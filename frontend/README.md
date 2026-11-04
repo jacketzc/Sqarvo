@@ -5,7 +5,7 @@
 | 平台 | 技术 | 目录 | 状态 |
 |---|---|---|---|
 | Windows | WinUI 3 / Windows App SDK / C# | [windows](windows/) | 窗口骨架，未接后端 |
-| Linux | GTK4 + libadwaita / Rust | [linux](linux/) | 窗口骨架，未接后端 |
+| Linux | GTK4 + libadwaita / Rust | [linux](linux/) | 已接后端 gRPC（握手 / 进程管理 / 四态），数据库功能未实现 |
 | macOS | SwiftUI / Swift | [macos](macos/) | 窗口骨架，未接后端 |
 
 共同约束：

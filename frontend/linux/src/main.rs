@@ -1,10 +1,14 @@
-//! Sqarvo Linux 桌面客户端（骨架）。
+//! Sqarvo Linux 桌面客户端（GTK4 + libadwaita）。
 //!
-//! 当前只是可运行的窗口骨架：
-//!
-//! - 使用 GTK4 + libadwaita，遵循 GNOME HIG；
-//! - 尚未接入后端 gRPC，界面会明确显示「后端未连接」；
-//! - 所有数据库操作将来都必须放在后台线程，结果安全派发到 GTK 主线程。
+//! 启动后按 `frontend/README.md` 的顺序接入本地后端：读端点描述 → 校验协议
+//! 主版本与 pid → 必要时启动 `sqarvo-backend` → 带 token 建立 gRPC Channel →
+//! `GetVersion` 核对版本，界面据此在 Loading / Connected / Error / Disconnected
+//! 之间切换。UI 不直接接触 socket、进程或端点文件：这些都在 [`backend`] 模块，
+//! GTK 主线程只通过 channel 与后台 worker 交互。
+
+mod backend;
+mod proto;
+mod ui;
 
 use adw::prelude::*;
 
@@ -13,32 +17,17 @@ fn main() -> adw::glib::ExitCode {
         .application_id("io.sqarvo.Sqarvo")
         .build();
 
-    app.connect_activate(build_ui);
+    install_app_actions(&app);
+    app.set_accels_for_action("app.quit", &["<primary>q"]);
+    app.connect_activate(ui::activate);
     app.run()
 }
 
-fn build_ui(app: &adw::Application) {
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("Sqarvo")
-        .default_width(1100)
-        .default_height(720)
-        .build();
-
-    let header = adw::HeaderBar::new();
-
-    // 明确呈现「未连接」状态，避免让用户以为后端已可用。
-    let status = gtk::Label::new(Some(
-        "Sqarvo 界面骨架\n后端尚未连接，数据库功能未实现",
-    ));
-    status.set_justify(gtk::Justification::Center);
-    status.set_margin_top(48);
-    status.set_margin_bottom(48);
-
-    let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    layout.append(&header);
-    layout.append(&status);
-
-    window.set_content(Some(&layout));
-    window.present();
+/// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径
+/// （`connect_shutdown` → 终止自己启动的后端子进程）。
+fn install_app_actions(app: &adw::Application) {
+    let quit = gtk::gio::SimpleAction::new("quit", None);
+    let app_handle = app.clone();
+    quit.connect_activate(move |_, _| app_handle.quit());
+    app.add_action(&quit);
 }
