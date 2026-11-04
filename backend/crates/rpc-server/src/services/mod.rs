@@ -9,6 +9,7 @@
 //! 业务规则不写在这里，也不写在前端。
 
 pub mod connection;
+pub mod mapping;
 pub mod metadata;
 pub mod query;
 pub mod system;
@@ -50,9 +51,9 @@ impl Services {
     ) -> Self {
         Self {
             system: SystemServiceImpl::new(Arc::clone(&sessions), drivers),
-            connection: ConnectionServiceImpl::new(sessions, Arc::clone(&queries)),
+            connection: ConnectionServiceImpl::new(Arc::clone(&sessions), Arc::clone(&queries)),
             metadata: MetadataServiceImpl::new(),
-            query: QueryServiceImpl::new(queries),
+            query: QueryServiceImpl::new(sessions, queries),
             transaction: TransactionServiceImpl::new(),
         }
     }

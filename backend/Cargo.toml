@@ -26,6 +26,7 @@ authors = ["Sqarvo contributors"]
 sqarvo-common = { path = "crates/common" }
 sqarvo-connection = { path = "crates/connection" }
 sqarvo-driver-api = { path = "crates/driver-api" }
+sqarvo-driver-sqlite = { path = "crates/drivers/sqlite" }
 sqarvo-driver-testkit = { path = "crates/driver-testkit" }
 sqarvo-drivers = { path = "crates/drivers" }
 sqarvo-local-store = { path = "crates/local-store" }

@@ -18,11 +18,13 @@ use sqarvo_local_store::AuthToken;
 use sqarvo_query_engine::{QueryLimits, QueryRegistry};
 use sqarvo_rpc_server::auth::TOKEN_METADATA_KEY;
 use sqarvo_rpc_server::proto::common::v1::Empty;
+use sqarvo_rpc_server::proto::common::v1::column_value;
 use sqarvo_rpc_server::proto::services::v1::connection_service_client::ConnectionServiceClient;
 use sqarvo_rpc_server::proto::services::v1::query_service_client::QueryServiceClient;
 use sqarvo_rpc_server::proto::services::v1::system_service_client::SystemServiceClient;
 use sqarvo_rpc_server::proto::services::v1::{
-    CancelQueryRequest, ConnectionParams, TestConnectionRequest,
+    CancelQueryRequest, CloseQueryRequest, ConnectRequest, ConnectionParams, DisconnectRequest,
+    ExecuteQueryRequest, FetchBatchRequest, TestConnectionRequest,
 };
 use sqarvo_rpc_server::{LocalListener, Services, error::ERROR_CODE_METADATA_KEY, serve};
 use tempfile::TempDir;
@@ -42,11 +44,19 @@ struct TestServer {
 
 impl TestServer {
     fn start() -> Self {
+        Self::start_with(DriverRegistry::new())
+    }
+
+    fn start_builtin() -> Self {
+        Self::start_with(DriverRegistry::with_builtin_drivers())
+    }
+
+    fn start_with(registry: DriverRegistry) -> Self {
         let dir = tempfile::tempdir().expect("创建临时目录");
         let socket = dir.path().join("backend.sock");
         let token = AuthToken::generate();
 
-        let registry = Arc::new(DriverRegistry::new());
+        let registry = Arc::new(registry);
         let sessions = Arc::new(SessionManager::new(Arc::clone(&registry)));
         let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
         let services = Services::new(sessions, registry, queries);
@@ -195,13 +205,13 @@ async fn query_cancel_reports_unknown_query() {
         }
     });
 
-    let error = client
+    // 取消是幂等的：已完成或不存在的查询返回成功，避免重复取消把 UI 打成错误。
+    client
         .cancel(CancelQueryRequest {
             query_id: "query_6f1c2f7a-3c1e-4a9b-9d6e-1c2b3a4d5e6f".to_owned(),
         })
         .await
-        .expect_err("未知查询必须返回 NOT_FOUND");
-    assert_eq!(error.code(), tonic::Code::NotFound);
+        .expect("未知查询的取消应保持幂等");
 
     let error = client
         .cancel(CancelQueryRequest {
@@ -211,5 +221,214 @@ async fn query_cancel_reports_unknown_query() {
         .expect_err("非法 ID 必须返回 INVALID_ARGUMENT");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
 
+    server.stop().await;
+}
+
+fn auth_interceptor(
+    token: AuthToken,
+) -> impl FnMut(Request<()>) -> Result<Request<()>, Status> + Clone {
+    move |mut request: Request<()>| {
+        let value = token.expose().parse().expect("token 是合法 metadata");
+        request.metadata_mut().insert(TOKEN_METADATA_KEY, value);
+        Ok(request)
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 端到端用例需按顺序验证「连接→执行→分批→关闭」完整链路
+async fn sqlite_query_roundtrip_over_uds() {
+    let server = TestServer::start_builtin();
+    let channel = server.channel().await;
+    let mut connections = ConnectionServiceClient::with_interceptor(
+        channel.clone(),
+        auth_interceptor(server.token.clone()),
+    );
+    let mut queries =
+        QueryServiceClient::with_interceptor(channel, auth_interceptor(server.token.clone()));
+
+    let database_dir = tempfile::tempdir().expect("临时数据库目录");
+    let database = database_dir.path().join("roundtrip.db");
+    let params = ConnectionParams {
+        driver_id: "sqlite".to_owned(),
+        host: database.display().to_string(),
+        ..ConnectionParams::default()
+    };
+
+    let connected = connections
+        .connect(ConnectRequest {
+            params: Some(params),
+            display_name: "e2e".to_owned(),
+        })
+        .await
+        .expect("连接 SQLite 成功")
+        .into_inner();
+    assert_eq!(connected.driver_id, "sqlite");
+    assert_ne!(connected.session_id, "");
+    let session_id = connected.session_id.clone();
+
+    let created = queries
+        .execute(ExecuteQueryRequest {
+            session_id: session_id.clone(),
+            sql: "CREATE TABLE t(v INTEGER)".to_owned(),
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect("建表成功")
+        .into_inner();
+    assert_eq!(created.statements.len(), 1);
+    assert!(!created.statements[0].has_result_set);
+    assert_eq!(created.rows.len(), 0);
+
+    let inserted = queries
+        .execute(ExecuteQueryRequest {
+            session_id: session_id.clone(),
+            sql: "INSERT INTO t(v) VALUES (1),(2),(3),(4),(5)".to_owned(),
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect("插入成功")
+        .into_inner();
+    assert_eq!(inserted.statements[0].rows_affected, 5);
+
+    let first = queries
+        .execute(ExecuteQueryRequest {
+            session_id: session_id.clone(),
+            sql: "SELECT v FROM t ORDER BY v".to_owned(),
+            max_rows_per_batch: 2,
+            timeout_millis: 5_000,
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect("查询成功")
+        .into_inner();
+    assert_eq!(first.rows.len(), 2);
+    assert!(first.has_more);
+    assert_ne!(first.page_token, "");
+    let meta = first.statements[0]
+        .result_meta
+        .as_ref()
+        .expect("SELECT 应返回列元数据");
+    assert_eq!(meta.columns[0].name, "v");
+    assert_eq!(meta.columns[0].r#type.as_ref().expect("列类型").kind, 2); // INTEGER
+
+    let query_id = first.query_id.clone();
+    let mut rows = first.rows.clone();
+    let mut page_token = first.page_token.clone();
+    let mut batches = 1;
+    while !page_token.is_empty() {
+        let next = queries
+            .fetch_batch(FetchBatchRequest {
+                query_id: query_id.clone(),
+                page_token,
+                max_rows: 2,
+                statement_index: 0,
+            })
+            .await
+            .expect("拉取下一批成功")
+            .into_inner();
+        rows.extend(next.rows);
+        page_token = next.page_token;
+        batches += 1;
+        assert!(batches <= 10, "分批未收敛");
+        if !next.has_more {
+            break;
+        }
+    }
+    assert_eq!(batches, 3, "5 行按每批 2 行应分成 3 批");
+    let values: Vec<i64> = rows
+        .iter()
+        .map(|row| match row.values[0].value.as_ref() {
+            Some(column_value::Value::Int64Value(value)) => *value,
+            other => panic!("期望 INT64，实际 {other:?}"),
+        })
+        .collect();
+    assert_eq!(values, vec![1, 2, 3, 4, 5]);
+
+    queries
+        .close(CloseQueryRequest {
+            query_id: query_id.clone(),
+        })
+        .await
+        .expect("关闭查询成功");
+    let error = queries
+        .fetch_batch(FetchBatchRequest {
+            query_id,
+            page_token: "2".to_owned(),
+            max_rows: 2,
+            statement_index: 0,
+        })
+        .await
+        .expect_err("关闭后不可再拉取");
+    assert_eq!(error.code(), tonic::Code::NotFound);
+
+    connections
+        .disconnect(DisconnectRequest {
+            connection_id: connected.connection_id,
+        })
+        .await
+        .expect("断开成功");
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn execute_timeout_cancels_query_and_session_recovers() {
+    let server = TestServer::start_builtin();
+    let channel = server.channel().await;
+    let mut connections = ConnectionServiceClient::with_interceptor(
+        channel.clone(),
+        auth_interceptor(server.token.clone()),
+    );
+    let mut queries =
+        QueryServiceClient::with_interceptor(channel, auth_interceptor(server.token.clone()));
+
+    let database_dir = tempfile::tempdir().expect("临时数据库目录");
+    let params = ConnectionParams {
+        driver_id: "sqlite".to_owned(),
+        host: database_dir.path().join("timeout.db").display().to_string(),
+        ..ConnectionParams::default()
+    };
+    let connected = connections
+        .connect(ConnectRequest {
+            params: Some(params),
+            display_name: "timeout".to_owned(),
+        })
+        .await
+        .expect("连接成功")
+        .into_inner();
+    let session_id = connected.session_id.clone();
+
+    let error = queries
+        .execute(ExecuteQueryRequest {
+            session_id: session_id.clone(),
+            sql: "SELECT count(*) FROM (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL \
+                  SELECT x+1 FROM c WHERE x<20000000) SELECT x FROM c)"
+                .to_owned(),
+            timeout_millis: 100,
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect_err("慢查询应超时");
+    assert_eq!(error.code(), tonic::Code::DeadlineExceeded);
+
+    // 超时路径必须真正中断驱动；会话随后应恢复空闲并正常执行新查询。
+    let recovered = queries
+        .execute(ExecuteQueryRequest {
+            session_id,
+            sql: "SELECT 1".to_owned(),
+            timeout_millis: 5_000,
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect("超时后会话应可继续使用")
+        .into_inner();
+    assert_eq!(recovered.rows.len(), 1);
+    assert!(!recovered.has_more);
+
+    connections
+        .disconnect(DisconnectRequest {
+            connection_id: connected.connection_id,
+        })
+        .await
+        .expect("断开成功");
     server.stop().await;
 }

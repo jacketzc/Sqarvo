@@ -4,12 +4,12 @@
 //! 从而避免把二者放进同一个自引用结构；同一会话同时只允许一条在途查询
 //! （上层的 `SessionHandle` 也会串行化）。
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, Rows, Statement};
-use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId};
+use rusqlite::{Connection, InterruptHandle, OpenFlags, Rows, Statement};
+use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId};
 use sqarvo_driver_api::{
     Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, DriverSession, ExecuteRequest,
     ExecutionStart, ResultBatch, StatementSummary, Value, sql_preview, truncate_text,
@@ -38,9 +38,20 @@ enum Command {
         max_rows: u32,
         reply: oneshot::Sender<Result<ResultBatch>>,
     },
+    CloseQuery {
+        query_id: QueryId,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
+}
+
+/// 会话与执行线程共享的查询状态，用于取消。
+#[derive(Default)]
+struct QueryState {
+    active: Mutex<Option<QueryId>>,
+    cancelled: AtomicBool,
 }
 
 /// SQLite 会话。
@@ -51,12 +62,16 @@ pub struct SqliteSession {
     sender: mpsc::UnboundedSender<Command>,
     closed: AtomicBool,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
+    interrupt: Arc<InterruptHandle>,
+    state: Arc<QueryState>,
 }
 
 impl SqliteSession {
     pub(crate) async fn connect(path: String, read_only: bool) -> Result<Self> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (ready_sender, ready_receiver) = oneshot::channel();
+        let state = Arc::new(QueryState::default());
+        let thread_state = Arc::clone(&state);
 
         let join = std::thread::Builder::new()
             .name("sqarvo-sqlite".to_owned())
@@ -68,14 +83,15 @@ impl SqliteSession {
                         return;
                     }
                 };
-                if ready_sender.send(Ok(())).is_err() {
+                let interrupt = Arc::new(connection.get_interrupt_handle());
+                if ready_sender.send(Ok(Arc::clone(&interrupt))).is_err() {
                     return;
                 }
-                run_connection(connection, receiver);
+                run_connection(connection, receiver, thread_state);
             })
             .map_err(|error| Error::internal("无法启动 SQLite 会话线程").with_source(error))?;
 
-        ready_receiver
+        let interrupt = ready_receiver
             .await
             .map_err(|_| Error::internal("SQLite 会话线程在连接完成前退出"))??;
 
@@ -84,6 +100,8 @@ impl SqliteSession {
             sender,
             closed: AtomicBool::new(false),
             join: Mutex::new(Some(join)),
+            interrupt,
+            state,
         })
     }
 
@@ -100,7 +118,11 @@ impl SqliteSession {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn run_connection(connection: Connection, mut receiver: mpsc::UnboundedReceiver<Command>) {
+fn run_connection(
+    connection: Connection,
+    mut receiver: mpsc::UnboundedReceiver<Command>,
+    state: Arc<QueryState>,
+) {
     loop {
         let Some(command) = receiver.blocking_recv() else {
             return;
@@ -110,6 +132,10 @@ fn run_connection(connection: Connection, mut receiver: mpsc::UnboundedReceiver<
                 let _ = reply.send(());
                 return;
             }
+            Command::CloseQuery { reply, .. } => {
+                // 空闲状态下没有游标可释放；保持幂等。
+                let _ = reply.send(Ok(()));
+            }
             Command::Fetch { reply, .. } => {
                 let _ = reply.send(Err(Error::not_found(
                     ErrorCode::QUERY_NOT_FOUND,
@@ -117,7 +143,18 @@ fn run_connection(connection: Connection, mut receiver: mpsc::UnboundedReceiver<
                 )));
             }
             Command::Execute { request, reply } => {
-                if serve_query(&connection, request, reply, &mut receiver) {
+                *state
+                    .active
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.query_id);
+                state.cancelled.store(false, Ordering::SeqCst);
+                let close = serve_query(&connection, request, reply, &mut receiver, &state);
+                *state
+                    .active
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                state.cancelled.store(false, Ordering::SeqCst);
+                if close {
                     return;
                 }
             }
@@ -137,6 +174,7 @@ fn serve_query(
     request: ExecuteRequest,
     reply: oneshot::Sender<Result<ExecutionStart>>,
     receiver: &mut mpsc::UnboundedReceiver<Command>,
+    state: &QueryState,
 ) -> bool {
     let query_id = request.query_id;
     let limit = batch_limit(request.max_rows);
@@ -216,7 +254,6 @@ fn serve_query(
     }
 
     let mut rows_read = u64::try_from(first_len).unwrap_or(u64::MAX);
-    let mut finished = !has_more;
 
     loop {
         let Some(command) = receiver.blocking_recv() else {
@@ -226,6 +263,19 @@ fn serve_query(
             Command::Close { reply } => {
                 let _ = reply.send(());
                 return true;
+            }
+            Command::CloseQuery {
+                query_id: requested,
+                reply,
+            } => {
+                if requested == query_id {
+                    let _ = reply.send(Ok(()));
+                    return false;
+                }
+                let _ = reply.send(Err(Error::not_found(
+                    ErrorCode::QUERY_NOT_FOUND,
+                    "查询不存在",
+                )));
             }
             Command::Execute { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
@@ -247,12 +297,9 @@ fn serve_query(
                     )));
                     continue;
                 }
-                if finished {
-                    let _ = reply.send(Err(Error::not_found(
-                        ErrorCode::QUERY_NOT_FOUND,
-                        "查询已结束或已被关闭",
-                    )));
-                    continue;
+                if state.cancelled.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(cancelled_error()));
+                    return false;
                 }
                 let expected = rows_read.to_string();
                 if cursor.as_deref() != Some(expected.as_str()) {
@@ -273,7 +320,6 @@ fn serve_query(
                         } else {
                             None
                         };
-                        finished = !more;
                         pending = next_pending;
                         let _ = reply.send(Ok(ResultBatch {
                             statement_index: 0,
@@ -287,8 +333,8 @@ fn serve_query(
                         }
                     }
                     Err(error) => {
-                        finished = true;
                         let _ = reply.send(Err(error));
+                        return false;
                     }
                 }
             }
@@ -412,6 +458,14 @@ fn batch_limit(requested: Option<u32>) -> usize {
     usize::try_from(rows).unwrap_or(DEFAULT_BATCH_ROWS as usize)
 }
 
+fn cancelled_error() -> Error {
+    Error::new(
+        ErrorCode::QUERY_CANCELLED,
+        ErrorCategory::Cancelled,
+        "查询已取消",
+    )
+}
+
 fn prepare_error(error: rusqlite::Error) -> Error {
     if matches!(error, rusqlite::Error::MultipleStatement) {
         return Error::unsupported(
@@ -458,12 +512,40 @@ impl DriverSession for SqliteSession {
         wait.await.map_err(|_| Self::closed_error())?
     }
 
-    async fn cancel(&self, _query_id: &QueryId) -> Result<()> {
+    async fn cancel(&self, query_id: &QueryId) -> Result<()> {
         self.ensure_open()?;
-        Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "SQLite 取消尚未实现（M2 #12）",
-        ))
+        let active = *self
+            .state
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match active {
+            Some(current) if current == *query_id => {
+                // 重复取消保持成功，不重复中断。
+                if !self.state.cancelled.swap(true, Ordering::SeqCst) {
+                    self.interrupt.interrupt();
+                }
+                Ok(())
+            }
+            Some(_) => Err(Error::not_found(
+                ErrorCode::QUERY_NOT_FOUND,
+                "该查询未在运行",
+            )),
+            // 查询已结束：取消是幂等的。
+            None => Ok(()),
+        }
+    }
+
+    async fn close_query(&self, query_id: &QueryId) -> Result<()> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::CloseQuery {
+                query_id: *query_id,
+                reply,
+            })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
     }
 
     async fn close(&self) -> Result<()> {

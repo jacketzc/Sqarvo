@@ -308,6 +308,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_interrupts_running_query_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = std::sync::Arc::new(
+            session::SqliteSession::connect(
+                dir.path().join("cancel.db").display().to_string(),
+                false,
+            )
+            .await
+            .unwrap(),
+        );
+
+        let query_id = QueryId::new();
+        let running = {
+            let session = std::sync::Arc::clone(&session);
+            tokio::spawn(async move {
+                // 递归计数在 SQLite 内部循环数百万次，足以在取消前保持运行。
+                session
+                    .execute(request(
+                        query_id,
+                        "SELECT count(*) FROM (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL \
+                         SELECT x+1 FROM c WHERE x<20000000) SELECT x FROM c)",
+                        None,
+                    ))
+                    .await
+            })
+        };
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let first = session.cancel(&query_id).await;
+        let second = session.cancel(&query_id).await;
+        assert!(first.is_ok(), "首次取消应成功: {first:?}");
+        assert!(second.is_ok(), "重复取消应保持幂等: {second:?}");
+
+        let error = running.await.unwrap().expect_err("查询应被取消");
+        assert_eq!(error.category(), ErrorCategory::Cancelled);
+        assert_eq!(error.code(), ErrorCode::QUERY_CANCELLED);
+    }
+
+    #[tokio::test]
+    async fn close_query_releases_cursor_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session::SqliteSession::connect(
+            dir.path().join("close-query.db").display().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v INTEGER)", None))
+            .await
+            .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "INSERT INTO t(v) VALUES (1),(2),(3)",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let query_id = QueryId::new();
+        let start = session
+            .execute(request(query_id, "SELECT v FROM t", Some(1)))
+            .await
+            .unwrap();
+        let cursor = start
+            .first_batch
+            .expect("应有首批")
+            .next_cursor
+            .expect("应有游标");
+
+        session.close_query(&query_id).await.unwrap();
+        session.close_query(&query_id).await.unwrap();
+
+        let error = session
+            .fetch(&query_id, 0, Some(&cursor), 1)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::QUERY_NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn passes_driver_testkit_smoke() {
         let dir = tempfile::tempdir().unwrap();
         let session = session::SqliteSession::connect(

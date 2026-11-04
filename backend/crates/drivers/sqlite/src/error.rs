@@ -50,6 +50,11 @@ fn classify(code: SqliteCode, context: &'static str) -> (ErrorCode, ErrorCategor
             ErrorCategory::Unavailable,
             "数据库忙或被其他连接锁定",
         ),
+        SqliteCode::OperationInterrupted => (
+            ErrorCode::QUERY_CANCELLED,
+            ErrorCategory::Cancelled,
+            "查询已取消",
+        ),
         SqliteCode::SystemIoFailure => (
             ErrorCode::IO,
             ErrorCategory::Unavailable,

@@ -314,6 +314,11 @@ pub trait DriverSession: Send + Sync {
     /// 关闭会话并释放资源。
     async fn close(&self) -> Result<()>;
 
+    /// 释放指定查询的游标与资源。无状态驱动可直接返回 `Ok(())`。
+    async fn close_query(&self, _query_id: &QueryId) -> Result<()> {
+        Ok(())
+    }
+
     /// 元数据能力；不支持的驱动返回 `None`。
     fn metadata(&self) -> Option<&dyn MetadataProvider> {
         None

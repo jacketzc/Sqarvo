@@ -23,14 +23,15 @@ impl DriverRegistry {
 
     /// 装载编译期内置驱动。
     ///
-    /// 目前没有内置驱动，返回空注册表。新增驱动时在此处注册，例如：
-    ///
-    /// ```ignore
-    /// registry.register(Arc::new(PostgresDriver::new()))?;
-    /// ```
+    /// v0.1 仅内置 SQLite。注册发生在启动阶段，重复 ID 属于编译期配置错误，
+    /// 因此这里直接 panic 而不是把错误推迟到运行期。
     #[must_use]
     pub fn with_builtin_drivers() -> Self {
-        Self::new()
+        let mut registry = Self::new();
+        registry
+            .register(Arc::new(sqarvo_driver_sqlite::SqliteDriver::new()))
+            .expect("内置 SQLite 驱动注册失败");
+        registry
     }
 
     /// 注册驱动。重复的驱动 ID 被视为错误，避免静默覆盖。

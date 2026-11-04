@@ -80,6 +80,11 @@ impl SessionHandle {
         self.session.cancel(query_id).await
     }
 
+    /// 释放查询游标与相关资源。
+    pub async fn close_query(&self, query_id: &QueryId) -> Result<()> {
+        self.session.close_query(query_id).await
+    }
+
     /// 元数据能力；不支持的驱动返回 `None`。
     #[must_use]
     pub fn metadata(&self) -> Option<&dyn MetadataProvider> {
