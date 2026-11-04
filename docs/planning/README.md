@@ -26,6 +26,7 @@ docs/
 │   ├── milestones.md        # 里程碑（稳定，不随小任务改动）
 │   ├── release-plan.md      # 版本范围、退出标准、发布检查
 │   └── risk-register.md     # 风险登记与缓解
+├── releases/                # 版本发布说明（能力、限制、验证记录）
 ├── architecture/            # 进程模型、模块边界、数据流
 ├── api/                     # gRPC / Protobuf 约定
 ├── database/                # Driver SPI 与数据库差异

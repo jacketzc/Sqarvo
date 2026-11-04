@@ -26,6 +26,11 @@
 - 所有检查（fmt/clippy/test/doc）通过；
 - 明确声明「无前端、无网络数据库支持」。
 
+完成记录（2026-11-04，Linux）：以上四条全部满足。`cargo test` 95 通过，
+`fmt --check` / `clippy -D warnings` / release 构建通过，CI 作业 41786163030 成功，
+真实二进制运行的权限、日志脱敏与退出清理已实测。发布说明见
+[v0.1](../releases/v0.1.md)。
+
 ### v0.2
 
 - 至少一个平台前端可启动后端、完成 token 握手并执行 SQL；

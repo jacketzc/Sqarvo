@@ -7,7 +7,7 @@
 |---|---|---|---|---|
 | M0 骨架 | S0 | 可编译、可测试的仓库骨架与本地 IPC | v0.1 | 已完成 |
 | M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
-| M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 进行中（#9–#13 完成） |
+| M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 已完成（#9–#17） |
 | M3 凭据与 PostgreSQL | S3 | 系统凭据存储 + PostgreSQL 驱动 | v0.2 | 未开始 |
 | M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.3 / v0.4 | 未开始 |
 | M5 第二驱动与一致性 | S5 | MySQL 驱动 + 三驱动一致性矩阵 | v1.0 | 未开始 |
@@ -50,6 +50,26 @@
 - 取消 2 秒内生效且幂等；
 - 断开连接后会话/查询计数归零；
 - CI 运行 SQLite 测试。
+
+### M2 首个驱动切片（实际完成）
+
+实际完成：2026-11-04（Linux）。任务：#9–#17，发布说明见
+[v0.1](../releases/v0.1.md)。
+
+| 完成标准 | 证据 |
+|---|---|
+| 真实 gRPC 客户端完成 SQLite 查询与分批拉取 | `sqarvo-rpc-server/tests/grpc_sqlite_e2e.rs::sqlite_lifecycle_over_uds`：真实 UDS + 临时库，7 行按每批 3 行拉成 3 批并逐值校验 |
+| 取消 2 秒内生效且幂等 | `::cancel_interrupts_running_fetch_within_deadline`：取批进行中 `Cancel`，实测耗时断言 `< 2s`，重复取消仍成功；错误码 `query.cancelled` |
+| 断开连接后会话/查询计数归零 | 每个 e2e 用例结束时断言 `SessionManager::active_count() == 0` 且 `QueryRegistry::active() == 0` |
+| CI 运行 SQLite 测试 | 作业 `41786163030`（commit 98c57a6）成功；显式步骤输出 `type_mapping` 12 用例、`grpc_sqlite_e2e` 3 用例全部通过，无 ignored/skipped |
+
+配套验证（同一次运行）：`cargo test` 95 通过 / 0 失败，`fmt --check` 与
+`clippy -D warnings` 通过，release 构建通过，真实二进制的权限/清理/日志脱敏实测通过。
+命令与输出摘要见 [development-plan.md](development-plan.md) 的 S2 验证记录。
+
+遗留（不属 M2 范围，已登记）：启动与空闲内存基准（M6 / `REQ-PERF-001`）；
+Windows、macOS 未构建验证；事务与元数据 RPC（M4）；取消无法作用于「尚未返回首批」的执行
+（契约层改进候选）。
 
 ### M3 凭据与 PostgreSQL
 

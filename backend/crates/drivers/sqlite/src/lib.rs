@@ -5,8 +5,8 @@
 //! - `rusqlite` 是同步库，不能在 Tokio worker 上直接执行；
 //! - `Statement` 借用 `Connection`，游标需要跨多次 gRPC 调用存活，
 //!   因此由专用线程在 `serve_query` 的内层循环中持有语句与 Rows；
-//! - 已实现：连接、只读模式、单语句执行、语句摘要、分批拉取、关闭；
-//!   取消与事务在 #12 / M4 完成，未实现时明确返回 `capability.unsupported`。
+//! - 已实现：连接、只读模式、单语句执行、语句摘要、分批拉取、取消（`InterruptHandle`，
+//!   幂等）、关闭；事务在 M4 接线，未实现时明确返回 `capability.unsupported`。
 
 #![warn(missing_docs)]
 

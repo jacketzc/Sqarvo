@@ -8,8 +8,9 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
-> 当前仓库处于**骨架阶段**。传输层、协议契约与部分通用逻辑已可编译、可测试，
-> 但**尚未实现任何数据库驱动**，因此还不能连接真实数据库。见下方「当前状态」。
+> 当前版本为 **v0.1（仅后端 + SQLite）**：传输层、协议契约、Driver SPI 与 SQLite 驱动
+> 已可端到端使用，但**没有可用的图形前端**，也不能连接网络数据库。
+> 能力边界与验证记录见 [v0.1 发布说明](docs/releases/v0.1.md)。
 
 ## 目录结构
 
@@ -24,7 +25,7 @@
 │   └── crates/
 │       ├── common/           # 错误模型与标识符
 │       ├── driver-api/       # Driver SPI：能力、值模型、元数据、会话
-│       ├── drivers/          # 驱动注册表（当前无内置驱动）
+│       ├── drivers/          # 驱动注册表与 SQLite 驱动（drivers/sqlite）
 │       ├── connection/       # 连接与会话生命周期
 │       ├── query-engine/     # 查询登记、并发上限、幂等取消
 │       ├── metadata/         # 元数据分页逻辑
@@ -51,6 +52,8 @@
 | 访问控制 | 每进程随机 256 位 token，写入 0600 端点文件；所有 RPC 经拦截器校验 |
 | Driver SPI | v0.2：多语句/语句摘要、事务与元数据接口、单元格截断 |
 | SQLite 驱动 | 连接 / 只读 / 单语句执行 / 分批游标 / 取消（已接入 gRPC） |
+| 类型映射与截断 | NULL/INTEGER/REAL/TEXT/BLOB 按存储类映射；NUMERIC 与日期类保留原始类型名；单格 64 KiB 截断标记 |
+| gRPC 端到端测试 | 真实 UDS + 临时 SQLite 库：查询、两批拉取、取消 2 秒内、断连归零 |
 | 驱动测试基架 | 脚本化测试会话 + 最小符合性检查 `smoke`（SQLite 已通过） |
 | 连接管理 | 会话建立/断开/列表、驱动不存在时明确报错 |
 | 查询登记 | 并发上限、批次上限、幂等取消 |
@@ -60,13 +63,15 @@
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
 
-- 任何数据库驱动（PostgreSQL / MySQL / SQLite 等）；
-- SQL 执行与结果集分批拉取；
+- PostgreSQL / MySQL 驱动（连接请求返回 `driver.not_found`）；
+- 多语句执行（第二条语句返回 `capability.unsupported`）；
 - 元数据对象树、列信息、DDL 生成；
 - 显式事务绑定到会话；
 - 操作系统凭据存储（当前仅有接口与「不可用」实现）；
 - 前端与后端的实际连接（三端 UI 仅为骨架）；
-- Windows Named Pipe + ACL 传输（当前回退为回环 TCP + token）。
+- 大字段延迟加载、结果集内存上限与背压；
+- Windows Named Pipe + ACL 传输（当前回退为回环 TCP + token）；
+- 启动/内存/大结果集性能基准（M6）。
 
 ## 构建与测试
 
@@ -113,6 +118,7 @@ cargo run -p sqarvo-backend-service
 - [发布计划](docs/planning/release-plan.md)
 - [风险登记](docs/planning/risk-register.md)
 - [规划文档与任务管理约定](docs/planning/README.md)
+- [v0.1 发布说明](docs/releases/v0.1.md)
 
 技术与设计：
 
