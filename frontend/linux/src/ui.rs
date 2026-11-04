@@ -190,6 +190,26 @@ pub fn activate(app: &adw::Application) {
 
     window.present();
     retry();
+
+    // QA 取证：延时后把窗口渲染成 PNG 再关闭窗口（走同一条清理路径）。
+    if let Some(capture) = crate::qa::requested() {
+        let window_weak = window.downgrade();
+        glib::timeout_add_local_once(capture.delay, move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            match crate::qa::save_window(&window, &capture.path) {
+                Ok(()) => {
+                    eprintln!("[qa] 界面截图已写入 {}", capture.path.display());
+                    window.close();
+                }
+                Err(error) => {
+                    eprintln!("[qa] 界面截图失败：{error}");
+                    std::process::exit(2);
+                }
+            }
+        });
+    }
 }
 
 fn noop_handler() -> Rc<dyn Fn()> {

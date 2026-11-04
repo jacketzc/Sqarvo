@@ -8,19 +8,50 @@
 
 mod backend;
 mod proto;
+mod qa;
 mod ui;
 
 use adw::prelude::*;
 
 fn main() -> adw::glib::ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if let Err(error) = qa::init(&args) {
+        eprintln!("[sqarvo-desktop] 参数错误：{error}");
+        return adw::glib::ExitCode::FAILURE;
+    }
+
     let app = adw::Application::builder()
         .application_id("io.sqarvo.Sqarvo")
         .build();
 
     install_app_actions(&app);
+    register_qa_options(&app);
     app.set_accels_for_action("app.quit", &["<primary>q"]);
     app.connect_activate(ui::activate);
     app.run()
+}
+
+/// 把 QA 截图参数注册给 GApplication 的选项解析器。
+///
+/// 只做「让 GLib 认识这两个选项」这一步：取值仍由 [`qa::init`] 自己从 `argv` 解析，
+/// 这样既不依赖 GLib 的回调时机，也不会改变正常启动路径。
+fn register_qa_options(app: &adw::Application) {
+    use gtk::gio::prelude::*;
+    use gtk::glib;
+
+    for (name, arg_description) in [
+        ("screenshot", "/path/to/output.png"),
+        ("screenshot-delay-ms", "milliseconds"),
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::String,
+            "QA：把窗口渲染成 PNG（开发/验证用）",
+            Some(arg_description),
+        );
+    }
 }
 
 /// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径

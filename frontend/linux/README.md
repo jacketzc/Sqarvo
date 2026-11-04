@@ -131,3 +131,19 @@ ls -l /run/user/1000/sqarvo
 # 4. 关闭窗口后：无 sqarvo-backend 进程，端点文件与 socket 均已消失
 pgrep -x sqarvo-backend; ls -A /run/user/1000/sqarvo
 ```
+
+## 无人值守取证（`--screenshot`）
+
+GNOME Wayland 会话里 `gnome-screenshot` / `org.gnome.Shell.Screenshot` 需要
+xdg-desktop-portal 的交互授权，无人值守时会被拒绝；XWayland 根窗口不做合成，
+`x11grab` 只能抓到全黑。为了在没有桌面截图权限时也能拿到**真实画面**，应用支持把窗口
+自己的渲染结果写成 PNG：
+
+```bash
+pkill -x sqarvo-desktop; pkill -x sqarvo-backend; rm -rf /run/user/1000/sqarvo
+DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 ./target/debug/sqarvo-desktop \
+  --screenshot /tmp/ui.png --screenshot-delay-ms 3500
+```
+
+延时不指定时默认 4000 ms；写盘后窗口关闭并走同一套清理路径。截图失败时进程退出码为 2，
+不会静默成功。该参数只用于开发/自动化验证，不属于产品功能。
