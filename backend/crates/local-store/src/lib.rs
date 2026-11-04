@@ -16,7 +16,12 @@ pub mod endpoint;
 pub mod paths;
 pub mod token;
 
-pub use credentials::{CredentialStore, Secret, UnavailableCredentialStore};
+#[cfg(target_os = "linux")]
+pub use credentials::SecretServiceCredentialStore;
+pub use credentials::{
+    CredentialStore, MemoryCredentialStore, Secret, UnavailableCredentialStore,
+    open_credential_store, open_default_credential_store, validate_reference,
+};
 pub use endpoint::{EndpointInfo, TransportKind, read_endpoint_file, write_endpoint_file};
 pub use paths::AppPaths;
 pub use paths::restrict_to_owner;

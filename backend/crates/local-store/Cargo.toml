@@ -13,7 +13,12 @@ serde_json.workspace = true
 sqarvo-common.workspace = true
 sqarvo-driver-api.workspace = true
 time.workspace = true
+tracing.workspace = true
 uuid.workspace = true
+
+# Secret Service 走 D-Bus；只有 Linux 需要（zbus 的 blocking API，见 credentials 模块文档）。
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -97,8 +97,10 @@ impl ErrorCode {
     pub const CAPABILITY_UNSUPPORTED: Self = Self("capability.unsupported");
     /// 配置非法。
     pub const CONFIG_INVALID: Self = Self("config.invalid");
-    /// 凭据不可用（未集成系统凭据存储或用户拒绝授权）。
+    /// 凭据不可用（未集成系统凭据存储、服务不可用或用户拒绝授权）。
     pub const CREDENTIAL_UNAVAILABLE: Self = Self("credential.unavailable");
+    /// 凭据引用不存在（连接配置还在，但系统凭据库中的条目已被删除）。
+    pub const CREDENTIAL_NOT_FOUND: Self = Self("credential.not_found");
     /// 本地传输失败。
     pub const TRANSPORT_FAILED: Self = Self("transport.failed");
     /// 本地 I/O 失败。
