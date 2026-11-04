@@ -4,10 +4,10 @@ name: 任务跟踪检查
 # 硬失败——缺里程碑、里程碑不在 milestones.md、未加入 Project 看板；
 # 警告——缺优先级或模块标签。
 #
-# 看板检查需要 Projects 读权限。用户级 Project 无法用 GITHUB_TOKEN 读取，
-# 因此需在仓库 Secrets 中配置 PROJECT_TOKEN：fine-grained PAT，仅授予
-# 「Projects: read」+「Issues: read」（或 classic token 的 project 作用域）。
-# 未配置时看板检查降级为警告，其余检查照常执行。
+# 看板检查需要 Projects 读权限。当前 Project 为公开，GITHUB_TOKEN 可读取；
+# 若改为私有，需在仓库 Secrets 配置 PROJECT_TOKEN（fine-grained PAT，仅授予
+# Projects: read，或 classic token 的 project 作用域）。
+# 读不到看板时降级为警告，其余检查照常执行（配置了 PROJECT_TOKEN 则改为硬失败）。
 
 on:
   schedule:

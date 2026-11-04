@@ -85,8 +85,8 @@ Issue 通过原生 Milestone 字段挂载）。
 ```
 
 CI 由 `.github/workflows/tracking.yml` 在每日定时、手动触发、Issue 打开/编辑/重开时运行。
-用户级 Project 无法用 `GITHUB_TOKEN` 读取，需在仓库 Secrets 配置 `PROJECT_TOKEN`
-（Projects: read，建议 fine-grained PAT）；未配置时看板检查降级为警告。
+看板为公开时 `GITHUB_TOKEN` 即可读取；若改为私有，需在 Secrets 配置 `PROJECT_TOKEN`
+（fine-grained PAT，Projects: read），否则看板检查降级为警告。
 
 ## 里程碑与版本
 
