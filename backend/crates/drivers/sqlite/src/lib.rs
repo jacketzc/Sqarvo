@@ -1,12 +1,12 @@
-//! SQLite 驱动：每会话一个阻塞线程（actor）持有连接。
+//! SQLite 驱动：每会话一个阻塞线程（actor）持有连接与游标。
 //!
 //! 设计依据见 `docs/decisions/0009-sqlite-driver.md`：
 //!
 //! - `rusqlite` 是同步库，不能在 Tokio worker 上直接执行；
 //! - `Statement` 借用 `Connection`，游标需要跨多次 gRPC 调用存活，
-//!   因此由专用线程持有连接与后续的语句/游标；
-//! - 当前阶段（M2 #9）只实现连接、只读模式、关闭与连接测试；
-//!   执行与分批拉取在 #10、#11 实现，未实现时会明确返回 `capability.unsupported`。
+//!   因此由专用线程在 `serve_query` 的内层循环中持有语句与 Rows；
+//! - 已实现：连接、只读模式、单语句执行、语句摘要、分批拉取、关闭；
+//!   取消与事务在 #12 / M4 完成，未实现时明确返回 `capability.unsupported`。
 
 #![warn(missing_docs)]
 
@@ -20,8 +20,10 @@ pub use driver::SqliteDriver;
 mod tests {
     use std::collections::BTreeMap;
 
-    use sqarvo_common::ErrorCategory;
-    use sqarvo_driver_api::{ConnectionParams, Driver, DriverSession, TlsMode};
+    use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
+    use sqarvo_driver_api::{
+        ConnectionParams, Driver, DriverSession, ExecuteRequest, TlsMode, Value,
+    };
 
     use super::*;
     use error::{SQLITE_OPEN_FAILED, SQLITE_READ_ONLY};
@@ -44,6 +46,22 @@ mod tests {
         }
     }
 
+    fn request(query_id: QueryId, sql: &str, max_rows: Option<u32>) -> ExecuteRequest {
+        ExecuteRequest {
+            query_id,
+            sql: sql.to_owned(),
+            max_rows,
+            timeout: None,
+        }
+    }
+
+    fn int_at(row: &sqarvo_driver_api::Row, index: usize) -> i64 {
+        match &row[index].value {
+            Value::Int(value) => *value,
+            other => panic!("期望 INTEGER，实际 {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn connect_close_and_reject_after_close() {
         let dir = tempfile::tempdir().unwrap();
@@ -59,7 +77,7 @@ mod tests {
         session.close().await.unwrap();
         session.close().await.unwrap();
         let error = session
-            .execute_batch_for_test("SELECT 1")
+            .execute(request(QueryId::new(), "SELECT 1", None))
             .await
             .unwrap_err();
         assert_eq!(error.code(), error::SESSION_CLOSED);
@@ -78,10 +96,15 @@ mod tests {
         let session = session::SqliteSession::connect(path.display().to_string(), true)
             .await
             .unwrap();
-        assert!(session.execute_batch_for_test("SELECT 1").await.is_ok());
+        assert!(
+            session
+                .execute(request(QueryId::new(), "SELECT v FROM t", None))
+                .await
+                .is_ok()
+        );
 
         let error = session
-            .execute_batch_for_test("INSERT INTO t VALUES (2)")
+            .execute(request(QueryId::new(), "INSERT INTO t VALUES (2)", None))
             .await
             .unwrap_err();
         assert_eq!(error.code(), SQLITE_READ_ONLY);
@@ -142,5 +165,207 @@ mod tests {
         assert!(report.reachable);
         assert!(report.server_version.is_some());
         assert_eq!(report.warnings, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn execute_reports_rows_affected_and_rejects_multiple_statements() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session::SqliteSession::connect(
+            dir.path().join("execute.db").display().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let created = session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v INTEGER)", None))
+            .await
+            .unwrap();
+        assert!(!created.statements[0].has_result_set);
+        assert_eq!(created.statements[0].rows_affected, Some(0));
+
+        let inserted = session
+            .execute(request(
+                QueryId::new(),
+                "INSERT INTO t(v) VALUES (1),(2),(3)",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(inserted.statements[0].rows_affected, Some(3));
+
+        let error = session
+            .execute(request(QueryId::new(), "SELECT 1; SELECT 2", None))
+            .await
+            .unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn select_returns_columns_and_batches_with_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session::SqliteSession::connect(
+            dir.path().join("select.db").display().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v INTEGER)", None))
+            .await
+            .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "INSERT INTO t(v) VALUES (1),(2),(3),(4),(5)",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let query_id = QueryId::new();
+        let start = session
+            .execute(request(query_id, "SELECT v FROM t ORDER BY v", Some(2)))
+            .await
+            .unwrap();
+
+        let summary = &start.statements[0];
+        assert!(summary.has_result_set);
+        assert_eq!(summary.columns.len(), 1);
+        assert_eq!(summary.columns[0].name, "v");
+        assert_eq!(
+            summary.columns[0].original_type_name.as_deref(),
+            Some("INTEGER")
+        );
+        assert_eq!(summary.columns[0].column_type.kind_name(), "integer");
+
+        let first = start.first_batch.expect("SELECT 应有首批数据");
+        assert_eq!(first.rows.len(), 2);
+        assert!(first.has_more);
+        let cursor = first.next_cursor.clone().expect("应返回游标");
+
+        let second = session.fetch(&query_id, 0, Some(&cursor), 2).await.unwrap();
+        assert_eq!(second.rows.len(), 2);
+        assert!(second.has_more);
+        let cursor = second.next_cursor.clone().expect("应返回游标");
+
+        let third = session.fetch(&query_id, 0, Some(&cursor), 2).await.unwrap();
+        assert_eq!(third.rows.len(), 1);
+        assert!(!third.has_more);
+        assert!(third.next_cursor.is_none());
+
+        let values: Vec<i64> = [first.rows, second.rows, third.rows]
+            .concat()
+            .iter()
+            .map(|row| int_at(row, 0))
+            .collect();
+        assert_eq!(values, vec![1, 2, 3, 4, 5]);
+
+        let error = session.fetch(&query_id, 0, None, 2).await.unwrap_err();
+        assert_eq!(error.code(), ErrorCode::QUERY_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn null_is_distinct_from_empty_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session::SqliteSession::connect(
+            dir.path().join("nulls.db").display().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v TEXT)", None))
+            .await
+            .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "INSERT INTO t(v) VALUES (NULL),(''),('x')",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let start = session
+            .execute(request(
+                QueryId::new(),
+                "SELECT v FROM t ORDER BY rowid",
+                None,
+            ))
+            .await
+            .unwrap();
+        let batch = start.first_batch.expect("应有结果");
+        assert_eq!(batch.rows.len(), 3);
+        assert!(batch.rows[0][0].is_null());
+        match &batch.rows[1][0].value {
+            Value::Text(text) => assert_eq!(text, ""),
+            other => panic!("期望空字符串，实际 {other:?}"),
+        }
+        assert_eq!(batch.rows[2][0].value, Value::Text("x".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn passes_driver_testkit_smoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session::SqliteSession::connect(
+            dir.path().join("smoke.db").display().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v INTEGER)", None))
+            .await
+            .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "INSERT INTO t(v) VALUES (1),(2),(3)",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let report = sqarvo_driver_testkit::smoke(&session, "SELECT v FROM t", 2)
+            .await
+            .unwrap();
+        assert_eq!(report.statements, 1);
+        assert_eq!(report.rows, 3);
+        assert_eq!(report.batches, 2);
+    }
+
+    #[tokio::test]
+    async fn batch_size_is_capped_by_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let session =
+            session::SqliteSession::connect(dir.path().join("cap.db").display().to_string(), false)
+                .await
+                .unwrap();
+
+        session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v INTEGER)", None))
+            .await
+            .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<6000) \
+                 INSERT INTO t(v) SELECT x FROM c",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let start = session
+            .execute(request(QueryId::new(), "SELECT v FROM t", Some(10_000)))
+            .await
+            .unwrap();
+        let batch = start.first_batch.expect("应有首批数据");
+        assert_eq!(batch.rows.len(), 5_000);
+        assert!(batch.has_more);
     }
 }

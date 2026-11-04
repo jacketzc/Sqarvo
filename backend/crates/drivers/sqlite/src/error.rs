@@ -11,6 +11,10 @@ pub const SQLITE_BUSY: ErrorCode = ErrorCode::from_static("sqlite.busy");
 pub const SQLITE_OPEN_FAILED: ErrorCode = ErrorCode::from_static("sqlite.open_failed");
 /// 会话已关闭。
 pub const SESSION_CLOSED: ErrorCode = ErrorCode::from_static("sqlite.session_closed");
+/// 游标与当前查询状态不匹配。
+pub const SQLITE_CURSOR_INVALID: ErrorCode = ErrorCode::from_static("sqlite.cursor_invalid");
+/// 当前会话已有在途查询。
+pub const SQLITE_QUERY_ACTIVE: ErrorCode = ErrorCode::from_static("sqlite.query_active");
 
 /// 把 SQLite 错误映射为可分类错误。
 ///

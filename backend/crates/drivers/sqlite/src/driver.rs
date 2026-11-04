@@ -37,10 +37,10 @@ impl SqliteDriver {
                 }],
                 capabilities: Capabilities {
                     // 能力描述符只声明「当前实现可用」的能力；
-                    // 事务、取消、流式结果分别在 M4、#12、#11 完成后开启。
+                    // 取消与事务分别在 #12 / M4 完成后开启。
                     transactions: false,
                     query_cancellation: false,
-                    streaming_results: false,
+                    streaming_results: true,
                     // v0.1 只支持单语句。
                     multiple_statements: false,
                     ddl_generation: false,

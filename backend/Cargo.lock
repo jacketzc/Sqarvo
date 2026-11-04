@@ -1146,6 +1146,7 @@ dependencies = [
  "rusqlite",
  "sqarvo-common",
  "sqarvo-driver-api",
+ "sqarvo-driver-testkit",
  "tempfile",
  "tokio",
  "tracing",

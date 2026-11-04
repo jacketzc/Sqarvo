@@ -120,7 +120,7 @@ pub trait MetadataProvider: Send + Sync {
 
 ## 尚未实现
 
-- 任何具体驱动（v0.1 正在实现 SQLite，见 Issue #9–#17）；
+- PostgreSQL / MySQL 驱动（SQLite 驱动已具备连接、单语句执行与分批拉取，尚未注册）；
 - 驱动级元数据遍历的具体实现（接口已定义）；
 - 事务在 gRPC 层的接线（接口已定义，M4 完成）；
 - 会话租约与断线重连。
