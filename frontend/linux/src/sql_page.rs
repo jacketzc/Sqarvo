@@ -386,6 +386,12 @@ impl SqlPage {
         self.results.set_detail(&detail);
 
         if let Some(statement) = &statement {
+            eprintln!(
+                "[query] 语句 {}：{} 列（has_result_set={}）",
+                statement.index + 1,
+                statement.columns.len(),
+                statement.has_result_set
+            );
             self.results.set_columns(&statement.columns);
             if !statement.has_result_set {
                 // UPDATE / INSERT 等：显示影响行数，绝不假装有结果集。
@@ -469,6 +475,9 @@ impl SqlPage {
     }
 
     /// 查询失败（保留已加载行）。
+    ///
+    /// 客户端结果集上限（`result.limit_reached`）走单独的 `Limited` 状态：它既不是
+    /// 服务端错误，也不是取消，界面不能显示成「查询失败」（那会让用户去查 SQL）。
     pub fn show_failure(self: &Rc<Self>, failure: &QueryFailure) {
         eprintln!(
             "[query] t=+{}ms 查询失败：[{}] {}",
@@ -477,9 +486,38 @@ impl SqlPage {
             failure.detail()
         );
         let loaded = self.results.row_count();
+        let state = if matches!(failure, QueryFailure::ResultLimit { .. }) {
+            RunState::Limited
+        } else {
+            RunState::Error
+        };
         self.results
-            .set_state(RunState::Error, loaded, false, Some(&failure.message()));
+            .set_state(state, loaded, false, Some(&failure.message()));
         self.set_state(PageState::Error, Some(failure.headline()));
+    }
+
+    /// 达到客户端结果集上限：保留已接收的行，明确显示 `result.limit_reached`。
+    ///
+    /// 这不是服务端错误：界面用「已达客户端上限」而不是「查询失败」，执行按钮仍然可用
+    /// （用户调大上限或改写 SQL 后可以直接再跑一条）。
+    pub fn show_limited(
+        self: &Rc<Self>,
+        rows: Vec<RowView>,
+        loaded: u64,
+        stop: &crate::backend::query::LimitStop,
+    ) {
+        let failure = QueryFailure::ResultLimit { stop: stop.clone() };
+        eprintln!(
+            "[query] t=+{}ms 达到客户端结果集上限：已保留 {loaded} 行（{}），停止拉取 [{}]",
+            qa::elapsed_ms(),
+            stop.reason.label(),
+            failure.code()
+        );
+        self.results.append_rows_only(rows, loaded);
+        self.results
+            .set_state(RunState::Limited, loaded, false, Some(&failure.message()));
+        self.set_state(PageState::Error, Some(failure.headline()));
+        self.ensure_scroll_target();
     }
 
     /// 断连：保留已加载行，明确标注失连并禁用执行/取消。

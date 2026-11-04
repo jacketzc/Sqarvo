@@ -11,8 +11,9 @@
 //!
 //! # 预取
 //!
-//! 滚动到距末尾不足 2 页时通过回调请求下一批（[`should_prefetch`]），配合
-//! `worker` 的 `FetchNext` 命令。界面从不一次性拉全量。
+//! 滚动到接近末尾时通过回调请求下一批（[`prefetch_decision`]），配合 `worker` 的
+//! `FetchNext` 命令。决策带消费门与单批背压：用户没有滚动到新区域就不继续拉，
+//! 同一时刻最多一批在途。界面从不一次性拉全量，也不会因为「停在末尾」把整表读进内存。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,7 +22,9 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 
-use crate::backend::query::{ColumnView, RowView, should_prefetch};
+use crate::backend::query::{
+    ColumnView, PrefetchDecision, PrefetchInput, PrefetchPause, RowView, prefetch_decision,
+};
 
 mod row_store {
     use super::*;
@@ -126,6 +129,8 @@ pub enum RunState {
     NoResultSet,
     /// 执行失败。
     Error,
+    /// 达到客户端结果集上限（`result.limit_reached`）：已加载行保留，可继续新查询。
+    Limited,
     /// 用户取消。
     Cancelled,
     /// 后端/会话已断开。
@@ -150,6 +155,14 @@ pub struct ResultsView {
     on_fetch: RefCell<Option<Rc<dyn Fn()>>>,
     /// 预取请求是否在途：避免一次滚动连发多条命令。
     fetch_requested: Cell<bool>,
+    /// 是否已触达客户端结果集上限（此后不再预取）。
+    limit_reached: Cell<bool>,
+    /// 上次发起预取时的滚动位置（消费门的基准）。
+    last_fetch_value: Cell<f64>,
+    /// 上次发起预取时的已加载行数（填充门的基准）。
+    last_fetch_loaded: Cell<u64>,
+    /// 上一次记录的暂停原因：只在原因变化时打日志，避免滚动时刷屏。
+    last_pause: Cell<Option<PrefetchPause>>,
 }
 
 impl ResultsView {
@@ -237,6 +250,10 @@ impl ResultsView {
             has_more: Cell::new(false),
             on_fetch: RefCell::new(Some(on_fetch)),
             fetch_requested: Cell::new(false),
+            limit_reached: Cell::new(false),
+            last_fetch_value: Cell::new(0.0),
+            last_fetch_loaded: Cell::new(0),
+            last_pause: Cell::new(None),
         });
 
         // 预取：滚动位置或内容高度变化时判断是否已接近末尾。
@@ -281,6 +298,10 @@ impl ResultsView {
         self.loaded.set(0);
         self.has_more.set(false);
         self.fetch_requested.set(false);
+        self.limit_reached.set(false);
+        self.last_fetch_value.set(0.0);
+        self.last_fetch_loaded.set(0);
+        self.last_pause.set(None);
         self.stack.set_visible_child_name("placeholder");
         self.set_state(RunState::Idle, 0, false, None);
     }
@@ -345,11 +366,26 @@ impl ResultsView {
         self.maybe_prefetch();
     }
 
+    /// 只追加行、更新计数，不改状态（用于「触顶」时保留最后一批已接收的行）。
+    pub fn append_rows_only(&self, rows: Vec<RowView>, loaded: u64) {
+        if !rows.is_empty() {
+            self.store.append(rows);
+        }
+        self.loaded.set(loaded);
+        if loaded > 0 {
+            self.stack.set_visible_child_name("grid");
+        }
+    }
+
     /// 更新状态栏（界面必须能分辨 Loading / Empty / Error / Cancelled / Disconnected）。
     pub fn set_state(&self, state: RunState, loaded: u64, has_more: bool, note: Option<&str>) {
         self.state.set(state);
         self.loaded.set(loaded);
         self.has_more.set(has_more);
+        if matches!(state, RunState::Limited) {
+            // 触顶后再预取没有意义：由 `prefetch_decision` 的 AtLimit 分支统一拦住。
+            self.limit_reached.set(true);
+        }
         self.spinner.set_visible(matches!(state, RunState::Loading));
         if matches!(state, RunState::Loading) {
             self.spinner.start();
@@ -373,6 +409,7 @@ impl ResultsView {
             RunState::Empty => "空结果集 · 共 0 行".to_owned(),
             RunState::NoResultSet => "已执行 · 无结果集".to_owned(),
             RunState::Error => format!("错误 · 已保留 {loaded} 行"),
+            RunState::Limited => format!("已达客户端上限 · 已保留 {loaded} 行"),
             RunState::Cancelled => format!("已取消 · 已保留 {loaded} 行"),
             RunState::Disconnected => format!("已断开 · 已保留 {loaded} 行"),
         };
@@ -382,6 +419,7 @@ impl ResultsView {
         self.status.remove_css_class("warning");
         match state {
             RunState::Error => self.status.add_css_class("error"),
+            RunState::Limited => self.status.add_css_class("warning"),
             RunState::Cancelled | RunState::Disconnected => self.status.add_css_class("warning"),
             RunState::Complete | RunState::NoResultSet => self.status.add_css_class("success"),
             _ => {}
@@ -408,6 +446,11 @@ impl ResultsView {
                     "语句执行成功，但没有返回任何行（与执行失败不同）".to_owned(),
                 ),
                 RunState::Error => ("查询失败", note.unwrap_or("后端未提供错误详情").to_owned()),
+                RunState::Limited => (
+                    "结果集达到客户端上限",
+                    note.unwrap_or("已停止拉取，已加载的数据仍可查看")
+                        .to_owned(),
+                ),
                 RunState::NoResultSet => (
                     "无结果集",
                     note.unwrap_or("语句已执行，但没有返回结果集").to_owned(),
@@ -444,7 +487,11 @@ impl ResultsView {
         true
     }
 
-    /// 触发一次预取判定（状态为 Streaming 且接近末尾时请求下一批）。
+    /// 触发一次预取判定。
+    ///
+    /// 决策本身是纯函数（`prefetch_decision`）：这里只负责取控件状态、记录日志并调用
+    /// 回调。**没有滚动到新区域就不会继续拉取**，避免「停在末尾」把整个结果集吃进内存；
+    /// 同一时刻最多一批在途（`fetch_requested` + worker 的 `loading`）。
     pub fn maybe_prefetch(&self) {
         if !matches!(self.state.get(), RunState::Streaming) {
             return;
@@ -452,24 +499,48 @@ impl ResultsView {
         let Some(adjustment) = self.grid.vadjustment() else {
             return;
         };
-        let wanted = should_prefetch(
-            self.has_more.get(),
-            self.fetch_requested.get(),
-            adjustment.upper(),
-            adjustment.page_size(),
-            adjustment.value(),
-        );
-        if wanted {
-            self.fetch_requested.set(true);
-            eprintln!(
-                "[query] t=+{}ms 预取触发：距末尾 {:.0}px，视口 {:.0}px，已加载 {} 行",
-                crate::qa::elapsed_ms(),
-                adjustment.upper() - (adjustment.value() + adjustment.page_size()),
-                adjustment.page_size(),
-                self.loaded.get()
-            );
-            if let Some(handler) = self.on_fetch.borrow().as_ref() {
-                handler();
+        let input = PrefetchInput {
+            has_more: self.has_more.get(),
+            in_flight: self.fetch_requested.get(),
+            limit_reached: self.limit_reached.get(),
+            upper: adjustment.upper(),
+            page_size: adjustment.page_size(),
+            value: adjustment.value(),
+            loaded: self.loaded.get(),
+            last_fetch_value: self.last_fetch_value.get(),
+            last_fetch_loaded: self.last_fetch_loaded.get(),
+        };
+        match prefetch_decision(&input) {
+            PrefetchDecision::Fetch => {
+                self.fetch_requested.set(true);
+                self.last_fetch_value.set(input.value);
+                self.last_fetch_loaded.set(input.loaded);
+                self.last_pause.set(None);
+                eprintln!(
+                    "[query] t=+{}ms 预取触发：距末尾 {:.0}px，视口 {:.0}px，已加载 {} 行",
+                    crate::qa::elapsed_ms(),
+                    adjustment.upper() - (adjustment.value() + adjustment.page_size()),
+                    adjustment.page_size(),
+                    self.loaded.get()
+                );
+                if let Some(handler) = self.on_fetch.borrow().as_ref() {
+                    handler();
+                }
+            }
+            PrefetchDecision::Pause(reason) => {
+                // 只在原因变化时打一行：滚动会连续触发 value_changed，逐次打印会刷屏，
+                // 但「为什么暂停」必须能在日志里复核（REQ-RESULT-005 背压证据）。
+                if self.last_pause.get() != Some(reason) {
+                    self.last_pause.set(Some(reason));
+                    eprintln!(
+                        "[query] t=+{}ms 暂停预取：{}（已加载 {} 行，距末尾 {:.0}px，视口 {:.0}px）",
+                        crate::qa::elapsed_ms(),
+                        reason.reason(),
+                        self.loaded.get(),
+                        adjustment.upper() - (adjustment.value() + adjustment.page_size()),
+                        adjustment.page_size()
+                    );
+                }
             }
         }
     }
