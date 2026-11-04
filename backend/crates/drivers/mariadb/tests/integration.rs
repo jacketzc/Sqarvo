@@ -138,8 +138,19 @@ async fn driver_passes_testkit_smoke() {
     assert_eq!(report.batches, 2);
 }
 
+/// 时间敏感用例（取消 / close 的 2 秒上限）串行执行。
+///
+/// 这些断言测的是「单会话在 2 秒内响应取消」，但 `cargo test` 默认并行跑 19 个用例、
+/// 每个都持有连接并 sleep；在负载下事件循环可能被饿到秒级，断言会变成测量机器负载。
+/// 串行化保证阈值仍然测的是驱动行为，而不是并发调度。
+fn timing_guard() -> &'static tokio::sync::Mutex<()> {
+    static GUARD: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[tokio::test]
 async fn cancel_interrupts_long_query_and_is_idempotent() {
+    let _serial = timing_guard().lock().await;
     let Some(session) = session().await else {
         return;
     };
@@ -810,6 +821,7 @@ async fn cancel_between_batches_fails_the_next_fetch_and_keeps_the_session_usabl
 
 #[tokio::test]
 async fn close_interrupts_in_flight_query_and_rejects_later_calls() {
+    let _serial = timing_guard().lock().await;
     let Some(session) = session().await else {
         return;
     };
@@ -863,6 +875,7 @@ async fn close_interrupts_in_flight_query_and_rejects_later_calls() {
 
 #[tokio::test]
 async fn cancelled_query_leaves_no_running_statement_on_the_server() {
+    let _serial = timing_guard().lock().await;
     let Some(victim) = session().await else {
         return;
     };
@@ -872,14 +885,19 @@ async fn cancelled_query_leaves_no_running_statement_on_the_server() {
     };
     let session: Arc<dyn DriverSession> = Arc::from(victim);
     let query_id = QueryId::new();
+    // 并行跑测试时会有其它用例同时执行 `SELECT SLEEP(30)`：必须用本用例独有的标记
+    // 过滤 processlist，否则既可能误判成「已消失」，也可能把别人的语句当作自己的残留。
+    let marker = format!("sqarvo-t22-{}", QueryId::new());
+    let long_sql = format!("SELECT SLEEP(30) /* {marker} */");
 
     let running = {
         let session = Arc::clone(&session);
+        let long_sql = long_sql.clone();
         tokio::spawn(async move {
             session
                 .execute(ExecuteRequest {
                     query_id,
-                    sql: "SELECT SLEEP(30)".to_owned(),
+                    sql: long_sql,
                     max_rows: None,
                     timeout: None,
                 })
@@ -891,7 +909,7 @@ async fn cancelled_query_leaves_no_running_statement_on_the_server() {
     let mut seen = 0;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        seen = sleeping_statements(&*observer).await;
+        seen = sleeping_statements(&*observer, &marker).await;
         if seen > 0 {
             break;
         }
@@ -908,7 +926,7 @@ async fn cancelled_query_leaves_no_running_statement_on_the_server() {
     // KILL 生效后服务端不应残留执行中的语句。
     let mut remaining = usize::MAX;
     for _ in 0..40 {
-        remaining = sleeping_statements(&*observer).await;
+        remaining = sleeping_statements(&*observer, &marker).await;
         if remaining == 0 {
             break;
         }
@@ -921,12 +939,15 @@ async fn cancelled_query_leaves_no_running_statement_on_the_server() {
     assert_eq!(rows[0][0].value, Value::Int(1));
 }
 
-/// `processlist` 中正在执行的 `SELECT SLEEP(30)` 数量。
-async fn sleeping_statements(session: &dyn DriverSession) -> usize {
+/// `processlist` 中带指定标记、且正在执行的长查询数量。
+async fn sleeping_statements(session: &dyn DriverSession, marker: &str) -> usize {
     let (_, rows) = select(
         session,
-        "SELECT COUNT(*) FROM information_schema.PROCESSLIST \
-         WHERE info = 'SELECT SLEEP(30)'",
+        &format!(
+            // 排除观察者自己：它自己的语句文本里也包含 marker。
+            "SELECT COUNT(*) FROM information_schema.PROCESSLIST \
+             WHERE id <> CONNECTION_ID() AND info LIKE '%{marker}%'"
+        ),
     )
     .await;
     usize::try_from(uint_at(&rows[0])).unwrap_or(usize::MAX)

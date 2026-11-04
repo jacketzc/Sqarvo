@@ -215,8 +215,8 @@ async fn run_session(
             }
         }
     }
-    // 不在这里 `disconnect().await`：它会先排空未读结果集，遇到大结果游标时
-    // 会把 `close()` 拖住。丢弃连接后由 `mysql_async` 在后台完成排空与关闭，
+    // 不在这里 `disconnect().await`：它会先排空未读结果集，遇到大结果游标时会把
+    // `close()` 拖住。直接丢弃 `Conn` 会立即关闭 socket，服务端随之中止未读完的查询；
     // 关闭语义仍然及时（见 docs/database/mariadb.md）。
     drop(conn);
 }
