@@ -1,4 +1,4 @@
-//! 窗口与四态状态机。
+//! 窗口、四态状态机与连接对话框的挂载。
 //!
 //! | 状态 | 界面表现 |
 //! |---|---|
@@ -6,6 +6,8 @@
 //! | Connected | 「已连接」+ 后端版本 / 协议版本 / 传输方式 / PID，可主动断开 |
 //! | Error | 可操作的错误文案（不含 token）与「重试」按钮 |
 //! | Disconnected | 连接结束原因与「重新连接」按钮 |
+//!
+//! 数据库连接成功后，主区域切换为会话页（服务端版本、延迟、`ListSessions` 结果）。
 //!
 //! 线程约束：所有 GTK 对象只在主线程操作。worker 线程通过 `async_channel`
 //! 发事件，主线程用 `glib::spawn_future_local` 消费后再更新界面；关闭窗口时
@@ -17,8 +19,27 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
+use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure};
 use crate::backend::endpoint;
 use crate::backend::worker::{ConnectedSnapshot, Event, WorkerHandle};
+use crate::dialog::ConnectionDialog;
+
+/// 主窗口与连接对话框共享的状态。
+struct UiState {
+    window: adw::ApplicationWindow,
+    slot: gtk::Box,
+    title: adw::WindowTitle,
+    worker: RefCell<Option<WorkerHandle>>,
+    /// 当前打开的连接对话框（未打开为 `None`）。
+    dialog: RefCell<Option<Rc<ConnectionDialog>>>,
+    /// 后端 gRPC 是否已握手成功：未成功时「新建连接」不可点（此时只会得到
+    /// `backend.unavailable`，没有意义）。
+    backend_ready: Cell<bool>,
+    /// 最近一次后端握手快照，用于从会话页返回状态页。
+    last_connected: RefCell<Option<ConnectedSnapshot>>,
+    /// 标题栏右侧的「新建连接」按钮。
+    new_connection: gtk::Button,
+}
 
 /// 应用激活：只保留一个窗口，重复激活时呈现既有窗口。
 pub fn activate(app: &adw::Application) {
@@ -37,6 +58,13 @@ pub fn activate(app: &adw::Application) {
     let header = adw::HeaderBar::new();
     let window_title = adw::WindowTitle::new("Sqarvo", "正在连接…");
     header.set_title_widget(Some(&window_title));
+
+    // 连接对话框入口：只有后端可用时可点。
+    let new_connection = gtk::Button::with_label("新建连接");
+    new_connection.add_css_class("suggested-action");
+    new_connection.set_sensitive(false);
+    new_connection.set_tooltip_text(Some("等待本地后端握手完成后可用"));
+    header.pack_end(&new_connection);
 
     let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
     slot.set_vexpand(true);
@@ -85,17 +113,30 @@ pub fn activate(app: &adw::Application) {
         }
     };
 
-    let worker = Rc::new(RefCell::new(Some(worker)));
-    let closing = Rc::new(Cell::new(false));
+    let state = Rc::new(UiState {
+        window: window.clone(),
+        slot: slot.clone(),
+        title: window_title.clone(),
+        worker: RefCell::new(Some(worker)),
+        dialog: RefCell::new(None),
+        backend_ready: Cell::new(false),
+        last_connected: RefCell::new(None),
+        new_connection: new_connection.clone(),
+    });
+
+    {
+        let state = Rc::clone(&state);
+        new_connection.connect_clicked(move |_| open_connection_dialog(&state));
+    }
 
     // 重试 / 重新连接：先回到 Loading，再让 worker 重新握手。
     let retry: Rc<dyn Fn()> = {
-        let worker = Rc::clone(&worker);
-        let slot = slot.clone();
-        let window_title = window_title.clone();
+        let state = Rc::clone(&state);
         Rc::new(move || {
-            show_loading(&slot, &window_title, "准备连接本地后端…");
-            if let Some(worker) = worker.borrow().as_ref() {
+            state.backend_ready.set(false);
+            state.new_connection.set_sensitive(false);
+            show_loading(&state.slot, &state.title, "准备连接本地后端…");
+            if let Some(worker) = state.worker.borrow().as_ref() {
                 worker.connect();
             }
         })
@@ -103,32 +144,31 @@ pub fn activate(app: &adw::Application) {
 
     // 主动断开：terminate 自己启动的后端，随后进入 Disconnected。
     let disconnect: Rc<dyn Fn()> = {
-        let worker = Rc::clone(&worker);
-        let slot = slot.clone();
-        let window_title = window_title.clone();
+        let state = Rc::clone(&state);
         Rc::new(move || {
-            show_loading(&slot, &window_title, "正在断开并清理后端进程…");
-            if let Some(worker) = worker.borrow().as_ref() {
+            state.backend_ready.set(false);
+            state.new_connection.set_sensitive(false);
+            show_loading(&state.slot, &state.title, "正在断开并清理后端进程…");
+            if let Some(worker) = state.worker.borrow().as_ref() {
                 worker.disconnect();
             }
         })
     };
 
+    let closing = Rc::new(Cell::new(false));
     window.connect_close_request({
-        let worker = Rc::clone(&worker);
+        let state = Rc::clone(&state);
         let closing = Rc::clone(&closing);
-        let slot = slot.clone();
-        let window_title = window_title.clone();
         move |_window| {
             if closing.get() {
                 return glib::Propagation::Proceed;
             }
-            let mut guard = worker.borrow_mut();
+            let mut guard = state.worker.borrow_mut();
             let Some(worker) = guard.as_mut() else {
                 return glib::Propagation::Proceed;
             };
             closing.set(true);
-            show_loading(&slot, &window_title, "正在停止后端并清理端点文件…");
+            show_loading(&state.slot, &state.title, "正在停止后端并清理端点文件…");
             worker.shutdown();
             // 等 worker 发来 ShutdownComplete 再销毁窗口，避免界面卡死。
             glib::Propagation::Stop
@@ -137,9 +177,7 @@ pub fn activate(app: &adw::Application) {
 
     // 事件泵：只在主线程更新界面。
     let app_handle = app.clone();
-    let window_weak = window.downgrade();
-    let events_slot = slot.clone();
-    let events_title = window_title.clone();
+    let events_state = Rc::clone(&state);
     let events_closing = Rc::clone(&closing);
     let events_retry = Rc::clone(&retry);
     let events_disconnect = Rc::clone(&disconnect);
@@ -148,26 +186,83 @@ pub fn activate(app: &adw::Application) {
             match event {
                 Event::Stage(message) => {
                     if !events_closing.get() {
-                        show_loading(&events_slot, &events_title, &message);
+                        show_loading(&events_state.slot, &events_state.title, &message);
                     }
                 }
                 Event::Connected(snapshot) => {
-                    if !events_closing.get() {
-                        show_connected(&events_slot, &events_title, &snapshot, &events_disconnect);
+                    if events_closing.get() {
+                        continue;
                     }
+                    events_state.backend_ready.set(true);
+                    events_state.new_connection.set_sensitive(true);
+                    events_state.new_connection.set_tooltip_text(None);
+                    events_state.last_connected.replace(Some(snapshot.clone()));
+                    show_connected(
+                        &events_state.slot,
+                        &events_state.title,
+                        &snapshot,
+                        &events_disconnect,
+                    );
+                    maybe_run_qa_profile(&events_state);
                 }
                 Event::Error(message) => {
                     if !events_closing.get() {
-                        show_error(&events_slot, &events_title, &message, &events_retry);
+                        events_state.backend_ready.set(false);
+                        events_state.new_connection.set_sensitive(false);
+                        show_error(
+                            &events_state.slot,
+                            &events_state.title,
+                            &message,
+                            &events_retry,
+                        );
                     }
                 }
                 Event::Disconnected(reason) => {
                     if !events_closing.get() {
-                        show_disconnected(&events_slot, &events_title, &reason, &events_retry);
+                        events_state.backend_ready.set(false);
+                        events_state.new_connection.set_sensitive(false);
+                        show_disconnected(
+                            &events_state.slot,
+                            &events_state.title,
+                            &reason,
+                            &events_retry,
+                        );
+                    }
+                }
+                Event::Tested(result) => {
+                    let dialog = events_state.dialog.borrow().as_ref().cloned();
+                    if let Some(dialog) = dialog.as_ref() {
+                        dialog.set_pending(false);
+                        match result {
+                            Ok(report) => dialog.show_test_report(&report),
+                            Err(failure) => dialog.show_failure(&failure),
+                        }
+                    }
+                }
+                Event::ConnectResult(result) => {
+                    let dialog = events_state.dialog.borrow().as_ref().cloned();
+                    if let Some(dialog) = dialog.as_ref() {
+                        dialog.set_pending(false);
+                    }
+                    match result {
+                        Ok(outcome) => {
+                            if let Some(dialog) = dialog.as_ref() {
+                                dialog.close();
+                            }
+                            show_session_page(&events_state, &outcome, &events_disconnect);
+                        }
+                        Err(failure) => match dialog.as_ref() {
+                            Some(dialog) => dialog.show_failure(&failure),
+                            None => eprintln!(
+                                "[sqarvo-desktop] 连接失败（对话框已关闭）：[{}] {}",
+                                failure.code(),
+                                failure.detail()
+                            ),
+                        },
                     }
                 }
                 Event::ShutdownComplete => {
-                    if let Some(window) = window_weak.upgrade() {
+                    if let Some(window) = events_state.window.downgrade().upgrade() {
                         window.destroy();
                     }
                     app_handle.quit();
@@ -179,9 +274,9 @@ pub fn activate(app: &adw::Application) {
 
     // 应用退出（例如会话结束）时同样确保子进程被清理。
     app.connect_shutdown({
-        let worker = Rc::clone(&worker);
+        let state = Rc::clone(&state);
         move |_app| {
-            if let Some(worker) = worker.borrow_mut().as_mut() {
+            if let Some(worker) = state.worker.borrow_mut().as_mut() {
                 worker.shutdown();
                 worker.join();
             }
@@ -191,17 +286,36 @@ pub fn activate(app: &adw::Application) {
     window.present();
     retry();
 
-    // QA 取证：延时后把窗口渲染成 PNG 再关闭窗口（走同一条清理路径）。
+    // QA 取证：延时后把当前最上层界面（连接对话框或主窗口）渲染成 PNG 再关闭窗口。
     if let Some(capture) = crate::qa::requested() {
-        let window_weak = window.downgrade();
+        let capture_state = Rc::clone(&state);
         glib::timeout_add_local_once(capture.delay, move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
+            // 先把 dialog 从 RefCell 里克隆出来：关闭它会同步触发 `closed` 处理器，
+            // 那里要 `borrow_mut()` 清空状态，外层还持着借用就会 panic。
+            let dialog = capture_state.dialog.borrow().as_ref().cloned();
+            eprintln!(
+                "[qa] 截图目标：{}",
+                if dialog.is_some() {
+                    "连接对话框"
+                } else {
+                    "主窗口"
+                }
+            );
+            let result = match dialog.as_ref() {
+                Some(dialog) => {
+                    crate::qa::save_widget(&capture_state.window, &dialog.widget(), &capture.path)
+                }
+                None => crate::qa::save_window(&capture_state.window, &capture.path),
             };
-            match crate::qa::save_window(&window, &capture.path) {
+            match result {
                 Ok(()) => {
                     eprintln!("[qa] 界面截图已写入 {}", capture.path.display());
-                    window.close();
+                    // 对话框是模态的：先强制关掉它，否则主窗口的关闭会被挡住，
+                    // 无人值守运行会一直挂到外部超时（后端也就不会被清理）。
+                    if let Some(dialog) = dialog.as_ref() {
+                        dialog.force_close();
+                    }
+                    capture_state.window.close();
                 }
                 Err(error) => {
                     eprintln!("[qa] 界面截图失败：{error}");
@@ -210,6 +324,84 @@ pub fn activate(app: &adw::Application) {
             }
         });
     }
+}
+
+/// 打开（或呈现已打开的）连接对话框，并接线到 worker。
+fn open_connection_dialog(state: &Rc<UiState>) {
+    if !state.backend_ready.get() {
+        eprintln!("[sqarvo-desktop] 后端尚未连接，忽略「新建连接」");
+        return;
+    }
+    if let Some(dialog) = state.dialog.borrow().as_ref() {
+        dialog.present(&state.window);
+        return;
+    }
+
+    let dialog = ConnectionDialog::build();
+
+    {
+        let state = Rc::clone(state);
+        let target = Rc::clone(&dialog);
+        dialog.set_test_handler(Rc::new(move |draft: ConnectionDraft| {
+            submit(&state, &target, draft, false);
+        }));
+    }
+    {
+        let state = Rc::clone(state);
+        let target = Rc::clone(&dialog);
+        dialog.set_save_handler(Rc::new(move |draft: ConnectionDraft| {
+            submit(&state, &target, draft, true);
+        }));
+    }
+    {
+        let state = Rc::clone(state);
+        dialog.connect_closed(move || {
+            state.dialog.borrow_mut().take();
+        });
+    }
+
+    state.dialog.replace(Some(Rc::clone(&dialog)));
+    dialog.present(&state.window);
+}
+
+/// 把草稿交给 worker；worker 不可用时立刻在对话框里报错。
+fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionDraft, save: bool) {
+    let mut queued = false;
+    if let Some(worker) = state.worker.borrow().as_ref() {
+        if save {
+            worker.save_and_connect(draft);
+        } else {
+            worker.test_connection(draft);
+        }
+        queued = true;
+    }
+    if !queued {
+        dialog.set_pending(false);
+        dialog.show_failure(&ConnectionFailure::backend_unavailable());
+    }
+}
+
+/// QA 自动化：把档案填进对话框（与用户输入同一控件），再触发「保存并连接」的回调。
+fn maybe_run_qa_profile(state: &Rc<UiState>) {
+    let Some(profile) = crate::qa::profile() else {
+        return;
+    };
+    open_connection_dialog(state);
+    let dialog = state.dialog.borrow().as_ref().cloned();
+    let Some(dialog) = dialog else {
+        eprintln!("[qa] 无法打开连接对话框，档案未生效");
+        return;
+    };
+    dialog.apply_profile(&profile);
+    // 让 GTK 先完成一次布局/绘制，再走与按钮完全相同的路径。
+    let action = crate::qa::action();
+    glib::timeout_add_local_once(
+        std::time::Duration::from_millis(250),
+        move || match action {
+            crate::qa::QaAction::Test => dialog.submit_test(),
+            crate::qa::QaAction::Save => dialog.submit_save(),
+        },
+    );
 }
 
 fn noop_handler() -> Rc<dyn Fn()> {
@@ -251,7 +443,8 @@ fn show_connected(
         snapshot.service_version, snapshot.protocol_version
     ));
     let mut description = format!(
-        "后端版本 {}\n协议版本 {}（{} 构建）\n传输方式 {}\n后端进程 PID {} · 由前端启动：{}\n端点文件 {}",
+        "后端版本 {}\n协议版本 {}（{} 构建）\n传输方式 {}\n后端进程 PID {} · 由前端启动：{}\n端点文件 {}\n\n\
+         尚未连接数据库：点标题栏右侧「新建连接」开始。",
         snapshot.service_version,
         snapshot.protocol_version,
         snapshot.build_profile,
@@ -284,6 +477,124 @@ fn show_connected(
     button.connect_clicked(move |_| handler());
     page.set_child(Some(&button));
     set_page(slot, &page);
+}
+
+/// 数据库会话页：服务端版本、延迟、`ListSessions` 结果与配置落盘情况。
+fn show_session_page(state: &Rc<UiState>, outcome: &ConnectOutcome, on_disconnect: &Rc<dyn Fn()>) {
+    let version = if outcome.server_version.trim().is_empty() {
+        "未知（后端未返回）".to_owned()
+    } else {
+        outcome.server_version.clone()
+    };
+    state.title.set_subtitle(&format!("已连接 · {version}"));
+
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let status = adw::StatusPage::builder()
+        .title("已连接到 MariaDB")
+        .description(format!(
+            "服务端版本 {version} · 延迟 {} ms\n共 {} 个活动会话 · 驱动 {}",
+            outcome.latency_millis,
+            outcome.sessions.len(),
+            outcome.driver_id
+        ))
+        .build();
+    status.set_vexpand(false);
+
+    let details = adw::PreferencesGroup::builder().title("连接").build();
+    details.add(
+        &adw::ActionRow::builder()
+            .title("服务端版本")
+            .subtitle(version.as_str())
+            .build(),
+    );
+    details.add(
+        &adw::ActionRow::builder()
+            .title("测试连接延迟")
+            .subtitle(format!("{} ms", outcome.latency_millis))
+            .build(),
+    );
+    details.add(
+        &adw::ActionRow::builder()
+            .title("会话 ID")
+            .subtitle(outcome.session_id.as_str())
+            .build(),
+    );
+    details.add(
+        &adw::ActionRow::builder()
+            .title("凭据引用")
+            .subtitle(format!(
+                "{}（只保存引用，不含密码）",
+                outcome.credential_ref
+            ))
+            .build(),
+    );
+    match &outcome.config {
+        Ok(path) => details.add(
+            &adw::ActionRow::builder()
+                .title("连接配置")
+                .subtitle(format!("已保存到 {path}（0600，只含引用）"))
+                .build(),
+        ),
+        Err(error) => details.add(
+            &adw::ActionRow::builder()
+                .title("连接配置")
+                .subtitle(format!("未写入：{error}"))
+                .build(),
+        ),
+    }
+
+    let sessions = adw::PreferencesGroup::builder()
+        .title("会话列表（ListSessions）")
+        .build();
+    if outcome.sessions.is_empty() {
+        sessions.add(
+            &adw::ActionRow::builder()
+                .title("没有活动会话")
+                .subtitle("后端没有报告任何会话：连接可能已被其他操作关闭")
+                .build(),
+        );
+    } else {
+        for session in &outcome.sessions {
+            sessions.add(
+                &adw::ActionRow::builder()
+                    .title(session.display_name.as_str())
+                    .subtitle(format!(
+                        "驱动 {} · 会话 {} · 连接于 {}",
+                        session.driver_id, session.session_id, session.connected_at
+                    ))
+                    .build(),
+            );
+        }
+    }
+
+    // 会话列表放在最前面：截图/一眼可见的第一信息应该是「真的连上了、有几个会话」，
+    // 细节参数排在后面。
+    let preferences = adw::PreferencesPage::new();
+    preferences.add(&sessions);
+    preferences.add(&details);
+
+    page.append(&status);
+    page.append(&preferences);
+
+    // 返回后端状态页：不改变任何连接，只是切回信息页。
+    let back = gtk::Button::with_label("返回后端状态");
+    back.set_halign(gtk::Align::Center);
+    back.set_margin_top(6);
+    back.set_margin_bottom(12);
+    back.add_css_class("pill");
+    {
+        let state = Rc::clone(state);
+        let on_disconnect = Rc::clone(on_disconnect);
+        back.connect_clicked(move |_| {
+            if let Some(snapshot) = state.last_connected.borrow().clone() {
+                show_connected(&state.slot, &state.title, &snapshot, &on_disconnect);
+            }
+        });
+    }
+    page.append(&back);
+
+    set_page(&state.slot, &page);
 }
 
 /// Error：可操作的错误文案 + 重试。

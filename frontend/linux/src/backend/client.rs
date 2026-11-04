@@ -24,6 +24,8 @@ use tower::service_fn;
 use crate::backend::endpoint::{EndpointInfo, TransportKind};
 use crate::backend::error::BackendError;
 use crate::proto::common::v1::Empty;
+use crate::proto::services::v1::connection_service_client::ConnectionServiceClient;
+use crate::proto::services::v1::credential_service_client::CredentialServiceClient;
 use crate::proto::services::v1::system_service_client::SystemServiceClient;
 
 /// gRPC metadata 中携带 token 的键；必须与后端认证拦截器一致。
@@ -202,6 +204,30 @@ impl BackendClient {
     {
         let interceptor = TokenInterceptor::new(&self.token)?;
         Ok(SystemServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
+    /// 带 token 认证的 `ConnectionService` 客户端（连接对话框、会话列表）。
+    pub fn connection_service(
+        &self,
+    ) -> Result<ConnectionServiceClient<InterceptedService<Channel, TokenInterceptor>>, BackendError>
+    {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(ConnectionServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
+    /// 带 token 认证的 `CredentialService` 客户端（写入/删除数据库密码）。
+    pub fn credential_service(
+        &self,
+    ) -> Result<CredentialServiceClient<InterceptedService<Channel, TokenInterceptor>>, BackendError>
+    {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(CredentialServiceClient::with_interceptor(
             self.channel.clone(),
             interceptor,
         ))

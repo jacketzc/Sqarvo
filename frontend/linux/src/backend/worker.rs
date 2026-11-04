@@ -8,6 +8,13 @@
 //!
 //! worker 负责整条启动链路：获取端点 → 建立 Channel → `GetVersion` 核对版本 →
 //! 进入已连接状态（周期性 `GetHealth` 探测）→ 收到断开/退出指令时清理子进程。
+//!
+//! # 连接对话框（#27）
+//!
+//! 「测试连接」与「保存并连接」都在本线程执行：写凭据（`CredentialService`）、
+//! `TestConnection`、`Connect`、`ListSessions` 全是异步 RPC，绝不能跑在 GTK 主线程上。
+//! UI 只提交 [`ConnectionDraft`]，拿回 [`TestReport`] / [`ConnectOutcome`] 或分类错误。
+//! 密码随 [`Command`] 进入本线程后再也不离开：结果类型与日志里都只有引用。
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -20,9 +27,11 @@ use async_channel::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::backend::client::{BackendClient, VersionInfo};
+use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure, TestReport};
 use crate::backend::endpoint::{self, EndpointInfo};
 use crate::backend::error::BackendError;
 use crate::backend::supervisor::{BackendSupervisor, Stage};
+use crate::config::{self, SavedConnection};
 
 /// 已连接状态下的健康探测间隔。
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -31,7 +40,10 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// UI 发给 worker 的指令。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 连接类指令携带 [`ConnectionDraft`]（含本次输入的密码）：草稿被移进 worker 线程，
+/// 处理完即丢弃，不会被存进任何长期结构。
+#[derive(Debug)]
 pub enum Command {
     /// 发起握手（已在连接中时忽略）。
     Connect,
@@ -39,6 +51,10 @@ pub enum Command {
     Disconnect,
     /// 应用退出：清理后结束 worker 线程。
     Shutdown,
+    /// 测试连接：写凭据 → `TestConnection`。
+    TestConnection(Box<ConnectionDraft>),
+    /// 保存并连接：写凭据 → `TestConnection` → `Connect` → `ListSessions` → 写配置。
+    SaveAndConnect(Box<ConnectionDraft>),
 }
 
 /// 握手成功后的可展示信息（不含 token）。
@@ -75,6 +91,10 @@ pub enum Event {
     Error(String),
     /// 连接断开（主动断开或后端消失）。
     Disconnected(String),
+    /// 「测试连接」结果（成功含延迟与服务端版本）。
+    Tested(Result<TestReport, ConnectionFailure>),
+    /// 「保存并连接」结果。
+    ConnectResult(Result<ConnectOutcome, ConnectionFailure>),
     /// 清理完成，可以关闭窗口。
     ShutdownComplete,
 }
@@ -135,6 +155,16 @@ impl WorkerHandle {
         let _ = self.commands.send(Command::Disconnect);
     }
 
+    /// 请求测试连接（写凭据 + `TestConnection`），非阻塞。
+    pub fn test_connection(&self, draft: ConnectionDraft) {
+        let _ = self.commands.send(Command::TestConnection(Box::new(draft)));
+    }
+
+    /// 请求保存并连接，非阻塞。
+    pub fn save_and_connect(&self, draft: ConnectionDraft) {
+        let _ = self.commands.send(Command::SaveAndConnect(Box::new(draft)));
+    }
+
     /// 请求退出清理；不阻塞调用方。
     pub fn shutdown(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -181,6 +211,20 @@ async fn worker_loop(
                             };
                             let _ = events.send(Event::Disconnected(reason)).await;
                         }
+                    }
+                    Some(Command::TestConnection(draft)) => {
+                        let outcome = match session.as_ref() {
+                            Some(active) => run_test(&active.client, &draft).await,
+                            None => Err(ConnectionFailure::backend_unavailable()),
+                        };
+                        let _ = events.send(Event::Tested(outcome)).await;
+                    }
+                    Some(Command::SaveAndConnect(draft)) => {
+                        let outcome = match session.as_ref() {
+                            Some(active) => run_save_and_connect(&active.client, &draft).await,
+                            None => Err(ConnectionFailure::backend_unavailable()),
+                        };
+                        let _ = events.send(Event::ConnectResult(outcome)).await;
                     }
                     Some(Command::Connect) => {
                         if session.is_some() {
@@ -268,6 +312,133 @@ async fn establish(
         endpoint: info,
         version,
         version_mismatch,
+    })
+}
+
+/// 解析本次要用的凭据引用（ADR 0012 / 0016）。
+///
+/// - 有新输入的密码：写入（或覆盖）凭据库，拿回引用；
+/// - 没有密码但已有引用：直接复用（用户没改密码，不重写密钥环）；
+/// - 两者都没有：本地报错，不发 RPC。
+async fn prepare_reference(
+    client: &BackendClient,
+    draft: &ConnectionDraft,
+) -> Result<String, ConnectionFailure> {
+    if draft.has_password() {
+        return client
+            .store_credential(draft.credential_ref.as_deref(), &draft.password)
+            .await;
+    }
+    draft
+        .credential_ref
+        .clone()
+        .ok_or_else(|| ConnectionFailure::InvalidInput {
+            message: "请输入密码（或复用已保存的凭据）".to_owned(),
+        })
+}
+
+/// 尽力删除刚写入但没能用上的凭据，避免在密钥环里留下无人引用的条目。
+///
+/// 清理失败只记录错误码与文案，不影响用户看到的原始失败原因。
+async fn discard_credential(client: &BackendClient, reference: &str) {
+    if let Err(error) = client.delete_credential(reference).await {
+        eprintln!(
+            "[sqarvo-desktop] 清理未使用的凭据失败：[{}] {}",
+            error.code(),
+            error.detail()
+        );
+    }
+}
+
+/// 「测试连接」：写凭据 → `TestConnection`。
+async fn run_test(
+    client: &BackendClient,
+    draft: &ConnectionDraft,
+) -> Result<TestReport, ConnectionFailure> {
+    let reference = prepare_reference(client, draft).await?;
+    match client
+        .test_connection(draft.params(&reference), &reference)
+        .await
+    {
+        Ok(report) => Ok(report),
+        Err(failure) => {
+            // 新生成的引用没有配置指向它：留着就是密钥环里的垃圾条目。
+            if draft.credential_ref.is_none() {
+                discard_credential(client, &reference).await;
+            }
+            Err(failure)
+        }
+    }
+}
+
+/// 「保存并连接」：写凭据 → `TestConnection` → `Connect` → `ListSessions` → 写配置。
+///
+/// 先测试再建会话：用户能立刻看到服务端版本与延迟，而且认证失败时不会留下半死会话。
+async fn run_save_and_connect(
+    client: &BackendClient,
+    draft: &ConnectionDraft,
+) -> Result<ConnectOutcome, ConnectionFailure> {
+    let reference = prepare_reference(client, draft).await?;
+
+    let report = match client
+        .test_connection(draft.params(&reference), &reference)
+        .await
+    {
+        Ok(report) => report,
+        Err(failure) => {
+            if draft.credential_ref.is_none() {
+                discard_credential(client, &reference).await;
+            }
+            return Err(failure);
+        }
+    };
+
+    let (connection_id, session_id, driver_id) = match client
+        .connect_database(draft.params(&reference), &draft.name)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(failure) => {
+            if draft.credential_ref.is_none() {
+                discard_credential(client, &reference).await;
+            }
+            return Err(failure);
+        }
+    };
+
+    let sessions = client.list_sessions().await.unwrap_or_else(|error| {
+        // 连接已经成功，列表读取失败不该把结论改成「连接失败」。
+        eprintln!(
+            "[sqarvo-desktop] 会话列表读取失败：[{}] {}",
+            error.code(),
+            error.detail()
+        );
+        Vec::new()
+    });
+
+    // 配置只保存引用与「怎么连」；密码已经在凭据库里。
+    let config = config::upsert(SavedConnection {
+        name: draft.name.clone(),
+        driver: draft.driver_id.clone(),
+        host: draft.host.clone(),
+        port: draft.port,
+        database: draft.database.clone(),
+        username: draft.username.clone(),
+        tls_mode: draft.tls_mode.config_value().to_owned(),
+        credential_ref: reference.clone(),
+    })
+    .map(|path| path.display().to_string())
+    .map_err(|error| error.to_string());
+
+    Ok(ConnectOutcome {
+        credential_ref: reference,
+        connection_id,
+        session_id,
+        driver_id,
+        server_version: report.server_version,
+        latency_millis: report.latency_millis,
+        sessions,
+        config,
     })
 }
 
