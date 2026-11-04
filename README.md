@@ -52,9 +52,10 @@
 | 访问控制 | 每进程随机 256 位 token，写入 0600 端点文件；所有 RPC 经拦截器校验 |
 | Driver SPI | v0.2：多语句/语句摘要、事务与元数据接口、单元格截断 |
 | SQLite 驱动 | 连接 / 只读 / 单语句执行 / 分批游标 / 取消（已接入 gRPC） |
+| MariaDB 驱动 | 连接 / 测试连接 / 单语句执行 / 分批游标 / `KILL QUERY` 取消 / 类型映射；集成测试需 `SQARVO_MARIADB_URL`（未设置时跳过并打印原因） |
 | 类型映射与截断 | NULL/INTEGER/REAL/TEXT/BLOB 按存储类映射；NUMERIC 与日期类保留原始类型名；单格 64 KiB 截断标记 |
 | gRPC 端到端测试 | 真实 UDS + 临时 SQLite 库：查询、两批拉取、取消 2 秒内、断连归零 |
-| 驱动测试基架 | 脚本化测试会话 + 最小符合性检查 `smoke`（SQLite 已通过） |
+| 驱动测试基架 | 脚本化测试会话 + 最小符合性检查 `smoke`（SQLite、MariaDB 均通过） |
 | 连接管理 | 会话建立/断开/列表、驱动不存在时明确报错 |
 | 查询登记 | 并发上限、批次上限、幂等取消 |
 | 元数据分页 | 不透明 token、页大小上限、非法 token 拒绝 |
@@ -63,7 +64,8 @@
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
 
-- PostgreSQL / MariaDB 驱动（连接请求返回 `driver.not_found`）；
+- PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
+- 凭据接线：`credential_ref` 尚未解析为 `Secret`（#23），MariaDB 在 gRPC 路径上只能以空密码握手；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
 - 元数据对象树、列信息、DDL 生成；
 - 显式事务绑定到会话；
@@ -85,6 +87,16 @@ cargo test
 cargo clippy --all-targets
 cargo fmt --check
 ```
+
+MariaDB 集成测试需要真实数据库（未设置环境变量时用例会跳过并打印原因）：
+
+```bash
+cd backend
+SQARVO_MARIADB_URL='mysql://sqarvo_test:sqarvo_test_only@127.0.0.1:53306/sqarvo_test' \
+  cargo test -p sqarvo-driver-mariadb --test integration
+```
+
+测试库启动方式见 [tests/integration/README.md](tests/integration/README.md)。
 
 运行后端：
 

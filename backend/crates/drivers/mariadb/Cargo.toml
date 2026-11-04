@@ -1,0 +1,25 @@
+[package]
+name = "sqarvo-driver-mariadb"
+description = "Sqarvo MariaDB 驱动（mysql_async，MySQL 协议族）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+mysql_async.workspace = true
+sqarvo-common.workspace = true
+sqarvo-driver-api.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+sqarvo-driver-testkit.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 
 use crate::capabilities::Capabilities;
+use crate::credential::Secret;
 use crate::metadata::MetadataProvider;
 use crate::value::{ColumnMeta, Row};
 
@@ -348,16 +349,28 @@ fn unsupported_transactions() -> Error {
 ///
 /// 驱动实现必须是 `Send + Sync`，可以被多个会话共享；连接池等状态放在
 /// 实现内部。阻塞型驱动必须使用阻塞任务池，不得阻塞 Tokio 工作线程。
+///
+/// 凭据传递：密码以 [`Secret`] 的**引用**单独传入，不放在 [`ConnectionParams`] 中。
+/// 上层负责把 `credential_ref` 解析为 `Secret`（ADR 0012），驱动只消费不保存；
+/// 实现不得把 `secret` 写入日志、错误信息或任何持久化结构。
 #[async_trait]
 pub trait Driver: Send + Sync {
     /// 驱动描述符。
     fn descriptor(&self) -> &DriverDescriptor;
 
     /// 测试连接可达性，不建立长期会话。
-    async fn test_connection(&self, params: &ConnectionParams) -> Result<ConnectionTestReport>;
+    async fn test_connection(
+        &self,
+        params: &ConnectionParams,
+        secret: Option<&Secret>,
+    ) -> Result<ConnectionTestReport>;
 
     /// 建立会话。
-    async fn connect(&self, params: &ConnectionParams) -> Result<Box<dyn DriverSession>>;
+    async fn connect(
+        &self,
+        params: &ConnectionParams,
+        secret: Option<&Secret>,
+    ) -> Result<Box<dyn DriverSession>>;
 }
 
 impl fmt::Debug for dyn Driver {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, MetadataProvider, ResultBatch, TransactionOptions,
+    ExecutionStart, MetadataProvider, ResultBatch, Secret, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use time::OffsetDateTime;
@@ -143,10 +143,15 @@ impl SessionManager {
     /// 测试连接。不创建长期会话。
     ///
     /// 未注册的驱动返回 `driver.not_found`，而不是伪造成功结果。
-    pub async fn test_connection(&self, params: &ConnectionParams) -> Result<ConnectionTestReport> {
+    /// `secret` 由调用方从凭据存储解析后传入；未接线时传 `None`（ADR 0013）。
+    pub async fn test_connection(
+        &self,
+        params: &ConnectionParams,
+        secret: Option<&Secret>,
+    ) -> Result<ConnectionTestReport> {
         params.validate()?;
         let driver = self.driver(&params.driver_id)?;
-        driver.test_connection(params).await
+        driver.test_connection(params, secret).await
     }
 
     /// 建立会话。
@@ -156,6 +161,7 @@ impl SessionManager {
         &self,
         display_name: impl Into<String>,
         params: ConnectionParams,
+        secret: Option<&Secret>,
     ) -> Result<SessionSummary> {
         params.validate()?;
         let display_name = display_name.into();
@@ -167,7 +173,7 @@ impl SessionManager {
         }
 
         let driver = self.driver(&params.driver_id)?;
-        let session = driver.connect(&params).await?;
+        let session = driver.connect(&params, secret).await?;
         let summary = SessionSummary {
             connection_id: ConnectionId::new(),
             session_id: session.session_id(),
@@ -333,6 +339,7 @@ mod tests {
         async fn test_connection(
             &self,
             _params: &ConnectionParams,
+            _secret: Option<&sqarvo_driver_api::Secret>,
         ) -> Result<ConnectionTestReport> {
             Ok(ConnectionTestReport {
                 reachable: true,
@@ -342,7 +349,11 @@ mod tests {
             })
         }
 
-        async fn connect(&self, _params: &ConnectionParams) -> Result<Box<dyn DriverSession>> {
+        async fn connect(
+            &self,
+            _params: &ConnectionParams,
+            _secret: Option<&sqarvo_driver_api::Secret>,
+        ) -> Result<Box<dyn DriverSession>> {
             Ok(Box::new(TestSession {
                 id: SessionId::new(),
             }))
@@ -385,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn unregistered_driver_fails_explicitly() {
         let manager = SessionManager::new(Arc::new(DriverRegistry::new()));
-        let error = manager.test_connection(&params()).await.unwrap_err();
+        let error = manager.test_connection(&params(), None).await.unwrap_err();
         assert_eq!(error.code(), ErrorCode::DRIVER_NOT_FOUND);
         assert_eq!(manager.active_count().await, 0);
     }
@@ -393,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn connect_and_disconnect_roundtrip() {
         let manager = SessionManager::new(registry_with_test_driver());
-        let summary = manager.connect("本地测试", params()).await.unwrap();
+        let summary = manager.connect("本地测试", params(), None).await.unwrap();
         assert_eq!(manager.active_count().await, 1);
         assert_eq!(summary.capabilities, ["transactions"]);
         assert_eq!(manager.list().await, vec![summary.clone()]);
@@ -411,14 +422,14 @@ mod tests {
     #[tokio::test]
     async fn empty_display_name_is_rejected() {
         let manager = SessionManager::new(registry_with_test_driver());
-        let error = manager.connect("   ", params()).await.unwrap_err();
+        let error = manager.connect("   ", params(), None).await.unwrap_err();
         assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
     }
 
     #[tokio::test]
     async fn acquire_returns_handle_and_rejects_unknown_session() {
         let manager = SessionManager::new(registry_with_test_driver());
-        let summary = manager.connect("acquire", params()).await.unwrap();
+        let summary = manager.connect("acquire", params(), None).await.unwrap();
         let handle = manager.acquire(&summary.session_id).await.unwrap();
         assert_eq!(handle.summary().session_id, summary.session_id);
 

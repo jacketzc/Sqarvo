@@ -16,8 +16,16 @@
 ```rust
 pub trait Driver: Send + Sync {
     fn descriptor(&self) -> &DriverDescriptor;
-    async fn test_connection(&self, params: &ConnectionParams) -> Result<ConnectionTestReport>;
-    async fn connect(&self, params: &ConnectionParams) -> Result<Box<dyn DriverSession>>;
+    async fn test_connection(
+        &self,
+        params: &ConnectionParams,
+        secret: Option<&Secret>, // 已解析的密码，只在此调用栈上存在
+    ) -> Result<ConnectionTestReport>;
+    async fn connect(
+        &self,
+        params: &ConnectionParams,
+        secret: Option<&Secret>,
+    ) -> Result<Box<dyn DriverSession>>;
 }
 
 pub trait DriverSession: Send + Sync {
@@ -70,7 +78,8 @@ pub struct ConnectionParams {
 ```
 
 **禁止**在 `ConnectionParams` 中增加 `password` 字段。凭据由 `sqarvo-local-store` 的
-`CredentialStore` 解析后直接交给驱动，且不得进入日志或错误信息。
+`CredentialStore` 解析成 `Secret` 后，作为 `Driver::connect` / `test_connection` 的
+`Option<&Secret>` 参数传入（ADR 0013）；驱动只消费、不保存，且不得进入日志或错误信息。
 
 ## 元数据
 
@@ -120,7 +129,9 @@ pub trait MetadataProvider: Send + Sync {
 
 ## 尚未实现
 
-- MariaDB / PostgreSQL 驱动（SQLite 驱动已注册，连接/执行/分批/取消可用）；
+- PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
+- MariaDB 驱动的显式事务与元数据（接口已定义，M4 接线；能力描述符当前为 `false`）；
+- MariaDB 驱动的单次执行超时与参数化执行（请求时会明确返回 `capability.unsupported`）；
 - 驱动级元数据遍历的具体实现（接口已定义）；
 - 事务在 gRPC 层的接线（接口已定义，M4 完成）；
 - 会话租约与断线重连。

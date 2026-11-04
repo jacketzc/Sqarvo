@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
     Capabilities, ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor,
-    DriverId, DriverSession, TlsMode,
+    DriverId, DriverSession, Secret, TlsMode,
 };
 
 use crate::error::map_sqlite_error;
@@ -65,7 +65,11 @@ impl Driver for SqliteDriver {
         &self.descriptor
     }
 
-    async fn test_connection(&self, params: &ConnectionParams) -> Result<ConnectionTestReport> {
+    async fn test_connection(
+        &self,
+        params: &ConnectionParams,
+        _secret: Option<&Secret>,
+    ) -> Result<ConnectionTestReport> {
         let config = SqliteConfig::from_params(params)?;
         let started = Instant::now();
         let path = config.path.clone();
@@ -89,7 +93,11 @@ impl Driver for SqliteDriver {
         })
     }
 
-    async fn connect(&self, params: &ConnectionParams) -> Result<Box<dyn DriverSession>> {
+    async fn connect(
+        &self,
+        params: &ConnectionParams,
+        _secret: Option<&Secret>,
+    ) -> Result<Box<dyn DriverSession>> {
         let config = SqliteConfig::from_params(params)?;
         let session = SqliteSession::connect(config.path, config.read_only).await?;
         Ok(Box::new(session))

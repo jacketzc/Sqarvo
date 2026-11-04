@@ -23,7 +23,7 @@ impl DriverRegistry {
 
     /// 装载编译期内置驱动。
     ///
-    /// v0.1 仅内置 SQLite。注册发生在启动阶段，重复 ID 属于编译期配置错误，
+    /// v0.2 内置 SQLite 与 MariaDB。注册发生在启动阶段，重复 ID 属于编译期配置错误，
     /// 因此这里直接 panic 而不是把错误推迟到运行期。
     #[must_use]
     pub fn with_builtin_drivers() -> Self {
@@ -31,6 +31,9 @@ impl DriverRegistry {
         registry
             .register(Arc::new(sqarvo_driver_sqlite::SqliteDriver::new()))
             .expect("内置 SQLite 驱动注册失败");
+        registry
+            .register(Arc::new(sqarvo_driver_mariadb::MariaDbDriver::new()))
+            .expect("内置 MariaDB 驱动注册失败");
         registry
     }
 
@@ -153,6 +156,7 @@ mod tests {
         async fn test_connection(
             &self,
             _params: &ConnectionParams,
+            _secret: Option<&sqarvo_driver_api::Secret>,
         ) -> Result<ConnectionTestReport> {
             Ok(ConnectionTestReport {
                 reachable: true,
@@ -162,7 +166,11 @@ mod tests {
             })
         }
 
-        async fn connect(&self, _params: &ConnectionParams) -> Result<Box<dyn DriverSession>> {
+        async fn connect(
+            &self,
+            _params: &ConnectionParams,
+            _secret: Option<&sqarvo_driver_api::Secret>,
+        ) -> Result<Box<dyn DriverSession>> {
             Ok(Box::new(FakeSession))
         }
     }
@@ -206,5 +214,17 @@ mod tests {
             .map(|descriptor| descriptor.id.to_string())
             .collect();
         assert_eq!(ids, ["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn builtin_registry_contains_file_and_network_drivers() {
+        let registry = DriverRegistry::with_builtin_drivers();
+        assert_eq!(registry.len(), 2);
+        assert!(registry.get(&DriverId::new("sqlite").unwrap()).is_some());
+        let mariadb = registry
+            .get(&DriverId::new("mariadb").unwrap())
+            .expect("MariaDB 驱动应已注册");
+        assert!(mariadb.descriptor().capabilities.query_cancellation);
+        assert!(!mariadb.descriptor().capabilities.multiple_statements);
     }
 }

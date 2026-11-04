@@ -119,7 +119,7 @@ mod tests {
         let path = dir.path().join("missing.db");
         let driver = SqliteDriver::new();
         let error = driver
-            .connect(&params_for(&path, true))
+            .connect(&params_for(&path, true), None)
             .await
             .err()
             .expect("只读打开不存在的文件必须失败");
@@ -135,22 +135,26 @@ mod tests {
 
         let mut params = params_for(&path, false);
         params.port = 5432;
-        let error = driver.connect(&params).await.err().expect("端口必须被拒绝");
+        let error = driver
+            .connect(&params, None)
+            .await
+            .err()
+            .expect("端口必须被拒绝");
         assert_eq!(error.category(), ErrorCategory::InvalidArgument);
 
         let mut params = params_for(&path, false);
         params.username = Some("root".to_owned());
-        assert!(driver.connect(&params).await.is_err());
+        assert!(driver.connect(&params, None).await.is_err());
 
         let mut params = params_for(&path, false);
         params.tls = TlsMode::Required;
-        assert!(driver.connect(&params).await.is_err());
+        assert!(driver.connect(&params, None).await.is_err());
 
         let mut params = params_for(&path, false);
         params
             .properties
             .insert("unknown".to_owned(), "1".to_owned());
-        assert!(driver.connect(&params).await.is_err());
+        assert!(driver.connect(&params, None).await.is_err());
     }
 
     #[tokio::test]
@@ -159,7 +163,7 @@ mod tests {
         let path = dir.path().join("ping.db");
         let driver = SqliteDriver::new();
         let report = driver
-            .test_connection(&params_for(&path, false))
+            .test_connection(&params_for(&path, false), None)
             .await
             .unwrap();
         assert!(report.reachable);

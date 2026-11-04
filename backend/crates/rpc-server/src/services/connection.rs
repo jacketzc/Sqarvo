@@ -45,9 +45,11 @@ impl ConnectionService for ConnectionServiceImpl {
             .ok_or_else(|| Status::invalid_argument("缺少连接参数"))?;
         let params = to_domain_params(params)?;
 
+        // 凭据解析（credential_ref → Secret）在 #23 接线；在此之前一律传 None，
+        // 网络数据库会因此以空密码握手并得到认证失败，而不是伪造成功。
         let report = self
             .sessions
-            .test_connection(&params)
+            .test_connection(&params, None)
             .await
             .map_err(to_status)?;
 
@@ -83,7 +85,7 @@ impl ConnectionService for ConnectionServiceImpl {
 
         let summary = self
             .sessions
-            .connect(display_name, params)
+            .connect(display_name, params, None)
             .await
             .map_err(to_status)?;
 

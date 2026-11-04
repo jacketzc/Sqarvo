@@ -44,7 +44,7 @@ impl TestSession {
         let dir = tempfile::tempdir().expect("临时目录");
         let driver = SqliteDriver::new();
         let session = driver
-            .connect(&params_for(&dir.path().join("types.db")))
+            .connect(&params_for(&dir.path().join("types.db")), None)
             .await
             .expect("连接临时 SQLite 库");
         Self { _dir: dir, session }

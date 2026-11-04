@@ -11,6 +11,7 @@ directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqarvo-common.workspace = true
+sqarvo-driver-api.workspace = true
 time.workspace = true
 uuid.workspace = true
 

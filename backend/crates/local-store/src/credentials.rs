@@ -12,33 +12,9 @@
 //! | macOS | Keychain（`security-framework`） |
 //! | Linux | Secret Service（D-Bus） |
 
-use std::fmt;
-
 use sqarvo_common::{Error, ErrorCode, Result};
 
-/// 内存中的秘密值。`Debug` 输出永远被脱敏。
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
-
-impl Secret {
-    /// 包装明文秘密。
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// 取出明文。调用方必须立即使用并尽快丢弃，禁止记录到日志。
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Secret(<redacted>)")
-    }
-}
+pub use sqarvo_driver_api::Secret;
 
 /// 操作系统凭据存储抽象。
 pub trait CredentialStore: Send + Sync {

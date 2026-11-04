@@ -13,11 +13,13 @@
 #![warn(missing_docs)]
 
 pub mod capabilities;
+pub mod credential;
 pub mod driver;
 pub mod metadata;
 pub mod value;
 
 pub use capabilities::Capabilities;
+pub use credential::Secret;
 pub use driver::{
     ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor, DriverId,
     DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS,
