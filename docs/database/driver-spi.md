@@ -79,7 +79,8 @@ pub struct ConnectionParams {
 
 **禁止**在 `ConnectionParams` 中增加 `password` 字段。凭据由 `sqarvo-local-store` 的
 `CredentialStore` 解析成 `Secret` 后，作为 `Driver::connect` / `test_connection` 的
-`Option<&Secret>` 参数传入（ADR 0013）；驱动只消费、不保存，且不得进入日志或错误信息。
+`Option<&Secret>` 参数传入（ADR 0013）；解析点由 `SessionManager` 负责（ADR 0015）；
+驱动只消费、不保存，且不得进入日志或错误信息。
 
 ## 元数据
 

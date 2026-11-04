@@ -10,6 +10,7 @@ use sqarvo_driver_api::{
     ExecutionStart, MetadataProvider, ResultBatch, Secret, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
+use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
 use time::OffsetDateTime;
 use tokio::sync::{Mutex, RwLock};
 
@@ -125,17 +126,39 @@ impl fmt::Debug for SessionHandle {
 }
 
 /// 连接与会话管理器。
+///
+/// 持有驱动注册表与凭据存储：`credential_ref` → [`Secret`] 的解析由本类型负责
+/// （ADR 0012 / 0015），gRPC 层不接触凭据存储，也不接触明文密码。
 pub struct SessionManager {
     registry: Arc<DriverRegistry>,
+    credentials: Arc<dyn CredentialStore>,
     sessions: RwLock<HashMap<ConnectionId, Arc<Session>>>,
 }
 
 impl SessionManager {
-    /// 由驱动注册表构造。
+    /// 由驱动注册表构造，凭据存储装配为 [`UnavailableCredentialStore`]。
+    ///
+    /// 带 `credential_ref` 的连接会得到 `credential.unavailable`，而不是悄悄以空密码
+    /// 握手（ADR 0012「缺失时明确报错」）。生产装配用
+    /// [`SessionManager::with_credential_store`]。
     #[must_use]
     pub fn new(registry: Arc<DriverRegistry>) -> Self {
+        Self::with_credential_store(registry, Arc::new(UnavailableCredentialStore))
+    }
+
+    /// 由驱动注册表与凭据存储构造。
+    ///
+    /// 测试注入 [`MemoryCredentialStore`](sqarvo_local_store::MemoryCredentialStore)，
+    /// 应用注入 [`open_default_credential_store`](sqarvo_local_store::open_default_credential_store)
+    /// 的结果。
+    #[must_use]
+    pub fn with_credential_store(
+        registry: Arc<DriverRegistry>,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Self {
         Self {
             registry,
+            credentials,
             sessions: RwLock::new(HashMap::new()),
         }
     }
@@ -143,25 +166,27 @@ impl SessionManager {
     /// 测试连接。不创建长期会话。
     ///
     /// 未注册的驱动返回 `driver.not_found`，而不是伪造成功结果。
-    /// `secret` 由调用方从凭据存储解析后传入；未接线时传 `None`（ADR 0013）。
-    pub async fn test_connection(
-        &self,
-        params: &ConnectionParams,
-        secret: Option<&Secret>,
-    ) -> Result<ConnectionTestReport> {
+    /// `params.credential_ref` 存在时先解析为 [`Secret`] 再交给驱动；解析失败时不会
+    /// 尝试连接数据库。
+    pub async fn test_connection(&self, params: &ConnectionParams) -> Result<ConnectionTestReport> {
         params.validate()?;
         let driver = self.driver(&params.driver_id)?;
-        driver.test_connection(params, secret).await
+        // 明文只在这个块里存活，测试连接结束后立即丢弃。
+        let report = {
+            let secret = self.resolve_secret(params).await?;
+            driver.test_connection(params, secret.as_ref()).await?
+        };
+        Ok(report)
     }
 
     /// 建立会话。
     ///
-    /// 数据库握手在锁外完成，成功后才写入会话表。
+    /// 数据库握手在锁外完成，成功后才写入会话表。凭据解析同样在写会话表之前完成：
+    /// 解析失败时既不会连库，也不会留下半死会话。
     pub async fn connect(
         &self,
         display_name: impl Into<String>,
         params: ConnectionParams,
-        secret: Option<&Secret>,
     ) -> Result<SessionSummary> {
         params.validate()?;
         let display_name = display_name.into();
@@ -173,7 +198,11 @@ impl SessionManager {
         }
 
         let driver = self.driver(&params.driver_id)?;
-        let session = driver.connect(&params, secret).await?;
+        // 明文只在这个块里存活：握手一结束就丢弃，不会进入会话摘要或后续状态。
+        let session = {
+            let secret = self.resolve_secret(&params).await?;
+            driver.connect(&params, secret.as_ref()).await?
+        };
         let summary = SessionSummary {
             connection_id: ConnectionId::new(),
             session_id: session.session_id(),
@@ -263,6 +292,30 @@ impl SessionManager {
         }
     }
 
+    /// 解析 `credential_ref` 为 [`Secret`]（ADR 0012 / 0015）。
+    ///
+    /// `CredentialStore` 是同步 trait：调用必须放进阻塞池，否则密钥环往返（D-Bus，
+    /// 锁定时可能等了用户）会占住 Tokio worker。返回的 `Secret` 只在这个调用栈上存活，
+    /// 不缓存、不进会话摘要、不写日志。
+    ///
+    /// 错误原样透传凭据存储的分类：引用不存在是 `credential.not_found`，
+    /// 存储不可用/锁定/权限拒绝是 `credential.unavailable`；文案来自存储层，不含密码。
+    async fn resolve_secret(&self, params: &ConnectionParams) -> Result<Option<Secret>> {
+        let Some(reference) = params.credential_ref.as_deref() else {
+            return Ok(None);
+        };
+        let store = Arc::clone(&self.credentials);
+        let reference = reference.to_owned();
+        let secret = tokio::task::spawn_blocking(move || store.get(&reference))
+            .await
+            .map_err(|join_error| {
+                // JoinError 只带任务号与「panic / cancelled」，不含凭据内容；
+                // 归到内部错误，避免上层把实现故障误判成认证失败。
+                Error::internal(format!("凭据解析任务异常结束：{join_error}"))
+            })??;
+        Ok(Some(secret))
+    }
+
     fn driver(&self, id: &DriverId) -> Result<Arc<dyn sqarvo_driver_api::Driver>> {
         self.registry.get(id).ok_or_else(|| {
             Error::not_found(
@@ -276,14 +329,16 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Mutex as StdMutex;
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use sqarvo_common::QueryId;
+    use sqarvo_common::{ErrorCategory, QueryId};
     use sqarvo_driver_api::{
         Capabilities, ConnectionTestReport, Driver, DriverDescriptor, DriverSession,
         ExecuteRequest, ExecutionStart, ResultBatch, TlsMode,
     };
+    use sqarvo_local_store::MemoryCredentialStore;
 
     use super::*;
 
@@ -361,22 +416,88 @@ mod tests {
     }
 
     fn registry_with_test_driver() -> Arc<DriverRegistry> {
+        registry_with_driver(Arc::new(TestDriver {
+            descriptor: descriptor(),
+        }))
+    }
+
+    fn descriptor() -> DriverDescriptor {
+        DriverDescriptor {
+            id: DriverId::new("test").unwrap(),
+            display_name: "测试驱动".to_owned(),
+            version: "0.0.0-test".to_owned(),
+            supported_databases: Vec::new(),
+            capabilities: Capabilities {
+                transactions: true,
+                ..Capabilities::default()
+            },
+        }
+    }
+
+    fn registry_with_driver(driver: Arc<dyn Driver>) -> Arc<DriverRegistry> {
         let mut registry = DriverRegistry::new();
-        registry
-            .register(Arc::new(TestDriver {
-                descriptor: DriverDescriptor {
-                    id: DriverId::new("test").unwrap(),
-                    display_name: "测试驱动".to_owned(),
-                    version: "0.0.0-test".to_owned(),
-                    supported_databases: Vec::new(),
-                    capabilities: Capabilities {
-                        transactions: true,
-                        ..Capabilities::default()
-                    },
-                },
-            }))
-            .unwrap();
+        registry.register(driver).unwrap();
         Arc::new(registry)
+    }
+
+    /// 记录型驱动：留下每次调用收到的 `secret`，用于断言解析结果。
+    ///
+    /// 记录的是测试夹具里的假密码，不是真实凭据。
+    struct RecordingDriver {
+        descriptor: DriverDescriptor,
+        calls: StdMutex<Vec<Option<String>>>,
+    }
+
+    impl RecordingDriver {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                descriptor: descriptor(),
+                calls: StdMutex::new(Vec::new()),
+            })
+        }
+
+        fn record(&self, secret: Option<&sqarvo_driver_api::Secret>) {
+            self.calls
+                .lock()
+                .expect("记录锁未中毒")
+                .push(secret.map(|secret| secret.expose().to_owned()));
+        }
+
+        fn calls(&self) -> Vec<Option<String>> {
+            self.calls.lock().expect("记录锁未中毒").clone()
+        }
+    }
+
+    #[async_trait]
+    impl Driver for RecordingDriver {
+        fn descriptor(&self) -> &DriverDescriptor {
+            &self.descriptor
+        }
+
+        async fn test_connection(
+            &self,
+            _params: &ConnectionParams,
+            secret: Option<&sqarvo_driver_api::Secret>,
+        ) -> Result<ConnectionTestReport> {
+            self.record(secret);
+            Ok(ConnectionTestReport {
+                reachable: true,
+                latency: Duration::from_millis(1),
+                server_version: None,
+                warnings: Vec::new(),
+            })
+        }
+
+        async fn connect(
+            &self,
+            _params: &ConnectionParams,
+            secret: Option<&sqarvo_driver_api::Secret>,
+        ) -> Result<Box<dyn DriverSession>> {
+            self.record(secret);
+            Ok(Box::new(TestSession {
+                id: SessionId::new(),
+            }))
+        }
     }
 
     fn params() -> ConnectionParams {
@@ -393,10 +514,17 @@ mod tests {
         }
     }
 
+    fn params_with_reference(reference: &str) -> ConnectionParams {
+        ConnectionParams {
+            credential_ref: Some(reference.to_owned()),
+            ..params()
+        }
+    }
+
     #[tokio::test]
     async fn unregistered_driver_fails_explicitly() {
         let manager = SessionManager::new(Arc::new(DriverRegistry::new()));
-        let error = manager.test_connection(&params(), None).await.unwrap_err();
+        let error = manager.test_connection(&params()).await.unwrap_err();
         assert_eq!(error.code(), ErrorCode::DRIVER_NOT_FOUND);
         assert_eq!(manager.active_count().await, 0);
     }
@@ -404,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn connect_and_disconnect_roundtrip() {
         let manager = SessionManager::new(registry_with_test_driver());
-        let summary = manager.connect("本地测试", params(), None).await.unwrap();
+        let summary = manager.connect("本地测试", params()).await.unwrap();
         assert_eq!(manager.active_count().await, 1);
         assert_eq!(summary.capabilities, ["transactions"]);
         assert_eq!(manager.list().await, vec![summary.clone()]);
@@ -422,14 +550,14 @@ mod tests {
     #[tokio::test]
     async fn empty_display_name_is_rejected() {
         let manager = SessionManager::new(registry_with_test_driver());
-        let error = manager.connect("   ", params(), None).await.unwrap_err();
+        let error = manager.connect("   ", params()).await.unwrap_err();
         assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
     }
 
     #[tokio::test]
     async fn acquire_returns_handle_and_rejects_unknown_session() {
         let manager = SessionManager::new(registry_with_test_driver());
-        let summary = manager.connect("acquire", params(), None).await.unwrap();
+        let summary = manager.connect("acquire", params()).await.unwrap();
         let handle = manager.acquire(&summary.session_id).await.unwrap();
         assert_eq!(handle.summary().session_id, summary.session_id);
 
@@ -515,5 +643,188 @@ mod tests {
         assert!(first.is_err());
         assert!(second.is_err());
         assert_eq!(counting.max_active.load(Ordering::SeqCst), 1);
+    }
+
+    // ---- 凭据解析（#23）----
+
+    const REF: &str = "sqarvo:conn/3f9a1c4e-7b2d-4a6f-9c11-0d2b8e5a71f4";
+    const STORED_SECRET: &str = "s3cr3t-from-memory-store";
+
+    fn manager_with_memory_store() -> (SessionManager, Arc<RecordingDriver>) {
+        let driver = RecordingDriver::new();
+        let store = Arc::new(MemoryCredentialStore::new());
+        store
+            .set(REF, &Secret::new(STORED_SECRET))
+            .expect("写入内存凭据存储");
+        (
+            SessionManager::with_credential_store(registry_with_driver(driver.clone()), store),
+            driver,
+        )
+    }
+
+    #[tokio::test]
+    async fn credential_reference_is_resolved_for_test_connection() {
+        let (manager, driver) = manager_with_memory_store();
+        let report = manager
+            .test_connection(&params_with_reference(REF))
+            .await
+            .expect("测试连接应成功");
+        assert!(report.reachable);
+        assert_eq!(driver.calls(), vec![Some(STORED_SECRET.to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn credential_reference_is_resolved_for_connect() {
+        let (manager, driver) = manager_with_memory_store();
+        let summary = manager
+            .connect("带凭据", params_with_reference(REF))
+            .await
+            .expect("连接应成功");
+        assert_eq!(driver.calls(), vec![Some(STORED_SECRET.to_owned())]);
+        assert_eq!(manager.active_count().await, 1);
+
+        // 明文只活在驱动调用栈上：会话摘要（会进 gRPC 响应与日志）不能带密码。
+        let rendered = format!("{summary:?}");
+        assert!(!rendered.contains(STORED_SECRET), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn absent_reference_passes_none() {
+        let (manager, driver) = manager_with_memory_store();
+        manager.test_connection(&params()).await.unwrap();
+        manager.connect("无引用", params()).await.unwrap();
+        assert_eq!(driver.calls(), vec![None, None]);
+    }
+
+    #[tokio::test]
+    async fn missing_reference_fails_before_driver_is_called() {
+        let driver = RecordingDriver::new();
+        let manager = SessionManager::with_credential_store(
+            registry_with_driver(driver.clone()),
+            Arc::new(MemoryCredentialStore::new()),
+        );
+
+        for error in [
+            manager
+                .connect("缺失", params_with_reference(REF))
+                .await
+                .unwrap_err(),
+            manager
+                .test_connection(&params_with_reference(REF))
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.code(), ErrorCode::CREDENTIAL_NOT_FOUND);
+            assert_eq!(error.category(), ErrorCategory::NotFound);
+        }
+        assert!(
+            driver.calls().is_empty(),
+            "凭据缺失时不应尝试连接数据库，实际 {:?}",
+            driver.calls()
+        );
+        assert_eq!(manager.active_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_store_reports_credential_unavailable() {
+        // `SessionManager::new` 装配 UnavailableCredentialStore：不 panic、不静默用空密码。
+        let driver = RecordingDriver::new();
+        let manager = SessionManager::new(registry_with_driver(driver.clone()));
+
+        let error = manager
+            .connect("不可用", params_with_reference(REF))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::CREDENTIAL_UNAVAILABLE);
+        assert_eq!(error.category(), ErrorCategory::Unavailable);
+        assert_eq!(
+            driver.calls(),
+            Vec::<Option<String>>::new(),
+            "凭据解析失败时不应调用驱动"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_store_is_called_from_the_blocking_pool() {
+        /// 记录 `get` 所在线程：同步 trait 必须落在阻塞池里，不能占用 async worker。
+        struct ThreadProbeStore {
+            reference: String,
+            caller: StdMutex<Option<std::thread::ThreadId>>,
+        }
+
+        impl CredentialStore for ThreadProbeStore {
+            fn get(&self, reference: &str) -> Result<Secret> {
+                *self.caller.lock().expect("锁未中毒") = Some(std::thread::current().id());
+                if reference == self.reference {
+                    Ok(Secret::new("probe-secret"))
+                } else {
+                    Err(Error::not_found(
+                        ErrorCode::CREDENTIAL_NOT_FOUND,
+                        "探测存储中没有该引用",
+                    ))
+                }
+            }
+
+            fn set(&self, _reference: &str, _secret: &Secret) -> Result<()> {
+                Ok(())
+            }
+
+            fn delete(&self, _reference: &str) -> Result<()> {
+                Ok(())
+            }
+
+            fn implementation(&self) -> &'static str {
+                "thread-probe"
+            }
+        }
+
+        let store = Arc::new(ThreadProbeStore {
+            reference: REF.to_owned(),
+            caller: StdMutex::new(None),
+        });
+        let driver = RecordingDriver::new();
+        let manager = SessionManager::with_credential_store(
+            registry_with_driver(driver.clone()),
+            Arc::clone(&store) as Arc<dyn CredentialStore>,
+        );
+
+        manager
+            .test_connection(&params_with_reference(REF))
+            .await
+            .expect("测试连接应成功");
+        assert_eq!(driver.calls(), vec![Some("probe-secret".to_owned())]);
+
+        let called_on = store
+            .caller
+            .lock()
+            .expect("锁未中毒")
+            .expect("store.get 应被调用");
+        assert_ne!(
+            called_on,
+            std::thread::current().id(),
+            "CredentialStore 必须经 spawn_blocking 调用，不能在 async worker 上直接执行"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_reference_is_rejected_before_driver_is_called() {
+        // 引用里带着主机名/端口——宁可在这里拒绝，也不要去连一个「引用看起来像连接串」的库。
+        let driver = RecordingDriver::new();
+        let manager = SessionManager::with_credential_store(
+            registry_with_driver(driver.clone()),
+            Arc::new(MemoryCredentialStore::new()),
+        );
+
+        let error = manager
+            .test_connection(&params_with_reference("sqarvo:conn/db.example.com:3306"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+        assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+        assert_eq!(
+            driver.calls(),
+            Vec::<Option<String>>::new(),
+            "凭据解析失败时不应调用驱动"
+        );
     }
 }

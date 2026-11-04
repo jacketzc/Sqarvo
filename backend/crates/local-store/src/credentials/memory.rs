@@ -87,6 +87,10 @@ impl CredentialStore for MemoryCredentialStore {
         self.lock().remove(reference);
         Ok(())
     }
+
+    fn implementation(&self) -> &'static str {
+        "memory"
+    }
 }
 
 #[cfg(test)]

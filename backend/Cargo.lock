@@ -2025,6 +2025,7 @@ dependencies = [
  "sqarvo-common",
  "sqarvo-driver-api",
  "sqarvo-drivers",
+ "sqarvo-local-store",
  "time",
  "tokio",
  "tracing",
@@ -2148,6 +2149,7 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

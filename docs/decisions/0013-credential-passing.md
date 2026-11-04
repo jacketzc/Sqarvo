@@ -1,6 +1,7 @@
 # ADR 0013：凭据如何传给驱动（`Driver::connect` 增加 `Secret` 参数）
 
-- 状态：已接受
+- 状态：已接受（第 3 条部分被 [ADR 0015](0015-credential-resolution.md) 取代：`SessionManager`
+  不再接受 `Option<&Secret>` 参数，改为内部解析 `credential_ref`；驱动侧签名不变）
 - 日期：2026-11-04
 - 关联：S3 / M3、#20、#23；ADR 0012（凭据引用格式）、ADR 0011（MariaDB 驱动）
 
