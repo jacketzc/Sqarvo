@@ -26,10 +26,11 @@ body:
         - M0 骨架
         - M1 契约冻结
         - M2 首个驱动切片
-        - M3 凭据与 PostgreSQL
+        - M3 凭据与 MariaDB
         - M4 元数据与事务
-        - M5 第二驱动与一致性
+        - M5 第二网络驱动与一致性
         - M6 前端接入与硬化
+        - M7 导入导出与结构管理
     validations:
       required: true
 

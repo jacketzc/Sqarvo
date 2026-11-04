@@ -63,7 +63,7 @@
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
 
-- PostgreSQL / MySQL 驱动（连接请求返回 `driver.not_found`）；
+- PostgreSQL / MariaDB 驱动（连接请求返回 `driver.not_found`）；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
 - 元数据对象树、列信息、DDL 生成；
 - 显式事务绑定到会话；

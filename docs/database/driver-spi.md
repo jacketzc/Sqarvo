@@ -4,7 +4,7 @@
 
 ## 设计原则
 
-1. **与具体驱动库解耦**：`sqlx`、`tokio-postgres` 等库的类型不得出现在公共接口；
+1. **与具体驱动库解耦**：`sqlx`、`mysql_async`、`tokio-postgres` 等库的类型不得出现在公共接口；
 2. **内置 crate，不做动态库 ABI**：第一阶段所有驱动编译进后端；
 3. **容器随数据库 crate 独立**：每个驱动一个 crate，自带集成测试；
 4. **显式能力**：不支持的能力必须声明为 `false` 并返回 `capability.unsupported`，
@@ -89,7 +89,7 @@ pub trait MetadataProvider: Send + Sync {
 ```
 
 - 元数据能力独立于 `DriverSession`，不支持时 `metadata()` 返回 `None`；
-- MySQL 的 database 通常映射为 `catalog`，没有独立 `schema`；
+- MariaDB / MySQL 的 database 映射为 `catalog`，没有独立 `schema`；
 - PostgreSQL 有 database + schema；
 - 不要为了统一而丢弃层级，也不要伪造不存在的层级；
 - `PageRequest` / `Page` 与会话无关，定义在 `driver-api`，分页上限 500。
@@ -120,7 +120,7 @@ pub trait MetadataProvider: Send + Sync {
 
 ## 尚未实现
 
-- PostgreSQL / MySQL 驱动（SQLite 驱动已注册，连接/执行/分批/取消可用）；
+- MariaDB / PostgreSQL 驱动（SQLite 驱动已注册，连接/执行/分批/取消可用）；
 - 驱动级元数据遍历的具体实现（接口已定义）；
 - 事务在 gRPC 层的接线（接口已定义，M4 完成）；
 - 会话租约与断线重连。

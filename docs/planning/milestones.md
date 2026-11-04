@@ -8,9 +8,9 @@
 | M0 骨架 | S0 | 可编译、可测试的仓库骨架与本地 IPC | v0.1 | 已完成 |
 | M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
 | M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 已完成（#9–#17） |
-| M3 凭据与 PostgreSQL | S3 | 系统凭据存储 + PostgreSQL 驱动 | v0.2 | 未开始 |
+| M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 未开始 |
 | M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.3 / v0.4 | 未开始 |
-| M5 第二驱动与一致性 | S5 | MySQL 驱动 + 三驱动一致性矩阵 | v1.0 | 未开始 |
+| M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v1.0 | 未开始 |
 | M6 前端接入与硬化 | S6 | 三端接入、性能、安全、跨平台构建 | v0.2 起持续 | 未开始 |
 | M7 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.5 | 未开始 |
 
@@ -72,10 +72,10 @@
 Windows、macOS 未构建验证；事务与元数据 RPC（M4）；取消无法作用于「尚未返回首批」的执行
 （契约层改进候选）。
 
-### M3 凭据与 PostgreSQL
+### M3 凭据与 MariaDB
 
 - 凭据只存系统凭据库，缺失时明确报错；
-- PostgreSQL 查询、TLS、取消、错误分类可用；
+- MariaDB 查询、TLS、取消、错误分类可用；
 - 通过 testkit。
 
 ### M4 元数据与事务
@@ -84,10 +84,10 @@ Windows、macOS 未构建验证；事务与元数据 RPC（M4）；取消无法�
 - 事务提交/回滚/失败态行为可测试；
 - 不支持能力返回明确错误。
 
-### M5 第二驱动与一致性
+### M5 第二网络驱动与一致性
 
-- MySQL 驱动可用；
-- 同一 testkit 覆盖三驱动，差异有文档。
+- PostgreSQL 驱动可用；
+- 同一 testkit 覆盖三驱动（SQLite / MariaDB / PostgreSQL），差异有文档。
 
 ### M6 前端接入与硬化
 
@@ -103,6 +103,16 @@ Windows、macOS 未构建验证；事务与元数据 RPC（M4）；取消无法�
 - 路径穿越、覆盖已有文件、超限输入三类情况均被明确拒绝；
 - 结构对比只生成脚本，任何路径都不自动执行 DDL；
 - 参数化执行在 SPI 与 proto 中冻结，不支持的驱动返回 `capability.unsupported`。
+
+## 范围调整记录
+
+- 2026-11-04：首个网络数据库由 PostgreSQL 改为 MariaDB（S3 / M3），第二个网络数据库由
+  MySQL 改为 PostgreSQL（S5 / M5），v1.0 三驱动矩阵为 SQLite / MariaDB / PostgreSQL。
+  理由：MariaDB 驱动基于 MySQL 协议，可在不新增第二套协议栈的前提下覆盖 MySQL 兼容场景，
+  同时把与 SQLite 差异更大的 PostgreSQL 留作第三个驱动来验证 SPI 的扩展性。
+  同步更新：`development-plan.md`、`roadmap.md`、`release-plan.md`、`risk-register.md`、
+  `docs/database/driver-spi.md`、`tests/integration/`，以及 GitHub 里程碑 M3 / M5 标题；
+  决策记录见 [ADR 0010](../decisions/0010-database-onboarding-order.md)。
 
 ## 变更规则
 

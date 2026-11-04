@@ -9,8 +9,9 @@
 
 ## 计划
 
+- MariaDB 11.4 LTS：类型往返（无符号整数、`DECIMAL`、`BIT`、`ENUM`/`SET`、`JSON` 别名、零日期）、
+  取消（`KILL QUERY`）、分页游标、catalog = database 的层级语义；
 - PostgreSQL 16：类型往返（numeric、timestamptz、uuid、jsonb、数组）、取消、分页游标；
-- MySQL 8.4：无符号整数、`ZEROFILL`、字符集/排序规则、隐式 schema = database；
 - SQLite：文件数据库、只读模式、无网络依赖的快速回归。
 
 ## 启动测试数据库

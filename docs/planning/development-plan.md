@@ -14,14 +14,14 @@ S0 骨架 → S1 契约冻结 → S2 SQLite 垂直切片        （均已完成�
                           │
           ┌───────────────┴───────────────┐
           ▼                               ▼
-  S3 凭据 + PostgreSQL            S4 元数据 + 事务
+  S3 凭据 + MariaDB               S4 元数据 + 事务
           │                               │
           │                               ▼
           │                 S7 导入导出与结构管理（v0.5）
           │                               │
           └───────────────┬───────────────┘
                           ▼
-        S5 第二驱动（MySQL）+ 一致性矩阵（v1.0）
+        S5 第二网络驱动（PostgreSQL）+ 一致性矩阵（v1.0）
                           │
                           ▼
      S6 前端接入 + 性能/安全硬化（v0.2 起持续）
@@ -157,32 +157,38 @@ S0 骨架 → S1 契约冻结 → S2 SQLite 垂直切片        （均已完成�
 
 遗留：启动时长与空闲内存尚未测量（`REQ-PERF-001`），按计划归入 S6 基准，不在本阶段声称已达标。
 
-## S3：凭据存储 + PostgreSQL
+## S3：凭据存储 + MariaDB
 
-目标：接入真实网络数据库，验证 SPI 对第二种数据库成立。
+目标：接入第一个真实网络数据库，验证 SPI 对第二种数据库成立。
 
 工作内容：
 
 1. 凭据存储：三平台抽象 + Linux Secret Service 实现（优先），
    测试使用内存实现；缺失时返回 `credential.unavailable`，绝不回退到明文配置。
-2. PostgreSQL 驱动：
-   - 连接参数、TLS 模式映射（disable/prefer/require/verify-ca/verify-full）；
-   - 类型映射：numeric、timestamptz、uuid、jsonb、数组、bytea、无符号缺失说明；
-   - 取消：服务端 cancel 请求；
+2. MariaDB 驱动：
+   - 连接参数；TLS 模式映射（`disable`/`prefer`/`require`/`verify-ca`/`verify-full`
+     对应 MariaDB 的 `DISABLED`/`PREFERRED`/`REQUIRED`/`VERIFY_CA`/`VERIFY_IDENTITY`）；
+   - 类型映射：无符号整数、`DECIMAL`、`DATE`/`DATETIME`/`TIMESTAMP`（`TIMESTAMP` 的
+     会话时区语义必须在文档中写明）、`BIT`、`ENUM`/`SET`、`YEAR`、`BLOB` 系列、
+     零日期（`0000-00-00`）；MariaDB 的 `JSON` 只是 `LONGTEXT` 别名，不得声明为原生 JSON 类型；
+   - 层级语义：database 映射为 catalog，没有独立 schema 层，元数据不得伪造 schema；
+   - 取消：MySQL 协议没有独立取消通道，需另开连接执行 `KILL QUERY <connection_id>`；
+     取消幂等，并明确取消后原连接是否可继续复用；
+   - 驱动描述符如实声明版本范围（MariaDB 10.6 LTS 起，11.x 纳入测试矩阵）；
    - 元数据与事务能力按 S4 的接口实现（可先留 `capability.unsupported`）。
-3. 驱动选型 ADR：`tokio-postgres` vs `sqlx`，评估协议控制、取消、COPY、TLS、
-   维护状态与许可证。
-4. 集成测试：`tests/integration/docker-compose.yml` 的 PostgreSQL 实例，
-   合成数据；CI 可选运行（无服务时跳过并明确标注）。
+3. 驱动选型 ADR：`mysql_async` vs `sqlx` vs `mariadb` crate，评估协议控制、取消、
+   TLS、认证插件（`ed25519`、`unix_socket`）、维护状态与许可证。
+4. 集成测试：`tests/integration/docker-compose.yml` 的 MariaDB 实例，合成数据；
+   CI 可选运行（无服务时跳过并明确标注）。
 
 验收标准：
 
-- 从真实 PostgreSQL 执行查询并分批返回；
+- 从真实 MariaDB 执行查询并分批返回；
 - 错误分类正确（认证失败、超时、断线、权限不足、取消）；
 - 密码不出现在日志/错误/端点文件中；
 - 驱动通过 testkit 的全部用例。
 
-完成条件：至少两种数据库（SQLite、PostgreSQL）共享同一 SPI 与 gRPC 行为。
+完成条件：至少两种数据库（SQLite、MariaDB）共享同一 SPI 与 gRPC 行为。
 
 ## S4：元数据 + 事务（跨驱动）
 
@@ -190,8 +196,8 @@ S0 骨架 → S1 契约冻结 → S2 SQLite 垂直切片        （均已完成�
 
 工作内容：
 
-1. `MetadataProvider` 实现：SQLite（`sqlite_schema` + `PRAGMA`）与 PostgreSQL
-   （`information_schema` / `pg_catalog`）；
+1. `MetadataProvider` 实现：SQLite（`sqlite_schema` + `PRAGMA`）与 MariaDB
+   （`information_schema` + `SHOW CREATE`）；
 2. `MetadataService` 接线：分页、层级（catalog/schema）、原始类型保留、DDL 原文标记；
 3. 事务：`TransactionService` 接线，单会话单事务，失败状态只允许回滚，
    只读事务，隔离级别能力声明；
@@ -248,19 +254,23 @@ S0 骨架 → S1 契约冻结 → S2 SQLite 垂直切片        （均已完成�
 完成条件：导入、导出、结构对比三项在后端可用并可通过 gRPC 调用，失败语义与资源上限有测试；
 界面由 S6 接入。
 
-## S5：第二驱动（MySQL）+ 一致性矩阵
+## S5：第二个网络数据库（PostgreSQL）+ 一致性矩阵
 
 工作内容：
 
-1. MySQL 驱动（评估 `mysql_async` / `sqlx`）：无符号整数、catalog=schema 语义、
-   字符集/排序规则、`ZEROFILL`、`BIT` 等差异；
+1. PostgreSQL 驱动（评估 `tokio-postgres` / `sqlx`）：numeric、timestamptz、uuid、
+   jsonb、数组、bytea、无符号整数缺失说明；database + schema 两级层级；
+   取消使用服务端 cancel 请求；COPY 不在本阶段使用（导入走 S7 的参数化批量写入）；
 2. 三驱动跑同一套 testkit，形成能力矩阵（事务、取消、流式、分页、元数据层级）；
-3. CI 增加 MySQL 服务作业（或标注为手动验证）；
-4. 更新 `docs/database/` 的数据库差异说明与支持矩阵。
+3. CI 增加 PostgreSQL 服务作业（或标注为手动验证）；
+4. 补充 MariaDB 与 MySQL 的兼容边界：MariaDB 驱动基于 MySQL 协议，MySQL 8.x 能否连接
+   需实测记录，不默认声明支持；
+5. 更新 `docs/database/` 的数据库差异说明与支持矩阵。
 
 验收标准：同一测试套件在三驱动下通过（或明确记录不支持项与错误语义）。
 
-完成条件：Driver SPI 被证明可扩展到三个数据库，且行为差异有文档。
+完成条件：Driver SPI 被证明可扩展到三个数据库（SQLite、MariaDB、PostgreSQL），
+且行为差异有文档。
 
 ## S6：前端接入 + 硬化
 

@@ -15,17 +15,17 @@ services:
       timeout: 3s
       retries: 10
 
-  mysql:
-    image: mysql:8.4
+  mariadb:
+    image: mariadb:11.4
     environment:
-      MYSQL_USER: sqarvo_test
-      MYSQL_PASSWORD: sqarvo_test_only
-      MYSQL_DATABASE: sqarvo_test
-      MYSQL_ROOT_PASSWORD: sqarvo_root_test_only
+      MARIADB_USER: sqarvo_test
+      MARIADB_PASSWORD: sqarvo_test_only
+      MARIADB_DATABASE: sqarvo_test
+      MARIADB_ROOT_PASSWORD: sqarvo_root_test_only
     ports:
       - "127.0.0.1:53306:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-usqarvo_test", "-psqarvo_test_only"]
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-usqarvo_test", "-psqarvo_test_only"]
       interval: 5s
       timeout: 3s
       retries: 20
