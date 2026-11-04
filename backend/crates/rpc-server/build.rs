@@ -30,6 +30,10 @@ fn main() {
     protos.sort();
     assert!(!protos.is_empty(), "proto 目录中没有 .proto 文件");
 
+    // 目录级监听：只监听「本次见到的文件」会漏掉新增的 .proto —— Cargo 的
+    // 重建判断来自上一次构建脚本声明的路径，新增文件不在其中，生成代码就会
+    // 停在旧契约上（表现为「proto 里有新服务，编译却找不到」）。
+    println!("cargo:rerun-if-changed={}", proto_root.display());
     for proto in &protos {
         println!("cargo:rerun-if-changed={}", proto.display());
     }
