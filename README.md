@@ -61,12 +61,12 @@
 | 元数据分页 | 不透明 token、页大小上限、非法 token 拒绝 |
 | 本地存储 | 目录解析与权限、端点文件原子写入、凭据引用接口 |
 | 凭据存储（Linux） | Secret Service（D-Bus，zbus blocking）：get / set / delete；引用不存在 → `credential.not_found`，服务不可用 → `credential.unavailable`，绝不回退明文；真实密钥环用例由 `SQARVO_SECRET_SERVICE_TEST=1` 门控 |
+| 凭据接线 | `SessionManager` 注入 `CredentialStore`：`credential_ref` 经 `spawn_blocking` 解析为 `Secret` 后交给驱动，明文不缓存、不落日志；引用不存在 → `credential.not_found`（不连库），存储不可用/锁定 → `credential.unavailable`；gRPC 端到端用例用内存存储 + 真实 MariaDB |
 | gRPC 冒烟测试 | 真实 UDS + token 的端到端调用 |
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
-- 凭据接线：`credential_ref` 尚未解析为 `Secret`（#23），MariaDB 在 gRPC 路径上只能以空密码握手；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
 - 元数据对象树、列信息、DDL 生成；
 - 显式事务绑定到会话；

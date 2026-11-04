@@ -99,6 +99,12 @@ pub trait CredentialStore: Send + Sync {
 
     /// 删除凭据。引用不存在视为成功（幂等）。
     fn delete(&self, reference: &str) -> Result<()>;
+
+    /// 实现名，用于启动日志与诊断。
+    ///
+    /// 必须是固定常量（如 `linux-secret-service`），不能拼接引用、主机或用户名：
+    /// 它会进日志，而日志里不允许出现连接拓扑或凭据信息。
+    fn implementation(&self) -> &'static str;
 }
 
 /// 校验凭据引用格式（ADR 0012）。
@@ -154,6 +160,10 @@ impl CredentialStore for UnavailableCredentialStore {
 
     fn delete(&self, _reference: &str) -> Result<()> {
         Err(unavailable_store_error("无法删除数据库凭据"))
+    }
+
+    fn implementation(&self) -> &'static str {
+        "unavailable"
     }
 }
 

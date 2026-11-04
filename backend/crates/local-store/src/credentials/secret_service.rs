@@ -311,6 +311,10 @@ impl CredentialStore for SecretServiceCredentialStore {
         }
         Ok(())
     }
+
+    fn implementation(&self) -> &'static str {
+        "linux-secret-service"
+    }
 }
 
 impl SecretServiceCredentialStore {

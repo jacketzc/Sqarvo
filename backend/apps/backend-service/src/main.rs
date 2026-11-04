@@ -19,7 +19,10 @@ use clap::Parser;
 use sqarvo_common::Result;
 use sqarvo_connection::SessionManager;
 use sqarvo_drivers::DriverRegistry;
-use sqarvo_local_store::{AppPaths, AuthToken, EndpointInfo, write_endpoint_file};
+use sqarvo_local_store::{
+    AppPaths, AuthToken, EndpointInfo, UnavailableCredentialStore, open_default_credential_store,
+    write_endpoint_file,
+};
 use sqarvo_query_engine::{QueryLimits, QueryRegistry};
 use sqarvo_rpc_server::{LocalListener, PROTOCOL_VERSION, Services, serve};
 use time::OffsetDateTime;
@@ -73,7 +76,26 @@ async fn run(cli: Cli) -> Result<()> {
     if registry.is_empty() {
         tracing::warn!("当前版本没有内置数据库驱动：连接请求将返回 driver.not_found，这是预期行为");
     }
-    let sessions = Arc::new(SessionManager::new(Arc::clone(&registry)));
+    // 凭据存储：Linux 上是 Secret Service（D-Bus）。装配过程要连接会话总线并打开会话，
+    // 属于阻塞调用，放进阻塞池以免占住运行时 worker（ADR 0014）。
+    // 失败不会 panic：退回「不可用」实现，凭据相关操作如实报 credential.unavailable；
+    // 日志只记实现名与错误码，不记凭据。
+    let credentials = match tokio::task::spawn_blocking(open_default_credential_store).await {
+        Ok(store) => store,
+        Err(join_error) => {
+            tracing::error!(%join_error, "凭据存储装配任务异常结束，退回不可用实现");
+            Arc::new(UnavailableCredentialStore)
+        }
+    };
+    tracing::info!(
+        implementation = credentials.implementation(),
+        "凭据存储已装配（不可用时凭据操作会如实报错，不回退明文）"
+    );
+
+    let sessions = Arc::new(SessionManager::with_credential_store(
+        Arc::clone(&registry),
+        credentials,
+    ));
     let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
     let services = Services::new(Arc::clone(&sessions), Arc::clone(&registry), queries);
 
