@@ -115,6 +115,9 @@ pub trait MetadataProvider: Send + Sync {
 - 默认单格上限 `DEFAULT_MAX_CELL_BYTES = 64 KiB`，文本必须按 UTF-8 字符边界截断
   （`truncate_text` 提供实现）。
 
+MariaDB 驱动的完整类型映射表、`Unsupported` 清单、TIMESTAMP 会话时区处理与取消语义
+见 [mariadb.md](./mariadb.md)。
+
 
 ## 新增驱动清单
 

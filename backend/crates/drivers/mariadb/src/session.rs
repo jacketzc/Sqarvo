@@ -62,6 +62,8 @@ enum Command {
 struct SharedState {
     active: std::sync::Mutex<Option<QueryId>>,
     cancelled: AtomicBool,
+    /// 是否有一个已开始交付、但尚未读完的结果游标（在两次 `fetch` 之间）。
+    cursor_open: AtomicBool,
 }
 
 impl SharedState {
@@ -71,6 +73,11 @@ impl SharedState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(query_id);
         self.cancelled.store(false, Ordering::SeqCst);
+        self.cursor_open.store(false, Ordering::SeqCst);
+    }
+
+    fn set_cursor_open(&self) {
+        self.cursor_open.store(true, Ordering::SeqCst);
     }
 
     fn clear_active(&self) {
@@ -79,6 +86,7 @@ impl SharedState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.cancelled.store(false, Ordering::SeqCst);
+        self.cursor_open.store(false, Ordering::SeqCst);
     }
 
     fn active(&self) -> Option<QueryId> {
@@ -86,6 +94,14 @@ impl SharedState {
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn cursor_open(&self) -> bool {
+        self.cursor_open.load(Ordering::SeqCst)
     }
 }
 
@@ -199,11 +215,23 @@ async fn run_session(
             }
         }
     }
-    let _ = conn.disconnect().await;
+    // 不在这里 `disconnect().await`：它会先排空未读结果集，遇到大结果游标时会把
+    // `close()` 拖住。直接丢弃 `Conn` 会立即关闭 socket，服务端随之中止未读完的查询；
+    // 关闭语义仍然及时（见 docs/database/mariadb.md）。
+    drop(conn);
 }
 
 fn query_not_found(message: &'static str) -> Error {
     Error::not_found(ErrorCode::QUERY_NOT_FOUND, message)
+}
+
+/// 取消语义统一的错误：`query.cancelled` / `Cancelled`。
+fn cancelled_error() -> Error {
+    Error::new(
+        ErrorCode::QUERY_CANCELLED,
+        ErrorCategory::Cancelled,
+        "查询已取消",
+    )
 }
 
 /// 执行查询并服务后续 `Fetch`。返回 `true` 表示会话应关闭。
@@ -293,6 +321,13 @@ async fn serve_query(
                 return false;
             }
         };
+    // 取消可能在首批发完前到达而 KILL 恰好落空（查询尚未在服务端注册）；
+    // 此时以已记录的取消状态为准，不把结果当成成功交付。
+    if state.is_cancelled() {
+        let _ = reply.send(Err(cancelled_error()));
+        state.clear_active();
+        return false;
+    }
 
     let mut rows_read = u64::try_from(rows.len()).unwrap_or(u64::MAX);
     let first_batch = ResultBatch {
@@ -313,6 +348,8 @@ async fn serve_query(
         state.clear_active();
         return false;
     }
+    // 批次之间没有正在执行的语句，取消不再需要 KILL（见 `DriverSession::cancel`）。
+    state.set_cursor_open();
 
     loop {
         let Some(command) = receiver.recv().await else {
@@ -349,6 +386,13 @@ async fn serve_query(
                 max_rows,
                 reply,
             } => {
+                // 游标已被取消：立即报取消并丢弃游标，剩余行由驱动在
+                // 下一条命令前排空（`mysql_async` 的 `clean_dirty`）。
+                if state.is_cancelled() {
+                    let _ = reply.send(Err(cancelled_error()));
+                    state.clear_active();
+                    return false;
+                }
                 if requested != query_id || statement_index != 0 {
                     let _ = reply.send(Err(query_not_found("查询或语句不存在")));
                     continue;
@@ -422,13 +466,8 @@ where
 }
 
 fn stream_error(error: mysql_async::Error, state: &SharedState) -> Error {
-    if state.cancelled.load(Ordering::SeqCst) || is_query_interrupted(&error) {
-        return Error::new(
-            ErrorCode::QUERY_CANCELLED,
-            ErrorCategory::Cancelled,
-            "查询已取消",
-        )
-        .with_source(error);
+    if state.is_cancelled() || is_query_interrupted(&error) {
+        return cancelled_error().with_source(error);
     }
     map_error(error, "读取 MariaDB 结果行失败")
 }
@@ -481,11 +520,17 @@ impl DriverSession for MariaDbSession {
     async fn cancel(&self, query_id: &QueryId) -> Result<()> {
         self.ensure_open()?;
         match self.state.active() {
-            // 查询已结束：取消幂等。
+            // 没有在途查询（从未执行或已结束）：取消幂等。
             None => Ok(()),
             Some(current) if current != *query_id => Err(query_not_found("该查询未在运行")),
             Some(_) => {
                 self.state.cancelled.store(true, Ordering::SeqCst);
+                // 批次之间服务端没有正在执行的语句，`KILL QUERY` 只会空转；
+                // 此时只记录取消，下一次 `fetch` 直接返回 `query.cancelled`
+                // 并丢弃游标（剩余行由驱动在后续命令前排空）。
+                if self.state.cursor_open() {
+                    return Ok(());
+                }
                 self.control.kill_query().await
             }
         }
