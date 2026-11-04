@@ -23,10 +23,17 @@ use tower::service_fn;
 
 use crate::backend::endpoint::{EndpointInfo, TransportKind};
 use crate::backend::error::BackendError;
+use crate::backend::query::{
+    ExecuteOutcome, FetchOutcome, QueryFailure, failure_from_status, failure_timeout,
+    rows_from_proto, statements_from_proto,
+};
 use crate::proto::common::v1::Empty;
 use crate::proto::services::v1::connection_service_client::ConnectionServiceClient;
 use crate::proto::services::v1::credential_service_client::CredentialServiceClient;
+use crate::proto::services::v1::query_service_client::QueryServiceClient;
 use crate::proto::services::v1::system_service_client::SystemServiceClient;
+use crate::proto::services::v1::{CancelQueryRequest, CloseQueryRequest};
+use crate::proto::services::v1::{ExecuteQueryRequest, FetchBatchRequest};
 
 /// gRPC metadata 中携带 token 的键；必须与后端认证拦截器一致。
 pub const TOKEN_METADATA_KEY: &str = "x-sqarvo-token";
@@ -36,6 +43,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 单次 RPC 的超时：本地 IPC 不应出现长时间无响应。
 const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `FetchBatch` / `Cancel` / `Close` 的客户端超时（本地 IPC；超过说明后端异常）。
+const QUERY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 后端版本信息（`SystemService.GetVersion` 的结果）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +243,18 @@ impl BackendClient {
         ))
     }
 
+    /// 带 token 认证的 `QueryService` 客户端（执行 / 分批 / 取消 / 关闭）。
+    pub fn query_service(
+        &self,
+    ) -> Result<QueryServiceClient<InterceptedService<Channel, TokenInterceptor>>, BackendError>
+    {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(QueryServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
     /// 调用 `SystemService.GetVersion`。
     pub async fn get_version(&self) -> Result<VersionInfo, BackendError> {
         let mut client = self.system_service()?;
@@ -270,6 +292,113 @@ impl BackendClient {
             detail: health.detail,
             registered_drivers: health.registered_drivers,
         })
+    }
+}
+
+impl BackendClient {
+    /// 执行 SQL，返回首批结果与分页 token。
+    ///
+    /// **不加客户端超时**：长语句由用户通过 `Cancel` 结束，而不是本地提前放弃——
+    /// 本地放弃会让界面显示「超时」而后端仍在执行，用户无法判断真实状态。
+    /// 服务端在驱动层登记查询，取消语义见 [`BackendClient::cancel_query`]。
+    pub async fn execute_query(
+        &self,
+        session_id: &str,
+        sql: &str,
+        max_rows_per_batch: u32,
+    ) -> Result<ExecuteOutcome, QueryFailure> {
+        let mut client = self.query_service().map_err(local_failure)?;
+        let request = ExecuteQueryRequest {
+            session_id: session_id.to_owned(),
+            sql: sql.to_owned(),
+            max_rows_per_batch,
+            // v0.1 无显式事务：语句自动提交（事务接线见 #29 之后的工作）。
+            auto_commit: true,
+            // 0 = 由服务端默认策略决定，不在客户端凭空加期限。
+            timeout_millis: 0,
+        };
+        let response = client
+            .execute(request)
+            .await
+            .map_err(|status| failure_from_status(&status))?
+            .into_inner();
+        Ok(ExecuteOutcome {
+            query_id: response.query_id,
+            statements: statements_from_proto(&response.statements),
+            rows: rows_from_proto(&response.rows, 1),
+            page_token: response.page_token,
+            has_more: response.has_more,
+            warnings: response
+                .warnings
+                .into_iter()
+                .map(|warning| format!("{}：{}", warning.code, warning.message))
+                .collect(),
+        })
+    }
+
+    /// 拉取后续批次。
+    ///
+    /// `first_number` 是本批第一行的全局行号（1 起），用于跨批次连续编号。
+    pub async fn fetch_batch(
+        &self,
+        query_id: &str,
+        statement_index: u32,
+        page_token: &str,
+        max_rows: u32,
+        first_number: u64,
+    ) -> Result<FetchOutcome, QueryFailure> {
+        let mut client = self.query_service().map_err(local_failure)?;
+        let request = FetchBatchRequest {
+            query_id: query_id.to_owned(),
+            page_token: page_token.to_owned(),
+            max_rows,
+            statement_index,
+        };
+        let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.fetch_batch(request))
+            .await
+            .map_err(|_| failure_timeout("拉取下一批", QUERY_RPC_TIMEOUT))?
+            .map_err(|status| failure_from_status(&status))?
+            .into_inner();
+        Ok(FetchOutcome {
+            rows: rows_from_proto(&response.rows, first_number),
+            page_token: response.page_token,
+            has_more: response.has_more,
+            complete: response.complete,
+        })
+    }
+
+    /// 请求取消查询（服务端幂等：已完成/不存在同样返回成功）。
+    pub async fn cancel_query(&self, query_id: &str) -> Result<(), QueryFailure> {
+        let mut client = self.query_service().map_err(local_failure)?;
+        let request = CancelQueryRequest {
+            query_id: query_id.to_owned(),
+        };
+        tokio::time::timeout(QUERY_RPC_TIMEOUT, client.cancel(request))
+            .await
+            .map_err(|_| failure_timeout("取消查询", QUERY_RPC_TIMEOUT))?
+            .map_err(|status| failure_from_status(&status))?;
+        Ok(())
+    }
+
+    /// 释放游标（幂等；未读完的结果集必须调用它，避免后端长期占用驱动游标）。
+    pub async fn close_query(&self, query_id: &str) -> Result<(), QueryFailure> {
+        let mut client = self.query_service().map_err(local_failure)?;
+        let request = CloseQueryRequest {
+            query_id: query_id.to_owned(),
+        };
+        tokio::time::timeout(QUERY_RPC_TIMEOUT, client.close(request))
+            .await
+            .map_err(|_| failure_timeout("关闭查询", QUERY_RPC_TIMEOUT))?
+            .map_err(|status| failure_from_status(&status))?;
+        Ok(())
+    }
+}
+
+/// 客户端自身（Channel / token）的本地失败：不是查询语义错误，保留为 `transport.failed`。
+fn local_failure(error: BackendError) -> QueryFailure {
+    QueryFailure::Other {
+        code: "transport.failed".to_owned(),
+        message: error.short(),
     }
 }
 
