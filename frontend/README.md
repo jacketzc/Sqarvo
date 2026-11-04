@@ -4,9 +4,9 @@
 
 | 平台 | 技术 | 目录 | 状态 |
 |---|---|---|---|
-| Windows | WinUI 3 / Windows App SDK / C# | [windows](windows/) | 窗口骨架，未接后端 |
-| Linux | GTK4 + libadwaita / Rust | [linux](linux/) | 已接后端 gRPC（握手 / 进程管理 / 四态），数据库功能未实现 |
-| macOS | SwiftUI / Swift | [macos](macos/) | 窗口骨架，未接后端 |
+| Windows | WinUI 3 / Windows App SDK / C# | [windows](windows/) | 窗口骨架，未接后端，未构建验证 |
+| Linux | GTK4 + libadwaita / Rust | [linux](linux/) | 已接后端：握手 / 进程管理 / 连接对话框 / SQL 执行与取消 / 结果虚拟化（v0.2，见 `docs/releases/v0.2.md`） |
+| macOS | SwiftUI / Swift | [macos](macos/) | 窗口骨架，未接后端，未构建验证 |
 
 共同约束：
 
@@ -24,4 +24,7 @@
 4. 建立 gRPC Channel（Unix socket / 回环 TCP 自定义连接器），携带 `x-sqarvo-token`；
 5. 退出时向子进程发送终止信号，由后端清理 socket 与端点文件。
 
-以上流程尚未在任何前端实现。
+以上流程已在 Linux 前端实现（`frontend/linux/src/backend/endpoint.rs`、
+`src/backend/supervisor.rs`、`src/backend/worker.rs`，PR #36），细节与实测记录见
+[`frontend/linux/README.md`](linux/README.md)。Windows 与 macOS 前端**尚未实现**该流程，
+仍是窗口骨架，未构建、未验证。
