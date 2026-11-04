@@ -50,7 +50,7 @@ impl Services {
     ) -> Self {
         Self {
             system: SystemServiceImpl::new(Arc::clone(&sessions), drivers),
-            connection: ConnectionServiceImpl::new(sessions),
+            connection: ConnectionServiceImpl::new(sessions, Arc::clone(&queries)),
             metadata: MetadataServiceImpl::new(),
             query: QueryServiceImpl::new(queries),
             transaction: TransactionServiceImpl::new(),

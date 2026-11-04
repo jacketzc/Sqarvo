@@ -4,7 +4,8 @@
 //!
 //! - 不含任何具体数据库协议、SQL 方言或连接池实现；
 //! - 不把第三方驱动的类型泄露到公共接口；
-//! - 用显式的能力描述符表达「不支持」，绝不静默模拟成功。
+//! - 用显式的能力描述符表达「不支持」，绝不静默模拟成功；
+//! - 结果集以「语句摘要 + 分批行」表达，游标由驱动持有（ADR 0005）。
 //!
 //! 具体驱动 crate（例如将来的 `sqarvo-driver-postgres`）实现
 //! [`Driver`] 与 [`DriverSession`]，由 `sqarvo-drivers` 中的注册表统一装载。
@@ -19,7 +20,13 @@ pub mod value;
 pub use capabilities::Capabilities;
 pub use driver::{
     ConnectionParams, ConnectionTestReport, Driver, DriverDescriptor, DriverId, DriverSession,
-    ExecuteRequest, ResultBatch, TlsMode, Warning,
+    ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS, ResultBatch,
+    StatementSummary, TlsMode, TransactionOptions, Warning, sql_preview,
 };
-pub use metadata::{ObjectKind, ObjectNode, QualifiedName};
-pub use value::{ColumnMeta, ColumnType, Decimal, Row, Value};
+pub use metadata::{
+    DEFAULT_PAGE_SIZE, Ddl, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode, ObjectRef,
+    Page, PageRequest, QualifiedName,
+};
+pub use value::{
+    Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value, truncate_text,
+};

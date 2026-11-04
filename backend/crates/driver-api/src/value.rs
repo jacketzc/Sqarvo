@@ -178,9 +178,6 @@ pub struct ColumnMeta {
     pub original_type_name: Option<String>,
 }
 
-/// 一行数据。列顺序与 [`ColumnMeta::ordinal`] 一致。
-pub type Row = Vec<Value>;
-
 /// 单个单元格值。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -254,6 +251,66 @@ impl Value {
     }
 }
 
+/// 单个单元格的默认上限（64 KiB）。
+///
+/// 文本与二进制超过该上限时只传前缀，并置 [`Cell::truncated`]。见 ADR 0007。
+pub const DEFAULT_MAX_CELL_BYTES: usize = 64 * 1024;
+
+/// 结果集单元格：值 + 截断标记。
+///
+/// 截断信息必须随单元格一起传递，否则前端无法区分「短值」与「被截断的值」。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cell {
+    /// 单元格值。
+    pub value: Value,
+    /// 是否因超过上限而截断。
+    pub truncated: bool,
+}
+
+impl Cell {
+    /// 构造未截断的单元格。
+    #[must_use]
+    pub fn new(value: Value) -> Self {
+        Self {
+            value,
+            truncated: false,
+        }
+    }
+
+    /// 构造已截断的单元格。
+    #[must_use]
+    pub fn truncated(value: Value) -> Self {
+        Self {
+            value,
+            truncated: true,
+        }
+    }
+
+    /// 是否为 NULL。
+    #[must_use]
+    pub const fn is_null(&self) -> bool {
+        self.value.is_null()
+    }
+}
+
+/// 一行数据。列顺序与 [`ColumnMeta::ordinal`] 一致。
+pub type Row = Vec<Cell>;
+
+/// 按 UTF-8 字符边界截断文本。
+///
+/// 返回截断后的字符串与是否发生截断。`max_bytes` 为字节上限，不会产生非法编码。
+#[must_use]
+pub fn truncate_text(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_owned(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +350,24 @@ mod tests {
                 unsigned: false
             }
         );
+    }
+
+    #[test]
+    fn cells_keep_truncation_flag() {
+        let cell = Cell::truncated(Value::Text("abc".to_owned()));
+        assert!(cell.truncated);
+        assert!(!cell.is_null());
+        assert!(!Cell::new(Value::Null).truncated);
+    }
+
+    #[test]
+    fn text_truncation_respects_char_boundaries() {
+        let (value, truncated) = truncate_text("数据库客户端", 4);
+        assert!(truncated);
+        assert_eq!(value, "数");
+
+        let (value, truncated) = truncate_text("abc", 10);
+        assert!(!truncated);
+        assert_eq!(value, "abc");
     }
 }

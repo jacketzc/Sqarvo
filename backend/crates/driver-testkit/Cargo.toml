@@ -1,0 +1,18 @@
+[package]
+name = "sqarvo-driver-testkit"
+description = "Sqarvo 驱动符合性测试基架与脚本化测试会话"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+sqarvo-common.workspace = true
+sqarvo-driver-api.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

@@ -5,6 +5,12 @@
 
 use std::fmt;
 
+use async_trait::async_trait;
+
+use sqarvo_common::{Result, SessionId};
+
+use crate::value::ColumnMeta;
+
 /// 完全限定名。缺失的层级为 `None`，例如 MySQL 没有独立的 Schema 层。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QualifiedName {
@@ -110,6 +116,84 @@ pub struct ObjectNode {
     pub comment: Option<String>,
 }
 
+/// 对象引用：会话 + 限定名 + 种类。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectRef {
+    /// 所属会话。
+    pub session_id: SessionId,
+    /// 完全限定名。
+    pub qualified_name: QualifiedName,
+    /// 对象种类。
+    pub kind: ObjectKind,
+}
+
+/// 默认页大小。
+pub const DEFAULT_PAGE_SIZE: u32 = 100;
+
+/// 单页上限，防止调用方用超大页一次拉全量。
+pub const MAX_PAGE_SIZE: u32 = 500;
+
+/// 元数据分页请求。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageRequest {
+    /// 期望条数；0 表示使用默认值。
+    pub page_size: u32,
+    /// 上一页返回的 token；`None` 表示第一页。
+    pub page_token: Option<String>,
+}
+
+impl PageRequest {
+    /// 归一化后的页大小。
+    #[must_use]
+    pub fn effective_page_size(&self) -> u32 {
+        if self.page_size == 0 {
+            DEFAULT_PAGE_SIZE
+        } else {
+            self.page_size.min(MAX_PAGE_SIZE)
+        }
+    }
+}
+
+/// 元数据分页结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page<T> {
+    /// 本页数据。
+    pub items: Vec<T>,
+    /// 下一页 token；`None` 表示没有更多数据。
+    pub next_page_token: Option<String>,
+    /// 是否因为页大小上限而截断。
+    pub truncated: bool,
+}
+
+/// DDL 查看结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ddl {
+    /// DDL 文本。
+    pub text: String,
+    /// 是否为数据库返回的原文；`false` 表示由驱动拼装。
+    pub exact: bool,
+}
+
+/// 元数据能力接口。
+///
+/// 独立于 [`crate::DriverSession`]，避免不支持元数据的驱动被迫实现空方法。
+/// 不支持时由 [`crate::DriverSession::metadata`] 返回 `None`。
+#[async_trait]
+pub trait MetadataProvider: Send + Sync {
+    /// 列出子节点。`parent == None` 表示根节点。
+    async fn list_children(
+        &self,
+        parent: Option<ObjectRef>,
+        page: &PageRequest,
+    ) -> Result<Page<ObjectNode>>;
+
+    /// 列出列信息。
+    async fn columns(&self, object: &ObjectRef) -> Result<Vec<ColumnMeta>>;
+
+    /// 获取 DDL；数据库不提供时返回 `capability.unsupported`。
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +210,21 @@ mod tests {
     fn object_kind_preserves_unknown_kinds() {
         assert_eq!(ObjectKind::Other("package".to_owned()).as_str(), "package");
         assert_eq!(ObjectKind::MaterializedView.as_str(), "materialized_view");
+    }
+
+    #[test]
+    fn page_size_is_bounded() {
+        assert_eq!(
+            PageRequest::default().effective_page_size(),
+            DEFAULT_PAGE_SIZE
+        );
+        assert_eq!(
+            PageRequest {
+                page_size: u32::MAX,
+                page_token: None
+            }
+            .effective_page_size(),
+            MAX_PAGE_SIZE
+        );
     }
 }

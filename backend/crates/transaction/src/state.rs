@@ -2,22 +2,8 @@
 
 use sqarvo_common::{Error, ErrorCode, Result, TransactionId};
 
-/// 隔离级别。具体数据库支持范围由驱动能力声明决定。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IsolationLevel {
-    /// 未指定，由数据库默认值决定。
-    Unspecified,
-    /// 读未提交。
-    ReadUncommitted,
-    /// 读已提交。
-    ReadCommitted,
-    /// 可重复读。
-    RepeatableRead,
-    /// 可串行化。
-    Serializable,
-    /// 快照隔离（PostgreSQL / SQL Server 语义不同，由驱动解释）。
-    Snapshot,
-}
+/// 隔离级别。定义在 Driver SPI 中，事务状态机直接复用，避免两套枚举漂移。
+pub use sqarvo_driver_api::IsolationLevel;
 
 /// 事务状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

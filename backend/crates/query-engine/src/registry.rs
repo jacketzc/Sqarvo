@@ -146,6 +146,19 @@ impl QueryRegistry {
         })
     }
 
+    /// 会话断开时清理其全部查询，返回移除数量。
+    ///
+    /// 驱动侧资源由会话关闭负责；这里只清理后端登记，避免悬挂查询。
+    pub fn remove_session(&self, session_id: &SessionId) -> usize {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = entries.len();
+        entries.retain(|_, entry| entry.session_id != *session_id);
+        before - entries.len()
+    }
+
     /// 查询状态。
     #[must_use]
     pub fn state(&self, id: &QueryId) -> Option<QueryState> {
@@ -232,5 +245,22 @@ mod tests {
         );
         registry.complete(&first).unwrap();
         assert!(registry.register(SessionId::new()).is_ok());
+    }
+
+    #[test]
+    fn remove_session_drops_only_that_session() {
+        let registry = QueryRegistry::new(QueryLimits::default());
+        let first = SessionId::new();
+        let second = SessionId::new();
+        let a = registry.register(first).unwrap();
+        let b = registry.register(first).unwrap();
+        let c = registry.register(second).unwrap();
+
+        assert_eq!(registry.remove_session(&first), 2);
+        assert_eq!(registry.active(), 1);
+        assert!(registry.state(&a).is_none());
+        assert!(registry.state(&b).is_none());
+        assert!(registry.state(&c).is_some());
+        assert_eq!(registry.remove_session(&first), 0);
     }
 }

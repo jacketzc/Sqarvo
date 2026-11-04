@@ -10,4 +10,4 @@
 
 pub mod manager;
 
-pub use manager::{SessionManager, SessionSummary};
+pub use manager::{SessionHandle, SessionManager, SessionSummary};

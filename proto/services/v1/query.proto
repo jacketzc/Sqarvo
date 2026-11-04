@@ -22,6 +22,8 @@ message ExecuteQueryRequest {
   // 每批最大行数；0 表示服务端默认值，超过上限会被服务端压到上限。
   uint32 max_rows_per_batch = 3;
   bool auto_commit = 4;
+  // 执行超时（毫秒）；0 表示无显式超时，由服务端默认策略决定。
+  uint32 timeout_millis = 5;
 }
 
 message StatementSummary {
@@ -48,6 +50,8 @@ message FetchBatchRequest {
   string query_id = 1;
   string page_token = 2;
   uint32 max_rows = 3;
+  // 结果集所属语句序号；v0.1 恒为 0（单语句）。
+  uint32 statement_index = 4;
 }
 
 message FetchBatchResponse {

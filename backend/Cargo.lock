@@ -1046,6 +1046,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqarvo-driver-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sqarvo-common",
+ "sqarvo-driver-api",
+ "tokio",
+]
+
+[[package]]
 name = "sqarvo-drivers"
 version = "0.1.0"
 dependencies = [
@@ -1115,6 +1125,7 @@ name = "sqarvo-transaction"
 version = "0.1.0"
 dependencies = [
  "sqarvo-common",
+ "sqarvo-driver-api",
 ]
 
 [[package]]

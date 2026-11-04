@@ -1,43 +1,10 @@
 //! 不透明分页 token 的生成与校验。
+//!
+//! 分页类型与上限定义在 Driver SPI 中，供驱动直接实现元数据接口。
 
 use sqarvo_common::{Error, ErrorCode, Result};
 
-/// 默认页大小。
-pub const DEFAULT_PAGE_SIZE: u32 = 100;
-/// 单页上限，防止前端用超大 `page_size` 一次性拉全量。
-pub const MAX_PAGE_SIZE: u32 = 500;
-
-/// 分页请求。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PageRequest {
-    /// 期望条数；0 表示使用默认值。
-    pub page_size: u32,
-    /// 上一页返回的 token。
-    pub page_token: Option<String>,
-}
-
-impl PageRequest {
-    /// 归一化后的页大小。
-    #[must_use]
-    pub fn effective_page_size(&self) -> u32 {
-        if self.page_size == 0 {
-            DEFAULT_PAGE_SIZE
-        } else {
-            self.page_size.min(MAX_PAGE_SIZE)
-        }
-    }
-}
-
-/// 分页结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Page<T> {
-    /// 本页数据。
-    pub items: Vec<T>,
-    /// 下一页 token；`None` 表示没有更多数据。
-    pub next_page_token: Option<String>,
-    /// 是否因为页大小上限而截断。
-    pub truncated: bool,
-}
+pub use sqarvo_driver_api::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page, PageRequest};
 
 /// 对内存中的有序集合分页。
 ///

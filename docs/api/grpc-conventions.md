@@ -27,7 +27,8 @@
 ## 错误语义
 
 - 错误通过 gRPC status 返回：状态码表示分类，`status message` 是**可直接展示**的中文文案；
-- 稳定错误码放在 trailing metadata `sqarvo-error-code`，例如 `driver.not_found`；
+- 稳定错误码放在 trailing metadata `sqarvo-error-code`，例如 `driver.not_found`、
+  `query.limit_reached`、`transaction.failed`、`capability.unsupported`；
 - `UNIMPLEMENTED` 表示「该能力尚未实现」，与「执行失败」严格区分；
 - 错误信息禁止包含凭据、完整连接串、内部堆栈与私有路径。
 
@@ -56,9 +57,18 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 ## 结果集与分页
 
 - `QueryService.Execute` 只返回首批数据（默认 200 行，单批上限 5000 行）；
-- 后续批次通过 `FetchBatch(query_id, page_token)` 拉取，token 不透明；
+- 后续批次通过 `FetchBatch(query_id, statement_index, page_token)` 拉取，token 不透明；
+- `ExecuteQueryRequest.timeout_millis` 为执行超时，0 表示由服务端默认策略决定；
+- `FetchBatchRequest.statement_index` 标识结果集所属语句，v0.1 恒为 0（单语句）；
 - 元数据浏览使用 `PageRequest`/`PageInfo`，单页默认 100、上限 500；
 - 不允许通过提高 gRPC message 大小上限来解决大结果集问题。
+
+## 单元格与截断
+
+- 每个单元格带 `truncated` 标记；文本/二进制默认上限 64 KiB（ADR 0007）；
+- 截断值仍是原类型（TEXT/BLOB），前端必须显示「已截断」状态；
+- 无法无损映射的数据库类型使用 `VALUE_KIND_UNSUPPORTED` 并保留原始类型名，
+  不得伪装成 TEXT 或其它类型。
 
 ## 取消与幂等
 

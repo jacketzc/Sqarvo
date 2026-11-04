@@ -90,6 +90,9 @@ S6 前端接入 + 性能/安全硬化
 
 完成条件：S1 的接口与 ADR 合并入库，后续驱动可以只依赖 SPI 实现。
 
+实际完成（2026-11-04）：SPI v0.2、proto 增量、`SessionManager::acquire` 与会话锁、
+`driver-testkit`、ADR 0005–0009 已完成；`cargo test` 66 项通过，`clippy -D warnings` 通过。
+
 ## S2：SQLite 垂直切片
 
 目标：证明「前端/客户端 → gRPC → 会话 → 驱动 → 数据库 → 分批返回」全链路可用。

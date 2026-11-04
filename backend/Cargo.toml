@@ -5,6 +5,7 @@ members = [
     "crates/common",
     "crates/connection",
     "crates/driver-api",
+    "crates/driver-testkit",
     "crates/drivers",
     "crates/local-store",
     "crates/metadata",

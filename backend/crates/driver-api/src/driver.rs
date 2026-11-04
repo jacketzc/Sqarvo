@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId};
+use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 
 use crate::capabilities::Capabilities;
+use crate::metadata::MetadataProvider;
 use crate::value::{ColumnMeta, Row};
 
 /// 驱动标识。仅允许小写 ASCII 字母、数字、`.`、`_`、`-`。
@@ -71,6 +72,33 @@ pub enum TlsMode {
     VerifyCa,
     /// 校验证书链与主机名。
     VerifyFull,
+}
+
+/// 事务隔离级别。具体数据库支持范围由驱动能力声明决定。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IsolationLevel {
+    /// 未指定，由数据库默认值决定。
+    #[default]
+    Unspecified,
+    /// 读未提交。
+    ReadUncommitted,
+    /// 读已提交。
+    ReadCommitted,
+    /// 可重复读。
+    RepeatableRead,
+    /// 可串行化。
+    Serializable,
+    /// 快照隔离（PostgreSQL / SQL Server 语义不同，由驱动解释）。
+    Snapshot,
+}
+
+/// 事务选项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionOptions {
+    /// 隔离级别。
+    pub isolation: IsolationLevel,
+    /// 是否只读。
+    pub read_only: bool,
 }
 
 /// 数据库版本支持范围。
@@ -179,13 +207,74 @@ pub struct ExecuteRequest {
     pub sql: String,
     /// 首批最大行数；`None` 表示驱动默认值。
     pub max_rows: Option<u32>,
+    /// 执行超时；`None` 表示由上层默认策略决定。
+    pub timeout: Option<Duration>,
+}
+
+/// SQL 预览的最大字符数。
+pub const MAX_SQL_PREVIEW_CHARS: usize = 200;
+
+/// 生成用于展示的 SQL 预览。超出上限时截断并追加省略号。
+#[must_use]
+pub fn sql_preview(sql: &str) -> String {
+    let trimmed = sql.trim();
+    let mut chars = trimmed.chars();
+    let preview: String = chars.by_ref().take(MAX_SQL_PREVIEW_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+/// 单条语句的执行摘要。
+#[derive(Debug, Clone)]
+pub struct StatementSummary {
+    /// 语句序号，从 0 开始。
+    pub index: u32,
+    /// SQL 预览（可能被截断，仅用于展示）。
+    pub sql_preview: String,
+    /// 列元数据；无结果集时为空。
+    pub columns: Vec<ColumnMeta>,
+    /// 影响行数；未知时为 `None`。
+    pub rows_affected: Option<u64>,
+    /// 是否有结果集。
+    pub has_result_set: bool,
+}
+
+/// 一次执行的起始结果：所有语句摘要 + 首个结果集的首批数据。
+#[derive(Debug, Clone)]
+pub struct ExecutionStart {
+    /// 语句摘要，按执行顺序。
+    pub statements: Vec<StatementSummary>,
+    /// 首个结果集的首批数据；全部语句都没有结果集时为 `None`。
+    pub first_batch: Option<ResultBatch>,
+}
+
+impl ExecutionStart {
+    /// 构造单语句结果。
+    #[must_use]
+    pub fn single(statement: StatementSummary, first_batch: Option<ResultBatch>) -> Self {
+        Self {
+            statements: vec![statement],
+            first_batch,
+        }
+    }
+
+    /// 按序号查找语句摘要。
+    #[must_use]
+    pub fn statement(&self, index: u32) -> Option<&StatementSummary> {
+        self.statements
+            .iter()
+            .find(|statement| statement.index == index)
+    }
 }
 
 /// 一批结果数据。
 #[derive(Debug, Clone)]
 pub struct ResultBatch {
-    /// 列元数据；仅首批必须完整。
-    pub columns: Vec<ColumnMeta>,
+    /// 该批数据所属的语句序号。
+    pub statement_index: u32,
     /// 行数据。
     pub rows: Vec<Row>,
     /// 下一批游标；`has_more == false` 时应为 `None`。
@@ -198,21 +287,23 @@ pub struct ResultBatch {
 ///
 /// 约定：
 ///
-/// - 同一会话上的执行由上层串行化，驱动可以假设非并发调用；
-/// - `cancel` 必须幂等，重复取消不得崩溃；
-/// - 会话被丢弃前必须调用 [`DriverSession::close`]，以释放服务端资源。
+/// - 同一会话上的 `execute` / `fetch` 由上层串行化，驱动可以假设非并发调用；
+/// - `cancel` 必须幂等，且**不**经过执行锁，可在执行进行中从其它任务调用；
+/// - 会话被丢弃前必须调用 [`DriverSession::close`]，以释放服务端资源；
+/// - 不支持的能力使用默认实现返回 `capability.unsupported`，驱动必须按能力描述符如实声明。
 #[async_trait]
 pub trait DriverSession: Send + Sync {
     /// 会话 ID。
     fn session_id(&self) -> SessionId;
 
-    /// 执行 SQL 并返回首批结果。
-    async fn execute(&self, request: ExecuteRequest) -> Result<ResultBatch>;
+    /// 执行 SQL 并返回语句摘要与首批结果。
+    async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart>;
 
-    /// 拉取下一批结果。
+    /// 拉取指定语句的下一批结果。
     async fn fetch(
         &self,
         query_id: &QueryId,
+        statement_index: u32,
         cursor: Option<&str>,
         max_rows: u32,
     ) -> Result<ResultBatch>;
@@ -222,6 +313,30 @@ pub trait DriverSession: Send + Sync {
 
     /// 关闭会话并释放资源。
     async fn close(&self) -> Result<()>;
+
+    /// 元数据能力；不支持的驱动返回 `None`。
+    fn metadata(&self) -> Option<&dyn MetadataProvider> {
+        None
+    }
+
+    /// 开始显式事务。默认实现表示不支持。
+    async fn begin_transaction(&self, _options: TransactionOptions) -> Result<TransactionId> {
+        Err(unsupported_transactions())
+    }
+
+    /// 提交事务。默认实现表示不支持。
+    async fn commit_transaction(&self, _transaction_id: &TransactionId) -> Result<()> {
+        Err(unsupported_transactions())
+    }
+
+    /// 回滚事务。默认实现表示不支持。
+    async fn rollback_transaction(&self, _transaction_id: &TransactionId) -> Result<()> {
+        Err(unsupported_transactions())
+    }
+}
+
+fn unsupported_transactions() -> Error {
+    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现显式事务")
 }
 
 /// 数据库驱动。

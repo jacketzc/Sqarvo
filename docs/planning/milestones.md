@@ -6,7 +6,7 @@
 | 里程碑 | 对应阶段 | 目标 | 对应版本 | 状态 |
 |---|---|---|---|---|
 | M0 骨架 | S0 | 可编译、可测试的仓库骨架与本地 IPC | v0.1 | 已完成 |
-| M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 未开始 |
+| M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
 | M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 未开始 |
 | M3 凭据与 PostgreSQL | S3 | 系统凭据存储 + PostgreSQL 驱动 | v0.2 | 未开始 |
 | M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.3 / v0.4 | 未开始 |
@@ -24,12 +24,25 @@
 
 实际完成：2026-11-04（Linux），验证记录见 `development-plan.md` 的 S0。
 
-### M1 契约冻结
+### M1 契约冻结（完成标准）
 
 - SPI v0.2 覆盖多语句、影响行数、截断、事务、元数据；
 - proto 仅做增量修改并重新生成；
 - testkit 可运行；
 - 4 份 ADR 合并。
+
+### M1 契约冻结（实际完成）
+
+实际完成：2026-11-04（Linux）
+
+- SPI v0.2：`ExecutionStart` / `StatementSummary`、按 `statement_index` 的游标、
+  事务接口、`MetadataProvider`、`Cell.truncated` 与 64 KiB 上限；
+- proto 增量：`FetchBatchRequest.statement_index = 4`、`ExecuteQueryRequest.timeout_millis = 5`；
+- `SessionManager::acquire` + 会话级执行锁 + 断连清理查询登记；
+- 新增 `sqarvo-driver-testkit`（脚本化会话 + `smoke` 符合性检查）；
+- ADR 0005–0009：游标所有权、多语句策略、截断、并发、SQLite 选型；
+- 验证：`cargo fmt --check`、`clippy -D warnings`、`cargo test`（66 通过）通过，
+  UDS gRPC 冒烟测试不回归。
 
 ### M2 首个驱动切片
 

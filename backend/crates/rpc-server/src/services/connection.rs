@@ -8,6 +8,7 @@ use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::{
     ConnectionParams as DriverConnectionParams, DriverId, TlsMode as DriverTlsMode,
 };
+use sqarvo_query_engine::QueryRegistry;
 use tonic::{Request, Response, Status};
 
 use crate::error::to_status;
@@ -21,13 +22,14 @@ use crate::proto::services::v1::{
 /// `ConnectionService` 实现。
 pub struct ConnectionServiceImpl {
     sessions: Arc<SessionManager>,
+    queries: Arc<QueryRegistry>,
 }
 
 impl ConnectionServiceImpl {
     /// 构造服务。
     #[must_use]
-    pub fn new(sessions: Arc<SessionManager>) -> Self {
-        Self { sessions }
+    pub fn new(sessions: Arc<SessionManager>, queries: Arc<QueryRegistry>) -> Self {
+        Self { sessions, queries }
     }
 }
 
@@ -109,10 +111,13 @@ impl ConnectionService for ConnectionServiceImpl {
             .connection_id
             .parse()
             .map_err(|_| Status::invalid_argument("连接 ID 格式非法"))?;
-        self.sessions
+        let summary = self
+            .sessions
             .disconnect(&connection_id)
             .await
             .map_err(to_status)?;
+        // 断连即回收该会话的全部查询登记，避免悬挂项。
+        self.queries.remove_session(&summary.session_id);
         Ok(Response::new(Empty {}))
     }
 

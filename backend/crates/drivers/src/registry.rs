@@ -82,7 +82,7 @@ mod tests {
     use sqarvo_common::{QueryId, SessionId};
     use sqarvo_driver_api::{
         Capabilities, ConnectionParams, ConnectionTestReport, DriverSession, ExecuteRequest,
-        ResultBatch,
+        ExecutionStart, ResultBatch,
     };
 
     use super::*;
@@ -114,7 +114,7 @@ mod tests {
             SessionId::new()
         }
 
-        async fn execute(&self, _request: ExecuteRequest) -> Result<ResultBatch> {
+        async fn execute(&self, _request: ExecuteRequest) -> Result<ExecutionStart> {
             Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
                 "fake driver does not execute SQL",
@@ -124,6 +124,7 @@ mod tests {
         async fn fetch(
             &self,
             _query_id: &QueryId,
+            _statement_index: u32,
             _cursor: Option<&str>,
             _max_rows: u32,
         ) -> Result<ResultBatch> {
