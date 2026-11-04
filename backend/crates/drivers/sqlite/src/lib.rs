@@ -425,6 +425,57 @@ mod tests {
         assert_eq!(report.batches, 2);
     }
 
+    /// testkit 的五项不变量检查（#24）：SQLite 也必须通过，
+    /// 证明这些检查不是「只对 MariaDB 成立」。
+    #[tokio::test]
+    async fn passes_driver_testkit_invariants() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session::SqliteSession::connect(
+            dir.path().join("invariants.db").display().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        sqarvo_driver_testkit::cancel_without_active_query_is_idempotent(&session)
+            .await
+            .unwrap();
+
+        sqarvo_driver_testkit::multiple_statements_are_rejected(&session, "SELECT 1; SELECT 2")
+            .await
+            .unwrap();
+
+        sqarvo_driver_testkit::oversized_cell_is_truncated(
+            &session,
+            "SELECT hex(randomblob(40000))",
+        )
+        .await
+        .unwrap();
+
+        session
+            .execute(request(QueryId::new(), "CREATE TABLE t(v INTEGER)", None))
+            .await
+            .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<1000) \
+                 INSERT INTO t(v) SELECT x FROM c",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        sqarvo_driver_testkit::batch_drain_has_no_loss(&session, "SELECT v FROM t ORDER BY v", 300)
+            .await
+            .unwrap();
+
+        // close 检查会关闭会话，必须放在最后。
+        sqarvo_driver_testkit::close_is_idempotent_and_use_after_close_is_rejected(&session)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn batch_size_is_capped_by_driver() {
         let dir = tempfile::tempdir().unwrap();

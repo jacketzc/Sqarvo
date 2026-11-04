@@ -138,6 +138,51 @@ async fn driver_passes_testkit_smoke() {
     assert_eq!(report.batches, 2);
 }
 
+/// testkit 的五项不变量检查（#24 的 testkit 全量要求）。
+///
+/// 检查本身与方言无关，SQL 由这里按 MariaDB 语法提供；「多语句被拒后无副作用」
+/// 由 `multiple_statements_are_rejected_before_execution` 单独断言，testkit 只断言错误分类。
+#[tokio::test]
+async fn driver_passes_testkit_invariants() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let session: Arc<dyn DriverSession> = Arc::from(session);
+    let session = &*session;
+
+    sqarvo_driver_testkit::cancel_without_active_query_is_idempotent(session)
+        .await
+        .expect("没有在途查询时取消必须幂等");
+
+    sqarvo_driver_testkit::multiple_statements_are_rejected(session, "SELECT 1; SELECT 2")
+        .await
+        .expect("多语句必须以 Unsupported 拒绝");
+
+    sqarvo_driver_testkit::oversized_cell_is_truncated(session, "SELECT REPEAT('a', 70000)")
+        .await
+        .expect("超长单元格必须截断并标记");
+
+    exec(session, "DROP TABLE IF EXISTS sqarvo_t24_drain").await;
+    exec(
+        session,
+        "CREATE TABLE sqarvo_t24_drain AS SELECT seq AS id FROM seq_1_to_1000",
+    )
+    .await;
+    sqarvo_driver_testkit::batch_drain_has_no_loss(
+        session,
+        "SELECT id FROM sqarvo_t24_drain ORDER BY id",
+        300,
+    )
+    .await
+    .expect("按批取完不得丢失或重复");
+    exec(session, "DROP TABLE IF EXISTS sqarvo_t24_drain").await;
+
+    // close 检查会关闭会话，必须放在最后。
+    sqarvo_driver_testkit::close_is_idempotent_and_use_after_close_is_rejected(session)
+        .await
+        .expect("close 必须幂等且关闭后拒绝执行");
+}
+
 /// 时间敏感用例（取消 / close 的 2 秒上限）串行执行。
 ///
 /// 这些断言测的是「单会话在 2 秒内响应取消」，但 `cargo test` 默认并行跑 19 个用例、
@@ -210,6 +255,26 @@ async fn wrong_password_is_reported_as_auth_failure() {
         .expect("错误密码必须失败");
     assert_eq!(error.category(), ErrorCategory::Unauthenticated);
     assert_eq!(error.code(), error::AUTH_FAILED);
+}
+
+/// 无权访问的库：`mariadb.permission_denied` / `PermissionDenied`。
+///
+/// 这是 `docs/database/mariadb.md` 错误映射表里此前唯一没有集成用例的分类：
+/// 测试账号只被授予测试库权限，连接到系统库 `mysql` 必然被服务端拒绝（1044）。
+#[tokio::test]
+async fn database_without_privileges_is_reported_as_permission_denied() {
+    let Some((mut params, secret)) = connection_params() else {
+        return;
+    };
+    params.database = Some("mysql".to_owned());
+    let driver = MariaDbDriver::new();
+    let error = driver
+        .connect(&params, Some(&secret))
+        .await
+        .err()
+        .expect("无权访问的库必须失败");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    assert_eq!(error.code(), error::PERMISSION_DENIED);
 }
 
 #[tokio::test]
