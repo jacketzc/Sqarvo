@@ -8,8 +8,8 @@
 ## 命名与版本
 
 - package 使用 `sqarvo.<domain>.v1`：`sqarvo.common.v1`、`sqarvo.services.v1`；
-- 服务按业务域拆分：`SystemService`、`ConnectionService`、`MetadataService`、
-  `QueryService`、`TransactionService`；不要把新操作堆进「万能服务」；
+- 服务按业务域拆分：`SystemService`、`ConnectionService`、`CredentialService`、
+  `MetadataService`、`QueryService`、`TransactionService`；不要把新操作堆进「万能服务」；
 - 不删除或复用已发布的字段编号；删除字段时使用 `reserved`；
 - 新增字段必须有合理默认语义（proto3 默认值必须被解释为「未设置」，不能与业务默认值冲突）。
 
@@ -31,6 +31,17 @@
   `query.limit_reached`、`transaction.failed`、`capability.unsupported`；
 - `UNIMPLEMENTED` 表示「该能力尚未实现」，与「执行失败」严格区分；
 - 错误信息禁止包含凭据、完整连接串、内部堆栈与私有路径。
+
+凭据相关错误（ADR 0012 / 0015 / 0016）：
+
+| 错误码 | gRPC 状态码 | 含义 |
+|---|---|---|
+| `credential.not_found` | `NOT_FOUND` | 配置里的引用在系统凭据库中不存在（密码已被用户删除） |
+| `credential.unavailable` | `UNAVAILABLE` / `FAILED_PRECONDITION` | 系统凭据库不可用、已锁定或用户拒绝授权；**永不回退明文** |
+| `config.invalid` | `INVALID_ARGUMENT` | 引用格式非法，或 `StoreCredential` 提交了空密码 |
+
+`CredentialService.StoreCredential` 是唯一携带数据库密码的 RPC：密码只在请求体内存在，
+不得写入日志、错误文案、端点文件或配置；连接配置只保存它返回的 `credential_ref`。
 
 分类映射（后端 `ErrorCategory` → gRPC code）：
 

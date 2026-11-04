@@ -7,6 +7,8 @@
 //! GTK 主线程只通过 channel 与后台 worker 交互。
 
 mod backend;
+mod config;
+mod dialog;
 mod proto;
 mod qa;
 mod ui;
@@ -42,6 +44,9 @@ fn register_qa_options(app: &adw::Application) {
     for (name, arg_description) in [
         ("screenshot", "/path/to/output.png"),
         ("screenshot-delay-ms", "milliseconds"),
+        ("qa-profile", "/path/to/profile.json"),
+        ("qa-password-env", "ENV_VAR_NAME"),
+        ("qa-action", "test|save"),
     ] {
         app.add_main_option(
             name,

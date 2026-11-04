@@ -30,6 +30,7 @@ use tonic::transport::server::Connected;
 use crate::auth::TokenInterceptor;
 use crate::proto::services::v1::{
     connection_service_server::ConnectionServiceServer,
+    credential_service_server::CredentialServiceServer,
     metadata_service_server::MetadataServiceServer, query_service_server::QueryServiceServer,
     system_service_server::SystemServiceServer,
     transaction_service_server::TransactionServiceServer,
@@ -249,6 +250,7 @@ where
     let Services {
         system,
         connection,
+        credential,
         metadata,
         query,
         transaction,
@@ -261,6 +263,10 @@ where
         ))
         .add_service(ConnectionServiceServer::with_interceptor(
             connection,
+            interceptor.clone(),
+        ))
+        .add_service(CredentialServiceServer::with_interceptor(
+            credential,
             interceptor.clone(),
         ))
         .add_service(MetadataServiceServer::with_interceptor(

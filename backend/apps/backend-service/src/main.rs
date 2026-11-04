@@ -94,10 +94,17 @@ async fn run(cli: Cli) -> Result<()> {
 
     let sessions = Arc::new(SessionManager::with_credential_store(
         Arc::clone(&registry),
-        credentials,
+        Arc::clone(&credentials),
     ));
     let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
-    let services = Services::new(Arc::clone(&sessions), Arc::clone(&registry), queries);
+    // 同一份凭据存储同时注入会话管理与 CredentialService：写入的密码必须能被
+    // 连接路径读到（ADR 0015 / 0016）。
+    let services = Services::new(
+        Arc::clone(&sessions),
+        Arc::clone(&registry),
+        queries,
+        credentials,
+    );
 
     let listener = match (cli.listen, cli.socket) {
         (Some(addr), _) => LocalListener::bind_tcp(addr)?,

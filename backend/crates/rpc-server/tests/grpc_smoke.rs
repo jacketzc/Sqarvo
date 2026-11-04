@@ -59,7 +59,12 @@ impl TestServer {
         let registry = Arc::new(registry);
         let sessions = Arc::new(SessionManager::new(Arc::clone(&registry)));
         let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
-        let services = Services::new(sessions, registry, queries);
+        let services = Services::new(
+            sessions,
+            registry,
+            queries,
+            Arc::new(sqarvo_local_store::MemoryCredentialStore::new()),
+        );
 
         let listener = LocalListener::bind_unix(&socket).expect("绑定 UDS");
         let (shutdown, receiver) = oneshot::channel();

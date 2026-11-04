@@ -59,7 +59,15 @@ impl E2eServer {
         let registry = Arc::new(DriverRegistry::with_builtin_drivers());
         let sessions = Arc::new(SessionManager::new(Arc::clone(&registry)));
         let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
-        let services = Services::new(Arc::clone(&sessions), registry, Arc::clone(&queries));
+        // SQLite 用例不涉及密码，注入空的内存存储即可（Services 只有一个构造入口）。
+        let credentials: Arc<dyn sqarvo_local_store::CredentialStore> =
+            Arc::new(sqarvo_local_store::MemoryCredentialStore::new());
+        let services = Services::new(
+            Arc::clone(&sessions),
+            registry,
+            Arc::clone(&queries),
+            Arc::clone(&credentials),
+        );
 
         let listener = LocalListener::bind_unix(&socket).expect("绑定 UDS");
         let (shutdown, receiver) = oneshot::channel();
