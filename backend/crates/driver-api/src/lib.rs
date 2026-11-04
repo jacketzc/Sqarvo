@@ -19,9 +19,9 @@ pub mod value;
 
 pub use capabilities::Capabilities;
 pub use driver::{
-    ConnectionParams, ConnectionTestReport, Driver, DriverDescriptor, DriverId, DriverSession,
-    ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS, ResultBatch,
-    StatementSummary, TlsMode, TransactionOptions, Warning, sql_preview,
+    ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor, DriverId,
+    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS,
+    ResultBatch, StatementSummary, TlsMode, TransactionOptions, Warning, sql_preview,
 };
 pub use metadata::{
     DEFAULT_PAGE_SIZE, Ddl, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode, ObjectRef,
