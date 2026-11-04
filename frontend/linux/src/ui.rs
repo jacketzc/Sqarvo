@@ -195,6 +195,7 @@ pub fn activate(app: &adw::Application) {
                     if events_closing.get() {
                         continue;
                     }
+                    eprintln!("[bench] t=+{}ms state=Connected", crate::qa::elapsed_ms());
                     events_state.backend_ready.set(true);
                     events_state.new_connection.set_sensitive(true);
                     events_state.new_connection.set_tooltip_text(None);
@@ -301,6 +302,9 @@ pub fn activate(app: &adw::Application) {
                         QueryEvent::Cancelled { note } => {
                             page.show_cancelled(note.as_deref());
                         }
+                        QueryEvent::Limited { rows, loaded, stop } => {
+                            page.show_limited(rows, loaded, &stop)
+                        }
                         QueryEvent::Failed(failure) => {
                             page.show_failure(&failure);
                             if failure.is_session_lost() {
@@ -333,6 +337,15 @@ pub fn activate(app: &adw::Application) {
 
     window.present();
     retry();
+
+    // 基准脚本用：定时关窗，退出仍走与用户关闭窗口相同的清理路径。
+    if let Some(millis) = crate::qa::exit_after_ms() {
+        let exit_window = window.clone();
+        glib::timeout_add_local_once(Duration::from_millis(millis), move || {
+            eprintln!("[bench] t=+{}ms state=ExitTimer", crate::qa::elapsed_ms());
+            exit_window.close();
+        });
+    }
 
     // QA 取证：延时后把当前最上层界面（连接对话框或主窗口）渲染成 PNG 再关闭窗口。
     if let Some(capture) = crate::qa::requested() {
@@ -604,6 +617,7 @@ fn show_sql_workspace(
     state.sql_page.replace(Some(Rc::clone(&page)));
     set_page(&state.slot, page.widget());
     page.focus_editor();
+    eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
 }
 
 /// QA：把 `--qa-sql-file` 填进编辑器（与用户输入同一控件），再触发与按钮相同的方法。
@@ -641,6 +655,18 @@ fn maybe_run_qa_sql(state: &Rc<UiState>) {
             glib::timeout_add_local_once(Duration::from_millis(150), move || {
                 second.request_cancel();
             });
+        });
+    }
+
+    // 首次执行之后再来一条：验证触顶/取消/错误之后应用仍可用。
+    if let Some(millis) = crate::qa::execute_again_after_ms() {
+        let page = Rc::clone(&page);
+        glib::timeout_add_local_once(Duration::from_millis(400 + millis), move || {
+            if let Some(sql) = crate::qa::second_sql() {
+                page.set_sql(&sql);
+            }
+            eprintln!("[qa] t=+{}ms 第二次执行", crate::qa::elapsed_ms());
+            page.execute();
         });
     }
 }

@@ -15,6 +15,7 @@
 //!                 [--qa-profile /tmp/profile.json] [--qa-password-env SQARVO_QA_PASSWORD]
 //!                 [--qa-sql-file /tmp/q.sql] [--qa-execute]
 //!                 [--qa-scroll-to-row N]... [--qa-cancel-after-ms N]
+//!                 [--qa-exit-after-ms N]
 //! ```
 //!
 //! - `--screenshot <path>`：延时后把**当前最上层**的界面（连接对话框打开时是对话框，
@@ -27,7 +28,10 @@
 //! - `--qa-scroll-to-row <n>`：滚动到第 n 行（可重复，按顺序每隔 1 秒一次）；未加载到
 //!   该行时按批预取，与用户快速滚动走同一路径；
 //! - `--qa-cancel-after-ms <n>`：执行后 n 毫秒点两次「取消」（间隔 150 ms），
-//!   用于验证幂等与「点击 → Cancelled」耗时。
+//!   用于验证幂等与「点击 → Cancelled」耗时；
+//! - `--qa-exit-after-ms <n>`：启动后 n 毫秒自动关窗（走正常清理路径），供基准脚本使用；
+//! - `--qa-second-sql-file <path>` + `--qa-execute-again-after-ms <n>`：首次执行后 n 毫秒
+//!   用第二段 SQL 再执行一次，用于验证「达到上限/取消之后仍能继续查询」。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
@@ -106,6 +110,12 @@ struct Args {
     scroll_rows: Vec<u32>,
     /// `--qa-cancel-after-ms`：执行后多少毫秒点两次取消（验证幂等与耗时）。
     cancel_after_ms: Option<u64>,
+    /// `--qa-exit-after-ms`：启动后多少毫秒自动关闭窗口（基准脚本用，避免依赖人工关闭）。
+    exit_after_ms: Option<u64>,
+    /// `--qa-second-sql-file`：第二次执行用的 SQL（验证触顶/取消后仍能继续查询）。
+    second_sql: Option<String>,
+    /// `--qa-execute-again-after-ms`：首次执行后多少毫秒用 `second_sql`（或同一 SQL）再执行一次。
+    execute_again_after_ms: Option<u64>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -160,6 +170,24 @@ pub fn scroll_targets() -> Vec<u32> {
 #[must_use]
 pub fn cancel_after_ms() -> Option<u64> {
     ARGS.get().and_then(|args| args.cancel_after_ms)
+}
+
+/// 启动后多久自动关闭窗口（毫秒）。仅用于基准脚本：不依赖人工关窗，退出仍走正常清理路径。
+#[must_use]
+pub fn exit_after_ms() -> Option<u64> {
+    ARGS.get().and_then(|args| args.exit_after_ms)
+}
+
+/// 第二次执行用的 SQL（未设置时为 `None`，此时复用编辑器里的内容）。
+#[must_use]
+pub fn second_sql() -> Option<String> {
+    ARGS.get().and_then(|args| args.second_sql.clone())
+}
+
+/// 首次执行后多久再执行一次（毫秒）。
+#[must_use]
+pub fn execute_again_after_ms() -> Option<u64> {
+    ARGS.get().and_then(|args| args.execute_again_after_ms)
 }
 
 /// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
@@ -284,6 +312,39 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .parse()
                     .map_err(|_| format!("--qa-cancel-after-ms 不是合法毫秒数：{value}"))?;
                 parsed.cancel_after_ms = Some(millis);
+                index += 2;
+            }
+            "--qa-exit-after-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-exit-after-ms 需要一个毫秒数".to_owned())?;
+                let millis: u64 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-exit-after-ms 不是合法毫秒数：{value}"))?;
+                parsed.exit_after_ms = Some(millis);
+                index += 2;
+            }
+            "--qa-second-sql-file" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-second-sql-file 需要一个文件路径".to_owned())?;
+                let text = std::fs::read_to_string(value).map_err(|error| {
+                    format!("无法读取 --qa-second-sql-file 文件 {value}：{error}")
+                })?;
+                if text.trim().is_empty() {
+                    return Err(format!("--qa-second-sql-file 文件 {value} 内容为空"));
+                }
+                parsed.second_sql = Some(text);
+                index += 2;
+            }
+            "--qa-execute-again-after-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-execute-again-after-ms 需要一个毫秒数".to_owned())?;
+                let millis: u64 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-execute-again-after-ms 不是合法毫秒数：{value}"))?;
+                parsed.execute_again_after_ms = Some(millis);
                 index += 2;
             }
             "--qa-password-env" => {
@@ -480,6 +541,47 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-scroll-to-row"])).is_err());
         assert!(parse(&args(&["app", "--qa-scroll-to-row", "-1"])).is_err());
         assert!(parse(&args(&["app", "--qa-cancel-after-ms", "soon"])).is_err());
+        assert!(parse(&args(&["app", "--qa-cancel-after-ms"])).is_err());
+        assert!(parse(&args(&["app", "--qa-exit-after-ms", "soon"])).is_err());
+    }
+
+    #[test]
+    fn exit_after_ms_is_parsed() {
+        let parsed = parse(&args(&["app", "--qa-exit-after-ms", "9000"])).unwrap();
+        assert_eq!(parsed.exit_after_ms, Some(9000));
+        // 不设置时没有定时退出：正常交互路径不受影响。
+        assert_eq!(parse(&args(&["app"])).unwrap().exit_after_ms, None);
+    }
+
+    #[test]
+    fn second_execution_flags_are_parsed() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("second.sql");
+        std::fs::write(&path, "SELECT 42 AS answer;\n").expect("写 SQL 文件");
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-second-sql-file",
+            path.to_str().expect("UTF-8 路径"),
+            "--qa-execute-again-after-ms",
+            "2500",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.second_sql.as_deref(), Some("SELECT 42 AS answer;\n"));
+        assert_eq!(parsed.execute_again_after_ms, Some(2500));
+    }
+
+    #[test]
+    fn second_execution_flags_reject_bad_values() {
+        assert!(parse(&args(&["app", "--qa-second-sql-file"])).is_err());
+        assert!(
+            parse(&args(&[
+                "app",
+                "--qa-second-sql-file",
+                "/nonexistent/2.sql"
+            ]))
+            .is_err()
+        );
+        assert!(parse(&args(&["app", "--qa-execute-again-after-ms", "later"])).is_err());
     }
 
     #[test]

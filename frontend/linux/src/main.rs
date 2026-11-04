@@ -52,6 +52,9 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-sql-file", "/path/to/query.sql"),
         ("qa-scroll-to-row", "row"),
         ("qa-cancel-after-ms", "milliseconds"),
+        ("qa-exit-after-ms", "milliseconds"),
+        ("qa-second-sql-file", "/path/to/second.sql"),
+        ("qa-execute-again-after-ms", "milliseconds"),
     ] {
         app.add_main_option(
             name,

@@ -31,7 +31,8 @@ use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFail
 use crate::backend::endpoint::{self, EndpointInfo};
 use crate::backend::error::BackendError;
 use crate::backend::query::{
-    ExecuteOutcome, FetchOutcome, MAX_ROWS_PER_BATCH, QueryFailure, RowView, StatementView,
+    ExecuteOutcome, FetchOutcome, MAX_ROWS_PER_BATCH, QueryFailure, ResultBudget, ResultMeter,
+    RowView, StatementView,
 };
 use crate::backend::supervisor::{BackendSupervisor, Stage};
 use crate::config::{self, SavedConnection};
@@ -116,6 +117,15 @@ pub enum QueryEvent {
         /// 补充说明：例如查询 ID 尚未返回、无法通知服务端。
         note: Option<String>,
     },
+    /// 达到客户端结果集上限：保留已接收的行，停止拉取（`result.limit_reached`）。
+    Limited {
+        /// 最后一批里放得下的行（可能为空：首批已随 `Started` 送出）。
+        rows: Vec<RowView>,
+        /// 累计已保留行数。
+        loaded: u64,
+        /// 触顶记录（原因、已保留行数、生效上限）。
+        stop: crate::backend::query::LimitStop,
+    },
     /// 查询失败。
     Failed(QueryFailure),
 }
@@ -135,10 +145,12 @@ struct ActiveQuery {
     cancel_requested: bool,
     /// 已加载行数（下一条的起始行号 = loaded + 1）。
     loaded: u64,
+    /// 结果集计量（行数 + 估算字节）：到上限后停止拉取并上报 `result.limit_reached`。
+    meter: ResultMeter,
 }
 
 impl ActiveQuery {
-    fn new() -> Self {
+    fn new(budget: ResultBudget) -> Self {
         Self {
             query_id: None,
             page_token: String::new(),
@@ -146,8 +158,32 @@ impl ActiveQuery {
             loading: true,
             cancel_requested: false,
             loaded: 0,
+            meter: ResultMeter::new(budget),
         }
     }
+}
+
+/// `FetchNext` 能否发出下一批；返回 `Some(原因)` 表示必须忽略这次请求。
+///
+/// 抽成函数是为了单测「超限后不再发 FetchBatch」与「同一时刻只有一批在途」，
+/// 并让日志里能直接打印被拦下的原因（便于复核背压）。
+fn fetch_block_reason(query: &ActiveQuery) -> Option<&'static str> {
+    if query.meter.is_stopped() {
+        return Some("已达客户端结果集上限（result.limit_reached）");
+    }
+    if query.cancel_requested {
+        return Some("查询已取消");
+    }
+    if !query.has_more {
+        return Some("没有更多批次");
+    }
+    if query.loading {
+        return Some("上一批仍在途（单批背压）");
+    }
+    if query.query_id.is_none() {
+        return Some("查询 ID 尚未返回");
+    }
+    None
 }
 
 /// 握手成功后的可展示信息（不含 token）。
@@ -312,6 +348,9 @@ async fn worker_loop(
     cancel: Arc<AtomicBool>,
 ) {
     let mut supervisor = BackendSupervisor::new(endpoint_path, Arc::clone(&cancel));
+    // 结果集上限（环境变量可调）：进程启动时读一次，之后保持不变。
+    let budget = ResultBudget::from_env();
+    eprintln!("[query] 结果集上限：{}", budget.describe());
     let mut session: Option<Session> = None;
     // 当前数据库会话 ID（`SaveAndConnect` 成功后记录，供 Execute 使用）。
     let mut db_session: Option<String> = None;
@@ -398,7 +437,7 @@ async fn worker_loop(
 
                         let preview: String = sql.lines().next().unwrap_or("").chars().take(80).collect();
                         eprintln!("[query] Execute 提交：{preview}");
-                        active = Some(ActiveQuery::new());
+                        active = Some(ActiveQuery::new(budget));
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
                         tokio::spawn(async move {
@@ -410,8 +449,14 @@ async fn worker_loop(
                     }
                     Some(Command::FetchNext) => {
                         let Some(query) = active.as_mut() else { continue };
-                        // 已在加载、已读完、已取消：重复请求直接忽略（幂等，不报错）。
-                        if !query.has_more || query.loading || query.cancel_requested {
+                        // 已在加载、已读完、已取消、已达客户端上限：重复请求直接忽略
+                        // （幂等，不报错），并把原因写进日志便于复核背压。
+                        if let Some(reason) = fetch_block_reason(query) {
+                            eprintln!(
+                                "[query] t=+{}ms 忽略 FetchNext：{}",
+                                crate::qa::elapsed_ms(),
+                                reason
+                            );
                             continue;
                         }
                         let Some(query_id) = query.query_id.clone() else { continue };
@@ -594,26 +639,67 @@ async fn handle_executed(
                 );
                 return;
             }
-            let loaded = u64::try_from(outcome.rows.len()).unwrap_or(0);
+            // 上限判定在首批就生效：放不下的行直接丢弃，保留已接收的前缀。
+            let mut rows = outcome.rows;
+            let mut stop = None;
+            let accepted = match active.as_mut() {
+                Some(query) => {
+                    let accepted = query.meter.admit_prefix(&mut rows);
+                    stop = query.meter.stop().cloned();
+                    accepted
+                }
+                None => rows.len(),
+            };
+            let loaded = u64::try_from(accepted).unwrap_or(0);
+            let has_more = outcome.has_more && stop.is_none();
             if let Some(query) = active.as_mut() {
                 query.query_id = Some(outcome.query_id.clone());
                 query.page_token = outcome.page_token.clone();
-                query.has_more = outcome.has_more;
+                query.has_more = has_more;
                 query.loading = false;
                 query.loaded = loaded;
             }
             let query_id = outcome.query_id.clone();
-            let has_more = outcome.has_more;
             let _ = events
                 .send(Event::Query(QueryEvent::Started {
                     query_id,
                     statements: outcome.statements,
-                    rows: outcome.rows,
+                    rows,
                     has_more,
                     loaded,
                 }))
                 .await;
+            if let Some(stop) = stop {
+                // 已达客户端上限：停止拉取、释放游标，并把原因交给界面（保留已加载行）。
+                eprintln!(
+                    "[query] t=+{}ms 达到客户端结果集上限：{} 行 / 估算 {}（{}），停止拉取",
+                    crate::qa::elapsed_ms(),
+                    stop.rows,
+                    crate::backend::query::human_bytes(stop.bytes),
+                    stop.reason.label()
+                );
+                *active = None;
+                close_in_background(session, &outcome.query_id, commands_tx);
+                let _ = events
+                    .send(Event::Query(QueryEvent::Limited {
+                        rows: Vec::new(),
+                        loaded,
+                        stop,
+                    }))
+                    .await;
+                return;
+            }
             if !has_more {
+                if let Some(query) = active.as_ref() {
+                    eprintln!(
+                        "[query] t=+{}ms 结果集计量：{} 行，估算 {}（上限 {} 行 / {}）",
+                        crate::qa::elapsed_ms(),
+                        query.meter.rows(),
+                        crate::backend::query::human_bytes(query.meter.bytes()),
+                        query.meter.budget().row_limit,
+                        crate::backend::query::human_bytes(query.meter.budget().byte_limit)
+                    );
+                }
                 // 结果已经读完：立即 Close（服务端也已释放，Close 幂等）。
                 *active = None;
                 close_in_background(session, &outcome.query_id, commands_tx);
@@ -652,18 +738,54 @@ async fn handle_fetched(
     }
     match result {
         Ok(batch) => {
+            // 上限判定：只接收放得下的前缀，触顶后本批剩余行丢弃、游标释放。
+            let mut rows = batch.rows;
+            let accepted = query.meter.admit_prefix(&mut rows);
+            let stop = query.meter.stop().cloned();
             query.page_token = batch.page_token.clone();
-            query.has_more = batch.has_more;
-            query.loaded += u64::try_from(batch.rows.len()).unwrap_or(0);
+            query.loaded += u64::try_from(accepted).unwrap_or(0);
             let loaded = query.loaded;
-            let has_more = batch.has_more;
+            let has_more = batch.has_more && stop.is_none();
+            query.has_more = has_more;
             let query_id = query.query_id.clone();
+            if let Some(stop) = stop {
+                // 触顶：不再发普通批次（否则界面会先显示「已完成」），直接上报上限。
+                eprintln!(
+                    "[query] t=+{}ms 达到客户端结果集上限：{} 行 / 估算 {}（{}），停止拉取",
+                    crate::qa::elapsed_ms(),
+                    stop.rows,
+                    crate::backend::query::human_bytes(stop.bytes),
+                    stop.reason.label()
+                );
+                *active = None;
+                if let Some(query_id) = query_id {
+                    close_in_background(session, &query_id, commands_tx);
+                }
+                let _ = events
+                    .send(Event::Query(QueryEvent::Limited { rows, loaded, stop }))
+                    .await;
+                return;
+            }
+            let meter_rows = query.meter.rows();
+            let meter_bytes = query.meter.bytes();
+            let budget = query.meter.budget();
             if !has_more {
                 *active = None;
             }
+            if !has_more {
+                // 可观测证据：估算字节与实际 RSS 的对照由基准脚本记录。
+                eprintln!(
+                    "[query] t=+{}ms 结果集计量：{} 行，估算 {}（上限 {} 行 / {}）",
+                    crate::qa::elapsed_ms(),
+                    meter_rows,
+                    crate::backend::query::human_bytes(meter_bytes),
+                    budget.row_limit,
+                    crate::backend::query::human_bytes(budget.byte_limit)
+                );
+            }
             let _ = events
                 .send(Event::Query(QueryEvent::Batch {
-                    rows: batch.rows,
+                    rows,
                     has_more,
                     loaded,
                 }))
@@ -940,5 +1062,94 @@ fn snapshot(supervisor: &BackendSupervisor, session: &Session) -> ConnectedSnaps
         endpoint_service_version: session.endpoint.service_version.clone(),
         version_mismatch: session.version_mismatch,
         started_by_frontend: supervisor.owns_backend(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::query::{CellStyle, CellView, LimitReason};
+
+    fn row(number: u64) -> RowView {
+        RowView {
+            number,
+            cells: vec![CellView {
+                text: format!("row-{number}"),
+                style: CellStyle::Normal,
+                tooltip: String::new(),
+                truncated: false,
+            }],
+        }
+    }
+
+    fn ready_query(row_limit: u64) -> ActiveQuery {
+        let mut query = ActiveQuery::new(ResultBudget {
+            row_limit,
+            byte_limit: u64::MAX,
+        });
+        // 模拟 Execute 已返回：有查询 ID、还有后续批次、没有批次在途。
+        query.loading = false;
+        query.has_more = true;
+        query.query_id = Some("q-1".to_owned());
+        query
+    }
+
+    #[test]
+    fn fetch_is_blocked_once_the_result_limit_is_hit() {
+        let mut query = ready_query(2);
+        let mut rows: Vec<RowView> = (1..=5).map(row).collect();
+        assert_eq!(query.meter.admit_prefix(&mut rows), 2);
+        assert_eq!(rows.len(), 2);
+        assert!(query.meter.is_stopped());
+        assert_eq!(
+            query.meter.stop().map(|stop| stop.reason),
+            Some(LimitReason::Rows)
+        );
+        // 关键断言：超限后不再允许任何 FetchBatch。
+        assert_eq!(
+            fetch_block_reason(&query),
+            Some("已达客户端结果集上限（result.limit_reached）")
+        );
+    }
+
+    #[test]
+    fn fetch_is_blocked_while_a_batch_is_in_flight() {
+        let mut query = ready_query(1_000);
+        query.loading = true;
+        assert_eq!(fetch_block_reason(&query), Some("上一批仍在途（单批背压）"));
+        query.loading = false;
+        assert_eq!(fetch_block_reason(&query), None);
+    }
+
+    #[test]
+    fn fetch_is_blocked_after_cancel_or_when_exhausted() {
+        let mut query = ready_query(1_000);
+        query.cancel_requested = true;
+        assert_eq!(fetch_block_reason(&query), Some("查询已取消"));
+
+        query.cancel_requested = false;
+        query.has_more = false;
+        assert_eq!(fetch_block_reason(&query), Some("没有更多批次"));
+
+        query.has_more = true;
+        query.query_id = None;
+        assert_eq!(fetch_block_reason(&query), Some("查询 ID 尚未返回"));
+    }
+
+    #[test]
+    fn meter_accumulates_across_batches() {
+        let mut query = ready_query(3);
+        let mut first: Vec<RowView> = (1..=2).map(row).collect();
+        assert_eq!(query.meter.admit_prefix(&mut first), 2);
+        query.loaded += 2;
+
+        let mut second: Vec<RowView> = (3..=6).map(row).collect();
+        assert_eq!(query.meter.admit_prefix(&mut second), 1);
+        assert_eq!(second.len(), 1);
+        query.loaded += 1;
+
+        assert_eq!(query.meter.stop().map(|stop| stop.rows), Some(3));
+        assert_eq!(query.loaded, 3);
+        assert!(query.meter.is_stopped());
     }
 }
