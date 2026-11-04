@@ -386,21 +386,28 @@ fn map_value(value: ValueRef<'_>) -> Cell {
         ValueRef::Null => Cell::new(Value::Null),
         ValueRef::Integer(number) => Cell::new(Value::Int(number)),
         ValueRef::Real(number) => Cell::new(Value::Float(number)),
-        ValueRef::Text(bytes) => {
-            let text = String::from_utf8_lossy(bytes);
-            let (value, truncated) = truncate_text(&text, DEFAULT_MAX_CELL_BYTES);
-            Cell {
-                value: Value::Text(value),
-                truncated,
+        // SQLite 不强制 TEXT 是合法 UTF-8。无法无损表示为字符串时按原始字节返回，
+        // 不用 `U+FFFD` 静默替换（那会永久丢失数据）。
+        ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => {
+                let (value, truncated) = truncate_text(text, DEFAULT_MAX_CELL_BYTES);
+                Cell {
+                    value: Value::Text(value),
+                    truncated,
+                }
             }
-        }
-        ValueRef::Blob(bytes) => {
-            if bytes.len() > DEFAULT_MAX_CELL_BYTES {
-                Cell::truncated(Value::Bytes(bytes[..DEFAULT_MAX_CELL_BYTES].to_vec()))
-            } else {
-                Cell::new(Value::Bytes(bytes.to_vec()))
-            }
-        }
+            Err(_) => bytes_cell(bytes),
+        },
+        ValueRef::Blob(bytes) => bytes_cell(bytes),
+    }
+}
+
+/// 二进制单元格：超过单格上限时只传前缀并标记截断。
+fn bytes_cell(bytes: &[u8]) -> Cell {
+    if bytes.len() > DEFAULT_MAX_CELL_BYTES {
+        Cell::truncated(Value::Bytes(bytes[..DEFAULT_MAX_CELL_BYTES].to_vec()))
+    } else {
+        Cell::new(Value::Bytes(bytes.to_vec()))
     }
 }
 
