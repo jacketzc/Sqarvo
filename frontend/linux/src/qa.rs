@@ -13,20 +13,28 @@
 //! ```text
 //! sqarvo-desktop --screenshot /tmp/ui.png [--screenshot-delay-ms 4000]
 //!                 [--qa-profile /tmp/profile.json] [--qa-password-env SQARVO_QA_PASSWORD]
+//!                 [--qa-sql-file /tmp/q.sql] [--qa-execute]
+//!                 [--qa-scroll-to-row N]... [--qa-cancel-after-ms N]
 //! ```
 //!
 //! - `--screenshot <path>`：延时后把**当前最上层**的界面（连接对话框打开时是对话框，
 //!   否则是主窗口）写成 PNG，然后关闭窗口（走与用户点关闭按钮相同的清理路径）；
 //! - `--qa-profile <json>`：后端握手完成后自动打开连接对话框，把档案里的值填进
 //!   **与用户输入相同的控件**，再触发与「保存并连接」按钮相同的回调；
-//! - `--qa-password-env <ENV>`：从该环境变量读密码，填进密码行（命令行里不出现明文）。
+//! - `--qa-password-env <ENV>`：从该环境变量读密码，填进密码行（命令行里不出现明文）；
+//! - `--qa-sql-file <path>`：把文件内容填进 SQL 工作区的 `GtkTextView` 缓冲区；
+//! - `--qa-execute`：连接成功后触发与「执行」按钮相同的方法；
+//! - `--qa-scroll-to-row <n>`：滚动到第 n 行（可重复，按顺序每隔 1 秒一次）；未加载到
+//!   该行时按批预取，与用户快速滚动走同一路径；
+//! - `--qa-cancel-after-ms <n>`：执行后 n 毫秒点两次「取消」（间隔 150 ms），
+//!   用于验证幂等与「点击 → Cancelled」耗时。
 //!
-//! 三者都只影响启动参数，不改变任何正常启动路径；也不存在「绕过对话框直接调 gRPC」
+//! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use serde::Deserialize;
@@ -90,15 +98,81 @@ struct Args {
     profile: Option<QaProfile>,
     password_env: Option<String>,
     action: QaAction,
+    /// `--qa-sql-file` 读到的 SQL（在 init 阶段读取，文件不可读时直接报错）。
+    sql: Option<String>,
+    /// `--qa-execute`：连接成功后自动点「执行」。
+    execute: bool,
+    /// `--qa-scroll-to-row`：按出现顺序依次滚动；重复给出即多步滚动。
+    scroll_rows: Vec<u32>,
+    /// `--qa-cancel-after-ms`：执行后多少毫秒点两次取消（验证幂等与耗时）。
+    cancel_after_ms: Option<u64>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
 
+/// 进程启动时刻，用于给 `[query]` / `[qa]` 日志标注毫秒时间戳。
+static START: OnceLock<Instant> = OnceLock::new();
+
 /// 解析命令行参数（`main` 调用一次）。失败时返回可读中文原因。
 pub fn init(args: &[String]) -> Result<(), String> {
+    let _ = START.set(Instant::now());
     let parsed = parse(args)?;
     let _ = ARGS.set(parsed);
     Ok(())
+}
+
+/// 自进程启动以来的毫秒数（日志用，便于和 RSS 采样对照）。
+#[must_use]
+pub fn elapsed_ms() -> u128 {
+    START.get().map_or(0, |start| start.elapsed().as_millis())
+}
+
+/// QA 是否启用了任何自动化参数。
+#[must_use]
+pub fn enabled() -> bool {
+    ARGS.get().is_some_and(|args| {
+        args.sql.is_some()
+            || args.execute
+            || !args.scroll_rows.is_empty()
+            || args.cancel_after_ms.is_some()
+    })
+}
+
+/// `--qa-sql-file` 的 SQL 内容（未启用时为 `None`）。
+pub fn sql() -> Option<String> {
+    ARGS.get().and_then(|args| args.sql.clone())
+}
+
+/// 是否请求自动执行。
+#[must_use]
+pub fn execute_requested() -> bool {
+    ARGS.get().is_some_and(|args| args.execute)
+}
+
+/// 依次要滚动到的行号（0 起）。
+#[must_use]
+pub fn scroll_targets() -> Vec<u32> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.scroll_rows.clone())
+}
+
+/// 执行后多久点取消（毫秒）。
+#[must_use]
+pub fn cancel_after_ms() -> Option<u64> {
+    ARGS.get().and_then(|args| args.cancel_after_ms)
+}
+
+/// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
+pub fn log_sql_preview(sql: &str) {
+    if !enabled() {
+        return;
+    }
+    let first = sql
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let preview: String = first.chars().take(100).collect();
+    eprintln!("[qa] SQL 首行：{preview}");
 }
 
 /// 已登记的截图请求（未启用时为 `None`）。
@@ -174,6 +248,42 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     "save" => QaAction::Save,
                     other => return Err(format!("--qa-action 只接受 test 或 save，实际：{other}")),
                 };
+                index += 2;
+            }
+            "--qa-sql-file" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-sql-file 需要一个文件路径".to_owned())?;
+                let text = std::fs::read_to_string(value)
+                    .map_err(|error| format!("无法读取 --qa-sql-file 文件 {value}：{error}"))?;
+                if text.trim().is_empty() {
+                    return Err(format!("--qa-sql-file 文件 {value} 内容为空"));
+                }
+                parsed.sql = Some(text);
+                index += 2;
+            }
+            "--qa-execute" => {
+                parsed.execute = true;
+                index += 1;
+            }
+            "--qa-scroll-to-row" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-scroll-to-row 需要一个行号".to_owned())?;
+                let row: u32 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-scroll-to-row 不是合法行号：{value}"))?;
+                parsed.scroll_rows.push(row);
+                index += 2;
+            }
+            "--qa-cancel-after-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-cancel-after-ms 需要一个毫秒数".to_owned())?;
+                let millis: u64 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-cancel-after-ms 不是合法毫秒数：{value}"))?;
+                parsed.cancel_after_ms = Some(millis);
                 index += 2;
             }
             "--qa-password-env" => {
@@ -337,6 +447,39 @@ mod tests {
             error.contains("缺少") || error.contains("missing field"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn sql_flags_are_parsed_in_order() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("q.sql");
+        std::fs::write(&path, "SELECT 1;\n").expect("写 SQL 文件");
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-sql-file",
+            path.to_str().expect("UTF-8 路径"),
+            "--qa-execute",
+            "--qa-scroll-to-row",
+            "50000",
+            "--qa-scroll-to-row",
+            "99999",
+            "--qa-cancel-after-ms",
+            "1200",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.sql.as_deref(), Some("SELECT 1;\n"));
+        assert!(parsed.execute);
+        assert_eq!(parsed.scroll_rows, vec![50000, 99999]);
+        assert_eq!(parsed.cancel_after_ms, Some(1200));
+    }
+
+    #[test]
+    fn sql_flags_reject_bad_values() {
+        assert!(parse(&args(&["app", "--qa-sql-file"])).is_err());
+        assert!(parse(&args(&["app", "--qa-sql-file", "/nonexistent/q.sql"])).is_err());
+        assert!(parse(&args(&["app", "--qa-scroll-to-row"])).is_err());
+        assert!(parse(&args(&["app", "--qa-scroll-to-row", "-1"])).is_err());
+        assert!(parse(&args(&["app", "--qa-cancel-after-ms", "soon"])).is_err());
     }
 
     #[test]

@@ -15,14 +15,16 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure};
 use crate::backend::endpoint;
-use crate::backend::worker::{ConnectedSnapshot, Event, WorkerHandle};
+use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, WorkerHandle};
 use crate::dialog::ConnectionDialog;
+use crate::sql_page::{SqlPage, SqlPageCallbacks};
 
 /// 主窗口与连接对话框共享的状态。
 struct UiState {
@@ -35,8 +37,8 @@ struct UiState {
     /// 后端 gRPC 是否已握手成功：未成功时「新建连接」不可点（此时只会得到
     /// `backend.unavailable`，没有意义）。
     backend_ready: Cell<bool>,
-    /// 最近一次后端握手快照，用于从会话页返回状态页。
-    last_connected: RefCell<Option<ConnectedSnapshot>>,
+    /// 当前 SQL 工作区（连接数据库后建立；断开时保留已加载结果）。
+    sql_page: RefCell<Option<Rc<SqlPage>>>,
     /// 标题栏右侧的「新建连接」按钮。
     new_connection: gtk::Button,
 }
@@ -120,7 +122,7 @@ pub fn activate(app: &adw::Application) {
         worker: RefCell::new(Some(worker)),
         dialog: RefCell::new(None),
         backend_ready: Cell::new(false),
-        last_connected: RefCell::new(None),
+        sql_page: RefCell::new(None),
         new_connection: new_connection.clone(),
     });
 
@@ -196,7 +198,10 @@ pub fn activate(app: &adw::Application) {
                     events_state.backend_ready.set(true);
                     events_state.new_connection.set_sensitive(true);
                     events_state.new_connection.set_tooltip_text(None);
-                    events_state.last_connected.replace(Some(snapshot.clone()));
+                    // 重新握手成功后旧的 SQL 工作区已失效（数据库会话不跨后端进程）。
+                    if let Some(page) = events_state.sql_page.borrow_mut().take() {
+                        page.close_query();
+                    }
                     show_connected(
                         &events_state.slot,
                         &events_state.title,
@@ -221,12 +226,19 @@ pub fn activate(app: &adw::Application) {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
                         events_state.new_connection.set_sensitive(false);
-                        show_disconnected(
-                            &events_state.slot,
-                            &events_state.title,
-                            &reason,
-                            &events_retry,
-                        );
+                        events_state.title.set_subtitle("已断开");
+                        // 有 SQL 工作区时保留它：已加载的行仍可查看，但明确标注失连，
+                        // 不能因为断连就把用户看到的数据抹掉。
+                        let page = events_state.sql_page.borrow().as_ref().cloned();
+                        match page {
+                            Some(page) => page.mark_disconnected(&reason),
+                            None => show_disconnected(
+                                &events_state.slot,
+                                &events_state.title,
+                                &reason,
+                                &events_retry,
+                            ),
+                        }
                     }
                 }
                 Event::Tested(result) => {
@@ -249,7 +261,13 @@ pub fn activate(app: &adw::Application) {
                             if let Some(dialog) = dialog.as_ref() {
                                 dialog.close();
                             }
-                            show_session_page(&events_state, &outcome, &events_disconnect);
+                            show_sql_workspace(
+                                &events_state,
+                                &outcome,
+                                &events_disconnect,
+                                &events_retry,
+                            );
+                            maybe_run_qa_sql(&events_state);
                         }
                         Err(failure) => match dialog.as_ref() {
                             Some(dialog) => dialog.show_failure(&failure),
@@ -259,6 +277,36 @@ pub fn activate(app: &adw::Application) {
                                 failure.detail()
                             ),
                         },
+                    }
+                }
+                Event::Query(event) => {
+                    let page = events_state.sql_page.borrow().as_ref().cloned();
+                    let Some(page) = page else {
+                        eprintln!("[sqarvo-desktop] 收到查询事件但没有工作区（忽略）");
+                        continue;
+                    };
+                    match event {
+                        QueryEvent::Started {
+                            query_id,
+                            statements,
+                            rows,
+                            has_more,
+                            loaded,
+                        } => page.show_started(&query_id, &statements, rows, has_more, loaded),
+                        QueryEvent::Batch {
+                            rows,
+                            has_more,
+                            loaded,
+                        } => page.show_batch(rows, has_more, loaded),
+                        QueryEvent::Cancelled { note } => {
+                            page.show_cancelled(note.as_deref());
+                        }
+                        QueryEvent::Failed(failure) => {
+                            page.show_failure(&failure);
+                            if failure.is_session_lost() {
+                                page.mark_disconnected(&failure.message());
+                            }
+                        }
                     }
                 }
                 Event::ShutdownComplete => {
@@ -413,6 +461,9 @@ fn set_page(slot: &gtk::Box, page: &impl IsA<gtk::Widget>) {
     while let Some(child) = slot.first_child() {
         slot.remove(&child);
     }
+    // 页面必须跟随 slot 收缩，否则按自然高度布局会溢出窗口（大结果集时尤其明显）。
+    page.set_vexpand(true);
+    page.set_valign(gtk::Align::Fill);
     slot.append(page);
 }
 
@@ -479,8 +530,16 @@ fn show_connected(
     set_page(slot, &page);
 }
 
-/// 数据库会话页：服务端版本、延迟、`ListSessions` 结果与配置落盘情况。
-fn show_session_page(state: &Rc<UiState>, outcome: &ConnectOutcome, on_disconnect: &Rc<dyn Fn()>) {
+/// 连接数据库后的主界面：SQL 工作区（编辑器 + 结果区）。
+///
+/// 会话信息不消失：服务端版本、会话 ID、活动会话数写进工作区顶栏与结果区副标题，
+/// 连接成功的证据始终可见。
+fn show_sql_workspace(
+    state: &Rc<UiState>,
+    outcome: &ConnectOutcome,
+    on_disconnect: &Rc<dyn Fn()>,
+    on_retry: &Rc<dyn Fn()>,
+) {
     let version = if outcome.server_version.trim().is_empty() {
         "未知（后端未返回）".to_owned()
     } else {
@@ -488,113 +547,112 @@ fn show_session_page(state: &Rc<UiState>, outcome: &ConnectOutcome, on_disconnec
     };
     state.title.set_subtitle(&format!("已连接 · {version}"));
 
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let session_line = format!(
+        "会话 {} · 驱动 {} · 服务端 {version} · 延迟 {} ms",
+        short_id(&outcome.session_id),
+        outcome.driver_id,
+        outcome.latency_millis
+    );
 
-    let status = adw::StatusPage::builder()
-        .title("已连接到 MariaDB")
-        .description(format!(
-            "服务端版本 {version} · 延迟 {} ms\n共 {} 个活动会话 · 驱动 {}",
-            outcome.latency_millis,
-            outcome.sessions.len(),
-            outcome.driver_id
-        ))
-        .build();
-    status.set_vexpand(false);
+    let callbacks = SqlPageCallbacks {
+        execute: {
+            let state = Rc::clone(state);
+            Rc::new(move |sql: String| {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.execute_sql(sql);
+                }
+            })
+        },
+        cancel: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.cancel_query();
+                }
+            })
+        },
+        fetch: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.fetch_next();
+                }
+            })
+        },
+        close: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.close_query();
+                }
+            })
+        },
+        disconnect: Rc::clone(on_disconnect),
+        reconnect: Rc::clone(on_retry),
+    };
 
-    let details = adw::PreferencesGroup::builder().title("连接").build();
-    details.add(
-        &adw::ActionRow::builder()
-            .title("服务端版本")
-            .subtitle(version.as_str())
-            .build(),
-    );
-    details.add(
-        &adw::ActionRow::builder()
-            .title("测试连接延迟")
-            .subtitle(format!("{} ms", outcome.latency_millis))
-            .build(),
-    );
-    details.add(
-        &adw::ActionRow::builder()
-            .title("会话 ID")
-            .subtitle(outcome.session_id.as_str())
-            .build(),
-    );
-    details.add(
-        &adw::ActionRow::builder()
-            .title("凭据引用")
-            .subtitle(format!(
-                "{}（只保存引用，不含密码）",
-                outcome.credential_ref
-            ))
-            .build(),
-    );
-    match &outcome.config {
-        Ok(path) => details.add(
-            &adw::ActionRow::builder()
-                .title("连接配置")
-                .subtitle(format!("已保存到 {path}（0600，只含引用）"))
-                .build(),
-        ),
-        Err(error) => details.add(
-            &adw::ActionRow::builder()
-                .title("连接配置")
-                .subtitle(format!("未写入：{error}"))
-                .build(),
-        ),
+    // 旧工作区（若有）先释放游标，再换新页面。
+    if let Some(previous) = state.sql_page.borrow_mut().take() {
+        previous.close_query();
+    }
+    let page = SqlPage::new(&session_line, callbacks);
+    page.results().set_detail(&format!(
+        "服务端 {version} · 会话 {} · ListSessions 报告 {} 个活动会话",
+        short_id(&outcome.session_id),
+        outcome.sessions.len()
+    ));
+    state.sql_page.replace(Some(Rc::clone(&page)));
+    set_page(&state.slot, page.widget());
+    page.focus_editor();
+}
+
+/// QA：把 `--qa-sql-file` 填进编辑器（与用户输入同一控件），再触发与按钮相同的方法。
+fn maybe_run_qa_sql(state: &Rc<UiState>) {
+    let Some(page) = state.sql_page.borrow().as_ref().cloned() else {
+        return;
+    };
+    if let Some(sql) = crate::qa::sql() {
+        page.set_sql(&sql);
+        eprintln!("[qa] t=+{}ms SQL 已填入编辑器", crate::qa::elapsed_ms());
+    }
+    if !crate::qa::execute_requested() {
+        return;
     }
 
-    let sessions = adw::PreferencesGroup::builder()
-        .title("会话列表（ListSessions）")
-        .build();
-    if outcome.sessions.is_empty() {
-        sessions.add(
-            &adw::ActionRow::builder()
-                .title("没有活动会话")
-                .subtitle("后端没有报告任何会话：连接可能已被其他操作关闭")
-                .build(),
-        );
-    } else {
-        for session in &outcome.sessions {
-            sessions.add(
-                &adw::ActionRow::builder()
-                    .title(session.display_name.as_str())
-                    .subtitle(format!(
-                        "驱动 {} · 会话 {} · 连接于 {}",
-                        session.driver_id, session.session_id, session.connected_at
-                    ))
-                    .build(),
-            );
-        }
-    }
+    let page_for_execute = Rc::clone(&page);
+    glib::timeout_add_local_once(Duration::from_millis(400), move || {
+        page_for_execute.execute();
+    });
 
-    // 会话列表放在最前面：截图/一眼可见的第一信息应该是「真的连上了、有几个会话」，
-    // 细节参数排在后面。
-    let preferences = adw::PreferencesPage::new();
-    preferences.add(&sessions);
-    preferences.add(&details);
-
-    page.append(&status);
-    page.append(&preferences);
-
-    // 返回后端状态页：不改变任何连接，只是切回信息页。
-    let back = gtk::Button::with_label("返回后端状态");
-    back.set_halign(gtk::Align::Center);
-    back.set_margin_top(6);
-    back.set_margin_bottom(12);
-    back.add_css_class("pill");
-    {
-        let state = Rc::clone(state);
-        let on_disconnect = Rc::clone(on_disconnect);
-        back.connect_clicked(move |_| {
-            if let Some(snapshot) = state.last_connected.borrow().clone() {
-                show_connected(&state.slot, &state.title, &snapshot, &on_disconnect);
-            }
+    for (index, row) in crate::qa::scroll_targets().into_iter().enumerate() {
+        let page = Rc::clone(&page);
+        let delay = 400 + 1_000 * (u64::try_from(index).unwrap_or(0) + 1);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            page.scroll_to_row(row);
         });
     }
-    page.append(&back);
 
-    set_page(&state.slot, &page);
+    if let Some(millis) = crate::qa::cancel_after_ms() {
+        let page = Rc::clone(&page);
+        glib::timeout_add_local_once(Duration::from_millis(400 + millis), move || {
+            page.request_cancel();
+            // 第二次点击：验证幂等（不发 RPC、不弹错误）。
+            let second = Rc::clone(&page);
+            glib::timeout_add_local_once(Duration::from_millis(150), move || {
+                second.request_cancel();
+            });
+        });
+    }
+}
+
+/// 会话 ID / 查询 ID 的短形式（界面展示用，完整值在 tooltip 与日志里）。
+fn short_id(id: &str) -> String {
+    let head: String = id.chars().take(8).collect();
+    if id.chars().count() > 8 {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Error：可操作的错误文案 + 重试。

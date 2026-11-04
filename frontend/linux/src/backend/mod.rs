@@ -15,5 +15,6 @@ pub mod client;
 pub mod connection;
 pub mod endpoint;
 pub mod error;
+pub mod query;
 pub mod supervisor;
 pub mod worker;

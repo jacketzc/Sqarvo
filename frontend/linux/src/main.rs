@@ -11,6 +11,8 @@ mod config;
 mod dialog;
 mod proto;
 mod qa;
+mod results;
+mod sql_page;
 mod ui;
 
 use adw::prelude::*;
@@ -33,9 +35,9 @@ fn main() -> adw::glib::ExitCode {
     app.run()
 }
 
-/// 把 QA 截图参数注册给 GApplication 的选项解析器。
+/// 把 QA 参数注册给 GApplication 的选项解析器。
 ///
-/// 只做「让 GLib 认识这两个选项」这一步：取值仍由 [`qa::init`] 自己从 `argv` 解析，
+/// 只做「让 GLib 认识这些选项」这一步：取值仍由 [`qa::init`] 自己从 `argv` 解析，
 /// 这样既不依赖 GLib 的回调时机，也不会改变正常启动路径。
 fn register_qa_options(app: &adw::Application) {
     use gtk::gio::prelude::*;
@@ -47,6 +49,9 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-profile", "/path/to/profile.json"),
         ("qa-password-env", "ENV_VAR_NAME"),
         ("qa-action", "test|save"),
+        ("qa-sql-file", "/path/to/query.sql"),
+        ("qa-scroll-to-row", "row"),
+        ("qa-cancel-after-ms", "milliseconds"),
     ] {
         app.add_main_option(
             name,
@@ -57,8 +62,15 @@ fn register_qa_options(app: &adw::Application) {
             Some(arg_description),
         );
     }
+    app.add_main_option(
+        "qa-execute",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "QA：连接成功后自动执行 --qa-sql-file 的内容",
+        None,
+    );
 }
-
 /// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径
 /// （`connect_shutdown` → 终止自己启动的后端子进程）。
 fn install_app_actions(app: &adw::Application) {
