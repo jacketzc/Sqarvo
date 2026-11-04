@@ -68,7 +68,9 @@ Issue 通过原生 Milestone 字段挂载）。
 | 依赖 | 文本 | 前置 Issue 编号，如 `#1、#5`（表格视图列） |
 | 看板 | 视图 | 按 Status 分列，用于推进 |
 | 任务表 | 视图 | 列含 Status、Milestone、Labels、依赖、Linked pull requests |
-| 路线图 | 视图 | 需先为 Project 添加日期字段并有值才会渲染，暂为占位 |
+
+路线图（Roadmap）视图需要 Project 日期字段并有值才会渲染，当前没有排期数据，
+因此暂不建立；确定各里程碑日期后再加，避免留一个空视图。
 
 ## 自动检查
 
