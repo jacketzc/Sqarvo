@@ -60,6 +60,7 @@
 | 查询登记 | 并发上限、批次上限、幂等取消 |
 | 元数据分页 | 不透明 token、页大小上限、非法 token 拒绝 |
 | 本地存储 | 目录解析与权限、端点文件原子写入、凭据引用接口 |
+| 凭据存储（Linux） | Secret Service（D-Bus，zbus blocking）：get / set / delete；引用不存在 → `credential.not_found`，服务不可用 → `credential.unavailable`，绝不回退明文；真实密钥环用例由 `SQARVO_SECRET_SERVICE_TEST=1` 门控 |
 | gRPC 冒烟测试 | 真实 UDS + token 的端到端调用 |
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
@@ -69,7 +70,7 @@
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
 - 元数据对象树、列信息、DDL 生成；
 - 显式事务绑定到会话；
-- 操作系统凭据存储（当前仅有接口与「不可用」实现）；
+- Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
 - 前端与后端的实际连接（三端 UI 仅为骨架）；
 - 大字段延迟加载、结果集内存上限与背压；
 - Windows Named Pipe + ACL 传输（当前回退为回环 TCP + token）；

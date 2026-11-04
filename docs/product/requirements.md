@@ -14,7 +14,7 @@
 | REQ-CONN-001 | 配置连接（驱动、主机、端口、库、用户、TLS 模式） | P0 | 部分 | 契约与领域类型已定义；SQLite（本地文件 + 只读）与 MariaDB（网络连接、TLS 模式）驱动可用；凭据接线与前端未完成 |
 | REQ-CONN-002 | 测试连接（延迟、服务端版本、告警） | P0 | 部分 | SQLite 与 MariaDB 实测可用（返回版本与延迟，MariaDB 的 TLS 回退会给出告警）；PostgreSQL 与未注册驱动返回 `driver.not_found` |
 | REQ-CONN-003 | 连接 / 断开 / 会话列表 | P0 | 部分 | 会话建立/断开/列表在 SQLite 上有 gRPC 端到端测试；断连后会话与查询登记归零 |
-| REQ-CONN-004 | 操作系统凭据存储（Keychain / Credential Manager / Secret Service） | P0 | 未实现 | 密码不落配置、不落日志；缺失时明确报错 |
+| REQ-CONN-004 | 操作系统凭据存储（Keychain / Credential Manager / Secret Service） | P0 | 部分 | Linux Secret Service 已实现（真实密钥环有 `SQARVO_SECRET_SERVICE_TEST=1` 门控用例）；Windows / macOS 未实现，装配为「不可用」且不回退明文；连接路径接线见 #23 |
 | REQ-CONN-005 | 连接分组、收藏、最近使用 | P2 | 未实现 | — |
 | REQ-CONN-006 | 连接超时、重连与断线状态呈现 | P1 | 未实现 | 超时可配置；断线状态对用户可见 |
 
