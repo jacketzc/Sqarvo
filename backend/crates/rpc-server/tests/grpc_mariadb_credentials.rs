@@ -46,6 +46,7 @@ struct TestServer {
     socket: PathBuf,
     token: AuthToken,
     sessions: Arc<SessionManager>,
+    queries: Arc<QueryRegistry>,
     shutdown: Option<oneshot::Sender<()>>,
     handle: tokio::task::JoinHandle<sqarvo_common::Result<()>>,
 }
@@ -62,7 +63,7 @@ impl TestServer {
             credentials,
         ));
         let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
-        let services = Services::new(Arc::clone(&sessions), registry, queries);
+        let services = Services::new(Arc::clone(&sessions), registry, Arc::clone(&queries));
 
         let listener = LocalListener::bind_unix(&socket).expect("绑定 UDS");
         let (shutdown, receiver) = oneshot::channel();
@@ -75,6 +76,7 @@ impl TestServer {
             socket,
             token,
             sessions,
+            queries,
             shutdown: Some(shutdown),
             handle,
         }
@@ -226,7 +228,9 @@ async fn credential_reference_connects_and_queries() {
         })
         .await
         .expect("断开应成功");
-    assert_eq!(server.sessions.active_count().await, 0);
+    // 断连必须同时释放会话与查询登记（#24 验收项）。
+    assert_eq!(server.sessions.active_count().await, 0, "会话未释放");
+    assert_eq!(server.queries.active(), 0, "查询登记未清空");
 
     server.stop().await;
 }
