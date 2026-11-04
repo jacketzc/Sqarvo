@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqarvo_common::{ErrorCode, QueryId, SessionId};
+use sqarvo_common::{Error, ErrorCode, QueryId, SessionId};
 use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::ExecuteRequest;
 use sqarvo_query_engine::QueryRegistry;
@@ -116,10 +116,13 @@ impl QueryService for QueryServiceImpl {
     ) -> Result<Response<FetchBatchResponse>, Status> {
         let request = request.into_inner();
         let query_id = parse_query_id(&request.query_id)?;
-        let session_id = self
-            .queries
-            .session_of(&query_id)
-            .ok_or_else(|| Status::not_found("查询不存在或已结束"))?;
+        let session_id = self.queries.session_of(&query_id).ok_or_else(|| {
+            // 与其他路径一致：错误必须带稳定错误码，客户端才能分支处理。
+            to_status(Error::not_found(
+                ErrorCode::QUERY_NOT_FOUND,
+                "查询不存在或已结束",
+            ))
+        })?;
         let handle = self
             .sessions
             .acquire(&session_id)
