@@ -451,6 +451,12 @@ async fn worker_loop(
                                     tokio::spawn(async move {
                                         let cancel = client.cancel_query(&query_id).await;
                                         let close = client.close_query(&query_id).await;
+                                        if close.is_ok() {
+                                            eprintln!(
+                                                "[query] t=+{}ms 取消后已 Close 游标 {query_id}",
+                                                crate::qa::elapsed_ms()
+                                            );
+                                        }
                                         let _ = sender.send(Command::Task(TaskUpdate::Cancelled(cancel)));
                                         let _ = sender.send(Command::Task(TaskUpdate::Closed(close)));
                                     });
@@ -697,9 +703,15 @@ fn close_in_background(
     let query_id = query_id.to_owned();
     let sender = commands_tx.clone();
     tokio::spawn(async move {
-        let _ = sender.send(Command::Task(TaskUpdate::Closed(
-            client.close_query(&query_id).await,
-        )));
+        let result = client.close_query(&query_id).await;
+        if result.is_ok() {
+            // 可观测证据：结果读完/取消后会真的释放游标，而不是只改界面状态。
+            eprintln!(
+                "[query] t=+{}ms 已 Close 游标 {query_id}",
+                crate::qa::elapsed_ms()
+            );
+        }
+        let _ = sender.send(Command::Task(TaskUpdate::Closed(result)));
     });
 }
 
