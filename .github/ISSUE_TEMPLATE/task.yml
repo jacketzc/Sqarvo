@@ -1,0 +1,105 @@
+name: 开发任务
+description: 创建一个可独立执行、可验收的开发任务
+title: "[模块] 简述任务目标"
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请确认：任务范围单一、验收标准可执行、已关联需求 ID 与里程碑。
+        规划文档见 `docs/planning/`，需求清单见 `docs/product/requirements.md`。
+
+  - type: input
+    id: module
+    attributes:
+      label: 所属模块
+      description: 例如 backend/crates/drivers/sqlite、frontend/linux、proto/services/v1
+      placeholder: backend/crates/...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: 里程碑
+      options:
+        - M0 骨架
+        - M1 契约冻结
+        - M2 首个驱动切片
+        - M3 凭据与 PostgreSQL
+        - M4 元数据与事务
+        - M5 第二驱动与一致性
+        - M6 前端接入与硬化
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 优先级
+      options:
+        - P0
+        - P1
+        - P2
+    validations:
+      required: true
+
+  - type: input
+    id: requirement
+    attributes:
+      label: 关联需求
+      description: 填写 requirements.md 中的 ID，例如 REQ-SQL-003
+      placeholder: REQ-...
+    validations:
+      required: false
+
+  - type: input
+    id: dependencies
+    attributes:
+      label: 前置依赖
+      description: 依赖的 Issue 编号；没有则填「无」
+      placeholder: "#12, #15"
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 工作内容
+      description: 拆到可独立提交与评审的粒度
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 必须可执行、可观察，不写「实现完成」这类不可验证表述
+      placeholder: |
+        - 通过真实 gRPC 客户端完成 ...
+        - 取消在 2 秒内生效，重复取消不报错
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: 验证方式
+      description: 需要运行的命令、测试或手动步骤；未验证平台需注明
+      placeholder: |
+        cargo fmt --all -- --check
+        cargo clippy --all-targets -- -D warnings
+        cargo test
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全确认
+      options:
+        - label: 本任务不涉及提交真实凭据、生产数据或连接串
+          required: true

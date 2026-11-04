@@ -11,6 +11,15 @@
 
 `protoc` 不需要预装：后端构建脚本内置 protoc。
 
+## 任务与 PR
+
+- 具体开发任务在 GitHub Issues 中跟踪；开始前确认所属里程碑（`docs/planning/milestones.md`）
+  与需求 ID（`docs/product/requirements.md`）；
+- PR 使用仓库模板，关联 Issue 与里程碑，并粘贴真实验证结果；
+- `docs/product/` 与 `docs/planning/` 由产品规划/项目管理角色维护；开发提交应更新代码、
+  测试、技术文档与 Issue 状态，不擅自修改需求、里程碑或实施计划；
+- 规划只维护一份：仓库保存长期规划，GitHub Issues/Projects 保存动态进度。
+
 ## 提交前检查
 
 ```bash

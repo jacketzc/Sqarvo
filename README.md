@@ -100,14 +100,33 @@ cargo run -p sqarvo-backend-service
 
 ## 文档
 
-- [产品定位与范围](docs/product/vision.md)
+规划与决策（随代码版本化，是长期有效的唯一来源）：
+
+- [产品愿景与范围](docs/product/vision.md)
+- [产品定位与竞品差异](docs/product/positioning.md)
+- [产品需求（含优先级与实现状态）](docs/product/requirements.md)
 - [路线图](docs/product/roadmap.md)
+- [开发实施计划](docs/planning/development-plan.md)
+- [里程碑](docs/planning/milestones.md)
+- [发布计划](docs/planning/release-plan.md)
+- [风险登记](docs/planning/risk-register.md)
+- [规划文档与任务管理约定](docs/planning/README.md)
+
+技术与设计：
+
 - [架构总览](docs/architecture/overview.md)
 - [本地 IPC 与访问控制](docs/architecture/local-ipc.md)
 - [gRPC 约定](docs/api/grpc-conventions.md)
 - [Driver SPI](docs/database/driver-spi.md)
-- [UI 设计原则](docs/ui/design-principles.md)
+- [UI 设计原则](docs/ui-specification/design-principles.md)
 - [决策记录](docs/decisions/)
+
+## 任务与进度
+
+- 具体任务、状态、依赖与负责人：GitHub Issues + Projects（模板见 `.github/ISSUE_TEMPLATE/`）；
+- 里程碑与版本目标：仓库内 `docs/planning/`；
+- 同一份计划只在一个地方维护：仓库保存长期规划，GitHub 保存动态执行状态。
+
 
 ## 安全
 
@@ -116,7 +135,8 @@ cargo run -p sqarvo-backend-service
 
 ## 参与贡献
 
-见 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须运行格式化、Clippy 与测试。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须运行格式化、Clippy 与测试；
+任务需关联 GitHub Issue 与里程碑，PR 使用仓库模板。
 
 ## 许可
 

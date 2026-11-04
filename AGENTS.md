@@ -131,12 +131,17 @@ The following is a suggested structure. Directories may be adjusted to match the
 ├── LICENSE
 ├── CONTRIBUTING.md
 ├── SECURITY.md
+├── .github/
+│   ├── workflows/            # CI
+│   ├── ISSUE_TEMPLATE/       # Task / bug issue templates
+│   └── pull_request_template.md
 ├── docs/
-│   ├── product/              # Product positioning, requirements, roadmap
+│   ├── product/              # Vision, positioning, requirements, roadmap
+│   ├── planning/             # Development plan, milestones, release plan, risks
 │   ├── architecture/         # Overall architecture, process model, data flow
 │   ├── api/                  # gRPC / Protobuf design notes
 │   ├── database/             # Driver SPI, dialects, and database differences
-│   ├── ui/                   # Interaction specifications, UI flows, design principles
+│   ├── ui-specification/     # Interaction specifications, UI flows, design principles
 │   └── decisions/            # ADRs: key technical decisions and rationale
 ├── proto/
 │   ├── common/v1/
@@ -169,6 +174,10 @@ The following is a suggested structure. Directories may be adjusted to match the
     ├── linux/
     └── macos/
 ```
+
+Database drivers are workspace crates under `backend/crates/drivers/<database>/`. Do not create a
+separate top-level `database-drivers/` tree: the Rust workspace is the build, test, and dependency
+unit, and a second location would split driver ownership across two build systems.
 
 ## 6. Database Driver SPI Guidelines
 
@@ -405,19 +414,38 @@ Record significant technical decisions as ADRs under `docs/decisions/`. Each ADR
 
 Add user documentation for user-visible features. Document every new configuration option, including its default value, persistence location, and security implications.
 
+### 14.1 Documentation Layers and Single Source of Truth
+
+| Layer | Location | Owner | Change rate |
+|---|---|---|---|
+| Product planning (vision, positioning, requirements, roadmap) | `docs/product/` | product owner | low |
+| Development planning (plan, milestones, release, risks) | `docs/planning/` | project-management role | medium |
+| Technical facts (architecture, API, driver SPI, UI) | `docs/architecture/`, `docs/api/`, `docs/database/`, `docs/ui-specification/` | architecture / module owners | with code |
+| Decisions | `docs/decisions/` | decision author | append-only |
+| Tasks, status, dependencies | GitHub Issues / Projects | development agents | high |
+
+Rules:
+
+- Stable planning lives in the repository; dynamic execution state lives in GitHub Issues/Projects.
+- Do not maintain a second task list inside the repository, and do not duplicate planning documents in external tools (Notion, wikis). One plan, one place.
+- Every task Issue must reference its module, milestone, priority, requirement ID, dependencies, and acceptance criteria; every PR must reference its Issue and milestone.
+- Development agents update Issues and PRs. They do not rewrite product requirements, milestones, or the development plan unless explicitly assigned that role.
+- A milestone is only marked complete with recorded verification evidence (commands and results), not with a summary claim.
+
+
 ## 15. Agent Workflow
 
 Follow this sequence when executing a task:
 
 1. Read this file and any other `AGENTS.md` files in the directories involved in the task.
 2. Read the relevant product requirements, architecture documents, ADRs, and existing code. Do not guess the state of the project based only on the task description.
-3. Confirm the requirements, scope of impact, module boundaries, and acceptance criteria. For complex tasks, provide a brief implementation plan first.
+3. Confirm the requirements, scope of impact, module boundaries, acceptance criteria, and the associated Issue/milestone. For complex tasks, provide a brief implementation plan first.
 4. Prefer the smallest complete and verifiable change. Do not opportunistically rewrite unrelated modules.
 5. Before changing APIs or public types, inspect all callers and compatibility implications.
 6. Add or update tests, documentation, and examples.
 7. Run relevant formatters, static checks, unit tests, and integration tests.
 8. Review `git diff` to ensure it contains no secrets, personal data, generated artifacts, temporary files, or unrelated formatting changes.
-9. Report completed work, key design decisions, test results, unfinished items, and known risks.
+9. Report completed work, key design decisions, test results, unfinished items, and known risks; update the Issue status and link the PR.
 
 ### Agent Prohibitions
 
@@ -431,6 +459,9 @@ Follow this sequence when executing a task:
 - Never introduce Electron, Chromium, or WebView to achieve superficial cross-platform support.
 - Never describe unimplemented, untested, or UI-placeholder functionality as completed.
 - Do not introduce a new runtime, framework, or large dependency without a clear requirement.
+- Do not create competing copies of plans or task lists outside their designated locations
+  (`docs/product/`, `docs/planning/`, GitHub Issues/Projects).
+- Do not mark a milestone or requirement complete without recorded verification evidence.
 
 ## 16. Task Handoff Template
 
