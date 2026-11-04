@@ -50,21 +50,45 @@ Product Owner 决定是否调整规划。避免多个 Agent 各自修改开发�
 每个任务对应一个 GitHub Issue，必须包含：
 
 - 所属模块（`backend/crates/*`、`frontend/*`、`proto/*`、`docs/*`）；
-- 所属里程碑（M0–M6，见 `milestones.md`）；
+- 所属里程碑（M0–M7，见 `milestones.md`）；
 - 优先级（P0/P1/P2，与 `requirements.md` 对齐）；
 - 前置依赖（Issue 编号）；
 - 验收标准（可执行、可观察）；
 - 关联 PR。
 
-模板见 `.github/ISSUE_TEMPLATE/task.yml`。Project 建议视图：Roadmap、Board
-（待办/进行中/审核中/完成）、Table（含依赖字段）、Milestones。
+模板见 `.github/ISSUE_TEMPLATE/task.yml`（自动打 `task` 标签）。依赖关系落在三处：
+Issue 正文写明编号、GitHub 原生 blocked-by 关系、Project「依赖」字段。
 
-当前看板：<https://github.com/users/jacketzc/projects/2>（里程碑 M0–M6 已建立，
-M1 任务已创建并加入看板）。
+当前看板：<https://github.com/users/jacketzc/projects/2>（里程碑 M0–M7 均已建立，
+Issue 通过原生 Milestone 字段挂载）。
+
+| 项 | 类型 | 说明 |
+|---|---|---|
+| Status | 单选项 | Todo / In Progress / Done；Issue 关闭即视为完成 |
+| 依赖 | 文本 | 前置 Issue 编号，如 `#1、#5`（表格视图列） |
+| 看板 | 视图 | 按 Status 分列，用于推进 |
+| 任务表 | 视图 | 列含 Status、Milestone、Labels、依赖、Linked pull requests |
+| 路线图 | 视图 | 需先为 Project 添加日期字段并有值才会渲染，暂为占位 |
+
+## 自动检查
+
+`scripts/check-tracking.sh` 把上述约定变成可执行的检查：
+
+- 硬失败：Issue 缺里程碑；里程碑名不在 `milestones.md`；Issue 未加入 Project 看板；
+- 警告：缺优先级标签（P0/P1/P2）、缺模块标签。
+
+```bash
+./scripts/check-tracking.sh              # 检查 open Issue
+./scripts/check-tracking.sh --state all  # 全量核对历史 Issue
+```
+
+CI 由 `.github/workflows/tracking.yml` 在每日定时、手动触发、Issue 打开/编辑/重开时运行。
+用户级 Project 无法用 `GITHUB_TOKEN` 读取，需在仓库 Secrets 配置 `PROJECT_TOKEN`
+（Projects: read，建议 fine-grained PAT）；未配置时看板检查降级为警告。
 
 ## 里程碑与版本
 
-- 里程碑 M0–M6 是开发阶段的稳定锚点，见 `milestones.md`；
+- 里程碑 M0–M7 是开发阶段的稳定锚点，见 `milestones.md`；
 - 产品版本 v0.1–v1.0 是交付目标，见 `release-plan.md`；
 - 单个任务延期不修改里程碑标准；只有范围或技术前提变化才改。
 

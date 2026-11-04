@@ -4,7 +4,7 @@
 具体任务在 GitHub Issues 中跟踪，本文件不重复维护任务清单。
 
 - 版本目标见 [roadmap.md](../product/roadmap.md) 与 [release-plan.md](release-plan.md)。
-- 阶段锚点见 [milestones.md](milestones.md)（M0–M6 与本文 S0–S6 一一对应）。
+- 阶段锚点见 [milestones.md](milestones.md)（M0–M7 与本文 S0–S7 一一对应）。
 - 风险见 [risk-register.md](risk-register.md)。
 
 ## 总体顺序

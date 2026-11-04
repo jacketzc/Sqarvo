@@ -1,0 +1,40 @@
+name: 任务跟踪检查
+
+# 校验 Issue 是否符合 AGENTS.md §14 与 docs/planning/README.md 的任务规范：
+# 硬失败——缺里程碑、里程碑不在 milestones.md、未加入 Project 看板；
+# 警告——缺优先级或模块标签。
+#
+# 看板检查需要 Projects 读权限。用户级 Project 无法用 GITHUB_TOKEN 读取，
+# 因此需在仓库 Secrets 中配置 PROJECT_TOKEN：fine-grained PAT，仅授予
+# 「Projects: read」+「Issues: read」（或 classic token 的 project 作用域）。
+# 未配置时看板检查降级为警告，其余检查照常执行。
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: tracking-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tracking:
+    name: 里程碑与看板归属
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 Issue 跟踪字段
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          TRACKING_PROJECT_OWNER: jacketzc
+          TRACKING_PROJECT_NUMBER: "2"
+          TRACKING_REQUIRE_PROJECT: ${{ secrets.PROJECT_TOKEN != '' && '1' || '0' }}
+        run: ./scripts/check-tracking.sh

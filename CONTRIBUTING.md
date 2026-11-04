@@ -15,6 +15,8 @@
 
 - 具体开发任务在 GitHub Issues 中跟踪；开始前确认所属里程碑（`docs/planning/milestones.md`）
   与需求 ID（`docs/product/requirements.md`）；
+- 新建任务请用 Issue 模板（自动打 `task` 标签），里程碑、优先级、模块标签、Project 归属
+  缺一不可；本地可先跑 `./scripts/check-tracking.sh` 自检；
 - PR 使用仓库模板，关联 Issue 与里程碑，并粘贴真实验证结果；
 - `docs/product/` 与 `docs/planning/` 由产品规划/项目管理角色维护；开发提交应更新代码、
   测试、技术文档与 Issue 状态，不擅自修改需求、里程碑或实施计划；

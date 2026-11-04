@@ -429,6 +429,7 @@ Rules:
 - Stable planning lives in the repository; dynamic execution state lives in GitHub Issues/Projects.
 - Do not maintain a second task list inside the repository, and do not duplicate planning documents in external tools (Notion, wikis). One plan, one place.
 - Every task Issue must reference its module, milestone, priority, requirement ID, dependencies, and acceptance criteria; every PR must reference its Issue and milestone.
+- `scripts/check-tracking.sh` (also run by `.github/workflows/tracking.yml`) enforces the milestone and Project-membership part of that rule; missing priority or module labels are reported as warnings.
 - Development agents update Issues and PRs. They do not rewrite product requirements, milestones, or the development plan unless explicitly assigned that role.
 - A milestone is only marked complete with recorded verification evidence (commands and results), not with a summary claim.
 
