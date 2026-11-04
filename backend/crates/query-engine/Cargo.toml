@@ -1,0 +1,13 @@
+[package]
+name = "sqarvo-query-engine"
+description = "Sqarvo 查询生命周期、分批拉取上限与幂等取消"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sqarvo-common.workspace = true
+
+[lints]
+workspace = true

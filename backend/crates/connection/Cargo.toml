@@ -1,0 +1,22 @@
+[package]
+name = "sqarvo-connection"
+description = "Sqarvo 连接与会话生命周期管理"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sqarvo-common.workspace = true
+sqarvo-driver-api.workspace = true
+sqarvo-drivers.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

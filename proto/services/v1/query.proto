@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+import "common/v1/value.proto";
+
+// 查询域：执行 SQL、分批取结果、取消、关闭。
+//
+// 大结果集绝不一次性返回：Execute 只返回首批数据与不透明 page_token，
+// 后续由 FetchBatch 拉取。
+service QueryService {
+  rpc Execute(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+  rpc FetchBatch(FetchBatchRequest) returns (FetchBatchResponse);
+  rpc Cancel(CancelQueryRequest) returns (sqarvo.common.v1.Empty);
+  rpc Close(CloseQueryRequest) returns (sqarvo.common.v1.Empty);
+}
+
+message ExecuteQueryRequest {
+  string session_id = 1;
+  string sql = 2;
+  // 每批最大行数；0 表示服务端默认值，超过上限会被服务端压到上限。
+  uint32 max_rows_per_batch = 3;
+  bool auto_commit = 4;
+}
+
+message StatementSummary {
+  uint32 statement_index = 1;
+  // 仅用于展示，可能被截断。
+  string sql_preview = 2;
+  sqarvo.common.v1.ResultSetMeta result_meta = 3;
+  uint64 rows_affected = 4;
+  bool has_result_set = 5;
+}
+
+message ExecuteQueryResponse {
+  string query_id = 1;
+  repeated StatementSummary statements = 2;
+  // 首批行数据。
+  repeated sqarvo.common.v1.Row rows = 3;
+  // 不透明分页 token；为空且 has_more=false 表示结果已结束。
+  string page_token = 4;
+  bool has_more = 5;
+  repeated sqarvo.common.v1.Warning warnings = 6;
+}
+
+message FetchBatchRequest {
+  string query_id = 1;
+  string page_token = 2;
+  uint32 max_rows = 3;
+}
+
+message FetchBatchResponse {
+  repeated sqarvo.common.v1.Row rows = 1;
+  string page_token = 2;
+  bool has_more = 3;
+  // 结果集已读完并已释放服务端资源。
+  bool complete = 4;
+}
+
+message CancelQueryRequest {
+  string query_id = 1;
+}
+
+message CloseQueryRequest {
+  string query_id = 1;
+}

@@ -1,0 +1,18 @@
+[package]
+name = "sqarvo-drivers"
+description = "Sqarvo 驱动注册表与内置驱动装载点"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sqarvo-common.workspace = true
+sqarvo-driver-api.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package sqarvo.common.v1;
+
+// 单元格值的逻辑类型。
+//
+// 刻意不使用「一切皆字符串」模型：NULL、整数、无符号整数、浮点、Decimal、
+// 二进制、日期时间必须可区分。无法无损映射的数据库特有类型使用
+// VALUE_KIND_UNSUPPORTED，并保留原始类型名与文本表示。
+enum ValueKind {
+  VALUE_KIND_UNSPECIFIED = 0;
+  VALUE_KIND_NULL = 1;
+  VALUE_KIND_BOOL = 2;
+  VALUE_KIND_INT64 = 3;
+  VALUE_KIND_UINT64 = 4;
+  VALUE_KIND_FLOAT64 = 5;
+  VALUE_KIND_DECIMAL = 6;
+  VALUE_KIND_TEXT = 7;
+  VALUE_KIND_BYTES = 8;
+  VALUE_KIND_DATE = 9;
+  VALUE_KIND_TIME = 10;
+  // 无时区的时间戳。
+  VALUE_KIND_DATETIME = 11;
+  // 带时区偏移的时间戳。
+  VALUE_KIND_TIMESTAMP = 12;
+  VALUE_KIND_JSON = 13;
+  VALUE_KIND_UUID = 14;
+  VALUE_KIND_ARRAY = 15;
+  VALUE_KIND_UNSUPPORTED = 16;
+}
+
+// 精确十进制值。unscaled_value 为十进制整数字面量（可带负号），
+// 实际值 = unscaled_value * 10^(-scale)。绝不通过 double 传输。
+message DecimalValue {
+  string unscaled_value = 1;
+  int32 scale = 2;
+}
+
+// 本地日期时间分量，用于 DATE / TIME / DATETIME。
+message DateTimeValue {
+  int32 year = 1;
+  uint32 month = 2;
+  uint32 day = 3;
+  uint32 hour = 4;
+  uint32 minute = 5;
+  uint32 second = 6;
+  uint32 nanosecond = 7;
+}
+
+// UTC 纳秒时间戳 + 显示用偏移。
+message TimestampValue {
+  int64 unix_nanos = 1;
+  int32 offset_seconds = 2;
+}
+
+message ArrayValue {
+  repeated ColumnValue elements = 1;
+}
+
+// 单个单元格。kind 与 value 必须一致；NULL 只有 kind。
+message ColumnValue {
+  ValueKind kind = 1;
+  oneof value {
+    bool bool_value = 2;
+    int64 int64_value = 3;
+    uint64 uint64_value = 4;
+    double float64_value = 5;
+    DecimalValue decimal_value = 6;
+    string text_value = 7;
+    bytes bytes_value = 8;
+    DateTimeValue date_value = 9;
+    DateTimeValue time_value = 10;
+    DateTimeValue datetime_value = 11;
+    TimestampValue timestamp_value = 12;
+    string json_value = 13;
+    string uuid_value = 14;
+    ArrayValue array_value = 15;
+    string unsupported_value = 16;
+  }
+  // 大字段按策略截断时为 true，此时 value 只包含前缀。
+  bool truncated = 17;
+  // 数据库原始类型名，例如 `varchar(64)`、`timestamptz`。
+  string original_type_name = 18;
+}
+
+// 列的逻辑类型。
+enum ColumnTypeKind {
+  COLUMN_TYPE_UNSPECIFIED = 0;
+  COLUMN_TYPE_BOOLEAN = 1;
+  COLUMN_TYPE_INTEGER = 2;
+  COLUMN_TYPE_FLOAT = 3;
+  COLUMN_TYPE_DECIMAL = 4;
+  COLUMN_TYPE_TEXT = 5;
+  COLUMN_TYPE_BINARY = 6;
+  COLUMN_TYPE_DATE = 7;
+  COLUMN_TYPE_TIME = 8;
+  COLUMN_TYPE_DATETIME = 9;
+  COLUMN_TYPE_TIMESTAMP = 10;
+  COLUMN_TYPE_JSON = 11;
+  COLUMN_TYPE_UUID = 12;
+  COLUMN_TYPE_ARRAY = 13;
+  COLUMN_TYPE_UNSUPPORTED = 14;
+}
+
+message ColumnType {
+  ColumnTypeKind kind = 1;
+  // 数据库原始类型名，始终保留。
+  string original_type_name = 2;
+  optional uint32 precision = 3;
+  optional int32 scale = 4;
+  optional uint32 length = 5;
+  optional bool unsigned = 6;
+  optional uint32 bits = 7;
+  optional bool with_time_zone = 8;
+  // 数组元素类型；仅 COLUMN_TYPE_ARRAY 使用。
+  ColumnType element_type = 9;
+}
+
+// 列元数据。nullable 与原始类型信息必须随结果集返回。
+message ColumnMeta {
+  string name = 1;
+  uint32 ordinal = 2;
+  ColumnType type = 3;
+  bool nullable = 4;
+}
+
+message Row {
+  repeated ColumnValue values = 1;
+}
+
+message ResultSetMeta {
+  repeated ColumnMeta columns = 1;
+  bool read_only = 2;
+}

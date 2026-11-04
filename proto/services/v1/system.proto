@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+
+// 系统域：版本、健康状态、已注册驱动。
+// 这是我（前端）用来确认后端可用性的最小契约。
+service SystemService {
+  rpc GetVersion(sqarvo.common.v1.Empty) returns (VersionResponse);
+  rpc GetHealth(sqarvo.common.v1.Empty) returns (HealthResponse);
+  rpc ListDrivers(sqarvo.common.v1.Empty) returns (ListDriversResponse);
+}
+
+message VersionResponse {
+  string service_version = 1;
+  // 协议版本，例如 `v1`。客户端必须校验主版本兼容性。
+  string protocol_version = 2;
+  // `debug` 或 `release`，仅用于诊断。
+  string build_profile = 3;
+}
+
+message HealthResponse {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_SERVING = 1;
+    STATE_DEGRADED = 2;
+  }
+  State state = 1;
+  // 可展示的诊断信息，不得包含凭据或本地私有路径。
+  string detail = 2;
+  uint64 uptime_seconds = 3;
+  uint32 active_sessions = 4;
+  uint32 registered_drivers = 5;
+}
+
+// 驱动声明的数据库版本支持范围。
+message DatabaseFlavor {
+  string name = 1;
+  string min_version = 2;
+  string max_version = 3;
+}
+
+message DriverInfo {
+  string driver_id = 1;
+  string display_name = 2;
+  string version = 3;
+  repeated DatabaseFlavor supported_databases = 4;
+  // 能力描述符，例如 `transactions`、`streaming_results`。
+  repeated string capabilities = 5;
+}
+
+message ListDriversResponse {
+  repeated DriverInfo drivers = 1;
+}

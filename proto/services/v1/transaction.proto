@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+
+// 事务域：显式事务的开始、提交、回滚。
+//
+// 不支持事务的驱动必须以 FAILED_PRECONDITION / `capability.unsupported`
+// 明确拒绝，不得静默降级为自动提交。
+service TransactionService {
+  rpc Begin(BeginTransactionRequest) returns (TransactionInfo);
+  rpc Commit(TransactionRef) returns (sqarvo.common.v1.Empty);
+  rpc Rollback(TransactionRef) returns (sqarvo.common.v1.Empty);
+}
+
+enum IsolationLevel {
+  ISOLATION_LEVEL_UNSPECIFIED = 0;
+  ISOLATION_LEVEL_READ_UNCOMMITTED = 1;
+  ISOLATION_LEVEL_READ_COMMITTED = 2;
+  ISOLATION_LEVEL_REPEATABLE_READ = 3;
+  ISOLATION_LEVEL_SERIALIZABLE = 4;
+  ISOLATION_LEVEL_SNAPSHOT = 5;
+}
+
+message BeginTransactionRequest {
+  string session_id = 1;
+  IsolationLevel isolation = 2;
+  bool read_only = 3;
+}
+
+message TransactionInfo {
+  string transaction_id = 1;
+  string session_id = 2;
+  IsolationLevel isolation = 3;
+  bool read_only = 4;
+}
+
+message TransactionRef {
+  string transaction_id = 1;
+}

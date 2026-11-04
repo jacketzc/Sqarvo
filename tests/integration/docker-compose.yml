@@ -1,0 +1,31 @@
+# 仅供本地驱动集成测试使用。
+# 密码是测试专用值，不得用于任何真实环境。
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sqarvo_test
+      POSTGRES_PASSWORD: sqarvo_test_only
+      POSTGRES_DB: sqarvo_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sqarvo_test -d sqarvo_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_USER: sqarvo_test
+      MYSQL_PASSWORD: sqarvo_test_only
+      MYSQL_DATABASE: sqarvo_test
+      MYSQL_ROOT_PASSWORD: sqarvo_root_test_only
+    ports:
+      - "127.0.0.1:53306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-usqarvo_test", "-psqarvo_test_only"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

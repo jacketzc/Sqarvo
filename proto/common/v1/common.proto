@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package sqarvo.common.v1;
+
+// 结构化错误详情。
+//
+// 说明：当前实现把错误码放在 gRPC trailing metadata 的 `sqarvo-error-code`
+// 中，并保留 status message 供直接展示。该消息为后续切换到
+// google.rpc.Status details 预留，字段一旦发布不得复用编号。
+message ErrorDetail {
+  // 稳定错误码，例如 `driver.not_found`。客户端可据此分支处理。
+  string code = 1;
+  // 错误分类，与 gRPC 状态码语义对齐，例如 `not_found`。
+  string category = 2;
+  // 可安全展示给用户的描述，不得包含凭据或内部堆栈。
+  string message = 3;
+  // 是否属于可重试错误（例如瞬时连接失败）。
+  bool retryable = 4;
+  // 附加的非敏感上下文，例如驱动 ID、能力名称。
+  map<string, string> metadata = 5;
+}
+
+// 分页请求。两种分页语义由具体 RPC 定义：
+// - SQL 结果集使用不透明 token，禁止客户端解析；
+// - 元数据浏览允许服务端自行决定 token 形式。
+message PageRequest {
+  // 期望条数。0 表示使用服务端默认值。
+  uint32 page_size = 1;
+  // 上一页返回的 token；为空表示第一页。
+  string page_token = 2;
+}
+
+// 分页结果元信息。
+message PageInfo {
+  // 下一页 token；为空表示没有更多数据。
+  string next_page_token = 1;
+  // 已知总数。未知时保持 0，不得以估算值冒充精确值。
+  uint64 total_size = 2;
+  // 是否因为上限而截断。
+  bool truncated = 3;
+}
+
+// 非致命告警，例如使用了不安全的 TLS 模式。
+message Warning {
+  string code = 1;
+  string message = 2;
+}
+
+// 空响应占位。
+message Empty {}

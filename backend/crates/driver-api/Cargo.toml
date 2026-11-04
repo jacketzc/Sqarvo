@@ -1,0 +1,16 @@
+[package]
+name = "sqarvo-driver-api"
+description = "Sqarvo 驱动 SPI：与具体数据库实现无关的驱动、会话、元数据与值模型"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+sqarvo-common.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

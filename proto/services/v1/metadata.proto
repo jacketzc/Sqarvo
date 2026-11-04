@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+import "common/v1/value.proto";
+
+// 元数据域：按需、分页地浏览对象树。
+//
+// 不允许一次性返回整库对象树；调用方必须从根节点开始逐层展开。
+service MetadataService {
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc GetColumns(GetColumnsRequest) returns (GetColumnsResponse);
+  rpc GetDdl(GetDdlRequest) returns (GetDdlResponse);
+}
+
+// 对象种类。不同数据库的 Catalog / Schema / Namespace 语义不同，
+// 这里保留各自的层级而不是压缩成一个字段。
+enum ObjectKind {
+  OBJECT_KIND_UNSPECIFIED = 0;
+  OBJECT_KIND_CATALOG = 1;
+  OBJECT_KIND_SCHEMA = 2;
+  OBJECT_KIND_TABLE = 3;
+  OBJECT_KIND_VIEW = 4;
+  OBJECT_KIND_MATERIALIZED_VIEW = 5;
+  OBJECT_KIND_COLUMN = 6;
+  OBJECT_KIND_INDEX = 7;
+  OBJECT_KIND_SEQUENCE = 8;
+  OBJECT_KIND_FUNCTION = 9;
+  OBJECT_KIND_PROCEDURE = 10;
+  OBJECT_KIND_TRIGGER = 11;
+  OBJECT_KIND_TYPE = 12;
+  OBJECT_KIND_OTHER = 13;
+}
+
+// 对象引用。catalog/schema 为空表示该数据库没有这一层级。
+message ObjectRef {
+  string session_id = 1;
+  string catalog = 2;
+  string schema = 3;
+  string name = 4;
+  ObjectKind kind = 5;
+}
+
+message ObjectNode {
+  ObjectRef reference = 1;
+  string display_name = 2;
+  bool has_children = 3;
+  string comment = 4;
+}
+
+message ListNodesRequest {
+  // 为空表示列出根节点（通常是 Catalog 或 Schema 列表）。
+  ObjectRef parent = 1;
+  sqarvo.common.v1.PageRequest page = 2;
+}
+
+message ListNodesResponse {
+  repeated ObjectNode nodes = 1;
+  sqarvo.common.v1.PageInfo page = 2;
+}
+
+message GetColumnsRequest {
+  ObjectRef object = 1;
+}
+
+message GetColumnsResponse {
+  repeated sqarvo.common.v1.ColumnMeta columns = 1;
+}
+
+message GetDdlRequest {
+  ObjectRef object = 1;
+}
+
+message GetDdlResponse {
+  string ddl = 1;
+  // DDL 是否为数据库返回的原文；false 表示由客户端拼装。
+  bool exact = 2;
+}

@@ -1,0 +1,17 @@
+[package]
+name = "sqarvo-common"
+description = "Sqarvo 后端共享的错误类型、稳定错误码与标识符"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

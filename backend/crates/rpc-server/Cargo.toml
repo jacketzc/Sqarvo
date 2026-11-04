@@ -1,0 +1,39 @@
+[package]
+name = "sqarvo-rpc-server"
+description = "Sqarvo gRPC 服务实现与本地传输层"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+prost.workspace = true
+sqarvo-common.workspace = true
+sqarvo-connection.workspace = true
+sqarvo-driver-api.workspace = true
+sqarvo-drivers.workspace = true
+sqarvo-local-store.workspace = true
+sqarvo-query-engine.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+tokio-stream.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+prost.workspace = true
+prost-types.workspace = true
+protoc-bin-vendored = "3"
+tonic-prost-build = "0.14"
+
+[dev-dependencies]
+http.workspace = true
+hyper-util.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tower.workspace = true
+
+[lints]
+workspace = true

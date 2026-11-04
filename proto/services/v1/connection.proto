@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+
+// 连接域：测试连接、建立会话、断开、列出会话。
+service ConnectionService {
+  rpc TestConnection(TestConnectionRequest) returns (TestConnectionResponse);
+  rpc Connect(ConnectRequest) returns (ConnectResponse);
+  rpc Disconnect(DisconnectRequest) returns (sqarvo.common.v1.Empty);
+  rpc ListSessions(sqarvo.common.v1.Empty) returns (ListSessionsResponse);
+}
+
+enum TlsMode {
+  TLS_MODE_UNSPECIFIED = 0;
+  TLS_MODE_DISABLED = 1;
+  TLS_MODE_PREFERRED = 2;
+  TLS_MODE_REQUIRED = 3;
+  TLS_MODE_VERIFY_CA = 4;
+  TLS_MODE_VERIFY_FULL = 5;
+}
+
+// 连接参数。
+//
+// 安全约束：这里没有 password 字段。密码只通过 `credential_ref` 引用，
+// 由后端从操作系统凭据存储读取，绝不经由 gRPC 明文批量传输，
+// 也绝不写入普通配置文件与日志。
+message ConnectionParams {
+  string driver_id = 1;
+  string host = 2;
+  uint32 port = 3;
+  string database = 4;
+  string username = 5;
+  string credential_ref = 6;
+  TlsMode tls_mode = 7;
+  string tls_server_name = 8;
+  // 驱动特有的非敏感参数，例如 `sslmode=require`。
+  map<string, string> properties = 9;
+}
+
+message TestConnectionRequest {
+  ConnectionParams params = 1;
+}
+
+message TestConnectionResponse {
+  bool reachable = 1;
+  uint64 latency_millis = 2;
+  // 服务端版本；无法获取时为空，不得伪造。
+  string server_version = 3;
+  repeated sqarvo.common.v1.Warning warnings = 4;
+}
+
+message ConnectRequest {
+  ConnectionParams params = 1;
+  // 用户可见的会话名称。
+  string display_name = 2;
+}
+
+message ConnectResponse {
+  string connection_id = 1;
+  string session_id = 2;
+  string driver_id = 3;
+  string server_version = 4;
+  repeated string capabilities = 5;
+  repeated sqarvo.common.v1.Warning warnings = 6;
+}
+
+message DisconnectRequest {
+  string connection_id = 1;
+}
+
+message SessionSummary {
+  string connection_id = 1;
+  string session_id = 2;
+  string driver_id = 3;
+  string display_name = 4;
+  repeated string capabilities = 5;
+  // RFC 3339 时间戳。
+  string connected_at = 6;
+}
+
+message ListSessionsResponse {
+  repeated SessionSummary sessions = 1;
+}

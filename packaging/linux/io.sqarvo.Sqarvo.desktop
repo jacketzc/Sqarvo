@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Sqarvo
+GenericName=Database Client
+Comment=Lightweight native database client
+TryExec=sqarvo-desktop
+Exec=sqarvo-desktop %F
+Icon=io.sqarvo.Sqarvo
+Terminal=false
+Categories=Development;Database;GTK;
+Keywords=database;sql;postgres;mysql;sqlite;
+StartupNotify=true
+StartupWMClass=io.sqarvo.Sqarvo

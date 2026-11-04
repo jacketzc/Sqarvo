@@ -1,0 +1,16 @@
+[package]
+name = "sqarvo-desktop"
+description = "Sqarvo Linux 桌面客户端（GTK4 + libadwaita）"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+adw = { package = "libadwaita", version = "0.9" }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_16"] }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

@@ -1,0 +1,21 @@
+[package]
+name = "sqarvo-local-store"
+description = "Sqarvo 本地路径、IPC 端点描述、会话 token 与凭据引用"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqarvo-common.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

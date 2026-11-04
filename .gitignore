@@ -1,0 +1,23 @@
+# Rust
+/backend/target/
+**/*.rs.bk
+
+# 本地配置与凭据：绝不提交
+.env
+.env.*
+*.local.toml
+*.secret
+
+# 构建与打包中间产物
+/dist/
+/build/
+/frontend/linux/target/
+/frontend/macos/.build/
+/frontend/windows/**/bin/
+/frontend/windows/**/obj/
+
+# IDE / 系统垃圾
+.idea/
+.vscode/
+*.swp
+.DS_Store

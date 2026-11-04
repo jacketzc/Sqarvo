@@ -1,0 +1,13 @@
+[package]
+name = "sqarvo-transaction"
+description = "Sqarvo 显式事务状态机"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sqarvo-common.workspace = true
+
+[lints]
+workspace = true
