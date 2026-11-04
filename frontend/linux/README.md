@@ -12,6 +12,9 @@ sudo apt install libgtk-4-dev libadwaita-1-dev build-essential pkg-config
 
 GTK 4.16 及以上（`gtk4` crate 的 `v4_16` feature）。
 
+本机已验证版本（2026-11-04，Ubuntu resolute）：GTK 4.22.4、libadwaita 1.9.1，
+`cargo build` 通过。
+
 ## 构建
 
 ```bash
@@ -19,9 +22,6 @@ cd frontend/linux
 cargo build
 cargo run
 ```
-
-> 当前仓库的验证环境没有安装 GTK4/libadwaita 开发包，因此本 crate **未在本机编译验证**。
-> 首次在安装依赖的机器上构建时，请修正可能存在的 crate API 差异，并在 PR 中说明。
 
 ## 约定
 

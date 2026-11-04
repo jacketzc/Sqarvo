@@ -21,6 +21,18 @@ cd tests/integration
 docker compose up -d
 ```
 
+没有 docker 权限时可用 rootless podman（本机已验证，2026-11-04）：
+
+```bash
+podman run -d --name sqarvo-mariadb-test \
+  -e MARIADB_USER=sqarvo_test -e MARIADB_PASSWORD=sqarvo_test_only \
+  -e MARIADB_DATABASE=sqarvo_test -e MARIADB_ROOT_PASSWORD=sqarvo_root_test_only \
+  -p 127.0.0.1:53306:3306 docker.io/library/mariadb:11.4
+```
+
+镜像仓库不可直连时，podman 需要设置 `HTTPS_PROXY`（例如 `http://127.0.0.1:7890`），
+或改用可用的镜像源。SQLite 用例不依赖任何服务，始终可运行。
+
 ## 约定
 
 - 测试数据必须可重复生成（种子脚本），不得依赖人工准备；
