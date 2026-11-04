@@ -123,6 +123,35 @@ S6 前端接入 + 性能/安全硬化
 
 完成条件：后端可对外提供 SQLite 查询能力，二进制度量（启动、内存）有初步记录。
 
+验证记录（2026-11-04，Linux）：
+
+- `cargo test`：95 通过 / 0 失败。其中
+  - `sqarvo-driver-sqlite`：12 个单元用例 + 12 个集成用例（`tests/type_mapping.rs`，
+    覆盖 NULL / `''` / 0 区分、i64 边界、NUMERIC 亲和性、日期类保留 TEXT、二进制、
+    64 KiB 截断与非法 UTF-8）；
+  - `sqarvo-rpc-server`：5 个 gRPC 冒烟用例 + 3 个端到端用例（`tests/grpc_sqlite_e2e.rs`，
+    覆盖 UDS 生命周期、取消 2 秒内生效、批次上限 5000、断连后会话与查询登记归零）。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` 通过。
+- `cargo build --release -p sqarvo-backend-service` 通过。
+- CI（GitHub Actions，`CI` / `backend` 作业）在 main 上通过；作业内除 `cargo test` 外，
+  还显式执行 `cargo test -p sqarvo-driver-sqlite --test type_mapping` 与
+  `cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e`，SQLite 覆盖不允许被静默跳过。
+- 真实二进制运行（Linux，release 构建，`XDG_RUNTIME_DIR` 指向临时目录）：
+
+  ```bash
+  XDG_RUNTIME_DIR=$TMP/runtime target/release/sqarvo-backend \
+      --socket $TMP/runtime/backend.sock --log-filter info &
+  stat -c '%A %n' $TMP/runtime/backend.sock $XDG_RUNTIME_DIR/sqarvo/backend-endpoint.json
+  grep -qF "$TOKEN" backend.log   # 期望不命中
+  kill -TERM $PID; wait $PID
+  ```
+
+  实测结果：socket `srw-------`（600）、端点文件 `-rw-------`（600）、目录 `drwx------`（700）；
+  端点文件含 64 位 token 且日志中未出现 token 原文；`SIGTERM` 后退出码 0，
+  socket 与端点文件均被删除；端点声明 `transport=unix protocol=v1 service=0.1.0`。
+
+遗留：启动时长与空闲内存尚未测量（`REQ-PERF-001`），按计划归入 S6 基准，不在本阶段声称已达标。
+
 ## S3：凭据存储 + PostgreSQL
 
 目标：接入真实网络数据库，验证 SPI 对第二种数据库成立。

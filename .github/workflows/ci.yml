@@ -35,5 +35,13 @@ jobs:
       - name: 测试
         run: cargo test
 
+      # SQLite 覆盖单独列出：这些用例不需要任何外部服务，必须每次都真实执行，
+      # 不能因为测试文件缺失或被过滤而静默跳过（v0.1 退出标准要求）。
+      - name: SQLite 驱动测试（类型映射与截断）
+        run: cargo test -p sqarvo-driver-sqlite --test type_mapping -- --nocapture
+
+      - name: SQLite gRPC 端到端（UDS + 临时库）
+        run: cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e -- --nocapture
+
   # Windows / macOS 前端尚未接入后端，且需要对应平台 SDK，
   # 因此暂不纳入 CI。接入后应各自增加构建任务。
