@@ -311,7 +311,7 @@ cat <<EOF
 
 | 场景 | 指标 | 数值 |
 |---|---|---|
-| 冷启动（3 次） | exec→Connected 中位数 | $COLD_MEDIAN ms |
+| 冷启动（3 次） | 进程入口→Connected 中位数 | $COLD_MEDIAN ms |
 | 冷启动（3 次） | 样本 | ${COLD_SAMPLES[*]} ms |
 | 空闲内存 | 连接后静置 5s VmRSS | $IDLE_RSS MB |
 | 空闲内存 | 连接后静置 5s VmHWM | $IDLE_HWM MB |
