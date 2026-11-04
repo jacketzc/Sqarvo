@@ -123,7 +123,8 @@ cargo run -p sqarvo-backend-service
 
 ## 任务与进度
 
-- 具体任务、状态、依赖与负责人：GitHub Issues + Projects（模板见 `.github/ISSUE_TEMPLATE/`）；
+- 任务看板：[Sqarvo 开发路线](https://github.com/users/jacketzc/projects/2)
+- 任务列表：[Issues](https://github.com/jacketzc/Sqarvo/issues)（模板见 `.github/ISSUE_TEMPLATE/`）；
 - 里程碑与版本目标：仓库内 `docs/planning/`；
 - 同一份计划只在一个地方维护：仓库保存长期规划，GitHub 保存动态执行状态。
 

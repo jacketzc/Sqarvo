@@ -58,6 +58,9 @@ Product Owner 决定是否调整规划。避免多个 Agent 各自修改开发�
 模板见 `.github/ISSUE_TEMPLATE/task.yml`。Project 建议视图：Roadmap、Board
 （待办/进行中/审核中/完成）、Table（含依赖字段）、Milestones。
 
+当前看板：<https://github.com/users/jacketzc/projects/2>（里程碑 M0–M6 已建立，
+M1 任务已创建并加入看板）。
+
 ## 里程碑与版本
 
 - 里程碑 M0–M6 是开发阶段的稳定锚点，见 `milestones.md`；
