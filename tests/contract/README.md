@@ -13,11 +13,21 @@
    metadata `sqarvo-error-code = driver.not_found`；
 7. 验证查询取消对未知 ID 返回 `NOT_FOUND`、非法 ID 返回 `INVALID_ARGUMENT`。
 
+`backend/crates/rpc-server/tests/grpc_credential.rs` 覆盖 `CredentialService`（#27）：
+真实 UDS + token + 注入的 `MemoryCredentialStore`，验证 `StoreCredential` 生成/复用引用、
+覆盖写、`DeleteCredential` 幂等、无 token 返回 `UNAUTHENTICATED`、非法引用返回
+`INVALID_ARGUMENT` + `config.invalid`、`UnavailableCredentialStore` 返回
+`credential.unavailable`，以及错误文案不含密码。需要真实 MariaDB 的用例
+（写入的密码能连接、错误密码得到 `mariadb.auth_failed`、未知引用得到
+`credential.not_found`）读取 `SQARVO_MARIADB_URL`，未设置时打印跳过原因。
+
 ## 运行
 
 ```bash
 cd backend
 cargo test -p sqarvo-rpc-server --test grpc_smoke
+SQARVO_MARIADB_URL='mysql://user:***@127.0.0.1:53306/sqarvo_test' \
+  cargo test -p sqarvo-rpc-server --test grpc_credential
 ```
 
 ## 待补充

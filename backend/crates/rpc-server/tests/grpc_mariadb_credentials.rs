@@ -52,6 +52,10 @@ struct TestServer {
 }
 
 impl TestServer {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "测试里直接接管注入的存储所有权"
+    )]
     fn start(credentials: Arc<dyn CredentialStore>) -> Self {
         let dir = tempfile::tempdir().expect("创建临时目录");
         let socket = dir.path().join("backend.sock");
@@ -60,10 +64,15 @@ impl TestServer {
         let registry = Arc::new(DriverRegistry::with_builtin_drivers());
         let sessions = Arc::new(SessionManager::with_credential_store(
             Arc::clone(&registry),
-            credentials,
+            Arc::clone(&credentials),
         ));
         let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
-        let services = Services::new(Arc::clone(&sessions), registry, Arc::clone(&queries));
+        let services = Services::new(
+            Arc::clone(&sessions),
+            registry,
+            Arc::clone(&queries),
+            Arc::clone(&credentials),
+        );
 
         let listener = LocalListener::bind_unix(&socket).expect("绑定 UDS");
         let (shutdown, receiver) = oneshot::channel();
