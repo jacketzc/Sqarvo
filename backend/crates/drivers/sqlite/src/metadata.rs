@@ -33,6 +33,13 @@
 //! 种类（列与索引可以同名）与父节点作用域（`main` 与 `temp` 可以有同名表）。token 仍是
 //! 不透明字符串（`v1:<offset>:<指纹>`），非法 token 显式报错、绝不回退第一页。
 //!
+//! # 对象搜索（#84）
+//!
+//! `ListNodes.filter` 的名称条件与 `kinds` 都**下推进 SQL**（`sqlite_master.name LIKE ...
+//! ESCAPE '\'`、`pragma_table_info(...) WHERE name LIKE ...`），过滤后的结果集才切页；
+//! 过滤结果的 token 是 `v2:<offset>:<指纹>:<过滤标签>`，换条件即 `config.invalid`。
+//! 大小写按 SQLite 真实行为（`LIKE` 只折叠 ASCII、`=` 是二进制比较），驱动不加 `lower()`。
+//!
 //! 所有查询都在会话的专用线程上执行：`Connection` 归它独占，元数据请求与查询走同一条
 //! 命令通道。存在在途结果游标时元数据请求会被拒绝（`sqlite.query_active`），不会与游标交错。
 
@@ -40,10 +47,11 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension};
 use sqarvo_common::{Error, ErrorCode, Result, SessionId};
 use sqarvo_driver_api::{
-    ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
-    ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
+    ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectFilter,
+    ObjectKind, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn,
+    QualifiedName,
 };
-use sqarvo_metadata::paginate_children;
+use sqarvo_metadata::{paginate_children_filtered, sqlite_name_condition};
 
 use crate::error::map_sqlite_error;
 use crate::session::SqliteSession;
@@ -58,9 +66,10 @@ pub(crate) const TEMP_DATABASE: &str = "temp";
 
 /// 元数据请求。由 [`MetadataProvider`] 构造，交给会话线程执行。
 pub(crate) enum MetadataRequest {
-    /// 列出子节点；`None` 表示根。
+    /// 列出子节点；`None` 表示根。`filter` 为空等价于不过滤。
     List {
         parent: Option<ObjectRef>,
+        filter: ObjectFilter,
         page: PageRequest,
     },
     /// 列出列信息。
@@ -82,9 +91,14 @@ pub(crate) enum MetadataReply {
 /// 在会话线程上执行元数据请求。
 pub(crate) fn handle(connection: &Connection, request: MetadataRequest) -> Result<MetadataReply> {
     match request {
-        MetadataRequest::List { parent, page } => Ok(MetadataReply::Nodes(list_children(
+        MetadataRequest::List {
+            parent,
+            filter,
+            page,
+        } => Ok(MetadataReply::Nodes(list_children(
             connection,
             parent.as_ref(),
+            &filter,
             &page,
         )?)),
         MetadataRequest::Columns(object) => {
@@ -104,12 +118,29 @@ impl MetadataProvider for SqliteSession {
         parent: Option<ObjectRef>,
         page: &PageRequest,
     ) -> Result<Page<ObjectNode>> {
+        self.list_children_filtered(parent, &ObjectFilter::none(), page)
+            .await
+    }
+
+    /// 按名称 / 种类过滤子节点（v0.2.2，#84）。
+    ///
+    /// 过滤在会话线程上**下推**进 SQL（`sqlite_master.name LIKE ... ESCAPE`、
+    /// `pragma_table_info(...) WHERE name LIKE ...`），不把整层读回来再筛。
+    async fn list_children_filtered(
+        &self,
+        parent: Option<ObjectRef>,
+        filter: &ObjectFilter,
+        page: &PageRequest,
+    ) -> Result<Page<ObjectNode>> {
         if let Some(parent) = &parent {
             validate_session(self.session_id(), parent)?;
         }
+        // 条件本身非法时不查库：`metadata.filter_invalid`，与「没搜到」区分开。
+        filter.validate()?;
         match self
             .metadata_call(MetadataRequest::List {
                 parent,
+                filter: filter.clone(),
                 page: page.clone(),
             })
             .await?
@@ -254,8 +285,17 @@ fn master_table(database: &str) -> String {
 }
 
 /// 目录层本身：列出本连接可见的 database。
-fn catalog_nodes(connection: &Connection) -> Result<Vec<ObjectNode>> {
-    Ok(database_names(connection)?
+///
+/// 名称条件与 `kinds` 都下推到 SQL：候选集（`pragma_database_list` ∪ `main` / `temp`）
+/// 在 SQL 里用 CTE 拼好再 `WHERE name LIKE ... ESCAPE`，不在 Rust 里筛。`temp` 在
+/// `PRAGMA database_list` 里要等第一个临时对象创建后才出现，但 `temp.sqlite_master`
+/// 随时可查，所以用 `UNION` 补上——补的是**候选**，过滤仍由数据库做。
+fn catalog_nodes(connection: &Connection, filter: &ObjectFilter) -> Result<Vec<ObjectNode>> {
+    if !wants(filter, &ObjectKind::Catalog) {
+        return Ok(Vec::new());
+    }
+    let names = filtered_database_names(connection, filter)?;
+    Ok(names
         .into_iter()
         .map(|name| ObjectNode {
             // 目录节点的 `catalog` 与 `name` 都是库名：`catalog` 是它在层级里的位置，
@@ -270,22 +310,69 @@ fn catalog_nodes(connection: &Connection) -> Result<Vec<ObjectNode>> {
         .collect())
 }
 
-/// 某个 database 里的表与视图。
+/// 过滤后的 catalog 名：`main` / `temp` / `ATTACH` 的库名，名称条件在 SQL 里生效。
+fn filtered_database_names(connection: &Connection, filter: &ObjectFilter) -> Result<Vec<String>> {
+    let (clause, binding) = sqlite_name_condition(filter, "name");
+    let where_clause = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {clause}")
+    };
+    let sql = format!(
+        "WITH available(name) AS (\
+           SELECT name FROM pragma_database_list \
+           UNION SELECT '{MAIN_DATABASE}' UNION SELECT '{TEMP_DATABASE}'\
+         ) SELECT name FROM available{where_clause} ORDER BY name"
+    );
+    let params: Vec<String> = binding.into_iter().collect();
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| map_sqlite_error(error, "准备读取 SQLite 数据库列表失败"))?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库列表失败"))?;
+
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库名失败"))?);
+    }
+    Ok(names)
+}
+
+/// 某个 database 里的表与视图（名称 / 种类都在 SQL 里过滤）。
 fn list_database_objects(
     connection: &Connection,
     database: &str,
+    filter: &ObjectFilter,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
+    let scope = format!("catalog:{database}");
+    let Some(types) = master_types(filter) else {
+        // `kinds` 里没有 table/view：这一层必然为空。空列表是合法结果（没搜到），
+        // 不是错误，也不再查库。
+        return paginate_children_filtered(Vec::new(), &scope, filter, page);
+    };
+    let (clause, binding) = sqlite_name_condition(filter, "name");
+    let extra = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {clause}")
+    };
+    let quoted: Vec<String> = types.iter().map(|kind| format!("'{kind}'")).collect();
     let sql = format!(
-        "SELECT name, type FROM {} WHERE type IN ('table','view') \
-         AND name NOT GLOB 'sqlite_*' ORDER BY name",
-        master_table(database)
+        "SELECT name, type FROM {} WHERE type IN ({}) AND name NOT GLOB 'sqlite_*'{extra} \
+         ORDER BY name",
+        master_table(database),
+        quoted.join(",")
     );
+    let params: Vec<String> = binding.into_iter().collect();
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 对象列表查询失败"))?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| map_sqlite_error(error, "读取 SQLite 对象列表失败"))?;
@@ -304,7 +391,30 @@ fn list_database_objects(
         });
     }
 
-    paginate_children(nodes, &format!("catalog:{database}"), page)
+    paginate_children_filtered(nodes, &scope, filter, page)
+}
+
+/// `kinds` → 可下推的 `sqlite_master.type` 集合；`None` 表示这一层不会有匹配。
+///
+/// 空 `kinds` = 不过滤（表 + 视图）。SQLite 的 `SEQUENCE` / `SCHEMA` 等种类在这一层
+/// 不存在，因此带它们的过滤在这个表/视图层只会得到空列表——不是错误。
+fn master_types(filter: &ObjectFilter) -> Option<Vec<&'static str>> {
+    if filter.kinds.is_empty() {
+        return Some(vec!["table", "view"]);
+    }
+    let mut types = Vec::new();
+    if wants(filter, &ObjectKind::Table) {
+        types.push("table");
+    }
+    if wants(filter, &ObjectKind::View) {
+        types.push("view");
+    }
+    (!types.is_empty()).then_some(types)
+}
+
+/// 该层要不要产出这种子节点：`kinds` 为空 = 不过滤。
+fn wants(filter: &ObjectFilter, kind: &ObjectKind) -> bool {
+    filter.kinds.is_empty() || filter.kinds.iter().any(|candidate| candidate == kind)
 }
 
 /// 把 `sqlite_master.type` 映射成种类。
@@ -319,35 +429,71 @@ fn object_kind(raw: &str) -> ObjectKind {
 }
 
 /// 表/视图的子节点：列 + 索引（表还带触发器）。
+///
+/// 三种子节点各自一条查询，名称条件与 `kinds` 都下推：被 `kinds` 排除的种类连查询都
+/// 不发（`pragma_table_info` 有 10 万列时也不该为了丢掉它们而先读一遍）。
 fn list_table_children(
     connection: &Connection,
     database: &str,
     table: &str,
     include_triggers: bool,
+    filter: &ObjectFilter,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
     let mut nodes = Vec::new();
-    for name in column_names(connection, database, table)? {
-        nodes.push(child_node(database, name, ObjectKind::Column));
+    if wants(filter, &ObjectKind::Column) {
+        for name in column_names(connection, database, table, filter)? {
+            nodes.push(child_node(database, name, ObjectKind::Column));
+        }
     }
-    for name in index_names(connection, database, table)? {
-        nodes.push(child_node(database, name, ObjectKind::Index));
+    if wants(filter, &ObjectKind::Index) {
+        for name in index_names(connection, database, table, filter)? {
+            nodes.push(child_node(database, name, ObjectKind::Index));
+        }
     }
-    if include_triggers {
-        for name in trigger_names(connection, database, table)? {
+    if include_triggers && wants(filter, &ObjectKind::Trigger) {
+        for name in trigger_names(connection, database, table, filter)? {
             nodes.push(child_node(database, name, ObjectKind::Trigger));
         }
     }
-    paginate_children(nodes, &format!("table:{database}.{table}"), page)
+    paginate_children_filtered(nodes, &format!("table:{database}.{table}"), filter, page)
+}
+
+/// 名称条件片段 + 绑定值。`joiner` 是接在已有条件后面的连接词（没有其它条件时用
+/// `WHERE`，已有 `WHERE` 时用 `AND`）。
+///
+/// `pragma_table_info` 这类表值函数结果表也必须在 SQL 里过滤：先取回来再筛就是
+/// 「全量读进内存」，这正是冻结口径否决的方案。
+fn name_filter_suffix(filter: &ObjectFilter, joiner: &str) -> (String, Option<String>) {
+    let (clause, binding) = sqlite_name_condition(filter, "name");
+    (
+        if clause.is_empty() {
+            String::new()
+        } else {
+            format!(" {joiner} {clause}")
+        },
+        binding,
+    )
 }
 
 /// 表/视图里的列名（按列序号）。
-fn column_names(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
+fn column_names(
+    connection: &Connection,
+    database: &str,
+    table: &str,
+    filter: &ObjectFilter,
+) -> Result<Vec<String>> {
+    let (suffix, binding) = name_filter_suffix(filter, "WHERE");
+    let sql = format!("SELECT name FROM pragma_table_info(?, ?){suffix}");
+    let mut params: Vec<String> = vec![table.to_owned(), database.to_owned()];
+    params.extend(binding);
     let mut statement = connection
-        .prepare("SELECT name FROM pragma_table_info(?1, ?2)")
+        .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 列名查询失败"))?;
     let rows = statement
-        .query_map([table, database], |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|error| map_sqlite_error(error, "读取 SQLite 列名失败"))?;
 
     let mut names = Vec::new();
@@ -361,13 +507,23 @@ fn column_names(connection: &Connection, database: &str, table: &str) -> Result<
 ///
 /// 排除 `sql IS NULL` 的隐式索引（`sqlite_autoindex_*`：主键与 `UNIQUE` 约束自动生成）。
 /// 它们是引擎内部对象，没有可展示的 DDL；列出来会让用户点进一个取不到 DDL 的节点。
-fn index_names(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
-    master_names(connection, database, "index", table)
+fn index_names(
+    connection: &Connection,
+    database: &str,
+    table: &str,
+    filter: &ObjectFilter,
+) -> Result<Vec<String>> {
+    master_names(connection, database, "index", table, filter)
 }
 
 /// 表上的触发器。
-fn trigger_names(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
-    master_names(connection, database, "trigger", table)
+fn trigger_names(
+    connection: &Connection,
+    database: &str,
+    table: &str,
+    filter: &ObjectFilter,
+) -> Result<Vec<String>> {
+    master_names(connection, database, "trigger", table, filter)
 }
 
 /// 从 `<库>.sqlite_master` 里按类型 + 所属表取名字（参数化，表名不进 SQL 文本）。
@@ -376,18 +532,24 @@ fn master_names(
     database: &str,
     master_type: &str,
     table: &str,
+    filter: &ObjectFilter,
 ) -> Result<Vec<String>> {
     // `master_type` 只来自本模块的常量（"index" / "trigger"），不是用户输入。
+    let (suffix, binding) = name_filter_suffix(filter, "AND");
     let sql = format!(
-        "SELECT name FROM {} WHERE type = ?1 AND tbl_name = ?2 \
-         AND sql IS NOT NULL ORDER BY name",
+        "SELECT name FROM {} WHERE type = ? AND tbl_name = ? \
+         AND sql IS NOT NULL{suffix} ORDER BY name",
         master_table(database)
     );
+    let mut params: Vec<String> = vec![master_type.to_owned(), table.to_owned()];
+    params.extend(binding);
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 子对象查询失败"))?;
     let rows = statement
-        .query_map([master_type, table], |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|error| map_sqlite_error(error, "读取 SQLite 子对象失败"))?;
 
     let mut names = Vec::new();
@@ -411,13 +573,17 @@ fn child_node(database: &str, name: String, kind: ObjectKind) -> ObjectNode {
 }
 
 /// 列出子节点。父节点为空 = 根 = 当前连接库（`main`）的表与视图，v0.2.1 行为不变。
+///
+/// `filter` 为空时每层的行为与 v0.2.1 / #82 完全一致（token 也仍是 v1）；非空时名称与
+/// 种类都进 SQL，结果集的分页 token 换成带过滤标签的 v2。
 fn list_children(
     connection: &Connection,
     parent: Option<&ObjectRef>,
+    filter: &ObjectFilter,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
     let Some(parent) = parent else {
-        return list_database_objects(connection, MAIN_DATABASE, page);
+        return list_database_objects(connection, MAIN_DATABASE, filter, page);
     };
 
     match &parent.kind {
@@ -428,10 +594,15 @@ fn list_children(
                 ));
             }
             let Some(requested) = catalog_target(parent)? else {
-                return paginate_children(catalog_nodes(connection)?, "catalog-layer", page);
+                return paginate_children_filtered(
+                    catalog_nodes(connection, filter)?,
+                    "catalog-layer",
+                    filter,
+                    page,
+                );
             };
             let database = canonical_database(connection, &requested)?;
-            list_database_objects(connection, &database, page)
+            list_database_objects(connection, &database, filter, page)
         }
         ObjectKind::Table | ObjectKind::View => {
             let (database, name) = resolve_object(connection, parent)?;
@@ -454,6 +625,7 @@ fn list_children(
                 &database,
                 &stored,
                 parent.kind == ObjectKind::Table,
+                filter,
                 page,
             )
         }
