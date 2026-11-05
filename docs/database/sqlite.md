@@ -76,28 +76,70 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，见
 [mariadb.md](./mariadb.md#连接级只读不适用)。
 
-## 元数据（v0.2.1 最小子集）
+## 元数据（v0.2.2：完整层级 + 跨库，ADR 0019 / #82）
 
 实现：`backend/crates/drivers/sqlite/src/metadata.rs`。
 
-| 请求 | 数据来源 | 说明 |
+### 层级与数据来源
+
+| 父节点 | 子节点 | 数据来源 |
 |---|---|---|
-| `list_children(None, page)` | `sqlite_master` | `type IN ('table','view')` 且排除 `sqlite_*` 内部表，`ORDER BY name`；`name` / `type` 原样映射到节点 |
-| `columns(object)` | `pragma_table_info(name)` | 声明类型（`type`）、可空（`notnull`）、列序号（`cid`）、默认值（`dflt_value`） |
-| `primary_key(object)` | `pragma_table_info(name).pk` | `pk > 0` 的行按 `pk` 排序；`pk` 就是**主键内顺序**（1 开始），不是表内列序号 |
-| `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」；v0.2.2 契约已冻结（#81，ADR 0019）：实现时取 `sqlite_master.sql`，给 `exact = true` + `source = DDL_SOURCE_DATABASE` + 来源说明 |
+| 空（根） | 当前连接库（`main`）的表 / 视图 | `"main".sqlite_master`，`type IN ('table','view')`，排除 `sqlite_*` 内部表 |
+| `CATALOG`（名字为空 = 目录层本身） | 本连接可见的 database：`main` / `temp` / `ATTACH` | `PRAGMA database_list` |
+| `CATALOG`（名字为库名） | 该库的表 / 视图 | `"<库>".sqlite_master` |
+| `TABLE` | 列 / 索引 / 触发器 | `pragma_table_info` / `"<库>".sqlite_master`（`type` 为 `index` / `trigger`） |
+| `VIEW` | 列 | `pragma_table_info` |
+| 列 / 索引 / 触发器（叶子） | 无；请求子节点报 `metadata.object_kind_unsupported` | — |
 
-层级范围：SQLite 没有 catalog / schema 层级，根节点（`parent = None`）直接返回当前数据库文件的
-表与视图。带 `catalog` 或 `schema` 的引用、以及 `Catalog` / `Schema` / `Sequence` 等上层或更深层级
-一律返回 `capability.unsupported`，**不返回空列表**冒充「没有对象」。
+- **SQLite 的 catalog 就是 database**：`main`、`temp`，以及本连接 `ATTACH` 进来的库。
+  `temp` 在 `PRAGMA database_list` 里要等第一个临时对象创建后才出现，但 `temp.sqlite_master`
+  随时可查，因此目录层永远列出它；`ATTACH` 的库也列出，否则用户会看到「表存在但在列表里找不到」。
+- **根节点没有变**：`parent = None` 仍然只返回当前连接库（`main`）的表/视图（v0.2.1 行为）。
+  目录层要显式请求：`parent.kind = CATALOG` 且不带名字（见 [grpc-conventions](../api/grpc-conventions.md)）。
+- **SQLite 没有 schema 层级，不伪造**：以 `SCHEMA` 为父节点、或对象引用里带 `schema`，
+  一律 `capability.unsupported`（`UNIMPLEMENTED`）；也不会有空的 schema 节点。
+  SQLite 同样没有序列，`SEQUENCE` 父节点一律报错。
+- **索引只列 `CREATE INDEX` 创建的**：`sqlite_autoindex_*`（主键与 `UNIQUE` 约束隐式生成、
+  `sqlite_master.sql` 为 NULL）不出现——它们没有可展示的 DDL，点进去只能得到空。
 
-对象名解析按 SQLite 语义大小写不敏感（`COLLATE NOCASE`），`pragma_table_info` 使用同一个名字；
-返回节点的名字取自 `sqlite_master` 中的原始大小写。`pragma_table_info` 通过**绑定参数**调用
-（`pragma_table_info(?1)`），不拼接标识符。
+### 跨库（catalog）与标识符
 
-无主键表返回空列表（浏览仍可用但置只读 `NoPrimaryKey`/`Unstable`，编辑被拒绝并返回
-`table_data.no_primary_key`，见 #46/#47）；视图同样没有主键，返回空列表而不是报错。
-表/视图不存在返回 `sqlite.object_not_found`（`NotFound`），不会返回空列。
+- 库名先与 `PRAGMA database_list` 的规范名对上（SQLite 的 database 名大小写不敏感），
+  再作为**标识符**拼进 `"<库>".sqlite_master`：`quote_identifier` 用双引号包裹、内部双引号成对
+  转义。反引号、空格、中文都不是特殊字符（它们在引号里就是字面量），集成用例
+  `catalog_names_with_quotes_spaces_and_cjk_are_quoted` 用 `订单 库` + 反引号 + 双引号的库名锁定；
+- 表名/列名走**绑定参数**（`pragma_table_info(?1, ?2)` 的第二个参数就是库名），不拼 SQL；
+- 省略 `catalog` = 当前库（`main`），**不是**「随便挑一个库」；
+- 表数据浏览（`BrowseTable` / 行编辑）仍然只支持 `main`：它的 SQL 还是 `SELECT ... FROM <表>`，
+  没有库名前缀。带别的 `catalog` 会显式返回 `capability.unsupported`，绝不把 `temp` 里的同名表
+  当成 `main` 的表去读写（跨库表数据不在 #82 范围）。
+
+### 子节点顺序与分页
+
+每一层都由 `sqarvo_metadata::paginate_children` 分页，token 仍是 `v1:<offset>:<16 位指纹>`：
+
+- **顺序**：先按种类（契约 `ObjectKind` 的声明顺序：表 → 视图 → 列 → 索引 → 触发器），
+  再按限定名。**v0.2.1 的「只按名字排序」不再是规则**：视图现在排在所有表之后，
+  前端不得假设全局字母序；
+- **键**：`<父节点作用域>␟<种类>:<限定名>`。种类进键是必须的（一张表可以同时有名为 `x` 的列与
+  名为 `x` 的索引），父节点作用域进键保证「`main` 的 token 不能翻 `temp` 的页」
+  （指纹不同 → `metadata.snapshot_changed`，而不是切出一页错位的数据）；
+- token 结构非法、版本未知、偏移量越界 → `config.invalid`；翻页期间对象集合变化 →
+  `metadata.snapshot_changed`（都应从第一页重读，绝不回退第一页）。
+
+### 错误分类
+
+| 情形 | 错误码 | gRPC |
+|---|---|---|
+| 库（catalog）不存在 | `metadata.object_not_found` | `NOT_FOUND` |
+| 表/视图不存在 | `metadata.object_not_found` | `NOT_FOUND` |
+| 该数据库没有这一层（schema、sequence） | `capability.unsupported` | `UNIMPLEMENTED` |
+| 种类不适用于该操作（对列/索引展开子节点、把视图当表展开） | `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` |
+| `GetDdl` | 仍是显式 `capability.unsupported`（#83 落地） | `UNIMPLEMENTED` |
+
+注意错误码的域：元数据浏览用 `metadata.object_not_found`；表数据浏览/行编辑仍用
+`sqlite.object_not_found`（`BrowseTable` 的既有契约）。两者由驱动显式翻译，不因为共用
+`pragma_table_info` 而互换。
 
 ### 列默认值、字符集与排序规则（#59）
 
@@ -136,7 +178,7 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 
 ### v0.2.2 契约（#81；插入行已实现，过滤与 DDL 见 #82 / #84）
 
-`ListNodes.filter` 与 `InsertRows` 的契约已冻结（ADR 0019），SQLite 侧实现见 #82 / #83：
+`ListNodes.filter` 与 `InsertRows` 的契约已冻结（ADR 0019），SQLite 侧实现见 #84 / #85：
 
 - **过滤下推**：`name.contains` → `sqlite_master.name LIKE '%' || ? || '%' ESCAPE '\'`
   （`%`、`_`、`\` 全部转义为字面量）；`name.exact` → `name = ?`；`kinds` → `type IN (...)`
@@ -162,7 +204,10 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 - 可空性按声明的 `NOT NULL` 原样返回。`INTEGER PRIMARY KEY` 即使没写 `NOT NULL`，插入 NULL 时
   SQLite 会自动分配 rowid——本版不按主键反推，避免猜测；
 - 虚拟表（FTS 等）的 shadow 表也会作为普通表出现在列表里，这是 `sqlite_master` 的真实内容；
-- 没有对象级权限概念；文件级权限在打开连接时由 `sqlite.open_failed` / `io.error` 分类；
+- 没有对象级权限概念；文件级权限在打开连接时由 `sqlite.open_failed` / `io.error` 分类
+  （因此元数据路径永远不会返回 `metadata.permission_denied`——SQLite 没有这个概念）；
+- 表数据浏览/行编辑只支持当前库（`main`）：跨库浏览可以，跨库读写不在 #82 范围；
+- 隐式索引（`sqlite_autoindex_*`）不出现在索引列表里（见上）；
 - 有未读完的结果游标时元数据请求返回 `sqlite.query_active`（`FailedPrecondition`），
   避免在游标持有的语句之外再准备语句；
 - DDL 查看计划 v0.2.2；本版不把 `sqlite_master.sql` 当作「数据库返回的原始 DDL」交付。
@@ -175,7 +220,8 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 | `query_cancellation` | `true` | `InterruptHandle`，幂等 |
 | `streaming_results` | `true` | 驱动侧分批 + 游标 |
 | `multiple_statements` | `false` | 发送前拒绝 |
-| `catalogs` / `schemas` | `false` | SQLite 没有这两个层级 |
+| `catalogs` | `true` | v0.2.2（#82）：catalog = database（`main` / `temp` / `ATTACH`），可逐层浏览与跨库寻址 |
+| `schemas` | `false` | SQLite 没有 schema 层级 |
 | `row_editing` | `true` | `table_data()` 提供浏览、行编辑（update / delete）与插入（#85），见 ADR 0017 / 0019 |
 | `parameterized_statements` | `true` | `execute_parameterized`：值经 `rusqlite` 绑定，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划 v0.2.2 |

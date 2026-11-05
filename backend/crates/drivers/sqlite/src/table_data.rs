@@ -39,9 +39,21 @@ use sqarvo_driver_api::{
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
-use crate::error::map_sqlite_error;
+use crate::error::{OBJECT_NOT_FOUND, map_sqlite_error};
 use crate::metadata;
 use crate::session::SqliteSession;
+
+/// 元数据域的对象不存在码 → 表数据域的对象不存在码。
+///
+/// 同一份 `pragma_table_info` 查询同时服务两个域，但错误码按域区分：元数据浏览用
+/// `metadata.object_not_found`（ADR 0019），表数据浏览/行编辑沿用 `sqlite.object_not_found`。
+/// 不在这里翻译的话，表数据路径会因为复用了元数据实现而悄悄换了码。
+fn table_data_not_found(error: Error) -> Error {
+    if error.code() == ErrorCode::METADATA_OBJECT_NOT_FOUND {
+        return Error::not_found(OBJECT_NOT_FOUND, error.message().to_owned());
+    }
+    error
+}
 
 /// 表数据请求。由 [`TableDataProvider`] 构造，交给会话线程执行。
 pub(crate) enum TableDataRequest {
@@ -223,8 +235,8 @@ fn browse(connection: &Connection, object: &ObjectRef, page: &PageRequest) -> Re
     let connection_read_only = connection_read_only(connection)?;
     // 列元数据复用 #45 的 GetColumns 路径：同一份 `pragma_table_info`、同一个顺序，
     // 因此 `columns` 与每行 cells 的下标严格对应。
-    let columns = metadata::columns(connection, object)?;
-    let primary_key = metadata::primary_key(connection, object)?;
+    let columns = metadata::columns(connection, object).map_err(table_data_not_found)?;
+    let primary_key = metadata::primary_key(connection, object).map_err(table_data_not_found)?;
     let page_size = usize::try_from(page.effective_page_size()).unwrap_or(100);
 
     if primary_key.is_empty() {
@@ -458,8 +470,8 @@ fn apply(
     if connection_read_only(connection)? {
         return Err(read_only_connection());
     }
-    let columns = metadata::columns(connection, object)?;
-    let primary_key = metadata::primary_key(connection, object)?;
+    let columns = metadata::columns(connection, object).map_err(table_data_not_found)?;
+    let primary_key = metadata::primary_key(connection, object).map_err(table_data_not_found)?;
     if primary_key.is_empty() {
         return Err(no_primary_key());
     }

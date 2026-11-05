@@ -1767,9 +1767,8 @@ async fn metadata_lists_tables_and_views_with_stable_pagination() {
         .collect();
     let unique: std::collections::BTreeSet<&String> = names.iter().collect();
     assert_eq!(unique.len(), names.len(), "翻页不得出现重复对象");
-    let mut sorted = names.clone();
-    sorted.sort();
-    assert_eq!(names, sorted, "对象必须按名字排序");
+    // v0.2.2 起子节点先按种类、再按名字排序（表在视图之前），因此不能直接按名字断言。
+    assert_kind_then_name_sorted(&collected, "根节点");
     for expected in [
         format!("{MD_PREFIX}_01"),
         format!("{MD_PREFIX}_02"),
@@ -1979,37 +1978,62 @@ async fn metadata_primary_key_handles_single_composite_and_missing_keys() {
 }
 
 #[tokio::test]
-async fn metadata_rejects_cross_catalog_and_bad_tokens() {
+async fn metadata_cross_catalog_references_are_explicit() {
     let Some(session) = session().await else {
         return;
     };
     let provider = session.metadata().expect("MariaDB 元数据能力");
 
-    // 跨库浏览本版未实现：显式拒绝，不返回别的库的表。
-    let other = ObjectRef {
+    // 显式给出另一个库：跨库引用可用（`information_schema` 对任何账号可见、只读）。
+    let system_tables = ObjectRef {
         session_id: session.session_id(),
-        qualified_name: QualifiedName::new(Some("mysql".to_owned()), None, ""),
+        qualified_name: QualifiedName::new(Some("information_schema".to_owned()), None, "TABLES"),
+        kind: ObjectKind::Table,
+    };
+    let columns = provider.columns(&system_tables).await.expect("跨库读列");
+    assert!(
+        columns.iter().any(|column| column.name == "TABLE_NAME"),
+        "必须读到 information_schema.TABLES 的列：{:?}",
+        columns
+            .iter()
+            .map(|column| &column.name)
+            .collect::<Vec<_>>()
+    );
+    let primary_key = provider
+        .primary_key(&system_tables)
+        .await
+        .expect("跨库读主键");
+    assert!(primary_key.is_empty(), "系统视图没有主键，不得编造");
+
+    // 不带 catalog = 当前库：绝不能把 information_schema 的同名表冒充成当前库的表。
+    let same_name = ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(None, None, "TABLES"),
         kind: ObjectKind::Table,
     };
     let error = provider
-        .columns(&other)
+        .columns(&same_name)
         .await
-        .expect_err("跨库必须明确拒绝");
-    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
-    assert_eq!(error.category(), ErrorCategory::Unsupported);
+        .expect_err("当前库里没有 TABLES，跨库不能隐式切换");
+    assert_eq!(error.code(), ErrorCode::METADATA_OBJECT_NOT_FOUND);
+    assert_eq!(error.category(), ErrorCategory::NotFound);
 
-    // 上层层级（Catalog/Schema）未实现。
-    let parent = ObjectRef {
+    // MariaDB 没有 schema 层级：带 schema 的引用显式报错，不返回空结果。
+    let schema_ref = ObjectRef {
         session_id: session.session_id(),
-        qualified_name: QualifiedName::new(Some("sqarvo_test_45".to_owned()), None, ""),
-        kind: ObjectKind::Catalog,
+        qualified_name: QualifiedName::new(
+            Some("information_schema".to_owned()),
+            Some("public".to_owned()),
+            "TABLES",
+        ),
+        kind: ObjectKind::Table,
     };
     let error = provider
-        .list_children(Some(parent), &md_page(10, None))
+        .columns(&schema_ref)
         .await
-        .expect_err("上层节点必须明确拒绝");
+        .expect_err("MariaDB 没有 schema 层级");
     assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
-    assert!(error.message().contains("v0.2.2"), "{error}");
+    assert_eq!(error.category(), ErrorCategory::Unsupported);
 
     // 非法 token / 越界偏移量：显式失败，不回退第一页。
     for token in ["abc", "v1:1", "v1:999:0000000000000000"] {
@@ -2052,7 +2076,9 @@ async fn metadata_missing_table_is_not_found() {
             .await
             .expect_err("不存在的主键查询必须报错"),
     ] {
-        assert_eq!(error.code(), error::OBJECT_NOT_FOUND);
+        // 元数据域用 `metadata.object_not_found`（ADR 0019）；表数据域仍是
+        // `mariadb.object_not_found`（见 browse 用例）。
+        assert_eq!(error.code(), ErrorCode::METADATA_OBJECT_NOT_FOUND);
         assert_eq!(error.category(), ErrorCategory::NotFound);
     }
 }
@@ -2075,6 +2101,32 @@ async fn metadata_without_selected_database_is_rejected() {
         .expect_err("没有选库时不能返回空列表冒充「没有表」");
     assert_eq!(error.code(), error::NO_DATABASE);
     assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+
+    // 目录层不依赖当前库：没有默认库时也能列出可见的 database（跨库浏览的入口）。
+    let catalogs = provider
+        .list_children(Some(md_catalog_layer(&*session)), &md_page(100, None))
+        .await
+        .expect("目录层不需要当前库");
+    assert!(
+        catalogs
+            .items
+            .iter()
+            .any(|node| node.display_name == "information_schema"),
+        "目录层必须列出 information_schema"
+    );
+
+    // 但展开某个库仍然要求那张表存在（这里显式给出 catalog，不靠默认库）。
+    let object = ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(Some("information_schema".to_owned()), None, "TABLES"),
+        kind: ObjectKind::Table,
+    };
+    let columns = provider
+        .columns(&object)
+        .await
+        .expect("显式库名时不依赖当前库");
+    assert!(columns.iter().any(|column| column.name == "TABLE_NAME"));
+
     session.close().await.unwrap();
 }
 
@@ -3445,6 +3497,668 @@ async fn parameterized_execution_binds_values_instead_of_splicing() {
 
     exec(&*session, "DROP TABLE IF EXISTS sqarvo_t_param59").await;
     session.close().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// v0.2.2 层级展开与跨库浏览（#82）
+// ---------------------------------------------------------------------------
+
+/// 本节的表/序列/触发器前缀：与其它用例互不干扰。
+const MD82_PREFIX: &str = "sqarvo_md82";
+
+/// 目录层引用：只给种类、不给名字 = 「列出全部 catalog」。
+fn md_catalog_layer(session: &dyn DriverSession) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(None, None, ""),
+        kind: ObjectKind::Catalog,
+    }
+}
+
+fn md_catalog(session: &dyn DriverSession, name: &str) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(Some(name.to_owned()), None, ""),
+        kind: ObjectKind::Catalog,
+    }
+}
+
+fn md_object_in(
+    session: &dyn DriverSession,
+    database: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(Some(database.to_owned()), None, name),
+        kind,
+    }
+}
+
+/// 逐页收全；每页都检查 `truncated` 与「非末页是满页」。
+async fn md_walk(
+    provider: &dyn MetadataProvider,
+    parent: Option<ObjectRef>,
+    page_size: u32,
+) -> sqarvo_common::Result<(Vec<ObjectNode>, usize)> {
+    let mut collected = Vec::new();
+    let mut token = None;
+    let mut pages = 0;
+    loop {
+        let page = provider
+            .list_children(parent.clone(), &md_page(page_size, token))
+            .await?;
+        assert!(page.items.len() <= usize::try_from(page_size).unwrap());
+        if page.next_page_token.is_some() {
+            assert!(page.truncated, "还有下一页时 truncated 必须为 true");
+            assert_eq!(
+                page.items.len(),
+                usize::try_from(page_size).unwrap(),
+                "非末页必须是满页"
+            );
+        } else {
+            assert!(!page.truncated);
+        }
+        collected.extend(page.items);
+        pages += 1;
+        assert!(pages <= 100, "分页未收敛");
+        match page.next_page_token {
+            Some(next) => token = Some(next),
+            None => return Ok((collected, pages)),
+        }
+    }
+}
+
+/// 翻页期间对象集合可能被并发用例改动：`metadata.snapshot_changed` 时从第一页重读。
+async fn md_walk_stable(
+    provider: &dyn MetadataProvider,
+    parent: Option<ObjectRef>,
+    page_size: u32,
+) -> (Vec<ObjectNode>, usize) {
+    for _ in 0..5 {
+        match md_walk(provider, parent.clone(), page_size).await {
+            Ok(result) => return result,
+            Err(error) if error.code() == ErrorCode::from_static("metadata.snapshot_changed") => {}
+            Err(error) => panic!("列出子节点失败：{error:?}"),
+        }
+    }
+    panic!("对象集合持续变化，无法完成分页");
+}
+
+/// 子节点排序权重：契约 `ObjectKind` 的声明顺序（与 `sqarvo_metadata::kind_order` 一致）。
+fn kind_rank(kind: &ObjectKind) -> u8 {
+    match kind {
+        ObjectKind::Catalog => 1,
+        ObjectKind::Schema => 2,
+        ObjectKind::Table => 3,
+        ObjectKind::View => 4,
+        ObjectKind::MaterializedView => 5,
+        ObjectKind::Column => 6,
+        ObjectKind::Index => 7,
+        ObjectKind::Sequence => 8,
+        ObjectKind::Function => 9,
+        ObjectKind::Procedure => 10,
+        ObjectKind::Trigger => 11,
+        ObjectKind::Type => 12,
+        ObjectKind::Other(_) => 13,
+    }
+}
+
+/// 断言当前页序列按（种类, 名字）严格递增——翻页无重无漏的前提。
+fn assert_kind_then_name_sorted(nodes: &[ObjectNode], context: &str) {
+    let mut previous: Option<(u8, &str)> = None;
+    for node in nodes {
+        let key = (kind_rank(&node.kind), node.display_name.as_str());
+        if let Some(previous) = previous {
+            assert!(
+                previous < key,
+                "{context}：排序被破坏，{previous:?} 之后出现 {key:?}"
+            );
+        }
+        previous = Some(key);
+    }
+}
+
+/// 测试侧的标识符引用：反引号包裹、内部反引号成对（与驱动内部实现分开写）。
+fn q(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+async fn drop_md82(session: &dyn DriverSession, names: &[&str]) {
+    for name in names {
+        exec(
+            session,
+            &format!("DROP TRIGGER IF EXISTS {MD82_PREFIX}_{name}_trg"),
+        )
+        .await;
+        exec(
+            session,
+            &format!("DROP VIEW IF EXISTS {MD82_PREFIX}_{name}"),
+        )
+        .await;
+        exec(
+            session,
+            &format!("DROP SEQUENCE IF EXISTS {MD82_PREFIX}_{name}"),
+        )
+        .await;
+        exec(
+            session,
+            &format!("DROP TABLE IF EXISTS {MD82_PREFIX}_{name}"),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn metadata_catalog_layer_lists_every_visible_database() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+
+    // 期望集合来自同一条服务端查询：`SCHEMATA` 就是权限过滤后的真相。
+    let (_, rows) = select(
+        &*session,
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
+    )
+    .await;
+    let expected: Vec<String> = rows.iter().map(|row| text_of(&row[0]).to_owned()).collect();
+    assert!(expected.len() >= 2, "测试库里应有多个可见库");
+
+    // 页大小 1：每个库一页，页数必须恰好等于库数。CI 的测试库只有
+    // information_schema + 测试库两个可见库、本地有 10+ 个，因此断言写成
+    // 「页数 == 库数」而不是「页数 > N」，两种环境都成立。
+    let (catalogs, pages) = md_walk_stable(provider, Some(md_catalog_layer(&*session)), 1).await;
+    assert_eq!(pages, expected.len(), "每页 1 个时页数必须等于库数");
+    assert!(pages >= 2, "至少 information_schema 与测试库两个可见库");
+    let listed: Vec<String> = catalogs
+        .iter()
+        .map(|node| node.display_name.clone())
+        .collect();
+    assert_eq!(listed, expected, "目录层必须无重复、无遗漏且有序");
+    for node in &catalogs {
+        assert_eq!(node.kind, ObjectKind::Catalog);
+        assert!(node.has_children, "目录都可能有下一层");
+        assert_eq!(
+            node.qualified_name.catalog.as_deref(),
+            Some(node.display_name.as_str()),
+            "目录节点的 catalog 必须是库名，客户端才能原样回传"
+        );
+    }
+}
+
+#[tokio::test]
+async fn metadata_catalog_children_are_scoped_to_that_database() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["scope"];
+    drop_md82(&*session, &own).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {MD82_PREFIX}_scope (id INT PRIMARY KEY)"),
+    )
+    .await;
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let current = text_of(&database_row[0][0]).to_owned();
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let (system, _) = md_walk_stable(
+        provider,
+        Some(md_catalog(&*session, "information_schema")),
+        100,
+    )
+    .await;
+    let system_names: Vec<&str> = system
+        .iter()
+        .map(|node| node.display_name.as_str())
+        .collect();
+    assert!(system_names.contains(&"TABLES"), "应列出系统表");
+    assert!(
+        !system_names.contains(&format!("{MD82_PREFIX}_scope").as_str()),
+        "别的库的对象不能出现在 information_schema 目录下"
+    );
+    assert!(
+        system
+            .iter()
+            .all(|node| node.qualified_name.catalog.as_deref() == Some("information_schema")),
+        "跨库列出时必须把 catalog 填成被展开的库"
+    );
+
+    let (own_nodes, _) = md_walk_stable(provider, Some(md_catalog(&*session, &current)), 100).await;
+    let target = own_nodes
+        .iter()
+        .find(|node| node.display_name == format!("{MD82_PREFIX}_scope"))
+        .expect("当前库必须列出自己刚建的表");
+    assert_eq!(target.kind, ObjectKind::Table);
+    assert_eq!(
+        target.qualified_name.catalog.as_deref(),
+        Some(current.as_str())
+    );
+
+    // 目录节点的引用原样回传（前端就是这么展开的）。
+    let expanded = provider
+        .list_children(
+            Some(ObjectRef {
+                session_id: session.session_id(),
+                qualified_name: QualifiedName::new(Some(current.clone()), None, current.clone()),
+                kind: ObjectKind::Catalog,
+            }),
+            &md_page(100, None),
+        )
+        .await
+        .expect("目录节点的 catalog + name 两种写法都必须可用");
+    assert!(
+        expanded
+            .items
+            .iter()
+            .any(|node| node.display_name == format!("{MD82_PREFIX}_scope"))
+    );
+
+    drop_md82(&*session, &own).await;
+}
+
+#[tokio::test]
+async fn metadata_sequences_are_browsable_and_are_leaves() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["seq"];
+    drop_md82(&*session, &own).await;
+    exec(
+        &*session,
+        &format!("CREATE SEQUENCE {MD82_PREFIX}_seq START WITH 5"),
+    )
+    .await;
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let current = text_of(&database_row[0][0]).to_owned();
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let (nodes, _) = md_walk_stable(provider, Some(md_catalog(&*session, &current)), 100).await;
+    let sequence = nodes
+        .iter()
+        .find(|node| node.display_name == format!("{MD82_PREFIX}_seq"))
+        .expect("序列必须出现在表列表里（MariaDB 的 SEQUENCE 就是 TABLES 里的一行）");
+    assert_eq!(sequence.kind, ObjectKind::Sequence);
+    assert!(!sequence.has_children, "序列是叶子");
+
+    // 根节点（当前库）同样列出序列：v0.2.2 的根是 TABLE/VIEW/SEQUENCE。
+    let (root_nodes, _) = md_walk_stable(provider, None, 100).await;
+    assert!(
+        root_nodes
+            .iter()
+            .any(|node| node.display_name == format!("{MD82_PREFIX}_seq")),
+        "根节点必须包含序列"
+    );
+
+    // 序列没有列、也不能再展开：种类不适用（不是「不存在」，也不是空列表）。
+    for error in [
+        provider
+            .columns(&md_object_in(
+                &*session,
+                &current,
+                &format!("{MD82_PREFIX}_seq"),
+                ObjectKind::Sequence,
+            ))
+            .await
+            .expect_err("序列没有列"),
+        provider
+            .list_children(
+                Some(md_object_in(
+                    &*session,
+                    &current,
+                    &format!("{MD82_PREFIX}_seq"),
+                    ObjectKind::Sequence,
+                )),
+                &md_page(10, None),
+            )
+            .await
+            .expect_err("序列不能再展开"),
+    ] {
+        assert_eq!(error.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+        assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    }
+
+    drop_md82(&*session, &own).await;
+}
+
+#[tokio::test]
+async fn metadata_table_children_include_columns_indexes_and_triggers() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["parts", "parts_view"];
+    drop_md82(&*session, &own).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {MD82_PREFIX}_parts (\
+             id INT NOT NULL AUTO_INCREMENT, \
+             code VARCHAR(16) NOT NULL, \
+             PRIMARY KEY (id), \
+             UNIQUE KEY uniq_code (code), \
+             KEY idx_code (code))"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TRIGGER {MD82_PREFIX}_parts_trg BEFORE INSERT ON {MD82_PREFIX}_parts \
+             FOR EACH ROW SET NEW.code = NEW.code"
+        ),
+    )
+    .await;
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let current = text_of(&database_row[0][0]).to_owned();
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let (children, _) = md_walk_stable(
+        provider,
+        Some(md_object_in(
+            &*session,
+            &current,
+            &format!("{MD82_PREFIX}_parts"),
+            ObjectKind::Table,
+        )),
+        100,
+    )
+    .await;
+    let listed: Vec<(&str, &str)> = children
+        .iter()
+        .map(|node| (node.kind.as_str(), node.display_name.as_str()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("column", "code"),
+            ("column", "id"),
+            ("index", "PRIMARY"),
+            ("index", "idx_code"),
+            ("index", "uniq_code"),
+            ("trigger", "sqarvo_md82_parts_trg"),
+        ],
+        "每层按（种类, 名字）排序；索引来自 STATISTICS，触发器来自 TRIGGERS"
+    );
+    assert!(
+        children.iter().all(|node| !node.has_children),
+        "列/索引/触发器都是叶子"
+    );
+    assert!(
+        children
+            .iter()
+            .all(|node| node.qualified_name.catalog.as_deref() == Some(current.as_str())),
+        "子节点的 catalog 必须填满"
+    );
+
+    // 视图只有列。
+    exec(
+        &*session,
+        &format!("CREATE VIEW {MD82_PREFIX}_parts_view AS SELECT id FROM {MD82_PREFIX}_parts"),
+    )
+    .await;
+    let (view_children, _) = md_walk_stable(
+        provider,
+        Some(md_object_in(
+            &*session,
+            &current,
+            &format!("{MD82_PREFIX}_parts_view"),
+            ObjectKind::View,
+        )),
+        100,
+    )
+    .await;
+    assert_eq!(
+        view_children
+            .iter()
+            .map(|node| (node.kind.as_str(), node.display_name.as_str()))
+            .collect::<Vec<_>>(),
+        [("column", "id")],
+        "视图子节点只有列"
+    );
+
+    drop_md82(&*session, &own).await;
+}
+
+#[tokio::test]
+async fn metadata_hierarchy_pagination_has_no_duplicates_or_gaps() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+
+    // 1) 目录层：每页 1 个 → 页数必须等于库数（CI 2 个、本地 10+ 个）。库集合在
+    //    测试期间稳定，因此这里可以做「与全集逐项比对」的严格断言；真正「造大量
+    //    对象跨多页」的是下面第 2 步的叶子层（自建表，不受并发用例影响）。
+    let (_, schema_rows) = select(
+        &*session,
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
+    )
+    .await;
+    let expected_catalogs: Vec<String> = schema_rows
+        .iter()
+        .map(|row| text_of(&row[0]).to_owned())
+        .collect();
+    let (catalogs, catalog_pages) =
+        md_walk_stable(provider, Some(md_catalog_layer(&*session)), 1).await;
+    assert_eq!(
+        catalog_pages,
+        expected_catalogs.len(),
+        "每页 1 个时页数必须等于库数"
+    );
+    let listed: Vec<String> = catalogs
+        .iter()
+        .map(|node| node.display_name.clone())
+        .collect();
+    assert_eq!(
+        listed, expected_catalogs,
+        "目录层翻页必须无重复、无遗漏且有序"
+    );
+
+    // 2) 叶子层：自建 20 列 + 3 个索引（其中一个与列同名）、每页 4 个 → 6 页。
+    //    只碰本用例自己的表，不会让并发用例看到对象集合变化。
+    let table = format!("{MD82_PREFIX}_wide");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    let columns: String = (0..20)
+        .map(|index| format!("c{index:02} INT"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} ({columns}, KEY idx_c00 (c00), KEY c01 (c01), KEY idx_c19 (c19))"
+        ),
+    )
+    .await;
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let current = text_of(&database_row[0][0]).to_owned();
+
+    let (children, child_pages) = md_walk_stable(
+        provider,
+        Some(md_object_in(&*session, &current, &table, ObjectKind::Table)),
+        4,
+    )
+    .await;
+    assert_eq!(child_pages, 6, "23 个子节点按每页 4 个应分 6 页");
+
+    let mut expected: Vec<(String, String)> = Vec::new();
+    for index in 0..20 {
+        expected.push(("column".to_owned(), format!("c{index:02}")));
+    }
+    for index in ["c01", "idx_c00", "idx_c19"] {
+        expected.push(("index".to_owned(), index.to_owned()));
+    }
+    expected.sort();
+    let mut got: Vec<(String, String)> = children
+        .iter()
+        .map(|node| (node.kind.as_str().to_owned(), node.display_name.clone()))
+        .collect();
+    got.sort();
+    assert_eq!(got, expected, "翻页必须无重复、无遗漏");
+    assert_kind_then_name_sorted(&children, "表的子节点");
+    assert!(
+        children
+            .iter()
+            .filter(|node| node.kind == ObjectKind::Index && node.display_name == "c01")
+            .count()
+            == 1,
+        "与列同名的索引必须恰好出现一次"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn metadata_cross_database_errors_are_classified() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+
+    // 库存在但当前账号没有权限（`mysql` 库对本测试账号不可见）：必须报权限不足，
+    // 不能报「不存在」，也不能返回空列表。
+    let error = provider
+        .list_children(Some(md_catalog(&*session, "mysql")), &md_page(10, None))
+        .await
+        .expect_err("无权限的库必须报错");
+    assert_eq!(error.code(), ErrorCode::METADATA_PERMISSION_DENIED);
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    assert!(error.message().contains("mysql"), "{error}");
+
+    // 不存在的库：`information_schema.SCHEMATA` 里看不到，随后 `SHOW CREATE DATABASE`
+    // 探测。**实测**（MariaDB 11.4，本测试账号只有库级授权）：
+    //   `SHOW CREATE DATABASE sqarvo_md82_ghost` → 1044
+    //   `SHOW CREATE DATABASE mysql`            → 1044
+    // 两种情形服务端给的是同一个错误，「不存在」与「无权限」无法区分（没有全局权限时
+    // 连 `USE <不存在的库>` 也是 1044），因此驱动按服务端原话报 permission_denied，
+    // 不猜成 object_not_found；消息里写明这一点。1049 → object_not_found 的映射由
+    // `probe_database` 的单元测试锁定。
+    let error = provider
+        .list_children(
+            Some(md_catalog(&*session, "sqarvo_md82_ghost")),
+            &md_page(10, None),
+        )
+        .await
+        .expect_err("不存在的库必须报错");
+    assert_eq!(error.code(), ErrorCode::METADATA_PERMISSION_DENIED);
+    assert!(error.message().contains("1044"), "{error}");
+
+    // 表不存在（库可读）→ metadata.object_not_found。
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let current = text_of(&database_row[0][0]).to_owned();
+    let error = provider
+        .list_children(
+            Some(md_object_in(
+                &*session,
+                &current,
+                "sqarvo_md82_ghost",
+                ObjectKind::Table,
+            )),
+            &md_page(10, None),
+        )
+        .await
+        .expect_err("不存在的表必须报错");
+    assert_eq!(error.code(), ErrorCode::METADATA_OBJECT_NOT_FOUND);
+    assert_eq!(error.category(), ErrorCategory::NotFound);
+
+    // 没有 schema 层级 → capability.unsupported；叶子节点不能再展开 → 种类不适用。
+    let error = provider
+        .list_children(
+            Some(ObjectRef {
+                session_id: session.session_id(),
+                qualified_name: QualifiedName::new(None, Some("public".to_owned()), ""),
+                kind: ObjectKind::Schema,
+            }),
+            &md_page(10, None),
+        )
+        .await
+        .expect_err("MariaDB 没有 schema 层级");
+    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
+    assert_eq!(error.category(), ErrorCategory::Unsupported);
+
+    let error = provider
+        .list_children(
+            Some(md_object_in(
+                &*session,
+                &current,
+                "some_column",
+                ObjectKind::Column,
+            )),
+            &md_page(10, None),
+        )
+        .await
+        .expect_err("列是叶子");
+    assert_eq!(error.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+    assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+}
+
+#[tokio::test]
+async fn metadata_object_names_with_backticks_spaces_and_cjk_round_trip() {
+    let Some(session) = session().await else {
+        return;
+    };
+    // 表名/列名/索引名里放反引号、空格与中文：库名走绑定参数，表名也走绑定参数，
+    // 因此这些字符不需要转义；这里锁定的是「真的不需要转义，而不是被拼接破坏」。
+    let table = "sqarvo_md82 订单`表";
+    let column = "备注 列`x";
+    let index = "索引`名 1";
+    exec(&*session, &format!("DROP TABLE IF EXISTS {}", q(table))).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {} (id INT NOT NULL, {} VARCHAR(32) NOT NULL, \
+             PRIMARY KEY (id), KEY {} ({}))",
+            q(table),
+            q(column),
+            q(index),
+            q(column)
+        ),
+    )
+    .await;
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let current = text_of(&database_row[0][0]).to_owned();
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let (nodes, _) = md_walk_stable(provider, Some(md_catalog(&*session, &current)), 100).await;
+    let node = nodes
+        .iter()
+        .find(|node| node.display_name == table)
+        .expect("特殊字符的表名必须原样列出");
+    assert_eq!(
+        node.qualified_name.catalog.as_deref(),
+        Some(current.as_str())
+    );
+
+    // 节点引用原样回传：读列 + 读主键 + 展开子节点。
+    let reference = ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: node.qualified_name.clone(),
+        kind: node.kind.clone(),
+    };
+    let columns = provider.columns(&reference).await.expect("读列");
+    assert_eq!(
+        columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", column]
+    );
+    let primary_key = provider.primary_key(&reference).await.expect("读主键");
+    assert_eq!(primary_key.column_names(), ["id"]);
+    let (children, _) = md_walk_stable(provider, Some(reference), 100).await;
+    assert!(
+        children
+            .iter()
+            .any(|node| node.kind == ObjectKind::Index && node.display_name == index),
+        "特殊字符的索引名必须原样列出：{:?}",
+        children
+            .iter()
+            .map(|node| (&node.kind, &node.display_name))
+            .collect::<Vec<_>>()
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {}", q(table))).await;
 }
 
 // ---------------------------------------------------------------------------

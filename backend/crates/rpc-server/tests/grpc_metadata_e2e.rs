@@ -30,9 +30,10 @@ use sqarvo_rpc_server::auth::TOKEN_METADATA_KEY;
 use sqarvo_rpc_server::proto::common::v1::{ColumnDefaultKind, ColumnTypeKind, PageRequest};
 use sqarvo_rpc_server::proto::services::v1::{
     ConnectRequest, ConnectionParams, DisconnectRequest, ExecuteQueryRequest, GetColumnsRequest,
-    GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, ObjectKind, ObjectRef,
-    connection_service_client::ConnectionServiceClient,
-    metadata_service_client::MetadataServiceClient, query_service_client::QueryServiceClient,
+    GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, NodeFilter, ObjectKind,
+    ObjectNameFilter, ObjectRef, connection_service_client::ConnectionServiceClient,
+    metadata_service_client::MetadataServiceClient, object_name_filter,
+    query_service_client::QueryServiceClient,
 };
 use sqarvo_rpc_server::{LocalListener, Services, serve};
 use tempfile::TempDir;
@@ -234,8 +235,9 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
         token = page.next_page_token;
     }
     assert_eq!(pages, 3, "5 个对象按每页 2 个应分 3 页");
-    assert_eq!(names, ["alpha", "beta", "delta", "epsilon", "gamma"]);
-    assert_eq!(kinds[3], ObjectKind::View);
+    // v0.2.2 起子节点先按种类、再按名字排序：表在前，视图在后。
+    assert_eq!(names, ["alpha", "beta", "delta", "gamma", "epsilon"]);
+    assert_eq!(kinds[4], ObjectKind::View);
     assert_eq!(kinds[0], ObjectKind::Table);
 
     // ---- GetColumns：原始类型名、长度、可空 ----
@@ -373,29 +375,157 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
         Some(ErrorCode::CONFIG_INVALID.as_str())
     );
 
-    // ---- 上层层级：明确未实现 ----
-    let unsupported_parent = metadata
+    // ---- 目录层（CATALOG）：逐层展开、catalog 由服务端填满、引用可原样回传 ----
+    let catalogs = stage(
+        "ListNodes(catalog layer)",
+        metadata
+            .list_nodes(ListNodesRequest {
+                parent: Some(ObjectRef {
+                    session_id: session_id.clone(),
+                    kind: ObjectKind::Catalog as i32,
+                    ..ObjectRef::default()
+                }),
+                page: Some(PageRequest {
+                    page_size: 10,
+                    page_token: String::new(),
+                }),
+                filter: None,
+            })
+            .await,
+    );
+    let main_catalog = catalogs
+        .nodes
+        .iter()
+        .find(|node| node.display_name == "main")
+        .expect("目录层必须列出 main");
+    let main_reference = main_catalog.reference.clone().expect("目录节点必须带引用");
+    assert_eq!(main_reference.kind, ObjectKind::Catalog as i32);
+    assert_eq!(main_reference.catalog, "main");
+    assert_eq!(main_reference.name, "main", "目录节点的名字就是库名");
+    assert!(main_catalog.has_children);
+
+    let expanded = stage(
+        "ListNodes(main)",
+        metadata
+            .list_nodes(ListNodesRequest {
+                parent: Some(main_reference.clone()),
+                page: Some(PageRequest {
+                    page_size: 100,
+                    page_token: String::new(),
+                }),
+                filter: None,
+            })
+            .await,
+    );
+    assert_eq!(
+        expanded.nodes.len(),
+        5,
+        "目录的直接子节点只有这一层的 5 个对象"
+    );
+    for node in &expanded.nodes {
+        let reference = node.reference.as_ref().expect("节点必须带引用");
+        assert_eq!(reference.catalog, "main", "catalog 必须由服务端填满");
+        assert!(
+            reference.schema.is_empty(),
+            "SQLite 没有 schema 层，不得填占位值"
+        );
+    }
+    let alpha_from_catalog = expanded
+        .nodes
+        .iter()
+        .find(|node| node.display_name == "alpha")
+        .expect("alpha 在 main 下")
+        .reference
+        .clone()
+        .expect("引用");
+    let alpha_columns = stage(
+        "GetColumns(catalog node)",
+        metadata
+            .get_columns(GetColumnsRequest {
+                object: Some(alpha_from_catalog),
+            })
+            .await,
+    );
+    assert_eq!(alpha_columns.columns.len(), 2, "目录节点引用必须能原样回传");
+
+    // ---- 不存在的层级：显式报错，绝不返回空列表 ----
+    let schema_parent = metadata
         .list_nodes(ListNodesRequest {
             parent: Some(ObjectRef {
                 session_id: session_id.clone(),
-                name: "main".to_owned(),
-                kind: ObjectKind::Catalog as i32,
-                ..ObjectRef::default()
+                catalog: String::new(),
+                schema: "public".to_owned(),
+                name: String::new(),
+                kind: ObjectKind::Schema as i32,
             }),
             page: Some(PageRequest::default()),
             filter: None,
         })
         .await
-        .expect_err("上层层级必须明确拒绝");
-    assert_eq!(unsupported_parent.code(), Code::Unimplemented);
+        .expect_err("SQLite 没有 schema 层级");
+    assert_eq!(schema_parent.code(), Code::Unimplemented);
     assert_eq!(
-        error_code_of(&unsupported_parent),
+        error_code_of(&schema_parent),
         Some(ErrorCode::CAPABILITY_UNSUPPORTED.as_str())
     );
-    assert!(
-        unsupported_parent.message().contains("v0.2.2"),
-        "{}",
-        unsupported_parent.message()
+
+    // 叶子节点不能再展开：种类不适用于该操作（不是「不存在」）。
+    let leaf_parent = metadata
+        .list_nodes(ListNodesRequest {
+            parent: Some(ObjectRef {
+                session_id: session_id.clone(),
+                catalog: "main".to_owned(),
+                schema: String::new(),
+                name: "id".to_owned(),
+                kind: ObjectKind::Column as i32,
+            }),
+            page: Some(PageRequest::default()),
+            filter: None,
+        })
+        .await
+        .expect_err("列是叶子");
+    assert_eq!(leaf_parent.code(), Code::InvalidArgument);
+    assert_eq!(
+        error_code_of(&leaf_parent),
+        Some(ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED.as_str())
+    );
+
+    // ---- 非空过滤：驱动未实现下推时必须显式拒绝，不能静默返回未过滤列表 ----
+    let filtered = metadata
+        .list_nodes(ListNodesRequest {
+            parent: Some(root_reference(&session_id)),
+            page: Some(PageRequest::default()),
+            filter: Some(NodeFilter {
+                name: Some(ObjectNameFilter {
+                    r#match: Some(object_name_filter::Match::Contains("a".to_owned())),
+                }),
+                kinds: Vec::new(),
+            }),
+        })
+        .await
+        .expect_err("未实现下推时必须报错");
+    assert_eq!(filtered.code(), Code::Unimplemented);
+    assert_eq!(
+        error_code_of(&filtered),
+        Some(ErrorCode::CAPABILITY_UNSUPPORTED.as_str())
+    );
+
+    // ---- 非法过滤条件：服务端先于驱动拒绝（metadata.filter_invalid） ----
+    let invalid_filter = metadata
+        .list_nodes(ListNodesRequest {
+            parent: Some(root_reference(&session_id)),
+            page: Some(PageRequest::default()),
+            filter: Some(NodeFilter {
+                name: None,
+                kinds: vec![ObjectKind::Unspecified as i32],
+            }),
+        })
+        .await
+        .expect_err("UNSPECIFIED 不是有效的种类过滤");
+    assert_eq!(invalid_filter.code(), Code::InvalidArgument);
+    assert_eq!(
+        error_code_of(&invalid_filter),
+        Some(ErrorCode::METADATA_FILTER_INVALID.as_str())
     );
 
     // ---- GetDdl：明确报未实现，绝不返回空串 ----

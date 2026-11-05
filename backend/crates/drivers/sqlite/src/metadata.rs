@@ -1,18 +1,39 @@
-//! SQLite 元数据：`sqlite_master` + `pragma_table_info`。
+//! SQLite 元数据：`sqlite_master` + `pragma_*`（v0.2.2 起覆盖完整层级）。
 //!
-//! v0.2.1 只覆盖「当前数据库文件里的表与视图」这一层：
+//! # 层级与数据来源
 //!
-//! - [`MetadataProvider::list_children`] 只接受根节点（父节点为空），返回表与视图，
-//!   按对象名排序后分页；Catalog / Schema / Index / Sequence 等层级显式报
-//!   `capability.unsupported`；
-//! - [`MetadataProvider::columns`] 用 `pragma_table_info` 读取声明类型、可空与默认值
-//!   （`dflt_value` 是未求值的 SQL 文本，见 [`column_default`]）；
-//! - [`MetadataProvider::primary_key`] 用 `pragma_table_info.pk`（主键内顺序）；
-//! - [`MetadataProvider::ddl`] 仍是显式未实现（计划 v0.2.2）。
+//! | 父节点 | 子节点 | 数据来源 |
+//! |---|---|---|
+//! | 空（根） | 当前连接库（`main`）的表 / 视图 | `"main".sqlite_master` |
+//! | `CATALOG`（名字为空 = 目录层本身） | 本连接可见的 database：`main` / `temp` / `ATTACH` | `PRAGMA database_list` |
+//! | `CATALOG`（名字为库名） | 该库的表 / 视图 | `<库>.sqlite_master` |
+//! | `TABLE` | 列 / 索引 / 触发器 | `pragma_table_info` / `<库>.sqlite_master` |
+//! | `VIEW` | 列 | `pragma_table_info` |
+//! | 列 / 索引 / 触发器（叶子） | 无；请求子节点报 `metadata.object_kind_unsupported` | — |
 //!
-//! 所有查询都在会话的专用线程上执行：`Connection` 归它独占，元数据请求与
-//! 查询走同一条命令通道。存在在途结果游标时元数据请求会被拒绝
-//! （`sqlite.query_active`），不会与游标交错。
+//! **SQLite 没有 schema 层级，也绝不伪造**：以 `SCHEMA` 为父节点、或对象引用里带
+//! `schema`，一律明确报 `capability.unsupported`（`UNIMPLEMENTED`），不返回空列表
+//! 冒充「这一层没有对象」。SQLite 也没有序列（`SEQUENCE`），同样显式报错。
+//!
+//! # 跨库（catalog）语义
+//!
+//! - catalog 的名字就是 `PRAGMA database_list` 里的 database 名：`main`、`temp`，
+//!   以及 `ATTACH` 进来的库。`temp` 在 `PRAGMA database_list` 里要等第一个临时对象
+//!   创建后才出现，但 `temp.sqlite_master` 随时可查，因此目录层永远列出它；
+//! - 库名只在**标识符位置**出现在 SQL 里（`"<库>".sqlite_master`），且必须先与
+//!   `database_list` 的规范名对上（大小写不敏感）才会拼进语句：
+//!   [`quote_identifier`] 按 SQL 标准把内部双引号成对转义，反引号、空格、中文都按
+//!   字面量处理。对象名（表/视图）走**绑定参数**，不拼 SQL：`pragma_table_info(?1, ?2)`
+//!   的第二个参数就是库名。
+//!
+//! # 子节点顺序与分页
+//!
+//! 每一层都用 [`sqarvo_metadata::paginate_children`]：先按种类、再按限定名排序；键里带
+//! 种类（列与索引可以同名）与父节点作用域（`main` 与 `temp` 可以有同名表）。token 仍是
+//! 不透明字符串（`v1:<offset>:<指纹>`），非法 token 显式报错、绝不回退第一页。
+//!
+//! 所有查询都在会话的专用线程上执行：`Connection` 归它独占，元数据请求与查询走同一条
+//! 命令通道。存在在途结果游标时元数据请求会被拒绝（`sqlite.query_active`），不会与游标交错。
 
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension};
@@ -21,10 +42,18 @@ use sqarvo_driver_api::{
     ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
     ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
 };
-use sqarvo_metadata::paginate_by_key;
+use sqarvo_metadata::paginate_children;
 
-use crate::error::{OBJECT_NOT_FOUND, map_sqlite_error};
+use crate::error::map_sqlite_error;
 use crate::session::SqliteSession;
+
+/// 当前连接库。根节点（`parent = None`）与省略 `catalog` 的对象引用都落在它上面，
+/// 与 v0.2.1 的行为一致。
+pub(crate) const MAIN_DATABASE: &str = "main";
+
+/// 临时库。SQLite 的 temp 库是惰性创建的，但 `temp.sqlite_master` 随时可查，
+/// 因此目录层永远能列出它。
+pub(crate) const TEMP_DATABASE: &str = "temp";
 
 /// 元数据请求。由 [`MetadataProvider`] 构造，交给会话线程执行。
 pub(crate) enum MetadataRequest {
@@ -116,7 +145,7 @@ fn mismatched_reply() -> Error {
     Error::internal("元数据回复与请求不匹配")
 }
 
-/// DDL 查看的统一文案（v0.2.2 提供）。
+/// DDL 查看的统一文案（v0.2.2 提供，#83）。
 pub(crate) fn ddl_unavailable() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
@@ -134,55 +163,122 @@ pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Res
     Ok(())
 }
 
-/// 校验对象层级与种类，返回对象名。
-pub(crate) fn object_name(object: &ObjectRef) -> Result<&str> {
-    if object.qualified_name.catalog.is_some() || object.qualified_name.schema.is_some() {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "SQLite 没有 catalog / schema 层级，本版只支持当前数据库文件内的对象",
-        ));
-    }
-    if !matches!(
-        object.kind,
-        ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_)
-    ) {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            format!(
-                "SQLite 元数据本版只支持表与视图，不支持 {}",
-                object.kind.as_str()
-            ),
-        ));
-    }
-    let name = object.qualified_name.name.trim();
-    if name.is_empty() {
-        return Err(Error::invalid_argument(
-            ErrorCode::CONFIG_INVALID,
-            "对象名不能为空",
-        ));
-    }
-    Ok(name)
+/// 该数据库没有这一层级、或本驱动不提供该层级：`capability.unsupported`。
+///
+/// 与 `metadata.object_kind_unsupported` 的分工见 ADR 0019：前者是「这一层不存在 /
+/// 还没实现」，后者是「请求本身把种类用错了」。
+fn unsupported_level(detail: impl Into<String>) -> Error {
+    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, detail)
 }
 
-fn list_children(
+/// 种类不适用于该操作：`metadata.object_kind_unsupported`（`INVALID_ARGUMENT`）。
+fn kind_not_applicable(kind: &ObjectKind, operation: &str) -> Error {
+    sqarvo_driver_api::object_kind_unsupported(kind, operation)
+}
+
+/// 对象不存在：`metadata.object_not_found`（`NOT_FOUND`）。
+fn object_not_found(database: &str, name: &str) -> Error {
+    Error::not_found(
+        ErrorCode::METADATA_OBJECT_NOT_FOUND,
+        format!("SQLite 对象 {database}.{name} 不存在"),
+    )
+}
+
+/// database 不存在：`metadata.object_not_found`（`NOT_FOUND`），消息里列出可用库名。
+fn database_not_found(requested: &str, available: &[String]) -> Error {
+    Error::not_found(
+        ErrorCode::METADATA_OBJECT_NOT_FOUND,
+        format!(
+            "SQLite 数据库 {requested} 不存在；本连接可见的数据库：{}",
+            available.join("、")
+        ),
+    )
+}
+
+/// SQLite 标识符引用：双引号包裹，内部双引号按 SQL 标准成对转义。
+///
+/// 反引号、空格、中文都不是特殊字符（只有被引用的标识符里的双引号需要转义），
+/// 因此**只**处理双引号。返回值一定被引号包住，调用方不得再自己拼引号。
+#[must_use]
+pub(crate) fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// 本连接可见的 database 名（catalog 名）：`main`、`temp` 与 `ATTACH` 进来的库。
+///
+/// `temp` 在 `PRAGMA database_list` 里要等第一个临时对象创建后才出现，但 SQLite 的
+/// temp 库概念上一直存在（`temp.sqlite_master` 随时可查），所以这里补齐；`main` 同理。
+/// 顺序按名字排序，保证分页稳定。
+fn database_names(connection: &Connection) -> Result<Vec<String>> {
+    let mut statement = connection
+        .prepare("PRAGMA database_list")
+        .map_err(|error| map_sqlite_error(error, "准备读取 SQLite 数据库列表失败"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库列表失败"))?;
+
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库名失败"))?);
+    }
+    for required in [MAIN_DATABASE, TEMP_DATABASE] {
+        if !names.iter().any(|name| name.eq_ignore_ascii_case(required)) {
+            names.push(required.to_owned());
+        }
+    }
+    names.sort();
+    names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    Ok(names)
+}
+
+/// 把请求里的库名对上规范名（SQLite 的 database 名大小写不敏感）。
+fn canonical_database(connection: &Connection, requested: &str) -> Result<String> {
+    let available = database_names(connection)?;
+    available
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(requested))
+        .cloned()
+        .ok_or_else(|| database_not_found(requested, &available))
+}
+
+/// `<库>.sqlite_master`：库名先由 [`canonical_database`] 校验过再引用。
+///
+/// 这里仍然走 [`quote_identifier`] 而不是直接拼接：`ATTACH` 的库名可以含空格、
+/// 反引号、中文甚至是 SQL 关键字。
+fn master_table(database: &str) -> String {
+    format!("{}.sqlite_master", quote_identifier(database))
+}
+
+/// 目录层本身：列出本连接可见的 database。
+fn catalog_nodes(connection: &Connection) -> Result<Vec<ObjectNode>> {
+    Ok(database_names(connection)?
+        .into_iter()
+        .map(|name| ObjectNode {
+            // 目录节点的 `catalog` 与 `name` 都是库名：`catalog` 是它在层级里的位置，
+            // `name` 让通用客户端不需要特判就能显示与回传（ADR 0019）。
+            qualified_name: QualifiedName::new(Some(name.clone()), None, name.clone()),
+            kind: ObjectKind::Catalog,
+            display_name: name,
+            // 任何 database 都可能有表/视图，即使现在为空。
+            has_children: true,
+            comment: None,
+        })
+        .collect())
+}
+
+/// 某个 database 里的表与视图。
+fn list_database_objects(
     connection: &Connection,
-    parent: Option<&ObjectRef>,
+    database: &str,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
-    if parent.is_some() {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "本版只支持列出当前数据库的表与视图（根节点）；\
-             Catalog / Schema / Index / Sequence 等层级在 v0.2.2 提供",
-        ));
-    }
-
+    let sql = format!(
+        "SELECT name, type FROM {} WHERE type IN ('table','view') \
+         AND name NOT GLOB 'sqlite_*' ORDER BY name",
+        master_table(database)
+    );
     let mut statement = connection
-        .prepare(
-            "SELECT name, type FROM sqlite_master \
-             WHERE type IN ('table','view') AND name NOT GLOB 'sqlite_*' \
-             ORDER BY name",
-        )
+        .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 对象列表查询失败"))?;
     let rows = statement
         .query_map([], |row| {
@@ -194,39 +290,294 @@ fn list_children(
     for row in rows {
         let (name, raw_kind) =
             row.map_err(|error| map_sqlite_error(error, "读取 SQLite 对象行失败"))?;
-        let kind = match raw_kind.as_str() {
-            "table" => ObjectKind::Table,
-            "view" => ObjectKind::View,
-            // `sqlite_master` 还会出现 index / trigger，这里已用 WHERE 排除。
-            other => ObjectKind::Other(other.to_owned()),
-        };
         nodes.push(ObjectNode {
-            qualified_name: QualifiedName::new(None, None, name.clone()),
-            kind,
+            qualified_name: QualifiedName::new(Some(database.to_owned()), None, name.clone()),
+            kind: object_kind(&raw_kind),
             display_name: name,
-            // 表与视图都能再展开列；本版通过 `GetColumns` 读取。
+            // 表与视图都能再展开：列、索引、触发器。
             has_children: true,
             comment: None,
         });
     }
 
-    paginate_by_key(nodes, page, |node| node.qualified_name.name.as_str())
+    paginate_children(nodes, &format!("catalog:{database}"), page)
+}
+
+/// 把 `sqlite_master.type` 映射成种类。
+fn object_kind(raw: &str) -> ObjectKind {
+    match raw {
+        "table" => ObjectKind::Table,
+        "view" => ObjectKind::View,
+        "index" => ObjectKind::Index,
+        "trigger" => ObjectKind::Trigger,
+        other => ObjectKind::Other(other.to_owned()),
+    }
+}
+
+/// 表/视图的子节点：列 + 索引（表还带触发器）。
+fn list_table_children(
+    connection: &Connection,
+    database: &str,
+    table: &str,
+    include_triggers: bool,
+    page: &PageRequest,
+) -> Result<Page<ObjectNode>> {
+    let mut nodes = Vec::new();
+    for name in column_names(connection, database, table)? {
+        nodes.push(child_node(database, name, ObjectKind::Column));
+    }
+    for name in index_names(connection, database, table)? {
+        nodes.push(child_node(database, name, ObjectKind::Index));
+    }
+    if include_triggers {
+        for name in trigger_names(connection, database, table)? {
+            nodes.push(child_node(database, name, ObjectKind::Trigger));
+        }
+    }
+    paginate_children(nodes, &format!("table:{database}.{table}"), page)
+}
+
+/// 表/视图里的列名（按列序号）。
+fn column_names(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info(?1, ?2)")
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 列名查询失败"))?;
+    let rows = statement
+        .query_map([table, database], |row| row.get::<_, String>(0))
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列名失败"))?;
+
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 列名行失败"))?);
+    }
+    Ok(names)
+}
+
+/// 表上由 `CREATE INDEX` 创建的索引。
+///
+/// 排除 `sql IS NULL` 的隐式索引（`sqlite_autoindex_*`：主键与 `UNIQUE` 约束自动生成）。
+/// 它们是引擎内部对象，没有可展示的 DDL；列出来会让用户点进一个取不到 DDL 的节点。
+fn index_names(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
+    master_names(connection, database, "index", table)
+}
+
+/// 表上的触发器。
+fn trigger_names(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
+    master_names(connection, database, "trigger", table)
+}
+
+/// 从 `<库>.sqlite_master` 里按类型 + 所属表取名字（参数化，表名不进 SQL 文本）。
+fn master_names(
+    connection: &Connection,
+    database: &str,
+    master_type: &str,
+    table: &str,
+) -> Result<Vec<String>> {
+    // `master_type` 只来自本模块的常量（"index" / "trigger"），不是用户输入。
+    let sql = format!(
+        "SELECT name FROM {} WHERE type = ?1 AND tbl_name = ?2 \
+         AND sql IS NOT NULL ORDER BY name",
+        master_table(database)
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 子对象查询失败"))?;
+    let rows = statement
+        .query_map([master_type, table], |row| row.get::<_, String>(0))
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 子对象失败"))?;
+
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 子对象行失败"))?);
+    }
+    Ok(names)
+}
+
+fn child_node(database: &str, name: String, kind: ObjectKind) -> ObjectNode {
+    ObjectNode {
+        // 子节点的 catalog 填满：前端把它原样回传给 `GetColumns` / `GetPrimaryKey`。
+        qualified_name: QualifiedName::new(Some(database.to_owned()), None, name.clone()),
+        kind,
+        display_name: name,
+        // 列/索引/触发器都是叶子。
+        has_children: false,
+        // `comment` 是数据库里的注释原文；SQLite 不存对象注释，这里不塞自己的说明。
+        comment: None,
+    }
+}
+
+/// 列出子节点。父节点为空 = 根 = 当前连接库（`main`）的表与视图，v0.2.1 行为不变。
+fn list_children(
+    connection: &Connection,
+    parent: Option<&ObjectRef>,
+    page: &PageRequest,
+) -> Result<Page<ObjectNode>> {
+    let Some(parent) = parent else {
+        return list_database_objects(connection, MAIN_DATABASE, page);
+    };
+
+    match &parent.kind {
+        ObjectKind::Catalog => {
+            if parent.qualified_name.schema.is_some() {
+                return Err(unsupported_level(
+                    "SQLite 没有 schema 层级：目录引用不能带 schema 字段",
+                ));
+            }
+            let Some(requested) = catalog_target(parent)? else {
+                return paginate_children(catalog_nodes(connection)?, "catalog-layer", page);
+            };
+            let database = canonical_database(connection, &requested)?;
+            list_database_objects(connection, &database, page)
+        }
+        ObjectKind::Table | ObjectKind::View => {
+            let (database, name) = resolve_object(connection, parent)?;
+            let expected = if parent.kind == ObjectKind::Table {
+                "table"
+            } else {
+                "view"
+            };
+            let Some((stored, master_type)) = lookup_object(connection, &database, &name)? else {
+                return Err(object_not_found(&database, &name));
+            };
+            if master_type != expected {
+                return Err(kind_not_applicable(
+                    &parent.kind,
+                    &format!("展开子节点（{database}.{stored} 是 {master_type}）"),
+                ));
+            }
+            list_table_children(
+                connection,
+                &database,
+                &stored,
+                parent.kind == ObjectKind::Table,
+                page,
+            )
+        }
+        ObjectKind::Schema => Err(unsupported_level(
+            "SQLite 没有 schema 层级：不伪造空 schema 层，请直接从 CATALOG 展开到表/视图",
+        )),
+        ObjectKind::Sequence => Err(unsupported_level(
+            "SQLite 没有序列（SEQUENCE）对象：该层级不存在，不返回空列表",
+        )),
+        ObjectKind::MaterializedView
+        | ObjectKind::Function
+        | ObjectKind::Procedure
+        | ObjectKind::Type => Err(unsupported_level(format!(
+            "SQLite 没有 {} 对象：该层级不存在，不返回空列表",
+            parent.kind.as_str()
+        ))),
+        ObjectKind::Column | ObjectKind::Index | ObjectKind::Trigger | ObjectKind::Other(_) => {
+            Err(kind_not_applicable(&parent.kind, "展开子节点"))
+        }
+    }
+}
+
+/// 解析目录层请求里的库名：`None` 表示「目录层本身」，要列出全部 database。
+///
+/// 目录节点的 `catalog` 与 `name` 都可能是库名（见 [`catalog_nodes`]），两者都给且
+/// 不一致说明请求自相矛盾，按 `config.invalid` 拒绝，而不是猜一个。
+fn catalog_target(parent: &ObjectRef) -> Result<Option<String>> {
+    let from_catalog = parent.qualified_name.catalog.as_deref();
+    let from_name = parent.qualified_name.name.trim();
+    match (from_catalog, from_name) {
+        (None, "") => Ok(None),
+        (Some(catalog), "") => Ok(Some(catalog.to_owned())),
+        (None, name) => Ok(Some(name.to_owned())),
+        (Some(catalog), name) if catalog.eq_ignore_ascii_case(name) => Ok(Some(catalog.to_owned())),
+        (Some(catalog), name) => Err(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            format!("目录引用自相矛盾：catalog={catalog}、name={name}"),
+        )),
+    }
+}
+
+/// 解析表/视图引用的库名（默认 `main`）与对象名。
+fn resolve_object(connection: &Connection, object: &ObjectRef) -> Result<(String, String)> {
+    if object.qualified_name.schema.is_some() {
+        return Err(unsupported_level(
+            "SQLite 没有 schema 层级：对象引用不能带 schema 字段",
+        ));
+    }
+    let database = match object.qualified_name.catalog.as_deref() {
+        Some(catalog) => canonical_database(connection, catalog)?,
+        None => MAIN_DATABASE.to_owned(),
+    };
+    let name = object.qualified_name.name.trim();
+    if name.is_empty() {
+        return Err(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "对象名不能为空",
+        ));
+    }
+    Ok((database, name.to_owned()))
+}
+
+/// 在 `<库>.sqlite_master` 里按名字找对象，返回（库里的规范名, master 类型）。
+///
+/// 名字按 SQLite 的标识符语义大小写不敏感（`COLLATE NOCASE`）。表/视图优先：
+/// 触发器与表可以同名，展开表时必须拿到表本身。
+fn lookup_object(
+    connection: &Connection,
+    database: &str,
+    name: &str,
+) -> Result<Option<(String, String)>> {
+    let sql = format!(
+        "SELECT name, type FROM {} WHERE name = ?1 COLLATE NOCASE \
+         AND type IN ('table','view','index','trigger') \
+         ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 \
+         WHEN 'index' THEN 2 ELSE 3 END LIMIT 1",
+        master_table(database)
+    );
+    let row: Option<(String, String)> = connection
+        .query_row(&sql, [name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .optional()
+        .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象失败"))?;
+    Ok(row)
+}
+
+/// 解析 `GetColumns` / `GetPrimaryKey` 的目标：库 + 规范对象名。
+fn table_target(connection: &Connection, object: &ObjectRef) -> Result<(String, String)> {
+    match &object.kind {
+        ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_) => {}
+        ObjectKind::Catalog => return Err(kind_not_applicable(&ObjectKind::Catalog, "读取列信息")),
+        ObjectKind::Schema => {
+            return Err(unsupported_level(
+                "SQLite 没有 schema 层级：不伪造空 schema 层",
+            ));
+        }
+        ObjectKind::Sequence => {
+            return Err(unsupported_level(
+                "SQLite 没有序列（SEQUENCE）对象：该层级不存在",
+            ));
+        }
+        kind => return Err(kind_not_applicable(kind, "读取列信息")),
+    }
+    let (database, name) = resolve_object(connection, object)?;
+    let Some((stored, master_type)) = lookup_object(connection, &database, &name)? else {
+        return Err(object_not_found(&database, &name));
+    };
+    if !matches!(master_type.as_str(), "table" | "view") {
+        return Err(kind_not_applicable(
+            &object.kind,
+            &format!("读取列信息（{database}.{stored} 是 {master_type}）"),
+        ));
+    }
+    Ok((database, stored))
 }
 
 pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
-    let name = object_name(object)?;
-    if !object_exists(connection, name)? {
-        return Err(object_not_found(name));
-    }
+    let (database, name) = table_target(connection, object)?;
 
     let mut statement = connection
         .prepare(
             "SELECT cid, name, type, \"notnull\", dflt_value \
-             FROM pragma_table_info(?1) ORDER BY cid",
+             FROM pragma_table_info(?1, ?2) ORDER BY cid",
         )
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 列查询失败"))?;
     let rows = statement
-        .query_map([name], |row| {
+        .query_map([name.as_str(), database.as_str()], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -259,22 +610,19 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
 
     if columns.is_empty() {
         // 已确认对象存在，但读不到任何列：说明对象不是可枚举列的表/视图。
-        return Err(object_not_found(name));
+        return Err(object_not_found(&database, &name));
     }
     Ok(columns)
 }
 
 pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result<PrimaryKey> {
-    let name = object_name(object)?;
-    if !object_exists(connection, name)? {
-        return Err(object_not_found(name));
-    }
+    let (database, name) = table_target(connection, object)?;
 
     let mut statement = connection
-        .prepare("SELECT name, pk FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk")
+        .prepare("SELECT name, pk FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk")
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键查询失败"))?;
     let rows = statement
-        .query_map([name], |row| {
+        .query_map([name.as_str(), database.as_str()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键失败"))?;
@@ -292,22 +640,39 @@ pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result
     Ok(PrimaryKey::new(columns))
 }
 
-/// 表或视图是否存在（SQLite 的标识符比较不区分大小写）。
-pub(crate) fn object_exists(connection: &Connection, name: &str) -> Result<bool> {
-    let found: Option<i64> = connection
-        .query_row(
-            "SELECT 1 FROM sqlite_master \
-             WHERE name = ?1 COLLATE NOCASE AND type IN ('table','view')",
-            [name],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象失败"))?;
-    Ok(found.is_some())
-}
-
-pub(crate) fn object_not_found(name: &str) -> Error {
-    Error::not_found(OBJECT_NOT_FOUND, format!("表或视图 {name} 不存在"))
+/// 表数据路径（`BrowseTable` / 行编辑）的对象名：目前只支持当前连接库（`main`）。
+///
+/// 元数据浏览可以跨库，但表数据浏览/行编辑的 SQL 是直接 `SELECT ... FROM <表>`，
+/// 还没有库名前缀（不在 #82 范围）。这里显式拒绝其它库，避免把 `temp` 里的同名表
+/// 当成 `main` 的表去读写。
+pub(crate) fn object_name(object: &ObjectRef) -> Result<&str> {
+    if object.qualified_name.schema.is_some() {
+        return Err(unsupported_level(
+            "SQLite 没有 schema 层级：对象引用不能带 schema 字段",
+        ));
+    }
+    if let Some(catalog) = object.qualified_name.catalog.as_deref()
+        && !catalog.eq_ignore_ascii_case(MAIN_DATABASE)
+    {
+        return Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            format!("SQLite 表数据浏览只支持当前连接库（main），不支持数据库 {catalog}"),
+        ));
+    }
+    if !matches!(
+        object.kind,
+        ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_)
+    ) {
+        return Err(kind_not_applicable(&object.kind, "表数据浏览"));
+    }
+    let name = object.qualified_name.name.trim();
+    if name.is_empty() {
+        return Err(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "对象名不能为空",
+        ));
+    }
+    Ok(name)
 }
 
 /// 把 `pragma_table_info.dflt_value` 映射为默认值。
@@ -442,5 +807,58 @@ mod tests {
             split_declared_type("double precision").0,
             "double precision"
         );
+    }
+
+    /// 标识符引用：只把双引号成对转义，反引号/空格/中文原样留在引号里。
+    #[test]
+    fn identifiers_are_quoted_with_doubled_quotes() {
+        assert_eq!(quote_identifier("main"), "\"main\"");
+        assert_eq!(quote_identifier("订单 库`x"), "\"订单 库`x\"");
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_identifier("select"), "\"select\"");
+    }
+
+    #[test]
+    fn master_table_is_schema_qualified_and_quoted() {
+        assert_eq!(master_table("main"), "\"main\".sqlite_master");
+        assert_eq!(master_table("a b`c"), "\"a b`c\".sqlite_master");
+        assert_eq!(master_table("a\"b"), "\"a\"\"b\".sqlite_master");
+    }
+
+    #[test]
+    fn catalog_target_distinguishes_layer_from_name() {
+        let session_id = SessionId::new();
+        let layer = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(None, None, ""),
+            kind: ObjectKind::Catalog,
+        };
+        assert_eq!(catalog_target(&layer).unwrap(), None);
+
+        let by_catalog = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(Some("temp".to_owned()), None, ""),
+            kind: ObjectKind::Catalog,
+        };
+        assert_eq!(
+            catalog_target(&by_catalog).unwrap().as_deref(),
+            Some("temp")
+        );
+
+        let by_name = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(None, None, "temp"),
+            kind: ObjectKind::Catalog,
+        };
+        assert_eq!(catalog_target(&by_name).unwrap().as_deref(), Some("temp"));
+
+        // 两个字段都给且不一致：自相矛盾，显式拒绝。
+        let conflicting = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(Some("main".to_owned()), None, "temp"),
+            kind: ObjectKind::Catalog,
+        };
+        let error = catalog_target(&conflicting).expect_err("自相矛盾的目录引用必须拒绝");
+        assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
     }
 }

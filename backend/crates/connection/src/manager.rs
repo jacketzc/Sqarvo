@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     ColumnMeta, ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel, MetadataProvider, ObjectNode,
-    ObjectRef, Page, PageRequest, PrimaryKey, ResultBatch, RowChangeCancel, RowChangeReport,
-    RowChangeRequest, Secret, TableDataProvider, TablePage, TransactionOptions,
+    ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel, MetadataProvider,
+    ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, ResultBatch,
+    RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, TableDataProvider, TablePage,
+    TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -258,6 +259,29 @@ impl SessionHandle {
     ) -> Result<Page<ObjectNode>> {
         let _guard = self.execution.lock().await;
         self.metadata_provider()?.list_children(parent, page).await
+    }
+
+    /// 在会话执行锁内按过滤条件列出元数据子节点（`ListNodes.filter`，#82）。
+    ///
+    /// 与 [`SessionHandle::list_children`] 共用同一条物理连接与执行锁：过滤是下推到
+    /// 数据库的查询，不是内存筛选（ADR 0019）。驱动未实现下推时原样返回
+    /// `capability.unsupported`——服务端不得静默丢掉过滤条件。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现过滤下推：`capability.unsupported`；
+    /// - 过滤条件非法：`metadata.filter_invalid`；
+    /// - 驱动错误原样透传（页 token 非法、父节点不存在、无权限等）。
+    pub async fn list_children_filtered(
+        &self,
+        parent: Option<ObjectRef>,
+        filter: &ObjectFilter,
+        page: &PageRequest,
+    ) -> Result<Page<ObjectNode>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .list_children_filtered(parent, filter, page)
+            .await
     }
 
     /// 在会话执行锁内读取列的元数据（#69）。

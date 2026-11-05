@@ -33,6 +33,10 @@ fn driver_id_and_defaults_are_sane() {
     // 事务在驱动层实现（Issue #43）；能力声明必须与实现一致。
     assert!(capabilities.transactions);
     assert!(capabilities.names().contains(&"transactions"));
+    // v0.2.2（#82）：目录层（database = catalog）可浏览，schema 层不存在。
+    assert!(capabilities.catalogs);
+    assert!(capabilities.names().contains(&"catalogs"));
+    assert!(!capabilities.schemas);
 }
 
 #[test]

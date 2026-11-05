@@ -31,7 +31,10 @@ use std::sync::Arc;
 
 use sqarvo_common::ErrorCode;
 use sqarvo_connection::SessionManager;
-use sqarvo_driver_api::{MetadataProvider, ObjectKind, ObjectNode, ObjectRef, Page, QualifiedName};
+use sqarvo_driver_api::{
+    MetadataProvider, NameMatch, ObjectFilter, ObjectKind, ObjectNode, ObjectRef, Page,
+    QualifiedName,
+};
 use tonic::{Request, Response, Status};
 
 use crate::error::to_status;
@@ -40,9 +43,10 @@ use crate::proto::common::v1::PageRequest as ProtoPageRequest;
 use crate::proto::services::v1::{
     DdlSource as ProtoDdlSource, GetColumnsRequest, GetColumnsResponse, GetDdlRequest,
     GetDdlResponse, GetPrimaryKeyRequest, GetPrimaryKeyResponse, ListNodesRequest,
-    ListNodesResponse, ObjectKind as ProtoObjectKind, ObjectNode as ProtoObjectNode,
-    ObjectRef as ProtoObjectRef, PrimaryKeyColumn as ProtoPrimaryKeyColumn,
-    metadata_service_server::MetadataService,
+    ListNodesResponse, NodeFilter as ProtoNodeFilter, ObjectKind as ProtoObjectKind,
+    ObjectNode as ProtoObjectNode, ObjectRef as ProtoObjectRef,
+    PrimaryKeyColumn as ProtoPrimaryKeyColumn, metadata_service_server::MetadataService,
+    object_name_filter::Match as ProtoNameMatch,
 };
 use crate::services::mapping;
 
@@ -79,19 +83,15 @@ impl MetadataService for MetadataServiceImpl {
         let parent = request.parent.ok_or_else(|| {
             Status::invalid_argument("ListNodes 必须提供 parent，且至少包含 session_id")
         })?;
-        // 过滤字段（#81）已进契约，下推到数据库由 #82 实现（驱动侧
-        // `list_children_filtered`）。在此之前**显式拒绝**非空过滤：静默忽略会
-        // 返回比用户要求更多的对象，让「搜索没生效」看起来像「搜索成功」。
-        if request
+        // 过滤字段（#81，接线于 #82）：下推由驱动实现 `list_children_filtered`。
+        // 服务端**不得**静默忽略非空过滤——驱动没实现下推就原样返回
+        // `capability.unsupported`（ADR 0019），否则「搜索没生效」会看起来像
+        // 「搜索成功」，用户拿到比要求更多的对象。
+        let filter = request
             .filter
             .as_ref()
-            .is_some_and(|filter| filter.name.is_some() || !filter.kinds.is_empty())
-        {
-            return Err(to_status(sqarvo_common::Error::unsupported(
-                ErrorCode::CAPABILITY_UNSUPPORTED,
-                "元数据过滤（ListNodes.filter）尚未实现，计划由 #82 下推到数据库",
-            )));
-        }
+            .map(object_filter_from_proto)
+            .transpose()?;
         let session_id = parse_session_id(&parent.session_id)?;
         let page_request = page_request(request.page);
 
@@ -107,10 +107,18 @@ impl MetadataService for MetadataServiceImpl {
         };
 
         // 元数据查询在会话执行锁内执行（#69）：与写入、浏览共用同一条连接。
-        let page = handle
-            .list_children(parent, &page_request)
-            .await
-            .map_err(to_status)?;
+        // 空过滤与 `list_children` 等价（SPI 约定），因此仍走原路径，避免让
+        // 「没实现过滤」的驱动把普通浏览也一起拒掉。
+        let page = match filter {
+            Some(filter) if !filter.is_empty() => handle
+                .list_children_filtered(parent, &filter, &page_request)
+                .await
+                .map_err(to_status)?,
+            _ => handle
+                .list_children(parent, &page_request)
+                .await
+                .map_err(to_status)?,
+        };
         Ok(Response::new(ListNodesResponse {
             nodes: page
                 .items
@@ -254,6 +262,40 @@ pub(crate) fn object_ref_from_proto(reference: &ProtoObjectRef) -> Result<Object
 fn optional_level(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+/// Protobuf 过滤条件 → SPI `ObjectFilter`。
+///
+/// 结构非法（名称匹配串为空、种类重复或含 `OBJECT_KIND_UNSPECIFIED`、枚举值未知）
+/// 一律 `metadata.filter_invalid`（`INVALID_ARGUMENT`），与「驱动没实现下推」的
+/// `capability.unsupported` 严格区分：前者换参数就能成立，后者换实现才行。
+fn object_filter_from_proto(filter: &ProtoNodeFilter) -> Result<ObjectFilter, Status> {
+    let name = match filter.name.as_ref().and_then(|name| name.r#match.as_ref()) {
+        None => None,
+        Some(ProtoNameMatch::Contains(value)) => Some(NameMatch::Contains(value.clone())),
+        Some(ProtoNameMatch::Exact(value)) => Some(NameMatch::Exact(value.clone())),
+    };
+    let mut kinds = Vec::with_capacity(filter.kinds.len());
+    for raw in &filter.kinds {
+        kinds.push(filter_kind_from_proto(*raw)?);
+    }
+    let filter = ObjectFilter { name, kinds };
+    filter.validate().map_err(to_status)?;
+    Ok(filter)
+}
+
+/// 过滤条件里的种类：`UNSPECIFIED` 与未知枚举值都不是「有效集合元素」。
+fn filter_kind_from_proto(value: i32) -> Result<ObjectKind, Status> {
+    if ProtoObjectKind::try_from(value) == Ok(ProtoObjectKind::Unspecified) {
+        return Err(to_status(sqarvo_driver_api::filter_invalid(
+            "种类过滤不能包含 OBJECT_KIND_UNSPECIFIED；不过滤请留空 kinds",
+        )));
+    }
+    kind_from_proto(value).map_err(|_| {
+        to_status(sqarvo_driver_api::filter_invalid(format!(
+            "种类过滤里有未知的枚举值 {value}"
+        )))
+    })
 }
 
 /// Protobuf 种类 → SPI 种类。
