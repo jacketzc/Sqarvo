@@ -10,11 +10,16 @@
 //!
 //! 分页 token 约定见 [`pagination::paginate_by_key`]：不透明字符串，非法 token
 //! 一律报错，绝不把错误吞掉后回退到第一页。
+//!
+//! v0.2.2（#82）起两个内置驱动都用 [`hierarchy::paginate_children`] 给每一层的
+//! 子节点分页：排序、键唯一化与「父节点作用域」都收在一处，两个驱动不会各写一套。
 
 #![warn(missing_docs)]
 
+pub mod hierarchy;
 pub mod pagination;
 pub mod table_cursor;
 
+pub use hierarchy::{child_key, kind_order, paginate_children, sort_children};
 pub use pagination::{Page, PageRequest, paginate, paginate_by_key};
 pub use table_cursor::{decode as decode_table_cursor, encode as encode_table_cursor};
