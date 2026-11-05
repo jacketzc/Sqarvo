@@ -613,6 +613,9 @@ impl BackendClient {
             updates,
             deletes,
             acknowledge_risk,
+            // v0.2.x 的前端还没有「取消提交」入口（#70 只做了后端语义）：留空表示本批不可取消，
+            // 服务端会自己生成一个 ID 并在响应里回显，但调用方拿不到它就没法取消。
+            query_id: String::new(),
         };
         let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.apply_row_changes(request))
             .await
