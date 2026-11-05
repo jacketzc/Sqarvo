@@ -8,10 +8,10 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
-> 当前版本为 **v0.2**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动）、
-> Linux GTK4 前端（拉起后端、连接、执行、取消、结果虚拟化）与凭据存储已可端到端使用。
-> **Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵与已知限制见
-> [v0.2 发布说明](docs/releases/v0.2.md)。
+> 当前版本为 **v0.2.1**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动 + 元数据 +
+> 显式事务）、Linux GTK4 前端（拉起后端、连接、执行、取消、结果虚拟化、数据页浏览/编辑）与
+> 凭据存储已可端到端使用。**Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵
+> 与已知限制见 [v0.2.1 发布说明](docs/releases/v0.2.1.md)。
 
 ## 目录结构
 
@@ -20,7 +20,7 @@
 ├── AGENTS.md                 # 仓库级开发准则
 ├── proto/                    # Protobuf 契约（前后端唯一事实来源）
 │   ├── common/v1/            # 错误、分页、值/列类型
-│   └── services/v1/          # system / connection / metadata / query / transaction
+│   └── services/v1/          # system / connection / credential / metadata / query / transaction / table_data
 ├── backend/                  # Rust workspace
 │   ├── apps/backend-service/ # 后端进程入口（本地 IPC + token 认证）
 │   └── crates/
@@ -48,10 +48,10 @@
 
 | 能力 | 说明 |
 |---|---|
-| Protobuf/gRPC 契约 | 5 个域服务，构建时由 `proto/` 生成 Rust 代码 |
+| Protobuf/gRPC 契约 | 7 个域服务（system / connection / credential / metadata / query / transaction / table_data），构建时由 `proto/` 生成 Rust 代码 |
 | 本地传输 | Linux/macOS Unix 域套接字（目录 0700、socket 0600）；回环 TCP 仅用于 Windows/调试 |
 | 访问控制 | 每进程随机 256 位 token，写入 0600 端点文件；所有 RPC 经拦截器校验 |
-| Driver SPI | v0.2：多语句/语句摘要、事务与元数据接口、单元格截断 |
+| Driver SPI | v0.2：多语句/语句摘要、事务与元数据接口、单元格截断；表数据浏览与参数化行编辑（ADR 0017） |
 | SQLite 驱动 | 连接 / 只读 / 单语句执行 / 分批游标 / 取消（已接入 gRPC） |
 | MariaDB 驱动 | 连接 / 测试连接 / 单语句执行 / 分批游标 / `KILL QUERY` 取消 / 类型映射；集成测试需 `SQARVO_MARIADB_URL`（未设置时跳过并打印原因） |
 | 类型映射与截断 | NULL/INTEGER/REAL/TEXT/BLOB 按存储类映射；NUMERIC 与日期类保留原始类型名；单格 64 KiB 截断标记 |
@@ -59,11 +59,13 @@
 | 驱动测试基架 | 脚本化测试会话 + 最小符合性检查 `smoke`（SQLite、MariaDB 均通过） |
 | 连接管理 | 会话建立/断开/列表、驱动不存在时明确报错 |
 | 查询登记 | 并发上限、批次上限、幂等取消 |
-| 元数据分页 | 不透明 token、页大小上限、非法 token 拒绝 |
+| 元数据 | 两个驱动都实现「当前库的表/视图 + 列 + 主键」：分页 token 带对象名集合指纹（非法 → `config.invalid`，集合变化 → `metadata.snapshot_changed`），列保留原始类型名与可空性；上层 Catalog / Schema / Index / Sequence 与跨库浏览返回 `capability.unsupported` |
+| 显式事务 | `TransactionService.Begin` / `Commit` / `Rollback` 已接线；单会话单事务、失败态只允许回滚、重复提交/回滚幂等；状态经 `TransactionInfo.state` 与 `SessionSummary.transaction` 暴露；断连与后端退出强制回滚。SQLite `--test transactions` 9 通过、MariaDB 集成覆盖四档隔离级别与隐式提交拒绝、`grpc_transactions_e2e` 8 通过 |
+| 表数据浏览 / 行编辑 | `TableDataService.BrowseTable` 按主键升序 + 不透明游标（禁止 `OFFSET`，无主键表只读并标注 `Unstable`）；`ApplyRowChanges` 只传主键值 + 列变更，驱动内部参数化 DML，核对影响行数、批内 savepoint；单批 ≤ 500 行，> 100 行或含删除需显式确认。SQLite `--test table_data` 9 通过、`--test row_edits` 10 通过、`grpc_table_data_e2e` 2 通过 |
 | 本地存储 | 目录解析与权限、端点文件原子写入、凭据引用接口 |
 | 凭据存储（Linux） | Secret Service（D-Bus，zbus blocking）：get / set / delete；引用不存在 → `credential.not_found`，服务不可用 → `credential.unavailable`，绝不回退明文；真实密钥环用例由 `SQARVO_SECRET_SERVICE_TEST=1` 门控 |
 | 凭据接线 | `SessionManager` 注入 `CredentialStore`：`credential_ref` 经 `spawn_blocking` 解析为 `Secret` 后交给驱动，明文不缓存、不落日志；引用不存在 → `credential.not_found`（不连库），存储不可用/锁定 → `credential.unavailable`；gRPC 端到端用例用内存存储 + 真实 MariaDB |
-| Linux 前端（GTK4 / libadwaita） | 拉起后端进程、读端点文件、校验 `protocol_version`、token 握手与退出清理；连接对话框（测试连接、密码只写系统凭据库）；`Ctrl+Enter` 执行、`Escape`/按钮取消、`GtkColumnView` 虚拟化 + 每批 500 行预取；行数/估算字节上限与背压（`SQARVO_RESULT_ROW_LIMIT` / `SQARVO_RESULT_BYTES_LIMIT`）；`cd frontend/linux && cargo test` 66 通过，`./scripts/bench.sh` 可复现基准 |
+| Linux 前端（GTK4 / libadwaita） | 拉起后端进程、读端点文件、校验 `protocol_version`、token 握手与退出清理；连接对话框（测试连接、密码只写系统凭据库）；`Ctrl+Enter` 执行、`Escape`/按钮取消、`GtkColumnView` 虚拟化 + 每批 500 行预取；行数/估算字节上限与背压（`SQARVO_RESULT_ROW_LIMIT` / `SQARVO_RESULT_BYTES_LIMIT`）；数据页（表列表、主键序翻页、单元格编辑与 NULL 开关、脏标记、风险确认、四态事务徽标、只读态与断连提示）；`cd frontend/linux && cargo test` 94 通过，`./scripts/bench.sh` 可复现基准 |
 | gRPC 冒烟测试 | 真实 UDS + token 的端到端调用 |
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
@@ -73,7 +75,9 @@
 - 元数据的上层层级（Catalog / Schema / Index / Sequence）与跨库浏览：显式返回 `capability.unsupported`
   （当前库的表/视图、列与主键已接入，见 [Driver SPI](./docs/database/driver-spi.md#元数据)）；
 - DDL 生成（v0.2.2，`GetDdl` 明确未实现）；
-- 显式事务绑定到会话（M4，v0.2.1 / v0.2.2）；
+- 数据页的插入新行、按非主键列排序与可折叠的多层对象树（v0.2.2）；
+- 列元数据的默认值 / 字符集 / 排序规则（`ColumnMeta` 无对应字段，契约待补）；
+- 事务隔离级别的界面入口（驱动已支持 MariaDB 四档；界面只提供「只读」开关）；
 - Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
 - Windows / macOS 前端接入后端（两端仍只有窗口骨架，未构建、未运行验证）；
 - 大字段延迟加载（当前单格按 64 KiB 截断返回；Linux 前端已有行数/估算字节上限与背压）；
@@ -149,6 +153,7 @@ cargo run
 - [规划文档与任务管理约定](docs/planning/README.md)
 - [v0.1 发布说明](docs/releases/v0.1.md)
 - [v0.2 发布说明](docs/releases/v0.2.md)
+- [v0.2.1 发布说明](docs/releases/v0.2.1.md)
 
 技术与设计：
 

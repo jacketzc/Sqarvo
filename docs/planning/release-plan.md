@@ -61,6 +61,43 @@ Windows / macOS 前端仍是窗口骨架，未构建、未验证。
 - 事务状态在 UI 中可见，断连时事务被清理；
 - 编辑操作的风险提示与只读模式可验证。
 
+完成记录（2026-11-05，Linux）：以上三条全部满足，逐条证据如下。范围仍是 Linux 前端 + 本地后端 +
+SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。最终基线 main `47da472`。
+
+| 退出标准 | 证据 |
+|---|---|
+| 表数据浏览与编辑可提交/回滚，脏数据可见 | **驱动层**：`cd backend && cargo test -p sqarvo-driver-sqlite --test row_edits` → 10 通过（含 `edits_round_trip_every_scalar_type_bit_for_bit`、`batch_inside_explicit_transaction_uses_savepoint_and_leaves_tx_usable`、`missing_row_and_mismatched_expectation_are_explicit`、`read_only_targets_and_invalid_keys_are_rejected_before_writing`）、`--test table_data` → 9 通过；`SQARVO_MARIADB_URL=… cargo test -p sqarvo-driver-mariadb --test integration` → 48 通过（含 `row_edits_detect_conflicts_and_roll_back_failed_batches`、`row_edits_inside_explicit_transaction_use_savepoint`、`row_edits_preserve_mariadb_types_bit_for_bit`）。**gRPC**：`cargo test -p sqarvo-rpc-server --test grpc_table_data_e2e` → 2 通过（`browse_table_pages_over_grpc_without_duplicates` 轮询翻页无重复行、`apply_row_changes_edits_rows_and_enforces_guards` 含类型化编辑、截断值拒绝、空批次拒绝等 35+ 断言）。**前端（真实后端 + MariaDB `sqarvo_test_48`）**：`sqarvo-desktop --qa-profile … --qa-data-table demo_items --qa-data-edit "2:name:beta-hermes" --qa-data-commit --qa-data-reload` → 日志「提交批次：1 更新 / 0 删除」「行变更已提交：影响 1 行，失败 0 行」「剩余脏行 0」，外部 `SELECT` 复核 id=3 的 name 由 gamma 变为 beta-hermes；回滚：`--qa-data-begin-txn --qa-data-edit "0:name:should-not-persist" --qa-data-rollback --qa-data-reload --qa-auto-confirm-risk` → 「事务已回滚」「事务结束后丢弃 1 行未提交的界面更改」，外部复核 id=1 仍为 alpha-committed。**脏数据可见**：截图 `data-page-dirty-txn.png`（行首红点脏标记、右上「脏行 1 · 待提交 1 条」、「提交更改 (1)」高亮） |
+| 事务状态在 UI 中可见，断连时事务被清理 | **UI**：右上徽标四态（自动提交 / 事务中 / 失败态 / 已断开），`data-page-dirty-txn.png` 显示「事务中」高亮、`data-page-readonly.png` 显示「自动提交」。**gRPC**：`cargo test -p sqarvo-rpc-server --test grpc_transactions_e2e` → 8 通过，其中 `disconnect_forces_rollback_and_clears_registry` 断言 `active_count()==0`、`forced_rollback_count()==1`、`cleanup_failure_count()==0`，并用新会话读到 0 行证明驱动侧真回滚。**真实进程**：后端退出日志「会话清理已强制回滚打开的事务 transaction=txn_6585cc8f… reason="后端退出"」（前端 e2e 实际触发；前端日志「断连清理：丢弃 1 行未提交变更，事务由后端回滚」）。**未验证**：前端进程崩溃（gRPC 流断开）不触发自动回滚——会话与传输流解耦，只有显式 `Disconnect` 与后端退出走强制回滚 |
+| 编辑操作的风险提示与只读模式可验证 | **风险提示**：>100 行或含删除必须显式确认（`DEFAULT_RISK_CONFIRMATION_ROWS = 100`），服务端以 `table_data.confirmation_required` 兜底；实测不加 `--qa-auto-confirm-risk` 时点「回滚事务」停在确认对话框、事务确实未回滚，加上后才回滚；gRPC e2e 中删除单行弹出确认对话框，确认后影响 1 行。**只读**：无主键表 `demo_notes` → 「已打开 demo_notes：1 行，只读=true（NoPrimaryKey），排序=Unstable，主键=[]」，尝试编辑 → 「编辑失败：只读：该表没有主键…」，三个编辑按钮在代码层被禁用（`frontend/linux/src/data_page.rs:2092-2095`），截图 `data-page-readonly.png`。**服务端拒绝**：`table_data.no_primary_key` / `table_data.read_only` / 会话只读事务写入被拒均有用例（SQLite `read_only_targets_and_invalid_keys_are_rejected_before_writing`、`read_only_transaction_rejects_row_edits`；MariaDB `row_edits_reject_read_only_targets_and_invalid_keys`） |
+
+交付顺序（全部 squash 合并进 main，Issue 已关闭；每个 PR 的两个作业 `后端（Linux）` 与
+`MariaDB 集成测试（服务容器）` 均 pass）：
+
+| Issue | 交付物 | PR | squash 提交 | CI run |
+|---|---|---|---|---|
+| #41 | ADR 0017 + proto + 参数化 SPI 类型 | #50 | `76ce23d` | `41954735456` |
+| #42 | SQLite 显式事务 | #51 | `fa2e747` | `41955959769` |
+| #43 | MariaDB 显式事务 | #52 | `b24eef9` | `41957364237` |
+| #44 | 事务生命周期接线与 `TransactionService` | #53 | `79ae6fd` | `41958744849` |
+| #45 | 两驱动元数据最小子集 | #54 | `100f43d` | `41960916141` |
+| #46 | 表数据浏览（主键序游标） | #55 | `8775dda` | `41963333169` |
+| #47 | 行编辑提交（参数化 DML） | #56 | `cdd3142` | `41965284410` |
+| #48 | Linux 数据页 | #57 | `47da472` | `41968317577` |
+
+配套基线（main `47da472`，Linux）：`cd backend && cargo fmt --all -- --check` 无输出 / exit 0；
+`cargo clippy --all-targets -- -D warnings` 无警告 / exit 0；
+`SQARVO_MARIADB_URL=… cargo test --workspace` → **382 passed / 0 failed / 0 ignored**（v0.2 基线 219）；
+`cd frontend/linux && cargo fmt --all -- --check` exit 0、`cargo test` → **94 passed / 0 failed**
+（v0.2 基线 66）；`bash scripts/check-tracking.sh --state all` → 「39 个 Issue：失败 0 项，警告 0 项」。
+
+口径与未验证项：性能数字来自 **debug** 构建（Ryzen 7 8745H / 24.8 GiB），release 构建未测量；
+10 万行翻页耗时（SQLite 全表 200 页 100.8 ms、MariaDB 499.0 ms）只是同机观察值，**不是发布承诺**。
+真实 TLS 握手、MySQL 8.x、MariaDB < 10.6 未验证；Windows / macOS 前端未构建、未运行。
+前端进程崩溃（gRPC 流断开）不触发自动回滚；逐行失败面板（`ROW_NOT_FOUND` / `CONFLICT`）只有单元测试，
+事务「失败态」徽标未用 e2e 触发，截断列禁编只有代码判定 + 单元测试，数据页 Loading / Empty / Error
+三态未逐态截图。本版**不包含**插入新行、对象树全量、DDL 查看、导入导出与非主键排序。
+逐条已知限制与问题清单见 [v0.2.1 发布说明](../releases/v0.2.1.md)。
+
 ### v0.2.2
 
 - 对象树懒加载可分页展开；
@@ -94,12 +131,13 @@ Windows / macOS 前端仍是窗口骨架，未构建、未验证。
 7. 打包产物与安装步骤在干净环境验证；
 8. 发布说明包含：新增能力、行为变化、已知限制、升级注意事项。
 
-## 支持矩阵（v0.2）
+## 支持矩阵（v0.2.1）
 
 只填写「已实现并有测试」的能力；未实现的能力必须写明错误语义，不允许空白或「部分支持」。
-本表的 MariaDB 列来自 `docs/database/mariadb.md` 与 PR #32/#35；SQLite 列按 v0.2 代码校正。
+本表的 SQLite / MariaDB 列按 v0.2.1（main `47da472`）的代码与测试校正；驱动细节见
+`docs/database/sqlite.md`、`docs/database/mariadb.md` 与 `docs/database/driver-spi.md`。
 
-| 能力 | SQLite（v0.1 起） | MariaDB（v0.2 新增） | PostgreSQL |
+| 能力 | SQLite（v0.1 起；事务 / 元数据 / 表数据自 v0.2.1） | MariaDB（v0.2 新增；事务 / 元数据 / 表数据自 v0.2.1） | PostgreSQL |
 |---|---|---|---|
 | 连接 / 测试连接 | 已实现并有测试：本地文件、`read_only` 模式、`SELECT sqlite_version()` 作为版本探测 | 已实现并有测试：真实 MariaDB 11.4 连接与测试连接（延迟 + 服务端版本）；5 档 TLS 模式映射，`preferred` 在服务端无 TLS 时回退并给出 `mariadb.tls_fallback` 告警；真实 TLS 握手未验证 | 未实现：未注册驱动，`Connect` / `TestConnection` 返回 `driver.not_found` |
 | 执行 / 分批结果 | 已实现并有测试：单语句、prepared statement 游标分批、服务端批次上限 5000 行 | 已实现并有测试：`execute` 交付摘要 + 首批行，`max_rows` 钳制 `1..=5000`；游标 = 已交付行数、多读一行判 `has_more`、不用 `OFFSET` 重查；游标不匹配 → `mariadb.cursor_invalid`，游标未读完再 `execute` → `mariadb.query_active` | 未实现：`driver.not_found` |
@@ -107,14 +145,15 @@ Windows / macOS 前端仍是窗口骨架，未构建、未验证。
 | 大字段截断 | 已实现并有测试：单格 64 KiB、文本按字符边界截断并置 `truncated`；延迟加载未实现 | 已实现并有测试：64 KiB、UTF-8 字符边界回退、恰好等于上限不标记；延迟加载未实现 | 未实现：`driver.not_found` |
 | 取消 | 已实现并有测试：`InterruptHandle` 中断、幂等、2 秒内生效 | 已实现并有测试：独立控制连接 `KILL QUERY`、幂等、2 秒内生效；批次之间的取消在下一次 `fetch` 立即返回 `query.cancelled`；`PROCESSLIST` 断言无残留执行 | 未实现：`driver.not_found` |
 | 多语句 | 未实现：单语句，第二条语句返回 `capability.unsupported`（ADR 0006） | 未实现：能力声明 `multiple_statements=false`，发送前拒绝，返回 `capability.unsupported`，第二条语句不产生副作用 | 未实现：`driver.not_found` |
-| 事务 | 未实现（M4）：`TransactionService` 返回 `UNIMPLEMENTED`，驱动 `transactions=false` | 未实现（M4）：`capability.unsupported`，`transactions=false` | 未实现：`driver.not_found` |
-| 元数据 / 对象树 / 列信息 / DDL | 未实现（M4）：`MetadataService` 返回 `UNIMPLEMENTED`，不返回空列表冒充成功 | 未实现（M4）：`metadata()` 返回 `None`，RPC 返回 `UNIMPLEMENTED` | 未实现：`driver.not_found` |
+| 事务 | 已实现并有测试：`BEGIN IMMEDIATE`（读写）/ `BEGIN DEFERRED` + `PRAGMA query_only`（只读）；一个会话最多一个事务（重复 `Begin` → `transaction.already_active`），失败态只允许回滚，重复提交/回滚与未知事务 ID 按 ADR 0017 处置；`--test transactions` 9 通过 | 已实现并有测试：`START TRANSACTION [READ ONLY]` / `COMMIT` / `ROLLBACK`；四档隔离级别逐档下发并有 `@@transaction_isolation` 断言，`Snapshot` 明确拒绝；事务中 DDL / `TRUNCATE` 等隐式提交语句**发送前**拒绝（`mariadb.implicit_commit_rejected`）；死锁 → 失败态，断连 → `mariadb.transaction_lost`；集成用例覆盖提交可见、回滚丢弃、断连回滚 | 未实现：`driver.not_found` |
+| 元数据（表/视图列表、列、主键） | 已实现并有测试：`sqlite_master` 的表/视图、`pragma_table_info` 的列与主键（`pk` 即主键内顺序）；分页 token 带对象名集合指纹，非法 token → `config.invalid`，集合变化 → `metadata.snapshot_changed`；`--test metadata` 8 通过 | 已实现并有测试：`information_schema` 的 `TABLES` / `COLUMNS` / `KEY_COLUMN_USAGE`；原始类型取 `COLUMN_TYPE`（含长度与 `unsigned`）、精度/标度/可空性；`metadata_*` 集成用例覆盖分页、跨 catalog 拒绝、缺库与缺表分类 | 未实现：`driver.not_found`。上层 Catalog / Schema / Index / Sequence 与跨库浏览对所有驱动返回 `capability.unsupported`（不返回空列表）；DDL 查看 v0.2.2 |
+| 表数据浏览 / 行编辑 | 已实现并有测试：主键升序 + 不透明游标（禁止 `OFFSET`），`--test table_data` 9 通过；行编辑走参数化 DML + 影响行数核对 + 批内 savepoint，`--test row_edits` 10 通过；无主键表只读（`table_data.no_primary_key`） | 已实现并有测试：同一游标语义与只读态；`row_edits_preserve_mariadb_types_bit_for_bit`（逐类型位级往返）、`row_edits_detect_conflicts_and_roll_back_failed_batches`、`row_edits_inside_explicit_transaction_use_savepoint`、`row_edits_reject_read_only_targets_and_invalid_keys` | 未实现：`driver.not_found` |
 
 > TLS 说明：MariaDB 的 TLS 只有「模式映射与参数校验」有单元测试，测试容器未启用 TLS，
 > `require` / `verify-ca` / `verify-full` 与客户端证书**未验证**；不得据此声称「TLS 可用」。
 > MySQL 8.x 兼容性同样未验证（`docs/database/mariadb.md` 未支持清单）。
 
-### 验证方式（v0.2）
+### 验证方式（v0.2.1）
 
 矩阵中的每一格都能用下列命令复核（除标注未验证的 TLS 外）：
 
@@ -125,9 +164,18 @@ cargo test -p sqarvo-driver-sqlite
 cargo test -p sqarvo-driver-sqlite --test type_mapping
 cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e
 
-# MariaDB：连接/测试连接/分批/取消/错误分类/testkit（需要真实实例）
+# v0.2.1：事务、元数据、表数据浏览与行编辑（SQLite，无需外部数据库）
+cargo test -p sqarvo-driver-sqlite --test transactions   # 9 通过
+cargo test -p sqarvo-driver-sqlite --test metadata       # 8 通过
+cargo test -p sqarvo-driver-sqlite --test table_data     # 9 通过
+cargo test -p sqarvo-driver-sqlite --test row_edits      # 10 通过
+cargo test -p sqarvo-rpc-server --test grpc_transactions_e2e  # 8 通过
+cargo test -p sqarvo-rpc-server --test grpc_table_data_e2e    # 2 通过
+cargo test -p sqarvo-rpc-server --test grpc_metadata_e2e      # 1 通过
+
+# MariaDB：连接/测试连接/分批/取消/错误分类/testkit/事务/元数据/行编辑（需要真实实例）
 SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
-  cargo test -p sqarvo-driver-mariadb --test integration
+  cargo test -p sqarvo-driver-mariadb --test integration   # 48 通过
 
 # 凭据：Store/Delete、缺失与不可用语义（内存存储 + 真实 MariaDB）
 cargo test -p sqarvo-rpc-server --test grpc_credential
@@ -135,10 +183,17 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
   cargo test -p sqarvo-rpc-server --test grpc_mariadb_credentials
 ```
 
+前端（数据页路径，真实后端 + MariaDB，详见 `frontend/linux/README.md`「数据页」）：
+
+```bash
+cd frontend/linux && cargo test    # 94 通过
+# 提交 / 回滚 / 只读 / 翻页的无人值守复现见该 README 的 --qa-data-* 参数表
+```
+
 CI 对应作业（`.github/workflows/ci.yml`）：`后端（Linux）`（fmt / clippy / `cargo test` /
 SQLite 类型映射 / SQLite UDS 端到端）与 `MariaDB 集成测试（服务容器）`（断言发现用例数 ≠ 0、
-通过数 = 发现数、未进入跳过分支）。两个作业在 v0.2 的每个 PR 上均为 pass；
-最近一次 main 合并后运行：run `41818532913`（commit `c6b9ab4`）。
+通过数 = 发现数、未进入跳过分支）。两个作业在 v0.2.1 的每个 PR（#50–#57）上均为 pass；
+最后一个 PR 的运行：#57 → run `41968317577`（squash 提交 `47da472`）。
 
 ## 兼容与弃用
 

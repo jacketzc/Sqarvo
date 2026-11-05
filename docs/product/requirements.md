@@ -22,11 +22,11 @@
 
 | ID | 需求 | 优先级 | 状态 | 验收要点 |
 |---|---|---|---|---|
-| REQ-META-001 | 对象树按需加载（Catalog / Schema / 表 / 视图 / 序列等） | P0 | 部分 | `MetadataProvider` 接口与分页逻辑已实现；无驱动实现，RPC 仍为 `UNIMPLEMENTED` |
-| REQ-META-002 | 列信息（原始类型、精度、可空、默认值） | P0 | 部分 | `ColumnMeta` 与接口已定义；无驱动映射 |
+| REQ-META-001 | 对象树按需加载（Catalog / Schema / 表 / 视图 / 序列等） | P0 | 部分 | **已交付部分**：两个驱动的「当前库表/视图」一层 + `MetadataService.ListNodes` 分页（每页上限 500，不透明 token 带对象名集合指纹；非法 token → `config.invalid`，翻页期间集合变化 → `metadata.snapshot_changed`，都不回退第一页）。`cargo test -p sqarvo-driver-sqlite --test metadata` → 8 通过，`SQARVO_MARIADB_URL=… cargo test -p sqarvo-driver-mariadb --test integration` 内的 `metadata_*` 用例通过（#45，PR #54 / `100f43d`）。**剩余**：Catalog / Schema / Index / Sequence 与跨库浏览返回 `capability.unsupported`（不返回空列表冒充成功）；Linux 前端是数据页左侧的平铺列表，没有可折叠的对象树，DDL 查看属 v0.2.2 |
+| REQ-META-002 | 列信息（原始类型、精度、可空、默认值） | P0 | 部分 | **已交付部分**：`GetColumns` 返回原始类型名（SQLite 声明类型 / MariaDB `COLUMN_TYPE`，含长度与 `unsigned`）、可空性、MariaDB 的精度与标度；SQLite `columns_preserve_declared_type_and_nullability`、MariaDB `metadata_columns_keep_original_types_and_nullability` 逐列断言（#45，PR #54）。**剩余**：默认值、字符集、排序规则无法交付——`proto.common.v1.ColumnMeta` 没有这些字段（契约冻结），补齐需改 proto；`ENUM` / `SET` / `GEOMETRY` / `BIT` 以 `ColumnType::Unsupported { type_name }` 保留原文 |
 | REQ-META-003 | 查看 DDL | P1 | 未实现 | 标明是否为数据库原文 |
 | REQ-META-004 | 对象搜索与过滤 | P1 | 未实现 | 大库下不阻塞 UI |
-| REQ-META-005 | 表/视图数据预览 | P1 | 未实现 | 与查询结果共用分页机制 |
+| REQ-META-005 | 表/视图数据预览 | P1 | 已实现 | `TableDataService.BrowseTable`：固定主键升序 + 不透明 cursor（禁止 `OFFSET`），每页上限 500，游标非法 → `table_data.cursor_invalid` 且不回退第一页；无主键表/视图返回 `read_only=true`（原因 `NoPrimaryKey`、排序 `Unstable`）。SQLite `cargo test -p sqarvo-driver-sqlite --test table_data`（9 用例）、MariaDB 集成用例、gRPC `cargo test -p sqarvo-rpc-server --test grpc_table_data_e2e`（#46，PR #55 / `8775dda`）；Linux 数据页按主键翻页并显示原始类型列头 |
 
 ## 3. SQL 编辑器与执行
 
@@ -53,10 +53,10 @@
 
 | ID | 需求 | 优先级 | 状态 | 验收要点 |
 |---|---|---|---|---|
-| REQ-EDIT-001 | 表数据浏览与主键定位 | P1 | 未实现 | 无主键时明确只读 |
-| REQ-EDIT-002 | 安全编辑：脏标记、提交、回滚、只读态 | P1 | 未实现 | 批量更新需风险提示 |
-| REQ-TXN-001 | 显式事务：开始/提交/回滚与状态展示 | P1 | 部分 | 状态机与 SPI 事务接口已实现；`TransactionService` 三个 RPC 仍返回 `UNIMPLEMENTED`，两个驱动都声明 `transactions=false`（M4） |
-| REQ-TXN-002 | 隔离级别与只读事务 | P2 | 未实现 | 不支持时明确拒绝 |
+| REQ-EDIT-001 | 表数据浏览与主键定位 | P1 | 已实现 | 行定位只用完整主键值（复合主键按 `GetPrimaryKey` 顺序给出全部列），驱动内部 prepared statement 绑定参数，不拼接 SQL。无主键表/视图：`primary_key` 返回空、`browse` 置只读并标注「无稳定排序」、编辑拒绝 `table_data.no_primary_key`，**不提供** rowid / ctid 近似定位（ADR 0017）。SQLite `primary_key_handles_single_composite_and_missing_keys`、`table_without_primary_key_is_read_only_and_not_pageable`、`views_browse_as_read_only_without_primary_key`；MariaDB `metadata_primary_key_handles_single_composite_and_missing_keys`（#45/#46，PR #54/#55） |
+| REQ-EDIT-002 | 安全编辑：脏标记、提交、回滚、只读态 | P1 | 已实现 | 脏行有行首标记与「脏行 N · 待提交 M 条」计数，放弃更改可撤销；提交只发「主键值 + 列变更」，`expected_rows_affected=1` 由服务端核对（不符 → `ChangeOutcome::Conflict`、目标行不存在 → `RowNotFound`、整批 `table_data.rows_affected_mismatch`），批内以 savepoint 保证原子性且失败后事务仍可用；风险确认阈值 `DEFAULT_RISK_CONFIRMATION_ROWS=100`，>100 行或含删除必须显式确认（服务端 `table_data.confirmation_required` 兜底）；只读态：无主键表 / 驱动未声明行编辑 / 只读事务三种原因都有文字说明并禁用编辑。SQLite `cargo test -p sqarvo-driver-sqlite --test row_edits` → 10 通过；MariaDB `row_edits_detect_conflicts_and_roll_back_failed_batches`、`row_edits_inside_explicit_transaction_use_savepoint`、`row_edits_preserve_mariadb_types_bit_for_bit`；gRPC `grpc_table_data_e2e`（#47，PR #56 / `cdd3142`）；Linux 数据页实测提交/回滚/只读（#48，PR #57 / `47da472`） |
+| REQ-TXN-001 | 显式事务：开始/提交/回滚与状态展示 | P1 | 已实现 | `TransactionService.Begin` / `Commit` / `Rollback` 已接线（不再返回 `UNIMPLEMENTED`），两个驱动 `transactions=true`；单会话最多一个事务（重复 `Begin` → `transaction.already_active`），失败态只允许回滚，未知事务 ID → `transaction.not_found`（不退化成自动提交）；状态经 `TransactionInfo.state` 与 `SessionSummary.transaction` 暴露，Linux 数据页徽标四态（自动提交 / 事务中 / 失败态 / 已断开）；断连时后端强制回滚并清空登记。`cargo test -p sqarvo-rpc-server --test grpc_transactions_e2e` → 8 通过（含 `disconnect_forces_rollback_and_clears_registry`、`failed_transaction_rejects_commit_and_allows_rollback`、`session_status_reports_open_transaction`）（#44，PR #53 / `79ae6fd`；UI 由 #48，PR #57）。**剩余**：SQL 工作区查询仍是 `auto_commit=true`，手写 `BEGIN` 后数据页徽标不即时刷新（写入被 `transaction.already_active` 拒绝）；「失败态」徽标未做 e2e 触发 |
+| REQ-TXN-002 | 隔离级别与只读事务 | P2 | 部分 | 只读事务已实现并两端验证：SQLite 用 `BEGIN DEFERRED` + `PRAGMA query_only` 由数据库拒绝写入（`read_only_transaction_rejects_writes_and_restores_writability`），MariaDB 用 `START TRANSACTION READ ONLY`（服务端错误 1792 → `mariadb.read_only_transaction`）；隔离级别 MariaDB 四档逐档下发并有 `@@transaction_isolation` 断言，`Snapshot` 明确拒绝（`capability.unsupported`），SQLite 只接受 `Serializable`、其余拒绝。**剩余**：界面没有隔离级别选择入口（只提供「只读」开关），`Unspecified` 即驱动默认；savepoint 只在行编辑批次内部使用，未对外暴露 |
 
 ## 6. 结构与高级能力
 
