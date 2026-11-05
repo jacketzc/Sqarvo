@@ -165,18 +165,29 @@ pub struct Ddl {
 - 对象名集合在翻页期间变化 → `metadata.snapshot_changed`（`failed_precondition`）；
 - 同名对象整体替换（名字集合不变）不会被指纹区分，文档必须写明这一边界。
 
-## 元数据实现现状（v0.2.1）
+## 元数据实现现状（v0.2.2，#82）
 
-两个内置驱动都实现了「当前库的表/视图」一层：`ListNodes` 根节点、`GetColumns`、`GetPrimaryKey`。
+两个内置驱动都实现了完整层级与跨库浏览：`ListNodes`（根 / Catalog / 表 / 视图 逐层展开）、
+`GetColumns`、`GetPrimaryKey`。
 
-| 驱动 | 列表 | 列 | 主键 | DDL |
-|---|---|---|---|---|
-| SQLite | `sqlite_master` | `pragma_table_info` | `pragma_table_info.pk` | 未实现（v0.2.2） |
-| MariaDB | `information_schema.TABLES` | `information_schema.COLUMNS` | `information_schema.KEY_COLUMN_USAGE` | 未实现（v0.2.2） |
+| 驱动 | 目录层（Catalog） | 表内层 | 列 | 主键 | DDL |
+|---|---|---|---|---|---|
+| SQLite | `PRAGMA database_list`（`main` / `temp` / `ATTACH`） | 列 / 索引 / 触发器（`pragma_table_info` + `sqlite_master`） | `pragma_table_info` | `pragma_table_info.pk` | 未实现（#83） |
+| MariaDB | `information_schema.SCHEMATA` | 列 / 索引 / 触发器（`COLUMNS` / `STATISTICS` / `TRIGGERS`） | `information_schema.COLUMNS` | `information_schema.KEY_COLUMN_USAGE` | 未实现（#83） |
 
-上层/更深层级（Catalog、Schema、Index、Sequence）与跨库浏览显式返回
-`capability.unsupported`，不返回空列表。细节见 [SQLite](./sqlite.md#元数据v021-最小子集) 与
-[MariaDB](./mariadb.md#元数据v021-最小子集)。
+两个驱动共同遵守的约定（细节见驱动文档）：
+
+- **子节点顺序**：先按种类（`ObjectKind` 声明顺序）、再按限定名。v0.2.1 的「只按名字排序」
+  已作废，客户端不得假设全局字母序；
+- **分页键**：`sqarvo-metadata::paginate_children`，键含种类与父节点作用域（列与索引可以同名；
+  不同库可以有同名表），token 仍是不透明 `v1:<offset>:<指纹>`；
+- **子节点填满 catalog**：节点引用可以原样回传给 `GetColumns` / `GetPrimaryKey` / `GetDdl`；
+- **不存在的层级不返回空列表**：SQLite / MariaDB 都没有 schema 层（`capability.unsupported`），
+  SQLite 没有序列；种类用错（对列展开、把视图当表）是
+  `metadata.object_kind_unsupported`（`INVALID_ARGUMENT`）；
+- **过滤下推**（`list_children_filtered`）仍未由驱动实现，默认实现返回
+  `capability.unsupported`；rpc-server 已把 `ListNodes.filter` 接线到该 SPI（#82），
+  真正下推在 #84。
 
 ## 事务实现现状（v0.2.1）
 
@@ -341,12 +352,11 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
 ## 尚未实现
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
-- 元数据的上层层级与 DDL：两驱动只实现「当前库的表/视图 + 列 + 主键」
-  （见上「元数据实现现状」），Catalog / Schema / Index / Sequence 与跨库浏览返回
-  `capability.unsupported`。**契约已于 v0.2.2 冻结（#81，ADR 0019）**：层级展开规则、
-  `ListNodes.filter`（名称/种类下推）与 `GetDdl` 的 `source` / `source_detail` /
-  `generator_version` 都已进 proto 与 SPI，驱动侧实现见 #82（对象树与搜索）与 #84（DDL）；
-  在此之前 rpc-server 对非空过滤明确返回 `UNIMPLEMENTED`，不静默忽略；
+- 元数据的 schema 层级、函数/存储过程/类型列表与 DDL：两驱动都没有 schema 层
+  （`capability.unsupported`），`FUNCTION` / `PROCEDURE` / `TYPE` 父节点同样显式报错；
+  `GetDdl` 仍是显式 `UNIMPLEMENTED`（#83 落地）。层级展开与跨库浏览已于 #82 实现
+  （见上「元数据实现现状」）；`ListNodes.filter` 的下推在 #84，驱动未实现前 rpc-server
+  对非空过滤明确返回 `UNIMPLEMENTED`，不静默忽略；
 - 表数据浏览与行编辑：两驱动已实现（`table_data()` 返回 provider，`supports_row_edits()`
   为 `true`），`Capabilities.row_editing` 已在 `ListDrivers` 中展示；**插入新行**
   （`insert_rows`，契约见 #81 / ADR 0019）与非主键排序仍未实现：两驱动的
