@@ -497,9 +497,47 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   生成列 → `table_data.column_not_insertable`（1906 / `EXTRA` 预判定），
   长度与取值越界（1406 / 1264 / 1265 / 1366 / 1292 / 1690）与 CHECK / 外键 → `config.invalid`
   （v0.2.2 未登记类型专用码）；
-- `list_children_filtered` 仍走默认实现返回 `capability.unsupported`
-  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`；
-  DDL 已由 #83 实现（见下）。
+- 过滤已由 #84 实现（见下「对象搜索」）；插入已由 #85 实现，
+  `supports_row_insertion()` 为 `true`；DDL 已由 #83 实现（见下）。
+
+### 对象搜索（#84）
+
+`ListNodes.filter` 的过滤**下推到 `information_schema` 的 SQL**：驱动不把整层读回来再筛，
+过滤后的结果集才进 `paginate_children_filtered` 切页。每层实际发出的语句：
+
+| 父节点 | 数据来源 | 名称条件 | 种类条件 |
+|---|---|---|---|
+| 空（根） / `CATALOG`（带库名） | `information_schema.TABLES` | `AND TABLE_NAME LIKE CONCAT('%', ?, '%')`（contains）或 `AND TABLE_NAME = ?`（exact） | `TABLE_TYPE IN ('BASE TABLE','VIEW','SYSTEM VIEW','SEQUENCE')` |
+| `CATALOG`（不带库名） | `information_schema.SCHEMATA` | `WHERE SCHEMA_NAME LIKE CONCAT('%', ?, '%')` | 不含 `CATALOG` → 直接空结果 |
+| `TABLE` / `VIEW` | `COLUMNS` / `STATISTICS` / `TRIGGERS` | `AND COLUMN_NAME LIKE CONCAT('%', ?, '%')` 等 | `kinds` 排除的种类连查询都不发 |
+
+- 名称与种类都只以**绑定参数**进 SQL；`contains` 的 `%` 包裹用 `CONCAT`（MariaDB 的 `||`
+  默认是逻辑或，除非启用 `PIPES_AS_CONCAT`），绑定值是**已转义**的字面量；
+- **转义**：`%`、`_` 与 `\` 自身变成字面量。MySQL 协议族的 `LIKE` 默认转义符就是反斜杠，
+  因此**不**写 `ESCAPE` 子句（写了在 `NO_BACKSLASH_ESCAPES` 下会把 `''` 当成两个字符而
+  报错）；已知限制：`NO_BACKSLASH_ESCAPES` 打开时默认转义符失效，本版不处理（见「待定」）；
+- **大小写与重音跟着列的排序规则，驱动不加 `LOWER()`**（本机 MariaDB 11.4 实测）：
+  - `information_schema.TABLES.TABLE_NAME` 是 `utf8mb3_general_ci`：
+    - `LIKE`（contains）**不区分** ASCII 大小写，**且折叠重音**（`cafe` 命中 `café`）；
+    - `=`（exact）在驱动把字符串按字节串绑定后是**二进制比较**：`USER_LOG` 不命中
+      `user_log`。这与 `contains` 不对称，也与 SQLite 的 `exact` 一致（那边是 BINARY
+      排序规则）；要跨库一致的大小写语义，得单独立 ADR（ADR 0019「重新评估条件」）；
+  - 表名本身的大小写取决于 `lower_case_table_names`，与这里的**比较**语义是两件事；
+- **分页 token**：过滤结果用 `v2:<offset>:<16 位集合指纹>:<16 位过滤标签>`，标签取自
+  `ObjectFilter::fingerprint_input()`。换关键词 / 换匹配方式 / 加 `kinds` → 旧 token
+  `config.invalid`；结果集变化仍是 `metadata.snapshot_changed`；空过滤与
+  `list_children` 完全一致（token 仍是 v1）；
+- **空结果 vs 无权限**：没搜到是合法空页；库不可读（1044 / 1142 / 1143）沿既有路径报
+  `metadata.permission_denied`（`PERMISSION_DENIED`），**不用空列表冒充**。
+  `information_schema` 会按权限隐藏行（这是 MariaDB 的可见性规则），但「整个库不可读」
+  仍由 `SHOW CREATE DATABASE` 探测给出明确错误；
+- **性能**（本机实测，`#[ignore]` 用例 `search_on_large_schema_bench`，release）：
+  同一个库里 1 万张表时，`contains` 命中 3 个 **7.2 ms**，不过滤首页 **153 ms**；
+  同时读 `SHOW SESSION STATUS LIKE 'Rows_sent'` 的前后差值来证明下推——**只增加 4**
+  （若把整层读回再筛，这个差值会等于对象总数）。10 万张表没有跑：InnoDB 建表约
+  41 ms/张（1 万张实测 412 s 建、333 s 删），10 万张要两小时以上，且测试库与其它 lane
+  共用；SQL 形状与过滤路径与规模无关，10 万只影响数据库侧扫描量。
+  `LIKE CONCAT('%', ?, '%')` 不能用索引，代价在数据库侧扫 `information_schema`。
 
 ### DDL 查看（#83）
 

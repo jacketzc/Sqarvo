@@ -251,6 +251,30 @@ SQLite 的 `sqlite_autoindex_*`（隐式索引，`sql` 列为 NULL）没有原�
 
 `GetDdl` 经新增的 `SessionHandle::ddl` 在会话执行锁内调用驱动（ADR 0008 的路径表已更新）。
 
+## 实现补充（#84，对象搜索）
+
+决策与契约未改；实现时确定的三处细节：
+
+1. **过滤结果的分页 token 换成 `v2:<offset>:<集合指纹>:<过滤标签>`**。冻结口径要求
+   「换条件后旧 token 以 `config.invalid` 失效」，而 #82 的集合指纹只能表达「对象集合
+   变了」（`metadata.snapshot_changed`）。两者混在一个 16 位指纹里就无法区分「数据变了，
+   请重读」与「你换了条件，请重搜」，所以 v2 token 多带一段显式标签（
+   `ObjectFilter::fingerprint_input()` 的 FNV-1a 摘要）。空过滤仍走 v1，与
+   `list_children` 完全一致。**不改协议**：token 对客户端始终不透明。
+2. **`exact` 用 `=`、`contains` 用 `LIKE`，因此两个驱动上两者的大小写行为都不对称**：
+   SQLite 的 `LIKE` 只折叠 ASCII、`=` 是二进制比较；MariaDB 的 `LIKE` 走列的
+   `utf8mb3_general_ci`（折叠 ASCII 大小写与重音），`=` 在字符串参数按字节串绑定时是二进制
+   比较。这是「按数据库实际行为」的直接后果，文档（`docs/database/{sqlite,mariadb}.md`）
+   逐条写明，驱动不加 `lower()` / `COLLATE` 去抹平——要统一语义须单独立 ADR。
+3. **MariaDB 不写 `ESCAPE` 子句**：MySQL 协议族的 `LIKE` 默认转义符是反斜杠，显式
+   `ESCAPE '\\'` 在 `NO_BACKSLASH_ESCAPES` 下会把两个字面量当成转义符而报错。已知限制：
+   该模式打开时默认转义符失效，本版不处理。
+
+代价（实测）：`LIKE '%x%'` 不能用索引。10 万对象上 SQLite `contains` 命中 3 个约
+9.3 ms、不过滤首页约 98 ms（扫 `sqlite_master`）；MariaDB 1 万对象上约 7.2 ms，
+且服务器只把命中行送回客户端（`Rows_sent` 增量 = 3 + 统计语句自身），
+但 `information_schema` 的扫描仍在数据库里发生。
+
 ## 验证
 
 - `backend/crates/driver-api/tests/v022_contract.rs`（10 例）：默认 SPI 实现返回

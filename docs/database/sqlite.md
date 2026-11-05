@@ -196,9 +196,42 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
   显式 NULL → `table_data.not_null_violation`、省略且无默认值 →
   `table_data.not_null_without_default`、生成列 → `table_data.column_not_insertable`、
   CHECK / 外键 / STRICT 类型不匹配 → `config.invalid`（v0.2.2 未登记类型专用码）；
-- `list_children_filtered` 仍走默认实现返回 `capability.unsupported`
-  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`；
-  DDL 已由 #83 实现（见下）。
+- 过滤已由 #84 实现（见下「对象搜索」）；插入已由 #85 实现，
+  `supports_row_insertion()` 为 `true`；DDL 已由 #83 实现（见下）。
+
+### 对象搜索（#84）
+
+`ListNodes.filter` 的过滤**下推到 SQL**：驱动不把整层读回来再筛，过滤后的结果集才进
+`paginate_children_filtered` 切页。每层实际发出的语句：
+
+| 父节点 | 数据来源 | 名称条件 | 种类条件 |
+|---|---|---|---|
+| 空（根） / `CATALOG`（带库名） | `<库>.sqlite_master` | `AND name LIKE '%' \|\| ? \|\| '%' ESCAPE '\'`（contains）或 `AND name = ?`（exact） | `type IN ('table','view')` |
+| `CATALOG`（不带库名） | `pragma_database_list` ∪ `main`/`temp`（CTE） | `WHERE name LIKE '%' \|\| ? \|\| '%' ESCAPE '\'` | 不含 `CATALOG` → 直接空结果 |
+| `TABLE` / `VIEW` | `pragma_table_info(?, ?)` / `<库>.sqlite_master` | `WHERE name LIKE ... ESCAPE '\'`（列）/ `AND name LIKE ...`（索引、触发器） | `kinds` 排除的种类连查询都不发 |
+
+- 名称与种类都只以**绑定参数**进 SQL：用户输入不进语句文本。`contains` 的 `%` 包裹写在
+  SQL 里（`'%' || ? || '%'`），绑定值是**已转义**的字面量；
+- **转义**：`%`、`_` 与转义符 `\` 自身都变成字面量（`sqarvo_metadata::like_escape`）。
+  搜 `user_log` 不会命中 `userXlog`，搜 `pct%100` 不会命中 `pctX100`；
+- **大小写按 SQLite 真实行为，驱动不加 `lower()`**：
+  - `LIKE`（contains）对 **ASCII** 不敏感、对非 ASCII 不折叠（`ärger` 不命中 `Ärger`）；
+  - `=`（exact）是二进制比较，**区分大小写**（`USER_LOG` 不命中 `user_log`）。
+    这与 `contains` 不对称，但两者都是 SQLite 自己的比较语义；MariaDB 的 `exact` 同样走
+    `=`，见下；
+- **分页 token**：过滤结果用 `v2:<offset>:<16 位集合指纹>:<16 位过滤标签>`，标签取自
+  `ObjectFilter::fingerprint_input()`（`name=<contains|exact>:<原文>;kinds=...`）。
+  换关键词、换匹配方式、加 `kinds` 都会让旧 token 报 `config.invalid`
+  （`INVALID_ARGUMENT`，「翻页中途改条件」是明确错误）；结果集自身变化仍是
+  `metadata.snapshot_changed`。空过滤与 `list_children` 完全一致（token 仍是 v1）；
+- **空结果与错误的边界**：没搜到是合法空页（`items = []`、`next_page_token = None`）；
+  空匹配串 / 重复 `kinds` 是 `metadata.filter_invalid`；SQLite 没有对象级权限模型，
+  因此不存在「无权限却返回空列表」的情形（文件级不可读在连接阶段就失败）；
+- **性能**（本机实测，`#[ignore]` 用例 `filter_on_hundred_thousand_objects_bench`，
+  release）：10 万张表、`contains("needle")` 命中 3 个 → **9.3 ms**；同样 10 万对象上
+  不过滤首页（只取 50 个）**97.7 ms**。`LIKE '%x%'` 不能用索引，代价在数据库侧
+  （扫 `sqlite_master`），不是把 10 万行搬进驱动内存。建这 10 万张表本身约 12 分钟
+  （SQLite 每次 DDL 都要重写并重解析 schema），属基准夹具成本。
 
 ### DDL 查看（#83）
 

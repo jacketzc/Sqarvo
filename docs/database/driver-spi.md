@@ -185,9 +185,10 @@ pub struct Ddl {
 - **不存在的层级不返回空列表**：SQLite / MariaDB 都没有 schema 层（`capability.unsupported`），
   SQLite 没有序列；种类用错（对列展开、把视图当表）是
   `metadata.object_kind_unsupported`（`INVALID_ARGUMENT`）；
-- **过滤下推**（`list_children_filtered`）仍未由驱动实现，默认实现返回
-  `capability.unsupported`；rpc-server 已把 `ListNodes.filter` 接线到该 SPI（#82），
-  真正下推在 #84。
+- **过滤下推**（`list_children_filtered`）：默认实现仍返回 `capability.unsupported`
+  （绝不在 SPI 层退化成内存过滤）；两个内置驱动已各自下推（#84）——SQLite 用
+  `LIKE ... ESCAPE '\\'`，MariaDB 用 `information_schema` 的 `LIKE CONCAT(...)`。
+  过滤结果的分页 token 是 `v2:<offset>:<集合指纹>:<过滤标签>`，换条件即 `config.invalid`。
 - **DDL**（`MetadataProvider::ddl`，#83）：两驱动都只交付数据库原文
   （`Ddl::from_database`，`exact = true`）；本版**没有**拼装路径，`Ddl::synthesized`
   只有契约层用例覆盖。拿不到原文时（SQLite 隐式索引、MariaDB 索引/触发器）明确报错，
