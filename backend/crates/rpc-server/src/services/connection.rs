@@ -18,6 +18,7 @@ use crate::proto::services::v1::{
     SessionSummary, TestConnectionRequest, TestConnectionResponse,
     connection_service_server::ConnectionService,
 };
+use crate::services::mapping;
 
 /// `ConnectionService` 实现。
 pub struct ConnectionServiceImpl {
@@ -146,6 +147,11 @@ impl ConnectionService for ConnectionServiceImpl {
                     .connected_at
                     .format(&time::format_description::well_known::Rfc3339)
                     .unwrap_or_default(),
+                // 事务字段是读取时的快照；未打开事务时为空 message。
+                transaction: summary
+                    .transaction
+                    .as_ref()
+                    .map(mapping::transaction_status_to_proto),
             })
             .collect();
 

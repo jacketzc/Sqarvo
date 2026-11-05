@@ -10,6 +10,13 @@
 //!   「事务已中止」的语义一致；
 //! - 不支持事务的驱动必须由上层返回 `capability.unsupported`，
 //!   不得降级为自动提交。
+//!
+//! 接线位置（#44）：`sqarvo-connection` 的会话句柄持有本 crate 的
+//! [`Transaction`]，每个会话最多一个；事务 ID 来自驱动，状态机负责在
+//! 调用驱动之前拦截失败态提交，并由 [ADR 0017 §3] 规定幂等语义
+//! （重复提交/回滚返回成功，写入路径才要求事务必须存在）。
+//!
+//! [ADR 0017 §3]: ../../../docs/decisions/0017-table-data-and-row-edit.md
 
 #![warn(missing_docs)]
 

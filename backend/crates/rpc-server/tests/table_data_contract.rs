@@ -136,6 +136,59 @@ fn table_data_message_field_numbers_are_frozen() {
     );
 }
 
+/// #44 的 proto 增量：只允许追加字段，既有字段号与语义不得改动。
+#[test]
+fn transaction_and_session_fields_are_append_only() {
+    let transaction = messages("services/v1/transaction.proto");
+    assert_fields(
+        &transaction["TransactionInfo"],
+        &[
+            (1, "transaction_id"),
+            (2, "session_id"),
+            (3, "isolation"),
+            (4, "read_only"),
+            (5, "state"),
+        ],
+    );
+    assert_fields(&transaction["TransactionRef"], &[(1, "transaction_id")]);
+    assert_fields(
+        &transaction["TransactionStatus"],
+        &[
+            (1, "transaction_id"),
+            (2, "isolation"),
+            (3, "read_only"),
+            (4, "state"),
+        ],
+    );
+    assert_fields(
+        &transaction["BeginTransactionRequest"],
+        &[(1, "session_id"), (2, "isolation"), (3, "read_only")],
+    );
+    assert_eq!(
+        type_name_of(&transaction["TransactionStatus"], "isolation"),
+        ".sqarvo.services.v1.IsolationLevel"
+    );
+
+    // 会话摘要的事务字段必须是新编号 7 上的嵌套 message，不能是字符串或布尔。
+    let connection = messages("services/v1/connection.proto");
+    assert_fields(
+        &connection["SessionSummary"],
+        &[
+            (1, "connection_id"),
+            (2, "session_id"),
+            (3, "driver_id"),
+            (4, "display_name"),
+            (5, "capabilities"),
+            (6, "connected_at"),
+            (7, "transaction"),
+        ],
+    );
+    assert_eq!(
+        type_name_of(&connection["SessionSummary"], "transaction"),
+        ".sqarvo.services.v1.TransactionStatus"
+    );
+}
+
 #[test]
 fn table_data_field_types_preserve_value_model() {
     let table_data = messages("services/v1/table_data.proto");

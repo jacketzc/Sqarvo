@@ -2,11 +2,17 @@
 //!
 //! 只做无损转换：无法表示的时间戳范围等极端情况返回 `INTERNAL`，
 //! 绝不静默截断或伪造值。单元格截断由驱动标记，映射层透传 `truncated`。
+//!
+//! 事务相关的枚举与快照映射也在本模块（#44）：它们跨越驱动 SPI 与契约两层，
+//! 集中在一处可以避免 `ConnectionService` 与 `TransactionService` 各写一份。
 
 use sqarvo_common::QueryId;
+use sqarvo_connection::TransactionStatus;
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, ColumnType, ExecutionStart, ResultBatch, Row, StatementSummary, Value,
+    Cell, ColumnMeta, ColumnType, ExecutionStart, IsolationLevel, ResultBatch, Row,
+    StatementSummary, Value,
 };
+use sqarvo_transaction::TransactionState;
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use tonic::Status;
 
@@ -17,7 +23,9 @@ use crate::proto::common::v1::{
     TimestampValue as ProtoTimestampValue, ValueKind, column_value,
 };
 use crate::proto::services::v1::{
-    ExecuteQueryResponse, FetchBatchResponse, StatementSummary as ProtoStatementSummary,
+    ExecuteQueryResponse, FetchBatchResponse, IsolationLevel as ProtoIsolationLevel,
+    StatementSummary as ProtoStatementSummary, TransactionState as ProtoTransactionState,
+    TransactionStatus as ProtoTransactionStatus,
 };
 
 /// 构造 `Execute` 响应。
@@ -291,4 +299,103 @@ fn column_type_to_proto(kind: &ColumnType, original: Option<&str>) -> ProtoColum
     }
 
     out
+}
+
+// ---------------------------------------------------------------------------
+// 事务（#44）
+// ---------------------------------------------------------------------------
+
+/// Protobuf 隔离级别 → 驱动 SPI 隔离级别。
+///
+/// 未知枚举值必须报错：猜一个隔离级别会让用户以为拿到了某个并发保证。
+/// `ISOLATION_LEVEL_UNSPECIFIED` 表示「交给驱动默认值」，与 proto3 默认值语义一致。
+///
+/// # Errors
+///
+/// 枚举值不属于契约定义时返回 `INVALID_ARGUMENT`。
+pub fn isolation_from_proto(value: i32) -> Result<IsolationLevel, Status> {
+    match ProtoIsolationLevel::try_from(value) {
+        Ok(ProtoIsolationLevel::Unspecified) => Ok(IsolationLevel::Unspecified),
+        Ok(ProtoIsolationLevel::ReadUncommitted) => Ok(IsolationLevel::ReadUncommitted),
+        Ok(ProtoIsolationLevel::ReadCommitted) => Ok(IsolationLevel::ReadCommitted),
+        Ok(ProtoIsolationLevel::RepeatableRead) => Ok(IsolationLevel::RepeatableRead),
+        Ok(ProtoIsolationLevel::Serializable) => Ok(IsolationLevel::Serializable),
+        Ok(ProtoIsolationLevel::Snapshot) => Ok(IsolationLevel::Snapshot),
+        Err(_) => Err(Status::invalid_argument("未知的事务隔离级别")),
+    }
+}
+
+/// 驱动 SPI 隔离级别 → Protobuf 枚举值。
+#[must_use]
+pub fn isolation_to_proto(level: IsolationLevel) -> ProtoIsolationLevel {
+    match level {
+        IsolationLevel::Unspecified => ProtoIsolationLevel::Unspecified,
+        IsolationLevel::ReadUncommitted => ProtoIsolationLevel::ReadUncommitted,
+        IsolationLevel::ReadCommitted => ProtoIsolationLevel::ReadCommitted,
+        IsolationLevel::RepeatableRead => ProtoIsolationLevel::RepeatableRead,
+        IsolationLevel::Serializable => ProtoIsolationLevel::Serializable,
+        IsolationLevel::Snapshot => ProtoIsolationLevel::Snapshot,
+    }
+}
+
+/// 事务状态机 → Protobuf 枚举值。
+#[must_use]
+pub fn transaction_state_to_proto(state: TransactionState) -> ProtoTransactionState {
+    match state {
+        TransactionState::Active => ProtoTransactionState::Active,
+        TransactionState::Failed => ProtoTransactionState::Failed,
+    }
+}
+
+/// 会话事务快照 → Protobuf `TransactionStatus`。
+#[must_use]
+pub fn transaction_status_to_proto(status: &TransactionStatus) -> ProtoTransactionStatus {
+    ProtoTransactionStatus {
+        transaction_id: status.transaction_id.to_string(),
+        isolation: isolation_to_proto(status.isolation) as i32,
+        read_only: status.read_only,
+        state: transaction_state_to_proto(status.state) as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolation_levels_roundtrip() {
+        for level in [
+            IsolationLevel::Unspecified,
+            IsolationLevel::ReadUncommitted,
+            IsolationLevel::ReadCommitted,
+            IsolationLevel::RepeatableRead,
+            IsolationLevel::Serializable,
+            IsolationLevel::Snapshot,
+        ] {
+            let proto = isolation_to_proto(level) as i32;
+            assert_eq!(isolation_from_proto(proto).unwrap(), level);
+        }
+    }
+
+    /// 未知枚举值不得被猜成某个具体级别。
+    #[test]
+    fn unknown_isolation_is_rejected() {
+        assert!(isolation_from_proto(99).is_err());
+        assert!(isolation_from_proto(-1).is_err());
+    }
+
+    #[test]
+    fn failed_state_is_visible_in_snapshot() {
+        let status = TransactionStatus {
+            transaction_id: sqarvo_common::TransactionId::new(),
+            isolation: IsolationLevel::Serializable,
+            read_only: true,
+            state: TransactionState::Failed,
+        };
+        let proto = transaction_status_to_proto(&status);
+        assert_eq!(proto.transaction_id, status.transaction_id.to_string());
+        assert_eq!(proto.isolation, ProtoIsolationLevel::Serializable as i32);
+        assert!(proto.read_only);
+        assert_eq!(proto.state, ProtoTransactionState::Failed as i32);
+    }
 }
