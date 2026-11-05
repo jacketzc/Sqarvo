@@ -19,7 +19,7 @@ docs/
 │   ├── vision.md            # 愿景与范围
 │   ├── positioning.md       # 定位、竞品差异、非目标
 │   ├── requirements.md      # 功能清单、优先级、状态
-│   └── roadmap.md           # 版本目标（v0.x → v1.0）
+│   └── roadmap.md           # 版本目标（v0.1 → v0.2.x）
 ├── planning/
 │   ├── README.md            # 本文件：分工与流程
 │   ├── development-plan.md  # 技术实施顺序、阶段交付与验收
@@ -91,7 +91,7 @@ CI 由 `.github/workflows/tracking.yml` 在每日定时、手动触发、Issue �
 ## 里程碑与版本
 
 - 里程碑 M0–M7 是开发阶段的稳定锚点，见 `milestones.md`；
-- 产品版本 v0.1–v1.0 是交付目标，见 `release-plan.md`；
+- 产品版本 v0.1–v0.2.x 是交付目标，见 `release-plan.md`；
 - 单个任务延期不修改里程碑标准；只有范围或技术前提变化才改。
 
 ## 文档更新责任

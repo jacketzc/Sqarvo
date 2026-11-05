@@ -9,10 +9,10 @@
 | M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
 | M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 已完成（#9–#17） |
 | M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 已完成（#20–#25；真实 TLS 握手未验证） |
-| M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.4 | 未开始 |
-| M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v1.0 | 未开始 |
+| M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | 未开始 |
+| M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v0.2.4 | 未开始 |
 | M6 前端接入与硬化 | S6 | 三端接入、性能、安全、跨平台构建 | v0.2 起持续 | 进行中（Linux 首端接入完成；Windows / macOS 未验证） |
-| M7 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.5 | 未开始 |
+| M7 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.2.3 | 未开始 |
 
 ## 完成标准
 
@@ -99,7 +99,7 @@ CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）`
 #24 → `41803584777`；main 合并后 run `41818532913`。
 
 遗留（不属 M3 范围，已登记）：真实 TLS 验证、MySQL 8.x 兼容性（M5 / `docs/database/mariadb.md` 未支持清单）；
-显式事务与元数据（M4）；Windows / macOS 凭据库（M6 / v1.0）；「尚未返回首批」的查询无法用 `Cancel`
+显式事务与元数据（M4）；Windows / macOS 凭据库（M6 / v0.2.4）；「尚未返回首批」的查询无法用 `Cancel`
 打断（契约缺口，见 [v0.2](../releases/v0.2.md) 已知限制）。
 
 ### M4 元数据与事务
@@ -165,12 +165,15 @@ M6 剩余完成条件：
 
 ## 范围调整记录
 
-- 2026-11-05：「数据浏览与编辑」由 v0.3 改标为 **v0.2.1**（在 v0.2 之上增量交付），范围与退出标准
-  不变；v0.4（对象管理）、v0.5（导入导出）、v1.0 编号不变。M4 的对应版本随之改为 v0.2.1 / v0.4。
-  同步更新：`release-plan.md`、`roadmap.md`、`requirements.md`（`REQ-SQL-004` 再评估时点改记 v0.4+）、
-  `docs/releases/v0.2.md`（M4 版本引用）。
+- 2026-11-05：版本序列整体改标到 0.2 线：v0.3（数据浏览与编辑）→ **v0.2.1**、
+  v0.4（对象管理）→ **v0.2.2**、v0.5（导入导出）→ **v0.2.3**、v1.0（首个完整可用版本）→ **v0.2.4**。
+  各版本范围与退出标准不变；0.2 线改为以 `0.2.x` 增量交付，暂不设 1.0 / 兼容承诺节点。
+  M4 对应版本随之改为 v0.2.1 / v0.2.2。同步更新：`release-plan.md`、`roadmap.md`、
+  `requirements.md`（`REQ-SQL-004` 再评估时点改记 v0.2.2+）、`development-plan.md`（S5 / S7 版本标注）、
+  `docs/planning/README.md`、`docs/releases/v0.2.md`、`README.md`，以及 ADR 0010 的版本标注
+  （保留原记号，只补改标说明）。
 - 2026-11-04：首个网络数据库由 PostgreSQL 改为 MariaDB（S3 / M3），第二个网络数据库由
-  MySQL 改为 PostgreSQL（S5 / M5），v1.0 三驱动矩阵为 SQLite / MariaDB / PostgreSQL。
+  MySQL 改为 PostgreSQL（S5 / M5），v0.2.4 三驱动矩阵为 SQLite / MariaDB / PostgreSQL。
   理由：MariaDB 驱动基于 MySQL 协议，可在不新增第二套协议栈的前提下覆盖 MySQL 兼容场景，
   同时把与 SQLite 差异更大的 PostgreSQL 留作第三个驱动来验证 SPI 的扩展性。
   同步更新：`development-plan.md`、`roadmap.md`、`release-plan.md`、`risk-register.md`、

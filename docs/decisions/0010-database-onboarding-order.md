@@ -16,8 +16,8 @@ TLS、服务端取消、连接与会话语义落实为真实约束，选错会�
 ## 决策
 
 1. **S3 / v0.2：MariaDB** 为第一个网络数据库，与系统凭据存储一起交付；
-2. **S5 / v1.0：PostgreSQL** 为第二个网络数据库，同时形成三驱动一致性矩阵
-   （SQLite / MariaDB / PostgreSQL）；
+2. **S5 / v0.2.4（原记 v1.0，2026-11-05 版本改标）：PostgreSQL** 为第二个网络数据库，
+   同时形成三驱动一致性矩阵（SQLite / MariaDB / PostgreSQL）；
 3. **MySQL 8.x 不默认声明支持**：MariaDB 驱动基于 MySQL 协议，能否连接 MySQL 8.x
    必须实测后在支持矩阵中如实记录，未验证前 UI 与文档按「不支持」表述。
 

@@ -70,8 +70,8 @@
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
-- 元数据对象树、列信息、DDL 生成（M4，v0.2.1 / v0.4）；
-- 显式事务绑定到会话（M4，v0.2.1 / v0.4）；
+- 元数据对象树、列信息、DDL 生成（M4，v0.2.1 / v0.2.2）；
+- 显式事务绑定到会话（M4，v0.2.1 / v0.2.2）；
 - Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
 - Windows / macOS 前端接入后端（两端仍只有窗口骨架，未构建、未运行验证）；
 - 大字段延迟加载（当前单格按 64 KiB 截断返回；Linux 前端已有行数/估算字节上限与背压）；
