@@ -44,7 +44,7 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 | 请求 | 数据来源 | 说明 |
 |---|---|---|
 | `list_children(None, page)` | `sqlite_master` | `type IN ('table','view')` 且排除 `sqlite_*` 内部表，`ORDER BY name`；`name` / `type` 原样映射到节点 |
-| `columns(object)` | `pragma_table_info(name)` | 声明类型（`type`）、可空（`notnull`）、列序号（`cid`） |
+| `columns(object)` | `pragma_table_info(name)` | 声明类型（`type`）、可空（`notnull`）、列序号（`cid`）、默认值（`dflt_value`） |
 | `primary_key(object)` | `pragma_table_info(name).pk` | `pk > 0` 的行按 `pk` 排序；`pk` 就是**主键内顺序**（1 开始），不是表内列序号 |
 | `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」 |
 
@@ -59,6 +59,28 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 无主键表返回空列表（浏览仍可用但置只读 `NoPrimaryKey`/`Unstable`，编辑被拒绝并返回
 `table_data.no_primary_key`，见 #46/#47）；视图同样没有主键，返回空列表而不是报错。
 表/视图不存在返回 `sqlite.object_not_found`（`NotFound`），不会返回空列。
+
+### 列默认值、字符集与排序规则（#59）
+
+`ColumnMeta` 的四个默认值状态全部来自 `pragma_table_info.dflt_value`，驱动不猜：
+
+| `dflt_value` | `ColumnMeta.default_value` | 说明 |
+|---|---|---|
+| SQL NULL | `NoDefault` | 没有 `DEFAULT` 子句。可空列也**不**记录隐式默认值，所以这里是「没有默认值」，不是「默认 NULL」 |
+| 文本 `NULL` | `Null` | 显式 `DEFAULT NULL`，与「没有默认值」不同 |
+| 其余文本 | `Expression(原文)` | **未求值的 SQL 文本**：`'x'`、`''`、`CURRENT_TIMESTAMP`、`1 + 1` 都原样交付 |
+
+要点：
+
+- `dflt_value` 是建表语句里的 SQL 文本，不是求值结果。`DEFAULT 1+1` 给出 `1 + 1`，
+  `DEFAULT CURRENT_TIMESTAMP` 给出 `CURRENT_TIMESTAMP`；驱动不求值、不去引号、不做归一。
+  （SQLite 自己会去掉最外层括号，驱动只透传它拿到的文本。）
+- 默认空串 `DEFAULT ''` 是 `Expression("''")`，不是 `NoDefault`，也不是空串占位。
+- **SQLite 没有列级字符集**：`character_set` 永远为 `None`（proto 字段不设置）。
+  排序规则只写在建表 SQL 里，`pragma_table_info` 不提供，本版也不解析 DDL，
+  因此 `collation` 同样为 `None`。前端必须把 `None` 显示为「不适用」，而不是「空字符集」。
+- 结果集路径（`SELECT` 返回的列）没有默认值信息，`default_value` 是 `Unspecified`（未知），
+  字符集/排序规则为 `None`。需要权威信息时用 `MetadataService.GetColumns`。
 
 ### 分页 token 与失效条件
 
@@ -75,9 +97,8 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 
 ### 已知缺口
 
-- `proto.common.v1.ColumnMeta` 没有默认值、字符集、排序规则字段（契约已冻结）。SQLite 的
-  `pragma_table_info.dflt_value` 能读到默认值，但传不到前端；补齐需要改 proto，见 #45 的「待定」；
-- SQLite 没有列级字符集；列排序规则只写在建表 SQL 里，`pragma_table_info` 不提供；
+- 列排序规则只写在建表 SQL 里，`pragma_table_info` 不提供，本版不解析 DDL，
+  因此 `collation` 恒为 `None`（见上一节）；
 - 可空性按声明的 `NOT NULL` 原样返回。`INTEGER PRIMARY KEY` 即使没写 `NOT NULL`，插入 NULL 时
   SQLite 会自动分配 rowid——本版不按主键反推，避免猜测；
 - 虚拟表（FTS 等）的 shadow 表也会作为普通表出现在列表里，这是 `sqlite_master` 的真实内容；
@@ -95,5 +116,7 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 | `streaming_results` | `true` | 驱动侧分批 + 游标 |
 | `multiple_statements` | `false` | 发送前拒绝 |
 | `catalogs` / `schemas` | `false` | SQLite 没有这两个层级 |
+| `row_editing` | `true` | `table_data()` 提供浏览与行编辑（update / delete），见 ADR 0017 |
+| `parameterized_statements` | `true` | `execute_parameterized`：值经 `rusqlite` 绑定，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划 v0.2.2 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |

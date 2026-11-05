@@ -364,6 +364,9 @@ pub trait DriverSession: Send + Sync {
     ///
     /// 默认 `false`。声明为 `true` 却返回 `capability.unsupported` 属于契约违背：
     /// 能力声明是给通用层做决策用的，不允许「先声明再试」。
+    ///
+    /// 必须与 [`Capabilities::parameterized_statements`] 一致：`SystemService.ListDrivers`
+    /// 展示的是能力位，通用层据此判断，不会逐个会话试探。
     fn supports_parameterized_statements(&self) -> bool {
         false
     }

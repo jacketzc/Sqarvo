@@ -306,7 +306,7 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 | 请求 | 数据来源 | 说明 |
 |---|---|---|
 | `list_children(None, page)` | `information_schema.TABLES` | 当前数据库的表与视图，`ORDER BY TABLE_NAME`；`TABLE_TYPE` 为 `BASE TABLE` → `Table`，`VIEW` / `SYSTEM VIEW` → `View`，其它原文进 `ObjectKind::Other`；`TABLE_COMMENT` 透传 |
-| `columns(object)` | `information_schema.COLUMNS` | 原始类型名取 `COLUMN_TYPE`（含长度与 `unsigned`），可空取 `IS_NULLABLE`，精度/标度取 `NUMERIC_PRECISION` / `NUMERIC_SCALE`，长度取 `CHARACTER_MAXIMUM_LENGTH` |
+| `columns(object)` | `information_schema.COLUMNS` | 原始类型名取 `COLUMN_TYPE`（含长度与 `unsigned`），可空取 `IS_NULLABLE`，精度/标度取 `NUMERIC_PRECISION` / `NUMERIC_SCALE`，长度取 `CHARACTER_MAXIMUM_LENGTH`，默认值取 `COLUMN_DEFAULT`，字符集/排序规则取 `CHARACTER_SET_NAME` / `COLLATION_NAME` |
 | `primary_key(object)` | `information_schema.KEY_COLUMN_USAGE` | `CONSTRAINT_NAME = 'PRIMARY'`，`ORDINAL_POSITION` 原样作为主键内顺序（1 开始） |
 | `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」 |
 
@@ -318,6 +318,38 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 库名/表名不拼进 SQL：`TABLE_SCHEMA` / `TABLE_NAME` 都是绑定参数，因此没有反引号转义问题。
 表名大小写按服务端 `information_schema` 的比较规则（`lower_case_table_names`）处理，
 返回的 `TABLE_NAME` 是服务端给出的规范名。
+
+### 列默认值、字符集与排序规则（#59）
+
+`COLUMN_DEFAULT` 是**文本**（10.2.7 起字符串默认值带引号），三态因此可以直接区分，
+不需要按 `IS_NULLABLE` 反推：
+
+| `COLUMN_DEFAULT` | `ColumnMeta.default_value` | 说明 |
+|---|---|---|
+| SQL NULL | `NoDefault` | 没有默认值（NOT NULL 且未写 DEFAULT；`AUTO_INCREMENT` 列也是这种） |
+| 文本 `NULL` | `Null` | 默认值是 SQL NULL。可空列即使没写 `DEFAULT NULL`，隐式默认值也是 NULL，服务端同样报 `NULL` 文本 |
+| 其余文本 | `Expression(原文)` | **未求值**的默认值文本：`'x'`、`''`、`current_timestamp()` 原样交付 |
+
+在 MariaDB 11.4 测试库实测（集成测试锁定）：
+
+```sql
+label VARCHAR(32) NOT NULL DEFAULT 'x'      -- COLUMN_DEFAULT = 'x'                 → Expression("'x'")
+blank VARCHAR(8)  NOT NULL DEFAULT ''       -- COLUMN_DEFAULT = ''                  → Expression("''")
+note  VARCHAR(32) DEFAULT NULL              -- COLUMN_DEFAULT = NULL（文本）        → Null
+bare  VARCHAR(32)                           -- COLUMN_DEFAULT = NULL（文本，隐式）  → Null
+amount INT NOT NULL                         -- COLUMN_DEFAULT = SQL NULL            → NoDefault
+created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                            -- COLUMN_DEFAULT = current_timestamp() → Expression(...)
+```
+
+要点：
+
+- 驱动不去引号、不求值、不做大小写归一。前端必须把 `Expression` 当表达式展示，
+  不能当成已求值的字面量。
+- `character_set` / `collation` 取 `CHARACTER_SET_NAME` / `COLLATION_NAME`：字符型列（含
+  `ENUM`/`SET`）非空，数值/二进制/时间列为 `None`（不适用），驱动不填 `binary` 之类的推测值。
+- 结果集路径（`SELECT` 返回的列）没有默认值信息，`default_value` 是 `Unspecified`（未知）；
+  协议里的字符集只有编号、没有名字，本版不映射，`character_set` / `collation` 均为 `None`。
 
 ### 分页 token 与失效条件
 
@@ -337,8 +369,6 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 
 ### 已知缺口
 
-- `proto.common.v1.ColumnMeta` 没有默认值、字符集、排序规则字段（契约已冻结），
-  这些信息驱动读得到但传不到前端；补齐需要改 proto，见 #45 的「待定」；
 - `COLUMN_TYPE` 是服务端原文，MariaDB 11.4 会带显示宽度（例如 `bigint(20) unsigned`），
   驱动不裁剪，前端应按原样展示；
 - `ENUM` / `SET` / `GEOMETRY` / `BIT` 无法无损映射到逻辑类型，返回
@@ -359,6 +389,8 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 | `multiple_statements` | `false` | 发送前拒绝 |
 | `transactions` | `true` | 会话内 `START TRANSACTION` / `COMMIT` / `ROLLBACK`，见「事务」 |
 | `catalogs` / `schemas` | `false` | `database` 映射为 catalog；元数据只覆盖当前库的表/视图一层，不声明多库浏览 |
+| `row_editing` | `true` | `table_data()` 提供浏览与行编辑（update / delete），见 ADR 0017 |
+| `parameterized_statements` | `true` | `execute_parameterized`：值经协议绑定参数执行，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
 
@@ -368,7 +400,8 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 - 元数据的对象树上层（Catalog / Schema / Index / Sequence）与跨库浏览：显式报
   `capability.unsupported`；DDL 查看计划 v0.2.2（`SHOW CREATE TABLE` 原文）；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
-- 参数化执行的对外 RPC（行编辑内部已用 prepared statement 绑定参数）与预编译语句复用；
+- 参数化执行的对外 RPC（SPI 的 `execute_parameterized` 已实现，查询侧 RPC 留给 S7）
+  与预编译语句复用；
 - 大字段按需加载（目前只截断前缀，`Cell::truncated` 标记）；
 - 断线重连与会话租约；
 - 压缩、`LOAD DATA LOCAL INFILE`、TLS 客户端证书的实测（代码路径存在，未在测试库验证）；

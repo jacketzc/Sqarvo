@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use mysql_async::prelude::*;
-use mysql_async::{Conn, Opts, Row as MyRow};
+use mysql_async::{Conn, Opts, Row as MyRow, Value as MyValue};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, ResultBatch, StatementSummary,
-    TransactionOptions, sql_preview,
+    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, ParameterizedExecuteRequest,
+    ResultBatch, StatementSummary, TransactionOptions, Value, sql_preview,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -40,6 +40,11 @@ const MAX_BATCH_ROWS: u32 = 5_000;
 enum Command {
     Execute {
         request: ExecuteRequest,
+        reply: oneshot::Sender<Result<ExecutionStart>>,
+    },
+    /// 参数化执行（#59）：与 `Execute` 走同一条语句/游标路径，只是值由驱动绑定。
+    ExecuteParameterized {
+        request: ParameterizedExecuteRequest,
         reply: oneshot::Sender<Result<ExecutionStart>>,
     },
     Fetch {
@@ -331,7 +336,36 @@ async fn run_session(
     while let Some(command) = receiver.recv().await {
         match command {
             Command::Execute { request, reply } => {
-                if serve_query(&mut conn, request, reply, &mut receiver, &state).await {
+                if serve_query(&mut conn, request, None, reply, &mut receiver, &state).await {
+                    break;
+                }
+            }
+            Command::ExecuteParameterized { request, reply } => {
+                // 绑定值先转换：`Value::Unsupported` / 数组等类型无法绑定，
+                // 必须在发送语句前失败，而不是让服务端收到半个语句。
+                let params = match bind_parameters(&request.params) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        continue;
+                    }
+                };
+                let prepared = ExecuteRequest {
+                    query_id: request.query_id,
+                    sql: request.sql,
+                    max_rows: request.max_rows,
+                    timeout: request.timeout,
+                };
+                if serve_query(
+                    &mut conn,
+                    prepared,
+                    Some(params),
+                    reply,
+                    &mut receiver,
+                    &state,
+                )
+                .await
+                {
                     break;
                 }
             }
@@ -619,11 +653,85 @@ fn cancelled_error() -> Error {
     )
 }
 
+/// 参数化执行的绑定值：`Value` → 协议值。
+///
+/// 与行编辑的 `table_data::bind_value` 的差异只有一条，但是刻意的：**允许 NULL**
+/// （参数化语句可以绑定 NULL，行编辑的主键定位不能）。
+///
+/// 无法绑定的类型（`Unsupported`、数组）必须在发送语句前拒绝，错误信息只带类型名。
+fn bind_parameters(values: &[Value]) -> Result<Vec<MyValue>> {
+    values.iter().map(bind_parameter).collect()
+}
+
+fn bind_parameter(value: &Value) -> Result<MyValue> {
+    let bound = match value {
+        Value::Null => MyValue::NULL,
+        Value::Bool(value) => MyValue::Int(i64::from(u8::from(*value))),
+        Value::Int(value) => MyValue::Int(*value),
+        Value::UInt(value) => MyValue::UInt(*value),
+        Value::Float(value) => MyValue::Double(*value),
+        // Decimal 与文本按字节绑定：由服务端按列类型解释，驱动不做精度转换。
+        Value::Decimal(value) => MyValue::Bytes(value.to_string().into_bytes()),
+        Value::Text(value) | Value::Json(value) => MyValue::Bytes(value.clone().into_bytes()),
+        // UUID 按标准 36 字符文本绑定；`binary(16)` 形式的 UUID 列不在支持范围。
+        Value::Uuid(value) => MyValue::Bytes(value.to_string().into_bytes()),
+        Value::Bytes(value) => MyValue::Bytes(value.clone()),
+        Value::Date(value) => MyValue::Date(
+            u16::try_from(value.year()).map_err(|_| unsupported_parameter("date"))?,
+            u8::from(value.month()),
+            value.day(),
+            0,
+            0,
+            0,
+            0,
+        ),
+        Value::Time(value) => MyValue::Time(
+            false,
+            0,
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.nanosecond() / 1_000,
+        ),
+        Value::DateTime(value) => MyValue::Date(
+            u16::try_from(value.year()).map_err(|_| unsupported_parameter("datetime"))?,
+            u8::from(value.month()),
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.nanosecond() / 1_000,
+        ),
+        // 与驱动其余路径一致：时钟按墙上时间绑定（`TIMESTAMP` 列本身不带偏移）。
+        Value::Timestamp(value) => MyValue::Date(
+            u16::try_from(value.year()).map_err(|_| unsupported_parameter("timestamp"))?,
+            u8::from(value.month()),
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.nanosecond() / 1_000,
+        ),
+        Value::Array(_) => return Err(unsupported_parameter("array")),
+        Value::Unsupported { type_name, .. } => return Err(unsupported_parameter(type_name)),
+    };
+    Ok(bound)
+}
+
+/// 绑定参数里出现 MariaDB 驱动无法表示的类型。
+fn unsupported_parameter(kind: &str) -> Error {
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        format!("MariaDB 驱动无法把 {kind} 类型的值绑定为参数"),
+    )
+}
+
 /// 执行查询并服务后续 `Fetch`。返回 `true` 表示会话应关闭。
 #[allow(clippy::too_many_lines)]
 async fn serve_query(
     conn: &mut Conn,
     request: ExecuteRequest,
+    params: Option<Vec<mysql_async::Value>>,
     reply: oneshot::Sender<Result<ExecutionStart>>,
     receiver: &mut mpsc::Receiver<Command>,
     state: &SharedState,
@@ -669,16 +777,57 @@ async fn serve_query(
     let limit = batch_limit(request.max_rows);
     state.set_active(query_id);
 
-    let mut result = match conn.query_iter(&request.sql).await {
-        Ok(result) => result,
-        Err(error) => {
-            let error = map_error(error, "执行 MariaDB 语句失败");
-            note_transaction_failure(state, &error);
-            let _ = reply.send(Err(error));
-            state.clear_active();
-            return false;
-        }
-    };
+    // 两种协议返回不同的 `QueryResult` 类型（文本 / 二进制），因此分别取结果，
+    // 取得之后统一交给 `serve_result`：游标、分批、取消路径只有一份实现。
+    match params {
+        // 纯文本 SQL：语句里的值由调用方自己负责，驱动不碰。
+        None => match conn.query_iter(&request.sql).await {
+            Ok(result) => serve_result(result, &request, limit, reply, receiver, state).await,
+            Err(error) => {
+                fail_query(error, reply, state);
+                false
+            }
+        },
+        // 参数化：值走协议层的绑定参数，不进入 SQL 文本。
+        Some(params) => match conn.exec_iter(&request.sql, params).await {
+            Ok(result) => serve_result(result, &request, limit, reply, receiver, state).await,
+            Err(error) => {
+                fail_query(error, reply, state);
+                false
+            }
+        },
+    }
+}
+
+/// 语句发送失败：记录事务失败信号、回错误、清活跃查询。
+fn fail_query(
+    error: mysql_async::Error,
+    reply: oneshot::Sender<Result<ExecutionStart>>,
+    state: &SharedState,
+) {
+    let error = map_error(error, "执行 MariaDB 语句失败");
+    note_transaction_failure(state, &error);
+    let _ = reply.send(Err(error));
+    state.clear_active();
+}
+
+/// 服务 `QueryResult` 的首批与后续 `Fetch`。
+///
+/// 泛型只为让文本协议与参数化（二进制协议）共用同一条游标与取消路径。
+#[allow(clippy::too_many_lines)]
+async fn serve_result<'a, 't: 'a, P>(
+    mut result: mysql_async::QueryResult<'a, 't, P>,
+    request: &ExecuteRequest,
+    limit: usize,
+    reply: oneshot::Sender<Result<ExecutionStart>>,
+    receiver: &mut mpsc::Receiver<Command>,
+    state: &SharedState,
+) -> bool
+where
+    // `stream()` 还要求协议标记 `Unpin`（`TextProtocol` / `BinaryProtocol` 都是零大小类型）。
+    P: mysql_async::prelude::Protocol + Unpin,
+{
+    let query_id = request.query_id;
 
     // 空列表示该语句本来就不产生行（INSERT/DDL 等）。
     let columns = result.columns().filter(|columns| !columns.is_empty());
@@ -783,7 +932,7 @@ async fn serve_query(
                 }
                 let _ = reply.send(Err(query_not_found("查询不存在")));
             }
-            Command::Execute { reply, .. } => {
+            Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
                     "当前会话已有在途查询，请先读完或关闭",
@@ -933,6 +1082,24 @@ impl DriverSession for MariaDbSession {
         let (reply, wait) = oneshot::channel();
         self.sender
             .send(Command::Execute { request, reply })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    /// MariaDB 驱动已实现参数绑定（#59）：值走协议的绑定参数，不拼进 SQL 文本。
+    fn supports_parameterized_statements(&self) -> bool {
+        true
+    }
+
+    async fn execute_parameterized(
+        &self,
+        request: ParameterizedExecuteRequest,
+    ) -> Result<ExecutionStart> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::ExecuteParameterized { request, reply })
             .await
             .map_err(|_| Self::closed_error())?;
         wait.await.map_err(|_| Self::closed_error())?

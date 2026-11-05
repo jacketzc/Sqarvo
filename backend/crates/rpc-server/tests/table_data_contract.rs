@@ -16,7 +16,7 @@ use prost::Message;
 use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorSet};
 use sqarvo_common::{Error, ErrorCode};
 use sqarvo_driver_api::{
-    ColumnMeta, ColumnType, DriverSession, ExecutionStart, IsolationLevel,
+    ColumnDefault, ColumnMeta, ColumnType, DriverSession, ExecutionStart, IsolationLevel,
     ParameterizedExecuteRequest, PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, ResultBatch,
     RowChange, RowChangeRequest, RowKey, RowOrder, TableDataProvider, TablePage, Value,
 };
@@ -324,6 +324,72 @@ fn table_data_service_methods_are_frozen() {
 }
 
 #[test]
+fn column_meta_fields_are_append_only() {
+    // #59：默认值/字符集/排序规则只能追加在既有 1–4 之后，不得重排或复用字段号。
+    let common = messages("common/v1/value.proto");
+    assert_fields(
+        &common["ColumnMeta"],
+        &[
+            (1, "name"),
+            (2, "ordinal"),
+            (3, "type"),
+            (4, "nullable"),
+            (5, "default_value"),
+            (6, "character_set"),
+            (7, "collation"),
+        ],
+    );
+    // 默认值必须是嵌套 message（四态），不能退化成空串或布尔。
+    assert_eq!(
+        type_name_of(&common["ColumnMeta"], "default_value"),
+        ".sqarvo.common.v1.ColumnDefault"
+    );
+    assert_fields(&common["ColumnDefault"], &[(1, "kind"), (2, "expression")]);
+    // 「未设置」与「明确没有默认值」必须能区分：message 字段有 presence，
+    // 字符集/排序规则用 proto3 optional（空串不等于「不适用」）。
+    assert_ne!(
+        field(&common["ColumnMeta"], "default_value").label(),
+        prost_types::field_descriptor_proto::Label::Repeated,
+        "default_value 不能是 repeated"
+    );
+    assert_eq!(
+        field(&common["ColumnMeta"], "character_set").proto3_optional,
+        Some(true),
+        "character_set 必须是 optional string"
+    );
+    assert_eq!(
+        field(&common["ColumnMeta"], "collation").proto3_optional,
+        Some(true),
+        "collation 必须是 optional string"
+    );
+
+    let set = descriptor_set();
+    let file = set
+        .file
+        .iter()
+        .find(|file| file.name() == "common/v1/value.proto")
+        .expect("描述符含 value.proto");
+    let values: Vec<(i32, String)> = file
+        .enum_type
+        .iter()
+        .find(|enumeration| enumeration.name() == "ColumnDefaultKind")
+        .expect("缺少 ColumnDefaultKind")
+        .value
+        .iter()
+        .map(|value| (value.number(), value.name().to_owned()))
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            (0, "COLUMN_DEFAULT_UNSPECIFIED".to_owned()),
+            (1, "COLUMN_DEFAULT_NONE".to_owned()),
+            (2, "COLUMN_DEFAULT_NULL".to_owned()),
+            (3, "COLUMN_DEFAULT_EXPRESSION".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn table_data_enum_values_are_frozen() {
     let set = descriptor_set();
     let file = set
@@ -574,6 +640,9 @@ impl TableDataProvider for FakeTableData {
                     },
                     nullable: false,
                     original_type_name: Some("bigint".to_owned()),
+                    default_value: ColumnDefault::Unspecified,
+                    character_set: None,
+                    collation: None,
                 }],
                 rows: Vec::new(),
                 next_page_token: Some("sqtoken-v1.eyJrZXkiOlsxXX0".to_owned()),

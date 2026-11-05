@@ -27,7 +27,7 @@ use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::AuthToken;
 use sqarvo_query_engine::{QueryLimits, QueryRegistry};
 use sqarvo_rpc_server::auth::TOKEN_METADATA_KEY;
-use sqarvo_rpc_server::proto::common::v1::{ColumnTypeKind, PageRequest};
+use sqarvo_rpc_server::proto::common::v1::{ColumnDefaultKind, ColumnTypeKind, PageRequest};
 use sqarvo_rpc_server::proto::services::v1::{
     ConnectRequest, ConnectionParams, DisconnectRequest, ExecuteQueryRequest, GetColumnsRequest,
     GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, ObjectKind, ObjectRef,
@@ -179,7 +179,7 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
         "CREATE TABLE alpha(id INTEGER PRIMARY KEY, name VARCHAR(64) NOT NULL)",
         "CREATE TABLE beta(tenant_id TEXT NOT NULL, order_id INTEGER NOT NULL, \
          PRIMARY KEY (order_id, tenant_id))",
-        "CREATE TABLE gamma(a TEXT, b TEXT)",
+        "CREATE TABLE gamma(a TEXT DEFAULT NULL, b TEXT NOT NULL DEFAULT 'x')",
         "CREATE TABLE delta(id INTEGER)",
         "CREATE VIEW epsilon AS SELECT id FROM alpha",
     ] {
@@ -259,6 +259,55 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
     assert_eq!(name_type.original_type_name, "VARCHAR(64)");
     assert_eq!(name_type.length, Some(64));
     assert!(!columns.columns[1].nullable, "NOT NULL 必须透传");
+    // #59：默认值按三态映射透传。SQLite 的裸列没有默认值 → NONE（不是「未知」）。
+    let id_default = columns.columns[0]
+        .default_value
+        .as_ref()
+        .expect("GetColumns 必须给出默认值，未知才不设置");
+    assert_eq!(
+        id_default.kind,
+        ColumnDefaultKind::ColumnDefaultNone as i32,
+        "没有 DEFAULT 子句的列必须是 NONE"
+    );
+    // SQLite 没有列级字符集/排序规则：字段不设置，前端按「不适用」展示。
+    assert!(columns.columns[0].character_set.is_none());
+    assert!(columns.columns[0].collation.is_none());
+
+    // ---- GetColumns：默认 NULL 与表达式默认值必须可区分 ----
+    let gamma = references
+        .iter()
+        .find(|reference| reference.name == "gamma")
+        .expect("gamma 引用")
+        .clone();
+    let gamma_columns = stage(
+        "GetColumns(gamma)",
+        metadata
+            .get_columns(GetColumnsRequest {
+                object: Some(gamma.clone()),
+            })
+            .await,
+    );
+    let null_default = gamma_columns.columns[0]
+        .default_value
+        .as_ref()
+        .expect("DEFAULT NULL 必须被映射");
+    assert_eq!(
+        null_default.kind,
+        ColumnDefaultKind::ColumnDefaultNull as i32,
+        "默认 NULL 与「没有默认值」不能混用"
+    );
+    let expression = gamma_columns.columns[1]
+        .default_value
+        .as_ref()
+        .expect("表达式默认值必须被映射");
+    assert_eq!(
+        expression.kind,
+        ColumnDefaultKind::ColumnDefaultExpression as i32
+    );
+    assert_eq!(
+        expression.expression, "'x'",
+        "默认值文本必须原样透传（不去引号、不求值）"
+    );
 
     // ---- GetPrimaryKey：单列 / 复合 / 无主键 ----
     let primary = stage(

@@ -437,3 +437,44 @@ async fn execute_timeout_cancels_query_and_session_recovers() {
         .expect("断开成功");
     server.stop().await;
 }
+
+/// #59：`ListDrivers` 必须把行编辑与参数化能力如实告诉前端。
+///
+/// 前端以前只能靠 `BrowseTable.read_only` 逐个对象猜；这两个能力位是通用层做
+/// 「是否显示编辑入口」的唯一依据，声明错了就是谎报能力。
+#[tokio::test]
+async fn list_drivers_reports_row_editing_and_parameterized_statements() {
+    let server = TestServer::start_builtin();
+    let mut client = SystemServiceClient::with_interceptor(server.channel().await, {
+        let token = server.token.clone();
+        move |mut request: Request<()>| {
+            let value = token.expose().parse().expect("token 是合法 metadata");
+            request.metadata_mut().insert(TOKEN_METADATA_KEY, value);
+            Ok::<_, Status>(request)
+        }
+    });
+
+    let drivers = client
+        .list_drivers(Empty {})
+        .await
+        .expect("ListDrivers 成功")
+        .into_inner()
+        .drivers;
+    assert_eq!(drivers.len(), 2, "内置驱动应为 SQLite 与 MariaDB");
+
+    for driver_id in ["sqlite", "mariadb"] {
+        let info = drivers
+            .iter()
+            .find(|driver| driver.driver_id == driver_id)
+            .unwrap_or_else(|| panic!("缺少内置驱动 {driver_id}"));
+        for capability in ["row_editing", "parameterized_statements"] {
+            assert!(
+                info.capabilities.iter().any(|name| name == capability),
+                "{driver_id} 必须声明 {capability}，实际 {:?}",
+                info.capabilities
+            );
+        }
+    }
+
+    server.stop().await;
+}

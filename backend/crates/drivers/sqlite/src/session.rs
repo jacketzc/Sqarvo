@@ -11,9 +11,9 @@ use rusqlite::types::ValueRef;
 use rusqlite::{Connection, InterruptHandle, OpenFlags, Rows, Statement};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, DriverSession, ExecuteRequest,
-    ExecutionStart, IsolationLevel, ResultBatch, StatementSummary, TransactionOptions, Value,
-    sql_preview, truncate_text,
+    Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, DriverSession,
+    ExecuteRequest, ExecutionStart, IsolationLevel, ParameterizedExecuteRequest, ResultBatch,
+    StatementSummary, TransactionOptions, Value, sql_preview, truncate_text,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -30,6 +30,11 @@ const MAX_BATCH_ROWS: u32 = 5_000;
 enum Command {
     Execute {
         request: ExecuteRequest,
+        reply: oneshot::Sender<Result<ExecutionStart>>,
+    },
+    /// 参数化执行（#59）：与 `Execute` 走同一条语句/游标路径，只是值由驱动绑定。
+    ExecuteParameterized {
+        request: ParameterizedExecuteRequest,
         reply: oneshot::Sender<Result<ExecutionStart>>,
     },
     Fetch {
@@ -263,25 +268,36 @@ fn run_connection(
                 let _ = reply.send(crate::table_data::handle(&connection, context, request));
             }
             Command::Execute { request, reply } => {
-                if transaction.is_some_and(|open| !open.is_active()) {
-                    // 事务已被 SQLite 回滚：此时执行语句会落进自动提交模式，
-                    // 用户以为在事务里、实际已经落库。必须显式拒绝。
-                    let _ = reply.send(Err(transaction_aborted()));
-                    continue;
+                if execute_statement(
+                    &connection,
+                    request,
+                    &[],
+                    reply,
+                    &mut receiver,
+                    &mut transaction,
+                    &state,
+                ) {
+                    let _ = rollback_if_open(&connection, &mut transaction);
+                    return;
                 }
-                *state
-                    .active
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.query_id);
-                state.cancelled.store(false, Ordering::SeqCst);
-                let close = serve_query(&connection, request, reply, &mut receiver, &state);
-                observe_transaction(&connection, &mut transaction);
-                *state
-                    .active
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                state.cancelled.store(false, Ordering::SeqCst);
-                if close {
+            }
+            Command::ExecuteParameterized { request, reply } => {
+                // 事务守卫与 `Execute` 完全一致：参数化不是绕过事务状态的旁路。
+                let prepared = ExecuteRequest {
+                    query_id: request.query_id,
+                    sql: request.sql,
+                    max_rows: request.max_rows,
+                    timeout: request.timeout,
+                };
+                if execute_statement(
+                    &connection,
+                    prepared,
+                    &request.params,
+                    reply,
+                    &mut receiver,
+                    &mut transaction,
+                    &state,
+                ) {
                     let _ = rollback_if_open(&connection, &mut transaction);
                     return;
                 }
@@ -469,6 +485,40 @@ fn reset_query_only(connection: &Connection) {
     let _ = connection.execute_batch("PRAGMA query_only = OFF");
 }
 
+/// 执行一条语句（可带绑定参数）并维护事务/取消簿记。
+///
+/// 普通执行与参数化执行共用这里：事务失败守卫、活跃查询标记与取消标志的
+/// 复位路径只有一份，避免参数化成为绕过事务状态的旁路。返回 `true` 表示会话应关闭。
+fn execute_statement(
+    connection: &Connection,
+    request: ExecuteRequest,
+    params: &[Value],
+    reply: oneshot::Sender<Result<ExecutionStart>>,
+    receiver: &mut mpsc::UnboundedReceiver<Command>,
+    transaction: &mut Option<OpenTransaction>,
+    state: &QueryState,
+) -> bool {
+    if transaction.is_some_and(|open| !open.is_active()) {
+        // 事务已被 SQLite 回滚：此时执行语句会落进自动提交模式，
+        // 用户以为在事务里、实际已经落库。必须显式拒绝。
+        let _ = reply.send(Err(transaction_aborted()));
+        return false;
+    }
+    *state
+        .active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.query_id);
+    state.cancelled.store(false, Ordering::SeqCst);
+    let close = serve_query(connection, request, params, reply, receiver, state);
+    observe_transaction(connection, transaction);
+    *state
+        .active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    state.cancelled.store(false, Ordering::SeqCst);
+    close
+}
+
 /// 执行查询并服务后续 `Fetch`，直到查询结束、会话关闭或通道断开。
 ///
 /// 返回 `true` 表示会话应关闭（收到 Close 或通道断开）。
@@ -479,12 +529,27 @@ fn reset_query_only(connection: &Connection) {
 fn serve_query(
     connection: &Connection,
     request: ExecuteRequest,
+    params: &[Value],
     reply: oneshot::Sender<Result<ExecutionStart>>,
     receiver: &mut mpsc::UnboundedReceiver<Command>,
     state: &QueryState,
 ) -> bool {
     let query_id = request.query_id;
     let limit = batch_limit(request.max_rows);
+
+    // 绑定参数在准备语句之前转换：`Value` 里可能有 SQLite 表示不了的类型
+    // （`Unsupported` / 数组 / 超出 i64 的 `UInt`），此时必须在执行前失败，
+    // 而不是让语句带着错误的参数跑起来。
+    let mut bound = Vec::with_capacity(params.len());
+    for value in params {
+        match bind_parameter(value) {
+            Ok(value) => bound.push(value),
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return false;
+            }
+        }
+    }
 
     let mut statement = match connection.prepare(&request.sql) {
         Ok(statement) => statement,
@@ -505,7 +570,7 @@ fn serve_query(
     };
 
     if !has_result_set {
-        let affected = match statement.execute([]) {
+        let affected = match statement.execute(rusqlite::params_from_iter(bound.iter())) {
             Ok(affected) => affected,
             Err(error) => {
                 let _ = reply.send(Err(map_sqlite_error(error, "执行 SQLite 语句失败")));
@@ -520,7 +585,7 @@ fn serve_query(
         return false;
     }
 
-    let mut rows = match statement.query([]) {
+    let mut rows = match statement.query(rusqlite::params_from_iter(bound.iter())) {
         Ok(rows) => rows,
         Err(error) => {
             let _ = reply.send(Err(map_sqlite_error(error, "执行 SQLite 查询失败")));
@@ -584,7 +649,7 @@ fn serve_query(
                     "查询不存在",
                 )));
             }
-            Command::Execute { reply, .. } => {
+            Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
                     "当前会话已有在途查询，请先读完或关闭",
@@ -685,6 +750,49 @@ fn serve_query(
     }
 }
 
+/// 参数化执行的绑定值：`Value` → SQLite 存储值。
+///
+/// 与行编辑的 `table_data::bind_value` 有两点不同，都是刻意的：
+///
+/// - **允许 NULL**：参数化语句可以绑定 NULL（行编辑的主键定位不能）；
+/// - 日期/时间类按 SQLite 的文本约定绑定 ISO-8601 文本——SQLite 没有日期类型，
+///   绑定成整数或浮点会丢掉「这是日期」的事实。
+///
+/// 拒绝 `Value::Unsupported`、数组以及超出 `i64` 的 `UInt`：SQLite 无法表示它们，
+/// 必须在执行前失败，而不是静默截断。错误信息只带类型名，不带值内容。
+fn bind_parameter(value: &Value) -> Result<rusqlite::types::Value> {
+    use rusqlite::types::Value as SqlValue;
+
+    let bound = match value {
+        Value::Null => SqlValue::Null,
+        Value::Bool(value) => SqlValue::Integer(i64::from(*value)),
+        Value::Int(value) => SqlValue::Integer(*value),
+        Value::UInt(value) => i64::try_from(*value)
+            .map(SqlValue::Integer)
+            .map_err(|_| unsupported_parameter_value("uint64"))?,
+        Value::Float(value) => SqlValue::Real(*value),
+        Value::Decimal(value) => SqlValue::Text(value.to_string()),
+        Value::Text(value) | Value::Json(value) => SqlValue::Text(value.clone()),
+        Value::Bytes(value) => SqlValue::Blob(value.clone()),
+        Value::Uuid(value) => SqlValue::Text(value.to_string()),
+        Value::Date(value) => SqlValue::Text(value.to_string()),
+        Value::Time(value) => SqlValue::Text(value.to_string()),
+        Value::DateTime(value) => SqlValue::Text(value.to_string()),
+        Value::Timestamp(value) => SqlValue::Text(value.to_string()),
+        Value::Array(_) => return Err(unsupported_parameter_value("array")),
+        Value::Unsupported { type_name, .. } => return Err(unsupported_parameter_value(type_name)),
+    };
+    Ok(bound)
+}
+
+/// 绑定参数里出现 SQLite 表示不了的类型。
+fn unsupported_parameter_value(kind: &str) -> Error {
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        format!("SQLite 驱动无法把 {kind} 类型的值绑定为参数"),
+    )
+}
+
 /// 读取一批行；多读一行用于判断 `has_more`，多出的行留作下一批的 `pending`。
 fn read_batch(
     rows: &mut Rows<'_>,
@@ -770,6 +878,11 @@ fn column_metadata(statement: &Statement<'_>) -> Vec<ColumnMeta> {
                 // SQLite 的列默认可空；精确的可空性需要查询表定义，v0.1 不做猜测。
                 nullable: true,
                 original_type_name: declared.map(str::to_owned),
+                // 结果集列没有默认值、字符集、排序规则信息（SQLite 也没有列级字符集）；
+                // 一律返回「未知 / 不适用」，不猜、不从 `decl_type` 反推。
+                default_value: ColumnDefault::Unspecified,
+                character_set: None,
+                collation: None,
             }
         })
         .collect()
@@ -848,6 +961,23 @@ impl DriverSession for SqliteSession {
         let (reply, wait) = oneshot::channel();
         self.sender
             .send(Command::Execute { request, reply })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    /// SQLite 驱动已实现参数绑定（#59）：值经 `rusqlite` 绑定，不拼进 SQL 文本。
+    fn supports_parameterized_statements(&self) -> bool {
+        true
+    }
+
+    async fn execute_parameterized(
+        &self,
+        request: ParameterizedExecuteRequest,
+    ) -> Result<ExecutionStart> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::ExecuteParameterized { request, reply })
             .map_err(|_| Self::closed_error())?;
         wait.await.map_err(|_| Self::closed_error())?
     }

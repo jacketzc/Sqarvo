@@ -116,12 +116,48 @@ message ColumnType {
   ColumnType element_type = 9;
 }
 
+// 列默认值的状态。三态必须可区分：不能用空串冒充「没有默认值」。
+enum ColumnDefaultKind {
+  // 未指定。服务端不发出该值；收到时按「未知」处理。
+  COLUMN_DEFAULT_UNSPECIFIED = 0;
+  // 该列**明确没有**默认值：插入时不提供值会被数据库拒绝（NOT NULL 列）。
+  COLUMN_DEFAULT_NONE = 1;
+  // 默认值就是 SQL NULL（`DEFAULT NULL`）。与「没有默认值」不同，
+  // 也与空字符串不同：NULL 是有效默认值，空串是文本默认值。
+  COLUMN_DEFAULT_NULL = 2;
+  // 默认值是一段**未求值**的 SQL 文本，见 ColumnDefault.expression。
+  COLUMN_DEFAULT_EXPRESSION = 3;
+}
+
+// 列默认值。
+message ColumnDefault {
+  ColumnDefaultKind kind = 1;
+  // 默认值的原始 SQL 文本，仅当 kind = COLUMN_DEFAULT_EXPRESSION 时有意义。
+  //
+  // 驱动原样透传数据库给出的文本：不求值、不去引号、不做大小写归一。
+  // 例如 SQLite 的 `'abc'`、`(datetime('now'))`、`CURRENT_TIMESTAMP`，
+  // MariaDB 的 `current_timestamp()`、`'0'`。前端必须把它当作表达式展示，
+  // 不得当成已求值的字面量值，也不得据此推断默认值的运行时类型。
+  string expression = 2;
+}
+
 // 列元数据。nullable 与原始类型信息必须随结果集返回。
 message ColumnMeta {
   string name = 1;
   uint32 ordinal = 2;
   ColumnType type = 3;
   bool nullable = 4;
+  // 默认值。字段**未设置**表示「未知」：老服务端不设置该字段，或者该列
+  // 元数据来自结果集（结果集没有默认值信息）。这与
+  // `default_value.kind = COLUMN_DEFAULT_NONE`（明确没有默认值）不同，
+  // 前端不得把「未知」渲染成「无默认值」。
+  ColumnDefault default_value = 5;
+  // 列级字符集名称，例如 `utf8mb4`。未设置表示「不适用或未知」：
+  // SQLite 没有列级字符集概念，因此永远不设置；前端不得把它显示为「空字符集」，
+  // 应按「不适用」处理。具体原因见 docs/database/{sqlite,mariadb}.md。
+  optional string character_set = 6;
+  // 列级排序规则名称，例如 `utf8mb4_general_ci`。语义同 character_set。
+  optional string collation = 7;
 }
 
 message Row {

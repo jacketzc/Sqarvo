@@ -565,6 +565,11 @@ mod tests {
                 element_type: None,
             }),
             nullable,
+            // 前端目前不展示默认值/字符集/排序规则（#59 只做契约透传）。
+            // 这些字段必须存在才能编译；`None` 表示驱动未提供。
+            default_value: None,
+            character_set: None,
+            collation: None,
         }
     }
 

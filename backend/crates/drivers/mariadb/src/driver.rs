@@ -52,6 +52,12 @@ impl MariaDbDriver {
                     // `database` 映射为 catalog，但对象树尚未实现，先声明为 false。
                     catalogs: false,
                     schemas: false,
+                    // 行编辑：`table_data()` 返回 provider，`supports_row_edits()`
+                    // 为 true（#47）。
+                    row_editing: true,
+                    // 参数化：`execute_parameterized` 走同一条语句执行路径，
+                    // 值由 `mysql_async` 绑定，不拼进 SQL 文本（#59）。
+                    parameterized_statements: true,
                 },
             },
         }

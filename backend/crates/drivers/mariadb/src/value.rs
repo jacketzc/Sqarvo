@@ -8,7 +8,8 @@
 use mysql_async::consts::{ColumnFlags, ColumnType as MyColumnType};
 use mysql_async::{Column, Value as MyValue};
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value, truncate_text,
+    Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value,
+    truncate_text,
 };
 use time::{Date, Month, PrimitiveDateTime, Time};
 
@@ -38,6 +39,11 @@ pub(crate) fn map_columns(columns: &[Column]) -> (Vec<ColumnMeta>, Vec<ColumnPla
             // 协议只给出 NOT NULL 标志；没有该标志的列一律按可空处理。
             nullable: !column.flags().contains(ColumnFlags::NOT_NULL_FLAG),
             original_type_name: Some(plan.type_name.clone()),
+            // 结果集列没有默认值信息；字符集/排序规则在协议里只有编号、没有名字，
+            // 这里如实返回「未知 / 不适用」，需要权威信息时用 `MetadataService.GetColumns`。
+            default_value: ColumnDefault::Unspecified,
+            character_set: None,
+            collation: None,
         });
         plans.push(plan);
     }

@@ -6,7 +6,9 @@
 //!   里的表与视图（`TABLE_TYPE` 原样保留到 [`ObjectKind`]），按表名排序后分页；
 //!   Catalog / Schema / Index / Sequence 等层级显式报 `capability.unsupported`；
 //! - [`MetadataProvider::columns`] 用 `information_schema.COLUMNS` 读取原始类型名
-//!   （`COLUMN_TYPE`，含长度/无符号）、可空、精度与标度；
+//!   （`COLUMN_TYPE`，含长度/无符号）、可空、精度与标度、默认值
+//!   （`COLUMN_DEFAULT`，未求值文本）以及字符集/排序规则
+//!   （`CHARACTER_SET_NAME` / `COLLATION_NAME`）；
 //! - [`MetadataProvider::primary_key`] 用 `information_schema.KEY_COLUMN_USAGE`
 //!   （`CONSTRAINT_NAME = 'PRIMARY'`），`ORDINAL_POSITION` 就是复合主键内的顺序；
 //! - [`MetadataProvider::ddl`] 仍是显式未实现（计划 v0.2.2）。
@@ -21,8 +23,8 @@ use mysql_async::prelude::*;
 use mysql_async::{Conn, Row as MyRow};
 use sqarvo_common::{Error, ErrorCode, Result, SessionId};
 use sqarvo_driver_api::{
-    ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind, ObjectNode,
-    ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
+    ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
+    ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
 };
 use sqarvo_metadata::paginate_by_key;
 
@@ -252,7 +254,8 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
     let rows: Vec<MyRow> = conn
         .exec(
             "SELECT COLUMN_NAME, ORDINAL_POSITION, COLUMN_TYPE, DATA_TYPE, IS_NULLABLE, \
-                    CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE \
+                    CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, \
+                    COLUMN_DEFAULT, CHARACTER_SET_NAME, COLLATION_NAME \
              FROM information_schema.COLUMNS \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
              ORDER BY ORDINAL_POSITION",
@@ -271,6 +274,7 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
         let length = optional_u64(row, 5);
         let precision = optional_u64(row, 6);
         let scale = optional_i64(row, 7);
+        let default_value = column_default(optional_text(row, 8).as_deref());
 
         columns.push(ColumnMeta {
             name: column_name,
@@ -279,6 +283,11 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
             column_type: map_column_type(&data_type, &original_type, length, precision, scale),
             nullable,
             original_type_name: Some(original_type),
+            default_value,
+            // `information_schema` 只对字符型列给出这两个值；数值/二进制列为 NULL，
+            // 这里保持 `None`（不适用），不填 `binary` 之类的推测值。
+            character_set: optional_text(row, 9).filter(|text| !text.trim().is_empty()),
+            collation: optional_text(row, 10).filter(|text| !text.trim().is_empty()),
         });
     }
 
@@ -373,6 +382,32 @@ fn missing_column(column: &'static str) -> Error {
     Error::internal(format!("MariaDB 元数据结果缺少列 {column}"))
 }
 
+/// 把 `information_schema.COLUMNS.COLUMN_DEFAULT` 映射为默认值。
+///
+/// MariaDB 把默认值放在 `COLUMN_DEFAULT` 的**文本**里（10.2.7 起字符串默认值带引号），
+/// NULL 语义因此是文本层面的，三态可以直接区分：
+///
+/// - `COLUMN_DEFAULT` 是 SQL NULL：该列**没有**默认值（NOT NULL 且未写 DEFAULT）→
+///   [`ColumnDefault::NoDefault`]；
+/// - 文本 `NULL`（大小写不敏感）：默认值就是 SQL NULL → [`ColumnDefault::Null`]。
+///   可空列即使没写 `DEFAULT NULL`，隐式默认值也是 NULL，MariaDB 同样报 `NULL` 文本——
+///   这是数据库语义，不是驱动的推断；
+/// - 其余文本：**未求值**的默认值 SQL 文本 → [`ColumnDefault::Expression`]。
+///   驱动不去引号、不求值、不做大小写归一：`'x'`、`''`、`current_timestamp()` 都原样交付。
+///
+/// 实测（MariaDB 11.4，集成测试锁定）：`DEFAULT 'x'` → `'x'`，`DEFAULT ''` → `''`，
+/// `DEFAULT NULL` 与「可空列无 DEFAULT」→ `NULL`，`NOT NULL` 无 DEFAULT → SQL NULL。
+///
+/// 例外：`AUTO_INCREMENT` 列的 `COLUMN_DEFAULT` 也是 SQL NULL，于是得到
+/// [`ColumnDefault::NoDefault`]——正确，它的值来自序列，不是默认值。
+fn column_default(raw: Option<&str>) -> ColumnDefault {
+    match raw.map(str::trim) {
+        None => ColumnDefault::NoDefault,
+        Some(text) if text.eq_ignore_ascii_case("NULL") => ColumnDefault::Null,
+        Some(text) => ColumnDefault::Expression(text.to_owned()),
+    }
+}
+
 /// `DATA_TYPE` + `COLUMN_TYPE` → 逻辑类型。
 ///
 /// 与结果集映射（`value.rs::logical_type`）保持一致：
@@ -462,6 +497,29 @@ mod tests {
                 unsigned: false
             }
         );
+    }
+
+    #[test]
+    fn column_default_uses_the_database_semantics() {
+        // 有字面量默认值：原样透传（MariaDB 11.x 带引号），不求值、不去引号。
+        assert_eq!(
+            column_default(Some("'x'")),
+            ColumnDefault::Expression("'x'".to_owned())
+        );
+        assert_eq!(
+            column_default(Some("current_timestamp()")),
+            ColumnDefault::Expression("current_timestamp()".to_owned())
+        );
+        // 默认空串是文本默认值，不是「没有默认值」。
+        assert_eq!(
+            column_default(Some("''")),
+            ColumnDefault::Expression("''".to_owned())
+        );
+        // 文本 NULL = 默认值为 SQL NULL（可空列的隐式默认值同样是 NULL）。
+        assert_eq!(column_default(Some("NULL")), ColumnDefault::Null);
+        assert_eq!(column_default(Some(" null ")), ColumnDefault::Null);
+        // SQL NULL = 明确没有默认值（NOT NULL 且未写 DEFAULT）。
+        assert_eq!(column_default(None), ColumnDefault::NoDefault);
     }
 
     #[test]

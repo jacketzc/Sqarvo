@@ -9,7 +9,7 @@
 use sqarvo_common::{Error, ErrorCode, QueryId};
 use sqarvo_connection::TransactionStatus;
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, ColumnType, ExecutionStart, IsolationLevel, ResultBatch, Row,
+    Cell, ColumnDefault, ColumnMeta, ColumnType, ExecutionStart, IsolationLevel, ResultBatch, Row,
     StatementSummary, Value,
 };
 use sqarvo_transaction::TransactionState;
@@ -18,10 +18,10 @@ use tonic::Status;
 
 use crate::error::to_status;
 use crate::proto::common::v1::{
-    ArrayValue as ProtoArrayValue, ColumnMeta as ProtoColumnMeta, ColumnType as ProtoColumnType,
-    ColumnTypeKind, ColumnValue, DateTimeValue as ProtoDateTimeValue,
-    DecimalValue as ProtoDecimalValue, ResultSetMeta, Row as ProtoRow,
-    TimestampValue as ProtoTimestampValue, ValueKind, column_value,
+    ArrayValue as ProtoArrayValue, ColumnDefault as ProtoColumnDefault, ColumnDefaultKind,
+    ColumnMeta as ProtoColumnMeta, ColumnType as ProtoColumnType, ColumnTypeKind, ColumnValue,
+    DateTimeValue as ProtoDateTimeValue, DecimalValue as ProtoDecimalValue, ResultSetMeta,
+    Row as ProtoRow, TimestampValue as ProtoTimestampValue, ValueKind, column_value,
 };
 use crate::proto::services::v1::{
     ExecuteQueryResponse, FetchBatchResponse, IsolationLevel as ProtoIsolationLevel,
@@ -388,14 +388,36 @@ fn column_to_proto(meta: &ColumnMeta) -> ProtoColumnMeta {
             meta.original_type_name.as_deref(),
         )),
         nullable: meta.nullable,
+        default_value: column_default_to_proto(&meta.default_value),
+        character_set: meta.character_set.clone(),
+        collation: meta.collation.clone(),
     }
+}
+
+/// 默认值 → Protobuf。
+///
+/// 四态映射：SPI 的 `Unspecified`（未知）**不设置**字段，与「明确没有默认值」
+/// （`COLUMN_DEFAULT_NONE`）在协议层可区分。绝不把未知降级成空串或「无默认值」。
+fn column_default_to_proto(default: &ColumnDefault) -> Option<ProtoColumnDefault> {
+    let (kind, expression) = match default {
+        ColumnDefault::Unspecified => return None,
+        ColumnDefault::NoDefault => (ColumnDefaultKind::ColumnDefaultNone, String::new()),
+        ColumnDefault::Null => (ColumnDefaultKind::ColumnDefaultNull, String::new()),
+        ColumnDefault::Expression(text) => {
+            (ColumnDefaultKind::ColumnDefaultExpression, text.clone())
+        }
+    };
+    Some(ProtoColumnDefault {
+        kind: kind as i32,
+        expression,
+    })
 }
 
 /// 列元数据列表 → Protobuf（`MetadataService.GetColumns`）。
 ///
-/// 与结果集共用同一套映射：原始类型名、长度/精度/标度、无符号、可空都无损传递。
-/// proto 的 `ColumnMeta` 没有默认值/字符集/排序规则字段（见 #45 的「待定」），
-/// 因此这里不伪造这些字段。
+/// 与结果集共用同一套映射：原始类型名、长度/精度/标度、无符号、可空、默认值、
+/// 字符集与排序规则都无损传递。默认值以 `ColumnDefault` 的三态表达，
+/// 「未知」与「没有默认值」不混用。
 #[must_use]
 pub fn columns_to_proto(columns: &[ColumnMeta]) -> Vec<ProtoColumnMeta> {
     columns.iter().map(column_to_proto).collect()
