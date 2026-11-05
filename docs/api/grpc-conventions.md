@@ -58,6 +58,26 @@
 | `transaction.already_active` | `ALREADY_EXISTS` | 会话已有打开的事务（一个会话同时最多一个） |
 | `transaction.failed` | `FAILED_PRECONDITION` | 事务处于失败态，只能回滚 |
 
+对象树、DDL 与插入行（ADR 0019，v0.2.2）：
+
+| 错误码 | gRPC 状态码 | 含义 |
+|---|---|---|
+| `metadata.object_not_found` | `NOT_FOUND` | 目标对象不存在（表/视图/索引已删除或名字拼错） |
+| `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` | 对象种类不能用于该操作（对列取 DDL、把表当 schema 的父节点）；与「驱动尚未实现该层级」不同 |
+| `metadata.permission_denied` | `PERMISSION_DENIED` | 数据库拒绝读取元数据（`information_schema` 里不可见）；**不得**降级成 `object_not_found` |
+| `metadata.filter_invalid` | `INVALID_ARGUMENT` | 过滤条件非法：`contains` 与 `exact` 同时给、`kinds` 重复或含 `UNSPECIFIED`、匹配串为空 |
+| `table_data.unique_violation` | `ALREADY_EXISTS` | 插入违反唯一约束/主键（逐行，不中断整批） |
+| `table_data.not_null_violation` | `INVALID_ARGUMENT` | 显式 NULL 写进 NOT NULL 列 |
+| `table_data.not_null_without_default` | `INVALID_ARGUMENT` | 省略 NOT NULL 列且该列没有默认值可兜底 |
+| `table_data.column_not_insertable` | `INVALID_ARGUMENT` | 列由数据库生成（`GENERATED ALWAYS` 身份列、计算列）；普通 `AUTO_INCREMENT` 不在此列 |
+| `table_data.permission_denied` | `PERMISSION_DENIED` | 缺少 INSERT 权限 |
+
+两条 NOT NULL 错误**不能合并**：`not_null_violation` 的处置是「去掉这一列或改值」，
+`not_null_without_default` 的处置是「补一个值」，前端提示必须不同。
+
+「按行失败」与「整批失败」的分工：插入的逐行错误走 `InsertRowResult.error_code`（response 内），
+只有**整批无法执行**的情形（无权限、对象不存在、事务不存在、驱动未实现）才用 `Err` 返回上面的码。
+
 `BrowseTable.read_only_reason` 取值（枚举**只追加**，不复用数字、不重排）：
 
 | 取值 | 数值 | 含义 | 前端处置 |
@@ -126,6 +146,72 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
   `read_only=true` + `ordering=ROW_ORDER_UNSTABLE`，不得改用 `OFFSET` 分页；
 - 行变更单批上限 500 行，超限由服务端钳制并在响应里给出 `clamped` / `deferred_changes`；
 - 不允许通过提高 gRPC message 大小上限来解决大结果集问题。
+
+## 对象树与搜索（v0.2.2，ADR 0019）
+
+- `ListNodes` **逐层懒加载**：`parent` 为空表示根（当前连接库的对象）；一次只返回直接子节点，
+  禁止一次拉整棵树；
+- 层级由 `ObjectKind` + `ObjectRef(catalog, schema, name)` 共同表达，展开规则写在
+  `proto/services/v1/metadata.proto` 的 `ObjectKind` 注释里（CATALOG → SCHEMA/TABLE…，
+  SCHEMA → TABLE/VIEW/…，TABLE → COLUMN/INDEX/TRIGGER，VIEW → COLUMN，其余为叶子）；
+- **跨库/跨 schema 必须显式**：`catalog` / `schema` 为空只表示「该数据库没有这一层」，
+  服务端不得隐式切到连接默认库；
+- 未实现的层级返回 `capability.unsupported`（`UNIMPLEMENTED`），**不得**返回空列表：
+  空列表的唯一含义是「这一层确实没有对象」；
+- 过滤字段（`ListNodesRequest.filter`，新增 3 号）：
+
+| 条件 | 表达 | 说明 |
+|---|---|---|
+| 名称包含 | `filter.name.contains` | `%` / `_` 按字面量匹配（驱动转义），客户端不拼通配符 |
+| 名称精确 | `filter.name.exact` | 与 `contains` 互斥（同一 oneof） |
+| 种类 | `filter.kinds` | 集合语义，顺序无关；空表示不过滤 |
+
+- 名称与种类取交集；过滤**必须下推**到数据库（SQLite `LIKE ... ESCAPE`、MariaDB
+  `information_schema` 的 `LIKE`），不做「全量读进内存再过滤」；
+- **大小写敏感性跟随数据库**，契约不提供开关：同一关键词在 SQLite 与 MariaDB 上可能给出不同
+  结果，前端不得再叠加一层过滤来「统一」；
+- 过滤条件的规范化字符串（`name=<contains|exact>:<原文>` + `kinds=<排序后的种类>`）进入分页
+  token 的指纹：换条件后旧 token 必须失效（`config.invalid`），不得拿旧 token 继续翻页；
+- **服务端不得静默忽略非空过滤**：驱动未实现下推时返回 `capability.unsupported`。当前
+  rpc-server 在 #82 接线前就按此显式拒绝（返回 `UNIMPLEMENTED` + `capability.unsupported`）。
+
+## DDL 查看（v0.2.2，ADR 0019）
+
+`GetDdl(GetDdlRequest) → GetDdlResponse{ddl, exact, source, source_detail, generator_version}`：
+
+| 来源 | `exact` | `source` | `source_detail` | `generator_version` |
+|---|---|---|---|---|
+| SQLite `sqlite_master.sql` | `true` | `DDL_SOURCE_DATABASE` | 必有，例如 `sqlite_master.sql` | 空 |
+| MariaDB `SHOW CREATE TABLE/VIEW` | `true` | `DDL_SOURCE_DATABASE` | 必有，例如 `SHOW CREATE TABLE` | 空 |
+| 服务端按元数据拼装 | `false` | `DDL_SOURCE_SYNTHESIZED` | **必有**：说明缺了什么 | **必有**：生成器版本 |
+
+- 不变式：`exact == (source == DDL_SOURCE_DATABASE)`；拼装却说不清来源/版本的结果，rpc-server
+  以 `internal.error` 拒绝返回（不能把「看不出是拼装的 DDL」当原文交给用户）；
+- `source = DDL_SOURCE_UNSPECIFIED` 表示**未说明**，客户端只能退回看 `exact`，不得假定原文；
+- 只有数据库给不出原文时才拼装；能拿到原文就必须给原文（拼装永远有信息损失）；
+- `GetDdl` 纳入会话执行锁（ADR 0008），与浏览、写入共用同一条物理连接。
+
+## 插入新行（v0.2.2，ADR 0019）
+
+`TableDataService.InsertRows(InsertRowsRequest) → InsertRowsResponse`：
+
+- **单行插入 = `rows` 只有一条**，不另立 RPC：单行与批量必须共用风险阈值与原子性；
+- **省略列 ≠ NULL**：不在 `values` 里的列交给数据库默认值（自增、`DEFAULT` 表达式、
+  `DEFAULT NULL`）；`VALUE_KIND_NULL` 是显式写 SQL NULL。服务端不把「省略」改写成默认值字面量；
+- **主键回传**：`InsertRowResult.key` 是插入后的**完整**主键值（自增/默认值生成的主键列取真实值），
+  顺序同 `GetPrimaryKey`；驱动拿不到完整主键就不能声明支持插入（不得部分回传）；
+- **原子性**：与 `ApplyRowChanges` 同一信封——无 `transaction_id` 时整批成功才提交（一个隐式
+  事务），指定事务时用 `SAVEPOINT`；任一行失败 → 继续执行完其余行以报全失败，然后整批回滚，
+  `rolled_back = true`、`total_rows_affected = 0`、逐行结果仍然返回；
+- 前端判成功**必须**看 `rolled_back`，不能只看逐行 `INSERT_OUTCOME_INSERTED`；
+  `inserted_rows` 是「语句层成功了几行」，`total_rows_affected` 是「库里的净变化」；
+- **风险阈值**：沿用 `acknowledge_risk` 与 `DEFAULT_RISK_CONFIRMATION_ROWS = 100`；
+  预计影响行数 = 本批行数（插入恒 1 行/行）。超过阈值未确认 → `table_data.confirmation_required`
+  （整批拒绝，一行都不执行）。**不另立插入专用阈值**；
+- **批次上限 500**（与行变更同值）：超限钳制，回 `clamped` / `deferred_rows`，客户端必须续传；
+- **本版不可取消**：没有 `query_id` 字段；后续需要时追加字段并复用 `CancelRowChanges`；
+- 事务指向不存在/已结束的事务 → `transaction.not_found`，绝不退化成自动提交；
+- 驱动未实现插入 → `capability.unsupported`（`UNIMPLEMENTED`），绝不返回「插入了 0 行」。
 
 ## 单元格与截断
 

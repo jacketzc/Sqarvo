@@ -90,6 +90,9 @@ pub enum ObjectKind { Catalog, Schema, Table, View, MaterializedView, Column, In
                       Sequence, Function, Procedure, Trigger, Type, Other(String) }
 pub struct ObjectRef { session_id: SessionId, qualified_name: QualifiedName, kind: ObjectKind }
 
+pub struct ObjectFilter { name: Option<NameMatch>, kinds: Vec<ObjectKind> }   // v0.2.2
+pub enum NameMatch { Contains(String), Exact(String) }                       // v0.2.2
+
 pub trait MetadataProvider: Send + Sync {
     async fn list_children(&self, parent: Option<ObjectRef>, page: &PageRequest)
         -> Result<Page<ObjectNode>>;
@@ -97,6 +100,9 @@ pub trait MetadataProvider: Send + Sync {
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
     // 主键读取（ADR 0017 的 `GetPrimaryKey`）；默认实现返回 capability.unsupported。
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey>;
+    // 名称/种类过滤（v0.2.2，ADR 0019）；默认实现返回 capability.unsupported。
+    async fn list_children_filtered(&self, parent: Option<ObjectRef>,
+        filter: &ObjectFilter, page: &PageRequest) -> Result<Page<ObjectNode>>;
 }
 ```
 
@@ -107,6 +113,47 @@ pub trait MetadataProvider: Send + Sync {
 - `PageRequest` / `Page` 与会话无关，定义在 `driver-api`，分页上限 500；
 - `primary_key` 与 `TableDataProvider::primary_key` 读同一份主键定义，两者必须一致；
   无主键返回空 `PrimaryKey`，不得返回 rowid / ctid 之类的近似主键。
+
+### 对象过滤（v0.2.2，ADR 0019）
+
+`ListNodesRequest.filter` 的 SPI 形态是 `ObjectFilter`（名称条件 + 种类集合，交集语义）。
+`list_children_filtered` 的**默认实现返回 `capability.unsupported`**，不会退化成
+「先 `list_children` 再内存过滤」：
+
+- 内存过滤会把整个子树读进内存（冻结口径明确否决），大库直接 OOM；
+- 更糟的是它「看起来实现了搜索」：调用方拿到的结果没有经过数据库的排序规则、转义规则，
+  与将来真正下推时的行为不同，前端无法预期。
+
+实现要求：
+
+| 条件 | 下推方式 | 注意 |
+|---|---|---|
+| `name.contains` | SQLite `name LIKE '%' || ? || '%' ESCAPE '\'`；MariaDB `TABLE_NAME LIKE CONCAT('%', ?, '%')` | `%` / `_` / 转义符本身必须转义成字面量 |
+| `name.exact` | `name = ?` | 与数据库 `=` 一致（含尾空格语义） |
+| `kinds` | `type IN (...)` / `TABLE_TYPE IN (...)` | 空集合 = 不按种类过滤；`UNSPECIFIED` 非法 |
+
+- 大小写敏感性跟随数据库，驱动**不得**自行 `LOWER()` 归一化（那会让 SQLite 与 MariaDB 的
+  行为被强行拉齐，代价是全表扫描与索引失效）；
+- 过滤条件的规范化字符串（`ObjectFilter::fingerprint_input()`）必须折进分页 token 的指纹，
+  条件变化 → 旧 token 以 `config.invalid` 失效；
+- 非法条件由 `ObjectFilter::validate()` 在进入驱动前拒绝（`metadata.filter_invalid`）。
+
+### DDL 的来源（v0.2.2，ADR 0019）
+
+```rust
+pub enum DdlSource { Database, Synthesized }
+pub struct Ddl {
+    pub text: String,
+    pub exact: bool,                       // ≡ source == DdlSource::Database
+    pub source: DdlSource,
+    pub source_detail: Option<String>,     // 原文取自哪里 / 拼装缺什么（两种情况都必须非空）
+    pub generator_version: Option<String>, // 仅 Synthesized 有意义，且必须非空
+}
+```
+
+- `Ddl::from_database(text, "sqlite_master.sql")` / `Ddl::synthesized(text, detail, version)`；
+- `Ddl::is_consistent()` 断言 `exact` 与 `source` 不打架、拼装路径有说明与版本；
+- rpc-server 在返回前检查，不自洽报 `internal.error`（不能把拼装结果当原文）；
 
 ### 分页 token（v0.2.1 起）
 
@@ -194,6 +241,7 @@ pub struct ParameterizedExecuteRequest {
 pub trait TableDataProvider: Send + Sync {
     fn supports_row_edits(&self) -> bool { false }
     fn supports_row_change_cancellation(&self) -> bool { false }   // #70
+    fn supports_row_insertion(&self) -> bool { false }             // #81
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey>;
     async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage>;
     async fn apply_row_changes(
@@ -201,7 +249,20 @@ pub trait TableDataProvider: Send + Sync {
         request: RowChangeRequest,
         cancel: &RowChangeCancel,   // #70：行边界协作式取消令牌
     ) -> Result<RowChangeReport>;
+    // 插入新行（#81）：默认 capability.unsupported，既有驱动零改动。
+    async fn insert_rows(&self, request: InsertRowsRequest) -> Result<InsertReport>;
 }
+
+// 插入行的 SPI 类型（#81）
+pub struct InsertRow { pub values: Vec<ColumnChange> }         // 省略的列 = 交给数据库默认值
+pub struct InsertRowsRequest { pub object: ObjectRef, pub rows: Vec<InsertRow> }
+pub struct InsertRowResult {                                   // 逐行结果
+    pub index: usize,
+    pub outcome: InsertOutcome,          // Inserted{rows_affected} | Failed{code}
+    pub key: Option<RowKey>,             // 插入后的完整主键值
+    pub message: Option<String>,
+}
+pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize, pub rolled_back: bool }
 ```
 
 约定：
@@ -242,6 +303,23 @@ pub trait TableDataProvider: Send + Sync {
   未实现的驱动（测试替身、最小驱动）由 `Capabilities::default()` 保持 `false`。
 
 
+### 插入新行（#81，ADR 0019）
+
+- **默认实现即拒绝**：`supports_row_insertion()` 默认 `false`、`insert_rows()` 默认返回
+  `capability.unsupported`。既有驱动一行不改也能编译，但拿不到「假成功」；
+- **省略 ≠ NULL**：只把给出的列放进 `INSERT` 的列清单，未给出的列交给数据库默认值；
+  代码里不要「补默认值」——`AUTO_INCREMENT`、`now()`、`'0'` 只有数据库能求值；
+- **完整主键回传**：成功行必须填 `InsertRowResult::key`（自增取
+  `last_insert_rowid` / `LAST_INSERT_ID`，复合主键回传全部列，顺序同 `PrimaryKey`）。
+  拿不到完整主键的驱动**不能**声明支持插入；
+- **整批成功才提交**：自动提交 → 一个隐式事务覆盖整批；事务模式 → `SAVEPOINT`；
+  任一行失败 → 继续执行完其余行（把失败一次报全），然后整批回滚，`rolled_back = true`、
+  净影响 0；`InsertReport::rows_affected()` 已经按这个规则返回 0，驱动不要自己抹；
+- **逐行失败用 `InsertOutcome::Failed{code}`**，不要用 `Err` 打断整批：`Err` 只用于
+  「整批根本无法执行」（无权限、对象不存在、事务不存在）；
+- 批次上限 `MAX_ROWS_PER_INSERT_BATCH = 500`（与行变更同值）；风险阈值沿用
+  `DEFAULT_RISK_CONFIRMATION_ROWS = 100`，预计影响行数 = 本批行数，**不另立阈值**。
+
 ## 新增驱动清单
 
 1. 新建 `backend/crates/drivers/<db>/` crate，`Cargo.toml` 继承 workspace 设置；
@@ -265,10 +343,14 @@ pub trait TableDataProvider: Send + Sync {
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
 - 元数据的上层层级与 DDL：两驱动只实现「当前库的表/视图 + 列 + 主键」
   （见上「元数据实现现状」），Catalog / Schema / Index / Sequence 与跨库浏览返回
-  `capability.unsupported`；`GetDdl` 计划 v0.2.2；
+  `capability.unsupported`。**契约已于 v0.2.2 冻结（#81，ADR 0019）**：层级展开规则、
+  `ListNodes.filter`（名称/种类下推）与 `GetDdl` 的 `source` / `source_detail` /
+  `generator_version` 都已进 proto 与 SPI，驱动侧实现见 #82（对象树与搜索）与 #84（DDL）；
+  在此之前 rpc-server 对非空过滤明确返回 `UNIMPLEMENTED`，不静默忽略；
 - 表数据浏览与行编辑：两驱动已实现（`table_data()` 返回 provider，`supports_row_edits()`
-  为 `true`），`Capabilities.row_editing` 已在 `ListDrivers` 中展示；但仍**不支持插入新行**
-  与非主键排序；
+  为 `true`），`Capabilities.row_editing` 已在 `ListDrivers` 中展示；**插入新行**
+  （`insert_rows`，契约见 #81 / ADR 0019）与非主键排序仍未实现：两驱动的
+  `supports_row_insertion()` 保持 `false`，调用得到 `capability.unsupported`；
 - 参数化执行的 gRPC RPC：SPI（`execute_parameterized`）两驱动已实现，查询侧的参数化 RPC
   留给 S7；
 - MariaDB 驱动的单次执行超时（请求时明确返回 `capability.unsupported`）；

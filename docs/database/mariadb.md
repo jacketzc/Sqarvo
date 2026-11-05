@@ -415,6 +415,27 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 已知代价：本版一次性读取当前库的全部对象名再在内存里切页（上限 500 行/页），
 不做 `LIMIT/OFFSET` 服务端分页；库内对象数量极大时应改用服务端游标（待定）。
 
+### v0.2.2 契约（#81，本驱动尚未实现）
+
+`ListNodes.filter`、`GetDdl` 与 `InsertRows` 的契约已冻结（ADR 0019），MariaDB 侧实现见
+#82 / #84 / #83：
+
+- **过滤下推**：`information_schema.TABLES.TABLE_NAME` 上用
+  `LIKE CONCAT('%', ?, '%')`（`%`、`_`、`\` 先转义成字面量）实现 `contains`，`=` 实现
+  `exact`，`TABLE_TYPE IN (...)` 实现 `kinds`；大小写取决于列/连接的排序规则
+  （`utf8mb4_general_ci` 下不敏感、`_bin` 下敏感），驱动不得额外 `LOWER()`；
+- **过滤条件进 token 指纹**：条件变化 → 旧 token 报 `config.invalid`（`metadata.filter_invalid`
+  只用于条件本身非法）；
+- **DDL**：`SHOW CREATE TABLE` / `SHOW CREATE VIEW` 原文，`exact = true`、
+  `source = DDL_SOURCE_DATABASE`、`source_detail` 写明用的是哪条 `SHOW CREATE`；
+  MariaDB 的 `SHOW CREATE` 会补全 `AUTO_INCREMENT=`、字符集等，属数据库原文，驱动不要改写；
+- **插入**：只绑给出的列；自增主键用 `LAST_INSERT_ID()` 回传，复合主键回传写入值与生成值；
+  整批隐式事务 / savepoint，任一行失败整批回滚（`rolled_back = true`）；
+  唯一冲突 → `table_data.unique_violation`，NOT NULL（1406/1048）按「显式 NULL /
+  省略无默认值」分别映射 `table_data.not_null_violation` / `..._without_default`；
+- 在此之前 `supports_row_insertion()` 为 `false`、`list_children_filtered` 走默认实现，
+  两者都返回 `capability.unsupported`（绝不返回空列表 / 「插入了 0 行」）。
+
 ### 已知缺口
 
 - `COLUMN_TYPE` 是服务端原文，MariaDB 11.4 会带显示宽度（例如 `bigint(20) unsigned`），
@@ -446,7 +467,8 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 
 - 事务的隔离级别选择界面与 savepoint 对外 API（批内 savepoint 已用于行编辑）；
 - 元数据的对象树上层（Catalog / Schema / Index / Sequence）与跨库浏览：显式报
-  `capability.unsupported`；DDL 查看计划 v0.2.2（`SHOW CREATE TABLE` 原文）；
+  `capability.unsupported`；DDL 查看（#84）按 v0.2.2 契约用 `SHOW CREATE TABLE` 原文
+  （`exact = true` + `source = DDL_SOURCE_DATABASE`，ADR 0019）；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
 - 参数化执行的对外 RPC（SPI 的 `execute_parameterized` 已实现，查询侧 RPC 留给 S7）
   与预编译语句复用；
