@@ -7,6 +7,7 @@
 //! GTK 主线程只通过 channel 与后台 worker 交互。
 
 mod backend;
+mod column_info;
 mod config;
 mod data_page;
 mod dialog;

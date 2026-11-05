@@ -15,6 +15,7 @@
 //!   「操作失败」，因为「无主键」「事务失效」「被截断的值」需要完全不同的处置。
 
 use crate::backend::query::{CellView, format_cell};
+use crate::column_info::ColumnDefaultState;
 use crate::proto::common::v1::{ColumnMeta, ColumnTypeKind, ColumnValue, Row as ProtoRow};
 use crate::proto::services::v1::{
     ObjectKind, ObjectNode, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowOrder,
@@ -92,6 +93,12 @@ pub struct TableColumn {
     pub with_time_zone: bool,
     /// Decimal 标度（来自列元数据）。
     pub scale: Option<i32>,
+    /// 默认值四态（#87）。`Unknown` 表示服务端没提供，不是「无默认值」。
+    pub default_value: ColumnDefaultState,
+    /// 列级字符集；`None` 表示不适用/未知（SQLite 永远如此）。
+    pub character_set: Option<String>,
+    /// 列级排序规则；`None` 语义同 `character_set`。
+    pub collation: Option<String>,
     /// 主键内位置（从 1 开始；`None` 表示不是主键列）。
     pub primary_key_position: Option<u32>,
 }
@@ -134,6 +141,9 @@ impl TableColumn {
             unsigned,
             with_time_zone,
             scale,
+            default_value: ColumnDefaultState::from_proto(column.default_value.as_ref()),
+            character_set: column.character_set.clone(),
+            collation: column.collation.clone(),
             primary_key_position: None,
         }
     }
@@ -652,12 +662,45 @@ mod tests {
                 element_type: None,
             }),
             nullable,
-            // 前端目前不展示默认值/字符集/排序规则（#59 只做契约透传）。
-            // 这些字段必须存在才能编译；`None` 表示驱动未提供。
+            // 默认值/字符集/排序规则（#59 契约透传，#87 起在列信息面板展示）。
+            // `None` 表示驱动未提供：默认值按「未知」处理，字符集/排序规则按「不适用」。
             default_value: None,
             character_set: None,
             collation: None,
         }
+    }
+
+    #[test]
+    fn column_keeps_default_charset_and_collation_from_meta() {
+        use crate::column_info::ColumnDefaultState;
+        use crate::proto::common::v1::{ColumnDefault, ColumnDefaultKind};
+
+        let mut with_defaults = meta(
+            "title",
+            ColumnTypeKind::ColumnTypeText,
+            "varchar(64)",
+            false,
+        );
+        with_defaults.default_value = Some(ColumnDefault {
+            kind: ColumnDefaultKind::ColumnDefaultExpression as i32,
+            expression: "'untitled'".to_owned(),
+        });
+        with_defaults.character_set = Some("utf8mb4".to_owned());
+        with_defaults.collation = Some("utf8mb4_general_ci".to_owned());
+        let column = TableColumn::from_meta(&with_defaults);
+        assert_eq!(
+            column.default_value,
+            ColumnDefaultState::Expression("'untitled'".to_owned())
+        );
+        assert_eq!(column.character_set.as_deref(), Some("utf8mb4"));
+        assert_eq!(column.collation.as_deref(), Some("utf8mb4_general_ci"));
+
+        // 字段缺失 = 未知 / 不适用，不能退化成「无默认值」或空字符集。
+        let bare =
+            TableColumn::from_meta(&meta("id", ColumnTypeKind::ColumnTypeInteger, "int", false));
+        assert_eq!(bare.default_value, ColumnDefaultState::Unknown);
+        assert_eq!(bare.character_set, None);
+        assert_eq!(bare.collation, None);
     }
 
     #[test]
