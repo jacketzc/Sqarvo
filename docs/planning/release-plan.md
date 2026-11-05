@@ -62,7 +62,8 @@ Windows / macOS 前端仍是窗口骨架，未构建、未验证。
 - 编辑操作的风险提示与只读模式可验证。
 
 完成记录（2026-11-05，Linux）：以上三条全部满足，逐条证据如下。范围仍是 Linux 前端 + 本地后端 +
-SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。最终基线 main `47da472`。
+SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。证据基线 main `47da472`
+（其后只有发布文档提交 `3796915`，未改任何代码）。
 
 | 退出标准 | 证据 |
 |---|---|
@@ -84,7 +85,7 @@ SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。�
 | #47 | 行编辑提交（参数化 DML） | #56 | `cdd3142` | `41965284410` |
 | #48 | Linux 数据页 | #57 | `47da472` | `41968317577` |
 
-配套基线（main `47da472`，Linux）：`cd backend && cargo fmt --all -- --check` 无输出 / exit 0；
+配套基线（证据基线 main `47da472`，Linux；其后的 `3796915` 只改文档）：`cd backend && cargo fmt --all -- --check` 无输出 / exit 0；
 `cargo clippy --all-targets -- -D warnings` 无警告 / exit 0；
 `SQARVO_MARIADB_URL=… cargo test --workspace` → **382 passed / 0 failed / 0 ignored**（v0.2 基线 219）；
 `cd frontend/linux && cargo fmt --all -- --check` exit 0、`cargo test` → **94 passed / 0 failed**
