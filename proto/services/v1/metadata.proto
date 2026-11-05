@@ -126,7 +126,10 @@ message NodeFilter {
 }
 
 message ListNodesRequest {
-  // 为空表示列出根节点（通常是 Catalog 或 Schema 列表）。
+  // 为空表示「当前连接库」的根节点（表 / 视图 / 序列），v0.2.1 起的行为不变。
+  // 要列出所有 Catalog（跨库浏览的入口），用 `parent.kind = OBJECT_KIND_CATALOG`
+  // 且 `catalog` / `schema` / `name` 全空；带名字表示展开该目录（v0.2.2 冻结，
+  // 见 docs/api/grpc-conventions.md「对象层级」与 docs/database/{sqlite,mariadb}.md）。
   ObjectRef parent = 1;
   sqarvo.common.v1.PageRequest page = 2;
   // 名称 / 种类过滤（v0.2.2 追加）。未设置表示不过滤。
