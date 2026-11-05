@@ -13,6 +13,19 @@
 //!
 //! 默认值的三态（未知 / 没有默认值 / 默认 NULL / 未求值表达式）在 #59 补齐，
 //! 映射集中在 `services::mapping`：`Unknown` 不设置 proto 字段，不会退化成空串。
+//!
+//! # 会话执行锁（#69）
+//!
+//! 三个查询 RPC 都经会话层方法在**执行锁内**调用驱动：
+//! [`SessionHandle::list_children`](sqarvo_connection::SessionHandle::list_children)、
+//! [`SessionHandle::columns`](sqarvo_connection::SessionHandle::columns)、
+//! [`SessionHandle::primary_key`](sqarvo_connection::SessionHandle::primary_key)。
+//! 元数据查询与写入、浏览共用同一条物理连接（ADR 0008），语句不得交错：
+//! 浏览进行中的 DDL 会让元数据读到改到一半的 schema。
+//!
+//! `GetDdl` 是唯一例外：本版两个内置驱动都在触达连接前返回
+//! `capability.unsupported`（v0.2.2 提供），没有语句可交错；实现 DDL 读取必须
+//! 一并纳入会话执行锁。
 
 use std::sync::Arc;
 
@@ -73,14 +86,14 @@ impl MetadataService for MetadataServiceImpl {
             .acquire(&session_id)
             .await
             .map_err(to_status)?;
-        let provider = handle.metadata().ok_or_else(metadata_unsupported)?;
         let parent = if is_root(&parent) {
             None
         } else {
             Some(object_ref_from_proto(&parent)?)
         };
 
-        let page = provider
+        // 元数据查询在会话执行锁内执行（#69）：与写入、浏览共用同一条连接。
+        let page = handle
             .list_children(parent, &page_request)
             .await
             .map_err(to_status)?;
@@ -108,8 +121,8 @@ impl MetadataService for MetadataServiceImpl {
             .acquire(&object.session_id)
             .await
             .map_err(to_status)?;
-        let provider = handle.metadata().ok_or_else(metadata_unsupported)?;
-        let columns = provider.columns(&object).await.map_err(to_status)?;
+        // 元数据查询在会话执行锁内执行（#69）。
+        let columns = handle.columns(&object).await.map_err(to_status)?;
         Ok(Response::new(GetColumnsResponse {
             columns: mapping::columns_to_proto(&columns),
         }))
@@ -154,8 +167,8 @@ impl MetadataService for MetadataServiceImpl {
             .acquire(&object.session_id)
             .await
             .map_err(to_status)?;
-        let provider = handle.metadata().ok_or_else(metadata_unsupported)?;
-        let primary_key = provider.primary_key(&object).await.map_err(to_status)?;
+        // 元数据查询在会话执行锁内执行（#69）。
+        let primary_key = handle.primary_key(&object).await.map_err(to_status)?;
         Ok(Response::new(GetPrimaryKeyResponse {
             columns: primary_key
                 .columns

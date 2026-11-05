@@ -7,9 +7,10 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, IsolationLevel, MetadataProvider, ResultBatch, RowChangeReport,
-    RowChangeRequest, Secret, TableDataProvider, TransactionOptions,
+    ColumnMeta, ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
+    ExecutionStart, IsolationLevel, MetadataProvider, ObjectNode, ObjectRef, Page, PageRequest,
+    PrimaryKey, ResultBatch, RowChangeReport, RowChangeRequest, Secret, TableDataProvider,
+    TablePage, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -124,8 +125,9 @@ impl Session {
 
 /// 可执行会话句柄。
 ///
-/// 由 [`SessionManager::acquire`] 获取；内部持有会话级执行锁，`execute` / `fetch`
-/// 串行执行，`cancel` 不取锁以便在执行中生效。
+/// 由 [`SessionManager::acquire`] 获取；内部持有会话级执行锁，`execute` / `fetch`、
+/// 浏览（`browse`）与元数据查询（`list_children` / `columns` / `primary_key` /
+/// `table_primary_key`）都串行执行，`cancel` 不取锁以便在执行中生效。
 #[derive(Clone)]
 pub struct SessionHandle {
     summary: SessionSummary,
@@ -217,6 +219,96 @@ impl SessionHandle {
     #[must_use]
     pub fn table_data(&self) -> Option<&dyn TableDataProvider> {
         self.session.table_data()
+    }
+
+    /// 在会话执行锁内浏览一页表数据（#69）。
+    ///
+    /// 浏览是驱动上的一条只读语句，但它与写入共用**同一条**物理连接（ADR 0008）：
+    /// 不持锁时，一页查询会与并发的 DDL / 写批次在同一条连接上交错，游标可能读到
+    /// 改动中的 schema，错误分类也会变得不可解释。因此这里与 `execute` /
+    /// `apply_row_changes` 争用同一把执行锁。
+    ///
+    /// # 锁边界
+    ///
+    /// - 持锁范围只有「取能力 + 驱动 `browse`」这一条语句，结果映射在锁外；
+    /// - 方法内部不调用任何会再次获取执行锁的入口，因此不存在同一把锁的重入等待；
+    /// - 锁顺序不变：执行锁 →（必要时）事务登记锁，本方法不碰登记表。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现表数据浏览：`capability.unsupported`；
+    /// - 驱动错误原样透传（游标非法、对象不存在等）。
+    pub async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
+        let _guard = self.execution.lock().await;
+        self.table_data_provider()?.browse(object, page).await
+    }
+
+    /// 在会话执行锁内列出元数据子节点（#69）。
+    ///
+    /// 与 [`SessionHandle::browse`] 同理：元数据查询也走同一条连接，必须串行。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现元数据浏览：`capability.unsupported`；
+    /// - 驱动错误原样透传（页 token 非法、父节点不存在等）。
+    pub async fn list_children(
+        &self,
+        parent: Option<ObjectRef>,
+        page: &PageRequest,
+    ) -> Result<Page<ObjectNode>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?.list_children(parent, page).await
+    }
+
+    /// 在会话执行锁内读取列的元数据（#69）。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现元数据浏览：`capability.unsupported`；
+    /// - 驱动错误原样透传（对象不存在、无权限等）。
+    pub async fn columns(&self, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?.columns(object).await
+    }
+
+    /// 在会话执行锁内读取主键定义（`GetPrimaryKey`，#69）。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现元数据浏览：`capability.unsupported`；
+    /// - 驱动错误原样透传（对象不存在、无权限等）。
+    pub async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?.primary_key(object).await
+    }
+
+    /// 在会话执行锁内读取行编辑用的主键定义（#69）。
+    ///
+    /// 与 [`SessionHandle::primary_key`] 读同一份数据库元数据，但走**表数据**能力
+    /// （`TableDataProvider::primary_key`）：`ApplyRowChanges` 的能力前提是
+    /// 「能改行」，不是「能浏览元数据」，不能因为驱动没实现元数据域就让写批次失败。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现表数据：`capability.unsupported`；
+    /// - 驱动错误原样透传（对象不存在、无权限等）。
+    pub async fn table_primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
+        let _guard = self.execution.lock().await;
+        self.table_data_provider()?.primary_key(object).await
+    }
+
+    /// 取元数据能力；未实现时返回 `capability.unsupported`（不伪装成空列表）。
+    fn metadata_provider(&self) -> Result<&dyn MetadataProvider> {
+        self.session.metadata().ok_or_else(|| {
+            Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现元数据浏览")
+        })
+    }
+
+    /// 取表数据能力；未实现时返回 `capability.unsupported`（不伪装成空页）。
+    fn table_data_provider(&self) -> Result<&dyn TableDataProvider> {
+        self.session.table_data().ok_or_else(|| {
+            Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现表数据浏览")
+        })
     }
 
     /// 开始显式事务（ADR 0017 §3）。
