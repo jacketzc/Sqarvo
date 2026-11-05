@@ -31,6 +31,14 @@ pub const QUERY_ACTIVE: ErrorCode = ErrorCode::from_static("mariadb.query_active
 pub const QUERY_TIMEOUT: ErrorCode = ErrorCode::from_static("mariadb.query_timeout");
 /// 权限不足。
 pub const PERMISSION_DENIED: ErrorCode = ErrorCode::from_static("mariadb.permission_denied");
+/// 事务中出现了会隐式提交的语句，驱动在发送前拒绝（绝不静默提交）。
+pub const IMPLICIT_COMMIT_REJECTED: ErrorCode =
+    ErrorCode::from_static("mariadb.implicit_commit_rejected");
+/// 只读事务中尝试写入。
+pub const READ_ONLY_TRANSACTION: ErrorCode =
+    ErrorCode::from_static("mariadb.read_only_transaction");
+/// 事务随连接断开/超时而丢失，无法确认提交结果。
+pub const TRANSACTION_LOST: ErrorCode = ErrorCode::from_static("mariadb.transaction_lost");
 
 /// 取服务端错误码（仅 `Server` 类错误）。
 pub(crate) fn server_code(error: &mysql_async::Error) -> Option<u16> {
@@ -128,6 +136,12 @@ fn map_server_code(code: u16, context: &'static str) -> (ErrorCode, ErrorCategor
         1205 => (SERVER_ERROR, ErrorCategory::Timeout, "等待锁超时"),
         // ER_LOCK_DEADLOCK
         1213 => (DEADLOCK, ErrorCategory::FailedPrecondition, "检测到死锁"),
+        // ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION
+        1792 => (
+            READ_ONLY_TRANSACTION,
+            ErrorCategory::FailedPrecondition,
+            "只读事务中不允许写入",
+        ),
         // ER_CONNECTION_KILLED / ER_SERVER_SHUTDOWN
         1927 | 1053 => (
             CONNECTION_FAILED,

@@ -8,7 +8,10 @@
 //!   取消幂等，被中断的会话连接可以继续复用；
 //! - v0.2 只支持单条语句：`multiple_statements = false`，检测到多条语句时明确拒绝，
 //!   不把「只执行了第一条」当成成功；
-//! - 事务与元数据在 M4 接线，未实现时按 SPI 默认实现返回 `capability.unsupported`。
+//! - 显式事务在同一会话连接上执行 `START TRANSACTION` / `COMMIT` / `ROLLBACK`；
+//!   事务中会隐式提交的 DDL / `TRUNCATE` 等语句在发送前拒绝，绝不静默提交
+//!   （见 `docs/database/mariadb.md`「事务」）；
+//! - 元数据在 M4 接线，未实现时按 SPI 默认实现返回 `capability.unsupported`。
 
 #![warn(missing_docs)]
 

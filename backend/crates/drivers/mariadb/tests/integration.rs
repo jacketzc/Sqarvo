@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
+use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
 use sqarvo_driver_api::{
     Cell, ColumnMeta, ColumnType, ConnectionParams, DEFAULT_MAX_CELL_BYTES, Driver, DriverSession,
-    ExecuteRequest, Row, TlsMode, Value,
+    ExecuteRequest, IsolationLevel, Row, TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
 
@@ -1016,6 +1016,545 @@ async fn sleeping_statements(session: &dyn DriverSession, marker: &str) -> usize
     )
     .await;
     usize::try_from(uint_at(&rows[0])).unwrap_or(usize::MAX)
+}
+
+// ---- 显式事务（Issue #43） ----
+
+/// testkit 的事务不变量（与 SQLite 共用同一组检查）。
+#[tokio::test]
+async fn driver_passes_transaction_invariants() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let session = &*session;
+    let probe = sqarvo_driver_testkit::TransactionProbe {
+        create_table: "CREATE TABLE sqarvo_t43_invariants (id INT NOT NULL)",
+        insert_row: "INSERT INTO sqarvo_t43_invariants VALUES (1)",
+        count_rows: "SELECT COUNT(*) FROM sqarvo_t43_invariants",
+        drop_table: "DROP TABLE IF EXISTS sqarvo_t43_invariants",
+    };
+
+    sqarvo_driver_testkit::transaction_commit_and_rollback_are_atomic(session, &probe)
+        .await
+        .expect("事务必须原子：事务内可见、回滚后不可见、提交后可见");
+    sqarvo_driver_testkit::begin_is_rejected_while_transaction_is_open(session)
+        .await
+        .expect("一个会话最多一个打开的事务");
+    sqarvo_driver_testkit::commit_and_rollback_are_idempotent(session)
+        .await
+        .expect("重复 commit / rollback 必须幂等");
+    sqarvo_driver_testkit::unknown_transaction_is_not_silently_accepted(session, &probe)
+        .await
+        .expect("未知事务 ID 必须以 NotFound 拒绝");
+}
+
+/// 提交后其它会话可见、回滚后其它会话不可见。
+#[tokio::test]
+async fn commit_and_rollback_are_visible_across_sessions() {
+    let Some(owner) = session().await else {
+        return;
+    };
+    let Some(observer) = session().await else {
+        return;
+    };
+    let owner = &*owner;
+    let observer = &*observer;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_visible").await;
+    exec(owner, "CREATE TABLE sqarvo_t43_visible (id INT NOT NULL)").await;
+
+    // 回滚：写入对其它会话从未可见。
+    let transaction = begin(owner).await;
+    exec(owner, "INSERT INTO sqarvo_t43_visible VALUES (1)").await;
+    assert_eq!(count_rows(owner, "sqarvo_t43_visible").await, 1);
+    assert_eq!(
+        count_rows(observer, "sqarvo_t43_visible").await,
+        0,
+        "未提交的写入不得对其它会话可见"
+    );
+    owner
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+    assert_eq!(
+        count_rows(observer, "sqarvo_t43_visible").await,
+        0,
+        "回滚后的写入不得对其它会话可见"
+    );
+
+    // 提交：提交后其它会话立即可见。
+    let transaction = begin(owner).await;
+    exec(owner, "INSERT INTO sqarvo_t43_visible VALUES (2)").await;
+    assert_eq!(
+        count_rows(observer, "sqarvo_t43_visible").await,
+        0,
+        "提交前不得可见"
+    );
+    owner
+        .commit_transaction(&transaction)
+        .await
+        .expect("提交应成功");
+    assert_eq!(
+        count_rows(observer, "sqarvo_t43_visible").await,
+        1,
+        "提交后的写入必须对其它会话可见"
+    );
+
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_visible").await;
+}
+
+/// 四档隔离级别真实生效（`@@transaction_isolation`）+ 未指定时回到服务端默认。
+#[tokio::test]
+async fn isolation_levels_are_applied_inside_the_transaction() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let session = &*session;
+    let (_, rows) = select(session, "SELECT @@transaction_isolation").await;
+    let server_default = text_of(&rows[0][0]).to_owned();
+
+    for (level, expected) in [
+        (IsolationLevel::ReadUncommitted, "READ-UNCOMMITTED"),
+        (IsolationLevel::ReadCommitted, "READ-COMMITTED"),
+        (IsolationLevel::RepeatableRead, "REPEATABLE-READ"),
+        (IsolationLevel::Serializable, "SERIALIZABLE"),
+    ] {
+        let transaction = session
+            .begin_transaction(TransactionOptions {
+                isolation: level,
+                read_only: false,
+            })
+            .await
+            .expect("开启事务应成功");
+        let (_, rows) = select(session, "SELECT @@transaction_isolation").await;
+        assert_eq!(
+            text_of(&rows[0][0]),
+            expected,
+            "隔离级别 {level:?} 没有生效"
+        );
+        session
+            .rollback_transaction(&transaction)
+            .await
+            .expect("回滚应成功");
+    }
+
+    // Unspecified 必须回到「连接建立时的默认值」，不能继承上一档显式设置。
+    let transaction = begin(session).await;
+    let (_, rows) = select(session, "SELECT @@transaction_isolation").await;
+    assert_eq!(
+        text_of(&rows[0][0]),
+        server_default,
+        "未指定隔离级别时必须使用服务端默认值（上次显式设置不得残留）"
+    );
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+
+    // MariaDB/InnoDB 没有快照隔离：显式声明不支持，不静默降级。
+    let error = session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Snapshot,
+            read_only: false,
+        })
+        .await
+        .expect_err("SNAPSHOT 隔离级别必须被拒绝");
+    assert_eq!(error.category(), ErrorCategory::Unsupported);
+}
+
+/// 隔离级别不仅改变量，也改变真实可见性：READ COMMITTED 看到别人刚提交的行，
+/// REPEATABLE READ 保持自己的快照。
+#[tokio::test]
+async fn isolation_level_changes_visibility_between_sessions() {
+    let Some(owner) = session().await else {
+        return;
+    };
+    let Some(other) = session().await else {
+        return;
+    };
+    let owner = &*owner;
+    let other = &*other;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_iso").await;
+    exec(owner, "CREATE TABLE sqarvo_t43_iso (id INT NOT NULL)").await;
+
+    // READ COMMITTED：每次查询都取最新已提交快照。
+    let transaction = owner
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::ReadCommitted,
+            read_only: false,
+        })
+        .await
+        .expect("开启事务应成功");
+    assert_eq!(count_rows(owner, "sqarvo_t43_iso").await, 0);
+    exec(other, "INSERT INTO sqarvo_t43_iso VALUES (1)").await;
+    assert_eq!(
+        count_rows(owner, "sqarvo_t43_iso").await,
+        1,
+        "READ COMMITTED 应看到其它会话刚提交的行"
+    );
+    owner
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+
+    // REPEATABLE READ：第一次读建立快照，之后别人提交的行不可见。
+    let transaction = owner
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::RepeatableRead,
+            read_only: false,
+        })
+        .await
+        .expect("开启事务应成功");
+    assert_eq!(count_rows(owner, "sqarvo_t43_iso").await, 1);
+    exec(other, "INSERT INTO sqarvo_t43_iso VALUES (2)").await;
+    assert_eq!(
+        count_rows(owner, "sqarvo_t43_iso").await,
+        1,
+        "REPEATABLE READ 不应看到快照之后提交的行"
+    );
+    owner
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_iso").await;
+}
+
+/// 只读事务拒绝写入（服务端 1792），事务本身仍然可读、可回滚。
+#[tokio::test]
+async fn read_only_transaction_rejects_writes() {
+    let Some(owner) = session().await else {
+        return;
+    };
+    let Some(observer) = session().await else {
+        return;
+    };
+    let owner = &*owner;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_ro").await;
+    exec(owner, "CREATE TABLE sqarvo_t43_ro (id INT NOT NULL)").await;
+
+    let transaction = owner
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Unspecified,
+            read_only: true,
+        })
+        .await
+        .expect("开启只读事务应成功");
+
+    let error = owner
+        .execute(request("INSERT INTO sqarvo_t43_ro VALUES (1)"))
+        .await
+        .expect_err("只读事务中写入必须被拒绝");
+    assert_eq!(error.code(), error::READ_ONLY_TRANSACTION);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+
+    // 只读事务仍然可读，且没有因为拒绝而失效。
+    assert_eq!(count_rows(owner, "sqarvo_t43_ro").await, 0);
+    owner
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+    assert_eq!(
+        count_rows(&*observer, "sqarvo_t43_ro").await,
+        0,
+        "被拒绝的写入不得以任何方式落库"
+    );
+
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_ro").await;
+}
+
+/// 事务中的 DDL / TRUNCATE 必须在发送前被拒绝，绝不静默提交。
+#[tokio::test]
+async fn implicit_commit_statements_are_rejected_inside_transaction() {
+    let Some(owner) = session().await else {
+        return;
+    };
+    let Some(observer) = session().await else {
+        return;
+    };
+    let owner = &*owner;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_ddl").await;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_ddl2").await;
+    exec(owner, "CREATE TABLE sqarvo_t43_ddl (id INT NOT NULL)").await;
+
+    let transaction = begin(owner).await;
+    exec(owner, "INSERT INTO sqarvo_t43_ddl VALUES (1)").await;
+
+    for sql in [
+        "CREATE TABLE sqarvo_t43_ddl2 (id INT)",
+        "ALTER TABLE sqarvo_t43_ddl ADD COLUMN v INT",
+        "DROP TABLE sqarvo_t43_ddl",
+        "TRUNCATE TABLE sqarvo_t43_ddl",
+        "RENAME TABLE sqarvo_t43_ddl TO sqarvo_t43_ddl2",
+        "SET autocommit = 1",
+    ] {
+        let error = owner
+            .execute(request(sql))
+            .await
+            .expect_err("事务中会隐式提交的语句必须被拒绝");
+        assert_eq!(
+            error.code(),
+            error::IMPLICIT_COMMIT_REJECTED,
+            "语句 {sql} 的错误码不符合预期"
+        );
+        assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+    }
+
+    // 拒绝之后事务必须仍然可用，且第一行没有被静默提交。
+    assert_eq!(count_rows(owner, "sqarvo_t43_ddl").await, 1);
+    owner
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+    assert_eq!(
+        count_rows(&*observer, "sqarvo_t43_ddl").await,
+        0,
+        "被拒绝的 DDL 不应把事务里的写入静默提交"
+    );
+    // DDL 没有产生任何副作用：原表还在，目标表不存在。
+    exec(owner, "INSERT INTO sqarvo_t43_ddl VALUES (2)").await;
+    assert_eq!(count_rows(owner, "sqarvo_t43_ddl").await, 1, "原表应仍存在");
+    let (_, rows) = select(
+        owner,
+        "SELECT COUNT(*) FROM information_schema.tables \
+         WHERE table_schema = DATABASE() AND table_name = 'sqarvo_t43_ddl2'",
+    )
+    .await;
+    assert_eq!(uint_at(&rows[0]), 0, "被拒绝的 CREATE 不得建出表");
+
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t43_ddl").await;
+}
+
+/// 事务内取消只杀当前语句：事务状态与已写入的行都保留，之后仍能提交。
+#[tokio::test]
+async fn cancel_inside_transaction_keeps_transaction_usable() {
+    let _serial = timing_guard().lock().await;
+    let Some(owner) = session().await else {
+        return;
+    };
+    let Some(observer) = session().await else {
+        return;
+    };
+    let owner: Arc<dyn DriverSession> = Arc::from(owner);
+    let observer = &*observer;
+    exec(&*owner, "DROP TABLE IF EXISTS sqarvo_t43_cancel").await;
+    exec(&*owner, "CREATE TABLE sqarvo_t43_cancel (id INT NOT NULL)").await;
+
+    let transaction = begin(&*owner).await;
+    exec(&*owner, "INSERT INTO sqarvo_t43_cancel VALUES (1)").await;
+
+    let query_id = QueryId::new();
+    let running = {
+        let owner: Arc<dyn DriverSession> = Arc::clone(&owner);
+        tokio::spawn(async move {
+            owner
+                .execute(ExecuteRequest {
+                    query_id,
+                    sql: "SELECT SLEEP(30)".to_owned(),
+                    max_rows: None,
+                    timeout: None,
+                })
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    owner.cancel(&query_id).await.expect("取消失败");
+    let error = running
+        .await
+        .expect("任务未 panic")
+        .expect_err("查询应被取消");
+    assert_eq!(error.code(), ErrorCode::QUERY_CANCELLED);
+
+    // 事务没有被取消：自己的写入还在，能继续执行并提交。
+    assert_eq!(count_rows(&*owner, "sqarvo_t43_cancel").await, 1);
+    exec(&*owner, "INSERT INTO sqarvo_t43_cancel VALUES (2)").await;
+    owner
+        .commit_transaction(&transaction)
+        .await
+        .expect("取消语句后事务必须仍能提交");
+    assert_eq!(
+        count_rows(observer, "sqarvo_t43_cancel").await,
+        2,
+        "提交后两行都应对其它会话可见"
+    );
+
+    exec(&*owner, "DROP TABLE IF EXISTS sqarvo_t43_cancel").await;
+}
+
+/// 连接被强制断开：提交报「事务已丢失」（Unavailable），回滚可收尾，数据未提交。
+#[tokio::test]
+async fn connection_loss_is_reported_as_transaction_lost() {
+    let Some(victim) = session().await else {
+        return;
+    };
+    let Some(observer) = session().await else {
+        return;
+    };
+    let victim = &*victim;
+    let observer = &*observer;
+    exec(observer, "DROP TABLE IF EXISTS sqarvo_t43_lost").await;
+    exec(observer, "CREATE TABLE sqarvo_t43_lost (id INT NOT NULL)").await;
+
+    let (_, rows) = select(victim, "SELECT CONNECTION_ID()").await;
+    let connection_id = uint_at(&rows[0]);
+
+    let transaction = begin(victim).await;
+    exec(victim, "INSERT INTO sqarvo_t43_lost VALUES (1)").await;
+
+    // 用另一条连接杀掉受害者连接：服务端随连接关闭回滚事务。
+    exec(observer, &format!("KILL {connection_id}")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let error = victim
+        .commit_transaction(&transaction)
+        .await
+        .expect_err("连接已断时提交必须失败");
+    assert_eq!(
+        error.code(),
+        error::TRANSACTION_LOST,
+        "断连必须与「用户主动回滚」区分开"
+    );
+    assert_eq!(error.category(), ErrorCategory::Unavailable);
+    assert!(error.category().is_retryable());
+
+    // 回滚收尾不应再制造一个用户无法处置的错误。
+    victim
+        .rollback_transaction(&transaction)
+        .await
+        .expect("丢失的事务回滚应返回成功");
+
+    // 会话已经不可用：后续执行必须显式失败，不能假装成功。
+    assert!(
+        victim.execute(request("SELECT 1")).await.is_err(),
+        "连接断开后不得继续执行"
+    );
+    assert_eq!(
+        count_rows(observer, "sqarvo_t43_lost").await,
+        0,
+        "断连后服务端必须回滚未提交的写入"
+    );
+
+    exec(observer, "DROP TABLE IF EXISTS sqarvo_t43_lost").await;
+}
+
+/// 死锁（1213）由服务端回滚整个事务：提交必须报 `transaction.failed`，只能回滚。
+#[tokio::test]
+async fn deadlock_puts_transaction_into_failed_state() {
+    let _serial = timing_guard().lock().await;
+    let Some(first) = session().await else {
+        return;
+    };
+    let Some(second) = session().await else {
+        return;
+    };
+    let first: Arc<dyn DriverSession> = Arc::from(first);
+    let second: Arc<dyn DriverSession> = Arc::from(second);
+    exec(&*first, "DROP TABLE IF EXISTS sqarvo_t43_deadlock").await;
+    exec(
+        &*first,
+        "CREATE TABLE sqarvo_t43_deadlock (id INT PRIMARY KEY, v INT NOT NULL)",
+    )
+    .await;
+    exec(
+        &*first,
+        "INSERT INTO sqarvo_t43_deadlock VALUES (1, 0), (2, 0)",
+    )
+    .await;
+    // 万一死锁检测失效，让锁等待 3 秒就超时，测试不会挂住。
+    for session in [&first, &second] {
+        exec(&**session, "SET SESSION innodb_lock_wait_timeout = 3").await;
+    }
+
+    let first_transaction = begin(&*first).await;
+    let second_transaction = begin(&*second).await;
+    exec(&*first, "UPDATE sqarvo_t43_deadlock SET v = 1 WHERE id = 1").await;
+    exec(
+        &*second,
+        "UPDATE sqarvo_t43_deadlock SET v = 2 WHERE id = 2",
+    )
+    .await;
+
+    // 交叉更新：两个事务各持一把锁再请求对方的锁 → InnoDB 检测到死锁并回滚其中一个。
+    let first_update = {
+        let first: Arc<dyn DriverSession> = Arc::clone(&first);
+        tokio::spawn(async move {
+            first
+                .execute(request("UPDATE sqarvo_t43_deadlock SET v = 1 WHERE id = 2"))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let second_update = {
+        let second: Arc<dyn DriverSession> = Arc::clone(&second);
+        tokio::spawn(async move {
+            second
+                .execute(request("UPDATE sqarvo_t43_deadlock SET v = 2 WHERE id = 1"))
+                .await
+        })
+    };
+
+    let (first_result, second_result) = tokio::time::timeout(Duration::from_secs(30), async {
+        (
+            first_update.await.expect("任务未 panic"),
+            second_update.await.expect("任务未 panic"),
+        )
+    })
+    .await
+    .expect("死锁应在 30 秒内被服务端处理");
+
+    let deadlock = error::DEADLOCK;
+    let (victim, victim_transaction, survivor, survivor_transaction) = match (
+        first_result.as_ref().err().map(sqarvo_common::Error::code),
+        second_result.as_ref().err().map(sqarvo_common::Error::code),
+    ) {
+        (Some(code), None) if code == deadlock => {
+            (&*first, first_transaction, &*second, second_transaction)
+        }
+        (None, Some(code)) if code == deadlock => {
+            (&*second, second_transaction, &*first, first_transaction)
+        }
+        _ => panic!(
+            "应恰好一方拿到死锁错误：first={:?} second={:?}",
+            first_result.as_ref().err(),
+            second_result.as_ref().err()
+        ),
+    };
+
+    // 失败态只允许回滚：提交必须以 transaction.failed 拒绝。
+    let error = victim
+        .commit_transaction(&victim_transaction)
+        .await
+        .expect_err("失败态提交必须被拒绝");
+    assert_eq!(error.code(), ErrorCode::TRANSACTION_FAILED);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+    victim
+        .rollback_transaction(&victim_transaction)
+        .await
+        .expect("失败态回滚应成功");
+
+    // 幸存者不受影响，仍可提交自己的事务。
+    survivor
+        .commit_transaction(&survivor_transaction)
+        .await
+        .expect("未成为牺牲者的事务应可提交");
+
+    exec(&*first, "DROP TABLE IF EXISTS sqarvo_t43_deadlock").await;
+}
+
+/// 开启事务。
+async fn begin(session: &dyn DriverSession) -> TransactionId {
+    session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Unspecified,
+            read_only: false,
+        })
+        .await
+        .expect("开启事务应成功")
+}
+
+/// 统计表行数（单列整数结果）。
+async fn count_rows(session: &dyn DriverSession, table: &str) -> u64 {
+    let (_, rows) = select(session, &format!("SELECT COUNT(*) FROM {table}")).await;
+    uint_at(&rows[0])
 }
 
 fn request(sql: &str) -> ExecuteRequest {
