@@ -23,7 +23,7 @@ import "services/v1/metadata.proto";
 // 行变更批次可取消（#70，ADR 0018）：
 //
 // * 每个批次有一个 `query_id`（客户端生成，格式与 QueryService 的 query_id 相同：
-//   `qry_<uuid>`）。取消用 `CancelRowChanges`，**不复用** `QueryService.Cancel`：
+//   `query_<uuid>`）。取消用 `CancelRowChanges`，**不复用** `QueryService.Cancel`：
 //   后者的语义是「释放查询游标」，与写入批次的生命周期不同（ADR 0018 记了取舍）；
 // * 取消在**行边界**生效：已开始的那一条变更执行完，后续变更不再执行；
 // * 自动提交模式（`transaction_id` 为空）取消后**整批回滚**，库里不留半批；
@@ -160,7 +160,7 @@ message ApplyRowChangesRequest {
   // 否则返回 `table_data.confirmation_required`。
   bool acknowledge_risk = 6;
   // 批次 ID，供 `CancelRowChanges` 定位（#70）。格式与 QueryService 的 query_id 相同
-  // （`qry_<uuid>`，也可只给 UUID）。由**客户端**生成：一元 RPC 在返回前无法把
+  // （`query_<uuid>`，也可只给 UUID）。由**客户端**生成：一元 RPC 在返回前无法把
   // 服务端生成的 ID 告诉调用方，只有客户端提供的 ID 才可能在执行期间被取消。
   //
   // 空字符串表示「本批次不可取消」：服务端会自己生成一个 ID 并在响应里回显
