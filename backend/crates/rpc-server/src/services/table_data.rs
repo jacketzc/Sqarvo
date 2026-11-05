@@ -38,6 +38,18 @@
 //!
 //! 批次上限 500 由服务端**钳制**：只执行前 500 条，并在响应里回 `clamped` 与
 //! `deferred_changes`，绝不静默丢弃用户编辑。
+//!
+//! # 会话执行锁（#61）
+//!
+//! `ApplyRowChanges` 不在本层自己拼「校验事务 → 调驱动」：事务登记校验与驱动写入
+//! 由 [`SessionHandle::apply_row_changes`](sqarvo_connection::SessionHandle::apply_row_changes)
+//! 收在**同一把**会话执行锁内（ADR 0008）。否则校验通过后、驱动调用前，并发的
+//! `Commit` / `Rollback` 可以结束事务，批次会写进已结束的事务或以自动提交落库。
+//!
+//! `BrowseTable` 仍**不**持执行锁：一次调用是驱动上一条自包含的只读分页命令，
+//! 既不读也不改事务登记，不会与写批次产生「写进已结束事务」这类状态竞争；内置
+//! 驱动本来就把同一会话的命令排成一条序列。浏览与元数据统一走执行锁是遗留缺口
+//! （ADR 0008 提到元数据也在锁内），不在本 Issue 范围内，已在 PR 的未完成项中列出。
 
 use std::sync::Arc;
 
@@ -48,7 +60,6 @@ use sqarvo_driver_api::{
     ObjectKind, PageRequest, PrimaryKey, ReadOnlyReason, RowChange, RowChangeRequest, RowKey,
     RowOrder,
 };
-use sqarvo_transaction::TransactionState;
 use tonic::{Request, Response, Status};
 
 use crate::error::to_status;
@@ -175,16 +186,22 @@ impl TableDataService for TableDataServiceImpl {
 
         // 事务语义：指定 transaction_id 时必须是会话当前打开且可用的那个；
         // 未指定时不允许悄悄落进一个已打开的事务里（用户会以为已经提交）。
-        ensure_transaction(&handle, requested_transaction(&request.transaction_id)?)?;
+        //
+        // 校验与驱动写入由 `SessionHandle::apply_row_changes` 收在同一把会话执行锁内
+        // （#61）：这里只解析参数，锁内的登记校验不可能被并发的 Commit / Rollback 跨过。
+        let requested_transaction = requested_transaction(&request.transaction_id)?;
 
         // 风险阈值：每条变更定位一行，因此「预计影响行数」= 本批实际执行的变更数。
         ensure_risk_acknowledged(changes.len(), request.acknowledge_risk)?;
 
-        let report = provider
-            .apply_row_changes(RowChangeRequest {
-                object: object.clone(),
-                changes,
-            })
+        let report = handle
+            .apply_row_changes(
+                requested_transaction.as_ref(),
+                RowChangeRequest {
+                    object: object.clone(),
+                    changes,
+                },
+            )
             .await
             .map_err(to_status)?;
 
@@ -208,43 +225,6 @@ impl TableDataService for TableDataServiceImpl {
             clamped: deferred_changes > 0 || report.deferred > 0,
             deferred_changes: u32::try_from(deferred_changes + report.deferred).unwrap_or(u32::MAX),
         }))
-    }
-}
-
-/// 校验行变更与事务的关系（ADR 0017 §3）。
-///
-/// - 指定事务：必须是会话当前打开且可用的那一个；未知/已结束 → `transaction.not_found`，
-///   失败态 → `transaction.failed`，只读 → `table_data.read_only`；
-/// - 未指定事务但会话已有打开的事务：显式拒绝（`transaction.already_active`），
-///   绝不把变更悄悄放进一个用户以为已经提交的事务里。
-fn ensure_transaction(
-    handle: &sqarvo_connection::SessionHandle,
-    requested: Option<TransactionId>,
-) -> Result<(), Status> {
-    let open = handle.transaction();
-    match (requested, open) {
-        (Some(requested), Some(open)) if open.transaction_id != requested => {
-            Err(to_status(Error::not_found(
-                ErrorCode::TRANSACTION_NOT_FOUND,
-                "事务不存在或已结束（不会退化为自动提交）",
-            )))
-        }
-        (Some(_), None) => Err(to_status(Error::not_found(
-            ErrorCode::TRANSACTION_NOT_FOUND,
-            "事务不存在或已结束（不会退化为自动提交）",
-        ))),
-        (Some(_), Some(open)) if open.state != TransactionState::Active => Err(to_status(
-            Error::failed_precondition(ErrorCode::TRANSACTION_FAILED, "事务已失败，只能回滚"),
-        )),
-        (Some(_), Some(open)) if open.read_only => Err(to_status(Error::failed_precondition(
-            ErrorCode::TABLE_DATA_READ_ONLY,
-            "当前会话处于只读事务，不能提交行变更；请先回滚事务",
-        ))),
-        (None, Some(_)) => Err(to_status(Error::already_exists(
-            ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-            "该会话已有打开的事务：提交行变更时必须指定 transaction_id，不会自动提交",
-        ))),
-        _ => Ok(()),
     }
 }
 

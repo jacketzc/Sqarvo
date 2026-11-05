@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, IsolationLevel, MetadataProvider, ResultBatch, Secret, TableDataProvider,
-    TransactionOptions,
+    ExecutionStart, IsolationLevel, MetadataProvider, ResultBatch, RowChangeReport,
+    RowChangeRequest, Secret, TableDataProvider, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -344,6 +344,101 @@ impl SessionHandle {
                 self.restore(open);
                 Err(error)
             }
+        }
+    }
+
+    /// 在会话执行锁内提交一批行变更（#61）。
+    ///
+    /// 把「校验事务登记 → 调驱动写批次 → 观察事务失败态」放在**同一把**会话执行锁
+    /// 内（ADR 0008）：如果先校验再释放锁，并发的 `Commit` / `Rollback` 可以在校验
+    /// 与驱动调用之间结束事务，批次就会写进已结束的事务（或以自动提交落库），
+    /// 而调用方以为自己仍在原事务里。串行化后只有两种合法结果：
+    ///
+    /// - 批次先拿到锁：写入属于当前事务，随后的 `Commit` / `Rollback` 决定去留；
+    /// - 事务结束先拿到锁：登记已移除，本方法返回 `transaction.not_found`，一个字节都不写。
+    ///
+    /// # 锁边界
+    ///
+    /// - 全程只持有会话执行锁（`tokio::sync::Mutex`），持有范围内只 await 驱动写入；
+    /// - 事务登记是标准库互斥锁的短临界区，快照拷出后立即释放，**不跨 `.await`**
+    ///   （AGENTS.md §11）；
+    /// - 方法内部不调用任何会再次获取执行锁的入口（`execute` / `fetch` /
+    ///   `begin_transaction` / `commit_transaction` / `rollback_transaction`），
+    ///   因此不存在同一把锁的重入等待；
+    /// - 锁顺序固定为「执行锁 → 事务登记锁」，与 #44 的 `begin` / `commit` / `rollback`
+    ///   一致，没有反向取锁路径。
+    ///
+    /// # Errors
+    ///
+    /// - 指定事务不存在、已结束或不属于当前会话：`transaction.not_found`；
+    /// - 事务已失败：`transaction.failed`；
+    /// - 只读事务：`table_data.read_only`；
+    /// - 未指定事务但会话已有打开事务：`transaction.already_active`；
+    /// - 驱动未实现行编辑：`capability.unsupported`；
+    /// - 驱动执行错误：原样透传（事务被数据库中止时同时把登记切到失败态）。
+    pub async fn apply_row_changes(
+        &self,
+        requested_transaction: Option<&TransactionId>,
+        request: RowChangeRequest,
+    ) -> Result<RowChangeReport> {
+        let _guard = self.execution.lock().await;
+
+        // 校验与写入必须同处一把锁：登记快照在 `.await` 前拷出，锁本身已释放。
+        self.ensure_writable_transaction(requested_transaction)?;
+
+        let provider = self.session.table_data().ok_or_else(|| {
+            Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该驱动未实现表数据行编辑",
+            )
+        })?;
+        if !provider.supports_row_edits() {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该驱动未实现表数据行编辑",
+            ));
+        }
+
+        let result = provider.apply_row_changes(request).await;
+        if let Err(error) = &result {
+            // 驱动可能已经中止了事务（SQLite 自动回滚、MariaDB 事务丢失）：
+            // 在执行锁内把登记切到失败态，后续 Commit 不得再问驱动。
+            self.observe_transaction_error(error);
+        }
+        result
+    }
+
+    /// 校验行变更与事务的关系（ADR 0017 §3），返回领域错误。
+    ///
+    /// 只在调用方持有执行锁时使用：`open` 是登记快照，校验通过后到驱动调用之间
+    /// 没有 `Commit` / `Rollback` 能插进来。
+    fn ensure_writable_transaction(&self, requested: Option<&TransactionId>) -> Result<()> {
+        let open = lock_transactions(&self.transaction)
+            .as_ref()
+            .map(TransactionStatus::of);
+        match (requested, open) {
+            (Some(requested), Some(open)) if open.transaction_id != *requested => {
+                Err(Error::not_found(
+                    ErrorCode::TRANSACTION_NOT_FOUND,
+                    "事务不存在或已结束（不会退化为自动提交）",
+                ))
+            }
+            (Some(_), None) => Err(Error::not_found(
+                ErrorCode::TRANSACTION_NOT_FOUND,
+                "事务不存在或已结束（不会退化为自动提交）",
+            )),
+            (Some(_), Some(open)) if open.state != TransactionState::Active => Err(
+                Error::failed_precondition(ErrorCode::TRANSACTION_FAILED, "事务已失败，只能回滚"),
+            ),
+            (Some(_), Some(open)) if open.read_only => Err(Error::failed_precondition(
+                ErrorCode::TABLE_DATA_READ_ONLY,
+                "当前会话处于只读事务，不能提交行变更；请先回滚事务",
+            )),
+            (None, Some(_)) => Err(Error::already_exists(
+                ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+                "该会话已有打开的事务：提交行变更时必须指定 transaction_id，不会自动提交",
+            )),
+            _ => Ok(()),
         }
     }
 
