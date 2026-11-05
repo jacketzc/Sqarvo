@@ -3,6 +3,7 @@ syntax = "proto3";
 package sqarvo.services.v1;
 
 import "common/v1/common.proto";
+import "services/v1/transaction.proto";
 
 // 连接域：测试连接、建立会话、断开、列出会话。
 service ConnectionService {
@@ -78,6 +79,9 @@ message SessionSummary {
   repeated string capabilities = 5;
   // RFC 3339 时间戳。
   string connected_at = 6;
+  // 当前打开的事务；未打开时为空（#44 追加，ADR 0017）。
+  // 只追加字段：旧客户端会忽略它，语义未被改变。
+  TransactionStatus transaction = 7;
 }
 
 message ListSessionsResponse {

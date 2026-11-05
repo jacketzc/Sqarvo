@@ -61,6 +61,12 @@
 重复 `Commit` / `Rollback` 是幂等的：对已结束或未知事务返回 `OK`（见 ADR 0017 §3）。
 「事务必须存在」的约束落在写入路径（`table_data` 的 `transaction_id`）上。
 
+会话上的事务状态通过既有 `ConnectionService.ListSessions` 暴露（#44）：
+`SessionSummary.transaction`（`TransactionStatus`：`transaction_id` / `isolation` /
+`read_only` / `state`）在每次读取时现取，未打开事务时为空。该字段与
+`TransactionInfo.state` 都是**追加**字段，不改动既有字段号与语义；前端据此展示事务徽标，
+不需要新增独立 RPC。断连由后端强制回滚，清理结果计入进程内计数并以日志记录。
+
 分类映射（后端 `ErrorCategory` → gRPC code）：
 
 | 分类 | gRPC 状态码 |

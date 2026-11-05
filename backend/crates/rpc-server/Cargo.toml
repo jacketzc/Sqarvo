@@ -15,6 +15,7 @@ sqarvo-driver-api.workspace = true
 sqarvo-drivers.workspace = true
 sqarvo-local-store.workspace = true
 sqarvo-query-engine.workspace = true
+sqarvo-transaction.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tokio-stream.workspace = true

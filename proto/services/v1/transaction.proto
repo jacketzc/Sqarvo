@@ -6,8 +6,12 @@ import "common/v1/common.proto";
 
 // 事务域：显式事务的开始、提交、回滚。
 //
-// 不支持事务的驱动必须以 FAILED_PRECONDITION / `capability.unsupported`
-// 明确拒绝，不得静默降级为自动提交。
+// 不支持事务的驱动必须以 `capability.unsupported` 明确拒绝（状态码映射见
+// docs/api/grpc-conventions.md），不得静默降级为自动提交。
+//
+// 幂等（ADR 0017 §3）：重复 `Commit` / `Rollback` 对已结束或未知事务返回成功；
+// 「事务必须存在」的约束落在写入路径（`transaction_id` 非空时未知事务报
+// `transaction.not_found`），不在本服务。
 service TransactionService {
   rpc Begin(BeginTransactionRequest) returns (TransactionInfo);
   rpc Commit(TransactionRef) returns (sqarvo.common.v1.Empty);
@@ -34,6 +38,24 @@ message TransactionInfo {
   string session_id = 2;
   IsolationLevel isolation = 3;
   bool read_only = 4;
+  // 事务状态（#44 追加）。`Begin` 返回的必是 ACTIVE；保留该字段是为了让客户端
+  // 用同一套结构渲染事务徽标，不必对 `Begin` 的响应特判。
+  TransactionState state = 5;
+}
+
+// 事务状态（ADR 0017 §3）：失败态只允许回滚。
+enum TransactionState {
+  TRANSACTION_STATE_UNSPECIFIED = 0;
+  TRANSACTION_STATE_ACTIVE = 1;
+  TRANSACTION_STATE_FAILED = 2;
+}
+
+// 会话当前事务的快照，用于 `SessionSummary.transaction` 与前端事务徽标。
+message TransactionStatus {
+  string transaction_id = 1;
+  IsolationLevel isolation = 2;
+  bool read_only = 3;
+  TransactionState state = 4;
 }
 
 message TransactionRef {
