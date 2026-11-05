@@ -355,6 +355,59 @@ async fn missing_row_and_mismatched_expectation_are_explicit() {
 }
 
 #[tokio::test]
+async fn same_value_update_counts_as_applied() {
+    let (_dir, session) = session().await;
+    exec(
+        session.as_ref(),
+        "CREATE TABLE same_value (id INTEGER PRIMARY KEY, v TEXT NOT NULL, n INTEGER)",
+    )
+    .await;
+    exec(
+        session.as_ref(),
+        "INSERT INTO same_value VALUES (1,'alpha',7),(2,'beta',8)",
+    )
+    .await;
+
+    // 预读一行，再把 `v` 写成它已有的值：`sqlite3_changes()` 按**匹配**行计，
+    // 因此必须是 APPLIED(1) —— 与 MariaDB 的 `CLIENT_FOUND_ROWS` 语义一致。
+    let before = read_row(session.as_ref(), "same_value", 1).await;
+    let report = apply(
+        session.as_ref(),
+        "same_value",
+        vec![update(1, "v", before[1].value.clone())],
+    )
+    .await
+    .expect("同值更新应返回逐行结果");
+    assert_eq!(
+        report.results[0].outcome,
+        ChangeOutcome::Applied { rows_affected: 1 },
+        "同值 UPDATE 的影响行数必须是匹配行数，不是实际变化行数"
+    );
+    assert_eq!(report.rows_affected(), 1);
+    assert!(!report.has_failures());
+
+    let after = read_row(session.as_ref(), "same_value", 1).await;
+    for index in 0..before.len() {
+        assert_eq!(
+            after[index], before[index],
+            "第 {index} 列在同值更新后发生了变化"
+        );
+    }
+
+    // 对照：主键不存在的行 → 0 行 → `ROW_NOT_FOUND`。
+    let report = apply(
+        session.as_ref(),
+        "same_value",
+        vec![update(9_999, "v", Value::Text("alpha".to_owned()))],
+    )
+    .await
+    .expect("更新不存在的行应返回逐行结果");
+    assert_eq!(report.results[0].outcome, ChangeOutcome::RowNotFound);
+    assert_eq!(report.results[0].rows_affected(), 0);
+    assert!(report.has_failures());
+}
+
+#[tokio::test]
 async fn failed_statement_rolls_back_the_whole_batch() {
     let (_dir, session) = session().await;
     exec(

@@ -2903,6 +2903,97 @@ async fn row_edits_preserve_mariadb_types_bit_for_bit() {
 }
 
 #[tokio::test]
+async fn row_edits_count_same_value_update_as_applied() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{RE_PREFIX}_found_rows");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, v INT NOT NULL, \
+             note VARCHAR(32) NULL) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("INSERT INTO {table} VALUES (1,10,'alpha'),(2,20,'beta')"),
+    )
+    .await;
+
+    let before = re_rows(&*session, &table).await;
+    assert_eq!(before.len(), 2);
+
+    // 先预读一行，再把 `v` 更新成**它已有的值**：驱动报的必须是「匹配 1 行」。
+    // `CLIENT_FOUND_ROWS` 关掉时 MariaDB 按「实际变化行数」报 0 行，服务端据此判
+    // `ROW_NOT_FOUND`，用户重复提交一次无害的空更新就会看到「这行已被删除」。
+    let same_value = before[0][1].value.clone();
+    assert_eq!(same_value, Value::Int(10));
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![re_update(
+            re_key(vec![Value::Int(1)]),
+            "v",
+            same_value.clone(),
+        )],
+    )
+    .await
+    .expect("同值更新应返回逐行结果");
+    assert_eq!(
+        report.results[0].outcome,
+        ChangeOutcome::Applied { rows_affected: 1 },
+        "UPDATE 的影响行数必须是匹配行数，不是实际变化行数；为 0 说明 CLIENT_FOUND_ROWS 丢了"
+    );
+    assert_eq!(report.results[0].rows_affected(), 1);
+    assert_eq!(report.rows_affected(), 1);
+    assert!(!report.has_failures());
+
+    // 读回逐格不变：报告 1 行不等于值被改坏。
+    let after = re_rows(&*session, &table).await;
+    assert_eq!(after.len(), before.len());
+    for (row_index, (before_row, after_row)) in before.iter().zip(&after).enumerate() {
+        for column_index in 0..before_row.len() {
+            assert_eq!(
+                after_row[column_index], before_row[column_index],
+                "第 {row_index} 行第 {column_index} 列在同值更新后发生了变化"
+            );
+        }
+    }
+
+    // 对照：目标主键不存在 → 0 行 → `ROW_NOT_FOUND`，与「同值 1 行」明确区分。
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![re_update(re_key(vec![Value::Int(9_999)]), "v", same_value)],
+    )
+    .await
+    .expect("更新不存在的行应返回逐行结果");
+    assert_eq!(report.results[0].outcome, ChangeOutcome::RowNotFound);
+    assert_eq!(report.results[0].rows_affected(), 0);
+    assert_eq!(report.rows_affected(), 0);
+    assert!(report.has_failures());
+
+    // 真的改动值仍报 1 行：上面两条断言的分界不是「所有 UPDATE 都算 1 行」。
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![re_update(re_key(vec![Value::Int(1)]), "v", Value::Int(11))],
+    )
+    .await
+    .expect("改值");
+    assert_eq!(
+        report.results[0].outcome,
+        ChangeOutcome::Applied { rows_affected: 1 }
+    );
+    assert_eq!(re_rows(&*session, &table).await[0][1].value, Value::Int(11));
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
 async fn row_edits_detect_conflicts_and_roll_back_failed_batches() {
     let Some(session) = session().await else {
         return;

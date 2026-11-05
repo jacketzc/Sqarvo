@@ -310,6 +310,27 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 | 断连 | 事务丢失 → `mariadb.transaction_lost`（`Unavailable`） | 由连接错误分类表达 |
 | 死锁 | 服务端回滚整个事务 → 失败态，只能回滚 | 无死锁检测，表现为 `SQLITE_BUSY` |
 
+## 行编辑：同值更新也计 1 行（`CLIENT_FOUND_ROWS`）
+
+连接固定开启 `CLIENT_FOUND_ROWS`（`src/config.rs` 的 `OptsBuilder::client_found_rows(true)`），
+因此 `UPDATE` / `DELETE` 上报的是**匹配**行数而不是实际变化行数，与 SQLite 的
+`sqlite3_changes()` 语义一致：
+
+| 情形 | 服务端报告 | 驱动 `ChangeOutcome` |
+|---|---|---|
+| 把某列更新成它已有的值 | 1 行（匹配 1 行、变化 0 行） | `Applied { rows_affected: 1 }` |
+| 主键没有匹配到行 | 0 行 | `RowNotFound` |
+
+去掉这个 flag，MariaDB 会按「实际变化行数」上报，一次无害的重复提交（用户把同一份编辑
+提交两次、或多端同时写相同的值）就会得到 0 行并被判成 `ROW_NOT_FOUND`，界面显示
+「这行已被删除」——一个看起来像数据损坏的假冲突（ADR 0017「更新/删除必须影响 1 行」）。
+
+锁定这条语义的用例：`backend/crates/drivers/mariadb/tests/integration.rs` 的
+`row_edits_count_same_value_update_as_applied`（预读 → 同值更新 → 断言 1 行，再加
+「更新不存在的行 → `ROW_NOT_FOUND`」作为对照）。**删掉 `client_found_rows(true)`
+这条用例必须变红**，改这一行前先跑它。SQLite 侧对照见
+`backend/crates/drivers/sqlite/tests/row_edits.rs` 的 `same_value_update_counts_as_applied`。
+
 ## 关闭
 
 - `close()` 幂等；有在途查询时先 `KILL QUERY` 再发送关闭命令，实测 2 秒内返回。
