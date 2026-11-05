@@ -84,9 +84,9 @@ use crate::error::to_status;
 use crate::proto::common::v1::Empty;
 use crate::proto::services::v1::{
     ApplyRowChangesRequest, ApplyRowChangesResponse, BrowseTableRequest, BrowseTableResponse,
-    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome,
-    ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowDelete, RowOrder as ProtoRowOrder,
-    RowUpdate, table_data_service_server::TableDataService,
+    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome, InsertRowsRequest,
+    InsertRowsResponse, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowDelete,
+    RowOrder as ProtoRowOrder, RowUpdate, table_data_service_server::TableDataService,
 };
 use crate::services::mapping;
 use crate::services::metadata::object_ref_from_proto;
@@ -335,6 +335,21 @@ impl TableDataService for TableDataServiceImpl {
             Err(error) if error.code() == ErrorCode::QUERY_NOT_FOUND => Ok(Response::new(Empty {})),
             Err(error) => Err(to_status(error)),
         }
+    }
+
+    /// `InsertRows`：契约已冻结（#81），驱动侧下推由 #83/#84 实现。
+    ///
+    /// 这里**只**返回明确的「未实现」，不做任何写入：把插入按 update 硬凑、
+    /// 或者返回「插入了 0 行」，都会让前端显示成功而库里没有数据。等
+    /// `TableDataProvider::insert_rows` 有实现（含完整主键回传）后再接线。
+    async fn insert_rows(
+        &self,
+        _request: Request<InsertRowsRequest>,
+    ) -> Result<Response<InsertRowsResponse>, Status> {
+        Err(to_status(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "插入新行尚未实现（契约已冻结，驱动实现见 #83/#84）",
+        )))
     }
 }
 

@@ -28,15 +28,20 @@ pub use driver::{
     Warning, sql_preview,
 };
 pub use metadata::{
-    DEFAULT_PAGE_SIZE, Ddl, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode, ObjectRef,
-    Page, PageRequest, QualifiedName,
+    DEFAULT_PAGE_SIZE, Ddl, DdlSource, MAX_PAGE_SIZE, MetadataProvider, NameMatch, ObjectFilter,
+    ObjectKind, ObjectNode, ObjectRef, Page, PageRequest, QualifiedName, filter_invalid,
+    metadata_permission_denied, object_kind_unsupported, object_not_found,
+    unsupported_metadata_filtering,
 };
 pub use table_data::{
-    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, MAX_ROW_CHANGES_PER_BATCH,
-    PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, RowChange, RowChangeCancel, RowChangeReport,
-    RowChangeRequest, RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage,
-    classify_rows_affected, invalid_change, no_primary_key, read_only_connection, read_only_object,
-    read_only_transaction, unsupported_row_change_cancellation,
+    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, InsertOutcome, InsertReport,
+    InsertRow, InsertRowResult, InsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH,
+    MAX_ROWS_PER_INSERT_BATCH, PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, RowChange,
+    RowChangeCancel, RowChangeReport, RowChangeRequest, RowChangeResult, RowKey, RowOrder,
+    TableDataProvider, TablePage, classify_rows_affected, column_not_insertable,
+    insert_permission_denied, invalid_change, no_primary_key, not_null_violation,
+    not_null_without_default, read_only_connection, read_only_object, read_only_transaction,
+    unique_violation, unsupported_row_change_cancellation, unsupported_row_insertion,
 };
 pub use value::{
     Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value,

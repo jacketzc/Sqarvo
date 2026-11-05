@@ -38,6 +38,26 @@ service TableDataService {
   // 因此「取消一个正在跑的批次」不会排在批次后面等到天荒地老。
   // 驱动未实现取消时返回 `capability.unsupported`（绝不静默成功）。
   rpc CancelRowChanges(CancelRowChangesRequest) returns (sqarvo.common.v1.Empty);
+  // 插入新行（v0.2.2 追加，#81）。
+  //
+  // 单行插入就是 `rows` 只有一条，**不**另立 `InsertRow` RPC：单行与批量必须走
+  // 同一套校验、风险阈值与原子性，两套 RPC 迟早长出两套语义。
+  //
+  // 语义摘要（完整规则见 `InsertRowsRequest` / `InsertRowsResponse`）：
+  //
+  // * **省略列 vs 显式 NULL**：省略的列交给数据库默认值（自增、`DEFAULT` 表达式、
+  //   `DEFAULT NULL` 都算），显式 `VALUE_KIND_NULL` 表示写入 SQL NULL。二者必须
+  //   可区分——用「没给值」冒充 NULL 会把自增列写成 0；
+  // * **主键回传**：成功行回传插入后的**完整**主键值（含数据库生成的自增值），
+  //   复合主键回传全部列值；前端据此定位新行并继续编辑；
+  // * **原子性**：与 `ApplyRowChanges` 同一信封——无 `transaction_id` 时整批成功
+  //   才提交，指定事务时用 savepoint；
+  // * **风险阈值**：沿用 `acknowledge_risk` 与 `DEFAULT_RISK_CONFIRMATION_ROWS`
+  //   （100 行），不另立阈值。
+  //
+  // 本版插入批次**不可取消**：没有 `query_id` 字段。若后续需要，追加字段并复用
+  // `CancelRowChanges` 即可，不必改既有字段号。
+  rpc InsertRows(InsertRowsRequest) returns (InsertRowsResponse);
 }
 
 // 浏览结果的排序保证。
@@ -204,4 +224,105 @@ message ApplyRowChangesResponse {
 message CancelRowChangesRequest {
   // `ApplyRowChangesRequest.query_id`。未知/已结束的批次视为「无需再取消」，返回成功。
   string query_id = 1;
+}
+
+// 要插入的一行（v0.2.2 追加，#81）。
+//
+// 只给**要写的列**。省略与显式 NULL 是两件事：
+//
+// | 表达 | 语义 | 例子 |
+// |---|---|---|
+// | 该列不在 `values` 里 | 交给数据库默认值：自增、`DEFAULT` 表达式、`DEFAULT NULL` | 不写 `id`，拿到 42 |
+// | `kind = VALUE_KIND_NULL` | 写入 SQL NULL | 明确把可空列写空 |
+// | `kind = VALUE_KIND_UNSPECIFIED` | 非法（`config.invalid`） | —— |
+//
+// 「有没有默认值」由 `GetColumns` 的 `ColumnMeta.default_value` 四态表达
+// （未设置 / 无默认值 / 默认 NULL / 未求值表达式，见 `common/v1/value.proto`）。
+// 服务端**不**替用户把「省略」改写成默认值字面量：自增与 `now()` 这类默认值只有
+// 数据库知道，代填等于伪造。
+//
+// 被截断的值（`ColumnValue.truncated = true`）不得写入（`table_data.truncated_value`）。
+message InsertRow {
+  // 列 → 值。列名重复、列不存在、同一列既省略又给出都是非法请求（`config.invalid`）。
+  repeated ColumnChange values = 1;
+}
+
+message InsertRowsRequest {
+  string session_id = 1;
+  // 目标表。视图不可插入（`table_data.read_only`）；驱动不支持插入时
+  // `capability.unsupported`，**不得**静默跳过。
+  ObjectRef object = 2;
+  // 所属事务；为空表示自动提交。非空且会话没有该事务时返回
+  // `transaction.not_found`（绝不退化成自动提交）。
+  //
+  // 事务模式下的批次以 `SAVEPOINT` 包裹：本批失败只回滚到该 savepoint，外层事务
+  // 仍然可用（可继续写、可提交或回滚）。自动提交模式下本批使用**一个**隐式事务，
+  // 覆盖整批行。
+  string transaction_id = 3;
+  // 按顺序插入的行。空列表是非法请求（`config.invalid`），不是「插入 0 行」。
+  repeated InsertRow rows = 4;
+  // 风险确认。预计影响行数（= 本批行数 × 1）超过服务端阈值（默认 100 行，
+  // `DEFAULT_RISK_CONFIRMATION_ROWS`）时必须为 true，否则整批返回
+  // `table_data.confirmation_required`（FAILED_PRECONDITION），一行都不执行。
+  // 阈值沿用行变更的既有阈值，**不**另立一套。
+  bool acknowledge_risk = 5;
+}
+
+// 单行插入的结果（v0.2.2 追加，#81）。
+enum InsertOutcome {
+  INSERT_OUTCOME_UNSPECIFIED = 0;
+  // 该行的 INSERT 语句执行成功。注意：批次是否最终落库还看
+  // `InsertRowsResponse.rolled_back`——整批回滚时本字段仍是 INSERTED，
+  // 但行已经不存在（契约要求客户端以 `rolled_back` 为准）。
+  INSERT_OUTCOME_INSERTED = 1;
+  // 该行失败（唯一冲突、NOT NULL、无权限等）。其余行继续执行，便于一次报出全部
+  // 问题；整批原子性仍由 `rolled_back` 表达。
+  INSERT_OUTCOME_FAILED = 2;
+}
+
+message InsertRowResult {
+  // 请求内下标，从 0 开始，与 `InsertRowsRequest.rows` 对齐。
+  uint32 row_index = 1;
+  InsertOutcome outcome = 2;
+  // 插入后的**完整**主键值：自增/默认值生成的主键列回传数据库真实值，其余主键列
+  // 回传写入值；复合主键按 `GetPrimaryKey` 的顺序给出全部列。
+  // 仅 `outcome = INSERTED` 且批次未回滚时才有意义；FAILED 或整批回滚时为空。
+  //
+  // 驱动若无法回传生成后的完整主键（例如只拿到自增值、复合主键的其它列来自
+  // 服务端默认值），**不得**编造或部分回传：这种情况不能声明支持插入，必须让
+  // `supports_row_insertion()` 保持 false。
+  RowKey key = 3;
+  // 该行驱动的真实影响行数：INSERTED 为 1，FAILED 为 0。全部行合计见
+  // `InsertRowsResponse.total_rows_affected`。
+  uint64 rows_affected = 4;
+  // 该行的稳定错误码（仅 FAILED 时有值），例如 `table_data.unique_violation`、
+  // `table_data.not_null_without_default`、`table_data.column_not_insertable`、
+  // `table_data.permission_denied`。前端据此逐行提示，不必解析文案。
+  string error_code = 5;
+  // 可安全展示的原因说明；不得包含 SQL、参数值或凭据。
+  string message = 6;
+}
+
+message InsertRowsResponse {
+  repeated InsertRowResult results = 1;
+  // 本批**净**影响行数：未回滚时 = Σ results[i].rows_affected（即成功行数）；
+  // `rolled_back = true` 时恒为 0——行都已回滚，报 N 会让界面显示「插入了 N 行」
+  // 而库里一行没有。
+  uint64 total_rows_affected = 2;
+  // 请求超过单批上限（500 行）时为 true：只执行了前 500 行。
+  bool clamped = 3;
+  // 因钳制而未执行的行数；大于 0 时客户端必须续传剩余行。
+  uint32 deferred_rows = 4;
+  // 整批是否已回滚。**客户端判定「插入成功」必须看本字段，不能只看逐行 outcome。**
+  //
+  // - 自动提交模式：任一行失败 → 整批回滚（本字段 true），数据库净变化为零；
+  // - 事务模式：任一行失败 → `ROLLBACK TO SAVEPOINT`（本字段 true），外层事务仍可用。
+  //
+  // 逐行结果仍然全部返回：用户需要知道**哪几行**冲突，而不是只知道「整批失败了」。
+  // 单行失败不中断其余行，正是为了把问题一次报全；代价是「一行坏、整批弃」，
+  // 取舍见 ADR 0019。
+  bool rolled_back = 5;
+  // 成功插入的行数（outcome = INSERTED 的条数），**不受** `rolled_back` 影响：
+  // 它回答「语句层成功了几行」，与 `total_rows_affected`（净变化）分工不同。
+  uint32 inserted_rows = 6;
 }

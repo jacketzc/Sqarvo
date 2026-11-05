@@ -23,6 +23,38 @@ service MetadataService {
 
 // 对象种类。不同数据库的 Catalog / Schema / Namespace 语义不同，
 // 这里保留各自的层级而不是压缩成一个字段。
+//
+// # 层级与展开规则（v0.2.2 冻结，#81）
+//
+// `ObjectRef` 用 `catalog` / `schema` / `name` + `kind` 表达一个节点；不适用的
+// 层级留空，**不得**用空串代替「该层级存在但名字为空」。`ListNodes(parent)` 只
+// 返回 parent 的**直接**子节点（逐层懒加载，禁止一次拉整棵树）：
+//
+// | parent.kind | 子节点 kind | 说明 |
+// |---|---|---|
+// | 未设置（根，只带 session_id） | TABLE / VIEW / SEQUENCE | 当前连接库的对象，既有行为不变 |
+// | CATALOG | SCHEMA | 有独立 schema 层的数据库（PostgreSQL） |
+// | CATALOG | TABLE / VIEW / SEQUENCE | 没有 schema 层的数据库（SQLite / MariaDB），不伪造空 schema 层 |
+// | SCHEMA | TABLE / VIEW / SEQUENCE / FUNCTION / PROCEDURE / TYPE | |
+// | TABLE | COLUMN / INDEX / TRIGGER | |
+// | VIEW | COLUMN | |
+// | COLUMN / INDEX / SEQUENCE / FUNCTION / PROCEDURE / TRIGGER / TYPE | 无 | 叶子，`has_children = false` |
+//
+// 约束：
+//
+// - **跨库 / 跨 schema 引用必须显式**：`catalog` / `schema` 为空只表示「该数据库
+//   没有这一层级」，不表示「用连接默认库代替」。服务端不得隐式切库，也不得把
+//   缺省层级补成当前库；
+// - 目录层级（CATALOG）的**名称**即 database 名（SQLite 为 `main` / `temp`，
+//   MariaDB 为 `information_schema` 里可见的库名）；节点引用必须能被原样回传给
+//   `GetColumns` / `GetPrimaryKey` / `GetDdl`，因此子节点的 `catalog` / `schema`
+//   由服务端填满，不由客户端补；
+// - 驱动尚未实现的层级返回 `capability.unsupported`（`UNIMPLEMENTED`），**不得**
+//   返回空列表——空列表的唯一含义是「这一层确实没有对象」；
+// - 请求的对象种类与该操作不匹配（对 COLUMN 调 `GetDdl`、把 TABLE 当 SCHEMA 的
+//   父节点）返回 `metadata.object_kind_unsupported`（`INVALID_ARGUMENT`）；对象
+//   不存在返回 `metadata.object_not_found`（`NOT_FOUND`）；数据库拒绝读取元数据
+//   返回 `metadata.permission_denied`（`PERMISSION_DENIED`）。
 enum ObjectKind {
   OBJECT_KIND_UNSPECIFIED = 0;
   OBJECT_KIND_CATALOG = 1;
@@ -56,10 +88,50 @@ message ObjectNode {
   string comment = 4;
 }
 
+// 名称过滤（v0.2.2 追加，#81）。
+//
+// 只表达「怎么比」，**不**表达「是否区分大小写」：大小写敏感性跟随数据库实际
+// 行为（SQLite 的 `LIKE` 对 ASCII 不敏感，MariaDB 取决于列/连接的排序规则），
+// 差异见 docs/database/{sqlite,mariadb}.md。契约不提供 `case_sensitive` 开关，
+// 因为三种数据库对「让 LIKE 区分大小写」的代价不同，加开关等于要求驱动做二次
+// 过滤（已在 ADR 0019 否决）。
+//
+// `%` 与 `_` 必须按**字面量**匹配：下推时由驱动转义（SQLite/MariaDB 用
+// `ESCAPE`），客户端不得自行拼通配符。空字符串不是「匹配全部」的简写：留空该
+// oneof 才是「不过滤」。
+message ObjectNameFilter {
+  oneof match {
+    // 子串包含，例如 `ord` 命中 `orders`。
+    string contains = 1;
+    // 精确相等（区分尾部空格的方式与数据库 `=` 一致）。
+    string exact = 2;
+  }
+}
+
+// `ListNodes` 的过滤条件（v0.2.2 追加，#81）。
+//
+// 两类条件同时给出时取**交集**；都为默认值时等于不过滤。过滤必须**下推**到
+// 数据库（SQLite `LIKE ... ESCAPE`、MariaDB `information_schema` 的 `LIKE`），
+// 不做「全量读进内存再过滤」——理由与代价见 ADR 0019。
+//
+// 过滤条件参与分页 token 的指纹：条件变化后旧 token 必须失效
+// （`config.invalid`），不得「换条件继续翻页」——那会把两次不同查询的结果拼在
+// 一起。
+message NodeFilter {
+  // 未设置表示不按名称过滤。
+  ObjectNameFilter name = 1;
+  // 空表示不按种类过滤。重复取值或 `OBJECT_KIND_UNSPECIFIED` 非法
+  // （`metadata.filter_invalid`）。排序无关：集合语义。
+  repeated ObjectKind kinds = 2;
+}
+
 message ListNodesRequest {
   // 为空表示列出根节点（通常是 Catalog 或 Schema 列表）。
   ObjectRef parent = 1;
   sqarvo.common.v1.PageRequest page = 2;
+  // 名称 / 种类过滤（v0.2.2 追加）。未设置表示不过滤。
+  // 服务端不得静默忽略非空过滤：驱动未实现下推时返回 `capability.unsupported`。
+  NodeFilter filter = 3;
 }
 
 message ListNodesResponse {
@@ -83,6 +155,34 @@ message GetDdlResponse {
   string ddl = 1;
   // DDL 是否为数据库返回的原文；false 表示由客户端拼装。
   bool exact = 2;
+  // DDL 来源（v0.2.2 追加，#81）。与 `exact` 冗余但**不可省略**：
+  // `exact` 是给老客户端的布尔契约，`source` 是给新客户端的机器可读取值。
+  // 两者必须一致：`exact = true` ⇔ `source = DDL_SOURCE_DATABASE`。
+  DdlSource source = 3;
+  // 来源说明，可直接展示（**不得**含凭据与连接串）：
+  // - 原文：具体取自哪里，例如 `sqlite_master.sql`、`SHOW CREATE TABLE`；
+  // - 拼装：缺了哪些信息、拼装依据是什么，例如
+  //   `由 information_schema 拼装；不含 CHECK 约束与索引`。
+  // `exact = false` 时**必须非空**：用户要能判断这份 DDL 值不值得信。
+  string source_detail = 4;
+  // 拼装实现（生成器）的版本号，仅 `source = DDL_SOURCE_SYNTHESIZED` 时有意义。
+  // 让「同一对象、不同版本拼出的 DDL 不同」可追溯；数据库原文时为空。
+  string generator_version = 5;
+}
+
+// DDL 来源（v0.2.2 追加，#81）。
+//
+// 三态而不是布尔，是因为「原文 / 服务端拼装 / 未说明」在旧数据与跨版本调用里
+// 必须可区分：0 号取值表示**没有说明**，客户端遇到它只能按 `exact` 判断，不得
+// 假定是原文。
+enum DdlSource {
+  DDL_SOURCE_UNSPECIFIED = 0;
+  // 数据库直接给出的原文：SQLite 的 `sqlite_master.sql`，MariaDB 的
+  // `SHOW CREATE TABLE` / `SHOW CREATE VIEW`。此时 `exact = true`。
+  DDL_SOURCE_DATABASE = 1;
+  // 数据库给不出原文，由服务端按元数据拼装。此时 `exact = false`，
+  // 且 `source_detail` 与 `generator_version` 必须非空。
+  DDL_SOURCE_SYNTHESIZED = 2;
 }
 
 message GetPrimaryKeyRequest {

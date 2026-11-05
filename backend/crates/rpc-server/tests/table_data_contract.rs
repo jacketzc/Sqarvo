@@ -333,6 +333,12 @@ fn table_data_service_methods_are_frozen() {
                 ".sqarvo.services.v1.CancelRowChangesRequest",
                 ".sqarvo.common.v1.Empty"
             ),
+            // #81：插入新行（单行 = rows 只有一条），只能追加在末尾。
+            (
+                "InsertRows",
+                ".sqarvo.services.v1.InsertRowsRequest",
+                ".sqarvo.services.v1.InsertRowsResponse"
+            ),
         ]
     );
 }

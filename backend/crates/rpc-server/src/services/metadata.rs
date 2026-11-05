@@ -38,10 +38,11 @@ use crate::error::to_status;
 use crate::proto::common::v1::PageInfo;
 use crate::proto::common::v1::PageRequest as ProtoPageRequest;
 use crate::proto::services::v1::{
-    GetColumnsRequest, GetColumnsResponse, GetDdlRequest, GetDdlResponse, GetPrimaryKeyRequest,
-    GetPrimaryKeyResponse, ListNodesRequest, ListNodesResponse, ObjectKind as ProtoObjectKind,
-    ObjectNode as ProtoObjectNode, ObjectRef as ProtoObjectRef,
-    PrimaryKeyColumn as ProtoPrimaryKeyColumn, metadata_service_server::MetadataService,
+    DdlSource as ProtoDdlSource, GetColumnsRequest, GetColumnsResponse, GetDdlRequest,
+    GetDdlResponse, GetPrimaryKeyRequest, GetPrimaryKeyResponse, ListNodesRequest,
+    ListNodesResponse, ObjectKind as ProtoObjectKind, ObjectNode as ProtoObjectNode,
+    ObjectRef as ProtoObjectRef, PrimaryKeyColumn as ProtoPrimaryKeyColumn,
+    metadata_service_server::MetadataService,
 };
 use crate::services::mapping;
 
@@ -78,6 +79,19 @@ impl MetadataService for MetadataServiceImpl {
         let parent = request.parent.ok_or_else(|| {
             Status::invalid_argument("ListNodes 必须提供 parent，且至少包含 session_id")
         })?;
+        // 过滤字段（#81）已进契约，下推到数据库由 #82 实现（驱动侧
+        // `list_children_filtered`）。在此之前**显式拒绝**非空过滤：静默忽略会
+        // 返回比用户要求更多的对象，让「搜索没生效」看起来像「搜索成功」。
+        if request
+            .filter
+            .as_ref()
+            .is_some_and(|filter| filter.name.is_some() || !filter.kinds.is_empty())
+        {
+            return Err(to_status(sqarvo_common::Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "元数据过滤（ListNodes.filter）尚未实现，计划由 #82 下推到数据库",
+            )));
+        }
         let session_id = parse_session_id(&parent.session_id)?;
         let page_request = page_request(request.page);
 
@@ -147,9 +161,19 @@ impl MetadataService for MetadataServiceImpl {
         // 映射为 UNIMPLEMENTED。若将来驱动真的实现了 DDL，这里原样返回，
         // 不会把结果丢弃或伪造 `exact`。
         let ddl = provider.ddl(&object).await.map_err(to_status)?;
+        // `exact` 与 `source` 必须自洽，拼装结果必须说明来源（#81）：
+        // 交不出「看得出是拼装的」结果就报内部错误，不当原文返回。
+        if !ddl.is_consistent() {
+            return Err(to_status(sqarvo_common::Error::internal(
+                "驱动返回的 DDL 缺少自洽的来源说明，拒绝返回无法自证的 DDL",
+            )));
+        }
         Ok(Response::new(GetDdlResponse {
             ddl: ddl.text,
             exact: ddl.exact,
+            source: ddl_source_to_proto(ddl.source) as i32,
+            source_detail: ddl.source_detail.unwrap_or_default(),
+            generator_version: ddl.generator_version.unwrap_or_default(),
         }))
     }
 
@@ -254,6 +278,14 @@ fn kind_from_proto(value: i32) -> Result<ObjectKind, Status> {
         Ok(ProtoObjectKind::Type) => Ok(ObjectKind::Type),
         Ok(ProtoObjectKind::Other) => Ok(ObjectKind::Other("other".to_owned())),
         Err(_) => Err(Status::invalid_argument("未知的对象种类枚举值")),
+    }
+}
+
+/// SPI DDL 来源 → Protobuf 来源（#81）。
+fn ddl_source_to_proto(source: sqarvo_driver_api::DdlSource) -> ProtoDdlSource {
+    match source {
+        sqarvo_driver_api::DdlSource::Database => ProtoDdlSource::Database,
+        sqarvo_driver_api::DdlSource::Synthesized => ProtoDdlSource::Synthesized,
     }
 }
 

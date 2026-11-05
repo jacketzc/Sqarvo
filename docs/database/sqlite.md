@@ -85,7 +85,7 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 | `list_children(None, page)` | `sqlite_master` | `type IN ('table','view')` 且排除 `sqlite_*` 内部表，`ORDER BY name`；`name` / `type` 原样映射到节点 |
 | `columns(object)` | `pragma_table_info(name)` | 声明类型（`type`）、可空（`notnull`）、列序号（`cid`）、默认值（`dflt_value`） |
 | `primary_key(object)` | `pragma_table_info(name).pk` | `pk > 0` 的行按 `pk` 排序；`pk` 就是**主键内顺序**（1 开始），不是表内列序号 |
-| `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」 |
+| `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」；v0.2.2 契约已冻结（#81，ADR 0019）：实现时取 `sqlite_master.sql`，给 `exact = true` + `source = DDL_SOURCE_DATABASE` + 来源说明 |
 
 层级范围：SQLite 没有 catalog / schema 层级，根节点（`parent = None`）直接返回当前数据库文件的
 表与视图。带 `catalog` 或 `schema` 的引用、以及 `Catalog` / `Schema` / `Sequence` 等上层或更深层级
@@ -133,6 +133,22 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 - 同名对象的 `DROP` + `CREATE`（名字集合不变）不会被指纹区分。
 
 一次请求会读取当前库的全部对象名再在内存切页（每页上限 500）；对象极多时应改为服务端游标（待定）。
+
+### v0.2.2 契约（#81，本驱动尚未实现）
+
+`ListNodes.filter` 与 `InsertRows` 的契约已冻结（ADR 0019），SQLite 侧实现见 #82 / #83：
+
+- **过滤下推**：`name.contains` → `sqlite_master.name LIKE '%' || ? || '%' ESCAPE '\'`
+  （`%`、`_`、`\` 全部转义为字面量）；`name.exact` → `name = ?`；`kinds` → `type IN (...)`
+  （`table` / `view`）。大小写按 SQLite `LIKE` 的 ASCII 不敏感行为，**不得**额外 `lower()`
+  （会让 `sqlite_master` 上的名字比较退化为全扫且与 MariaDB 行为不一致）；
+- **过滤条件进 token 指纹**：过滤条件的规范化字符串必须与对象名集合一起进指纹，换条件后旧
+  token 报 `config.invalid`；
+- **插入**：`INSERT INTO t (给出的列) VALUES (绑定参数)`，只绑给出的列；自增主键用
+  `last_insert_rowid()` 回传，复合主键回传写入值与生成值；整批隐式事务 / savepoint，
+  任一行失败整批回滚（`rolled_back = true`）；
+- 在此之前 `supports_row_insertion()` 为 `false`、`list_children_filtered` 走默认实现，
+  两者都返回 `capability.unsupported`（绝不返回空列表 / 「插入了 0 行」）。
 
 ### 已知缺口
 

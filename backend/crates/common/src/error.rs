@@ -113,6 +113,42 @@ impl ErrorCode {
     pub const TABLE_DATA_TRUNCATED_VALUE: Self = Self("table_data.truncated_value");
     /// 预计影响行数超过风险阈值，但请求未带显式确认。
     pub const TABLE_DATA_CONFIRMATION_REQUIRED: Self = Self("table_data.confirmation_required");
+    /// 插入时违反唯一约束（主键或唯一索引重复）。
+    ///
+    /// 逐行返回，不中断整批（其余行仍会执行，便于一次报全冲突）。
+    pub const TABLE_DATA_UNIQUE_VIOLATION: Self = Self("table_data.unique_violation");
+    /// 显式把 NULL 写进 NOT NULL 列。
+    ///
+    /// 与 [`ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT`] 分开：这条是「用户给了
+    /// NULL」，处置是去掉该列或改值；那条是「用户没给值且没有默认值可兜底」，处置是
+    /// 补一个值。文案与建议不同，前端不能合并成一句「不能为空」。
+    pub const TABLE_DATA_NOT_NULL_VIOLATION: Self = Self("table_data.not_null_violation");
+    /// 插入时省略了 NOT NULL 列，而该列**没有**可用默认值。
+    ///
+    /// 依赖 `ColumnMeta.default_value = COLUMN_DEFAULT_NONE` 的判定；「默认值是
+    /// 表达式」或「默认 NULL 且列可空」都不属于此错误。
+    pub const TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT: Self =
+        Self("table_data.not_null_without_default");
+    /// 该列由数据库生成，不能显式插入（`GENERATED ALWAYS` 身份列、计算列）。
+    ///
+    /// 普通 `AUTO_INCREMENT` / `SERIAL` 列**不**在此列：它们允许显式写值，只是省略时
+    /// 由数据库生成。区分这两者是「客户端能不能自己指定 id」的关键。
+    pub const TABLE_DATA_COLUMN_NOT_INSERTABLE: Self = Self("table_data.column_not_insertable");
+    /// 数据库拒绝该写入操作（缺少 INSERT 权限）。
+    pub const TABLE_DATA_PERMISSION_DENIED: Self = Self("table_data.permission_denied");
+    /// 目标对象不存在（表/视图/索引等已被删除，或名字拼错）。
+    pub const METADATA_OBJECT_NOT_FOUND: Self = Self("metadata.object_not_found");
+    /// 该对象种类不能用于本操作（例如对列取 DDL、把表当作 schema 的父节点）。
+    ///
+    /// 与 `capability.unsupported` 的区别：这条是**请求本身**不成立（换参数就能成功
+    /// 或永远不该这么问），那条是**驱动尚未实现**该层级（将来会支持）。
+    pub const METADATA_OBJECT_KIND_UNSUPPORTED: Self = Self("metadata.object_kind_unsupported");
+    /// 数据库拒绝读取元数据（无 `information_schema` 可见性、对象不可见）。
+    ///
+    /// 不得退化成「对象不存在」：前者是权限问题，换连接/授权即可；后者是对象真的没了。
+    pub const METADATA_PERMISSION_DENIED: Self = Self("metadata.permission_denied");
+    /// 元数据过滤条件非法（同时给了 contains 与 exact、种类重复或为 UNSPECIFIED）。
+    pub const METADATA_FILTER_INVALID: Self = Self("metadata.filter_invalid");
     /// 请求的能力不被当前驱动支持。
     pub const CAPABILITY_UNSUPPORTED: Self = Self("capability.unsupported");
     /// 配置非法。
@@ -328,6 +364,75 @@ mod tests {
             ErrorCode::TRANSACTION_FAILED,
             ErrorCode::CAPABILITY_UNSUPPORTED,
             ErrorCode::CONFIG_INVALID,
+            ErrorCode::INTERNAL,
+        ] {
+            assert!(
+                !texts.contains(&existing.as_str()),
+                "{existing} 与既有错误码重复"
+            );
+        }
+    }
+
+    /// #81（v0.2.2）新增错误码：文本即契约，且不得与既有码重复。
+    ///
+    /// 这些码锁的是「同一情形在所有驱动上给出同一个码」：契约测试按此表逐条比对
+    /// proto 文档与 gRPC 映射，改文本等于破坏前端分支。
+    #[test]
+    fn v022_error_codes_are_stable_and_unique() {
+        let codes = [
+            ErrorCode::METADATA_OBJECT_NOT_FOUND,
+            ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED,
+            ErrorCode::METADATA_PERMISSION_DENIED,
+            ErrorCode::METADATA_FILTER_INVALID,
+            ErrorCode::TABLE_DATA_UNIQUE_VIOLATION,
+            ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
+            ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
+            ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
+            ErrorCode::TABLE_DATA_PERMISSION_DENIED,
+        ];
+        let texts: Vec<&str> = codes.iter().map(|code| code.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "metadata.object_not_found",
+                "metadata.object_kind_unsupported",
+                "metadata.permission_denied",
+                "metadata.filter_invalid",
+                "table_data.unique_violation",
+                "table_data.not_null_violation",
+                "table_data.not_null_without_default",
+                "table_data.column_not_insertable",
+                "table_data.permission_denied",
+            ]
+        );
+
+        let unique: std::collections::BTreeSet<&str> = texts.iter().copied().collect();
+        assert_eq!(unique.len(), texts.len(), "新增错误码不得重复");
+
+        // 与既有错误码也不得撞车（既有码全部列一遍，防止新增时抄错前缀）。
+        for existing in [
+            ErrorCode::DRIVER_NOT_FOUND,
+            ErrorCode::SESSION_NOT_FOUND,
+            ErrorCode::QUERY_NOT_FOUND,
+            ErrorCode::QUERY_CANCELLED,
+            ErrorCode::QUERY_LIMIT_REACHED,
+            ErrorCode::QUERY_ID_IN_USE,
+            ErrorCode::TRANSACTION_FAILED,
+            ErrorCode::TRANSACTION_NOT_FOUND,
+            ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+            ErrorCode::TABLE_DATA_NO_PRIMARY_KEY,
+            ErrorCode::TABLE_DATA_READ_ONLY,
+            ErrorCode::TABLE_DATA_CURSOR_INVALID,
+            ErrorCode::TABLE_DATA_ROWS_AFFECTED_MISMATCH,
+            ErrorCode::TABLE_DATA_ROW_DELETED,
+            ErrorCode::TABLE_DATA_TRUNCATED_VALUE,
+            ErrorCode::TABLE_DATA_CONFIRMATION_REQUIRED,
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            ErrorCode::CONFIG_INVALID,
+            ErrorCode::CREDENTIAL_UNAVAILABLE,
+            ErrorCode::CREDENTIAL_NOT_FOUND,
+            ErrorCode::TRANSPORT_FAILED,
+            ErrorCode::IO,
             ErrorCode::INTERNAL,
         ] {
             assert!(
