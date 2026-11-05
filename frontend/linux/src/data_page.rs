@@ -886,13 +886,22 @@ impl DataPage {
             .as_ref()
             .map(|batch| batch.targets.clone())
             .unwrap_or_default();
-        let failures = match (batch.as_ref(), self.draft.borrow_mut().as_mut()) {
-            (Some(batch), Some(draft)) => draft.apply_results(batch, &report.results),
-            _ => Vec::new(),
+        let failures = if report.cancelled {
+            // 取消 = 整批回滚（ADR 0018）：库里的净变化为零，界面也不能把本批的行
+            // 当成「已提交」。保留脏行与编辑文本，用户点击「提交更改」即可重试；
+            // 不调用 apply_results，即使服务端异常回传了部分逐行结果也不采信。
+            Vec::new()
+        } else {
+            match (batch.as_ref(), self.draft.borrow_mut().as_mut()) {
+                (Some(batch), Some(draft)) => draft.apply_results(batch, &report.results),
+                _ => Vec::new(),
+            }
         };
         // 只让本批涉及的行失效，避免为整表逐行发通知。
-        for target in &targets {
-            self.refresh_row(target.row);
+        if !report.cancelled {
+            for target in &targets {
+                self.refresh_row(target.row);
+            }
         }
         self.show_failures(&failures);
 
@@ -901,39 +910,23 @@ impl DataPage {
             .borrow()
             .as_ref()
             .map_or(0, TableDraft::dirty_rows);
-        if report.clamped || report.deferred_changes > 0 {
+        // 被钳制时的横幅提示保持原样；取消是正常结果，不再弹带「重新连接后端」按钮的横幅。
+        if !report.cancelled && (report.clamped || report.deferred_changes > 0) {
             self.show_banner(&format!(
                 "单批上限 500 行：本次只执行了前 {} 条，还有 {} 条未提交——请再次点「提交更改」续传。",
                 report.total_rows_affected, report.deferred_changes
             ));
-            self.set_status(
-                &format!(
-                    "已提交 {} 行（单批上限：{} 条未执行）· 仍有 {dirty} 行待提交",
-                    report.total_rows_affected, report.deferred_changes
-                ),
-                "warning",
-            );
-        } else {
-            self.set_status(
-                &format!(
-                    "已提交 {} 行 · 失败 {} 行 · 脏行 {}",
-                    report.total_rows_affected,
-                    failures.len(),
-                    dirty
-                ),
-                if failures.is_empty() {
-                    "success"
-                } else {
-                    "warning"
-                },
-            );
         }
+        let status = report.status_line(failures.len(), dirty);
+        self.set_status(&status.text, status.tone.css_class());
         eprintln!(
-            "[data] 提交完成：影响 {} 行，逐行失败 {}，钳制={}，未执行 {}，剩余脏行 {}",
+            "[data] 提交完成：影响 {} 行，逐行失败 {}，钳制={}，未执行 {}，已取消={}，已执行 {} 条，剩余脏行 {}",
             report.total_rows_affected,
             failures.len(),
             report.clamped,
             report.deferred_changes,
+            report.cancelled,
+            report.executed_changes,
             dirty
         );
         self.update_dirty_label();
@@ -1105,6 +1098,44 @@ impl DataPage {
     pub fn qa_inject_transaction_failure(self: &Rc<Self>, detail: &str) {
         self.show_failure(&TableFailure::TransactionFailed {
             message: detail.to_owned(),
+        });
+    }
+
+    /// QA：重放「批次被取消」的结果（`--qa-data-replay-cancelled`）。
+    ///
+    /// **这不是真的取消**：前端当前既不生成也不保存批次 `query_id`（`client.rs` 留空，
+    /// 服务端生成后只随响应回显），更没有 `CancelRowChanges` 调用点，所以单会话里
+    /// 制造不出「执行到一半被打断」的真实取消。这里构造一个与 proto 同形的
+    /// `cancelled` 响应，走**同一个** `show_applied`，用于取证状态行文案与脏行是否保留。
+    pub fn qa_replay_cancelled(self: &Rc<Self>) {
+        let (batch, changes) = {
+            let draft = self.draft.borrow();
+            let Some(draft) = draft.as_ref() else {
+                self.set_status("尚未打开表", "warning");
+                return;
+            };
+            // 半个批次：与取消「在行边界生效、已执行若干条」的真实形态一致。
+            let changes = draft.risk().total();
+            (draft.build_batch(), changes)
+        };
+        if batch.is_empty() {
+            self.set_status("没有待提交的更改", "warning");
+            return;
+        }
+        let executed_changes = u32::try_from(changes / 2).unwrap_or(0);
+        eprintln!(
+            "[qa] 重放取消结果：请求 {changes} 条变更，executed_changes={executed_changes}（未发出 CancelRowChanges）"
+        );
+        self.pending_batch.replace(Some(batch));
+        self.set_busy(true);
+        self.set_status("正在提交…", "normal");
+        self.show_applied(ApplyReport {
+            results: Vec::new(),
+            total_rows_affected: 0,
+            clamped: false,
+            deferred_changes: 0,
+            cancelled: true,
+            executed_changes,
         });
     }
 

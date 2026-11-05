@@ -88,6 +88,7 @@ fn register_qa_options(app: &adw::Application) {
         "qa-data-reload",
         "qa-auto-confirm-risk",
         "qa-data-fail-txn",
+        "qa-data-replay-cancelled",
     ] {
         app.add_main_option(
             name,

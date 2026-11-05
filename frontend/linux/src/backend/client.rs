@@ -627,6 +627,8 @@ impl BackendClient {
             total_rows_affected: response.total_rows_affected,
             clamped: response.clamped,
             deferred_changes: response.deferred_changes,
+            cancelled: response.cancelled,
+            executed_changes: response.executed_changes,
         })
     }
 

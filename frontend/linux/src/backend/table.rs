@@ -273,6 +273,45 @@ pub struct ApplyReport {
     pub clamped: bool,
     /// 未执行的变更数（> 0 时必须续传）。
     pub deferred_changes: u32,
+    /// 本批是否被 `CancelRowChanges` 取消（ADR 0018）。
+    ///
+    /// 取消是**正常结果**而不是错误：`total_rows_affected` 恒为 0，已执行的行都
+    /// 随批次回滚，所以界面不能把它说成「影响 0 行」，也不能据此清空脏行。
+    pub cancelled: bool,
+    /// 取消前驱动**已执行**的变更条数（含随后回滚的那些）。
+    ///
+    /// 仅 `cancelled = true` 时有意义；未取消时为 0。用它说明「真的跑到一半」，
+    /// 而不是「一条都没跑」。
+    pub executed_changes: u32,
+}
+
+/// 状态行的语义色调（映射到 GTK 的 CSS class，但本模块不依赖 GTK）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusTone {
+    /// 一切按预期完成。
+    Success,
+    /// 完成但需要用户注意（有失败行、被钳制、被取消）。
+    Warning,
+}
+
+impl StatusTone {
+    /// 绑到状态行 Label 的 CSS class。
+    #[must_use]
+    pub fn css_class(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+/// 提交完成后的状态行（文案 + 色调）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyStatus {
+    /// 状态行文案。
+    pub text: String,
+    /// 状态行色调。
+    pub tone: StatusTone,
 }
 
 impl ApplyReport {
@@ -288,6 +327,54 @@ impl ApplyReport {
                 )
             })
             .count()
+    }
+
+    /// 提交完成后的状态行文案（纯函数，可单测）。
+    ///
+    /// **取消优先判定**：`cancelled = true` 时 `results` 为空、`total_rows_affected`
+    /// 为 0，若按成功路径渲染就会变成「已提交 0 行」，正是 #77 要消除的歧义。
+    /// 三种结果各自措辞：
+    ///
+    /// - 取消：说明「已执行 N 条随后整批回滚、数据库未变化」，并提示仍可重试；
+    /// - 钳制：说明还有多少条未执行、需要再次提交续传；
+    /// - 成功：提交行数 / 失败行数 / 剩余脏行。
+    ///
+    /// `dirty_rows` 是提交后仍待提交的脏行数——被取消时必须保留它，界面不清脏行。
+    #[must_use]
+    pub fn status_line(&self, failed_rows: usize, dirty_rows: usize) -> ApplyStatus {
+        if self.cancelled {
+            let executed = if self.executed_changes == 0 {
+                "本批未及执行任何变更".to_owned()
+            } else {
+                format!("已执行 {} 条变更随后整批回滚", self.executed_changes)
+            };
+            return ApplyStatus {
+                text: format!(
+                    "批次已取消：{executed}，数据库未变化 · 仍有 {dirty_rows} 行待提交（可重试）"
+                ),
+                tone: StatusTone::Warning,
+            };
+        }
+        if self.clamped || self.deferred_changes > 0 {
+            return ApplyStatus {
+                text: format!(
+                    "已提交 {} 行（单批上限：{} 条未执行）· 仍有 {} 行待提交",
+                    self.total_rows_affected, self.deferred_changes, dirty_rows
+                ),
+                tone: StatusTone::Warning,
+            };
+        }
+        ApplyStatus {
+            text: format!(
+                "已提交 {} 行 · 失败 {} 行 · 脏行 {}",
+                self.total_rows_affected, failed_rows, dirty_rows
+            ),
+            tone: if failed_rows == 0 {
+                StatusTone::Success
+            } else {
+                StatusTone::Warning
+            },
+        }
     }
 }
 
@@ -683,5 +770,106 @@ mod tests {
             kind: ObjectKind::Column as i32,
         });
         assert!(TableEntry::from_node(&node).is_none());
+    }
+
+    // ---- 提交完成后的状态行（#77） ----
+
+    /// 取消的批次：服务端按契约回 `results` 为空、`total_rows_affected = 0`，
+    /// 只带 `cancelled` 与 `executed_changes`（proto `ApplyRowChangesResponse`）。
+    fn cancelled_report(executed_changes: u32) -> ApplyReport {
+        ApplyReport {
+            results: Vec::new(),
+            total_rows_affected: 0,
+            clamped: false,
+            deferred_changes: 0,
+            cancelled: true,
+            executed_changes,
+        }
+    }
+
+    fn applied_report(results: Vec<RowChangeResult>, total_rows_affected: u64) -> ApplyReport {
+        ApplyReport {
+            results,
+            total_rows_affected,
+            clamped: false,
+            deferred_changes: 0,
+            cancelled: false,
+            executed_changes: 0,
+        }
+    }
+
+    #[test]
+    fn cancelled_status_says_rolled_back_and_keeps_dirty_rows_visible() {
+        let status = cancelled_report(199).status_line(0, 200);
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(status.text.contains("批次已取消"), "{}", status.text);
+        assert!(status.text.contains("已执行 199 条变更"), "{}", status.text);
+        assert!(status.text.contains("整批回滚"), "{}", status.text);
+        assert!(status.text.contains("数据库未变化"), "{}", status.text);
+        // 脏行必须留在状态行里：用户要能看出「还能重试」，而不是「已提交 0 行」。
+        assert!(status.text.contains("仍有 200 行待提交"), "{}", status.text);
+        // 关键回归：不能退化成 #77 描述的「已提交 0 行」。
+        assert!(!status.text.contains("已提交"), "{}", status.text);
+        assert!(!status.text.contains("影响 0 行"), "{}", status.text);
+    }
+
+    #[test]
+    fn cancelled_before_any_change_is_not_described_as_partially_executed() {
+        let status = cancelled_report(0).status_line(0, 3);
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(status.text.contains("未及执行任何变更"), "{}", status.text);
+        assert!(!status.text.contains("已执行 0 条"), "{}", status.text);
+        assert!(status.text.contains("仍有 3 行待提交"), "{}", status.text);
+    }
+
+    #[test]
+    fn successful_status_reports_rows_failures_and_dirty_left() {
+        let status = applied_report(Vec::new(), 5).status_line(0, 0);
+        assert_eq!(
+            status,
+            ApplyStatus {
+                text: "已提交 5 行 · 失败 0 行 · 脏行 0".to_owned(),
+                tone: StatusTone::Success,
+            }
+        );
+        // 有失败行时降级为 warning，且失败数来自逐行结果。
+        let status = applied_report(
+            vec![
+                RowChangeResult {
+                    change_index: 0,
+                    outcome: crate::proto::services::v1::ChangeOutcome::Applied as i32,
+                    rows_affected: 1,
+                    message: String::new(),
+                },
+                RowChangeResult {
+                    change_index: 1,
+                    outcome: crate::proto::services::v1::ChangeOutcome::Conflict as i32,
+                    rows_affected: 0,
+                    message: "冲突".to_owned(),
+                },
+            ],
+            1,
+        )
+        .status_line(1, 1);
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(status.text.contains("已提交 1 行"), "{}", status.text);
+        assert!(status.text.contains("失败 1 行"), "{}", status.text);
+        assert!(status.text.contains("脏行 1"), "{}", status.text);
+    }
+
+    #[test]
+    fn clamped_status_mentions_unexecuted_changes() {
+        let report = ApplyReport {
+            results: Vec::new(),
+            total_rows_affected: 500,
+            clamped: true,
+            deferred_changes: 20,
+            cancelled: false,
+            executed_changes: 0,
+        };
+        let status = report.status_line(0, 20);
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(status.text.contains("已提交 500 行"), "{}", status.text);
+        assert!(status.text.contains("20 条未执行"), "{}", status.text);
     }
 }

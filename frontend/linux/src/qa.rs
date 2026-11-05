@@ -256,6 +256,8 @@ struct Args {
     auto_confirm_risk: bool,
     /// `--qa-data-fail-txn`：把「服务端报告 transaction.failed」这条失败路径重放到界面。
     data_fail_txn: bool,
+    /// `--qa-data-replay-cancelled`：把「批次被取消」的响应重放到界面。
+    data_replay_cancelled: bool,
     /// `--qa-expect-data-state`：截图时必须成立的数据页状态。
     expect_data_state: Option<DataExpectation>,
     /// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
@@ -294,6 +296,7 @@ pub fn enabled() -> bool {
             || args.data_commit
             || args.data_rollback
             || args.data_fail_txn
+            || args.data_replay_cancelled
     })
 }
 
@@ -406,6 +409,12 @@ pub fn auto_confirm_risk() -> bool {
 #[must_use]
 pub fn data_fail_transaction() -> bool {
     ARGS.get().is_some_and(|args| args.data_fail_txn)
+}
+
+/// 是否重放「批次被取消」的响应（`--qa-data-replay-cancelled`）。
+#[must_use]
+pub fn data_replay_cancelled() -> bool {
+    ARGS.get().is_some_and(|args| args.data_replay_cancelled)
 }
 
 /// 截图时要求成立的数据页状态。
@@ -655,6 +664,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--qa-data-fail-txn" => {
                 parsed.data_fail_txn = true;
+                index += 1;
+            }
+            "--qa-data-replay-cancelled" => {
+                parsed.data_replay_cancelled = true;
                 index += 1;
             }
             "--qa-expect-data-state" => {
@@ -1004,6 +1017,13 @@ mod tests {
         assert!(!parse(&args(&["app"])).unwrap().data_fail_txn);
         let parsed = parse(&args(&["app", "--qa-data-fail-txn"])).unwrap();
         assert!(parsed.data_fail_txn);
+    }
+
+    #[test]
+    fn replay_cancelled_flag_is_parsed() {
+        assert!(!parse(&args(&["app"])).unwrap().data_replay_cancelled);
+        let parsed = parse(&args(&["app", "--qa-data-replay-cancelled"])).unwrap();
+        assert!(parsed.data_replay_cancelled);
     }
 
     #[test]

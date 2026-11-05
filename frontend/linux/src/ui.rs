@@ -1032,6 +1032,16 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
     }
 
     // 6. 提交更改 / 回滚事务（脚本控制，截图时通常都不设置）。
+    if crate::qa::data_replay_cancelled() {
+        let data = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(3_600), move || {
+            eprintln!(
+                "[qa] t=+{}ms 重放「批次已取消」结果（未发出 CancelRowChanges）",
+                crate::qa::elapsed_ms()
+            );
+            data.qa_replay_cancelled();
+        });
+    }
     if crate::qa::data_commit() {
         let data = Rc::clone(&data);
         glib::timeout_add_local_once(Duration::from_millis(3_600), move || {
