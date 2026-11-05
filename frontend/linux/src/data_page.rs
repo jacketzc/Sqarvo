@@ -37,6 +37,7 @@ use crate::backend::query::{CellStyle, CellView, format_cell};
 use crate::backend::table::{
     ApplyReport, TableColumn, TableEntry, TableFailure, TableOpen, TableRow, TxnSnapshot,
 };
+use crate::column_info::{column_index_for_title, header_title};
 use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::{RowDelete, RowOrder, RowUpdate, TransactionState};
 use crate::table_data::{
@@ -95,6 +96,39 @@ pub struct DataPageObservation {
     pub edits_allowed: bool,
     /// 横幅文本（未显示时为 `None`）。
     pub banner: Option<String>,
+}
+
+/// 列信息面板的一行：六个字段的控件（断言读它们的文本）。
+struct ColumnInfoRow {
+    cells: [gtk::Label; 6],
+}
+
+/// QA 从列信息面板读回的一行（全部来自真实控件文本）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnInfoRowObservation {
+    /// 列名（面板第一列）。
+    pub name: String,
+    /// 原始类型。
+    pub type_label: String,
+    /// 可空文案。
+    pub nullable: String,
+    /// 默认值文案。
+    pub default_value: String,
+    /// 字符集文案。
+    pub charset: String,
+    /// 排序规则文案。
+    pub collation: String,
+}
+
+/// QA 读回的列信息面板状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnInfoObservation {
+    /// 面板是否可见。
+    pub visible: bool,
+    /// 面板里被高亮的列（表头点击后应当是该列；没有高亮时为 `None`）。
+    pub focused: Option<String>,
+    /// 面板里的行（按界面顺序）。
+    pub rows: Vec<ColumnInfoRowObservation>,
 }
 
 /// 数据页发给 worker 的命令（全部非阻塞）。
@@ -370,12 +404,30 @@ pub struct DataPage {
     errors: gtk::ListBox,
     errors_scroll: gtk::ScrolledWindow,
     buttons: DataButtons,
+    /// 「列信息」按钮（打开下方浮层）。
+    info_button: gtk::Button,
+    /// 列信息浮层的卡片（Overlay 子控件，默认隐藏）。
+    info_card: gtk::Box,
+    /// 浮层的关闭按钮（QA 用它验证关闭路径）。
+    info_close: gtk::Button,
+    /// 浮层副标题（表名 · 列数）。
+    info_subtitle: gtk::Label,
+    /// 浮层的字段网格（第 0 行是表头）。
+    info_grid: gtk::Grid,
+    /// 浮层字段网格的滚动容器（高亮行在可视区外时滚过去）。
+    info_scroll: gtk::ScrolledWindow,
+    /// 浮层当前的行控件（重建时逐个摘掉）。
+    info_rows: RefCell<Vec<ColumnInfoRow>>,
     readonly_check: gtk::CheckButton,
     draft: RefCell<Option<TableDraft>>,
     badge: RefCell<TransactionBadge>,
     state: Cell<DataState>,
     columns: RefCell<Vec<TableColumn>>,
     table: RefCell<Option<TableEntry>>,
+    /// 已建的数据列对象（顺序 = `columns`；QA 用它把某列滚进可视区）。
+    header_columns: RefCell<Vec<gtk::ColumnViewColumn>>,
+    /// 各列表头的标题（顺序 = `columns`，建列时记录；点击时按标题反查下标）。
+    header_titles: RefCell<Vec<String>>,
     /// 只读原因（表级；只读事务由徽标另行判定）。
     read_only_cause: RefCell<Option<ReadOnlyCause>>,
     /// 是否还有更多页。
@@ -446,6 +498,13 @@ impl DataPage {
         refresh.add_css_class("flat");
         refresh.set_tooltip_text(Some("重新读取当前表的第一页"));
 
+        let info_button = gtk::Button::with_label("列信息");
+        info_button.add_css_class("flat");
+        info_button.set_sensitive(false);
+        info_button.set_tooltip_text(Some(
+            "查看每列的原始类型、可空、默认值、字符集与排序规则（默认值按服务端原文展示）",
+        ));
+
         let disconnect = gtk::Button::with_label("断开后端");
         disconnect.add_css_class("flat");
 
@@ -462,6 +521,7 @@ impl DataPage {
         header.append(&commit_txn);
         header.append(&rollback);
         header.append(&refresh);
+        header.append(&info_button);
         header.append(&disconnect);
 
         let commit_changes = gtk::Button::with_label("提交更改");
@@ -554,6 +614,77 @@ impl DataPage {
         stack.add_named(&scroll, Some("grid"));
         stack.set_visible_child_name("placeholder");
 
+        // 列信息浮层（#87）：浮在网格上方的卡片，默认隐藏。
+        //
+        // 用 Overlay 而不是 GtkPopover：Gtk4 的 Popover 是独立的 GdkSurface，
+        // 无人值守截图（WidgetPaintable + GskRenderer）只能渲染窗口自己的节点树，
+        // 拍不到 Popover——取证要求「画面里必须有这块内容」，所以把它做成
+        // 窗口内的浮层。
+        let info_title = gtk::Label::new(Some("列信息"));
+        info_title.add_css_class("heading");
+        info_title.set_xalign(0.0);
+        let info_subtitle = gtk::Label::new(None);
+        info_subtitle.set_xalign(0.0);
+        info_subtitle.add_css_class("dim-label");
+        info_subtitle.add_css_class("caption");
+        let info_close = gtk::Button::from_icon_name("window-close-symbolic");
+        info_close.add_css_class("flat");
+        info_close.set_tooltip_text(Some("关闭列信息"));
+        let info_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        info_header.append(&info_title);
+        info_header.append(&info_subtitle);
+        info_subtitle.set_hexpand(true);
+        info_header.append(&info_close);
+
+        let info_grid = gtk::Grid::builder()
+            .column_spacing(12)
+            .row_spacing(6)
+            .margin_top(6)
+            .build();
+        // 表头：六列字段名（顺序与 column_info_rows 一致）。
+        for (index, title) in ["列名", "原始类型", "可空", "默认值", "字符集", "排序规则"]
+            .into_iter()
+            .enumerate()
+        {
+            let label = gtk::Label::new(Some(title));
+            label.set_xalign(0.0);
+            label.add_css_class("dim-label");
+            label.add_css_class("caption");
+            info_grid.attach(&label, i32::try_from(index).unwrap_or(0), 0, 1, 1);
+        }
+        let info_note = gtk::Label::new(Some(
+            "默认值按服务端原文展示，不做求值；未提供的字符集/排序规则显示「不适用」。",
+        ));
+        info_note.set_xalign(0.0);
+        info_note.set_wrap(true);
+        info_note.add_css_class("dim-label");
+        info_note.add_css_class("caption");
+
+        let info_grid_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(320)
+            .min_content_height(60)
+            .child(&info_grid)
+            .build();
+        let info_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        info_card.add_css_class("sqarvo-column-info");
+        info_card.set_size_request(840, -1);
+        info_card.set_halign(gtk::Align::End);
+        info_card.set_valign(gtk::Align::Start);
+        info_card.set_margin_top(46);
+        info_card.set_margin_end(12);
+        info_card.set_visible(false);
+        info_card.append(&info_header);
+        info_card.append(&info_grid_scroll);
+        info_card.append(&info_note);
+
+        let overlay = gtk::Overlay::new();
+        overlay.set_vexpand(true);
+        overlay.set_child(Some(&stack));
+        overlay.add_overlay(&info_card);
+
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_vexpand(true);
         root.set_valign(gtk::Align::Fill);
@@ -562,7 +693,7 @@ impl DataPage {
         root.append(&controls);
         root.append(&status_row);
         root.append(&errors_scroll);
-        root.append(&stack);
+        root.append(&overlay);
 
         let page = Rc::new(Self {
             root,
@@ -589,12 +720,21 @@ impl DataPage {
                 delete_row,
                 disconnect,
             },
+            info_button: info_button.clone(),
+            info_card: info_card.clone(),
+            info_close: info_close.clone(),
+            info_subtitle,
+            info_grid,
+            info_scroll: info_grid_scroll.clone(),
+            info_rows: RefCell::new(Vec::new()),
             readonly_check,
             draft: RefCell::new(None),
             badge: RefCell::new(TransactionBadge::new()),
             state: Cell::new(DataState::Idle),
             columns: RefCell::new(Vec::new()),
             table: RefCell::new(None),
+            header_columns: RefCell::new(Vec::new()),
+            header_titles: RefCell::new(Vec::new()),
             read_only_cause: RefCell::new(None),
             has_more: Cell::new(false),
             loading_page: Cell::new(false),
@@ -660,6 +800,16 @@ impl DataPage {
         }
         {
             let page = Rc::clone(&page);
+            page.info_button
+                .clone()
+                .connect_clicked(move |_| page.open_column_info());
+        }
+        {
+            let card = info_card.clone();
+            info_close.connect_clicked(move |_| card.set_visible(false));
+        }
+        {
+            let page = Rc::clone(&page);
             page.buttons
                 .disconnect
                 .clone()
@@ -695,6 +845,7 @@ impl DataPage {
             });
         }
 
+        page.install_header_click();
         page.update_buttons();
         page
     }
@@ -707,6 +858,382 @@ impl DataPage {
     /// QA 用：风险确认对话框自动确认。
     pub fn set_qa_auto_confirm(&self, value: bool) {
         self.qa_auto_confirm.set(value);
+    }
+
+    // ---- 列信息浮层（#87） ----
+
+    /// 打开列信息浮层（顶栏「列信息」按钮：全部列的总览）。
+    pub fn open_column_info(&self) {
+        if self.columns.borrow().is_empty() {
+            return;
+        }
+        self.info_card.set_visible(true);
+    }
+
+    /// 点击某列表头：打开浮层并高亮该列（复用 [`Self::open_column_info`] 的同一张卡片，
+    /// 不另写一套渲染）。
+    pub fn open_column_info_for(&self, index: usize) {
+        let Some(name) = self
+            .columns
+            .borrow()
+            .get(index)
+            .map(|column| column.name.clone())
+        else {
+            return;
+        };
+        self.open_column_info();
+        if self.focus_column_info_row(&name) && crate::qa::enabled() {
+            eprintln!(
+                "[data] 表头点击：列 {name}（第 {} 列）→ 列信息浮层",
+                index + 1
+            );
+        }
+    }
+
+    /// 浮层副标题：`表名 · N 列`。
+    fn info_subtitle_text(&self) -> String {
+        let table_name = self
+            .table
+            .borrow()
+            .as_ref()
+            .map_or_else(String::new, |table| format!("{} · ", table.display_name));
+        format!("{table_name}{} 列", self.columns.borrow().len())
+    }
+
+    /// 高亮浮层里某一列的行（其余行去掉高亮）；返回是否找到该列。
+    ///
+    /// 副标题同时写出「已选哪一列」：截图里能直接看出点的是哪一列，
+    /// 不只依赖一行浅底色。
+    fn focus_column_info_row(&self, column: &str) -> bool {
+        let rows = self.info_rows.borrow();
+        let mut found = false;
+        for row in rows.iter() {
+            let is_target = row.cells[0].text() == column;
+            found |= is_target;
+            for cell in &row.cells {
+                if is_target {
+                    cell.add_css_class("sqarvo-column-info-focus");
+                } else {
+                    cell.remove_css_class("sqarvo-column-info-focus");
+                }
+            }
+        }
+        if found {
+            self.info_subtitle
+                .set_text(&format!("{} · 已选 {column}", self.info_subtitle_text()));
+            // 列多的表：高亮行可能在浮层可视区外，滚过去，否则看起来「没反应」。
+            let target_row = rows
+                .iter()
+                .find(|row| row.cells[0].has_css_class("sqarvo-column-info-focus"));
+            let adjustment = self.info_scroll.vadjustment();
+            if let Some(row) = target_row
+                && let Some(rect) = row.cells[0].compute_bounds(&self.info_grid)
+            {
+                let y = f64::from(rect.y());
+                let top = adjustment.value();
+                let bottom = top + adjustment.page_size();
+                if y < top || y + f64::from(rect.height()) > bottom {
+                    adjustment.set_value((y - 4.0).max(0.0));
+                }
+            }
+        }
+        found
+    }
+
+    /// 浮层里当前被高亮的列（QA 观察点）。
+    fn focused_column_info(&self) -> Option<String> {
+        self.info_rows
+            .borrow()
+            .iter()
+            .find(|row| row.cells[0].has_css_class("sqarvo-column-info-focus"))
+            .map(|row| row.cells[0].text().to_string())
+    }
+
+    /// 列名 → 数据列下标。
+    fn column_index(&self, column: &str) -> Result<usize, String> {
+        self.columns
+            .borrow()
+            .iter()
+            .position(|candidate| candidate.name == column)
+            .ok_or_else(|| format!("列 {column} 不在当前表的列清单里"))
+    }
+
+    /// 表头行控件（`GtkColumnView` 的 `header` 节点；GTK 4.22 里是
+    /// `GtkColumnViewRowWidget css=header`，每列一个 `GtkColumnViewTitle`）。
+    ///
+    /// `GtkColumnViewColumn` 没有自定义表头控件的 API：`GtkColumnView:header-factory`
+    /// 生成的是**行分组的小节表头**（`GtkListHeader`），不是列头（见 GTK 文档
+    /// `ColumnView.set_header_factory`：「used in section headers」）。所以列头点击
+    /// 落在 GTK 自己的列头控件上：拿它的真实几何做 `pick`，再按标题对回数据列。
+    fn header_row(&self) -> Option<gtk::Widget> {
+        let mut child = self.grid.first_child();
+        while let Some(widget) = child {
+            if widget.css_name() == "header" {
+                return Some(widget);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    /// 某列表头的标题控件（列头按列顺序各一个，标题就是建列时登记的 `名字 · 类型`）。
+    fn header_title_widget(&self, index: usize) -> Option<gtk::Widget> {
+        let title = self.header_titles.borrow().get(index).cloned()?;
+        let header = self.header_row()?;
+        let mut child = header.first_child();
+        while let Some(widget) = child {
+            if header_label_text(&widget).as_deref() == Some(title.as_str()) {
+                return Some(widget);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    /// 点击列头坐标 → 打开该列的列信息浮层。坐标相对**列头行**。
+    ///
+    /// 走 GTK 自己的命中测试（`pick`）：从最深处控件往上找到列头那一格
+    /// （`GtkColumnViewTitle`），读它显示的标题，按 [`Self::header_titles`] 反查
+    /// 数据列下标。标题对不上（行号指示列的空标题、或布局已变）就什么都不做——
+    /// 宁可点不开，也不打开错列。
+    fn header_click_at(&self, x: f64, y: f64) {
+        let Some(header) = self.header_row() else {
+            return;
+        };
+        let Some(hit) = header.pick(x, y, gtk::PickFlags::DEFAULT) else {
+            return;
+        };
+        let cell = header_cell_of(&hit, &header);
+        let Some(title) = header_label_text(&cell) else {
+            return;
+        };
+        let index = {
+            let titles = self.header_titles.borrow();
+            column_index_for_title(&titles, Some(title.as_str()))
+        };
+        if let Some(index) = index {
+            self.open_column_info_for(index);
+        }
+    }
+
+    /// 列头点击手势：只挂在**列头行**上，不挂在 `GtkColumnView` 上。
+    ///
+    /// 挂整张网格会把数据行的按下一起认领，抢掉单元格双击编辑的手势；挂列头行则数据区
+    /// 完全不受影响。捕获阶段是为了在列头自己的排序手势之前拿到坐标；落在列头右缘的
+    /// 按下不认作点击，手势判 `Denied`，把列宽拖拽让给 GTK。
+    fn install_header_click(self: &Rc<Self>) {
+        let Some(header) = self.header_row() else {
+            return;
+        };
+        // 幂等：列头行可能被 GTK 重建，重建后要补挂；已经挂过就不再挂第二个。
+        let controllers = header.observe_controllers();
+        let mut index = 0;
+        while index < controllers.n_items() {
+            let already = controllers.item(index).is_some_and(|controller| {
+                controller
+                    .downcast_ref::<gtk::GestureClick>()
+                    .is_some_and(|gesture| {
+                        gesture.propagation_phase() == gtk::PropagationPhase::Capture
+                    })
+            });
+            if already {
+                return;
+            }
+            index += 1;
+        }
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(gtk::gdk::BUTTON_PRIMARY);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        let weak_header = header.downgrade();
+        gesture.connect_pressed(move |gesture, _, x, y| {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            let Some(header) = weak_header.upgrade() else {
+                return;
+            };
+            if page.is_header_resize_grip(&header, x, y) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            page.header_click_at(x, y);
+        });
+        header.add_controller(gesture);
+    }
+
+    /// 按下的位置是否是列头右缘的「拉宽」手柄（这一下不算点击，让 GTK 处理拖拽）。
+    fn is_header_resize_grip(&self, header: &gtk::Widget, x: f64, y: f64) -> bool {
+        let Some(hit) = header.pick(x, y, gtk::PickFlags::DEFAULT) else {
+            return false;
+        };
+        header_cell_of(&hit, header)
+            .compute_bounds(header)
+            .is_some_and(|rect| {
+                let right = f64::from(rect.x()) + f64::from(rect.width());
+                right - x <= 8.0
+            })
+    }
+
+    /// 给每列列头挂上「点击查看列信息」的提示（列头控件在布局后才存在，所以延后一拍）。
+    fn refresh_header_tooltips(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            let titles = page.header_titles.borrow().clone();
+            for (index, title) in titles.iter().enumerate() {
+                if let Some(widget) = page.header_title_widget(index) {
+                    widget.set_tooltip_text(Some(&format!("点击查看列信息：{title}")));
+                }
+            }
+        });
+    }
+
+    /// 清空浮层内容并收起（打开新表/刷新时调用，避免旧表的列信息残留）。
+    fn clear_column_info(&self) {
+        for row in self.info_rows.borrow_mut().drain(..) {
+            for cell in row.cells {
+                self.info_grid.remove(&cell);
+            }
+        }
+        self.info_subtitle.set_text("");
+        self.info_card.set_visible(false);
+        self.info_button.set_sensitive(false);
+    }
+
+    /// 按当前列元数据重建浮层内容（文案全部来自 [`crate::column_info`]）。
+    fn rebuild_column_info(&self, columns: &[TableColumn]) {
+        self.clear_column_info();
+        let count = columns.len();
+        self.info_button.set_sensitive(count > 0);
+        if count == 0 {
+            return;
+        }
+        self.info_subtitle.set_text(&self.info_subtitle_text());
+
+        let mut rows = self.info_rows.borrow_mut();
+        for (row_index, column) in columns.iter().enumerate() {
+            let values = crate::column_info::column_info_rows(column);
+            let cells: [gtk::Label; 6] = std::array::from_fn(|index| {
+                let value = &values[index].1;
+                let label = gtk::Label::new(Some(value));
+                label.set_xalign(0.0);
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.set_tooltip_text(Some(value));
+                label.add_css_class("monospace");
+                label.add_css_class("caption");
+                if index == 3 || index == 5 {
+                    // 默认值（表达式原文）与排序规则都可能较长：两列一起吃掉多余宽度。
+                    label.set_hexpand(true);
+                }
+                let attribute = i32::try_from(row_index).unwrap_or(0) + 1;
+                self.info_grid
+                    .attach(&label, i32::try_from(index).unwrap_or(0), attribute, 1, 1);
+                label
+            });
+            if column.default_value.is_expression() {
+                // 表达式态是「未求值原文」：tooltip 再强调一次，避免被当成字面量值。
+                cells[3]
+                    .set_tooltip_text(Some(&format!("未求值的默认值原文：{}", cells[3].text())));
+            }
+            rows.push(ColumnInfoRow { cells });
+        }
+    }
+
+    /// QA：确保目标列的列头控件已经存在（列在可视区外时先横向滚过去）。
+    ///
+    /// 列头控件由 GTK 在布局时创建；用户也是横向滚动才点得到视野外的列。列头已经
+    /// 在时是空操作（不移动画面，截图布局保持原样）。
+    pub fn qa_reveal_column_header(&self, column: &str) -> Result<(), String> {
+        let index = self.column_index(column)?;
+        if self.header_title_widget(index).is_some() {
+            return Ok(());
+        }
+        let Some(column_object) = self.header_columns.borrow().get(index).cloned() else {
+            return Err(format!("列 {column} 的表头尚未建立"));
+        };
+        self.grid
+            .scroll_to(0, Some(&column_object), gtk::ListScrollFlags::NONE, None);
+        eprintln!("[qa] 列 {column} 的列头在可视区外：已横向滚动到该列");
+        Ok(())
+    }
+
+    /// QA：点**该列的列头**打开浮层（不是顶栏「列信息」按钮）。
+    ///
+    /// 点击坐标取列头控件的真实几何中心（`compute_bounds`），交给用户点击同一个
+    /// `header_click_at`：`pick` → 列头行 → 标题 → 数据列下标 → 打开浮层。
+    /// 三步都验证：点列头 → 浮层出现且高亮该列；点关闭 → 收起；再点同一列头 →
+    /// 重新出现。任何一步不成立都返回原因。
+    pub fn qa_open_column_info(self: &Rc<Self>, column: &str) -> Result<(), String> {
+        let index = self.column_index(column)?;
+        let click = |page: &Rc<Self>| -> Result<(), String> {
+            let Some(title) = page.header_title_widget(index) else {
+                return Err(format!(
+                    "列 {column} 的列头控件还没有（列在可视区外；先调用 qa_reveal_column_header）"
+                ));
+            };
+            let Some(header) = page.header_row() else {
+                return Err("列头行还没有建立".to_owned());
+            };
+            let Some(rect) = title.compute_bounds(&header) else {
+                return Err(format!("列 {column} 的列头还没有分配几何"));
+            };
+            let (x, y) = (
+                f64::from(rect.x()) + f64::from(rect.width()) / 2.0,
+                f64::from(rect.y()) + f64::from(rect.height()) / 2.0,
+            );
+            page.header_click_at(x, y);
+            Ok(())
+        };
+
+        click(self)?;
+        if !self.info_card.is_visible() {
+            return Err("点击列头后列信息浮层没有打开".to_owned());
+        }
+        let focused = self.focused_column_info();
+        if focused.as_deref() != Some(column) {
+            return Err(format!(
+                "点击 {column} 的列头后浮层高亮的是 {focused:?}（列头 → 列映射错位）"
+            ));
+        }
+        self.info_close.emit_clicked();
+        if self.info_card.is_visible() {
+            return Err("点击关闭后列信息浮层仍然可见".to_owned());
+        }
+        click(self)?;
+        if !self.info_card.is_visible() {
+            return Err("关闭后重新点列头打开列信息浮层失败".to_owned());
+        }
+        eprintln!("[qa] 列信息浮层：点列头「{column}」→ 打开 → 关闭 → 再点列头 → 重新打开，均正常");
+        eprintln!(
+            "[qa] t=+{}ms 点击列头打开列信息浮层：{column}（第 {} 列）",
+            crate::qa::elapsed_ms(),
+            index + 1
+        );
+        Ok(())
+    }
+
+    /// QA 观察点：从浮层控件上读回每一列的六项文案。
+    pub fn qa_observe_column_info(&self) -> ColumnInfoObservation {
+        ColumnInfoObservation {
+            visible: self.info_card.is_visible(),
+            focused: self.focused_column_info(),
+            rows: self
+                .info_rows
+                .borrow()
+                .iter()
+                .map(|row| ColumnInfoRowObservation {
+                    name: row.cells[0].text().to_string(),
+                    type_label: row.cells[1].text().to_string(),
+                    nullable: row.cells[2].text().to_string(),
+                    default_value: row.cells[3].text().to_string(),
+                    charset: row.cells[4].text().to_string(),
+                    collation: row.cells[5].text().to_string(),
+                })
+                .collect(),
+        }
     }
 
     /// 当前已加载行数。
@@ -740,6 +1267,7 @@ impl DataPage {
         self.errors_scroll.set_visible(false);
         self.store.clear();
         self.clear_columns();
+        self.clear_column_info();
         self.draft.replace(None);
         self.pending_batch.replace(None);
         self.columns.borrow_mut().clear();
@@ -776,6 +1304,7 @@ impl DataPage {
         ));
         self.columns.replace(open.columns.clone());
         self.build_columns(&open.columns);
+        self.rebuild_column_info(&open.columns);
 
         // 只读原因只认服务端给的枚举（`from_browse_reason`），不在界面层再猜一遍。
         let read_only_cause = ReadOnlyCause::from_browse_reason(open.read_only_reason);
@@ -1769,6 +2298,10 @@ impl DataPage {
 
     fn build_columns(self: &Rc<Self>, columns: &[TableColumn]) {
         self.clear_columns();
+        self.header_titles
+            .replace(columns.iter().map(header_title).collect());
+        self.refresh_header_tooltips();
+        self.install_header_click();
 
         let indicator_factory = gtk::SignalListItemFactory::new();
         indicator_factory.connect_setup(|_, list_item| {
@@ -1836,15 +2369,23 @@ impl DataPage {
 
         for (index, column) in columns.iter().enumerate() {
             let factory = self.cell_factory(index);
-            let title = format!("{} · {}", column.name, column.type_label);
+            let title = header_title(column);
             let view_column = gtk::ColumnViewColumn::new(Some(&title), Some(factory));
             view_column.set_expand(false);
             view_column.set_resizable(true);
             view_column.set_fixed_width(200);
             self.grid.append_column(&view_column);
+            self.header_columns.borrow_mut().push(view_column);
         }
     }
 
+    /// 表头工厂：每列表头是一个 flat 按钮，点击即打开该列的列信息浮层（#87）。
+    ///
+    /// 自定义表头的入口在 `GtkColumnView` 上（`set_header_factory`，GTK ≥ 4.12；
+    /// 本 crate 的 `gtk4` 开了 `v4_16`，宿主机 GTK 4.22 满足），不在
+    /// `GtkColumnViewColumn` 上。表头 factory 绑定的是 **`GtkListHeader`**（不是
+    /// `GtkListItem`）：`GtkListHeader.start()` 是它在列模型里的下标（0 是行号指示列），
+    /// `item()` 是那个 `GtkColumnViewColumn`。下标与列对象互相印证后才认，避免错位。
     fn cell_factory(self: &Rc<Self>, column_index: usize) -> gtk::SignalListItemFactory {
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, list_item| {
@@ -1959,6 +2500,9 @@ impl DataPage {
     }
 
     fn clear_columns(&self) {
+        // 列没了，已实现的数据列表头对象与表头按钮也一起失效（刷新/换表后不会点到旧列）。
+        self.header_columns.borrow_mut().clear();
+        self.header_titles.borrow_mut().clear();
         let model = self.grid.columns();
         while model.n_items() > 0 {
             let Some(column) = model
@@ -2317,6 +2861,36 @@ fn ordering_label(ordering: RowOrder) -> &'static str {
 }
 
 /// 安装数据页 CSS（脏行底色、删除线、徽标配色）。
+/// 列头行里 `widget` 所在的那一格（往上走到 `header` 的直接子控件）。
+fn header_cell_of(widget: &gtk::Widget, header: &gtk::Widget) -> gtk::Widget {
+    let mut cell = widget.clone();
+    while let Some(parent) = cell.parent() {
+        if parent == *header {
+            break;
+        }
+        cell = parent;
+    }
+    cell
+}
+
+/// 控件里第一个 `GtkLabel` 的文本（列头单元格里就是列标题）。
+fn header_label_text(widget: &gtk::Widget) -> Option<String> {
+    fn find(widget: &gtk::Widget) -> Option<String> {
+        if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+            return Some(label.text().to_string());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(text) = find(&current) {
+                return Some(text);
+            }
+            child = current.next_sibling();
+        }
+        None
+    }
+    find(widget)
+}
+
 fn install_css() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -2339,6 +2913,15 @@ fn install_css() {
         .sqarvo-txn-readonly { background: alpha(@warning_color, 0.30); }
         .sqarvo-txn-failed { background: alpha(@error_color, 0.30); font-weight: 600; }
         .sqarvo-txn-disconnected { background: alpha(@error_color, 0.20); }
+        .sqarvo-column-info {
+            background-color: @theme_bg_color;
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 8px 24px alpha(black, 0.25);
+        }
+        .sqarvo-column-info-focus { background: alpha(@accent_color, 0.18); }
+        .sqarvo-column-header { padding: 0 8px; min-height: 26px; }
+        .sqarvo-column-header:hover { background: alpha(@accent_color, 0.12); }
         "#,
     );
     gtk::style_context_add_provider_for_display(

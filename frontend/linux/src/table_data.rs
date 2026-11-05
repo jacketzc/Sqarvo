@@ -1241,6 +1241,9 @@ mod tests {
             with_time_zone: false,
             scale: None,
             primary_key_position: None,
+            default_value: crate::column_info::ColumnDefaultState::Unknown,
+            character_set: None,
+            collation: None,
         }
     }
 

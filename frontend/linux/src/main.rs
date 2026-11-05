@@ -7,6 +7,7 @@
 //! GTK 主线程只通过 channel 与后台 worker 交互。
 
 mod backend;
+mod column_info;
 mod config;
 mod data_page;
 mod dialog;
@@ -105,6 +106,11 @@ fn register_qa_options(app: &adw::Application) {
             "loading|ready|empty|error|disconnected",
         ),
         ("qa-expect-txn", "auto|active|readonly|failed|disconnected"),
+        ("qa-column-info", "column"),
+        (
+            "qa-expect-column",
+            "column:name|type|nullable|default|charset|collation=text",
+        ),
     ] {
         app.add_main_option(
             name,

@@ -437,6 +437,45 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 - 有未提交更改时「提交事务」不可用（先提交或放弃更改），避免误以为更改已随事务落库；
 - 事务结束（提交/回滚）后自动重新浏览当前表，显示数据库真实状态。
 
+### 列信息（#87）
+
+**点列头**即可打开该列的列信息浮层（`名字 · 类型` 那一格，整格可点；行号指示列不可点）。
+数据页顶栏的「列信息」按钮打开同一张浮层，但不指定列——它是全部列的总览。浮层逐列列出
+**列名 / 原始类型 / 可空 / 默认值 / 字符集 / 排序规则**，被点的那一列高亮，
+副标题写明「已选 `<列名>`」。口径与
+`docs/api/grpc-conventions.md`「列元数据的存在性语义」一致：
+
+| 元数据 | 面板显示 |
+|---|---|
+| `default_value` 未设置 | 「未知（服务端未提供）」——不是「无默认值」 |
+| `COLUMN_DEFAULT_NONE` | 「无默认值」 |
+| `COLUMN_DEFAULT_NULL` | 「默认 NULL」（与空串默认值 `''` 区分） |
+| `COLUMN_DEFAULT_EXPRESSION` | 服务端原文（如 `'untitled'`、`1.50`、`current_timestamp()`），不求值、不去引号 |
+| `character_set` / `collation` 未设置 | 「不适用」（SQLite 整张表都是这一态），不是空字符集 |
+
+协议只有「表达式」这一种带文本的默认值状态：常量默认值（`'untitled'`、`0`）与
+`current_timestamp()` 都按原文展示，前端不额外推断「这是常量还是函数」，也不把
+原文当成已求值的字面量。文案映射是纯函数（`src/column_info.rs`），不依赖 GTK。
+
+浮层用 `GtkOverlay` 而不是 `GtkPopover`：Popover 是独立 `GdkSurface`，无人值守
+截图（`WidgetPaintable` + `GskRenderer`）拍不到，取证要求画面里必须有这块内容。
+
+列头点击的实现口径（这条容易踩错，写清楚）：
+
+- **`GtkColumnViewColumn` 没有自定义表头控件的 API**，只有 `title` 与 `header_menu`；
+- **`GtkColumnView:header-factory`（GTK ≥ 4.12）不是列头**：GTK 文档原文是
+  「populating the `GtkListHeader` objects used in **section headers**」——它给的是
+  按行分组的小节表头（`GtkListHeader` 的 `item` 是**那一行的数据**），设了它会在
+  表头下面多出一条空的分组条，跟列头无关；
+- 真正的列头控件是 `GtkColumnView` 内部的 `GtkColumnViewRowWidget css=header`，每列一个
+  `GtkColumnViewTitle`。界面在**列头行**上挂捕获阶段的 `GtkGestureClick`（不挂在
+  `GtkColumnView` 上：那样会把数据行的按下一起认领，抢掉单元格双击编辑），
+  按下时用 `pick()` 命中到列头那一格，读该格显示的标题，按建列时记录的
+  「标题 → 数据列下标」表反查（`column_info::column_index_for_title`，整串比对，
+  不解析标题、不按第几个列头猜）。落点在列头右缘 8px 内视为拉伸手柄，手势判
+  `Denied` 让给 GTK 自己的列宽拖拽，不抢 resize；
+- 刷新/换表时 `clear_columns` 一并清掉标题表与列对象，旧表的列头点不到。
+
 ### 只读态
 
 | 原因 | 界面行为 |
@@ -472,6 +511,8 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-replay-cancelled` | 重放「批次被取消（`cancelled=true`）」的结果（走同一个 `show_applied`；注入的是响应，不是真的取消，原因见下） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
+| `--qa-column-info <column>` | 打开表后**点该列的列头**展开浮层，并高亮该列（点击坐标取列头控件的真实几何中心，走与用户点击同一个列头点击处理） |
+| `--qa-expect-column <column>:<field>=<text>` | 截图时刻断言浮层里该列某字段的**控件文本**（可重复；field 取 `name\|type\|nullable\|default\|charset\|collation`），不符则退出码 3 |
 
 `--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
 断言失败也不会丢证据）。退出码：`0` 通过、`2` 截图失败、`3` 断言失败、`4` 档案里的驱动或字段不被当前后端支持。
@@ -516,6 +557,40 @@ podman exec <mariadb> mariadb -u… -p… sqarvo_test_62 \
 所以单会话里拿不到可取消的批次 ID。注入点与真实响应走同一个 `show_applied`（`cancelled = true`
 与 `executed_changes`，`results` 为空、`total_rows_affected = 0`），状态行文案、脏行是否保留、
 按钮可用性都是真实代码路径；拿到的是一个「取消后界面怎么显示」的证据，而不是「取消 RPC 能用」的证据。
+
+#### 列信息浮层的取证（#87）
+
+```bash
+# (a) 四种默认值态同屏：无默认值 / 默认 NULL / 常量原文 / 表达式原文
+… --qa-data-table column_defaults --qa-column-info note \
+  --qa-expect-column "amount:default=无默认值" \
+  --qa-expect-column "note:default=默认 NULL" \
+  --qa-expect-column "title:default='untitled'" \
+  --qa-expect-column "created:default=current_timestamp()" \
+  --screenshot ~/sqarvo-v022-shots/column-info-defaults.png --screenshot-delay-ms 7000
+
+# (b) MariaDB 的列级字符集/排序规则（数值列显示「不适用」）
+… --qa-data-table column_defaults --qa-column-info title \
+  --qa-expect-column "title:charset=utf8mb4" \
+  --qa-expect-column "title:collation=utf8mb4_general_ci" \
+  --qa-expect-column "id:collation=不适用" \
+  --screenshot ~/sqarvo-v022-shots/column-info-charset.png --screenshot-delay-ms 7000
+
+# (c) SQLite：字符集/排序规则整列「不适用」
+… --qa-profile /tmp/sqlite-profile.json --qa-data-table notes --qa-column-info body \
+  --qa-expect-column "title:charset=不适用" \
+  --qa-expect-column "body:default=默认 NULL" \
+  --qa-expect-column "created_at:default=datetime('now')" \
+  --screenshot ~/sqarvo-v022-shots/column-info-sqlite.png --screenshot-delay-ms 7000
+```
+
+断言读的是浮层里那六个 `GtkLabel` 的文本（不是重新调用一遍文案函数），所以
+「文案函数对、界面没接线」也会失败。`--qa-column-info` 依次执行
+「点该列列头 → 浮层出现且高亮的是这一列 → 点关闭 → 再点同一列列头 → 重新出现」，
+任何一步不成立都会在日志里写明原因（高亮错列会直接报「列头 → 列映射错位」）。
+Wayland 会话里无法注入指针事件，所以这里不是 xdotool 式的鼠标点击：取列头控件的
+`compute_bounds` 中心坐标，交给用户点击同一个 `header_click_at`（`pick` → 列头格 →
+标题 → 数据列下标）。截图里能直接看到列头行、被高亮的那一行和副标题的「已选 `<列名>`」。
 
 不带这些参数的正常启动路径完全不受影响。
 

@@ -36,7 +36,12 @@
 //!   用于验证幂等与「点击 → Cancelled」耗时；
 //! - `--qa-exit-after-ms <n>`：启动后 n 毫秒自动关窗（走正常清理路径），供基准脚本使用；
 //! - `--qa-second-sql-file <path>` + `--qa-execute-again-after-ms <n>`：首次执行后 n 毫秒
-//!   用第二段 SQL 再执行一次，用于验证「达到上限/取消之后仍能继续查询」。
+//!   用第二段 SQL 再执行一次，用于验证「达到上限/取消之后仍能继续查询」；
+//! - `--qa-column-info <column>`：打开表后点**该列的列头**展开列信息浮层并高亮该列
+//!   （点的是列头控件的真实几何位置，走与用户点击同一个列头点击处理）；
+//! - `--qa-expect-column <column>:<field>=<text>`：截图时刻断言浮层里该列某字段的控件
+//!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
+//!   不符时退出码 3。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
@@ -214,6 +219,97 @@ impl TxnExpectation {
     }
 }
 
+/// `--qa-expect-column` 里的字段名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnField {
+    /// 列名。
+    Name,
+    /// 原始类型。
+    Type,
+    /// 可空文案。
+    Nullable,
+    /// 默认值文案。
+    DefaultValue,
+    /// 字符集文案。
+    Charset,
+    /// 排序规则文案。
+    Collation,
+}
+
+impl ColumnField {
+    /// 参数里的字段名。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "name" => Ok(Self::Name),
+            "type" => Ok(Self::Type),
+            "nullable" => Ok(Self::Nullable),
+            "default" => Ok(Self::DefaultValue),
+            "charset" => Ok(Self::Charset),
+            "collation" => Ok(Self::Collation),
+            other => Err(format!(
+                "--qa-expect-column 的字段只接受 name|type|nullable|default|charset|collation，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段在参数里的名字（日志用，与 [`Self::parse`] 同一份词表）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Type => "type",
+            Self::Nullable => "nullable",
+            Self::DefaultValue => "default",
+            Self::Charset => "charset",
+            Self::Collation => "collation",
+        }
+    }
+
+    /// 从面板的一行里取该字段的**控件文本**。
+    #[must_use]
+    pub fn value(self, row: &crate::data_page::ColumnInfoRowObservation) -> &str {
+        match self {
+            Self::Name => &row.name,
+            Self::Type => &row.type_label,
+            Self::Nullable => &row.nullable,
+            Self::DefaultValue => &row.default_value,
+            Self::Charset => &row.charset,
+            Self::Collation => &row.collation,
+        }
+    }
+}
+
+/// `--qa-expect-column <column>:<field>=<value>` 的一条断言。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnExpectation {
+    /// 列名。
+    pub column: String,
+    /// 要比对的字段。
+    pub field: ColumnField,
+    /// 期望的展示文案（与界面上看到的逐字一致）。
+    pub expected: String,
+}
+
+impl ColumnExpectation {
+    /// 解析 `列名:字段=期望文案`；列名里不能有 `:`，文案里可以有 `=`。
+    fn parse(value: &str) -> Result<Self, String> {
+        let (column, rest) = value
+            .split_once(':')
+            .ok_or_else(|| format!("--qa-expect-column 需要 列名:字段=文案，实际：{value}"))?;
+        let (field, expected) = rest
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-column 需要 列名:字段=文案，实际：{value}"))?;
+        if column.trim().is_empty() {
+            return Err(format!("--qa-expect-column 的列名为空：{value}"));
+        }
+        Ok(Self {
+            column: column.to_owned(),
+            field: ColumnField::parse(field)?,
+            expected: expected.to_owned(),
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 struct Args {
     capture: Option<Capture>,
@@ -262,6 +358,10 @@ struct Args {
     expect_data_state: Option<DataExpectation>,
     /// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
     expect_txn: Option<TxnExpectation>,
+    /// `--qa-column-info <column>`：连接并打开表后点该列的列头，展开列信息浮层并高亮该列。
+    column_info: Option<String>,
+    /// `--qa-expect-column <column>:<field>=<value>`：列信息浮层上必须显示的文案（可重复）。
+    expect_columns: Vec<ColumnExpectation>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -297,6 +397,7 @@ pub fn enabled() -> bool {
             || args.data_rollback
             || args.data_fail_txn
             || args.data_replay_cancelled
+            || args.column_info.is_some()
     })
 }
 
@@ -427,6 +528,19 @@ pub fn expect_data_state() -> Option<DataExpectation> {
 #[must_use]
 pub fn expect_txn() -> Option<TxnExpectation> {
     ARGS.get().and_then(|args| args.expect_txn)
+}
+
+/// 打开表后要展开列信息浮层的目标列（`--qa-column-info`）。
+#[must_use]
+pub fn column_info() -> Option<String> {
+    ARGS.get().and_then(|args| args.column_info.clone())
+}
+
+/// 列信息浮层上必须显示的文案（`--qa-expect-column`，按登记顺序）。
+#[must_use]
+pub fn expect_columns() -> Vec<ColumnExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_columns.clone())
 }
 
 /// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
@@ -684,6 +798,23 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.expect_txn = Some(TxnExpectation::parse(value)?);
                 index += 2;
             }
+            "--qa-column-info" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-column-info 需要一个列名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-column-info 的列名不能为空".to_owned());
+                }
+                parsed.column_info = Some(value.clone());
+                index += 2;
+            }
+            "--qa-expect-column" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-column 需要 列名:字段=文案".to_owned())?;
+                parsed.expect_columns.push(ColumnExpectation::parse(value)?);
+                index += 2;
+            }
             "--qa-password-env" => {
                 let value = args
                     .get(index + 1)
@@ -701,7 +832,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
     // 期望值只在截图那一刻校验：没有截图就没有「这一刻」，静默忽略会让
     // 「跑了但没断言」看起来像通过。
     if parsed.capture.is_none()
-        && (parsed.expect_data_state.is_some() || parsed.expect_txn.is_some())
+        && (parsed.expect_data_state.is_some()
+            || parsed.expect_txn.is_some()
+            || !parsed.expect_columns.is_empty())
     {
         return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
     }
@@ -1049,6 +1182,75 @@ mod tests {
         assert_eq!(TxnExpectation::AutoCommit.label(), "自动提交");
         assert_eq!(DataExpectation::Loading.name(), "Loading");
         assert_eq!(DataExpectation::Empty.name(), "Empty");
+    }
+
+    #[test]
+    fn column_info_flags_are_parsed() {
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-column-info",
+            "note",
+            "--qa-expect-column",
+            "note:default=默认 NULL",
+            "--qa-expect-column",
+            "title:collation=utf8mb4_general_ci",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.column_info.as_deref(), Some("note"));
+        assert_eq!(parsed.expect_columns.len(), 2);
+        assert_eq!(
+            parsed.expect_columns[0],
+            ColumnExpectation {
+                column: "note".to_owned(),
+                field: ColumnField::DefaultValue,
+                expected: "默认 NULL".to_owned(),
+            }
+        );
+        assert_eq!(parsed.expect_columns[1].field, ColumnField::Collation);
+        // 文案里可以有 `=` 与 `(`：只按第一个 `=` 切分。
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-expect-column",
+            "updated:default=current_timestamp()",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.expect_columns[0].expected, "current_timestamp()");
+        // 字段名与断言读取用同一份词表。
+        for field in [
+            ColumnField::Name,
+            ColumnField::Type,
+            ColumnField::Nullable,
+            ColumnField::DefaultValue,
+            ColumnField::Charset,
+            ColumnField::Collation,
+        ] {
+            assert_eq!(ColumnField::parse(field.name()).unwrap(), field);
+        }
+    }
+
+    #[test]
+    fn column_info_flags_reject_bad_values() {
+        // 列名不能为空；必须是 列名:字段=文案；字段名必须认识。
+        assert!(parse(&args(&["app", "--qa-column-info"])).is_err());
+        assert!(parse(&args(&["app", "--qa-column-info", " "])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-column"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-column", "note"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-column", "note:default"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-column", ":default=x"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-column", "note:bogus=x"])).is_err());
+        // 与其它 --qa-expect-* 一样：没有截图就没有「断言这一刻」。
+        assert!(
+            parse(&args(&[
+                "app",
+                "--qa-expect-column",
+                "note:default=默认 NULL"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]
