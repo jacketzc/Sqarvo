@@ -37,7 +37,8 @@
 //! - `--qa-exit-after-ms <n>`：启动后 n 毫秒自动关窗（走正常清理路径），供基准脚本使用；
 //! - `--qa-second-sql-file <path>` + `--qa-execute-again-after-ms <n>`：首次执行后 n 毫秒
 //!   用第二段 SQL 再执行一次，用于验证「达到上限/取消之后仍能继续查询」；
-//! - `--qa-column-info <column>`：打开表后点「列信息」按钮展开列信息浮层并高亮该列；
+//! - `--qa-column-info <column>`：打开表后点**该列的列头**展开列信息浮层并高亮该列
+//!   （点的是列头控件的真实几何位置，走与用户点击同一个列头点击处理）；
 //! - `--qa-expect-column <column>:<field>=<text>`：截图时刻断言浮层里该列某字段的控件
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
 //!   不符时退出码 3。
@@ -357,7 +358,7 @@ struct Args {
     expect_data_state: Option<DataExpectation>,
     /// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
     expect_txn: Option<TxnExpectation>,
-    /// `--qa-column-info <column>`：连接并打开表后展开列信息浮层，并高亮该列。
+    /// `--qa-column-info <column>`：连接并打开表后点该列的列头，展开列信息浮层并高亮该列。
     column_info: Option<String>,
     /// `--qa-expect-column <column>:<field>=<value>`：列信息浮层上必须显示的文案（可重复）。
     expect_columns: Vec<ColumnExpectation>,

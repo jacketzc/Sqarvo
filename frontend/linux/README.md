@@ -439,8 +439,10 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 
 ### 列信息（#87）
 
-数据页顶栏的「列信息」按钮打开一个浮层（浮在网格上方，可关闭），逐列列出
-**列名 / 原始类型 / 可空 / 默认值 / 字符集 / 排序规则**。口径与
+**点列头**即可打开该列的列信息浮层（`名字 · 类型` 那一格，整格可点；行号指示列不可点）。
+数据页顶栏的「列信息」按钮打开同一张浮层，但不指定列——它是全部列的总览。浮层逐列列出
+**列名 / 原始类型 / 可空 / 默认值 / 字符集 / 排序规则**，被点的那一列高亮，
+副标题写明「已选 `<列名>`」。口径与
 `docs/api/grpc-conventions.md`「列元数据的存在性语义」一致：
 
 | 元数据 | 面板显示 |
@@ -457,6 +459,21 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 
 浮层用 `GtkOverlay` 而不是 `GtkPopover`：Popover 是独立 `GdkSurface`，无人值守
 截图（`WidgetPaintable` + `GskRenderer`）拍不到，取证要求画面里必须有这块内容。
+
+列头点击的实现口径（这条容易踩错，写清楚）：
+
+- **`GtkColumnViewColumn` 没有自定义表头控件的 API**，只有 `title` 与 `header_menu`；
+- **`GtkColumnView:header-factory`（GTK ≥ 4.12）不是列头**：GTK 文档原文是
+  「populating the `GtkListHeader` objects used in **section headers**」——它给的是
+  按行分组的小节表头（`GtkListHeader` 的 `item` 是**那一行的数据**），设了它会在
+  表头下面多出一条空的分组条，跟列头无关；
+- 真正的列头控件是 `GtkColumnView` 内部的 `GtkColumnViewRowWidget css=header`，每列一个
+  `GtkColumnViewTitle`。界面在 `GtkColumnView` 上挂捕获阶段的 `GtkGestureClick`，
+  按下时用 `pick()` 命中到列头那一格，读该格显示的标题，按建列时记录的
+  「标题 → 数据列下标」表反查（`column_info::column_index_for_title`，整串比对，
+  不解析标题、不按第几个列头猜）。落点在列头右缘 8px 内视为拉伸手柄，手势判
+  `Denied` 让给 GTK 自己的列宽拖拽，不抢 resize；
+- 刷新/换表时 `clear_columns` 一并清掉标题表与列对象，旧表的列头点不到。
 
 ### 只读态
 
@@ -493,7 +510,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-replay-cancelled` | 重放「批次被取消（`cancelled=true`）」的结果（走同一个 `show_applied`；注入的是响应，不是真的取消，原因见下） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
-| `--qa-column-info <column>` | 打开表后点「列信息」按钮展开浮层，并高亮该列 |
+| `--qa-column-info <column>` | 打开表后**点该列的列头**展开浮层，并高亮该列（点击坐标取列头控件的真实几何中心，走与用户点击同一个列头点击处理） |
 | `--qa-expect-column <column>:<field>=<text>` | 截图时刻断言浮层里该列某字段的**控件文本**（可重复；field 取 `name\|type\|nullable\|default\|charset\|collation`），不符则退出码 3 |
 
 `--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
@@ -567,8 +584,12 @@ podman exec <mariadb> mariadb -u… -p… sqarvo_test_62 \
 ```
 
 断言读的是浮层里那六个 `GtkLabel` 的文本（不是重新调用一遍文案函数），所以
-「文案函数对、界面没接线」也会失败。`--qa-column-info` 打开时会依次执行
-「点『列信息』→ 点关闭 → 再点『列信息』」，关闭路径与重新打开都走真实按钮回调。
+「文案函数对、界面没接线」也会失败。`--qa-column-info` 依次执行
+「点该列列头 → 浮层出现且高亮的是这一列 → 点关闭 → 再点同一列列头 → 重新出现」，
+任何一步不成立都会在日志里写明原因（高亮错列会直接报「列头 → 列映射错位」）。
+Wayland 会话里无法注入指针事件，所以这里不是 xdotool 式的鼠标点击：取列头控件的
+`compute_bounds` 中心坐标，交给用户点击同一个 `header_click_at`（`pick` → 列头格 →
+标题 → 数据列下标）。截图里能直接看到列头行、被高亮的那一行和副标题的「已选 `<列名>`」。
 
 不带这些参数的正常启动路径完全不受影响。
 

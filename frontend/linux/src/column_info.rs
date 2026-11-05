@@ -115,6 +115,30 @@ fn name_or_not_applicable(value: Option<&str>) -> String {
         .map_or_else(|| NOT_APPLICABLE.to_owned(), str::to_owned)
 }
 
+/// 数据网格的表头标题（`名字 · 类型`）。
+///
+/// 建列与表头映射共用这一个函数，标题不是两条各自拼出来的字符串。
+#[must_use]
+pub fn header_title(column: &TableColumn) -> String {
+    format!("{} · {}", column.name, column.type_label)
+}
+
+/// 点到的列头标题 → 数据列下标（#87）。
+///
+/// `titles` 是建列时按 `columns` 顺序记录的列头文字（`名字 · 类型`）。点击时把
+/// 被点那格的标题整体比对回下标：不解析标题内容、不按「第几个列头」猜。空标题
+/// （行号指示列）与查不到的标题都返回 `None` —— 该列头不可点。
+///
+/// 纯函数：列头点击的「点的是第几列」可以脱离 GTK 单测。
+#[must_use]
+pub fn column_index_for_title(titles: &[String], clicked: Option<&str>) -> Option<usize> {
+    let clicked = clicked?.trim();
+    if clicked.is_empty() {
+        return None;
+    }
+    titles.iter().position(|title| title.as_str() == clicked)
+}
+
 /// 面板一行的六个字段（顺序即界面列顺序）。
 #[must_use]
 pub fn column_info_rows(column: &TableColumn) -> [(&'static str, String); 6] {
@@ -289,5 +313,65 @@ mod tests {
         // SQLite：字符集/排序规则两行都是「不适用」，不是空串。
         assert_eq!(rows[4].1, NOT_APPLICABLE);
         assert_eq!(rows[5].1, NOT_APPLICABLE);
+    }
+
+    fn named_column(name: &str, type_label: &str) -> TableColumn {
+        let mut column = column(ColumnDefaultState::Unknown);
+        column.name = name.to_owned();
+        column.type_label = type_label.to_owned();
+        column
+    }
+
+    #[test]
+    fn header_title_is_name_dot_type() {
+        // 表头标题与建列时用的是同一个函数：`名字 · 类型`，中间是空格 + 间隔点 + 空格。
+        assert_eq!(
+            header_title(&named_column("note", "varchar(64)")),
+            "note · varchar(64)"
+        );
+    }
+
+    fn titles(columns: &[TableColumn]) -> Vec<String> {
+        columns.iter().map(header_title).collect()
+    }
+
+    #[test]
+    fn clicked_header_title_maps_back_to_its_column() {
+        let columns = [
+            named_column("id", "int(11)"),
+            named_column("title", "varchar(64)"),
+            named_column("note", "varchar(64)"),
+            named_column("created", "timestamp"),
+        ];
+        let titles = titles(&columns);
+        // 每一个列头的标题都映射回它自己的那一列（点列头 → 对应列）。
+        for (index, column) in columns.iter().enumerate() {
+            let clicked = header_title(column);
+            assert_eq!(
+                column_index_for_title(&titles, Some(clicked.as_str())),
+                Some(index),
+                "列头「{clicked}」应映射回第 {index} 列"
+            );
+        }
+    }
+
+    #[test]
+    fn clicked_header_title_rejects_empty_and_unknown() {
+        let titles = titles(&[named_column("id", "int(11)"), named_column("note", "text")]);
+        // 行号指示列的列头是空标题：没有列信息，返回 None（列头不可点）。
+        assert_eq!(column_index_for_title(&titles, Some("")), None);
+        assert_eq!(column_index_for_title(&titles, Some("   ")), None);
+        assert_eq!(column_index_for_title(&titles, None), None);
+        // 名字相同但类型不同 = 不同列：整串比对，不会串到 note · text。
+        assert_eq!(
+            column_index_for_title(&titles, Some("note · varchar(64)")),
+            None
+        );
+        // 刷新后旧表的列头标题查不到（不会点到上一张表的列）。
+        assert_eq!(column_index_for_title(&[], Some("id · int(11)")), None);
+        assert_eq!(
+            column_index_for_title(&titles, Some("id · int(11)")),
+            Some(0)
+        );
     }
 }

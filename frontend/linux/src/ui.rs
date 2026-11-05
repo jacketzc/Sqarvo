@@ -944,13 +944,23 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
         });
     }
 
-    // 1b. 列信息浮层（--qa-column-info）：等首页列元数据绑定后，点「列信息」按钮。
+    // 1b. 列信息浮层（--qa-column-info）：等首页列元数据绑定后，点**该列的表头**。
     if let Some(column) = crate::qa::column_info() {
+        // 先确保这列的表头实现了（列在可视区外时横向滚过去，与用户一样）。
+        {
+            let data = Rc::clone(&data);
+            let column = column.clone();
+            glib::timeout_add_local_once(Duration::from_millis(1_800), move || {
+                if let Err(error) = data.qa_reveal_column_header(&column) {
+                    eprintln!("[qa] 表头滚入可视区失败：{error}");
+                }
+            });
+        }
         let data = Rc::clone(&data);
-        glib::timeout_add_local_once(Duration::from_millis(2_000), move || {
+        glib::timeout_add_local_once(Duration::from_millis(2_100), move || {
             if let Err(error) = data.qa_open_column_info(&column) {
                 // 不静默：列名写错时浮层不会打开，随后的 --qa-expect-column 会失败。
-                eprintln!("[qa] 打开列信息浮层失败：{error}");
+                eprintln!("[qa] 点击表头打开列信息浮层失败：{error}");
             }
         });
     }
