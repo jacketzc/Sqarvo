@@ -15,7 +15,11 @@
 //! - **值一律绑定**：只有标识符（表名、列名）进入 SQL 文本，并且用双引号引用、
 //!   内部双引号翻倍；主键值与页大小都是参数；
 //! - **无主键只读**：按扫描顺序给一页预览，`ordering = Unstable`、
-//!   `read_only_reason = NoPrimaryKey`，并且**不签发游标**——不提供 rowid 近似定位。
+//!   `read_only_reason = NoPrimaryKey`，并且**不签发游标**——不提供 rowid 近似定位；
+//! - **只读连接**：连接以 `SQLITE_OPEN_READONLY` 打开时，浏览本身可用（仍按主键升序、
+//!   仍签发游标），但一律置只读并给出 `ConnectionReadOnly`；写入在准备语句前就拒绝
+//!   （`table_data.read_only`），不把 `SQLITE_READONLY` 留给用户猜。两种原因同时成立时
+//!   报「连接只读」：它影响该连接上的所有表，且是用户唯一能改的那一个。
 //!
 //! 行值比较 `(a,b) > (?,?)` 走 SQLite 的行值语义（3.15+）：先比 `a`，相等再比 `b`，
 //! 与 `ORDER BY a, b` 完全一致；主键列不允许 NULL，因此不会碰到「NULL 排在末尾」
@@ -30,7 +34,7 @@ use sqarvo_driver_api::{
     Cell, ColumnMeta, DriverSession, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
     PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowChangeResult,
     RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected, invalid_change,
-    no_primary_key, read_only_object, read_only_transaction,
+    no_primary_key, read_only_connection, read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
@@ -151,6 +155,8 @@ impl TableDataProvider for SqliteSession {
 
 fn browse(connection: &Connection, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
     let name = metadata::object_name(object)?;
+    // 连接级只读：浏览不受影响（仍是 SELECT），但写入一定被拒绝，因此这里就置只读。
+    let connection_read_only = connection_read_only(connection)?;
     // 列元数据复用 #45 的 GetColumns 路径：同一份 `pragma_table_info`、同一个顺序，
     // 因此 `columns` 与每行 cells 的下标严格对应。
     let columns = metadata::columns(connection, object)?;
@@ -158,61 +164,22 @@ fn browse(connection: &Connection, object: &ObjectRef, page: &PageRequest) -> Re
     let page_size = usize::try_from(page.effective_page_size()).unwrap_or(100);
 
     if primary_key.is_empty() {
-        return browse_without_primary_key(connection, name, columns, page_size);
+        return browse_without_primary_key(
+            connection,
+            name,
+            columns,
+            page_size,
+            connection_read_only,
+        );
     }
 
     let cursor = match page.page_token.as_deref() {
         None | Some("") => None,
         Some(token) => Some(decode_table_cursor(token, object, primary_key.len())?),
     };
+    let (sql, params) = page_query(name, &columns, &primary_key, cursor.as_deref(), page_size)?;
 
-    let select = columns
-        .iter()
-        .map(|column| quote_identifier(&column.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let order = primary_key
-        .column_names()
-        .iter()
-        .map(|column| format!("{} ASC", quote_identifier(column)))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let mut params: Vec<SqlValue> = Vec::new();
-    let sql = match &cursor {
-        None => {
-            params.push(SqlValue::Integer(page_limit(page_size)));
-            format!(
-                "SELECT {select} FROM {} ORDER BY {order} LIMIT ?1",
-                quote_identifier(name)
-            )
-        }
-        Some(key) => {
-            let placeholders = (1..=key.len())
-                .map(|index| format!("?{index}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let bound = key
-                .iter()
-                .map(bind_value)
-                .collect::<Result<Vec<SqlValue>>>()?;
-            params.extend(bound);
-            params.push(SqlValue::Integer(page_limit(page_size)));
-            let left = primary_key
-                .column_names()
-                .iter()
-                .map(|column| quote_identifier(column))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "SELECT {select} FROM {} WHERE ({left}) > ({placeholders}) ORDER BY {order} LIMIT ?{}",
-                quote_identifier(name),
-                key.len() + 1
-            )
-        }
-    };
-
-    let read_only = false;
+    let read_only_reason = connection_read_only.then_some(ReadOnlyReason::ConnectionReadOnly);
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 表数据查询失败"))?;
@@ -251,21 +218,96 @@ fn browse(connection: &Connection, object: &ObjectRef, page: &PageRequest) -> Re
         rows: collected,
         next_page_token,
         has_more,
-        read_only,
-        read_only_reason: None,
+        read_only: read_only_reason.is_some(),
+        read_only_reason,
         ordering: RowOrder::PrimaryKeyAscending,
     })
+}
+
+/// 构造一页键集查询的 SQL 与参数：只有标识符进入 SQL 文本，值一律绑定。
+///
+/// 抽出来是为了让 [`browse`] 只负责读取与判定只读，同时让「有游标 / 无游标」两种
+/// SQL 骨架在一处生成——主键列数变化时不会有一份漏改。
+fn page_query(
+    name: &str,
+    columns: &[ColumnMeta],
+    primary_key: &PrimaryKey,
+    cursor: Option<&[Value]>,
+    page_size: usize,
+) -> Result<(String, Vec<SqlValue>)> {
+    let select = columns
+        .iter()
+        .map(|column| quote_identifier(&column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order = primary_key
+        .column_names()
+        .iter()
+        .map(|column| format!("{} ASC", quote_identifier(column)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut params: Vec<SqlValue> = Vec::new();
+    let sql = match cursor {
+        None => {
+            params.push(SqlValue::Integer(page_limit(page_size)));
+            format!(
+                "SELECT {select} FROM {} ORDER BY {order} LIMIT ?1",
+                quote_identifier(name)
+            )
+        }
+        Some(key) => {
+            let placeholders = (1..=key.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let bound = key
+                .iter()
+                .map(bind_value)
+                .collect::<Result<Vec<SqlValue>>>()?;
+            params.extend(bound);
+            params.push(SqlValue::Integer(page_limit(page_size)));
+            let left = primary_key
+                .column_names()
+                .iter()
+                .map(|column| quote_identifier(column))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "SELECT {select} FROM {} WHERE ({left}) > ({placeholders}) ORDER BY {order} LIMIT ?{}",
+                quote_identifier(name),
+                key.len() + 1
+            )
+        }
+    };
+    Ok((sql, params))
+}
+
+/// 连接是否以只读方式打开（`sqlite3_db_readonly`）。
+///
+/// 只看连接的**真实**标志，不看 `PRAGMA query_only`：后者是只读事务用的连接级开关，
+/// 属于会话级临时状态，由事务徽标与写入拒绝负责表达，不能混进「连接只读」这个原因，
+/// 否则事务结束后界面还会继续显示只读。
+fn connection_read_only(connection: &Connection) -> Result<bool> {
+    connection
+        .is_readonly("main")
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 连接只读状态失败"))
 }
 
 /// 无主键：只给一页扫描顺序的预览，明确不提供继续语义。
 ///
 /// 不签发游标（`has_more = false`）：无主键就没有稳定的「下一页从这里开始」，
 /// 用 rowid 近似定位会在 `VACUUM` / `INSERT OR REPLACE` 后指向别的行（ADR 0017）。
+///
+/// `connection_read_only` 与「无主键」同时成立时报「连接只读」：那一个原因影响
+/// 该连接上的所有表，且是用户唯一能改变的条件；「无稳定排序」仍由
+/// [`RowOrder::Unstable`] 与界面标签单独表达，信息不会丢。
 fn browse_without_primary_key(
     connection: &Connection,
     name: &str,
     columns: Vec<ColumnMeta>,
     page_size: usize,
+    connection_read_only: bool,
 ) -> Result<TablePage> {
     let select = columns
         .iter()
@@ -297,7 +339,11 @@ fn browse_without_primary_key(
         next_page_token: None,
         has_more: false,
         read_only: true,
-        read_only_reason: Some(ReadOnlyReason::NoPrimaryKey),
+        read_only_reason: Some(if connection_read_only {
+            ReadOnlyReason::ConnectionReadOnly
+        } else {
+            ReadOnlyReason::NoPrimaryKey
+        }),
         // 扫描顺序不受契约保证：UI 必须展示「无稳定排序」，且禁止据此定位行。
         ordering: RowOrder::Unstable,
     })
@@ -334,8 +380,8 @@ fn apply(
     let name = metadata::object_name(object)?;
     // 以只读方式打开的数据库文件：在准备任何语句前就明确拒绝，
     // 不把 SQLite 的 `SQLITE_READONLY` 留给用户猜。
-    if connection.is_readonly("main").unwrap_or(false) {
-        return Err(read_only_object());
+    if connection_read_only(connection)? {
+        return Err(read_only_connection());
     }
     let columns = metadata::columns(connection, object)?;
     let primary_key = metadata::primary_key(connection, object)?;

@@ -18,11 +18,13 @@
 //! | 表/视图不存在 | `NOT_FOUND` | `sqlite.object_not_found` / `mariadb.object_not_found` |
 //! | 无权限（MariaDB 在 `information_schema` 不可见） | `NOT_FOUND` | 同上 |
 //! | 无主键（浏览） | 浏览成功，`read_only = true` + `READ_ONLY_REASON_NO_PRIMARY_KEY` | — |
+//! | 只读连接（浏览） | 浏览成功，`read_only = true` + `READ_ONLY_REASON_CONNECTION_READ_ONLY` | — |
 //! | 游标非法/被篡改/不属于该表 | `INVALID_ARGUMENT` | `table_data.cursor_invalid` |
 //! | 驱动未实现表数据 | `UNIMPLEMENTED` | `capability.unsupported` |
 //! | 空批次 / 主键形状不符 / 值类型错配 | `INVALID_ARGUMENT` | `config.invalid` |
 //! | 提交了被截断的值 | `INVALID_ARGUMENT` | `table_data.truncated_value` |
 //! | 无主键（编辑）/ 视图 | `FAILED_PRECONDITION` | `table_data.no_primary_key` / `table_data.read_only` |
+//! | 只读连接写入 | `FAILED_PRECONDITION` | `table_data.read_only` |
 //! | 只读事务写入 | `FAILED_PRECONDITION` | `table_data.read_only` |
 //! | 未知/已结束的事务 | `NOT_FOUND` | `transaction.not_found`（绝不退化为自动提交） |
 //! | 超过风险阈值未确认 | `FAILED_PRECONDITION` | `table_data.confirmation_required` |
@@ -448,6 +450,7 @@ fn read_only_reason_to_proto(reason: Option<ReadOnlyReason>) -> ProtoReadOnlyRea
         None => ProtoReadOnlyReason::Unspecified,
         Some(ReadOnlyReason::NoPrimaryKey) => ProtoReadOnlyReason::NoPrimaryKey,
         Some(ReadOnlyReason::DriverUnsupported) => ProtoReadOnlyReason::DriverUnsupported,
+        Some(ReadOnlyReason::ConnectionReadOnly) => ProtoReadOnlyReason::ConnectionReadOnly,
     }
 }
 
@@ -479,6 +482,15 @@ mod tests {
             read_only_reason_to_proto(Some(ReadOnlyReason::DriverUnsupported)),
             ProtoReadOnlyReason::DriverUnsupported
         );
+        assert_eq!(
+            read_only_reason_to_proto(Some(ReadOnlyReason::ConnectionReadOnly)),
+            ProtoReadOnlyReason::ConnectionReadOnly
+        );
+        // 枚举取值只追加：数值与既有语义不得变化（契约兼容）。
+        assert_eq!(ProtoReadOnlyReason::Unspecified as i32, 0);
+        assert_eq!(ProtoReadOnlyReason::NoPrimaryKey as i32, 1);
+        assert_eq!(ProtoReadOnlyReason::DriverUnsupported as i32, 2);
+        assert_eq!(ProtoReadOnlyReason::ConnectionReadOnly as i32, 3);
     }
 
     #[test]

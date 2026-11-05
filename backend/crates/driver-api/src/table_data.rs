@@ -88,6 +88,9 @@ pub enum ReadOnlyReason {
     NoPrimaryKey,
     /// 驱动未实现行编辑能力。
     DriverUnsupported,
+    /// 连接以只读方式打开：该连接上的任何写入都会被数据库拒绝
+    /// （`table_data.read_only`），与表结构无关。
+    ConnectionReadOnly,
 }
 
 impl ReadOnlyReason {
@@ -97,6 +100,7 @@ impl ReadOnlyReason {
         match self {
             Self::NoPrimaryKey => "no_primary_key",
             Self::DriverUnsupported => "driver_unsupported",
+            Self::ConnectionReadOnly => "connection_read_only",
         }
     }
 }
@@ -430,6 +434,18 @@ pub fn read_only_object() -> Error {
     )
 }
 
+/// 连接以只读方式打开时写路径的明确拒绝。
+///
+/// 与 [`read_only_object`] 分开是因为处置方式不同：对象只读要换表/换视图，
+/// 连接只读要换连接（或以可写方式重连），文案必须说清是哪一种。
+#[must_use]
+pub fn read_only_connection() -> Error {
+    Error::failed_precondition(
+        ErrorCode::TABLE_DATA_READ_ONLY,
+        "当前连接以只读方式打开，不能提交行变更；请改用可写连接",
+    )
+}
+
 /// 会话处于只读事务时写路径的明确拒绝。
 #[must_use]
 pub fn read_only_transaction() -> Error {
@@ -592,6 +608,16 @@ mod tests {
             read_only_transaction().code(),
             ErrorCode::TABLE_DATA_READ_ONLY
         );
+        // 连接只读的文案必须指向「连接」，否则用户会去改表结构。
+        assert_eq!(
+            read_only_connection().code(),
+            ErrorCode::TABLE_DATA_READ_ONLY
+        );
+        assert!(
+            read_only_connection()
+                .message()
+                .contains("连接以只读方式打开")
+        );
         assert_eq!(invalid_change("x").code(), ErrorCode::CONFIG_INVALID);
         // 文案面向用户：不包含 SQL 片段。
         assert!(!read_only_object().message().contains("UPDATE"));
@@ -603,6 +629,10 @@ mod tests {
         assert_eq!(
             ReadOnlyReason::DriverUnsupported.as_str(),
             "driver_unsupported"
+        );
+        assert_eq!(
+            ReadOnlyReason::ConnectionReadOnly.as_str(),
+            "connection_read_only"
         );
         assert_eq!(
             RowOrder::PrimaryKeyAscending.as_str(),
