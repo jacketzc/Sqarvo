@@ -39,17 +39,19 @@
 //! 批次上限 500 由服务端**钳制**：只执行前 500 条，并在响应里回 `clamped` 与
 //! `deferred_changes`，绝不静默丢弃用户编辑。
 //!
-//! # 会话执行锁（#61）
+//! # 会话执行锁（#61、#69）
 //!
 //! `ApplyRowChanges` 不在本层自己拼「校验事务 → 调驱动」：事务登记校验与驱动写入
 //! 由 [`SessionHandle::apply_row_changes`](sqarvo_connection::SessionHandle::apply_row_changes)
 //! 收在**同一把**会话执行锁内（ADR 0008）。否则校验通过后、驱动调用前，并发的
 //! `Commit` / `Rollback` 可以结束事务，批次会写进已结束的事务或以自动提交落库。
 //!
-//! `BrowseTable` 仍**不**持执行锁：一次调用是驱动上一条自包含的只读分页命令，
-//! 既不读也不改事务登记，不会与写批次产生「写进已结束事务」这类状态竞争；内置
-//! 驱动本来就把同一会话的命令排成一条序列。浏览与元数据统一走执行锁是遗留缺口
-//! （ADR 0008 提到元数据也在锁内），不在本 Issue 范围内，已在 PR 的未完成项中列出。
+//! `BrowseTable` 与主键查询同样走会话执行锁（#69）：
+//! [`SessionHandle::browse`](sqarvo_connection::SessionHandle::browse) /
+//! [`SessionHandle::table_primary_key`](sqarvo_connection::SessionHandle::table_primary_key)。
+//! 它们读的是**同一条物理连接**——浏览的游标、写批次、DDL 并发时会在连接上交错，
+//! 游标可能读到改动中的 schema，错误分类也无法解释。服务端仍只做参数/结果映射，
+//! 不为绕过队头阻塞把浏览放回锁外（实测占锁时长见 ADR 0008「现状」一节）。
 
 use std::sync::Arc;
 
@@ -116,8 +118,8 @@ impl TableDataService for TableDataServiceImpl {
             .acquire(&object.session_id)
             .await
             .map_err(to_status)?;
-        let provider = handle.table_data().ok_or_else(table_data_unsupported)?;
-        let page = provider.browse(&object, &page).await.map_err(to_status)?;
+        // 浏览在会话执行锁内执行（#69）：与写入共用同一条连接，语句不得交错。
+        let page = handle.browse(&object, &page).await.map_err(to_status)?;
 
         Ok(Response::new(BrowseTableResponse {
             columns: mapping::columns_to_proto(&page.columns),
@@ -171,7 +173,9 @@ impl TableDataService for TableDataServiceImpl {
         }
 
         // 主键定义是行定位的唯一依据：列名与顺序都按它校验，绝不按客户端顺序猜。
-        let primary_key = provider.primary_key(&object).await.map_err(to_status)?;
+        // 主键查询也走会话执行锁（#69）：它是同一条连接上的元数据语句，
+        // 不能与浏览、执行或另一条写批次交错。仍走表数据能力，能力前提不变。
+        let primary_key = handle.table_primary_key(&object).await.map_err(to_status)?;
         if primary_key.is_empty() {
             return Err(to_status(Error::failed_precondition(
                 ErrorCode::TABLE_DATA_NO_PRIMARY_KEY,
