@@ -47,7 +47,8 @@ impl MariaDbDriver {
                     streaming_results: true,
                     // v0.2 只支持单条语句（多语句检测见 `sql.rs`）。
                     multiple_statements: false,
-                    ddl_generation: false,
+                    // v0.2.2（#83）：`GetDdl` 取 `SHOW CREATE TABLE/VIEW/SEQUENCE` 原文。
+                    ddl_generation: true,
                     server_side_pagination: false,
                     // v0.2.2（#82）：`database` 映射为 catalog，目录层与跨库浏览已实现。
                     catalogs: true,
