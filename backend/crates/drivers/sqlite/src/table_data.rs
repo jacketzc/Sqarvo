@@ -490,7 +490,9 @@ impl EditPlan {
             let affected = statement
                 .execute(params_from_iter(step.params.iter()))
                 .map_err(|error| map_sqlite_error(error, "执行 SQLite 行变更失败"))?;
-            // 0 行 = 目标行已不存在；>1 行 = 主键不唯一。两者都不是成功。
+            // 0 行 = 目标行已不存在；>1 行 = 主键不唯一。两者都不是成功，
+            // 但真实行数必须留在 `outcome` 里：`RowChangeResult::rows_affected()`
+            // 会把它透传到 proto，调用方才知道到底动了几行。
             results.push(RowChangeResult {
                 index,
                 outcome: classify_rows_affected(

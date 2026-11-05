@@ -338,7 +338,11 @@ async fn missing_row_and_mismatched_expectation_are_explicit() {
             actual: 1
         }
     );
-    assert_eq!(report.rows_affected(), 0, "冲突行不得计入受影响行数");
+    // 契约（#68）：冲突行必须上报驱动**真实**影响的行数（这条 UPDATE 确实改动了 1 行），
+    // 不再恒为 0——否则调用方看不出「动了 1 行但被拒」。
+    assert_eq!(report.results[0].rows_affected(), 1);
+    assert_eq!(report.rows_affected(), 1, "冲突行计入驱动实际影响行数");
+    assert!(report.has_failures(), "行数如实上报不等于判定成功");
 
     // 未受影响/未匹配的行保持原值。
     assert_eq!(
