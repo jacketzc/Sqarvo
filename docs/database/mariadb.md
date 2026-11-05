@@ -418,7 +418,9 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 | 表/视图不存在（`information_schema` 不可见） | `metadata.object_not_found` | `NOT_FOUND` |
 | 该数据库没有这一层（schema） | `capability.unsupported` | `UNIMPLEMENTED` |
 | 种类不适用于该操作（序列取列、叶子展开、视图当表展开） | `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` |
-| `GetDdl` | 仍是显式 `capability.unsupported`（#83 落地） | `UNIMPLEMENTED` |
+| `GetDdl` 对象不存在（`information_schema` 不可见） | `metadata.object_not_found` | `NOT_FOUND` |
+| `GetDdl` 的 `SHOW CREATE` 被服务端拒绝（1044/1142/1143） | `metadata.permission_denied` | `PERMISSION_DENIED` |
+| `GetDdl` 对索引 / 触发器 / 列等种类 | `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` |
 
 元数据浏览用 `metadata.object_not_found`；表数据浏览/行编辑仍用
 `mariadb.object_not_found`（`BrowseTable` 的既有契约），两者由驱动显式翻译。
@@ -471,7 +473,7 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 已知代价：本版一次性读取当前库的全部对象名再在内存里切页（上限 500 行/页），
 不做 `LIMIT/OFFSET` 服务端分页；库内对象数量极大时应改用服务端游标（待定）。
 
-### v0.2.2 契约（#81，本驱动尚未实现）
+### v0.2.2 契约（#81；插入行 #85、DDL #83 已实现，过滤下推见 #84）
 
 `ListNodes.filter`、`GetDdl` 与 `InsertRows` 的契约已冻结（ADR 0019），MariaDB 侧实现见
 #84 / #83 / #85：
@@ -482,9 +484,10 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   （`utf8mb4_general_ci` 下不敏感、`_bin` 下敏感），驱动不得额外 `LOWER()`；
 - **过滤条件进 token 指纹**：条件变化 → 旧 token 报 `config.invalid`（`metadata.filter_invalid`
   只用于条件本身非法）；
-- **DDL**：`SHOW CREATE TABLE` / `SHOW CREATE VIEW` 原文，`exact = true`、
-  `source = DDL_SOURCE_DATABASE`、`source_detail` 写明用的是哪条 `SHOW CREATE`；
-  MariaDB 的 `SHOW CREATE` 会补全 `AUTO_INCREMENT=`、字符集等，属数据库原文，驱动不要改写；
+- **DDL（已实现，#83）**：`SHOW CREATE TABLE` / `SHOW CREATE VIEW` / `SHOW CREATE SEQUENCE`
+  原文，`exact = true`、`source = DDL_SOURCE_DATABASE`、`source_detail` 写明用的是哪条
+  `SHOW CREATE`；MariaDB 的 `SHOW CREATE` 会补全 `AUTO_INCREMENT=`、字符集等，属数据库
+  原文，驱动不要改写；
 - **插入（已实现，#85）**：只绑给出的列（空列清单用 `INSERT INTO t () VALUES ()`）；
   自增主键用 `LAST_INSERT_ID()` 回传，复合主键回传写入值与生成值，非自增主键列被省略时
   整批拒绝（`capability.unsupported`，不编造主键）；整批隐式事务 / savepoint
@@ -494,8 +497,33 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   生成列 → `table_data.column_not_insertable`（1906 / `EXTRA` 预判定），
   长度与取值越界（1406 / 1264 / 1265 / 1366 / 1292 / 1690）与 CHECK / 外键 → `config.invalid`
   （v0.2.2 未登记类型专用码）；
-- `list_children_filtered` 与 DDL 仍走默认实现返回 `capability.unsupported`
-  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`。
+- `list_children_filtered` 仍走默认实现返回 `capability.unsupported`
+  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`；
+  DDL 已由 #83 实现（见下）。
+
+### DDL 查看（#83）
+
+| 种类 | 语句 | 结果 |
+|---|---|---|
+| `TABLE` | `SHOW CREATE TABLE` | 原文，2 列中的第 2 列（`Create Table`） |
+| `VIEW` | `SHOW CREATE VIEW` | 原文，**4 列**中的第 2 列（`Create View`）；第 3/4 列是 `character_set_client` / `collation_connection`，绝不能当 DDL |
+| `SEQUENCE` | `SHOW CREATE SEQUENCE` | 原文（MariaDB 10.3+ 序列以 `TABLE_TYPE='SEQUENCE'` 出现在 `TABLES`） |
+| `INDEX` | — | `metadata.object_kind_unsupported`：见下 |
+| `TRIGGER` / `COLUMN` / `CATALOG` | — | `metadata.object_kind_unsupported`（`SHOW CREATE TRIGGER` 的权限要求本版未覆盖） |
+
+- **列的选择**：按**下标 1**（第 2 列）取，取完再校验文本以 `CREATE ` 开头且包含
+  ` TABLE ` / ` VIEW ` / ` SEQUENCE `——列错位（版本差异、误取字符集列）会报
+  `internal.error`，不会把非 DDL 文本当原文交付；
+- **索引没有独立 DDL，本版明确报错而不拼装**：MariaDB 的索引定义是 `CREATE TABLE`
+  的一部分，`ObjectRef` 又不携带所属表（`catalog` / `schema` / `name` / `kind`），
+  无法唯一定位同库中重名的索引；拼出来的 `CREATE INDEX` 会丢前缀长度、索引类型、
+  表达式索引、可见性等信息，比报错更危险。前端要展示索引定义时应读所属表的 DDL；
+- **权限与不存在**：先经 `information_schema` 判存在（不可见 → `metadata.object_not_found`），
+  库不可读（1044）→ `metadata.permission_denied`；`SHOW CREATE` 自身返回 1044/1142/1143
+  → `metadata.permission_denied`，1146/1051 → `metadata.object_not_found`；
+- **长 DDL 不截断**：与 SQLite 一致，驱动原样返回；实际上限由 gRPC 消息上限（tonic 默认
+  4 MiB）决定，超限时请求失败而不是返回半截文本。ADR 0007 的 64 KiB 是单元格规则，
+  不适用于 DDL。
 
 ### 已知缺口
 
@@ -505,7 +533,9 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   `ColumnType::Unsupported { type_name: COLUMN_TYPE }`；
 - 权限不足的对象在 `information_schema` 里不可见，因此元数据查询表现为
   `mariadb.object_not_found`（`NotFound`）。这是 MySQL 协议族的语义；连接级无权限
-  （1044）仍由「错误映射」表归类为 `mariadb.permission_denied`；
+  （1044）仍由「错误映射」表归类为 `mariadb.permission_denied`。`GetDdl` 是例外：
+  库不可读（`SHOW CREATE DATABASE` 探测到 1044/1142）与 `SHOW CREATE` 自身被拒绝
+  都报 `metadata.permission_denied`——这时「是权限不是不存在」可以说清；
 - 连接没有选择数据库时列出对象返回 `mariadb.no_database`（`FAILED_PRECONDITION`），
   不把 `DATABASE() IS NULL` 当成「库里没有表」；
 - 有未读完的结果游标时元数据请求返回 `mariadb.query_active`，避免与游标交错。

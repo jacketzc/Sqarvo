@@ -135,7 +135,9 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 | 表/视图不存在 | `metadata.object_not_found` | `NOT_FOUND` |
 | 该数据库没有这一层（schema、sequence） | `capability.unsupported` | `UNIMPLEMENTED` |
 | 种类不适用于该操作（对列/索引展开子节点、把视图当表展开） | `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` |
-| `GetDdl` | 仍是显式 `capability.unsupported`（#83 落地） | `UNIMPLEMENTED` |
+| `GetDdl` 对象不存在 | `metadata.object_not_found` | `NOT_FOUND` |
+| `GetDdl` 对列/目录等没有 DDL 的种类 | `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` |
+| `GetDdl` 对象存在但 `sqlite_master.sql` 为 NULL（隐式索引） | `capability.unsupported` | `UNIMPLEMENTED` |
 
 注意错误码的域：元数据浏览用 `metadata.object_not_found`；表数据浏览/行编辑仍用
 `sqlite.object_not_found`（`BrowseTable` 的既有契约）。两者由驱动显式翻译，不因为共用
@@ -176,7 +178,7 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 
 一次请求会读取当前库的全部对象名再在内存切页（每页上限 500）；对象极多时应改为服务端游标（待定）。
 
-### v0.2.2 契约（#81；插入行已实现，过滤与 DDL 见 #82 / #84）
+### v0.2.2 契约（#81；插入行 #85、DDL #83 已实现，过滤下推见 #84）
 
 `ListNodes.filter` 与 `InsertRows` 的契约已冻结（ADR 0019），SQLite 侧实现见 #84 / #85：
 
@@ -194,8 +196,43 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
   显式 NULL → `table_data.not_null_violation`、省略且无默认值 →
   `table_data.not_null_without_default`、生成列 → `table_data.column_not_insertable`、
   CHECK / 外键 / STRICT 类型不匹配 → `config.invalid`（v0.2.2 未登记类型专用码）；
-- `list_children_filtered` 与 DDL 仍走默认实现返回 `capability.unsupported`
-  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`。
+- `list_children_filtered` 仍走默认实现返回 `capability.unsupported`
+  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`；
+  DDL 已由 #83 实现（见下）。
+
+### DDL 查看（#83）
+
+`GetDdl` 直接读 `<库>.sqlite_master.sql`，**永远是数据库原文**：
+`exact = true`、`source = DDL_SOURCE_DATABASE`、`generator_version` 为空。
+
+| 种类 | 结果 | `source_detail` |
+|---|---|---|
+| `TABLE` / `VIEW` / `INDEX` / `TRIGGER` | `sqlite_master.sql` 原文，逐字节等于建对象时的语句（SQLite 会把语句原样保存，包括换行与注释） | `sqlite_master.sql（数据库 <库名>，对象种类 <type>）` |
+| `COLUMN` / `CATALOG` | `metadata.object_kind_unsupported`（种类用错，不是「不存在」） | — |
+| `SCHEMA` / `SEQUENCE` | `capability.unsupported`（SQLite 没有这一层） | — |
+
+- **索引、触发器也可取**：一个 database 内表/视图/索引/触发器共用一个命名空间，
+  因此 `name` 足以定位，不需要所属表；
+- **内部对象没有原文时明确报错**：`sqlite_autoindex_*`（`PRIMARY KEY` / `UNIQUE` 约束隐式
+  创建的索引）的 `sql` 列是 NULL。此时返回 `capability.unsupported` 并说明「引擎内部对象
+  没有保存的 DDL 原文」，**不返回空串、也不拼一段 `CREATE INDEX`**——这个名字是 SQLite
+  保留的，拼出来的语句在别的库里无法执行。`sqlite_sequence` / `sqlite_stat1` 有原文，照常返回；
+- **跨库**：`catalog` 决定读哪个库的 `sqlite_master`（`main` / `temp` / `ATTACH`），
+  同名对象各取各的；
+- **名字大小写**：按 SQLite 标识符语义不敏感（`COLLATE NOCASE`），返回的是库里保存的规范文本。
+
+### DDL 的长度与截断（#83）
+
+DDL **不截断**：`GetDdlResponse` 没有 `truncated` 字段，截断后调用方无法判断，违反
+「不能截了还说 `exact = true` 全量」。ADR 0007 的 64 KiB 上限只约束**单元格**
+（`ColumnValue.truncated` 有配套标志），不适用于 DDL。
+
+- 驱动把 `sqlite_master.sql` 原样返回，1 MiB 的视图原文逐字节一致（用例
+  `ddl_is_not_truncated_at_cell_limits`）；
+- 实际上限由 gRPC 消息上限决定（tonic 默认 4 MiB，本项目未放大）：超过时请求**失败**
+  （客户端拿到错误），而不是收到半截 DDL；
+- 若要为 DDL 引入确定性的体积上限，需要先登记错误码（例如 `metadata.ddl_too_large`）
+  并改契约，本版不做（见 PR 待定）。
 
 ### 已知缺口
 
@@ -210,7 +247,8 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 - 隐式索引（`sqlite_autoindex_*`）不出现在索引列表里（见上）；
 - 有未读完的结果游标时元数据请求返回 `sqlite.query_active`（`FailedPrecondition`），
   避免在游标持有的语句之外再准备语句；
-- DDL 查看计划 v0.2.2；本版不把 `sqlite_master.sql` 当作「数据库返回的原始 DDL」交付。
+- DDL 查看已由 #83 实现：只交付 `sqlite_master.sql` 原文，没有拼装路径（因此 `exact`
+  恒为 `true`）；内部对象（`sqlite_autoindex_*`）没有原文时明确报错。
 
 ## 能力描述符（现状）
 

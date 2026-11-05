@@ -47,7 +47,7 @@
 | 显式事务 | `begin_transaction` / `commit_transaction` / `rollback_transaction` | 是 |
 | 行变更批次 | `apply_row_changes`（#61：校验 + 写入同一把锁） | 是 |
 | 浏览一页 | `browse`（`BrowseTable`，#69） | 是 |
-| 元数据查询 | `list_children` / `list_children_filtered` / `columns` / `primary_key`（`ListNodes` / `GetColumns` / `GetPrimaryKey`，#69、#82） | 是 |
+| 元数据查询 | `list_children` / `list_children_filtered` / `columns` / `primary_key` / `ddl`（`ListNodes` / `GetColumns` / `GetPrimaryKey` / `GetDdl`，#69、#82、#83） | 是 |
 | 行编辑的主键查询 | `ApplyRowChanges` 内的 `table_primary_key`（表数据能力，#69） | 是 |
 | 取消查询 | `cancel` | 否——必须在执行进行中生效，故意旁路 |
 | 取消行变更批次 | `CancelRowChanges`（#70，ADR 0018） | 否——只置位驱动在行间读取的取消令牌 |

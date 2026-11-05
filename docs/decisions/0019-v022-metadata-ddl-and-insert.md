@@ -224,6 +224,33 @@ pub trait MetadataProvider {
 前端提示。本 ADR 取字面读法，并把差异记入 PR「待定」，由编排者确认；若改为逐行保留，
 proto 字段一个都不用改。
 
+## 实现补充（#83，DDL 查看）
+
+契约与本节决策未改；实现时确定的三处细节：
+
+1. **两驱动都不拼装**：SQLite 取 `sqlite_master.sql`（表/视图/索引/触发器），MariaDB 取
+   `SHOW CREATE TABLE` / `SHOW CREATE VIEW` / `SHOW CREATE SEQUENCE` 的第 2 列。
+   因此本版 `exact` 恒为 `true`、`source` 恒为 `DATABASE`、`generator_version` 恒为空；
+   `Ddl::synthesized` 仍只有契约层用例覆盖。拼装是被**避免**的，不是被遗忘的：
+   拼出来的默认值/字符集/约束命名与数据库不一致，用户据此做迁移会踩坑（见「背景」）。
+2. **MariaDB 索引明确报错，不拼装**：MariaDB 不为索引保存独立 DDL（索引是
+   `CREATE TABLE` 的一部分），而 `ObjectRef` 只带 `catalog` / `schema` / `name` / `kind`，
+   不带所属表，无法唯一定位同库中重名的索引。从 `information_schema.STATISTICS` 反拼
+   `CREATE INDEX` 会丢前缀长度、索引类型、表达式索引与可见性——这比「不支持」更容易误导，
+   故返回 `metadata.object_kind_unsupported` 并在文案里指路「读该表的 DDL」。若将来要支持，
+   需先在契约里给索引带上所属表（改 `ObjectRef` 或加父引用字段），单独立 ADR。
+   MariaDB 触发器同理（`SHOW CREATE TRIGGER` 另需权限）。
+3. **不截断**：`GetDdlResponse` 没有 `truncated` 字段，截断后调用方无法判断，直接违反
+   「不能截了还说 `exact = true` 全量」。ADR 0007 的 64 KiB 是单元格规则，不适用于 DDL。
+   实际可用长度由 gRPC 消息上限（tonic 默认 4 MiB，本项目未放大）决定，超限时请求失败。
+   若要引入确定性上限，需先登记专用错误码（例如 `metadata.ddl_too_large`）——属契约增量，
+   本版不做。
+
+SQLite 的 `sqlite_autoindex_*`（隐式索引，`sql` 列为 NULL）没有原文，返回
+`capability.unsupported` 并说明是引擎内部对象；**不返回空串、不伪造** `CREATE INDEX`。
+
+`GetDdl` 经新增的 `SessionHandle::ddl` 在会话执行锁内调用驱动（ADR 0008 的路径表已更新）。
+
 ## 验证
 
 - `backend/crates/driver-api/tests/v022_contract.rs`（10 例）：默认 SPI 实现返回
