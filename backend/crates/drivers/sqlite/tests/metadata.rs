@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
 use sqarvo_driver_api::{
-    ColumnType, ConnectionParams, Driver, DriverSession, ExecuteRequest, MAX_PAGE_SIZE,
-    MetadataProvider, ObjectKind, ObjectRef, PageRequest, QualifiedName, TlsMode,
+    ColumnDefault, ColumnType, ConnectionParams, Driver, DriverSession, ExecuteRequest,
+    MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectRef, PageRequest, QualifiedName, TlsMode,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
 use tempfile::TempDir;
@@ -252,6 +252,75 @@ async fn columns_preserve_declared_type_and_nullability() {
         .await
         .expect("SQLite 对象名大小写不敏感");
     assert_eq!(upper.len(), 5);
+}
+
+/// #59：默认值三态必须可区分；SQLite 没有列级字符集/排序规则，明确返回空。
+#[tokio::test]
+async fn columns_expose_default_value_and_only_what_sqlite_knows() {
+    let (_dir, session) = session().await;
+    exec(
+        &*session,
+        "CREATE TABLE defaults(id INTEGER NOT NULL, \
+         label TEXT NOT NULL DEFAULT 'x', \
+         note TEXT DEFAULT NULL, \
+         bare TEXT, \
+         blank TEXT NOT NULL DEFAULT '', \
+         created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+         expr TEXT NOT NULL DEFAULT (1 + 1))",
+    )
+    .await;
+
+    let provider = metadata_provider(&*session);
+    let columns = provider
+        .columns(&object_ref(&*session, "defaults", ObjectKind::Table))
+        .await
+        .expect("读取列信息");
+    assert_eq!(columns.len(), 7);
+
+    let by_name = |name: &str| {
+        columns
+            .iter()
+            .find(|column| column.name == name)
+            .unwrap_or_else(|| panic!("缺少列 {name}"))
+    };
+
+    // 没有默认值：`pragma_table_info.dflt_value` 为 SQL NULL。
+    assert_eq!(by_name("id").default_value, ColumnDefault::NoDefault);
+    // 默认 NULL：`dflt_value` 是文本 "NULL"，与「没有默认值」不同。
+    assert_eq!(by_name("note").default_value, ColumnDefault::Null);
+    // 可空但没写 DEFAULT：SQLite 不记录隐式默认值，`dflt_value` 仍是 SQL NULL。
+    assert_eq!(by_name("bare").default_value, ColumnDefault::NoDefault);
+    // 有默认值：原样 SQL 文本，不去引号、不求值。
+    assert_eq!(
+        by_name("label").default_value,
+        ColumnDefault::Expression("'x'".to_owned())
+    );
+    assert_eq!(
+        by_name("blank").default_value,
+        ColumnDefault::Expression("''".to_owned()),
+        "默认空串是文本默认值，不是「没有默认值」"
+    );
+    assert_eq!(
+        by_name("created").default_value,
+        ColumnDefault::Expression("CURRENT_TIMESTAMP".to_owned())
+    );
+    // `DEFAULT (1 + 1)` 是表达式：驱动不求值成 2。
+    // （SQLite 自己会去掉最外层括号，`dflt_value` 给出 `1 + 1`；驱动只透传它拿到的文本。）
+    assert_eq!(
+        by_name("expr").default_value,
+        ColumnDefault::Expression("1 + 1".to_owned())
+    );
+
+    // SQLite 没有列级字符集；列排序规则只写在建表 SQL 里，`pragma_table_info` 不提供。
+    // 两者都必须是「不适用」（None），不能填占位值冒充支持。
+    for column in &columns {
+        assert_eq!(
+            column.character_set, None,
+            "列 {} 不应有字符集",
+            column.name
+        );
+        assert_eq!(column.collation, None, "列 {} 不应有排序规则", column.name);
+    }
 }
 
 #[tokio::test]

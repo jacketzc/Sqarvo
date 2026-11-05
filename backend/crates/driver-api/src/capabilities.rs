@@ -28,6 +28,19 @@ pub struct Capabilities {
     pub catalogs: bool,
     /// 存在 Schema 层级。
     pub schemas: bool,
+    /// 支持行编辑：`TableDataProvider::supports_row_edits()` 为 `true`，
+    /// 即浏览可用且 `ApplyRowChanges` 可以提交 update / delete（ADR 0017）。
+    ///
+    /// 与 [`crate::DriverSession::table_data`] 的一致性：这里为 `true` 的驱动，
+    /// `table_data()` 必须返回 `Some`，且 `supports_row_edits()` 必须为 `true`；
+    /// 具体对象是否可写（无主键、视图等）仍由 `TablePage::read_only` 逐个判定。
+    pub row_editing: bool,
+    /// 支持参数化语句：值经绑定的占位符进入语句，不拼进 SQL 文本。
+    ///
+    /// 与 [`crate::DriverSession::supports_parameterized_statements`] 保持一致：
+    /// 这里为 `true` 的驱动，其会话必须实现 `execute_parameterized`，而不是返回
+    /// `capability.unsupported`。能力描述是给通用层做决策用的，不允许「先声明再试」。
+    pub parameterized_statements: bool,
 }
 
 impl Capabilities {
@@ -59,6 +72,12 @@ impl Capabilities {
         if self.schemas {
             names.push("schemas");
         }
+        if self.row_editing {
+            names.push("row_editing");
+        }
+        if self.parameterized_statements {
+            names.push("parameterized_statements");
+        }
         names
     }
 }
@@ -80,5 +99,31 @@ mod tests {
             ..Capabilities::default()
         };
         assert_eq!(capabilities.names(), ["transactions", "query_cancellation"]);
+    }
+
+    #[test]
+    fn editing_capabilities_are_appended_without_moving_old_names() {
+        // 能力名是 gRPC 与前端可见的稳定标识：新增项只能追加，既有顺序不变。
+        let capabilities = Capabilities {
+            transactions: true,
+            row_editing: true,
+            parameterized_statements: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(
+            capabilities.names(),
+            ["transactions", "row_editing", "parameterized_statements"]
+        );
+    }
+
+    #[test]
+    fn minimal_driver_does_not_claim_editing_capabilities() {
+        // 测试替身/最小驱动只声明连接与单条 SQL：两项编辑能力必须为 false，
+        // 否则 ListDrivers 会向通用层谎报能力。
+        let minimal = Capabilities::default();
+        assert!(!minimal.row_editing);
+        assert!(!minimal.parameterized_statements);
+        assert!(!minimal.names().contains(&"row_editing"));
+        assert!(!minimal.names().contains(&"parameterized_statements"));
     }
 }

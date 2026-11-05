@@ -46,7 +46,9 @@ message DriverInfo {
   string display_name = 2;
   string version = 3;
   repeated DatabaseFlavor supported_databases = 4;
-  // 能力描述符，例如 `transactions`、`streaming_results`。
+  // 能力描述符，例如 `transactions`、`streaming_results`、`row_editing`、
+  // `parameterized_statements`。名称是稳定标识：只追加，不改名，不改变既有项的含义。
+  // 前端必须按「未出现即不支持」解释，不得尝试执行后再判断。
   repeated string capabilities = 5;
 }
 

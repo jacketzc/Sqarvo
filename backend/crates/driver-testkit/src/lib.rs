@@ -1183,6 +1183,9 @@ mod tests {
             },
             nullable: true,
             original_type_name: Some("INTEGER".to_owned()),
+            default_value: sqarvo_driver_api::ColumnDefault::Unspecified,
+            character_set: None,
+            collation: None,
         }
     }
 

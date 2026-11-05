@@ -162,7 +162,10 @@ pub trait MetadataProvider: Send + Sync {
 - 数据库特有类型使用 `Value::Unsupported { type_name, text }`；
 - 行是 `Vec<Cell>`，`Cell { value, truncated }` 明确标记大字段截断（ADR 0007）；
 - 默认单格上限 `DEFAULT_MAX_CELL_BYTES = 64 KiB`，文本必须按 UTF-8 字符边界截断
-  （`truncate_text` 提供实现）。
+  （`truncate_text` 提供实现）；
+- 列元数据的默认值是四态 `ColumnDefault`：`Unspecified`（未知）、`NoDefault`（明确没有）、
+  `Null`（默认 NULL）、`Expression(未求值 SQL 文本)`。`character_set` / `collation` 为
+  `Option<String>`，`None` 表示「不适用或未知」（SQLite 没有列级字符集），不得用空串顶替。
 
 MariaDB 驱动的完整类型映射表、`Unsupported` 清单、TIMESTAMP 会话时区处理与取消语义
 见 [mariadb.md](./mariadb.md)。
@@ -212,8 +215,14 @@ pub trait TableDataProvider: Send + Sync {
 - **批次钳制**：`RowChangeRequest::effective_changes()` 截到 500 行，
   `deferred_changes()` 告诉调用方还剩多少行，不得静默丢弃；
 - **能力如实声明**：`table_data()` 为 `None` 表示完全不支持浏览；
-  `supports_row_edits()` 为 `false` 表示只读。`Capabilities` 未加字段（新增字段会破坏两个
-  驱动现有的穷举字面量），因此 `ListDrivers` 暂不展示这两项能力。
+  `supports_row_edits()` 为 `false` 表示只读。
+- **能力位与实现必须一致**：`Capabilities::row_editing` 对应
+  `table_data().is_some() && supports_row_edits()`；`Capabilities::parameterized_statements`
+  对应 `DriverSession::supports_parameterized_statements()` 为 `true` 且
+  `execute_parameterized` 有实现。两个内置驱动（SQLite / MariaDB）都声明为 `true`，
+  `SystemService.ListDrivers` 直接展示 `Capabilities::names()`，因此前端能一次拿到
+  「这个驱动能不能编辑、能不能绑定参数」，不必逐个对象试。
+  未实现的驱动（测试替身、最小驱动）由 `Capabilities::default()` 保持 `false`。
 
 
 ## 新增驱动清单
@@ -241,10 +250,10 @@ pub trait TableDataProvider: Send + Sync {
   （见上「元数据实现现状」），Catalog / Schema / Index / Sequence 与跨库浏览返回
   `capability.unsupported`；`GetDdl` 计划 v0.2.2；
 - 表数据浏览与行编辑：两驱动已实现（`table_data()` 返回 provider，`supports_row_edits()`
-  为 `true`），但仍**不支持插入新行**与非主键排序；这两项能力没有进入 `Capabilities`，
-  `ListDrivers` 不展示，调用方以 `TableDataService` 的错误语义为准；
-- 参数化执行（`execute_parameterized`）的驱动实现：SQLite 与 MariaDB 已用于内部行编辑，
-  对外仍无参数化执行的 RPC（留给 S7）；
+  为 `true`），`Capabilities.row_editing` 已在 `ListDrivers` 中展示；但仍**不支持插入新行**
+  与非主键排序；
+- 参数化执行的 gRPC RPC：SPI（`execute_parameterized`）两驱动已实现，查询侧的参数化 RPC
+  留给 S7；
 - MariaDB 驱动的单次执行超时（请求时明确返回 `capability.unsupported`）；
 - 服务端元数据分页（目前把当前库对象名一次读入内存后切页）；
 - 会话租约与断线重连。

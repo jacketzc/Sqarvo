@@ -115,6 +115,23 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 - 已完成、已取消或不存在的查询返回成功（`OK`），避免前端重复取消变成错误提示；
 - 取消后仍可能收到最后一批已产生的数据，前端应忽略。
 
+## 列元数据的存在性语义
+
+`common.v1.ColumnMeta` 的扩展字段（`default_value` / `character_set` / `collation`）
+用 proto3 的 presence 表达「未设置」，它**不等于**「值为空」：
+
+| 字段状态 | 含义 | 前端必须 |
+|---|---|---|
+| `default_value` 未设置 | 未知：老服务端不提供，或该列来自结果集（结果集没有默认值信息） | 显示「未知」，不得显示为「无默认值」 |
+| `default_value.kind = COLUMN_DEFAULT_NONE` | 明确没有默认值 | 显示「无默认值」 |
+| `default_value.kind = COLUMN_DEFAULT_NULL` | 默认值是 SQL NULL | 显示「默认 NULL」，与空串区分 |
+| `default_value.kind = COLUMN_DEFAULT_EXPRESSION` | 未求值的默认值文本（`expression`） | 当表达式展示，不求值、不推断类型 |
+| `character_set` / `collation` 未设置 | 不适用（例如 SQLite 没有列级字符集）或未知 | 显示「不适用」，不得显示空字符集 |
+
+理由：默认值、字符集、排序规则在数据库之间的可读性差异很大（AGENTS.md §6.2）。用空串
+顶替「没有默认值」会让「默认空串」与「没有默认值」不可区分；用空串顶替「不适用」
+会让前端把 SQLite 显示成「字符集为空」，两者都是伪造事实。
+
 ## 协议演进
 
 - 前端启动时校验 `SystemService.GetVersion.protocol_version` 主版本；

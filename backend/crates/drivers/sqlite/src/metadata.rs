@@ -5,7 +5,8 @@
 //! - [`MetadataProvider::list_children`] 只接受根节点（父节点为空），返回表与视图，
 //!   按对象名排序后分页；Catalog / Schema / Index / Sequence 等层级显式报
 //!   `capability.unsupported`；
-//! - [`MetadataProvider::columns`] 用 `pragma_table_info` 读取声明类型、可空与默认值；
+//! - [`MetadataProvider::columns`] 用 `pragma_table_info` 读取声明类型、可空与默认值
+//!   （`dflt_value` 是未求值的 SQL 文本，见 [`column_default`]）；
 //! - [`MetadataProvider::primary_key`] 用 `pragma_table_info.pk`（主键内顺序）；
 //! - [`MetadataProvider::ddl`] 仍是显式未实现（计划 v0.2.2）。
 //!
@@ -17,8 +18,8 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension};
 use sqarvo_common::{Error, ErrorCode, Result, SessionId};
 use sqarvo_driver_api::{
-    ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind, ObjectNode,
-    ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
+    ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
+    ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
 };
 use sqarvo_metadata::paginate_by_key;
 
@@ -219,7 +220,10 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
     }
 
     let mut statement = connection
-        .prepare("SELECT cid, name, type, \"notnull\" FROM pragma_table_info(?1) ORDER BY cid")
+        .prepare(
+            "SELECT cid, name, type, \"notnull\", dflt_value \
+             FROM pragma_table_info(?1) ORDER BY cid",
+        )
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 列查询失败"))?;
     let rows = statement
         .query_map([name], |row| {
@@ -228,13 +232,14 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(|error| map_sqlite_error(error, "读取 SQLite 列信息失败"))?;
 
     let mut columns = Vec::new();
     for row in rows {
-        let (cid, column_name, declared, not_null) =
+        let (cid, column_name, declared, not_null, dflt_value) =
             row.map_err(|error| map_sqlite_error(error, "读取 SQLite 列行失败"))?;
         let declared = declared.trim();
         columns.push(ColumnMeta {
@@ -244,6 +249,11 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
             // SQLite 只记录 `NOT NULL` 声明；这里如实原样返回，不按主键反推。
             nullable: not_null == 0,
             original_type_name: (!declared.is_empty()).then(|| declared.to_owned()),
+            default_value: column_default(dflt_value.as_deref()),
+            // SQLite 没有列级字符集；`pragma_table_info` 也不提供列排序规则
+            // （它只写在建表 SQL 里，本版不解析 DDL）。两者都按「不适用」返回 `None`。
+            character_set: None,
+            collation: None,
         });
     }
 
@@ -300,6 +310,28 @@ pub(crate) fn object_not_found(name: &str) -> Error {
     Error::not_found(OBJECT_NOT_FOUND, format!("表或视图 {name} 不存在"))
 }
 
+/// 把 `pragma_table_info.dflt_value` 映射为默认值。
+///
+/// **`dflt_value` 是建表语句里的 SQL 文本，不是求值结果**：`DEFAULT 1+1` 给出的
+/// 文本是 `1+1`，不是 `2`；`DEFAULT CURRENT_TIMESTAMP` 给出 `CURRENT_TIMESTAMP`。
+/// 因此非 `NULL` 的文本一律按 [`ColumnDefault::Expression`] 原样透传，不求值、
+/// 不去引号、不做大小写归一。
+///
+/// 三态映射：
+///
+/// - 列为 `NULL`：该列没有 `DEFAULT` 子句 → [`ColumnDefault::NoDefault`]；
+/// - 文本就是 `NULL` 关键字（`DEFAULT NULL`）：[`ColumnDefault::Null`]。SQLite 把
+///   显式默认 NULL 保存成这段文本，与「没有默认值」可区分；`DEFAULT (NULL)`
+///   带括号，按未求值表达式返回 `(NULL)`，不做额外归一；
+/// - 其余文本（含 `''`，即默认空串）：[`ColumnDefault::Expression`]。
+fn column_default(dflt_value: Option<&str>) -> ColumnDefault {
+    match dflt_value.map(str::trim) {
+        None => ColumnDefault::NoDefault,
+        Some(text) if text.eq_ignore_ascii_case("NULL") => ColumnDefault::Null,
+        Some(text) => ColumnDefault::Expression(text.to_owned()),
+    }
+}
+
 /// 把声明类型映射为逻辑类型，并保留长度/精度信息。
 ///
 /// 与结果集映射（`session.rs::map_declared_type`）保持一致：SQLite 的类型是
@@ -352,6 +384,32 @@ fn split_declared_type(declared: &str) -> (&str, Vec<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_default_keeps_the_three_states_apart() {
+        // `dflt_value` 是 SQL 文本：没有 DEFAULT → NULL；`DEFAULT NULL` → 文本 "NULL"。
+        assert_eq!(column_default(None), ColumnDefault::NoDefault);
+        assert_eq!(column_default(Some("NULL")), ColumnDefault::Null);
+        assert_eq!(column_default(Some(" null ")), ColumnDefault::Null);
+        assert_eq!(
+            column_default(Some("'abc'")),
+            ColumnDefault::Expression("'abc'".to_owned())
+        );
+        // 默认空串是文本默认值，不是「没有默认值」。
+        assert_eq!(
+            column_default(Some("''")),
+            ColumnDefault::Expression("''".to_owned())
+        );
+        // 未求值：`1+1` 原样透传，不是 `2`；大写关键字不改写。
+        assert_eq!(
+            column_default(Some("1+1")),
+            ColumnDefault::Expression("1+1".to_owned())
+        );
+        assert_eq!(
+            column_default(Some("CURRENT_TIMESTAMP")),
+            ColumnDefault::Expression("CURRENT_TIMESTAMP".to_owned())
+        );
+    }
 
     #[test]
     fn declared_types_keep_shape_without_faking_sqlite_affinity() {

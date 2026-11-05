@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
 use sqarvo_driver_api::{
-    Cell, ChangeOutcome, ColumnChange, ColumnMeta, ColumnType, ConnectionParams,
+    Cell, ChangeOutcome, ColumnChange, ColumnDefault, ColumnMeta, ColumnType, ConnectionParams,
     DEFAULT_MAX_CELL_BYTES, Driver, DriverSession, ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE,
-    MetadataProvider, ObjectKind, ObjectNode, ObjectRef, PageRequest, QualifiedName,
-    ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowOrder, TableDataProvider,
-    TlsMode, TransactionOptions, Value,
+    MetadataProvider, ObjectKind, ObjectNode, ObjectRef, PageRequest, ParameterizedExecuteRequest,
+    QualifiedName, ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowOrder,
+    TableDataProvider, TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
 
@@ -3163,4 +3163,185 @@ fn int_of(cell: &Cell) -> i64 {
         Value::UInt(value) => i64::try_from(*value).expect("应在 i64 范围内"),
         other => panic!("期望整数，实际 {other:?}"),
     }
+}
+
+/// #59：列元数据的默认值 / 字符集 / 排序规则必须真实反映 `information_schema`。
+///
+/// 三态来自 MariaDB 自己的文本表示，不是驱动的猜测：
+/// `COLUMN_DEFAULT` 为 SQL NULL = 没有默认值；文本 `NULL` = 默认 NULL；其余 = 未求值表达式。
+#[tokio::test]
+async fn metadata_columns_expose_default_charset_and_collation() {
+    let Some(session) = session().await else {
+        return;
+    };
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t_colmeta").await;
+    exec(
+        &*session,
+        "CREATE TABLE sqarvo_t_colmeta (\
+         id INT NOT NULL, \
+         label VARCHAR(32) NOT NULL DEFAULT 'x', \
+         note VARCHAR(32) DEFAULT NULL, \
+         bare VARCHAR(32), \
+         amount INT NOT NULL, \
+         blank VARCHAR(8) NOT NULL DEFAULT '', \
+         created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+    )
+    .await;
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let columns = provider
+        .columns(&md_object(&*session, "sqarvo_t_colmeta", ObjectKind::Table))
+        .await
+        .expect("读取列信息");
+    assert_eq!(columns.len(), 7);
+
+    let by_name = |name: &str| {
+        columns
+            .iter()
+            .find(|column| column.name == name)
+            .unwrap_or_else(|| panic!("缺少列 {name}"))
+    };
+
+    // 没有默认值：NOT NULL 且未写 DEFAULT。
+    assert_eq!(by_name("id").default_value, ColumnDefault::NoDefault);
+    assert_eq!(by_name("amount").default_value, ColumnDefault::NoDefault);
+    // 默认 NULL：与「没有默认值」不同。
+    assert_eq!(by_name("note").default_value, ColumnDefault::Null);
+    assert_eq!(by_name("bare").default_value, ColumnDefault::Null);
+    // 有默认值：原样文本，未求值、不去引号。
+    assert_eq!(
+        by_name("label").default_value,
+        ColumnDefault::Expression("'x'".to_owned())
+    );
+    assert_eq!(
+        by_name("blank").default_value,
+        ColumnDefault::Expression("''".to_owned()),
+        "默认空串是文本默认值，不是「没有默认值」"
+    );
+    match &by_name("created").default_value {
+        ColumnDefault::Expression(text) => {
+            assert!(
+                text.eq_ignore_ascii_case("current_timestamp()"),
+                "默认值必须是数据库原文：{text}"
+            );
+        }
+        other => panic!("表达式默认值应为 Expression，实际 {other:?}"),
+    }
+
+    // 字符型列有字符集与排序规则，且非空。
+    let label = by_name("label");
+    assert_eq!(label.character_set.as_deref(), Some("utf8mb4"));
+    let collation = label.collation.as_deref().expect("字符列必须有排序规则");
+    assert_ne!(collation, "", "排序规则不能是空串");
+    // 数值列没有列级字符集：明确为空，不填占位值。
+    assert_eq!(by_name("amount").character_set, None);
+    assert_eq!(by_name("amount").collation, None);
+    // TIMESTAMP 列不是字符列，同理。
+    assert_eq!(by_name("created").character_set, None);
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t_colmeta").await;
+    session.close().await.unwrap();
+}
+
+/// #59：`parameterized_statements` 能力位必须是真的——值经绑定参数执行，不拼进 SQL。
+#[tokio::test]
+async fn parameterized_execution_binds_values_instead_of_splicing() {
+    let Some(session) = session().await else {
+        return;
+    };
+    assert!(
+        session.supports_parameterized_statements(),
+        "驱动声明了 parameterized_statements 能力，会话必须真的支持"
+    );
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t_param59").await;
+    exec(
+        &*session,
+        "CREATE TABLE sqarvo_t_param59 (id INT NOT NULL PRIMARY KEY, name VARCHAR(64) NULL)",
+    )
+    .await;
+
+    // 带引号与反斜杠的值必须原样入库：拼接 SQL 会在这里出问题。
+    let tricky = "o'brien\\x; DROP TABLE sqarvo_t_param59";
+    let inserted = session
+        .execute_parameterized(ParameterizedExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "INSERT INTO sqarvo_t_param59 (id, name) VALUES (?, ?)".to_owned(),
+            params: vec![Value::Int(1), Value::Text(tricky.to_owned())],
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect("参数化 INSERT 应成功");
+    assert_eq!(
+        inserted.statements[0].rows_affected,
+        Some(1),
+        "参数化 DML 必须如实报告影响行数"
+    );
+
+    // NULL 是有效参数值，不能被当成「没有参数」。
+    session
+        .execute_parameterized(ParameterizedExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "INSERT INTO sqarvo_t_param59 (id, name) VALUES (?, ?)".to_owned(),
+            params: vec![Value::Int(2), Value::Null],
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect("绑定 NULL 应成功");
+
+    let (columns, rows) = {
+        let start = session
+            .execute_parameterized(ParameterizedExecuteRequest {
+                query_id: QueryId::new(),
+                sql: "SELECT id, name FROM sqarvo_t_param59 WHERE id >= ? ORDER BY id".to_owned(),
+                params: vec![Value::Int(1)],
+                max_rows: None,
+                timeout: None,
+            })
+            .await
+            .expect("参数化 SELECT 应成功");
+        (
+            start.statements[0].columns.clone(),
+            start.first_batch.expect("应返回首批行").rows,
+        )
+    };
+    assert_eq!(rows.len(), 2);
+    assert_eq!(text_of(&rows[0][1]), tricky, "值必须原样往返");
+    assert!(rows[1][1].is_null(), "NULL 必须保持 NULL");
+    assert_ne!(
+        rows[1][1].value,
+        Value::Text(String::new()),
+        "NULL 与空串不能混淆"
+    );
+    // 结果集列没有默认值信息：必须是「未知」，不能伪造「无默认值」。
+    assert_eq!(
+        columns[0].default_value,
+        ColumnDefault::Unspecified,
+        "结果集路径没有默认值信息，只能报未知"
+    );
+
+    // 无法绑定的类型必须在发送语句前被拒绝。
+    let error = session
+        .execute_parameterized(ParameterizedExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "SELECT ?".to_owned(),
+            params: vec![Value::Unsupported {
+                type_name: "geometry".to_owned(),
+                text: "POLYGON((0 0,1 1))".to_owned(),
+            }],
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect_err("Unsupported 值不得被绑定");
+    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
+    assert!(
+        !error.message().contains("POLYGON"),
+        "错误文案不得包含值内容：{error}"
+    );
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t_param59").await;
+    session.close().await.unwrap();
 }

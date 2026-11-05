@@ -163,6 +163,45 @@ impl ColumnType {
     }
 }
 
+/// 列默认值。
+///
+/// 四个状态对应四种不同的事实，不能用空串或 `NULL` 互相顶替：
+///
+/// - [`ColumnDefault::Unspecified`]：驱动没有拿到该信息（例如结果集列本身没有
+///   默认值信息，或老服务端不提供）。**不等于**「没有默认值」；
+/// - [`ColumnDefault::NoDefault`]：该列明确没有默认值；
+/// - [`ColumnDefault::Null`]：默认值就是 SQL NULL（`DEFAULT NULL`）。NULL 是
+///   有效默认值，与空字符串不同；
+/// - [`ColumnDefault::Expression`]：数据库返回的**未求值** SQL 文本。
+///
+/// `Expression` 的文本由数据库原样给出：驱动不去引号、不求值、不做大小写归一。
+/// 例如 SQLite 的 `'abc'`、`CURRENT_TIMESTAMP`，MariaDB 的 `current_timestamp()`。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ColumnDefault {
+    /// 未知：驱动未采集或被查询对象没有这项信息。
+    #[default]
+    Unspecified,
+    /// 明确没有默认值。
+    NoDefault,
+    /// 默认值为 SQL NULL。
+    Null,
+    /// 未求值的默认值 SQL 文本。
+    Expression(String),
+}
+
+impl ColumnDefault {
+    /// 稳定的状态标识，用于日志与测试断言。
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::NoDefault => "no_default",
+            Self::Null => "null",
+            Self::Expression(_) => "expression",
+        }
+    }
+}
+
 /// 列元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnMeta {
@@ -176,6 +215,16 @@ pub struct ColumnMeta {
     pub nullable: bool,
     /// 数据库原始类型名，例如 `varchar(64)`。
     pub original_type_name: Option<String>,
+    /// 默认值。见 [`ColumnDefault`]：`Unspecified` 表示未知，不是「没有默认值」。
+    pub default_value: ColumnDefault,
+    /// 列级字符集。
+    ///
+    /// `None` 表示「不适用或未知」：SQLite 没有列级字符集概念（永远为 `None`），
+    /// 结果集路径不映射协议里的字符集编号（避免把编号伪造成名字）。
+    /// 具体原因写在各驱动文档的元数据一节。
+    pub character_set: Option<String>,
+    /// 列级排序规则。语义同 [`ColumnMeta::character_set`]。
+    pub collation: Option<String>,
 }
 
 /// 单个单元格值。
@@ -358,6 +407,24 @@ mod tests {
         assert!(cell.truncated);
         assert!(!cell.is_null());
         assert!(!Cell::new(Value::Null).truncated);
+    }
+
+    #[test]
+    fn column_default_states_stay_distinct() {
+        // 「未知」不是「没有默认值」，也不是「默认 NULL」；空串是文本表达式而不是
+        // 「没有默认值」——三者必须可区分。
+        assert_ne!(ColumnDefault::Unspecified, ColumnDefault::NoDefault);
+        assert_ne!(ColumnDefault::NoDefault, ColumnDefault::Null);
+        assert_ne!(
+            ColumnDefault::NoDefault,
+            ColumnDefault::Expression(String::new())
+        );
+        assert_eq!(ColumnDefault::default(), ColumnDefault::Unspecified);
+        assert_eq!(ColumnDefault::NoDefault.kind_name(), "no_default");
+        assert_eq!(
+            ColumnDefault::Expression("CURRENT_TIMESTAMP".to_owned()).kind_name(),
+            "expression"
+        );
     }
 
     #[test]

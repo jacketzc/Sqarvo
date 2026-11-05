@@ -38,5 +38,6 @@ pub use table_data::{
     invalid_change, no_primary_key, read_only_object, read_only_transaction,
 };
 pub use value::{
-    Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value, truncate_text,
+    Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value,
+    truncate_text,
 };

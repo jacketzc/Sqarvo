@@ -746,6 +746,9 @@ mod tests {
             column_type: sqarvo_driver_api::ColumnType::Text { length: None },
             nullable: true,
             original_type_name: Some("TEXT".to_owned()),
+            default_value: sqarvo_driver_api::ColumnDefault::Unspecified,
+            character_set: None,
+            collation: None,
         }
     }
 
