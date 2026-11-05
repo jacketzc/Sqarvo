@@ -48,6 +48,18 @@ use sqarvo_driver_api::{
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
 use crate::error::map_error;
+
+/// 元数据域的对象不存在码 → 表数据域的对象不存在码。
+///
+/// 两个域复用同一份 `information_schema` 查询，但错误码各自稳定：元数据浏览用
+/// `metadata.object_not_found`（ADR 0019），表数据浏览/行编辑沿用
+/// `mariadb.object_not_found`。不翻译的话，表数据路径会因为复用元数据实现而悄悄换码。
+fn table_data_not_found(error: Error) -> Error {
+    if error.code() == ErrorCode::METADATA_OBJECT_NOT_FOUND {
+        return Error::not_found(crate::error::OBJECT_NOT_FOUND, error.message().to_owned());
+    }
+    error
+}
 use crate::metadata;
 use crate::session::MariaDbSession;
 use crate::value::{map_columns, map_row};
@@ -185,8 +197,12 @@ async fn browse(conn: &mut Conn, object: &ObjectRef, page: &PageRequest) -> Resu
     };
 
     // 列元数据复用 #45 的 GetColumns 路径；SELECT 的列顺序与它完全一致。
-    let columns = metadata::columns(conn, object).await?;
-    let primary_key = metadata::primary_key(conn, object).await?;
+    let columns = metadata::columns(conn, object)
+        .await
+        .map_err(table_data_not_found)?;
+    let primary_key = metadata::primary_key(conn, object)
+        .await
+        .map_err(table_data_not_found)?;
     let page_size = usize::try_from(page.effective_page_size()).unwrap_or(100);
     let qualified = format!(
         "{}.{}",
@@ -416,8 +432,12 @@ async fn apply(
     let Some(table) = metadata::find_table(conn, &database, name).await? else {
         return Err(metadata::object_not_found(name));
     };
-    let columns = metadata::columns(conn, object).await?;
-    let primary_key = metadata::primary_key(conn, object).await?;
+    let columns = metadata::columns(conn, object)
+        .await
+        .map_err(table_data_not_found)?;
+    let primary_key = metadata::primary_key(conn, object)
+        .await
+        .map_err(table_data_not_found)?;
     if primary_key.is_empty() {
         return Err(no_primary_key());
     }

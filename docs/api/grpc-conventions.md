@@ -151,6 +151,13 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 
 - `ListNodes` **逐层懒加载**：`parent` 为空表示根（当前连接库的对象）；一次只返回直接子节点，
   禁止一次拉整棵树；
+- **目录层怎么请求**（v0.2.2，#82）：`parent.kind = OBJECT_KIND_CATALOG` 且不带名字
+  （`catalog` / `schema` / `name` 全空）表示「列出全部 Catalog」；带名字表示展开该目录。
+  目录节点的 `catalog` 与 `name` **都**是库名，客户端把节点引用原样回传即可展开。
+  ⚠️ 这是本版实现取的读法：冻结的 `ObjectKind` 注释只写了「根 → 表/视图/序列」与
+  「CATALOG → 表/视图/序列」，没有给「列出全部 Catalog」的独立表达方式；细节见 PR「待定」；
+- **子节点顺序**：先按种类（`ObjectKind` 声明顺序）、再按名字。v0.2.1 的纯字母序不再是契约，
+  客户端不要自己重排（会让分页顺序与 token 语义不一致）；
 - 层级由 `ObjectKind` + `ObjectRef(catalog, schema, name)` 共同表达，展开规则写在
   `proto/services/v1/metadata.proto` 的 `ObjectKind` 注释里（CATALOG → SCHEMA/TABLE…，
   SCHEMA → TABLE/VIEW/…，TABLE → COLUMN/INDEX/TRIGGER，VIEW → COLUMN，其余为叶子）；
@@ -172,8 +179,11 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
   结果，前端不得再叠加一层过滤来「统一」；
 - 过滤条件的规范化字符串（`name=<contains|exact>:<原文>` + `kinds=<排序后的种类>`）进入分页
   token 的指纹：换条件后旧 token 必须失效（`config.invalid`），不得拿旧 token 继续翻页；
-- **服务端不得静默忽略非空过滤**：驱动未实现下推时返回 `capability.unsupported`。当前
-  rpc-server 在 #82 接线前就按此显式拒绝（返回 `UNIMPLEMENTED` + `capability.unsupported`）。
+- **服务端不得静默忽略非空过滤**：驱动未实现下推时返回 `capability.unsupported`。
+  #82 起 rpc-server 已把非空 `filter` 接线到 SPI 的 `list_children_filtered`：结构非法的过滤
+  （空匹配串、`kinds` 重复或含 `OBJECT_KIND_UNSPECIFIED`、未知枚举值）先报
+  `metadata.filter_invalid`；驱动未实现下推的两个内置驱动返回
+  `UNIMPLEMENTED` + `capability.unsupported`（下推实现在 #84）。
 
 ## DDL 查看（v0.2.2，ADR 0019）
 

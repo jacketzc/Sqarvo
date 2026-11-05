@@ -347,25 +347,81 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 引号/注释感知的扫描器拒绝多条语句，返回 `capability.unsupported`；不会「只执行第一条」再报错。
 集成测试用 `information_schema.tables` 断言第二条语句没有产生任何副作用。
 
-## 元数据（v0.2.1 最小子集）
+## 元数据（v0.2.2：完整层级 + 跨库，ADR 0019 / #82）
 
 实现：`backend/crates/drivers/mariadb/src/metadata.rs`，全部读 `information_schema`。
 
-| 请求 | 数据来源 | 说明 |
+### 层级与数据来源
+
+| 父节点 | 子节点 | 数据来源 |
 |---|---|---|
-| `list_children(None, page)` | `information_schema.TABLES` | 当前数据库的表与视图，`ORDER BY TABLE_NAME`；`TABLE_TYPE` 为 `BASE TABLE` → `Table`，`VIEW` / `SYSTEM VIEW` → `View`，其它原文进 `ObjectKind::Other`；`TABLE_COMMENT` 透传 |
-| `columns(object)` | `information_schema.COLUMNS` | 原始类型名取 `COLUMN_TYPE`（含长度与 `unsigned`），可空取 `IS_NULLABLE`，精度/标度取 `NUMERIC_PRECISION` / `NUMERIC_SCALE`，长度取 `CHARACTER_MAXIMUM_LENGTH`，默认值取 `COLUMN_DEFAULT`，字符集/排序规则取 `CHARACTER_SET_NAME` / `COLLATION_NAME` |
-| `primary_key(object)` | `information_schema.KEY_COLUMN_USAGE` | `CONSTRAINT_NAME = 'PRIMARY'`，`ORDINAL_POSITION` 原样作为主键内顺序（1 开始） |
-| `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」 |
+| 空（根） | 当前数据库的表 / 视图 / 序列 | `information_schema.TABLES`（`TABLE_SCHEMA = DATABASE()`） |
+| `CATALOG`（名字为空 = 目录层本身） | 本连接可见的库（database） | `information_schema.SCHEMATA` |
+| `CATALOG`（名字为库名） | 该库的表 / 视图 / 序列 | `information_schema.TABLES` |
+| `TABLE` | 列 / 索引 / 触发器 | `COLUMNS` / `STATISTICS`（按 `INDEX_NAME` 去重，含 `PRIMARY`）/ `TRIGGERS` |
+| `VIEW` | 列 | `COLUMNS` |
+| 列 / 索引 / 触发器 / 序列（叶子） | 无；请求子节点报 `metadata.object_kind_unsupported` | — |
 
-层级范围：本版只到「当前连接数据库里的表与视图」这一层。根节点（`parent = None`）返回对象列表；
-`Catalog` / `Schema` / `Index` / `Sequence` 等上层或更深层级一律返回
-`capability.unsupported`，**不返回空列表**冒充「没有对象」。MariaDB 的 `database` 映射为
-`catalog`；`schema` 层不存在，带 `schema` 的引用会被拒绝。
+- **`database` 就是 catalog**，**没有 schema 层级**：带 `schema` 的引用和 `SCHEMA` 父节点一律
+  `capability.unsupported`，不伪造空 schema 层；
+- **序列**：MariaDB 10.3+ 的 `CREATE SEQUENCE` 在 `information_schema.TABLES` 里就是
+  `TABLE_TYPE = 'SEQUENCE'` 的一行，因此序列作为叶子节点列出（`has_children = false`），
+  不需要额外的 `SHOW SEQUENCES`；
+- **触发器**：`information_schema.TRIGGERS` 只展示当前账号有 `TRIGGER` 权限的行，
+  所以这里可能比真实触发器少，但不会伪造；
+- 根节点仍是「当前库的对象」（v0.2.1 行为），目录层要显式请求：`parent.kind = CATALOG`
+  且不带名字（见 [grpc-conventions](../api/grpc-conventions.md)）。
 
-库名/表名不拼进 SQL：`TABLE_SCHEMA` / `TABLE_NAME` 都是绑定参数，因此没有反引号转义问题。
+### 跨库与权限
+
+跨库引用必须显式给出 `catalog`（库名）；省略 = 当前连接库（`DATABASE()`），**不隐式切库**。
+库名解析顺序：
+
+1. `information_schema.SCHEMATA` 里可见 → 返回服务端规范名（比较大小写不敏感）；
+2. 不可见 → 用 `SHOW CREATE DATABASE <反引号引用并转义的库名>` 探测：
+   `1049`（ER_BAD_DB_ERROR）→ `metadata.object_not_found`，
+   `1044` / `1142` / `1143` → `metadata.permission_denied`。
+
+**已知限制**：`SCHEMATA` 已按权限过滤，且没有全局权限的账号在两种情形下都只拿到 `1044`
+（实测 MariaDB 11.4：`SHOW CREATE DATABASE mysql` 与 `SHOW CREATE DATABASE <不存在的库>`
+都是 1044，`USE <不存在的库>` 同样是 1044）。此时驱动按服务端原话报
+`metadata.permission_denied`，消息里写明「无法与库不存在区分」，**不猜成**
+`metadata.object_not_found`。1049 的分支由单元测试 `probe_codes_map_to_metadata_errors` 锁定
+（需要带全局权限的账号才能真实触发）。
+
+库名/表名进 `information_schema` 查询时全部是**绑定参数**
+（`TABLE_SCHEMA = ? AND TABLE_NAME = ?`），因此没有拼接与转义问题；唯一把库名当**标识符**用的
+位置是上面的 `SHOW CREATE DATABASE` 探测，那里用反引号引用、内部反引号成对转义
+（反引号、空格、中文都是字面量）。集成用例
+`metadata_object_names_with_backticks_spaces_and_cjk_round_trip` 用含反引号/空格/中文的
+表名、列名、索引名锁定「不需要转义也不会被破坏」。
+
 表名大小写按服务端 `information_schema` 的比较规则（`lower_case_table_names`）处理，
 返回的 `TABLE_NAME` 是服务端给出的规范名。
+
+### 子节点顺序与分页
+
+每一层都由 `sqarvo_metadata::paginate_children` 分页，token 仍是 `v1:<offset>:<16 位指纹>`：
+
+- **顺序**：先按种类（表 → 视图 → 列 → 索引 → 序列/触发器…，即契约 `ObjectKind` 的声明顺序），
+  再按限定名。**v0.2.1 的「只按名字排序」不再是规则**：视图排在表之后，前端不得假设全局字母序；
+- **键**：`<父节点作用域>␟<种类>:<限定名>`；种类进键（列与索引可以同名），作用域进键
+  （跨库/同名表不会互相串页）；
+- 非法 token / 越界 → `config.invalid`；翻页期间集合变化 → `metadata.snapshot_changed`。
+
+### 错误分类
+
+| 情形 | 错误码 | gRPC |
+|---|---|---|
+| 库不存在（服务端回 1049） | `metadata.object_not_found` | `NOT_FOUND` |
+| 库不可读（1044/1142/1143，含「不存在但无全局权限」） | `metadata.permission_denied` | `PERMISSION_DENIED` |
+| 表/视图不存在（`information_schema` 不可见） | `metadata.object_not_found` | `NOT_FOUND` |
+| 该数据库没有这一层（schema） | `capability.unsupported` | `UNIMPLEMENTED` |
+| 种类不适用于该操作（序列取列、叶子展开、视图当表展开） | `metadata.object_kind_unsupported` | `INVALID_ARGUMENT` |
+| `GetDdl` | 仍是显式 `capability.unsupported`（#83 落地） | `UNIMPLEMENTED` |
+
+元数据浏览用 `metadata.object_not_found`；表数据浏览/行编辑仍用
+`mariadb.object_not_found`（`BrowseTable` 的既有契约），两者由驱动显式翻译。
 
 ### 列默认值、字符集与排序规则（#59）
 
@@ -418,7 +474,7 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ### v0.2.2 契约（#81，本驱动尚未实现）
 
 `ListNodes.filter`、`GetDdl` 与 `InsertRows` 的契约已冻结（ADR 0019），MariaDB 侧实现见
-#82 / #84 / #83：
+#84 / #83 / #85：
 
 - **过滤下推**：`information_schema.TABLES.TABLE_NAME` 上用
   `LIKE CONCAT('%', ?, '%')`（`%`、`_`、`\` 先转义成字面量）实现 `contains`，`=` 实现
@@ -457,7 +513,8 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 | `streaming_results` | `true` | 行流 + 驱动侧分批 |
 | `multiple_statements` | `false` | 发送前拒绝 |
 | `transactions` | `true` | 会话内 `START TRANSACTION` / `COMMIT` / `ROLLBACK`，见「事务」 |
-| `catalogs` / `schemas` | `false` | `database` 映射为 catalog；元数据只覆盖当前库的表/视图一层，不声明多库浏览 |
+| `catalogs` | `true` | v0.2.2（#82）：`database` 映射为 catalog，目录层与跨库浏览已实现 |
+| `schemas` | `false` | MariaDB 没有独立 schema 层级 |
 | `row_editing` | `true` | `table_data()` 提供浏览与行编辑（update / delete），见 ADR 0017 |
 | `parameterized_statements` | `true` | `execute_parameterized`：值经协议绑定参数执行，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
@@ -466,9 +523,11 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ## 未支持清单
 
 - 事务的隔离级别选择界面与 savepoint 对外 API（批内 savepoint 已用于行编辑）；
-- 元数据的对象树上层（Catalog / Schema / Index / Sequence）与跨库浏览：显式报
-  `capability.unsupported`；DDL 查看（#84）按 v0.2.2 契约用 `SHOW CREATE TABLE` 原文
+- 元数据的 schema 层级（MariaDB 没有这一层，显式报 `capability.unsupported`）、
+  函数/存储过程/类型列表（`FUNCTION` / `PROCEDURE` / `TYPE` 父节点同样显式报错）；
+  DDL 查看（#83）按 v0.2.2 契约用 `SHOW CREATE TABLE` 原文
   （`exact = true` + `source = DDL_SOURCE_DATABASE`，ADR 0019）；
+- 跨库的表数据浏览/行编辑：元数据可以跨库，`BrowseTable` 仍只作用于当前库；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
 - 参数化执行的对外 RPC（SPI 的 `execute_parameterized` 已实现，查询侧 RPC 留给 S7）
   与预编译语句复用；

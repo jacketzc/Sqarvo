@@ -130,19 +130,19 @@ async fn list_rejects_unknown_levels_tokens_and_oversized_pages_are_clamped() {
     exec(&*session, "CREATE TABLE t01(id INTEGER)").await;
     let provider = metadata_provider(&*session);
 
-    // 上层层级（Catalog/Schema）本版未实现：显式报「不支持」，不返回空列表。
-    let catalog = ObjectRef {
+    // SQLite 没有 schema 层级：必须显式报「这一层不存在」，不返回空列表冒充。
+    let schema = ObjectRef {
         session_id: session.session_id(),
-        qualified_name: QualifiedName::new(Some("main".to_owned()), None, ""),
-        kind: ObjectKind::Catalog,
+        qualified_name: QualifiedName::new(None, Some("public".to_owned()), ""),
+        kind: ObjectKind::Schema,
     };
     let error = provider
-        .list_children(Some(catalog), &page_request(10, None))
+        .list_children(Some(schema), &page_request(10, None))
         .await
-        .expect_err("上层节点必须明确拒绝");
+        .expect_err("不存在的层级必须明确拒绝");
     assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
     assert_eq!(error.category(), ErrorCategory::Unsupported);
-    assert!(error.message().contains("v0.2.2"), "{error}");
+    assert!(error.message().contains("schema"), "{error}");
 
     // 非法 token：显式报错，绝不回退到第一页。
     let error = provider
@@ -385,10 +385,7 @@ async fn missing_objects_and_closed_sessions_are_classified() {
         .columns(&object_ref(&*session, "ghost", ObjectKind::Table))
         .await
         .expect_err("不存在的表必须报错");
-    assert_eq!(
-        missing.code(),
-        ErrorCode::from_static("sqlite.object_not_found")
-    );
+    assert_eq!(missing.code(), ErrorCode::METADATA_OBJECT_NOT_FOUND);
     assert_eq!(missing.category(), ErrorCategory::NotFound);
 
     let missing_pk = provider
