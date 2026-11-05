@@ -455,8 +455,3 @@ mod tests {
         assert_eq!(params.port, 0);
     }
 }
-
-#[allow(dead_code)]
-fn ci_red_probe() -> u32 {
-    "这不是数字，故意制造一次类型错误"
-}
