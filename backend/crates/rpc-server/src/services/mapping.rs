@@ -104,7 +104,7 @@ fn cell_to_proto(cell: &Cell) -> Result<ColumnValue, Status> {
     Ok(value)
 }
 
-fn value_to_proto(value: &Value) -> Result<ColumnValue, Status> {
+pub(crate) fn value_to_proto(value: &Value) -> Result<ColumnValue, Status> {
     let (kind, mapped) = match value {
         Value::Null => (ValueKind::Null, None),
         Value::Bool(value) => (

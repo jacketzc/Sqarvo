@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     ColumnMeta, ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, IsolationLevel, MetadataProvider, ObjectNode, ObjectRef, Page, PageRequest,
-    PrimaryKey, ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret,
-    TableDataProvider, TablePage, TransactionOptions,
+    ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel, MetadataProvider, ObjectNode,
+    ObjectRef, Page, PageRequest, PrimaryKey, ResultBatch, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, Secret, TableDataProvider, TablePage, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -505,6 +505,50 @@ impl SessionHandle {
         if let Err(error) = &result {
             // 驱动可能已经中止了事务（SQLite 自动回滚、MariaDB 事务丢失）：
             // 在执行锁内把登记切到失败态，后续 Commit 不得再问驱动。
+            self.observe_transaction_error(error);
+        }
+        result
+    }
+
+    /// 在会话执行锁内插入一批新行（v0.2.2，#85）。
+    ///
+    /// 与 [`SessionHandle::apply_row_changes`] 同一信封：事务登记校验、驱动写入、
+    /// 「事务被数据库中止」的观察全部在同一把会话执行锁内完成（ADR 0008）。
+    /// 如果先校验再放锁，并发的 `Commit` / `Rollback` 能在校验与驱动调用之间结束
+    /// 事务，插入就会写进已结束的事务（或退化成自动提交）。
+    ///
+    /// # Errors
+    ///
+    /// - 指定事务不存在、已结束或不属于当前会话：`transaction.not_found`；
+    /// - 事务已失败：`transaction.failed`；只读事务：`table_data.read_only`；
+    /// - 未指定事务但会话已有打开事务：`transaction.already_active`；
+    /// - 驱动未声明插入能力：`capability.unsupported`（绝不静默「插入 0 行」）；
+    /// - 驱动执行错误：原样透传。
+    pub async fn insert_rows(
+        &self,
+        requested_transaction: Option<&TransactionId>,
+        request: InsertRowsRequest,
+    ) -> Result<InsertReport> {
+        let _guard = self.execution.lock().await;
+
+        self.ensure_writable_transaction(requested_transaction)?;
+
+        let provider = self.session.table_data().ok_or_else(|| {
+            Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该驱动未实现表数据行编辑",
+            )
+        })?;
+        if !provider.supports_row_insertion() {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该驱动未实现插入新行（需要参数化 INSERT 与主键回传）",
+            ));
+        }
+
+        let result = provider.insert_rows(request).await;
+        if let Err(error) = &result {
+            // 驱动可能已经把事务中止（死锁 / 连接丢失）：在执行锁内切到失败态。
             self.observe_transaction_error(error);
         }
         result

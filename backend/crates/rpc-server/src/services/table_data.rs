@@ -1,4 +1,5 @@
-//! 表数据域实现（`BrowseTable` / `ApplyRowChanges`，ADR 0017）。
+//! 表数据域实现（`BrowseTable` / `ApplyRowChanges`，ADR 0017；
+//! `InsertRows`，v0.2.2 #85 / ADR 0019）。
 //!
 //! 本模块只做三件事：Protobuf ↔ 领域类型、调用驱动 `TableDataProvider`、
 //! 把领域错误映射为 gRPC 状态。分页语义（主键升序、键集游标、无主键只读）全部
@@ -30,6 +31,10 @@
 //! | 超过风险阈值未确认 | `FAILED_PRECONDITION` | `table_data.confirmation_required` |
 //! | `query_id` 已有在途批次 | `ALREADY_EXISTS` | `query.id_in_use` |
 //! | 驱动未实现行变更取消 | `UNIMPLEMENTED` | `capability.unsupported` |
+//! | 驱动未声明插入能力 | `UNIMPLEMENTED` | `capability.unsupported` |
+//! | 插入空批次 / 值类型未指定 | `INVALID_ARGUMENT` | `config.invalid` |
+//! | 插入被截断的值 | `INVALID_ARGUMENT` | `table_data.truncated_value` |
+//! | 插入视图 | `FAILED_PRECONDITION` | `table_data.read_only` |
 //!
 //! # 行编辑的原子性
 //!
@@ -40,6 +45,15 @@
 //!
 //! 批次上限 500 由服务端**钳制**：只执行前 500 条，并在响应里回 `clamped` 与
 //! `deferred_changes`，绝不静默丢弃用户编辑。
+//!
+//! # 插入（v0.2.2，#85）
+//!
+//! `InsertRows` 与行变更共用风险阈值与会话执行锁，但原子性更强：**整批原子**——任一行
+//! 失败会继续跑完其余行（把冲突一次报全），随后整批回滚，`rolled_back = true`、
+//! `total_rows_affected = 0`；`inserted_rows` 仍报语句层成功条数。逐行错误走
+//! `InsertRowResult.error_code`（`table_data.unique_violation` / `not_null_*` /
+//! `column_not_insertable` 等），只有「整批无法执行」才用 `Err`。客户端判成功
+//! **必须**看 `rolled_back`，不能只看逐行 outcome。
 //!
 //! # 会话执行锁（#61、#69）
 //!
@@ -74,19 +88,22 @@ use std::sync::Arc;
 use sqarvo_common::{Error, ErrorCode, QueryId, SessionId, TransactionId};
 use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_driver_api::{
-    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, MAX_ROW_CHANGES_PER_BATCH,
-    ObjectKind, PageRequest, PrimaryKey, ReadOnlyReason, RowChange, RowChangeCancel,
-    RowChangeRequest, RowKey, RowOrder,
+    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, InsertRow,
+    InsertRowsRequest as DomainInsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH,
+    MAX_ROWS_PER_INSERT_BATCH, ObjectKind, PageRequest, PrimaryKey, ReadOnlyReason, RowChange,
+    RowChangeCancel, RowChangeRequest, RowKey, RowOrder,
 };
 use tonic::{Request, Response, Status};
 
 use crate::error::to_status;
-use crate::proto::common::v1::Empty;
+use crate::proto::common::v1::{ColumnValue as ProtoColumnValue, Empty, ValueKind};
 use crate::proto::services::v1::{
     ApplyRowChangesRequest, ApplyRowChangesResponse, BrowseTableRequest, BrowseTableResponse,
-    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome, InsertRowsRequest,
-    InsertRowsResponse, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowDelete,
-    RowOrder as ProtoRowOrder, RowUpdate, table_data_service_server::TableDataService,
+    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome,
+    InsertOutcome as ProtoInsertOutcome, InsertRowResult, InsertRowsRequest, InsertRowsResponse,
+    PrimaryKeyValue, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowDelete,
+    RowKey as ProtoRowKey, RowOrder as ProtoRowOrder, RowUpdate,
+    table_data_service_server::TableDataService,
 };
 use crate::services::mapping;
 use crate::services::metadata::object_ref_from_proto;
@@ -337,19 +354,188 @@ impl TableDataService for TableDataServiceImpl {
         }
     }
 
-    /// `InsertRows`：契约已冻结（#81），驱动侧下推由 #83/#84 实现。
+    /// 插入一批新行（v0.2.2，#85，ADR 0019）。
     ///
-    /// 这里**只**返回明确的「未实现」，不做任何写入：把插入按 update 硬凑、
-    /// 或者返回「插入了 0 行」，都会让前端显示成功而库里没有数据。等
-    /// `TableDataProvider::insert_rows` 有实现（含完整主键回传）后再接线。
+    /// # 顺序
+    ///
+    /// 1. 解析参数、校验会话与对象种类（视图不可插入）；
+    /// 2. 确认驱动**声明**了插入能力（未声明 → `capability.unsupported`，绝不返回
+    ///    「插入 0 行」冒充成功）；
+    /// 3. 钳制到 `MAX_ROWS_PER_INSERT_BATCH`（500），超限部分只计数；
+    /// 4. 风险阈值：预计影响行数 = 本批实际执行的行数（插入恒 1 行/行），
+    ///    沿用 `DEFAULT_RISK_CONFIRMATION_ROWS`，超阈值未确认直接拒绝，一行都不执行；
+    /// 5. 在会话执行锁内完成「事务登记校验 + 驱动插入 + 事务失败态观察」。
+    ///
+    /// # 原子性
+    ///
+    /// 驱动在每个事务/保存点内执行整批：任一行失败仍继续跑完其余行（一次报全），
+    /// 然后整批回滚并置 `rolled_back = true`。**客户端判成功必须看 `rolled_back`**，
+    /// 不能只看逐行 outcome——回滚时逐行结果仍是 `INSERTED`，但行已经不存在。
     async fn insert_rows(
         &self,
-        _request: Request<InsertRowsRequest>,
+        request: Request<InsertRowsRequest>,
     ) -> Result<Response<InsertRowsResponse>, Status> {
-        Err(to_status(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "插入新行尚未实现（契约已冻结，驱动实现见 #83/#84）",
-        )))
+        let request = request.into_inner();
+        let object_proto = request
+            .object
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("InsertRows 必须提供 object"))?;
+        let object = object_ref_from_proto(object_proto)?;
+        validate_session_id(&request.session_id, &object.session_id)?;
+
+        // 空批次不是「插入 0 行」：没有行就没有可提交的内容，按参数错误拒绝。
+        if request.rows.is_empty() {
+            return Err(to_status(Error::invalid_argument(
+                ErrorCode::CONFIG_INVALID,
+                "插入批次不能为空：rows 至少提供一行",
+            )));
+        }
+        if object.kind != ObjectKind::Table {
+            // 视图没有可写基底：明确只读，不尝试写入。
+            return Err(to_status(Error::failed_precondition(
+                ErrorCode::TABLE_DATA_READ_ONLY,
+                "该对象只读，不能插入新行",
+            )));
+        }
+
+        let handle = self
+            .sessions
+            .acquire(&object.session_id)
+            .await
+            .map_err(to_status)?;
+        let provider = handle.table_data().ok_or_else(table_data_unsupported)?;
+        if !provider.supports_row_insertion() {
+            return Err(to_status(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该驱动未实现插入新行（需要参数化 INSERT 与完整主键回传）",
+            )));
+        }
+
+        // 批次上限：只为会执行的行分配对象，超出部分只计数（AGENTS.md §10）。
+        let deferred_rows = request.rows.len().saturating_sub(MAX_ROWS_PER_INSERT_BATCH);
+        let rows = insert_rows_from_proto(&request.rows)?;
+
+        // 风险阈值与行变更共用同一个值，不另立插入专用阈值。
+        ensure_risk_acknowledged(rows.len(), request.acknowledge_risk)?;
+
+        let requested_transaction = requested_transaction(&request.transaction_id)?;
+
+        // 主键定义只用于给回传的主键值**命名**（顺序即主键顺序）。读取与插入分别在
+        // 执行锁内各走一次，中间没有写路径能改变主键定义。
+        let primary_key = handle.table_primary_key(&object).await.map_err(to_status)?;
+
+        let report = handle
+            .insert_rows(
+                requested_transaction.as_ref(),
+                DomainInsertRowsRequest {
+                    object: object.clone(),
+                    rows,
+                },
+            )
+            .await
+            .map_err(to_status)?;
+
+        let results = report
+            .results
+            .iter()
+            .map(|result| insert_result_to_proto(result, &primary_key))
+            .collect::<Result<Vec<_>, Status>>()?;
+
+        Ok(Response::new(InsertRowsResponse {
+            results,
+            total_rows_affected: report.rows_affected(),
+            clamped: deferred_rows > 0 || report.deferred > 0,
+            deferred_rows: u32::try_from(deferred_rows + report.deferred).unwrap_or(u32::MAX),
+            rolled_back: report.rolled_back,
+            inserted_rows: report.inserted_rows(),
+        }))
+    }
+}
+
+/// 一条驱动插入结果 → proto `InsertRowResult`。
+///
+/// 主键列名取自 `GetPrimaryKey`（驱动只回传值，顺序与主键一致）；失败行不带主键，
+/// 避免前端拿半截主键去改行。
+fn insert_result_to_proto(
+    result: &sqarvo_driver_api::InsertRowResult,
+    primary_key: &PrimaryKey,
+) -> Result<InsertRowResult, Status> {
+    let key = match &result.key {
+        Some(key) => Some(ProtoRowKey {
+            values: key
+                .values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    Ok(PrimaryKeyValue {
+                        column: primary_key
+                            .columns
+                            .get(index)
+                            .map(|column| column.name.clone())
+                            .unwrap_or_default(),
+                        value: Some(mapping::value_to_proto(value)?),
+                    })
+                })
+                .collect::<Result<Vec<_>, Status>>()?,
+        }),
+        None => None,
+    };
+    Ok(InsertRowResult {
+        row_index: u32::try_from(result.index).unwrap_or(u32::MAX),
+        outcome: insert_outcome_to_proto(&result.outcome) as i32,
+        key,
+        rows_affected: result.rows_affected(),
+        error_code: result
+            .outcome
+            .error_code()
+            .map(|code| code.to_string())
+            .unwrap_or_default(),
+        message: result.message.clone().unwrap_or_default(),
+    })
+}
+
+/// Protobuf 的插入行 → 驱动插入行（只转换会执行的前 500 行）。
+///
+/// `VALUE_KIND_UNSPECIFIED` 是非法请求（`config.invalid`）：把「没说类型」当成 NULL
+/// 或默认值都会写入错误数据。被截断的值由 `value_from_proto` 拒绝
+/// （`table_data.truncated_value`）。
+fn insert_rows_from_proto(
+    rows: &[crate::proto::services::v1::InsertRow],
+) -> Result<Vec<InsertRow>, Status> {
+    let mut converted = Vec::with_capacity(rows.len().min(MAX_ROWS_PER_INSERT_BATCH));
+    for row in rows.iter().take(MAX_ROWS_PER_INSERT_BATCH) {
+        let mut values = Vec::with_capacity(row.values.len());
+        for change in &row.values {
+            let cell: &ProtoColumnValue = change.value.as_ref().ok_or_else(|| {
+                to_status(Error::invalid_argument(
+                    ErrorCode::CONFIG_INVALID,
+                    format!("列 {} 缺少值：插入的列必须给出 ColumnValue", change.column),
+                ))
+            })?;
+            if cell.kind == ValueKind::Unspecified as i32 {
+                return Err(to_status(Error::invalid_argument(
+                    ErrorCode::CONFIG_INVALID,
+                    format!(
+                        "列 {} 的值未指定类型（VALUE_KIND_UNSPECIFIED）；写 NULL 请显式给 VALUE_KIND_NULL",
+                        change.column
+                    ),
+                )));
+            }
+            values.push(ColumnChange {
+                column: change.column.clone(),
+                value: mapping::value_from_proto(cell)?,
+            });
+        }
+        converted.push(InsertRow::new(values));
+    }
+    Ok(converted)
+}
+
+/// 驱动插入结果 → proto `InsertOutcome`。
+fn insert_outcome_to_proto(outcome: &sqarvo_driver_api::InsertOutcome) -> ProtoInsertOutcome {
+    match outcome {
+        sqarvo_driver_api::InsertOutcome::Inserted { .. } => ProtoInsertOutcome::Inserted,
+        sqarvo_driver_api::InsertOutcome::Failed { .. } => ProtoInsertOutcome::Failed,
     }
 }
 
