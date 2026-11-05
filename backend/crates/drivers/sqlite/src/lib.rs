@@ -6,7 +6,8 @@
 //! - `Statement` 借用 `Connection`，游标需要跨多次 gRPC 调用存活，
 //!   因此由专用线程在 `serve_query` 的内层循环中持有语句与 Rows；
 //! - 已实现：连接、只读模式、单语句执行、语句摘要、分批拉取、取消（`InterruptHandle`，
-//!   幂等）、关闭、显式事务（`BEGIN`/`COMMIT`/`ROLLBACK`，ADR 0017 §3）。
+//!   幂等）、关闭、显式事务（`BEGIN`/`COMMIT`/`ROLLBACK`，ADR 0017 §3）、
+//!   元数据最小子集（表/视图列表、列、主键；`sqlite_master` + `pragma_table_info`）。
 //!
 //! 事务语义（见 `session.rs` 的 `begin_transaction` / `commit_transaction` /
 //! `rollback_transaction`）：一个会话最多一个打开事务；只读事务用连接级
@@ -17,6 +18,7 @@
 
 mod driver;
 mod error;
+mod metadata;
 mod session;
 
 pub use driver::SqliteDriver;

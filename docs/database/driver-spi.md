@@ -95,6 +95,8 @@ pub trait MetadataProvider: Send + Sync {
         -> Result<Page<ObjectNode>>;
     async fn columns(&self, object: &ObjectRef) -> Result<Vec<ColumnMeta>>;
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
+    // 主键读取（ADR 0017 的 `GetPrimaryKey`）；默认实现返回 capability.unsupported。
+    async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey>;
 }
 ```
 
@@ -102,7 +104,32 @@ pub trait MetadataProvider: Send + Sync {
 - MariaDB / MySQL 的 database 映射为 `catalog`，没有独立 `schema`；
 - PostgreSQL 有 database + schema；
 - 不要为了统一而丢弃层级，也不要伪造不存在的层级；
-- `PageRequest` / `Page` 与会话无关，定义在 `driver-api`，分页上限 500。
+- `PageRequest` / `Page` 与会话无关，定义在 `driver-api`，分页上限 500；
+- `primary_key` 与 `TableDataProvider::primary_key` 读同一份主键定义，两者必须一致；
+  无主键返回空 `PrimaryKey`，不得返回 rowid / ctid 之类的近似主键。
+
+### 分页 token（v0.2.1 起）
+
+对象列表用 `sqarvo-metadata::paginate_by_key`：token 是**不透明字符串**
+`v1:<offset>:<16 位十六进制指纹>`，指纹为有序对象名集合的 FNV-1a 64 位摘要。
+
+- 调用方只能原样回传；结构非法、版本未知、偏移越界 → `config.invalid`，
+  **不得**静默回退到第一页；
+- 对象名集合在翻页期间变化 → `metadata.snapshot_changed`（`failed_precondition`）；
+- 同名对象整体替换（名字集合不变）不会被指纹区分，文档必须写明这一边界。
+
+## 元数据实现现状（v0.2.1）
+
+两个内置驱动都实现了「当前库的表/视图」一层：`ListNodes` 根节点、`GetColumns`、`GetPrimaryKey`。
+
+| 驱动 | 列表 | 列 | 主键 | DDL |
+|---|---|---|---|---|
+| SQLite | `sqlite_master` | `pragma_table_info` | `pragma_table_info.pk` | 未实现（v0.2.2） |
+| MariaDB | `information_schema.TABLES` | `information_schema.COLUMNS` | `information_schema.KEY_COLUMN_USAGE` | 未实现（v0.2.2） |
+
+上层/更深层级（Catalog、Schema、Index、Sequence）与跨库浏览显式返回
+`capability.unsupported`，不返回空列表。细节见 [SQLite](./sqlite.md#元数据v021-最小子集) 与
+[MariaDB](./mariadb.md#元数据v021-最小子集)。
 
 ## 值模型
 
@@ -189,15 +216,16 @@ pub trait TableDataProvider: Send + Sync {
 ## 尚未实现
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
-- MariaDB 驱动的元数据（接口已定义，M4 接线；能力描述符当前为 `false`）。显式事务已在
-  驱动层实现（`transactions = true`），语义见 [MariaDB 驱动](./mariadb.md#事务)；
+- 元数据的上层层级与 DDL：两驱动只实现「当前库的表/视图 + 列 + 主键」
+  （见上「元数据实现现状」），Catalog / Schema / Index / Sequence 与跨库浏览返回
+  `capability.unsupported`；`GetDdl` 计划 v0.2.2；
 - 表数据浏览与行编辑的驱动实现：SPI 与 proto 已冻结（ADR 0017），
   `table_data()` 目前全部返回 `None`，`supports_row_edits()` 为 `false`，
   请求时返回 `capability.unsupported`；
 - 参数化执行（`execute_parameterized`）的驱动实现：SPI 已冻结，默认返回
   `capability.unsupported`；对外仍无参数化执行的 RPC（留给 S7）；
 - MariaDB 驱动的单次执行超时（请求时明确返回 `capability.unsupported`）；
-- 驱动级元数据遍历的具体实现（接口已定义）；
+- 服务端元数据分页（目前把当前库对象名一次读入内存后切页）；
 - 事务在 gRPC 层的接线（接口已定义，M4 完成）；
 - 会话租约与断线重连。
 

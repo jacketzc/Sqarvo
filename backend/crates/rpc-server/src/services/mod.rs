@@ -63,7 +63,7 @@ impl Services {
             system: SystemServiceImpl::new(Arc::clone(&sessions), drivers),
             connection: ConnectionServiceImpl::new(Arc::clone(&sessions), Arc::clone(&queries)),
             credential: CredentialServiceImpl::new(credentials),
-            metadata: MetadataServiceImpl::new(),
+            metadata: MetadataServiceImpl::new(Arc::clone(&sessions)),
             // 事务服务与会话管理共享同一份登记表：`Begin` 绑定的会话必须是
             // `Disconnect` / 断连清理看到的那一个（#44）。
             transaction: TransactionServiceImpl::new(Arc::clone(&sessions)),

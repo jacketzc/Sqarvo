@@ -66,6 +66,11 @@ enum Command {
         id: TransactionId,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// 元数据读取（#45）：在会话连接上执行，避免另开连接看不到事务内未提交的 DDL。
+    Metadata {
+        request: crate::metadata::MetadataRequest,
+        reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
@@ -271,6 +276,20 @@ impl MariaDbSession {
         Ok(())
     }
 
+    /// 把元数据请求交给会话任务执行。只由 [`crate::metadata`] 调用。
+    pub(crate) async fn metadata_call(
+        &self,
+        request: crate::metadata::MetadataRequest,
+    ) -> Result<crate::metadata::MetadataReply> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Metadata { request, reply })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
     fn closed_error() -> Error {
         Error::failed_precondition(SESSION_CLOSED, "会话已关闭")
     }
@@ -310,6 +329,12 @@ async fn run_session(
             }
             Command::Rollback { id, reply } => {
                 let result = rollback_transaction(&mut conn, id, &state).await;
+                let _ = reply.send(result);
+            }
+            Command::Metadata { request, reply } => {
+                // 元数据只读，不改变事务状态；失败也不升级事务状态
+                // （information_schema 查询失败不会让服务端回滚用户事务）。
+                let result = crate::metadata::handle(&mut conn, request).await;
                 let _ = reply.send(result);
             }
             Command::Close { reply } => {
@@ -728,6 +753,13 @@ async fn serve_query(
                     "当前会话有未读完的结果集，请先读完或关闭再操作事务",
                 )));
             }
+            // 未读完的结果集仍在连接上，此时发元数据查询会与游标交错。
+            Command::Metadata { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再读取元数据",
+                )));
+            }
             Command::Fetch {
                 query_id: requested,
                 statement_index,
@@ -833,6 +865,10 @@ fn batch_limit(requested: Option<u32>) -> usize {
 impl DriverSession for MariaDbSession {
     fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    fn metadata(&self) -> Option<&dyn sqarvo_driver_api::MetadataProvider> {
+        Some(self)
     }
 
     async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {

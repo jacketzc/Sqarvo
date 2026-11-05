@@ -55,6 +55,11 @@ enum Command {
         transaction_id: TransactionId,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// 元数据读取（#45）：与会话查询共用线程，避免第二个连接看不到 `:memory:` 库。
+    Metadata {
+        request: crate::metadata::MetadataRequest,
+        reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
@@ -151,6 +156,19 @@ impl SqliteSession {
         Ok(())
     }
 
+    /// 把元数据请求交给会话线程执行。只由 [`crate::metadata`] 调用。
+    pub(crate) async fn metadata_call(
+        &self,
+        request: crate::metadata::MetadataRequest,
+    ) -> Result<crate::metadata::MetadataReply> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Metadata { request, reply })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
     fn closed_error() -> Error {
         Error::failed_precondition(SESSION_CLOSED, "会话已关闭")
     }
@@ -206,6 +224,10 @@ fn run_connection(
                     &mut transaction,
                     &transaction_id,
                 ));
+            }
+            Command::Metadata { request, reply } => {
+                // 元数据只是读取：不改变事务簿记，也不依赖 `query_only` 开关。
+                let _ = reply.send(crate::metadata::handle(&connection, request));
             }
             Command::Execute { request, reply } => {
                 if transaction.is_some_and(|open| !open.is_active()) {
@@ -554,6 +576,14 @@ fn serve_query(
                     "当前会话已有在途查询，请先读完或关闭后再回滚事务",
                 )));
             }
+            // 元数据读取要在游标释放后进行：语句与 Rows 正借用连接，
+            // 此时再准备新语句会与游标交错。调用方先读完或 close_query。
+            Command::Metadata { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再读取元数据",
+                )));
+            }
             Command::Fetch {
                 query_id: requested,
                 statement_index,
@@ -758,6 +788,10 @@ fn prepare_error(error: rusqlite::Error) -> Error {
 impl DriverSession for SqliteSession {
     fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    fn metadata(&self) -> Option<&dyn sqarvo_driver_api::MetadataProvider> {
+        Some(self)
     }
 
     async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {

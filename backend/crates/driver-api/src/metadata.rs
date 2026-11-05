@@ -7,8 +7,9 @@ use std::fmt;
 
 use async_trait::async_trait;
 
-use sqarvo_common::{Result, SessionId};
+use sqarvo_common::{Error, ErrorCode, Result, SessionId};
 
+use crate::table_data::PrimaryKey;
 use crate::value::ColumnMeta;
 
 /// 完全限定名。缺失的层级为 `None`，例如 MySQL 没有独立的 Schema 层。
@@ -192,6 +193,22 @@ pub trait MetadataProvider: Send + Sync {
 
     /// 获取 DDL；数据库不提供时返回 `capability.unsupported`。
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
+
+    /// 读取主键定义（ADR 0017 的 `GetPrimaryKey`）。
+    ///
+    /// 无主键返回空 [`PrimaryKey`]（视图通常如此），**不得**返回 rowid / ctid
+    /// 之类的近似主键。列顺序即数据库真实的复合主键顺序，`position` 从 1 开始。
+    ///
+    /// 与 [`crate::TableDataProvider::primary_key`] 读的是同一份数据库元数据：
+    /// 前者服务元数据浏览，后者服务行编辑定位，两者必须给出相同结果。
+    /// 默认实现表示「该驱动不提供主键查询」，返回 `capability.unsupported`，
+    /// 绝不以空主键冒充「没有主键」。
+    async fn primary_key(&self, _object: &ObjectRef) -> Result<PrimaryKey> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供主键查询",
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -11,13 +11,15 @@
 //! - 显式事务在同一会话连接上执行 `START TRANSACTION` / `COMMIT` / `ROLLBACK`；
 //!   事务中会隐式提交的 DDL / `TRUNCATE` 等语句在发送前拒绝，绝不静默提交
 //!   （见 `docs/database/mariadb.md`「事务」）；
-//! - 元数据在 M4 接线，未实现时按 SPI 默认实现返回 `capability.unsupported`。
+//! - 元数据最小子集（#45）：表/视图列表、列、主键全部读 `information_schema`；
+//!   DDL 仍显式未实现（计划 v0.2.2）。
 
 #![warn(missing_docs)]
 
 mod config;
 mod driver;
 pub mod error;
+mod metadata;
 mod session;
 mod sql;
 mod value;

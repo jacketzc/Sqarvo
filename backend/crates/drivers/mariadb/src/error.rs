@@ -39,6 +39,8 @@ pub const READ_ONLY_TRANSACTION: ErrorCode =
     ErrorCode::from_static("mariadb.read_only_transaction");
 /// 事务随连接断开/超时而丢失，无法确认提交结果。
 pub const TRANSACTION_LOST: ErrorCode = ErrorCode::from_static("mariadb.transaction_lost");
+/// 连接没有选择数据库，无法列出对象。
+pub const NO_DATABASE: ErrorCode = ErrorCode::from_static("mariadb.no_database");
 
 /// 取服务端错误码（仅 `Server` 类错误）。
 pub(crate) fn server_code(error: &mysql_async::Error) -> Option<u16> {
