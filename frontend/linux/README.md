@@ -36,7 +36,10 @@ MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径
 NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交、逐行错误展示、
 > 100 行/含删除的风险确认、事务徽标（自动提交 / 事务中 / 失败态 / 已断开）与
 开始/提交/回滚按钮。无主键表只读并在横幅里说明「无稳定排序 / 无法稳定定位行」；
-断连时丢弃未提交变更并说明后端已强制回滚事务。
+断连时丢弃未提交变更并说明后端已强制回滚事务。**提交中可取消**（#89）：「提交更改」在
+批次执行期间变成「取消提交」，前端自己生成批次 `query_id` 并调 `CancelRowChanges`，
+取消后整批回滚、脏行保留可重试（状态行写明「已执行 N 条随后整批回滚」）；在途登记在
+成功/失败/取消/断连后都会清理。
 
 **语法高亮尚未实现**：编辑器是纯文本，编辑器上方如实标注「当前为纯文本编辑，语法高亮
 将在后续版本提供」，不用配色暗示已有高亮。
@@ -542,6 +545,9 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-auto-confirm-risk` | 无人值守时自动确认风险对话框（仍走同一个对话框与提交路径） |
 | `--qa-data-fail-txn` | 重放「服务端报 `transaction.failed`」的失败路径（走同一个 `show_failure`） |
 | `--qa-data-replay-cancelled` | 重放「批次被取消（`cancelled=true`）」的结果（走同一个 `show_applied`；注入的是响应，不是真的取消，原因见下） |
+| `--qa-data-edit-range <start>:<count>:<column>:<value>` | 批量编辑连续行（每行都走与单元格编辑同一条路径），500 行批次用 |
+| `--qa-data-cancel-after-ms <n>` | 提交**真正发出**后 n 毫秒点「取消提交」（真的发 `CancelRowChanges`） |
+| `--qa-expect-submit <phase\|outcome\|button\|status>=<value>` | 截图时刻断言在途批次（阶段/结束方式逐字相等，按钮与状态行按包含比对） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
 | `--qa-column-info <column>` | 打开表后**点该列的列头**展开浮层，并高亮该列（点击坐标取列头控件的真实几何中心，走与用户点击同一个列头点击处理） |
@@ -584,19 +590,53 @@ podman exec <mariadb> mariadb -u… -p… sqarvo_test_62 \
 死锁（1213），必须由第二条会话制造，单会话无法复现；注入点调用的仍是真实 RPC 错误
 回来时的同一个 `show_failure`，徽标、按钮、横幅都走真实代码。
 
-#### 批次取消结果的取证（#77）
+#### 提交中取消：真实取消（#89）与结果渲染（#77）
+
+前端在提交时**自己生成** `query_id`（`query_<uuid>`，与 `QueryService` 的 ID 同形）随
+`ApplyRowChanges` 发出，并在 worker 里登记为在途批次；提交期间「提交更改」按钮变成
+「取消提交」，点击调 `CancelRowChanges`。下面这条命令造 500 行 update，提交后 300 ms 点取消：
 
 ```bash
-# 先改两行（1 更新 + 1 删除），再重放「取消」响应
-… --qa-data-table demo_items --qa-data-edit 0:note:alpha-edit --qa-data-delete-row 1 \
-  --qa-data-replay-cancelled --screenshot …/data-page-cancelled.png --screenshot-delay-ms 5200
+# 让一批 500 行真的跑不完（约 1 s）：每次改 note 时在行边界停 2 ms。
+# 生产里这种耗时来自慢库；这里用触发器造出同一个现象，前端一行代码都不为它改。
+podman exec sqarvo-mariadb-test mariadb -usqarvo_test -psqarvo_test_only sqarvo_test_89 -e '
+CREATE TRIGGER items89_slow_before BEFORE UPDATE ON items89 FOR EACH ROW
+BEGIN IF OLD.note <> NEW.note THEN SET @sqarvo89_pause = SLEEP(0.002); END IF; END'
+
+pkill -x sqarvo-desktop; pkill -x sqarvo-backend; rm -rf /tmp/sqarvo-89-run
+XDG_CONFIG_HOME=/tmp/sqarvo-cfg-89 SQARVO_QA_PASSWORD='***' \
+SQARVO_BACKEND_BIN=…/backend/target/debug/sqarvo-backend \
+  ./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/profile89.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-data-table items89 --qa-data-edit-range 0:500:note:bulk-edit \
+  --qa-auto-confirm-risk --qa-data-commit --qa-data-cancel-after-ms 300 \
+  --qa-expect-submit outcome=cancelled --qa-expect-submit status=已取消 \
+  --screenshot ~/sqarvo-v022-shots/89-submit-cancel.png --screenshot-delay-ms 7000
+
+# 外部复核：库里 0 行变化（已执行的行随批次回滚）
+podman exec sqarvo-mariadb-test mariadb -usqarvo_test -psqarvo_test_only sqarvo_test_89 \
+  -e "SELECT COUNT(*) total, SUM(note='orig') orig FROM items89;"
 ```
 
-取消同样只能重放**响应**：`CancelRowChanges` 要打在**在途**批次上，而前端当前不生成批次
-`query_id`（`apply_row_changes` 留空，服务端生成后只随响应回显），也没有任何取消调用点，
-所以单会话里拿不到可取消的批次 ID。注入点与真实响应走同一个 `show_applied`（`cancelled = true`
-与 `executed_changes`，`results` 为空、`total_rows_affected = 0`），状态行文案、脏行是否保留、
-按钮可用性都是真实代码路径；拿到的是一个「取消后界面怎么显示」的证据，而不是「取消 RPC 能用」的证据。
+- `--qa-data-cancel-after-ms` 从「提交真正发出」的那一刻开始计时（提交前还有风险确认对话框，
+  按启动时间算会让取消落在批次结束之后）；
+- 取消在**行边界**生效：日志里 `executed_changes` > 0 证明真的跑到一半，而外部 SQL 复核
+  仍是 0 行变化（已执行的那些随批次整批回滚）；
+- 提交中的界面同样可断言：`--qa-expect-submit phase=submitting --qa-expect-submit button=取消提交`；
+- 批次先结束、取消点击才到（`--qa-data-cancel-after-ms 1500`）：按钮已经回到「提交更改」，
+  这一下不发 `CancelRowChanges`、不报错，也不覆盖「已提交 N 行」的结果文案
+  （被取消且还有脏行时才当作「重试提交」）；
+- 真实往返的证据是这两行日志（不是重放）：
+
+```text
+[data] t=+4360ms 提交 500 条行变更（事务：自动提交，query_id=query_4bc08170-…）
+[data] t=+4660ms 发送 CancelRowChanges（query_id=query_4bc08170-…）
+[data] t=+4662ms CancelRowChanges 返回成功（query_id=query_4bc08170-…，往返 1ms）
+```
+
+`--qa-data-replay-cancelled`（#77）仍然保留，但用途只剩一个：回归「取消**结果**怎么渲染」
+（`cancelled = true`、`results` 为空、`total_rows_affected = 0` 时不能显示成「已提交 0 行」）。
+它注入的是响应，不证明取消 RPC 能用；要证明取消到达服务端，看上面那两行 `CancelRowChanges` 日志。
 
 #### 列信息浮层的取证（#87）
 

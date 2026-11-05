@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -43,6 +43,7 @@ use crate::config::{self, SavedConnection};
 use crate::proto::services::v1::{
     InsertRow, IsolationLevel, ObjectRef, RowDelete, RowUpdate, TransactionState,
 };
+use crate::submit_batch::{CancelRequest, SubmitOutcome, SubmitRegistry, SubmitSnapshot};
 
 /// 已连接状态下的健康探测间隔。
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -143,6 +144,8 @@ pub enum Command {
         /// 同一次提交信封里的选项（风险确认 + 待插入的新行）。
         options: SubmitOptions,
     },
+    /// 取消正在提交的行变更批次（幂等：重复点、批次已结束都只记日志）。
+    CancelRowChanges,
     /// 开始事务（一个会话同时最多一个）。
     BeginTransaction {
         /// 只读 / 隔离级别。
@@ -190,6 +193,15 @@ pub enum TaskUpdate {
     },
     /// 行变更提交结果。
     Applied(Result<ApplyReport, TableFailure>),
+    /// `CancelRowChanges` 的往返结果（失败才需要改界面：批次仍在执行）。
+    RowChangesCancel {
+        /// 被取消的批次 ID（与请求逐字一致）。
+        query_id: String,
+        /// RPC 结果。
+        result: Result<(), TableFailure>,
+        /// 往返耗时（毫秒），证明取消没有排在批次后面。
+        elapsed_ms: u128,
+    },
     /// 插入新行结果（`InsertRows`）。
     Inserted(Result<InsertReport, TableFailure>),
     /// 开始事务。
@@ -358,6 +370,8 @@ pub enum TableEvent {
     Applied(ApplyReport),
     /// 新行已插入（或整批回滚）：界面按 `rolled_back` 判定成败，逐行错误码逐条展示。
     Inserted(InsertReport),
+    /// 在途提交批次的状态变化（按钮切成「取消提交」/「正在取消…」/恢复）。
+    Submit(SubmitSnapshot),
     /// 表数据 / 事务操作失败（已分类，界面直接展示）。
     Failed(TableFailure),
     /// 事务状态变化（徽标数据）。
@@ -573,6 +587,11 @@ impl WorkerHandle {
         });
     }
 
+    /// 请求取消在途的行变更批次（幂等：重复调用不会重复发 RPC）。
+    pub fn cancel_row_changes(&self) {
+        let _ = self.commands.send(Command::CancelRowChanges);
+    }
+
     /// 请求开始事务（可指定隔离级别），非阻塞。
     pub fn begin_transaction(&self, options: BeginOptions) {
         let _ = self.commands.send(Command::BeginTransaction { options });
@@ -633,6 +652,8 @@ async fn worker_loop(
     // 当前表数据浏览（cursor 只有这里持有）与当前事务。
     let mut table: Option<TableState> = None;
     let mut transaction: Option<OpenTransaction> = None;
+    // 在途提交批次（客户端生成的 query_id + 状态机，见 `submit_batch`）。
+    let mut submit = SubmitRegistry::new();
     let mut health = tokio::time::interval(HEALTH_INTERVAL);
     health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -648,6 +669,8 @@ async fn worker_loop(
                             let client = active_session.client.clone();
                             cleanup_query(&client, &mut active).await;
                         }
+                        // 在途行变更批次同样要清理：登记先清空，取消尽力送达。
+                        abandon_submit_batch(&mut submit, session.as_ref(), "主动断开").await;
                         db_session = None;
                         active_driver = None;
                         // 断开后表数据与事务全部失效（后端会强制回滚事务）。
@@ -680,6 +703,8 @@ async fn worker_loop(
                             if let Some(query_id) = active.take().and_then(|query| query.query_id) {
                                 close_in_background(session.as_ref(), &query_id, &commands_tx);
                             }
+                            // 在途批次属于旧会话：换会话前清理登记，不留悬空条目。
+                            abandon_submit_batch(&mut submit, session.as_ref(), "切换会话").await;
                             db_session = Some(outcome.session_id.clone());
                             active_driver = Some(outcome.driver_id.clone());
                             // 表数据与事务都绑定在旧会话上：新会话一律从零开始。
@@ -1005,11 +1030,34 @@ async fn worker_loop(
                             continue;
                         }
                         let count = updates.len() + deletes.len();
+                        // 先登记再发请求：取消请求必须能找到这一批（服务端也是「先登记
+                        // 令牌再执行」，否则早到的取消会落进「还没登记」的窗口）。
+                        let snapshot = match submit.begin(count) {
+                            Ok(snapshot) => snapshot,
+                            Err(blocked) => {
+                                eprintln!(
+                                    "[data] t=+{}ms {}（在途批次 {}）",
+                                    crate::qa::elapsed_ms(),
+                                    blocked.reason(),
+                                    submit.snapshot().short_id()
+                                );
+                                // 界面保持在途状态：重复提交不得把「取消提交」按钮打回原形。
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Submit(submit.snapshot())))
+                                    .await;
+                                continue;
+                            }
+                        };
+                        let query_id = snapshot.query_id.clone().unwrap_or_default();
                         eprintln!(
-                            "[data] t=+{}ms 提交 {count} 条行变更（事务：{}）",
+                            "[data] t=+{}ms 提交 {count} 条行变更（事务：{}，query_id={query_id}）",
                             crate::qa::elapsed_ms(),
                             transaction_id.as_deref().unwrap_or("自动提交")
                         );
+                        // 界面据此把按钮切成「取消提交」并显示批次 ID。
+                        let _ = events
+                            .send(Event::Table(TableEvent::Submit(snapshot)))
+                            .await;
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
                         tokio::spawn(async move {
@@ -1021,10 +1069,65 @@ async fn worker_loop(
                                     updates,
                                     deletes,
                                     options.acknowledge_risk,
+                                    &query_id,
                                 )
                                 .await;
                             let _ = sender.send(Command::Task(TaskUpdate::Applied(result)));
                         });
+                    }
+                    Some(Command::CancelRowChanges) => {
+                        match submit.request_cancel() {
+                            CancelRequest::Send { query_id } => {
+                                eprintln!(
+                                    "[data] t=+{}ms 发送 CancelRowChanges（query_id={query_id}）",
+                                    crate::qa::elapsed_ms()
+                                );
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Submit(submit.snapshot())))
+                                    .await;
+                                match session.as_ref() {
+                                    Some(active_session) => {
+                                        let client = active_session.client.clone();
+                                        let sender = commands_tx.clone();
+                                        tokio::spawn(async move {
+                                            let started = Instant::now();
+                                            let result = client.cancel_row_changes(&query_id).await;
+                                            let elapsed_ms = started.elapsed().as_millis();
+                                            // 真实往返的日志：请求发出与返回各一行，
+                                            // 端到端取证靠它证明取消真的到了服务端。
+                                            match &result {
+                                                Ok(()) => eprintln!(
+                                                    "[data] t=+{}ms CancelRowChanges 返回成功（query_id={query_id}，往返 {elapsed_ms}ms）",
+                                                    crate::qa::elapsed_ms()
+                                                ),
+                                                Err(failure) => eprintln!(
+                                                    "[data] t=+{}ms CancelRowChanges 失败（query_id={query_id}，往返 {elapsed_ms}ms）：[{}] {}",
+                                                    crate::qa::elapsed_ms(),
+                                                    failure.code(),
+                                                    failure.detail()
+                                                ),
+                                            }
+                                            let _ = sender.send(Command::Task(
+                                                TaskUpdate::RowChangesCancel {
+                                                    query_id,
+                                                    result,
+                                                    elapsed_ms,
+                                                },
+                                            ));
+                                        });
+                                    }
+                                    None => eprintln!(
+                                        "[data] 未连接数据库：CancelRowChanges 未发送（query_id={query_id}）"
+                                    ),
+                                }
+                            }
+                            // 幂等：重复点、批次已结束、没有在途批次——不发 RPC、不报错、
+                            // 不改界面（服务端对未知/已结束批次同样返回成功）。
+                            CancelRequest::Ignore { reason } => eprintln!(
+                                "[data] t=+{}ms 忽略取消提交：{reason}",
+                                crate::qa::elapsed_ms()
+                            ),
+                        }
                     }
                     Some(Command::BeginTransaction { options }) => {
                         let Some(active_session) = session.as_ref() else {
@@ -1293,15 +1396,55 @@ async fn worker_loop(
                                 }
                             }
                         }
-                        TaskUpdate::Applied(result) => match result {
+                        TaskUpdate::Applied(result) => {
+                            // 批次结束（成功 / 取消 / 失败）：**先**清理在途登记，
+                            // 再按结果更新界面。断连、失败、取消都在这一条路径上收敛，
+                            // 不会留下悬空登记。
+                            let registered = submit
+                                .in_flight()
+                                .map(|batch| batch.query_id().to_owned());
+                            if let Ok(report) = &result
+                                && registered.as_deref() != Some(report.query_id.as_str())
+                            {
+                                // 回显的批次 ID 对不上：说明这一批不是我们登记的那批，
+                                // 取消会打空。如实记录，不静默。
+                                eprintln!(
+                                    "[data] 批次 ID 不一致：请求={registered:?}，响应={}",
+                                    report.query_id
+                                );
+                            }
+                            let outcome = match &result {
+                                Ok(report) if report.cancelled => SubmitOutcome::Cancelled,
+                                Ok(_) => SubmitOutcome::Applied,
+                                Err(_) => SubmitOutcome::Failed,
+                            };
+                            let executed = match &result {
+                                Ok(report) => report.executed_changes,
+                                Err(_) => 0,
+                            };
+                            if registered.is_some() {
+                                let snapshot = submit.finish(outcome, executed);
+                                eprintln!(
+                                    "[data] t=+{}ms 批次登记已清理（query_id={}，结果={}）",
+                                    crate::qa::elapsed_ms(),
+                                    snapshot.query_id.as_deref().unwrap_or(""),
+                                    outcome.name()
+                                );
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Submit(snapshot)))
+                                    .await;
+                            }
+                            match result {
                             Ok(report) => {
                                 eprintln!(
-                                    "[data] t=+{}ms 行变更已提交：影响 {} 行，失败 {} 行，钳制={}，未执行 {}",
+                                    "[data] t=+{}ms 行变更已提交：影响 {} 行，失败 {} 行，钳制={}，未执行 {}，已取消={}，已执行 {} 条",
                                     crate::qa::elapsed_ms(),
                                     report.total_rows_affected,
                                     report.failed_rows(),
                                     report.clamped,
-                                    report.deferred_changes
+                                    report.deferred_changes,
+                                    report.cancelled,
+                                    report.executed_changes
                                 );
                                 let _ = events.send(Event::Table(TableEvent::Applied(report))).await;
                             }
@@ -1317,7 +1460,30 @@ async fn worker_loop(
                                 }
                                 emit_table_failure(&events, failure).await;
                             }
-                        },
+                            }
+                        }
+                        TaskUpdate::RowChangesCancel {
+                            query_id,
+                            result,
+                            elapsed_ms,
+                        } => {
+                            if let Err(failure) = result {
+                                // 取消失败（例如驱动不支持）：批次仍在执行，退回
+                                // 「正在提交」并如实说明，界面不得显示成「已取消」。
+                                eprintln!(
+                                    "[data] t=+{}ms 取消提交未生效（query_id={query_id}，往返 {elapsed_ms}ms），批次仍在执行",
+                                    crate::qa::elapsed_ms()
+                                );
+                                let snapshot = submit.cancel_failed(format!(
+                                    "取消失败：[{}] {}",
+                                    failure.code(),
+                                    failure.detail()
+                                ));
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Submit(snapshot)))
+                                    .await;
+                            }
+                        }
                         TaskUpdate::Inserted(result) => match result {
                             Ok(report) => {
                                 // 成功与否**只看 rolled_back**：整批原子，逐行 INSERTED
@@ -1439,6 +1605,8 @@ async fn worker_loop(
                         // 断连清理：对活动查询 Cancel + Close，失败忽略（要求 8）。
                         let client = active_session.client.clone();
                         cleanup_query(&client, &mut active).await;
+                        // 断连不得留悬空登记：先清理再丢会话。
+                        abandon_submit_batch(&mut submit, Some(active_session), "健康探测失败").await;
                         db_session = None;
                         active_driver = None;
                         table = None;
@@ -1459,6 +1627,8 @@ async fn worker_loop(
         let client = active_session.client.clone();
         cleanup_query(&client, &mut active).await;
     }
+    // 退出同样要清掉在途提交登记（断连/退出不得留悬空条目）。
+    abandon_submit_batch(&mut submit, session.as_ref(), "退出").await;
     if let Err(error) = supervisor.shutdown().await {
         // 清理失败必须如实报告，不能假装成功。
         eprintln!("[sqarvo-desktop] 退出时清理后端失败：{error}");
@@ -1695,6 +1865,42 @@ async fn emit_table_failure(events: &Sender<Event>, failure: TableFailure) {
         let _ = events.send(Event::Disconnected(failure.message())).await;
     } else {
         let _ = events.send(Event::Table(TableEvent::Failed(failure))).await;
+    }
+}
+
+/// 断连清理：清空在途提交登记，并尽力让服务端在下一个行边界停下。
+///
+/// 登记**先**清空（之后再问「还有在途批次吗」一定是没有），取消是尽力而为：
+/// 最多等 200 ms，绝不让断连流程卡在一个已经不健康的后端上。这也是「断连不留
+/// 悬空登记」的唯一实现点，单测在 [`crate::submit_batch`]。
+async fn abandon_submit_batch(
+    submit: &mut SubmitRegistry,
+    session: Option<&Session>,
+    reason: &str,
+) {
+    let cleanup = submit.disconnect();
+    let Some(query_id) = cleanup.cancel_query_id else {
+        return;
+    };
+    eprintln!("[data] 断连清理：在途批次 {query_id} 登记已清空（{reason}），请求取消");
+    let Some(client) = session.map(|session| session.client.clone()) else {
+        return;
+    };
+    match tokio::time::timeout(
+        Duration::from_millis(200),
+        client.cancel_row_changes(&query_id),
+    )
+    .await
+    {
+        Ok(Ok(())) => eprintln!("[data] 断连清理：CancelRowChanges 已送达（query_id={query_id}）"),
+        Ok(Err(failure)) => eprintln!(
+            "[data] 断连清理：CancelRowChanges 失败（忽略）：[{}] {}",
+            failure.code(),
+            failure.detail()
+        ),
+        Err(_) => eprintln!(
+            "[data] 断连清理：CancelRowChanges 超时（忽略，后端即将终止，query_id={query_id}）"
+        ),
     }
 }
 

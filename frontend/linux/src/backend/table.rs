@@ -300,6 +300,9 @@ pub struct ApplyReport {
     /// 仅 `cancelled = true` 时有意义；未取消时为 0。用它说明「真的跑到一半」，
     /// 而不是「一条都没跑」。
     pub executed_changes: u32,
+    /// 服务端回显的批次 ID（#89）：应与请求里客户端自己生成的 `query_id` 逐字一致，
+    /// 不一致说明这一批不是我们登记的那批，日志里要能看出来。
+    pub query_id: String,
 }
 
 /// 状态行的语义色调（映射到 GTK 的 CSS class，但本模块不依赖 GTK）。
@@ -1047,6 +1050,7 @@ mod tests {
             deferred_changes: 0,
             cancelled: true,
             executed_changes,
+            query_id: format!("query_{executed_changes}"),
         }
     }
 
@@ -1058,6 +1062,7 @@ mod tests {
             deferred_changes: 0,
             cancelled: false,
             executed_changes: 0,
+            query_id: String::new(),
         }
     }
 
@@ -1129,6 +1134,7 @@ mod tests {
             deferred_changes: 20,
             cancelled: false,
             executed_changes: 0,
+            query_id: String::new(),
         };
         let status = report.status_line(0, 20);
         assert_eq!(status.tone, StatusTone::Warning);

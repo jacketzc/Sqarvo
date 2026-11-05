@@ -44,6 +44,10 @@ use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::{
     IsolationLevel, RowDelete, RowOrder, RowUpdate, TransactionState,
 };
+use crate::submit_batch::{
+    CommitClick, SubmitPhase, SubmitSnapshot, commit_button_label, commit_click,
+    status_line as submit_status_line,
+};
 use crate::table_data::{
     ChangeBatch, InsertDraft, InsertMode, IsolationOption, ReadOnlyCause, RiskAssessment,
     TableDraft, TransactionBadge, TxnStatus, begin_summary, edit_text, isolation_options,
@@ -101,6 +105,14 @@ pub struct DataPageObservation {
     pub edits_allowed: bool,
     /// 横幅文本（未显示时为 `None`）。
     pub banner: Option<String>,
+    /// 「提交更改 / 取消提交」按钮的可见文案。
+    pub commit_button_label: String,
+    /// 状态行文本（提交/取消的进度与结果都在这句里）。
+    pub status_text: String,
+    /// 在途批次阶段（`idle` 表示没有批次）。
+    pub submit_phase: SubmitPhase,
+    /// 批次结束方式（在途或从未提交时为 `None`）。
+    pub submit_outcome: Option<crate::submit_batch::SubmitOutcome>,
 }
 
 /// 列信息面板的一行：六个字段的控件（断言读它们的文本）。
@@ -142,6 +154,8 @@ pub struct DataCallbacks {
     pub fetch_page: Rc<dyn Fn()>,
     /// 提交行变更（updates / deletes / 风险确认）。
     pub apply: ApplyCallback,
+    /// 取消在途的行变更批次（worker 侧幂等：重复调用不会重复发 RPC）。
+    pub cancel_submit: Rc<dyn Fn()>,
     /// 开始事务（只读开关 + 隔离级别）。
     pub begin: Rc<dyn Fn(BeginOptions)>,
     /// 提交事务。
@@ -462,6 +476,8 @@ pub struct DataPage {
     last_fetch_value: Cell<f64>,
     /// 正在提交的批次（用于把逐行结果映射回行号）。
     pending_batch: RefCell<Option<ChangeBatch>>,
+    /// 在途提交批次的状态快照（worker 推来；按钮文案与「取消提交」入口都由它决定）。
+    submit: RefCell<Option<SubmitSnapshot>>,
     /// 新行草稿（「新增行」之后存在；提交成功或放弃后清空）。
     insert: RefCell<Option<InsertDraft>>,
     /// 插入成功后才提交的脏行批次（一次「提交更改」里插入先行，避免半套写入）。
@@ -837,6 +853,7 @@ impl DataPage {
             pages: Cell::new(0),
             last_fetch_value: Cell::new(0.0),
             pending_batch: RefCell::new(None),
+            submit: RefCell::new(None),
             insert: RefCell::new(None),
             after_insert_batch: RefCell::new(None),
             driver_id: RefCell::new(None),
@@ -886,7 +903,7 @@ impl DataPage {
             page.buttons
                 .commit_changes
                 .clone()
-                .connect_clicked(move |_| page.request_commit());
+                .connect_clicked(move |_| page.on_commit_clicked());
         }
         {
             let page = Rc::clone(&page);
@@ -2236,6 +2253,7 @@ impl DataPage {
         self.clear_column_info();
         self.draft.replace(None);
         self.pending_batch.replace(None);
+        self.submit.replace(None);
         self.insert.replace(None);
         self.after_insert_batch.replace(None);
         self.txn_card.set_visible(false);
@@ -2562,6 +2580,8 @@ impl DataPage {
             draft.discard();
         }
         self.pending_batch.replace(None);
+        // worker 已清空在途登记（断连清理）：界面不能再显示「取消提交」。
+        self.submit.replace(None);
         self.badge.borrow_mut().disconnect();
         self.sync_badge();
         self.has_more.set(false);
@@ -2633,10 +2653,10 @@ impl DataPage {
 
     /// QA：重放「批次被取消」的结果（`--qa-data-replay-cancelled`）。
     ///
-    /// **这不是真的取消**：前端当前既不生成也不保存批次 `query_id`（`client.rs` 留空，
-    /// 服务端生成后只随响应回显），更没有 `CancelRowChanges` 调用点，所以单会话里
-    /// 制造不出「执行到一半被打断」的真实取消。这里构造一个与 proto 同形的
-    /// `cancelled` 响应，走**同一个** `show_applied`，用于取证状态行文案与脏行是否保留。
+    /// **这不是真的取消**（#89 之后真实取消走 `--qa-data-cancel-after-ms` 与
+    /// [`Self::request_cancel_submit`]）。保留它的唯一用途是回归**渲染**：构造一个与
+    /// proto 同形的 `cancelled` 响应（`results` 为空、`total_rows_affected = 0`），
+    /// 走**同一个** `show_applied`，验证状态行不会退化成「已提交 0 行」、脏行不被清空。
     pub fn qa_replay_cancelled(self: &Rc<Self>) {
         let (batch, changes) = {
             let draft = self.draft.borrow();
@@ -2666,6 +2686,7 @@ impl DataPage {
             deferred_changes: 0,
             cancelled: true,
             executed_changes,
+            query_id: "query_qa-replay".to_owned(),
         });
     }
 
@@ -2689,7 +2710,103 @@ impl DataPage {
             } else {
                 None
             },
+            commit_button_label: self
+                .buttons
+                .commit_changes
+                .label()
+                .map(|label| label.to_string())
+                .unwrap_or_default(),
+            status_text: self.status.text().to_string(),
+            submit_phase: self
+                .submit
+                .borrow()
+                .as_ref()
+                .map_or(SubmitPhase::Idle, |snapshot| snapshot.phase),
+            submit_outcome: self
+                .submit
+                .borrow()
+                .as_ref()
+                .and_then(|snapshot| snapshot.outcome),
         }
+    }
+
+    /// worker 推来的在途批次状态：按钮文案、状态行与「取消提交」入口都跟着它走。
+    ///
+    /// 只有 worker 会改登记：界面只消费快照，不自己发明批次状态。
+    pub fn show_submit(&self, snapshot: SubmitSnapshot) {
+        eprintln!(
+            "[data] 批次状态：phase={}，query_id={}，变更 {} 条，已执行 {} 条",
+            snapshot.phase.name(),
+            snapshot.query_id.as_deref().unwrap_or("（无）"),
+            snapshot.changes,
+            snapshot.executed_changes
+        );
+        if let Some((text, tone)) = submit_status_line(&snapshot) {
+            self.set_status(&text, tone);
+        }
+        self.submit.replace(Some(snapshot));
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    /// 「提交更改 / 取消提交」是同一个按钮：按当前批次状态分派。
+    ///
+    /// 在途时点它就是取消，取消中/已结束时点它不会误触发新提交（幂等）。
+    pub fn on_commit_clicked(self: &Rc<Self>) {
+        let snapshot = self.submit.borrow().clone();
+        let pending = self.pending_change_count();
+        match commit_click(snapshot.as_ref(), pending) {
+            CommitClick::Cancel => self.request_cancel_submit(),
+            CommitClick::Submit => self.request_commit(),
+            CommitClick::Ignore(reason) => {
+                eprintln!(
+                    "[data] t=+{}ms 忽略按钮点击：{reason}（批次 {}，待提交 {pending}）",
+                    crate::qa::elapsed_ms(),
+                    snapshot.as_ref().map_or("", SubmitSnapshot::short_id)
+                );
+            }
+        }
+    }
+
+    /// 待提交条数（脏行 + 新行草稿）：与「提交更改（N）」文案里的 N 同一口径。
+    fn pending_change_count(&self) -> usize {
+        let changes = self
+            .draft
+            .borrow()
+            .as_ref()
+            .map_or(0, |draft| draft.risk().total());
+        changes + usize::from(self.insert.borrow().is_some())
+    }
+
+    /// 点「取消提交」：只切本地状态并转给 worker，置位取消令牌在服务端完成。
+    ///
+    /// 幂等：没有在途批次、或已经请求过取消，都只记一行日志（不发 RPC、不改界面）。
+    pub fn request_cancel_submit(self: &Rc<Self>) {
+        let Some(snapshot) = self.submit.borrow().clone() else {
+            eprintln!("[data] 没有在途批次，忽略取消提交");
+            return;
+        };
+        if !snapshot.can_cancel() {
+            eprintln!(
+                "[data] 批次 {} 当前状态 {} 不可取消，忽略",
+                snapshot.short_id(),
+                snapshot.phase.name()
+            );
+            return;
+        }
+        eprintln!(
+            "[data] t=+{}ms 点击「取消提交」：批次 {}（{} 条变更）",
+            crate::qa::elapsed_ms(),
+            snapshot.short_id(),
+            snapshot.changes
+        );
+        self.set_status(
+            &format!("正在取消提交（批次 {}）…", snapshot.short_id()),
+            "normal",
+        );
+        // 取消请求已发出：按钮先禁用，等服务端结果（取消中不得重复发 RPC）。
+        self.buttons.commit_changes.set_sensitive(false);
+        (self.callbacks.cancel_submit)();
     }
 
     /// 提交按钮入口：先做风险判定，必要时弹确认对话框。
@@ -2805,6 +2922,18 @@ impl DataPage {
         self.pending_batch.replace(Some(batch));
         self.set_busy(true);
         self.set_status("正在提交…", "normal");
+        // QA：`--qa-data-cancel-after-ms` 的计时**从这里开始**（提交真正发出的那一刻），
+        // 不是从进程启动或点击按钮算起——中间还有风险确认对话框要等。
+        if let Some(millis) = crate::qa::data_cancel_after_ms() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(millis), move || {
+                eprintln!(
+                    "[qa] t=+{}ms 提交已发出 {millis}ms，点击「取消提交」",
+                    crate::qa::elapsed_ms()
+                );
+                page.qa_cancel_submit();
+            });
+        }
         (self.callbacks.apply)(updates, deletes, SubmitOptions::changes(acknowledge_risk));
     }
 
@@ -3267,6 +3396,11 @@ impl DataPage {
     /// QA：点「提交更改」。
     pub fn qa_commit(self: &Rc<Self>) {
         self.request_commit();
+    }
+
+    /// QA：点「提交更改 / 取消提交」按钮（同一个 `clicked` 信号，与用户点击同一条路径）。
+    pub fn qa_cancel_submit(self: &Rc<Self>) {
+        self.buttons.commit_changes.emit_clicked();
     }
 
     /// QA：点「开始事务」（先打开卡片再确认，与用户点击走同一条路径）。
@@ -3737,9 +3871,10 @@ impl DataPage {
             )
         };
         self.dirty_label.set_text(&text);
-        self.buttons.commit_changes.set_label(&format!(
-            "提交更改（{}）",
-            risk.total() + usize::from(has_insert)
+        // 在途时同一个按钮就是「取消提交」：文案由批次状态决定，不在这里拼。
+        self.buttons.commit_changes.set_label(&commit_button_label(
+            self.submit.borrow().as_ref(),
+            risk.total() + usize::from(has_insert),
         ));
     }
 
@@ -3772,9 +3907,17 @@ impl DataPage {
         self.buttons
             .refresh
             .set_sensitive(self.draft.borrow().is_some() && !busy);
-        self.buttons
-            .commit_changes
-            .set_sensitive(editing_enabled && pending > 0 && !busy);
+        // 「提交更改」在在途时变成「取消提交」：必须可点；取消中（已在等结果）
+        // 与普通状态都按原规则（有脏行且不在忙）。
+        let submit_phase = self.submit.borrow().as_ref().map(|snapshot| snapshot.phase);
+        let commit_sensitive = match submit_phase {
+            Some(SubmitPhase::Submitting) => true,
+            Some(SubmitPhase::Cancelling) => false,
+            Some(SubmitPhase::Idle | SubmitPhase::Done) | None => {
+                editing_enabled && pending > 0 && !busy
+            }
+        };
+        self.buttons.commit_changes.set_sensitive(commit_sensitive);
         self.buttons
             .discard
             .set_sensitive(editing_enabled && (dirty > 0 || has_insert) && !busy);
