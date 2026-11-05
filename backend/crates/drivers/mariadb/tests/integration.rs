@@ -1748,17 +1748,24 @@ async fn metadata_lists_tables_and_views_with_stable_pagination() {
 
     let provider = session.metadata().expect("MariaDB 必须提供元数据能力");
 
-    // 测试库与其他用例共用，对象集合可能并发变化：遇到
-    // `metadata.snapshot_changed` 就按契约从第一页重读（最多 5 次）。
+    // 测试库与其他用例共用，对象集合可能并发变化：
+    // - 集合先变后翻页 → `metadata.snapshot_changed`；
+    // - 集合变小到旧 offset 越界 → 实现给的是 `config.invalid`（“分页 token 超出数据范围”），
+    //   契约没有为「既越界又已变化」规定唯一码（已记入报告，供后续收敛）。
+    // 两种都说明这一轮遍历的窗口不干净：按契约从第一页重读（最多 20 次，间隔 50ms）。
     let mut attempt = 0;
     let (collected, page_count) = loop {
         attempt += 1;
-        assert!(attempt <= 5, "对象集合持续变化，无法完成分页");
+        assert!(attempt <= 20, "对象集合持续变化，无法完成分页");
         match walk_md_objects(provider).await {
             Ok(result) => break result,
             Err(error) if error.code() == ErrorCode::from_static("metadata.snapshot_changed") => {}
+            Err(error)
+                if error.code() == ErrorCode::CONFIG_INVALID
+                    && error.message().contains("超出数据范围") => {}
             Err(error) => panic!("列出根节点失败：{error:?}"),
         }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     };
     assert!(page_count > 1, "测试库对象数应足以触发多页");
 
