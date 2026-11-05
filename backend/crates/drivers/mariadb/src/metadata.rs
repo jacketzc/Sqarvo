@@ -42,25 +42,34 @@
 //! 每一层都用 [`sqarvo_metadata::paginate_children`]：先按种类、再按限定名排序；键里带
 //! 种类（列与索引可以同名）与父节点作用域。token 是不透明字符串
 //! （`v1:<offset>:<指纹>`），非法 token 显式报错、绝不回退第一页。
+//!
+//! # 对象搜索（#84）
+//!
+//! `ListNodes.filter` 的名称条件与 `kinds` 都**下推进 `information_schema` 的 SQL**
+//! （`TABLE_NAME LIKE CONCAT('%', ?, '%')` 等），过滤后的结果集才切页；过滤结果的 token
+//! 是 `v2:<offset>:<指纹>:<过滤标签>`，换条件即 `config.invalid`。大小写与重音跟着列的
+//! 排序规则（`utf8mb3_general_ci` 下 `LIKE` 折叠大小写与重音），驱动不加 `LOWER()`。
 
 use async_trait::async_trait;
 use mysql_async::prelude::*;
-use mysql_async::{Conn, Row as MyRow};
+use mysql_async::{Conn, Params, Row as MyRow, Value as MyValue};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result, SessionId};
 use sqarvo_driver_api::{
-    ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
-    ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
+    ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectFilter,
+    ObjectKind, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn,
+    QualifiedName,
 };
-use sqarvo_metadata::paginate_children;
+use sqarvo_metadata::{mariadb_name_condition, paginate_children_filtered};
 
 use crate::error::{NO_DATABASE, map_error, server_code};
 use crate::session::MariaDbSession;
 
 /// 元数据请求。由 [`MetadataProvider`] 构造，交给会话任务执行。
 pub(crate) enum MetadataRequest {
-    /// 列出子节点；`None` 表示根。
+    /// 列出子节点；`None` 表示根。`filter` 为空等价于不过滤。
     List {
         parent: Option<ObjectRef>,
+        filter: ObjectFilter,
         page: PageRequest,
     },
     /// 列出列信息。
@@ -82,8 +91,12 @@ pub(crate) enum MetadataReply {
 /// 在会话任务（独占连接）上执行元数据请求。
 pub(crate) async fn handle(conn: &mut Conn, request: MetadataRequest) -> Result<MetadataReply> {
     match request {
-        MetadataRequest::List { parent, page } => Ok(MetadataReply::Nodes(
-            list_children(conn, parent.as_ref(), &page).await?,
+        MetadataRequest::List {
+            parent,
+            filter,
+            page,
+        } => Ok(MetadataReply::Nodes(
+            list_children(conn, parent.as_ref(), &filter, &page).await?,
         )),
         MetadataRequest::Columns(object) => {
             let counts = columns(conn, &object).await?;
@@ -103,12 +116,29 @@ impl MetadataProvider for MariaDbSession {
         parent: Option<ObjectRef>,
         page: &PageRequest,
     ) -> Result<Page<ObjectNode>> {
+        self.list_children_filtered(parent, &ObjectFilter::none(), page)
+            .await
+    }
+
+    /// 按名称 / 种类过滤子节点（v0.2.2，#84）。
+    ///
+    /// 过滤在会话任务上**下推**进 `information_schema` 的 SQL
+    /// （`TABLE_NAME LIKE CONCAT('%', ?, '%')` 等），不把整层读回来再筛。
+    async fn list_children_filtered(
+        &self,
+        parent: Option<ObjectRef>,
+        filter: &ObjectFilter,
+        page: &PageRequest,
+    ) -> Result<Page<ObjectNode>> {
         if let Some(parent) = &parent {
             validate_session(self.session_id(), parent)?;
         }
+        // 条件本身非法时不查库：`metadata.filter_invalid`，与「没搜到」区分开。
+        filter.validate()?;
         match self
             .metadata_call(MetadataRequest::List {
                 parent,
+                filter: filter.clone(),
                 page: page.clone(),
             })
             .await?
@@ -343,13 +373,26 @@ fn probe_error(code: Option<u16>, name: &str) -> Option<Error> {
     }
 }
 
-/// 目录层本身：列出本连接可见的 database。
-async fn catalog_nodes(conn: &mut Conn) -> Result<Vec<ObjectNode>> {
+/// 目录层本身：列出本连接可见的 database（名称条件在 SQL 里生效）。
+///
+/// `information_schema.SCHEMATA` 已按权限过滤：账号看不到的库不出现，这是 MariaDB 的
+/// 可见性规则，不是驱动丢弃。
+async fn catalog_nodes(conn: &mut Conn, filter: &ObjectFilter) -> Result<Vec<ObjectNode>> {
+    if !wants(filter, &ObjectKind::Catalog) {
+        return Ok(Vec::new());
+    }
+    let (clause, binding) = mariadb_name_condition(filter, "SCHEMA_NAME");
+    let where_clause = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {clause}")
+    };
+    let sql = format!(
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA{where_clause} ORDER BY SCHEMA_NAME"
+    );
+    let params = params_of(binding);
     let rows: Vec<MyRow> = conn
-        .exec(
-            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
-            (),
-        )
+        .exec(sql.as_str(), Params::Positional(params))
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 数据库列表失败"))?;
 
@@ -370,18 +413,34 @@ async fn catalog_nodes(conn: &mut Conn) -> Result<Vec<ObjectNode>> {
     Ok(nodes)
 }
 
-/// 某个库里的表 / 视图 / 序列。
+/// 某个库里的表 / 视图 / 序列（名称 / 种类都在 SQL 里过滤）。
 async fn list_database_objects(
     conn: &mut Conn,
     database: &str,
+    filter: &ObjectFilter,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
+    let scope = format!("catalog:{database}");
+    let Some(types) = table_types(filter) else {
+        // `kinds` 里没有本层的种类：空列表是合法结果（没搜到），也不再查库。
+        return paginate_children_filtered(Vec::new(), &scope, filter, page);
+    };
+    let (clause, binding) = mariadb_name_condition(filter, "TABLE_NAME");
+    let extra = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {clause}")
+    };
+    let quoted: Vec<String> = types.iter().map(|kind| format!("'{kind}'")).collect();
+    let sql = format!(
+        "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES \
+         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ({}){extra} ORDER BY TABLE_NAME",
+        quoted.join(",")
+    );
+    let mut params = vec![MyValue::Bytes(database.as_bytes().to_vec())];
+    params.extend(params_of(binding));
     let rows: Vec<MyRow> = conn
-        .exec(
-            "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES \
-             WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
-            (database,),
-        )
+        .exec(sql.as_str(), Params::Positional(params))
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 表列表失败"))?;
 
@@ -400,7 +459,42 @@ async fn list_database_objects(
         });
     }
 
-    paginate_children(nodes, &format!("catalog:{database}"), page)
+    paginate_children_filtered(nodes, &scope, filter, page)
+}
+
+/// `kinds` → 可下推的 `information_schema.TABLES.TABLE_TYPE` 集合；
+/// `None` 表示这一层不会有匹配。
+///
+/// `SYSTEM VIEW` 也归 `VIEW`（[`table_kind`] 的映射），因此过滤 `VIEW` 时两种都要取。
+fn table_types(filter: &ObjectFilter) -> Option<Vec<&'static str>> {
+    if filter.kinds.is_empty() {
+        return Some(vec!["BASE TABLE", "VIEW", "SYSTEM VIEW", "SEQUENCE"]);
+    }
+    let mut types = Vec::new();
+    if wants(filter, &ObjectKind::Table) {
+        types.push("BASE TABLE");
+    }
+    if wants(filter, &ObjectKind::View) {
+        types.push("VIEW");
+        types.push("SYSTEM VIEW");
+    }
+    if wants(filter, &ObjectKind::Sequence) {
+        types.push("SEQUENCE");
+    }
+    (!types.is_empty()).then_some(types)
+}
+
+/// 该层要不要产出这种子节点：`kinds` 为空 = 不过滤。
+fn wants(filter: &ObjectFilter, kind: &ObjectKind) -> bool {
+    filter.kinds.is_empty() || filter.kinds.iter().any(|candidate| candidate == kind)
+}
+
+/// 名称条件的绑定值 → 位置参数。`None` 表示没有名称条件。
+fn params_of(binding: Option<String>) -> Vec<MyValue> {
+    binding
+        .map(|value| MyValue::Bytes(value.into_bytes()))
+        .into_iter()
+        .collect()
 }
 
 /// `information_schema.TABLES.TABLE_TYPE` → 种类。
@@ -417,36 +511,60 @@ fn table_kind(raw: &str) -> ObjectKind {
 }
 
 /// 表/视图的子节点：列 + 索引（表还带触发器）。
+///
+/// 三种子节点各自一条查询，名称条件与 `kinds` 都下推：被 `kinds` 排除的种类连查询都
+/// 不发。
 async fn list_table_children(
     conn: &mut Conn,
     database: &str,
     table: &str,
     include_triggers: bool,
+    filter: &ObjectFilter,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
     let mut nodes = Vec::new();
-    for name in column_names(conn, database, table).await? {
-        nodes.push(child_node(database, name, ObjectKind::Column));
+    if wants(filter, &ObjectKind::Column) {
+        for name in column_names(conn, database, table, filter).await? {
+            nodes.push(child_node(database, name, ObjectKind::Column));
+        }
     }
-    for name in index_names(conn, database, table).await? {
-        nodes.push(child_node(database, name, ObjectKind::Index));
+    if wants(filter, &ObjectKind::Index) {
+        for name in index_names(conn, database, table, filter).await? {
+            nodes.push(child_node(database, name, ObjectKind::Index));
+        }
     }
-    if include_triggers {
-        for name in trigger_names(conn, database, table).await? {
+    if include_triggers && wants(filter, &ObjectKind::Trigger) {
+        for name in trigger_names(conn, database, table, filter).await? {
             nodes.push(child_node(database, name, ObjectKind::Trigger));
         }
     }
-    paginate_children(nodes, &format!("table:{database}.{table}"), page)
+    paginate_children_filtered(nodes, &format!("table:{database}.{table}"), filter, page)
 }
 
-/// 表/视图里的列名（按列序号）。
-async fn column_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+/// 表/视图里的列名（按列序号，名称条件在 SQL 里）。
+async fn column_names(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+    filter: &ObjectFilter,
+) -> Result<Vec<String>> {
+    let (clause, binding) = mariadb_name_condition(filter, "COLUMN_NAME");
+    let extra = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {clause}")
+    };
+    let sql = format!(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?{extra} ORDER BY ORDINAL_POSITION"
+    );
+    let mut params = vec![
+        MyValue::Bytes(database.as_bytes().to_vec()),
+        MyValue::Bytes(table.as_bytes().to_vec()),
+    ];
+    params.extend(params_of(binding));
     let rows: Vec<MyRow> = conn
-        .exec(
-            "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-            (database, table),
-        )
+        .exec(sql.as_str(), Params::Positional(params))
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 列名失败"))?;
     rows.iter()
@@ -457,14 +575,30 @@ async fn column_names(conn: &mut Conn, database: &str, table: &str) -> Result<Ve
 /// 表上的索引（`STATISTICS` 每个索引列一行，按索引名去重）。
 ///
 /// 主键索引的名字是 `PRIMARY`；`information_schema` 只展示当前账号可见的索引。
-async fn index_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+async fn index_names(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+    filter: &ObjectFilter,
+) -> Result<Vec<String>> {
+    let (clause, binding) = mariadb_name_condition(filter, "INDEX_NAME");
+    let extra = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {clause}")
+    };
+    let sql = format!(
+        "SELECT INDEX_NAME FROM information_schema.STATISTICS \
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?{extra} \
+         GROUP BY INDEX_NAME ORDER BY INDEX_NAME"
+    );
+    let mut params = vec![
+        MyValue::Bytes(database.as_bytes().to_vec()),
+        MyValue::Bytes(table.as_bytes().to_vec()),
+    ];
+    params.extend(params_of(binding));
     let rows: Vec<MyRow> = conn
-        .exec(
-            "SELECT INDEX_NAME FROM information_schema.STATISTICS \
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
-             GROUP BY INDEX_NAME ORDER BY INDEX_NAME",
-            (database, table),
-        )
+        .exec(sql.as_str(), Params::Positional(params))
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 索引列表失败"))?;
     rows.iter()
@@ -476,13 +610,29 @@ async fn index_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec
 ///
 /// 没有 `TRIGGER` 权限的账号在 `information_schema.TRIGGERS` 里看不到行（这是
 /// MariaDB 的可见性规则），因此这里可能比真实触发器少——它不会报错，也不会伪造。
-async fn trigger_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+async fn trigger_names(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+    filter: &ObjectFilter,
+) -> Result<Vec<String>> {
+    let (clause, binding) = mariadb_name_condition(filter, "TRIGGER_NAME");
+    let extra = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {clause}")
+    };
+    let sql = format!(
+        "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS \
+         WHERE TRIGGER_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?{extra} ORDER BY TRIGGER_NAME"
+    );
+    let mut params = vec![
+        MyValue::Bytes(database.as_bytes().to_vec()),
+        MyValue::Bytes(table.as_bytes().to_vec()),
+    ];
+    params.extend(params_of(binding));
     let rows: Vec<MyRow> = conn
-        .exec(
-            "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS \
-             WHERE TRIGGER_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? ORDER BY TRIGGER_NAME",
-            (database, table),
-        )
+        .exec(sql.as_str(), Params::Positional(params))
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 触发器列表失败"))?;
     rows.iter()
@@ -507,11 +657,12 @@ fn child_node(database: &str, name: String, kind: ObjectKind) -> ObjectNode {
 async fn list_children(
     conn: &mut Conn,
     parent: Option<&ObjectRef>,
+    filter: &ObjectFilter,
     page: &PageRequest,
 ) -> Result<Page<ObjectNode>> {
     let Some(parent) = parent else {
         let database = current_database(conn).await?;
-        return list_database_objects(conn, &database, page).await;
+        return list_database_objects(conn, &database, filter, page).await;
     };
 
     match &parent.kind {
@@ -522,10 +673,15 @@ async fn list_children(
                 ));
             }
             let Some(requested) = catalog_target(parent)? else {
-                return paginate_children(catalog_nodes(conn).await?, "catalog-layer", page);
+                return paginate_children_filtered(
+                    catalog_nodes(conn, filter).await?,
+                    "catalog-layer",
+                    filter,
+                    page,
+                );
             };
             let database = resolve_database(conn, &requested).await?;
-            list_database_objects(conn, &database, page).await
+            list_database_objects(conn, &database, filter, page).await
         }
         ObjectKind::Table | ObjectKind::View => {
             let (database, name) = resolve_object(conn, parent).await?;
@@ -552,6 +708,7 @@ async fn list_children(
                 &database,
                 &found.name,
                 matches!(expected, ObjectKind::Table),
+                filter,
                 page,
             )
             .await

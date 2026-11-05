@@ -490,25 +490,51 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
         Some(ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED.as_str())
     );
 
-    // ---- 非空过滤：驱动未实现下推时必须显式拒绝，不能静默返回未过滤列表 ----
+    // ---- 非空过滤：下推已实现（#84），服务端必须把条件交给驱动而不是静默忽略 ----
     let filtered = metadata
         .list_nodes(ListNodesRequest {
             parent: Some(root_reference(&session_id)),
             page: Some(PageRequest::default()),
             filter: Some(NodeFilter {
                 name: Some(ObjectNameFilter {
-                    r#match: Some(object_name_filter::Match::Contains("a".to_owned())),
+                    r#match: Some(object_name_filter::Match::Contains("amm".to_owned())),
                 }),
                 kinds: Vec::new(),
             }),
         })
         .await
-        .expect_err("未实现下推时必须报错");
-    assert_eq!(filtered.code(), Code::Unimplemented);
+        .expect("两个内置驱动已实现过滤下推（#84）");
+    let filtered_names: Vec<&str> = filtered
+        .get_ref()
+        .nodes
+        .iter()
+        .map(|node| node.display_name.as_str())
+        .collect();
     assert_eq!(
-        error_code_of(&filtered),
-        Some(ErrorCode::CAPABILITY_UNSUPPORTED.as_str())
+        filtered_names,
+        ["gamma"],
+        "过滤必须真的生效，不能返回未过滤的整层"
     );
+
+    // 种类过滤同样下推：只要 VIEW 时只剩视图 epsilon。
+    let views_only = metadata
+        .list_nodes(ListNodesRequest {
+            parent: Some(root_reference(&session_id)),
+            page: Some(PageRequest::default()),
+            filter: Some(NodeFilter {
+                name: None,
+                kinds: vec![ObjectKind::View as i32],
+            }),
+        })
+        .await
+        .expect("种类过滤应成功");
+    let view_names: Vec<&str> = views_only
+        .get_ref()
+        .nodes
+        .iter()
+        .map(|node| node.display_name.as_str())
+        .collect();
+    assert_eq!(view_names, ["epsilon"]);
 
     // ---- 非法过滤条件：服务端先于驱动拒绝（metadata.filter_invalid） ----
     let invalid_filter = metadata

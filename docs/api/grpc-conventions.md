@@ -182,8 +182,14 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 - **服务端不得静默忽略非空过滤**：驱动未实现下推时返回 `capability.unsupported`。
   #82 起 rpc-server 已把非空 `filter` 接线到 SPI 的 `list_children_filtered`：结构非法的过滤
   （空匹配串、`kinds` 重复或含 `OBJECT_KIND_UNSPECIFIED`、未知枚举值）先报
-  `metadata.filter_invalid`；驱动未实现下推的两个内置驱动返回
-  `UNIMPLEMENTED` + `capability.unsupported`（下推实现在 #84）。
+  `metadata.filter_invalid`；**未实现下推的驱动**（例如将来新增的）返回
+  `UNIMPLEMENTED` + `capability.unsupported`，绝不静默返回未过滤列表。两个内置驱动自
+  #84 起已下推（SQLite `LIKE ... ESCAPE`、MariaDB `information_schema` 的 `LIKE`）；
+- **过滤结果的分页 token** 是 `v2:<offset>:<集合指纹>:<过滤标签>`（不透明字符串，客户端
+  只回传）。标签来自 `ObjectFilter::fingerprint_input()` 的规范化字符串：换关键词、换
+  `contains`/`exact`、增删 `kinds` 都会让旧 token 报 `config.invalid`（`INVALID_ARGUMENT`），
+  客户端必须从第一页重搜；结果集自身变化仍是 `metadata.snapshot_changed`。
+  空 `filter` 走与 `list_children` 相同的路径（token 仍是 `v1:`）。
 
 ## DDL 查看（v0.2.2，ADR 0019）
 
