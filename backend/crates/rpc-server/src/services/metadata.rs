@@ -7,8 +7,9 @@
 use tonic::{Request, Response, Status};
 
 use crate::proto::services::v1::{
-    GetColumnsRequest, GetColumnsResponse, GetDdlRequest, GetDdlResponse, ListNodesRequest,
-    ListNodesResponse, metadata_service_server::MetadataService,
+    GetColumnsRequest, GetColumnsResponse, GetDdlRequest, GetDdlResponse, GetPrimaryKeyRequest,
+    GetPrimaryKeyResponse, ListNodesRequest, ListNodesResponse,
+    metadata_service_server::MetadataService,
 };
 
 /// `MetadataService` 实现。
@@ -47,6 +48,17 @@ impl MetadataService for MetadataServiceImpl {
     ) -> Result<Response<GetDdlResponse>, Status> {
         Err(Status::unimplemented(
             "DDL 生成尚未实现：等待驱动提供方言级 DDL 能力",
+        ))
+    }
+
+    /// ADR 0017 引入的 RPC。这里只保留「未实现」的显式拒绝，
+    /// 接线（读取驱动的 `PrimaryKey`）属于后续任务，不在此处提前实现。
+    async fn get_primary_key(
+        &self,
+        _request: Request<GetPrimaryKeyRequest>,
+    ) -> Result<Response<GetPrimaryKeyResponse>, Status> {
+        Err(Status::unimplemented(
+            "主键查询尚未接线：等待元数据服务接入驱动 TableDataProvider",
         ))
     }
 }

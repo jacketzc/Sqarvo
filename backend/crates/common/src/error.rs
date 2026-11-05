@@ -93,6 +93,22 @@ impl ErrorCode {
     pub const QUERY_LIMIT_REACHED: Self = Self("query.limit_reached");
     /// 事务处于失败状态，只能回滚。
     pub const TRANSACTION_FAILED: Self = Self("transaction.failed");
+    /// 事务不存在或已结束（例如行变更指向一个已提交/已回滚的事务）。
+    pub const TRANSACTION_NOT_FOUND: Self = Self("transaction.not_found");
+    /// 会话已经有一个打开的事务（一个会话同时最多一个）。
+    pub const TRANSACTION_ALREADY_ACTIVE: Self = Self("transaction.already_active");
+    /// 目标表没有主键，无法稳定定位行，编辑被拒绝（ADR 0017）。
+    pub const TABLE_DATA_NO_PRIMARY_KEY: Self = Self("table_data.no_primary_key");
+    /// 目标对象只读（视图、驱动只读模式，或驱动未声明行编辑能力）。
+    pub const TABLE_DATA_READ_ONLY: Self = Self("table_data.read_only");
+    /// 浏览游标非法、被篡改，或与目标表/排序不匹配。
+    pub const TABLE_DATA_CURSOR_INVALID: Self = Self("table_data.cursor_invalid");
+    /// 影响行数与客户端期望不符（乐观并发冲突）。
+    pub const TABLE_DATA_ROWS_AFFECTED_MISMATCH: Self = Self("table_data.rows_affected_mismatch");
+    /// 目标行已不存在（已被其它会话删除）。
+    pub const TABLE_DATA_ROW_DELETED: Self = Self("table_data.row_deleted");
+    /// 预计影响行数超过风险阈值，但请求未带显式确认。
+    pub const TABLE_DATA_CONFIRMATION_REQUIRED: Self = Self("table_data.confirmation_required");
     /// 请求的能力不被当前驱动支持。
     pub const CAPABILITY_UNSUPPORTED: Self = Self("capability.unsupported");
     /// 配置非法。
@@ -265,6 +281,56 @@ mod tests {
         let error = Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "事务不受支持");
         assert_eq!(error.to_string(), "事务不受支持 [capability.unsupported]");
         assert_eq!(error.category(), ErrorCategory::Unsupported);
+    }
+
+    /// ADR 0017 新增的错误码：文本即契约，改动等于破坏兼容。
+    #[test]
+    fn table_data_error_codes_are_stable_and_unique() {
+        let codes = [
+            ErrorCode::TRANSACTION_NOT_FOUND,
+            ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+            ErrorCode::TABLE_DATA_NO_PRIMARY_KEY,
+            ErrorCode::TABLE_DATA_READ_ONLY,
+            ErrorCode::TABLE_DATA_CURSOR_INVALID,
+            ErrorCode::TABLE_DATA_ROWS_AFFECTED_MISMATCH,
+            ErrorCode::TABLE_DATA_ROW_DELETED,
+            ErrorCode::TABLE_DATA_CONFIRMATION_REQUIRED,
+        ];
+        let texts: Vec<&str> = codes.iter().map(|code| code.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "transaction.not_found",
+                "transaction.already_active",
+                "table_data.no_primary_key",
+                "table_data.read_only",
+                "table_data.cursor_invalid",
+                "table_data.rows_affected_mismatch",
+                "table_data.row_deleted",
+                "table_data.confirmation_required",
+            ]
+        );
+
+        let unique: std::collections::BTreeSet<&str> = texts.iter().copied().collect();
+        assert_eq!(unique.len(), texts.len(), "错误码不得重复");
+
+        // 与既有错误码也不得撞车。
+        for existing in [
+            ErrorCode::DRIVER_NOT_FOUND,
+            ErrorCode::SESSION_NOT_FOUND,
+            ErrorCode::QUERY_NOT_FOUND,
+            ErrorCode::QUERY_CANCELLED,
+            ErrorCode::QUERY_LIMIT_REACHED,
+            ErrorCode::TRANSACTION_FAILED,
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            ErrorCode::CONFIG_INVALID,
+            ErrorCode::INTERNAL,
+        ] {
+            assert!(
+                !texts.contains(&existing.as_str()),
+                "{existing} 与既有错误码重复"
+            );
+        }
     }
 
     #[test]

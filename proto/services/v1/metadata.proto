@@ -12,6 +12,13 @@ service MetadataService {
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   rpc GetColumns(GetColumnsRequest) returns (GetColumnsResponse);
   rpc GetDdl(GetDdlRequest) returns (GetDdlResponse);
+  // 读取主键定义（ADR 0017）。
+  //
+  // 这里选择独立 RPC，而不是给 ColumnMeta 增加 `primary_key` 布尔标志：
+  // - 布尔标志无法表达复合主键的列顺序，而编辑必须按主键顺序提交主键值；
+  // - ColumnMeta 与查询结果集共用，结果集中的列不具备主键语义，加标志会让
+  //   「结果集列是某表主键」成为可被误读的字段。
+  rpc GetPrimaryKey(GetPrimaryKeyRequest) returns (GetPrimaryKeyResponse);
 }
 
 // 对象种类。不同数据库的 Catalog / Schema / Namespace 语义不同，
@@ -76,4 +83,23 @@ message GetDdlResponse {
   string ddl = 1;
   // DDL 是否为数据库返回的原文；false 表示由客户端拼装。
   bool exact = 2;
+}
+
+message GetPrimaryKeyRequest {
+  // 目标表/视图。视图通常没有主键。
+  ObjectRef object = 1;
+}
+
+// 主键中的一列。
+message PrimaryKeyColumn {
+  string name = 1;
+  // 列在**主键内**的顺序，从 1 开始。不是表内列序号：
+  // 复合主键的列顺序由数据库决定，行编辑必须按此顺序提交主键值。
+  uint32 position = 2;
+}
+
+message GetPrimaryKeyResponse {
+  // 按主键顺序排列。空列表表示该对象没有主键：浏览只读（无稳定排序），
+  // 编辑一律被拒绝，不提供 rowid / ctid 之类的近似定位。
+  repeated PrimaryKeyColumn columns = 1;
 }
