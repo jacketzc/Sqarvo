@@ -27,11 +27,23 @@ use crate::backend::query::{
     ExecuteOutcome, FetchOutcome, QueryFailure, failure_from_status, failure_timeout,
     rows_from_proto, statements_from_proto,
 };
+use crate::backend::table::{
+    ApplyReport, BrowsePage, TABLE_PAGE_SIZE, TableColumn, TableEntry, TableFailure, TxnSnapshot,
+    failure_from_status as table_failure_from_status, rows_from_proto as table_rows_from_proto,
+};
 use crate::proto::common::v1::Empty;
+use crate::proto::common::v1::PageRequest;
 use crate::proto::services::v1::connection_service_client::ConnectionServiceClient;
 use crate::proto::services::v1::credential_service_client::CredentialServiceClient;
+use crate::proto::services::v1::metadata_service_client::MetadataServiceClient;
 use crate::proto::services::v1::query_service_client::QueryServiceClient;
 use crate::proto::services::v1::system_service_client::SystemServiceClient;
+use crate::proto::services::v1::table_data_service_client::TableDataServiceClient;
+use crate::proto::services::v1::transaction_service_client::TransactionServiceClient;
+use crate::proto::services::v1::{
+    ApplyRowChangesRequest, BeginTransactionRequest, BrowseTableRequest, GetPrimaryKeyRequest,
+    ListNodesRequest, ObjectKind, ObjectRef, RowDelete, RowUpdate, TransactionRef,
+};
 use crate::proto::services::v1::{CancelQueryRequest, CloseQueryRequest};
 use crate::proto::services::v1::{ExecuteQueryRequest, FetchBatchRequest};
 
@@ -255,6 +267,42 @@ impl BackendClient {
         ))
     }
 
+    /// 带 token 认证的 `MetadataService` 客户端（表列表 / 列 / 主键）。
+    pub fn metadata_service(
+        &self,
+    ) -> Result<MetadataServiceClient<InterceptedService<Channel, TokenInterceptor>>, BackendError>
+    {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(MetadataServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
+    /// 带 token 认证的 `TableDataService` 客户端（浏览 / 行变更）。
+    pub fn table_data_service(
+        &self,
+    ) -> Result<TableDataServiceClient<InterceptedService<Channel, TokenInterceptor>>, BackendError>
+    {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(TableDataServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
+    /// 带 token 认证的 `TransactionService` 客户端（开始 / 提交 / 回滚）。
+    pub fn transaction_service(
+        &self,
+    ) -> Result<TransactionServiceClient<InterceptedService<Channel, TokenInterceptor>>, BackendError>
+    {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(TransactionServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
     /// 调用 `SystemService.GetVersion`。
     pub async fn get_version(&self) -> Result<VersionInfo, BackendError> {
         let mut client = self.system_service()?;
@@ -392,6 +440,192 @@ impl BackendClient {
             .map_err(|status| failure_from_status(&status))?;
         Ok(())
     }
+
+    /// 列出当前会话所在数据库的表与视图（`MetadataService.ListNodes` 根节点）。
+    ///
+    /// 只请求一页（500 个对象）：v0.2.1 的根节点列表就是这一层，超过一页时
+    /// 如实记录日志而不是假装「只有这些表」。
+    pub async fn list_tables(&self, session_id: &str) -> Result<Vec<TableEntry>, TableFailure> {
+        let mut client = self.metadata_service().map_err(table_local_failure)?;
+        let request = ListNodesRequest {
+            parent: Some(ObjectRef {
+                session_id: session_id.to_owned(),
+                catalog: String::new(),
+                schema: String::new(),
+                name: String::new(),
+                kind: ObjectKind::Unspecified as i32,
+            }),
+            page: Some(PageRequest {
+                page_size: TABLE_PAGE_SIZE,
+                page_token: String::new(),
+            }),
+        };
+        let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.list_nodes(request))
+            .await
+            .map_err(|_| table_timeout("读取表列表"))?
+            .map_err(|status| table_failure_from_status(&status))?
+            .into_inner();
+        if let Some(page) = response.page.as_ref()
+            && page.truncated
+        {
+            eprintln!(
+                "[data] 表列表已截断：只显示前 {} 个对象",
+                response.nodes.len()
+            );
+        }
+        Ok(response
+            .nodes
+            .iter()
+            .filter_map(TableEntry::from_node)
+            .collect())
+    }
+
+    /// 读取主键列（按主键顺序；空列表表示无主键）。
+    pub async fn get_primary_key(
+        &self,
+        object: &ObjectRef,
+    ) -> Result<Vec<crate::proto::services::v1::PrimaryKeyColumn>, TableFailure> {
+        let mut client = self.metadata_service().map_err(table_local_failure)?;
+        let request = GetPrimaryKeyRequest {
+            object: Some(object.clone()),
+        };
+        let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.get_primary_key(request))
+            .await
+            .map_err(|_| table_timeout("读取主键"))?
+            .map_err(|status| table_failure_from_status(&status))?
+            .into_inner();
+        Ok(response.columns)
+    }
+
+    /// 浏览一页表数据（`first_number` 是本页第一行的全局行号，1 起）。
+    pub async fn browse_table(
+        &self,
+        object: &ObjectRef,
+        page_token: &str,
+        first_number: u64,
+    ) -> Result<BrowsePage, TableFailure> {
+        let mut client = self.table_data_service().map_err(table_local_failure)?;
+        let request = BrowseTableRequest {
+            object: Some(object.clone()),
+            page_size: TABLE_PAGE_SIZE,
+            page_token: page_token.to_owned(),
+        };
+        let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.browse_table(request))
+            .await
+            .map_err(|_| table_timeout("浏览表数据"))?
+            .map_err(|status| table_failure_from_status(&status))?
+            .into_inner();
+        let columns: Vec<TableColumn> = response
+            .columns
+            .iter()
+            .map(TableColumn::from_meta)
+            .collect();
+        Ok(BrowsePage {
+            rows: table_rows_from_proto(&response.rows, &columns, first_number),
+            columns,
+            next_page_token: response.next_page_token,
+            has_more: response.has_more,
+            read_only: response.read_only,
+            read_only_reason: crate::proto::services::v1::ReadOnlyReason::try_from(
+                response.read_only_reason,
+            )
+            .unwrap_or(crate::proto::services::v1::ReadOnlyReason::Unspecified),
+            ordering: crate::proto::services::v1::RowOrder::try_from(response.ordering)
+                .unwrap_or(crate::proto::services::v1::RowOrder::Unspecified),
+        })
+    }
+
+    /// 提交一批行变更（主键值 + 列变更；服务端用 prepared statement 绑定参数）。
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "与契约字段一一对应，拆成结构体只会增加一层没有语义的包装"
+    )]
+    pub async fn apply_row_changes(
+        &self,
+        session_id: &str,
+        object: &ObjectRef,
+        transaction_id: Option<&str>,
+        updates: Vec<RowUpdate>,
+        deletes: Vec<RowDelete>,
+        acknowledge_risk: bool,
+    ) -> Result<ApplyReport, TableFailure> {
+        let mut client = self.table_data_service().map_err(table_local_failure)?;
+        let request = ApplyRowChangesRequest {
+            session_id: session_id.to_owned(),
+            object: Some(object.clone()),
+            transaction_id: transaction_id.unwrap_or_default().to_owned(),
+            updates,
+            deletes,
+            acknowledge_risk,
+        };
+        let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.apply_row_changes(request))
+            .await
+            .map_err(|_| table_timeout("提交行变更"))?
+            .map_err(|status| table_failure_from_status(&status))?
+            .into_inner();
+        Ok(ApplyReport {
+            results: response.results,
+            total_rows_affected: response.total_rows_affected,
+            clamped: response.clamped,
+            deferred_changes: response.deferred_changes,
+        })
+    }
+
+    /// 开始事务（一个会话同时最多一个；只读事务不能写入）。
+    pub async fn begin_transaction(
+        &self,
+        session_id: &str,
+        read_only: bool,
+    ) -> Result<TxnSnapshot, TableFailure> {
+        let mut client = self.transaction_service().map_err(table_local_failure)?;
+        let request = BeginTransactionRequest {
+            session_id: session_id.to_owned(),
+            // 0 = 未指定，由服务端/数据库默认隔离级别决定。
+            isolation: crate::proto::services::v1::IsolationLevel::Unspecified as i32,
+            read_only,
+        };
+        let info = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.begin(request))
+            .await
+            .map_err(|_| table_timeout("开始事务"))?
+            .map_err(|status| table_failure_from_status(&status))?
+            .into_inner();
+        Ok(TxnSnapshot {
+            transaction_id: Some(info.transaction_id),
+            read_only: info.read_only,
+            state: crate::proto::services::v1::TransactionState::try_from(info.state)
+                .unwrap_or(crate::proto::services::v1::TransactionState::Unspecified),
+        })
+    }
+
+    /// 提交事务（幂等：已结束的事务同样返回成功）。
+    pub async fn commit_transaction(&self, transaction_id: &str) -> Result<(), TableFailure> {
+        let mut client = self.transaction_service().map_err(table_local_failure)?;
+        tokio::time::timeout(
+            QUERY_RPC_TIMEOUT,
+            client.commit(TransactionRef {
+                transaction_id: transaction_id.to_owned(),
+            }),
+        )
+        .await
+        .map_err(|_| table_timeout("提交事务"))?
+        .map_err(|status| table_failure_from_status(&status))?;
+        Ok(())
+    }
+
+    /// 回滚事务（幂等；失败态也允许回滚）。
+    pub async fn rollback_transaction(&self, transaction_id: &str) -> Result<(), TableFailure> {
+        let mut client = self.transaction_service().map_err(table_local_failure)?;
+        tokio::time::timeout(
+            QUERY_RPC_TIMEOUT,
+            client.rollback(TransactionRef {
+                transaction_id: transaction_id.to_owned(),
+            }),
+        )
+        .await
+        .map_err(|_| table_timeout("回滚事务"))?
+        .map_err(|status| table_failure_from_status(&status))?;
+        Ok(())
+    }
 }
 
 /// 客户端自身（Channel / token）的本地失败：不是查询语义错误，保留为 `transport.failed`。
@@ -399,6 +633,22 @@ fn local_failure(error: BackendError) -> QueryFailure {
     QueryFailure::Other {
         code: "transport.failed".to_owned(),
         message: error.short(),
+    }
+}
+
+/// 表数据域的本地失败（与查询域分开：界面按 `TableFailure` 展示）。
+fn table_local_failure(error: BackendError) -> TableFailure {
+    TableFailure::Other {
+        code: "transport.failed".to_owned(),
+        message: error.short(),
+    }
+}
+
+/// 表数据 RPC 的客户端超时。
+fn table_timeout(operation: &str) -> TableFailure {
+    TableFailure::Other {
+        code: "deadline_exceeded".to_owned(),
+        message: format!("{operation}在 {} 秒内未返回", QUERY_RPC_TIMEOUT.as_secs()),
     }
 }
 

@@ -652,7 +652,7 @@ fn format_bytes(bytes: &[u8], truncated: bool) -> String {
 }
 
 /// 浮点格式：Rust 的 `Display` 已给出最短可往返表示，不使用固定精度。
-fn format_float(value: f64) -> String {
+pub fn format_float(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
     }

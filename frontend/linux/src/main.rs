@@ -8,11 +8,13 @@
 
 mod backend;
 mod config;
+mod data_page;
 mod dialog;
 mod proto;
 mod qa;
 mod results;
 mod sql_page;
+mod table_data;
 mod ui;
 
 use adw::prelude::*;
@@ -55,6 +57,10 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-exit-after-ms", "milliseconds"),
         ("qa-second-sql-file", "/path/to/second.sql"),
         ("qa-execute-again-after-ms", "milliseconds"),
+        ("qa-data-table", "table"),
+        ("qa-data-edit", "row:column:value"),
+        ("qa-data-delete-row", "row"),
+        ("qa-data-scroll-to-row", "row"),
     ] {
         app.add_main_option(
             name,
@@ -73,6 +79,23 @@ fn register_qa_options(app: &adw::Application) {
         "QA：连接成功后自动执行 --qa-sql-file 的内容",
         None,
     );
+    for name in [
+        "qa-data-begin-txn",
+        "qa-data-read-only",
+        "qa-data-commit",
+        "qa-data-rollback",
+        "qa-data-reload",
+        "qa-auto-confirm-risk",
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::None,
+            "QA：Linux 数据页无人值守验证（开发/验证用）",
+            None,
+        );
+    }
 }
 /// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径
 /// （`connect_shutdown` → 终止自己启动的后端子进程）。

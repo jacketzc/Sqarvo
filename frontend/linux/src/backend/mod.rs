@@ -17,4 +17,5 @@ pub mod endpoint;
 pub mod error;
 pub mod query;
 pub mod supervisor;
+pub mod table;
 pub mod worker;

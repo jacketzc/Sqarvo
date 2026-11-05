@@ -35,7 +35,11 @@ use crate::backend::query::{
     RowView, StatementView,
 };
 use crate::backend::supervisor::{BackendSupervisor, Stage};
+use crate::backend::table::{
+    ApplyReport, BrowsePage, TableEntry, TableFailure, TableOpen, TableRow, TxnSnapshot,
+};
 use crate::config::{self, SavedConnection};
+use crate::proto::services::v1::{ObjectRef, RowDelete, RowUpdate, TransactionState};
 
 /// 已连接状态下的健康探测间隔。
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -67,6 +71,32 @@ pub enum Command {
     CancelQuery,
     /// 关闭当前查询游标（界面关闭结果、断连、退出时调用）。
     CloseQuery,
+    /// 列出当前数据库的表与视图（元数据根节点）。
+    ListTables,
+    /// 打开（或重新打开）一张表：浏览首页 + 读取主键。
+    OpenTable(Box<ObjectRef>),
+    /// 拉取表数据的下一页（cursor 由 worker 持有，界面只按「接近末尾」触发）。
+    FetchTablePage,
+    /// 重新浏览当前表的第一页（提交/回滚后刷新）。
+    ReloadTable,
+    /// 提交一批行变更（值已按列类型转换；不带任何 SQL 文本）。
+    ApplyRowChanges {
+        /// 更新（主键值 + 列变更）。
+        updates: Vec<RowUpdate>,
+        /// 删除。
+        deletes: Vec<RowDelete>,
+        /// 风险确认（> 100 行或包含删除时由界面确认后置为 true）。
+        acknowledge_risk: bool,
+    },
+    /// 开始事务（一个会话同时最多一个）。
+    BeginTransaction {
+        /// 是否只读事务。
+        read_only: bool,
+    },
+    /// 提交当前事务（幂等）。
+    CommitTransaction,
+    /// 回滚当前事务（失败态也可以回滚）。
+    RollbackTransaction,
     /// 后台 RPC 任务的结果（只有 worker 循环会改查询状态，任务只回报）。
     Task(TaskUpdate),
 }
@@ -85,6 +115,41 @@ pub enum TaskUpdate {
     Cancelled(Result<(), QueryFailure>),
     /// `Close` 的 RPC 结果（失败只记日志：游标随后端/会话一起消失，或已幂等结束）。
     Closed(Result<(), QueryFailure>),
+    /// 表列表。
+    TablesListed(Result<Vec<TableEntry>, TableFailure>),
+    /// 打开表：浏览首页 + 主键定义（`generation` 用于丢弃过期的结果）。
+    TableOpened {
+        /// 打开代数：与当前 `TableState` 不一致的结果直接丢弃。
+        generation: u64,
+        /// 目标对象（用于构造 `TableOpen`）。
+        object: ObjectRef,
+        /// 结果。
+        result: Result<OpenedTable, TableFailure>,
+    },
+    /// 表数据下一页。
+    TablePage {
+        /// 打开代数。
+        generation: u64,
+        /// 结果。
+        result: Result<BrowsePage, TableFailure>,
+    },
+    /// 行变更提交结果。
+    Applied(Result<ApplyReport, TableFailure>),
+    /// 开始事务。
+    TransactionBegun(Result<TxnSnapshot, TableFailure>),
+    /// 提交事务。
+    TransactionCommitted(Result<(), TableFailure>),
+    /// 回滚事务。
+    TransactionRolledBack(Result<(), TableFailure>),
+}
+
+/// 打开表时 worker 拿到的两部分结果。
+#[derive(Debug)]
+pub struct OpenedTable {
+    /// 首页浏览结果。
+    pub page: BrowsePage,
+    /// 主键列名（按主键顺序）。
+    pub primary_key: Vec<String>,
 }
 
 /// 查询事件的界面侧表达。
@@ -209,6 +274,93 @@ pub struct ConnectedSnapshot {
     pub started_by_frontend: bool,
 }
 
+/// 表数据事件的界面侧表达。
+#[derive(Debug)]
+pub enum TableEvent {
+    /// 表列表（成功或分类失败）。
+    Tables(Result<Vec<TableEntry>, TableFailure>),
+    /// 表已打开：列、首页行、只读原因与排序。
+    Opened(Box<TableOpen>),
+    /// 后续页到达。
+    Page {
+        /// 本页行。
+        rows: Vec<TableRow>,
+        /// 是否还有后续页。
+        has_more: bool,
+        /// 累计已加载行数。
+        loaded: u64,
+        /// 累计已取页数（第一页为 1）。
+        pages: u64,
+    },
+    /// 行变更已提交（逐行结果）。
+    Applied(ApplyReport),
+    /// 表数据 / 事务操作失败（已分类，界面直接展示）。
+    Failed(TableFailure),
+    /// 事务状态变化（徽标数据）。
+    Transaction(TxnSnapshot),
+}
+
+/// 表数据浏览的 worker 侧状态（cursor 只有这里持有，界面不接触）。
+#[derive(Debug)]
+struct TableState {
+    /// 目标对象（含 session_id）。
+    object: ObjectRef,
+    /// 打开代数：过期的后台结果据此丢弃。
+    generation: u64,
+    /// 不透明 cursor。
+    page_token: String,
+    /// 是否还有下一页。
+    has_more: bool,
+    /// 是否有一页在途（单批背压）。
+    loading: bool,
+    /// 已加载行数。
+    loaded: u64,
+    /// 已取页数。
+    pages: u64,
+}
+
+/// 当前事务（一个会话最多一个）。
+#[derive(Debug, Clone)]
+struct OpenTransaction {
+    /// 事务 ID。
+    id: String,
+    /// 是否只读。
+    read_only: bool,
+    /// 是否进入失败态（只能回滚）。
+    failed: bool,
+}
+
+impl OpenTransaction {
+    fn snapshot(&self) -> TxnSnapshot {
+        TxnSnapshot {
+            transaction_id: Some(self.id.clone()),
+            read_only: self.read_only,
+            state: if self.failed {
+                TransactionState::Failed
+            } else {
+                TransactionState::Active
+            },
+        }
+    }
+}
+
+/// 表数据操作被拦下的原因（本地判定，不发 RPC）。
+fn table_block_reason(table: Option<&TableState>, session: Option<&str>) -> Option<&'static str> {
+    if session.is_none() {
+        return Some("尚未连接数据库");
+    }
+    let Some(table) = table else {
+        return Some("尚未打开表");
+    };
+    if table.loading {
+        return Some("上一页仍在途（单批背压）");
+    }
+    if !table.has_more {
+        return Some("没有更多页");
+    }
+    None
+}
+
 /// worker 发给 UI 的事件。
 #[derive(Debug)]
 pub enum Event {
@@ -226,6 +378,8 @@ pub enum Event {
     ConnectResult(Result<ConnectOutcome, ConnectionFailure>),
     /// 查询事件（执行 / 分批 / 取消 / 失败）。
     Query(QueryEvent),
+    /// 表数据事件（浏览 / 翻页 / 提交 / 事务）。
+    Table(TableEvent),
     /// 清理完成，可以关闭窗口。
     ShutdownComplete,
 }
@@ -318,6 +472,55 @@ impl WorkerHandle {
         let _ = self.commands.send(Command::CloseQuery);
     }
 
+    /// 请求列出当前数据库的表（非阻塞）。
+    pub fn list_tables(&self) {
+        let _ = self.commands.send(Command::ListTables);
+    }
+
+    /// 请求打开（或重新打开）一张表，非阻塞。
+    pub fn open_table(&self, reference: ObjectRef) {
+        let _ = self.commands.send(Command::OpenTable(Box::new(reference)));
+    }
+
+    /// 请求表数据的下一页（界面在接近末尾时调用；worker 自己防重复）。
+    pub fn fetch_table_page(&self) {
+        let _ = self.commands.send(Command::FetchTablePage);
+    }
+
+    /// 请求重新浏览当前表的第一页（提交/回滚后刷新）。
+    pub fn reload_table(&self) {
+        let _ = self.commands.send(Command::ReloadTable);
+    }
+
+    /// 请求提交一批行变更，非阻塞。
+    pub fn apply_row_changes(
+        &self,
+        updates: Vec<RowUpdate>,
+        deletes: Vec<RowDelete>,
+        acknowledge_risk: bool,
+    ) {
+        let _ = self.commands.send(Command::ApplyRowChanges {
+            updates,
+            deletes,
+            acknowledge_risk,
+        });
+    }
+
+    /// 请求开始事务，非阻塞。
+    pub fn begin_transaction(&self, read_only: bool) {
+        let _ = self.commands.send(Command::BeginTransaction { read_only });
+    }
+
+    /// 请求提交事务，非阻塞。
+    pub fn commit_transaction(&self) {
+        let _ = self.commands.send(Command::CommitTransaction);
+    }
+
+    /// 请求回滚事务，非阻塞。
+    pub fn rollback_transaction(&self) {
+        let _ = self.commands.send(Command::RollbackTransaction);
+    }
+
     /// 请求退出清理；不阻塞调用方。
     pub fn shutdown(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -356,6 +559,9 @@ async fn worker_loop(
     let mut db_session: Option<String> = None;
     // 当前查询：只有本循环会改它，后台任务的返回值经 `Command::Task` 回到这里。
     let mut active: Option<ActiveQuery> = None;
+    // 当前表数据浏览（cursor 只有这里持有）与当前事务。
+    let mut table: Option<TableState> = None;
+    let mut transaction: Option<OpenTransaction> = None;
     let mut health = tokio::time::interval(HEALTH_INTERVAL);
     health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -372,6 +578,9 @@ async fn worker_loop(
                             cleanup_query(&client, &mut active).await;
                         }
                         db_session = None;
+                        // 断开后表数据与事务全部失效（后端会强制回滚事务）。
+                        table = None;
+                        transaction = None;
                         if session.take().is_some() {
                             let reason = match supervisor.shutdown().await {
                                 Ok(()) => "已断开与后端的连接。".to_owned(),
@@ -400,6 +609,9 @@ async fn worker_loop(
                                 close_in_background(session.as_ref(), &query_id, &commands_tx);
                             }
                             db_session = Some(outcome.session_id.clone());
+                            // 表数据与事务都绑定在旧会话上：新会话一律从零开始。
+                            table = None;
+                            transaction = None;
                         }
                         let _ = events.send(Event::ConnectResult(outcome)).await;
                     }
@@ -537,6 +749,263 @@ async fn worker_loop(
                             });
                         }
                     }
+                    Some(Command::ListTables) => {
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：请先通过「新建连接」建立会话".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let Some(session_id) = db_session.clone() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：请先通过「新建连接」建立会话".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        tokio::spawn(async move {
+                            let result = client.list_tables(&session_id).await;
+                            let _ = sender.send(Command::Task(TaskUpdate::TablesListed(result)));
+                        });
+                    }
+                    Some(Command::OpenTable(reference)) => {
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：请先通过「新建连接」建立会话".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let Some(session_id) = db_session.clone() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：请先通过「新建连接」建立会话".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let mut object = *reference;
+                        // ListNodes 返回的引用已经带 session_id；缺失时用当前会话补齐。
+                        if object.session_id.trim().is_empty() {
+                            object.session_id.clone_from(&session_id);
+                        }
+                        let generation = match table.as_mut() {
+                            Some(state) => state.generation + 1,
+                            None => 1,
+                        };
+                        eprintln!("[data] 打开表 {}（代号 {generation}）", object.name);
+                        table = Some(TableState {
+                            object: object.clone(),
+                            generation,
+                            page_token: String::new(),
+                            has_more: false,
+                            loading: true,
+                            loaded: 0,
+                            pages: 0,
+                        });
+                        spawn_open_table(active_session.client.clone(), commands_tx.clone(), generation, object);
+                    }
+                    Some(Command::ReloadTable) => {
+                        let Some(existing) = table.as_ref() else { continue };
+                        let Some(active_session) = session.as_ref() else { continue };
+                        let mut object = existing.object.clone();
+                        let generation = existing.generation + 1;
+                        if object.session_id.trim().is_empty()
+                            && let Some(session_id) = db_session.clone()
+                        {
+                            object.session_id = session_id;
+                        }
+                        table = Some(TableState {
+                            object: object.clone(),
+                            generation,
+                            page_token: String::new(),
+                            has_more: false,
+                            loading: true,
+                            loaded: 0,
+                            pages: 0,
+                        });
+                        eprintln!("[data] 重新浏览 {}（代号 {generation}）", object.name);
+                        spawn_open_table(active_session.client.clone(), commands_tx.clone(), generation, object);
+                    }
+                    Some(Command::FetchTablePage) => {
+                        let Some(generation) = table.as_ref().map(|state| state.generation) else {
+                            continue;
+                        };
+                        if let Some(reason) =
+                            table_block_reason(table.as_ref(), db_session.as_deref())
+                        {
+                            eprintln!(
+                                "[data] t=+{}ms 忽略 FetchTablePage：{reason}",
+                                crate::qa::elapsed_ms()
+                            );
+                            continue;
+                        }
+                        let Some(state) = table.as_mut() else { continue };
+                        let Some(active_session) = session.as_ref() else { continue };
+                        state.loading = true;
+                        let object = state.object.clone();
+                        let token = state.page_token.clone();
+                        let first_number = state.loaded + 1;
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        tokio::spawn(async move {
+                            let result = client.browse_table(&object, &token, first_number).await;
+                            let _ = sender.send(Command::Task(TaskUpdate::TablePage {
+                                generation,
+                                result,
+                            }));
+                        });
+                    }
+                    Some(Command::ApplyRowChanges {
+                        updates,
+                        deletes,
+                        acknowledge_risk,
+                    }) => {
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：行变更未提交".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let Some(session_id) = db_session.clone() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：行变更未提交".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let Some(state) = table.as_ref() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::Other {
+                                    code: "table_data.not_open".to_owned(),
+                                    message: "尚未打开表：行变更未提交".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        if let Some(open) = transaction.as_ref()
+                            && open.failed
+                        {
+                            // 失败态只允许回滚：本地就拒绝，不发写入 RPC。
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(
+                                    TableFailure::TransactionFailed {
+                                        message: "事务已失败，只能回滚：行变更未提交".to_owned(),
+                                    },
+                                )))
+                                .await;
+                            continue;
+                        }
+                        let object = state.object.clone();
+                        let transaction_id = transaction.as_ref().map(|open| open.id.clone());
+                        let count = updates.len() + deletes.len();
+                        eprintln!(
+                            "[data] t=+{}ms 提交 {count} 条行变更（事务：{}）",
+                            crate::qa::elapsed_ms(),
+                            transaction_id.as_deref().unwrap_or("自动提交")
+                        );
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        tokio::spawn(async move {
+                            let result = client
+                                .apply_row_changes(
+                                    &session_id,
+                                    &object,
+                                    transaction_id.as_deref(),
+                                    updates,
+                                    deletes,
+                                    acknowledge_risk,
+                                )
+                                .await;
+                            let _ = sender.send(Command::Task(TaskUpdate::Applied(result)));
+                        });
+                    }
+                    Some(Command::BeginTransaction { read_only }) => {
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：无法开始事务".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let Some(session_id) = db_session.clone() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
+                                    message: "尚未连接数据库：无法开始事务".to_owned(),
+                                })))
+                                .await;
+                            continue;
+                        };
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        tokio::spawn(async move {
+                            let result = client.begin_transaction(&session_id, read_only).await;
+                            let _ = sender
+                                .send(Command::Task(TaskUpdate::TransactionBegun(result)));
+                        });
+                    }
+                    Some(Command::CommitTransaction) => {
+                        let Some(open) = transaction.clone() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(
+                                    TableFailure::TransactionNotFound {
+                                        message: "当前没有打开的事务".to_owned(),
+                                    },
+                                )))
+                                .await;
+                            continue;
+                        };
+                        if open.failed {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(
+                                    TableFailure::TransactionFailed {
+                                        message: "事务已失败，只能回滚".to_owned(),
+                                    },
+                                )))
+                                .await;
+                            continue;
+                        }
+                        let Some(active_session) = session.as_ref() else { continue };
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        let id = open.id.clone();
+                        tokio::spawn(async move {
+                            let result = client.commit_transaction(&id).await;
+                            let _ = sender
+                                .send(Command::Task(TaskUpdate::TransactionCommitted(result)));
+                        });
+                    }
+                    Some(Command::RollbackTransaction) => {
+                        let Some(open) = transaction.clone() else {
+                            let _ = events
+                                .send(Event::Table(TableEvent::Failed(
+                                    TableFailure::TransactionNotFound {
+                                        message: "当前没有打开的事务".to_owned(),
+                                    },
+                                )))
+                                .await;
+                            continue;
+                        };
+                        let Some(active_session) = session.as_ref() else { continue };
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        tokio::spawn(async move {
+                            let result = client.rollback_transaction(&open.id).await;
+                            let _ = sender.send(Command::Task(
+                                TaskUpdate::TransactionRolledBack(result),
+                            ));
+                        });
+                    }
                     Some(Command::Task(update)) => match update {
                         TaskUpdate::Executed(result) => {
                             handle_executed(result, &mut active, &events, &commands_tx, session.as_ref()).await;
@@ -562,6 +1031,246 @@ async fn worker_loop(
                                 );
                             }
                         }
+                        TaskUpdate::TablesListed(result) => {
+                            match &result {
+                                Ok(tables) => eprintln!(
+                                    "[data] t=+{}ms 表列表：{} 个对象",
+                                    crate::qa::elapsed_ms(),
+                                    tables.len()
+                                ),
+                                Err(failure) => eprintln!(
+                                    "[data] 表列表失败：[{}] {}",
+                                    failure.code(),
+                                    failure.detail()
+                                ),
+                            }
+                            let _ = events
+                                .send(Event::Table(TableEvent::Tables(result)))
+                                .await;
+                        }
+                        TaskUpdate::TableOpened {
+                            generation,
+                            object,
+                            result,
+                        } => {
+                            if table.as_ref().map(|state| state.generation) != Some(generation) {
+                                eprintln!(
+                                    "[data] 丢弃过期的打开结果（代号 {generation}，当前 {:?}）",
+                                    table.as_ref().map(|state| state.generation)
+                                );
+                                continue;
+                            }
+                            match result {
+                                Ok(opened) => {
+                                    let mut columns = opened.page.columns.clone();
+                                    for (position, name) in opened.primary_key.iter().enumerate() {
+                                        if let Some(column) =
+                                            columns.iter_mut().find(|column| &column.name == name)
+                                        {
+                                            column.primary_key_position = Some(
+                                                u32::try_from(position)
+                                                    .unwrap_or(u32::MAX)
+                                                    .saturating_add(1),
+                                            );
+                                        }
+                                    }
+                                    // 只读原因以服务端为准；服务端给了 `Unspecified` 却标了
+                                    // 只读时，按主键缺失 / 驱动不支持归类，绝不静默当成可编辑。
+                                    let read_only_reason = if opened.page.read_only {
+                                        match opened.page.read_only_reason {
+                                            crate::proto::services::v1::ReadOnlyReason::Unspecified => {
+                                                if opened.primary_key.is_empty() {
+                                                    crate::proto::services::v1::ReadOnlyReason::NoPrimaryKey
+                                                } else {
+                                                    crate::proto::services::v1::ReadOnlyReason::DriverUnsupported
+                                                }
+                                            }
+                                            other => other,
+                                        }
+                                    } else {
+                                        opened.page.read_only_reason
+                                    };
+                                    let kind = crate::proto::services::v1::ObjectKind::try_from(
+                                        object.kind,
+                                    )
+                                    .unwrap_or(crate::proto::services::v1::ObjectKind::Table);
+                                    let rows = opened.page.rows.clone();
+                                    let row_count = u64::try_from(rows.len()).unwrap_or(0);
+                                    let open = TableOpen {
+                                        table: TableEntry {
+                                            reference: object.clone(),
+                                            display_name: object.name.clone(),
+                                            kind,
+                                        },
+                                        columns,
+                                        rows,
+                                        has_more: opened.page.has_more,
+                                        read_only: opened.page.read_only,
+                                        read_only_reason,
+                                        ordering: opened.page.ordering,
+                                    };
+                                    if let Some(state) = table.as_mut() {
+                                        state.page_token = opened.page.next_page_token.clone();
+                                        state.has_more = opened.page.has_more;
+                                        state.loading = false;
+                                        state.loaded = row_count;
+                                        state.pages = 1;
+                                    }
+                                    eprintln!(
+                                        "[data] t=+{}ms 已打开 {}：{} 行，只读={}（{:?}），排序={:?}，主键={:?}",
+                                        crate::qa::elapsed_ms(),
+                                        object.name,
+                                        row_count,
+                                        opened.page.read_only,
+                                        read_only_reason,
+                                        opened.page.ordering,
+                                        opened.primary_key
+                                    );
+                                    let _ = events
+                                        .send(Event::Table(TableEvent::Opened(Box::new(open))))
+                                        .await;
+                                }
+                                Err(failure) => {
+                                    table = None;
+                                    emit_table_failure(&events, failure).await;
+                                }
+                            }
+                        }
+                        TaskUpdate::TablePage { generation, result } => {
+                            if table.as_ref().map(|state| state.generation) != Some(generation) {
+                                eprintln!("[data] 丢弃过期的翻页结果（代号 {generation}）");
+                                continue;
+                            }
+                            match result {
+                                Ok(page) => {
+                                    let count = u64::try_from(page.rows.len()).unwrap_or(0);
+                                    let (loaded, pages, has_more) = match table.as_mut() {
+                                        Some(state) => {
+                                            state.loading = false;
+                                            state.loaded += count;
+                                            state.pages += 1;
+                                            state.page_token = page.next_page_token.clone();
+                                            state.has_more = page.has_more;
+                                            (state.loaded, state.pages, state.has_more)
+                                        }
+                                        None => continue,
+                                    };
+                                    eprintln!(
+                                        "[data] t=+{}ms 第 {pages} 页：{count} 行，累计 {loaded}，has_more={has_more}",
+                                        crate::qa::elapsed_ms()
+                                    );
+                                    let _ = events
+                                        .send(Event::Table(TableEvent::Page {
+                                            rows: page.rows,
+                                            has_more,
+                                            loaded,
+                                            pages,
+                                        }))
+                                        .await;
+                                }
+                                Err(failure) => {
+                                    // 游标坏掉不能「回到第一页」：停止翻页并如实展示原因。
+                                    if matches!(failure, TableFailure::CursorInvalid { .. })
+                                        && let Some(state) = table.as_mut()
+                                    {
+                                        state.loading = false;
+                                        state.has_more = false;
+                                    }
+                                    if let Some(state) = table.as_mut() {
+                                        state.loading = false;
+                                    }
+                                    emit_table_failure(&events, failure).await;
+                                }
+                            }
+                        }
+                        TaskUpdate::Applied(result) => match result {
+                            Ok(report) => {
+                                eprintln!(
+                                    "[data] t=+{}ms 行变更已提交：影响 {} 行，失败 {} 行，钳制={}，未执行 {}",
+                                    crate::qa::elapsed_ms(),
+                                    report.total_rows_affected,
+                                    report.failed_rows(),
+                                    report.clamped,
+                                    report.deferred_changes
+                                );
+                                let _ = events.send(Event::Table(TableEvent::Applied(report))).await;
+                            }
+                            Err(failure) => {
+                                if failure.is_transaction_failed()
+                                    && let Some(open) = transaction.as_mut()
+                                {
+                                    open.failed = true;
+                                    let snapshot = open.snapshot();
+                                    let _ = events
+                                        .send(Event::Table(TableEvent::Transaction(snapshot)))
+                                        .await;
+                                }
+                                emit_table_failure(&events, failure).await;
+                            }
+                        },
+                        TaskUpdate::TransactionBegun(result) => match result {
+                            Ok(snapshot) => {
+                                let id = snapshot.transaction_id.clone().unwrap_or_default();
+                                eprintln!(
+                                    "[data] t=+{}ms 事务已开始：{id}（只读={}）",
+                                    crate::qa::elapsed_ms(),
+                                    snapshot.read_only
+                                );
+                                transaction = Some(OpenTransaction {
+                                    id,
+                                    read_only: snapshot.read_only,
+                                    failed: matches!(
+                                        snapshot.state,
+                                        TransactionState::Failed
+                                    ),
+                                });
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Transaction(snapshot)))
+                                    .await;
+                            }
+                            Err(failure) => emit_table_failure(&events, failure).await,
+                        },
+                        TaskUpdate::TransactionCommitted(result) => match result {
+                            Ok(()) => {
+                                eprintln!(
+                                    "[data] t=+{}ms 事务已提交",
+                                    crate::qa::elapsed_ms()
+                                );
+                                transaction = None;
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Transaction(
+                                        TxnSnapshot::none(),
+                                    )))
+                                    .await;
+                            }
+                            Err(failure) => {
+                                if failure.is_transaction_failed()
+                                    && let Some(open) = transaction.as_mut()
+                                {
+                                    open.failed = true;
+                                    let snapshot = open.snapshot();
+                                    let _ = events
+                                        .send(Event::Table(TableEvent::Transaction(snapshot)))
+                                        .await;
+                                }
+                                emit_table_failure(&events, failure).await;
+                            }
+                        },
+                        TaskUpdate::TransactionRolledBack(result) => match result {
+                            Ok(()) => {
+                                eprintln!(
+                                    "[data] t=+{}ms 事务已回滚",
+                                    crate::qa::elapsed_ms()
+                                );
+                                transaction = None;
+                                let _ = events
+                                    .send(Event::Table(TableEvent::Transaction(
+                                        TxnSnapshot::none(),
+                                    )))
+                                    .await;
+                            }
+                            Err(failure) => emit_table_failure(&events, failure).await,
+                        },
                     },
                     Some(Command::Connect) => {
                         if session.is_some() {
@@ -594,6 +1303,8 @@ async fn worker_loop(
                         let client = active_session.client.clone();
                         cleanup_query(&client, &mut active).await;
                         db_session = None;
+                        table = None;
+                        transaction = None;
                         session = None;
                         if let Err(cleanup) = supervisor.shutdown().await {
                             reason.push_str(&format!("\n后端清理未完成：{cleanup}"));
@@ -810,6 +1521,42 @@ async fn handle_fetched(
                 close_in_background(session, &query_id, commands_tx);
             }
         }
+    }
+}
+
+/// 在后台打开一张表：浏览首页 + 读取主键，结果回到 worker 循环统一处理。
+fn spawn_open_table(
+    client: BackendClient,
+    sender: UnboundedSender<Command>,
+    generation: u64,
+    object: ObjectRef,
+) {
+    tokio::spawn(async move {
+        let result = async {
+            let page = client.browse_table(&object, "", 1).await?;
+            let primary_key = client
+                .get_primary_key(&object)
+                .await?
+                .into_iter()
+                .map(|column| column.name)
+                .collect();
+            Ok(OpenedTable { page, primary_key })
+        }
+        .await;
+        let _ = sender.send(Command::Task(TaskUpdate::TableOpened {
+            generation,
+            object,
+            result,
+        }));
+    });
+}
+
+/// 表数据失败：会话失效时升级为断连（后端清理走同一条路径），其余按分类展示。
+async fn emit_table_failure(events: &Sender<Event>, failure: TableFailure) {
+    if failure.is_session_lost() {
+        let _ = events.send(Event::Disconnected(failure.message())).await;
+    } else {
+        let _ = events.send(Event::Table(TableEvent::Failed(failure))).await;
     }
 }
 
