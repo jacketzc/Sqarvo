@@ -36,16 +36,71 @@ use crate::backend::query::{
 };
 use crate::backend::supervisor::{BackendSupervisor, Stage};
 use crate::backend::table::{
-    ApplyReport, BrowsePage, TableEntry, TableFailure, TableOpen, TableRow, TxnSnapshot,
+    ApplyReport, BrowsePage, InsertReport, TableEntry, TableFailure, TableOpen, TableRow,
+    TxnSnapshot,
 };
 use crate::config::{self, SavedConnection};
-use crate::proto::services::v1::{ObjectRef, RowDelete, RowUpdate, TransactionState};
+use crate::proto::services::v1::{
+    InsertRow, IsolationLevel, ObjectRef, RowDelete, RowUpdate, TransactionState,
+};
 
 /// 已连接状态下的健康探测间隔。
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// 取消标志的轮询间隔：让握手与退出指令的竞争尽快收敛。
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// 一次行变更提交的选项（风险确认 + 随批插入的新行）。
+///
+/// 插入与更新走同一次「提交更改」：界面先提交新行（`InsertRows`，整批原子），
+/// 成功后再提交脏行——两者都在这里表达，worker 只需看 `inserts` 是否为空。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubmitOptions {
+    /// 风险确认（> 100 行或包含删除时由界面确认后置为 true）。
+    pub acknowledge_risk: bool,
+    /// 待插入的行（单行插入 = 一条；空表示本次只提交更新/删除）。
+    pub inserts: Vec<InsertRow>,
+}
+
+impl SubmitOptions {
+    /// 只提交行变更（不插入）。
+    #[must_use]
+    pub fn changes(acknowledge_risk: bool) -> Self {
+        Self {
+            acknowledge_risk,
+            inserts: Vec::new(),
+        }
+    }
+
+    /// 只插入一批新行（不带更新/删除）。
+    #[must_use]
+    pub fn insert(rows: Vec<InsertRow>, acknowledge_risk: bool) -> Self {
+        Self {
+            acknowledge_risk,
+            inserts: rows,
+        }
+    }
+}
+
+/// 开始事务的选项（隔离级别 + 只读）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeginOptions {
+    /// 是否只读事务。
+    pub read_only: bool,
+    /// 隔离级别；`Unspecified` = 交给数据库默认值。
+    pub isolation: IsolationLevel,
+}
+
+impl BeginOptions {
+    /// 默认隔离级别 + 指定的只读开关。
+    #[must_use]
+    pub fn new(read_only: bool, isolation: IsolationLevel) -> Self {
+        Self {
+            read_only,
+            isolation,
+        }
+    }
+}
 
 /// UI 发给 worker 的指令。
 ///
@@ -85,13 +140,13 @@ pub enum Command {
         updates: Vec<RowUpdate>,
         /// 删除。
         deletes: Vec<RowDelete>,
-        /// 风险确认（> 100 行或包含删除时由界面确认后置为 true）。
-        acknowledge_risk: bool,
+        /// 同一次提交信封里的选项（风险确认 + 待插入的新行）。
+        options: SubmitOptions,
     },
     /// 开始事务（一个会话同时最多一个）。
     BeginTransaction {
-        /// 是否只读事务。
-        read_only: bool,
+        /// 只读 / 隔离级别。
+        options: BeginOptions,
     },
     /// 提交当前事务（幂等）。
     CommitTransaction,
@@ -135,6 +190,8 @@ pub enum TaskUpdate {
     },
     /// 行变更提交结果。
     Applied(Result<ApplyReport, TableFailure>),
+    /// 插入新行结果（`InsertRows`）。
+    Inserted(Result<InsertReport, TableFailure>),
     /// 开始事务。
     TransactionBegun(Result<TxnSnapshot, TableFailure>),
     /// 提交事务。
@@ -299,6 +356,8 @@ pub enum TableEvent {
     },
     /// 行变更已提交（逐行结果）。
     Applied(ApplyReport),
+    /// 新行已插入（或整批回滚）：界面按 `rolled_back` 判定成败，逐行错误码逐条展示。
+    Inserted(InsertReport),
     /// 表数据 / 事务操作失败（已分类，界面直接展示）。
     Failed(TableFailure),
     /// 事务状态变化（徽标数据）。
@@ -497,23 +556,26 @@ impl WorkerHandle {
         let _ = self.commands.send(Command::ReloadTable);
     }
 
-    /// 请求提交一批行变更，非阻塞。
+    /// 请求提交一批行变更（或一批新行），非阻塞。
+    ///
+    /// `options.inserts` 非空时提交的是 `InsertRows`（整批原子），否则是
+    /// `ApplyRowChanges`——两者不能混在同一个 RPC 里，排序由界面控制。
     pub fn apply_row_changes(
         &self,
         updates: Vec<RowUpdate>,
         deletes: Vec<RowDelete>,
-        acknowledge_risk: bool,
+        options: SubmitOptions,
     ) {
         let _ = self.commands.send(Command::ApplyRowChanges {
             updates,
             deletes,
-            acknowledge_risk,
+            options,
         });
     }
 
-    /// 请求开始事务，非阻塞。
-    pub fn begin_transaction(&self, read_only: bool) {
-        let _ = self.commands.send(Command::BeginTransaction { read_only });
+    /// 请求开始事务（可指定隔离级别），非阻塞。
+    pub fn begin_transaction(&self, options: BeginOptions) {
+        let _ = self.commands.send(Command::BeginTransaction { options });
     }
 
     /// 请求提交事务，非阻塞。
@@ -564,6 +626,8 @@ async fn worker_loop(
     let mut session: Option<Session> = None;
     // 当前数据库会话 ID（`SaveAndConnect` 成功后记录，供 Execute 使用）。
     let mut db_session: Option<String> = None;
+    // 当前数据库会话的驱动 ID：隔离级别能力按驱动判定（SQLite 只接受 SERIALIZABLE）。
+    let mut active_driver: Option<String> = None;
     // 当前查询：只有本循环会改它，后台任务的返回值经 `Command::Task` 回到这里。
     let mut active: Option<ActiveQuery> = None;
     // 当前表数据浏览（cursor 只有这里持有）与当前事务。
@@ -585,6 +649,7 @@ async fn worker_loop(
                             cleanup_query(&client, &mut active).await;
                         }
                         db_session = None;
+                        active_driver = None;
                         // 断开后表数据与事务全部失效（后端会强制回滚事务）。
                         table = None;
                         transaction = None;
@@ -616,6 +681,7 @@ async fn worker_loop(
                                 close_in_background(session.as_ref(), &query_id, &commands_tx);
                             }
                             db_session = Some(outcome.session_id.clone());
+                            active_driver = Some(outcome.driver_id.clone());
                             // 表数据与事务都绑定在旧会话上：新会话一律从零开始。
                             table = None;
                             transaction = None;
@@ -872,7 +938,7 @@ async fn worker_loop(
                     Some(Command::ApplyRowChanges {
                         updates,
                         deletes,
-                        acknowledge_risk,
+                        options,
                     }) => {
                         let Some(active_session) = session.as_ref() else {
                             let _ = events
@@ -914,6 +980,30 @@ async fn worker_loop(
                         }
                         let object = state.object.clone();
                         let transaction_id = transaction.as_ref().map(|open| open.id.clone());
+                        if !options.inserts.is_empty() {
+                            // 插入走 InsertRows：整批原子，成功与否只看 rolled_back。
+                            let count = options.inserts.len();
+                            eprintln!(
+                                "[data] t=+{}ms 提交 {count} 行插入（事务：{}）",
+                                crate::qa::elapsed_ms(),
+                                transaction_id.as_deref().unwrap_or("自动提交")
+                            );
+                            let client = active_session.client.clone();
+                            let sender = commands_tx.clone();
+                            tokio::spawn(async move {
+                                let result = crate::backend::table::insert_rows(
+                                    &client,
+                                    &session_id,
+                                    &object,
+                                    transaction_id.as_deref(),
+                                    options.inserts,
+                                    options.acknowledge_risk,
+                                )
+                                .await;
+                                let _ = sender.send(Command::Task(TaskUpdate::Inserted(result)));
+                            });
+                            continue;
+                        }
                         let count = updates.len() + deletes.len();
                         eprintln!(
                             "[data] t=+{}ms 提交 {count} 条行变更（事务：{}）",
@@ -930,13 +1020,13 @@ async fn worker_loop(
                                     transaction_id.as_deref(),
                                     updates,
                                     deletes,
-                                    acknowledge_risk,
+                                    options.acknowledge_risk,
                                 )
                                 .await;
                             let _ = sender.send(Command::Task(TaskUpdate::Applied(result)));
                         });
                     }
-                    Some(Command::BeginTransaction { read_only }) => {
+                    Some(Command::BeginTransaction { options }) => {
                         let Some(active_session) = session.as_ref() else {
                             let _ = events
                                 .send(Event::Table(TableEvent::Failed(TableFailure::SessionLost {
@@ -955,8 +1045,20 @@ async fn worker_loop(
                         };
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
+                        eprintln!(
+                            "[data] t=+{}ms 开始事务：{}（只读={}）",
+                            crate::qa::elapsed_ms(),
+                            crate::table_data::isolation_label(options.isolation),
+                            options.read_only
+                        );
                         tokio::spawn(async move {
-                            let result = client.begin_transaction(&session_id, read_only).await;
+                            let result = crate::backend::table::begin_transaction_with(
+                                &client,
+                                &session_id,
+                                options.isolation,
+                                options.read_only,
+                            )
+                            .await;
                             let _ = sender
                                 .send(Command::Task(TaskUpdate::TransactionBegun(result)));
                         });
@@ -1115,6 +1217,7 @@ async fn worker_loop(
                                         read_only: opened.page.read_only,
                                         read_only_reason,
                                         ordering: opened.page.ordering,
+                                        driver_id: active_driver.clone(),
                                     };
                                     if let Some(state) = table.as_mut() {
                                         state.page_token = opened.page.next_page_token.clone();
@@ -1215,6 +1318,33 @@ async fn worker_loop(
                                 emit_table_failure(&events, failure).await;
                             }
                         },
+                        TaskUpdate::Inserted(result) => match result {
+                            Ok(report) => {
+                                // 成功与否**只看 rolled_back**：整批原子，逐行 INSERTED
+                                // 也可能已被整批撤销（此时净影响为 0）。
+                                eprintln!(
+                                    "[data] t=+{}ms 插入结果：语句成功 {} 行，净影响 {} 行，整批回滚={}，失败 {} 行，钳制={}，未执行 {}",
+                                    crate::qa::elapsed_ms(),
+                                    report.inserted_rows,
+                                    report.total_rows_affected,
+                                    report.rolled_back,
+                                    report.failures().len(),
+                                    report.clamped,
+                                    report.deferred_rows
+                                );
+                                for failure in report.failures() {
+                                    eprintln!(
+                                        "[data] 插入失败行 {}：[{}] {}",
+                                        failure.number, failure.code, failure.message
+                                    );
+                                }
+                                if let Some(key) = report.key_label() {
+                                    eprintln!("[data] 新行主键：{key}");
+                                }
+                                let _ = events.send(Event::Table(TableEvent::Inserted(report))).await;
+                            }
+                            Err(failure) => emit_table_failure(&events, failure).await,
+                        },
                         TaskUpdate::TransactionBegun(result) => match result {
                             Ok(snapshot) => {
                                 let id = snapshot.transaction_id.clone().unwrap_or_default();
@@ -1310,6 +1440,7 @@ async fn worker_loop(
                         let client = active_session.client.clone();
                         cleanup_query(&client, &mut active).await;
                         db_session = None;
+                        active_driver = None;
                         table = None;
                         transaction = None;
                         session = None;

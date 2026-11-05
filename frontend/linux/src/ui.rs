@@ -317,6 +317,7 @@ pub fn activate(app: &adw::Application) {
                             pages,
                         } => workspace.data_page.show_page(rows, has_more, loaded, pages),
                         TableEvent::Applied(report) => workspace.data_page.show_applied(report),
+                        TableEvent::Inserted(report) => workspace.data_page.show_inserted(report),
                         TableEvent::Failed(failure) => workspace.data_page.show_failure(&failure),
                         TableEvent::Transaction(snapshot) => {
                             workspace.data_page.show_transaction(&snapshot)

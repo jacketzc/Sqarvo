@@ -131,6 +131,40 @@ fn register_qa_options(app: &adw::Application) {
             Some(arg_description),
         );
     }
+
+    // ---- #88：插入行与隔离级别（只追加，不改既有开关） ----
+    for (name, arg_description) in [
+        ("qa-data-insert-set", "column:value"),
+        ("qa-data-insert-null", "column"),
+        ("qa-expect-row", "column=value"),
+        (
+            "qa-isolation-level",
+            "default|read-uncommitted|read-committed|repeatable-read|serializable",
+        ),
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::String,
+            "QA：插入新行 / 隔离级别选择（开发/验证用）",
+            Some(arg_description),
+        );
+    }
+    for name in [
+        "qa-data-insert",
+        "qa-isolation-dialog",
+        "qa-isolation-confirm",
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::None,
+            "QA：插入新行 / 隔离级别选择（开发/验证用）",
+            None,
+        );
+    }
 }
 /// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径
 /// （`connect_shutdown` → 终止自己启动的后端子进程）。
