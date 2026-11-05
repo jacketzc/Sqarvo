@@ -25,6 +25,14 @@
 //!
 //! 仍然遵守两条硬约束：**没有 OFFSET**；只有标识符进入 SQL 文本（反引号引用、
 //! 内部反引号翻倍），所有值都绑定。
+//!
+//! **只读连接不适用**：MariaDB 没有「以只读方式打开连接」的概念，连接参数里的
+//! `read_only` 会被 `MariaDbConfig::from_params` 以 `config.invalid` 明确拒绝（不静默
+//! 忽略），服务端也没有连接级只读开关。因此本驱动的浏览永远不会返回
+//! `ReadOnlyReason::ConnectionReadOnly`：写的否决权来自表/视图本身（对象只读）与
+//! 只读事务（`START TRANSACTION READ ONLY`，服务端 1792）。要限制某个账号的写权限，
+//! 应使用数据库授权（`GRANT SELECT`），那种情况下写入会以服务端权限错误返回，
+//! 不属于「连接只读」这一契约原因。
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -232,6 +240,7 @@ async fn browse(conn: &mut Conn, object: &ObjectRef, page: &PageRequest) -> Resu
         rows: collected,
         next_page_token,
         has_more,
+        // 连接级只读在 MariaDB 不存在（见模块文档）：只有表结构原因才会置只读。
         read_only: false,
         read_only_reason: None,
         ordering: RowOrder::PrimaryKeyAscending,

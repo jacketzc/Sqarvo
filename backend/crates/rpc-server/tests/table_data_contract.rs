@@ -423,6 +423,8 @@ fn table_data_enum_values_are_frozen() {
             (0, "READ_ONLY_REASON_UNSPECIFIED".to_owned()),
             (1, "READ_ONLY_REASON_NO_PRIMARY_KEY".to_owned()),
             (2, "READ_ONLY_REASON_DRIVER_UNSUPPORTED".to_owned()),
+            // #60：只追加取值，既有数字与语义不变（枚举兼容靠这一点）。
+            (3, "READ_ONLY_REASON_CONNECTION_READ_ONLY".to_owned()),
         ]
     );
     assert_eq!(

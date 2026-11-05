@@ -58,6 +58,19 @@
 | `transaction.already_active` | `ALREADY_EXISTS` | 会话已有打开的事务（一个会话同时最多一个） |
 | `transaction.failed` | `FAILED_PRECONDITION` | 事务处于失败态，只能回滚 |
 
+`BrowseTable.read_only_reason` 取值（枚举**只追加**，不复用数字、不重排）：
+
+| 取值 | 数值 | 含义 | 前端处置 |
+|---|---|---|---|
+| `READ_ONLY_REASON_UNSPECIFIED` | 0 | 可编辑（`read_only = false`） | 单元格可进入编辑态 |
+| `READ_ONLY_REASON_NO_PRIMARY_KEY` | 1 | 表/视图没有主键，无法稳定定位行；`row_order` 为 `ROW_ORDER_UNSTABLE` | 显示「无主键」文案，禁用编辑 |
+| `READ_ONLY_REASON_DRIVER_UNSUPPORTED` | 2 | 驱动未声明行编辑能力（`capability.unsupported`） | 显示「驱动不支持」文案，禁用编辑 |
+| `READ_ONLY_REASON_CONNECTION_READ_ONLY` | 3 | 连接以只读方式打开（SQLite `read_only`），写入必被拒 | 显示「连接只读」文案，禁用编辑；提示改用可写连接 |
+
+每条原因都必须有**对应文案**，不能只说「只读」：三种原因的用户处置完全不同（换表 / 换驱动 /
+换连接）。前端只翻译服务端给出的枚举，不自行猜测；旧客户端遇到不认识的取值会落到
+`UNSPECIFIED`，此时仍以 `read_only = true` 为准禁用编辑，不会显示可编辑。
+
 重复 `Commit` / `Rollback` 是幂等的：对已结束或未知事务返回 `OK`（见 ADR 0017 §3）。
 「事务必须存在」的约束落在写入路径（`table_data` 的 `transaction_id`）上。
 

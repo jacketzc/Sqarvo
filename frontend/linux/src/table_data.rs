@@ -19,7 +19,10 @@ use crate::proto::common::v1::{
     ColumnTypeKind, ColumnValue, DateTimeValue, DecimalValue, TimestampValue, ValueKind,
     column_value,
 };
-use crate::proto::services::v1::{ColumnChange, PrimaryKeyValue, RowDelete, RowKey, RowUpdate};
+use crate::proto::services::v1::{
+    ColumnChange, PrimaryKeyValue, ReadOnlyReason as ProtoReadOnlyReason, RowDelete, RowKey,
+    RowUpdate,
+};
 
 /// 风险确认阈值：预计影响行数 **超过** 该值时必须确认（与 ADR 0017 的服务端阈值一致）。
 pub const RISK_CONFIRMATION_ROWS: usize = 100;
@@ -940,17 +943,36 @@ pub enum ReadOnlyCause {
     NoPrimaryKey,
     /// 驱动未声明行编辑能力。
     DriverUnsupported,
+    /// 连接以只读方式打开：写入一定被数据库拒绝。
+    ConnectionReadOnly,
     /// 当前事务是只读事务。
     ReadOnlyTransaction,
 }
 
 impl ReadOnlyCause {
+    /// 由服务端 `BrowseTable.read_only_reason` 得到表级只读原因。
+    ///
+    /// **只认服务端给的枚举，不由前端猜**：`Unspecified` 表示可编辑；未知取值
+    /// （更新版后端新增的原因，旧前端不认识）同样按 `None` 处理，界面仍会因
+    /// `TableOpen.read_only` 禁用编辑，只是说不出具体原因——绝不反过来当成可编辑。
+    /// 只读事务不在这个字段里：它是会话级状态，由事务徽标判定。
+    #[must_use]
+    pub fn from_browse_reason(reason: ProtoReadOnlyReason) -> Option<Self> {
+        match reason {
+            ProtoReadOnlyReason::NoPrimaryKey => Some(Self::NoPrimaryKey),
+            ProtoReadOnlyReason::DriverUnsupported => Some(Self::DriverUnsupported),
+            ProtoReadOnlyReason::ConnectionReadOnly => Some(Self::ConnectionReadOnly),
+            ProtoReadOnlyReason::Unspecified => None,
+        }
+    }
+
     /// 标题。
     #[must_use]
     pub fn headline(self) -> &'static str {
         match self {
             Self::NoPrimaryKey => "只读：该表没有主键",
             Self::DriverUnsupported => "只读：驱动未声明行编辑能力",
+            Self::ConnectionReadOnly => "只读：连接以只读方式打开",
             Self::ReadOnlyTransaction => "只读：当前是只读事务",
         }
     }
@@ -966,6 +988,10 @@ impl ReadOnlyCause {
             Self::DriverUnsupported => {
                 "该数据库驱动未声明支持行编辑，浏览可用，但不能修改或删除数据。"
             }
+            Self::ConnectionReadOnly => {
+                "该连接以只读方式打开（SQLite 的 read_only 参数），数据库会拒绝任何写入，\
+                 因此不能修改或删除数据。浏览、翻页与导出不受影响；需要编辑时请改用可写连接重连。"
+            }
             Self::ReadOnlyTransaction => {
                 "当前事务为只读事务，提交行变更会被拒绝。回滚事务后可以重新开始读写事务。"
             }
@@ -979,6 +1005,7 @@ impl ReadOnlyCause {
         match self {
             Self::NoPrimaryKey => "table_data.no_primary_key",
             Self::DriverUnsupported => "capability.unsupported",
+            Self::ConnectionReadOnly => "table_data.read_only",
             Self::ReadOnlyTransaction => "table_data.read_only",
         }
     }
@@ -1538,12 +1565,15 @@ mod tests {
         for cause in [
             ReadOnlyCause::NoPrimaryKey,
             ReadOnlyCause::DriverUnsupported,
+            ReadOnlyCause::ConnectionReadOnly,
             ReadOnlyCause::ReadOnlyTransaction,
         ] {
             let banner = cause.banner();
             assert!(banner.starts_with("只读"));
             assert!(banner.len() > 20, "{banner}");
             assert!(!cause.code().is_empty());
+            // 文案必须说清原因，不能只有一句「只读」。
+            assert!(!cause.explanation().is_empty(), "{cause:?}");
         }
         assert!(
             ReadOnlyCause::NoPrimaryKey
@@ -1564,6 +1594,40 @@ mod tests {
             ReadOnlyCause::ReadOnlyTransaction
                 .explanation()
                 .contains("只读事务")
+        );
+        // 连接只读必须点名「连接」与「只读」，并说明浏览不受影响，
+        // 否则用户会以为要换表或改主键。
+        let connection = ReadOnlyCause::ConnectionReadOnly;
+        assert!(connection.headline().contains("连接"));
+        assert!(connection.explanation().contains("只读"));
+        assert!(connection.explanation().contains("浏览"));
+        assert_eq!(connection.code(), "table_data.read_only");
+    }
+
+    /// 服务端枚举 → 表级只读原因：只认服务端给的值，`Unspecified` 才是可编辑。
+    #[test]
+    fn browse_read_only_reason_maps_to_causes() {
+        assert_eq!(
+            ReadOnlyCause::from_browse_reason(ProtoReadOnlyReason::NoPrimaryKey),
+            Some(ReadOnlyCause::NoPrimaryKey)
+        );
+        assert_eq!(
+            ReadOnlyCause::from_browse_reason(ProtoReadOnlyReason::DriverUnsupported),
+            Some(ReadOnlyCause::DriverUnsupported)
+        );
+        assert_eq!(
+            ReadOnlyCause::from_browse_reason(ProtoReadOnlyReason::ConnectionReadOnly),
+            Some(ReadOnlyCause::ConnectionReadOnly)
+        );
+        assert_eq!(
+            ReadOnlyCause::from_browse_reason(ProtoReadOnlyReason::Unspecified),
+            None,
+            "Unspecified 才表示可编辑"
+        );
+        // 只读事务是会话级状态，不会出现在 BrowseTable 的只读原因里。
+        assert_ne!(
+            ReadOnlyCause::from_browse_reason(ProtoReadOnlyReason::ConnectionReadOnly),
+            Some(ReadOnlyCause::ReadOnlyTransaction)
         );
     }
 

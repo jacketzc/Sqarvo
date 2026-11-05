@@ -38,9 +38,7 @@ use crate::backend::table::{
     ApplyReport, TableColumn, TableEntry, TableFailure, TableOpen, TableRow, TxnSnapshot,
 };
 use crate::proto::common::v1::ColumnValue;
-use crate::proto::services::v1::{
-    ReadOnlyReason, RowDelete, RowOrder, RowUpdate, TransactionState,
-};
+use crate::proto::services::v1::{RowDelete, RowOrder, RowUpdate, TransactionState};
 use crate::table_data::{
     ChangeBatch, ReadOnlyCause, RiskAssessment, TableDraft, TransactionBadge, TxnStatus, edit_text,
 };
@@ -745,11 +743,8 @@ impl DataPage {
         self.columns.replace(open.columns.clone());
         self.build_columns(&open.columns);
 
-        let read_only_cause = match open.read_only_reason {
-            ReadOnlyReason::NoPrimaryKey => Some(ReadOnlyCause::NoPrimaryKey),
-            ReadOnlyReason::DriverUnsupported => Some(ReadOnlyCause::DriverUnsupported),
-            ReadOnlyReason::Unspecified => None,
-        };
+        // 只读原因只认服务端给的枚举（`from_browse_reason`），不在界面层再猜一遍。
+        let read_only_cause = ReadOnlyCause::from_browse_reason(open.read_only_reason);
         self.read_only_cause.replace(read_only_cause);
 
         let read_only_text = read_only_cause.map(ReadOnlyCause::banner);

@@ -494,3 +494,144 @@ async fn views_browse_as_read_only_without_primary_key() {
     );
     assert_eq!(page.ordering, RowOrder::Unstable);
 }
+
+fn params_at(path: &std::path::Path, read_only: bool) -> ConnectionParams {
+    let mut properties = std::collections::BTreeMap::new();
+    if read_only {
+        properties.insert("read_only".to_owned(), "true".to_owned());
+    }
+    ConnectionParams {
+        driver_id: "sqlite".parse().unwrap(),
+        host: path.display().to_string(),
+        port: 0,
+        database: None,
+        username: None,
+        credential_ref: None,
+        tls: TlsMode::Unspecified,
+        tls_server_name: None,
+        properties,
+    }
+}
+
+/// 只读连接（#60）：浏览必须自报「连接只读」，写入在准备语句前被拒。
+///
+/// 这是 `ConnectionParams.read_only` 的真实链路：同一个库文件、同一个驱动，
+/// 只改连接参数。可写连接的回归（`read_only = false` + 无只读原因）在同一用例里
+/// 先断言一次，确保新原因不会溢到可编辑路径上。
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "同一库文件上串起可写回归、只读浏览与写入拒绝，拆开会丢对照"
+)]
+async fn read_only_connection_reports_reason_and_rejects_edits() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let path = dir.path().join("readonly-browse.db");
+
+    // ---- 1. 可写连接准备数据，并做可写回归断言 ----
+    let writable = SqliteDriver::new()
+        .connect(&params_at(&path, false), None)
+        .await
+        .expect("可写连接");
+    for sql in [
+        "CREATE TABLE orders(id INTEGER PRIMARY KEY, v TEXT NOT NULL)",
+        "INSERT INTO orders VALUES (1,'a'),(2,'b'),(3,'c')",
+        "CREATE TABLE logs(message TEXT, level INTEGER)",
+        "INSERT INTO logs VALUES ('m1',1),('m2',2)",
+    ] {
+        exec(writable.as_ref(), sql).await;
+    }
+    let writable_orders = object(writable.as_ref(), "orders");
+    let first = browse(writable.as_ref())
+        .browse(&writable_orders, &page(2, None))
+        .await
+        .expect("可写连接浏览");
+    assert!(!first.read_only, "可写连接必须可编辑");
+    assert_eq!(
+        first.read_only_reason, None,
+        "可编辑时不得给出只读原因（回归）"
+    );
+    writable.close().await.expect("关闭可写连接");
+
+    // ---- 2. 只读连接：同一张表浏览仍可用，但原因必须是「连接只读」 ----
+    let read_only = SqliteDriver::new()
+        .connect(&params_at(&path, true), None)
+        .await
+        .expect("只读连接");
+    let provider = browse(read_only.as_ref());
+    let orders = object(read_only.as_ref(), "orders");
+    let first = provider
+        .browse(&orders, &page(2, None))
+        .await
+        .expect("只读连接可以浏览");
+    assert!(first.read_only, "只读连接必须自报只读");
+    assert_eq!(
+        first.read_only_reason,
+        Some(ReadOnlyReason::ConnectionReadOnly),
+        "只读连接的只读原因必须是「连接只读」，不能沉默或归到别的表结构原因"
+    );
+    assert_eq!(
+        first.ordering,
+        RowOrder::PrimaryKeyAscending,
+        "只读不改变排序保证"
+    );
+    eprintln!(
+        "[#60] 只读连接 browse：read_only={} reason={:?} ordering={:?} rows={}",
+        first.read_only,
+        first.read_only_reason,
+        first.ordering,
+        first.rows.len()
+    );
+    assert_eq!(first.rows.len(), 2);
+    let token = first
+        .next_page_token
+        .clone()
+        .expect("只读连接仍按主键翻页，必须签发游标");
+    let second = provider
+        .browse(&orders, &page(2, Some(token)))
+        .await
+        .expect("只读连接翻第二页");
+    assert_eq!(int_key(&second.rows[0]), 3);
+
+    // ---- 3. 写入被拒：table_data.read_only，且真的没写进去 ----
+    let error = provider
+        .apply_row_changes(sqarvo_driver_api::RowChangeRequest {
+            object: orders.clone(),
+            changes: vec![sqarvo_driver_api::RowChange::Update {
+                key: sqarvo_driver_api::RowKey::new(vec![Value::Int(1)]),
+                changes: vec![sqarvo_driver_api::ColumnChange {
+                    column: "v".to_owned(),
+                    value: Value::Text("changed".to_owned()),
+                }],
+                expected_rows_affected: 0,
+            }],
+        })
+        .await
+        .expect_err("只读连接必须拒绝行变更");
+    assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+    eprintln!(
+        "[#60] 只读连接写入被拒：code={} category={:?} message={}",
+        error.code(),
+        error.category(),
+        error.message()
+    );
+    let again = provider.browse(&orders, &page(1, None)).await.unwrap();
+    assert_eq!(
+        again.rows[0][1].value,
+        Value::Text("a".to_owned()),
+        "被拒绝的写入不得落库"
+    );
+
+    // ---- 4. 两种原因同时成立时报「连接只读」，「无稳定排序」仍由 ordering 表达 ----
+    let logs = object(read_only.as_ref(), "logs");
+    let logs_page = provider.browse(&logs, &page(10, None)).await.unwrap();
+    assert!(logs_page.read_only);
+    assert_eq!(
+        logs_page.read_only_reason,
+        Some(ReadOnlyReason::ConnectionReadOnly),
+        "连接只读影响该连接上的所有表，优先于表结构原因"
+    );
+    assert_eq!(logs_page.ordering, RowOrder::Unstable);
+
+    read_only.close().await.expect("关闭只读连接");
+}

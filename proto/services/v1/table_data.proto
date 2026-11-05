@@ -40,6 +40,11 @@ enum ReadOnlyReason {
   READ_ONLY_REASON_NO_PRIMARY_KEY = 1;
   // 驱动未声明行编辑能力（`capability.unsupported`）。
   READ_ONLY_REASON_DRIVER_UNSUPPORTED = 2;
+  // 连接以只读方式打开（SQLite `read_only` 参数）。浏览可用且仍按主键升序，
+  // 但写入一定被数据库拒绝（`table_data.read_only`），因此浏览时就置只读。
+  // 只读事务属于会话级状态，由事务徽标与写入拒绝表达，不复用本值（ADR 0017）。
+  // 追加取值：旧客户端读到未知值时会落到 UNSPECIFIED，仍按只读处理，不会显示可编辑。
+  READ_ONLY_REASON_CONNECTION_READ_ONLY = 3;
 }
 
 message BrowseTableRequest {

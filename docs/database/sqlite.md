@@ -37,6 +37,30 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 [mariadb.md](./mariadb.md#与-sqlite-的差异)，逐维度的两驱动对照表见
 [driver-spi.md](./driver-spi.md#事务实现现状v021)。
 
+## 只读连接（`read_only`）
+
+`ConnectionParams.properties["read_only"] = "true"` 让连接以 `SQLITE_OPEN_READONLY` 打开
+（见 `session.rs` 的 `open_connection`）：文件不存在时连接失败（`sqlite.open_failed`，
+**不会**创建文件），`":memory:"` 与只读互斥（`config.invalid`）。
+
+只读连接对表数据的影响（#60）：
+
+- **浏览照常**：`BrowseTable` 仍按主键升序、仍签发键集游标、`row_order` 不变。只读限制
+  的是写，不是读，因此不做「只读就不许翻页」这类猜测性降级；
+- **浏览即置只读**：`read_only = true` 且 `read_only_reason = READ_ONLY_REASON_CONNECTION_READ_ONLY`。
+  驱动用 `sqlite3_db_readonly`（rusqlite 的 `Connection::is_readonly`）读连接的**真实**
+  标志，而不是靠参数回显；
+- **写入在准备语句前就被拒**：`ApplyRowChanges` 返回 `table_data.read_only`
+  （`FAILED_PRECONDITION`），不把 `SQLITE_READONLY` 透给用户；被拒的批次不留任何副作用；
+- **与无主键同时成立时报「连接只读」**：它影响该连接上的所有表，也是用户唯一能改变的
+  条件；「无稳定排序」仍由 `row_order = ROW_ORDER_UNSTABLE` 单独表达，信息不丢；
+- **只读事务不算「连接只读」**：`PRAGMA query_only` 是会话级临时开关，由事务徽标与写入
+  拒绝负责表达，事务结束后不该继续显示「连接只读」。因此只读事务期间的浏览仍是
+  `read_only_reason = UNSPECIFIED`（可编辑），提交时才被拒。
+
+MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，见
+[mariadb.md](./mariadb.md#连接级只读不适用)。
+
 ## 元数据（v0.2.1 最小子集）
 
 实现：`backend/crates/drivers/sqlite/src/metadata.rs`。

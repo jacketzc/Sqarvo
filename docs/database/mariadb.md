@@ -203,6 +203,18 @@ MySQL 协议没有取消通道：驱动用**另一条控制连接**执行 `KILL 
 
 例外：MariaDB 允许在只读事务里写**临时表**（服务端行为，驱动不额外拦截）。
 
+### 连接级只读不适用
+
+MariaDB 协议里没有「以只读方式打开连接」这一概念，驱动也不提供该开关：
+
+- 连接参数里的 `read_only` 会被 `MariaDbConfig::from_params` 以 `config.invalid` **明确
+  拒绝**（`INVALID_ARGUMENT`），不会静默忽略，避免用户以为连接已经只读；
+- 服务端也没有连接级只读开关；只读事务是会话级能力（见上一节），要限制账号的写权限
+  应使用数据库授权（例如只授予 `SELECT`），这时写入会以服务端权限错误返回；
+- 因此 `BrowseTable.read_only_reason = READ_ONLY_REASON_CONNECTION_READ_ONLY` 在 MariaDB 上
+  **不会出现**，浏览的只读原因只有「无主键」与「驱动未声明行编辑」两种（#60）。
+  前端无需特判驱动：它只显示服务端给出的原因。
+
 ### 隐式提交：事务中一律拒绝
 
 MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务**，`ROLLBACK` 之后就什么也回滚
