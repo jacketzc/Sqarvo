@@ -107,6 +107,8 @@ impl ErrorCode {
     pub const TABLE_DATA_ROWS_AFFECTED_MISMATCH: Self = Self("table_data.rows_affected_mismatch");
     /// 目标行已不存在（已被其它会话删除）。
     pub const TABLE_DATA_ROW_DELETED: Self = Self("table_data.row_deleted");
+    /// 提交的单元格值是被截断的前缀，不能作为完整值写回（ADR 0007）。
+    pub const TABLE_DATA_TRUNCATED_VALUE: Self = Self("table_data.truncated_value");
     /// 预计影响行数超过风险阈值，但请求未带显式确认。
     pub const TABLE_DATA_CONFIRMATION_REQUIRED: Self = Self("table_data.confirmation_required");
     /// 请求的能力不被当前驱动支持。

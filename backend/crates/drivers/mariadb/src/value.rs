@@ -225,7 +225,17 @@ fn map_value(value: &MyValue, plan: &ColumnPlan) -> Cell {
     match value {
         MyValue::NULL => Cell::new(Value::Null),
         MyValue::Bytes(bytes) => map_bytes(bytes, plan),
-        MyValue::Int(number) => Cell::new(Value::Int(*number)),
+        MyValue::Int(number) => {
+            // 二进制协议对无符号列也可能用有符号编码发送（值在 i64 范围内时）。
+            // 读取必须与文本协议、与列元数据一致：声明为 UNSIGNED 的整数列统一给
+            // `Value::UInt`，否则同一个值经 BrowseTable（二进制）与 Execute（文本）
+            // 会得到不同的类型，编辑往返也会「读回类型变了」。
+            if plan.unsigned && *number >= 0 {
+                Cell::new(Value::UInt(u64::try_from(*number).unwrap_or_default()))
+            } else {
+                Cell::new(Value::Int(*number))
+            }
+        }
         MyValue::UInt(number) => Cell::new(Value::UInt(*number)),
         MyValue::Float(number) => Cell::new(Value::Float(f64::from(*number))),
         MyValue::Double(number) => Cell::new(Value::Float(*number)),

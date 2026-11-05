@@ -123,12 +123,9 @@ async fn large_table_pages_are_complete_and_strictly_ordered() {
         assert!(page.has_more, "10 万行表的第 {index} 页之后仍应有数据");
         assert!(page.next_page_token.is_some(), "has_more 时必须给游标");
         assert_eq!(page.ordering, RowOrder::PrimaryKeyAscending);
-        assert!(page.read_only);
-        assert_eq!(
-            page.read_only_reason,
-            Some(ReadOnlyReason::DriverUnsupported),
-            "有主键但驱动尚未声明行编辑能力（#47）"
-        );
+        // #47 后 SQLite 声明了行编辑能力，有主键表浏览不再只读。
+        assert!(!page.read_only, "有主键表在行编辑落地后必须可编辑");
+        assert_eq!(page.read_only_reason, None, "可编辑时不得给出只读原因");
 
         let keys: Vec<i64> = page.rows.iter().map(int_key).collect();
         let expected_start = i64::from(index) * 500 + 1;

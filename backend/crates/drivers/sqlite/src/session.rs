@@ -88,6 +88,8 @@ enum TransactionPhase {
 struct OpenTransaction {
     id: TransactionId,
     phase: TransactionPhase,
+    /// 只读事务：行编辑必须在进入驱动前被拒绝，不能等 SQLite 报 `SQLITE_READONLY`。
+    read_only: bool,
 }
 
 impl OpenTransaction {
@@ -248,9 +250,17 @@ fn run_connection(
                 let _ = reply.send(crate::metadata::handle(&connection, request));
             }
             Command::TableData { request, reply } => {
-                // 浏览同样是只读：不改事务簿记；`query_only` 只影响写语句，
-                // 因此只读事务里浏览表数据仍然可用。
-                let _ = reply.send(crate::table_data::handle(&connection, request));
+                // 浏览只读、不改事务簿记；行编辑需要知道当前事务的真实阶段与只读性质，
+                // 因此把簿记快照交给表数据层，由它决定「在事务内执行」还是
+                // 「自己包一层事务」。
+                let context = match transaction {
+                    None => crate::table_data::EditTransaction::None,
+                    Some(open) if open.is_active() => crate::table_data::EditTransaction::Active {
+                        read_only: open.read_only,
+                    },
+                    Some(_) => crate::table_data::EditTransaction::Aborted,
+                };
+                let _ = reply.send(crate::table_data::handle(&connection, context, request));
             }
             Command::Execute { request, reply } => {
                 if transaction.is_some_and(|open| !open.is_active()) {
@@ -358,6 +368,7 @@ fn begin_transaction(
     *transaction = Some(OpenTransaction {
         id,
         phase: TransactionPhase::Active,
+        read_only: options.read_only,
     });
     Ok(id)
 }

@@ -46,7 +46,7 @@ pub struct Services {
     pub query: QueryServiceImpl,
     /// 事务域。
     pub transaction: TransactionServiceImpl,
-    /// 表数据域（浏览只读；行编辑在 #47）。
+    /// 表数据域（主键升序浏览 + 参数化行编辑）。
     pub table_data: TableDataServiceImpl,
 }
 
