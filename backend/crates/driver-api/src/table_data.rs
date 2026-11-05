@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use sqarvo_common::{Error, ErrorCode, Result};
+use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
 
 use crate::metadata::{ObjectRef, PageRequest};
 use crate::value::{ColumnMeta, Row, Value};
@@ -425,6 +425,256 @@ impl RowChangeCancel {
     }
 }
 
+/// 单批插入行数上限（v0.2.2）。
+///
+/// 与行变更共用 500：同一批数据无论「改」还是「插」，前端一次只发这么多，超限由
+/// 服务端钳制并在响应里给出 `deferred_rows`，客户端必须续传。
+pub const MAX_ROWS_PER_INSERT_BATCH: usize = MAX_ROW_CHANGES_PER_BATCH;
+
+/// 要插入的一行（v0.2.2）。
+///
+/// 只给**要写的列**：省略的列交给数据库默认值（自增、`DEFAULT` 表达式、
+/// `DEFAULT NULL`），显式 [`Value::Null`] 才是写入 SQL NULL。复用 [`ColumnChange`]
+/// 而不是新造 `{column, value}` 类型：结构与语义完全一致，两套类型只会让映射层
+/// 多一次翻译、多一个漂移点。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InsertRow {
+    /// 列 → 值。省略的列由数据库补默认值。
+    pub values: Vec<ColumnChange>,
+}
+
+impl InsertRow {
+    /// 构造一行。
+    #[must_use]
+    pub fn new(values: Vec<ColumnChange>) -> Self {
+        Self { values }
+    }
+
+    /// 本行给出的列名，按给出顺序。
+    #[must_use]
+    pub fn columns(&self) -> Vec<&str> {
+        self.values
+            .iter()
+            .map(|value| value.column.as_str())
+            .collect()
+    }
+
+    /// 结构校验：列名非空、同一列不得出现两次、值不得是 `Unsupported`。
+    ///
+    /// 列是否存在、是否可写、是否由数据库生成需要数据库元数据，不在本层判断
+    /// （由驱动按 `ColumnMeta` 判定，错误码见 `table_data.*`）。
+    pub fn validate(&self) -> Result<()> {
+        let mut seen = std::collections::BTreeSet::new();
+        for value in &self.values {
+            if value.column.trim().is_empty() {
+                return Err(invalid_change("插入行的列名不能为空"));
+            }
+            if !seen.insert(value.column.as_str()) {
+                return Err(invalid_change(format!(
+                    "插入行里重复的列：{}",
+                    value.column
+                )));
+            }
+            if matches!(value.value, Value::Unsupported { .. }) {
+                return Err(invalid_change(format!(
+                    "列 {} 的值是数据库特有类型，不能作为写入值（先按列类型转换）",
+                    value.column
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 插入请求（v0.2.2）。
+///
+/// 单行插入就是 `rows.len() == 1`：不提供「单行 RPC + 批量 RPC」两套入口，
+/// 两套入口迟早在风险阈值与原子性上分叉。
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertRowsRequest {
+    /// 目标表。
+    pub object: ObjectRef,
+    /// 按顺序插入的行。
+    pub rows: Vec<InsertRow>,
+}
+
+impl InsertRowsRequest {
+    /// 构造请求。
+    #[must_use]
+    pub fn new(object: ObjectRef, rows: Vec<InsertRow>) -> Self {
+        Self { object, rows }
+    }
+
+    /// 实际交给驱动的行（不超过 [`MAX_ROWS_PER_INSERT_BATCH`]）。
+    #[must_use]
+    pub fn effective_rows(&self) -> &[InsertRow] {
+        let len = self.rows.len().min(MAX_ROWS_PER_INSERT_BATCH);
+        &self.rows[..len]
+    }
+
+    /// 因超出批次上限而未执行的行数。
+    #[must_use]
+    pub fn deferred_rows(&self) -> usize {
+        self.rows.len().saturating_sub(MAX_ROWS_PER_INSERT_BATCH)
+    }
+
+    /// 是否被钳制过。
+    #[must_use]
+    pub fn is_clamped(&self) -> bool {
+        self.rows.len() > MAX_ROWS_PER_INSERT_BATCH
+    }
+
+    /// 预计影响行数：插入恒为「每行 1」。风险阈值（[`DEFAULT_RISK_CONFIRMATION_ROWS`]）
+    /// 比较的就是这个值，**不另立**插入专用阈值。
+    #[must_use]
+    pub fn estimated_rows_affected(&self) -> u64 {
+        u64::try_from(self.effective_rows().len()).unwrap_or(u64::MAX)
+    }
+
+    /// 结构校验：至少一行，逐行通过 [`InsertRow::validate`]。
+    ///
+    /// 空批次是非法请求（`config.invalid`），不是「插入 0 行」：那会让前端在
+    /// 「什么都没填」时也收到成功。
+    pub fn validate(&self) -> Result<()> {
+        if self.rows.is_empty() {
+            return Err(invalid_change("插入批次不能为空"));
+        }
+        for (index, row) in self.rows.iter().enumerate() {
+            row.validate()
+                .map_err(|error| invalid_change(format!("第 {index} 行：{}", error.message())))?;
+        }
+        Ok(())
+    }
+}
+
+/// 单行插入的结果（v0.2.2）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertOutcome {
+    /// 该行的 INSERT 已执行。
+    Inserted {
+        /// 真实影响行数（正常为 1）。
+        rows_affected: u64,
+    },
+    /// 该行失败。整批是否落库看 [`InsertReport::rolled_back`]。
+    Failed {
+        /// 稳定错误码（`table_data.unique_violation` 等）。
+        code: ErrorCode,
+    },
+}
+
+impl InsertOutcome {
+    /// 语句层是否成功。**不等于**「行已在库里」——整批回滚时它仍可能是 `true`。
+    #[must_use]
+    pub const fn is_inserted(&self) -> bool {
+        matches!(self, Self::Inserted { .. })
+    }
+
+    /// 该行语句的真实影响行数（失败为 0）。
+    #[must_use]
+    pub const fn rows_affected(&self) -> u64 {
+        match self {
+            Self::Inserted { rows_affected } => *rows_affected,
+            Self::Failed { .. } => 0,
+        }
+    }
+
+    /// 失败行的稳定错误码；成功为 `None`。
+    #[must_use]
+    pub const fn error_code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Inserted { .. } => None,
+            Self::Failed { code } => Some(*code),
+        }
+    }
+
+    /// 与 proto `InsertOutcome` 取值对应的名称。
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Inserted { .. } => "inserted",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+/// 一条插入的结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertRowResult {
+    /// 请求内下标，从 0 开始。
+    pub index: usize,
+    /// 结果。
+    pub outcome: InsertOutcome,
+    /// 插入后的**完整**主键值（含数据库生成的自增值），顺序同
+    /// [`PrimaryKey::columns`]。
+    ///
+    /// 仅在语句成功且批次未回滚时有值；驱动拿不到完整主键时不得部分回传
+    /// （那会让前端用错误的主键去改行），这种情况不应声明支持插入。
+    pub key: Option<RowKey>,
+    /// 可安全展示的说明（不含 SQL、参数值）。
+    pub message: Option<String>,
+}
+
+impl InsertRowResult {
+    /// 该行语句的真实影响行数。
+    #[must_use]
+    pub const fn rows_affected(&self) -> u64 {
+        self.outcome.rows_affected()
+    }
+}
+
+/// 一批插入的结果（v0.2.2）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InsertReport {
+    /// 逐行结果。整批回滚时**仍然全部返回**：用户要知道哪几行冲突了。
+    pub results: Vec<InsertRowResult>,
+    /// 因超出批次上限而未执行的行数；客户端必须续传。
+    pub deferred: usize,
+    /// 整批是否已回滚。
+    ///
+    /// `true` 表示驱动按「整批成功才提交」执行了回滚（自动提交 → 整批，
+    /// 事务模式 → 回到本批 savepoint），数据库净变化为零。前端判成功**必须**
+    /// 看它，不能只看逐行 `Inserted`。
+    pub rolled_back: bool,
+}
+
+impl InsertReport {
+    /// 本批**净**影响行数：回滚后恒为 0。
+    ///
+    /// 与逐行 [`InsertRowResult::rows_affected`] 的区别同 ADR 0018 的取消路径：
+    /// 已回滚的行不能再算成「插入了 N 行」，否则界面与库里的事实相反。
+    #[must_use]
+    pub fn rows_affected(&self) -> u64 {
+        if self.rolled_back {
+            0
+        } else {
+            self.results
+                .iter()
+                .map(InsertRowResult::rows_affected)
+                .sum()
+        }
+    }
+
+    /// 语句层成功的行数，**不受** `rolled_back` 影响。
+    #[must_use]
+    pub fn inserted_rows(&self) -> u32 {
+        u32::try_from(
+            self.results
+                .iter()
+                .filter(|result| result.outcome.is_inserted())
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
+    /// 是否存在失败行。
+    #[must_use]
+    pub fn has_failures(&self) -> bool {
+        self.results
+            .iter()
+            .any(|result| !result.outcome.is_inserted())
+    }
+}
+
 /// 表数据能力接口。
 ///
 /// 与 [`crate::MetadataProvider`] 一样独立于 [`crate::DriverSession`]：
@@ -481,6 +731,96 @@ pub trait TableDataProvider: Send + Sync {
     ) -> Result<RowChangeReport> {
         Err(unsupported_row_editing())
     }
+
+    /// 是否支持插入新行（v0.2.2）。
+    ///
+    /// 默认为 `false`：既有驱动（SQLite / MariaDB）在本 Issue 不改一行代码，因此
+    /// 只能拿到 `capability.unsupported`，不能「看起来支持、其实什么都不做」。
+    ///
+    /// 声明为 `true` 的前提是**能回传插入后的完整主键值**（自增/默认值生成的主键
+    /// 列取数据库真实值）。做不到就不要声明——前端会用这个主键继续编辑，回传错了
+    /// 比不回传更糟。
+    fn supports_row_insertion(&self) -> bool {
+        false
+    }
+
+    /// 插入一批新行。默认实现表示不支持。
+    ///
+    /// 实现必须满足（与 `ApplyRowChanges` 同一信封）：
+    ///
+    /// - **省略 ≠ NULL**：只绑定给出的列，未给出的列不出现在 `INSERT` 的列清单里；
+    /// - **整批成功才提交**：自动提交模式下一个隐式事务覆盖整批；任一行失败则整批
+    ///   回滚并置 [`InsertReport::rolled_back`]；事务模式下用 `SAVEPOINT`，失败时
+    ///   回到 savepoint，外层事务保持可用；
+    /// - **单行失败不中断其余行**：继续执行后面的行，把全部失败一次报全；
+    /// - **回传完整主键**：成功行填 [`InsertRowResult::key`]；
+    /// - 逐行错误用 [`InsertOutcome::Failed`] 携带稳定错误码，不要用 `Err` 打断整批
+    ///   （`Err` 只用于「整批根本无法执行」：无权限、对象不存在、事务不存在等）。
+    async fn insert_rows(&self, _request: InsertRowsRequest) -> Result<InsertReport> {
+        Err(unsupported_row_insertion())
+    }
+}
+
+/// 驱动未实现插入新行（`capability.unsupported`）。
+///
+/// 必须显式报错：静默返回「插入了 0 行」会让前端显示成功而库里没有数据。
+#[must_use]
+pub fn unsupported_row_insertion() -> Error {
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "该驱动未实现插入新行（需要参数化 INSERT 与主键回传）",
+    )
+}
+
+/// 插入违反唯一约束（`table_data.unique_violation`）。
+#[must_use]
+pub fn unique_violation(column: impl Into<String>) -> Error {
+    let column = column.into();
+    Error::already_exists(
+        ErrorCode::TABLE_DATA_UNIQUE_VIOLATION,
+        format!("列 {column} 的值已存在（主键或唯一约束冲突）"),
+    )
+}
+
+/// 显式 NULL 写入 NOT NULL 列（`table_data.not_null_violation`）。
+#[must_use]
+pub fn not_null_violation(column: impl Into<String>) -> Error {
+    let column = column.into();
+    Error::invalid_argument(
+        ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
+        format!("列 {column} 不允许 NULL，请给一个值"),
+    )
+}
+
+/// 省略了 NOT NULL 列且该列没有默认值（`table_data.not_null_without_default`）。
+#[must_use]
+pub fn not_null_without_default(column: impl Into<String>) -> Error {
+    let column = column.into();
+    Error::invalid_argument(
+        ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
+        format!("列 {column} 必填：既未给值，数据库也没有默认值可兜底"),
+    )
+}
+
+/// 该列由数据库生成，不能显式插入（`table_data.column_not_insertable`）。
+#[must_use]
+pub fn column_not_insertable(column: impl Into<String>) -> Error {
+    let column = column.into();
+    Error::invalid_argument(
+        ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
+        format!("列 {column} 由数据库生成，不能显式插入"),
+    )
+}
+
+/// 数据库拒绝该写入（`table_data.permission_denied`）。
+#[must_use]
+pub fn insert_permission_denied(object: impl Into<String>) -> Error {
+    let object = object.into();
+    Error::new(
+        ErrorCode::TABLE_DATA_PERMISSION_DENIED,
+        ErrorCategory::PermissionDenied,
+        format!("当前连接无权向 {object} 插入数据"),
+    )
 }
 
 /// 按影响行数判定单条变更的结果（ADR 0017：更新/删除必须影响 1 行）。
