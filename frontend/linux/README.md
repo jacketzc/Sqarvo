@@ -464,6 +464,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-reload` | 提交/回滚后重新浏览并打印行值 |
 | `--qa-auto-confirm-risk` | 无人值守时自动确认风险对话框（仍走同一个对话框与提交路径） |
 | `--qa-data-fail-txn` | 重放「服务端报 `transaction.failed`」的失败路径（走同一个 `show_failure`） |
+| `--qa-data-replay-cancelled` | 重放「批次被取消（`cancelled=true`）」的结果（走同一个 `show_applied`；注入的是响应，不是真的取消，原因见下） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
 
@@ -496,6 +497,20 @@ podman exec <mariadb> mariadb -u… -p… sqarvo_test_62 \
 失败态只能注入：一个 GUI 进程只有一条数据库会话，而服务端进入失败态的确定性来源是
 死锁（1213），必须由第二条会话制造，单会话无法复现；注入点调用的仍是真实 RPC 错误
 回来时的同一个 `show_failure`，徽标、按钮、横幅都走真实代码。
+
+#### 批次取消结果的取证（#77）
+
+```bash
+# 先改两行（1 更新 + 1 删除），再重放「取消」响应
+… --qa-data-table demo_items --qa-data-edit 0:note:alpha-edit --qa-data-delete-row 1 \
+  --qa-data-replay-cancelled --screenshot …/data-page-cancelled.png --screenshot-delay-ms 5200
+```
+
+取消同样只能重放**响应**：`CancelRowChanges` 要打在**在途**批次上，而前端当前不生成批次
+`query_id`（`apply_row_changes` 留空，服务端生成后只随响应回显），也没有任何取消调用点，
+所以单会话里拿不到可取消的批次 ID。注入点与真实响应走同一个 `show_applied`（`cancelled = true`
+与 `executed_changes`，`results` 为空、`total_rows_affected = 0`），状态行文案、脏行是否保留、
+按钮可用性都是真实代码路径；拿到的是一个「取消后界面怎么显示」的证据，而不是「取消 RPC 能用」的证据。
 
 不带这些参数的正常启动路径完全不受影响。
 
