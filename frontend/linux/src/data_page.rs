@@ -35,13 +35,18 @@ use gtk::glib;
 
 use crate::backend::query::{CellStyle, CellView, format_cell};
 use crate::backend::table::{
-    ApplyReport, TableColumn, TableEntry, TableFailure, TableOpen, TableRow, TxnSnapshot,
+    ApplyReport, InsertReport, TableColumn, TableEntry, TableFailure, TableOpen, TableRow,
+    TxnSnapshot,
 };
+use crate::backend::worker::{BeginOptions, SubmitOptions};
 use crate::column_info::{column_index_for_title, header_title};
 use crate::proto::common::v1::ColumnValue;
-use crate::proto::services::v1::{RowDelete, RowOrder, RowUpdate, TransactionState};
+use crate::proto::services::v1::{
+    IsolationLevel, RowDelete, RowOrder, RowUpdate, TransactionState,
+};
 use crate::table_data::{
-    ChangeBatch, ReadOnlyCause, RiskAssessment, TableDraft, TransactionBadge, TxnStatus, edit_text,
+    ChangeBatch, InsertDraft, InsertMode, IsolationOption, ReadOnlyCause, RiskAssessment,
+    TableDraft, TransactionBadge, TxnStatus, begin_summary, edit_text, isolation_options,
 };
 
 /// 数据页的状态（界面必须能分辨加载 / 空 / 错误 / 只读 / 断连）。
@@ -73,8 +78,8 @@ const TXN_CSS_CLASSES: [&str; 5] = [
     "sqarvo-txn-disconnected",
 ];
 
-/// 提交行变更的回调签名。
-pub type ApplyCallback = Rc<dyn Fn(Vec<RowUpdate>, Vec<RowDelete>, bool)>;
+/// 提交行变更的回调签名（`SubmitOptions` 同时携带风险确认与待插入的新行）。
+pub type ApplyCallback = Rc<dyn Fn(Vec<RowUpdate>, Vec<RowDelete>, SubmitOptions)>;
 
 /// QA 从控件上读回的可见状态（[`DataPage::qa_observe`]）。
 ///
@@ -137,8 +142,8 @@ pub struct DataCallbacks {
     pub fetch_page: Rc<dyn Fn()>,
     /// 提交行变更（updates / deletes / 风险确认）。
     pub apply: ApplyCallback,
-    /// 开始事务（是否只读）。
-    pub begin: Rc<dyn Fn(bool)>,
+    /// 开始事务（只读开关 + 隔离级别）。
+    pub begin: Rc<dyn Fn(BeginOptions)>,
     /// 提交事务。
     pub commit_txn: Rc<dyn Fn()>,
     /// 回滚事务。
@@ -163,6 +168,8 @@ pub(crate) struct DataRow {
     deleted: bool,
     /// 删除已提交（行已不存在）。
     removed: bool,
+    /// 是否是「新增行」草稿（提交后才成为真正的行）。
+    insert: bool,
 }
 
 mod data_row_store {
@@ -241,6 +248,17 @@ impl DataRowStore {
         if removed > 0 {
             self.items_changed(0, removed, 0);
         }
+    }
+
+    /// 去掉最后一行（放弃「新增行」草稿时用：占位行不属于任何已加载数据）。
+    fn drop_last(&self) {
+        let removed = self.imp().rows.borrow_mut().pop();
+        if removed.is_none() {
+            return;
+        }
+        let index = self.n_items();
+        self.imp().items.borrow_mut().pop();
+        self.items_changed(index, 1, 0);
     }
 
     fn notify_row(&self, index: usize) {
@@ -444,8 +462,27 @@ pub struct DataPage {
     last_fetch_value: Cell<f64>,
     /// 正在提交的批次（用于把逐行结果映射回行号）。
     pending_batch: RefCell<Option<ChangeBatch>>,
+    /// 新行草稿（「新增行」之后存在；提交成功或放弃后清空）。
+    insert: RefCell<Option<InsertDraft>>,
+    /// 插入成功后才提交的脏行批次（一次「提交更改」里插入先行，避免半套写入）。
+    after_insert_batch: RefCell<Option<ChangeBatch>>,
+    /// 当前会话驱动 ID（隔离级别能力按驱动判定）。
+    driver_id: RefCell<Option<String>>,
+    /// 「开始事务」卡片（页内模态，见 [`DataPage::open_txn_chooser`]）。
+    txn_card: gtk::Box,
+    /// 卡片里的隔离级别选项容器（每次打开按驱动重建）。
+    txn_options: gtk::Box,
+    /// 卡片里的选项控件与当前选中级别。
+    isolation_choices: RefCell<Vec<(IsolationLevel, gtk::CheckButton)>>,
+    isolation_selected: Cell<IsolationLevel>,
+    /// 卡片底部的确认按钮（QA 与用户都点它）。
+    txn_confirm: gtk::Button,
+    /// 卡片里的说明行（驱动能力 / 不可用原因）。
+    txn_note: gtk::Label,
     /// QA：风险确认对话框自动点「确认提交」（仍走同一个对话框路径）。
     qa_auto_confirm: Cell<bool>,
+    /// QA：一次运行只编排一次打开后的动作（重新浏览不能再插一行）。
+    qa_steps_done: Cell<bool>,
     callbacks: DataCallbacks,
 }
 
@@ -457,6 +494,7 @@ struct DataButtons {
     commit_changes: gtk::Button,
     discard: gtk::Button,
     delete_row: gtk::Button,
+    add_row: gtk::Button,
     disconnect: gtk::Button,
 }
 
@@ -538,6 +576,14 @@ impl DataPage {
         delete_row.set_sensitive(false);
         delete_row.set_tooltip_text(Some("把选中行标记为待删除（提交前仍可撤销）"));
 
+        // 新增行（#88）：空行进入编辑态，默认值列显示数据库默认，自增列留空。
+        let add_row = gtk::Button::with_label("新增行");
+        add_row.add_css_class("suggested-action");
+        add_row.set_sensitive(false);
+        add_row.set_tooltip_text(Some(
+            "在表末尾插入一个新行：有默认值的列显示数据库默认值，自增列留空（省略即由数据库生成）",
+        ));
+
         let spinner = gtk::Spinner::new();
         spinner.set_visible(false);
 
@@ -567,6 +613,7 @@ impl DataPage {
         controls.append(&commit_changes);
         controls.append(&discard);
         controls.append(&delete_row);
+        controls.append(&add_row);
 
         let errors = gtk::ListBox::new();
         errors.set_selection_mode(gtk::SelectionMode::None);
@@ -685,6 +732,52 @@ impl DataPage {
         overlay.set_child(Some(&stack));
         overlay.add_overlay(&info_card);
 
+        // 开始事务卡片（#88）：隔离级别只在**开始之前**选，不支持的项在这里就禁用
+        // 并给出原因，而不是提交后才被服务端拒绝。
+        //
+        // 做成页内浮层而不是独立 `GtkWindow`：Wayland 会话没有系统截屏权限，
+        // 独立 surface 无法用 `WidgetPaintable` 自渲染取证（与 #87 列信息浮层同一处理）。
+        let txn_title = gtk::Label::new(Some("开始事务"));
+        txn_title.add_css_class("heading");
+        txn_title.set_xalign(0.0);
+        let txn_close = gtk::Button::from_icon_name("window-close-symbolic");
+        txn_close.add_css_class("flat");
+        txn_close.set_tooltip_text(Some("取消（不开始事务）"));
+        let txn_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        txn_header.append(&txn_title);
+        txn_title.set_hexpand(true);
+        txn_header.append(&txn_close);
+
+        let txn_note = gtk::Label::new(None);
+        txn_note.set_xalign(0.0);
+        txn_note.set_wrap(true);
+        txn_note.add_css_class("dim-label");
+        txn_note.add_css_class("caption");
+
+        let txn_options = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        txn_options.set_margin_top(4);
+
+        let txn_confirm = gtk::Button::with_label("开始事务");
+        txn_confirm.add_css_class("suggested-action");
+        let txn_cancel = gtk::Button::with_label("取消");
+        let txn_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        txn_buttons.set_halign(gtk::Align::End);
+        txn_buttons.append(&txn_cancel);
+        txn_buttons.append(&txn_confirm);
+
+        let txn_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        txn_card.add_css_class("sqarvo-column-info");
+        txn_card.set_size_request(460, -1);
+        txn_card.set_halign(gtk::Align::Center);
+        txn_card.set_valign(gtk::Align::Start);
+        txn_card.set_margin_top(64);
+        txn_card.set_visible(false);
+        txn_card.append(&txn_header);
+        txn_card.append(&txn_note);
+        txn_card.append(&txn_options);
+        txn_card.append(&txn_buttons);
+        overlay.add_overlay(&txn_card);
+
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_vexpand(true);
         root.set_valign(gtk::Align::Fill);
@@ -718,6 +811,7 @@ impl DataPage {
                 commit_changes,
                 discard,
                 delete_row,
+                add_row,
                 disconnect,
             },
             info_button: info_button.clone(),
@@ -743,7 +837,17 @@ impl DataPage {
             pages: Cell::new(0),
             last_fetch_value: Cell::new(0.0),
             pending_batch: RefCell::new(None),
+            insert: RefCell::new(None),
+            after_insert_batch: RefCell::new(None),
+            driver_id: RefCell::new(None),
+            txn_card: txn_card.clone(),
+            txn_options: txn_options.clone(),
+            isolation_choices: RefCell::new(Vec::new()),
+            isolation_selected: Cell::new(IsolationLevel::Unspecified),
+            txn_confirm: txn_confirm.clone(),
+            txn_note: txn_note.clone(),
             qa_auto_confirm: Cell::new(false),
+            qa_steps_done: Cell::new(false),
             callbacks,
         });
 
@@ -797,6 +901,27 @@ impl DataPage {
                 .delete_row
                 .clone()
                 .connect_clicked(move |_| page.delete_selected_row());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .add_row
+                .clone()
+                .connect_clicked(move |_| page.begin_insert());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.txn_confirm
+                .clone()
+                .connect_clicked(move |_| page.confirm_begin_transaction());
+        }
+        {
+            let card = txn_card.clone();
+            txn_cancel.connect_clicked(move |_| card.set_visible(false));
+        }
+        {
+            let card = txn_card.clone();
+            txn_close.connect_clicked(move |_| card.set_visible(false));
         }
         {
             let page = Rc::clone(&page);
@@ -858,6 +983,847 @@ impl DataPage {
     /// QA 用：风险确认对话框自动确认。
     pub fn set_qa_auto_confirm(&self, value: bool) {
         self.qa_auto_confirm.set(value);
+    }
+
+    // ---- 插入新行（#88） ----
+
+    /// 待插入新行在网格里的位置（永远是最末一行；`None` 表示没有新行）。
+    fn insert_index(&self) -> Option<usize> {
+        if self.insert.borrow().is_none() {
+            return None;
+        }
+        let count = self.store.n_items();
+        if count == 0 {
+            return None;
+        }
+        usize::try_from(count - 1).ok()
+    }
+
+    /// 「新增行」：构造空行草稿，并把占位行加到网格末尾（立即进入可编辑态）。
+    ///
+    /// 空行**默认全部省略**：有默认值的列显示数据库默认值原文，自增列留空——
+    /// 「省略」就是交给数据库生成，这是自增列唯一正确的表达方式（写 0 是错的）。
+    fn begin_insert(self: &Rc<Self>) {
+        if self.is_read_only() {
+            let reason = self
+                .read_only_reason()
+                .unwrap_or_else(|| "只读状态：不能插入新行".to_owned());
+            self.set_status(&reason, "warning");
+            return;
+        }
+        let columns = self.columns.borrow().clone();
+        if columns.is_empty() {
+            self.set_status("尚未打开表，无法新增行", "warning");
+            return;
+        }
+        if let Some(index) = self.insert_index()
+            && let Ok(index) = u32::try_from(index)
+        {
+            self.selection.set_selected(index);
+            self.grid
+                .scroll_to(index, None, gtk::ListScrollFlags::NONE, None);
+        }
+        if self.insert_index().is_some() {
+            self.set_status("已经有一行待插入的新行：先提交或放弃它", "warning");
+            return;
+        }
+        let draft = InsertDraft::new(columns);
+        let summary = draft.summary();
+        let warnings = draft.warnings();
+        let all_omitted = draft.is_all_omitted();
+        self.insert.replace(Some(draft));
+        let cells = self.insert_cells();
+        self.store.append(vec![DataRow {
+            // 行号 0 = 尚未落库；提交成功后按返回的主键定位再赋予真实行号。
+            number: 0,
+            cells,
+            dirty: Vec::new(),
+            deleted: false,
+            removed: false,
+            insert: true,
+        }]);
+        if let Some(index) = self.insert_index()
+            && let Ok(index) = u32::try_from(index)
+        {
+            self.selection.set_selected(index);
+            self.grid
+                .scroll_to(index, None, gtk::ListScrollFlags::NONE, None);
+        }
+        eprintln!(
+            "[data] t=+{}ms 新增行：{summary}{}",
+            crate::qa::elapsed_ms(),
+            if all_omitted {
+                "（全部省略：直接提交即 INSERT DEFAULT VALUES，自增/默认值列由数据库填充）"
+            } else {
+                ""
+            }
+        );
+        for warning in &warnings {
+            eprintln!("[data] 新增行提示：{warning}");
+        }
+        self.set_status(
+            &format!("{summary} · 双击单元格填值，填完点「提交更改」"),
+            "normal",
+        );
+        self.update_dirty_label();
+        self.update_buttons();
+        self.qa_fill_insert();
+    }
+
+    /// 新行每一格的显示（省略态用 dim 样式 + 提示文案）。
+    fn insert_cells(&self) -> Vec<CellView> {
+        let guard = self.insert.borrow();
+        let Some(draft) = guard.as_ref() else {
+            return Vec::new();
+        };
+        (0..draft.cells().len())
+            .map(|index| {
+                let view = draft.view(index);
+                CellView {
+                    text: view.text,
+                    style: if view.hint {
+                        CellStyle::Null
+                    } else {
+                        CellStyle::Normal
+                    },
+                    tooltip: view.tooltip,
+                    truncated: false,
+                }
+            })
+            .collect()
+    }
+
+    /// 刷新新行在网格里的显示（改了一格之后只失效这一行）。
+    fn refresh_insert_row(&self) {
+        let Some(index) = self.insert_index() else {
+            return;
+        };
+        let cells = self.insert_cells();
+        let count = self.store.n_items();
+        let Some(item) = self.store.item(u32::try_from(index).unwrap_or(u32::MAX)) else {
+            return;
+        };
+        if let Ok(boxed) = item.downcast::<glib::BoxedAnyObject>() {
+            let row = boxed.borrow::<Rc<RefCell<DataRow>>>().clone();
+            drop(boxed);
+            row.borrow_mut().cells = cells;
+        }
+        if index < usize::try_from(count).unwrap_or(0) {
+            self.store.notify_row(index);
+        }
+    }
+
+    /// 新行的某格改成文本（解析失败就报错且不改草稿）。
+    fn apply_insert_text(self: &Rc<Self>, column: usize, text: &str) -> Result<(), String> {
+        {
+            let mut guard = self.insert.borrow_mut();
+            let Some(draft) = guard.as_mut() else {
+                return Err("当前没有待插入的新行".to_owned());
+            };
+            draft.set_text(column, text)?;
+        }
+        self.refresh_insert_row();
+        self.after_insert_edit(column, text);
+        Ok(())
+    }
+
+    /// 新行的某格改成显式 NULL。
+    fn apply_insert_null(self: &Rc<Self>, column: usize) -> Result<(), String> {
+        {
+            let mut guard = self.insert.borrow_mut();
+            let Some(draft) = guard.as_mut() else {
+                return Err("当前没有待插入的新行".to_owned());
+            };
+            draft.set_null(column)?;
+        }
+        self.refresh_insert_row();
+        self.after_insert_edit(column, "NULL");
+        Ok(())
+    }
+
+    /// 新行的某格改回「省略」（交给数据库默认值 / 自增）。
+    fn apply_insert_omit(self: &Rc<Self>, column: usize) -> Result<(), String> {
+        {
+            let mut guard = self.insert.borrow_mut();
+            let Some(draft) = guard.as_mut() else {
+                return Err("当前没有待插入的新行".to_owned());
+            };
+            draft.set_omit(column)?;
+        }
+        self.refresh_insert_row();
+        self.after_insert_edit(column, "（省略）");
+        Ok(())
+    }
+
+    fn after_insert_edit(self: &Rc<Self>, column: usize, shown: &str) {
+        let (name, summary) = {
+            let guard = self.insert.borrow();
+            let Some(draft) = guard.as_ref() else {
+                return;
+            };
+            let name = draft
+                .columns()
+                .get(column)
+                .map_or_else(|| column.to_string(), |column| column.name.clone());
+            (name, draft.summary())
+        };
+        eprintln!(
+            "[data] t=+{}ms 新行 {name} = {shown}（{}）",
+            crate::qa::elapsed_ms(),
+            summary
+        );
+        self.errors_scroll.set_visible(false);
+        self.set_status(&summary, "normal");
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    /// 打开新行某列的编辑态（与已有行的编辑器分开：多了「省略」这一态）。
+    fn open_insert_editor(self: &Rc<Self>, column: usize, anchor: &gtk::Widget) {
+        let (initial, column_name, type_label, nullable, hint, is_null, is_omit) = {
+            let guard = self.insert.borrow();
+            let Some(draft) = guard.as_ref() else {
+                return;
+            };
+            let Some(spec) = draft.columns().get(column) else {
+                return;
+            };
+            let Some(cell) = draft.cells().get(column) else {
+                return;
+            };
+            let view = draft.view(column);
+            let (initial, is_null, is_omit) = match &cell.mode {
+                InsertMode::Omit => (String::new(), false, true),
+                InsertMode::Null => (String::new(), true, false),
+                InsertMode::Text(text) => (text.clone(), false, false),
+            };
+            (
+                initial,
+                spec.name.clone(),
+                spec.type_label.clone(),
+                spec.nullable,
+                view.tooltip,
+                is_null,
+                is_omit,
+            )
+        };
+
+        let popover = gtk::Popover::new();
+        popover.set_parent(anchor);
+        popover.set_autohide(true);
+        popover.set_has_arrow(true);
+
+        let title = gtk::Label::new(Some(&format!("新行 · {column_name} · {type_label}")));
+        title.set_xalign(0.0);
+        title.add_css_class("heading");
+
+        let entry = gtk::Entry::new();
+        entry.set_text(&initial);
+        entry.set_hexpand(true);
+
+        let omit_check = gtk::CheckButton::with_label("省略该列（交给数据库默认值 / 自增）");
+        omit_check.set_active(is_omit);
+        let null_check = gtk::CheckButton::with_label("显式 NULL（SQL 空值）");
+        null_check.set_active(is_null);
+        null_check.set_sensitive(nullable);
+        {
+            // 三态互斥：勾「省略」就清 NULL，勾 NULL 就清「省略」，都不勾 = 文本。
+            let null_check = null_check.clone();
+            let entry = entry.clone();
+            omit_check.connect_toggled(move |check| {
+                if check.is_active() {
+                    null_check.set_active(false);
+                    entry.set_sensitive(false);
+                } else {
+                    entry.set_sensitive(!null_check.is_active());
+                }
+            });
+        }
+        {
+            let omit_check = omit_check.clone();
+            let entry = entry.clone();
+            null_check.connect_toggled(move |check| {
+                if check.is_active() {
+                    omit_check.set_active(false);
+                    entry.set_sensitive(false);
+                } else {
+                    entry.set_sensitive(!omit_check.is_active());
+                }
+            });
+        }
+        entry.set_sensitive(!is_null && !is_omit);
+
+        let hint_text = if hint.is_empty() {
+            if nullable {
+                "空文本在文本列表示空字符串；要写 NULL 请勾选上方选项"
+            } else {
+                "该列不允许 NULL：请输入合法值"
+            }
+        } else {
+            hint.as_str()
+        };
+        let hint_label = gtk::Label::new(Some(hint_text));
+        hint_label.set_xalign(0.0);
+        hint_label.set_wrap(true);
+        hint_label.add_css_class("dim-label");
+        hint_label.add_css_class("caption");
+
+        let error = gtk::Label::new(None);
+        error.set_xalign(0.0);
+        error.set_wrap(true);
+        error.add_css_class("error");
+        error.add_css_class("caption");
+        error.set_visible(false);
+
+        let apply = gtk::Button::with_label("应用");
+        apply.add_css_class("suggested-action");
+        let cancel = gtk::Button::with_label("取消");
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        buttons.set_halign(gtk::Align::End);
+        buttons.append(&cancel);
+        buttons.append(&apply);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
+        content.set_margin_start(8);
+        content.set_margin_end(8);
+        content.set_size_request(340, -1);
+        content.append(&title);
+        content.append(&entry);
+        content.append(&omit_check);
+        content.append(&null_check);
+        content.append(&hint_label);
+        content.append(&error);
+        content.append(&buttons);
+        popover.set_child(Some(&content));
+
+        {
+            let popover_for_cancel = popover.clone();
+            cancel.connect_clicked(move |_| popover_for_cancel.popdown());
+        }
+        {
+            let page = Rc::clone(self);
+            let popover_for_apply = popover.clone();
+            let entry = entry.clone();
+            let omit_check = omit_check.clone();
+            let null_check = null_check.clone();
+            let error = error.clone();
+            apply.connect_clicked(move |_| {
+                let result = if omit_check.is_active() {
+                    page.apply_insert_omit(column)
+                } else if null_check.is_active() {
+                    page.apply_insert_null(column)
+                } else {
+                    page.apply_insert_text(column, &entry.text())
+                };
+                match result {
+                    Ok(()) => popover_for_apply.popdown(),
+                    Err(message) => {
+                        error.set_text(&message);
+                        error.set_visible(true);
+                    }
+                }
+            });
+        }
+        popover.connect_closed(|popover| popover.unparent());
+        popover.popup();
+        entry.grab_focus();
+    }
+
+    /// 构造待提交的 `InsertRow`（省略的列不出现在请求里）。
+    fn build_insert_row(&self) -> Result<crate::proto::services::v1::InsertRow, String> {
+        let guard = self.insert.borrow();
+        let Some(draft) = guard.as_ref() else {
+            return Err("当前没有待插入的新行".to_owned());
+        };
+        draft.to_row()
+    }
+
+    /// 提交新行：先发 `InsertRows`（整批原子），成功后再继续提交脏行。
+    fn submit_insert(self: &Rc<Self>, batch: ChangeBatch, acknowledge_risk: bool) {
+        let row = match self.build_insert_row() {
+            Ok(row) => row,
+            Err(message) => {
+                self.set_status(&message, "error");
+                return;
+            }
+        };
+        let summary = self
+            .insert
+            .borrow()
+            .as_ref()
+            .map(InsertDraft::summary)
+            .unwrap_or_default();
+        eprintln!(
+            "[data] 提交新行：{} 列显式（acknowledge_risk={acknowledge_risk}）· {summary}",
+            row.values.len()
+        );
+        self.after_insert_batch
+            .replace(if batch.is_empty() { None } else { Some(batch) });
+        self.pending_batch.replace(None);
+        self.set_busy(true);
+        self.set_status("正在插入新行…", "normal");
+        (self.callbacks.apply)(
+            Vec::new(),
+            Vec::new(),
+            SubmitOptions::insert(vec![row], acknowledge_risk),
+        );
+    }
+
+    /// 插入结果：`rolled_back = true` 时明确告诉用户「整批已回滚、库里 0 行变化」，
+    /// 并保留草稿行供修正重试；否则用返回的主键定位新行（不整表重刷）。
+    pub fn show_inserted(self: &Rc<Self>, report: InsertReport) {
+        self.set_busy(false);
+        let failures = report.failures();
+        self.show_failures(&failures);
+        let status = report.status_line();
+
+        if report.rolled_back {
+            // 插入整批回滚：被挂起的脏行一条都不提交（否则用户以为「只有插入失败」）。
+            if let Some(batch) = self.after_insert_batch.borrow_mut().take() {
+                eprintln!(
+                    "[data] 插入整批回滚：暂不提交同时登记的 {} 条行变更（脏行保留）",
+                    batch.len()
+                );
+            }
+            let codes: Vec<String> = failures
+                .iter()
+                .map(|failure| failure.code.clone())
+                .collect();
+            eprintln!(
+                "[data] 插入整批回滚：库里 0 行变化，逐行失败码 = {}",
+                if codes.is_empty() {
+                    "（服务端未给出）".to_owned()
+                } else {
+                    codes.join("、")
+                }
+            );
+            self.show_banner(&format!(
+                "插入失败：整批已回滚，库里 0 行变化{} · 草稿行已保留，修正后可重试",
+                if codes.is_empty() {
+                    String::new()
+                } else {
+                    format!("（{}）", codes.join("、"))
+                }
+            ));
+            self.set_status(&status.text, status.tone.css_class());
+            self.update_dirty_label();
+            self.update_buttons();
+            return;
+        }
+
+        // 成功：占位行转成真实行，并用返回的主键定位（不重新浏览整张表）。
+        if !report.committed() {
+            // 未回滚但净影响为 0（例如整批被单批上限钳制到一行都没执行）：
+            // 既不能说「整批回滚」，更不能说「已插入」。
+            eprintln!(
+                "[data] 插入未产生净变化：语句成功 {} 行，净影响 0 行",
+                report.inserted_rows
+            );
+            self.show_banner("本次插入未产生净变化：没有行落库。草稿行已保留，可重试。");
+            self.set_status(&status.text, status.tone.css_class());
+            self.update_dirty_label();
+            self.update_buttons();
+            return;
+        }
+        let key_label = report.key_label();
+        self.finish_insert_row(report.inserted_key());
+        let pending = self.after_insert_batch.borrow_mut().take();
+        self.set_status(&status.text, status.tone.css_class());
+        self.show_banner(&format!(
+            "已插入 1 行{}：该行已按返回的主键定位到表末尾（未整表重刷）。其余列由数据库填充，点「刷新」可回读实际值。",
+            key_label
+                .as_ref()
+                .map_or_else(String::new, |label| format!("（主键 {label}）"))
+        ));
+        self.banner.set_button_label(None::<&str>);
+        eprintln!(
+            "[data] t=+{}ms 新行已插入{}：净影响 {} 行（未整表重刷）",
+            crate::qa::elapsed_ms(),
+            key_label
+                .as_ref()
+                .map_or_else(String::new, |label| format!("（主键 {label}）")),
+            report.total_rows_affected
+        );
+        self.update_dirty_label();
+        self.update_buttons();
+        if pending.is_some() {
+            // 同一次「提交更改」里还有脏行：插入已成功，继续提交它们（重新走风险判定）。
+            eprintln!("[data] 插入成功：继续提交同时登记的脏行");
+            self.request_commit();
+        }
+    }
+
+    /// 把新行占位行转成真实行：单元格 = 返回的主键值 + 已提交的值 + 「数据库生成」提示。
+    fn finish_insert_row(&self, key: Option<&crate::proto::services::v1::RowKey>) {
+        let Some(index) = self.insert_index() else {
+            return;
+        };
+        let cells = self.committed_insert_cells(key);
+        let count = self.store.n_items();
+        if let Some(item) = self.store.item(u32::try_from(index).unwrap_or(u32::MAX))
+            && let Ok(boxed) = item.downcast::<glib::BoxedAnyObject>()
+        {
+            let row = boxed.borrow::<Rc<RefCell<DataRow>>>().clone();
+            drop(boxed);
+            {
+                let mut row = row.borrow_mut();
+                row.cells = cells;
+                row.insert = false;
+                row.number = u64::from(count);
+                row.dirty = Vec::new();
+                row.deleted = false;
+                row.removed = false;
+            }
+        }
+        self.insert.replace(None);
+        self.store.notify_row(index);
+        if let Ok(index) = u32::try_from(index) {
+            self.selection.set_selected(index);
+            self.grid
+                .scroll_to(index, None, gtk::ListScrollFlags::NONE, None);
+        }
+    }
+
+    fn committed_insert_cells(
+        &self,
+        key: Option<&crate::proto::services::v1::RowKey>,
+    ) -> Vec<CellView> {
+        let guard = self.insert.borrow();
+        let Some(draft) = guard.as_ref() else {
+            return Vec::new();
+        };
+        let mut cells = Vec::with_capacity(draft.columns().len());
+        for (index, column) in draft.columns().iter().enumerate() {
+            let from_key = key
+                .and_then(|key| key.values.iter().find(|value| value.column == column.name))
+                .and_then(|value| value.value.as_ref());
+            let cell = match from_key {
+                Some(value) => format_cell(value),
+                None => match &draft.cells()[index].mode {
+                    InsertMode::Text(text) => crate::table_data::parse_cell_input(text, column)
+                        .map_or_else(
+                            |_| CellView {
+                                text: text.clone(),
+                                style: CellStyle::Normal,
+                                tooltip: "已提交的原文（服务端接受，但前端未能重新解析）"
+                                    .to_owned(),
+                                truncated: false,
+                            },
+                            |value| format_cell(&value),
+                        ),
+                    InsertMode::Null => format_cell(&crate::table_data::null_value()),
+                    // 省略的列由数据库填：界面**不猜**实际值，明确标成「数据库生成」。
+                    InsertMode::Omit => CellView {
+                        text: "（数据库生成）".to_owned(),
+                        style: CellStyle::Null,
+                        tooltip:
+                            "该列由数据库填充（默认值 / 自增），界面未回读；点「刷新」查看实际值"
+                                .to_owned(),
+                        truncated: false,
+                    },
+                },
+            };
+            cells.push(cell);
+        }
+        cells
+    }
+
+    /// 清掉新行草稿与占位行（放弃更改 / 换表 / 断连）。
+    fn clear_insert(&self) {
+        if self.insert.borrow().is_none() {
+            return;
+        }
+        self.insert.replace(None);
+        self.store.drop_last();
+        self.after_insert_batch.replace(None);
+    }
+
+    // ---- 开始事务：隔离级别（#88 / REQ-TXN-002） ----
+
+    /// 打开「开始事务」卡片：按当前驱动重建选项，不可用的项禁用并附原因。
+    fn open_txn_chooser(self: &Rc<Self>) {
+        if !self.badge.borrow().can_begin() {
+            self.set_status("该会话已有打开的事务（或已断开）", "warning");
+            return;
+        }
+        self.render_isolation_options();
+        self.txn_card.set_visible(true);
+    }
+
+    /// 重建隔离级别选项（每次打开都重建：换库/换驱动后不能沿用旧能力表）。
+    fn render_isolation_options(self: &Rc<Self>) {
+        while let Some(child) = self.txn_options.first_child() {
+            self.txn_options.remove(&child);
+        }
+        self.isolation_choices.borrow_mut().clear();
+
+        let family = self
+            .driver_id
+            .borrow()
+            .as_deref()
+            .and_then(crate::backend::connection::DriverFamily::for_id);
+        let options: Vec<IsolationOption> = isolation_options(family);
+        let mut first: Option<gtk::CheckButton> = None;
+        for option in &options {
+            let label = if option.available {
+                option.label.to_owned()
+            } else {
+                format!("{} · 不可用", option.label)
+            };
+            let check = gtk::CheckButton::with_label(&label);
+            check.set_sensitive(option.available);
+            check.set_tooltip_text(Some(&option.note));
+            match first.as_ref() {
+                Some(first) => check.set_group(Some(first)),
+                None => first = Some(check.clone()),
+            }
+            let note = gtk::Label::new(Some(&option.note));
+            note.set_xalign(0.0);
+            note.set_wrap(true);
+            note.add_css_class("caption");
+            note.add_css_class("dim-label");
+            let line = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            line.append(&check);
+            line.append(&note);
+            self.txn_options.append(&line);
+
+            let selected = self.isolation_selected.get();
+            check.set_active(option.available && option.level == selected);
+            {
+                let page = Rc::downgrade(self);
+                let level = option.level;
+                check.connect_toggled(move |check| {
+                    if !check.is_active() {
+                        return;
+                    }
+                    if let Some(page) = page.upgrade() {
+                        page.isolation_selected.set(level);
+                        eprintln!(
+                            "[data] 隔离级别选中：{}",
+                            crate::table_data::isolation_label(level)
+                        );
+                    }
+                });
+            }
+            self.isolation_choices
+                .borrow_mut()
+                .push((option.level, check));
+        }
+
+        // 预选：优先用调用方指定的级别（QA / 上次选择），不可用则退回「默认」。
+        let preferred = self.isolation_selected.get();
+        let target = options
+            .iter()
+            .find(|option| option.level == preferred && option.available)
+            .map_or(IsolationLevel::Unspecified, |option| option.level);
+        self.isolation_selected.set(target);
+        for (level, check) in self.isolation_choices.borrow().iter() {
+            check.set_active(*level == target);
+        }
+
+        let available: Vec<&str> = options
+            .iter()
+            .filter(|option| option.available)
+            .map(|option| option.label)
+            .collect();
+        let disabled: Vec<String> = options
+            .iter()
+            .filter(|option| !option.available)
+            .map(|option| format!("{}（{}）", option.label, option.note))
+            .collect();
+        self.txn_note.set_text(&format!(
+            "当前驱动可选 {} / {} 项：{}。不可用的级别已禁用并写明原因（不是等到提交后才报错）。",
+            available.len(),
+            options.len(),
+            available.join("、")
+        ));
+        eprintln!(
+            "[data] 隔离级别选项：可用 {} 项（{}）；禁用 {} 项（{}）",
+            crate::table_data::supported_isolation_levels(family).len(),
+            available.join("、"),
+            disabled.len(),
+            if disabled.is_empty() {
+                "无".to_owned()
+            } else {
+                disabled.join("；")
+            }
+        );
+    }
+
+    /// 确认开始事务（卡片里的「开始事务」按钮）。
+    fn confirm_begin_transaction(self: &Rc<Self>) {
+        let isolation = self.isolation_selected.get();
+        let available = self
+            .isolation_choices
+            .borrow()
+            .iter()
+            .find(|(level, _)| *level == isolation)
+            .is_some_and(|(_, check)| check.is_sensitive());
+        if !available {
+            // 选到不支持的级别只可能来自程序错误：拒绝并发出一条明确的状态说明。
+            self.set_status(
+                &format!(
+                    "{} 在当前驱动下不可用，请选择已启用的级别",
+                    crate::table_data::isolation_label(isolation)
+                ),
+                "error",
+            );
+            return;
+        }
+        self.txn_card.set_visible(false);
+        let read_only = self.readonly_check.is_active();
+        let options = BeginOptions::new(read_only, isolation);
+        eprintln!("[data] {}", begin_summary(read_only, isolation));
+        self.set_busy(true);
+        self.set_status(&begin_summary(read_only, isolation), "normal");
+        (self.callbacks.begin)(options);
+    }
+
+    // ---- QA：插入行与隔离级别（#88） ----
+
+    /// QA：点「新增行」（与工具栏按钮同一条路径）。
+    pub fn qa_add_row(self: &Rc<Self>) {
+        self.begin_insert();
+    }
+
+    /// QA：给新行某列填值（`--qa-data-insert-set column:value`）。
+    pub fn qa_insert_set(self: &Rc<Self>, column: &str, text: &str) -> Result<(), String> {
+        let index = self.insert_column_index(column)?;
+        self.apply_insert_text(index, text)
+    }
+
+    /// QA：把新行某列显式设为 NULL（`--qa-data-insert-null column`）。
+    pub fn qa_insert_null(self: &Rc<Self>, column: &str) -> Result<(), String> {
+        let index = self.insert_column_index(column)?;
+        self.apply_insert_null(index)
+    }
+
+    fn insert_column_index(&self, column: &str) -> Result<usize, String> {
+        self.insert
+            .borrow()
+            .as_ref()
+            .and_then(|draft| {
+                draft
+                    .columns()
+                    .iter()
+                    .position(|candidate| candidate.name == column)
+            })
+            .ok_or_else(|| format!("新行里没有列 {column}（是否还没点「新增行」？）"))
+    }
+
+    /// QA：打开「开始事务」卡片（截图用，不真的开事务）。
+    pub fn qa_isolation_dialog(self: &Rc<Self>) {
+        if let Some(choice) = crate::qa::isolation_level() {
+            self.isolation_selected.set(choice.level());
+        }
+        self.open_txn_chooser();
+    }
+
+    /// QA：点卡片里的「开始事务」。
+    pub fn qa_isolation_confirm(self: &Rc<Self>) {
+        if !self.txn_card.is_visible() {
+            self.qa_isolation_dialog();
+        }
+        self.confirm_begin_transaction();
+    }
+
+    /// QA：打开后的动作编排（新增行 / 隔离级别卡片），一次运行只做一次。
+    fn qa_schedule_show_open(self: &Rc<Self>) {
+        if !crate::qa::enabled() || self.qa_steps_done.replace(true) {
+            return;
+        }
+        if crate::qa::data_insert() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                eprintln!("[qa] t=+{}ms 点击「新增行」", crate::qa::elapsed_ms());
+                page.qa_add_row();
+            });
+        }
+        if crate::qa::isolation_dialog() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
+                eprintln!(
+                    "[qa] t=+{}ms 打开「开始事务」的隔离级别选择",
+                    crate::qa::elapsed_ms()
+                );
+                page.qa_isolation_dialog();
+            });
+        }
+        if crate::qa::isolation_confirm() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1_500), move || {
+                eprintln!(
+                    "[qa] t=+{}ms 点击卡片里的「开始事务」",
+                    crate::qa::elapsed_ms()
+                );
+                page.qa_isolation_confirm();
+            });
+        }
+    }
+
+    /// QA：把新行的值按 `--qa-data-insert-set` / `--qa-data-insert-null` 填好。
+    fn qa_fill_insert(self: &Rc<Self>) {
+        if !crate::qa::enabled() {
+            return;
+        }
+        let page = Rc::clone(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            for (column, value) in crate::qa::data_insert_set() {
+                match page.qa_insert_set(&column, &value) {
+                    Ok(()) => eprintln!("[qa] 新行 {column} = {value}"),
+                    Err(error) => eprintln!("[qa] 新行填值失败：{error}"),
+                }
+            }
+            for column in crate::qa::data_insert_null() {
+                match page.qa_insert_null(&column) {
+                    Ok(()) => eprintln!("[qa] 新行 {column} = NULL"),
+                    Err(error) => eprintln!("[qa] 新行设 NULL 失败：{error}"),
+                }
+            }
+        });
+    }
+
+    /// QA：重新浏览后核对 `--qa-expect-row column=value`（不成立时退出码 3）。
+    fn qa_check_expect_rows(self: &Rc<Self>) {
+        let expectations = crate::qa::expect_rows();
+        if expectations.is_empty() {
+            return;
+        }
+        let page = Rc::clone(self);
+        let mut attempts = 0;
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            attempts += 1;
+            let summary = page.rows_summary();
+            let mut missing = Vec::new();
+            for (column, expected) in &expectations {
+                let needle = format!("{column}={expected}");
+                if !summary.iter().any(|line| line.contains(&needle)) {
+                    missing.push(needle);
+                }
+            }
+            if missing.is_empty() {
+                eprintln!(
+                    "[qa] 断言通过：重新浏览后找到 {}",
+                    expectations
+                        .iter()
+                        .map(|(column, expected)| format!("{column}={expected}"))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                );
+                return glib::ControlFlow::Break;
+            }
+            if attempts >= 20 {
+                eprintln!(
+                    "[qa] 断言失败：重新浏览后仍找不到 {}（已加载 {} 行）",
+                    missing.join("、"),
+                    page.row_count()
+                );
+                std::process::exit(3);
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     // ---- 列信息浮层（#87） ----
@@ -1270,6 +2236,9 @@ impl DataPage {
         self.clear_column_info();
         self.draft.replace(None);
         self.pending_batch.replace(None);
+        self.insert.replace(None);
+        self.after_insert_batch.replace(None);
+        self.txn_card.set_visible(false);
         self.columns.borrow_mut().clear();
         self.has_more.set(false);
         self.loading_page.set(true);
@@ -1295,6 +2264,9 @@ impl DataPage {
         // 否则旧表的行会被追加到新表下面。
         self.store.clear();
         self.clear_columns();
+        self.insert.replace(None);
+        self.after_insert_batch.replace(None);
+        self.driver_id.replace(open.driver_id.clone());
         self.table.replace(Some(open.table.clone()));
         self.table_label.set_text(&format!(
             "{} · {} · {}",
@@ -1365,6 +2337,7 @@ impl DataPage {
         if crate::qa::enabled() {
             self.log_rows("首页", &open.rows);
         }
+        self.qa_schedule_show_open();
     }
 
     /// 后续页到达：追加行与草稿。
@@ -1382,7 +2355,25 @@ impl DataPage {
             }
         }
         let data_rows: Vec<DataRow> = rows.iter().map(DataRow::from_table_row).collect();
+        // 新行占位行必须始终是最后一行（下标与 `TableDraft` 对齐）：先摘掉它再追加。
+        let insert_cells = if self.insert.borrow().is_some() {
+            let cells = self.insert_cells();
+            self.store.drop_last();
+            Some(cells)
+        } else {
+            None
+        };
         self.store.append(data_rows);
+        if let Some(cells) = insert_cells {
+            self.store.append(vec![DataRow {
+                number: 0,
+                cells,
+                dirty: Vec::new(),
+                deleted: false,
+                removed: false,
+                insert: true,
+            }]);
+        }
         self.has_more.set(has_more);
         self.loading_page.set(false);
         self.pages.set(pages);
@@ -1597,12 +2588,22 @@ impl DataPage {
             draft.discard();
         }
         self.pending_batch.replace(None);
+        // 新行草稿也是「未提交的更改」：一起放弃（占位行随之从网格移除）。
+        let had_insert = self.insert.borrow().is_some();
+        self.clear_insert();
         let count = self.store.n_items();
         for index in 0..usize::try_from(count).unwrap_or(0) {
             self.refresh_row(index);
         }
         self.errors_scroll.set_visible(false);
-        self.set_status("已放弃未提交的更改", "warning");
+        self.set_status(
+            if had_insert {
+                "已放弃未提交的更改（含新增行）"
+            } else {
+                "已放弃未提交的更改"
+            },
+            "warning",
+        );
         self.update_dirty_label();
         self.update_buttons();
     }
@@ -1692,6 +2693,9 @@ impl DataPage {
     }
 
     /// 提交按钮入口：先做风险判定，必要时弹确认对话框。
+    ///
+    /// 有新行时插入先行（`InsertRows` 整批原子），成功后才提交脏行；插入失败则
+    /// 一条脏行都不提交——避免「插入失败了，但别处的修改已经写进去」这种半套状态。
     pub fn request_commit(self: &Rc<Self>) {
         if self.is_read_only() {
             let reason = self
@@ -1708,9 +2712,17 @@ impl DataPage {
             };
             draft.build_batch()
         };
-        if batch.is_empty() {
+        let has_insert = self.insert.borrow().is_some();
+        if batch.is_empty() && !has_insert {
             self.set_status("没有待提交的更改", "warning");
             return;
+        }
+        if has_insert {
+            // 本地类型校验先跑一遍：送不出去的行不该发 RPC（服务端错误码留给真实冲突）。
+            if let Err(message) = self.build_insert_row() {
+                self.set_status(&message, "error");
+                return;
+            }
         }
         let risk = self.draft.borrow().as_ref().map_or(
             RiskAssessment {
@@ -1719,8 +2731,17 @@ impl DataPage {
             },
             TableDraft::risk,
         );
-        if risk.needs_confirmation() {
-            self.confirm_batch(batch, &risk.summary(), false);
+        let total = risk.total() + usize::from(has_insert);
+        if risk.needs_confirmation() || total > crate::table_data::RISK_CONFIRMATION_ROWS {
+            let mut summary = risk.summary();
+            if has_insert {
+                summary.push_str(
+                    "\n\n另含 1 行新插入（InsertRows：整批原子，任一行失败则整批回滚）。",
+                );
+            }
+            self.confirm_batch(batch, &summary, false);
+        } else if has_insert {
+            self.submit_insert(batch, false);
         } else {
             self.submit_batch(batch, false);
         }
@@ -1747,7 +2768,11 @@ impl DataPage {
                 }
                 if response == "confirm" {
                     eprintln!("[data] 风险确认：用户点击确认提交");
-                    page.submit_batch(batch.clone(), true);
+                    if page.insert.borrow().is_some() {
+                        page.submit_insert(batch.clone(), true);
+                    } else {
+                        page.submit_batch(batch.clone(), true);
+                    }
                 } else {
                     eprintln!("[data] 风险确认：用户取消，未提交");
                     page.set_status("已取消提交（未发送任何变更）", "warning");
@@ -1780,7 +2805,7 @@ impl DataPage {
         self.pending_batch.replace(Some(batch));
         self.set_busy(true);
         self.set_status("正在提交…", "normal");
-        (self.callbacks.apply)(updates, deletes, acknowledge_risk);
+        (self.callbacks.apply)(updates, deletes, SubmitOptions::changes(acknowledge_risk));
     }
 
     fn delete_selected_row(self: &Rc<Self>) {
@@ -1797,6 +2822,13 @@ impl DataPage {
             return;
         }
         let index = usize::try_from(selected).unwrap_or(usize::MAX);
+        if self.insert_index() == Some(index) {
+            self.set_status(
+                "新行尚未提交：用「放弃更改」撤销它，或先提交；已存在的行才可以标记删除",
+                "warning",
+            );
+            return;
+        }
         let result = match self.draft.borrow_mut().as_mut() {
             Some(draft) => draft.delete_row(index),
             None => Err("尚未打开表".to_owned()),
@@ -1826,10 +2858,8 @@ impl DataPage {
             self.set_status("该会话已有打开的事务（或已断开）", "warning");
             return;
         }
-        let read_only = self.readonly_check.is_active();
-        self.set_busy(true);
-        self.set_status("正在开始事务…", "normal");
-        (self.callbacks.begin)(read_only);
+        // 先选隔离级别再发 RPC：不支持的级别在这里就禁用（#88 / REQ-TXN-002）。
+        self.open_txn_chooser();
     }
 
     fn commit_transaction(self: &Rc<Self>) {
@@ -1908,6 +2938,11 @@ impl DataPage {
     fn open_editor(self: &Rc<Self>, row: usize, column: usize, anchor: &gtk::Widget) {
         if let Some(reason) = self.edit_block_reason(row, column) {
             self.set_status(&reason, "warning");
+            return;
+        }
+        // 新行用另一套编辑器：多一个「省略（交给数据库默认值）」态。
+        if self.insert_index() == Some(row) {
+            self.open_insert_editor(column, anchor);
             return;
         }
         let (initial, column_name, type_label, nullable) = {
@@ -2067,6 +3102,10 @@ impl DataPage {
             return Some(reason);
         }
         let Some(draft_row) = draft.rows().get(row) else {
+            // 新行的占位行不在 `TableDraft` 里：允许编辑，其它越界下标仍然拒绝。
+            if self.insert_index() == Some(row) {
+                return None;
+            }
             return Some("行不存在".to_owned());
         };
         if draft_row.removed {
@@ -2230,10 +3269,14 @@ impl DataPage {
         self.request_commit();
     }
 
-    /// QA：点「开始事务」。
+    /// QA：点「开始事务」（先打开卡片再确认，与用户点击走同一条路径）。
     pub fn qa_begin(self: &Rc<Self>, read_only: bool) {
         self.readonly_check.set_active(read_only);
-        self.begin_transaction();
+        if let Some(choice) = crate::qa::isolation_level() {
+            self.isolation_selected.set(choice.level());
+        }
+        self.qa_isolation_dialog();
+        self.confirm_begin_transaction();
     }
 
     /// QA：点「回滚事务」。
@@ -2241,9 +3284,10 @@ impl DataPage {
         self.rollback_transaction();
     }
 
-    /// QA：重新读取当前表。
+    /// QA：重新读取当前表；登记了 `--qa-expect-row` 时随后断言。
     pub fn qa_reload(self: &Rc<Self>) {
         self.reload();
+        self.qa_check_expect_rows();
     }
 
     /// 已加载行的展示文本（QA 日志与证据用）。
@@ -2340,6 +3384,12 @@ impl DataPage {
                     "✕",
                     format!("第 {} 行 · 已删除", row.number),
                     "sqarvo-deleted",
+                )
+            } else if row.insert {
+                (
+                    "＋",
+                    "新行 · 尚未提交（双击单元格填值）".to_owned(),
+                    "sqarvo-dirty",
                 )
             } else if row.deleted {
                 (
@@ -2661,6 +3711,7 @@ impl DataPage {
     }
 
     fn update_dirty_label(&self) {
+        let has_insert = self.insert.borrow().is_some();
         let (dirty, risk) = match self.draft.borrow().as_ref() {
             Some(draft) => (draft.dirty_rows(), draft.risk()),
             None => (
@@ -2673,17 +3724,23 @@ impl DataPage {
         };
         let text = if risk.deletes > 0 {
             format!(
-                "脏行 {dirty} · 待提交 {} 条（含 {} 个删除）",
+                "脏行 {dirty} · 待提交 {} 条（含 {} 个删除）{insert_note}",
                 risk.total(),
-                risk.deletes
+                risk.deletes,
+                insert_note = if has_insert { " · 新行 1 行" } else { "" }
             )
         } else {
-            format!("脏行 {dirty} · 待提交 {} 条", risk.total())
+            format!(
+                "脏行 {dirty} · 待提交 {} 条{}",
+                risk.total(),
+                if has_insert { " · 新行 1 行" } else { "" }
+            )
         };
         self.dirty_label.set_text(&text);
-        self.buttons
-            .commit_changes
-            .set_label(&format!("提交更改（{}）", risk.total()));
+        self.buttons.commit_changes.set_label(&format!(
+            "提交更改（{}）",
+            risk.total() + usize::from(has_insert)
+        ));
     }
 
     fn update_buttons(&self) {
@@ -2697,6 +3754,8 @@ impl DataPage {
             Some(draft) => (draft.dirty_rows(), draft.risk().total()),
             None => (0, 0),
         };
+        let has_insert = self.insert.borrow().is_some();
+        let pending = changes + usize::from(has_insert);
         let badge = self.badge.borrow();
         let disconnected = matches!(self.state.get(), DataState::Disconnected)
             || matches!(badge.status(), TxnStatus::Disconnected);
@@ -2715,14 +3774,24 @@ impl DataPage {
             .set_sensitive(self.draft.borrow().is_some() && !busy);
         self.buttons
             .commit_changes
-            .set_sensitive(editing_enabled && changes > 0 && !busy);
+            .set_sensitive(editing_enabled && pending > 0 && !busy);
         self.buttons
             .discard
-            .set_sensitive(editing_enabled && dirty > 0 && !busy);
+            .set_sensitive(editing_enabled && (dirty > 0 || has_insert) && !busy);
         let has_selection = self.selection.selected() != gtk::INVALID_LIST_POSITION;
         self.buttons
             .delete_row
             .set_sensitive(editing_enabled && has_selection && !busy);
+        self.buttons
+            .add_row
+            .set_sensitive(editing_enabled && !has_insert && !busy);
+        self.buttons
+            .delete_row
+            .set_tooltip_text(Some(if has_insert {
+                "新行尚未提交：先提交或「放弃更改」"
+            } else {
+                "把选中行标记为待删除（提交前仍可撤销）"
+            }));
         self.buttons.disconnect.set_sensitive(!disconnected);
         self.buttons
             .commit_changes
@@ -2734,6 +3803,7 @@ impl DataPage {
         // 只读原因一旦成立，编辑类按钮一律禁用（不是靠置灰暗示，状态行同时给出原因）。
         if let Some(reason) = self.read_only_reason() {
             self.buttons.delete_row.set_sensitive(false);
+            self.buttons.add_row.set_sensitive(false);
             self.buttons.commit_changes.set_sensitive(false);
             self.buttons.discard.set_sensitive(false);
             self.status.set_tooltip_text(Some(&reason));
@@ -2829,6 +3899,7 @@ impl DataRow {
             dirty: vec![false; row.cells.len()],
             deleted: false,
             removed: false,
+            insert: false,
         }
     }
 }

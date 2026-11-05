@@ -467,6 +467,50 @@ impl DdlExpectation {
     }
 }
 
+/// `--qa-isolation-level` 的取值：只想让脚本说人话，映射到 proto 枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationChoice {
+    /// 不指定（交给数据库默认值）。
+    Default,
+    /// 读未提交。
+    ReadUncommitted,
+    /// 读已提交。
+    ReadCommitted,
+    /// 可重复读。
+    RepeatableRead,
+    /// 可序列化。
+    Serializable,
+}
+
+impl IsolationChoice {
+    /// 解析参数取值。
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "default" | "unspecified" => Ok(Self::Default),
+            "read-uncommitted" => Ok(Self::ReadUncommitted),
+            "read-committed" => Ok(Self::ReadCommitted),
+            "repeatable-read" => Ok(Self::RepeatableRead),
+            "serializable" => Ok(Self::Serializable),
+            other => Err(format!(
+                "--qa-isolation-level 只接受 default|read-uncommitted|read-committed|repeatable-read|serializable，实际：{other}"
+            )),
+        }
+    }
+
+    /// 对应的 proto 枚举。
+    #[must_use]
+    pub fn level(self) -> crate::proto::services::v1::IsolationLevel {
+        use crate::proto::services::v1::IsolationLevel;
+        match self {
+            Self::Default => IsolationLevel::Unspecified,
+            Self::ReadUncommitted => IsolationLevel::ReadUncommitted,
+            Self::ReadCommitted => IsolationLevel::ReadCommitted,
+            Self::RepeatableRead => IsolationLevel::RepeatableRead,
+            Self::Serializable => IsolationLevel::Serializable,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Args {
     capture: Option<Capture>,
@@ -535,6 +579,21 @@ struct Args {
     expect_tree: Vec<TreeExpectation>,
     /// `--qa-expect-ddl <field>=<value>`：DDL 面板的断言（可重复）。
     expect_ddl: Vec<DdlExpectation>,
+    // ---- #88 插入行与隔离级别 ----
+    /// `--qa-data-insert`：点「新增行」（与用户点工具栏按钮同一条路径）。
+    data_insert: bool,
+    /// `--qa-data-insert-set <column:value>`：给新行某列填值（按列名，可重复）。
+    data_insert_set: Vec<(String, String)>,
+    /// `--qa-data-insert-null <column>`：把新行某列显式设为 NULL（可重复）。
+    data_insert_null: Vec<String>,
+    /// `--qa-expect-row <column=value>`：重新浏览后必须存在该值的行（否则退出码 3）。
+    expect_rows: Vec<(String, String)>,
+    /// `--qa-isolation-dialog`：打开「开始事务」的隔离级别选择卡片（截图用）。
+    isolation_dialog: bool,
+    /// `--qa-isolation-level <level>`：对话框里预选的隔离级别。
+    isolation_level: Option<IsolationChoice>,
+    /// `--qa-isolation-confirm`：在卡片里点「开始事务」（真的开事务）。
+    isolation_confirm: bool,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -577,6 +636,9 @@ pub fn enabled() -> bool {
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
+            || args.data_insert
+            || args.isolation_dialog
+            || args.isolation_confirm
     })
 }
 
@@ -784,6 +846,51 @@ pub fn tree_requested() -> bool {
             || args.tree_click_result
             || args.tree_load_more
     })
+}
+
+/// `--qa-data-insert`：点「新增行」。
+#[must_use]
+pub fn data_insert() -> bool {
+    ARGS.get().is_some_and(|args| args.data_insert)
+}
+
+/// `--qa-data-insert-set <column:value>`：给新行填的值（按登记顺序）。
+#[must_use]
+pub fn data_insert_set() -> Vec<(String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.data_insert_set.clone())
+}
+
+/// `--qa-data-insert-null <column>`：新行里显式写 NULL 的列。
+#[must_use]
+pub fn data_insert_null() -> Vec<String> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.data_insert_null.clone())
+}
+
+/// `--qa-expect-row <column=value>`：重新浏览后必须存在的行（否则退出码 3）。
+#[must_use]
+pub fn expect_rows() -> Vec<(String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_rows.clone())
+}
+
+/// `--qa-isolation-dialog`：打开隔离级别选择卡片。
+#[must_use]
+pub fn isolation_dialog() -> bool {
+    ARGS.get().is_some_and(|args| args.isolation_dialog)
+}
+
+/// `--qa-isolation-level`：预选的隔离级别。
+#[must_use]
+pub fn isolation_level() -> Option<IsolationChoice> {
+    ARGS.get().and_then(|args| args.isolation_level)
+}
+
+/// `--qa-isolation-confirm`：在卡片里点「开始事务」。
+#[must_use]
+pub fn isolation_confirm() -> bool {
+    ARGS.get().is_some_and(|args| args.isolation_confirm)
 }
 
 /// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
@@ -1076,6 +1183,66 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .ok_or_else(|| "--qa-expect-column 需要 列名:字段=文案".to_owned())?;
                 parsed.expect_columns.push(ColumnExpectation::parse(value)?);
                 index += 2;
+            }
+            // ---- #88：插入行与隔离级别 ----
+            "--qa-data-insert" => {
+                parsed.data_insert = true;
+                index += 1;
+            }
+            "--qa-data-insert-set" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-insert-set 需要 column:value".to_owned())?;
+                let (column, text) = value.split_once(':').ok_or_else(|| {
+                    format!("--qa-data-insert-set 需要 column:value，实际：{value}")
+                })?;
+                if column.trim().is_empty() {
+                    return Err(format!("--qa-data-insert-set 的列名为空：{value}"));
+                }
+                parsed
+                    .data_insert_set
+                    .push((column.to_owned(), text.to_owned()));
+                index += 2;
+            }
+            "--qa-data-insert-null" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-insert-null 需要一个列名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-data-insert-null 的列名不能为空".to_owned());
+                }
+                parsed.data_insert_null.push(value.clone());
+                index += 2;
+            }
+            "--qa-expect-row" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-row 需要 column=value".to_owned())?;
+                let (column, expected) = value
+                    .split_once('=')
+                    .ok_or_else(|| format!("--qa-expect-row 需要 column=value，实际：{value}"))?;
+                if column.trim().is_empty() {
+                    return Err(format!("--qa-expect-row 的列名为空：{value}"));
+                }
+                parsed
+                    .expect_rows
+                    .push((column.to_owned(), expected.to_owned()));
+                index += 2;
+            }
+            "--qa-isolation-dialog" => {
+                parsed.isolation_dialog = true;
+                index += 1;
+            }
+            "--qa-isolation-level" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-isolation-level 需要一个级别名".to_owned())?;
+                parsed.isolation_level = Some(IsolationChoice::parse(value)?);
+                index += 2;
+            }
+            "--qa-isolation-confirm" => {
+                parsed.isolation_confirm = true;
+                index += 1;
             }
             "--qa-tree-expand" => {
                 let value = args
@@ -1728,5 +1895,64 @@ mod tests {
         // 没有截图就没有「断言这一刻」：静默忽略会让「跑了但没断言」看起来像通过。
         assert!(parse(&args(&["app", "--qa-expect-txn", "failed"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-data-state", "empty"])).is_err());
+    }
+
+    // ---- #88：插入行与隔离级别 ----
+
+    #[test]
+    fn insert_and_isolation_flags_are_parsed() {
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-data-insert",
+            "--qa-data-insert-set",
+            "code:qa-new-1",
+            "--qa-data-insert-null",
+            "amount",
+            "--qa-expect-row",
+            "code=qa-new-1",
+            "--qa-isolation-dialog",
+            "--qa-isolation-level",
+            "repeatable-read",
+            "--qa-isolation-confirm",
+        ]))
+        .expect("参数应可解析");
+        assert!(parsed.data_insert);
+        assert_eq!(
+            parsed.data_insert_set,
+            vec![("code".to_owned(), "qa-new-1".to_owned())]
+        );
+        assert_eq!(parsed.data_insert_null, vec!["amount".to_owned()]);
+        assert_eq!(
+            parsed.expect_rows,
+            vec![("code".to_owned(), "qa-new-1".to_owned())]
+        );
+        assert!(parsed.isolation_dialog);
+        assert_eq!(
+            parsed.isolation_level,
+            Some(IsolationChoice::RepeatableRead)
+        );
+        assert!(parsed.isolation_confirm);
+    }
+
+    #[test]
+    fn insert_and_isolation_flags_reject_malformed_values() {
+        // 缺值 / 缺分隔符 / 未知级别都必须报错，不能静默用默认值：
+        // 「参数写错了却跑通了」会让人以为界面验证过。
+        assert!(parse(&args(&["app", "--qa-data-insert-set"])).is_err());
+        assert!(parse(&args(&["app", "--qa-data-insert-set", "code"])).is_err());
+        assert!(parse(&args(&["app", "--qa-data-insert-null"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-row", "code"])).is_err());
+        assert!(parse(&args(&["app", "--qa-isolation-level", "read-something"])).is_err());
+        // 合法取值映射到 proto 枚举（界面发出去的正是这个值）。
+        assert_eq!(
+            IsolationChoice::parse("serializable")
+                .expect("合法级别")
+                .level(),
+            crate::proto::services::v1::IsolationLevel::Serializable
+        );
+        assert_eq!(
+            IsolationChoice::parse("default").expect("合法级别").level(),
+            crate::proto::services::v1::IsolationLevel::Unspecified
+        );
     }
 }

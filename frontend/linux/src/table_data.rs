@@ -14,14 +14,16 @@
 //! - 时间戳按 `unix_nanos + offset_seconds` 表达，可写 `+08:00` 指定偏移；
 //! - 转换失败返回中文原因（包含期望格式），界面直接展示，不静默丢弃编辑。
 
+use crate::backend::connection::DriverFamily;
 use crate::backend::table::TableColumn;
+use crate::column_info::ColumnDefaultState;
 use crate::proto::common::v1::{
     ColumnTypeKind, ColumnValue, DateTimeValue, DecimalValue, TimestampValue, ValueKind,
     column_value,
 };
 use crate::proto::services::v1::{
-    ColumnChange, PrimaryKeyValue, ReadOnlyReason as ProtoReadOnlyReason, RowDelete, RowKey,
-    RowUpdate,
+    ColumnChange, InsertRow, IsolationLevel, PrimaryKeyValue,
+    ReadOnlyReason as ProtoReadOnlyReason, RowDelete, RowKey, RowUpdate,
 };
 
 /// 风险确认阈值：预计影响行数 **超过** 该值时必须确认（与 ADR 0017 的服务端阈值一致）。
@@ -1226,6 +1228,397 @@ impl TransactionBadge {
     }
 }
 
+// ---- 插入草稿（#88） ----
+//
+// 插入与「改已有行」的区别全在**省略列**上：省略的列交给数据库默认值（自增、
+// `DEFAULT` 表达式、`DEFAULT NULL`），显式 NULL 才写 SQL NULL。协议里这两者
+// 严格可分（`InsertRow.values` 里没有该列 = 省略），所以前端也必须把它们做成
+// 两个不同的操作，而不是「空文本」这种含糊状态。
+
+/// 插入草稿里一列的取值方式。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InsertMode {
+    /// 省略该列：交给数据库默认值 / 自增 / `DEFAULT NULL`。
+    Omit,
+    /// 显式写入 SQL NULL（仅可空列；不可空列在 [`InsertDraft::set_null`] 就被拒绝）。
+    Null,
+    /// 显式写入一个文本（提交时按列类型解析，与单元格编辑同一套转换）。
+    Text(String),
+}
+
+/// 插入草稿里的一列：取值方式 + 服务端默认值提示。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertCell {
+    /// 当前取值方式。
+    pub mode: InsertMode,
+    /// 默认值提示（有 `DEFAULT` 时是服务端原文；没有默认值时为 `None`）。
+    pub default_hint: Option<String>,
+}
+
+impl InsertCell {
+    /// 是否处于「交给数据库」的省略态（空行刚建出来时就是这个态）。
+    #[must_use]
+    pub fn is_omitted(&self) -> bool {
+        matches!(self.mode, InsertMode::Omit)
+    }
+}
+
+/// 插入草稿的一格在界面上的显示（文本 + tooltip + 是否只是提示）。
+///
+/// 空行进入编辑态时每一列都必须**说清楚会发生什么**：是显示数据库默认值、
+/// 省略后由数据库生成，还是「无默认值，省略会被拒绝」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertCellView {
+    /// 单元格文本。
+    pub text: String,
+    /// 悬停说明（空串表示没有）。
+    pub tooltip: String,
+    /// 是否只是「省略」提示（界面用 dim 样式，避免看起来像真实数据）。
+    pub hint: bool,
+}
+
+/// 一行待插入的数据（按列顺序表达每一列怎么给值）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertDraft {
+    columns: Vec<TableColumn>,
+    cells: Vec<InsertCell>,
+}
+
+impl InsertDraft {
+    /// 构造空行草稿：**所有列默认省略**，由数据库填默认值/自增。
+    ///
+    /// 默认省略而不是默认 NULL 是协议要求的：`INSERT` 里不写该列与写 `NULL`
+    /// 是不同的语句，把「没填」当成 NULL 会把自增列写成 0。
+    #[must_use]
+    pub fn new(columns: Vec<TableColumn>) -> Self {
+        let cells = columns.iter().map(default_cell).collect();
+        Self { columns, cells }
+    }
+
+    /// 列元数据。
+    #[must_use]
+    pub fn columns(&self) -> &[TableColumn] {
+        &self.columns
+    }
+
+    /// 每一列的取值方式。
+    #[must_use]
+    pub fn cells(&self) -> &[InsertCell] {
+        &self.cells
+    }
+
+    /// 显式给值的列数（`Text` + `Null`）。
+    #[must_use]
+    pub fn provided(&self) -> usize {
+        self.cells.iter().filter(|cell| !cell.is_omitted()).count()
+    }
+
+    /// 省略的列数。
+    #[must_use]
+    pub fn omitted(&self) -> usize {
+        self.cells.len() - self.provided()
+    }
+
+    /// 是否一个字都没填（全部省略）。
+    #[must_use]
+    pub fn is_all_omitted(&self) -> bool {
+        self.provided() == 0
+    }
+
+    /// 状态行 / 日志文案。
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "新行：显式 {} 列 · 省略 {} 列（交给数据库默认值）",
+            self.provided(),
+            self.omitted()
+        )
+    }
+
+    fn index_of(&self, index: usize) -> Result<&TableColumn, String> {
+        self.columns
+            .get(index)
+            .ok_or_else(|| format!("列下标 {index} 不存在"))
+    }
+
+    /// 用文本给某列赋值（按列类型解析；空文本在数值列表示 NULL，与单元格编辑同一口径）。
+    ///
+    /// 解析失败时**不改**草稿：错误提示与「什么都没发生」必须同时成立。
+    pub fn set_text(&mut self, index: usize, text: &str) -> Result<(), String> {
+        let column = self.index_of(index)?.clone();
+        if let Some(reason) = column.type_not_editable_reason() {
+            return Err(reason);
+        }
+        let parsed = parse_cell_input(text, &column)?;
+        let mode = if ValueKind::try_from(parsed.kind) == Ok(ValueKind::Null) {
+            // 空文本落到 NULL（数值/时间列）：显示成 NULL，而不是留着空串假装没填。
+            InsertMode::Null
+        } else {
+            InsertMode::Text(text.to_owned())
+        };
+        self.cells[index].mode = mode;
+        Ok(())
+    }
+
+    /// 显式把某列写成 SQL NULL（不可空列直接拒绝，不等服务端报 `not_null_violation`）。
+    pub fn set_null(&mut self, index: usize) -> Result<(), String> {
+        let column = self.index_of(index)?;
+        if !column.nullable {
+            return Err(format!("列 {} 不允许 NULL（NOT NULL）", column.name));
+        }
+        self.cells[index].mode = InsertMode::Null;
+        Ok(())
+    }
+
+    /// 把某列改回「省略」：由数据库填默认值 / 自增。
+    pub fn set_omit(&mut self, index: usize) -> Result<(), String> {
+        self.index_of(index)?;
+        self.cells[index].mode = InsertMode::Omit;
+        Ok(())
+    }
+
+    /// 提交前的本地提醒（不阻止提交；服务端仍是最终判定者）。
+    ///
+    /// 只提醒「省略了一定会被拒绝」的列：不可空且没有默认值。之所以只提醒不阻止，
+    /// 是因为协议没有「自增」标志位（`ColumnMeta` 不带 `auto_increment`），
+    /// MariaDB 的 `AUTO_INCREMENT` 列在这里读到的是「不可空 + 无默认值」——
+    /// 它省略恰恰是正确的。前端不猜，交给服务端错误码确认。
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for (index, cell) in self.cells.iter().enumerate() {
+            if !cell.is_omitted() {
+                continue;
+            }
+            let column = &self.columns[index];
+            if column.nullable {
+                continue;
+            }
+            if matches!(column.default_value, ColumnDefaultState::NoDefault) {
+                warnings.push(format!(
+                    "列 {} 不可空且没有默认值：省略会被服务端拒绝（`table_data.not_null_without_default`）；若它是自增列则省略是正确的",
+                    column.name
+                ));
+            }
+        }
+        warnings
+    }
+
+    /// 单元格显示。
+    #[must_use]
+    pub fn view(&self, index: usize) -> InsertCellView {
+        let Some(cell) = self.cells.get(index) else {
+            return InsertCellView {
+                text: String::new(),
+                tooltip: String::new(),
+                hint: true,
+            };
+        };
+        let column = &self.columns[index];
+        match &cell.mode {
+            InsertMode::Text(text) => InsertCellView {
+                text: text.clone(),
+                tooltip: "已填写，提交时按列类型解析".to_owned(),
+                hint: false,
+            },
+            InsertMode::Null => InsertCellView {
+                text: "NULL".to_owned(),
+                tooltip: "显式写入 SQL NULL（与「省略」不同）".to_owned(),
+                hint: false,
+            },
+            InsertMode::Omit => {
+                let (text, tooltip) = omit_hint(column);
+                InsertCellView {
+                    text,
+                    tooltip,
+                    hint: true,
+                }
+            }
+        }
+    }
+
+    /// 构造提交用的 `InsertRow`：省略的列**不出现在** `values` 里。
+    pub fn to_row(&self) -> Result<InsertRow, String> {
+        let mut values = Vec::with_capacity(self.cells.len());
+        for (index, cell) in self.cells.iter().enumerate() {
+            let column = &self.columns[index];
+            let value = match &cell.mode {
+                InsertMode::Omit => continue,
+                InsertMode::Null => {
+                    if !column.nullable {
+                        return Err(format!("列 {} 不允许 NULL（NOT NULL）", column.name));
+                    }
+                    null_value()
+                }
+                InsertMode::Text(text) => parse_cell_input(text, column)
+                    .map_err(|error| format!("列 {}：{error}", column.name))?,
+            };
+            values.push(ColumnChange {
+                column: column.name.clone(),
+                value: Some(value),
+            });
+        }
+        Ok(InsertRow { values })
+    }
+}
+
+/// 空行草稿里某一列的初始状态：默认省略 + 服务端默认值提示。
+fn default_cell(column: &TableColumn) -> InsertCell {
+    let default_hint = match &column.default_value {
+        ColumnDefaultState::Expression(text) if text.trim().is_empty() => None,
+        ColumnDefaultState::Expression(text) => Some(text.clone()),
+        ColumnDefaultState::Null => Some("NULL".to_owned()),
+        ColumnDefaultState::NoDefault | ColumnDefaultState::Unknown => None,
+    };
+    InsertCell {
+        mode: InsertMode::Omit,
+        default_hint,
+    }
+}
+
+/// 省略某列时界面上的提示：说清楚「数据库会怎么填」，而不是留一个空格子。
+fn omit_hint(column: &TableColumn) -> (String, String) {
+    match &column.default_value {
+        ColumnDefaultState::Expression(text) if !text.trim().is_empty() => (
+            format!("默认：{text}"),
+            format!("该列省略：由数据库默认值 {text} 填充（不写进 INSERT 语句）"),
+        ),
+        ColumnDefaultState::Expression(_) => (
+            "默认：（服务端未给出文本）".to_owned(),
+            "该列省略：由数据库默认值填充".to_owned(),
+        ),
+        ColumnDefaultState::Null => (
+            "默认 NULL".to_owned(),
+            "该列省略：数据库默认值为 NULL".to_owned(),
+        ),
+        ColumnDefaultState::NoDefault if column.nullable => (
+            "省略 → NULL".to_owned(),
+            "该列省略：可空且无默认值，插入后为 NULL（与显式写 NULL 等价）".to_owned(),
+        ),
+        ColumnDefaultState::NoDefault => (
+            "省略 → 数据库决定".to_owned(),
+            "该列不可空且没有默认值：省略后由数据库决定（自增列正是这样），否则会被拒绝（table_data.not_null_without_default）".to_owned(),
+        ),
+        ColumnDefaultState::Unknown => (
+            "省略 → 数据库生成".to_owned(),
+            "服务端未提供该列的默认值信息：省略即交给数据库".to_owned(),
+        ),
+    }
+}
+
+// ---- 隔离级别选项（#88 / REQ-TXN-002） ----
+
+/// 隔离级别的展示文案（含 `ISOLATION_LEVEL_UNSPECIFIED` = 默认）。
+#[must_use]
+pub fn isolation_label(level: IsolationLevel) -> &'static str {
+    match level {
+        IsolationLevel::Unspecified => "默认（由数据库决定）",
+        IsolationLevel::ReadUncommitted => "读未提交（READ UNCOMMITTED）",
+        IsolationLevel::ReadCommitted => "读已提交（READ COMMITTED）",
+        IsolationLevel::RepeatableRead => "可重复读（REPEATABLE READ）",
+        IsolationLevel::Serializable => "可序列化（SERIALIZABLE）",
+        IsolationLevel::Snapshot => "快照（SNAPSHOT）",
+    }
+}
+
+/// 开始事务对话框里的一个隔离级别选项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsolationOption {
+    /// 对应 `BeginTransactionRequest.isolation`。
+    pub level: IsolationLevel,
+    /// 展示文案。
+    pub label: &'static str,
+    /// 当前驱动是否支持（false 时界面必须禁用，并展示 [`Self::note`]）。
+    pub available: bool,
+    /// 可用时的说明 / 不可用的原因——**不可用必须给出原因**，不能只置灰。
+    pub note: String,
+}
+
+/// 驱动能力表：哪些隔离级别可选，不支持的为什么不能选。
+///
+/// 判定放在纯函数里而不是界面里，是为了让「SQLite 只剩可序列化」「MariaDB 四档」
+/// 这类映射能被单测钉住；界面只负责把 `available = false` 的项禁用并贴上 `note`。
+///
+/// `family` 为 `None`（前端不认识的驱动）时只允许「默认」：契约没有声明它支持
+/// 哪些级别，猜一个会在提交后才发现不被接受——正是本 Issue 要消除的体验。
+#[must_use]
+pub fn isolation_options(family: Option<DriverFamily>) -> Vec<IsolationOption> {
+    const ALL: [IsolationLevel; 5] = [
+        IsolationLevel::Unspecified,
+        IsolationLevel::ReadUncommitted,
+        IsolationLevel::ReadCommitted,
+        IsolationLevel::RepeatableRead,
+        IsolationLevel::Serializable,
+    ];
+    ALL.into_iter()
+        .map(|level| {
+            let (available, note) = match (family, level) {
+                (_, IsolationLevel::Unspecified) => {
+                    (true, "不指定隔离级别：由数据库/驱动的默认值决定".to_owned())
+                }
+                // 快照隔离不在 v0.2.2 的界面清单里（Issue 只要求四档 + 默认）；
+                // 服务端枚举有该值，界面不提供，也不假装两家驱动都支持。
+                (_, IsolationLevel::Snapshot) => (
+                    false,
+                    "快照隔离不在本版界面提供：两种驱动的服务端都不接受该级别".to_owned(),
+                ),
+                (Some(DriverFamily::MariaDb), IsolationLevel::ReadUncommitted) => {
+                    (true, "脏读可见：并发最高，一致性最弱".to_owned())
+                }
+                (Some(DriverFamily::MariaDb), IsolationLevel::ReadCommitted) => (
+                    true,
+                    "只读已提交数据（Oracle/PostgreSQL 的默认级别）".to_owned(),
+                ),
+                (Some(DriverFamily::MariaDb), IsolationLevel::RepeatableRead) => {
+                    (true, "MariaDB/InnoDB 的默认级别".to_owned())
+                }
+                (Some(DriverFamily::MariaDb), IsolationLevel::Serializable) => {
+                    (true, "读也加共享锁：并发冲突最多".to_owned())
+                }
+                (Some(DriverFamily::Sqlite), IsolationLevel::Serializable) => (
+                    true,
+                    "SQLite 只接受 SERIALIZABLE：本选项与数据库行为一致".to_owned(),
+                ),
+                (Some(DriverFamily::Sqlite), _) => (
+                    false,
+                    "SQLite 只接受 SERIALIZABLE（写事务天然串行）：其它级别不会被接受，因此不可选"
+                        .to_owned(),
+                ),
+                (None, _) => (
+                    false,
+                    "当前驱动未声明支持的隔离级别：只能选「默认」，否则要到提交后才可能被拒绝"
+                        .to_owned(),
+                ),
+            };
+            IsolationOption {
+                level,
+                label: isolation_label(level),
+                available,
+                note,
+            }
+        })
+        .collect()
+}
+
+/// 当前驱动**实际可选**的隔离级别（日志与断言用）。
+#[must_use]
+pub fn supported_isolation_levels(family: Option<DriverFamily>) -> Vec<IsolationLevel> {
+    isolation_options(family)
+        .into_iter()
+        .filter(|option| option.available)
+        .map(|option| option.level)
+        .collect()
+}
+/// 开始事务的说明文案（对话框副标题 / 日志）。
+#[must_use]
+pub fn begin_summary(read_only: bool, level: IsolationLevel) -> String {
+    format!(
+        "开始事务：{} · {}",
+        isolation_label(level),
+        if read_only { "只读" } else { "读写" }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1739,5 +2132,258 @@ mod tests {
             "date",
         );
         assert_eq!(edit_text(&date), "2026-11-05");
+    }
+
+    // ---- 插入草稿（#88） ----
+
+    fn column_with_default(
+        name: &str,
+        kind: ColumnTypeKind,
+        label: &str,
+        nullable: bool,
+        default_value: ColumnDefaultState,
+    ) -> TableColumn {
+        TableColumn {
+            default_value,
+            ..column(name, kind, label, nullable)
+        }
+    }
+
+    /// 一张典型的 MariaDB 表：自增主键 + 带默认值的时间列 + 必填文本 + 可空列。
+    fn insert_columns() -> Vec<TableColumn> {
+        vec![
+            // 自增列的元数据与「不可空 + 无默认值」完全相同（协议没有自增标志）。
+            TableColumn {
+                primary_key_position: Some(1),
+                ..column_with_default(
+                    "id",
+                    ColumnTypeKind::ColumnTypeInteger,
+                    "bigint",
+                    false,
+                    ColumnDefaultState::NoDefault,
+                )
+            },
+            column_with_default(
+                "name",
+                ColumnTypeKind::ColumnTypeText,
+                "varchar(64)",
+                false,
+                ColumnDefaultState::NoDefault,
+            ),
+            column_with_default(
+                "created_at",
+                ColumnTypeKind::ColumnTypeTimestamp,
+                "timestamp",
+                false,
+                ColumnDefaultState::Expression("current_timestamp()".to_owned()),
+            ),
+            column_with_default(
+                "note",
+                ColumnTypeKind::ColumnTypeText,
+                "text",
+                true,
+                ColumnDefaultState::Null,
+            ),
+            column("payload", ColumnTypeKind::ColumnTypeBinary, "blob", true),
+        ]
+    }
+
+    #[test]
+    fn insert_draft_starts_fully_omitted_with_default_hints() {
+        let draft = InsertDraft::new(insert_columns());
+        assert!(draft.is_all_omitted());
+        assert_eq!(draft.provided(), 0);
+        assert_eq!(draft.omitted(), 5);
+
+        let views: Vec<InsertCellView> = (0..5).map(|index| draft.view(index)).collect();
+        // 有默认值的列显示数据库默认值原文，而且必须是「提示」样式（不是真实数据）。
+        assert_eq!(views[2].text, "默认：current_timestamp()");
+        assert!(views[2].hint);
+        assert_eq!(views[3].text, "默认 NULL");
+        // 自增列 / 必填列：只说「省略 → 数据库决定」，绝不替他编一个 0。
+        assert_eq!(views[0].text, "省略 → 数据库决定");
+        assert!(!views[0].text.contains('0'));
+        assert!(views[4].text.contains("省略"));
+    }
+
+    #[test]
+    fn insert_draft_distinguishes_omitted_from_explicit_null() {
+        let columns = insert_columns();
+        let mut draft = InsertDraft::new(columns);
+        // name 给值；note 显式 NULL；其余省略。
+        draft.set_text(1, "alpha").expect("name 应可写");
+        draft.set_null(3).expect("note 可空");
+
+        let row = draft.to_row().expect("应能构造 InsertRow");
+        let names: Vec<&str> = row
+            .values
+            .iter()
+            .map(|change| change.column.as_str())
+            .collect();
+        // 省略的列（id / created_at / payload）**不出现在**请求里——这是自增与默认值
+        // 生效的唯一表达方式；显式 NULL 的列必须出现。
+        assert_eq!(names, vec!["name", "note"]);
+        assert_eq!(
+            ValueKind::try_from(row.values[0].value.as_ref().unwrap().kind),
+            Ok(ValueKind::Text)
+        );
+        assert_eq!(
+            ValueKind::try_from(row.values[1].value.as_ref().unwrap().kind),
+            Ok(ValueKind::Null)
+        );
+        assert_eq!(draft.provided(), 2);
+        assert_eq!(draft.omitted(), 3);
+    }
+
+    #[test]
+    fn insert_draft_rejects_null_for_not_null_column() {
+        let mut draft = InsertDraft::new(insert_columns());
+        let error = draft.set_null(1).expect_err("name 不可空");
+        assert!(error.contains("不允许 NULL"), "错误应说明原因：{error}");
+        // 拒绝之后草稿保持原状：仍是省略态，不会被写成一个假的 NULL。
+        assert!(draft.cells()[1].is_omitted());
+    }
+
+    #[test]
+    fn insert_draft_keeps_values_when_parse_fails() {
+        let mut draft = InsertDraft::new(insert_columns());
+        let error = draft.set_text(0, "not-a-number").expect_err("id 是整数列");
+        assert!(
+            error.contains("id") || error.contains("整数"),
+            "应给出列名或期望：{error}"
+        );
+        assert!(draft.cells()[0].is_omitted(), "解析失败不能改动草稿");
+        draft.set_text(0, "42").expect("合法整数");
+        assert_eq!(draft.cells()[0].mode, InsertMode::Text("42".to_owned()));
+        // 再把同一列改成省略：回到「交给数据库」。
+        draft.set_omit(0).expect("列存在");
+        assert!(draft.cells()[0].is_omitted());
+    }
+
+    #[test]
+    fn insert_draft_empty_text_on_nullable_numeric_becomes_null() {
+        let columns = vec![column(
+            "amount",
+            ColumnTypeKind::ColumnTypeDecimal,
+            "decimal(12,3)",
+            true,
+        )];
+        let mut draft = InsertDraft::new(columns);
+        // 空文本在数值列表示 NULL（与单元格编辑同一口径），而不是被当成 0。
+        draft.set_text(0, "").expect("可空数值列允许空文本");
+        assert_eq!(draft.cells()[0].mode, InsertMode::Null);
+        assert_eq!(draft.view(0).text, "NULL");
+    }
+
+    #[test]
+    fn insert_draft_warns_only_for_omitted_not_null_without_default() {
+        let mut draft = InsertDraft::new(insert_columns());
+        let warnings = draft.warnings();
+        // id 与 name 都命中；note/payload 可空，created_at 有默认值。
+        assert_eq!(warnings.len(), 2, "实际：{warnings:?}");
+        assert!(warnings.iter().any(|text| text.contains("列 id")));
+        assert!(warnings.iter().any(|text| text.contains("列 name")));
+
+        // 填了值就不再提醒；显式 NULL 同理。
+        draft.set_text(1, "alpha").expect("name 可写");
+        let warnings = draft.warnings();
+        assert_eq!(warnings.len(), 1, "实际：{warnings:?}");
+        assert!(warnings[0].contains("列 id"));
+    }
+
+    #[test]
+    fn insert_draft_rejects_types_that_cannot_be_written_losslessly() {
+        let mut draft = InsertDraft::new(insert_columns());
+        let error = draft.set_text(4, "0x00").expect_err("blob 不支持行内输入");
+        assert!(error.contains("payload"), "错误应指名列：{error}");
+    }
+
+    #[test]
+    fn insert_draft_summary_counts_both_sides() {
+        let mut draft = InsertDraft::new(insert_columns());
+        assert_eq!(
+            draft.summary(),
+            "新行：显式 0 列 · 省略 5 列（交给数据库默认值）"
+        );
+        draft.set_text(1, "alpha").expect("name 可写");
+        assert_eq!(
+            draft.summary(),
+            "新行：显式 1 列 · 省略 4 列（交给数据库默认值）"
+        );
+    }
+
+    // ---- 隔离级别选项（#88） ----
+
+    #[test]
+    fn isolation_options_sqlite_only_allows_serializable() {
+        let options = isolation_options(Some(DriverFamily::Sqlite));
+        let available: Vec<IsolationLevel> = options
+            .iter()
+            .filter(|option| option.available)
+            .map(|option| option.level)
+            .collect();
+        assert_eq!(
+            available,
+            vec![IsolationLevel::Unspecified, IsolationLevel::Serializable]
+        );
+        // 不可用的三项必须**带原因**，而不是只置灰。
+        for option in options.iter().filter(|option| !option.available) {
+            assert!(
+                option.note.contains("SQLite"),
+                "{} 的禁用原因应指名 SQLite：{}",
+                option.label,
+                option.note
+            );
+        }
+        assert_eq!(
+            supported_isolation_levels(Some(DriverFamily::Sqlite)),
+            vec![IsolationLevel::Unspecified, IsolationLevel::Serializable]
+        );
+    }
+
+    #[test]
+    fn isolation_options_mariadb_allows_four_levels_plus_default() {
+        let options = isolation_options(Some(DriverFamily::MariaDb));
+        assert_eq!(options.len(), 5);
+        assert!(options.iter().all(|option| option.available));
+        assert_eq!(
+            supported_isolation_levels(Some(DriverFamily::MariaDb)),
+            vec![
+                IsolationLevel::Unspecified,
+                IsolationLevel::ReadUncommitted,
+                IsolationLevel::ReadCommitted,
+                IsolationLevel::RepeatableRead,
+                IsolationLevel::Serializable,
+            ]
+        );
+    }
+
+    #[test]
+    fn isolation_options_unknown_driver_allows_only_default() {
+        let options = isolation_options(None);
+        let available: Vec<IsolationLevel> = options
+            .iter()
+            .filter(|option| option.available)
+            .map(|option| option.level)
+            .collect();
+        assert_eq!(available, vec![IsolationLevel::Unspecified]);
+        assert!(
+            options
+                .iter()
+                .filter(|option| !option.available)
+                .all(|option| option.note.contains("未声明"))
+        );
+    }
+
+    #[test]
+    fn begin_summary_names_level_and_mode() {
+        assert_eq!(
+            begin_summary(false, IsolationLevel::RepeatableRead),
+            "开始事务：可重复读（REPEATABLE READ） · 读写"
+        );
+        assert_eq!(
+            begin_summary(true, IsolationLevel::Serializable),
+            "开始事务：可序列化（SERIALIZABLE） · 只读"
+        );
     }
 }

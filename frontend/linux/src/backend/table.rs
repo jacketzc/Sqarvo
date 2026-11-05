@@ -18,7 +18,9 @@ use crate::backend::query::{CellView, format_cell};
 use crate::column_info::ColumnDefaultState;
 use crate::proto::common::v1::{ColumnMeta, ColumnTypeKind, ColumnValue, Row as ProtoRow};
 use crate::proto::services::v1::{
-    ObjectKind, ObjectNode, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowOrder,
+    BeginTransactionRequest, InsertOutcome, InsertRow, InsertRowResult, InsertRowsRequest,
+    IsolationLevel, ObjectKind, ObjectNode, ObjectRef, ReadOnlyReason as ProtoReadOnlyReason,
+    RowChangeResult, RowKey, RowOrder,
 };
 
 /// 单页请求行数：与 ADR 0017 的单页上限一致（服务端会把更大的值钳制到 500）。
@@ -252,6 +254,11 @@ pub struct TableOpen {
     pub read_only_reason: ProtoReadOnlyReason,
     /// 排序保证。
     pub ordering: RowOrder,
+    /// 当前会话的驱动 ID（`mariadb` / `sqlite`）；`None` 表示本次会话没记录。
+    ///
+    /// 隔离级别选项的可用性由驱动能力决定（SQLite 只接受 SERIALIZABLE），
+    /// 所以打开表时就把驱动带上，界面不必再猜一次。
+    pub driver_id: Option<String>,
 }
 
 impl TableOpen {
@@ -409,6 +416,219 @@ impl TxnSnapshot {
             state: crate::proto::services::v1::TransactionState::Unspecified,
         }
     }
+}
+
+/// 插入新行的结果（`InsertRows` 响应）。
+///
+/// **判成功必须看 `rolled_back`**，不能只看逐行 `outcome`：整批原子，任一行失败就
+/// 全批回滚，逐行结果仍然是 `INSERTED`，但库里一行都没有。`total_rows_affected`
+/// 是**净**影响，回滚时恒为 0——界面拿它显示「插入了 N 行」会骗人。
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertReport {
+    /// 逐行结果（请求内下标，从 0 开始）。
+    pub results: Vec<InsertRowResult>,
+    /// 净影响行数（回滚时恒为 0）。
+    pub total_rows_affected: u64,
+    /// 是否因单批上限（500 行）被钳制。
+    pub clamped: bool,
+    /// 因钳制而未执行的行数（> 0 时必须续传）。
+    pub deferred_rows: u32,
+    /// 整批是否已回滚（自动提交模式：整批撤销；事务模式：回滚到 savepoint）。
+    pub rolled_back: bool,
+    /// 语句层成功插入的行数（**不受** `rolled_back` 影响）。
+    pub inserted_rows: u32,
+}
+
+impl InsertReport {
+    /// 这批插入是否**真的落到库里**。
+    ///
+    /// 三个条件缺一不可：未回滚、净影响为正、没有被钳制到一行都没执行。
+    #[must_use]
+    pub fn committed(&self) -> bool {
+        !self.rolled_back && self.total_rows_affected > 0
+    }
+
+    /// 新行主键（未回滚时第一行返回的完整主键；用于在不整表重刷的前提下定位新行）。
+    #[must_use]
+    pub fn inserted_key(&self) -> Option<&RowKey> {
+        if self.rolled_back {
+            return None;
+        }
+        self.results
+            .iter()
+            .find(|result| InsertOutcome::try_from(result.outcome) == Ok(InsertOutcome::Inserted))
+            .and_then(|result| result.key.as_ref())
+            .filter(|key| !key.values.is_empty())
+    }
+
+    /// 逐行失败（带稳定错误码）：`table_data.unique_violation`、
+    /// `table_data.not_null_without_default`、`table_data.column_not_insertable`…
+    ///
+    /// 界面必须逐条展示这些码，而不是只弹一句「插入失败」：唯一冲突要改值，
+    /// NOT NULL 要补值，列不可插入要去掉该列——处置方式完全不同。
+    #[must_use]
+    pub fn failures(&self) -> Vec<crate::table_data::RowFailure> {
+        self.results
+            .iter()
+            .filter(|result| InsertOutcome::try_from(result.outcome) == Ok(InsertOutcome::Failed))
+            .map(|result| crate::table_data::RowFailure {
+                number: u64::from(result.row_index) + 1,
+                code: if result.error_code.trim().is_empty() {
+                    "table_data.insert_failed".to_owned()
+                } else {
+                    result.error_code.clone()
+                },
+                message: if result.message.trim().is_empty() {
+                    "服务端未提供原因".to_owned()
+                } else {
+                    result.message.clone()
+                },
+            })
+            .collect()
+    }
+
+    /// 主键的展示文本（`id=42` / `a=1, b=2`）。
+    #[must_use]
+    pub fn key_label(&self) -> Option<String> {
+        let key = self.inserted_key()?;
+        let parts: Vec<String> = key
+            .values
+            .iter()
+            .map(|value| {
+                let text = value
+                    .value
+                    .as_ref()
+                    .map_or_else(|| "NULL".to_owned(), |cell| format_cell(cell).text);
+                format!("{}={text}", value.column)
+            })
+            .collect();
+        Some(parts.join(", "))
+    }
+
+    /// 提交完成后的状态行文案（纯函数，可单测）。
+    ///
+    /// `rolled_back = true` 时**必须**明说「整批已回滚、库里 0 行变化」：这是本 Issue
+    /// 最容易被写错的一句，`inserted_rows` 此时仍然大于 0（语句层成功过），
+    /// 拿它渲染就会显示成「插入了 1 行」而库里没有这一行。
+    #[must_use]
+    pub fn status_line(&self) -> ApplyStatus {
+        if self.rolled_back {
+            return ApplyStatus {
+                text: format!(
+                    "整批已回滚：库里 0 行变化（{} 行语句曾执行成功，已随整批撤销）· 失败 {} 行 — 草稿已保留，修正后可重试",
+                    self.inserted_rows,
+                    self.failures().len()
+                ),
+                tone: StatusTone::Warning,
+            };
+        }
+        if self.clamped || self.deferred_rows > 0 {
+            return ApplyStatus {
+                text: format!(
+                    "已插入 {} 行（单批上限：{} 行未执行，请续传）",
+                    self.total_rows_affected, self.deferred_rows
+                ),
+                tone: StatusTone::Warning,
+            };
+        }
+        let key = self
+            .key_label()
+            .map_or_else(String::new, |label| format!("（主键 {label}）"));
+        ApplyStatus {
+            text: format!(
+                "已插入 {} 行{key} · 净影响 {} 行",
+                self.inserted_rows, self.total_rows_affected
+            ),
+            tone: StatusTone::Success,
+        }
+    }
+}
+
+/// `InsertRows` 的客户端超时（与行变更同口径）。
+const INSERT_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 调用 `TableDataService.InsertRows`（单行插入 = `rows` 只有一条）。
+///
+/// 放在 `backend::table` 而不是 `client.rs`：插入是表数据域的语义（逐行结果 +
+/// 整批回滚 + 主键回传），而 `client.rs` 的职责只是把 RPC 长什么样封起来。
+pub async fn insert_rows(
+    client: &crate::backend::client::BackendClient,
+    session_id: &str,
+    object: &ObjectRef,
+    transaction_id: Option<&str>,
+    rows: Vec<InsertRow>,
+    acknowledge_risk: bool,
+) -> Result<InsertReport, TableFailure> {
+    let mut client = client
+        .table_data_service()
+        .map_err(|error| TableFailure::Other {
+            code: "transport.failed".to_owned(),
+            message: error.short(),
+        })?;
+    let request = InsertRowsRequest {
+        session_id: session_id.to_owned(),
+        object: Some(object.clone()),
+        transaction_id: transaction_id.unwrap_or_default().to_owned(),
+        rows,
+        acknowledge_risk,
+    };
+    let response = tokio::time::timeout(INSERT_RPC_TIMEOUT, client.insert_rows(request))
+        .await
+        .map_err(|_| TableFailure::Other {
+            code: "deadline_exceeded".to_owned(),
+            message: format!("插入新行在 {} 秒内未返回", INSERT_RPC_TIMEOUT.as_secs()),
+        })?
+        .map_err(|status| failure_from_status(&status))?
+        .into_inner();
+    Ok(InsertReport {
+        results: response.results,
+        total_rows_affected: response.total_rows_affected,
+        clamped: response.clamped,
+        deferred_rows: response.deferred_rows,
+        rolled_back: response.rolled_back,
+        inserted_rows: response.inserted_rows,
+    })
+}
+
+/// 开始事务，可选择隔离级别。
+///
+/// `Unspecified` 走既有路径（`BackendClient::begin_transaction`，与 v0.2.1 完全一致）；
+/// 其余级别带上 `isolation` 发请求。之所以不在 `client.rs` 里改签名：那会动到并行
+/// lane 的文件，而这里多一层薄封装同样只有一处调用点。
+pub async fn begin_transaction_with(
+    client: &crate::backend::client::BackendClient,
+    session_id: &str,
+    isolation: IsolationLevel,
+    read_only: bool,
+) -> Result<TxnSnapshot, TableFailure> {
+    if isolation == IsolationLevel::Unspecified {
+        return client.begin_transaction(session_id, read_only).await;
+    }
+    let mut service = client
+        .transaction_service()
+        .map_err(|error| TableFailure::Other {
+            code: "transport.failed".to_owned(),
+            message: error.short(),
+        })?;
+    let request = BeginTransactionRequest {
+        session_id: session_id.to_owned(),
+        isolation: isolation as i32,
+        read_only,
+    };
+    let info = tokio::time::timeout(INSERT_RPC_TIMEOUT, service.begin(request))
+        .await
+        .map_err(|_| TableFailure::Other {
+            code: "deadline_exceeded".to_owned(),
+            message: format!("开始事务在 {} 秒内未返回", INSERT_RPC_TIMEOUT.as_secs()),
+        })?
+        .map_err(|status| failure_from_status(&status))?
+        .into_inner();
+    Ok(TxnSnapshot {
+        transaction_id: Some(info.transaction_id),
+        read_only: info.read_only,
+        state: crate::proto::services::v1::TransactionState::try_from(info.state)
+            .unwrap_or(crate::proto::services::v1::TransactionState::Unspecified),
+    })
 }
 
 /// 表数据 / 事务类失败的结构化分类。
@@ -914,5 +1134,142 @@ mod tests {
         assert_eq!(status.tone, StatusTone::Warning);
         assert!(status.text.contains("已提交 500 行"), "{}", status.text);
         assert!(status.text.contains("20 条未执行"), "{}", status.text);
+    }
+
+    // ---- 插入结果（#88） ----
+
+    fn insert_key(column: &str, value: i64) -> RowKey {
+        RowKey {
+            values: vec![crate::proto::services::v1::PrimaryKeyValue {
+                column: column.to_owned(),
+                value: Some(ColumnValue {
+                    kind: ValueKind::Int64 as i32,
+                    value: Some(crate::proto::common::v1::column_value::Value::Int64Value(
+                        value,
+                    )),
+                    truncated: false,
+                    original_type_name: "bigint".to_owned(),
+                }),
+            }],
+        }
+    }
+
+    fn insert_result(outcome: InsertOutcome, key: Option<RowKey>) -> InsertRowResult {
+        InsertRowResult {
+            row_index: 0,
+            outcome: outcome as i32,
+            key,
+            rows_affected: u64::from(matches!(outcome, InsertOutcome::Inserted)),
+            error_code: String::new(),
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn rolled_back_insert_never_claims_success() {
+        // 服务端的真实形态：语句层成功过（inserted_rows=1），但整批原子性把它撤销了。
+        let report = InsertReport {
+            results: vec![insert_result(
+                InsertOutcome::Inserted,
+                Some(insert_key("id", 7)),
+            )],
+            total_rows_affected: 0,
+            clamped: false,
+            deferred_rows: 0,
+            rolled_back: true,
+            inserted_rows: 1,
+        };
+        assert!(!report.committed(), "回滚的批次不算成功");
+        assert!(
+            report.inserted_key().is_none(),
+            "回滚后主键不可用（行已不存在）"
+        );
+        let status = report.status_line();
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(status.text.contains("整批已回滚"), "{}", status.text);
+        assert!(status.text.contains("库里 0 行变化"), "{}", status.text);
+        // 关键反例：绝不能出现「已插入 1 行」这种把语句层成功当落库的说法。
+        assert!(!status.text.contains("已插入"), "{}", status.text);
+    }
+
+    #[test]
+    fn committed_insert_reports_key_and_net_rows() {
+        let report = InsertReport {
+            results: vec![insert_result(
+                InsertOutcome::Inserted,
+                Some(insert_key("id", 42)),
+            )],
+            total_rows_affected: 1,
+            clamped: false,
+            deferred_rows: 0,
+            rolled_back: false,
+            inserted_rows: 1,
+        };
+        assert!(report.committed());
+        assert_eq!(report.key_label().as_deref(), Some("id=42"));
+        let status = report.status_line();
+        assert_eq!(status.tone, StatusTone::Success);
+        assert!(status.text.contains("已插入 1 行"), "{}", status.text);
+        assert!(status.text.contains("主键 id=42"), "{}", status.text);
+        assert!(status.text.contains("净影响 1 行"), "{}", status.text);
+    }
+
+    #[test]
+    fn failed_rows_keep_their_stable_error_codes() {
+        let report = InsertReport {
+            results: vec![InsertRowResult {
+                row_index: 0,
+                outcome: InsertOutcome::Failed as i32,
+                key: None,
+                rows_affected: 0,
+                error_code: "table_data.unique_violation".to_owned(),
+                message: "Duplicate entry 'alpha' for key 'name'".to_owned(),
+            }],
+            total_rows_affected: 0,
+            clamped: false,
+            deferred_rows: 0,
+            rolled_back: true,
+            inserted_rows: 0,
+        };
+        let failures = report.failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].number, 1);
+        assert_eq!(failures[0].code, "table_data.unique_violation");
+        assert!(failures[0].message.contains("Duplicate entry"));
+
+        // 服务端没给码/原因时也不能伪造：用中性兜底，界面仍能看出是哪个错误域。
+        let bare = InsertReport {
+            results: vec![InsertRowResult {
+                row_index: 0,
+                outcome: InsertOutcome::Failed as i32,
+                key: None,
+                rows_affected: 0,
+                error_code: String::new(),
+                message: String::new(),
+            }],
+            total_rows_affected: 0,
+            clamped: false,
+            deferred_rows: 0,
+            rolled_back: true,
+            inserted_rows: 0,
+        };
+        let failures = bare.failures();
+        assert_eq!(failures[0].code, "table_data.insert_failed");
+        assert_eq!(failures[0].message, "服务端未提供原因");
+    }
+
+    #[test]
+    fn clamped_insert_asks_for_continuation() {
+        let report = InsertReport {
+            results: Vec::new(),
+            total_rows_affected: 500,
+            clamped: true,
+            deferred_rows: 3,
+            rolled_back: false,
+            inserted_rows: 500,
+        };
+        let status = report.status_line();
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(status.text.contains("3 行未执行"), "{}", status.text);
     }
 }
