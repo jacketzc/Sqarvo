@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, IsolationLevel, MetadataProvider, ResultBatch, Secret, TransactionOptions,
+    ExecutionStart, IsolationLevel, MetadataProvider, ResultBatch, Secret, TableDataProvider,
+    TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -208,6 +209,14 @@ impl SessionHandle {
     #[must_use]
     pub fn metadata(&self) -> Option<&dyn MetadataProvider> {
         self.session.metadata()
+    }
+
+    /// 表数据浏览能力（ADR 0017）；不支持的驱动返回 `None`。
+    ///
+    /// 只是把能力透传给驱动，不在这里做分页或游标解析——游标归驱动所有。
+    #[must_use]
+    pub fn table_data(&self) -> Option<&dyn TableDataProvider> {
+        self.session.table_data()
     }
 
     /// 开始显式事务（ADR 0017 §3）。

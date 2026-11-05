@@ -32,7 +32,7 @@ use crate::proto::services::v1::{
     connection_service_server::ConnectionServiceServer,
     credential_service_server::CredentialServiceServer,
     metadata_service_server::MetadataServiceServer, query_service_server::QueryServiceServer,
-    system_service_server::SystemServiceServer,
+    system_service_server::SystemServiceServer, table_data_service_server::TableDataServiceServer,
     transaction_service_server::TransactionServiceServer,
 };
 use crate::services::Services;
@@ -254,6 +254,7 @@ where
         metadata,
         query,
         transaction,
+        table_data,
     } = services;
 
     Server::builder()
@@ -279,6 +280,10 @@ where
         ))
         .add_service(TransactionServiceServer::with_interceptor(
             transaction,
+            interceptor.clone(),
+        ))
+        .add_service(TableDataServiceServer::with_interceptor(
+            table_data,
             interceptor,
         ))
         .serve_with_incoming_shutdown(incoming, shutdown)

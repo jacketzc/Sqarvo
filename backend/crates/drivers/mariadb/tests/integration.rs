@@ -16,7 +16,8 @@ use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
 use sqarvo_driver_api::{
     Cell, ColumnMeta, ColumnType, ConnectionParams, DEFAULT_MAX_CELL_BYTES, Driver, DriverSession,
     ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode,
-    ObjectRef, PageRequest, QualifiedName, Row, TlsMode, TransactionOptions, Value,
+    ObjectRef, PageRequest, QualifiedName, ReadOnlyReason, Row, RowOrder, TableDataProvider,
+    TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
 
@@ -2137,4 +2138,469 @@ async fn metadata_waits_for_open_cursor_to_be_closed() {
     );
 
     drop_md_objects(&*session, &own).await;
+}
+
+// ---------------------------------------------------------------------------
+// 表数据浏览（#46）
+// ---------------------------------------------------------------------------
+
+/// 测试库与其他用例共用，且各用例并行执行。前缀选在字母序的末尾，
+/// 避免与 `sqarvo_md45_*` / `sqarvo_t43_*` / `sqarvo_t_*` 的对象名在
+/// 「MySQL 排序规则」与「Rust 字节序」不一致的位置上相邻（见 PR 的「待定」）。
+const TD_PREFIX: &str = "sqarvo_zz46";
+
+fn td_object(session: &dyn DriverSession, name: &str) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(None, None, name),
+        kind: ObjectKind::Table,
+    }
+}
+
+fn td_page(size: u32, token: Option<String>) -> PageRequest {
+    PageRequest {
+        page_size: size,
+        page_token: token,
+    }
+}
+
+fn td_provider(session: &dyn DriverSession) -> &dyn TableDataProvider {
+    session.table_data().expect("MariaDB 必须提供表数据能力")
+}
+
+fn td_int_key(row: &Row) -> i64 {
+    match &row[0].value {
+        Value::Int(value) => *value,
+        Value::UInt(value) => i64::try_from(*value).expect("主键应在 i64 范围内"),
+        other => panic!("期望整数主键，实际 {other:?}"),
+    }
+}
+
+/// 10 万行表的翻页：前 3 页逐页校验区间，然后翻完全表做**主键值全集**比较。
+///
+/// 只比行数会漏掉「重复一行 + 丢掉另一行」这类错误，所以这里把 10 万个主键
+/// 收进 `BTreeSet` 与 `1..=100_000` 相等比较，并断言逐页严格升序。
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 端到端断言按「3 页 → 全表」两段串行，拆开反而丢失上下文
+async fn browse_walks_a_hundred_thousand_rows_without_gaps() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{TD_PREFIX}_big");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, payload VARCHAR(32) NOT NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "INSERT INTO {table} (id, payload) SELECT seq, CONCAT('row-', seq) \
+             FROM seq_1_to_100000"
+        ),
+    )
+    .await;
+    assert_eq!(count_rows(&*session, &table).await, 100_000);
+
+    let provider = td_provider(&*session);
+    let object = td_object(&*session, &table);
+
+    // ---- 1. 需求要求的 3 页 ----
+    let mut token: Option<String> = None;
+    let mut first_three = std::collections::BTreeSet::new();
+    let mut timings: Vec<Duration> = Vec::new();
+    for index in 0..3_i64 {
+        let started = Instant::now();
+        let page = provider
+            .browse(&object, &td_page(500, token.clone()))
+            .await
+            .expect("浏览一页");
+        timings.push(started.elapsed());
+
+        assert_eq!(page.rows.len(), 500, "第 {index} 页应满 500 行");
+        assert!(page.has_more);
+        assert!(page.next_page_token.is_some());
+        assert_eq!(page.ordering, RowOrder::PrimaryKeyAscending);
+        assert!(page.read_only);
+        assert_eq!(
+            page.read_only_reason,
+            Some(ReadOnlyReason::DriverUnsupported),
+            "有主键但驱动尚未声明行编辑能力（#47）"
+        );
+        assert_eq!(page.columns.len(), 2, "列元数据必须与行单元格数量一致");
+        assert_eq!(page.columns[0].name, "id");
+        assert_eq!(page.columns[1].name, "payload");
+        for row in &page.rows {
+            assert_eq!(row.len(), page.columns.len());
+        }
+
+        let keys: Vec<i64> = page.rows.iter().map(td_int_key).collect();
+        assert_eq!(
+            keys,
+            (index * 500 + 1..=index * 500 + 500).collect::<Vec<_>>(),
+            "第 {index} 页必须是从上一页继续的连续主键"
+        );
+        first_three.extend(keys);
+        token = page.next_page_token;
+    }
+    assert_eq!(first_three.len(), 1_500, "3 页之间不得重复");
+
+    // ---- 2. 翻完全表，主键集合与全集比较 ----
+    let walk_started = Instant::now();
+    let mut collected: Vec<i64> = Vec::with_capacity(100_000);
+    let mut token: Option<String> = None;
+    let mut pages = 0_usize;
+    loop {
+        let page = provider
+            .browse(&object, &td_page(500, token))
+            .await
+            .expect("翻页");
+        pages += 1;
+        assert!(page.rows.len() <= usize::try_from(MAX_PAGE_SIZE).unwrap());
+        collected.extend(page.rows.iter().map(td_int_key));
+        if let Some(next) = page.next_page_token {
+            assert!(page.has_more);
+            token = Some(next);
+        } else {
+            assert!(!page.has_more);
+            break;
+        }
+        assert!(pages <= 1_000, "翻页未收敛");
+    }
+    let walk_elapsed = walk_started.elapsed();
+
+    assert_eq!(pages, 200, "10 万行按每页 500 应分 200 页");
+    assert_eq!(collected.len(), 100_000);
+    let unique: std::collections::BTreeSet<i64> = collected.iter().copied().collect();
+    assert_eq!(unique.len(), collected.len(), "翻页出现重复主键");
+    assert_eq!(
+        unique,
+        (1..=100_000).collect::<std::collections::BTreeSet<_>>(),
+        "主键集合与全集不一致（有遗漏或多余行）"
+    );
+    assert!(
+        collected.windows(2).all(|pair| pair[0] < pair[1]),
+        "翻页顺序必须严格升序（主键序）"
+    );
+
+    println!(
+        "MariaDB 10 万行：前 3 页耗时 {:?}/{:?}/{:?}，全表 {pages} 页共 {walk_elapsed:?}",
+        timings[0], timings[1], timings[2]
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn browse_composite_primary_key_uses_column_order() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{TD_PREFIX}_orders");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (tenant INT NOT NULL, id INT NOT NULL, note VARCHAR(8), \
+             PRIMARY KEY (tenant, id)) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "INSERT INTO {table} VALUES (1,1,'a'),(1,2,'b'),(1,3,'c'),\
+             (2,1,'d'),(2,2,'e'),(3,1,'f')"
+        ),
+    )
+    .await;
+
+    let provider = td_provider(&*session);
+    let object = td_object(&*session, &table);
+    let primary_key = provider.primary_key(&object).await.expect("主键");
+    assert_eq!(primary_key.column_names(), ["tenant", "id"]);
+
+    let mut all: Vec<(i64, i64)> = Vec::new();
+    let mut token = None;
+    loop {
+        let page = provider
+            .browse(&object, &td_page(2, token))
+            .await
+            .expect("翻页");
+        all.extend(
+            page.rows
+                .iter()
+                .map(|row| match (&row[0].value, &row[1].value) {
+                    (Value::Int(tenant), Value::Int(id)) => (*tenant, *id),
+                    (Value::UInt(tenant), Value::UInt(id)) => {
+                        (i64::try_from(*tenant).unwrap(), i64::try_from(*id).unwrap())
+                    }
+                    other => panic!("期望复合主键，实际 {other:?}"),
+                }),
+        );
+        match page.next_page_token {
+            Some(next) => token = Some(next),
+            None => break,
+        }
+    }
+    // 字典序比较，不是按 id 单独比较。
+    assert_eq!(all, vec![(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (3, 1)]);
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn browse_without_primary_key_is_read_only_and_not_pageable() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{TD_PREFIX}_logs");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {table} (message VARCHAR(32), level INT) ENGINE=InnoDB"),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "INSERT INTO {table} (message, level) SELECT CONCAT('m', seq), seq % 5 \
+             FROM seq_1_to_250"
+        ),
+    )
+    .await;
+
+    let provider = td_provider(&*session);
+    let object = td_object(&*session, &table);
+    assert!(
+        provider
+            .primary_key(&object)
+            .await
+            .expect("主键")
+            .is_empty(),
+        "无主键表的主键定义必须为空"
+    );
+
+    let page = provider
+        .browse(&object, &td_page(100, None))
+        .await
+        .expect("浏览");
+    assert_eq!(page.rows.len(), 100);
+    assert!(page.read_only);
+    assert_eq!(
+        page.read_only_reason,
+        Some(ReadOnlyReason::NoPrimaryKey),
+        "只读原因必须是「无主键」而不是驱动未实现"
+    );
+    assert_eq!(page.ordering, RowOrder::Unstable);
+    assert!(page.next_page_token.is_none());
+    assert!(!page.has_more);
+    assert_eq!(page.columns.len(), 2);
+    for row in &page.rows {
+        assert_eq!(row.len(), 2);
+    }
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn browse_rejects_tampered_or_foreign_cursor() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{TD_PREFIX}_cursor");
+    let other = format!("{TD_PREFIX}_cursor_other");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(&*session, &format!("DROP TABLE IF EXISTS {other}")).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB"),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("INSERT INTO {table} (id) SELECT seq FROM seq_1_to_10"),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {other} (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB"),
+    )
+    .await;
+    exec(&*session, &format!("INSERT INTO {other} VALUES (1)")).await;
+
+    let provider = td_provider(&*session);
+    let object = td_object(&*session, &table);
+    let other_object = td_object(&*session, &other);
+    let first = provider
+        .browse(&object, &td_page(2, None))
+        .await
+        .expect("首页");
+    let token = first.next_page_token.expect("应返回游标");
+
+    let mut tampered = token.clone();
+    let index = tampered.rfind(|c: char| c.is_ascii_hexdigit()).unwrap();
+    let replacement = if tampered.as_bytes()[index] == b'0' {
+        '1'
+    } else {
+        '0'
+    };
+    tampered.replace_range(index..=index, &replacement.to_string());
+
+    for (target, candidate) in [
+        (&object, tampered),
+        (&object, "not-a-cursor".to_owned()),
+        (&other_object, token.clone()),
+    ] {
+        let error = provider
+            .browse(target, &td_page(2, Some(candidate.clone())))
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("非法游标必须报错：{candidate}"));
+        assert_eq!(
+            error.code(),
+            ErrorCode::TABLE_DATA_CURSOR_INVALID,
+            "token={candidate}"
+        );
+        assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+        assert!(
+            !error.message().contains(&candidate),
+            "错误文案不得回显游标"
+        );
+    }
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(&*session, &format!("DROP TABLE IF EXISTS {other}")).await;
+}
+
+#[tokio::test]
+async fn browse_page_size_is_clamped_and_decimal_key_keeps_precision() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{TD_PREFIX}_price");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (price DECIMAL(10,2) NOT NULL PRIMARY KEY, note VARCHAR(8)) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("INSERT INTO {table} VALUES (2.50,'b'),(10.00,'c'),(1.05,'a'),(1.10,'a2')"),
+    )
+    .await;
+
+    let provider = td_provider(&*session);
+    let object = td_object(&*session, &table);
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut token = None;
+    loop {
+        let page = provider
+            .browse(&object, &td_page(1, token))
+            .await
+            .expect("翻页");
+        assert_eq!(page.rows.len(), 1);
+        match &page.rows[0][0].value {
+            Value::Decimal(value) => seen.push(value.to_string()),
+            other => panic!("期望 DECIMAL 主键，实际 {other:?}"),
+        }
+        match page.next_page_token {
+            Some(next) => token = Some(next),
+            None => break,
+        }
+    }
+    // 数值升序 + 精度无损（没有经过 f64）。
+    assert_eq!(seen, vec!["1.05", "1.10", "2.50", "10.00"]);
+
+    // 页大小：0 → 默认 100；超过上限 → 钳制到 500，不报错。
+    let default_page = provider
+        .browse(&object, &td_page(0, None))
+        .await
+        .expect("默认页大小");
+    assert_eq!(default_page.rows.len(), 4);
+    let capped = provider
+        .browse(&object, &td_page(u32::MAX, None))
+        .await
+        .expect("钳制不报错");
+    assert!(capped.rows.len() <= usize::try_from(MAX_PAGE_SIZE).unwrap());
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn browse_keeps_binary_and_microsecond_precision_in_the_cursor() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{TD_PREFIX}_precise");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (ts DATETIME(6) NOT NULL, token VARBINARY(4) NOT NULL, \
+             PRIMARY KEY (ts, token)) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    // 两条同一微秒、不同二进制值，一条下一微秒：游标必须把两者都无损带上。
+    exec(
+        &*session,
+        &format!(
+            "INSERT INTO {table} VALUES \
+             ('2026-11-05 01:02:03.456789', X'00FF'), \
+             ('2026-11-05 01:02:03.456789', X'0001'), \
+             ('2026-11-05 01:02:03.456790', X'0000')"
+        ),
+    )
+    .await;
+
+    let provider = td_provider(&*session);
+    let object = td_object(&*session, &table);
+
+    let mut seen: Vec<(i64, Vec<u8>)> = Vec::new();
+    let mut token = None;
+    loop {
+        let page = provider
+            .browse(&object, &td_page(1, token))
+            .await
+            .expect("翻页");
+        assert_eq!(page.rows.len(), 1);
+        let (nanos, bytes) = match (&page.rows[0][0].value, &page.rows[0][1].value) {
+            (Value::DateTime(ts), Value::Bytes(bytes)) => (
+                i64::from(ts.hour()) * 3_600_000_000_000
+                    + i64::from(ts.minute()) * 60_000_000_000
+                    + i64::from(ts.second()) * 1_000_000_000
+                    + i64::from(ts.nanosecond()),
+                bytes.clone(),
+            ),
+            other => panic!("期望 DATETIME(6) + VARBINARY 主键，实际 {other:?}"),
+        };
+        seen.push((nanos, bytes));
+        match page.next_page_token {
+            Some(next) => token = Some(next),
+            None => break,
+        }
+    }
+
+    assert_eq!(
+        seen,
+        vec![
+            // 同一微秒内按二进制值升序：0x0001 < 0x00FF。
+            (3_723_456_789_000, vec![0x00, 0x01],),
+            (3_723_456_789_000, vec![0x00, 0xFF],),
+            (3_723_456_790_000, vec![0x00, 0x00],),
+        ],
+        "游标必须保留微秒与二进制主键，不能退化成秒级或字符串"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
 }

@@ -14,5 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod pagination;
+pub mod table_cursor;
 
 pub use pagination::{Page, PageRequest, paginate, paginate_by_key};
+pub use table_cursor::{decode as decode_table_cursor, encode as encode_table_cursor};

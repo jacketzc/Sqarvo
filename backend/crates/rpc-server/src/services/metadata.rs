@@ -169,7 +169,7 @@ impl MetadataService for MetadataServiceImpl {
     }
 }
 
-fn parse_session_id(raw: &str) -> Result<sqarvo_common::SessionId, Status> {
+pub(crate) fn parse_session_id(raw: &str) -> Result<sqarvo_common::SessionId, Status> {
     if raw.trim().is_empty() {
         return Err(Status::invalid_argument("会话 ID 不能为空"));
     }
@@ -202,7 +202,7 @@ fn is_root(reference: &ProtoObjectRef) -> bool {
         && reference.schema.trim().is_empty()
 }
 
-fn object_ref_from_proto(reference: &ProtoObjectRef) -> Result<ObjectRef, Status> {
+pub(crate) fn object_ref_from_proto(reference: &ProtoObjectRef) -> Result<ObjectRef, Status> {
     Ok(ObjectRef {
         session_id: parse_session_id(&reference.session_id)?,
         qualified_name: QualifiedName::new(

@@ -14,6 +14,7 @@ pub mod mapping;
 pub mod metadata;
 pub mod query;
 pub mod system;
+pub mod table_data;
 pub mod transaction;
 
 use std::sync::Arc;
@@ -28,6 +29,7 @@ pub use credential::CredentialServiceImpl;
 pub use metadata::MetadataServiceImpl;
 pub use query::QueryServiceImpl;
 pub use system::SystemServiceImpl;
+pub use table_data::TableDataServiceImpl;
 pub use transaction::TransactionServiceImpl;
 
 /// 需要挂载到 gRPC 服务器上的服务集合。
@@ -44,6 +46,8 @@ pub struct Services {
     pub query: QueryServiceImpl,
     /// 事务域。
     pub transaction: TransactionServiceImpl,
+    /// 表数据域（浏览只读；行编辑在 #47）。
+    pub table_data: TableDataServiceImpl,
 }
 
 impl Services {
@@ -67,6 +71,8 @@ impl Services {
             // 事务服务与会话管理共享同一份登记表：`Begin` 绑定的会话必须是
             // `Disconnect` / 断连清理看到的那一个（#44）。
             transaction: TransactionServiceImpl::new(Arc::clone(&sessions)),
+            // 表数据浏览与会话共享同一份登记表：游标归驱动，会话由这里解析。
+            table_data: TableDataServiceImpl::new(Arc::clone(&sessions)),
             query: QueryServiceImpl::new(sessions, queries),
         }
     }

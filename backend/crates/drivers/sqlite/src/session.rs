@@ -60,6 +60,11 @@ enum Command {
         request: crate::metadata::MetadataRequest,
         reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
     },
+    /// 表数据浏览（#46）：与元数据一样在会话连接上执行，读的是同一个快照。
+    TableData {
+        request: crate::table_data::TableDataRequest,
+        reply: oneshot::Sender<Result<crate::table_data::TableDataReply>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
@@ -169,6 +174,19 @@ impl SqliteSession {
         wait.await.map_err(|_| Self::closed_error())?
     }
 
+    /// 把表数据请求交给会话线程执行。只由 [`crate::table_data`] 调用。
+    pub(crate) async fn table_data_call(
+        &self,
+        request: crate::table_data::TableDataRequest,
+    ) -> Result<crate::table_data::TableDataReply> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::TableData { request, reply })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
     fn closed_error() -> Error {
         Error::failed_precondition(SESSION_CLOSED, "会话已关闭")
     }
@@ -228,6 +246,11 @@ fn run_connection(
             Command::Metadata { request, reply } => {
                 // 元数据只是读取：不改变事务簿记，也不依赖 `query_only` 开关。
                 let _ = reply.send(crate::metadata::handle(&connection, request));
+            }
+            Command::TableData { request, reply } => {
+                // 浏览同样是只读：不改事务簿记；`query_only` 只影响写语句，
+                // 因此只读事务里浏览表数据仍然可用。
+                let _ = reply.send(crate::table_data::handle(&connection, request));
             }
             Command::Execute { request, reply } => {
                 if transaction.is_some_and(|open| !open.is_active()) {
@@ -584,6 +607,14 @@ fn serve_query(
                     "当前会话已有在途查询，请先读完或关闭后再读取元数据",
                 )));
             }
+            // 浏览要准备并执行自己的语句，同样必须等游标释放，否则会与在途
+            // 结果集在同一个连接上交错。
+            Command::TableData { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再浏览表数据",
+                )));
+            }
             Command::Fetch {
                 query_id: requested,
                 statement_index,
@@ -671,7 +702,10 @@ fn read_batch(
     Ok((batch, true, Some(extra)))
 }
 
-fn map_row(row: &rusqlite::Row<'_>, columns: &[ColumnMeta]) -> Result<sqarvo_driver_api::Row> {
+pub(crate) fn map_row(
+    row: &rusqlite::Row<'_>,
+    columns: &[ColumnMeta],
+) -> Result<sqarvo_driver_api::Row> {
     let mut cells = Vec::with_capacity(columns.len());
     for index in 0..columns.len() {
         let value = row
@@ -791,6 +825,10 @@ impl DriverSession for SqliteSession {
     }
 
     fn metadata(&self) -> Option<&dyn sqarvo_driver_api::MetadataProvider> {
+        Some(self)
+    }
+
+    fn table_data(&self) -> Option<&dyn sqarvo_driver_api::TableDataProvider> {
         Some(self)
     }
 

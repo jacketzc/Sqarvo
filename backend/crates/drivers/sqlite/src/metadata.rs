@@ -123,7 +123,7 @@ pub(crate) fn ddl_unavailable() -> Error {
     )
 }
 
-fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
+pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
     if object.session_id != session_id {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
@@ -134,7 +134,7 @@ fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
 }
 
 /// 校验对象层级与种类，返回对象名。
-fn object_name(object: &ObjectRef) -> Result<&str> {
+pub(crate) fn object_name(object: &ObjectRef) -> Result<&str> {
     if object.qualified_name.catalog.is_some() || object.qualified_name.schema.is_some() {
         return Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
@@ -212,7 +212,7 @@ fn list_children(
     paginate_by_key(nodes, page, |node| node.qualified_name.name.as_str())
 }
 
-fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
+pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
     let name = object_name(object)?;
     if !object_exists(connection, name)? {
         return Err(object_not_found(name));
@@ -254,7 +254,7 @@ fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<ColumnMeta
     Ok(columns)
 }
 
-fn primary_key(connection: &Connection, object: &ObjectRef) -> Result<PrimaryKey> {
+pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result<PrimaryKey> {
     let name = object_name(object)?;
     if !object_exists(connection, name)? {
         return Err(object_not_found(name));
@@ -283,7 +283,7 @@ fn primary_key(connection: &Connection, object: &ObjectRef) -> Result<PrimaryKey
 }
 
 /// 表或视图是否存在（SQLite 的标识符比较不区分大小写）。
-fn object_exists(connection: &Connection, name: &str) -> Result<bool> {
+pub(crate) fn object_exists(connection: &Connection, name: &str) -> Result<bool> {
     let found: Option<i64> = connection
         .query_row(
             "SELECT 1 FROM sqlite_master \
@@ -296,7 +296,7 @@ fn object_exists(connection: &Connection, name: &str) -> Result<bool> {
     Ok(found.is_some())
 }
 
-fn object_not_found(name: &str) -> Error {
+pub(crate) fn object_not_found(name: &str) -> Error {
     Error::not_found(OBJECT_NOT_FOUND, format!("表或视图 {name} 不存在"))
 }
 
