@@ -32,8 +32,10 @@ use mysql_async::prelude::*;
 use mysql_async::{Conn, Params, Value as MyValue};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, DriverSession, MetadataProvider, ObjectRef, PageRequest, PrimaryKey,
-    ReadOnlyReason, Row, RowOrder, TableDataProvider, TablePage, Value,
+    Cell, ColumnMeta, DriverSession, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
+    PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowChangeResult,
+    RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected, invalid_change,
+    no_primary_key, read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
@@ -49,27 +51,59 @@ pub(crate) enum TableDataRequest {
         object: ObjectRef,
         page: PageRequest,
     },
+    /// 提交一批行变更（ADR 0017：值全部走 prepared statement 绑定）。
+    Apply {
+        object: ObjectRef,
+        changes: Vec<RowChange>,
+    },
 }
 
 /// 表数据回复，与 [`TableDataRequest`] 一一对应。
 pub(crate) enum TableDataReply {
     Page(TablePage),
+    Report(RowChangeReport),
+}
+
+/// 会话任务看到的显式事务状态快照。
+///
+/// 行变更的原子性依赖它：没有事务时由驱动自己包一层；已有事务时用 `SAVEPOINT`
+/// 让整批可回滚，同时**不**替调用方提交或回滚外层事务。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditTransaction {
+    /// 没有打开的事务。
+    None,
+    /// 事务可用。
+    Active {
+        /// 只读事务：写入必须在发送 DML 前拒绝。
+        read_only: bool,
+    },
+    /// 事务已被服务端回滚（死锁），只能回滚。
+    Failed,
+    /// 事务随连接丢失，提交结果未知。
+    Lost,
 }
 
 /// 在会话任务（独占连接）上执行表数据请求。
-pub(crate) async fn handle(conn: &mut Conn, request: TableDataRequest) -> Result<TableDataReply> {
+pub(crate) async fn handle(
+    conn: &mut Conn,
+    transaction: EditTransaction,
+    request: TableDataRequest,
+) -> Result<TableDataReply> {
     match request {
         TableDataRequest::Browse { object, page } => {
             Ok(TableDataReply::Page(browse(conn, &object, &page).await?))
         }
+        TableDataRequest::Apply { object, changes } => Ok(TableDataReply::Report(
+            apply(conn, transaction, &object, &changes).await?,
+        )),
     }
 }
 
 #[async_trait]
 impl TableDataProvider for MariaDbSession {
-    /// 行编辑由 #47 实现；在此之前声明为不支持，服务端据此拒绝一切写入。
+    /// MariaDB 驱动已通过参数化 DML、影响行数核对与冲突检测测试（#47）。
     fn supports_row_edits(&self) -> bool {
-        false
+        true
     }
 
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
@@ -86,6 +120,32 @@ impl TableDataProvider for MariaDbSession {
             .await?
         {
             TableDataReply::Page(page) => Ok(page),
+            TableDataReply::Report(_) => Err(Error::internal("表数据回复类型不匹配")),
+        }
+    }
+
+    async fn apply_row_changes(&self, request: RowChangeRequest) -> Result<RowChangeReport> {
+        metadata::validate_session(self.session_id(), &request.object)?;
+        if request.object.kind != ObjectKind::Table {
+            return Err(read_only_object());
+        }
+        let deferred = request.deferred_changes();
+        let changes = request.effective_changes().to_vec();
+        if changes.is_empty() {
+            return Ok(RowChangeReport::default());
+        }
+        match self
+            .table_data_call(TableDataRequest::Apply {
+                object: request.object.clone(),
+                changes,
+            })
+            .await?
+        {
+            TableDataReply::Report(mut report) => {
+                report.deferred = deferred;
+                Ok(report)
+            }
+            TableDataReply::Page(_) => Err(Error::internal("表数据回复类型不匹配")),
         }
     }
 }
@@ -172,8 +232,8 @@ async fn browse(conn: &mut Conn, object: &ObjectRef, page: &PageRequest) -> Resu
         rows: collected,
         next_page_token,
         has_more,
-        read_only: true,
-        read_only_reason: Some(ReadOnlyReason::DriverUnsupported),
+        read_only: false,
+        read_only_reason: None,
         ordering: RowOrder::PrimaryKeyAscending,
     })
 }
@@ -293,6 +353,357 @@ fn keyset_condition(
 
 fn page_limit(page_size: usize) -> i64 {
     i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX)
+}
+
+// ---------------------------------------------------------------------------
+// 行编辑（ADR 0017）
+// ---------------------------------------------------------------------------
+
+/// 提交一批行变更：prepared statement 绑定参数 + 影响行数核对 + 事务包裹。
+///
+/// 原子性：
+///
+/// - 没有显式事务 → `START TRANSACTION` 包住整批，全部成功才 `COMMIT`，
+///   任何执行期错误（SQL、约束、IO）都 `ROLLBACK`；
+/// - 已有显式事务 → 用 `SAVEPOINT` 包住整批，失败时回到保存点，
+///   **不**替调用方结束外层事务。
+///
+/// 逐行冲突（目标行不存在 / 影响行数不符）不中断批次：ADR 0017 要求
+/// 「单行失败不吞掉整批结果」，冲突以逐行结果返回；整批回滚只用于执行期错误。
+async fn apply(
+    conn: &mut Conn,
+    transaction: EditTransaction,
+    object: &ObjectRef,
+    changes: &[RowChange],
+) -> Result<RowChangeReport> {
+    if object.kind != ObjectKind::Table {
+        return Err(read_only_object());
+    }
+    let database = metadata::current_database(conn).await?;
+    let name = metadata::object_parts(object, &database)?;
+    let Some(table) = metadata::find_table(conn, &database, name).await? else {
+        return Err(metadata::object_not_found(name));
+    };
+    let columns = metadata::columns(conn, object).await?;
+    let primary_key = metadata::primary_key(conn, object).await?;
+    if primary_key.is_empty() {
+        return Err(no_primary_key());
+    }
+    let qualified = format!(
+        "{}.{}",
+        quote_identifier(&database),
+        quote_identifier(&table)
+    );
+    // 先把整批变更编译成「SQL 骨架 + 参数」；参数非法时一条语句都不执行。
+    let plan = EditPlan::new(&qualified, &columns, &primary_key, changes)?;
+
+    match transaction {
+        EditTransaction::Failed => Err(transaction_failed()),
+        EditTransaction::Lost => Err(transaction_lost()),
+        EditTransaction::Active { read_only: true } => Err(read_only_transaction()),
+        EditTransaction::Active { read_only: false } => {
+            conn.query_drop("SAVEPOINT sqarvo_row_changes")
+                .await
+                .map_err(|error| map_error(error, "创建 MariaDB 行变更保存点失败"))?;
+            match execute_plan(conn, &plan).await {
+                Ok(results) => {
+                    conn.query_drop("RELEASE SAVEPOINT sqarvo_row_changes")
+                        .await
+                        .map_err(|error| map_error(error, "释放 MariaDB 行变更保存点失败"))?;
+                    Ok(RowChangeReport {
+                        results,
+                        deferred: 0,
+                    })
+                }
+                Err(error) => {
+                    let _ = conn
+                        .query_drop("ROLLBACK TO SAVEPOINT sqarvo_row_changes")
+                        .await;
+                    let _ = conn
+                        .query_drop("RELEASE SAVEPOINT sqarvo_row_changes")
+                        .await;
+                    Err(error)
+                }
+            }
+        }
+        EditTransaction::None => {
+            conn.query_drop("START TRANSACTION")
+                .await
+                .map_err(|error| map_error(error, "开始 MariaDB 行变更事务失败"))?;
+            match execute_plan(conn, &plan).await {
+                Ok(results) => {
+                    if let Err(error) = conn.query_drop("COMMIT").await {
+                        let _ = conn.query_drop("ROLLBACK").await;
+                        return Err(map_error(error, "提交 MariaDB 行变更失败"));
+                    }
+                    Ok(RowChangeReport {
+                        results,
+                        deferred: 0,
+                    })
+                }
+                Err(error) => {
+                    // 整批回滚：失败批次不得留下任何已提交的写入。
+                    let _ = conn.query_drop("ROLLBACK").await;
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+/// 编译后的一批行变更：按连续相同 SQL 分组，组内复用同一个 prepared statement。
+struct EditPlan {
+    groups: Vec<EditGroup>,
+}
+
+/// 一组共用同一 SQL 骨架的变更（同一批编辑通常改同样的列）。
+struct EditGroup {
+    /// 只有标识符（已引用/转义）与 `?` 占位符，没有任何值。
+    sql: String,
+    rows: Vec<EditRow>,
+}
+
+/// 单行变更的绑定参数与期望影响行数。
+struct EditRow {
+    /// 请求内的下标，用于把结果映射回 `updates` / `deletes` 的顺序。
+    index: usize,
+    params: Vec<MyValue>,
+    expected: u64,
+}
+
+impl EditPlan {
+    fn new(
+        qualified: &str,
+        columns: &[ColumnMeta],
+        primary_key: &PrimaryKey,
+        changes: &[RowChange],
+    ) -> Result<Self> {
+        let mut groups: Vec<EditGroup> = Vec::new();
+        for (index, change) in changes.iter().enumerate() {
+            let (sql, params, expected) = compile(qualified, columns, primary_key, change, index)?;
+            match groups.last_mut() {
+                Some(group) if group.sql == sql => group.rows.push(EditRow {
+                    index,
+                    params,
+                    expected,
+                }),
+                _ => groups.push(EditGroup {
+                    sql,
+                    rows: vec![EditRow {
+                        index,
+                        params,
+                        expected,
+                    }],
+                }),
+            }
+        }
+        Ok(Self { groups })
+    }
+}
+
+async fn execute_plan(conn: &mut Conn, plan: &EditPlan) -> Result<Vec<RowChangeResult>> {
+    let total: usize = plan.groups.iter().map(|group| group.rows.len()).sum();
+    let mut results = Vec::with_capacity(total);
+    for group in &plan.groups {
+        // 命中同一 SQL 骨架的连续变更复用同一个 prepared statement（二进制协议绑定）。
+        let statement = conn
+            .prep(&group.sql)
+            .await
+            .map_err(|error| map_error(error, "准备 MariaDB 行变更语句失败"))?;
+        for row in &group.rows {
+            let result = conn
+                .exec_iter(&statement, Params::Positional(row.params.clone()))
+                .await
+                .map_err(|error| map_read_only(map_error(error, "执行 MariaDB 行变更失败")))?;
+            let affected = result.affected_rows();
+            drop(result);
+            results.push(RowChangeResult {
+                index: row.index,
+                outcome: classify_rows_affected(row.expected, affected),
+            });
+        }
+    }
+    Ok(results)
+}
+
+/// 编译一条变更：(SQL 骨架, 绑定参数, 期望影响行数)。
+fn compile(
+    qualified: &str,
+    columns: &[ColumnMeta],
+    primary_key: &PrimaryKey,
+    change: &RowChange,
+    index: usize,
+) -> Result<(String, Vec<MyValue>, u64)> {
+    let position = index.saturating_add(1);
+    let key = change.key();
+    if !key.matches(primary_key) {
+        return Err(invalid_change(format!(
+            "第 {position} 条变更的主键值个数与主键定义不一致"
+        )));
+    }
+    if key.values.iter().any(Value::is_null) {
+        return Err(invalid_change(format!(
+            "第 {position} 条变更的主键值不能为 NULL"
+        )));
+    }
+
+    let mut params: Vec<MyValue> = Vec::new();
+    let sql = match change {
+        RowChange::Update { key, changes, .. } => {
+            if changes.is_empty() {
+                return Err(invalid_change(format!(
+                    "第 {position} 条更新没有任何列变更"
+                )));
+            }
+            let mut assignments = Vec::with_capacity(changes.len());
+            let mut seen: Vec<&str> = Vec::with_capacity(changes.len());
+            for change in changes {
+                let column = resolve_column(columns, &change.column).ok_or_else(|| {
+                    invalid_change(format!(
+                        "第 {position} 条变更引用了不存在的列 {}",
+                        change.column
+                    ))
+                })?;
+                if seen.iter().any(|name| name.eq_ignore_ascii_case(column)) {
+                    return Err(invalid_change(format!(
+                        "第 {position} 条变更重复修改了列 {column}"
+                    )));
+                }
+                seen.push(column);
+                params.push(bind_cell(&change.value)?);
+                assignments.push(format!("{} = ?", quote_identifier(column)));
+            }
+            for value in &key.values {
+                params.push(bind_cell(value)?);
+            }
+            format!(
+                "UPDATE {qualified} SET {} WHERE {}",
+                assignments.join(", "),
+                key_condition(primary_key)
+            )
+        }
+        RowChange::Delete { key, .. } => {
+            for value in &key.values {
+                params.push(bind_cell(value)?);
+            }
+            format!(
+                "DELETE FROM {qualified} WHERE {}",
+                key_condition(primary_key)
+            )
+        }
+    };
+    Ok((sql, params, change.effective_expected_rows()))
+}
+
+/// `WHERE `pk1` = ? AND `pk2` = ?`：主键列名取自 schema，不是客户端文本。
+///
+/// MariaDB 的占位符是裸 `?`，参数按 SQL 中出现顺序绑定：
+/// `UPDATE` 先绑定 SET 的值，再绑定主键值。
+fn key_condition(primary_key: &PrimaryKey) -> String {
+    primary_key
+        .column_names()
+        .iter()
+        .map(|name| format!("{} = ?", quote_identifier(name)))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+/// 客户端给的列名 → schema 里的规范列名（大小写以数据库为准）。
+///
+/// 只有解析成功后才把**规范名**拼进 SQL，客户端提供的标识符文本永远不进 SQL。
+fn resolve_column<'a>(columns: &'a [ColumnMeta], requested: &str) -> Option<&'a str> {
+    columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case(requested.trim()))
+        .map(|column| column.name.as_str())
+}
+
+fn transaction_failed() -> Error {
+    Error::failed_precondition(ErrorCode::TRANSACTION_FAILED, "事务已失败，只能回滚")
+}
+
+fn transaction_lost() -> Error {
+    Error::new(
+        ErrorCode::from_static("mariadb.transaction_lost"),
+        sqarvo_common::ErrorCategory::Unavailable,
+        "事务已随连接断开而丢失，无法确认是否已提交；请重新连接",
+    )
+}
+
+/// 服务端 1792（只读事务拒绝写入）统一映射为 `table_data.read_only`，
+/// 让前端不必按驱动分支处理「只读」。
+fn map_read_only(error: Error) -> Error {
+    if error.code() == crate::error::READ_ONLY_TRANSACTION {
+        return read_only_transaction().with_source(error);
+    }
+    error
+}
+
+/// 强类型值 → MariaDB 绑定参数（二进制协议）。
+///
+/// `Decimal` 以十进制文本绑定（不经 `f64`），`DATETIME(6)`/`TIME(6)` 保留微秒，
+/// 二进制与文本各自走 `Bytes`，不拼进 SQL 文本。
+fn bind_cell(value: &Value) -> Result<MyValue> {
+    let bound = match value {
+        Value::Null => MyValue::NULL,
+        Value::Bool(value) => MyValue::Int(i64::from(u8::from(*value))),
+        Value::Int(value) => MyValue::Int(*value),
+        Value::UInt(value) => MyValue::UInt(*value),
+        Value::Float(value) => MyValue::Double(*value),
+        Value::Decimal(value) => MyValue::Bytes(value.to_string().into_bytes()),
+        Value::Text(value) | Value::Json(value) => MyValue::Bytes(value.clone().into_bytes()),
+        Value::Bytes(value) => MyValue::Bytes(value.clone()),
+        Value::Date(value) => MyValue::Date(
+            mysql_year(value.year())?,
+            u8::from(value.month()),
+            value.day(),
+            0,
+            0,
+            0,
+            0,
+        ),
+        Value::Time(value) => MyValue::Time(
+            false,
+            0,
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.nanosecond() / 1_000,
+        ),
+        // MariaDB 把 `TIMESTAMP` 列按会话时区的墙上时间返回；绑定同样用墙上时间。
+        Value::DateTime(value) => MyValue::Date(
+            mysql_year(value.year())?,
+            u8::from(value.month()),
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.nanosecond() / 1_000,
+        ),
+        Value::Timestamp(value) => MyValue::Date(
+            mysql_year(value.year())?,
+            u8::from(value.month()),
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second(),
+            value.nanosecond() / 1_000,
+        ),
+        Value::Uuid(value) => MyValue::Bytes(value.to_string().into_bytes()),
+        Value::Array(_) | Value::Unsupported { .. } => {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                format!("MariaDB 本版不支持写入 {} 类型的值", value.kind_name()),
+            ));
+        }
+    };
+    Ok(bound)
+}
+
+fn mysql_year(year: i32) -> Result<u16> {
+    u16::try_from(year).map_err(|_| {
+        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "日期年份超出 MariaDB 支持范围")
+    })
 }
 
 /// 从一行里取出主键列的值（按主键顺序）。

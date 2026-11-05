@@ -379,6 +379,30 @@ pub trait TableDataProvider: Send + Sync {
     }
 }
 
+/// 按影响行数判定单条变更的结果（ADR 0017：更新/删除必须影响 1 行）。
+///
+/// 两个驱动的 DML 路径共用这一处判定，避免「0 行算成功」或「多行静默通过」
+/// 这类差异在驱动之间漂移。语义：
+///
+/// - `actual == expected` → [`ChangeOutcome::Applied`]；
+/// - `actual == 0` → [`ChangeOutcome::RowNotFound`]：主键定位不到行，说明该行
+///   已被其它会话删除（`table_data.row_deleted` 语义）；
+/// - 其它 → [`ChangeOutcome::Conflict`]：影响行数与期望不符
+///   （`table_data.rows_affected_mismatch` 语义）。主键重复/定义损坏时可能出现，
+///   此时**绝不**把多余行当作成功。
+#[must_use]
+pub fn classify_rows_affected(expected: u64, actual: u64) -> ChangeOutcome {
+    if actual == expected {
+        ChangeOutcome::Applied {
+            rows_affected: actual,
+        }
+    } else if actual == 0 {
+        ChangeOutcome::RowNotFound
+    } else {
+        ChangeOutcome::Conflict { expected, actual }
+    }
+}
+
 /// 行编辑不支持的统一错误。
 #[must_use]
 pub fn unsupported_row_editing() -> Error {
@@ -386,6 +410,39 @@ pub fn unsupported_row_editing() -> Error {
         ErrorCode::CAPABILITY_UNSUPPORTED,
         "该驱动未实现表数据行编辑",
     )
+}
+
+/// 无主键表不允许编辑（ADR 0017：不提供 rowid / ctid 近似定位）。
+#[must_use]
+pub fn no_primary_key() -> Error {
+    Error::failed_precondition(
+        ErrorCode::TABLE_DATA_NO_PRIMARY_KEY,
+        "该表没有主键，无法稳定定位行，不能按行编辑",
+    )
+}
+
+/// 只读对象（视图、只读连接）不允许编辑。
+#[must_use]
+pub fn read_only_object() -> Error {
+    Error::failed_precondition(
+        ErrorCode::TABLE_DATA_READ_ONLY,
+        "该对象只读，不能提交行变更",
+    )
+}
+
+/// 会话处于只读事务时写路径的明确拒绝。
+#[must_use]
+pub fn read_only_transaction() -> Error {
+    Error::failed_precondition(
+        ErrorCode::TABLE_DATA_READ_ONLY,
+        "当前会话处于只读事务，不能提交行变更；请先回滚事务",
+    )
+}
+
+/// 行变更参数非法（主键值缺失、列不存在、同一列重复变更等）。
+#[must_use]
+pub fn invalid_change(message: impl Into<String>) -> Error {
+    Error::invalid_argument(ErrorCode::CONFIG_INVALID, message)
 }
 
 #[cfg(test)]
@@ -498,6 +555,46 @@ mod tests {
         assert_eq!(report.rows_affected(), 2);
         assert!(report.has_failures());
         assert_eq!(ChangeOutcome::RowNotFound.as_str(), "row_not_found");
+    }
+
+    #[test]
+    fn affected_rows_decide_outcome() {
+        assert_eq!(
+            classify_rows_affected(1, 1),
+            ChangeOutcome::Applied { rows_affected: 1 }
+        );
+        assert_eq!(classify_rows_affected(1, 0), ChangeOutcome::RowNotFound);
+        assert_eq!(
+            classify_rows_affected(1, 3),
+            ChangeOutcome::Conflict {
+                expected: 1,
+                actual: 3
+            },
+            "影响行数超过期望时绝不能当作成功"
+        );
+        assert_eq!(
+            classify_rows_affected(2, 1),
+            ChangeOutcome::Conflict {
+                expected: 2,
+                actual: 1
+            }
+        );
+    }
+
+    #[test]
+    fn edit_rejections_use_explicit_codes() {
+        assert_eq!(
+            no_primary_key().code(),
+            ErrorCode::TABLE_DATA_NO_PRIMARY_KEY
+        );
+        assert_eq!(read_only_object().code(), ErrorCode::TABLE_DATA_READ_ONLY);
+        assert_eq!(
+            read_only_transaction().code(),
+            ErrorCode::TABLE_DATA_READ_ONLY
+        );
+        assert_eq!(invalid_change("x").code(), ErrorCode::CONFIG_INVALID);
+        // 文案面向用户：不包含 SQL 片段。
+        assert!(!read_only_object().message().contains("UPDATE"));
     }
 
     #[test]

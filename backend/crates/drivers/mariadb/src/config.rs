@@ -104,6 +104,11 @@ impl MariaDbConfig {
             // 密码只在这里出现一次；Opts 的 Debug 不打印内容。
             .pass(Some(secret.map(Secret::expose).unwrap_or_default()))
             .db_name(database)
+            // `CLIENT_FOUND_ROWS`：`UPDATE`/`DELETE` 的报告行数按**匹配**行计，
+            // 与 SQLite 的 `sqlite3_changes` 语义一致。表行编辑必须靠它区分
+            // 「目标行不存在（0 行）」与「改了但值相同（1 行）」——否则一次
+            // 无害的空更新会被误报成行已删除（ADR 0017）。
+            .client_found_rows(true)
             // 连接参数里的 host 始终按主机名处理：不尝试本地 unix socket。
             .prefer_socket(false);
         if let Some(ssl_opts) = ssl_opts {

@@ -91,7 +91,12 @@ enum TransactionState {
     #[default]
     None,
     /// 事务打开且可继续执行语句。
-    Active { id: TransactionId },
+    Active {
+        /// 事务 ID。
+        id: TransactionId,
+        /// 只读事务：行编辑必须在发送 DML 前拒绝，不能等服务端报 1792。
+        read_only: bool,
+    },
     /// 事务已被服务端结束（死锁），只能回滚。
     Failed { id: TransactionId },
     /// 事务随连接丢失而丢失，提交结果未知。
@@ -357,8 +362,22 @@ async fn run_session(
                 let _ = reply.send(result);
             }
             Command::TableData { request, reply } => {
-                // 浏览同样只读：不改事务簿记；失败也不把事务升级为失败态。
-                let result = crate::table_data::handle(&mut conn, request).await;
+                // 浏览只读；行编辑需要事务快照来决定「自己开事务」还是
+                // 「在调用方事务里用 SAVEPOINT 包一层」。
+                let context = match state.transaction() {
+                    TransactionState::None => crate::table_data::EditTransaction::None,
+                    TransactionState::Active { read_only, .. } => {
+                        crate::table_data::EditTransaction::Active { read_only }
+                    }
+                    TransactionState::Failed { .. } => crate::table_data::EditTransaction::Failed,
+                    TransactionState::Lost { .. } => crate::table_data::EditTransaction::Lost,
+                };
+                let result = crate::table_data::handle(&mut conn, context, request).await;
+                if let Err(error) = &result {
+                    // 死锁会由服务端回滚整个事务；连接不可用则事务丢失。
+                    // 与 Execute 路径一致地更新状态，绝不让后续 COMMIT 变成空提交。
+                    note_transaction_failure(&state, error);
+                }
                 let _ = reply.send(result);
             }
             Command::Close { reply } => {
@@ -487,7 +506,10 @@ async fn open_transaction(
     conn.query_drop(statement)
         .await
         .map_err(|error| map_error(error, "开启事务失败"))?;
-    state.set_transaction(TransactionState::Active { id });
+    state.set_transaction(TransactionState::Active {
+        id,
+        read_only: options.read_only,
+    });
     Ok(())
 }
 
@@ -495,7 +517,7 @@ async fn open_transaction(
 async fn commit_transaction(conn: &mut Conn, id: TransactionId, state: &SharedState) -> Result<()> {
     match state.transaction() {
         TransactionState::None => Ok(()),
-        TransactionState::Active { id: current } if current == id => {
+        TransactionState::Active { id: current, .. } if current == id => {
             match conn.query_drop("COMMIT").await {
                 Ok(()) => {
                     state.finish_transaction(id);
@@ -538,7 +560,7 @@ async fn rollback_transaction(
 ) -> Result<()> {
     match state.transaction() {
         TransactionState::None => Ok(()),
-        TransactionState::Active { id: current } if current == id => {
+        TransactionState::Active { id: current, .. } if current == id => {
             match conn.query_drop("ROLLBACK").await {
                 Ok(()) => {
                     state.finish_transaction(id);
@@ -578,7 +600,7 @@ async fn rollback_transaction(
 /// 连接不可用时事务随连接丢失。其它错误（语法错误、唯一键冲突、锁等待超时）
 /// 只让当前语句失败，事务仍然可用——把这类错误当成失败态会白白丢掉可提交的工作。
 fn note_transaction_failure(state: &SharedState, error: &Error) {
-    let TransactionState::Active { id } = state.transaction() else {
+    let TransactionState::Active { id, .. } = state.transaction() else {
         return;
     };
     if error.code() == DEADLOCK {

@@ -6,7 +6,7 @@
 //! 事务相关的枚举与快照映射也在本模块（#44）：它们跨越驱动 SPI 与契约两层，
 //! 集中在一处可以避免 `ConnectionService` 与 `TransactionService` 各写一份。
 
-use sqarvo_common::QueryId;
+use sqarvo_common::{Error, ErrorCode, QueryId};
 use sqarvo_connection::TransactionStatus;
 use sqarvo_driver_api::{
     Cell, ColumnMeta, ColumnType, ExecutionStart, IsolationLevel, ResultBatch, Row,
@@ -16,6 +16,7 @@ use sqarvo_transaction::TransactionState;
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use tonic::Status;
 
+use crate::error::to_status;
 use crate::proto::common::v1::{
     ArrayValue as ProtoArrayValue, ColumnMeta as ProtoColumnMeta, ColumnType as ProtoColumnType,
     ColumnTypeKind, ColumnValue, DateTimeValue as ProtoDateTimeValue,
@@ -187,6 +188,152 @@ fn value_to_proto(value: &Value) -> Result<ColumnValue, Status> {
         truncated: false,
         original_type_name: String::new(),
     })
+}
+
+/// Protobuf 单元格 → 驱动值模型（行编辑入参）。
+///
+/// 只做无损转换：`kind` 与 `oneof` 必须一致，未知枚举、类型错配、非法日期分量、
+/// 被截断的值一律拒绝并返回稳定错误码，绝不猜测或截断。
+///
+/// 截断值（`truncated = true`）是**读取时**的前缀，写回会永久损坏数据
+/// （ADR 0007）；这里在进入驱动之前就拒绝，错误码 `table_data.truncated_value`。
+#[allow(clippy::too_many_lines)] // 1:1 的类型分支平铺比拆成多层辅助函数更易核对
+pub fn value_from_proto(cell: &ColumnValue) -> Result<Value, Status> {
+    if cell.truncated {
+        return Err(invalid_value(
+            ErrorCode::TABLE_DATA_TRUNCATED_VALUE,
+            "提交的值是被截断的前缀，不能作为完整值写回；请刷新该行后重试",
+        ));
+    }
+    let kind = ValueKind::try_from(cell.kind)
+        .map_err(|_| Status::invalid_argument("未知的值类型枚举值"))?;
+    let mismatch = || Status::invalid_argument("值的类型标记与取值不一致");
+    let value = match kind {
+        ValueKind::Unspecified => {
+            return Err(Status::invalid_argument(
+                "值的类型未指定（VALUE_KIND_UNSPECIFIED）",
+            ));
+        }
+        ValueKind::Null => {
+            if cell.value.is_some() {
+                return Err(Status::invalid_argument("NULL 值不能同时携带取值"));
+            }
+            Value::Null
+        }
+        ValueKind::Bool => match &cell.value {
+            Some(column_value::Value::BoolValue(value)) => Value::Bool(*value),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Int64 => match &cell.value {
+            Some(column_value::Value::Int64Value(value)) => Value::Int(*value),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Uint64 => match &cell.value {
+            Some(column_value::Value::Uint64Value(value)) => Value::UInt(*value),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Float64 => match &cell.value {
+            Some(column_value::Value::Float64Value(value)) => Value::Float(*value),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Decimal => match &cell.value {
+            Some(column_value::Value::DecimalValue(decimal)) => Value::Decimal(
+                sqarvo_driver_api::Decimal::new(decimal.unscaled_value.clone(), decimal.scale)
+                    .map_err(|_| Status::invalid_argument("十进制值的表示非法"))?,
+            ),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Text => match &cell.value {
+            Some(column_value::Value::TextValue(value)) => Value::Text(value.clone()),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Bytes => match &cell.value {
+            Some(column_value::Value::BytesValue(value)) => Value::Bytes(value.clone()),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Date => match &cell.value {
+            Some(column_value::Value::DateValue(parts)) => Value::Date(date_from_parts(parts)?),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Time => match &cell.value {
+            Some(column_value::Value::TimeValue(parts)) => Value::Time(time_from_parts(parts)?),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Datetime => match &cell.value {
+            Some(column_value::Value::DatetimeValue(parts)) => Value::DateTime(
+                PrimitiveDateTime::new(date_from_parts(parts)?, time_from_parts(parts)?),
+            ),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Timestamp => match &cell.value {
+            Some(column_value::Value::TimestampValue(stamp)) => {
+                Value::Timestamp(timestamp_from_parts(stamp)?)
+            }
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Json => match &cell.value {
+            Some(column_value::Value::JsonValue(value)) => Value::Json(value.clone()),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Uuid => match &cell.value {
+            Some(column_value::Value::UuidValue(value)) => Value::Uuid(
+                value
+                    .parse()
+                    .map_err(|_| Status::invalid_argument("UUID 文本非法"))?,
+            ),
+            _ => return Err(mismatch()),
+        },
+        ValueKind::Array => match &cell.value {
+            Some(column_value::Value::ArrayValue(array)) => Value::Array(
+                array
+                    .elements
+                    .iter()
+                    .map(value_from_proto)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            _ => return Err(mismatch()),
+        },
+        // `Unsupported` 的文本表示可能已被截断或只是展示用文本，写回没有无损保证。
+        ValueKind::Unsupported => {
+            return Err(to_status(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该列类型未被无损建模，不能作为行变更写回",
+            )));
+        }
+    };
+    Ok(value)
+}
+
+fn date_from_parts(parts: &ProtoDateTimeValue) -> Result<Date, Status> {
+    let month = u8::try_from(parts.month)
+        .ok()
+        .and_then(|month| time::Month::try_from(month).ok())
+        .ok_or_else(|| Status::invalid_argument("日期的月份非法"))?;
+    let day = u8::try_from(parts.day).map_err(|_| Status::invalid_argument("日期的日非法"))?;
+    Date::from_calendar_date(parts.year, month, day)
+        .map_err(|_| Status::invalid_argument("日期非法"))
+}
+
+fn time_from_parts(parts: &ProtoDateTimeValue) -> Result<Time, Status> {
+    let hour = u8::try_from(parts.hour).map_err(|_| Status::invalid_argument("时间的小时非法"))?;
+    let minute =
+        u8::try_from(parts.minute).map_err(|_| Status::invalid_argument("时间的分钟非法"))?;
+    let second =
+        u8::try_from(parts.second).map_err(|_| Status::invalid_argument("时间的秒非法"))?;
+    Time::from_hms_nano(hour, minute, second, parts.nanosecond)
+        .map_err(|_| Status::invalid_argument("时间非法（小时/分钟/秒/纳秒越界）"))
+}
+
+fn timestamp_from_parts(stamp: &ProtoTimestampValue) -> Result<OffsetDateTime, Status> {
+    let instant = OffsetDateTime::from_unix_timestamp_nanos(i128::from(stamp.unix_nanos))
+        .map_err(|_| Status::invalid_argument("时间戳超出可表示范围"))?;
+    let offset = time::UtcOffset::from_whole_seconds(stamp.offset_seconds)
+        .map_err(|_| Status::invalid_argument("时间戳的时区偏移非法"))?;
+    Ok(instant.to_offset(offset))
+}
+
+fn invalid_value(code: ErrorCode, message: &'static str) -> Status {
+    to_status(Error::invalid_argument(code, message))
 }
 
 fn date_parts(value: Date) -> ProtoDateTimeValue {
@@ -407,5 +554,99 @@ mod tests {
         assert_eq!(proto.isolation, ProtoIsolationLevel::Serializable as i32);
         assert!(proto.read_only);
         assert_eq!(proto.state, ProtoTransactionState::Failed as i32);
+    }
+
+    #[test]
+    fn truncated_values_are_never_written_back() {
+        let cell = ColumnValue {
+            kind: ValueKind::Text as i32,
+            value: Some(column_value::Value::TextValue("prefix".to_owned())),
+            truncated: true,
+            original_type_name: String::new(),
+        };
+        let status = value_from_proto(&cell).expect_err("截断值必须拒绝");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::error::ERROR_CODE_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("table_data.truncated_value")
+        );
+    }
+
+    #[test]
+    fn value_kind_and_payload_must_agree() {
+        // kind 说是整数，payload 是文本：绝不猜测。
+        let cell = ColumnValue {
+            kind: ValueKind::Int64 as i32,
+            value: Some(column_value::Value::TextValue("1".to_owned())),
+            truncated: false,
+            original_type_name: String::new(),
+        };
+        assert!(value_from_proto(&cell).is_err());
+
+        // kind 未指定。
+        assert!(
+            value_from_proto(&ColumnValue::default()).is_err(),
+            "VALUE_KIND_UNSPECIFIED 不能当成 NULL"
+        );
+
+        // NULL 不得同时携带取值。
+        let cell = ColumnValue {
+            kind: ValueKind::Null as i32,
+            value: Some(column_value::Value::Int64Value(0)),
+            truncated: false,
+            original_type_name: String::new(),
+        };
+        assert!(value_from_proto(&cell).is_err());
+    }
+
+    #[test]
+    fn typed_values_convert_without_precision_loss() {
+        let decimal = ColumnValue {
+            kind: ValueKind::Decimal as i32,
+            value: Some(column_value::Value::DecimalValue(ProtoDecimalValue {
+                unscaled_value: "12345678901234567890".to_owned(),
+                scale: 10,
+            })),
+            truncated: false,
+            original_type_name: String::new(),
+        };
+        assert_eq!(
+            value_from_proto(&decimal).unwrap(),
+            Value::Decimal(sqarvo_driver_api::Decimal::new("12345678901234567890", 10).unwrap())
+        );
+
+        let stamp = ColumnValue {
+            kind: ValueKind::Timestamp as i32,
+            value: Some(column_value::Value::TimestampValue(ProtoTimestampValue {
+                unix_nanos: 1_790_000_000_123_456_789,
+                offset_seconds: 28_800,
+            })),
+            truncated: false,
+            original_type_name: String::new(),
+        };
+        match value_from_proto(&stamp).unwrap() {
+            Value::Timestamp(value) => {
+                assert_eq!(value.unix_timestamp_nanos(), 1_790_000_000_123_456_789);
+                assert_eq!(value.offset().whole_seconds(), 28_800);
+            }
+            other => panic!("期望时间戳，实际 {other:?}"),
+        }
+
+        // 非法日期分量（2 月 30 日）必须拒绝，而不是滚到下个月。
+        let bad_date = ColumnValue {
+            kind: ValueKind::Date as i32,
+            value: Some(column_value::Value::DateValue(ProtoDateTimeValue {
+                year: 2026,
+                month: 2,
+                day: 30,
+                ..ProtoDateTimeValue::default()
+            })),
+            truncated: false,
+            original_type_name: String::new(),
+        };
+        assert!(value_from_proto(&bad_date).is_err());
     }
 }

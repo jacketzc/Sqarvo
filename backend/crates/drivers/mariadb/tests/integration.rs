@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, ColumnType, ConnectionParams, DEFAULT_MAX_CELL_BYTES, Driver, DriverSession,
-    ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode,
-    ObjectRef, PageRequest, QualifiedName, ReadOnlyReason, Row, RowOrder, TableDataProvider,
+    Cell, ChangeOutcome, ColumnChange, ColumnMeta, ColumnType, ConnectionParams,
+    DEFAULT_MAX_CELL_BYTES, Driver, DriverSession, ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE,
+    MetadataProvider, ObjectKind, ObjectNode, ObjectRef, PageRequest, QualifiedName,
+    ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowOrder, TableDataProvider,
     TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
@@ -2225,12 +2226,9 @@ async fn browse_walks_a_hundred_thousand_rows_without_gaps() {
         assert!(page.has_more);
         assert!(page.next_page_token.is_some());
         assert_eq!(page.ordering, RowOrder::PrimaryKeyAscending);
-        assert!(page.read_only);
-        assert_eq!(
-            page.read_only_reason,
-            Some(ReadOnlyReason::DriverUnsupported),
-            "有主键但驱动尚未声明行编辑能力（#47）"
-        );
+        // #47 后 MariaDB 声明了行编辑能力，有主键表浏览不再只读。
+        assert!(!page.read_only, "有主键表在行编辑落地后必须可编辑");
+        assert_eq!(page.read_only_reason, None, "可编辑时不得给出只读原因");
         assert_eq!(page.columns.len(), 2, "列元数据必须与行单元格数量一致");
         assert_eq!(page.columns[0].name, "id");
         assert_eq!(page.columns[1].name, "payload");
@@ -2603,4 +2601,566 @@ async fn browse_keeps_binary_and_microsecond_precision_in_the_cursor() {
     );
 
     exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+// ---------------------------------------------------------------------------
+// 行编辑（#47）：参数化 DML、类型保真、影响行数核对、冲突与原子性
+// ---------------------------------------------------------------------------
+
+const RE_PREFIX: &str = "sqarvo_zz47";
+
+fn re_object(session: &dyn DriverSession, name: &str) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(None, None, name),
+        kind: ObjectKind::Table,
+    }
+}
+
+fn re_view(session: &dyn DriverSession, name: &str) -> ObjectRef {
+    ObjectRef {
+        kind: ObjectKind::View,
+        ..re_object(session, name)
+    }
+}
+
+fn re_provider(session: &dyn DriverSession) -> &dyn TableDataProvider {
+    session.table_data().expect("MariaDB 必须提供表数据能力")
+}
+
+async fn re_rows(session: &dyn DriverSession, name: &str) -> Vec<Row> {
+    re_provider(session)
+        .browse(&re_object(session, name), &td_page(500, None))
+        .await
+        .expect("浏览表")
+        .rows
+}
+
+fn re_key(values: Vec<Value>) -> sqarvo_driver_api::RowKey {
+    sqarvo_driver_api::RowKey::new(values)
+}
+
+fn re_update(key: sqarvo_driver_api::RowKey, column: &str, value: Value) -> RowChange {
+    RowChange::Update {
+        key,
+        changes: vec![ColumnChange {
+            column: column.to_owned(),
+            value,
+        }],
+        expected_rows_affected: 0,
+    }
+}
+
+async fn re_apply(
+    session: &dyn DriverSession,
+    name: &str,
+    changes: Vec<RowChange>,
+) -> sqarvo_common::Result<RowChangeReport> {
+    re_provider(session)
+        .apply_row_changes(RowChangeRequest {
+            object: re_object(session, name),
+            changes,
+        })
+        .await
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 类型往返与批次语义在同一条链路上验证，拆开会重复建表
+async fn row_edits_preserve_mariadb_types_bit_for_bit() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{RE_PREFIX}_typed");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (\
+                id BIGINT UNSIGNED NOT NULL PRIMARY KEY, \
+                big BIGINT UNSIGNED, \
+                dec_v DECIMAL(30,10), \
+                dt DATETIME(6), \
+                tm TIME(6), \
+                d DATE, \
+                bin VARBINARY(16), \
+                js JSON, \
+                bits BIT(8), \
+                en ENUM('a','b'), \
+                st SET('x','y'), \
+                ts TIMESTAMP(6) NULL DEFAULT NULL, \
+                note VARCHAR(32)\
+             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "INSERT INTO {table} VALUES (\
+                18446744073709551615, 18446744073709551614, \
+                '12345678901234567890.1234567890', \
+                '2026-11-05 01:02:03.456789', '12:34:56.123456', '2026-11-05', \
+                X'00FF10', '{{\"k\":[1,2,3]}}', b'10100101', 'b', 'x,y', \
+                '2026-11-05 01:02:03.456789', 'first'\
+             )"
+        ),
+    )
+    .await;
+
+    let before = re_rows(&*session, &table).await;
+    assert_eq!(before.len(), 1);
+    let row = &before[0];
+    assert_eq!(
+        row[0].value,
+        Value::UInt(u64::MAX),
+        "无符号大整数不得退化为 i64"
+    );
+    assert_eq!(row[1].value, Value::UInt(u64::MAX - 1));
+    assert_eq!(
+        row[2].value,
+        Value::Decimal(
+            sqarvo_driver_api::Decimal::new("123456789012345678901234567890".to_owned(), 10)
+                .unwrap()
+        ),
+        "DECIMAL 必须按十进制精确读回，不经过 f64"
+    );
+    match &row[3].value {
+        Value::DateTime(stamp) => {
+            assert_eq!(stamp.nanosecond(), 456_789_000, "DATETIME(6) 微秒不得丢失");
+            assert_eq!(stamp.hour(), 1);
+        }
+        other => panic!("期望 DATETIME，实际 {other:?}"),
+    }
+    match &row[4].value {
+        Value::Time(time) => assert_eq!(time.nanosecond(), 123_456_000),
+        other => panic!("期望 TIME，实际 {other:?}"),
+    }
+    assert!(matches!(row[5].value, Value::Date(_)));
+    assert_eq!(row[6].value, Value::Bytes(vec![0x00, 0xFF, 0x10]));
+    // MariaDB 的 `JSON` 是带 `json_valid` 约束的 LONGTEXT：按 TEXT 读回，原文一字不差。
+    assert_eq!(row[7].value, Value::Text("{\"k\":[1,2,3]}".to_owned()));
+    assert_eq!(
+        row[8].value,
+        Value::Bytes(vec![0b1010_0101]),
+        "BIT 不得退化为字符串"
+    );
+    assert_eq!(
+        row[9].value,
+        Value::Text("b".to_owned()),
+        "ENUM 保持标签文本"
+    );
+    assert_eq!(
+        row[10].value,
+        Value::Text("x,y".to_owned()),
+        "SET 保持集合文本"
+    );
+    assert!(
+        matches!(row[11].value, Value::DateTime(_)),
+        "TIMESTAMP 按墙上时间"
+    );
+
+    // 只改 note：其余 12 列必须逐格完全相等（含 BIT、DECIMAL、微秒时间）。
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![re_update(
+            re_key(vec![Value::UInt(u64::MAX)]),
+            "note",
+            Value::Text("second".to_owned()),
+        )],
+    )
+    .await
+    .expect("更新一列");
+    assert_eq!(
+        report.results[0].outcome,
+        ChangeOutcome::Applied { rows_affected: 1 }
+    );
+    let after = re_rows(&*session, &table).await;
+    assert_eq!(after[0][12].value, Value::Text("second".to_owned()));
+    for index in 0..12 {
+        assert_eq!(
+            after[0][index], before[0][index],
+            "第 {index} 列在只改另一列时发生了变化"
+        );
+    }
+
+    // 再用驱动值绑定写回所有类型列，读回必须与写入值完全相等。
+    let decimal = sqarvo_driver_api::Decimal::new("98765432109876543210".to_owned(), 10).unwrap();
+    let datetime = Value::DateTime(time::PrimitiveDateTime::new(
+        time::Date::from_calendar_date(2030, time::Month::January, 2).unwrap(),
+        time::Time::from_hms_micro(3, 4, 5, 678_901).unwrap(),
+    ));
+    let time_value = Value::Time(time::Time::from_hms_micro(1, 2, 3, 4).unwrap());
+    let date = Value::Date(time::Date::from_calendar_date(2031, time::Month::February, 3).unwrap());
+    let json = Value::Json("{\"a\": 1}".to_owned());
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![RowChange::Update {
+            key: re_key(vec![Value::UInt(u64::MAX)]),
+            changes: vec![
+                ColumnChange {
+                    column: "big".to_owned(),
+                    value: Value::UInt(7),
+                },
+                ColumnChange {
+                    column: "dec_v".to_owned(),
+                    value: Value::Decimal(decimal.clone()),
+                },
+                ColumnChange {
+                    column: "dt".to_owned(),
+                    value: datetime.clone(),
+                },
+                ColumnChange {
+                    column: "tm".to_owned(),
+                    value: time_value.clone(),
+                },
+                ColumnChange {
+                    column: "d".to_owned(),
+                    value: date.clone(),
+                },
+                ColumnChange {
+                    column: "bin".to_owned(),
+                    value: Value::Bytes(vec![0x00, 0x01, 0xFE, 0xFF]),
+                },
+                ColumnChange {
+                    column: "js".to_owned(),
+                    value: json.clone(),
+                },
+                ColumnChange {
+                    column: "en".to_owned(),
+                    value: Value::Text("a".to_owned()),
+                },
+                ColumnChange {
+                    column: "st".to_owned(),
+                    value: Value::Text("y".to_owned()),
+                },
+                ColumnChange {
+                    column: "ts".to_owned(),
+                    value: datetime.clone(),
+                },
+                ColumnChange {
+                    column: "note".to_owned(),
+                    value: Value::Null,
+                },
+            ],
+            expected_rows_affected: 1,
+        }],
+    )
+    .await
+    .expect("写入各类型");
+    assert_eq!(report.rows_affected(), 1);
+
+    let row = &re_rows(&*session, &table).await[0];
+    assert_eq!(row[1].value, Value::UInt(7));
+    assert_eq!(
+        row[2].value,
+        Value::Decimal(decimal),
+        "DECIMAL 写回精度丢失"
+    );
+    assert_eq!(row[3].value, datetime, "DATETIME(6) 写回微秒丢失");
+    assert_eq!(row[4].value, time_value, "TIME(6) 写回微秒丢失");
+    assert_eq!(row[5].value, date);
+    assert_eq!(row[6].value, Value::Bytes(vec![0x00, 0x01, 0xFE, 0xFF]));
+    assert_eq!(
+        row[7].value,
+        Value::Text("{\"a\": 1}".to_owned()),
+        "JSON 文本写回后原文不变"
+    );
+    assert_eq!(
+        row[8].value,
+        Value::Bytes(vec![0b1010_0101]),
+        "BIT 列未被触及"
+    );
+    assert_eq!(row[9].value, Value::Text("a".to_owned()));
+    assert_eq!(row[10].value, Value::Text("y".to_owned()));
+    assert_eq!(row[11].value, datetime, "TIMESTAMP 写回微秒丢失");
+    assert_eq!(row[12].value, Value::Null, "NULL 不能写成空字符串");
+
+    // 空更新（值相同）仍必须报告 1 行：`CLIENT_FOUND_ROWS` 保证匹配行语义，
+    // 否则一次无害的重复提交会被误判成「行已删除」。
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![re_update(
+            re_key(vec![Value::UInt(u64::MAX)]),
+            "note",
+            Value::Null,
+        )],
+    )
+    .await
+    .expect("空更新");
+    assert_eq!(
+        report.results[0].outcome,
+        ChangeOutcome::Applied { rows_affected: 1 },
+        "UPDATE 的影响行数必须是匹配行数，不是实际变化行数"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn row_edits_detect_conflicts_and_roll_back_failed_batches() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{RE_PREFIX}_conflict");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, v INT NOT NULL, \
+             CHECK (v >= 0)) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("INSERT INTO {table} VALUES (1,1),(2,2)"),
+    )
+    .await;
+
+    // 目标行已不存在：RowNotFound，不是成功。
+    exec(&*session, &format!("DELETE FROM {table} WHERE id = 2")).await;
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![re_update(re_key(vec![Value::Int(2)]), "v", Value::Int(20))],
+    )
+    .await
+    .expect("逐行冲突应返回结果");
+    assert_eq!(report.results[0].outcome, ChangeOutcome::RowNotFound);
+    assert_eq!(report.rows_affected(), 0);
+
+    // 期望影响 2 行但只命中 1 行：Conflict。
+    let report = re_apply(
+        &*session,
+        &table,
+        vec![RowChange::Delete {
+            key: re_key(vec![Value::Int(1)]),
+            expected_rows_affected: 2,
+        }],
+    )
+    .await
+    .expect("期望不符应返回结果");
+    assert_eq!(
+        report.results[0].outcome,
+        ChangeOutcome::Conflict {
+            expected: 2,
+            actual: 1
+        }
+    );
+
+    // 恢复数据后验证整批回滚：第二条违反 CHECK，第一条不得生效。
+    exec(&*session, &format!("DELETE FROM {table}")).await;
+    exec(
+        &*session,
+        &format!("INSERT INTO {table} VALUES (1,1),(2,2)"),
+    )
+    .await;
+    re_apply(
+        &*session,
+        &table,
+        vec![
+            re_update(re_key(vec![Value::Int(1)]), "v", Value::Int(10)),
+            re_update(re_key(vec![Value::Int(2)]), "v", Value::Int(-1)),
+        ],
+    )
+    .await
+    .expect_err("违反约束必须整批失败");
+
+    let (_, rows) = select(&*session, &format!("SELECT id, v FROM {table} ORDER BY id")).await;
+    assert_eq!(
+        rows.iter().map(|row| int_of(&row[1])).collect::<Vec<_>>(),
+        vec![1, 2],
+        "失败批次必须整批回滚"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn row_edits_inside_explicit_transaction_use_savepoint() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{RE_PREFIX}_tx");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, v INT NOT NULL, \
+             CHECK (v >= 0)) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("INSERT INTO {table} VALUES (1,1),(2,2)"),
+    )
+    .await;
+
+    let transaction = session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::RepeatableRead,
+            read_only: false,
+        })
+        .await
+        .expect("开启事务");
+
+    // 事务内成功的一批。
+    re_apply(
+        &*session,
+        &table,
+        vec![re_update(re_key(vec![Value::Int(1)]), "v", Value::Int(5))],
+    )
+    .await
+    .expect("事务内更新");
+    assert_eq!(int_of(&re_rows(&*session, &table).await[0][1]), 5);
+
+    // 事务内失败的一批：回到保存点，前一批仍在，事务仍可用。
+    re_apply(
+        &*session,
+        &table,
+        vec![
+            re_update(re_key(vec![Value::Int(2)]), "v", Value::Int(9)),
+            re_update(re_key(vec![Value::Int(1)]), "v", Value::Int(-5)),
+        ],
+    )
+    .await
+    .expect_err("违反约束");
+    assert_eq!(
+        int_of(&re_rows(&*session, &table).await[1][1]),
+        2,
+        "失败批次不得部分生效"
+    );
+
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚事务");
+    let (_, rows) = select(&*session, &format!("SELECT id, v FROM {table} ORDER BY id")).await;
+    assert_eq!(
+        rows.iter().map(|row| int_of(&row[1])).collect::<Vec<_>>(),
+        vec![1, 2],
+        "回滚后事务内的行变更必须全部消失"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn row_edits_reject_read_only_targets_and_invalid_keys() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let plain = format!("{RE_PREFIX}_plain");
+    let keyed = format!("{RE_PREFIX}_keyed");
+    let view = format!("{RE_PREFIX}_view");
+    for name in [&plain, &keyed] {
+        exec(&*session, &format!("DROP TABLE IF EXISTS {name}")).await;
+    }
+    exec(&*session, &format!("DROP VIEW IF EXISTS {view}")).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {plain} (v VARCHAR(16)) ENGINE=InnoDB"),
+    )
+    .await;
+    exec(&*session, &format!("INSERT INTO {plain} VALUES ('a')")).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {keyed} (id INT NOT NULL PRIMARY KEY, v VARCHAR(16)) ENGINE=InnoDB"),
+    )
+    .await;
+    exec(&*session, &format!("INSERT INTO {keyed} VALUES (1,'a')")).await;
+    exec(
+        &*session,
+        &format!("CREATE VIEW {view} AS SELECT id, v FROM {keyed}"),
+    )
+    .await;
+
+    // 无主键表：`table_data.no_primary_key`。
+    let error = re_apply(
+        &*session,
+        &plain,
+        vec![re_update(
+            re_key(vec![Value::Int(1)]),
+            "v",
+            Value::Text("b".to_owned()),
+        )],
+    )
+    .await
+    .expect_err("无主键表必须拒绝编辑");
+    assert_eq!(error.code(), ErrorCode::TABLE_DATA_NO_PRIMARY_KEY);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+
+    // 视图：`table_data.read_only`。
+    let error = re_provider(&*session)
+        .apply_row_changes(RowChangeRequest {
+            object: re_view(&*session, &view),
+            changes: vec![RowChange::Delete {
+                key: re_key(vec![Value::Int(1)]),
+                expected_rows_affected: 0,
+            }],
+        })
+        .await
+        .expect_err("视图必须拒绝编辑");
+    assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);
+
+    // NULL 主键与不完整主键：参数错误，绝不猜测定位。
+    for key in [vec![Value::Null], Vec::new()] {
+        let error = re_apply(
+            &*session,
+            &keyed,
+            vec![RowChange::Delete {
+                key: re_key(key),
+                expected_rows_affected: 0,
+            }],
+        )
+        .await
+        .expect_err("非法主键必须拒绝");
+        assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+    }
+
+    // 只读事务：`table_data.read_only`（驱动在发送 DML 前拒绝）。
+    let transaction = session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::RepeatableRead,
+            read_only: true,
+        })
+        .await
+        .expect("开启只读事务");
+    let error = re_apply(
+        &*session,
+        &keyed,
+        vec![re_update(
+            re_key(vec![Value::Int(1)]),
+            "v",
+            Value::Text("b".to_owned()),
+        )],
+    )
+    .await
+    .expect_err("只读事务必须拒绝写入");
+    assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚");
+
+    // 内容仍未变。
+    let (_, rows) = select(&*session, &format!("SELECT v FROM {keyed} WHERE id = 1")).await;
+    assert_eq!(text_of(&rows[0][0]), "a");
+
+    exec(&*session, &format!("DROP VIEW IF EXISTS {view}")).await;
+    exec(&*session, &format!("DROP TABLE IF EXISTS {keyed}")).await;
+    exec(&*session, &format!("DROP TABLE IF EXISTS {plain}")).await;
+}
+
+/// 读取 `INT` 单元格（有符号）。
+fn int_of(cell: &Cell) -> i64 {
+    match &cell.value {
+        Value::Int(value) => *value,
+        Value::UInt(value) => i64::try_from(*value).expect("应在 i64 范围内"),
+        other => panic!("期望整数，实际 {other:?}"),
+    }
 }
