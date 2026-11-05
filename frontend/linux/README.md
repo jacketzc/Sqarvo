@@ -546,6 +546,13 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
 | `--qa-column-info <column>` | 打开表后**点该列的列头**展开浮层，并高亮该列（点击坐标取列头控件的真实几何中心，走与用户点击同一个列头点击处理） |
 | `--qa-expect-column <column>:<field>=<text>` | 截图时刻断言浮层里该列某字段的**控件文本**（可重复；field 取 `name\|type\|nullable\|default\|charset\|collation`），不符则退出码 3 |
+| `--qa-data-insert` | 打开表后点「新增行」（与工具栏按钮同一条路径），空行进入编辑态 |
+| `--qa-data-insert-set <column:value>` | 给新行某列填值（可重复，按列名） |
+| `--qa-data-insert-null <column>` | 把新行某列显式设为 NULL（可重复；与「省略」不同） |
+| `--qa-expect-row <column=value>` | 重新浏览后必须存在该值的行（不成立时退出码 3） |
+| `--qa-isolation-dialog` | 打开「开始事务」的隔离级别选择卡片（截图用，不真的开事务） |
+| `--qa-isolation-level <default\|read-uncommitted\|read-committed\|repeatable-read\|serializable>` | 预先选中隔离级别（`--qa-data-begin-txn` 也用它） |
+| `--qa-isolation-confirm` | 在卡片里点「开始事务」（真的开事务） |
 
 `--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
 断言失败也不会丢证据）。退出码：`0` 通过、`2` 截图失败、`3` 断言失败、`4` 档案里的驱动或字段不被当前后端支持。
@@ -627,6 +634,48 @@ Wayland 会话里无法注入指针事件，所以这里不是 xdotool 式的鼠
 
 不带这些参数的正常启动路径完全不受影响。
 
+#### 插入新行与隔离级别的取证（#88）
+
+```bash
+# (a) 空行进入编辑态：默认值列显示数据库默认原文，自增列只说「省略 → 数据库决定」
+… --qa-data-table insert_items_88 --qa-data-insert \
+  --screenshot ~/sqarvo-v022-shots/insert-draft-mariadb.png --screenshot-delay-ms 3500
+
+# (b) 插入一行（省略 id / created_at，显式写 code、note，显式 NULL 写 amount）→ 提交 → 重新浏览
+… --qa-data-table insert_items_88 --qa-data-insert \
+  --qa-data-insert-set 'code:qa-new-1' --qa-data-insert-set 'note:新行备注' \
+  --qa-data-insert-null amount --qa-data-commit --qa-data-reload \
+  --qa-expect-row 'code=qa-new-1' \
+  --screenshot ~/sqarvo-v022-shots/insert-row-mariadb.png --screenshot-delay-ms 9000
+
+# (c) 唯一冲突：整批回滚，界面必须说「库里 0 行变化」，草稿行保留供修正
+… --qa-data-table insert_items_88 --qa-data-insert --qa-data-insert-set 'code:seed-a' \
+  --qa-data-commit --screenshot ~/sqarvo-v022-shots/insert-rollback-mariadb.png --screenshot-delay-ms 5200
+
+# (d) 隔离级别：SQLite 只剩「默认 + 可序列化」，其余三项禁用并写明原因
+… --qa-profile /tmp/sqlite-profile.json --qa-data-table items88 --qa-isolation-dialog \
+  --screenshot ~/sqarvo-v022-shots/isolation-sqlite.png --screenshot-delay-ms 4000
+```
+
+`(b)` 的日志里 `插入结果：语句成功 1 行，净影响 1 行，整批回滚=false` 与 `新行主键：id=3`
+是同一次响应的两个字段；`(c)` 里 `整批回滚=true` 时 `inserted_rows` 可能仍大于 0（语句层
+成功过），所以界面**只认 `rolled_back`**，`total_rows_affected` 恒为 0 才是「库里没变化」。
+
+隔离级别是否真的到达数据库有两层证据（跑过一次，记录在此）：
+
+```bash
+# 外部会话开一个不提交的事务改 id=2；界面在事务内重新浏览
+python3 - <<'EOF' &   # 见 PR 正文的脚本：UPDATE ... SET note='dirty-ru' WHERE id=2，保持 22s
+EOF
+… --qa-data-begin-txn --qa-isolation-level read-uncommitted --qa-data-reload …
+# → 重新浏览读到 note=dirty-ru（脏读成立 = 窗口真的在 READ UNCOMMITTED 里）
+… --qa-data-begin-txn --qa-isolation-level repeatable-read --qa-data-reload …
+# → 同一时刻读到 note=NULL（可重复读看不到未提交值）
+```
+
+两次唯一的差别是所选隔离级别，读到的值不同，说明 `BeginTransactionRequest.isolation`
+真的被服务端接受并生效（不是前端自说自话）。
+
 ## 安全约定
 
 - 端点文件里的 token 只保存在 `BackendClient` 内部；`Debug` 实现与所有日志/错误文案
@@ -649,7 +698,13 @@ Wayland 会话里无法注入指针事件，所以这里不是 xdotool 式的鼠
 - 冷启动与内存数值都来自**debug 构建**，release 构建的基准尚未测量；
 - SQL 工作区的查询仍是 `auto_commit=true`（查询侧不使用显式事务）；数据页的事务按钮
   只作用于表数据的行变更，两者共用同一个数据库会话；
-- 数据页**不支持插入新行**（v0.2.2）、不提供按非主键列排序（cursor 只按主键升序）；
+- 数据页已支持插入新行（`InsertRows`，单行一批），但**协议没有「自增」标志位**：
+  `ColumnMeta` 不带 `auto_increment`，MariaDB 的自增列读出来与「不可空 + 无默认值」完全一样，
+  所以界面只能把这类列默认「省略」并提示原因，无法在 UI 上禁用输入；显式填写自增值仍由
+  数据库接受（MariaDB 允许）。要真正禁止需要契约追加列级标志（待定，见 #88）；
+- 插入成功后按返回的主键把新行定位到网格末尾，**不回读**省略列的实际值（渲染为「数据库生成」）；
+  协议没有「按主键回读单行」的 RPC，要看真实值请点「刷新」；
+- 不提供按非主键列排序（cursor 只按主键升序）；
 - 截断列（`truncated=true`）禁止编辑，避免把前缀写回数据库；「查看完整值」未实现；
 - v0.1 只有一条语句的结果集：`statements` 全部如实列出，但表格只展示 `statement_index=0`；
   多语句/单语句限制由服务端决定，前端不伪造；
