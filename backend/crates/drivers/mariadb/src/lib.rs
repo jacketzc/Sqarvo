@@ -22,6 +22,7 @@ pub mod error;
 mod metadata;
 mod session;
 mod sql;
+mod table_data;
 mod value;
 
 pub use driver::{DRIVER_ID, MariaDbDriver};

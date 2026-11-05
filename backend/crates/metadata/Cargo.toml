@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 sqarvo-common.workspace = true
 sqarvo-driver-api.workspace = true
+time.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

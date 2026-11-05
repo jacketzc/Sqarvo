@@ -126,7 +126,7 @@ pub(crate) fn ddl_unavailable() -> Error {
     )
 }
 
-fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
+pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
     if object.session_id != session_id {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
@@ -137,7 +137,7 @@ fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
 }
 
 /// 当前连接选中的数据库。未选数据库时显式失败：不能把 `NULL` 当成「没有表」。
-async fn current_database(conn: &mut Conn) -> Result<String> {
+pub(crate) async fn current_database(conn: &mut Conn) -> Result<String> {
     // 注意用 `Option<String>` 读取：`DATABASE()` 在未选库时是 NULL，
     // 直接取 `String` 会因为 NULL 转换失败而 panic（mysql_common 的 FromValue 语义）。
     let rows: Vec<MyRow> = conn
@@ -161,7 +161,7 @@ async fn current_database(conn: &mut Conn) -> Result<String> {
 /// 校验对象引用的层级/种类，并返回（catalog, 对象名）。
 ///
 /// `catalog` 必须等于当前数据库（本版不支持跨库浏览）；MariaDB 没有独立 schema 层。
-fn object_parts<'a>(object: &'a ObjectRef, database: &str) -> Result<&'a str> {
+pub(crate) fn object_parts<'a>(object: &'a ObjectRef, database: &str) -> Result<&'a str> {
     if object.qualified_name.schema.is_some() {
         return Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
@@ -242,7 +242,7 @@ async fn list_children(
     paginate_by_key(nodes, page, |node| node.qualified_name.name.as_str())
 }
 
-async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
+pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
     let database = current_database(conn).await?;
     let name = object_parts(object, &database)?;
     let Some(table) = find_table(conn, &database, name).await? else {
@@ -289,7 +289,7 @@ async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<ColumnMeta>>
     Ok(columns)
 }
 
-async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<PrimaryKey> {
+pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<PrimaryKey> {
     let database = current_database(conn).await?;
     let name = object_parts(object, &database)?;
     let Some(table) = find_table(conn, &database, name).await? else {
@@ -322,7 +322,11 @@ async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<PrimaryKey> 
 ///
 /// 权限不足的对象在 `information_schema` 里不可见，因此这里表现为「不存在」：
 /// 这是 MySQL 协议族的语义，不额外猜测权限（文档已说明）。
-async fn find_table(conn: &mut Conn, database: &str, name: &str) -> Result<Option<String>> {
+pub(crate) async fn find_table(
+    conn: &mut Conn,
+    database: &str,
+    name: &str,
+) -> Result<Option<String>> {
     let row: Option<MyRow> = conn
         .exec_first(
             "SELECT TABLE_NAME FROM information_schema.TABLES \
@@ -336,7 +340,7 @@ async fn find_table(conn: &mut Conn, database: &str, name: &str) -> Result<Optio
         .transpose()
 }
 
-fn object_not_found(name: &str) -> Error {
+pub(crate) fn object_not_found(name: &str) -> Error {
     Error::not_found(OBJECT_NOT_FOUND, format!("表或视图 {name} 不存在"))
 }
 

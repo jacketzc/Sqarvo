@@ -85,7 +85,7 @@ fn statement_to_proto(summary: &StatementSummary) -> ProtoStatementSummary {
     }
 }
 
-fn rows_to_proto(rows: &[Row]) -> Result<Vec<ProtoRow>, Status> {
+pub(crate) fn rows_to_proto(rows: &[Row]) -> Result<Vec<ProtoRow>, Status> {
     rows.iter()
         .map(|row| {
             let values = row

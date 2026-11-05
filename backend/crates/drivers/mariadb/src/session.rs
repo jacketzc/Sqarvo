@@ -71,6 +71,11 @@ enum Command {
         request: crate::metadata::MetadataRequest,
         reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
     },
+    /// 表数据浏览（#46）：与元数据一样在会话连接上执行，读的是同一个事务视图。
+    TableData {
+        request: crate::table_data::TableDataRequest,
+        reply: oneshot::Sender<Result<crate::table_data::TableDataReply>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
@@ -290,6 +295,20 @@ impl MariaDbSession {
         wait.await.map_err(|_| Self::closed_error())?
     }
 
+    /// 把表数据请求交给会话任务执行。只由 [`crate::table_data`] 调用。
+    pub(crate) async fn table_data_call(
+        &self,
+        request: crate::table_data::TableDataRequest,
+    ) -> Result<crate::table_data::TableDataReply> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::TableData { request, reply })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
     fn closed_error() -> Error {
         Error::failed_precondition(SESSION_CLOSED, "会话已关闭")
     }
@@ -335,6 +354,11 @@ async fn run_session(
                 // 元数据只读，不改变事务状态；失败也不升级事务状态
                 // （information_schema 查询失败不会让服务端回滚用户事务）。
                 let result = crate::metadata::handle(&mut conn, request).await;
+                let _ = reply.send(result);
+            }
+            Command::TableData { request, reply } => {
+                // 浏览同样只读：不改事务簿记；失败也不把事务升级为失败态。
+                let result = crate::table_data::handle(&mut conn, request).await;
                 let _ = reply.send(result);
             }
             Command::Close { reply } => {
@@ -760,6 +784,13 @@ async fn serve_query(
                     "当前会话有未读完的结果集，请先读完或关闭再读取元数据",
                 )));
             }
+            // 浏览要发自己的 SELECT，同样必须等游标读完。
+            Command::TableData { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再浏览表数据",
+                )));
+            }
             Command::Fetch {
                 query_id: requested,
                 statement_index,
@@ -868,6 +899,10 @@ impl DriverSession for MariaDbSession {
     }
 
     fn metadata(&self) -> Option<&dyn sqarvo_driver_api::MetadataProvider> {
+        Some(self)
+    }
+
+    fn table_data(&self) -> Option<&dyn sqarvo_driver_api::TableDataProvider> {
         Some(self)
     }
 

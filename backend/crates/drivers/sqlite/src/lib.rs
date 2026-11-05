@@ -20,6 +20,7 @@ mod driver;
 mod error;
 mod metadata;
 mod session;
+mod table_data;
 
 pub use driver::SqliteDriver;
 
