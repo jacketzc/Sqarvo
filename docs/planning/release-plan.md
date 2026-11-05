@@ -85,6 +85,19 @@ SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。�
 | #47 | 行编辑提交（参数化 DML） | #56 | `cdd3142` | `41965284410` |
 | #48 | Linux 数据页 | #57 | `47da472` | `41968317577` |
 
+同日收尾批次（#41–#48 合并后复核发现的工程债，同样逐条关 Issue）：
+
+| Issue | 交付物 | PR | squash 提交 | CI run |
+|---|---|---|---|---|
+| #59 | `ColumnMeta` 补默认值/字符集/排序规则 + 驱动能力位 `row_editing`/`parameterized_statements` | #64 | `c78d6b6` | `41975329411` |
+| #60 | `ReadOnlyReason` 增加「连接只读」，SQLite 只读连接不再误报可编辑 | #63 | `c99a313` | `41975913097` |
+| #61 | 表数据写入路径持会话执行锁（校验事务 → 写批次 → 失败态观察同处一锁） | #65 | `afd2827` | `41976832129` |
+| #62 | 测试债：逐行失败面板 / 截断列 e2e、失败态徽标、数据页三态截图 | #66 | `b4cc9a1` | `41978029512` |
+
+收尾批次后的基线（main `b4cc9a1`）：`cargo test --workspace` → **408 passed / 0 failed**
+（#41–#48 时为 382）；`cd frontend/linux && cargo test` → **98 passed**（原 94）；
+fmt 与 clippy 仍干净；`scripts/check-tracking.sh --state all` 仍「失败 0 项，警告 0 项」。
+
 配套基线（证据基线 main `47da472`，Linux；其后的 `3796915` 只改文档）：`cd backend && cargo fmt --all -- --check` 无输出 / exit 0；
 `cargo clippy --all-targets -- -D warnings` 无警告 / exit 0；
 `SQARVO_MARIADB_URL=… cargo test --workspace` → **382 passed / 0 failed / 0 ignored**（v0.2 基线 219）；
@@ -146,9 +159,11 @@ SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。�
 | 大字段截断 | 已实现并有测试：单格 64 KiB、文本按字符边界截断并置 `truncated`；延迟加载未实现 | 已实现并有测试：64 KiB、UTF-8 字符边界回退、恰好等于上限不标记；延迟加载未实现 | 未实现：`driver.not_found` |
 | 取消 | 已实现并有测试：`InterruptHandle` 中断、幂等、2 秒内生效 | 已实现并有测试：独立控制连接 `KILL QUERY`、幂等、2 秒内生效；批次之间的取消在下一次 `fetch` 立即返回 `query.cancelled`；`PROCESSLIST` 断言无残留执行 | 未实现：`driver.not_found` |
 | 多语句 | 未实现：单语句，第二条语句返回 `capability.unsupported`（ADR 0006） | 未实现：能力声明 `multiple_statements=false`，发送前拒绝，返回 `capability.unsupported`，第二条语句不产生副作用 | 未实现：`driver.not_found` |
-| 事务 | 已实现并有测试：`BEGIN IMMEDIATE`（读写）/ `BEGIN DEFERRED` + `PRAGMA query_only`（只读）；一个会话最多一个事务（重复 `Begin` → `transaction.already_active`），失败态只允许回滚，重复提交/回滚与未知事务 ID 按 ADR 0017 处置；`--test transactions` 9 通过 | 已实现并有测试：`START TRANSACTION [READ ONLY]` / `COMMIT` / `ROLLBACK`；四档隔离级别逐档下发并有 `@@transaction_isolation` 断言，`Snapshot` 明确拒绝；事务中 DDL / `TRUNCATE` 等隐式提交语句**发送前**拒绝（`mariadb.implicit_commit_rejected`）；死锁 → 失败态，断连 → `mariadb.transaction_lost`；集成用例覆盖提交可见、回滚丢弃、断连回滚 | 未实现：`driver.not_found` |
-| 元数据（表/视图列表、列、主键） | 已实现并有测试：`sqlite_master` 的表/视图、`pragma_table_info` 的列与主键（`pk` 即主键内顺序）；分页 token 带对象名集合指纹，非法 token → `config.invalid`，集合变化 → `metadata.snapshot_changed`；`--test metadata` 8 通过 | 已实现并有测试：`information_schema` 的 `TABLES` / `COLUMNS` / `KEY_COLUMN_USAGE`；原始类型取 `COLUMN_TYPE`（含长度与 `unsigned`）、精度/标度/可空性；`metadata_*` 集成用例覆盖分页、跨 catalog 拒绝、缺库与缺表分类 | 未实现：`driver.not_found`。上层 Catalog / Schema / Index / Sequence 与跨库浏览对所有驱动返回 `capability.unsupported`（不返回空列表）；DDL 查看 v0.2.2 |
+| 事务 | 已实现并有测试：`BEGIN IMMEDIATE`（读写）/ `BEGIN DEFERRED` + `PRAGMA query_only`（只读）；表数据写入路径持会话执行锁（#61）；一个会话最多一个事务（重复 `Begin` → `transaction.already_active`），失败态只允许回滚，重复提交/回滚与未知事务 ID 按 ADR 0017 处置；`--test transactions` 9 通过 | 已实现并有测试：`START TRANSACTION [READ ONLY]` / `COMMIT` / `ROLLBACK`；四档隔离级别逐档下发并有 `@@transaction_isolation` 断言，`Snapshot` 明确拒绝；事务中 DDL / `TRUNCATE` 等隐式提交语句**发送前**拒绝（`mariadb.implicit_commit_rejected`）；死锁 → 失败态，断连 → `mariadb.transaction_lost`；集成用例覆盖提交可见、回滚丢弃、断连回滚 | 未实现：`driver.not_found` |
+| 元数据（表/视图列表、列、主键、默认值） | 已实现并有测试：`sqlite_master` 的表/视图、`pragma_table_info` 的列与主键（`pk` 即主键内顺序）、默认值四态（无默认 / 默认 NULL / 未求值表达式，SQLite 无列级字符集故留空）；分页 token 带对象名集合指纹，非法 token → `config.invalid`，集合变化 → `metadata.snapshot_changed`；`--test metadata` 8 通过 | 已实现并有测试：`information_schema` 的 `TABLES` / `COLUMNS` / `KEY_COLUMN_USAGE`；原始类型取 `COLUMN_TYPE`（含长度与 `unsigned`）、精度/标度/可空性、默认值、字符集与排序规则；`metadata_*` 集成用例覆盖分页、跨 catalog 拒绝、缺库与缺表分类 | 未实现：`driver.not_found`。上层 Catalog / Schema / Index / Sequence 与跨库浏览对所有驱动返回 `capability.unsupported`（不返回空列表）；DDL 查看 v0.2.2 |
 | 表数据浏览 / 行编辑 | 已实现并有测试：主键升序 + 不透明游标（禁止 `OFFSET`），`--test table_data` 9 通过；行编辑走参数化 DML + 影响行数核对 + 批内 savepoint，`--test row_edits` 10 通过；无主键表只读（`table_data.no_primary_key`） | 已实现并有测试：同一游标语义与只读态；`row_edits_preserve_mariadb_types_bit_for_bit`（逐类型位级往返）、`row_edits_detect_conflicts_and_roll_back_failed_batches`、`row_edits_inside_explicit_transaction_use_savepoint`、`row_edits_reject_read_only_targets_and_invalid_keys` | 未实现：`driver.not_found` |
+
+> 驱动能力位（#59）：`ListDrivers` 现在会列出 `row_editing` 与 `parameterized_statements`，两个驱动均为 true 且有断言；未实现能力的驱动不会出现这两项。
 
 > TLS 说明：MariaDB 的 TLS 只有「模式映射与参数校验」有单元测试，测试容器未启用 TLS，
 > `require` / `verify-ca` / `verify-full` 与客户端证书**未验证**；不得据此声称「TLS 可用」。
