@@ -96,6 +96,106 @@ pub enum QaAction {
     Save,
 }
 
+/// `--qa-expect-data-state`：截图时必须成立的数据页状态。
+///
+/// 断言读的是界面上真实渲染的状态（同一份 `DataState` 枚举），不是「假设它会是」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataExpectation {
+    /// 正在读取。
+    Loading,
+    /// 已加载（有行）。
+    Ready,
+    /// 表存在但没有行。
+    Empty,
+    /// 读取/提交失败。
+    Error,
+    /// 已断开。
+    Disconnected,
+}
+
+impl DataExpectation {
+    /// 参数取值（`--qa-expect-data-state`）。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "loading" => Ok(Self::Loading),
+            "ready" => Ok(Self::Ready),
+            "empty" => Ok(Self::Empty),
+            "error" => Ok(Self::Error),
+            "disconnected" => Ok(Self::Disconnected),
+            other => Err(format!(
+                "--qa-expect-data-state 只接受 loading|ready|empty|error|disconnected，实际：{other}"
+            )),
+        }
+    }
+
+    /// 人类可读名称（日志用）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Loading => "Loading",
+            Self::Ready => "Ready",
+            Self::Empty => "Empty",
+            Self::Error => "Error",
+            Self::Disconnected => "Disconnected",
+        }
+    }
+}
+
+/// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxnExpectation {
+    /// 自动提交。
+    AutoCommit,
+    /// 事务中（读写）。
+    Active,
+    /// 事务中（只读）。
+    ReadOnly,
+    /// 失败态（只能回滚）。
+    Failed,
+    /// 已断开。
+    Disconnected,
+}
+
+impl TxnExpectation {
+    /// 参数取值（`--qa-expect-txn`）。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::AutoCommit),
+            "active" => Ok(Self::Active),
+            "readonly" => Ok(Self::ReadOnly),
+            "failed" => Ok(Self::Failed),
+            "disconnected" => Ok(Self::Disconnected),
+            other => Err(format!(
+                "--qa-expect-txn 只接受 auto|active|readonly|failed|disconnected，实际：{other}"
+            )),
+        }
+    }
+
+    /// 徽标上应显示的文案（断言直接比对控件文本）。
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AutoCommit => "自动提交",
+            Self::Active => "事务中",
+            Self::ReadOnly => "事务中（只读）",
+            Self::Failed => "事务失败（只能回滚）",
+            Self::Disconnected => "已断开",
+        }
+    }
+
+    /// 徽标上应带的 CSS 类（视觉状态与文案一起断言）。
+    #[must_use]
+    pub fn css_class(self) -> &'static str {
+        match self {
+            Self::AutoCommit => "sqarvo-txn-commit",
+            Self::Active => "sqarvo-txn-active",
+            Self::ReadOnly => "sqarvo-txn-readonly",
+            Self::Failed => "sqarvo-txn-failed",
+            Self::Disconnected => "sqarvo-txn-disconnected",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Args {
     capture: Option<Capture>,
@@ -136,6 +236,12 @@ struct Args {
     data_reload: bool,
     /// `--qa-auto-confirm-risk`：无人值守时自动点风险确认对话框的「确认提交」。
     auto_confirm_risk: bool,
+    /// `--qa-data-fail-txn`：把「服务端报告 transaction.failed」这条失败路径重放到界面。
+    data_fail_txn: bool,
+    /// `--qa-expect-data-state`：截图时必须成立的数据页状态。
+    expect_data_state: Option<DataExpectation>,
+    /// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
+    expect_txn: Option<TxnExpectation>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -169,6 +275,7 @@ pub fn enabled() -> bool {
             || !args.data_edits.is_empty()
             || args.data_commit
             || args.data_rollback
+            || args.data_fail_txn
     })
 }
 
@@ -275,6 +382,24 @@ pub fn data_reload() -> bool {
 #[must_use]
 pub fn auto_confirm_risk() -> bool {
     ARGS.get().is_some_and(|args| args.auto_confirm_risk)
+}
+
+/// 是否重放「事务已失败」这条失败路径（`--qa-data-fail-txn`）。
+#[must_use]
+pub fn data_fail_transaction() -> bool {
+    ARGS.get().is_some_and(|args| args.data_fail_txn)
+}
+
+/// 截图时要求成立的数据页状态。
+#[must_use]
+pub fn expect_data_state() -> Option<DataExpectation> {
+    ARGS.get().and_then(|args| args.expect_data_state)
+}
+
+/// 截图时要求成立的事务徽标状态。
+#[must_use]
+pub fn expect_txn() -> Option<TxnExpectation> {
+    ARGS.get().and_then(|args| args.expect_txn)
 }
 
 /// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
@@ -510,6 +635,24 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.auto_confirm_risk = true;
                 index += 1;
             }
+            "--qa-data-fail-txn" => {
+                parsed.data_fail_txn = true;
+                index += 1;
+            }
+            "--qa-expect-data-state" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-data-state 需要一个状态名".to_owned())?;
+                parsed.expect_data_state = Some(DataExpectation::parse(value)?);
+                index += 2;
+            }
+            "--qa-expect-txn" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-txn 需要一个徽标状态".to_owned())?;
+                parsed.expect_txn = Some(TxnExpectation::parse(value)?);
+                index += 2;
+            }
             "--qa-password-env" => {
                 let value = args
                     .get(index + 1)
@@ -524,6 +667,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
     }
     parsed.capture = path.map(|path| Capture { path, delay });
+    // 期望值只在截图那一刻校验：没有截图就没有「这一刻」，静默忽略会让
+    // 「跑了但没断言」看起来像通过。
+    if parsed.capture.is_none()
+        && (parsed.expect_data_state.is_some() || parsed.expect_txn.is_some())
+    {
+        return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
+    }
     Ok(parsed)
 }
 
@@ -751,5 +901,65 @@ mod tests {
     fn missing_profile_file_is_reported() {
         let error = load_profile("/nonexistent/qa-profile.json").unwrap_err();
         assert!(error.contains("无法读取"));
+    }
+
+    #[test]
+    fn fail_transaction_flag_is_parsed() {
+        assert!(!parse(&args(&["app"])).unwrap().data_fail_txn);
+        let parsed = parse(&args(&["app", "--qa-data-fail-txn"])).unwrap();
+        assert!(parsed.data_fail_txn);
+    }
+
+    #[test]
+    fn expectation_flags_are_parsed_with_labels() {
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-expect-data-state",
+            "error",
+            "--qa-expect-txn",
+            "failed",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.expect_data_state, Some(DataExpectation::Error));
+        assert_eq!(parsed.expect_txn, Some(TxnExpectation::Failed));
+
+        // 断言比对的是界面上的真实文案与 CSS 类，文案必须和状态机一致。
+        assert_eq!(TxnExpectation::Failed.label(), "事务失败（只能回滚）");
+        assert_eq!(TxnExpectation::Failed.css_class(), "sqarvo-txn-failed");
+        assert_eq!(TxnExpectation::Active.label(), "事务中");
+        assert_eq!(TxnExpectation::ReadOnly.label(), "事务中（只读）");
+        assert_eq!(TxnExpectation::AutoCommit.label(), "自动提交");
+        assert_eq!(DataExpectation::Loading.name(), "Loading");
+        assert_eq!(DataExpectation::Empty.name(), "Empty");
+    }
+
+    #[test]
+    fn expectation_flags_reject_bad_values() {
+        assert!(parse(&args(&["app", "--qa-expect-txn"])).is_err());
+        assert!(
+            parse(&args(&[
+                "app",
+                "--screenshot",
+                "/tmp/a.png",
+                "--qa-expect-txn",
+                "bogus"
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&args(&[
+                "app",
+                "--screenshot",
+                "/tmp/a.png",
+                "--qa-expect-data-state",
+                "bogus"
+            ]))
+            .is_err()
+        );
+        // 没有截图就没有「断言这一刻」：静默忽略会让「跑了但没断言」看起来像通过。
+        assert!(parse(&args(&["app", "--qa-expect-txn", "failed"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-data-state", "empty"])).is_err());
     }
 }

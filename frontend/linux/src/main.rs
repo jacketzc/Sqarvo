@@ -86,6 +86,7 @@ fn register_qa_options(app: &adw::Application) {
         "qa-data-rollback",
         "qa-data-reload",
         "qa-auto-confirm-risk",
+        "qa-data-fail-txn",
     ] {
         app.add_main_option(
             name,
@@ -94,6 +95,22 @@ fn register_qa_options(app: &adw::Application) {
             glib::OptionArg::None,
             "QA：Linux 数据页无人值守验证（开发/验证用）",
             None,
+        );
+    }
+    for (name, arg_description) in [
+        (
+            "qa-expect-data-state",
+            "loading|ready|empty|error|disconnected",
+        ),
+        ("qa-expect-txn", "auto|active|readonly|failed|disconnected"),
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::String,
+            "QA：截图时刻断言数据页/事务徽标状态（断言失败退出码 3）",
+            Some(arg_description),
         );
     }
 }
