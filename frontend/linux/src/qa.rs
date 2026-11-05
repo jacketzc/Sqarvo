@@ -41,7 +41,14 @@
 //!   （点的是列头控件的真实几何位置，走与用户点击同一个列头点击处理）；
 //! - `--qa-expect-column <column>:<field>=<text>`：截图时刻断言浮层里该列某字段的控件
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
-//!   不符时退出码 3。
+//!   不符时退出码 3；
+//! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开）、
+//!   `--qa-tree-open <name>`（打开表）、`--qa-tree-ddl <name>`（看 DDL）、
+//!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
+//!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）；
+//! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
+//!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：
+//!   `provenance|detail_contains|object_contains|contains|state|copy|visible`。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
@@ -310,6 +317,156 @@ impl ColumnExpectation {
     }
 }
 
+/// `--qa-expect-tree` 要比对的字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeField {
+    /// 树的健康状态（Ready / Empty / Unsupported / Failed…）。
+    Health,
+    /// 当前选中的节点名。
+    Selected,
+    /// 搜索页状态（results / empty / denied / failed）。
+    Search,
+    /// 搜索结果条数。
+    Results,
+    /// 第一条搜索结果的名字。
+    First,
+    /// 当前可见页（tree / search / state）。
+    Page,
+    /// 已加载的真实节点数。
+    Loaded,
+    /// 树的状态行是否包含某段文本。
+    StatusContains,
+}
+
+impl TreeField {
+    /// 参数里的字段名。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "health" => Ok(Self::Health),
+            "selected" => Ok(Self::Selected),
+            "search" => Ok(Self::Search),
+            "results" => Ok(Self::Results),
+            "first" => Ok(Self::First),
+            "page" => Ok(Self::Page),
+            "loaded" => Ok(Self::Loaded),
+            "status_contains" => Ok(Self::StatusContains),
+            other => Err(format!(
+                "--qa-expect-tree 的字段只接受 health|selected|search|results|first|page|loaded|status_contains，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段在参数里的名字（日志用，与 [`Self::parse`] 同一份词表）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Health => "health",
+            Self::Selected => "selected",
+            Self::Search => "search",
+            Self::Results => "results",
+            Self::First => "first",
+            Self::Page => "page",
+            Self::Loaded => "loaded",
+            Self::StatusContains => "status_contains",
+        }
+    }
+}
+
+/// `--qa-expect-tree <field>=<value>` 的一条断言。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeExpectation {
+    /// 字段。
+    pub field: TreeField,
+    /// 期望值（`status_contains` 是子串，其余是逐字相等）。
+    pub expected: String,
+}
+
+impl TreeExpectation {
+    /// 解析 `字段=值`。
+    fn parse(value: &str) -> Result<Self, String> {
+        let (field, expected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-tree 需要 字段=值，实际：{value}"))?;
+        Ok(Self {
+            field: TreeField::parse(field)?,
+            expected: expected.to_owned(),
+        })
+    }
+}
+
+/// `--qa-expect-ddl` 要比对的字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DdlField {
+    /// 来源徽标（**原文** / **由客户端拼装**）。
+    Provenance,
+    /// 来源说明是否包含某段文本。
+    DetailContains,
+    /// 标题里的对象名是否包含某段文本。
+    ObjectContains,
+    /// DDL 正文是否包含某段文本。
+    Contains,
+    /// 面板状态（idle / loading / ready / empty / error / unsupported）。
+    State,
+    /// 「复制」是否可点（on / off）。
+    Copy,
+    /// 面板是否可见（on / off）。
+    Visible,
+}
+
+impl DdlField {
+    /// 参数里的字段名。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "provenance" => Ok(Self::Provenance),
+            "detail_contains" => Ok(Self::DetailContains),
+            "object_contains" => Ok(Self::ObjectContains),
+            "contains" => Ok(Self::Contains),
+            "state" => Ok(Self::State),
+            "copy" => Ok(Self::Copy),
+            "visible" => Ok(Self::Visible),
+            other => Err(format!(
+                "--qa-expect-ddl 的字段只接受 provenance|detail_contains|object_contains|contains|state|copy|visible，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段在参数里的名字。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Provenance => "provenance",
+            Self::DetailContains => "detail_contains",
+            Self::ObjectContains => "object_contains",
+            Self::Contains => "contains",
+            Self::State => "state",
+            Self::Copy => "copy",
+            Self::Visible => "visible",
+        }
+    }
+}
+
+/// `--qa-expect-ddl <field>=<value>` 的一条断言。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DdlExpectation {
+    /// 字段。
+    pub field: DdlField,
+    /// 期望值（`*_contains` 是子串，其余逐字相等）。
+    pub expected: String,
+}
+
+impl DdlExpectation {
+    /// 解析 `字段=值`；值里可以有 `=`（只按第一个切分）。
+    fn parse(value: &str) -> Result<Self, String> {
+        let (field, expected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-ddl 需要 字段=值，实际：{value}"))?;
+        Ok(Self {
+            field: DdlField::parse(field)?,
+            expected: expected.to_owned(),
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 struct Args {
     capture: Option<Capture>,
@@ -362,6 +519,22 @@ struct Args {
     column_info: Option<String>,
     /// `--qa-expect-column <column>:<field>=<value>`：列信息浮层上必须显示的文案（可重复）。
     expect_columns: Vec<ColumnExpectation>,
+    /// `--qa-tree-expand <name>`：依次展开的节点名（可重复，逐层展开）。
+    tree_expand: Vec<String>,
+    /// `--qa-tree-open <name>`：在树里打开的表名。
+    tree_open: Option<String>,
+    /// `--qa-tree-ddl <name>`：查看 DDL 的对象名。
+    tree_ddl: Option<String>,
+    /// `--qa-tree-search <query>`：搜索关键词。
+    tree_search: Option<String>,
+    /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
+    tree_click_result: bool,
+    /// `--qa-tree-load-more`：点第一个「加载更多…」占位行。
+    tree_load_more: bool,
+    /// `--qa-expect-tree <field>=<value>`：树 / 搜索的断言（可重复）。
+    expect_tree: Vec<TreeExpectation>,
+    /// `--qa-expect-ddl <field>=<value>`：DDL 面板的断言（可重复）。
+    expect_ddl: Vec<DdlExpectation>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -398,6 +571,12 @@ pub fn enabled() -> bool {
             || args.data_fail_txn
             || args.data_replay_cancelled
             || args.column_info.is_some()
+            || !args.tree_expand.is_empty()
+            || args.tree_open.is_some()
+            || args.tree_ddl.is_some()
+            || args.tree_search.is_some()
+            || args.tree_click_result
+            || args.tree_load_more
     })
 }
 
@@ -543,6 +722,70 @@ pub fn expect_columns() -> Vec<ColumnExpectation> {
         .map_or_else(Vec::new, |args| args.expect_columns.clone())
 }
 
+/// 依次要展开的节点名（`--qa-tree-expand`，按出现顺序）。
+#[must_use]
+pub fn tree_expand() -> Vec<String> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.tree_expand.clone())
+}
+
+/// 要在树里打开的表名（`--qa-tree-open`）。
+#[must_use]
+pub fn tree_open() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_open.clone())
+}
+
+/// 要查看 DDL 的对象名（`--qa-tree-ddl`）。
+#[must_use]
+pub fn tree_ddl() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_ddl.clone())
+}
+
+/// 搜索关键词（`--qa-tree-search`）。
+#[must_use]
+pub fn tree_search() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_search.clone())
+}
+
+/// 是否点第一条搜索结果（`--qa-tree-click-result`）。
+#[must_use]
+pub fn tree_click_result() -> bool {
+    ARGS.get().is_some_and(|args| args.tree_click_result)
+}
+
+/// 是否点「加载更多…」（`--qa-tree-load-more`）。
+#[must_use]
+pub fn tree_load_more() -> bool {
+    ARGS.get().is_some_and(|args| args.tree_load_more)
+}
+
+/// 树 / 搜索的断言（`--qa-expect-tree`，按登记顺序）。
+#[must_use]
+pub fn expect_tree() -> Vec<TreeExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_tree.clone())
+}
+
+/// DDL 面板的断言（`--qa-expect-ddl`，按登记顺序）。
+#[must_use]
+pub fn expect_ddl() -> Vec<DdlExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_ddl.clone())
+}
+
+/// 是否登记了任何对象树 / 搜索 / DDL 动作（`maybe_run_qa_tree` 的开关）。
+#[must_use]
+pub fn tree_requested() -> bool {
+    ARGS.get().is_some_and(|args| {
+        !args.tree_expand.is_empty()
+            || args.tree_open.is_some()
+            || args.tree_ddl.is_some()
+            || args.tree_search.is_some()
+            || args.tree_click_result
+            || args.tree_load_more
+    })
+}
+
 /// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
 pub fn log_sql_preview(sql: &str) {
     if !enabled() {
@@ -589,7 +832,26 @@ pub fn password() -> Option<String> {
     }
 }
 
+/// 把 `--opt=value` 展开成 `--opt value`：GLib 的选项解析接受前一种写法，
+/// QA 的自解析必须一致，否则「参数没生效」会看起来像功能坏了。
+fn expand_equals(args: &[String]) -> Vec<String> {
+    let mut expanded = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg.starts_with("--")
+            && let Some((name, value)) = arg.split_once('=')
+        {
+            expanded.push(name.to_owned());
+            expanded.push(value.to_owned());
+        } else {
+            expanded.push(arg.clone());
+        }
+    }
+    expanded
+}
+
 fn parse(args: &[String]) -> Result<Args, String> {
+    let expanded = expand_equals(args);
+    let args = &expanded[..];
     let mut parsed = Args::default();
     let mut delay = DEFAULT_DELAY;
     let mut path: Option<PathBuf> = None;
@@ -815,6 +1077,68 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.expect_columns.push(ColumnExpectation::parse(value)?);
                 index += 2;
             }
+            "--qa-tree-expand" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-expand 需要一个节点名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-expand 的节点名不能为空".to_owned());
+                }
+                parsed.tree_expand.push(value.clone());
+                index += 2;
+            }
+            "--qa-tree-open" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-open 需要一个表名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-open 的表名不能为空".to_owned());
+                }
+                parsed.tree_open = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-ddl" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-ddl 需要一个对象名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-ddl 的对象名不能为空".to_owned());
+                }
+                parsed.tree_ddl = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-search" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-search 需要一个关键词".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-search 的关键词不能为空".to_owned());
+                }
+                parsed.tree_search = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-click-result" => {
+                parsed.tree_click_result = true;
+                index += 1;
+            }
+            "--qa-tree-load-more" => {
+                parsed.tree_load_more = true;
+                index += 1;
+            }
+            "--qa-expect-tree" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-tree 需要 字段=值".to_owned())?;
+                parsed.expect_tree.push(TreeExpectation::parse(value)?);
+                index += 2;
+            }
+            "--qa-expect-ddl" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-ddl 需要 字段=值".to_owned())?;
+                parsed.expect_ddl.push(DdlExpectation::parse(value)?);
+                index += 2;
+            }
             "--qa-password-env" => {
                 let value = args
                     .get(index + 1)
@@ -834,7 +1158,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
     if parsed.capture.is_none()
         && (parsed.expect_data_state.is_some()
             || parsed.expect_txn.is_some()
-            || !parsed.expect_columns.is_empty())
+            || !parsed.expect_columns.is_empty()
+            || !parsed.expect_tree.is_empty()
+            || !parsed.expect_ddl.is_empty())
     {
         return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
     }
@@ -1251,6 +1577,129 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn tree_flags_are_parsed_in_order() {
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-tree-expand",
+            "sqarvo_test_86",
+            "--qa-tree-expand",
+            "orders",
+            "--qa-tree-open",
+            "orders",
+            "--qa-tree-ddl",
+            "orders",
+            "--qa-tree-search",
+            "ord",
+            "--qa-tree-click-result",
+            "--qa-tree-load-more",
+            "--qa-expect-tree",
+            "selected=orders",
+            "--qa-expect-ddl",
+            "provenance=原文",
+        ]))
+        .unwrap();
+        // 展开顺序就是参数顺序：先库、后表，跳转时的逐层展开依赖它。
+        assert_eq!(parsed.tree_expand, vec!["sqarvo_test_86", "orders"]);
+        assert_eq!(parsed.tree_open.as_deref(), Some("orders"));
+        assert_eq!(parsed.tree_ddl.as_deref(), Some("orders"));
+        assert_eq!(parsed.tree_search.as_deref(), Some("ord"));
+        assert!(parsed.tree_click_result);
+        assert!(parsed.tree_load_more);
+        assert_eq!(
+            parsed.expect_tree[0],
+            TreeExpectation {
+                field: TreeField::Selected,
+                expected: "orders".to_owned(),
+            }
+        );
+        assert_eq!(
+            parsed.expect_ddl[0],
+            DdlExpectation {
+                field: DdlField::Provenance,
+                expected: "原文".to_owned(),
+            }
+        );
+        // 字段名与断言读取用同一份词表。
+        for field in [
+            TreeField::Health,
+            TreeField::Selected,
+            TreeField::Search,
+            TreeField::Results,
+            TreeField::First,
+            TreeField::Page,
+            TreeField::Loaded,
+            TreeField::StatusContains,
+        ] {
+            assert_eq!(TreeField::parse(field.name()).unwrap(), field);
+        }
+        for field in [
+            DdlField::Provenance,
+            DdlField::DetailContains,
+            DdlField::ObjectContains,
+            DdlField::Contains,
+            DdlField::State,
+            DdlField::Copy,
+            DdlField::Visible,
+        ] {
+            assert_eq!(DdlField::parse(field.name()).unwrap(), field);
+        }
+    }
+
+    #[test]
+    fn equals_form_is_expanded_like_glib() {
+        // `--opt=value` 与 `--opt value` 必须等价（GLib 两种都接受）。
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot=/tmp/a.png",
+            "--screenshot-delay-ms=2500",
+            "--qa-tree-ddl=orders",
+            "--qa-expect-ddl=contains=CREATE TABLE",
+        ]))
+        .unwrap();
+        let capture = parsed.capture.expect("应解析出截图请求");
+        assert_eq!(capture.path, PathBuf::from("/tmp/a.png"));
+        assert_eq!(capture.delay, Duration::from_millis(2500));
+        assert_eq!(parsed.tree_ddl.as_deref(), Some("orders"));
+        // 值里可以有 `=`：只按第一个切分。
+        assert_eq!(parsed.expect_ddl[0].expected, "CREATE TABLE");
+        assert_eq!(parsed.expect_ddl[0].field, DdlField::Contains);
+    }
+
+    #[test]
+    fn tree_flags_reject_bad_values() {
+        assert!(parse(&args(&["app", "--qa-tree-expand"])).is_err());
+        assert!(parse(&args(&["app", "--qa-tree-expand", " "])).is_err());
+        assert!(parse(&args(&["app", "--qa-tree-open"])).is_err());
+        assert!(parse(&args(&["app", "--qa-tree-open", ""])).is_err());
+        assert!(parse(&args(&["app", "--qa-tree-ddl"])).is_err());
+        assert!(parse(&args(&["app", "--qa-tree-search", "  "])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-tree", "selected"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-tree", "bogus=x"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-ddl", "provenance"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-ddl", "bogus=x"])).is_err());
+        // 与其它 --qa-expect-* 一样：没有截图就没有「断言这一刻」。
+        assert!(parse(&args(&["app", "--qa-expect-tree", "selected=orders"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-ddl", "provenance=原文"])).is_err());
+    }
+
+    #[test]
+    fn tree_requested_only_when_an_action_is_registered() {
+        // 只有断言没有动作时不该跑序列（否则会空转 6 秒等一个不会发生的点击）。
+        let only_expectations = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-expect-tree",
+            "health=Ready",
+        ]))
+        .unwrap();
+        assert!(only_expectations.tree_expand.is_empty());
+        assert!(!only_expectations.tree_click_result);
     }
 
     #[test]

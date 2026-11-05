@@ -7,14 +7,17 @@
 //! - [`connection`]：连接草稿、`CredentialService`/`ConnectionService` 调用与错误分类；
 //! - [`supervisor`]：后端可执行文件查找、启动、等待就绪与退出清理；
 //! - [`worker`]：后台线程与消息通道，UI 只与本层交互；
+//! - [`metadata`]：对象树 / 搜索 / DDL 的数据类型与独立后台通道（#86）；
 //! - [`error`]：可直接展示给用户的错误文案（绝不含 token）。
 //!
-//! UI 层不得直接调用 socket、spawn 进程或读写端点文件，一律经 [`worker`]。
+//! UI 层不得直接调用 socket、spawn 进程或读写端点文件，一律经 [`worker`]
+//! 与 [`metadata::MetadataWorker`]。
 
 pub mod client;
 pub mod connection;
 pub mod endpoint;
 pub mod error;
+pub mod metadata;
 pub mod query;
 pub mod supervisor;
 pub mod table;
