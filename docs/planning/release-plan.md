@@ -129,8 +129,9 @@ fmt 与 clippy 仍干净；`scripts/check-tracking.sh --state all` 仍「失败 
   并有 `--qa-*` 无人值守证据与 GTK 自渲染截图。
 
 完成记录（2026-11-06，Linux）：以上五条全部满足，逐条证据如下。范围仍是 Linux 前端 + 本地后端 +
-SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。证据基线 main `9f3d2ce`（#89 的合并提交；
-其后没有代码提交）。
+SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。证据基线 main `ca0df3c`（#89 的合并提交 `9f3d2ce` 之后又合入三个发布前修正：
+`9f7fec8` 修正 `query_id` 前缀注释、`43a18e5` 让 MariaDB 分页用例在共享库并发变更时重试更稳、
+`ca0df3c` 修正 `ListNodesRequest.parent` 注释；三者都不改协议字段与错误码语义）。
 
 | 退出标准 | 证据 |
 |---|---|
@@ -158,10 +159,14 @@ SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。�
 > `MariaDB 集成测试（服务容器）` 作业 1 例失败——`metadata_lists_tables_and_views_with_stable_pagination`
 > 翻页时得到 `config.invalid`「分页 token 超出数据范围」（68 passed / 1 failed）；该提交未重跑。
 > 随后合入的 #89 合并提交 run `42067912917` 三个作业全绿；本轮本地在同一测试库复跑 `--test integration`
-> 69 通过，失败未复现。最可能的原因是集成用例并行执行时共用同一个库、对象集合在翻页途中被其它用例改变；
-> 未做隔离复现，因此这里只记录事实，不宣称「已修复」。
+> 69 通过，失败未复现。原因已定位为：集成用例并行执行时共用同一个库，其它用例在翻页途中 `CREATE`/`DROP`
+> 对象，会把「根节点列表」的分页窗口打脏；实现此时可能返回 `metadata.snapshot_changed`，也可能因为旧
+> offset 已越过新长度而返回 `config.invalid`「分页 token 超出数据范围」。
+> **发布前修正 `43a18e5`（PR #101）**：只改测试的重试策略（5 → 20 次、间隔 50 ms，并把上述两种「需要重读」
+> 的结果都视为窗口不干净），本地连续跑 3 次均 69/69 通过；产品侧错误码语义**未改**——「集合变小且 offset
+> 越界」到底该报哪个码仍无定论，留给后续版本收敛（见「口径与未验证项」）。
 
-配套基线（2026-11-06，Linux，证据基线 main `9f3d2ce`）：`cd backend && cargo fmt --all -- --check` → exit 0；
+配套基线（2026-11-06，Linux，证据基线 main `ca0df3c`）：`cd backend && cargo fmt --all -- --check` → exit 0；
 `cargo clippy --all-targets -- -D warnings` → 0 warning；
 `SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test_90' cargo test --workspace`
 → **539 passed / 0 failed / 2 ignored**（54 个测试块；基线 v0.2.1 为 382，v0.2.2 前的 #84 已是 539）；
@@ -183,6 +188,7 @@ MariaDB 集成 **69 passed**，日志中「跳过：未设置 SQARVO_MARIADB_URL
 - **取消提交（#89）本轮未重跑**：其取消语义的证据来自 #89 的日志与截图（`CancelRowChanges` 往返、`executed_changes=128 < 500`、外部 SQL 0 行变化），不计入本轮独立复跑。
 - **搜索范围**：Linux 只搜当前库根层、只展示首页 500 条；`contains` 与 `exact` 的大小写语义不对称（跟随数据库）。
 - **仍不支持**：跨库表数据浏览/行编辑（元数据可跨库）、MariaDB 索引/触发器 DDL、`InsertRows` 批次取消、`Snapshot` 隔离级别、schema 层。
+- **分页 token 的边界错误码未定口径**：对象集合变小、旧 offset 同时越界时，当前实现返回 `config.invalid`（「分页 token 超出数据范围」）而不是 `metadata.snapshot_changed`；两者对客户端都意味着「从第一页重读」，但语义不同。改它会影响既有用例与文档，需要先定口径，本版不动。
 - 逐条已知限制见 [v0.2.2 发布说明](../releases/v0.2.2.md)。
 
 ### v0.2.3
