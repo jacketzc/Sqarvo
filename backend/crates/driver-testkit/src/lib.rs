@@ -15,6 +15,10 @@
 //!   4. [`oversized_cell_is_truncated`]：超出 `DEFAULT_MAX_CELL_BYTES` 的单元格只交付
 //!      前缀并置 `Cell::truncated`（ADR 0007）；
 //!   5. [`batch_drain_has_no_loss`]：按批取完与一次性取回的行一致，不重复、不丢失（ADR 0005）。
+//! - 事务不变量检查（声明 `capabilities.transactions == true` 的驱动必须通过，
+//!   见 ADR 0017 §3）：提交可见、回滚丢弃、重复提交/回滚幂等、
+//!   不支持并发事务、语句失败后仍可回滚。SQL 同样由调用方按方言提供。读者应从
+//!   [`transaction_commit_is_visible`] 开始。
 //!
 //! 真实驱动接入时，在集成测试中构造会话并调用 `smoke` 与上述五项检查，再补充该驱动
 //! 特有的类型往返测试。检查失败一律返回 **`INTERNAL`** 错误（文案说明违反了哪条不变量），
@@ -30,9 +34,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId};
+use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    DEFAULT_MAX_CELL_BYTES, DriverSession, ExecuteRequest, ExecutionStart, ResultBatch, Row, Value,
+    DEFAULT_MAX_CELL_BYTES, DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel,
+    ResultBatch, Row, TransactionOptions, Value,
 };
 
 /// 脚本化会话：`execute` 返回预设结果，`fetch` 依次弹出预设批次。
@@ -530,6 +535,320 @@ fn sample(key: &str) -> String {
         end -= 1;
     }
     format!("{}…（共 {} 字节）", &key[..end], key.len())
+}
+
+// ---------------------------------------------------------------------------
+// 事务不变量（ADR 0017 §3）
+// ---------------------------------------------------------------------------
+
+/// 事务不变量检查所需的 SQL 片段，由调用方按本驱动方言提供。
+///
+/// 三项都必须落在**同一张表**上，且满足：
+///
+/// - `prepare`：**单条**语句，执行后表存在且为空（典型写法 `DELETE FROM t`）。
+///   表本身由调用方在检查前建好：驱动不一定支持一次执行多条语句（SQLite 明确不支持），
+///   所以不能在这里用 `DROP TABLE ...; CREATE TABLE ...`；
+/// - `insert`：向该表写入一行；
+/// - `count`：返回单行单列整数，表示该表当前行数。
+///
+/// 检查会连续复用同一个会话，因此 `prepare` 的重置语义是必需的。
+#[derive(Debug, Clone, Copy)]
+pub struct TransactionFixture<'a> {
+    /// 清空表（单条语句）。
+    pub prepare: &'a str,
+    /// 插入一行。
+    pub insert: &'a str,
+    /// 返回当前行数的查询。
+    pub count: &'a str,
+}
+
+/// 事务检查统一使用的选项：隔离级别交给驱动默认值，读写事务。
+fn read_write_options() -> TransactionOptions {
+    TransactionOptions {
+        isolation: IsolationLevel::Unspecified,
+        read_only: false,
+    }
+}
+
+/// 执行一条不返回结果集的语句；错误包装成 `INTERNAL` 并带上驱动错误码。
+async fn tx_execute(session: &dyn DriverSession, sql: &str, step: &str) -> Result<()> {
+    session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: sql.to_owned(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            Error::internal(format!(
+                "{step}：语句执行失败：{}（{}）",
+                error.code(),
+                error.category()
+            ))
+            .with_source(error)
+        })
+}
+
+/// 执行计数查询并取出单个整数。
+async fn tx_count(session: &dyn DriverSession, sql: &str) -> Result<i64> {
+    let drained = drain(session, sql, 100).await?;
+    let row = drained
+        .rows
+        .first()
+        .ok_or_else(|| Error::internal(format!("计数查询未返回任何行：{sql}")))?;
+    match row.first().map(|cell| &cell.value) {
+        Some(Value::Int(value)) => Ok(*value),
+        other => Err(Error::internal(format!(
+            "计数查询必须返回单行单列整数，实际 {other:?}（{sql}）"
+        ))),
+    }
+}
+
+/// 断言当前行数符合预期。
+async fn tx_expect_count(
+    session: &dyn DriverSession,
+    sql: &str,
+    expected: i64,
+    step: &str,
+) -> Result<()> {
+    let actual = tx_count(session, sql).await?;
+    if actual != expected {
+        return Err(Error::internal(format!(
+            "{step}：期望 {expected} 行，实际 {actual} 行"
+        )));
+    }
+    Ok(())
+}
+
+/// 开始事务，失败即视为违反契约。
+async fn tx_begin(session: &dyn DriverSession) -> Result<TransactionId> {
+    session
+        .begin_transaction(read_write_options())
+        .await
+        .map_err(|error| {
+            Error::internal(format!(
+                "声明支持事务的驱动必须接受 BEGIN，实际失败：{}（{}）",
+                error.code(),
+                error.category()
+            ))
+            .with_source(error)
+        })
+}
+
+/// 提交事务，失败即视为违反契约。
+async fn tx_commit(session: &dyn DriverSession, id: &TransactionId) -> Result<()> {
+    session.commit_transaction(id).await.map_err(|error| {
+        Error::internal(format!(
+            "COMMIT 应成功，实际失败：{}（{}）",
+            error.code(),
+            error.category()
+        ))
+        .with_source(error)
+    })
+}
+
+/// 回滚事务，失败即视为违反契约。
+async fn tx_rollback(session: &dyn DriverSession, id: &TransactionId) -> Result<()> {
+    session.rollback_transaction(id).await.map_err(|error| {
+        Error::internal(format!(
+            "ROLLBACK 应成功，实际失败：{}（{}）",
+            error.code(),
+            error.category()
+        ))
+        .with_source(error)
+    })
+}
+
+/// 尽力回滚，用于错误路径上不掩盖原始失败。
+async fn tx_abandon(session: &dyn DriverSession, id: &TransactionId) {
+    let _ = session.rollback_transaction(id).await;
+}
+
+/// 断言「提交后变更可见」。
+///
+/// 验证的不变量：`BEGIN` → 写入 → 事务内可读到 → `COMMIT` → 新查询仍可读到。
+/// 事务内可读（读己之写）是必须的：若驱动把事务内写入放到别处缓冲、事务内读不到，
+/// 前端的「应用变更后刷新」会显示旧数据。
+///
+/// 调用方需要提供：一个已连接会话与满足 [`TransactionFixture`] 契约的 SQL。
+pub async fn transaction_commit_is_visible(
+    session: &dyn DriverSession,
+    fixture: &TransactionFixture<'_>,
+) -> Result<()> {
+    tx_execute(session, fixture.prepare, "准备").await?;
+    tx_expect_count(session, fixture.count, 0, "准备后").await?;
+
+    let id = tx_begin(session).await?;
+    tx_execute(session, fixture.insert, "事务内插入").await?;
+    tx_expect_count(session, fixture.count, 1, "事务内可读性").await?;
+    tx_commit(session, &id).await?;
+    tx_expect_count(session, fixture.count, 1, "提交后").await
+}
+
+/// 断言「回滚丢弃变更」。
+///
+/// 验证的不变量：`BEGIN` → 写入 → 事务内可读 → `ROLLBACK` → 变更不可见。
+///
+/// 调用方需要提供：一个已连接会话与满足 [`TransactionFixture`] 契约的 SQL。
+pub async fn transaction_rollback_discards_changes(
+    session: &dyn DriverSession,
+    fixture: &TransactionFixture<'_>,
+) -> Result<()> {
+    tx_execute(session, fixture.prepare, "准备").await?;
+    tx_expect_count(session, fixture.count, 0, "准备后").await?;
+
+    let id = tx_begin(session).await?;
+    tx_execute(session, fixture.insert, "事务内插入").await?;
+    tx_expect_count(session, fixture.count, 1, "事务内可读性").await?;
+    tx_rollback(session, &id).await?;
+    tx_expect_count(session, fixture.count, 0, "回滚后").await
+}
+
+/// 断言「一个会话最多一个打开事务」。
+///
+/// 验证的不变量（ADR 0017 §3）：已有打开事务时第二次 `BEGIN` 必须以
+/// [`ErrorCode::TRANSACTION_ALREADY_ACTIVE`] 拒绝；拒绝之后会话仍然可用——
+/// 回滚第一个事务就能重新 `BEGIN`。只断言错误码，因为该码已在
+/// `sqarvo-common` 登记，属于跨驱动的稳定契约。
+///
+/// 调用方需要提供：一个已连接、当前没有打开事务的会话。
+pub async fn transaction_begin_twice_is_rejected(session: &dyn DriverSession) -> Result<()> {
+    let first = tx_begin(session).await?;
+    match session.begin_transaction(read_write_options()).await {
+        Ok(second) => {
+            tx_abandon(session, &second).await;
+            tx_abandon(session, &first).await;
+            return Err(Error::internal(
+                "已有打开事务时第二次 BEGIN 必须被拒绝，实际成功：一个会话不得同时打开两个事务",
+            ));
+        }
+        Err(error) if error.code() == ErrorCode::TRANSACTION_ALREADY_ACTIVE => {}
+        Err(error) => {
+            tx_abandon(session, &first).await;
+            return Err(Error::internal(format!(
+                "已有打开事务时第二次 BEGIN 必须以 transaction.already_active 拒绝，\
+                 实际为 {}（{}）",
+                error.code(),
+                error.category()
+            )));
+        }
+    }
+
+    tx_rollback(session, &first).await?;
+
+    // 被拒绝之后会话必须仍可用。
+    let again = tx_begin(session).await?;
+    tx_rollback(session, &again).await
+}
+
+/// 断言「重复提交 / 回滚幂等」（ADR 0017 §3）。
+///
+/// 验证的不变量：同一个事务 `COMMIT` 两次都成功；`ROLLBACK` 两次都成功；
+/// 对从未签发过的事务 ID 调用 `COMMIT` / `ROLLBACK` 也返回成功。
+/// 理由见 ADR：前端在断线重连与重试时无法区分「已提交」与「从未收到」，
+/// 把这类竞态变成错误只会给用户一条无法处置的失败提示。
+///
+/// 调用方需要提供：一个已连接、当前没有打开事务的会话。
+pub async fn transaction_commit_and_rollback_are_idempotent(
+    session: &dyn DriverSession,
+) -> Result<()> {
+    let committed = tx_begin(session).await?;
+    tx_commit(session, &committed).await?;
+    tx_commit(session, &committed).await.map_err(|error| {
+        Error::internal(format!(
+            "重复 COMMIT 必须幂等成功，实际失败：{}（{}）",
+            error.code(),
+            error.category()
+        ))
+        .with_source(error)
+    })?;
+
+    let rolled_back = tx_begin(session).await?;
+    tx_rollback(session, &rolled_back).await?;
+    tx_rollback(session, &rolled_back).await.map_err(|error| {
+        Error::internal(format!(
+            "重复 ROLLBACK 必须幂等成功，实际失败：{}（{}）",
+            error.code(),
+            error.category()
+        ))
+        .with_source(error)
+    })?;
+
+    let unknown = TransactionId::new();
+    session
+        .commit_transaction(&unknown)
+        .await
+        .map_err(|error| {
+            Error::internal(format!(
+                "对未知事务 ID 的 COMMIT 必须幂等成功，实际失败：{}（{}）",
+                error.code(),
+                error.category()
+            ))
+            .with_source(error)
+        })?;
+    session
+        .rollback_transaction(&unknown)
+        .await
+        .map_err(|error| {
+            Error::internal(format!(
+                "对未知事务 ID 的 ROLLBACK 必须幂等成功，实际失败：{}（{}）",
+                error.code(),
+                error.category()
+            ))
+            .with_source(error)
+        })
+}
+
+/// 断言「语句失败后事务仍可回滚，且回滚丢弃变更」。
+///
+/// 验证的不变量：
+///
+/// - 事务内一条语句失败必须返回错误（不得静默吞掉）；
+/// - 失败之后 `ROLLBACK` 仍必须成功——无论数据库是否已自动回滚整个事务；
+/// - 回滚后此前的写入不可见。
+///
+/// 检查**不**断言失败后的状态是「可提交」还是「必须回滚」：这取决于数据库的实际行为
+/// （SQLite 的普通语句错误不回滚事务，PostgreSQL 会进入 aborted 事务）。驱动必须把
+/// 自己的真实行为写进测试与文档。这里只固定「回滚永远可用」这条跨库底线。
+///
+/// 调用方需要提供：一个已连接会话、满足 [`TransactionFixture`] 契约的 SQL，
+/// 以及 `failing_sql`：**本驱动方言**下必然失败的语句（如引用不存在的表）。
+pub async fn transaction_statement_error_leaves_rollback_usable(
+    session: &dyn DriverSession,
+    fixture: &TransactionFixture<'_>,
+    failing_sql: &str,
+) -> Result<()> {
+    tx_execute(session, fixture.prepare, "准备").await?;
+    let id = tx_begin(session).await?;
+    tx_execute(session, fixture.insert, "事务内插入").await?;
+    tx_expect_count(session, fixture.count, 1, "事务内可读性").await?;
+
+    let failed = session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: failing_sql.to_owned(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await;
+    if failed.is_ok() {
+        tx_abandon(session, &id).await;
+        return Err(Error::internal(format!(
+            "事务内失败的语句必须返回错误，实际成功：{failing_sql}"
+        )));
+    }
+
+    tx_rollback(session, &id).await.map_err(|error| {
+        Error::internal(format!(
+            "语句失败后 ROLLBACK 仍必须成功，实际失败：{}（{}）",
+            error.code(),
+            error.category()
+        ))
+        .with_source(error)
+    })?;
+    tx_expect_count(session, fixture.count, 0, "语句失败并回滚后").await
 }
 
 #[cfg(test)]
@@ -1051,5 +1370,300 @@ mod tests {
         let short = sample(&long);
         assert!(short.len() < long.len());
         assert!(short.starts_with('数'));
+    }
+
+    // ---- 事务不变量检查：正例与反例 ----
+    //
+    // 与上面的五项检查一样，检查本身必须被测：符合契约的会话应通过，
+    // 违约的会话应得到带清晰文案的 `INTERNAL`。
+
+    /// 内存事务会话：用「已提交行数 + 事务内待提交行数」模拟一张表。
+    ///
+    /// 只识别单元测试用到的四条指令：`RESET` / `INSERT` / `COUNT` / `FAIL`。
+    /// 它不解析任意 SQL，只用来验证事务不变量检查本身能否区分符合契约与违约的驱动。
+    #[allow(clippy::struct_excessive_bools)]
+    struct MemoryTransactionSession {
+        session_id: SessionId,
+        state: Mutex<MemoryState>,
+        commit_discards: bool,
+        commit_not_idempotent: bool,
+        allow_double_begin: bool,
+        rollback_fails: bool,
+    }
+
+    #[derive(Default)]
+    struct MemoryState {
+        committed: i64,
+        open: Option<MemoryTransaction>,
+    }
+
+    struct MemoryTransaction {
+        id: TransactionId,
+        pending: i64,
+        read_only: bool,
+    }
+
+    impl MemoryTransactionSession {
+        fn conforming() -> Self {
+            Self {
+                session_id: SessionId::new(),
+                state: Mutex::new(MemoryState::default()),
+                commit_discards: false,
+                commit_not_idempotent: false,
+                allow_double_begin: false,
+                rollback_fails: false,
+            }
+        }
+
+        fn state(&self) -> std::sync::MutexGuard<'_, MemoryState> {
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
+
+    fn statements_without_rows() -> ExecutionStart {
+        ExecutionStart::single(
+            StatementSummary {
+                index: 0,
+                sql_preview: "statement".to_owned(),
+                columns: Vec::new(),
+                rows_affected: Some(0),
+                has_result_set: false,
+            },
+            None,
+        )
+    }
+
+    fn start_returning_int(value: i64) -> ExecutionStart {
+        ExecutionStart::single(
+            StatementSummary {
+                index: 0,
+                sql_preview: "COUNT".to_owned(),
+                columns: vec![column()],
+                rows_affected: None,
+                has_result_set: true,
+            },
+            Some(ResultBatch {
+                statement_index: 0,
+                rows: vec![row(value)],
+                next_cursor: None,
+                has_more: false,
+            }),
+        )
+    }
+
+    #[async_trait]
+    impl DriverSession for MemoryTransactionSession {
+        fn session_id(&self) -> SessionId {
+            self.session_id
+        }
+
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+            let mut state = self.state();
+            match request.sql.as_str() {
+                "RESET" => {
+                    state.committed = 0;
+                    state.open = None;
+                    Ok(statements_without_rows())
+                }
+                "INSERT" => {
+                    if let Some(open) = state.open.as_mut() {
+                        if open.read_only {
+                            return Err(Error::failed_precondition(
+                                ErrorCode::from_static("testkit.read_only"),
+                                "只读事务拒绝写入",
+                            ));
+                        }
+                        open.pending += 1;
+                    } else {
+                        state.committed += 1;
+                    }
+                    Ok(statements_without_rows())
+                }
+                "COUNT" => {
+                    let pending = state.open.as_ref().map_or(0, |open| open.pending);
+                    Ok(start_returning_int(state.committed + pending))
+                }
+                "FAIL" => Err(Error::new(
+                    ErrorCode::from_static("testkit.statement_failed"),
+                    ErrorCategory::Internal,
+                    "模拟语句失败",
+                )),
+                other => Err(Error::internal(format!("内存会话不认识的指令：{other}"))),
+            }
+        }
+
+        async fn fetch(
+            &self,
+            _query_id: &QueryId,
+            _statement_index: u32,
+            _cursor: Option<&str>,
+            _max_rows: u32,
+        ) -> Result<ResultBatch> {
+            Err(Error::not_found(
+                ErrorCode::QUERY_NOT_FOUND,
+                "内存会话不产生多批结果",
+            ))
+        }
+
+        async fn cancel(&self, _query_id: &QueryId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn begin_transaction(&self, options: TransactionOptions) -> Result<TransactionId> {
+            let mut state = self.state();
+            if state.open.is_some() && !self.allow_double_begin {
+                return Err(Error::already_exists(
+                    ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+                    "已有打开的事务",
+                ));
+            }
+            let id = TransactionId::new();
+            state.open = Some(MemoryTransaction {
+                id,
+                pending: 0,
+                read_only: options.read_only,
+            });
+            Ok(id)
+        }
+
+        async fn commit_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+            let mut state = self.state();
+            let Some(open) = state.open.take() else {
+                return if self.commit_not_idempotent {
+                    Err(Error::internal("模拟重复提交失败"))
+                } else {
+                    Ok(())
+                };
+            };
+            if open.id != *transaction_id {
+                state.open = Some(open);
+                return Ok(());
+            }
+            if !self.commit_discards {
+                state.committed += open.pending;
+            }
+            Ok(())
+        }
+
+        async fn rollback_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+            let mut state = self.state();
+            if self.rollback_fails {
+                return Err(Error::internal("模拟回滚失败"));
+            }
+            let Some(open) = state.open.take() else {
+                return Ok(());
+            };
+            if open.id != *transaction_id {
+                state.open = Some(open);
+            }
+            Ok(())
+        }
+    }
+
+    fn fixture() -> TransactionFixture<'static> {
+        TransactionFixture {
+            prepare: "RESET",
+            insert: "INSERT",
+            count: "COUNT",
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_checks_accept_conforming_session() {
+        let session = MemoryTransactionSession::conforming();
+        let fixture = fixture();
+        transaction_commit_is_visible(&session, &fixture)
+            .await
+            .unwrap();
+        transaction_rollback_discards_changes(&session, &fixture)
+            .await
+            .unwrap();
+        transaction_begin_twice_is_rejected(&session).await.unwrap();
+        transaction_commit_and_rollback_are_idempotent(&session)
+            .await
+            .unwrap();
+        transaction_statement_error_leaves_rollback_usable(&session, &fixture, "FAIL")
+            .await
+            .unwrap();
+        assert!(
+            session.state().open.is_none(),
+            "事务检查结束后不应留下打开的事务"
+        );
+        assert_eq!(session.state().committed, 0, "每次准备都会清空已提交行");
+    }
+
+    #[tokio::test]
+    async fn commit_check_rejects_discarded_commit() {
+        let session = MemoryTransactionSession {
+            commit_discards: true,
+            ..MemoryTransactionSession::conforming()
+        };
+        let error = transaction_commit_is_visible(&session, &fixture())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("提交后"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn rollback_check_rejects_failing_rollback() {
+        let session = MemoryTransactionSession {
+            rollback_fails: true,
+            ..MemoryTransactionSession::conforming()
+        };
+        let error = transaction_rollback_discards_changes(&session, &fixture())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("ROLLBACK"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn begin_twice_check_rejects_two_open_transactions() {
+        let session = MemoryTransactionSession {
+            allow_double_begin: true,
+            ..MemoryTransactionSession::conforming()
+        };
+        let error = transaction_begin_twice_is_rejected(&session)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(
+            error.to_string().contains("不得同时打开两个事务"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn idempotency_check_rejects_non_idempotent_commit() {
+        let session = MemoryTransactionSession {
+            commit_not_idempotent: true,
+            ..MemoryTransactionSession::conforming()
+        };
+        let error = transaction_commit_and_rollback_are_idempotent(&session)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("重复 COMMIT"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn statement_error_check_rejects_unusable_rollback() {
+        let session = MemoryTransactionSession {
+            rollback_fails: true,
+            ..MemoryTransactionSession::conforming()
+        };
+        let error =
+            transaction_statement_error_leaves_rollback_usable(&session, &fixture(), "FAIL")
+                .await
+                .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("ROLLBACK"), "{error}");
     }
 }

@@ -36,9 +36,9 @@ impl SqliteDriver {
                     max_version: None,
                 }],
                 capabilities: Capabilities {
-                    // 能力描述符只声明「当前实现可用」的能力；
-                    // 事务在 M4 完成后开启。
-                    transactions: false,
+                    // 显式事务：BEGIN IMMEDIATE/DEFERRED + COMMIT/ROLLBACK，
+                    // 由会话线程持有唯一打开的事务（ADR 0017 §3、#42）。
+                    transactions: true,
                     query_cancellation: true,
                     streaming_results: true,
                     // v0.1 只支持单语句。

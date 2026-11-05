@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, InterruptHandle, OpenFlags, Rows, Statement};
-use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId};
+use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, DriverSession, ExecuteRequest,
-    ExecutionStart, ResultBatch, StatementSummary, Value, sql_preview, truncate_text,
+    ExecutionStart, IsolationLevel, ResultBatch, StatementSummary, TransactionOptions, Value,
+    sql_preview, truncate_text,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -42,9 +43,47 @@ enum Command {
         query_id: QueryId,
         reply: oneshot::Sender<Result<()>>,
     },
+    Begin {
+        options: TransactionOptions,
+        reply: oneshot::Sender<Result<TransactionId>>,
+    },
+    Commit {
+        transaction_id: TransactionId,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Rollback {
+        transaction_id: TransactionId,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
+}
+
+/// 事务在连接上的真实阶段。
+///
+/// SQLite 会在部分语句错误（写语句被 `sqlite3_interrupt` 打断、磁盘满、IO 错误等）
+/// 之后**自动回滚整个事务**，连接回到自动提交模式。簿记必须跟随这个事实，
+/// 否则下一次 `COMMIT` 会退化成一次隐式提交空事务，用户以为改动已落库。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionPhase {
+    /// `BEGIN` 已成功，事务可以继续执行语句。
+    Active,
+    /// SQLite 已回滚事务，只剩簿记等待 `ROLLBACK` 清除；此阶段只允许回滚。
+    Aborted,
+}
+
+/// 会话内唯一打开的事务。
+#[derive(Debug, Clone, Copy)]
+struct OpenTransaction {
+    id: TransactionId,
+    phase: TransactionPhase,
+}
+
+impl OpenTransaction {
+    fn is_active(self) -> bool {
+        self.phase == TransactionPhase::Active
+    }
 }
 
 /// 会话与执行线程共享的查询状态，用于取消。
@@ -123,12 +162,15 @@ fn run_connection(
     mut receiver: mpsc::UnboundedReceiver<Command>,
     state: Arc<QueryState>,
 ) {
+    let mut transaction: Option<OpenTransaction> = None;
     loop {
         let Some(command) = receiver.blocking_recv() else {
             return;
         };
         match command {
             Command::Close { reply } => {
+                // 会话关闭等同断连：显式回滚，不依赖 `Connection` 析构时的隐式回滚。
+                let _ = rollback_if_open(&connection, &mut transaction);
                 let _ = reply.send(());
                 return;
             }
@@ -142,24 +184,233 @@ fn run_connection(
                     "当前会话没有在途查询",
                 )));
             }
+            Command::Begin { options, reply } => {
+                let _ = reply.send(begin_transaction(&connection, &mut transaction, options));
+            }
+            Command::Commit {
+                transaction_id,
+                reply,
+            } => {
+                let _ = reply.send(commit_transaction(
+                    &connection,
+                    &mut transaction,
+                    &transaction_id,
+                ));
+            }
+            Command::Rollback {
+                transaction_id,
+                reply,
+            } => {
+                let _ = reply.send(rollback_transaction(
+                    &connection,
+                    &mut transaction,
+                    &transaction_id,
+                ));
+            }
             Command::Execute { request, reply } => {
+                if transaction.is_some_and(|open| !open.is_active()) {
+                    // 事务已被 SQLite 回滚：此时执行语句会落进自动提交模式，
+                    // 用户以为在事务里、实际已经落库。必须显式拒绝。
+                    let _ = reply.send(Err(transaction_aborted()));
+                    continue;
+                }
                 *state
                     .active
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.query_id);
                 state.cancelled.store(false, Ordering::SeqCst);
                 let close = serve_query(&connection, request, reply, &mut receiver, &state);
+                observe_transaction(&connection, &mut transaction);
                 *state
                     .active
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 state.cancelled.store(false, Ordering::SeqCst);
                 if close {
+                    let _ = rollback_if_open(&connection, &mut transaction);
                     return;
                 }
             }
         }
     }
+}
+
+/// 事务因 SQLite 自动回滚而不可用。
+fn transaction_aborted() -> Error {
+    Error::failed_precondition(
+        ErrorCode::TRANSACTION_FAILED,
+        "事务已被数据库回滚，只能回滚",
+    )
+}
+
+/// 把簿记对齐到连接的真实状态：事务期间连接若回到自动提交，说明 SQLite 已回滚。
+///
+/// 普通语句错误（约束冲突、语法错误等）**不会**让 SQLite 回滚事务，
+/// 因此这里只在 `is_autocommit()` 为真时进入失败态，不按「语句失败即失败」升级。
+///
+/// 已知边界：用户在事务中直接用 SQL 执行 `COMMIT`/`ROLLBACK` 会绕过簿记，
+/// 连接同样回到自动提交，于是这里看到失败态。契约要求事务必须经 SPI 方法结束，
+/// 这种混用不在保证范围内，但绝不会静默继续把后续语句当成事务的一部分。
+fn observe_transaction(connection: &Connection, transaction: &mut Option<OpenTransaction>) {
+    if let Some(open) = transaction.as_mut()
+        && open.is_active()
+        && connection.is_autocommit()
+    {
+        open.phase = TransactionPhase::Aborted;
+    }
+}
+
+/// `BEGIN`。
+///
+/// 隔离级别：SQLite 只提供可串行化语义（单连接、事务期间持有读/写视图），
+/// 因此只接受 `Unspecified` 与 `Serializable`；其余级别显式拒绝，不静默近似。
+///
+/// 事务模式：
+///
+/// - 读写事务用 `BEGIN IMMEDIATE`：桌面前端的交互式事务总是短事务，先拿写锁可以
+///   避免「先读后写」时锁升级失败（`SQLITE_BUSY` 在升级阶段不可重试，只能整事务回滚）；
+/// - 只读事务用 `BEGIN DEFERRED`：不需要写锁，不阻塞其它连接的写入。
+fn begin_transaction(
+    connection: &Connection,
+    transaction: &mut Option<OpenTransaction>,
+    options: TransactionOptions,
+) -> Result<TransactionId> {
+    if transaction.is_some() || !connection.is_autocommit() {
+        // 后者覆盖「用户用原始 SQL 打开了事务」的情况：SQLite 侧确实有事务在跑。
+        return Err(Error::already_exists(
+            ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+            "该会话已有打开的事务，请先提交或回滚",
+        ));
+    }
+    match options.isolation {
+        IsolationLevel::Unspecified | IsolationLevel::Serializable => {}
+        other => {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                format!("SQLite 只提供可串行化隔离，不支持 {other:?}"),
+            ));
+        }
+    }
+
+    // 只读事务：`query_only` 是连接级开关，由 SQLite 自己拒绝任何写操作，
+    // 不依赖我们解析 SQL。事务结束时（提交、回滚、会话关闭）一律复位。
+    if options.read_only {
+        connection
+            .execute_batch("PRAGMA query_only = ON")
+            .map_err(|error| map_sqlite_error(error, "开启 SQLite 只读模式失败"))?;
+    }
+    let begin_sql = if options.read_only {
+        "BEGIN DEFERRED"
+    } else {
+        "BEGIN IMMEDIATE"
+    };
+    if let Err(error) = connection.execute_batch(begin_sql) {
+        reset_query_only(connection);
+        return Err(map_sqlite_error(error, "开始 SQLite 事务失败"));
+    }
+
+    let id = TransactionId::new();
+    *transaction = Some(OpenTransaction {
+        id,
+        phase: TransactionPhase::Active,
+    });
+    Ok(id)
+}
+
+/// `COMMIT`。对已结束、从未存在或不属于当前事务的 ID 保持幂等成功。
+fn commit_transaction(
+    connection: &Connection,
+    transaction: &mut Option<OpenTransaction>,
+    transaction_id: &TransactionId,
+) -> Result<()> {
+    let Some(open) = transaction.take() else {
+        return Ok(());
+    };
+    if open.id != *transaction_id {
+        // 当前打开的是另一个事务：不能替它提交，也不报错（对方可能只是重试）。
+        *transaction = Some(open);
+        return Ok(());
+    }
+    if !open.is_active() {
+        *transaction = Some(open);
+        return Err(transaction_aborted());
+    }
+
+    match connection.execute_batch("COMMIT") {
+        Ok(()) => {
+            reset_query_only(connection);
+            Ok(())
+        }
+        Err(error) => {
+            if connection.is_autocommit() {
+                // SQLite 在 COMMIT 失败时也可能已经回滚；簿记跟随真实状态。
+                reset_query_only(connection);
+            } else {
+                // 事务仍在：保留状态，允许调用方重试提交或改为回滚。
+                *transaction = Some(open);
+            }
+            Err(map_sqlite_error(error, "提交 SQLite 事务失败"))
+        }
+    }
+}
+
+/// `ROLLBACK`。对已结束或不属于当前事务的 ID 保持幂等成功。
+fn rollback_transaction(
+    connection: &Connection,
+    transaction: &mut Option<OpenTransaction>,
+    transaction_id: &TransactionId,
+) -> Result<()> {
+    let Some(open) = transaction.take() else {
+        return Ok(());
+    };
+    if open.id != *transaction_id {
+        *transaction = Some(open);
+        return Ok(());
+    }
+    if !open.is_active() {
+        // 已经处于失败态（SQLite 早已回滚），回滚只需清除簿记。
+        reset_query_only(connection);
+        return Ok(());
+    }
+
+    match connection.execute_batch("ROLLBACK") {
+        Ok(()) => {
+            reset_query_only(connection);
+            Ok(())
+        }
+        Err(error) => {
+            if connection.is_autocommit() {
+                reset_query_only(connection);
+            } else {
+                *transaction = Some(open);
+            }
+            Err(map_sqlite_error(error, "回滚 SQLite 事务失败"))
+        }
+    }
+}
+
+/// 会话关闭/线程退出时的兜底回滚。错误无处上报，只保证连接状态干净。
+fn rollback_if_open(
+    connection: &Connection,
+    transaction: &mut Option<OpenTransaction>,
+) -> Result<()> {
+    if transaction.take().is_none() {
+        return Ok(());
+    }
+    let result = if connection.is_autocommit() {
+        Ok(())
+    } else {
+        connection
+            .execute_batch("ROLLBACK")
+            .map_err(|error| map_sqlite_error(error, "关闭会话时回滚事务失败"))
+    };
+    reset_query_only(connection);
+    result
+}
+
+/// 复位只读开关；失败时只记录错误（连接即将关闭或已回到自动提交）。
+fn reset_query_only(connection: &Connection) {
+    let _ = connection.execute_batch("PRAGMA query_only = OFF");
 }
 
 /// 执行查询并服务后续 `Fetch`，直到查询结束、会话关闭或通道断开。
@@ -281,6 +532,26 @@ fn serve_query(
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
                     "当前会话已有在途查询，请先读完或关闭",
+                )));
+            }
+            // 事务命令在游标未读完时不执行：语句已经准备好并绑定在连接上，
+            // 此刻提交或回滚会与游标冲突。与 Execute 一样用 SQLITE_QUERY_ACTIVE 拒绝。
+            Command::Begin { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再开始事务",
+                )));
+            }
+            Command::Commit { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再提交事务",
+                )));
+            }
+            Command::Rollback { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再回滚事务",
                 )));
             }
             Command::Fetch {
@@ -549,6 +820,39 @@ impl DriverSession for SqliteSession {
         self.sender
             .send(Command::CloseQuery {
                 query_id: *query_id,
+                reply,
+            })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    async fn begin_transaction(&self, options: TransactionOptions) -> Result<TransactionId> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Begin { options, reply })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    async fn commit_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Commit {
+                transaction_id: *transaction_id,
+                reply,
+            })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    async fn rollback_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Rollback {
+                transaction_id: *transaction_id,
                 reply,
             })
             .map_err(|_| Self::closed_error())?;

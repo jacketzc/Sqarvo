@@ -6,7 +6,12 @@
 //! - `Statement` 借用 `Connection`，游标需要跨多次 gRPC 调用存活，
 //!   因此由专用线程在 `serve_query` 的内层循环中持有语句与 Rows；
 //! - 已实现：连接、只读模式、单语句执行、语句摘要、分批拉取、取消（`InterruptHandle`，
-//!   幂等）、关闭；事务在 M4 接线，未实现时明确返回 `capability.unsupported`。
+//!   幂等）、关闭、显式事务（`BEGIN`/`COMMIT`/`ROLLBACK`，ADR 0017 §3）。
+//!
+//! 事务语义（见 `session.rs` 的 `begin_transaction` / `commit_transaction` /
+//! `rollback_transaction`）：一个会话最多一个打开事务；只读事务用连接级
+//! `PRAGMA query_only` 拒绝写入；SQLite 自动回滚后进入失败态，只允许回滚；
+//! 重复提交/回滚与未知事务 ID 幂等成功。
 
 #![warn(missing_docs)]
 

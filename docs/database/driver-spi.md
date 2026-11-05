@@ -176,7 +176,9 @@ pub trait TableDataProvider: Send + Sync {
 3. 在 `DriverRegistry::with_builtin_drivers()` 注册；
 4. 使用 `sqarvo-driver-testkit` 做符合性检查：除 `smoke`（执行、分批、游标不变量）外，
    还需通过 5 项不变量检查——取消幂等、`close` 幂等与关闭后拒绝执行、多语句拒绝、
-   单元格截断、分批无丢失；检查本身与方言无关，SQL 由驱动的集成测试按本驱动语法提供；
+   单元格截断、分批无丢失；声明 `capabilities.transactions` 的驱动还必须通过事务不变量
+   （提交可见、回滚丢弃、重复提交/回滚幂等、一个会话最多一个事务、语句失败后仍可回滚）。
+   检查本身与方言无关，SQL 由驱动的集成测试按本驱动语法提供；
 5. 编写集成测试：连接、类型往返（含 NULL/Decimal/UUID/JSON/数组）、取消、错误分类、资源清理；
 6. 更新本文件与 README 的支持矩阵；
 7. 在 Linux 上至少跑通单元测试与 SQLite/容器化集成测试。
