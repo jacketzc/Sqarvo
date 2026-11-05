@@ -19,9 +19,9 @@
 //! 每一层，代价与替代方案见 ADR 0019 的「重新评估条件」。
 
 use sqarvo_common::Result;
-use sqarvo_driver_api::{ObjectKind, ObjectNode, Page, PageRequest};
+use sqarvo_driver_api::{ObjectFilter, ObjectKind, ObjectNode, Page, PageRequest};
 
-use crate::pagination::paginate_by_key;
+use crate::pagination::{filter_tag, paginate_by_key, paginate_by_key_filtered};
 
 /// 子节点排序权重：契约里 `ObjectKind` 的声明顺序，末尾是数据库特有的种类。
 ///
@@ -103,6 +103,46 @@ pub fn paginate_children(
         .map(|node| (child_key(scope, &node), node))
         .collect();
     let paged = paginate_by_key(keyed, page, |(key, _)| key.as_str())?;
+    Ok(Page {
+        items: paged.items.into_iter().map(|(_, node)| node).collect(),
+        next_page_token: paged.next_page_token,
+        truncated: paged.truncated,
+    })
+}
+
+/// 对某一层的子节点排序并分页（v0.2.2，#84：带过滤条件）。
+///
+/// 与 [`paginate_children`] 的区别只有 token：过滤结果的 token 是
+/// `v2:<offset>:<集合指纹>:<过滤标签>`，标签取自
+/// [`ObjectFilter::fingerprint_input`]，因此**换条件后旧 token 会被
+/// `config.invalid` 拒绝**（ADR 0019），而不是拿旧偏移量切一份属于另一个查询的数据。
+///
+/// `filter.is_empty()` 时直接走 [`paginate_children`]：SPI 要求空过滤与
+/// `list_children` 行为完全一致（token 格式也一致），否则前端在「有过滤条件」与
+/// 「条件被清空」之间切换会莫名其妙地失效。
+///
+/// # Errors
+///
+/// - 条件本身非法：`metadata.filter_invalid`（`INVALID_ARGUMENT`）；
+/// - token 非法 / 版本不符 / 过滤标签不符 / 偏移越界：`config.invalid`；
+/// - 结果集在翻页期间变化：`metadata.snapshot_changed`。
+pub fn paginate_children_filtered(
+    mut nodes: Vec<ObjectNode>,
+    scope: &str,
+    filter: &ObjectFilter,
+    page: &PageRequest,
+) -> Result<Page<ObjectNode>> {
+    filter.validate()?;
+    if filter.is_empty() {
+        return paginate_children(nodes, scope, page);
+    }
+    sort_children(&mut nodes);
+    let keyed: Vec<(String, ObjectNode)> = nodes
+        .into_iter()
+        .map(|node| (child_key(scope, &node), node))
+        .collect();
+    let paged =
+        paginate_by_key_filtered(keyed, page, |(key, _)| key.as_str(), &filter_tag(filter))?;
     Ok(Page {
         items: paged.items.into_iter().map(|(_, node)| node).collect(),
         next_page_token: paged.next_page_token,
