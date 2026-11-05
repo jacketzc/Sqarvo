@@ -9,7 +9,8 @@
 
 - package 使用 `sqarvo.<domain>.v1`：`sqarvo.common.v1`、`sqarvo.services.v1`；
 - 服务按业务域拆分：`SystemService`、`ConnectionService`、`CredentialService`、
-  `MetadataService`、`QueryService`、`TransactionService`；不要把新操作堆进「万能服务」；
+  `MetadataService`、`QueryService`、`TransactionService`、`TableDataService`；
+  不要把新操作堆进「万能服务」；
 - 不删除或复用已发布的字段编号；删除字段时使用 `reserved`；
 - 新增字段必须有合理默认语义（proto3 默认值必须被解释为「未设置」，不能与业务默认值冲突）。
 
@@ -43,6 +44,23 @@
 `CredentialService.StoreCredential` 是唯一携带数据库密码的 RPC：密码只在请求体内存在，
 不得写入日志、错误文案、端点文件或配置；连接配置只保存它返回的 `credential_ref`。
 
+表数据与事务（ADR 0017）：
+
+| 错误码 | gRPC 状态码 | 含义 |
+|---|---|---|
+| `table_data.no_primary_key` | `FAILED_PRECONDITION` | 表没有主键：无法稳定定位行，编辑被拒绝；浏览仍可用但为只读且无稳定排序 |
+| `table_data.read_only` | `FAILED_PRECONDITION` | 目标对象只读（视图、驱动只读模式，或驱动未声明行编辑能力） |
+| `table_data.cursor_invalid` | `INVALID_ARGUMENT` | 浏览游标非法、被篡改或与目标表/排序不匹配；**不得**回退到第一页 |
+| `table_data.rows_affected_mismatch` | `FAILED_PRECONDITION` | 影响行数与 `expected_rows_affected` 不符（乐观并发冲突） |
+| `table_data.row_deleted` | `NOT_FOUND` | 目标行已不存在（已被其它会话删除） |
+| `table_data.confirmation_required` | `FAILED_PRECONDITION` | 预计影响行数超过风险阈值（默认 100 行）且请求未带 `acknowledge_risk` |
+| `transaction.not_found` | `NOT_FOUND` | 写入指向的事务不存在或已结束；**不得**退化为自动提交 |
+| `transaction.already_active` | `ALREADY_EXISTS` | 会话已有打开的事务（一个会话同时最多一个） |
+| `transaction.failed` | `FAILED_PRECONDITION` | 事务处于失败态，只能回滚 |
+
+重复 `Commit` / `Rollback` 是幂等的：对已结束或未知事务返回 `OK`（见 ADR 0017 §3）。
+「事务必须存在」的约束落在写入路径（`table_data` 的 `transaction_id`）上。
+
 分类映射（后端 `ErrorCategory` → gRPC code）：
 
 | 分类 | gRPC 状态码 |
@@ -72,6 +90,10 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 - `ExecuteQueryRequest.timeout_millis` 为执行超时，0 表示由服务端默认策略决定；
 - `FetchBatchRequest.statement_index` 标识结果集所属语句，v0.1 恒为 0（单语句）；
 - 元数据浏览使用 `PageRequest`/`PageInfo`，单页默认 100、上限 500；
+- 表数据浏览（`TableDataService.BrowseTable`）固定按主键升序，使用同语义的不透明
+  `page_token`（ADR 0017）：默认 100、上限 500、超限钳制；无主键表返回
+  `read_only=true` + `ordering=ROW_ORDER_UNSTABLE`，不得改用 `OFFSET` 分页；
+- 行变更单批上限 500 行，超限由服务端钳制并在响应里给出 `clamped` / `deferred_changes`；
 - 不允许通过提高 gRPC message 大小上限来解决大结果集问题。
 
 ## 单元格与截断

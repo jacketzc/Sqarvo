@@ -16,6 +16,7 @@ pub mod capabilities;
 pub mod credential;
 pub mod driver;
 pub mod metadata;
+pub mod table_data;
 pub mod value;
 
 pub use capabilities::Capabilities;
@@ -23,11 +24,17 @@ pub use credential::Secret;
 pub use driver::{
     ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor, DriverId,
     DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS,
-    ResultBatch, StatementSummary, TlsMode, TransactionOptions, Warning, sql_preview,
+    ParameterizedExecuteRequest, ResultBatch, StatementSummary, TlsMode, TransactionOptions,
+    Warning, sql_preview,
 };
 pub use metadata::{
     DEFAULT_PAGE_SIZE, Ddl, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode, ObjectRef,
     Page, PageRequest, QualifiedName,
+};
+pub use table_data::{
+    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, MAX_ROW_CHANGES_PER_BATCH,
+    PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, RowChange, RowChangeReport, RowChangeRequest,
+    RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage,
 };
 pub use value::{
     Cell, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value, truncate_text,

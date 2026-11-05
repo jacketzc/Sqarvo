@@ -12,7 +12,8 @@ use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId, TransactionId}
 use crate::capabilities::Capabilities;
 use crate::credential::Secret;
 use crate::metadata::MetadataProvider;
-use crate::value::{ColumnMeta, Row};
+use crate::table_data::TableDataProvider;
+use crate::value::{ColumnMeta, Row, Value};
 
 /// 驱动标识。仅允许小写 ASCII 字母、数字、`.`、`_`、`-`。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -212,6 +213,32 @@ pub struct ExecuteRequest {
     pub timeout: Option<Duration>,
 }
 
+/// 参数化执行请求（ADR 0017）。
+///
+/// 与 [`ExecuteRequest`] 的区别只有一个，但足够关键：语句里的值位置用驱动的占位符
+/// 表示，值放在 `params` 里由驱动绑定。通用业务层（表数据行编辑就是第一个调用方）
+/// 因此永远不需要把用户数据拼进 SQL 文本，也就没有转义与注入面。
+///
+/// 约束：
+///
+/// - `params` 与 `sql` 中占位符按顺序一一对应，个数不符由驱动返回
+///   `invalid_argument`，不得猜测补齐；
+/// - `Value::Unsupported` 不得出现在 `params` 中：驱动无法绑定它，服务端必须在
+///   调用驱动前拒绝，而不是发送后才失败。
+#[derive(Debug, Clone)]
+pub struct ParameterizedExecuteRequest {
+    /// 查询 ID，由上层分配，便于取消与审计。
+    pub query_id: QueryId,
+    /// 含占位符的 SQL。占位符语法由驱动方言决定。
+    pub sql: String,
+    /// 绑定参数，顺序与占位符一致。
+    pub params: Vec<Value>,
+    /// 首批最大行数；`None` 表示驱动默认值。
+    pub max_rows: Option<u32>,
+    /// 执行超时；`None` 表示由上层默认策略决定。
+    pub timeout: Option<Duration>,
+}
+
 /// SQL 预览的最大字符数。
 pub const MAX_SQL_PREVIEW_CHARS: usize = 200;
 
@@ -325,6 +352,30 @@ pub trait DriverSession: Send + Sync {
         None
     }
 
+    /// 表数据浏览与行编辑能力；不支持的驱动返回 `None`（ADR 0017）。
+    ///
+    /// 返回 `Some` 但 [`TableDataProvider::supports_row_edits`] 为 `false` 时，
+    /// 浏览可用、编辑被拒绝，UI 必须展示只读。
+    fn table_data(&self) -> Option<&dyn TableDataProvider> {
+        None
+    }
+
+    /// 是否支持参数化执行（占位符 + 绑定参数）。
+    ///
+    /// 默认 `false`。声明为 `true` 却返回 `capability.unsupported` 属于契约违背：
+    /// 能力声明是给通用层做决策用的，不允许「先声明再试」。
+    fn supports_parameterized_statements(&self) -> bool {
+        false
+    }
+
+    /// 以参数化方式执行 SQL 并返回语句摘要与首批结果。默认实现表示不支持。
+    async fn execute_parameterized(
+        &self,
+        _request: ParameterizedExecuteRequest,
+    ) -> Result<ExecutionStart> {
+        Err(unsupported_parameterized_statements())
+    }
+
     /// 开始显式事务。默认实现表示不支持。
     async fn begin_transaction(&self, _options: TransactionOptions) -> Result<TransactionId> {
         Err(unsupported_transactions())
@@ -343,6 +394,10 @@ pub trait DriverSession: Send + Sync {
 
 fn unsupported_transactions() -> Error {
     Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现显式事务")
+}
+
+fn unsupported_parameterized_statements() -> Error {
+    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现参数化执行")
 }
 
 /// 数据库驱动。

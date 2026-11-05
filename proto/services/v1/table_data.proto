@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+import "common/v1/value.proto";
+import "services/v1/metadata.proto";
+
+// 表数据域：按主键升序浏览表数据、提交行级变更（ADR 0017）。
+//
+// 三条硬约束：
+//
+// 1. 浏览只按主键升序 + 不透明 cursor，**禁止** OFFSET 分页；cursor 语义与
+//    QueryService 的结果集游标一致（客户端只能原样回传，不得解析）；
+// 2. 无主键表只读浏览并标注「无稳定排序」，编辑一律拒绝，不提供 rowid / ctid
+//    之类的近似定位；
+// 3. 行变更只传「主键值 + 列变更」的强类型值，驱动内部以 prepared statement
+//    绑定参数执行，服务端绝不拼接 SQL 字符串。
+//
+// 不支持的能力必须返回 `capability.unsupported`（驱动未实现行编辑）或
+// `table_data.no_primary_key`（无主键），不得静默降级为「尽力而为」的写入。
+service TableDataService {
+  rpc BrowseTable(BrowseTableRequest) returns (BrowseTableResponse);
+  rpc ApplyRowChanges(ApplyRowChangesRequest) returns (ApplyRowChangesResponse);
+}
+
+// 浏览结果的排序保证。
+enum RowOrder {
+  ROW_ORDER_UNSPECIFIED = 0;
+  // 按主键升序；游标翻页期间稳定。
+  ROW_ORDER_PRIMARY_KEY_ASCENDING = 1;
+  // 无稳定排序（无主键表）。只允许只读浏览，不得用于编辑定位。
+  ROW_ORDER_UNSTABLE = 2;
+}
+
+// 只读原因。可编辑时 read_only=false 且本字段为 READ_ONLY_REASON_UNSPECIFIED。
+enum ReadOnlyReason {
+  READ_ONLY_REASON_UNSPECIFIED = 0;
+  // 表没有主键：无法稳定定位行，编辑被拒绝（`table_data.no_primary_key`）。
+  READ_ONLY_REASON_NO_PRIMARY_KEY = 1;
+  // 驱动未声明行编辑能力（`capability.unsupported`）。
+  READ_ONLY_REASON_DRIVER_UNSUPPORTED = 2;
+}
+
+message BrowseTableRequest {
+  // 目标表/视图。kind 必须与对象实际种类一致。
+  ObjectRef object = 1;
+  // 期望行数；0 表示服务端默认值（100）。超过单批上限（500）被服务端钳制，
+  // 不返回错误。
+  uint32 page_size = 2;
+  // 上一页返回的不透明 cursor；为空表示第一页。
+  string page_token = 3;
+}
+
+message BrowseTableResponse {
+  // 列元数据，顺序与每行 values 一致。
+  repeated sqarvo.common.v1.ColumnMeta columns = 1;
+  // 本页行数据。
+  repeated sqarvo.common.v1.Row rows = 2;
+  // 下一页 cursor；has_more=false 时为空。客户端不得解析其内容。
+  string next_page_token = 3;
+  // 是否还有更多数据。
+  bool has_more = 4;
+  // 是否只读。只读时前端必须显式展示不可编辑。
+  bool read_only = 5;
+  // 只读原因；可编辑时为 READ_ONLY_REASON_UNSPECIFIED。
+  ReadOnlyReason read_only_reason = 6;
+  // 排序保证。
+  RowOrder ordering = 7;
+}
+
+// 主键中一列的值。复合主键必须给出全部列，顺序与 GetPrimaryKey 返回的顺序一致。
+message PrimaryKeyValue {
+  string column = 1;
+  // 主键值；NULL 不是合法主键值，服务端必须拒绝。
+  sqarvo.common.v1.ColumnValue value = 2;
+}
+
+// 定位一行的完整主键值。
+message RowKey {
+  repeated PrimaryKeyValue values = 1;
+}
+
+// 单列变更。
+message ColumnChange {
+  string column = 1;
+  // 新值。设为 NULL 必须显式给 kind=VALUE_KIND_NULL，不能靠省略该列表达。
+  sqarvo.common.v1.ColumnValue value = 2;
+}
+
+message RowUpdate {
+  RowKey key = 1;
+  // 列变更；空列表视为无效请求（`config.invalid`）。
+  repeated ColumnChange changes = 2;
+  // 期望受影响行数；0 表示「未设置」，服务端按 1 处理。
+  // 实际行数与之不符时该行返回 CHANGE_OUTCOME_CONFLICT 与
+  // `table_data.rows_affected_mismatch` 语义。
+  uint64 expected_rows_affected = 3;
+}
+
+message RowDelete {
+  RowKey key = 1;
+  // 期望受影响行数；0 表示「未设置」，服务端按 1 处理。
+  // 目标行已不存在时该行返回 CHANGE_OUTCOME_ROW_NOT_FOUND。
+  uint64 expected_rows_affected = 2;
+}
+
+message ApplyRowChangesRequest {
+  string session_id = 1;
+  ObjectRef object = 2;
+  // 所属事务；为空表示自动提交。非空且会话没有该事务时返回
+  // `transaction.not_found`（绝不退化成自动提交）。
+  string transaction_id = 3;
+  // 更新列表，按顺序执行。
+  repeated RowUpdate updates = 4;
+  // 删除列表，在 updates 之后按顺序执行。
+  repeated RowDelete deletes = 5;
+  // 风险确认。预计影响行数超过服务端阈值（默认 100 行）时必须为 true，
+  // 否则返回 `table_data.confirmation_required`。
+  bool acknowledge_risk = 6;
+}
+
+enum ChangeOutcome {
+  CHANGE_OUTCOME_UNSPECIFIED = 0;
+  CHANGE_OUTCOME_APPLIED = 1;
+  // 目标行已不存在（已被其它会话删除）。
+  CHANGE_OUTCOME_ROW_NOT_FOUND = 2;
+  // 影响行数与期望不符（乐观并发冲突）。
+  CHANGE_OUTCOME_CONFLICT = 3;
+}
+
+message RowChangeResult {
+  // 请求内下标：updates 在前、deletes 在后，各自按请求顺序，从 0 开始。
+  uint32 change_index = 1;
+  ChangeOutcome outcome = 2;
+  // 实际受影响行数。
+  uint64 rows_affected = 3;
+  // 可安全展示的原因说明；不得包含 SQL、参数值或凭据。
+  string message = 4;
+}
+
+message ApplyRowChangesResponse {
+  repeated RowChangeResult results = 1;
+  // 本批受影响行数合计。
+  uint64 total_rows_affected = 2;
+  // 请求超过单批上限（500 行）时为 true：只执行了前 500 条。
+  bool clamped = 3;
+  // 因钳制而未执行的变更数；大于 0 时客户端必须续传剩余变更。
+  uint32 deferred_changes = 4;
+}
