@@ -215,11 +215,12 @@ async fn sqlite_lifecycle_over_uds() {
         connected.capabilities
     );
     assert!(
-        !connected
+        connected
             .capabilities
             .iter()
             .any(|name| name == "transactions"),
-        "事务在 v0.1 未接线，不得声明"
+        "SQLite 驱动已实现显式事务（#42），必须声明能力，实际 {:?}",
+        connected.capabilities
     );
     let session_id = connected.session_id.clone();
 
