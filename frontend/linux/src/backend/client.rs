@@ -515,6 +515,8 @@ impl BackendClient {
                 page_size: TABLE_PAGE_SIZE,
                 page_token: String::new(),
             }),
+            // v0.2.2 契约增量（#81）：根节点列表暂不使用名称/种类过滤。
+            filter: None,
         };
         let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.list_nodes(request))
             .await
