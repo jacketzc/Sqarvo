@@ -19,9 +19,25 @@ import "services/v1/metadata.proto";
 //
 // 不支持的能力必须返回 `capability.unsupported`（驱动未实现行编辑）或
 // `table_data.no_primary_key`（无主键），不得静默降级为「尽力而为」的写入。
+//
+// 行变更批次可取消（#70，ADR 0018）：
+//
+// * 每个批次有一个 `query_id`（客户端生成，格式与 QueryService 的 query_id 相同：
+//   `qry_<uuid>`）。取消用 `CancelRowChanges`，**不复用** `QueryService.Cancel`：
+//   后者的语义是「释放查询游标」，与写入批次的生命周期不同（ADR 0018 记了取舍）；
+// * 取消在**行边界**生效：已开始的那一条变更执行完，后续变更不再执行；
+// * 自动提交模式（`transaction_id` 为空）取消后**整批回滚**，库里不留半批；
+// * 事务模式下取消只回滚本批（savepoint），外层事务仍然可用（可继续写、可提交或回滚）；
+// * 取消幂等：重复取消、取消已完成/不存在的批次都返回成功（`Empty`）。
 service TableDataService {
   rpc BrowseTable(BrowseTableRequest) returns (BrowseTableResponse);
   rpc ApplyRowChanges(ApplyRowChangesRequest) returns (ApplyRowChangesResponse);
+  // 取消一个正在执行的行变更批次。见文件头「行变更批次可取消」。
+  //
+  // 这条 RPC **不等待**会话执行锁：它只把该批次的取消令牌置位后立刻返回，
+  // 因此「取消一个正在跑的批次」不会排在批次后面等到天荒地老。
+  // 驱动未实现取消时返回 `capability.unsupported`（绝不静默成功）。
+  rpc CancelRowChanges(CancelRowChangesRequest) returns (sqarvo.common.v1.Empty);
 }
 
 // 浏览结果的排序保证。
@@ -123,6 +139,15 @@ message ApplyRowChangesRequest {
   // 风险确认。预计影响行数超过服务端阈值（默认 100 行）时必须为 true，
   // 否则返回 `table_data.confirmation_required`。
   bool acknowledge_risk = 6;
+  // 批次 ID，供 `CancelRowChanges` 定位（#70）。格式与 QueryService 的 query_id 相同
+  // （`qry_<uuid>`，也可只给 UUID）。由**客户端**生成：一元 RPC 在返回前无法把
+  // 服务端生成的 ID 告诉调用方，只有客户端提供的 ID 才可能在执行期间被取消。
+  //
+  // 空字符串表示「本批次不可取消」：服务端会自己生成一个 ID 并在响应里回显
+  // （`ApplyRowChangesResponse.query_id`），但此时调用方已经无法用它取消——v0.3 起的
+  // 客户端必须自己提供。同一 ID 不得并发复用（`query.id_in_use`），避免把取消
+  // 打到别人的批次上。
+  string query_id = 7;
 }
 
 enum ChangeOutcome {
@@ -154,9 +179,29 @@ message ApplyRowChangesResponse {
   // 本批驱动实际影响的行数合计 = Σ results[i].rows_affected，**包含**被判为冲突的行：
   // 逐行冲突只改变 outcome，不会回滚已执行的 DML（整批原子性只由语句级错误与 savepoint
   // 保证）。把它们从合计里抹掉会让界面显示「影响 0 行」，而库里其实已经改了若干行。
+  //
+  // 被取消时恒为 0：已执行的行已随批次回滚，数据库净变化为零（ADR 0018）。
   uint64 total_rows_affected = 2;
   // 请求超过单批上限（500 行）时为 true：只执行了前 500 条。
   bool clamped = 3;
   // 因钳制而未执行的变更数；大于 0 时客户端必须续传剩余变更。
   uint32 deferred_changes = 4;
+  // 本批次是否被 `CancelRowChanges` 取消（ADR 0018）。
+  //
+  // 取消是**正常结果**而不是错误：客户端据此显示「已取消」并丢弃本批结果。
+  // true 时 `results` 为空、`total_rows_affected` 为 0——已执行的行都回滚了，
+  // 回报这些行会让界面显示「改了 200 行」而库里一行没动。
+  bool cancelled = 5;
+  // 取消发生前驱动**已执行**的变更条数（含随后回滚的那些），证明「真的跑到一半」。
+  // 仅 `cancelled = true` 时有意义；未取消时为 0。
+  // 取值满足 0 ≤ executed_changes < 请求变更数：取消在行边界生效。
+  uint32 executed_changes = 6;
+  // 本批次的 ID（回显请求里的 `query_id`；请求留空时为服务端生成的值）。
+  string query_id = 7;
+}
+
+// 取消一个行变更批次。
+message CancelRowChangesRequest {
+  // `ApplyRowChangesRequest.query_id`。未知/已结束的批次视为「无需再取消」，返回成功。
+  string query_id = 1;
 }

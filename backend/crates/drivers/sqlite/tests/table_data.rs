@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
 use sqarvo_driver_api::{
     ConnectionParams, Driver, DriverSession, ExecuteRequest, MAX_PAGE_SIZE, ObjectKind, ObjectRef,
-    PageRequest, QualifiedName, ReadOnlyReason, RowOrder, TableDataProvider, TlsMode, Value,
+    PageRequest, QualifiedName, ReadOnlyReason, RowChangeCancel, RowOrder, TableDataProvider,
+    TlsMode, Value,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
 use tempfile::TempDir;
@@ -594,17 +595,20 @@ async fn read_only_connection_reports_reason_and_rejects_edits() {
 
     // ---- 3. 写入被拒：table_data.read_only，且真的没写进去 ----
     let error = provider
-        .apply_row_changes(sqarvo_driver_api::RowChangeRequest {
-            object: orders.clone(),
-            changes: vec![sqarvo_driver_api::RowChange::Update {
-                key: sqarvo_driver_api::RowKey::new(vec![Value::Int(1)]),
-                changes: vec![sqarvo_driver_api::ColumnChange {
-                    column: "v".to_owned(),
-                    value: Value::Text("changed".to_owned()),
+        .apply_row_changes(
+            sqarvo_driver_api::RowChangeRequest {
+                object: orders.clone(),
+                changes: vec![sqarvo_driver_api::RowChange::Update {
+                    key: sqarvo_driver_api::RowKey::new(vec![Value::Int(1)]),
+                    changes: vec![sqarvo_driver_api::ColumnChange {
+                        column: "v".to_owned(),
+                        value: Value::Text("changed".to_owned()),
+                    }],
+                    expected_rows_affected: 0,
                 }],
-                expected_rows_affected: 0,
-            }],
-        })
+            },
+            &RowChangeCancel::new(),
+        )
         .await
         .expect_err("只读连接必须拒绝行变更");
     assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);

@@ -49,10 +49,15 @@
 | 浏览一页 | `browse`（`BrowseTable`，#69） | 是 |
 | 元数据查询 | `list_children` / `columns` / `primary_key`（`ListNodes` / `GetColumns` / `GetPrimaryKey`，#69） | 是 |
 | 行编辑的主键查询 | `ApplyRowChanges` 内的 `table_primary_key`（表数据能力，#69） | 是 |
-| 取消 | `cancel` | 否——必须在执行进行中生效，故意旁路 |
+| 取消查询 | `cancel` | 否——必须在执行进行中生效，故意旁路 |
+| 取消行变更批次 | `CancelRowChanges`（#70，ADR 0018） | 否——只置位驱动在行间读取的取消令牌 |
 | 释放游标 / 关闭会话 | `close_query` / `close` | 否——生命周期路径，不下发语句 |
 
 实现仍是**单一把 `tokio::sync::Mutex`（互斥锁），不是读写锁**。
+
+两条旁路（`cancel`、`CancelRowChanges`）都不取这把锁，也不 acquire 会话：前者调驱动中断句柄，
+后者只做一次原子写。行变更批次的取消因此能在批次**进行中**生效——若它去取执行锁，取消会排在
+批次后面等到整批跑完（ADR 0018）。
 
 ### 占锁时长实测（#69）
 

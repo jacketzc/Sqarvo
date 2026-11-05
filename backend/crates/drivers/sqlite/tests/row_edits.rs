@@ -20,8 +20,8 @@ use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
 use sqarvo_driver_api::{
     ChangeOutcome, ColumnChange, ConnectionParams, Decimal, Driver, DriverSession, ExecuteRequest,
     IsolationLevel, ObjectKind, ObjectRef, PageRequest, QualifiedName, Row, RowChange,
-    RowChangeReport, RowChangeRequest, RowKey, TableDataProvider, TlsMode, TransactionOptions,
-    Value,
+    RowChangeCancel, RowChangeReport, RowChangeRequest, RowKey, TableDataProvider, TlsMode,
+    TransactionOptions, Value,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
 use tempfile::TempDir;
@@ -128,10 +128,13 @@ async fn apply(
     changes: Vec<RowChange>,
 ) -> sqarvo_common::Result<RowChangeReport> {
     provider(session)
-        .apply_row_changes(RowChangeRequest {
-            object: object(session, name),
-            changes,
-        })
+        .apply_row_changes(
+            RowChangeRequest {
+                object: object(session, name),
+                changes,
+            },
+            &RowChangeCancel::new(),
+        )
         .await
 }
 
@@ -582,10 +585,13 @@ async fn read_only_targets_and_invalid_keys_are_rejected_before_writing() {
 
     // 视图：只读。
     let error = provider(session.as_ref())
-        .apply_row_changes(RowChangeRequest {
-            object: view(session.as_ref(), "keyed_view"),
-            changes: vec![delete(1)],
-        })
+        .apply_row_changes(
+            RowChangeRequest {
+                object: view(session.as_ref(), "keyed_view"),
+                changes: vec![delete(1)],
+            },
+            &RowChangeCancel::new(),
+        )
         .await
         .expect_err("视图必须拒绝编辑");
     assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sqarvo_common::ConnectionId;
-use sqarvo_connection::SessionManager;
+use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_driver_api::{
     ConnectionParams as DriverConnectionParams, DriverId, TlsMode as DriverTlsMode,
 };
@@ -24,13 +24,23 @@ use crate::services::mapping;
 pub struct ConnectionServiceImpl {
     sessions: Arc<SessionManager>,
     queries: Arc<QueryRegistry>,
+    /// 在途行变更批次（#70）：断连时让它们停下并清掉登记，避免悬挂项。
+    batches: Arc<RowChangeBatches>,
 }
 
 impl ConnectionServiceImpl {
     /// 构造服务。
     #[must_use]
-    pub fn new(sessions: Arc<SessionManager>, queries: Arc<QueryRegistry>) -> Self {
-        Self { sessions, queries }
+    pub fn new(
+        sessions: Arc<SessionManager>,
+        queries: Arc<QueryRegistry>,
+        batches: Arc<RowChangeBatches>,
+    ) -> Self {
+        Self {
+            sessions,
+            queries,
+            batches,
+        }
     }
 }
 
@@ -121,6 +131,9 @@ impl ConnectionService for ConnectionServiceImpl {
             .map_err(to_status)?;
         // 断连即回收该会话的全部查询登记，避免悬挂项。
         self.queries.remove_session(&summary.session_id);
+        // 在途行变更批次同理（#70）：请求取消让驱动在下一个行边界停下，
+        // 并移除登记，`CancelRowChanges` 随后按幂等返回成功。
+        self.batches.remove_session(&summary.session_id);
         Ok(Response::new(Empty {}))
     }
 

@@ -14,6 +14,9 @@
 
 use async_trait::async_trait;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use sqarvo_common::{Error, ErrorCode, Result};
 
 use crate::metadata::{ObjectRef, PageRequest};
@@ -349,9 +352,20 @@ impl RowChangeResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowChangeReport {
     /// 每条变更的结果。
+    ///
+    /// 被取消（[`RowChangeReport::cancelled`]）时为空：已执行的行都已随批次回滚，
+    /// 把它们报成「已应用」会让界面显示「改了 N 行」而库里一行没动（ADR 0018）。
     pub results: Vec<RowChangeResult>,
     /// 因超出批次上限而未执行的变更数；客户端必须续传。
     pub deferred: usize,
+    /// 批次是否被取消。`true` 表示执行在行边界被打断，已执行的部分整批回滚。
+    pub cancelled: bool,
+    /// 取消发生前驱动**已执行**的变更条数（含随后回滚的那些）。
+    ///
+    /// 未取消时为 0；被取消时满足 `0 <= executed_changes < 请求变更数`。这是
+    /// 「真的跑到一半」的唯一可观测证据：数据库净变化为零，只有这个计数能说明
+    /// 批次不是「取消了已完成批次」。
+    pub executed_changes: usize,
 }
 
 impl RowChangeReport {
@@ -374,6 +388,40 @@ impl RowChangeReport {
         self.results
             .iter()
             .any(|result| !result.outcome.is_applied())
+    }
+}
+
+/// 行变更批次的取消令牌（行边界协作式取消，ADR 0018）。
+///
+/// 语义与实现约定：
+///
+/// - 令牌只在**行与行之间**被读取：已开始的那条变更执行完，后续变更不再执行。
+///   因此取消不会把一个 DML 语句打断在半路，事务不会被数据库隐式回滚；
+/// - 令牌是 `Arc<AtomicBool>`：取消方（`CancelRowChanges`）只做一次原子写，
+///   **不获取会话执行锁**，所以「取消一个正在跑的批次」不会排在批次后面等到死锁
+///   （ADR 0008：执行锁 → 事务登记锁之外不存在第二条取锁路径）；
+/// - 同一令牌可被重复取消：`cancel` 幂等，`is_cancelled` 永久为真。
+#[derive(Debug, Clone, Default)]
+pub struct RowChangeCancel {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RowChangeCancel {
+    /// 新建未取消的令牌。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 请求取消，返回 `true` 表示本次调用首次置位。重复取消返回 `false`，不会失败。
+    pub fn cancel(&self) -> bool {
+        !self.cancelled.swap(true, Ordering::SeqCst)
+    }
+
+    /// 是否已请求取消。驱动在每条变更前调用。
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
     }
 }
 
@@ -403,8 +451,34 @@ pub trait TableDataProvider: Send + Sync {
     /// [`TablePage::ordering`] 置为 [`RowOrder::Unstable`]，同时置只读。
     async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage>;
 
+    /// 是否实现了行变更取消（ADR 0018）。
+    ///
+    /// 默认为 `false`：`CancelRowChanges` 收到不声明该能力的批次时必须返回
+    /// `capability.unsupported`，**不得**静默成功（那会让用户以为批次停了，其实还在写）。
+    /// 声明为 `true` 的实现必须在 [`TableDataProvider::apply_row_changes`] 的
+    /// **行循环**里逐条检查 [`RowChangeCancel::is_cancelled`]。
+    fn supports_row_change_cancellation(&self) -> bool {
+        false
+    }
+
     /// 批量提交行变更。默认实现表示不支持。
-    async fn apply_row_changes(&self, _request: RowChangeRequest) -> Result<RowChangeReport> {
+    ///
+    /// `cancel` 是取消令牌（ADR 0018）。实现必须：
+    ///
+    /// - 在每条变更**之前**检查 [`RowChangeCancel::is_cancelled`]，置位后不再执行后续变更
+    ///   （当前行允许执行完：取消在行边界生效）；
+    /// - 一旦观察到取消，**回滚本批已写入的行**（无事务时整批回滚；有显式事务时回滚到
+    ///   本批 savepoint 并保留外层事务），然后返回 `cancelled = true`、
+    ///   `executed_changes = 已执行条数`、`results` 为空；
+    /// - 不做任何「取消只影响后续语句、已写的留着」的近似——半批落库是明确禁止的。
+    ///
+    /// 未声明 [`TableDataProvider::supports_row_change_cancellation`] 的实现可以忽略令牌，
+    /// 但服务端不会把批次登记为可取消，`CancelRowChanges` 会明确报 `capability.unsupported`。
+    async fn apply_row_changes(
+        &self,
+        _request: RowChangeRequest,
+        _cancel: &RowChangeCancel,
+    ) -> Result<RowChangeReport> {
         Err(unsupported_row_editing())
     }
 }
@@ -439,6 +513,18 @@ pub fn unsupported_row_editing() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
         "该驱动未实现表数据行编辑",
+    )
+}
+
+/// 驱动未实现行变更取消（ADR 0018）。
+///
+/// `CancelRowChanges` 必须用它明确报「不能取消」，绝不返回成功——静默成功会让用户
+/// 以为批次已停，而驱动其实还在写。
+#[must_use]
+pub fn unsupported_row_change_cancellation() -> Error {
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "该驱动未实现行变更取消，无法取消正在执行的批次",
     )
 }
 
@@ -593,11 +679,49 @@ mod tests {
                 },
             ],
             deferred: 0,
+            cancelled: false,
+            executed_changes: 0,
         };
         // 2（应用）+ 0（行不存在）+ 2（冲突但驱动确实动了 2 行）。
         assert_eq!(report.rows_affected(), 4);
         assert!(report.has_failures());
         assert_eq!(ChangeOutcome::RowNotFound.as_str(), "row_not_found");
+    }
+
+    /// 取消令牌是取消路径的唯一共享状态（ADR 0018）。
+    ///
+    /// 取消方只做一次原子写、不取任何锁；令牌必须 (1) 首次取消返回 `true`、
+    /// (2) 重复取消返回 `false` 且不 panic、(3) 置位后永久为真、(4) 克隆共享同一状态。
+    #[test]
+    fn cancel_token_is_idempotent_and_shared_across_clones() {
+        let token = RowChangeCancel::new();
+        assert!(!token.is_cancelled(), "新令牌默认未取消");
+
+        let clone = token.clone();
+        assert!(clone.cancel(), "首次取消应返回 true");
+        assert!(token.is_cancelled(), "克隆与原件共享状态");
+        assert!(!token.cancel(), "重复取消返回 false，不 panic");
+        assert!(token.is_cancelled());
+        assert!(!RowChangeCancel::default().is_cancelled());
+    }
+
+    /// 取消的批次不得报任何「已应用」行：已执行的行都回滚了。
+    #[test]
+    fn cancelled_report_reports_progress_without_applied_rows() {
+        let report = RowChangeReport {
+            results: Vec::new(),
+            deferred: 0,
+            cancelled: true,
+            executed_changes: 137,
+        };
+        assert!(report.cancelled);
+        assert_eq!(report.executed_changes, 137, "进度计数保留真实执行条数");
+        assert_eq!(report.rows_affected(), 0, "回滚后净影响必须为 0");
+        assert!(!report.has_failures(), "取消不是逐行失败");
+        // 默认值：未取消、无进度。
+        let default = RowChangeReport::default();
+        assert!(!default.cancelled);
+        assert_eq!(default.executed_changes, 0);
     }
 
     /// proto `RowChangeResult.rows_affected` 的语义：**任何** outcome 都上报驱动真实行数。

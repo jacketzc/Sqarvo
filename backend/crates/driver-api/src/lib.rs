@@ -33,9 +33,10 @@ pub use metadata::{
 };
 pub use table_data::{
     ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, MAX_ROW_CHANGES_PER_BATCH,
-    PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, RowChange, RowChangeReport, RowChangeRequest,
-    RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, classify_rows_affected,
-    invalid_change, no_primary_key, read_only_connection, read_only_object, read_only_transaction,
+    PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, RowChange, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage,
+    classify_rows_affected, invalid_change, no_primary_key, read_only_connection, read_only_object,
+    read_only_transaction, unsupported_row_change_cancellation,
 };
 pub use value::{
     Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value,

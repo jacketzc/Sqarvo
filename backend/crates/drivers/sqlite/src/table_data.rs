@@ -32,9 +32,9 @@ use rusqlite::{Connection, params_from_iter};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
     Cell, ColumnMeta, DriverSession, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
-    PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowChangeResult,
-    RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected, invalid_change,
-    no_primary_key, read_only_connection, read_only_object, read_only_transaction,
+    PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest,
+    RowChangeResult, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
+    invalid_change, no_primary_key, read_only_connection, read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
@@ -53,6 +53,8 @@ pub(crate) enum TableDataRequest {
     Apply {
         object: ObjectRef,
         changes: Vec<RowChange>,
+        /// 取消令牌（ADR 0018）：只在行与行之间读取，取消方不取会话执行锁。
+        cancel: RowChangeCancel,
     },
 }
 
@@ -89,11 +91,16 @@ pub(crate) fn handle(
         TableDataRequest::Browse { object, page } => {
             Ok(TableDataReply::Page(browse(connection, &object, &page)?))
         }
-        TableDataRequest::Apply { object, changes } => Ok(TableDataReply::Report(apply(
+        TableDataRequest::Apply {
+            object,
+            changes,
+            cancel,
+        } => Ok(TableDataReply::Report(apply(
             connection,
             transaction,
             &object,
             &changes,
+            &cancel,
         )?)),
     }
 }
@@ -102,6 +109,12 @@ pub(crate) fn handle(
 impl TableDataProvider for SqliteSession {
     /// SQLite 驱动已通过参数化 DML、影响行数核对与冲突检测测试（#47）。
     fn supports_row_edits(&self) -> bool {
+        true
+    }
+
+    /// 行变更取消在行循环里检查令牌（ADR 0018）：`sqlite3_interrupt` 会把语句与事务
+    /// 一起打断，不能用它做「事务仍可用」的取消。
+    fn supports_row_change_cancellation(&self) -> bool {
         true
     }
 
@@ -125,7 +138,11 @@ impl TableDataProvider for SqliteSession {
         }
     }
 
-    async fn apply_row_changes(&self, request: RowChangeRequest) -> Result<RowChangeReport> {
+    async fn apply_row_changes(
+        &self,
+        request: RowChangeRequest,
+        cancel: &RowChangeCancel,
+    ) -> Result<RowChangeReport> {
         metadata::validate_session(self.session_id(), &request.object)?;
         if request.object.kind != ObjectKind::Table {
             // 视图/物化视图没有可写基底，编辑一律拒绝（`table_data.read_only`）。
@@ -141,6 +158,7 @@ impl TableDataProvider for SqliteSession {
             .table_data_call(TableDataRequest::Apply {
                 object: request.object.clone(),
                 changes,
+                cancel: cancel.clone(),
             })
             .await?
         {
@@ -368,11 +386,22 @@ fn page_limit(page_size: usize) -> i64 {
 ///
 /// 逐行冲突（目标行不存在 / 影响行数不符）不中断批次：ADR 0017 要求
 /// 「单行失败不吞掉整批结果」，冲突以逐行结果返回；整批回滚只用于执行期错误。
+///
+/// 取消（ADR 0018）在**行边界**生效：`EditPlan::execute` 在每条变更前读一次取消令牌，
+/// 置位后返回已执行条数。两条分支都按「整批回滚」处理——
+///
+/// - 自动提交模式：`ROLLBACK`，库里一行都不留（不允许半批落库）；
+/// - 事务模式：`ROLLBACK TO SAVEPOINT`，外层事务保持可用（可继续写、可提交或回滚）。
+///
+/// 不在这里用 `InterruptHandle` 取消：`sqlite3_interrupt` 会把 DML 打断在半路，
+/// SQLite 随即**隐式回滚整个事务**，事务模式下列就不能取消、外层事务也废了，
+/// 与「事务仍可用」的契约直接冲突。
 fn apply(
     connection: &Connection,
     transaction: EditTransaction,
     object: &ObjectRef,
     changes: &[RowChange],
+    cancel: &RowChangeCancel,
 ) -> Result<RowChangeReport> {
     if object.kind != ObjectKind::Table {
         return Err(read_only_object());
@@ -402,19 +431,20 @@ fn apply(
             connection
                 .execute_batch("SAVEPOINT sqarvo_row_changes")
                 .map_err(|error| map_sqlite_error(error, "创建 SQLite 行变更保存点失败"))?;
-            match plan.execute(connection) {
-                Ok(results) => {
+            match plan.execute(connection, cancel) {
+                Ok(execution) if execution.cancelled => {
+                    // 取消：回到本批 savepoint，外层事务原样保留（ADR 0018）。
+                    rollback_savepoint(connection);
+                    Ok(execution.into_cancelled_report())
+                }
+                Ok(execution) => {
                     connection
                         .execute_batch("RELEASE sqarvo_row_changes")
                         .map_err(|error| map_sqlite_error(error, "释放 SQLite 行变更保存点失败"))?;
-                    Ok(RowChangeReport {
-                        results,
-                        deferred: 0,
-                    })
+                    Ok(execution.into_report())
                 }
                 Err(error) => {
-                    let _ = connection.execute_batch("ROLLBACK TO sqarvo_row_changes");
-                    let _ = connection.execute_batch("RELEASE sqarvo_row_changes");
+                    rollback_savepoint(connection);
                     Err(error)
                 }
             }
@@ -431,16 +461,18 @@ fn apply(
             connection
                 .execute_batch("BEGIN IMMEDIATE")
                 .map_err(|error| map_sqlite_error(error, "开始 SQLite 行变更事务失败"))?;
-            match plan.execute(connection) {
-                Ok(results) => {
+            match plan.execute(connection, cancel) {
+                Ok(execution) if execution.cancelled => {
+                    // 自动提交模式下取消 = 整批回滚：绝不留半批（ADR 0018）。
+                    let _ = connection.execute_batch("ROLLBACK");
+                    Ok(execution.into_cancelled_report())
+                }
+                Ok(execution) => {
                     if let Err(error) = connection.execute_batch("COMMIT") {
                         let _ = connection.execute_batch("ROLLBACK");
                         return Err(map_sqlite_error(error, "提交 SQLite 行变更失败"));
                     }
-                    Ok(RowChangeReport {
-                        results,
-                        deferred: 0,
-                    })
+                    Ok(execution.into_report())
                 }
                 Err(error) => {
                     // 整批回滚：失败批次不得留下任何已提交的写入。
@@ -448,6 +480,49 @@ fn apply(
                     Err(error)
                 }
             }
+        }
+    }
+}
+
+/// 回滚到本批的 savepoint 并释放它；失败时只记日志，不掩盖原始错误。
+///
+/// 保存点释放失败本身不是用户能处理的问题（外层事务仍在），但如果吞掉又会
+/// 让「取消后事务仍可用」的说法失去依据，因此这里显式记录。
+fn rollback_savepoint(connection: &Connection) {
+    if let Err(error) = connection.execute_batch("ROLLBACK TO sqarvo_row_changes") {
+        tracing::warn!(%error, "回滚 SQLite 行变更保存点失败");
+    }
+    if let Err(error) = connection.execute_batch("RELEASE sqarvo_row_changes") {
+        tracing::warn!(%error, "释放 SQLite 行变更保存点失败");
+    }
+}
+
+/// 一批变更的执行结果：逐行结果 + 是否在行边界被取消。
+struct PlanExecution {
+    /// 已执行的行结果；被取消时仍然保留，仅用于取 `executed_changes`。
+    results: Vec<RowChangeResult>,
+    /// 是否因取消而提前结束。
+    cancelled: bool,
+}
+
+impl PlanExecution {
+    /// 未取消：逐行结果原样上报。
+    fn into_report(self) -> RowChangeReport {
+        RowChangeReport {
+            results: self.results,
+            deferred: 0,
+            cancelled: false,
+            executed_changes: 0,
+        }
+    }
+
+    /// 已取消：已执行的行都被回滚，结果清空，只留进度计数。
+    fn into_cancelled_report(self) -> RowChangeReport {
+        RowChangeReport {
+            results: Vec::new(),
+            deferred: 0,
+            cancelled: true,
+            executed_changes: self.results.len(),
         }
     }
 }
@@ -481,9 +556,19 @@ impl EditPlan {
         Ok(Self { steps })
     }
 
-    fn execute(&self, connection: &Connection) -> Result<Vec<RowChangeResult>> {
+    /// 逐条执行编译好的变更。
+    ///
+    /// 每条**之前**检查一次取消令牌（ADR 0018）：置位后立即返回，不再执行后续变更，
+    /// 已执行的结果交给调用方回滚——取消只在行边界生效，绝不打断正在执行的 DML。
+    fn execute(&self, connection: &Connection, cancel: &RowChangeCancel) -> Result<PlanExecution> {
         let mut results = Vec::with_capacity(self.steps.len());
         for (index, step) in self.steps.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Ok(PlanExecution {
+                    results,
+                    cancelled: true,
+                });
+            }
             let mut statement = connection
                 .prepare_cached(&step.sql)
                 .map_err(|error| map_sqlite_error(error, "准备 SQLite 行变更语句失败"))?;
@@ -501,7 +586,10 @@ impl EditPlan {
                 ),
             });
         }
-        Ok(results)
+        Ok(PlanExecution {
+            results,
+            cancelled: false,
+        })
     }
 }
 

@@ -24,6 +24,21 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 它们可能以 INTEGER/REAL/TEXT 存储，统一按 `ColumnType::Unsupported` 返回并保留声明原文（ADR 0009）。
 超过 64 KiB 的文本/二进制按 ADR 0007 截断并置 `Cell::truncated`。
 
+## 行变更批次取消（#70）
+
+`ApplyRowChanges` 的取消**不走** `sqlite3_interrupt`：中断会把 DML 撕在半路，SQLite 随即隐式
+回滚整个事务，事务模式下列就不能取消、外层事务也废了（ADR 0018）。
+
+- 驱动在行循环里**每条之前**读一次 `RowChangeCancel`；命中后不再执行后续变更；
+- 自动提交模式：整批 `ROLLBACK`，库里 0 行变化；
+- 事务模式：`ROLLBACK TO SAVEPOINT sqarvo_row_changes` + `RELEASE`，外层事务继续可用；
+- 返回 `cancelled = true`、`executed_changes = 已执行条数`、`results = []`。
+
+端到端证据（`crates/rpc-server/tests/grpc_row_cancel_e2e.rs`）：500 行批次用
+`BEFORE UPDATE` 触发器（递归 CTE，25 000 层，约 10 ms/行）拖慢，在批次进行中取消，
+实测「执行 8 行后取消、库里 0 行改动、取消耗时约 1.7 ms」——取消耗时远小于单行耗时，
+说明它没有排在批次/执行锁后面。
+
 ## 事务
 
 - `BEGIN IMMEDIATE`（读写）/ `BEGIN DEFERRED`（`read_only = true`），`COMMIT` / `ROLLBACK`；

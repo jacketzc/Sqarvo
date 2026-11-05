@@ -12,5 +12,9 @@
 #![warn(missing_docs)]
 
 pub mod manager;
+pub mod row_changes;
 
 pub use manager::{SessionHandle, SessionManager, SessionSummary, TransactionStatus};
+pub use row_changes::{
+    MAX_CONCURRENT_ROW_CHANGE_BATCHES, RowChangeBatches, RowChangeCancelOutcome,
+};

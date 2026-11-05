@@ -256,6 +256,21 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 集成用例：`BEGIN` → `INSERT` → 取消 `SELECT SLEEP(30)` → 仍能读到自己的行 → 再写一行 →
 `COMMIT` → 另一个会话看到两行。
 
+### 行变更批次的取消（#70）
+
+`ApplyRowChanges` 的取消**不用** `KILL QUERY`（ADR 0018）：它会把语句打断在半路，事务是否存活
+取决于服务端状态，做不到「取消后外层事务仍可用」。改为行边界协作：
+
+- 驱动在 `execute_plan` 的每行之前读一次 `RowChangeCancel`；命中后不再执行后续变更；
+- 自动提交模式：`ROLLBACK`（驱动自开的整批事务），库里 0 行变化；
+- 事务模式：`ROLLBACK TO SAVEPOINT sqarvo_row_changes` + `RELEASE SAVEPOINT`，外层事务继续可用；
+- 返回 `cancelled = true`、`executed_changes = 已执行条数`、`results = []`。
+
+端到端证据（`crates/rpc-server/tests/grpc_mariadb_row_cancel.rs`，需要 `SQARVO_MARIADB_URL`）：
+500 行批次带 `BEFORE UPDATE ... DO SLEEP(0.003)` 触发器，实测每行约 4.8 ms；在批次进行中取消，
+「执行 16 行后取消、库里 0 行改动、取消耗时 1.2 ms」。时序靠服务端 `SLEEP` 而不是本机调度，
+因此对机器速度不敏感。
+
 ### 失败态与断连
 
 | 触发 | 驱动状态 | `commit` | `rollback` | 后续 `execute` |
