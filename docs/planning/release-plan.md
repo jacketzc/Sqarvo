@@ -128,7 +128,62 @@ fmt 与 clippy 仍干净；`scripts/check-tracking.sh --state all` 仍「失败 
 - Linux 前端闭环：能用界面完成「展开对象树 → 查看 DDL → 搜索对象 → 插入一行」，
   并有 `--qa-*` 无人值守证据与 GTK 自渲染截图。
 
-完成记录待 v0.2.2 收尾时补（格式同 v0.2.1：逐条证据表 + 口径与未验证项）。
+完成记录（2026-11-06，Linux）：以上五条全部满足，逐条证据如下。范围仍是 Linux 前端 + 本地后端 +
+SQLite / MariaDB 两个驱动；Windows / macOS 前端未构建、未验证。证据基线 main `9f3d2ce`（#89 的合并提交；
+其后没有代码提交）。
+
+| 退出标准 | 证据 |
+|---|---|
+| 对象树可逐层展开且分页稳定 | **SQLite**：`cargo test -p sqarvo-driver-sqlite --test metadata_hierarchy` → 8 通过（含 `nodes_from_another_database_round_trip_to_columns_and_primary_key`、`catalog_names_with_quotes_spaces_and_cjk_are_quoted`、`mixed_kinds_with_duplicate_names_page_without_gaps`）；`--test metadata` → 13 通过。**MariaDB**：`SQARVO_MARIADB_URL=… cargo test -p sqarvo-driver-mariadb --test integration` → 69 通过，含 `metadata_catalog_layer_lists_every_visible_database`、`metadata_catalog_children_are_scoped_to_that_database`、`metadata_table_children_include_columns_indexes_and_triggers`、`metadata_hierarchy_pagination_has_no_duplicates_or_gaps`。**前端（真机 UI）**：SQLite `--qa-tree-expand main` → 日志「level=2 main 返回 4 条（耗时 2 ms，累计 4 条，has_more=false）」，打开 `orders` 后「已打开 orders：2 行…主键=["id"]」，断言 `health=Ready`、`selected=orders`；MariaDB `--qa-tree-expand sqarvo_test_90` 同一路径 exit 0（截图 `90-tree-ddl.png`、`90-tree-ddl-mariadb.png`）。**口径**：schema 层两个数据库都不存在，显式 `capability.unsupported`；MariaDB 受限账号无法区分「库不存在 / 无权限」 |
+| DDL 可查看且来源可信 | **SQLite**：`--test metadata` 的 5 个 `ddl_*` 用例通过（`ddl_returns_sqlite_master_text_verbatim`、`ddl_is_not_truncated_at_cell_limits`、`ddl_reads_attached_database_by_catalog` 等）；`sqlite_autoindex_*` 无原文 → `capability.unsupported`。**MariaDB**：集成 69 通过中含 `metadata_ddl_returns_show_create_table_text`、`metadata_ddl_picks_the_ddl_column_for_views`、`metadata_ddl_supports_sequences`、`metadata_ddl_reports_unsupported_kinds_and_missing_objects`。**执行锁**：`cargo test -p sqarvo-rpc-server --test grpc_session_locks_e2e` → 8 通过，含 `ddl_holds_lock_against_apply`、`ddl_waits_for_apply`。**gRPC**：`--test grpc_metadata_e2e` → 1 通过（断言 `exact=true`、`source=DDL_SOURCE_DATABASE`、正文以 `CREATE TABLE` 开头）。**前端**：两驱动均以 `--qa-tree-ddl` 打开面板并断言 `provenance=原文 / state=ready / copy=on`；日志「exact=true，source_detail=sqlite_master.sql（数据库 main，对象种类 table）」与「source_detail=SHOW CREATE TABLE（sqarvo_test_90.sqarvo_t_smoke）」 |
+| 对象搜索可用 | **SQLite**：`cargo test -p sqarvo-driver-sqlite --test metadata_filter` → 13 通过 / 1 ignored（`underscore_is_a_literal_not_a_wildcard`、`filter_applies_before_the_page_is_cut`、`changing_the_filter_rejects_the_old_token` 等）。**MariaDB**：`--test metadata_filter` → 9 通过 / 1 ignored（含 `permission_denied_is_not_reported_as_an_empty_search`、`changing_the_filter_rejects_the_old_token`）。**前端**：`--qa-tree-search ord` → 日志「搜索「ord」返回 3 个结果」「跳转成功：main.order_items」，断言 `search=results`、`first=order_items`、`selected=order_items`、`page=tree`（截图 `90-search-jump.png`）。**性能**：SQLite 10 万对象 9.3 ms、MariaDB 1 万对象 7.2 ms（均来自 #84 的 release `#[ignore]` 基准，本轮未重跑夹具；MariaDB 10 万未实测） |
+| 插入行可用且安全 | **SQLite**：`cargo test -p sqarvo-driver-sqlite --test insert_rows` → 9 通过（自增/显式/复合主键、省略列 vs 显式 NULL、唯一冲突整批回滚、savepoint、类型位级往返、500 行钳制）。**MariaDB**：集成 69 通过中含 8 个 `insert_rows_*`（`insert_rows_return_autoincrement_and_apply_defaults`、`insert_rows_unique_conflict_and_length_error_are_per_row_and_atomic`、`insert_rows_savepoint_keeps_the_outer_transaction_usable` 等）。**gRPC**：`cargo test -p sqarvo-rpc-server --test grpc_insert_rows_e2e` → 2 通过。**参数化**：`grep -rn 'push_str("INSERT\|format!("INSERT' backend/crates/drivers backend/crates/connection` 的生产路径只有 `INSERT INTO … VALUES (?1..?n)` / `DEFAULT VALUES` / `INSERT INTO t () VALUES ()` 模板，其余命中全在 `tests/` 夹具；没有把值拼进 SQL 的路径。**前端（SQLite 真机）**：`--qa-data-insert --qa-data-insert-set code:qa-new-1 --qa-data-insert-null amount --qa-data-commit --qa-data-reload --qa-expect-row code=qa-new-1` → 「整批回滚=false」「新行主键：id=1」，外部 `sqlite3` 复核 1 行、`created_at` 由默认值生成、`amount` 为 NULL；重复写同一 `code` → 「整批回滚=true」「`table_data.unique_violation`」「库里 0 行变化」，外部计数仍为 1（截图 `90-insert-row.png`、`90-insert-rollback.png`） |
+| Linux 前端闭环 | 本轮在 SQLite（`/tmp/qa90.db`）上按「展开 `main` → 打开 `orders` → 查看 DDL → 搜索 `ord` → 跳转 `order_items` → 插入一行并回读」跑通四条 `--qa-*` 序列，退出码均为 0，断言读取控件文本；MariaDB 另跑「展开 `sqarvo_test_90` → 打开 `sqarvo_t_smoke` → 查看 DDL」，同样 exit 0。隔离级别卡片（`--qa-isolation-dialog`）在 SQLite 上输出「可用 2 项（默认、可序列化）；禁用 3 项（附原因）」。截图（GTK 自渲染，仓库外）：`~/sqarvo-v022-shots/90-tree-ddl.png`、`90-tree-ddl-mariadb.png`、`90-search-jump.png`、`90-insert-row.png`、`90-insert-rollback.png`、`90-isolation-sqlite.png`。**限制**：Wayland 下无 OS 级截屏与真实指针注入，点击走控件几何 + 同一处理函数；搜索与插入的 UI 闭环只在 SQLite 上跑，MariaDB 的 UI 证据只覆盖对象树/DDL |
+
+交付顺序（全部 squash 合并进 main，Issue 已关闭）：
+
+| Issue | 交付物 | PR | squash 提交 | CI run |
+|---|---|---|---|---|
+| #81 | 契约增量（proto + driver-api + 错误码） | #91 | `b59bad7` | `42044516828` |
+| #87 | 前端列面板（默认值/字符集/排序规则） | #92 | `bcb12c4` | `42047837242` |
+| #82 | 上层层级与跨库浏览 | #94 | `43373e7` | `42049499508` |
+| #85 | 插入新行（两驱动 + gRPC） | #93 | `8c7316b` | `42050177579` |
+| #83 | DDL 查看（两驱动 + 执行锁） | #95 | `0a8e21f` | `42052752392` |
+| #84 | 对象搜索与过滤下推 | #96 | `8e7c661` | `42059959553` |
+| #86 | 前端对象树、搜索与 DDL 面板 | #98 | `a6008c1` | `42063985353` |
+| #88 | 前端插入行与隔离级别入口 | #97 | `a59d78d` | `42065190556`（MariaDB 作业失败，见下） |
+| #89 | 前端在途批次登记与取消提交 | #99 | `9f3d2ce` | `42067912917` |
+
+> #88 的合并提交 run `42065190556`：`后端（Linux）` 与 `前端（Linux）` 作业 success，
+> `MariaDB 集成测试（服务容器）` 作业 1 例失败——`metadata_lists_tables_and_views_with_stable_pagination`
+> 翻页时得到 `config.invalid`「分页 token 超出数据范围」（68 passed / 1 failed）；该提交未重跑。
+> 随后合入的 #89 合并提交 run `42067912917` 三个作业全绿；本轮本地在同一测试库复跑 `--test integration`
+> 69 通过，失败未复现。最可能的原因是集成用例并行执行时共用同一个库、对象集合在翻页途中被其它用例改变；
+> 未做隔离复现，因此这里只记录事实，不宣称「已修复」。
+
+配套基线（2026-11-06，Linux，证据基线 main `9f3d2ce`）：`cd backend && cargo fmt --all -- --check` → exit 0；
+`cargo clippy --all-targets -- -D warnings` → 0 warning；
+`SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test_90' cargo test --workspace`
+→ **539 passed / 0 failed / 2 ignored**（54 个测试块；基线 v0.2.1 为 382，v0.2.2 前的 #84 已是 539）；
+MariaDB 集成 **69 passed**，日志中「跳过：未设置 SQARVO_MARIADB_URL」出现 **0** 次；
+`cd frontend/linux && cargo fmt --all -- --check` exit 0、`cargo clippy --all-targets -- -D warnings` 0 warning、
+`cargo test` → **192 passed / 0 failed**（v0.2.1 基线 94）；
+`bash scripts/check-tracking.sh --state all` → 「60 个 Issue：失败 0 项，警告 0 项」。
+
+口径与未验证项：
+
+- **TLS / 远程网络部署未验证**：测试容器未启用 TLS，`require` / `verify-ca` / `verify-full` 与客户端证书都没有真实握手记录；远程后端不在本版范围。
+- **Windows / macOS 前端仍是窗口骨架**：未接后端、未构建、未运行验证、CI 无对应作业。
+- **release 构建性能未系统测量**：除 #84 的搜索基准用 `cargo test --release` 外，启动、内存与大结果集数值仍来自 debug 构建。
+- **MariaDB 10 万对象搜索未实测**：只跑 1 万对象（7.18 ms，release）；SQLite 10 万表为 9.28 ms。数据库侧建表夹具成本高（MariaDB 约 41 ms/张），不作为发布承诺。
+- **无权限（`metadata.permission_denied`）的前端真实场景未跑**：测试账号权限过全，只有前端单测与驱动集成用例（MariaDB 侧用测试账号读 `mysql` 库）。
+- **自增列在 UI 只能「默认留空 + 说明」**：契约缺 `ColumnMeta.auto_increment`，无法禁止用户显式填写自增值（数据库仍会接受）。
+- **插入成功后省略列不回读真实值**：协议没有「按主键回读单行」RPC，界面显示「数据库生成」，需手动刷新。
+- **前端截图是 GTK 自渲染**：Wayland 下不是 OS 级截屏，也没有真实指针注入；点击取证走控件几何与同一处理函数。
+- **取消提交（#89）本轮未重跑**：其取消语义的证据来自 #89 的日志与截图（`CancelRowChanges` 往返、`executed_changes=128 < 500`、外部 SQL 0 行变化），不计入本轮独立复跑。
+- **搜索范围**：Linux 只搜当前库根层、只展示首页 500 条；`contains` 与 `exact` 的大小写语义不对称（跟随数据库）。
+- **仍不支持**：跨库表数据浏览/行编辑（元数据可跨库）、MariaDB 索引/触发器 DDL、`InsertRows` 批次取消、`Snapshot` 隔离级别、schema 层。
+- 逐条已知限制见 [v0.2.2 发布说明](../releases/v0.2.2.md)。
 
 ### v0.2.3
 
@@ -157,13 +212,13 @@ fmt 与 clippy 仍干净；`scripts/check-tracking.sh --state all` 仍「失败 
 7. 打包产物与安装步骤在干净环境验证；
 8. 发布说明包含：新增能力、行为变化、已知限制、升级注意事项。
 
-## 支持矩阵（v0.2.1）
+## 支持矩阵（v0.2.2）
 
 只填写「已实现并有测试」的能力；未实现的能力必须写明错误语义，不允许空白或「部分支持」。
-本表的 SQLite / MariaDB 列按 v0.2.1（main `47da472`）的代码与测试校正；驱动细节见
+本表的 SQLite / MariaDB 列按 v0.2.2（main `9f3d2ce`）的代码与测试校正；驱动细节见
 `docs/database/sqlite.md`、`docs/database/mariadb.md` 与 `docs/database/driver-spi.md`。
 
-| 能力 | SQLite（v0.1 起；事务 / 元数据 / 表数据自 v0.2.1） | MariaDB（v0.2 新增；事务 / 元数据 / 表数据自 v0.2.1） | PostgreSQL |
+| 能力 | SQLite（v0.1 起；事务 / 元数据 / 表数据自 v0.2.1，对象树 / DDL / 搜索 / 插入自 v0.2.2） | MariaDB（v0.2 新增；事务 / 元数据 / 表数据自 v0.2.1，对象树 / DDL / 搜索 / 插入自 v0.2.2） | PostgreSQL |
 |---|---|---|---|
 | 连接 / 测试连接 | 已实现并有测试：本地文件、`read_only` 模式、`SELECT sqlite_version()` 作为版本探测 | 已实现并有测试：真实 MariaDB 11.4 连接与测试连接（延迟 + 服务端版本）；5 档 TLS 模式映射，`preferred` 在服务端无 TLS 时回退并给出 `mariadb.tls_fallback` 告警；真实 TLS 握手未验证 | 未实现：未注册驱动，`Connect` / `TestConnection` 返回 `driver.not_found` |
 | 执行 / 分批结果 | 已实现并有测试：单语句、prepared statement 游标分批、服务端批次上限 5000 行 | 已实现并有测试：`execute` 交付摘要 + 首批行，`max_rows` 钳制 `1..=5000`；游标 = 已交付行数、多读一行判 `has_more`、不用 `OFFSET` 重查；游标不匹配 → `mariadb.cursor_invalid`，游标未读完再 `execute` → `mariadb.query_active` | 未实现：`driver.not_found` |
@@ -172,8 +227,12 @@ fmt 与 clippy 仍干净；`scripts/check-tracking.sh --state all` 仍「失败 
 | 取消 | 已实现并有测试：`InterruptHandle` 中断、幂等、2 秒内生效 | 已实现并有测试：独立控制连接 `KILL QUERY`、幂等、2 秒内生效；批次之间的取消在下一次 `fetch` 立即返回 `query.cancelled`；`PROCESSLIST` 断言无残留执行 | 未实现：`driver.not_found` |
 | 多语句 | 未实现：单语句，第二条语句返回 `capability.unsupported`（ADR 0006） | 未实现：能力声明 `multiple_statements=false`，发送前拒绝，返回 `capability.unsupported`，第二条语句不产生副作用 | 未实现：`driver.not_found` |
 | 事务 | 已实现并有测试：`BEGIN IMMEDIATE`（读写）/ `BEGIN DEFERRED` + `PRAGMA query_only`（只读）；表数据写入路径持会话执行锁（#61）；一个会话最多一个事务（重复 `Begin` → `transaction.already_active`），失败态只允许回滚，重复提交/回滚与未知事务 ID 按 ADR 0017 处置；`--test transactions` 9 通过 | 已实现并有测试：`START TRANSACTION [READ ONLY]` / `COMMIT` / `ROLLBACK`；四档隔离级别逐档下发并有 `@@transaction_isolation` 断言，`Snapshot` 明确拒绝；事务中 DDL / `TRUNCATE` 等隐式提交语句**发送前**拒绝（`mariadb.implicit_commit_rejected`）；死锁 → 失败态，断连 → `mariadb.transaction_lost`；集成用例覆盖提交可见、回滚丢弃、断连回滚 | 未实现：`driver.not_found` |
-| 元数据（表/视图列表、列、主键、默认值） | 已实现并有测试：`sqlite_master` 的表/视图、`pragma_table_info` 的列与主键（`pk` 即主键内顺序）、默认值四态（无默认 / 默认 NULL / 未求值表达式，SQLite 无列级字符集故留空）；分页 token 带对象名集合指纹，非法 token → `config.invalid`，集合变化 → `metadata.snapshot_changed`；`--test metadata` 8 通过 | 已实现并有测试：`information_schema` 的 `TABLES` / `COLUMNS` / `KEY_COLUMN_USAGE`；原始类型取 `COLUMN_TYPE`（含长度与 `unsigned`）、精度/标度/可空性、默认值、字符集与排序规则；`metadata_*` 集成用例覆盖分页、跨 catalog 拒绝、缺库与缺表分类 | 未实现：`driver.not_found`。上层 Catalog / Schema / Index / Sequence 与跨库浏览对所有驱动返回 `capability.unsupported`（不返回空列表）；DDL 查看 v0.2.2 |
-| 表数据浏览 / 行编辑 | 已实现并有测试：主键升序 + 不透明游标（禁止 `OFFSET`），`--test table_data` 9 通过；行编辑走参数化 DML + 影响行数核对 + 批内 savepoint，`--test row_edits` 10 通过；无主键表只读（`table_data.no_primary_key`） | 已实现并有测试：同一游标语义与只读态；`row_edits_preserve_mariadb_types_bit_for_bit`（逐类型位级往返）、`row_edits_detect_conflicts_and_roll_back_failed_batches`、`row_edits_inside_explicit_transaction_use_savepoint`、`row_edits_reject_read_only_targets_and_invalid_keys` | 未实现：`driver.not_found` |
+| 元数据（表/视图列表、列、主键、默认值） | 已实现并有测试：`sqlite_master` 的表/视图、`pragma_table_info` 的列与主键（`pk` 即主键内顺序）、默认值四态（无默认 / 默认 NULL / 未求值表达式，SQLite 无列级字符集故留空）；分页 token 带对象名集合指纹，非法 token → `config.invalid`，集合变化 → `metadata.snapshot_changed`；`--test metadata` 13 通过 | 已实现并有测试：`information_schema` 的 `TABLES` / `COLUMNS` / `KEY_COLUMN_USAGE`；原始类型取 `COLUMN_TYPE`（含长度与 `unsigned`）、精度/标度/可空性、默认值、字符集与排序规则；`metadata_*` 集成用例覆盖分页、跨 catalog 拒绝、缺库与缺表分类 | 未实现：`driver.not_found`（请以「对象树」行的层级说明为准） |
+| 表数据浏览 / 行编辑 | 已实现并有测试：主键升序 + 不透明游标（禁止 `OFFSET`），`--test table_data` 10 通过；行编辑走参数化 DML + 影响行数核对 + 批内 savepoint，`--test row_edits` 11 通过；无主键表只读（`table_data.no_primary_key`） | 已实现并有测试：同一游标语义与只读态；`row_edits_preserve_mariadb_types_bit_for_bit`（逐类型位级往返）、`row_edits_detect_conflicts_and_roll_back_failed_batches`、`row_edits_inside_explicit_transaction_use_savepoint`、`row_edits_reject_read_only_targets_and_invalid_keys` | 未实现：`driver.not_found` |
+| 对象树（逐层展开 / 跨库） | 已实现并有测试：根 = `main` 的表/视图；目录层 `main` / `temp` / `ATTACH`；表 → 列/索引/触发器；视图 → 列；schema / sequence 层显式 `capability.unsupported`；跨库必须显式 catalog；每层按（种类, 名字）分页，`--test metadata_hierarchy` 8 通过、`--test metadata` 13 通过 | 已实现并有测试：database 即 catalog（`SCHEMATA`）；表 → 列/索引（含 `PRIMARY`）/触发器；序列作为叶子（`TABLE_TYPE='SEQUENCE'`）；schema 层显式 `capability.unsupported`；集成 69 通过（含 7 个层级/跨库用例） | 未实现：`driver.not_found` |
+| DDL 查看 | 已实现并有测试：表/视图/索引/触发器读 `sqlite_master.sql` 原文（`exact=true`、`source=DDL_SOURCE_DATABASE`）；`sqlite_autoindex_*` 无原文 → `capability.unsupported`；`--test metadata` 含 5 个 `ddl_*` 用例，不截断 | 已实现并有测试：表/视图/序列 `SHOW CREATE` 原文（第 2 列，校验 `CREATE` 前缀）；索引/触发器 → `metadata.object_kind_unsupported`；4 个 `metadata_ddl_*` 集成用例，不截断 | 未实现：`driver.not_found` |
+| 对象搜索 | 已实现并有测试：`LIKE … ESCAPE '\'` 下推、`%` / `_` / `\` 字面量；`--test metadata_filter` 13 通过 / 1 ignored；10 万对象 9.3 ms（release，`#[ignore]`，非承诺值） | 已实现并有测试：`LIKE CONCAT('%', ?, '%')` 下推、`Rows_sent` 增量断言；`--test metadata_filter` 9 通过 / 1 ignored；1 万对象 7.2 ms；10 万未实测 | 未实现：`driver.not_found` |
+| 插入行 | 已实现并有测试：省略列 / 显式 NULL 区分、自增与复合主键回传、整批原子、`WITHOUT ROWID` 或省略非自增主键 → `capability.unsupported`；`--test insert_rows` 9 通过、`grpc_insert_rows_e2e` 2 通过；批次不可取消 | 已实现并有测试：`LAST_INSERT_ID` 回传、savepoint 原子性、唯一冲突 / NOT NULL 逐行码；8 个 `insert_rows_*` 集成用例；批次不可取消 | 未实现：`driver.not_found` |
 
 > 驱动能力位（#59）：`ListDrivers` 现在会列出 `row_editing` 与 `parameterized_statements`，两个驱动均为 true 且有断言；未实现能力的驱动不会出现这两项。
 
@@ -181,7 +240,7 @@ fmt 与 clippy 仍干净；`scripts/check-tracking.sh --state all` 仍「失败 
 > `require` / `verify-ca` / `verify-full` 与客户端证书**未验证**；不得据此声称「TLS 可用」。
 > MySQL 8.x 兼容性同样未验证（`docs/database/mariadb.md` 未支持清单）。
 
-### 验证方式（v0.2.1）
+### 验证方式（v0.2.2）
 
 矩阵中的每一格都能用下列命令复核（除标注未验证的 TLS 外）：
 
@@ -192,18 +251,25 @@ cargo test -p sqarvo-driver-sqlite
 cargo test -p sqarvo-driver-sqlite --test type_mapping
 cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e
 
-# v0.2.1：事务、元数据、表数据浏览与行编辑（SQLite，无需外部数据库）
+# v0.2.1 / v0.2.2：事务、元数据、对象树、DDL、搜索、插入、表数据与行编辑（SQLite，无需外部数据库）
 cargo test -p sqarvo-driver-sqlite --test transactions   # 9 通过
-cargo test -p sqarvo-driver-sqlite --test metadata       # 8 通过
-cargo test -p sqarvo-driver-sqlite --test table_data     # 9 通过
-cargo test -p sqarvo-driver-sqlite --test row_edits      # 10 通过
+cargo test -p sqarvo-driver-sqlite --test metadata       # 13 通过（含 5 个 ddl_*）
+cargo test -p sqarvo-driver-sqlite --test metadata_hierarchy  # 8 通过
+cargo test -p sqarvo-driver-sqlite --test metadata_filter     # 13 通过 / 1 ignored
+cargo test -p sqarvo-driver-sqlite --test insert_rows         # 9 通过
+cargo test -p sqarvo-driver-sqlite --test table_data     # 10 通过
+cargo test -p sqarvo-driver-sqlite --test row_edits      # 11 通过
 cargo test -p sqarvo-rpc-server --test grpc_transactions_e2e  # 8 通过
 cargo test -p sqarvo-rpc-server --test grpc_table_data_e2e    # 2 通过
-cargo test -p sqarvo-rpc-server --test grpc_metadata_e2e      # 1 通过
+cargo test -p sqarvo-rpc-server --test grpc_metadata_e2e      # 1 通过（含 GetDdl exact/source 断言）
+cargo test -p sqarvo-rpc-server --test grpc_session_locks_e2e # 8 通过（含 DDL 执行锁两例）
+cargo test -p sqarvo-rpc-server --test grpc_insert_rows_e2e   # 2 通过
 
 # MariaDB：连接/测试连接/分批/取消/错误分类/testkit/事务/元数据/行编辑（需要真实实例）
 SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
-  cargo test -p sqarvo-driver-mariadb --test integration   # 48 通过
+  cargo test -p sqarvo-driver-mariadb --test integration   # 69 通过
+SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
+  cargo test -p sqarvo-driver-mariadb --test metadata_filter  # 9 通过 / 1 ignored
 
 # 凭据：Store/Delete、缺失与不可用语义（内存存储 + 真实 MariaDB）
 cargo test -p sqarvo-rpc-server --test grpc_credential
@@ -211,17 +277,18 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
   cargo test -p sqarvo-rpc-server --test grpc_mariadb_credentials
 ```
 
-前端（数据页路径，真实后端 + MariaDB，详见 `frontend/linux/README.md`「数据页」）：
+前端（UI 逻辑单测；对象树/DDL/搜索/插入与数据页的真机复现见
+`frontend/linux/README.md` 的「对象树、搜索与 DDL 面板」「插入新行与隔离级别的取证」两节）：
 
 ```bash
-cd frontend/linux && cargo test    # 94 通过
-# 提交 / 回滚 / 只读 / 翻页的无人值守复现见该 README 的 --qa-data-* 参数表
+cd frontend/linux && cargo test    # 192 通过
 ```
 
 CI 对应作业（`.github/workflows/ci.yml`）：`后端（Linux）`（fmt / clippy / `cargo test` /
-SQLite 类型映射 / SQLite UDS 端到端）与 `MariaDB 集成测试（服务容器）`（断言发现用例数 ≠ 0、
-通过数 = 发现数、未进入跳过分支）。两个作业在 v0.2.1 的每个 PR（#50–#57）上均为 pass；
-最后一个 PR 的运行：#57 → run `41968317577`（squash 提交 `47da472`）。
+SQLite 类型映射 / SQLite UDS 端到端）、`MariaDB 集成测试（服务容器）`（断言发现用例数 ≠ 0、
+通过数 = 发现数、未进入跳过分支）与 `前端（Linux）`（fmt / clippy / `cargo test`）。
+v0.2.2 的 9 个合并提交中 8 个三作业全绿；#88 的合并提交 run `42065190556` 的 MariaDB 作业
+1 例失败（见上「交付顺序」脚注）。最后一个 PR #99 → run `42067912917`（squash 提交 `9f3d2ce`）。
 
 ## 兼容与弃用
 
