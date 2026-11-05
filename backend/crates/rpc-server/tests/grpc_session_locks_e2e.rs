@@ -1,6 +1,6 @@
 //! 浏览/元数据与写路径的会话执行锁端到端测试（#69）。
 //!
-//! 本文件验证 `BrowseTable`、`ListNodes`、`GetColumns`、`GetPrimaryKey` 与
+//! 本文件验证 `BrowseTable`、`ListNodes`、`GetColumns`、`GetPrimaryKey`、`GetDdl` 与
 //! `Execute` / `ApplyRowChanges` **争用同一把会话执行锁**（ADR 0008）：
 //! 同一会话只允许一条在途驱动语句。
 //!
@@ -41,10 +41,10 @@ use sqarvo_query_engine::{QueryLimits, QueryRegistry};
 use sqarvo_rpc_server::auth::TOKEN_METADATA_KEY;
 use sqarvo_rpc_server::proto::services::v1::{
     ApplyRowChangesRequest, BrowseTableRequest, BrowseTableResponse, ColumnChange, ConnectRequest,
-    ConnectResponse, ConnectionParams, DisconnectRequest, ExecuteQueryRequest,
-    ExecuteQueryResponse, GetColumnsRequest, GetColumnsResponse, GetPrimaryKeyRequest,
-    GetPrimaryKeyResponse, ListNodesRequest, ListNodesResponse, ObjectKind as ProtoObjectKind,
-    ObjectRef as ProtoObjectRef, PrimaryKeyValue, RowKey, RowUpdate,
+    ConnectResponse, ConnectionParams, DdlSource, DisconnectRequest, ExecuteQueryRequest,
+    ExecuteQueryResponse, GetColumnsRequest, GetColumnsResponse, GetDdlRequest, GetDdlResponse,
+    GetPrimaryKeyRequest, GetPrimaryKeyResponse, ListNodesRequest, ListNodesResponse,
+    ObjectKind as ProtoObjectKind, ObjectRef as ProtoObjectRef, PrimaryKeyValue, RowKey, RowUpdate,
     connection_service_client::ConnectionServiceClient,
     metadata_service_client::MetadataServiceClient, query_service_client::QueryServiceClient,
     table_data_service_client::TableDataServiceClient,
@@ -87,6 +87,7 @@ struct Shared {
     execute_gate: Option<Arc<Semaphore>>,
     list_gate: Option<Arc<Semaphore>>,
     columns_gate: Option<Arc<Semaphore>>,
+    ddl_gate: Option<Arc<Semaphore>>,
     apply_gate: Option<Arc<Semaphore>>,
 }
 
@@ -103,6 +104,7 @@ impl Shared {
             execute_gate: gate("execute"),
             list_gate: gate("list"),
             columns_gate: gate("columns"),
+            ddl_gate: gate("ddl"),
             apply_gate: gate("apply"),
         });
         (shared, receiver)
@@ -114,6 +116,7 @@ impl Shared {
             "execute" => self.execute_gate.as_ref(),
             "list" => self.list_gate.as_ref(),
             "columns" => self.columns_gate.as_ref(),
+            "ddl" => self.ddl_gate.as_ref(),
             "apply" => self.apply_gate.as_ref(),
             other => panic!("未知闸门 {other}"),
         }
@@ -378,9 +381,12 @@ impl MetadataProvider for LockSession {
     }
 
     async fn ddl(&self, _object: &ObjectRef) -> sqarvo_common::Result<sqarvo_driver_api::Ddl> {
-        Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "lock 驱动不提供 DDL",
+        self.shared.enter("ddl");
+        self.shared.park("ddl").await;
+        self.shared.leave();
+        Ok(sqarvo_driver_api::Ddl::from_database(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)",
+            "sqlite_master.sql（数据库 main）",
         ))
     }
 }
@@ -565,6 +571,12 @@ fn primary_key_request(session_id: &str) -> GetPrimaryKeyRequest {
     }
 }
 
+fn ddl_request(session_id: &str) -> GetDdlRequest {
+    GetDdlRequest {
+        object: Some(table_ref(session_id)),
+    }
+}
+
 fn apply_request(session_id: &str, value: &str) -> ApplyRowChangesRequest {
     ApplyRowChangesRequest {
         session_id: session_id.to_owned(),
@@ -678,6 +690,22 @@ fn spawn_primary_key(
         let mut client = MetadataServiceClient::with_interceptor(channel, auth(token));
         client
             .get_primary_key(primary_key_request(&session_id))
+            .await
+            .map(Response::into_inner)
+    })
+}
+
+fn spawn_ddl(
+    channel: &Channel,
+    token: &AuthToken,
+    session_id: String,
+) -> JoinHandle<Result<GetDdlResponse, Status>> {
+    let channel = channel.clone();
+    let token = token.clone();
+    tokio::spawn(async move {
+        let mut client = MetadataServiceClient::with_interceptor(channel, auth(token));
+        client
+            .get_ddl(ddl_request(&session_id))
             .await
             .map(Response::into_inner)
     })
@@ -919,6 +947,100 @@ async fn list_nodes_holds_lock_against_apply() {
             shared.events(),
             ["list", "primary_key", "apply"],
             "第 {round} 轮：驱动顺序必须是「元数据 → 主键 → 写批次」"
+        );
+        assert_eq!(shared.max_active(), 1, "第 {round} 轮：驱动调用不得并行");
+
+        disconnect(&channel, &token, &connected.connection_id).await;
+        server.stop().await;
+    }
+}
+
+/// `GetDdl` 先持锁：写批次必须排队（#83 把 DDL 读取纳入会话执行锁）。
+///
+/// 这条用例是「DDL 与并发写入不交错」的直接证据：假驱动在 `ddl` 里停在闸门上
+/// （= 已持有执行锁），此时发起的 `ApplyRowChanges` 必须**无法完成**；
+/// 释放后驱动调用顺序必须是「DDL → 主键 → 写批次」，且任意时刻只有一个驱动调用在途。
+/// 若 `GetDdl` 绕过执行锁直接调驱动，`assert_pending` 会立刻失败。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ddl_holds_lock_against_apply() {
+    for round in 0..ROUNDS {
+        let (mut server, shared) = TestServer::fake(&["ddl"]);
+        let channel = server.channel().await;
+        let token = server.token.clone();
+        let connected = connect_fake(&channel, &token).await;
+
+        let ddl = spawn_ddl(&channel, &token, connected.session_id.clone());
+        server.next_event("ddl").await;
+
+        let mut apply = spawn_apply(&channel, &token, &connected.session_id, "after");
+        assert_pending(&format!("第 {round} 轮 ApplyRowChanges"), &mut apply).await;
+
+        shared.release("ddl");
+        let ddl = within("GetDdl", ddl)
+            .await
+            .expect("ddl 任务未 panic")
+            .expect("DDL 读取必须成功");
+        assert!(ddl.exact, "假驱动返回的是原文，exact 必须为 true");
+        assert_eq!(
+            ddl.source,
+            DdlSource::Database as i32,
+            "来源必须原样映射为 DDL_SOURCE_DATABASE"
+        );
+        assert!(
+            ddl.ddl.starts_with("CREATE TABLE items"),
+            "DDL 文本必须原样返回：{}",
+            ddl.ddl
+        );
+        within("ApplyRowChanges", apply)
+            .await
+            .expect("apply 任务未 panic")
+            .expect("DDL 读取结束后写批次必须成功");
+
+        assert_eq!(
+            shared.events(),
+            ["ddl", "primary_key", "apply"],
+            "第 {round} 轮：驱动顺序必须是「DDL → 主键 → 写批次」"
+        );
+        assert_eq!(shared.max_active(), 1, "第 {round} 轮：驱动调用不得并行");
+
+        disconnect(&channel, &token, &connected.connection_id).await;
+        server.stop().await;
+    }
+}
+
+/// 写批次先持锁：`GetDdl` 必须排队，等写批次释放后才进入驱动。
+///
+/// 与上一条用例组成双向证据：DDL 也不会**插队**到已经持锁的写入前面。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ddl_waits_for_apply() {
+    for round in 0..ROUNDS {
+        let (mut server, shared) = TestServer::fake(&["apply"]);
+        let channel = server.channel().await;
+        let token = server.token.clone();
+        let connected = connect_fake(&channel, &token).await;
+
+        let apply = spawn_apply(&channel, &token, &connected.session_id, "after");
+        server.next_event("primary_key").await;
+        server.next_event("apply").await;
+
+        let mut ddl = spawn_ddl(&channel, &token, connected.session_id.clone());
+        assert_pending(&format!("第 {round} 轮 GetDdl"), &mut ddl).await;
+
+        shared.release("apply");
+        within("ApplyRowChanges", apply)
+            .await
+            .expect("apply 任务未 panic")
+            .expect("写批次必须成功");
+        let ddl = within("GetDdl", ddl)
+            .await
+            .expect("ddl 任务未 panic")
+            .expect("写批次结束后 DDL 必须成功");
+        assert!(ddl.ddl.starts_with("CREATE TABLE items"));
+
+        assert_eq!(
+            shared.events(),
+            ["primary_key", "apply", "ddl"],
+            "第 {round} 轮：DDL 必须等写批次释放后才进入驱动"
         );
         assert_eq!(shared.max_active(), 1, "第 {round} 轮：驱动调用不得并行");
 
