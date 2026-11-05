@@ -9,7 +9,7 @@
 | M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
 | M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 已完成（#9–#17） |
 | M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 已完成（#20–#25；真实 TLS 握手未验证） |
-| M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | 未开始 |
+| M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | 已完成（#41–#48；对象树只到「当前库表/视图」一层，DDL 与上层对象留 v0.2.2） |
 | M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v0.2.4 | 未开始 |
 | M6 前端接入与硬化 | S6 | 三端接入、性能、安全、跨平台构建 | v0.2 起持续 | 进行中（Linux 首端接入完成；Windows / macOS 未验证） |
 | M7 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.2.3 | 未开始 |
@@ -107,6 +107,31 @@ CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）`
 - 两驱动下对象树可分页展开，列信息保留原始类型；
 - 事务提交/回滚/失败态行为可测试；
 - 不支持能力返回明确错误。
+
+### M4 元数据与事务（实际完成）
+
+实际完成：2026-11-05（Linux）。任务 #41–#48（PR #50–#57），发布说明见
+[v0.2.1](../releases/v0.2.1.md)，支持矩阵见 [release-plan.md](release-plan.md)。
+对象树只实现「当前连接库的表/视图 + 列 + 主键」一层；Catalog / Schema / Index / Sequence、
+跨库浏览与 DDL 查看明确不在本版，留给 v0.2.2。
+
+| 完成标准 | 证据 |
+|---|---|
+| 两驱动下对象树可分页展开，列信息保留原始类型 | SQLite：`cargo test -p sqarvo-driver-sqlite --test metadata` → 8 通过（`lists_tables_and_views_with_stable_pagination`、`columns_preserve_declared_type_and_nullability`、`primary_key_handles_single_composite_and_missing_keys`、`missing_objects_and_closed_sessions_are_classified`）；MariaDB：`SQARVO_MARIADB_URL=… cargo test -p sqarvo-driver-mariadb --test integration` → 48 通过，其中 `metadata_lists_tables_and_views_with_stable_pagination`、`metadata_columns_keep_original_types_and_nullability`（`COLUMN_TYPE` 原文、精度/标度/长度）、`metadata_primary_key_handles_single_composite_and_missing_keys`、`metadata_missing_table_is_not_found`、`metadata_without_selected_database_is_rejected` 覆盖元数据语义；gRPC：`cargo test -p sqarvo-rpc-server --test grpc_metadata_e2e` → 1 通过（`metadata_rpcs_are_wired_and_not_unimplemented`）；PR #54 / `100f43d`（CI run `41960916141`） |
+| 事务提交/回滚/失败态行为可测试 | SQLite：`--test transactions` → 9 通过（`passes_transaction_invariants`、`only_serializable_isolation_is_accepted`、`read_only_transaction_rejects_writes_and_restores_writability`、`interrupted_write_puts_transaction_into_failed_state`、`statement_error_keeps_transaction_active`、`closing_session_rolls_back_open_transaction`、`raw_sql_begin_counts_as_open_transaction`），PR #51 / `fa2e747`（run `41955959769`）；MariaDB：集成 48 通过，含四档隔离级别的 `@@transaction_isolation` 断言、`BEGIN` → `CREATE TABLE` → `ROLLBACK` 的隐式提交拒绝、死锁进失败态与断连 `mariadb.transaction_lost`，PR #52 / `b24eef9`（run `41957364237`）；gRPC：`--test grpc_transactions_e2e` → 8 通过（`committed_changes_are_visible_to_later_sessions`、`rolled_back_changes_are_discarded`、`failed_transaction_rejects_commit_and_allows_rollback`、`second_begin_reports_already_active`、`repeated_commit_and_rollback_are_idempotent`、`session_status_reports_open_transaction`、`disconnect_forces_rollback_and_clears_registry`、`driver_without_transactions_reports_capability_unsupported`），PR #53 / `79ae6fd`（run `41958744849`） |
+| 不支持能力返回明确错误 | `MetadataService.GetDdl` 在两驱动都返回 `capability.unsupported` 且文案写明 v0.2.2（`ddl_is_explicitly_unimplemented_until_v0_2_2`、`metadata_ddl_is_explicitly_unimplemented_until_v0_2_2`）；上层层级与跨库引用被拒而不返回空列表（`list_rejects_unknown_levels_tokens_and_oversized_pages_are_clamped`、`metadata_rejects_cross_catalog_and_bad_tokens`）；无主键表编辑返回 `table_data.no_primary_key`（`read_only_targets_and_invalid_keys_are_rejected_before_writing`）；未声明事务的驱动在 gRPC 层返回 `capability.unsupported`（`driver_without_transactions_reports_capability_unsupported`）；分页 token 非法 → `config.invalid`、对象集合变化 → `metadata.snapshot_changed`，都不回退第一页 |
+
+配套验证（2026-11-05，main `47da472`）：`cd backend && SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' cargo test --workspace`
+→ **382 通过 / 0 失败 / 0 ignored**（v0.2 基线 219）；`cargo fmt --all -- --check` 与
+`cargo clippy --all-targets -- -D warnings` 通过；`cd frontend/linux && cargo test` → **94 通过**
+（基线 66）；`bash scripts/check-tracking.sh --state all` → 「39 个 Issue：失败 0 项，警告 0 项」。
+CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）` 均 pass）：
+#50 → `41954735456`、#51 → `41955959769`、#52 → `41957364237`、#53 → `41958744849`、
+#54 → `41960916141`、#55 → `41963333169`、#56 → `41965284410`、#57 → `41968317577`。
+
+遗留（不属 M4 当前范围，已登记）：DDL 查看与上层对象（v0.2.2）；插入新行与非主键排序；
+隔离级别的界面入口；「失败态」徽标的 e2e 触发与逐行失败面板的 UI 测试；
+Windows / macOS 前端（M6 / v0.2.4）。
 
 ### M5 第二网络驱动与一致性
 

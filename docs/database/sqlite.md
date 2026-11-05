@@ -33,6 +33,10 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
   只允许回滚，绝不把后续语句当成仍在事务里执行；
 - 重复提交/回滚与未知事务 ID 幂等成功（ADR 0017 §3）。
 
+与 MariaDB 的差异（隐式提交、只读事务、隔离级别、断连、死锁）见
+[mariadb.md](./mariadb.md#与-sqlite-的差异)，逐维度的两驱动对照表见
+[driver-spi.md](./driver-spi.md#事务实现现状v021)。
+
 ## 元数据（v0.2.1 最小子集）
 
 实现：`backend/crates/drivers/sqlite/src/metadata.rs`。
@@ -52,7 +56,8 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 返回节点的名字取自 `sqlite_master` 中的原始大小写。`pragma_table_info` 通过**绑定参数**调用
 （`pragma_table_info(?1)`），不拼接标识符。
 
-无主键表返回空列表（浏览只读、编辑拒绝由 #46/#47 落地）；视图同样没有主键，返回空列表而不是报错。
+无主键表返回空列表（浏览仍可用但置只读 `NoPrimaryKey`/`Unstable`，编辑被拒绝并返回
+`table_data.no_primary_key`，见 #46/#47）；视图同样没有主键，返回空列表而不是报错。
 表/视图不存在返回 `sqlite.object_not_found`（`NotFound`），不会返回空列。
 
 ### 分页 token 与失效条件

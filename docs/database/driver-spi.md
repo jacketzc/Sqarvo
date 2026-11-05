@@ -131,6 +131,27 @@ pub trait MetadataProvider: Send + Sync {
 `capability.unsupported`，不返回空列表。细节见 [SQLite](./sqlite.md#元数据v021-最小子集) 与
 [MariaDB](./mariadb.md#元数据v021-最小子集)。
 
+## 事务实现现状（v0.2.1）
+
+两个内置驱动都通过会话自己的连接实现显式事务，`TransactionService` 已接线（不再返回
+`UNIMPLEMENTED`）。共同不变量由 `sqarvo-driver-testkit` 覆盖：原子性、一个会话最多一个事务、
+重复提交/回滚幂等、有打开事务时未知事务 ID 必须 `NotFound`。
+
+| 维度 | SQLite | MariaDB |
+|---|---|---|
+| 开始语句 | `BEGIN IMMEDIATE`（读写）/ `BEGIN DEFERRED`（只读） | `START TRANSACTION [READ ONLY]` |
+| 只读事务 | 连接级 `PRAGMA query_only` 由数据库拒绝写入 | 服务端拒绝（1792 → `mariadb.read_only_transaction`） |
+| 隔离级别 | 只接受 `Serializable`，其余 `capability.unsupported` | 四档逐档下发；`Snapshot` 拒绝 |
+| 隐式提交 | DDL 在事务内合法、可回滚 | DDL / `TRUNCATE` 会先提交当前事务，驱动**发送前**拒绝（`mariadb.implicit_commit_rejected`） |
+| 失败态 | 中断 / 磁盘满 / IO 错误后 SQLite 自动回滚，驱动切失败态 | 死锁（1213）后服务端回滚整个事务，驱动切失败态 |
+| 断连 | 由连接错误分类表达 | `mariadb.transaction_lost`（`Unavailable`） |
+| 行编辑批内原子性 | savepoint | savepoint |
+
+对外错误语义：重复 `Begin` → `transaction.already_active`；失败态提交 → `transaction.failed`；
+行变更指向已结束的事务 → `transaction.not_found`，绝不退化成自动提交；重复提交/回滚幂等
+（ADR 0017 §3）。逐条细节见 [SQLite](./sqlite.md#事务) 与 [MariaDB](./mariadb.md#事务)
+（后者含「与 SQLite 的差异」表）。
+
 ## 值模型
 
 见 `driver-api/src/value.rs`：
@@ -219,13 +240,12 @@ pub trait TableDataProvider: Send + Sync {
 - 元数据的上层层级与 DDL：两驱动只实现「当前库的表/视图 + 列 + 主键」
   （见上「元数据实现现状」），Catalog / Schema / Index / Sequence 与跨库浏览返回
   `capability.unsupported`；`GetDdl` 计划 v0.2.2；
-- 表数据浏览与行编辑的驱动实现：SPI 与 proto 已冻结（ADR 0017），
-  `table_data()` 目前全部返回 `None`，`supports_row_edits()` 为 `false`，
-  请求时返回 `capability.unsupported`；
-- 参数化执行（`execute_parameterized`）的驱动实现：SPI 已冻结，默认返回
-  `capability.unsupported`；对外仍无参数化执行的 RPC（留给 S7）；
+- 表数据浏览与行编辑：两驱动已实现（`table_data()` 返回 provider，`supports_row_edits()`
+  为 `true`），但仍**不支持插入新行**与非主键排序；这两项能力没有进入 `Capabilities`，
+  `ListDrivers` 不展示，调用方以 `TableDataService` 的错误语义为准；
+- 参数化执行（`execute_parameterized`）的驱动实现：SQLite 与 MariaDB 已用于内部行编辑，
+  对外仍无参数化执行的 RPC（留给 S7）；
 - MariaDB 驱动的单次执行超时（请求时明确返回 `capability.unsupported`）；
 - 服务端元数据分页（目前把当前库对象名一次读入内存后切页）；
-- 事务在 gRPC 层的接线（接口已定义，M4 完成）；
 - 会话租约与断线重连。
 

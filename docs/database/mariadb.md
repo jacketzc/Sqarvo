@@ -364,11 +364,11 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 
 ## 未支持清单
 
-- 事务状态展示与 gRPC 接线（驱动层已实现，见「事务」；服务层接线未完成）；
+- 事务的隔离级别选择界面与 savepoint 对外 API（批内 savepoint 已用于行编辑）；
 - 元数据的对象树上层（Catalog / Schema / Index / Sequence）与跨库浏览：显式报
   `capability.unsupported`；DDL 查看计划 v0.2.2（`SHOW CREATE TABLE` 原文）；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
-- 参数化执行、预编译语句复用；
+- 参数化执行的对外 RPC（行编辑内部已用 prepared statement 绑定参数）与预编译语句复用；
 - 大字段按需加载（目前只截断前缀，`Cell::truncated` 标记）；
 - 断线重连与会话租约；
 - 压缩、`LOAD DATA LOCAL INFILE`、TLS 客户端证书的实测（代码路径存在，未在测试库验证）；
