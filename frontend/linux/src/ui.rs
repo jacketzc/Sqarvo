@@ -22,7 +22,9 @@ use gtk::glib;
 
 use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure};
 use crate::backend::endpoint;
-use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, WorkerHandle};
+use crate::backend::table::TableEntry;
+use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, TableEvent, WorkerHandle};
+use crate::data_page::{DataCallbacks, DataPage, TableBrowser};
 use crate::dialog::ConnectionDialog;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
 
@@ -37,8 +39,8 @@ struct UiState {
     /// 后端 gRPC 是否已握手成功：未成功时「新建连接」不可点（此时只会得到
     /// `backend.unavailable`，没有意义）。
     backend_ready: Cell<bool>,
-    /// 当前 SQL 工作区（连接数据库后建立；断开时保留已加载结果）。
-    sql_page: RefCell<Option<Rc<SqlPage>>>,
+    /// 当前工作区（SQL 编辑器 + 表数据页；连接数据库后建立）。
+    workspace: RefCell<Option<Rc<Workspace>>>,
     /// 标题栏右侧的「新建连接」按钮。
     new_connection: gtk::Button,
 }
@@ -122,7 +124,7 @@ pub fn activate(app: &adw::Application) {
         worker: RefCell::new(Some(worker)),
         dialog: RefCell::new(None),
         backend_ready: Cell::new(false),
-        sql_page: RefCell::new(None),
+        workspace: RefCell::new(None),
         new_connection: new_connection.clone(),
     });
 
@@ -199,9 +201,9 @@ pub fn activate(app: &adw::Application) {
                     events_state.backend_ready.set(true);
                     events_state.new_connection.set_sensitive(true);
                     events_state.new_connection.set_tooltip_text(None);
-                    // 重新握手成功后旧的 SQL 工作区已失效（数据库会话不跨后端进程）。
-                    if let Some(page) = events_state.sql_page.borrow_mut().take() {
-                        page.close_query();
+                    // 重新握手成功后旧的工作区已失效（数据库会话不跨后端进程）。
+                    if let Some(workspace) = events_state.workspace.borrow_mut().take() {
+                        workspace.sql_page.close_query();
                     }
                     show_connected(
                         &events_state.slot,
@@ -228,11 +230,14 @@ pub fn activate(app: &adw::Application) {
                         events_state.backend_ready.set(false);
                         events_state.new_connection.set_sensitive(false);
                         events_state.title.set_subtitle("已断开");
-                        // 有 SQL 工作区时保留它：已加载的行仍可查看，但明确标注失连，
+                        // 有工作区时保留它：已加载的行仍可查看，但明确标注失连，
                         // 不能因为断连就把用户看到的数据抹掉。
-                        let page = events_state.sql_page.borrow().as_ref().cloned();
-                        match page {
-                            Some(page) => page.mark_disconnected(&reason),
+                        let workspace = events_state.workspace.borrow().as_ref().cloned();
+                        match workspace {
+                            Some(workspace) => {
+                                workspace.sql_page.mark_disconnected(&reason);
+                                workspace.data_page.mark_disconnected(&reason);
+                            }
                             None => show_disconnected(
                                 &events_state.slot,
                                 &events_state.title,
@@ -262,13 +267,14 @@ pub fn activate(app: &adw::Application) {
                             if let Some(dialog) = dialog.as_ref() {
                                 dialog.close();
                             }
-                            show_sql_workspace(
+                            show_workspace(
                                 &events_state,
                                 &outcome,
                                 &events_disconnect,
                                 &events_retry,
                             );
                             maybe_run_qa_sql(&events_state);
+                            maybe_run_qa_data(&events_state);
                         }
                         Err(failure) => match dialog.as_ref() {
                             Some(dialog) => dialog.show_failure(&failure),
@@ -280,8 +286,37 @@ pub fn activate(app: &adw::Application) {
                         },
                     }
                 }
+                Event::Table(event) => {
+                    let workspace = events_state.workspace.borrow().as_ref().cloned();
+                    let Some(workspace) = workspace else {
+                        eprintln!("[sqarvo-desktop] 收到表数据事件但没有工作区（忽略）");
+                        continue;
+                    };
+                    match event {
+                        TableEvent::Tables(result) => match result {
+                            Ok(tables) => workspace.sidebar.set_tables(tables),
+                            Err(failure) => workspace.data_page.show_failure(&failure),
+                        },
+                        TableEvent::Opened(open) => workspace.data_page.show_open(*open),
+                        TableEvent::Page {
+                            rows,
+                            has_more,
+                            loaded,
+                            pages,
+                        } => workspace.data_page.show_page(rows, has_more, loaded, pages),
+                        TableEvent::Applied(report) => workspace.data_page.show_applied(report),
+                        TableEvent::Failed(failure) => workspace.data_page.show_failure(&failure),
+                        TableEvent::Transaction(snapshot) => {
+                            workspace.data_page.show_transaction(&snapshot)
+                        }
+                    }
+                }
                 Event::Query(event) => {
-                    let page = events_state.sql_page.borrow().as_ref().cloned();
+                    let page = events_state
+                        .workspace
+                        .borrow()
+                        .as_ref()
+                        .map(|workspace| Rc::clone(&workspace.sql_page));
                     let Some(page) = page else {
                         eprintln!("[sqarvo-desktop] 收到查询事件但没有工作区（忽略）");
                         continue;
@@ -543,11 +578,11 @@ fn show_connected(
     set_page(slot, &page);
 }
 
-/// 连接数据库后的主界面：SQL 工作区（编辑器 + 结果区）。
+/// 连接数据库后的主界面：左侧表列表 + 右侧「SQL 工作区 / 数据页」。
 ///
-/// 会话信息不消失：服务端版本、会话 ID、活动会话数写进工作区顶栏与结果区副标题，
-/// 连接成功的证据始终可见。
-fn show_sql_workspace(
+/// 两个页面共用同一个数据库会话与 worker：SQL 工作区负责查询，数据页负责按表
+/// 浏览与行编辑。切换不重建会话，也不隐藏连接成功的证据（会话信息在 SQL 页顶栏）。
+fn show_workspace(
     state: &Rc<UiState>,
     outcome: &ConnectOutcome,
     on_disconnect: &Rc<dyn Fn()>,
@@ -605,24 +640,182 @@ fn show_sql_workspace(
     };
 
     // 旧工作区（若有）先释放游标，再换新页面。
-    if let Some(previous) = state.sql_page.borrow_mut().take() {
-        previous.close_query();
+    if let Some(previous) = state.workspace.borrow_mut().take() {
+        previous.sql_page.close_query();
     }
-    let page = SqlPage::new(&session_line, callbacks);
-    page.results().set_detail(&format!(
+    let sql_page = SqlPage::new(&session_line, callbacks);
+    sql_page.results().set_detail(&format!(
         "服务端 {version} · 会话 {} · ListSessions 报告 {} 个活动会话",
         short_id(&outcome.session_id),
         outcome.sessions.len()
     ));
-    state.sql_page.replace(Some(Rc::clone(&page)));
-    set_page(&state.slot, page.widget());
-    page.focus_editor();
+
+    let data_callbacks = DataCallbacks {
+        fetch_page: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.fetch_table_page();
+                }
+            })
+        },
+        apply: {
+            let state = Rc::clone(state);
+            Rc::new(move |updates, deletes, acknowledge| {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.apply_row_changes(updates, deletes, acknowledge);
+                }
+            })
+        },
+        begin: {
+            let state = Rc::clone(state);
+            Rc::new(move |read_only| {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.begin_transaction(read_only);
+                }
+            })
+        },
+        commit_txn: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.commit_transaction();
+                }
+            })
+        },
+        rollback_txn: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.rollback_transaction();
+                }
+            })
+        },
+        reload: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.reload_table();
+                }
+            })
+        },
+        disconnect: Rc::clone(on_disconnect),
+        reconnect: Rc::clone(on_retry),
+    };
+    let data_page = DataPage::new(data_callbacks);
+
+    let workspace = Workspace::new(&sql_page, &data_page, state);
+    state.workspace.replace(Some(Rc::clone(&workspace)));
+    set_page(&state.slot, workspace.widget());
+    sql_page.focus_editor();
     eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
+    // 工作区建立后立刻读取表列表（侧栏不是空壳）。
+    if let Some(worker) = state.worker.borrow().as_ref() {
+        worker.list_tables();
+    }
+}
+
+/// 工作区：左侧表列表 + 右侧「SQL 工作区 / 数据页」。
+struct Workspace {
+    root: gtk::Box,
+    sidebar: Rc<TableBrowser>,
+    sql_page: Rc<SqlPage>,
+    data_page: Rc<DataPage>,
+    /// 打开表的统一入口（侧栏点击与 QA 按名打开共用）。
+    open: Rc<dyn Fn(TableEntry)>,
+}
+
+impl Workspace {
+    fn new(sql_page: &Rc<SqlPage>, data_page: &Rc<DataPage>, state: &Rc<UiState>) -> Rc<Self> {
+        let stack = gtk::Stack::new();
+        stack.set_vexpand(true);
+        stack.set_hexpand(true);
+        stack.add_named(sql_page.widget(), Some("sql"));
+        stack.add_named(data_page.widget(), Some("data"));
+        stack.set_visible_child_name("sql");
+
+        // 侧栏顶部：回到 SQL 工作区。页面切换不重建会话。
+        let sql_button = gtk::Button::with_label("SQL 工作区");
+        sql_button.add_css_class("flat");
+        sql_button.set_tooltip_text(Some("切换到 SQL 编辑器与结果区"));
+        let stack_for_sql = stack.clone();
+        sql_button.connect_clicked(move |_| stack_for_sql.set_visible_child_name("sql"));
+
+        let open: Rc<dyn Fn(TableEntry)> = {
+            let stack = stack.clone();
+            let data_page = Rc::clone(data_page);
+            let state = Rc::clone(state);
+            Rc::new(move |entry: TableEntry| {
+                stack.set_visible_child_name("data");
+                data_page.begin_open(entry.clone());
+                eprintln!(
+                    "[data] t=+{}ms 选择表 {}",
+                    crate::qa::elapsed_ms(),
+                    entry.display_name
+                );
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.open_table(entry.reference);
+                }
+            })
+        };
+
+        let sidebar = TableBrowser::new(Rc::clone(&open), {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.list_tables();
+                }
+            })
+        });
+
+        let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        sidebar_box.set_size_request(230, -1);
+        sidebar_box.append(&sql_button);
+        sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        sidebar_box.append(sidebar.widget());
+
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root.set_vexpand(true);
+        root.append(&sidebar_box);
+        root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        root.append(&stack);
+
+        Rc::new(Self {
+            root,
+            sidebar,
+            sql_page: Rc::clone(sql_page),
+            data_page: Rc::clone(data_page),
+            open,
+        })
+    }
+
+    fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    /// 按表名打开（QA 与「打开指定表」共用侧栏的同一条路径）。
+    fn open_by_name(&self, name: &str) -> bool {
+        let Some(entry) = self.sidebar.entry_by_name(name) else {
+            return false;
+        };
+        eprintln!(
+            "[qa] t=+{}ms 从侧栏选择表 {}",
+            crate::qa::elapsed_ms(),
+            entry.display_name
+        );
+        (self.open)(entry);
+        true
+    }
 }
 
 /// QA：把 `--qa-sql-file` 填进编辑器（与用户输入同一控件），再触发与按钮相同的方法。
 fn maybe_run_qa_sql(state: &Rc<UiState>) {
-    let Some(page) = state.sql_page.borrow().as_ref().cloned() else {
+    let Some(page) = state
+        .workspace
+        .borrow()
+        .as_ref()
+        .map(|workspace| Rc::clone(&workspace.sql_page))
+    else {
         return;
     };
     if let Some(sql) = crate::qa::sql() {
@@ -667,6 +860,138 @@ fn maybe_run_qa_sql(state: &Rc<UiState>) {
             }
             eprintln!("[qa] t=+{}ms 第二次执行", crate::qa::elapsed_ms());
             page.execute();
+        });
+    }
+}
+
+/// QA：数据页无人值守验证（打开表 → 编辑 → 提交/回滚 → 重新查询）。
+///
+/// 全部动作走用户会走的同一条路径：按名选择侧栏条目、编辑态的值转换、
+/// 「提交更改」按钮（含风险确认对话框）、事务按钮。没有直接调 gRPC 的捷径。
+fn maybe_run_qa_data(state: &Rc<UiState>) {
+    let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {
+        return;
+    };
+    let Some(table) = crate::qa::data_table() else {
+        return;
+    };
+    let data = Rc::clone(&workspace.data_page);
+    data.set_qa_auto_confirm(crate::qa::auto_confirm_risk());
+
+    // 1. 从侧栏按名打开表（与点击侧栏条目同一条路径）。
+    {
+        let workspace = Rc::clone(&workspace);
+        let table = table.clone();
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            if !workspace.open_by_name(&table) {
+                eprintln!("[qa] 表列表中找不到 {table}（ListNodes 未返回该对象）");
+            }
+        });
+    }
+
+    // 2. 开始事务（可选只读，用于只读态验证）。
+    if crate::qa::data_begin_transaction() {
+        let data = Rc::clone(&data);
+        let read_only = crate::qa::data_read_only();
+        glib::timeout_add_local_once(Duration::from_millis(1_300), move || {
+            eprintln!(
+                "[qa] t=+{}ms 点击「开始事务」（只读={read_only}）",
+                crate::qa::elapsed_ms()
+            );
+            data.qa_begin(read_only);
+        });
+    }
+
+    // 3. 单元格编辑（按列名）。
+    for (index, (row, column, value)) in crate::qa::data_edits().into_iter().enumerate() {
+        let data = Rc::clone(&data);
+        let delay = 1_900 + 180 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            eprintln!(
+                "[qa] t=+{}ms 编辑第 {} 行 {} = {}",
+                crate::qa::elapsed_ms(),
+                row,
+                column,
+                value
+            );
+            match data.qa_edit_named(usize::try_from(row).unwrap_or(0), &column, &value) {
+                Ok(()) => {}
+                Err(error) => eprintln!("[qa] 编辑失败：{error}"),
+            }
+        });
+    }
+
+    // 4. 标记删除（可重复）。
+    for (index, row) in crate::qa::data_delete_rows().into_iter().enumerate() {
+        let data = Rc::clone(&data);
+        let delay = 2_600 + 180 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            eprintln!("[qa] t=+{}ms 标记删除第 {row} 行", crate::qa::elapsed_ms());
+            if let Err(error) = data.qa_delete_row(usize::try_from(row).unwrap_or(0)) {
+                eprintln!("[qa] 标记删除失败：{error}");
+            }
+        });
+    }
+
+    // 5. 滚动到指定行（触发 cursor 翻页；未加载时像用户快速滚动一样继续取页）。
+    for (index, row) in crate::qa::data_scroll_rows().into_iter().enumerate() {
+        let state = Rc::clone(state);
+        let workspace = Rc::clone(&workspace);
+        let delay = 2_600 + 1_200 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            let mut attempts = 0;
+            glib::timeout_add_local(Duration::from_millis(300), move || {
+                if workspace.data_page.qa_scroll_to_row(row) {
+                    eprintln!(
+                        "[qa] t=+{}ms 已滚动到第 {row} 行（已加载 {} 行）",
+                        crate::qa::elapsed_ms(),
+                        workspace.data_page.row_count()
+                    );
+                    return glib::ControlFlow::Break;
+                }
+                if attempts >= 30 {
+                    eprintln!(
+                        "[qa] 第 {row} 行超过已加载行数（{}），停止",
+                        workspace.data_page.row_count()
+                    );
+                    return glib::ControlFlow::Break;
+                }
+                attempts += 1;
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.fetch_table_page();
+                }
+                glib::ControlFlow::Continue
+            });
+        });
+    }
+
+    // 6. 提交更改 / 回滚事务（脚本控制，截图时通常都不设置）。
+    if crate::qa::data_commit() {
+        let data = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(3_600), move || {
+            eprintln!("[qa] t=+{}ms 点击「提交更改」", crate::qa::elapsed_ms());
+            data.qa_commit();
+        });
+    }
+    if crate::qa::data_rollback() {
+        let data = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(3_600), move || {
+            eprintln!("[qa] t=+{}ms 点击「回滚事务」", crate::qa::elapsed_ms());
+            data.qa_rollback();
+        });
+    }
+
+    // 7. 重新浏览，核对数据库里的真实值。
+    if crate::qa::data_reload() {
+        let data_for_reload = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(4_800), move || {
+            eprintln!("[qa] t=+{}ms 重新浏览当前表", crate::qa::elapsed_ms());
+            data_for_reload.qa_reload();
+        });
+        let data_for_log = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(5_600), move || {
+            eprintln!("[qa] 重新浏览后的行值：");
+            data_for_log.qa_log_rows();
         });
     }
 }

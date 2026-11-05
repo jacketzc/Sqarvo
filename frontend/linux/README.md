@@ -23,6 +23,14 @@ Loading / Connected / Error / Disconnected 四态之间切换，Connected 时显
 就不会继续拉取）。数值见 [`docs/releases/v0.2.md`](../../docs/releases/v0.2.md) 与下方
 「性能实测」。
 
+**表数据页已接入**（#48）：连接后左侧是 `MetadataService.ListNodes` 的表/视图列表，
+点击进入数据页——`TableDataService.BrowseTable` 按主键升序 + 不透明 cursor 翻页（每页
+500 行、滚动到底继续取）、`GtkColumnView` 虚拟化网格、单元格编辑（文本 → 强类型值，
+NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交、逐行错误展示、
+> 100 行/含删除的风险确认、事务徽标（自动提交 / 事务中 / 失败态 / 已断开）与
+开始/提交/回滚按钮。无主键表只读并在横幅里说明「无稳定排序 / 无法稳定定位行」；
+断连时丢弃未提交变更并说明后端已强制回滚事务。
+
 **语法高亮尚未实现**：编辑器是纯文本，编辑器上方如实标注「当前为纯文本编辑，语法高亮
 将在后续版本提供」，不用配色暗示已有高亮。
 
@@ -108,6 +116,9 @@ cargo run
 | `src/backend/query.rs` | 查询域：视图模型、单元格格式化（NULL/空串/二进制/Decimal/日期时间/截断）、失败分类、结果集上限计量与预取决策（纯函数）；不依赖 GTK |
 | `src/results.rs` | 结果区：自定义 `GListModel`（`RowStore`）+ `GtkColumnView` 虚拟化、预取触发（消费门/单批背压）、上限状态、状态栏 |
 | `src/sql_page.rs` | SQL 工作区：编辑器、执行/取消按钮与快捷键、页面状态机、QA 滚动与取消钩子 |
+| `src/backend/table.rs` | 表数据域：浏览结果/列元数据/只读原因/逐行结果/错误分类与文案（纯逻辑，不依赖 GTK） |
+| `src/table_data.rs` | 表编辑纯逻辑：文本 → 强类型值、NULL/空串、全文本草稿与批次构造、风险判定、只读文案、事务徽标状态机（可单测） |
+| `src/data_page.rs` | 数据页：表列表侧栏、虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务徽标、逐行错误列表 |
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
 
@@ -328,6 +339,98 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 都加载进来，所以「加载到末尾」时 RSS 必然随已加载行数增长；这不是滚动泄漏，而是数据本身。
 若未来需要「跳到末尾不占内存」，需要服务端提供可寻址分页或视窗查询。
 
+## 数据页（#48）
+
+连接数据库后，主区域左侧出现「表与视图」列表（`MetadataService.ListNodes` 根节点，
+失败时用分类文案展示，不是空列表）；点击条目进入右侧数据页。右上「SQL 工作区」
+切回编辑器，两个页面共用同一个数据库会话。
+
+### 浏览与翻页
+
+- `TableDataService.BrowseTable(object, page_size=500, page_token)`：固定按主键升序，
+  cursor 不透明且只由 worker 持有，界面只在滚动接近末尾（或内容不足一屏）时请求下一页；
+  同一时刻最多一页在途（单批背压），停在末尾不动不会继续拉取；
+- 列头显示**原始类型名**（`varchar(64)`、`decimal(12,3)`…），来自 `ColumnMeta`；
+- 行号跨页连续；`has_more=false` 后不再请求；
+- 空表显示「空表 · 共 0 行」，与错误/只读严格区分；
+- 游标非法（`table_data.cursor_invalid`）时停止翻页并展示原因，**不回退到第一页**。
+
+### 编辑
+
+| 操作 | 方式 |
+|---|---|
+| 编辑单元格 | 双击单元格打开编辑弹窗（文本框 + 「设为 NULL」开关） |
+| 标记删除 | 选中一行后点「删除选中行」（提交前可放弃更改撤销） |
+| 提交 | 「提交更改（N）」；`N` 为待提交行数 |
+| 放弃 | 「放弃更改」把当前值恢复为加载时的值 |
+
+- 值按列类型转换：整数（区分无符号）、浮点、Decimal（`unscaled_value + scale`，不经 f64）、
+  布尔（1/0、true/false、是/否）、DATE/TIME/DATETIME/TIMESTAMP（时间戳可写 `+08:00`）、
+  TEXT/JSON/UUID；转换失败就地显示原因，不静默丢弃；
+- **NULL 与空串**：文本列的空文本是空字符串 `''`；要写 SQL NULL 必须勾选「设为 NULL」。
+  数值/时间列的空文本按 NULL 处理（不可空列直接报错）。字符串 `NULL` 仍是文本；
+- 脏行在行首显示 `●` 并高亮修改过的单元格，状态行右侧显示「脏行 N · 待提交 M 条」；
+- 截断列（`truncated=true`）、二进制/数组/未映射类型**不进入编辑态**并给出原因
+  （提交截断值会被服务端以 `table_data.truncated_value` 拒绝）；
+- 提交只发送「主键值 + 列变更」（`ApplyRowChanges`），前端不拼接任何 SQL；
+  `expected_rows_affected=1` 由服务端核对。
+
+### 风险确认
+
+- 预计影响 **> 100 行**，或**包含任何删除**时，提交前弹 `AdwAlertDialog` 确认；
+  删除会单独警告「提交后无法通过本界面撤销」；
+- 未确认不发送任何变更；服务端仍会以 `table_data.confirmation_required` 兜底
+  （客户端不自行放宽阈值），此时界面会重新弹出同一个确认对话框；
+- 单批上限 500 行：服务端返回 `clamped` / `deferred_changes` 时，界面明确提示
+  「还有 N 条未提交，请再次提交」，不静默丢弃。
+
+### 事务徽标与按钮
+
+| 徽标 | 含义 | 允许的操作 |
+|---|---|---|
+| 自动提交 | 未打开事务，行变更立即生效 | 开始事务 |
+| 事务中 / 事务中（只读） | 显式事务；只读事务禁止编辑 | 提交事务 / 回滚事务（只读态可编辑性另受限制） |
+| 事务失败（只能回滚） | 服务端 `transaction.failed` | 仅回滚 |
+| 已断开 | 后端/会话失效，后端已强制回滚 | 无（横幅提供重新连接） |
+
+- 「开始事务」带「只读」开关；只读事务下编辑与删除会被拒绝并说明原因；
+- 有未提交更改时「提交事务」不可用（先提交或放弃更改），避免误以为更改已随事务落库；
+- 事务结束（提交/回滚）后自动重新浏览当前表，显示数据库真实状态。
+
+### 只读态
+
+| 原因 | 界面行为 |
+|---|---|
+| 无主键表（`table_data.no_primary_key`） | 浏览可用；横幅说明「无稳定排序 / 无法稳定定位行」，编辑/删除/提交禁用 |
+| 驱动未声明行编辑（`capability.unsupported`） | 浏览可用；横幅说明驱动不支持行编辑 |
+| 只读事务 | 横幅说明只读事务；回滚后可重新开始读写事务 |
+
+只读原因**始终以文字说明**，不是只把按钮置灰；`no_primary_key` 的文案不会暗示存在
+rowid / ctid 之类的近似定位方式。
+
+### 断连
+
+`GetHealth` 失败、`UNAVAILABLE` 或 `session.not_found` 时：数据页进入「已断开」，
+**丢弃未提交的界面更改**并在横幅里写明「未提交的 N 行变更已丢弃；数据库事务已由后端
+强制回滚」。已加载行保留为只读视图。
+
+### 无人值守验证参数
+
+| 参数 | 作用 |
+|---|---|
+| `--qa-data-table <name>` | 通过侧栏按名打开表（与点击条目同一条路径） |
+| `--qa-data-begin-txn` | 打开表后点「开始事务」 |
+| `--qa-data-read-only` | 开始只读事务（配合上一个参数） |
+| `--qa-data-edit <row>:<column>:<value>` | 用编辑态的值转换修改单元格（可重复；行号 0 起） |
+| `--qa-data-delete-row <row>` | 标记删除一行（可重复） |
+| `--qa-data-scroll-to-row <n>` | 滚动到第 n 行，未加载时继续取页 |
+| `--qa-data-commit` | 点「提交更改」（必要时弹风险确认） |
+| `--qa-data-rollback` | 点「回滚事务」 |
+| `--qa-data-reload` | 提交/回滚后重新浏览并打印行值 |
+| `--qa-auto-confirm-risk` | 无人值守时自动确认风险对话框（仍走同一个对话框与提交路径） |
+
+不带这些参数的正常启动路径完全不受影响。
+
 ## 安全约定
 
 - 端点文件里的 token 只保存在 `BackendClient` 内部；`Debug` 实现与所有日志/错误文案
@@ -348,7 +451,10 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
   看到完整结果；
 - 默认上限（500000 行 / 512 MiB 估算）按本机 24 GiB 内存选择，较小内存机器应显式调低；
 - 冷启动与内存数值都来自**debug 构建**，release 构建的基准尚未测量；
-- 事务未接线：`auto_commit=true` 固定提交，界面上没有 BEGIN/COMMIT/ROLLBACK；
+- SQL 工作区的查询仍是 `auto_commit=true`（查询侧不使用显式事务）；数据页的事务按钮
+  只作用于表数据的行变更，两者共用同一个数据库会话；
+- 数据页**不支持插入新行**（v0.2.2）、不提供按非主键列排序（cursor 只按主键升序）；
+- 截断列（`truncated=true`）禁止编辑，避免把前缀写回数据库；「查看完整值」未实现；
 - v0.1 只有一条语句的结果集：`statements` 全部如实列出，但表格只展示 `statement_index=0`；
   多语句/单语句限制由服务端决定，前端不伪造；
 - 取消一个**尚未返回查询 ID** 的 `Execute` 无法通知服务端（见「取消语义」）；
@@ -434,6 +540,26 @@ DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_P
 - 所有 `[query]` / `[qa]` 日志带 `t=+Xms`（进程启动起算），可与 `/proc/<pid>/status`
   的 `VmRSS` 采样按时间对齐；
 - 不存在绕过 UI 直接调 gRPC 的捷径。
+
+### 数据页的无人值守验证（#48）
+
+```bash
+pkill -x sqarvo-desktop; pkill -x sqarvo-backend; rm -rf /run/user/1000/sqarvo
+DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 \
+XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
+  ./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-data-table demo_items --qa-data-begin-txn \
+  --qa-data-edit 0:name:alpha-preview \
+  --screenshot /tmp/data-page-dirty-txn.png --screenshot-delay-ms 3200
+```
+
+- 打开表、开始事务、编辑单元格都走用户路径（侧栏条目 / 事务按钮 / 编辑态的值转换）；
+- 提交路径加 `--qa-data-commit --qa-data-reload`（可选 `--qa-auto-confirm-risk`），
+  日志里能看到「提交 1 条行变更」「影响 1 行」以及重新浏览后的行值；
+- 回滚路径把 `--qa-data-commit` 换成 `--qa-data-rollback`，重新浏览后值应保持不变；
+- 翻页用 `--qa-data-scroll-to-row 1100`（表需足够大），日志给出第 N 页行数与累计行数；
+- `--qa-data-table demo_notes`（无主键表）会进入只读态并打印只读原因。
 
 ### 连接对话框的无人值守验证（`--qa-profile` / `--qa-password-env`）
 

@@ -1,0 +1,2256 @@
+//! 数据页（#48）：表列表 + 虚拟化数据网格 + 单元格编辑 + 批量提交/回滚 + 事务徽标。
+//!
+//! # 结构
+//!
+//! ```text
+//! ┌ 表列表（MetadataService.ListNodes）┐ ┌ 数据页 ────────────────────────────┐
+//! │ demo_items  表                      │ │ 表名 · 事务徽标 · 开始/提交/回滚    │
+//! │ demo_notes  表                      │ │ 只读/断连横幅                      │
+//! └─────────────────────────────────────┘ │ 状态行 · 脏行计数                  │
+//!                                          │ GtkColumnView（虚拟化，cursor 翻页）│
+//!                                          │ 逐行错误列表                       │
+//!                                          └────────────────────────────────────┘
+//! ```
+//!
+//! # 为什么复用 `GtkColumnView` + 自定义 `GListModel`
+//!
+//! 与 [`crate::results`] 同一套思路：只对可见行调用工厂的 `setup`/`bind`，
+//! 行数据本身是 `Rc<RefCell<DataRow>>`，编辑只改数据并通知一行失效，
+//! **不会**为每一行创建 widget。翻页由 cursor 驱动（界面只在接近末尾时请求下一页，
+//! cursor 本身留在 worker，界面不解析）。
+//!
+//! # 编辑
+//!
+//! 双击单元格打开 `GtkPopover`：文本框 + 「设为 NULL」开关。空文本在文本列表示
+//! 空字符串，在数值/时间列表示 NULL；要写 SQL NULL 必须勾选开关——二者绝不混淆。
+//! 值按列类型转换（[`crate::table_data::parse_cell_input`]），失败原因就地展示。
+//! 截断列、二进制/数组/未映射类型与只读表**不进入编辑态**，并给出原因。
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use adw::prelude::*;
+use gtk::gio;
+use gtk::glib;
+
+use crate::backend::query::{CellStyle, CellView, format_cell};
+use crate::backend::table::{
+    ApplyReport, TableColumn, TableEntry, TableFailure, TableOpen, TableRow, TxnSnapshot,
+};
+use crate::proto::common::v1::ColumnValue;
+use crate::proto::services::v1::{
+    ReadOnlyReason, RowDelete, RowOrder, RowUpdate, TransactionState,
+};
+use crate::table_data::{
+    ChangeBatch, ReadOnlyCause, RiskAssessment, TableDraft, TransactionBadge, TxnStatus, edit_text,
+};
+
+/// 数据页的状态（界面必须能分辨加载 / 空 / 错误 / 只读 / 断连）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataState {
+    /// 还没打开表。
+    Idle,
+    /// 正在读取。
+    Loading,
+    /// 已加载（可编辑或只读）。
+    Ready,
+    /// 表存在但没有行。
+    Empty,
+    /// 读取/提交失败。
+    Error,
+    /// 已断开（保留已加载数据）。
+    Disconnected,
+}
+
+/// 提交行变更的回调签名。
+pub type ApplyCallback = Rc<dyn Fn(Vec<RowUpdate>, Vec<RowDelete>, bool)>;
+
+/// 数据页发给 worker 的命令（全部非阻塞）。
+pub struct DataCallbacks {
+    /// 预取下一页。
+    pub fetch_page: Rc<dyn Fn()>,
+    /// 提交行变更（updates / deletes / 风险确认）。
+    pub apply: ApplyCallback,
+    /// 开始事务（是否只读）。
+    pub begin: Rc<dyn Fn(bool)>,
+    /// 提交事务。
+    pub commit_txn: Rc<dyn Fn()>,
+    /// 回滚事务。
+    pub rollback_txn: Rc<dyn Fn()>,
+    /// 重新浏览当前表。
+    pub reload: Rc<dyn Fn()>,
+    /// 主动断开后端。
+    pub disconnect: Rc<dyn Fn()>,
+    /// 断连横幅上的「重新连接后端」。
+    pub reconnect: Rc<dyn Fn()>,
+}
+
+/// 一行在网格里的可编辑数据。
+pub(crate) struct DataRow {
+    /// 行号（1 起）。
+    number: u64,
+    /// 显示单元格。
+    cells: Vec<CellView>,
+    /// 每列是否脏。
+    dirty: Vec<bool>,
+    /// 是否标记删除。
+    deleted: bool,
+    /// 删除已提交（行已不存在）。
+    removed: bool,
+}
+
+mod data_row_store {
+    use super::*;
+    use gio::subclass::prelude::*;
+
+    #[derive(Default)]
+    pub struct DataRowStore {
+        pub(crate) rows: RefCell<Vec<Rc<RefCell<DataRow>>>>,
+        pub(crate) items: RefCell<Vec<Option<glib::Object>>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for DataRowStore {
+        const NAME: &'static str = "SqarvoDataRowStore";
+        type Type = super::DataRowStore;
+        type Interfaces = (gio::ListModel,);
+    }
+
+    impl ObjectImpl for DataRowStore {}
+
+    impl ListModelImpl for DataRowStore {
+        fn item_type(&self) -> glib::Type {
+            glib::BoxedAnyObject::static_type()
+        }
+
+        fn n_items(&self) -> u32 {
+            u32::try_from(self.rows.borrow().len()).unwrap_or(u32::MAX)
+        }
+
+        fn item(&self, position: u32) -> Option<glib::Object> {
+            let index = usize::try_from(position).ok()?;
+            let row = self.rows.borrow().get(index).cloned()?;
+            let mut items = self.items.borrow_mut();
+            if items.len() <= index {
+                items.resize_with(index + 1, || None);
+            }
+            if items[index].is_none() {
+                items[index] = Some(glib::BoxedAnyObject::new(row).upcast());
+            }
+            items[index].clone()
+        }
+    }
+}
+
+glib::wrapper! {
+    /// 数据行模型：只持有数据，不持有 widget。
+    pub struct DataRowStore(ObjectSubclass<data_row_store::DataRowStore>) @implements gio::ListModel;
+}
+
+impl Default for DataRowStore {
+    fn default() -> Self {
+        glib::Object::new()
+    }
+}
+
+impl DataRowStore {
+    fn append(&self, rows: impl IntoIterator<Item = DataRow>) {
+        let start = self.n_items();
+        {
+            let mut store = self.imp().rows.borrow_mut();
+            for row in rows {
+                store.push(Rc::new(RefCell::new(row)));
+            }
+        }
+        let added = self.n_items().saturating_sub(start);
+        if added > 0 {
+            self.items_changed(start, 0, added);
+        }
+    }
+
+    fn clear(&self) {
+        let removed = self.n_items();
+        self.imp().rows.borrow_mut().clear();
+        self.imp().items.borrow_mut().clear();
+        if removed > 0 {
+            self.items_changed(0, removed, 0);
+        }
+    }
+
+    fn notify_row(&self, index: usize) {
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        if index < self.n_items() {
+            // 丢掉缓存对象：GTK 的列表视图在 item 指针未变时不会重新 bind，
+            // 同一位置换一个新 `BoxedAnyObject` 才能让编辑后的文本真正刷新。
+            if let Some(slot) = self
+                .imp()
+                .items
+                .borrow_mut()
+                .get_mut(usize::try_from(index).unwrap_or(usize::MAX))
+            {
+                *slot = None;
+            }
+            self.items_changed(index, 1, 1);
+        }
+    }
+
+    fn imp(&self) -> &data_row_store::DataRowStore {
+        glib::subclass::prelude::ObjectSubclassIsExt::imp(self)
+    }
+}
+
+/// 表列表侧栏。
+pub struct TableBrowser {
+    root: gtk::Box,
+    list: gtk::ListBox,
+    entries: RefCell<Vec<TableEntry>>,
+    count: gtk::Label,
+}
+
+impl TableBrowser {
+    /// 构建侧栏；`on_select` 在用户点击表时调用，`on_refresh` 由「刷新」触发。
+    pub fn new(on_select: Rc<dyn Fn(TableEntry)>, on_refresh: Rc<dyn Fn()>) -> Rc<Self> {
+        let title = gtk::Label::new(Some("表与视图"));
+        title.set_xalign(0.0);
+        title.add_css_class("heading");
+        title.set_hexpand(true);
+
+        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+        refresh.add_css_class("flat");
+        refresh.set_tooltip_text(Some("重新读取表列表（ListNodes）"));
+        refresh.connect_clicked(move |_| on_refresh());
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header.set_margin_top(8);
+        header.set_margin_bottom(6);
+        header.set_margin_start(10);
+        header.set_margin_end(6);
+        header.append(&title);
+        header.append(&refresh);
+
+        let count = gtk::Label::new(None);
+        count.set_xalign(0.0);
+        count.set_margin_start(10);
+        count.set_margin_bottom(4);
+        count.add_css_class("dim-label");
+        count.add_css_class("caption");
+
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.add_css_class("navigation-sidebar");
+
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&list)
+            .build();
+
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.set_size_request(220, -1);
+        root.append(&header);
+        root.append(&count);
+        root.append(&scroll);
+
+        let browser = Rc::new(Self {
+            root,
+            list,
+            entries: RefCell::new(Vec::new()),
+            count,
+        });
+
+        let browser_for_activate = Rc::clone(&browser);
+        browser.list.connect_row_activated(move |_, row| {
+            let index = usize::try_from(row.index()).unwrap_or(usize::MAX);
+            let entry = browser_for_activate.entries.borrow().get(index).cloned();
+            if let Some(entry) = entry {
+                on_select(entry);
+            }
+        });
+        browser
+    }
+
+    /// 根控件。
+    pub fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    /// 替换表列表。
+    pub fn set_tables(&self, tables: Vec<TableEntry>) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        let count = tables.len();
+        for table in &tables {
+            let name = gtk::Label::new(Some(&table.display_name));
+            name.set_xalign(0.0);
+            name.set_hexpand(true);
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let kind = gtk::Label::new(Some(table.kind_label()));
+            kind.add_css_class("dim-label");
+            kind.add_css_class("caption");
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row_box.set_margin_top(6);
+            row_box.set_margin_bottom(6);
+            row_box.set_margin_start(8);
+            row_box.set_margin_end(8);
+            row_box.append(&name);
+            row_box.append(&kind);
+            let row = gtk::ListBoxRow::new();
+            row.set_child(Some(&row_box));
+            row.set_tooltip_text(Some(&format!(
+                "{}（{}）· 点击浏览表数据",
+                table.display_name,
+                table.kind_label()
+            )));
+            row.set_activatable(true);
+            self.list.append(&row);
+        }
+        self.count.set_text(&format!("共 {count} 个对象"));
+        self.entries.replace(tables);
+    }
+
+    /// 按名称找到条目（QA 与「打开指定表」用）。
+    pub fn entry_by_name(&self, name: &str) -> Option<TableEntry> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.display_name == name || entry.reference.name == name)
+            .cloned()
+    }
+}
+
+/// 数据页。
+pub struct DataPage {
+    root: gtk::Box,
+    banner: adw::Banner,
+    table_label: gtk::Label,
+    txn_badge: gtk::Label,
+    status: gtk::Label,
+    dirty_label: gtk::Label,
+    spinner: gtk::Spinner,
+    grid: gtk::ColumnView,
+    /// 内容区：占位页 / 数据网格。
+    content: gtk::Stack,
+    placeholder: adw::StatusPage,
+    selection: gtk::SingleSelection,
+    store: DataRowStore,
+    errors: gtk::ListBox,
+    errors_scroll: gtk::ScrolledWindow,
+    buttons: DataButtons,
+    readonly_check: gtk::CheckButton,
+    draft: RefCell<Option<TableDraft>>,
+    badge: RefCell<TransactionBadge>,
+    state: Cell<DataState>,
+    columns: RefCell<Vec<TableColumn>>,
+    table: RefCell<Option<TableEntry>>,
+    /// 只读原因（表级；只读事务由徽标另行判定）。
+    read_only_cause: RefCell<Option<ReadOnlyCause>>,
+    /// 是否还有更多页。
+    has_more: Cell<bool>,
+    /// 是否有一页在途。
+    loading_page: Cell<bool>,
+    /// 是否有 RPC 在途（提交/事务按钮忙碌态）。
+    busy: Cell<bool>,
+    /// 当前横幅是否是只读说明（刷新事务状态时据此决定是否收起）。
+    banner_is_readonly: Cell<bool>,
+    /// 已取页数。
+    pages: Cell<u64>,
+    /// 上次请求翻页时的滚动位置（消费门）。
+    last_fetch_value: Cell<f64>,
+    /// 正在提交的批次（用于把逐行结果映射回行号）。
+    pending_batch: RefCell<Option<ChangeBatch>>,
+    /// QA：风险确认对话框自动点「确认提交」（仍走同一个对话框路径）。
+    qa_auto_confirm: Cell<bool>,
+    callbacks: DataCallbacks,
+}
+
+struct DataButtons {
+    begin: gtk::Button,
+    commit_txn: gtk::Button,
+    rollback: gtk::Button,
+    refresh: gtk::Button,
+    commit_changes: gtk::Button,
+    discard: gtk::Button,
+    delete_row: gtk::Button,
+    disconnect: gtk::Button,
+}
+
+impl DataPage {
+    /// 构建数据页（不发起任何 RPC）。
+    pub fn new(callbacks: DataCallbacks) -> Rc<Self> {
+        install_css();
+
+        let banner = adw::Banner::new("");
+        banner.set_revealed(false);
+        banner.set_button_label(Some("重新连接后端"));
+
+        let table_label = gtk::Label::new(Some("未选择表"));
+        table_label.set_xalign(0.0);
+        table_label.add_css_class("heading");
+        table_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+        let txn_badge = gtk::Label::new(Some("自动提交"));
+        txn_badge.add_css_class("pill");
+        txn_badge.add_css_class("sqarvo-txn-commit");
+        txn_badge.set_tooltip_text(Some("事务状态：自动提交"));
+
+        let begin = gtk::Button::with_label("开始事务");
+        begin.add_css_class("flat");
+        begin.set_tooltip_text(Some("在当前会话开始一个显式事务"));
+
+        let readonly_check = gtk::CheckButton::with_label("只读");
+        readonly_check.set_tooltip_text(Some("以只读事务开始（不能写入，用于只读态验证）"));
+
+        let commit_txn = gtk::Button::with_label("提交事务");
+        commit_txn.add_css_class("suggested-action");
+        commit_txn.set_tooltip_text(Some("提交当前事务（失败态只能回滚）"));
+
+        let rollback = gtk::Button::with_label("回滚事务");
+        rollback.add_css_class("destructive-action");
+        rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
+
+        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+        refresh.add_css_class("flat");
+        refresh.set_tooltip_text(Some("重新读取当前表的第一页"));
+
+        let disconnect = gtk::Button::with_label("断开后端");
+        disconnect.add_css_class("flat");
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        header.set_margin_top(8);
+        header.set_margin_bottom(4);
+        header.set_margin_start(12);
+        header.set_margin_end(12);
+        header.append(&table_label);
+        table_label.set_hexpand(true);
+        header.append(&txn_badge);
+        header.append(&begin);
+        header.append(&readonly_check);
+        header.append(&commit_txn);
+        header.append(&rollback);
+        header.append(&refresh);
+        header.append(&disconnect);
+
+        let commit_changes = gtk::Button::with_label("提交更改");
+        commit_changes.add_css_class("suggested-action");
+        commit_changes.set_sensitive(false);
+        commit_changes.set_tooltip_text(Some("提交所有脏行的变更（主键定位 + 列变更）"));
+
+        let discard = gtk::Button::with_label("放弃更改");
+        discard.set_sensitive(false);
+        discard.set_tooltip_text(Some("丢弃全部未提交的编辑与删除标记"));
+
+        let delete_row = gtk::Button::with_label("删除选中行");
+        delete_row.add_css_class("destructive-action");
+        delete_row.set_sensitive(false);
+        delete_row.set_tooltip_text(Some("把选中行标记为待删除（提交前仍可撤销）"));
+
+        let spinner = gtk::Spinner::new();
+        spinner.set_visible(false);
+
+        let status = gtk::Label::new(Some("请选择左侧的表开始浏览"));
+        status.set_xalign(0.0);
+        status.add_css_class("caption");
+        status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+        let dirty_label = gtk::Label::new(Some("脏行 0 · 待提交 0 条"));
+        dirty_label.set_xalign(1.0);
+        dirty_label.add_css_class("dim-label");
+        dirty_label.add_css_class("caption");
+
+        let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        status_row.set_margin_start(12);
+        status_row.set_margin_end(12);
+        status_row.set_margin_bottom(4);
+        status_row.append(&spinner);
+        status_row.append(&status);
+        status.set_hexpand(true);
+        status_row.append(&dirty_label);
+
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        controls.set_margin_start(12);
+        controls.set_margin_end(12);
+        controls.set_margin_bottom(6);
+        controls.append(&commit_changes);
+        controls.append(&discard);
+        controls.append(&delete_row);
+
+        let errors = gtk::ListBox::new();
+        errors.set_selection_mode(gtk::SelectionMode::None);
+        errors.add_css_class("boxed-list");
+        let errors_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .max_content_height(140)
+            .min_content_height(60)
+            .child(&errors)
+            .build();
+        errors_scroll.set_margin_start(12);
+        errors_scroll.set_margin_end(12);
+        errors_scroll.set_margin_bottom(6);
+        errors_scroll.set_visible(false);
+
+        let store = DataRowStore::default();
+        let selection = gtk::SingleSelection::new(Some(store.clone()));
+        selection.set_autoselect(false);
+        selection.set_can_unselect(true);
+        let grid = gtk::ColumnView::new(Some(selection.clone()));
+        grid.set_show_row_separators(true);
+        grid.set_show_column_separators(true);
+        grid.set_reorderable(false);
+        grid.add_css_class("sqarvo-grid");
+
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&grid)
+            .build();
+
+        let placeholder = adw::StatusPage::builder()
+            .title("尚未打开表")
+            .description("在左侧表列表中选择一张表查看数据")
+            .build();
+        let placeholder_icon = gtk::Image::from_icon_name("x-office-spreadsheet-symbolic");
+        placeholder_icon.set_pixel_size(48);
+        placeholder.set_child(Some(&placeholder_icon));
+
+        let stack = gtk::Stack::new();
+        stack.set_vexpand(true);
+        stack.add_named(&placeholder, Some("placeholder"));
+        stack.add_named(&scroll, Some("grid"));
+        stack.set_visible_child_name("placeholder");
+
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.set_vexpand(true);
+        root.set_valign(gtk::Align::Fill);
+        root.append(&banner);
+        root.append(&header);
+        root.append(&controls);
+        root.append(&status_row);
+        root.append(&errors_scroll);
+        root.append(&stack);
+
+        let page = Rc::new(Self {
+            root,
+            banner,
+            table_label,
+            txn_badge,
+            status,
+            dirty_label,
+            spinner,
+            grid: grid.clone(),
+            content: stack.clone(),
+            placeholder: placeholder.clone(),
+            selection: selection.clone(),
+            store,
+            errors,
+            errors_scroll,
+            buttons: DataButtons {
+                begin,
+                commit_txn,
+                rollback,
+                refresh,
+                commit_changes,
+                discard,
+                delete_row,
+                disconnect,
+            },
+            readonly_check,
+            draft: RefCell::new(None),
+            badge: RefCell::new(TransactionBadge::new()),
+            state: Cell::new(DataState::Idle),
+            columns: RefCell::new(Vec::new()),
+            table: RefCell::new(None),
+            read_only_cause: RefCell::new(None),
+            has_more: Cell::new(false),
+            loading_page: Cell::new(false),
+            busy: Cell::new(false),
+            banner_is_readonly: Cell::new(false),
+            pages: Cell::new(0),
+            last_fetch_value: Cell::new(0.0),
+            pending_batch: RefCell::new(None),
+            qa_auto_confirm: Cell::new(false),
+            callbacks,
+        });
+
+        // 按钮接线：与用户点击走同一条路径。
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .begin
+                .clone()
+                .connect_clicked(move |_| page.begin_transaction());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .commit_txn
+                .clone()
+                .connect_clicked(move |_| page.commit_transaction());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .rollback
+                .clone()
+                .connect_clicked(move |_| page.rollback_transaction());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons.refresh.clone().connect_clicked(move |_| {
+                if page.draft.borrow().is_some() {
+                    page.reload();
+                }
+            });
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .commit_changes
+                .clone()
+                .connect_clicked(move |_| page.request_commit());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .discard
+                .clone()
+                .connect_clicked(move |_| page.discard_changes());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .delete_row
+                .clone()
+                .connect_clicked(move |_| page.delete_selected_row());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.buttons
+                .disconnect
+                .clone()
+                .connect_clicked(move |_| (page.callbacks.disconnect)());
+        }
+        {
+            let page = Rc::clone(&page);
+            page.banner.clone().connect_button_clicked(move |_| {
+                (page.callbacks.reconnect)();
+            });
+        }
+        {
+            let page = Rc::clone(&page);
+            page.selection.clone().connect_selected_notify(move |_| {
+                page.update_buttons();
+            });
+        }
+
+        // 翻页：只有滚动到接近末尾（或内容不足一屏）时才请求下一页，
+        // 与 #28 的消费门一致——停在末尾不动不会持续拉取。
+        if let Some(adjustment) = grid.vadjustment() {
+            let weak = Rc::downgrade(&page);
+            adjustment.connect_value_changed(move |_| {
+                if let Some(page) = weak.upgrade() {
+                    page.maybe_fetch();
+                }
+            });
+            let weak = Rc::downgrade(&page);
+            adjustment.connect_upper_notify(move |_| {
+                if let Some(page) = weak.upgrade() {
+                    page.maybe_fetch();
+                }
+            });
+        }
+
+        page.update_buttons();
+        page
+    }
+
+    /// 根控件。
+    pub fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    /// QA 用：风险确认对话框自动确认。
+    pub fn set_qa_auto_confirm(&self, value: bool) {
+        self.qa_auto_confirm.set(value);
+    }
+
+    /// 当前已加载行数。
+    pub fn row_count(&self) -> u64 {
+        u64::from(self.store.n_items())
+    }
+
+    /// 是否只读（表级或只读事务）。
+    pub fn is_read_only(&self) -> bool {
+        self.read_only_cause.borrow().is_some() || !self.badge.borrow().edits_allowed()
+    }
+
+    /// 只读原因的完整说明（可读性优先；没有只读时为 `None`）。
+    pub fn read_only_reason(&self) -> Option<String> {
+        if let Some(cause) = *self.read_only_cause.borrow() {
+            return Some(cause.banner());
+        }
+        match self.badge.borrow().status() {
+            TxnStatus::Active {
+                read_only: true, ..
+            } => Some(ReadOnlyCause::ReadOnlyTransaction.banner()),
+            TxnStatus::Failed { .. } => Some("事务已失败：只能回滚，不能继续编辑".to_owned()),
+            TxnStatus::Disconnected => Some("已断开：未提交的更改已丢弃".to_owned()),
+            _ => None,
+        }
+    }
+
+    /// 进入「正在打开表」状态：清空旧数据（旧表的草稿不能带到新表上）。
+    pub fn begin_open(&self, table: TableEntry) {
+        self.banner.set_revealed(false);
+        self.errors_scroll.set_visible(false);
+        self.store.clear();
+        self.clear_columns();
+        self.draft.replace(None);
+        self.pending_batch.replace(None);
+        self.columns.borrow_mut().clear();
+        self.has_more.set(false);
+        self.loading_page.set(true);
+        self.pages.set(0);
+        self.last_fetch_value.set(0.0);
+        self.read_only_cause.replace(None);
+        self.table.replace(Some(table.clone()));
+        self.table_label
+            .set_text(&format!("{} · {}", table.display_name, table.kind_label()));
+        self.busy.set(false);
+        self.set_state(DataState::Loading);
+        self.placeholder.set_title("正在读取表数据");
+        self.placeholder
+            .set_description(Some("等待服务端返回第一页…"));
+        self.content.set_visible_child_name("placeholder");
+        self.status.set_text("正在读取表数据…");
+        self.update_dirty_label();
+    }
+
+    /// 打开成功：建列、建草稿、绑定首页行。
+    pub fn show_open(self: &Rc<Self>, open: TableOpen) {
+        // 重新浏览（刷新/提交后）会复用同一个页面：先清空旧行与旧列，
+        // 否则旧表的行会被追加到新表下面。
+        self.store.clear();
+        self.clear_columns();
+        self.table.replace(Some(open.table.clone()));
+        self.table_label.set_text(&format!(
+            "{} · {} · {}",
+            open.table.display_name,
+            open.table.kind_label(),
+            ordering_label(open.ordering)
+        ));
+        self.columns.replace(open.columns.clone());
+        self.build_columns(&open.columns);
+
+        let read_only_cause = match open.read_only_reason {
+            ReadOnlyReason::NoPrimaryKey => Some(ReadOnlyCause::NoPrimaryKey),
+            ReadOnlyReason::DriverUnsupported => Some(ReadOnlyCause::DriverUnsupported),
+            ReadOnlyReason::Unspecified => None,
+        };
+        self.read_only_cause.replace(read_only_cause);
+
+        let read_only_text = read_only_cause.map(ReadOnlyCause::banner);
+        let draft = TableDraft::new(
+            open.columns.clone(),
+            open.primary_key(),
+            &open.rows,
+            read_only_text.clone(),
+        );
+        self.draft.replace(Some(draft));
+
+        let rows: Vec<DataRow> = open.rows.iter().map(DataRow::from_table_row).collect();
+        let count = rows.len();
+        self.store.append(rows);
+        self.has_more.set(open.has_more);
+        self.loading_page.set(false);
+        self.busy.set(false);
+        self.pages.set(1);
+        self.last_fetch_value.set(0.0);
+
+        if let Some(text) = &read_only_text {
+            self.show_read_only_banner(text);
+        }
+        if count == 0 {
+            self.placeholder.set_title("空表");
+            self.placeholder
+                .set_description(Some("该表存在，但目前没有任何行"));
+            self.content.set_visible_child_name("placeholder");
+        } else {
+            self.content.set_visible_child_name("grid");
+        }
+        self.set_state(if count == 0 {
+            DataState::Empty
+        } else {
+            DataState::Ready
+        });
+        self.set_status_ready(open.has_more);
+        self.update_dirty_label();
+        self.update_buttons();
+
+        eprintln!(
+            "[data] 数据页已就绪：{} 行，列 {}，只读={}，可编辑={}",
+            count,
+            open.columns.len(),
+            open.read_only,
+            self.draft
+                .borrow()
+                .as_ref()
+                .is_some_and(TableDraft::editable)
+        );
+        if crate::qa::enabled() {
+            self.log_rows("首页", &open.rows);
+        }
+    }
+
+    /// 后续页到达：追加行与草稿。
+    pub fn show_page(
+        self: &Rc<Self>,
+        rows: Vec<TableRow>,
+        has_more: bool,
+        loaded: u64,
+        pages: u64,
+    ) {
+        {
+            let mut draft = self.draft.borrow_mut();
+            if let Some(draft) = draft.as_mut() {
+                draft.append_rows(&rows);
+            }
+        }
+        let data_rows: Vec<DataRow> = rows.iter().map(DataRow::from_table_row).collect();
+        self.store.append(data_rows);
+        self.has_more.set(has_more);
+        self.loading_page.set(false);
+        self.pages.set(pages);
+        self.last_fetch_value.set(self.scroll_value());
+        if loaded > 0 {
+            self.content.set_visible_child_name("grid");
+        }
+        self.set_state(if loaded == 0 {
+            DataState::Empty
+        } else {
+            DataState::Ready
+        });
+        self.set_status_ready(has_more);
+        self.update_dirty_label();
+        self.update_buttons();
+        eprintln!(
+            "[data] 数据页第 {pages} 页已绑定：累计 {loaded} 行（服务端返回 {} 行）",
+            rows.len()
+        );
+        if crate::qa::enabled() {
+            self.log_rows(&format!("第 {pages} 页"), &rows);
+        }
+    }
+
+    /// 行变更提交结果：成功的行变干净，失败行逐行列出错误码与原因。
+    pub fn show_applied(self: &Rc<Self>, report: ApplyReport) {
+        self.set_busy(false);
+        let batch = self.pending_batch.borrow_mut().take();
+        let targets = batch
+            .as_ref()
+            .map(|batch| batch.targets.clone())
+            .unwrap_or_default();
+        let failures = match (batch.as_ref(), self.draft.borrow_mut().as_mut()) {
+            (Some(batch), Some(draft)) => draft.apply_results(batch, &report.results),
+            _ => Vec::new(),
+        };
+        // 只让本批涉及的行失效，避免为整表逐行发通知。
+        for target in &targets {
+            self.refresh_row(target.row);
+        }
+        self.show_failures(&failures);
+
+        let dirty = self
+            .draft
+            .borrow()
+            .as_ref()
+            .map_or(0, TableDraft::dirty_rows);
+        if report.clamped || report.deferred_changes > 0 {
+            self.show_banner(&format!(
+                "单批上限 500 行：本次只执行了前 {} 条，还有 {} 条未提交——请再次点「提交更改」续传。",
+                report.total_rows_affected, report.deferred_changes
+            ));
+            self.set_status(
+                &format!(
+                    "已提交 {} 行（单批上限：{} 条未执行）· 仍有 {dirty} 行待提交",
+                    report.total_rows_affected, report.deferred_changes
+                ),
+                "warning",
+            );
+        } else {
+            self.set_status(
+                &format!(
+                    "已提交 {} 行 · 失败 {} 行 · 脏行 {}",
+                    report.total_rows_affected,
+                    failures.len(),
+                    dirty
+                ),
+                if failures.is_empty() {
+                    "success"
+                } else {
+                    "warning"
+                },
+            );
+        }
+        eprintln!(
+            "[data] 提交完成：影响 {} 行，逐行失败 {}，钳制={}，未执行 {}，剩余脏行 {}",
+            report.total_rows_affected,
+            failures.len(),
+            report.clamped,
+            report.deferred_changes,
+            dirty
+        );
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    /// 表数据 / 事务失败：分类展示；事务失败态只允许回滚。
+    pub fn show_failure(self: &Rc<Self>, failure: &TableFailure) {
+        self.set_busy(false);
+        eprintln!("[data] 操作失败：[{}] {}", failure.code(), failure.detail());
+        if failure.requires_confirmation() {
+            // 服务端阈值判定与本地不一致（例如服务端策略更严）：重新走同一个确认对话框。
+            let batch = self.pending_batch.borrow().clone();
+            if let Some(batch) = batch {
+                let detail = failure.detail();
+                self.confirm_batch(batch, &detail, true);
+                return;
+            }
+        }
+        if failure.is_transaction_failed() {
+            self.badge.borrow_mut().fail();
+            self.sync_badge();
+        }
+        if matches!(
+            failure,
+            TableFailure::ReadOnly { .. } | TableFailure::NoPrimaryKey { .. }
+        ) {
+            let cause = if matches!(failure, TableFailure::NoPrimaryKey { .. }) {
+                ReadOnlyCause::NoPrimaryKey
+            } else if matches!(
+                self.badge.borrow().status(),
+                TxnStatus::Active {
+                    read_only: true,
+                    ..
+                }
+            ) {
+                ReadOnlyCause::ReadOnlyTransaction
+            } else {
+                ReadOnlyCause::DriverUnsupported
+            };
+            self.read_only_cause.replace(Some(cause));
+            self.show_read_only_banner(&cause.banner());
+        } else if matches!(failure, TableFailure::CursorInvalid { .. }) {
+            self.has_more.set(false);
+        }
+        self.show_banner(&failure.message());
+        self.set_status(&failure.message(), "error");
+        if !matches!(self.state.get(), DataState::Disconnected) {
+            self.set_state(DataState::Error);
+        }
+        self.update_buttons();
+    }
+
+    /// 事务状态变化。
+    pub fn show_transaction(self: &Rc<Self>, snapshot: &TxnSnapshot) {
+        self.set_busy(false);
+        let previous = self.badge.borrow().clone();
+        let previous_active = previous.can_commit() || previous.can_rollback();
+        {
+            let mut badge = self.badge.borrow_mut();
+            let failed = matches!(snapshot.state, TransactionState::Failed);
+            badge.restore(
+                snapshot.transaction_id.as_deref(),
+                snapshot.read_only,
+                failed,
+            );
+        }
+        self.sync_badge();
+        let current = self.badge.borrow().clone();
+        eprintln!(
+            "[data] 事务状态：{:?} → {}",
+            previous.status(),
+            current.label()
+        );
+        if previous_active && !current.can_commit() && !current.can_rollback() {
+            // 提交/回滚完成：放弃尚未提交的界面更改（回滚时它们已不可能生效），
+            // 再重新浏览当前表，界面显示数据库的真实状态。
+            let discarded = self
+                .draft
+                .borrow()
+                .as_ref()
+                .map_or(0, TableDraft::dirty_rows);
+            if discarded > 0 {
+                eprintln!("[data] 事务结束后丢弃 {discarded} 行未提交的界面更改");
+            }
+            if let Some(draft) = self.draft.borrow_mut().as_mut() {
+                draft.discard();
+            }
+            self.pending_batch.replace(None);
+            self.callbacks.reload.as_ref()();
+        }
+        self.set_status(
+            &format!("事务状态：{}", current.label()),
+            if current.can_rollback() {
+                "warning"
+            } else {
+                "success"
+            },
+        );
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    /// 断连：丢弃未提交变更并明确说明事务已由后端清理。
+    pub fn mark_disconnected(self: &Rc<Self>, reason: &str) {
+        self.set_busy(false);
+        let discarded = self
+            .draft
+            .borrow()
+            .as_ref()
+            .map_or(0, TableDraft::dirty_rows);
+        if let Some(draft) = self.draft.borrow_mut().as_mut() {
+            draft.discard();
+        }
+        self.pending_batch.replace(None);
+        self.badge.borrow_mut().disconnect();
+        self.sync_badge();
+        self.has_more.set(false);
+        self.set_state(DataState::Disconnected);
+        let text = if discarded > 0 {
+            format!(
+                "已断开：{reason} 未提交的 {discarded} 行变更已丢弃；数据库事务已由后端强制回滚。"
+            )
+        } else {
+            format!("已断开：{reason} 数据库事务已由后端强制回滚。")
+        };
+        eprintln!("[data] 断连清理：丢弃 {discarded} 行未提交变更，事务由后端回滚");
+        self.show_banner(&text);
+        self.set_status(
+            &format!("已断开 · 已加载 {} 行（只读）", self.row_count()),
+            "warning",
+        );
+        self.update_buttons();
+    }
+
+    /// 丢弃未提交变更（用户点「放弃更改」）。
+    pub fn discard_changes(self: &Rc<Self>) {
+        if let Some(draft) = self.draft.borrow_mut().as_mut() {
+            draft.discard();
+        }
+        self.pending_batch.replace(None);
+        let count = self.store.n_items();
+        for index in 0..usize::try_from(count).unwrap_or(0) {
+            self.refresh_row(index);
+        }
+        self.errors_scroll.set_visible(false);
+        self.set_status("已放弃未提交的更改", "warning");
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    /// 重新加载当前表（提交/回滚后刷新真实数据）。
+    pub fn reload(self: &Rc<Self>) {
+        // 先把表引用克隆出来：`begin_open` 会 `table.replace(..)`，在同一作用域
+        // 持有 `borrow()` 会触发 RefCell 重复借用 panic。
+        let table = self.table.borrow().clone();
+        if let Some(table) = table {
+            self.begin_open(table);
+            (self.callbacks.reload)();
+        }
+    }
+
+    /// 提交按钮入口：先做风险判定，必要时弹确认对话框。
+    pub fn request_commit(self: &Rc<Self>) {
+        if self.is_read_only() {
+            let reason = self
+                .read_only_reason()
+                .unwrap_or_else(|| "只读状态：不能提交".to_owned());
+            self.set_status(&reason, "warning");
+            return;
+        }
+        let batch = {
+            let draft = self.draft.borrow();
+            let Some(draft) = draft.as_ref() else {
+                self.set_status("尚未打开表", "warning");
+                return;
+            };
+            draft.build_batch()
+        };
+        if batch.is_empty() {
+            self.set_status("没有待提交的更改", "warning");
+            return;
+        }
+        let risk = self.draft.borrow().as_ref().map_or(
+            RiskAssessment {
+                updates: 0,
+                deletes: 0,
+            },
+            TableDraft::risk,
+        );
+        if risk.needs_confirmation() {
+            self.confirm_batch(batch, &risk.summary(), false);
+        } else {
+            self.submit_batch(batch, false);
+        }
+    }
+
+    /// 风险确认对话框：> 100 行或含删除时必须经过它。
+    fn confirm_batch(self: &Rc<Self>, batch: ChangeBatch, summary: &str, from_server: bool) {
+        let dialog = adw::AlertDialog::new(Some("确认提交变更？"), Some(summary));
+        dialog.add_response("cancel", "取消");
+        dialog.add_response("confirm", "确认提交");
+        dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        {
+            let page = Rc::clone(self);
+            let batch = batch.clone();
+            // 只接受第一次 response：某些版本在程序化触发 response 后还会以
+            // close_response（cancel）再发一次，重复处理会既提交又打出「取消」。
+            let handled = Rc::new(Cell::new(false));
+            dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+                if handled.replace(true) {
+                    return;
+                }
+                if response == "confirm" {
+                    eprintln!("[data] 风险确认：用户点击确认提交");
+                    page.submit_batch(batch.clone(), true);
+                } else {
+                    eprintln!("[data] 风险确认：用户取消，未提交");
+                    page.set_status("已取消提交（未发送任何变更）", "warning");
+                }
+            });
+        }
+        if self.qa_auto_confirm.get() {
+            // 无人值守：仍然操作同一个对话框（自动点「确认提交」），不绕过确认语义。
+            let dialog_for_qa = dialog.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                eprintln!("[qa] 自动确认风险对话框（无人值守）");
+                respond_dialog(&dialog_for_qa, "confirm");
+            });
+        }
+        eprintln!(
+            "[data] 风险确认对话框：{}（服务端要求={from_server}）",
+            batch.len()
+        );
+        dialog.present(Some(&self.root));
+    }
+
+    fn submit_batch(self: &Rc<Self>, batch: ChangeBatch, acknowledge_risk: bool) {
+        let updates = batch.updates.clone();
+        let deletes = batch.deletes.clone();
+        eprintln!(
+            "[data] 提交批次：{} 更新 / {} 删除（acknowledge_risk={acknowledge_risk}）",
+            updates.len(),
+            deletes.len()
+        );
+        self.pending_batch.replace(Some(batch));
+        self.set_busy(true);
+        self.set_status("正在提交…", "normal");
+        (self.callbacks.apply)(updates, deletes, acknowledge_risk);
+    }
+
+    fn delete_selected_row(self: &Rc<Self>) {
+        if self.is_read_only() {
+            let reason = self
+                .read_only_reason()
+                .unwrap_or_else(|| "只读状态：不能删除".to_owned());
+            self.set_status(&reason, "warning");
+            return;
+        }
+        let selected = self.selection.selected();
+        if selected == gtk::INVALID_LIST_POSITION {
+            self.set_status("请先在表格中选择一行", "warning");
+            return;
+        }
+        let index = usize::try_from(selected).unwrap_or(usize::MAX);
+        let result = match self.draft.borrow_mut().as_mut() {
+            Some(draft) => draft.delete_row(index),
+            None => Err("尚未打开表".to_owned()),
+        };
+        match result {
+            Ok(()) => {
+                self.refresh_row(index);
+                let number = self
+                    .draft
+                    .borrow()
+                    .as_ref()
+                    .and_then(|draft| draft.rows().get(index))
+                    .map_or(index + 1, |row| usize::try_from(row.number).unwrap_or(0));
+                self.set_status(
+                    &format!("第 {number} 行已标记删除（提交前可撤销）"),
+                    "warning",
+                );
+            }
+            Err(error) => self.set_status(&error, "warning"),
+        }
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    fn begin_transaction(self: &Rc<Self>) {
+        if !self.badge.borrow().can_begin() {
+            self.set_status("该会话已有打开的事务（或已断开）", "warning");
+            return;
+        }
+        let read_only = self.readonly_check.is_active();
+        self.set_busy(true);
+        self.set_status("正在开始事务…", "normal");
+        (self.callbacks.begin)(read_only);
+    }
+
+    fn commit_transaction(self: &Rc<Self>) {
+        if !self.badge.borrow().can_commit() {
+            let reason = match self.badge.borrow().status() {
+                TxnStatus::Failed { .. } => "事务已失败：只能回滚",
+                _ => "当前没有可提交的事务",
+            };
+            self.set_status(reason, "warning");
+            return;
+        }
+        let dirty = self
+            .draft
+            .borrow()
+            .as_ref()
+            .map_or(0, TableDraft::dirty_rows);
+        if dirty > 0 {
+            self.set_status(
+                &format!("还有 {dirty} 行更改未提交：先点「提交更改」或「放弃更改」再提交事务"),
+                "warning",
+            );
+            return;
+        }
+        self.set_busy(true);
+        self.set_status("正在提交事务…", "normal");
+        (self.callbacks.commit_txn)();
+    }
+
+    fn rollback_transaction(self: &Rc<Self>) {
+        if !self.badge.borrow().can_rollback() {
+            self.set_status("当前没有可回滚的事务", "warning");
+            return;
+        }
+        let dirty = self
+            .draft
+            .borrow()
+            .as_ref()
+            .map_or(0, TableDraft::dirty_rows);
+        let message = if dirty > 0 {
+            format!("回滚事务将丢弃数据库侧的变更，并放弃 {dirty} 行未提交的界面更改。")
+        } else {
+            "回滚当前事务？".to_owned()
+        };
+        let dialog = adw::AlertDialog::new(Some("回滚事务？"), Some(&message));
+        dialog.add_response("cancel", "取消");
+        dialog.add_response("rollback", "回滚");
+        dialog.set_response_appearance("rollback", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        {
+            let page = Rc::clone(self);
+            let handled = Rc::new(Cell::new(false));
+            dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+                if handled.replace(true) {
+                    return;
+                }
+                if response == "rollback" {
+                    page.set_busy(true);
+                    page.set_status("正在回滚事务…", "normal");
+                    (page.callbacks.rollback_txn)();
+                }
+            });
+        }
+        if self.qa_auto_confirm.get() {
+            let dialog_for_qa = dialog.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                respond_dialog(&dialog_for_qa, "rollback");
+            });
+        }
+        dialog.present(Some(&self.root));
+    }
+
+    // ---- 单元格编辑 ----
+
+    /// 打开单元格编辑态（双击进入；QA 通过 `qa_edit` 走同一转换函数）。
+    fn open_editor(self: &Rc<Self>, row: usize, column: usize, anchor: &gtk::Widget) {
+        if let Some(reason) = self.edit_block_reason(row, column) {
+            self.set_status(&reason, "warning");
+            return;
+        }
+        let (initial, column_name, type_label, nullable) = {
+            let draft = self.draft.borrow();
+            let Some(draft) = draft.as_ref() else {
+                return;
+            };
+            let Some(spec) = draft.columns().get(column) else {
+                return;
+            };
+            let Some(draft_row) = draft.rows().get(row) else {
+                return;
+            };
+            let value = draft_row
+                .current
+                .get(column)
+                .map_or_else(crate::table_data::null_value, Clone::clone);
+            (
+                edit_text(&value),
+                spec.name.clone(),
+                spec.type_label.clone(),
+                spec.nullable,
+            )
+        };
+        let is_null = {
+            let draft = self.draft.borrow();
+            draft.as_ref().is_some_and(|draft| {
+                draft
+                    .rows()
+                    .get(row)
+                    .and_then(|row| row.current.get(column))
+                    .is_none_or(|value| {
+                        crate::proto::common::v1::ValueKind::try_from(value.kind)
+                            == Ok(crate::proto::common::v1::ValueKind::Null)
+                    })
+            })
+        };
+
+        let popover = gtk::Popover::new();
+        popover.set_parent(anchor);
+        popover.set_autohide(true);
+        popover.set_has_arrow(true);
+
+        let title = gtk::Label::new(Some(&format!("编辑 {column_name} · {type_label}")));
+        title.set_xalign(0.0);
+        title.add_css_class("heading");
+
+        let entry = gtk::Entry::new();
+        entry.set_text(&initial);
+        entry.set_hexpand(true);
+
+        let null_check = gtk::CheckButton::with_label("设为 NULL（SQL 空值）");
+        null_check.set_active(is_null);
+        entry.set_sensitive(!is_null);
+        {
+            let entry = entry.clone();
+            null_check.connect_toggled(move |check| {
+                entry.set_sensitive(!check.is_active());
+            });
+        }
+
+        let hint = gtk::Label::new(Some(if nullable {
+            "空文本在文本列表示空字符串 ''；要写 NULL 请勾选上方选项"
+        } else {
+            "该列不允许 NULL：请输入合法值"
+        }));
+        hint.set_xalign(0.0);
+        hint.set_wrap(true);
+        hint.add_css_class("dim-label");
+        hint.add_css_class("caption");
+        if !nullable {
+            null_check.set_sensitive(false);
+        }
+
+        let error = gtk::Label::new(None);
+        error.set_xalign(0.0);
+        error.set_wrap(true);
+        error.add_css_class("error");
+        error.add_css_class("caption");
+        error.set_visible(false);
+
+        let apply = gtk::Button::with_label("应用");
+        apply.add_css_class("suggested-action");
+        let cancel = gtk::Button::with_label("取消");
+
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        buttons.set_halign(gtk::Align::End);
+        buttons.append(&cancel);
+        buttons.append(&apply);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
+        content.set_margin_start(8);
+        content.set_margin_end(8);
+        content.set_size_request(320, -1);
+        content.append(&title);
+        content.append(&entry);
+        content.append(&null_check);
+        content.append(&hint);
+        content.append(&error);
+        content.append(&buttons);
+        popover.set_child(Some(&content));
+
+        {
+            let popover_for_cancel = popover.clone();
+            cancel.connect_clicked(move |_| popover_for_cancel.popdown());
+        }
+        {
+            let page = Rc::clone(self);
+            let popover_for_apply = popover.clone();
+            let entry = entry.clone();
+            let null_check = null_check.clone();
+            let error = error.clone();
+            apply.connect_clicked(move |_| {
+                let result = if null_check.is_active() {
+                    page.apply_cell_null(row, column)
+                } else {
+                    page.apply_cell_text(row, column, &entry.text())
+                };
+                match result {
+                    Ok(()) => popover_for_apply.popdown(),
+                    Err(message) => {
+                        error.set_text(&message);
+                        error.set_visible(true);
+                    }
+                }
+            });
+        }
+        popover.connect_closed(|popover| {
+            popover.unparent();
+        });
+        popover.popup();
+        entry.grab_focus();
+        entry.select_region(0, -1);
+    }
+
+    /// 为什么这个单元格不能编辑（可编辑时为 `None`）。
+    fn edit_block_reason(&self, row: usize, column: usize) -> Option<String> {
+        let draft = self.draft.borrow();
+        let Some(draft) = draft.as_ref() else {
+            return Some("尚未打开表".to_owned());
+        };
+        if let Some(reason) = draft.read_only_reason() {
+            return Some(reason.to_owned());
+        }
+        if !self.badge.borrow().edits_allowed() {
+            return Some(
+                self.read_only_reason()
+                    .unwrap_or_else(|| "当前状态不允许编辑".to_owned()),
+            );
+        }
+        let Some(spec) = draft.columns().get(column) else {
+            return Some("列不存在".to_owned());
+        };
+        if let Some(reason) = spec.type_not_editable_reason() {
+            return Some(reason);
+        }
+        let Some(draft_row) = draft.rows().get(row) else {
+            return Some("行不存在".to_owned());
+        };
+        if draft_row.removed {
+            return Some("该行已删除".to_owned());
+        }
+        if draft_row.deleted {
+            return Some("该行已标记删除：撤销删除后才能编辑".to_owned());
+        }
+        // 截断列禁止编辑：提交被截断的值会写坏数据（table_data.truncated_value）。
+        let truncated = self
+            .store
+            .item(u32::try_from(row).unwrap_or(u32::MAX))
+            .and_then(|item| item.downcast::<glib::BoxedAnyObject>().ok())
+            .map(|item| {
+                let data = item.borrow::<Rc<RefCell<DataRow>>>();
+                data.borrow()
+                    .cells
+                    .get(column)
+                    .is_some_and(|cell| cell.truncated)
+            })
+            .unwrap_or(false);
+        if truncated {
+            return Some(format!(
+                "列 {} 的值被服务端截断（只收到前缀），禁止编辑：提交截断值会写坏数据",
+                spec.name
+            ));
+        }
+        None
+    }
+
+    fn apply_cell_text(
+        self: &Rc<Self>,
+        row: usize,
+        column: usize,
+        text: &str,
+    ) -> Result<(), String> {
+        // 只读表 / 截断列 / 只读事务 / 失败事务都必须在写入草稿前拦住：
+        // 不能只在编辑弹窗入口判断，QA 与其它调用方也走这条路径。
+        if let Some(reason) = self.edit_block_reason(row, column) {
+            return Err(reason);
+        }
+        let mut guard = self.draft.borrow_mut();
+        let Some(draft) = guard.as_mut() else {
+            return Err("尚未打开表".to_owned());
+        };
+        draft.set_cell_from_text(row, column, text)?;
+        drop(guard);
+        self.refresh_row(row);
+        self.after_edit(row, column);
+        Ok(())
+    }
+
+    fn apply_cell_null(self: &Rc<Self>, row: usize, column: usize) -> Result<(), String> {
+        if let Some(reason) = self.edit_block_reason(row, column) {
+            return Err(reason);
+        }
+        let mut guard = self.draft.borrow_mut();
+        let Some(draft) = guard.as_mut() else {
+            return Err("尚未打开表".to_owned());
+        };
+        draft.set_cell_null(row, column)?;
+        drop(guard);
+        self.refresh_row(row);
+        self.after_edit(row, column);
+        Ok(())
+    }
+
+    fn after_edit(self: &Rc<Self>, row: usize, column: usize) {
+        let (number, column_name, text) = {
+            let draft = self.draft.borrow();
+            let Some(draft) = draft.as_ref() else {
+                return;
+            };
+            let number = draft
+                .rows()
+                .get(row)
+                .map_or_else(|| u64::try_from(row + 1).unwrap_or(0), |row| row.number);
+            let column_name = draft
+                .columns()
+                .get(column)
+                .map_or_else(|| column.to_string(), |column| column.name.clone());
+            let text = draft
+                .rows()
+                .get(row)
+                .and_then(|row| row.current.get(column))
+                .map_or_else(|| "NULL".to_owned(), display_value);
+            (number, column_name, text)
+        };
+        eprintln!(
+            "[data] t=+{}ms 修改第 {number} 行 {column_name} = {text}（脏行 {}）",
+            crate::qa::elapsed_ms(),
+            self.draft
+                .borrow()
+                .as_ref()
+                .map_or(0, TableDraft::dirty_rows)
+        );
+        self.errors_scroll.set_visible(false);
+        self.update_dirty_label();
+        self.update_buttons();
+    }
+
+    /// QA：按列名修改单元格（`--qa-data-edit row:column:value`）。
+    pub fn qa_edit_named(
+        self: &Rc<Self>,
+        row: usize,
+        column: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        let index = self
+            .draft
+            .borrow()
+            .as_ref()
+            .and_then(|draft| {
+                draft
+                    .columns()
+                    .iter()
+                    .position(|candidate| candidate.name == column)
+            })
+            .ok_or_else(|| format!("列 {column} 不存在"))?;
+        self.apply_cell_text(row, index, text)
+    }
+
+    /// QA：滚动到第 `row` 行（0 起）；未加载时返回 `false`（调用方可继续翻页）。
+    pub fn qa_scroll_to_row(&self, row: u32) -> bool {
+        if u64::from(row) >= self.row_count() {
+            return false;
+        }
+        self.grid
+            .scroll_to(row, None, gtk::ListScrollFlags::NONE, None);
+        true
+    }
+
+    /// QA：把已加载行的当前值逐行打印（提交/回滚后核对真实数据）。
+    pub fn qa_log_rows(&self) {
+        for line in self.rows_summary() {
+            eprintln!("[data] {line}");
+        }
+    }
+
+    /// QA：标记删除一行（与「删除选中行」同一条草稿路径）。
+    pub fn qa_delete_row(self: &Rc<Self>, row: usize) -> Result<(), String> {
+        if self.is_read_only() {
+            return Err(self
+                .read_only_reason()
+                .unwrap_or_else(|| "只读状态：不能删除".to_owned()));
+        }
+        let mut guard = self.draft.borrow_mut();
+        let Some(draft) = guard.as_mut() else {
+            return Err("尚未打开表".to_owned());
+        };
+        draft.delete_row(row)?;
+        drop(guard);
+        self.refresh_row(row);
+        self.update_dirty_label();
+        self.update_buttons();
+        Ok(())
+    }
+
+    /// QA：点「提交更改」。
+    pub fn qa_commit(self: &Rc<Self>) {
+        self.request_commit();
+    }
+
+    /// QA：点「开始事务」。
+    pub fn qa_begin(self: &Rc<Self>, read_only: bool) {
+        self.readonly_check.set_active(read_only);
+        self.begin_transaction();
+    }
+
+    /// QA：点「回滚事务」。
+    pub fn qa_rollback(self: &Rc<Self>) {
+        self.rollback_transaction();
+    }
+
+    /// QA：重新读取当前表。
+    pub fn qa_reload(self: &Rc<Self>) {
+        self.reload();
+    }
+
+    /// 已加载行的展示文本（QA 日志与证据用）。
+    pub fn rows_summary(&self) -> Vec<String> {
+        let draft = self.draft.borrow();
+        let Some(draft) = draft.as_ref() else {
+            return Vec::new();
+        };
+        draft
+            .rows()
+            .iter()
+            .map(|row| {
+                let pairs: Vec<String> = draft
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, column)| {
+                        let value = row
+                            .current
+                            .get(index)
+                            .map_or_else(|| "NULL".to_owned(), display_value);
+                        format!("{}={value}", column.name)
+                    })
+                    .collect();
+                format!("第 {} 行 {}", row.number, pairs.join(" "))
+            })
+            .collect()
+    }
+
+    fn log_rows(&self, label: &str, rows: &[TableRow]) {
+        let columns = self.columns.borrow();
+        for row in rows.iter().take(5) {
+            let pairs: Vec<String> = columns
+                .iter()
+                .enumerate()
+                .map(|(index, column)| {
+                    let text = row
+                        .cells
+                        .get(index)
+                        .map_or_else(|| "NULL".to_owned(), |cell| cell.text.clone());
+                    format!("{}={text}", column.name)
+                })
+                .collect();
+            eprintln!("[data] {label} 第 {} 行 {}", row.number, pairs.join(" "));
+        }
+        if rows.len() > 5 {
+            eprintln!("[data] {label}：另有 {} 行未逐行打印", rows.len() - 5);
+        }
+    }
+
+    // ---- 网格 ----
+
+    fn build_columns(self: &Rc<Self>, columns: &[TableColumn]) {
+        self.clear_columns();
+
+        let indicator_factory = gtk::SignalListItemFactory::new();
+        indicator_factory.connect_setup(|_, list_item| {
+            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.5);
+            label.add_css_class("sqarvo-dirty-indicator");
+            list_item.set_child(Some(&label));
+        });
+        indicator_factory.connect_bind(|_, list_item| {
+            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(label) = list_item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            let Some(item) = list_item
+                .item()
+                .and_then(|object| object.downcast::<glib::BoxedAnyObject>().ok())
+            else {
+                label.set_text("");
+                return;
+            };
+            let row = item.borrow::<Rc<RefCell<DataRow>>>().clone();
+            drop(item);
+            let row = row.borrow();
+            label.remove_css_class("sqarvo-dirty");
+            label.remove_css_class("sqarvo-deleted");
+            let (text, tooltip, class) = if row.removed {
+                (
+                    "✕",
+                    format!("第 {} 行 · 已删除", row.number),
+                    "sqarvo-deleted",
+                )
+            } else if row.deleted {
+                (
+                    "✕",
+                    format!("第 {} 行 · 已标记删除（提交前可撤销）", row.number),
+                    "sqarvo-deleted",
+                )
+            } else if row.dirty.iter().any(|dirty| *dirty) {
+                (
+                    "●",
+                    format!("第 {} 行 · 有未提交的更改", row.number),
+                    "sqarvo-dirty",
+                )
+            } else {
+                ("", format!("第 {} 行", row.number), "")
+            };
+            label.set_text(text);
+            if !class.is_empty() {
+                label.add_css_class(class);
+            }
+            label.set_tooltip_text(Some(&tooltip));
+        });
+        let indicator_column = gtk::ColumnViewColumn::new(Some(""), Some(indicator_factory));
+        indicator_column.set_fixed_width(48);
+        indicator_column.set_resizable(false);
+        self.grid.append_column(&indicator_column);
+
+        for (index, column) in columns.iter().enumerate() {
+            let factory = self.cell_factory(index);
+            let title = format!("{} · {}", column.name, column.type_label);
+            let view_column = gtk::ColumnViewColumn::new(Some(&title), Some(factory));
+            view_column.set_expand(false);
+            view_column.set_resizable(true);
+            view_column.set_fixed_width(200);
+            self.grid.append_column(&view_column);
+        }
+    }
+
+    fn cell_factory(self: &Rc<Self>, column_index: usize) -> gtk::SignalListItemFactory {
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, list_item| {
+            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.0);
+            label.set_single_line_mode(true);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.add_css_class("sqarvo-cell");
+            list_item.set_child(Some(&label));
+        });
+        factory.connect_bind(move |_, list_item| {
+            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(label) = list_item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            let Some(item) = list_item
+                .item()
+                .and_then(|object| object.downcast::<glib::BoxedAnyObject>().ok())
+            else {
+                label.set_text("");
+                return;
+            };
+            let row = item.borrow::<Rc<RefCell<DataRow>>>().clone();
+            drop(item);
+            let row = row.borrow();
+
+            for class in [
+                "sqarvo-cell-null",
+                "sqarvo-cell-empty",
+                "sqarvo-cell-mono",
+                "sqarvo-cell-number",
+                "sqarvo-cell-bool",
+                "sqarvo-cell-temporal",
+                "sqarvo-cell-structured",
+                "sqarvo-cell-unsupported",
+                "sqarvo-cell-dirty",
+                "sqarvo-row-deleted",
+            ] {
+                label.remove_css_class(class);
+            }
+            label.set_xalign(0.0);
+            label.set_tooltip_text(None);
+            let Some(cell) = row.cells.get(column_index) else {
+                label.set_text("");
+                return;
+            };
+            label.set_text(&cell.text);
+            if !matches!(cell.style, CellStyle::Normal) {
+                label.add_css_class(cell.style.css_class());
+            }
+            if cell.style.is_numeric() {
+                label.set_xalign(1.0);
+            }
+            if row.removed || row.deleted {
+                label.add_css_class("sqarvo-row-deleted");
+            } else if row.dirty.get(column_index).copied().unwrap_or(false) {
+                label.add_css_class("sqarvo-cell-dirty");
+            }
+            let mut tooltip = cell.tooltip.clone();
+            if cell.truncated {
+                tooltip.push_str("\n该值被截断：不能编辑（提交截断值会写坏数据）");
+            }
+            if row.dirty.get(column_index).copied().unwrap_or(false) {
+                tooltip.push_str("\n已修改，尚未提交");
+            }
+            if !tooltip.is_empty() {
+                label.set_tooltip_text(Some(&tooltip));
+            }
+        });
+        let weak_for_gesture = Rc::downgrade(self);
+        factory.connect_bind(move |_, list_item| {
+            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(label) = list_item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            let Some(page) = weak_for_gesture.upgrade() else {
+                return;
+            };
+            let position = list_item.position();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(1);
+            let page = Rc::clone(&page);
+            let label_for_click = label.clone();
+            gesture.connect_pressed(move |gesture, presses, _, _| {
+                if presses < 2 {
+                    // 单击只做「选中一行」，双击才进入编辑态。
+                    return;
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.open_editor(
+                    usize::try_from(position).unwrap_or(usize::MAX),
+                    column_index,
+                    label_for_click.upcast_ref(),
+                );
+            });
+            label.add_controller(gesture);
+        });
+        factory
+    }
+
+    fn clear_columns(&self) {
+        let model = self.grid.columns();
+        while model.n_items() > 0 {
+            let Some(column) = model
+                .item(0)
+                .and_then(|object| object.downcast::<gtk::ColumnViewColumn>().ok())
+            else {
+                break;
+            };
+            self.grid.remove_column(&column);
+        }
+    }
+
+    /// 刷新一行的显示（编辑 / 删除标记变化后调用）。
+    fn refresh_row(&self, index: usize) {
+        let (cells, dirty, deleted, removed) = {
+            let draft = self.draft.borrow();
+            let Some(draft) = draft.as_ref() else {
+                return;
+            };
+            let Some(row) = draft.rows().get(index) else {
+                return;
+            };
+            let cells: Vec<CellView> = draft
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(column, _)| {
+                    row.current.get(column).map_or_else(
+                        || CellView {
+                            text: "NULL".to_owned(),
+                            style: CellStyle::Null,
+                            tooltip: String::new(),
+                            truncated: false,
+                        },
+                        format_cell,
+                    )
+                })
+                .collect();
+            (cells, row.dirty.clone(), row.deleted, row.removed)
+        };
+        let count = self.store.n_items();
+        let Some(item) = self.store.item(u32::try_from(index).unwrap_or(u32::MAX)) else {
+            return;
+        };
+        if let Ok(boxed) = item.downcast::<glib::BoxedAnyObject>() {
+            let row = boxed.borrow::<Rc<RefCell<DataRow>>>().clone();
+            drop(boxed);
+            {
+                let mut row = row.borrow_mut();
+                row.cells = cells;
+                row.dirty = dirty;
+                row.deleted = deleted;
+                row.removed = removed;
+            }
+        }
+        if index < usize::try_from(count).unwrap_or(0) {
+            self.store.notify_row(index);
+        }
+    }
+
+    // ---- 状态 / 翻页 ----
+
+    fn maybe_fetch(self: &Rc<Self>) {
+        if !self.has_more.get() || self.loading_page.get() || self.busy.get() {
+            return;
+        }
+        if !matches!(self.state.get(), DataState::Ready) {
+            return;
+        }
+        let Some(adjustment) = self.grid.vadjustment() else {
+            return;
+        };
+        let value = adjustment.value();
+        let remaining = adjustment.upper() - (value + adjustment.page_size());
+        let viewport_short = adjustment.upper() <= adjustment.page_size();
+        // 消费门：内容不足一屏时允许继续拉；否则必须滚动到新位置。
+        if !viewport_short && value <= self.last_fetch_value.get() {
+            return;
+        }
+        if remaining > adjustment.page_size() {
+            return;
+        }
+        self.loading_page.set(true);
+        self.last_fetch_value.set(value);
+        eprintln!(
+            "[data] t=+{}ms 请求下一页：距末尾 {remaining:.0}px，视口 {:.0}px，已加载 {} 行",
+            crate::qa::elapsed_ms(),
+            adjustment.page_size(),
+            self.row_count()
+        );
+        (self.callbacks.fetch_page)();
+    }
+
+    fn scroll_value(&self) -> f64 {
+        self.grid
+            .vadjustment()
+            .map_or(0.0, |adjustment| adjustment.value())
+    }
+
+    fn set_state(&self, state: DataState) {
+        self.state.set(state);
+        self.spinner
+            .set_visible(matches!(state, DataState::Loading));
+        if matches!(state, DataState::Loading) {
+            self.spinner.start();
+        } else {
+            self.spinner.stop();
+        }
+    }
+
+    fn set_status(&self, text: &str, kind: &str) {
+        self.status.set_text(text);
+        for class in ["error", "warning", "success", "dim-label"] {
+            self.status.remove_css_class(class);
+        }
+        match kind {
+            "error" => self.status.add_css_class("error"),
+            "warning" => self.status.add_css_class("warning"),
+            "success" => self.status.add_css_class("success"),
+            _ => {}
+        }
+    }
+
+    fn set_status_ready(&self, has_more: bool) {
+        let rows = self.row_count();
+        let pages = self.pages.get();
+        let suffix = if has_more {
+            " · 滚动到底部继续加载"
+        } else {
+            ""
+        };
+        if rows == 0 {
+            self.set_status("空表 · 共 0 行", "dim-label");
+            return;
+        }
+        if self.is_read_only() {
+            self.set_status(
+                &format!("只读 · 已加载 {rows} 行 · {pages} 页{suffix}"),
+                "warning",
+            );
+        } else {
+            self.set_status(&format!("已加载 {rows} 行 · {pages} 页{suffix}"), "success");
+        }
+    }
+
+    fn set_busy(&self, busy: bool) {
+        self.busy.set(busy);
+        if busy {
+            self.spinner.set_visible(true);
+            self.spinner.start();
+        } else {
+            self.spinner.stop();
+            self.spinner.set_visible(false);
+        }
+        self.update_buttons();
+    }
+
+    fn update_dirty_label(&self) {
+        let (dirty, risk) = match self.draft.borrow().as_ref() {
+            Some(draft) => (draft.dirty_rows(), draft.risk()),
+            None => (
+                0,
+                RiskAssessment {
+                    updates: 0,
+                    deletes: 0,
+                },
+            ),
+        };
+        let text = if risk.deletes > 0 {
+            format!(
+                "脏行 {dirty} · 待提交 {} 条（含 {} 个删除）",
+                risk.total(),
+                risk.deletes
+            )
+        } else {
+            format!("脏行 {dirty} · 待提交 {} 条", risk.total())
+        };
+        self.dirty_label.set_text(&text);
+        self.buttons
+            .commit_changes
+            .set_label(&format!("提交更改（{}）", risk.total()));
+    }
+
+    fn update_buttons(&self) {
+        let busy = self.busy.get();
+        let editing_enabled = !self.is_read_only()
+            && matches!(
+                self.state.get(),
+                DataState::Ready | DataState::Empty | DataState::Error
+            );
+        let (dirty, changes) = match self.draft.borrow().as_ref() {
+            Some(draft) => (draft.dirty_rows(), draft.risk().total()),
+            None => (0, 0),
+        };
+        let badge = self.badge.borrow();
+        let disconnected = matches!(self.state.get(), DataState::Disconnected)
+            || matches!(badge.status(), TxnStatus::Disconnected);
+
+        self.buttons
+            .begin
+            .set_sensitive(badge.can_begin() && !disconnected && !busy);
+        self.buttons
+            .commit_txn
+            .set_sensitive(badge.can_commit() && dirty == 0 && !busy);
+        self.buttons
+            .rollback
+            .set_sensitive(badge.can_rollback() && !busy);
+        self.buttons
+            .refresh
+            .set_sensitive(self.draft.borrow().is_some() && !busy);
+        self.buttons
+            .commit_changes
+            .set_sensitive(editing_enabled && changes > 0 && !busy);
+        self.buttons
+            .discard
+            .set_sensitive(editing_enabled && dirty > 0 && !busy);
+        let has_selection = self.selection.selected() != gtk::INVALID_LIST_POSITION;
+        self.buttons
+            .delete_row
+            .set_sensitive(editing_enabled && has_selection && !busy);
+        self.buttons.disconnect.set_sensitive(!disconnected);
+        self.buttons
+            .commit_changes
+            .set_tooltip_text(Some(if badge.can_commit() {
+                "提交所有脏行的变更（主键定位 + 列变更），然后在事务内生效"
+            } else {
+                "提交所有脏行的变更（主键定位 + 列变更）"
+            }));
+        // 只读原因一旦成立，编辑类按钮一律禁用（不是靠置灰暗示，状态行同时给出原因）。
+        if let Some(reason) = self.read_only_reason() {
+            self.buttons.delete_row.set_sensitive(false);
+            self.buttons.commit_changes.set_sensitive(false);
+            self.buttons.discard.set_sensitive(false);
+            self.status.set_tooltip_text(Some(&reason));
+        } else {
+            self.status.set_tooltip_text(None);
+        }
+    }
+
+    fn sync_badge(&self) {
+        let badge = self.badge.borrow();
+        self.txn_badge.set_text(&badge.label());
+        for class in [
+            "sqarvo-txn-commit",
+            "sqarvo-txn-active",
+            "sqarvo-txn-readonly",
+            "sqarvo-txn-failed",
+            "sqarvo-txn-disconnected",
+        ] {
+            self.txn_badge.remove_css_class(class);
+        }
+        for class in badge.css_classes() {
+            self.txn_badge.add_css_class(class);
+        }
+        self.txn_badge.set_tooltip_text(Some(match badge.status() {
+            TxnStatus::AutoCommit => "事务状态：自动提交（每条语句立即生效）",
+            TxnStatus::Active {
+                read_only: false, ..
+            } => "事务状态：事务中（提交或回滚前不会写库）",
+            TxnStatus::Active {
+                read_only: true, ..
+            } => "事务状态：只读事务（不能写入）",
+            TxnStatus::Failed { .. } => "事务状态：失败（只能回滚）",
+            TxnStatus::Disconnected => "事务状态：已断开（后端已强制回滚）",
+        }));
+        // 只读事务要显式说明原因（不能只靠按钮置灰）。
+        if matches!(
+            badge.status(),
+            TxnStatus::Active {
+                read_only: true,
+                ..
+            }
+        ) {
+            self.show_read_only_banner(&ReadOnlyCause::ReadOnlyTransaction.banner());
+        } else if self.read_only_cause.borrow().is_none() && self.banner_is_readonly.get() {
+            // 只读事务结束后收起只读说明；错误/断连横幅不受影响。
+            self.banner.set_revealed(false);
+            self.banner_is_readonly.set(false);
+        }
+    }
+
+    fn show_banner(&self, text: &str) {
+        self.banner_is_readonly.set(false);
+        self.banner.set_button_label(Some("重新连接后端"));
+        self.banner.set_title(text);
+        self.banner.set_revealed(true);
+    }
+
+    /// 只读说明横幅：事务状态变化时只在「不再是只读」时收起，避免误收起错误横幅。
+    fn show_read_only_banner(&self, text: &str) {
+        self.banner_is_readonly.set(true);
+        // 只读说明不是断连：不提供「重新连接后端」按钮，避免误导。
+        self.banner.set_button_label(None::<&str>);
+        self.banner.set_title(text);
+        self.banner.set_revealed(true);
+    }
+
+    fn show_failures(&self, failures: &[crate::table_data::RowFailure]) {
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
+        if failures.is_empty() {
+            self.errors_scroll.set_visible(false);
+            return;
+        }
+        for failure in failures {
+            let row = gtk::Label::new(Some(&format!(
+                "第 {} 行：[{}] {}",
+                failure.number, failure.code, failure.message
+            )));
+            row.set_xalign(0.0);
+            row.set_wrap(true);
+            row.add_css_class("caption");
+            row.set_selectable(true);
+            row.set_margin_top(4);
+            row.set_margin_bottom(4);
+            row.set_margin_start(8);
+            row.set_margin_end(8);
+            self.errors.append(&row);
+        }
+        self.errors_scroll.set_visible(true);
+    }
+}
+
+impl DataRow {
+    fn from_table_row(row: &TableRow) -> Self {
+        Self {
+            number: row.number,
+            cells: row.cells.clone(),
+            dirty: vec![false; row.cells.len()],
+            deleted: false,
+            removed: false,
+        }
+    }
+}
+
+/// 以编程方式触发 `AdwAlertDialog` 的 response 信号。
+///
+/// 无人值守验证用：仍然走对话框自己的 response 路径（与用户点击按钮同一个信号），
+/// 不是绕过确认直接提交。
+fn respond_dialog(dialog: &adw::AlertDialog, response: &str) {
+    let value = glib::Value::from(response);
+    dialog.emit_by_name::<()>("response", &[&value]);
+    // 程序化触发不一定走「点击后自动收起」的内部路径；仍可见时显式关闭，
+    // 否则模态对话框会挡住窗口关闭（无人值守运行会挂到外部超时）。
+    if dialog.is_visible() {
+        dialog.close();
+    }
+}
+
+/// 值的一行展示（错误/日志用；NULL 明确写 NULL）。
+fn display_value(value: &ColumnValue) -> String {
+    format_cell(value).text
+}
+
+fn ordering_label(ordering: RowOrder) -> &'static str {
+    match ordering {
+        RowOrder::PrimaryKeyAscending => "按主键升序",
+        RowOrder::Unstable => "无稳定排序",
+        RowOrder::Unspecified => "排序未知",
+    }
+}
+
+/// 安装数据页 CSS（脏行底色、删除线、徽标配色）。
+fn install_css() {
+    use std::sync::OnceLock;
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.set(()).is_err() {
+        return;
+    }
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(
+        r#"
+        .sqarvo-cell-dirty { background: alpha(@accent_color, 0.12); }
+        .sqarvo-row-deleted { text-decoration: line-through; opacity: 0.55; }
+        .sqarvo-dirty { color: @accent_color; font-weight: 700; }
+        .sqarvo-deleted { color: @error_color; font-weight: 700; }
+        .sqarvo-dirty-indicator { font-family: monospace; }
+        .sqarvo-txn-commit { background: alpha(@accent_color, 0.15); }
+        .sqarvo-txn-active { background: alpha(@warning_color, 0.30); font-weight: 600; }
+        .sqarvo-txn-readonly { background: alpha(@warning_color, 0.30); }
+        .sqarvo-txn-failed { background: alpha(@error_color, 0.30); font-weight: 600; }
+        .sqarvo-txn-disconnected { background: alpha(@error_color, 0.20); }
+        "#,
+    );
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}

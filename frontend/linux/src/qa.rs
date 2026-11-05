@@ -116,6 +116,26 @@ struct Args {
     second_sql: Option<String>,
     /// `--qa-execute-again-after-ms`：首次执行后多少毫秒用 `second_sql`（或同一 SQL）再执行一次。
     execute_again_after_ms: Option<u64>,
+    /// `--qa-data-table`：连接后打开的数据页表名。
+    data_table: Option<String>,
+    /// `--qa-data-begin-txn`：打开表后开始事务。
+    data_begin: bool,
+    /// `--qa-data-read-only`：开始只读事务（验证只读态）。
+    data_read_only: bool,
+    /// `--qa-data-edit <row>:<column>:<value>`：按顺序应用的单元格编辑。
+    data_edits: Vec<(u32, String, String)>,
+    /// `--qa-data-delete-row <row>`：标记删除的行（可重复）。
+    data_delete_rows: Vec<u32>,
+    /// `--qa-data-commit`：提交更改。
+    data_commit: bool,
+    /// `--qa-data-rollback`：回滚事务。
+    data_rollback: bool,
+    /// `--qa-data-scroll-to-row <n>`：滚动到第 n 行（触发 cursor 翻页）。
+    data_scroll_rows: Vec<u32>,
+    /// `--qa-data-reload`：提交/回滚后重新浏览当前表。
+    data_reload: bool,
+    /// `--qa-auto-confirm-risk`：无人值守时自动点风险确认对话框的「确认提交」。
+    auto_confirm_risk: bool,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -145,6 +165,10 @@ pub fn enabled() -> bool {
             || args.execute
             || !args.scroll_rows.is_empty()
             || args.cancel_after_ms.is_some()
+            || args.data_table.is_some()
+            || !args.data_edits.is_empty()
+            || args.data_commit
+            || args.data_rollback
     })
 }
 
@@ -188,6 +212,69 @@ pub fn second_sql() -> Option<String> {
 #[must_use]
 pub fn execute_again_after_ms() -> Option<u64> {
     ARGS.get().and_then(|args| args.execute_again_after_ms)
+}
+
+/// `--qa-data-table`：连接后要打开的表名。
+#[must_use]
+pub fn data_table() -> Option<String> {
+    ARGS.get().and_then(|args| args.data_table.clone())
+}
+
+/// 是否在打开表后开始事务。
+#[must_use]
+pub fn data_begin_transaction() -> bool {
+    ARGS.get().is_some_and(|args| args.data_begin)
+}
+
+/// 开始事务时是否只读。
+#[must_use]
+pub fn data_read_only() -> bool {
+    ARGS.get().is_some_and(|args| args.data_read_only)
+}
+
+/// 按顺序应用的单元格编辑 `(行, 列名, 文本)`。
+#[must_use]
+pub fn data_edits() -> Vec<(u32, String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.data_edits.clone())
+}
+
+/// 要标记删除的行（0 起）。
+#[must_use]
+pub fn data_delete_rows() -> Vec<u32> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.data_delete_rows.clone())
+}
+
+/// 是否提交更改。
+#[must_use]
+pub fn data_commit() -> bool {
+    ARGS.get().is_some_and(|args| args.data_commit)
+}
+
+/// 是否回滚事务。
+#[must_use]
+pub fn data_rollback() -> bool {
+    ARGS.get().is_some_and(|args| args.data_rollback)
+}
+
+/// 要滚动到的行（0 起，按顺序）。
+#[must_use]
+pub fn data_scroll_rows() -> Vec<u32> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.data_scroll_rows.clone())
+}
+
+/// 是否在提交/回滚后重新浏览。
+#[must_use]
+pub fn data_reload() -> bool {
+    ARGS.get().is_some_and(|args| args.data_reload)
+}
+
+/// 是否自动确认风险对话框（无人值守验证用）。
+#[must_use]
+pub fn auto_confirm_risk() -> bool {
+    ARGS.get().is_some_and(|args| args.auto_confirm_risk)
 }
 
 /// 日志里记一行 SQL 摘要：只在 QA 模式下记录，并截断到 100 字符。
@@ -346,6 +433,82 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .map_err(|_| format!("--qa-execute-again-after-ms 不是合法毫秒数：{value}"))?;
                 parsed.execute_again_after_ms = Some(millis);
                 index += 2;
+            }
+            "--qa-data-table" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-table 需要一个表名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-data-table 的表名不能为空".to_owned());
+                }
+                parsed.data_table = Some(value.clone());
+                index += 2;
+            }
+            "--qa-data-begin-txn" => {
+                parsed.data_begin = true;
+                index += 1;
+            }
+            "--qa-data-read-only" => {
+                parsed.data_read_only = true;
+                index += 1;
+            }
+            "--qa-data-edit" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-edit 需要 row:column:value".to_owned())?;
+                let mut parts = value.splitn(3, ':');
+                let row: u32 = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-data-edit 缺少行号：{value}"))?
+                    .parse()
+                    .map_err(|_| format!("--qa-data-edit 的行号不合法：{value}"))?;
+                let column = parts
+                    .next()
+                    .filter(|column| !column.is_empty())
+                    .ok_or_else(|| format!("--qa-data-edit 缺少列名：{value}"))?;
+                let text = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-data-edit 缺少值：{value}"))?;
+                parsed
+                    .data_edits
+                    .push((row, column.to_owned(), text.to_owned()));
+                index += 2;
+            }
+            "--qa-data-delete-row" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-delete-row 需要一个行号".to_owned())?;
+                let row: u32 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-data-delete-row 不是合法行号：{value}"))?;
+                parsed.data_delete_rows.push(row);
+                index += 2;
+            }
+            "--qa-data-commit" => {
+                parsed.data_commit = true;
+                index += 1;
+            }
+            "--qa-data-rollback" => {
+                parsed.data_rollback = true;
+                index += 1;
+            }
+            "--qa-data-scroll-to-row" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-scroll-to-row 需要一个行号".to_owned())?;
+                let row: u32 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-data-scroll-to-row 不是合法行号：{value}"))?;
+                parsed.data_scroll_rows.push(row);
+                index += 2;
+            }
+            "--qa-data-reload" => {
+                parsed.data_reload = true;
+                index += 1;
+            }
+            "--qa-auto-confirm-risk" => {
+                parsed.auto_confirm_risk = true;
+                index += 1;
             }
             "--qa-password-env" => {
                 let value = args
