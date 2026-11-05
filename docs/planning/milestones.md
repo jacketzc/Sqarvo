@@ -9,7 +9,7 @@
 | M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
 | M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 已完成（#9–#17） |
 | M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 已完成（#20–#25；真实 TLS 握手未验证） |
-| M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | v0.2.1 部分完成（#41–#48）；余项转 v0.2.2 继续跟踪（#81–#85、#90；对象树只到「当前库表/视图」一层，DDL 与上层对象尚未实现） |
+| M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | 已完成（v0.2.1：事务 / 元数据最小子集 / 表数据；v0.2.2：逐层对象树 / 跨库 / DDL / 搜索，2026-11-06） |
 | M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v0.2.4 | 未开始 |
 | M6 前端接入与硬化 | S6 | 三端接入、性能、安全、跨平台构建 | v0.2 起持续 | 进行中（Linux 首端接入完成；Windows / macOS 未验证） |
 | M7 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.2.3 | 未开始 |
@@ -150,6 +150,29 @@ CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）`
 `left: 0, right: 1`）；`cargo test --workspace`（带 DSN）→ 410 通过、MariaDB 集成 50 条真实执行
 （无「跳过：未设置 SQARVO_MARIADB_URL」输出）。
 
+### M4 元数据与事务（v0.2.2 收尾）
+
+实际完成：2026-11-06（Linux）。任务 #81–#85、#87，#86/#88/#89 为前端闭环；发布说明见
+[v0.2.2](../releases/v0.2.2.md)，支持矩阵见 [release-plan.md](release-plan.md)，证据基线 main `9f3d2ce`。
+
+| 完成标准 | 证据 |
+|---|---|
+| 两驱动下对象树可分页展开，列信息保留原始类型 | SQLite：`cargo test -p sqarvo-driver-sqlite --test metadata_hierarchy` → 8 通过（含跨库往返、含引号/空格/中文的 catalog、按（种类, 名字）分页无重无漏）；`--test metadata` → 13 通过。MariaDB：`SQARVO_MARIADB_URL=… cargo test -p sqarvo-driver-mariadb --test integration` → 69 通过，含 `metadata_catalog_layer_lists_every_visible_database`、`metadata_catalog_children_are_scoped_to_that_database`、`metadata_table_children_include_columns_indexes_and_triggers`、`metadata_hierarchy_pagination_has_no_duplicates_or_gaps`；PR #94 / `43373e7`（CI run `42049499508`） |
+| DDL 可查看且来源可信 | SQLite：`--test metadata` 的 5 个 `ddl_*` 用例（`ddl_returns_sqlite_master_text_verbatim`、`ddl_is_not_truncated_at_cell_limits`、`ddl_reads_attached_database_by_catalog` 等）；隐式索引无原文 → `capability.unsupported`。MariaDB：4 个 `metadata_ddl_*`（表/视图列选择/序列/不支持种类）；`grpc_metadata_e2e` 1 通过（断言 `exact=true`、`source=DDL_SOURCE_DATABASE`）。执行锁：`grpc_session_locks_e2e` 8 通过含 `ddl_holds_lock_against_apply` / `ddl_waits_for_apply`；PR #95 / `0a8e21f`（run `42052752392`） |
+| 不支持能力返回明确错误 | `ListNodes` 的 schema / sequence 层 → `capability.unsupported`；叶子/种类不适用 → `metadata.object_kind_unsupported`；库/表不存在 → `metadata.object_not_found`；无权限 → `metadata.permission_denied`；过滤非法 → `metadata.filter_invalid`；MariaDB 索引/触发器 DDL → `metadata.object_kind_unsupported`（不拼装）；插入的 `WITHOUT ROWID` / 省略非自增主键 → `capability.unsupported`。均有单元或集成用例，且前端按错误码分文案 |
+| 对象搜索可用（v0.2.2 追加） | SQLite `--test metadata_filter` 13 通过 / 1 ignored、MariaDB `--test metadata_filter` 9 通过 / 1 ignored；转义（`%`/`_`/`\` 字面量）、过滤下推、换条件旧 token 失效均有断言；PR #96 / `8e7c661`（run `42059959553`） |
+
+判定：**完成**。M4 的原完成标准对两个内置驱动都满足；以下不阻塞完成，但如实记录：
+
+- **schema 层没有实现**：SQLite / MariaDB 都没有独立 schema（请求即 `capability.unsupported`），
+  PostgreSQL 驱动未实现，因此没有 schema 层的正例证据。M4 的目标「对象树」以 Catalog →
+  表/视图/序列 → 列/索引/触发器 的层级交付，不把不存在的层伪装出来。
+- **MariaDB 索引/触发器没有独立 DDL**：`ObjectRef` 不携带所属表，无法唯一定位索引；按契约
+  明确报 `metadata.object_kind_unsupported`。支持它需要 proto 增量，留后续版本。
+- **搜索的规模证据不对称**：SQLite 10 万对象 9.3 ms；MariaDB 只测 1 万对象 7.2 ms（10 万未实测，
+  原因见 [v0.2.2 发布说明](../releases/v0.2.2.md)）。
+- **前端闭环**：对象树/DDL 在两个驱动上真机跑过；搜索与插入的 UI 闭环本轮只在 SQLite 上复跑。
+
 ### M5 第二网络驱动与一致性
 
 - PostgreSQL 驱动可用；
@@ -176,12 +199,23 @@ Linux 已完成（证据均为 PR / commit / CI run 或可直接执行的命令�
 | SQL 执行、取消、每批 500 行预取、`GtkColumnView` 虚拟化、类型显示、取消/断连状态 | PR #38 / `835373f`（run `41815806079`） |
 | 客户端结果集上限、背压、可复现基准脚本 | PR #39 / `c6b9ab4`（run `41818263864`）；数值见 [v0.2](../releases/v0.2.md)「性能基准」 |
 | 构建修复：后端 `build.rs` 监听整个 `proto/` 目录 | `8e967cb`（run `41812812519`），避免新增 `.proto` 不触发重新生成 |
+| 对象树、搜索与 DDL 面板（v0.2.2） | PR #98 / `a6008c1`（run `42063985353`）；真机 SQLite `--qa-tree-expand main --qa-tree-open orders --qa-tree-ddl orders` 与 MariaDB `--qa-tree-expand sqarvo_test_90` 均 exit 0，断言读控件文本；截图（GTK 自渲染）`90-tree-ddl.png`、`90-tree-ddl-mariadb.png`、`90-search-jump.png` |
+| 列信息浮层（默认值四态 / 字符集 / 排序规则） | PR #92 / `bcb12c4`（run `42047837242`）；`--qa-column-info` 点真实列头并断言六项文本 |
+| 插入新行与隔离级别入口（v0.2.2） | PR #97 / `a59d78d`；SQLite 真机插入 + 外部 `sqlite3` 复核、唯一冲突整批回滚且外部计数不变；`--qa-isolation-dialog` 输出「可用 2 项 / 禁用 3 项（附原因）」 |
+| 提交中取消（在途批次登记） | PR #99 / `9f3d2ce`（run `42067912917`）；`cargo test` 192 通过（含 13 项状态机/文案用例）；#89 的真机日志：`CancelRowChanges` 往返 1 ms、已执行 128 条、外部 SQL 0 行变化 |
 
 可复核命令（2026-11-04，Linux，main `c6b9ab4`）：
 
 ```bash
 cd frontend/linux && cargo test          # 66 passed / 0 failed
 cd frontend/linux && ./scripts/bench.sh  # 冷启动 / 空闲内存 / 10 万行 / 200 列宽表
+```
+
+v0.2.2 复核（2026-11-06，main `9f3d2ce`）：
+
+```bash
+cd frontend/linux && cargo test          # 192 passed / 0 failed
+cd frontend/linux && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings  # 均 exit 0
 ```
 
 Windows / macOS 现状：`frontend/windows` 与 `frontend/macos` 只有窗口骨架，**未接后端、
@@ -196,6 +230,7 @@ M6 剩余完成条件：
 3. **release 构建**的冷启动与内存基准（当前数值全部来自 debug 构建）；
 4. 安全清单在三端各自复跑（日志脱敏、端点/管道权限、IPC 仅本机）；
 5. 宽表内存分配点定位与客户端结果集上限的计量口径修正（`REQ-RESULT-005` 的已知偏差）。
+6. v0.2.2 新增的搜索与插入 UI 闭环需要在 MariaDB 上各跑一次（本轮 MariaDB 只覆盖对象树/DDL）。
 
 ### M7 导入导出与结构管理
 

@@ -8,7 +8,7 @@
 | v0.1 | 基础架构与数据库连接（后端） | 本地 IPC + token、gRPC 契约、Driver SPI v0.2、SQLite 连接/执行/分批/取消 | 已完成（M0–M2） |
 | v0.2 | SQL 编辑器与查询结果 | 前端接入、凭据存储、MariaDB、SQL 编辑器、结果虚拟化、取消 | 已完成（M3；M6 的 Linux 首端） |
 | v0.2.1 | 数据浏览与编辑 | 表数据浏览、安全编辑、事务状态 | 已完成（M4） |
-| v0.2.2 | 数据库对象管理 | 对象树、列信息、DDL、对象搜索 | 未开始 |
+| v0.2.2 | 数据库对象管理 | 对象树、列信息、DDL、对象搜索、插入行 | 已完成（2026-11-06） |
 | v0.2.3 | 导入导出与结构管理 | CSV/JSON/SQL 导入导出、结构对比与迁移脚本 | 未开始 |
 | v0.2.4 | 首个完整可用版本 | 三平台、SQLite/MariaDB/PostgreSQL、性能与安全验收、打包 | 未开始 |
 
@@ -23,10 +23,15 @@
   （当前库表/视图 + 列 + 主键）、表数据浏览与行编辑、Linux 数据页（脏标记、风险确认、
   四态事务徽标）；验证记录与已知限制见 [v0.2.1 发布说明](../releases/v0.2.1.md)
   与 [发布计划](../planning/release-plan.md)；
-- SQLite 与 MariaDB 可连接、执行、分批拉取、取消、事务与表数据编辑；PostgreSQL 未实现，
-  连接返回 `driver.not_found`；MariaDB 真实 TLS 握手与 MySQL 8.x 兼容性未验证；
-- 元数据的上层层级（Catalog / Schema / Index / Sequence）、跨库浏览与 DDL 查看仍不可用：
-  显式返回 `capability.unsupported`（DDL 计划 v0.2.2）；
+- v0.2.2 已完成（2026-11-06，仅 Linux 前端）：Catalog → 表/视图/序列 → 列/索引/触发器 的逐层
+  对象树与跨库浏览、DDL 原文查看、对象搜索、插入新行；Linux 前端新增对象树、搜索跳转、
+  DDL 面板、列信息浮层、插入行、隔离级别入口与提交中取消。验证记录与已知限制见
+  [v0.2.2 发布说明](../releases/v0.2.2.md) 与 [发布计划](../planning/release-plan.md)；
+- SQLite 与 MariaDB 可连接、执行、分批拉取、取消、事务、表数据编辑、对象浏览、DDL 查看、
+  搜索与插入；PostgreSQL 未实现，连接返回 `driver.not_found`；MariaDB 真实 TLS 握手与
+  MySQL 8.x 兼容性未验证；
+- schema 层两个内置数据库都不存在（显式 `capability.unsupported`）；MariaDB 索引/触发器没有
+  独立 DDL（明确报错）；跨库的表数据读写仍只支持当前库；
 - 前端：Linux 已接入后端并可查询；Windows / macOS 仅有窗口骨架，未接后端、未构建验证；
 
 ## 版本原则

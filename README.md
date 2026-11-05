@@ -8,10 +8,11 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
-> 当前版本为 **v0.2.1**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动 + 元数据 +
-> 显式事务）、Linux GTK4 前端（拉起后端、连接、执行、取消、结果虚拟化、数据页浏览/编辑）与
-> 凭据存储已可端到端使用。**Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵
-> 与已知限制见 [v0.2.1 发布说明](docs/releases/v0.2.1.md)。
+> 当前版本为 **v0.2.2**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动 + 元数据与
+> 对象树 / DDL / 搜索 + 显式事务 + 插入行）、Linux GTK4 前端（拉起后端、连接、执行、取消、
+> 结果虚拟化、对象树 / DDL / 搜索、数据页浏览/编辑/插入、隔离级别与取消提交）与凭据存储
+> 已可端到端使用。**Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵与
+> 已知限制见 [v0.2.2 发布说明](docs/releases/v0.2.2.md)。
 
 ## 目录结构
 
@@ -59,30 +60,35 @@
 | 驱动测试基架 | 脚本化测试会话 + 最小符合性检查 `smoke`（SQLite、MariaDB 均通过） |
 | 连接管理 | 会话建立/断开/列表、驱动不存在时明确报错 |
 | 查询登记 | 并发上限、批次上限、幂等取消 |
-| 元数据 | 两个驱动都实现「当前库的表/视图 + 列 + 主键」：分页 token 带对象名集合指纹（非法 → `config.invalid`，集合变化 → `metadata.snapshot_changed`），列保留原始类型名与可空性；上层 Catalog / Schema / Index / Sequence 与跨库浏览返回 `capability.unsupported` |
+| 元数据 | 两个驱动都实现逐层懒加载：Catalog → 表/视图/序列 → 列/索引/触发器（SQLite 的 catalog 为 `main` / `temp` / `ATTACH`，MariaDB 的 database 即 catalog）；跨库必须显式 catalog；schema 层两个数据库都不存在，显式 `capability.unsupported`；列保留原始类型名、可空性、默认值四态、字符集与排序规则；分页按（种类, 名字），token 带对象名集合指纹（非法 → `config.invalid`，集合变化 → `metadata.snapshot_changed`）。`metadata_hierarchy` 8 通过、`metadata` 13 通过、MariaDB 集成 69 通过 |
 | 显式事务 | `TransactionService.Begin` / `Commit` / `Rollback` 已接线；单会话单事务、失败态只允许回滚、重复提交/回滚幂等；状态经 `TransactionInfo.state` 与 `SessionSummary.transaction` 暴露；断连与后端退出强制回滚。SQLite `--test transactions` 9 通过、MariaDB 集成覆盖四档隔离级别与隐式提交拒绝、`grpc_transactions_e2e` 8 通过 |
-| 表数据浏览 / 行编辑 | `TableDataService.BrowseTable` 按主键升序 + 不透明游标（禁止 `OFFSET`，无主键表只读并标注 `Unstable`）；`ApplyRowChanges` 只传主键值 + 列变更，驱动内部参数化 DML，核对影响行数、批内 savepoint；单批 ≤ 500 行，> 100 行或含删除需显式确认。SQLite `--test table_data` 9 通过、`--test row_edits` 10 通过、`grpc_table_data_e2e` 2 通过 |
+| 表数据浏览 / 行编辑 / 插入 | `TableDataService.BrowseTable` 按主键升序 + 不透明游标（禁止 `OFFSET`，无主键表只读并标注 `Unstable`）；`ApplyRowChanges` 只传主键值 + 列变更，驱动内部参数化 DML，核对影响行数、批内 savepoint；`InsertRows` 区分省略列与显式 NULL、回传自增主键、整批原子（失败 → `rolled_back=true`）；单批 ≤ 500 行，> 100 行或含删除需显式确认。SQLite `--test table_data` 10 通过、`--test row_edits` 11 通过、`--test insert_rows` 9 通过，`grpc_table_data_e2e` 2 通过、`grpc_insert_rows_e2e` 2 通过 |
 | 本地存储 | 目录解析与权限、端点文件原子写入、凭据引用接口 |
 | 凭据存储（Linux） | Secret Service（D-Bus，zbus blocking）：get / set / delete；引用不存在 → `credential.not_found`，服务不可用 → `credential.unavailable`，绝不回退明文；真实密钥环用例由 `SQARVO_SECRET_SERVICE_TEST=1` 门控 |
 | 凭据接线 | `SessionManager` 注入 `CredentialStore`：`credential_ref` 经 `spawn_blocking` 解析为 `Secret` 后交给驱动，明文不缓存、不落日志；引用不存在 → `credential.not_found`（不连库），存储不可用/锁定 → `credential.unavailable`；gRPC 端到端用例用内存存储 + 真实 MariaDB |
-| Linux 前端（GTK4 / libadwaita） | 拉起后端进程、读端点文件、校验 `protocol_version`、token 握手与退出清理；连接对话框（测试连接、密码只写系统凭据库）；`Ctrl+Enter` 执行、`Escape`/按钮取消、`GtkColumnView` 虚拟化 + 每批 500 行预取；行数/估算字节上限与背压（`SQARVO_RESULT_ROW_LIMIT` / `SQARVO_RESULT_BYTES_LIMIT`）；数据页（表列表、主键序翻页、单元格编辑与 NULL 开关、脏标记、风险确认、四态事务徽标、只读态与断连提示）；`cd frontend/linux && cargo test` 94 通过，`./scripts/bench.sh` 可复现基准 |
+| Linux 前端（GTK4 / libadwaita） | 拉起后端进程、读端点文件、校验 `protocol_version`、token 握手与退出清理；连接对话框（测试连接、密码只写系统凭据库）；`Ctrl+Enter` 执行、`Escape`/按钮取消、`GtkColumnView` 虚拟化 + 每批 500 行预取；行数/估算字节上限与背压（`SQARVO_RESULT_ROW_LIMIT` / `SQARVO_RESULT_BYTES_LIMIT`）；可折叠对象树（逐层懒加载、每页 500、搜索跳转）、DDL 面板（原文/拼装标注、复制）、列信息浮层；数据页（主键序翻页、单元格编辑与 NULL 开关、新增行、脏标记、风险确认、四态事务徽标、只读态与断连提示）；开始事务可选隔离级别，提交行变更时可取消；`cd frontend/linux && cargo test` 192 通过，`./scripts/bench.sh` 可复现基准 |
 | gRPC 冒烟测试 | 真实 UDS + token 的端到端调用 |
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
-- 元数据的上层层级（Catalog / Schema / Index / Sequence）与跨库浏览：显式返回 `capability.unsupported`
-  （当前库的表/视图、列与主键已接入，见 [Driver SPI](./docs/database/driver-spi.md#元数据)）；
-- DDL 生成（v0.2.2，`GetDdl` 明确未实现）；
-- 数据页的插入新行、按非主键列排序与可折叠的多层对象树（v0.2.2）；
-- 列元数据的默认值 / 字符集 / 排序规则（`ColumnMeta` 无对应字段，契约待补）；
-- 事务隔离级别的界面入口（驱动已支持 MariaDB 四档；界面只提供「只读」开关）；
+- schema 层对象树：SQLite / MariaDB 没有独立 schema，请求即 `capability.unsupported`；
+  PostgreSQL 驱动未实现，因此也没有该层的正例（Catalog / 表 / 视图 / 序列 / 索引 / 触发器已接入）；
+- MariaDB 索引与触发器的独立 DDL：`ObjectRef` 不携带所属表，明确报 `metadata.object_kind_unsupported`
+  （可查看所属表的 `SHOW CREATE TABLE`）；
+- 结构修改（执行 DDL）、导入导出、结构对比与 ER 图：导入导出与结构对比属 v0.2.3，
+  结构修改与 ER 图未排期（P2）；当前 `GetDdl` 只读；
+- 数据页按非主键列排序；跨库的表数据浏览/行编辑/插入（元数据可跨库，读写仍限当前库）；
+- `ColumnMeta.auto_increment`：自增列在 UI 只能默认留空并说明，无法禁止显式填写；
+  「按主键回读单行」RPC 与插入批次取消同样待契约增量；
+- 事务 `Snapshot` 隔离级别（`capability.unsupported`）；savepoint 仅批次内部使用，未对外暴露；
 - Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
 - Windows / macOS 前端接入后端（两端仍只有窗口骨架，未构建、未运行验证）；
 - 大字段延迟加载（当前单格按 64 KiB 截断返回；Linux 前端已有行数/估算字节上限与背压）；
 - Windows Named Pipe + ACL 传输（当前回退为回环 TCP + token）；
-- **release 构建**的启动/内存/大结果集基准（现有数值全部来自 debug 构建）。
+- **release 构建**的启动/内存/大结果集基准（现有基准用 debug 构建，搜索规模基准除外）；
+- 远程 TLS 连接与远程后端部署（测试容器未启用 TLS，未做真实握手验证）。
 
 ## 构建与测试
 
@@ -154,6 +160,7 @@ cargo run
 - [v0.1 发布说明](docs/releases/v0.1.md)
 - [v0.2 发布说明](docs/releases/v0.2.md)
 - [v0.2.1 发布说明](docs/releases/v0.2.1.md)
+- [v0.2.2 发布说明](docs/releases/v0.2.2.md)
 
 技术与设计：
 

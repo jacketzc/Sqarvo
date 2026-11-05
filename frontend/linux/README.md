@@ -68,7 +68,7 @@ cargo run
 CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、
 `cargo test`（`.github/workflows/ci.yml` 的 `前端（Linux）` 作业）。该作业在 ubuntu-26.04 上
 运行——24.04 的 `libgtk-4-dev` 只有 4.14.2，低于 crate 要求的 GTK 4.16（下面「依赖」一节），
-构建期就会失败。测试不需要显示：本地 `env -u DISPLAY -u WAYLAND_DISPLAY cargo test` 同样 116 项全过。
+构建期就会失败。测试不需要显示：本地 `env -u DISPLAY -u WAYLAND_DISPLAY cargo test` 同样 192 项全过。
 
 ## 启动顺序
 
@@ -704,9 +704,9 @@ Wayland 会话里无法注入指针事件，所以这里不是 xdotool 式的鼠
 隔离级别是否真的到达数据库有两层证据（跑过一次，记录在此）：
 
 ```bash
-# 外部会话开一个不提交的事务改 id=2；界面在事务内重新浏览
-python3 - <<'EOF' &   # 见 PR 正文的脚本：UPDATE ... SET note='dirty-ru' WHERE id=2，保持 22s
-EOF
+# 外部会话开一个不提交的事务改 id=2，保持 22 秒（容器内 mariadb 客户端，库名按你的测试库替换）
+podman exec -i sqarvo-mariadb-test mariadb -usqarvo_test -psqarvo_test_only sqarvo_test_88 -e \
+  "START TRANSACTION; UPDATE items88 SET note='dirty-ru' WHERE id=2; DO SLEEP(22);" &
 … --qa-data-begin-txn --qa-isolation-level read-uncommitted --qa-data-reload …
 # → 重新浏览读到 note=dirty-ru（脏读成立 = 窗口真的在 READ UNCOMMITTED 里）
 … --qa-data-begin-txn --qa-isolation-level repeatable-read --qa-data-reload …
