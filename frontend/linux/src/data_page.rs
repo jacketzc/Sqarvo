@@ -801,6 +801,10 @@ impl DataPage {
 
         if let Some(text) = &read_only_text {
             self.show_read_only_banner(text);
+            if crate::qa::enabled() {
+                // 只读原因必须在日志里可复核：截图看得到横幅，但自动化要能断言文案。
+                eprintln!("[data] 只读原因：{text}");
+            }
         }
         if count == 0 {
             self.placeholder.set_title("空表");

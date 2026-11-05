@@ -81,6 +81,33 @@ pub struct HealthInfo {
     pub registered_drivers: u32,
 }
 
+/// `SystemService.ListDrivers` 返回的一条驱动描述。
+///
+/// **驱动清单的唯一来源是后端**：界面不维护自己的驱动列表，否则后端新增驱动时
+/// 前端还在展示一份过期清单。`driver_id` 是稳定标识（`mariadb` / `sqlite`），
+/// `display_name` 只用于展示。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverSummary {
+    /// 稳定驱动标识。
+    pub driver_id: String,
+    /// 展示名（由驱动自己声明）。
+    pub display_name: String,
+    /// 驱动版本。
+    pub version: String,
+    /// 能力描述符（名称是稳定标识，只追加不改名）。
+    pub capabilities: Vec<String>,
+}
+
+impl DriverSummary {
+    /// 界面上的下拉标签：展示名 + 驱动 ID（对照后端日志时用 ID）。
+    ///
+    /// 版本号不放进标签：同一驱动的版本由后端随包发布，放进下拉只会让列表变长。
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{}（{}）", self.display_name, self.driver_id)
+    }
+}
+
 /// 把本地会话 token 注入每个请求的拦截器。
 #[derive(Clone)]
 pub struct TokenInterceptor {
@@ -340,6 +367,35 @@ impl BackendClient {
             detail: health.detail,
             registered_drivers: health.registered_drivers,
         })
+    }
+
+    /// 调用 `SystemService.ListDrivers`，返回后端已注册的驱动。
+    ///
+    /// 连接对话框的驱动下拉只用这份结果，**不硬编码驱动清单**：后端升级多出一个驱动时，
+    /// 前端不需要跟着发版（是否认识它的字段集由 [`crate::driver_form`] 决定）。
+    /// 结果按 `driver_id` 排序，保证同一后端每次顺序一致。
+    pub async fn list_drivers(&self) -> Result<Vec<DriverSummary>, BackendError> {
+        let mut client = self.system_service()?;
+        let response = tokio::time::timeout(RPC_TIMEOUT, client.list_drivers(Empty {}))
+            .await
+            .map_err(|_| BackendError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+                message: format!("ListDrivers 在 {} 秒内未返回", RPC_TIMEOUT.as_secs()),
+            })?
+            .map_err(map_status)?;
+        let mut drivers: Vec<DriverSummary> = response
+            .into_inner()
+            .drivers
+            .into_iter()
+            .map(|driver| DriverSummary {
+                driver_id: driver.driver_id,
+                display_name: driver.display_name,
+                version: driver.version,
+                capabilities: driver.capabilities,
+            })
+            .collect();
+        drivers.sort_by(|left, right| left.driver_id.cmp(&right.driver_id));
+        Ok(drivers)
     }
 }
 

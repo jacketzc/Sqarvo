@@ -26,7 +26,7 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::backend::client::{BackendClient, VersionInfo};
+use crate::backend::client::{BackendClient, DriverSummary, VersionInfo};
 use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure, TestReport};
 use crate::backend::endpoint::{self, EndpointInfo};
 use crate::backend::error::BackendError;
@@ -272,6 +272,11 @@ pub struct ConnectedSnapshot {
     pub version_mismatch: bool,
     /// 后端是否由前端启动。
     pub started_by_frontend: bool,
+    /// `SystemService.ListDrivers` 返回的驱动（连接对话框的下拉数据源）。
+    ///
+    /// 读取失败时为空并已记日志：界面会如实说「后端未返回驱动列表」，
+    /// 而不是伪造一份 MariaDB 清单。
+    pub drivers: Vec<DriverSummary>,
 }
 
 /// 表数据事件的界面侧表达。
@@ -541,6 +546,8 @@ struct Session {
     endpoint: EndpointInfo,
     version: VersionInfo,
     version_mismatch: bool,
+    /// 后端注册的驱动（连接对话框的下拉数据源）。
+    drivers: Vec<DriverSummary>,
 }
 
 async fn worker_loop(
@@ -1646,16 +1653,45 @@ async fn establish(
         version.service_version, version.protocol_version, version.build_profile
     );
 
+    // 驱动清单来自后端（`ListDrivers`），不在这里硬编码：后端多一个驱动，
+    // 对话框下拉就多一项。读取失败不阻止握手（没有驱动也能看状态页），
+    // 但必须记日志并在界面上如实反映「没有可用驱动」。
+    let drivers = match until_cancelled(cancel, client.list_drivers()).await {
+        Ok(Ok(drivers)) => {
+            eprintln!(
+                "[sqarvo-desktop] 已注册驱动：{}",
+                if drivers.is_empty() {
+                    "（无）".to_owned()
+                } else {
+                    drivers
+                        .iter()
+                        .map(|driver| format!("{} {}", driver.driver_id, driver.version))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                }
+            );
+            drivers
+        }
+        Ok(Err(error)) => {
+            eprintln!("[sqarvo-desktop] 驱动列表读取失败：{}", error.short());
+            Vec::new()
+        }
+        Err(error) => return Err(error),
+    };
+
     Ok(Session {
         client,
         endpoint: info,
         version,
         version_mismatch,
+        drivers,
     })
 }
 
 /// 解析本次要用的凭据引用（ADR 0012 / 0016）。
 ///
+/// - 驱动不需要凭据（SQLite，本地文件）时直接返回空引用：不调用
+///   `StoreCredential`，也不要求用户填一个对数据库毫无意义的密码；
 /// - 有新输入的密码：写入（或覆盖）凭据库，拿回引用；
 /// - 没有密码但已有引用：直接复用（用户没改密码，不重写密钥环）；
 /// - 两者都没有：本地报错，不发 RPC。
@@ -1663,6 +1699,9 @@ async fn prepare_reference(
     client: &BackendClient,
     draft: &ConnectionDraft,
 ) -> Result<String, ConnectionFailure> {
+    if !draft.needs_credential() {
+        return Ok(String::new());
+    }
     if draft.has_password() {
         return client
             .store_credential(draft.credential_ref.as_deref(), &draft.password)
@@ -1678,8 +1717,12 @@ async fn prepare_reference(
 
 /// 尽力删除刚写入但没能用上的凭据，避免在密钥环里留下无人引用的条目。
 ///
-/// 清理失败只记录错误码与文案，不影响用户看到的原始失败原因。
+/// 清理失败只记录错误码与文案，不影响用户看到的原始失败原因；没有引用
+/// （SQLite 这类免凭据驱动）时什么都不做。
 async fn discard_credential(client: &BackendClient, reference: &str) {
+    if reference.is_empty() {
+        return;
+    }
     if let Err(error) = client.delete_credential(reference).await {
         eprintln!(
             "[sqarvo-desktop] 清理未使用的凭据失败：[{}] {}",
@@ -1755,7 +1798,7 @@ async fn run_save_and_connect(
         Vec::new()
     });
 
-    // 配置只保存引用与「怎么连」；密码已经在凭据库里。
+    // 配置只保存引用与「怎么连」；密码已经在凭据库里（SQLite 没有密码）。
     let config = config::upsert(SavedConnection {
         name: draft.name.clone(),
         driver: draft.driver_id.clone(),
@@ -1763,6 +1806,8 @@ async fn run_save_and_connect(
         port: draft.port,
         database: draft.database.clone(),
         username: draft.username.clone(),
+        file_path: draft.file_path.clone(),
+        read_only: draft.read_only,
         tls_mode: draft.tls_mode.config_value().to_owned(),
         credential_ref: reference.clone(),
     })
@@ -1809,6 +1854,7 @@ fn snapshot(supervisor: &BackendSupervisor, session: &Session) -> ConnectedSnaps
         endpoint_service_version: session.endpoint.service_version.clone(),
         version_mismatch: session.version_mismatch,
         started_by_frontend: supervisor.owns_backend(),
+        drivers: session.drivers.clone(),
     }
 }
 

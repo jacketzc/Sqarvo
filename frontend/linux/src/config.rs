@@ -29,20 +29,43 @@ const DOCUMENT_VERSION: u32 = 1;
 pub struct SavedConnection {
     /// 用户可见名称。
     pub name: String,
-    /// 驱动 ID（当前为 `mariadb`）。
+    /// 驱动 ID（来自 `ListDrivers`）。
     pub driver: String,
-    /// 主机。
+    /// 主机（服务器型驱动）。
     pub host: String,
-    /// 端口。
+    /// 端口（服务器型驱动）。
     pub port: u16,
-    /// 数据库名。
+    /// 数据库名（服务器型驱动）。
     pub database: String,
-    /// 用户名。
+    /// 用户（服务器型驱动）。
     pub username: String,
+    /// 文件型驱动（SQLite）的数据库文件路径；服务器型驱动为空。
+    ///
+    /// 单独一列而不是复写进 `host`：`connections.json` 是给人看的，
+    /// 把路径写进「host」会让运维误以为这是一个网络地址。
+    #[serde(default)]
+    pub file_path: String,
+    /// 文件型驱动是否以只读方式打开；服务器型驱动为 `false`。
+    #[serde(default)]
+    pub read_only: bool,
     /// TLS 模式（`disabled` / `preferred` / `required` / `verify-ca` / `verify-full`）。
     pub tls_mode: String,
-    /// 系统凭据库中的引用，形如 `sqarvo:conn/<uuid-v4>`。
+    /// 系统凭据库中的引用，形如 `sqarvo:conn/<uuid-v4>`；无需凭据的驱动为空。
     pub credential_ref: String,
+}
+
+impl SavedConnection {
+    /// 条目身份：有凭据时按凭据引用，没有凭据（SQLite）时按驱动 + 路径。
+    ///
+    /// 只按 `credential_ref` 去重会让所有 SQLite 连接（引用都是空串）互相覆盖，
+    /// 导致连接列表永远只剩最后一条。
+    fn identity(&self) -> String {
+        if self.credential_ref.is_empty() {
+            format!("{}|{}|{}", self.driver, self.host, self.file_path)
+        } else {
+            self.credential_ref.clone()
+        }
+    }
 }
 
 /// 配置文件结构。
@@ -126,9 +149,10 @@ fn upsert_in(dir: &Path, connection: SavedConnection) -> Result<PathBuf, ConfigE
     ensure_dir(dir)?;
 
     let mut connections = load_file(&path);
+    let key = connection.identity();
     match connections
         .iter_mut()
-        .find(|existing| existing.credential_ref == connection.credential_ref)
+        .find(|existing| existing.identity() == key)
     {
         Some(existing) => *existing = connection,
         None => connections.push(connection),
@@ -217,8 +241,26 @@ mod tests {
             port: 53306,
             database: "sqarvo_test".to_owned(),
             username: "sqarvo_test".to_owned(),
+            file_path: String::new(),
+            read_only: false,
             tls_mode: "preferred".to_owned(),
             credential_ref: reference.to_owned(),
+        }
+    }
+
+    /// 无需凭据的 SQLite 连接（`credential_ref` 为空）。
+    fn sqlite_entry(path: &str) -> SavedConnection {
+        SavedConnection {
+            name: "demo.db（SQLite）".to_owned(),
+            driver: "sqlite".to_owned(),
+            host: String::new(),
+            port: 0,
+            database: String::new(),
+            username: String::new(),
+            file_path: path.to_owned(),
+            read_only: true,
+            tls_mode: "disabled".to_owned(),
+            credential_ref: String::new(),
         }
     }
 
@@ -234,6 +276,8 @@ mod tests {
             "\"port\"",
             "\"database\"",
             "\"username\"",
+            "\"file_path\"",
+            "\"read_only\"",
             "\"tls_mode\"",
             "\"credential_ref\"",
         ] {
@@ -245,6 +289,39 @@ mod tests {
                 "配置里不应出现 {forbidden}：{json}"
             );
         }
+    }
+
+    #[test]
+    fn credentialless_connections_do_not_overwrite_each_other() {
+        // SQLite 没有凭据引用：只按引用去重会把两条不同文件当成同一条。
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("cfg");
+        let first = sqlite_entry("/tmp/a.db");
+        let second = sqlite_entry("/tmp/b.db");
+
+        upsert_in(&target, first.clone()).expect("第一条");
+        upsert_in(&target, second.clone()).expect("第二条");
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(
+            connections.len(),
+            2,
+            "两个文件必须各占一条：{connections:?}"
+        );
+
+        // 同一个文件再次保存：更新原条目，不追加。
+        let mut updated = first.clone();
+        updated.read_only = false;
+        upsert_in(&target, updated.clone()).expect("更新");
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(connections.len(), 2);
+        let stored = connections
+            .iter()
+            .find(|connection| connection.file_path == "/tmp/a.db")
+            .expect("应能找到 /tmp/a.db");
+        assert!(!stored.read_only, "同一文件的条目应被更新");
+        // 仍然不写任何敏感字段。
+        let text = fs::read_to_string(target.join(FILE_NAME)).expect("读配置");
+        assert!(!text.contains("password") && !text.contains("secret"));
     }
 
     #[test]

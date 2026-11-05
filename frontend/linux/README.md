@@ -6,8 +6,11 @@
 Loading / Connected / Error / Disconnected 四态之间切换，Connected 时显示
 后端版本、协议版本与传输方式。
 
-**连接对话框已接入**（#27）：标题栏「新建连接」打开 MariaDB 连接对话框，密码经
-`CredentialService.StoreCredential` 写入系统凭据库，连接配置只保存 `credential_ref`；
+**连接对话框已接入**（#27 / #67）：标题栏「新建连接」打开连接对话框，**驱动下拉由
+`SystemService.ListDrivers` 填充**（不在前端硬编码清单），切换驱动即切换字段集——
+MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径 + 只读开关。
+密码经 `CredentialService.StoreCredential` 写入系统凭据库，连接配置只保存
+`credential_ref`；SQLite 这类本地文件驱动不写凭据库。
 「测试连接」显示延迟与服务端版本，「保存并连接」建立会话并用 `ListSessions` 刷新会话列表。
 错误按 `sqarvo-error-code` 分类展示（认证失败 / 凭据不存在 / 凭据库不可用 / 驱动缺失 /
 超时），不合并成一句「连接失败」。
@@ -108,7 +111,8 @@ cargo run
 | `src/backend/endpoint.rs` | 端点定位、解析、协议主版本校验、pid 存活探测 |
 | `src/backend/connection.rs` | 连接草稿、TLS 模式、`CredentialService`/`ConnectionService` 调用、错误分类 |
 | `src/config.rs` | `connections.json` 读写（目录 0700、文件 0600，只含非敏感字段） |
-| `src/dialog.rs` | GNOME HIG 连接对话框（`AdwDialog` + `AdwPreferencesPage`） |
+| `src/dialog.rs` | GNOME HIG 连接对话框（`AdwDialog` + `AdwPreferencesPage`）：驱动下拉、按驱动切换字段行、文件选择器、只读开关 |
+| `src/driver_form.rs` | 驱动 → 字段集的**描述表**与草稿校验/组装（纯逻辑：SQLite 空路径、文件不存在、内存库只读等，可单测） |
 | `src/backend/client.rs` | tonic Channel（UDS / TCP 自定义连接器）、token 拦截器、`SystemService` 调用 |
 | `src/backend/supervisor.rs` | 后端可执行文件查找、启动、等待就绪、退出清理 |
 | `src/backend/worker.rs` | 后台 tokio 线程、命令/事件通道、握手与健康探测循环 |
@@ -147,17 +151,48 @@ Channel）和同一套命令/事件通道。
 
 ## 连接与凭据
 
-1. 对话框收集驱动（固定 MariaDB）、主机、端口、数据库、用户名、TLS 模式与密码；
-2. 「保存并连接」先调 `CredentialService.StoreCredential`，后端把密码写进系统凭据库
-   （Linux Secret Service）并返回 `credential_ref`；
-3. 随后 `ConnectionService.TestConnection`（拿服务端版本与延迟）→ `Connect` →
+1. 握手时调用 `SystemService.ListDrivers`，把返回的驱动填进对话框的驱动下拉
+   （`AdwComboRow`）；前端**不维护自己的驱动清单**，后端多一个驱动下拉就多一项。
+   前端还不认识的驱动也会列出来，但标签写着「前端暂无表单」且提交按钮禁用——
+   不给一份填了也会被后端拒绝的表单；
+2. 字段集由 `src/driver_form.rs` 的一张描述表决定，切换驱动只改控件可见性：
+
+   | 驱动族 | 可见字段 | 不可见（也不会进 `ConnectionParams`） |
+   |---|---|---|
+   | 服务器型（`mariadb`） | 主机 / 端口 / 数据库 / 用户名 / TLS 模式 / 密码 | 数据库文件、只读 |
+   | 文件型（`sqlite`） | 数据库文件（可手输或用 `GtkFileDialog` 选）/ 只读打开 | 主机 / 端口 / 库 / 用户名 / TLS / 密码 |
+
+3. 「保存并连接」先调 `CredentialService.StoreCredential`（**仅服务器型驱动**），
+   后端把密码写进系统凭据库（Linux Secret Service）并返回 `credential_ref`；
+   SQLite 是本地文件数据库，后端明确拒绝用户名/密码，因此这条链路上不调用凭据服务；
+4. 随后 `ConnectionService.TestConnection`（拿服务端版本与延迟）→ `Connect` →
    `ListSessions` 刷新会话页；
-4. 非敏感配置写到 `$XDG_CONFIG_HOME/sqarvo/Sqarvo/connections.json`（目录 0700、
+5. 非敏感配置写到 `$XDG_CONFIG_HOME/sqarvo/Sqarvo/connections.json`（目录 0700、
    文件 0600），字段固定为
-   `name / driver / host / port / database / username / tls_mode / credential_ref`；
+   `name / driver / host / port / database / username / file_path / read_only / tls_mode / credential_ref`；
    **没有** password、secret 或 token 字段；
-5. 系统凭据库不可用（无会话总线、已锁定、用户拒绝）时如实报 `credential.unavailable`，
+6. 系统凭据库不可用（无会话总线、已锁定、用户拒绝）时如实报 `credential.unavailable`，
    绝不把密码退回配置文件或环境变量。
+
+### SQLite 连接的参数映射
+
+`ConnectionParams` 没有「文件路径」字段，后端 SQLite 驱动的约定是
+**用 `host` 承载路径**（`backend/crates/drivers/sqlite/src/driver.rs` 的
+`SqliteConfig::from_params`），并且拒绝多余字段。前端按同一契约组装：
+
+| `ConnectionParams` 字段 | SQLite 取值 |
+|---|---|
+| `driver_id` | `sqlite` |
+| `host` | 数据库文件路径 |
+| `port` | `0`（SQLite 不支持端口） |
+| `database` / `username` / `credential_ref` | 空（非空会被后端以 `config.invalid` 拒绝） |
+| `tls_mode` | `TLS_MODE_DISABLED` |
+| `properties["read_only"]` | `"true"` / `"false"` |
+
+界面层的校验（`driver_form::build_draft`）：路径为空拦住、文件不存在给出
+「数据库文件不存在：<路径>」而不是让后端报晦、`:memory:` 不允许只读
+（与后端同一条规则）。会话显示名按驱动派生：`用户@主机/库` 或 `文件名（SQLite）`，
+标题栏与会话行都能看出连的是哪种数据库。
 
 失败提示按稳定错误码分开：`mariadb.auth_failed`（认证失败：用户名或密码错误）、
 `credential.not_found`（凭据不存在）、`credential.unavailable`（系统凭据库不可用）、
@@ -492,7 +527,10 @@ podman exec <mariadb> mariadb -u… -p… sqarvo_test_62 \
   多语句/单语句限制由服务端决定，前端不伪造；
 - 取消一个**尚未返回查询 ID** 的 `Execute` 无法通知服务端（见「取消语义」）；
 - 大字段只显示服务端返回的前缀（`truncated=true`），「查看完整值」的延迟加载未实现；
-- 连接对话框只支持内置 MariaDB 驱动，驱动行不可切换；
+- **SQLite 只能打开已存在的数据库文件**：连接对话框会拦住不存在的路径（避免后端报晦），
+  因此本版本还不能用它新建空库；先用 `sqlite3` 建库再连接。`:memory:` 可以用，但不支持只读；
+- 前端只认识 `mariadb` 与 `sqlite` 两个驱动的字段集：后端注册的其他驱动会出现在下拉里，
+  但标签标注「前端暂无表单」且提交禁用（不猜字段集）；
 - 会话页只展示 `ListSessions` 结果，暂未提供「断开单个数据库会话」按钮；
 - 空密码账户不受支持（`StoreCredential` 拒绝空 secret，避免客户端漏填字段时覆盖已保存密码）；
 - 只支持本地传输（Unix socket、回环 TCP），无 TLS / 远程后端；
@@ -597,6 +635,7 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 ### 连接对话框的无人值守验证（`--qa-profile` / `--qa-password-env`）
 
 ```bash
+# MariaDB
 cat > /tmp/profile.json <<'EOF'
 {"driver":"mariadb","host":"127.0.0.1","port":53306,
  "database":"sqarvo_test_27","username":"sqarvo_test",
@@ -608,12 +647,45 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   ./target/debug/sqarvo-desktop \
   --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
   --screenshot /tmp/connect.png --screenshot-delay-ms 7000
+
+# SQLite（只读）
+cat > /tmp/sqlite-ro.json <<'EOF'
+{"driver":"sqlite","path":"/tmp/sqarvo67/demo.db","read_only":true}
+EOF
+pkill -x sqarvo-desktop; pkill -x sqarvo-backend; rm -rf /run/user/1000/sqarvo
+XDG_CONFIG_HOME=/tmp/sqarvo-cfg-sqlite ./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/sqlite-ro.json --qa-data-table demo_items \
+  --qa-expect-data-state ready --qa-expect-txn auto \
+  --screenshot /tmp/sqlite-readonly.png --screenshot-delay-ms 5000
 ```
 
 - 后端握手完成后自动打开连接对话框，把档案里的值填进**与用户输入相同的控件**
   （密码从环境变量取，命令行里不出现明文），再触发与「保存并连接」按钮**相同的回调**；
+- `driver: "mariadb"` 需要 `host` / `database` / `username`；
+  `driver: "sqlite"` 需要 `path`（文件必须已存在；`":memory:"` 不接受 `read_only`），
+  不需要主机/端口/用户/密码；
+- 档案里的驱动必须是后端 `ListDrivers` 返回的驱动，否则进程以**退出码 4** 结束
+  （档案没生效就不该被当成通过）；
 - 不存在绕过对话框直接调 gRPC 的捷径：自动化走的就是用户会走的那条路径；
-- `--screenshot` 拍的是**当前最上层**界面：对话框还开着（例如认证失败）就拍对话框，
-  否则拍主窗口；拍完会强制关闭对话框再走正常退出路径；
-- 档案文件缺少 `host` / `database` / `username`、`driver` 不是 `mariadb`、或密码环境变量
+- `--screenshot` 拍的是**当前最上层**界面：对话框还开着（例如认证失败、或配合
+  `--qa-action test`）就拍对话框，否则拍主窗口；拍完会强制关闭对话框再走正常退出路径；
+- 档案文件缺少该驱动需要的字段、`driver` 是前端不认识的驱动、或密码环境变量
   为空时会直接报错/保持密码行为空，不会静默用错参数冒充通过。
+
+#### 多驱动与只读态取证（#67）
+
+```bash
+# 驱动选择器 + SQLite 字段集（--qa-action test 让对话框留在屏幕上）
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json --qa-action test \
+  --screenshot ~/sqarvo-v021-shots/driver-picker.png --screenshot-delay-ms 3500
+
+# SQLite：打开表 → 改一行 → 提交 → 重新浏览（外部 sqlite3 复核落库结果）
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json \
+  --qa-data-table demo_items --qa-data-edit 0:note:edited-by-qa \
+  --qa-data-commit --qa-data-reload --qa-expect-data-state ready \
+  --screenshot ~/sqarvo-v021-shots/sqlite-data-edit.png --screenshot-delay-ms 7000
+sqlite3 /tmp/sqarvo67/demo.db "SELECT note FROM demo_items WHERE id = 1;"
+```
+
+只读连接的日志会出现 `[data] 只读原因：只读：连接以只读方式打开：…`，
+截图上方横幅是同一段文案——「只读态在界面上可见」有日志与画面两份证据。
