@@ -43,6 +43,86 @@ jobs:
       - name: SQLite gRPC 端到端（UDS + 临时库）
         run: cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e -- --nocapture
 
+  # 前端作业：proto 变更（例如 #70 给 ApplyRowChangesRequest 加字段）会直接打破
+  # frontend/linux 的编译，而这类破坏只有真的编译一次前端才会暴露——本地三项检查
+  # 曾长期只手工跑，于是 PR 全绿、main 变红（修复提交 67bfda0）。三项检查与
+  # frontend/linux/README.md「构建与运行」一致。
+  #
+  # runner 用 ubuntu-26.04 而非 24.04：crate 在构建期要求 GTK ≥ 4.16（gtk4-sys 的
+  # `v4_16` → system-deps version = "4.16"）与 libadwaita ≥ 1.6（`v1_6` → "1.6"），
+  # 而 noble 只有 libgtk-4-dev 4.14.2 / libadwaita-1-dev 1.5.0，pkg-config 检查就
+  # 过不了，换什么代码都绕不开；resolute 提供 4.22 / 1.9。下面的版本门禁把这件事写进
+  # 日志：runner 镜像回退时直接失败，而不是留一句难懂的 system-deps 报错。
+  frontend:
+    name: 前端（Linux）
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        working-directory: frontend/linux
+    steps:
+      - uses: actions/checkout@v4
+
+      # 构建依赖与 frontend/linux/README.md「依赖」一节一致。
+      # protoc 由 build.rs 的 protoc-bin-vendored 提供，不需要系统安装。
+      # apt 包用缓存恢复，避免每次作业重下整套 GTK 开发包（约 200 MB）。
+      - name: 安装 GTK 依赖
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+          version: 1.0
+
+      - name: 校验 GTK 版本
+        run: |
+          set -euo pipefail
+          GTK="$(pkg-config --modversion gtk4)"
+          ADW="$(pkg-config --modversion libadwaita-1)"
+          echo "GTK ${GTK} / libadwaita ${ADW}"
+          dpkg --compare-versions "${GTK}" ge 4.16 \
+            || { echo "::error::GTK ${GTK} < 4.16，gtk4 的 v4_16 feature 无法构建"; exit 1; }
+          dpkg --compare-versions "${ADW}" ge 1.6 \
+            || { echo "::error::libadwaita ${ADW} < 1.6，adw 的 v1_6 feature 无法构建"; exit 1; }
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/linux
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # 与 MariaDB 作业同一条原则：用例被过滤成 0 个也必须变红，
+      # 不能让「cargo test 什么都没跑」冒充通过。
+      - name: 测试
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          LOG=frontend-tests.log
+          STATUS=0
+          cargo test 2>&1 | tee "${LOG}" || STATUS=$?
+
+          PASSED="$(grep -o 'test result: ok\. [0-9]* passed' "${LOG}" \
+            | tail -n1 | grep -o '[0-9]*' || true)"
+          echo "通过用例数：${PASSED:-<未解析到>}"
+          if [ -z "${PASSED}" ]; then
+            echo "::error::日志中缺少 'test result: ok. N passed'"
+            exit 1
+          fi
+          if [ "${PASSED}" -le 0 ]; then
+            echo "::error::通过用例数为 0，测试未真实执行"
+            exit 1
+          fi
+
+          exit "${STATUS}"
+
   # MariaDB 集成测试单独成作业：服务容器启动失败或驱动回归不应掩盖 SQLite 覆盖，
   # 反之亦然。账号/密码/库名与 tests/integration/docker-compose.yml 完全一致
   # （测试专用值，不是真实凭据，因此不引入任何 secret）。
