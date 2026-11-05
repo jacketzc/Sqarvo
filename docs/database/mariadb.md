@@ -485,12 +485,17 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 - **DDL**：`SHOW CREATE TABLE` / `SHOW CREATE VIEW` 原文，`exact = true`、
   `source = DDL_SOURCE_DATABASE`、`source_detail` 写明用的是哪条 `SHOW CREATE`；
   MariaDB 的 `SHOW CREATE` 会补全 `AUTO_INCREMENT=`、字符集等，属数据库原文，驱动不要改写；
-- **插入**：只绑给出的列；自增主键用 `LAST_INSERT_ID()` 回传，复合主键回传写入值与生成值；
-  整批隐式事务 / savepoint，任一行失败整批回滚（`rolled_back = true`）；
-  唯一冲突 → `table_data.unique_violation`，NOT NULL（1406/1048）按「显式 NULL /
-  省略无默认值」分别映射 `table_data.not_null_violation` / `..._without_default`；
-- 在此之前 `supports_row_insertion()` 为 `false`、`list_children_filtered` 走默认实现，
-  两者都返回 `capability.unsupported`（绝不返回空列表 / 「插入了 0 行」）。
+- **插入（已实现，#85）**：只绑给出的列（空列清单用 `INSERT INTO t () VALUES ()`）；
+  自增主键用 `LAST_INSERT_ID()` 回传，复合主键回传写入值与生成值，非自增主键列被省略时
+  整批拒绝（`capability.unsupported`，不编造主键）；整批隐式事务 / savepoint
+  （`sqarvo_row_insert`），任一行失败整批回滚（`rolled_back = true`）；
+  唯一冲突 → `table_data.unique_violation`，显式 NULL → `table_data.not_null_violation`
+  （1048），省略且无默认值 → `table_data.not_null_without_default`（1364 / 预校验），
+  生成列 → `table_data.column_not_insertable`（1906 / `EXTRA` 预判定），
+  长度与取值越界（1406 / 1264 / 1265 / 1366 / 1292 / 1690）与 CHECK / 外键 → `config.invalid`
+  （v0.2.2 未登记类型专用码）；
+- `list_children_filtered` 与 DDL 仍走默认实现返回 `capability.unsupported`
+  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`。
 
 ### 已知缺口
 
@@ -515,7 +520,7 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 | `transactions` | `true` | 会话内 `START TRANSACTION` / `COMMIT` / `ROLLBACK`，见「事务」 |
 | `catalogs` | `true` | v0.2.2（#82）：`database` 映射为 catalog，目录层与跨库浏览已实现 |
 | `schemas` | `false` | MariaDB 没有独立 schema 层级 |
-| `row_editing` | `true` | `table_data()` 提供浏览与行编辑（update / delete），见 ADR 0017 |
+| `row_editing` | `true` | `table_data()` 提供浏览、行编辑（update / delete）与插入（#85），见 ADR 0017 / 0019 |
 | `parameterized_statements` | `true` | `execute_parameterized`：值经协议绑定参数执行，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |

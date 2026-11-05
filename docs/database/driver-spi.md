@@ -359,8 +359,9 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
   对非空过滤明确返回 `UNIMPLEMENTED`，不静默忽略；
 - 表数据浏览与行编辑：两驱动已实现（`table_data()` 返回 provider，`supports_row_edits()`
   为 `true`），`Capabilities.row_editing` 已在 `ListDrivers` 中展示；**插入新行**
-  （`insert_rows`，契约见 #81 / ADR 0019）与非主键排序仍未实现：两驱动的
-  `supports_row_insertion()` 保持 `false`，调用得到 `capability.unsupported`；
+  （`insert_rows`，契约见 #81 / ADR 0019）已由 #85 在两驱动落地：
+  `supports_row_insertion()` 为 `true`，参数化 `INSERT`、自增/默认值、唯一与 NOT NULL
+  错误码、整批原子（隐式事务 / savepoint）见各驱动文档；仅**非主键排序**仍未实现；
 - 参数化执行的 gRPC RPC：SPI（`execute_parameterized`）两驱动已实现，查询侧的参数化 RPC
   留给 S7；
 - MariaDB 驱动的单次执行超时（请求时明确返回 `capability.unsupported`）；

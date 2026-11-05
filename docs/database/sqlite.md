@@ -176,7 +176,7 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 
 一次请求会读取当前库的全部对象名再在内存切页（每页上限 500）；对象极多时应改为服务端游标（待定）。
 
-### v0.2.2 契约（#81，本驱动尚未实现）
+### v0.2.2 契约（#81；插入行已实现，过滤与 DDL 见 #82 / #84）
 
 `ListNodes.filter` 与 `InsertRows` 的契约已冻结（ADR 0019），SQLite 侧实现见 #84 / #85：
 
@@ -186,11 +186,16 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
   （会让 `sqlite_master` 上的名字比较退化为全扫且与 MariaDB 行为不一致）；
 - **过滤条件进 token 指纹**：过滤条件的规范化字符串必须与对象名集合一起进指纹，换条件后旧
   token 报 `config.invalid`；
-- **插入**：`INSERT INTO t (给出的列) VALUES (绑定参数)`，只绑给出的列；自增主键用
-  `last_insert_rowid()` 回传，复合主键回传写入值与生成值；整批隐式事务 / savepoint，
-  任一行失败整批回滚（`rolled_back = true`）；
-- 在此之前 `supports_row_insertion()` 为 `false`、`list_children_filtered` 走默认实现，
-  两者都返回 `capability.unsupported`（绝不返回空列表 / 「插入了 0 行」）。
+- **插入（已实现，#85）**：`INSERT INTO t (给出的列) VALUES (?1, ?2, ...)`，只绑给出的列，
+  一列都不给时用 `INSERT INTO t DEFAULT VALUES`；自增主键用 `last_insert_rowid()` 定位后
+  **回读**主键列（而不是拿 rowid 冒充键值），复合主键在全部给出时按主键顺序回传；
+  整批隐式事务（`BEGIN IMMEDIATE`）/ savepoint（`sqarvo_row_insert`），任一行失败整批回滚
+  （`rolled_back = true`）；错误码：唯一冲突 → `table_data.unique_violation`、
+  显式 NULL → `table_data.not_null_violation`、省略且无默认值 →
+  `table_data.not_null_without_default`、生成列 → `table_data.column_not_insertable`、
+  CHECK / 外键 / STRICT 类型不匹配 → `config.invalid`（v0.2.2 未登记类型专用码）；
+- `list_children_filtered` 与 DDL 仍走默认实现返回 `capability.unsupported`
+  （绝不返回空列表）；插入已由 #85 实现，`supports_row_insertion()` 为 `true`。
 
 ### 已知缺口
 
@@ -217,7 +222,7 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
 | `multiple_statements` | `false` | 发送前拒绝 |
 | `catalogs` | `true` | v0.2.2（#82）：catalog = database（`main` / `temp` / `ATTACH`），可逐层浏览与跨库寻址 |
 | `schemas` | `false` | SQLite 没有 schema 层级 |
-| `row_editing` | `true` | `table_data()` 提供浏览与行编辑（update / delete），见 ADR 0017 |
+| `row_editing` | `true` | `table_data()` 提供浏览、行编辑（update / delete）与插入（#85），见 ADR 0017 / 0019 |
 | `parameterized_statements` | `true` | `execute_parameterized`：值经 `rusqlite` 绑定，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划 v0.2.2 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |

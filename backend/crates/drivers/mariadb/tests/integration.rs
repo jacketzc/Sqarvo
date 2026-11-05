@@ -4160,3 +4160,611 @@ async fn metadata_object_names_with_backticks_spaces_and_cjk_round_trip() {
 
     exec(&*session, &format!("DROP TABLE IF EXISTS {}", q(table))).await;
 }
+
+// ---------------------------------------------------------------------------
+// 插入新行（#85，v0.2.2）：自增回传、默认值、冲突与批量原子性
+// ---------------------------------------------------------------------------
+
+const INS_PREFIX: &str = "sqarvo_zz85";
+
+fn ins_object(session: &dyn DriverSession, name: &str) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(None, None, name),
+        kind: ObjectKind::Table,
+    }
+}
+
+fn ins_view(session: &dyn DriverSession, name: &str) -> ObjectRef {
+    ObjectRef {
+        kind: ObjectKind::View,
+        ..ins_object(session, name)
+    }
+}
+
+fn ins_provider(session: &dyn DriverSession) -> &dyn TableDataProvider {
+    session.table_data().expect("MariaDB 必须提供表数据能力")
+}
+
+fn ins_value(column: &str, value: Value) -> ColumnChange {
+    ColumnChange {
+        column: column.to_owned(),
+        value,
+    }
+}
+
+fn ins_row(values: Vec<ColumnChange>) -> sqarvo_driver_api::InsertRow {
+    sqarvo_driver_api::InsertRow::new(values)
+}
+
+async fn ins_insert(
+    session: &dyn DriverSession,
+    object: &ObjectRef,
+    rows: Vec<sqarvo_driver_api::InsertRow>,
+) -> sqarvo_common::Result<sqarvo_driver_api::InsertReport> {
+    ins_provider(session)
+        .insert_rows(sqarvo_driver_api::InsertRowsRequest {
+            object: object.clone(),
+            rows,
+        })
+        .await
+}
+
+async fn ins_rows(session: &dyn DriverSession, name: &str) -> Vec<Row> {
+    ins_provider(session)
+        .browse(&ins_object(session, name), &td_page(500, None))
+        .await
+        .expect("浏览表")
+        .rows
+}
+
+fn ins_key(result: &sqarvo_driver_api::InsertRowResult) -> &Value {
+    &result
+        .key
+        .as_ref()
+        .unwrap_or_else(|| panic!("成功行必须回传主键：{result:?}"))
+        .values[0]
+}
+
+#[tokio::test]
+async fn insert_rows_return_autoincrement_and_apply_defaults() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_auto");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (\
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, \
+                name VARCHAR(32) NOT NULL, \
+                label VARCHAR(32) NOT NULL DEFAULT 'd', \
+                note VARCHAR(32) DEFAULT 'n'\
+             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![
+            ins_row(vec![ins_value("name", Value::Text("a".to_owned()))]),
+            ins_row(vec![
+                ins_value("name", Value::Text("b".to_owned())),
+                // 显式 NULL ≠ 省略：这里必须写 SQL NULL，而不是默认值 'n'。
+                ins_value("note", Value::Null),
+            ]),
+        ],
+    )
+    .await
+    .expect("插入两行");
+    assert!(!report.rolled_back, "全部成功时不得置 rolled_back");
+    assert_eq!(report.inserted_rows(), 2);
+    assert_eq!(report.rows_affected(), 2);
+    assert_eq!(
+        ins_key(&report.results[0]),
+        &Value::UInt(1),
+        "无符号自增主键必须按 UInt 回传（与浏览一致）"
+    );
+    assert_eq!(ins_key(&report.results[1]), &Value::UInt(2));
+
+    // 外部 SQL 复核：默认值生效、显式 NULL 是 NULL。
+    let (_, rows) = select(
+        &*session,
+        &format!("SELECT id, name, label, note FROM {table} ORDER BY id"),
+    )
+    .await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(text_of(&rows[0][2]), "d", "省略列必须取数据库默认值");
+    assert_eq!(text_of(&rows[0][3]), "n");
+    assert!(rows[1][3].is_null(), "显式 NULL 必须写成 SQL NULL");
+
+    // 自增继续：第一条 INSERT 真的落库了。
+    let more = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![ins_value(
+            "name",
+            Value::Text("c".to_owned()),
+        )])],
+    )
+    .await
+    .expect("再插一行");
+    assert_eq!(ins_key(&more.results[0]), &Value::UInt(3));
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn insert_rows_echo_explicit_and_composite_keys() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_composite");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (\
+                tenant INT NOT NULL, \
+                seq INT NOT NULL, \
+                v VARCHAR(32), \
+                PRIMARY KEY (tenant, seq)\
+             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![
+            ins_value("seq", Value::Int(2)),
+            ins_value("tenant", Value::Int(9)),
+            ins_value("v", Value::Text("x".to_owned())),
+        ])],
+    )
+    .await
+    .expect("复合主键插入");
+    assert!(!report.rolled_back);
+    let key = report.results[0].key.as_ref().expect("复合主键必须回传");
+    assert_eq!(
+        key.values,
+        vec![Value::Int(9), Value::Int(2)],
+        "复合主键按 GetPrimaryKey 的顺序回传全部列（与请求里的列顺序无关）"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn insert_rows_with_all_defaults_send_an_empty_column_list() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_defaults");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (\
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, \
+                v VARCHAR(16) NOT NULL DEFAULT 'auto', \
+                n INT NOT NULL DEFAULT 7\
+             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(Vec::new())],
+    )
+    .await
+    .expect("全默认值插入");
+    assert!(!report.rolled_back);
+    assert_eq!(ins_key(&report.results[0]), &Value::Int(1));
+
+    let (_, rows) = select(&*session, &format!("SELECT v, n FROM {table}")).await;
+    assert_eq!(text_of(&rows[0][0]), "auto");
+    assert_eq!(
+        rows[0][1].value,
+        Value::Int(7),
+        "省略的数值列必须取数据库默认值 7"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn insert_rows_not_null_errors_use_distinct_codes_and_roll_back() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_strict");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,                 v VARCHAR(32) NOT NULL,                 w VARCHAR(32)             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    // 1) 显式 NULL 写进 NOT NULL 列。
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![
+            ins_row(vec![ins_value("v", Value::Text("ok".to_owned()))]),
+            ins_row(vec![ins_value("v", Value::Null)]),
+        ],
+    )
+    .await
+    .expect("逐行错误不是整批 Err");
+    assert!(report.rolled_back);
+    assert_eq!(report.rows_affected(), 0);
+    assert_eq!(report.inserted_rows(), 1, "语句层成功条数仍要上报");
+    assert_eq!(
+        report.results[1].outcome,
+        sqarvo_driver_api::InsertOutcome::Failed {
+            code: ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION
+        }
+    );
+    assert_eq!(
+        count_rows(&*session, &table).await,
+        0,
+        "整批回滚后库里必须一行都没有"
+    );
+
+    // 2) 省略 NOT NULL 列且该列没有默认值。
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![ins_value(
+            "w",
+            Value::Text("only-w".to_owned()),
+        )])],
+    )
+    .await
+    .expect("逐行错误不是整批 Err");
+    assert!(report.rolled_back);
+    assert_eq!(
+        report.results[0].outcome,
+        sqarvo_driver_api::InsertOutcome::Failed {
+            code: ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT
+        },
+        "「省略且无默认值」必须与「显式 NULL」分开"
+    );
+    assert_eq!(count_rows(&*session, &table).await, 0);
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn insert_rows_unique_conflict_and_length_error_are_per_row_and_atomic() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_unique");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,                 email VARCHAR(64) NOT NULL UNIQUE,                 short VARCHAR(4) NULL             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![
+            ins_row(vec![ins_value("email", Value::Text("a@x".to_owned()))]),
+            ins_row(vec![ins_value("email", Value::Text("a@x".to_owned()))]),
+            ins_row(vec![ins_value("email", Value::Text("c@x".to_owned()))]),
+        ],
+    )
+    .await
+    .expect("冲突逐行上报");
+    assert_eq!(report.results.len(), 3);
+    assert_eq!(
+        report.results[1].outcome,
+        sqarvo_driver_api::InsertOutcome::Failed {
+            code: ErrorCode::TABLE_DATA_UNIQUE_VIOLATION
+        }
+    );
+    assert!(
+        report.results[2].outcome.is_inserted(),
+        "第 2 行冲突后第 3 行必须继续执行（一次报全）"
+    );
+    assert_eq!(report.inserted_rows(), 2);
+    assert!(report.rolled_back);
+    assert_eq!(report.rows_affected(), 0);
+    assert!(report.results[1].key.is_none(), "失败行不得回传主键");
+    // 外部 SQL 复核：整批回滚，不是「部分成功留在库里」。
+    assert_eq!(count_rows(&*session, &table).await, 0);
+
+    // 类型/长度错误（ER_DATA_TOO_LONG）：逐行 `config.invalid`，批次仍整批回滚。
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![
+            ins_value("email", Value::Text("long@x".to_owned())),
+            ins_value("short", Value::Text("toolong".to_owned())),
+        ])],
+    )
+    .await
+    .expect("长度错误逐行上报");
+    assert!(report.rolled_back);
+    assert_eq!(
+        report.results[0].outcome,
+        sqarvo_driver_api::InsertOutcome::Failed {
+            code: ErrorCode::CONFIG_INVALID
+        },
+        "值超出列长度必须给出明确错误码，不能吞成成功"
+    );
+    assert_eq!(count_rows(&*session, &table).await, 0);
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn insert_rows_savepoint_keeps_the_outer_transaction_usable() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_tx");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,                 v VARCHAR(32) NOT NULL UNIQUE             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    // ---- 批失败 → 外层事务仍可用 → 继续写 → 提交 ----
+    let transaction = session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::RepeatableRead,
+            read_only: false,
+        })
+        .await
+        .expect("开启事务");
+    let failed = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![
+            ins_row(vec![ins_value("v", Value::Text("dup".to_owned()))]),
+            ins_row(vec![ins_value("v", Value::Text("dup".to_owned()))]),
+        ],
+    )
+    .await
+    .expect("事务模式下的冲突仍是逐行上报");
+    assert!(failed.rolled_back, "批失败必须回滚到 savepoint");
+    assert_eq!(failed.rows_affected(), 0);
+
+    let good = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![ins_value(
+            "v",
+            Value::Text("kept".to_owned()),
+        )])],
+    )
+    .await
+    .expect("失败批次之后外层事务必须仍可用");
+    assert!(!good.rolled_back);
+    assert_eq!(good.rows_affected(), 1);
+    session
+        .commit_transaction(&transaction)
+        .await
+        .expect("提交外层事务");
+    assert_eq!(
+        count_rows(&*session, &table).await,
+        1,
+        "只有 savepoint 之后的那一行落库"
+    );
+
+    // ---- 批失败 → 外层事务仍可回滚 ----
+    let transaction = session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::RepeatableRead,
+            read_only: false,
+        })
+        .await
+        .expect("开启第二个事务");
+    let failed = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![
+            ins_row(vec![ins_value("v", Value::Text("x".to_owned()))]),
+            ins_row(vec![ins_value("v", Value::Text("x".to_owned()))]),
+        ],
+    )
+    .await
+    .expect("冲突逐行上报");
+    assert!(failed.rolled_back);
+    ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![ins_value(
+            "v",
+            Value::Text("discarded".to_owned()),
+        )])],
+    )
+    .await
+    .expect("事务仍可用");
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚外层事务");
+    assert_eq!(
+        count_rows(&*session, &table).await,
+        1,
+        "外层事务回滚后不得留下 savepoint 之后的行"
+    );
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 类型往返按列串行断言，拆开会重复建表
+async fn insert_rows_preserve_mariadb_types_bit_for_bit() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_typed");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,                 big BIGINT UNSIGNED,                 dec_v DECIMAL(30,10),                 dt DATETIME(6),                 tm TIME(6),                 d DATE,                 bin VARBINARY(16),                 js JSON,                 note VARCHAR(32),                 ts TIMESTAMP(6) NULL DEFAULT NULL             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+
+    let decimal = sqarvo_driver_api::Decimal::new("98765432109876543210".to_owned(), 10).unwrap();
+    let datetime = Value::DateTime(time::PrimitiveDateTime::new(
+        time::Date::from_calendar_date(2030, time::Month::January, 2).unwrap(),
+        time::Time::from_hms_micro(3, 4, 5, 678_901).unwrap(),
+    ));
+    let time_value = Value::Time(time::Time::from_hms_micro(1, 2, 3, 4).unwrap());
+    let date = Value::Date(time::Date::from_calendar_date(2031, time::Month::February, 3).unwrap());
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![
+            ins_value("big", Value::UInt(u64::MAX)),
+            ins_value("dec_v", Value::Decimal(decimal.clone())),
+            ins_value("dt", datetime.clone()),
+            ins_value("tm", time_value.clone()),
+            ins_value("d", date.clone()),
+            ins_value("bin", Value::Bytes(vec![0x00, 0x01, 0xFE, 0xFF, 0x00])),
+            ins_value("js", Value::Json("{\"a\": 1}".to_owned())),
+            ins_value("note", Value::Null),
+            ins_value("ts", datetime.clone()),
+        ])],
+    )
+    .await
+    .expect("插入各类型");
+    assert!(!report.rolled_back);
+    assert_eq!(ins_key(&report.results[0]), &Value::UInt(1));
+
+    let rows = ins_rows(&*session, &table).await;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row[1].value, Value::UInt(u64::MAX), "无符号大整数退化");
+    assert_eq!(
+        row[2].value,
+        Value::Decimal(decimal),
+        "DECIMAL 插入后读回精度丢失"
+    );
+    assert_eq!(row[3].value, datetime, "DATETIME(6) 插入后微秒丢失");
+    assert_eq!(row[4].value, time_value, "TIME(6) 插入后微秒丢失");
+    assert_eq!(row[5].value, date);
+    assert_eq!(
+        row[6].value,
+        Value::Bytes(vec![0x00, 0x01, 0xFE, 0xFF, 0x00]),
+        "VARBINARY 插入后字节不一致"
+    );
+    assert_eq!(row[7].value, Value::Text("{\"a\": 1}".to_owned()));
+    assert_eq!(row[8].value, Value::Null, "NULL 不能写成空字符串");
+    assert_eq!(row[9].value, datetime, "TIMESTAMP 插入后微秒丢失");
+
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
+
+#[tokio::test]
+async fn insert_rows_reject_views_generated_columns_and_unknown_columns() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = format!("{INS_PREFIX}_reject");
+    let view = format!("{INS_PREFIX}_view");
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+    exec(&*session, &format!("DROP VIEW IF EXISTS {view}")).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {table} (                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,                 w INT NOT NULL,                 doubled INT AS (w * 2) STORED             ) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("CREATE VIEW {view} AS SELECT id, w FROM {table}"),
+    )
+    .await;
+
+    // 视图不可插入：明确只读，不是「插入 0 行」。
+    let error = ins_insert(
+        &*session,
+        &ins_view(&*session, &view),
+        vec![ins_row(vec![ins_value("w", Value::Int(1))])],
+    )
+    .await
+    .expect_err("视图必须拒绝插入");
+    assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);
+
+    // 生成列不能显式写入（information_schema 的 EXTRA 识别）。
+    let report = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![
+            ins_value("w", Value::Int(1)),
+            ins_value("doubled", Value::Int(2)),
+        ])],
+    )
+    .await
+    .expect("生成列是逐行错误");
+    assert!(report.rolled_back);
+    assert_eq!(
+        report.results[0].outcome,
+        sqarvo_driver_api::InsertOutcome::Failed {
+            code: ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE
+        }
+    );
+
+    // 未知列：请求级非法，整批 Err，一条 SQL 都不发。
+    let error = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![ins_value("missing", Value::Int(1))])],
+    )
+    .await
+    .expect_err("未知列必须整批拒绝");
+    assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+
+    // 重复列同理。
+    let error = ins_insert(
+        &*session,
+        &ins_object(&*session, &table),
+        vec![ins_row(vec![
+            ins_value("w", Value::Int(1)),
+            ins_value("w", Value::Int(2)),
+        ])],
+    )
+    .await
+    .expect_err("重复列必须整批拒绝");
+    assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+
+    // 空批次同样非法。
+    let error = ins_insert(&*session, &ins_object(&*session, &table), Vec::new())
+        .await
+        .expect_err("空批次必须拒绝");
+    assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+
+    assert_eq!(
+        count_rows(&*session, &table).await,
+        0,
+        "以上请求都不得写入任何行"
+    );
+
+    exec(&*session, &format!("DROP VIEW IF EXISTS {view}")).await;
+    exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
+}
