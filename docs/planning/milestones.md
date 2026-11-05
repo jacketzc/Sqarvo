@@ -134,8 +134,16 @@ CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）`
 `cargo test --workspace` → 408 通过、`frontend/linux cargo test` → 98 通过。
 
 遗留（不属 M4 当前范围，已登记）：DDL 查看与上层对象（v0.2.2）；插入新行与非主键排序；
-隔离级别的界面入口；`RowChangeResult.rows_affected` 在冲突路径的语义与 proto 注释不一致；
-行变更批次不可取消；失败态徽标只有 QA 注入证据；Windows / macOS 前端（M6 / v0.2.4）。
+隔离级别的界面入口；行变更批次不可取消；失败态徽标只有 QA 注入证据；
+Windows / macOS 前端（M6 / v0.2.4）。
+
+契约修订（2026-11-05，#68 / PR 见 Issue 评论）：`RowChangeResult.rows_affected` 与 proto 注释
+对齐——一律填驱动实际影响行数（`CONFLICT` 取真实值，可能 `> 1`；`ROW_NOT_FOUND` 为 0），
+`total_rows_affected` = Σ 逐行值并包含冲突行；判定语义不变（仍是「影响 1 行才算成功」）。
+证据：`cargo test -p sqarvo-rpc-server --test grpc_row_failures_e2e` → 4 通过
+（新增 `mixed_batch_totals_include_conflict_rows`；把 rpc 映射回退到基线时这两条断言失败：
+`left: 0, right: 1`）；`cargo test --workspace`（带 DSN）→ 410 通过、MariaDB 集成 50 条真实执行
+（无「跳过：未设置 SQARVO_MARIADB_URL」输出）。
 
 ### M5 第二网络驱动与一致性
 

@@ -2950,6 +2950,10 @@ async fn row_edits_detect_conflicts_and_roll_back_failed_batches() {
             actual: 1
         }
     );
+    // 契约（#68）：冲突行如实上报驱动影响的行数（DELETE 确实删了 1 行），不再恒为 0。
+    assert_eq!(report.results[0].rows_affected(), 1);
+    assert_eq!(report.rows_affected(), 1);
+    assert!(report.has_failures());
 
     // 恢复数据后验证整批回滚：第二条违反 CHECK，第一条不得生效。
     exec(&*session, &format!("DELETE FROM {table}")).await;

@@ -205,16 +205,15 @@ impl TableDataService for TableDataServiceImpl {
             .await
             .map_err(to_status)?;
 
+        // 逐行结果原样透传：`rows_affected` 是驱动实际影响的行数（冲突时可能 > 1，
+        // 未命中时为 0），成败判定只看 outcome，不在映射层二次加工。
         let results = report
             .results
             .iter()
             .map(|result| RowChangeResult {
                 change_index: u32::try_from(result.index).unwrap_or(u32::MAX),
                 outcome: outcome_to_proto(&result.outcome) as i32,
-                rows_affected: match result.outcome {
-                    ChangeOutcome::Applied { rows_affected } => rows_affected,
-                    ChangeOutcome::RowNotFound | ChangeOutcome::Conflict { .. } => 0,
-                },
+                rows_affected: result.rows_affected(),
                 message: outcome_message(&result.outcome),
             })
             .collect();

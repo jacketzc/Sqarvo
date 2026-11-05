@@ -528,6 +528,8 @@ async fn execute_plan(conn: &mut Conn, plan: &EditPlan) -> Result<Vec<RowChangeR
             drop(result);
             results.push(RowChangeResult {
                 index: row.index,
+                // `affected_rows` 是驱动真实返回值，原样进 `outcome`：
+                // 冲突/未命中时也不能抹成 0（`rows_affected()` 会透传到 proto）。
                 outcome: classify_rows_affected(row.expected, affected),
             });
         }

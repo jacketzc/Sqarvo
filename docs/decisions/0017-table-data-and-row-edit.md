@@ -164,6 +164,31 @@ SPI 与语义被提前到本版冻结。
 - 500 行钳制要求前端实现续传循环；未打开事务时，一个批次被钳制意味着「前 500 行已提交」，
   前端必须在提示中说明，并引导用户在事务中提交大批量编辑。
 
+## 补记：`RowChangeResult.rows_affected` 的语义（#68）
+
+本文正文里「逐行返回 `RowChangeResult`（`APPLIED` / `ROW_NOT_FOUND` / `CONFLICT`）」没有说清
+其中的 `rows_affected` 取值，导致 v0.2.1 的实现在冲突路径恒填 0，与 proto 注释「实际受影响行数」
+不一致（#62 上报，未擅自改契约）。现按 proto 注释对齐实现，语义定死为：
+
+- **`rows_affected` 一律填驱动 DML 语句的真实影响行数**，与 `outcome` 无关：
+  `APPLIED` → 应用行数；`CONFLICT` → 冲突时真实影响行数（主键不唯一/定义损坏时可能 `> 1`）；
+  `ROW_NOT_FOUND` → `0`（该分支的判定条件就是实际影响 0 行）。
+- **成败判定只看 `outcome`**，判据仍是「更新/删除必须影响 1 行」，本补记不改判定逻辑；
+  调用方不得用 `rows_affected` 是否为 1 反推成功。
+- **`ApplyRowChangesResponse.total_rows_affected` = Σ 逐行 `rows_affected`**，
+  因此**包含**被判为冲突的行。理由：逐行冲突只改变 `outcome`，并不回滚已经执行的 DML
+  （整批原子性只由语句级错误与 savepoint 保证），这些行确实被改动了；若从合计里抹掉，
+  界面会显示「影响 0 行」而库里已改若干行——对用户是误导。
+- 选这条而不是「改注释为『仅在 APPLIED 时有意义』」的理由：后者让调用方无法区分
+  「根本没匹配到行」与「匹配到多行被拒」，而这正是排查并发冲突最需要的信息；
+  代价是 `rows_affected` 不再是「成功行数」的同义词，前端展示必须同时读 `outcome`
+  （现有实现已经是这样：失败的逐行结果单列展示）。
+
+验证：「主键匹配到 >1 行」在 SQLite / MariaDB 上无法通过公开 SQL 造出（两者都在引擎层强制主键唯一），
+因此 `> 1` 分支由 `sqarvo-driver-api` 的单测锁定（`classify_rows_affected` +
+`RowChangeResult::rows_affected`），真实链路（UDS + token + 真 SQLite/gRPC）覆盖 `CONFLICT` 的
+`actual = 1` 与 `ROW_NOT_FOUND` 的 `0`。
+
 ## 重新评估条件
 
 - 出现必须支持无主键表编辑的真实需求：届时评估「全列匹配 + 影响行数必须为 1」的受限定位，

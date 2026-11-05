@@ -138,7 +138,12 @@ message RowChangeResult {
   // 请求内下标：updates 在前、deletes 在后，各自按请求顺序，从 0 开始。
   uint32 change_index = 1;
   ChangeOutcome outcome = 2;
-  // 实际受影响行数。
+  // 驱动 DML 语句实际影响的行数——**不论 outcome 是什么都填真实值**，调用方不得用它
+  // 判断成败（成败只看 outcome）：
+  //   APPLIED      → 应用的行数（必须等于 expected_rows_affected）；
+  //   CONFLICT     → 冲突时真实影响的行数，主键不唯一/定义损坏时可能 > 1；
+  //   ROW_NOT_FOUND→ 0（该分支的判定条件就是实际影响 0 行）。
+  // 这样「一行都没动」与「动了多行但被拒」可区分；恒为 0 会让用户只能猜。
   uint64 rows_affected = 3;
   // 可安全展示的原因说明；不得包含 SQL、参数值或凭据。
   string message = 4;
@@ -146,7 +151,9 @@ message RowChangeResult {
 
 message ApplyRowChangesResponse {
   repeated RowChangeResult results = 1;
-  // 本批受影响行数合计。
+  // 本批驱动实际影响的行数合计 = Σ results[i].rows_affected，**包含**被判为冲突的行：
+  // 逐行冲突只改变 outcome，不会回滚已执行的 DML（整批原子性只由语句级错误与 savepoint
+  // 保证）。把它们从合计里抹掉会让界面显示「影响 0 行」，而库里其实已经改了若干行。
   uint64 total_rows_affected = 2;
   // 请求超过单批上限（500 行）时为 true：只执行了前 500 条。
   bool clamped = 3;

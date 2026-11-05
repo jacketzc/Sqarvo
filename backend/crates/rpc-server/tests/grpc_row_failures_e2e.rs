@@ -544,18 +544,21 @@ async fn rows_affected_mismatch_is_reported_as_conflict() {
         ChangeOutcome::Conflict as i32,
         "影响行数与期望不符必须报 CONFLICT，不能静默当作成功"
     );
-    // 既有行为（v0.2.1）：只有 APPLIED 才回填 `rows_affected`，冲突行的字段为 0，
-    // 真实行数只能从文案里读到。这里按实际契约断言，并作为已知缺口记录在 Issue #62 里。
+    // 契约（#68）：`rows_affected` 一律填驱动真实影响的行数，冲突时不再是 0。
+    // 这里语句确实命中了 1 行，因此 1；判定结果仍由 outcome 表达（CONFLICT）。
     assert_eq!(
-        conflict.results[0].rows_affected, 0,
-        "CONFLICT 行不回填 rows_affected（只有 APPLIED 才回填）"
+        conflict.results[0].rows_affected, 1,
+        "CONFLICT 行必须回填驱动实际影响的行数（改前为 0）"
     );
     assert!(
         conflict.results[0].message.contains('1') && conflict.results[0].message.contains('2'),
         "文案要同时给出实际与期望：{}",
         conflict.results[0].message
     );
-    assert_eq!(conflict.total_rows_affected, 0, "失败行不计入整批影响行数");
+    assert_eq!(
+        conflict.total_rows_affected, 1,
+        "冲突行真的改动了 1 行，整批合计不能抹成 0"
+    );
     // 契约事实：逐行结果只报告冲突，不回滚已执行的语句；客户端必须刷新后重试。
     let after_conflict: Vec<Vec<ColumnValue>> =
         browse(&mut table_data, &session.session_id, "items", 100)
@@ -612,9 +615,10 @@ async fn rows_affected_mismatch_is_reported_as_conflict() {
         "删除命中 1 行但期望 2 行：这是冲突，不是「行不存在」"
     );
     assert_eq!(
-        delete_conflict.results[0].rows_affected, 0,
-        "冲突行同理不回填 rows_affected"
+        delete_conflict.results[0].rows_affected, 1,
+        "删除冲突同理：驱动确实删掉了 1 行，字段必须是 1"
     );
+    assert_eq!(delete_conflict.total_rows_affected, 1);
 
     // ---- 4. 另一会话并发改主键：旧主键定位不到行 → ROW_NOT_FOUND ----
     // 上一步的删除虽然报冲突，但语句本身已经执行，所以这里换一行新的。
@@ -661,6 +665,10 @@ async fn rows_affected_mismatch_is_reported_as_conflict() {
         ChangeOutcome::RowNotFound as i32,
         "主键被别的会话移走后，旧主键必须报 ROW_NOT_FOUND"
     );
+    assert_eq!(
+        stale_key.results[0].rows_affected, 0,
+        "ROW_NOT_FOUND 的判定条件就是实际影响 0 行，字段必须为 0"
+    );
     assert_eq!(stale_key.total_rows_affected, 0);
 
     let rows: Vec<Vec<ColumnValue>> = browse(&mut table_data, &session.session_id, "items", 100)
@@ -690,6 +698,103 @@ async fn rows_affected_mismatch_is_reported_as_conflict() {
         connections
             .disconnect(DisconnectRequest {
                 connection_id: session_b.connection_id.clone(),
+            })
+            .await,
+    );
+    server.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// 2b. 混合批次的合计：冲突行的真实行数必须计入（#68）
+// ---------------------------------------------------------------------------
+
+/// 同批里「1 条成功 + 1 条冲突」：`total_rows_affected` = 1 + 1 = 2，而不是 1。
+///
+/// 这条用例的价值在于它同时验证了合计**不是装饰**：浏览结果证明两条语句都真的写进了库，
+/// 所以把冲突行从合计里抹掉会让界面显示「影响 1 行」而实际改了 2 行。
+#[tokio::test]
+async fn mixed_batch_totals_include_conflict_rows() {
+    let server = RowFailureServer::start();
+    let channel = server.channel().await;
+    let auth = server.auth();
+    let mut connections = ConnectionServiceClient::with_interceptor(channel.clone(), auth.clone());
+    let mut queries = QueryServiceClient::with_interceptor(channel.clone(), auth.clone());
+    let mut table_data = TableDataServiceClient::with_interceptor(channel, auth);
+
+    let session = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "mixed-totals".to_owned(),
+            })
+            .await,
+    );
+    for sql in [
+        "CREATE TABLE mixed(id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+        "INSERT INTO mixed(id, label) VALUES (1, 'a'), (2, 'b')",
+    ] {
+        stage(
+            "Execute(DDL/DML)",
+            queries
+                .execute(ExecuteQueryRequest {
+                    session_id: session.session_id.clone(),
+                    sql: sql.to_owned(),
+                    ..ExecuteQueryRequest::default()
+                })
+                .await,
+        );
+    }
+
+    let report = stage(
+        "ApplyRowChanges(mixed)",
+        table_data
+            .apply_row_changes(edit_request(
+                &session.session_id,
+                "mixed",
+                vec![
+                    update_with_expected(pk(1), "label", text_value("ok"), 1),
+                    // 期望 3 行、实际 1 行 → CONFLICT，但那一行确实被改了。
+                    update_with_expected(pk(2), "label", text_value("late"), 3),
+                ],
+                vec![],
+            ))
+            .await,
+    );
+
+    assert_eq!(report.results.len(), 2);
+    assert_eq!(report.results[0].outcome, ChangeOutcome::Applied as i32);
+    assert_eq!(report.results[0].rows_affected, 1);
+    assert_eq!(report.results[1].outcome, ChangeOutcome::Conflict as i32);
+    assert_eq!(
+        report.results[1].rows_affected, 1,
+        "冲突行必须回填驱动实际影响的行数（改前为 0）"
+    );
+    assert_eq!(
+        report.total_rows_affected, 2,
+        "合计 = Σ 逐行 rows_affected（1 应用 + 1 冲突），改前为 1"
+    );
+
+    // 合计如实的证据：两条更新都真的落库了。
+    let rows: Vec<Vec<ColumnValue>> = browse(&mut table_data, &session.session_id, "mixed", 100)
+        .await
+        .rows
+        .into_iter()
+        .map(|row| row.values)
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(text_of(&rows[0][1]), "ok");
+    assert_eq!(
+        text_of(&rows[1][1]),
+        "late",
+        "冲突不阻止语句本身生效：所以合计必须承认这 1 行"
+    );
+
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: session.connection_id.clone(),
             })
             .await,
     );

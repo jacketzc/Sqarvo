@@ -212,6 +212,11 @@ pub trait TableDataProvider: Send + Sync {
   通用层不拼接 SQL；
 - **影响行数核对**：`expected_rows_affected == 0` 解释为 1；不符时该行返回
   `ChangeOutcome::Conflict`，目标行不存在时返回 `ChangeOutcome::RowNotFound`；
+- **影响行数上报**（ADR 0017 补记）：`RowChangeResult::rows_affected()` 一律是驱动 DML 的
+  真实影响行数，**不因 outcome 而清零**——`Conflict` 取 `actual`（主键不唯一时可能 `> 1`），
+  `RowNotFound` 恒为 0。`RowChangeReport::rows_affected()` = Σ 逐行值，因此**包含**冲突行
+  （逐行冲突不回滚已执行的语句，这些行确实被改动了）。驱动实现只把
+  `changes()` / `affected_rows()` 交给 `classify_rows_affected`，不要在映射层二次加工或抹零；
 - **批次钳制**：`RowChangeRequest::effective_changes()` 截到 500 行，
   `deferred_changes()` 告诉调用方还剩多少行，不得静默丢弃；
 - **能力如实声明**：`table_data()` 为 `None` 表示完全不支持浏览；

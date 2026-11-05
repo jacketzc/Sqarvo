@@ -285,10 +285,14 @@ pub enum ChangeOutcome {
     /// 目标行已不存在（被其它会话删除）。
     RowNotFound,
     /// 影响行数与期望不符（乐观并发冲突）。
+    ///
+    /// `actual` 是驱动 DML 语句**真实返回**的影响行数，必须原样上报
+    /// （见 [`RowChangeResult::rows_affected`]）：主键定义损坏或不唯一时可能 `> 1`，
+    /// 此时不能只回一个 0 让调用方去猜。
     Conflict {
         /// 期望行数。
         expected: u64,
-        /// 实际行数。
+        /// 实际行数（驱动真实返回值）。
         actual: u64,
     },
 }
@@ -320,6 +324,27 @@ pub struct RowChangeResult {
     pub outcome: ChangeOutcome,
 }
 
+impl RowChangeResult {
+    /// 该条变更在驱动侧**实际影响的行数**，与 proto `RowChangeResult.rows_affected` 同义。
+    ///
+    /// 不论 `outcome` 是什么都返回真实值，调用方据此区分「一行都没动」与
+    /// 「动了多行但被拒」：
+    ///
+    /// - [`ChangeOutcome::Applied`] → 应用的行数；
+    /// - [`ChangeOutcome::Conflict`] → 冲突时真实影响的行数（主键不唯一时可能 `> 1`）；
+    /// - [`ChangeOutcome::RowNotFound`] → `0`，因为该分支的判定条件就是 `actual == 0`。
+    ///
+    /// 成功与否只看 [`ChangeOutcome`]，不得用本值是否为 1 反推成功。
+    #[must_use]
+    pub const fn rows_affected(&self) -> u64 {
+        match self.outcome {
+            ChangeOutcome::Applied { rows_affected } => rows_affected,
+            ChangeOutcome::RowNotFound => 0,
+            ChangeOutcome::Conflict { actual, .. } => actual,
+        }
+    }
+}
+
 /// 一批行变更的结果。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowChangeReport {
@@ -330,15 +355,16 @@ pub struct RowChangeReport {
 }
 
 impl RowChangeReport {
-    /// 受影响行数合计。
+    /// 驱动实际影响的行数合计 = Σ [`RowChangeResult::rows_affected`]。
+    ///
+    /// **包含**被判定为冲突的行：逐行冲突只改变 `outcome`，不会回滚已经执行的 DML
+    /// （整批原子性只由语句级错误与 savepoint 保证）。把它们从合计里抹掉会让界面
+    /// 显示「影响 0 行」，而数据库里确实改动了若干行——那是对用户的误导。
     #[must_use]
     pub fn rows_affected(&self) -> u64 {
         self.results
             .iter()
-            .map(|result| match result.outcome {
-                ChangeOutcome::Applied { rows_affected } => rows_affected,
-                ChangeOutcome::RowNotFound | ChangeOutcome::Conflict { .. } => 0,
-            })
+            .map(RowChangeResult::rows_affected)
             .sum()
     }
 
@@ -547,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn report_totals_only_count_applied_rows() {
+    fn report_totals_sum_driver_rows_affected() {
         let report = RowChangeReport {
             results: vec![
                 RowChangeResult {
@@ -568,9 +594,48 @@ mod tests {
             ],
             deferred: 0,
         };
-        assert_eq!(report.rows_affected(), 2);
+        // 2（应用）+ 0（行不存在）+ 2（冲突但驱动确实动了 2 行）。
+        assert_eq!(report.rows_affected(), 4);
         assert!(report.has_failures());
         assert_eq!(ChangeOutcome::RowNotFound.as_str(), "row_not_found");
+    }
+
+    /// proto `RowChangeResult.rows_affected` 的语义：**任何** outcome 都上报驱动真实行数。
+    ///
+    /// 这一条锁住「> 1 行」的取值：两个内置驱动的真实链路造不出「主键匹配到多行」
+    /// （SQLite / MariaDB 都在引擎层强制主键唯一），因此该分支只能在这里锁死。
+    #[test]
+    fn rows_affected_reports_driver_value_for_every_outcome() {
+        let applied = RowChangeResult {
+            index: 0,
+            outcome: ChangeOutcome::Applied { rows_affected: 1 },
+        };
+        assert_eq!(applied.rows_affected(), 1);
+
+        let not_found = RowChangeResult {
+            index: 1,
+            outcome: ChangeOutcome::RowNotFound,
+        };
+        assert_eq!(
+            not_found.rows_affected(),
+            0,
+            "行不存在的判定条件是 actual == 0"
+        );
+
+        // 主键不唯一 / 定义损坏：驱动实际动了 3 行，拒绝的同时必须如实报 3。
+        let multi = RowChangeResult {
+            index: 2,
+            outcome: classify_rows_affected(1, 3),
+        };
+        assert_eq!(
+            multi.outcome,
+            ChangeOutcome::Conflict {
+                expected: 1,
+                actual: 3
+            }
+        );
+        assert_eq!(multi.rows_affected(), 3, "冲突行不得把真实行数抹成 0");
+        assert!(!multi.outcome.is_applied(), "多行影响绝不能算成功");
     }
 
     #[test]

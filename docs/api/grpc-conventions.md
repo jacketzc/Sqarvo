@@ -74,6 +74,18 @@
 重复 `Commit` / `Rollback` 是幂等的：对已结束或未知事务返回 `OK`（见 ADR 0017 §3）。
 「事务必须存在」的约束落在写入路径（`table_data` 的 `transaction_id`）上。
 
+`RowChangeResult.rows_affected` 的取值（ADR 0017 补记，#68）：
+
+| `outcome` | `rows_affected` | 说明 |
+|---|---|---|
+| `CHANGE_OUTCOME_APPLIED` | 应用行数（= `expected_rows_affected`） | 唯一算成功的取值 |
+| `CHANGE_OUTCOME_CONFLICT` | 驱动**实际**影响的行数，可能 `> 1` | 判定为冲突；`> 1` 表示主键匹配到多行（主键定义损坏/不唯一） |
+| `CHANGE_OUTCOME_ROW_NOT_FOUND` | `0` | 该分支的判定条件就是实际影响 0 行 |
+
+`total_rows_affected` = Σ 逐行 `rows_affected`，**包含**冲突行（逐行冲突只改变 `outcome`，
+不回滚已执行的 DML）。因此「成功与否」只能看 `outcome`，不能用 `rows_affected` 反推；
+前端展示「已提交 N 行 · 失败 M 行」时，N 是驱动实际改动行数，M 是失败条数，两者不互斥。
+
 会话上的事务状态通过既有 `ConnectionService.ListSessions` 暴露（#44）：
 `SessionSummary.transaction`（`TransactionStatus`：`transaction_id` / `isolation` /
 `read_only` / `state`）在每次读取时现取，未打开事务时为空。该字段与
