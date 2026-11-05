@@ -299,6 +299,57 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 引号/注释感知的扫描器拒绝多条语句，返回 `capability.unsupported`；不会「只执行第一条」再报错。
 集成测试用 `information_schema.tables` 断言第二条语句没有产生任何副作用。
 
+## 元数据（v0.2.1 最小子集）
+
+实现：`backend/crates/drivers/mariadb/src/metadata.rs`，全部读 `information_schema`。
+
+| 请求 | 数据来源 | 说明 |
+|---|---|---|
+| `list_children(None, page)` | `information_schema.TABLES` | 当前数据库的表与视图，`ORDER BY TABLE_NAME`；`TABLE_TYPE` 为 `BASE TABLE` → `Table`，`VIEW` / `SYSTEM VIEW` → `View`，其它原文进 `ObjectKind::Other`；`TABLE_COMMENT` 透传 |
+| `columns(object)` | `information_schema.COLUMNS` | 原始类型名取 `COLUMN_TYPE`（含长度与 `unsigned`），可空取 `IS_NULLABLE`，精度/标度取 `NUMERIC_PRECISION` / `NUMERIC_SCALE`，长度取 `CHARACTER_MAXIMUM_LENGTH` |
+| `primary_key(object)` | `information_schema.KEY_COLUMN_USAGE` | `CONSTRAINT_NAME = 'PRIMARY'`，`ORDINAL_POSITION` 原样作为主键内顺序（1 开始） |
+| `ddl(object)` | — | 显式 `capability.unsupported`，文案写明「v0.2.2 提供」 |
+
+层级范围：本版只到「当前连接数据库里的表与视图」这一层。根节点（`parent = None`）返回对象列表；
+`Catalog` / `Schema` / `Index` / `Sequence` 等上层或更深层级一律返回
+`capability.unsupported`，**不返回空列表**冒充「没有对象」。MariaDB 的 `database` 映射为
+`catalog`；`schema` 层不存在，带 `schema` 的引用会被拒绝。
+
+库名/表名不拼进 SQL：`TABLE_SCHEMA` / `TABLE_NAME` 都是绑定参数，因此没有反引号转义问题。
+表名大小写按服务端 `information_schema` 的比较规则（`lower_case_table_names`）处理，
+返回的 `TABLE_NAME` 是服务端给出的规范名。
+
+### 分页 token 与失效条件
+
+分页由 `sqarvo-metadata::paginate_by_key` 生成不透明 token，格式为
+`v1:<offset>:<16 位十六进制指纹>`：
+
+- 指纹是**有序对象名集合**的 FNV-1a 64 位摘要，翻页时重新校验；
+- token 结构非法、版本未知、偏移量越界 → `config.invalid`（`INVALID_ARGUMENT`），
+  **绝不回退到第一页**；
+- 对象名集合在翻页期间发生变化（新建/删除/改名）→ `metadata.snapshot_changed`
+  （`FAILED_PRECONDITION`），调用方应从第一页重新读取；
+- 对象数量不变但内容整体替换且名字相同（例如 `DROP` 后重建同名表）不会被指纹区分，
+  会被当成同一对象继续翻页。
+
+已知代价：本版一次性读取当前库的全部对象名再在内存里切页（上限 500 行/页），
+不做 `LIMIT/OFFSET` 服务端分页；库内对象数量极大时应改用服务端游标（待定）。
+
+### 已知缺口
+
+- `proto.common.v1.ColumnMeta` 没有默认值、字符集、排序规则字段（契约已冻结），
+  这些信息驱动读得到但传不到前端；补齐需要改 proto，见 #45 的「待定」；
+- `COLUMN_TYPE` 是服务端原文，MariaDB 11.4 会带显示宽度（例如 `bigint(20) unsigned`），
+  驱动不裁剪，前端应按原样展示；
+- `ENUM` / `SET` / `GEOMETRY` / `BIT` 无法无损映射到逻辑类型，返回
+  `ColumnType::Unsupported { type_name: COLUMN_TYPE }`；
+- 权限不足的对象在 `information_schema` 里不可见，因此元数据查询表现为
+  `mariadb.object_not_found`（`NotFound`）。这是 MySQL 协议族的语义；连接级无权限
+  （1044）仍由「错误映射」表归类为 `mariadb.permission_denied`；
+- 连接没有选择数据库时列出对象返回 `mariadb.no_database`（`FAILED_PRECONDITION`），
+  不把 `DATABASE() IS NULL` 当成「库里没有表」；
+- 有未读完的结果游标时元数据请求返回 `mariadb.query_active`，避免与游标交错。
+
 ## 能力描述符（现状）
 
 | 能力 | 值 | 说明 |
@@ -307,14 +358,15 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 | `streaming_results` | `true` | 行流 + 驱动侧分批 |
 | `multiple_statements` | `false` | 发送前拒绝 |
 | `transactions` | `true` | 会话内 `START TRANSACTION` / `COMMIT` / `ROLLBACK`，见「事务」 |
-| `catalogs` / `schemas` | `false` | `database` 映射为 catalog，但对象树尚未实现 |
+| `catalogs` / `schemas` | `false` | `database` 映射为 catalog；元数据只覆盖当前库的表/视图一层，不声明多库浏览 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
 
 ## 未支持清单
 
 - 事务状态展示与 gRPC 接线（驱动层已实现，见「事务」；服务层接线未完成）；
-- 元数据（对象树、列、DDL）：`metadata()` 返回 `None`；
+- 元数据的对象树上层（Catalog / Schema / Index / Sequence）与跨库浏览：显式报
+  `capability.unsupported`；DDL 查看计划 v0.2.2（`SHOW CREATE TABLE` 原文）；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
 - 参数化执行、预编译语句复用；
 - 大字段按需加载（目前只截断前缀，`Cell::truncated` 标记）；

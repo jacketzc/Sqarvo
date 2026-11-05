@@ -70,7 +70,9 @@
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
-- 元数据对象树、列信息、DDL 生成（M4，v0.2.1 / v0.2.2）；
+- 元数据的上层层级（Catalog / Schema / Index / Sequence）与跨库浏览：显式返回 `capability.unsupported`
+  （当前库的表/视图、列与主键已接入，见 [Driver SPI](./docs/database/driver-spi.md#元数据)）；
+- DDL 生成（v0.2.2，`GetDdl` 明确未实现）；
 - 显式事务绑定到会话（M4，v0.2.1 / v0.2.2）；
 - Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
 - Windows / macOS 前端接入后端（两端仍只有窗口骨架，未构建、未运行验证）；

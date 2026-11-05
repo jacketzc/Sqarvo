@@ -117,3 +117,23 @@ fn disabled_tls_rejects_certificate_parameters() {
         .insert("ssl_ca".to_owned(), ca.display().to_string());
     assert!(MariaDbConfig::from_params(&params, None).is_err());
 }
+
+/// 元数据查询只读 `information_schema`，它同样会把服务端错误交给统一的分类器。
+/// 这里直接构造服务端错误，证明「对象不存在」与「无权限」不会被混为一谈。
+#[test]
+fn server_errors_used_by_metadata_queries_are_classified() {
+    let server = |code: u16, message: &str| {
+        mysql_async::Error::Server(mysql_async::ServerError {
+            code,
+            message: message.to_owned(),
+            state: "HY000".to_owned(),
+        })
+    };
+    let mapped = crate::error::map_error(server(1146, "Table 'x.y' doesn't exist"), "列信息");
+    assert_eq!(mapped.code(), crate::error::OBJECT_NOT_FOUND);
+    assert_eq!(mapped.category(), ErrorCategory::NotFound);
+
+    let mapped = crate::error::map_error(server(1142, "SELECT command denied"), "列信息");
+    assert_eq!(mapped.code(), crate::error::PERMISSION_DENIED);
+    assert_eq!(mapped.category(), ErrorCategory::PermissionDenied);
+}

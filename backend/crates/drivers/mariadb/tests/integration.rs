@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
 use sqarvo_driver_api::{
     Cell, ColumnMeta, ColumnType, ConnectionParams, DEFAULT_MAX_CELL_BYTES, Driver, DriverSession,
-    ExecuteRequest, IsolationLevel, Row, TlsMode, TransactionOptions, Value,
+    ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode,
+    ObjectRef, PageRequest, QualifiedName, Row, TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
 
@@ -1660,4 +1661,480 @@ fn connection_params() -> Option<(ConnectionParams, sqarvo_driver_api::Secret)> 
         properties: BTreeMap::new(),
     };
     Some((params, sqarvo_driver_api::Secret::new(password)))
+}
+
+// ---------------------------------------------------------------------------
+// 元数据最小子集（#45）
+// ---------------------------------------------------------------------------
+
+/// 测试库里的对象前缀：与其他用例的表互不干扰。
+const MD_PREFIX: &str = "sqarvo_md45";
+
+fn md_object(session: &dyn DriverSession, name: &str, kind: ObjectKind) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(None, None, name),
+        kind,
+    }
+}
+
+fn md_page(size: u32, token: Option<String>) -> PageRequest {
+    PageRequest {
+        page_size: size,
+        page_token: token,
+    }
+}
+
+/// 连续翻页直到没有 token。
+///
+/// 测试库与其它用例共用，对象集合可能在翻页期间变化；调用方对
+/// `metadata.snapshot_changed` 重新从第一页开始。
+async fn walk_md_objects(
+    provider: &dyn MetadataProvider,
+) -> sqarvo_common::Result<(Vec<ObjectNode>, usize)> {
+    let mut collected = Vec::new();
+    let mut token = None;
+    let mut page_count = 0;
+    loop {
+        let page = provider.list_children(None, &md_page(3, token)).await?;
+        assert!(page.items.len() <= 3);
+        if page.next_page_token.is_none() {
+            assert!(!page.truncated);
+        } else {
+            assert_eq!(page.items.len(), 3, "非末页必须是满页");
+            assert!(page.truncated, "还有下一页时 truncated 必须为 true");
+        }
+        collected.extend(page.items);
+        page_count += 1;
+        assert!(page_count <= 100, "分页未收敛");
+        if let Some(next) = page.next_page_token {
+            token = Some(next);
+        } else {
+            return Ok((collected, page_count));
+        }
+    }
+}
+
+/// 只清理本用例自己的对象：测试并行执行，不能碰同前缀的其它对象。
+async fn drop_md_objects(session: &dyn DriverSession, names: &[&str]) {
+    for name in names {
+        exec(session, &format!("DROP VIEW IF EXISTS {MD_PREFIX}_{name}")).await;
+        exec(session, &format!("DROP TABLE IF EXISTS {MD_PREFIX}_{name}")).await;
+    }
+}
+
+#[tokio::test]
+async fn metadata_lists_tables_and_views_with_stable_pagination() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["01", "02", "03", "04", "05", "view"];
+    drop_md_objects(&*session, &own).await;
+    for index in 1..=5 {
+        exec(
+            &*session,
+            &format!("CREATE TABLE {MD_PREFIX}_{index:02} (id INT PRIMARY KEY)"),
+        )
+        .await;
+    }
+    exec(
+        &*session,
+        &format!("CREATE VIEW {MD_PREFIX}_view AS SELECT id FROM {MD_PREFIX}_01"),
+    )
+    .await;
+
+    let provider = session.metadata().expect("MariaDB 必须提供元数据能力");
+
+    // 测试库与其他用例共用，对象集合可能并发变化：遇到
+    // `metadata.snapshot_changed` 就按契约从第一页重读（最多 5 次）。
+    let mut attempt = 0;
+    let (collected, page_count) = loop {
+        attempt += 1;
+        assert!(attempt <= 5, "对象集合持续变化，无法完成分页");
+        match walk_md_objects(provider).await {
+            Ok(result) => break result,
+            Err(error) if error.code() == ErrorCode::from_static("metadata.snapshot_changed") => {}
+            Err(error) => panic!("列出根节点失败：{error:?}"),
+        }
+    };
+    assert!(page_count > 1, "测试库对象数应足以触发多页");
+
+    let names: Vec<String> = collected
+        .iter()
+        .map(|node| node.display_name.clone())
+        .collect();
+    let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+    assert_eq!(unique.len(), names.len(), "翻页不得出现重复对象");
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "对象必须按名字排序");
+    for expected in [
+        format!("{MD_PREFIX}_01"),
+        format!("{MD_PREFIX}_02"),
+        format!("{MD_PREFIX}_03"),
+        format!("{MD_PREFIX}_04"),
+        format!("{MD_PREFIX}_05"),
+        format!("{MD_PREFIX}_view"),
+    ] {
+        assert_eq!(
+            names.iter().filter(|name| **name == expected).count(),
+            1,
+            "{expected} 必须恰好出现一次"
+        );
+    }
+
+    let our_view = collected
+        .iter()
+        .find(|node| node.display_name == format!("{MD_PREFIX}_view"))
+        .expect("应列出视图");
+    assert_eq!(our_view.kind, ObjectKind::View);
+    assert!(our_view.has_children);
+    let our_table = collected
+        .iter()
+        .find(|node| node.display_name == format!("{MD_PREFIX}_01"))
+        .expect("应列出表");
+    assert_eq!(our_table.kind, ObjectKind::Table);
+    let (_, database_row) = select(&*session, "SELECT DATABASE()").await;
+    let expected_catalog = text_of(&database_row[0][0]).to_owned();
+    assert_eq!(
+        our_table.qualified_name.catalog.as_deref(),
+        Some(expected_catalog.as_str()),
+        "信息架构节点必须带上当前数据库（catalog）"
+    );
+
+    drop_md_objects(&*session, &own).await;
+}
+
+#[tokio::test]
+async fn metadata_columns_keep_original_types_and_nullability() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["types"];
+    drop_md_objects(&*session, &own).await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {MD_PREFIX}_types (\
+             id BIGINT UNSIGNED NOT NULL, \
+             name VARCHAR(64) NOT NULL, \
+             price DECIMAL(12,3) NULL, \
+             created DATETIME, \
+             flag ENUM('a','b') NOT NULL)"
+        ),
+    )
+    .await;
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let columns = provider
+        .columns(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_types"),
+            ObjectKind::Table,
+        ))
+        .await
+        .expect("读取列信息");
+    assert_eq!(columns.len(), 5);
+
+    assert_eq!(columns[0].name, "id");
+    assert_eq!(columns[0].ordinal, 0, "SPI 的 ordinal 从 0 开始");
+    let original = columns[0]
+        .original_type_name
+        .as_deref()
+        .expect("原始类型名必须保留");
+    assert!(
+        original.starts_with("bigint") && original.ends_with("unsigned"),
+        "原始类型名必须保留无符号信息，实际 {original}"
+    );
+    assert_eq!(
+        columns[0].column_type,
+        ColumnType::Integer {
+            bits: 64,
+            unsigned: true
+        }
+    );
+    assert!(!columns[0].nullable);
+
+    assert_eq!(
+        columns[1].original_type_name.as_deref(),
+        Some("varchar(64)")
+    );
+    assert_eq!(
+        columns[1].column_type,
+        ColumnType::Text { length: Some(64) }
+    );
+    assert!(!columns[1].nullable, "NOT NULL 必须如实返回");
+
+    assert_eq!(
+        columns[2].original_type_name.as_deref(),
+        Some("decimal(12,3)")
+    );
+    assert_eq!(
+        columns[2].column_type,
+        ColumnType::Decimal {
+            precision: Some(12),
+            scale: Some(3)
+        }
+    );
+    assert!(columns[2].nullable);
+
+    assert_eq!(columns[3].column_type, ColumnType::DateTime);
+
+    assert!(
+        matches!(columns[4].column_type, ColumnType::Unsupported { .. }),
+        "ENUM 不能静默降级为字符串"
+    );
+    assert_eq!(
+        columns[4].original_type_name.as_deref(),
+        Some("enum('a','b')")
+    );
+
+    drop_md_objects(&*session, &own).await;
+}
+
+#[tokio::test]
+async fn metadata_primary_key_handles_single_composite_and_missing_keys() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["single", "composite", "no_key", "v"];
+    drop_md_objects(&*session, &own).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {MD_PREFIX}_single (id INT PRIMARY KEY, v VARCHAR(8))"),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "CREATE TABLE {MD_PREFIX}_composite (\
+             tenant_id VARCHAR(16) NOT NULL, order_id INT NOT NULL, \
+             PRIMARY KEY (order_id, tenant_id))"
+        ),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {MD_PREFIX}_no_key (a INT, b INT)"),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("CREATE VIEW {MD_PREFIX}_v AS SELECT 1 AS one"),
+    )
+    .await;
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+
+    let single = provider
+        .primary_key(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_single"),
+            ObjectKind::Table,
+        ))
+        .await
+        .expect("单列主键");
+    assert_eq!(single.column_names(), ["id"]);
+    assert_eq!(single.columns[0].position, 1);
+
+    let composite = provider
+        .primary_key(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_composite"),
+            ObjectKind::Table,
+        ))
+        .await
+        .expect("复合主键");
+    assert_eq!(
+        composite.column_names(),
+        ["order_id", "tenant_id"],
+        "position 必须是数据库真实的复合主键顺序"
+    );
+    assert_eq!(composite.columns[0].position, 1);
+    assert_eq!(composite.columns[1].position, 2);
+
+    let none = provider
+        .primary_key(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_no_key"),
+            ObjectKind::Table,
+        ))
+        .await
+        .expect("无主键表必须成功返回空列表");
+    assert!(none.is_empty(), "无主键不得返回近似主键");
+
+    let view = provider
+        .primary_key(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_v"),
+            ObjectKind::View,
+        ))
+        .await
+        .expect("视图主键查询");
+    assert!(view.is_empty());
+
+    drop_md_objects(&*session, &own).await;
+}
+
+#[tokio::test]
+async fn metadata_rejects_cross_catalog_and_bad_tokens() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+
+    // 跨库浏览本版未实现：显式拒绝，不返回别的库的表。
+    let other = ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(Some("mysql".to_owned()), None, ""),
+        kind: ObjectKind::Table,
+    };
+    let error = provider
+        .columns(&other)
+        .await
+        .expect_err("跨库必须明确拒绝");
+    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
+    assert_eq!(error.category(), ErrorCategory::Unsupported);
+
+    // 上层层级（Catalog/Schema）未实现。
+    let parent = ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(Some("sqarvo_test_45".to_owned()), None, ""),
+        kind: ObjectKind::Catalog,
+    };
+    let error = provider
+        .list_children(Some(parent), &md_page(10, None))
+        .await
+        .expect_err("上层节点必须明确拒绝");
+    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
+    assert!(error.message().contains("v0.2.2"), "{error}");
+
+    // 非法 token / 越界偏移量：显式失败，不回退第一页。
+    for token in ["abc", "v1:1", "v1:999:0000000000000000"] {
+        let error = provider
+            .list_children(None, &md_page(2, Some(token.to_owned())))
+            .await
+            .expect_err("非法 token 必须失败");
+        assert_eq!(error.code(), ErrorCode::CONFIG_INVALID, "token={token}");
+        assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+    }
+
+    // 超上限页大小被钳制（共享 `paginate_by_key` 的钳制路径；501 个对象的
+    // 精确断言在 SQLite 集成用例里，避免污染共享测试库）。
+    let page = provider
+        .list_children(None, &md_page(u32::MAX, None))
+        .await
+        .expect("超上限页大小应被钳制");
+    assert!(
+        page.items.len() <= usize::try_from(MAX_PAGE_SIZE).unwrap(),
+        "页大小必须被钳制到 SPI 上限，实际 {}",
+        page.items.len()
+    );
+}
+
+#[tokio::test]
+async fn metadata_missing_table_is_not_found() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let missing = format!("{MD_PREFIX}_ghost");
+
+    for error in [
+        provider
+            .columns(&md_object(&*session, &missing, ObjectKind::Table))
+            .await
+            .expect_err("不存在的表必须报错"),
+        provider
+            .primary_key(&md_object(&*session, &missing, ObjectKind::Table))
+            .await
+            .expect_err("不存在的主键查询必须报错"),
+    ] {
+        assert_eq!(error.code(), error::OBJECT_NOT_FOUND);
+        assert_eq!(error.category(), ErrorCategory::NotFound);
+    }
+}
+
+#[tokio::test]
+async fn metadata_without_selected_database_is_rejected() {
+    let Some((mut params, secret)) = connection_params() else {
+        return;
+    };
+    params.database = None;
+    let driver = MariaDbDriver::new();
+    let session = driver
+        .connect(&params, Some(&secret))
+        .await
+        .expect("无默认库也应能连接");
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let error = provider
+        .list_children(None, &md_page(10, None))
+        .await
+        .expect_err("没有选库时不能返回空列表冒充「没有表」");
+    assert_eq!(error.code(), error::NO_DATABASE);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn metadata_ddl_is_explicitly_unimplemented_until_v0_2_2() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let error = provider
+        .ddl(&md_object(&*session, "any_table", ObjectKind::Table))
+        .await
+        .expect_err("DDL 本版必须报未实现");
+    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
+    assert!(error.message().contains("v0.2.2"), "{error}");
+}
+
+#[tokio::test]
+async fn metadata_waits_for_open_cursor_to_be_closed() {
+    let Some(session) = session().await else {
+        return;
+    };
+    // 测试库可能被并行用例清空：本用例自带一个对象，避免依赖别人的残留。
+    let own = ["cursor"];
+    drop_md_objects(&*session, &own).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {MD_PREFIX}_cursor (id INT PRIMARY KEY)"),
+    )
+    .await;
+
+    let query_id = QueryId::new();
+    let start = session
+        .execute(ExecuteRequest {
+            query_id,
+            sql: "SELECT seq FROM seq_1_to_1000".to_owned(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .expect("查询");
+    assert!(start.first_batch.expect("首批").has_more);
+
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+    let busy = provider
+        .list_children(None, &md_page(10, None))
+        .await
+        .expect_err("游标未读完时元数据必须被拒绝");
+    assert_eq!(busy.code(), error::QUERY_ACTIVE);
+    assert_eq!(busy.category(), ErrorCategory::FailedPrecondition);
+
+    session.close_query(&query_id).await.expect("关闭游标");
+    let ok = provider
+        .list_children(None, &md_page(u32::MAX, None))
+        .await
+        .expect("游标释放后应可读取元数据");
+    assert!(
+        ok.items
+            .iter()
+            .any(|node| node.display_name == format!("{MD_PREFIX}_cursor")),
+        "游标释放后必须能列出刚建的表"
+    );
+
+    drop_md_objects(&*session, &own).await;
 }

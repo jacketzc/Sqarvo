@@ -244,6 +244,16 @@ fn column_to_proto(meta: &ColumnMeta) -> ProtoColumnMeta {
     }
 }
 
+/// 列元数据列表 → Protobuf（`MetadataService.GetColumns`）。
+///
+/// 与结果集共用同一套映射：原始类型名、长度/精度/标度、无符号、可空都无损传递。
+/// proto 的 `ColumnMeta` 没有默认值/字符集/排序规则字段（见 #45 的「待定」），
+/// 因此这里不伪造这些字段。
+#[must_use]
+pub fn columns_to_proto(columns: &[ColumnMeta]) -> Vec<ProtoColumnMeta> {
+    columns.iter().map(column_to_proto).collect()
+}
+
 fn column_type_to_proto(kind: &ColumnType, original: Option<&str>) -> ProtoColumnType {
     let mut out = ProtoColumnType {
         original_type_name: original.unwrap_or_default().to_owned(),
