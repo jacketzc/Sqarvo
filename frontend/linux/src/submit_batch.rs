@@ -381,8 +381,8 @@ impl SubmitRegistry {
 /// 生成一个客户端批次 ID：`query_<uuid v4>`。
 ///
 /// 前缀用 `query_`（与 `QueryService` 的 `query_id` 同形）：服务端的标识符解析器
-/// 只接受裸 UUID 或 `query_` 前缀（`backend/crates/common/src/ids.rs`），proto 注释里
-/// 写的 `qry_` 前缀会被判为非法——契约不改，这里按解析器实现取值。
+/// 只接受裸 UUID 或 `query_` 前缀（`backend/crates/common/src/ids.rs`），proto 注释
+/// 曾把前缀写成 `qry_`，已在 `fix/query-id-comment` 里按实现改正（仅注释，契约不变）。
 #[must_use]
 pub fn new_query_id() -> String {
     format!("query_{}", uuid::Uuid::new_v4())
