@@ -106,6 +106,11 @@ fn register_qa_options(app: &adw::Application) {
             "loading|ready|empty|error|disconnected",
         ),
         ("qa-expect-txn", "auto|active|readonly|failed|disconnected"),
+        ("qa-column-info", "column"),
+        (
+            "qa-expect-column",
+            "column:name|type|nullable|default|charset|collation=text",
+        ),
     ] {
         app.add_main_option(
             name,

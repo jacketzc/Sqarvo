@@ -413,7 +413,9 @@ pub fn activate(app: &adw::Application) {
                     eprintln!("[qa] 界面截图已写入 {}", capture.path.display());
                     // 截图之后立刻断言：画面证据已经落盘，断言失败也不会丢证据。
                     // 只有登记了 --qa-expect-* 才校验；退出码 3 与截图失败的 2 区分开。
-                    if crate::qa::expect_data_state().is_some() || crate::qa::expect_txn().is_some()
+                    if crate::qa::expect_data_state().is_some()
+                        || crate::qa::expect_txn().is_some()
+                        || !crate::qa::expect_columns().is_empty()
                     {
                         match verify_expectations(&capture_state) {
                             Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
@@ -942,6 +944,17 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
         });
     }
 
+    // 1b. 列信息浮层（--qa-column-info）：等首页列元数据绑定后，点「列信息」按钮。
+    if let Some(column) = crate::qa::column_info() {
+        let data = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(2_000), move || {
+            if let Err(error) = data.qa_open_column_info(&column) {
+                // 不静默：列名写错时浮层不会打开，随后的 --qa-expect-column 会失败。
+                eprintln!("[qa] 打开列信息浮层失败：{error}");
+            }
+        });
+    }
+
     // 2. 开始事务（可选只读，用于只读态验证）。
     if crate::qa::data_begin_transaction() {
         let data = Rc::clone(&data);
@@ -1135,10 +1148,11 @@ fn data_state_name(state: DataState) -> &'static str {
     }
 }
 
-/// QA：校验 `--qa-expect-data-state` / `--qa-expect-txn`。
+/// QA：校验 `--qa-expect-data-state` / `--qa-expect-txn` / `--qa-expect-column`。
 ///
-/// 读的全部是控件上真实渲染出来的东西（徽标文本 / 失败态 CSS / 按钮 `sensitive`），
-/// 不是「状态机里应该是」：状态机单测已经覆盖字段，这里要证明的是界面跟着变了。
+/// 读的全部是控件上真实渲染出来的东西（徽标文本 / 失败态 CSS / 按钮 `sensitive` /
+/// 列信息浮层的字段文本），不是「状态机里应该是」：状态机单测已经覆盖字段，
+/// 这里要证明的是界面跟着变了。
 /// 返回一句话描述（供日志），错误即断言失败；调用方以退出码 3 结束。
 fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
     let data_page = state
@@ -1205,6 +1219,38 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             | crate::qa::TxnExpectation::Disconnected => {}
         }
         passed.push(format!("事务徽标={}", observed.badge_text));
+    }
+
+    let column_expectations = crate::qa::expect_columns();
+    if !column_expectations.is_empty() {
+        let observed = data_page.qa_observe_column_info();
+        if !observed.visible {
+            return Err(
+                "列信息浮层没有打开：截图上不会有列信息（检查 --qa-column-info）".to_owned(),
+            );
+        }
+        for expectation in &column_expectations {
+            let row = observed
+                .rows
+                .iter()
+                .find(|row| row.name == expectation.column)
+                .ok_or_else(|| format!("列信息浮层里没有列 {}", expectation.column))?;
+            let actual = expectation.field.value(row);
+            if actual != expectation.expected {
+                return Err(format!(
+                    "列 {} 的 {} 期望「{}」，实际「{}」",
+                    expectation.column,
+                    expectation.field.name(),
+                    expectation.expected,
+                    actual
+                ));
+            }
+            passed.push(format!(
+                "列 {} {}={actual}",
+                expectation.column,
+                expectation.field.name()
+            ));
+        }
     }
 
     if passed.is_empty() {
