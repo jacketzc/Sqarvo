@@ -54,6 +54,16 @@ mod tests {
         }
     }
 
+    /// v0.2.2（#82）：catalog 层（main / temp / ATTACH）可浏览；没有 schema 层。
+    #[test]
+    fn descriptor_declares_catalogs_but_not_schemas() {
+        let driver = SqliteDriver::new();
+        let capabilities = driver.descriptor().capabilities;
+        assert!(capabilities.catalogs);
+        assert!(capabilities.names().contains(&"catalogs"));
+        assert!(!capabilities.schemas, "SQLite 没有 schema 层级，不得声明");
+    }
+
     fn request(query_id: QueryId, sql: &str, max_rows: Option<u32>) -> ExecuteRequest {
         ExecuteRequest {
             query_id,

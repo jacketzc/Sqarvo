@@ -45,7 +45,10 @@ impl SqliteDriver {
                     multiple_statements: false,
                     ddl_generation: false,
                     server_side_pagination: false,
-                    catalogs: false,
+                    // v0.2.2（#82）：catalog 层可浏览。SQLite 的 catalog 就是 database：
+                    // `main` / `temp` / 本连接 `ATTACH` 进来的库（见 docs/database/sqlite.md）。
+                    catalogs: true,
+                    // SQLite 没有独立的 schema 层级，不伪造。
                     schemas: false,
                     // 行编辑：`table_data()` 返回 provider，`supports_row_edits()`
                     // 为 true（#47）。
