@@ -835,7 +835,7 @@ pub(crate) fn map_row(
     Ok(cells)
 }
 
-fn map_value(value: ValueRef<'_>) -> Cell {
+pub(crate) fn map_value(value: ValueRef<'_>) -> Cell {
     match value {
         ValueRef::Null => Cell::new(Value::Null),
         ValueRef::Integer(number) => Cell::new(Value::Int(number)),

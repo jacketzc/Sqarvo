@@ -28,12 +28,13 @@
 
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params_from_iter};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, DriverSession, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
+    Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport, InsertRow,
+    InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
     PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest,
-    RowChangeResult, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
+    RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
     invalid_change, no_primary_key, read_only_connection, read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
@@ -56,12 +57,18 @@ pub(crate) enum TableDataRequest {
         /// 取消令牌（ADR 0018）：只在行与行之间读取，取消方不取会话执行锁。
         cancel: RowChangeCancel,
     },
+    /// 插入一批新行（v0.2.2，#85）：列清单只含标识符，值全部走参数绑定。
+    Insert {
+        object: ObjectRef,
+        rows: Vec<InsertRow>,
+    },
 }
 
 /// 表数据回复，与 [`TableDataRequest`] 一一对应。
 pub(crate) enum TableDataReply {
     Page(TablePage),
     Report(RowChangeReport),
+    InsertReport(InsertReport),
 }
 
 /// 会话线程看到的显式事务状态快照。
@@ -102,6 +109,12 @@ pub(crate) fn handle(
             &changes,
             &cancel,
         )?)),
+        TableDataRequest::Insert { object, rows } => Ok(TableDataReply::InsertReport(insert(
+            connection,
+            transaction,
+            &object,
+            &rows,
+        )?)),
     }
 }
 
@@ -115,6 +128,11 @@ impl TableDataProvider for SqliteSession {
     /// 行变更取消在行循环里检查令牌（ADR 0018）：`sqlite3_interrupt` 会把语句与事务
     /// 一起打断，不能用它做「事务仍可用」的取消。
     fn supports_row_change_cancellation(&self) -> bool {
+        true
+    }
+
+    /// SQLite 驱动能回传插入后的完整主键（`last_insert_rowid` + 回读，见 [`insert`]）。
+    fn supports_row_insertion(&self) -> bool {
         true
     }
 
@@ -134,7 +152,7 @@ impl TableDataProvider for SqliteSession {
             .await?
         {
             TableDataReply::Page(page) => Ok(page),
-            TableDataReply::Report(_) => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal("表数据回复类型不匹配")),
         }
     }
 
@@ -166,7 +184,35 @@ impl TableDataProvider for SqliteSession {
                 report.deferred = deferred;
                 Ok(report)
             }
-            TableDataReply::Page(_) => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal("表数据回复类型不匹配")),
+        }
+    }
+
+    async fn insert_rows(&self, request: InsertRowsRequest) -> Result<InsertReport> {
+        metadata::validate_session(self.session_id(), &request.object)?;
+        if request.object.kind != ObjectKind::Table {
+            // 视图没有可写基底：明确只读，不尝试写入。
+            return Err(read_only_object());
+        }
+        // 请求级结构校验（列名为空、同一列重复、值类型不可写）：整批拒绝，一条 SQL 都不发。
+        request.validate()?;
+        let deferred = request.deferred_rows();
+        let rows = request.effective_rows().to_vec();
+        if rows.is_empty() {
+            return Ok(InsertReport::default());
+        }
+        match self
+            .table_data_call(TableDataRequest::Insert {
+                object: request.object.clone(),
+                rows,
+            })
+            .await?
+        {
+            TableDataReply::InsertReport(mut report) => {
+                report.deferred = deferred;
+                Ok(report)
+            }
+            _ => Err(Error::internal("表数据回复类型不匹配")),
         }
     }
 }
@@ -692,10 +738,14 @@ fn key_condition(primary_key: &PrimaryKey, first: usize) -> String {
 ///
 /// 只有解析成功后才把**规范名**拼进 SQL，客户端提供的标识符文本永远不进 SQL。
 fn resolve_column<'a>(columns: &'a [ColumnMeta], requested: &str) -> Option<&'a str> {
+    resolve_column_meta(columns, requested).map(|column| column.name.as_str())
+}
+
+/// 客户端给的列名 → 完整的列元数据（大小写以数据库为准）。
+fn resolve_column_meta<'a>(columns: &'a [ColumnMeta], requested: &str) -> Option<&'a ColumnMeta> {
     columns
         .iter()
         .find(|column| column.name.eq_ignore_ascii_case(requested.trim()))
-        .map(|column| column.name.as_str())
 }
 
 /// 强类型值 → SQLite 绑定参数。
@@ -848,6 +898,547 @@ fn bind_value(value: &Value) -> Result<SqlValue> {
 /// 只有对象名与列名走这里；任何**值**都不进入 SQL 文本，一律参数绑定。
 fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+// ---------------------------------------------------------------------------
+// 插入新行（v0.2.2，#85）
+// ---------------------------------------------------------------------------
+
+/// 单行预校验失败：不发送 SQL，但**仍要**进逐行结果。
+///
+/// NOT NULL（显式 NULL / 省略且无默认值）与「列由数据库生成」都能从
+/// [`ColumnMeta`] 与 `pragma_table_xinfo` 直接判定，不必等数据库报错：同一批里
+/// 每行的问题各不相同，必须逐行上报（proto 要求 FAILED 行带稳定错误码），
+/// 而不是整批 `Err`。
+#[derive(Debug, Clone)]
+struct RowRejection {
+    /// 稳定错误码（`table_data.*`）。
+    code: ErrorCode,
+    /// 可安全展示的说明，不含 SQL 与参数值。
+    message: String,
+}
+
+impl RowRejection {
+    fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn into_result(self, index: usize) -> InsertRowResult {
+        InsertRowResult {
+            index,
+            outcome: InsertOutcome::Failed { code: self.code },
+            // 失败行不回传主键：部分回传会让前端用错误的主键去改行。
+            key: None,
+            message: Some(self.message),
+        }
+    }
+}
+
+/// 编译好的一批插入：逐行的 SQL 骨架与绑定参数，或该行的预校验失败。
+///
+/// 编译期只做「能提前判定」的事；任何 SQL 都不在编译期发送。
+struct InsertPlan {
+    /// 已引用的表名（只有标识符）。
+    table: String,
+    /// 主键列名，按主键顺序；用于从数据库回读生成值。
+    key_columns: Vec<String>,
+    /// 与请求行一一对应。
+    rows: Vec<CompiledInsert>,
+}
+
+/// 单行的编译结果。
+enum CompiledInsert {
+    /// 可执行。
+    Ready(InsertStatement),
+    /// 预校验失败，不执行。
+    Rejected(RowRejection),
+}
+
+/// 单行 INSERT 的 SQL 骨架与绑定参数。
+struct InsertStatement {
+    /// 只有标识符（已引用/转义）与 `?n` 占位符，没有任何值。
+    sql: String,
+    /// 绑定参数，顺序与占位符严格对应。
+    params: Vec<SqlValue>,
+    /// 全部主键列都由本行给出时的键值（顺序同 [`PrimaryKey::columns`]）。
+    ///
+    /// 有主键列被省略（自增、默认值）时为 `None`：生成值只能插入后回读，
+    /// 不在这里猜。
+    key: Option<RowKey>,
+}
+
+impl InsertPlan {
+    fn compile(
+        connection: &Connection,
+        table: &str,
+        columns: &[ColumnMeta],
+        primary_key: &PrimaryKey,
+        rows: &[InsertRow],
+    ) -> Result<Self> {
+        // 生成列不在 `pragma_table_info` 里，单独取一次：显式写入必须报
+        // `table_data.column_not_insertable`，不能降级成「列不存在」。
+        let generated = generated_columns(connection, table)?;
+        let rowid_alias = rowid_alias_column(connection, table)?;
+        let rowid_table = is_rowid_table(connection, table)?;
+        let key_columns = primary_key
+            .column_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        let mut compiled = Vec::with_capacity(rows.len());
+        for (index, row) in rows.iter().enumerate() {
+            compiled.push(compile_row(
+                table,
+                columns,
+                primary_key,
+                &generated,
+                rowid_alias.as_deref(),
+                row,
+                index,
+            )?);
+        }
+
+        // WITHOUT ROWID 表没有 rowid 可回读：省略主键列时拿不到生成值。
+        // 这里整批拒绝（不发任何 SQL），而不是回传一个编造的主键。
+        if !rowid_table
+            && !key_columns.is_empty()
+            && compiled.iter().any(
+                |row| matches!(row, CompiledInsert::Ready(statement) if statement.key.is_none()),
+            )
+        {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该表（WITHOUT ROWID）省略了主键列，无法回传插入后的完整主键；请显式提供主键值",
+            ));
+        }
+
+        Ok(Self {
+            table: quote_identifier(table),
+            key_columns,
+            rows: compiled,
+        })
+    }
+
+    /// 逐行执行。任何一行的约束错误都只影响该行（其余行继续执行），
+    /// 执行期错误（IO、连接、只读）直接返回 `Err` 由调用方整批回滚。
+    fn execute(&self, connection: &Connection) -> Result<Vec<InsertRowResult>> {
+        let mut results = Vec::with_capacity(self.rows.len());
+        for (index, row) in self.rows.iter().enumerate() {
+            let statement = match row {
+                CompiledInsert::Rejected(rejection) => {
+                    results.push(rejection.clone().into_result(index));
+                    continue;
+                }
+                CompiledInsert::Ready(statement) => statement,
+            };
+            let mut prepared = connection
+                .prepare_cached(&statement.sql)
+                .map_err(|error| map_sqlite_error(error, "准备 SQLite 插入语句失败"))?;
+            let affected = match prepared.execute(params_from_iter(statement.params.iter())) {
+                Ok(affected) => affected,
+                Err(error) => {
+                    if let Some(rejection) = classify_insert_error(&error, index) {
+                        results.push(rejection.into_result(index));
+                        continue;
+                    }
+                    return Err(map_sqlite_error(error, "执行 SQLite 插入失败"));
+                }
+            };
+            // INSERT 的影响行数恒为 1；不是 1 说明语句被改写（如 `OR IGNORE`），
+            // 那不是成功，也不能谎报。
+            if affected != 1 {
+                results.push(
+                    RowRejection::new(
+                        ErrorCode::INTERNAL,
+                        format!("插入语句影响了 {affected} 行，预期 1 行"),
+                    )
+                    .into_result(index),
+                );
+                continue;
+            }
+            // 无主键表：插入可行，但没有可回传的主键（不编造）。
+            let key = if self.key_columns.is_empty() {
+                None
+            } else {
+                match &statement.key {
+                    Some(key) => Some(key.clone()),
+                    None => Some(self.read_back_key(connection)?),
+                }
+            };
+            results.push(InsertRowResult {
+                index,
+                outcome: InsertOutcome::Inserted { rows_affected: 1 },
+                key,
+                message: None,
+            });
+        }
+        Ok(results)
+    }
+
+    /// 按 `last_insert_rowid()` 回读新行的全部主键列。
+    ///
+    /// 只有「本行省略了主键列」时才走这里：自增值只有数据库知道，回读到的
+    /// 才是真实值（也顺带拿到列亲和性转换后的类型，与 Browse 读到的完全一致）。
+    fn read_back_key(&self, connection: &Connection) -> Result<RowKey> {
+        let rowid = connection.last_insert_rowid();
+        let select = self
+            .key_columns
+            .iter()
+            .map(|column| quote_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT {select} FROM {} WHERE rowid = ?1", self.table);
+        let mut statement = connection
+            .prepare_cached(&sql)
+            .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键回读语句失败"))?;
+        let mut rows = statement
+            .query([rowid])
+            .map_err(|error| map_sqlite_error(error, "执行 SQLite 主键回读失败"))?;
+        let Some(row) = rows
+            .next()
+            .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键回读结果失败"))?
+        else {
+            return Err(Error::internal(
+                "插入成功但按 rowid 回读不到新行（主键回传失败）",
+            ));
+        };
+
+        let mut values = Vec::with_capacity(self.key_columns.len());
+        for index in 0..self.key_columns.len() {
+            let reference = row
+                .get_ref(index)
+                .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键值失败"))?;
+            let cell = crate::session::map_value(reference);
+            if cell.truncated {
+                return Err(Error::unsupported(
+                    ErrorCode::CAPABILITY_UNSUPPORTED,
+                    "主键值超过单元格上限，无法回传插入后的完整主键",
+                ));
+            }
+            values.push(cell.value);
+        }
+        Ok(RowKey::new(values))
+    }
+}
+
+/// 编译一行：解析列名、做可提前判定的校验、生成 SQL 骨架与参数。
+///
+/// 返回 `Err` 只用于**请求级**非法（列不存在、重复列）：那种问题改请求才能解决，
+/// 且与行内容无关，整批一条 SQL 都不该发。行级问题（生成列、NOT NULL）返回
+/// [`CompiledInsert::Rejected`]，由调用方逐行上报。
+#[allow(clippy::too_many_arguments)]
+fn compile_row(
+    table: &str,
+    columns: &[ColumnMeta],
+    primary_key: &PrimaryKey,
+    generated: &[String],
+    rowid_alias: Option<&str>,
+    row: &InsertRow,
+    index: usize,
+) -> Result<CompiledInsert> {
+    let position = index.saturating_add(1);
+    let mut names: Vec<&str> = Vec::with_capacity(row.values.len());
+    let mut params: Vec<SqlValue> = Vec::with_capacity(row.values.len());
+    // 已给出的列 → 值（用于按主键顺序取键值，与列出现顺序无关）。
+    let mut given: Vec<(&str, &Value)> = Vec::with_capacity(row.values.len());
+
+    for change in &row.values {
+        let requested = change.column.trim();
+        let Some(column) = resolve_column_meta(columns, requested) else {
+            if generated
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(requested))
+            {
+                return Ok(CompiledInsert::Rejected(RowRejection::new(
+                    ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
+                    format!("列 {requested} 由数据库生成，不能显式插入"),
+                )));
+            }
+            return Err(invalid_change(format!(
+                "第 {position} 行引用了不存在的列 {requested}"
+            )));
+        };
+        if !column.nullable && matches!(change.value, Value::Null) {
+            // 显式 NULL 写进 NOT NULL 列：处置是「去掉该列或改值」，
+            // 与「省略且无默认值」区分开（两套错误码，两种提示）。
+            return Ok(CompiledInsert::Rejected(RowRejection::new(
+                ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
+                format!("列 {} 不允许 NULL，请给一个值", column.name),
+            )));
+        }
+        match bind_cell(&change.value) {
+            Ok(bound) => params.push(bound),
+            Err(error) => {
+                return Ok(CompiledInsert::Rejected(RowRejection::new(
+                    error.code(),
+                    error.message().to_owned(),
+                )));
+            }
+        }
+        names.push(column.name.as_str());
+        given.push((column.name.as_str(), &change.value));
+    }
+
+    // 省略的 NOT NULL 列：只有「数据库确实没有默认值」才拒绝。
+    // 自增（`INTEGER PRIMARY KEY` rowid 别名）与有默认值的列都交给数据库。
+    for column in columns {
+        if given
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(&column.name))
+        {
+            continue;
+        }
+        if column.nullable
+            || !matches!(column.default_value, ColumnDefault::NoDefault)
+            || rowid_alias.is_some_and(|alias| alias.eq_ignore_ascii_case(&column.name))
+        {
+            continue;
+        }
+        return Ok(CompiledInsert::Rejected(RowRejection::new(
+            ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
+            format!(
+                "列 {} 必填：既未给值，数据库也没有默认值可兜底",
+                column.name
+            ),
+        )));
+    }
+
+    let sql = if names.is_empty() {
+        // 全默认值：不写列清单，交给数据库（`INSERT INTO t DEFAULT VALUES`）。
+        format!("INSERT INTO {} DEFAULT VALUES", quote_identifier(table))
+    } else {
+        let placeholders = (1..=params.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "INSERT INTO {} ({}) VALUES ({placeholders})",
+            quote_identifier(table),
+            names
+                .iter()
+                .map(|name| quote_identifier(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    // 主键全部由本行给出时才能直接回传；否则插入后按 rowid 回读。
+    let mut key_values = Vec::with_capacity(primary_key.len());
+    let mut complete = !primary_key.is_empty();
+    for name in primary_key.column_names() {
+        let Some((_, value)) = given
+            .iter()
+            .find(|(column, _)| column.eq_ignore_ascii_case(name))
+        else {
+            complete = false;
+            break;
+        };
+        key_values.push((*value).clone());
+    }
+
+    Ok(CompiledInsert::Ready(InsertStatement {
+        sql,
+        params,
+        key: complete.then(|| RowKey::new(key_values)),
+    }))
+}
+
+/// `pragma_table_xinfo` 里 `hidden` 为 2/3 的列：`VIRTUAL` / `STORED` 生成列。
+fn generated_columns(connection: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_xinfo(?1) WHERE hidden IN (2, 3)")
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 生成列查询失败"))?;
+    let rows = statement
+        .query_map([table], |row| row.get::<_, String>(0))
+        .map_err(|error| map_sqlite_error(error, "执行 SQLite 生成列查询失败"))?;
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 生成列名失败"))?);
+    }
+    Ok(names)
+}
+
+/// 单列 `INTEGER PRIMARY KEY` 是 rowid 别名：省略时由 SQLite 自动分配。
+///
+/// `pragma_table_info` 只回报显式 `NOT NULL`，`INTEGER PRIMARY KEY NOT NULL` 会
+/// 被看成「必填且无默认值」，这里把它识别出来，避免误报
+/// `table_data.not_null_without_default`。
+fn rowid_alias_column(connection: &Connection, table: &str) -> Result<Option<String>> {
+    let mut statement = connection
+        .prepare("SELECT name, type FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk")
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键列查询失败"))?;
+    let columns = statement
+        .query_map([table], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| map_sqlite_error(error, "执行 SQLite 主键列查询失败"))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键列失败"))?;
+    match columns.as_slice() {
+        [(name, declared)] if declared.trim().eq_ignore_ascii_case("INTEGER") => {
+            Ok(Some(name.clone()))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// 表是否有真实 rowid（`WITHOUT ROWID` 表返回 `false`）。
+///
+/// 只有这种表才能用 `last_insert_rowid()` 定位刚插入的行。查询失败（极老的
+/// SQLite 没有 `pragma_table_list`）按「有 rowid」处理：那是 SQLite 的默认形态。
+fn is_rowid_table(connection: &Connection, table: &str) -> Result<bool> {
+    let without_rowid: Option<i64> = connection
+        .query_row(
+            "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 表形态失败"))?;
+    Ok(without_rowid.unwrap_or(0) == 0)
+}
+
+/// 把插入语句的错误分成「该行的问题」与「整批无法继续」。
+///
+/// 只有约束类错误能逐行上报（返回 `Some`）；IO、忙、只读、语法错误等一律返回
+/// `None`，由调用方整批回滚并 `Err`——把连接问题包装成「第 3 行失败了」会让
+/// 用户以为改数据就能解决。
+fn classify_insert_error(error: &rusqlite::Error, index: usize) -> Option<RowRejection> {
+    let rusqlite::Error::SqliteFailure(failure, _) = error else {
+        return None;
+    };
+    let message = format!("第 {} 行插入失败", index.saturating_add(1));
+    match failure.extended_code {
+        // SQLITE_CONSTRAINT_UNIQUE / SQLITE_CONSTRAINT_PRIMARYKEY
+        2067 | 1555 => Some(RowRejection::new(
+            ErrorCode::TABLE_DATA_UNIQUE_VIOLATION,
+            format!("{message}：主键或唯一约束冲突，该值已存在"),
+        )),
+        // SQLITE_CONSTRAINT_NOTNULL
+        1299 => Some(RowRejection::new(
+            ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
+            format!("{message}：有列不允许 NULL"),
+        )),
+        // SQLITE_CONSTRAINT_CHECK / TRIGGER / FOREIGNKEY / STRICT 类型不匹配
+        275 | 1811 | 787 | 3091 => Some(RowRejection::new(
+            ErrorCode::CONFIG_INVALID,
+            format!("{message}：值不满足列定义（CHECK/外键/类型约束）"),
+        )),
+        _ => None,
+    }
+}
+
+/// 插入一批新行：整批一个事务（自动提交）或一个 savepoint（事务模式）。
+///
+/// 语义（ADR 0019，编排者裁定）：
+///
+/// - **继续执行其余行**：任一行失败不打断后面的行，以便一次报全所有冲突；
+/// - **整批原子**：只要有一行失败就整批回滚（自动提交 → `ROLLBACK`；事务模式 →
+///   `ROLLBACK TO SAVEPOINT`，外层事务仍可用），`rolled_back = true`、
+///   `total_rows_affected = 0`，逐行结果仍全部返回；
+/// - **省略 ≠ NULL**：只把给出的列写进 `INSERT` 的列清单，未给出的列交给数据库默认值。
+fn insert(
+    connection: &Connection,
+    transaction: EditTransaction,
+    object: &ObjectRef,
+    rows: &[InsertRow],
+) -> Result<InsertReport> {
+    if object.kind != ObjectKind::Table {
+        return Err(read_only_object());
+    }
+    let name = metadata::object_name(object)?;
+    // 只读方式打开的库文件：在准备任何语句前明确拒绝（`table_data.read_only`）。
+    if connection_read_only(connection)? {
+        return Err(read_only_connection());
+    }
+    let columns = metadata::columns(connection, object)?;
+    let primary_key = metadata::primary_key(connection, object)?;
+    let plan = InsertPlan::compile(connection, name, &columns, &primary_key, rows)?;
+
+    match transaction {
+        EditTransaction::Aborted => Err(Error::failed_precondition(
+            ErrorCode::TRANSACTION_FAILED,
+            "事务已被数据库回滚，只能回滚",
+        )),
+        EditTransaction::Active { read_only: true } => Err(read_only_transaction()),
+        EditTransaction::Active { read_only: false } => {
+            connection
+                .execute_batch("SAVEPOINT sqarvo_row_insert")
+                .map_err(|error| map_sqlite_error(error, "创建 SQLite 插入保存点失败"))?;
+            match plan.execute(connection) {
+                Ok(results) if !has_failures(&results) => {
+                    connection
+                        .execute_batch("RELEASE sqarvo_row_insert")
+                        .map_err(|error| map_sqlite_error(error, "释放 SQLite 插入保存点失败"))?;
+                    Ok(report(results, false))
+                }
+                Ok(results) => {
+                    // 任一行失败：回到 savepoint，外层事务原样保留（仍可提交/回滚）。
+                    rollback_insert_savepoint(connection);
+                    Ok(report(results, true))
+                }
+                Err(error) => {
+                    rollback_insert_savepoint(connection);
+                    Err(error)
+                }
+            }
+        }
+        EditTransaction::None => {
+            if !connection.is_autocommit() {
+                return Err(Error::already_exists(
+                    ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+                    "该会话已有打开的 SQL 事务，请先提交或回滚",
+                ));
+            }
+            connection
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| map_sqlite_error(error, "开始 SQLite 插入事务失败"))?;
+            match plan.execute(connection) {
+                Ok(results) if !has_failures(&results) => {
+                    if let Err(error) = connection.execute_batch("COMMIT") {
+                        let _ = connection.execute_batch("ROLLBACK");
+                        return Err(map_sqlite_error(error, "提交 SQLite 插入失败"));
+                    }
+                    Ok(report(results, false))
+                }
+                Ok(results) => {
+                    // 整批回滚：失败批次不得留下任何已写入的行。
+                    let _ = connection.execute_batch("ROLLBACK");
+                    Ok(report(results, true))
+                }
+                Err(error) => {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+/// 回滚到插入批次的 savepoint 并释放它；失败只记日志，不掩盖原始错误。
+fn rollback_insert_savepoint(connection: &Connection) {
+    if let Err(error) = connection.execute_batch("ROLLBACK TO sqarvo_row_insert") {
+        tracing::warn!(%error, "回滚 SQLite 插入保存点失败");
+    }
+    if let Err(error) = connection.execute_batch("RELEASE sqarvo_row_insert") {
+        tracing::warn!(%error, "释放 SQLite 插入保存点失败");
+    }
+}
+
+fn has_failures(results: &[InsertRowResult]) -> bool {
+    results.iter().any(|result| !result.outcome.is_inserted())
+}
+
+fn report(results: Vec<InsertRowResult>, rolled_back: bool) -> InsertReport {
+    InsertReport {
+        results,
+        deferred: 0,
+        rolled_back,
+    }
 }
 
 #[cfg(test)]
@@ -1021,6 +1612,84 @@ mod tests {
                 0,
             )
             .is_err()
+        );
+    }
+
+    /// 插入语句必须是「骨架 + 占位符」：值只能进参数，省略的列不进列清单。
+    ///
+    /// 这条用例锁的是参数化的**方式**，不是结果：把绑定换成字符串拼接时，
+    /// SQL 里就会出现 `DROP TABLE`，断言立刻失败。
+    #[test]
+    fn insert_sql_binds_values_and_omits_missing_columns() {
+        let columns = keyed_columns();
+        let primary_key = composite_key();
+        let row = InsertRow::new(vec![ColumnChange {
+            column: "V".to_owned(),
+            value: Value::Text("'; DROP TABLE orders; --".to_owned()),
+        }]);
+        let compiled = compile_row("orders", &columns, &primary_key, &[], None, &row, 0).unwrap();
+        let CompiledInsert::Ready(statement) = compiled else {
+            panic!("合法行不应被拒绝");
+        };
+        // 只写给出的列（`id` / `tenant` 留给数据库默认值），列名按 schema 规范化。
+        assert_eq!(statement.sql, "INSERT INTO \"orders\" (\"v\") VALUES (?1)");
+        assert!(
+            !statement.sql.contains("DROP TABLE"),
+            "值绝不能进入 SQL 文本：{}",
+            statement.sql
+        );
+        assert_eq!(
+            statement.params,
+            vec![SqlValue::Text("'; DROP TABLE orders; --".to_owned())]
+        );
+        // 主键有列被省略：键值只能插入后回读，不能在这里猜。
+        assert!(statement.key.is_none());
+
+        // 一列都不给：空列清单，整行交给数据库默认值。
+        let CompiledInsert::Ready(empty) = compile_row(
+            "orders",
+            &columns,
+            &primary_key,
+            &[],
+            None,
+            &InsertRow::new(Vec::new()),
+            0,
+        )
+        .unwrap() else {
+            panic!("全默认值行不应被拒绝");
+        };
+        assert_eq!(empty.sql, "INSERT INTO \"orders\" DEFAULT VALUES");
+        assert_eq!(empty.params.len(), 0, "全默认值行不应绑定任何参数");
+    }
+
+    /// 显式主键全部给出时直接回传，且不触发回读。
+    #[test]
+    fn provided_primary_key_is_reused_without_readback() {
+        let columns = keyed_columns();
+        let primary_key = composite_key();
+        let row = InsertRow::new(vec![
+            ColumnChange {
+                column: "ID".to_owned(),
+                value: Value::Int(7),
+            },
+            ColumnChange {
+                column: "tenant".to_owned(),
+                value: Value::Int(3),
+            },
+        ]);
+        let CompiledInsert::Ready(statement) =
+            compile_row("orders", &columns, &primary_key, &[], None, &row, 0).unwrap()
+        else {
+            panic!("合法行不应被拒绝");
+        };
+        assert_eq!(
+            statement.sql, "INSERT INTO \"orders\" (\"id\", \"tenant\") VALUES (?1, ?2)",
+            "列顺序按请求顺序，列名按 schema 规范化"
+        );
+        assert_eq!(
+            statement.key,
+            Some(RowKey::new(vec![Value::Int(3), Value::Int(7)])),
+            "主键值按主键定义顺序回传，与请求里的列顺序无关"
         );
     }
 
