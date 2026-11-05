@@ -10,6 +10,7 @@ mod backend;
 mod config;
 mod data_page;
 mod dialog;
+mod driver_form;
 mod proto;
 mod qa;
 mod results;

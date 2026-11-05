@@ -22,6 +22,11 @@
 //!   否则是主窗口）写成 PNG，然后关闭窗口（走与用户点关闭按钮相同的清理路径）；
 //! - `--qa-profile <json>`：后端握手完成后自动打开连接对话框，把档案里的值填进
 //!   **与用户输入相同的控件**，再触发与「保存并连接」按钮相同的回调；
+//! - `--qa-profile` 的 `driver` 可以是 `mariadb` 或 `sqlite`：
+//!   - `mariadb`：`host` / `port` / `database` / `username` / `tls_mode`；
+//!   - `sqlite`：`path`（必须已存在，或用 `:memory:`）/ `read_only`（布尔）；
+//! - 档案里的驱动必须是后端 `ListDrivers` 返回的驱动，否则进程以退出码 **4** 结束
+//!   （档案没生效就不算跑过）；
 //! - `--qa-password-env <ENV>`：从该环境变量读密码，填进密码行（命令行里不出现明文）；
 //! - `--qa-sql-file <path>`：把文件内容填进 SQL 工作区的 `GtkTextView` 缓冲区；
 //! - `--qa-execute`：连接成功后触发与「执行」按钮相同的方法；
@@ -56,24 +61,37 @@ pub struct Capture {
 }
 
 /// `--qa-profile` 文件内容：一条连接的非敏感字段。
+///
+/// 字段集按驱动不同：服务器型（MariaDB）用 `host`/`port`/`database`/`username`/`tls_mode`，
+/// 文件型（SQLite）用 `path`/`read_only`。缺哪个驱动需要的字段由 [`load_profile`] 报错，
+/// 不会静默用空值连接。
 #[derive(Debug, Clone, Deserialize)]
 pub struct QaProfile {
     /// 驱动 ID（默认 `mariadb`）。
     #[serde(default = "default_driver")]
     pub driver: String,
-    /// 主机。
+    /// 主机（服务器型驱动）。
+    #[serde(default)]
     pub host: String,
-    /// 端口。
+    /// 端口（服务器型驱动）。
     #[serde(default = "default_port")]
     pub port: u16,
-    /// 数据库名。
+    /// 数据库名（服务器型驱动）。
+    #[serde(default)]
     pub database: String,
-    /// 用户名。
+    /// 用户名（服务器型驱动）。
+    #[serde(default)]
     pub username: String,
     /// TLS 模式（`disabled` / `preferred` / `required` / `verify-ca` / `verify-full`）。
     #[serde(default)]
     pub tls_mode: Option<String>,
-    /// 会话显示名（缺省时由对话框按 `user@host/db` 派生）。
+    /// 数据库文件路径（文件型驱动，SQLite）。
+    #[serde(default)]
+    pub path: Option<String>,
+    /// 以只读方式打开（文件型驱动）。
+    #[serde(default)]
+    pub read_only: bool,
+    /// 会话显示名（缺省时由对话框按驱动派生）。
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -678,23 +696,51 @@ fn parse(args: &[String]) -> Result<Args, String> {
 }
 
 /// 读取并解析 QA 档案；任何问题都报错退出，避免「档案没生效却以为通过了」。
+///
+/// 必填字段按驱动族判定（[`crate::driver_form::fields_for`] 是同一张表）：
+/// MariaDB 要主机/库/用户名，SQLite 要一个存在的数据库文件路径。
 fn load_profile(path: &str) -> Result<QaProfile, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("无法读取 --qa-profile 文件 {path}：{error}"))?;
     let profile: QaProfile = serde_json::from_str(&text)
         .map_err(|error| format!("--qa-profile 文件 {path} 不是合法的连接档案：{error}"))?;
-    if profile.host.trim().is_empty()
-        || profile.database.trim().is_empty()
-        || profile.username.trim().is_empty()
-    {
-        return Err("--qa-profile 缺少 host / database / username".to_owned());
-    }
-    // 驱动固定：对话框只支持 MariaDB，档案写别的值必须报错，不能静默忽略。
-    if profile.driver != "mariadb" {
+    let Some(family) = crate::backend::connection::DriverFamily::for_id(&profile.driver) else {
+        // 驱动清单来自后端，但字段集必须由前端认识；不认识就明确报错，
+        // 不能拿 MariaDB 的字段去填一个 SQLite 连接。
         return Err(format!(
-            "--qa-profile 的 driver 必须是 mariadb（当前只支持该驱动），实际：{}",
+            "--qa-profile 的 driver「{}」还没有前端连接表单（当前支持 mariadb / sqlite）",
             profile.driver
         ));
+    };
+    match family {
+        crate::backend::connection::DriverFamily::MariaDb => {
+            if profile.host.trim().is_empty()
+                || profile.database.trim().is_empty()
+                || profile.username.trim().is_empty()
+            {
+                return Err(
+                    "--qa-profile 缺少 host / database / username（MariaDB 连接需要）".to_owned(),
+                );
+            }
+        }
+        crate::backend::connection::DriverFamily::Sqlite => {
+            let Some(database_path) = profile.path.as_deref().map(str::trim) else {
+                return Err("--qa-profile 缺少 path（SQLite 连接需要数据库文件路径）".to_owned());
+            };
+            if database_path.is_empty() {
+                return Err("--qa-profile 的 path 不能为空".to_owned());
+            }
+            if database_path != crate::driver_form::SQLITE_MEMORY_PATH
+                && !std::path::Path::new(database_path).exists()
+            {
+                return Err(format!(
+                    "--qa-profile 的数据库文件不存在：{database_path}（请先用 sqlite3 创建）"
+                ));
+            }
+            if profile.read_only && database_path == crate::driver_form::SQLITE_MEMORY_PATH {
+                return Err("--qa-profile 的 read_only 不能用于内存数据库（:memory:）".to_owned());
+            }
+        }
     }
     Ok(profile)
 }
@@ -816,11 +862,61 @@ mod tests {
         let path = dir.path().join("profile.json");
         std::fs::write(&path, r#"{"host":"127.0.0.1"}"#).expect("写档案");
         let error = load_profile(path.to_str().expect("UTF-8 路径")).unwrap_err();
-        // serde 会指出缺失的字段名（这里被截到「不是合法的连接档案：missing field ...」）。
-        assert!(
-            error.contains("缺少") || error.contains("missing field"),
-            "{error}"
-        );
+        assert!(error.contains("缺少"), "{error}");
+    }
+
+    #[test]
+    fn sqlite_profile_is_parsed_with_path_and_read_only() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let database = dir.path().join("demo.db");
+        std::fs::write(&database, b"").expect("建库文件");
+        let path = dir.path().join("profile.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"driver":"sqlite","path":"{}","read_only":true}}"#,
+                database.display()
+            ),
+        )
+        .expect("写档案");
+
+        let profile = load_profile(path.to_str().expect("UTF-8 路径")).expect("解析 SQLite 档案");
+        assert_eq!(profile.driver, "sqlite");
+        assert_eq!(profile.path.as_deref(), Some(database.to_str().unwrap()));
+        assert!(profile.read_only);
+        // 服务器型字段在 SQLite 档案里没有意义，缺省为空而不是「必填」。
+        assert!(profile.host.is_empty() && profile.database.is_empty());
+    }
+
+    #[test]
+    fn sqlite_profile_requires_an_existing_file() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("profile.json");
+
+        std::fs::write(&path, r#"{"driver":"sqlite"}"#).expect("写档案");
+        let error = load_profile(path.to_str().expect("UTF-8 路径")).unwrap_err();
+        assert!(error.contains("缺少 path"), "{error}");
+
+        let missing = dir.path().join("nope.db");
+        std::fs::write(
+            &path,
+            format!(r#"{{"driver":"sqlite","path":"{}"}}"#, missing.display()),
+        )
+        .expect("写档案");
+        let error = load_profile(path.to_str().expect("UTF-8 路径")).unwrap_err();
+        assert!(error.contains("数据库文件不存在"), "{error}");
+        assert!(error.contains("nope.db"), "{error}");
+    }
+
+    #[test]
+    fn profile_with_unknown_driver_is_rejected() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("profile.json");
+        std::fs::write(&path, r#"{"driver":"postgresql","host":"h"}"#).expect("写档案");
+        let error = load_profile(path.to_str().expect("UTF-8 路径")).unwrap_err();
+        // 后端可能列出前端还不认识的驱动：档案必须明确报错，不能拿别的字段集硬填。
+        assert!(error.contains("postgresql"), "{error}");
+        assert!(error.contains("还没有前端连接表单"), "{error}");
     }
 
     #[test]

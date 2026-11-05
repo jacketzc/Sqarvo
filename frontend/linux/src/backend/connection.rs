@@ -125,26 +125,63 @@ impl TlsMode {
     }
 }
 
+/// 驱动族：决定「哪些字段有意义」以及参数怎么进 `ConnectionParams`。
+///
+/// 这里只放**协议层面的差异**（字段怎么映射）。界面上的字段可见性、校验与
+/// 草稿组装集中在 [`crate::driver_form`]，避免两层各写一半规则。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverFamily {
+    /// 服务器型（MariaDB）：主机 / 端口 / 库 / 用户 / TLS / 密码。
+    MariaDb,
+    /// 文件型（SQLite）：数据库文件路径 + 只读开关，没有网络与凭据。
+    Sqlite,
+}
+
+impl DriverFamily {
+    /// 由驱动 ID 得到驱动族；前端不认识的驱动返回 `None`（不猜它的字段）。
+    #[must_use]
+    pub fn for_id(driver_id: &str) -> Option<Self> {
+        match driver_id {
+            "mariadb" => Some(Self::MariaDb),
+            "sqlite" => Some(Self::Sqlite),
+            _ => None,
+        }
+    }
+
+    /// 是否需要系统凭据库里的密码。
+    ///
+    /// SQLite 是本地文件数据库，后端明确拒绝用户名/密码（`driver.rs` 的
+    /// `SqliteConfig::from_params`），因此这条链路上不调用 `StoreCredential`。
+    #[must_use]
+    pub fn needs_credential(self) -> bool {
+        matches!(self, Self::MariaDb)
+    }
+}
+
 /// 一次连接尝试的全部输入。
 ///
 /// 密码字段只在「用户刚输入过密码」时非空；`credential_ref` 非空表示已有保存的凭据，
 /// 此时密码留空即复用旧凭据（`StoreCredential` 不会被调用）。
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConnectionDraft {
-    /// 会话显示名（从用户、主机、库名派生）。
+    /// 会话显示名（从用户、主机、库名派生；文件型驱动从文件名派生）。
     pub name: String,
-    /// 驱动 ID；当前固定 `mariadb`。
+    /// 驱动 ID（来自 `ListDrivers`）。
     pub driver_id: String,
-    /// 主机。
+    /// 主机（服务器型驱动）。
     pub host: String,
-    /// 端口。
+    /// 端口（服务器型驱动）。
     pub port: u16,
-    /// 数据库名。
+    /// 数据库名（服务器型驱动）。
     pub database: String,
-    /// 用户名。
+    /// 用户名（服务器型驱动）。
     pub username: String,
-    /// TLS 模式。
+    /// TLS 模式（服务器型驱动）。
     pub tls_mode: TlsMode,
+    /// 数据库文件路径（文件型驱动）；服务器型驱动为空。
+    pub file_path: String,
+    /// 是否以只读方式打开（文件型驱动）。
+    pub read_only: bool,
     /// 已保存的凭据引用（ADR 0012 格式）；为空表示本次需要新写入。
     pub credential_ref: Option<String>,
     /// 本次输入的密码明文。只在 worker 内存中存在，绝不写配置/日志。
@@ -162,6 +199,8 @@ impl fmt::Debug for ConnectionDraft {
             .field("database", &self.database)
             .field("username", &self.username)
             .field("tls_mode", &self.tls_mode)
+            .field("file_path", &self.file_path)
+            .field("read_only", &self.read_only)
             .field("credential_ref", &self.credential_ref)
             .field("password", &"<redacted>")
             .finish()
@@ -169,18 +208,50 @@ impl fmt::Debug for ConnectionDraft {
 }
 
 impl ConnectionDraft {
+    /// 驱动族；前端不认识的驱动为 `None`。
+    #[must_use]
+    pub fn family(&self) -> Option<DriverFamily> {
+        DriverFamily::for_id(&self.driver_id)
+    }
+
+    /// 是否需要系统凭据库（不认识的驱动按「需要」处理，宁可多要一次密码也不静默免密）。
+    #[must_use]
+    pub fn needs_credential(&self) -> bool {
+        self.family().is_none_or(DriverFamily::needs_credential)
+    }
+
     /// 构造 gRPC 连接参数。
+    ///
+    /// 字段映射按驱动族分开：SQLite 的路径走契约里的 `host`（`driver.rs` 明确要求
+    /// 「使用 host 作为数据库文件路径」），端口/库/用户/TLS/凭据一律留空，
+    /// 只读开关走 `properties`。绝不把主机/端口塞给 SQLite。
     #[must_use]
     pub fn params(&self, credential_ref: &str) -> ConnectionParams {
-        ConnectionParams {
-            driver_id: self.driver_id.clone(),
-            host: self.host.clone(),
-            port: u32::from(self.port),
-            database: self.database.clone(),
-            username: self.username.clone(),
-            credential_ref: credential_ref.to_owned(),
-            tls_mode: self.tls_mode.to_proto() as i32,
-            ..ConnectionParams::default()
+        match self.family() {
+            Some(DriverFamily::Sqlite) => ConnectionParams {
+                driver_id: self.driver_id.clone(),
+                host: self.file_path.clone(),
+                port: 0,
+                database: String::new(),
+                username: String::new(),
+                credential_ref: String::new(),
+                tls_mode: ProtoTlsMode::Disabled as i32,
+                tls_server_name: String::new(),
+                properties: std::collections::HashMap::from([(
+                    "read_only".to_owned(),
+                    self.read_only.to_string(),
+                )]),
+            },
+            _ => ConnectionParams {
+                driver_id: self.driver_id.clone(),
+                host: self.host.clone(),
+                port: u32::from(self.port),
+                database: self.database.clone(),
+                username: self.username.clone(),
+                credential_ref: credential_ref.to_owned(),
+                tls_mode: self.tls_mode.to_proto() as i32,
+                ..ConnectionParams::default()
+            },
         }
     }
 
@@ -657,6 +728,8 @@ mod tests {
             database: "sqarvo".to_owned(),
             username: "root".to_owned(),
             tls_mode: TlsMode::Preferred,
+            file_path: String::new(),
+            read_only: false,
             credential_ref: None,
             password: "hunter2".to_owned(),
         };
@@ -685,6 +758,8 @@ mod tests {
             database: "app".to_owned(),
             username: "app".to_owned(),
             tls_mode: TlsMode::VerifyFull,
+            file_path: String::new(),
+            read_only: false,
             credential_ref: None,
             password: "hunter2".to_owned(),
         };
@@ -694,7 +769,73 @@ mod tests {
             "sqarvo:conn/3f9a1c4e-7b2d-4a6f-9c11-0d2b8e5a71f4"
         );
         assert_eq!(params.tls_mode, ProtoTlsMode::VerifyFull as i32);
+        // 服务器型驱动不带 `properties`：不能把无关参数塞进 SQLite 那种键值表。
+        assert!(params.properties.is_empty());
         // 明文不能出现在任何会被序列化/打印的参数里。
         assert!(!format!("{params:?}").contains("hunter2"));
+    }
+
+    fn sqlite_draft(read_only: bool) -> ConnectionDraft {
+        ConnectionDraft {
+            name: "demo.db（SQLite）".to_owned(),
+            driver_id: "sqlite".to_owned(),
+            // 故意带上主机/端口/库名：SQLite 的 `params()` 必须完全忽略它们。
+            host: "127.0.0.1".to_owned(),
+            port: 3306,
+            database: "ignored".to_owned(),
+            username: "ignored".to_owned(),
+            tls_mode: TlsMode::Required,
+            file_path: "/tmp/demo.db".to_owned(),
+            read_only,
+            credential_ref: Some("sqarvo:conn/unused".to_owned()),
+            password: "hunter2".to_owned(),
+        }
+    }
+
+    #[test]
+    fn sqlite_params_use_path_and_never_host_or_credential() {
+        let params = sqlite_draft(false).params("sqarvo:conn/unused");
+        assert_eq!(params.driver_id, "sqlite");
+        // 契约没有「文件路径」字段：SQLite 驱动按 host 接收路径。
+        assert_eq!(params.host, "/tmp/demo.db");
+        assert_eq!(params.port, 0, "SQLite 不支持端口，必须为 0");
+        assert!(params.database.is_empty(), "SQLite 不接受 database 字段");
+        assert!(params.username.is_empty(), "SQLite 不接受用户名");
+        assert!(
+            params.credential_ref.is_empty(),
+            "SQLite 不接受凭据引用（后端会拒绝非空值）"
+        );
+        assert_eq!(params.tls_mode, ProtoTlsMode::Disabled as i32);
+        assert_eq!(
+            params.properties.get("read_only").map(String::as_str),
+            Some("false")
+        );
+        assert!(!format!("{params:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn sqlite_read_only_travels_in_properties() {
+        let params = sqlite_draft(true).params("");
+        assert_eq!(
+            params.properties.get("read_only").map(String::as_str),
+            Some("true")
+        );
+        // 只读开关是唯一允许出现在 properties 里的键。
+        assert_eq!(params.properties.len(), 1);
+    }
+
+    #[test]
+    fn only_mariadb_needs_a_credential() {
+        assert!(DriverFamily::MariaDb.needs_credential());
+        assert!(!DriverFamily::Sqlite.needs_credential());
+        assert!(!sqlite_draft(false).needs_credential());
+        assert!(sqlite_draft(false).has_password(), "明文仍在草稿里");
+        // 不认识的驱动按「需要密码」处理：宁可多要一次密码，也不静默免密连接。
+        let unknown = ConnectionDraft {
+            driver_id: "postgresql".to_owned(),
+            ..sqlite_draft(false)
+        };
+        assert_eq!(unknown.family(), None);
+        assert!(unknown.needs_credential());
     }
 }

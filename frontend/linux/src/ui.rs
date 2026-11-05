@@ -36,6 +36,8 @@ struct UiState {
     worker: RefCell<Option<WorkerHandle>>,
     /// 当前打开的连接对话框（未打开为 `None`）。
     dialog: RefCell<Option<Rc<ConnectionDialog>>>,
+    /// `SystemService.ListDrivers` 的结果（连接对话框下拉的数据源）。
+    drivers: RefCell<Vec<crate::backend::client::DriverSummary>>,
     /// 后端 gRPC 是否已握手成功：未成功时「新建连接」不可点（此时只会得到
     /// `backend.unavailable`，没有意义）。
     backend_ready: Cell<bool>,
@@ -123,6 +125,7 @@ pub fn activate(app: &adw::Application) {
         title: window_title.clone(),
         worker: RefCell::new(Some(worker)),
         dialog: RefCell::new(None),
+        drivers: RefCell::new(Vec::new()),
         backend_ready: Cell::new(false),
         workspace: RefCell::new(None),
         new_connection: new_connection.clone(),
@@ -201,6 +204,8 @@ pub fn activate(app: &adw::Application) {
                     events_state.backend_ready.set(true);
                     events_state.new_connection.set_sensitive(true);
                     events_state.new_connection.set_tooltip_text(None);
+                    // 驱动清单随握手一起到达：连接对话框的驱动下拉只看这份结果。
+                    events_state.drivers.replace(snapshot.drivers.clone());
                     // 重新握手成功后旧的工作区已失效（数据库会话不跨后端进程）。
                     if let Some(workspace) = events_state.workspace.borrow_mut().take() {
                         workspace.sql_page.close_query();
@@ -445,7 +450,8 @@ fn open_connection_dialog(state: &Rc<UiState>) {
         return;
     }
 
-    let dialog = ConnectionDialog::build();
+    let drivers = state.drivers.borrow().clone();
+    let dialog = ConnectionDialog::build(&drivers);
 
     {
         let state = Rc::clone(state);
@@ -490,6 +496,9 @@ fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionD
 }
 
 /// QA 自动化：把档案填进对话框（与用户输入同一控件），再触发「保存并连接」的回调。
+///
+/// 档案里的驱动必须是后端 `ListDrivers` 返回的驱动；否则打印原因并以退出码 4 结束，
+/// 而不是继续跑一个「档案没生效」的验证。
 fn maybe_run_qa_profile(state: &Rc<UiState>) {
     let Some(profile) = crate::qa::profile() else {
         return;
@@ -498,9 +507,21 @@ fn maybe_run_qa_profile(state: &Rc<UiState>) {
     let dialog = state.dialog.borrow().as_ref().cloned();
     let Some(dialog) = dialog else {
         eprintln!("[qa] 无法打开连接对话框，档案未生效");
-        return;
+        std::process::exit(4);
     };
-    dialog.apply_profile(&profile);
+    if let Err(reason) = dialog.apply_profile(&profile) {
+        eprintln!("[qa] 档案无法应用：{reason}");
+        std::process::exit(4);
+    }
+    eprintln!(
+        "[qa] 档案已填入对话框：驱动 {}（{}）",
+        dialog.selected_driver_id().unwrap_or("?"),
+        profile
+            .path
+            .as_deref()
+            .map(|path| format!("路径 {path}"))
+            .unwrap_or_else(|| format!("{}:{}/{}", profile.host, profile.port, profile.database))
+    );
     // 让 GTK 先完成一次布局/绘制，再走与按钮完全相同的路径。
     let action = crate::qa::action();
     glib::timeout_add_local_once(
@@ -554,7 +575,7 @@ fn show_connected(
         snapshot.service_version, snapshot.protocol_version
     ));
     let mut description = format!(
-        "后端版本 {}\n协议版本 {}（{} 构建）\n传输方式 {}\n后端进程 PID {} · 由前端启动：{}\n端点文件 {}\n\n\
+        "后端版本 {}\n协议版本 {}（{} 构建）\n传输方式 {}\n后端进程 PID {} · 由前端启动：{}\n端点文件 {}\n已注册驱动：{}\n\n\
          尚未连接数据库：点标题栏右侧「新建连接」开始。",
         snapshot.service_version,
         snapshot.protocol_version,
@@ -567,6 +588,16 @@ fn show_connected(
             "否"
         },
         snapshot.endpoint_path,
+        if snapshot.drivers.is_empty() {
+            "（后端未返回任何驱动）".to_owned()
+        } else {
+            snapshot
+                .drivers
+                .iter()
+                .map(|driver| format!("{}（{}）", driver.display_name, driver.driver_id))
+                .collect::<Vec<_>>()
+                .join("、")
+        },
     );
     if snapshot.version_mismatch {
         // 不一致必须展示，不能静默：可能连到了旧版本后端或读到了过期端点。
@@ -605,12 +636,22 @@ fn show_workspace(
     } else {
         outcome.server_version.clone()
     };
-    state.title.set_subtitle(&format!("已连接 · {version}"));
+    // 驱动显示名来自 `ListDrivers`：会话信息里必须能看出连的是哪种数据库
+    // （以前所有会话都按 user@host/db 派生，SQLite 会看不出区别）。
+    let driver_label = state
+        .drivers
+        .borrow()
+        .iter()
+        .find(|driver| driver.driver_id == outcome.driver_id)
+        .map(|driver| format!("{}（{}）", driver.display_name, driver.driver_id))
+        .unwrap_or_else(|| outcome.driver_id.clone());
+    state
+        .title
+        .set_subtitle(&format!("已连接 · {driver_label} · {version}"));
 
     let session_line = format!(
-        "会话 {} · 驱动 {} · 服务端 {version} · 延迟 {} ms",
+        "会话 {} · 驱动 {driver_label} · 服务端 {version} · 延迟 {} ms",
         short_id(&outcome.session_id),
-        outcome.driver_id,
         outcome.latency_millis
     );
 

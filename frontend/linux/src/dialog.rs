@@ -2,25 +2,42 @@
 //!
 //! | 元素 | 说明 |
 //! |---|---|
-//! | 驱动 | 固定 MariaDB，不可切换（当前版本只内置该驱动），界面如实标注 |
-//! | 主机 / 端口 / 数据库 / 用户名 | `AdwEntryRow`，即时校验非空与端口范围 |
-//! | TLS 模式 | `AdwComboRow`，对应 `TlsMode` 五个取值 |
+//! | 驱动 | `AdwComboRow`，选项来自 `SystemService.ListDrivers`（前端不硬编码清单） |
+//! | 主机 / 端口 / 数据库 / 用户名 | `AdwEntryRow`，服务器型驱动可见，即时校验非空与端口范围 |
+//! | TLS 模式 | `AdwComboRow`，对应 `TlsMode` 五个取值（服务器型驱动可见） |
 //! | 密码 | `AdwPasswordEntryRow`，绝不回显已保存的密码（没有「读出旧密码」的路径） |
+//! | 文件路径 | `AdwEntryRow` + 「浏览」按钮（`GtkFileDialog`），文件型驱动可见 |
+//! | 只读 | `AdwSwitchRow`，文件型驱动可见（SQLite 的 `read_only` 参数） |
 //! | 按钮 | 「测试连接」「保存并连接」；取消不写任何凭据 |
+//!
+//! 哪个驱动显示哪些字段，由 [`crate::driver_form`] 的**一张描述表**决定；本模块只负责
+//! 「按表显示/隐藏控件、把控件内容读成 [`FormInput`]、把错误写进状态行」。这样加一个
+//! 驱动不需要在界面代码里再散落 `if driver == "sqlite"`。
 //!
 //! 对话框只负责收集输入与展示结果：RPC 在 worker 线程执行（`backend::worker`），
 //! 密码随 [`ConnectionDraft`] 交给 worker 后即被丢弃，本模块不保存它。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::gio;
 
-use crate::backend::connection::{ConnectionDraft, ConnectionFailure, TestReport, TlsMode};
+use crate::backend::client::DriverSummary;
+use crate::backend::connection::{
+    ConnectionDraft, ConnectionFailure, DriverFamily, TestReport, TlsMode,
+};
+use crate::driver_form::{self, FieldSet, FormInput};
 use crate::qa::QaProfile;
 
 /// 对话框提交回调：UI 层把草稿交给 worker。
 type SubmitHandler = Rc<dyn Fn(ConnectionDraft)>;
+
+/// 新建连接时默认预选的驱动（存在时才生效；不存在就用后端返回的第一个）。
+///
+/// 这不是「驱动清单」：清单永远来自 `ListDrivers`，这里只决定默认值，
+/// 保持既有用户的肌肉记忆（以前只有 MariaDB）。
+const PREFERRED_DEFAULT_DRIVER: &str = "mariadb";
 
 /// 状态提示的语义（决定 CSS 类）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,24 +47,69 @@ enum StatusKind {
     Error,
 }
 
+/// 驱动下拉的一项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DriverChoice {
+    /// 稳定驱动 ID。
+    id: String,
+    /// 展示名（来自后端）。
+    display_name: String,
+    /// 下拉标签。
+    label: String,
+    /// 驱动族；前端不认识时为 `None`。
+    family: Option<DriverFamily>,
+}
+
+impl DriverChoice {
+    fn from_summary(summary: &DriverSummary) -> Self {
+        let family = DriverFamily::for_id(&summary.driver_id);
+        // 前端不认识的驱动仍然列出来（清单属于后端），但标签必须说明「无法配置」，
+        // 不能给它套一份 MariaDB 的字段让人以为填完就能连。
+        let label = if driver_form::fields_for_driver(&summary.driver_id).is_some() {
+            summary.label()
+        } else {
+            format!(
+                "{}（{}，前端暂无表单）",
+                summary.display_name, summary.driver_id
+            )
+        };
+        Self {
+            id: summary.driver_id.clone(),
+            display_name: summary.display_name.clone(),
+            label,
+            family,
+        }
+    }
+}
+
 /// 连接对话框窗口与其控件。
 ///
 /// 用 `Rc<Self>` 共享：GTK 信号处理函数需要 `'static` 闭包，内部用弱引用回指本结构。
 pub struct ConnectionDialog {
     dialog: adw::Dialog,
     title: adw::WindowTitle,
+    driver_row: adw::ComboRow,
+    choices: Vec<DriverChoice>,
     host_row: adw::EntryRow,
     port_row: adw::EntryRow,
     database_row: adw::EntryRow,
     username_row: adw::EntryRow,
     tls_row: adw::ComboRow,
     password_row: adw::PasswordEntryRow,
+    path_row: adw::EntryRow,
+    read_only_row: adw::SwitchRow,
+    /// 「密码只写入系统凭据库」提示（仅服务器型驱动显示）。
+    credential_note: adw::ActionRow,
     status: gtk::Label,
     test_button: gtk::Button,
     save_button: gtk::Button,
+    /// 当前驱动是否被前端表单支持（不支持时两个按钮都禁用）。
+    supported: Cell<bool>,
+    /// 当前驱动展示名（`set_pending` 结束后恢复副标题用）。
+    subtitle: RefCell<String>,
     /// 已经保存成功的凭据引用；测试成功后回填，避免重复写同一个密码。
     credential_ref: RefCell<Option<String>>,
-    /// QA 档案指定的会话显示名（正常路径由用户名/主机/库名派生）。
+    /// QA 档案指定的会话显示名（正常路径由驱动族派生）。
     name_override: RefCell<Option<String>>,
     test_handler: RefCell<Option<SubmitHandler>>,
     save_handler: RefCell<Option<SubmitHandler>>,
@@ -55,23 +117,38 @@ pub struct ConnectionDialog {
 
 impl ConnectionDialog {
     /// 构建对话框（不自动呈现）。
-    pub fn build() -> Rc<Self> {
+    ///
+    /// `drivers` 来自 `SystemService.ListDrivers`：空列表说明后端没有注册驱动（或读取失败），
+    /// 此时下拉如实显示「未返回任何驱动」并禁用提交，而不是退回一份写死的 MariaDB。
+    pub fn build(drivers: &[DriverSummary]) -> Rc<Self> {
         let dialog = adw::Dialog::builder()
             .title("新建连接")
-            .content_width(520)
+            .content_width(560)
             .build();
-        let title = adw::WindowTitle::new("新建连接", "MariaDB");
+        let title = adw::WindowTitle::new("新建连接", "未选择驱动");
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&title));
         let cancel = gtk::Button::with_label("取消");
         header.pack_start(&cancel);
 
-        // 驱动：当前版本只内置 MariaDB，做成只读行并如实说明，而不是给一个假装可选的列表。
-        let driver_row = adw::ActionRow::builder()
+        let choices: Vec<DriverChoice> = drivers.iter().map(DriverChoice::from_summary).collect();
+        let labels: Vec<String> = if choices.is_empty() {
+            vec!["（后端未返回任何驱动）".to_owned()]
+        } else {
+            choices.iter().map(|choice| choice.label.clone()).collect()
+        };
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let driver_model = gtk::StringList::new(&label_refs);
+        let driver_row = adw::ComboRow::builder()
             .title("驱动")
-            .subtitle("MariaDB（当前版本仅内置该驱动，暂不可切换）")
+            .model(&driver_model)
             .build();
-        driver_row.set_activatable(false);
+        driver_row.set_sensitive(!choices.is_empty());
+        driver_row.set_subtitle(&if choices.is_empty() {
+            "后端 ListDrivers 没有返回驱动：无法新建连接".to_owned()
+        } else {
+            "字段随驱动切换".to_owned()
+        });
 
         let host_row = adw::EntryRow::builder()
             .title("主机")
@@ -93,8 +170,24 @@ impl ConnectionDialog {
         // AdwPasswordEntryRow 默认带「眼睛」图标（libadwaita 1.6+），不再单独设置。
         let password_row = adw::PasswordEntryRow::builder().title("密码").build();
 
+        // 文件型驱动：路径可手输，也可以点「浏览」用系统文件选择器（GtkFileDialog）。
+        let path_row = adw::EntryRow::builder().title("数据库文件").build();
+        path_row.set_tooltip_text(Some("SQLite 数据库文件的绝对路径"));
+        let browse = gtk::Button::from_icon_name("document-open-symbolic");
+        browse.add_css_class("flat");
+        browse.set_tooltip_text(Some("选择 SQLite 数据库文件"));
+        browse.set_valign(gtk::Align::Center);
+        path_row.add_suffix(&browse);
+
+        let read_only_row = adw::SwitchRow::builder()
+            .title("只读打开")
+            .subtitle("以只读方式连接：数据库会拒绝任何写入（数据页会显示只读原因）")
+            .build();
+
         let group = adw::PreferencesGroup::builder().title("连接参数").build();
         group.add(&driver_row);
+        group.add(&path_row);
+        group.add(&read_only_row);
         group.add(&host_row);
         group.add(&port_row);
         group.add(&database_row);
@@ -103,12 +196,12 @@ impl ConnectionDialog {
         group.add(&password_row);
 
         let note = adw::PreferencesGroup::new();
-        let hint = adw::ActionRow::builder()
+        let credential_note = adw::ActionRow::builder()
             .title("密码只写入系统凭据库")
             .subtitle("连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存")
             .build();
-        hint.set_activatable(false);
-        note.add(&hint);
+        credential_note.set_activatable(false);
+        note.add(&credential_note);
 
         let page = adw::PreferencesPage::new();
         page.add(&group);
@@ -139,31 +232,68 @@ impl ConnectionDialog {
         toolbar.set_content(Some(&page));
         toolbar.add_bottom_bar(&actions);
         dialog.set_child(Some(&toolbar));
-        dialog.set_default_widget(Some(&save_button));
 
         let this = Rc::new(Self {
             dialog,
             title,
+            driver_row,
+            choices,
             host_row,
             port_row,
             database_row,
             username_row,
             tls_row,
             password_row,
+            path_row,
+            read_only_row,
+            credential_note,
             status,
             test_button,
             save_button,
+            supported: Cell::new(false),
+            subtitle: RefCell::new(String::new()),
             credential_ref: RefCell::new(None),
             name_override: RefCell::new(None),
             test_handler: RefCell::new(None),
             save_handler: RefCell::new(None),
         });
 
+        // 初始驱动：优先 MariaDB（存在时），否则后端返回的第一个。
+        let initial = this
+            .choices
+            .iter()
+            .position(|choice| choice.id == PREFERRED_DEFAULT_DRIVER)
+            .unwrap_or(0);
+        let initial = u32::try_from(initial).unwrap_or(0);
+        if !this.choices.is_empty() {
+            this.driver_row.set_selected(initial);
+        }
+        this.apply_selection(initial);
+        this.dialog.set_default_widget(Some(&this.save_button));
+
         {
             let dialog = this.dialog.clone();
             cancel.connect_clicked(move |_| {
                 // 取消：什么都没写过，直接关闭。
                 dialog.close();
+            });
+        }
+        {
+            let weak = Rc::downgrade(&this);
+            this.driver_row.connect_selected_notify(move |row| {
+                if let Some(this) = weak.upgrade() {
+                    this.apply_selection(row.selected());
+                }
+            });
+        }
+        {
+            // 文件选择器：只把选中的路径写进输入行，其余流程与手输完全相同。
+            let weak = Rc::downgrade(&this);
+            browse.connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                open_file_chooser(&this.path_row);
             });
         }
         {
@@ -221,22 +351,103 @@ impl ConnectionDialog {
         self.dialog.connect_closed(move |_| handler());
     }
 
+    /// 当前选中的驱动 ID。
+    pub fn selected_driver_id(&self) -> Option<&str> {
+        let index = usize::try_from(self.driver_row.selected()).ok()?;
+        self.choices.get(index).map(|choice| choice.id.as_str())
+    }
+
+    /// 当前选中的驱动族（前端不认识的驱动为 `None`）。
+    fn selected_family(&self) -> Option<DriverFamily> {
+        let index = usize::try_from(self.driver_row.selected()).ok()?;
+        self.choices.get(index).and_then(|choice| choice.family)
+    }
+
+    /// 按驱动字段集切换控件可见性，并同步标题副标题与按钮可用性。
+    ///
+    /// 只显示该驱动真正用到的字段：SQLite 不显示主机/端口/用户/TLS/密码，
+    /// MariaDB 不显示文件路径/只读。隐藏的字段不会进入 `ConnectionParams`。
+    fn apply_selection(&self, index: u32) {
+        let choice = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.choices.get(index));
+        let family = choice.and_then(|choice| choice.family);
+        let fields = family.map_or(FieldSet::NONE, driver_form::fields_for);
+
+        self.host_row.set_visible(fields.host);
+        self.port_row.set_visible(fields.port);
+        self.database_row.set_visible(fields.database);
+        self.username_row.set_visible(fields.username);
+        self.tls_row.set_visible(fields.tls);
+        self.password_row.set_visible(fields.password);
+        self.path_row.set_visible(fields.file_path);
+        self.read_only_row.set_visible(fields.read_only);
+        self.credential_note.set_visible(fields.password);
+
+        // 切回服务器型驱动时，空着的默认值补回来（用户没改过就不该看到空主机）。
+        if fields.host && self.host_row.text().trim().is_empty() {
+            self.host_row.set_text("127.0.0.1");
+        }
+        if fields.port && self.port_row.text().trim().is_empty() {
+            self.port_row.set_text("3306");
+        }
+
+        let supported = family.is_some();
+        self.supported.set(supported);
+        self.test_button
+            .set_sensitive(supported && !self.choices.is_empty());
+        self.save_button
+            .set_sensitive(supported && !self.choices.is_empty());
+
+        let subtitle = match choice {
+            Some(choice) => choice.display_name.clone(),
+            None => "未选择驱动".to_owned(),
+        };
+        self.title.set_subtitle(&subtitle);
+        self.subtitle.replace(subtitle);
+
+        if supported {
+            self.clear_status();
+        } else if !self.choices.is_empty() {
+            // 驱动来自后端但前端没有表单：如实说明，而不是给一份填了也会被后端拒绝的表单。
+            self.show_status(
+                &format!(
+                    "此版本前端没有驱动「{}」的连接表单：请升级前端，或换一个驱动",
+                    choice.map_or("", |choice| choice.id.as_str())
+                ),
+                StatusKind::Error,
+            );
+        }
+        if self.choices.is_empty() {
+            self.show_status(
+                "后端没有注册任何驱动（ListDrivers 为空）：无法新建连接",
+                StatusKind::Error,
+            );
+        }
+    }
+
     /// 切换「进行中」状态：期间禁止重复提交与编辑。
     pub fn set_pending(&self, pending: bool) {
-        self.test_button.set_sensitive(!pending);
-        self.save_button.set_sensitive(!pending);
-        self.host_row.set_sensitive(!pending);
-        self.port_row.set_sensitive(!pending);
-        self.database_row.set_sensitive(!pending);
-        self.username_row.set_sensitive(!pending);
-        self.tls_row.set_sensitive(!pending);
-        self.password_row.set_sensitive(!pending);
-        let subtitle = if pending {
-            "正在与数据库握手…"
+        let sensitive = !pending;
+        let supported = self.supported.get() && !self.choices.is_empty();
+        self.test_button.set_sensitive(sensitive && supported);
+        self.save_button.set_sensitive(sensitive && supported);
+        self.driver_row
+            .set_sensitive(sensitive && !self.choices.is_empty());
+        self.host_row.set_sensitive(sensitive);
+        self.port_row.set_sensitive(sensitive);
+        self.database_row.set_sensitive(sensitive);
+        self.username_row.set_sensitive(sensitive);
+        self.tls_row.set_sensitive(sensitive);
+        self.password_row.set_sensitive(sensitive);
+        self.path_row.set_sensitive(sensitive);
+        self.read_only_row.set_sensitive(sensitive);
+        if pending {
+            self.title.set_subtitle("正在与数据库握手…");
         } else {
-            "MariaDB"
-        };
-        self.title.set_subtitle(subtitle);
+            let subtitle = self.subtitle.borrow().clone();
+            self.title.set_subtitle(&subtitle);
+        }
     }
 
     /// 展示「测试连接」成功结果。
@@ -246,8 +457,11 @@ impl ConnectionDialog {
         } else {
             report.server_version.clone()
         };
-        self.credential_ref
-            .replace(Some(report.credential_ref.clone()));
+        // 免凭据驱动（SQLite）没有引用可回填：空引用就是「不需要凭据」。
+        if !report.credential_ref.is_empty() {
+            self.credential_ref
+                .replace(Some(report.credential_ref.clone()));
+        }
         self.show_status(
             &format!(
                 "连接成功：延迟 {} ms · 服务端版本 {version}",
@@ -283,14 +497,43 @@ impl ConnectionDialog {
         }
     }
 
+    /// 收起状态行（切换驱动时旧驱动的错误不该留在屏幕上）。
+    fn clear_status(&self) {
+        self.status.set_text("");
+        self.status.set_visible(false);
+        for class in ["dim-label", "success", "error"] {
+            self.status.remove_css_class(class);
+        }
+    }
+
     /// 用 QA 档案填充输入行（与用户输入完全相同的控件），密码取自环境变量。
     ///
-    /// 只用于无人值守验证：不绕过对话框，也不直接调 gRPC。
-    pub fn apply_profile(&self, profile: &QaProfile) {
+    /// 只用于无人值守验证：不绕过对话框，也不直接调 gRPC。返回值是失败原因
+    /// （例如后端没有该驱动），由调用方记录并让进程以非 0 退出。
+    pub fn apply_profile(&self, profile: &QaProfile) -> Result<(), String> {
+        let index = self
+            .choices
+            .iter()
+            .position(|choice| choice.id == profile.driver)
+            .ok_or_else(|| {
+                format!(
+                    "后端 ListDrivers 未返回驱动「{}」：档案无法生效",
+                    profile.driver
+                )
+            })?;
+        let index = u32::try_from(index).unwrap_or(0);
+        self.driver_row.set_selected(index);
+        // `set_selected` 在序号未变时不会触发 notify：显式再应用一次，保证字段可见性正确。
+        self.apply_selection(index);
+
         self.host_row.set_text(&profile.host);
         self.port_row.set_text(&profile.port.to_string());
         self.database_row.set_text(&profile.database);
         self.username_row.set_text(&profile.username);
+        if let Some(path) = profile.path.as_deref() {
+            self.path_row.set_text(path);
+        }
+        self.read_only_row.set_active(profile.read_only);
         if let Some(mode) = profile
             .tls_mode
             .as_deref()
@@ -298,10 +541,16 @@ impl ConnectionDialog {
         {
             self.tls_row.set_selected(mode.index());
         }
-        if let Some(password) = crate::qa::password() {
+        // 只有需要凭据的驱动才读密码环境变量：SQLite 密码行是隐藏的，填了也没意义。
+        if self
+            .selected_family()
+            .is_some_and(DriverFamily::needs_credential)
+            && let Some(password) = crate::qa::password()
+        {
             self.password_row.set_text(&password);
         }
         self.name_override.replace(profile.name.clone());
+        Ok(())
     }
 
     /// 触发与「保存并连接」按钮完全相同的回调（QA 自动化入口）。
@@ -315,48 +564,26 @@ impl ConnectionDialog {
     }
 
     /// 组装并校验草稿；校验失败时返回可直接展示的中文原因。
+    ///
+    /// 规则全部在 [`crate::driver_form::build_draft`]：本方法只做「读控件」。
     fn draft(&self) -> Result<ConnectionDraft, String> {
-        let host = self.host_row.text().trim().to_owned();
-        if host.is_empty() {
-            return Err("请填写主机".to_owned());
-        }
-        let port_text = self.port_row.text().trim().to_owned();
-        let port: u16 = port_text
-            .parse()
-            .map_err(|_| format!("端口必须是 1-65535 之间的数字（当前：{port_text}）"))?;
-        if port == 0 {
-            return Err("端口必须是 1-65535 之间的数字".to_owned());
-        }
-        let database = self.database_row.text().trim().to_owned();
-        if database.is_empty() {
-            return Err("请填写数据库名".to_owned());
-        }
-        let username = self.username_row.text().trim().to_owned();
-        if username.is_empty() {
-            return Err("请填写用户名".to_owned());
-        }
-        let password = self.password_row.text().to_string();
-        let credential_ref = self.credential_ref.borrow().clone();
-        if password.is_empty() && credential_ref.is_none() {
-            return Err("请输入密码".to_owned());
-        }
-        let tls_mode = TlsMode::from_index(self.tls_row.selected());
-        let name = self
-            .name_override
-            .borrow()
-            .clone()
-            .unwrap_or_else(|| format!("{username}@{host}/{database}"));
-        Ok(ConnectionDraft {
-            name,
-            driver_id: "mariadb".to_owned(),
-            host,
-            port,
-            database,
-            username,
-            tls_mode,
-            credential_ref,
-            password,
-        })
+        let driver_id = self
+            .selected_driver_id()
+            .ok_or_else(|| "请选择驱动".to_owned())?;
+        let input = FormInput {
+            driver_id: driver_id.to_owned(),
+            host: self.host_row.text().to_string(),
+            port: self.port_row.text().to_string(),
+            database: self.database_row.text().to_string(),
+            username: self.username_row.text().to_string(),
+            file_path: self.path_row.text().to_string(),
+            read_only: self.read_only_row.is_active(),
+            tls_mode: TlsMode::from_index(self.tls_row.selected()),
+            credential_ref: self.credential_ref.borrow().clone(),
+            password: self.password_row.text().to_string(),
+            name_override: self.name_override.borrow().clone(),
+        };
+        driver_form::build_draft(&input)
     }
 
     /// 校验 → 置为进行中 → 调用注册的回调。
@@ -390,9 +617,50 @@ impl ConnectionDialog {
     }
 }
 
+/// 打开系统文件选择器，把选中的路径写进输入行。
+///
+/// 用 `GtkFileDialog`（GTK 4.10+，本工程已启用 `v4_16`）：对话框是 `AdwDialog`
+/// 而不是 `gtk::Window`，因此不传父窗口（GTK 允许），避免为了一个父窗口引入
+/// 额外的 surface 依赖。
+fn open_file_chooser(path_row: &adw::EntryRow) {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("SQLite 数据库（*.db、*.sqlite、*.sqlite3）"));
+    for pattern in ["*.db", "*.sqlite", "*.sqlite3"] {
+        filter.add_pattern(pattern);
+    }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+
+    let dialog = gtk::FileDialog::builder()
+        .title("选择 SQLite 数据库文件")
+        .modal(true)
+        .filters(&filters)
+        .build();
+    let path_row = path_row.clone();
+    dialog.open(
+        None::<&gtk::Window>,
+        None::<&gio::Cancellable>,
+        move |result| match result {
+            Ok(file) => {
+                let Some(path) = file.path() else {
+                    eprintln!("[sqarvo-desktop] 所选文件没有本地路径（非本地文件），忽略");
+                    return;
+                };
+                path_row.set_text(&path.display().to_string());
+            }
+            Err(error) => {
+                // 用户取消不算错误：只有真的失败才记一行。
+                if !error.matches(gio::IOErrorEnum::Cancelled) {
+                    eprintln!("[sqarvo-desktop] 选择数据库文件失败：{error}");
+                }
+            }
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::backend::connection::ConnectionFailure;
+    use super::*;
 
     #[test]
     fn failure_text_is_multi_line_and_keeps_code() {
@@ -409,5 +677,29 @@ mod tests {
         assert!(rendered.contains("认证失败"));
         assert!(rendered.contains("mariadb.auth_failed"));
         assert_eq!(rendered.lines().count(), 2);
+    }
+
+    #[test]
+    fn driver_choice_labels_mark_unsupported_drivers() {
+        let mariadb = crate::backend::client::DriverSummary {
+            driver_id: "mariadb".to_owned(),
+            display_name: "MariaDB".to_owned(),
+            version: "0.1.0".to_owned(),
+            capabilities: Vec::new(),
+        };
+        let choice = DriverChoice::from_summary(&mariadb);
+        assert_eq!(choice.family, Some(DriverFamily::MariaDb));
+        assert_eq!(choice.label, "MariaDB（mariadb）");
+
+        let unknown = crate::backend::client::DriverSummary {
+            driver_id: "postgresql".to_owned(),
+            display_name: "PostgreSQL".to_owned(),
+            version: "0.1.0".to_owned(),
+            capabilities: Vec::new(),
+        };
+        let choice = DriverChoice::from_summary(&unknown);
+        assert_eq!(choice.family, None);
+        // 后端列出的驱动即使前端不认识也要出现，但标签必须说明「暂无表单」。
+        assert!(choice.label.contains("前端暂无表单"), "{}", choice.label);
     }
 }
