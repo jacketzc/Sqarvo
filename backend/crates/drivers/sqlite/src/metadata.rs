@@ -9,6 +9,7 @@
 //! | `CATALOG`（名字为库名） | 该库的表 / 视图 | `<库>.sqlite_master` |
 //! | `TABLE` | 列 / 索引 / 触发器 | `pragma_table_info` / `<库>.sqlite_master` |
 //! | `VIEW` | 列 | `pragma_table_info` |
+//! | `TABLE` / `VIEW` / `INDEX` / `TRIGGER`（`GetDdl`） | 建对象原文（`exact = true`） | `<库>.sqlite_master.sql` |
 //! | 列 / 索引 / 触发器（叶子） | 无；请求子节点报 `metadata.object_kind_unsupported` | — |
 //!
 //! **SQLite 没有 schema 层级，也绝不伪造**：以 `SCHEMA` 为父节点、或对象引用里带
@@ -66,6 +67,8 @@ pub(crate) enum MetadataRequest {
     Columns(ObjectRef),
     /// 读取主键定义。
     PrimaryKey(ObjectRef),
+    /// 读取建对象原文（`sqlite_master.sql`）。
+    Ddl(ObjectRef),
 }
 
 /// 元数据回复，与 [`MetadataRequest`] 一一对应。
@@ -73,6 +76,7 @@ pub(crate) enum MetadataReply {
     Nodes(Page<ObjectNode>),
     Columns(Vec<ColumnMeta>),
     PrimaryKey(PrimaryKey),
+    Ddl(Ddl),
 }
 
 /// 在会话线程上执行元数据请求。
@@ -89,6 +93,7 @@ pub(crate) fn handle(connection: &Connection, request: MetadataRequest) -> Resul
         MetadataRequest::PrimaryKey(object) => {
             Ok(MetadataReply::PrimaryKey(primary_key(connection, &object)?))
         }
+        MetadataRequest::Ddl(object) => Ok(MetadataReply::Ddl(ddl(connection, &object)?)),
     }
 }
 
@@ -125,8 +130,15 @@ impl MetadataProvider for SqliteSession {
         }
     }
 
-    async fn ddl(&self, _object: &ObjectRef) -> Result<Ddl> {
-        Err(ddl_unavailable())
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call(MetadataRequest::Ddl(object.clone()))
+            .await?
+        {
+            MetadataReply::Ddl(ddl) => Ok(ddl),
+            _ => Err(mismatched_reply()),
+        }
     }
 
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
@@ -143,14 +155,6 @@ impl MetadataProvider for SqliteSession {
 
 fn mismatched_reply() -> Error {
     Error::internal("元数据回复与请求不匹配")
-}
-
-/// DDL 查看的统一文案（v0.2.2 提供，#83）。
-pub(crate) fn ddl_unavailable() -> Error {
-    Error::unsupported(
-        ErrorCode::CAPABILITY_UNSUPPORTED,
-        "SQLite 的 DDL 查看将在 v0.2.2 提供；本版不返回由声明拼装的近似文本",
-    )
 }
 
 pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
@@ -638,6 +642,100 @@ pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result
         });
     }
     Ok(PrimaryKey::new(columns))
+}
+
+/// 读取建对象原文：SQLite 把表 / 视图 / 索引 / 触发器的原始 `CREATE ...` 语句
+/// 原样保存在 `<库>.sqlite_master.sql` 里，因此这条路径**永远是原文**
+/// （`exact = true`、`source = Database`），不做任何拼装或改写。
+///
+/// 支持的层级与种类：
+///
+/// - `TABLE` / `VIEW` / `INDEX` / `TRIGGER`（后两者是表节点的子节点，索引名在
+///   一个 database 内唯一，因此 `name` 足以定位，不需要所属表）；
+/// - `SCHEMA` / `SEQUENCE`：SQLite 没有这两个层级，显式报 `capability.unsupported`；
+/// - `COLUMN` / `CATALOG` 等：`metadata.object_kind_unsupported`（种类用错了）。
+///
+/// # 内部对象
+///
+/// `sqlite_master.sql` 可能为 `NULL`：`sqlite_autoindex_*` 这类由 `PRIMARY KEY` /
+/// `UNIQUE` 约束隐式创建的索引没有保存任何 DDL 文本。此时**明确报错**
+/// （`capability.unsupported` + 说明是引擎内部对象），不返回空串、也不伪造一段
+/// 拼装文本——`sqlite_autoindex_*` 的名字是保留的，拼出来的 `CREATE INDEX` 在
+/// 别的库里根本执行不了。`sqlite_sequence` / `sqlite_stat1` 等系统表有原文，照常返回。
+pub(crate) fn ddl(connection: &Connection, object: &ObjectRef) -> Result<Ddl> {
+    let expected = ddl_master_type(&object.kind)?;
+    let (database, name) = resolve_object(connection, object)?;
+    let Some((stored, master_type, text)) = lookup_ddl_source(connection, &database, &name)? else {
+        return Err(object_not_found(&database, &name));
+    };
+    if master_type != expected {
+        return Err(kind_not_applicable(
+            &object.kind,
+            &format!("读取 DDL（{database}.{stored} 是 {master_type}）"),
+        ));
+    }
+    let Some(text) = text else {
+        return Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            format!(
+                "SQLite 内部对象 {database}.{stored} 没有保存的 DDL 原文\
+                 （sqlite_master.sql 为 NULL）：它由主键/UNIQUE 约束隐式创建，不能单独重建"
+            ),
+        ));
+    };
+    if text.trim().is_empty() {
+        // 已确认 sql 非 NULL 却取到空白：这是引擎数据异常，不能当成空 DDL 返回。
+        return Err(Error::internal(format!(
+            "SQLite 对象 {database}.{stored} 的 sqlite_master.sql 是空白文本，拒绝返回空 DDL"
+        )));
+    }
+    Ok(Ddl::from_database(
+        text,
+        format!("sqlite_master.sql（数据库 {database}，对象种类 {master_type}）"),
+    ))
+}
+
+/// `GetDdl` 支持的对象种类 → `sqlite_master.type`。
+fn ddl_master_type(kind: &ObjectKind) -> Result<&'static str> {
+    match kind {
+        ObjectKind::Table => Ok("table"),
+        ObjectKind::View => Ok("view"),
+        ObjectKind::Index => Ok("index"),
+        ObjectKind::Trigger => Ok("trigger"),
+        ObjectKind::Schema => Err(unsupported_level(
+            "SQLite 没有 schema 层级：没有 schema 的 DDL 可读",
+        )),
+        ObjectKind::Sequence => Err(unsupported_level(
+            "SQLite 没有序列（SEQUENCE）对象：没有序列的 DDL 可读",
+        )),
+        other => Err(kind_not_applicable(other, "读取 DDL")),
+    }
+}
+
+/// 在 `<库>.sqlite_master` 里按名字取「库里的规范名 + master 类型 + 原文」。
+///
+/// 名字按 SQLite 的标识符语义大小写不敏感（`COLLATE NOCASE`）；一个 database 内
+/// 表/视图/索引/触发器共用一个命名空间，因此名字唯一确定一个对象。
+/// `sql` 列可以为 `NULL`（隐式索引），这里原样返回 `None`，由调用方决定如何报错。
+fn lookup_ddl_source(
+    connection: &Connection,
+    database: &str,
+    name: &str,
+) -> Result<Option<(String, String, Option<String>)>> {
+    let sql = format!(
+        "SELECT name, type, sql FROM {} WHERE name = ?1 COLLATE NOCASE LIMIT 1",
+        master_table(database)
+    );
+    connection
+        .query_row(&sql, [name], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .optional()
+        .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象 DDL 失败"))
 }
 
 /// 表数据路径（`BrowseTable` / 行编辑）的对象名：目前只支持当前连接库（`main`）。

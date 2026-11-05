@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
 use sqarvo_driver_api::{
-    ColumnDefault, ColumnType, ConnectionParams, Driver, DriverSession, ExecuteRequest,
+    ColumnDefault, ColumnType, ConnectionParams, DdlSource, Driver, DriverSession, ExecuteRequest,
     MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectRef, PageRequest, QualifiedName, TlsMode,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
@@ -409,17 +409,240 @@ async fn missing_objects_and_closed_sessions_are_classified() {
     assert_eq!(closed.category(), ErrorCategory::FailedPrecondition);
 }
 
+// ---------------------------------------------------------------------------
+// DDL 查看（#83）：`sqlite_master.sql` 原文
+// ---------------------------------------------------------------------------
+
+const TABLE_DDL: &str =
+    "CREATE TABLE t (\n  id INTEGER PRIMARY KEY,\n  name VARCHAR(64) NOT NULL DEFAULT 'x'\n)";
+const VIEW_DDL: &str = "CREATE VIEW v AS SELECT id, name FROM t WHERE id > 0";
+const INDEX_DDL: &str = "CREATE UNIQUE INDEX idx_t_name ON t(name)";
+const TRIGGER_DDL: &str =
+    "CREATE TRIGGER trg_t AFTER INSERT ON t BEGIN UPDATE t SET name = name; END";
+
+fn named_ref(
+    session: &dyn DriverSession,
+    catalog: Option<&str>,
+    name: &str,
+    kind: ObjectKind,
+) -> ObjectRef {
+    ObjectRef {
+        session_id: session.session_id(),
+        qualified_name: QualifiedName::new(catalog.map(str::to_owned), None, name),
+        kind,
+    }
+}
+
+/// 表 / 视图 / 索引 / 触发器都返回 `sqlite_master.sql` 原文，逐字节等于建对象时的语句。
+///
+/// 这是「`exact` 标志与实际来源一致」的正面证据：文本不是驱动拼的，而是数据库自己
+/// 保存的；同时锁住 `source`、`source_detail` 与非空的 `generator_version` 语义
+/// （原文路径不得带生成器版本）。
 #[tokio::test]
-async fn ddl_is_explicitly_unimplemented_until_v0_2_2() {
+async fn ddl_returns_sqlite_master_text_verbatim() {
     let (_dir, session) = session().await;
-    exec(&*session, "CREATE TABLE t(id INTEGER)").await;
-    let error = metadata_provider(&*session)
-        .ddl(&object_ref(&*session, "t", ObjectKind::Table))
+    for sql in [TABLE_DDL, INDEX_DDL, VIEW_DDL, TRIGGER_DDL] {
+        exec(&*session, sql).await;
+    }
+    let provider = metadata_provider(&*session);
+
+    for (name, kind, expected) in [
+        ("t", ObjectKind::Table, TABLE_DDL),
+        ("v", ObjectKind::View, VIEW_DDL),
+        ("idx_t_name", ObjectKind::Index, INDEX_DDL),
+        ("trg_t", ObjectKind::Trigger, TRIGGER_DDL),
+    ] {
+        let ddl = provider
+            .ddl(&named_ref(&*session, None, name, kind))
+            .await
+            .unwrap_or_else(|error| panic!("{name} 的 DDL 必须可读：{error:?}"));
+        assert_eq!(ddl.text, expected, "{name} 必须是建对象时的原文");
+        assert!(
+            ddl.exact,
+            "{name} 来自 sqlite_master.sql，exact 必须为 true"
+        );
+        assert_eq!(ddl.source, DdlSource::Database, "{name} 的来源必须是数据库");
+        assert!(
+            ddl.generator_version.is_none(),
+            "{name} 是原文，不得带拼装器版本"
+        );
+        let detail = ddl.source_detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("sqlite_master.sql") && detail.contains("main"),
+            "{name} 的来源说明必须写清取自 sqlite_master.sql：{detail}"
+        );
+        assert!(ddl.is_consistent(), "{name} 的 DDL 必须自洽：{ddl:?}");
+    }
+
+    // 名字按 SQLite 的标识符语义大小写不敏感：返回的仍是库里的规范文本。
+    let upper = provider
+        .ddl(&named_ref(&*session, None, "T", ObjectKind::Table))
         .await
-        .expect_err("DDL 本版必须报未实现");
+        .expect("表名大小写不敏感");
+    assert_eq!(upper.text, TABLE_DDL);
+}
+
+/// `ATTACH` 进来的库：按 `catalog` 取原文，且与同名对象互不串。
+#[tokio::test]
+async fn ddl_reads_attached_database_by_catalog() {
+    let (dir, session) = session().await;
+    let other = dir.path().join("attached.db");
+    exec(
+        &*session,
+        &format!("ATTACH DATABASE '{}' AS extra", other.display()),
+    )
+    .await;
+    exec(&*session, "CREATE TABLE extra.t (id INTEGER)").await;
+    exec(&*session, "CREATE TABLE main.t (id TEXT)").await;
+
+    let provider = metadata_provider(&*session);
+    let main_ddl = provider
+        .ddl(&named_ref(&*session, Some("main"), "t", ObjectKind::Table))
+        .await
+        .expect("main 的表");
+    let extra_ddl = provider
+        .ddl(&named_ref(&*session, Some("extra"), "t", ObjectKind::Table))
+        .await
+        .expect("extra 的表");
+
+    // SQLite 保存时会去掉 schema 前缀（`CREATE TABLE main.t` → `CREATE TABLE t`），
+    // 因此两份原文靠列类型区分：同名对象必须各取各的。
+    assert_eq!(main_ddl.text, "CREATE TABLE t (id TEXT)");
+    assert_eq!(extra_ddl.text, "CREATE TABLE t (id INTEGER)");
+    assert!(
+        extra_ddl
+            .source_detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("extra"),
+        "来源说明必须带上具体的库名：{extra_ddl:?}"
+    );
+}
+
+/// 内部对象没有保存的 DDL 原文时必须**明确报错**，不得返回空串或伪造文本。
+///
+/// `sqlite_autoindex_*` 由 `UNIQUE` 约束隐式创建，`sqlite_master.sql` 是 NULL。
+#[tokio::test]
+async fn ddl_reports_internal_objects_without_stored_text() {
+    let (_dir, session) = session().await;
+    exec(
+        &*session,
+        "CREATE TABLE u(id INTEGER PRIMARY KEY, code TEXT UNIQUE)",
+    )
+    .await;
+
+    // 先确认这个内部索引真的在 sqlite_master 里（sql 为 NULL）。
+    let start = session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NULL".to_owned(),
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect("查询 sqlite_master");
+    let rows = start
+        .first_batch
+        .map(|batch| batch.rows)
+        .unwrap_or_default();
+    assert_eq!(rows.len(), 1, "UNIQUE 约束应产生一个隐式索引");
+    let internal_name = match &rows[0][0].value {
+        sqarvo_driver_api::Value::Text(name) => name.clone(),
+        other => panic!("期望文本，实际 {other:?}"),
+    };
+    assert!(internal_name.starts_with("sqlite_autoindex_"));
+
+    let error = metadata_provider(&*session)
+        .ddl(&named_ref(
+            &*session,
+            None,
+            &internal_name,
+            ObjectKind::Index,
+        ))
+        .await
+        .expect_err("内部索引没有原文，必须报错而不是返回空串");
     assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
     assert_eq!(error.category(), ErrorCategory::Unsupported);
-    assert!(error.message().contains("v0.2.2"), "{error}");
+    assert!(
+        error.message().contains("内部对象") && error.message().contains("sqlite_master.sql"),
+        "文案必须说清是内部对象没有原文：{error}"
+    );
+}
+
+/// 不存在 / 种类用错 / 没有该层级：三种情况各自的错误码（不是只看 `is_err`）。
+#[tokio::test]
+async fn ddl_errors_are_classified() {
+    let (_dir, session) = session().await;
+    exec(&*session, "CREATE TABLE t(id INTEGER)").await;
+    exec(&*session, "CREATE VIEW v AS SELECT id FROM t").await;
+    let provider = metadata_provider(&*session);
+
+    // 对象不存在。
+    let missing = provider
+        .ddl(&named_ref(&*session, None, "ghost", ObjectKind::Table))
+        .await
+        .expect_err("不存在必须报错");
+    assert_eq!(missing.code(), ErrorCode::METADATA_OBJECT_NOT_FOUND);
+    assert_eq!(missing.category(), ErrorCategory::NotFound);
+
+    // 种类用错：列没有 DDL。
+    let column = provider
+        .ddl(&named_ref(&*session, None, "id", ObjectKind::Column))
+        .await
+        .expect_err("列没有 DDL");
+    assert_eq!(column.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+    assert_eq!(column.category(), ErrorCategory::InvalidArgument);
+
+    // 种类与实际对象不符：把视图当表请求。
+    let mismatch = provider
+        .ddl(&named_ref(&*session, None, "v", ObjectKind::Table))
+        .await
+        .expect_err("视图不是表");
+    assert_eq!(mismatch.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+    assert_eq!(mismatch.category(), ErrorCategory::InvalidArgument);
+
+    // SQLite 没有 schema / 序列层级：明确报 unsupported，不是「没有对象」。
+    for kind in [ObjectKind::Schema, ObjectKind::Sequence] {
+        let label = format!("{kind:?}");
+        let unsupported = provider
+            .ddl(&named_ref(&*session, None, "anything", kind))
+            .await
+            .expect_err("不存在的层级必须明确拒绝");
+        assert_eq!(
+            unsupported.code(),
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "{label}"
+        );
+        assert_eq!(unsupported.category(), ErrorCategory::Unsupported);
+    }
+
+    // 目录本身没有 DDL（种类用错），不是「层级不存在」。
+    let catalog = provider
+        .ddl(&named_ref(&*session, Some("main"), "", ObjectKind::Catalog))
+        .await
+        .expect_err("目录没有 DDL");
+    assert_eq!(catalog.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+}
+
+/// 长 DDL 不截断：1 MiB 的视图原文必须逐字节原样返回（`exact = true` 时是全量）。
+///
+/// ADR 0007 的 64 KiB 上限是**单元格**规则；DDL 不是单元格，若在这里截断就必须
+/// 让调用方看出来（proto 没有 `truncated` 字段）。本实现选择不截断，因此这条用例
+/// 把「返回的文本 == 数据库里的文本」钉死。
+#[tokio::test]
+async fn ddl_is_not_truncated_at_cell_limits() {
+    let (_dir, session) = session().await;
+    let literal = "x".repeat(1024 * 1024);
+    let sql = format!("CREATE VIEW big AS SELECT '{literal}' AS body");
+    exec(&*session, &sql).await;
+
+    let ddl = metadata_provider(&*session)
+        .ddl(&named_ref(&*session, None, "big", ObjectKind::View))
+        .await
+        .expect("大视图的 DDL 必须可读");
+    assert_eq!(ddl.text, sql, "DDL 不得被截断");
+    assert_eq!(ddl.text.len(), sql.len());
+    assert!(ddl.exact);
 }
 
 #[tokio::test]

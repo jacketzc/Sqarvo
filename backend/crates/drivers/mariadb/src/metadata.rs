@@ -9,6 +9,7 @@
 //! | `CATALOG`（名字为库名） | 该库的表 / 视图 / 序列 | `information_schema.TABLES` |
 //! | `TABLE` | 列 / 索引 / 触发器 | `COLUMNS` / `STATISTICS` / `TRIGGERS` |
 //! | `VIEW` | 列 | `COLUMNS` |
+//! | `TABLE` / `VIEW` / `SEQUENCE`（`GetDdl`） | 建对象原文（`exact = true`） | `SHOW CREATE TABLE/VIEW/SEQUENCE` |
 //! | 列 / 索引 / 触发器 / 序列（叶子） | 无；请求子节点报 `metadata.object_kind_unsupported` | — |
 //!
 //! MariaDB 的 database 映射为 catalog，**没有独立的 schema 层级**：以 `SCHEMA` 为父节点、
@@ -45,7 +46,7 @@
 use async_trait::async_trait;
 use mysql_async::prelude::*;
 use mysql_async::{Conn, Row as MyRow};
-use sqarvo_common::{Error, ErrorCode, Result, SessionId};
+use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result, SessionId};
 use sqarvo_driver_api::{
     ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
     ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
@@ -66,6 +67,8 @@ pub(crate) enum MetadataRequest {
     Columns(ObjectRef),
     /// 读取主键定义。
     PrimaryKey(ObjectRef),
+    /// 读取建对象原文（`SHOW CREATE ...`）。
+    Ddl(ObjectRef),
 }
 
 /// 元数据回复，与 [`MetadataRequest`] 一一对应。
@@ -73,6 +76,7 @@ pub(crate) enum MetadataReply {
     Nodes(Page<ObjectNode>),
     Columns(Vec<ColumnMeta>),
     PrimaryKey(PrimaryKey),
+    Ddl(Ddl),
 }
 
 /// 在会话任务（独占连接）上执行元数据请求。
@@ -88,6 +92,7 @@ pub(crate) async fn handle(conn: &mut Conn, request: MetadataRequest) -> Result<
         MetadataRequest::PrimaryKey(object) => {
             Ok(MetadataReply::PrimaryKey(primary_key(conn, &object).await?))
         }
+        MetadataRequest::Ddl(object) => Ok(MetadataReply::Ddl(ddl(conn, &object).await?)),
     }
 }
 
@@ -124,8 +129,15 @@ impl MetadataProvider for MariaDbSession {
         }
     }
 
-    async fn ddl(&self, _object: &ObjectRef) -> Result<Ddl> {
-        Err(ddl_unavailable())
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call(MetadataRequest::Ddl(object.clone()))
+            .await?
+        {
+            MetadataReply::Ddl(ddl) => Ok(ddl),
+            _ => Err(mismatched_reply()),
+        }
     }
 
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
@@ -142,14 +154,6 @@ impl MetadataProvider for MariaDbSession {
 
 fn mismatched_reply() -> Error {
     Error::internal("元数据回复与请求不匹配")
-}
-
-/// DDL 查看的统一文案（v0.2.2 提供，#83）。
-pub(crate) fn ddl_unavailable() -> Error {
-    Error::unsupported(
-        ErrorCode::CAPABILITY_UNSUPPORTED,
-        "MariaDB 的 DDL 查看将在 v0.2.2 提供；本版不返回 `SHOW CREATE TABLE` 之外的拼装文本",
-    )
 }
 
 pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
@@ -690,6 +694,134 @@ pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<P
         });
     }
     Ok(PrimaryKey::new(columns))
+}
+
+/// 读取建对象原文：MariaDB 的 `SHOW CREATE TABLE` / `SHOW CREATE VIEW` /
+/// `SHOW CREATE SEQUENCE` 返回服务端自己保存的语句，因此这条路径**永远是原文**
+/// （`exact = true`、`source = Database`）。
+///
+/// # 列的选择
+///
+/// `SHOW CREATE TABLE` 返回 2 列（`Table`、`Create Table`），而 `SHOW CREATE VIEW`
+/// 返回 4 列（`View`、`Create View`、`character_set_client`、`collation_connection`）。
+/// 因此**不能按下标取「最后一列」**：两种语句的 DDL 都在第 2 列（下标 1）。取到后
+/// 再校验它以 `CREATE ` 开头且包含对应的关键字（`TABLE` / `VIEW` / `SEQUENCE`）——
+/// 列一旦错位（版本差异、驱动把字符集列当 DDL）就报内部错误，不把半截文本当 DDL。
+///
+/// # 不支持的种类
+///
+/// - `INDEX`：MariaDB 不为索引保存独立 DDL（索引定义在所属表的 `CREATE TABLE` 里），
+///   而 `ObjectRef` 不携带所属表，无法唯一定位 → `metadata.object_kind_unsupported`，
+///   并在文案里指路「读该表的 DDL」。**不拼装**：没有任何信息能保证拼出来的索引与
+///   库里真正定义的索引一致（前缀长度、索引类型、表达式索引、可见性都可能缺失）。
+/// - `TRIGGER`：本版不支持（`SHOW CREATE TRIGGER` 需要额外权限，见 docs）。
+/// - `COLUMN` / `CATALOG` 等：种类用错了 → `metadata.object_kind_unsupported`。
+pub(crate) async fn ddl(conn: &mut Conn, object: &ObjectRef) -> Result<Ddl> {
+    check_ddl_kind(&object.kind)?;
+    let (database, name) = resolve_object(conn, object).await?;
+    let Some(table) = find_table_entry(conn, &database, &name).await? else {
+        return Err(metadata_not_found(&database, &name));
+    };
+    if table.kind != object.kind {
+        return Err(kind_not_applicable(
+            &object.kind,
+            &format!(
+                "读取 DDL（{database}.{} 是 {}）",
+                table.name,
+                table.kind.as_str()
+            ),
+        ));
+    }
+    let statement = match table.kind {
+        ObjectKind::Table => "TABLE",
+        ObjectKind::View => "VIEW",
+        ObjectKind::Sequence => "SEQUENCE",
+        other => return Err(kind_not_applicable(&other, "读取 DDL")),
+    };
+    show_create(conn, statement, &database, &table.name).await
+}
+
+/// `GetDdl` 支持的对象种类；其余种类显式分类，不退化成「拼一段文本」。
+fn check_ddl_kind(kind: &ObjectKind) -> Result<()> {
+    match kind {
+        ObjectKind::Table | ObjectKind::View | ObjectKind::Sequence => Ok(()),
+        ObjectKind::Index => Err(Error::invalid_argument(
+            ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED,
+            "MariaDB 不为索引保存独立 DDL（索引定义在所属表的 CREATE TABLE 里），\
+             且对象引用不携带所属表，无法定位到唯一索引；请读取该表的 DDL",
+        )),
+        ObjectKind::Schema => Err(unsupported_level(
+            "MariaDB 没有独立的 schema 层级：没有 schema 的 DDL 可读",
+        )),
+        other => Err(kind_not_applicable(other, "读取 DDL")),
+    }
+}
+
+/// 执行 `SHOW CREATE <KIND> <库>.<对象>` 并把第 2 列作为原文返回。
+///
+/// `<KIND>` 只来自本模块的常量，库名/对象名一律按标识符引用（反引号 + 内部成对转义）。
+async fn show_create(
+    conn: &mut Conn,
+    statement: &'static str,
+    database: &str,
+    name: &str,
+) -> Result<Ddl> {
+    let sql = format!(
+        "SHOW CREATE {statement} {}.{}",
+        quote_identifier(database),
+        quote_identifier(name)
+    );
+    let rows: Vec<MyRow> = match conn.query::<MyRow, _>(sql).await {
+        Ok(rows) => rows,
+        Err(error) => return Err(ddl_error(error, database, name)),
+    };
+    let row = rows.first().ok_or_else(|| {
+        Error::internal(format!(
+            "MariaDB `SHOW CREATE {statement}` 对 {database}.{name} 没有返回任何行"
+        ))
+    })?;
+    let text = required_text(row, 1, "Create")?;
+    if text.trim().is_empty() {
+        return Err(Error::internal(format!(
+            "MariaDB `SHOW CREATE {statement}` 对 {database}.{name} 返回空白 DDL，拒绝当成空 DDL 交付"
+        )));
+    }
+    // 列错位的防线：第二列必须是 `CREATE ... <KIND> ...`。
+    // 只看前 4096 个字符（视图的 ALGORITHM/DEFINER 前缀可能较长），避免大 DDL 复制。
+    let head: String = text
+        .chars()
+        .take(4096)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if !head.starts_with("CREATE ") || !head.contains(&format!(" {statement} ")) {
+        return Err(Error::internal(format!(
+            "MariaDB `SHOW CREATE {statement}` 对 {database}.{name} 的第 2 列不是预期语句，\
+             拒绝把非 DDL 列当原文返回"
+        )));
+    }
+    Ok(Ddl::from_database(
+        text,
+        format!("SHOW CREATE {statement}（{database}.{name}）"),
+    ))
+}
+
+/// `SHOW CREATE` 的服务端错误分类：权限 / 不存在各有明确错误码，其余走通用映射。
+///
+/// 与 `information_schema` 的可见性不同，`SHOW CREATE` 会**真的**报权限错误
+/// （1142 / 1143 / 1044）：对象对当前账号存在但不可读时，这是唯一能说出「是权限，
+/// 不是不存在」的回答。
+fn ddl_error(error: mysql_async::Error, database: &str, name: &str) -> Error {
+    let code = server_code(&error);
+    match code {
+        Some(1142 | 1143 | 1044) => Error::new(
+            ErrorCode::METADATA_PERMISSION_DENIED,
+            ErrorCategory::PermissionDenied,
+            format!("当前连接无权读取 {database}.{name} 的 DDL（服务端拒绝读取元数据）"),
+        )
+        .with_source(error),
+        Some(1146 | 1051 | 1049) => metadata_not_found(database, name).with_source(error),
+        _ => map_error(error, "读取 MariaDB DDL 失败"),
+    }
 }
 
 /// `information_schema.TABLES` 里找到的表/视图/序列。

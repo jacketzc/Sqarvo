@@ -15,10 +15,11 @@ use std::time::{Duration, Instant};
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
 use sqarvo_driver_api::{
     Cell, ChangeOutcome, ColumnChange, ColumnDefault, ColumnMeta, ColumnType, ConnectionParams,
-    DEFAULT_MAX_CELL_BYTES, Driver, DriverSession, ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE,
-    MetadataProvider, ObjectKind, ObjectNode, ObjectRef, PageRequest, ParameterizedExecuteRequest,
-    QualifiedName, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport,
-    RowChangeRequest, RowOrder, TableDataProvider, TlsMode, TransactionOptions, Value,
+    DEFAULT_MAX_CELL_BYTES, DdlSource, Driver, DriverSession, ExecuteRequest, IsolationLevel,
+    MAX_PAGE_SIZE, MetadataProvider, ObjectKind, ObjectNode, ObjectRef, PageRequest,
+    ParameterizedExecuteRequest, QualifiedName, ReadOnlyReason, Row, RowChange, RowChangeCancel,
+    RowChangeReport, RowChangeRequest, RowOrder, TableDataProvider, TlsMode, TransactionOptions,
+    Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
 
@@ -2130,18 +2131,246 @@ async fn metadata_without_selected_database_is_rejected() {
     session.close().await.unwrap();
 }
 
+/// 建 DDL 用例的表（自增、字符集、注释、唯一索引都在，确保原文会带服务端补全）。
+///
+/// 每个用例用自己的表名：集成测试并行执行，共用一个名字会互相 DROP。
+async fn create_ddl_table(session: &dyn DriverSession, suffix: &str) {
+    drop_md_objects(session, &[suffix]).await;
+    exec(
+        session,
+        &format!(
+            "CREATE TABLE {MD_PREFIX}_{suffix} (\
+             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, \
+             name VARCHAR(64) NOT NULL DEFAULT 'abc', \
+             UNIQUE KEY uq_name (name)) \
+             ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ddl 用例'"
+        ),
+    )
+    .await;
+}
+
+/// 表：`SHOW CREATE TABLE`（2 列）原文，逐字节等于同一条语句经查询路径拿到的第 2 列。
+///
+/// 两条路径独立（`execute` vs 元数据），列选错、被改写、被截断都会让它们不相等。
 #[tokio::test]
-async fn metadata_ddl_is_explicitly_unimplemented_until_v0_2_2() {
+async fn metadata_ddl_returns_show_create_table_text() {
     let Some(session) = session().await else {
         return;
     };
-    let provider = session.metadata().expect("MariaDB 元数据能力");
-    let error = provider
-        .ddl(&md_object(&*session, "any_table", ObjectKind::Table))
+    create_ddl_table(&*session, "ddl_t").await;
+
+    let table_ddl = session
+        .metadata()
+        .expect("MariaDB 元数据能力")
+        .ddl(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_ddl_t"),
+            ObjectKind::Table,
+        ))
         .await
-        .expect_err("DDL 本版必须报未实现");
-    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
-    assert!(error.message().contains("v0.2.2"), "{error}");
+        .expect("表的 DDL 必须可读");
+    let (_, rows) = select(&*session, &format!("SHOW CREATE TABLE {MD_PREFIX}_ddl_t")).await;
+    assert_eq!(
+        table_ddl.text,
+        text_of(&rows[0][1]),
+        "表 DDL 必须是 SHOW CREATE TABLE 原文"
+    );
+    assert!(table_ddl.exact);
+    assert_eq!(table_ddl.source, DdlSource::Database);
+    assert!(
+        table_ddl.generator_version.is_none(),
+        "原文路径不得带拼装器版本"
+    );
+    let detail = table_ddl.source_detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("SHOW CREATE TABLE") && detail.contains(MD_PREFIX),
+        "来源说明必须写清取自 SHOW CREATE TABLE 与具体对象：{detail}"
+    );
+    assert!(table_ddl.is_consistent());
+    assert!(
+        table_ddl.text.contains("AUTO_INCREMENT"),
+        "原文必须保留 AUTO_INCREMENT 这类服务端改写后的细节：{}",
+        table_ddl.text
+    );
+
+    drop_md_objects(&*session, &["ddl_t"]).await;
+}
+
+/// 视图：`SHOW CREATE VIEW` 有 **4 列**，DDL 在第 2 列，第 3 列是字符集。
+///
+/// 这条用例锁的是「不能取最后一列」：取错列会把 `utf8mb4` 之类的字符集当 DDL 返回。
+#[tokio::test]
+async fn metadata_ddl_picks_the_ddl_column_for_views() {
+    let Some(session) = session().await else {
+        return;
+    };
+    create_ddl_table(&*session, "ddl_vt").await;
+    exec(
+        &*session,
+        &format!("CREATE VIEW {MD_PREFIX}_ddl_v AS SELECT id, name FROM {MD_PREFIX}_ddl_vt"),
+    )
+    .await;
+
+    let view_ddl = session
+        .metadata()
+        .expect("MariaDB 元数据能力")
+        .ddl(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_ddl_v"),
+            ObjectKind::View,
+        ))
+        .await
+        .expect("视图的 DDL 必须可读");
+    let (columns, rows) = select(&*session, &format!("SHOW CREATE VIEW {MD_PREFIX}_ddl_v")).await;
+    assert_eq!(
+        columns.len(),
+        4,
+        "SHOW CREATE VIEW 返回 4 列，本用例锁的就是这一点"
+    );
+    assert_eq!(
+        view_ddl.text,
+        text_of(&rows[0][1]),
+        "视图 DDL 必须是 Create View 列"
+    );
+    assert!(
+        view_ddl.text.contains(" VIEW "),
+        "视图原文必须包含 VIEW：{}",
+        view_ddl.text
+    );
+    // 第 3 列是 character_set_client：绝不能把它当 DDL 返回。
+    assert_ne!(view_ddl.text, text_of(&rows[0][2]));
+    assert!(view_ddl.exact);
+    assert_eq!(view_ddl.source, DdlSource::Database);
+    assert!(
+        view_ddl
+            .source_detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SHOW CREATE VIEW"),
+        "{view_ddl:?}"
+    );
+
+    drop_md_objects(&*session, &["ddl_vt", "ddl_v"]).await;
+}
+
+/// 序列：`SHOW CREATE SEQUENCE` 原文（MariaDB 10.3+）。
+#[tokio::test]
+async fn metadata_ddl_supports_sequences() {
+    let Some(session) = session().await else {
+        return;
+    };
+    exec(
+        &*session,
+        &format!("DROP SEQUENCE IF EXISTS {MD_PREFIX}_ddl_s"),
+    )
+    .await;
+    exec(
+        &*session,
+        &format!("CREATE SEQUENCE {MD_PREFIX}_ddl_s START WITH 7 INCREMENT BY 2"),
+    )
+    .await;
+
+    let sequence_ddl = session
+        .metadata()
+        .expect("MariaDB 元数据能力")
+        .ddl(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_ddl_s"),
+            ObjectKind::Sequence,
+        ))
+        .await
+        .expect("序列的 DDL 必须可读");
+    assert!(
+        sequence_ddl.text.starts_with("CREATE SEQUENCE"),
+        "{}",
+        sequence_ddl.text
+    );
+    assert!(sequence_ddl.exact);
+    assert_eq!(sequence_ddl.source, DdlSource::Database);
+    assert!(
+        sequence_ddl
+            .source_detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SHOW CREATE SEQUENCE"),
+        "{sequence_ddl:?}"
+    );
+
+    exec(
+        &*session,
+        &format!("DROP SEQUENCE IF EXISTS {MD_PREFIX}_ddl_s"),
+    )
+    .await;
+}
+
+/// 索引 / 列 / 不存在 / 种类不符 / 无权限：各自的错误码（不是只看 `is_err`）。
+#[tokio::test]
+async fn metadata_ddl_reports_unsupported_kinds_and_missing_objects() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let own = ["ddl_err"];
+    drop_md_objects(&*session, &own).await;
+    exec(
+        &*session,
+        &format!("CREATE TABLE {MD_PREFIX}_ddl_err (id INT PRIMARY KEY, v INT, INDEX idx_v (v))"),
+    )
+    .await;
+    let provider = session.metadata().expect("MariaDB 元数据能力");
+
+    // 索引：MariaDB 没有独立索引 DDL，且 ObjectRef 不带所属表 → 种类不支持。
+    let index = provider
+        .ddl(&md_object(&*session, "idx_v", ObjectKind::Index))
+        .await
+        .expect_err("索引 DDL 必须明确报不支持，而不是拼一段文本");
+    assert_eq!(index.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+    assert_eq!(index.category(), ErrorCategory::InvalidArgument);
+    assert!(
+        index.message().contains("索引") && index.message().contains("索引定义在"),
+        "文案必须解释为什么不支持：{index}"
+    );
+
+    // 列：种类用错。
+    let column = provider
+        .ddl(&md_object(&*session, "v", ObjectKind::Column))
+        .await
+        .expect_err("列没有 DDL");
+    assert_eq!(column.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+    assert_eq!(column.category(), ErrorCategory::InvalidArgument);
+
+    // 对象不存在。
+    let missing = provider
+        .ddl(&md_object(&*session, "no_such_object", ObjectKind::Table))
+        .await
+        .expect_err("不存在必须报错");
+    assert_eq!(missing.code(), ErrorCode::METADATA_OBJECT_NOT_FOUND);
+    assert_eq!(missing.category(), ErrorCategory::NotFound);
+
+    // 种类与实际对象不符：表被当成视图请求。
+    let mismatch = provider
+        .ddl(&md_object(
+            &*session,
+            &format!("{MD_PREFIX}_ddl_err"),
+            ObjectKind::View,
+        ))
+        .await
+        .expect_err("表不是视图");
+    assert_eq!(mismatch.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
+    assert_eq!(mismatch.category(), ErrorCategory::InvalidArgument);
+
+    // 无权限的库（`mysql`）：必须是 permission_denied，不能降级成「不存在」。
+    let unreadable = provider
+        .ddl(&ObjectRef {
+            session_id: session.session_id(),
+            qualified_name: QualifiedName::new(Some("mysql".to_owned()), None, "user"),
+            kind: ObjectKind::Table,
+        })
+        .await
+        .expect_err("无权读取的库必须失败");
+    assert_eq!(unreadable.code(), ErrorCode::METADATA_PERMISSION_DENIED);
+    assert_eq!(unreadable.category(), ErrorCategory::PermissionDenied);
+
+    drop_md_objects(&*session, &own).await;
 }
 
 #[tokio::test]

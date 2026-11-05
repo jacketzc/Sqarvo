@@ -172,8 +172,8 @@ pub struct Ddl {
 
 | 驱动 | 目录层（Catalog） | 表内层 | 列 | 主键 | DDL |
 |---|---|---|---|---|---|
-| SQLite | `PRAGMA database_list`（`main` / `temp` / `ATTACH`） | 列 / 索引 / 触发器（`pragma_table_info` + `sqlite_master`） | `pragma_table_info` | `pragma_table_info.pk` | 未实现（#83） |
-| MariaDB | `information_schema.SCHEMATA` | 列 / 索引 / 触发器（`COLUMNS` / `STATISTICS` / `TRIGGERS`） | `information_schema.COLUMNS` | `information_schema.KEY_COLUMN_USAGE` | 未实现（#83） |
+| SQLite | `PRAGMA database_list`（`main` / `temp` / `ATTACH`） | 列 / 索引 / 触发器（`pragma_table_info` + `sqlite_master`） | `pragma_table_info` | `pragma_table_info.pk` | `sqlite_master.sql` 原文（表/视图/索引/触发器，#83） |
+| MariaDB | `information_schema.SCHEMATA` | 列 / 索引 / 触发器（`COLUMNS` / `STATISTICS` / `TRIGGERS`） | `information_schema.COLUMNS` | `information_schema.KEY_COLUMN_USAGE` | `SHOW CREATE TABLE/VIEW/SEQUENCE` 原文（索引不支持，#83） |
 
 两个驱动共同遵守的约定（细节见驱动文档）：
 
@@ -188,6 +188,10 @@ pub struct Ddl {
 - **过滤下推**（`list_children_filtered`）仍未由驱动实现，默认实现返回
   `capability.unsupported`；rpc-server 已把 `ListNodes.filter` 接线到该 SPI（#82），
   真正下推在 #84。
+- **DDL**（`MetadataProvider::ddl`，#83）：两驱动都只交付数据库原文
+  （`Ddl::from_database`，`exact = true`）；本版**没有**拼装路径，`Ddl::synthesized`
+  只有契约层用例覆盖。拿不到原文时（SQLite 隐式索引、MariaDB 索引/触发器）明确报错，
+  不返回空串、不伪造文本。DDL 读取经 `SessionHandle::ddl` 在会话执行锁内执行。
 
 ## 事务实现现状（v0.2.1）
 
@@ -354,8 +358,8 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
 - 元数据的 schema 层级、函数/存储过程/类型列表与 DDL：两驱动都没有 schema 层
   （`capability.unsupported`），`FUNCTION` / `PROCEDURE` / `TYPE` 父节点同样显式报错；
-  `GetDdl` 仍是显式 `UNIMPLEMENTED`（#83 落地）。层级展开与跨库浏览已于 #82 实现
-  （见上「元数据实现现状」）；`ListNodes.filter` 的下推在 #84，驱动未实现前 rpc-server
+  `GetDdl` 已由 #83 实现（表/视图/索引/触发器取原文，见上「元数据实现现状」）。层级展开与
+  跨库浏览已于 #82 实现；`ListNodes.filter` 的下推在 #84，驱动未实现前 rpc-server
   对非空过滤明确返回 `UNIMPLEMENTED`，不静默忽略；
 - 表数据浏览与行编辑：两驱动已实现（`table_data()` 返回 provider，`supports_row_edits()`
   为 `true`），`Capabilities.row_editing` 已在 `ListDrivers` 中展示；**插入新行**

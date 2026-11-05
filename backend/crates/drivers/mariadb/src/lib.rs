@@ -11,8 +11,9 @@
 //! - 显式事务在同一会话连接上执行 `START TRANSACTION` / `COMMIT` / `ROLLBACK`；
 //!   事务中会隐式提交的 DDL / `TRUNCATE` 等语句在发送前拒绝，绝不静默提交
 //!   （见 `docs/database/mariadb.md`「事务」）；
-//! - 元数据最小子集（#45）：表/视图列表、列、主键全部读 `information_schema`；
-//!   DDL 仍显式未实现（计划 v0.2.2）。
+//! - 元数据（#45、#82、#83）：表/视图/序列列表、列、主键、DDL（`SHOW CREATE ...` 原文）
+//!   全部读 `information_schema` / `SHOW CREATE`；索引与触发器没有独立 DDL，明确报
+//!   `metadata.object_kind_unsupported`（见 `docs/database/mariadb.md`）。
 
 #![warn(missing_docs)]
 

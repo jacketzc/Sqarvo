@@ -9,31 +9,28 @@
 //! - `ListNodes` 只到「当前数据库的表与视图」这一层，分页 token 不透明；
 //! - `GetColumns` 返回原始类型名、长度/精度/标度、可空、默认值、字符集与排序规则；
 //! - `GetPrimaryKey` 返回按主键顺序排列的列，无主键返回空列表；
-//! - `GetDdl` 明确返回「v0.2.2 提供」，绝不返回空串冒充成功。
+//! - `GetDdl` 返回数据库原文，并标注来源（`DdlSource` + `source_detail`）；拼装
+//!   结果必须 `exact = false` 且说明拼装依据，不自洽就报 `internal.error`。
 //!
 //! 默认值的三态（未知 / 没有默认值 / 默认 NULL / 未求值表达式）在 #59 补齐，
 //! 映射集中在 `services::mapping`：`Unknown` 不设置 proto 字段，不会退化成空串。
 //!
-//! # 会话执行锁（#69）
+//! # 会话执行锁（#69、#83）
 //!
-//! 三个查询 RPC 都经会话层方法在**执行锁内**调用驱动：
+//! 四个查询 RPC 都经会话层方法在**执行锁内**调用驱动：
 //! [`SessionHandle::list_children`](sqarvo_connection::SessionHandle::list_children)、
 //! [`SessionHandle::columns`](sqarvo_connection::SessionHandle::columns)、
-//! [`SessionHandle::primary_key`](sqarvo_connection::SessionHandle::primary_key)。
+//! [`SessionHandle::primary_key`](sqarvo_connection::SessionHandle::primary_key)、
+//! [`SessionHandle::ddl`](sqarvo_connection::SessionHandle::ddl)。
 //! 元数据查询与写入、浏览共用同一条物理连接（ADR 0008），语句不得交错：
-//! 浏览进行中的 DDL 会让元数据读到改到一半的 schema。
-//!
-//! `GetDdl` 是唯一例外：本版两个内置驱动都在触达连接前返回
-//! `capability.unsupported`（v0.2.2 提供），没有语句可交错；实现 DDL 读取必须
-//! 一并纳入会话执行锁。
+//! 浏览进行中的 DDL 会让元数据读到改到一半的 schema，反过来并发 `ALTER TABLE`
+//! 也会让 `GetDdl` 读出既不是旧结构也不是新结构的文本。
 
 use std::sync::Arc;
 
-use sqarvo_common::ErrorCode;
 use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::{
-    MetadataProvider, NameMatch, ObjectFilter, ObjectKind, ObjectNode, ObjectRef, Page,
-    QualifiedName,
+    NameMatch, ObjectFilter, ObjectKind, ObjectNode, ObjectRef, Page, QualifiedName,
 };
 use tonic::{Request, Response, Status};
 
@@ -61,14 +58,6 @@ impl MetadataServiceImpl {
     pub fn new(sessions: Arc<SessionManager>) -> Self {
         Self { sessions }
     }
-}
-
-/// 驱动不支持元数据时的统一错误（不返回空列表）。
-fn metadata_unsupported() -> Status {
-    to_status(sqarvo_common::Error::unsupported(
-        ErrorCode::CAPABILITY_UNSUPPORTED,
-        "该驱动未实现元数据浏览",
-    ))
 }
 
 #[tonic::async_trait]
@@ -164,11 +153,9 @@ impl MetadataService for MetadataServiceImpl {
             .acquire(&object.session_id)
             .await
             .map_err(to_status)?;
-        let provider: &dyn MetadataProvider = handle.metadata().ok_or_else(metadata_unsupported)?;
-        // 本版两个驱动都返回 `capability.unsupported`（文案含「v0.2.2 提供」），
-        // 映射为 UNIMPLEMENTED。若将来驱动真的实现了 DDL，这里原样返回，
-        // 不会把结果丢弃或伪造 `exact`。
-        let ddl = provider.ddl(&object).await.map_err(to_status)?;
+        // DDL 读取在会话执行锁内执行（#83）：SQLite 查 `sqlite_master`、MariaDB 发
+        // `SHOW CREATE ...`，都是同一条物理连接上的语句，不能与执行/浏览/写批次交错。
+        let ddl = handle.ddl(&object).await.map_err(to_status)?;
         // `exact` 与 `source` 必须自洽，拼装结果必须说明来源（#81）：
         // 交不出「看得出是拼装的」结果就报内部错误，不当原文返回。
         if !ddl.is_consistent() {

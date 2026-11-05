@@ -192,13 +192,23 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 | 来源 | `exact` | `source` | `source_detail` | `generator_version` |
 |---|---|---|---|---|
 | SQLite `sqlite_master.sql` | `true` | `DDL_SOURCE_DATABASE` | 必有，例如 `sqlite_master.sql` | 空 |
-| MariaDB `SHOW CREATE TABLE/VIEW` | `true` | `DDL_SOURCE_DATABASE` | 必有，例如 `SHOW CREATE TABLE` | 空 |
+| MariaDB `SHOW CREATE TABLE/VIEW/SEQUENCE` | `true` | `DDL_SOURCE_DATABASE` | 必有，例如 `SHOW CREATE TABLE` | 空 |
 | 服务端按元数据拼装 | `false` | `DDL_SOURCE_SYNTHESIZED` | **必有**：说明缺了什么 | **必有**：生成器版本 |
 
 - 不变式：`exact == (source == DDL_SOURCE_DATABASE)`；拼装却说不清来源/版本的结果，rpc-server
   以 `internal.error` 拒绝返回（不能把「看不出是拼装的 DDL」当原文交给用户）；
 - `source = DDL_SOURCE_UNSPECIFIED` 表示**未说明**，客户端只能退回看 `exact`，不得假定原文；
 - 只有数据库给不出原文时才拼装；能拿到原文就必须给原文（拼装永远有信息损失）；
+- **v0.2.2 的实现没有拼装路径**：两驱动都只返回原文，因此 `exact` 恒为 `true`、
+  `generator_version` 恒为空。拿不到原文的对象（SQLite 隐式索引、MariaDB 索引/触发器）
+  返回 `metadata.object_kind_unsupported` 或 `capability.unsupported`，**不返回空串、
+  不伪造 DDL**——`Ddl::synthesized` 目前只有契约层用例覆盖；
+- **不截断**：`GetDdlResponse` 没有 `truncated` 字段，截断后调用方无法判断（不能截了还说
+  `exact = true` 全量），因此 DDL 原样返回。ADR 0007 的 64 KiB 上限只约束单元格；
+  实际可用长度由 gRPC 消息上限（tonic 默认 4 MiB）决定，超限时请求失败而非返回半截文本；
+- 错误码：对象不存在 → `metadata.object_not_found`（`NOT_FOUND`）；种类不适用
+  （列、MariaDB 索引/触发器）→ `metadata.object_kind_unsupported`（`INVALID_ARGUMENT`）；
+  数据库拒绝读取 → `metadata.permission_denied`（`PERMISSION_DENIED`）；
 - `GetDdl` 纳入会话执行锁（ADR 0008），与浏览、写入共用同一条物理连接。
 
 ## 插入新行（v0.2.2，ADR 0019）

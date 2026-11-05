@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    ColumnMeta, ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
-    ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel, MetadataProvider,
-    ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, ResultBatch,
-    RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, TableDataProvider, TablePage,
-    TransactionOptions,
+    ColumnMeta, ConnectionParams, ConnectionTestReport, Ddl, DriverId, DriverSession,
+    ExecuteRequest, ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel,
+    MetadataProvider, ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey,
+    ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, TableDataProvider,
+    TablePage, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -293,6 +293,22 @@ impl SessionHandle {
     pub async fn columns(&self, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
         let _guard = self.execution.lock().await;
         self.metadata_provider()?.columns(object).await
+    }
+
+    /// 在会话执行锁内读取对象的 DDL（`GetDdl`，#83）。
+    ///
+    /// DDL 读取在 SQLite 上是 `sqlite_master` 查询、在 MariaDB 上是 `SHOW CREATE ...`：
+    /// 两者都是**下发到同一条物理连接的语句**，与执行、浏览、写批次争用同一把执行锁
+    /// （ADR 0008 的路径表已列入）。不持锁时，一条并发的 `ALTER TABLE` 会让 DDL 读到
+    /// 「改到一半的 schema」，返回的文本既不是旧结构也不是新结构。
+    ///
+    /// # Errors
+    ///
+    /// - 驱动未实现元数据浏览：`capability.unsupported`；
+    /// - 驱动错误原样透传（对象不存在、种类不适用、无权限等）。
+    pub async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?.ddl(object).await
     }
 
     /// 在会话执行锁内读取主键定义（`GetPrimaryKey`，#69）。

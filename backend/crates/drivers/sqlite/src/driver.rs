@@ -43,7 +43,8 @@ impl SqliteDriver {
                     streaming_results: true,
                     // v0.1 只支持单语句。
                     multiple_statements: false,
-                    ddl_generation: false,
+                    // v0.2.2（#83）：`GetDdl` 取 `sqlite_master.sql` 原文（表/视图/索引/触发器）。
+                    ddl_generation: true,
                     server_side_pagination: false,
                     // v0.2.2（#82）：catalog 层可浏览。SQLite 的 catalog 就是 database：
                     // `main` / `temp` / 本连接 `ATTACH` 进来的库（见 docs/database/sqlite.md）。

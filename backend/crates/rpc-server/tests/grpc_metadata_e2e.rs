@@ -8,7 +8,7 @@
 //! 3. `GetPrimaryKey` 单列、复合（position 顺序）、无主键三种情况都正确；
 //! 4. 非法分页 token 返回 `INVALID_ARGUMENT` + `config.invalid`，不回退第一页；
 //! 5. 上层层级返回 `UNIMPLEMENTED` + `capability.unsupported`；
-//! 6. `GetDdl` 明确报未实现且文案包含「v0.2.2」，绝不返回空串。
+//! 6. `GetDdl` 返回 `sqlite_master.sql` 原文，`exact = true` 且来源标注为数据库。
 //!
 //! 失败时的定位方式：每个 RPC 都经 [`stage`] 包装，panic 信息里带阶段名、gRPC 状态码
 //! 与 `sqarvo-error-code`。
@@ -29,9 +29,9 @@ use sqarvo_query_engine::{QueryLimits, QueryRegistry};
 use sqarvo_rpc_server::auth::TOKEN_METADATA_KEY;
 use sqarvo_rpc_server::proto::common::v1::{ColumnDefaultKind, ColumnTypeKind, PageRequest};
 use sqarvo_rpc_server::proto::services::v1::{
-    ConnectRequest, ConnectionParams, DisconnectRequest, ExecuteQueryRequest, GetColumnsRequest,
-    GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, NodeFilter, ObjectKind,
-    ObjectNameFilter, ObjectRef, connection_service_client::ConnectionServiceClient,
+    ConnectRequest, ConnectionParams, DdlSource, DisconnectRequest, ExecuteQueryRequest,
+    GetColumnsRequest, GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, NodeFilter,
+    ObjectKind, ObjectNameFilter, ObjectRef, connection_service_client::ConnectionServiceClient,
     metadata_service_client::MetadataServiceClient, object_name_filter,
     query_service_client::QueryServiceClient,
 };
@@ -528,18 +528,41 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
         Some(ErrorCode::METADATA_FILTER_INVALID.as_str())
     );
 
-    // ---- GetDdl：明确报未实现，绝不返回空串 ----
-    let ddl = metadata
-        .get_ddl(GetDdlRequest {
-            object: Some(references[0].clone()),
-        })
-        .await
-        .expect_err("DDL 本版必须报未实现");
-    assert_eq!(ddl.code(), Code::Unimplemented);
+    // ---- GetDdl：返回 sqlite_master 原文并标注来源（#83）----
+    let ddl = stage(
+        "GetDdl(alpha)",
+        metadata
+            .get_ddl(GetDdlRequest {
+                object: Some(ObjectRef {
+                    session_id: session_id.clone(),
+                    catalog: String::new(),
+                    schema: String::new(),
+                    name: "alpha".to_owned(),
+                    kind: ObjectKind::Table as i32,
+                }),
+            })
+            .await,
+    );
+    assert!(ddl.exact, "sqlite_master.sql 原文必须 exact = true");
+    assert_eq!(
+        ddl.source,
+        DdlSource::Database as i32,
+        "来源必须是 DDL_SOURCE_DATABASE"
+    );
     assert!(
-        ddl.message().contains("v0.2.2"),
-        "文案必须写清 v0.2.2：{}",
-        ddl.message()
+        ddl.ddl.starts_with("CREATE TABLE alpha"),
+        "必须是建表原文：{}",
+        ddl.ddl
+    );
+    assert!(
+        ddl.source_detail.contains("sqlite_master.sql"),
+        "来源说明必须写清取自 sqlite_master.sql：{}",
+        ddl.source_detail
+    );
+    assert!(
+        ddl.generator_version.is_empty(),
+        "原文路径不得带拼装器版本：{}",
+        ddl.generator_version
     );
 
     // ---- 未知会话 ----
