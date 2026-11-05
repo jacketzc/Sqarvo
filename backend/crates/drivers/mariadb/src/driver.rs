@@ -40,8 +40,9 @@ impl MariaDbDriver {
                     max_version: Some("11.4".to_owned()),
                 }],
                 capabilities: Capabilities {
-                    // 事务与元数据在 M4 接线；未实现前如实声明为 false。
-                    transactions: false,
+                    // 显式事务在驱动层实现（会话内的 START TRANSACTION / COMMIT / ROLLBACK）；
+                    // gRPC 接线由后续 Issue 负责。
+                    transactions: true,
                     query_cancellation: true,
                     streaming_results: true,
                     // v0.2 只支持单条语句（多语句检测见 `sql.rs`）。

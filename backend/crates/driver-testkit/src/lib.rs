@@ -16,9 +16,18 @@
 //!      前缀并置 `Cell::truncated`（ADR 0007）；
 //!   5. [`batch_drain_has_no_loss`]：按批取完与一次性取回的行一致，不重复、不丢失（ADR 0005）。
 //! - 事务不变量检查（声明 `capabilities.transactions == true` 的驱动必须通过，
-//!   见 ADR 0017 §3）：提交可见、回滚丢弃、重复提交/回滚幂等、
-//!   不支持并发事务、语句失败后仍可回滚。SQL 同样由调用方按方言提供。读者应从
-//!   [`transaction_commit_is_visible`] 开始。
+//!   见 ADR 0017 §3）。两组检查互补，SQL 同样由调用方按方言提供：
+//!   1. 表数据可见性组（[`TransactionFixture`]）：提交可见、回滚丢弃、重复提交/回滚与
+//!      未知 ID 幂等、不支持并发事务、语句失败后仍可回滚。读者应从
+//!      [`transaction_commit_is_visible`] 开始；
+//!   2. 事务状态机组（[`TransactionProbe`]）：原子性（事务内可见 → 回滚丢弃 → 提交生效）、
+//!      一个会话最多一个打开事务、重复提交/回滚幂等（含已结束事务在新事务打开后重试）、
+//!      有打开事务时未知 ID 必须以 `NotFound` 拒绝。读者应从
+//!      [`transaction_commit_and_rollback_are_atomic`] 开始。
+//!
+//!   两组的「未知事务 ID」断言并不冲突：**没有**打开事务时，未知 ID 的提交/回滚必须
+//!   幂等成功（重试语义）；**有**打开事务时，未知 ID 必须 `NotFound`——否则等于用一个
+//!   未知 ID 把当前事务静默提交了。SQLite 目前接入第 1 组，MariaDB 接入第 2 组。
 //!
 //! 真实驱动接入时，在集成测试中构造会话并调用 `smoke` 与上述五项检查，再补充该驱动
 //! 特有的类型往返测试。检查失败一律返回 **`INTERNAL`** 错误（文案说明违反了哪条不变量），
@@ -538,7 +547,7 @@ fn sample(key: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 事务不变量（ADR 0017 §3）
+// 事务不变量（ADR 0017 §3）：表数据可见性
 // ---------------------------------------------------------------------------
 
 /// 事务不变量检查所需的 SQL 片段，由调用方按本驱动方言提供。
@@ -851,9 +860,316 @@ pub async fn transaction_statement_error_leaves_rollback_usable(
     tx_expect_count(session, fixture.count, 0, "语句失败并回滚后").await
 }
 
+// ---- 事务不变量（ADR 0017 §3）：事务状态机 ----
+//
+// 事务状态机由 SPI 的三个方法表达，因此这一组检查与方言无关；只有「建表、造一行、数一行、
+// 删表」需要调用方给 SQL。MariaDB 接入这一组，SQLite 接入上方的表数据可见性组
+// （`TransactionFixture`）；驱动差异（隐式提交、只读事务、断连分类）属于驱动特有行为，
+// 由各自驱动 crate 的测试补充，不放进 testkit。
+
+/// 事务不变量检查所需的方言 SQL。
+#[derive(Debug, Clone, Copy)]
+pub struct TransactionProbe<'a> {
+    /// 建表语句。检查会先执行 [`Self::drop_table`]，因此可以重复运行。
+    pub create_table: &'a str,
+    /// 插入**恰好一行**的语句。
+    pub insert_row: &'a str,
+    /// 返回当前表行数的查询（单列整数）。
+    pub count_rows: &'a str,
+    /// 删表语句。
+    pub drop_table: &'a str,
+}
+
+/// 断言「事务是原子的」：事务内可见、回滚后不可见、提交后可见。
+///
+/// 验证的不变量：
+///
+/// - 事务内执行的写入，在同一会话里立即可见；
+/// - `rollback_transaction` 之后该写入不可见（不能被静默提交）；
+/// - `commit_transaction` 之后该写入仍然可见（不能只留在本地缓冲）。
+///
+/// 调用方需要提供：一个已连接、当前没有打开事务的会话，以及 [`TransactionProbe`]。
+/// 检查会自己建表并删表，结束后表不存在。
+pub async fn transaction_commit_and_rollback_are_atomic(
+    session: &dyn DriverSession,
+    probe: &TransactionProbe<'_>,
+) -> Result<()> {
+    execute_checked(session, probe.drop_table, "清理事务检查用表失败").await?;
+    execute_checked(session, probe.create_table, "建事务检查用表失败").await?;
+
+    // 回滚路径：事务内 1 行，回滚后 0 行。
+    let transaction = begin_checked(session).await?;
+    execute_checked(session, probe.insert_row, "事务内写入失败").await?;
+    let inside = count_rows(session, probe.count_rows).await?;
+    if inside != 1 {
+        rollback_quietly(session, &transaction).await;
+        return Err(Error::internal(format!(
+            "事务内应看到 1 行，实际 {inside} 行：事务内的写入必须对自己可见"
+        )));
+    }
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .map_err(|error| violated("rollback_transaction 失败", error))?;
+    let after_rollback = count_rows(session, probe.count_rows).await?;
+    if after_rollback != 0 {
+        return Err(Error::internal(format!(
+            "回滚后应看到 0 行，实际 {after_rollback} 行：回滚没有撤销写入（或写入被静默提交了）"
+        )));
+    }
+
+    // 提交路径：提交后数据必须仍然存在。
+    let transaction = begin_checked(session).await?;
+    execute_checked(session, probe.insert_row, "第二次事务内写入失败").await?;
+    session
+        .commit_transaction(&transaction)
+        .await
+        .map_err(|error| violated("commit_transaction 失败", error))?;
+    let after_commit = count_rows(session, probe.count_rows).await?;
+    if after_commit != 1 {
+        return Err(Error::internal(format!(
+            "提交后应看到 1 行，实际 {after_commit} 行：提交没有让写入生效"
+        )));
+    }
+
+    execute_checked(session, probe.drop_table, "删除事务检查用表失败").await?;
+    Ok(())
+}
+
+/// 断言「一个会话同时最多一个打开的事务」（ADR 0017 §3）。
+///
+/// 第二次 `begin_transaction` 必须以 [`ErrorCategory::AlreadyExists`] 拒绝；
+/// 回滚后必须能重新开启，证明拒绝不是把会话锁死。
+///
+/// 调用方需要提供：一个已连接、当前没有打开事务的会话。
+pub async fn begin_is_rejected_while_transaction_is_open(
+    session: &dyn DriverSession,
+) -> Result<()> {
+    let transaction = begin_checked(session).await?;
+    let error = match session
+        .begin_transaction(default_transaction_options())
+        .await
+    {
+        Ok(second) => {
+            rollback_quietly(session, &second).await;
+            rollback_quietly(session, &transaction).await;
+            return Err(Error::internal(
+                "已有打开的事务时 begin_transaction 仍返回成功：一个会话最多一个事务",
+            ));
+        }
+        Err(error) => error,
+    };
+    if error.category() != ErrorCategory::AlreadyExists {
+        rollback_quietly(session, &transaction).await;
+        return Err(Error::internal(format!(
+            "重复开启事务必须以 AlreadyExists 拒绝（transaction.already_active），\
+             实际分类为 {}（{}）",
+            error.category(),
+            error.code()
+        )));
+    }
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .map_err(|error| violated("回滚事务失败", error))?;
+
+    // 回滚后必须能再次开启：拒绝不能把会话卡在「永远已有事务」的状态。
+    let reopened = begin_checked(session).await.map_err(|error| {
+        Error::internal(format!(
+            "回滚后应能重新开启事务，实际失败：{}（{}）",
+            error,
+            error.code()
+        ))
+    })?;
+    session
+        .rollback_transaction(&reopened)
+        .await
+        .map_err(|error| violated("回滚重新开启的事务失败", error))?;
+    Ok(())
+}
+
+/// 断言「重复提交 / 回滚是幂等的」（ADR 0017 §3）。
+///
+/// 验证的不变量：对已结束的事务再 `commit` 或再 `rollback` 都必须返回 `Ok`；
+/// 提交后再回滚、回滚后再提交同样不得报错。前端在断线重连与双击时会重复调用，
+/// 返回错误只会制造一条用户无法处置的失败提示。
+///
+/// 调用方需要提供：一个已连接、当前没有打开事务的会话。
+pub async fn commit_and_rollback_are_idempotent(session: &dyn DriverSession) -> Result<()> {
+    let transaction = begin_checked(session).await?;
+    for attempt in 1..=2 {
+        session
+            .commit_transaction(&transaction)
+            .await
+            .map_err(|error| {
+                violated(
+                    &format!("第 {attempt} 次 commit 应返回 Ok（重复提交必须幂等）"),
+                    error,
+                )
+            })?;
+    }
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .map_err(|error| violated("已提交的事务再回滚应返回 Ok", error))?;
+
+    // 已结束的事务 ID 在新事务打开后重试，同样必须成功，且不能影响新事务。
+    let current = begin_checked(session).await?;
+    session
+        .commit_transaction(&transaction)
+        .await
+        .map_err(|error| violated("旧事务 ID 的重试提交应返回 Ok", error))?;
+    session
+        .commit_transaction(&current)
+        .await
+        .map_err(|error| violated("新事务仍应可正常提交", error))?;
+
+    let transaction = begin_checked(session).await?;
+    for attempt in 1..=2 {
+        session
+            .rollback_transaction(&transaction)
+            .await
+            .map_err(|error| {
+                violated(
+                    &format!("第 {attempt} 次 rollback 应返回 Ok（重复回滚必须幂等）"),
+                    error,
+                )
+            })?;
+    }
+    session
+        .commit_transaction(&transaction)
+        .await
+        .map_err(|error| violated("已回滚的事务再提交应返回 Ok", error))?;
+    Ok(())
+}
+
+/// 断言「未知事务 ID 不会被静默接受」（ADR 0017 §3）。
+///
+/// 验证的不变量：
+///
+/// - 会话里有事务时，用一个**不存在**的事务 ID 提交/回滚必须返回
+///   [`ErrorCategory::NotFound`]，绝不退化成自动提交；
+/// - 拒绝之后真事务仍然可用：写入 + 提交后行数必须为 1（说明没被提前提交，
+///   也没把会话搞坏）。
+///
+/// 调用方需要提供：一个已连接、当前没有打开事务的会话，以及 [`TransactionProbe`]。
+pub async fn unknown_transaction_is_not_silently_accepted(
+    session: &dyn DriverSession,
+    probe: &TransactionProbe<'_>,
+) -> Result<()> {
+    execute_checked(session, probe.drop_table, "清理事务检查用表失败").await?;
+    execute_checked(session, probe.create_table, "建事务检查用表失败").await?;
+
+    let transaction = begin_checked(session).await?;
+    let unknown = TransactionId::new();
+    for (action, result) in [
+        ("commit", session.commit_transaction(&unknown).await),
+        ("rollback", session.rollback_transaction(&unknown).await),
+    ] {
+        match result {
+            Ok(()) => {
+                rollback_quietly(session, &transaction).await;
+                return Err(Error::internal(format!(
+                    "对未知事务 {unknown} 的 {action} 返回成功：未知事务必须以 NotFound 拒绝，\
+                     不得当成自动提交"
+                )));
+            }
+            Err(error) if error.category() == ErrorCategory::NotFound => {}
+            Err(error) => {
+                rollback_quietly(session, &transaction).await;
+                return Err(Error::internal(format!(
+                    "对未知事务 {unknown} 的 {action} 必须以 NotFound 拒绝，\
+                     实际分类为 {}（{}）",
+                    error.category(),
+                    error.code()
+                )));
+            }
+        }
+    }
+
+    execute_checked(session, probe.insert_row, "事务内写入失败").await?;
+    session
+        .commit_transaction(&transaction)
+        .await
+        .map_err(|error| violated("提交真事务失败", error))?;
+    let rows = count_rows(session, probe.count_rows).await?;
+    if rows != 1 {
+        return Err(Error::internal(format!(
+            "真事务提交后应看到 1 行，实际 {rows} 行：拒绝未知事务不能影响当前事务"
+        )));
+    }
+    execute_checked(session, probe.drop_table, "删除事务检查用表失败").await?;
+    Ok(())
+}
+
+/// 默认事务选项：不指定隔离级别、可写。
+fn default_transaction_options() -> TransactionOptions {
+    TransactionOptions {
+        isolation: IsolationLevel::Unspecified,
+        read_only: false,
+    }
+}
+
+/// 执行一条不产生结果集的语句；失败即视为违反不变量。
+async fn execute_checked(session: &dyn DriverSession, sql: &str, context: &str) -> Result<()> {
+    session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: sql.to_owned(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|error| violated(context, error))
+}
+
+/// 开启事务；失败即视为违反不变量。
+async fn begin_checked(session: &dyn DriverSession) -> Result<TransactionId> {
+    session
+        .begin_transaction(default_transaction_options())
+        .await
+        .map_err(|error| violated("begin_transaction 失败", error))
+}
+
+/// 尽力回滚：检查失败时不让会话留着打开的事务，避免污染后续检查。
+async fn rollback_quietly(session: &dyn DriverSession, transaction: &TransactionId) {
+    let _ = session.rollback_transaction(transaction).await;
+}
+
+/// 读一个整数标量（行数）。
+async fn count_rows(session: &dyn DriverSession, sql: &str) -> Result<i64> {
+    let start = session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: sql.to_owned(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .map_err(|error| violated("行数查询失败", error))?;
+    let cell = start
+        .first_batch
+        .and_then(|batch| batch.rows.into_iter().next())
+        .and_then(|row| row.into_iter().next())
+        .ok_or_else(|| Error::internal("行数查询没有返回任何行"))?;
+    match cell.value {
+        Value::Int(value) => Ok(value),
+        Value::UInt(value) => i64::try_from(value)
+            .map_err(|_| Error::internal("行数超出 i64 范围：调用方的查询是否写错了？")),
+        other => Err(Error::internal(format!("行数列不是整数：{other:?}"))),
+    }
+}
+
+/// 把驱动错误包装成「违反事务不变量」的 `INTERNAL`。
+fn violated(context: &str, error: Error) -> Error {
+    Error::internal(format!("{context}：{}（{}）", error, error.code())).with_source(error)
+}
+
 #[cfg(test)]
 mod tests {
     use sqarvo_driver_api::{Cell, ColumnMeta, ColumnType, Row, StatementSummary, Value};
+    use std::sync::atomic::AtomicI64;
 
     use super::*;
 
@@ -1665,5 +1981,326 @@ mod tests {
                 .unwrap_err();
         assert_eq!(error.code(), ErrorCode::INTERNAL);
         assert!(error.to_string().contains("ROLLBACK"), "{error}");
+    }
+
+    // ---- 事务不变量检查：正例与反例 ----
+
+    /// 可在事务检查中注入偏差的内存会话：表只有一行计数，事务语义在内存里模拟。
+    #[derive(Default)]
+    struct TransactionViolations {
+        /// 事务已打开时再 begin 仍返回成功。
+        allow_second_begin: bool,
+        /// 对未知事务 ID 的 commit/rollback 返回成功（相当于静默自动提交）。
+        accept_unknown_transaction: bool,
+        /// 重复提交/回滚已结束的事务返回错误。
+        reject_repeat_commit: bool,
+    }
+
+    struct TransactionSession {
+        session_id: SessionId,
+        open: Mutex<Option<TransactionId>>,
+        /// 最近一个已结束的事务：重复提交/回滚它必须幂等成功。
+        finished: Mutex<Option<TransactionId>>,
+        committed: AtomicI64,
+        pending: AtomicI64,
+        violations: TransactionViolations,
+    }
+
+    impl TransactionSession {
+        fn new(violations: TransactionViolations) -> Self {
+            Self {
+                session_id: SessionId::new(),
+                open: Mutex::new(None),
+                finished: Mutex::new(None),
+                committed: AtomicI64::new(0),
+                pending: AtomicI64::new(0),
+                violations,
+            }
+        }
+
+        fn is_finished(&self, transaction_id: &TransactionId) -> bool {
+            *self
+                .finished
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == Some(*transaction_id)
+        }
+
+        fn count(&self) -> i64 {
+            self.committed.load(Ordering::SeqCst) + self.pending.load(Ordering::SeqCst)
+        }
+
+        fn count_start(&self) -> ExecutionStart {
+            let summary = StatementSummary {
+                index: 0,
+                sql_preview: "SELECT COUNT(*) FROM t".to_owned(),
+                columns: vec![column()],
+                rows_affected: None,
+                has_result_set: true,
+            };
+            let rows = vec![vec![Cell::new(Value::Int(self.count()))]];
+            ExecutionStart::single(
+                summary,
+                Some(ResultBatch {
+                    statement_index: 0,
+                    rows,
+                    next_cursor: None,
+                    has_more: false,
+                }),
+            )
+        }
+
+        fn done() -> ExecutionStart {
+            ExecutionStart::single(
+                StatementSummary {
+                    index: 0,
+                    sql_preview: "statement".to_owned(),
+                    columns: Vec::new(),
+                    rows_affected: Some(1),
+                    has_result_set: false,
+                },
+                None,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl DriverSession for TransactionSession {
+        fn session_id(&self) -> SessionId {
+            self.session_id
+        }
+
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+            let sql = request.sql.trim().to_ascii_lowercase();
+            // 建表/删表都让表回到「空」状态，检查之间互不干扰。
+            if sql.starts_with("drop") || sql.starts_with("create") {
+                self.committed.store(0, Ordering::SeqCst);
+                self.pending.store(0, Ordering::SeqCst);
+            }
+            if sql.starts_with("insert") {
+                self.pending.fetch_add(1, Ordering::SeqCst);
+            }
+            if sql.starts_with("select") {
+                return Ok(self.count_start());
+            }
+            Ok(Self::done())
+        }
+
+        async fn fetch(
+            &self,
+            _query_id: &QueryId,
+            _statement_index: u32,
+            _cursor: Option<&str>,
+            _max_rows: u32,
+        ) -> Result<ResultBatch> {
+            Err(Error::not_found(
+                ErrorCode::QUERY_NOT_FOUND,
+                "该假会话不产生更多批次",
+            ))
+        }
+
+        async fn cancel(&self, _query_id: &QueryId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn begin_transaction(&self, _options: TransactionOptions) -> Result<TransactionId> {
+            let mut open = self
+                .open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if open.is_some() && !self.violations.allow_second_begin {
+                return Err(Error::new(
+                    ErrorCode::TRANSACTION_ALREADY_ACTIVE,
+                    ErrorCategory::AlreadyExists,
+                    "事务已打开",
+                ));
+            }
+            let id = TransactionId::new();
+            *open = Some(id);
+            Ok(id)
+        }
+
+        async fn commit_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+            let mut open = self
+                .open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match *open {
+                None if self.violations.reject_repeat_commit => Err(Error::failed_precondition(
+                    ErrorCode::TRANSACTION_FAILED,
+                    "没有可提交的事务",
+                )),
+                None => Ok(()),
+                Some(current) if current == *transaction_id => {
+                    let flushed = self.pending.swap(0, Ordering::SeqCst);
+                    self.committed.fetch_add(flushed, Ordering::SeqCst);
+                    *open = None;
+                    *self
+                        .finished
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*transaction_id);
+                    Ok(())
+                }
+                Some(_) if self.is_finished(transaction_id) => Ok(()),
+                Some(_) if self.violations.accept_unknown_transaction => Ok(()),
+                Some(_) => Err(Error::not_found(
+                    ErrorCode::TRANSACTION_NOT_FOUND,
+                    "事务不存在",
+                )),
+            }
+        }
+
+        async fn rollback_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+            let mut open = self
+                .open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match *open {
+                None if self.violations.reject_repeat_commit => Err(Error::failed_precondition(
+                    ErrorCode::TRANSACTION_FAILED,
+                    "没有可回滚的事务",
+                )),
+                None => Ok(()),
+                Some(current) if current == *transaction_id => {
+                    self.pending.store(0, Ordering::SeqCst);
+                    *open = None;
+                    *self
+                        .finished
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*transaction_id);
+                    Ok(())
+                }
+                Some(_) if self.is_finished(transaction_id) => Ok(()),
+                Some(_) if self.violations.accept_unknown_transaction => Ok(()),
+                Some(_) => Err(Error::not_found(
+                    ErrorCode::TRANSACTION_NOT_FOUND,
+                    "事务不存在",
+                )),
+            }
+        }
+    }
+
+    fn transaction_probe() -> TransactionProbe<'static> {
+        TransactionProbe {
+            create_table: "CREATE TABLE t (v INT)",
+            insert_row: "INSERT INTO t VALUES (1)",
+            count_rows: "SELECT COUNT(*) FROM t",
+            drop_table: "DROP TABLE IF EXISTS t",
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_probe_checks_accept_conforming_session() {
+        let session = TransactionSession::new(TransactionViolations::default());
+        transaction_commit_and_rollback_are_atomic(&session, &transaction_probe())
+            .await
+            .unwrap();
+        begin_is_rejected_while_transaction_is_open(&session)
+            .await
+            .unwrap();
+        commit_and_rollback_are_idempotent(&session).await.unwrap();
+        unknown_transaction_is_not_silently_accepted(&session, &transaction_probe())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn second_begin_violation_is_reported() {
+        let session = TransactionSession::new(TransactionViolations {
+            allow_second_begin: true,
+            ..TransactionViolations::default()
+        });
+        let error = begin_is_rejected_while_transaction_is_open(&session)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("最多一个事务"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn silently_accepted_unknown_transaction_is_reported() {
+        let session = TransactionSession::new(TransactionViolations {
+            accept_unknown_transaction: true,
+            ..TransactionViolations::default()
+        });
+        let error = unknown_transaction_is_not_silently_accepted(&session, &transaction_probe())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("未知事务"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn non_idempotent_commit_is_reported() {
+        let session = TransactionSession::new(TransactionViolations {
+            reject_repeat_commit: true,
+            ..TransactionViolations::default()
+        });
+        let error = commit_and_rollback_are_idempotent(&session)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("第 2 次 commit"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn rollback_that_does_not_discard_is_reported() {
+        // 模拟「回滚没有生效」：把 rollback 当成空操作（保留 pending）。
+        struct LosingRollback(TransactionSession);
+        #[async_trait]
+        impl DriverSession for LosingRollback {
+            fn session_id(&self) -> SessionId {
+                self.0.session_id()
+            }
+            async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+                self.0.execute(request).await
+            }
+            async fn fetch(
+                &self,
+                query_id: &QueryId,
+                statement_index: u32,
+                cursor: Option<&str>,
+                max_rows: u32,
+            ) -> Result<ResultBatch> {
+                self.0
+                    .fetch(query_id, statement_index, cursor, max_rows)
+                    .await
+            }
+            async fn cancel(&self, query_id: &QueryId) -> Result<()> {
+                self.0.cancel(query_id).await
+            }
+            async fn close(&self) -> Result<()> {
+                self.0.close().await
+            }
+            async fn begin_transaction(
+                &self,
+                options: TransactionOptions,
+            ) -> Result<TransactionId> {
+                self.0.begin_transaction(options).await
+            }
+            async fn commit_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+                self.0.commit_transaction(transaction_id).await
+            }
+            async fn rollback_transaction(&self, _transaction_id: &TransactionId) -> Result<()> {
+                // 只清掉打开标记，不丢弃待提交的行：等价于「回滚被静默提交」。
+                *self
+                    .0
+                    .open
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                Ok(())
+            }
+        }
+
+        let session = LosingRollback(TransactionSession::new(TransactionViolations::default()));
+        let error = transaction_commit_and_rollback_are_atomic(&session, &transaction_probe())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert!(error.to_string().contains("回滚"), "{error}");
     }
 }

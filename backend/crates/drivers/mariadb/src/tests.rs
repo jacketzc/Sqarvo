@@ -30,7 +30,9 @@ fn driver_id_and_defaults_are_sane() {
     assert!(capabilities.query_cancellation);
     assert!(capabilities.streaming_results);
     assert!(!capabilities.multiple_statements);
-    assert!(!capabilities.transactions);
+    // 事务在驱动层实现（Issue #43）；能力声明必须与实现一致。
+    assert!(capabilities.transactions);
+    assert!(capabilities.names().contains(&"transactions"));
 }
 
 #[test]

@@ -178,6 +178,9 @@ pub trait TableDataProvider: Send + Sync {
    还需通过 5 项不变量检查——取消幂等、`close` 幂等与关闭后拒绝执行、多语句拒绝、
    单元格截断、分批无丢失；声明 `capabilities.transactions` 的驱动还必须通过事务不变量
    （提交可见、回滚丢弃、重复提交/回滚幂等、一个会话最多一个事务、语句失败后仍可回滚）。
+   testkit 提供两组互补的事务检查：`TransactionFixture`（表数据可见性组，SQLite 接入）与
+   `TransactionProbe`（事务状态机组：原子性、一个会话最多一个事务、重复提交/回滚幂等、
+   有打开事务时未知 ID 必须 `NotFound`，MariaDB 接入）。
    检查本身与方言无关，SQL 由驱动的集成测试按本驱动语法提供；
 5. 编写集成测试：连接、类型往返（含 NULL/Decimal/UUID/JSON/数组）、取消、错误分类、资源清理；
 6. 更新本文件与 README 的支持矩阵；
@@ -186,7 +189,8 @@ pub trait TableDataProvider: Send + Sync {
 ## 尚未实现
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
-- MariaDB 驱动的显式事务与元数据（接口已定义，M4 接线；能力描述符当前为 `false`）；
+- MariaDB 驱动的元数据（接口已定义，M4 接线；能力描述符当前为 `false`）。显式事务已在
+  驱动层实现（`transactions = true`），语义见 [MariaDB 驱动](./mariadb.md#事务)；
 - 表数据浏览与行编辑的驱动实现：SPI 与 proto 已冻结（ADR 0017），
   `table_data()` 目前全部返回 `None`，`supports_row_edits()` 为 `false`，
   请求时返回 `capability.unsupported`；
