@@ -49,8 +49,9 @@ impl MariaDbDriver {
                     multiple_statements: false,
                     ddl_generation: false,
                     server_side_pagination: false,
-                    // `database` 映射为 catalog，但对象树尚未实现，先声明为 false。
-                    catalogs: false,
+                    // v0.2.2（#82）：`database` 映射为 catalog，目录层与跨库浏览已实现。
+                    catalogs: true,
+                    // MariaDB 没有独立的 schema 层级，不伪造。
                     schemas: false,
                     // 行编辑：`table_data()` 返回 provider，`supports_row_edits()`
                     // 为 true（#47）。

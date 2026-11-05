@@ -1,22 +1,46 @@
-//! MariaDB 元数据：`information_schema`。
+//! MariaDB 元数据：`information_schema`（v0.2.2 起覆盖完整层级与跨库）。
 //!
-//! v0.2.1 只覆盖「当前数据库（catalog）里的表与视图」这一层：
+//! # 层级与数据来源
 //!
-//! - [`MetadataProvider::list_children`] 只接受根节点，返回 `information_schema.TABLES`
-//!   里的表与视图（`TABLE_TYPE` 原样保留到 [`ObjectKind`]），按表名排序后分页；
-//!   Catalog / Schema / Index / Sequence 等层级显式报 `capability.unsupported`；
-//! - [`MetadataProvider::columns`] 用 `information_schema.COLUMNS` 读取原始类型名
-//!   （`COLUMN_TYPE`，含长度/无符号）、可空、精度与标度、默认值
-//!   （`COLUMN_DEFAULT`，未求值文本）以及字符集/排序规则
-//!   （`CHARACTER_SET_NAME` / `COLLATION_NAME`）；
-//! - [`MetadataProvider::primary_key`] 用 `information_schema.KEY_COLUMN_USAGE`
-//!   （`CONSTRAINT_NAME = 'PRIMARY'`），`ORDINAL_POSITION` 就是复合主键内的顺序；
-//! - [`MetadataProvider::ddl`] 仍是显式未实现（计划 v0.2.2）。
+//! | 父节点 | 子节点 | 数据来源 |
+//! |---|---|---|
+//! | 空（根） | 当前数据库的表 / 视图 / 序列 | `information_schema.TABLES`（当前库） |
+//! | `CATALOG`（名字为空 = 目录层本身） | 本连接可见的库（database） | `information_schema.SCHEMATA` |
+//! | `CATALOG`（名字为库名） | 该库的表 / 视图 / 序列 | `information_schema.TABLES` |
+//! | `TABLE` | 列 / 索引 / 触发器 | `COLUMNS` / `STATISTICS` / `TRIGGERS` |
+//! | `VIEW` | 列 | `COLUMNS` |
+//! | 列 / 索引 / 触发器 / 序列（叶子） | 无；请求子节点报 `metadata.object_kind_unsupported` | — |
 //!
-//! 所有标识符都通过 **绑定参数** 传给服务端（`TABLE_SCHEMA = ? AND TABLE_NAME = ?`），
-//! 因此不存在把库名/表名拼进 SQL 或反引号转义的问题。表名大小写按服务端
-//! `information_schema` 的比较规则处理：`lower_case_table_names = 0` 时区分大小写，
-//! 结果以服务端返回的 `TABLE_NAME` 为准。
+//! MariaDB 的 database 映射为 catalog，**没有独立的 schema 层级**：以 `SCHEMA` 为父节点、
+//! 或对象引用里带 `schema`，一律明确报 `capability.unsupported`，不伪造空 schema 层。
+//!
+//! # 跨库与权限
+//!
+//! 跨库引用必须显式给出 `catalog`（库名）；省略时用当前连接库（`DATABASE()`），
+//! 但**不会**把「引用里没写库名」当成「切到别的库」。
+//!
+//! 存在性判定与错误分类：
+//!
+//! - 库在 `information_schema.SCHEMATA` 里可见 → 存在且可读，返回服务端给出的规范名；
+//! - 不可见时用 `SHOW CREATE DATABASE <引用转义的库名>` 探测：`1049` → 库不存在
+//!   （`metadata.object_not_found`），`1044` / `1142` → 无权限（`metadata.permission_denied`）；
+//! - **已知限制**：`information_schema.SCHEMATA` 已按权限过滤，没有全局权限的账号
+//!   对「不存在」与「无权限」都可能只拿到 `1044`（实测：`SHOW TABLES FROM <不存在的库>`
+//!   与 `USE <不存在的库>` 都返回 1044），此时驱动按服务端的原话报
+//!   `metadata.permission_denied`，不猜成「不存在」。
+//!
+//! # 标识符与参数
+//!
+//! 库名 / 表名 / 列名进 `information_schema` 查询时全部是**绑定参数**
+//! （`TABLE_SCHEMA = ? AND TABLE_NAME = ?`），因此没有拼接问题；唯一需要把库名当
+//! **标识符**用的地方是 `SHOW CREATE DATABASE` 探测，那里用 [`quote_identifier`]
+//! 反引号引用、内部反引号成对转义（反引号、空格、中文都按字面量处理）。
+//!
+//! # 子节点顺序与分页
+//!
+//! 每一层都用 [`sqarvo_metadata::paginate_children`]：先按种类、再按限定名排序；键里带
+//! 种类（列与索引可以同名）与父节点作用域。token 是不透明字符串
+//! （`v1:<offset>:<指纹>`），非法 token 显式报错、绝不回退第一页。
 
 use async_trait::async_trait;
 use mysql_async::prelude::*;
@@ -26,9 +50,9 @@ use sqarvo_driver_api::{
     ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectKind,
     ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
 };
-use sqarvo_metadata::paginate_by_key;
+use sqarvo_metadata::paginate_children;
 
-use crate::error::{NO_DATABASE, OBJECT_NOT_FOUND, map_error};
+use crate::error::{NO_DATABASE, map_error, server_code};
 use crate::session::MariaDbSession;
 
 /// 元数据请求。由 [`MetadataProvider`] 构造，交给会话任务执行。
@@ -120,7 +144,7 @@ fn mismatched_reply() -> Error {
     Error::internal("元数据回复与请求不匹配")
 }
 
-/// DDL 查看的统一文案（v0.2.2 提供）。
+/// DDL 查看的统一文案（v0.2.2 提供，#83）。
 pub(crate) fn ddl_unavailable() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
@@ -136,6 +160,58 @@ pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Res
         ));
     }
     Ok(())
+}
+
+/// 该数据库没有这一层级、或本驱动不提供该层级：`capability.unsupported`。
+fn unsupported_level(detail: impl Into<String>) -> Error {
+    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, detail)
+}
+
+/// 种类不适用于该操作：`metadata.object_kind_unsupported`（`INVALID_ARGUMENT`）。
+fn kind_not_applicable(kind: &ObjectKind, operation: &str) -> Error {
+    sqarvo_driver_api::object_kind_unsupported(kind, operation)
+}
+
+/// 对象不存在：`metadata.object_not_found`（`NOT_FOUND`）。
+fn metadata_not_found(database: &str, name: &str) -> Error {
+    Error::not_found(
+        ErrorCode::METADATA_OBJECT_NOT_FOUND,
+        format!(
+            "MariaDB 对象 {database}.{name} 不存在（或当前账号在 information_schema 里看不到它）"
+        ),
+    )
+}
+
+/// 库不存在：`metadata.object_not_found`（`NOT_FOUND`）。
+fn database_not_found(name: &str) -> Error {
+    Error::not_found(
+        ErrorCode::METADATA_OBJECT_NOT_FOUND,
+        format!("MariaDB 数据库 {name} 不存在"),
+    )
+}
+
+/// 库存在但当前账号无权读取：`metadata.permission_denied`（`PERMISSION_DENIED`）。
+///
+/// **不降级成「不存在」**：权限问题换授权就能解决，对象真没了只能重建。
+/// 但 MariaDB 对没有全局权限的账号在两种情形下都只返回 1044，消息里如实写明这一点。
+fn database_permission_denied(name: &str) -> Error {
+    Error::new(
+        ErrorCode::METADATA_PERMISSION_DENIED,
+        sqarvo_common::ErrorCategory::PermissionDenied,
+        format!(
+            "当前连接无权读取数据库 {name} 的元数据（MariaDB 对不可见库统一返回 1044，\
+             无法与「库不存在」区分）"
+        ),
+    )
+}
+
+/// MariaDB 标识符引用：反引号包裹，内部反引号成对转义。
+///
+/// 只用于**库名必须当标识符**的位置（`SHOW CREATE DATABASE` 探测）：查询
+/// `information_schema` 时库名/表名都是绑定参数，不需要引用。
+#[must_use]
+pub(crate) fn quote_identifier(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
 }
 
 /// 当前连接选中的数据库。未选数据库时显式失败：不能把 `NULL` 当成「没有表」。
@@ -160,35 +236,29 @@ pub(crate) async fn current_database(conn: &mut Conn) -> Result<String> {
         })
 }
 
-/// 校验对象引用的层级/种类，并返回（catalog, 对象名）。
+/// 校验表数据路径（`BrowseTable` / 行编辑）的对象引用，并返回对象名。
 ///
-/// `catalog` 必须等于当前数据库（本版不支持跨库浏览）；MariaDB 没有独立 schema 层。
+/// 表数据浏览/行编辑的 SQL 还只作用于当前数据库（跨库表数据不在 #82 范围），
+/// 因此 `catalog` 必须等于当前库；元数据浏览走 [`resolve_object`]，不受此限。
 pub(crate) fn object_parts<'a>(object: &'a ObjectRef, database: &str) -> Result<&'a str> {
     if object.qualified_name.schema.is_some() {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
+        return Err(unsupported_level(
             "MariaDB 没有独立的 schema 层级，该对象引用不属于本驱动",
         ));
     }
     if let Some(catalog) = object.qualified_name.catalog.as_deref()
-        && catalog != database
+        && !catalog.eq_ignore_ascii_case(database)
     {
         return Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            format!("本版只支持当前数据库（{database}）内的对象，不支持跨库浏览"),
+            format!("MariaDB 表数据浏览只支持当前数据库（{database}），不支持跨库"),
         ));
     }
     if !matches!(
         object.kind,
         ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_)
     ) {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            format!(
-                "MariaDB 元数据本版只支持表与视图，不支持 {}",
-                object.kind.as_str()
-            ),
-        ));
+        return Err(kind_not_applicable(&object.kind, "表数据浏览"));
     }
     let name = object.qualified_name.name.trim();
     if name.is_empty() {
@@ -200,24 +270,113 @@ pub(crate) fn object_parts<'a>(object: &'a ObjectRef, database: &str) -> Result<
     Ok(name)
 }
 
-async fn list_children(
-    conn: &mut Conn,
-    parent: Option<&ObjectRef>,
-    page: &PageRequest,
-) -> Result<Page<ObjectNode>> {
-    if parent.is_some() {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "本版只支持列出当前数据库的表与视图（根节点）；\
-             Catalog / Schema / Index / Sequence 等层级在 v0.2.2 提供",
+/// 解析元数据请求里的对象引用：库（catalog）+ 对象名。
+///
+/// 省略 `catalog` 表示当前连接库；给出来就必须显式解析（跨库不隐式切换）。
+async fn resolve_object(conn: &mut Conn, object: &ObjectRef) -> Result<(String, String)> {
+    if object.qualified_name.schema.is_some() {
+        return Err(unsupported_level(
+            "MariaDB 没有独立的 schema 层级：对象引用不能带 schema 字段",
         ));
     }
-    let database = current_database(conn).await?;
+    let database = match object.qualified_name.catalog.as_deref() {
+        Some(catalog) => resolve_database(conn, catalog).await?,
+        None => current_database(conn).await?,
+    };
+    let name = object.qualified_name.name.trim();
+    if name.is_empty() {
+        return Err(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "对象名不能为空",
+        ));
+    }
+    Ok((database, name.to_owned()))
+}
+
+/// 把请求里的库名解析成服务端规范名（`information_schema` 的排序规则大小写不敏感）。
+///
+/// 不可见时探测一次：`SHOW CREATE DATABASE` 是唯一能把「不存在」（1049）与
+/// 「无权限」（1044/1142）分开的服务端回答——没有全局权限的账号两者都会拿到 1044。
+async fn resolve_database(conn: &mut Conn, requested: &str) -> Result<String> {
+    let visible: Option<String> = conn
+        .exec_first(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
+            (requested,),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 数据库列表失败"))?;
+    if let Some(name) = visible {
+        return Ok(name);
+    }
+
+    probe_database(conn, requested).await
+}
+
+/// `information_schema.SCHEMATA` 里看不到时，用 `SHOW CREATE DATABASE` 探测并分类。
+async fn probe_database(conn: &mut Conn, name: &str) -> Result<String> {
+    let sql = format!("SHOW CREATE DATABASE {}", quote_identifier(name));
+    match conn.query_drop(sql).await {
+        Ok(()) => Ok(name.to_owned()),
+        Err(error) => match probe_error(server_code(&error), name) {
+            Some(error) => Err(error),
+            None => Err(map_error(error, "读取 MariaDB 数据库信息失败")),
+        },
+    }
+}
+
+/// 探测到的服务端错误码 → 元数据域错误；`None` 表示不认识，由调用方按通用规则映射。
+///
+/// 单独拆出来是因为「1049 = 库不存在」这条分支在本测试账号下无法真实触发（没有
+/// 全局权限时 MariaDB 对所有不可见库都回 1044），只能在单元测试里锁定映射。
+fn probe_error(code: Option<u16>, name: &str) -> Option<Error> {
+    match code {
+        // ER_BAD_DB_ERROR：库确实不存在。
+        Some(1049) => Some(database_not_found(name)),
+        // ER_DBACCESS_DENIED_ERROR / ER_TABLEACCESS_DENIED_ERROR /
+        // ER_COLUMNACCESS_DENIED_ERROR：库存在（或无法证明不存在）但不可读。
+        Some(1044 | 1142 | 1143) => Some(database_permission_denied(name)),
+        _ => None,
+    }
+}
+
+/// 目录层本身：列出本连接可见的 database。
+async fn catalog_nodes(conn: &mut Conn) -> Result<Vec<ObjectNode>> {
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
+            (),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 数据库列表失败"))?;
+
+    let mut nodes = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let name = required_text(row, 0, "SCHEMA_NAME")?;
+        nodes.push(ObjectNode {
+            // 目录节点的 `catalog` 与 `name` 都是库名：`catalog` 是它在层级里的位置，
+            // `name` 让通用客户端不需要特判就能显示与回传（ADR 0019）。
+            qualified_name: QualifiedName::new(Some(name.clone()), None, name.clone()),
+            kind: ObjectKind::Catalog,
+            display_name: name,
+            // 任何库都可能有表/视图，即使现在为空。
+            has_children: true,
+            comment: None,
+        });
+    }
+    Ok(nodes)
+}
+
+/// 某个库里的表 / 视图 / 序列。
+async fn list_database_objects(
+    conn: &mut Conn,
+    database: &str,
+    page: &PageRequest,
+) -> Result<Page<ObjectNode>> {
     let rows: Vec<MyRow> = conn
         .exec(
             "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES \
              WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
-            (database.clone(),),
+            (database,),
         )
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 表列表失败"))?;
@@ -226,30 +385,223 @@ async fn list_children(
     for row in &rows {
         let name = required_text(row, 0, "TABLE_NAME")?;
         let raw_kind = required_text(row, 1, "TABLE_TYPE")?;
-        let kind = match raw_kind.as_str() {
-            "BASE TABLE" => ObjectKind::Table,
-            "VIEW" | "SYSTEM VIEW" => ObjectKind::View,
-            other => ObjectKind::Other(other.to_owned()),
-        };
+        let kind = table_kind(&raw_kind);
         let comment = optional_text(row, 2).filter(|text| !text.trim().is_empty());
         nodes.push(ObjectNode {
-            qualified_name: QualifiedName::new(Some(database.clone()), None, name.clone()),
+            qualified_name: QualifiedName::new(Some(database.to_owned()), None, name.clone()),
+            has_children: !matches!(kind, ObjectKind::Sequence),
             kind,
             display_name: name,
-            has_children: true,
             comment,
         });
     }
 
-    paginate_by_key(nodes, page, |node| node.qualified_name.name.as_str())
+    paginate_children(nodes, &format!("catalog:{database}"), page)
+}
+
+/// `information_schema.TABLES.TABLE_TYPE` → 种类。
+///
+/// MariaDB 10.3+ 的序列以 `TABLE_TYPE = 'SEQUENCE'` 出现在 `TABLES` 里（它内部是
+/// 带 `SEQUENCE` 引擎的表），因此序列不需要单独的 `SHOW SEQUENCES`。
+fn table_kind(raw: &str) -> ObjectKind {
+    match raw {
+        "BASE TABLE" => ObjectKind::Table,
+        "VIEW" | "SYSTEM VIEW" => ObjectKind::View,
+        "SEQUENCE" => ObjectKind::Sequence,
+        other => ObjectKind::Other(other.to_owned()),
+    }
+}
+
+/// 表/视图的子节点：列 + 索引（表还带触发器）。
+async fn list_table_children(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+    include_triggers: bool,
+    page: &PageRequest,
+) -> Result<Page<ObjectNode>> {
+    let mut nodes = Vec::new();
+    for name in column_names(conn, database, table).await? {
+        nodes.push(child_node(database, name, ObjectKind::Column));
+    }
+    for name in index_names(conn, database, table).await? {
+        nodes.push(child_node(database, name, ObjectKind::Index));
+    }
+    if include_triggers {
+        for name in trigger_names(conn, database, table).await? {
+            nodes.push(child_node(database, name, ObjectKind::Trigger));
+        }
+    }
+    paginate_children(nodes, &format!("table:{database}.{table}"), page)
+}
+
+/// 表/视图里的列名（按列序号）。
+async fn column_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+            (database, table),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 列名失败"))?;
+    rows.iter()
+        .map(|row| required_text(row, 0, "COLUMN_NAME"))
+        .collect()
+}
+
+/// 表上的索引（`STATISTICS` 每个索引列一行，按索引名去重）。
+///
+/// 主键索引的名字是 `PRIMARY`；`information_schema` 只展示当前账号可见的索引。
+async fn index_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT INDEX_NAME FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+             GROUP BY INDEX_NAME ORDER BY INDEX_NAME",
+            (database, table),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 索引列表失败"))?;
+    rows.iter()
+        .map(|row| required_text(row, 0, "INDEX_NAME"))
+        .collect()
+}
+
+/// 表上的触发器。
+///
+/// 没有 `TRIGGER` 权限的账号在 `information_schema.TRIGGERS` 里看不到行（这是
+/// MariaDB 的可见性规则），因此这里可能比真实触发器少——它不会报错，也不会伪造。
+async fn trigger_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS \
+             WHERE TRIGGER_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? ORDER BY TRIGGER_NAME",
+            (database, table),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 触发器列表失败"))?;
+    rows.iter()
+        .map(|row| required_text(row, 0, "TRIGGER_NAME"))
+        .collect()
+}
+
+fn child_node(database: &str, name: String, kind: ObjectKind) -> ObjectNode {
+    ObjectNode {
+        // 子节点的 catalog 填满：前端把它原样回传给 `GetColumns` / `GetPrimaryKey`。
+        qualified_name: QualifiedName::new(Some(database.to_owned()), None, name.clone()),
+        kind,
+        display_name: name,
+        // 列/索引/触发器都是叶子。
+        has_children: false,
+        // `comment` 是数据库里的注释原文；列/索引这一层没有可展示的注释。
+        comment: None,
+    }
+}
+
+/// 列出子节点。父节点为空 = 根 = 当前连接库的表 / 视图 / 序列（v0.2.1 行为不变）。
+async fn list_children(
+    conn: &mut Conn,
+    parent: Option<&ObjectRef>,
+    page: &PageRequest,
+) -> Result<Page<ObjectNode>> {
+    let Some(parent) = parent else {
+        let database = current_database(conn).await?;
+        return list_database_objects(conn, &database, page).await;
+    };
+
+    match &parent.kind {
+        ObjectKind::Catalog => {
+            if parent.qualified_name.schema.is_some() {
+                return Err(unsupported_level(
+                    "MariaDB 没有独立的 schema 层级：目录引用不能带 schema 字段",
+                ));
+            }
+            let Some(requested) = catalog_target(parent)? else {
+                return paginate_children(catalog_nodes(conn).await?, "catalog-layer", page);
+            };
+            let database = resolve_database(conn, &requested).await?;
+            list_database_objects(conn, &database, page).await
+        }
+        ObjectKind::Table | ObjectKind::View => {
+            let (database, name) = resolve_object(conn, parent).await?;
+            let Some(found) = find_table_entry(conn, &database, &name).await? else {
+                return Err(metadata_not_found(&database, &name));
+            };
+            let expected = if parent.kind == ObjectKind::Table {
+                ObjectKind::Table
+            } else {
+                ObjectKind::View
+            };
+            if found.kind != expected {
+                return Err(kind_not_applicable(
+                    &parent.kind,
+                    &format!(
+                        "展开子节点（{database}.{} 是 {}）",
+                        found.name,
+                        found.kind.as_str()
+                    ),
+                ));
+            }
+            list_table_children(
+                conn,
+                &database,
+                &found.name,
+                matches!(expected, ObjectKind::Table),
+                page,
+            )
+            .await
+        }
+        ObjectKind::Schema => Err(unsupported_level(
+            "MariaDB 没有独立的 schema 层级：database 即 catalog，不伪造空 schema 层",
+        )),
+        ObjectKind::MaterializedView
+        | ObjectKind::Function
+        | ObjectKind::Procedure
+        | ObjectKind::Type => Err(unsupported_level(format!(
+            "MariaDB 的元数据本版不提供 {} 的对象列表：该层级不返回空列表冒充「没有对象」",
+            parent.kind.as_str()
+        ))),
+        ObjectKind::Column
+        | ObjectKind::Index
+        | ObjectKind::Trigger
+        | ObjectKind::Sequence
+        | ObjectKind::Other(_) => Err(kind_not_applicable(&parent.kind, "展开子节点")),
+    }
+}
+
+/// 解析目录层请求里的库名：`None` 表示「目录层本身」，要列出全部 database。
+///
+/// 目录节点的 `catalog` 与 `name` 都可能是库名（见 [`catalog_nodes`]），两者都给且
+/// 不一致说明请求自相矛盾，按 `config.invalid` 拒绝，而不是猜一个。
+fn catalog_target(parent: &ObjectRef) -> Result<Option<String>> {
+    let from_catalog = parent.qualified_name.catalog.as_deref();
+    let from_name = parent.qualified_name.name.trim();
+    match (from_catalog, from_name) {
+        (None, "") => Ok(None),
+        (Some(catalog), "") => Ok(Some(catalog.to_owned())),
+        (None, name) => Ok(Some(name.to_owned())),
+        (Some(catalog), name) if catalog.eq_ignore_ascii_case(name) => Ok(Some(catalog.to_owned())),
+        (Some(catalog), name) => Err(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            format!("目录引用自相矛盾：catalog={catalog}、name={name}"),
+        )),
+    }
 }
 
 pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
-    let database = current_database(conn).await?;
-    let name = object_parts(object, &database)?;
-    let Some(table) = find_table(conn, &database, name).await? else {
-        return Err(object_not_found(name));
+    check_column_kind(&object.kind)?;
+    let (database, name) = resolve_object(conn, object).await?;
+    let Some(table) = find_table_entry(conn, &database, &name).await? else {
+        return Err(metadata_not_found(&database, &name));
     };
+    if table.kind == ObjectKind::Sequence {
+        // 引用里写的是 Table、实际是序列：种类用错了，不是「不存在」。
+        return Err(kind_not_applicable(
+            &object.kind,
+            &format!("读取列信息（{database}.{} 是 sequence）", table.name),
+        ));
+    }
 
     let rows: Vec<MyRow> = conn
         .exec(
@@ -259,7 +611,7 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
              FROM information_schema.COLUMNS \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
              ORDER BY ORDINAL_POSITION",
-            (database.clone(), table.clone()),
+            (database.clone(), table.name.clone()),
         )
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 列信息失败"))?;
@@ -293,16 +645,29 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
 
     if columns.is_empty() {
         // 已确认表存在却读不到列：通常是权限过滤（information_schema 只展示可见对象）。
-        return Err(object_not_found(name));
+        return Err(metadata_not_found(&database, &name));
     }
     Ok(columns)
 }
 
+/// `GetColumns` / `GetPrimaryKey` 只对表与视图成立；其余种类显式分类。
+fn check_column_kind(kind: &ObjectKind) -> Result<()> {
+    match kind {
+        ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_) => Ok(()),
+        // 序列是叶子，没有列；把「种类用错了」和「这一层不存在」分开报。
+        ObjectKind::Sequence => Err(kind_not_applicable(kind, "读取列信息")),
+        ObjectKind::Schema => Err(unsupported_level(
+            "MariaDB 没有独立的 schema 层级：不伪造空 schema 层",
+        )),
+        other => Err(kind_not_applicable(other, "读取列信息")),
+    }
+}
+
 pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<PrimaryKey> {
-    let database = current_database(conn).await?;
-    let name = object_parts(object, &database)?;
-    let Some(table) = find_table(conn, &database, name).await? else {
-        return Err(object_not_found(name));
+    check_column_kind(&object.kind)?;
+    let (database, name) = resolve_object(conn, object).await?;
+    let Some(table) = find_table_entry(conn, &database, &name).await? else {
+        return Err(metadata_not_found(&database, &name));
     };
 
     let rows: Vec<MyRow> = conn
@@ -310,7 +675,7 @@ pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<P
             "SELECT COLUMN_NAME, ORDINAL_POSITION FROM information_schema.KEY_COLUMN_USAGE \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' \
              ORDER BY ORDINAL_POSITION",
-            (database, table),
+            (database, table.name),
         )
         .await
         .map_err(|error| map_error(error, "读取 MariaDB 主键失败"))?;
@@ -327,30 +692,60 @@ pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<P
     Ok(PrimaryKey::new(columns))
 }
 
-/// 查询表/视图是否存在，返回服务端给出的规范表名。
-///
-/// 权限不足的对象在 `information_schema` 里不可见，因此这里表现为「不存在」：
-/// 这是 MySQL 协议族的语义，不额外猜测权限（文档已说明）。
+/// `information_schema.TABLES` 里找到的表/视图/序列。
+pub(crate) struct FoundTable {
+    /// 服务端给出的规范名（大小写以 `information_schema` 为准）。
+    pub(crate) name: String,
+    /// 映射后的种类（`BASE TABLE` / `VIEW` / `SEQUENCE` / 其它原文）。
+    pub(crate) kind: ObjectKind,
+}
+
+/// 查询表/视图是否存在，返回服务端给出的规范表名（表数据路径用）。
 pub(crate) async fn find_table(
     conn: &mut Conn,
     database: &str,
     name: &str,
 ) -> Result<Option<String>> {
+    Ok(find_table_entry(conn, database, name)
+        .await?
+        .map(|found| found.name))
+}
+
+/// 查询表/视图/序列是否存在，并给出它的种类。
+///
+/// 权限不足的对象在 `information_schema` 里不可见，因此这里表现为「不存在」：
+/// 这是 MySQL 协议族的语义，不额外猜测权限（文档已说明）。
+async fn find_table_entry(
+    conn: &mut Conn,
+    database: &str,
+    name: &str,
+) -> Result<Option<FoundTable>> {
     let row: Option<MyRow> = conn
         .exec_first(
-            "SELECT TABLE_NAME FROM information_schema.TABLES \
+            "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
             (database, name),
         )
         .await
         .map_err(|error| map_error(error, "查询 MariaDB 对象是否存在失败"))?;
-    row.as_ref()
-        .map(|row| required_text(row, 0, "TABLE_NAME"))
-        .transpose()
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(FoundTable {
+        name: required_text(&row, 0, "TABLE_NAME")?,
+        kind: table_kind(&required_text(&row, 1, "TABLE_TYPE")?),
+    }))
 }
 
+/// 表数据域的对象不存在码（`mariadb.object_not_found`）。
+///
+/// 元数据浏览用 `metadata.object_not_found`（ADR 0019），表数据浏览/行编辑沿用
+/// `mariadb.object_not_found`：两个域的错误码各自稳定，不因为复用实现而互换。
 pub(crate) fn object_not_found(name: &str) -> Error {
-    Error::not_found(OBJECT_NOT_FOUND, format!("表或视图 {name} 不存在"))
+    Error::not_found(
+        crate::error::OBJECT_NOT_FOUND,
+        format!("表或视图 {name} 不存在"),
+    )
 }
 
 fn required_text(row: &MyRow, index: usize, column: &'static str) -> Result<String> {
@@ -537,6 +932,89 @@ mod tests {
             ColumnType::Unsupported {
                 type_name: "enum('a','b')".to_owned()
             }
+        );
+    }
+
+    /// 反引号引用：内部反引号成对转义；反引号/空格/中文按字面量。
+    #[test]
+    fn identifiers_are_quoted_with_doubled_backticks() {
+        assert_eq!(quote_identifier("shop"), "`shop`");
+        assert_eq!(quote_identifier("订单 库`x"), "`订单 库``x`");
+        assert_eq!(quote_identifier("select"), "`select`");
+    }
+
+    #[test]
+    fn table_type_maps_to_kinds() {
+        assert_eq!(table_kind("BASE TABLE"), ObjectKind::Table);
+        assert_eq!(table_kind("VIEW"), ObjectKind::View);
+        assert_eq!(table_kind("SYSTEM VIEW"), ObjectKind::View);
+        assert_eq!(table_kind("SEQUENCE"), ObjectKind::Sequence);
+        assert_eq!(
+            table_kind("TEMPORARY TABLE"),
+            ObjectKind::Other("TEMPORARY TABLE".to_owned())
+        );
+    }
+
+    #[test]
+    fn catalog_target_distinguishes_layer_from_name() {
+        let session_id = SessionId::new();
+        let layer = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(None, None, ""),
+            kind: ObjectKind::Catalog,
+        };
+        assert_eq!(catalog_target(&layer).unwrap(), None);
+        let by_name = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(None, None, "shop"),
+            kind: ObjectKind::Catalog,
+        };
+        assert_eq!(catalog_target(&by_name).unwrap().as_deref(), Some("shop"));
+        let conflicting = ObjectRef {
+            session_id,
+            qualified_name: QualifiedName::new(Some("a".to_owned()), None, "b"),
+            kind: ObjectKind::Catalog,
+        };
+        assert_eq!(
+            catalog_target(&conflicting).unwrap_err().code(),
+            ErrorCode::CONFIG_INVALID
+        );
+    }
+
+    /// 1049 → 库不存在；1044/1142/1143 → 无权限；其它码不猜。
+    #[test]
+    fn probe_codes_map_to_metadata_errors() {
+        assert_eq!(
+            probe_error(Some(1049), "shop").unwrap().code(),
+            ErrorCode::METADATA_OBJECT_NOT_FOUND
+        );
+        for code in [1044, 1142, 1143] {
+            let error = probe_error(Some(code), "mysql").unwrap();
+            assert_eq!(
+                error.code(),
+                ErrorCode::METADATA_PERMISSION_DENIED,
+                "{code}"
+            );
+            assert_eq!(
+                error.category(),
+                sqarvo_common::ErrorCategory::PermissionDenied
+            );
+        }
+        assert!(probe_error(None, "shop").is_none());
+        assert!(probe_error(Some(1064), "shop").is_none());
+    }
+
+    #[test]
+    fn column_kind_classification_is_explicit() {
+        assert!(check_column_kind(&ObjectKind::Table).is_ok());
+        assert!(check_column_kind(&ObjectKind::View).is_ok());
+        assert_eq!(
+            check_column_kind(&ObjectKind::Sequence).unwrap_err().code(),
+            ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED
+        );
+        assert_eq!(
+            check_column_kind(&ObjectKind::Schema).unwrap_err().code(),
+            ErrorCode::CAPABILITY_UNSUPPORTED
         );
     }
 }
