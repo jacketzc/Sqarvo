@@ -23,6 +23,9 @@ use tower::service_fn;
 
 use crate::backend::endpoint::{EndpointInfo, TransportKind};
 use crate::backend::error::BackendError;
+use crate::backend::metadata::{
+    self, DdlView, MetadataError, NodePage, failure_from_status as metadata_failure_from_status,
+};
 use crate::backend::query::{
     ExecuteOutcome, FetchOutcome, QueryFailure, failure_from_status, failure_timeout,
     rows_from_proto, statements_from_proto,
@@ -41,8 +44,9 @@ use crate::proto::services::v1::system_service_client::SystemServiceClient;
 use crate::proto::services::v1::table_data_service_client::TableDataServiceClient;
 use crate::proto::services::v1::transaction_service_client::TransactionServiceClient;
 use crate::proto::services::v1::{
-    ApplyRowChangesRequest, BeginTransactionRequest, BrowseTableRequest, GetPrimaryKeyRequest,
-    ListNodesRequest, ObjectKind, ObjectRef, RowDelete, RowUpdate, TransactionRef,
+    ApplyRowChangesRequest, BeginTransactionRequest, BrowseTableRequest, GetDdlRequest,
+    GetPrimaryKeyRequest, ListNodesRequest, NodeFilter, ObjectKind, ObjectRef, RowDelete,
+    RowUpdate, TransactionRef,
 };
 use crate::proto::services::v1::{CancelQueryRequest, CloseQueryRequest};
 use crate::proto::services::v1::{ExecuteQueryRequest, FetchBatchRequest};
@@ -58,6 +62,9 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `FetchBatch` / `Cancel` / `Close` 的客户端超时（本地 IPC；超过说明后端异常）。
 const QUERY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 元数据 RPC（`ListNodes` / `GetDdl`）的客户端超时。
+const METADATA_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 后端版本信息（`SystemService.GetVersion` 的结果）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -538,6 +545,65 @@ impl BackendClient {
             .collect())
     }
 
+    /// 列出 `parent` 的**直接**子节点（v0.2.2 逐层懒加载，#86）。
+    ///
+    /// - `parent` 为空引用 = 根（当前连接库的对象）；目录层用
+    ///   `kind = CATALOG` 且不带名字表示「列出全部 Catalog」；
+    /// - `filter` 由服务端下推；客户端**不**做二次过滤（大小写敏感性跟随数据库）；
+    /// - 顺序由服务端决定（种类, 名字），这里原样保留，不重排。
+    pub async fn list_nodes(
+        &self,
+        parent: &ObjectRef,
+        page_token: &str,
+        filter: Option<NodeFilter>,
+        session_id: &str,
+    ) -> Result<NodePage, MetadataError> {
+        let mut client = self.metadata_service().map_err(metadata_local_failure)?;
+        let request = metadata::list_request(parent.clone(), page_token, filter);
+        let response = tokio::time::timeout(METADATA_RPC_TIMEOUT, client.list_nodes(request))
+            .await
+            .map_err(|_| metadata_timeout("读取对象树"))?
+            .map_err(|status| metadata_failure_from_status(&status))?
+            .into_inner();
+        Ok(NodePage::from_proto(&response, session_id))
+    }
+
+    /// 搜索当前连接库的对象（`ListNodes` 根层 + `filter.name.contains`）。
+    ///
+    /// 关键词原样传给服务端：`%` / `_` 由驱动按字面量转义，前端不拼通配符。
+    pub async fn search_nodes(
+        &self,
+        session_id: &str,
+        query: &str,
+        page_token: &str,
+    ) -> Result<NodePage, MetadataError> {
+        let mut client = self.metadata_service().map_err(metadata_local_failure)?;
+        let request = metadata::search_request(session_id, query, page_token);
+        let response = tokio::time::timeout(METADATA_RPC_TIMEOUT, client.list_nodes(request))
+            .await
+            .map_err(|_| metadata_timeout("搜索对象"))?
+            .map_err(|status| metadata_failure_from_status(&status))?
+            .into_inner();
+        Ok(NodePage::from_proto(&response, session_id))
+    }
+
+    /// 读取对象的 DDL（`GetDdl`）。
+    ///
+    /// 响应里的 `exact` / `source` / `source_detail` 原样保留：界面**必须**展示
+    /// 「原文」还是「由客户端拼装」，不能只给一段 SQL 文本。
+    pub async fn get_ddl(&self, object: &ObjectRef) -> Result<DdlView, MetadataError> {
+        let mut client = self.metadata_service().map_err(metadata_local_failure)?;
+        let request = GetDdlRequest {
+            object: Some(object.clone()),
+        };
+        let response = tokio::time::timeout(METADATA_RPC_TIMEOUT, client.get_ddl(request))
+            .await
+            .map_err(|_| metadata_timeout("读取 DDL"))?
+            .map_err(|status| metadata_failure_from_status(&status))?
+            .into_inner();
+        Ok(DdlView::from_proto(&response))
+    }
+
     /// 读取主键列（按主键顺序；空列表表示无主键）。
     pub async fn get_primary_key(
         &self,
@@ -712,6 +778,24 @@ fn table_timeout(operation: &str) -> TableFailure {
     TableFailure::Other {
         code: "deadline_exceeded".to_owned(),
         message: format!("{operation}在 {} 秒内未返回", QUERY_RPC_TIMEOUT.as_secs()),
+    }
+}
+
+/// 元数据 RPC 的客户端超时。
+fn metadata_timeout(operation: &str) -> MetadataError {
+    MetadataError::Other {
+        code: "deadline_exceeded".to_owned(),
+        message: format!(
+            "{operation}在 {} 秒内未返回",
+            METADATA_RPC_TIMEOUT.as_secs()
+        ),
+    }
+}
+
+/// 本地建 Channel / 取服务客户端失败：不是「对象不存在」，单独归类。
+fn metadata_local_failure(error: BackendError) -> MetadataError {
+    MetadataError::Unavailable {
+        message: error.short(),
     }
 }
 

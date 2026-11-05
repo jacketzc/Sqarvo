@@ -26,8 +26,12 @@ MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径
 就不会继续拉取）。数值见 [`docs/releases/v0.2.md`](../../docs/releases/v0.2.md) 与下方
 「性能实测」。
 
-**表数据页已接入**（#48）：连接后左侧是 `MetadataService.ListNodes` 的表/视图列表，
-点击进入数据页——`TableDataService.BrowseTable` 按主键升序 + 不透明 cursor 翻页（每页
+**对象树与 DDL 面板已接入**（#86）：连接后左侧是可展开的对象树（库 → 表 / 视图 →
+列 / 索引，`GtkTreeListModel` 逐层懒加载、每页 500、「加载更多」翻页），顶部搜索框
+按名称包含搜索并在树里逐层展开定位，底部 DDL 面板显式标注**原文 / 由客户端拼装**
+（`GetDdl.exact`）并提供「复制」。侧栏仍可切到 v0.2.1 的平铺表列表。
+
+**表数据页已接入**（#48）：点击树里的表进入数据页——`TableDataService.BrowseTable` 按主键升序 + 不透明 cursor 翻页（每页
 500 行、滚动到底继续取）、`GtkColumnView` 虚拟化网格、单元格编辑（文本 → 强类型值，
 NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交、逐行错误展示、
 > 100 行/含删除的风险确认、事务徽标（自动提交 / 事务中 / 失败态 / 已断开）与
@@ -127,7 +131,10 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/sql_page.rs` | SQL 工作区：编辑器、执行/取消按钮与快捷键、页面状态机、QA 滚动与取消钩子 |
 | `src/backend/table.rs` | 表数据域：浏览结果/列元数据/只读原因/逐行结果/错误分类与文案（纯逻辑，不依赖 GTK） |
 | `src/table_data.rs` | 表编辑纯逻辑：文本 → 强类型值、NULL/空串、全文本草稿与批次构造、风险判定、只读文案、事务徽标状态机（可单测） |
-| `src/data_page.rs` | 数据页：表列表侧栏、虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务徽标、逐行错误列表 |
+| `src/data_page.rs` | 数据页：平铺表列表侧栏（v0.2.1 视图，对象树不可用时的回退）、虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务徽标、逐行错误列表 |
+| `src/backend/metadata.rs` | 元数据域（#86）：节点/种类映射、请求构造、DDL 来源与错误分类（纯逻辑，可单测）+ 独立元数据线程与主线程请求路由（`MetadataHub`） |
+| `src/tree.rs` | 对象树：`GtkTreeListModel` 懒加载、自定义展开箭头、分页「加载更多」、搜索防抖（250 ms）与跳转、树的健康状态 |
+| `src/ddl.rs` | DDL 面板：`GetDdl` 结果的原文/拼装标注、来源说明、等宽可滚动文本、复制按钮与四态文案 |
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
 
@@ -379,11 +386,37 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 都加载进来，所以「加载到末尾」时 RSS 必然随已加载行数增长；这不是滚动泄漏，而是数据本身。
 若未来需要「跳到末尾不占内存」，需要服务端提供可寻址分页或视窗查询。
 
+## 对象树、搜索与 DDL 面板（#86）
+
+连接数据库后，左侧是对象树：第一层是**目录层**（`ListNodes(parent.kind = CATALOG)`，
+列出当前账号可见的库），展开库得到表 / 视图 / 序列，再展开表得到列 / 索引 / 触发器。
+驱动没有目录层（返回 `capability.unsupported`）时自动回退到「当前库对象」根层，
+两者都不可用时切到平铺列表并说明原因。
+
+- **逐层懒加载**：只有展开才发 `ListNodes`。`GtkTreeExpander` 在 bind 时会向
+  `GtkTreeListRow` 要子模型（用来决定有没有箭头），等于为每个可见行发一次请求，
+  因此这里自己画箭头（同时手动按 `depth` 缩进）；
+- **顺序由服务端决定**（先种类、再名字），客户端不重排——重排会让界面顺序与分页
+  token 的语义不一致；
+- **分页**：每页 500，`next_page_token` 非空时在末尾显示「加载更多…（已加载 N 个）」，
+  点它继续；`truncated` 只在本页被上限截断**且没有下一页**时才提示「有数据拿不到」；
+- **搜索**：输入防抖 250 ms，带 `filter.name.contains` 请求根层；关键词原样下推，
+  客户端不拼通配符、不做二次过滤（大小写敏感性跟随数据库）。空结果与
+  `metadata.permission_denied` 是两句不同的话（后者给出授权建议）；点结果在树里
+  逐层展开并选中，失败时在状态行说明「不在当前库的目录层下」；
+- **DDL 面板**：徽标显示**原文**或**由客户端拼装**（只看 `exact`，`source` 未说明时
+  按 `exact` 判断），来源说明始终展示（拼装时必须说清缺了什么），拼装结果额外一行
+  警示并给出 `generator_version`；Loading / Empty / Error / 不支持各有文案，
+  `metadata.object_kind_unsupported` 与 `capability.unsupported` 分开显示；长文本
+  可滚动，复制只复制 DDL 本身（不带来源标注）；
+- **线程**：树的每个展开、搜索、`GetDdl` 都发到独立的元数据线程（`MetadataHub` 按请求
+  ID 路由回主线程），主线程只更新控件。
+
 ## 数据页（#48）
 
-连接数据库后，主区域左侧出现「表与视图」列表（`MetadataService.ListNodes` 根节点，
-失败时用分类文案展示，不是空列表）；点击条目进入右侧数据页。右上「SQL 工作区」
-切回编辑器，两个页面共用同一个数据库会话。
+连接数据库后，主区域左侧是对象树（可切换为 v0.2.1 的「表与视图」平铺列表，
+`ListNodes` 根节点，失败时用分类文案展示，不是空列表）；点击树里的表进入右侧数据页。
+右上「SQL 工作区」切回编辑器，两个页面共用同一个数据库会话。
 
 ### 浏览与翻页
 
@@ -726,6 +759,50 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 - 回滚路径把 `--qa-data-commit` 换成 `--qa-data-rollback`，重新浏览后值应保持不变；
 - 翻页用 `--qa-data-scroll-to-row 1100`（表需足够大），日志给出第 N 页行数与累计行数；
 - `--qa-data-table demo_notes`（无主键表）会进入只读态并打印只读原因。
+
+### 对象树、搜索与 DDL 面板的无人值守验证（#86）
+
+```bash
+# 展开两层 → 打开表 → 看 DDL，并在截图时刻断言「原文」标记
+./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-tree-expand sqarvo_test_86 --qa-tree-open orders --qa-tree-ddl orders \
+  --screenshot ~/sqarvo-v022-shots/tree-ddl.png --screenshot-delay-ms 6500 \
+  --qa-expect-tree health=Ready --qa-expect-tree selected=orders \
+  --qa-expect-ddl provenance=原文 --qa-expect-ddl state=ready --qa-expect-ddl copy=on \
+  '--qa-expect-ddl=contains=CREATE TABLE' '--qa-expect-ddl=detail_contains=SHOW CREATE TABLE'
+
+# 搜索 → 点第一条结果 → 在树里逐层展开并选中
+./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-tree-search ord --qa-tree-click-result \
+  --screenshot ~/sqarvo-v022-shots/search-jump.png --screenshot-delay-ms 5500 \
+  --qa-expect-tree search=results --qa-expect-tree first=order_items \
+  --qa-expect-tree selected=order_items --qa-expect-tree page=tree
+
+# 大库：展开 5000 对象的库（每页 500），再点一次「加载更多」，日志给出耗时
+./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-tree-expand sqarvo_bench_86 --qa-tree-load-more \
+  --screenshot ~/sqarvo-v022-shots/bench-5000.png --screenshot-delay-ms 6000
+```
+
+- `--qa-tree-expand <name>`：按名字展开节点（可重复，按参数顺序；每步都会重试到节点
+  出现为止）。展开走 `GtkTreeListModel` 的真实展开路径，**只有展开才发 `ListNodes`**；
+- `--qa-tree-open <name>`：选中并打开表（与双击行同一条回调），进入数据页；
+- `--qa-tree-ddl <name>`：选中并触发树的「DDL」路径，打开底部 DDL 面板；
+- `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
+  只是跳过键盘）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
+  点第一个「加载更多…」占位行；
+- `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|loaded|
+  status_contains`；`--qa-expect-ddl <field>=<value>`：`provenance|detail_contains|
+  object_contains|contains|state|copy|visible`。断言读的是**控件上真实渲染的文本**
+  （搜索状态行、DDL 徽标、缓冲区正文），不是「状态机里应该是」；
+- `--opt=value` 与 `--opt value` 两种写法等价（GLib 的选项解析两种都接受，QA 的自解析
+  必须一致，否则「参数没生效」会看起来像功能坏了）；
+- 并行开发时可以给每个 worktree 一个独立端点，避免互相杀掉对方的后端：
+  `SQARVO_ENDPOINT_FILE=/tmp/sqarvo-86-run/sqarvo/backend-endpoint.json`
+  （前端会把子进程的 `XDG_RUNTIME_DIR` 指到同一目录，后端就写到那里）。
 
 ### 连接对话框的无人值守验证（`--qa-profile` / `--qa-password-env`）
 

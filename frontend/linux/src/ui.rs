@@ -22,11 +22,14 @@ use gtk::glib;
 
 use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure};
 use crate::backend::endpoint;
+use crate::backend::metadata::NodeView;
 use crate::backend::table::TableEntry;
 use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, TableEvent, WorkerHandle};
 use crate::data_page::{DataCallbacks, DataPage, DataState, TableBrowser};
+use crate::ddl::DdlPanel;
 use crate::dialog::ConnectionDialog;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
+use crate::tree::{TreeCallbacks, TreeHealth, TreePanel};
 
 /// 主窗口与连接对话框共享的状态。
 struct UiState {
@@ -41,10 +44,12 @@ struct UiState {
     /// 后端 gRPC 是否已握手成功：未成功时「新建连接」不可点（此时只会得到
     /// `backend.unavailable`，没有意义）。
     backend_ready: Cell<bool>,
-    /// 当前工作区（SQL 编辑器 + 表数据页；连接数据库后建立）。
+    /// 当前工作区（对象树 + SQL 编辑器 + 数据页 + DDL 面板；连接数据库后建立）。
     workspace: RefCell<Option<Rc<Workspace>>>,
     /// 标题栏右侧的「新建连接」按钮。
     new_connection: gtk::Button,
+    /// 端点描述文件路径：元数据通道（对象树 / 搜索 / DDL）自己建立 Channel 时要用。
+    endpoint_path: std::path::PathBuf,
 }
 
 /// 应用激活：只保留一个窗口，重复激活时呈现既有窗口。
@@ -110,7 +115,7 @@ pub fn activate(app: &adw::Application) {
     };
     footer.set_text(&format!("端点文件：{}", endpoint_path.display()));
 
-    let (worker, events) = match WorkerHandle::spawn(endpoint_path) {
+    let (worker, events) = match WorkerHandle::spawn(endpoint_path.clone()) {
         Ok(pair) => pair,
         Err(error) => {
             show_error(&slot, &window_title, &error.to_string(), &noop_handler());
@@ -129,6 +134,7 @@ pub fn activate(app: &adw::Application) {
         backend_ready: Cell::new(false),
         workspace: RefCell::new(None),
         new_connection: new_connection.clone(),
+        endpoint_path,
     });
 
     {
@@ -280,6 +286,7 @@ pub fn activate(app: &adw::Application) {
                             );
                             maybe_run_qa_sql(&events_state);
                             maybe_run_qa_data(&events_state);
+                            maybe_run_qa_tree(&events_state);
                         }
                         Err(failure) => match dialog.as_ref() {
                             Some(dialog) => dialog.show_failure(&failure),
@@ -299,7 +306,7 @@ pub fn activate(app: &adw::Application) {
                     };
                     match event {
                         TableEvent::Tables(result) => match result {
-                            Ok(tables) => workspace.sidebar.set_tables(tables),
+                            Ok(tables) => workspace.flat.set_tables(tables),
                             Err(failure) => workspace.data_page.show_failure(&failure),
                         },
                         TableEvent::Opened(open) => workspace.data_page.show_open(*open),
@@ -416,6 +423,8 @@ pub fn activate(app: &adw::Application) {
                     if crate::qa::expect_data_state().is_some()
                         || crate::qa::expect_txn().is_some()
                         || !crate::qa::expect_columns().is_empty()
+                        || !crate::qa::expect_tree().is_empty()
+                        || !crate::qa::expect_ddl().is_empty()
                     {
                         match verify_expectations(&capture_state) {
                             Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
@@ -759,49 +768,62 @@ fn show_workspace(
     };
     let data_page = DataPage::new(data_callbacks);
 
-    let workspace = Workspace::new(&sql_page, &data_page, state);
+    let workspace = Workspace::new(&sql_page, &data_page, state, &outcome.session_id);
     state.workspace.replace(Some(Rc::clone(&workspace)));
     set_page(&state.slot, workspace.widget());
     sql_page.focus_editor();
     eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
-    // 工作区建立后立刻读取表列表（侧栏不是空壳）。
+    // 工作区建立后立刻读取表列表（平铺回退视图）与对象树根层。
     if let Some(worker) = state.worker.borrow().as_ref() {
         worker.list_tables();
     }
 }
 
-/// 工作区：左侧表列表 + 右侧「SQL 工作区 / 数据页」。
+/// 工作区：左侧对象树（可切换为平铺列表）+ 右侧「SQL 工作区 / 数据页」+ 底部 DDL 面板。
+///
+/// 侧栏与数据页共用同一个数据库会话：树的每一层都走 `ListNodes`（懒加载），
+/// 平铺视图保留 v0.2.1 的一页表列表，用于驱动没有目录层时的回退与对照。
 struct Workspace {
     root: gtk::Box,
-    sidebar: Rc<TableBrowser>,
+    /// 对象树（懒加载 + 搜索 + 跳转）。
+    tree: Rc<TreePanel>,
+    /// 平铺表列表（v0.2.1 视图；对象树不可用时的回退）。
+    flat: Rc<TableBrowser>,
     sql_page: Rc<SqlPage>,
     data_page: Rc<DataPage>,
-    /// 打开表的统一入口（侧栏点击与 QA 按名打开共用）。
+    /// DDL 面板（容器由 revealer 管理；QA 断言读它的控件）。
+    ddl: Rc<DdlPanel>,
+    /// 打开表的统一入口（树、平铺列表与 QA 共用同一条路径）。
     open: Rc<dyn Fn(TableEntry)>,
 }
 
 impl Workspace {
-    fn new(sql_page: &Rc<SqlPage>, data_page: &Rc<DataPage>, state: &Rc<UiState>) -> Rc<Self> {
-        let stack = gtk::Stack::new();
-        stack.set_vexpand(true);
-        stack.set_hexpand(true);
-        stack.add_named(sql_page.widget(), Some("sql"));
-        stack.add_named(data_page.widget(), Some("data"));
-        stack.set_visible_child_name("sql");
+    fn new(
+        sql_page: &Rc<SqlPage>,
+        data_page: &Rc<DataPage>,
+        state: &Rc<UiState>,
+        session_id: &str,
+    ) -> Rc<Self> {
+        let page_stack = gtk::Stack::new();
+        page_stack.set_vexpand(true);
+        page_stack.set_hexpand(true);
+        page_stack.add_named(sql_page.widget(), Some("sql"));
+        page_stack.add_named(data_page.widget(), Some("data"));
+        page_stack.set_visible_child_name("sql");
 
         // 侧栏顶部：回到 SQL 工作区。页面切换不重建会话。
         let sql_button = gtk::Button::with_label("SQL 工作区");
         sql_button.add_css_class("flat");
         sql_button.set_tooltip_text(Some("切换到 SQL 编辑器与结果区"));
-        let stack_for_sql = stack.clone();
+        let stack_for_sql = page_stack.clone();
         sql_button.connect_clicked(move |_| stack_for_sql.set_visible_child_name("sql"));
 
         let open: Rc<dyn Fn(TableEntry)> = {
-            let stack = stack.clone();
+            let page_stack = page_stack.clone();
             let data_page = Rc::clone(data_page);
             let state = Rc::clone(state);
             Rc::new(move |entry: TableEntry| {
-                stack.set_visible_child_name("data");
+                page_stack.set_visible_child_name("data");
                 data_page.begin_open(entry.clone());
                 eprintln!(
                     "[data] t=+{}ms 选择表 {}",
@@ -814,32 +836,195 @@ impl Workspace {
             })
         };
 
-        let sidebar = TableBrowser::new(Rc::clone(&open), {
+        // ---- 元数据通道（独立线程；连接断开时随工作区一起释放） ----------------
+        let hub = match crate::backend::metadata::MetadataHub::spawn(
+            state.endpoint_path.clone(),
+            session_id.to_owned(),
+        ) {
+            Ok((hub, events)) => {
+                // 事件泵：只在主线程更新控件（回调里可以安全地 set_text）。
+                let pump = Rc::clone(&hub);
+                glib::spawn_future_local(async move {
+                    while let Ok(event) = events.recv().await {
+                        pump.dispatch(event);
+                    }
+                });
+                Some(hub)
+            }
+            Err(error) => {
+                eprintln!("[tree] 元数据通道启动失败：{error}");
+                None
+            }
+        };
+
+        // ---- DDL 面板（底部可收起，常驻布局但不占空间） ------------------------
+        let ddl_revealer = gtk::Revealer::new();
+        ddl_revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        ddl_revealer.set_reveal_child(false);
+        let ddl_slot: Rc<RefCell<Option<Rc<DdlPanel>>>> = Rc::new(RefCell::new(None));
+        let ddl = DdlPanel::new({
+            let revealer = ddl_revealer.clone();
+            let slot = Rc::clone(&ddl_slot);
+            Rc::new(move || {
+                eprintln!("[ddl] t=+{}ms 关闭 DDL 面板", crate::qa::elapsed_ms());
+                revealer.set_reveal_child(false);
+                if let Some(panel) = slot.borrow().as_ref() {
+                    panel.set_visible(false);
+                }
+            })
+        });
+        ddl_slot.replace(Some(Rc::clone(&ddl)));
+        ddl_revealer.set_child(Some(ddl.widget()));
+
+        // ---- 侧栏栈：对象树 / 平铺列表 ----------------------------------------
+        let sidebar_stack = gtk::Stack::new();
+        sidebar_stack.set_vexpand(true);
+
+        let view_toggle = gtk::Button::with_label("平铺列表");
+        view_toggle.add_css_class("flat");
+        view_toggle.set_tooltip_text(Some("在对象树与平铺表列表之间切换"));
+
+        let tree = TreePanel::new(TreeCallbacks {
+            open: {
+                let open = Rc::clone(&open);
+                Rc::new(move |node: NodeView| {
+                    (open)(TableEntry {
+                        reference: node.reference,
+                        display_name: node.display_name,
+                        kind: node.kind,
+                    });
+                })
+            },
+            ddl: {
+                let ddl = Rc::clone(&ddl);
+                let revealer = ddl_revealer.clone();
+                Rc::new(move |node: NodeView| {
+                    ddl.set_visible(true);
+                    revealer.set_reveal_child(true);
+                    ddl.show_for(node);
+                })
+            },
+            health: {
+                let stack = sidebar_stack.clone();
+                let toggle = view_toggle.clone();
+                Rc::new(move |health: TreeHealth| {
+                    eprintln!("[tree] 健康状态：{}", health.name());
+                    if health == TreeHealth::Unsupported {
+                        // 树没法用：直接切到 v0.2.1 的平铺列表，不让用户对着空侧栏。
+                        stack.set_visible_child_name("flat");
+                        toggle.set_label("对象树");
+                    }
+                })
+            },
+        });
+
+        let refresh: Rc<dyn Fn()> = {
+            let tree = Rc::clone(&tree);
             let state = Rc::clone(state);
             Rc::new(move || {
+                eprintln!("[tree] t=+{}ms 刷新对象树", crate::qa::elapsed_ms());
+                tree.reload();
                 if let Some(worker) = state.worker.borrow().as_ref() {
                     worker.list_tables();
                 }
             })
+        };
+
+        let flat = TableBrowser::new(Rc::clone(&open), {
+            let refresh = Rc::clone(&refresh);
+            Rc::new(move || refresh())
         });
 
+        sidebar_stack.add_named(tree.widget(), Some("tree"));
+        sidebar_stack.add_named(flat.widget(), Some("flat"));
+        sidebar_stack.set_visible_child_name("tree");
+
+        // 侧栏页脚：刷新 / 树↔平铺 / 查看 DDL。
+        let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+        refresh_button.add_css_class("flat");
+        refresh_button.set_tooltip_text(Some("重新读取对象树（ListNodes）"));
+        {
+            let refresh = Rc::clone(&refresh);
+            refresh_button.connect_clicked(move |_| refresh());
+        }
+
+        {
+            let stack = sidebar_stack.clone();
+            view_toggle.connect_clicked(move |button| {
+                let showing_tree = stack.visible_child_name().as_deref() == Some("tree");
+                if showing_tree {
+                    stack.set_visible_child_name("flat");
+                    button.set_label("对象树");
+                } else {
+                    stack.set_visible_child_name("tree");
+                    button.set_label("平铺列表");
+                }
+            });
+        }
+
+        let ddl_button = gtk::Button::with_label("DDL");
+        ddl_button.add_css_class("flat");
+        ddl_button.set_tooltip_text(Some("查看选中对象的 DDL（原文 / 由客户端拼装会标注）"));
+        {
+            let tree = Rc::clone(&tree);
+            let ddl = Rc::clone(&ddl);
+            let revealer = ddl_revealer.clone();
+            ddl_button.connect_clicked(move |_| match tree.selected_node() {
+                Some(node) if !node.is_placeholder() => {
+                    ddl.set_visible(true);
+                    revealer.set_reveal_child(true);
+                    ddl.show_for(node);
+                }
+                _ => eprintln!("[ddl] 先在对象树里选中一个对象，再点「DDL」"),
+            });
+        }
+
+        let footer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        footer.set_margin_start(6);
+        footer.set_margin_end(6);
+        footer.set_margin_top(2);
+        footer.set_margin_bottom(4);
+        footer.append(&refresh_button);
+        footer.append(&view_toggle);
+        footer.append(&ddl_button);
+
         let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sidebar_box.set_size_request(230, -1);
+        sidebar_box.set_size_request(280, -1);
         sidebar_box.append(&sql_button);
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        sidebar_box.append(sidebar.widget());
+        sidebar_box.append(&sidebar_stack);
+        sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        sidebar_box.append(&footer);
+
+        // 右侧：主页面 + 底部 DDL。
+        let right = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        right.set_vexpand(true);
+        right.set_hexpand(true);
+        right.append(&page_stack);
+        right.append(&ddl_revealer);
 
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.set_vexpand(true);
         root.append(&sidebar_box);
         root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        root.append(&stack);
+        root.append(&right);
+
+        // 接线：树读根层，DDL 面板与树共用同一条元数据通道。
+        match hub {
+            Some(hub) => {
+                ddl.attach(Rc::clone(&hub));
+                tree.attach(hub, session_id);
+            }
+            None => tree.mark_unavailable("元数据通道启动失败：无法读取对象树"),
+        }
 
         Rc::new(Self {
             root,
-            sidebar,
+            tree,
+            flat,
             sql_page: Rc::clone(sql_page),
             data_page: Rc::clone(data_page),
+            ddl,
             open,
         })
     }
@@ -848,9 +1033,9 @@ impl Workspace {
         &self.root
     }
 
-    /// 按表名打开（QA 与「打开指定表」共用侧栏的同一条路径）。
+    /// 按表名打开（数据页 QA 与「打开指定表」共用侧栏的同一条路径），走平铺列表。
     fn open_by_name(&self, name: &str) -> bool {
-        let Some(entry) = self.sidebar.entry_by_name(name) else {
+        let Some(entry) = self.flat.entry_by_name(name) else {
             return false;
         };
         eprintln!(
@@ -917,6 +1102,132 @@ fn maybe_run_qa_sql(state: &Rc<UiState>) {
             page.execute();
         });
     }
+}
+
+/// QA：对象树 / 搜索 / DDL 面板的无人值守序列（#86）。
+///
+/// 每一步都走用户会走的那条路径：展开走 `GtkTreeListModel` 的展开、打开走行的
+/// 激活处理、DDL 走树的「DDL」回调、搜索走搜索框的文本变化 + 结果行点击。
+/// 没有「直接调 gRPC」的捷径，因此截图里的状态就是用户点出来的状态。
+///
+/// 每个动作都带重试：树的每一层是异步加载的，固定延时既不够稳也不该被当成
+/// 「等待时间」的证据。重试到条件成立为止（上限 6 秒），日志里记下每一步的耗时。
+fn maybe_run_qa_tree(state: &Rc<UiState>) {
+    if !crate::qa::tree_requested() {
+        return;
+    }
+    let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {
+        return;
+    };
+    let mut delay = 900u64;
+
+    for name in crate::qa::tree_expand() {
+        let tree = Rc::clone(&workspace.tree);
+        let name_for_step = name.clone();
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_expand(&name_for_step)
+                    .map(|note| format!("展开 {note}"))
+            }),
+        );
+        delay += 900;
+    }
+
+    if let Some(name) = crate::qa::tree_open() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_open(&name)
+                    .map(|node| format!("打开表 {}（{}）", node.display_name, node.path_label()))
+            }),
+        );
+        delay += 900;
+    }
+
+    if let Some(name) = crate::qa::tree_ddl() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_show_ddl(&name)
+                    .map(|node| format!("查看 DDL：{}", node.path_label()))
+            }),
+        );
+        delay += 900;
+    }
+
+    if let Some(query) = crate::qa::tree_search() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_search(&query);
+                Ok(format!("在搜索框输入「{query}」"))
+            }),
+        );
+        delay += 900;
+    }
+
+    if crate::qa::tree_click_result() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_click_first_result()
+                    .map(|label| format!("点击搜索结果 {label}"))
+            }),
+        );
+        delay += 1_200;
+    }
+
+    if crate::qa::tree_load_more() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_click_load_more()
+                    .map(|note| format!("点「{note}」翻页"))
+            }),
+        );
+    }
+}
+
+/// 执行一个 QA 步骤：`delay` 之后开始尝试，失败每 150ms 重试，最多 40 次。
+fn schedule_step(delay: u64, action: Rc<dyn Fn() -> Result<String, String>>) {
+    glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+        let attempts = Rc::new(Cell::new(0u32));
+        glib::timeout_add_local(Duration::from_millis(150), move || {
+            match action() {
+                Ok(note) => {
+                    eprintln!("[qa] t=+{}ms {note}", crate::qa::elapsed_ms());
+                    glib::ControlFlow::Break
+                }
+                Err(reason) => {
+                    let attempt = attempts.get() + 1;
+                    attempts.set(attempt);
+                    // 第一次失败就记一行：否则要等到第 40 次才知道原因。
+                    if attempt == 1 || attempt.is_multiple_of(10) {
+                        eprintln!(
+                            "[qa] t=+{}ms 步骤未就绪（第 {attempt} 次）：{reason}",
+                            crate::qa::elapsed_ms()
+                        );
+                    }
+                    if attempt >= 40 {
+                        // 不静默：断言/截图会把失败的界面拍下来，这里留下原因。
+                        eprintln!(
+                            "[qa] t=+{}ms 步骤失败（已重试 {attempt} 次）：{reason}",
+                            crate::qa::elapsed_ms()
+                        );
+                        glib::ControlFlow::Break
+                    } else {
+                        glib::ControlFlow::Continue
+                    }
+                }
+            }
+        });
+    });
 }
 
 /// QA：数据页无人值守验证（打开表 → 编辑 → 提交/回滚 → 重新查询）。
@@ -1165,12 +1476,13 @@ fn data_state_name(state: DataState) -> &'static str {
 /// 这里要证明的是界面跟着变了。
 /// 返回一句话描述（供日志），错误即断言失败；调用方以退出码 3 结束。
 fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
-    let data_page = state
+    let workspace = state
         .workspace
         .borrow()
         .as_ref()
-        .map(|workspace| Rc::clone(&workspace.data_page))
-        .ok_or_else(|| "工作区尚未建立：没有数据页可断言".to_owned())?;
+        .cloned()
+        .ok_or_else(|| "工作区尚未建立：没有可断言的界面".to_owned())?;
+    let data_page = Rc::clone(&workspace.data_page);
     let observed = data_page.qa_observe();
     let mut passed: Vec<String> = Vec::new();
 
@@ -1263,8 +1575,108 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         }
     }
 
+    let tree_expectations = crate::qa::expect_tree();
+    if !tree_expectations.is_empty() {
+        for expectation in &tree_expectations {
+            let actual = match expectation.field {
+                crate::qa::TreeField::Health => workspace.tree.health().name().to_owned(),
+                crate::qa::TreeField::Selected => workspace
+                    .tree
+                    .selected_node()
+                    .map(|node| node.display_name)
+                    .unwrap_or_else(|| "（未选中）".to_owned()),
+                crate::qa::TreeField::Search => workspace.tree.search_state().name().to_owned(),
+                crate::qa::TreeField::Results => workspace.tree.search_snapshot().count.to_string(),
+                crate::qa::TreeField::First => workspace
+                    .tree
+                    .search_snapshot()
+                    .first
+                    .unwrap_or_else(|| "（无结果）".to_owned()),
+                crate::qa::TreeField::Page => workspace.tree.visible_page().unwrap_or_default(),
+                crate::qa::TreeField::Loaded => workspace.tree.loaded_nodes().to_string(),
+                crate::qa::TreeField::StatusContains => workspace.tree.status_text(),
+            };
+            let matched = if expectation.field == crate::qa::TreeField::StatusContains {
+                actual.contains(&expectation.expected)
+            } else {
+                actual == expectation.expected
+            };
+            if !matched {
+                return Err(format!(
+                    "对象树 {} 期望「{}」，实际「{actual}」（状态行：{}；已加载 {} 个对象）",
+                    expectation.field.name(),
+                    expectation.expected,
+                    workspace.tree.status_text(),
+                    workspace.tree.loaded_nodes()
+                ));
+            }
+            passed.push(format!(
+                "树 {}={}",
+                expectation.field.name(),
+                if expectation.field == crate::qa::TreeField::StatusContains {
+                    expectation.expected.clone()
+                } else {
+                    actual
+                }
+            ));
+        }
+    }
+
+    let ddl_expectations = crate::qa::expect_ddl();
+    if !ddl_expectations.is_empty() {
+        let observed = workspace.ddl.qa_observe();
+        if !observed.visible {
+            return Err("DDL 面板没有打开：截图上不会有 DDL（检查 --qa-tree-ddl）".to_owned());
+        }
+        for expectation in &ddl_expectations {
+            let actual = match expectation.field {
+                crate::qa::DdlField::Provenance => observed.provenance.clone(),
+                crate::qa::DdlField::DetailContains => observed.detail.clone(),
+                crate::qa::DdlField::ObjectContains => observed.object.clone(),
+                crate::qa::DdlField::Contains => observed.text.clone(),
+                crate::qa::DdlField::State => observed.state.name().to_owned(),
+                crate::qa::DdlField::Copy => {
+                    if observed.copy_enabled { "on" } else { "off" }.to_owned()
+                }
+                crate::qa::DdlField::Visible => {
+                    if observed.visible { "on" } else { "off" }.to_owned()
+                }
+            };
+            let matched = match expectation.field {
+                crate::qa::DdlField::DetailContains
+                | crate::qa::DdlField::ObjectContains
+                | crate::qa::DdlField::Contains => actual.contains(&expectation.expected),
+                _ => actual == expectation.expected,
+            };
+            if !matched {
+                return Err(format!(
+                    "DDL 面板 {} 期望「{}」，实际「{}」（状态 {:?}，来源说明：{}）",
+                    expectation.field.name(),
+                    expectation.expected,
+                    truncate_for_log(&actual, 120),
+                    observed.state,
+                    truncate_for_log(&observed.detail, 120)
+                ));
+            }
+            passed.push(format!(
+                "DDL {}={}",
+                expectation.field.name(),
+                truncate_for_log(&actual, 60)
+            ));
+        }
+    }
+
     if passed.is_empty() {
         return Err("没有登记任何期望值".to_owned());
     }
     Ok(passed.join("，"))
+}
+
+/// 日志 / 断言失败信息里截断长文本（DDL 可能很长，整段塞进日志没有意义）。
+fn truncate_for_log(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(limit).collect();
+    format!("{head}…")
 }

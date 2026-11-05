@@ -10,6 +10,7 @@ mod backend;
 mod column_info;
 mod config;
 mod data_page;
+mod ddl;
 mod dialog;
 mod driver_form;
 mod proto;
@@ -17,6 +18,7 @@ mod qa;
 mod results;
 mod sql_page;
 mod table_data;
+mod tree;
 mod ui;
 
 use adw::prelude::*;
@@ -63,6 +65,12 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-data-edit", "row:column:value"),
         ("qa-data-delete-row", "row"),
         ("qa-data-scroll-to-row", "row"),
+        ("qa-tree-expand", "node-name"),
+        ("qa-tree-open", "table-name"),
+        ("qa-tree-ddl", "object-name"),
+        ("qa-tree-search", "query"),
+        ("qa-expect-tree", "field=value"),
+        ("qa-expect-ddl", "field=value"),
     ] {
         app.add_main_option(
             name,
@@ -82,6 +90,8 @@ fn register_qa_options(app: &adw::Application) {
         None,
     );
     for name in [
+        "qa-tree-click-result",
+        "qa-tree-load-more",
         "qa-data-begin-txn",
         "qa-data-read-only",
         "qa-data-commit",
