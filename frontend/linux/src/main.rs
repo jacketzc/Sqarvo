@@ -17,6 +17,7 @@ mod proto;
 mod qa;
 mod results;
 mod sql_page;
+mod submit_batch;
 mod table_data;
 mod tree;
 mod ui;
@@ -108,6 +109,20 @@ fn register_qa_options(app: &adw::Application) {
             glib::OptionArg::None,
             "QA：Linux 数据页无人值守验证（开发/验证用）",
             None,
+        );
+    }
+    for (name, arg_description) in [
+        ("qa-data-edit-range", "start:count:column:value"),
+        ("qa-data-cancel-after-ms", "milliseconds"),
+        ("qa-expect-submit", "phase|outcome|button|status=value"),
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::String,
+            "QA：在途提交批次的批量编辑、取消点击与断言（开发/验证用）",
+            Some(arg_description),
         );
     }
     for (name, arg_description) in [

@@ -286,6 +286,67 @@ impl ColumnField {
     }
 }
 
+/// `--qa-expect-submit` 的字段名（在途提交批次的可见表现）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitField {
+    /// 批次阶段：`idle|submitting|cancelling|done`。
+    Phase,
+    /// 结束方式：`applied|cancelled|failed`。
+    Outcome,
+    /// 「提交更改 / 取消提交」按钮的文案。
+    Button,
+    /// 状态行文本（含子串比对）。
+    Status,
+}
+
+impl SubmitField {
+    /// 参数里的字段名。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "phase" => Ok(Self::Phase),
+            "outcome" => Ok(Self::Outcome),
+            "button" => Ok(Self::Button),
+            "status" => Ok(Self::Status),
+            other => Err(format!(
+                "--qa-expect-submit 的字段只接受 phase|outcome|button|status，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段在参数里的名字（日志用）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Phase => "phase",
+            Self::Outcome => "outcome",
+            Self::Button => "button",
+            Self::Status => "status",
+        }
+    }
+}
+
+/// `--qa-expect-submit <field>=<value>` 的一条断言。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmitExpectation {
+    /// 要比对的字段。
+    pub field: SubmitField,
+    /// 期望值（`button` / `status` 按「包含」比对，`phase` / `outcome` 逐字相等）。
+    pub expected: String,
+}
+
+impl SubmitExpectation {
+    /// 解析 `字段=值`；值里可以有 `=`。
+    fn parse(value: &str) -> Result<Self, String> {
+        let (field, expected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-submit 需要 字段=值，实际：{value}"))?;
+        Ok(Self {
+            field: SubmitField::parse(field)?,
+            expected: expected.to_owned(),
+        })
+    }
+}
+
 /// `--qa-expect-column <column>:<field>=<value>` 的一条断言。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnExpectation {
@@ -555,6 +616,13 @@ struct Args {
     data_fail_txn: bool,
     /// `--qa-data-replay-cancelled`：把「批次被取消」的响应重放到界面。
     data_replay_cancelled: bool,
+    /// `--qa-data-edit-range <start>:<count>:<column>:<value>`：批量编辑连续行
+    /// （每行都走与单元格编辑相同的一条路径）。
+    data_edit_ranges: Vec<(u32, u32, String, String)>,
+    /// `--qa-data-cancel-after-ms <n>`：点「提交更改」后 n 毫秒点「取消提交」。
+    data_cancel_after_ms: Option<u64>,
+    /// `--qa-expect-submit <field>=<value>`：在途提交批次的断言（可重复）。
+    expect_submit: Vec<SubmitExpectation>,
     /// `--qa-expect-data-state`：截图时必须成立的数据页状态。
     expect_data_state: Option<DataExpectation>,
     /// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
@@ -637,6 +705,8 @@ pub fn enabled() -> bool {
             || args.tree_click_result
             || args.tree_load_more
             || args.data_insert
+            || !args.data_edit_ranges.is_empty()
+            || args.data_cancel_after_ms.is_some()
             || args.isolation_dialog
             || args.isolation_confirm
     })
@@ -751,6 +821,26 @@ pub fn auto_confirm_risk() -> bool {
 #[must_use]
 pub fn data_fail_transaction() -> bool {
     ARGS.get().is_some_and(|args| args.data_fail_txn)
+}
+
+/// 批量编辑的区间（`--qa-data-edit-range`，按出现顺序应用）。
+#[must_use]
+pub fn data_edit_ranges() -> Vec<(u32, u32, String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.data_edit_ranges.clone())
+}
+
+/// 点「提交更改」后多久点「取消提交」（毫秒）。
+#[must_use]
+pub fn data_cancel_after_ms() -> Option<u64> {
+    ARGS.get().and_then(|args| args.data_cancel_after_ms)
+}
+
+/// `--qa-expect-submit` 的断言（截图时刻校验）。
+#[must_use]
+pub fn expect_submit() -> Vec<SubmitExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_submit.clone())
 }
 
 /// 是否重放「批次被取消」的响应（`--qa-data-replay-cancelled`）。
@@ -1119,6 +1209,50 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.data_delete_rows.push(row);
                 index += 2;
             }
+            "--qa-data-edit-range" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    "--qa-data-edit-range 需要 start:count:column:value".to_owned()
+                })?;
+                let mut parts = value.splitn(4, ':');
+                let start: u32 = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-data-edit-range 缺少起始行：{value}"))?
+                    .parse()
+                    .map_err(|_| format!("--qa-data-edit-range 的起始行不合法：{value}"))?;
+                let count: u32 = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-data-edit-range 缺少行数：{value}"))?
+                    .parse()
+                    .map_err(|_| format!("--qa-data-edit-range 的行数不合法：{value}"))?;
+                let column = parts
+                    .next()
+                    .filter(|column| !column.is_empty())
+                    .ok_or_else(|| format!("--qa-data-edit-range 缺少列名：{value}"))?;
+                let text = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-data-edit-range 缺少值：{value}"))?;
+                parsed
+                    .data_edit_ranges
+                    .push((start, count, column.to_owned(), text.to_owned()));
+                index += 2;
+            }
+            "--qa-data-cancel-after-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-data-cancel-after-ms 需要一个毫秒数".to_owned())?;
+                let millis: u64 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-data-cancel-after-ms 不是合法毫秒数：{value}"))?;
+                parsed.data_cancel_after_ms = Some(millis);
+                index += 2;
+            }
+            "--qa-expect-submit" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-submit 需要 字段=值".to_owned())?;
+                parsed.expect_submit.push(SubmitExpectation::parse(value)?);
+                index += 2;
+            }
             "--qa-data-commit" => {
                 parsed.data_commit = true;
                 index += 1;
@@ -1327,7 +1461,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             || parsed.expect_txn.is_some()
             || !parsed.expect_columns.is_empty()
             || !parsed.expect_tree.is_empty()
-            || !parsed.expect_ddl.is_empty())
+            || !parsed.expect_ddl.is_empty()
+            || !parsed.expect_submit.is_empty())
     {
         return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
     }
@@ -1932,6 +2067,71 @@ mod tests {
             Some(IsolationChoice::RepeatableRead)
         );
         assert!(parsed.isolation_confirm);
+    }
+
+    #[test]
+    fn cancel_submit_flags_are_parsed() {
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-data-table",
+            "items89",
+            "--qa-data-edit-range",
+            "0:500:note:bulk-edit",
+            "--qa-data-cancel-after-ms",
+            "300",
+            "--qa-expect-submit",
+            "outcome=cancelled",
+            "--qa-expect-submit",
+            "status=已取消",
+            "--qa-expect-submit",
+            "button=取消提交",
+            "--qa-expect-submit",
+            "phase=submitting",
+        ]))
+        .unwrap();
+        assert_eq!(
+            parsed.data_edit_ranges,
+            vec![(0, 500, "note".to_owned(), "bulk-edit".to_owned())]
+        );
+        assert_eq!(parsed.data_cancel_after_ms, Some(300));
+        // 值里可以带 `=`（状态行文案常常含等号），只按第一个 `=` 切分。
+        assert_eq!(
+            parsed.expect_submit,
+            vec![
+                SubmitExpectation {
+                    field: SubmitField::Outcome,
+                    expected: "cancelled".to_owned()
+                },
+                SubmitExpectation {
+                    field: SubmitField::Status,
+                    expected: "已取消".to_owned()
+                },
+                SubmitExpectation {
+                    field: SubmitField::Button,
+                    expected: "取消提交".to_owned()
+                },
+                SubmitExpectation {
+                    field: SubmitField::Phase,
+                    expected: "submitting".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cancel_submit_flags_reject_malformed_values() {
+        // 参数写错必须报错：静默忽略会让人以为「取消已经验证过了」。
+        assert!(parse(&args(&["app", "--qa-data-edit-range"])).is_err());
+        assert!(parse(&args(&["app", "--qa-data-edit-range", "0:500:note"])).is_err());
+        assert!(parse(&args(&["app", "--qa-data-edit-range", "x:500:note:v"])).is_err());
+        assert!(parse(&args(&["app", "--qa-data-cancel-after-ms", "soon"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-submit"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-submit", "phase"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-submit", "mood=cancelled"])).is_err());
+        // 没有截图就没有「那一刻」：断言不得静默跳过。
+        assert!(parse(&args(&["app", "--qa-expect-submit", "phase=done"])).is_err());
     }
 
     #[test]

@@ -44,9 +44,9 @@ use crate::proto::services::v1::system_service_client::SystemServiceClient;
 use crate::proto::services::v1::table_data_service_client::TableDataServiceClient;
 use crate::proto::services::v1::transaction_service_client::TransactionServiceClient;
 use crate::proto::services::v1::{
-    ApplyRowChangesRequest, BeginTransactionRequest, BrowseTableRequest, GetDdlRequest,
-    GetPrimaryKeyRequest, ListNodesRequest, NodeFilter, ObjectKind, ObjectRef, RowDelete,
-    RowUpdate, TransactionRef,
+    ApplyRowChangesRequest, BeginTransactionRequest, BrowseTableRequest, CancelRowChangesRequest,
+    GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, NodeFilter, ObjectKind, ObjectRef,
+    RowDelete, RowUpdate, TransactionRef,
 };
 use crate::proto::services::v1::{CancelQueryRequest, CloseQueryRequest};
 use crate::proto::services::v1::{ExecuteQueryRequest, FetchBatchRequest};
@@ -660,6 +660,10 @@ impl BackendClient {
     }
 
     /// 提交一批行变更（主键值 + 列变更；服务端用 prepared statement 绑定参数）。
+    ///
+    /// `query_id` 由调用方（worker）**自己生成**：一元 RPC 在返回前拿不到服务端 ID，
+    /// 只有事先给出的 ID 才可能在执行期间被 [`BackendClient::cancel_row_changes`] 找到
+    /// （ADR 0018）。留空表示「本批不可取消」，v0.3 起不再这样做。
     #[allow(
         clippy::too_many_arguments,
         reason = "与契约字段一一对应，拆成结构体只会增加一层没有语义的包装"
@@ -672,6 +676,7 @@ impl BackendClient {
         updates: Vec<RowUpdate>,
         deletes: Vec<RowDelete>,
         acknowledge_risk: bool,
+        query_id: &str,
     ) -> Result<ApplyReport, TableFailure> {
         let mut client = self.table_data_service().map_err(table_local_failure)?;
         let request = ApplyRowChangesRequest {
@@ -681,9 +686,9 @@ impl BackendClient {
             updates,
             deletes,
             acknowledge_risk,
-            // v0.2.x 的前端还没有「取消提交」入口（#70 只做了后端语义）：留空表示本批不可取消，
-            // 服务端会自己生成一个 ID 并在响应里回显，但调用方拿不到它就没法取消。
-            query_id: String::new(),
+            // 客户端生成的批次 ID：服务端据此登记取消令牌，`CancelRowChanges` 用同一个
+            // ID 定位（响应里的 `query_id` 必须原样回显）。
+            query_id: query_id.to_owned(),
         };
         let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.apply_row_changes(request))
             .await
@@ -697,7 +702,27 @@ impl BackendClient {
             deferred_changes: response.deferred_changes,
             cancelled: response.cancelled,
             executed_changes: response.executed_changes,
+            query_id: response.query_id,
         })
+    }
+
+    /// 取消一个在途的行变更批次（ADR 0018）。
+    ///
+    /// 幂等：批次已结束 / 不存在时服务端同样返回成功，因此「重复点取消」「提交先结束
+    /// 再点取消」都不会报错。驱动未实现取消时返回 `capability.unsupported`——这里如实
+    /// 返回失败，绝不假装取消成功。
+    pub async fn cancel_row_changes(&self, query_id: &str) -> Result<(), TableFailure> {
+        let mut client = self.table_data_service().map_err(table_local_failure)?;
+        tokio::time::timeout(
+            QUERY_RPC_TIMEOUT,
+            client.cancel_row_changes(CancelRowChangesRequest {
+                query_id: query_id.to_owned(),
+            }),
+        )
+        .await
+        .map_err(|_| table_timeout("取消行变更批次"))?
+        .map_err(|status| table_failure_from_status(&status))?;
+        Ok(())
     }
 
     /// 开始事务（一个会话同时最多一个；只读事务不能写入）。

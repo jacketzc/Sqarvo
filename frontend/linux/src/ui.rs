@@ -316,6 +316,7 @@ pub fn activate(app: &adw::Application) {
                             loaded,
                             pages,
                         } => workspace.data_page.show_page(rows, has_more, loaded, pages),
+                        TableEvent::Submit(snapshot) => workspace.data_page.show_submit(snapshot),
                         TableEvent::Applied(report) => workspace.data_page.show_applied(report),
                         TableEvent::Inserted(report) => workspace.data_page.show_inserted(report),
                         TableEvent::Failed(failure) => workspace.data_page.show_failure(&failure),
@@ -426,6 +427,7 @@ pub fn activate(app: &adw::Application) {
                         || !crate::qa::expect_columns().is_empty()
                         || !crate::qa::expect_tree().is_empty()
                         || !crate::qa::expect_ddl().is_empty()
+                        || !crate::qa::expect_submit().is_empty()
                     {
                         match verify_expectations(&capture_state) {
                             Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
@@ -729,6 +731,14 @@ fn show_workspace(
             Rc::new(move |updates, deletes, acknowledge| {
                 if let Some(worker) = state.worker.borrow().as_ref() {
                     worker.apply_row_changes(updates, deletes, acknowledge);
+                }
+            })
+        },
+        cancel_submit: {
+            let state = Rc::clone(state);
+            Rc::new(move || {
+                if let Some(worker) = state.worker.borrow().as_ref() {
+                    worker.cancel_row_changes();
                 }
             })
         },
@@ -1322,6 +1332,39 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
         });
     }
 
+    // 3b. 批量编辑连续行（--qa-data-edit-range）：每行都走与单元格编辑相同的
+    //     `qa_edit_named`（同一套类型转换与脏行登记），只是省掉 500 次定时器。
+    for (index, (start, count, column, value)) in
+        crate::qa::data_edit_ranges().into_iter().enumerate()
+    {
+        let data = Rc::clone(&data);
+        let delay = 1_900 + 180 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            eprintln!(
+                "[qa] t=+{}ms 批量编辑第 {start}..{} 行 {} = {}",
+                crate::qa::elapsed_ms(),
+                start.saturating_add(count),
+                column,
+                value
+            );
+            let mut applied = 0u32;
+            for row in start..start.saturating_add(count) {
+                match data.qa_edit_named(usize::try_from(row).unwrap_or(0), &column, &value) {
+                    Ok(()) => applied += 1,
+                    Err(error) => {
+                        eprintln!("[qa] 批量编辑在第 {row} 行停止：{error}");
+                        break;
+                    }
+                }
+            }
+            eprintln!(
+                "[qa] t=+{}ms 批量编辑完成：{applied} 行（脏行 {}）",
+                crate::qa::elapsed_ms(),
+                data.row_count()
+            );
+        });
+    }
+
     // 4. 标记删除（可重复）。
     for (index, row) in crate::qa::data_delete_rows().into_iter().enumerate() {
         let data = Rc::clone(&data);
@@ -1542,6 +1585,45 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             | crate::qa::TxnExpectation::Disconnected => {}
         }
         passed.push(format!("事务徽标={}", observed.badge_text));
+    }
+
+    // 在途提交批次（#89）：按钮文案、状态行、批次阶段与结束方式。
+    let submit_expectations = crate::qa::expect_submit();
+    if !submit_expectations.is_empty() {
+        for expectation in &submit_expectations {
+            let actual = match expectation.field {
+                crate::qa::SubmitField::Phase => observed.submit_phase.name().to_owned(),
+                crate::qa::SubmitField::Outcome => observed
+                    .submit_outcome
+                    .map_or("none".to_owned(), |outcome| outcome.name().to_owned()),
+                crate::qa::SubmitField::Button => observed.commit_button_label.clone(),
+                crate::qa::SubmitField::Status => observed.status_text.clone(),
+            };
+            let matched = match expectation.field {
+                // 阶段与结束方式是枚举：逐字相等，不做子串匹配。
+                crate::qa::SubmitField::Phase | crate::qa::SubmitField::Outcome => {
+                    actual == expectation.expected
+                }
+                // 按钮与状态行是给用户看的整句：按包含比对，允许前后有提示语。
+                crate::qa::SubmitField::Button | crate::qa::SubmitField::Status => {
+                    actual.contains(&expectation.expected)
+                }
+            };
+            if !matched {
+                return Err(format!(
+                    "提交批次 {} 期望「{}」，实际「{actual}」；按钮=「{}」，状态行=「{}」",
+                    expectation.field.name(),
+                    expectation.expected,
+                    observed.commit_button_label,
+                    observed.status_text
+                ));
+            }
+            passed.push(format!(
+                "提交批次 {}={}",
+                expectation.field.name(),
+                expectation.expected
+            ));
+        }
     }
 
     let column_expectations = crate::qa::expect_columns();
