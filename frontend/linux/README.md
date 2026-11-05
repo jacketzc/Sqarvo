@@ -468,7 +468,8 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
   按行分组的小节表头（`GtkListHeader` 的 `item` 是**那一行的数据**），设了它会在
   表头下面多出一条空的分组条，跟列头无关；
 - 真正的列头控件是 `GtkColumnView` 内部的 `GtkColumnViewRowWidget css=header`，每列一个
-  `GtkColumnViewTitle`。界面在 `GtkColumnView` 上挂捕获阶段的 `GtkGestureClick`，
+  `GtkColumnViewTitle`。界面在**列头行**上挂捕获阶段的 `GtkGestureClick`（不挂在
+  `GtkColumnView` 上：那样会把数据行的按下一起认领，抢掉单元格双击编辑），
   按下时用 `pick()` 命中到列头那一格，读该格显示的标题，按建列时记录的
   「标题 → 数据列下标」表反查（`column_info::column_index_for_title`，整串比对，
   不解析标题、不按第几个列头猜）。落点在列头右缘 8px 内视为拉伸手柄，手势判

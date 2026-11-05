@@ -990,30 +990,20 @@ impl DataPage {
         None
     }
 
-    /// 点击列头坐标 → 打开该列的列信息浮层。
+    /// 点击列头坐标 → 打开该列的列信息浮层。坐标相对**列头行**。
     ///
-    /// 走 GTK 自己的命中测试（`pick`）：从最深处控件往上找到列头行，再取列头行下面
-    /// 的那一格（`GtkColumnViewTitle`），读它显示的标题，按 [`Self::header_titles`]
-    /// 反查数据列下标。标题对不上（行号指示列的空标题、或布局已变）就什么都不做——
+    /// 走 GTK 自己的命中测试（`pick`）：从最深处控件往上找到列头那一格
+    /// （`GtkColumnViewTitle`），读它显示的标题，按 [`Self::header_titles`] 反查
+    /// 数据列下标。标题对不上（行号指示列的空标题、或布局已变）就什么都不做——
     /// 宁可点不开，也不打开错列。
     fn header_click_at(&self, x: f64, y: f64) {
         let Some(header) = self.header_row() else {
             return;
         };
-        let Some(hit) = self.grid.pick(x, y, gtk::PickFlags::DEFAULT) else {
+        let Some(hit) = header.pick(x, y, gtk::PickFlags::DEFAULT) else {
             return;
         };
-        if !is_descendant_of(&hit, &header) {
-            return;
-        }
-        // hit → 列头行的那一格（跳过 label / sort-indicator 这些内部子控件）。
-        let mut cell = hit;
-        while let Some(parent) = cell.parent() {
-            if parent == header {
-                break;
-            }
-            cell = parent;
-        }
+        let cell = header_cell_of(&hit, &header);
         let Some(title) = header_label_text(&cell) else {
             return;
         };
@@ -1026,52 +1016,63 @@ impl DataPage {
         }
     }
 
-    /// 列头点击手势：挂在 `GtkColumnView` 上（列头单元格由 GTK 按需创建/复用，
-    /// 挂整行不会因为单元格重建而失效）。
+    /// 列头点击手势：只挂在**列头行**上，不挂在 `GtkColumnView` 上。
     ///
-    /// 用捕获阶段：列头单元格自己的手势（列宽拖拽）在冒泡阶段，捕获阶段先拿到
-    /// 坐标才能判断点的是哪一列。为避免抢掉列宽拖拽，落在列头右缘的按下不认作点击，
-    /// 直接把手势序列判为 `Denied`，交给 GTK 自己的拖拽手势。
+    /// 挂整张网格会把数据行的按下一起认领，抢掉单元格双击编辑的手势；挂列头行则数据区
+    /// 完全不受影响。捕获阶段是为了在列头自己的排序手势之前拿到坐标；落在列头右缘的
+    /// 按下不认作点击，手势判 `Denied`，把列宽拖拽让给 GTK。
     fn install_header_click(self: &Rc<Self>) {
+        let Some(header) = self.header_row() else {
+            return;
+        };
+        // 幂等：列头行可能被 GTK 重建，重建后要补挂；已经挂过就不再挂第二个。
+        let controllers = header.observe_controllers();
+        let mut index = 0;
+        while index < controllers.n_items() {
+            let already = controllers.item(index).is_some_and(|controller| {
+                controller
+                    .downcast_ref::<gtk::GestureClick>()
+                    .is_some_and(|gesture| {
+                        gesture.propagation_phase() == gtk::PropagationPhase::Capture
+                    })
+            });
+            if already {
+                return;
+            }
+            index += 1;
+        }
         let gesture = gtk::GestureClick::new();
         gesture.set_button(gtk::gdk::BUTTON_PRIMARY);
         gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
+        let weak_header = header.downgrade();
         gesture.connect_pressed(move |gesture, _, x, y| {
             let Some(page) = weak.upgrade() else {
                 return;
             };
-            if page.is_header_resize_grip(x, y) {
+            let Some(header) = weak_header.upgrade() else {
+                return;
+            };
+            if page.is_header_resize_grip(&header, x, y) {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
             }
             page.header_click_at(x, y);
         });
-        self.grid.add_controller(gesture);
+        header.add_controller(gesture);
     }
 
     /// 按下的位置是否是列头右缘的「拉宽」手柄（这一下不算点击，让 GTK 处理拖拽）。
-    fn is_header_resize_grip(&self, x: f64, y: f64) -> bool {
-        let Some(header) = self.header_row() else {
+    fn is_header_resize_grip(&self, header: &gtk::Widget, x: f64, y: f64) -> bool {
+        let Some(hit) = header.pick(x, y, gtk::PickFlags::DEFAULT) else {
             return false;
         };
-        let Some(hit) = self.grid.pick(x, y, gtk::PickFlags::DEFAULT) else {
-            return false;
-        };
-        if !is_descendant_of(&hit, &header) {
-            return false;
-        }
-        let mut cell = hit;
-        while let Some(parent) = cell.parent() {
-            if parent == header {
-                break;
-            }
-            cell = parent;
-        }
-        cell.compute_bounds(&self.grid).is_some_and(|rect| {
-            let right = f64::from(rect.x()) + f64::from(rect.width());
-            right - x <= 8.0
-        })
+        header_cell_of(&hit, header)
+            .compute_bounds(header)
+            .is_some_and(|rect| {
+                let right = f64::from(rect.x()) + f64::from(rect.width());
+                right - x <= 8.0
+            })
     }
 
     /// 给每列列头挂上「点击查看列信息」的提示（列头控件在布局后才存在，所以延后一拍）。
@@ -1173,7 +1174,10 @@ impl DataPage {
                     "列 {column} 的列头控件还没有（列在可视区外；先调用 qa_reveal_column_header）"
                 ));
             };
-            let Some(rect) = title.compute_bounds(&page.grid) else {
+            let Some(header) = page.header_row() else {
+                return Err("列头行还没有建立".to_owned());
+            };
+            let Some(rect) = title.compute_bounds(&header) else {
                 return Err(format!("列 {column} 的列头还没有分配几何"));
             };
             let (x, y) = (
@@ -2297,6 +2301,7 @@ impl DataPage {
         self.header_titles
             .replace(columns.iter().map(header_title).collect());
         self.refresh_header_tooltips();
+        self.install_header_click();
 
         let indicator_factory = gtk::SignalListItemFactory::new();
         indicator_factory.connect_setup(|_, list_item| {
@@ -2856,6 +2861,18 @@ fn ordering_label(ordering: RowOrder) -> &'static str {
 }
 
 /// 安装数据页 CSS（脏行底色、删除线、徽标配色）。
+/// 列头行里 `widget` 所在的那一格（往上走到 `header` 的直接子控件）。
+fn header_cell_of(widget: &gtk::Widget, header: &gtk::Widget) -> gtk::Widget {
+    let mut cell = widget.clone();
+    while let Some(parent) = cell.parent() {
+        if parent == *header {
+            break;
+        }
+        cell = parent;
+    }
+    cell
+}
+
 /// 控件里第一个 `GtkLabel` 的文本（列头单元格里就是列标题）。
 fn header_label_text(widget: &gtk::Widget) -> Option<String> {
     fn find(widget: &gtk::Widget) -> Option<String> {
@@ -2872,18 +2889,6 @@ fn header_label_text(widget: &gtk::Widget) -> Option<String> {
         None
     }
     find(widget)
-}
-
-/// `widget` 是否在 `ancestor` 的子树里（含自身）。
-fn is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
-    let mut current = Some(widget.clone());
-    while let Some(candidate) = current {
-        if candidate == *ancestor {
-            return true;
-        }
-        current = candidate.parent();
-    }
-    false
 }
 
 fn install_css() {
