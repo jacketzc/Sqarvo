@@ -8,9 +8,10 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
-> 当前版本为 **v0.1（仅后端 + SQLite）**：传输层、协议契约、Driver SPI 与 SQLite 驱动
-> 已可端到端使用，但**没有可用的图形前端**，也不能连接网络数据库。
-> 能力边界与验证记录见 [v0.1 发布说明](docs/releases/v0.1.md)。
+> 当前版本为 **v0.2**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动）、
+> Linux GTK4 前端（拉起后端、连接、执行、取消、结果虚拟化）与凭据存储已可端到端使用。
+> **Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵与已知限制见
+> [v0.2 发布说明](docs/releases/v0.2.md)。
 
 ## 目录结构
 
@@ -25,14 +26,14 @@
 │   └── crates/
 │       ├── common/           # 错误模型与标识符
 │       ├── driver-api/       # Driver SPI：能力、值模型、元数据、会话
-│       ├── drivers/          # 驱动注册表与 SQLite 驱动（drivers/sqlite）
+│       ├── drivers/          # 驱动注册表，drivers/sqlite、drivers/mariadb
 │       ├── connection/       # 连接与会话生命周期
 │       ├── query-engine/     # 查询登记、并发上限、幂等取消
 │       ├── metadata/         # 元数据分页逻辑
 │       ├── transaction/      # 显式事务状态机
 │       ├── local-store/      # 路径、端点文件、token、凭据引用
 │       └── rpc-server/       # gRPC 服务实现与本地传输层
-├── frontend/                 # 三个平台的原生前端（UI 骨架，未接后端）
+├── frontend/                 # 三个平台的原生前端（Linux 已接入后端；Windows/macOS 为骨架）
 │   ├── windows/              # WinUI 3 + C#
 │   ├── linux/                # GTK4 + libadwaita + Rust
 │   └── macos/                # SwiftUI + Swift
@@ -62,19 +63,20 @@
 | 本地存储 | 目录解析与权限、端点文件原子写入、凭据引用接口 |
 | 凭据存储（Linux） | Secret Service（D-Bus，zbus blocking）：get / set / delete；引用不存在 → `credential.not_found`，服务不可用 → `credential.unavailable`，绝不回退明文；真实密钥环用例由 `SQARVO_SECRET_SERVICE_TEST=1` 门控 |
 | 凭据接线 | `SessionManager` 注入 `CredentialStore`：`credential_ref` 经 `spawn_blocking` 解析为 `Secret` 后交给驱动，明文不缓存、不落日志；引用不存在 → `credential.not_found`（不连库），存储不可用/锁定 → `credential.unavailable`；gRPC 端到端用例用内存存储 + 真实 MariaDB |
+| Linux 前端（GTK4 / libadwaita） | 拉起后端进程、读端点文件、校验 `protocol_version`、token 握手与退出清理；连接对话框（测试连接、密码只写系统凭据库）；`Ctrl+Enter` 执行、`Escape`/按钮取消、`GtkColumnView` 虚拟化 + 每批 500 行预取；行数/估算字节上限与背压（`SQARVO_RESULT_ROW_LIMIT` / `SQARVO_RESULT_BYTES_LIMIT`）；`cd frontend/linux && cargo test` 66 通过，`./scripts/bench.sh` 可复现基准 |
 | gRPC 冒烟测试 | 真实 UDS + token 的端到端调用 |
 
 **尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
 
 - PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
 - 多语句执行（第二条语句返回 `capability.unsupported`）；
-- 元数据对象树、列信息、DDL 生成；
-- 显式事务绑定到会话；
+- 元数据对象树、列信息、DDL 生成（M4，v0.2.1 / v0.4）；
+- 显式事务绑定到会话（M4，v0.2.1 / v0.4）；
 - Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
-- 前端与后端的实际连接（三端 UI 仅为骨架）；
-- 大字段延迟加载、结果集内存上限与背压；
+- Windows / macOS 前端接入后端（两端仍只有窗口骨架，未构建、未运行验证）；
+- 大字段延迟加载（当前单格按 64 KiB 截断返回；Linux 前端已有行数/估算字节上限与背压）；
 - Windows Named Pipe + ACL 传输（当前回退为回环 TCP + token）；
-- 启动/内存/大结果集性能基准（M6）。
+- **release 构建**的启动/内存/大结果集基准（现有数值全部来自 debug 构建）。
 
 ## 构建与测试
 
@@ -115,6 +117,18 @@ cargo run -p sqarvo-backend-service
 
 正常退出（Ctrl-C / SIGTERM）会删除 socket 与端点文件。
 
+运行 Linux 前端（GTK4 + libadwaita，需 GTK 4.16 / libadwaita 1.6 及以上）：
+
+```bash
+sudo apt install libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+cd frontend/linux
+cargo run
+```
+
+前端会按候选路径查找后端可执行文件并自行拉起（`SQARVO_BACKEND_BIN` 可显式指定），
+然后完成 token 握手。连接对话框、凭据写入、`--qa-*` 无人值守验证、结果集上限与基准脚本
+见 [frontend/linux/README.md](frontend/linux/README.md)。
+
 > 验证范围：本项目当前只在 Linux 上执行过构建与测试。Windows 与 macOS 的传输/UI
 > 代码尚未在本机验证，详见各平台 README。
 
@@ -132,6 +146,7 @@ cargo run -p sqarvo-backend-service
 - [风险登记](docs/planning/risk-register.md)
 - [规划文档与任务管理约定](docs/planning/README.md)
 - [v0.1 发布说明](docs/releases/v0.1.md)
+- [v0.2 发布说明](docs/releases/v0.2.md)
 
 技术与设计：
 

@@ -35,7 +35,7 @@
 | REQ-SQL-001 | 多标签 SQL 编辑器：高亮、行号、选区、缩进、查找替换 | P0 | 未实现 | 当前是纯文本多行等宽编辑器（PR #38），界面明确标注「语法高亮将在后续版本提供」；无多标签、行号、查找替换、历史 |
 | REQ-SQL-002 | 执行全部 / 执行当前语句 | P0 | 部分 | 后端执行、语句摘要与分批已端到端验证（SQLite 与 MariaDB）；Linux 前端 `Ctrl+Enter` 执行**整段** SQL（PR #38）；「执行当前语句」未实现（无光标语句识别） |
 | REQ-SQL-003 | 取消执行（幂等，传播到驱动） | P0 | 部分 | 驱动中断与 gRPC 幂等取消已端到端验证（2 秒内，MariaDB 用 `KILL QUERY` 并断言服务端无残留）；Linux 前端 `Escape`/按钮取消，重复点击不发第二次 RPC；**契约缺口**：`ExecuteQueryRequest` 不携带客户端 `query_id`，尚未返回首批的语句无法服务端取消（界面 0 ms 进入 Cancelled，服务端可能仍在执行） |
-| REQ-SQL-004 | 多语句、多结果集 | P1 | 部分 | 契约与 SPI 已支持 `statement_index`；SQLite 与 MariaDB 两个驱动都**拒绝**多语句（`capability.unsupported`，MariaDB 在发送前拒绝），无驱动实现多结果集（v0.3+ 再评估） |
+| REQ-SQL-004 | 多语句、多结果集 | P1 | 部分 | 契约与 SPI 已支持 `statement_index`；SQLite 与 MariaDB 两个驱动都**拒绝**多语句（`capability.unsupported`，MariaDB 在发送前拒绝），无驱动实现多结果集（v0.4+ 再评估） |
 | REQ-SQL-005 | 查询历史与收藏 | P1 | 未实现 | 本地保存，不含敏感数据 |
 | REQ-SQL-006 | 自动补全（基于元数据） | P2 | 未实现 | 可关闭；不阻塞输入 |
 

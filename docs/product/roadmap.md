@@ -6,8 +6,8 @@
 | 版本 | 主题 | 主要能力 | 状态 |
 |---|---|---|---|
 | v0.1 | 基础架构与数据库连接（后端） | 本地 IPC + token、gRPC 契约、Driver SPI v0.2、SQLite 连接/执行/分批/取消 | 已完成（M0–M2） |
-| v0.2 | SQL 编辑器与查询结果 | 前端接入、凭据存储、MariaDB、SQL 编辑器、结果虚拟化、取消 | 未开始 |
-| v0.3 | 数据浏览与编辑 | 表数据浏览、安全编辑、事务状态 | 未开始 |
+| v0.2 | SQL 编辑器与查询结果 | 前端接入、凭据存储、MariaDB、SQL 编辑器、结果虚拟化、取消 | 已完成（M3；M6 的 Linux 首端） |
+| v0.2.1 | 数据浏览与编辑 | 表数据浏览、安全编辑、事务状态 | 未开始 |
 | v0.4 | 数据库对象管理 | 对象树、列信息、DDL、对象搜索 | 未开始 |
 | v0.5 | 导入导出与结构管理 | CSV/JSON/SQL 导入导出、结构对比与迁移脚本 | 未开始 |
 | v1.0 | 首个完整可用版本 | 三平台、SQLite/MariaDB/PostgreSQL、性能与安全验收、打包 | 未开始 |
@@ -16,9 +16,13 @@
 
 - v0.1 已完成：仓库骨架与本地 IPC（M0）、契约冻结（M1）、SQLite 垂直切片（M2），
   验证记录见 [v0.1 发布说明](../releases/v0.1.md)；
-- SQLite 可连接、执行、分批拉取与取消；MariaDB / PostgreSQL 未实现，连接返回 `driver.not_found`；
-- 元数据与事务 RPC 仍返回 `UNIMPLEMENTED`（M4）；
-- 三端前端仅有窗口骨架，未连接后端。
+- v0.2 已完成（2026-11-04，仅 Linux 前端）：凭据存储（Linux Secret Service）、MariaDB 驱动、
+  SQL 执行/取消/结果虚拟化；验证记录、支持矩阵与已知限制见 [v0.2 发布说明](../releases/v0.2.md)
+  与 [发布计划](../planning/release-plan.md)；
+- SQLite 与 MariaDB 可连接、执行、分批拉取与取消；PostgreSQL 未实现，连接返回 `driver.not_found`；
+  MariaDB 真实 TLS 握手与 MySQL 8.x 兼容性未验证；
+- 元数据与事务 RPC 仍返回 `UNIMPLEMENTED`（M4，目标版本 v0.2.1 / v0.4）；
+- 前端：Linux 已接入后端并可查询；Windows / macOS 仅有窗口骨架，未接后端、未构建验证；
 
 ## 版本原则
 
