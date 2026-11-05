@@ -60,8 +60,42 @@ pub enum DataState {
     Disconnected,
 }
 
+/// 事务徽标可能带的 CSS 类：同步徽标时先全部摘掉再加当前状态的那一个。
+///
+/// 单点定义：状态切换（`sync_badge`）与 QA 观察（[`DataPage::qa_observe`]）读同一份清单，
+/// 不会出现「断言看到的是另一个类」。
+const TXN_CSS_CLASSES: [&str; 5] = [
+    "sqarvo-txn-commit",
+    "sqarvo-txn-active",
+    "sqarvo-txn-readonly",
+    "sqarvo-txn-failed",
+    "sqarvo-txn-disconnected",
+];
+
 /// 提交行变更的回调签名。
 pub type ApplyCallback = Rc<dyn Fn(Vec<RowUpdate>, Vec<RowDelete>, bool)>;
+
+/// QA 从控件上读回的可见状态（[`DataPage::qa_observe`]）。
+///
+/// 只读快照：字段全部来自真实控件（徽标文本、按钮 `sensitive`、横幅），
+/// 断言用它而不是直接读状态机字段，才能证明「界面被更新了」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataPageObservation {
+    /// 数据页状态。
+    pub state: DataState,
+    /// 事务徽标的可见文本。
+    pub badge_text: String,
+    /// 徽标上带的 CSS 类（正常状态应恰好一个）。
+    pub badge_classes: Vec<&'static str>,
+    /// 「提交事务」是否可点。
+    pub commit_enabled: bool,
+    /// 「回滚事务」是否可点。
+    pub rollback_enabled: bool,
+    /// 是否允许继续编辑。
+    pub edits_allowed: bool,
+    /// 横幅文本（未显示时为 `None`）。
+    pub banner: Option<String>,
+}
 
 /// 数据页发给 worker 的命令（全部非阻塞）。
 pub struct DataCallbacks {
@@ -1055,6 +1089,41 @@ impl DataPage {
         if let Some(table) = table {
             self.begin_open(table);
             (self.callbacks.reload)();
+        }
+    }
+
+    /// QA：重放「服务端返回 `transaction.failed`」这一条失败路径。
+    ///
+    /// 调用的正是 [`Self::show_failure`]——真实 RPC 错误回来时用的同一个处理器，
+    /// 因此徽标切换、提交按钮禁用、只允许回滚都走真实代码；只有错误来源是注入的。
+    /// 之所以要注入：一个 GUI 进程只有一条数据库会话，而服务端的失败态来自死锁
+    /// （`transaction.failed`）这类必须由第二条会话制造的竞态，单会话无法确定性复现。
+    pub fn qa_inject_transaction_failure(self: &Rc<Self>, detail: &str) {
+        self.show_failure(&TableFailure::TransactionFailed {
+            message: detail.to_owned(),
+        });
+    }
+
+    /// QA 观察点：从控件上读回用户真正看到的东西（徽标文案/CSS、按钮可用性、横幅）。
+    ///
+    /// 断言必须基于渲染结果而不是状态机内部字段：状态机单测已经覆盖字段，
+    /// 这里要证明的是「界面真的跟着变了」。
+    pub fn qa_observe(&self) -> DataPageObservation {
+        DataPageObservation {
+            state: self.state.get(),
+            badge_text: self.txn_badge.text().to_string(),
+            badge_classes: TXN_CSS_CLASSES
+                .into_iter()
+                .filter(|class| self.txn_badge.has_css_class(class))
+                .collect(),
+            commit_enabled: self.buttons.commit_txn.is_sensitive(),
+            rollback_enabled: self.buttons.rollback.is_sensitive(),
+            edits_allowed: self.badge.borrow().edits_allowed(),
+            banner: if self.banner.is_revealed() {
+                Some(self.banner.title().to_string())
+            } else {
+                None
+            },
         }
     }
 
@@ -2097,13 +2166,7 @@ impl DataPage {
     fn sync_badge(&self) {
         let badge = self.badge.borrow();
         self.txn_badge.set_text(&badge.label());
-        for class in [
-            "sqarvo-txn-commit",
-            "sqarvo-txn-active",
-            "sqarvo-txn-readonly",
-            "sqarvo-txn-failed",
-            "sqarvo-txn-disconnected",
-        ] {
+        for class in TXN_CSS_CLASSES {
             self.txn_badge.remove_css_class(class);
         }
         for class in badge.css_classes() {

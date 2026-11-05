@@ -24,7 +24,7 @@ use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFail
 use crate::backend::endpoint;
 use crate::backend::table::TableEntry;
 use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, TableEvent, WorkerHandle};
-use crate::data_page::{DataCallbacks, DataPage, TableBrowser};
+use crate::data_page::{DataCallbacks, DataPage, DataState, TableBrowser};
 use crate::dialog::ConnectionDialog;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
 
@@ -406,6 +406,18 @@ pub fn activate(app: &adw::Application) {
             match result {
                 Ok(()) => {
                     eprintln!("[qa] 界面截图已写入 {}", capture.path.display());
+                    // 截图之后立刻断言：画面证据已经落盘，断言失败也不会丢证据。
+                    // 只有登记了 --qa-expect-* 才校验；退出码 3 与截图失败的 2 区分开。
+                    if crate::qa::expect_data_state().is_some() || crate::qa::expect_txn().is_some()
+                    {
+                        match verify_expectations(&capture_state) {
+                            Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
+                            Err(reason) => {
+                                eprintln!("[qa] 断言失败：{reason}");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
                     // 对话框是模态的：先强制关掉它，否则主窗口的关闭会被挡住，
                     // 无人值守运行会一直挂到外部超时（后端也就不会被清理）。
                     if let Some(dialog) = dialog.as_ref() {
@@ -902,6 +914,19 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
         });
     }
 
+    // 2b. 重放「服务端报 transaction.failed」的失败路径（--qa-data-fail-txn）。
+    //     与真实错误走同一个 `show_failure`；错误来源是注入的（单会话无法制造死锁）。
+    if crate::qa::data_fail_transaction() {
+        let data = Rc::clone(&data);
+        glib::timeout_add_local_once(Duration::from_millis(2_100), move || {
+            eprintln!(
+                "[qa] t=+{}ms 注入事务失败态（transaction.failed）",
+                crate::qa::elapsed_ms()
+            );
+            data.qa_inject_transaction_failure("事务已失败，只能回滚（QA 注入）");
+        });
+    }
+
     // 3. 单元格编辑（按列名）。
     for (index, (row, column, value)) in crate::qa::data_edits().into_iter().enumerate() {
         let data = Rc::clone(&data);
@@ -1045,4 +1070,94 @@ fn show_disconnected(
     button.connect_clicked(move |_| handler());
     page.set_child(Some(&button));
     set_page(slot, &page);
+}
+
+/// 数据页状态的可读名称（断言失败时用同一份枚举，不猜）。
+fn data_state_name(state: DataState) -> &'static str {
+    match state {
+        DataState::Idle => "Idle",
+        DataState::Loading => "Loading",
+        DataState::Ready => "Ready",
+        DataState::Empty => "Empty",
+        DataState::Error => "Error",
+        DataState::Disconnected => "Disconnected",
+    }
+}
+
+/// QA：校验 `--qa-expect-data-state` / `--qa-expect-txn`。
+///
+/// 读的全部是控件上真实渲染出来的东西（徽标文本 / 失败态 CSS / 按钮 `sensitive`），
+/// 不是「状态机里应该是」：状态机单测已经覆盖字段，这里要证明的是界面跟着变了。
+/// 返回一句话描述（供日志），错误即断言失败；调用方以退出码 3 结束。
+fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
+    let data_page = state
+        .workspace
+        .borrow()
+        .as_ref()
+        .map(|workspace| Rc::clone(&workspace.data_page))
+        .ok_or_else(|| "工作区尚未建立：没有数据页可断言".to_owned())?;
+    let observed = data_page.qa_observe();
+    let mut passed: Vec<String> = Vec::new();
+
+    if let Some(expected) = crate::qa::expect_data_state() {
+        let actual = data_state_name(observed.state);
+        if actual != expected.name() {
+            return Err(format!(
+                "数据页状态期望 {}，实际 {actual}；横幅={:?}，徽标={:?}",
+                expected.name(),
+                observed.banner,
+                observed.badge_text
+            ));
+        }
+        passed.push(format!("数据页状态={actual}"));
+    }
+
+    if let Some(expected) = crate::qa::expect_txn() {
+        if observed.badge_text != expected.label() {
+            return Err(format!(
+                "事务徽标期望「{}」，实际「{}」",
+                expected.label(),
+                observed.badge_text
+            ));
+        }
+        // 徽标 CSS 类必须恰好是当前状态那一个：既证明样式跟着换了，
+        // 也证明旧的（例如事务中的绿色）已经被摘掉。
+        if observed.badge_classes != vec![expected.css_class()] {
+            return Err(format!(
+                "事务徽标 CSS 期望 [{}]，实际 {:?}",
+                expected.css_class(),
+                observed.badge_classes
+            ));
+        }
+        match expected {
+            // 失败态：只能回滚——提交禁用、回滚可点、不许编辑。
+            crate::qa::TxnExpectation::Failed => {
+                if observed.commit_enabled {
+                    return Err("失败态下「提交事务」必须禁用，实际可点".to_owned());
+                }
+                if !observed.rollback_enabled {
+                    return Err("失败态下「回滚事务」必须可点，实际禁用".to_owned());
+                }
+                if observed.edits_allowed {
+                    return Err("失败态下不得继续编辑，实际允许".to_owned());
+                }
+                passed.push("失败态：提交禁用 / 回滚可点 / 编辑冻结".to_owned());
+            }
+            crate::qa::TxnExpectation::Active => {
+                if !observed.commit_enabled {
+                    return Err("事务中「提交事务」应可点，实际禁用".to_owned());
+                }
+                passed.push("事务中：提交可点".to_owned());
+            }
+            crate::qa::TxnExpectation::AutoCommit
+            | crate::qa::TxnExpectation::ReadOnly
+            | crate::qa::TxnExpectation::Disconnected => {}
+        }
+        passed.push(format!("事务徽标={}", observed.badge_text));
+    }
+
+    if passed.is_empty() {
+        return Err("没有登记任何期望值".to_owned());
+    }
+    Ok(passed.join("，"))
 }

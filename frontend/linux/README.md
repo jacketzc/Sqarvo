@@ -428,6 +428,39 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-rollback` | 点「回滚事务」 |
 | `--qa-data-reload` | 提交/回滚后重新浏览并打印行值 |
 | `--qa-auto-confirm-risk` | 无人值守时自动确认风险对话框（仍走同一个对话框与提交路径） |
+| `--qa-data-fail-txn` | 重放「服务端报 `transaction.failed`」的失败路径（走同一个 `show_failure`） |
+| `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
+| `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
+
+`--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
+断言失败也不会丢证据）。退出码：`0` 通过、`2` 截图失败、`3` 断言失败。
+
+#### 数据页三态与事务失败态的取证（#62）
+
+```bash
+# Loading：外部会话 LOCK TABLES WRITE 锁住表，browse 阻塞，界面停在 Loading
+podman exec <mariadb> mariadb -u… -p… sqarvo_test_62 \
+  -e "LOCK TABLES locked_items WRITE; SELECT SLEEP(14);" &
+./target/debug/sqarvo-desktop --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-data-table locked_items --qa-expect-data-state loading \
+  --screenshot ~/sqarvo-v021-shots/data-page-loading.png --screenshot-delay-ms 3000
+
+# Empty：空表
+… --qa-data-table empty_items --qa-expect-data-state empty --screenshot …/data-page-empty.png
+
+# Error：唯一键冲突，提交被服务端拒绝
+… --qa-data-table uniq_items --qa-data-edit 0:code:B --qa-data-commit \
+  --qa-expect-data-state error --screenshot …/data-page-error.png --screenshot-delay-ms 5200
+
+# 失败态徽标：先产生一行脏数据，再注入 transaction.failed
+… --qa-data-table demo_items --qa-data-begin-txn --qa-data-edit 0:note:alpha-edit \
+  --qa-data-fail-txn --qa-expect-txn failed --qa-expect-data-state error \
+  --screenshot …/data-page-txn-failed.png --screenshot-delay-ms 3500
+```
+
+失败态只能注入：一个 GUI 进程只有一条数据库会话，而服务端进入失败态的确定性来源是
+死锁（1213），必须由第二条会话制造，单会话无法复现；注入点调用的仍是真实 RPC 错误
+回来时的同一个 `show_failure`，徽标、按钮、横幅都走真实代码。
 
 不带这些参数的正常启动路径完全不受影响。
 
