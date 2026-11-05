@@ -211,6 +211,7 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
                         page_size: 2,
                         page_token: token.clone(),
                     }),
+                    filter: None,
                 })
                 .await,
         );
@@ -362,6 +363,7 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
                 page_size: 2,
                 page_token: "abc".to_owned(),
             }),
+            filter: None,
         })
         .await
         .expect_err("非法 token 必须失败");
@@ -381,6 +383,7 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
                 ..ObjectRef::default()
             }),
             page: Some(PageRequest::default()),
+            filter: None,
         })
         .await
         .expect_err("上层层级必须明确拒绝");

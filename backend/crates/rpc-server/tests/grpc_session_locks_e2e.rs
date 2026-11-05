@@ -660,6 +660,7 @@ fn spawn_list_nodes(
                     ..ProtoObjectRef::default()
                 }),
                 page: None,
+                filter: None,
             })
             .await
             .map(Response::into_inner)
