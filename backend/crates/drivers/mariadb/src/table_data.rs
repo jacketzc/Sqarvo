@@ -40,9 +40,10 @@ use mysql_async::prelude::*;
 use mysql_async::{Conn, Params, Value as MyValue};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    Cell, ColumnMeta, DriverSession, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
+    Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport, InsertRow,
+    InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
     PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest,
-    RowChangeResult, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
+    RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
     invalid_change, no_primary_key, read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
@@ -66,12 +67,18 @@ pub(crate) enum TableDataRequest {
         /// 取消令牌（ADR 0018）：只在行与行之间读取，取消方不取会话执行锁。
         cancel: RowChangeCancel,
     },
+    /// 插入一批新行（v0.2.2，#85）：列清单只含标识符，值全部走二进制协议绑定。
+    Insert {
+        object: ObjectRef,
+        rows: Vec<InsertRow>,
+    },
 }
 
 /// 表数据回复，与 [`TableDataRequest`] 一一对应。
 pub(crate) enum TableDataReply {
     Page(TablePage),
     Report(RowChangeReport),
+    InsertReport(InsertReport),
 }
 
 /// 会话任务看到的显式事务状态快照。
@@ -110,6 +117,9 @@ pub(crate) async fn handle(
         } => Ok(TableDataReply::Report(
             apply(conn, transaction, &object, &changes, &cancel).await?,
         )),
+        TableDataRequest::Insert { object, rows } => Ok(TableDataReply::InsertReport(
+            insert(conn, transaction, &object, &rows).await?,
+        )),
     }
 }
 
@@ -123,6 +133,11 @@ impl TableDataProvider for MariaDbSession {
     /// 行变更取消在行循环里检查令牌（ADR 0018）：`KILL QUERY` 会把语句打断在半路，
     /// 事务是否还可用取决于服务端与隔离级别，做不到「取消后外层事务仍可用」的确定语义。
     fn supports_row_change_cancellation(&self) -> bool {
+        true
+    }
+
+    /// MariaDB 驱动能回传插入后的完整主键（`LAST_INSERT_ID()`，见 [`insert`]）。
+    fn supports_row_insertion(&self) -> bool {
         true
     }
 
@@ -140,7 +155,7 @@ impl TableDataProvider for MariaDbSession {
             .await?
         {
             TableDataReply::Page(page) => Ok(page),
-            TableDataReply::Report(_) => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal("表数据回复类型不匹配")),
         }
     }
 
@@ -170,7 +185,33 @@ impl TableDataProvider for MariaDbSession {
                 report.deferred = deferred;
                 Ok(report)
             }
-            TableDataReply::Page(_) => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal("表数据回复类型不匹配")),
+        }
+    }
+
+    async fn insert_rows(&self, request: InsertRowsRequest) -> Result<InsertReport> {
+        metadata::validate_session(self.session_id(), &request.object)?;
+        if request.object.kind != ObjectKind::Table {
+            return Err(read_only_object());
+        }
+        request.validate()?;
+        let deferred = request.deferred_rows();
+        let rows = request.effective_rows().to_vec();
+        if rows.is_empty() {
+            return Ok(InsertReport::default());
+        }
+        match self
+            .table_data_call(TableDataRequest::Insert {
+                object: request.object.clone(),
+                rows,
+            })
+            .await?
+        {
+            TableDataReply::InsertReport(mut report) => {
+                report.deferred = deferred;
+                Ok(report)
+            }
+            _ => Err(Error::internal("表数据回复类型不匹配")),
         }
     }
 }
@@ -706,10 +747,14 @@ fn key_condition(primary_key: &PrimaryKey) -> String {
 ///
 /// 只有解析成功后才把**规范名**拼进 SQL，客户端提供的标识符文本永远不进 SQL。
 fn resolve_column<'a>(columns: &'a [ColumnMeta], requested: &str) -> Option<&'a str> {
+    resolve_column_meta(columns, requested).map(|column| column.name.as_str())
+}
+
+/// 客户端给的列名 → 完整的列元数据（大小写以数据库为准）。
+fn resolve_column_meta<'a>(columns: &'a [ColumnMeta], requested: &str) -> Option<&'a ColumnMeta> {
     columns
         .iter()
         .find(|column| column.name.eq_ignore_ascii_case(requested.trim()))
-        .map(|column| column.name.as_str())
 }
 
 fn transaction_failed() -> Error {
@@ -896,10 +941,567 @@ fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
+// ---------------------------------------------------------------------------
+// 插入新行（v0.2.2，#85）
+// ---------------------------------------------------------------------------
+
+/// 单行预校验失败：不发送 SQL，但**仍要**进逐行结果。
+#[derive(Debug, Clone)]
+struct RowRejection {
+    /// 稳定错误码（`table_data.*`）。
+    code: ErrorCode,
+    /// 可安全展示的说明，不含 SQL 与参数值。
+    message: String,
+}
+
+impl RowRejection {
+    fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn into_result(self, index: usize) -> InsertRowResult {
+        InsertRowResult {
+            index,
+            outcome: InsertOutcome::Failed { code: self.code },
+            // 失败行不回传主键：部分回传会让前端用错误的主键去改行。
+            key: None,
+            message: Some(self.message),
+        }
+    }
+}
+
+/// 一列能否被显式写入（`information_schema.COLUMNS.EXTRA`）。
+#[derive(Debug, Clone, Copy, Default)]
+struct ColumnFlags {
+    /// `auto_increment`：允许显式写值，省略时由数据库生成。
+    auto_increment: bool,
+    /// `VIRTUAL GENERATED` / `STORED GENERATED`：不允许显式写值。
+    generated: bool,
+}
+
+/// 编译好的一批插入。
+struct InsertPlan {
+    /// 与请求行一一对应。
+    rows: Vec<CompiledInsert>,
+}
+
+/// 单行的编译结果。
+enum CompiledInsert {
+    Ready(InsertStatement),
+    Rejected(RowRejection),
+}
+
+/// 插入后主键的来源。
+///
+/// MariaDB 只在 `AUTO_INCREMENT` 列上给出生成值（`LAST_INSERT_ID()`）；复合主键
+/// 里其余列必须由调用方给出，或本身也是自增列（MariaDB 不允许两个自增列，但
+/// 这里的表达不依赖该限制）。
+enum KeyPlan {
+    /// 表没有主键：插入可行，但没有可回传的主键（不编造）。
+    None,
+    /// 全部主键列都由本行给出。
+    Provided(RowKey),
+    /// 有主键列被省略：插入后取 `LAST_INSERT_ID()` 填自增位。
+    Generated(Vec<KeySlot>),
+}
+
+/// 主键位置上的取值来源。
+enum KeySlot {
+    /// 本行给出的值。
+    Given(Value),
+    /// 自增列生成的值（`LAST_INSERT_ID()`）。
+    AutoIncrement {
+        /// 列是否无符号：决定回传 `UInt` 还是 `Int`。
+        unsigned: bool,
+    },
+}
+
+/// 单行 INSERT 的 SQL 骨架与绑定参数。
+struct InsertStatement {
+    /// 只有标识符（已引用/转义）与 `?` 占位符，没有任何值。
+    sql: String,
+    /// 绑定参数，顺序与占位符严格对应。
+    params: Vec<MyValue>,
+    /// 插入后主键怎么来。
+    key: KeyPlan,
+}
+
+impl InsertPlan {
+    fn compile(
+        qualified: &str,
+        columns: &[ColumnMeta],
+        primary_key: &PrimaryKey,
+        flags: &[(String, ColumnFlags)],
+        rows: &[InsertRow],
+    ) -> Result<Self> {
+        let mut compiled = Vec::with_capacity(rows.len());
+        for (index, row) in rows.iter().enumerate() {
+            compiled.push(compile_row(
+                qualified,
+                columns,
+                primary_key,
+                flags,
+                row,
+                index,
+            )?);
+        }
+        Ok(Self { rows: compiled })
+    }
+
+    /// 逐行执行：约束错误只影响该行，其余行继续；执行期错误整批 `Err`。
+    async fn execute(&self, conn: &mut Conn) -> Result<Vec<InsertRowResult>> {
+        let mut results = Vec::with_capacity(self.rows.len());
+        for (index, row) in self.rows.iter().enumerate() {
+            let statement = match row {
+                CompiledInsert::Rejected(rejection) => {
+                    results.push(rejection.clone().into_result(index));
+                    continue;
+                }
+                CompiledInsert::Ready(statement) => statement,
+            };
+            let executed = match conn
+                .exec_iter(&statement.sql, Params::Positional(statement.params.clone()))
+                .await
+            {
+                Ok(executed) => executed,
+                Err(error) => {
+                    if let Some(rejection) = classify_insert_error(&error, index) {
+                        results.push(rejection.into_result(index));
+                        continue;
+                    }
+                    return Err(map_read_only(map_error(error, "执行 MariaDB 插入失败")));
+                }
+            };
+            let affected = executed.affected_rows();
+            drop(executed);
+            // INSERT 的影响行数恒为 1；不是 1 说明语句被改写，那不是成功。
+            if affected != 1 {
+                results.push(
+                    RowRejection::new(
+                        ErrorCode::INTERNAL,
+                        format!("插入语句影响了 {affected} 行，预期 1 行"),
+                    )
+                    .into_result(index),
+                );
+                continue;
+            }
+            let key = resolve_key(conn, &statement.key).await?;
+            results.push(InsertRowResult {
+                index,
+                outcome: InsertOutcome::Inserted { rows_affected: 1 },
+                key,
+                message: None,
+            });
+        }
+        Ok(results)
+    }
+}
+
+/// 插入后取 `LAST_INSERT_ID()` 补齐自增主键位。
+///
+/// `LAST_INSERT_ID()` 是**连接级**状态，必须在同一连接上、紧跟该行 INSERT 读取：
+/// 会话任务独占连接，行与行之间没有别的语句插入，因此这里读到的一定是本行的值。
+async fn resolve_key(conn: &mut Conn, plan: &KeyPlan) -> Result<Option<RowKey>> {
+    match plan {
+        KeyPlan::None => Ok(None),
+        KeyPlan::Provided(key) => Ok(Some(key.clone())),
+        KeyPlan::Generated(slots) => {
+            let generated: u64 = conn
+                .query_first("SELECT LAST_INSERT_ID()")
+                .await
+                .map_err(|error| map_error(error, "读取 MariaDB 自增值失败"))?
+                .ok_or_else(|| Error::internal("LAST_INSERT_ID() 没有返回值"))?;
+            let mut values = Vec::with_capacity(slots.len());
+            for slot in slots {
+                match slot {
+                    KeySlot::Given(value) => values.push(value.clone()),
+                    KeySlot::AutoIncrement { unsigned } => values.push(if *unsigned {
+                        Value::UInt(generated)
+                    } else {
+                        Value::Int(i64::try_from(generated).map_err(|_| {
+                            Error::internal("自增值超出 i64 范围，无法按有符号列回传")
+                        })?)
+                    }),
+                }
+            }
+            Ok(Some(RowKey::new(values)))
+        }
+    }
+}
+
+/// 编译一行：解析列名、做可提前判定的校验、生成 SQL 骨架与参数。
+///
+/// 返回 `Err` 只用于**请求级**非法（列不存在）：那种问题改请求才能解决，整批
+/// 一条 SQL 都不该发。行级问题（生成列、NOT NULL）返回
+/// [`CompiledInsert::Rejected`]，由调用方逐行上报。
+fn compile_row(
+    qualified: &str,
+    columns: &[ColumnMeta],
+    primary_key: &PrimaryKey,
+    flags: &[(String, ColumnFlags)],
+    row: &InsertRow,
+    index: usize,
+) -> Result<CompiledInsert> {
+    let position = index.saturating_add(1);
+    let mut names: Vec<&str> = Vec::with_capacity(row.values.len());
+    let mut params: Vec<MyValue> = Vec::with_capacity(row.values.len());
+    let mut given: Vec<(&str, &Value)> = Vec::with_capacity(row.values.len());
+
+    for change in &row.values {
+        let requested = change.column.trim();
+        // 生成列在 `information_schema.COLUMNS` 里**是**可见的，因此必须先判断
+        // 「由数据库生成」再解析：否则会拼出一条数据库直接拒绝的 INSERT。
+        if flags
+            .iter()
+            .any(|(name, flags)| name.eq_ignore_ascii_case(requested) && flags.generated)
+        {
+            return Ok(CompiledInsert::Rejected(RowRejection::new(
+                ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
+                format!("列 {requested} 由数据库生成，不能显式插入"),
+            )));
+        }
+        let Some(column) = resolve_column_meta(columns, requested) else {
+            return Err(invalid_change(format!(
+                "第 {position} 行引用了不存在的列 {requested}"
+            )));
+        };
+        if !column.nullable && matches!(change.value, Value::Null) {
+            return Ok(CompiledInsert::Rejected(RowRejection::new(
+                ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
+                format!("列 {} 不允许 NULL，请给一个值", column.name),
+            )));
+        }
+        match bind_cell(&change.value) {
+            Ok(bound) => params.push(bound),
+            Err(error) => {
+                return Ok(CompiledInsert::Rejected(RowRejection::new(
+                    error.code(),
+                    error.message().to_owned(),
+                )));
+            }
+        }
+        names.push(column.name.as_str());
+        given.push((column.name.as_str(), &change.value));
+    }
+
+    // 省略的 NOT NULL 列：只有「数据库确实没有默认值」才拒绝。
+    // 自增列与有默认值的列都交给数据库（自增列在 `information_schema` 里
+    // `COLUMN_DEFAULT` 为 NULL，不能据此判成「无默认值」）。
+    for column in columns {
+        if given
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(&column.name))
+        {
+            continue;
+        }
+        if column.nullable || !matches!(column.default_value, ColumnDefault::NoDefault) {
+            continue;
+        }
+        // 自增列与生成列都不要求调用方给值：前者由序列生成，后者由表达式算出。
+        let flags = flags
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&column.name))
+            .map(|(_, flags)| *flags)
+            .unwrap_or_default();
+        if flags.auto_increment || flags.generated {
+            continue;
+        }
+        return Ok(CompiledInsert::Rejected(RowRejection::new(
+            ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
+            format!(
+                "列 {} 必填：既未给值，数据库也没有默认值可兜底",
+                column.name
+            ),
+        )));
+    }
+
+    let sql = if names.is_empty() {
+        // 全默认值：空列清单，交给数据库（`INSERT INTO t () VALUES ()`）。
+        format!("INSERT INTO {qualified} () VALUES ()")
+    } else {
+        let placeholders = std::iter::repeat_n("?", params.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "INSERT INTO {qualified} ({}) VALUES ({placeholders})",
+            names
+                .iter()
+                .map(|name| quote_identifier(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    Ok(CompiledInsert::Ready(InsertStatement {
+        sql,
+        params,
+        key: compile_key(primary_key, columns, flags, &given)?,
+    }))
+}
+
+/// 主键值怎么来：全部给出就原样回传；有自增列被省略就插入后取生成值。
+///
+/// 省略了**非自增**主键列时整批拒绝（不发 SQL）：那种生成值只有数据库知道，
+/// 而驱动无法安全地定位新行（MariaDB 没有 rowid），编一个主键比不回传更糟。
+fn compile_key(
+    primary_key: &PrimaryKey,
+    columns: &[ColumnMeta],
+    flags: &[(String, ColumnFlags)],
+    given: &[(&str, &Value)],
+) -> Result<KeyPlan> {
+    if primary_key.is_empty() {
+        return Ok(KeyPlan::None);
+    }
+    let mut slots = Vec::with_capacity(primary_key.len());
+    let mut any_generated = false;
+    for name in primary_key.column_names() {
+        if let Some((_, value)) = given
+            .iter()
+            .find(|(column, _)| column.eq_ignore_ascii_case(name))
+        {
+            slots.push(KeySlot::Given((*value).clone()));
+            continue;
+        }
+        let auto_increment = flags
+            .iter()
+            .any(|(column, flags)| column.eq_ignore_ascii_case(name) && flags.auto_increment);
+        if !auto_increment {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                format!(
+                    "主键列 {name} 被省略且不是自增列，无法回传插入后的完整主键；请显式给出该列"
+                ),
+            ));
+        }
+        let unsigned = columns
+            .iter()
+            .find(|column| column.name.eq_ignore_ascii_case(name))
+            .is_some_and(|column| {
+                matches!(
+                    column.column_type,
+                    sqarvo_driver_api::ColumnType::Integer { unsigned: true, .. }
+                )
+            });
+        any_generated = true;
+        slots.push(KeySlot::AutoIncrement { unsigned });
+    }
+    if any_generated {
+        Ok(KeyPlan::Generated(slots))
+    } else {
+        let values = slots
+            .into_iter()
+            .filter_map(|slot| match slot {
+                KeySlot::Given(value) => Some(value),
+                KeySlot::AutoIncrement { .. } => None,
+            })
+            .collect();
+        Ok(KeyPlan::Provided(RowKey::new(values)))
+    }
+}
+
+/// 读 `information_schema.COLUMNS.EXTRA`：区分自增列与生成列。
+///
+/// 只有插入路径需要这两项：自增列在 `COLUMN_DEFAULT` 上是 NULL（看起来像「没有
+/// 默认值」，但省略它是合法的），生成列则完全不能显式写值。
+async fn column_flags(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+) -> Result<Vec<(String, ColumnFlags)>> {
+    let rows: Vec<mysql_async::Row> = conn
+        .exec(
+            "SELECT COLUMN_NAME, EXTRA FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            (database, table),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 列属性失败"))?;
+    let mut flags = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let name = row
+            .get::<String, _>(0)
+            .ok_or_else(|| Error::internal("列属性缺少 COLUMN_NAME"))?;
+        let extra = row
+            .get::<Option<String>, _>(1)
+            .flatten()
+            .unwrap_or_default();
+        let lower = extra.to_ascii_lowercase();
+        flags.push((
+            name,
+            ColumnFlags {
+                auto_increment: lower.contains("auto_increment"),
+                // `DEFAULT_GENERATED` 也含 "generated"，但它表示「默认值由表达式生成」，
+                // 列本身仍可显式写入，不能误判。
+                generated: lower.contains("virtual generated")
+                    || lower.contains("stored generated"),
+            },
+        ));
+    }
+    Ok(flags)
+}
+
+/// 把插入语句的错误分成「该行的问题」与「整批无法继续」。
+///
+/// 只有约束类错误能逐行上报（返回 `Some`）；权限、死锁、连接丢失、语法错误等一律
+/// 返回 `None`，由调用方整批回滚并 `Err`。
+fn classify_insert_error(error: &mysql_async::Error, index: usize) -> Option<RowRejection> {
+    let mysql_async::Error::Server(server) = error else {
+        return None;
+    };
+    let message = format!("第 {} 行插入失败", index.saturating_add(1));
+    let rejection =
+        |code, detail: &str| Some(RowRejection::new(code, format!("{message}：{detail}")));
+    match server.code {
+        // ER_DUP_ENTRY / ER_DUP_ENTRY_WITH_KEY_NAME
+        1062 | 1586 => rejection(
+            ErrorCode::TABLE_DATA_UNIQUE_VIOLATION,
+            "主键或唯一约束冲突，该值已存在",
+        ),
+        // ER_BAD_NULL_ERROR
+        1048 => rejection(ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION, "有列不允许 NULL"),
+        // ER_NO_DEFAULT_FOR_FIELD
+        1364 => rejection(
+            ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
+            "有 NOT NULL 列既未给值也没有默认值",
+        ),
+        // 长度 / 取值越界 / 类型不匹配：ER_DATA_TOO_LONG、ER_WARN_DATA_OUT_OF_RANGE、
+        // ER_WARN_DATA_TRUNCATED、ER_TRUNCATED_WRONG_VALUE_FOR_FIELD、
+        // ER_TRUNCATED_WRONG_VALUE、ER_DATA_OUT_OF_RANGE
+        1406 | 1264 | 1265 | 1366 | 1292 | 1690 => {
+            rejection(ErrorCode::CONFIG_INVALID, "值超出列的类型或长度范围")
+        }
+        // ER_NO_REFERENCED_ROW_2 / ER_ROW_IS_REFERENCED_2 / ER_CHECK_CONSTRAINT_VIOLATED /
+        // ER_CONSTRAINT_FAILED
+        1452 | 1451 | 3819 | 4025 => rejection(
+            ErrorCode::CONFIG_INVALID,
+            "值不满足列定义（外键/CHECK 约束）",
+        ),
+        // ER_NON_DEFAULT_VALUE_FOR_GENERATED_COLUMN：生成列被显式写值
+        1906 => rejection(
+            ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
+            "有生成列被显式写入",
+        ),
+        _ => None,
+    }
+}
+
+/// 插入一批新行：整批一个事务（自动提交）或一个 savepoint（事务模式）。
+///
+/// 语义（ADR 0019，编排者裁定）：
+///
+/// - **继续执行其余行**：任一行失败不打断后面的行，以便一次报全所有冲突；
+/// - **整批原子**：只要有一行失败就整批回滚（自动提交 → `ROLLBACK`；事务模式 →
+///   `ROLLBACK TO SAVEPOINT`，外层事务仍可用），`rolled_back = true`、
+///   `total_rows_affected = 0`，逐行结果仍全部返回；
+/// - **省略 ≠ NULL**：只把给出的列写进 `INSERT` 的列清单，未给出的列交给数据库默认值。
+async fn insert(
+    conn: &mut Conn,
+    transaction: EditTransaction,
+    object: &ObjectRef,
+    rows: &[InsertRow],
+) -> Result<InsertReport> {
+    if object.kind != ObjectKind::Table {
+        return Err(read_only_object());
+    }
+    let database = metadata::current_database(conn).await?;
+    let name = metadata::object_parts(object, &database)?;
+    let Some(table) = metadata::find_table(conn, &database, name).await? else {
+        return Err(metadata::object_not_found(name));
+    };
+    let columns = metadata::columns(conn, object).await?;
+    let primary_key = metadata::primary_key(conn, object).await?;
+    let flags = column_flags(conn, &database, &table).await?;
+    let qualified = format!(
+        "{}.{}",
+        quote_identifier(&database),
+        quote_identifier(&table)
+    );
+    let plan = InsertPlan::compile(&qualified, &columns, &primary_key, &flags, rows)?;
+
+    match transaction {
+        EditTransaction::Failed => Err(transaction_failed()),
+        EditTransaction::Lost => Err(transaction_lost()),
+        EditTransaction::Active { read_only: true } => Err(read_only_transaction()),
+        EditTransaction::Active { read_only: false } => {
+            conn.query_drop("SAVEPOINT sqarvo_row_insert")
+                .await
+                .map_err(|error| map_error(error, "创建 MariaDB 插入保存点失败"))?;
+            match plan.execute(conn).await {
+                Ok(results) if !has_failures(&results) => {
+                    conn.query_drop("RELEASE SAVEPOINT sqarvo_row_insert")
+                        .await
+                        .map_err(|error| map_error(error, "释放 MariaDB 插入保存点失败"))?;
+                    Ok(report(results, false))
+                }
+                Ok(results) => {
+                    // 任一行失败：回到 savepoint，外层事务原样保留（仍可提交/回滚）。
+                    rollback_insert_savepoint(conn).await;
+                    Ok(report(results, true))
+                }
+                Err(error) => {
+                    rollback_insert_savepoint(conn).await;
+                    Err(error)
+                }
+            }
+        }
+        EditTransaction::None => {
+            conn.query_drop("START TRANSACTION")
+                .await
+                .map_err(|error| map_error(error, "开始 MariaDB 插入事务失败"))?;
+            match plan.execute(conn).await {
+                Ok(results) if !has_failures(&results) => {
+                    if let Err(error) = conn.query_drop("COMMIT").await {
+                        let _ = conn.query_drop("ROLLBACK").await;
+                        return Err(map_error(error, "提交 MariaDB 插入失败"));
+                    }
+                    Ok(report(results, false))
+                }
+                Ok(results) => {
+                    // 整批回滚：失败批次不得留下任何已写入的行。
+                    let _ = conn.query_drop("ROLLBACK").await;
+                    Ok(report(results, true))
+                }
+                Err(error) => {
+                    let _ = conn.query_drop("ROLLBACK").await;
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+/// 回滚到插入批次的 savepoint 并释放它；失败只记日志，不掩盖原始错误。
+async fn rollback_insert_savepoint(conn: &mut Conn) {
+    if let Err(error) = conn
+        .query_drop("ROLLBACK TO SAVEPOINT sqarvo_row_insert")
+        .await
+    {
+        tracing::warn!(%error, "回滚 MariaDB 插入保存点失败");
+    }
+    if let Err(error) = conn.query_drop("RELEASE SAVEPOINT sqarvo_row_insert").await {
+        tracing::warn!(%error, "释放 MariaDB 插入保存点失败");
+    }
+}
+
+fn has_failures(results: &[InsertRowResult]) -> bool {
+    results.iter().any(|result| !result.outcome.is_inserted())
+}
+
+fn report(results: Vec<InsertRowResult>, rolled_back: bool) -> InsertReport {
+    InsertReport {
+        results,
+        deferred: 0,
+        rolled_back,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqarvo_driver_api::PrimaryKeyColumn;
+    use sqarvo_driver_api::{ColumnChange, PrimaryKeyColumn};
 
     fn primary_key(names: &[&str]) -> PrimaryKey {
         PrimaryKey::new(
@@ -964,6 +1566,113 @@ mod tests {
         assert_eq!(
             bind_value(&value).unwrap(),
             MyValue::Date(2026, 11, 5, 1, 2, 3, 456_789)
+        );
+    }
+
+    fn column(name: &str, nullable: bool, default: ColumnDefault) -> ColumnMeta {
+        ColumnMeta {
+            name: name.to_owned(),
+            ordinal: 1,
+            column_type: sqarvo_driver_api::ColumnType::Text { length: None },
+            nullable,
+            original_type_name: Some("varchar(32)".to_owned()),
+            default_value: default,
+            character_set: None,
+            collation: None,
+        }
+    }
+
+    /// 插入语句必须是「骨架 + 占位符」：值只能进参数，省略的列不进列清单。
+    ///
+    /// 这条用例锁的是参数化的**方式**：把绑定改成字符串拼接时，SQL 里会出现
+    /// `DROP TABLE`，断言立刻失败。
+    #[test]
+    fn insert_sql_binds_values_and_omits_missing_columns() {
+        let columns = vec![
+            column("id", false, ColumnDefault::NoDefault),
+            column("v", true, ColumnDefault::Null),
+        ];
+        let primary_key = primary_key(&["id"]);
+        let flags = vec![
+            (
+                "id".to_owned(),
+                ColumnFlags {
+                    auto_increment: true,
+                    generated: false,
+                },
+            ),
+            ("v".to_owned(), ColumnFlags::default()),
+        ];
+        let row = sqarvo_driver_api::InsertRow::new(vec![ColumnChange {
+            column: "V".to_owned(),
+            value: Value::Text("'; DROP TABLE orders; --".to_owned()),
+        }]);
+        let CompiledInsert::Ready(statement) =
+            compile_row("`shop`.`orders`", &columns, &primary_key, &flags, &row, 0).unwrap()
+        else {
+            panic!("合法行不应被拒绝");
+        };
+        assert_eq!(
+            statement.sql, "INSERT INTO `shop`.`orders` (`v`) VALUES (?)",
+            "只写给出的列（`id` 由自增生成），列名按 schema 规范化"
+        );
+        assert!(
+            !statement.sql.contains("DROP TABLE"),
+            "值绝不能进入 SQL 文本：{}",
+            statement.sql
+        );
+        assert_eq!(
+            statement.params,
+            vec![MyValue::Bytes(b"'; DROP TABLE orders; --".to_vec())]
+        );
+        // 主键列被省略且是自增列：插入后取 LAST_INSERT_ID()。
+        match statement.key {
+            KeyPlan::Generated(slots) => {
+                assert!(matches!(slots.as_slice(), [KeySlot::AutoIncrement { .. }]));
+            }
+            other => panic!("自增主键应走生成值路径：{}", matches!(other, KeyPlan::None)),
+        }
+
+        // 一列都不给：空列清单，整行交给数据库默认值。
+        let CompiledInsert::Ready(empty) = compile_row(
+            "`shop`.`orders`",
+            &columns,
+            &primary_key,
+            &flags,
+            &sqarvo_driver_api::InsertRow::new(Vec::new()),
+            0,
+        )
+        .unwrap() else {
+            panic!("全默认值行不应被拒绝");
+        };
+        assert_eq!(empty.sql, "INSERT INTO `shop`.`orders` () VALUES ()");
+        assert_eq!(empty.params.len(), 0, "全默认值行不应绑定任何参数");
+    }
+
+    /// 省略「非自增且无默认值」的 NOT NULL 列：逐行拒绝，不是整批失败。
+    #[test]
+    fn omitted_not_null_column_without_default_is_a_row_rejection() {
+        let columns = vec![
+            column("id", false, ColumnDefault::NoDefault),
+            column("v", false, ColumnDefault::NoDefault),
+        ];
+        let primary_key = primary_key(&["id"]);
+        let flags = vec![(
+            "id".to_owned(),
+            ColumnFlags {
+                auto_increment: true,
+                generated: false,
+            },
+        )];
+        let row = sqarvo_driver_api::InsertRow::new(Vec::new());
+        let CompiledInsert::Rejected(rejection) =
+            compile_row("`shop`.`t`", &columns, &primary_key, &flags, &row, 0).unwrap()
+        else {
+            panic!("缺少必填列应被逐行拒绝");
+        };
+        assert_eq!(
+            rejection.code,
+            ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT
         );
     }
 
