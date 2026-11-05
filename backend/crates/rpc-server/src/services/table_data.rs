@@ -28,6 +28,8 @@
 //! | 只读事务写入 | `FAILED_PRECONDITION` | `table_data.read_only` |
 //! | 未知/已结束的事务 | `NOT_FOUND` | `transaction.not_found`（绝不退化为自动提交） |
 //! | 超过风险阈值未确认 | `FAILED_PRECONDITION` | `table_data.confirmation_required` |
+//! | `query_id` 已有在途批次 | `ALREADY_EXISTS` | `query.id_in_use` |
+//! | 驱动未实现行变更取消 | `UNIMPLEMENTED` | `capability.unsupported` |
 //!
 //! # 行编辑的原子性
 //!
@@ -52,23 +54,39 @@
 //! 它们读的是**同一条物理连接**——浏览的游标、写批次、DDL 并发时会在连接上交错，
 //! 游标可能读到改动中的 schema，错误分类也无法解释。服务端仍只做参数/结果映射，
 //! 不为绕过队头阻塞把浏览放回锁外（实测占锁时长见 ADR 0008「现状」一节）。
+//!
+//! # 取消（#70，ADR 0018）
+//!
+//! `ApplyRowChanges` 在一元 RPC 期间全程持锁，因此取消**不能**走会话：
+//! `CancelRowChanges` 只查 [`RowChangeBatches`] 登记表并把取消令牌置位，全程无
+//! `.await`、不 acquire 会话、不取执行锁。批次在下一次行边界看到令牌后整批回滚，
+//! 返回 `cancelled = true` 与 `executed_changes`（已执行条数，证明不是取消了已完成批次）。
+//!
+//! 语义（写在 proto 注释里，与 ADR 0018 一致）：
+//!
+//! - 取消在**行边界**生效，已开始的那条变更执行完；
+//! - 自动提交模式（无 `transaction_id`）整批回滚，库里不留半批；
+//! - 事务模式只回滚本批 savepoint，外层事务仍可用；
+//! - 取消幂等：重复取消、取消已完成/不存在的批次都返回成功。
 
 use std::sync::Arc;
 
-use sqarvo_common::{Error, ErrorCode, SessionId, TransactionId};
-use sqarvo_connection::SessionManager;
+use sqarvo_common::{Error, ErrorCode, QueryId, SessionId, TransactionId};
+use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_driver_api::{
     ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, MAX_ROW_CHANGES_PER_BATCH,
-    ObjectKind, PageRequest, PrimaryKey, ReadOnlyReason, RowChange, RowChangeRequest, RowKey,
-    RowOrder,
+    ObjectKind, PageRequest, PrimaryKey, ReadOnlyReason, RowChange, RowChangeCancel,
+    RowChangeRequest, RowKey, RowOrder,
 };
 use tonic::{Request, Response, Status};
 
 use crate::error::to_status;
+use crate::proto::common::v1::Empty;
 use crate::proto::services::v1::{
     ApplyRowChangesRequest, ApplyRowChangesResponse, BrowseTableRequest, BrowseTableResponse,
-    ChangeOutcome as ProtoChangeOutcome, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult,
-    RowDelete, RowOrder as ProtoRowOrder, RowUpdate, table_data_service_server::TableDataService,
+    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome,
+    ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowDelete, RowOrder as ProtoRowOrder,
+    RowUpdate, table_data_service_server::TableDataService,
 };
 use crate::services::mapping;
 use crate::services::metadata::object_ref_from_proto;
@@ -76,13 +94,40 @@ use crate::services::metadata::object_ref_from_proto;
 /// `TableDataService` 实现。
 pub struct TableDataServiceImpl {
     sessions: Arc<SessionManager>,
+    /// 在途行变更批次的取消登记表（#70，ADR 0018）。
+    ///
+    /// 与会话管理器分开：取消路径只能碰这张表，绝不能为了取消去 acquire 会话
+    /// （那会取到执行锁，取消就变成「排到批次后面」）。
+    batches: Arc<RowChangeBatches>,
 }
 
 impl TableDataServiceImpl {
     /// 构造服务。表数据必须绑定到具体会话（不同会话连的是不同的库）。
+    ///
+    /// 取消登记表由本服务私有创建；断连清理需要共享时用
+    /// [`TableDataServiceImpl::with_batches`]。
     #[must_use]
     pub fn new(sessions: Arc<SessionManager>) -> Self {
-        Self { sessions }
+        Self::with_batches(sessions, Arc::new(RowChangeBatches::with_default_limit()))
+    }
+
+    /// 用共享的取消登记表构造（`Services` 装配用：连接域断连时也要能清理）。
+    #[must_use]
+    pub fn with_batches(sessions: Arc<SessionManager>, batches: Arc<RowChangeBatches>) -> Self {
+        Self { sessions, batches }
+    }
+}
+
+/// 在途批次的登记守卫：任何返回路径（包括 `?` 提前返回）都会在 Drop 时移除登记，
+/// 不会让一个失败的请求把 `query_id` 永久占住。
+struct BatchRegistration {
+    batches: Arc<RowChangeBatches>,
+    id: QueryId,
+}
+
+impl Drop for BatchRegistration {
+    fn drop(&mut self) {
+        self.batches.finish(&self.id);
     }
 }
 
@@ -172,6 +217,25 @@ impl TableDataService for TableDataServiceImpl {
             )));
         }
 
+        // 取消登记（#70）：令牌在**任何驱动语句之前**就登记好，取消请求不会落进
+        // 「还没登记」的窗口——早到的取消会让批次在第一条变更前就停下并整批回滚，
+        // 而不是被静默丢掉。驱动未实现取消时登记 `None`：`CancelRowChanges` 会明确报
+        // capability.unsupported。
+        let query_id = batch_query_id(&request.query_id)?;
+        let cancellable = provider.supports_row_change_cancellation();
+        let cancel = RowChangeCancel::new();
+        self.batches
+            .register(
+                query_id,
+                object.session_id,
+                cancellable.then(|| cancel.clone()),
+            )
+            .map_err(to_status)?;
+        let _registration = BatchRegistration {
+            batches: Arc::clone(&self.batches),
+            id: query_id,
+        };
+
         // 主键定义是行定位的唯一依据：列名与顺序都按它校验，绝不按客户端顺序猜。
         // 主键查询也走会话执行锁（#69）：它是同一条连接上的元数据语句，
         // 不能与浏览、执行或另一条写批次交错。仍走表数据能力，能力前提不变。
@@ -205,12 +269,16 @@ impl TableDataService for TableDataServiceImpl {
                     object: object.clone(),
                     changes,
                 },
+                &cancel,
             )
             .await
             .map_err(to_status)?;
 
         // 逐行结果原样透传：`rows_affected` 是驱动实际影响的行数（冲突时可能 > 1，
         // 未命中时为 0），成败判定只看 outcome，不在映射层二次加工。
+        //
+        // 被取消时驱动一定回 `results = []`：已执行的行都回滚了，把它们报成「已应用」
+        // 会让界面显示「改了 N 行」而库里一行没动（ADR 0018）。
         let results = report
             .results
             .iter()
@@ -227,8 +295,57 @@ impl TableDataService for TableDataServiceImpl {
             total_rows_affected: report.rows_affected(),
             clamped: deferred_changes > 0 || report.deferred > 0,
             deferred_changes: u32::try_from(deferred_changes + report.deferred).unwrap_or(u32::MAX),
+            cancelled: report.cancelled,
+            executed_changes: u32::try_from(report.executed_changes).unwrap_or(u32::MAX),
+            query_id: query_id.to_string(),
         }))
     }
+
+    /// 取消一个在途的行变更批次（#70，ADR 0018）。
+    ///
+    /// # 为什么这里**不**取会话执行锁
+    ///
+    /// `ApplyRowChanges` 整批期间都持着会话执行锁（ADR 0008）。取消如果走到
+    /// `SessionManager::acquire` + 会话执行锁，就会排在批次后面等它跑完——
+    /// 用户点了「取消」却要等整批 500 行结束——这正是本 Issue 要消除的行为，
+    /// 而且批次内部的取消等待同一把锁会直接死锁。
+    ///
+    /// 因此本方法只做三件事：解析 ID、查登记表、原子置位令牌。全程**没有 `.await`**，
+    /// 结构上不可能拿到任何异步锁。批次在下一次行边界读到令牌后整批回滚并返回
+    /// `cancelled = true`。
+    ///
+    /// # 幂等
+    ///
+    /// - 重复取消：令牌已置位，返回成功（`AlreadyCancelled`）；
+    /// - 批次未开始 / 已结束 / ID 不存在：返回成功（与 `QueryService.Cancel` 一致）；
+    /// - 驱动未实现取消：`capability.unsupported`，绝不假装成功。
+    async fn cancel_row_changes(
+        &self,
+        request: Request<CancelRowChangesRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let raw = request.into_inner().query_id;
+        let query_id: QueryId = raw
+            .trim()
+            .parse()
+            .map_err(|_| Status::invalid_argument("查询 ID 格式非法"))?;
+
+        match self.batches.cancel(&query_id) {
+            Ok(_outcome) => Ok(Response::new(Empty {})),
+            // 幂等：没有在途批次就没有可取消的东西（已完成 / 尚未开始 / 已断开）。
+            Err(error) if error.code() == ErrorCode::QUERY_NOT_FOUND => Ok(Response::new(Empty {})),
+            Err(error) => Err(to_status(error)),
+        }
+    }
+}
+
+/// 解析请求里的批次 ID；留空时生成一个（该批次随后无法被取消，见 proto 注释）。
+fn batch_query_id(raw: &str) -> Result<QueryId, Status> {
+    if raw.trim().is_empty() {
+        return Ok(QueryId::new());
+    }
+    raw.trim()
+        .parse()
+        .map_err(|_| Status::invalid_argument("查询 ID 格式非法"))
 }
 
 /// 风险阈值：预计影响行数超过服务端阈值且未显式确认时拒绝。

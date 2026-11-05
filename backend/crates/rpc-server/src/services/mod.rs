@@ -19,7 +19,7 @@ pub mod transaction;
 
 use std::sync::Arc;
 
-use sqarvo_connection::SessionManager;
+use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::CredentialStore;
 use sqarvo_query_engine::QueryRegistry;
@@ -63,16 +63,26 @@ impl Services {
         queries: Arc<QueryRegistry>,
         credentials: Arc<dyn CredentialStore>,
     ) -> Self {
+        // 在途行变更批次的取消登记表（#70）：表数据域写、连接域在断连时清理。
+        let batches = Arc::new(RowChangeBatches::with_default_limit());
         Self {
             system: SystemServiceImpl::new(Arc::clone(&sessions), drivers),
-            connection: ConnectionServiceImpl::new(Arc::clone(&sessions), Arc::clone(&queries)),
+            connection: ConnectionServiceImpl::new(
+                Arc::clone(&sessions),
+                Arc::clone(&queries),
+                Arc::clone(&batches),
+            ),
             credential: CredentialServiceImpl::new(credentials),
             metadata: MetadataServiceImpl::new(Arc::clone(&sessions)),
             // 事务服务与会话管理共享同一份登记表：`Begin` 绑定的会话必须是
             // `Disconnect` / 断连清理看到的那一个（#44）。
             transaction: TransactionServiceImpl::new(Arc::clone(&sessions)),
             // 表数据浏览与会话共享同一份登记表：游标归驱动，会话由这里解析。
-            table_data: TableDataServiceImpl::new(Arc::clone(&sessions)),
+            // 行变更批次的取消登记表（#70）同时交给连接域：断连时要让在途批次停下。
+            table_data: TableDataServiceImpl::with_batches(
+                Arc::clone(&sessions),
+                Arc::clone(&batches),
+            ),
             query: QueryServiceImpl::new(sessions, queries),
         }
     }

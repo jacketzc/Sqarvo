@@ -32,8 +32,8 @@ use sqarvo_driver_api::{
     ConnectionParams as DriverConnectionParams, ConnectionTestReport, Driver, DriverDescriptor,
     DriverId, DriverSession, ExecuteRequest, ExecutionStart, MetadataProvider, ObjectKind,
     ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
-    ResultBatch, RowChangeReport, RowChangeRequest, RowChangeResult, RowOrder, StatementSummary,
-    TableDataProvider, TablePage, Value,
+    ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, RowChangeResult, RowOrder,
+    StatementSummary, TableDataProvider, TablePage, Value,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::AuthToken;
@@ -319,6 +319,7 @@ impl TableDataProvider for LockSession {
     async fn apply_row_changes(
         &self,
         request: RowChangeRequest,
+        _cancel: &RowChangeCancel,
     ) -> sqarvo_common::Result<RowChangeReport> {
         self.shared.enter("apply");
         self.shared.park("apply").await;
@@ -331,6 +332,8 @@ impl TableDataProvider for LockSession {
                 })
                 .collect(),
             deferred: 0,
+            cancelled: false,
+            executed_changes: 0,
         })
     }
 }
@@ -567,6 +570,7 @@ fn apply_request(session_id: &str, value: &str) -> ApplyRowChangesRequest {
         session_id: session_id.to_owned(),
         object: Some(table_ref(session_id)),
         transaction_id: String::new(),
+        query_id: String::new(),
         updates: vec![RowUpdate {
             key: Some(RowKey {
                 values: vec![PrimaryKeyValue {

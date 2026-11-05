@@ -277,6 +277,7 @@ async fn browse_reports_connection_read_only_and_rejects_writes() {
             session_id: read_only.session_id.clone(),
             object: Some(table_ref(&read_only.session_id, "orders")),
             transaction_id: String::new(),
+            query_id: String::new(),
             updates: vec![RowUpdate {
                 key: Some(RowKey {
                     values: vec![sqarvo_rpc_server::proto::services::v1::PrimaryKeyValue {

@@ -32,8 +32,9 @@ use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::{
     Capabilities, ChangeOutcome, ConnectionParams as DriverConnectionParams, ConnectionTestReport,
     Driver, DriverDescriptor, DriverId, DriverSession, ExecuteRequest, ExecutionStart, ObjectRef,
-    PrimaryKey, PrimaryKeyColumn, ResultBatch, RowChange, RowChangeReport, RowChangeRequest,
-    RowChangeResult, StatementSummary, TableDataProvider, TablePage, TransactionOptions, Value,
+    PrimaryKey, PrimaryKeyColumn, ResultBatch, RowChange, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, RowChangeResult, StatementSummary, TableDataProvider, TablePage,
+    TransactionOptions, Value,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::AuthToken;
@@ -352,6 +353,7 @@ impl TableDataProvider for GateSession {
     async fn apply_row_changes(
         &self,
         request: RowChangeRequest,
+        _cancel: &RowChangeCancel,
     ) -> sqarvo_common::Result<RowChangeReport> {
         self.shared.enter("apply");
         if let Some(gate) = &self.shared.apply_gate {
@@ -413,6 +415,8 @@ impl TableDataProvider for GateSession {
         Ok(RowChangeReport {
             results,
             deferred: 0,
+            cancelled: false,
+            executed_changes: 0,
         })
     }
 }
@@ -690,6 +694,7 @@ fn apply_request(session_id: &str, transaction_id: &str, value: &str) -> ApplyRo
         session_id: session_id.to_owned(),
         object: Some(table_ref(session_id, "items")),
         transaction_id: transaction_id.to_owned(),
+        query_id: String::new(),
         updates: vec![RowUpdate {
             key: Some(RowKey {
                 values: vec![PrimaryKeyValue {

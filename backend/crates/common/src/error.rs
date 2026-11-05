@@ -91,6 +91,8 @@ impl ErrorCode {
     pub const QUERY_CANCELLED: Self = Self("query.cancelled");
     /// 并发查询数量已达上限。
     pub const QUERY_LIMIT_REACHED: Self = Self("query.limit_reached");
+    /// 该 `query_id` 已有在途批次（行变更批次的 ID 不得并发复用，ADR 0018）。
+    pub const QUERY_ID_IN_USE: Self = Self("query.id_in_use");
     /// 事务处于失败状态，只能回滚。
     pub const TRANSACTION_FAILED: Self = Self("transaction.failed");
     /// 事务不存在或已结束（例如行变更指向一个已提交/已回滚的事务）。

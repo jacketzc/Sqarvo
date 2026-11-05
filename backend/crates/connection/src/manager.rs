@@ -9,8 +9,8 @@ use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, 
 use sqarvo_driver_api::{
     ColumnMeta, ConnectionParams, ConnectionTestReport, DriverId, DriverSession, ExecuteRequest,
     ExecutionStart, IsolationLevel, MetadataProvider, ObjectNode, ObjectRef, Page, PageRequest,
-    PrimaryKey, ResultBatch, RowChangeReport, RowChangeRequest, Secret, TableDataProvider,
-    TablePage, TransactionOptions,
+    PrimaryKey, ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret,
+    TableDataProvider, TablePage, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -439,7 +439,7 @@ impl SessionHandle {
         }
     }
 
-    /// 在会话执行锁内提交一批行变更（#61）。
+    /// 在会话执行锁内提交一批行变更（#61），取消走独立令牌（#70）。
     ///
     /// 把「校验事务登记 → 调驱动写批次 → 观察事务失败态」放在**同一把**会话执行锁
     /// 内（ADR 0008）：如果先校验再释放锁，并发的 `Commit` / `Rollback` 可以在校验
@@ -448,6 +448,15 @@ impl SessionHandle {
     ///
     /// - 批次先拿到锁：写入属于当前事务，随后的 `Commit` / `Rollback` 决定去留；
     /// - 事务结束先拿到锁：登记已移除，本方法返回 `transaction.not_found`，一个字节都不写。
+    ///
+    /// # 取消（ADR 0018）
+    ///
+    /// `cancel` 是取消令牌。取消方（`CancelRowChanges`）只把令牌置位，**绝不获取**
+    /// 这把执行锁——否则「取消一个正在跑的批次」会排在本方法后面等到批次自己结束，
+    /// 取消永远不生效（死锁）。驱动在行与行之间读令牌，命中后整批回滚：
+    ///
+    /// - 自动提交模式：整批 `ROLLBACK`，库里不留半批；
+    /// - 事务模式：回滚到本批 savepoint，外层事务仍可用（可继续写、可提交或回滚）。
     ///
     /// # 锁边界
     ///
@@ -472,6 +481,7 @@ impl SessionHandle {
         &self,
         requested_transaction: Option<&TransactionId>,
         request: RowChangeRequest,
+        cancel: &RowChangeCancel,
     ) -> Result<RowChangeReport> {
         let _guard = self.execution.lock().await;
 
@@ -491,7 +501,7 @@ impl SessionHandle {
             ));
         }
 
-        let result = provider.apply_row_changes(request).await;
+        let result = provider.apply_row_changes(request, cancel).await;
         if let Err(error) = &result {
             // 驱动可能已经中止了事务（SQLite 自动回滚、MariaDB 事务丢失）：
             // 在执行锁内把登记切到失败态，后续 Commit 不得再问驱动。

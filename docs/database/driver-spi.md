@@ -193,9 +193,14 @@ pub struct ParameterizedExecuteRequest {
 
 pub trait TableDataProvider: Send + Sync {
     fn supports_row_edits(&self) -> bool { false }
+    fn supports_row_change_cancellation(&self) -> bool { false }   // #70
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey>;
     async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage>;
-    async fn apply_row_changes(&self, request: RowChangeRequest) -> Result<RowChangeReport>;
+    async fn apply_row_changes(
+        &self,
+        request: RowChangeRequest,
+        cancel: &RowChangeCancel,   // #70：行边界协作式取消令牌
+    ) -> Result<RowChangeReport>;
 }
 ```
 
@@ -219,6 +224,13 @@ pub trait TableDataProvider: Send + Sync {
   `changes()` / `affected_rows()` 交给 `classify_rows_affected`，不要在映射层二次加工或抹零；
 - **批次钳制**：`RowChangeRequest::effective_changes()` 截到 500 行，
   `deferred_changes()` 告诉调用方还剩多少行，不得静默丢弃；
+- **批次可取消**（#70，ADR 0018）：`apply_row_changes` 必须在**每条变更之前**读一次
+  `RowChangeCancel::is_cancelled()`；命中后不再执行后续变更，并**回滚本批已写入的行**
+  （自动提交 → 整批 `ROLLBACK`；事务模式 → `ROLLBACK TO SAVEPOINT`，外层事务保持可用），
+  返回 `RowChangeReport { cancelled: true, executed_changes: 已执行条数, results: [] }`。
+  取消只在行边界生效，不得打断正在执行的 DML（那会把事务撕掉）。声称支持取消的驱动必须让
+  `supports_row_change_cancellation()` 返回 `true`；不返回 `true` 时服务端不会把批次登记为可取消，
+  `CancelRowChanges` 明确报 `capability.unsupported`，绝不静默成功。两个内置驱动都支持；
 - **能力如实声明**：`table_data()` 为 `None` 表示完全不支持浏览；
   `supports_row_edits()` 为 `false` 表示只读。
 - **能力位与实现必须一致**：`Capabilities::row_editing` 对应

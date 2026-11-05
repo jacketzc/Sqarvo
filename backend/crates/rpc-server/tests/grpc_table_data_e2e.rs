@@ -511,6 +511,7 @@ fn edit_request(
         session_id: session_id.to_owned(),
         object: Some(table_ref(session_id, table)),
         transaction_id: String::new(),
+        query_id: String::new(),
         updates,
         deletes,
         acknowledge_risk: false,

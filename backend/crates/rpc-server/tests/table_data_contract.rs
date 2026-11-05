@@ -18,7 +18,8 @@ use sqarvo_common::{Error, ErrorCode};
 use sqarvo_driver_api::{
     ColumnDefault, ColumnMeta, ColumnType, DriverSession, ExecutionStart, IsolationLevel,
     ParameterizedExecuteRequest, PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, ResultBatch,
-    RowChange, RowChangeRequest, RowKey, RowOrder, TableDataProvider, TablePage, Value,
+    RowChange, RowChangeCancel, RowChangeRequest, RowKey, RowOrder, TableDataProvider, TablePage,
+    Value,
 };
 use sqarvo_rpc_server::error::{ERROR_CODE_METADATA_KEY, to_status};
 use tonic::Code;
@@ -114,6 +115,8 @@ fn table_data_message_field_numbers_are_frozen() {
             (4, "updates"),
             (5, "deletes"),
             (6, "acknowledge_risk"),
+            // #70：可取消批次的 ID，只能追加在既有字段之后。
+            (7, "query_id"),
         ],
     );
     assert_fields(
@@ -132,8 +135,13 @@ fn table_data_message_field_numbers_are_frozen() {
             (2, "total_rows_affected"),
             (3, "clamped"),
             (4, "deferred_changes"),
+            // #70：取消结果与进度（ADR 0018），同样只能追加。
+            (5, "cancelled"),
+            (6, "executed_changes"),
+            (7, "query_id"),
         ],
     );
+    assert_fields(&table_data["CancelRowChangesRequest"], &[(1, "query_id")]);
 }
 
 /// #44 的 proto 增量：只允许追加字段，既有字段号与语义不得改动。
@@ -318,6 +326,12 @@ fn table_data_service_methods_are_frozen() {
                 "ApplyRowChanges",
                 ".sqarvo.services.v1.ApplyRowChangesRequest",
                 ".sqarvo.services.v1.ApplyRowChangesResponse"
+            ),
+            // #70：取消行变更批次。与 QueryService.Cancel 分开（ADR 0018）。
+            (
+                "CancelRowChanges",
+                ".sqarvo.services.v1.CancelRowChangesRequest",
+                ".sqarvo.common.v1.Empty"
             ),
         ]
     );
@@ -746,13 +760,16 @@ async fn browse_cursor_is_opaque_and_round_trips_verbatim() {
 
     // 行编辑默认拒绝，而不是「尽力而为」。
     let error = provider
-        .apply_row_changes(RowChangeRequest {
-            object,
-            changes: vec![RowChange::Delete {
-                key: RowKey::new(vec![Value::Int(1), Value::Int(2)]),
-                expected_rows_affected: 0,
-            }],
-        })
+        .apply_row_changes(
+            RowChangeRequest {
+                object,
+                changes: vec![RowChange::Delete {
+                    key: RowKey::new(vec![Value::Int(1), Value::Int(2)]),
+                    expected_rows_affected: 0,
+                }],
+            },
+            &RowChangeCancel::new(),
+        )
         .await
         .expect_err("未实现行编辑的驱动必须拒绝");
     assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);

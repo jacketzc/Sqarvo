@@ -17,8 +17,8 @@ use sqarvo_driver_api::{
     Cell, ChangeOutcome, ColumnChange, ColumnDefault, ColumnMeta, ColumnType, ConnectionParams,
     DEFAULT_MAX_CELL_BYTES, Driver, DriverSession, ExecuteRequest, IsolationLevel, MAX_PAGE_SIZE,
     MetadataProvider, ObjectKind, ObjectNode, ObjectRef, PageRequest, ParameterizedExecuteRequest,
-    QualifiedName, ReadOnlyReason, Row, RowChange, RowChangeReport, RowChangeRequest, RowOrder,
-    TableDataProvider, TlsMode, TransactionOptions, Value,
+    QualifiedName, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, RowOrder, TableDataProvider, TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_mariadb::{MariaDbDriver, error};
 
@@ -2657,10 +2657,13 @@ async fn re_apply(
     changes: Vec<RowChange>,
 ) -> sqarvo_common::Result<RowChangeReport> {
     re_provider(session)
-        .apply_row_changes(RowChangeRequest {
-            object: re_object(session, name),
-            changes,
-        })
+        .apply_row_changes(
+            RowChangeRequest {
+                object: re_object(session, name),
+                changes,
+            },
+            &RowChangeCancel::new(),
+        )
         .await
 }
 
@@ -3100,13 +3103,16 @@ async fn row_edits_reject_read_only_targets_and_invalid_keys() {
 
     // 视图：`table_data.read_only`。
     let error = re_provider(&*session)
-        .apply_row_changes(RowChangeRequest {
-            object: re_view(&*session, &view),
-            changes: vec![RowChange::Delete {
-                key: re_key(vec![Value::Int(1)]),
-                expected_rows_affected: 0,
-            }],
-        })
+        .apply_row_changes(
+            RowChangeRequest {
+                object: re_view(&*session, &view),
+                changes: vec![RowChange::Delete {
+                    key: re_key(vec![Value::Int(1)]),
+                    expected_rows_affected: 0,
+                }],
+            },
+            &RowChangeCancel::new(),
+        )
         .await
         .expect_err("视图必须拒绝编辑");
     assert_eq!(error.code(), ErrorCode::TABLE_DATA_READ_ONLY);
