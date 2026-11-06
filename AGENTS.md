@@ -448,6 +448,23 @@ Follow this sequence when executing a task:
 8. Review `git diff` to ensure it contains no secrets, personal data, generated artifacts, temporary files, or unrelated formatting changes.
 9. Report completed work, key design decisions, test results, unfinished items, and known risks; update the Issue status and link the PR.
 
+### 15.1 Commit Messages and Attribution
+
+- Follow the repository commit convention: a Chinese `<module>: <description>` subject line
+  (e.g. `前端：…`, `文档：…`, `契约：…`), describing the change rather than the process.
+- Do not add `Co-authored-by:`, `Signed-off-by:`, or any other attribution trailer naming a third
+  party unless that person actually authored part of the change and agreed to be credited.
+- Never credit a generic tool or agent identity (for example
+  `Co-authored-by: Hermes Agent <hermes@nousresearch.com>`). GitHub attributes a commit to a
+  GitHub account whenever a trailer's email matches a verified email of that account, so a generic
+  address silently credits an unrelated account: it appears under Insights → Contributors for this
+  repository even though it has no write access, no pushes, and no PRs. Verify the mapping with
+  `gh api graphql` querying `Commit.authors { email user { login } }` before assuming a stranger
+  contributed code.
+- Because published commits cannot be re-attributed without rewriting history (and that requires
+  temporarily disabling branch protection on `main`), a mistaken trailer is effectively permanent.
+  Do not rewrite `main` to remove one without explicit approval from the maintainer.
+
 ### Agent Prohibitions
 
 - Never fabricate command output, test results, database connection results, or API behavior.
@@ -455,6 +472,8 @@ Follow this sequence when executing a task:
 - Do not modify user data, production databases, system services, network configuration, or credentials without authorization.
 - Do not delete unknown files, overwrite user work, or perform destructive database operations.
 - Never commit real passwords, tokens, private keys, certificates, or sensitive connection strings.
+- Never add attribution trailers (`Co-authored-by:`, `Signed-off-by:`, …) that credit a third party
+  or a generic agent identity; see §15.1.
 - Never edit generated Protobuf/gRPC files manually.
 - Never bypass the Driver SPI by hardcoding a database implementation in the frontend or generic business layer.
 - Never introduce Electron, Chromium, or WebView to achieve superficial cross-platform support.
