@@ -77,8 +77,8 @@
 | REQ-SEC-001 | 本地 IPC 访问控制（0700/0600 + token，拒绝非回环） | P0 | 已实现 | 有单元测试与真实 UDS 冒烟测试；Linux 前端按端点文件与 token 建立连接（PR #36） |
 | REQ-SEC-002 | 日志与错误脱敏（token、密码、连接串） | P0 | 部分 | Token/Secret 类型已脱敏；gRPC 凭据用例断言密码不出现在引用、错误文案与日志中（`stored_secret_never_appears_in_reference_or_errors`）；Windows/macOS 前端尚无日志路径可验证 |
 | REQ-SEC-003 | 高危操作提示与影响范围说明 | P1 | 未实现 | 删除/覆盖/批量更新 |
-| REQ-PERF-001 | 启动与空闲内存基准 | P1 | 已实现 | `cd frontend/linux && ./scripts/bench.sh`：冷启动 3 次中位数 240 ms、空闲 5 秒 VmRSS 149.3 MB（debug 构建，Ryzen 7 8745H / 24.8 GiB）；脚本可重复执行并输出机器可读记录；release 构建未测 |
-| REQ-PERF-002 | 大结果集与宽表性能测试 | P1 | 已实现 | 10 万行 2808 ms / 191.6 MB、200 列 × 2000 行 3554 ms / 603.4 MB，不滚动 3 秒仍 500 行（背压），见 `docs/releases/v0.2.md`；**未达标项**：宽表内存随列数上升，分配点未定位 |
+| REQ-PERF-001 | 启动与空闲内存基准 | P1 | 已实现 | `cd frontend/linux && ./scripts/bench.sh`：冷启动 3 次中位数 release 235 ms / debug 240 ms、空闲 5 秒 VmRSS release 141.6 MB / debug 149.3 MB（2026-11-06 release、2026-11-04 debug，同一台 Ryzen 7 8745H / 24.8 GiB）；脚本可重复执行并输出机器可读记录，两种构建均已实测（release 三轮复跑见 `docs/releases/v0.2.2.md`） |
+| REQ-PERF-002 | 大结果集与宽表性能测试 | P1 | 已实现 | 10 万行 release 2095 ms / 184.6 MB（debug 2808 ms / 191.6 MB）、200 列 × 2000 行 release 2927 ms / 595.6 MB（debug 3554 ms / 603.4 MB），不滚动 3 秒仍 500 行（背压，两种构建一致），见 `docs/releases/v0.2.2.md`；**未达标项**：宽表内存随列数上升且 release 下几乎不变（分配点未定位）；估算字节不含 GTK 渲染开销 |
 | REQ-A11Y-001 | 键盘可达与可访问性 | P1 | 未实现 | 常用操作有快捷键 |
 | REQ-I18N-001 | 国际化 | P2 | 未实现 | 当前界面文案为中文 |
 

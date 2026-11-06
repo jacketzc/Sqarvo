@@ -110,6 +110,9 @@ start_app() {
         "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}"
         "XDG_CONFIG_HOME=$WORK/config"
         "SQARVO_QA_PASSWORD=$DB_PASSWORD"
+        # 前端自己拉起后端：不传这一项时它只按候选路径找 debug 后端，
+        # 用 release 后端跑基准会握手失败（找不到可执行文件）。
+        "SQARVO_BACKEND_BIN=$BACKEND"
     )
     # 只在显式设置时传入：空字符串会被前端当作「非法值」并打印警告。
     [[ -n "${SQARVO_RESULT_ROW_LIMIT:-}" ]] && envs+=("SQARVO_RESULT_ROW_LIMIT=$SQARVO_RESULT_ROW_LIMIT")
