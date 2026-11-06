@@ -21,11 +21,18 @@ jobs:
 
       # 构建依赖与 frontend/linux/README.md「依赖」一致；
       # dpkg-dev 提供 build-deb.sh 计算 Depends 用的 dpkg-shlibdeps。
+      #
+      # 这里刻意用普通 apt-get 而不是缓存动作：2026-11-06 首次运行本作业时，
+      # awalsh128/cache-apt-pkgs-action 在「安装构建依赖」一步卡了 11 分钟没有输出
+      # （ci.yml 的前端作业用同一动作是缓存命中，所以没暴露），而打包是发布路径，
+      # 需要可解释的日志。runner 是临时环境，apt 装一次约一分钟，不值得为它引入
+      # 一个在冷缓存下行为不明的第三方动作。
       - name: 安装构建依赖
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libgtk-4-dev libadwaita-1-dev build-essential pkg-config dpkg-dev
-          version: 1.0
+        run: |
+          set -euo pipefail
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev build-essential pkg-config dpkg-dev
 
       # 打包产物会链接 runner 上的 GTK/libadwaita，版本回退时直接失败，
       # 而不是留一句难懂的 pkg-config / 链接错误。
