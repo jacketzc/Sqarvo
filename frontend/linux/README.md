@@ -343,9 +343,14 @@ Channel）和同一套命令/事件通道。
 - worker 对活动查询尽力 `Cancel` + `Close`（失败只记日志），随后终止自己启动的后端；
 - 已加载的行保留、标明「已断开」，执行/取消按钮禁用。
 
-### 性能实测（2026-11-04，本机，debug 构建）
+### 性能实测（debug 与 release）
 
-用 `scripts/bench.sh` 一条命令复现（脚本自己清理残留进程与 runtime 目录，失败时非 0 退出
+本机：AMD Ryzen 7 8745H w/ Radeon 780M Graphics / 16 核 / 24.8 GiB，GTK 4.22.4，
+libadwaita 1.9.1，内核 `Linux 7.0.0-38-generic x86_64`；MariaDB 测试库，500 行/批，
+结果集上限保持默认（行数 500000 / 估算 512.0 MiB）。前端是单实例 `GtkApplication`，
+同一会话内只能同时跑一条基准命令（脚本自己 `pkill`、清 runtime 目录）。
+
+**debug 构建（2026-11-04）**——用 `scripts/bench.sh` 一条命令复现（脚本失败时非 0 退出
 并指明步骤）：
 
 ```bash
@@ -354,8 +359,6 @@ cargo build
 cd ../.. && cargo build -p sqarvo-backend-service   # 后端二进制
 cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 ```
-
-本机（AMD Ryzen 7 8745H / 16 核 / 24.8 GiB，GTK 4.22.4，libadwaita 1.9.1，debug 构建）：
 
 | 场景 | 指标 | 实测 |
 |---|---|---|
@@ -368,15 +371,52 @@ cd frontend/linux && ./scripts/bench.sh --out /tmp/bench.md
 | 200 列 × 2000 行 | 首批 / 全量加载 | 1137 ms / **3554 ms** |
 | 200 列 × 2000 行 | 加载后 VmRSS | **603.4 MB** |
 
+**release 构建（2026-11-06，同机同脚本，连续 3 轮取第 3 轮）**：
+
+```bash
+cd backend && cargo build --release -p sqarvo-backend-service
+cd frontend/linux && cargo build --release
+cd frontend/linux
+SQARVO_BENCH_BIN=$PWD/target/release/sqarvo-desktop \
+SQARVO_BENCH_BACKEND=$PWD/../../backend/target/release/sqarvo-backend \
+  ./scripts/bench.sh --out /tmp/bench105-release.md
+```
+
+`SQARVO_BENCH_BACKEND` 会被 `bench.sh` 作为 `SQARVO_BACKEND_BIN` 传给前端（不传时前端只按候选
+路径找 debug 后端，release 前端会因「找不到后端可执行文件」握手失败）。
+
+| 场景 | 指标 | release | debug（对照） |
+|---|---|---|---|
+| 冷启动（3 次） | 进程入口→Connected 中位数 | **235 ms**（235 / 232 / 236） | 240 ms（243 / 240 / 234） |
+| 空闲内存 | 连接后静置 5s VmRSS / VmHWM | **141.6 MB** / 141.6 MB | 149.3 MB / 149.3 MB |
+| 10 万行 | 首批到达（500 行） | **945 ms** | 953 ms |
+| 10 万行 | 全量加载（100000 行，199 批） | **2095 ms** | 2808 ms |
+| 10 万行 | 全量加载后 VmRSS | **184.6 MB** | 191.6 MB |
+| 10 万行（不滚动 3s） | 已加载行数 / 后续批次 | **500 行 / 0 批** | 500 行 / 0 批 |
+| 200 列 × 2000 行 | 首批 / 全量加载 | 987 ms / **2927 ms** | 1137 ms / 3554 ms |
+| 200 列 × 2000 行 | 加载后 VmRSS | **595.6 MB** | 603.4 MB |
+
+release 下「不滚动」的预取暂停日志（背压证据）：
+
+```text
+[query] t=+982ms 暂停预取：未滚动到新区域所以不预取（已加载 500 行，距末尾 17241px，视口 259px）
+```
+
+debug 与 release 的差异来自构建类型：差别集中在**值转换与批次处理**这一段（10 万行全量
+−25%，200 列全量 −18%、首批 −13%），而冷启动（235 vs 240 ms）与首批到达（945 vs 953 ms）
+在噪声内，内存只降 5–8 MB——说明首屏耗时与这批内存不在 debug 未优化代码上。完整表格、
+三轮复跑与逐条结论见 [`docs/releases/v0.2.2.md`](../../docs/releases/v0.2.2.md#性能实测release-构建)。
+
 结论与未达标项（如实记录）：
 
 - 冷启动与 10 万行场景达到 v0.2 的「可用」标准：首屏 < 1 s，10 万行 3 s 内读完，
-  RSS 191.6 MB；**这不是 release 构建的数值**，release 未在本轮测量；
+  RSS 191.6 MB（debug）；release 下同样达标且更快（235 ms / 2095 ms / 184.6 MB），见上表；
 - **200 列宽表内存明显偏高**：2000 行 × 200 列占 603.4 MB，而同样 10 万单元格的
   20 列 × 5000 行只有 208.6 MB、100 列 × 1000 行为 376.5 MB（对照实验，同一轮测量）。
   内存随**列数**上升（约 2 MB/列量级），与行数关系很小（200 列 500 行 563.5 MB →
   2000 行 603.4 MB，仅 +40 MB）。已排除「按行增长」的解释，但**没有定位到具体分配点**
-  （怀疑是 `GtkColumnView` 每列的单元格/管理器开销），因此不声称已优化；
+  （怀疑是 `GtkColumnView` 每列的单元格/管理器开销），因此不声称已优化；release 构建下
+  仍是 595.6 MB（−1.3%，在轮次波动内），说明这笔开销与构建类型无关，问题继续按未达标记录；
 - 估算字节与实际 RSS 有系统偏差：10 万行估算 25.3 MiB / 实际增量约 42 MB（约 1.7 倍），
   200 列 2000 行估算 40.0 MiB / 实际 603 MB。上限口径只覆盖前端显示数据，**不含 GTK
   渲染开销**，不能当作 RSS 的精确预测；
@@ -735,7 +775,8 @@ podman exec -i sqarvo-mariadb-test mariadb -usqarvo_test -psqarvo_test_only sqar
 - 触顶时**当前批次里放不下的行会被丢弃**，不是「从下一批继续」：调大上限后重新执行才能
   看到完整结果；
 - 默认上限（500000 行 / 512 MiB 估算）按本机 24 GiB 内存选择，较小内存机器应显式调低；
-- 冷启动与内存数值都来自**debug 构建**，release 构建的基准尚未测量；
+- 冷启动与内存数值在 debug（2026-11-04）与 release（2026-11-06）两种构建上都有实测，
+  见「性能实测」；宽表内存偏高在两种构建下都存在，仍未定位到分配点；
 - SQL 工作区的查询仍是 `auto_commit=true`（查询侧不使用显式事务）；数据页的事务按钮
   只作用于表数据的行变更，两者共用同一个数据库会话；
 - 数据页已支持插入新行（`InsertRows`，单行一批），但**协议没有「自增」标志位**：
