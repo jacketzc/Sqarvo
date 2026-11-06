@@ -578,6 +578,145 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   不把 `DATABASE() IS NULL` 当成「库里没有表」；
 - 有未读完的结果游标时元数据请求返回 `mariadb.query_active`，避免与游标交错。
 
+## TLS 逐档验证（#106）
+
+判据是**服务端会话变量** `SHOW SESSION STATUS LIKE 'Ssl_cipher'` 是否非空，而不是「连接成功」
+或错误码：只有非空才能证明这条会话确实完成了 TLS 握手，而不是悄悄回退到了明文。
+
+2026-11-06 在 MariaDB 11.4.13 上逐档实测（`crates/drivers/mariadb/tests/tls_handshake.rs`，8 个用例，
+全部由环境变量门控，缺变量时打印跳过原因）：
+
+| 档位 | 结果 | `Ssl_cipher` | 用例 |
+|---|---|---|---|
+| `disabled` | 连接成功 | 空（明文） | `disabled_tls_connects_without_cipher` |
+| `preferred` | 连接成功 | `TLS_AES_256_GCM_SHA384` | `preferred_tls_negotiates_cipher` |
+| `required` | 连接成功 | `TLS_AES_256_GCM_SHA384` | `required_tls_negotiates_cipher` |
+| `verify-ca`（固定根证书，证书带 SAN） | 连接成功 | `TLS_AES_256_GCM_SHA384` | `verify_ca_trusts_pinned_root_certificate` |
+| `verify-full`（证书带 SAN） | 连接成功 | `TLS_AES_256_GCM_SHA384` | `verify_full_accepts_matching_certificate` |
+| `verify-full`（证书无 SAN，主机 `127.0.0.1`） | 拒绝 | — | `verify_full_rejects_hostname_mismatch` → `mariadb.connection_failed` / `Unavailable` |
+| `preferred`（服务端无 TLS） | 回退明文成功 + `mariadb.tls_fallback` 告警 | 空 | `preferred_falls_back_to_plaintext_and_warns` |
+| `required`（服务端无 TLS） | 失败 | — | `required_fails_on_server_without_tls` → `mariadb.connection_failed` |
+
+### 证书从哪来
+
+`docker.io/library/mariadb:11.4` 的测试容器（`sqarvo-mariadb-test`，`have_ssl=YES`）**不落盘证书**：
+`/var/lib/mysql` 下没有 `ca.pem` / `server-cert.pem` / `server-key.pem`，容器内 `find / -name '*.pem'`
+也只找得到系统 CA。服务端在启动时自动生成自签证书并只在内存里使用：`CN=MariaDB Server`、
+无 `subjectAltName`、自签（`issuer` 同名）、有效期到 2036-11-01。所以「复制容器里的 `ca.pem`」不可行；
+根证书从一次真实握手里取出——自签叶证书就是它自己的信任锚：
+
+```bash
+openssl s_client -starttls mysql -connect 127.0.0.1:53306 -showcerts </dev/null 2>/dev/null \
+  | openssl x509 -out /tmp/sqarvo-mariadb-ca.pem
+openssl x509 -in /tmp/sqarvo-mariadb-ca.pem -noout -subject -fingerprint -sha256
+# subject=CN=MariaDB Server
+# sha256 Fingerprint=EE:6D:61:46:2E:37:22:4E:D4:A5:99:50:E3:19:E3:57:15:DC:D6:BF:FC:87:24:86:59:19:7F:C3:44:F9:1B:47
+```
+
+这张证书没有 SAN，`verify-ca` / `verify-full` 的**成功**路径没法在它上面取证
+（`NotValidForNameContext { expected: IpAddress(127.0.0.1), presented: [] }`）。成功路径改用临时容器：
+自建 CA 签一张带 `DNS:localhost, IP:127.0.0.1` SAN 的服务端证书（一次性，30 天）：
+
+```bash
+mkdir -p /tmp/sqarvo-tls106-certs && cd /tmp/sqarvo-tls106-certs
+openssl req -x509 -newkey rsa:2048 -nodes -keyout ca-key.pem -out ca.pem -days 30 \
+  -subj "/CN=Sqarvo Test CA 106" -addext "basicConstraints=critical,CA:TRUE"
+openssl req -newkey rsa:2048 -nodes -keyout server-key.pem -out server.csr -subj "/CN=sqarvo-tls106"
+printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\n' > ext.cnf
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
+  -out server-cert.pem -days 30 -extfile ext.cnf
+chmod 644 ./*.pem
+```
+
+### 三个监听端
+
+```bash
+# 1) 共享测试库（TLS，自签自动证书）：sqarvo-mariadb-test，127.0.0.1:53306，常驻
+
+# 2) 无 TLS：preferred 回退与 required 反向对照
+podman run -d --rm --name sqarvo-tls106-notls \
+  -e MARIADB_USER=sqarvo_test -e MARIADB_PASSWORD=sqarvo_test_only \
+  -e MARIADB_DATABASE=test_106 -e MARIADB_ROOT_PASSWORD=sqarvo_root_only \
+  -p 127.0.0.1:53307:3306 docker.io/library/mariadb:11.4 --skip-ssl
+
+# 3) 带 SAN 证书：verify-ca / verify-full 成功路径
+podman run -d --rm --name sqarvo-tls106-san \
+  -e MARIADB_USER=sqarvo_test -e MARIADB_PASSWORD=sqarvo_test_only \
+  -e MARIADB_DATABASE=test_106 -e MARIADB_ROOT_PASSWORD=sqarvo_root_only \
+  -v /tmp/sqarvo-tls106-certs:/certs:ro -p 127.0.0.1:53308:3306 \
+  docker.io/library/mariadb:11.4 \
+  --ssl-ca=/certs/ca.pem --ssl-cert=/certs/server-cert.pem --ssl-key=/certs/server-key.pem
+```
+
+- `--skip-ssl` 生效的判据是 `SHOW VARIABLES LIKE 'have_ssl'` 变成 `DISABLED`（默认 `YES`）；
+  证书挂载进去后 `SHOW VARIABLES LIKE 'ssl_cert'` 应为容器内路径。
+- MariaDB 11.4 的**客户端**默认要求 TLS，手工核对无 TLS 监听端时要加 `--skip-ssl`，
+  否则客户端自己报 `SSL is required, but the server does not support it`（不是服务端的问题）。
+- 临时容器用 `podman rm -f sqarvo-tls106-notls sqarvo-tls106-san` 清理（`--rm` 在停止时删除）。
+
+### 运行与真实输出
+
+```bash
+cd backend
+SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
+SQARVO_MARIADB_CA=/tmp/sqarvo-mariadb-ca.pem \
+SQARVO_MARIADB_NO_TLS_URL='mysql://sqarvo_test:***@127.0.0.1:53307/test_106' \
+SQARVO_MARIADB_SAN_URL='mysql://sqarvo_test:***@127.0.0.1:53308/test_106' \
+SQARVO_MARIADB_SAN_CA=/tmp/sqarvo-tls106-certs/ca.pem \
+  cargo test -p sqarvo-driver-mariadb --test tls_handshake -- --nocapture --test-threads=1
+```
+
+```text
+running 8 tests
+test disabled_tls_connects_without_cipher ... ok
+test preferred_falls_back_to_plaintext_and_warns ... preferred 回退：version=Some("11.4.13-MariaDB-ubu2404") warnings=[Warning { code: "mariadb.tls_fallback", message: "TLS 不可用，已按「优先 TLS」模式回退为明文连接" }]
+ok
+test preferred_tls_negotiates_cipher ... preferred：Ssl_cipher = TLS_AES_256_GCM_SHA384
+ok
+test required_fails_on_server_without_tls ... required（服务端无 TLS）：code=mariadb.connection_failed category=Internal message=连接 MariaDB 失败
+ok
+test required_tls_negotiates_cipher ... required：Ssl_cipher = TLS_AES_256_GCM_SHA384
+ok
+test verify_ca_trusts_pinned_root_certificate ... verify-ca：Ssl_cipher = TLS_AES_256_GCM_SHA384
+ok
+test verify_full_accepts_matching_certificate ... verify-full：Ssl_cipher = TLS_AES_256_GCM_SHA384
+ok
+test verify_full_rejects_hostname_mismatch ... verify-full（主机名不匹配）：code=mariadb.connection_failed category=Unavailable message=数据库连接中断
+ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+`tls_server_name` 覆盖同样实测：`SQARVO_MARIADB_SAN_SERVER_NAME=localhost`（证书的 `DNS:` SAN）时
+`verify_full_accepts_matching_certificate` 通过；不设时按 URL 主机 `127.0.0.1` 匹配 `IP:` SAN。
+
+不设任何环境变量时用例逐条打印跳过原因并返回（不是静默通过）：`cargo test -p sqarvo-driver-mariadb`
+输出 90 行 `跳过：未设置 …`。
+
+### 已知缺口（实测发现，本任务只记录、未改驱动语义）
+
+1. **`verify-ca` 当前等同 `verify-full`**：`mysql_async` 0.37.1 用
+   `e.to_string().contains("NotValidForName")` 判断是否跳过主机名校验
+   （`src/io/tls/rustls_io.rs` 的 `DangerousVerifier`），而 rustls 0.23 的 `Display` 输出是
+   `invalid peer certificate: certificate not valid for name …`，永远匹配不到，`skip_domain_validation`
+   因此是死参数。实测：对无 SAN 的自签证书用 `verify-ca` + 固定根证书，仍然被
+   `InvalidCertificate(NotValidForNameContext { expected: IpAddress(127.0.0.1), presented: [] })` 拒绝。
+   影响是「不会更宽松」，不是「会接受错误证书」；需要「只校链、不校名」的用户目前拿不到这个档位。
+2. **证书校验失败的文案**：这类错误走 `IoError::Io(InvalidData)`，`error.rs` 里
+   `IoError::Tls(_) → 「TLS 握手失败」` 的分支命不中，所以码对（`mariadb.connection_failed` /
+   `Unavailable`）、文案却是「数据库连接中断」。
+3. **`required` 撞上无 TLS 服务端**：码是 `mariadb.connection_failed`，分类却是 `Internal`
+   （`mysql_async` 归到 `Error::Other`），不是 `Unavailable`。用例因此只断言错误码。
+
+### 未覆盖
+
+- 客户端证书 / 双向 TLS（`ssl_cert` + `ssl_key` → `ClientIdentity`）：代码路径存在
+  （`config.rs` 的 `build_ssl_opts`），测试库未配置「要求客户端证书」，**未验证**；
+- MySQL 8.x 的 TLS 语义（`--ssl-mode`、`caching_sha2_password`）：未实测；
+- 远程后端与真实网络（中间人拦截、证书轮换、过期）：未覆盖；
+- CI：`.github/workflows/ci.yml` 的 MariaDB 作业仍只跑 `--test integration`，本文件需要额外两个
+  监听端，**尚未接入 CI**（也没有验证过 CI 环境能否生成同样的证书），所以目前是本地门控证据。
+
 ## 能力描述符（现状）
 
 | 能力 | 值 | 说明 |
@@ -606,7 +745,8 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   与预编译语句复用；
 - 大字段按需加载（目前只截断前缀，`Cell::truncated` 标记）；
 - 断线重连与会话租约；
-- 压缩、`LOAD DATA LOCAL INFILE`、TLS 客户端证书的实测（代码路径存在，未在测试库验证）；
+- 压缩、`LOAD DATA LOCAL INFILE`；TLS 客户端证书（双向 TLS）的实测（代码路径存在，未在测试库验证；
+  单/双向的其余档位见上文「TLS 逐档验证（#106）」）；
 - MySQL 8.x 兼容性（`caching_sha2_password`、二进制 JSON）：未实测，不声明支持。
 
 ## 错误映射
@@ -640,6 +780,10 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 | `transaction.failed` | `FailedPrecondition` | 失败态（死锁后）提交或继续执行 |
 
 错误信息中绝不包含密码或完整连接串；`MariaDbConfig` 的 `Debug` 只打印 TLS 模式与超时。
+
+TLS 相关的两条现状（详见「TLS 逐档验证」的已知缺口）：证书校验失败 → `mariadb.connection_failed` /
+`Unavailable`，但文案是「数据库连接中断」（原始错误是 `IoError::Io(InvalidData)`，不走
+`IoError::Tls` 分支）；档位要求 `required` 而服务端不支持 TLS → `mariadb.connection_failed` / `Internal`。
 
 ## 测试与复现
 

@@ -8,7 +8,7 @@
 | M0 骨架 | S0 | 可编译、可测试的仓库骨架与本地 IPC | v0.1 | 已完成 |
 | M1 契约冻结 | S1 | Driver SPI v0.2、proto 增量、驱动测试基架 | v0.1 | 已完成 |
 | M2 首个驱动切片 | S2 | SQLite 连接 → 执行 → 分批 → 取消 → 关闭 | v0.1 | 已完成（#9–#17） |
-| M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 已完成（#20–#25；真实 TLS 握手未验证） |
+| M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 已完成（#20–#25；TLS 握手 2026-11-06 逐档验证，见「M3 凭据与 MariaDB（实际完成）」备注） |
 | M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | 已完成（v0.2.1：事务 / 元数据最小子集 / 表数据；v0.2.2：逐层对象树 / 跨库 / DDL / 搜索，2026-11-06） |
 | M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v0.2.4 | 未开始 |
 | M6 前端接入与硬化 | S6 | 三端接入、性能、安全、跨平台构建 | v0.2 起持续 | 进行中（Linux 首端接入完成；Windows / macOS 未验证） |
@@ -87,7 +87,7 @@ Windows、macOS 未构建验证；事务与元数据 RPC（M4）；取消无法�
 | 完成标准 | 证据 |
 |---|---|
 | 凭据只存系统凭据库，缺失时明确报错 | Linux Secret Service 实现 + 内存替身（#21，PR #31 / `692a917`）：`cargo test -p sqarvo-local-store` → 33 个单测 + `tests/credential_store.rs` 4 个用例通过；无会话总线 / 密钥环锁定 / D-Bus 权限拒绝 → `credential.unavailable`，引用不存在 → `credential.not_found`；`UnavailableCredentialStore` 仍是默认装配，代码路径不存在回退明文。gRPC 层（#27，PR #37 / `409dcbb`）：`cargo test -p sqarvo-rpc-server --test grpc_credential` → 11 通过（Store/Delete 幂等、空密码被拒且不覆盖原值、存储不可用、未知引用、密码不出现在引用与错误文案）。`credential_ref` 在 `Connect` / `TestConnection` 前解析（#23，PR #33 / `b186681`），解析失败不连库。**未验证**：真实密钥环用例 `secret_service_semantics` 由 `SQARVO_SECRET_SERVICE_TEST=1` 门控，本次验证未运行；Windows Credential Manager 与 macOS Keychain 未实现（装配为「不可用」）。 |
-| MariaDB 查询、TLS、取消、错误分类可用 | 查询与分批：`cargo test -p sqarvo-driver-mariadb --test integration` → 21 通过（真实 MariaDB 11.4，含 `test_connection_reports_version`、`query_batches_follow_the_cursor`）。取消：同文件 `cancel_interrupts_long_query_and_is_idempotent`、`cancel_between_batches_fails_the_next_fetch_and_keeps_the_session_usable`、`cancelled_query_leaves_no_running_statement_on_the_server`（用 `information_schema.PROCESSLIST` 断言 `SELECT SLEEP(30)` 取消后消失），2 秒内生效、重复取消成功。错误分类：`wrong_password_is_reported_as_auth_failure`、`database_without_privileges_is_reported_as_permission_denied`、`unreachable_host_fails_within_timeout`，以及 `cargo test -p sqarvo-driver-mariadb` 的 27 个单测覆盖错误码映射。TLS：5 档模式映射与参数校验有单元测试（如 `disabled_tls_rejects_certificate_parameters`），`preferred` 在服务端无 TLS 时回退并给出 `mariadb.tls_fallback` 告警；**真实 TLS 握手（`require` / `verify-ca` / `verify-full`、客户端证书）未在测试库验证**——测试容器未启用 TLS。 |
+| MariaDB 查询、TLS、取消、错误分类可用 | 查询与分批：`cargo test -p sqarvo-driver-mariadb --test integration` → 21 通过（真实 MariaDB 11.4，含 `test_connection_reports_version`、`query_batches_follow_the_cursor`）。取消：同文件 `cancel_interrupts_long_query_and_is_idempotent`、`cancel_between_batches_fails_the_next_fetch_and_keeps_the_session_usable`、`cancelled_query_leaves_no_running_statement_on_the_server`（用 `information_schema.PROCESSLIST` 断言 `SELECT SLEEP(30)` 取消后消失），2 秒内生效、重复取消成功。错误分类：`wrong_password_is_reported_as_auth_failure`、`database_without_privileges_is_reported_as_permission_denied`、`unreachable_host_fails_within_timeout`，以及 `cargo test -p sqarvo-driver-mariadb` 的 27 个单测覆盖错误码映射。**TLS（2026-11-06，#106）**：新增 `crates/drivers/mariadb/tests/tls_handshake.rs`，8 个环境变量门控用例对 MariaDB 11.4.13 逐档取证，判据是服务端会话变量 `SHOW SESSION STATUS LIKE 'Ssl_cipher'` 非空（不是「连接成功」也不是错误码）：`disabled` 为空、`preferred` / `required` 为 `TLS_AES_256_GCM_SHA384`；`verify-ca`（固定根证书）与 `verify-full` 在证书带 `DNS:localhost, IP:127.0.0.1` SAN 的监听端同样为 `TLS_AES_256_GCM_SHA384`，`tls_server_name=localhost` 覆盖亦通过；`verify-full` 对无 SAN 的证书以 `mariadb.connection_failed` / `Unavailable` 拒绝；`preferred` 对无 TLS 监听端回退明文（`Ssl_cipher` 为空）并带 `mariadb.tls_fallback` 告警，`required` 同场景直接报 `mariadb.connection_failed`。运行命令与真实输出见 `docs/database/mariadb.md`「TLS 逐档验证（#106）」。**未验证**：客户端证书/双向 TLS、MySQL 8.x、远程后端；`verify-ca` 目前等同 `verify-full`（上游 `mysql_async` 0.37.1 的 `skip_domain_validation` 在 rustls 0.23 下失效，已作为已知缺口登记）；CI 尚未接入该测试文件。 |
 | 通过 testkit | `crates/drivers/mariadb/tests/integration.rs::driver_passes_testkit_smoke`（`sqarvo_driver_testkit::smoke`）与 `::driver_passes_testkit_invariants`（五项不变量：#24 的取消幂等、多语句拒绝、超长单元格截断、分批无丢失、关闭幂等），随上述 21 个集成用例一起执行并通过；SQLite 侧同五项由 `passes_driver_testkit_invariants` 覆盖（`cargo test -p sqarvo-driver-sqlite` 13 通过）。 |
 
 配套验证（2026-11-04，main `c6b9ab4`）：`cd backend && SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test_30' cargo test --workspace`
@@ -98,7 +98,7 @@ CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）`
 #21 → run `41797844064`、#22 → `41799321128`、#23 → `41801300984`、#25 → `41802430943`、
 #24 → `41803584777`；main 合并后 run `41818532913`。
 
-遗留（不属 M3 范围，已登记）：真实 TLS 验证、MySQL 8.x 兼容性（M5 / `docs/database/mariadb.md` 未支持清单）；
+遗留（不属 M3 范围，已登记）：TLS 的客户端证书/双向 TLS 与 MySQL 8.x 兼容性（M5 / `docs/database/mariadb.md` 未支持清单与「TLS 逐档验证」未覆盖）；
 显式事务与元数据（M4）；Windows / macOS 凭据库（M6 / v0.2.4）；「尚未返回首批」的查询无法用 `Cancel`
 打断（契约缺口，见 [v0.2](../releases/v0.2.md) 已知限制）。
 
