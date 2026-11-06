@@ -1,0 +1,160 @@
+name: 打包（Linux .deb）
+
+# 只在 main、发布标签与手动触发时运行：release 构建（两个 workspace 各一次）
+# 约 5 分钟，放进每个 PR 只会拖慢反馈而不增加覆盖——PR 阶段的前端/后端编译已由
+# ci.yml 的两个作业覆盖，这里要验证的是「打包脚本 + 安装布局 + 装完能不能跑」。
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  deb:
+    name: Linux .deb 打包与安装校验
+    # 与 ci.yml 的前端作业一致：crate 构建期要求 GTK ≥ 4.16 / libadwaita ≥ 1.6，
+    # ubuntu-24.04 的 4.14.2 / 1.5.0 连 pkg-config 都过不了。
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # 构建依赖与 frontend/linux/README.md「依赖」一致；
+      # dpkg-dev 提供 build-deb.sh 计算 Depends 用的 dpkg-shlibdeps。
+      - name: 安装构建依赖
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libgtk-4-dev libadwaita-1-dev build-essential pkg-config dpkg-dev
+          version: 1.0
+
+      # 打包产物会链接 runner 上的 GTK/libadwaita，版本回退时直接失败，
+      # 而不是留一句难懂的 pkg-config / 链接错误。
+      - name: 校验 GTK 版本
+        run: |
+          set -euo pipefail
+          GTK="$(pkg-config --modversion gtk4)"
+          ADW="$(pkg-config --modversion libadwaita-1)"
+          echo "GTK ${GTK} / libadwaita ${ADW}"
+          dpkg --compare-versions "${GTK}" ge 4.16 \
+            || { echo "::error::GTK ${GTK} < 4.16，前端无法构建"; exit 1; }
+          dpkg --compare-versions "${ADW}" ge 1.6 \
+            || { echo "::error::libadwaita ${ADW} < 1.6，前端无法构建"; exit 1; }
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 前后端是两个独立 workspace、两个 target 目录，各缓存一次。
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            backend
+            frontend/linux
+
+      - name: 构建后端（release）
+        working-directory: backend
+        run: cargo build --release -p sqarvo-backend-service
+
+      - name: 构建前端（release）
+        working-directory: frontend/linux
+        run: cargo build --release
+
+      # BUILD=0：复用上面两个 release 二进制，脚本只做暂存与 dpkg-deb 打包。
+      # 脚本自身会打印 dpkg-deb -f 的 Package/Version/Architecture/Depends。
+      - name: 打包 .deb
+        run: BUILD=0 packaging/linux/build-deb.sh
+
+      - name: 检查包元数据与文件清单
+        run: |
+          set -euo pipefail
+          ls -l dist/
+          DEB="$(ls dist/sqarvo_*_*.deb)"
+          echo "== dpkg-deb -I ${DEB} =="
+          dpkg-deb -I "${DEB}"
+          echo "== dpkg-deb -c ${DEB} =="
+          dpkg-deb -c "${DEB}"
+
+      # 真实安装一次：依赖解析、文件落位、包状态都由 dpkg 说话。
+      - name: 安装 .deb 并校验安装结果
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./dist/sqarvo_*_*.deb
+
+          echo "== dpkg -s sqarvo =="
+          dpkg -s sqarvo
+          dpkg -s sqarvo | grep -qx 'Status: install ok installed' \
+            || { echo "::error::sqarvo 未处于 install ok installed 状态"; exit 1; }
+
+          echo "== dpkg -L sqarvo =="
+          dpkg -L sqarvo
+
+          for bin in /usr/bin/sqarvo-desktop /usr/bin/sqarvo-backend; do
+            [ -x "${bin}" ] || { echo "::error::缺少可执行文件 ${bin}"; exit 1; }
+            echo "已安装：${bin}"
+          done
+          [ -f /usr/share/applications/io.sqarvo.Sqarvo.desktop ] \
+            || { echo "::error::缺少桌面入口文件"; exit 1; }
+          grep -q '^Exec=sqarvo-desktop' /usr/share/applications/io.sqarvo.Sqarvo.desktop \
+            || { echo "::error::桌面入口的 Exec 与安装的二进制不一致"; exit 1; }
+
+      # 不做 GUI 冒烟：runner 没有 Wayland/X 会话，只能靠 xvfb-run，而验证机上
+      # 没有 xvfb-run 可预验这条路径是否稳定；前端是单实例 GtkApplication + 子进程
+      # 后端，在无会话总线的环境里失败原因容易被误判成「打包坏了」。GUI 启动
+      # 验证目前只在 Ubuntu 26.04 真机上手工做（记录见 packaging/linux/README.md），
+      # 等 CI 里能稳定跑通再搬进来。
+      # 这里退一步做不依赖显示的启动冒烟：后端必须在临时 runtime 目录里写出
+      # 0600 的端点文件与套接字，并在 SIGTERM 后删掉它们。
+
+      - name: 启动冒烟（后端 + 端点文件）
+        run: |
+          set -euo pipefail
+          ROOT="$(mktemp -d)"
+          ENDPOINT="${ROOT}/sqarvo/backend-endpoint.json"
+          SOCKET="${ROOT}/sqarvo/backend.sock"
+          XDG_RUNTIME_DIR="${ROOT}" XDG_CONFIG_HOME="${ROOT}/cfg" \
+            /usr/bin/sqarvo-backend >"${ROOT}/backend.log" 2>&1 &
+          PID=$!
+          # 任何失败分支都不能在 runner 上留下孤儿进程。
+          trap 'kill -KILL "${PID}" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 100); do
+            [ -s "${ENDPOINT}" ] && break
+            sleep 0.1
+          done
+          if [ ! -s "${ENDPOINT}" ]; then
+            echo "::error::后端 10 秒内未写出端点文件"
+            cat "${ROOT}/backend.log" || true
+            exit 1
+          fi
+
+          echo "运行时目录：$(stat -c '%a %n' "${ROOT}/sqarvo")"
+          echo "端点文件：$(stat -c '%a %U:%G %n' "${ENDPOINT}")"
+          echo "套接字：$(stat -c '%a %F %n' "${SOCKET}")"
+          MODE="$(stat -c '%a' "${ENDPOINT}")"
+          [ "${MODE}" = "600" ] || { echo "::error::端点文件权限 ${MODE}，期望 0600"; exit 1; }
+          [ -S "${SOCKET}" ] || { echo "::error::未创建 Unix 域套接字 ${SOCKET}"; exit 1; }
+          # 只打印结构，token 一律打码：CI 日志是共享的，端点 token 仍属凭据。
+          sed -E 's/("token"[[:space:]]*:[[:space:]]*")[^"]*"/\1<redacted>"/' "${ENDPOINT}"; echo
+
+          kill -TERM "${PID}"
+          for _ in $(seq 1 50); do
+            kill -0 "${PID}" 2>/dev/null || break
+            sleep 0.1
+          done
+          if kill -0 "${PID}" 2>/dev/null; then
+            echo "::error::后端在 SIGTERM 后 5 秒内未退出"
+            exit 1
+          fi
+          trap - EXIT
+          [ ! -e "${ENDPOINT}" ] || { echo "::error::退出后端点文件仍存在"; exit 1; }
+          [ ! -e "${SOCKET}" ] || { echo "::error::退出后套接字文件仍存在"; exit 1; }
+          echo "后端已退出，端点文件与套接字均已清理（目录本身按设计保留）："
+          ls -la "${ROOT}/sqarvo"
+
+      - name: 上传 .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqarvo-deb-${{ github.ref_name }}
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
