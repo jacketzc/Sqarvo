@@ -154,6 +154,24 @@ BACKEND="$REPO_ROOT/backend/target/debug/sqarvo-backend"
 [ -x "$BIN" ] || fail_early "找不到前端二进制：$BIN"
 [ -x "$BACKEND" ] || fail_early "找不到后端二进制：$BACKEND"
 
+# 只清理**本轮新出现**的后端进程：验收里应用被 `--qa-exit-after-ms` 收尾或超时中断时，
+# 后端会被 reparent 成孤儿继续跑（实测每轮会留下 1–2 个）。跑前先把已在跑的后端记下来，
+# EXIT 时只杀新出现的，避免误杀用户自己在用的实例。
+backend_pids() { pgrep -f "$BACKEND" 2>/dev/null | sort -u || true; }
+BACKEND_BEFORE="$TMP/backend-before.txt"
+backend_pids > "$BACKEND_BEFORE"
+cleanup_backends() {
+    local rc=$?
+    local pid
+    for pid in $(backend_pids); do
+        if ! grep -qx "$pid" "$BACKEND_BEFORE"; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    exit "$rc"
+}
+trap cleanup_backends EXIT INT TERM
+
 say "验收目录：$OUT"
 say "临时配置目录：$XDG_CONFIG_HOME"
 say "Python：$PYTHON"
