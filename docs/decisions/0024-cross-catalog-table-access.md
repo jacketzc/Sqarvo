@@ -51,6 +51,23 @@ v0.2.3 的对象树已经能跨库列对象：`ListNodes(CATALOG)` 读 `informat
 6. 不需改 Protobuf：字段本来就有。此决定只改三个驱动的实现与前端表单，**不产生契约增量**，
    旧客户端行为不变（catalog 缺省时语义与 v0.2.3 完全一致）。
 
+## 落地记录（2026-11-07）
+
+| 决定 | 落地 | 证据 |
+|---|---|---|
+| §1 catalog 优先、缺省回落默认库 | #140 / PR #143（合并 `3e51ed8`） | `table_data_database()` 先查 `information_schema.SCHEMATA`（参数化）再 `quote_identifier`；`mariadb/tests/cross_catalog.rs` 5 条用例（两库同名表行数不同） |
+| §2 不隐式切库、不 `USE` | 同上 | 代码里没有 `USE`；两个标签各打开一个库的表互不影响（`03-two-catalogs-tabs.png`） |
+| §3 前端「数据库」可为空 | #141 / PR #147（合并 `33c7f82`） | 会话名 `sqarvo_test@127.0.0.1`（无尾随斜杠）；无默认库时树直接列库；状态栏 `库: sqarvo_test_140a_b` 跟随当前标签；信息面板库字段「未指定」 |
+| §4 SQLite 只接受 `main` / `temp` | #140 | `capability.unsupported` 用例；不再静默按 `main` |
+| §5 写入同样按 catalog | #140 | `row_changes_only_touch_the_requested_catalog` / `inserts_only_touch_the_requested_catalog` |
+| §6 不改 Protobuf | — | `git diff` 未触及 `proto/` |
+
+验收：`scripts/v023-acceptance.sh` 新增 `mariadb-nodb` 用例（不填库名连接 → 树里两个库 →
+各开一个标签 → 排序/翻页/导出照常 → 切标签库归属各自正确），全链 **139 项断言全过**。
+
+**未覆盖**：平铺列表视图（v0.2.1 遗留）在无默认库连接下仍为空并返回 `mariadb.no_database`；
+查询标签的状态栏文案仍写 `@ 默认`。两者记入后续清单（前端硬化项）。
+
 ## 理由
 
 - 协议早就写下「引用必须显式、服务端不得隐式切库」（`metadata.proto:45-47`），
