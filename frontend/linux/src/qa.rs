@@ -69,7 +69,8 @@
 //!   这三类 `expect-*` 失败都以退出码 3 结束，与既有断言同一口径。
 //! - #120 增补：`--qa-export <path>`（数据就绪后导出，仍走确认对话框并自动点「导出」）、
 //!   `--qa-export-hold`（停在确认框，截图用）、`--qa-export-cancel-after-rows <n>`
-//!   （写满 n 行后走取消路径，验证目标不留半截文件、临时文件被清理）。
+//!   （写满 n 行后走取消路径，验证目标不留半截文件、临时文件被清理）、
+//!   `--qa-export-raw-values`（关掉公式注入防护，验证 #137 的开关）。
 //! - #121 增补（全部是 `--qa-tabs-file` 的**脚本步骤**，不新增命令行开关）：
 //!   `expand <名字>`（展开树节点）、`select-node <名字>`（选中并切信息面板）、
 //!   `inspector <ddl|info|show|hide>`、`sort <标签> <列>[:shift]`、
@@ -806,6 +807,8 @@ struct Args {
     export_hold: bool,
     /// `--qa-export-cancel-after-rows <n>`：写满 n 行后走取消路径（验证临时文件清理）。
     export_cancel_after_rows: Option<u64>,
+    /// `--qa-export-raw-values`：导出时关闭公式注入防护（写原始值，验证 #137 的开关）。
+    export_raw_values: bool,
 }
 
 /// `--qa-browse` 的一步（顺序执行；全部走用户会走的同一条界面路径）。
@@ -1026,6 +1029,12 @@ pub fn export_hold() -> bool {
 #[must_use]
 pub fn export_cancel_after_rows() -> Option<u64> {
     ARGS.get().and_then(|args| args.export_cancel_after_rows)
+}
+
+/// `--qa-export-raw-values`：导出时关闭公式注入防护（写原始值）。
+#[must_use]
+pub fn export_raw_values() -> bool {
+    ARGS.get().is_some_and(|args| args.export_raw_values)
 }
 
 /// 是否登记了标签脚本（上限对话框在无人值守时会自动关闭）。
@@ -1910,6 +1919,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--qa-export-hold" => {
                 parsed.export_hold = true;
+                index += 1;
+            }
+            "--qa-export-raw-values" => {
+                parsed.export_raw_values = true;
                 index += 1;
             }
             "--qa-export-cancel-after-rows" => {

@@ -152,6 +152,7 @@ fn register_qa_options(app: &adw::Application) {
         "qa-data-replay-cancelled",
         "qa-layout-audit",
         "qa-export-hold",
+        "qa-export-raw-values",
         "qa-startup-workspace",
         "qa-open-about",
     ] {

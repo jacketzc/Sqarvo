@@ -10,6 +10,12 @@
 //! - Decimal 用原文（`unscaled_value` + `scale` 拼字面量，绝不经 f64）；
 //!   DATE / TIME / DATETIME / TIMESTAMP 用 ISO 8601（日期与时间之间是 `T`）。
 //! - 被服务端截断的文本按返回的前缀写出；确认对话框会统计并警告截断单元格数量。
+//!   只要本文件含截断单元格，末尾就追加一行 `# sqarvo:` 注释，列出相关列（#137）：
+//!   事后单独看文件也能知道这些值不完整。读文件的程序应把以 `#` 开头的行当注释。
+//! - **公式注入防护（#137）**：文本类值（Text / JSON / UUID / Unsupported）如果以
+//!   `=`、`+`、`-`、`@`、制表符或回车开头，前置单引号，避免 Excel / LibreOffice
+//!   打开 CSV 时把它当公式执行。非文本类值（整数、浮点、Decimal、布尔、日期时间）
+//!   不受影响：`-5` 写成 `'-5` 会改变数值语义。确认对话框里的开关可写原始值。
 //!
 //! # 写入策略
 //!
@@ -47,8 +53,12 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub enum Field {
     /// SQL NULL：写出**空字段**（不带引号），与空字符串区分。
     Null,
-    /// 非 NULL 文本：按 CSV 规则转义后写出。
+    /// 来自数据库的**文本类**值（Text / JSON / UUID / Unsupported）：内容不可信，
+    /// 导出时默认前置单引号防公式注入（#137）。
     Text(String),
+    /// 本前端自己格式化出的**非文本类**值（整数、浮点、Decimal、布尔、日期时间、
+    /// 二进制占位、数组字面量）：不做公式防护——`-5` 写成 `'-5` 会改变数值语义。
+    Scalar(String),
 }
 
 impl Field {
@@ -58,7 +68,7 @@ impl Field {
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::Null => None,
-            Self::Text(text) => Some(text),
+            Self::Text(text) | Self::Scalar(text) => Some(text),
         }
     }
 }
@@ -70,36 +80,36 @@ pub fn field_from_value(value: &ColumnValue) -> Field {
     match (kind, value.value.as_ref()) {
         (ValueKind::Null, _) => Field::Null,
         (ValueKind::Bool, Some(column_value::Value::BoolValue(flag))) => {
-            Field::Text(if *flag { "true" } else { "false" }.to_owned())
+            Field::Scalar(if *flag { "true" } else { "false" }.to_owned())
         }
         (ValueKind::Int64, Some(column_value::Value::Int64Value(number))) => {
-            Field::Text(number.to_string())
+            Field::Scalar(number.to_string())
         }
         (ValueKind::Uint64, Some(column_value::Value::Uint64Value(number))) => {
-            Field::Text(number.to_string())
+            Field::Scalar(number.to_string())
         }
         (ValueKind::Float64, Some(column_value::Value::Float64Value(number))) => {
-            Field::Text(format_float(*number))
+            Field::Scalar(format_float(*number))
         }
         (ValueKind::Decimal, Some(column_value::Value::DecimalValue(decimal))) => {
             // 原文：unscaled × 10^-scale 拼成十进制字面量，不做 f64 往返。
-            Field::Text(format_decimal(&decimal.unscaled_value, decimal.scale))
+            Field::Scalar(format_decimal(&decimal.unscaled_value, decimal.scale))
         }
         (ValueKind::Text, Some(column_value::Value::TextValue(text))) => Field::Text(text.clone()),
         (ValueKind::Json, Some(column_value::Value::JsonValue(text))) => Field::Text(text.clone()),
         (ValueKind::Uuid, Some(column_value::Value::UuidValue(text))) => Field::Text(text.clone()),
         (ValueKind::Bytes, Some(column_value::Value::BytesValue(bytes))) => {
-            Field::Text(blob_placeholder(bytes.len(), value.truncated))
+            Field::Scalar(blob_placeholder(bytes.len(), value.truncated))
         }
-        (ValueKind::Date, Some(column_value::Value::DateValue(date))) => Field::Text(format!(
+        (ValueKind::Date, Some(column_value::Value::DateValue(date))) => Field::Scalar(format!(
             "{:04}-{:02}-{:02}",
             date.year, date.month, date.day
         )),
-        (ValueKind::Time, Some(column_value::Value::TimeValue(time))) => Field::Text(
+        (ValueKind::Time, Some(column_value::Value::TimeValue(time))) => Field::Scalar(
             format_time_iso(time.hour, time.minute, time.second, time.nanosecond),
         ),
         (ValueKind::Datetime, Some(column_value::Value::DatetimeValue(datetime))) => {
-            Field::Text(format_datetime_iso(
+            Field::Scalar(format_datetime_iso(
                 i64::from(datetime.year),
                 datetime.month,
                 datetime.day,
@@ -110,7 +120,7 @@ pub fn field_from_value(value: &ColumnValue) -> Field {
             ))
         }
         (ValueKind::Timestamp, Some(column_value::Value::TimestampValue(timestamp))) => {
-            Field::Text(format_timestamp_iso(
+            Field::Scalar(format_timestamp_iso(
                 timestamp.unix_nanos,
                 timestamp.offset_seconds,
             ))
@@ -120,13 +130,13 @@ pub fn field_from_value(value: &ColumnValue) -> Field {
             for element in &array.elements {
                 parts.push(inline_value(element));
             }
-            Field::Text(format!("[{}]", parts.join(", ")))
+            Field::Scalar(format!("[{}]", parts.join(", ")))
         }
         (ValueKind::Unsupported, Some(column_value::Value::UnsupportedValue(text))) => {
             Field::Text(text.clone())
         }
         // 契约要求 kind 与 value 一致；不一致时如实写占位，不假装是数据。
-        (kind, value) => Field::Text(format!("(值缺失：{kind:?} / {})", value_kind_name(value))),
+        (kind, value) => Field::Scalar(format!("(值缺失：{kind:?} / {})", value_kind_name(value))),
     }
 }
 
@@ -134,7 +144,7 @@ pub fn field_from_value(value: &ColumnValue) -> Field {
 fn inline_value(value: &ColumnValue) -> String {
     match field_from_value(value) {
         Field::Null => "NULL".to_owned(),
-        Field::Text(text) => {
+        Field::Text(text) | Field::Scalar(text) => {
             if text.is_empty() {
                 "''".to_owned()
             } else {
@@ -182,50 +192,131 @@ pub fn fields_from_values(values: &[ColumnValue], width: usize) -> Vec<Field> {
     fields
 }
 
-/// 一个字段是否需要引号（空串也要引号，才能与 NULL 的空字段区分）。
-fn needs_quotes(text: &str) -> bool {
-    text.is_empty()
-        || text.contains([',', '"', '\r', '\n'])
-        || text.starts_with([' ', '\t'])
-        || text.ends_with([' ', '\t'])
+/// 写出口径：与确认对话框里的开关一一对应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatOptions {
+    /// 对文本类值做公式注入防护（前置单引号）；关闭时写原始值（#137）。
+    pub guard_formulas: bool,
 }
 
-/// 写一个字段（不含分隔符）。
-fn write_field<W: Write>(out: &mut W, field: &Field) -> io::Result<()> {
-    match field {
-        Field::Null => Ok(()),
-        Field::Text(text) if !needs_quotes(text) => out.write_all(text.as_bytes()),
-        Field::Text(text) => {
-            out.write_all(b"\"")?;
-            let mut start = 0;
-            for (index, byte) in text.bytes().enumerate() {
-                if byte == b'"' {
-                    out.write_all(&text.as_bytes()[start..index])?;
-                    out.write_all(b"\"\"")?;
-                    start = index + 1;
-                }
-            }
-            out.write_all(&text.as_bytes()[start..])?;
-            out.write_all(b"\"")
+impl Default for FormatOptions {
+    fn default() -> Self {
+        // 默认开启：导出的是数据库里的数据，来源不可信。
+        Self {
+            guard_formulas: true,
         }
     }
 }
 
+/// Excel / LibreOffice 会把这些字符开头的单元格当公式或控制序列执行。
+const DANGEROUS_PREFIXES: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+/// 文本类值是否需要公式注入防护（只看首个字符）。
+#[must_use]
+pub fn needs_formula_guard(text: &str) -> bool {
+    text.starts_with(DANGEROUS_PREFIXES)
+}
+
+/// 一个字段是否需要引号（空串也要引号，才能与 NULL 的空字段区分）。
+///
+/// `#` 开头也加引号：导出文件末尾的截断说明是一行以 `#` 开头的注释，把数据里
+/// 以 `#` 开头的值引起来，才能保证「以 # 开头的行都是注释」这条规则不误伤数据行。
+fn needs_quotes(text: &str) -> bool {
+    text.is_empty()
+        || text.contains([',', '"', '\r', '\n'])
+        || text.starts_with([' ', '\t', '#'])
+        || text.ends_with([' ', '\t'])
+}
+
+/// 写一个字段（不含分隔符）。
+fn write_field<W: Write>(out: &mut W, field: &Field, options: FormatOptions) -> io::Result<()> {
+    let text = match field {
+        Field::Null => return Ok(()),
+        // 只对文本类值做防护：数值、布尔、日期时间等标量保持原样。
+        Field::Text(text) if options.guard_formulas && needs_formula_guard(text) => {
+            // 引号判定看**原始**文本：`\t`/`\r` 开头时前置单引号会让首字符变成
+            // `'`，若用转义后的文本判定就会漏掉引号，制表符也可能被表格软件吞掉。
+            let escaped = format!("'{text}");
+            return if needs_quotes(text) {
+                write_quoted(out, &escaped)
+            } else {
+                write_text(out, &escaped)
+            };
+        }
+        Field::Text(text) | Field::Scalar(text) => text,
+    };
+    write_text(out, text)
+}
+
+/// 按 RFC 4180 写一个文本字段（必要时引号包裹、内部引号翻倍）。
+fn write_text<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
+    if needs_quotes(text) {
+        write_quoted(out, text)
+    } else {
+        out.write_all(text.as_bytes())
+    }
+}
+
+/// 引号包裹并转义内部引号。
+fn write_quoted<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
+    out.write_all(b"\"")?;
+    let mut start = 0;
+    for (index, byte) in text.bytes().enumerate() {
+        if byte == b'"' {
+            out.write_all(&text.as_bytes()[start..index])?;
+            out.write_all(b"\"\"")?;
+            start = index + 1;
+        }
+    }
+    out.write_all(&text.as_bytes()[start..])?;
+    out.write_all(b"\"")
+}
+
 /// 写一条记录（字段 + CRLF）。
-pub fn write_record<W: Write>(out: &mut W, fields: &[Field]) -> io::Result<()> {
+pub fn write_record<W: Write>(
+    out: &mut W,
+    fields: &[Field],
+    options: FormatOptions,
+) -> io::Result<()> {
     for (index, field) in fields.iter().enumerate() {
         if index > 0 {
             out.write_all(b",")?;
         }
-        write_field(out, field)?;
+        write_field(out, field, options)?;
     }
     out.write_all(ROW_TERMINATOR)
 }
 
 /// 写表头（列名按同样规则转义）。
-pub fn write_header<W: Write>(out: &mut W, titles: &[String]) -> io::Result<()> {
+pub fn write_header<W: Write>(
+    out: &mut W,
+    titles: &[String],
+    options: FormatOptions,
+) -> io::Result<()> {
     let fields: Vec<Field> = titles.iter().cloned().map(Field::Text).collect();
-    write_record(out, &fields)
+    write_record(out, &fields, options)
+}
+
+/// 文件末尾的截断说明（没有截断时返回 `None`）。
+///
+/// 只在**本文件确实含截断单元格**时追加一行；前缀固定 `# sqarvo:`，行尾与数据行
+/// 一致（CRLF）。列名里的换行会被压成空格，保证注释只占一行。
+#[must_use]
+pub fn truncation_note(truncated_cells: u64, columns: &[String]) -> Option<String> {
+    if truncated_cells == 0 {
+        return None;
+    }
+    let mut note =
+        format!("# sqarvo: 本文件含 {truncated_cells} 个被截断的单元格（仅前缀，不是完整值）");
+    if !columns.is_empty() {
+        let names: Vec<String> = columns
+            .iter()
+            .map(|name| name.replace(['\r', '\n'], " "))
+            .collect();
+        note.push('：');
+        note.push_str(&names.join(", "));
+    }
+    Some(note)
 }
 
 /// 目标路径的现状。
@@ -351,6 +442,18 @@ pub fn inspect_target(path: &Path) -> Result<TargetState, ExportError> {
     }
 }
 
+/// 一行的导出数据：字段 + 被服务端截断的列下标（0 起，与表头对齐）。
+///
+/// 截断信息不放进 [`Field`]：写出的字节与「是否完整」是两件事，分开表达才能让
+/// 转义规则保持简单（#137）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportRow {
+    /// 与表头等宽的字段。
+    pub fields: Vec<Field>,
+    /// 被截断的列下标（升序、无重复）。
+    pub truncated_columns: Vec<usize>,
+}
+
 /// 流式 CSV 写入器：临时文件 → 成功后改名。
 pub struct CsvSink {
     target: PathBuf,
@@ -359,6 +462,14 @@ pub struct CsvSink {
     /// 复用的单行缓冲：峰值内存与行数无关。
     row_buf: Vec<u8>,
     allow_overwrite: bool,
+    /// 写出口径（公式注入防护开关）。
+    options: FormatOptions,
+    /// 表头列名：文件末尾的截断说明要列出**列名**而不是下标。
+    titles: Vec<String>,
+    /// 出现过截断的列下标（第一次出现时追加）。
+    truncated_columns: Vec<usize>,
+    /// 被截断的单元格总数（同一列可以出现在多行）。
+    truncated_cells: u64,
     rows: u64,
     bytes: u64,
     committed: bool,
@@ -377,7 +488,13 @@ pub struct ExportReport {
 
 impl CsvSink {
     /// 创建临时文件并准备表头。默认不覆盖已有目标。
-    pub fn create(target: &Path, allow_overwrite: bool) -> Result<Self, ExportError> {
+    ///
+    /// `options` 是写出口径：用户关掉公式注入防护时从确认对话框传进来（#137）。
+    pub fn create_with_options(
+        target: &Path,
+        allow_overwrite: bool,
+        options: FormatOptions,
+    ) -> Result<Self, ExportError> {
         let state = inspect_target(target)?;
         if state == TargetState::Existing && !allow_overwrite {
             return Err(ExportError::AlreadyExists(target.to_path_buf()));
@@ -398,15 +515,15 @@ impl CsvSink {
                 ".{name}.{}.{sequence}.sqarvo-tmp",
                 std::process::id()
             ));
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
+            let mut open_options = OpenOptions::new();
+            open_options.write(true).create_new(true);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
                 // 与 config.rs 一致的私有文件口径：同机其他用户读不到导出内容。
-                options.mode(0o600);
+                open_options.mode(0o600);
             }
-            match options.open(&temp) {
+            match open_options.open(&temp) {
                 Ok(file) => {
                     return Ok(Self {
                         target: target.to_path_buf(),
@@ -414,6 +531,10 @@ impl CsvSink {
                         writer: Some(BufWriter::with_capacity(WRITE_BUFFER_BYTES, file)),
                         row_buf: Vec::with_capacity(1024),
                         allow_overwrite,
+                        options,
+                        titles: Vec::new(),
+                        truncated_columns: Vec::new(),
+                        truncated_cells: 0,
                         rows: 0,
                         bytes: 0,
                         committed: false,
@@ -433,8 +554,9 @@ impl CsvSink {
 
     /// 写表头。
     pub fn header(&mut self, titles: &[String]) -> Result<(), ExportError> {
+        self.titles = titles.to_vec();
         self.row_buf.clear();
-        write_header(&mut self.row_buf, titles)
+        write_header(&mut self.row_buf, titles, self.options)
             .map_err(|error| ExportError::Io(error.to_string()))?;
         self.write_buffered()
     }
@@ -442,9 +564,43 @@ impl CsvSink {
     /// 写一行字段。
     pub fn record(&mut self, fields: &[Field]) -> Result<(), ExportError> {
         self.row_buf.clear();
-        write_record(&mut self.row_buf, fields)
+        write_record(&mut self.row_buf, fields, self.options)
             .map_err(|error| ExportError::Io(error.to_string()))?;
         self.rows += 1;
+        self.write_buffered()
+    }
+
+    /// 写一行并累计截断列（文件末尾的说明行用它）。
+    pub fn record_row(&mut self, row: &ExportRow) -> Result<(), ExportError> {
+        self.record(&row.fields)?;
+        for column in &row.truncated_columns {
+            self.truncated_cells = self.truncated_cells.saturating_add(1);
+            if !self.truncated_columns.contains(column) {
+                self.truncated_columns.push(*column);
+            }
+        }
+        Ok(())
+    }
+
+    /// 追加文件末尾的截断说明（只在有截断时写一行，行尾与数据行一致）。
+    fn write_truncation_note(&mut self) -> Result<(), ExportError> {
+        let mut columns: Vec<usize> = self.truncated_columns.clone();
+        columns.sort_unstable();
+        let names: Vec<String> = columns
+            .iter()
+            .map(|index| {
+                self.titles
+                    .get(*index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("第 {} 列", index + 1))
+            })
+            .collect();
+        let Some(note) = truncation_note(self.truncated_cells, &names) else {
+            return Ok(());
+        };
+        self.row_buf.clear();
+        self.row_buf.extend_from_slice(note.as_bytes());
+        self.row_buf.extend_from_slice(ROW_TERMINATOR);
         self.write_buffered()
     }
 
@@ -461,6 +617,8 @@ impl CsvSink {
 
     /// 落盘（flush + fsync）后改名到目标。失败时临时文件由 `Drop` 清理。
     pub fn finish(mut self) -> Result<ExportReport, ExportError> {
+        // 截断说明必须在所有数据行之后、flush 之前写。
+        self.write_truncation_note()?;
         let Some(mut writer) = self.writer.take() else {
             return Err(ExportError::Io("写入器已关闭".to_owned()));
         };
@@ -582,8 +740,13 @@ mod tests {
         fs::read_to_string(path).expect("读取导出的 CSV")
     }
 
+    /// 测试用的默认写出口径（公式注入防护开启）。
+    fn sink(target: &Path, allow_overwrite: bool) -> Result<CsvSink, ExportError> {
+        CsvSink::create_with_options(target, allow_overwrite, FormatOptions::default())
+    }
+
     fn export(titles: &[&str], rows: &[Vec<Field>], target: &Path) -> ExportReport {
-        let mut sink = CsvSink::create(target, true).expect("创建导出");
+        let mut sink = sink(target, true).expect("创建导出");
         let titles: Vec<String> = titles.iter().map(|title| (*title).to_owned()).collect();
         sink.header(&titles).expect("表头");
         for row in rows {
@@ -653,7 +816,7 @@ mod tests {
         };
         assert_eq!(
             field_from_value(&value),
-            Field::Text("(BLOB 4 bytes)".to_owned())
+            Field::Scalar("(BLOB 4 bytes)".to_owned())
         );
         assert!(!field_from_value(&value).text().unwrap().contains("0x89"));
 
@@ -663,7 +826,7 @@ mod tests {
         };
         assert_eq!(
             field_from_value(&truncated),
-            Field::Text("(BLOB 4 bytes, 已截断)".to_owned())
+            Field::Scalar("(BLOB 4 bytes, 已截断)".to_owned())
         );
     }
 
@@ -680,7 +843,7 @@ mod tests {
         };
         assert_eq!(
             field_from_value(&value),
-            Field::Text("-1234567890123456.789012".to_owned())
+            Field::Scalar("-1234567890123456.789012".to_owned())
         );
     }
 
@@ -796,7 +959,7 @@ mod tests {
         let target = dir.path().join("exists.csv");
         fs::write(&target, "keep me").expect("预置文件");
 
-        let error = match CsvSink::create(&target, false) {
+        let error = match sink(&target, false) {
             Ok(_) => panic!("默认不覆盖"),
             Err(error) => error,
         };
@@ -815,7 +978,7 @@ mod tests {
         let target = dir.path().join("cancelled.csv");
         let before = fs::read_dir(dir.path()).expect("读目录").count();
         {
-            let mut sink = CsvSink::create(&target, false).expect("创建导出");
+            let mut sink = sink(&target, false).expect("创建导出");
             sink.header(&["a".to_owned()]).expect("表头");
             sink.record(&[Field::Text("partial".to_owned())])
                 .expect("写一行");
@@ -835,7 +998,7 @@ mod tests {
         let target = dir.path().join("keep.csv");
         fs::write(&target, "original").expect("预置文件");
         {
-            let mut sink = CsvSink::create(&target, true).expect("允许覆盖");
+            let mut sink = sink(&target, true).expect("允许覆盖");
             sink.header(&["a".to_owned()]).expect("表头");
             sink.record(&[Field::Text("partial".to_owned())])
                 .expect("写一行");
@@ -853,7 +1016,7 @@ mod tests {
     fn target_created_after_start_is_not_replaced() {
         let dir = tempfile::tempdir().expect("临时目录");
         let target = dir.path().join("race.csv");
-        let mut sink = CsvSink::create(&target, false).expect("创建导出");
+        let mut sink = sink(&target, false).expect("创建导出");
         sink.header(&["a".to_owned()]).expect("表头");
         sink.record(&[Field::Text("mine".to_owned())])
             .expect("写一行");
@@ -898,6 +1061,239 @@ mod tests {
         assert_eq!(read(&target), "\"a,b\",\"c\"\"d\"\r\n");
     }
 
+    // ---- #137：公式注入防护 ----
+
+    /// 六类危险前缀 + 普通文本，按默认口径各写一行。
+    fn record_line(fields: &[Field], options: FormatOptions) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        write_record(&mut out, fields, options).expect("写记录");
+        String::from_utf8(out).expect("UTF-8")
+    }
+
+    #[test]
+    fn dangerous_prefixes_are_prefixed_with_apostrophe() {
+        // 制表符 / 回车开头的值本身就触发 RFC 4180 的引号规则，所以期望值带外层引号。
+        let cases = [
+            ("=1+1", "'=1+1"),
+            ("+44", "'+44"),
+            ("-5", "'-5"),
+            ("@x", "'@x"),
+            ("\tfoo", "\"'\tfoo\""),
+            ("\rfoo", "\"'\rfoo\""),
+        ];
+        for (text, expected) in cases {
+            let line = record_line(&[Field::Text(text.to_owned())], FormatOptions::default());
+            assert_eq!(
+                line,
+                format!("{expected}\r\n"),
+                "危险前缀 {text:?} 必须前置单引号"
+            );
+        }
+        // 空白与普通文本不受影响。
+        assert_eq!(
+            record_line(&[Field::Text("plain".to_owned())], FormatOptions::default()),
+            "plain\r\n"
+        );
+        assert_eq!(
+            record_line(
+                &[Field::Text("  spaced".to_owned())],
+                FormatOptions::default()
+            ),
+            "\"  spaced\"\r\n"
+        );
+    }
+
+    #[test]
+    fn guarded_text_keeps_rfc4180_quoting() {
+        // 前置单引号后仍按 CSV 规则转义（逗号、引号、换行）。
+        assert_eq!(
+            record_line(&[Field::Text("=1,2".to_owned())], FormatOptions::default()),
+            "\"'=1,2\"\r\n"
+        );
+        assert_eq!(
+            record_line(&[Field::Text("=a\"b".to_owned())], FormatOptions::default()),
+            "\"'=a\"\"b\"\r\n"
+        );
+    }
+
+    #[test]
+    fn numeric_values_are_never_guarded() {
+        // `-5` 写成 `'-5` 会改变数值语义：非文本类值一律不加单引号。
+        let int_value = ColumnValue {
+            kind: ValueKind::Int64 as i32,
+            value: Some(column_value::Value::Int64Value(-5)),
+            truncated: false,
+            original_type_name: "bigint".to_owned(),
+        };
+        assert_eq!(field_from_value(&int_value), Field::Scalar("-5".to_owned()));
+        assert_eq!(
+            record_line(&[field_from_value(&int_value)], FormatOptions::default()),
+            "-5\r\n"
+        );
+
+        let float_value = ColumnValue {
+            kind: ValueKind::Float64 as i32,
+            value: Some(column_value::Value::Float64Value(-1.5)),
+            truncated: false,
+            original_type_name: "double".to_owned(),
+        };
+        assert_eq!(
+            record_line(&[field_from_value(&float_value)], FormatOptions::default()),
+            "-1.5\r\n"
+        );
+
+        let decimal_value = ColumnValue {
+            kind: ValueKind::Decimal as i32,
+            value: Some(column_value::Value::DecimalValue(DecimalValue {
+                unscaled_value: "-500".to_owned(),
+                scale: 2,
+            })),
+            truncated: false,
+            original_type_name: "decimal(10,2)".to_owned(),
+        };
+        assert_eq!(
+            record_line(
+                &[field_from_value(&decimal_value)],
+                FormatOptions::default()
+            ),
+            "-5.00\r\n"
+        );
+
+        // 文本列里的 -5 仍是文本：防护开启，避免被当公式。
+        assert_eq!(
+            record_line(&[field_from_value(&text("-5"))], FormatOptions::default()),
+            "'-5\r\n"
+        );
+    }
+
+    #[test]
+    fn raw_values_option_writes_original_text() {
+        let options = FormatOptions {
+            guard_formulas: false,
+        };
+        for text in ["=1+1", "+44", "-5", "@x", "\tfoo", "\rfoo"] {
+            let line = record_line(&[Field::Text(text.to_owned())], options);
+            // `\t` / `\r` 开头的内容本身就是引号包裹的字段（RFC 4180 需要），
+            // 这里只断言**没有**多出来的单引号。
+            assert!(!line.contains('\''), "关闭防护后不得再加单引号：{line:?}");
+        }
+        assert_eq!(
+            record_line(&[Field::Text("=1+1".to_owned())], options),
+            "=1+1\r\n"
+        );
+    }
+
+    #[test]
+    fn header_titles_are_guarded_too() {
+        let mut out: Vec<u8> = Vec::new();
+        write_header(
+            &mut out,
+            &["=cmd".to_owned(), "ok".to_owned()],
+            FormatOptions::default(),
+        )
+        .expect("写表头");
+        assert_eq!(String::from_utf8(out).unwrap(), "'=cmd,ok\r\n");
+    }
+
+    #[test]
+    fn hash_prefixed_values_are_quoted_so_data_never_looks_like_a_comment() {
+        // 文件末尾的截断说明以 `#` 开头；数据行首列以 `#` 开头时必须加引号，
+        // 否则「以 # 开头的行是注释」会误伤真实数据。
+        assert_eq!(
+            record_line(&[Field::Text("#tag".to_owned())], FormatOptions::default()),
+            "\"#tag\"\r\n"
+        );
+    }
+
+    // ---- #137：截断标记 ----
+
+    #[test]
+    fn truncation_note_mentions_count_and_columns() {
+        let note = truncation_note(3, &["payload".to_owned(), "note".to_owned()])
+            .expect("有截断就必须有说明行");
+        assert!(note.starts_with("# sqarvo: "), "{note}");
+        assert!(note.contains('3'), "{note}");
+        assert!(note.contains("payload, note"), "{note}");
+        // 列名里的换行不允许把注释拆成两行。
+        let note = truncation_note(1, &["a\nb".to_owned()]).expect("说明行");
+        assert!(!note.contains('\n'), "{note}");
+        assert_eq!(truncation_note(0, &["a".to_owned()]), None);
+    }
+
+    #[test]
+    fn truncated_cells_append_one_comment_line_at_end() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("truncated.csv");
+        let mut sink = sink(&target, false).expect("创建导出");
+        sink.header(&["id".to_owned(), "payload".to_owned()])
+            .expect("表头");
+        sink.record_row(&ExportRow {
+            fields: vec![
+                Field::Scalar("1".to_owned()),
+                Field::Text("prefix".to_owned()),
+            ],
+            truncated_columns: vec![1],
+        })
+        .expect("第一行");
+        sink.record_row(&ExportRow {
+            fields: vec![
+                Field::Scalar("2".to_owned()),
+                Field::Text("prefix".to_owned()),
+            ],
+            truncated_columns: vec![1],
+        })
+        .expect("第二行");
+        sink.record_row(&ExportRow {
+            fields: vec![
+                Field::Scalar("3".to_owned()),
+                Field::Text("full".to_owned()),
+            ],
+            truncated_columns: Vec::new(),
+        })
+        .expect("第三行");
+        let report = sink.finish().expect("完成");
+
+        let content = read(&target);
+        let lines: Vec<&str> = content.split("\r\n").collect();
+        // 表头 + 3 行 + 注释 + 末尾空串（文件以 CRLF 结束）
+        assert_eq!(lines.len(), 6, "{content:?}");
+        assert_eq!(lines[0], "id,payload");
+        let last = lines[4];
+        assert_eq!(
+            last, "# sqarvo: 本文件含 2 个被截断的单元格（仅前缀，不是完整值）：payload",
+            "{content:?}"
+        );
+        // 行尾与数据行一致（CRLF），且字节数统计包含注释行。
+        assert!(content.ends_with("payload\r\n"), "{content:?}");
+        assert_eq!(report.rows, 3);
+        assert_eq!(report.bytes as usize, content.len());
+    }
+
+    #[test]
+    fn complete_export_has_no_comment_line() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("complete.csv");
+        let mut sink = sink(&target, false).expect("创建导出");
+        sink.header(&["id".to_owned()]).expect("表头");
+        sink.record_row(&ExportRow {
+            fields: vec![Field::Scalar("1".to_owned())],
+            truncated_columns: Vec::new(),
+        })
+        .expect("一行");
+        sink.finish().expect("完成");
+        let content = read(&target);
+        assert_eq!(content, "id\r\n1\r\n");
+        assert!(!content.contains("# sqarvo:"), "{content:?}");
+    }
+
+    #[test]
+    fn counter_proof_guard_disabled_by_default_switch() {
+        // 开关语义：默认 = 防护开启；显式关闭才写原始值。
+        assert!(FormatOptions::default().guard_formulas);
+        assert!(needs_formula_guard("=1+1"));
+        assert!(!needs_formula_guard("1+1"));
+    }
+
     #[test]
     fn permissions_are_private() {
         #[cfg(unix)]
@@ -924,7 +1320,7 @@ mod tests {
         let rss_before = peak_rss_kib();
         let started = std::time::Instant::now();
 
-        let mut sink = CsvSink::create(&target, true).expect("创建导出");
+        let mut sink = sink(&target, true).expect("创建导出");
         let titles: Vec<String> = ["id", "name", "note", "payload"]
             .iter()
             .map(|title| (*title).to_owned())

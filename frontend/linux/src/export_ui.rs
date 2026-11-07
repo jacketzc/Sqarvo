@@ -23,7 +23,7 @@ use gtk::gio;
 use gtk::glib;
 
 use crate::data_page::DataPage;
-use crate::export::{self, CsvSink, Field, TargetState};
+use crate::export::{self, CsvSink, ExportRow, Field, FormatOptions, TargetState};
 use crate::proto::common::v1::ColumnValue;
 use crate::results::{ResultsView, RunState};
 
@@ -192,24 +192,36 @@ impl ExportSource {
         }
     }
 
-    fn row_fields(&self, plan: &ExportPlan, index: usize) -> Vec<Field> {
+    /// 按位置取一行的导出字段与截断列（下标与表头对齐）。
+    fn row_fields(&self, plan: &ExportPlan, index: usize) -> ExportRow {
         let width = plan.titles.len();
+        let empty = || ExportRow {
+            fields: vec![Field::Null; width],
+            truncated_columns: Vec::new(),
+        };
+        let build = |values: &[ColumnValue]| ExportRow {
+            fields: export::fields_from_values(values, width),
+            truncated_columns: truncated_columns(values),
+        };
         match self {
-            Self::Query(results) => results.row_at(index).map_or_else(
-                || vec![Field::Null; width],
-                |row| export::fields_from_values(&row.values, width),
-            ),
-            Self::Table(_) => plan.table_rows.as_ref().map_or_else(
-                || vec![Field::Null; width],
-                |rows| {
-                    rows.get(index).map_or_else(
-                        || vec![Field::Null; width],
-                        |values| export::fields_from_values(values, width),
-                    )
-                },
-            ),
+            Self::Query(results) => results
+                .row_at(index)
+                .map_or_else(empty, |row| build(&row.values)),
+            Self::Table(_) => plan.table_rows.as_ref().map_or_else(empty, |rows| {
+                rows.get(index).map_or_else(empty, |values| build(values))
+            }),
         }
     }
+}
+
+/// 一行里被服务端截断的列下标（升序）。
+fn truncated_columns(values: &[ColumnValue]) -> Vec<usize> {
+    values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.truncated)
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// 入口（EX 按钮 / 菜单 / 快捷键）：选目标 → 确认 → 导出。
@@ -261,10 +273,15 @@ pub fn begin(parent: &gtk::Widget, source: ExportSource) {
 pub fn begin_qa(parent: &gtk::Widget, source: ExportSource, target: PathBuf) {
     let plan = Rc::new(source.plan());
     eprintln!(
-        "[export] QA 触发：目标 {}，{}，截断单元格 {}",
+        "[export] QA 触发：目标 {}，{}，截断单元格 {}，公式注入防护 {}",
         target.display(),
         plan.scope.title(),
-        plan.truncated_cells
+        plan.truncated_cells,
+        if crate::qa::export_raw_values() {
+            "关闭（原始值）"
+        } else {
+            "开启"
+        }
     );
     if plan.row_count == 0 {
         eprintln!("[export] QA 跳过：没有已加载的行");
@@ -312,21 +329,40 @@ fn confirm(
     dialog.set_response_appearance("export", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("export"));
     dialog.set_close_response("cancel");
+
+    // #137：公式注入防护开关。默认开启；关掉就写原始值（由用户明确承担风险）。
+    // QA 的 `--qa-export-raw-values` 拨的就是这个开关，走的仍是同一份写出口径。
+    let guard = adw::SwitchRow::builder()
+        .title("公式注入防护")
+        .subtitle("文本以 = + - @、制表符或回车开头时前置单引号；数值与日期时间不受影响")
+        .active(!crate::qa::export_raw_values())
+        .build();
+    dialog.set_extra_child(Some(&guard));
+
     {
         let parent = parent.clone();
         let source = source.clone();
         let plan = Rc::clone(&plan);
         let target = target.clone();
+        let guard = guard.clone();
         let handled = Rc::new(Cell::new(false));
         dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
             if handled.replace(true) {
                 return;
             }
             if response == "export" {
+                let options = FormatOptions {
+                    guard_formulas: guard.is_active(),
+                };
                 eprintln!(
-                    "[export] 用户确认导出：{}（目标 {}）",
+                    "[export] 用户确认导出：{}（目标 {}，公式注入防护 {}）",
                     plan.scope.title(),
-                    target.display()
+                    target.display(),
+                    if options.guard_formulas {
+                        "开启"
+                    } else {
+                        "关闭（原始值）"
+                    }
                 );
                 after_confirm(
                     &parent,
@@ -334,6 +370,7 @@ fn confirm(
                     Rc::clone(&plan),
                     target.clone(),
                     qa,
+                    options,
                 );
             } else {
                 eprintln!("[export] 用户在确认对话框取消，未写任何文件");
@@ -358,10 +395,11 @@ fn after_confirm(
     plan: Rc<ExportPlan>,
     target: PathBuf,
     qa: bool,
+    options: FormatOptions,
 ) {
     match export::inspect_target(&target) {
         Err(error) => show_notice(parent, "无法导出", &error.message()),
-        Ok(TargetState::New) => run_export(parent, source, plan, target, false),
+        Ok(TargetState::New) => run_export(parent, source, plan, target, false, options),
         Ok(TargetState::Existing) => {
             let dialog = adw::AlertDialog::new(
                 Some("覆盖已有文件？"),
@@ -393,6 +431,7 @@ fn after_confirm(
                             Rc::clone(&plan),
                             target.clone(),
                             true,
+                            options,
                         );
                     } else {
                         eprintln!("[export] 用户放弃覆盖，未写任何文件");
@@ -418,6 +457,8 @@ struct ExportJob {
     source: ExportSource,
     plan: Rc<ExportPlan>,
     target: PathBuf,
+    /// 写出口径（完成提示要如实说明是否做了公式注入防护）。
+    options: FormatOptions,
     sink: RefCell<Option<CsvSink>>,
     index: Cell<usize>,
     cancelled: Cell<bool>,
@@ -433,8 +474,9 @@ fn run_export(
     plan: Rc<ExportPlan>,
     target: PathBuf,
     allow_overwrite: bool,
+    options: FormatOptions,
 ) {
-    let mut sink = match CsvSink::create(&target, allow_overwrite) {
+    let mut sink = match CsvSink::create_with_options(&target, allow_overwrite, options) {
         Ok(sink) => sink,
         Err(error) => {
             eprintln!("[export] 创建临时文件失败：{}", error.message());
@@ -482,6 +524,7 @@ fn run_export(
         source,
         plan,
         target: target.clone(),
+        options,
         sink: RefCell::new(Some(sink)),
         index: Cell::new(0),
         cancelled: Cell::new(false),
@@ -504,10 +547,15 @@ fn run_export(
     dialog.present(Some(parent));
 
     eprintln!(
-        "[export] 开始导出：{}，目标 {}，已加载 {} 行",
+        "[export] 开始导出：{}，目标 {}，已加载 {} 行，公式注入防护 {}",
         job.plan.scope.title(),
         job.target.display(),
-        job.plan.row_count
+        job.plan.row_count,
+        if options.guard_formulas {
+            "开启"
+        } else {
+            "关闭（原始值）"
+        }
     );
     let job_for_tick = Rc::clone(&job);
     glib::timeout_add_local(Duration::from_millis(1), move || {
@@ -539,8 +587,8 @@ fn run_export(
                 return glib::ControlFlow::Break;
             };
             for index in start..end {
-                let fields = job_for_tick.source.row_fields(&job_for_tick.plan, index);
-                if let Err(error) = sink.record(&fields) {
+                let row = job_for_tick.source.row_fields(&job_for_tick.plan, index);
+                if let Err(error) = sink.record_row(&row) {
                     drop(guard);
                     job_for_tick.fail(&error);
                     return glib::ControlFlow::Break;
@@ -633,12 +681,17 @@ impl ExportJob {
             report.target.display(),
             self.plan.scope.title()
         );
-        show_completion(&self.parent, &self.plan, &report);
+        show_completion(&self.parent, &self.plan, &report, self.options);
     }
 }
 
 /// 完成提示：行数、范围、截断警告、可选中的路径与「复制路径」。
-fn show_completion(parent: &gtk::Widget, plan: &ExportPlan, report: &export::ExportReport) {
+fn show_completion(
+    parent: &gtk::Widget,
+    plan: &ExportPlan,
+    report: &export::ExportReport,
+    options: FormatOptions,
+) {
     let mut body = format!(
         "已完成：{}，写出 {} 行（{}，CSV）。",
         plan.scope.title(),
@@ -650,9 +703,16 @@ fn show_completion(parent: &gtk::Widget, plan: &ExportPlan, report: &export::Exp
         body.push_str("\n\n");
         body.push_str(&note);
     }
+    if options.guard_formulas {
+        body.push_str(
+            "\n公式注入防护已开启：以 = + - @、制表符或回车开头的文本前置了单引号（数值与日期时间未改动）。",
+        );
+    } else {
+        body.push_str("\n公式注入防护已关闭：文本按原样写出，打开文件时不要直接启用宏或公式。");
+    }
     if plan.truncated_cells > 0 {
         body.push_str(&format!(
-            "\n有 {} 个单元格被服务端截断：文件里只有前缀。",
+            "\n有 {} 个单元格被服务端截断：文件里只有前缀，文件末尾有一行以 `# sqarvo:` 开头的注释列出相关列。",
             plan.truncated_cells
         ));
     }
