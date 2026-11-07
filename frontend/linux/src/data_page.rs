@@ -581,6 +581,20 @@ impl TableBrowser {
     }
 }
 
+/// QA 的列宽证据（#133）：同一列的三份宽度放在一起，断言才有对照。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnWidthObservation {
+    /// 列名。
+    pub name: String,
+    /// `GtkColumnViewColumn::fixed_width()`（GTK 的 -1 = 按内容自适应）。
+    pub fixed_width: i32,
+    /// 类型条带上对应格子的**分配宽度**（截图时刻实测）。
+    pub type_cell_width: i32,
+    /// 表头标题控件的**自然宽度**（= GTK 的列宽测量值；`GtkColumnViewColumn` 没有公开的
+    /// 宽度查询 API，所以从表头行读）。
+    pub header_natural_width: i32,
+}
+
 /// 数据页。
 pub struct DataPage {
     root: gtk::Box,
@@ -670,6 +684,9 @@ pub struct DataPage {
     type_scroll: gtk::ScrolledWindow,
     /// 每列的类型标签（顺序 = `columns`；点它看列信息）。
     type_labels: RefCell<Vec<gtk::Label>>,
+    /// 每列类型行的格子容器（顺序 = `columns`）：列宽变化时改的是这一层的宽度，
+    /// 标签自己用 `hexpand` 填满格子，右对齐由标签的 `xalign` 决定。
+    type_cells: RefCell<Vec<gtk::Box>>,
     /// 当前是否因权限不足进入只读（错误码含 permission）。
     permission_denied: Cell<bool>,
     /// 正在提交的批次（用于把逐行结果映射回行号）。
@@ -844,6 +861,7 @@ impl DataPage {
         badges_row.set_visible(false);
 
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        controls.add_css_class("sqarvo-table-actions");
         controls.set_margin_start(12);
         controls.set_margin_end(12);
         controls.set_margin_bottom(6);
@@ -897,8 +915,13 @@ impl DataPage {
         // 列宽对齐的条带，和网格共用同一份横向滚动位置（见 `sync_header_scroll`）。
         let type_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         type_row.add_css_class("sqarvo-type-row");
+        // 横向策略必须是 `External` 而不是 `Never`：`Never` 会把条带里全部格子的最小
+        // 宽度（200 × 列数）上报成外层最小宽度，宽表因此把信息面板压到 ~198px
+        // （v0.2.3 release notes 的已知问题，#133）。`External` 由外层共享滚动位置、
+        // 不显示滚动条，也不参与最小宽度传播（GTK 4.22 `gtkscrolledwindow.c`：
+        // 只有 `Never` 才累加子控件最小宽度）。
         let type_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&type_row)
             .build();
@@ -1176,6 +1199,7 @@ impl DataPage {
             type_row: type_row.clone(),
             type_scroll: type_scroll.clone(),
             type_labels: RefCell::new(Vec::new()),
+            type_cells: RefCell::new(Vec::new()),
             permission_denied: Cell::new(false),
             pending_batch: RefCell::new(None),
             submit: RefCell::new(None),
@@ -1488,6 +1512,11 @@ impl DataPage {
         let visibility = self.visibility.borrow();
         for (index, column) in self.header_columns.borrow().iter().enumerate() {
             column.set_visible(visibility.is_visible(index));
+        }
+        // 类型条带与列一一对应（#133）：隐藏的列必须同时收起它的类型格，否则后面的
+        // 格子整体左移，对齐就断了。
+        for (index, cell) in self.type_cells.borrow().iter().enumerate() {
+            cell.set_visible(visibility.is_visible(index));
         }
     }
 
@@ -4413,10 +4442,21 @@ impl DataPage {
             let factory = self.cell_factory(index);
             let view_column = gtk::ColumnViewColumn::new(Some(&column.name), Some(factory));
             view_column.set_expand(false);
-            // 固定宽度：第二行的类型条带按同一宽度对齐（GTK 4.22 没有每列表头控件，
-            // 只能自绘一条与列宽一致的条带）。列宽拖拽与类型行对齐不可兼得，见 PR 待定。
-            view_column.set_resizable(false);
+            // 数据列可拖拽（design-principles「结果网格」要求列宽调整；#118 为了类型行
+            // 对齐把它关掉是回归）。初始宽度仍取 COLUMN_WIDTH，类型条带由
+            // `notify::fixed-width` 跟随：GTK 拖拽列边界时走的就是
+            // `gtk_column_view_column_set_fixed_width`（gtkcolumnview.c 的
+            // `update_column_resize`），该 setter 会 `g_object_notify_by_pspec`。
+            view_column.set_resizable(true);
             view_column.set_fixed_width(COLUMN_WIDTH);
+            {
+                let page = Rc::downgrade(self);
+                view_column.connect_notify_local(Some("fixed-width"), move |column, _| {
+                    if let Some(page) = page.upgrade() {
+                        page.on_column_width_changed(index, column.fixed_width());
+                    }
+                });
+            }
             self.grid.append_column(&view_column);
             self.header_columns.borrow_mut().push(view_column);
         }
@@ -4432,6 +4472,7 @@ impl DataPage {
             self.type_row.remove(&child);
         }
         self.type_labels.borrow_mut().clear();
+        self.type_cells.borrow_mut().clear();
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_size_request(ROW_NUMBER_WIDTH, -1);
         self.type_row.append(&spacer);
@@ -4462,8 +4503,176 @@ impl DataPage {
             cell.append(&label);
             self.type_row.append(&cell);
             self.type_labels.borrow_mut().push(label);
+            self.type_cells.borrow_mut().push(cell);
         }
         self.type_scroll.set_visible(!columns.is_empty());
+    }
+
+    /// 数据列宽度变化（用户拖拽列边界 / 双击自适应 / QA 走同一条属性设置路径）。
+    ///
+    /// 类型条带是独立控件（GTK 4.22 没有逐列 `header_factory`），只能把对应格子的宽度
+    /// 改成与列一致；日志留一行数值对照，截图之外还有可复核的证据。
+    fn on_column_width_changed(self: &Rc<Self>, index: usize, width: i32) {
+        let name = self.columns.borrow().get(index).map_or_else(
+            || format!("第 {} 列", index + 1),
+            |column| column.name.clone(),
+        );
+        if width < 0 {
+            // 双击列边界：GTK 把 `fixed-width` 复位成 -1（按内容自适应），新宽度要等
+            // 这一帧布局才算出来。`GtkColumnViewColumn` 在 4.22 没有公开的宽度查询
+            // API，所以延后一拍读表头子控件的分配宽度（见 `header_column_width`）。
+            self.align_type_cell_after_autofit(index, &name);
+            return;
+        }
+        if let Some(applied) = self.set_type_cell_width(index, width) {
+            eprintln!("[data] 列宽变化：{name} 列宽={width} 类型格宽={applied}");
+        }
+    }
+
+    /// 双击列边界后的对齐：GTK 把 `fixed-width` 复位成 -1（按内容自适应），新宽度要等
+    /// 这一帧布局才算出来。GTK 4.22 没有公开的列宽查询 API（
+    /// `gtk_column_view_column_get_allocation` 没有导出），所以用**与 GTK 相同的测量
+    /// 口径**（表头标题 + 已创建数据单元格的自然宽度取最大，见
+    /// `gtk_column_view_column_measure`）量出宽度，再把列固定到该值——列宽与类型格用
+    /// 同一个数字，对齐不依赖未公开 API。
+    fn align_type_cell_after_autofit(self: &Rc<Self>, index: usize, name: &str) {
+        let weak = Rc::downgrade(self);
+        let name = name.to_owned();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(32), move || {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            let Some(width) = page.measured_column_width(index) else {
+                eprintln!("[data] 列宽变化：{name} 双击自适应后拿不到列内容宽度，类型格保持原宽");
+                return;
+            };
+            page.set_type_cell_width(index, width);
+            let column = page.header_columns.borrow().get(index).cloned();
+            if let Some(column) = column {
+                column.set_fixed_width(width);
+            }
+            eprintln!("[data] 列宽变化：{name} 列宽={width}（双击自适应）类型格宽={width}");
+        });
+    }
+
+    /// 某列按内容自适应的自然宽度：表头标题与**已创建**数据单元格的自然宽度取最大。
+    ///
+    /// 与 GTK 4.22 `gtk_column_view_column_measure` 的口径一致（表头 + `first_cell`
+    /// 链表）；已创建单元格只覆盖可视行，双击后列会被固定，结果不随滚动变化。
+    fn measured_column_width(&self, index: usize) -> Option<i32> {
+        let mut width = self.header_column_natural_width(index)?;
+        // grid 的直接子控件依次是表头行与 listview（gtkcolumnview.c 的
+        // `gtk_widget_set_parent (self->header, ...)` + listview）。行控件的子节点只包含
+        // **可见**列的单元格、第 0 个是行号，所以先按列显隐把下标折算成单元格位置。
+        let visibility = self.visibility.borrow();
+        let visible_index = (0..=index).filter(|i| visibility.is_visible(*i)).count();
+        drop(visibility);
+        let list = self.grid.first_child()?.next_sibling()?;
+        let mut row = list.first_child();
+        while let Some(row_widget) = row {
+            let mut cell = row_widget.first_child();
+            let mut position = 0;
+            while let Some(current) = cell {
+                if position == visible_index {
+                    let (_, natural, _, _) = current.measure(gtk::Orientation::Horizontal, -1);
+                    width = width.max(natural);
+                    break;
+                }
+                position += 1;
+                cell = current.next_sibling();
+            }
+            row = row_widget.next_sibling();
+        }
+        Some(width)
+    }
+
+    /// 把第 `index` 列的类型格改成 `width`；返回写进 `size_request` 的宽度。
+    ///
+    /// 负值（GTK 的 -1 = 按内容自适应）在这里按 0 处理：调用方只会传真实宽度。
+    fn set_type_cell_width(&self, index: usize, width: i32) -> Option<i32> {
+        let cell = self.type_cells.borrow().get(index).cloned()?;
+        let width = width.max(0);
+        cell.set_size_request(width, -1);
+        Some(width)
+    }
+
+    /// 第 `index` 列的**自然宽度**（读 GTK 表头行里对应标题控件的 measure 结果）。
+    ///
+    /// `GtkColumnViewColumn`（GTK 4.22）没有公开的宽度 / allocation 查询 API；表头行是
+    /// `GtkColumnView` 的直接子控件，css 名固定为 `header`（gtkcolumnview.c 的
+    /// `gtk_widget_set_parent (self->header, ...)` 与 gtkcolumnviewrowwidget.c 的
+    /// `css-name` 属性），其子控件顺序 = 列顺序。`GtkColumnViewTitle` 的 measure 会把
+    /// CSS padding 加回去，所以固定宽度列的 natural 恰好等于 `fixed-width`（实测
+    /// 200 → 200，300 → 300）；它只给双击自适应与 QA 断言用，不参与常规布局。
+    fn header_column_natural_width(&self, index: usize) -> Option<i32> {
+        let mut child = self.grid.first_child();
+        let mut header = None;
+        while let Some(widget) = child {
+            if widget.css_name().as_str() == "header" {
+                header = Some(widget);
+                break;
+            }
+            child = widget.next_sibling();
+        }
+        // 表头行同样有行号列（position 0），数据列下标与标题控件位置相差 1。
+        let mut title = header?.first_child();
+        for _ in 0..=index {
+            title = title?.next_sibling();
+        }
+        let (_, natural, _, _) = title?.measure(gtk::Orientation::Horizontal, -1);
+        Some(natural)
+    }
+
+    /// QA `--qa-column-width`：把某列宽度设成指定值。
+    ///
+    /// 走与用户拖拽列边界**同一个属性**（`GtkColumnViewColumn::set_fixed_width`，
+    /// GTK 的 `update_column_resize` 也是这一句），类型条带的跟随因此也是同一条
+    /// `notify::fixed-width` 路径，而不是测试专用的旁路。
+    pub fn qa_set_column_width(&self, column: &str, width: i32) -> Result<(), String> {
+        if width <= 0 {
+            return Err(format!("列宽必须是正数，实际：{width}"));
+        }
+        let index = self.column_index(column)?;
+        let view_column = self
+            .header_columns
+            .borrow()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| format!("列 {column} 的表头列还没建立"))?;
+        view_column.set_fixed_width(width);
+        Ok(())
+    }
+
+    /// QA：截图时刻的列宽证据（分配宽度，不是刚写进去的 `size_request`）。
+    pub fn qa_observe_column_widths(&self) -> Vec<ColumnWidthObservation> {
+        let names: Vec<String> = self
+            .columns
+            .borrow()
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let fixed_width = self
+                    .header_columns
+                    .borrow()
+                    .get(index)
+                    .map_or(-1, gtk::ColumnViewColumn::fixed_width);
+                let type_cell_width = self
+                    .type_cells
+                    .borrow()
+                    .get(index)
+                    .map_or(0, gtk::prelude::WidgetExt::width);
+                ColumnWidthObservation {
+                    name: name.clone(),
+                    fixed_width,
+                    type_cell_width,
+                    header_natural_width: self.header_column_natural_width(index).unwrap_or(0),
+                }
+            })
+            .collect()
     }
 
     /// 让类型行跟随网格的横向滚动（两条带共用同一个滚动位置）。
@@ -5078,6 +5287,10 @@ fn install_css() {
         .sqarvo-header-cell { padding: 1px 6px; min-height: 44px; }
         .sqarvo-type-row { min-height: 24px; }
         .sqarvo-type-cell { min-height: 24px; }
+        /* #133：类型条带不再把最小宽度上报给外层后，窗口在 960 宽下不再被撑大，
+           这一行的 9 个按钮必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
+           横向 padding 收 2px，最小宽度从 721 降到 697 以内。 */
+        .sqarvo-table-actions button { padding: 2px 8px; }
         .sqarvo-header-name-row { min-height: 22px; }
         .sqarvo-header-name { font-size: 12px; font-weight: 600; }
         .sqarvo-header-name.sqarvo-header-sorted { color: @accent_color; }

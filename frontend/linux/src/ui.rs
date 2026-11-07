@@ -674,6 +674,16 @@ pub fn activate(app: &adw::Application) {
                             }
                         }
                     }
+                    // #133：类型条带宽度必须等于列宽（截图时刻实测分配宽度）。
+                    if !crate::qa::column_widths().is_empty() {
+                        match verify_column_widths(&capture_state) {
+                            Ok(summary) => eprintln!("[qa] 列宽断言通过：{summary}"),
+                            Err(reason) => {
+                                eprintln!("[qa] 断言失败：{reason}");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
                     // #139：启动落地工作区的断言（主区域 = Objects 空态，不含诊断字段）。
                     if crate::qa::startup_workspace() {
                         match verify_startup_workspace(&capture_state) {
@@ -2615,6 +2625,25 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
         });
     }
 
+    // 1c. 列宽（--qa-column-width，#133）：走 GtkColumnViewColumn::set_fixed_width，
+    // 与用户拖拽列边界触发的是同一条属性与 notify 路径（类型条带随之更新）。
+    for (index, (column, width)) in crate::qa::column_widths().into_iter().enumerate() {
+        let workspace = Rc::clone(&workspace);
+        let delay = 2_400 + 150 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            let Some(data) = workspace.tabs.data_page() else {
+                return;
+            };
+            match data.qa_set_column_width(&column, width) {
+                Ok(()) => eprintln!(
+                    "[qa] t=+{}ms 设置列宽：{column} = {width}",
+                    crate::qa::elapsed_ms()
+                ),
+                Err(error) => eprintln!("[qa] 设置列宽失败：{error}"),
+            }
+        });
+    }
+
     // 2. 开始事务（可选只读，用于只读态验证）。
     if crate::qa::data_begin_transaction() {
         let workspace = Rc::clone(&workspace);
@@ -3173,6 +3202,57 @@ fn verify_about(state: &Rc<UiState>) -> Result<String, String> {
         "关于 Squarvo：包含后端版本与驱动清单（{} 项断言）",
         required.len()
     ))
+}
+
+/// #133：截图时刻核对「类型条带宽度 == 列宽」。
+///
+/// 比较的是**分配宽度**（GTK 布局结果），不是刚调用 `set_fixed_width` 写进去的值：
+/// 类型条带如果仍被最小宽度或滚动位置影响，这里就会变红。表头标题控件的分配宽度是
+/// GTK 实际列宽的公开可见代理（`GtkColumnViewColumn` 在 4.22 没有宽度查询 API）。
+fn verify_column_widths(state: &Rc<UiState>) -> Result<String, String> {
+    let workspace = state
+        .workspace
+        .borrow()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "工作区尚未建立：没有可断言的列宽".to_owned())?;
+    let data_page = workspace
+        .tabs
+        .data_page()
+        .ok_or_else(|| "当前标签不是表数据标签：没有可断言的列宽".to_owned())?;
+    let observed = data_page.qa_observe_column_widths();
+    let mut passed = Vec::new();
+    for (column, expected) in crate::qa::column_widths() {
+        let Some(fact) = observed.iter().find(|fact| fact.name == column) else {
+            let names: Vec<&str> = observed.iter().map(|fact| fact.name.as_str()).collect();
+            return Err(format!(
+                "列 {column} 不在当前表的列清单里（{}）",
+                names.join("、")
+            ));
+        };
+        if fact.fixed_width != expected {
+            return Err(format!(
+                "列 {column} 的 fixed-width 期望 {expected}，实际 {}",
+                fact.fixed_width
+            ));
+        }
+        for (label, actual) in [
+            ("类型格", fact.type_cell_width),
+            ("表头自然宽", fact.header_natural_width),
+        ] {
+            if (actual - expected).abs() > 1 {
+                return Err(format!(
+                    "列 {column} 的{label}宽度={actual}，与列宽 {expected} 不一致"
+                ));
+            }
+            eprintln!("[qa] 断言 OK：列 {column} 列宽={expected}，{label}宽={actual}");
+        }
+        passed.push(format!(
+            "{column}: 列宽={expected} 类型格={} 表头={}",
+            fact.type_cell_width, fact.header_natural_width
+        ));
+    }
+    Ok(passed.join("，"))
 }
 
 /// QA：校验 `--qa-expect-data-state` / `--qa-expect-txn` / `--qa-expect-column`。
