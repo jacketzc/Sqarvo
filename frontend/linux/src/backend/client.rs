@@ -31,8 +31,9 @@ use crate::backend::query::{
     rows_from_proto, statements_from_proto,
 };
 use crate::backend::table::{
-    ApplyReport, BrowsePage, TABLE_PAGE_SIZE, TableColumn, TableEntry, TableFailure, TxnSnapshot,
-    failure_from_status as table_failure_from_status, rows_from_proto as table_rows_from_proto,
+    ApplyReport, BrowsePage, BrowseQuery, TABLE_PAGE_SIZE, TableColumn, TableEntry, TableFailure,
+    TxnSnapshot, failure_from_status as table_failure_from_status,
+    rows_from_proto as table_rows_from_proto,
 };
 use crate::proto::common::v1::Empty;
 use crate::proto::common::v1::PageRequest;
@@ -621,25 +622,27 @@ impl BackendClient {
         Ok(response.columns)
     }
 
-    /// 浏览一页表数据（`first_number` 是本页第一行的全局行号，1 起）。
+    /// 浏览一页表数据（offset 分页；`first_number` = offset + 1 由调用方给定）。
+    ///
+    /// **与 cursor 互斥**：本版一律带 `offset`，`page_token` 始终为空——
+    /// 两者同时非空会被服务端拒绝（`config.invalid`），驱动也会拒绝。
     pub async fn browse_table(
         &self,
         object: &ObjectRef,
-        page_token: &str,
+        query: &BrowseQuery,
         first_number: u64,
     ) -> Result<BrowsePage, TableFailure> {
         let mut client = self.table_data_service().map_err(table_local_failure)?;
         let request = BrowseTableRequest {
             object: Some(object.clone()),
-            page_size: TABLE_PAGE_SIZE,
-            page_token: page_token.to_owned(),
-            // v0.2.3 契约增量（#109）：前端尚未提供 offset / 排序 / 筛选 / 精确计数，
-            // 显式给默认值 = v0.2.2 行为（功能实现见 #110 / #111 / #113）。
-            offset: 0,
-            sort: Vec::new(),
-            filter: None,
-            include_total: false,
-            // 契约增量（#127）：0 = 服务端默认计数超时；前端本版不请求总数，字段留默认。
+            page_size: query.page_size,
+            // offset 分页：绝不带 cursor（ADR 0022）。
+            page_token: String::new(),
+            offset: query.offset,
+            sort: query.sort.clone(),
+            filter: query.filter.clone(),
+            include_total: query.include_total,
+            // 0 = 服务端默认计数超时（2 s，上限由驱动钳制）。
             timeout_millis: 0,
         };
         let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.browse_table(request))
@@ -664,6 +667,11 @@ impl BackendClient {
             .unwrap_or(crate::proto::services::v1::ReadOnlyReason::Unspecified),
             ordering: crate::proto::services::v1::RowOrder::try_from(response.ordering)
                 .unwrap_or(crate::proto::services::v1::RowOrder::Unspecified),
+            offset: query.offset,
+            page_size: query.page_size,
+            total_rows: response.total_rows,
+            total_kind: response.total_kind,
+            total_skipped: response.total_skipped,
         })
     }
 

@@ -119,6 +119,10 @@ fn name_or_not_applicable(value: Option<&str>) -> String {
 ///
 /// 建列与表头映射共用这一个函数，标题不是两条各自拼出来的字符串。
 #[must_use]
+#[allow(
+    dead_code,
+    reason = "表头改为两行（列名 / 原始类型）后不再拼接单行标题；保留给列信息与回归测试"
+)]
 pub fn header_title(column: &TableColumn) -> String {
     format!("{} · {}", column.name, column.type_label)
 }
@@ -130,7 +134,11 @@ pub fn header_title(column: &TableColumn) -> String {
 /// （行号指示列）与查不到的标题都返回 `None` —— 该列头不可点。
 ///
 /// 纯函数：列头点击的「点的是第几列」可以脱离 GTK 单测。
+///
+/// #118 之后表头由 `GtkColumnView:header-factory` 生成，点击直接拿到列下标；
+/// 这个反查保留给回归测试（`column_info` 的单测）与后续按标题定位的入口。
 #[must_use]
+#[allow(dead_code, reason = "表头点击已直接拿列下标；反查保留给单测与后续入口")]
 pub fn column_index_for_title(titles: &[String], clicked: Option<&str>) -> Option<usize> {
     let clicked = clicked?.trim();
     if clicked.is_empty() {

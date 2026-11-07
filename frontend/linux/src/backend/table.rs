@@ -18,9 +18,9 @@ use crate::backend::query::{CellView, format_cell};
 use crate::column_info::ColumnDefaultState;
 use crate::proto::common::v1::{ColumnMeta, ColumnTypeKind, ColumnValue, Row as ProtoRow};
 use crate::proto::services::v1::{
-    BeginTransactionRequest, InsertOutcome, InsertRow, InsertRowResult, InsertRowsRequest,
+    BeginTransactionRequest, Filter, InsertOutcome, InsertRow, InsertRowResult, InsertRowsRequest,
     IsolationLevel, ObjectKind, ObjectNode, ObjectRef, ReadOnlyReason as ProtoReadOnlyReason,
-    RowChangeResult, RowKey, RowOrder,
+    RowChangeResult, RowKey, RowOrder, SortKey,
 };
 
 /// 单页请求行数：与 ADR 0017 的单页上限一致（服务端会把更大的值钳制到 500）。
@@ -218,6 +218,38 @@ pub struct TableRow {
     pub edit_texts: Vec<String>,
 }
 
+/// `BrowseTable` 的请求参数（#118）：offset 分页 + 排序 + 筛选 + 是否要总数。
+///
+/// **与 `page_token` 互斥**：本版一律走 offset，`page_token` 留空。排序与筛选
+/// 由服务端下推（`ORDER BY` / `WHERE`），值参数化绑定——这里只承载契约字段。
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowseQuery {
+    /// 起始行（0 起）。
+    pub offset: u64,
+    /// 每页行数。
+    pub page_size: u32,
+    /// 排序键（空 = 服务端默认主键升序）。
+    pub sort: Vec<SortKey>,
+    /// 筛选条件（`None` = 不过滤；本版只支持 AND）。
+    pub filter: Option<Filter>,
+    /// 是否请求总行数。
+    pub include_total: bool,
+}
+
+impl BrowseQuery {
+    /// 第一页、无排序、无筛选；`include_total` 按能力位决定。
+    #[must_use]
+    pub fn first_page(page_size: u32, include_total: bool) -> Self {
+        Self {
+            offset: 0,
+            page_size,
+            sort: Vec::new(),
+            filter: None,
+            include_total,
+        }
+    }
+}
+
 /// `BrowseTable` 的成功结果（一页）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowsePage {
@@ -225,7 +257,7 @@ pub struct BrowsePage {
     pub columns: Vec<TableColumn>,
     /// 本页行。
     pub rows: Vec<TableRow>,
-    /// 下一页 cursor（不透明；客户端不得解析）。
+    /// 下一页 cursor（不透明；offset 分页下客户端不使用，保留契约字段）。
     pub next_page_token: String,
     /// 是否还有更多数据。
     pub has_more: bool,
@@ -235,6 +267,16 @@ pub struct BrowsePage {
     pub read_only_reason: ProtoReadOnlyReason,
     /// 排序保证。
     pub ordering: RowOrder,
+    /// 本页起始行（回显请求的 offset）。
+    pub offset: u64,
+    /// 每页行数（服务端钳制后的值）。
+    pub page_size: u32,
+    /// 总行数（`total_kind = UNKNOWN` 时无意义）。
+    pub total_rows: u64,
+    /// 总数三态（`TotalKind` 的 `i32`）。
+    pub total_kind: i32,
+    /// 请求了精确计数但被跳过（超时/中断），不报错、不影响本页。
+    pub total_skipped: bool,
 }
 
 /// 打开表时一次拿到的完整上下文（浏览首页 + 主键）。
@@ -259,6 +301,20 @@ pub struct TableOpen {
     /// 隔离级别选项的可用性由驱动能力决定（SQLite 只接受 SERIALIZABLE），
     /// 所以打开表时就把驱动带上，界面不必再猜一次。
     pub driver_id: Option<String>,
+    /// 本次会话的能力位名称（来自 `ConnectResponse.capabilities`）。
+    ///
+    /// 界面据此决定是否展示排序/筛选/总数入口；缺省时按「不支持」处理。
+    pub capabilities: Vec<String>,
+    /// 本页起始行（0 起）。
+    pub offset: u64,
+    /// 每页行数。
+    pub page_size: u32,
+    /// 总行数（`total_kind = UNKNOWN` 时无意义）。
+    pub total_rows: u64,
+    /// 总数三态（`TotalKind` 的 `i32`）。
+    pub total_kind: i32,
+    /// 请求了精确计数但被跳过。
+    pub total_skipped: bool,
 }
 
 impl TableOpen {
@@ -977,6 +1033,37 @@ mod tests {
         assert_eq!(rows[0].cells.len(), 2);
         assert_eq!(rows[0].values[1].kind, ValueKind::Null as i32);
         assert_eq!(rows[0].cells[1].text, "NULL");
+    }
+
+    #[test]
+    fn browse_query_first_page_is_offset_zero_and_never_carries_a_cursor() {
+        // #118：offset 分页的第一页 = offset 0、无排序、无筛选；是否要总数由能力位决定。
+        let query = BrowseQuery::first_page(500, true);
+        assert_eq!(query.offset, 0);
+        assert_eq!(query.page_size, 500);
+        assert!(query.sort.is_empty());
+        assert!(query.filter.is_none());
+        assert!(query.include_total);
+        assert!(!BrowseQuery::first_page(500, false).include_total);
+    }
+
+    #[test]
+    fn browse_query_keeps_offset_sort_and_filter_for_navigation() {
+        let query = BrowseQuery {
+            offset: 1_000,
+            page_size: 100,
+            sort: vec![SortKey {
+                column: "name".to_owned(),
+                direction: crate::proto::services::v1::SortDirection::Desc as i32,
+            }],
+            filter: Some(Filter {
+                conditions: Vec::new(),
+            }),
+            include_total: false,
+        };
+        assert_eq!(query.offset, 1_000);
+        assert_eq!(query.sort.len(), 1);
+        assert!(query.filter.is_some());
     }
 
     #[test]

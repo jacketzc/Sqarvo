@@ -396,7 +396,7 @@ async fn connect_once(
     let driver = params.driver_id.clone();
     let client = client_for(endpoint_path).await?;
     let started = Instant::now();
-    let (connection_id, session_id, driver_id) = tokio::time::timeout(
+    let opened = tokio::time::timeout(
         CONNECT_TIMEOUT,
         client.connect_database(params, display_name),
     )
@@ -405,10 +405,11 @@ async fn connect_once(
     .map_err(|failure| format!("[{}] {}", failure.code(), failure.detail()))?;
     let latency_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     eprintln!(
-        "[browse] 浏览会话已建立：连接「{display_name}」驱动 {driver_id}（请求 {driver}），\
-         连接 {connection_id}，会话 {session_id}，{latency_millis} ms"
+        "[browse] 浏览会话已建立：连接「{display_name}」驱动 {}（请求 {driver}），\
+         连接 {}，会话 {}，{latency_millis} ms",
+        opened.driver_id, opened.connection_id, opened.session_id
     );
-    Ok((connection_id, session_id, latency_millis))
+    Ok((opened.connection_id, opened.session_id, latency_millis))
 }
 
 async fn disconnect_once(endpoint_path: &Path, connection_id: &str) -> Result<(), String> {

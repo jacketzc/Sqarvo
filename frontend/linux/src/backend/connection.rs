@@ -337,6 +337,22 @@ impl From<SessionSummary> for SessionView {
     }
 }
 
+/// 一次 `Connect` 的原始结果（会话身份 + 驱动能力位）。
+///
+/// 与 [`ConnectOutcome`] 分开：后者是「保存并连接」的完整结果（含配置写入与
+/// 会话列表），这里只承载 `ConnectResponse` 的三个 ID 与 `capabilities`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOpen {
+    /// 连接 ID。
+    pub connection_id: String,
+    /// 会话 ID。
+    pub session_id: String,
+    /// 驱动 ID。
+    pub driver_id: String,
+    /// 驱动能力位名称（`table_browse_sort_filter_total` 等）。
+    pub capabilities: Vec<String>,
+}
+
 /// 「保存并连接」成功后的完整结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectOutcome {
@@ -354,6 +370,8 @@ pub struct ConnectOutcome {
     pub latency_millis: u64,
     /// `ListSessions` 刷新的会话列表。
     pub sessions: Vec<SessionView>,
+    /// 驱动能力位名称（`table_browse_sort_filter_total` 等）。
+    pub capabilities: Vec<String>,
     /// 配置文件写入结果：成功时是路径；失败时是可直接展示的原因（连接仍然成功）。
     pub config: Result<String, String>,
 }
@@ -608,7 +626,7 @@ impl BackendClient {
         &self,
         params: ConnectionParams,
         display_name: &str,
-    ) -> Result<(String, String, String), ConnectionFailure> {
+    ) -> Result<SessionOpen, ConnectionFailure> {
         let mut client: ConnectionClient = self
             .connection_service()
             .map_err(|error| Self::map_local(&error))?;
@@ -621,11 +639,13 @@ impl BackendClient {
             .map_err(|_| ConnectionFailure::timeout("建立会话", DATABASE_TIMEOUT))?
             .map_err(|status| ConnectionFailure::from_status(&status))?
             .into_inner();
-        Ok((
-            response.connection_id,
-            response.session_id,
-            response.driver_id,
-        ))
+        Ok(SessionOpen {
+            connection_id: response.connection_id,
+            session_id: response.session_id,
+            driver_id: response.driver_id,
+            // 只读透传：界面据此决定是否展示排序/筛选/总数入口（#118）。
+            capabilities: response.capabilities,
+        })
     }
 
     /// 列出后端当前的数据库会话。

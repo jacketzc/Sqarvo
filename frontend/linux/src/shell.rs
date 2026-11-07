@@ -47,7 +47,8 @@ use std::time::Instant;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::data_page::{DataState, RowOp, RowOpsState, StatusSnapshot};
+use crate::browse_view::relative_age;
+use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
 use crate::layout;
 use crate::proto::services::v1::ObjectKind;
 
@@ -57,8 +58,9 @@ const INSPECTOR_SLOT_NOTE: &str = "内容由 #119 提供：连接 / 库 / 表";
 /// 状态栏「连接过滤」的提示：过滤未实现，树已按连接分组。
 const CONNECTION_FILTER_NOTE: &str = "连接过滤未实现；对象树已按连接分组（#114）";
 
-/// 分页器的提示：现在的翻页是「滚动到底部续页」，不是页码跳转。
-const PAGER_NOTE: &str = "页码分页由 #118 提供；当前是滚动到底部自动续页";
+/// 分页器的提示：offset 分页，页码只读，只提供首页/上页/下页/末页。
+const PAGER_NOTE: &str =
+    "offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供";
 
 /// 外壳需要的回调。
 pub struct ShellHandlers {
@@ -68,6 +70,8 @@ pub struct ShellHandlers {
     pub work_area: gtk::Widget,
     /// 行操作（状态栏按钮组）。
     pub row_op: Rc<dyn Fn(RowOp)>,
+    /// 分页器动作（首页 / 上页 / 下页 / 末页）。
+    pub page_op: Rc<dyn Fn(PagerAction)>,
     /// 左组「连接」。
     pub connect: Rc<dyn Fn()>,
     /// 左组「新建查询」。
@@ -95,7 +99,17 @@ impl Shell {
     /// 组装五个区域（区域 01 的 headerbar 由 `ui.rs` 提供，不在本模块内）。
     pub fn new(handlers: ShellHandlers) -> Rc<Self> {
         let toolbar = Toolbar::new(Rc::clone(&handlers.connect), Rc::clone(&handlers.new_query));
-        let status = StatusBar::new(Rc::clone(&handlers.row_op));
+        let status = StatusBar::new(Rc::clone(&handlers.row_op), Rc::clone(&handlers.page_op));
+        {
+            // 相对时间（<1m / Nm）不会自己变：每 30 秒重算一次标签文本。
+            let weak = Rc::downgrade(&status);
+            glib::timeout_add_seconds_local(30, move || {
+                if let Some(status) = weak.upgrade() {
+                    status.tick_relative_time();
+                }
+                glib::ControlFlow::Continue
+            });
+        }
 
         // ---- 区域 06：信息面板空槽（只有几何与显隐，#119 填内容） ----------------
         let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -498,6 +512,12 @@ pub struct StatusBar {
     refresh: gtk::Button,
     cancel: gtk::Button,
     pager_summary: gtk::Label,
+    /// 分页器按钮（首页 / 上页 / 下页 / 末页），顺序与 `PagerAction` 对应。
+    pager_buttons: RefCell<Vec<gtk::Button>>,
+    /// 选中行数（`N selected`）。
+    selected_label: gtk::Label,
+    /// 最后刷新时刻（相对时间由定时器重算）。
+    last_refresh_at: Cell<Option<Instant>>,
     row_one: gtk::Box,
     row_one_left: gtk::Box,
     row_one_middle: gtk::Box,
@@ -516,7 +536,7 @@ pub struct StatusBar {
 }
 
 impl StatusBar {
-    fn new(on_row_op: Rc<dyn Fn(RowOp)>) -> Rc<Self> {
+    fn new(on_row_op: Rc<dyn Fn(RowOp)>, on_page: Rc<dyn Fn(PagerAction)>) -> Rc<Self> {
         // ---- 行 1 ------------------------------------------------------------
         let filter = gtk::SearchEntry::new();
         filter.set_placeholder_text(Some("连接过滤"));
@@ -551,24 +571,33 @@ impl StatusBar {
         ops_separator.set_valign(gtk::Align::Center);
         ops_separator.add_css_class("sqarvo-status-sep");
 
-        // 分页器：只有页码跳转未实现（#118），当前显示真实已加载页数。
+        // 分页器（#118）：offset 分页 + 页码只读显示。按钮把动作交给当前数据页，
+        // 由数据页决定目标 offset（并在有未提交更改时拒绝）。
         let pager_summary = gtk::Label::new(Some("未打开表"));
         pager_summary.add_css_class("dim-label");
         pager_summary.set_valign(gtk::Align::Center);
         let pager = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         pager.add_css_class("linked");
         pager.set_valign(gtk::Align::Center);
-        for (icon, tip) in [
-            ("go-first-symbolic", "首页（页码分页由 #118 提供）"),
-            ("go-previous-symbolic", "上一页（页码分页由 #118 提供）"),
-            ("go-next-symbolic", "下一页（页码分页由 #118 提供）"),
-            ("go-last-symbolic", "末页（页码分页由 #118 提供）"),
+        let mut pager_buttons: Vec<gtk::Button> = Vec::new();
+        for (icon, action, tip) in [
+            (
+                "go-first-symbolic",
+                PagerAction::First,
+                "首页（offset = 0）",
+            ),
+            ("go-previous-symbolic", PagerAction::Previous, "上一页"),
+            ("go-next-symbolic", PagerAction::Next, "下一页"),
+            ("go-last-symbolic", PagerAction::Last, "末页（需要总数）"),
         ] {
             let button = gtk::Button::from_icon_name(icon);
             button.add_css_class("flat");
             button.set_sensitive(false);
             button.set_tooltip_text(Some(tip));
+            let pager_handler = Rc::clone(&on_page);
+            button.connect_clicked(move |_| pager_handler(action));
             pager.append(&button);
+            pager_buttons.push(button);
         }
         let pager_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         pager_box.set_valign(gtk::Align::Center);
@@ -576,7 +605,13 @@ impl StatusBar {
         pager_box.append(&pager_summary);
         pager_box.set_tooltip_text(Some(PAGER_NOTE));
 
-        // 行 1 分三组：连接过滤 │ 行操作 │ 分页器。
+        // 「N selected」：多选时必须能一眼看到选了几行（状态栏右）。
+        let selected_label = gtk::Label::new(None);
+        selected_label.add_css_class("dim-label");
+        selected_label.set_valign(gtk::Align::Center);
+        selected_label.set_visible(false);
+
+        // 行 1 分三组：连接过滤 │ 行操作 │ 选中数 + 分页器。
         //
         // 「对象树 / 平铺」切换**不放这里**：960×640 下它会把右组顶出窗口右边缘
         // （「平铺」只剩半个字）。该动作在侧栏页脚（#113 之前的位置）已有入口，
@@ -588,7 +623,8 @@ impl StatusBar {
         row_one_middle.append(&ops_separator);
         row_one_middle.append(&ops_row);
 
-        let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row_one_right.append(&selected_label);
         row_one_right.append(&pager_box);
 
         let row_one = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -620,6 +656,17 @@ impl StatusBar {
         last_refresh.add_css_class("dim-label");
         last_refresh.set_visible(false);
 
+        // 刷新入口就放在「Last Refresh」旁边（ADR 0022 §4：offset 分页不保证跨页稳定）。
+        let refresh_now = gtk::Button::from_icon_name("view-refresh-symbolic");
+        refresh_now.add_css_class("flat");
+        refresh_now.set_valign(gtk::Align::Center);
+        refresh_now.set_tooltip_text(Some("刷新当前表（保持排序/筛选，回到第 1 页）"));
+        refresh_now.set_sensitive(false);
+        {
+            let handler = Rc::clone(&on_row_op);
+            refresh_now.connect_clicked(move |_| handler(RowOp::Refresh));
+        }
+
         let session = gtk::Label::new(None);
         session.set_valign(gtk::Align::Center);
         session.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -636,8 +683,9 @@ impl StatusBar {
         let row_two_middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row_two_middle.append(&record);
 
-        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row_two_right.append(&last_refresh);
+        row_two_right.append(&refresh_now);
         row_two_right.append(&session);
 
         let row_two = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -661,6 +709,9 @@ impl StatusBar {
             refresh,
             cancel,
             pager_summary,
+            pager_buttons: RefCell::new(pager_buttons),
+            selected_label,
+            last_refresh_at: Cell::new(None),
             row_one,
             row_one_left,
             row_one_middle,
@@ -717,7 +768,7 @@ impl StatusBar {
         ]
     }
 
-    /// 数据页快照：行操作可用性、记录位置、事务徽标。
+    /// 数据页快照：行操作可用性、记录位置、事务徽标、分页器与选中数。
     pub fn apply_snapshot(&self, snapshot: &StatusSnapshot) {
         self.apply_row_ops(&snapshot.row_ops);
         // 分页器只在有表时出现：没有表就整格隐藏，不用「未打开表」占位。
@@ -726,11 +777,40 @@ impl StatusBar {
             (Some(_), DataState::Loading) => Some("读取中…".to_owned()),
             (Some(_), DataState::Error) => Some("读取失败".to_owned()),
             (Some(_), DataState::Disconnected) => Some("已断开".to_owned()),
-            (Some(_), _) => Some(format!("第 {} 页", snapshot.pages.max(1))),
+            (Some(_), _) => {
+                // 页码只读显示；总数按三态（共 N / 约 N / 无）——能力位为 false 时不显示总数。
+                let mut text = format!("第 {} 页", snapshot.page_index.max(1));
+                if let Some(count) = snapshot.page_count {
+                    text = format!("第 {} / {} 页", snapshot.page_index.max(1), count.max(1));
+                }
+                if let Some(total) = &snapshot.total_text {
+                    text.push_str(&format!(" · {total}"));
+                }
+                Some(text)
+            }
         };
         self.pager_summary
             .set_text(pager_text.as_deref().unwrap_or(""));
         self.pager_summary.set_visible(pager_text.is_some());
+        // 翻页按钮：只按快照里的可用性；没有表时全部禁用。
+        let pager_buttons = self.pager_buttons.borrow().clone();
+        for (button, enabled, tip) in [
+            (&pager_buttons[0], snapshot.can_first, "首页（offset = 0）"),
+            (&pager_buttons[1], snapshot.can_previous, "上一页"),
+            (&pager_buttons[2], snapshot.can_next, "下一页"),
+            (&pager_buttons[3], snapshot.can_last, "末页（需要总数）"),
+        ] {
+            button.set_sensitive(enabled && snapshot.table.is_some());
+            button.set_tooltip_text(Some(tip));
+        }
+        // `N selected`：只在多选时出现（单选与 0 选都不占位置）。
+        let selected = snapshot.selected_count;
+        self.selected_label
+            .set_text(&format!("{selected} selected"));
+        self.selected_label.set_visible(selected > 0);
+        self.selected_label.set_tooltip_text(Some(&format!(
+            "已选中 {selected} 行：Ctrl/Shift 可多选，删除按批量语义提交"
+        )));
         // 记录位置只在有表时出现：SQL 页没有「第 N 行」可报，就不占这一格。
         self.record.set_visible(snapshot.table.is_some());
         if snapshot.table.is_some() {
@@ -738,14 +818,36 @@ impl StatusBar {
             self.record
                 .set_tooltip_text(Some(&record_tooltip(snapshot)));
         }
+        self.last_refresh_at.set(snapshot.last_refresh);
         self.last_refresh
             .set_visible(snapshot.last_refresh.is_some());
         if let Some(instant) = snapshot.last_refresh {
-            self.last_refresh
-                .set_text(&format!("最后刷新 {}", clock_time(instant)));
+            self.last_refresh.set_text(&format!(
+                "Last Refresh: {}",
+                relative_age(instant.elapsed().as_secs())
+            ));
+            self.last_refresh.set_tooltip_text(Some(&format!(
+                "上次读取时间：{}（offset 分页不保证跨页稳定，必要时点旁边的刷新）",
+                clock_time(instant)
+            )));
         }
         self.txn.replace(snapshot.txn_label.clone());
+        // 表标签的 SQL 摘要 = 当前筛选/排序拼出的只读 `SELECT … LIMIT …`（不执行）。
+        if snapshot.table.is_some() && !snapshot.summary.is_empty() {
+            self.set_sql_summary(&snapshot.summary);
+        }
         self.refresh_session();
+    }
+
+    /// 定时重算「Last Refresh」的相对时间（<1m / Nm）；数据页推送新快照时也会重算。
+    pub fn tick_relative_time(&self) {
+        let Some(instant) = self.last_refresh_at.get() else {
+            return;
+        };
+        self.last_refresh.set_text(&format!(
+            "Last Refresh: {}",
+            relative_age(instant.elapsed().as_secs())
+        ));
     }
 
     /// 行操作按钮组：可用性与页内按钮完全一致，全部禁用时用 tooltip 说明原因。
@@ -773,6 +875,11 @@ impl StatusBar {
         self.pager_summary.set_visible(false);
         self.record.set_visible(false);
         self.last_refresh.set_visible(false);
+        self.selected_label.set_visible(false);
+        // 没有表时翻页按钮一律禁用（不是「看起来能点」）。
+        for button in self.pager_buttons.borrow().iter() {
+            button.set_sensitive(false);
+        }
         self.apply_row_ops(&RowOpsState {
             add: false,
             delete: false,
@@ -828,18 +935,13 @@ impl StatusBar {
     }
 }
 
-/// 行 2 中段：记录位置。拿不到总数就只说已加载行数（§9：不编造）。
+/// 行 2 中段：记录位置。总数三态由 `position_text` 表达（精确 / 估计 / 未知），
+/// 拿不到总数就不说总数（§9：不编造）。
 fn record_text(snapshot: &StatusSnapshot) -> String {
     let Some(table) = snapshot.table.as_ref() else {
         return "未打开表".to_owned();
     };
-    let mut text = format!("{} · 已加载 {} 行", table.display_name, snapshot.rows);
-    if snapshot.pages > 1 {
-        text.push_str(&format!(" · 第 {} 页", snapshot.pages));
-    }
-    if let Some(selected) = snapshot.selected {
-        text.push_str(&format!(" · 已选第 {} 行", selected + 1));
-    }
+    let mut text = format!("{} · {}", table.display_name, snapshot.position_text);
     if snapshot.pending > 0 {
         text.push_str(&format!(" · 待提交 {} 条", snapshot.pending));
     }
@@ -920,33 +1022,54 @@ mod tests {
             state,
             table,
             rows: 0,
-            pages: 0,
-            selected: None,
+            page_index: 1,
+            page_count: None,
+            total_text: None,
+            position_text: "第 1 页 · 本页 0 行".to_owned(),
+            selected_count: 0,
             dirty: 0,
             pending: 0,
             txn_label: "自动提交".to_owned(),
             row_ops: ops(false),
             last_refresh: None,
             status_text: String::new(),
+            summary: String::new(),
+            can_first: false,
+            can_previous: false,
+            can_next: false,
+            can_last: false,
+            sort_filter_total: true,
         }
     }
 
     #[test]
-    fn record_text_says_loaded_rows_without_inventing_a_total() {
+    fn record_text_carries_the_position_text_without_inventing_a_total() {
         let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
         snapshot.rows = 500;
-        snapshot.pages = 1;
-        snapshot.selected = Some(2);
+        snapshot.position_text = "第 1 页 · 本页 500 行".to_owned();
         let text = record_text(&snapshot);
-        assert_eq!(text, "items · 已加载 500 行 · 已选第 3 行");
-        // 不出现「总数 / Total / of」这类需要服务端总数的说法。
-        assert!(!text.contains("总数"));
+        assert_eq!(text, "items · 第 1 页 · 本页 500 行");
+        // 未知总数时不能出现「共 / of」这种需要服务端总数的说法。
+        assert!(!text.contains("共 "));
+        assert!(!text.contains(" of "));
+    }
+
+    #[test]
+    fn record_text_uses_the_exact_total_when_the_server_gave_one() {
+        let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
+        snapshot.rows = 500;
+        snapshot.page_index = 1;
+        snapshot.page_count = Some(3);
+        snapshot.total_text = Some("共 1200 行".to_owned());
+        snapshot.position_text = "Record 1 of 1200 in page 1".to_owned();
+        let text = record_text(&snapshot);
+        assert_eq!(text, "items · Record 1 of 1200 in page 1");
     }
 
     #[test]
     fn record_text_stops_at_the_loaded_rows_for_empty_tables() {
         let snapshot = snapshot(DataState::Empty, Some(table("empty_items")));
-        assert_eq!(record_text(&snapshot), "empty_items · 已加载 0 行");
+        assert_eq!(record_text(&snapshot), "empty_items · 第 1 页 · 本页 0 行");
     }
 
     #[test]

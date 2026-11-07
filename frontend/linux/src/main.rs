@@ -8,6 +8,7 @@
 
 mod backend;
 mod browse;
+mod browse_view;
 mod column_info;
 mod config;
 mod data_page;
@@ -90,6 +91,10 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-expect-tree", "field=value"),
         ("qa-expect-ddl", "field=value"),
         ("qa-tabs-file", "/path/to/tabs.txt"),
+        (
+            "qa-browse",
+            "open=table|sort=column|filter=col:op:value|next|prev|first|last|select=N|hide=col|show=col|log",
+        ),
     ] {
         app.add_main_option(
             name,
