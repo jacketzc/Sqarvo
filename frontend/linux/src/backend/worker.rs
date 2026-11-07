@@ -64,13 +64,14 @@ use crate::backend::query::{
 use crate::backend::routing::{CancelPlan, Delivery, QuerySlots};
 use crate::backend::supervisor::{BackendSupervisor, Stage};
 use crate::backend::table::{
-    ApplyReport, BrowsePage, InsertReport, TableEntry, TableFailure, TableOpen, TableRow,
-    TxnSnapshot,
+    ApplyReport, BrowsePage, BrowseQuery, InsertReport, TABLE_PAGE_SIZE, TableEntry, TableFailure,
+    TableOpen, TxnSnapshot,
 };
+use crate::browse_view::BrowseCapabilities;
 use crate::config::{self, SavedConnection};
 use crate::proto::services::v1::{
-    ConnectionParams, DisconnectRequest, InsertRow, IsolationLevel, ObjectRef, RowDelete,
-    RowUpdate, TransactionState, connection_service_client::ConnectionServiceClient,
+    ConnectionParams, DisconnectRequest, Filter, InsertRow, IsolationLevel, ObjectRef, RowDelete,
+    RowUpdate, SortKey, TransactionState, connection_service_client::ConnectionServiceClient,
 };
 use crate::submit_batch::{CancelRequest, SubmitOutcome, SubmitRegistry, SubmitSnapshot};
 
@@ -211,19 +212,35 @@ pub enum Command {
         /// 用来查询元数据的会话 ID（不是标签会话）。
         session_id: String,
     },
-    /// 打开（或重新打开）一张表：浏览首页 + 读取主键。
+    /// 打开（或重新打开）一张表：按 offset 浏览首页 + 读取主键（#118）。
     OpenTable {
         /// 标签 ID。
         tab_id: TabId,
         /// 目标对象。
         reference: Box<ObjectRef>,
     },
-    /// 拉取表数据的下一页（cursor 由 worker 持有，界面只按「接近末尾」触发）。
-    FetchTablePage {
+    /// 跳到指定 offset（分页器的首页/上页/下页/末页）。
+    BrowseToOffset {
+        /// 标签 ID。
+        tab_id: TabId,
+        /// 起始行（0 起）。
+        offset: u64,
+    },
+    /// 下一页（QA 的滚行探测；界面翻页走 `BrowseToOffset`）。
+    BrowseNextPage {
         /// 标签 ID。
         tab_id: TabId,
     },
-    /// 重新浏览当前表的第一页（提交/回滚后刷新）。
+    /// 换排序 / 筛选：**回到第一页**并重新取数（#118）。
+    SetBrowse {
+        /// 标签 ID。
+        tab_id: TabId,
+        /// 排序键（界面已按列清单校验）。
+        sort: Vec<SortKey>,
+        /// 筛选条件（`None` = 不过滤）。
+        filter: Option<Filter>,
+    },
+    /// 重新浏览当前表的第一页（保持排序/筛选；提交/回滚后刷新）。
     ReloadTable {
         /// 标签 ID。
         tab_id: TabId,
@@ -327,15 +344,6 @@ pub enum TaskUpdate {
         /// 结果。
         result: Result<OpenedTable, TableFailure>,
     },
-    /// 表数据下一页。
-    TablePage {
-        /// 标签 ID。
-        tab_id: TabId,
-        /// 打开代数。
-        generation: u64,
-        /// 结果。
-        result: Result<BrowsePage, TableFailure>,
-    },
     /// 行变更提交结果。
     Applied {
         /// 标签 ID。
@@ -393,6 +401,8 @@ pub struct ConnectedTab {
     pub session_id: String,
     /// 驱动 ID。
     pub driver_id: String,
+    /// 驱动能力位名称（`table_browse_sort_filter_total` 等）。
+    pub capabilities: Vec<String>,
     /// 建连耗时（毫秒）。
     pub latency_millis: u64,
 }
@@ -550,19 +560,8 @@ pub struct ConnectedSnapshot {
 /// 表数据事件的界面侧表达。
 #[derive(Debug)]
 pub enum TableEvent {
-    /// 表已打开：列、首页行、只读原因与排序。
+    /// 表已打开 / 已翻到新的一页：列、本页行、只读原因、排序与总数（#118）。
     Opened(Box<TableOpen>),
-    /// 后续页到达。
-    Page {
-        /// 本页行。
-        rows: Vec<TableRow>,
-        /// 是否还有后续页。
-        has_more: bool,
-        /// 累计已加载行数。
-        loaded: u64,
-        /// 累计已取页数（第一页为 1）。
-        pages: u64,
-    },
     /// 行变更已提交（逐行结果）。
     Applied(ApplyReport),
     /// 新行已插入（或整批回滚）：界面按 `rolled_back` 判定成败，逐行错误码逐条展示。
@@ -581,7 +580,6 @@ impl TableEvent {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Opened(_) => "opened",
-            Self::Page { .. } => "page",
             Self::Applied(_) => "applied",
             Self::Inserted(_) => "inserted",
             Self::Submit(_) => "submit",
@@ -598,16 +596,22 @@ struct TableState {
     object: ObjectRef,
     /// 打开代数：过期的后台结果据此丢弃。
     generation: u64,
-    /// 不透明 cursor。
-    page_token: String,
     /// 是否还有下一页。
     has_more: bool,
     /// 是否有一页在途（单批背压）。
     loading: bool,
-    /// 已加载行数。
+    /// 本页行数（offset 分页：每次只持有一页）。
     loaded: u64,
-    /// 已取页数。
-    pages: u64,
+    /// 当前浏览请求：offset + 排序 + 筛选 + 是否要总数（#118）。
+    query: BrowseQuery,
+    /// 最近一次拿到的总数三态（`offset > 0` 的页复用，不再重复计数）。
+    total_rows: u64,
+    /// 总数三态（`TotalKind` 的 `i32`）。
+    total_kind: i32,
+    /// 请求了精确计数但被跳过。
+    total_skipped: bool,
+    /// 主键列名（打开时读一次；翻页时复用，不重复读元数据）。
+    primary_key: Vec<String>,
 }
 
 /// 当前事务（一个会话最多一个）。
@@ -636,6 +640,8 @@ impl OpenTransaction {
 }
 
 /// 表数据操作被拦下的原因（本地判定，不发 RPC）。
+///
+/// offset 分页下「没有更多页」不再是翻页前置条件：末页也允许回到首页/上页。
 fn table_block_reason(table: Option<&TableState>, session: Option<&str>) -> Option<&'static str> {
     if session.is_none() {
         return Some("尚未连接数据库");
@@ -645,9 +651,6 @@ fn table_block_reason(table: Option<&TableState>, session: Option<&str>) -> Opti
     };
     if table.loading {
         return Some("上一页仍在途（单批背压）");
-    }
-    if !table.has_more {
-        return Some("没有更多页");
     }
     None
 }
@@ -839,9 +842,26 @@ impl WorkerHandle {
         });
     }
 
-    /// 请求表数据的下一页（界面在接近末尾时调用；worker 自己防重复）。
+    /// 请求跳到指定 offset（分页器驱动；worker 自己防重复）。
+    pub fn browse_to_offset(&self, tab_id: &str, offset: u64) {
+        let _ = self.commands.send(Command::BrowseToOffset {
+            tab_id: tab_id.to_owned(),
+            offset,
+        });
+    }
+
+    /// 请求换排序 / 筛选（worker 会把 offset 清 0 再取第一页）。
+    pub fn set_browse(&self, tab_id: &str, sort: Vec<SortKey>, filter: Option<Filter>) {
+        let _ = self.commands.send(Command::SetBrowse {
+            tab_id: tab_id.to_owned(),
+            sort,
+            filter,
+        });
+    }
+
+    /// 下一页（QA 的「滚到第 N 行」用；界面本身的翻页走分页器）。
     pub fn fetch_table_page(&self, tab_id: &str) {
-        let _ = self.commands.send(Command::FetchTablePage {
+        let _ = self.commands.send(Command::BrowseNextPage {
             tab_id: tab_id.to_owned(),
         });
     }
@@ -945,6 +965,8 @@ struct TabSession {
     session_id: String,
     /// 驱动 ID（隔离级别能力与只读判定用）。
     driver: String,
+    /// 驱动能力位名称（`ConnectResponse.capabilities`；#118 的排序/筛选/总数门控）。
+    capabilities: Vec<String>,
     /// 该标签的活动查询。
     query: Option<ActiveQuery>,
     /// 该标签的表浏览状态。
@@ -963,6 +985,7 @@ impl TabSession {
             connection_id: String::new(),
             session_id: String::new(),
             driver: String::new(),
+            capabilities: Vec::new(),
             query: None,
             table: None,
             transaction: None,
@@ -985,6 +1008,7 @@ struct PooledSession {
     connection_id: String,
     session_id: String,
     driver: String,
+    capabilities: Vec<String>,
 }
 
 /// 会话指纹：驱动 + 地址 + 库 + 凭据引用（不含密码）。
@@ -1162,6 +1186,7 @@ async fn worker_loop(
                                 connection_id: outcome.connection_id.clone(),
                                 session_id: outcome.session_id.clone(),
                                 driver: outcome.driver_id.clone(),
+                                capabilities: outcome.capabilities.clone(),
                             });
                             eprintln!(
                                 "[tabs] 「保存并连接」的会话 {} 待领养（驱动 {}）",
@@ -1196,6 +1221,7 @@ async fn worker_loop(
                                     connection_id: adopt.connection_id.clone(),
                                     session_id: adopt.session_id.clone(),
                                     driver: adopt.driver.clone(),
+                                    capabilities: adopt.capabilities.clone(),
                                     query: None,
                                     table: None,
                                     transaction: None,
@@ -1238,10 +1264,11 @@ async fn worker_loop(
                             let result = client
                                 .connect_database(*params, &display_name)
                                 .await
-                                .map(|(connection_id, session_id, driver_id)| ConnectedTab {
-                                    connection_id,
-                                    session_id,
-                                    driver_id,
+                                .map(|opened| ConnectedTab {
+                                    connection_id: opened.connection_id,
+                                    session_id: opened.session_id,
+                                    driver_id: opened.driver_id,
+                                    capabilities: opened.capabilities,
                                     latency_millis: u64::try_from(started.elapsed().as_millis())
                                         .unwrap_or(u64::MAX),
                                 });
@@ -1602,15 +1629,28 @@ async fn worker_loop(
                             Some(state) => state.generation + 1,
                             None => 1,
                         };
-                        eprintln!("[data] 标签 {tab_id} 打开表 {}（代号 {generation}）", object.name);
+                        eprintln!(
+                            "[data] 标签 {tab_id} 打开表 {}（代号 {generation}，offset 分页）",
+                            object.name
+                        );
+                        let capabilities =
+                            BrowseCapabilities::from_names(&tab.capabilities);
+                        eprintln!(
+                            "[data] 标签 {tab_id} 的能力位：{:?}（sort/filter/total={}）",
+                            tab.capabilities, capabilities.sort_filter_total
+                        );
+                        let query = BrowseQuery::first_page(TABLE_PAGE_SIZE, capabilities.totals());
                         tab.table = Some(TableState {
                             object: object.clone(),
                             generation,
-                            page_token: String::new(),
                             has_more: false,
                             loading: true,
                             loaded: 0,
-                            pages: 0,
+                            query: query.clone(),
+                            total_rows: 0,
+                            total_kind: crate::proto::services::v1::TotalKind::Unknown as i32,
+                            total_skipped: false,
+                            primary_key: Vec::new(),
                         });
                         spawn_open_table(
                             active_session.client.clone(),
@@ -1618,6 +1658,8 @@ async fn worker_loop(
                             tab_id.clone(),
                             generation,
                             object,
+                            query,
+                            None,
                         );
                     }
                     Command::ReloadTable { tab_id } => {
@@ -1630,55 +1672,143 @@ async fn worker_loop(
                         let mut object = existing.object.clone();
                         object.session_id.clone_from(&tab.session_id);
                         let generation = existing.generation + 1;
+                        // 重新浏览：保留排序/筛选，回到第一页并重新统计总数。
+                        let capabilities = BrowseCapabilities::from_names(&tab.capabilities);
+                        let mut query = existing.query.clone();
+                        query.offset = 0;
+                        query.include_total = capabilities.totals();
+                        let primary_key = existing.primary_key.clone();
                         tab.table = Some(TableState {
                             object: object.clone(),
                             generation,
-                            page_token: String::new(),
                             has_more: false,
                             loading: true,
                             loaded: 0,
-                            pages: 0,
+                            query: query.clone(),
+                            total_rows: 0,
+                            total_kind: crate::proto::services::v1::TotalKind::Unknown as i32,
+                            total_skipped: false,
+                            primary_key,
                         });
-                        eprintln!("[data] 标签 {tab_id} 重新浏览 {}（代号 {generation}）", object.name);
+                        eprintln!(
+                            "[data] 标签 {tab_id} 重新浏览 {}（代号 {generation}，回到第一页）",
+                            object.name
+                        );
                         spawn_open_table(
                             active_session.client.clone(),
                             commands_tx.clone(),
                             tab_id.clone(),
                             generation,
                             object,
+                            query,
+                            None,
                         );
                     }
-                    Command::FetchTablePage { tab_id } => {
+                    Command::BrowseToOffset { tab_id, offset } => {
                         let Some(tab) = tabs.get_mut(&tab_id) else { continue };
-                        let Some(generation) = tab.table.as_ref().map(|state| state.generation) else {
+                        let Some(active_session) = session.as_ref() else { continue };
+                        let Some(generation) = tab.table.as_ref().map(|state| state.generation)
+                        else {
                             continue;
                         };
-                        let session_id = if tab.is_ready() { Some(tab.session_id.clone()) } else { None };
+                        let client = active_session.client.clone();
+                        let sender = commands_tx.clone();
+                        let capabilities = BrowseCapabilities::from_names(&tab.capabilities);
+                        let session_id = if tab.is_ready() {
+                            Some(tab.session_id.clone())
+                        } else {
+                            None
+                        };
                         if let Some(reason) =
                             table_block_reason(tab.table.as_ref(), session_id.as_deref())
                         {
-                            eprintln!(
-                                "[data] t=+{}ms 忽略标签 {tab_id} 的 FetchTablePage：{reason}",
-                                crate::qa::elapsed_ms()
-                            );
+                            eprintln!("[data] 忽略标签 {tab_id} 的跳页：{reason}");
                             continue;
                         }
-                        let Some(active_session) = session.as_ref() else { continue };
                         let Some(state) = tab.table.as_mut() else { continue };
                         state.loading = true;
+                        // 首页重新统计总数；其它页复用上一次的三态（不重复计数）。
+                        state.query.offset = offset;
+                        state.query.include_total = offset == 0 && capabilities.totals();
                         let object = state.object.clone();
-                        let token = state.page_token.clone();
-                        let first_number = state.loaded + 1;
+                        let query = state.query.clone();
+                        let primary_key = state.primary_key.clone();
+                        eprintln!(
+                            "[data] 标签 {tab_id} 跳页：offset={offset}，排序键 {} 个，筛选 {} 条",
+                            query.sort.len(),
+                            query.filter.as_ref().map_or(0, |filter| filter.conditions.len())
+                        );
+                        spawn_open_table(
+                            client,
+                            sender,
+                            tab_id,
+                            generation,
+                            object,
+                            query,
+                            Some(primary_key),
+                        );
+                    }
+                    Command::BrowseNextPage { tab_id } => {
+                        // QA 的「滚到第 N 行」：按 offset 步进一页（不是滚动自动取下一页）。
+                        let Some(tab) = tabs.get_mut(&tab_id) else { continue };
+                        let Some(state) = tab.table.as_ref() else { continue };
+                        if !state.has_more || state.loading {
+                            continue;
+                        }
+                        let next = state.query.offset + u64::from(state.query.page_size);
+                        let _ = commands_tx.send(Command::BrowseToOffset {
+                            tab_id: tab_id.clone(),
+                            offset: next,
+                        });
+                    }
+                    Command::SetBrowse {
+                        tab_id,
+                        sort,
+                        filter,
+                    } => {
+                        let Some(tab) = tabs.get_mut(&tab_id) else { continue };
+                        let Some(active_session) = session.as_ref() else { continue };
+                        let Some(generation) = tab.table.as_ref().map(|state| state.generation)
+                        else {
+                            continue;
+                        };
+                        let capabilities = BrowseCapabilities::from_names(&tab.capabilities);
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
-                        tokio::spawn(async move {
-                            let result = client.browse_table(&object, &token, first_number).await;
-                            let _ = sender.send(Command::Task(TaskUpdate::TablePage {
-                                tab_id,
-                                generation,
-                                result,
-                            }));
-                        });
+                        let Some(state) = tab.table.as_mut() else { continue };
+                        if state.loading {
+                            eprintln!("[data] 忽略标签 {tab_id} 的排序/筛选变更：上一页仍在途");
+                            continue;
+                        }
+                        state.loading = true;
+                        // 能力位为 false 时不接受排序/筛选（界面已经隐藏入口，这里是兜底）。
+                        state.query.sort = if capabilities.sorting() {
+                            sort
+                        } else {
+                            Vec::new()
+                        };
+                        state.query.filter = if capabilities.filtering() { filter } else { None };
+                        // 排序/筛选变了：**必须回到第一页**（旧 offset 没有意义）。
+                        state.query.offset = 0;
+                        state.query.include_total = capabilities.totals();
+                        let object = state.object.clone();
+                        let query = state.query.clone();
+                        let primary_key = state.primary_key.clone();
+                        eprintln!(
+                            "[data] t=+{}ms 标签 {tab_id} 换排序/筛选：offset 重置为 0，排序键 {} 个，筛选 {} 条",
+                            crate::qa::elapsed_ms(),
+                            query.sort.len(),
+                            query.filter.as_ref().map_or(0, |filter| filter.conditions.len())
+                        );
+                        spawn_open_table(
+                            client,
+                            sender,
+                            tab_id,
+                            generation,
+                            object,
+                            query,
+                            Some(primary_key),
+                        );
                     }
                     Command::ApplyRowChanges {
                         tab_id,
@@ -1989,6 +2119,7 @@ async fn worker_loop(
                                 tab.connection_id = connected.connection_id.clone();
                                 tab.session_id = connected.session_id.clone();
                                 tab.driver = connected.driver_id.clone();
+                                tab.capabilities = connected.capabilities.clone();
                                 eprintln!(
                                     "[tabs] 标签 {tab_id} 的会话已建立：{}（{connection_id}，{} ms）",
                                     short_session(&connected.session_id),
@@ -2193,6 +2324,24 @@ async fn worker_loop(
                                     .unwrap_or(crate::proto::services::v1::ObjectKind::Table);
                                     let rows = opened.page.rows.clone();
                                     let row_count = u64::try_from(rows.len()).unwrap_or(0);
+                                    // 翻页（offset > 0）不重复计数：服务端回 UNKNOWN 时沿用
+                                    // 上一页拿到的总数三态；换排序/筛选时状态已重置为 UNKNOWN。
+                                    let (total_kind, total_rows, total_skipped) = {
+                                        let mut kind = opened.page.total_kind;
+                                        let mut rows_total = opened.page.total_rows;
+                                        let mut skipped = opened.page.total_skipped;
+                                        if kind == crate::proto::services::v1::TotalKind::Unknown as i32
+                                            && !skipped
+                                            && let Some(state) = tab.table.as_ref()
+                                                && state.total_kind
+                                                    != crate::proto::services::v1::TotalKind::Unknown as i32
+                                            {
+                                                kind = state.total_kind;
+                                                rows_total = state.total_rows;
+                                                skipped = state.total_skipped;
+                                            }
+                                        (kind, rows_total, skipped)
+                                    };
                                     let open = TableOpen {
                                         table: TableEntry {
                                             reference: object.clone(),
@@ -2206,22 +2355,33 @@ async fn worker_loop(
                                         read_only_reason,
                                         ordering: opened.page.ordering,
                                         driver_id: Some(tab.driver.clone()),
+                                        capabilities: tab.capabilities.clone(),
+                                        offset: opened.page.offset,
+                                        page_size: opened.page.page_size,
+                                        total_rows,
+                                        total_kind,
+                                        total_skipped,
                                     };
                                     if let Some(state) = tab.table.as_mut() {
-                                        state.page_token = opened.page.next_page_token.clone();
                                         state.has_more = opened.page.has_more;
                                         state.loading = false;
                                         state.loaded = row_count;
-                                        state.pages = 1;
+                                        state.primary_key = opened.primary_key.clone();
+                                        state.total_rows = total_rows;
+                                        state.total_kind = total_kind;
+                                        state.total_skipped = total_skipped;
                                     }
                                     eprintln!(
-                                        "[data] t=+{}ms 标签 {tab_id} 已打开 {}：{} 行，只读={}（{:?}），排序={:?}，主键={:?}",
+                                        "[data] t=+{}ms 标签 {tab_id} 已绑定 {}：offset={}，{} 行，只读={}（{:?}），排序={:?}，总数={}（kind={total_kind}，skipped={}），主键={:?}",
                                         crate::qa::elapsed_ms(),
                                         object.name,
+                                        opened.page.offset,
                                         row_count,
                                         opened.page.read_only,
                                         read_only_reason,
                                         opened.page.ordering,
+                                        opened.page.total_rows,
+                                        opened.page.total_skipped,
                                         opened.primary_key
                                     );
                                     send_tab_table(
@@ -2232,8 +2392,13 @@ async fn worker_loop(
                                     .await;
                                 }
                                 Err(failure) => {
-                                    tab.table = None;
+                                    // 翻页/排序失败不销毁会话级的浏览状态：保留排序与
+                                    // offset，用户重试或换条件时不必重新打开表。
+                                    if let Some(state) = tab.table.as_mut() {
+                                        state.loading = false;
+                                    }
                                     if failure.is_session_lost() {
+                                        tab.table = None;
                                         tabs.remove(&tab_id);
                                         slots.close(&tab_id);
                                         send_tab_lost(&events, &tab_id, &failure.message()).await;
@@ -2245,60 +2410,6 @@ async fn worker_loop(
                                         )
                                         .await;
                                     }
-                                }
-                            }
-                        }
-                        TaskUpdate::TablePage {
-                            tab_id,
-                            generation,
-                            result,
-                        } => {
-                            let Some(tab) = tabs.get_mut(&tab_id) else { continue };
-                            if tab.table.as_ref().map(|state| state.generation) != Some(generation) {
-                                eprintln!("[data] 丢弃过期的翻页结果（标签 {tab_id}，代号 {generation}）");
-                                continue;
-                            }
-                            match result {
-                                Ok(page) => {
-                                    let count = u64::try_from(page.rows.len()).unwrap_or(0);
-                                    let (loaded, pages, has_more) = match tab.table.as_mut() {
-                                        Some(state) => {
-                                            state.loading = false;
-                                            state.loaded += count;
-                                            state.pages += 1;
-                                            state.page_token = page.next_page_token.clone();
-                                            state.has_more = page.has_more;
-                                            (state.loaded, state.pages, state.has_more)
-                                        }
-                                        None => continue,
-                                    };
-                                    eprintln!(
-                                        "[data] t=+{}ms 标签 {tab_id} 第 {pages} 页：{count} 行，累计 {loaded}，has_more={has_more}",
-                                        crate::qa::elapsed_ms()
-                                    );
-                                    send_tab_table(
-                                        &events,
-                                        &tab_id,
-                                        TableEvent::Page {
-                                            rows: page.rows,
-                                            has_more,
-                                            loaded,
-                                            pages,
-                                        },
-                                    )
-                                    .await;
-                                }
-                                Err(failure) => {
-                                    if matches!(failure, TableFailure::CursorInvalid { .. })
-                                        && let Some(state) = tab.table.as_mut()
-                                    {
-                                        state.has_more = false;
-                                    }
-                                    if let Some(state) = tab.table.as_mut() {
-                                        state.loading = false;
-                                    }
-                                    send_tab_table(&events, &tab_id, TableEvent::Failed(failure))
-                                        .await;
                                 }
                             }
                         }
@@ -2847,22 +2958,32 @@ async fn handle_fetched(
 }
 
 /// 在后台打开一张表：浏览首页 + 读取主键，结果回到 worker 循环统一处理。
+/// 取一页表数据（并回传主键：首次读元数据，翻页复用缓存）。
+///
+/// `primary_key = None` 表示这次要顺便读主键（打开/重新浏览）；
+/// `Some(..)` 表示翻页/排序/筛选，复用已知主键，不重复读元数据。
 fn spawn_open_table(
     client: BackendClient,
     sender: UnboundedSender<Command>,
     tab_id: TabId,
     generation: u64,
     object: ObjectRef,
+    query: BrowseQuery,
+    primary_key: Option<Vec<String>>,
 ) {
     tokio::spawn(async move {
+        let first_number = query.offset.saturating_add(1);
         let result = async {
-            let page = client.browse_table(&object, "", 1).await?;
-            let primary_key = client
-                .get_primary_key(&object)
-                .await?
-                .into_iter()
-                .map(|column| column.name)
-                .collect();
+            let page = client.browse_table(&object, &query, first_number).await?;
+            let primary_key = match primary_key {
+                Some(primary_key) => primary_key,
+                None => client
+                    .get_primary_key(&object)
+                    .await?
+                    .into_iter()
+                    .map(|column| column.name)
+                    .collect(),
+            };
             Ok(OpenedTable { page, primary_key })
         }
         .await;
@@ -3137,11 +3258,11 @@ async fn run_save_and_connect(
         }
     };
 
-    let (connection_id, session_id, driver_id) = match client
+    let opened = match client
         .connect_database(draft.params(&reference), &draft.name)
         .await
     {
-        Ok(ids) => ids,
+        Ok(opened) => opened,
         Err(failure) => {
             if draft.credential_ref.is_none() {
                 discard_credential(client, &reference).await;
@@ -3149,6 +3270,12 @@ async fn run_save_and_connect(
             return Err(failure);
         }
     };
+    let (connection_id, session_id, driver_id, capabilities) = (
+        opened.connection_id,
+        opened.session_id,
+        opened.driver_id,
+        opened.capabilities,
+    );
 
     let sessions = client.list_sessions().await.unwrap_or_else(|error| {
         // 连接已经成功，列表读取失败不该把结论改成「连接失败」。
@@ -3184,6 +3311,7 @@ async fn run_save_and_connect(
         server_version: report.server_version,
         latency_millis: report.latency_millis,
         sessions,
+        capabilities,
         config,
     })
 }
@@ -3304,16 +3432,7 @@ mod tests {
             .name(),
             "batch"
         );
-        assert_eq!(
-            TableEvent::Page {
-                rows: Vec::new(),
-                has_more: false,
-                loaded: 0,
-                pages: 1,
-            }
-            .name(),
-            "page"
-        );
+        // #118 起翻页复用 `Opened`（offset 分页每次替换整页），不再有独立的 `Page` 事件。
         assert_eq!(
             TableEvent::Transaction(TxnSnapshot::none()).name(),
             "transaction"

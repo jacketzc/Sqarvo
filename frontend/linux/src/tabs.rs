@@ -816,10 +816,15 @@ impl TabSet {
         let worker = Rc::clone(&self.context.worker);
         let id = tab_id.to_owned();
         let callbacks = DataCallbacks {
-            fetch_page: {
+            browse_to: {
                 let worker = Rc::clone(&worker);
                 let id = id.clone();
-                Rc::new(move || worker.fetch_table_page(&id))
+                Rc::new(move |offset: u64| worker.browse_to_offset(&id, offset))
+            },
+            set_browse: {
+                let worker = Rc::clone(&worker);
+                let id = id.clone();
+                Rc::new(move |sort, filter| worker.set_browse(&id, sort, filter))
             },
             apply: {
                 let worker = Rc::clone(&worker);
@@ -1049,12 +1054,6 @@ impl TabSet {
                 eprintln!("[tabs] 标签 {tab_id} 已加载表 {}", open.table.display_name);
                 data.show_open(*open);
             }
-            TableEvent::Page {
-                rows,
-                has_more,
-                loaded,
-                pages,
-            } => data.show_page(rows, has_more, loaded, pages),
             TableEvent::Submit(snapshot) => data.show_submit(snapshot),
             TableEvent::Applied(report) => data.show_applied(report),
             TableEvent::Inserted(report) => data.show_inserted(report),
@@ -2163,14 +2162,23 @@ mod tests {
             state: crate::data_page::DataState::Ready,
             table: None,
             rows: 3,
-            pages: 1,
-            selected: None,
+            page_index: 1,
+            page_count: None,
+            total_text: None,
+            position_text: "第 1 页 · 本页 3 行".to_owned(),
+            selected_count: 0,
             dirty,
             pending: dirty,
             txn_label: txn.to_owned(),
             row_ops: TabSet::empty_row_ops(),
             last_refresh: None,
             status_text: String::new(),
+            summary: String::new(),
+            can_first: false,
+            can_previous: false,
+            can_next: false,
+            can_last: false,
+            sort_filter_total: true,
         }
     }
 

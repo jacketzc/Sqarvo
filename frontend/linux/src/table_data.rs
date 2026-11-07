@@ -585,7 +585,6 @@ impl DraftRow {
 pub struct TableDraft {
     columns: Vec<TableColumn>,
     primary_key: Vec<String>,
-    pk_indices: Vec<usize>,
     rows: Vec<DraftRow>,
     /// 表级只读原因（无主键 / 驱动不支持）；`None` 表示可编辑。
     read_only: Option<String>,
@@ -638,7 +637,6 @@ impl TableDraft {
         Self {
             columns,
             primary_key,
-            pk_indices,
             rows,
             read_only,
         }
@@ -654,26 +652,6 @@ impl TableDraft {
     #[must_use]
     pub fn rows(&self) -> &[DraftRow] {
         &self.rows
-    }
-
-    /// 追加一页行（翻页时调用）。
-    pub fn append_rows(&mut self, rows: &[crate::backend::table::TableRow]) {
-        for row in rows {
-            let key: Vec<ColumnValue> = self
-                .pk_indices
-                .iter()
-                .filter_map(|index| row.values.get(*index).cloned())
-                .collect();
-            self.rows.push(DraftRow {
-                number: row.number,
-                key,
-                original: row.values.clone(),
-                current: row.values.clone(),
-                dirty: vec![false; row.values.len()],
-                deleted: false,
-                removed: false,
-            });
-        }
     }
 
     /// 表级只读原因（`None` 表示可编辑）。

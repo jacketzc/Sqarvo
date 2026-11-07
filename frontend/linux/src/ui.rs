@@ -407,6 +407,7 @@ pub fn activate(app: &adw::Application) {
                             );
                             maybe_run_qa_sql(&events_state);
                             maybe_run_qa_data(&events_state);
+                            maybe_run_qa_browse(&events_state);
                             maybe_run_qa_tree(&events_state);
                         }
                         Err(failure) => match dialog.as_ref() {
@@ -1182,6 +1183,16 @@ impl Workspace {
                     }
                 })
             },
+            page_op: {
+                let tabs = Rc::clone(&tabs);
+                Rc::new(move |action| {
+                    if let Some(data) = tabs.data_page() {
+                        data.navigate(action);
+                    } else {
+                        eprintln!("[tabs] 当前标签不是表数据标签，忽略分页动作");
+                    }
+                })
+            },
             connect: {
                 let state = Rc::clone(state);
                 Rc::new(move || open_connection_dialog(&state))
@@ -1548,6 +1559,130 @@ fn schedule_step(delay: u64, action: Rc<dyn Fn() -> Result<String, String>>) {
 
 /// QA：数据页无人值守验证（打开表 → 编辑 → 提交/回滚 → 重新查询）。
 ///
+/// QA：表格浏览脚本（`--qa-browse`，#118）。
+///
+/// 每一步都走用户会走的同一条路径：`open=` 按名打开表（与点侧栏条目同一条路径）、
+/// `sort=` 点列头排序、`filter=` 填筛选面板并应用、`next/prev/first/last` 点分页器、
+/// `select=` 多选、`hide=/show=` 列显隐、`log` 打印当前浏览状态。
+/// 步骤之间留出一次 RPC 的时间，日志里的 `[qa]` 行就是验收证据。
+fn maybe_run_qa_browse(state: &Rc<UiState>) {
+    let steps = crate::qa::browse_steps();
+    if steps.is_empty() {
+        return;
+    }
+    let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {
+        return;
+    };
+    for (index, step) in steps.into_iter().enumerate() {
+        let workspace = Rc::clone(&workspace);
+        let delay = 1_600 + 900 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            let result = match step {
+                crate::qa::BrowseStep::Open(table) => {
+                    if workspace.open_by_name(&table) {
+                        Ok(format!("打开表 {table}"))
+                    } else {
+                        Err(format!("表列表里还没有 {table}"))
+                    }
+                }
+                crate::qa::BrowseStep::Sort(column, shift) => {
+                    let Some(data) = workspace.tabs.data_page() else {
+                        eprintln!("[qa] 排序失败：当前不是表标签");
+                        return;
+                    };
+                    data.qa_toggle_sort(&column, shift)
+                        .map(|()| format!("点列头排序：{column}（shift={shift}）"))
+                }
+                crate::qa::BrowseStep::Filter(column, operator, value) => {
+                    let Some(data) = workspace.tabs.data_page() else {
+                        eprintln!("[qa] 筛选失败：当前不是表标签");
+                        return;
+                    };
+                    browse_operator(&operator).and_then(|operator| {
+                        data.qa_apply_filter(&column, operator, &value)
+                            .map(|()| format!("应用筛选：{column} {} {value}", operator.sql()))
+                    })
+                }
+                crate::qa::BrowseStep::Page(action) => {
+                    let Some(data) = workspace.tabs.data_page() else {
+                        eprintln!("[qa] 翻页失败：当前不是表标签");
+                        return;
+                    };
+                    let action = match action.as_str() {
+                        "next" => crate::data_page::PagerAction::Next,
+                        "prev" => crate::data_page::PagerAction::Previous,
+                        "first" => crate::data_page::PagerAction::First,
+                        _ => crate::data_page::PagerAction::Last,
+                    };
+                    data.navigate(action);
+                    Ok(format!("分页器：{}", action.label()))
+                }
+                crate::qa::BrowseStep::Select(count) => {
+                    let Some(data) = workspace.tabs.data_page() else {
+                        eprintln!("[qa] 多选失败：当前不是表标签");
+                        return;
+                    };
+                    data.qa_select_rows(count)
+                        .map(|selected| format!("多选：{selected} 行"))
+                }
+                crate::qa::BrowseStep::Visible(column, visible) => {
+                    let Some(data) = workspace.tabs.data_page() else {
+                        eprintln!("[qa] 列显隐失败：当前不是表标签");
+                        return;
+                    };
+                    data.qa_set_column_visible(&column, visible).map(|()| {
+                        format!(
+                            "列显隐：{column} → {}",
+                            if visible { "显示" } else { "隐藏" }
+                        )
+                    })
+                }
+                crate::qa::BrowseStep::Log => Ok("记录浏览状态".to_owned()),
+            };
+            match result {
+                Ok(note) => eprintln!("[qa] t=+{}ms {note}", crate::qa::elapsed_ms()),
+                Err(error) => eprintln!(
+                    "[qa] t=+{}ms 浏览步骤失败：{error}",
+                    crate::qa::elapsed_ms()
+                ),
+            }
+            if let Some(data) = workspace.tabs.data_page() {
+                let observation = data.qa_observe();
+                eprintln!(
+                    "[qa] 浏览状态：页码 {}，页数 {:?}，总数 {:?}，位置「{}」，排序 {:?}，筛选 {} 条，可见列 {:?}，选中 {}，摘要「{}」",
+                    observation.page_index,
+                    observation.page_count,
+                    observation.total_text,
+                    observation.position_text,
+                    observation.sort_keys,
+                    observation.filter_conditions,
+                    observation.visible_columns,
+                    observation.selected_count,
+                    observation.summary
+                );
+            }
+        });
+    }
+}
+
+/// `--qa-browse filter=` 的算子名 → 面板算子。
+fn browse_operator(name: &str) -> Result<crate::browse_view::Operator, String> {
+    use crate::browse_view::Operator;
+    let operator = match name.to_ascii_lowercase().as_str() {
+        "eq" => Operator::Eq,
+        "ne" => Operator::Ne,
+        "lt" => Operator::Lt,
+        "le" => Operator::Le,
+        "gt" => Operator::Gt,
+        "ge" => Operator::Ge,
+        "like" => Operator::Like,
+        "null" => Operator::IsNull,
+        "notnull" => Operator::IsNotNull,
+        other => return Err(format!("未知筛选算子：{other}")),
+    };
+    Ok(operator)
+}
+
 /// 全部动作走用户会走的同一条路径：按名选择侧栏条目（会打开一个表标签）、编辑态的
 /// 值转换、「提交更改」按钮（含风险确认对话框）、事务按钮。标签是异步建立的，所以
 /// 每一步都在执行时刻从**当前标签**取数据页，而不是提前抓一个引用。

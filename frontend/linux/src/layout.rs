@@ -54,7 +54,11 @@ pub const INSPECTOR_MAX: i32 = 520;
 pub const TAB_STRIP_HEIGHT: i32 = 24;
 
 /// 表格工具条（区域 04 中部）高度。
-pub const TABLE_ACTIONS_HEIGHT: i32 = 32;
+/// 表格工具条第 1 行事务控制 + 第 2 行行变更与次要动作：两行共 64。
+///
+/// 规范 §2.1 与附录 A 第 8 条：表格工具条是**两行**，每行 32。历史上这里只按
+/// 32 记账，导致 `gridHeight` 比实际可用高度多算 32px（#113/#116 遗留）。
+pub const TABLE_ACTIONS_HEIGHT: i32 = 64;
 
 /// 表格左内边距。
 pub const GRID_PADDING_START: i32 = 18;
@@ -193,8 +197,9 @@ mod tests {
             );
             assert_eq!(status_y(window.1), window.1 - 56);
         }
-        assert_eq!(grid_height(800), 548);
-        assert_eq!(grid_height(640), 388);
+        // 604 − 24（标签条） − 64（两行工具条）= 516；960 档 444 − 24 − 64 = 356。
+        assert_eq!(grid_height(800), 516);
+        assert_eq!(grid_height(640), 356);
     }
 
     #[test]

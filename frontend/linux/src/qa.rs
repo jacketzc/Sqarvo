@@ -689,6 +689,105 @@ struct Args {
     // ---- #116 标签工作区 ----
     /// `--qa-tabs-file <path>`：标签工作区脚本（步骤见 `tabs::parse_script`）。
     tabs_script: Option<String>,
+    // ---- #118 表格浏览：offset 分页 / 排序 / 筛选 / 多选 / 列显隐 ----
+    /// `--qa-browse <step>`：按顺序执行的浏览步骤（可重复，见 [`BrowseStep`]）。
+    browse_steps: Vec<BrowseStep>,
+}
+
+/// `--qa-browse` 的一步（顺序执行；全部走用户会走的同一条界面路径）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowseStep {
+    /// `open=<table>`：按名打开表（与点侧栏条目同一条路径）。
+    Open(String),
+    /// `sort=<column>[:shift]`：点该列列头排序（Shift = 多列排序）。
+    Sort(String, bool),
+    /// `filter=<column>:<op>:<value>`：填筛选面板并应用（op = eq/ne/lt/le/gt/ge/like/null/notnull）。
+    Filter(String, String, String),
+    /// `next` / `prev` / `first` / `last`：分页器动作。
+    Page(String),
+    /// `select=<n>`：选中前 n 行（多选）。
+    Select(usize),
+    /// `hide=<column>` / `show=<column>`：列显隐。
+    Visible(String, bool),
+    /// `log`：把当前浏览状态（页码 / 总数文案 / 排序 / 筛选 / 可见列 / 选中数）打进日志。
+    Log,
+}
+
+impl BrowseStep {
+    /// 解析 `--qa-browse` 的一步。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let (key, value) = raw
+            .split_once('=')
+            .map_or((raw.trim(), None), |(key, value)| (key.trim(), Some(value)));
+        match key {
+            "open" => {
+                let value = value.ok_or_else(|| "--qa-browse open= 需要表名".to_owned())?;
+                if value.is_empty() {
+                    return Err("--qa-browse open= 的表名不能为空".to_owned());
+                }
+                Ok(Self::Open(value.to_owned()))
+            }
+            "sort" => {
+                let value = value.ok_or_else(|| "--qa-browse sort= 需要列名".to_owned())?;
+                let (column, shift) = match value.split_once(':') {
+                    Some((column, "shift")) => (column, true),
+                    Some((column, _)) => (column, false),
+                    None => (value, false),
+                };
+                if column.is_empty() {
+                    return Err("--qa-browse sort= 的列名不能为空".to_owned());
+                }
+                Ok(Self::Sort(column.to_owned(), shift))
+            }
+            "filter" => {
+                let value = value
+                    .ok_or_else(|| "--qa-browse filter= 需要 <column>:<op>:<value>".to_owned())?;
+                let mut parts = value.splitn(3, ':');
+                let column = parts.next().unwrap_or_default();
+                let operator = parts
+                    .next()
+                    .ok_or_else(|| "--qa-browse filter= 缺少算子".to_owned())?;
+                let operand = parts.next().unwrap_or_default();
+                if column.is_empty() {
+                    return Err("--qa-browse filter= 的列名不能为空".to_owned());
+                }
+                Ok(Self::Filter(
+                    column.to_owned(),
+                    operator.to_owned(),
+                    operand.to_owned(),
+                ))
+            }
+            "next" | "prev" | "first" | "last" => {
+                if value.is_some() {
+                    return Err(format!("--qa-browse {key} 不接受取值"));
+                }
+                Ok(Self::Page(key.to_owned()))
+            }
+            "select" => {
+                let value = value.ok_or_else(|| "--qa-browse select= 需要行数".to_owned())?;
+                let count = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("--qa-browse select= 不是合法行数：{value}"))?;
+                Ok(Self::Select(count))
+            }
+            "hide" | "show" => {
+                let value = value.ok_or_else(|| format!("--qa-browse {key}= 需要列名"))?;
+                if value.is_empty() {
+                    return Err(format!("--qa-browse {key}= 的列名不能为空"));
+                }
+                Ok(Self::Visible(value.to_owned(), key == "show"))
+            }
+            "log" => {
+                if value.is_some() {
+                    return Err("--qa-browse log 不接受取值".to_owned());
+                }
+                Ok(Self::Log)
+            }
+            other => Err(format!(
+                "未知的 --qa-browse 步骤：{other}（可用：open/sort/filter/next/prev/first/last/select/hide/show/log）"
+            )),
+        }
+    }
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -738,6 +837,7 @@ pub fn enabled() -> bool {
             || args.isolation_confirm
             || args.layout_audit
             || args.tabs_script.is_some()
+            || !args.browse_steps.is_empty()
     })
 }
 
@@ -787,6 +887,13 @@ pub fn execute_again_after_ms() -> Option<u64> {
 #[must_use]
 pub fn tabs_script() -> Option<String> {
     ARGS.get().and_then(|args| args.tabs_script.clone())
+}
+
+/// `--qa-browse` 的步骤（顺序执行；空表示不跑浏览脚本）。
+#[must_use]
+pub fn browse_steps() -> Vec<BrowseStep> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.browse_steps.clone())
 }
 
 /// 是否登记了标签脚本（上限对话框在无人值守时会自动关闭）。
@@ -1465,6 +1572,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-layout-audit" => {
                 parsed.layout_audit = true;
                 index += 1;
+            }
+            "--qa-browse" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-browse 需要一个步骤".to_owned())?;
+                parsed.browse_steps.push(BrowseStep::parse(value)?);
+                index += 2;
             }
             "--qa-tabs-file" => {
                 let value = args
@@ -2316,5 +2430,72 @@ mod tests {
         // 规范的最小窗口是 960×640：比它小就不再是「验收尺寸」。
         assert!(parse(&args(&["app", "--window-size", "900x640"])).is_err());
         assert!(parse(&args(&["app", "--window-size"])).is_err());
+    }
+
+    // ---- #118 浏览脚本（--qa-browse） ----
+
+    #[test]
+    fn browse_steps_parse_every_supported_form() {
+        assert_eq!(
+            BrowseStep::parse("open=demo_items").expect("open"),
+            BrowseStep::Open("demo_items".to_owned())
+        );
+        assert_eq!(
+            BrowseStep::parse("sort=name").expect("sort"),
+            BrowseStep::Sort("name".to_owned(), false)
+        );
+        assert_eq!(
+            BrowseStep::parse("sort=name:shift").expect("sort shift"),
+            BrowseStep::Sort("name".to_owned(), true)
+        );
+        assert_eq!(
+            BrowseStep::parse("filter=name:like:a%").expect("filter"),
+            BrowseStep::Filter("name".to_owned(), "like".to_owned(), "a%".to_owned())
+        );
+        assert_eq!(
+            BrowseStep::parse("next").expect("next"),
+            BrowseStep::Page("next".to_owned())
+        );
+        assert_eq!(
+            BrowseStep::parse("select=3").expect("select"),
+            BrowseStep::Select(3)
+        );
+        assert_eq!(
+            BrowseStep::parse("hide=note").expect("hide"),
+            BrowseStep::Visible("note".to_owned(), false)
+        );
+        assert_eq!(BrowseStep::parse("log").expect("log"), BrowseStep::Log);
+    }
+
+    #[test]
+    fn browse_steps_reject_malformed_input() {
+        assert!(BrowseStep::parse("open=").is_err());
+        assert!(BrowseStep::parse("sort=").is_err());
+        assert!(BrowseStep::parse("filter=name").is_err());
+        assert!(BrowseStep::parse("select=abc").is_err());
+        assert!(BrowseStep::parse("next=1").is_err());
+        assert!(BrowseStep::parse("nonsense").is_err());
+    }
+
+    #[test]
+    fn browse_flag_is_repeatable_and_enables_qa_mode() {
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-browse",
+            "open=demo_items",
+            "--qa-browse",
+            "sort=name",
+            "--qa-browse",
+            "next",
+        ]))
+        .expect("参数应可解析");
+        assert_eq!(
+            parsed.browse_steps,
+            vec![
+                BrowseStep::Open("demo_items".to_owned()),
+                BrowseStep::Sort("name".to_owned(), false),
+                BrowseStep::Page("next".to_owned()),
+            ]
+        );
     }
 }
