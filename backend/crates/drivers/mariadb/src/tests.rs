@@ -37,6 +37,13 @@ fn driver_id_and_defaults_are_sane() {
     assert!(capabilities.catalogs);
     assert!(capabilities.names().contains(&"catalogs"));
     assert!(!capabilities.schemas);
+    // #111：表浏览的排序 / 筛选 / offset / 计数已下推到 SQL，能力位必须与实现一致。
+    assert!(capabilities.table_browse_sort_filter_total);
+    assert!(
+        capabilities
+            .names()
+            .contains(&"table_browse_sort_filter_total")
+    );
     // ADR 0020：上游 `skip_domain_validation` 在 rustls 0.23 下失效，verify-ca 归一化为
     // verify-full。能力位必须为 false，否则前端不会标注这层退化。
     assert!(!capabilities.tls_verify_ca_chain_only);

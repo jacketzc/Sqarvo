@@ -24,10 +24,19 @@
 //!   在实际 schema 里很小，参数上限（65535）不是约束；换来的是可预测的执行计划。
 //!
 //! 仍然遵守两条硬约束：**值一律绑定**，只有标识符进入 SQL 文本（反引号引用、
-//! 内部反引号翻倍）。#109 只做契约增量：`BrowseOptions` 的 offset / 排序 / 筛选 /
-//! 总数**尚未下推**（`supports_browse_sort_filter_total` 保持 false），SQL 仍是
-//! 「主键升序 + 键集游标」；OFFSET / ORDER BY / WHERE / COUNT(*) 的拼装属于
-//! #110 / #111。
+//! 内部反引号翻倍）。
+//!
+//! #111 起 `BrowseOptions` 的四个维度都**下推**到 SQL（`supports_browse_sort_filter_total`
+//! 为 true）：
+//!
+//! - `sort` → `ORDER BY`（多列，方向显式；无 sort 时仍是主键升序，键集游标不变）；
+//! - `filter` → `WHERE`（只支持 AND，算子见 [`FilterOperator`]；值是占位符）；
+//! - `offset` → `LIMIT ? OFFSET ?`（页码跳转；不保证跨页稳定，见 ADR 0022 §4）；
+//! - `include_total` → `SELECT COUNT(*)`（`Exact`）或 `information_schema.TABLES.TABLE_ROWS`
+//!   （`Estimate`，阈值见 [`EXACT_COUNT_MAX_ESTIMATED_ROWS`]）。
+//!
+//! 排序与筛选的列名只能来自 `GetColumns` 的白名单（大小写按数据库语义匹配），
+//! 解析成功后才把**规范列名**拼进 SQL；客户端给的标识符文本永远不进 SQL。
 //!
 //! **只读连接不适用**：MariaDB 没有「以只读方式打开连接」的概念，连接参数里的
 //! `read_only` 会被 `MariaDbConfig::from_params` 以 `config.invalid` 明确拒绝（不静默
@@ -43,12 +52,12 @@ use mysql_async::prelude::*;
 use mysql_async::{Conn, Params, Value as MyValue};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    BrowseOptions, Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport,
-    InsertRow, InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef,
-    PageRequest, PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport,
-    RowChangeRequest, RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, TotalKind,
-    Value, classify_rows_affected, invalid_change, no_primary_key, read_only_object,
-    read_only_transaction,
+    BrowseOptions, Cell, ColumnDefault, ColumnMeta, DriverSession, Filter, FilterOperator,
+    InsertOutcome, InsertReport, InsertRow, InsertRowResult, InsertRowsRequest, MetadataProvider,
+    ObjectKind, ObjectRef, PageRequest, PrimaryKey, ReadOnlyReason, Row, RowChange,
+    RowChangeCancel, RowChangeReport, RowChangeRequest, RowChangeResult, RowKey, RowOrder,
+    SortDirection, SortKey, TableDataProvider, TablePage, TotalKind, Value, classify_rows_affected,
+    invalid_change, no_primary_key, read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
@@ -75,7 +84,7 @@ pub(crate) enum TableDataRequest {
     Browse {
         object: ObjectRef,
         page: PageRequest,
-        /// v0.2.3 浏览选项（ADR 0022）；#109 起随请求传递，SQL 下推在 #110 / #111。
+        /// v0.2.3 浏览选项（ADR 0022）：offset / 排序 / 筛选 / 总数，全部下推到 SQL（#111）。
         options: BrowseOptions,
     },
     /// 提交一批行变更（ADR 0017：值全部走 prepared statement 绑定）。
@@ -163,6 +172,15 @@ impl TableDataProvider for MariaDbSession {
         true
     }
 
+    /// 排序 / 筛选 / offset / 总数都下推到 SQL（#111，ADR 0022）。
+    ///
+    /// 声明为 true 的前提是它真的生效：`sort` → `ORDER BY`、`filter` → `WHERE`、
+    /// `offset` → `LIMIT ... OFFSET`、`include_total` → `COUNT(*)` 或 `TABLE_ROWS`
+    /// 估计（见 [`browse`]）。置 true 后前端才会提供排序/筛选入口。
+    fn supports_browse_sort_filter_total(&self) -> bool {
+        true
+    }
+
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
         MetadataProvider::primary_key(self, object).await
     }
@@ -244,15 +262,20 @@ impl TableDataProvider for MariaDbSession {
     }
 }
 
+/// 估算行数超过它就改用 `information_schema.TABLES.TABLE_ROWS`，不再跑 `COUNT(*)`。
+///
+/// 依据：InnoDB 的 `COUNT(*)` 要扫一遍（主键或最小的二级索引），本机容器上 10 万行约
+/// 数十毫秒，百万行级会到秒级——「打开表格」不该为此等待。取 10 万让常规业务表拿到
+/// 精确总数，大表退回估计。估计值来自 `InnoDB` 采样统计，偏差可达数十个百分点，
+/// 因此**始终**以 `TotalKind::Estimate` 返回，绝不冒称 `Exact`（ADR 0022 §1）。
+const EXACT_COUNT_MAX_ESTIMATED_ROWS: u64 = 100_000;
+
 async fn browse(
     conn: &mut Conn,
     object: &ObjectRef,
     page: &PageRequest,
-    _options: &BrowseOptions,
+    options: &BrowseOptions,
 ) -> Result<TablePage> {
-    // #109 只做契约增量：offset / 排序 / 筛选 / 总数尚未下推（#110 / #111），
-    // 能力位 `supports_browse_sort_filter_total` 保持 false。此处**显式忽略**
-    // 浏览选项并返回 v0.2.2 行为，不伪造排序/筛选/总数。
     let database = metadata::current_database(conn).await?;
     let name = metadata::object_parts(object, &database)?;
     // `find_table` 同时给出服务端规范表名（大小写以 `information_schema` 为准），
@@ -261,7 +284,8 @@ async fn browse(
         return Err(metadata::object_not_found(name));
     };
 
-    // 列元数据复用 #45 的 GetColumns 路径；SELECT 的列顺序与它完全一致。
+    // 列元数据复用 #45 的 GetColumns 路径；SELECT 的列顺序与它完全一致，
+    // 同时也是排序/筛选列名的白名单来源。
     let columns = metadata::columns(conn, object)
         .await
         .map_err(table_data_not_found)?;
@@ -274,54 +298,53 @@ async fn browse(
         quote_identifier(&database),
         quote_identifier(&table)
     );
-    let select = columns
-        .iter()
-        .map(|column| quote_identifier(&column.name))
-        .collect::<Vec<_>>()
-        .join(", ");
 
-    if primary_key.is_empty() {
-        return browse_without_primary_key(conn, &qualified, select, columns, page_size).await;
-    }
+    let offset = options.offset_or_zero();
+    let token = page
+        .page_token
+        .as_deref()
+        .filter(|token| !token.trim().is_empty());
+    check_pagination(token, offset, &primary_key, options.has_requested_sort())?;
 
-    let cursor = match page.page_token.as_deref() {
-        None | Some("") => None,
-        Some(token) => Some(decode_table_cursor(token, object, primary_key.len())?),
-    };
-    let order = primary_key
-        .column_names()
-        .iter()
-        .map(|column| format!("{} ASC", quote_identifier(column)))
-        .collect::<Vec<_>>()
-        .join(", ");
+    // 排序与筛选先编译成「只含标识符与 `?`」的片段：任何非法列名都在发 SQL 之前
+    // 变成 `config.invalid`，不让数据库报语法错，也保证客户端文本不进 SQL 文本。
+    let filter = compile_filter(&columns, options.filter.as_ref())?;
+    let order = compile_order(&columns, &primary_key, &options.sort)?;
 
-    let mut params: Vec<MyValue> = Vec::new();
-    let sql = match &cursor {
-        None => {
-            params.push(MyValue::Int(page_limit(page_size)));
-            format!("SELECT {select} FROM {qualified} ORDER BY {order} LIMIT ?")
-        }
-        Some(key) => {
-            let where_clause = keyset_condition(&primary_key, &mut params, key)?;
-            params.push(MyValue::Int(page_limit(page_size)));
-            format!(
-                "SELECT {select} FROM {qualified} WHERE {where_clause} ORDER BY {order} LIMIT ?"
-            )
-        }
-    };
-
-    let mut collected = run_query(
+    // 总数是独立查询，与取页在同一个会话执行锁内（ADR 0008 / 0022 §2）。
+    let (total_rows, total_kind) = browse_total(
         conn,
-        &sql,
-        params,
-        columns.len(),
-        page_size.saturating_add(1),
+        &database,
+        &table,
+        &qualified,
+        &filter,
+        options.include_total,
     )
     .await?;
 
-    let has_more = collected.len() > page_size;
+    let query = PageQuery {
+        object,
+        qualified: &qualified,
+        columns: &columns,
+        primary_key: &primary_key,
+        filter: &filter,
+    }
+    .compile(page_size, token, offset, order.as_deref())?;
+
+    let mut collected = run_query(
+        conn,
+        &query.sql,
+        query.params,
+        columns.len(),
+        query.collect_limit,
+    )
+    .await?;
+
+    let has_more = !primary_key.is_empty() && collected.len() > page_size;
     collected.truncate(page_size);
-    let next_page_token = if has_more {
+    // offset 分页由调用方自己推进偏移量；再回一个键集游标会把两种分页方式混在一起，
+    // 客户端无法判断该用哪个（ADR 0022：必须显式选一种）。
+    let next_page_token = if has_more && offset == 0 {
         let last = collected
             .last()
             .ok_or_else(|| Error::internal("表数据游标缺少上一页最后一行"))?;
@@ -333,19 +356,148 @@ async fn browse(
         None
     };
 
+    // 排序不改变只读性：无主键表仍然只读（编辑定位依赖主键，ADR 0017 / 0022 §6）。
+    let ordering = if primary_key.is_empty() {
+        RowOrder::Unstable
+    } else if options.has_requested_sort() {
+        RowOrder::RequestedSort
+    } else {
+        RowOrder::PrimaryKeyAscending
+    };
+
     Ok(TablePage {
         columns,
         rows: collected,
         next_page_token,
         has_more,
         // 连接级只读在 MariaDB 不存在（见模块文档）：只有表结构原因才会置只读。
-        read_only: false,
-        read_only_reason: None,
-        ordering: RowOrder::PrimaryKeyAscending,
-        // 总数未请求 / 未实现（#111 才下推 COUNT(*)）；不得伪称 EXACT。
-        total_rows: None,
-        total_kind: TotalKind::Unknown,
+        read_only: primary_key.is_empty(),
+        read_only_reason: primary_key
+            .is_empty()
+            .then_some(ReadOnlyReason::NoPrimaryKey),
+        ordering,
+        total_rows,
+        total_kind,
     })
+}
+
+/// 双模分页与游标的前置校验（ADR 0022）。
+///
+/// rpc-server 已经校验过一次，驱动这里再校验一次：SPI 可以被其它调用方（测试、未来的
+/// 本地 API）直接使用，规则不能只在一个入口成立。
+///
+/// - `offset` 与 `page_token` 互斥：必须显式选一种；
+/// - 键集游标只描述「主键升序」的下一页，与 `sort` 并用会静默给出错页；
+/// - 无主键表没有稳定顺序，既不签发也不接受游标（沿用 v0.2.2 语义）。
+fn check_pagination(
+    token: Option<&str>,
+    offset: u64,
+    primary_key: &PrimaryKey,
+    has_sort: bool,
+) -> Result<()> {
+    if token.is_some() && offset > 0 {
+        return Err(invalid_change(
+            "offset 与 page_token 互斥：页码跳转用 offset，连续翻页用 page_token",
+        ));
+    }
+    if token.is_some() && has_sort {
+        return Err(invalid_change(
+            "游标只对应主键升序：按请求排序翻页请改用 offset 分页",
+        ));
+    }
+    if token.is_some() && primary_key.is_empty() {
+        return Err(invalid_change(
+            "无主键表没有稳定顺序，不签发翻页游标，也不接受 page_token",
+        ));
+    }
+    Ok(())
+}
+
+/// 一次取页查询的编译上下文：元数据已解析，列白名单已就绪。
+struct PageQuery<'a> {
+    /// 用于校验游标归属（游标绑定对象）。
+    object: &'a ObjectRef,
+    /// 已引用的 `db`.`table`。
+    qualified: &'a str,
+    /// 列元数据（同时决定 SELECT 列表的顺序）。
+    columns: &'a [ColumnMeta],
+    /// 主键（键集条件与 `has_more` 判定都用它）。
+    primary_key: &'a PrimaryKey,
+    /// 编译后的筛选。
+    filter: &'a CompiledFilter,
+}
+
+/// 编译好的取页语句：只有标识符与 `?`，参数按占位符顺序排列。
+struct CompiledQuery {
+    sql: String,
+    params: Vec<MyValue>,
+    /// 实际读取上限：有主键时 `page_size + 1`（多读一行判 `has_more`）。
+    collect_limit: usize,
+}
+
+impl PageQuery<'_> {
+    /// 拼 `SELECT ... [WHERE ...] [ORDER BY ...] LIMIT ? [OFFSET ?]`。
+    ///
+    /// 参数顺序必须与 SQL 里 `?` 的出现顺序一致：先键集（前缀列会重复绑定），
+    /// 再筛选条件，最后 LIMIT / OFFSET。
+    fn compile(
+        &self,
+        page_size: usize,
+        token: Option<&str>,
+        offset: u64,
+        order: Option<&str>,
+    ) -> Result<CompiledQuery> {
+        let select = self
+            .columns
+            .iter()
+            .map(|column| quote_identifier(&column.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut terms: Vec<String> = Vec::new();
+        let mut params: Vec<MyValue> = Vec::new();
+        if let Some(token) = token {
+            let key = decode_table_cursor(token, self.object, self.primary_key.len())?;
+            // 键集条件内部是 OR 组合，必须整体括号化后再与筛选条件 AND。
+            terms.push(format!(
+                "({})",
+                keyset_condition(self.primary_key, &mut params, &key)?
+            ));
+        }
+        terms.extend(self.filter.terms.iter().cloned());
+        params.extend(self.filter.params.iter().cloned());
+
+        let mut sql = format!("SELECT {select} FROM {}", self.qualified);
+        if !terms.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&terms.join(" AND "));
+        }
+        if let Some(order) = order {
+            sql.push_str(" ORDER BY ");
+            sql.push_str(order);
+        }
+
+        // 有主键时多取一行判 `has_more`；无主键表沿用 v0.2.2 的「不提供继续语义」
+        // （不签发游标，`has_more` 恒为 false），只交付一页预览。
+        let collect_limit = if self.primary_key.is_empty() {
+            page_size
+        } else {
+            page_size.saturating_add(1)
+        };
+        sql.push_str(" LIMIT ?");
+        params.push(MyValue::Int(bind_limit(collect_limit)));
+        if offset > 0 {
+            // `LIMIT ? OFFSET ?` 与 `LIMIT offset,count` 等价，但参数顺序更不容易搞反。
+            // offset 大时要扫描前面所有行（`InnoDB` 二级索引回表），成本见
+            // docs/database/mariadb.md「大 offset 的成本」。
+            sql.push_str(" OFFSET ?");
+            params.push(MyValue::UInt(offset));
+        }
+        Ok(CompiledQuery {
+            sql,
+            params,
+            collect_limit,
+        })
+    }
 }
 
 /// 执行一次分页查询并收集最多 `collect_limit` 行。
@@ -406,35 +558,190 @@ async fn run_query(
     Ok(collected)
 }
 
-/// 无主键：只给一页扫描顺序的预览，明确不提供继续语义（不签发游标）。
-async fn browse_without_primary_key(
-    conn: &mut Conn,
-    qualified: &str,
-    select: String,
-    columns: Vec<ColumnMeta>,
-    page_size: usize,
-) -> Result<TablePage> {
-    let sql = format!("SELECT {select} FROM {qualified} LIMIT ?");
-    let collected = run_query(
-        conn,
-        &sql,
-        vec![MyValue::Int(page_limit(page_size))],
-        columns.len(),
-        page_size,
-    )
-    .await?;
+/// 编译后的筛选：每个元素是**不含 OR** 的条件表达式（条件之间按 AND 组合），
+/// 只含白名单列名与 `?` 占位符。
+#[derive(Debug, Default)]
+struct CompiledFilter {
+    /// 条件表达式，按请求顺序。
+    terms: Vec<String>,
+    /// 绑定参数，顺序与 `terms` 里 `?` 的出现顺序严格一致。
+    params: Vec<MyValue>,
+}
 
-    Ok(TablePage {
-        columns,
-        rows: collected,
-        next_page_token: None,
-        has_more: false,
-        read_only: true,
-        read_only_reason: Some(ReadOnlyReason::NoPrimaryKey),
-        ordering: RowOrder::Unstable,
-        total_rows: None,
-        total_kind: TotalKind::Unknown,
-    })
+impl CompiledFilter {
+    /// 是否没有任何条件。
+    fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+}
+
+/// 编译 `ORDER BY`：只在白名单命中后拼**规范列名**。
+///
+/// - 没有请求排序 → 主键升序（v0.2.2 行为，键集游标与它一一对应）；
+/// - 没有主键且没有请求排序 → `None`：不编造 `ORDER BY`，顺序由引擎决定；
+/// - 有请求排序 → 按给出顺序、方向由客户端显式给出。
+///
+/// **不**在末尾追加主键兜底排序：ADR 0022 §4 已写明「排序列有重复值时 offset 分页
+/// 可能拆页或漏行」，暗加排序会让界面看起来稳定、实际只是换了并列行的相对位置，
+/// 反而掩盖了这个必须如实展示的事实。
+fn compile_order(
+    columns: &[ColumnMeta],
+    primary_key: &PrimaryKey,
+    sort: &[SortKey],
+) -> Result<Option<String>> {
+    if sort.is_empty() {
+        if primary_key.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(
+            primary_key
+                .column_names()
+                .iter()
+                .map(|column| format!("{} ASC", quote_identifier(column)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    let mut keys = Vec::with_capacity(sort.len());
+    for key in sort {
+        let column = resolve_column(columns, &key.column).ok_or_else(|| {
+            invalid_change(format!(
+                "排序列 {} 不存在（列名必须来自 GetColumns）",
+                key.column.trim()
+            ))
+        })?;
+        let direction = match key.direction {
+            SortDirection::Asc => "ASC",
+            SortDirection::Desc => "DESC",
+        };
+        keys.push(format!("{} {direction}", quote_identifier(column)));
+    }
+    Ok(Some(keys.join(", ")))
+}
+
+/// 编译筛选：列名走白名单，值一律进 `params`。
+///
+/// v0.2.3 只支持 AND（ADR 0022），因此每个条件编译成一个独立表达式，由调用方
+/// 用 `AND` 连接；这样键集条件（内部含 OR）与筛选条件组合时也不会串味。
+///
+/// 拒绝的情形（都在发送 SQL 之前，`config.invalid` / `capability.unsupported`）：
+///
+/// - 列名不在 `GetColumns` 白名单里；
+/// - 比较算子缺少值（`IS NULL` / `IS NOT NULL` 忽略值，其余必须给）；
+/// - 比较算子的值是 SQL `NULL`：`x = NULL` 恒为未知，静默返回空页会误导用户；
+///   空值比较必须用 `IS NULL` / `IS NOT NULL`；
+/// - 值类型无法绑定（`Array` / `Unsupported`，见 [`bind_cell`]）。
+fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<CompiledFilter> {
+    let mut compiled = CompiledFilter::default();
+    let Some(filter) = filter else {
+        return Ok(compiled);
+    };
+    for condition in &filter.conditions {
+        let column = resolve_column(columns, &condition.column).ok_or_else(|| {
+            invalid_change(format!(
+                "筛选列 {} 不存在（列名必须来自 GetColumns）",
+                condition.column.trim()
+            ))
+        })?;
+        let quoted = quote_identifier(column);
+        let term = match condition.operator {
+            FilterOperator::IsNull => format!("{quoted} IS NULL"),
+            FilterOperator::IsNotNull => format!("{quoted} IS NOT NULL"),
+            other => {
+                let value = condition
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| invalid_change(format!("列 {column} 的筛选条件缺少比较值")))?;
+                if matches!(value, Value::Null) {
+                    return Err(invalid_change(format!(
+                        "列 {column} 的比较值不能为 NULL：空值请用 IS NULL / IS NOT NULL"
+                    )));
+                }
+                let operator = match other {
+                    FilterOperator::Eq => "=",
+                    FilterOperator::Ne => "<>",
+                    FilterOperator::Lt => "<",
+                    FilterOperator::Le => "<=",
+                    FilterOperator::Gt => ">",
+                    FilterOperator::Ge => ">=",
+                    FilterOperator::Like => "LIKE",
+                    // 上面两支已单独处理。
+                    FilterOperator::IsNull | FilterOperator::IsNotNull => {
+                        unreachable!("空值算子不参与值比较")
+                    }
+                };
+                // 参数化绑定：LIKE 的 `%` / `_` 按 MariaDB 语义解释（字面量用 `\%` /
+                // `\_`），驱动不改写匹配串，也不把它拼进 SQL 文本。
+                compiled.params.push(bind_cell(value)?);
+                format!("{quoted} {operator} ?")
+            }
+        };
+        compiled.terms.push(term);
+    }
+    Ok(compiled)
+}
+
+/// 计算 `include_total` 的总数，返回（行数, 可信程度）。
+///
+/// 三态自洽（ADR 0022 §1）：
+///
+/// - 未请求 → `(None, Unknown)`，**不**给任何数字；
+/// - 带筛选 → `COUNT(*)` + `Exact`：`TABLE_ROWS` 是整表行数，反映不了筛选后的结果，
+///   拿它当筛选后的总数就是编数字；
+/// - 无筛选且 `InnoDB` 估算 ≤ [`EXACT_COUNT_MAX_ESTIMATED_ROWS`] → `COUNT(*)` + `Exact`；
+/// - 无筛选且估算更大 → `TABLE_ROWS` + `Estimate`（统计信息，偏差可达数十个百分点）。
+///
+/// 视图在 `information_schema.TABLES` 里 `TABLE_ROWS` 为 NULL，因此永远走精确计数。
+async fn browse_total(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+    qualified: &str,
+    filter: &CompiledFilter,
+    include_total: bool,
+) -> Result<(Option<u64>, TotalKind)> {
+    if !include_total {
+        return Ok((None, TotalKind::Unknown));
+    }
+    if filter.is_empty()
+        && let Some(estimate) = table_row_estimate(conn, database, table).await?
+        && estimate > EXACT_COUNT_MAX_ESTIMATED_ROWS
+    {
+        return Ok((Some(estimate), TotalKind::Estimate));
+    }
+    let count = count_rows(conn, qualified, filter).await?;
+    Ok((Some(count), TotalKind::Exact))
+}
+
+/// `SELECT COUNT(*)`：与取页共用同一份筛选条件，因此总数与页内容始终自洽。
+async fn count_rows(conn: &mut Conn, qualified: &str, filter: &CompiledFilter) -> Result<u64> {
+    let mut sql = format!("SELECT COUNT(*) FROM {qualified}");
+    if !filter.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&filter.terms.join(" AND "));
+    }
+    let count: Option<u64> = conn
+        .exec_first(&sql, Params::Positional(filter.params.clone()))
+        .await
+        .map_err(|error| map_error(error, "统计 MariaDB 表行数失败"))?;
+    count.ok_or_else(|| Error::internal("COUNT(*) 没有返回结果"))
+}
+
+/// 读 `information_schema.TABLES.TABLE_ROWS`（`InnoDB` 估计值；视图为 NULL）。
+async fn table_row_estimate(conn: &mut Conn, database: &str, table: &str) -> Result<Option<u64>> {
+    let rows: Vec<mysql_async::Row> = conn
+        .exec(
+            "SELECT TABLE_ROWS FROM information_schema.TABLES \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            (database, table),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 表行数估计失败"))?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    // `TABLE_ROWS` 对视图 / 统计信息尚未生成的对象是 NULL：不猜 0，交给精确计数。
+    Ok(row.get::<Option<u64>, _>(0).flatten())
 }
 
 /// 字典序展开条件：`(p1 > ?) OR (p1 = ? AND p2 > ?) OR ...`。
@@ -463,8 +770,12 @@ fn keyset_condition(
     Ok(terms.join(" OR "))
 }
 
-fn page_limit(page_size: usize) -> i64 {
-    i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX)
+/// `LIMIT` 的绑定值。
+///
+/// 一行也不取是合法输入（`page_size` 归一化后不会是 0，但这里不制造溢出）：
+/// 超过 `i64::MAX` 的页大小直接钳到 `i64::MAX`，服务端会当超大上限处理。
+fn bind_limit(count: usize) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -1550,7 +1861,7 @@ fn report(results: Vec<InsertRowResult>, rolled_back: bool) -> InsertReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqarvo_driver_api::{ColumnChange, PrimaryKeyColumn};
+    use sqarvo_driver_api::{ColumnChange, FilterCondition, PrimaryKeyColumn};
 
     fn primary_key(names: &[&str]) -> PrimaryKey {
         PrimaryKey::new(
@@ -1570,6 +1881,177 @@ mod tests {
         assert_eq!(quote_identifier("orders"), "`orders`");
         assert_eq!(quote_identifier("we`ird"), "`we``ird`");
         assert_eq!(quote_identifier("a; DROP TABLE t"), "`a; DROP TABLE t`");
+    }
+
+    fn browse_columns() -> Vec<ColumnMeta> {
+        vec![
+            column("id", false, ColumnDefault::NoDefault),
+            column("name", true, ColumnDefault::Null),
+            column("score", true, ColumnDefault::Null),
+        ]
+    }
+
+    fn sort(column: &str, direction: SortDirection) -> SortKey {
+        SortKey {
+            column: column.to_owned(),
+            direction,
+        }
+    }
+
+    fn condition(column: &str, operator: FilterOperator, value: Option<Value>) -> FilterCondition {
+        FilterCondition {
+            column: column.to_owned(),
+            operator,
+            value,
+        }
+    }
+
+    /// 无请求排序 → 主键升序（v0.2.2 行为）；无主键表不编造 `ORDER BY`。
+    #[test]
+    fn order_defaults_to_primary_key_ascending() {
+        let columns = browse_columns();
+        let primary_key = primary_key(&["id"]);
+        assert_eq!(
+            compile_order(&columns, &primary_key, &[])
+                .unwrap()
+                .as_deref(),
+            Some("`id` ASC")
+        );
+        assert_eq!(
+            compile_order(&columns, &PrimaryKey::default(), &[]).unwrap(),
+            None,
+            "无主键表没有可声明的顺序"
+        );
+    }
+
+    /// 多列排序按给出顺序、方向显式；列名取 schema 规范名（客户端大小写不进 SQL）。
+    #[test]
+    fn order_uses_requested_keys_in_given_order() {
+        let columns = browse_columns();
+        let keys = vec![
+            sort("NAME", SortDirection::Desc),
+            sort("id", SortDirection::Asc),
+        ];
+        assert_eq!(
+            compile_order(&columns, &primary_key(&["id"]), &keys)
+                .unwrap()
+                .as_deref(),
+            Some("`name` DESC, `id` ASC")
+        );
+    }
+
+    #[test]
+    fn order_rejects_unknown_column() {
+        let columns = browse_columns();
+        let keys = vec![sort("nope", SortDirection::Asc)];
+        let error = compile_order(&columns, &primary_key(&["id"]), &keys).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+        assert!(!error.message().contains("ORDER BY"), "文案不得回显 SQL");
+    }
+
+    /// 值只能进参数：把匹配串拼进 SQL 时这条断言立刻失败。
+    #[test]
+    fn filter_binds_values_and_never_inlines_them() {
+        let columns = browse_columns();
+        let filter = Filter::new(vec![
+            condition(
+                "name",
+                FilterOperator::Like,
+                Some(Value::Text("a%b_c".to_owned())),
+            ),
+            condition("score", FilterOperator::Ge, Some(Value::Int(10))),
+        ]);
+        let compiled = compile_filter(&columns, Some(&filter)).unwrap();
+        assert_eq!(compiled.terms, vec!["`name` LIKE ?", "`score` >= ?"]);
+        assert_eq!(
+            compiled.params,
+            vec![MyValue::Bytes(b"a%b_c".to_vec()), MyValue::Int(10),]
+        );
+        for term in &compiled.terms {
+            assert!(!term.contains('%'), "LIKE 通配符必须留在参数里：{term}");
+            assert!(!term.contains("10"), "值不得进入 SQL 文本：{term}");
+        }
+    }
+
+    /// `IS NULL` / `IS NOT NULL` 忽略值，也不产生任何绑定参数。
+    #[test]
+    fn filter_null_operators_bind_nothing() {
+        let columns = browse_columns();
+        let filter = Filter::new(vec![
+            condition("name", FilterOperator::IsNull, None),
+            condition("score", FilterOperator::IsNotNull, None),
+        ]);
+        let compiled = compile_filter(&columns, Some(&filter)).unwrap();
+        assert_eq!(
+            compiled.terms,
+            vec!["`name` IS NULL", "`score` IS NOT NULL"]
+        );
+        assert_eq!(compiled.params, Vec::<MyValue>::new());
+    }
+
+    #[test]
+    fn filter_maps_every_comparison_operator() {
+        let columns = browse_columns();
+        let cases = [
+            (FilterOperator::Eq, "`id` = ?"),
+            (FilterOperator::Ne, "`id` <> ?"),
+            (FilterOperator::Lt, "`id` < ?"),
+            (FilterOperator::Le, "`id` <= ?"),
+            (FilterOperator::Gt, "`id` > ?"),
+            (FilterOperator::Ge, "`id` >= ?"),
+        ];
+        for (operator, expected) in cases {
+            let filter = Filter::new(vec![condition("id", operator, Some(Value::Int(1)))]);
+            let compiled = compile_filter(&columns, Some(&filter)).unwrap();
+            assert_eq!(compiled.terms, vec![expected.to_owned()]);
+            assert_eq!(compiled.params, vec![MyValue::Int(1)]);
+        }
+    }
+
+    #[test]
+    fn filter_rejects_unknown_column_and_missing_value() {
+        let columns = browse_columns();
+        let unknown = Filter::new(vec![condition(
+            "nope",
+            FilterOperator::Eq,
+            Some(Value::Int(1)),
+        )]);
+        assert_eq!(
+            compile_filter(&columns, Some(&unknown)).unwrap_err().code(),
+            ErrorCode::CONFIG_INVALID
+        );
+
+        let missing = Filter::new(vec![condition("id", FilterOperator::Eq, None)]);
+        assert_eq!(
+            compile_filter(&columns, Some(&missing)).unwrap_err().code(),
+            ErrorCode::CONFIG_INVALID
+        );
+    }
+
+    /// 比较算子的值是 SQL NULL：拒绝并指路，不静默变成「永远为假」的空结果集。
+    #[test]
+    fn filter_rejects_null_value_for_comparison() {
+        let columns = browse_columns();
+        let filter = Filter::new(vec![condition(
+            "name",
+            FilterOperator::Eq,
+            Some(Value::Null),
+        )]);
+        let error = compile_filter(&columns, Some(&filter)).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+        assert!(error.message().contains("IS NULL"));
+    }
+
+    /// 空 `conditions` 等价于不过滤：不产生任何 WHERE 片段。
+    #[test]
+    fn empty_filter_compiles_to_nothing() {
+        let columns = browse_columns();
+        assert!(compile_filter(&columns, None).unwrap().is_empty());
+        assert!(
+            compile_filter(&columns, Some(&Filter::default()))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

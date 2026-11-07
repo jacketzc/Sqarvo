@@ -749,6 +749,70 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 - CI：`.github/workflows/ci.yml` 的 MariaDB 作业仍只跑 `--test integration`，本文件需要额外两个
   监听端，**尚未接入 CI**（也没有验证过 CI 环境能否生成同样的证书），所以目前是本地门控证据。
 
+## 表数据浏览：排序、筛选、offset 与总数（v0.2.3，#111）
+
+`BrowseTable` 的四个新维度（ADR 0022）全部**下推到 SQL**，能力位
+`table_browse_sort_filter_total` 已翻为 `true`：
+
+| 请求 | 下推成的 SQL | 说明 |
+|---|---|---|
+| `sort`（多列） | `ORDER BY` + 按请求顺序的「列 ASC/DESC」 | 列名取 `GetColumns` 的**规范名**；无 `sort` 时仍是主键升序（键集游标路径不变） |
+| `filter.conditions`（只 AND） | `WHERE` 逐项比较（`IS NULL` / `IS NOT NULL` 不绑定值） | 每个条件是一个独立项，值一律 `?` 占位符 |
+| `offset` | `LIMIT ? OFFSET ?` | 与 `page_token` 互斥；`offset=0` 等同未设置（proto3 无法区分） |
+| `include_total` | `SELECT COUNT(*)` 或 `information_schema.TABLES.TABLE_ROWS` | 三态见下 |
+
+硬约束（与行编辑同一条底线）：
+
+- **列名白名单**：排序/筛选的列必须命中 `information_schema.COLUMNS` 返回的列（大小写按
+  数据库语义匹配）。命中后拼进 SQL 的是 schema 里的规范名，客户端给的标识符文本**永不**
+  进入 SQL。未知列在发送前返回 `config.invalid`（`INVALID_ARGUMENT`），不会让数据库报语法错；
+- **值全部参数绑定**：`LIKE` 的匹配串也是参数。驱动不改写通配符，语义由 MariaDB 决定：
+  `%` / `_` 是通配符，字面量用 `\%` / `\_`（默认转义符 `\`）；
+- **NULL 比较**：`IS NULL` / `IS NOT NULL` 忽略 `value`。比较算子（`=`、`<>`、`<`、`<=`、
+  `>`、`>=`、`LIKE`）的值若是 SQL `NULL`，返回 `config.invalid` 并提示改用 `IS NULL`——
+  `x = NULL` 恒为未知，静默返回空页会误导用户。
+
+能力边界：
+
+- `page_token` 只描述「主键升序」的下一页：与 `sort` 或 `offset > 0` 并用返回
+  `config.invalid`；无主键表不签发游标，也不接受 `page_token`（沿用 v0.2.2 的
+  「不提供继续语义」，`has_more` 恒为 false）；
+- 无主键表允许排序 / 筛选 / 计数，但 `ordering = UNSTABLE`、`read_only = true`
+  （编辑定位依赖主键，ADR 0017 / 0022 §6）；
+- offset 分页**不保证跨页稳定**：翻页期间有插入/删除会出现重复或漏行，界面必须在
+  「Last Refresh」旁提供刷新入口；连续翻页的稳定性只在「无 sort + `page_token`」时成立。
+
+### 总数三态与阈值
+
+| 条件 | SQL | `total_kind` |
+|---|---|---|
+| `include_total = false` | 不查询 | `UNKNOWN`，`total_rows` 为空 |
+| 有筛选 | `SELECT COUNT(*) ... WHERE <同一份条件>` | `EXACT` |
+| 无筛选，`TABLE_ROWS` ≤ 100 000（含 NULL：视图 / 统计未生成） | `SELECT COUNT(*)` | `EXACT` |
+| 无筛选，`TABLE_ROWS` > 100 000 | `information_schema.TABLES.TABLE_ROWS` | `ESTIMATE` |
+
+- 阈值常量 `EXACT_COUNT_MAX_ESTIMATED_ROWS = 100_000`（`table_data.rs`）：InnoDB 的
+  `COUNT(*)` 要扫一遍，本机容器上 10 万行约数十毫秒、百万行级到秒级；阈值以下给精确值，
+  以上退回统计信息，避免「打开表格」被一次计数拖住；
+- **估计就是估计**：`TABLE_ROWS` 来自 InnoDB 采样统计，偏差可达数十个百分点，永远以
+  `ESTIMATE` 返回，绝不冒称 `EXACT`（实测 15 万行表报 149877）；
+- 有筛选时**不用** `TABLE_ROWS`：它反映不了筛选后的行数，拿它当筛选总数就是编数字；
+- 精确计数与取页在同一个会话执行锁内（ADR 0008），取消走该会话已有的 `KILL QUERY` 路径；
+  浏览请求没有独立的超时字段，`EXACT` 计数在大表上可能较慢（见「未支持清单」）。
+
+### 大 offset 的成本
+
+`LIMIT ? OFFSET ?` 需要先扫过前面 `offset` 行（InnoDB 二级索引范围扫描 + 回表），
+成本随 offset 线性增长。实测（本机容器，MariaDB 11.4.13，15 万行 `INT` 主键表）：
+
+| 请求 | 耗时 |
+|---|---|
+| `offset=0, limit=100` | 约 2 ms |
+| `offset=90000, limit=100` | 约 7–17 ms（两次运行：7.4 ms / 16.7 ms） |
+
+上表只是观察值（单次波动较大），不构成性能承诺。v0.2.3 的界面只提供首页 / 上页 / 下页 / 末页，
+页码只读；跳转到任意页码需要按主键估算位置的方案，不在本版（ADR 0022 §5）。
+
 ## 能力描述符（现状）
 
 | 能力 | 值 | 说明 |
@@ -763,7 +827,7 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 | `parameterized_statements` | `true` | `execute_parameterized`：值经协议绑定参数执行，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
-| `table_browse_sort_filter_total` | `false` | v0.2.3（#109）契约已就位；排序 / 筛选 / 精确计数的 SQL 下推在 #110 / #111，落地前保持 `false`（ADR 0022） |
+| `table_browse_sort_filter_total` | `true` | v0.2.3（#111）：排序 / 筛选 / offset / 总数下推到 SQL，见「表数据浏览」 |
 | `tls_verify_ca_chain_only` | `false` | 不支持「只校链、不校名」：`verify-ca` 归一化为 `verify-full`（ADR 0020） |
 
 ## 未支持清单
@@ -774,6 +838,12 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
   DDL 查看（#83）按 v0.2.2 契约用 `SHOW CREATE TABLE` 原文
   （`exact = true` + `source = DDL_SOURCE_DATABASE`，ADR 0019）；
 - 跨库的表数据浏览/行编辑：元数据可以跨库，`BrowseTable` 仍只作用于当前库；
+- 表数据浏览的任意页码跳转与「按主键估算位置」（ADR 0022 §5）：v0.2.3 只有首页 / 上页 /
+  下页 / 末页，大 offset 的成本见「表数据浏览」；
+- 表数据浏览的**独立超时**：浏览请求没有超时字段，`include_total` 的精确计数与取页共用
+  会话执行锁，取消只能走会话级 `KILL QUERY`；
+- 排序/筛选的**类型兼容性**预校验：值按 `ColumnType` 之外不加限制，比较语义交给 MariaDB
+  隐式转换（例如 `int_col = 'abc'` 会按 0 比较），由客户端保证值的类型正确；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
 - 参数化执行的对外 RPC（SPI 的 `execute_parameterized` 已实现，查询侧 RPC 留给 S7）
   与预编译语句复用；
@@ -837,3 +907,14 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test_22' \
 
 未设置 `SQARVO_MARIADB_URL` 时集成测试打印跳过原因并返回，不会静默通过。
 测试表按主题使用前缀并在用例结束时清理：`sqarvo_t22_`（类型映射、长文本）、`sqarvo_t43_`（事务）。
+
+表浏览的排序/筛选/offset/总数下推有独立用例（不与 `integration.rs` 抢文件，`#111`）：
+
+```bash
+SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test_22' \
+  cargo test -p sqarvo-driver-mariadb --test browse_pushdown
+```
+
+用例自建/自删表，表名带进程级随机后缀（`bp111_<hex>_<case>`），可与其他用例并行；
+其中 `large_table_total_is_an_estimate_and_large_offset_is_timed` 会临时建一张 15 万行的表
+（`seq_1_to_150000`）并 `ANALYZE`，用完后 DROP，耗时约 1 秒。
