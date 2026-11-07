@@ -67,6 +67,9 @@
 //!   `expect-trace <n> <a,b,c>`（事件序列逐项相等）、`expect-rows <n> <count>`
 //!   （已加载行数）、`expect-query <n> <rows|state|first|summary>=<值>`（结果归属与状态）。
 //!   这三类 `expect-*` 失败都以退出码 3 结束，与既有断言同一口径。
+//! - #120 增补：`--qa-export <path>`（数据就绪后导出，仍走确认对话框并自动点「导出」）、
+//!   `--qa-export-hold`（停在确认框，截图用）、`--qa-export-cancel-after-rows <n>`
+//!   （写满 n 行后走取消路径，验证目标不留半截文件、临时文件被清理）。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
@@ -742,6 +745,13 @@ struct Args {
     // ---- #118 表格浏览：offset 分页 / 排序 / 筛选 / 多选 / 列显隐 ----
     /// `--qa-browse <step>`：按顺序执行的浏览步骤（可重复，见 [`BrowseStep`]）。
     browse_steps: Vec<BrowseStep>,
+    // ---- #120 导出 CSV ----
+    /// `--qa-export <path>`：数据就绪后导出到该路径（仍走确认对话框，QA 自动点确认）。
+    export_path: Option<PathBuf>,
+    /// `--qa-export-hold`：停在导出确认对话框（截图用，不自动确认）。
+    export_hold: bool,
+    /// `--qa-export-cancel-after-rows <n>`：写满 n 行后走取消路径（验证临时文件清理）。
+    export_cancel_after_rows: Option<u64>,
 }
 
 /// `--qa-browse` 的一步（顺序执行；全部走用户会走的同一条界面路径）。
@@ -944,6 +954,24 @@ pub fn tabs_script() -> Option<String> {
 pub fn browse_steps() -> Vec<BrowseStep> {
     ARGS.get()
         .map_or_else(Vec::new, |args| args.browse_steps.clone())
+}
+
+/// `--qa-export` 的目标路径（数据就绪后由页面触发导出）。
+#[must_use]
+pub fn export_path() -> Option<PathBuf> {
+    ARGS.get().and_then(|args| args.export_path.clone())
+}
+
+/// `--qa-export-hold`：停在导出确认对话框（截图用）。
+#[must_use]
+pub fn export_hold() -> bool {
+    ARGS.get().is_some_and(|args| args.export_hold)
+}
+
+/// `--qa-export-cancel-after-rows`：写满多少行后取消（验证清理）。
+#[must_use]
+pub fn export_cancel_after_rows() -> Option<u64> {
+    ARGS.get().and_then(|args| args.export_cancel_after_rows)
 }
 
 /// 是否登记了标签脚本（上限对话框在无人值守时会自动关闭）。
@@ -1674,6 +1702,30 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     std::fs::read_to_string(value)
                         .map_err(|error| format!("--qa-tabs-file 读取 {value} 失败：{error}"))?,
                 );
+                index += 2;
+            }
+            "--qa-export" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-export 需要一个目标路径".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-export 的目标路径不能为空".to_owned());
+                }
+                parsed.export_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--qa-export-hold" => {
+                parsed.export_hold = true;
+                index += 1;
+            }
+            "--qa-export-cancel-after-rows" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-export-cancel-after-rows 需要行数".to_owned())?;
+                let rows: u64 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-export-cancel-after-rows 不是合法行数：{value}"))?;
+                parsed.export_cancel_after_rows = Some(rows);
                 index += 2;
             }
             "--qa-tree-expand" => {

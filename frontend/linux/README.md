@@ -612,9 +612,50 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-isolation-dialog` | 打开「开始事务」的隔离级别选择卡片（截图用，不真的开事务） |
 | `--qa-isolation-level <default\|read-uncommitted\|read-committed\|repeatable-read\|serializable>` | 预先选中隔离级别（`--qa-data-begin-txn` 也用它） |
 | `--qa-isolation-confirm` | 在卡片里点「开始事务」（真的开事务） |
+| `--qa-export <path>` | 数据就绪后导出到该路径（仍走确认对话框，QA 自动点「导出」；#120） |
+| `--qa-export-hold` | 停在导出确认对话框（截图用，不自动确认、不写文件） |
+| `--qa-export-cancel-after-rows <n>` | 写满 n 行后走取消路径（验证临时文件清理与「不留半截文件」） |
 
 `--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
 断言失败也不会丢证据）。退出码：`0` 通过、`2` 截图失败、`3` 断言失败、`4` 档案里的驱动或字段不被当前后端支持。
+
+#### 导出 CSV（#120）
+
+`EX`（表工具条 / SQL 结果区）、「表 → 导出 CSV」与 `Ctrl+Shift+E` 走同一个入口：
+`GtkFileDialog` 选目标 → 确认口径 → 目标已存在时二次确认 → 逐行写临时文件 → 成功后改名。
+
+写出口径（确认对话框里逐条列出）：
+
+- **范围**：查询结果只含**已加载的行**（不重跑 SQL、不拉全量）；表只含**当前页**。
+  客户端上限 / 仍在加载 / 查询取消时，对话框与完成提示都写明「不是全部结果」。
+- **NULL vs 空串**：空字段 = SQL NULL；空字符串写为 `""`（字节层面可区分）。
+- **二进制**：占位 `(BLOB n bytes)`，绝不导出原始字节；截断值附加 `已截断`。
+- **Decimal**：原文（`unscaled` + `scale` 拼字面量，不经 f64）；日期时间用 ISO 8601。
+- **截断**：确认对话框统计「有 N 个单元格被服务端截断」，文件写已返回的前缀。
+- **列**：表数据页导出全部列；`CC` 隐藏列只影响渲染。
+- **路径**：拒绝相对路径与 `..`；父目录必须存在；默认不覆盖（已存在需二次确认）。
+  临时文件与目标文件权限 0600。
+
+```bash
+# 查询结果（SQLite）：目标不存在时直接确认并写出
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json \
+  --qa-sql-file /tmp/q.sql --qa-execute --qa-export /tmp/query.csv \
+  --screenshot /tmp/export-done.png --screenshot-delay-ms 5000 --qa-exit-after-ms 6500
+
+# 表当前页（MariaDB）
+./target/debug/sqarvo-desktop --qa-profile /tmp/mariadb.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-data-table export_values --qa-export /tmp/page.csv --qa-exit-after-ms 6000
+
+# 取消：写 2 行后走取消路径；外部复核目标不存在、目录里没有 .sqarvo-tmp
+./target/debug/sqarvo-desktop … --qa-export /tmp/cancel.csv --qa-export-cancel-after-rows 2
+
+# 10 万行基准（默认 #[ignore]；行按需生成，RSS 增量只反映导出缓冲）
+cargo test export_100k_benchmark -- --ignored --nocapture
+# [bench] export rows=100000 bytes=7409540 lines=100001 elapsed=0.418s peak_rss=5440KiB delta=824KiB
+```
+
+`--qa-export` 在查询结果读完（`has_more=false`）或表当前页打开后触发；分批结果仍在加载时
+不会自动导出（用户可以点 EX 导出此刻已加载的前缀）。
 
 #### 数据页三态与事务失败态的取证（#62）
 

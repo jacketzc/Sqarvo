@@ -713,6 +713,8 @@ struct DataButtons {
     discard: gtk::Button,
     delete_row: gtk::Button,
     add_row: gtk::Button,
+    /// 导出当前页（#120）。
+    export: gtk::Button,
     disconnect: gtk::Button,
 }
 
@@ -768,6 +770,12 @@ impl DataPage {
 
         let disconnect = gtk::Button::with_label("断开后端");
         disconnect.add_css_class("flat");
+
+        // 导出当前页（EX，#120）：只导出本页已加载行，不重新分页、不拉全表。
+        let export = gtk::Button::with_label("EX");
+        export.add_css_class("flat");
+        export.set_sensitive(false);
+        export.set_tooltip_text(Some("导出当前页已加载的行为 CSV（Ctrl+Shift+E）"));
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.set_margin_top(8);
@@ -850,6 +858,7 @@ impl DataPage {
         controls.append(&refresh);
         controls.append(&fs_button);
         controls.append(&cc_button);
+        controls.append(&export);
         controls.append(&disconnect);
 
         let errors = gtk::ListBox::new();
@@ -1123,6 +1132,7 @@ impl DataPage {
                 discard,
                 delete_row,
                 add_row,
+                export,
                 disconnect,
             },
 
@@ -1242,6 +1252,16 @@ impl DataPage {
                 .add_row
                 .clone()
                 .connect_clicked(move |_| page.begin_insert());
+        }
+        {
+            // EX：导出当前页已加载行（#120）。与菜单 / Ctrl+Shift+E 走同一个入口。
+            let page = Rc::clone(&page);
+            page.buttons.export.clone().connect_clicked(move |_| {
+                crate::export_ui::begin(
+                    page.root.upcast_ref::<gtk::Widget>(),
+                    crate::export_ui::ExportSource::Table(Rc::clone(&page)),
+                );
+            });
         }
         {
             let page = Rc::clone(&page);
@@ -1400,12 +1420,67 @@ impl DataPage {
         session.sql_summary(&table, &columns)
     }
 
-    /// 可见列下标（导出 / 复制与渲染共用这一份口径；行号列不在其中）。
+    /// 可见列下标（复制与渲染共用这一份口径；行号列不在其中）。
+    ///
+    /// 导出（#120）**不受列显隐影响**：与 `CC` 的提示一致，隐藏列只影响渲染，
+    /// 导出的 CSV 始终包含全部列，避免「看着少一列、文件里多一列」的意外丢列。
     #[must_use]
     pub fn visible_column_indices(&self) -> Vec<usize> {
         self.visibility
             .borrow()
             .visible_indices(self.columns.borrow().len())
+    }
+
+    /// 导出表头（全部列，不含行号列）。
+    #[must_use]
+    pub fn export_columns(&self) -> Vec<String> {
+        self.columns
+            .borrow()
+            .iter()
+            .map(|column| column.name.clone())
+            .collect()
+    }
+
+    /// 导出当前页的值快照（按草稿的**当前值**；已提交删除的行不再导出）。
+    ///
+    /// 一次最多一页（`TABLE_PAGE_SIZE` 行），导出期间刷新页面不会写出半新半旧的数据。
+    #[must_use]
+    pub fn export_values(&self) -> Vec<Vec<ColumnValue>> {
+        self.draft.borrow().as_ref().map_or_else(Vec::new, |draft| {
+            draft
+                .rows()
+                .iter()
+                .filter(|row| !row.removed)
+                .map(|row| row.current.clone())
+                .collect()
+        })
+    }
+
+    /// 当前页可导出的行数。
+    #[must_use]
+    pub fn export_row_count(&self) -> usize {
+        self.draft.borrow().as_ref().map_or(0, |draft| {
+            draft.rows().iter().filter(|row| !row.removed).count()
+        })
+    }
+
+    /// 编辑态摘要：未提交编辑的行数 + 是否有「新增行」草稿。
+    #[must_use]
+    pub fn export_edit_summary(&self) -> (usize, bool) {
+        let dirty = self
+            .draft
+            .borrow()
+            .as_ref()
+            .map_or(0, crate::table_data::TableDraft::dirty_rows);
+        (dirty, self.insert.borrow().is_some())
+    }
+
+    /// 导出当前页（EX 按钮 /「表」菜单 / Ctrl+Shift+E 同一个入口）。
+    pub fn export(self: &Rc<Self>) {
+        crate::export_ui::begin(
+            self.root.upcast_ref::<gtk::Widget>(),
+            crate::export_ui::ExportSource::Table(Rc::clone(self)),
+        );
     }
 
     /// 把显隐状态刷到网格列上（不改列模型、不丢数据）。
@@ -2481,6 +2556,20 @@ impl DataPage {
     fn qa_schedule_show_open(self: &Rc<Self>) {
         if !crate::qa::enabled() || self.qa_steps_done.replace(true) {
             return;
+        }
+        if let Some(target) = crate::qa::export_path() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
+                eprintln!(
+                    "[qa] t=+{}ms 触发导出当前页（--qa-export）",
+                    crate::qa::elapsed_ms()
+                );
+                crate::export_ui::begin_qa(
+                    page.root.upcast_ref::<gtk::Widget>(),
+                    crate::export_ui::ExportSource::Table(Rc::clone(&page)),
+                    target,
+                );
+            });
         }
         if crate::qa::data_insert() {
             let page = Rc::clone(self);
@@ -4773,6 +4862,12 @@ impl DataPage {
             } else {
                 "把选中行标记为待删除（提交前仍可撤销）"
             }));
+        // 导出当前页（#120）：有已加载行即可导出；提交在途时避免写出半套状态。
+        let export_rows = self.export_row_count();
+        self.buttons.export.set_sensitive(export_rows > 0 && !busy);
+        self.buttons.export.set_tooltip_text(Some(&format!(
+            "导出当前页已加载的 {export_rows} 行为 CSV（只含本页；JSON/SQL 格式在 v0.2.5；Ctrl+Shift+E）"
+        )));
         self.buttons.disconnect.set_sensitive(!disconnected);
         self.buttons
             .commit_changes

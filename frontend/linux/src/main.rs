@@ -15,6 +15,8 @@ mod data_page;
 mod ddl;
 mod dialog;
 mod driver_form;
+mod export;
+mod export_ui;
 mod inspector;
 mod layout;
 mod layout_audit;
@@ -102,6 +104,8 @@ fn register_qa_options(app: &adw::Application) {
             "qa-browse",
             "open=table|sort=column|filter=col:op:value|next|prev|first|last|select=N|hide=col|show=col|log",
         ),
+        ("qa-export", "/path/to/output.csv"),
+        ("qa-export-cancel-after-rows", "rows"),
     ] {
         app.add_main_option(
             name,
@@ -132,6 +136,7 @@ fn register_qa_options(app: &adw::Application) {
         "qa-data-fail-txn",
         "qa-data-replay-cancelled",
         "qa-layout-audit",
+        "qa-export-hold",
     ] {
         app.add_main_option(
             name,

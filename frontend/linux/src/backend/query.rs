@@ -88,12 +88,17 @@ pub struct CellView {
 }
 
 /// 一行数据（已格式化，绑定到 GTK 时不再做字符串处理）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RowView {
     /// 从 1 开始的行号（跨批次连续）。
     pub number: u64,
     /// 与列顺序一致的单元格。
     pub cells: Vec<CellView>,
+    /// 原始强类型值（#120）：CSV 导出按类型写出，绝不从显示文本反推。
+    ///
+    /// 显示文本会做省略（240 字符）与截断标记，二进制只显示十六进制前缀，
+    /// 因此导出必须拿原始值；顺序与 `cells` 一致。
+    pub values: Vec<ColumnValue>,
 }
 
 /// 一列的类型与名称。
@@ -149,7 +154,7 @@ impl StatementView {
 }
 
 /// `Execute` 的结果：语句摘要 + 首批行 + 分页 token。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExecuteOutcome {
     /// 服务端签发的查询 ID（`Cancel` / `Close` 都用它）。
     pub query_id: String,
@@ -166,7 +171,7 @@ pub struct ExecuteOutcome {
 }
 
 /// `FetchBatch` 的结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FetchOutcome {
     /// 本批行（已格式化，行号由调用方给出起始值）。
     pub rows: Vec<RowView>,
@@ -419,6 +424,7 @@ pub fn rows_from_proto(rows: &[ProtoRow], first_number: u64) -> Vec<RowView> {
         .map(|(offset, row)| RowView {
             number: first_number + u64::try_from(offset).unwrap_or(0),
             cells: row.values.iter().map(format_cell).collect(),
+            values: row.values.clone(),
         })
         .collect()
 }
@@ -699,9 +705,42 @@ fn format_clock(hour: u32, minute: u32, second: u32, nanosecond: u32) -> String 
     }
 }
 
+/// 时间（`HH:MM:SS[.frac]`）：CSV 导出用它写出 ISO 8601 时间部分。
+#[must_use]
+pub fn format_time_iso(hour: u32, minute: u32, second: u32, nanosecond: u32) -> String {
+    format_clock(hour, minute, second, nanosecond)
+}
+
+/// 无时区日期时间（`YYYY-MM-DDTHH:MM:SS[.frac]`，ISO 8601）。
+#[must_use]
+pub fn format_datetime_iso(
+    year: i64,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanosecond: u32,
+) -> String {
+    format!(
+        "{year:04}-{month:02}-{day:02}T{}",
+        format_clock(hour, minute, second, nanosecond)
+    )
+}
+
 /// UTC 纳秒 + 显示偏移 → `YYYY-MM-DD HH:MM:SS[.frac]±HH:MM`。
 #[must_use]
 pub fn format_timestamp(unix_nanos: i64, offset_seconds: i32) -> String {
+    format_timestamp_with(unix_nanos, offset_seconds, ' ')
+}
+
+/// 与 [`format_timestamp`] 同一数值口径，日期与时间之间用 `T`（ISO 8601，CSV 导出用）。
+#[must_use]
+pub fn format_timestamp_iso(unix_nanos: i64, offset_seconds: i32) -> String {
+    format_timestamp_with(unix_nanos, offset_seconds, 'T')
+}
+
+fn format_timestamp_with(unix_nanos: i64, offset_seconds: i32, separator: char) -> String {
     let offset = i64::from(offset_seconds);
     let local = unix_nanos.saturating_add(offset.saturating_mul(1_000_000_000));
     let seconds = local.div_euclid(1_000_000_000);
@@ -721,7 +760,7 @@ pub fn format_timestamp(unix_nanos: i64, offset_seconds: i32) -> String {
     let offset_minutes = (offset_abs % 3600) / 60;
 
     format!(
-        "{year:04}-{month:02}-{day:02} {}{sign}{offset_hours:02}:{offset_minutes:02}",
+        "{year:04}-{month:02}-{day:02}{separator}{}{sign}{offset_hours:02}:{offset_minutes:02}",
         format_clock(hour, minute, second, nanos)
     )
 }
@@ -1412,6 +1451,7 @@ mod tests {
                     truncated: false,
                 },
             ],
+            values: Vec::new(),
         }
     }
 
@@ -1495,6 +1535,7 @@ mod tests {
         let empty = ResultMeter::estimated_row_bytes(&RowView {
             number: 0,
             cells: Vec::new(),
+            values: Vec::new(),
         });
         assert!(empty > 0);
     }
