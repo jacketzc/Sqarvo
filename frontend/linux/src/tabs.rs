@@ -49,6 +49,7 @@ use crate::backend::worker::QueryEvent;
 use crate::backend::worker::{TabSessionOpened, TableEvent, WorkerHandle};
 use crate::browse::ConnectionRegistry;
 use crate::data_page::{DataCallbacks, DataPage, RowOpsState, StatusSnapshot};
+use crate::inspector::InspectorSnapshot;
 use crate::qa;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
 
@@ -57,10 +58,6 @@ pub const MAX_TABS: usize = 8;
 
 /// `Objects` 固定页的标签 ID。
 pub const OBJECTS_TAB_ID: &str = "tab-objects";
-
-/// 固定 `Objects` 页的说明：内容由 #119 提供，这里只说清楚它为何是空的。
-const OBJECTS_NOTE: &str =
-    "对象概览尚未实现（#135）：本页固定存在、不可关闭；当前选中对象的属性在右侧信息面板。";
 
 /// 超限文案：必须含当前上限与关闭建议（不是静默失败）。
 #[must_use]
@@ -390,12 +387,224 @@ pub enum TabStatus {
     },
 }
 
+/// `Objects` 页的 QA 观察结果（读真实控件文本，#135）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObjectsObservation {
+    /// 面板页名（`empty` = 空态）。
+    pub page: String,
+    /// 是否空态。
+    pub empty: bool,
+    /// 对象名。
+    pub name: String,
+    /// 种类。
+    pub kind: String,
+    /// 限定名。
+    pub path: String,
+    /// 关键属性（`字段=值`，按渲染顺序）。
+    pub facts: Vec<String>,
+    /// 「在信息面板查看 DDL」是否出现。
+    pub ddl_action_visible: bool,
+}
+
+/// `Objects` 固定页的对象概览（#135）。
+///
+/// 只渲染信息面板推来的 [`InspectorSnapshot`]：同一份标题 / 种类 / 限定名 / 关键属性，
+/// 不复制面板的完整内容，也不发任何 RPC。没有选中对象时显示空态文案而不是空白。
+pub struct ObjectsOverview {
+    root: gtk::Box,
+    stack: gtk::Stack,
+    name: gtk::Label,
+    kind: gtk::Label,
+    path: gtk::Label,
+    facts: gtk::Box,
+    ddl_action: gtk::Button,
+    on_view_ddl: RefCell<Option<Rc<dyn Fn()>>>,
+    /// 当前快照（QA 读页名与「是否空态」）。
+    current: RefCell<InspectorSnapshot>,
+}
+
+impl ObjectsOverview {
+    fn new() -> Rc<Self> {
+        let name = gtk::Label::new(None);
+        name.set_xalign(0.0);
+        name.set_wrap(true);
+        name.set_selectable(true);
+        name.add_css_class("heading");
+
+        let kind = gtk::Label::new(None);
+        kind.set_xalign(0.0);
+        kind.add_css_class("dim-label");
+        kind.add_css_class("caption");
+
+        let path = gtk::Label::new(None);
+        path.set_xalign(0.0);
+        path.set_wrap(true);
+        path.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        path.set_selectable(true);
+        path.add_css_class("dim-label");
+        path.add_css_class("caption");
+        path.set_visible(false);
+
+        let facts = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        facts.set_visible(false);
+
+        let ddl_action = gtk::Button::with_label("在信息面板查看 DDL");
+        ddl_action.set_halign(gtk::Align::Start);
+        ddl_action.set_tooltip_text(Some("切到右侧信息面板的 DDL 页"));
+        ddl_action.set_visible(false);
+
+        let overview = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        overview.set_margin_top(8);
+        overview.append(&name);
+        overview.append(&kind);
+        overview.append(&path);
+        overview.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        overview.append(&facts);
+        overview.append(&ddl_action);
+
+        let empty = adw::StatusPage::new();
+        empty.set_vexpand(true);
+        empty.set_title("没有选中对象");
+        empty.set_description(Some(
+            "在左侧对象树里选中一条连接、一个库、一张表或一列，这里会显示它的概览。",
+        ));
+
+        let stack = gtk::Stack::new();
+        stack.set_vexpand(true);
+        stack.add_named(&empty, Some("empty"));
+        stack.add_named(&overview, Some("overview"));
+        stack.set_visible_child_name("empty");
+
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.set_vexpand(true);
+        root.append(&stack);
+
+        let overview = Rc::new(Self {
+            root,
+            stack,
+            name,
+            kind,
+            path,
+            facts,
+            ddl_action,
+            on_view_ddl: RefCell::new(None),
+            current: RefCell::new(InspectorSnapshot {
+                page: "empty".to_owned(),
+                ..InspectorSnapshot::default()
+            }),
+        });
+        {
+            let weak = Rc::downgrade(&overview);
+            overview.ddl_action.connect_clicked(move |_| {
+                if let Some(overview) = weak.upgrade()
+                    && let Some(action) = overview.on_view_ddl.borrow().clone()
+                {
+                    action();
+                }
+            });
+        }
+        overview
+    }
+
+    /// 根控件（嵌进 `Objects` 页）。
+    fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    /// 快捷动作的落地：切到信息面板的 DDL 页（由 `ui.rs` 接线，面板与外壳都在那里）。
+    pub fn set_ddl_action(&self, action: Rc<dyn Fn()>) {
+        self.on_view_ddl.replace(Some(action));
+    }
+
+    /// 渲染面板推来的快照（唯一的数据入口）。
+    pub fn show_snapshot(&self, snapshot: &InspectorSnapshot) {
+        self.current.replace(snapshot.clone());
+        if snapshot.is_empty() {
+            self.name.set_text("");
+            self.kind.set_text("");
+            self.path.set_text("");
+            self.path.set_visible(false);
+            while let Some(child) = self.facts.first_child() {
+                self.facts.remove(&child);
+            }
+            self.facts.set_visible(false);
+            self.ddl_action.set_visible(false);
+            self.stack.set_visible_child_name("empty");
+            return;
+        }
+        self.name.set_text(&snapshot.title);
+        self.kind.set_text(&snapshot.kind_label);
+        self.path.set_text(&snapshot.qualified_path);
+        self.path
+            .set_visible(!snapshot.qualified_path.trim().is_empty());
+        while let Some(child) = self.facts.first_child() {
+            self.facts.remove(&child);
+        }
+        let key_facts = snapshot.key_facts();
+        self.facts.set_visible(!key_facts.is_empty());
+        for fact in key_facts {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let label = gtk::Label::new(Some(fact.label));
+            label.set_size_request(72, -1);
+            label.set_xalign(0.0);
+            label.set_valign(gtk::Align::Start);
+            label.add_css_class("dim-label");
+            label.add_css_class("caption");
+            let value = gtk::Label::new(Some(&fact.value));
+            value.set_xalign(0.0);
+            value.set_wrap(true);
+            value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            value.set_hexpand(true);
+            value.set_selectable(true);
+            value.add_css_class("caption");
+            row.append(&label);
+            row.append(&value);
+            self.facts.append(&row);
+        }
+        // 快捷动作只在真能工作时出现：表 / 视图的面板有 [DDL] 页；
+        // 序列 / 函数 / 类型的面板本来就是 DDL。其余种类没有这个页，不摆按钮。
+        let ddl_available = matches!(snapshot.page.as_str(), "table" | "ddl-only");
+        self.ddl_action.set_visible(ddl_available);
+        self.stack.set_visible_child_name("overview");
+    }
+
+    /// QA：从真实控件读回文案（不是从快照抄）。
+    #[must_use]
+    pub fn qa_observation(&self) -> ObjectsObservation {
+        let current = self.current.borrow().clone();
+        let mut facts = Vec::new();
+        let mut child = self.facts.first_child();
+        while let Some(row) = child {
+            if let (Some(label), Some(value)) = (
+                row.first_child()
+                    .and_then(|widget| widget.downcast::<gtk::Label>().ok()),
+                row.last_child()
+                    .and_then(|widget| widget.downcast::<gtk::Label>().ok()),
+            ) {
+                facts.push(format!("{}={}", label.text(), value.text()));
+            }
+            child = row.next_sibling();
+        }
+        ObjectsObservation {
+            page: current.page.clone(),
+            empty: current.is_empty(),
+            name: self.name.text().to_string(),
+            kind: self.kind.text().to_string(),
+            path: self.path.text().to_string(),
+            facts,
+            ddl_action_visible: self.ddl_action.is_visible(),
+        }
+    }
+}
+
 /// 标签工作区。
 pub struct TabSet {
     root: gtk::Box,
     view: adw::TabView,
     bar: adw::TabBar,
     tabs: RefCell<Vec<Rc<TabHandle>>>,
+    /// 固定 `Objects` 页的对象概览（#135：只跟随信息面板的快照）。
+    objects: RefCell<Option<Rc<ObjectsOverview>>>,
     context: TabContext,
     next_query_number: Cell<u32>,
     /// 标签 ID 的单调序号（关闭后也不复用：日志里能唯一对上）。
@@ -442,6 +651,7 @@ impl TabSet {
             view,
             bar,
             tabs: RefCell::new(Vec::new()),
+            objects: RefCell::new(None),
             context,
             next_query_number: Cell::new(1),
             next_tab_seq: Cell::new(1),
@@ -654,6 +864,21 @@ impl TabSet {
             .cloned()
     }
 
+    /// 固定 `Objects` 页的概览（#135：外壳在这里登记信息面板的快照观察者）。
+    #[must_use]
+    pub fn objects_overview(&self) -> Option<Rc<ObjectsOverview>> {
+        self.objects.borrow().clone()
+    }
+
+    /// QA：`Objects` 页的文案（读真实控件；页面没建时是 `None`）。
+    #[must_use]
+    pub fn qa_observe_objects(&self) -> Option<ObjectsObservation> {
+        self.objects
+            .borrow()
+            .as_ref()
+            .map(|objects| objects.qa_observation())
+    }
+
     /// 按位置找标签（QA 脚本用；0 = Objects）。
     #[must_use]
     pub fn by_index(&self, index: usize) -> Option<Rc<TabHandle>> {
@@ -699,17 +924,16 @@ impl TabSet {
         )));
         subtitle.set_xalign(0.0);
         subtitle.add_css_class("dim-label");
-        let note = gtk::Label::new(Some(OBJECTS_NOTE));
-        note.set_xalign(0.0);
-        note.set_wrap(true);
-        note.add_css_class("dim-label");
+        // 概览内容只来自信息面板的快照（#135）；这里不摆任何占位属性。
+        let overview = ObjectsOverview::new();
         page_box.append(&title);
         page_box.append(&subtitle);
-        page_box.append(&note);
+        page_box.append(overview.widget());
+        self.objects.replace(Some(Rc::clone(&overview)));
 
         let page = self.view.add_page(&page_box, None);
         page.set_title("Objects");
-        page.set_tooltip("固定页：当前连接的对象概览（内容由 #119 提供）");
+        page.set_tooltip("固定页：当前选中对象的概览（与信息面板同源）");
         let handle = Rc::new(TabHandle {
             id: OBJECTS_TAB_ID.to_owned(),
             kind: TabKind::Objects,

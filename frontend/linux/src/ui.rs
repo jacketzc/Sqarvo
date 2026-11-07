@@ -664,6 +664,7 @@ pub fn activate(app: &adw::Application) {
                         || !crate::qa::expect_tree().is_empty()
                         || !crate::qa::expect_ddl().is_empty()
                         || !crate::qa::expect_inspector().is_empty()
+                        || !crate::qa::expect_objects().is_empty()
                         || !crate::qa::expect_submit().is_empty()
                     {
                         match verify_expectations(&capture_state) {
@@ -1995,6 +1996,23 @@ impl Workspace {
             .status()
             .set_sql_summary(&format!("已连接 · {version}"));
 
+        // #135：`Objects` 固定页只跟随信息面板的**同一份**快照（不新增 RPC、不复制面板）。
+        if let Some(objects) = tabs.objects_overview() {
+            inspector.set_observer({
+                let objects = Rc::clone(&objects);
+                Rc::new(move |snapshot| objects.show_snapshot(snapshot))
+            });
+            // 快捷动作：切到面板的 DDL 页并展开面板——这是真实能做到的那一件事。
+            objects.set_ddl_action({
+                let shell = Rc::clone(&shell);
+                let inspector = Rc::clone(&inspector);
+                Rc::new(move || {
+                    shell.set_inspector_visible(true);
+                    inspector.set_pane(crate::inspector::TablePage::Ddl);
+                })
+            });
+        }
+
         // 接线：树与信息面板都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
         match state.registry.borrow().clone() {
             Some(registry) => {
@@ -3305,6 +3323,57 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
                 ));
             }
             passed.push(format!("信息面板 {}={actual}", expectation.field));
+        }
+    }
+
+    let objects_expectations = crate::qa::expect_objects();
+    if !objects_expectations.is_empty() {
+        let observed = workspace
+            .tabs
+            .qa_observe_objects()
+            .ok_or_else(|| "Objects 固定页尚未建立：没有可断言的概览".to_owned())?;
+        // 同一份快照：页面上的对象名 / 种类必须就是面板这次推给它的那份（不是另一套文案）。
+        let panel = workspace.inspector.snapshot().unwrap_or_default();
+        if !observed.empty && (observed.name != panel.title || observed.kind != panel.kind_label) {
+            return Err(format!(
+                "Objects 页与信息面板快照不一致：页面「{} / {}」，快照「{} / {}」",
+                observed.name, observed.kind, panel.title, panel.kind_label
+            ));
+        }
+        for expectation in &objects_expectations {
+            let actual = match expectation.field.as_str() {
+                "name" => observed.name.clone(),
+                "kind" => observed.kind.clone(),
+                "path" => observed.path.clone(),
+                "facts" => observed.facts.len().to_string(),
+                "fact_contains" => observed.facts.join(" · "),
+                "empty" => if observed.empty { "on" } else { "off" }.to_owned(),
+                "ddl_action" => if observed.ddl_action_visible {
+                    "on"
+                } else {
+                    "off"
+                }
+                .to_owned(),
+                other => return Err(format!("未知的 --qa-expect-objects 字段：{other}")),
+            };
+            let matched = if matches!(
+                expectation.field.as_str(),
+                "name" | "kind" | "path" | "fact_contains"
+            ) {
+                actual.contains(&expectation.expected)
+            } else {
+                actual == expectation.expected
+            };
+            if !matched {
+                return Err(format!(
+                    "Objects 页 {} 期望「{}」，实际「{actual}」（页={}，属性：{}）",
+                    expectation.field,
+                    expectation.expected,
+                    observed.page,
+                    observed.facts.join(" · ")
+                ));
+            }
+            passed.push(format!("Objects {}={actual}", expectation.field));
         }
     }
 

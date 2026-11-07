@@ -113,6 +113,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-expect-tree", "field=value"),
         ("qa-expect-ddl", "field=value"),
         ("qa-expect-inspector", "field=value"),
+        ("qa-expect-objects", "field=value"),
         ("qa-tabs-file", "/path/to/tabs.txt"),
         (
             "qa-browse",
