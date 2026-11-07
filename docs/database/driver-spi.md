@@ -317,6 +317,13 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
   `SystemService.ListDrivers` 直接展示 `Capabilities::names()`，因此前端能一次拿到
   「这个驱动能不能编辑、能不能绑定参数」，不必逐个对象试。
   未实现的驱动（测试替身、最小驱动）由 `Capabilities::default()` 保持 `false`。
+- **档位类能力只允许向更严退化，且必须显式声明**（#107，ADR 0020）：
+  `Capabilities::tls_verify_ca_chain_only` 表示「支持只校链、不校名」，默认 `false`；MariaDB
+  因上游限制把它归一化为 `verify-full`，故为 `false`（SQLite 无 TLS 档位，不涉及）。驱动实现
+  不了某一档时**只能收紧**（`verify-ca` → `verify-full`），**不得放松**（校验档 → `required` /
+  `preferred`），并且必须同时体现在能力位与驱动文档里——静默退化不可接受。前端按能力位标注
+  档位含义，不按驱动名特判；该位由 `Capabilities::names()` 自动出现在 `ListDrivers` /
+  `ConnectResponse` 的 `repeated string capabilities` 中。
 
 
 ### 插入新行（#81，ADR 0019）
