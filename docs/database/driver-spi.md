@@ -258,8 +258,15 @@ pub trait TableDataProvider: Send + Sync {
     fn supports_row_edits(&self) -> bool { false }
     fn supports_row_change_cancellation(&self) -> bool { false }   // #70
     fn supports_row_insertion(&self) -> bool { false }             // #81
+    // #109（ADR 0022）：排序 / 筛选 / 精确总数；#110 / #111 落地前默认 false。
+    fn supports_browse_sort_filter_total(&self) -> bool { false }
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey>;
-    async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage>;
+    async fn browse(
+        &self,
+        object: &ObjectRef,
+        page: &PageRequest,              // 页大小与不透明游标（元数据分页共用）
+        options: &BrowseOptions,         // offset / 排序 / 筛选 / 是否请求总数
+    ) -> Result<TablePage>;
     async fn apply_row_changes(
         &self,
         request: RowChangeRequest,
@@ -268,6 +275,15 @@ pub trait TableDataProvider: Send + Sync {
     // 插入新行（#81）：默认 capability.unsupported，既有驱动零改动。
     async fn insert_rows(&self, request: InsertRowsRequest) -> Result<InsertReport>;
 }
+
+// 浏览专用选项（#109，ADR 0022）：与 PageRequest 分开，后者也被元数据分页共用。
+pub struct BrowseOptions {
+    pub offset: Option<u64>,        // None = 未使用 offset；与 page_token 互斥
+    pub sort: Vec<SortKey>,         // 空 = 主键升序（v0.2.2 行为）
+    pub filter: Option<Filter>,     // None / 空 = 不过滤（v0.2.3 只支持 AND）
+    pub include_total: bool,        // false → total_kind = Unknown
+}
+pub struct TablePage { /* …既有字段… */ pub total_rows: Option<u64>, pub total_kind: TotalKind }
 
 // 插入行的 SPI 类型（#81）
 pub struct InsertRow { pub values: Vec<ColumnChange> }         // 省略的列 = 交给数据库默认值
@@ -283,9 +299,15 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
 
 约定：
 
-- **浏览按主键升序 + 不透明游标**：`page.page_token` 只能由上一页的
+- **浏览双模分页**（#109，ADR 0022）：`page.page_token` 只能由上一页的
   `TablePage::next_page_token` 原样传入；无法解析时返回 `table_data.cursor_invalid`，
-  **不得**回退到第一页，也不得用 `OFFSET` 重查（ADR 0005 / 0017）；
+  **不得**回退到第一页，游标路径也不得用 `OFFSET` 重查（ADR 0005 / 0017）。
+  页码跳转用 `BrowseOptions::offset`，与 `page_token` 互斥（同时给出 → `config.invalid`）；
+  offset 不保证跨页稳定，驱动不得声称稳定。`sort` / `filter` 必须下推到 SQL：列名走
+  `GetColumns` 白名单，值一律参数化绑定；总数三态由 `TablePage::total_kind` 显式给出，
+  未请求或给不出就是 `Unknown`，不得编数字。以上能力由
+  `supports_browse_sort_filter_total()` / `Capabilities::table_browse_sort_filter_total`
+  声明，`#110` / `#111` 落地前两个内置驱动都保持 `false`（忽略选项、返回 v0.2.2 行为）；
 - **无主键表**：`primary_key` 返回空的 `PrimaryKey`；`browse` 仍可用，但必须置
   `read_only = true`、`read_only_reason = NoPrimaryKey`、`ordering = Unstable`；
   `apply_row_changes` 必须拒绝（`table_data.no_primary_key`）；不支持 rowid / ctid 近似定位；

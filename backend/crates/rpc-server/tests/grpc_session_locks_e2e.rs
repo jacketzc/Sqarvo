@@ -28,7 +28,7 @@ use hyper_util::rt::TokioIo;
 use sqarvo_common::{Error, ErrorCode, QueryId, SessionId};
 use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::{
-    Capabilities, Cell, ChangeOutcome, ColumnDefault, ColumnMeta, ColumnType,
+    BrowseOptions, Capabilities, Cell, ChangeOutcome, ColumnDefault, ColumnMeta, ColumnType,
     ConnectionParams as DriverConnectionParams, ConnectionTestReport, Driver, DriverDescriptor,
     DriverId, DriverSession, ExecuteRequest, ExecutionStart, MetadataProvider, ObjectKind,
     ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn, QualifiedName,
@@ -304,6 +304,7 @@ impl TableDataProvider for LockSession {
         &self,
         _object: &ObjectRef,
         _page: &PageRequest,
+        _options: &BrowseOptions,
     ) -> sqarvo_common::Result<TablePage> {
         self.shared.enter("browse");
         self.shared.park("browse").await;
@@ -316,6 +317,8 @@ impl TableDataProvider for LockSession {
             read_only: false,
             read_only_reason: None,
             ordering: RowOrder::PrimaryKeyAscending,
+            total_rows: None,
+            total_kind: sqarvo_driver_api::TotalKind::Unknown,
         })
     }
 
@@ -634,6 +637,10 @@ fn spawn_browse(
                 object: Some(table_ref(&session_id)),
                 page_size: 500,
                 page_token,
+                offset: 0,
+                sort: Vec::new(),
+                filter: None,
+                include_total: false,
             })
             .await
             .map(Response::into_inner)
@@ -1135,6 +1142,10 @@ async fn sqlite_browse_pages_stay_consistent_with_concurrent_writes() {
                         object: Some(table_ref(&session_for_browse)),
                         page_size: 500,
                         page_token,
+                        offset: 0,
+                        sort: Vec::new(),
+                        filter: None,
+                        include_total: false,
                     })
                     .await
                     .map(Response::into_inner)

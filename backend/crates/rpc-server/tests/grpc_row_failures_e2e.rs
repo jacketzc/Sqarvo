@@ -266,6 +266,10 @@ async fn browse(
                 object: Some(table_ref(session_id, table)),
                 page_size,
                 page_token: String::new(),
+                offset: 0,
+                sort: Vec::new(),
+                filter: None,
+                include_total: false,
             })
             .await,
     )

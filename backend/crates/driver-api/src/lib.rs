@@ -34,14 +34,15 @@ pub use metadata::{
     unsupported_metadata_filtering,
 };
 pub use table_data::{
-    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, InsertOutcome, InsertReport,
-    InsertRow, InsertRowResult, InsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH,
-    MAX_ROWS_PER_INSERT_BATCH, PrimaryKey, PrimaryKeyColumn, ReadOnlyReason, RowChange,
-    RowChangeCancel, RowChangeReport, RowChangeRequest, RowChangeResult, RowKey, RowOrder,
-    TableDataProvider, TablePage, classify_rows_affected, column_not_insertable,
-    insert_permission_denied, invalid_change, no_primary_key, not_null_violation,
-    not_null_without_default, read_only_connection, read_only_object, read_only_transaction,
-    unique_violation, unsupported_row_change_cancellation, unsupported_row_insertion,
+    BrowseOptions, ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, Filter,
+    FilterCondition, FilterOperator, InsertOutcome, InsertReport, InsertRow, InsertRowResult,
+    InsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH, MAX_ROWS_PER_INSERT_BATCH, PrimaryKey,
+    PrimaryKeyColumn, ReadOnlyReason, RowChange, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, RowChangeResult, RowKey, RowOrder, SortDirection, SortKey, TableDataProvider,
+    TablePage, TotalKind, classify_rows_affected, column_not_insertable, insert_permission_denied,
+    invalid_change, no_primary_key, not_null_violation, not_null_without_default,
+    read_only_connection, read_only_object, read_only_transaction, unique_violation,
+    unsupported_row_change_cancellation, unsupported_row_insertion,
 };
 pub use value::{
     Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, Decimal, Row, Value,

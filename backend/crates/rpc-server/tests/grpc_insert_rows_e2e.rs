@@ -203,6 +203,10 @@ async fn browse_rows(channel: &Channel, token: &AuthToken, object: ObjectRef) ->
                 object: Some(object),
                 page_size: 500,
                 page_token: String::new(),
+                offset: 0,
+                sort: Vec::new(),
+                filter: None,
+                include_total: false,
             })
             .await,
     );

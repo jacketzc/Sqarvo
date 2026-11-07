@@ -13,13 +13,13 @@
 use async_trait::async_trait;
 use sqarvo_common::{ErrorCategory, ErrorCode};
 use sqarvo_driver_api::{
-    ColumnChange, ColumnMeta, Ddl, DdlSource, InsertOutcome, InsertReport, InsertRow,
-    InsertRowResult, InsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH, MAX_ROWS_PER_INSERT_BATCH,
-    MetadataProvider, NameMatch, ObjectFilter, ObjectKind, ObjectNode, ObjectRef, Page,
-    PageRequest, PrimaryKey, TableDataProvider, TablePage, Value, column_not_insertable,
-    insert_permission_denied, invalid_change, not_null_violation, not_null_without_default,
-    object_kind_unsupported, object_not_found, unique_violation, unsupported_metadata_filtering,
-    unsupported_row_insertion,
+    BrowseOptions, ColumnChange, ColumnMeta, Ddl, DdlSource, InsertOutcome, InsertReport,
+    InsertRow, InsertRowResult, InsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH,
+    MAX_ROWS_PER_INSERT_BATCH, MetadataProvider, NameMatch, ObjectFilter, ObjectKind, ObjectNode,
+    ObjectRef, Page, PageRequest, PrimaryKey, TableDataProvider, TablePage, Value,
+    column_not_insertable, insert_permission_denied, invalid_change, not_null_violation,
+    not_null_without_default, object_kind_unsupported, object_not_found, unique_violation,
+    unsupported_metadata_filtering, unsupported_row_insertion,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,6 +38,7 @@ impl TableDataProvider for NoInsertDriver {
         &self,
         _object: &ObjectRef,
         _page: &PageRequest,
+        _options: &BrowseOptions,
     ) -> sqarvo_common::Result<TablePage> {
         Ok(TablePage {
             columns: Vec::new(),
@@ -47,6 +48,8 @@ impl TableDataProvider for NoInsertDriver {
             read_only: true,
             read_only_reason: None,
             ordering: sqarvo_driver_api::RowOrder::Unstable,
+            total_rows: None,
+            total_kind: sqarvo_driver_api::TotalKind::Unknown,
         })
     }
 }

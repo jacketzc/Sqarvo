@@ -78,7 +78,16 @@ fn table_data_message_field_numbers_are_frozen() {
 
     assert_fields(
         &table_data["BrowseTableRequest"],
-        &[(1, "object"), (2, "page_size"), (3, "page_token")],
+        &[
+            (1, "object"),
+            (2, "page_size"),
+            (3, "page_token"),
+            // #109（ADR 0022）：双模分页与浏览选项，只能追加。
+            (4, "offset"),
+            (5, "sort"),
+            (6, "filter"),
+            (7, "include_total"),
+        ],
     );
     assert_fields(
         &table_data["BrowseTableResponse"],
@@ -90,6 +99,9 @@ fn table_data_message_field_numbers_are_frozen() {
             (5, "read_only"),
             (6, "read_only_reason"),
             (7, "ordering"),
+            // #109：总数三态（UNKNOWN / ESTIMATE / EXACT）。
+            (8, "total_rows"),
+            (9, "total_kind"),
         ],
     );
     assert_fields(
@@ -435,6 +447,8 @@ fn table_data_enum_values_are_frozen() {
             (0, "ROW_ORDER_UNSPECIFIED".to_owned()),
             (1, "ROW_ORDER_PRIMARY_KEY_ASCENDING".to_owned()),
             (2, "ROW_ORDER_UNSTABLE".to_owned()),
+            // #109（ADR 0022）：按请求排序，只能追加在既有取值之后。
+            (3, "ROW_ORDER_REQUESTED_SORT".to_owned()),
         ]
     );
     assert_eq!(
@@ -646,6 +660,7 @@ impl TableDataProvider for FakeTableData {
         &self,
         _object: &sqarvo_driver_api::ObjectRef,
         page: &sqarvo_driver_api::PageRequest,
+        _options: &sqarvo_driver_api::BrowseOptions,
     ) -> sqarvo_common::Result<TablePage> {
         self.seen_token
             .lock()
@@ -672,6 +687,8 @@ impl TableDataProvider for FakeTableData {
                 read_only: true,
                 read_only_reason: Some(ReadOnlyReason::DriverUnsupported),
                 ordering: RowOrder::PrimaryKeyAscending,
+                total_rows: None,
+                total_kind: sqarvo_driver_api::TotalKind::Unknown,
             });
         };
         // 游标只能原样回传：篡改后必须显式拒绝，不能静默回到第一页。
@@ -689,6 +706,8 @@ impl TableDataProvider for FakeTableData {
             read_only: true,
             read_only_reason: Some(ReadOnlyReason::NoPrimaryKey),
             ordering: RowOrder::Unstable,
+            total_rows: None,
+            total_kind: sqarvo_driver_api::TotalKind::Unknown,
         })
     }
 }
@@ -709,7 +728,11 @@ async fn browse_cursor_is_opaque_and_round_trips_verbatim() {
     };
 
     let first = provider
-        .browse(&object, &sqarvo_driver_api::PageRequest::default())
+        .browse(
+            &object,
+            &sqarvo_driver_api::PageRequest::default(),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("第一页");
     assert!(first.has_more);
@@ -731,6 +754,7 @@ async fn browse_cursor_is_opaque_and_round_trips_verbatim() {
                 page_size: 100,
                 page_token: Some(cursor.clone()),
             },
+            &sqarvo_driver_api::BrowseOptions::default(),
         )
         .await
         .expect("原样回传的游标可用");
@@ -745,6 +769,7 @@ async fn browse_cursor_is_opaque_and_round_trips_verbatim() {
                 page_size: 100,
                 page_token: Some("sqtoken-v1.tampered".to_owned()),
             },
+            &sqarvo_driver_api::BrowseOptions::default(),
         )
         .await
         .expect_err("篡改的游标必须被拒绝");
@@ -758,6 +783,7 @@ async fn browse_cursor_is_opaque_and_round_trips_verbatim() {
                 page_size: 100,
                 page_token: Some("sqtoken-v1.eyJrZXkiOlsxXX0".to_owned()),
             },
+            &sqarvo_driver_api::BrowseOptions::default(),
         )
         .await
         .expect("无主键表可浏览");

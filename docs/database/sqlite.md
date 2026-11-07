@@ -297,3 +297,4 @@ DDL **不截断**：`GetDdlResponse` 没有 `truncated` 字段，截断后调用
 | `parameterized_statements` | `true` | `execute_parameterized`：值经 `rusqlite` 绑定，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划 v0.2.2 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
+| `table_browse_sort_filter_total` | `false` | v0.2.3（#109）契约已就位；排序 / 筛选 / 精确计数的 SQL 下推在 #110 / #111，落地前保持 `false`（ADR 0022） |

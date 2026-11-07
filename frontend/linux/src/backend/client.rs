@@ -633,6 +633,12 @@ impl BackendClient {
             object: Some(object.clone()),
             page_size: TABLE_PAGE_SIZE,
             page_token: page_token.to_owned(),
+            // v0.2.3 契约增量（#109）：前端尚未提供 offset / 排序 / 筛选 / 精确计数，
+            // 显式给默认值 = v0.2.2 行为（功能实现见 #110 / #111 / #113）。
+            offset: 0,
+            sort: Vec::new(),
+            filter: None,
+            include_total: false,
         };
         let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.browse_table(request))
             .await

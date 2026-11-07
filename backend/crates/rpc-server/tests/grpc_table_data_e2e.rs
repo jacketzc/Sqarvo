@@ -165,6 +165,10 @@ fn browse_request(object: ObjectRef, page_size: u32, token: &str) -> BrowseTable
         object: Some(object),
         page_size,
         page_token: token.to_owned(),
+        offset: 0,
+        sort: Vec::new(),
+        filter: None,
+        include_total: false,
     }
 }
 

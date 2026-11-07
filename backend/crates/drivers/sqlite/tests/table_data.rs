@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
 use sqarvo_driver_api::{
-    ConnectionParams, Driver, DriverSession, ExecuteRequest, MAX_PAGE_SIZE, ObjectKind, ObjectRef,
-    PageRequest, QualifiedName, ReadOnlyReason, RowChangeCancel, RowOrder, TableDataProvider,
-    TlsMode, Value,
+    BrowseOptions, ConnectionParams, Driver, DriverSession, ExecuteRequest, MAX_PAGE_SIZE,
+    ObjectKind, ObjectRef, PageRequest, QualifiedName, ReadOnlyReason, RowChangeCancel, RowOrder,
+    TableDataProvider, TlsMode, Value,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
 use tempfile::TempDir;
@@ -115,7 +115,7 @@ async fn large_table_pages_are_complete_and_strictly_ordered() {
     for index in 0..3_u32 {
         let started = Instant::now();
         let page = provider
-            .browse(&big, &page(500, token.clone()))
+            .browse(&big, &page(500, token.clone()), &BrowseOptions::default())
             .await
             .expect("浏览一页");
         timings.push(started.elapsed());
@@ -149,7 +149,7 @@ async fn large_table_pages_are_complete_and_strictly_ordered() {
     let mut pages = 0_usize;
     loop {
         let page = provider
-            .browse(&big, &page(500, token))
+            .browse(&big, &page(500, token), &BrowseOptions::default())
             .await
             .expect("翻页");
         pages += 1;
@@ -212,13 +212,16 @@ async fn composite_primary_key_uses_column_order_comparison() {
     let provider = browse(session.as_ref());
     let orders = object(session.as_ref(), "orders");
 
-    let first = provider.browse(&orders, &page(2, None)).await.unwrap();
+    let first = provider
+        .browse(&orders, &page(2, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(first.rows.len(), 2);
     assert_eq!((int_key(&first.rows[0]), int_key(&first.rows[1])), (1, 1));
     let token = first.next_page_token.expect("应返回游标");
 
     let second = provider
-        .browse(&orders, &page(2, Some(token)))
+        .browse(&orders, &page(2, Some(token)), &BrowseOptions::default())
         .await
         .unwrap();
     let keys: Vec<(i64, i64)> = second
@@ -234,7 +237,7 @@ async fn composite_primary_key_uses_column_order_comparison() {
 
     let token = second.next_page_token.expect("应返回游标");
     let third = provider
-        .browse(&orders, &page(2, Some(token)))
+        .browse(&orders, &page(2, Some(token)), &BrowseOptions::default())
         .await
         .unwrap();
     let keys: Vec<(i64, i64)> = third
@@ -285,7 +288,10 @@ async fn text_primary_key_round_trips_through_the_cursor() {
     let mut seen = Vec::new();
     let mut token = None;
     loop {
-        let page = provider.browse(&tags, &page(1, token)).await.unwrap();
+        let page = provider
+            .browse(&tags, &page(1, token), &BrowseOptions::default())
+            .await
+            .unwrap();
         assert_eq!(page.rows.len(), 1);
         match &page.rows[0][0].value {
             Value::Text(name) => seen.push(name.clone()),
@@ -322,7 +328,10 @@ async fn table_without_primary_key_is_read_only_and_not_pageable() {
         "无主键表的主键定义必须为空，不能给出 rowid 近似主键"
     );
 
-    let page = provider.browse(&logs, &page(100, None)).await.unwrap();
+    let page = provider
+        .browse(&logs, &page(100, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(page.rows.len(), 100);
     assert!(page.read_only, "无主键表必须标记只读");
     assert_eq!(
@@ -357,7 +366,10 @@ async fn invalid_cursor_is_rejected_instead_of_returning_the_first_page() {
 
     let provider = browse(session.as_ref());
     let big = object(session.as_ref(), "big");
-    let first = provider.browse(&big, &page(2, None)).await.unwrap();
+    let first = provider
+        .browse(&big, &page(2, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     let token = first.next_page_token.expect("应返回游标");
 
     // 篡改载荷（保持格式）：必须报 cursor_invalid，绝不回退第一页。
@@ -378,7 +390,11 @@ async fn invalid_cursor_is_rejected_instead_of_returning_the_first_page() {
         (&other, token.clone()),
     ] {
         let error = provider
-            .browse(object, &page(2, Some(candidate.clone())))
+            .browse(
+                object,
+                &page(2, Some(candidate.clone())),
+                &BrowseOptions::default(),
+            )
             .await
             .err()
             .unwrap_or_else(|| panic!("非法游标必须报错：{candidate}"));
@@ -403,15 +419,24 @@ async fn page_size_is_clamped_instead_of_erroring() {
     let big = object(session.as_ref(), "big");
 
     // 0 → 默认 100。
-    let default_page = provider.browse(&big, &page(0, None)).await.unwrap();
+    let default_page = provider
+        .browse(&big, &page(0, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(default_page.rows.len(), 100);
 
     // 超过上限 → 钳制到 500，不报错。
-    let capped = provider.browse(&big, &page(u32::MAX, None)).await.unwrap();
+    let capped = provider
+        .browse(&big, &page(u32::MAX, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(capped.rows.len(), usize::try_from(MAX_PAGE_SIZE).unwrap());
 
     // 显式请求 500 与钳制结果一致。
-    let exact = provider.browse(&big, &page(500, None)).await.unwrap();
+    let exact = provider
+        .browse(&big, &page(500, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(exact.rows.len(), capped.rows.len());
 }
 
@@ -427,7 +452,7 @@ async fn missing_table_is_not_found_and_not_an_empty_page() {
     let missing = object(session.as_ref(), "absent");
 
     let error = provider
-        .browse(&missing, &page(10, None))
+        .browse(&missing, &page(10, None), &BrowseOptions::default())
         .await
         .expect_err("不存在的表必须报错");
     assert_eq!(error.category(), ErrorCategory::NotFound);
@@ -457,7 +482,7 @@ async fn browse_is_rejected_while_a_result_cursor_is_open() {
     assert!(start.first_batch.expect("应有首批").has_more);
 
     let error = provider
-        .browse(&big, &page(10, None))
+        .browse(&big, &page(10, None), &BrowseOptions::default())
         .await
         .expect_err("游标未释放时不得与浏览交错");
     assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
@@ -485,7 +510,10 @@ async fn views_browse_as_read_only_without_primary_key() {
         qualified_name: QualifiedName::new(None, None, "recent"),
         kind: ObjectKind::View,
     };
-    let page = provider.browse(&view, &page(10, None)).await.unwrap();
+    let page = provider
+        .browse(&view, &page(10, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert!(page.read_only);
     assert_eq!(
@@ -543,7 +571,7 @@ async fn read_only_connection_reports_reason_and_rejects_edits() {
     }
     let writable_orders = object(writable.as_ref(), "orders");
     let first = browse(writable.as_ref())
-        .browse(&writable_orders, &page(2, None))
+        .browse(&writable_orders, &page(2, None), &BrowseOptions::default())
         .await
         .expect("可写连接浏览");
     assert!(!first.read_only, "可写连接必须可编辑");
@@ -561,7 +589,7 @@ async fn read_only_connection_reports_reason_and_rejects_edits() {
     let provider = browse(read_only.as_ref());
     let orders = object(read_only.as_ref(), "orders");
     let first = provider
-        .browse(&orders, &page(2, None))
+        .browse(&orders, &page(2, None), &BrowseOptions::default())
         .await
         .expect("只读连接可以浏览");
     assert!(first.read_only, "只读连接必须自报只读");
@@ -588,7 +616,7 @@ async fn read_only_connection_reports_reason_and_rejects_edits() {
         .clone()
         .expect("只读连接仍按主键翻页，必须签发游标");
     let second = provider
-        .browse(&orders, &page(2, Some(token)))
+        .browse(&orders, &page(2, Some(token)), &BrowseOptions::default())
         .await
         .expect("只读连接翻第二页");
     assert_eq!(int_key(&second.rows[0]), 3);
@@ -619,7 +647,10 @@ async fn read_only_connection_reports_reason_and_rejects_edits() {
         error.category(),
         error.message()
     );
-    let again = provider.browse(&orders, &page(1, None)).await.unwrap();
+    let again = provider
+        .browse(&orders, &page(1, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert_eq!(
         again.rows[0][1].value,
         Value::Text("a".to_owned()),
@@ -628,7 +659,10 @@ async fn read_only_connection_reports_reason_and_rejects_edits() {
 
     // ---- 4. 两种原因同时成立时报「连接只读」，「无稳定排序」仍由 ordering 表达 ----
     let logs = object(read_only.as_ref(), "logs");
-    let logs_page = provider.browse(&logs, &page(10, None)).await.unwrap();
+    let logs_page = provider
+        .browse(&logs, &page(10, None), &BrowseOptions::default())
+        .await
+        .unwrap();
     assert!(logs_page.read_only);
     assert_eq!(
         logs_page.read_only_reason,

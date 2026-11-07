@@ -4070,6 +4070,9 @@ fn ordering_label(ordering: RowOrder) -> &'static str {
     match ordering {
         RowOrder::PrimaryKeyAscending => "按主键升序",
         RowOrder::Unstable => "无稳定排序",
+        // v0.2.3 契约增量（#109）：驱动能力位仍为 false，本值不会出现；
+        // 这里只补全 match（真正的列头排序 UI 由 #113 负责）。
+        RowOrder::RequestedSort => "按请求排序",
         RowOrder::Unspecified => "排序未知",
     }
 }

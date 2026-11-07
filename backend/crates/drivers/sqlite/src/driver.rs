@@ -59,6 +59,9 @@ impl SqliteDriver {
                     parameterized_statements: true,
                     // 文件型驱动没有 TLS：TLS 档位一律不呈现，也不声明「只校链」能力。
                     tls_verify_ca_chain_only: false,
+                    // 表浏览的排序/筛选/精确总数（ADR 0022）：契约已就位（#109），
+                    // SQL 下推在 #110 / #111，落地前必须保持 false。
+                    table_browse_sort_filter_total: false,
                 },
             },
         }

@@ -763,6 +763,7 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 | `parameterized_statements` | `true` | `execute_parameterized`：值经协议绑定参数执行，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
+| `table_browse_sort_filter_total` | `false` | v0.2.3（#109）契约已就位；排序 / 筛选 / 精确计数的 SQL 下推在 #110 / #111，落地前保持 `false`（ADR 0022） |
 | `tls_verify_ca_chain_only` | `false` | 不支持「只校链、不校名」：`verify-ca` 归一化为 `verify-full`（ADR 0020） |
 
 ## 未支持清单

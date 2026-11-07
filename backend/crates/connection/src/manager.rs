@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 
 use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    ColumnMeta, ConnectionParams, ConnectionTestReport, Ddl, DriverId, DriverSession,
-    ExecuteRequest, ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel,
+    BrowseOptions, ColumnMeta, ConnectionParams, ConnectionTestReport, Ddl, DriverId,
+    DriverSession, ExecuteRequest, ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel,
     MetadataProvider, ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey,
     ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, TableDataProvider,
     TablePage, TransactionOptions,
@@ -239,9 +239,16 @@ impl SessionHandle {
     ///
     /// - 驱动未实现表数据浏览：`capability.unsupported`；
     /// - 驱动错误原样透传（游标非法、对象不存在等）。
-    pub async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
+    pub async fn browse(
+        &self,
+        object: &ObjectRef,
+        page: &PageRequest,
+        options: &BrowseOptions,
+    ) -> Result<TablePage> {
         let _guard = self.execution.lock().await;
-        self.table_data_provider()?.browse(object, page).await
+        self.table_data_provider()?
+            .browse(object, page, options)
+            .await
     }
 
     /// 在会话执行锁内列出元数据子节点（#69）。
