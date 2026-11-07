@@ -2505,7 +2505,11 @@ async fn browse_walks_a_hundred_thousand_rows_without_gaps() {
     for index in 0..3_i64 {
         let started = Instant::now();
         let page = provider
-            .browse(&object, &td_page(500, token.clone()))
+            .browse(
+                &object,
+                &td_page(500, token.clone()),
+                &sqarvo_driver_api::BrowseOptions::default(),
+            )
             .await
             .expect("浏览一页");
         timings.push(started.elapsed());
@@ -2542,7 +2546,11 @@ async fn browse_walks_a_hundred_thousand_rows_without_gaps() {
     let mut pages = 0_usize;
     loop {
         let page = provider
-            .browse(&object, &td_page(500, token))
+            .browse(
+                &object,
+                &td_page(500, token),
+                &sqarvo_driver_api::BrowseOptions::default(),
+            )
             .await
             .expect("翻页");
         pages += 1;
@@ -2614,7 +2622,11 @@ async fn browse_composite_primary_key_uses_column_order() {
     let mut token = None;
     loop {
         let page = provider
-            .browse(&object, &td_page(2, token))
+            .browse(
+                &object,
+                &td_page(2, token),
+                &sqarvo_driver_api::BrowseOptions::default(),
+            )
             .await
             .expect("翻页");
         all.extend(
@@ -2672,7 +2684,11 @@ async fn browse_without_primary_key_is_read_only_and_not_pageable() {
     );
 
     let page = provider
-        .browse(&object, &td_page(100, None))
+        .browse(
+            &object,
+            &td_page(100, None),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("浏览");
     assert_eq!(page.rows.len(), 100);
@@ -2723,7 +2739,11 @@ async fn browse_rejects_tampered_or_foreign_cursor() {
     let object = td_object(&*session, &table);
     let other_object = td_object(&*session, &other);
     let first = provider
-        .browse(&object, &td_page(2, None))
+        .browse(
+            &object,
+            &td_page(2, None),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("首页");
     let token = first.next_page_token.expect("应返回游标");
@@ -2743,7 +2763,11 @@ async fn browse_rejects_tampered_or_foreign_cursor() {
         (&other_object, token.clone()),
     ] {
         let error = provider
-            .browse(target, &td_page(2, Some(candidate.clone())))
+            .browse(
+                target,
+                &td_page(2, Some(candidate.clone())),
+                &sqarvo_driver_api::BrowseOptions::default(),
+            )
             .await
             .err()
             .unwrap_or_else(|| panic!("非法游标必须报错：{candidate}"));
@@ -2791,7 +2815,11 @@ async fn browse_page_size_is_clamped_and_decimal_key_keeps_precision() {
     let mut token = None;
     loop {
         let page = provider
-            .browse(&object, &td_page(1, token))
+            .browse(
+                &object,
+                &td_page(1, token),
+                &sqarvo_driver_api::BrowseOptions::default(),
+            )
             .await
             .expect("翻页");
         assert_eq!(page.rows.len(), 1);
@@ -2809,12 +2837,20 @@ async fn browse_page_size_is_clamped_and_decimal_key_keeps_precision() {
 
     // 页大小：0 → 默认 100；超过上限 → 钳制到 500，不报错。
     let default_page = provider
-        .browse(&object, &td_page(0, None))
+        .browse(
+            &object,
+            &td_page(0, None),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("默认页大小");
     assert_eq!(default_page.rows.len(), 4);
     let capped = provider
-        .browse(&object, &td_page(u32::MAX, None))
+        .browse(
+            &object,
+            &td_page(u32::MAX, None),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("钳制不报错");
     assert!(capped.rows.len() <= usize::try_from(MAX_PAGE_SIZE).unwrap());
@@ -2856,7 +2892,11 @@ async fn browse_keeps_binary_and_microsecond_precision_in_the_cursor() {
     let mut token = None;
     loop {
         let page = provider
-            .browse(&object, &td_page(1, token))
+            .browse(
+                &object,
+                &td_page(1, token),
+                &sqarvo_driver_api::BrowseOptions::default(),
+            )
             .await
             .expect("翻页");
         assert_eq!(page.rows.len(), 1);
@@ -2918,7 +2958,11 @@ fn re_provider(session: &dyn DriverSession) -> &dyn TableDataProvider {
 
 async fn re_rows(session: &dyn DriverSession, name: &str) -> Vec<Row> {
     re_provider(session)
-        .browse(&re_object(session, name), &td_page(500, None))
+        .browse(
+            &re_object(session, name),
+            &td_page(500, None),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("浏览表")
         .rows
@@ -4448,7 +4492,11 @@ async fn ins_insert(
 
 async fn ins_rows(session: &dyn DriverSession, name: &str) -> Vec<Row> {
     ins_provider(session)
-        .browse(&ins_object(session, name), &td_page(500, None))
+        .browse(
+            &ins_object(session, name),
+            &td_page(500, None),
+            &sqarvo_driver_api::BrowseOptions::default(),
+        )
         .await
         .expect("浏览表")
         .rows

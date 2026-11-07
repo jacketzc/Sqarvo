@@ -6,19 +6,34 @@ import "common/v1/common.proto";
 import "common/v1/value.proto";
 import "services/v1/metadata.proto";
 
-// 表数据域：按主键升序浏览表数据、提交行级变更（ADR 0017）。
+// 表数据域：浏览表数据、提交行级变更（ADR 0017、ADR 0022）。
 //
 // 三条硬约束：
 //
-// 1. 浏览只按主键升序 + 不透明 cursor，**禁止** OFFSET 分页；cursor 语义与
-//    QueryService 的结果集游标一致（客户端只能原样回传，不得解析）；
+// 1. 浏览支持**双模分页**（ADR 0022）：连续翻页用主键升序 + 不透明 cursor
+//    （`page_token`，语义与 QueryService 的结果集游标一致，客户端只能原样回传、
+//    不得解析）；页码跳转用 `offset`。两者互斥——同时给出（且 `offset > 0`）返回
+//    `config.invalid`。offset 分页**不保证跨页稳定**：翻页期间有插入或删除会出现
+//    重复或漏行，这是 offset 的固有属性；只有「不带 sort、用 page_token」的连续
+//    翻页才稳定；
 // 2. 无主键表只读浏览并标注「无稳定排序」，编辑一律拒绝，不提供 rowid / ctid
-//    之类的近似定位；
+//    之类的近似定位；排序不改变只读性（ADR 0022 §6）；
 // 3. 行变更只传「主键值 + 列变更」的强类型值，驱动内部以 prepared statement
 //    绑定参数执行，服务端绝不拼接 SQL 字符串。
 //
+// 排序与筛选（`sort` / `filter`，ADR 0022）必须**下推**到数据库：
+//
+// * 列名只能取自 `GetColumns` 返回的列名，服务端与驱动都要用白名单校验，未知列
+//   返回 `config.invalid`；**禁止**把用户输入拼进 SQL 文本；
+// * 值一律参数化绑定（`Filter.Condition.value`），不做字符串拼接；
+// * 总数三态（`TotalKind`）必须显式给出，客户端不得从「有没有 total_rows」推断：
+//   UNKNOWN 表示未请求或驱动给不出，ESTIMATE 来自统计信息（可能偏差很大），
+//   EXACT 才是真实计数。
+//
 // 不支持的能力必须返回 `capability.unsupported`（驱动未实现行编辑）或
 // `table_data.no_primary_key`（无主键），不得静默降级为「尽力而为」的写入。
+// 驱动能力位 `table_browse_sort_filter_total` 在 #110 / #111 落地前保持 false：
+// 前端据此不提供排序/筛选/精确计数入口，服务端也不会替驱动伪造这些效果。
 //
 // 行变更批次可取消（#70，ADR 0018）：
 //
@@ -67,20 +82,72 @@ enum RowOrder {
   ROW_ORDER_PRIMARY_KEY_ASCENDING = 1;
   // 无稳定排序（无主键表）。只允许只读浏览，不得用于编辑定位。
   ROW_ORDER_UNSTABLE = 2;
+  // 按请求的 `sort` 排序（ADR 0022）。页间稳定性取决于排序列是否唯一：
+  // 排序列有重复值时，`offset` 分页可能把重复行分到两页或漏掉，必须如实展示，
+  // 不得声称稳定。客户端据此不把「第 N 行」当成可长期依赖的位置。
+  ROW_ORDER_REQUESTED_SORT = 3;
 }
 
-// 只读原因。可编辑时 read_only=false 且本字段为 READ_ONLY_REASON_UNSPECIFIED。
-enum ReadOnlyReason {
-  READ_ONLY_REASON_UNSPECIFIED = 0;
-  // 表没有主键：无法稳定定位行，编辑被拒绝（`table_data.no_primary_key`）。
-  READ_ONLY_REASON_NO_PRIMARY_KEY = 1;
-  // 驱动未声明行编辑能力（`capability.unsupported`）。
-  READ_ONLY_REASON_DRIVER_UNSUPPORTED = 2;
-  // 连接以只读方式打开（SQLite `read_only` 参数）。浏览可用且仍按主键升序，
-  // 但写入一定被数据库拒绝（`table_data.read_only`），因此浏览时就置只读。
-  // 只读事务属于会话级状态，由事务徽标与写入拒绝表达，不复用本值（ADR 0017）。
-  // 追加取值：旧客户端读到未知值时会落到 UNSPECIFIED，仍按只读处理，不会显示可编辑。
-  READ_ONLY_REASON_CONNECTION_READ_ONLY = 3;
+// 排序方向。
+enum SortDirection {
+  // 非法：新增客户端必须显式给出 ASC 或 DESC；服务端返回 `config.invalid`。
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+
+// 一个排序键。
+message SortKey {
+  // 列名。必须来自 `GetColumns` 返回的列名（大小写按数据库语义匹配），
+  // 服务端用白名单校验；未知列返回 `config.invalid`，**禁止**拼进 SQL 文本。
+  string column = 1;
+  // 排序方向；UNSPECIFIED 非法（`config.invalid`）。
+  SortDirection direction = 2;
+}
+
+// 筛选算子。`LIKE` 的通配符语义由驱动按方言处理，客户端只给匹配串。
+enum FilterOperator {
+  // 非法：未指定算子返回 `config.invalid`。
+  FILTER_OPERATOR_UNSPECIFIED = 0;
+  FILTER_OPERATOR_EQ = 1;
+  FILTER_OPERATOR_NE = 2;
+  FILTER_OPERATOR_LT = 3;
+  FILTER_OPERATOR_LE = 4;
+  FILTER_OPERATOR_GT = 5;
+  FILTER_OPERATOR_GE = 6;
+  // 文本包含匹配；匹配串由驱动参数化绑定，`%` / `_` 按数据库语义解释。
+  FILTER_OPERATOR_LIKE = 7;
+  // 忽略 `value`。
+  FILTER_OPERATOR_IS_NULL = 8;
+  // 忽略 `value`。
+  FILTER_OPERATOR_IS_NOT_NULL = 9;
+}
+
+// 结构化筛选。v0.2.3 只支持 AND 组合，OR 与嵌套条件不在本版（ADR 0022）。
+message Filter {
+  // 单条条件。
+  message Condition {
+    // 列名。与 `SortKey.column` 同一套白名单校验。
+    string column = 1;
+    // 算子；UNSPECIFIED 非法（`config.invalid`）。
+    FilterOperator operator = 2;
+    // 比较值，复用 `ColumnValue` 的 kind；`IS NULL` / `IS NOT NULL` 时忽略。
+    // 必须**参数化绑定**：值不得以任何形式拼进 SQL 文本。
+    sqarvo.common.v1.ColumnValue value = 3;
+  }
+  // 全部条件按 AND 组合；空列表表示不过滤。
+  repeated Condition conditions = 1;
+}
+
+// 总行数的可信程度。三态必须由服务端显式给出，客户端不得推断（ADR 0022）。
+enum TotalKind {
+  // 未请求（`include_total = false`），或请求了但驱动无法给出总数。
+  TOTAL_KIND_UNKNOWN = 0;
+  // 来自统计信息的估计值（例如 MariaDB `information_schema.TABLES.TABLE_ROWS`），
+  // 误差可能很大；界面必须显示「约 N 行」。
+  TOTAL_KIND_ESTIMATE = 1;
+  // 真实计数（例如独立的 `SELECT COUNT(*)`）；界面可以显示「N 行」。
+  TOTAL_KIND_EXACT = 2;
 }
 
 message BrowseTableRequest {
@@ -89,8 +156,32 @@ message BrowseTableRequest {
   // 期望行数；0 表示服务端默认值（100）。超过单批上限（500）被服务端钳制，
   // 不返回错误。
   uint32 page_size = 2;
-  // 上一页返回的不透明 cursor；为空表示第一页。
+  // 上一页返回的不透明 cursor；为空表示第一页。与 `offset` 互斥：
+  // `offset > 0` 且本字段非空 → `config.invalid`，必须显式选一种分页方式。
   string page_token = 3;
+  // 起始行偏移（从 0 开始，0 等同未设置）。用于页码跳转。
+  //
+  // * 与 `page_token` 互斥（见上）：proto3 无法区分「显式 0」与「未设置」，
+  //   因此只有 `offset > 0` 与 `page_token` 同时给出才报错；
+  // * **不保证跨页稳定**：翻页期间有插入/删除会出现重复或漏行。这是 offset 的
+  //   固有属性，界面必须在「Last Refresh」附近提供刷新入口（ADR 0022 §4）；
+  // * 超过总数时返回空行 + `has_more = false` + 如实的总数，不返回错误；
+  // * 大 offset 需要扫描前面所有行（MariaDB `LIMIT 100000,100`），v0.2.3 的界面
+  //   只提供首页 / 上页 / 下页 / 末页，页码只读显示。
+  uint64 offset = 4;
+  // 排序键；空 = 主键升序（v0.2.2 行为）。多个键按给出顺序依次排序。
+  // 排序必须下推到 SQL（`ORDER BY`），列名走白名单，值不得拼接。
+  // 响应里的 `ordering` 为 `ROW_ORDER_REQUESTED_SORT`。
+  repeated SortKey sort = 5;
+  // 结构化筛选；未设置或 `conditions` 为空 = 不过滤。v0.2.3 只支持 AND。
+  // 筛选必须下推（`WHERE`），值一律参数化绑定；未知列 / 不支持算子返回
+  // `config.invalid`，不让数据库报语法错。
+  Filter filter = 6;
+  // 是否请求总行数。false 时 `total_kind` 必须为 `TOTAL_KIND_UNKNOWN`（v0.2.2 行为）。
+  //
+  // 精确计数是一次独立查询，必须可取消、有超时，并与本次取页在同一会话执行锁内
+  // （ADR 0008 / 0022 §2）。驱动可以只返回 `ESTIMATE`，**不得**把估计值伪称 `EXACT`。
+  bool include_total = 7;
 }
 
 message BrowseTableResponse {
@@ -108,6 +199,25 @@ message BrowseTableResponse {
   ReadOnlyReason read_only_reason = 6;
   // 排序保证。
   RowOrder ordering = 7;
+  // 总行数。仅在 `total_kind != TOTAL_KIND_UNKNOWN` 时有意义；UNKNOWN 时为 0。
+  // 客户端必须按 `total_kind` 决定文案（「N 行」还是「约 N 行」），不得自己猜。
+  uint64 total_rows = 8;
+  // 总行数的可信程度（三态）。UNKNOWN = 未请求或驱动给不出。
+  TotalKind total_kind = 9;
+}
+
+// 只读原因。可编辑时 read_only=false 且本字段为 READ_ONLY_REASON_UNSPECIFIED。
+enum ReadOnlyReason {
+  READ_ONLY_REASON_UNSPECIFIED = 0;
+  // 表没有主键：无法稳定定位行，编辑被拒绝（`table_data.no_primary_key`）。
+  READ_ONLY_REASON_NO_PRIMARY_KEY = 1;
+  // 驱动未声明行编辑能力（`capability.unsupported`）。
+  READ_ONLY_REASON_DRIVER_UNSUPPORTED = 2;
+  // 连接以只读方式打开（SQLite `read_only` 参数）。浏览可用且仍按主键升序，
+  // 但写入一定被数据库拒绝（`table_data.read_only`），因此浏览时就置只读。
+  // 只读事务属于会话级状态，由事务徽标与写入拒绝表达，不复用本值（ADR 0017）。
+  // 追加取值：旧客户端读到未知值时会落到 UNSPECIFIED，仍按只读处理，不会显示可编辑。
+  READ_ONLY_REASON_CONNECTION_READ_ONLY = 3;
 }
 
 // 主键中一列的值。复合主键必须给出全部列，顺序与 GetPrimaryKey 返回的顺序一致。

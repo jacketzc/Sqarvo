@@ -21,9 +21,9 @@ use std::collections::BTreeMap;
 
 use sqarvo_common::{ErrorCode, QueryId};
 use sqarvo_driver_api::{
-    ColumnChange, ConnectionParams, Decimal, Driver, DriverSession, ExecuteRequest, InsertOutcome,
-    InsertRow, InsertRowsRequest, IsolationLevel, ObjectKind, ObjectRef, PageRequest,
-    QualifiedName, Row, TableDataProvider, TlsMode, TransactionOptions, Value,
+    BrowseOptions, ColumnChange, ConnectionParams, Decimal, Driver, DriverSession, ExecuteRequest,
+    InsertOutcome, InsertRow, InsertRowsRequest, IsolationLevel, ObjectKind, ObjectRef,
+    PageRequest, QualifiedName, Row, TableDataProvider, TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
 use tempfile::TempDir;
@@ -145,6 +145,7 @@ async fn browse(session: &dyn DriverSession, name: &str) -> Vec<Row> {
                 page_size: 500,
                 page_token: None,
             },
+            &BrowseOptions::default(),
         )
         .await
         .expect("浏览表")

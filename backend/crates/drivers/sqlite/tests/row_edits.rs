@@ -18,10 +18,10 @@ use std::collections::BTreeMap;
 
 use sqarvo_common::{ErrorCategory, ErrorCode, QueryId};
 use sqarvo_driver_api::{
-    ChangeOutcome, ColumnChange, ConnectionParams, Decimal, Driver, DriverSession, ExecuteRequest,
-    IsolationLevel, ObjectKind, ObjectRef, PageRequest, QualifiedName, Row, RowChange,
-    RowChangeCancel, RowChangeReport, RowChangeRequest, RowKey, TableDataProvider, TlsMode,
-    TransactionOptions, Value,
+    BrowseOptions, ChangeOutcome, ColumnChange, ConnectionParams, Decimal, Driver, DriverSession,
+    ExecuteRequest, IsolationLevel, ObjectKind, ObjectRef, PageRequest, QualifiedName, Row,
+    RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest, RowKey, TableDataProvider,
+    TlsMode, TransactionOptions, Value,
 };
 use sqarvo_driver_sqlite::SqliteDriver;
 use tempfile::TempDir;
@@ -86,6 +86,7 @@ async fn all_rows(session: &dyn DriverSession, name: &str) -> Vec<Row> {
                 page_size: 500,
                 page_token: None,
             },
+            &BrowseOptions::default(),
         )
         .await
         .expect("浏览表")
@@ -789,6 +790,7 @@ async fn browse_marks_primary_key_tables_editable_after_capability_flip() {
                 page_size: 10,
                 page_token: None,
             },
+            &BrowseOptions::default(),
         )
         .await
         .expect("浏览");

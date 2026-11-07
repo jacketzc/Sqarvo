@@ -162,6 +162,10 @@ fn browse_request(session_id: &str, name: &str, token: &str) -> BrowseTableReque
         object: Some(table_ref(session_id, name)),
         page_size: 2,
         page_token: token.to_owned(),
+        offset: 0,
+        sort: Vec::new(),
+        filter: None,
+        include_total: false,
     }
 }
 

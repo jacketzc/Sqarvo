@@ -65,6 +65,9 @@ impl MariaDbDriver {
                     // 因此本驱动把 verify-ca 归一化为 verify-full（多校一层主机名）。
                     // 只向更严方向退化，并通过这个能力位显式声明（ADR 0020）。
                     tls_verify_ca_chain_only: false,
+                    // 表浏览的排序/筛选/精确总数（ADR 0022）：契约已就位（#109），
+                    // SQL 下推在 #110 / #111，落地前必须保持 false。
+                    table_browse_sort_filter_total: false,
                 },
             },
         }

@@ -588,6 +588,7 @@ impl TableDataProvider for GateSession {
         &self,
         _object: &ObjectRef,
         _page: &sqarvo_driver_api::PageRequest,
+        _options: &sqarvo_driver_api::BrowseOptions,
     ) -> sqarvo_common::Result<TablePage> {
         Err(sqarvo_common::Error::unsupported(
             sqarvo_common::ErrorCode::CAPABILITY_UNSUPPORTED,

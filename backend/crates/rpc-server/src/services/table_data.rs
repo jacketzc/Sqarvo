@@ -2,8 +2,10 @@
 //! `InsertRows`，v0.2.2 #85 / ADR 0019）。
 //!
 //! 本模块只做三件事：Protobuf ↔ 领域类型、调用驱动 `TableDataProvider`、
-//! 把领域错误映射为 gRPC 状态。分页语义（主键升序、键集游标、无主键只读）全部
-//! 由驱动决定，服务端**不解析**游标内容，也不替驱动重排或补行。
+//! 把领域错误映射为 gRPC 状态。分页语义（双模：键集游标 / offset、排序与筛选下推、
+//! 总数三态、无主键只读）由 ADR 0022 定义，具体 SQL 由驱动拼装；服务端**不解析**
+//! 游标内容，也不替驱动重排或补行。参数结构（未知枚举、空列名、offset 与游标并用）
+//! 在这一层校验并报 `config.invalid`，不让数据库报语法错。
 //!
 //! # 背压
 //!
@@ -21,6 +23,7 @@
 //! | 无主键（浏览） | 浏览成功，`read_only = true` + `READ_ONLY_REASON_NO_PRIMARY_KEY` | — |
 //! | 只读连接（浏览） | 浏览成功，`read_only = true` + `READ_ONLY_REASON_CONNECTION_READ_ONLY` | — |
 //! | 游标非法/被篡改/不属于该表 | `INVALID_ARGUMENT` | `table_data.cursor_invalid` |
+//! | `offset` 与 `page_token` 并用 / 未知排序方向 / 未知筛选算子 | `INVALID_ARGUMENT` | `config.invalid` |
 //! | 驱动未实现表数据 | `UNIMPLEMENTED` | `capability.unsupported` |
 //! | 空批次 / 主键形状不符 / 值类型错配 | `INVALID_ARGUMENT` | `config.invalid` |
 //! | 提交了被截断的值 | `INVALID_ARGUMENT` | `table_data.truncated_value` |
@@ -88,10 +91,11 @@ use std::sync::Arc;
 use sqarvo_common::{Error, ErrorCode, QueryId, SessionId, TransactionId};
 use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_driver_api::{
-    ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, InsertRow,
-    InsertRowsRequest as DomainInsertRowsRequest, MAX_ROW_CHANGES_PER_BATCH,
-    MAX_ROWS_PER_INSERT_BATCH, ObjectKind, PageRequest, PrimaryKey, ReadOnlyReason, RowChange,
-    RowChangeCancel, RowChangeRequest, RowKey, RowOrder,
+    BrowseOptions, ChangeOutcome, ColumnChange, DEFAULT_RISK_CONFIRMATION_ROWS, Filter,
+    FilterCondition, FilterOperator, InsertRow, InsertRowsRequest as DomainInsertRowsRequest,
+    MAX_ROW_CHANGES_PER_BATCH, MAX_ROWS_PER_INSERT_BATCH, ObjectKind, PageRequest, PrimaryKey,
+    ReadOnlyReason, RowChange, RowChangeCancel, RowChangeRequest, RowKey, RowOrder, SortDirection,
+    SortKey, TablePage, TotalKind,
 };
 use tonic::{Request, Response, Status};
 
@@ -99,10 +103,11 @@ use crate::error::to_status;
 use crate::proto::common::v1::{ColumnValue as ProtoColumnValue, Empty, ValueKind};
 use crate::proto::services::v1::{
     ApplyRowChangesRequest, ApplyRowChangesResponse, BrowseTableRequest, BrowseTableResponse,
-    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome,
-    InsertOutcome as ProtoInsertOutcome, InsertRowResult, InsertRowsRequest, InsertRowsResponse,
-    PrimaryKeyValue, ReadOnlyReason as ProtoReadOnlyReason, RowChangeResult, RowDelete,
-    RowKey as ProtoRowKey, RowOrder as ProtoRowOrder, RowUpdate,
+    CancelRowChangesRequest, ChangeOutcome as ProtoChangeOutcome, Filter as ProtoFilter,
+    FilterOperator as ProtoFilterOperator, InsertOutcome as ProtoInsertOutcome, InsertRowResult,
+    InsertRowsRequest, InsertRowsResponse, PrimaryKeyValue, ReadOnlyReason as ProtoReadOnlyReason,
+    RowChangeResult, RowDelete, RowKey as ProtoRowKey, RowOrder as ProtoRowOrder, RowUpdate,
+    SortDirection as ProtoSortDirection, SortKey as ProtoSortKey, TotalKind as ProtoTotalKind,
     table_data_service_server::TableDataService,
 };
 use crate::services::mapping;
@@ -165,8 +170,14 @@ impl TableDataService for TableDataServiceImpl {
         let request = request.into_inner();
         let object = request
             .object
+            .as_ref()
             .ok_or_else(|| Status::invalid_argument("BrowseTable 必须提供 object"))?;
-        let object = object_ref_from_proto(&object)?;
+        let object = object_ref_from_proto(object)?;
+
+        // offset / 排序 / 筛选 / 总数（ADR 0022）：结构校验在发 SQL 之前完成，
+        // 未知枚举值、空列名、offset 与游标并用都在这里变成 `config.invalid`。
+        // 先于 `PageRequest` 构造调用：后者会移走 `page_token`。
+        let options = browse_options_from_proto(&request)?;
 
         // 页大小与游标原样交给驱动：0 表示默认值，超出上限由驱动钳制。
         // 服务端不在这里截断或改写游标，否则两处规则会漂移。
@@ -181,7 +192,13 @@ impl TableDataService for TableDataServiceImpl {
             .await
             .map_err(to_status)?;
         // 浏览在会话执行锁内执行（#69）：与写入共用同一条连接，语句不得交错。
-        let page = handle.browse(&object, &page).await.map_err(to_status)?;
+        let page = handle
+            .browse(&object, &page, &options)
+            .await
+            .map_err(to_status)?;
+
+        // 总行数在移动 `next_page_token` 之前算好：两者都借用 `page`。
+        let total_rows = total_rows_to_proto(&page);
 
         Ok(Response::new(BrowseTableResponse {
             columns: mapping::columns_to_proto(&page.columns),
@@ -191,6 +208,8 @@ impl TableDataService for TableDataServiceImpl {
             read_only: page.read_only,
             read_only_reason: read_only_reason_to_proto(page.read_only_reason) as i32,
             ordering: ordering_to_proto(page.ordering) as i32,
+            total_rows,
+            total_kind: total_kind_to_proto(page.total_kind) as i32,
         }))
     }
 
@@ -755,10 +774,153 @@ fn read_only_reason_to_proto(reason: Option<ReadOnlyReason>) -> ProtoReadOnlyRea
     }
 }
 
+/// 浏览请求的 v0.2.3 增量 → SPI 的 [`BrowseOptions`]（ADR 0022）。
+///
+/// 结构校验全部在这里完成，且**在发 SQL 之前**：未知枚举值、空列名、缺少比较值、
+/// `offset` 与 `page_token` 并用都变成 `config.invalid`（`INVALID_ARGUMENT`），不让数据库
+/// 报语法错。列名是否真实存在由驱动按 `GetColumns` 白名单校验（需要连接）。
+///
+/// 这里的校验只读取字段、不拼接 SQL，也不回显任何比较值。
+fn browse_options_from_proto(request: &BrowseTableRequest) -> Result<BrowseOptions, Status> {
+    // proto3 无法区分「显式 0」与「未设置」：offset = 0 等同未设置（第一行），
+    // 因此索引 0 与 page_token 并用不报错，只有 offset > 0 才与游标互斥。
+    let offset = (request.offset > 0).then_some(request.offset);
+    if offset.is_some() && !request.page_token.is_empty() {
+        return Err(to_status(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "offset 与 page_token 互斥：页码跳转用 offset、连续翻页用 page_token，二者只能给一个",
+        )));
+    }
+
+    let mut sort = Vec::with_capacity(request.sort.len());
+    for key in &request.sort {
+        sort.push(sort_key_from_proto(key)?);
+    }
+
+    Ok(BrowseOptions {
+        offset,
+        sort,
+        filter: filter_from_proto(request.filter.as_ref())?,
+        include_total: request.include_total,
+    })
+}
+
+fn sort_key_from_proto(key: &ProtoSortKey) -> Result<SortKey, Status> {
+    if key.column.trim().is_empty() {
+        return Err(invalid_browse_argument("排序键的列名不能为空"));
+    }
+    let direction = ProtoSortDirection::try_from(key.direction)
+        .map_err(|_| invalid_browse_argument("排序方向是未知枚举值"))?;
+    let direction = match direction {
+        ProtoSortDirection::Asc => SortDirection::Asc,
+        ProtoSortDirection::Desc => SortDirection::Desc,
+        // 不猜默认方向：猜成升序会让用户以为排序生效了，实际不是他要的方向。
+        ProtoSortDirection::Unspecified => {
+            return Err(invalid_browse_argument(
+                "排序方向未指定：必须显式给 SORT_DIRECTION_ASC 或 SORT_DIRECTION_DESC",
+            ));
+        }
+    };
+    Ok(SortKey {
+        column: key.column.clone(),
+        direction,
+    })
+}
+
+/// 空 `conditions` 等价于不过滤（返回 `None`），与老客户端完全不填 `filter` 一致。
+fn filter_from_proto(filter: Option<&ProtoFilter>) -> Result<Option<Filter>, Status> {
+    let Some(filter) = filter else {
+        return Ok(None);
+    };
+    if filter.conditions.is_empty() {
+        return Ok(None);
+    }
+    let mut conditions = Vec::with_capacity(filter.conditions.len());
+    for condition in &filter.conditions {
+        conditions.push(filter_condition_from_proto(condition)?);
+    }
+    Ok(Some(Filter::new(conditions)))
+}
+
+fn filter_condition_from_proto(
+    condition: &crate::proto::services::v1::filter::Condition,
+) -> Result<FilterCondition, Status> {
+    if condition.column.trim().is_empty() {
+        return Err(invalid_browse_argument("筛选条件的列名不能为空"));
+    }
+    let operator = ProtoFilterOperator::try_from(condition.operator)
+        .map_err(|_| invalid_browse_argument("筛选算子是未知枚举值"))?;
+    let operator = match operator {
+        ProtoFilterOperator::Eq => FilterOperator::Eq,
+        ProtoFilterOperator::Ne => FilterOperator::Ne,
+        ProtoFilterOperator::Lt => FilterOperator::Lt,
+        ProtoFilterOperator::Le => FilterOperator::Le,
+        ProtoFilterOperator::Gt => FilterOperator::Gt,
+        ProtoFilterOperator::Ge => FilterOperator::Ge,
+        ProtoFilterOperator::Like => FilterOperator::Like,
+        ProtoFilterOperator::IsNull => FilterOperator::IsNull,
+        ProtoFilterOperator::IsNotNull => FilterOperator::IsNotNull,
+        ProtoFilterOperator::Unspecified => {
+            return Err(invalid_browse_argument(
+                "筛选算子未指定：必须显式给出算子（等值、比较、LIKE 或 IS NULL）",
+            ));
+        }
+    };
+
+    // `IS NULL` / `IS NOT NULL` 忽略值；其余算子缺少比较值是非法请求。
+    let value = if operator.requires_value() {
+        let raw = condition.value.as_ref().ok_or_else(|| {
+            invalid_browse_argument(format!(
+                "列 {} 的筛选条件缺少比较值（IS NULL 请用对应算子）",
+                condition.column
+            ))
+        })?;
+        if raw.kind == ValueKind::Unspecified as i32 {
+            return Err(invalid_browse_argument(format!(
+                "列 {} 的筛选值未指定类型（VALUE_KIND_UNSPECIFIED）",
+                condition.column
+            )));
+        }
+        Some(mapping::value_from_proto(raw)?)
+    } else {
+        None
+    };
+
+    Ok(FilterCondition {
+        column: condition.column.clone(),
+        operator,
+        value,
+    })
+}
+
+/// 浏览参数非法的统一构造（`config.invalid` → `INVALID_ARGUMENT` + trailing metadata）。
+fn invalid_browse_argument(message: impl Into<String>) -> Status {
+    to_status(Error::invalid_argument(ErrorCode::CONFIG_INVALID, message))
+}
+
 fn ordering_to_proto(ordering: RowOrder) -> ProtoRowOrder {
     match ordering {
         RowOrder::PrimaryKeyAscending => ProtoRowOrder::PrimaryKeyAscending,
         RowOrder::Unstable => ProtoRowOrder::Unstable,
+        RowOrder::RequestedSort => ProtoRowOrder::RequestedSort,
+    }
+}
+
+fn total_kind_to_proto(kind: TotalKind) -> ProtoTotalKind {
+    match kind {
+        TotalKind::Unknown => ProtoTotalKind::Unknown,
+        TotalKind::Estimate => ProtoTotalKind::Estimate,
+        TotalKind::Exact => ProtoTotalKind::Exact,
+    }
+}
+
+/// `total_rows` 只在 `total_kind != UNKNOWN` 时有意义；UNKNOWN 时固定回 0，
+/// 不把驱动遗留的数字透出去让客户端误读。
+fn total_rows_to_proto(page: &TablePage) -> u64 {
+    if page.total_kind == TotalKind::Unknown {
+        0
+    } else {
+        page.total_rows.unwrap_or(0)
     }
 }
 
@@ -926,5 +1088,217 @@ mod tests {
             String::new()
         );
         assert_ne!(outcome_message(&ChangeOutcome::RowNotFound), String::new());
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR 0022：浏览参数（offset / sort / filter / total）的映射与校验
+    // -----------------------------------------------------------------------
+
+    use crate::error::ERROR_CODE_METADATA_KEY;
+    use crate::proto::services::v1::filter::Condition as ProtoFilterCondition;
+    use tonic::Code;
+
+    fn error_code_of(status: &Status) -> &str {
+        status
+            .metadata()
+            .get(ERROR_CODE_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+    }
+
+    /// 老客户端（一个新字段都不填）→ `offset = None`、无排序、无筛选、不请求总数，
+    /// 且被 SPI 判定为 legacy 路径（行为与 v0.2.2 完全一致）。
+    #[test]
+    fn default_browse_request_is_the_v022_path() {
+        let request = BrowseTableRequest::default();
+        let options = browse_options_from_proto(&request).expect("空请求合法");
+        assert!(options.is_legacy());
+        assert_eq!(options.offset, None);
+        assert_eq!(options.sort, Vec::<SortKey>::new());
+        assert!(options.filter.is_none());
+        assert!(!options.include_total);
+
+        // 空的 `filter` message（而不是 None）也等价于不过滤。
+        let request = BrowseTableRequest {
+            filter: Some(ProtoFilter::default()),
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("空 filter 合法");
+        assert!(options.filter.is_none());
+        assert!(options.is_legacy());
+    }
+
+    /// `offset` 与 `page_token` 互斥：同时给出（`offset > 0`）必须是 `config.invalid`，
+    /// 而不是「随便挑一个用」。offset = 0 在 proto3 里无法与未设置区分，等同未设置。
+    #[test]
+    fn offset_and_page_token_are_mutually_exclusive() {
+        let request = BrowseTableRequest {
+            offset: 10,
+            page_token: "sqtoken-v1.***".to_owned(),
+            ..BrowseTableRequest::default()
+        };
+        let status = browse_options_from_proto(&request).expect_err("互斥必须报错");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(error_code_of(&status), "config.invalid");
+        assert!(status.message().contains("互斥"));
+        // 文案面向用户：不回显游标内容。
+        assert!(!status.message().contains("sqtoken"));
+
+        // 只有 offset：走 offset 路径，不请求总数时仍是 legacy 维度之外的新路径。
+        let request = BrowseTableRequest {
+            offset: 10,
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("单独 offset 合法");
+        assert_eq!(options.offset, Some(10));
+        assert!(!options.is_legacy());
+
+        // offset = 0 + 游标：等价于未设置 offset，不报错（老客户端行为不变）。
+        let request = BrowseTableRequest {
+            page_token: "sqtoken-v1.***".to_owned(),
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("offset=0 等同未设置");
+        assert_eq!(options.offset, None);
+        assert!(options.is_legacy());
+    }
+
+    #[test]
+    fn sort_keys_require_column_and_explicit_direction() {
+        let request = BrowseTableRequest {
+            sort: vec![ProtoSortKey {
+                column: "created_at".to_owned(),
+                direction: ProtoSortDirection::Desc as i32,
+            }],
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("合法排序键");
+        assert!(options.has_requested_sort());
+        assert_eq!(options.sort[0].column, "created_at");
+        assert_eq!(options.sort[0].direction, SortDirection::Desc);
+        // 有排序时 ordering 必须是 ROW_ORDER_REQUESTED_SORT。
+        assert_eq!(
+            ordering_to_proto(RowOrder::RequestedSort),
+            ProtoRowOrder::RequestedSort
+        );
+
+        for (column, direction) in [
+            ("", ProtoSortDirection::Asc as i32),
+            ("id", ProtoSortDirection::Unspecified as i32),
+            ("id", 99),
+        ] {
+            let request = BrowseTableRequest {
+                sort: vec![ProtoSortKey {
+                    column: column.to_owned(),
+                    direction,
+                }],
+                ..BrowseTableRequest::default()
+            };
+            let status = browse_options_from_proto(&request)
+                .expect_err("空列名 / 未指定 / 未知方向必须拒绝");
+            assert_eq!(status.code(), Code::InvalidArgument);
+            assert_eq!(error_code_of(&status), "config.invalid");
+        }
+    }
+
+    #[test]
+    fn filter_conditions_are_mapped_without_sql_text() {
+        let request = BrowseTableRequest {
+            filter: Some(ProtoFilter {
+                conditions: vec![
+                    ProtoFilterCondition {
+                        column: "name".to_owned(),
+                        operator: ProtoFilterOperator::Like as i32,
+                        value: Some(text("a%")),
+                    },
+                    ProtoFilterCondition {
+                        column: "deleted_at".to_owned(),
+                        operator: ProtoFilterOperator::IsNull as i32,
+                        // IS NULL 忽略值。
+                        value: None,
+                    },
+                ],
+            }),
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("过滤条件合法");
+        let filter = options.filter.expect("非空 filter");
+        assert_eq!(filter.conditions.len(), 2);
+        assert_eq!(filter.conditions[0].operator, FilterOperator::Like);
+        assert_eq!(
+            filter.conditions[0].value,
+            Some(sqarvo_driver_api::Value::Text("a%".to_owned()))
+        );
+        assert_eq!(filter.conditions[1].operator, FilterOperator::IsNull);
+        assert_eq!(filter.conditions[1].value, None);
+
+        // 需要值的算子缺少值 → config.invalid，且文案不回显任何值。
+        let request = BrowseTableRequest {
+            filter: Some(ProtoFilter {
+                conditions: vec![ProtoFilterCondition {
+                    column: "name".to_owned(),
+                    operator: ProtoFilterOperator::Eq as i32,
+                    value: None,
+                }],
+            }),
+            ..BrowseTableRequest::default()
+        };
+        let status = browse_options_from_proto(&request).expect_err("缺少比较值必须拒绝");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(error_code_of(&status), "config.invalid");
+
+        // 未指定 / 未知算子同样拒绝，不猜默认算子。
+        for operator in [ProtoFilterOperator::Unspecified as i32, 99] {
+            let request = BrowseTableRequest {
+                filter: Some(ProtoFilter {
+                    conditions: vec![ProtoFilterCondition {
+                        column: "name".to_owned(),
+                        operator,
+                        value: Some(text("x")),
+                    }],
+                }),
+                ..BrowseTableRequest::default()
+            };
+            let status = browse_options_from_proto(&request).expect_err("未知算子必须拒绝");
+            assert_eq!(status.code(), Code::InvalidArgument);
+            assert_eq!(error_code_of(&status), "config.invalid");
+        }
+    }
+
+    /// 总数三态映射：UNKNOWN 时不透出数字；ESTIMATE / EXACT 如实回传。
+    #[test]
+    fn total_rows_are_only_meaningful_with_a_known_kind() {
+        assert_eq!(
+            total_kind_to_proto(TotalKind::Unknown),
+            ProtoTotalKind::Unknown
+        );
+        assert_eq!(
+            total_kind_to_proto(TotalKind::Estimate),
+            ProtoTotalKind::Estimate
+        );
+        assert_eq!(total_kind_to_proto(TotalKind::Exact), ProtoTotalKind::Exact);
+
+        let page = TablePage {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            next_page_token: None,
+            has_more: false,
+            read_only: true,
+            read_only_reason: None,
+            ordering: RowOrder::RequestedSort,
+            total_rows: Some(42),
+            total_kind: TotalKind::Exact,
+        };
+        assert_eq!(total_rows_to_proto(&page), 42);
+
+        let unknown = TablePage {
+            total_kind: TotalKind::Unknown,
+            ..page
+        };
+        assert_eq!(
+            total_rows_to_proto(&unknown),
+            0,
+            "UNKNOWN 时不得透出遗留数字"
+        );
     }
 }

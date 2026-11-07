@@ -11,7 +11,11 @@
 //!
 //! 三条约束：
 //!
-//! - **没有 OFFSET**：游标里是上一页最后一个主键值，翻页代价与页序号无关；
+//! - **分页双模**（ADR 0022）：连续翻页用键集游标，游标里是上一页最后一个主键值，
+//!   翻页代价与页序号无关；#109 只做契约增量，`BrowseOptions` 的 offset / 排序 /
+//!   筛选 / 总数**尚未下推**（`supports_browse_sort_filter_total` 保持 false），
+//!   实际 SQL 仍是「主键升序 + 键集游标」；OFFSET / ORDER BY / WHERE / COUNT(*)
+//!   的拼装属于 #110 / #111；
 //! - **值一律绑定**：只有标识符（表名、列名）进入 SQL 文本，并且用双引号引用、
 //!   内部双引号翻倍；主键值与页大小都是参数；
 //! - **无主键只读**：按扫描顺序给一页预览，`ordering = Unstable`、
@@ -31,11 +35,12 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport, InsertRow,
-    InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
-    PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest,
-    RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
-    invalid_change, no_primary_key, read_only_connection, read_only_object, read_only_transaction,
+    BrowseOptions, Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport,
+    InsertRow, InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef,
+    PageRequest, PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, TotalKind,
+    Value, classify_rows_affected, invalid_change, no_primary_key, read_only_connection,
+    read_only_object, read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
@@ -61,6 +66,8 @@ pub(crate) enum TableDataRequest {
     Browse {
         object: ObjectRef,
         page: PageRequest,
+        /// v0.2.3 浏览选项（ADR 0022）；#109 起随请求传递，SQL 下推在 #110 / #111。
+        options: BrowseOptions,
     },
     /// 提交一批行变更（ADR 0017：值全部走参数绑定）。
     Apply {
@@ -107,9 +114,13 @@ pub(crate) fn handle(
     request: TableDataRequest,
 ) -> Result<TableDataReply> {
     match request {
-        TableDataRequest::Browse { object, page } => {
-            Ok(TableDataReply::Page(browse(connection, &object, &page)?))
-        }
+        TableDataRequest::Browse {
+            object,
+            page,
+            options,
+        } => Ok(TableDataReply::Page(browse(
+            connection, &object, &page, &options,
+        )?)),
         TableDataRequest::Apply {
             object,
             changes,
@@ -154,12 +165,18 @@ impl TableDataProvider for SqliteSession {
         MetadataProvider::primary_key(self, object).await
     }
 
-    async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
+    async fn browse(
+        &self,
+        object: &ObjectRef,
+        page: &PageRequest,
+        options: &BrowseOptions,
+    ) -> Result<TablePage> {
         metadata::validate_session(self.session_id(), object)?;
         match self
             .table_data_call(TableDataRequest::Browse {
                 object: object.clone(),
                 page: page.clone(),
+                options: options.clone(),
             })
             .await?
         {
@@ -229,7 +246,15 @@ impl TableDataProvider for SqliteSession {
     }
 }
 
-fn browse(connection: &Connection, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
+fn browse(
+    connection: &Connection,
+    object: &ObjectRef,
+    page: &PageRequest,
+    _options: &BrowseOptions,
+) -> Result<TablePage> {
+    // #109 只做契约增量：offset / 排序 / 筛选 / 总数尚未下推（#110 / #111），
+    // 能力位 `supports_browse_sort_filter_total` 保持 false。此处**显式忽略**
+    // 浏览选项并返回 v0.2.2 行为，不伪造排序/筛选/总数。
     let name = metadata::object_name(object)?;
     // 连接级只读：浏览不受影响（仍是 SELECT），但写入一定被拒绝，因此这里就置只读。
     let connection_read_only = connection_read_only(connection)?;
@@ -297,6 +322,9 @@ fn browse(connection: &Connection, object: &ObjectRef, page: &PageRequest) -> Re
         read_only: read_only_reason.is_some(),
         read_only_reason,
         ordering: RowOrder::PrimaryKeyAscending,
+        // 总数未请求 / 未实现（#111 才下推 COUNT(*)）；不得伪称 EXACT。
+        total_rows: None,
+        total_kind: TotalKind::Unknown,
     })
 }
 
@@ -422,6 +450,8 @@ fn browse_without_primary_key(
         }),
         // 扫描顺序不受契约保证：UI 必须展示「无稳定排序」，且禁止据此定位行。
         ordering: RowOrder::Unstable,
+        total_rows: None,
+        total_kind: TotalKind::Unknown,
     })
 }
 

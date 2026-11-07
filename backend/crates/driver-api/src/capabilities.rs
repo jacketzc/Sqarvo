@@ -48,6 +48,15 @@ pub struct Capabilities {
     /// 对话框里标注该档位等同 `VerifyFull`，不得让用户以为「只校链」真的生效（ADR 0020）。
     /// 没有 TLS 的文件型驱动同样为 `false`。
     pub tls_verify_ca_chain_only: bool,
+    /// 表浏览支持排序、筛选与精确总数（ADR 0022）。
+    ///
+    /// 与 [`crate::TableDataProvider::supports_browse_sort_filter_total`] 一致：为
+    /// `false` 时前端不得提供列头排序 / 筛选 / 精确计数入口，驱动也必须忽略
+    /// `BrowseOptions` 的对应字段（返回 v0.2.2 的「主键升序 + 游标」行为）。
+    ///
+    /// 默认 `false`：#109 只做契约增量，SQL 下推（`ORDER BY` / `WHERE` /
+    /// `COUNT(*)`）在 #110 / #111 实现后才允许翻成 `true`。
+    pub table_browse_sort_filter_total: bool,
 }
 
 impl Capabilities {
@@ -87,6 +96,9 @@ impl Capabilities {
         }
         if self.tls_verify_ca_chain_only {
             names.push("tls_verify_ca_chain_only");
+        }
+        if self.table_browse_sort_filter_total {
+            names.push("table_browse_sort_filter_total");
         }
         names
     }
@@ -153,5 +165,29 @@ mod tests {
         let minimal = Capabilities::default();
         assert!(!minimal.tls_verify_ca_chain_only);
         assert!(!minimal.names().contains(&"tls_verify_ca_chain_only"));
+    }
+
+    #[test]
+    fn browse_sort_filter_total_is_opt_in_and_appended_last() {
+        // ADR 0022：排序/筛选/精确计数的能力位默认 false（#110 / #111 才翻 true），
+        // 名字追加在既有项之后，不改动任何既有能力的顺序。
+        let minimal = Capabilities::default();
+        assert!(!minimal.table_browse_sort_filter_total);
+        assert!(!minimal.names().contains(&"table_browse_sort_filter_total"));
+
+        let capabilities = Capabilities {
+            transactions: true,
+            row_editing: true,
+            table_browse_sort_filter_total: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(
+            capabilities.names(),
+            [
+                "transactions",
+                "row_editing",
+                "table_browse_sort_filter_total"
+            ]
+        );
     }
 }

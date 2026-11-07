@@ -23,8 +23,11 @@
 //! - **代价**：展开形式会重复绑定前缀列（n 列主键需要 n(n+1)/2 个参数）。主键列数
 //!   在实际 schema 里很小，参数上限（65535）不是约束；换来的是可预测的执行计划。
 //!
-//! 仍然遵守两条硬约束：**没有 OFFSET**；只有标识符进入 SQL 文本（反引号引用、
-//! 内部反引号翻倍），所有值都绑定。
+//! 仍然遵守两条硬约束：**值一律绑定**，只有标识符进入 SQL 文本（反引号引用、
+//! 内部反引号翻倍）。#109 只做契约增量：`BrowseOptions` 的 offset / 排序 / 筛选 /
+//! 总数**尚未下推**（`supports_browse_sort_filter_total` 保持 false），SQL 仍是
+//! 「主键升序 + 键集游标」；OFFSET / ORDER BY / WHERE / COUNT(*) 的拼装属于
+//! #110 / #111。
 //!
 //! **只读连接不适用**：MariaDB 没有「以只读方式打开连接」的概念，连接参数里的
 //! `read_only` 会被 `MariaDbConfig::from_params` 以 `config.invalid` 明确拒绝（不静默
@@ -40,11 +43,12 @@ use mysql_async::prelude::*;
 use mysql_async::{Conn, Params, Value as MyValue};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport, InsertRow,
-    InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef, PageRequest,
-    PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest,
-    RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, Value, classify_rows_affected,
-    invalid_change, no_primary_key, read_only_object, read_only_transaction,
+    BrowseOptions, Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport,
+    InsertRow, InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef,
+    PageRequest, PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, TotalKind,
+    Value, classify_rows_affected, invalid_change, no_primary_key, read_only_object,
+    read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
@@ -71,6 +75,8 @@ pub(crate) enum TableDataRequest {
     Browse {
         object: ObjectRef,
         page: PageRequest,
+        /// v0.2.3 浏览选项（ADR 0022）；#109 起随请求传递，SQL 下推在 #110 / #111。
+        options: BrowseOptions,
     },
     /// 提交一批行变更（ADR 0017：值全部走 prepared statement 绑定）。
     Apply {
@@ -119,9 +125,13 @@ pub(crate) async fn handle(
     request: TableDataRequest,
 ) -> Result<TableDataReply> {
     match request {
-        TableDataRequest::Browse { object, page } => {
-            Ok(TableDataReply::Page(browse(conn, &object, &page).await?))
-        }
+        TableDataRequest::Browse {
+            object,
+            page,
+            options,
+        } => Ok(TableDataReply::Page(
+            browse(conn, &object, &page, &options).await?,
+        )),
         TableDataRequest::Apply {
             object,
             changes,
@@ -157,12 +167,18 @@ impl TableDataProvider for MariaDbSession {
         MetadataProvider::primary_key(self, object).await
     }
 
-    async fn browse(&self, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
+    async fn browse(
+        &self,
+        object: &ObjectRef,
+        page: &PageRequest,
+        options: &BrowseOptions,
+    ) -> Result<TablePage> {
         metadata::validate_session(self.session_id(), object)?;
         match self
             .table_data_call(TableDataRequest::Browse {
                 object: object.clone(),
                 page: page.clone(),
+                options: options.clone(),
             })
             .await?
         {
@@ -228,7 +244,15 @@ impl TableDataProvider for MariaDbSession {
     }
 }
 
-async fn browse(conn: &mut Conn, object: &ObjectRef, page: &PageRequest) -> Result<TablePage> {
+async fn browse(
+    conn: &mut Conn,
+    object: &ObjectRef,
+    page: &PageRequest,
+    _options: &BrowseOptions,
+) -> Result<TablePage> {
+    // #109 只做契约增量：offset / 排序 / 筛选 / 总数尚未下推（#110 / #111），
+    // 能力位 `supports_browse_sort_filter_total` 保持 false。此处**显式忽略**
+    // 浏览选项并返回 v0.2.2 行为，不伪造排序/筛选/总数。
     let database = metadata::current_database(conn).await?;
     let name = metadata::object_parts(object, &database)?;
     // `find_table` 同时给出服务端规范表名（大小写以 `information_schema` 为准），
@@ -318,6 +342,9 @@ async fn browse(conn: &mut Conn, object: &ObjectRef, page: &PageRequest) -> Resu
         read_only: false,
         read_only_reason: None,
         ordering: RowOrder::PrimaryKeyAscending,
+        // 总数未请求 / 未实现（#111 才下推 COUNT(*)）；不得伪称 EXACT。
+        total_rows: None,
+        total_kind: TotalKind::Unknown,
     })
 }
 
@@ -405,6 +432,8 @@ async fn browse_without_primary_key(
         read_only: true,
         read_only_reason: Some(ReadOnlyReason::NoPrimaryKey),
         ordering: RowOrder::Unstable,
+        total_rows: None,
+        total_kind: TotalKind::Unknown,
     })
 }
 
