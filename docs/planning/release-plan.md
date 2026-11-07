@@ -229,6 +229,25 @@ MariaDB 集成 **69 passed**，日志中「跳过：未设置 SQARVO_MARIADB_URL
 - 一标签一会话的证据：两个标签的事务互不可见（一个提交前后，另一个读到旧值），有记录；
 - 证据为 `--qa-*` 无人值守序列 + GTK 自渲染截图，不得用描述代替。
 
+完成记录（2026-11-07，Linux，证据基线 `a74ca8f`）：以上 8 条全部满足，发布说明见
+[v0.2.3](../releases/v0.2.3.md)。
+
+| 退出标准 | 证据 |
+|---|---|
+| 六区域 1200×800 / 960×640 两档无裁切 | `--qa-layout-audit` 两档各 19 项 0 超限；折叠省 280px 有反证截图 |
+| 键盘可走完「树 → 标签 → 表格 → 面板」 | 验收链的焦点断言（`win.focus-search` 经产品动作）+ 各控件 Tab 顺序；完整屏幕阅读器验证未做 |
+| 关闭有脏行标签进入三选，取消不销毁 | 关标签三选：选「取消」后标签 2 / 会话 2 保留；选「放弃」后 1/1 |
+| 超限拒绝并给出可读原因 | 第 9 个标签被拒：「标签上限 8 个（当前已开 8 个）：请先关闭一个标签再新建」 |
+| 排序/筛选列名白名单 + 值全参数化 | 两驱动在发 SQL 前 `config.invalid`（有用例）；共享 testkit 不变量 #112 |
+| 总数 ESTIMATE 标「约」 | MariaDB 25 万行「约 250149 行」；计数超时「未统计（超出计数预算）」 |
+| 导出取消不留半截、路径穿越与未确认覆盖被拒 | 取消后目标不存在、无 `.sqarvo-tmp`；`../` 被拒；`RENAME_NOREPLACE` |
+| 一标签一会话：两标签事务互不可见 | A 标签事务内 `name=txn-locked`，B 读到已提交值；A 回滚后 B 不变 |
+| 证据为 `--qa-*` + 自渲染截图 | `scripts/v023-acceptance.sh` 86 项断言全过（两库各一遍），证据目录在仓库外 |
+
+配套基线（2026-11-07）：backend `cargo test --workspace`（带 DSN）**619 passed / 0 failed / 2 ignored**；
+frontend `cargo test` **311 passed / 0 failed / 1 ignored**；`fmt --check` 与 `clippy -D warnings` 均通过；
+CI（`a74ca8f`）三作业 success；`scripts/check-tracking.sh --state all` 无失败无警告。
+
 口径与未验证项（本版开始时如实记录，发布时更新）：
 
 - Windows / macOS 前端仍是窗口骨架，本版只提供映射口径，不提供实现与验证；

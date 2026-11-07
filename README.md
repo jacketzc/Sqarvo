@@ -8,11 +8,12 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
-> 当前版本为 **v0.2.2**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动 + 元数据与
-> 对象树 / DDL / 搜索 + 显式事务 + 插入行）、Linux GTK4 前端（拉起后端、连接、执行、取消、
-> 结果虚拟化、对象树 / DDL / 搜索、数据页浏览/编辑/插入、隔离级别与取消提交）与凭据存储
-> 已可端到端使用。**Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵与
-> 已知限制见 [v0.2.2 发布说明](docs/releases/v0.2.2.md)。
+> 当前版本为 **v0.2.3**：后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动 + 元数据与
+> 对象树 / DDL / 搜索 + 显式事务 + 插入行 + 表浏览排序/筛选/offset 分页/总数三态）、
+> Linux GTK4 前端（六区域工作区、多连接、标签工作区（一标签一会话）、表格浏览与多选、
+> 信息面板、导出 CSV、对象树 / DDL / 搜索、数据页浏览/编辑/插入）与凭据存储已可端到端使用。
+> **Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵与已知限制见
+> [v0.2.3 发布说明](docs/releases/v0.2.3.md)。
 
 ## 目录结构
 
@@ -77,8 +78,8 @@
   PostgreSQL 驱动未实现，因此也没有该层的正例（Catalog / 表 / 视图 / 序列 / 索引 / 触发器已接入）；
 - MariaDB 索引与触发器的独立 DDL：`ObjectRef` 不携带所属表，明确报 `metadata.object_kind_unsupported`
   （可查看所属表的 `SHOW CREATE TABLE`）；
-- 结构修改（执行 DDL）、导入导出、结构对比与 ER 图：导入导出与结构对比属 v0.2.3，
-  结构修改与 ER 图未排期（P2）；当前 `GetDdl` 只读；
+- 结构修改（执行 DDL）、导入导出、结构对比与 ER 图：导入导出与结构对比属 v0.2.5（M8），
+  结构修改与 ER 图未排期（P2）；当前 `GetDdl` 只读；导出目前只有「当前结果 / 当前页 → CSV」；
 - 数据页按非主键列排序；跨库的表数据浏览/行编辑/插入（元数据可跨库，读写仍限当前库）；
 - `ColumnMeta.auto_increment`：自增列在 UI 只能默认留空并说明，无法禁止显式填写；
   「按主键回读单行」RPC 与插入批次取消同样待契约增量；
@@ -161,6 +162,7 @@ cargo run
 - [v0.2 发布说明](docs/releases/v0.2.md)
 - [v0.2.1 发布说明](docs/releases/v0.2.1.md)
 - [v0.2.2 发布说明](docs/releases/v0.2.2.md)
+- [v0.2.3 发布说明](docs/releases/v0.2.3.md)
 
 技术与设计：
 
