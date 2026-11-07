@@ -7,6 +7,7 @@
 //! GTK 主线程只通过 channel 与后台 worker 交互。
 
 mod backend;
+mod browse;
 mod column_info;
 mod config;
 mod data_page;
@@ -84,6 +85,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-open", "table-name"),
         ("qa-tree-ddl", "object-name"),
         ("qa-tree-search", "query"),
+        ("qa-tree-disconnect", "connection-name"),
         ("qa-expect-tree", "field=value"),
         ("qa-expect-ddl", "field=value"),
     ] {

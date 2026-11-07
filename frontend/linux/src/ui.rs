@@ -30,6 +30,7 @@ use crate::backend::endpoint;
 use crate::backend::metadata::NodeView;
 use crate::backend::table::TableEntry;
 use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, TableEvent, WorkerHandle};
+use crate::browse::{ConnectionRegistry, ConnectionSnapshot};
 use crate::data_page::{
     DataCallbacks, DataPage, DataState, RowOpsState, StatusSnapshot, TableBrowser,
 };
@@ -66,6 +67,10 @@ struct UiState {
     connection_name: RefCell<Option<String>>,
     /// 窗口级动作（主菜单与快捷键）；`activate` 里建好后放进这里。
     actions: RefCell<Option<Rc<WindowActions>>>,
+    /// 连接注册表（`connections.json` 的全部连接 + 每连接一条浏览会话，#114）。
+    registry: RefCell<Option<Rc<ConnectionRegistry>>>,
+    /// 本次「保存并连接」的文件路径（把结果对回注册表条目用；SQLite 没有凭据可对）。
+    pending_file_hint: RefCell<Option<String>>,
 }
 
 /// `Connected` 事件携带的后端信息，诊断信息对话框用。
@@ -150,6 +155,16 @@ pub fn activate(app: &adw::Application) {
         }
     };
 
+    // 连接注册表（#114）：连接列表来自 `connections.json`，与后端是否握手无关；
+    // 每条连接的浏览会话在真正展开/点击时才建立。
+    let (registry, session_events) = match ConnectionRegistry::load(endpoint_path.clone()) {
+        Ok((registry, events)) => (Some(registry), Some(events)),
+        Err(error) => {
+            eprintln!("[browse] 连接注册表启动失败：{error}");
+            (None, None)
+        }
+    };
+
     let state = Rc::new(UiState {
         window: window.clone(),
         slot: slot.clone(),
@@ -164,7 +179,20 @@ pub fn activate(app: &adw::Application) {
         backend: RefCell::new(None),
         connection_name: RefCell::new(None),
         actions: RefCell::new(None),
+        registry: RefCell::new(registry),
+        pending_file_hint: RefCell::new(None),
     });
+
+    // 浏览会话事件泵：建立/断开/会话列表的结果都只在主线程改界面。
+    if let (Some(registry), Some(session_events)) =
+        (state.registry.borrow().clone(), session_events)
+    {
+        glib::spawn_future_local(async move {
+            while let Ok(event) = session_events.recv().await {
+                registry.dispatch(event);
+            }
+        });
+    }
 
     // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
     let actions = install_window_actions(&window, &state);
@@ -271,6 +299,9 @@ pub fn activate(app: &adw::Application) {
                     if let Some(workspace) = events_state.workspace.borrow_mut().take() {
                         workspace.sql_page.close_query();
                     }
+                    if let Some(registry) = events_state.registry.borrow().clone() {
+                        registry.reset_sessions("后端已重新握手：浏览会话需要重建");
+                    }
                     show_connected(
                         &events_state.slot,
                         &events_state.title,
@@ -303,6 +334,9 @@ pub fn activate(app: &adw::Application) {
                         events_state.title.set_subtitle("已断开");
                         events_state.title.set_title("Sqarvo");
                         events_state.connection_name.replace(None);
+                        if let Some(registry) = events_state.registry.borrow().clone() {
+                            registry.reset_sessions(&format!("后端已断开：{reason}"));
+                        }
                         // 有工作区时保留它：已加载的行仍可查看，但明确标注失连，
                         // 不能因为断连就把用户看到的数据抹掉。
                         let workspace = events_state.workspace.borrow().as_ref().cloned();
@@ -341,6 +375,27 @@ pub fn activate(app: &adw::Application) {
                         Ok(outcome) => {
                             if let Some(dialog) = dialog.as_ref() {
                                 dialog.close();
+                            }
+                            // 连接注册表跟着配置走：先把新条目读进来，再把这条会话挂到
+                            // 对应的连接上，最后为它建立**独立的**浏览会话（ADR 0021）。
+                            let file_hint = events_state.pending_file_hint.borrow().clone();
+                            if let Some(registry) = events_state.registry.borrow().clone() {
+                                registry.refresh_from_config();
+                                match registry.key_for_outcome(
+                                    &outcome.credential_ref,
+                                    &outcome.driver_id,
+                                    file_hint.as_deref(),
+                                ) {
+                                    Some(key) => {
+                                        registry.set_active(Some(&key), Some(&outcome.session_id));
+                                        registry.log_sessions("保存并连接后");
+                                        registry.open(&key);
+                                    }
+                                    None => eprintln!(
+                                        "[browse] 保存并连接成功，但在连接注册表里找不到对应条目（会话 {}）",
+                                        short_id(&outcome.session_id)
+                                    ),
+                                }
                             }
                             show_workspace(
                                 &events_state,
@@ -615,6 +670,10 @@ fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionD
             // 会话显示名是标题规则（§5.1）里的「连接名」：只在这里临时记住，
             // 不参与连接参数，也不进日志。
             state.connection_name.replace(Some(draft.name.clone()));
+            // SQLite 没有凭据引用可对：把文件路径留给注册表，把结果对回正确的条目。
+            state
+                .pending_file_hint
+                .replace(Some(draft.file_path.clone()).filter(|path| !path.is_empty()));
             worker.save_and_connect(draft);
         } else {
             worker.test_connection(draft);
@@ -995,43 +1054,57 @@ impl Workspace {
         let stack_for_sql = page_stack.clone();
         sql_button.connect_clicked(move |_| stack_for_sql.set_visible_child_name("sql"));
 
+        // 打开表的统一入口。数据页仍然绑定 worker 持有的那条会话（#116 才会做到
+        // 一标签一会话）：树里的对象可能来自**另一条**连接的浏览会话，那种情况必须
+        // 明确说明，不能把 B 库的表按 A 库的会话去读（同名表会读到错的数据）。
         let open: Rc<dyn Fn(TableEntry)> = {
             let page_stack = page_stack.clone();
             let data_page = Rc::clone(data_page);
             let state = Rc::clone(state);
             Rc::new(move |entry: TableEntry| {
+                let mut entry = entry;
+                let mut blocked = None;
+                if let Some(registry) = state.registry.borrow().clone() {
+                    let session = entry.reference.session_id.clone();
+                    if !session.is_empty() && !registry.is_active_session(&session) {
+                        let owner = registry
+                            .key_for_session(&session)
+                            .and_then(|key| registry.snapshot(&key))
+                            .map(|snapshot| snapshot.name);
+                        let active = registry
+                            .active_key()
+                            .and_then(|key| registry.snapshot(&key))
+                            .map(|snapshot| snapshot.name)
+                            .unwrap_or_else(|| "（无）".to_owned());
+                        blocked = Some((owner.unwrap_or_else(|| "另一条连接".to_owned()), active));
+                    } else if let Some(data_session) = registry.data_session() {
+                        // 浏览会话与数据会话是两条：数据页必须用后者。
+                        entry.reference.session_id = data_session;
+                    }
+                }
+                if let Some((owner, active)) = blocked {
+                    let text = format!(
+                        "「{}」的表属于连接「{owner}」，数据页当前绑定「{active}」：\
+                         每标签会话在 #116 提供，本轮只浏览当前连接的表。",
+                        entry.display_name
+                    );
+                    eprintln!("[data] 拒绝打开 {}：{text}", entry.display_name);
+                    page_stack.set_visible_child_name("data");
+                    data_page.show_notice(&text);
+                    return;
+                }
                 page_stack.set_visible_child_name("data");
                 data_page.begin_open(entry.clone());
                 eprintln!(
-                    "[data] t=+{}ms 选择表 {}",
+                    "[data] t=+{}ms 选择表 {}（会话 {}）",
                     crate::qa::elapsed_ms(),
-                    entry.display_name
+                    entry.display_name,
+                    short_id(&entry.reference.session_id)
                 );
                 if let Some(worker) = state.worker.borrow().as_ref() {
                     worker.open_table(entry.reference);
                 }
             })
-        };
-
-        // ---- 元数据通道（独立线程；连接断开时随工作区一起释放） ----------------
-        let hub = match crate::backend::metadata::MetadataHub::spawn(
-            state.endpoint_path.clone(),
-            session_id.to_owned(),
-        ) {
-            Ok((hub, events)) => {
-                // 事件泵：只在主线程更新控件（回调里可以安全地 set_text）。
-                let pump = Rc::clone(&hub);
-                glib::spawn_future_local(async move {
-                    while let Ok(event) = events.recv().await {
-                        pump.dispatch(event);
-                    }
-                });
-                Some(hub)
-            }
-            Err(error) => {
-                eprintln!("[tree] 元数据通道启动失败：{error}");
-                None
-            }
         };
 
         // ---- DDL 面板（底部可收起，常驻布局但不占空间） ------------------------
@@ -1092,6 +1165,12 @@ impl Workspace {
                         stack.set_visible_child_name("flat");
                         toggle.set_label("对象树");
                     }
+                })
+            },
+            disconnect: {
+                let state = Rc::clone(state);
+                Rc::new(move |snapshot: ConnectionSnapshot| {
+                    confirm_disconnect(&state, snapshot);
                 })
             },
         });
@@ -1227,13 +1306,18 @@ impl Workspace {
             }));
         }
 
-        // 接线：树读根层，DDL 面板与树共用同一条元数据通道。
-        match hub {
-            Some(hub) => {
-                ddl.attach(Rc::clone(&hub));
-                tree.attach(hub, session_id);
+        // 接线：树与 DDL 都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
+        match state.registry.borrow().clone() {
+            Some(registry) => {
+                ddl.attach_resolver({
+                    let registry = Rc::clone(&registry);
+                    Rc::new(move |object: &crate::proto::services::v1::ObjectRef| {
+                        registry.hub_for_session(&object.session_id)
+                    })
+                });
+                tree.attach(registry);
             }
-            None => tree.mark_unavailable("元数据通道启动失败：无法读取对象树"),
+            None => tree.mark_unavailable("连接注册表不可用：无法读取对象树"),
         }
 
         let root = shell.widget().clone();
@@ -1449,6 +1533,20 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
             }),
         );
         delay += 900;
+    }
+
+    // #114：断开一条连接的浏览会话（走右键菜单同一条路径：回调里弹确认框）。
+    // 排在搜索之前：一次运行里就能验证「断开这条之后，另一条仍能搜索/展开」。
+    if let Some(name) = crate::qa::tree_disconnect() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_disconnect(&name)
+                    .map(|snapshot| format!("断开连接「{}」（浏览会话）", snapshot.name))
+            }),
+        );
+        delay += 1_500;
     }
 
     if let Some(query) = crate::qa::tree_search() {
@@ -1730,6 +1828,67 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
             data_for_log.qa_log_rows();
         });
     }
+}
+
+/// 断开一条连接的浏览会话（#114）：先确认，再关会话，并在前后各写一次会话数。
+///
+/// 数据页用的是**另一条**会话（ADR 0021 §2）：断开浏览会话不会让表格里的数据消失。
+/// 因此这里不阻止对「当前数据页绑定连接」的断开，而是把这件事说清楚。
+fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
+    let Some(registry) = state.registry.borrow().clone() else {
+        return;
+    };
+    let body = if snapshot.is_active {
+        format!(
+            "将关闭连接「{}」的浏览会话（对象树 / 搜索 / DDL）。\n\
+             数据页用的是另一条会话（{}）：已加载的数据仍可查看，但树里这条连接会变成未连接。",
+            snapshot.name,
+            short_id(&registry.data_session().unwrap_or_default())
+        )
+    } else {
+        format!(
+            "将关闭连接「{}」的浏览会话（对象树 / 搜索 / DDL）。\n其它连接的浏览会话不受影响。",
+            snapshot.name
+        )
+    };
+    let dialog = adw::AlertDialog::new(Some("断开连接？"), Some(&body));
+    dialog.add_response("cancel", "取消");
+    dialog.add_response("disconnect", "断开连接");
+    dialog.set_response_appearance("disconnect", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    {
+        let registry = Rc::clone(&registry);
+        let key = snapshot.key.clone();
+        let name = snapshot.name.clone();
+        let handled = Rc::new(Cell::new(false));
+        dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+            if handled.replace(true) || response != "disconnect" {
+                return;
+            }
+            eprintln!("[browse] 用户确认断开「{name}」（连接键 {key}）");
+            registry.log_sessions("断开前");
+            registry.disconnect(&key);
+            // 断开是异步的：稍后再数一次，前后两次会话数就是验收证据。
+            let registry = Rc::clone(&registry);
+            glib::timeout_add_local_once(Duration::from_millis(1_500), move || {
+                registry.log_sessions("断开后");
+            });
+        });
+    }
+    // 无人值守验证（`--qa-tree-disconnect`）：仍然走对话框自己的 response 信号，
+    // 与用户点「断开连接」同一个入口，不是绕过确认直接断开。
+    if crate::qa::tree_disconnect().as_deref() == Some(snapshot.name.as_str()) {
+        let dialog_for_qa = dialog.clone();
+        glib::timeout_add_local_once(Duration::from_millis(200), move || {
+            let value = glib::Value::from("disconnect");
+            dialog_for_qa.emit_by_name::<()>("response", &[&value]);
+            if dialog_for_qa.is_visible() {
+                dialog_for_qa.close();
+            }
+        });
+    }
+    dialog.present(Some(&state.window));
 }
 
 /// 会话 ID / 查询 ID 的短形式（界面展示用，完整值在 tooltip 与日志里）。

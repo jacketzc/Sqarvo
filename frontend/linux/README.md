@@ -959,7 +959,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 - `--qa-tree-ddl <name>`：选中并触发树的「DDL」路径，打开底部 DDL 面板；
 - `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
   只是跳过键盘）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
-  点第一个「加载更多…」占位行；
+  点第一个「加载更多…」占位行；`--qa-tree-disconnect <name>` 断开指定连接的浏览会话
+  （与右键菜单「断开连接」同一条路径，包含确认框；排在搜索步骤之前）；
 - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|loaded|
   status_contains`；`--qa-expect-ddl <field>=<value>`：`provenance|detail_contains|
   object_contains|contains|state|copy|visible`。断言读的是**控件上真实渲染的文本**
@@ -969,6 +970,32 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 - 并行开发时可以给每个 worktree 一个独立端点，避免互相杀掉对方的后端：
   `SQARVO_ENDPOINT_FILE=/tmp/sqarvo-86-run/sqarvo/backend-endpoint.json`
   （前端会把子进程的 `XDG_RUNTIME_DIR` 指到同一目录，后端就写到那里）。
+
+### 多连接注册表与每连接浏览会话（#114）
+
+树根是 `My Connections`：`connections.json` 里的每条连接一个节点，与「当前是否连上」无关；
+未连接的节点点一下就用已保存的凭据建立一条**浏览会话**（对象树 / 搜索 / DDL 都走它，
+不执行用户 SQL）。数据页仍绑定「保存并连接」建立的那条会话（一标签一会话在 #116）。
+
+```bash
+# 先种一条 SQLite 连接（免凭据），再让 MariaDB 通过对话框成为数据页连接，
+# 最后从树里点开 SQLite：两条连接并列，各自一条浏览会话
+./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
+  --qa-tree-expand "本地 SQLite" --qa-tree-expand main \
+  --screenshot ~/sqarvo-v023-shots/two-connections.png --screenshot-delay-ms 9500
+
+# 断开其中一条，另一条仍能搜索/展开（日志里 ListSessions 前后各一次）
+… --qa-tree-expand "本地 SQLite" --qa-tree-disconnect "本地 SQLite" \
+  --qa-tree-search demo --qa-tree-click-result --screenshot …/disconnect-one.png
+```
+
+- 展开一个 catalog 会建立 `Tables` / `Views` 两个分组，**每组一次** `ListNodes`
+  （`filter.kinds`），日志里是 `分组 Tables 拉取第 1 页（filter.kinds=[Table]）`；
+- 断开连接只关它自己的浏览会话：`ListSessions` 从 3 条变 2 条（另一条连接的数据会话 +
+  浏览会话不动），数据页不受影响；若断开的是当前数据页绑定的连接，确认框与日志都会写明；
+- 数据页只浏览当前连接的表：树里另一条连接的表被点开时，数据页横幅给出明确说明
+  （每标签会话在 #116 提供），不会用错会话去读同名表。
 
 ### 连接对话框的无人值守验证（`--qa-profile` / `--qa-password-env`）
 

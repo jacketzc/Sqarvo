@@ -4265,6 +4265,16 @@ impl DataPage {
         self.banner.set_revealed(true);
     }
 
+    /// 一条常驻提示（不断连、不改状态页）：多连接下数据页只绑定一条会话。
+    ///
+    /// 用它说明「这个对象属于另一条连接，数据页暂时看不到」，而不是假装打开成功。
+    pub fn show_notice(&self, text: &str) {
+        self.banner_is_readonly.set(false);
+        self.banner.set_button_label(None::<&str>);
+        self.banner.set_title(text);
+        self.banner.set_revealed(true);
+    }
+
     /// 只读说明横幅：事务状态变化时只在「不再是只读」时收起，避免误收起错误横幅。
     fn show_read_only_banner(&self, text: &str) {
         self.banner_is_readonly.set(true);

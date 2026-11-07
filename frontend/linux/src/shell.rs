@@ -54,8 +54,8 @@ use crate::proto::services::v1::ObjectKind;
 /// 信息面板空槽的提示文案：说明它为什么是空的（#119 才有内容）。
 const INSPECTOR_SLOT_NOTE: &str = "内容由 #119 提供：连接 / 库 / 表";
 
-/// 状态栏「连接过滤」的提示：当前只有一条连接，过滤没有对象。
-const CONNECTION_FILTER_NOTE: &str = "当前只有一条连接；连接过滤随 #114（多连接注册表）提供";
+/// 状态栏「连接过滤」的提示：过滤未实现，树已按连接分组。
+const CONNECTION_FILTER_NOTE: &str = "连接过滤未实现；对象树已按连接分组（#114）";
 
 /// 分页器的提示：现在的翻页是「滚动到底部续页」，不是页码跳转。
 const PAGER_NOTE: &str = "页码分页由 #118 提供；当前是滚动到底部自动续页";

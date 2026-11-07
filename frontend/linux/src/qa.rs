@@ -52,7 +52,8 @@
 //! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开）、
 //!   `--qa-tree-open <name>`（打开表）、`--qa-tree-ddl <name>`（看 DDL）、
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
-//!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）；
+//!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
+//!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
 //!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：
 //!   `provenance|detail_contains|object_contains|contains|state|copy|visible`。
@@ -650,6 +651,8 @@ struct Args {
     tree_click_result: bool,
     /// `--qa-tree-load-more`：点第一个「加载更多…」占位行。
     tree_load_more: bool,
+    /// `--qa-tree-disconnect <name>`：断开指定连接的浏览会话（#114）。
+    tree_disconnect: Option<String>,
     /// `--qa-expect-tree <field>=<value>`：树 / 搜索的断言（可重复）。
     expect_tree: Vec<TreeExpectation>,
     /// `--qa-expect-ddl <field>=<value>`：DDL 面板的断言（可重复）。
@@ -923,6 +926,12 @@ pub fn tree_load_more() -> bool {
     ARGS.get().is_some_and(|args| args.tree_load_more)
 }
 
+/// 要断开浏览会话的连接名（`--qa-tree-disconnect`）。
+#[must_use]
+pub fn tree_disconnect() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_disconnect.clone())
+}
+
 /// 树 / 搜索的断言（`--qa-expect-tree`，按登记顺序）。
 #[must_use]
 pub fn expect_tree() -> Vec<TreeExpectation> {
@@ -947,6 +956,7 @@ pub fn tree_requested() -> bool {
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
+            || args.tree_disconnect.is_some()
     })
 }
 
@@ -1477,6 +1487,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-tree-load-more" => {
                 parsed.tree_load_more = true;
                 index += 1;
+            }
+            "--qa-tree-disconnect" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-disconnect 需要一个连接名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-disconnect 的连接名不能为空".to_owned());
+                }
+                parsed.tree_disconnect = Some(value.clone());
+                index += 2;
             }
             "--qa-expect-tree" => {
                 let value = args
