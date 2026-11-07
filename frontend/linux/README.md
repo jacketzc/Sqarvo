@@ -626,6 +626,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-export <path>` | 数据就绪后导出到该路径（仍走确认对话框，QA 自动点「导出」；#120） |
 | `--qa-export-hold` | 停在导出确认对话框（截图用，不自动确认、不写文件） |
 | `--qa-export-cancel-after-rows <n>` | 写满 n 行后走取消路径（验证临时文件清理与「不留半截文件」） |
+| `--qa-export-raw-values` | 关掉导出确认对话框里的「公式注入防护」开关，写原始值（验证 #137 的开关；默认开启防护） |
 | `--qa-startup-workspace` | 截图时刻断言未连接的启动工作区：主区域是 `Objects` 页、空态文案存在、**不含**「后端版本 / 端点文件」（#139） |
 | `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |
 | `--qa-expect-about <substring>` | 「关于 Squarvo」里必须出现的文案（可重复，例如 `后端版本`、`SQLite`；#139） |
