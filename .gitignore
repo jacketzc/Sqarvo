@@ -21,3 +21,15 @@
 .vscode/
 *.swp
 .DS_Store
+
+# Agent 工作目录（本地会话状态、项目级技能、草稿脚本）：绝不提交
+.hermes/
+.agents/
+.agent/
+.claude/
+.codex/
+.opencode/
+.cursor/
+.aider*
+.figma-analysis/
+*.agent.log
