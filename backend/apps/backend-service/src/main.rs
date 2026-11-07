@@ -6,9 +6,11 @@
 //! 2. 构建驱动注册表、会话管理器与查询登记表；
 //! 3. 绑定本地 IPC（Unix socket 或回环 TCP），生成会话 token；
 //! 4. 写入端点描述文件（0600），启动 gRPC 服务；
-//! 5. 收到 SIGINT/SIGTERM 后退出的清理路径。
+//! 5. 收到 SIGINT/SIGTERM、或父进程（前端）消失后退出并清理。
 //!
 //! 安全约束：日志中绝不输出 token 原文；正常退出时删除 socket 与端点文件。
+
+mod parent;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -51,6 +53,13 @@ struct Cli {
         value_name = "FILTER"
     )]
     log_filter: String,
+
+    /// 内部参数（不出现在 --help）：启动本进程的前端 pid。
+    ///
+    /// 只有显式给出时才监视父进程：手工启动的后端父进程可能是 shell，
+    /// 无条件设置 `PR_SET_PDEATHSIG` 会被误杀。
+    #[arg(long, value_name = "PID", hide = true)]
+    parent_pid: Option<u32>,
 }
 
 #[tokio::main]
@@ -69,6 +78,16 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    // 先注册 SIGTERM 处理器，再设置 PR_SET_PDEATHSIG：反过来会留下一个窗口期，
+    // 父进程在这段时间退出时 SIGTERM 走默认处置（立刻终止），来不及清理。
+    let signals = Signals::register();
+    let parent = parent::install(cli.parent_pid)?;
+    if let parent::Installed::ParentGone(pid) = parent {
+        // 还没有创建目录、绑定 socket 或写端点文件：直接退出即可。
+        tracing::warn!(parent_pid = pid, "父进程已不存在，退出");
+        return Ok(());
+    }
+
     let paths = AppPaths::discover()?;
     paths.ensure_dirs()?;
 
@@ -125,7 +144,7 @@ async fn run(cli: Cli) -> Result<()> {
         "后端已启动"
     );
 
-    let result = serve(listener, token, services, shutdown_signal()).await;
+    let result = serve(listener, token, services, shutdown_signal(signals, parent)).await;
 
     sessions.close_all().await;
     cleanup(socket_path.as_deref(), &endpoint_path);
@@ -202,31 +221,62 @@ fn init_tracing(filter: &str) {
     }
 }
 
-async fn shutdown_signal() {
+/// 关闭信号：SIGTERM 流在 `run` 的早期（设置 PDEATHSIG 之前）就注册好。
+struct Signals {
+    #[cfg(unix)]
+    terminate: Option<tokio::signal::unix::Signal>,
+}
+
+impl Signals {
+    /// 注册 SIGTERM；失败时只告警，后端仍能通过 Ctrl-C 与父进程轮询退出。
+    fn register() -> Self {
+        #[cfg(unix)]
+        {
+            let terminate =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(signal) => Some(signal),
+                    Err(error) => {
+                        tracing::warn!(%error, "无法监听 SIGTERM 信号");
+                        None
+                    }
+                };
+            Self { terminate }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+}
+
+async fn shutdown_signal(signals: Signals, parent: parent::Installed) {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             tracing::warn!(%error, "无法监听 Ctrl-C 信号");
         }
     };
 
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "无法监听 SIGTERM 信号");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
     tokio::select! {
         () = ctrl_c => tracing::info!("收到 Ctrl-C，正在退出"),
-        () = terminate => tracing::info!("收到 SIGTERM，正在退出"),
+        () = wait_terminate(signals) => tracing::info!("收到 SIGTERM，正在退出"),
+        pid = parent::wait_until_gone(parent) => {
+            tracing::warn!(parent_pid = pid, "父进程已消失，开始清理退出");
+        }
+    }
+}
+
+/// 等待 SIGTERM；注册失败时永不返回（其余退出路径仍然有效）。
+async fn wait_terminate(signals: Signals) {
+    #[cfg(unix)]
+    match signals.terminate {
+        Some(mut signal) => {
+            signal.recv().await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signals;
+        std::future::pending::<()>().await;
     }
 }

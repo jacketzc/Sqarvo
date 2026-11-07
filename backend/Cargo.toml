@@ -44,6 +44,8 @@ directories = "6"
 futures-util = "0.3"
 http = "1"
 hyper-util = { version = "0.1", features = ["tokio"] }
+# 只用于父进程监视（PR_SET_PDEATHSIG / getppid 的底层常量），按目标平台引入。
+libc = "0.2"
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
 # 仅用于把 TLS 握手失败的错误做类型化判定（`io::Error` 内层是 `rustls::Error`），
 # 不开默认特性以免引入 aws-lc-rs 的 cmake 构建依赖；实际加密后端由 mysql_async 的

@@ -24,6 +24,7 @@ mod proto;
 mod qa;
 mod results;
 mod shell;
+mod signals;
 mod sql_page;
 mod startup;
 mod submit_batch;
@@ -58,6 +59,9 @@ fn main() -> adw::glib::ExitCode {
 
     install_app_actions(&app);
     register_qa_options(&app);
+    // #146：SIGTERM / SIGINT / SIGHUP 走进与「关窗口」相同的清理路径，
+    // 否则默认处置会直接终止前端，留下孤儿后端。
+    signals::install(&app);
     app.set_accels_for_action("app.quit", &["<primary>q"]);
     app.connect_activate(ui::activate);
     app.run()
