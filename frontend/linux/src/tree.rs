@@ -1007,6 +1007,18 @@ impl TreePanel {
         self.refresh_connections();
     }
 
+    /// 把焦点放到搜索框（`workspace-model` §10 的 `Ctrl+F`）。
+    ///
+    /// 返回 placeholder 文案供日志使用；不读窗口焦点链——「是否真的拿到焦点」由
+    /// `qa::assert_tree_search_focused` 在验收链里断言，产品路径不为此多一次遍历。
+    pub fn focus_search(&self) -> String {
+        self.search_entry.grab_focus();
+        self.search_entry
+            .placeholder_text()
+            .map(|text| text.to_string())
+            .unwrap_or_default()
+    }
+
     /// 重新读取连接层（注册表变化与「刷新」都走这里）。
     ///
     /// 掉线连接的层被作废（会话 ID 变了，旧分页 token 没有意义）；已连接连接的层

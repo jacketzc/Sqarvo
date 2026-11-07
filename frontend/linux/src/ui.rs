@@ -204,6 +204,8 @@ pub fn activate(app: &adw::Application) {
     // 侧栏与信息面板这类没有输入焦点的动作配快捷键。
     app.set_accels_for_action("win.toggle-inspector", &["<primary>i"]);
     app.set_accels_for_action("win.refresh", &["F5"]);
+    // 对象搜索（§10）：Ctrl+F 聚焦树的搜索框。
+    app.set_accels_for_action("win.focus-search", &["<primary>f"]);
     // 标签快捷键（§10）：Ctrl+T 新建查询标签、Ctrl+W 关闭当前标签。
     app.set_accels_for_action("win.new-tab", &["<primary>t"]);
     app.set_accels_for_action("win.close-tab", &["<primary>w"]);
@@ -2894,6 +2896,17 @@ fn install_window_actions(
         });
     }
 
+    let focus_search = gio::SimpleAction::new("focus-search", None);
+    {
+        let state = Rc::clone(state);
+        focus_search.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                let note = workspace.tree.focus_search();
+                eprintln!("[tree] 搜索框获得焦点（placeholder「{note}」）");
+            }
+        });
+    }
+
     let execute = gio::SimpleAction::new("execute", None);
     {
         let state = Rc::clone(state);
@@ -3020,6 +3033,7 @@ fn install_window_actions(
         &close_tab,
         &toggle_sidebar,
         &toggle_inspector,
+        &focus_search,
         &refresh,
         &execute,
         &cancel,

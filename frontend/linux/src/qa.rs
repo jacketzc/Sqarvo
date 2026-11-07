@@ -2042,21 +2042,15 @@ pub fn list_nodes_total() -> u64 {
     LIST_NODES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// 把焦点放到**对象树搜索框**上，并断言它真的拿到了焦点。
+/// 只断言（不抓取）焦点在对象树搜索框上。
 ///
-/// workspace-model §10 的 `Ctrl+F` 语义是「聚焦树搜索框」。产品当前还没有注册这条
-/// 快捷键（#121 的「待定」项），所以验收脚本走的是**同一个焦点目标**：找到树顶部那个
-/// `GtkSearchEntry`（placeholder「搜索表名、视图…」），`grab_focus()` 之后读回
-/// `window.focus()`。读到的是 GTK 的真实焦点链，不是「应该聚焦」的推断。
-pub fn focus_tree_search(window: &gtk::Window) -> Result<String, String> {
-    let window = window.clone();
+/// 用于验收「产品快捷键 `Ctrl+F` 真的把焦点送过去」：先用 `activate_action` 触发动作，
+/// 再调本函数读回真实焦点链。它不 `grab_focus`，所以动作没生效时断言会红。
+pub fn assert_tree_search_focused(window: &gtk::Window) -> Result<String, String> {
     let entry = find_tree_search(window.upcast_ref::<gtk::Widget>())
         .ok_or_else(|| "对象树搜索框尚未创建".to_owned())?;
-    entry.grab_focus();
     let widget = entry.clone().upcast::<gtk::Widget>();
-    let focus = gtk::prelude::GtkWindowExt::focus(&window);
-    // `GtkSearchEntry` 内部是 `GtkText`：实际焦点落在子控件上，所以按「焦点控件的祖先里
-    // 有没有这个搜索框」判断，而不是只比较顶层控件。
+    let focus = gtk::prelude::GtkWindowExt::focus(window);
     let focused = focus
         .as_ref()
         .is_some_and(|current| widget == *current || is_descendant_of(current, &widget));
@@ -2064,21 +2058,12 @@ pub fn focus_tree_search(window: &gtk::Window) -> Result<String, String> {
         let current = focus
             .map(|widget| widget.type_().name().to_string())
             .unwrap_or_else(|| "None".to_owned());
-        return Err(format!(
-            "对象树搜索框没有拿到焦点（mapped={}，can_focus={}，sensitive={}，window_active={}，当前焦点={current}）",
-            entry.is_mapped(),
-            entry.can_focus(),
-            entry.is_sensitive(),
-            window.is_active()
-        ));
+        return Err(format!("焦点不在对象树搜索框上（当前焦点={current}）"));
     }
-    Ok(format!(
-        "对象树搜索框获得焦点（placeholder「{}」）",
-        entry
-            .placeholder_text()
-            .map(|text| text.to_string())
-            .unwrap_or_default()
-    ))
+    Ok(entry
+        .placeholder_text()
+        .map(|text| text.to_string())
+        .unwrap_or_default())
 }
 
 // 最近一次呈现的模态提示（导出完成等）：退出前由 QA 收起。

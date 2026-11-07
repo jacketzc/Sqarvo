@@ -351,7 +351,9 @@ EOF
     local in_app
     in_app=$(grep -cF '断言 OK：' "$log" 2>/dev/null || true)
     IN_APP_TOTAL=$((IN_APP_TOTAL + in_app))
-    check_eq "$case_name 应用内断言条数" 15 "$in_app"
+    # 16 = 15 项原断言 + 1 项「Ctrl+F 经产品动作把焦点送到树搜索框」（#121 的残余项落地后
+    # 该步骤从「只抓焦点」变成「先激活 win.focus-search 再只读断言」，多出一条断言行）。
+    check_eq "$case_name 应用内断言条数" 16 "$in_app"
 
     check_contains "$case_name 展开 catalog 的 ListNodes 次数" \
         '断言 OK：展开 catalog 的 ListNodes 次数=2' "$log"

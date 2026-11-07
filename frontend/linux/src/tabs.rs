@@ -1979,7 +1979,16 @@ impl TabSet {
                 let window = self
                     .window()
                     .ok_or_else(|| "还没有主窗口（无法聚焦搜索框）".to_owned())?;
-                crate::qa::focus_tree_search(&window).map(|note| format!("焦点：{note}"))
+                // 走产品动作 `win.focus-search`（= §10 的 Ctrl+F），再只读断言焦点，
+                // 这样验收链证明的是「快捷键那条路径」，不是测试代码自己抓焦点。
+                window
+                    .activate_action("win.focus-search", None)
+                    .map_err(|error| format!("激活 win.focus-search 失败：{error}"))?;
+                crate::qa::assert_tree_search_focused(&window).map(|note| {
+                    format!(
+                        "断言 OK：焦点在对象树搜索框（placeholder「{note}」，经 win.focus-search）"
+                    )
+                })
             }
             QaStep::ExpectFocus(target) => {
                 if target != "search" {
@@ -1988,7 +1997,8 @@ impl TabSet {
                 let window = self
                     .window()
                     .ok_or_else(|| "还没有主窗口（无法聚焦搜索框）".to_owned())?;
-                crate::qa::focus_tree_search(&window).map(|note| format!("断言 OK：焦点在{note}"))
+                crate::qa::assert_tree_search_focused(&window)
+                    .map(|note| format!("断言 OK：焦点在对象树搜索框（placeholder「{note}」）"))
             }
             QaStep::MarkListNodes => {
                 crate::qa::mark_list_nodes();
