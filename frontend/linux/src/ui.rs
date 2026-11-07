@@ -207,6 +207,8 @@ pub fn activate(app: &adw::Application) {
     // 标签快捷键（§10）：Ctrl+T 新建查询标签、Ctrl+W 关闭当前标签。
     app.set_accels_for_action("win.new-tab", &["<primary>t"]);
     app.set_accels_for_action("win.close-tab", &["<primary>w"]);
+    // 导出当前结果（§10）：Ctrl+Shift+E。
+    app.set_accels_for_action("win.export-csv", &["<primary><shift>e"]);
 
     // 重试 / 重新连接：先回到 Loading，再让 worker 重新握手。
     let retry: Rc<dyn Fn()> = {
@@ -2702,6 +2704,7 @@ fn build_main_menu() -> gio::Menu {
     table.append(Some("刷新当前表"), Some("win.refresh-table"));
     table.append(Some("新增行"), Some("win.add-row"));
     table.append(Some("删除选中行"), Some("win.delete-row"));
+    table.append(Some("导出 CSV"), Some("win.export-csv"));
     menu.append_submenu(Some("表"), &table);
 
     let help = gio::Menu::new();
@@ -2729,6 +2732,8 @@ struct WindowActions {
     refresh_table: gio::SimpleAction,
     add_row: gio::SimpleAction,
     delete_row: gio::SimpleAction,
+    /// 导出当前结果 / 当前页为 CSV（#120）。
+    export_csv: gio::SimpleAction,
 }
 
 impl WindowActions {
@@ -2757,6 +2762,7 @@ impl WindowActions {
             &self.cancel,
             &self.new_tab,
             &self.close_tab,
+            &self.export_csv,
         ] {
             action.set_enabled(ready);
         }
@@ -2941,6 +2947,18 @@ fn install_window_actions(
         });
     }
 
+    let export_csv = gio::SimpleAction::new("export-csv", None);
+    {
+        let state = Rc::clone(state);
+        export_csv.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned()
+                && !workspace.tabs.export_current()
+            {
+                eprintln!("[export] 当前标签没有可导出的结果页");
+            }
+        });
+    }
+
     let about = gio::SimpleAction::new("about", None);
     {
         let state = Rc::clone(state);
@@ -2968,6 +2986,7 @@ fn install_window_actions(
         &refresh_table,
         &add_row,
         &delete_row,
+        &export_csv,
         &about,
         &diagnostics,
     ] {
@@ -2989,6 +3008,7 @@ fn install_window_actions(
         refresh_table,
         add_row,
         delete_row,
+        export_csv,
     });
     actions.set_backend_ready(false);
     actions.set_workspace_ready(false);

@@ -3362,6 +3362,7 @@ mod tests {
                 tooltip: String::new(),
                 truncated: false,
             }],
+            values: Vec::new(),
         }
     }
 

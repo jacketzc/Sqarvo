@@ -75,6 +75,8 @@ pub struct SqlPage {
     cancel_sent: Cell<bool>,
     /// 取消点击时刻，用于记录「点击 → Cancelled」耗时。
     cancel_clicked_at: Cell<Option<std::time::Instant>>,
+    /// QA 导出（`--qa-export`）每次执行只触发一次。
+    qa_export_started: Cell<bool>,
     /// QA 的滚动目标队列：按顺序逐个滚动（用户连续快速滚动的等价路径）。
     scroll_queue: RefCell<VecDeque<u32>>,
     /// 当前查询 ID（仅用于状态栏展示，不含敏感信息）。
@@ -194,6 +196,7 @@ impl SqlPage {
             state: Cell::new(PageState::Idle),
             cancel_sent: Cell::new(false),
             cancel_clicked_at: Cell::new(None),
+            qa_export_started: Cell::new(false),
             scroll_queue: RefCell::new(VecDeque::new()),
             query_id: RefCell::new(None),
             session_base: session_line.to_owned(),
@@ -215,6 +218,17 @@ impl SqlPage {
             let disconnect = Rc::clone(&page.callbacks.disconnect);
             let button = disconnect_button.clone();
             button.connect_clicked(move |_| disconnect());
+        }
+        {
+            // EX（#120）：导出已加载的查询结果；与菜单 / Ctrl+Shift+E 同一个入口。
+            let button = page.results.ex_button().clone();
+            let page = Rc::clone(&page);
+            button.connect_clicked(move |_| {
+                crate::export_ui::begin(
+                    page.root.upcast_ref::<gtk::Widget>(),
+                    crate::export_ui::ExportSource::Query(Rc::clone(&page.results)),
+                );
+            });
         }
         {
             let banner = page.banner.clone();
@@ -370,6 +384,39 @@ impl SqlPage {
         }
     }
 
+    /// 导出已加载的查询结果（EX 按钮 /「表」菜单 / Ctrl+Shift+E 同一个入口）。
+    pub fn export(self: &Rc<Self>) {
+        crate::export_ui::begin(
+            self.root.upcast_ref::<gtk::Widget>(),
+            crate::export_ui::ExportSource::Query(Rc::clone(&self.results)),
+        );
+    }
+
+    /// QA（`--qa-export`）：结果读完后按 `--qa-export` 的目标导出已加载行。
+    ///
+    /// 与用户点 EX 走同一个确认/写入路径（QA 只是自动点确认，不绕过范围与覆盖语义）；
+    /// 每次执行只触发一次，避免分批到达时重复导出。
+    fn maybe_qa_export(self: &Rc<Self>) {
+        let Some(target) = crate::qa::export_path() else {
+            return;
+        };
+        if self.qa_export_started.replace(true) {
+            return;
+        }
+        let page = Rc::clone(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            eprintln!(
+                "[qa] t=+{}ms 触发导出查询结果（--qa-export）",
+                qa::elapsed_ms()
+            );
+            crate::export_ui::begin_qa(
+                page.root.upcast_ref::<gtk::Widget>(),
+                crate::export_ui::ExportSource::Query(Rc::clone(&page.results)),
+                target,
+            );
+        });
+    }
+
     /// `Execute` 返回：语句摘要 + 首批行。
     pub fn show_started(
         self: &Rc<Self>,
@@ -380,6 +427,7 @@ impl SqlPage {
         loaded: u64,
     ) {
         self.query_id.replace(Some(query_id.to_owned()));
+        self.qa_export_started.set(false);
         eprintln!(
             "[query] t=+{}ms 首批到达：{} 行，has_more={has_more}，query_id={query_id}",
             qa::elapsed_ms(),
@@ -442,6 +490,9 @@ impl SqlPage {
             None,
         );
         self.ensure_scroll_target();
+        if !has_more {
+            self.maybe_qa_export();
+        }
     }
 
     /// 后续批次到达。
@@ -462,6 +513,7 @@ impl SqlPage {
         );
         if !has_more {
             eprintln!("[query] t=+{}ms 结果读完，共 {loaded} 行", qa::elapsed_ms());
+            self.maybe_qa_export();
         }
         self.ensure_scroll_target();
     }
@@ -533,6 +585,7 @@ impl SqlPage {
             .set_state(RunState::Limited, loaded, false, Some(&failure.message()));
         self.set_state(PageState::Error, Some(failure.headline()));
         self.ensure_scroll_target();
+        self.maybe_qa_export();
     }
 
     /// 断连：保留已加载行，明确标注失连并禁用执行/取消。

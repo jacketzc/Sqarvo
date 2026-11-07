@@ -97,6 +97,16 @@ impl RowStore {
         }
     }
 
+    /// 按位置取一行（导出按需读取，不复制整份结果）。
+    pub fn row_at(&self, index: usize) -> Option<Rc<RowView>> {
+        self.imp().rows.borrow().get(index).cloned()
+    }
+
+    /// 当前行数。
+    pub fn rows_len(&self) -> usize {
+        self.imp().rows.borrow().len()
+    }
+
     /// 清空（新查询开始时调用）。
     pub fn clear(&self) {
         let removed = self.n_items();
@@ -167,6 +177,12 @@ pub struct ResultsView {
     spinner: gtk::Spinner,
     detail: gtk::Label,
     columns: RefCell<Vec<gtk::ColumnViewColumn>>,
+    /// 导出的表头（不含行号列；`set_columns` 时记录）。
+    column_names: RefCell<Vec<String>>,
+    /// 已加载行里被服务端截断的单元格数（导出确认对话框统计用）。
+    truncated_cells: Cell<u64>,
+    /// 「EX」导出按钮（SQL 结果区，#120）。
+    ex_button: gtk::Button,
     state: Cell<RunState>,
     loaded: Cell<u64>,
     has_more: Cell<bool>,
@@ -221,6 +237,13 @@ impl ResultsView {
         detail_row.append(&detail);
         detail.set_hexpand(true);
 
+        // 导出（EX，#120）：只导出已加载行；由 `sql_page` 接到 `export_ui`。
+        let ex_button = gtk::Button::with_label("EX");
+        ex_button.add_css_class("flat");
+        ex_button.set_sensitive(false);
+        ex_button.set_tooltip_text(Some("导出已加载的查询结果为 CSV（Ctrl+Shift+E）"));
+        detail_row.append(&ex_button);
+
         let placeholder = adw::StatusPage::builder().title("尚未执行查询").build();
         placeholder.set_vexpand(true);
         let placeholder_icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
@@ -264,6 +287,9 @@ impl ResultsView {
             spinner,
             detail,
             columns: RefCell::new(Vec::new()),
+            column_names: RefCell::new(Vec::new()),
+            truncated_cells: Cell::new(0),
+            ex_button,
             state: Cell::new(RunState::Idle),
             loaded: Cell::new(0),
             has_more: Cell::new(false),
@@ -310,6 +336,31 @@ impl ResultsView {
         self.state.get()
     }
 
+    /// 导出的列名（不含行号列）。
+    pub fn column_names(&self) -> Vec<String> {
+        self.column_names.borrow().clone()
+    }
+
+    /// 已加载的行数（`usize`，导出按下标读取）。
+    pub fn rows_len(&self) -> usize {
+        self.store.rows_len()
+    }
+
+    /// 按位置取一行（导出按需读取；调用方只读）。
+    pub fn row_at(&self, index: usize) -> Option<Rc<RowView>> {
+        self.store.row_at(index)
+    }
+
+    /// 已加载行里被服务端截断的单元格数。
+    pub fn truncated_cells(&self) -> u64 {
+        self.truncated_cells.get()
+    }
+
+    /// 「EX」按钮（由 `sql_page` 接线到 `export_ui`）。
+    pub fn ex_button(&self) -> &gtk::Button {
+        &self.ex_button
+    }
+
     /// QA 观测：首行首列的文本（`None` = 还没有行）。
     ///
     /// 只读一行，不实例化 widget：验收断言比对的是界面真实持有的行数据。
@@ -325,6 +376,8 @@ impl ResultsView {
     pub fn reset(&self) {
         self.store.clear();
         self.clear_columns();
+        self.column_names.borrow_mut().clear();
+        self.truncated_cells.set(0);
         self.loaded.set(0);
         self.has_more.set(false);
         self.fetch_requested.set(false);
@@ -345,6 +398,8 @@ impl ResultsView {
     /// 按列元数据重建列：每列一个 `GtkColumnViewColumn`，单元格工厂只为可见行创建 widget。
     pub fn set_columns(&self, columns: &[ColumnView]) {
         self.clear_columns();
+        self.column_names
+            .replace(columns.iter().map(|column| column.name.clone()).collect());
 
         // 行号列：跨批次连续，便于对照「已加载到第几行」。
         let number_factory = text_factory(usize::MAX, false);
@@ -373,6 +428,8 @@ impl ResultsView {
 
     /// 追加一批行并更新状态。
     pub fn append_rows(&self, rows: Vec<RowView>, has_more: bool, loaded: u64) {
+        self.truncated_cells
+            .set(self.truncated_cells.get() + count_truncated(&rows));
         let empty = rows.is_empty();
         if !empty {
             self.store.append(rows);
@@ -398,6 +455,8 @@ impl ResultsView {
 
     /// 只追加行、更新计数，不改状态（用于「触顶」时保留最后一批已接收的行）。
     pub fn append_rows_only(&self, rows: Vec<RowView>, loaded: u64) {
+        self.truncated_cells
+            .set(self.truncated_cells.get() + count_truncated(&rows));
         if !rows.is_empty() {
             self.store.append(rows);
         }
@@ -417,6 +476,10 @@ impl ResultsView {
             self.limit_reached.set(true);
         }
         self.spinner.set_visible(matches!(state, RunState::Loading));
+        self.ex_button.set_sensitive(loaded > 0);
+        self.ex_button.set_tooltip_text(Some(&format!(
+            "导出已加载的 {loaded} 行为 CSV（只含内存中已有的行；JSON/SQL 格式在 v0.2.5；Ctrl+Shift+E）"
+        )));
         if matches!(state, RunState::Loading) {
             self.spinner.start();
         } else {
@@ -576,8 +639,14 @@ impl ResultsView {
     }
 }
 
+/// 统计一批行里被服务端截断的单元格数。
+fn count_truncated(rows: &[RowView]) -> u64 {
+    rows.iter()
+        .map(|row| row.cells.iter().filter(|cell| cell.truncated).count() as u64)
+        .sum()
+}
+
 /// 单元格工厂：一个 `GtkLabel`，按位置绑定该列的值与样式。
-///
 /// `column_index == usize::MAX` 表示行号列。
 fn text_factory(column_index: usize, show_tooltip: bool) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();

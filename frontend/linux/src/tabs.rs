@@ -1588,6 +1588,24 @@ impl TabSet {
         self.current().and_then(|tab| tab.sql.clone())
     }
 
+    /// 导出当前标签：表标签 → 当前页；查询标签 → 已加载结果。
+    ///
+    /// 没有结果页（`Objects` 页）时返回 `false`，菜单 / 快捷键据此不去假装有动作。
+    pub fn export_current(&self) -> bool {
+        let Some(tab) = self.current() else {
+            return false;
+        };
+        if let Some(data) = tab.data.as_ref() {
+            data.export();
+            return true;
+        }
+        if let Some(sql) = tab.sql.as_ref() {
+            sql.export();
+            return true;
+        }
+        false
+    }
+
     /// 按 ID 取数据页。
     #[must_use]
     pub fn data_page_at(&self, index: usize) -> Option<Rc<DataPage>> {
