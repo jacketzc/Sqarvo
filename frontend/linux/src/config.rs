@@ -248,6 +248,31 @@ fn find_by_identity_in(path: &Path, connection: &SavedConnection) -> Option<Save
         .find(|existing| existing.key() == key)
 }
 
+/// 按连接身份（[`SavedConnection::key`]）删除一条已保存连接。
+///
+/// 返回是否真的删掉了条目：没命中时**不重写文件**（权限、mtime 与内容都不动），
+/// 免得一次误点的「删除」把一份只是没命中的配置重新序列化一遍。
+/// 命中时与写入共用「临时文件 + 同目录 rename」，文件权限仍是 0600。
+pub fn remove_by_key(identity: &str) -> Result<bool, ConfigError> {
+    remove_by_key_in(&config_dir()?, identity)
+}
+
+fn remove_by_key_in(dir: &Path, identity: &str) -> Result<bool, ConfigError> {
+    let path = dir.join(FILE_NAME);
+    let mut connections = load_file(&path);
+    let before = connections.len();
+    connections.retain(|connection| connection.key() != identity);
+    if connections.len() == before {
+        return Ok(false);
+    }
+    let document = Document {
+        version: DOCUMENT_VERSION,
+        connections,
+    };
+    write_atomic(dir, &path, &document)?;
+    Ok(true)
+}
+
 fn load_file(path: &Path) -> Vec<SavedConnection> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
@@ -718,5 +743,89 @@ mod tests {
             assert!(dir.ends_with("sqarvo/Sqarvo"), "{}", dir.display());
             assert_eq!(dir.join(FILE_NAME).file_name().unwrap(), FILE_NAME);
         }
+    }
+
+    // -- #144：删除连接（启动态侧栏右键「删除连接」） ------------------------
+
+    #[test]
+    fn remove_by_key_deletes_only_the_named_connection() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("cfg");
+        let keep = sqlite_entry("/tmp/keep.db");
+        let drop = entry(REF);
+        let also_keep = {
+            let mut other = entry(REF);
+            other.database = "another_db".to_owned();
+            other
+        };
+        upsert_in(&target, keep.clone()).expect("SQLite 条目");
+        upsert_in(&target, drop.clone()).expect("要删除的条目");
+        upsert_in(&target, also_keep.clone()).expect("同凭据但不同目标");
+
+        let removed = remove_by_key_in(&target, &drop.key()).expect("删除");
+        assert!(removed, "命中的身份应报告删除成功");
+
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(connections.len(), 2, "只删一条：{connections:?}");
+        assert!(
+            connections.iter().all(|row| row.key() != drop.key()),
+            "被删的连接不应残留：{connections:?}"
+        );
+        assert!(
+            connections.iter().any(|row| row.key() == keep.key()),
+            "其它驱动/目标的条目必须保留：{connections:?}"
+        );
+        assert!(
+            connections.iter().any(|row| row.key() == also_keep.key()),
+            "同一凭据引用但不同目标不是同一条连接：{connections:?}"
+        );
+    }
+
+    #[test]
+    fn remove_by_key_without_match_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path();
+        let path = target.join(FILE_NAME);
+        upsert_in(target, entry(REF)).expect("写入");
+        let before = fs::read_to_string(&path).expect("读配置");
+        let before_mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+
+        let removed = remove_by_key_in(target, "mariadb|nowhere|1|nobody|none").expect("尝试删除");
+        assert!(!removed, "未命中必须如实返回 false");
+
+        let after = fs::read_to_string(&path).expect("读配置");
+        assert_eq!(before, after, "未命中不应重写配置文件");
+        let after_mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(before_mode, after_mode, "未命中不应改动文件权限");
+    }
+
+    #[test]
+    fn remove_by_key_keeps_private_permissions() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("nested");
+        upsert_in(&target, entry(REF)).expect("写入");
+        let path = target.join(FILE_NAME);
+        assert!(remove_by_key_in(&target, &entry(REF).key()).expect("删除"));
+
+        let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "删除后配置文件仍是 0600，实际 {mode:o}");
+        let dir_mode = fs::metadata(&target)
+            .expect("stat 目录")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "配置目录仍是 0700，实际 {dir_mode:o}");
+        assert!(load_file(&path).is_empty(), "删掉最后一条后列表为空");
+    }
+
+    #[test]
+    fn remove_by_key_on_missing_file_is_a_no_op() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let removed = remove_by_key_in(dir.path(), "sqlite|file|/tmp/none.db").expect("删除");
+        assert!(!removed);
+        assert!(
+            !dir.path().join(FILE_NAME).exists(),
+            "没有配置时不应凭空创建文件"
+        );
     }
 }

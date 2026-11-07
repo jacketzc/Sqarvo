@@ -538,6 +538,20 @@ impl ConnectionDialog {
         );
     }
 
+    /// 打开对话框时预置一行提示（#144：按保存凭据连接发现缺密码时说明原因）。
+    ///
+    /// 与 [`Self::show_failure`] 同一块状态行，但**不伪造错误码**：这里只是解释
+    /// 「为什么把你带到这个对话框」，真正的失败分类仍由后续 RPC 结果给出。
+    pub fn show_prompt_reason(&self, reason: &str) {
+        self.show_status(reason, StatusKind::Error);
+    }
+
+    /// 当前状态行文案（#144：`--qa-expect-dialog` 读的就是用户看到的那一行）。
+    #[must_use]
+    pub fn observed_status(&self) -> String {
+        self.status.text().to_string()
+    }
+
     fn show_status(&self, message: &str, kind: StatusKind) {
         self.status.set_text(message);
         self.status.set_visible(true);

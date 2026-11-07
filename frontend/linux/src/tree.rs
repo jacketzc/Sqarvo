@@ -172,6 +172,11 @@ pub struct TreeCallbacks {
     pub health: Rc<dyn Fn(TreeHealth)>,
     /// 断开一条连接（右键菜单；确认与副作用由调用方负责）。
     pub disconnect: Rc<dyn Fn(ConnectionSnapshot)>,
+    /// 点击一条已保存连接（#144）：与启动态侧栏同一个 `connect_saved` 入口。
+    ///
+    /// 树不再自己判断「已连接 → 展开 / 未连接 → 连接」：这个判断在入口里只有一处，
+    /// 否则同一个点击在两个位置会有两种语义。
+    pub connect_saved: Rc<dyn Fn(String)>,
 }
 
 /// 树上的一次选中（信息面板的输入）。
@@ -848,15 +853,25 @@ impl TreePanel {
                 disconnect_row_handlers(item);
                 if expandable {
                     let handler_row = list_row.clone();
-                    let clicked = arrow_button.connect_clicked(move |_| {
-                        handler_row.set_expanded(!handler_row.is_expanded());
-                    });
-                    let notify_arrow = arrow.clone();
                     let connection_key = match &row {
                         Row::Connection(snapshot) => Some(snapshot.key.clone()),
                         _ => None,
                     };
-                    let slot_for_expand = Rc::clone(&slot);
+                    let slot_for_click = Rc::clone(&slot);
+                    let clicked = arrow_button.connect_clicked(move |_| {
+                        let expanded = !handler_row.is_expanded();
+                        handler_row.set_expanded(expanded);
+                        // 只有用户点箭头才记「收起 / 展开」意图（行销毁不算，见下）。
+                        if let Some(key) = connection_key.as_ref()
+                            && let Some(panel) = slot_for_click
+                                .borrow()
+                                .as_ref()
+                                .and_then(std::rc::Weak::upgrade)
+                        {
+                            panel.remember_collapsed(key, expanded);
+                        }
+                    });
+                    let notify_arrow = arrow.clone();
                     let expanded_changed = list_row.connect_expanded_notify(move |row| {
                         let expanded = row.is_expanded();
                         notify_arrow.set_icon_name(Some(if expanded {
@@ -864,21 +879,10 @@ impl TreePanel {
                         } else {
                             ARROW_COLLAPSED
                         }));
-                        // 记住用户对连接节点的收起动作：注册表刷新时不强行展开回去。
-                        if let Some(key) = connection_key.as_ref()
-                            && let Some(panel) = slot_for_expand
-                                .borrow()
-                                .as_ref()
-                                .and_then(std::rc::Weak::upgrade)
-                            && !panel.rebuilding.get()
-                        {
-                            let mut collapsed = panel.collapsed.borrow_mut();
-                            if expanded {
-                                collapsed.remove(key);
-                            } else {
-                                collapsed.insert(key.clone());
-                            }
-                        }
+                        // 这里**不**记录「用户收起」：行在重建 / 回收时也会发 `expanded=false`，
+                        // 把那种通知当成用户意图会让下一次刷新不再展开已连接的连接（#144）。
+                        // 收起意图只由用户手势记录：本文的箭头按钮与点连接行
+                        // （`connect_saved` → `TreePanel::toggle_connection`）。
                     });
                     let handlers = RowHandlers {
                         row: list_row.clone(),
@@ -1225,25 +1229,118 @@ impl TreePanel {
     }
 
     /// 展开某个连接节点（如果它还在、且还没展开）。
-    fn expand_connection(self: &Rc<Self>, key: &str) {
+    ///
+    /// 与用户点箭头 / 点连接行走的是同一个 `set_expanded`：不预取未展开的分组，
+    /// 也不改 `collapsed` 记忆（那是用户主动收起的状态，只在用户点的时候才记）。
+    pub fn expand_connection(self: &Rc<Self>, key: &str) {
+        if let Some(row) = self.connection_row(key)
+            && !row.is_expanded()
+        {
+            row.set_expanded(true);
+        }
+    }
+
+    /// 记录用户对连接节点的展开 / 收起意图（只由用户手势调用）。
+    ///
+    /// 行被销毁或回收时也会发 `expanded=false`，那种通知不算用户意图：把它写进
+    /// `collapsed` 会让「按保存凭据连接」之后的自动展开被自己挡住（#144）。
+    fn remember_collapsed(&self, key: &str, expanded: bool) {
+        let mut collapsed = self.collapsed.borrow_mut();
+        if expanded {
+            collapsed.remove(key);
+        } else {
+            collapsed.insert(key.to_owned());
+        }
+    }
+
+    /// 展开 / 收起某个连接节点（`connect_saved` 判为「已连接」时走这里）。
+    pub fn toggle_connection(&self, key: &str) {
+        match self.connection_row(key) {
+            Some(row) => {
+                let expanded = !row.is_expanded();
+                row.set_expanded(expanded);
+                self.remember_collapsed(key, expanded);
+            }
+            None => eprintln!("[tree] 树里没有连接 {key}，忽略展开/收起"),
+        }
+    }
+
+    /// 某个连接节点当前是否展开（`None` = 树里没有这条连接；QA 断言用）。
+    #[must_use]
+    pub fn connection_expanded(&self, key: &str) -> Option<bool> {
+        self.connection_row(key).map(|row| row.is_expanded())
+    }
+
+    /// 按连接键找树上的连接行（根层）。
+    fn connection_row(&self, key: &str) -> Option<gtk::TreeListRow> {
         for position in 0..self.tree_model.n_items() {
             let Some(row) = self.tree_row(position) else {
                 continue;
             };
-            let Some(view) = self.row_of(&row) else {
+            let Some(Row::Connection(snapshot)) = self.row_of(&row) else {
                 continue;
             };
-            let Row::Connection(snapshot) = &view else {
-                continue;
-            };
-            if snapshot.key != key {
-                continue;
+            if snapshot.key == key {
+                return Some(row);
             }
-            if !row.is_expanded() {
-                row.set_expanded(true);
-            }
-            return;
         }
+        None
+    }
+
+    /// 展开注册表里所有**已连接**且用户没有主动收起的连接（#144 补一次）。
+    ///
+    /// 为什么需要它：`set_connections` 的自动展开依赖 `registry.notify`。刚建立工作区时，
+    /// 浏览会话的 `Opened` 事件可能先于树订阅到达（notify 丢掉），而树的行是懒创建的
+    /// （`GtkListView` 绑定后才 `tree_row()` 拿得到），所以即使收到 notify，第一次也
+    /// 可能一个行都没有。这里在挂载后短轮询（与 `auto_expand_groups` 同一模式，不是
+    /// 固定 sleep）：行一旦可用就按同一条 `set_expanded` 展开，然后立刻停止。
+    pub fn expand_connected(self: &Rc<Self>) {
+        let attempts = Rc::new(Cell::new(0u32));
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(40), move || {
+            let Some(panel) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let collapsed = panel.collapsed.borrow().clone();
+            let keys: Vec<String> = panel
+                .registry
+                .borrow()
+                .as_ref()
+                .map(|registry| {
+                    registry
+                        .snapshots()
+                        .into_iter()
+                        .filter(|row| row.state.is_connected())
+                        .filter(|row| !collapsed.contains(&row.key))
+                        .map(|row| row.key)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !keys.is_empty() {
+                let mut expanded = 0usize;
+                for key in &keys {
+                    if panel.connection_row(key).is_some() {
+                        panel.expand_connection(key);
+                        expanded += 1;
+                    }
+                }
+                if expanded > 0 {
+                    eprintln!(
+                        "[tree] t=+{}ms 已连接的连接层已展开 {expanded} 个",
+                        crate::qa::elapsed_ms()
+                    );
+                    return glib::ControlFlow::Break;
+                }
+            }
+            // 还没有已连接的连接、或行还没创建出来：等下一拍（最多 ~1 秒）。
+            let tick = attempts.get() + 1;
+            attempts.set(tick);
+            if tick >= 25 {
+                eprintln!("[tree] 已连接的连接行没有出现（放弃补展开）");
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     /// 元数据通道不可用（线程没起来）：显示明确原因，而不是空树。
@@ -1449,21 +1546,14 @@ impl TreePanel {
                         }
                     }
                     Row::Connection(snapshot) => {
-                        if snapshot.state.is_connected() {
-                            row.set_expanded(!row.is_expanded());
-                        } else if !matches!(
-                            snapshot.state,
-                            ConnectionState::Connecting | ConnectionState::Disconnecting
-                        ) {
-                            // 未连接：按保存的凭据建立浏览会话（与右键「连接」同一条路径）。
-                            if let Some(registry) = panel.registry() {
-                                eprintln!(
-                                    "[tree] 点击未连接的连接「{}」：建立浏览会话",
-                                    snapshot.name
-                                );
-                                registry.open(&snapshot.key);
-                            }
-                        }
+                        // 已连接 → 展开/收起；未连接 → 按保存的凭据连接；凭据缺失 → 预填对话框。
+                        // 判断与启动态侧栏共用（`connect_saved`，AGENTS §13 的单测覆盖它）。
+                        eprintln!(
+                            "[tree] 点击连接「{}」（{}）→ connect_saved",
+                            snapshot.name,
+                            snapshot.state.name()
+                        );
+                        (panel.callbacks.connect_saved)(snapshot.key.clone());
                     }
                     Row::Group(_) => row.set_expanded(!row.is_expanded()),
                     Row::Object(node) => {
@@ -2283,16 +2373,14 @@ impl TreePanel {
                         Rc::new(move || disconnect((*snapshot).clone()))
                     }));
                 } else {
-                    let registry = self.registry();
+                    let callback = Rc::clone(&self.callbacks.connect_saved);
                     let key = snapshot.key.clone();
                     let name = snapshot.name.clone();
                     entries.push((
                         "连接（使用已保存的凭据）".to_owned(),
                         Rc::new(move || {
-                            if let Some(registry) = registry.as_ref() {
-                                eprintln!("[tree] 右键连接「{name}」");
-                                registry.open(&key);
-                            }
+                            eprintln!("[tree] 右键连接「{name}」→ connect_saved");
+                            callback(key.clone());
                         }),
                     ));
                 }
@@ -2527,9 +2615,7 @@ impl TreePanel {
             if let Row::Connection(snapshot) = &view
                 && !snapshot.state.is_connected()
             {
-                if let Some(registry) = self.registry() {
-                    registry.open(&snapshot.key);
-                }
+                (self.callbacks.connect_saved)(snapshot.key.clone());
                 return Err(format!(
                     "连接「{name}」正在建立浏览会话（{}）",
                     snapshot.state.name()

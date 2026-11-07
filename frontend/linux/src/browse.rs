@@ -36,7 +36,7 @@ use async_channel::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::backend::client::BackendClient;
-use crate::backend::connection::{ConnectionDraft, TlsMode};
+use crate::backend::connection::{ConnectionDraft, ConnectionFailure, TlsMode};
 use crate::backend::endpoint;
 use crate::backend::metadata::MetadataHub;
 use crate::config::SavedConnection;
@@ -94,6 +94,57 @@ impl ConnectionState {
             Self::Connected => "已连接",
             Self::Disconnecting => "断开中…",
             Self::Failed => "失败",
+        }
+    }
+}
+
+/// 「点已保存连接」要做什么（启动态侧栏与对象树共用同一个判断）。
+///
+/// 这两个入口必须给出同一个答案，否则同一个动作在不同位置有两种语义
+/// （#144：启动态点击曾经是「打开预填对话框」，树上点击是「直接连接」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedClickAction {
+    /// 已有浏览会话：展开 / 收起这个连接节点（与用户点箭头同一条 `set_expanded` 路径）。
+    ToggleExpanded,
+    /// 未连接：用保存的 `credential_ref` 建立浏览会话（不读密码、不新增凭据）。
+    Connect,
+    /// 配置里没有凭据引用：直接打开预填对话框，让用户补密码。
+    PromptForCredentials,
+    /// 正在连接 / 断开：忽略这次点击（避免重复 Connect）。
+    Ignore,
+}
+
+impl SavedClickAction {
+    /// 日志与断言用的名字。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ToggleExpanded => "toggle-expanded",
+            Self::Connect => "connect",
+            Self::PromptForCredentials => "prompt-credentials",
+            Self::Ignore => "ignore",
+        }
+    }
+}
+
+/// 点击一条已保存连接时应该做什么（纯函数，启动态与树上共用）。
+///
+/// - 已连接 → 展开/收起；
+/// - 连接中 / 断开中 → 忽略；
+/// - 未连接（含上次失败）→ 若服务器型驱动没有凭据引用则回落对话框，否则直接连接。
+///   文件型驱动（SQLite）本来就不需要凭据，空引用是正确的。
+#[must_use]
+pub fn saved_click_action(state: ConnectionState, saved: &SavedConnection) -> SavedClickAction {
+    match state {
+        ConnectionState::Connected => SavedClickAction::ToggleExpanded,
+        ConnectionState::Connecting | ConnectionState::Disconnecting => SavedClickAction::Ignore,
+        ConnectionState::Disconnected | ConnectionState::Failed => {
+            let needs_credential = saved.driver != crate::config::SQLITE_DRIVER_ID;
+            if needs_credential && saved.credential_ref.trim().is_empty() {
+                SavedClickAction::PromptForCredentials
+            } else {
+                SavedClickAction::Connect
+            }
         }
     }
 }
@@ -183,6 +234,27 @@ pub fn params_from_saved(saved: &SavedConnection) -> ConnectionParams {
 // 后台线程：建立 / 断开浏览会话
 // ---------------------------------------------------------------------------
 
+/// 建立浏览会话的结果（`Connect` 的返回 + 客户端往返毫秒）。
+///
+/// 带齐 `ConnectResponse` 的字段（`driver_id` / `server_version` / `capabilities`）：
+/// 「按保存的凭据连接」成功后要合成一份与「保存并连接」同形状的工作区连接信息
+/// （ADR 0021），不能只拿两个 ID 去猜其余字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseSession {
+    /// 后端给的连接 ID（`Disconnect` 用它）。
+    pub connection_id: String,
+    /// 后端给的会话 ID。
+    pub session_id: String,
+    /// 驱动 ID（`ConnectResponse.driver_id`）。
+    pub driver_id: String,
+    /// 服务端版本；拿不到时为空（不伪造）。
+    pub server_version: String,
+    /// 驱动能力位名称（`table_browse_sort_filter_total` 等）。
+    pub capabilities: Vec<String>,
+    /// 从发起到拿到的毫秒数。
+    pub latency_millis: u64,
+}
+
 /// 主线程发给浏览会话 worker 的请求。
 enum SessionCommand {
     /// 建立一条浏览会话。
@@ -212,12 +284,8 @@ pub enum SessionEvent {
         request: u64,
         /// 连接键。
         key: String,
-        /// 后端给的连接 ID（`Disconnect` 用它）。
-        connection_id: String,
-        /// 后端给的会话 ID。
-        session_id: String,
-        /// 从发起到拿到的毫秒数。
-        latency_millis: u64,
+        /// `Connect` 的完整结果（含驱动 / 版本 / 能力位）。
+        session: BrowseSession,
     },
     /// 建立/断开失败（文案可直接展示）。
     Failed {
@@ -227,8 +295,10 @@ pub enum SessionEvent {
         key: String,
         /// 出错的阶段。
         stage: &'static str,
-        /// 可展示的原因。
+        /// 可展示的原因（含稳定错误码前缀）。
         message: String,
+        /// 稳定错误码；`credential.not_found` 表示配置里的引用在凭据库里不存在。
+        code: String,
     },
     /// 断开结果。
     Closed {
@@ -323,20 +393,18 @@ async fn session_loop(
                 let events = events.clone();
                 let endpoint_path = endpoint_path.clone();
                 tokio::spawn(async move {
-                    let result = connect_once(&endpoint_path, &display_name, params).await;
-                    let event = match result {
-                        Ok((connection_id, session_id, latency_millis)) => SessionEvent::Opened {
+                    let event = match connect_once(&endpoint_path, &display_name, params).await {
+                        Ok(session) => SessionEvent::Opened {
                             request,
                             key,
-                            connection_id,
-                            session_id,
-                            latency_millis,
+                            session,
                         },
-                        Err(message) => SessionEvent::Failed {
+                        Err(failure) => SessionEvent::Failed {
                             request,
                             key,
                             stage: "建立浏览会话",
-                            message,
+                            message: failure.detail().to_owned(),
+                            code: failure.code().to_owned(),
                         },
                     };
                     let _ = events.send(event).await;
@@ -392,24 +460,35 @@ async fn connect_once(
     endpoint_path: &Path,
     display_name: &str,
     params: ConnectionParams,
-) -> Result<(String, String, u64), String> {
+) -> Result<BrowseSession, ConnectionFailure> {
     let driver = params.driver_id.clone();
-    let client = client_for(endpoint_path).await?;
+    let client = client_for(endpoint_path)
+        .await
+        .map_err(|message| ConnectionFailure::Other {
+            code: "transport.failed".to_owned(),
+            message,
+        })?;
     let started = Instant::now();
     let opened = tokio::time::timeout(
         CONNECT_TIMEOUT,
         client.connect_database(params, display_name),
     )
     .await
-    .map_err(|_| "建立浏览会话超时（30 秒）".to_owned())?
-    .map_err(|failure| format!("[{}] {}", failure.code(), failure.detail()))?;
+    .map_err(|_| ConnectionFailure::timeout("建立浏览会话", CONNECT_TIMEOUT))??;
     let latency_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     eprintln!(
         "[browse] 浏览会话已建立：连接「{display_name}」驱动 {}（请求 {driver}），\
          连接 {}，会话 {}，{latency_millis} ms",
         opened.driver_id, opened.connection_id, opened.session_id
     );
-    Ok((opened.connection_id, opened.session_id, latency_millis))
+    Ok(BrowseSession {
+        connection_id: opened.connection_id,
+        session_id: opened.session_id,
+        driver_id: opened.driver_id,
+        server_version: opened.server_version,
+        capabilities: opened.capabilities,
+        latency_millis,
+    })
 }
 
 async fn disconnect_once(endpoint_path: &Path, connection_id: &str) -> Result<(), String> {
@@ -853,11 +932,15 @@ impl ConnectionRegistry {
             SessionEvent::Opened {
                 request,
                 key,
-                connection_id,
-                session_id,
-                latency_millis,
+                session,
             } => {
                 self.pending.borrow_mut().remove(&request);
+                let BrowseSession {
+                    connection_id,
+                    session_id,
+                    latency_millis,
+                    ..
+                } = session;
                 let hub = match MetadataHub::spawn(self.endpoint_path.clone(), session_id.clone()) {
                     Ok((hub, events)) => {
                         let pump = Rc::clone(&hub);
@@ -900,6 +983,7 @@ impl ConnectionRegistry {
                 key,
                 stage,
                 message,
+                code,
             } => {
                 self.pending.borrow_mut().remove(&request);
                 let name = {
@@ -911,10 +995,10 @@ impl ConnectionRegistry {
                     entry.connection_id.clear();
                     entry.session_id.clear();
                     entry.hub = None;
-                    entry.detail = format!("{stage}失败：{message}");
+                    entry.detail = format!("{stage}失败：[{code}] {message}");
                     entry.saved.name.clone()
                 };
-                eprintln!("[browse] 连接「{name}」{stage}失败：{message}");
+                eprintln!("[browse] 连接「{name}」{stage}失败：[{code}] {message}");
                 self.notify();
             }
             SessionEvent::Closed {
@@ -1106,5 +1190,70 @@ mod tests {
         saved.tls_mode = "nonsense".to_owned();
         let params = params_from_saved(&saved);
         assert_eq!(params.tls_mode, ProtoTlsMode::Preferred as i32);
+    }
+
+    // -- #144：启动态侧栏与对象树共用的点击语义 ------------------------------
+
+    #[test]
+    fn connected_connection_click_toggles_expansion() {
+        // 已连接：点一下只展开/收起，不再发第二次 Connect。
+        assert_eq!(
+            saved_click_action(ConnectionState::Connected, &mariadb("x")),
+            SavedClickAction::ToggleExpanded
+        );
+        assert_eq!(
+            saved_click_action(ConnectionState::Connected, &sqlite("a", "/tmp/a.sqlite")),
+            SavedClickAction::ToggleExpanded
+        );
+    }
+
+    #[test]
+    fn disconnected_connection_click_connects_with_saved_credential() {
+        // 未连接（含上次失败）：按保存的凭据直接建立浏览会话。
+        for state in [ConnectionState::Disconnected, ConnectionState::Failed] {
+            assert_eq!(
+                saved_click_action(state, &mariadb("x")),
+                SavedClickAction::Connect,
+                "{state:?} 应按保存凭据连接"
+            );
+        }
+        // SQLite 不需要凭据：空引用是正确状态，不能因此打开对话框。
+        assert_eq!(
+            saved_click_action(ConnectionState::Disconnected, &sqlite("a", "/tmp/a.sqlite")),
+            SavedClickAction::Connect
+        );
+    }
+
+    #[test]
+    fn server_connection_without_credential_reference_prompts_for_password() {
+        let mut saved = mariadb("x");
+        saved.credential_ref = String::new();
+        assert_eq!(
+            saved_click_action(ConnectionState::Disconnected, &saved),
+            SavedClickAction::PromptForCredentials
+        );
+        // 只有空白的引用同样算缺失（配置文件被手改过）。
+        saved.credential_ref = "   ".to_owned();
+        assert_eq!(
+            saved_click_action(ConnectionState::Failed, &saved),
+            SavedClickAction::PromptForCredentials
+        );
+    }
+
+    #[test]
+    fn in_flight_connection_click_is_ignored() {
+        // 连接中/断开中重复点击不能叠加 Connect（每个请求都会真的开一条会话）。
+        for state in [ConnectionState::Connecting, ConnectionState::Disconnecting] {
+            assert_eq!(
+                saved_click_action(state, &mariadb("x")),
+                SavedClickAction::Ignore,
+                "{state:?} 应忽略"
+            );
+        }
+        assert_eq!(SavedClickAction::Connect.name(), "connect");
+        assert_eq!(
+            SavedClickAction::PromptForCredentials.name(),
+            "prompt-credentials"
+        );
     }
 }
