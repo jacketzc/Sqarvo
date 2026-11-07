@@ -680,6 +680,20 @@ pub enum MetadataCommand {
         /// 目标对象。
         object: ObjectRef,
     },
+    /// 读取列（`GetColumns`）。
+    Columns {
+        /// 请求 ID。
+        id: u64,
+        /// 目标对象（表 / 视图）。
+        object: ObjectRef,
+    },
+    /// 读取主键（`GetPrimaryKey`）。
+    PrimaryKey {
+        /// 请求 ID。
+        id: u64,
+        /// 目标对象（表）。
+        object: ObjectRef,
+    },
     /// 退出线程。
     Shutdown,
 }
@@ -700,6 +714,20 @@ pub enum MetadataEvent {
         id: u64,
         /// 结果。
         result: Result<DdlView, MetadataError>,
+    },
+    /// 列（`GetColumns` 的结果，已转成界面用的列模型）。
+    Columns {
+        /// 请求 ID。
+        id: u64,
+        /// 结果。
+        result: Result<Vec<crate::backend::table::TableColumn>, MetadataError>,
+    },
+    /// 主键（按主键顺序）。
+    PrimaryKey {
+        /// 请求 ID。
+        id: u64,
+        /// 结果。
+        result: Result<Vec<crate::proto::services::v1::PrimaryKeyColumn>, MetadataError>,
     },
     /// 线程自身故障（无法建 tokio 运行时）：之后不会再有任何结果。
     Broken {
@@ -788,6 +816,18 @@ impl MetadataWorker {
     pub fn ddl(&self, id: u64, object: ObjectRef) {
         let _ = self.commands.send(MetadataCommand::Ddl { id, object });
     }
+
+    /// 读取列（非阻塞；#119 信息面板）。
+    pub fn columns(&self, id: u64, object: ObjectRef) {
+        let _ = self.commands.send(MetadataCommand::Columns { id, object });
+    }
+
+    /// 读取主键（非阻塞；#119 信息面板）。
+    pub fn primary_key(&self, id: u64, object: ObjectRef) {
+        let _ = self
+            .commands
+            .send(MetadataCommand::PrimaryKey { id, object });
+    }
 }
 
 impl Drop for MetadataWorker {
@@ -862,6 +902,32 @@ async fn worker_loop(
                     break;
                 }
             }
+            MetadataCommand::Columns { id, object } => {
+                let result = match client_for(&mut client, &endpoint_path).await {
+                    Ok(client) => client.get_columns(&object).await,
+                    Err(error) => Err(error),
+                };
+                if events
+                    .send(MetadataEvent::Columns { id, result })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            MetadataCommand::PrimaryKey { id, object } => {
+                let result = match client_for(&mut client, &endpoint_path).await {
+                    Ok(client) => client.get_primary_key_metadata(&object).await,
+                    Err(error) => Err(error),
+                };
+                if events
+                    .send(MetadataEvent::PrimaryKey { id, result })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
     }
 }
@@ -900,10 +966,18 @@ async fn client_for<'a>(
 pub type PageSink = std::rc::Rc<dyn Fn(Result<NodePage, MetadataError>)>;
 /// DDL 的回调。
 pub type DdlSink = std::rc::Rc<dyn Fn(Result<DdlView, MetadataError>)>;
+/// 列的回调。
+pub type ColumnsSink =
+    std::rc::Rc<dyn Fn(Result<Vec<crate::backend::table::TableColumn>, MetadataError>)>;
+/// 主键的回调。
+pub type PrimaryKeySink =
+    std::rc::Rc<dyn Fn(Result<Vec<crate::proto::services::v1::PrimaryKeyColumn>, MetadataError>)>;
 
 enum Route {
     Page(PageSink),
     Ddl(DdlSink),
+    Columns(ColumnsSink),
+    PrimaryKey(PrimaryKeySink),
 }
 
 /// 元数据请求的**主线程**路由中心：持有 worker、请求 ID 与回调表。
@@ -977,6 +1051,18 @@ impl MetadataHub {
         self.worker.ddl(id, object);
     }
 
+    /// 请求列（`GetColumns`；信息面板「表信息」页）。
+    pub fn request_columns(&self, object: ObjectRef, sink: ColumnsSink) {
+        let id = self.take_id(Route::Columns(sink));
+        self.worker.columns(id, object);
+    }
+
+    /// 请求主键（`GetPrimaryKey`；信息面板「表信息」页）。
+    pub fn request_primary_key(&self, object: ObjectRef, sink: PrimaryKeySink) {
+        let id = self.take_id(Route::PrimaryKey(sink));
+        self.worker.primary_key(id, object);
+    }
+
     /// 分发一条 worker 事件（只在主线程调用）。未知 ID 丢弃并记日志。
     pub fn dispatch(&self, event: MetadataEvent) {
         match event {
@@ -984,8 +1070,8 @@ impl MetadataHub {
                 let route = self.routes.borrow_mut().remove(&id);
                 match route {
                     Some(Route::Page(sink)) => sink(result),
-                    Some(Route::Ddl(_)) => {
-                        eprintln!("[tree] 请求 {id} 的回调类型不匹配（children/ddl），丢弃");
+                    Some(_) => {
+                        eprintln!("[tree] 请求 {id} 的回调类型不匹配（children），丢弃");
                     }
                     None => eprintln!("[tree] 收到未知请求 {id} 的子节点响应（丢弃）"),
                 }
@@ -994,10 +1080,30 @@ impl MetadataHub {
                 let route = self.routes.borrow_mut().remove(&id);
                 match route {
                     Some(Route::Ddl(sink)) => sink(result),
-                    Some(Route::Page(_)) => {
-                        eprintln!("[tree] 请求 {id} 的回调类型不匹配（ddl/children），丢弃");
+                    Some(_) => {
+                        eprintln!("[tree] 请求 {id} 的回调类型不匹配（ddl），丢弃");
                     }
                     None => eprintln!("[tree] 收到未知请求 {id} 的 DDL 响应（丢弃）"),
+                }
+            }
+            MetadataEvent::Columns { id, result } => {
+                let route = self.routes.borrow_mut().remove(&id);
+                match route {
+                    Some(Route::Columns(sink)) => sink(result),
+                    Some(_) => {
+                        eprintln!("[tree] 请求 {id} 的回调类型不匹配（columns），丢弃");
+                    }
+                    None => eprintln!("[tree] 收到未知请求 {id} 的列响应（丢弃）"),
+                }
+            }
+            MetadataEvent::PrimaryKey { id, result } => {
+                let route = self.routes.borrow_mut().remove(&id);
+                match route {
+                    Some(Route::PrimaryKey(sink)) => sink(result),
+                    Some(_) => {
+                        eprintln!("[tree] 请求 {id} 的回调类型不匹配（primary_key），丢弃");
+                    }
+                    None => eprintln!("[tree] 收到未知请求 {id} 的主键响应（丢弃）"),
                 }
             }
             MetadataEvent::Broken { message } => {

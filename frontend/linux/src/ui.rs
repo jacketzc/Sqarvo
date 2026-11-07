@@ -26,6 +26,8 @@ use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
 
+use crate::proto::services::v1::ObjectKind;
+
 use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure};
 use crate::backend::endpoint;
 use crate::backend::metadata::NodeView;
@@ -33,12 +35,12 @@ use crate::backend::table::TableEntry;
 use crate::backend::worker::{ConnectedSnapshot, Event, WorkerHandle};
 use crate::browse::{ConnectionRegistry, ConnectionSnapshot};
 use crate::data_page::{DataState, RowOpsState, TableBrowser};
-use crate::ddl::DdlPanel;
 use crate::dialog::ConnectionDialog;
+use crate::inspector::{ConnectionLive, Inspector, TablePage};
 use crate::layout;
 use crate::shell::{Shell, ShellHandlers, StatusBar};
 use crate::theme;
-use crate::tree::{TreeCallbacks, TreeHealth, TreePanel};
+use crate::tree::{TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
 
 /// 主窗口与连接对话框共享的状态。
 struct UiState {
@@ -547,6 +549,7 @@ pub fn activate(app: &adw::Application) {
                         || !crate::qa::expect_columns().is_empty()
                         || !crate::qa::expect_tree().is_empty()
                         || !crate::qa::expect_ddl().is_empty()
+                        || !crate::qa::expect_inspector().is_empty()
                         || !crate::qa::expect_submit().is_empty()
                     {
                         match verify_expectations(&capture_state) {
@@ -864,6 +867,37 @@ fn show_workspace(
     }
 }
 
+/// 跨标签未提交事务提示（#119 承接 #116 待定项）。
+///
+/// 事务是会话级的：切到另一个标签后，原标签的事务仍在。面板顶部常驻一行，
+/// 说明「同一 catalog 里还有谁的没提交」；没有就整行隐藏。
+fn refresh_txn_hint(
+    inspector: &Rc<Inspector>,
+    tree_slot: &Rc<RefCell<Option<Rc<TreePanel>>>>,
+    tabs_slot: &Rc<RefCell<Option<Rc<crate::tabs::TabSet>>>>,
+) {
+    let Some(tabs) = tabs_slot.borrow().clone() else {
+        inspector.set_txn_hint(None);
+        return;
+    };
+    let catalog = tree_slot
+        .borrow()
+        .as_ref()
+        .and_then(|tree| match tree.current_selection() {
+            TreeSelection::Object { node, .. } => Some(node.reference.catalog),
+            _ => None,
+        });
+    let titles = tabs.uncommitted_elsewhere(catalog.as_deref());
+    if titles.is_empty() {
+        inspector.set_txn_hint(None);
+    } else {
+        inspector.set_txn_hint(Some(format!(
+            "同一 catalog 的其它标签还有未提交事务：{}",
+            titles.join("、")
+        )));
+    }
+}
+
 /// 当前标签的状态 → 状态栏 / 工具条 / 「表」菜单。
 fn apply_tab_status(
     shell: &Rc<Shell>,
@@ -921,8 +955,8 @@ struct Workspace {
     flat: Rc<TableBrowser>,
     /// 标签工作区（固定 Objects 页 + 表标签 + 查询标签）。
     tabs: Rc<crate::tabs::TabSet>,
-    /// DDL 面板（容器由 revealer 管理；QA 断言读它的控件）。
-    ddl: Rc<DdlPanel>,
+    /// 信息面板（#119：连接 / 库 / 表三态；DDL 与表信息在面板内切换）。
+    inspector: Rc<Inspector>,
     /// 打开表的统一入口（树、平铺列表与 QA 共用同一条路径）。
     open: Rc<dyn Fn(TableEntry)>,
     /// 刷新对象树 + 表列表（「视图 → 刷新」与 F5）。
@@ -964,24 +998,17 @@ impl Workspace {
             })
         };
 
-        // ---- DDL 面板（底部可收起，常驻布局但不占空间） ------------------------
-        let ddl_revealer = gtk::Revealer::new();
-        ddl_revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
-        ddl_revealer.set_reveal_child(false);
-        let ddl_slot: Rc<RefCell<Option<Rc<DdlPanel>>>> = Rc::new(RefCell::new(None));
-        let ddl = DdlPanel::new({
-            let revealer = ddl_revealer.clone();
-            let slot = Rc::clone(&ddl_slot);
+        // ---- 信息面板（区域 06，#119）---------------------------------------
+        // 外壳还没建：折叠按钮通过槽位回调（与 `Ctrl+I` 同一条路径）。
+        let shell_slot: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
+        let inspector = Inspector::new({
+            let slot = Rc::clone(&shell_slot);
             Rc::new(move || {
-                eprintln!("[ddl] t=+{}ms 关闭 DDL 面板", crate::qa::elapsed_ms());
-                revealer.set_reveal_child(false);
-                if let Some(panel) = slot.borrow().as_ref() {
-                    panel.set_visible(false);
+                if let Some(shell) = slot.borrow().as_ref() {
+                    shell.set_inspector_visible(false);
                 }
             })
         });
-        ddl_slot.replace(Some(Rc::clone(&ddl)));
-        ddl_revealer.set_child(Some(ddl.widget()));
 
         // ---- 区域 03 的内容：侧栏栈（对象树 / 平铺列表）+ 页脚 -----------------
         let sidebar_stack = gtk::Stack::new();
@@ -1034,12 +1061,99 @@ impl Workspace {
                 })
             },
             ddl: {
-                let ddl = Rc::clone(&ddl);
-                let revealer = ddl_revealer.clone();
+                let inspector = Rc::clone(&inspector);
+                let shell_slot = Rc::clone(&shell_slot);
+                let tabs_slot = Rc::clone(&tabs_slot);
                 Rc::new(move |node: NodeView| {
-                    ddl.set_visible(true);
-                    revealer.set_reveal_child(true);
-                    ddl.show_for(node);
+                    if let Some(shell) = shell_slot.borrow().as_ref() {
+                        shell.set_inspector_visible(true);
+                    }
+                    let tab_id = tabs_slot
+                        .borrow()
+                        .as_ref()
+                        .and_then(|tabs| tabs.current_id())
+                        .unwrap_or_else(|| "tree".to_owned());
+                    let loaded = tabs_slot
+                        .borrow()
+                        .as_ref()
+                        .and_then(|tabs| tabs.loaded_rows_for(&node.reference));
+                    inspector.show_object(node, None, loaded, &tab_id);
+                    // 「看 DDL」是显式动作：即使记得的是「表信息」也切到 DDL 页。
+                    inspector.set_pane(TablePage::Ddl);
+                })
+            },
+            select: {
+                let inspector = Rc::clone(&inspector);
+                let tree_slot = Rc::clone(&tree_slot);
+                let tabs_slot = Rc::clone(&tabs_slot);
+                let state = Rc::clone(state);
+                let server_version = version.to_owned();
+                let latency = outcome.latency_millis;
+                // 本次「保存并连接」的那条连接按名字认：活动键在注册表刷新后可能已经
+                // 换成别的条目，而版本 / 延迟属于这次 ConnectOutcome。
+                let owner = connection_name.to_owned();
+                Rc::new(move |selection: TreeSelection| {
+                    let tab_id = tabs_slot
+                        .borrow()
+                        .as_ref()
+                        .and_then(|tabs| tabs.current_id())
+                        .unwrap_or_else(|| "tree".to_owned());
+                    match selection {
+                        TreeSelection::Connection(snapshot) => {
+                            let registry = state.registry.borrow().clone();
+                            let saved = registry
+                                .as_ref()
+                                .and_then(|registry| registry.saved(&snapshot.key));
+                            let sessions = registry
+                                .as_ref()
+                                .and_then(|registry| registry.session_count_for(&snapshot.name));
+                            // 服务端版本与延迟只有「保存并连接」那条连接有：其它连接
+                            // 拿不到就不显示这两行（不编造）。
+                            let mine = snapshot.is_active || snapshot.name == owner;
+                            let live = ConnectionLive {
+                                server_version: if mine {
+                                    server_version.clone()
+                                } else {
+                                    String::new()
+                                },
+                                latency_millis: mine.then_some(latency),
+                                sessions,
+                            };
+                            inspector.show_connection(saved.as_ref(), &live);
+                            inspector.set_txn_hint(None);
+                        }
+                        TreeSelection::Object { node, parent } => {
+                            let counts = tree_slot
+                                .borrow()
+                                .as_ref()
+                                .map(|tree| tree.group_counts(&node.reference));
+                            if matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
+                                let counts = counts.unwrap_or_default();
+                                inspector.show_catalog(
+                                    &node.display_name,
+                                    counts.tables,
+                                    counts.views,
+                                    counts.complete,
+                                );
+                            } else {
+                                let loaded = tabs_slot
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|tabs| tabs.loaded_rows_for(&node.reference));
+                                inspector.show_object(
+                                    *node.clone(),
+                                    parent.as_deref(),
+                                    loaded,
+                                    &tab_id,
+                                );
+                            }
+                            refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
+                        }
+                        TreeSelection::None => {
+                            inspector.show_empty();
+                            inspector.set_txn_hint(None);
+                        }
+                    }
                 })
             },
             health: {
@@ -1093,16 +1207,21 @@ impl Workspace {
 
         let ddl_button = gtk::Button::with_label("DDL");
         ddl_button.add_css_class("flat");
-        ddl_button.set_tooltip_text(Some("查看选中对象的 DDL（原文 / 由客户端拼装会标注）"));
+        ddl_button.set_tooltip_text(Some(
+            "在信息面板里查看选中对象的 DDL（原文 / 由客户端拼装会标注）",
+        ));
         {
             let tree = Rc::clone(&tree);
-            let ddl = Rc::clone(&ddl);
-            let revealer = ddl_revealer.clone();
+            let inspector = Rc::clone(&inspector);
+            let shell_slot = Rc::clone(&shell_slot);
             ddl_button.connect_clicked(move |_| match tree.selected_node() {
                 Some(node) if !node.is_placeholder() => {
-                    ddl.set_visible(true);
-                    revealer.set_reveal_child(true);
-                    ddl.show_for(node);
+                    if let Some(shell) = shell_slot.borrow().as_ref() {
+                        shell.set_inspector_visible(true);
+                    }
+                    // 与树上的「查看 DDL」走同一条回调：内容与来源标注只有一份。
+                    inspector.show_object(node, None, None, "tree");
+                    inspector.set_pane(TablePage::Ddl);
                 }
                 _ => eprintln!("[ddl] 先在对象树里选中一个对象，再点「DDL」"),
             });
@@ -1124,10 +1243,18 @@ impl Workspace {
         sidebar_box.append(&footer);
 
         // ---- 外壳（区域 02–06） ----------------------------------------------
-        // 状态回调里要拿到 `Shell`：先占槽位，Shell 建好后填进去。
-        let shell_slot: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
         let tabs = crate::tabs::TabSet::new(crate::tabs::TabContext {
             worker: Rc::clone(&worker),
+            on_column: {
+                let inspector = Rc::clone(&inspector);
+                let shell_slot = Rc::clone(&shell_slot);
+                Rc::new(move |column: crate::backend::table::TableColumn| {
+                    if let Some(shell) = shell_slot.borrow().as_ref() {
+                        shell.set_inspector_visible(true);
+                    }
+                    inspector.show_column(&column);
+                })
+            },
             connection_name: connection_name.to_owned(),
             driver_label: driver_label.to_owned(),
             subtitle: format!("已连接 · {driver_label} · {version}"),
@@ -1147,10 +1274,21 @@ impl Workspace {
             },
             on_status: {
                 let shell_slot = Rc::clone(&shell_slot);
+                let inspector = Rc::clone(&inspector);
+                let tree_slot = Rc::clone(&tree_slot);
+                let tabs_slot = Rc::clone(&tabs_slot);
                 let actions = state.actions.borrow().clone();
                 Rc::new(move |status: crate::tabs::TabStatus| {
                     if let Some(shell) = shell_slot.borrow().as_ref() {
                         apply_tab_status(shell, actions.as_ref(), status);
+                        // 事务状态变了：跨标签提示跟着重算（#119）。
+                        refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
+                        // 切标签只换「表页选择」的记忆键，不重发请求、不重建标签。
+                        if let Some(tabs) = tabs_slot.borrow().as_ref()
+                            && let Some(tab_id) = tabs.current_id()
+                        {
+                            inspector.retarget(&tab_id);
+                        }
                     }
                 })
             },
@@ -1168,11 +1306,35 @@ impl Workspace {
         work_box.set_vexpand(true);
         work_box.set_hexpand(true);
         work_box.append(tabs.widget());
-        work_box.append(&ddl_revealer);
+
+        // 面板宽度按连接记忆（独立的窗口状态文件，不写进 connections.json）。
+        let connection_key = state
+            .registry
+            .borrow()
+            .as_ref()
+            .and_then(|registry| registry.active_key());
+        let remembered_width = connection_key
+            .as_deref()
+            .and_then(crate::window_state::inspector_width)
+            .unwrap_or(layout::INSPECTOR_WIDTH);
+        eprintln!("[shell] 信息面板宽度按连接读取：{}", remembered_width);
 
         let shell = Shell::new(ShellHandlers {
             sidebar: sidebar_box.upcast(),
             work_area: work_box.upcast(),
+            inspector: inspector.widget().clone().upcast(),
+            inspector_width: remembered_width,
+            on_inspector_width: {
+                let key = connection_key.clone();
+                Rc::new(move |width: i32| {
+                    let Some(key) = key.as_deref() else {
+                        return;
+                    };
+                    if let Err(error) = crate::window_state::remember_inspector_width(key, width) {
+                        eprintln!("[shell] 信息面板宽度未能记住：{error}");
+                    }
+                })
+            },
             row_op: {
                 let tabs = Rc::clone(&tabs);
                 Rc::new(move |op| {
@@ -1212,10 +1374,10 @@ impl Workspace {
             .status()
             .set_sql_summary(&format!("已连接 · {version}"));
 
-        // 接线：树与 DDL 都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
+        // 接线：树与信息面板都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
         match state.registry.borrow().clone() {
             Some(registry) => {
-                ddl.attach_resolver({
+                inspector.attach_resolver({
                     let registry = Rc::clone(&registry);
                     Rc::new(move |object: &crate::proto::services::v1::ObjectRef| {
                         registry.hub_for_session(&object.session_id)
@@ -1236,7 +1398,7 @@ impl Workspace {
             tree,
             flat,
             tabs,
-            ddl,
+            inspector,
             open,
             refresh,
             session_id: outcome.session_id.clone(),
@@ -1263,6 +1425,10 @@ impl Workspace {
         targets.push(Target::row("侧栏", self.shell.sidebar().clone()));
         for (name, widget) in self.shell.status().audit_groups() {
             targets.push(Target::row(name, widget));
+        }
+        // 信息面板展开时也要自检：280 宽的栏里字段名 + 值不能互相压盖。
+        if self.shell.inspector_visible() {
+            targets.extend(self.inspector.layout_audit_targets());
         }
         for target in self.tabs.layout_audit_targets() {
             targets.push(target);
@@ -1469,6 +1635,101 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
             }),
         );
         delay += 900;
+    }
+
+    if let Some(name) = crate::qa::tree_select_connection() {
+        let tree = Rc::clone(&workspace.tree);
+        let shell = Rc::clone(&workspace.shell);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                shell.set_inspector_visible(true);
+                tree.qa_select_connection(&name)
+                    .map(|()| format!("选中连接节点「{name}」（信息面板：连接）"))
+            }),
+        );
+        delay += 700;
+    }
+
+    if let Some(name) = crate::qa::tree_select() {
+        let tree = Rc::clone(&workspace.tree);
+        let shell = Rc::clone(&workspace.shell);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                shell.set_inspector_visible(true);
+                tree.qa_select(&name)
+                    .map(|node| format!("选中节点 {}（信息面板已切换）", node.path_label()))
+            }),
+        );
+        delay += 700;
+    }
+
+    if let Some(width) = crate::qa::inspector_width() {
+        let shell = Rc::clone(&workspace.shell);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                shell.set_inspector_visible(true);
+                shell.set_inspector_width(width);
+                Ok(format!(
+                    "信息面板宽度拖到 {width}（记忆宽 {}）",
+                    shell.inspector_width()
+                ))
+            }),
+        );
+        delay += 500;
+    }
+
+    if let Some(mode) = crate::qa::inspector() {
+        let shell = Rc::clone(&workspace.shell);
+        let inspector = Rc::clone(&workspace.inspector);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                match mode.as_str() {
+                    "hidden" => {
+                        shell.set_inspector_visible(false);
+                    }
+                    "shown" => {
+                        shell.set_inspector_visible(true);
+                    }
+                    "ddl" | "info" => {
+                        shell.set_inspector_visible(true);
+                        let Some(pane) = crate::inspector::TablePage::parse(&mode) else {
+                            return Err(format!("未知的 --qa-inspector 取值：{mode}"));
+                        };
+                        inspector.set_pane(pane);
+                        return Ok(format!("信息面板：展开 · {}", pane.name()));
+                    }
+                    "toggle" => {
+                        // 展开 → 再折叠：两次都走 `Ctrl+I` 的同一条路径，日志里能读到
+                        // 折叠前后面板实际占的宽度（#119 的「折叠不占宽」证据）。
+                        shell.set_inspector_visible(true);
+                        let shell_after = Rc::clone(&shell);
+                        glib::timeout_add_local_once(Duration::from_millis(900), move || {
+                            shell_after.toggle_inspector();
+                            eprintln!(
+                                "[qa] 信息面板：展开 → 折叠（宽 {}）",
+                                shell_after.inspector_width()
+                            );
+                        });
+                        return Ok("信息面板：展开后折叠（toggle）".to_owned());
+                    }
+                    other => return Err(format!("未知的 --qa-inspector 取值：{other}")),
+                }
+                Ok(format!(
+                    "信息面板：{}（宽 {}）",
+                    if shell.inspector_visible() {
+                        "展开"
+                    } else {
+                        "折叠"
+                    },
+                    shell.inspector_width()
+                ))
+            }),
+        );
+        delay += 500;
     }
 
     // #114：断开一条连接的浏览会话（走右键菜单同一条路径：回调里弹确认框）。
@@ -1735,8 +1996,10 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
             let Some(data) = workspace.tabs.data_page() else {
                 return;
             };
+            // 列信息已迁到右侧面板：先展开面板，再走与用户点击同一条表头入口。
+            workspace.shell.set_inspector_visible(true);
             if let Err(error) = data.qa_open_column_info(&column) {
-                eprintln!("[qa] 点击表头打开列信息浮层失败：{error}");
+                eprintln!("[qa] 点击表头定位列信息失败：{error}");
             }
         });
     }
@@ -2101,11 +2364,62 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         .as_ref()
         .cloned()
         .ok_or_else(|| "工作区尚未建立：没有可断言的界面".to_owned())?;
+    let mut passed: Vec<String> = Vec::new();
+
+    let inspector_expectations = crate::qa::expect_inspector();
+    if !inspector_expectations.is_empty() {
+        let observed = workspace.inspector.qa_observe();
+        for expectation in &inspector_expectations {
+            let actual = match expectation.field.as_str() {
+                "page" => observed.page.clone(),
+                "table_page" => observed.table_page.clone(),
+                "title" => observed.title.clone(),
+                "subtitle" => observed.subtitle.clone(),
+                "txn_hint" => observed.txn_hint.clone(),
+                "ddl_state" => observed.ddl_state.clone(),
+                "facts_contains" => observed.facts.join(" · "),
+                "state_contains" => observed.state_detail.clone(),
+                "columns" => observed.columns.to_string(),
+                "visible" => if observed.visible { "on" } else { "off" }.to_owned(),
+                other => return Err(format!("未知的 --qa-expect-inspector 字段：{other}")),
+            };
+            let matched = if matches!(
+                expectation.field.as_str(),
+                "facts_contains" | "state_contains" | "title" | "subtitle" | "txn_hint"
+            ) {
+                actual.contains(&expectation.expected)
+            } else {
+                actual == expectation.expected
+            };
+            if !matched {
+                return Err(format!(
+                    "信息面板 {} 期望「{}」，实际「{actual}」（页={}，字段：{}）",
+                    expectation.field,
+                    expectation.expected,
+                    observed.page,
+                    observed.facts.join(" · ")
+                ));
+            }
+            passed.push(format!("信息面板 {}={actual}", expectation.field));
+        }
+    }
+
+    // 信息面板的断言不依赖数据页（#119：选中连接 / 库也能断言）；数据页的断言仍然要求
+    // 当前标签是表数据标签——没有数据页却登记了数据断言，是脚本错误，不能静默跳过。
+    let needs_data_page = crate::qa::expect_data_state().is_some()
+        || crate::qa::expect_txn().is_some()
+        || !crate::qa::expect_columns().is_empty()
+        || !crate::qa::expect_submit().is_empty();
     let Some(data_page) = workspace.tabs.data_page() else {
-        return Err("当前标签不是表数据标签：没有可断言的数据页".to_owned());
+        if needs_data_page {
+            return Err("当前标签不是表数据标签：没有可断言的数据页".to_owned());
+        }
+        if passed.is_empty() {
+            return Err("没有登记任何期望值".to_owned());
+        }
+        return Ok(passed.join("，"));
     };
     let observed = data_page.qa_observe();
-    let mut passed: Vec<String> = Vec::new();
 
     if let Some(expected) = crate::qa::expect_data_state() {
         let actual = data_state_name(observed.state);
@@ -2205,19 +2519,27 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
 
     let column_expectations = crate::qa::expect_columns();
     if !column_expectations.is_empty() {
-        let observed = data_page.qa_observe_column_info();
-        if !observed.visible {
-            return Err(
-                "列信息浮层没有打开：截图上不会有列信息（检查 --qa-column-info）".to_owned(),
-            );
-        }
+        // 列信息已迁到右侧面板（#119）：断言读面板列页的控件文本。
+        let observed = workspace.inspector.qa_observe_column();
+        let Some(observed) = observed else {
+            return Err("列信息页没有打开：截图上不会有列信息（检查 --qa-column-info）".to_owned());
+        };
+        let row = crate::data_page::ColumnInfoRowObservation {
+            name: observed.name,
+            type_label: observed.type_label,
+            nullable: observed.nullable,
+            default_value: observed.default_value,
+            charset: observed.charset,
+            collation: observed.collation,
+        };
         for expectation in &column_expectations {
-            let row = observed
-                .rows
-                .iter()
-                .find(|row| row.name == expectation.column)
-                .ok_or_else(|| format!("列信息浮层里没有列 {}", expectation.column))?;
-            let actual = expectation.field.value(row);
+            if row.name != expectation.column {
+                return Err(format!(
+                    "列信息页显示的是 {}，不是 {}",
+                    row.name, expectation.column
+                ));
+            }
+            let actual = expectation.field.value(&row);
             if actual != expectation.expected {
                 return Err(format!(
                     "列 {} 的 {} 期望「{}」，实际「{}」",
@@ -2284,7 +2606,8 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
 
     let ddl_expectations = crate::qa::expect_ddl();
     if !ddl_expectations.is_empty() {
-        let observed = workspace.ddl.qa_observe();
+        // DDL 已迁入信息面板：断言读面板里那块 DDL 的控件。
+        let observed = workspace.inspector.ddl_panel().qa_observe();
         if !observed.visible {
             return Err("DDL 面板没有打开：截图上不会有 DDL（检查 --qa-tree-ddl）".to_owned());
         }

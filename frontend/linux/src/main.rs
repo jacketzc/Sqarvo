@@ -15,6 +15,7 @@ mod data_page;
 mod ddl;
 mod dialog;
 mod driver_form;
+mod inspector;
 mod layout;
 mod layout_audit;
 mod proto;
@@ -28,6 +29,7 @@ mod tabs;
 mod theme;
 mod tree;
 mod ui;
+mod window_state;
 
 use adw::prelude::*;
 
@@ -88,8 +90,13 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-ddl", "object-name"),
         ("qa-tree-search", "query"),
         ("qa-tree-disconnect", "connection-name"),
+        ("qa-tree-select", "object-name"),
+        ("qa-tree-select-connection", "connection-name"),
+        ("qa-inspector", "ddl|info|hidden|shown|toggle"),
+        ("qa-inspector-width", "pixels"),
         ("qa-expect-tree", "field=value"),
         ("qa-expect-ddl", "field=value"),
+        ("qa-expect-inspector", "field=value"),
         ("qa-tabs-file", "/path/to/tabs.txt"),
         (
             "qa-browse",

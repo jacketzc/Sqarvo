@@ -166,10 +166,44 @@ pub struct TreeCallbacks {
     pub open: Rc<dyn Fn(NodeView)>,
     /// 查看 DDL（当前选中或指定节点）。
     pub ddl: Rc<dyn Fn(NodeView)>,
+    /// 选中变化（信息面板按它换内容，#119）。占位行与分组行不通知（传 `None`）。
+    pub select: Rc<dyn Fn(TreeSelection)>,
     /// 健康状态变化（侧栏提示 / 平铺回退用）。
     pub health: Rc<dyn Fn(TreeHealth)>,
     /// 断开一条连接（右键菜单；确认与副作用由调用方负责）。
     pub disconnect: Rc<dyn Fn(ConnectionSnapshot)>,
+}
+
+/// 树上的一次选中（信息面板的输入）。
+///
+/// 列节点单独带上**父表**：`GetColumns` 的粒度是表，列节点自己的引用里没有父表名。
+#[derive(Debug, Clone)]
+pub enum TreeSelection {
+    /// 连接节点。
+    Connection(Rc<ConnectionSnapshot>),
+    /// 服务端对象（库 / 表 / 视图 / 列 / 索引 / 触发器 …）。
+    ///
+    /// 装箱：`NodeView` 比另一个变体大得多，面板每次切换都会搬一次枚举，
+    /// 不该为一次展示把两份路径字符串摊在栈上。
+    Object {
+        /// 节点。
+        node: Box<NodeView>,
+        /// 上一层的对象（列节点用它找父表；分组行与连接行不算）。
+        parent: Option<Box<NodeView>>,
+    },
+    /// 没有选中，或选中的是分组 / 占位行。
+    None,
+}
+
+/// 一个 catalog 下已加载的表 / 视图条数（信息面板的库页）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GroupCounts {
+    /// 已加载的表数；`None` = `Tables` 分组还没展开过。
+    pub tables: Option<usize>,
+    /// 已加载的视图数；`None` = `Views` 分组还没展开过。
+    pub views: Option<usize>,
+    /// 两组都读到了最后一页（计数可以当作总数）。
+    pub complete: bool,
 }
 
 /// 种类分组：客户端虚拟层（workspace-model §4）。
@@ -1218,6 +1252,82 @@ impl TreePanel {
         node.row().node().cloned()
     }
 
+    /// 当前选中（连接 / 对象 / 无），并带上对象的上一层（信息面板用）。
+    ///
+    /// 列节点的引用里没有父表名，而 `GetColumns` 的粒度是表：父表只能从树上取。
+    pub fn current_selection(&self) -> TreeSelection {
+        let Some(position) = self.selected_position() else {
+            return TreeSelection::None;
+        };
+        let Some(row) = self
+            .tree_model
+            .item(position)
+            .and_then(|item| item.downcast::<gtk::TreeListRow>().ok())
+        else {
+            return TreeSelection::None;
+        };
+        let Some(object) = row
+            .item()
+            .and_then(|item| item.downcast::<NodeObject>().ok())
+        else {
+            return TreeSelection::None;
+        };
+        match object.row() {
+            Row::Connection(snapshot) => TreeSelection::Connection(snapshot),
+            Row::Object(node) => {
+                let parent = row
+                    .parent()
+                    .and_then(|parent| parent.item())
+                    .and_then(|item| item.downcast::<NodeObject>().ok())
+                    .and_then(|object| object.row().node().cloned())
+                    .map(Box::new);
+                TreeSelection::Object {
+                    node: Box::new(node),
+                    parent,
+                }
+            }
+            Row::Group(_) | Row::Note(_) => TreeSelection::None,
+        }
+    }
+
+    /// 某个 catalog 下**已经加载**的表 / 视图条数（分组层各自的分页状态）。
+    ///
+    /// 只读已展开的结果：信息面板不会为了显示计数去全量扫库（§4 的懒加载契约）。
+    /// `complete` 表示两组都已读到最后一页——为 `false` 时界面必须说明「按已展开统计」。
+    pub fn group_counts(&self, parent: &ObjectRef) -> GroupCounts {
+        let mut tables = None;
+        let mut views = None;
+        let mut complete = true;
+        for level in self.levels.borrow().values() {
+            let LevelSource::Group {
+                parent: level_parent,
+                group,
+                ..
+            } = &level.source
+            else {
+                continue;
+            };
+            if level_parent.catalog != parent.catalog
+                || level_parent.schema != parent.schema
+                || level_parent.name != parent.name
+            {
+                continue;
+            }
+            let loaded = level.loaded.get();
+            let done = level.next_token.borrow().is_empty() && !level.loading.get();
+            match group {
+                KindGroup::Tables => tables = Some(loaded),
+                KindGroup::Views => views = Some(loaded),
+            }
+            complete &= done;
+        }
+        GroupCounts {
+            tables,
+            views,
+            complete: complete && (tables.is_some() || views.is_some()),
+        }
+    }
+
     /// 已加载的真实节点数（展开后的行数，不含占位行）。
     pub fn loaded_nodes(&self) -> usize {
         self.levels
@@ -1268,6 +1378,32 @@ impl TreePanel {
     }
 
     fn install_handlers(self: &Rc<Self>) {
+        // 选中变化 → 信息面板（#119）。`activate` 只处理「点开」；这里处理「只是选中」。
+        if let Some(selection) = self
+            .list_view
+            .model()
+            .and_then(|model| model.downcast::<gtk::SingleSelection>().ok())
+        {
+            let weak = Rc::downgrade(self);
+            selection.connect_selected_notify(move |_| {
+                let Some(panel) = weak.upgrade() else {
+                    return;
+                };
+                let selection = panel.current_selection();
+                match &selection {
+                    TreeSelection::Connection(snapshot) => {
+                        eprintln!("[tree] 选中连接：{}", snapshot.name);
+                    }
+                    TreeSelection::Object { node, .. } => eprintln!(
+                        "[tree] 选中对象：{}（{}）",
+                        node.display_name,
+                        kind_label(node.kind)
+                    ),
+                    TreeSelection::None => eprintln!("[tree] 选中已清空（分组行或占位行）"),
+                }
+                (panel.callbacks.select)(selection);
+            });
+        }
         self.list_view.connect_activate({
             let weak = Rc::downgrade(self);
             move |view, position| {
@@ -2516,6 +2652,50 @@ impl TreePanel {
         }
         let opened = self.expand_available_groups();
         Err(format!("树里找不到节点 {name}（已展开 {opened} 个分组）"))
+    }
+
+    /// 走用户路径「只选中」某个节点（#119 截图与断言用）：
+    /// 触发的就是点击行时的选中变化，信息面板据此换内容。
+    pub fn qa_select(self: &Rc<Self>, name: &str) -> Result<NodeView, String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Some(node) = view.node() else {
+                continue;
+            };
+            if node.display_name != name {
+                continue;
+            }
+            self.select_position(position);
+            return Ok(node.clone());
+        }
+        let opened = self.expand_available_groups();
+        Err(format!("树里找不到节点 {name}（已展开 {opened} 个分组）"))
+    }
+
+    /// 走用户路径选中一条**连接**节点（#119 截图用）。
+    pub fn qa_select_connection(self: &Rc<Self>, name: &str) -> Result<(), String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Row::Connection(snapshot) = view else {
+                continue;
+            };
+            if snapshot.name != name {
+                continue;
+            }
+            self.select_position(position);
+            return Ok(());
+        }
+        Err(format!("树里找不到连接节点 {name}"))
     }
 
     /// 点击树里的第一个「加载更多…」占位行（分页证据）。
