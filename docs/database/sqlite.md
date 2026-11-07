@@ -76,6 +76,36 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，见
 [mariadb.md](./mariadb.md#连接级只读不适用)。
 
+## 表浏览：排序 / 筛选 / offset / 精确总数（v0.2.3，#110）
+
+`BrowseTable` 的 v0.2.3 维度已全部下推到 SQL（ADR 0022），驱动声明
+`table_browse_sort_filter_total = true`。默认值（老客户端）仍是「主键升序 + 键集游标」，
+行为与 v0.2.2 一致。
+
+- **排序**：多列、`ASC` / `DESC`，按请求顺序拼成 `ORDER BY "c1" DESC, "c2" ASC`；未在
+  排序里出现的主键列追加 `ASC` 作为并列打破。列名必须命中 `GetColumns`（大小写不敏感），
+  只拼 schema 里的规范名并用双引号引用；未知列在发送 SQL 前报 `config.invalid`。
+- **筛选**：`EQ` / `NE` / `LT` / `LE` / `GT` / `GE` / `LIKE` / `IS NULL` / `IS NOT NULL`，
+  只支持 AND 组合。值一律参数化绑定；`LIKE` 的语义是**文本包含**，用户输入里的 `%` 与 `_`
+  按字面量匹配（转义后包成 `%...%`，SQL 用 `ESCAPE '\'`），不是通配符。比较值显式为 NULL
+  会被拒绝（`config.invalid`，判空要用 `IS NULL`）；`NE` 不返回 NULL 行，这是 SQL 三值逻辑，
+  驱动不改写。未知列、非文本 `LIKE` 值、SQLite 表示不了的值（数组等）同样在发送前拒绝。
+- **分页**：`offset` 与 `page_token` 互斥（rpc-server 与驱动各校验一次）；`Some(0)` 也算
+  显式 offset 分页。排序 + `page_token` 被拒绝——游标编码的是主键升序上的位置，换排序后
+  不再是下一页的起点。**offset 分页不签发游标**（`has_more` 仍如实给出），由调用方递增
+  offset；`LIMIT ?n OFFSET ?m` 的代价是扫描前面 m 行（ADR 0022 §5），不做「按主键估算跳页」。
+- **总数**：`include_total = true` 时在同一连接上跑独立的 `SELECT COUNT(*)`（同一份筛选
+  `WHERE`，不带游标条件、`ORDER BY`、`LIMIT`/`OFFSET`），结果报 `TOTAL_KIND_EXACT`；
+  未请求、或计数失败（被中断、锁等待超时）时是 `TOTAL_KIND_UNKNOWN` 且 `total_rows` 为空，
+  **从不**给出估算值——SQLite 没有可靠的统计视图可用，`ESTIMATE` 在本驱动不会出现。
+  总数是筛选后的全集，不随 offset 递减。
+- **无主键表 / 视图**：允许排序、筛选与计数，但 `read_only` 仍为 true
+  （`READ_ONLY_REASON_NO_PRIMARY_KEY`），`row_order` 恒为 `UNSTABLE`、不签发游标。
+- **锁等待**：连接建立时显式设置 `PRAGMA busy_timeout = 5000`（毫秒常量，
+  见 `session.rs` 的 `BUSY_TIMEOUT`）。只设忙等超时、**不**改 `journal_mode`：WAL 会派生
+  `-wal` / `-shm` 文件并改变持久化与检查点语义，只读连接也无法切换，不属于连接建立的默认行为。
+  两个连接同文件、一个持写锁时，另一个会等待到预算耗尽才报 `sqlite.busy`，而不是立刻失败。
+
 ## 元数据（v0.2.2：完整层级 + 跨库，ADR 0019 / #82）
 
 实现：`backend/crates/drivers/sqlite/src/metadata.rs`。
@@ -297,4 +327,4 @@ DDL **不截断**：`GetDdlResponse` 没有 `truncated` 字段，截断后调用
 | `parameterized_statements` | `true` | `execute_parameterized`：值经 `rusqlite` 绑定，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划 v0.2.2 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
-| `table_browse_sort_filter_total` | `false` | v0.2.3（#109）契约已就位；排序 / 筛选 / 精确计数的 SQL 下推在 #110 / #111，落地前保持 `false`（ADR 0022） |
+| `table_browse_sort_filter_total` | `true` | v0.2.3（#110）：排序 / 筛选 / offset / 精确计数已下推到 SQL，见「表浏览」与 ADR 0022 |

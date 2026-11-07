@@ -1107,24 +1107,41 @@ impl Drop for SqliteSession {
     }
 }
 
+/// 连接建立时显式设置的写锁等待上限（ADR 0021 决策 5）。
+///
+/// **只设 `busy_timeout`，不改 `journal_mode`**：
+///
+/// - `busy_timeout` 只决定「遇到锁时等多久再报 `SQLITE_BUSY`」，对文件形态、持久化
+///   与跨连接可见性零副作用；两个连接同时写时，后来者等待而不是立刻失败；
+/// - 切到 WAL 会派生 `-wal` / `-shm` 文件、改变持久化与检查点语义，只读连接也无法
+///   切换，属于连接之外的产品决策，不在驱动建立连接时偷偷做。
+///
+/// rusqlite 0.41 当前的新连接默认值也是 5000 ms，但那是上游实现细节；契约要求
+/// 驱动显式设置，避免上游改默认值时行为悄悄漂移。
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5_000);
+
 /// 打开 SQLite 连接。只读模式不会创建文件。
 pub(crate) fn open_connection(path: &str, read_only: bool) -> Result<Connection> {
-    if path == ":memory:" {
+    let connection = if path == ":memory:" {
         if read_only {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
                 "内存数据库不支持只读模式",
             ));
         }
-        return Connection::open_in_memory().map_err(map_open_error);
-    }
-
-    let flags = if read_only {
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI
+        Connection::open_in_memory().map_err(map_open_error)?
     } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_URI
+        let flags = if read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_URI
+        };
+        Connection::open_with_flags(path, flags).map_err(map_open_error)?
     };
-    Connection::open_with_flags(path, flags).map_err(map_open_error)
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(|error| map_sqlite_error(error, "设置 SQLite 忙等待超时失败"))?;
+    Ok(connection)
 }
