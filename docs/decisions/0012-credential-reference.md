@@ -71,6 +71,18 @@ pub const CREDENTIAL_NOT_FOUND: Self = Self("credential.not_found");
 - 单一 `service` 前缀下用属性区分档案：Linux Secret Service 支持按属性检索，Windows/macOS 侧
   由该平台实现负责用 `profile:reference` 组合出 target name。
 
+## 落地记录
+
+- 2026-11-07，#145（PR #148）：连接配置的身份从 `credential_ref` 改为**连接目标**——
+  `SavedConnection::key()` 服务器型取「驱动 + 主机（大小写不敏感）+ 端口 + 用户名 + 库」，
+  文件型取「驱动 + 规范化绝对路径」；`config::upsert` 按身份更新原条目，不再按引用追加。
+  「保存并连接」在写凭据之前 `config::find_by_identity` 命中已有条目并复用其引用，密码
+  覆盖原引用指向的密钥（同一引用重复写入即覆盖，符合上面的生命周期语义），不在密钥环
+  新增条目。加载配置时按同一身份合并旧版本留下的重复条目并记日志（保留最近一次保存）。
+  证据：`cargo test` 328 通过；验收链 139 项断言；隔离配置连续两次保存同一 MariaDB 目标后
+  `connections.json` 1 条且 `credential_ref` 相同，Secret Service 按该引用只检索到 1 个条目
+  （`sqarvo-v023-shots/145/verify-keyring.txt`）。
+
 ## 重新评估条件
 
 - 需要多设备同步或在团队内共享连接（引用必须可迁移）；
