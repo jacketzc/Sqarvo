@@ -506,6 +506,12 @@ impl TableBrowser {
         self.entries.replace(tables);
     }
 
+    /// 平铺列表里的条目数（工作区判断「表列表是否已经回来」用）。
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.entries.borrow().len()
+    }
+
     /// 按名称找到条目（QA 与「打开指定表」用）。
     pub fn entry_by_name(&self, name: &str) -> Option<TableEntry> {
         self.entries
@@ -4265,9 +4271,8 @@ impl DataPage {
         self.banner.set_revealed(true);
     }
 
-    /// 一条常驻提示（不断连、不改状态页）：多连接下数据页只绑定一条会话。
-    ///
-    /// 用它说明「这个对象属于另一条连接，数据页暂时看不到」，而不是假装打开成功。
+    /// 一条常驻提示（不断连、不改状态页）：用文案说明「为什么现在是这样」，
+    /// 而不是假装成功。例如「保存失败：事务处于失败态，标签未关闭」。
     pub fn show_notice(&self, text: &str) {
         self.banner_is_readonly.set(false);
         self.banner.set_button_label(None::<&str>);

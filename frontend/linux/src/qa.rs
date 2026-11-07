@@ -56,7 +56,11 @@
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
 //!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：
-//!   `provenance|detail_contains|object_contains|contains|state|copy|visible`。
+//!   `provenance|detail_contains|object_contains|contains|state|copy|visible`；
+//! - `--qa-tabs-file <path>`（#116）：标签工作区脚本，每行一步，走与用户相同的路径
+//!   （`open-table` / `query-tab` / `begin` / `edit` / `apply` / `rollback` / `reload` /
+//!   `log-rows` / `sql` / `execute` / `close <n> <save|discard|cancel>` / `sessions <标签>` /
+//!   `expect-tabs <n>` / `expect-limit <子串>` / `sleep <ms>`；`#` 开头为注释）。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
@@ -676,6 +680,9 @@ struct Args {
     layout_audit: bool,
     /// `--window-size <WIDTHxHEIGHT>`：取证用的初始窗口尺寸（产品默认 1200×800）。
     window_size: Option<(i32, i32)>,
+    // ---- #116 标签工作区 ----
+    /// `--qa-tabs-file <path>`：标签工作区脚本（步骤见 `tabs::parse_script`）。
+    tabs_script: Option<String>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -724,6 +731,7 @@ pub fn enabled() -> bool {
             || args.isolation_dialog
             || args.isolation_confirm
             || args.layout_audit
+            || args.tabs_script.is_some()
     })
 }
 
@@ -767,6 +775,18 @@ pub fn second_sql() -> Option<String> {
 #[must_use]
 pub fn execute_again_after_ms() -> Option<u64> {
     ARGS.get().and_then(|args| args.execute_again_after_ms)
+}
+
+/// `--qa-tabs-file` 的脚本原文（未启用时为 `None`）。
+#[must_use]
+pub fn tabs_script() -> Option<String> {
+    ARGS.get().and_then(|args| args.tabs_script.clone())
+}
+
+/// 是否登记了标签脚本（上限对话框在无人值守时会自动关闭）。
+#[must_use]
+pub fn tabs_requested() -> bool {
+    ARGS.get().is_some_and(|args| args.tabs_script.is_some())
 }
 
 /// `--qa-data-table`：连接后要打开的表名。
@@ -1439,6 +1459,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-layout-audit" => {
                 parsed.layout_audit = true;
                 index += 1;
+            }
+            "--qa-tabs-file" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tabs-file 需要一个脚本路径".to_owned())?;
+                parsed.tabs_script = Some(
+                    std::fs::read_to_string(value)
+                        .map_err(|error| format!("--qa-tabs-file 读取 {value} 失败：{error}"))?,
+                );
+                index += 2;
             }
             "--qa-tree-expand" => {
                 let value = args

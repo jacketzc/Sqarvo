@@ -67,6 +67,25 @@ pub fn stylesheet() -> String {
             font-size: {ui}px;
         }}
 
+        /* 区域 04 顶部：标签条 24（workspace-model §2.1 的 tabStrip） */
+        .sqarvo-tab-strip {{
+            min-height: {tab_strip}px;
+            padding: 0 6px;
+            border-bottom: 1px solid alpha(currentColor, 0.10);
+        }}
+        /* AdwTabBar 默认把标签条撑到 ~47px；这里压到规范口径附近（24px 行高）。
+           标签本身的最小点击区仍不小于 24（§11），缩的是外层留白。 */
+        .sqarvo-tab-bar {{
+            padding: 0 2px;
+            min-height: {tab_strip}px;
+        }}
+        .sqarvo-tab-bar tab {{
+            min-height: {target}px;
+            padding: 0 8px;
+            font-size: {ui}px;
+        }}
+        .sqarvo-tab-strip button {{ min-height: {target}px; min-width: {target}px; }}
+
         /* 区域 05：状态栏 56 高（两行各 24），字号 11 */
         .sqarvo-status-bar {{
             min-height: {status}px;
@@ -107,6 +126,7 @@ pub fn stylesheet() -> String {
         tree_row = layout::ROW_HEIGHT_TREE,
         data_row = layout::ROW_HEIGHT_DATA,
         target = layout::MIN_TARGET,
+        tab_strip = layout::TAB_STRIP_HEIGHT,
     )
 }
 
@@ -124,6 +144,10 @@ mod tests {
         assert!(css.contains("font-size: 12px"), "界面字号缺失");
         assert!(css.contains("font-size: 13px"), "标题字号缺失");
         assert!(css.contains("font-size: 11px"), "状态栏字号缺失");
+        assert!(
+            css.contains(&format!("min-height: {}px", layout::TAB_STRIP_HEIGHT)),
+            "标签条高度缺失"
+        );
     }
 
     #[test]

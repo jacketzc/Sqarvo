@@ -23,6 +23,7 @@ mod shell;
 mod sql_page;
 mod submit_batch;
 mod table_data;
+mod tabs;
 mod theme;
 mod tree;
 mod ui;
@@ -88,6 +89,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-disconnect", "connection-name"),
         ("qa-expect-tree", "field=value"),
         ("qa-expect-ddl", "field=value"),
+        ("qa-tabs-file", "/path/to/tabs.txt"),
     ] {
         app.add_main_option(
             name,

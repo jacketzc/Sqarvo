@@ -47,7 +47,10 @@ pub const INSPECTOR_MIN: i32 = 240;
 /// 信息面板可拖拽上限。
 pub const INSPECTOR_MAX: i32 = 520;
 
-/// 标签条（区域 04 顶部）高度；标签页由 #116 实现，这里先固定位置口径。
+/// 标签条（区域 04 顶部）高度（workspace-model §2.1 的 `tabStrip`）。
+///
+/// 这是**规范口径**：`AdwTabBar` 自身的最小高度由 libadwaita 决定（实测比 24 高），
+/// 表格实际矮掉的差额由工作区吸收；`grid_height` 的记账口径只在这里维护一份。
 pub const TAB_STRIP_HEIGHT: i32 = 24;
 
 /// 表格工具条（区域 04 中部）高度。
