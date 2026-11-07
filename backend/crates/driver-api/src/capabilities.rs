@@ -41,6 +41,13 @@ pub struct Capabilities {
     /// 这里为 `true` 的驱动，其会话必须实现 `execute_parameterized`，而不是返回
     /// `capability.unsupported`。能力描述是给通用层做决策用的，不允许「先声明再试」。
     pub parameterized_statements: bool,
+    /// 支持「只校验证书链、不校验主机名」的 TLS 模式（`TlsMode::VerifyCa` 的契约语义）。
+    ///
+    /// 为 `false` 的驱动把 `VerifyCa` 归一化为 `VerifyFull`，即**多校验**一层主机名。
+    /// 退化只允许朝更严的方向走，且必须显式声明：能力位为 `false` 时前端要在连接
+    /// 对话框里标注该档位等同 `VerifyFull`，不得让用户以为「只校链」真的生效（ADR 0020）。
+    /// 没有 TLS 的文件型驱动同样为 `false`。
+    pub tls_verify_ca_chain_only: bool,
 }
 
 impl Capabilities {
@@ -77,6 +84,9 @@ impl Capabilities {
         }
         if self.parameterized_statements {
             names.push("parameterized_statements");
+        }
+        if self.tls_verify_ca_chain_only {
+            names.push("tls_verify_ca_chain_only");
         }
         names
     }
@@ -125,5 +135,23 @@ mod tests {
         assert!(!minimal.parameterized_statements);
         assert!(!minimal.names().contains(&"row_editing"));
         assert!(!minimal.names().contains(&"parameterized_statements"));
+    }
+
+    #[test]
+    fn tls_verify_ca_chain_only_is_a_positive_capability() {
+        // 正向命名：缺省即「不支持只校链」，前端据此标注 verify-ca 等同 verify-full（ADR 0020）。
+        // 名字只能追加，不能插进既有顺序里。
+        let capabilities = Capabilities {
+            transactions: true,
+            tls_verify_ca_chain_only: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(
+            capabilities.names(),
+            ["transactions", "tls_verify_ca_chain_only"]
+        );
+        let minimal = Capabilities::default();
+        assert!(!minimal.tls_verify_ca_chain_only);
+        assert!(!minimal.names().contains(&"tls_verify_ca_chain_only"));
     }
 }

@@ -97,7 +97,7 @@ async fn verify_ca_trusts_pinned_root_certificate() {
 }
 
 /// `verify-full` 在证书**没有**匹配的主机名时必须失败，且要映射成 TLS 类错误码
-/// （`error::CONNECTION_FAILED` / `Unavailable`，文案「TLS 握手失败」）。
+/// （`error::CONNECTION_FAILED` / `Unavailable`，文案「服务端证书与主机名不匹配」）。
 #[tokio::test]
 async fn verify_full_rejects_hostname_mismatch() {
     let Some(target) = Target::from_env("SQARVO_MARIADB_URL") else {
@@ -117,8 +117,43 @@ async fn verify_full_rejects_hostname_mismatch() {
         .expect_err("证书里没有 127.0.0.1，verify-full 必须拒绝");
     assert_eq!(failure.code(), error::CONNECTION_FAILED);
     assert_eq!(failure.category(), ErrorCategory::Unavailable);
+    assert_eq!(failure.message(), "服务端证书与主机名不匹配");
     println!(
         "verify-full（主机名不匹配）：code={} category={:?} message={}",
+        failure.code(),
+        failure.category(),
+        failure.message()
+    );
+}
+
+/// `verify-ca` 归一化为 `verify-full` 的取证（ADR 0020、#107）。
+///
+/// 契约语义上 `verify-ca` 只校验证书链，但上游 `mysql_async` 0.37.1 的
+/// `skip_domain_validation` 在 rustls 0.23 下失效。所以本驱动把 `verify-ca`
+/// 归一化为 `verify-full`：同一张无 SAN 证书在 `verify-ca` 下也必须被拒，
+/// 且失败形态（码 / 分类 / 文案）与 `verify-full` 完全一致。
+#[tokio::test]
+async fn verify_ca_is_normalized_to_verify_full() {
+    let Some(target) = Target::from_env("SQARVO_MARIADB_URL") else {
+        return;
+    };
+    let Some(ca) = env_value("SQARVO_MARIADB_CA") else {
+        eprintln!(
+            "跳过：未设置 SQARVO_MARIADB_CA（根证书 PEM 路径，用于 verify-ca / verify-full）"
+        );
+        return;
+    };
+    let (params, secret) = target.params(TlsMode::VerifyCa, Some(&ca), None);
+    let driver = MariaDbDriver::new();
+    let failure = driver
+        .test_connection(&params, Some(&secret))
+        .await
+        .expect_err("verify-ca 已归一化为 verify-full，无 SAN 证书必须被拒");
+    assert_eq!(failure.code(), error::CONNECTION_FAILED);
+    assert_eq!(failure.category(), ErrorCategory::Unavailable);
+    assert_eq!(failure.message(), "服务端证书与主机名不匹配");
+    println!(
+        "verify-ca（主机名不匹配，归一化为 verify-full）：code={} category={:?} message={}",
         failure.code(),
         failure.category(),
         failure.message()
@@ -211,9 +246,12 @@ async fn required_fails_on_server_without_tls() {
         failure.category(),
         failure.message()
     );
-    // 只断言错误码：分类目前是 `Internal`（`mysql_async` 把「服务端不支持 SSL」
-    // 归到 `Error::Other`），见 `docs/database/mariadb.md`「TLS 逐档验证」的已知缺口。
+    // 服务端没有 TLS 能力属于「服务端不满足连接要求」：分类必须是 `Unavailable`，
+    // 不能落到 `Internal`（`mysql_async` 把它归到 `DriverError::NoClientSslFlagFromServer`，
+    // #107 第 3 条）。
     assert_eq!(failure.code(), error::CONNECTION_FAILED);
+    assert_eq!(failure.category(), ErrorCategory::Unavailable);
+    assert_eq!(failure.message(), "服务端不支持 TLS（连接要求 TLS）");
 }
 
 // ---------------------------------------------------------------------------

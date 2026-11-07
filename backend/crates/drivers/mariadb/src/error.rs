@@ -67,21 +67,26 @@ fn classify(
 ) -> (ErrorCode, ErrorCategory, &'static str) {
     match error {
         mysql_async::Error::Server(server) => map_server_code(server.code, context),
-        mysql_async::Error::Io(mysql_async::IoError::Io(io)) => match io.kind() {
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-                (QUERY_TIMEOUT, ErrorCategory::Timeout, "数据库连接超时")
+        mysql_async::Error::Io(mysql_async::IoError::Io(io)) => {
+            if let Some(classified) = classify_certificate_error(io) {
+                return classified;
             }
-            std::io::ErrorKind::ConnectionRefused => (
-                CONNECTION_FAILED,
-                ErrorCategory::Unavailable,
-                "无法连接数据库（连接被拒绝）",
-            ),
-            _ => (
-                CONNECTION_FAILED,
-                ErrorCategory::Unavailable,
-                "数据库连接中断",
-            ),
-        },
+            match io.kind() {
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+                    (QUERY_TIMEOUT, ErrorCategory::Timeout, "数据库连接超时")
+                }
+                std::io::ErrorKind::ConnectionRefused => (
+                    CONNECTION_FAILED,
+                    ErrorCategory::Unavailable,
+                    "无法连接数据库（连接被拒绝）",
+                ),
+                _ => (
+                    CONNECTION_FAILED,
+                    ErrorCategory::Unavailable,
+                    "数据库连接中断",
+                ),
+            }
+        }
         mysql_async::Error::Io(mysql_async::IoError::Tls(_)) => (
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
@@ -98,10 +103,63 @@ fn classify(
                 ErrorCategory::Unavailable,
                 "数据库连接已关闭",
             ),
+            // 服务端在握手阶段声明没有 SSL 能力：`required` / `verify-*` 档位下这是
+            // 「服务端不满足连接要求」（`Unavailable`），不是驱动内部错误（#107 第 3 条）。
+            mysql_async::DriverError::NoClientSslFlagFromServer => (
+                CONNECTION_FAILED,
+                ErrorCategory::Unavailable,
+                "服务端不支持 TLS（连接要求 TLS）",
+            ),
             _ => (CONNECTION_FAILED, ErrorCategory::Internal, context),
         },
         mysql_async::Error::Other(_) => (CONNECTION_FAILED, ErrorCategory::Internal, context),
     }
+}
+
+/// 把证书类 TLS 失败分成「主机名不匹配」与「证书不可信/已失效」两类。
+///
+/// 为什么能取回强类型：`tokio-rustls` 用 `io::Error::new(ErrorKind::InvalidData,
+/// rustls::Error)` 包装握手失败，原始错误留在 `io::Error` 内层。上游 `mysql_async`
+/// 反而退化成匹配错误字符串 `contains("NotValidForName")`，rustls 0.23 改了 Display
+/// 文案后这个判断永久失效——这里不重蹈覆辙：只匹配枚举，不做字符串判断（#107）。
+///
+/// 两类分开的理由是处置方式不同：名字不匹配可以用 `tls_server_name` 覆盖校验名，
+/// 证书不可信则要换 CA 证书。
+fn classify_certificate_error(
+    io: &std::io::Error,
+) -> Option<(ErrorCode, ErrorCategory, &'static str)> {
+    let error = io.get_ref()?.downcast_ref::<rustls::Error>()?;
+    let rustls::Error::InvalidCertificate(certificate) = error else {
+        return None;
+    };
+    let classified = match certificate {
+        rustls::CertificateError::NotValidForName
+        | rustls::CertificateError::NotValidForNameContext { .. } => (
+            CONNECTION_FAILED,
+            ErrorCategory::Unavailable,
+            "服务端证书与主机名不匹配",
+        ),
+        rustls::CertificateError::UnknownIssuer
+        | rustls::CertificateError::Expired
+        | rustls::CertificateError::ExpiredContext { .. }
+        | rustls::CertificateError::NotValidYet
+        | rustls::CertificateError::NotValidYetContext { .. }
+        | rustls::CertificateError::InvalidPurpose
+        | rustls::CertificateError::InvalidPurposeContext { .. }
+        | rustls::CertificateError::Revoked
+        | rustls::CertificateError::BadSignature => (
+            CONNECTION_FAILED,
+            ErrorCategory::Unavailable,
+            "服务端证书未被信任或已失效",
+        ),
+        // 其余证书错误（编码、扩展、OCSP 响应等）同样是握手失败，不再细分文案。
+        _ => (
+            CONNECTION_FAILED,
+            ErrorCategory::Unavailable,
+            "TLS 握手失败",
+        ),
+    };
+    Some(classified)
 }
 
 fn map_server_code(code: u16, context: &'static str) -> (ErrorCode, ErrorCategory, &'static str) {

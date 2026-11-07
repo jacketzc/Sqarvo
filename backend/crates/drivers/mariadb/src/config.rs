@@ -137,8 +137,12 @@ fn build_ssl_opts(
         TlsMode::Unspecified | TlsMode::Preferred | TlsMode::Required => {
             SslOpts::default().with_danger_accept_invalid_certs(true)
         }
-        TlsMode::VerifyCa => SslOpts::default().with_danger_skip_domain_validation(true),
-        TlsMode::VerifyFull => SslOpts::default(),
+        // `verify-ca` 的契约语义是「只校链、不校名」；上游 `mysql_async` 0.37.1 的
+        // `with_danger_skip_domain_validation` 在 rustls 0.23 下失效（它靠错误字符串
+        // 匹配 `NotValidForName`，而 rustls 的 Display 文案里没有这个字面量），所以这里
+        // 把 `verify-ca` 归一化为 `verify-full`：多校一层主机名，只向更严方向退化。
+        // 退化通过能力位 `tls_verify_ca_chain_only = false` 与前端标注显式声明（ADR 0020）。
+        TlsMode::VerifyCa | TlsMode::VerifyFull => SslOpts::default(),
     };
 
     if let Some(ca) = ssl_ca {
