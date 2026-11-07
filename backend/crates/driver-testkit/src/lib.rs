@@ -28,6 +28,10 @@
 //!   两组的「未知事务 ID」断言并不冲突：**没有**打开事务时，未知 ID 的提交/回滚必须
 //!   幂等成功（重试语义）；**有**打开事务时，未知 ID 必须 `NotFound`——否则等于用一个
 //!   未知 ID 把当前事务静默提交了。SQLite 目前接入第 1 组，MariaDB 接入第 2 组。
+//! - 表浏览不变量（ADR 0022，[`browse_invariants`]）：`offset` 与 `page_token` 互斥、
+//!   排序下 offset 翻页无重无漏、总数三态自洽、非法排序/筛选显式失败、无主键表只读且
+//!   顺序不稳定、能力位与排序行为一致。夹具与 SQL 由调用方按方言提供
+//!   （[`BrowseFixture`]）。
 //!
 //! 真实驱动接入时，在集成测试中构造会话并调用 `smoke` 与上述五项检查，再补充该驱动
 //! 特有的类型往返测试。检查失败一律返回 **`INTERNAL`** 错误（文案说明违反了哪条不变量），
@@ -37,6 +41,10 @@
 //! [`sqarvo_driver_api::DriverSession`] 的公开方法观察行为。
 
 #![warn(missing_docs)]
+
+mod browse;
+
+pub use browse::{BrowseFixture, BrowseTable, browse_invariants};
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
