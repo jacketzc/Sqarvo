@@ -1,0 +1,225 @@
+//! 六区域外壳的布局算术（`docs/ui-specification/workspace-model.md` §1、§2.1）。
+//!
+//! 这里的常量与函数是**唯一一份**尺寸口径：外壳（[`crate::shell`]）、紧凑密度 CSS
+//! （[`crate::theme`]）与验收截图都以它为准。放进纯函数是为了能在没有 GTK 显示
+//! 服务器的环境里单测——布局算错时不该只能靠肉眼看截图。
+//!
+//! ```text
+//! contentHeight = windowHeight - 140 - 56      # 140 = 外壳 64 + 工具条 76
+//! contentWidth  = windowWidth  - sidebarWidth
+//! gridWidth     = contentWidth - 18（左内边距）- 3（右内边距）
+//!                 - [10（间隙）+ inspectorWidth]   # 面板折叠时两项一起收回
+//! ```
+//!
+//! 1200×800 基准下 `gridWidth`：折叠 942、面板 280 时 652、面板 320 时 612
+//! （与规范表格逐字一致，见本模块的测试）。
+
+/// 窗口外壳（区域 01）高度：`AdwHeaderBar` 40 + 菜单行 24。
+///
+/// Linux 不设菜单行（ADR 0023），但外壳高度按规范保持 64，工具条与状态栏的位置
+/// 才不会因平台而异——菜单行走 headerbar 主菜单。
+pub const HEADER_HEIGHT: i32 = 64;
+
+/// 主工具条（区域 02）高度。
+pub const TOOLBAR_HEIGHT: i32 = 76;
+
+/// 状态栏（区域 05）高度，两行各 24 + 上下留白。
+pub const STATUS_HEIGHT: i32 = 56;
+
+/// 外壳 + 工具条的合计高度（§2.1 公式里的 140）。
+pub const CHROME_HEIGHT: i32 = HEADER_HEIGHT + TOOLBAR_HEIGHT;
+
+/// 侧栏（区域 03）默认宽度。
+pub const SIDEBAR_WIDTH: i32 = 237;
+
+/// 侧栏可拖拽下限。
+pub const SIDEBAR_MIN: i32 = 180;
+
+/// 侧栏可拖拽上限。
+pub const SIDEBAR_MAX: i32 = 420;
+
+/// 信息面板（区域 06）默认宽度。
+pub const INSPECTOR_WIDTH: i32 = 280;
+
+/// 信息面板可拖拽下限。
+pub const INSPECTOR_MIN: i32 = 240;
+
+/// 信息面板可拖拽上限。
+pub const INSPECTOR_MAX: i32 = 520;
+
+/// 标签条（区域 04 顶部）高度；标签页由 #116 实现，这里先固定位置口径。
+pub const TAB_STRIP_HEIGHT: i32 = 24;
+
+/// 表格工具条（区域 04 中部）高度。
+pub const TABLE_ACTIONS_HEIGHT: i32 = 32;
+
+/// 表格左内边距。
+pub const GRID_PADDING_START: i32 = 18;
+
+/// 表格右内边距。
+pub const GRID_PADDING_END: i32 = 3;
+
+/// 表格与信息面板之间的间隙（面板折叠时一并收回）。
+pub const INSPECTOR_GAP: i32 = 10;
+
+/// 树行高。
+pub const ROW_HEIGHT_TREE: i32 = 24;
+
+/// 数据行高。
+pub const ROW_HEIGHT_DATA: i32 = 32;
+
+/// 界面字号。
+pub const FONT_UI: i32 = 12;
+
+/// 标题字号（semibold 由 CSS 给出）。
+pub const FONT_TITLE: i32 = 13;
+
+/// 状态栏字号。
+pub const FONT_STATUS: i32 = 11;
+
+/// 可焦点控件的最小点击区（§11：紧凑化不得小于它）。
+pub const MIN_TARGET: i32 = 24;
+
+/// 内容区高度：两侧在状态栏之上、工具条之下。
+#[must_use]
+pub fn content_height(window_height: i32) -> i32 {
+    window_height - CHROME_HEIGHT - STATUS_HEIGHT
+}
+
+/// 内容区宽度：右侧工作区（不含侧栏）。
+#[must_use]
+pub fn content_width(window_width: i32, sidebar_width: i32) -> i32 {
+    window_width - sidebar_width
+}
+
+/// 数据网格宽度；`inspector_width` 为 `None` 表示信息面板折叠。
+#[must_use]
+pub fn grid_width(window_width: i32, sidebar_width: i32, inspector_width: Option<i32>) -> i32 {
+    let base = content_width(window_width, sidebar_width) - GRID_PADDING_START - GRID_PADDING_END;
+    match inspector_width {
+        Some(width) => base - INSPECTOR_GAP - width,
+        None => base,
+    }
+}
+
+/// 数据网格高度：标签条与表格工具条之下。
+#[must_use]
+pub fn grid_height(window_height: i32) -> i32 {
+    content_height(window_height) - TAB_STRIP_HEIGHT - TABLE_ACTIONS_HEIGHT
+}
+
+/// 状态栏顶边 y 坐标（用于检查表格不压在状态栏上）。
+#[must_use]
+pub fn status_y(window_height: i32) -> i32 {
+    window_height - STATUS_HEIGHT
+}
+
+/// 把侧栏宽度钳制到可拖拽区间。
+#[must_use]
+pub fn clamp_sidebar(width: i32) -> i32 {
+    width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+}
+
+/// 把信息面板宽度钳制到可拖拽区间。
+#[must_use]
+pub fn clamp_inspector(width: i32) -> i32 {
+    width.clamp(INSPECTOR_MIN, INSPECTOR_MAX)
+}
+
+/// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制。
+///
+/// 分隔条位置是「左侧子控件占多少」，面板宽度 = 总宽 - 位置 - 1（分隔条）。
+#[must_use]
+pub fn inspector_width_from_position(pane_width: i32, position: i32) -> i32 {
+    clamp_inspector(pane_width - position - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WINDOW_1200: (i32, i32) = (1200, 800);
+    const WINDOW_960: (i32, i32) = (960, 640);
+
+    #[test]
+    fn content_height_matches_the_spec_for_both_target_sizes() {
+        assert_eq!(content_height(WINDOW_1200.1), 604);
+        assert_eq!(content_height(WINDOW_960.1), 444);
+    }
+
+    #[test]
+    fn header_toolbar_and_status_bar_add_up_to_the_chrome() {
+        assert_eq!(HEADER_HEIGHT + TOOLBAR_HEIGHT, 140);
+        assert_eq!(CHROME_HEIGHT + STATUS_HEIGHT, 196);
+    }
+
+    #[test]
+    fn grid_width_matches_the_spec_table_at_1200x800() {
+        // 折叠 942 / 280 时 652 / 320 时 612 —— 规范 §2.1 的表格。
+        assert_eq!(grid_width(1200, 237, None), 942);
+        assert_eq!(grid_width(1200, 237, Some(280)), 652);
+        assert_eq!(grid_width(1200, 237, Some(320)), 612);
+    }
+
+    #[test]
+    fn collapsing_the_inspector_reclaims_the_gap_too() {
+        assert_eq!(
+            grid_width(1200, 237, None),
+            grid_width(1200, 237, Some(280)) + 280 + INSPECTOR_GAP
+        );
+    }
+
+    #[test]
+    fn grid_stays_positive_at_960x640_even_with_the_widest_inspector() {
+        assert_eq!(grid_width(960, 237, Some(280)), 412);
+        // 侧栏拖到最窄、面板拖到最宽：仍然必须给表格留出正宽度，
+        // 否则列会被静默裁掉而不是横向滚动。
+        assert_eq!(grid_width(960, SIDEBAR_MIN, Some(INSPECTOR_MAX)), 229);
+        assert!(grid_width(960, 237, Some(INSPECTOR_MAX)) > 0);
+    }
+
+    #[test]
+    fn grid_height_and_status_position_do_not_overlap() {
+        for window in [WINDOW_1200, WINDOW_960] {
+            let grid = grid_height(window.1);
+            let end_of_grid = HEADER_HEIGHT + TOOLBAR_HEIGHT + grid;
+            assert!(
+                end_of_grid <= status_y(window.1),
+                "表格底边 {end_of_grid} 压在状态栏顶部 {} 上",
+                status_y(window.1)
+            );
+            assert_eq!(status_y(window.1), window.1 - 56);
+        }
+        assert_eq!(grid_height(800), 548);
+        assert_eq!(grid_height(640), 388);
+    }
+
+    #[test]
+    fn sidebar_and_inspector_clamp_to_their_drag_ranges() {
+        assert_eq!(clamp_sidebar(100), 180);
+        assert_eq!(clamp_sidebar(237), 237);
+        assert_eq!(clamp_sidebar(600), 420);
+        assert_eq!(clamp_inspector(100), 240);
+        assert_eq!(clamp_inspector(280), 280);
+        assert_eq!(clamp_inspector(900), 520);
+    }
+
+    #[test]
+    fn inspector_width_from_position_round_trips() {
+        // 1200 宽的工作区、面板 280：分隔条位置 = 1200 - 280 - 1。
+        assert_eq!(inspector_width_from_position(1200, 919), 280);
+        // 拖到上限外：钳到 520。
+        assert_eq!(inspector_width_from_position(1200, 400), 520);
+        // 拖到下限外：钳到 240。
+        assert_eq!(inspector_width_from_position(1200, 1100), 240);
+    }
+
+    #[test]
+    fn compact_metrics_keep_the_24px_target_floor() {
+        // 常量约束写成编译期断言：改字号/行高时先在这里失败，而不是靠肉眼发现。
+        const { assert!(ROW_HEIGHT_TREE >= MIN_TARGET) };
+        const { assert!(ROW_HEIGHT_DATA >= MIN_TARGET) };
+        const { assert!(FONT_TITLE > FONT_UI) };
+        const { assert!(FONT_UI >= FONT_STATUS) };
+    }
+}

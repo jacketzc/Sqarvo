@@ -12,11 +12,18 @@
 //!
 //! ```text
 //! sqarvo-desktop --screenshot /tmp/ui.png [--screenshot-delay-ms 4000]
+//!                 [--window-size 1200x800] [--qa-layout-audit]
 //!                 [--qa-profile /tmp/profile.json] [--qa-password-env SQARVO_QA_PASSWORD]
 //!                 [--qa-sql-file /tmp/q.sql] [--qa-execute]
 //!                 [--qa-scroll-to-row N]... [--qa-cancel-after-ms N]
 //!                 [--qa-exit-after-ms N]
 //! ```
+//!
+//! - `--window-size WIDTHxHEIGHT`：取证用的初始窗口尺寸（不低于 960×640）；
+//!   不给就用产品默认 1200×800（workspace-model §1）。
+//! - `--qa-layout-audit`：截图之后在当前窗口尺寸上做「无裁切」量化自检——
+//!   逐区域比较 GTK 最小/自然宽度与实际分配宽度，超限时以退出码 **5** 结束并打印
+//!   超出的 px 数；必须与 `--screenshot` 一起使用（自检发生在截图时刻）。
 //!
 //! - `--screenshot <path>`：延时后把**当前最上层**的界面（连接对话框打开时是对话框，
 //!   否则是主窗口）写成 PNG，然后关闭窗口（走与用户点关闭按钮相同的清理路径）；
@@ -662,6 +669,10 @@ struct Args {
     isolation_level: Option<IsolationChoice>,
     /// `--qa-isolation-confirm`：在卡片里点「开始事务」（真的开事务）。
     isolation_confirm: bool,
+    /// `--qa-layout-audit`：截图后在当前窗口尺寸上做「无裁切」量化自检。
+    layout_audit: bool,
+    /// `--window-size <WIDTHxHEIGHT>`：取证用的初始窗口尺寸（产品默认 1200×800）。
+    window_size: Option<(i32, i32)>,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -709,6 +720,7 @@ pub fn enabled() -> bool {
             || args.data_cancel_after_ms.is_some()
             || args.isolation_dialog
             || args.isolation_confirm
+            || args.layout_audit
     })
 }
 
@@ -996,6 +1008,20 @@ pub fn log_sql_preview(sql: &str) {
     eprintln!("[qa] SQL 首行：{preview}");
 }
 
+/// 取证用的初始窗口尺寸（`--window-size`）；未给出时为 `None`（用产品默认值）。
+///
+/// 这个开关只用于在 1200×800 与 960×640 两档取截图与目检，不改变产品默认窗口大小。
+#[must_use]
+pub fn window_size() -> Option<(i32, i32)> {
+    ARGS.get().and_then(|args| args.window_size)
+}
+
+/// 是否在截图之后做「无裁切」量化布局自检（`--qa-layout-audit`）。
+#[must_use]
+pub fn layout_audit() -> bool {
+    ARGS.get().is_some_and(|args| args.layout_audit)
+}
+
 /// 已登记的截图请求（未启用时为 `None`）。
 pub fn requested() -> Option<Capture> {
     ARGS.get().and_then(|args| args.capture.clone())
@@ -1044,6 +1070,28 @@ fn expand_equals(args: &[String]) -> Vec<String> {
         }
     }
     expanded
+}
+
+/// 解析 `WIDTHxHEIGHT`：两段都必须是正整数，尺寸太小按布局下限拒绝。
+///
+/// 拒绝而不是「尽量用」：窗口尺寸不对时截图会裁掉状态栏，看起来像布局 bug。
+fn parse_window_size(value: &str) -> Result<(i32, i32), String> {
+    let (width, height) = value
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("--window-size 需要 WIDTHxHEIGHT，实际：{value}"))?;
+    let width: i32 = width
+        .parse()
+        .map_err(|_| format!("--window-size 的宽度不是整数：{value}"))?;
+    let height: i32 = height
+        .parse()
+        .map_err(|_| format!("--window-size 的高度不是整数：{value}"))?;
+    // 960×640 是规范里的最小窗口：比它还小就只保证可用，取证没有意义。
+    if width < 960 || height < 640 {
+        return Err(format!(
+            "--window-size 不能小于 960x640（workspace-model §1），实际：{width}x{height}"
+        ));
+    }
+    Ok((width, height))
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -1378,6 +1426,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.isolation_confirm = true;
                 index += 1;
             }
+            "--qa-layout-audit" => {
+                parsed.layout_audit = true;
+                index += 1;
+            }
             "--qa-tree-expand" => {
                 let value = args
                     .get(index + 1)
@@ -1440,6 +1492,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.expect_ddl.push(DdlExpectation::parse(value)?);
                 index += 2;
             }
+            "--window-size" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--window-size 需要 WIDTHxHEIGHT".to_owned())?;
+                parsed.window_size = Some(parse_window_size(value)?);
+                index += 2;
+            }
             "--qa-password-env" => {
                 let value = args
                     .get(index + 1)
@@ -1465,6 +1524,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
             || !parsed.expect_submit.is_empty())
     {
         return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
+    }
+    if parsed.layout_audit && parsed.capture.is_none() {
+        return Err(
+            "--qa-layout-audit 必须与 --screenshot 一起使用（自检发生在截图时刻）".to_owned(),
+        );
     }
     Ok(parsed)
 }
@@ -2154,5 +2218,47 @@ mod tests {
             IsolationChoice::parse("default").expect("合法级别").level(),
             crate::proto::services::v1::IsolationLevel::Unspecified
         );
+    }
+
+    #[test]
+    fn layout_audit_flag_is_a_boolean_and_requires_a_screenshot() {
+        assert!(!parse(&args(&["app"])).unwrap().layout_audit);
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-layout-audit",
+        ]))
+        .unwrap();
+        assert!(parsed.layout_audit);
+        assert!(parse(&args(&["app", "--qa-layout-audit"])).is_err());
+    }
+
+    #[test]
+    fn window_size_is_optional_and_parsed() {
+        // 未给出：用产品默认 1200×800（外壳不传 override）。
+        assert!(parse(&args(&["app"])).unwrap().window_size.is_none());
+        assert_eq!(
+            parse(&args(&["app", "--window-size", "960x640"]))
+                .unwrap()
+                .window_size,
+            Some((960, 640))
+        );
+        // GLib 接受 `--opt=value`：自解析必须一致，大小写 x 都认。
+        assert_eq!(
+            parse(&args(&["app", "--window-size=1200X800"]))
+                .unwrap()
+                .window_size,
+            Some((1200, 800))
+        );
+    }
+
+    #[test]
+    fn window_size_rejects_malformed_or_below_minimum_values() {
+        assert!(parse(&args(&["app", "--window-size", "960"])).is_err());
+        assert!(parse(&args(&["app", "--window-size", "widex640"])).is_err());
+        // 规范的最小窗口是 960×640：比它小就不再是「验收尺寸」。
+        assert!(parse(&args(&["app", "--window-size", "900x640"])).is_err());
+        assert!(parse(&args(&["app", "--window-size"])).is_err());
     }
 }

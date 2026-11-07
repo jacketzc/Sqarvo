@@ -386,7 +386,11 @@ impl TreePanel {
             let kind = gtk::Label::new(None);
             kind.add_css_class("dim-label");
             kind.add_css_class("caption");
+            // 侧栏 237 宽时种类标签贴着右边界会被切掉半个字：留 6px 行尾留白，
+            // 名字列本来就 ellipsize，不会因为这点留白被挤坏。
+            kind.set_margin_end(6);
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            row_box.add_css_class("sqarvo-tree-row");
             row_box.append(&arrow_button);
             row_box.append(&icon);
             row_box.append(&name);
@@ -453,6 +457,12 @@ impl TreePanel {
                 } else {
                     kind_label(view.kind)
                 });
+                // GTK 的 GtkBox 在名字列 hexpand 时可能把行尾的种类标签压到
+                // 最小宽度以下（237 宽侧栏里「库」只剩半个字）。给标签声明它自己
+                // 的最小宽度，名字列继续用省略号收缩，二者不再互相挤压。
+                let (needed, _natural, _min_baseline, _natural_baseline) =
+                    kind.measure(gtk::Orientation::Horizontal, -1);
+                kind.set_size_request(needed, -1);
             }
             if view.is_placeholder() {
                 icon.set_icon_name(Some("content-loading-symbolic"));
@@ -566,7 +576,9 @@ impl TreePanel {
         stack.set_visible_child_name("tree");
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.set_size_request(260, -1);
+        // 侧栏最小宽度归外壳（GtkPaned）管：树自身只声明 §1 的可拖拽下限 180，
+        // 不能再钉 260——那会让 237 的默认宽度和 180 的下限都到不了。
+        root.set_size_request(crate::layout::SIDEBAR_MIN, -1);
         root.append(&search_entry);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&stack);
