@@ -627,6 +627,35 @@ impl InspectorExpectation {
     }
 }
 
+/// `--qa-expect-objects` 的断言（#135：读 Objects 固定页的控件文本）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectsExpectation {
+    /// 字段名（原样保留，比对时再分派）。
+    pub field: String,
+    /// 期望值。
+    pub expected: String,
+}
+
+impl ObjectsExpectation {
+    fn parse(value: &str) -> Result<Self, String> {
+        let (field, expected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-objects 需要 字段=值，实际：{value}"))?;
+        if !matches!(
+            field,
+            "name" | "kind" | "path" | "facts" | "fact_contains" | "empty" | "ddl_action"
+        ) {
+            return Err(format!(
+                "--qa-expect-objects 只接受 name|kind|path|facts|fact_contains|empty|ddl_action，实际：{field}"
+            ));
+        }
+        Ok(Self {
+            field: field.to_owned(),
+            expected: expected.to_owned(),
+        })
+    }
+}
+
 /// `--qa-isolation-level` 的取值：只想让脚本说人话，映射到 proto 枚举。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsolationChoice {
@@ -762,6 +791,8 @@ struct Args {
     expect_ddl: Vec<DdlExpectation>,
     /// `--qa-expect-inspector <field>=<value>`：信息面板的断言（可重复，#119）。
     expect_inspector: Vec<InspectorExpectation>,
+    /// `--qa-expect-objects <field>=<value>`：`Objects` 固定页的断言（可重复，#135）。
+    expect_objects: Vec<ObjectsExpectation>,
     // ---- #88 插入行与隔离级别 ----
     /// `--qa-data-insert`：点「新增行」（与用户点工具栏按钮同一条路径）。
     data_insert: bool,
@@ -1250,6 +1281,13 @@ pub fn inspector_width() -> Option<i32> {
 pub fn expect_inspector() -> Vec<InspectorExpectation> {
     ARGS.get()
         .map_or_else(Vec::new, |args| args.expect_inspector.clone())
+}
+
+/// `Objects` 固定页的断言（`--qa-expect-objects`，按登记顺序；#135）。
+#[must_use]
+pub fn expect_objects() -> Vec<ObjectsExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_objects.clone())
 }
 
 /// 树 / 搜索的断言（`--qa-expect-tree`，按登记顺序）。
@@ -2088,6 +2126,15 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .push(InspectorExpectation::parse(value)?);
                 index += 2;
             }
+            "--qa-expect-objects" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-objects 需要 字段=值".to_owned())?;
+                parsed
+                    .expect_objects
+                    .push(ObjectsExpectation::parse(value)?);
+                index += 2;
+            }
             "--qa-expect-ddl" => {
                 let value = args
                     .get(index + 1)
@@ -2124,6 +2171,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             || !parsed.expect_columns.is_empty()
             || !parsed.expect_tree.is_empty()
             || !parsed.expect_ddl.is_empty()
+            || !parsed.expect_objects.is_empty()
             || !parsed.expect_submit.is_empty())
     {
         return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
@@ -2726,6 +2774,41 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-column-width", ":120"])).is_err());
         assert!(parse(&args(&["app", "--qa-column-width", "name:0"])).is_err());
         assert!(parse(&args(&["app", "--qa-column-width", "name:-3"])).is_err());
+    }
+
+    #[test]
+    fn objects_expectations_are_parsed_and_require_a_screenshot() {
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-expect-objects",
+            "name=accept_items",
+            "--qa-expect-objects",
+            "kind=表",
+            "--qa-expect-objects",
+            "facts=3",
+            "--qa-expect-objects",
+            "ddl_action=on",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.expect_objects.len(), 4);
+        assert_eq!(
+            parsed.expect_objects[0],
+            ObjectsExpectation {
+                field: "name".to_owned(),
+                expected: "accept_items".to_owned(),
+            }
+        );
+        // 没有截图就没有「断言这一刻」；未知字段与缺 `=` 都要报错。
+        assert!(
+            parse(&args(&["app", "--qa-expect-objects", "name=x"]))
+                .unwrap_err()
+                .contains("--screenshot")
+        );
+        assert!(parse(&args(&["app", "--qa-expect-objects"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-objects", "name"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-objects", "bogus=x"])).is_err());
     }
 
     #[test]
