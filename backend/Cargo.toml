@@ -45,6 +45,10 @@ futures-util = "0.3"
 http = "1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
+# 仅用于把 TLS 握手失败的错误做类型化判定（`io::Error` 内层是 `rustls::Error`），
+# 不开默认特性以免引入 aws-lc-rs 的 cmake 构建依赖；实际加密后端由 mysql_async 的
+# `default-rustls-ring` 特性决定，特性合并后仍是同一个 rustls 编解码实现。
+rustls = { version = "0.23", default-features = false }
 prost = "0.14"
 prost-types = "0.14"
 rusqlite = { version = "0.41", features = ["bundled", "column_decltype"] }

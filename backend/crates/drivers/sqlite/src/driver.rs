@@ -57,6 +57,8 @@ impl SqliteDriver {
                     // 参数化：`execute_parameterized` 走同一条语句执行路径，
                     // 值经 `rusqlite` 绑定，不拼进 SQL 文本（#59）。
                     parameterized_statements: true,
+                    // 文件型驱动没有 TLS：TLS 档位一律不呈现，也不声明「只校链」能力。
+                    tls_verify_ca_chain_only: false,
                 },
             },
         }

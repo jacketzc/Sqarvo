@@ -177,12 +177,16 @@ MariaDB 集成 **69 passed**，日志中「跳过：未设置 SQARVO_MARIADB_URL
 
 口径与未验证项：
 
-- **TLS 已逐档实测（2026-11-06，#106），仍有缺口**：在 `mariadb:11.4` 测试容器上完成了
-  `disabled` / `preferred` / `required` / `verify-ca` / `verify-full` 五档真实握手（判据是会话
-  变量 `Ssl_cipher`），并验证了 `preferred` 对无 TLS 监听端的回退与 `mariadb.tls_fallback` 告警；
-  但 `verify-ca` 因上游 `mysql_async` 的错误字符串匹配而等同 `verify-full`、证书失败文案与
-  `required` 的错误分类不准确，客户端证书（双向 TLS）与 MySQL 8.x 未验证。证据见
-  [`docs/database/mariadb.md`](../database/mariadb.md)「TLS 逐档验证」与发布说明已知限制第 20 条。
+- **TLS 已逐档实测（2026-11-06，#106）；证书档的两处实现已按 ADR 0020 收敛**：在
+  `mariadb:11.4` 测试容器上完成了 `disabled` / `preferred` / `required` / `verify-ca` /
+  `verify-full` 五档真实握手（判据是会话变量 `Ssl_cipher`），并验证了 `preferred` 对无 TLS
+  监听端的回退与 `mariadb.tls_fallback` 告警；`verify-ca` 因上游 `mysql_async` 的错误字符串
+  匹配拿不到「只校链、不校名」，按 **ADR 0020 归一化为 `verify-full`** 并以驱动能力位
+  `tls_verify_ca_chain_only` 声明（MariaDB 为 `false`，前端据此在连接对话框标注）；证书失败
+  文案（主机名不匹配 / 证书不受信或已失效 / 其他 TLS 错误三档）与 `required` 的错误分类
+  （`Internal` → `Unavailable`）同批修正。客户端证书（双向 TLS）与 MySQL 8.x 仍未验证。
+  证据见 [`docs/database/mariadb.md`](../database/mariadb.md)「TLS 逐档验证」与发布说明
+  已知限制第 20 条（该条现按 ADR 0020 定为设计决定；发布说明 append-only，正文不改）。
 - **release 构建性能已补测（2026-11-06，#105）**：冷启动、空闲内存、10 万行与 200 列宽表四组
   场景均有 release 数值并与 debug 对照（见发布说明「性能实测（release 构建）」）；宽表内存
   偏高仍未定位，估算字节不含 GTK 渲染开销。
@@ -233,7 +237,7 @@ MariaDB 集成 **69 passed**，日志中「跳过：未设置 SQARVO_MARIADB_URL
 
 | 能力 | SQLite（v0.1 起；事务 / 元数据 / 表数据自 v0.2.1，对象树 / DDL / 搜索 / 插入自 v0.2.2） | MariaDB（v0.2 新增；事务 / 元数据 / 表数据自 v0.2.1，对象树 / DDL / 搜索 / 插入自 v0.2.2） | PostgreSQL |
 |---|---|---|---|
-| 连接 / 测试连接 | 已实现并有测试：本地文件、`read_only` 模式、`SELECT sqlite_version()` 作为版本探测 | 已实现并有测试：真实 MariaDB 11.4 连接与测试连接（延迟 + 服务端版本）；5 档 TLS 模式映射，`preferred` 在服务端无 TLS 时回退并给出 `mariadb.tls_fallback` 告警；五档真实握手已于 2026-11-06 逐档实测（#106，判据 `Ssl_cipher`），`verify-ca` 受上游限制等同 `verify-full` | 未实现：未注册驱动，`Connect` / `TestConnection` 返回 `driver.not_found` |
+| 连接 / 测试连接 | 已实现并有测试：本地文件、`read_only` 模式、`SELECT sqlite_version()` 作为版本探测 | 已实现并有测试：真实 MariaDB 11.4 连接与测试连接（延迟 + 服务端版本）；5 档 TLS 模式映射，`preferred` 在服务端无 TLS 时回退并给出 `mariadb.tls_fallback` 告警；五档真实握手已于 2026-11-06 逐档实测（#106，判据 `Ssl_cipher`），`verify-ca` 归一化为 `verify-full`（ADR 0020，驱动能力位 `tls_verify_ca_chain_only` 声明，MariaDB 为 `false`） | 未实现：未注册驱动，`Connect` / `TestConnection` 返回 `driver.not_found` |
 | 执行 / 分批结果 | 已实现并有测试：单语句、prepared statement 游标分批、服务端批次上限 5000 行 | 已实现并有测试：`execute` 交付摘要 + 首批行，`max_rows` 钳制 `1..=5000`；游标 = 已交付行数、多读一行判 `has_more`、不用 `OFFSET` 重查；游标不匹配 → `mariadb.cursor_invalid`，游标未读完再 `execute` → `mariadb.query_active` | 未实现：`driver.not_found` |
 | 类型映射 | 已实现并有测试：NULL/INTEGER/REAL/TEXT/BLOB 按实际存储类映射；NUMERIC 与 DATE/DATETIME 保留原始类型名、不伪造 Decimal 与时间戳；非法 UTF-8 按字节返回 | 已实现并有测试：有/无符号整数、`DECIMAL` 精度与标度（不经 `f64`）、`DATE`/`DATETIME`/`TIMESTAMP`（会话时区语义、0–6 位微秒）、`TIME`、`BIT`、`ENUM`/`SET`、`YEAR`、TEXT/BLOB 系列、`JSON`→`Text`（longtext 别名，不声明原生 JSON）；零日期与超范围 `TIME` 为值级 `Unsupported`，保留原始文本 | 未实现：`driver.not_found` |
 | 大字段截断 | 已实现并有测试：单格 64 KiB、文本按字符边界截断并置 `truncated`；延迟加载未实现 | 已实现并有测试：64 KiB、UTF-8 字符边界回退、恰好等于上限不标记；延迟加载未实现 | 未实现：`driver.not_found` |
@@ -251,9 +255,12 @@ MariaDB 集成 **69 passed**，日志中「跳过：未设置 SQARVO_MARIADB_URL
 
 > TLS 说明：五档模式已于 2026-11-06 在 `mariadb:11.4` 测试容器上逐档实测（#106，
 > `cargo test -p sqarvo-driver-mariadb --test tls_handshake`，判据是会话变量 `Ssl_cipher`），
-> 含 `preferred` 对无 TLS 监听端的回退告警。**`verify-ca` 目前等同 `verify-full`**（上游
-> `mysql_async` 0.37.1 用错误字符串匹配判断「只跳过主机名」，参数未生效），证书校验失败的
-> 文案与 `required` 的错误分类也不准确——三处缺口见发布说明已知限制第 20 条。
+> 含 `preferred` 对无 TLS 监听端的回退告警。**`verify-ca` 归一化为 `verify-full`**（ADR 0020）：
+> 上游 `mysql_async` 0.37.1 用错误字符串匹配判断「只跳过主机名」，参数在 rustls 0.23 下不生效；
+> 驱动因此按 `verify-full` 执行并以能力位 `tls_verify_ca_chain_only = false` 显式声明，前端在
+> 连接对话框标注「本驱动等同 verify-full」。证书失败文案（三档）与 `required` 的分类
+> 已同批修正为 `Unavailable`，发布说明已知限制第 20 条仍按 v0.2.2 发布时的状态记录
+> （[`docs/releases/v0.2.2.md`](../releases/v0.2.2.md)，append-only）。
 > 客户端证书（双向 TLS）与 MySQL 8.x 兼容性仍未验证（`docs/database/mariadb.md` 未支持清单）。
 
 ### 验证方式（v0.2.2）

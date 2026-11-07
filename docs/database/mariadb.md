@@ -591,7 +591,7 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 | `disabled` | 连接成功 | 空（明文） | `disabled_tls_connects_without_cipher` |
 | `preferred` | 连接成功 | `TLS_AES_256_GCM_SHA384` | `preferred_tls_negotiates_cipher` |
 | `required` | 连接成功 | `TLS_AES_256_GCM_SHA384` | `required_tls_negotiates_cipher` |
-| `verify-ca`（固定根证书，证书带 SAN） | 连接成功 | `TLS_AES_256_GCM_SHA384` | `verify_ca_trusts_pinned_root_certificate` |
+| `verify-ca`（固定根证书，证书带 SAN） | 连接成功（驱动归一化为 `verify-full`，ADR 0020） | `TLS_AES_256_GCM_SHA384` | `verify_ca_trusts_pinned_root_certificate` |
 | `verify-full`（证书带 SAN） | 连接成功 | `TLS_AES_256_GCM_SHA384` | `verify_full_accepts_matching_certificate` |
 | `verify-full`（证书无 SAN，主机 `127.0.0.1`） | 拒绝 | — | `verify_full_rejects_hostname_mismatch` → `mariadb.connection_failed` / `Unavailable` |
 | `preferred`（服务端无 TLS） | 回退明文成功 + `mariadb.tls_fallback` 告警 | 空 | `preferred_falls_back_to_plaintext_and_warns` |
@@ -687,26 +687,58 @@ ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 ```
 
+该输出是 2026-11-06 的实测记录，原样保留。其中 `required` 的 `category=Internal` 与
+`verify-full` 的 `message=数据库连接中断` 已由 ADR 0020 修正为 `Unavailable` 与新的证书错误
+文案（见下「已知边界与修正记录」）；下次实测时更新这段输出，不在此处改写历史记录。
+
+2026-11-07（ADR 0020 实现后）本地复跑：三个监听端同前（53306 自签自动证书、53307 `--skip-ssl`、
+53308 自建 CA 签的带 SAN 证书），`cargo test -p sqarvo-driver-mariadb --test tls_handshake --
+--nocapture --test-threads=1` → **9 passed; 0 failed**（新增 `verify_ca_is_normalized_to_verify_full`）。
+与旧记录相比的差异：`required_fails_on_server_without_tls` 输出 `category=Unavailable`、
+`message=服务端不支持 TLS（连接要求 TLS）`；`verify_ca_is_normalized_to_verify_full` 与
+`verify_full_rejects_hostname_mismatch` 都输出 `code=mariadb.connection_failed`、
+`category=Unavailable`、`message=服务端证书与主机名不匹配`。这是本地门控证据（未接入 CI），
+53306 的根证书是用 `openssl s_client -starttls mysql` 从一次真实握手里取出的。
+
 `tls_server_name` 覆盖同样实测：`SQARVO_MARIADB_SAN_SERVER_NAME=localhost`（证书的 `DNS:` SAN）时
 `verify_full_accepts_matching_certificate` 通过；不设时按 URL 主机 `127.0.0.1` 匹配 `IP:` SAN。
 
 不设任何环境变量时用例逐条打印跳过原因并返回（不是静默通过）：`cargo test -p sqarvo-driver-mariadb`
 输出 90 行 `跳过：未设置 …`。
 
-### 已知缺口（实测发现，本任务只记录、未改驱动语义）
+### 已知边界与修正记录（#106 实测 + ADR 0020 处置）
 
-1. **`verify-ca` 当前等同 `verify-full`**：`mysql_async` 0.37.1 用
-   `e.to_string().contains("NotValidForName")` 判断是否跳过主机名校验
+1. **`verify-ca` 归一化为 `verify-full`（设计决定，ADR 0020，不再算缺口）**：
+   `mysql_async` 0.37.1 用 `e.to_string().contains("NotValidForName")` 判断是否跳过主机名校验
    （`src/io/tls/rustls_io.rs` 的 `DangerousVerifier`），而 rustls 0.23 的 `Display` 输出是
-   `invalid peer certificate: certificate not valid for name …`，永远匹配不到，`skip_domain_validation`
-   因此是死参数。实测：对无 SAN 的自签证书用 `verify-ca` + 固定根证书，仍然被
-   `InvalidCertificate(NotValidForNameContext { expected: IpAddress(127.0.0.1), presented: [] })` 拒绝。
-   影响是「不会更宽松」，不是「会接受错误证书」；需要「只校链、不校名」的用户目前拿不到这个档位。
-2. **证书校验失败的文案**：这类错误走 `IoError::Io(InvalidData)`，`error.rs` 里
-   `IoError::Tls(_) → 「TLS 握手失败」` 的分支命不中，所以码对（`mariadb.connection_failed` /
-   `Unavailable`）、文案却是「数据库连接中断」。
-3. **`required` 撞上无 TLS 服务端**：码是 `mariadb.connection_failed`，分类却是 `Internal`
-   （`mysql_async` 归到 `Error::Other`），不是 `Unavailable`。用例因此只断言错误码。
+   `invalid peer certificate: certificate not valid for name …`，永远匹配不到，
+   `with_danger_skip_domain_validation(true)` 因此是死参数（#106 实测：对无 SAN 的自签证书用
+   `verify-ca` + 固定根证书，仍被 `InvalidCertificate(NotValidForNameContext { expected:
+   IpAddress(127.0.0.1), presented: [] })` 拒绝）。驱动因此把 `verify-ca` **归一化**为
+   `verify-full`（固定根证书 + 主机名校验），并在能力位 `tls_verify_ca_chain_only = false` 上
+   声明「本驱动不支持只校链、不校名」，前端连接对话框据此标注。
+   **用户出路**：证书没有匹配连接地址的 SAN 时，用既有字段 `tls_server_name` 指定证书里确实
+   存在的名字（`DNS:` SAN），`verify-full` 即可通过——已实测（`SQARVO_MARIADB_SAN_SERVER_NAME=localhost`
+   时 `verify_full_accepts_matching_certificate` 通过）。证书既无 SAN 也无可用名字时，MariaDB
+   上就没有「只校链」这一档，只能换证书或改用不校验证书的档位。
+   方向是**更严**：归一化只会多拒，不会放行本该拒绝的证书。
+2. **证书校验失败的文案与分类**：已按 ADR 0020 改为强类型判定——从
+   `IoError::Io(io)` 的 `io.get_ref().downcast_ref::<rustls::Error>()` 取回 rustls 错误，
+   按 `CertificateError` 变体分档，不做字符串匹配。三档文案（错误码都是
+   `mariadb.connection_failed`）：
+
+   | 情形 | 文案 | 分类 |
+   |---|---|---|
+   | 证书主机名不匹配（`NotValidForName` / `NotValidForNameContext`） | 服务端证书与主机名不匹配 | `Unavailable` |
+   | 证书不受信 / 已失效 / 用途不符（`UnknownIssuer`、`Expired*`、`InvalidPurpose*`、`BadSignature` 等） | 服务端证书未被信任或已失效 | `Unavailable` |
+   | 其他 TLS 错误（`IoError::Tls` 分支） | TLS 握手失败 | `Unavailable` |
+
+   归一化后，无 SAN 证书在 `verify-ca` 下与 `verify-full` 一样被拒，落到第一档——报错要读成
+   「换个校验名」而不是「换个证书」。
+3. **`required` 撞上无 TLS 服务端**：已修（ADR 0020）。分类从 `Internal` 改为 `Unavailable`，文案为
+   「服务端不支持 TLS（连接要求 TLS）」，错误码仍是 `mariadb.connection_failed`。真实变体是
+   `DriverError::NoClientSslFlagFromServer`（`display`：`Client asked for SSL but server does not
+   have this capability`），不是 #106 时推测的 `Error::Other`；`error.rs` 按变体精确匹配，不看文案。
 
 ### 未覆盖
 
@@ -731,6 +763,7 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 | `parameterized_statements` | `true` | `execute_parameterized`：值经协议绑定参数执行，不拼进 SQL 文本 |
 | `ddl_generation` | `false` | 计划用 `SHOW CREATE TABLE` 原文 |
 | `server_side_pagination` | `false` | 游标由驱动持有 |
+| `tls_verify_ca_chain_only` | `false` | 不支持「只校链、不校名」：`verify-ca` 归一化为 `verify-full`（ADR 0020） |
 
 ## 未支持清单
 
@@ -781,9 +814,11 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 错误信息中绝不包含密码或完整连接串；`MariaDbConfig` 的 `Debug` 只打印 TLS 模式与超时。
 
-TLS 相关的两条现状（详见「TLS 逐档验证」的已知缺口）：证书校验失败 → `mariadb.connection_failed` /
-`Unavailable`，但文案是「数据库连接中断」（原始错误是 `IoError::Io(InvalidData)`，不走
-`IoError::Tls` 分支）；档位要求 `required` 而服务端不支持 TLS → `mariadb.connection_failed` / `Internal`。
+TLS 相关（详见「TLS 逐档验证」的「已知边界与修正记录」与 ADR 0020）：证书校验失败一律
+`mariadb.connection_failed` / `Unavailable`，按原因分三档文案——主机名不匹配 →「服务端证书与
+主机名不匹配」；证书不受信 / 已失效 / 用途不符 →「服务端证书未被信任或已失效」；其他 TLS 错误
+→「TLS 握手失败」。档位要求 `required` 而服务端不支持 TLS → `mariadb.connection_failed` /
+`Unavailable`，文案「服务端不支持 TLS（连接要求 TLS）」。
 
 ## 测试与复现
 

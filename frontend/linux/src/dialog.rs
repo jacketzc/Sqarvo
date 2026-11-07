@@ -4,7 +4,7 @@
 //! |---|---|
 //! | 驱动 | `AdwComboRow`，选项来自 `SystemService.ListDrivers`（前端不硬编码清单） |
 //! | 主机 / 端口 / 数据库 / 用户名 | `AdwEntryRow`，服务器型驱动可见，即时校验非空与端口范围 |
-//! | TLS 模式 | `AdwComboRow`，对应 `TlsMode` 五个取值（服务器型驱动可见） |
+//! | TLS 模式 | `AdwComboRow`，对应 `TlsMode` 五个取值（服务器型驱动可见）；`verify-ca` 的文案随驱动能力重建：驱动不支持「只校链」时标注「等同 verify-full」 |
 //! | 密码 | `AdwPasswordEntryRow`，绝不回显已保存的密码（没有「读出旧密码」的路径） |
 //! | 文件路径 | `AdwEntryRow` + 「浏览」按钮（`GtkFileDialog`），文件型驱动可见 |
 //! | 只读 | `AdwSwitchRow`，文件型驱动可见（SQLite 的 `read_only` 参数） |
@@ -26,6 +26,7 @@ use gtk::gio;
 use crate::backend::client::DriverSummary;
 use crate::backend::connection::{
     ConnectionDraft, ConnectionFailure, DriverFamily, TestReport, TlsMode,
+    supports_chain_only_verify_ca,
 };
 use crate::driver_form::{self, FieldSet, FormInput};
 use crate::qa::QaProfile;
@@ -58,6 +59,8 @@ struct DriverChoice {
     label: String,
     /// 驱动族；前端不认识时为 `None`。
     family: Option<DriverFamily>,
+    /// 驱动自述的能力串（来自 `ListDrivers`）：TLS 标签按它判断 `verify-ca` 能否只校链。
+    capabilities: Vec<String>,
 }
 
 impl DriverChoice {
@@ -78,6 +81,7 @@ impl DriverChoice {
             display_name: summary.display_name.clone(),
             label,
             family,
+            capabilities: summary.capabilities.clone(),
         }
     }
 }
@@ -159,13 +163,10 @@ impl ConnectionDialog {
         let database_row = adw::EntryRow::builder().title("数据库").build();
         let username_row = adw::EntryRow::builder().title("用户名").build();
 
-        let tls_labels: Vec<&str> = TlsMode::ALL.iter().map(|mode| mode.label()).collect();
-        let tls_model = gtk::StringList::new(&tls_labels);
-        let tls_row = adw::ComboRow::builder()
-            .title("TLS 模式")
-            .model(&tls_model)
-            .selected(TlsMode::default().index())
-            .build();
+        // TLS 标签随驱动能力变化（`verify-ca` 是否等同 `verify-full`），
+        // 因此不在这里写死：model 与初始选中档位都由 `apply_selection` →
+        // `rebuild_tls_model` 按当前驱动确定（没有有效序号时回落默认档 `Preferred`）。
+        let tls_row = adw::ComboRow::builder().title("TLS 模式").build();
 
         // AdwPasswordEntryRow 默认带「眼睛」图标（libadwaita 1.6+），不再单独设置。
         let password_row = adw::PasswordEntryRow::builder().title("密码").build();
@@ -287,6 +288,16 @@ impl ConnectionDialog {
             });
         }
         {
+            // 档位变化只影响副标题（标签本身与所选档位无关）：
+            // 用户从 verify-ca 切到别的档位时，「仍会校验主机名」的说明要立刻消失。
+            let weak = Rc::downgrade(&this);
+            this.tls_row.connect_selected_notify(move |row| {
+                if let Some(this) = weak.upgrade() {
+                    this.apply_tls_subtitle(row.selected());
+                }
+            });
+        }
+        {
             // 文件选择器：只把选中的路径写进输入行，其余流程与手输完全相同。
             let weak = Rc::downgrade(&this);
             browse.connect_clicked(move |_| {
@@ -384,6 +395,9 @@ impl ConnectionDialog {
         self.read_only_row.set_visible(fields.read_only);
         self.credential_note.set_visible(fields.password);
 
+        // TLS 标签取决于驱动能力，必须先于任何读取 `tls_row.selected()` 的逻辑重建。
+        self.rebuild_tls_model();
+
         // 切回服务器型驱动时，空着的默认值补回来（用户没改过就不该看到空主机）。
         if fields.host && self.host_row.text().trim().is_empty() {
             self.host_row.set_text("127.0.0.1");
@@ -424,6 +438,38 @@ impl ConnectionDialog {
                 StatusKind::Error,
             );
         }
+    }
+
+    /// 当前驱动的能力串；没有驱动（或后端未返回驱动）时为空，按「不支持」处理。
+    fn selected_capabilities(&self) -> &[String] {
+        usize::try_from(self.driver_row.selected())
+            .ok()
+            .and_then(|index| self.choices.get(index))
+            .map_or(&[], |choice| choice.capabilities.as_slice())
+    }
+
+    /// 按当前驱动能力重建 TLS 下拉框标签，并把选中档位映射回新列表的序号。
+    ///
+    /// 驱动切换时 `verify-ca` 的文案会变（是否等同 `verify-full`），所以标签不能
+    /// 在 `build` 时一次性生成。换 model 会让 `selected` 失效，因此重建后显式选回
+    /// 同一个 [`TlsMode`]；序号按列表长度 clamp，避免将来档位增减时越界。
+    fn rebuild_tls_model(&self) {
+        let capabilities = self.selected_capabilities();
+        let current = TlsMode::from_index(self.tls_row.selected());
+        let (labels, selected) = tls_model_for(current, capabilities);
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.tls_row
+            .set_model(Some(&gtk::StringList::new(&label_refs)));
+        self.tls_row.set_selected(selected);
+        self.apply_tls_subtitle(selected);
+    }
+
+    /// 同步 TLS 行的副标题：驱动做不到「只校链」却选了 `verify-ca` 时必须说明。
+    fn apply_tls_subtitle(&self, selected: u32) {
+        self.tls_row.set_subtitle(tls_subtitle_for(
+            TlsMode::from_index(selected),
+            self.selected_capabilities(),
+        ));
     }
 
     /// 切换「进行中」状态：期间禁止重复提交与编辑。
@@ -617,6 +663,34 @@ impl ConnectionDialog {
     }
 }
 
+/// 按驱动能力生成 TLS 下拉框的标签，并给出 `current` 档位在新列表里的序号。
+///
+/// 标签数量与顺序始终与 [`TlsMode::ALL`] 一致，因此序号即档位序号；仍按列表长度
+/// clamp，将来档位增减（或列表为空）时不会越界，越界时回落到默认档 `Preferred`
+/// （与 `TlsMode::from_index` 的语义一致）。
+///
+/// 拆成纯函数而不是内联在 GTK 代码里：驱动切换时的标签/序号映射可以脱离显示环境测试。
+fn tls_model_for(current: TlsMode, capabilities: &[String]) -> (Vec<String>, u32) {
+    let labels: Vec<String> = TlsMode::ALL
+        .iter()
+        .map(|mode| mode.label_for(capabilities))
+        .collect();
+    let last = u32::try_from(labels.len().saturating_sub(1)).unwrap_or(0);
+    (labels, current.index().min(last))
+}
+
+/// TLS 行的副标题：只有「选了 `verify-ca` 且驱动做不到只校链」时才有说明。
+///
+/// 其余情况返回空串，让行副标题不占位。判断依据是驱动能力串，不认驱动的具体
+/// ID：将来支持 chain-only 的驱动不需要在前端再加分支。
+fn tls_subtitle_for(mode: TlsMode, capabilities: &[String]) -> &'static str {
+    if mode == TlsMode::VerifyCa && !supports_chain_only_verify_ca(capabilities) {
+        "本驱动无法只校验证书链：仍会校验主机名"
+    } else {
+        ""
+    }
+}
+
 /// 打开系统文件选择器，把选中的路径写进输入行。
 ///
 /// 用 `GtkFileDialog`（GTK 4.10+，本工程已启用 `v4_16`）：对话框是 `AdwDialog`
@@ -679,6 +753,16 @@ mod tests {
         assert_eq!(rendered.lines().count(), 2);
     }
 
+    /// 测试用驱动摘要（与 `driver_choice_labels_mark_unsupported_drivers` 的构造方式一致）。
+    fn driver(driver_id: &str, display_name: &str, capabilities: &[&str]) -> DriverSummary {
+        DriverSummary {
+            driver_id: driver_id.to_owned(),
+            display_name: display_name.to_owned(),
+            version: "0.1.0".to_owned(),
+            capabilities: capabilities.iter().map(|item| (*item).to_owned()).collect(),
+        }
+    }
+
     #[test]
     fn driver_choice_labels_mark_unsupported_drivers() {
         let mariadb = crate::backend::client::DriverSummary {
@@ -701,5 +785,102 @@ mod tests {
         assert_eq!(choice.family, None);
         // 后端列出的驱动即使前端不认识也要出现，但标签必须说明「暂无表单」。
         assert!(choice.label.contains("前端暂无表单"), "{}", choice.label);
+    }
+
+    #[test]
+    fn verify_ca_label_marks_degradation_only_without_chain_only_capability() {
+        // MariaDB：能力串不含 `tls_verify_ca_chain_only` → verify-ca 实为 verify-full。
+        let mariadb = DriverChoice::from_summary(&driver("mariadb", "MariaDB", &[]));
+        let (labels, _) = tls_model_for(TlsMode::VerifyCa, &mariadb.capabilities);
+        let verify_ca = &labels[TlsMode::VerifyCa.index() as usize];
+        assert!(verify_ca.contains("等同 verify-full"), "{verify_ca}");
+
+        // 声明了 chain-only 的驱动：标注必须自动消失，不能按驱动 ID 硬编码。
+        let chain_only = DriverChoice::from_summary(&driver(
+            "postgresql",
+            "PostgreSQL",
+            &["tls_verify_ca_chain_only"],
+        ));
+        let (labels, _) = tls_model_for(TlsMode::VerifyCa, &chain_only.capabilities);
+        assert_eq!(
+            labels[TlsMode::VerifyCa.index() as usize],
+            TlsMode::VerifyCa.label()
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.contains("等同 verify-full")),
+            "{labels:?}"
+        );
+        // 其余四档在两种驱动下文案都不变（能力只影响 verify-ca）。
+        for mode in [
+            TlsMode::Disabled,
+            TlsMode::Preferred,
+            TlsMode::Required,
+            TlsMode::VerifyFull,
+        ] {
+            assert_eq!(
+                labels[mode.index() as usize],
+                mode.label_for(&mariadb.capabilities)
+            );
+        }
+    }
+
+    #[test]
+    fn tls_selection_maps_to_same_mode_after_driver_switch() {
+        let mariadb = DriverChoice::from_summary(&driver("mariadb", "MariaDB", &[]));
+        let chain_only = DriverChoice::from_summary(&driver(
+            "postgresql",
+            "PostgreSQL",
+            &["tls_verify_ca_chain_only"],
+        ));
+        for mode in TlsMode::ALL {
+            // 选中档位 → 新列表序号的映射必须回到同一个档位（标签变长变短都不许错位）。
+            let (labels, selected) = tls_model_for(mode, &mariadb.capabilities);
+            assert_eq!(TlsMode::from_index(selected), mode);
+            assert_eq!(labels.len(), TlsMode::ALL.len());
+            assert_eq!(
+                labels[selected as usize],
+                mode.label_for(&mariadb.capabilities)
+            );
+
+            // 切到另一个驱动：重建后仍是同一档位，且标签取自新驱动。
+            let (labels, selected) =
+                tls_model_for(TlsMode::from_index(selected), &chain_only.capabilities);
+            assert_eq!(TlsMode::from_index(selected), mode);
+            assert_eq!(
+                labels[selected as usize],
+                mode.label_for(&chain_only.capabilities)
+            );
+        }
+        // 换 model 后 `selected` 会变成无效位置：此时回落到默认档，不越界。
+        assert_eq!(TlsMode::from_index(u32::MAX), TlsMode::Preferred);
+    }
+
+    #[test]
+    fn verify_ca_subtitle_only_shows_when_chain_only_is_unavailable() {
+        let mariadb = DriverChoice::from_summary(&driver("mariadb", "MariaDB", &[]));
+        let chain_only = DriverChoice::from_summary(&driver(
+            "postgresql",
+            "PostgreSQL",
+            &["tls_verify_ca_chain_only"],
+        ));
+        assert_eq!(
+            tls_subtitle_for(TlsMode::VerifyCa, &mariadb.capabilities),
+            "本驱动无法只校验证书链：仍会校验主机名"
+        );
+        assert!(
+            tls_subtitle_for(TlsMode::VerifyCa, &chain_only.capabilities).is_empty(),
+            "支持 chain-only 的驱动不该出现退化说明"
+        );
+        // 别的档位不谈「只校链」，副标题必须是空的。
+        for mode in [
+            TlsMode::Disabled,
+            TlsMode::Preferred,
+            TlsMode::Required,
+            TlsMode::VerifyFull,
+        ] {
+            assert!(tls_subtitle_for(mode, &mariadb.capabilities).is_empty());
+        }
     }
 }

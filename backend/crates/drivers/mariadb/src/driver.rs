@@ -60,6 +60,11 @@ impl MariaDbDriver {
                     // 参数化：`execute_parameterized` 走同一条语句执行路径，
                     // 值由 `mysql_async` 绑定，不拼进 SQL 文本（#59）。
                     parameterized_statements: true,
+                    // verify-ca 的契约语义是「只校链、不校名」，但上游 `mysql_async` 0.37.1
+                    // 的 `with_danger_skip_domain_validation` 在 rustls 0.23 下失效，
+                    // 因此本驱动把 verify-ca 归一化为 verify-full（多校一层主机名）。
+                    // 只向更严方向退化，并通过这个能力位显式声明（ADR 0020）。
+                    tls_verify_ca_chain_only: false,
                 },
             },
         }

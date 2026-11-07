@@ -2050,6 +2050,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "mysql_async",
+ "rustls",
  "sqarvo-common",
  "sqarvo-driver-api",
  "sqarvo-driver-testkit",

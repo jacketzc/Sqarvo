@@ -38,6 +38,25 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 /// 后端返回的稳定错误码所在的 metadata 键，与 `backend/crates/rpc-server/src/error.rs` 一致。
 pub const ERROR_CODE_METADATA_KEY: &str = "sqarvo-error-code";
 
+/// 驱动能力串：声明该驱动的 `verify-ca` **只校验证书链、不校验主机名**。
+///
+/// 由后端 `Capabilities::names()` 输出（`tls_verify_ca_chain_only`），经
+/// `SystemService.ListDrivers` / `ConnectResponse` 的 `repeated string capabilities`
+/// 传到前端。缺这个串的驱动会把 `verify-ca` 退化成 `verify-full`（仍校验主机名），
+/// 界面必须显式标注，不能静默。
+pub const TLS_VERIFY_CA_CHAIN_ONLY: &str = "tls_verify_ca_chain_only";
+
+/// 驱动是否声明了 [`TLS_VERIFY_CA_CHAIN_ONLY`]（`verify-ca` 只校链、不校名）。
+///
+/// 能力串缺失按「不支持」处理：宁可多校验主机名（fail-closed），也不能让界面
+/// 声称一个驱动做不到的语义。
+#[must_use]
+pub fn supports_chain_only_verify_ca(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability == TLS_VERIFY_CA_CHAIN_ONLY)
+}
+
 /// TLS 模式（对应 `proto` 的 `TlsMode`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TlsMode {
@@ -65,6 +84,10 @@ impl TlsMode {
     ];
 
     /// 下拉框标签：中文说明 + 协议枚举名，便于对照后端日志。
+    ///
+    /// 这是**没有驱动上下文**时的默认文案（日志、测试、能力未知的场景）。
+    /// 界面上的 TLS 下拉必须用 [`Self::label_for`]，因为 `verify-ca` 的实际语义
+    /// 取决于驱动能力，详见该方法。
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -73,6 +96,21 @@ impl TlsMode {
             Self::Required => "必需（required）",
             Self::VerifyCa => "校验 CA（verify-ca）",
             Self::VerifyFull => "完整校验（verify-full）",
+        }
+    }
+
+    /// 按驱动能力返回下拉框标签。
+    ///
+    /// `verify-ca` 的契约语义是「只校验证书链、不校验主机名」，但并非每个驱动都能
+    /// 做到：未声明 [`TLS_VERIFY_CA_CHAIN_ONLY`] 的驱动会连带校验主机名（等同
+    /// `verify-full`）。这种情况下标签必须如实标注这个退化，不能让用户以为选了
+    /// 「只校链」就真的不校名；其余四档与能力无关，文案同 [`Self::label`]。
+    #[must_use]
+    pub fn label_for(self, capabilities: &[String]) -> String {
+        if self == Self::VerifyCa && !supports_chain_only_verify_ca(capabilities) {
+            "校验 CA（verify-ca，本驱动等同 verify-full）".to_owned()
+        } else {
+            self.label().to_owned()
         }
     }
 
@@ -746,6 +784,50 @@ mod tests {
         }
         assert_eq!(TlsMode::from_config_value("bogus"), None);
         assert_eq!(TlsMode::from_index(99), TlsMode::Preferred);
+    }
+
+    #[test]
+    fn verify_ca_label_declares_degradation_without_chain_only_capability() {
+        // MariaDB：能力串缺失（后端未声明 chain-only）→ verify-ca 实为 verify-full。
+        let without: Vec<String> = Vec::new();
+        let degraded = TlsMode::VerifyCa.label_for(&without);
+        assert!(degraded.contains("等同 verify-full"), "{degraded}");
+        assert!(!supports_chain_only_verify_ca(&without));
+
+        // 支持 chain-only 的驱动：标注自动消失，标签回到默认文案。
+        let with = vec![TLS_VERIFY_CA_CHAIN_ONLY.to_owned()];
+        assert!(supports_chain_only_verify_ca(&with));
+        assert_eq!(
+            TlsMode::VerifyCa.label_for(&with),
+            TlsMode::VerifyCa.label()
+        );
+
+        // 其余四档与能力无关：无论驱动支持与否，文案都不变。
+        for mode in [
+            TlsMode::Disabled,
+            TlsMode::Preferred,
+            TlsMode::Required,
+            TlsMode::VerifyFull,
+        ] {
+            assert_eq!(mode.label_for(&without), mode.label());
+            assert_eq!(mode.label_for(&with), mode.label());
+        }
+    }
+
+    #[test]
+    fn unknown_capability_strings_do_not_claim_chain_only() {
+        // 只认稳定串本身：相近但不同的名字不能被当作能力（fail-closed）。
+        let similar = vec![
+            "tls".to_owned(),
+            "tls_verify_ca".to_owned(),
+            "tls_verify_ca_chain_only_v2".to_owned(),
+        ];
+        assert!(!supports_chain_only_verify_ca(&similar));
+        assert!(
+            TlsMode::VerifyCa
+                .label_for(&similar)
+                .contains("等同 verify-full")
+        );
     }
 
     #[test]
