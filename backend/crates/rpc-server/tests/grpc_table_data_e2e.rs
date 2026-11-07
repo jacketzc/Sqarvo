@@ -448,7 +448,9 @@ async fn browse_table_reports_a_skipped_total_after_the_count_timeout() {
 
     for sql in [
         "CREATE TABLE count_src(id INTEGER PRIMARY KEY, v INTEGER)",
-        "WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < 240) \
+        // 1000 × 1000 = 100 万行的交叉连接：1 ms 的计数预算在**任何**机器上都不可能完成，
+        // 否则「超时」用例会因 CI 比本地快而偶发失败（实测 CI 用 240×240 时计数在 1 ms 内就跑完了）。
+        "WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < 1000) \
          INSERT INTO count_src(id, v) SELECT x, x FROM seq",
         "CREATE VIEW slow_view AS SELECT a.id AS id, a.v AS v FROM count_src a, count_src b",
     ] {
@@ -506,7 +508,7 @@ async fn browse_table_reports_a_skipped_total_after_the_count_timeout() {
         response.total_kind,
         sqarvo_rpc_server::proto::services::v1::TotalKind::Exact as i32
     );
-    assert_eq!(response.total_rows, 240);
+    assert_eq!(response.total_rows, 1000);
     assert!(!response.total_skipped);
 
     stage(
