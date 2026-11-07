@@ -1,25 +1,41 @@
-//! SQLite 表数据浏览：主键升序 + 键集（keyset）游标（ADR 0017）。
+//! SQLite 表数据浏览：主键升序 + 键集（keyset）游标（ADR 0017）与排序/筛选/
+//! offset/精确计数下推（ADR 0022，#110）。
 //!
-//! 分页 SQL 固定为
+//! 四种 SQL 形状，全部「标识符进文本、值走绑定」：
 //!
 //! ```sql
+//! -- v0.2.2 连续翻页（无排序、无 offset）：键集游标
 //! SELECT "c1","c2" FROM "t"
 //!  WHERE ("pk1","pk2") > (?1,?2)
 //!  ORDER BY "pk1" ASC,"pk2" ASC
 //!  LIMIT ?3
+//!
+//! -- 排序 + 页码跳转
+//! SELECT "c1","c2" FROM "t"
+//!  WHERE "c1" >= ?1 AND "c2" LIKE ?2 ESCAPE '\'
+//!  ORDER BY "c2" DESC,"pk1" ASC
+//!  LIMIT ?3 OFFSET ?4
+//!
+//! -- 精确总数：同一连接、同一份 WHERE，不带 ORDER BY / LIMIT / OFFSET
+//! SELECT COUNT(*) FROM "t" WHERE "c1" >= ?1 AND "c2" LIKE ?2 ESCAPE '\'
 //! ```
 //!
-//! 三条约束：
+//! 约束：
 //!
 //! - **分页双模**（ADR 0022）：连续翻页用键集游标，游标里是上一页最后一个主键值，
-//!   翻页代价与页序号无关；#109 只做契约增量，`BrowseOptions` 的 offset / 排序 /
-//!   筛选 / 总数**尚未下推**（`supports_browse_sort_filter_total` 保持 false），
-//!   实际 SQL 仍是「主键升序 + 键集游标」；OFFSET / ORDER BY / WHERE / COUNT(*)
-//!   的拼装属于 #110 / #111；
+//!   翻页代价与页序号无关；页码跳转用 `LIMIT ... OFFSET ...`。两者互斥，驱动侧
+//!   仍做一次防御（rpc-server 已经拦过）。排序与游标也互斥：游标编码的是「主键
+//!   升序上的位置」，换了排序就不再是下一页的起点；
+//! - **列名白名单**：排序/筛选的列名必须命中 `GetColumns` 返回的列（大小写不敏感），
+//!   命中后只用 schema 里的**规范名**拼 SQL；未知列在发送 SQL 前报 `config.invalid`，
+//!   不让数据库报语法错；
 //! - **值一律绑定**：只有标识符（表名、列名）进入 SQL 文本，并且用双引号引用、
-//!   内部双引号翻倍；主键值与页大小都是参数；
+//!   内部双引号翻倍；排序方向 / 算子来自枚举映射，不来自请求文本；
+//! - **LIKE 是文本包含**：用户值里的 `%` 与 `_` 按字面量匹配（先转义，再包
+//!   `%...%`，SQL 用 `ESCAPE '\'`），不是通配符；
 //! - **无主键只读**：按扫描顺序给一页预览，`ordering = Unstable`、
 //!   `read_only_reason = NoPrimaryKey`，并且**不签发游标**——不提供 rowid 近似定位；
+//!   无主键表仍允许排序/筛选/计数（ADR 0022 §6），只是排序不构成稳定保证；
 //! - **只读连接**：连接以 `SQLITE_OPEN_READONLY` 打开时，浏览本身可用（仍按主键升序、
 //!   仍签发游标），但一律置只读并给出 `ConnectionReadOnly`；写入在准备语句前就拒绝
 //!   （`table_data.read_only`），不把 `SQLITE_READONLY` 留给用户猜。两种原因同时成立时
@@ -29,20 +45,26 @@
 //! 与 `ORDER BY a, b` 完全一致；主键列不允许 NULL，因此不会碰到「NULL 排在末尾」
 //! 与比较结果不一致的情况。主键是 TEXT 时按列自身的排序规则（BINARY 或声明的
 //! COLLATE）比较，与 `ORDER BY` 用的是同一套规则。
+//!
+//! 请求的排序后仍追加主键列 ASC 作为并列打破（未在排序里出现过的主键列）：offset
+//! 翻页因此对重复排序值也有确定的页边界。`ordering` 仍报 `RequestedSort`——契约
+//! 不承诺「排序列唯一」，追加 tie-breaker 是实现的稳定性改进，不升级为跨页保证。
 
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_driver_api::{
-    BrowseOptions, Cell, ColumnDefault, ColumnMeta, DriverSession, InsertOutcome, InsertReport,
-    InsertRow, InsertRowResult, InsertRowsRequest, MetadataProvider, ObjectKind, ObjectRef,
-    PageRequest, PrimaryKey, ReadOnlyReason, Row, RowChange, RowChangeCancel, RowChangeReport,
-    RowChangeRequest, RowChangeResult, RowKey, RowOrder, TableDataProvider, TablePage, TotalKind,
-    Value, classify_rows_affected, invalid_change, no_primary_key, read_only_connection,
-    read_only_object, read_only_transaction,
+    BrowseOptions, Cell, ColumnDefault, ColumnMeta, DriverSession, Filter, FilterCondition,
+    FilterOperator, InsertOutcome, InsertReport, InsertRow, InsertRowResult, InsertRowsRequest,
+    MetadataProvider, ObjectKind, ObjectRef, PageRequest, PrimaryKey, ReadOnlyReason, Row,
+    RowChange, RowChangeCancel, RowChangeReport, RowChangeRequest, RowChangeResult, RowKey,
+    RowOrder, SortDirection, SortKey, TableDataProvider, TablePage, TotalKind, Value,
+    classify_rows_affected, invalid_change, no_primary_key, read_only_connection, read_only_object,
+    read_only_transaction,
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
+use std::fmt::Write as _;
 
 use crate::error::{OBJECT_NOT_FOUND, map_sqlite_error};
 use crate::metadata;
@@ -159,6 +181,15 @@ impl TableDataProvider for SqliteSession {
         true
     }
 
+    /// 排序 / 筛选 / offset / 精确计数已下推到 SQL（#110）。
+    ///
+    /// 声明为 `true` 的依据是 [`BrowsePlan::page_sql`] / [`count_total`] 的实际实现
+    /// 与 `tests/table_browse_options.rs` 的用例：未知列、缺值、NULL 比较在发送 SQL
+    /// 前拒绝；精确计数拿不到时降级为 `UNKNOWN`，不伪称 `EXACT`。
+    fn supports_browse_sort_filter_total(&self) -> bool {
+        true
+    }
+
     async fn primary_key(&self, object: &ObjectRef) -> Result<PrimaryKey> {
         // 与 `MetadataService.GetPrimaryKey` 读同一份 `pragma_table_info`：
         // 两处必须给出相同结果，否则编辑定位与浏览顺序会不一致。
@@ -250,21 +281,36 @@ fn browse(
     connection: &Connection,
     object: &ObjectRef,
     page: &PageRequest,
-    _options: &BrowseOptions,
+    options: &BrowseOptions,
 ) -> Result<TablePage> {
-    // #109 只做契约增量：offset / 排序 / 筛选 / 总数尚未下推（#110 / #111），
-    // 能力位 `supports_browse_sort_filter_total` 保持 false。此处**显式忽略**
-    // 浏览选项并返回 v0.2.2 行为，不伪造排序/筛选/总数。
     let name = metadata::object_name(object)?;
     // 连接级只读：浏览不受影响（仍是 SELECT），但写入一定被拒绝，因此这里就置只读。
     let connection_read_only = connection_read_only(connection)?;
     // 列元数据复用 #45 的 GetColumns 路径：同一份 `pragma_table_info`、同一个顺序，
-    // 因此 `columns` 与每行 cells 的下标严格对应。
+    // 因此 `columns` 与每行 cells 的下标严格对应，同时也是排序/筛选的白名单。
     let columns = metadata::columns(connection, object).map_err(table_data_not_found)?;
     let primary_key = metadata::primary_key(connection, object).map_err(table_data_not_found)?;
     let page_size = usize::try_from(page.effective_page_size()).unwrap_or(100);
+    let page_token = page.page_token.as_deref().filter(|token| !token.is_empty());
+    let offset = options.offset_or_zero();
 
-    if primary_key.is_empty() {
+    // 双模分页的互斥已由 rpc-server 校验；驱动侧仍守一遍：不经 gRPC 的调用方
+    // （测试、未来内嵌使用）不能把两种分页方式混在一起。
+    if page_token.is_some() && offset > 0 {
+        return Err(invalid_browse(
+            "offset 与 page_token 互斥：页码跳转用 offset、连续翻页用 page_token，二者只能给一个",
+        ));
+    }
+    // 游标编码的是「主键升序上的位置」。带排序时它不是下一页的起点，继续用会静默
+    // 返回错位甚至重复的行，因此在发送 SQL 前拒绝，要求改用 offset。
+    if page_token.is_some() && options.has_requested_sort() {
+        return Err(invalid_browse(
+            "带排序的翻页请用 offset：page_token 只表示主键升序上的位置",
+        ));
+    }
+
+    // 老路径（v0.2.2）：无主键表只给一页扫描预览（不签发游标），语义原样保留。
+    if primary_key.is_empty() && options.is_legacy() {
         return browse_without_primary_key(
             connection,
             name,
@@ -274,13 +320,36 @@ fn browse(
         );
     }
 
-    let cursor = match page.page_token.as_deref() {
-        None | Some("") => None,
+    // 白名单 + 参数编译在准备语句之前完成：未知列、缺值、NULL 比较都不会变成
+    // 数据库语法错，也不会有一条 SQL 被发送。
+    let sort = resolve_browse_sort(&columns, &options.sort)?;
+    let filter = compile_filter(&columns, options.filter.as_ref())?;
+    let cursor = match page_token {
+        None => None,
         Some(token) => Some(decode_table_cursor(token, object, primary_key.len())?),
     };
-    let (sql, params) = page_query(name, &columns, &primary_key, cursor.as_deref(), page_size)?;
+    let (sql, params) = {
+        let plan = BrowsePlan {
+            table: name,
+            columns: &columns,
+            sort: &sort,
+            filter: &filter,
+            primary_key: &primary_key,
+        };
+        plan.page_sql(cursor.as_deref(), page_size, offset)?
+    };
 
-    let read_only_reason = connection_read_only.then_some(ReadOnlyReason::ConnectionReadOnly);
+    let read_only_reason = if primary_key.is_empty() {
+        // 无主键表：可以排序/筛选/计数，但编辑定位依赖主键（ADR 0017 §6），仍只读。
+        Some(if connection_read_only {
+            ReadOnlyReason::ConnectionReadOnly
+        } else {
+            ReadOnlyReason::NoPrimaryKey
+        })
+    } else {
+        connection_read_only.then_some(ReadOnlyReason::ConnectionReadOnly)
+    };
+
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 表数据查询失败"))?;
@@ -302,17 +371,24 @@ fn browse(
     let has_more = collected.len() > page_size;
     collected.truncate(page_size);
 
-    let next_page_token = if has_more {
-        let last = collected
-            .last()
-            .ok_or_else(|| Error::internal("表数据游标缺少上一页最后一行"))?;
-        Some(encode_table_cursor(
-            object,
-            &primary_key_values(last, &columns, &primary_key)?,
-        )?)
-    } else {
-        None
-    };
+    // 游标只在「主键升序 + 未显式请求 offset」时签发：offset 翻页由调用方递增
+    // offset，此时给一个主键游标会让下一页的起点与用户看到的顺序对不上。
+    // `Some(0)` 也算显式 offset 分页（SPI 层保留 Option 就是为了区分它）。
+    let next_page_token =
+        if has_more && sort.is_empty() && options.offset.is_none() && !primary_key.is_empty() {
+            let last = collected
+                .last()
+                .ok_or_else(|| Error::internal("表数据游标缺少上一页最后一行"))?;
+            Some(encode_table_cursor(
+                object,
+                &primary_key_values(last, &columns, &primary_key)?,
+            )?)
+        } else {
+            None
+        };
+
+    // 总数是「筛选后的全集」，与游标/offset 无关；拿不到就 UNKNOWN，绝不伪造。
+    let (total_rows, total_kind) = count_total(connection, name, &filter, options.include_total);
 
     Ok(TablePage {
         columns,
@@ -321,70 +397,316 @@ fn browse(
         has_more,
         read_only: read_only_reason.is_some(),
         read_only_reason,
-        ordering: RowOrder::PrimaryKeyAscending,
-        // 总数未请求 / 未实现（#111 才下推 COUNT(*)）；不得伪称 EXACT。
-        total_rows: None,
-        total_kind: TotalKind::Unknown,
+        ordering: row_order(&primary_key, &sort),
+        total_rows,
+        total_kind,
     })
 }
 
-/// 构造一页键集查询的 SQL 与参数：只有标识符进入 SQL 文本，值一律绑定。
+/// 响应里的排序保证（ADR 0022）。
 ///
-/// 抽出来是为了让 [`browse`] 只负责读取与判定只读，同时让「有游标 / 无游标」两种
-/// SQL 骨架在一处生成——主键列数变化时不会有一份漏改。
-fn page_query(
-    name: &str,
-    columns: &[ColumnMeta],
-    primary_key: &PrimaryKey,
-    cursor: Option<&[Value]>,
-    page_size: usize,
-) -> Result<(String, Vec<SqlValue>)> {
-    let select = columns
-        .iter()
-        .map(|column| quote_identifier(&column.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let order = primary_key
-        .column_names()
-        .iter()
-        .map(|column| format!("{} ASC", quote_identifier(column)))
-        .collect::<Vec<_>>()
-        .join(", ");
+/// 无主键一律 `Unstable`（排序可以下推，但没有主键就不存在可承诺的行序）；
+/// 有主键且未请求排序 → `PrimaryKeyAscending`（v0.2.2 行为）；有排序 → `RequestedSort`。
+fn row_order(primary_key: &PrimaryKey, sort: &[SortTerm]) -> RowOrder {
+    if primary_key.is_empty() {
+        RowOrder::Unstable
+    } else if sort.is_empty() {
+        RowOrder::PrimaryKeyAscending
+    } else {
+        RowOrder::RequestedSort
+    }
+}
 
-    let mut params: Vec<SqlValue> = Vec::new();
-    let sql = match cursor {
-        None => {
-            params.push(SqlValue::Integer(page_limit(page_size)));
-            format!(
-                "SELECT {select} FROM {} ORDER BY {order} LIMIT ?1",
-                quote_identifier(name)
-            )
+/// 解析后的排序键：`column` 是 schema 里的规范列名，不是请求里的原文。
+#[derive(Debug)]
+struct SortTerm {
+    column: String,
+    direction: SortDirection,
+}
+
+/// 排序白名单校验：未知列 / 空列名在发送 SQL 前报 `config.invalid`。
+fn resolve_browse_sort(columns: &[ColumnMeta], sort: &[SortKey]) -> Result<Vec<SortTerm>> {
+    let mut terms = Vec::with_capacity(sort.len());
+    for key in sort {
+        let requested = key.column.trim();
+        if requested.is_empty() {
+            return Err(invalid_browse("排序键的列名不能为空"));
         }
-        Some(key) => {
+        let column = resolve_column_meta(columns, requested)
+            .ok_or_else(|| invalid_browse(format!("排序引用了不存在的列 {requested}")))?;
+        terms.push(SortTerm {
+            column: column.name.clone(),
+            direction: key.direction,
+        });
+    }
+    Ok(terms)
+}
+
+/// 编译后的筛选条件：`terms` 只含已引用/转义的列名与 `?n`，值全在 `params` 里。
+#[derive(Debug, Default)]
+struct FilterSql {
+    terms: Vec<String>,
+    params: Vec<SqlValue>,
+}
+
+/// 筛选白名单与参数编译（ADR 0022 §3）。
+///
+/// 逐条规则：
+///
+/// - 列名必须命中 `GetColumns`，否则 `config.invalid`；
+/// - `IS NULL` / `IS NOT NULL` 忽略比较值；
+/// - 其余算子必须带值，且值不能是 NULL（判空要用 `IS NULL`，`= NULL` 永远不成立，
+///   静默返回空页会误导用户）；
+/// - `LIKE` 只接受文本值，语义是「包含」（`%` / `_` 按字面量，见 [`like_pattern`]）；
+/// - 其余算子的值一律 `bind_cell` 绑定，SQLite 表示不了的类型在发送前报 `config.invalid`。
+fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<FilterSql> {
+    let mut compiled = FilterSql::default();
+    let Some(filter) = filter else {
+        return Ok(compiled);
+    };
+    for condition in &filter.conditions {
+        let column = filter_column(columns, condition)?;
+        let name = quote_identifier(&column.name);
+        match condition.operator {
+            FilterOperator::IsNull => compiled.terms.push(format!("{name} IS NULL")),
+            FilterOperator::IsNotNull => compiled.terms.push(format!("{name} IS NOT NULL")),
+            FilterOperator::Like => {
+                let value = required_value(condition)?;
+                let text = match value {
+                    Value::Text(text) | Value::Json(text) => text,
+                    other => {
+                        return Err(invalid_browse(format!(
+                            "列 {} 的 LIKE 需要文本值，实际是 {}",
+                            column.name,
+                            other.kind_name()
+                        )));
+                    }
+                };
+                compiled.params.push(SqlValue::Text(like_pattern(text)));
+                compiled.terms.push(format!(
+                    "{name} LIKE ?{} ESCAPE '\\'",
+                    compiled.params.len()
+                ));
+            }
+            operator => {
+                let value = required_value(condition)?;
+                if value.is_null() {
+                    return Err(invalid_browse(format!(
+                        "列 {} 的比较值不能为 NULL：判空请用 IS NULL / IS NOT NULL",
+                        column.name
+                    )));
+                }
+                let sql_operator = comparison_sql(operator)
+                    .ok_or_else(|| Error::internal("筛选算子缺少 SQL 映射"))?;
+                let bound = bind_cell(value).map_err(|_| {
+                    invalid_browse(format!(
+                        "列 {} 的筛选值类型 {} 不能用于 SQLite 比较",
+                        column.name,
+                        value.kind_name()
+                    ))
+                })?;
+                compiled.params.push(bound);
+                compiled
+                    .terms
+                    .push(format!("{name} {sql_operator} ?{}", compiled.params.len()));
+            }
+        }
+    }
+    Ok(compiled)
+}
+
+/// 取筛选条件的列元数据（白名单）。
+fn filter_column<'a>(
+    columns: &'a [ColumnMeta],
+    condition: &FilterCondition,
+) -> Result<&'a ColumnMeta> {
+    let requested = condition.column.trim();
+    if requested.is_empty() {
+        return Err(invalid_browse("筛选条件的列名不能为空"));
+    }
+    resolve_column_meta(columns, requested)
+        .ok_or_else(|| invalid_browse(format!("筛选引用了不存在的列 {requested}")))
+}
+
+/// 需要比较值的算子缺值 → `config.invalid`。
+fn required_value(condition: &FilterCondition) -> Result<&Value> {
+    condition.value.as_ref().ok_or_else(|| {
+        invalid_browse(format!(
+            "筛选用算子 {} 时必须给比较值",
+            condition.operator.as_str()
+        ))
+    })
+}
+
+/// 比较算子 → SQL 文本。只有固定映射，不来自请求。
+const fn comparison_sql(operator: FilterOperator) -> Option<&'static str> {
+    match operator {
+        FilterOperator::Eq => Some("="),
+        FilterOperator::Ne => Some("<>"),
+        FilterOperator::Lt => Some("<"),
+        FilterOperator::Le => Some("<="),
+        FilterOperator::Gt => Some(">"),
+        FilterOperator::Ge => Some(">="),
+        FilterOperator::Like | FilterOperator::IsNull | FilterOperator::IsNotNull => None,
+    }
+}
+
+/// 把用户输入转成「文本包含」的 LIKE 参数。
+///
+/// v0.2.3 的筛选是「列包含这段文本」：`%` 与 `_` 是用户数据的一部分，不是通配符，
+/// 因此先按 `\` 转义再包 `%...%`，SQL 侧用 `ESCAPE '\'` 声明转义符。SQLite 的 LIKE
+/// 对 ASCII 默认不区分大小写，这是方言语义，驱动不改写（中文等非 ASCII 按二进制比较）。
+fn like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len().saturating_add(2));
+    escaped.push('%');
+    for character in value.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('%');
+    escaped
+}
+
+/// 一页浏览的 SQL 骨架：只有标识符与 `?n`，值全部在返回的参数列表里。
+struct BrowsePlan<'a> {
+    table: &'a str,
+    columns: &'a [ColumnMeta],
+    sort: &'a [SortTerm],
+    filter: &'a FilterSql,
+    primary_key: &'a PrimaryKey,
+}
+
+impl BrowsePlan<'_> {
+    /// 构造取页 SQL：`WHERE`（筛选 + 游标）→ `ORDER BY` → `LIMIT` → `OFFSET`。
+    ///
+    /// 参数编号按实际追加顺序连续分配；游标值用 `?n` 占位，绝不进 SQL 文本。
+    fn page_sql(
+        &self,
+        cursor: Option<&[Value]>,
+        page_size: usize,
+        offset: u64,
+    ) -> Result<(String, Vec<SqlValue>)> {
+        let select = self
+            .columns
+            .iter()
+            .map(|column| quote_identifier(&column.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut params = self.filter.params.clone();
+        let mut conditions = self.filter.terms.clone();
+
+        if let Some(key) = cursor {
             let placeholders = (1..=key.len())
-                .map(|index| format!("?{index}"))
+                .map(|index| format!("?{}", params.len() + index))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let bound = key
-                .iter()
-                .map(bind_value)
-                .collect::<Result<Vec<SqlValue>>>()?;
-            params.extend(bound);
-            params.push(SqlValue::Integer(page_limit(page_size)));
-            let left = primary_key
+            for value in key {
+                params.push(bind_value(value)?);
+            }
+            let left = self
+                .primary_key
                 .column_names()
                 .iter()
                 .map(|column| quote_identifier(column))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(
-                "SELECT {select} FROM {} WHERE ({left}) > ({placeholders}) ORDER BY {order} LIMIT ?{}",
-                quote_identifier(name),
-                key.len() + 1
-            )
+            conditions.push(format!("({left}) > ({placeholders})"));
         }
-    };
-    Ok((sql, params))
+
+        let mut sql = format!("SELECT {select} FROM {}", quote_identifier(self.table));
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        if let Some(order) = self.order_by() {
+            sql.push_str(" ORDER BY ");
+            sql.push_str(&order);
+        }
+        params.push(SqlValue::Integer(page_limit(page_size)));
+        let _ = write!(sql, " LIMIT ?{}", params.len());
+        if offset > 0 {
+            let offset = i64::try_from(offset)
+                .map_err(|_| invalid_browse("offset 超出 SQLite 可表示范围"))?;
+            params.push(SqlValue::Integer(offset));
+            let _ = write!(sql, " OFFSET ?{}", params.len());
+        }
+        Ok((sql, params))
+    }
+
+    /// `ORDER BY` 子句：请求的排序在前，未出现过的主键列 ASC 作为并列打破。
+    ///
+    /// 无排序、无主键时返回 `None`（按扫描顺序），与 v0.2.2 的无主键预览一致。
+    fn order_by(&self) -> Option<String> {
+        let mut terms = self
+            .sort
+            .iter()
+            .map(|key| {
+                let direction = match key.direction {
+                    SortDirection::Asc => "ASC",
+                    SortDirection::Desc => "DESC",
+                };
+                format!("{} {direction}", quote_identifier(&key.column))
+            })
+            .collect::<Vec<_>>();
+        for name in self.primary_key.column_names() {
+            if self
+                .sort
+                .iter()
+                .any(|key| key.column.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
+            terms.push(format!("{} ASC", quote_identifier(name)));
+        }
+        (!terms.is_empty()).then(|| terms.join(", "))
+    }
+}
+
+/// 独立的精确计数（ADR 0022 §2）。
+///
+/// 与取页共用同一连接、同一份筛选 `WHERE`，但不带游标条件（总数是筛选后的全集，
+/// 不是「本页之后还剩多少」），也不带 `ORDER BY` / `LIMIT` / `OFFSET`。
+///
+/// 拿不到计数（被中断、锁等待超时、驱动层错误）时返回 `(None, Unknown)` 而不是
+/// 编一个数字：契约允许「请求了但给不出」，**不允许**把估计/失败伪称 `EXACT`。
+fn count_total(
+    connection: &Connection,
+    table: &str,
+    filter: &FilterSql,
+    requested: bool,
+) -> (Option<u64>, TotalKind) {
+    if !requested {
+        return (None, TotalKind::Unknown);
+    }
+    let mut sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
+    if !filter.terms.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&filter.terms.join(" AND "));
+    }
+    match connection.query_row(&sql, params_from_iter(filter.params.iter()), |row| {
+        row.get::<_, i64>(0)
+    }) {
+        Ok(count) => match u64::try_from(count) {
+            Ok(count) => (Some(count), TotalKind::Exact),
+            Err(_) => (None, TotalKind::Unknown),
+        },
+        Err(error) => {
+            // 计数是一次独立查询：失败只影响「能否显示总数」，不影响这一页数据，
+            // 因此降级为 UNKNOWN 并记录原因，而不是让整个浏览失败。
+            tracing::warn!(%error, "SQLite 精确计数失败，按 UNKNOWN 降级");
+            (None, TotalKind::Unknown)
+        }
+    }
+}
+
+/// 浏览选项的请求级非法参数（`config.invalid`）。
+///
+/// 与 [`invalid_change`] 同码不同域：这里描述的是「排序/筛选/分页参数不成立」，
+/// 文案面向用户、不含 SQL 片段。
+fn invalid_browse(message: impl Into<String>) -> Error {
+    Error::invalid_argument(ErrorCode::CONFIG_INVALID, message)
 }
 
 /// 连接是否以只读方式打开（`sqlite3_db_readonly`）。
@@ -1754,5 +2076,98 @@ mod tests {
         // 超出 i64 的无符号整数无法被 SQLite 无损表示：显式拒绝，不静默截断。
         assert!(bind_cell(&Value::UInt(u64::MAX)).is_err());
         assert!(bind_cell(&Value::Array(Vec::new())).is_err());
+    }
+
+    /// 浏览 SQL 必须是「白名单列名 + 占位符」：值只能出现在参数里。
+    ///
+    /// 这条用例锁的是**方式**：把任一值改成字符串拼接，SQL 里就会出现 `DROP`/引号，
+    /// 断言立刻失败；列名只来自 `ColumnMeta`，请求里的原文不进入 SQL。
+    #[test]
+    fn browse_page_sql_uses_whitelisted_columns_and_bound_values() {
+        let columns = vec![name("id"), name("v")];
+        let primary_key = PrimaryKey::new(vec![sqarvo_driver_api::PrimaryKeyColumn {
+            name: "id".to_owned(),
+            position: 1,
+        }]);
+        let sort = resolve_browse_sort(
+            &columns,
+            &[SortKey {
+                column: "V".to_owned(),
+                direction: SortDirection::Desc,
+            }],
+        )
+        .unwrap();
+        let filter = compile_filter(
+            &columns,
+            Some(&Filter::new(vec![FilterCondition {
+                column: "v".to_owned(),
+                operator: FilterOperator::Like,
+                value: Some(Value::Text("50%_'; DROP TABLE t; --".to_owned())),
+            }])),
+        )
+        .unwrap();
+        let plan = BrowsePlan {
+            table: "t",
+            columns: &columns,
+            sort: &sort,
+            filter: &filter,
+            primary_key: &primary_key,
+        };
+        let (sql, params) = plan.page_sql(None, 5, 10).unwrap();
+
+        assert_eq!(
+            sql,
+            "SELECT \"id\", \"v\" FROM \"t\" WHERE \"v\" LIKE ?1 ESCAPE '\\' \
+             ORDER BY \"v\" DESC, \"id\" ASC LIMIT ?2 OFFSET ?3",
+            "列名按 schema 规范化并引用，排序方向来自枚举"
+        );
+        assert!(
+            !sql.contains("DROP") && !sql.contains("50%"),
+            "值绝不能进入 SQL 文本：{sql}"
+        );
+        assert_eq!(
+            params,
+            vec![
+                SqlValue::Text("%50\\%\\_'; DROP TABLE t; --%".to_owned()),
+                SqlValue::Integer(6),
+                SqlValue::Integer(10),
+            ],
+            "LIKE 通配符被转义成字面量；LIMIT/OFFSET 也是参数"
+        );
+    }
+
+    /// `%` / `_` / `\` 按字面量：先转义再包 `%...%`。
+    #[test]
+    fn like_pattern_escapes_wildcards() {
+        assert_eq!(like_pattern("abc"), "%abc%");
+        assert_eq!(like_pattern("a_b"), "%a\\_b%");
+        assert_eq!(like_pattern("50%"), "%50\\%%");
+        assert_eq!(like_pattern("a\\b"), "%a\\\\b%");
+    }
+
+    /// 未知列在编译期被拒，错误是 `config.invalid` 而不是数据库语法错。
+    #[test]
+    fn unknown_sort_and_filter_columns_are_rejected_before_sql() {
+        let columns = vec![name("id")];
+        let sort_error = resolve_browse_sort(
+            &columns,
+            &[SortKey {
+                column: "missing".to_owned(),
+                direction: SortDirection::Asc,
+            }],
+        )
+        .expect_err("未知排序列必须被拒绝");
+        assert_eq!(sort_error.code(), ErrorCode::CONFIG_INVALID);
+
+        let filter_error = compile_filter(
+            &columns,
+            Some(&Filter::new(vec![FilterCondition {
+                column: "missing".to_owned(),
+                operator: FilterOperator::Eq,
+                value: Some(Value::Int(1)),
+            }])),
+        )
+        .expect_err("未知筛选列必须被拒绝");
+        assert_eq!(filter_error.code(), ErrorCode::CONFIG_INVALID);
     }
 }
