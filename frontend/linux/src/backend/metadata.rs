@@ -198,18 +198,6 @@ impl NodeView {
     pub fn is_placeholder(&self) -> bool {
         self.kind == ObjectKind::Unspecified
     }
-
-    /// 「读取中…」占位行。
-    #[must_use]
-    pub fn placeholder(text: &str) -> Self {
-        Self {
-            reference: ObjectRef::default(),
-            display_name: text.to_owned(),
-            kind: ObjectKind::Unspecified,
-            has_children: false,
-            comment: String::new(),
-        }
-    }
 }
 
 /// 一页子节点。
@@ -612,6 +600,22 @@ pub fn contains_filter(query: &str) -> Option<NodeFilter> {
     })
 }
 
+/// 种类过滤：`filter.kinds`（集合语义，空列表 = 不过滤）。
+///
+/// 树上的 `Tables` / `Views` 分组是**客户端虚拟层**：契约里的层级只有
+/// Catalog → Table/View/Sequence → Column/Index/Trigger，分组要靠按种类过滤
+/// 逐组拉取（workspace-model §4）。这里只把种类原样交给服务端，不猜也不二次过滤。
+#[must_use]
+pub fn kinds_filter(kinds: &[ObjectKind]) -> Option<NodeFilter> {
+    if kinds.is_empty() {
+        return None;
+    }
+    Some(NodeFilter {
+        name: None,
+        kinds: kinds.iter().map(|kind| *kind as i32).collect(),
+    })
+}
+
 /// 一页 `ListNodesRequest`。
 #[must_use]
 pub fn list_request(
@@ -649,7 +653,7 @@ pub fn search_request(
 /// UI 发给元数据 worker 的请求。
 #[derive(Debug)]
 pub enum MetadataCommand {
-    /// 列出一层子节点。
+    /// 列出一层子节点（可按种类过滤，供树上的 `Tables` / `Views` 分组使用）。
     ListChildren {
         /// 请求 ID（UI 侧路由响应用）。
         id: u64,
@@ -657,6 +661,8 @@ pub enum MetadataCommand {
         parent: Option<ObjectRef>,
         /// 分页 token（空 = 第一页）。
         page_token: String,
+        /// 种类过滤（空 = 不过滤）：原样进 `ListNodesRequest.filter.kinds`。
+        kinds: Vec<ObjectKind>,
     },
     /// 搜索（根层 + 名称包含）。
     Search {
@@ -750,10 +756,22 @@ impl MetadataWorker {
 
     /// 列出一层子节点（非阻塞）。
     pub fn list_children(&self, id: u64, parent: Option<ObjectRef>, page_token: &str) {
+        self.list_group(id, parent, page_token, &[]);
+    }
+
+    /// 按种类列出一层子节点（非阻塞；`kinds` 为空 = 不过滤）。
+    pub fn list_group(
+        &self,
+        id: u64,
+        parent: Option<ObjectRef>,
+        page_token: &str,
+        kinds: &[ObjectKind],
+    ) {
         let _ = self.commands.send(MetadataCommand::ListChildren {
             id,
             parent,
             page_token: page_token.to_owned(),
+            kinds: kinds.to_vec(),
         });
     }
 
@@ -795,12 +813,13 @@ async fn worker_loop(
                 id,
                 parent,
                 page_token,
+                kinds,
             } => {
                 let result = match client_for(&mut client, &endpoint_path).await {
                     Ok(client) => {
                         let parent = parent.unwrap_or_else(|| root_parent(&session_id));
                         client
-                            .list_nodes(&parent, &page_token, None, &session_id)
+                            .list_nodes(&parent, &page_token, kinds_filter(&kinds), &session_id)
                             .await
                     }
                     Err(error) => Err(error),
@@ -929,6 +948,21 @@ impl MetadataHub {
     pub fn request_children(&self, parent: Option<ObjectRef>, page_token: &str, sink: PageSink) {
         let id = self.take_id(Route::Page(sink));
         self.worker.list_children(id, parent, page_token);
+    }
+
+    /// 请求一层**按种类过滤**的子节点（树的 `Tables` / `Views` 分组用）。
+    ///
+    /// 每个分组有自己的分页 token 与请求 ID：两组同时展开时响应不会串页
+    /// （仍按请求 ID 回调，与 [`MetadataHub::request_children`] 同一套路由）。
+    pub fn request_group(
+        &self,
+        parent: ObjectRef,
+        kinds: &[ObjectKind],
+        page_token: &str,
+        sink: PageSink,
+    ) {
+        let id = self.take_id(Route::Page(sink));
+        self.worker.list_group(id, Some(parent), page_token, kinds);
     }
 
     /// 请求搜索（根层 + 名称包含）。
@@ -1104,6 +1138,21 @@ mod tests {
             other => panic!("必须是 contains，实际 {other:?}"),
         }
         assert_eq!(request.page.unwrap().page_token, "next");
+    }
+
+    #[test]
+    fn kinds_filter_maps_group_to_contract_field() {
+        // 分组是客户端虚拟层：唯一的落点是 `filter.kinds`（集合语义）。
+        let filter = kinds_filter(&[ObjectKind::Table]).expect("非空种类必须有过滤");
+        assert_eq!(filter.kinds, vec![ObjectKind::Table as i32]);
+        assert!(filter.name.is_none(), "分组不应带名称过滤");
+
+        let views = kinds_filter(&[ObjectKind::View, ObjectKind::MaterializedView]).unwrap();
+        assert_eq!(views.kinds.len(), 2);
+        assert!(views.kinds.contains(&(ObjectKind::MaterializedView as i32)));
+
+        // 空列表 = 不过滤（不是「过滤掉一切」）。
+        assert!(kinds_filter(&[]).is_none());
     }
 
     #[test]

@@ -24,7 +24,10 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::metadata::{DdlView, MetadataError, MetadataHub, NodeView, kind_label};
-use crate::proto::services::v1::DdlSource;
+use crate::proto::services::v1::{DdlSource, ObjectRef};
+
+/// 按对象的会话找元数据通道（多连接下 DDL 走对象**自己**那条浏览会话）。
+pub type HubResolver = Rc<dyn Fn(&ObjectRef) -> Option<Rc<MetadataHub>>>;
 
 /// DDL 面板的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +131,8 @@ pub struct DdlPanel {
     warning: gtk::Label,
     text_view: gtk::TextView,
     copy: gtk::Button,
-    hub: RefCell<Option<Rc<MetadataHub>>>,
+    /// 按对象自己的会话找元数据通道：两条连接各看各的 DDL（#114）。
+    hub_of: RefCell<Option<HubResolver>>,
     /// 最近一次的结果：复制按钮用它取**纯 DDL**（不带来源标注）。
     last: RefCell<Option<DdlView>>,
     current: RefCell<Option<NodeView>>,
@@ -240,7 +244,7 @@ impl DdlPanel {
             warning,
             text_view,
             copy,
-            hub: RefCell::new(None),
+            hub_of: RefCell::new(None),
             last: RefCell::new(None),
             current: RefCell::new(None),
             state: Cell::new(DdlState::Idle),
@@ -257,9 +261,12 @@ impl DdlPanel {
         &self.root
     }
 
-    /// 接线到元数据 hub。
-    pub fn attach(&self, hub: Rc<MetadataHub>) {
-        self.hub.replace(Some(hub));
+    /// 接线到「按会话找元数据通道」的解析器。
+    ///
+    /// 不直接持有一个 hub：一个窗口里可以有多条连接，每条连接一条浏览会话
+    /// （ADR 0021）；DDL 必须走**对象自己那条**会话。
+    pub fn attach_resolver(&self, resolver: HubResolver) {
+        self.hub_of.replace(Some(resolver));
     }
 
     /// 标记面板可见性（ui.rs 的 revealer 变化时调用）。
@@ -291,8 +298,17 @@ impl DdlPanel {
             kind_label(node.kind),
             node.path_label()
         );
-        let Some(hub) = self.hub.borrow().clone() else {
-            self.set_state(DdlState::Error, "元数据通道尚未建立", "请先重新连接数据库");
+        let hub = self
+            .hub_of
+            .borrow()
+            .as_ref()
+            .and_then(|resolver| resolver(&node.reference));
+        let Some(hub) = hub else {
+            self.set_state(
+                DdlState::Error,
+                "这条连接没有浏览会话",
+                "对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。",
+            );
             return;
         };
         let weak = Rc::downgrade(self);

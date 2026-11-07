@@ -24,6 +24,9 @@ pub const FILE_NAME: &str = "connections.json";
 /// 当前文档版本；字段增删时提升，并为旧版本保留读取路径。
 const DOCUMENT_VERSION: u32 = 1;
 
+/// 文件型驱动（SQLite）的驱动 ID，与后端 `ListDrivers` 的返回值一致。
+pub const SQLITE_DRIVER_ID: &str = "sqlite";
+
 /// 一条保存的连接（不含任何敏感信息）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedConnection {
@@ -59,11 +62,42 @@ impl SavedConnection {
     ///
     /// 只按 `credential_ref` 去重会让所有 SQLite 连接（引用都是空串）互相覆盖，
     /// 导致连接列表永远只剩最后一条。
-    fn identity(&self) -> String {
+    ///
+    /// #114 起这个身份也是连接注册表里的节点键（树上的连接节点与之绑定），
+    /// 所以它是 `pub` 的：注册表要用它把「刚建立的会话」对回「哪一条连接」。
+    #[must_use]
+    pub fn key(&self) -> String {
         if self.credential_ref.is_empty() {
             format!("{}|{}|{}", self.driver, self.host, self.file_path)
         } else {
             self.credential_ref.clone()
+        }
+    }
+
+    /// 文件型驱动（SQLite）的库路径；服务器型驱动为 `None`。
+    #[must_use]
+    pub fn file_target(&self) -> Option<&str> {
+        (self.driver == SQLITE_DRIVER_ID && !self.file_path.is_empty())
+            .then_some(self.file_path.as_str())
+    }
+
+    /// 连接目标的展示文案：服务器型 `user@host:port/db`，文件型是文件路径。
+    ///
+    /// 树上的连接节点用它做 tooltip：两个同名连接靠目标区分，不靠猜。
+    #[must_use]
+    pub fn target_label(&self) -> String {
+        if let Some(path) = self.file_target() {
+            return path.to_owned();
+        }
+        let user = if self.username.is_empty() {
+            String::new()
+        } else {
+            format!("{}@", self.username)
+        };
+        if self.database.is_empty() {
+            format!("{user}{}:{}", self.host, self.port)
+        } else {
+            format!("{user}{}:{}/{}", self.host, self.port, self.database)
         }
     }
 }
@@ -116,10 +150,18 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
     Ok(base.join("sqarvo").join("Sqarvo"))
 }
 
-/// 读取已保存的连接。
+/// 读取已保存的连接（#114 的连接注册表数据源）。
 ///
 /// 文件不存在、损坏或版本不认识时返回空列表并打印一行说明：连接配置是便利功能，
 /// 读失败不能阻止用户新建连接，但也不能假装「读到了」。
+#[must_use]
+pub fn saved_connections() -> Vec<SavedConnection> {
+    let Ok(dir) = config_dir() else {
+        return Vec::new();
+    };
+    load_file(&dir.join(FILE_NAME))
+}
+
 /// 插入或更新一条连接，返回写入的路径。
 ///
 /// 以 `credential_ref` 作为标识：同一个引用视为同一条连接（用户改了主机/库名时更新原条目，
@@ -149,10 +191,10 @@ fn upsert_in(dir: &Path, connection: SavedConnection) -> Result<PathBuf, ConfigE
     ensure_dir(dir)?;
 
     let mut connections = load_file(&path);
-    let key = connection.identity();
+    let key = connection.key();
     match connections
         .iter_mut()
-        .find(|existing| existing.identity() == key)
+        .find(|existing| existing.key() == key)
     {
         Some(existing) => *existing = connection,
         None => connections.push(connection),
