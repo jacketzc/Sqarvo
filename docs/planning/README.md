@@ -50,7 +50,7 @@ Product Owner 决定是否调整规划。避免多个 Agent 各自修改开发�
 每个任务对应一个 GitHub Issue，必须包含：
 
 - 所属模块（`backend/crates/*`、`frontend/*`、`proto/*`、`docs/*`）；
-- 所属里程碑（M0–M7，见 `milestones.md`）；
+- 所属里程碑（M0–M8，见 `milestones.md`）；
 - 优先级（P0/P1/P2，与 `requirements.md` 对齐）；
 - 前置依赖（Issue 编号）；
 - 验收标准（可执行、可观察）；
@@ -60,7 +60,7 @@ Product Owner 决定是否调整规划。避免多个 Agent 各自修改开发�
 Issue 正文写明编号、GitHub 原生 blocked-by 关系、Project「依赖」字段。
 
 当前看板：<https://github.com/users/jacketzc/projects/2>（里程碑 M0–M7 均已建立，
-Issue 通过原生 Milestone 字段挂载）。
+M8 随 v0.2.3 计划调整建立；Issue 通过原生 Milestone 字段挂载）。
 
 | 项 | 类型 | 说明 |
 |---|---|---|
@@ -90,7 +90,7 @@ CI 由 `.github/workflows/tracking.yml` 在每日定时、手动触发、Issue �
 
 ## 里程碑与版本
 
-- 里程碑 M0–M7 是开发阶段的稳定锚点，见 `milestones.md`；
+- 里程碑 M0–M8 是开发阶段的稳定锚点，见 `milestones.md`；
 - 产品版本 v0.1–v0.2.x 是交付目标，见 `release-plan.md`；
 - 单个任务延期不修改里程碑标准；只有范围或技术前提变化才改。
 

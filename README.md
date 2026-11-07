@@ -169,6 +169,7 @@ cargo run
 - [gRPC 约定](docs/api/grpc-conventions.md)
 - [Driver SPI](docs/database/driver-spi.md)
 - [UI 设计原则](docs/ui-specification/design-principles.md)
+- [工作区模型与区域规范](docs/ui-specification/workspace-model.md)
 - [决策记录](docs/decisions/)
 
 ## 任务与进度

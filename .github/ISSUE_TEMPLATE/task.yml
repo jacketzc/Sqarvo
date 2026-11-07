@@ -30,7 +30,8 @@ body:
         - M4 元数据与事务
         - M5 第二网络驱动与一致性
         - M6 前端接入与硬化
-        - M7 导入导出与结构管理
+        - M7 工作区 UI 重构
+        - M8 导入导出与结构管理
     validations:
       required: true
 
