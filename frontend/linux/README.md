@@ -226,8 +226,12 @@ Channel）和同一套命令/事件通道。
 
 界面层的校验（`driver_form::build_draft`）：路径为空拦住、文件不存在给出
 「数据库文件不存在：<路径>」而不是让后端报晦、`:memory:` 不允许只读
-（与后端同一条规则）。会话显示名按驱动派生：`用户@主机/库` 或 `文件名（SQLite）`，
-标题栏与会话行都能看出连的是哪种数据库。
+（与后端同一条规则）。会话显示名按驱动派生：`用户@主机/库`、无默认库时 `用户@主机`，
+或 `文件名（SQLite）`；标题栏与会话行都能看出连的是哪种数据库。
+
+「数据库」在服务器型驱动里是**可选**字段（ADR 0024 §3）：占位文案说明「留空则连接后浏览
+所有库」，留空不会补成 `information_schema` 或任何默认库；连上后树根层直接是库列表，
+从哪个库打开表由节点的 `ObjectRef.catalog` 决定，没有「当前库」这一层。
 
 失败提示按稳定错误码分开：`mariadb.auth_failed`（认证失败：用户名或密码错误）、
 `credential.not_found`（凭据不存在）、`credential.unavailable`（系统凭据库不可用）、
@@ -1087,12 +1091,16 @@ SQARVO_QA_PASSWORD=… ./scripts/v023-acceptance.sh
 → 关一个标签（ListSessions = 3）
 ```
 
-SQLite 与 MariaDB 各跑一遍：
+SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例（#141）：
 
 | 用例 | 连接 | 说明 |
 |---|---|---|
 | `sqlite` | 临时库 `accept.db` | 3 张表 + 1 个视图，1200 行（1100 `keep` / 100 `drop`） |
 | `mariadb` | `sqarvo_test_121` | 同样的表与数据；同一隔离配置里已有 SQLite 连接，树里因此是 **2 条连接**，但只有展开的那条产生浏览会话 |
+| `mariadb-nodb` | 不填库名 | 档案里没有 `database`：树根层直接是库列表；在 `sqarvo_test_140a` / `sqarvo_test_140a_b` 各开一张同名表 `probe_141_items`（1200 行，a-/b- 前缀），断言标签名、ListSessions 计数、总数/排序/翻页/导出与会话名退化 |
+
+两个库必须已存在且账号有 ALL 权限（`SQARVO_CROSS_DB_A` / `SQARVO_CROSS_DB_B` 可覆盖）；
+脚本在各库建/重建 `probe_141_items`。
 
 **配置隔离**：脚本把 `XDG_CONFIG_HOME` 指向 `mktemp -d` 的目录，所有 `connections.json`
 与 `window.json` 都写在里面；结束时断言真实 `~/.config/sqarvo/Sqarvo/connections.json`
@@ -1111,6 +1119,10 @@ SQLite 与 MariaDB 各跑一遍：
 | `05-export.png` | 导出完成提示（第 3 页 100 行、2.4 KiB、CSV 路径） |
 | `page3.csv` | 导出的当前页（101 行） |
 
+`mariadb-nodb` 用例另有 `01-tree-catalogs.png`（连接节点 + 库列表）、`02-b-table.png`
+（B 库表的标签名/状态栏库/第 2 页）、`03-two-catalogs-tabs.png`（两个同名表标签互不影响）、
+`04-connection-unspecified.png`（信息面板「默认库：未指定」）与 `b-page2.csv`。
+
 脚本用到的开关（既有语义一个都没改）：
 
 | 开关 | 作用 | 前置条件 |
@@ -1118,6 +1130,7 @@ SQLite 与 MariaDB 各跑一遍：
 | `--qa-profile <json>` | 把连接档案填进对话框并点「保存并连接」 | 驱动必须是后端 `ListDrivers` 返回的；SQLite 路径必须存在 |
 | `--qa-password-env <ENV>` | 从环境变量读密码（命令行无明文） | 服务器型驱动；变量非空 |
 | `--qa-tabs-file <path>` | 按行执行标签工作区脚本（见下表） | 只在工作区建立后运行 |
+| `SQARVO_QA_APP_ID`（环境变量） | 给验收进程一个独立的 GApplication id，避免把激活转发给用户正在运行的实例（后者会让新进程以 0 退出、日志与截图全空） | 仅启用 QA 参数时生效 |
 | `--window-size 1200x800` | 取证窗口尺寸（产品默认也是 1200×800） | `--screenshot`/验收脚本使用 |
 | `--qa-exit-after-ms <n>` | 定时走正常清理路径关窗（基准脚本） | 不与 `quit` 脚本步骤同用 |
 
@@ -1127,6 +1140,8 @@ SQLite 与 MariaDB 各跑一遍：
 |---|---|---|
 | `expand <名字>` | 展开连接 / catalog / 分组（走树节点展开） | 节点已加载 |
 | `select-node <名字>` | 选中对象节点，信息面板随之切换 | 节点已加载 |
+| `select-connection <名字>` | 选中连接节点（信息面板切到「连接」态） | 连接节点已加载 |
+| `open-node <库> <表>` | 打开**指定库**里的表（与行激活同一条回调；同名表分属两库时用） | 该库已展开到表 |
 | `inspector <ddl\|info\|show\|hide>` | 信息面板换页 / 显隐 | 选中的是表/视图才能换页 |
 | `open-table <表名>` | 打开表标签（与点侧栏条目同一条路径） | 平铺表列表已加载 |
 | `select <n>` / `close <n> <save\|discard\|cancel>` | 切标签 / 关标签（0 是固定 `Objects` 页） | 标签存在 |
@@ -1140,7 +1155,8 @@ SQLite 与 MariaDB 各跑一遍：
 | `mark-list-nodes` / `expect-list-nodes <n>` | 断言自基线以来的 `ListNodes` 次数（= 分组数） | catalog 展开期间 |
 | `expect-sessions <n>` | 重新读 `ListSessions` 并断言会话总数 | 后端有活动会话 |
 | `expect-browse <标签> <字段>=<值>` | 断言页码 / 页数 / 行数 / 总数 / 位置 / 排序 / 筛选数 / 摘要 | 表标签已就绪 |
-| `expect-inspector <字段>=<值>` | 断言面板页 / 子页 / 列数 / 可见性 / 标题 / DDL 状态 | 面板已显示 |
+| `expect-inspector <字段>=<值>` | 断言面板页 / 子页 / 列数 / 可见性 / 标题 / 字段行（`facts`）/ DDL 状态 | 面板已显示 |
+| `expect-tab-title <标签> <子串>` | 断言标签页真实标题（`对象 @ 库`） | 标签存在 |
 | `sessions <说明>` | 写一次 `ListSessions` 日志（前后对比证据） | 有注册表 |
 | `quit` | 收起模态提示后关窗，走 `connect_shutdown` 清理 | 工作区存在 |
 
@@ -1181,7 +1197,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg-sqlite ./target/debug/sqarvo-desktop \
 
 - 后端握手完成后自动打开连接对话框，把档案里的值填进**与用户输入相同的控件**
   （密码从环境变量取，命令行里不出现明文），再触发与「保存并连接」按钮**相同的回调**；
-- `driver: "mariadb"` 需要 `host` / `database` / `username`；
+- `driver: "mariadb"` 需要 `host` / `username`；`database` 可选，省略（或空串）= 无默认库，
+  连接后树根层直接列出所有库，会话名退化为 `用户@主机`；
   `driver: "sqlite"` 需要 `path`（文件必须已存在；`":memory:"` 不接受 `read_only`），
   不需要主机/端口/用户/密码；
 - 档案里的驱动必须是后端 `ListDrivers` 返回的驱动，否则进程以**退出码 4** 结束

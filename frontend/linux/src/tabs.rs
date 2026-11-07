@@ -348,6 +348,9 @@ pub struct TabContext {
 /// 验收脚本里的「按名字做一件事」动作（`Err` = 还没就绪，由调度器重试）。
 pub type QaAction = Rc<dyn Fn(&str) -> Result<String, String>>;
 
+/// 两个参数的验收动作（目前只有「在指定库里打开表」）。
+pub type QaOpenAction = Rc<dyn Fn(&str, &str) -> Result<String, String>>;
+
 /// #121：验收脚本要用到的「树 / 信息面板」动作。
 ///
 /// 全部由 `ui.rs` 用**已经存在的用户路径**接线（`tree.qa_expand` / `tree.qa_select` /
@@ -358,6 +361,13 @@ pub struct QaBridge {
     pub expand: QaAction,
     /// 选中树节点（信息面板随之切换）。
     pub select: QaAction,
+    /// 选中**连接**节点（信息面板切到「连接」态）。
+    pub select_connection: QaAction,
+    /// 在指定库里打开表（`open-node <catalog> <name>`）：两个参数，单列一个字段。
+    ///
+    /// 同名表可以同时存在于两个库，按名字打开会命中错的那个；跨库验收必须
+    /// 用「库 + 表名」定位，走的仍是行激活的那条打开回调。
+    pub open_in: QaOpenAction,
     /// 信息面板：`ddl|info|show|hide`。
     pub inspect: QaAction,
     /// 信息面板快照（断言读真实控件文本）。
@@ -1674,6 +1684,14 @@ impl TabSet {
                 let tab_id = self.open_table(entry)?;
                 Ok(format!("打开表标签 {name}（{tab_id}）"))
             }
+            QaStep::OpenNode { catalog, name } => {
+                let bridge = self
+                    .context
+                    .qa
+                    .as_ref()
+                    .ok_or_else(|| "验收桥未接线".to_owned())?;
+                (bridge.open_in)(catalog, name)
+            }
             QaStep::QueryTab => match self.new_query_tab() {
                 Ok(tab_id) => Ok(format!("新建查询标签（{tab_id}）")),
                 Err(message) => {
@@ -1881,6 +1899,14 @@ impl TabSet {
                     .as_ref()
                     .ok_or_else(|| "验收桥未接线".to_owned())?;
                 (bridge.select)(name)
+            }
+            QaStep::SelectConnection(name) => {
+                let bridge = self
+                    .context
+                    .qa
+                    .as_ref()
+                    .ok_or_else(|| "验收桥未接线".to_owned())?;
+                (bridge.select_connection)(name)
             }
             QaStep::Inspector(mode) => {
                 let bridge = self
@@ -2104,6 +2130,7 @@ impl TabSet {
                     InspectorField::Columns => (observation.columns.to_string(), true),
                     InspectorField::Visible => (observation.visible.to_string(), true),
                     InspectorField::Title => (observation.title.clone(), false),
+                    InspectorField::Facts => (observation.facts.join(" · "), false),
                     InspectorField::DdlState => (observation.ddl_state.clone(), true),
                 };
                 let ok = if equal {
@@ -2149,6 +2176,19 @@ impl TabSet {
                     Ok(format!("标签数={actual}"))
                 } else {
                     Err(format!("标签数期望 {expected}，实际 {actual}"))
+                }
+            }
+            QaStep::ExpectTabTitle { tab, expected } => {
+                let handle = self
+                    .by_index(*tab)
+                    .ok_or_else(|| format!("没有第 {tab} 个标签"))?;
+                let actual = handle.page.title().to_string();
+                if actual.contains(expected.as_str()) {
+                    Ok(format!("断言 OK：第 {tab} 个标签标题={actual}"))
+                } else {
+                    Err(format!(
+                        "第 {tab} 个标签标题期望包含「{expected}」，实际「{actual}」"
+                    ))
                 }
             }
             QaStep::ExpectLimit(needle) => match self.last_limit_message() {
@@ -2200,6 +2240,7 @@ impl QaStep {
                 | Self::ExpectSessions(_)
                 | Self::ExpectBrowse { .. }
                 | Self::ExpectInspector { .. }
+                | Self::ExpectTabTitle { .. }
         )
     }
 }
@@ -2369,6 +2410,8 @@ pub enum QaStep {
     Expand(String),
     /// `select-node <名字>`：选中树节点（信息面板随之切换）。
     SelectNode(String),
+    /// `select-connection <名字>`：选中连接节点（信息面板切到「连接」态）。
+    SelectConnection(String),
     /// `inspector <ddl|info|show|hide>`：信息面板的页 / 显隐。
     Inspector(String),
     /// `sort <标签> <列>[:shift]`：点列头排序。
@@ -2438,6 +2481,20 @@ pub enum QaStep {
         /// 观测字段。
         field: InspectorField,
         /// 期望值。
+        expected: String,
+    },
+    /// `open-node <catalog> <table>`：打开树里属于指定库的表（与行激活同一条回调）。
+    OpenNode {
+        /// 库名（`ObjectRef.catalog`）。
+        catalog: String,
+        /// 表 / 视图名。
+        name: String,
+    },
+    /// `expect-tab-title <标签> <子串>`：断言标签页标题（用户看到的 `对象 @ 库`）。
+    ExpectTabTitle {
+        /// 标签序号。
+        tab: usize,
+        /// 期望出现的子串。
         expected: String,
     },
     /// `quit`：走正常清理路径关窗（脚本跑完的证据收尾）。
@@ -2557,6 +2614,8 @@ pub enum InspectorField {
     Visible,
     /// 标题（按包含比对）。
     Title,
+    /// 字段行（整体按包含比对：`默认库=未指定` 这类断言用）。
+    Facts,
     /// DDL 状态名（逐字相等）。
     DdlState,
 }
@@ -2570,9 +2629,10 @@ impl InspectorField {
             "columns" => Ok(Self::Columns),
             "visible" => Ok(Self::Visible),
             "title" => Ok(Self::Title),
+            "facts" => Ok(Self::Facts),
             "ddl_state" => Ok(Self::DdlState),
             other => Err(format!(
-                "expect-inspector 的字段只接受 page|table_page|columns|visible|title|ddl_state，实际：{other}"
+                "expect-inspector 的字段只接受 page|table_page|columns|visible|title|facts|ddl_state，实际：{other}"
             )),
         }
     }
@@ -2586,6 +2646,7 @@ impl InspectorField {
             Self::Columns => "columns",
             Self::Visible => "visible",
             Self::Title => "title",
+            Self::Facts => "facts",
             Self::DdlState => "ddl_state",
         }
     }
@@ -2699,6 +2760,23 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
             },
             "expand" => QaStep::Expand(rest_of(&parts, 1, number, "节点名")?),
             "select-node" => QaStep::SelectNode(rest_of(&parts, 1, number, "节点名")?),
+            "select-connection" => QaStep::SelectConnection(rest_of(&parts, 1, number, "连接名")?),
+            "open-node" => {
+                let catalog = parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少库名", number + 1))?;
+                let name = parts
+                    .get(2..)
+                    .map(|rest| rest.join(" "))
+                    .unwrap_or_default();
+                if name.trim().is_empty() {
+                    return Err(format!("第 {} 行缺少表名", number + 1));
+                }
+                QaStep::OpenNode {
+                    catalog: (*catalog).to_owned(),
+                    name,
+                }
+            }
             "inspector" => {
                 let mode = parts
                     .get(1)
@@ -2853,6 +2931,17 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     .parse::<usize>()
                     .map_err(|_| format!("第 {} 行的数值不合法", number + 1))?,
             ),
+            "expect-tab-title" => {
+                let tab = parse_index(&parts, 1, number)?;
+                let expected = parts
+                    .get(2..)
+                    .map(|rest| rest.join(" "))
+                    .unwrap_or_default();
+                if expected.trim().is_empty() {
+                    return Err(format!("第 {} 行缺少标题子串", number + 1));
+                }
+                QaStep::ExpectTabTitle { tab, expected }
+            }
             "expect-limit" => QaStep::ExpectLimit(
                 parts
                     .get(1..)
@@ -3076,6 +3165,30 @@ sleep 200
         assert!(parse_script("expect-query 2 rows").is_err(), "缺少 =");
         assert!(parse_script("expect-query 2 bogus=1").is_err(), "未知字段");
         assert!(parse_script("scroll 1").is_err(), "缺少行号");
+    }
+
+    #[test]
+    fn script_parser_accepts_cross_catalog_steps() {
+        // 无默认库的验收脚本：按「库 + 表名」打开，断言标签标题带库。
+        let steps = parse_script("open-node sqarvo_test_140a_b probe_141_items\nexpect-tab-title 2 probe_141_items @ sqarvo_test_140a_b\n").expect("脚本应当可解析");
+        assert_eq!(
+            steps[0],
+            QaStep::OpenNode {
+                catalog: "sqarvo_test_140a_b".to_owned(),
+                name: "probe_141_items".to_owned(),
+            }
+        );
+        assert_eq!(
+            steps[1],
+            QaStep::ExpectTabTitle {
+                tab: 2,
+                expected: "probe_141_items @ sqarvo_test_140a_b".to_owned(),
+            }
+        );
+        assert!(steps[1].is_assertion(), "标签标题断言必须算断言");
+        // 坏输入不能被当成「没写」。
+        assert!(parse_script("open-node only_catalog").is_err());
+        assert!(parse_script("expect-tab-title 2").is_err());
     }
 
     #[test]

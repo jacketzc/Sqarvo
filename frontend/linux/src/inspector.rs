@@ -133,7 +133,14 @@ pub fn connection_facts(saved: &SavedConnection, live: &ConnectionLive) -> Vec<F
     if let Some(endpoint) = endpoint_text(saved) {
         facts.push(Fact::new("地址", endpoint));
     }
-    facts.push(Fact::new("默认库", saved.database.clone()));
+    // 服务器型驱动的库名可选（ADR 0024）：没有默认库时说「未指定」，
+    // 而不是把这一行整行吞掉（用户会以为界面漏了字段）。
+    // 文件型驱动的 database 本来就没有意义，保持「空值不渲染」。
+    if saved.database.trim().is_empty() && saved.file_target().is_none() {
+        facts.push(Fact::new("默认库", "未指定"));
+    } else {
+        facts.push(Fact::new("默认库", saved.database.clone()));
+    }
     facts.push(Fact::new("用户", saved.username.clone()));
     // 文件型驱动没有 TLS 这一层：不适用就该整行不出现，而不是写「disabled」。
     if saved.file_target().is_none() {
@@ -1315,6 +1322,31 @@ mod tests {
         assert_eq!(facts[1].value, "127.0.0.1:53306");
         assert_eq!(facts[7].value, "12 ms");
         assert_eq!(facts[8].value, "3 条");
+    }
+
+    #[test]
+    fn connection_facts_show_unspecified_without_a_default_database() {
+        let mut entry = saved("mariadb");
+        entry.database = String::new();
+        let facts = connection_facts(&entry, &ConnectionLive::default());
+        let database = facts
+            .iter()
+            .find(|fact| fact.label == "默认库")
+            .expect("服务器型连接的库一栏必须存在");
+        assert_eq!(database.value, "未指定");
+        // 地址不因缺库变成 `host:port/`。
+        let endpoint = facts
+            .iter()
+            .find(|fact| fact.label == "地址")
+            .expect("地址");
+        assert_eq!(endpoint.value, "127.0.0.1:53306");
+
+        // SQLite：database 为空是常态，这一行不该以「未指定」出现。
+        let sqlite_facts = connection_facts(&sqlite("/tmp/demo.db"), &ConnectionLive::default());
+        assert!(
+            sqlite_facts.iter().all(|fact| fact.label != "默认库"),
+            "SQLite 不应出现「默认库」行：{sqlite_facts:?}"
+        );
     }
 
     #[test]

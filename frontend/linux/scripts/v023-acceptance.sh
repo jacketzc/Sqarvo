@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Sqarvo v0.2.3 验收链（#121）：一条命令跑完「多连接 → 展开树 → 开 3 个表标签 →
 # 排序 → 筛选 → 翻页 → 信息面板 DDL/表信息 → 导出当前页 CSV → 关标签」。
+# #141 追加一段无默认库用例：不填库名连 MariaDB → 树里两个库 → 各打开一张同名表 →
+# 总数/排序/翻页/导出 → 两个标签互不影响（断言含标签名、ListSessions 计数与会话名）。
 #
 # 形态：本脚本负责建库、隔离配置、按顺序跑 SQLite / MariaDB 两个用例，并把每一步的
 # 断言结果与截图路径打到 stdout。界面步骤全部写在 app 内的 `--qa-tabs-file` 脚本里，
@@ -17,6 +19,8 @@
 #   * 已构建的前端/后端二进制（默认执行 cargo build；`SQARVO_ACCEPTANCE_NO_BUILD=1` 跳过）；
 #   * 可用的图形会话（WAYLAND_DISPLAY 或 DISPLAY）；
 #   * MariaDB 测试库 sqarvo_test_121（可用 `SQARVO_TEST_HOST/PORT/DB/USER` 覆盖）；
+#   * #141 跨库用例需要两个已有库 sqarvo_test_140a / sqarvo_test_140a_b（账号有 ALL 权限；
+#     可用 `SQARVO_CROSS_DB_A/B` 覆盖）：脚本会在其中各建一张同名表 probe_141_items；
 #   * 密码从环境变量 `SQARVO_QA_PASSWORD` 读取（**不写进脚本**）；
 #   * Python 3 且可 `import pymysql`（用于建测试数据；也可 `PYTHON=/path/to/python3` 指定）。
 #
@@ -45,6 +49,14 @@ MYSQL_HOST=${SQARVO_TEST_HOST:-127.0.0.1}
 MYSQL_PORT=${SQARVO_TEST_PORT:-53306}
 MYSQL_DB=${SQARVO_TEST_DB:-sqarvo_test_121}
 MYSQL_USER=${SQARVO_TEST_USER:-sqarvo_test}
+
+# #141 跨库用例：两个**已有**的库（账号对它们有 ALL 权限），各放一张同名表。
+# 库里已有 #140 的 probe_* 表（2–3 行），不够断言总数/翻页，所以这里另建一张
+# 1200 行的同名表；两张表用 a-/b- 前缀区分，导出的 CSV 能证明读的是哪个库。
+CROSS_DB_A=${SQARVO_CROSS_DB_A:-sqarvo_test_140a}
+CROSS_DB_B=${SQARVO_CROSS_DB_B:-sqarvo_test_140a_b}
+CROSS_TABLE=probe_141_items
+CROSS_ROWS=1200
 
 REAL_CONFIG="$HOME/.config/sqarvo/Sqarvo/connections.json"
 PASS_COUNT=0
@@ -280,6 +292,49 @@ fi
 say "测试数据就绪：SQLite $SQLITE_DB；MariaDB $MYSQL_DB.accept_items（$TAB_ROWS 行，其中 keep $TAB_KEEP 行）"
 
 # ---------------------------------------------------------------------------
+# 2b. 跨库用例的测试数据（#141）：两个库各一张 1200 行的同名表
+# ---------------------------------------------------------------------------
+
+"$PYTHON" - "$MYSQL_HOST" "$MYSQL_PORT" "$MYSQL_USER" "$SQARVO_QA_PASSWORD" \
+    "$CROSS_DB_A" "$CROSS_DB_B" "$CROSS_TABLE" "$CROSS_ROWS" <<'PY'
+import sys
+
+import pymysql
+
+host, port, user, password, db_a, db_b, table, rows = sys.argv[1:9]
+rows = int(rows)
+conn = pymysql.connect(
+    host=host,
+    port=int(port),
+    user=user,
+    password=password,
+    charset="utf8mb4",
+    autocommit=True,
+    connect_timeout=10,
+)
+with conn.cursor() as cur:
+    for database, prefix in ((db_a, "a"), (db_b, "b")):
+        cur.execute(f"DROP TABLE IF EXISTS `{database}`.`{table}`")
+        cur.execute(
+            f"CREATE TABLE `{database}`.`{table}`("
+            "id INT PRIMARY KEY, name VARCHAR(64) NOT NULL, "
+            "category VARCHAR(16) NOT NULL, amount INT NOT NULL)"
+        )
+        cur.executemany(
+            f"INSERT INTO `{database}`.`{table}` VALUES (%s,%s,%s,%s)",
+            [
+                (i, f"{prefix}-item-{i:04d}", "keep", i * 3 % 97)
+                for i in range(1, rows + 1)
+            ],
+        )
+conn.close()
+PY
+if [ $? -ne 0 ]; then
+    fail_early "跨库用例建数据失败：需要已存在并已授权的库 $CROSS_DB_A / $CROSS_DB_B（账号 $MYSQL_USER）。用 root 执行：CREATE DATABASE $CROSS_DB_A; GRANT ALL ON $CROSS_DB_A.* TO '$MYSQL_USER'@'%';（$CROSS_DB_B 同理）"
+fi
+say "跨库测试数据就绪：$CROSS_DB_A.$CROSS_TABLE / $CROSS_DB_B.$CROSS_TABLE（各 $CROSS_ROWS 行，前缀 a-/b-）"
+
+# ---------------------------------------------------------------------------
 # 3. 一个用例：跑 app、收集日志、核对关键证据
 # ---------------------------------------------------------------------------
 
@@ -349,6 +404,9 @@ EOF
         "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
         "SQARVO_ENDPOINT_FILE=$run_root/sqarvo/backend-endpoint.json"
         "SQARVO_BACKEND_BIN=$BACKEND"
+        # 用户在用的 Sqarvo 实例占着 `io.sqarvo.Sqarvo`：验收必须用自己的 application-id，
+        # 否则新进程只会把激活转给用户窗口然后以 0 退出（日志空白、截图全缺）。
+        "SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QA141Acceptance"
     )
     local -a extra_args=()
     if [ -n "$password_env" ]; then
@@ -410,6 +468,188 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# 3b. #141 无默认库跨库用例：不填库名连 MariaDB → 树里两个库 → 各开一张同名表
+# ---------------------------------------------------------------------------
+
+# 与 run_case 分开写：既有用例的断言条数是写死的，跨库用例的步骤与断言完全不同；
+# 混进同一个函数只会让两边的口径互相牵制。
+run_cross_catalog_case() {
+    local case_name="mariadb-nodb"
+    local case_out="$OUT/$case_name"
+    local run_root="$TMP/run-$case_name"
+    local log="$case_out/run.log"
+    local tabs="$case_out/tabs.txt"
+    local conn_name="$MYSQL_USER@$MYSQL_HOST"
+    local profile="$TMP/profile-mariadb-nodb.json"
+    mkdir -p "$case_out" "$run_root/sqarvo"
+
+    # 档案里**没有 database 字段**：对话框的库名留空，连接后按库列表浏览。
+    # 也没有 name：会话名交给 default_name 派生（断言退化为 user@host）。
+    cat > "$profile" <<EOF
+{"driver":"mariadb","host":"$MYSQL_HOST","port":$MYSQL_PORT,"username":"$MYSQL_USER","tls_mode":"preferred"}
+EOF
+
+    cat > "$tabs" <<EOF
+# #141 无默认库：树根层直接是库列表，不伪造「当前库」层
+mark-list-nodes
+select-node $CROSS_DB_B
+expect-inspector page=catalog
+expect-inspector title=$CROSS_DB_B
+# 先截图再展开：展开会把目标滚进视口，连接节点会被挤出画面；
+# 这一张要同时看到连接节点和两个库。
+screenshot $case_out/01-tree-catalogs.png
+expand $CROSS_DB_B
+expect-list-nodes 2
+# 打开 B 库的表：标签名 = 对象 @ 库，状态栏显示库
+open-node $CROSS_DB_B $CROSS_TABLE
+expect-tabs 2
+expect-tab-title 1 $CROSS_TABLE @ $CROSS_DB_B
+expect-browse 1 total=$CROSS_ROWS
+expect-browse 1 rows=500
+sort 1 name
+expect-browse 1 sort=name:asc
+page 1 next
+expect-browse 1 page=2
+sessions 打开 B 库的表后
+expect-sessions 2
+screenshot $case_out/02-b-table.png
+# 再打开 A 库的同名表：两个标签互不影响
+select-node $CROSS_DB_A
+expect-inspector page=catalog
+expect-inspector title=$CROSS_DB_A
+expand $CROSS_DB_A
+open-node $CROSS_DB_A $CROSS_TABLE
+expect-tabs 3
+expect-tab-title 2 $CROSS_TABLE @ $CROSS_DB_A
+expect-browse 2 total=$CROSS_ROWS
+expect-browse 2 page=1
+expect-browse 2 rows=500
+expect-browse 2 sort=
+sessions 打开 A 库的表后
+expect-sessions 3
+# 切回 B 标签：它的排序与页码都还在（没有共享任何「当前库」状态）
+select 1
+expect-browse 1 page=2
+expect-browse 1 sort=name:asc
+screenshot $case_out/03-two-catalogs-tabs.png
+# 信息面板「连接」态：没有默认库时库一栏是「未指定」
+select-connection $conn_name
+expect-inspector page=connection
+expect-inspector facts=默认库=未指定
+screenshot $case_out/04-connection-unspecified.png
+# 导出放在截图之后：导出完成的模态框会盖住界面（quit 会收起它）
+export 1 $case_out/b-page2.csv
+expect-file $case_out/b-page2.csv 5000
+quit
+EOF
+
+    say ""
+    say "== 用例 $case_name（驱动 mariadb，无默认库，库 $CROSS_DB_A / $CROSS_DB_B） =="
+    env "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" \
+        "SQARVO_ENDPOINT_FILE=$run_root/sqarvo/backend-endpoint.json" \
+        "SQARVO_BACKEND_BIN=$BACKEND" \
+        "SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QA141Acceptance" \
+        "SQARVO_QA_PASSWORD=$SQARVO_QA_PASSWORD" \
+        timeout 150 "$BIN" \
+        --window-size 1200x800 \
+        --qa-profile "$profile" \
+        --qa-password-env SQARVO_QA_PASSWORD \
+        --qa-tabs-file "$tabs" > "$log" 2>&1
+    local code=$?
+    check_eq "$case_name 进程退出码" 0 "$code"
+
+    local in_app
+    in_app=$(grep -cF '断言 OK：' "$log" 2>/dev/null || true)
+    IN_APP_TOTAL=$((IN_APP_TOTAL + in_app))
+    # 22 = 两个库各 2 条（page/title）+ ListNodes 1 + 两个标签各 2 条（标题/总数）
+    # + 分页/排序/行数/会话数 + 导出文件 + 连接面板 2 条。改动脚本时必须同步这里。
+    check_eq "$case_name 应用内断言条数" 22 "$in_app"
+
+    check_contains "$case_name 档案以「无默认库」填入对话框" '（无默认库）' "$log"
+    check_contains "$case_name 展开一个 catalog 的 ListNodes 次数" \
+        '断言 OK：展开 catalog 的 ListNodes 次数=2' "$log"
+    # 连接层 1 次 + 两个 catalog 各 2 个分组 = 5 次。
+    check_count "$case_name ListNodes 发送次数（连接层 1 + 两组 ×2）" 5 \
+        '（发送 ListNodes）' "$log"
+
+    check_contains "$case_name B 库标签名带库" \
+        "：$CROSS_TABLE @ $CROSS_DB_B" "$log"
+    check_contains "$case_name A 库标签名带库" \
+        "：$CROSS_TABLE @ $CROSS_DB_A" "$log"
+    check_contains "$case_name 标签数（B 库表 + Objects）" '标签数=2' "$log"
+    check_contains "$case_name 标签数（两个库的表 + Objects）" '标签数=3' "$log"
+    check_contains "$case_name ListSessions 打开 B 库后" \
+        'ListSessions（打开 B 库的表后）：后端共 2 条会话' "$log"
+    check_contains "$case_name ListSessions 打开 A 库后" \
+        'ListSessions（打开 A 库的表后）：后端共 3 条会话' "$log"
+    check_contains "$case_name 状态栏跟着标签换库（B）" \
+        "[status] 状态栏显示所属库：$CROSS_DB_B" "$log"
+    check_contains "$case_name 状态栏跟着标签换库（A）" \
+        "[status] 状态栏显示所属库：$CROSS_DB_A" "$log"
+
+    check_contains "$case_name B 库总数" "断言 OK：第 1 个标签 total=" "$log"
+    check_contains "$case_name B 库排序" '断言 OK：第 1 个标签 sort=name:asc' "$log"
+    check_contains "$case_name B 库第 2 页" '断言 OK：第 1 个标签 page=2' "$log"
+    check_contains "$case_name A 库第 1 页" '断言 OK：第 2 个标签 page=1' "$log"
+    check_contains "$case_name 标签标题（B 库）" \
+        "断言 OK：第 1 个标签标题=$CROSS_TABLE @ $CROSS_DB_B" "$log"
+    check_contains "$case_name 标签标题（A 库）" \
+        "断言 OK：第 2 个标签标题=$CROSS_TABLE @ $CROSS_DB_A" "$log"
+    check_contains "$case_name 连接面板库=未指定" '断言 OK：信息面板 facts=' "$log"
+
+    check_file_lines "$case_name 导出 CSV 行数（表头 + 500 行）" 501 "$case_out/b-page2.csv"
+    check_contains "$case_name CSV 表头" 'id,name,category,amount' "$case_out/b-page2.csv"
+    check_contains "$case_name CSV 第 2 页首行来自 B 库" '501,b-item-0501,keep' \
+        "$case_out/b-page2.csv"
+    # 同名表在两个库内容不同：导出的必须只有 B 库前缀。
+    if grep -qF 'a-item-' "$case_out/b-page2.csv"; then
+        bad "$case_name B 库导出混进了 A 库的数据"
+    else
+        ok "$case_name B 库导出只有 B 库数据（无 a-item- 行）"
+    fi
+
+    local png
+    for png in 01-tree-catalogs 02-b-table 03-two-catalogs-tabs 04-connection-unspecified; do
+        local path="$case_out/$png.png"
+        local size=0
+        [ -f "$path" ] && size=$(wc -c < "$path")
+        if [ "$size" -gt 1000 ]; then
+            ok "$case_name 截图 $png（$size 字节）"
+        else
+            bad "$case_name 截图 $png 缺失或过小（$size 字节）：$path"
+        fi
+        say "       截图：$path（$size 字节）"
+    done
+
+    # 会话名退化：无默认库时是 user@host，不是 user@host/。
+    local saved_name
+    saved_name=$("$PYTHON" - "$ISOLATED_CONFIG" "$MYSQL_USER@$MYSQL_HOST" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    entries = json.load(handle)["connections"]
+# SQLite 的 database 也是空串：只看服务器型驱动的条目，否则会拿到 SQLite 那条。
+names = [
+    item["name"]
+    for item in entries
+    if item.get("driver") == "mariadb" and item.get("database", "") == ""
+]
+print(names[0] if len(names) == 1 else "?" + repr(names))
+PY
+)
+    check_eq "$case_name 无默认库会话名退化为 用户@主机" "$conn_name" "$saved_name"
+    if grep -qF '"name": "'"$conn_name"'/"' "$ISOLATED_CONFIG"; then
+        bad "$case_name 隔离配置里出现了残缺会话名 user@host/"
+    else
+        ok "$case_name 隔离配置里没有残缺会话名 user@host/"
+    fi
+    check_eq "$case_name 隔离配置累计 3 条连接（+ 无默认库）" 3 \
+        "$(config_count "$ISOLATED_CONFIG")"
+
+    say "       日志：$log（$(wc -l < "$log") 行）"
+}
+
+# ---------------------------------------------------------------------------
 # 4. SQLite 用例
 # ---------------------------------------------------------------------------
 
@@ -449,6 +689,12 @@ if grep -qiE '"(password|secret|token)"' "$ISOLATED_CONFIG"; then
 else
     ok "隔离配置里没有 password / secret / token 字段"
 fi
+
+# ---------------------------------------------------------------------------
+# 5b. #141 无默认库跨库用例（不填库名连 MariaDB，同一隔离配置 → 第 3 条连接）
+# ---------------------------------------------------------------------------
+
+run_cross_catalog_case
 
 # ---------------------------------------------------------------------------
 # 6. 配置隔离复核：真实连接配置一条都不能多

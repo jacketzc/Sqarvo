@@ -30,7 +30,7 @@
 //! - `--qa-profile <json>`：后端握手完成后自动打开连接对话框，把档案里的值填进
 //!   **与用户输入相同的控件**，再触发与「保存并连接」按钮相同的回调；
 //! - `--qa-profile` 的 `driver` 可以是 `mariadb` 或 `sqlite`：
-//!   - `mariadb`：`host` / `port` / `database` / `username` / `tls_mode`；
+//!   - `mariadb`：`host` / `port` / `database`（**可选**，省略 = 无默认库）/ `username` / `tls_mode`；
 //!   - `sqlite`：`path`（必须已存在，或用 `:memory:`）/ `read_only`（布尔）；
 //! - 档案里的驱动必须是后端 `ListDrivers` 返回的驱动，否则进程以退出码 **4** 结束
 //!   （档案没生效就不算跑过）；
@@ -80,6 +80,13 @@
 //!   catalog 的 `ListNodes` 次数 = 分组数）、`expect-sessions <n>`（`ListSessions`
 //!   返回的会话总数）、`expect-browse <标签> <字段>=<值>`、
 //!   `expect-inspector <字段>=<值>`、`quit`（走正常清理路径关窗）。
+//!
+//! - #141 增补（无默认库跨库验收）：`open-node <库> <表>`（按 `ObjectRef.catalog`
+//!   精确定位，同名表分属两个库时不会开错）、`select-connection <名字>`（信息面板切到
+//!   连接态）、`expect-tab-title <标签> <子串>`（读 AdwTabPage 的真实标题）、
+//!   `expect-inspector facts=<子串>`（断言字段行，如 `默认库=未指定`）。
+//!   验收要和用户正在运行的实例共存时，用环境变量 `SQARVO_QA_APP_ID` 给本次进程一个
+//!   独立的 GApplication id（否则同 id 的新进程只会把激活转给用户窗口并以 0 退出）。
 //!
 //! - #139 增补（截图时刻断言，全部要求 `--screenshot`）：
 //!   `--qa-startup-workspace`（未连接时主区域是 `Objects` 页，且不含「后端版本」
@@ -1968,7 +1975,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
 /// 读取并解析 QA 档案；任何问题都报错退出，避免「档案没生效却以为通过了」。
 ///
 /// 必填字段按驱动族判定（[`crate::driver_form::fields_for`] 是同一张表）：
-/// MariaDB 要主机/库/用户名，SQLite 要一个存在的数据库文件路径。
+/// MariaDB 要主机 / 用户名（库名可选，留空 = 浏览所有库）；SQLite 要一个
+/// 存在的数据库文件路径。
 fn load_profile(path: &str) -> Result<QaProfile, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("无法读取 --qa-profile 文件 {path}：{error}"))?;
@@ -1984,13 +1992,10 @@ fn load_profile(path: &str) -> Result<QaProfile, String> {
     };
     match family {
         crate::backend::connection::DriverFamily::MariaDb => {
-            if profile.host.trim().is_empty()
-                || profile.database.trim().is_empty()
-                || profile.username.trim().is_empty()
-            {
-                return Err(
-                    "--qa-profile 缺少 host / database / username（MariaDB 连接需要）".to_owned(),
-                );
+            // 库名不是必填（ADR 0024 §3）：档案里省略 `database` 就是「无默认库」，
+            // 与连接对话框的校验同一口径。
+            if profile.host.trim().is_empty() || profile.username.trim().is_empty() {
+                return Err("--qa-profile 缺少 host / username（MariaDB 连接需要）".to_owned());
             }
         }
         crate::backend::connection::DriverFamily::Sqlite => {
@@ -2256,6 +2261,21 @@ mod tests {
         std::fs::write(&path, r#"{"host":"127.0.0.1"}"#).expect("写档案");
         let error = load_profile(path.to_str().expect("UTF-8 路径")).unwrap_err();
         assert!(error.contains("缺少"), "{error}");
+    }
+
+    #[test]
+    fn mariadb_profile_without_a_database_is_valid() {
+        // `--qa-profile` 省略 `database` = 无默认库：与连接对话框的可选库名同一口径。
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("profile.json");
+        std::fs::write(
+            &path,
+            r#"{"host":"127.0.0.1","port":53306,"username":"sqarvo_test"}"#,
+        )
+        .expect("写档案");
+        let profile = load_profile(path.to_str().expect("UTF-8 路径")).expect("无默认库档案应有效");
+        assert!(profile.database.is_empty());
+        assert_eq!(profile.port, 53306);
     }
 
     #[test]
