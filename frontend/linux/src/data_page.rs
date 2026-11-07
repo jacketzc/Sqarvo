@@ -519,6 +519,14 @@ impl TableBrowser {
 /// 数据页。
 pub struct DataPage {
     root: gtk::Box,
+    /// 表格工具条第 1 行（表名 · 事务徽标 · 事务动作）。
+    header_row: gtk::Box,
+    /// 表格工具条第 2 行（行变更动作 + 右侧次要动作）。
+    controls_row: gtk::Box,
+    /// 表格工具条下方的状态行（加载状态 / 脏行计数）。
+    status_row: gtk::Box,
+    /// 数据网格的滚动容器（布局自检按视口算，不按全部列的自然宽度）。
+    grid_scroll: gtk::ScrolledWindow,
     banner: adw::Banner,
     table_label: gtk::Label,
     txn_badge: gtk::Label,
@@ -676,9 +684,6 @@ impl DataPage {
         header.append(&readonly_check);
         header.append(&commit_txn);
         header.append(&rollback);
-        header.append(&refresh);
-        header.append(&info_button);
-        header.append(&disconnect);
 
         let commit_changes = gtk::Button::with_label("提交更改");
         commit_changes.add_css_class("suggested-action");
@@ -732,6 +737,13 @@ impl DataPage {
         controls.append(&discard);
         controls.append(&delete_row);
         controls.append(&add_row);
+        // 次要动作放第二行右侧：960 宽下第一行放不下，但功能一个不少。
+        let controls_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        controls_spacer.set_hexpand(true);
+        controls.append(&controls_spacer);
+        controls.append(&refresh);
+        controls.append(&info_button);
+        controls.append(&disconnect);
 
         let errors = gtk::ListBox::new();
         errors.set_selection_mode(gtk::SelectionMode::None);
@@ -908,6 +920,10 @@ impl DataPage {
 
         let page = Rc::new(Self {
             root,
+            header_row: header.clone(),
+            controls_row: controls.clone(),
+            status_row: status_row.clone(),
+            grid_scroll: scroll.clone(),
             banner,
             table_label,
             txn_badge,
@@ -1099,6 +1115,30 @@ impl DataPage {
     /// 根控件。
     pub fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// 表格工具条第 1 行的表名标签（布局自检按「全文」比较它）。
+    pub fn table_header_label(&self) -> &gtk::Label {
+        &self.table_label
+    }
+
+    /// 布局自检目标：表格工具条两行 + 状态行 + 数据网格视口。
+    ///
+    /// 表格按**滚动视口**检查（列的自然宽度允许横向滚动，不算裁切）；
+    /// 视口自身的最小宽度必须小于等于实际分配宽度。
+    pub fn audit_groups(&self) -> Vec<(&'static str, gtk::Widget)> {
+        vec![
+            (
+                "表格工具条 第1行(表名·事务)",
+                self.header_row.clone().upcast(),
+            ),
+            (
+                "表格工具条 第2行(行变更·次要动作)",
+                self.controls_row.clone().upcast(),
+            ),
+            ("表格工具条 状态行", self.status_row.clone().upcast()),
+            ("表格 数据网格视口", self.grid_scroll.clone().upcast()),
+        ]
     }
 
     /// QA 用：风险确认对话框自动确认。
@@ -2398,6 +2438,8 @@ impl DataPage {
             open.table.kind_label(),
             ordering_label(open.ordering)
         ));
+        self.table_label
+            .set_tooltip_text(Some(&self.table_label.text()));
         self.columns.replace(open.columns.clone());
         self.build_columns(&open.columns);
         self.rebuild_column_info(&open.columns);

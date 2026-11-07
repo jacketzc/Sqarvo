@@ -6,7 +6,8 @@
 Loading / Connected / Error / Disconnected 四态之间切换，Connected 时显示
 后端版本、协议版本与传输方式。
 
-**连接对话框已接入**（#27 / #67）：标题栏「新建连接」打开连接对话框，**驱动下拉由
+**连接对话框已接入**（#27 / #67）：主工具条左组「连接」（或「文件 → 新建连接」/ `Ctrl+N`）
+打开连接对话框，**驱动下拉由
 `SystemService.ListDrivers` 填充**（不在前端硬编码清单），切换驱动即切换字段集——
 MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径 + 只读开关。
 密码经 `CredentialService.StoreCredential` 写入系统凭据库，连接配置只保存

@@ -14,6 +14,7 @@ mod ddl;
 mod dialog;
 mod driver_form;
 mod layout;
+mod layout_audit;
 mod proto;
 mod qa;
 mod results;
@@ -114,6 +115,7 @@ fn register_qa_options(app: &adw::Application) {
         "qa-auto-confirm-risk",
         "qa-data-fail-txn",
         "qa-data-replay-cancelled",
+        "qa-layout-audit",
     ] {
         app.add_main_option(
             name,

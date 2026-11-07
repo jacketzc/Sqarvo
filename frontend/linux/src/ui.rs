@@ -51,13 +51,13 @@ struct UiState {
     dialog: RefCell<Option<Rc<ConnectionDialog>>>,
     /// `SystemService.ListDrivers` 的结果（连接对话框下拉的数据源）。
     drivers: RefCell<Vec<crate::backend::client::DriverSummary>>,
-    /// 后端 gRPC 是否已握手成功：未成功时「新建连接」不可点（此时只会得到
+    /// 后端 gRPC 是否已握手成功：未成功时窗口级「新建连接」动作不可用（此时只会得到
     /// `backend.unavailable`，没有意义）。
     backend_ready: Cell<bool>,
+    /// 区域 01：窗口外壳（布局自检要用它核对标题与右组）。
+    header: adw::HeaderBar,
     /// 当前工作区（对象树 + SQL 编辑器 + 数据页 + DDL 面板；连接数据库后建立）。
     workspace: RefCell<Option<Rc<Workspace>>>,
-    /// 标题栏右侧的「新建连接」按钮。
-    new_connection: gtk::Button,
     /// 端点描述文件路径：元数据通道（对象树 / 搜索 / DDL）自己建立 Channel 时要用。
     endpoint_path: std::path::PathBuf,
     /// 后端握手信息（「帮助 → 诊断信息」的数据源；未握手时为 `None`）。
@@ -104,12 +104,8 @@ pub fn activate(app: &adw::Application) {
     let window_title = adw::WindowTitle::new("Sqarvo", "正在连接…");
     header.set_title_widget(Some(&window_title));
 
-    // 连接对话框入口：只有后端可用时可点。
-    let new_connection = gtk::Button::with_label("新建连接");
-    new_connection.add_css_class("suggested-action");
-    new_connection.set_sensitive(false);
-    new_connection.set_tooltip_text(Some("等待本地后端握手完成后可用"));
-
+    // 连接入口只有一个：主工具条左组「连接」（workspace-model §2；headerbar 只留
+    // 标题与主菜单）。连接对话框也能从「文件 → 新建连接」/ Ctrl+N 打开。
     let menu_button = gtk::MenuButton::new();
     menu_button.set_icon_name("open-menu-symbolic");
     menu_button.add_css_class("flat");
@@ -117,7 +113,6 @@ pub fn activate(app: &adw::Application) {
     menu_button.set_menu_model(Some(&build_main_menu()));
 
     header.pack_end(&menu_button);
-    header.pack_end(&new_connection);
 
     let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
     slot.set_vexpand(true);
@@ -163,8 +158,8 @@ pub fn activate(app: &adw::Application) {
         dialog: RefCell::new(None),
         drivers: RefCell::new(Vec::new()),
         backend_ready: Cell::new(false),
+        header: header.clone(),
         workspace: RefCell::new(None),
-        new_connection: new_connection.clone(),
         endpoint_path,
         backend: RefCell::new(None),
         connection_name: RefCell::new(None),
@@ -180,17 +175,11 @@ pub fn activate(app: &adw::Application) {
     app.set_accels_for_action("win.toggle-inspector", &["<primary>i"]);
     app.set_accels_for_action("win.refresh", &["F5"]);
 
-    {
-        let state = Rc::clone(&state);
-        new_connection.connect_clicked(move |_| open_connection_dialog(&state));
-    }
-
     // 重试 / 重新连接：先回到 Loading，再让 worker 重新握手。
     let retry: Rc<dyn Fn()> = {
         let state = Rc::clone(&state);
         Rc::new(move || {
             state.backend_ready.set(false);
-            state.new_connection.set_sensitive(false);
             if let Some(actions) = state.actions.borrow().as_ref() {
                 actions.set_backend_ready(false);
             }
@@ -206,7 +195,6 @@ pub fn activate(app: &adw::Application) {
         let state = Rc::clone(&state);
         Rc::new(move || {
             state.backend_ready.set(false);
-            state.new_connection.set_sensitive(false);
             if let Some(actions) = state.actions.borrow().as_ref() {
                 actions.set_backend_ready(false);
             }
@@ -257,8 +245,6 @@ pub fn activate(app: &adw::Application) {
                     }
                     eprintln!("[bench] t=+{}ms state=Connected", crate::qa::elapsed_ms());
                     events_state.backend_ready.set(true);
-                    events_state.new_connection.set_sensitive(true);
-                    events_state.new_connection.set_tooltip_text(None);
                     if let Some(actions) = events_state.actions.borrow().as_ref() {
                         actions.set_backend_ready(true);
                     }
@@ -296,7 +282,6 @@ pub fn activate(app: &adw::Application) {
                 Event::Error(message) => {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
-                        events_state.new_connection.set_sensitive(false);
                         events_state.title.set_title("Sqarvo");
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
@@ -312,7 +297,6 @@ pub fn activate(app: &adw::Application) {
                 Event::Disconnected(reason) => {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
-                        events_state.new_connection.set_sensitive(false);
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
@@ -550,6 +534,24 @@ pub fn activate(app: &adw::Application) {
                             }
                         }
                     }
+                    // 布局自检：在真实窗口尺寸上核对「最小尺寸 ≤ 分配尺寸」。
+                    // 放在截图之后、关窗之前；超限退出码 5（2/3/4 已分别表示截图/断言/驱动）。
+                    if crate::qa::layout_audit() {
+                        let mut targets: Vec<crate::layout_audit::Target> =
+                            vec![crate::layout_audit::Target::row(
+                                "窗口外壳 headerbar",
+                                capture_state.header.clone().upcast(),
+                            )];
+                        if let Some(workspace) = capture_state.workspace.borrow().as_ref() {
+                            targets.extend(workspace.layout_audit_targets());
+                        } else {
+                            eprintln!("[layout-audit] 尚无工作区：只检查 headerbar");
+                        }
+                        let window = (capture_state.window.width(), capture_state.window.height());
+                        if !crate::layout_audit::report(window, &targets) {
+                            std::process::exit(5);
+                        }
+                    }
                     // 对话框是模态的：先强制关掉它，否则主窗口的关闭会被挡住，
                     // 无人值守运行会一直挂到外部超时（后端也就不会被清理）。
                     if let Some(dialog) = dialog.as_ref() {
@@ -706,7 +708,7 @@ fn show_connected(
     ));
     let mut description = format!(
         "后端版本 {}\n协议版本 {}（{} 构建）\n传输方式 {}\n后端进程 PID {} · 由前端启动：{}\n端点文件 {}\n已注册驱动：{}\n\n\
-         尚未连接数据库：点标题栏右侧「新建连接」开始。",
+         尚未连接数据库：点「文件 → 新建连接」或按 Ctrl+N 开始。",
         snapshot.service_version,
         snapshot.protocol_version,
         snapshot.build_profile,
@@ -1124,22 +1126,17 @@ impl Workspace {
             refresh_button.connect_clicked(move |_| refresh());
         }
 
-        // 视图切换的唯一状态：侧栏页脚按钮与状态栏开关都走这个闭包，
-        // 两处按钮的选中态因此不会各说各话。
-        let status_slot: Rc<RefCell<Option<Rc<StatusBar>>>> = Rc::new(RefCell::new(None));
+        // 视图切换的唯一入口：侧栏页脚按钮（#113 之前的位置）。状态栏不再放第二个开关，
+        // 960×640 下那一份会被窗口右边缘裁掉。
         let view_is_tree = Rc::new(Cell::new(true));
         let set_view: Rc<dyn Fn(bool)> = {
             let stack = sidebar_stack.clone();
             let toggle = view_toggle.clone();
-            let slot = Rc::clone(&status_slot);
             let state_cell = Rc::clone(&view_is_tree);
             Rc::new(move |tree: bool| {
                 stack.set_visible_child_name(if tree { "tree" } else { "flat" });
                 toggle.set_label(if tree { "平铺列表" } else { "对象树" });
                 state_cell.set(tree);
-                if let Some(status) = slot.borrow().as_ref() {
-                    status.apply_view(tree);
-                }
             })
         };
         {
@@ -1198,7 +1195,6 @@ impl Workspace {
                 let data_page = Rc::clone(data_page);
                 Rc::new(move |op| data_page.perform_row_op(op))
             },
-            set_view: Rc::clone(&set_view),
             connect: {
                 let state = Rc::clone(state);
                 Rc::new(move || open_connection_dialog(&state))
@@ -1212,7 +1208,6 @@ impl Workspace {
                 })
             },
         });
-        status_slot.replace(Some(Rc::clone(shell.status())));
         shell.status().set_connection(Some(connection_name));
 
         // 数据页 → 状态栏 / 工具条种类高亮 / 「表」菜单可用性。
@@ -1259,6 +1254,39 @@ impl Workspace {
 
     fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// 布局自检目标：主工具条两组、侧栏（含一行已绑定的树行）、状态栏两行三组、
+    /// 表格工具条三行与数据网格视口。headerbar 由 `ui.rs` 补在最前面。
+    fn layout_audit_targets(&self) -> Vec<crate::layout_audit::Target> {
+        use crate::layout_audit::Target;
+        let mut targets: Vec<Target> = Vec::new();
+        targets.push(Target::row(
+            "主工具条 左组(连接·新建查询)",
+            self.shell.toolbar().left_group().clone().upcast(),
+        ));
+        targets.push(Target::row(
+            "主工具条 右组(种类高亮)",
+            self.shell.toolbar().right_group().clone().upcast(),
+        ));
+        targets.push(Target::row("侧栏", self.shell.sidebar().clone()));
+        for (name, widget) in self.shell.status().audit_groups() {
+            targets.push(Target::row(name, widget));
+        }
+        for (name, widget) in self.data_page.audit_groups() {
+            targets.push(Target::row(name, widget));
+        }
+        // 表名必须**完整**显示（不允许省略号）：这条专门防「按主键升序」被截断。
+        targets.push(Target::full_text(
+            "表格工具条 表名(全文)",
+            self.data_page.table_header_label().clone().upcast(),
+        ));
+        // 树行由 ListItem 工厂构建：按 CSS class 找一行已绑定的行，
+        // 专门盯「名称 + 种类标签」在 237 宽侧栏里是否被切掉半个字。
+        if let Some(row) = crate::layout_audit::find_by_css_class(&self.root, "sqarvo-tree-row") {
+            targets.push(Target::row("侧栏 对象树行(名称+种类标签)", row));
+        }
+        targets
     }
 
     /// 区域 05：状态栏（查询事件与断连都要更新它）。
@@ -2093,7 +2121,7 @@ struct WindowActions {
 }
 
 impl WindowActions {
-    /// 后端握手前「新建连接」不可用（与 headerbar 上的按钮同一口径）。
+    /// 后端握手前「新建连接」不可用（与工具条「连接」同一口径：入口只在握手后出现）。
     fn set_backend_ready(&self, ready: bool) {
         self.new_connection.set_enabled(ready);
         // 标签页（#116）之前保持禁用：动作存在，菜单文案已写明原因。

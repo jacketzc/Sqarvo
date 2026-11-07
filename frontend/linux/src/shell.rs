@@ -17,8 +17,8 @@
 //!    左栏 237      │    标签条（#116）→ 页面栈 → 表格工具条 → 数据网格        │    Revealer
 //!    可拖 180–420  │                                                        │    280（240–520）
 //! ├────────────────┴────────────────────────────────────────────────────────┤
-//! 05 状态栏     Shell::status    高 56：行1 连接过滤 │ 行操作 │ 分页 │ 视图切换
-//!                                行2 SQL 摘要 │ 记录位置 │ 最后刷新 │ 连接·事务·耗时
+//! 05 状态栏     Shell::status    高 56：行1 连接过滤 │ 行操作 │ 分页器
+//!                                行2 SQL 摘要 │ 记录位置 │ 最后刷新 · 连接·事务·耗时
 //! └──────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -36,6 +36,8 @@
 //! - 不自绘窗口控制按钮，不设窗口内菜单行（ADR 0023：Linux 用 headerbar 主菜单）；
 //! - 不实现标签页（#116）：页面栈仍是「SQL / 数据」两页；
 //! - 不实现信息面板内容（#119）：这里是空槽，只有几何与显隐；
+//! - 状态栏不放「对象树 / 平铺」切换：960×640 下右组会被窗口右边缘裁掉（半个「平铺」），
+//!   该动作原本就在侧栏页脚（#113 之前的位置），这里不再重复一份；
 //! - 工具条与菜单里没有实现支撑的按钮/项**禁用并说明原因**，不摆占位动作。
 
 use std::cell::{Cell, RefCell};
@@ -58,9 +60,6 @@ const CONNECTION_FILTER_NOTE: &str = "当前只有一条连接；连接过滤随
 /// 分页器的提示：现在的翻页是「滚动到底部续页」，不是页码跳转。
 const PAGER_NOTE: &str = "页码分页由 #118 提供；当前是滚动到底部自动续页";
 
-/// 视图切换回调（`true` = 对象树，`false` = 平铺列表）。
-pub type ViewHandler = Rc<dyn Fn(bool)>;
-
 /// 外壳需要的回调。
 pub struct ShellHandlers {
     /// 左栏内容（对象树 / 平铺列表 + 页脚）。
@@ -69,8 +68,6 @@ pub struct ShellHandlers {
     pub work_area: gtk::Widget,
     /// 行操作（状态栏按钮组）。
     pub row_op: Rc<dyn Fn(RowOp)>,
-    /// 侧栏视图切换（`true` = 对象树，`false` = 平铺列表）。
-    pub set_view: ViewHandler,
     /// 左组「连接」。
     pub connect: Rc<dyn Fn()>,
     /// 左组「新建查询」。
@@ -99,8 +96,6 @@ impl Shell {
     pub fn new(handlers: ShellHandlers) -> Rc<Self> {
         let toolbar = Toolbar::new(Rc::clone(&handlers.connect), Rc::clone(&handlers.new_query));
         let status = StatusBar::new(Rc::clone(&handlers.row_op));
-        status.set_view_handler(Rc::clone(&handlers.set_view));
-        status.apply_view(true);
 
         // ---- 区域 06：信息面板空槽（只有几何与显隐，#119 填内容） ----------------
         let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -270,6 +265,11 @@ impl Shell {
         &self.toolbar
     }
 
+    /// 区域 03：侧栏（对象树 / 平铺 + 页脚）。
+    pub fn sidebar(&self) -> &gtk::Widget {
+        &self.sidebar
+    }
+
     /// 区域 05：状态栏。
     pub fn status(&self) -> &Rc<StatusBar> {
         &self.status
@@ -339,6 +339,8 @@ impl Shell {
 /// 只承担高亮职责——不摆一个点了没反应的动作。
 pub struct Toolbar {
     root: gtk::Box,
+    left: gtk::Box,
+    right: gtk::Box,
     table: gtk::ToggleButton,
     view: gtk::ToggleButton,
     function: gtk::ToggleButton,
@@ -417,6 +419,8 @@ impl Toolbar {
 
         Rc::new(Self {
             root,
+            left,
+            right,
             table,
             view,
             function,
@@ -426,6 +430,16 @@ impl Toolbar {
 
     fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// 左组（连接 / 新建查询）：布局自检按组比较需求宽度与分配宽度。
+    pub fn left_group(&self) -> &gtk::Box {
+        &self.left
+    }
+
+    /// 右组（种类高亮）：同上。
+    pub fn right_group(&self) -> &gtk::Box {
+        &self.right
     }
 
     /// 高亮「当前种类」：跟随当前打开对象的种类，而不是用户上次点的按钮。
@@ -469,9 +483,12 @@ fn kind_button(label: &str, reason: &str) -> gtk::ToggleButton {
 /// 三段归属（§7）：
 ///
 /// ```text
-/// 行1：[连接过滤] │ [新增 删除 应用 撤销 刷新 取消]        [分页器] [视图切换]
+/// 行1：[连接过滤] │ [新增 删除 应用 撤销 刷新 取消]                 [分页器]
 /// 行2：[SQL 摘要]              [已加载 N 行 · 第 P 页]  [最后刷新] [连接·事务·耗时]
 /// ```
+///
+/// 视图切换（对象树 / 平铺）**不在状态栏**：它在侧栏页脚（#113 之前的位置），
+/// 960×640 下放两处会把右组顶出窗口。这里只保留分页器。
 ///
 /// 读数全部来自数据页 / 查询事件：拿不到的（总数、页码跳转）不出现，不写 `—` 冒充。
 pub struct StatusBar {
@@ -483,15 +500,18 @@ pub struct StatusBar {
     refresh: gtk::Button,
     cancel: gtk::Button,
     pager_summary: gtk::Label,
-    view_tree: gtk::ToggleButton,
-    view_flat: gtk::ToggleButton,
+    row_one: gtk::Box,
+    row_one_left: gtk::Box,
+    row_one_middle: gtk::Box,
+    row_one_right: gtk::Box,
+    row_two: gtk::Box,
+    row_two_left: gtk::Box,
+    row_two_middle: gtk::Box,
+    row_two_right: gtk::Box,
     sql_summary: gtk::Label,
     record: gtk::Label,
     last_refresh: gtk::Label,
     session: gtk::Label,
-    view_handler: RefCell<Option<ViewHandler>>,
-    /// 程序化设置切换按钮时抑制回调（避免「设置 → 回调 → 再设置」的环）。
-    syncing: Cell<bool>,
     connection: RefCell<Option<String>>,
     txn: RefCell<String>,
     timing_ms: Cell<Option<u64>>,
@@ -558,29 +578,29 @@ impl StatusBar {
         pager_box.append(&pager_summary);
         pager_box.set_tooltip_text(Some(PAGER_NOTE));
 
-        // 视图切换：树 / 平铺是已有实现（侧栏页脚同一个动作）；▦/▥ 面板视图
-        // 在 v0.2.3 不实现（§9），因此这里不出现。
-        let view_tree = gtk::ToggleButton::with_label("对象树");
-        view_tree.add_css_class("flat");
-        view_tree.set_valign(gtk::Align::Center);
-        view_tree.set_tooltip_text(Some("侧栏显示对象树"));
-        let view_flat = gtk::ToggleButton::with_label("平铺");
-        view_flat.add_css_class("flat");
-        view_flat.set_valign(gtk::Align::Center);
-        view_flat.set_tooltip_text(Some("侧栏显示 v0.2.1 的平铺表列表"));
-        view_flat.set_group(Some(&view_tree));
+        // 行 1 分三组：连接过滤 │ 行操作 │ 分页器。
+        //
+        // 「对象树 / 平铺」切换**不放这里**：960×640 下它会把右组顶出窗口右边缘
+        // （「平铺」只剩半个字）。该动作在侧栏页脚（#113 之前的位置）已有入口，
+        // 这里不重复；状态栏只保留分页器。
+        let row_one_left = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_one_left.append(&filter);
+
+        let row_one_middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_one_middle.append(&ops_separator);
+        row_one_middle.append(&ops_row);
+
+        let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_one_right.append(&pager_box);
 
         let row_one = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row_one.add_css_class("sqarvo-status-row");
-        row_one.append(&filter);
-        row_one.append(&ops_separator);
-        row_one.append(&ops_row);
+        row_one.append(&row_one_left);
+        row_one.append(&row_one_middle);
         let spacer_one = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer_one.set_hexpand(true);
         row_one.append(&spacer_one);
-        row_one.append(&pager_box);
-        row_one.append(&view_tree);
-        row_one.append(&view_flat);
+        row_one.append(&row_one_right);
 
         // ---- 行 2 ------------------------------------------------------------
         let sql_summary = gtk::Label::new(Some("SQL：尚未执行"));
@@ -611,12 +631,22 @@ impl StatusBar {
         session.add_css_class("dim-label");
         session.set_visible(false);
 
+        let row_two_left = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_two_left.set_hexpand(true);
+        row_two_left.append(&sql_summary);
+
+        let row_two_middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_two_middle.append(&record);
+
+        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row_two_right.append(&last_refresh);
+        row_two_right.append(&session);
+
         let row_two = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row_two.add_css_class("sqarvo-status-row");
-        row_two.append(&sql_summary);
-        row_two.append(&record);
-        row_two.append(&last_refresh);
-        row_two.append(&session);
+        row_two.append(&row_two_left);
+        row_two.append(&row_two_middle);
+        row_two.append(&row_two_right);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("sqarvo-status-bar");
@@ -624,7 +654,7 @@ impl StatusBar {
         root.append(&row_one);
         root.append(&row_two);
 
-        let bar = Rc::new(Self {
+        Rc::new(Self {
             root,
             add,
             delete,
@@ -633,57 +663,60 @@ impl StatusBar {
             refresh,
             cancel,
             pager_summary,
-            view_tree,
-            view_flat,
+            row_one,
+            row_one_left,
+            row_one_middle,
+            row_one_right,
+            row_two,
+            row_two_left,
+            row_two_middle,
+            row_two_right,
             sql_summary,
             record,
             last_refresh,
             session,
-            view_handler: RefCell::new(None),
-            syncing: Cell::new(false),
             connection: RefCell::new(None),
             txn: RefCell::new(String::new()),
             timing_ms: Cell::new(None),
-        });
-
-        for (button, tree) in [
-            (bar.view_tree.clone(), true),
-            (bar.view_flat.clone(), false),
-        ] {
-            let bar_weak = Rc::downgrade(&bar);
-            button.connect_toggled(move |button| {
-                let Some(bar) = bar_weak.upgrade() else {
-                    return;
-                };
-                if bar.syncing.get() || !button.is_active() {
-                    return;
-                }
-                if let Some(handler) = bar.view_handler.borrow().clone() {
-                    handler(tree);
-                }
-            });
-        }
-
-        bar
+        })
     }
 
     fn widget(&self) -> &gtk::Box {
         &self.root
     }
 
-    /// 登记视图切换回调（侧栏栈由工作区持有，外壳不反向依赖它）。
+    /// 布局自检用的两行与三组（行 1：过滤 / 行操作 / 分页器；行 2：SQL 摘要 / 记录 / 右组）。
     ///
-    /// 这里显式丢弃返回值：调用方拿到 `&Self`，不需要链式使用。
-    pub fn set_view_handler(&self, handler: ViewHandler) {
-        *self.view_handler.borrow_mut() = Some(handler);
-    }
-
-    /// 同步视图切换按钮的选中态（不触发回调）。
-    pub fn apply_view(&self, tree: bool) {
-        self.syncing.set(true);
-        self.view_tree.set_active(tree);
-        self.view_flat.set_active(!tree);
-        self.syncing.set(false);
+    /// 返回控件克隆，调用方只在布局稳定后读取几何，不参与显隐与业务逻辑。
+    pub fn audit_groups(&self) -> Vec<(&'static str, gtk::Widget)> {
+        vec![
+            ("状态栏 行1 整行", self.row_one.clone().upcast()),
+            (
+                "状态栏 行1 左组(连接过滤)",
+                self.row_one_left.clone().upcast(),
+            ),
+            (
+                "状态栏 行1 中组(行操作)",
+                self.row_one_middle.clone().upcast(),
+            ),
+            (
+                "状态栏 行1 右组(分页器)",
+                self.row_one_right.clone().upcast(),
+            ),
+            ("状态栏 行2 整行", self.row_two.clone().upcast()),
+            (
+                "状态栏 行2 左组(SQL 摘要)",
+                self.row_two_left.clone().upcast(),
+            ),
+            (
+                "状态栏 行2 中组(记录位置)",
+                self.row_two_middle.clone().upcast(),
+            ),
+            (
+                "状态栏 行2 右组(刷新·会话)",
+                self.row_two_right.clone().upcast(),
+            ),
+        ]
     }
 
     /// 数据页快照：行操作可用性、记录位置、事务徽标。

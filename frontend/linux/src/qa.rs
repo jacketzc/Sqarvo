@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! sqarvo-desktop --screenshot /tmp/ui.png [--screenshot-delay-ms 4000]
-//!                 [--window-size 1200x800]
+//!                 [--window-size 1200x800] [--qa-layout-audit]
 //!                 [--qa-profile /tmp/profile.json] [--qa-password-env SQARVO_QA_PASSWORD]
 //!                 [--qa-sql-file /tmp/q.sql] [--qa-execute]
 //!                 [--qa-scroll-to-row N]... [--qa-cancel-after-ms N]
@@ -21,6 +21,9 @@
 //!
 //! - `--window-size WIDTHxHEIGHT`：取证用的初始窗口尺寸（不低于 960×640）；
 //!   不给就用产品默认 1200×800（workspace-model §1）。
+//! - `--qa-layout-audit`：截图之后在当前窗口尺寸上做「无裁切」量化自检——
+//!   逐区域比较 GTK 最小/自然宽度与实际分配宽度，超限时以退出码 **5** 结束并打印
+//!   超出的 px 数；必须与 `--screenshot` 一起使用（自检发生在截图时刻）。
 //!
 //! - `--screenshot <path>`：延时后把**当前最上层**的界面（连接对话框打开时是对话框，
 //!   否则是主窗口）写成 PNG，然后关闭窗口（走与用户点关闭按钮相同的清理路径）；
@@ -666,6 +669,8 @@ struct Args {
     isolation_level: Option<IsolationChoice>,
     /// `--qa-isolation-confirm`：在卡片里点「开始事务」（真的开事务）。
     isolation_confirm: bool,
+    /// `--qa-layout-audit`：截图后在当前窗口尺寸上做「无裁切」量化自检。
+    layout_audit: bool,
     /// `--window-size <WIDTHxHEIGHT>`：取证用的初始窗口尺寸（产品默认 1200×800）。
     window_size: Option<(i32, i32)>,
 }
@@ -715,6 +720,7 @@ pub fn enabled() -> bool {
             || args.data_cancel_after_ms.is_some()
             || args.isolation_dialog
             || args.isolation_confirm
+            || args.layout_audit
     })
 }
 
@@ -1008,6 +1014,12 @@ pub fn log_sql_preview(sql: &str) {
 #[must_use]
 pub fn window_size() -> Option<(i32, i32)> {
     ARGS.get().and_then(|args| args.window_size)
+}
+
+/// 是否在截图之后做「无裁切」量化布局自检（`--qa-layout-audit`）。
+#[must_use]
+pub fn layout_audit() -> bool {
+    ARGS.get().is_some_and(|args| args.layout_audit)
 }
 
 /// 已登记的截图请求（未启用时为 `None`）。
@@ -1414,6 +1426,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.isolation_confirm = true;
                 index += 1;
             }
+            "--qa-layout-audit" => {
+                parsed.layout_audit = true;
+                index += 1;
+            }
             "--qa-tree-expand" => {
                 let value = args
                     .get(index + 1)
@@ -1508,6 +1524,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
             || !parsed.expect_submit.is_empty())
     {
         return Err("--qa-expect-* 必须与 --screenshot 一起使用（断言发生在截图时刻）".to_owned());
+    }
+    if parsed.layout_audit && parsed.capture.is_none() {
+        return Err(
+            "--qa-layout-audit 必须与 --screenshot 一起使用（自检发生在截图时刻）".to_owned(),
+        );
     }
     Ok(parsed)
 }
@@ -2197,6 +2218,20 @@ mod tests {
             IsolationChoice::parse("default").expect("合法级别").level(),
             crate::proto::services::v1::IsolationLevel::Unspecified
         );
+    }
+
+    #[test]
+    fn layout_audit_flag_is_a_boolean_and_requires_a_screenshot() {
+        assert!(!parse(&args(&["app"])).unwrap().layout_audit);
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-layout-audit",
+        ]))
+        .unwrap();
+        assert!(parsed.layout_audit);
+        assert!(parse(&args(&["app", "--qa-layout-audit"])).is_err());
     }
 
     #[test]
