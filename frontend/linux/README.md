@@ -153,6 +153,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/ddl.rs` | DDL 面板：`GetDdl` 结果的原文/拼装标注、来源说明、等宽可滚动文本、复制按钮与四态文案 |
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
+| `scripts/v023-acceptance.sh` | v0.2.3 验收链（#121）：SQLite + MariaDB 两库跑完整流程，配置隔离、逐项断言、仓库外取证 |
 
 UI 不直接接触 socket、进程或端点文件，只与 `backend::worker` 收发消息；后续的连接
 对话框（#27）与 SQL 执行（#28）应复用 `BackendClient`（`channel()` 返回可克隆的
@@ -1037,6 +1038,93 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   浏览会话不动），数据页不受影响；若断开的是当前数据页绑定的连接，确认框与日志都会写明；
 - 数据页只浏览当前连接的表：树里另一条连接的表被点开时，数据页横幅给出明确说明
   （每标签会话在 #116 提供），不会用错会话去读同名表。
+
+### v0.2.3 验收链（#121）
+
+```bash
+cd frontend/linux
+SQARVO_QA_PASSWORD=… ./scripts/v023-acceptance.sh
+# 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v023-shots）
+#       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
+#       PYTHON=/path/to/python3（需要能 import pymysql）
+```
+
+一条命令跑完 v0.2.3 的完整流程，每一步都断言**控件文本或服务端计数**，失败以非零退出：
+
+```text
+展开 catalog（Tables/Views 两组 → 2 次 ListNodes，按分组数计，不预取全部）
+→ Ctrl+F 的焦点目标（对象树搜索框）→ 选中表（信息面板 DDL）
+→ 开 3 个表标签（ListSessions = 1 条浏览 + 3 条标签）
+→ 排序（name asc）→ 筛选（category = keep，1100 行）
+→ 第 2 / 3 页（500 / 100 行）→ 信息面板切「表信息」（4 列）
+→ 导出当前页 CSV（101 行 = 表头 + 100 行，首行是第 3 页的 1001）
+→ 关一个标签（ListSessions = 3）
+```
+
+SQLite 与 MariaDB 各跑一遍：
+
+| 用例 | 连接 | 说明 |
+|---|---|---|
+| `sqlite` | 临时库 `accept.db` | 3 张表 + 1 个视图，1200 行（1100 `keep` / 100 `drop`） |
+| `mariadb` | `sqarvo_test_121` | 同样的表与数据；同一隔离配置里已有 SQLite 连接，树里因此是 **2 条连接**，但只有展开的那条产生浏览会话 |
+
+**配置隔离**：脚本把 `XDG_CONFIG_HOME` 指向 `mktemp -d` 的目录，所有 `connections.json`
+与 `window.json` 都写在里面；结束时断言真实 `~/.config/sqarvo/Sqarvo/connections.json`
+条目数与开始时一致（本轮基线 13 条，跑完仍是 13 条）。
+
+**证据**：截图（GTK 自渲染）与日志写在仓库外
+`/home/jack/sqarvo-v023-shots/acceptance-<时间戳>/<用例>/`，脚本把每张图的路径与字节数、
+每条断言的真假打到 stdout：
+
+| 文件 | 内容 |
+|---|---|
+| `01-tree.png` | 树展开到 Tables/Views（视图可见）+ 搜索框获得焦点 |
+| `02-tabs.png` | 3 个表标签 + 服务端 4 条会话 |
+| `03-page3.png` | 第 3 页、1100 行、name 升序、category=keep |
+| `04-info.png` | 信息面板「表信息」：4 列、主键、索引/触发器 |
+| `05-export.png` | 导出完成提示（第 3 页 100 行、2.4 KiB、CSV 路径） |
+| `page3.csv` | 导出的当前页（101 行） |
+
+脚本用到的开关（既有语义一个都没改）：
+
+| 开关 | 作用 | 前置条件 |
+|---|---|---|
+| `--qa-profile <json>` | 把连接档案填进对话框并点「保存并连接」 | 驱动必须是后端 `ListDrivers` 返回的；SQLite 路径必须存在 |
+| `--qa-password-env <ENV>` | 从环境变量读密码（命令行无明文） | 服务器型驱动；变量非空 |
+| `--qa-tabs-file <path>` | 按行执行标签工作区脚本（见下表） | 只在工作区建立后运行 |
+| `--window-size 1200x800` | 取证窗口尺寸（产品默认也是 1200×800） | `--screenshot`/验收脚本使用 |
+| `--qa-exit-after-ms <n>` | 定时走正常清理路径关窗（基准脚本） | 不与 `quit` 脚本步骤同用 |
+
+`--qa-tabs-file` 的步骤（#121 增补的步骤不引入新命令行开关）：
+
+| 步骤 | 作用 | 前置条件 |
+|---|---|---|
+| `expand <名字>` | 展开连接 / catalog / 分组（走树节点展开） | 节点已加载 |
+| `select-node <名字>` | 选中对象节点，信息面板随之切换 | 节点已加载 |
+| `inspector <ddl\|info\|show\|hide>` | 信息面板换页 / 显隐 | 选中的是表/视图才能换页 |
+| `open-table <表名>` | 打开表标签（与点侧栏条目同一条路径） | 平铺表列表已加载 |
+| `select <n>` / `close <n> <save\|discard\|cancel>` | 切标签 / 关标签（0 是固定 `Objects` 页） | 标签存在 |
+| `sort <标签> <列>[:shift]` | 点列头排序 | 表标签；驱动声明排序能力 |
+| `filter <标签> <列> <算子> <值>` | 应用一条筛选（`eq/ne/lt/le/gt/ge/like/null/notnull`） | 表标签；驱动声明筛选能力 |
+| `page <标签> <next\|prev\|first\|last>` | 分页器动作 | 表标签；offset 分页 |
+| `export <标签> <路径>` | 导出该标签当前页（确认框自动确认） | 标签有已加载行；父目录存在 |
+| `expect-file <路径> <最少字节>` | 等导出写完后断言字节数 | 同上 |
+| `screenshot <路径>` | GTK 自渲染截图（仓库外取证） | 窗口已渲染 |
+| `focus-search` / `expect-focus search` | 把焦点放到对象树搜索框并断言焦点链 | 树已创建 |
+| `mark-list-nodes` / `expect-list-nodes <n>` | 断言自基线以来的 `ListNodes` 次数（= 分组数） | catalog 展开期间 |
+| `expect-sessions <n>` | 重新读 `ListSessions` 并断言会话总数 | 后端有活动会话 |
+| `expect-browse <标签> <字段>=<值>` | 断言页码 / 页数 / 行数 / 总数 / 位置 / 排序 / 筛选数 / 摘要 | 表标签已就绪 |
+| `expect-inspector <字段>=<值>` | 断言面板页 / 子页 / 列数 / 可见性 / 标题 / DDL 状态 | 面板已显示 |
+| `sessions <说明>` | 写一次 `ListSessions` 日志（前后对比证据） | 有注册表 |
+| `quit` | 收起模态提示后关窗，走 `connect_shutdown` 清理 | 工作区存在 |
+
+`expect-*` 步骤在重试 40 次（约 8 秒）后仍不成立就以退出码 3 结束；退出码 4 表示脚本无法
+解析，2 表示截图失败（与既有 `--qa-*` 同一口径）。
+
+**已知限制（#121 待定）**：workspace-model §10 的 `Ctrl+F` 快捷键在产品里**尚未绑定**。
+验收脚本验证的是它的焦点目标——对象树搜索框能被聚焦、且焦点链确实落在它上面
+（`focus-search` / `expect-focus search`），不伪称按下了 `Ctrl+F`；快捷键本身需要在
+`ui.rs` 注册窗口动作（后续 Issue）。
 
 ### 连接对话框的无人值守验证（`--qa-profile` / `--qa-password-env`）
 
