@@ -574,7 +574,8 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   （1044）仍由「错误映射」表归类为 `mariadb.permission_denied`。`GetDdl` 是例外：
   库不可读（`SHOW CREATE DATABASE` 探测到 1044/1142）与 `SHOW CREATE` 自身被拒绝
   都报 `metadata.permission_denied`——这时「是权限不是不存在」可以说清；
-- 连接没有选择数据库时列出对象返回 `mariadb.no_database`（`FAILED_PRECONDITION`），
+- 连接没有默认库、请求也没给 `catalog` 时，列出对象与表数据都返回 `mariadb.no_database`
+  （`FAILED_PRECONDITION`）；文案提示「请在连接里填写默认库，或从对象树选择具体库的表」，
   不把 `DATABASE() IS NULL` 当成「库里没有表」；
 - 有未读完的结果游标时元数据请求返回 `mariadb.query_active`，避免与游标交错。
 
@@ -863,7 +864,9 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
   函数/存储过程/类型列表（`FUNCTION` / `PROCEDURE` / `TYPE` 父节点同样显式报错）；
   DDL 查看（#83）按 v0.2.2 契约用 `SHOW CREATE TABLE` 原文
   （`exact = true` + `source = DDL_SOURCE_DATABASE`，ADR 0019）；
-- 跨库的表数据浏览/行编辑：元数据可以跨库，`BrowseTable` 仍只作用于当前库；
+- 跨库的表数据**本版已支持**（#140 / ADR 0024）：`BrowseTable` / `ApplyRowChanges` /
+  `InsertRows` 按请求里的 `ObjectRef.catalog` 拼限定名，`catalog` 缺省才回落会话默认库，
+  驱动不执行 `USE`、不缓存「当前库」；
 - 表数据浏览的任意页码跳转与「按主键估算位置」（ADR 0022 §5）：v0.2.3 只有首页 / 上页 /
   下页 / 末页，大 offset 的成本见「表数据浏览」；
 - 表数据浏览计数的**客户端取消**：`BrowseTable` 是一元 RPC，返回前没有取消通道，本版只有

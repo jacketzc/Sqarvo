@@ -28,6 +28,17 @@ cd backend
 cargo test -p sqarvo-driver-mariadb --test integration -- --list
 ```
 
+跨库表数据用例（#140 / ADR 0024）在单独的测试二进制里，需要一个**第二个库**
+`<DSN 里的库>_b`（`sqarvo_test` → `sqarvo_test_b`）并给测试账号全权限。
+`docker-compose.yml` 通过 `mariadb-init/` 的入口脚本自动建库授权；已经初始化过的实例
+需要手工执行 `mariadb-init/01-cross-catalog.sql`：
+
+```bash
+cd backend
+SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
+  cargo test -p sqarvo-driver-mariadb --test cross_catalog -- --nocapture
+```
+
 ## 启动测试数据库
 
 ```bash

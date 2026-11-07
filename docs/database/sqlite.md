@@ -150,9 +150,10 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
   `catalog_names_with_quotes_spaces_and_cjk_are_quoted` 用 `订单 库` + 反引号 + 双引号的库名锁定；
 - 表名/列名走**绑定参数**（`pragma_table_info(?1, ?2)` 的第二个参数就是库名），不拼 SQL；
 - 省略 `catalog` = 当前库（`main`），**不是**「随便挑一个库」；
-- 表数据浏览（`BrowseTable` / 行编辑）仍然只支持 `main`：它的 SQL 还是 `SELECT ... FROM <表>`，
-  没有库名前缀。带别的 `catalog` 会显式返回 `capability.unsupported`，绝不把 `temp` 里的同名表
-  当成 `main` 的表去读写（跨库表数据不在 #82 范围）。
+- 表数据（`BrowseTable` / 行变更 / 插入）按 `catalog` 定位（#140 / ADR 0024）：SQL 一律写成
+  `"<库>"."<表>"`，`main` 与 `temp` 都支持。`temp` 与 `main` 可以有同名表，带库前缀才不会按
+  搜索顺序落到另一张表上。`main` / `temp` 之外的 catalog（包括 `ATTACH` 的库）显式返回
+  `capability.unsupported`，绝不静默按 `main` 处理。
 
 ### 子节点顺序与分页
 
@@ -316,7 +317,8 @@ DDL **不截断**：`GetDdlResponse` 没有 `truncated` 字段，截断后调用
 - 虚拟表（FTS 等）的 shadow 表也会作为普通表出现在列表里，这是 `sqlite_master` 的真实内容；
 - 没有对象级权限概念；文件级权限在打开连接时由 `sqlite.open_failed` / `io.error` 分类
   （因此元数据路径永远不会返回 `metadata.permission_denied`——SQLite 没有这个概念）；
-- 表数据浏览/行编辑只支持当前库（`main`）：跨库浏览可以，跨库读写不在 #82 范围；
+- 表数据（浏览 / 行变更 / 插入）只支持 `main` 与 `temp`：`ATTACH` 进来的库可以浏览元数据，
+  但表数据路径显式返回 `capability.unsupported`（#140 / ADR 0024）；
 - 隐式索引（`sqlite_autoindex_*`）不出现在索引列表里（见上）；
 - 有未读完的结果游标时元数据请求返回 `sqlite.query_active`（`FailedPrecondition`），
   避免在游标持有的语句之外再准备语句；

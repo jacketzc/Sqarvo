@@ -278,8 +278,8 @@ async fn browse(
     page: &PageRequest,
     options: &BrowseOptions,
 ) -> Result<TablePage> {
-    let database = metadata::current_database(conn).await?;
-    let name = metadata::object_parts(object, &database)?;
+    let name = metadata::object_parts(object)?;
+    let database = metadata::table_data_database(conn, object).await?;
     // `find_table` 同时给出服务端规范表名（大小写以 `information_schema` 为准），
     // 并用「不存在」表达权限不可见——与 GetColumns 的错误分类保持一致。
     let Some(table) = metadata::find_table(conn, &database, name).await? else {
@@ -856,8 +856,8 @@ async fn apply(
     if object.kind != ObjectKind::Table {
         return Err(read_only_object());
     }
-    let database = metadata::current_database(conn).await?;
-    let name = metadata::object_parts(object, &database)?;
+    let name = metadata::object_parts(object)?;
+    let database = metadata::table_data_database(conn, object).await?;
     let Some(table) = metadata::find_table(conn, &database, name).await? else {
         return Err(metadata::object_not_found(name));
     };
@@ -1814,8 +1814,8 @@ async fn insert(
     if object.kind != ObjectKind::Table {
         return Err(read_only_object());
     }
-    let database = metadata::current_database(conn).await?;
-    let name = metadata::object_parts(object, &database)?;
+    let name = metadata::object_parts(object)?;
+    let database = metadata::table_data_database(conn, object).await?;
     let Some(table) = metadata::find_table(conn, &database, name).await? else {
         return Err(metadata::object_not_found(name));
     };
