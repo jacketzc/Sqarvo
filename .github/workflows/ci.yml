@@ -166,10 +166,11 @@ jobs:
 
       # 跨库表数据用例（#140 / ADR 0024）需要第二个库 `<DSN 库>_b`：测试账号只有
       # sqarvo_test 的权限，因此由 root 建库并授权（测试专用值，不是真实凭据）。
+      # 用镜像自带的 `mariadb` 客户端：mariadb:11.4 里没有 `mysql` 这个命令名。
       - name: 准备跨库测试库
         run: |
           docker exec "${{ job.services.mariadb.id }}" \
-            mysql -uroot -psqarvo_root_test_only -e "
+            mariadb -uroot -psqarvo_root_test_only -e "
               CREATE DATABASE IF NOT EXISTS sqarvo_test_b;
               GRANT ALL ON sqarvo_test_b.* TO 'sqarvo_test'@'%';
               FLUSH PRIVILEGES;"
