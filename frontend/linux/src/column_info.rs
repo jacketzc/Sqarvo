@@ -64,6 +64,10 @@ impl ColumnDefaultState {
 
     /// 是否是「未求值原文」这一态（界面据此显示附注）。
     #[must_use]
+    #[allow(
+        dead_code,
+        reason = "信息面板改用 default_label 统一出文案；判断保留给后续附注"
+    )]
     pub fn is_expression(&self) -> bool {
         matches!(self, Self::Expression(_))
     }

@@ -546,6 +546,46 @@ impl DdlExpectation {
     }
 }
 
+/// `--qa-expect-inspector <field>=<value>` 的一条断言（#119）。
+///
+/// 字段取值：`page|table_page|title|subtitle|txn_hint|ddl_state|facts_contains|state_contains|columns|visible`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectorExpectation {
+    /// 字段名（原样保留，比对时再分派）。
+    pub field: String,
+    /// 期望值。
+    pub expected: String,
+}
+
+impl InspectorExpectation {
+    fn parse(value: &str) -> Result<Self, String> {
+        let (field, expected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-inspector 需要 字段=值，实际：{value}"))?;
+        if !matches!(
+            field,
+            "page"
+                | "table_page"
+                | "title"
+                | "subtitle"
+                | "txn_hint"
+                | "ddl_state"
+                | "facts_contains"
+                | "state_contains"
+                | "columns"
+                | "visible"
+        ) {
+            return Err(format!(
+                "--qa-expect-inspector 只接受 page|table_page|title|subtitle|txn_hint|ddl_state|facts_contains|state_contains|columns|visible，实际：{field}"
+            ));
+        }
+        Ok(Self {
+            field: field.to_owned(),
+            expected: expected.to_owned(),
+        })
+    }
+}
+
 /// `--qa-isolation-level` 的取值：只想让脚本说人话，映射到 proto 枚举。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsolationChoice {
@@ -663,10 +703,20 @@ struct Args {
     tree_load_more: bool,
     /// `--qa-tree-disconnect <name>`：断开指定连接的浏览会话（#114）。
     tree_disconnect: Option<String>,
+    /// `--qa-tree-select <name>`：只选中某个对象节点（信息面板据此换内容，#119）。
+    tree_select: Option<String>,
+    /// `--qa-tree-select-connection <name>`：选中某条连接节点（#119）。
+    tree_select_connection: Option<String>,
+    /// `--qa-inspector <ddl|info|hidden|shown|toggle>`：信息面板的初始状态（#119）。
+    inspector: Option<String>,
+    /// `--qa-inspector-width <px>`：把面板拖到指定宽度（按连接记忆的证据，#119）。
+    inspector_width: Option<i32>,
     /// `--qa-expect-tree <field>=<value>`：树 / 搜索的断言（可重复）。
     expect_tree: Vec<TreeExpectation>,
     /// `--qa-expect-ddl <field>=<value>`：DDL 面板的断言（可重复）。
     expect_ddl: Vec<DdlExpectation>,
+    /// `--qa-expect-inspector <field>=<value>`：信息面板的断言（可重复，#119）。
+    expect_inspector: Vec<InspectorExpectation>,
     // ---- #88 插入行与隔离级别 ----
     /// `--qa-data-insert`：点「新增行」（与用户点工具栏按钮同一条路径）。
     data_insert: bool,
@@ -1065,6 +1115,38 @@ pub fn tree_disconnect() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_disconnect.clone())
 }
 
+/// 只选中（不打开）的对象名（`--qa-tree-select`，#119）。
+#[must_use]
+pub fn tree_select() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_select.clone())
+}
+
+/// 要选中的连接节点名（`--qa-tree-select-connection`，#119）。
+#[must_use]
+pub fn tree_select_connection() -> Option<String> {
+    ARGS.get()
+        .and_then(|args| args.tree_select_connection.clone())
+}
+
+/// 信息面板的初始状态（`--qa-inspector`，#119）：`ddl|info|hidden|shown|toggle`。
+#[must_use]
+pub fn inspector() -> Option<String> {
+    ARGS.get().and_then(|args| args.inspector.clone())
+}
+
+/// 把面板拖到的宽度（`--qa-inspector-width`，#119）。
+#[must_use]
+pub fn inspector_width() -> Option<i32> {
+    ARGS.get().and_then(|args| args.inspector_width)
+}
+
+/// 信息面板的断言（`--qa-expect-inspector`，按登记顺序）。
+#[must_use]
+pub fn expect_inspector() -> Vec<InspectorExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_inspector.clone())
+}
+
 /// 树 / 搜索的断言（`--qa-expect-tree`，按登记顺序）。
 #[must_use]
 pub fn expect_tree() -> Vec<TreeExpectation> {
@@ -1090,6 +1172,10 @@ pub fn tree_requested() -> bool {
             || args.tree_click_result
             || args.tree_load_more
             || args.tree_disconnect.is_some()
+            || args.tree_select.is_some()
+            || args.tree_select_connection.is_some()
+            || args.inspector.is_some()
+            || args.inspector_width.is_some()
     })
 }
 
@@ -1648,11 +1734,65 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.tree_disconnect = Some(value.clone());
                 index += 2;
             }
+            "--qa-tree-select" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-select 需要一个对象名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-select 的对象名不能为空".to_owned());
+                }
+                parsed.tree_select = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-select-connection" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-select-connection 需要一个连接名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-select-connection 的连接名不能为空".to_owned());
+                }
+                parsed.tree_select_connection = Some(value.clone());
+                index += 2;
+            }
+            "--qa-inspector" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-inspector 需要 ddl|info|hidden|shown".to_owned())?;
+                if !matches!(
+                    value.as_str(),
+                    "ddl" | "info" | "hidden" | "shown" | "toggle"
+                ) {
+                    return Err(format!(
+                        "--qa-inspector 只接受 ddl|info|hidden|shown|toggle，实际：{value}"
+                    ));
+                }
+                parsed.inspector = Some(value.clone());
+                index += 2;
+            }
             "--qa-expect-tree" => {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| "--qa-expect-tree 需要 字段=值".to_owned())?;
                 parsed.expect_tree.push(TreeExpectation::parse(value)?);
+                index += 2;
+            }
+            "--qa-inspector-width" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-inspector-width 需要一个像素宽度".to_owned())?;
+                let width: i32 = value
+                    .parse()
+                    .map_err(|_| format!("--qa-inspector-width 不是合法像素宽度：{value}"))?;
+                parsed.inspector_width = Some(width);
+                index += 2;
+            }
+            "--qa-expect-inspector" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-inspector 需要 字段=值".to_owned())?;
+                parsed
+                    .expect_inspector
+                    .push(InspectorExpectation::parse(value)?);
                 index += 2;
             }
             "--qa-expect-ddl" => {

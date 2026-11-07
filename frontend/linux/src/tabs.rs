@@ -318,6 +318,8 @@ pub type TitleSink = Rc<dyn Fn(&str, &str)>;
 pub struct TabContext {
     /// worker 句柄（命令全部带 `tab_id`）。
     pub worker: Rc<WorkerHandle>,
+    /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
+    pub on_column: Rc<dyn Fn(crate::backend::table::TableColumn)>,
     /// 连接名（窗口标题用）。
     pub connection_name: String,
     /// 驱动显示名（`Objects` 页标题用）。
@@ -403,7 +405,6 @@ impl TabSet {
         root.set_hexpand(true);
         root.append(&strip);
         root.append(&view);
-
         let set = Rc::new(Self {
             root,
             view,
@@ -546,6 +547,69 @@ impl TabSet {
     #[must_use]
     pub fn current_id(&self) -> Option<String> {
         self.current().map(|tab| tab.id.clone())
+    }
+
+    /// 某个对象在某个表标签里**已加载的行数**（#119 信息面板「表信息」）。
+    ///
+    /// 只有该对象真的在标签里打开过才有这个事实；没打开就返回 `None`，
+    /// 面板不显示这一行，也不为了一个数字去发浏览请求。
+    #[must_use]
+    pub fn loaded_rows_for(
+        &self,
+        reference: &crate::proto::services::v1::ObjectRef,
+    ) -> Option<usize> {
+        for tab in self.tabs.borrow().iter() {
+            let Some(data) = tab.data.as_ref() else {
+                continue;
+            };
+            let snapshot = data.status_snapshot();
+            let Some(table) = snapshot.table.as_ref() else {
+                continue;
+            };
+            if table.reference.catalog != reference.catalog
+                || table.reference.schema != reference.schema
+                || table.reference.name != reference.name
+            {
+                continue;
+            }
+            return Some(usize::try_from(snapshot.rows).unwrap_or(usize::MAX));
+        }
+        None
+    }
+
+    /// 同一 catalog 里**其它标签**还有未提交事务的标题（#119 面板顶部提示）。
+    ///
+    /// 事务是会话级的（状态栏只说当前标签）：切到另一个标签时，前一个标签的
+    /// 事务仍然开着，用户必须能在面板上一眼看到这个跨标签事实。
+    #[must_use]
+    pub fn uncommitted_elsewhere(&self, catalog: Option<&str>) -> Vec<String> {
+        let current = self.current_id();
+        let mut titles = Vec::new();
+        for tab in self.tabs.borrow().iter() {
+            if current.as_deref() == Some(tab.id.as_str()) {
+                continue;
+            }
+            let Some(data) = tab.data.as_ref() else {
+                continue;
+            };
+            let snapshot = data.status_snapshot();
+            if !is_transaction_open(&snapshot.txn_label) {
+                continue;
+            }
+            if let Some(catalog) = catalog {
+                let tab_catalog = match &tab.kind {
+                    TabKind::Table { catalog, .. } | TabKind::Query { catalog, .. } => {
+                        catalog.as_str()
+                    }
+                    TabKind::Objects => "",
+                };
+                if !catalog.is_empty() && tab_catalog != catalog {
+                    continue;
+                }
+            }
+            titles.push(tab.kind.title());
+        }
+        titles
     }
 
     /// 按 ID 找标签。
@@ -860,6 +924,7 @@ impl TabSet {
             },
             disconnect: Rc::clone(&self.context.disconnect_backend),
             reconnect: Rc::clone(&self.context.reconnect_backend),
+            on_column: Rc::clone(&self.context.on_column),
         };
         let page = DataPage::new(callbacks);
         // QA 脚本运行时自动确认回滚/风险对话框：脚本无人值守，模态框会挡住后续步骤

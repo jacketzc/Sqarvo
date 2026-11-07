@@ -30,9 +30,10 @@ use crate::proto::services::v1::{DdlSource, ObjectRef};
 pub type HubResolver = Rc<dyn Fn(&ObjectRef) -> Option<Rc<MetadataHub>>>;
 
 /// DDL 面板的状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DdlState {
     /// 还没请求。
+    #[default]
     Idle,
     /// 正在读取。
     Loading,
@@ -62,7 +63,7 @@ impl DdlState {
 }
 
 /// QA 从面板控件上读回的快照（断言读真实控件，不读状态机）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DdlObservation {
     /// 面板是否可见。
     pub visible: bool,
@@ -131,6 +132,10 @@ pub struct DdlPanel {
     warning: gtk::Label,
     text_view: gtk::TextView,
     copy: gtk::Button,
+    close: gtk::Button,
+    /// 是否嵌在信息面板里（#119）：嵌进去后不再显示自己的标题与关闭按钮，
+    /// 也不占一个固定高度——标题由面板头部负责，收起由面板负责。
+    embedded: Cell<bool>,
     /// 按对象自己的会话找元数据通道：两条连接各看各的 DDL（#114）。
     hub_of: RefCell<Option<HubResolver>>,
     /// 最近一次的结果：复制按钮用它取**纯 DDL**（不带来源标注）。
@@ -244,6 +249,8 @@ impl DdlPanel {
             warning,
             text_view,
             copy,
+            close,
+            embedded: Cell::new(false),
             hub_of: RefCell::new(None),
             last: RefCell::new(None),
             current: RefCell::new(None),
@@ -274,14 +281,35 @@ impl DdlPanel {
         self.visible.set(visible);
     }
 
+    /// 嵌进信息面板（#119）：隐藏自己的标题与关闭按钮，去掉固定高度。
+    ///
+    /// DDL 内容、来源徽标与「复制」按钮保持不变——迁入的是**位置**，不是能力。
+    pub fn set_embedded(&self, embedded: bool) {
+        self.embedded.set(embedded);
+        self.object_label.set_visible(!embedded);
+        self.close.set_visible(!embedded);
+        self.root
+            .set_size_request(-1, if embedded { -1 } else { 220 });
+        // 280 宽的面板里不折行等于只能看到每行前 20 个字符：迁入后按词折行，
+        // 仍然可横向滚动（`WrapMode::None` 只在独立面板里保留，那里更宽）。
+        self.text_view.set_wrap_mode(if embedded {
+            gtk::WrapMode::WordChar
+        } else {
+            gtk::WrapMode::None
+        });
+    }
+
     /// 查看某个对象的 DDL（清空上一次内容并进入 Loading）。
     pub fn show_for(self: &Rc<Self>, node: NodeView) {
-        self.object_label.set_text(&format!(
-            "{} · {}",
-            node.display_name,
-            kind_label(node.kind)
-        ));
-        self.object_label.set_tooltip_text(Some(&node.path_label()));
+        if !self.embedded.get() {
+            // 嵌进信息面板后标题由面板头部负责：这里不再写一遍对象名。
+            self.object_label.set_text(&format!(
+                "{} · {}",
+                node.display_name,
+                kind_label(node.kind)
+            ));
+            self.object_label.set_tooltip_text(Some(&node.path_label()));
+        }
         self.badge.set_visible(false);
         self.badge.set_text("");
         self.detail.set_visible(false);

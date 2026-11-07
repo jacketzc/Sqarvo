@@ -2,8 +2,8 @@
 //!
 //! 本模块只负责**区域与槽位**：谁在哪里、多宽多高、怎么显隐。内容仍由各页面
 //! （对象树 [`crate::tree`]、SQL 工作区 [`crate::sql_page`]、数据页 [`crate::data_page`]、
-//! DDL 面板 [`crate::ddl`]）自己负责。#114（多连接）与 #116（标签工作区）已经落在
-//! 这些槽位里，#119（信息面板）继续用最后一个槽位。
+//! 信息面板 [`crate::inspector`]）自己负责。#114（多连接）、#116（标签工作区）与
+//! #119（信息面板）都已落在各自的槽位里。
 //!
 //! # 槽位一览
 //!
@@ -29,13 +29,13 @@
 //! | 03 | `Shell::sidebar_pane` 起始子控件 | #114 已实现：多连接树（仍是左栏） |
 //! | 04 | `Shell::work_pane` 起始子控件 | #116 标签条 + [`crate::tabs::TabSet`] |
 //! | 05 | `Shell::status`（[`StatusBar`]） | #118 分页器接真实页码 |
-//! | 06 | `Shell::inspector_box`（空槽） | #119 填连接 / 库 / 表内容 |
+//! | 06 | `Shell::inspector_box` | #119 已填入连接 / 库 / 表内容（可折叠、宽度按连接记忆） |
 //!
 //! # 不做什么
 //!
 //! - 不自绘窗口控制按钮，不设窗口内菜单行（ADR 0023：Linux 用 headerbar 主菜单）；
 //! - 不自绘标签条：#116 用 `AdwTabView` + `AdwTabBar`，外壳只给它位置；
-//! - 不实现信息面板内容（#119）：这里是空槽，只有几何与显隐；
+//! - 不实现信息面板内容（#119）：外壳只给位置与显隐，内容在 [`crate::inspector`]；
 //! - 状态栏不放「对象树 / 平铺」切换：960×640 下右组会被窗口右边缘裁掉（半个「平铺」），
 //!   该动作原本就在侧栏页脚（#113 之前的位置），这里不再重复一份；
 //! - 工具条与菜单里没有实现支撑的按钮/项**禁用并说明原因**，不摆占位动作。
@@ -52,9 +52,6 @@ use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapsho
 use crate::layout;
 use crate::proto::services::v1::ObjectKind;
 
-/// 信息面板空槽的提示文案：说明它为什么是空的（#119 才有内容）。
-const INSPECTOR_SLOT_NOTE: &str = "内容由 #119 提供：连接 / 库 / 表";
-
 /// 状态栏「连接过滤」的提示：过滤未实现，树已按连接分组。
 const CONNECTION_FILTER_NOTE: &str = "连接过滤未实现；对象树已按连接分组（#114）";
 
@@ -66,8 +63,14 @@ const PAGER_NOTE: &str =
 pub struct ShellHandlers {
     /// 左栏内容（对象树 / 平铺列表 + 页脚）。
     pub sidebar: gtk::Widget,
-    /// 工作区内容（SQL / 数据页栈 + DDL 面板）。
+    /// 工作区内容（SQL / 数据页栈）。
     pub work_area: gtk::Widget,
+    /// 信息面板内容（#119：连接 / 库 / 表三态检查器）。
+    pub inspector: gtk::Widget,
+    /// 信息面板的初始宽度（按当前连接从窗口状态文件读回，已钳制）。
+    pub inspector_width: i32,
+    /// 面板宽度变化（拖拽后）→ 调用方按连接记忆（写独立的窗口状态文件）。
+    pub on_inspector_width: Rc<dyn Fn(i32)>,
     /// 行操作（状态栏按钮组）。
     pub row_op: Rc<dyn Fn(RowOp)>,
     /// 分页器动作（首页 / 上页 / 下页 / 末页）。
@@ -93,6 +96,11 @@ pub struct Shell {
     inspector_width: Rc<Cell<i32>>,
     /// 信息面板是否展开。
     inspector_visible: Rc<Cell<bool>>,
+    /// 正在程序化分栏（展开 / 折叠 / 恢复宽度）：这期间的分栏位置变化不是用户拖拽，
+    /// 不能当成新的宽度记下来。
+    inspector_placing: Rc<Cell<bool>>,
+    /// 用户把面板拖到新宽度 → 按连接记住（写独立的窗口状态文件）。
+    on_inspector_width: Rc<dyn Fn(i32)>,
 }
 
 impl Shell {
@@ -111,20 +119,10 @@ impl Shell {
             });
         }
 
-        // ---- 区域 06：信息面板空槽（只有几何与显隐，#119 填内容） ----------------
-        let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        // ---- 区域 06：信息面板（#119 提供连接 / 库 / 表内容） -----------------
+        let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         inspector_box.add_css_class("sqarvo-inspector");
-        inspector_box.set_size_request(layout::INSPECTOR_WIDTH, -1);
-        let inspector_title = gtk::Label::new(Some("信息面板"));
-        inspector_title.set_xalign(0.0);
-        inspector_title.add_css_class("sqarvo-title");
-        let inspector_note = gtk::Label::new(Some(INSPECTOR_SLOT_NOTE));
-        inspector_note.set_xalign(0.0);
-        inspector_note.set_wrap(true);
-        inspector_note.add_css_class("dim-label");
-        inspector_note.add_css_class("sqarvo-slot-note");
-        inspector_box.append(&inspector_title);
-        inspector_box.append(&inspector_note);
+        inspector_box.append(&handlers.inspector);
 
         let inspector = gtk::Revealer::new();
         inspector.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
@@ -168,14 +166,19 @@ impl Shell {
             });
         }
 
-        let inspector_width = Rc::new(Cell::new(layout::INSPECTOR_WIDTH));
+        let inspector_width = Rc::new(Cell::new(layout::clamp_inspector(handlers.inspector_width)));
         let inspector_visible = Rc::new(Cell::new(false));
+        let inspector_placing = Rc::new(Cell::new(false));
         {
             let guard = Cell::new(false);
             let width_cell = Rc::clone(&inspector_width);
             let visible = Rc::clone(&inspector_visible);
+            let placing = Rc::clone(&inspector_placing);
+            // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（按连接记忆）。
+            let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+            let on_width = Rc::clone(&handlers.on_inspector_width);
             work_pane.connect_notify_local(Some("position"), move |pane, _| {
-                if guard.get() || !visible.get() {
+                if guard.get() || !visible.get() || placing.get() {
                     return;
                 }
                 let pane_width = pane.width();
@@ -183,13 +186,24 @@ impl Shell {
                     return;
                 }
                 let clamped = layout::inspector_width_from_position(pane_width, pane.position());
-                width_cell.set(clamped);
+                if clamped != width_cell.get() {
+                    width_cell.set(clamped);
+                }
                 let position = pane_width - clamped - 1;
                 if position != pane.position() {
                     guard.set(true);
                     pane.set_position(position);
                     guard.set(false);
                 }
+                if let Some(source) = pending.borrow_mut().take() {
+                    source.remove();
+                }
+                let on_width = Rc::clone(&on_width);
+                let width = clamped;
+                *pending.borrow_mut() = Some(glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(400),
+                    move || on_width(width),
+                ));
             });
         }
 
@@ -211,6 +225,8 @@ impl Shell {
             inspector_box,
             inspector_width,
             inspector_visible,
+            inspector_placing,
+            on_inspector_width: Rc::clone(&handlers.on_inspector_width),
         });
         {
             // 首次拿到尺寸时把布局算式的实际结果写进日志：截图之外还有可复核的数字。
@@ -292,31 +308,96 @@ impl Shell {
     /// 折叠 / 展开信息面板，返回新的可见性。
     ///
     /// 折叠时把焦点交回工作区：焦点不能留在不可见控件上（§11）。
+    ///
+    /// **折叠必须把宽度还回去**：只把 revealer 收起而让分栏位置停在原处，表格仍然
+    /// 少 280px（`workspace-model` §2.1 的「折叠 942」，比 652 多 290）。因此折叠时
+    /// 把分隔条推到最右（起始子控件占满），展开时再恢复到记忆的宽度。
     pub fn set_inspector_visible(&self, visible: bool) -> bool {
         if visible == self.inspector_visible.get() {
             return visible;
         }
         self.inspector_visible.set(visible);
+        // 展开 / 折叠都先关掉「宽度采样」：这一拍的位置由下面这次分栏决定，
+        // 不是用户在拖。
+        self.inspector_placing.set(true);
+        if visible {
+            // 先显示内容再滑出：否则动画期间是一块空白。
+            self.inspector_box.set_visible(true);
+        }
         self.inspector.set_reveal_child(visible);
+        if !visible {
+            // 动画结束后把面板内容整个隐藏：`GtkRevealer` 收起时仍会报子控件的最小
+            // 宽度（实测 198px），分栏会把这 198px 继续留给面板——折叠就不算「不占宽」。
+            let box_ = self.inspector_box.clone();
+            let pane = self.work_pane.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(260), move || {
+                box_.set_visible(false);
+                // 最小宽度变成 0 之后再分一次栏：否则位置还停在「面板 min = 198」那次
+                // 钳制的结果上，表格仍然少 198px。
+                let pane_width = pane.width();
+                if pane_width > 0 {
+                    pane.set_position(pane_width);
+                }
+            });
+        }
         eprintln!(
             "[shell] 信息面板：{}（宽 {}）",
             if visible { "展开" } else { "折叠" },
             self.inspector_width.get()
         );
-        if visible {
-            let width = layout::clamp_inspector(self.inspector_width.get());
+        let width = layout::clamp_inspector(self.inspector_width.get());
+        let pane = self.work_pane.clone();
+        let place = Rc::new(move || {
+            let pane_width = pane.width();
+            if pane_width <= 0 {
+                return;
+            }
+            let position = if visible {
+                pane_width - width - 1
+            } else {
+                // 全部给工作区：面板不占宽（间隙一并收回）。
+                pane_width
+            };
+            pane.set_position(position);
+        });
+        // 已分配尺寸时立即分栏；首次展开（宽度还是 0）时等一次布局再做。
+        place();
+        let later = Rc::clone(&place);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(0), move || later());
+        {
+            let placing = Rc::clone(&self.inspector_placing);
             let pane = self.work_pane.clone();
-            // 已分配尺寸时立即分栏；首次展开（宽度还是 0）时等一次布局再做。
-            let place = Rc::new(move || {
+            let remembered = self.inspector_width.get();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+                placing.set(false);
+                // 折叠 / 展开之后表格实际拿到多少宽：截图之外还有可复核的数字。
                 let pane_width = pane.width();
-                if pane_width > 0 {
-                    pane.set_position(pane_width - width - 1);
-                }
+                let allocated = if visible && pane_width > 0 {
+                    (pane_width - pane.position() - 1).max(0)
+                } else {
+                    0
+                };
+                // 起始子控件的**分配**宽度才是表格真正拿到的宽度（分栏位置只是请求值：
+                // 折叠时 GTK 还会按面板的最小宽度再钳一次）。折叠 / 展开相差 280。
+                let work_width = pane.start_child().map_or(0, |child| child.width());
+                let (min_start, _, _, _) = pane.start_child().map_or((0, 0, 0, 0), |child| {
+                    child.measure(gtk::Orientation::Horizontal, -1)
+                });
+                eprintln!(
+                    "[shell] 面板{}：工作区宽 {pane_width}，表格区实宽 {work_width}，面板占 {allocated}（记忆宽 {remembered}；起始 min {min_start}）",
+                    if visible { "展开" } else { "折叠" },
+                );
+                // 再取一次：revealer 的滑动动画约 200ms，动画结束后才是最终宽度。
+                let pane = pane.clone();
+                let label = if visible { "展开" } else { "折叠" };
+                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                    let work_width = pane.start_child().map_or(0, |child| child.width());
+                    eprintln!("[shell] 面板{label}（动画后）：表格区实宽 {work_width}");
+                });
             });
-            place();
-            let later = Rc::clone(&place);
-            glib::timeout_add_local_once(std::time::Duration::from_millis(0), move || later());
-        } else if let Some(focus) = self.root.root().and_then(|root| root.focus())
+        }
+        if !visible
+            && let Some(focus) = self.root.root().and_then(|root| root.focus())
             && focus.is_ancestor(&self.inspector_box)
         {
             self.work_area.grab_focus();
@@ -328,6 +409,38 @@ impl Shell {
     pub fn toggle_inspector(&self) -> bool {
         let next = !self.inspector_visible.get();
         self.set_inspector_visible(next)
+    }
+
+    /// 信息面板当前是否展开（布局自检与 QA 用）。
+    pub fn inspector_visible(&self) -> bool {
+        self.inspector_visible.get()
+    }
+
+    /// 信息面板当前记忆的宽度（折叠时仍然保留，展开时用它）。
+    pub fn inspector_width(&self) -> i32 {
+        self.inspector_width.get()
+    }
+
+    /// 把面板设到指定宽度（拖拽结束后的落点；`--qa-inspector-width` 也走这里）。
+    ///
+    /// 钳制到 240–520，展开状态下立刻重新分栏，并按连接记下来。
+    pub fn set_inspector_width(&self, width: i32) {
+        let width = layout::clamp_inspector(width);
+        if width == self.inspector_width.get() {
+            return;
+        }
+        self.inspector_width.set(width);
+        self.inspector_placing.set(true);
+        let pane = self.work_pane.clone();
+        if pane.width() > 0 {
+            pane.set_position(pane.width() - width - 1);
+        }
+        let placing = Rc::clone(&self.inspector_placing);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+            placing.set(false);
+        });
+        (self.on_inspector_width)(width);
+        eprintln!("[shell] 信息面板宽度改为 {width}（已按连接记忆）");
     }
 
     /// 显隐对象树侧栏，返回新的可见性。

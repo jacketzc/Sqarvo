@@ -46,8 +46,8 @@ use crate::proto::services::v1::table_data_service_client::TableDataServiceClien
 use crate::proto::services::v1::transaction_service_client::TransactionServiceClient;
 use crate::proto::services::v1::{
     ApplyRowChangesRequest, BeginTransactionRequest, BrowseTableRequest, CancelRowChangesRequest,
-    GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, NodeFilter, ObjectKind, ObjectRef,
-    RowDelete, RowUpdate, TransactionRef,
+    GetColumnsRequest, GetDdlRequest, GetPrimaryKeyRequest, ListNodesRequest, NodeFilter,
+    ObjectKind, ObjectRef, PrimaryKeyColumn, RowDelete, RowUpdate, TransactionRef,
 };
 use crate::proto::services::v1::{CancelQueryRequest, CloseQueryRequest};
 use crate::proto::services::v1::{ExecuteQueryRequest, FetchBatchRequest};
@@ -603,6 +603,48 @@ impl BackendClient {
             .map_err(|status| metadata_failure_from_status(&status))?
             .into_inner();
         Ok(DdlView::from_proto(&response))
+    }
+
+    /// 读取对象的列（`GetColumns`；#119 信息面板「表信息」页）。
+    ///
+    /// 与浏览表数据时顺带拿到的 `columns` 是同一条 RPC 的结果：列的类型、可空、
+    /// 默认值四态、字符集与排序规则都原样保留，不在界面层补默认值。
+    pub async fn get_columns(&self, object: &ObjectRef) -> Result<Vec<TableColumn>, MetadataError> {
+        let mut client = self.metadata_service().map_err(metadata_local_failure)?;
+        let request = GetColumnsRequest {
+            object: Some(object.clone()),
+        };
+        let response = tokio::time::timeout(METADATA_RPC_TIMEOUT, client.get_columns(request))
+            .await
+            .map_err(|_| metadata_timeout("读取列信息"))?
+            .map_err(|status| metadata_failure_from_status(&status))?
+            .into_inner();
+        Ok(response
+            .columns
+            .iter()
+            .map(TableColumn::from_meta)
+            .collect())
+    }
+
+    /// 读取主键（`GetPrimaryKey`，元数据错误分类版；#119 信息面板用）。
+    ///
+    /// 与 [`Self::get_primary_key`] 是同一条 RPC，只是错误类型换成元数据的那一套：
+    /// 信息面板需要 `metadata.object_not_found` / `capability.unsupported` 这类稳定
+    /// 错误码，而不是表格编辑路径的 `TableFailure`。
+    pub async fn get_primary_key_metadata(
+        &self,
+        object: &ObjectRef,
+    ) -> Result<Vec<PrimaryKeyColumn>, MetadataError> {
+        let mut client = self.metadata_service().map_err(metadata_local_failure)?;
+        let request = GetPrimaryKeyRequest {
+            object: Some(object.clone()),
+        };
+        let response = tokio::time::timeout(METADATA_RPC_TIMEOUT, client.get_primary_key(request))
+            .await
+            .map_err(|_| metadata_timeout("读取主键"))?
+            .map_err(|status| metadata_failure_from_status(&status))?
+            .into_inner();
+        Ok(response.columns)
     }
 
     /// 读取主键列（按主键顺序；空列表表示无主键）。

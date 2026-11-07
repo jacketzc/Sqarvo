@@ -471,6 +471,11 @@ pub struct ConnectionRegistry {
     next_request: Cell<u64>,
     /// 未完成的请求（日志与断言用；也防止响应找不到主人）。
     pending: RefCell<HashMap<u64, &'static str>>,
+    /// 最近一次 `ListSessions` 的结果（#119 信息面板的「会话数」）。
+    ///
+    /// `None` = 还没读过。存的是 `(会话 ID, 展示名)`；展示名就是建立会话时的
+    /// 连接名，面板据此把会话数归到某一条连接上。
+    sessions: RefCell<Option<Vec<(String, String)>>>,
 }
 
 impl ConnectionRegistry {
@@ -486,6 +491,7 @@ impl ConnectionRegistry {
             listeners: RefCell::new(Vec::new()),
             next_request: Cell::new(1),
             pending: RefCell::new(HashMap::new()),
+            sessions: RefCell::new(None),
         });
         registry.refresh_from_config();
         Ok((registry, events))
@@ -574,6 +580,35 @@ impl ConnectionRegistry {
     #[must_use]
     pub fn snapshot(&self, key: &str) -> Option<ConnectionSnapshot> {
         self.snapshots().into_iter().find(|row| row.key == key)
+    }
+
+    /// 某一条连接的保存配置（信息面板的连接页；**不含密码**）。
+    ///
+    /// 面板要展示地址、默认库、用户、TLS 与凭据引用，这些只在 `SavedConnection`
+    /// 里；快照是给树渲染用的，故意不带齐这些字段。
+    #[must_use]
+    pub fn saved(&self, key: &str) -> Option<SavedConnection> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.saved.clone())
+    }
+
+    /// 最近一次 `ListSessions` 里属于某条连接的会话数（#119）。
+    ///
+    /// 展示名就是建立会话时用的连接名：会话数只数**名字完全一致**的那些。
+    /// 还没读过 `ListSessions` 时返回 `None`（面板不显示这一行）。
+    #[must_use]
+    pub fn session_count_for(&self, name: &str) -> Option<usize> {
+        let sessions = self.sessions.borrow();
+        let sessions = sessions.as_ref()?;
+        Some(
+            sessions
+                .iter()
+                .filter(|(_, display_name)| display_name == name)
+                .count(),
+        )
     }
 
     /// 已连接的会话数（日志与断言用）。
@@ -924,6 +959,9 @@ impl ConnectionRegistry {
                 self.pending.borrow_mut().remove(&request);
                 match result {
                     Ok(sessions) => {
+                        // 保留一份给信息面板的「会话数」（#119）：只看 `ListSessions`
+                        // 真的返回过的数字，不按注册表条数推算。
+                        self.sessions.replace(Some(sessions.clone()));
                         eprintln!(
                             "[browse] ListSessions（{reason}）：后端共 {} 条会话{}",
                             sessions.len(),
