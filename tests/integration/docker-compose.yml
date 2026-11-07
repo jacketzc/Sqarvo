@@ -24,6 +24,10 @@ services:
       MARIADB_ROOT_PASSWORD: sqarvo_root_test_only
     ports:
       - "127.0.0.1:53306:3306"
+    # 入口脚本只在数据卷首次初始化时执行：`sqarvo_test_b` 是跨库表数据用例
+    # （#140 / ADR 0024）要用的第二个库，已存在的实例需要手工建库并授权。
+    volumes:
+      - ./mariadb-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-usqarvo_test", "-psqarvo_test_only"]
       interval: 5s

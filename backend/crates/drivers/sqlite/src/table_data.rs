@@ -285,13 +285,16 @@ fn browse(
     page: &PageRequest,
     options: &BrowseOptions,
 ) -> Result<TablePage> {
-    let name = metadata::object_name(object)?;
+    // 库归属来自请求里的 `catalog`（缺省才回落 `main`），SQL 一律带库前缀（ADR 0024）。
+    let (database, name) = metadata::table_data_target(object)?;
+    let scoped = metadata::scoped_object(object, &database);
+    let qualified = metadata::table_identifier(&database, &name);
     // 连接级只读：浏览不受影响（仍是 SELECT），但写入一定被拒绝，因此这里就置只读。
     let connection_read_only = connection_read_only(connection)?;
     // 列元数据复用 #45 的 GetColumns 路径：同一份 `pragma_table_info`、同一个顺序，
     // 因此 `columns` 与每行 cells 的下标严格对应，同时也是排序/筛选的白名单。
-    let columns = metadata::columns(connection, object).map_err(table_data_not_found)?;
-    let primary_key = metadata::primary_key(connection, object).map_err(table_data_not_found)?;
+    let columns = metadata::columns(connection, &scoped).map_err(table_data_not_found)?;
+    let primary_key = metadata::primary_key(connection, &scoped).map_err(table_data_not_found)?;
     let page_size = usize::try_from(page.effective_page_size()).unwrap_or(100);
     let page_token = page.page_token.as_deref().filter(|token| !token.is_empty());
     let offset = options.offset_or_zero();
@@ -315,7 +318,7 @@ fn browse(
     if primary_key.is_empty() && options.is_legacy() {
         return browse_without_primary_key(
             connection,
-            name,
+            &qualified,
             columns,
             page_size,
             connection_read_only,
@@ -332,7 +335,7 @@ fn browse(
     };
     let (sql, params) = {
         let plan = BrowsePlan {
-            table: name,
+            table: &qualified,
             columns: &columns,
             sort: &sort,
             filter: &filter,
@@ -391,7 +394,8 @@ fn browse(
 
     // 总数是「筛选后的全集」，与游标/offset 无关；拿不到就 UNKNOWN，绝不伪造。
     // 计数有界（#127）：超时只放弃统计，本页数据照常返回。
-    let (total_rows, total_kind, total_skipped) = count_total(connection, name, &filter, options);
+    let (total_rows, total_kind, total_skipped) =
+        count_total(connection, &qualified, &filter, options);
 
     Ok(TablePage {
         columns,
@@ -575,6 +579,7 @@ fn like_pattern(value: &str) -> String {
 
 /// 一页浏览的 SQL 骨架：只有标识符与 `?n`，值全部在返回的参数列表里。
 struct BrowsePlan<'a> {
+    /// 已限定并引用的表名（`"库"."表"`），不是客户端原文。
     table: &'a str,
     columns: &'a [ColumnMeta],
     sort: &'a [SortTerm],
@@ -619,7 +624,7 @@ impl BrowsePlan<'_> {
             conditions.push(format!("({left}) > ({placeholders})"));
         }
 
-        let mut sql = format!("SELECT {select} FROM {}", quote_identifier(self.table));
+        let mut sql = format!("SELECT {select} FROM {}", self.table);
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
@@ -691,7 +696,8 @@ fn count_total(
     if !options.include_total {
         return (None, TotalKind::Unknown, false);
     }
-    let mut sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
+    // `table` 已限定并引用（`"库"."表"`）：计数必须与取页落在同一个库。
+    let mut sql = format!("SELECT COUNT(*) FROM {table}");
     if !filter.terms.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&filter.terms.join(" AND "));
@@ -798,7 +804,7 @@ fn connection_read_only(connection: &Connection) -> Result<bool> {
 /// [`RowOrder::Unstable`] 与界面标签单独表达，信息不会丢。
 fn browse_without_primary_key(
     connection: &Connection,
-    name: &str,
+    table: &str,
     columns: Vec<ColumnMeta>,
     page_size: usize,
     connection_read_only: bool,
@@ -808,7 +814,8 @@ fn browse_without_primary_key(
         .map(|column| quote_identifier(&column.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!("SELECT {select} FROM {} LIMIT ?1", quote_identifier(name));
+    // `table` 已限定并引用（`"库"."表"`）：同名表在 `main` 与 `temp` 并存时不能落到别处。
+    let sql = format!("SELECT {select} FROM {table} LIMIT ?1");
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 表数据查询失败"))?;
@@ -886,20 +893,23 @@ fn apply(
     if object.kind != ObjectKind::Table {
         return Err(read_only_object());
     }
-    let name = metadata::object_name(object)?;
+    // 写入必须落在用户看到的那个库：库归属同样来自请求里的 `catalog`（ADR 0024 §5）。
+    let (database, name) = metadata::table_data_target(object)?;
+    let scoped = metadata::scoped_object(object, &database);
+    let qualified = metadata::table_identifier(&database, &name);
     // 以只读方式打开的数据库文件：在准备任何语句前就明确拒绝，
     // 不把 SQLite 的 `SQLITE_READONLY` 留给用户猜。
     if connection_read_only(connection)? {
         return Err(read_only_connection());
     }
-    let columns = metadata::columns(connection, object).map_err(table_data_not_found)?;
-    let primary_key = metadata::primary_key(connection, object).map_err(table_data_not_found)?;
+    let columns = metadata::columns(connection, &scoped).map_err(table_data_not_found)?;
+    let primary_key = metadata::primary_key(connection, &scoped).map_err(table_data_not_found)?;
     if primary_key.is_empty() {
         return Err(no_primary_key());
     }
 
     // 先把整批变更编译成「SQL 骨架 + 参数」；参数非法时一条语句都不执行。
-    let plan = EditPlan::new(name, &columns, &primary_key, changes)?;
+    let plan = EditPlan::new(&qualified, &columns, &primary_key, changes)?;
 
     match transaction {
         EditTransaction::Aborted => Err(Error::failed_precondition(
@@ -1074,6 +1084,7 @@ impl EditPlan {
 }
 
 impl EditStep {
+    /// `table` 是**已限定并引用**的表名（`"库"."表"`），不是客户端原文。
     fn new(
         table: &str,
         columns: &[ColumnMeta],
@@ -1126,7 +1137,7 @@ impl EditStep {
                 }
                 format!(
                     "UPDATE {} SET {} WHERE {}",
-                    quote_identifier(table),
+                    table,
                     assignments.join(", "),
                     key_condition(primary_key, key_start)
                 )
@@ -1137,7 +1148,7 @@ impl EditStep {
                 }
                 format!(
                     "DELETE FROM {} WHERE {}",
-                    quote_identifier(table),
+                    table,
                     key_condition(primary_key, 1)
                 )
             }
@@ -1375,7 +1386,7 @@ impl RowRejection {
 ///
 /// 编译期只做「能提前判定」的事；任何 SQL 都不在编译期发送。
 struct InsertPlan {
-    /// 已引用的表名（只有标识符）。
+    /// 已限定并引用的表名（`"库"."表"`），只有标识符。
     table: String,
     /// 主键列名，按主键顺序；用于从数据库回读生成值。
     key_columns: Vec<String>,
@@ -1405,18 +1416,22 @@ struct InsertStatement {
 }
 
 impl InsertPlan {
+    /// `database` 是表所在的库（`main` / `temp`，见 [`metadata::table_data_target`]）；
+    /// `pragma_*` 查询用它做第二个参数，SQL 用 `<库>.<表>` 限定。
     fn compile(
         connection: &Connection,
+        database: &str,
         table: &str,
         columns: &[ColumnMeta],
         primary_key: &PrimaryKey,
         rows: &[InsertRow],
     ) -> Result<Self> {
+        let qualified = metadata::table_identifier(database, table);
         // 生成列不在 `pragma_table_info` 里，单独取一次：显式写入必须报
         // `table_data.column_not_insertable`，不能降级成「列不存在」。
-        let generated = generated_columns(connection, table)?;
-        let rowid_alias = rowid_alias_column(connection, table)?;
-        let rowid_table = is_rowid_table(connection, table)?;
+        let generated = generated_columns(connection, database, table)?;
+        let rowid_alias = rowid_alias_column(connection, database, table)?;
+        let rowid_table = is_rowid_table(connection, database, table)?;
         let key_columns = primary_key
             .column_names()
             .into_iter()
@@ -1426,7 +1441,7 @@ impl InsertPlan {
         let mut compiled = Vec::with_capacity(rows.len());
         for (index, row) in rows.iter().enumerate() {
             compiled.push(compile_row(
-                table,
+                &qualified,
                 columns,
                 primary_key,
                 &generated,
@@ -1451,7 +1466,7 @@ impl InsertPlan {
         }
 
         Ok(Self {
-            table: quote_identifier(table),
+            table: qualified,
             key_columns,
             rows: compiled,
         })
@@ -1564,6 +1579,8 @@ impl InsertPlan {
 /// 返回 `Err` 只用于**请求级**非法（列不存在、重复列）：那种问题改请求才能解决，
 /// 且与行内容无关，整批一条 SQL 都不该发。行级问题（生成列、NOT NULL）返回
 /// [`CompiledInsert::Rejected`]，由调用方逐行上报。
+///
+/// `table` 是**已限定并引用**的表名（`"库"."表"`），不是客户端原文。
 #[allow(clippy::too_many_arguments)]
 fn compile_row(
     table: &str,
@@ -1643,7 +1660,7 @@ fn compile_row(
 
     let sql = if names.is_empty() {
         // 全默认值：不写列清单，交给数据库（`INSERT INTO t DEFAULT VALUES`）。
-        format!("INSERT INTO {} DEFAULT VALUES", quote_identifier(table))
+        format!("INSERT INTO {table} DEFAULT VALUES")
     } else {
         let placeholders = (1..=params.len())
             .map(|index| format!("?{index}"))
@@ -1651,7 +1668,7 @@ fn compile_row(
             .join(", ");
         format!(
             "INSERT INTO {} ({}) VALUES ({placeholders})",
-            quote_identifier(table),
+            table,
             names
                 .iter()
                 .map(|name| quote_identifier(name))
@@ -1682,12 +1699,12 @@ fn compile_row(
 }
 
 /// `pragma_table_xinfo` 里 `hidden` 为 2/3 的列：`VIRTUAL` / `STORED` 生成列。
-fn generated_columns(connection: &Connection, table: &str) -> Result<Vec<String>> {
+fn generated_columns(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
     let mut statement = connection
-        .prepare("SELECT name FROM pragma_table_xinfo(?1) WHERE hidden IN (2, 3)")
+        .prepare("SELECT name FROM pragma_table_xinfo(?1, ?2) WHERE hidden IN (2, 3)")
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 生成列查询失败"))?;
     let rows = statement
-        .query_map([table], |row| row.get::<_, String>(0))
+        .query_map([table, database], |row| row.get::<_, String>(0))
         .map_err(|error| map_sqlite_error(error, "执行 SQLite 生成列查询失败"))?;
     let mut names = Vec::new();
     for row in rows {
@@ -1701,12 +1718,16 @@ fn generated_columns(connection: &Connection, table: &str) -> Result<Vec<String>
 /// `pragma_table_info` 只回报显式 `NOT NULL`，`INTEGER PRIMARY KEY NOT NULL` 会
 /// 被看成「必填且无默认值」，这里把它识别出来，避免误报
 /// `table_data.not_null_without_default`。
-fn rowid_alias_column(connection: &Connection, table: &str) -> Result<Option<String>> {
+fn rowid_alias_column(
+    connection: &Connection,
+    database: &str,
+    table: &str,
+) -> Result<Option<String>> {
     let mut statement = connection
-        .prepare("SELECT name, type FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk")
+        .prepare("SELECT name, type FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk")
         .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键列查询失败"))?;
     let columns = statement
-        .query_map([table], |row| {
+        .query_map([table, database], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| map_sqlite_error(error, "执行 SQLite 主键列查询失败"))?
@@ -1724,11 +1745,11 @@ fn rowid_alias_column(connection: &Connection, table: &str) -> Result<Option<Str
 ///
 /// 只有这种表才能用 `last_insert_rowid()` 定位刚插入的行。查询失败（极老的
 /// SQLite 没有 `pragma_table_list`）按「有 rowid」处理：那是 SQLite 的默认形态。
-fn is_rowid_table(connection: &Connection, table: &str) -> Result<bool> {
+fn is_rowid_table(connection: &Connection, database: &str, table: &str) -> Result<bool> {
     let without_rowid: Option<i64> = connection
         .query_row(
-            "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
-            [table],
+            "SELECT wr FROM pragma_table_list WHERE schema = ?1 AND name = ?2",
+            [database, table],
             |row| row.get(0),
         )
         .optional()
@@ -1784,14 +1805,16 @@ fn insert(
     if object.kind != ObjectKind::Table {
         return Err(read_only_object());
     }
-    let name = metadata::object_name(object)?;
+    // 与浏览/行变更同一条规则：插入也按 `catalog` 定位（ADR 0024 §5）。
+    let (database, name) = metadata::table_data_target(object)?;
+    let scoped = metadata::scoped_object(object, &database);
     // 只读方式打开的库文件：在准备任何语句前明确拒绝（`table_data.read_only`）。
     if connection_read_only(connection)? {
         return Err(read_only_connection());
     }
-    let columns = metadata::columns(connection, object)?;
-    let primary_key = metadata::primary_key(connection, object)?;
-    let plan = InsertPlan::compile(connection, name, &columns, &primary_key, rows)?;
+    let columns = metadata::columns(connection, &scoped)?;
+    let primary_key = metadata::primary_key(connection, &scoped)?;
+    let plan = InsertPlan::compile(connection, &database, &name, &columns, &primary_key, rows)?;
 
     match transaction {
         EditTransaction::Aborted => Err(Error::failed_precondition(
@@ -1935,8 +1958,9 @@ mod tests {
     fn update_sql_binds_values_instead_of_splicing_them() {
         let columns = keyed_columns();
         let primary_key = composite_key();
+        let qualified = metadata::table_identifier(metadata::MAIN_DATABASE, "orders");
         let step = EditStep::new(
-            "orders",
+            &qualified,
             &columns,
             &primary_key,
             &RowChange::Update {
@@ -1951,10 +1975,10 @@ mod tests {
         )
         .unwrap();
 
-        // 列名按 schema 规范化，占位符从 1 开始，主键条件用 `?n`。
+        // 表名带库前缀（ADR 0024），列名按 schema 规范化，占位符从 1 开始，主键条件用 `?n`。
         assert_eq!(
             step.sql,
-            "UPDATE \"orders\" SET \"v\" = ?1 WHERE \"tenant\" = ?2 AND \"id\" = ?3"
+            "UPDATE \"main\".\"orders\" SET \"v\" = ?1 WHERE \"tenant\" = ?2 AND \"id\" = ?3"
         );
         assert!(
             !step.sql.contains("DROP TABLE"),
@@ -1976,8 +2000,9 @@ mod tests {
     fn delete_sql_uses_the_full_primary_key() {
         let columns = keyed_columns();
         let primary_key = composite_key();
+        let qualified = metadata::table_identifier(metadata::TEMP_DATABASE, "orders");
         let step = EditStep::new(
-            "orders",
+            &qualified,
             &columns,
             &primary_key,
             &RowChange::Delete {
@@ -1989,7 +2014,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             step.sql,
-            "DELETE FROM \"orders\" WHERE \"tenant\" = ?1 AND \"id\" = ?2"
+            "DELETE FROM \"temp\".\"orders\" WHERE \"tenant\" = ?1 AND \"id\" = ?2"
         );
         assert_eq!(
             step.params,
@@ -2061,12 +2086,16 @@ mod tests {
             column: "V".to_owned(),
             value: Value::Text("'; DROP TABLE orders; --".to_owned()),
         }]);
-        let compiled = compile_row("orders", &columns, &primary_key, &[], None, &row, 0).unwrap();
+        let qualified = metadata::table_identifier(metadata::MAIN_DATABASE, "orders");
+        let compiled = compile_row(&qualified, &columns, &primary_key, &[], None, &row, 0).unwrap();
         let CompiledInsert::Ready(statement) = compiled else {
             panic!("合法行不应被拒绝");
         };
         // 只写给出的列（`id` / `tenant` 留给数据库默认值），列名按 schema 规范化。
-        assert_eq!(statement.sql, "INSERT INTO \"orders\" (\"v\") VALUES (?1)");
+        assert_eq!(
+            statement.sql,
+            "INSERT INTO \"main\".\"orders\" (\"v\") VALUES (?1)"
+        );
         assert!(
             !statement.sql.contains("DROP TABLE"),
             "值绝不能进入 SQL 文本：{}",
@@ -2081,7 +2110,7 @@ mod tests {
 
         // 一列都不给：空列清单，整行交给数据库默认值。
         let CompiledInsert::Ready(empty) = compile_row(
-            "orders",
+            &qualified,
             &columns,
             &primary_key,
             &[],
@@ -2092,7 +2121,7 @@ mod tests {
         .unwrap() else {
             panic!("全默认值行不应被拒绝");
         };
-        assert_eq!(empty.sql, "INSERT INTO \"orders\" DEFAULT VALUES");
+        assert_eq!(empty.sql, "INSERT INTO \"main\".\"orders\" DEFAULT VALUES");
         assert_eq!(empty.params.len(), 0, "全默认值行不应绑定任何参数");
     }
 
@@ -2111,14 +2140,15 @@ mod tests {
                 value: Value::Int(3),
             },
         ]);
+        let qualified = metadata::table_identifier(metadata::MAIN_DATABASE, "orders");
         let CompiledInsert::Ready(statement) =
-            compile_row("orders", &columns, &primary_key, &[], None, &row, 0).unwrap()
+            compile_row(&qualified, &columns, &primary_key, &[], None, &row, 0).unwrap()
         else {
             panic!("合法行不应被拒绝");
         };
         assert_eq!(
-            statement.sql, "INSERT INTO \"orders\" (\"id\", \"tenant\") VALUES (?1, ?2)",
-            "列顺序按请求顺序，列名按 schema 规范化"
+            statement.sql, "INSERT INTO \"main\".\"orders\" (\"id\", \"tenant\") VALUES (?1, ?2)",
+            "表名带库前缀，列顺序按请求顺序，列名按 schema 规范化"
         );
         assert_eq!(
             statement.key,
@@ -2176,8 +2206,9 @@ mod tests {
             }])),
         )
         .unwrap();
+        let table = metadata::table_identifier(metadata::MAIN_DATABASE, "t");
         let plan = BrowsePlan {
-            table: "t",
+            table: &table,
             columns: &columns,
             sort: &sort,
             filter: &filter,
@@ -2187,9 +2218,9 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT \"id\", \"v\" FROM \"t\" WHERE \"v\" LIKE ?1 ESCAPE '\\' \
+            "SELECT \"id\", \"v\" FROM \"main\".\"t\" WHERE \"v\" LIKE ?1 ESCAPE '\\' \
              ORDER BY \"v\" DESC, \"id\" ASC LIMIT ?2 OFFSET ?3",
-            "列名按 schema 规范化并引用，排序方向来自枚举"
+            "表名带库前缀，列名按 schema 规范化并引用，排序方向来自枚举"
         );
         assert!(
             !sql.contains("DROP") && !sql.contains("50%"),

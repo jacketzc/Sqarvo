@@ -164,6 +164,17 @@ jobs:
           timeout 120 bash -c 'until (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null; do sleep 1; done'
           echo "127.0.0.1:3306 已可连接"
 
+      # 跨库表数据用例（#140 / ADR 0024）需要第二个库 `<DSN 库>_b`：测试账号只有
+      # sqarvo_test 的权限，因此由 root 建库并授权（测试专用值，不是真实凭据）。
+      # 用镜像自带的 `mariadb` 客户端：mariadb:11.4 里没有 `mysql` 这个命令名。
+      - name: 准备跨库测试库
+        run: |
+          docker exec "${{ job.services.mariadb.id }}" \
+            mariadb -uroot -psqarvo_root_test_only -e "
+              CREATE DATABASE IF NOT EXISTS sqarvo_test_b;
+              GRANT ALL ON sqarvo_test_b.* TO 'sqarvo_test'@'%';
+              FLUSH PRIVILEGES;"
+
       # 断言逻辑说明见 tests/integration/README.md「CI」小节：
       # 用例被过滤成 0 个、或整批被跳过，都必须让作业变红。
       - name: MariaDB 驱动集成测试
@@ -222,13 +233,60 @@ jobs:
 
           exit "${STATUS}"
 
+      # 跨库表数据用例单独一步：与上面的集成用例共用服务容器与账号，
+      # 但断言目标是 cross_catalog.rs，不能靠集成测试的日志断言覆盖。
+      - name: MariaDB 跨库表数据用例
+        env:
+          SQARVO_MARIADB_URL: mysql://sqarvo_test:sqarvo_test_only@127.0.0.1:3306/sqarvo_test
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          LOG=cross-catalog-tests.log
+
+          DISCOVERED="$(cargo test -p sqarvo-driver-mariadb --test cross_catalog -- --list \
+            | grep -c ': test' || true)"
+          echo "发现用例数：${DISCOVERED}"
+          if [ "${DISCOVERED}" -eq 0 ]; then
+            echo "::error::未发现任何跨库表数据用例"
+            exit 1
+          fi
+
+          STATUS=0
+          cargo test -p sqarvo-driver-mariadb --test cross_catalog -- --nocapture 2>&1 \
+            | tee "${LOG}" || STATUS=$?
+
+          if grep -q "跳过：未设置 SQARVO_MARIADB_URL" "${LOG}"; then
+            echo "::error::用例进入了跳过分支，SQARVO_MARIADB_URL 未生效"
+            exit 1
+          fi
+          if ! grep -Eq 'Running.*tests/cross_catalog\.rs' "${LOG}"; then
+            echo "::error::日志中缺少 Running tests/cross_catalog.rs，用例未执行"
+            exit 1
+          fi
+
+          PASSED="$(grep -o 'test result: ok\. [0-9]* passed' "${LOG}" \
+            | tail -n1 | grep -o '[0-9]*' || true)"
+          echo "实际通过用例数：${PASSED:-<未解析到>} / 发现 ${DISCOVERED}"
+          if [ -z "${PASSED}" ] || [ "${PASSED}" -le 0 ]; then
+            echo "::error::通过用例数为 0 或缺失，测试未真实执行"
+            exit 1
+          fi
+          if [ "${PASSED}" -ne "${DISCOVERED}" ]; then
+            echo "::error::通过用例数 ${PASSED} 与发现数 ${DISCOVERED} 不一致"
+            exit 1
+          fi
+
+          exit "${STATUS}"
+
       # 失败时保留证据：日志只包含测试专用连接参数，不含任何真实凭据。
       - name: 上传测试日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: mariadb-tests-log
-          path: backend/mariadb-tests.log
+          path: |
+            backend/mariadb-tests.log
+            backend/cross-catalog-tests.log
           if-no-files-found: warn
 
   # Windows / macOS 前端尚未接入后端，且需要对应平台 SDK，

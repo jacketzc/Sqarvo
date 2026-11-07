@@ -32,6 +32,9 @@
 //!   排序下 offset 翻页无重无漏、总数三态自洽、非法排序/筛选显式失败、无主键表只读且
 //!   顺序不稳定、能力位与排序行为一致。夹具与 SQL 由调用方按方言提供
 //!   （[`BrowseFixture`]）。
+//! - 跨库表数据不变量（ADR 0024，[`catalog_scoping_is_session_independent`]）：同一个
+//!   对象引用（`catalog` + 表名）在「有默认库 / 无默认库」会话下结果一致；省略 `catalog`
+//!   时回落到默认库，且跨库浏览不得改变这一回落（不隐式 `USE`）。
 //!
 //! 真实驱动接入时，在集成测试中构造会话并调用 `smoke` 与上述五项检查，再补充该驱动
 //! 特有的类型往返测试。检查失败一律返回 **`INTERNAL`** 错误（文案说明违反了哪条不变量），
@@ -43,8 +46,10 @@
 #![warn(missing_docs)]
 
 mod browse;
+mod catalog;
 
 pub use browse::{BrowseFixture, BrowseTable, browse_invariants};
+pub use catalog::{CatalogTable, catalog_scoping_is_session_independent};
 
 use std::collections::VecDeque;
 use std::sync::Mutex;

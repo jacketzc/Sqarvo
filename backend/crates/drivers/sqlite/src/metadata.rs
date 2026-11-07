@@ -910,23 +910,17 @@ fn lookup_ddl_source(
         .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象 DDL 失败"))
 }
 
-/// 表数据路径（`BrowseTable` / 行编辑）的对象名：目前只支持当前连接库（`main`）。
+/// 表数据路径（`BrowseTable` / 行编辑 / 插入）的目标：库名 + 对象名（ADR 0024）。
 ///
-/// 元数据浏览可以跨库，但表数据浏览/行编辑的 SQL 是直接 `SELECT ... FROM <表>`，
-/// 还没有库名前缀（不在 #82 范围）。这里显式拒绝其它库，避免把 `temp` 里的同名表
-/// 当成 `main` 的表去读写。
-pub(crate) fn object_name(object: &ObjectRef) -> Result<&str> {
+/// - `catalog` 缺省或为空 → `main`（v0.2.3 行为不变：根节点与旧客户端都走这里）；
+/// - `main` / `temp` → 接受，SQL 里按 `<库>.<表>` 显式限定；
+/// - 其它 catalog → `capability.unsupported`。SQLite 的表数据只落在 `main` 与 `temp`
+///   两个库上（`ATTACH` 进来的库不在本版写入范围），**不能**静默按 `main` 处理：
+///   那会把「请求了别的库」当成「请求了 main」，属于静默降级（ADR 0024 §4）。
+pub(crate) fn table_data_target(object: &ObjectRef) -> Result<(String, String)> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
             "SQLite 没有 schema 层级：对象引用不能带 schema 字段",
-        ));
-    }
-    if let Some(catalog) = object.qualified_name.catalog.as_deref()
-        && !catalog.eq_ignore_ascii_case(MAIN_DATABASE)
-    {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            format!("SQLite 表数据浏览只支持当前连接库（main），不支持数据库 {catalog}"),
         ));
     }
     if !matches!(
@@ -935,6 +929,20 @@ pub(crate) fn object_name(object: &ObjectRef) -> Result<&str> {
     ) {
         return Err(kind_not_applicable(&object.kind, "表数据浏览"));
     }
+    let database = match object.qualified_name.catalog.as_deref().map(str::trim) {
+        None | Some("") => MAIN_DATABASE.to_owned(),
+        Some(catalog) if catalog.eq_ignore_ascii_case(MAIN_DATABASE) => MAIN_DATABASE.to_owned(),
+        Some(catalog) if catalog.eq_ignore_ascii_case(TEMP_DATABASE) => TEMP_DATABASE.to_owned(),
+        Some(catalog) => {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                format!(
+                    "SQLite 表数据只支持 main / temp 两个库，不支持数据库 {catalog}；\
+                     跨 ATTACH 库的表数据本版未实现"
+                ),
+            ));
+        }
+    };
     let name = object.qualified_name.name.trim();
     if name.is_empty() {
         return Err(Error::invalid_argument(
@@ -942,7 +950,34 @@ pub(crate) fn object_name(object: &ObjectRef) -> Result<&str> {
             "对象名不能为空",
         ));
     }
-    Ok(name)
+    Ok((database, name.to_owned()))
+}
+
+/// 表数据域用的对象引用：把 `catalog` 固定成已解析的库名。
+///
+/// 请求里 catalog 缺省（或为空）时 [`table_data_target`] 已回落到 `main`，后续的列 /
+/// 主键查询用这个显式引用，避免「回落规则」在浏览、行变更、插入三处各写一遍，
+/// 也避免空 catalog 在元数据路径上被当成「库名为空」而报不存在。
+pub(crate) fn scoped_object(object: &ObjectRef, database: &str) -> ObjectRef {
+    ObjectRef {
+        session_id: object.session_id,
+        qualified_name: QualifiedName::new(
+            Some(database.to_owned()),
+            None,
+            object.qualified_name.name.trim(),
+        ),
+        kind: object.kind.clone(),
+    }
+}
+
+/// 表数据 SQL 里的表引用：`"库"."表"`（两段都按标识符转义）。
+///
+/// 库名只可能来自 [`table_data_target`] 的规范化结果（`main` / `temp`），
+/// 对象名也只来自 `pragma_table_info` / `sqlite_master` 的规范名，因此拼进 SQL 的
+/// 是驱动自己核对过的标识符，不是客户端原文。**必须带库前缀**：`temp` 与 `main`
+/// 可以有同名表，不带前缀会按 SQLite 的搜索顺序落到另一张表上。
+pub(crate) fn table_identifier(database: &str, table: &str) -> String {
+    format!("{}.{}", quote_identifier(database), quote_identifier(table))
 }
 
 /// 把 `pragma_table_info.dflt_value` 映射为默认值。

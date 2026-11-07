@@ -265,27 +265,40 @@ pub(crate) async fn current_database(conn: &mut Conn) -> Result<String> {
         .ok_or_else(|| {
             Error::failed_precondition(
                 NO_DATABASE,
-                "当前连接没有选择数据库，无法列出对象；请先选择数据库再浏览元数据",
+                "当前连接没有默认库，请求也未指定库；请在连接里填写默认库，\
+                 或从对象树选择具体库的表",
             )
         })
 }
 
-/// 校验表数据路径（`BrowseTable` / 行编辑）的对象引用，并返回对象名。
+/// 表数据域（`BrowseTable` / 行变更 / 插入）的库归属（ADR 0024）。
 ///
-/// 表数据浏览/行编辑的 SQL 还只作用于当前数据库（跨库表数据不在 #82 范围），
-/// 因此 `catalog` 必须等于当前库；元数据浏览走 [`resolve_object`]，不受此限。
-pub(crate) fn object_parts<'a>(object: &'a ObjectRef, database: &str) -> Result<&'a str> {
+/// - `catalog` 非空 → 用它定位，**不**与会话默认库比较（跨库浏览/写入是显式引用）；
+/// - `catalog` 缺省或为空 → 回落会话当前库（旧客户端行为不变）；
+/// - 会话也没有默认库 → [`current_database`] 报 `NO_DATABASE`。
+///
+/// 这里不执行 `USE`、不缓存「当前库」：库归属由请求携带，一个标签打开 A 库的表、
+/// 另一个打开 B 库的表互不影响（ADR 0024 §2）。
+pub(crate) async fn table_data_database(conn: &mut Conn, object: &ObjectRef) -> Result<String> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
             "MariaDB 没有独立的 schema 层级，该对象引用不属于本驱动",
         ));
     }
-    if let Some(catalog) = object.qualified_name.catalog.as_deref()
-        && !catalog.eq_ignore_ascii_case(database)
-    {
-        return Err(Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            format!("MariaDB 表数据浏览只支持当前数据库（{database}），不支持跨库"),
+    match object.qualified_name.catalog.as_deref().map(str::trim) {
+        Some(catalog) if !catalog.is_empty() => resolve_database(conn, catalog).await,
+        _ => current_database(conn).await,
+    }
+}
+
+/// 校验表数据路径（`BrowseTable` / 行编辑）的对象引用，并返回对象名。
+///
+/// 库归属由 [`table_data_database`] 解析（ADR 0024）：`catalog` 非空就用它拼限定名，
+/// 缺省才回落会话默认库。这里只校验层级与种类，**不**再断言与会话默认库一致。
+pub(crate) fn object_parts(object: &ObjectRef) -> Result<&str> {
+    if object.qualified_name.schema.is_some() {
+        return Err(unsupported_level(
+            "MariaDB 没有独立的 schema 层级，该对象引用不属于本驱动",
         ));
     }
     if !matches!(
