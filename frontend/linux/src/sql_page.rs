@@ -251,9 +251,9 @@ impl SqlPage {
         &self.root
     }
 
-    /// 结果区（QA 与测试用）。
-    pub fn results(&self) -> &Rc<ResultsView> {
-        &self.results
+    /// 更新顶栏的会话信息（标签会话建立后调用；不改变按钮状态）。
+    pub fn set_session_line(&self, text: &str) {
+        self.session_label.set_text(text);
     }
 
     /// 把 SQL 放进编辑器缓冲区（与用户输入同一个控件；QA 也走这里）。

@@ -750,20 +750,57 @@ impl ConnectionRegistry {
             .map(|entry| entry.key.clone())
     }
 
-    /// 这条会话是否就是数据页当前用的那条（数据会话，或当前连接的浏览会话）。
-    ///
-    /// 两种都要认：树里的对象带的是**浏览会话**，平铺列表里的对象带的是 worker
-    /// 持有的**数据会话**——它们都属于「当前数据页绑定的连接」。
+    /// 某条连接保存的参数（打开标签时 `Connect` 用；只含凭据引用，不含密码）。
     #[must_use]
-    pub fn is_active_session(&self, session_id: &str) -> bool {
-        if session_id.is_empty() {
-            return false;
-        }
-        if self.data_session().as_deref() == Some(session_id) {
-            return true;
-        }
-        self.key_for_session(session_id)
-            .is_some_and(|key| self.active_key().as_deref() == Some(key.as_str()))
+    pub fn params_for_key(&self, key: &str) -> Option<ConnectionParams> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| params_from_saved(&entry.saved))
+    }
+
+    /// 某条连接的显示名。
+    #[must_use]
+    pub fn name_for_key(&self, key: &str) -> Option<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.saved.name.clone())
+    }
+
+    /// 某条连接的默认 catalog（标签名 `对象 @ catalog` 用）。
+    ///
+    /// 服务器型驱动用保存的库名；文件型驱动（SQLite）没有库名，默认库就是 `main`。
+    #[must_use]
+    pub fn catalog_for_key(&self, key: &str) -> String {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| {
+                if !entry.saved.database.trim().is_empty() {
+                    entry.saved.database.clone()
+                } else if entry.saved.driver == "sqlite" {
+                    "main".to_owned()
+                } else {
+                    "默认".to_owned()
+                }
+            })
+            .unwrap_or_else(|| "默认".to_owned())
+    }
+
+    /// 当前活动连接的浏览会话 ID（平铺表列表用它，不占标签会话）。
+    #[must_use]
+    pub fn session_for_active(&self) -> Option<String> {
+        let active = self.active.borrow().clone()?;
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == active)
+            .map(|entry| entry.session_id.clone())
+            .filter(|session| !session.is_empty())
     }
 
     // -- 事件 ---------------------------------------------------------------

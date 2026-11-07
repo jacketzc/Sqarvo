@@ -2,8 +2,8 @@
 //!
 //! 本模块只负责**区域与槽位**：谁在哪里、多宽多高、怎么显隐。内容仍由各页面
 //! （对象树 [`crate::tree`]、SQL 工作区 [`crate::sql_page`]、数据页 [`crate::data_page`]、
-//! DDL 面板 [`crate::ddl`]）自己负责。这样 #114（多连接）、#116（标签）、#119（信息面板）
-//! 都能在既有槽位上扩展，而不必重写外壳。
+//! DDL 面板 [`crate::ddl`]）自己负责。#114（多连接）与 #116（标签工作区）已经落在
+//! 这些槽位里，#119（信息面板）继续用最后一个槽位。
 //!
 //! # 槽位一览
 //!
@@ -14,7 +14,7 @@
 //! ├────────────────┬────────────────────────────────────────────────────────┤
 //! 03 对象树       │ 04 工作区                                              │ 06 信息面板
 //!    side_pane     │    work_pane（起始子控件）                              │    inspector
-//!    左栏 237      │    标签条（#116）→ 页面栈 → 表格工具条 → 数据网格        │    Revealer
+//!    左栏 237      │    标签条 24 → 标签页（表格工具条 → 数据网格）           │    Revealer
 //!    可拖 180–420  │                                                        │    280（240–520）
 //! ├────────────────┴────────────────────────────────────────────────────────┤
 //! 05 状态栏     Shell::status    高 56：行1 连接过滤 │ 行操作 │ 分页器
@@ -25,16 +25,16 @@
 //! | 区域 | 字段 | 后续扩展 |
 //! |---|---|---|
 //! | 01 | 无（`ui.rs` 的 `AdwHeaderBar`） | 标题跟随当前连接（#114 已接连接注册表） |
-//! | 02 | `Shell::toolbar`（[`Toolbar`]） | #116 把「新建查询」接到标签 |
+//! | 02 | `Shell::toolbar`（[`Toolbar`]） | #116 已把「新建查询」接到标签 |
 //! | 03 | `Shell::sidebar_pane` 起始子控件 | #114 已实现：多连接树（仍是左栏） |
-//! | 04 | `Shell::work_pane` 起始子控件 | #116 标签条插在页面栈之上 |
+//! | 04 | `Shell::work_pane` 起始子控件 | #116 标签条 + [`crate::tabs::TabSet`] |
 //! | 05 | `Shell::status`（[`StatusBar`]） | #118 分页器接真实页码 |
 //! | 06 | `Shell::inspector_box`（空槽） | #119 填连接 / 库 / 表内容 |
 //!
 //! # 不做什么
 //!
 //! - 不自绘窗口控制按钮，不设窗口内菜单行（ADR 0023：Linux 用 headerbar 主菜单）；
-//! - 不实现标签页（#116）：页面栈仍是「SQL / 数据」两页，数据页仍用一条会话；
+//! - 不自绘标签条：#116 用 `AdwTabView` + `AdwTabBar`，外壳只给它位置；
 //! - 不实现信息面板内容（#119）：这里是空槽，只有几何与显隐；
 //! - 状态栏不放「对象树 / 平铺」切换：960×640 下右组会被窗口右边缘裁掉（半个「平铺」），
 //!   该动作原本就在侧栏页脚（#113 之前的位置），这里不再重复一份；
@@ -365,9 +365,7 @@ impl Toolbar {
         let new_query = gtk::Button::with_label("新建查询");
         new_query.add_css_class("flat");
         new_query.set_valign(gtk::Align::Center);
-        new_query.set_tooltip_text(Some(
-            "切换到 SQL 编辑器（标签页在 v0.2.4 提供：现在只有一个 SQL 工作区）",
-        ));
+        new_query.set_tooltip_text(Some("新建查询标签（Ctrl+T）"));
         {
             let handler = Rc::clone(&on_new_query);
             new_query.connect_clicked(move |_| handler());
@@ -767,6 +765,28 @@ impl StatusBar {
             };
             button.set_tooltip_text(Some(&tooltip));
         }
+    }
+
+    /// 当前标签没有表格（Objects / 查询标签）：分页器与记录位置整格隐藏，
+    /// 行操作全部禁用并用 tooltip 说明原因——不留下「看起来能点」的按钮。
+    pub fn show_no_table(&self, reason: &str) {
+        self.pager_summary.set_visible(false);
+        self.record.set_visible(false);
+        self.last_refresh.set_visible(false);
+        self.apply_row_ops(&RowOpsState {
+            add: false,
+            delete: false,
+            apply: false,
+            discard: false,
+            refresh: false,
+            cancel: false,
+            begin_txn: false,
+            commit_txn: false,
+            rollback_txn: false,
+            reason: Some(reason.to_owned()),
+        });
+        self.txn.replace(String::new());
+        self.refresh_session();
     }
 
     /// SQL 摘要（行 2 左段）：来自查询事件，不推测。
