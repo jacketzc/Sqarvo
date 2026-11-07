@@ -137,6 +137,25 @@ pub enum RunState {
     Disconnected,
 }
 
+impl RunState {
+    /// 状态名（QA 断言与日志用；与变体一一对应，界面文案另在状态行里）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Loading => "loading",
+            Self::Streaming => "streaming",
+            Self::Complete => "complete",
+            Self::Empty => "empty",
+            Self::NoResultSet => "no_result_set",
+            Self::Error => "error",
+            Self::Limited => "limited",
+            Self::Cancelled => "cancelled",
+            Self::Disconnected => "disconnected",
+        }
+    }
+}
+
 /// 结果区：状态栏 + 虚拟化表格 + 占位页。
 pub struct ResultsView {
     root: gtk::Box,
@@ -289,6 +308,17 @@ impl ResultsView {
     /// 当前状态。
     pub fn state(&self) -> RunState {
         self.state.get()
+    }
+
+    /// QA 观测：首行首列的文本（`None` = 还没有行）。
+    ///
+    /// 只读一行，不实例化 widget：验收断言比对的是界面真实持有的行数据。
+    pub fn first_cell_text(&self) -> Option<String> {
+        let item = self.store.item(0)?;
+        let boxed = item.downcast::<glib::BoxedAnyObject>().ok()?;
+        let row = boxed.borrow::<Rc<RowView>>().clone();
+        drop(boxed);
+        row.cells.first().map(|cell| cell.text.clone())
     }
 
     /// 清空表格与状态（新查询开始前）。

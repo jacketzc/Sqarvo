@@ -61,6 +61,12 @@
 //!   （`open-table` / `query-tab` / `begin` / `edit` / `apply` / `rollback` / `reload` /
 //!   `log-rows` / `sql` / `execute` / `close <n> <save|discard|cancel>` / `sessions <标签>` /
 //!   `expect-tabs <n>` / `expect-limit <子串>` / `sleep <ms>`；`#` 开头为注释）。
+//! - #117 增补的脚本步骤（同一个 `--qa-tabs-file`，不新增命令行开关）：
+//!   `cancel <n>`（点该查询标签的「取消」，与用户路径一致）、`scroll <n> <row>`
+//!   （表标签触发翻页 / 查询标签触发分批预取）、`trace <n>`（打印该标签实际收到的事件序列）、
+//!   `expect-trace <n> <a,b,c>`（事件序列逐项相等）、`expect-rows <n> <count>`
+//!   （已加载行数）、`expect-query <n> <rows|state|first|summary>=<值>`（结果归属与状态）。
+//!   这三类 `expect-*` 失败都以退出码 3 结束，与既有断言同一口径。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。

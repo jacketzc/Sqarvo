@@ -26,6 +26,19 @@
 //! 「保存并连接」建立的会话先挂在 `pooled` 里，由**第一个**标签在指纹（驱动 + 地址 +
 //! 库 + 凭据引用）完全一致时领养：这样连接对话框不会留下一条没人用的会话，
 //! 验收里的「1 条浏览会话 + N 个标签会话」也才数得清。
+//!
+//! # 取消与关闭（#117）
+//!
+//! 归属判定（哪个标签、哪一代结果、这次取消是否已发过）抽在 [`crate::backend::routing`]，
+//! 纯函数 + 单测。本文件只负责把判定结果落成 RPC：
+//!
+//! - `Executed` / `Fetched` 带发起时的**代数**；对不上（标签已关闭、或同一标签里更早一次
+//!   执行的结果晚到）就丢弃并补发 `Close`，绝不写进当前查询；
+//! - 取消只作用于目标标签的槽位，重复取消不再发 RPC；
+//! - `CloseTabSession` 先摘归属，再在**后台**按 Cancel → Close → Disconnect 收尾，
+//!   worker 循环不等待这些 RPC（否则关标签会把其它标签的翻页结果堵在队列里）。
+//!
+//! 每条事件都带 `tab_id`：标签已关闭就丢弃并记一行日志，不会落到别的标签或已摘掉的控件。
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -48,6 +61,7 @@ use crate::backend::query::{
     ExecuteOutcome, FetchOutcome, MAX_ROWS_PER_BATCH, QueryFailure, ResultBudget, ResultMeter,
     RowView, StatementView,
 };
+use crate::backend::routing::{CancelPlan, Delivery, QuerySlots};
 use crate::backend::supervisor::{BackendSupervisor, Stage};
 use crate::backend::table::{
     ApplyReport, BrowsePage, InsertReport, TableEntry, TableFailure, TableOpen, TableRow,
@@ -268,6 +282,8 @@ pub enum TaskUpdate {
     Executed {
         /// 标签 ID。
         tab_id: TabId,
+        /// 发起这次执行时的查询代数（对不上就是过期结果，丢弃）。
+        epoch: u64,
         /// 结果。
         result: Result<ExecuteOutcome, QueryFailure>,
     },
@@ -275,13 +291,29 @@ pub enum TaskUpdate {
     Fetched {
         /// 标签 ID。
         tab_id: TabId,
+        /// 发起这次拉取时的查询代数。
+        epoch: u64,
         /// 结果。
         result: Result<FetchOutcome, QueryFailure>,
     },
     /// `Cancel` 的 RPC 结果（失败只记日志：界面已经进入 Cancelled，不该再弹错）。
-    Cancelled(Result<(), QueryFailure>),
+    Cancelled {
+        /// 标签 ID（日志归属用）。
+        tab_id: TabId,
+        /// 被取消的服务端查询 ID。
+        query_id: String,
+        /// 结果。
+        result: Result<(), QueryFailure>,
+    },
     /// `Close` 的 RPC 结果（失败只记日志：游标随后端/会话一起消失，或已幂等结束）。
-    Closed(Result<(), QueryFailure>),
+    Closed {
+        /// 标签 ID（日志归属用）。
+        tab_id: TabId,
+        /// 被释放的服务端查询 ID。
+        query_id: String,
+        /// 结果。
+        result: Result<(), QueryFailure>,
+    },
     /// 表列表（工作区级，不属于任何标签）。
     TablesListed(Result<Vec<TableEntry>, TableFailure>),
     /// 打开表：浏览首页 + 主键定义（`generation` 用于丢弃过期的结果）。
@@ -417,6 +449,20 @@ pub enum QueryEvent {
     Failed(QueryFailure),
 }
 
+impl QueryEvent {
+    /// 事件名（界面事件序列与日志用；与变体一一对应，不随载荷变化）。
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Started { .. } => "started",
+            Self::Batch { .. } => "batch",
+            Self::Cancelled { .. } => "cancelled",
+            Self::Limited { .. } => "limited",
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+
 /// 一个活动查询的 worker 侧状态。
 #[derive(Debug)]
 struct ActiveQuery {
@@ -527,6 +573,22 @@ pub enum TableEvent {
     Failed(TableFailure),
     /// 事务状态变化（徽标数据）。
     Transaction(TxnSnapshot),
+}
+
+impl TableEvent {
+    /// 事件名（界面事件序列与日志用；与变体一一对应）。
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Opened(_) => "opened",
+            Self::Page { .. } => "page",
+            Self::Applied(_) => "applied",
+            Self::Inserted(_) => "inserted",
+            Self::Submit(_) => "submit",
+            Self::Failed(_) => "failed",
+            Self::Transaction(_) => "transaction",
+        }
+    }
 }
 
 /// 表数据浏览的 worker 侧状态（cursor 只有这里持有，界面不接触）。
@@ -1002,6 +1064,9 @@ async fn worker_loop(
     let mut session: Option<Session> = None;
     // 标签 → 会话（一标签一会话）。所有会话级状态都在这里，不共享。
     let mut tabs: HashMap<TabId, TabSession> = HashMap::new();
+    // 标签 → 查询代数 / 取消标记（纯归属逻辑，单测见 `backend::routing`）。
+    // 与 `tabs` 同一批 `tab_id`：登记、摘除都在这里同步，绝不按「最近一次请求」推断。
+    let mut slots = QuerySlots::new();
     // 「保存并连接」留下的会话，等第一个同参数的标签领养。
     let mut pooled: Option<PooledSession> = None;
     let mut health = tokio::time::interval(HEALTH_INTERVAL);
@@ -1018,13 +1083,14 @@ async fn worker_loop(
                         if let Some(active_session) = session.as_ref() {
                             let client = active_session.client.clone();
                             for tab in tabs.values_mut() {
-                                cleanup_query(&client, &mut tab.query).await;
+                                cleanup_query(&client, &tab.tab_id, &mut tab.query).await;
                             }
                         }
                         for tab in tabs.values_mut() {
                             abandon_submit_batch(&mut tab.submit, session.as_ref(), "主动断开").await;
                         }
                         for (tab_id, _) in tabs.drain() {
+                            slots.close(&tab_id);
                             send_tab_lost(&events, &tab_id, "与后端的连接已断开").await;
                         }
                         pooled = None;
@@ -1056,10 +1122,11 @@ async fn worker_loop(
                             if let Some(active_session) = session.as_ref() {
                                 let client = active_session.client.clone();
                                 for tab in tabs.values_mut() {
-                                    cleanup_query(&client, &mut tab.query).await;
+                                    cleanup_query(&client, &tab.tab_id, &mut tab.query).await;
                                 }
                             }
                             for (tab_id, mut tab) in tabs.drain() {
+                                slots.close(&tab_id);
                                 abandon_submit_batch(&mut tab.submit, session.as_ref(), "切换连接")
                                     .await;
                                 if let Some(active_session) = session.as_ref()
@@ -1113,6 +1180,8 @@ async fn worker_loop(
                             eprintln!("[tabs] 标签 {tab_id} 已有会话，忽略重复建立");
                             continue;
                         }
+                        // 归属先登记：之后到达的关闭 / 执行 / 取消请求都能按 tab_id 命中。
+                        slots.open(&tab_id);
                         let fingerprint = session_fingerprint(&params);
                         // 同参数且还没被领养：直接把那条会话交给这个标签。
                         if let Some(adopt) = pooled.take_if(|pooled| pooled.fingerprint == fingerprint) {
@@ -1185,6 +1254,7 @@ async fn worker_loop(
                     Command::CloseTabSession { tab_id } => {
                         let Some(mut tab) = tabs.remove(&tab_id) else {
                             // 幂等：已关闭 / 尚未登记。迟到的 TabConnected 会自行回收会话。
+                            eprintln!("[tabs] 关闭标签 {tab_id}：没有登记（幂等）");
                             let _ = events
                                 .send(Event::TabSessionClosed {
                                     tab_id,
@@ -1193,6 +1263,12 @@ async fn worker_loop(
                                 .await;
                             continue;
                         };
+                        // 关闭前先读一次归属：已经取消过的查询不再重复发 Cancel（幂等），
+                        // 但游标仍要 Close，随后的 Disconnect 才是最后一步。
+                        let needs_cancel = !slots.is_cancelled(&tab_id);
+                        // 归属先摘：之后任何事件（Executed / Fetched / TablePage）都会被
+                        // 当作「标签不存在」丢弃——不会投到别的标签，也不会写到已摘掉的控件。
+                        slots.close(&tab_id);
                         if !tab.is_ready() {
                             // 连接中：TabConnected 到达时发现标签已不在，会立刻断开。
                             let _ = events
@@ -1203,9 +1279,17 @@ async fn worker_loop(
                                 .await;
                             continue;
                         }
-                        if let Some(active_session) = session.as_ref() {
-                            cleanup_query(&active_session.client, &mut tab.query).await;
+                        // 在途查询：Cancel + Close 在后台按顺序发出，worker 循环不再等这些
+                        // RPC——否则关闭标签 A 会把标签 B 正在返回的翻页结果堵在队列里。
+                        let pending = tab.query.take();
+                        let query_id = pending.as_ref().and_then(|query| query.query_id.clone());
+                        if pending.is_some() && query_id.is_none() {
+                            eprintln!(
+                                "[tabs] 关闭标签 {tab_id}：在途查询还没有 query_id（Execute 未返回），\
+                                 无从 Cancel；Disconnect 会随会话释放它"
+                            );
                         }
+                        // 在途提交批次：登记必须先清空（有界 200 ms），不等批次结束。
                         abandon_submit_batch(&mut tab.submit, session.as_ref(), "关闭标签").await;
                         let closing_tab = tab_id.clone();
                         let connection_id = tab.connection_id.clone();
@@ -1218,6 +1302,28 @@ async fn worker_loop(
                                 let client = active_session.client.clone();
                                 let sender = events.clone();
                                 tokio::spawn(async move {
+                                    if let Some(query_id) = query_id {
+                                        if needs_cancel
+                                            && let Err(error) =
+                                                client.cancel_query(&query_id).await
+                                        {
+                                            eprintln!(
+                                                "[tabs] 关闭标签 {closing_tab} 时 Cancel 失败（忽略）：[{}] {}",
+                                                error.code(),
+                                                error.detail()
+                                            );
+                                        }
+                                        match client.close_query(&query_id).await {
+                                            Ok(()) => eprintln!(
+                                                "[tabs] 关闭标签 {closing_tab}：在途查询 {query_id} 已 Cancel + Close"
+                                            ),
+                                            Err(error) => eprintln!(
+                                                "[tabs] 关闭标签 {closing_tab} 时 Close 失败（忽略）：[{}] {}",
+                                                error.code(),
+                                                error.detail()
+                                            ),
+                                        }
+                                    }
                                     let result = disconnect_session(&client, &connection_id).await;
                                     let _ = sender
                                         .send(Event::TabSessionClosed {
@@ -1270,15 +1376,27 @@ async fn worker_loop(
                         {
                             let client = active_session.client.clone();
                             let sender = commands_tx.clone();
+                            let stale_tab = tab_id.clone();
+                            let stale_query = query_id.clone();
                             tokio::spawn(async move {
                                 let closed = client.cancel_query(&query_id).await.and(
                                     client.close_query(&query_id).await,
                                 );
-                                let _ = sender.send(Command::Task(TaskUpdate::Closed(closed)));
+                                let _ = sender.send(Command::Task(TaskUpdate::Closed {
+                                    tab_id: stale_tab,
+                                    query_id: stale_query,
+                                    result: closed,
+                                }));
                             });
                         }
+                        // 新一次执行拿新代数：上一次执行晚到的结果按代数丢弃，
+                        // 不会写进这次查询的状态（同一标签内的串号）。
+                        let Some(epoch) = slots.begin(&tab_id) else {
+                            eprintln!("[query] 忽略执行请求：标签 {tab_id} 没有归属登记（可能已关闭）");
+                            continue;
+                        };
                         let preview: String = sql.lines().next().unwrap_or("").chars().take(80).collect();
-                        eprintln!("[query] 标签 {tab_id} 提交执行：{preview}");
+                        eprintln!("[query] 标签 {tab_id} 提交执行（代数 {epoch}）：{preview}");
                         tab.query = Some(ActiveQuery::new(budget));
                         let session_id = tab.session_id.clone();
                         let client = active_session.client.clone();
@@ -1289,6 +1407,7 @@ async fn worker_loop(
                                 .await;
                             let _ = sender.send(Command::Task(TaskUpdate::Executed {
                                 tab_id,
+                                epoch,
                                 result,
                             }));
                         });
@@ -1306,6 +1425,7 @@ async fn worker_loop(
                         }
                         let Some(query_id) = query.query_id.clone() else { continue };
                         let Some(active_session) = session.as_ref() else { continue };
+                        let Some(epoch) = slots.epoch(&tab_id) else { continue };
                         query.loading = true;
                         let page_token = query.page_token.clone();
                         let first_number = query.loaded + 1;
@@ -1323,45 +1443,74 @@ async fn worker_loop(
                                 .await;
                             let _ = sender.send(Command::Task(TaskUpdate::Fetched {
                                 tab_id,
+                                epoch,
                                 result,
                             }));
                         });
                     }
                     Command::CancelQuery { tab_id } => {
-                        let Some(tab) = tabs.get_mut(&tab_id) else { continue };
-                        let Some(mut query) = tab.query.take() else { continue };
-                        // 重复点击：不发 RPC、不产生错误（要求 7）。
-                        if query.cancel_requested {
+                        // 归属判定与幂等语义都在 `QuerySlots`：只动这个标签的槽位。
+                        let query_id = tabs
+                            .get(&tab_id)
+                            .and_then(|tab| tab.query.as_ref())
+                            .and_then(|query| query.query_id.clone());
+                        let Some(plan) = slots.cancel(&tab_id, query_id.as_deref()) else {
+                            eprintln!(
+                                "[query] {}",
+                                crate::backend::routing::DropReason::UnknownTab.log_line(&tab_id)
+                            );
+                            continue;
+                        };
+                        if plan == CancelPlan::AlreadyCancelled {
+                            eprintln!(
+                                "[query] 标签 {tab_id} 的取消决策：{}（幂等，不发 RPC）",
+                                plan.name()
+                            );
                             continue;
                         }
+                        eprintln!(
+                            "[query] 标签 {tab_id} 的取消决策：{}",
+                            plan.name()
+                        );
+                        let Some(tab) = tabs.get_mut(&tab_id) else { continue };
+                        let Some(query) = tab.query.as_mut() else { continue };
                         query.cancel_requested = true;
-                        match query.query_id.clone() {
-                            Some(query_id) => {
+                        match plan {
+                            CancelPlan::Send { query_id } => {
                                 let sender = commands_tx.clone();
                                 let client = session.as_ref().map(|session| session.client.clone());
                                 if let Some(client) = client {
+                                    let cancel_tab = tab_id.clone();
+                                    let close_tab = tab_id.clone();
                                     tokio::spawn(async move {
                                         let cancel = client.cancel_query(&query_id).await;
                                         let close = client.close_query(&query_id).await;
                                         if close.is_ok() {
                                             eprintln!(
-                                                "[query] t=+{}ms 取消后已 Close 游标 {query_id}",
+                                                "[query] t=+{}ms 取消后已 Close 游标 {query_id}（标签 {close_tab}）",
                                                 crate::qa::elapsed_ms()
                                             );
                                         }
-                                        let _ = sender.send(Command::Task(TaskUpdate::Cancelled(cancel)));
-                                        let _ = sender.send(Command::Task(TaskUpdate::Closed(close)));
+                                        let _ = sender.send(Command::Task(TaskUpdate::Cancelled {
+                                            tab_id: cancel_tab,
+                                            query_id: query_id.clone(),
+                                            result: cancel,
+                                        }));
+                                        let _ = sender.send(Command::Task(TaskUpdate::Closed {
+                                            tab_id: close_tab,
+                                            query_id,
+                                            result: close,
+                                        }));
                                     });
                                 }
                                 send_tab_query(&events, &tab_id, QueryEvent::Cancelled { note: None })
                                     .await;
                             }
-                            None => {
+                            CancelPlan::MarkOnly => {
                                 let note = Some(
                                     "服务端尚未返回查询 ID：界面已停止等待，但该语句可能仍在数据库侧执行"
                                         .to_owned(),
                                 );
-                                tab.query = Some(query);
                                 send_tab_query(
                                     &events,
                                     &tab_id,
@@ -1369,21 +1518,27 @@ async fn worker_loop(
                                 )
                                 .await;
                             }
+                            CancelPlan::AlreadyCancelled => {}
                         }
                     }
                     Command::CloseQuery { tab_id } => {
                         let Some(tab) = tabs.get_mut(&tab_id) else { continue };
                         let Some(query) = tab.query.take() else { continue };
+                        // 游标释放后代数 +1：在途批次的返回按过期结果丢弃。
+                        slots.invalidate(&tab_id);
                         if let Some(query_id) = query.query_id
                             && let Some(active_session) = session.as_ref()
                         {
                             let client = active_session.client.clone();
                             let sender = commands_tx.clone();
+                            let close_tab = tab_id.clone();
                             tokio::spawn(async move {
-                                let _ = sender
-                                    .send(Command::Task(TaskUpdate::Closed(
-                                        client.close_query(&query_id).await,
-                                    )));
+                                let result = client.close_query(&query_id).await;
+                                let _ = sender.send(Command::Task(TaskUpdate::Closed {
+                                    tab_id: close_tab,
+                                    query_id,
+                                    result,
+                                }));
                             });
                         }
                     }
@@ -1856,6 +2011,7 @@ async fn worker_loop(
                             }
                             Err(failure) => {
                                 tabs.remove(&tab_id);
+                                slots.close(&tab_id);
                                 eprintln!(
                                     "[tabs] 标签 {tab_id} 建立会话失败：[{}] {}",
                                     failure.code(),
@@ -1869,7 +2025,31 @@ async fn worker_loop(
                                     .await;
                             }
                         },
-                        TaskUpdate::Executed { tab_id, result } => {
+                        TaskUpdate::Executed {
+                            tab_id,
+                            epoch,
+                            result,
+                        } => {
+                            // 归属判定先于一切状态改动：标签已关闭 / 结果属于更早的一次执行，
+                            // 都只补发 Close 释放游标，绝不写进任何标签的当前查询。
+                            if let Delivery::Drop(reason) = slots.accepts(&tab_id, epoch) {
+                                if let Ok(outcome) = &result {
+                                    eprintln!(
+                                        "[query] {}；补发 Close 释放游标 {}",
+                                        reason.log_line(&tab_id),
+                                        outcome.query_id
+                                    );
+                                    close_in_background(
+                                        session.as_ref().map(|session| &session.client),
+                                        &tab_id,
+                                        &outcome.query_id,
+                                        &commands_tx,
+                                    );
+                                } else {
+                                    eprintln!("[query] {}", reason.log_line(&tab_id));
+                                }
+                                continue;
+                            }
                             let lost = {
                                 let Some(tab) = tabs.get_mut(&tab_id) else { continue };
                                 let client = session.as_ref().map(|session| &session.client);
@@ -1885,10 +2065,27 @@ async fn worker_loop(
                             };
                             if let Some(reason) = lost {
                                 tabs.remove(&tab_id);
+                                slots.close(&tab_id);
                                 send_tab_lost(&events, &tab_id, &reason).await;
                             }
                         }
-                        TaskUpdate::Fetched { tab_id, result } => {
+                        TaskUpdate::Fetched {
+                            tab_id,
+                            epoch,
+                            result,
+                        } => {
+                            if let Delivery::Drop(reason) = slots.accepts(&tab_id, epoch) {
+                                if let Ok(batch) = &result {
+                                    eprintln!(
+                                        "[query] {}；本批 {} 行未写入界面",
+                                        reason.log_line(&tab_id),
+                                        batch.rows.len()
+                                    );
+                                } else {
+                                    eprintln!("[query] {}", reason.log_line(&tab_id));
+                                }
+                                continue;
+                            }
                             let lost = {
                                 let Some(tab) = tabs.get_mut(&tab_id) else { continue };
                                 let client = session.as_ref().map(|session| &session.client);
@@ -1904,22 +2101,31 @@ async fn worker_loop(
                             };
                             if let Some(reason) = lost {
                                 tabs.remove(&tab_id);
+                                slots.close(&tab_id);
                                 send_tab_lost(&events, &tab_id, &reason).await;
                             }
                         }
-                        TaskUpdate::Cancelled(result) => {
+                        TaskUpdate::Cancelled {
+                            tab_id,
+                            query_id,
+                            result,
+                        } => {
                             if let Err(error) = result {
                                 eprintln!(
-                                    "[query] Cancel 失败（界面已显示 Cancelled，忽略）：[{}] {}",
+                                    "[query] 标签 {tab_id} 的 Cancel 失败（query_id={query_id}，界面已显示 Cancelled，忽略）：[{}] {}",
                                     error.code(),
                                     error.detail()
                                 );
                             }
                         }
-                        TaskUpdate::Closed(result) => {
+                        TaskUpdate::Closed {
+                            tab_id,
+                            query_id,
+                            result,
+                        } => {
                             if let Err(error) = result {
                                 eprintln!(
-                                    "[query] Close 失败（忽略）：[{}] {}",
+                                    "[query] 标签 {tab_id} 的 Close 失败（query_id={query_id}，忽略）：[{}] {}",
                                     error.code(),
                                     error.detail()
                                 );
@@ -2029,6 +2235,7 @@ async fn worker_loop(
                                     tab.table = None;
                                     if failure.is_session_lost() {
                                         tabs.remove(&tab_id);
+                                        slots.close(&tab_id);
                                         send_tab_lost(&events, &tab_id, &failure.message()).await;
                                     } else {
                                         send_tab_table(
@@ -2165,6 +2372,7 @@ async fn worker_loop(
                                     }
                                     if failure.is_session_lost() {
                                         tabs.remove(&tab_id);
+                                        slots.close(&tab_id);
                                         send_tab_lost(&events, &tab_id, &failure.message()).await;
                                     } else {
                                         send_tab_table(
@@ -2233,6 +2441,7 @@ async fn worker_loop(
                                 Err(failure) => {
                                     if failure.is_session_lost() {
                                         tabs.remove(&tab_id);
+                                        slots.close(&tab_id);
                                         send_tab_lost(&events, &tab_id, &failure.message()).await;
                                     } else {
                                         send_tab_table(
@@ -2372,13 +2581,14 @@ async fn worker_loop(
                         // 断连清理：每个标签的活动查询 Cancel + Close，失败忽略（要求 8）。
                         let client = active_session.client.clone();
                         for tab in tabs.values_mut() {
-                            cleanup_query(&client, &mut tab.query).await;
+                            cleanup_query(&client, &tab.tab_id, &mut tab.query).await;
                         }
                         for tab in tabs.values_mut() {
                             abandon_submit_batch(&mut tab.submit, Some(active_session), "健康探测失败")
                                 .await;
                         }
                         for (tab_id, _) in tabs.drain() {
+                            slots.close(&tab_id);
                             send_tab_lost(&events, &tab_id, "与后端的连接已断开").await;
                         }
                         pooled = None;
@@ -2398,7 +2608,7 @@ async fn worker_loop(
     // 后端进程随后会被终止，但先把「正常关闭」的路径走完，不留悬空登记。
     for tab in tabs.values_mut() {
         if let Some(active_session) = session.as_ref() {
-            cleanup_query(&active_session.client, &mut tab.query).await;
+            cleanup_query(&active_session.client, &tab.tab_id, &mut tab.query).await;
         }
     }
     for tab in tabs.values_mut() {
@@ -2444,7 +2654,7 @@ async fn handle_executed(
             if discarded {
                 // 用户已取消（或断连后迟到）：丢弃结果，只补发 Close 释放游标。
                 *active = None;
-                close_in_background(client, &outcome.query_id, commands_tx);
+                close_in_background(client, tab_id, &outcome.query_id, commands_tx);
                 eprintln!(
                     "[query] 标签 {tab_id} 已取消/已失效的查询返回，丢弃 {} 行并补发 Close：{}",
                     outcome.rows.len(),
@@ -2495,7 +2705,7 @@ async fn handle_executed(
                     stop.reason.label()
                 );
                 *active = None;
-                close_in_background(client, &outcome.query_id, commands_tx);
+                close_in_background(client, tab_id, &outcome.query_id, commands_tx);
                 send_tab_query(
                     events,
                     tab_id,
@@ -2521,7 +2731,7 @@ async fn handle_executed(
                 }
                 // 结果已经读完：立即 Close（服务端也已释放，Close 幂等）。
                 *active = None;
-                close_in_background(client, &outcome.query_id, commands_tx);
+                close_in_background(client, tab_id, &outcome.query_id, commands_tx);
             }
             None
         }
@@ -2578,7 +2788,7 @@ async fn handle_fetched(
                 );
                 *active = None;
                 if let Some(query_id) = query_id {
-                    close_in_background(client, &query_id, commands_tx);
+                    close_in_background(client, tab_id, &query_id, commands_tx);
                 }
                 send_tab_query(events, tab_id, QueryEvent::Limited { rows, loaded, stop }).await;
                 return None;
@@ -2611,7 +2821,7 @@ async fn handle_fetched(
             )
             .await;
             if !has_more && let Some(query_id) = query_id {
-                close_in_background(client, &query_id, commands_tx);
+                close_in_background(client, tab_id, &query_id, commands_tx);
             }
             None
         }
@@ -2622,14 +2832,14 @@ async fn handle_fetched(
                 send_tab_query(events, tab_id, QueryEvent::Cancelled { note: None }).await;
             } else if failure.is_session_lost() {
                 if let Some(query_id) = query_id {
-                    close_in_background(client, &query_id, commands_tx);
+                    close_in_background(client, tab_id, &query_id, commands_tx);
                 }
                 return Some(failure.message());
             } else {
                 send_tab_query(events, tab_id, QueryEvent::Failed(failure)).await;
             }
             if let Some(query_id) = query_id {
-                close_in_background(client, &query_id, commands_tx);
+                close_in_background(client, tab_id, &query_id, commands_tx);
             }
             None
         }
@@ -2704,12 +2914,14 @@ async fn abandon_submit_batch(
 /// 后台补发 `Close`：释放游标，失败只记日志（幂等，不影响界面状态）。
 fn close_in_background(
     client: Option<&BackendClient>,
+    tab_id: &str,
     query_id: &str,
     commands_tx: &UnboundedSender<Command>,
 ) {
     let Some(client) = client.cloned() else {
         return;
     };
+    let tab_id = tab_id.to_owned();
     let query_id = query_id.to_owned();
     let sender = commands_tx.clone();
     tokio::spawn(async move {
@@ -2717,35 +2929,41 @@ fn close_in_background(
         if result.is_ok() {
             // 可观测证据：结果读完/取消后会真的释放游标，而不是只改界面状态。
             eprintln!(
-                "[query] t=+{}ms 已 Close 游标 {query_id}",
+                "[query] t=+{}ms 已 Close 游标 {query_id}（标签 {tab_id}）",
                 crate::qa::elapsed_ms()
             );
         }
-        let _ = sender.send(Command::Task(TaskUpdate::Closed(result)));
+        let _ = sender.send(Command::Task(TaskUpdate::Closed {
+            tab_id,
+            query_id,
+            result,
+        }));
     });
 }
 
 /// 尽力取消并关闭活动查询；断连场景下失败是正常的，只记录不冒泡。
-async fn cleanup_query(client: &BackendClient, active: &mut Option<ActiveQuery>) {
+async fn cleanup_query(client: &BackendClient, tab_id: &str, active: &mut Option<ActiveQuery>) {
     let Some(query) = active.take() else { return };
     let Some(query_id) = query.query_id else {
         // Execute 尚未返回：协议没有客户端查询 ID，此时无从取消；
         // `TaskUpdate::Executed` 分支会在返回后补发 Close。
-        eprintln!("[query] 断连清理：活动查询尚无 query_id，跳过 Cancel/Close（协议缺口）");
+        eprintln!(
+            "[query] 断连清理：标签 {tab_id} 的活动查询尚无 query_id，跳过 Cancel/Close（协议缺口）"
+        );
         return;
     };
     if !query.cancel_requested
         && let Err(error) = client.cancel_query(&query_id).await
     {
         eprintln!(
-            "[query] 断连清理：Cancel 失败（忽略）：[{}] {}",
+            "[query] 断连清理：标签 {tab_id} 的 Cancel 失败（忽略）：[{}] {}",
             error.code(),
             error.detail()
         );
     }
     if let Err(error) = client.close_query(&query_id).await {
         eprintln!(
-            "[query] 断连清理：Close 失败（忽略）：[{}] {}",
+            "[query] 断连清理：标签 {tab_id} 的 Close 失败（忽略）：[{}] {}",
             error.code(),
             error.detail()
         );
@@ -3071,6 +3289,35 @@ mod tests {
         query.has_more = true;
         query.query_id = None;
         assert_eq!(fetch_block_reason(&query), Some("查询 ID 尚未返回"));
+    }
+
+    #[test]
+    fn event_names_are_the_trace_vocabulary() {
+        // 事件序列断言只依赖这些名字：改名即等于改变证据口径，必须被单测挡住。
+        assert_eq!(QueryEvent::Cancelled { note: None }.name(), "cancelled");
+        assert_eq!(
+            QueryEvent::Batch {
+                rows: Vec::new(),
+                has_more: false,
+                loaded: 0,
+            }
+            .name(),
+            "batch"
+        );
+        assert_eq!(
+            TableEvent::Page {
+                rows: Vec::new(),
+                has_more: false,
+                loaded: 0,
+                pages: 1,
+            }
+            .name(),
+            "page"
+        );
+        assert_eq!(
+            TableEvent::Transaction(TxnSnapshot::none()).name(),
+            "transaction"
+        );
     }
 
     #[test]
