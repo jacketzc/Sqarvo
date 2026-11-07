@@ -349,6 +349,8 @@ pub struct SessionOpen {
     pub session_id: String,
     /// 驱动 ID。
     pub driver_id: String,
+    /// 服务端版本（`ConnectResponse.server_version`；拿不到时为空，不伪造）。
+    pub server_version: String,
     /// 驱动能力位名称（`table_browse_sort_filter_total` 等）。
     pub capabilities: Vec<String>,
 }
@@ -643,6 +645,7 @@ impl BackendClient {
             connection_id: response.connection_id,
             session_id: response.session_id,
             driver_id: response.driver_id,
+            server_version: response.server_version,
             // 只读透传：界面据此决定是否展示排序/筛选/总数入口（#118）。
             capabilities: response.capabilities,
         })

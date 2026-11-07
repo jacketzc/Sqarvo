@@ -7,21 +7,29 @@
 //! - 主区域 = 固定 `Objects` 标签，空态文案「从左侧选择一个连接开始」；
 //! - 状态栏显示「未连接」、驱动数与浏览器会话数（启动时为 0）。
 //!
+//! # 点击语义（#144）
+//!
+//! 点一条已保存连接 = **按保存的凭据直接连接**（与对象树里点未连接的连接同一个
+//! 入口 [`crate::ui::connect_saved`]）：成功后落到工作区并在树里展开这条连接。
+//! 编辑 / 断开 / 删除这些不常用动作用右键菜单，不占左键。
+//!
 //! 后端版本 / 协议 / PID / 端点文件等诊断信息**不**在这里出现：它们在
 //! 「帮助 → 关于 Squarvo」里（[`crate::ui::show_about`]）。本模块只引用
 //! [`crate::shell`] 的公开槽位，不复制标签或对象树逻辑；真正连上数据库后，
 //! `ui.rs` 会用 [`crate::ui::Workspace`] 整体替换这里的外壳。
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
 
+use crate::browse::ConnectionState;
 use crate::shell::{Shell, ShellHandlers};
 
 /// 侧栏里一条已保存连接的只读展示数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupConnection {
-    /// 注册表里的连接键（点击时用它预填连接对话框）。
+    /// 注册表里的连接键（点击时用它按保存的凭据连接）。
     pub key: String,
     /// 用户可见名称。
     pub name: String,
@@ -29,6 +37,25 @@ pub struct StartupConnection {
     pub driver: String,
     /// 目标（`user@host:port/db` 或 SQLite 文件路径）；只显示，不含密码。
     pub target: String,
+    /// 浏览会话状态（决定右键「断开」是否出现）。
+    pub state: ConnectionState,
+}
+
+/// 启动工作区的侧栏行动作。
+///
+/// 全部由 `ui.rs` 提供：本模块只负责把用户的点击 / 右键动作转发出去，
+/// 不自己判断「该连接还是该弹对话框」（那个判断只有一处，见
+/// [`crate::browse::saved_click_action`]）。
+#[derive(Clone)]
+pub struct StartupActions {
+    /// 左键点击 / 回车：按保存的凭据连接（含展开与凭据缺失回落）。
+    pub connect_saved: Rc<dyn Fn(String)>,
+    /// 右键「编辑连接…」：打开预填对话框。
+    pub edit: Rc<dyn Fn(String)>,
+    /// 右键「断开」：关闭这条连接的浏览会话。
+    pub disconnect: Rc<dyn Fn(String)>,
+    /// 右键「删除连接」：二次确认后删除配置与凭据条目。
+    pub delete: Rc<dyn Fn(String)>,
 }
 
 /// 启动工作区的接线。
@@ -41,8 +68,8 @@ pub struct StartupConfig {
     pub browse_sessions: usize,
     /// 左组「连接」与页脚「新建连接…」：打开既有的连接对话框。
     pub connect: Rc<dyn Fn()>,
-    /// 点击侧栏某条已保存连接：打开对话框并预填该连接（**不**自动连接）。
-    pub open_saved: Rc<dyn Fn(String)>,
+    /// 侧栏行动作（点击连接 / 右键编辑 / 断开 / 删除）。
+    pub actions: StartupActions,
     /// 页脚「断开后端」：与状态页原来的按钮走同一条清理路径。
     pub disconnect: Rc<dyn Fn()>,
 }
@@ -55,14 +82,29 @@ pub fn idle_status_text(driver_count: usize, browse_sessions: usize) -> String {
     format!("驱动 {driver_count} · 浏览会话 {browse_sessions}")
 }
 
+/// 侧栏一行的副标题：`驱动 · 目标`，已连接时再带状态徽标。
+///
+/// 纯函数（不接触 GTK）：启动态与 #144 的 QA 断言都用同一份文案规则。
+#[must_use]
+pub fn row_subtitle(connection: &StartupConnection) -> String {
+    match connection.state.badge() {
+        "" => format!("{} · {}", connection.driver, connection.target),
+        badge => format!("{} · {} · {badge}", connection.driver, connection.target),
+    }
+}
+
 /// 启动态外壳：侧栏连接列表 + `Objects` 空态 + 状态栏。
 pub struct StartupWorkspace {
     root: gtk::Box,
     list: gtk::ListBox,
     count: gtk::Label,
     empty_hint: gtk::Label,
-    /// 点击已保存连接 → 打开预填好的连接对话框。
-    open_saved: Rc<dyn Fn(String)>,
+    /// 侧栏行动作（点击 / 右键）。
+    actions: StartupActions,
+    /// 当前打开的右键菜单（一次只留一个）。
+    menu: Rc<RefCell<Option<gtk::Popover>>>,
+    /// 名字 → (连接键, 状态)：右键菜单与 QA 按名字找行时用。
+    rows: RefCell<std::collections::HashMap<String, (String, ConnectionState)>>,
 }
 
 impl StartupWorkspace {
@@ -219,7 +261,9 @@ impl StartupWorkspace {
             list,
             count,
             empty_hint,
-            open_saved: Rc::clone(&config.open_saved),
+            actions: config.actions.clone(),
+            menu: Rc::new(RefCell::new(None)),
+            rows: RefCell::new(std::collections::HashMap::new()),
         });
         workspace.set_connections(&config.connections);
         workspace
@@ -248,15 +292,26 @@ impl StartupWorkspace {
             self.list.remove(&row);
         }
         self.count.set_text(&format!("{} 条", connections.len()));
+        {
+            let mut rows = self.rows.borrow_mut();
+            rows.clear();
+            for connection in connections {
+                rows.insert(
+                    connection.name.clone(),
+                    (connection.key.clone(), connection.state),
+                );
+            }
+        }
         for connection in connections {
+            let subtitle = row_subtitle(connection);
             let row = adw::ActionRow::builder()
                 .title(connection.name.as_str())
-                .subtitle(format!("{} · {}", connection.driver, connection.target))
+                .subtitle(subtitle)
                 .build();
-            // 点击已保存连接 → 打开连接对话框并预填参数；用户仍需显式点
-            // 「保存并连接」。启动时绝不自动连接任何一条（AGENTS §9）。
+            // 点击已保存连接 = 按保存的凭据直接建立浏览会话（#144）：与对象树
+            // 「点未连接的连接」同一个入口。启动时绝不自动连接任何一条（AGENTS §9）。
             row.set_activatable(true);
-            row.set_tooltip_text(Some("打开连接对话框并预填已保存的参数（不会自动连接）"));
+            row.set_tooltip_text(Some("按保存的凭据连接；右键可编辑 / 断开 / 删除这条连接"));
             row.add_prefix(&gtk::Image::from_icon_name(
                 if connection.driver == "sqlite" {
                     "document-open-symbolic"
@@ -265,8 +320,15 @@ impl StartupWorkspace {
                 },
             ));
             let key = connection.key.clone();
-            let open_saved = Rc::clone(&self.open_saved);
-            row.connect_activated(move |_| open_saved(key.clone()));
+            let connect_saved = Rc::clone(&self.actions.connect_saved);
+            let activate_key = key.clone();
+            row.connect_activated(move |_| connect_saved(activate_key.clone()));
+            self.attach_context_menu(
+                row.upcast_ref::<gtk::Widget>(),
+                &key,
+                &connection.name,
+                connection.state,
+            );
             self.list.append(&row);
         }
         if connections.is_empty() {
@@ -277,6 +339,232 @@ impl StartupWorkspace {
             self.empty_hint.set_visible(false);
         }
     }
+
+    /// 给一行挂右键菜单（编辑 / 断开 / 删除；编辑走右键，不占左键）。
+    fn attach_context_menu(
+        &self,
+        anchor: &gtk::Widget,
+        key: &str,
+        name: &str,
+        state: ConnectionState,
+    ) {
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let menu = Rc::clone(&self.menu);
+        let actions = self.actions.clone();
+        let key = key.to_owned();
+        let name = name.to_owned();
+        let anchor_for_gesture = anchor.clone();
+        gesture.connect_pressed(move |gesture, _presses, x, y| {
+            show_row_menu(
+                &anchor_for_gesture,
+                gesture,
+                x,
+                y,
+                &key,
+                &name,
+                state,
+                &actions,
+                &menu,
+            );
+        });
+        anchor.add_controller(gesture);
+    }
+
+    /// QA（`--qa-startup-click <name>`）：按名字激活一行。
+    ///
+    /// 走的是行自己的 `activate()`——与用户左键点击 / 回车同一条 `activated`
+    /// 信号，不绕过界面直接调 gRPC。
+    pub fn activate_named(&self, name: &str) -> Result<String, String> {
+        let mut child = self.list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            let Some(row) = widget.downcast_ref::<adw::ActionRow>() else {
+                continue;
+            };
+            if row.title().as_str() != name {
+                continue;
+            }
+            eprintln!("[qa] 启动态侧栏激活已保存连接「{name}」");
+            // `WidgetExt::activate` 与 `ActionRowExt::activate` 同名：这里要的是后者
+            // （发 `activated` 信号，走与用户点击同一条回调）。
+            adw::prelude::ActionRowExt::activate(row);
+            return Ok(name.to_owned());
+        }
+        Err(format!(
+            "启动态侧栏里没有「{name}」（共 {} 条；确认 connections.json 里有这条连接）",
+            self.connection_count()
+        ))
+    }
+    /// QA（`--qa-startup-menu <name>`）：按名字打开一行的右键菜单。
+    ///
+    /// 走的就是右键手势调用的同一个 [`show_row_menu`]：菜单项与真实右键完全一致。
+    pub fn open_menu_named(&self, name: &str) -> Result<(), String> {
+        let Some((key, state)) = self.rows.borrow().get(name).cloned() else {
+            return Err(format!(
+                "启动态侧栏里没有「{name}」（共 {} 条）",
+                self.connection_count()
+            ));
+        };
+        let mut child = self.list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            let Some(row) = widget.downcast_ref::<adw::ActionRow>() else {
+                continue;
+            };
+            if row.title().as_str() != name {
+                continue;
+            }
+            show_row_menu(
+                row.upcast_ref(),
+                &gtk::GestureClick::new(),
+                0.0,
+                0.0,
+                &key,
+                name,
+                state,
+                &self.actions,
+                &self.menu,
+            );
+            return Ok(());
+        }
+        Err(format!("启动态侧栏里没有可点开的「{name}」行"))
+    }
+
+    /// QA（`--qa-startup-menu-pick <label>`）：点当前菜单里该文案的条目。
+    ///
+    /// 走按钮自己的 `clicked` 信号（与用户鼠标点击同一条回调），不是直调业务函数。
+    pub fn pick_menu_item(&self, label: &str) -> Result<(), String> {
+        let Some(popover) = self.menu.borrow().clone() else {
+            return Err("右键菜单没有打开：无法选择条目".to_owned());
+        };
+        let Some(child) = popover.child() else {
+            return Err("右键菜单没有内容".to_owned());
+        };
+        let Some(list) = child.downcast_ref::<gtk::Box>() else {
+            return Err("右键菜单结构不是按钮列表".to_owned());
+        };
+        let mut cursor = list.first_child();
+        let mut labels = Vec::new();
+        while let Some(widget) = cursor {
+            cursor = widget.next_sibling();
+            let Some(button) = widget.downcast_ref::<gtk::Button>() else {
+                continue;
+            };
+            let current = button.label().unwrap_or_default().to_string();
+            if current == label {
+                eprintln!("[qa] 点右键菜单条目「{label}」");
+                button.emit_clicked();
+                return Ok(());
+            }
+            labels.push(current);
+        }
+        Err(format!(
+            "右键菜单里没有「{label}」（实际：{}）",
+            labels.join(" / ")
+        ))
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn show_row_menu(
+    anchor: &gtk::Widget,
+    gesture: &gtk::GestureClick,
+    x: f64,
+    y: f64,
+    key: &str,
+    name: &str,
+    state: ConnectionState,
+    actions: &StartupActions,
+    slot: &Rc<RefCell<Option<gtk::Popover>>>,
+) {
+    if let Some(previous) = slot.borrow_mut().take() {
+        previous.popdown();
+        previous.unparent();
+    }
+    let _ = gesture;
+    let popover = gtk::Popover::new();
+    popover.set_parent(anchor);
+    popover.set_has_arrow(true);
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+        i32::try_from(x as i64).unwrap_or(0),
+        i32::try_from(y as i64).unwrap_or(0),
+        1,
+        1,
+    )));
+
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.set_margin_top(4);
+    list.set_margin_bottom(4);
+    list.set_margin_start(4);
+    list.set_margin_end(4);
+
+    let mut entries: Vec<(String, Rc<dyn Fn()>)> = Vec::new();
+    {
+        let edit = Rc::clone(&actions.edit);
+        let key = key.to_owned();
+        let label = name.to_owned();
+        entries.push((
+            "编辑连接…".to_owned(),
+            Rc::new(move || {
+                eprintln!("[startup] 右键「编辑连接…」：{label}");
+                edit(key.clone());
+            }),
+        ));
+    }
+    if state.is_connected() {
+        let disconnect = Rc::clone(&actions.disconnect);
+        let key = key.to_owned();
+        let label = name.to_owned();
+        entries.push((
+            "断开".to_owned(),
+            Rc::new(move || {
+                eprintln!("[startup] 右键「断开」：{label}");
+                disconnect(key.clone());
+            }),
+        ));
+    }
+    {
+        let delete = Rc::clone(&actions.delete);
+        let key = key.to_owned();
+        let label = name.to_owned();
+        entries.push((
+            "删除连接".to_owned(),
+            Rc::new(move || {
+                eprintln!("[startup] 右键「删除连接」：{label}");
+                delete(key.clone());
+            }),
+        ));
+    }
+
+    eprintln!(
+        "[startup] 右键菜单（「{name}」）：{}",
+        entries
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    );
+    for (label, action) in entries {
+        let button = gtk::Button::with_label(&label);
+        button.add_css_class("flat");
+        button.set_halign(gtk::Align::Fill);
+        let popover_for_button = popover.clone();
+        button.connect_clicked(move |_| {
+            popover_for_button.popdown();
+            action();
+        });
+        list.append(&button);
+    }
+    popover.set_child(Some(&list));
+    {
+        let slot = Rc::clone(slot);
+        popover.connect_closed(move |popover| {
+            popover.unparent();
+            slot.borrow_mut().take();
+        });
+    }
+    slot.borrow_mut().replace(popover.clone());
+    popover.popup();
 }
 
 #[cfg(test)]
@@ -287,5 +575,25 @@ mod tests {
     fn idle_status_reports_driver_and_session_counts() {
         assert_eq!(idle_status_text(2, 0), "驱动 2 · 浏览会话 0");
         assert_eq!(idle_status_text(0, 0), "驱动 0 · 浏览会话 0");
+    }
+
+    #[test]
+    fn row_subtitle_marks_connected_connections() {
+        let idle = StartupConnection {
+            key: "sqlite|file|/tmp/a.db".to_owned(),
+            name: "a".to_owned(),
+            driver: "sqlite".to_owned(),
+            target: "/tmp/a.db".to_owned(),
+            state: ConnectionState::Disconnected,
+        };
+        assert_eq!(row_subtitle(&idle), "sqlite · /tmp/a.db");
+
+        let mut connected = idle.clone();
+        connected.state = ConnectionState::Connected;
+        assert_eq!(row_subtitle(&connected), "sqlite · /tmp/a.db · 已连接");
+
+        let mut busy = idle;
+        busy.state = ConnectionState::Connecting;
+        assert_eq!(row_subtitle(&busy), "sqlite · /tmp/a.db · 连接中…");
     }
 }

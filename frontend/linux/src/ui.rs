@@ -36,7 +36,10 @@ use crate::backend::endpoint;
 use crate::backend::metadata::NodeView;
 use crate::backend::table::TableEntry;
 use crate::backend::worker::{ConnectedSnapshot, Event, WorkerHandle};
-use crate::browse::{ConnectionRegistry, ConnectionSnapshot};
+use crate::browse::{
+    BrowseSession, ConnectionRegistry, ConnectionSnapshot, ConnectionState, SavedClickAction,
+    SessionEvent, saved_click_action,
+};
 use crate::data_page::{DataState, RowOpsState, TableBrowser};
 use crate::dialog::ConnectionDialog;
 use crate::inspector::{ConnectionLive, Inspector, TablePage};
@@ -79,6 +82,8 @@ struct UiState {
     registry: RefCell<Option<Rc<ConnectionRegistry>>>,
     /// 本次「保存并连接」的文件路径（把结果对回注册表条目用；SQLite 没有凭据可对）。
     pending_file_hint: RefCell<Option<String>>,
+    /// 成功的 `Connect` 次数（浏览会话建立事件计数；QA 断言「只连一次」用）。
+    connect_count: Cell<usize>,
 }
 
 /// `Connected` 事件携带的后端信息，「关于 Squarvo」的诊断区块用。
@@ -194,18 +199,8 @@ pub fn activate(app: &adw::Application) {
         actions: RefCell::new(None),
         registry: RefCell::new(registry),
         pending_file_hint: RefCell::new(None),
+        connect_count: Cell::new(0),
     });
-
-    // 浏览会话事件泵：建立/断开/会话列表的结果都只在主线程改界面。
-    if let (Some(registry), Some(session_events)) =
-        (state.registry.borrow().clone(), session_events)
-    {
-        glib::spawn_future_local(async move {
-            while let Ok(event) = session_events.recv().await {
-                registry.dispatch(event);
-            }
-        });
-    }
 
     // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
     let actions = install_window_actions(&window, &state);
@@ -279,6 +274,71 @@ pub fn activate(app: &adw::Application) {
     let events_closing = Rc::clone(&closing);
     let events_retry = Rc::clone(&retry);
     let events_disconnect = Rc::clone(&disconnect);
+
+    // 浏览会话事件泵（#114 / #144）：只在主线程改界面。
+    //
+    // 两个副作用在 `registry.dispatch` 之后做，因为它们要用到 `show_workspace` 的
+    // 回调（断开 / 重试）：
+    // - 未连接状态下按保存的凭据连上 → 落到工作区（#144）；
+    // - 凭据库里找不到配置的引用 → 明确提示并打开预填对话框（#144）。
+    if let (Some(registry), Some(session_events)) =
+        (state.registry.borrow().clone(), session_events)
+    {
+        let pump_state = Rc::clone(&state);
+        let pump_disconnect = Rc::clone(&events_disconnect);
+        let pump_retry = Rc::clone(&events_retry);
+        glib::spawn_future_local(async move {
+            while let Ok(event) = session_events.recv().await {
+                // 结果要在消费事件之前取出：dispatch 会把它搬进注册表状态。
+                let opened = match &event {
+                    SessionEvent::Opened {
+                        key,
+                        session,
+                        request: _,
+                    } => Some((key.clone(), session.clone())),
+                    _ => None,
+                };
+                let failure = match &event {
+                    SessionEvent::Failed {
+                        key,
+                        stage,
+                        message,
+                        code,
+                        request: _,
+                    } => Some((
+                        key.clone(),
+                        (*stage).to_owned(),
+                        message.clone(),
+                        code.clone(),
+                    )),
+                    _ => None,
+                };
+                registry.dispatch(event);
+                if let Some((key, session)) = opened {
+                    pump_state
+                        .connect_count
+                        .set(pump_state.connect_count.get() + 1);
+                    browse_session_opened(
+                        &pump_state,
+                        &registry,
+                        &key,
+                        &session,
+                        &pump_disconnect,
+                        &pump_retry,
+                    );
+                }
+                if let Some((key, stage, message, code)) = failure
+                    && code == "credential.not_found"
+                {
+                    prompt_for_saved_credentials(
+                        &pump_state,
+                        &key,
+                        &format!("{stage}: {message}（{code}）"),
+                    );
+                }
+            }
+        });
+    }
     glib::spawn_future_local(async move {
         while let Ok(event) = events.recv().await {
             match event {
@@ -326,6 +386,11 @@ pub fn activate(app: &adw::Application) {
                     }
                     // #139：握手成功即落地工作区外壳，不再停在 v0.1 诊断页。
                     show_startup_workspace(&events_state, &snapshot, &events_disconnect);
+                    // #144：启动态点击已保存连接（走行自己的 activated 信号）。
+                    maybe_run_qa_startup_click(&events_state);
+                    // #144：右键菜单（编辑 / 断开 / 删除）与删除连接的自动确认。
+                    maybe_run_qa_startup_menu(&events_state);
+                    maybe_run_qa_delete_connection(&events_state);
                     maybe_run_qa_profile(&events_state);
                     if crate::qa::open_about() {
                         let state = Rc::clone(&events_state);
@@ -389,6 +454,25 @@ pub fn activate(app: &adw::Application) {
                         match result {
                             Ok(report) => dialog.show_test_report(&report),
                             Err(failure) => dialog.show_failure(&failure),
+                        }
+                    }
+                }
+                Event::CredentialDeleted { reference, result } => {
+                    match result {
+                        Ok(()) => {
+                            eprintln!("[startup] 已删除凭据条目 {reference}（删除连接的后继清理）")
+                        }
+                        Err(failure) => {
+                            // 配置已经删掉了：这里只如实说明密钥条目还在，不静默。
+                            let message = format!(
+                                "配置已删除，密钥条目未删除（{}）：{}",
+                                failure.code(),
+                                failure.detail()
+                            );
+                            eprintln!("[startup] {message}（{reference}）");
+                            if !events_closing.get() {
+                                show_message(&events_state, "密钥条目未删除", &message);
+                            }
                         }
                     }
                 }
@@ -600,6 +684,19 @@ pub fn activate(app: &adw::Application) {
                             }
                         }
                     }
+                    // #144：按保存凭据连接 / 凭据缺失回落（sessions / 标题 / 树 / 只连一次 /
+                    // 对话框）。断言读的都是真实界面与注册表，不是「状态机里应该是」。
+                    if !crate::qa::expect_dialog().is_empty()
+                        || !crate::qa::expect_startup_connect().is_empty()
+                    {
+                        match verify_startup_connect(&capture_state) {
+                            Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
+                            Err(reason) => {
+                                eprintln!("[qa] 断言失败：{reason}");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
                     // #139：「关于 Squarvo」必须能打开，并显示后端版本与驱动清单。
                     if crate::qa::open_about() || !crate::qa::expect_about().is_empty() {
                         match verify_about(&capture_state) {
@@ -712,6 +809,123 @@ fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
     dialog.present(&state.window);
 }
 
+/// 「按保存的凭据连接」的**唯一**入口（#144）：启动态侧栏点击与对象树点击都调它。
+///
+/// 只读 `connections.json` 里的引用，让后端从操作系统凭据库取密码：这里拿不到、
+/// 也不写任何明文。三种去向：
+///
+/// - 已连接 → 展开 / 收起树上的连接节点（与点箭头同一条 `set_expanded`）；
+/// - 未连接 → `registry.open(key)`（一次 `Connect`，成功后落到工作区 + 展开树）；
+/// - 凭据缺失（服务器型驱动没有引用）→ 明确提示并打开预填对话框，不发无用 RPC。
+fn connect_saved(state: &Rc<UiState>, key: &str) {
+    let Some(registry) = state.registry.borrow().clone() else {
+        eprintln!("[startup] 连接注册表不可用：忽略按保存凭据连接 {key}");
+        return;
+    };
+    let Some(saved) = registry.saved(key) else {
+        eprintln!("[startup] 连接注册表里没有 {key}：忽略这次点击");
+        return;
+    };
+    let current = registry
+        .snapshot(key)
+        .map_or(ConnectionState::Disconnected, |row| row.state);
+    let action = saved_click_action(current, &saved);
+    eprintln!(
+        "[startup] 点击已保存连接「{}」→ connect_saved（{}）",
+        saved.name,
+        action.name()
+    );
+    match action {
+        SavedClickAction::ToggleExpanded => {
+            match state.workspace.borrow().as_ref() {
+                Some(workspace) => workspace.toggle_connection(key),
+                // 启动态没有对象树：连接已建立却还没有工作区时无事可做（正常路径不会到这里）。
+                None => eprintln!(
+                    "[startup] 「{}」已连接：启动态没有可展开的树节点",
+                    saved.name
+                ),
+            }
+        }
+        SavedClickAction::Connect => registry.open(key),
+        SavedClickAction::PromptForCredentials => {
+            prompt_for_saved_credentials(state, key, "配置里没有凭据引用")
+        }
+        SavedClickAction::Ignore => eprintln!(
+            "[startup] 「{}」正在连接/断开（{}）：忽略这次点击",
+            saved.name,
+            current.name()
+        ),
+    }
+}
+
+/// 凭据缺失回落（#144）：明确提示 + 打开预填对话框，让用户补密码。
+///
+/// 提示写在对话框自己的状态行里（主标题是「凭据不存在：请重新输入密码」这类可读
+/// 文案 + 稳定错误码），日志只带连接键与错误码，不带任何密码。
+fn prompt_for_saved_credentials(state: &Rc<UiState>, key: &str, reason: &str) {
+    let name = state
+        .registry
+        .borrow()
+        .as_ref()
+        .and_then(|registry| registry.name_for_key(key))
+        .unwrap_or_else(|| key.to_owned());
+    eprintln!(
+        "[startup] 凭据缺失：连接「{name}」（键 {key}）；{reason}；已打开预填对话框请用户补密码"
+    );
+    open_connection_dialog_for(state, Some(key));
+    if let Some(dialog) = state.dialog.borrow().as_ref() {
+        dialog.show_prompt_reason(&format!("这条连接缺少密码，请编辑后重试（{reason}）"));
+    }
+}
+
+/// 浏览会话建立后的界面效果（#144）：**还没有工作区**时落到工作区并展开该连接。
+///
+/// 已经在工作区里（用户点树上的另一条连接、或 QA 展开树）就什么都不做：注册表
+/// 状态变化已经让树重新渲染，树的自动展开与用户点击走的是同一条路径。
+fn browse_session_opened(
+    state: &Rc<UiState>,
+    registry: &Rc<ConnectionRegistry>,
+    key: &str,
+    session: &BrowseSession,
+    on_disconnect: &Rc<dyn Fn()>,
+    on_retry: &Rc<dyn Fn()>,
+) {
+    if state.workspace.borrow().is_some() {
+        return;
+    }
+    let Some(saved) = registry.saved(key) else {
+        eprintln!("[startup] 浏览会话已建立，但连接已不在注册表：{key}");
+        return;
+    };
+    // 标题规则（§5.1）用连接名；数据页 / 新查询标签绑定到这条连接。
+    state.connection_name.replace(Some(saved.name.clone()));
+    registry.set_active(Some(key), None);
+    let outcome = ConnectOutcome {
+        credential_ref: saved.credential_ref.clone(),
+        connection_id: session.connection_id.clone(),
+        session_id: session.session_id.clone(),
+        driver_id: session.driver_id.clone(),
+        server_version: session.server_version.clone(),
+        latency_millis: session.latency_millis,
+        // 会话列表由 `dispatch` 里的 `ListSessions` 回报；这里不伪造一份。
+        sessions: Vec::new(),
+        capabilities: session.capabilities.clone(),
+        // 本次没有写配置（只用了已有条目）：不是失败，只是没有路径可展示。
+        config: Ok(String::new()),
+    };
+    eprintln!(
+        "[startup] 已按保存的凭据连上「{}」（驱动 {}，会话 {}）：落到工作区并展开连接",
+        saved.name,
+        session.driver_id,
+        short_id(&session.session_id)
+    );
+    state.startup.borrow_mut().take();
+    show_workspace(state, &outcome, on_disconnect, on_retry);
+    if let Some(workspace) = state.workspace.borrow().as_ref() {
+        workspace.expand_connection(key);
+    }
+}
+
 /// 把草稿交给 worker；worker 不可用时立刻在对话框里报错。
 fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionDraft, save: bool) {
     let mut queued = false;
@@ -734,6 +948,83 @@ fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionD
         dialog.set_pending(false);
         dialog.show_failure(&ConnectionFailure::backend_unavailable());
     }
+}
+
+/// QA（`--qa-startup-click <name>`）：在启动态侧栏按名字激活一行。
+///
+/// 走的是 `adw::ActionRow::activate()`：与用户左键点击 / 回车同一条 `activated`
+/// 信号，因此「按保存凭据连接」整条链路（connect_saved → registry.open →
+/// Connect → 落到工作区）都被真实走到，没有绕过界面直调 gRPC。
+fn maybe_run_qa_startup_click(state: &Rc<UiState>) {
+    let Some(name) = crate::qa::startup_click() else {
+        return;
+    };
+    let Some(startup) = state.startup.borrow().clone() else {
+        eprintln!("[qa] 启动态工作区尚未建立：--qa-startup-click 未生效");
+        std::process::exit(4);
+    };
+    eprintln!("[qa] 启动态点击：{name}");
+    // 让第一帧先渲染出来（与用户看到行之后才点同一个顺序）。
+    glib::timeout_add_local_once(Duration::from_millis(400), move || {
+        if let Err(reason) = startup.activate_named(&name) {
+            eprintln!("[qa] 启动态点击失败：{reason}");
+            std::process::exit(4);
+        }
+    });
+}
+
+/// QA（`--qa-startup-menu <name>` / `--qa-startup-menu-pick <label>`）：打开右键菜单并按文案点条目。
+///
+/// 菜单本身由 [`crate::startup::StartupWorkspace::open_menu_named`] 用右键手势同一条
+/// [`crate::startup::show_row_menu`] 路径打开；点条目走按钮自己的 `clicked` 信号。
+fn maybe_run_qa_startup_menu(state: &Rc<UiState>) {
+    let Some(name) = crate::qa::startup_menu() else {
+        return;
+    };
+    let Some(startup) = state.startup.borrow().clone() else {
+        eprintln!("[qa] 启动态工作区尚未建立：--qa-startup-menu 未生效");
+        std::process::exit(4);
+    };
+    let pick = crate::qa::startup_menu_pick();
+    glib::timeout_add_local_once(Duration::from_millis(400), move || {
+        if let Err(reason) = startup.open_menu_named(&name) {
+            eprintln!("[qa] 打开右键菜单失败：{reason}");
+            std::process::exit(4);
+        }
+        let Some(pick) = pick else {
+            return;
+        };
+        eprintln!("[qa] 右键菜单已打开，准备点「{pick}」");
+        let startup_for_pick = startup.clone();
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            if let Err(reason) = startup_for_pick.pick_menu_item(&pick) {
+                eprintln!("[qa] 点右键菜单条目失败：{reason}");
+                std::process::exit(4);
+            }
+        });
+    });
+}
+
+/// QA（`--qa-delete-connection <name>`）：走「删除连接」同一条回调并自动确认。
+fn maybe_run_qa_delete_connection(state: &Rc<UiState>) {
+    let Some(name) = crate::qa::delete_connection() else {
+        return;
+    };
+    let state = Rc::clone(state);
+    glib::timeout_add_local_once(Duration::from_millis(400), move || {
+        let key = state.registry.borrow().as_ref().and_then(|registry| {
+            registry
+                .snapshots()
+                .into_iter()
+                .find(|row| row.name == name)
+                .map(|row| row.key)
+        });
+        let Some(key) = key else {
+            eprintln!("[qa] 删除连接失败：注册表里没有「{name}」");
+            std::process::exit(4);
+        };
+        confirm_delete_saved(&state, &key);
+    });
 }
 
 /// QA 自动化：把档案填进对话框（与用户输入同一控件），再触发「保存并连接」的回调。
@@ -828,21 +1119,9 @@ fn show_startup_workspace(
     }
 
     let registry = state.registry.borrow().clone();
-    let connections: Vec<crate::startup::StartupConnection> = registry
+    let connections = registry
         .as_ref()
-        .map(|registry| {
-            registry
-                .snapshots()
-                .into_iter()
-                .map(|row| crate::startup::StartupConnection {
-                    key: row.key,
-                    name: row.name,
-                    driver: row.driver,
-                    target: row.target,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+        .map_or_else(Vec::new, |registry| startup_connections(registry));
     let browse_sessions = registry
         .as_ref()
         .map_or(0, |registry| registry.connected_count());
@@ -855,9 +1134,23 @@ fn show_startup_workspace(
             let state = Rc::clone(state);
             Rc::new(move || open_connection_dialog(&state))
         },
-        open_saved: {
-            let state = Rc::clone(state);
-            Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
+        actions: crate::startup::StartupActions {
+            connect_saved: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| connect_saved(&state, &key))
+            },
+            edit: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
+            },
+            disconnect: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| disconnect_saved(&state, &key))
+            },
+            delete: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| confirm_delete_saved(&state, &key))
+            },
         },
         disconnect: Rc::clone(on_disconnect),
     });
@@ -870,6 +1163,139 @@ fn show_startup_workspace(
         crate::qa::elapsed_ms(),
         startup.connection_count()
     );
+}
+
+/// 注册表快照 → 启动态侧栏的行数据（只含展示字段，不含密码）。
+fn startup_connections(registry: &ConnectionRegistry) -> Vec<crate::startup::StartupConnection> {
+    registry
+        .snapshots()
+        .into_iter()
+        .map(|row| crate::startup::StartupConnection {
+            key: row.key,
+            name: row.name,
+            driver: row.driver,
+            target: row.target,
+            state: row.state,
+        })
+        .collect()
+}
+
+/// 配置变化后重填启动态侧栏（删除连接后不重建整个外壳：状态栏与标签页都还在）。
+fn refresh_startup_connections(state: &Rc<UiState>) {
+    let (Some(startup), Some(registry)) = (
+        state.startup.borrow().clone(),
+        state.registry.borrow().clone(),
+    ) else {
+        return;
+    };
+    startup.set_connections(&startup_connections(&registry));
+}
+
+/// 断开一条连接的浏览会话（侧栏右键「断开」）：与树上的右键走同一条确认路径。
+fn disconnect_saved(state: &Rc<UiState>, key: &str) {
+    let Some(registry) = state.registry.borrow().clone() else {
+        return;
+    };
+    let Some(snapshot) = registry.snapshot(key) else {
+        eprintln!("[startup] 断开：注册表里没有 {key}");
+        return;
+    };
+    if !snapshot.state.is_connected() {
+        eprintln!("[startup] 断开：连接「{}」当前未连接，忽略", snapshot.name);
+        return;
+    }
+    confirm_disconnect(state, snapshot);
+}
+
+/// 删除一条已保存连接（侧栏右键「删除连接」）：二次确认 → 删配置 → 尽力删密钥。
+fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
+    let Some(registry) = state.registry.borrow().clone() else {
+        return;
+    };
+    let Some(saved) = registry.saved(key) else {
+        eprintln!("[startup] 删除：注册表里没有 {key}");
+        return;
+    };
+    let body = format!(
+        "将从 connections.json 删除连接「{}」（{}）。\n\
+         对象树里这条连接与其浏览会话会一并消失；其它连接不受影响。",
+        saved.name,
+        saved.target_label()
+    );
+    let dialog = adw::AlertDialog::new(Some("删除连接？"), Some(&body));
+    let saved_name = saved.name.clone();
+    dialog.add_response("cancel", "取消");
+    dialog.add_response("delete", "删除连接");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    {
+        let state = Rc::clone(state);
+        let registry = Rc::clone(&registry);
+        let key = key.to_owned();
+        let name = saved.name.clone();
+        let reference = saved.credential_ref.clone();
+        let handled = Rc::new(Cell::new(false));
+        dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+            if handled.replace(true) || response != "delete" {
+                return;
+            }
+            eprintln!("[startup] 用户确认删除连接「{name}」（连接键 {key}）");
+            // 浏览会话先关掉：删掉条目之后它就成了没人认领的会话。
+            registry.disconnect(&key);
+            match crate::config::remove_by_key(&key) {
+                Ok(true) => eprintln!("[startup] 已从 connections.json 删除连接「{name}」"),
+                Ok(false) => {
+                    eprintln!(
+                        "[startup] connections.json 里没有连接「{name}」（{key}），未改动文件"
+                    );
+                }
+                Err(error) => {
+                    eprintln!("[startup] 删除连接「{name}」的配置失败：{error}");
+                    show_message(
+                        &state,
+                        "删除连接失败",
+                        &format!("无法写回 connections.json：{error}"),
+                    );
+                    return;
+                }
+            }
+            registry.refresh_from_config();
+            refresh_startup_connections(&state);
+            // 密钥条目尽力删除：删不掉不冒充成功，界面会写明「配置已删除，密钥条目未删除」。
+            if reference.is_empty() {
+                eprintln!("[startup] 连接「{name}」没有凭据引用（无需清理密钥条目）");
+                return;
+            }
+            match state.worker.borrow().as_ref() {
+                Some(worker) => worker.delete_credential(&reference),
+                None => eprintln!("[startup] worker 不可用：跳过密钥条目清理（{reference}）"),
+            }
+        });
+    }
+    dialog.present(Some(&state.window));
+    // 无人值守验证（`--qa-delete-connection <name>`）：仍然走对话框自己的 response
+    // 信号，与用户点「删除连接」同一个入口，不是绕过确认直接删。
+    if crate::qa::delete_connection().as_deref() == Some(saved_name.as_str()) {
+        eprintln!("[qa] 自动确认删除连接「{saved_name}」");
+        let dialog_for_qa = dialog.clone();
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            let value = glib::Value::from("delete");
+            dialog_for_qa.emit_by_name::<()>("response", &[&value]);
+            if dialog_for_qa.is_visible() {
+                dialog_for_qa.close();
+            }
+        });
+    }
+}
+
+/// 一条不可操作的提示对话框（删除失败 / 密钥条目残留）。
+fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
+    let dialog = adw::AlertDialog::new(Some(heading), Some(body));
+    dialog.add_response("close", "知道了");
+    dialog.set_default_response(Some("close"));
+    dialog.set_close_response("close");
+    dialog.present(Some(&state.window));
 }
 
 /// 连接数据库后的主界面：左侧对象树 + 右侧标签工作区（一标签一会话）。
@@ -940,6 +1366,11 @@ fn show_workspace(
     eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
     workspace.refresh_flat_tables();
     workspace.schedule_flat_retry();
+    // #144：树挂载后补一次「已连接连接层展开」。
+    //
+    // 浏览会话的 `Opened` 事件可能先于树订阅到达（notify 丢掉），而行又是懒创建的：
+    // 没有这一步，「保存并连接」之后的连接层要等用户/脚本去点才展开。
+    workspace.expand_connected_layers();
     if let Some(script) = crate::qa::tabs_script() {
         match crate::tabs::parse_script(&script) {
             Ok(steps) => workspace.tabs.run_qa_script(steps),
@@ -1060,6 +1491,21 @@ struct Workspace {
 }
 
 impl Workspace {
+    /// 展开 / 收起树上的连接节点（`connect_saved` 判为「已连接」时用）。
+    fn toggle_connection(&self, key: &str) {
+        self.tree.toggle_connection(key);
+    }
+
+    /// 展开树上的连接节点（按保存凭据连上、落到工作区时用）。
+    fn expand_connection(&self, key: &str) {
+        self.tree.expand_connection(key);
+    }
+
+    /// 补展开所有已连接的连接层（#144：树挂载后调一次，防止 notify 丢失/行未创建）。
+    fn expand_connected_layers(&self) {
+        self.tree.expand_connected();
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         state: &Rc<UiState>,
@@ -1266,6 +1712,10 @@ impl Workspace {
                 Rc::new(move |snapshot: ConnectionSnapshot| {
                     confirm_disconnect(&state, snapshot);
                 })
+            },
+            connect_saved: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| connect_saved(&state, &key))
             },
         });
 
@@ -2569,6 +3019,130 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
         "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段）",
         startup.connection_count()
     ))
+}
+
+/// #144：截图时刻断言「按保存凭据连接」的结果。
+///
+/// 字段：
+/// - `sessions=<n>`：最近一次 `ListSessions` 返回的会话总数（浏览会话建立后会立刻数一次）；
+/// - `title_contains=<子串>`：窗口标题（§5.1 的 `<连接名> - <连接类型>`）；
+/// - `connected=<名字>`：该连接在注册表里处于已连接态；
+/// - `tree_expanded=<名字>`：该连接的树节点已展开（读 `set_expanded` 的真实状态）；
+/// - `connects=<n>` / `log=browse_opened`：成功的 `Connect` 次数（「浏览会话已建立」只出现一次）。
+///
+/// 另外 `--qa-expect-dialog` 断言连接对话框已打开（凭据缺失回落路径）。
+fn verify_startup_connect(state: &Rc<UiState>) -> Result<String, String> {
+    let registry = state
+        .registry
+        .borrow()
+        .clone()
+        .ok_or_else(|| "连接注册表不可用：没有可断言的对象".to_owned())?;
+    let workspace = state.workspace.borrow().as_ref().cloned();
+    let mut passed: Vec<String> = Vec::new();
+
+    for (field, expected) in crate::qa::expect_startup_connect() {
+        match field.as_str() {
+            "sessions" => {
+                let expected: usize = expected.parse().map_err(|_| {
+                    format!("--qa-expect-startup-connect sessions 不是整数：{expected}")
+                })?;
+                let actual = registry.session_count().ok_or_else(|| {
+                    "还没有读到 ListSessions：无法断言会话数（连接可能没成功）".to_owned()
+                })?;
+                if actual != expected {
+                    return Err(format!(
+                        "会话数期望 {expected}，实际 {actual}（已连接 {} 条浏览会话）",
+                        registry.connected_count()
+                    ));
+                }
+                passed.push(format!("sessions={actual}"));
+            }
+            "connects" | "log" => {
+                let expected: usize = if field == "connects" {
+                    expected
+                        .parse()
+                        .map_err(|_| format!("connects 不是整数：{expected}"))?
+                } else {
+                    if expected != "browse_opened" {
+                        return Err(format!(
+                            "--qa-expect-startup-connect log 只接受 browse_opened，实际：{expected}"
+                        ));
+                    }
+                    // 「浏览会话已建立」出现一次 ⇔ 成功的 Connect 只有一次。
+                    1
+                };
+                let actual = state.connect_count.get();
+                if actual != expected {
+                    return Err(format!(
+                        "Connect 次数期望 {expected}，实际 {actual}（每次成功建立浏览会话算一次）"
+                    ));
+                }
+                passed.push(format!("{field}={actual}"));
+            }
+            "title_contains" => {
+                let title = state.title.title().to_string();
+                if !title.contains(&expected) {
+                    return Err(format!("窗口标题期望包含「{expected}」，实际「{title}」"));
+                }
+                passed.push(format!("title_contains={expected}"));
+            }
+            "connected" | "tree_expanded" => {
+                let row = registry
+                    .snapshots()
+                    .into_iter()
+                    .find(|row| row.name == expected)
+                    .ok_or_else(|| format!("注册表里没有连接「{expected}」"))?;
+                if field == "connected" {
+                    if !row.state.is_connected() {
+                        return Err(format!(
+                            "连接「{expected}」期望已连接，实际 {}（{}）",
+                            row.state.name(),
+                            row.detail
+                        ));
+                    }
+                    passed.push(format!("connected={expected}"));
+                } else {
+                    let expanded = workspace
+                        .as_ref()
+                        .and_then(|workspace| workspace.tree.connection_expanded(&row.key))
+                        .ok_or_else(|| {
+                            format!("对象树里没有连接「{expected}」的节点（工作区可能还没建立）")
+                        })?;
+                    if !expanded {
+                        return Err(format!("连接「{expected}」的树节点期望已展开，实际收起"));
+                    }
+                    passed.push(format!("tree_expanded={expected}"));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "未知的 --qa-expect-startup-connect 字段：{other}（可用：sessions / connects / log / title_contains / connected / tree_expanded）"
+                ));
+            }
+        }
+    }
+
+    if !crate::qa::expect_dialog().is_empty() {
+        let Some(dialog) = state.dialog.borrow().as_ref().cloned() else {
+            return Err("期望连接对话框已打开，实际没有打开的对话框".to_owned());
+        };
+        // 读状态行控件自己的文字（用户看到的就是这一行），不是「状态机里应该是」。
+        let status = dialog.observed_status();
+        for needle in crate::qa::expect_dialog() {
+            if !status.contains(&needle) {
+                return Err(format!(
+                    "对话框状态行应含「{needle}」，实际「{}」",
+                    truncate_for_log(&status, 400)
+                ));
+            }
+            passed.push(format!("dialog≈{needle}"));
+        }
+    }
+
+    if passed.is_empty() {
+        return Err("没有登记任何 --qa-expect-startup-connect 断言".to_owned());
+    }
+    Ok(passed.join(" · "))
 }
 
 /// #139：「关于 Squarvo」可打开，并显示后端版本与驱动清单。

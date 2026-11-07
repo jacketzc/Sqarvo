@@ -93,6 +93,15 @@
 //!   「端点文件」等诊断字段）、`--qa-open-about`（握手后打开「关于 Squarvo」）、
 //!   `--qa-expect-about <子串>`（「关于」里必须出现的文案，可重复）。
 //!
+//! - #144 增补（启动态点击已保存连接；全部要求 `--screenshot`，`--qa-startup-click`
+//!   与 `--qa-startup-menu` 除外）：
+//!   `--qa-startup-click <名字>`（激活启动态侧栏的一行，走行自己的 `activated` 信号）、
+//!   `--qa-expect-startup-connect <字段=值>`（可重复：`sessions|connects|log|
+//!   title_contains|connected|tree_expanded`）、`--qa-expect-dialog <子串>`（连接对话框
+//!   已打开且含该文案）、`--qa-startup-menu <名字>` + `--qa-startup-menu-pick <条目>`
+//!   （打开右键菜单并点条目）、`--qa-delete-connection <名字>`（走「删除连接」回调并
+//!   自动确认，仍经过二次确认对话框）。
+//!
 //! 这些都是「脚本 + 断言」的收拢：既有 `--qa-*` 的语义一个都没改。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
@@ -765,6 +774,19 @@ struct Args {
     // ---- #139 启动落地工作区 ----
     /// `--qa-startup-workspace`：截图时刻断言当前是未连接的启动工作区（Objects 空态）。
     startup_workspace: bool,
+    // ---- #144 启动态点击已保存连接 ----
+    /// `--qa-startup-click <name>`：在启动态侧栏按名字激活一行（走 `activated` 同一条回调）。
+    startup_click: Option<String>,
+    /// `--qa-expect-startup-connect <字段=值>`：截图时刻断言「按保存凭据连接」的结果（可重复）。
+    expect_startup_connect: Vec<(String, String)>,
+    /// `--qa-expect-dialog <子串>`：截图时刻断言连接对话框已打开且含该文案（可重复）。
+    expect_dialog: Vec<String>,
+    /// `--qa-startup-menu <name>`：在启动态侧栏打开该行的右键菜单。
+    startup_menu: Option<String>,
+    /// `--qa-startup-menu-pick <label>`：点右键菜单里该文案的条目（与用户点击同一条路径）。
+    startup_menu_pick: Option<String>,
+    /// `--qa-delete-connection <name>`：走「删除连接」同一条回调并自动确认。
+    delete_connection: Option<String>,
     /// `--qa-open-about`：握手完成后打开「关于 Squarvo」（截图与断言用）。
     open_about: bool,
     /// `--qa-expect-about <substring>`：「关于」对话框里必须出现的文案（可重复）。
@@ -1323,6 +1345,44 @@ pub fn open_about() -> bool {
     ARGS.get().is_some_and(|args| args.open_about)
 }
 
+/// 启动态侧栏要按名字激活的连接（`--qa-startup-click`，#144）。
+#[must_use]
+pub fn startup_click() -> Option<String> {
+    ARGS.get().and_then(|args| args.startup_click.clone())
+}
+
+/// 「按保存凭据连接」的截图时刻断言（`--qa-expect-startup-connect`，可重复；#144）。
+#[must_use]
+pub fn expect_startup_connect() -> Vec<(String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_startup_connect.clone())
+}
+
+/// 截图时刻要断言的对话框文案（`--qa-expect-dialog`，可重复；#144）。
+#[must_use]
+pub fn expect_dialog() -> Vec<String> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_dialog.clone())
+}
+
+/// 启动态侧栏要打开右键菜单的连接名（`--qa-startup-menu`，#144）。
+#[must_use]
+pub fn startup_menu() -> Option<String> {
+    ARGS.get().and_then(|args| args.startup_menu.clone())
+}
+
+/// 右键菜单里要点的条目文案（`--qa-startup-menu-pick`，#144）。
+#[must_use]
+pub fn startup_menu_pick() -> Option<String> {
+    ARGS.get().and_then(|args| args.startup_menu_pick.clone())
+}
+
+/// 要删除并自动确认的连接名（`--qa-delete-connection`，#144）。
+#[must_use]
+pub fn delete_connection() -> Option<String> {
+    ARGS.get().and_then(|args| args.delete_connection.clone())
+}
+
 /// 「关于」对话框里必须出现的文案（`--qa-expect-about`，可重复；#139）。
 #[must_use]
 pub fn expect_about() -> Vec<String> {
@@ -1742,6 +1802,71 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.startup_workspace = true;
                 index += 1;
             }
+            "--qa-startup-click" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-startup-click 需要一个连接名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-startup-click 的连接名不能为空".to_owned());
+                }
+                parsed.startup_click = Some(value.clone());
+                index += 2;
+            }
+            "--qa-expect-startup-connect" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-startup-connect 需要 字段=值".to_owned())?;
+                let (field, expected) = value.split_once('=').ok_or_else(|| {
+                    format!("--qa-expect-startup-connect 需要 字段=值，实际：{value}")
+                })?;
+                if field.trim().is_empty() {
+                    return Err(format!("--qa-expect-startup-connect 的字段为空：{value}"));
+                }
+                parsed
+                    .expect_startup_connect
+                    .push((field.trim().to_owned(), expected.trim().to_owned()));
+                index += 2;
+            }
+            "--qa-startup-menu" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-startup-menu 需要一个连接名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-startup-menu 的连接名不能为空".to_owned());
+                }
+                parsed.startup_menu = Some(value.clone());
+                index += 2;
+            }
+            "--qa-startup-menu-pick" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-startup-menu-pick 需要一个菜单项文案".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-startup-menu-pick 的菜单项文案不能为空".to_owned());
+                }
+                parsed.startup_menu_pick = Some(value.clone());
+                index += 2;
+            }
+            "--qa-delete-connection" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-delete-connection 需要一个连接名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-delete-connection 的连接名不能为空".to_owned());
+                }
+                parsed.delete_connection = Some(value.clone());
+                index += 2;
+            }
+            "--qa-expect-dialog" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-dialog 需要一个文案子串".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-expect-dialog 的文案子串不能为空".to_owned());
+                }
+                parsed.expect_dialog.push(value.clone());
+                index += 2;
+            }
             "--qa-open-about" => {
                 parsed.open_about = true;
                 index += 1;
@@ -1966,6 +2091,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
     {
         return Err(
             "--qa-startup-workspace / --qa-open-about / --qa-expect-about 必须与 --screenshot 一起使用"
+                .to_owned(),
+        );
+    }
+    if (!parsed.expect_dialog.is_empty() || !parsed.expect_startup_connect.is_empty())
+        && parsed.capture.is_none()
+    {
+        return Err(
+            "--qa-expect-startup-connect / --qa-expect-dialog 必须与 --screenshot 一起使用（断言发生在截图时刻）"
                 .to_owned(),
         );
     }
@@ -2859,6 +2992,67 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn startup_click_flags_parse_and_require_a_screenshot() {
+        let plain = parse(&args(&["app"])).unwrap();
+        assert!(plain.startup_click.is_none());
+        assert!(plain.expect_startup_connect.is_empty());
+        assert!(plain.expect_dialog.is_empty());
+
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-startup-click",
+            "v023-mariadb",
+            "--qa-expect-startup-connect",
+            "sessions=1",
+            "--qa-expect-startup-connect=log=browse_opened",
+            "--qa-expect-startup-connect",
+            "title_contains=mariadb",
+            "--qa-expect-dialog",
+            "缺少密码",
+            "--qa-startup-menu",
+            "v023-mariadb",
+            "--qa-startup-menu-pick",
+            "编辑连接…",
+            "--qa-delete-connection",
+            "v023-mariadb",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.startup_click.as_deref(), Some("v023-mariadb"));
+        assert_eq!(
+            parsed.expect_startup_connect,
+            vec![
+                ("sessions".to_owned(), "1".to_owned()),
+                ("log".to_owned(), "browse_opened".to_owned()),
+                ("title_contains".to_owned(), "mariadb".to_owned()),
+            ]
+        );
+        assert_eq!(parsed.expect_dialog, vec!["缺少密码".to_owned()]);
+        assert_eq!(parsed.startup_menu.as_deref(), Some("v023-mariadb"));
+        assert_eq!(parsed.startup_menu_pick.as_deref(), Some("编辑连接…"));
+        assert_eq!(parsed.delete_connection.as_deref(), Some("v023-mariadb"));
+
+        // 断言发生在截图那一刻：没有截图就不能登记。
+        assert!(parse(&args(&["app", "--qa-expect-startup-connect", "sessions=1"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-dialog", "缺少密码"])).is_err());
+        // 缺值 / 缺分隔符都是参数错误，不能静默当成「通过」。
+        assert!(parse(&args(&["app", "--qa-startup-click"])).is_err());
+        assert!(parse(&args(&["app", "--qa-startup-click", " "])).is_err());
+        assert!(
+            parse(&args(&[
+                "app",
+                "--screenshot",
+                "/tmp/a.png",
+                "--qa-expect-startup-connect",
+                "sessions"
+            ]))
+            .is_err()
+        );
+        assert!(parse(&args(&["app", "--qa-delete-connection"])).is_err());
     }
 
     #[test]

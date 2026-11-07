@@ -169,6 +169,11 @@ pub enum Command {
     Shutdown,
     /// 测试连接：写凭据 → `TestConnection`。
     TestConnection(Box<ConnectionDraft>),
+    /// 删除一条凭据（#144：删除连接时尽力清理密钥环条目）。
+    DeleteCredential {
+        /// 要删除的凭据引用（`sqarvo:conn/<uuid>`）。
+        reference: String,
+    },
     /// 保存并连接：写凭据 → `TestConnection` → `Connect` → `ListSessions` → 写配置。
     SaveAndConnect(Box<ConnectionDraft>),
     /// 为标签建立一条**新的**数据库会话（或领养「保存并连接」留下的那条）。
@@ -673,6 +678,13 @@ pub enum Event {
     Tested(Result<TestReport, ConnectionFailure>),
     /// 「保存并连接」结果。
     ConnectResult(Result<ConnectOutcome, ConnectionFailure>),
+    /// 删除凭据条目的结果（#144）。
+    CredentialDeleted {
+        /// 被删除的凭据引用。
+        reference: String,
+        /// 结果：成功或可展示的原因（配置已删除时界面会提示「密钥条目未删除」）。
+        result: Result<(), ConnectionFailure>,
+    },
     /// 标签会话已建立（或失败）。
     TabSession {
         /// 标签 ID。
@@ -780,6 +792,13 @@ impl WorkerHandle {
     /// 请求保存并连接，非阻塞。
     pub fn save_and_connect(&self, draft: ConnectionDraft) {
         let _ = self.commands.send(Command::SaveAndConnect(Box::new(draft)));
+    }
+
+    /// 删除一条凭据条目（幂等；失败由 [`Event::CredentialDeleted`] 回报）。
+    pub fn delete_credential(&self, reference: &str) {
+        let _ = self.commands.send(Command::DeleteCredential {
+            reference: reference.to_owned(),
+        });
     }
 
     /// 为标签建立一条数据库会话（或领养「保存并连接」留下的那条）。
@@ -1132,6 +1151,18 @@ async fn worker_loop(
                             None => Err(ConnectionFailure::backend_unavailable()),
                         };
                         let _ = events.send(Event::Tested(outcome)).await;
+                    }
+                    Command::DeleteCredential { reference } => {
+                        // 尽力而为：配置已经删掉，密钥条目删不掉时如实回报原因。
+                        let result = match session.as_ref() {
+                            Some(active_session) => {
+                                active_session.client.delete_credential(&reference).await
+                            }
+                            None => Err(ConnectionFailure::backend_unavailable()),
+                        };
+                        let _ = events
+                            .send(Event::CredentialDeleted { reference, result })
+                            .await;
                     }
                     Command::SaveAndConnect(draft) => {
                         let outcome = match session.as_ref() {

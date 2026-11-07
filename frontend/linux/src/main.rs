@@ -229,7 +229,30 @@ fn register_qa_options(app: &adw::Application) {
             None,
         );
     }
+
+    // ---- #144：启动态点击已保存连接（只追加，不改既有开关） ----
+    for (name, arg_description) in [
+        ("qa-startup-click", "connection-name"),
+        (
+            "qa-expect-startup-connect",
+            "sessions|connects|log|title_contains|connected|tree_expanded=value",
+        ),
+        ("qa-expect-dialog", "substring（对话框已打开且含该文案）"),
+        ("qa-startup-menu", "connection-name"),
+        ("qa-startup-menu-pick", "menu-item-label"),
+        ("qa-delete-connection", "connection-name"),
+    ] {
+        app.add_main_option(
+            name,
+            glib::Char::from(b'\0'),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::String,
+            "QA：启动态侧栏点击 / 右键菜单 / 删除连接（开发/验证用）",
+            Some(arg_description),
+        );
+    }
 }
+
 /// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径
 /// （`connect_shutdown` → 终止自己启动的后端子进程）。
 fn install_app_actions(app: &adw::Application) {
