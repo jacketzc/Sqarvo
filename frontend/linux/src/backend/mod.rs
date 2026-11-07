@@ -19,6 +19,7 @@ pub mod endpoint;
 pub mod error;
 pub mod metadata;
 pub mod query;
+pub mod routing;
 pub mod supervisor;
 pub mod table;
 pub mod worker;

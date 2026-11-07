@@ -321,6 +321,21 @@ impl SqlPage {
         self.mark_cancelled(None);
     }
 
+    /// QA 观测：已加载行数（与界面显示同一份计数）。
+    pub fn qa_row_count(&self) -> u64 {
+        self.results.row_count()
+    }
+
+    /// QA 观测：结果区状态名（`RunState::name`，断言用）。
+    pub fn qa_state(&self) -> &'static str {
+        self.results.state().name()
+    }
+
+    /// QA 观测：首行首列文本（结果归属与数据前缀的断言用）。
+    pub fn qa_first_cell(&self) -> Option<String> {
+        self.results.first_cell_text()
+    }
+
     /// 滚动到第 `row` 行（0 起）。未加载时先记住目标并按批预取。
     pub fn scroll_to_row(self: &Rc<Self>, row: u32) {
         self.scroll_queue.borrow_mut().push_back(row);

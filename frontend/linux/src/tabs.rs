@@ -43,6 +43,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 
+use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
 use crate::backend::worker::{TabSessionOpened, TableEvent, WorkerHandle};
@@ -121,6 +122,16 @@ impl TabKind {
     #[must_use]
     pub fn has_session(&self) -> bool {
         !matches!(self, Self::Objects)
+    }
+
+    /// 事件通道：会话级事件只能投给同种标签（判定在 `backend::routing`）。
+    #[must_use]
+    pub fn channel(&self) -> Channel {
+        match self {
+            Self::Objects => Channel::Objects,
+            Self::Table { .. } => Channel::Table,
+            Self::Query { .. } => Channel::Query,
+        }
     }
 
     /// 标签标题。
@@ -259,6 +270,8 @@ pub struct TabHandle {
     query_started: Cell<Option<std::time::Instant>>,
     /// 查询标签上一次执行的耗时（毫秒；结束时写入）。
     query_timing: Cell<Option<u64>>,
+    /// 该标签实际收到的会话级事件名（按到达顺序；QA 断言与日志证据）。
+    trace: RefCell<Vec<String>>,
 }
 
 impl TabHandle {
@@ -271,7 +284,29 @@ impl TabHandle {
     fn set_session(&self, session: String) {
         self.session.replace(Some(session));
     }
+
+    /// 记录一条已投递的事件（只记事件名，不记载荷）。
+    ///
+    /// 上限 [`TRACE_LIMIT`]：到顶后追加一个 `…` 并停止增长，长查询不会无限占内存；
+    /// 「到顶」本身也是可见事实（不会让断言把截断当成完整序列）。
+    fn record(&self, name: &str) {
+        let mut trace = self.trace.borrow_mut();
+        if trace.len() < TRACE_LIMIT {
+            trace.push(name.to_owned());
+        } else if trace.len() == TRACE_LIMIT {
+            trace.push("…".to_owned());
+        }
+    }
+
+    /// 该标签收到的事件序列（诊断 / QA 证据用）。
+    #[must_use]
+    pub fn trace(&self) -> Vec<String> {
+        self.trace.borrow().clone()
+    }
 }
+
+/// 每个标签保留的事件名条数上限。
+const TRACE_LIMIT: usize = 64;
 
 /// 表名 → 对象（平铺列表的查询入口）。
 pub type TableResolver = Rc<dyn Fn(&str) -> Option<TableEntry>>;
@@ -592,6 +627,7 @@ impl TabSet {
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
+            trace: RefCell::new(Vec::new()),
         });
         self.tabs.borrow_mut().push(handle);
         self.view.set_selected_page(&page);
@@ -641,6 +677,7 @@ impl TabSet {
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
+            trace: RefCell::new(Vec::new()),
         });
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
@@ -690,6 +727,7 @@ impl TabSet {
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
+            trace: RefCell::new(Vec::new()),
         });
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
@@ -989,11 +1027,19 @@ impl TabSet {
     // -- worker 事件路由 ---------------------------------------------------
 
     /// 表数据事件：按 `tab_id` 投递到该标签自己的数据页。
+    ///
+    /// 归属判定用 [`routing::route`]（同一份纯逻辑有单测）：找不到标签或通道不符时
+    /// **丢弃并记一行日志**，绝不把结果画到别的标签上，也不碰已摘掉的控件。
     pub fn route_table(self: &Rc<Self>, tab_id: &str, event: TableEvent) {
         let Some(tab) = self.by_id(tab_id) else {
-            eprintln!("[tabs] 丢弃表数据事件：标签 {tab_id} 已关闭");
+            eprintln!("[tabs] {}", DropReason::UnknownTab.log_line(tab_id));
             return;
         };
+        if let Delivery::Drop(reason) = routing::route(Some(tab.kind.channel()), Channel::Table) {
+            eprintln!("[tabs] {}", reason.log_line(tab_id));
+            return;
+        }
+        tab.record(event.name());
         let Some(data) = tab.data.as_ref() else {
             eprintln!("[tabs] 丢弃表数据事件：标签 {tab_id} 不是表标签");
             return;
@@ -1020,9 +1066,14 @@ impl TabSet {
     /// 查询事件：按 `tab_id` 投递到该标签自己的 SQL 页，并更新摘要。
     pub fn route_query(self: &Rc<Self>, tab_id: &str, event: QueryEvent) {
         let Some(tab) = self.by_id(tab_id) else {
-            eprintln!("[tabs] 丢弃查询事件：标签 {tab_id} 已关闭");
+            eprintln!("[tabs] {}", DropReason::UnknownTab.log_line(tab_id));
             return;
         };
+        if let Delivery::Drop(reason) = routing::route(Some(tab.kind.channel()), Channel::Query) {
+            eprintln!("[tabs] {}", reason.log_line(tab_id));
+            return;
+        }
+        tab.record(event.name());
         let Some(page) = tab.sql.as_ref() else {
             eprintln!("[tabs] 丢弃查询事件：标签 {tab_id} 不是查询标签");
             return;
@@ -1333,10 +1384,9 @@ impl TabSet {
         if matches!(removed.kind, TabKind::Objects) {
             return;
         }
-        // 关闭结果窗口/游标：会话随后断开，服务端会回滚未提交事务。
-        if let Some(sql) = removed.sql.as_ref() {
-            sql.close_query();
-        }
+        // 关闭标签即释放它自己的会话：worker 的 `CloseTabSession` 先 Cancel 在途查询、
+        // 再 Close 游标，最后 Disconnect。这里**不**单独发 `CloseQuery`——那会把游标
+        // 提前摘掉，让 worker 看不到在途查询，从而跳过 Cancel。
         self.context.worker.close_tab_session(&removed.id);
         eprintln!(
             "[tabs] 标签 {} 已移除：会话 {} 请求释放（剩余 {} 个标签）",
@@ -1606,6 +1656,106 @@ impl TabSet {
                 sql.execute();
                 Ok(format!("第 {index} 个查询标签执行"))
             }
+            QaStep::Cancel(index) => {
+                let sql = self
+                    .sql_page_at(*index)
+                    .ok_or_else(|| format!("第 {index} 个标签不是查询标签"))?;
+                sql.request_cancel();
+                Ok(format!("第 {index} 个查询标签点了取消"))
+            }
+            QaStep::Scroll { tab, row } => {
+                if let Some(data) = self.data_page_at(*tab) {
+                    if data.qa_scroll_to_row(*row) {
+                        Ok(format!("第 {tab} 个表标签滚动到第 {row} 行"))
+                    } else {
+                        // 未加载到该行：让调度器重试（翻页在途），而不是假装滚动过。
+                        Err(format!(
+                            "第 {tab} 个表标签还没加载到第 {row} 行（已加载 {} 行）",
+                            data.row_count()
+                        ))
+                    }
+                } else if let Some(sql) = self.sql_page_at(*tab) {
+                    sql.scroll_to_row(*row);
+                    Ok(format!("第 {tab} 个查询标签请求滚动到第 {row} 行"))
+                } else {
+                    Err(format!("没有第 {tab} 个标签"))
+                }
+            }
+            QaStep::Trace(index) => {
+                let tab = self
+                    .by_index(*index)
+                    .ok_or_else(|| format!("没有第 {index} 个标签"))?;
+                let trace = tab.trace();
+                eprintln!(
+                    "[qa] 第 {index} 个标签（{}）事件序列（{} 条）：{}",
+                    tab.kind.title(),
+                    trace.len(),
+                    if trace.is_empty() {
+                        "（空）".to_owned()
+                    } else {
+                        trace.join(",")
+                    }
+                );
+                Ok(format!("第 {index} 个标签事件序列已打印"))
+            }
+            QaStep::ExpectTrace { tab, expected } => {
+                let handle = self
+                    .by_index(*tab)
+                    .ok_or_else(|| format!("没有第 {tab} 个标签"))?;
+                let actual = handle.trace();
+                if actual == *expected {
+                    Ok(format!("第 {tab} 个标签事件序列={}", actual.join(",")))
+                } else {
+                    Err(format!(
+                        "第 {tab} 个标签事件序列期望 {}，实际 {}",
+                        expected.join(","),
+                        actual.join(",")
+                    ))
+                }
+            }
+            QaStep::ExpectRows { tab, rows } => {
+                let actual = match (self.data_page_at(*tab), self.sql_page_at(*tab)) {
+                    (Some(data), _) => data.row_count(),
+                    (None, Some(sql)) => sql.qa_row_count(),
+                    (None, None) => return Err(format!("没有第 {tab} 个标签")),
+                };
+                if actual == *rows {
+                    Ok(format!("第 {tab} 个标签已加载 {actual} 行"))
+                } else {
+                    Err(format!("第 {tab} 个标签已加载 {actual} 行，期望 {rows} 行"))
+                }
+            }
+            QaStep::ExpectQuery {
+                tab,
+                field,
+                expected,
+            } => {
+                let sql = self
+                    .sql_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是查询标签"))?;
+                let actual = match field {
+                    QueryField::Rows => sql.qa_row_count().to_string(),
+                    QueryField::State => sql.qa_state().to_owned(),
+                    QueryField::First => sql.qa_first_cell().unwrap_or_default(),
+                    QueryField::Summary => self
+                        .by_index(*tab)
+                        .and_then(|handle| handle.sql_summary.borrow().clone())
+                        .unwrap_or_default(),
+                };
+                let ok = match field {
+                    QueryField::Rows | QueryField::State => actual == *expected,
+                    // 前缀 / 摘要按「包含」比对：不要求逐字相等的文案也能断言关键片段。
+                    QueryField::First | QueryField::Summary => actual.contains(expected.as_str()),
+                };
+                if ok {
+                    Ok(format!("第 {tab} 个查询标签 {}={actual}", field.name()))
+                } else {
+                    Err(format!(
+                        "第 {tab} 个查询标签 {} 期望「{expected}」，实际「{actual}」",
+                        field.name()
+                    ))
+                }
+            }
             QaStep::Close { tab, answer } => {
                 if self.close_tab_at(*tab, *answer) {
                     Ok(format!("关闭第 {tab} 个标签（回答 {answer:?}）"))
@@ -1656,7 +1806,14 @@ impl TabSet {
 impl QaStep {
     /// 断言类步骤：失败即退出码 3（与既有的 `--qa-expect-*` 一致）。
     fn is_assertion(&self) -> bool {
-        matches!(self, Self::ExpectTabs(_) | Self::ExpectLimit(_))
+        matches!(
+            self,
+            Self::ExpectTabs(_)
+                | Self::ExpectLimit(_)
+                | Self::ExpectTrace { .. }
+                | Self::ExpectRows { .. }
+                | Self::ExpectQuery { .. }
+        )
     }
 }
 
@@ -1760,6 +1917,40 @@ pub enum QaStep {
     },
     /// 执行第 n 个查询标签里的 SQL。
     Execute(usize),
+    /// 点第 n 个查询标签的「取消」（与用户点取消同一条路径，幂等）。
+    Cancel(usize),
+    /// 滚动到第 n 个标签的第 `row` 行（表标签触发翻页，查询标签触发分批预取）。
+    Scroll {
+        /// 标签序号。
+        tab: usize,
+        /// 行号（0 起）。
+        row: u32,
+    },
+    /// 打印第 n 个标签实际收到的事件序列（证据）。
+    Trace(usize),
+    /// 断言第 n 个标签的事件序列逐项相等。
+    ExpectTrace {
+        /// 标签序号。
+        tab: usize,
+        /// 期望的事件名序列（按到达顺序）。
+        expected: Vec<String>,
+    },
+    /// 断言第 n 个标签已加载的行数（表标签 = 数据页，查询标签 = 结果区）。
+    ExpectRows {
+        /// 标签序号。
+        tab: usize,
+        /// 期望行数。
+        rows: u64,
+    },
+    /// 断言第 n 个查询标签的观测值（行数 / 状态 / 首行首列 / 摘要）。
+    ExpectQuery {
+        /// 标签序号。
+        tab: usize,
+        /// 观测字段。
+        field: QueryField,
+        /// 期望值（`rows` / `state` 逐字相等，`first` / `summary` 按包含）。
+        expected: String,
+    },
     /// 关闭第 n 个标签，并按答案自动回应三选对话框。
     Close {
         /// 标签序号。
@@ -1775,6 +1966,45 @@ pub enum QaStep {
     ExpectLimit(String),
     /// 等待若干毫秒。
     Sleep(u64),
+}
+
+/// `expect-query` 的观测字段（断言读的是界面真实持有的值，不是「应该是什么」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryField {
+    /// 已加载行数（整数，逐字相等）。
+    Rows,
+    /// 结果区状态名（[`crate::results::RunState::name`]，逐字相等）。
+    State,
+    /// 首行首列文本（按包含比对，用于前缀断言）。
+    First,
+    /// 状态栏摘要（按包含比对）。
+    Summary,
+}
+
+impl QueryField {
+    /// 解析字段名（只接受这一份词表，写错不算跑过）。
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "rows" => Ok(Self::Rows),
+            "state" => Ok(Self::State),
+            "first" => Ok(Self::First),
+            "summary" => Ok(Self::Summary),
+            other => Err(format!(
+                "expect-query 的字段只接受 rows|state|first|summary，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段名（日志与断言信息用）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rows => "rows",
+            Self::State => "state",
+            Self::First => "first",
+            Self::Summary => "summary",
+        }
+    }
 }
 
 /// 解析 QA 脚本。行格式：`<命令> [参数...]`，`#` 开头为注释。
@@ -1826,6 +2056,54 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     .to_string(),
             },
             "execute" => QaStep::Execute(parse_index(&parts, 1, number)?),
+            "cancel" => QaStep::Cancel(parse_index(&parts, 1, number)?),
+            "scroll" => QaStep::Scroll {
+                tab: parse_index(&parts, 1, number)?,
+                row: parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少行号", number + 1))?
+                    .parse::<u32>()
+                    .map_err(|_| format!("第 {} 行的行号不合法", number + 1))?,
+            },
+            "trace" => QaStep::Trace(parse_index(&parts, 1, number)?),
+            "expect-trace" => {
+                let raw = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少事件序列", number + 1))?;
+                let expected: Vec<String> = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if expected.is_empty() {
+                    return Err(format!("第 {} 行的事件序列为空", number + 1));
+                }
+                QaStep::ExpectTrace {
+                    tab: parse_index(&parts, 1, number)?,
+                    expected,
+                }
+            }
+            "expect-rows" => QaStep::ExpectRows {
+                tab: parse_index(&parts, 1, number)?,
+                rows: parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少行数", number + 1))?
+                    .parse::<u64>()
+                    .map_err(|_| format!("第 {} 行的行数不合法", number + 1))?,
+            },
+            "expect-query" => {
+                let (field, expected) = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少字段=值", number + 1))?
+                    .split_once('=')
+                    .ok_or_else(|| format!("第 {} 行需要 字段=值", number + 1))?;
+                QaStep::ExpectQuery {
+                    tab: parse_index(&parts, 1, number)?,
+                    field: QueryField::parse(field)?,
+                    expected: expected.to_owned(),
+                }
+            }
             "close" => QaStep::Close {
                 tab: parse_index(&parts, 1, number)?,
                 answer: match parts.get(2).copied() {
@@ -2038,5 +2316,68 @@ sleep 200
             "回答只接受 save|discard|cancel"
         );
         assert!(parse_script("expect-tabs x").is_err(), "数值必须可解析");
+        // #117 新增步骤的坏输入同样必须报错，不能被当成「没写」。
+        assert!(parse_script("expect-trace 2").is_err(), "缺少事件序列");
+        assert!(parse_script("expect-trace 2 ,").is_err(), "空序列");
+        assert!(
+            parse_script("expect-rows 1 many").is_err(),
+            "行数必须可解析"
+        );
+        assert!(parse_script("expect-query 2").is_err(), "缺少字段=值");
+        assert!(parse_script("expect-query 2 rows").is_err(), "缺少 =");
+        assert!(parse_script("expect-query 2 bogus=1").is_err(), "未知字段");
+        assert!(parse_script("scroll 1").is_err(), "缺少行号");
+    }
+
+    #[test]
+    fn script_parser_accepts_the_isolation_scenario() {
+        // 与真机取证脚本同一形状：慢查询标签取消、表标签翻页、断言各自的事件序列。
+        let script = "\
+open-table big_items
+select 1
+scroll 1 400
+query-tab
+sql 2 /tmp/slow.sql
+execute 2
+sleep 600
+cancel 2
+expect-query 2 state=cancelled
+expect-query 2 first=slow
+expect-rows 1 1000
+trace 2
+expect-trace 2 started,cancelled
+close 2
+";
+        let steps = parse_script(script).expect("脚本应当可解析");
+        assert_eq!(steps[2], QaStep::Scroll { tab: 1, row: 400 });
+        assert_eq!(steps[7], QaStep::Cancel(2));
+        assert_eq!(
+            steps[8],
+            QaStep::ExpectQuery {
+                tab: 2,
+                field: QueryField::State,
+                expected: "cancelled".to_owned(),
+            }
+        );
+        assert_eq!(
+            steps[12],
+            QaStep::ExpectTrace {
+                tab: 2,
+                expected: vec!["started".to_owned(), "cancelled".to_owned()],
+            }
+        );
+        assert_eq!(steps[11], QaStep::Trace(2));
+        assert_eq!(steps[10], QaStep::ExpectRows { tab: 1, rows: 1000 });
+        // 断言类步骤失败必须以退出码 3 结束（与既有 expect-tabs 同一口径）。
+        assert!(!QaStep::Cancel(2).is_assertion());
+        assert!(QaStep::ExpectRows { tab: 1, rows: 1 }.is_assertion());
+        assert!(
+            QaStep::ExpectQuery {
+                tab: 1,
+                field: QueryField::Rows,
+                expected: "1".to_owned()
+            }
+            .is_assertion()
+        );
     }
 }
