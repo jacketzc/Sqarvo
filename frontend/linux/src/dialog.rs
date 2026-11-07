@@ -28,6 +28,7 @@ use crate::backend::connection::{
     ConnectionDraft, ConnectionFailure, DriverFamily, TestReport, TlsMode,
     supports_chain_only_verify_ca,
 };
+use crate::config::SavedConnection;
 use crate::driver_form::{self, FieldSet, FormInput};
 use crate::qa::QaProfile;
 
@@ -550,6 +551,47 @@ impl ConnectionDialog {
         for class in ["dim-label", "success", "error"] {
             self.status.remove_css_class(class);
         }
+    }
+
+    /// 用已保存连接预填输入行（#139：启动工作区侧栏点击一条连接）。
+    ///
+    /// 只填非敏感字段；已有 `credential_ref` 时保留它，密码行留空——后端会从系统
+    /// 凭据库读取密码。**不**发起连接：用户仍需点「测试连接」/「保存并连接」。
+    pub fn apply_saved(&self, saved: &SavedConnection) -> Result<(), String> {
+        let index = self
+            .choices
+            .iter()
+            .position(|choice| choice.id == saved.driver)
+            .ok_or_else(|| {
+                format!(
+                    "后端 ListDrivers 未返回驱动「{}」：无法预填已保存连接",
+                    saved.driver
+                )
+            })?;
+        let index = u32::try_from(index).unwrap_or(0);
+        self.driver_row.set_selected(index);
+        self.apply_selection(index);
+
+        self.host_row.set_text(&saved.host);
+        self.port_row.set_text(&saved.port.to_string());
+        self.database_row.set_text(&saved.database);
+        self.username_row.set_text(&saved.username);
+        self.path_row.set_text(&saved.file_path);
+        self.read_only_row.set_active(saved.read_only);
+        if let Some(mode) = TlsMode::from_config_value(&saved.tls_mode) {
+            self.tls_row.set_selected(mode.index());
+        }
+        // 密码永远不回显：有凭据引用就复用它，没有就让用户输入。
+        self.password_row.set_text("");
+        self.credential_ref
+            .replace((!saved.credential_ref.is_empty()).then(|| saved.credential_ref.clone()));
+        self.name_override.replace(Some(saved.name.clone()));
+        if saved.credential_ref.is_empty() {
+            self.show_status("已填入保存的连接；请输入密码后连接", StatusKind::Info);
+        } else {
+            self.show_status("已填入保存的连接：密码将从系统凭据库读取", StatusKind::Info);
+        }
+        Ok(())
     }
 
     /// 用 QA 档案填充输入行（与用户输入完全相同的控件），密码取自环境变量。

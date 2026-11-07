@@ -2,10 +2,13 @@
 //!
 //! | 状态 | 界面表现 |
 //! |---|---|
-//! | Loading | 居中的 spinner + 当前握手阶段文案 |
-//! | Connected | 「已连接」+ 后端版本 / 协议版本 / 传输方式 / PID，可主动断开 |
+//! | Loading | 居中的 spinner + 当前握手阶段文案（握手期间的过渡态） |
+//! | Connected | 直接进入工作区外壳：侧栏连接列表 + `Objects` 空态 +「未连接」状态栏 |
 //! | Error | 可操作的错误文案（不含 token）与「重试」按钮 |
 //! | Disconnected | 连接结束原因与「重新连接」按钮 |
+//!
+//! 后端版本 / 协议 / PID / 端点文件等诊断信息不在主区域常驻：它们在
+//! 「帮助 → 关于 Squarvo」（[`show_about`]），启动态的主界面只说明「还没有选中连接」。
 //!
 //! 区域 01（窗口外壳）在这里：`AdwHeaderBar` + `AdwWindowTitle`（标题规则见
 //! workspace-model §5.1）与 headerbar 主菜单（ADR 0023：Linux 不设窗口内菜单行）。
@@ -60,9 +63,13 @@ struct UiState {
     header: adw::HeaderBar,
     /// 当前工作区（对象树 + SQL 编辑器 + 数据页 + DDL 面板；连接数据库后建立）。
     workspace: RefCell<Option<Rc<Workspace>>>,
+    /// 启动态工作区（握手成功、尚未连接数据库时的六区域外壳；#139）。
+    startup: RefCell<Option<Rc<crate::startup::StartupWorkspace>>>,
+    /// 当前打开的「关于 Squarvo」对话框（QA 断言读真实控件文本用）。
+    about: RefCell<Option<adw::Dialog>>,
     /// 端点描述文件路径：元数据通道（对象树 / 搜索 / DDL）自己建立 Channel 时要用。
     endpoint_path: std::path::PathBuf,
-    /// 后端握手信息（「帮助 → 诊断信息」的数据源；未握手时为 `None`）。
+    /// 后端握手信息（「帮助 → 关于 Squarvo」的数据源；未握手时为 `None`）。
     backend: RefCell<Option<BackendInfo>>,
     /// 用户所选连接的显示名（连接对话框的草稿名，标题规则用）。
     connection_name: RefCell<Option<String>>,
@@ -74,7 +81,7 @@ struct UiState {
     pending_file_hint: RefCell<Option<String>>,
 }
 
-/// `Connected` 事件携带的后端信息，诊断信息对话框用。
+/// `Connected` 事件携带的后端信息，「关于 Squarvo」的诊断区块用。
 struct BackendInfo {
     service_version: String,
     protocol_version: String,
@@ -83,6 +90,8 @@ struct BackendInfo {
     backend_pid: u32,
     started_by_frontend: bool,
     endpoint_path: String,
+    endpoint_service_version: String,
+    version_mismatch: bool,
     drivers: Vec<(String, String)>,
 }
 
@@ -141,7 +150,7 @@ pub fn activate(app: &adw::Application) {
     let endpoint_path = match endpoint::endpoint_path() {
         Ok(path) => path,
         Err(error) => {
-            // 端点路径不再常驻主界面（迁到「帮助 → 诊断信息」）：这里只报错误本身。
+            // 端点路径不再常驻主界面（迁到「帮助 → 关于 Squarvo」）：这里只报错误本身。
             show_error(&slot, &window_title, &error.to_string(), &noop_handler());
             window.present();
             return;
@@ -177,6 +186,8 @@ pub fn activate(app: &adw::Application) {
         backend_ready: Cell::new(false),
         header: header.clone(),
         workspace: RefCell::new(None),
+        startup: RefCell::new(None),
+        about: RefCell::new(None),
         endpoint_path,
         backend: RefCell::new(None),
         connection_name: RefCell::new(None),
@@ -295,6 +306,8 @@ pub fn activate(app: &adw::Application) {
                         backend_pid: snapshot.backend_pid,
                         started_by_frontend: snapshot.started_by_frontend,
                         endpoint_path: snapshot.endpoint_path.clone(),
+                        endpoint_service_version: snapshot.endpoint_service_version.clone(),
+                        version_mismatch: snapshot.version_mismatch,
                         drivers: snapshot
                             .drivers
                             .iter()
@@ -311,17 +324,20 @@ pub fn activate(app: &adw::Application) {
                     if let Some(registry) = events_state.registry.borrow().clone() {
                         registry.reset_sessions("后端已重新握手：浏览会话需要重建");
                     }
-                    show_connected(
-                        &events_state.slot,
-                        &events_state.title,
-                        &snapshot,
-                        &events_disconnect,
-                    );
+                    // #139：握手成功即落地工作区外壳，不再停在 v0.1 诊断页。
+                    show_startup_workspace(&events_state, &snapshot, &events_disconnect);
                     maybe_run_qa_profile(&events_state);
+                    if crate::qa::open_about() {
+                        let state = Rc::clone(&events_state);
+                        glib::timeout_add_local_once(Duration::from_millis(600), move || {
+                            show_about(&state);
+                        });
+                    }
                 }
                 Event::Error(message) => {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
+                        events_state.startup.borrow_mut().take();
                         events_state.title.set_title("Sqarvo");
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
@@ -337,6 +353,7 @@ pub fn activate(app: &adw::Application) {
                 Event::Disconnected(reason) => {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
+                        events_state.startup.borrow_mut().take();
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
@@ -405,6 +422,8 @@ pub fn activate(app: &adw::Application) {
                                     ),
                                 }
                             }
+                            // 已连上数据库：启动态外壳由连接后的工作区整体替换。
+                            events_state.startup.borrow_mut().take();
                             show_workspace(
                                 &events_state,
                                 &outcome,
@@ -522,26 +541,32 @@ pub fn activate(app: &adw::Application) {
         });
     }
 
-    // QA 取证：延时后把当前最上层界面（连接对话框或主窗口）渲染成 PNG 再关闭窗口。
+    // QA 取证：延时后把当前最上层界面（连接对话框 / 关于 / 主窗口）渲染成 PNG 再关闭窗口。
     if let Some(capture) = crate::qa::requested() {
         let capture_state = Rc::clone(&state);
         glib::timeout_add_local_once(capture.delay, move || {
             // 先把 dialog 从 RefCell 里克隆出来：关闭它会同步触发 `closed` 处理器，
             // 那里要 `borrow_mut()` 清空状态，外层还持着借用就会 panic。
             let dialog = capture_state.dialog.borrow().as_ref().cloned();
+            let about = capture_state.about.borrow().as_ref().cloned();
             eprintln!(
                 "[qa] 截图目标：{}",
                 if dialog.is_some() {
                     "连接对话框"
+                } else if about.is_some() {
+                    "关于 Squarvo"
                 } else {
                     "主窗口"
                 }
             );
-            let result = match dialog.as_ref() {
-                Some(dialog) => {
+            let result = match (dialog.as_ref(), about.as_ref()) {
+                (Some(dialog), _) => {
                     crate::qa::save_widget(&capture_state.window, &dialog.widget(), &capture.path)
                 }
-                None => crate::qa::save_window(&capture_state.window, &capture.path),
+                (None, Some(about)) => {
+                    crate::qa::save_widget(&capture_state.window, about, &capture.path)
+                }
+                (None, None) => crate::qa::save_window(&capture_state.window, &capture.path),
             };
             match result {
                 Ok(()) => {
@@ -557,6 +582,26 @@ pub fn activate(app: &adw::Application) {
                         || !crate::qa::expect_submit().is_empty()
                     {
                         match verify_expectations(&capture_state) {
+                            Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
+                            Err(reason) => {
+                                eprintln!("[qa] 断言失败：{reason}");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
+                    // #139：启动落地工作区的断言（主区域 = Objects 空态，不含诊断字段）。
+                    if crate::qa::startup_workspace() {
+                        match verify_startup_workspace(&capture_state) {
+                            Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
+                            Err(reason) => {
+                                eprintln!("[qa] 断言失败：{reason}");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
+                    // #139：「关于 Squarvo」必须能打开，并显示后端版本与驱动清单。
+                    if crate::qa::open_about() || !crate::qa::expect_about().is_empty() {
+                        match verify_about(&capture_state) {
                             Ok(summary) => eprintln!("[qa] 断言通过：{summary}"),
                             Err(reason) => {
                                 eprintln!("[qa] 断言失败：{reason}");
@@ -587,6 +632,9 @@ pub fn activate(app: &adw::Application) {
                     if let Some(dialog) = dialog.as_ref() {
                         dialog.force_close();
                     }
+                    if let Some(about) = about.as_ref() {
+                        about.force_close();
+                    }
                     // 截图时刻可能正处在某个定时器里：关窗放进下一次主循环迭代，
                     // 让当前事件先结束再走 close-request 的同一条清理路径。
                     let window_for_close = capture_state.window.clone();
@@ -603,8 +651,15 @@ pub fn activate(app: &adw::Application) {
     }
 }
 
-/// 打开（或呈现已打开的）连接对话框，并接线到 worker。
+/// 打开（或呈现已打开的）连接对话框（新建连接）。
 fn open_connection_dialog(state: &Rc<UiState>) {
+    open_connection_dialog_for(state, None);
+}
+
+/// 打开连接对话框；`saved_key` 有值时用该条已保存连接预填字段。
+///
+/// 预填只改输入控件，**不会**自动连接：用户仍需显式点「测试连接」或「保存并连接」。
+fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
     if !state.backend_ready.get() {
         eprintln!("[sqarvo-desktop] 后端尚未连接，忽略「新建连接」");
         return;
@@ -616,6 +671,20 @@ fn open_connection_dialog(state: &Rc<UiState>) {
 
     let drivers = state.drivers.borrow().clone();
     let dialog = ConnectionDialog::build(&drivers);
+    if let Some(key) = saved_key {
+        let saved = state
+            .registry
+            .borrow()
+            .as_ref()
+            .and_then(|registry| registry.saved(key));
+        match saved {
+            Some(saved) => match dialog.apply_saved(&saved) {
+                Ok(()) => eprintln!("[connections] 已用已保存连接「{}」预填对话框", saved.name),
+                Err(reason) => eprintln!("[connections] 无法预填已保存连接：{reason}"),
+            },
+            None => eprintln!("[connections] 注册表里找不到连接键 {key}，按新建连接打开"),
+        }
+    }
 
     {
         let state = Rc::clone(state);
@@ -734,62 +803,65 @@ fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
     set_page(slot, &page);
 }
 
-/// Connected：展示后端版本等关键信息，标题栏副标题同步连接状态。
-fn show_connected(
-    slot: &gtk::Box,
-    title: &adw::WindowTitle,
+/// Connected：握手成功即落到工作区外壳（#139）。
+///
+/// 侧栏是 `connections.json` 的已保存连接列表，主区域是固定 `Objects` 标签的空态，
+/// 状态栏显示「未连接」、驱动数与浏览会话数。后端诊断信息不在这里：见 [`show_about`]。
+fn show_startup_workspace(
+    state: &Rc<UiState>,
     snapshot: &ConnectedSnapshot,
     on_disconnect: &Rc<dyn Fn()>,
 ) {
-    title.set_subtitle(&format!(
-        "已连接 · 后端 {}（协议 {}）",
-        snapshot.service_version, snapshot.protocol_version
-    ));
-    let mut description = format!(
-        "后端版本 {}\n协议版本 {}（{} 构建）\n传输方式 {}\n后端进程 PID {} · 由前端启动：{}\n端点文件 {}\n已注册驱动：{}\n\n\
-         尚未连接数据库：点「文件 → 新建连接」或按 Ctrl+N 开始。",
-        snapshot.service_version,
-        snapshot.protocol_version,
-        snapshot.build_profile,
-        snapshot.transport,
-        snapshot.backend_pid,
-        if snapshot.started_by_frontend {
-            "是"
-        } else {
-            "否"
-        },
-        snapshot.endpoint_path,
-        if snapshot.drivers.is_empty() {
-            "（后端未返回任何驱动）".to_owned()
-        } else {
-            snapshot
-                .drivers
-                .iter()
-                .map(|driver| format!("{}（{}）", driver.display_name, driver.driver_id))
-                .collect::<Vec<_>>()
-                .join("、")
-        },
-    );
-    if snapshot.version_mismatch {
-        // 不一致必须展示，不能静默：可能连到了旧版本后端或读到了过期端点。
-        description.push_str(&format!(
-            "\n\n注意：端点记录的后端版本 {} 与 GetVersion 返回的 {} 不一致。",
-            snapshot.endpoint_service_version, snapshot.service_version
-        ));
+    // 重新握手时旧外壳整体重建：连接列表可能已经变化。
+    state.startup.borrow_mut().take();
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        // 没有数据库连接：标签 / 刷新 / 行操作都没有可作用的会话。
+        actions.set_workspace_ready(false);
     }
 
-    let page = adw::StatusPage::builder()
-        .title("已连接")
-        .description(description.as_str())
-        .build();
-    let button = gtk::Button::with_label("断开连接");
-    button.set_halign(gtk::Align::Center);
-    button.set_margin_top(18);
-    button.add_css_class("pill");
-    let handler = Rc::clone(on_disconnect);
-    button.connect_clicked(move |_| handler());
-    page.set_child(Some(&button));
-    set_page(slot, &page);
+    let registry = state.registry.borrow().clone();
+    let connections: Vec<crate::startup::StartupConnection> = registry
+        .as_ref()
+        .map(|registry| {
+            registry
+                .snapshots()
+                .into_iter()
+                .map(|row| crate::startup::StartupConnection {
+                    key: row.key,
+                    name: row.name,
+                    driver: row.driver,
+                    target: row.target,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let browse_sessions = registry
+        .as_ref()
+        .map_or(0, |registry| registry.connected_count());
+
+    let startup = crate::startup::StartupWorkspace::new(crate::startup::StartupConfig {
+        connections,
+        driver_count: snapshot.drivers.len(),
+        browse_sessions,
+        connect: {
+            let state = Rc::clone(state);
+            Rc::new(move || open_connection_dialog(&state))
+        },
+        open_saved: {
+            let state = Rc::clone(state);
+            Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
+        },
+        disconnect: Rc::clone(on_disconnect),
+    });
+    state.startup.replace(Some(Rc::clone(&startup)));
+    state.title.set_title("Sqarvo");
+    state.title.set_subtitle("未连接");
+    set_page(&state.slot, startup.widget());
+    eprintln!(
+        "[bench] t=+{}ms state=StartupWorkspace（未连接；{} 条已保存连接）",
+        crate::qa::elapsed_ms(),
+        startup.connection_count()
+    );
 }
 
 /// 连接数据库后的主界面：左侧对象树 + 右侧标签工作区（一标签一会话）。
@@ -965,7 +1037,7 @@ struct Workspace {
     open: Rc<dyn Fn(TableEntry)>,
     /// 刷新对象树 + 表列表（「视图 → 刷新」与 F5）。
     refresh: Rc<dyn Fn()>,
-    /// 「保存并连接」时的会话 ID（诊断信息里给出短形式；标签会话各自另有 ID）。
+    /// 「保存并连接」时的会话 ID（「关于 Squarvo」里给出短形式；标签会话各自另有 ID）。
     session_id: String,
 }
 
@@ -2398,6 +2470,95 @@ fn data_state_name(state: DataState) -> &'static str {
     }
 }
 
+/// 收集控件树里可见的文本（QA 断言读真实控件，不读状态机自述）。
+fn collect_widget_text(widget: &gtk::Widget) -> String {
+    let mut out = String::new();
+    collect_widget_text_into(widget, &mut out);
+    out
+}
+
+fn collect_widget_text_into(widget: &gtk::Widget, out: &mut String) {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        out.push_str(&label.text());
+        out.push('\n');
+    }
+    if let Some(button) = widget.downcast_ref::<gtk::Button>()
+        && let Some(label) = button.label()
+    {
+        out.push_str(&label);
+        out.push('\n');
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        collect_widget_text_into(&current, out);
+    }
+}
+
+/// #139：启动态断言——主区域是 `Objects` 空态，主界面不含后端诊断字段。
+fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
+    if state.workspace.borrow().is_some() {
+        return Err("已经连接数据库：当前不是启动态工作区".to_owned());
+    }
+    let startup = state
+        .startup
+        .borrow()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "启动态工作区尚未建立".to_owned())?;
+    let text = collect_widget_text(startup.widget().upcast_ref());
+    for required in ["Objects", "从左侧选择一个连接开始", "未连接", "浏览会话"] {
+        if !text.contains(required) {
+            return Err(format!(
+                "启动态缺少「{required}」；实际文本：{}",
+                truncate_for_log(&text, 600)
+            ));
+        }
+    }
+    for forbidden in ["后端版本", "端点文件", "协议版本", "后端进程 PID"] {
+        if text.contains(forbidden) {
+            return Err(format!(
+                "启动态主界面不应出现「{forbidden}」；实际文本：{}",
+                truncate_for_log(&text, 600)
+            ));
+        }
+    }
+    Ok(format!(
+        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段）",
+        startup.connection_count()
+    ))
+}
+
+/// #139：「关于 Squarvo」可打开，并显示后端版本与驱动清单。
+///
+/// 除了固定的两项，还校验 `--qa-expect-about` 登记的每个子串（例如具体驱动名）。
+fn verify_about(state: &Rc<UiState>) -> Result<String, String> {
+    let dialog = state
+        .about
+        .borrow()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "「关于 Squarvo」没有打开".to_owned())?;
+    let child = dialog
+        .child()
+        .ok_or_else(|| "「关于 Squarvo」没有内容".to_owned())?;
+    let text = collect_widget_text(&child);
+    let mut required = vec!["后端版本".to_owned(), "已注册驱动".to_owned()];
+    required.extend(crate::qa::expect_about());
+    for needle in &required {
+        if !text.contains(needle) {
+            return Err(format!(
+                "「关于 Squarvo」缺少「{needle}」；实际文本：{}",
+                truncate_for_log(&text, 600)
+            ));
+        }
+    }
+    Ok(format!(
+        "关于 Squarvo：包含后端版本与驱动清单（{} 项断言）",
+        required.len()
+    ))
+}
+
 /// QA：校验 `--qa-expect-data-state` / `--qa-expect-txn` / `--qa-expect-column`。
 ///
 /// 读的全部是控件上真实渲染出来的东西（徽标文本 / 失败态 CSS / 按钮 `sensitive` /
@@ -2753,8 +2914,9 @@ fn build_main_menu() -> gio::Menu {
     menu.append_submenu(Some("表"), &table);
 
     let help = gio::Menu::new();
-    help.append(Some("关于 Sqarvo"), Some("win.about"));
-    help.append(Some("诊断信息…"), Some("win.diagnostics"));
+    // #139：后端版本 / 协议 / PID / 端点文件 / 驱动清单都在「关于 Squarvo」里，
+    // 不再单独占一个「诊断信息」入口。
+    help.append(Some("关于 Squarvo"), Some("win.about"));
     menu.append_submenu(Some("帮助"), &help);
 
     menu
@@ -3021,12 +3183,6 @@ fn install_window_actions(
         about.connect_activate(move |_, _| show_about(&state));
     }
 
-    let diagnostics = gio::SimpleAction::new("diagnostics", None);
-    {
-        let state = Rc::clone(state);
-        diagnostics.connect_activate(move |_, _| show_diagnostics(&state));
-    }
-
     for action in [
         &new_connection,
         &new_tab,
@@ -3045,7 +3201,6 @@ fn install_window_actions(
         &delete_row,
         &export_csv,
         &about,
-        &diagnostics,
     ] {
         window.add_action(action);
     }
@@ -3072,57 +3227,99 @@ fn install_window_actions(
     actions
 }
 
-/// 「关于」：版本信息取自 cargo 包（不写死字符串）。
-fn show_about(state: &Rc<UiState>) {
-    let about = adw::AboutDialog::builder()
-        .application_name("Sqarvo")
-        .application_icon("io.sqarvo.Sqarvo")
-        .version(env!("CARGO_PKG_VERSION"))
-        .comments("轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）")
-        .build();
-    about.present(Some(&state.window));
+/// 后端诊断行（不含密码、凭据引用与 token）。
+///
+/// 纯函数：对话框与 QA 断言共用同一份文案，避免「界面改了、断言还在读旧字段」。
+fn backend_diagnostic_lines(info: &BackendInfo) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "后端版本：{}（协议 {}，{} 构建）",
+            info.service_version, info.protocol_version, info.build_profile
+        ),
+        format!("传输方式：{}", info.transport),
+        format!(
+            "后端进程：PID {}（由前端启动：{}）",
+            info.backend_pid,
+            if info.started_by_frontend {
+                "是"
+            } else {
+                "否"
+            }
+        ),
+        format!("端点文件：{}", info.endpoint_path),
+    ];
+    if info.version_mismatch {
+        // 不一致必须展示，不能静默：可能连到了旧版本后端或读到了过期端点。
+        lines.push(format!(
+            "注意：端点记录的后端版本 {} 与 GetVersion 返回的 {} 不一致。",
+            info.endpoint_service_version, info.service_version
+        ));
+    }
+    if info.drivers.is_empty() {
+        lines.push("已注册驱动：（后端未返回任何驱动）".to_owned());
+    } else {
+        lines.push(format!(
+            "已注册驱动：{}",
+            info.drivers
+                .iter()
+                .map(|(name, id)| format!("{name}（{id}）"))
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
+    }
+    lines
 }
 
-/// 「帮助 → 诊断信息」：端点文件、后端版本与传输方式。
+/// 「帮助 → 关于 Squarvo」：应用信息 + 后端诊断（#139）。
 ///
-/// 端点路径原本在主界面底部常驻（workspace-model §5 要求迁走）：这里给出同一份
-/// 信息，但按需打开、只在本机显示，且**不含**密码、凭据引用与 token。
-fn show_diagnostics(state: &Rc<UiState>) {
-    let mut lines = vec![format!("端点文件：{}", state.endpoint_path.display())];
-    match state.backend.borrow().as_ref() {
-        Some(info) => {
-            lines.push(format!(
-                "后端版本：{}（协议 {}，{} 构建）",
-                info.service_version, info.protocol_version, info.build_profile
-            ));
-            lines.push(format!("传输方式：{}", info.transport));
-            lines.push(format!(
-                "后端进程：PID {}（由前端启动：{}）",
-                info.backend_pid,
-                if info.started_by_frontend {
-                    "是"
-                } else {
-                    "否"
-                }
-            ));
-            lines.push(format!("握手时的端点记录：{}", info.endpoint_path));
-            if info.drivers.is_empty() {
-                lines.push("已注册驱动：（后端未返回任何驱动）".to_owned());
-            } else {
-                lines.push(format!(
-                    "已注册驱动：{}",
-                    info.drivers
-                        .iter()
-                        .map(|(name, id)| format!("{name}（{id}）"))
-                        .collect::<Vec<_>>()
-                        .join("、")
-                ));
-            }
-        }
-        None => lines.push("后端：尚未握手完成".to_owned()),
+/// 端点路径原本常驻主界面底部（workspace-model §5 要求迁走）。这里给出同一份信息，
+/// 但按需打开、只在本机显示，且**不含**密码、凭据引用与 token。
+/// 使用自绘 `AdwDialog`（而不是 `AdwAboutDialog`）是为了把诊断字段放进同一页、
+/// 让 QA 能在无人值守时读到真实控件文本。
+fn show_about(state: &Rc<UiState>) {
+    if let Some(dialog) = state.about.borrow().as_ref() {
+        dialog.present(Some(&state.window));
+        return;
     }
-    if let Some(name) = state.connection_name.borrow().as_ref() {
-        lines.push(format!("连接：{name}"));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let name = gtk::Label::new(Some("Sqarvo"));
+    name.set_xalign(0.0);
+    name.add_css_class("title-1");
+    let version = gtk::Label::new(Some(&format!("版本 {}", env!("CARGO_PKG_VERSION"))));
+    version.set_xalign(0.0);
+    version.add_css_class("dim-label");
+    let comments = gtk::Label::new(Some(
+        "轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）",
+    ));
+    comments.set_xalign(0.0);
+    comments.set_wrap(true);
+    content.append(&name);
+    content.append(&version);
+    content.append(&comments);
+
+    let heading = gtk::Label::new(Some("后端诊断"));
+    heading.set_xalign(0.0);
+    heading.set_margin_top(10);
+    heading.add_css_class("heading");
+    heading.add_css_class("caption");
+    content.append(&heading);
+
+    let mut lines = Vec::new();
+    match state.backend.borrow().as_ref() {
+        Some(info) => lines.extend(backend_diagnostic_lines(info)),
+        None => {
+            lines.push(format!("端点文件：{}", state.endpoint_path.display()));
+            lines.push("后端：尚未握手完成".to_owned());
+        }
+    }
+    if let Some(connected) = state.connection_name.borrow().as_ref() {
+        lines.push(format!("连接：{connected}"));
     }
     if let Some(workspace) = state.workspace.borrow().as_ref() {
         lines.push(format!(
@@ -3135,34 +3332,98 @@ fn show_diagnostics(state: &Rc<UiState>) {
             lines.push(format!("  {line}"));
         }
     }
-    lines.push(String::new());
-    lines.push("本对话框只在本机显示，不含密码、凭据引用与 token。".to_owned());
+    for line in &lines {
+        let label = gtk::Label::new(Some(line));
+        label.set_xalign(0.0);
+        label.set_wrap(true);
+        label.set_selectable(true);
+        // 长路径逐字折行：不让对话框被一个没有空格的字符串顶宽。
+        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        label.add_css_class("caption");
+        label.set_hexpand(true);
+        content.append(&label);
+    }
 
-    let view = gtk::TextView::builder()
-        .editable(false)
-        .cursor_visible(false)
-        .monospace(true)
-        .build();
-    view.buffer().set_text(&lines.join("\n"));
-    view.set_left_margin(12);
-    view.set_right_margin(12);
-    view.set_top_margin(8);
-    view.set_bottom_margin(8);
+    let note = gtk::Label::new(Some("本对话框只在本机显示，不含密码、凭据引用与 token。"));
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.set_margin_top(10);
+    note.add_css_class("dim-label");
+    note.add_css_class("caption");
+    content.append(&note);
+
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
-        .child(&view)
+        .child(&content)
         .build();
 
     let dialog = adw::Dialog::builder()
-        .title("诊断信息")
+        .title("关于 Squarvo")
         .content_width(620)
-        .content_height(420)
+        .content_height(520)
         .build();
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&adw::HeaderBar::new());
     toolbar_view.set_content(Some(&scroll));
     dialog.set_child(Some(&toolbar_view));
+    {
+        let weak = Rc::downgrade(state);
+        dialog.connect_closed(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state.about.borrow_mut().take();
+            }
+        });
+    }
+    state.about.replace(Some(dialog.clone()));
     dialog.present(Some(&state.window));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backend_info() -> BackendInfo {
+        BackendInfo {
+            service_version: "0.2.3".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            build_profile: "debug".to_owned(),
+            transport: "unix:/run/user/1000/sqarvo/backend.sock".to_owned(),
+            backend_pid: 4242,
+            started_by_frontend: true,
+            endpoint_path: "/run/user/1000/sqarvo/backend-endpoint.json".to_owned(),
+            endpoint_service_version: "0.2.3".to_owned(),
+            version_mismatch: false,
+            drivers: vec![
+                ("MariaDB".to_owned(), "mariadb".to_owned()),
+                ("SQLite".to_owned(), "sqlite".to_owned()),
+            ],
+        }
+    }
+
+    #[test]
+    fn backend_diagnostics_keep_every_field() {
+        let lines = backend_diagnostic_lines(&backend_info()).join("\n");
+        for needle in [
+            "后端版本：0.2.3（协议 1.0，debug 构建）",
+            "传输方式：unix:/run/user/1000/sqarvo/backend.sock",
+            "后端进程：PID 4242（由前端启动：是）",
+            "端点文件：/run/user/1000/sqarvo/backend-endpoint.json",
+            "已注册驱动：MariaDB（mariadb）、SQLite（sqlite）",
+        ] {
+            assert!(lines.contains(needle), "诊断缺少「{needle}」：{lines}");
+        }
+    }
+
+    #[test]
+    fn backend_diagnostics_report_mismatch_and_empty_drivers() {
+        let mut info = backend_info();
+        info.version_mismatch = true;
+        info.endpoint_service_version = "0.2.2".to_owned();
+        info.drivers.clear();
+        let lines = backend_diagnostic_lines(&info).join("\n");
+        assert!(lines.contains("端点记录的后端版本 0.2.2 与 GetVersion 返回的 0.2.3 不一致"));
+        assert!(lines.contains("已注册驱动：（后端未返回任何驱动）"));
+    }
 }

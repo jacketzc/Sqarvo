@@ -25,6 +25,7 @@ mod qa;
 mod results;
 mod shell;
 mod sql_page;
+mod startup;
 mod submit_batch;
 mod table_data;
 mod tabs;
@@ -106,6 +107,7 @@ fn register_qa_options(app: &adw::Application) {
         ),
         ("qa-export", "/path/to/output.csv"),
         ("qa-export-cancel-after-rows", "rows"),
+        ("qa-expect-about", "substring"),
     ] {
         app.add_main_option(
             name,
@@ -137,6 +139,8 @@ fn register_qa_options(app: &adw::Application) {
         "qa-data-replay-cancelled",
         "qa-layout-audit",
         "qa-export-hold",
+        "qa-startup-workspace",
+        "qa-open-about",
     ] {
         app.add_main_option(
             name,

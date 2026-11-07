@@ -81,6 +81,11 @@
 //!   返回的会话总数）、`expect-browse <标签> <字段>=<值>`、
 //!   `expect-inspector <字段>=<值>`、`quit`（走正常清理路径关窗）。
 //!
+//! - #139 增补（截图时刻断言，全部要求 `--screenshot`）：
+//!   `--qa-startup-workspace`（未连接时主区域是 `Objects` 页，且不含「后端版本」
+//!   「端点文件」等诊断字段）、`--qa-open-about`（握手后打开「关于 Squarvo」）、
+//!   `--qa-expect-about <子串>`（「关于」里必须出现的文案，可重复）。
+//!
 //! 这些都是「脚本 + 断言」的收拢：既有 `--qa-*` 的语义一个都没改。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
@@ -750,6 +755,13 @@ struct Args {
     isolation_confirm: bool,
     /// `--qa-layout-audit`：截图后在当前窗口尺寸上做「无裁切」量化自检。
     layout_audit: bool,
+    // ---- #139 启动落地工作区 ----
+    /// `--qa-startup-workspace`：截图时刻断言当前是未连接的启动工作区（Objects 空态）。
+    startup_workspace: bool,
+    /// `--qa-open-about`：握手完成后打开「关于 Squarvo」（截图与断言用）。
+    open_about: bool,
+    /// `--qa-expect-about <substring>`：「关于」对话框里必须出现的文案（可重复）。
+    expect_about: Vec<String>,
     /// `--window-size <WIDTHxHEIGHT>`：取证用的初始窗口尺寸（产品默认 1200×800）。
     window_size: Option<(i32, i32)>,
     // ---- #116 标签工作区 ----
@@ -1292,6 +1304,25 @@ pub fn layout_audit() -> bool {
     ARGS.get().is_some_and(|args| args.layout_audit)
 }
 
+/// 截图时刻是否断言「未连接的启动工作区」（`--qa-startup-workspace`，#139）。
+#[must_use]
+pub fn startup_workspace() -> bool {
+    ARGS.get().is_some_and(|args| args.startup_workspace)
+}
+
+/// 握手完成后是否打开「关于 Squarvo」（`--qa-open-about`，#139）。
+#[must_use]
+pub fn open_about() -> bool {
+    ARGS.get().is_some_and(|args| args.open_about)
+}
+
+/// 「关于」对话框里必须出现的文案（`--qa-expect-about`，可重复；#139）。
+#[must_use]
+pub fn expect_about() -> Vec<String> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_about.clone())
+}
+
 /// 已登记的截图请求（未启用时为 `None`）。
 pub fn requested() -> Option<Capture> {
     ARGS.get().and_then(|args| args.capture.clone())
@@ -1700,6 +1731,24 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.layout_audit = true;
                 index += 1;
             }
+            "--qa-startup-workspace" => {
+                parsed.startup_workspace = true;
+                index += 1;
+            }
+            "--qa-open-about" => {
+                parsed.open_about = true;
+                index += 1;
+            }
+            "--qa-expect-about" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-about 需要一个文案子串".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-expect-about 的文案子串不能为空".to_owned());
+                }
+                parsed.expect_about.push(value.clone());
+                index += 2;
+            }
             "--qa-browse" => {
                 let value = args
                     .get(index + 1)
@@ -1903,6 +1952,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
     if parsed.layout_audit && parsed.capture.is_none() {
         return Err(
             "--qa-layout-audit 必须与 --screenshot 一起使用（自检发生在截图时刻）".to_owned(),
+        );
+    }
+    if (parsed.startup_workspace || parsed.open_about || !parsed.expect_about.is_empty())
+        && parsed.capture.is_none()
+    {
+        return Err(
+            "--qa-startup-workspace / --qa-open-about / --qa-expect-about 必须与 --screenshot 一起使用"
+                .to_owned(),
         );
     }
     Ok(parsed)
@@ -2730,6 +2787,58 @@ mod tests {
         .unwrap();
         assert!(parsed.layout_audit);
         assert!(parse(&args(&["app", "--qa-layout-audit"])).is_err());
+    }
+
+    #[test]
+    fn startup_workspace_and_about_flags_require_a_screenshot() {
+        // 未给出：默认都不启用（正常启动路径不受影响）。
+        let plain = parse(&args(&["app"])).unwrap();
+        assert!(!plain.startup_workspace);
+        assert!(!plain.open_about);
+        assert!(plain.expect_about.is_empty());
+
+        let parsed = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-startup-workspace",
+            "--qa-open-about",
+            "--qa-expect-about",
+            "后端版本",
+            "--qa-expect-about=SQLite",
+        ]))
+        .unwrap();
+        assert!(parsed.startup_workspace);
+        assert!(parsed.open_about);
+        assert_eq!(
+            parsed.expect_about,
+            vec!["后端版本".to_owned(), "SQLite".to_owned()]
+        );
+
+        // 断言发生在截图那一刻：没有截图就不能登记。
+        assert!(parse(&args(&["app", "--qa-startup-workspace"])).is_err());
+        assert!(parse(&args(&["app", "--qa-open-about"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-about", "x"])).is_err());
+        // 空子串是参数错误，不是「必然通过」。
+        assert!(
+            parse(&args(&[
+                "app",
+                "--screenshot",
+                "/tmp/a.png",
+                "--qa-expect-about",
+                "  "
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&args(&[
+                "app",
+                "--screenshot",
+                "/tmp/a.png",
+                "--qa-expect-about"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

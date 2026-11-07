@@ -3,8 +3,11 @@
 ## 状态
 
 **已接入后端 gRPC**：启动后按下面「启动顺序」完成握手，窗口在
-Loading / Connected / Error / Disconnected 四态之间切换，Connected 时显示
-后端版本、协议版本与传输方式。
+Loading / Connected / Error / Disconnected 四态之间切换。握手成功后**直接落地工作区**：
+侧栏是 `connections.json` 的已保存连接列表，主区域是固定 `Objects` 标签的空态
+（「从左侧选择一个连接开始」），状态栏显示「未连接」、驱动数与浏览会话数；
+后端版本 / 协议 / PID / 端点文件 / 驱动清单在「帮助 → 关于 Squarvo」里
+（不再常驻主区域，见 #139）。
 
 **连接对话框已接入**（#27 / #67）：主工具条左组「连接」（或「文件 → 新建连接」/ `Ctrl+N`）
 打开连接对话框，**驱动下拉由
@@ -47,7 +50,7 @@ NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交�
 信息面板空槽 280，可拖 240–520、默认折叠）→ 56 高两行状态栏。布局尺寸在一个纯函数
 模块里（`src/layout.rs`，有 1200×800 与 960×640 两档单测），紧凑密度（行高 24/32、
 字号 12/13/11）由 `src/theme.rs` 的全局 CSS 提供。主界面不再常驻「端点文件：…」，
-该信息移到「帮助 → 诊断信息」。标签页（#116）、信息面板内容（#119）、多连接（#114）
+该信息移到「帮助 → 关于 Squarvo」（#139）。标签页（#116）、信息面板内容（#119）、多连接（#114）
 与页码分页（#118）还没实现：相关菜单项与工具条按钮**禁用并在文案 / tooltip 里写明原因**，
 不摆点了没反应的动作。
 
@@ -78,7 +81,8 @@ cargo run
 CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、
 `cargo test`（`.github/workflows/ci.yml` 的 `前端（Linux）` 作业）。该作业在 ubuntu-26.04 上
 运行——24.04 的 `libgtk-4-dev` 只有 4.14.2，低于 crate 要求的 GTK 4.16（下面「依赖」一节），
-构建期就会失败。测试不需要显示：本地 `env -u DISPLAY -u WAYLAND_DISPLAY cargo test` 同样 192 项全过。
+构建期就会失败。测试不需要显示：本地 `env -u DISPLAY -u WAYLAND_DISPLAY cargo test` 同样 315 项全过
+（#139 之后；此前基线 311）。
 
 ## 启动顺序
 
@@ -129,8 +133,9 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | 文件 | 职责 |
 |---|---|
 | `src/main.rs` | 应用入口与动作（Ctrl+Q 退出、Ctrl+W 关闭窗口） |
-| `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、事件泵与关闭流程、诊断信息对话框 |
+| `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、启动态落地与「关于 Squarvo」诊断、事件泵与关闭流程 |
 | `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板空槽、两行状态栏；模块文档给出六个区域的槽位表 |
+| `src/startup.rs` | 启动落地工作区（#139）：未连接时的侧栏连接列表、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
 | `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
 | `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24） |
 | `src/backend/endpoint.rs` | 端点定位、解析、协议主版本校验、pid 存活探测 |
@@ -154,6 +159,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
 | `scripts/v023-acceptance.sh` | v0.2.3 验收链（#121）：SQLite + MariaDB 两库跑完整流程，配置隔离、逐项断言、仓库外取证 |
+| `scripts/qa-139-startup.sh` | #139 启动落地工作区验收：有/无已保存连接、`Objects` 空态、「关于 Squarvo」诊断，自渲染截图落仓库外 |
 
 UI 不直接接触 socket、进程或端点文件，只与 `backend::worker` 收发消息；后续的连接
 对话框（#27）与 SQL 执行（#28）应复用 `BackendClient`（`channel()` 返回可克隆的
@@ -616,6 +622,9 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-export <path>` | 数据就绪后导出到该路径（仍走确认对话框，QA 自动点「导出」；#120） |
 | `--qa-export-hold` | 停在导出确认对话框（截图用，不自动确认、不写文件） |
 | `--qa-export-cancel-after-rows <n>` | 写满 n 行后走取消路径（验证临时文件清理与「不留半截文件」） |
+| `--qa-startup-workspace` | 截图时刻断言未连接的启动工作区：主区域是 `Objects` 页、空态文案存在、**不含**「后端版本 / 端点文件」（#139） |
+| `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |
+| `--qa-expect-about <substring>` | 「关于 Squarvo」里必须出现的文案（可重复，例如 `后端版本`、`SQLite`；#139） |
 
 `--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
 断言失败也不会丢证据）。退出码：`0` 通过、`2` 截图失败、`3` 断言失败、`4` 档案里的驱动或字段不被当前后端支持。
@@ -1038,6 +1047,23 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   浏览会话不动），数据页不受影响；若断开的是当前数据页绑定的连接，确认框与日志都会写明；
 - 数据页只浏览当前连接的表：树里另一条连接的表被点开时，数据页横幅给出明确说明
   （每标签会话在 #116 提供），不会用错会话去读同名表。
+
+### 启动落地工作区验收（#139）
+
+```bash
+cd frontend/linux
+./scripts/qa-139-startup.sh
+# 可选：SQARVO_QA139_DIR=/tmp/shots（默认 /home/jack/sqarvo-v023-shots/139-startup-workspace）
+#       SQARVO_QA139_NO_BUILD=1（跳过 cargo build）
+```
+
+脚本在隔离的 `XDG_CONFIG_HOME` / `SQARVO_ENDPOINT_FILE` 下跑三次，产物全部落在仓库外：
+
+1. 有 2 条已保存连接：截图主窗口，应用内断言「启动态=Objects 空态」且主界面没有诊断字段；
+2. `--qa-open-about`：截图目标是「关于 Squarvo」，断言包含后端版本与 `MariaDB` / `SQLite`；
+3. 删除 `connections.json`：仍然落到同一个空态（0 条连接），不崩溃、不退回诊断页。
+
+断言读的是控件树里真实渲染的文本（`--qa-expect-about` 也是），不是状态机自述。
 
 ### v0.2.3 验收链（#121）
 
