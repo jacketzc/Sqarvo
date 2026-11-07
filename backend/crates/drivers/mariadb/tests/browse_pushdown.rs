@@ -960,3 +960,68 @@ async fn pushed_down_browse_keeps_column_metadata_aligned() {
 
     drop_table(&*session, &table).await;
 }
+
+/// 跨驱动不变量（`sqarvo_driver_testkit::browse_invariants`，ADR 0022）：
+/// `offset` 与 `page_token` 互斥、排序下 `offset` 翻页无重无漏、总数三态自洽、
+/// 非法排序/筛选显式失败、无主键表只读且顺序不稳定、能力位与排序行为一致。
+///
+/// 与上面的用例互补：不重复方言细节（`LIKE` 通配符、NULL 三值逻辑、估算阈值），
+/// 只断言「MariaDB 与 SQLite 必须给出同样结论」的契约性质。
+#[tokio::test]
+async fn table_browse_satisfies_shared_testkit_invariants() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let keyed = table_name("invkeys");
+    let unkeyed = table_name("invlogs");
+    let keyed_create = format!(
+        "CREATE TABLE `{keyed}` (id INT NOT NULL PRIMARY KEY, grp INT NOT NULL, name VARCHAR(8) NOT NULL)"
+    );
+    let keyed_insert = format!(
+        "INSERT INTO `{keyed}` (id, grp, name) VALUES \
+         (1,2,'n1'),(2,3,'n2'),(3,1,'n3'),(4,3,'n4'),(5,1,'n5'),\
+         (6,2,'n6'),(7,1,'n7'),(8,3,'n8'),(9,2,'n9')"
+    );
+    let unkeyed_create = format!(
+        "CREATE TABLE `{unkeyed}` (id INT NULL, grp INT NOT NULL, name VARCHAR(8) NOT NULL)"
+    );
+    let unkeyed_insert = format!(
+        "INSERT INTO `{unkeyed}` (id, grp, name) VALUES \
+         (1,2,'n1'),(2,3,'n2'),(3,1,'n3'),(4,3,'n4'),(5,1,'n5'),\
+         (6,2,'n6'),(7,1,'n7'),(8,3,'n8'),(9,2,'n9')"
+    );
+    let keyed_drop = format!("DROP TABLE IF EXISTS `{keyed}`");
+    let keyed_count = format!("SELECT COUNT(*) FROM `{keyed}`");
+    let unkeyed_drop = format!("DROP TABLE IF EXISTS `{unkeyed}`");
+    let unkeyed_count = format!("SELECT COUNT(*) FROM `{unkeyed}`");
+
+    let fixture = sqarvo_driver_testkit::BrowseFixture {
+        keyed: sqarvo_driver_testkit::BrowseTable {
+            name: &keyed,
+            create_sql: &keyed_create,
+            insert_sql: &keyed_insert,
+            drop_sql: &keyed_drop,
+            count_sql: &keyed_count,
+            primary_key: Some("id"),
+            sort_column: "grp",
+            row_count: 9,
+        },
+        unkeyed: sqarvo_driver_testkit::BrowseTable {
+            name: &unkeyed,
+            create_sql: &unkeyed_create,
+            insert_sql: &unkeyed_insert,
+            drop_sql: &unkeyed_drop,
+            count_sql: &unkeyed_count,
+            primary_key: None,
+            sort_column: "grp",
+            row_count: 9,
+        },
+    };
+
+    sqarvo_driver_testkit::browse_invariants(&*session, &fixture)
+        .await
+        .unwrap_or_else(|error| panic!("MariaDB 未通过表浏览不变量：{error:?}"));
+
+    drop_table(&*session, &keyed).await;
+    drop_table(&*session, &unkeyed).await;
+}

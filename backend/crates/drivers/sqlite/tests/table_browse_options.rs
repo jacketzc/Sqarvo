@@ -823,3 +823,51 @@ async fn driver_declares_browse_sort_filter_total() {
     let provider = session.table_data().expect("表数据能力");
     assert!(provider.supports_browse_sort_filter_total());
 }
+
+/// 跨驱动不变量（`sqarvo_driver_testkit::browse_invariants`，ADR 0022）：
+/// `offset` 与 `page_token` 互斥、排序下 `offset` 翻页无重无漏、总数三态自洽、
+/// 非法排序/筛选显式失败、无主键表只读且顺序不稳定、能力位与排序行为一致。
+///
+/// 与上面的用例互补：这里不重复方言细节（LIKE 通配符、NULL 三值逻辑），只断言
+/// 「SQLite 与 MariaDB 必须给出同样结论」的契约性质。
+#[tokio::test]
+async fn table_browse_satisfies_shared_testkit_invariants() {
+    let (_dir, session) = session().await;
+
+    let keyed_create = "CREATE TABLE inv_scores (id INTEGER PRIMARY KEY, grp INTEGER NOT NULL, name TEXT NOT NULL)";
+    let keyed_insert = "INSERT INTO inv_scores VALUES \
+         (1,2,'n1'),(2,3,'n2'),(3,1,'n3'),(4,3,'n4'),(5,1,'n5'),\
+         (6,2,'n6'),(7,1,'n7'),(8,3,'n8'),(9,2,'n9')";
+    let unkeyed_create =
+        "CREATE TABLE inv_logs (id INTEGER, grp INTEGER NOT NULL, name TEXT NOT NULL)";
+    let unkeyed_insert = "INSERT INTO inv_logs VALUES \
+         (1,2,'n1'),(2,3,'n2'),(3,1,'n3'),(4,3,'n4'),(5,1,'n5'),\
+         (6,2,'n6'),(7,1,'n7'),(8,3,'n8'),(9,2,'n9')";
+
+    let fixture = sqarvo_driver_testkit::BrowseFixture {
+        keyed: sqarvo_driver_testkit::BrowseTable {
+            name: "inv_scores",
+            create_sql: keyed_create,
+            insert_sql: keyed_insert,
+            drop_sql: "DROP TABLE IF EXISTS inv_scores",
+            count_sql: "SELECT COUNT(*) FROM inv_scores",
+            primary_key: Some("id"),
+            sort_column: "grp",
+            row_count: 9,
+        },
+        unkeyed: sqarvo_driver_testkit::BrowseTable {
+            name: "inv_logs",
+            create_sql: unkeyed_create,
+            insert_sql: unkeyed_insert,
+            drop_sql: "DROP TABLE IF EXISTS inv_logs",
+            count_sql: "SELECT COUNT(*) FROM inv_logs",
+            primary_key: None,
+            sort_column: "grp",
+            row_count: 9,
+        },
+    };
+
+    sqarvo_driver_testkit::browse_invariants(session.as_ref(), &fixture)
+        .await
+        .unwrap_or_else(|error| panic!("SQLite 未通过表浏览不变量：{error:?}"));
+}
