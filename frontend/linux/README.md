@@ -41,6 +41,15 @@ NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交�
 取消后整批回滚、脏行保留可重试（状态行写明「已执行 N 条随后整批回滚」）；在途登记在
 成功/失败/取消/断连后都会清理。
 
+**六区域外壳已就位**（#113）：`AdwHeaderBar`（标题 / 副标题 / 主菜单）→ 76 高主工具条
+（连接 / 新建查询 │ 当前种类高亮）→ `GtkPaned`（侧栏 237，可拖 180–420 | 工作区 |
+信息面板空槽 280，可拖 240–520、默认折叠）→ 56 高两行状态栏。布局尺寸在一个纯函数
+模块里（`src/layout.rs`，有 1200×800 与 960×640 两档单测），紧凑密度（行高 24/32、
+字号 12/13/11）由 `src/theme.rs` 的全局 CSS 提供。主界面不再常驻「端点文件：…」，
+该信息移到「帮助 → 诊断信息」。标签页（#116）、信息面板内容（#119）、多连接（#114）
+与页码分页（#118）还没实现：相关菜单项与工具条按钮**禁用并在文案 / tooltip 里写明原因**，
+不摆点了没反应的动作。
+
 **语法高亮尚未实现**：编辑器是纯文本，编辑器上方如实标注「当前为纯文本编辑，语法高亮
 将在后续版本提供」，不用配色暗示已有高亮。
 
@@ -119,7 +128,10 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | 文件 | 职责 |
 |---|---|
 | `src/main.rs` | 应用入口与动作（Ctrl+Q 退出、Ctrl+W 关闭窗口） |
-| `src/ui.rs` | 窗口、四态状态页、事件泵与关闭流程 |
+| `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、事件泵与关闭流程、诊断信息对话框 |
+| `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板空槽、两行状态栏；模块文档给出六个区域的槽位表 |
+| `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
+| `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24） |
 | `src/backend/endpoint.rs` | 端点定位、解析、协议主版本校验、pid 存活探测 |
 | `src/backend/connection.rs` | 连接草稿、TLS 模式、`CredentialService`/`ConnectionService` 调用、错误分类 |
 | `src/config.rs` | `connections.json` 读写（目录 0700、文件 0600，只含非敏感字段） |
@@ -844,6 +856,23 @@ DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 ./target/debug/sqarvo-desktop \
 
 延时不指定时默认 4000 ms；写盘后窗口关闭并走同一套清理路径。截图失败时进程退出码为 2，
 不会静默成功。该参数只用于开发/自动化验证，不属于产品功能。
+
+`--window-size WIDTHxHEIGHT` 指定初始窗口尺寸（不低于规范的最小窗口 960×640），用于
+在 1200×800 与 960×640 两档取外壳截图；**产品默认仍是 1200×800**，不给这个参数就用默认值：
+
+```bash
+# v0.2.3 六区域外壳：两档尺寸各一张（连一个临时 SQLite 库，打开一张表）
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json --qa-data-table items \
+  --window-size 1200x800 --screenshot ~/sqarvo-v023-shots/shell-1200x800.png
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json --qa-data-table items \
+  --window-size 960x640 --screenshot ~/sqarvo-v023-shots/shell-960x640.png
+```
+
+启动日志里会打印一行布局自检，便于把公式与实际分配对上：
+
+```text
+[shell] 布局 1200x800：工具条 76，状态栏 56（y=744），内容 963x604，表格 942x548，侧栏 237，信息面板 折叠
+```
 
 ### SQL 执行的无人值守验证（`--qa-sql-file` / `--qa-execute` / `--qa-scroll-to-row` / `--qa-cancel-after-ms`）
 

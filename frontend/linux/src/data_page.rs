@@ -28,6 +28,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
 use adw::prelude::*;
 use gtk::gio;
@@ -147,6 +148,103 @@ pub struct ColumnInfoObservation {
     /// 面板里的行（按界面顺序）。
     pub rows: Vec<ColumnInfoRowObservation>,
 }
+
+/// 状态栏「行操作」按钮组要触发的动作。
+///
+/// 与页内按钮一一对应，走的是同一条方法：状态栏只是同一个动作的第二个入口，
+/// 不复制业务逻辑，也不引入第二套状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowOp {
+    /// 新增行（插入草稿）。
+    Add,
+    /// 标记删除选中行。
+    Delete,
+    /// 提交更改（含「取消提交」的在途语义）。
+    Apply,
+    /// 放弃更改。
+    Discard,
+    /// 重新读取当前表的第一页。
+    Refresh,
+    /// 取消在途提交批次。
+    Cancel,
+}
+
+/// 行操作按钮的可用性（读数来自页内按钮自身，不重复判定）。
+///
+/// 状态栏与「表」菜单用它决定置灰；`reason` 是**全部禁用**时的原因，
+/// 供 tooltip 说明「为什么现在不能点」，而不是让按钮无声地灰着。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowOpsState {
+    /// 新增行。
+    pub add: bool,
+    /// 删除选中行。
+    pub delete: bool,
+    /// 提交更改。
+    pub apply: bool,
+    /// 放弃更改。
+    pub discard: bool,
+    /// 刷新当前表。
+    pub refresh: bool,
+    /// 取消在途批次。
+    pub cancel: bool,
+    /// 开始事务（隔离级别卡片）。
+    pub begin_txn: bool,
+    /// 提交事务。
+    pub commit_txn: bool,
+    /// 回滚事务。
+    pub rollback_txn: bool,
+    /// 全部禁用时的原因（有任意一项可用时为 `None`）。
+    pub reason: Option<String>,
+}
+
+impl RowOpsState {
+    /// 是否有任何一项可点。
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.add
+            || self.delete
+            || self.apply
+            || self.discard
+            || self.refresh
+            || self.cancel
+            || self.begin_txn
+            || self.commit_txn
+            || self.rollback_txn
+    }
+}
+
+/// 状态栏要展示的数据页摘要。
+///
+/// 全部字段来自已渲染的状态（按钮可用性 / 徽标文本 / 已加载行数），
+/// 拿不到的字段就是 `None`：状态栏**不编造**总数、页码与耗时。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusSnapshot {
+    /// 数据页状态。
+    pub state: DataState,
+    /// 当前打开的表（未打开为 `None`）。
+    pub table: Option<TableEntry>,
+    /// 已加载行数。
+    pub rows: u64,
+    /// 已取页数。
+    pub pages: u64,
+    /// 选中行（0 起；未选中为 `None`）。
+    pub selected: Option<u32>,
+    /// 脏行数。
+    pub dirty: usize,
+    /// 待提交条数（脏行 + 新行草稿）。
+    pub pending: usize,
+    /// 事务徽标文案（与数据页徽标同一份文本）。
+    pub txn_label: String,
+    /// 行操作可用性。
+    pub row_ops: RowOpsState,
+    /// 最后一次成功读取数据的时间（未读过为 `None`）。
+    pub last_refresh: Option<Instant>,
+    /// 数据页状态行文本（提交/取消的进度与结果都在这句里）。
+    pub status_text: String,
+}
+
+/// 状态栏观察者：数据页每次刷新按钮/状态后回调一次。
+pub type StatusObserver = Rc<dyn Fn(StatusSnapshot)>;
 
 /// 数据页发给 worker 的命令（全部非阻塞）。
 pub struct DataCallbacks {
@@ -499,6 +597,10 @@ pub struct DataPage {
     qa_auto_confirm: Cell<bool>,
     /// QA：一次运行只编排一次打开后的动作（重新浏览不能再插一行）。
     qa_steps_done: Cell<bool>,
+    /// 状态栏观察者：数据页每次刷新按钮/状态后回调一次（六区域外壳用）。
+    status_observer: RefCell<Option<StatusObserver>>,
+    /// 最后一次成功读取数据的时间（状态栏「最后刷新」）。
+    last_refresh: Cell<Option<Instant>>,
     callbacks: DataCallbacks,
 }
 
@@ -865,6 +967,8 @@ impl DataPage {
             txn_note: txn_note.clone(),
             qa_auto_confirm: Cell::new(false),
             qa_steps_done: Cell::new(false),
+            status_observer: RefCell::new(None),
+            last_refresh: Cell::new(None),
             callbacks,
         });
 
@@ -1020,7 +1124,7 @@ impl DataPage {
     ///
     /// 空行**默认全部省略**：有默认值的列显示数据库默认值原文，自增列留空——
     /// 「省略」就是交给数据库生成，这是自增列唯一正确的表达方式（写 0 是错的）。
-    fn begin_insert(self: &Rc<Self>) {
+    pub fn begin_insert(self: &Rc<Self>) {
         if self.is_read_only() {
             let reason = self
                 .read_only_reason()
@@ -1560,7 +1664,9 @@ impl DataPage {
     // ---- 开始事务：隔离级别（#88 / REQ-TXN-002） ----
 
     /// 打开「开始事务」卡片：按当前驱动重建选项，不可用的项禁用并附原因。
-    fn open_txn_chooser(self: &Rc<Self>) {
+    ///
+    /// 「表」菜单与页内按钮共用这个入口：隔离级别只在开始之前选。
+    pub fn open_txn_chooser(self: &Rc<Self>) {
         if !self.badge.borrow().can_begin() {
             self.set_status("该会话已有打开的事务（或已断开）", "warning");
             return;
@@ -2730,6 +2836,115 @@ impl DataPage {
         }
     }
 
+    /// 登记状态栏观察者，并立刻推送一次当前快照。
+    ///
+    /// 观察者只读快照（不反向改数据页），因此可以在其中安全地更新状态栏与菜单。
+    pub fn set_status_observer(&self, observer: StatusObserver) {
+        *self.status_observer.borrow_mut() = Some(observer);
+        self.notify_status();
+    }
+
+    /// 推送一次状态栏快照（按钮可用性 / 徽标 / 行数变化后调用）。
+    fn notify_status(&self) {
+        // 先把观察者克隆出来再调用：回调里更新控件不会与这里的借用相交。
+        let observer = self.status_observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(self.status_snapshot());
+        }
+    }
+
+    /// 当前数据页摘要（状态栏与菜单的读数）。
+    #[must_use]
+    pub fn status_snapshot(&self) -> StatusSnapshot {
+        StatusSnapshot {
+            state: self.state.get(),
+            table: self.table.borrow().clone(),
+            rows: self.row_count(),
+            pages: self.pages.get(),
+            selected: {
+                let selected = self.selection.selected();
+                if selected == gtk::INVALID_LIST_POSITION {
+                    None
+                } else {
+                    Some(selected)
+                }
+            },
+            dirty: self
+                .draft
+                .borrow()
+                .as_ref()
+                .map_or(0, TableDraft::dirty_rows),
+            pending: self.pending_change_count(),
+            txn_label: self.txn_badge.text().to_string(),
+            row_ops: self.row_ops_state(),
+            last_refresh: self.last_refresh.get(),
+            status_text: self.status.text().to_string(),
+        }
+    }
+
+    /// 行操作可用性：直接读页内按钮的 `sensitive`，不重复一遍判定条件。
+    #[must_use]
+    pub fn row_ops_state(&self) -> RowOpsState {
+        let state = RowOpsState {
+            add: self.buttons.add_row.is_sensitive(),
+            delete: self.buttons.delete_row.is_sensitive(),
+            apply: self.buttons.commit_changes.is_sensitive(),
+            discard: self.buttons.discard.is_sensitive(),
+            refresh: self.buttons.refresh.is_sensitive(),
+            cancel: self
+                .submit
+                .borrow()
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.phase == SubmitPhase::Submitting),
+            begin_txn: self.buttons.begin.is_sensitive(),
+            commit_txn: self.buttons.commit_txn.is_sensitive(),
+            rollback_txn: self.buttons.rollback.is_sensitive(),
+            reason: None,
+        };
+        if state.any() {
+            state
+        } else {
+            RowOpsState {
+                reason: Some(self.row_ops_reason()),
+                ..state
+            }
+        }
+    }
+
+    /// 为什么行操作一个都不能点（状态栏 tooltip 用，按当前状态给具体原因）。
+    fn row_ops_reason(&self) -> String {
+        match self.state.get() {
+            DataState::Idle => "尚未打开表".to_owned(),
+            DataState::Loading => "正在读取数据".to_owned(),
+            DataState::Disconnected => "连接已断开".to_owned(),
+            DataState::Error if self.draft.borrow().is_none() => {
+                "读取失败，没有可编辑的数据".to_owned()
+            }
+            _ if self.busy.get() => "上一次请求还在进行中".to_owned(),
+            _ => {
+                if let Some(reason) = self.read_only_reason() {
+                    reason
+                } else if self.draft.borrow().is_none() {
+                    "尚未打开表".to_owned()
+                } else {
+                    "没有可提交的更改".to_owned()
+                }
+            }
+        }
+    }
+
+    /// 执行一个行操作：与页内按钮调用的是同一个方法。
+    pub fn perform_row_op(self: &Rc<Self>, op: RowOp) {
+        match op {
+            RowOp::Add => self.begin_insert(),
+            RowOp::Delete => self.delete_selected_row(),
+            RowOp::Apply => self.on_commit_clicked(),
+            RowOp::Discard => self.discard_changes(),
+            RowOp::Refresh => self.reload(),
+            RowOp::Cancel => self.request_cancel_submit(),
+        }
+    }
+
     /// worker 推来的在途批次状态：按钮文案、状态行与「取消提交」入口都跟着它走。
     ///
     /// 只有 worker 会改登记：界面只消费快照，不自己发明批次状态。
@@ -2937,7 +3152,8 @@ impl DataPage {
         (self.callbacks.apply)(updates, deletes, SubmitOptions::changes(acknowledge_risk));
     }
 
-    fn delete_selected_row(self: &Rc<Self>) {
+    /// 标记删除当前选中行（提交前可撤销）。
+    pub fn delete_selected_row(self: &Rc<Self>) {
         if self.is_read_only() {
             let reason = self
                 .read_only_reason()
@@ -2982,7 +3198,8 @@ impl DataPage {
         self.update_buttons();
     }
 
-    fn begin_transaction(self: &Rc<Self>) {
+    /// 开始事务（先选隔离级别，见 [`Self::open_txn_chooser`]）。
+    pub fn begin_transaction(self: &Rc<Self>) {
         if !self.badge.borrow().can_begin() {
             self.set_status("该会话已有打开的事务（或已断开）", "warning");
             return;
@@ -2991,7 +3208,8 @@ impl DataPage {
         self.open_txn_chooser();
     }
 
-    fn commit_transaction(self: &Rc<Self>) {
+    /// 提交事务（有脏行时拒绝，先提交更改或放弃）。
+    pub fn commit_transaction(self: &Rc<Self>) {
         if !self.badge.borrow().can_commit() {
             let reason = match self.badge.borrow().status() {
                 TxnStatus::Failed { .. } => "事务已失败：只能回滚",
@@ -3017,7 +3235,8 @@ impl DataPage {
         (self.callbacks.commit_txn)();
     }
 
-    fn rollback_transaction(self: &Rc<Self>) {
+    /// 回滚事务（未提交的更改会被丢弃）。
+    pub fn rollback_transaction(self: &Rc<Self>) {
         if !self.badge.borrow().can_rollback() {
             self.set_status("当前没有可回滚的事务", "warning");
             return;
@@ -3808,9 +4027,13 @@ impl DataPage {
             "success" => self.status.add_css_class("success"),
             _ => {}
         }
+        // 状态行也是状态栏要展示的内容：文案一变就推送一次快照。
+        self.notify_status();
     }
 
     fn set_status_ready(&self, has_more: bool) {
+        // 能走到这里说明数据确实读到了：这就是状态栏「最后刷新」的口径。
+        self.last_refresh.set(Some(Instant::now()));
         let rows = self.row_count();
         let pages = self.pages.get();
         let suffix = if has_more {
@@ -3953,6 +4176,8 @@ impl DataPage {
         } else {
             self.status.set_tooltip_text(None);
         }
+        // 按钮可用性是状态栏行操作组与「表」菜单的唯一读数来源。
+        self.notify_status();
     }
 
     fn sync_badge(&self) {

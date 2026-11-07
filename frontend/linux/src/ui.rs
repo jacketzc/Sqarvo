@@ -1,4 +1,4 @@
-//! 窗口、四态状态机与连接对话框的挂载。
+//! 窗口、六区域外壳与连接对话框的挂载。
 //!
 //! | 状态 | 界面表现 |
 //! |---|---|
@@ -7,7 +7,11 @@
 //! | Error | 可操作的错误文案（不含 token）与「重试」按钮 |
 //! | Disconnected | 连接结束原因与「重新连接」按钮 |
 //!
-//! 数据库连接成功后，主区域切换为会话页（服务端版本、延迟、`ListSessions` 结果）。
+//! 区域 01（窗口外壳）在这里：`AdwHeaderBar` + `AdwWindowTitle`（标题规则见
+//! workspace-model §5.1）与 headerbar 主菜单（ADR 0023：Linux 不设窗口内菜单行）。
+//! 其余五个区域由 [`crate::shell`] 组装并给出槽位。
+//!
+//! 数据库连接成功后，主区域切换为工作区（六区域外壳 + 对象树 + SQL / 数据页）。
 //!
 //! 线程约束：所有 GTK 对象只在主线程操作。worker 线程通过 `async_channel`
 //! 发事件，主线程用 `glib::spawn_future_local` 消费后再更新界面；关闭窗口时
@@ -15,9 +19,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
+use gtk::gio;
 use gtk::glib;
 
 use crate::backend::connection::{ConnectOutcome, ConnectionDraft, ConnectionFailure};
@@ -25,10 +30,15 @@ use crate::backend::endpoint;
 use crate::backend::metadata::NodeView;
 use crate::backend::table::TableEntry;
 use crate::backend::worker::{ConnectedSnapshot, Event, QueryEvent, TableEvent, WorkerHandle};
-use crate::data_page::{DataCallbacks, DataPage, DataState, TableBrowser};
+use crate::data_page::{
+    DataCallbacks, DataPage, DataState, RowOpsState, StatusSnapshot, TableBrowser,
+};
 use crate::ddl::DdlPanel;
 use crate::dialog::ConnectionDialog;
+use crate::layout;
+use crate::shell::{Shell, ShellHandlers, StatusBar};
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
+use crate::theme;
 use crate::tree::{TreeCallbacks, TreeHealth, TreePanel};
 
 /// 主窗口与连接对话框共享的状态。
@@ -50,6 +60,24 @@ struct UiState {
     new_connection: gtk::Button,
     /// 端点描述文件路径：元数据通道（对象树 / 搜索 / DDL）自己建立 Channel 时要用。
     endpoint_path: std::path::PathBuf,
+    /// 后端握手信息（「帮助 → 诊断信息」的数据源；未握手时为 `None`）。
+    backend: RefCell<Option<BackendInfo>>,
+    /// 用户所选连接的显示名（连接对话框的草稿名，标题规则用）。
+    connection_name: RefCell<Option<String>>,
+    /// 窗口级动作（主菜单与快捷键）；`activate` 里建好后放进这里。
+    actions: RefCell<Option<Rc<WindowActions>>>,
+}
+
+/// `Connected` 事件携带的后端信息，诊断信息对话框用。
+struct BackendInfo {
+    service_version: String,
+    protocol_version: String,
+    build_profile: String,
+    transport: String,
+    backend_pid: u32,
+    started_by_frontend: bool,
+    endpoint_path: String,
+    drivers: Vec<(String, String)>,
 }
 
 /// 应用激活：只保留一个窗口，重复激活时呈现既有窗口。
@@ -59,13 +87,19 @@ pub fn activate(app: &adw::Application) {
         return;
     }
 
+    // 紧凑密度（§11）：全局 CSS 只装一次；class 只加在主窗口上。
+    theme::install();
+    let (default_width, default_height) = crate::qa::window_size().unwrap_or((1200, 800));
+
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Sqarvo")
-        .default_width(1100)
-        .default_height(720)
+        .default_width(default_width)
+        .default_height(default_height)
         .build();
+    window.add_css_class(theme::WINDOW_CLASS);
 
+    // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
     let header = adw::HeaderBar::new();
     let window_title = adw::WindowTitle::new("Sqarvo", "正在连接…");
     header.set_title_widget(Some(&window_title));
@@ -75,24 +109,22 @@ pub fn activate(app: &adw::Application) {
     new_connection.add_css_class("suggested-action");
     new_connection.set_sensitive(false);
     new_connection.set_tooltip_text(Some("等待本地后端握手完成后可用"));
+
+    let menu_button = gtk::MenuButton::new();
+    menu_button.set_icon_name("open-menu-symbolic");
+    menu_button.add_css_class("flat");
+    menu_button.set_tooltip_text(Some("主菜单（文件 / 视图 / 查询 / 表 / 帮助）"));
+    menu_button.set_menu_model(Some(&build_main_menu()));
+
+    header.pack_end(&menu_button);
     header.pack_end(&new_connection);
 
     let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
     slot.set_vexpand(true);
 
-    let footer = gtk::Label::new(None);
-    footer.set_xalign(0.0);
-    footer.set_margin_top(6);
-    footer.set_margin_bottom(6);
-    footer.set_margin_start(12);
-    footer.set_margin_end(12);
-    footer.add_css_class("dim-label");
-    footer.add_css_class("caption");
-
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&header);
     root.append(&slot);
-    root.append(&footer);
     window.set_content(Some(&root));
     show_loading(&slot, &window_title, "准备连接本地后端…");
 
@@ -107,13 +139,12 @@ pub fn activate(app: &adw::Application) {
     let endpoint_path = match endpoint::endpoint_path() {
         Ok(path) => path,
         Err(error) => {
-            footer.set_text("端点路径不可用");
+            // 端点路径不再常驻主界面（迁到「帮助 → 诊断信息」）：这里只报错误本身。
             show_error(&slot, &window_title, &error.to_string(), &noop_handler());
             window.present();
             return;
         }
     };
-    footer.set_text(&format!("端点文件：{}", endpoint_path.display()));
 
     let (worker, events) = match WorkerHandle::spawn(endpoint_path.clone()) {
         Ok(pair) => pair,
@@ -135,7 +166,19 @@ pub fn activate(app: &adw::Application) {
         workspace: RefCell::new(None),
         new_connection: new_connection.clone(),
         endpoint_path,
+        backend: RefCell::new(None),
+        connection_name: RefCell::new(None),
+        actions: RefCell::new(None),
     });
+
+    // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
+    let actions = install_window_actions(&window, &state);
+    state.actions.replace(Some(Rc::clone(&actions)));
+    app.set_accels_for_action("win.new-connection", &["<primary>n"]);
+    // Ctrl+Enter / Escape 由编辑器自己的按键控制器处理（见 sql_page），这里只给
+    // 侧栏与信息面板这类没有输入焦点的动作配快捷键。
+    app.set_accels_for_action("win.toggle-inspector", &["<primary>i"]);
+    app.set_accels_for_action("win.refresh", &["F5"]);
 
     {
         let state = Rc::clone(&state);
@@ -148,6 +191,9 @@ pub fn activate(app: &adw::Application) {
         Rc::new(move || {
             state.backend_ready.set(false);
             state.new_connection.set_sensitive(false);
+            if let Some(actions) = state.actions.borrow().as_ref() {
+                actions.set_backend_ready(false);
+            }
             show_loading(&state.slot, &state.title, "准备连接本地后端…");
             if let Some(worker) = state.worker.borrow().as_ref() {
                 worker.connect();
@@ -161,6 +207,9 @@ pub fn activate(app: &adw::Application) {
         Rc::new(move || {
             state.backend_ready.set(false);
             state.new_connection.set_sensitive(false);
+            if let Some(actions) = state.actions.borrow().as_ref() {
+                actions.set_backend_ready(false);
+            }
             show_loading(&state.slot, &state.title, "正在断开并清理后端进程…");
             if let Some(worker) = state.worker.borrow().as_ref() {
                 worker.disconnect();
@@ -210,8 +259,28 @@ pub fn activate(app: &adw::Application) {
                     events_state.backend_ready.set(true);
                     events_state.new_connection.set_sensitive(true);
                     events_state.new_connection.set_tooltip_text(None);
+                    if let Some(actions) = events_state.actions.borrow().as_ref() {
+                        actions.set_backend_ready(true);
+                    }
                     // 驱动清单随握手一起到达：连接对话框的驱动下拉只看这份结果。
                     events_state.drivers.replace(snapshot.drivers.clone());
+                    events_state.backend.replace(Some(BackendInfo {
+                        service_version: snapshot.service_version.clone(),
+                        protocol_version: snapshot.protocol_version.clone(),
+                        build_profile: snapshot.build_profile.clone(),
+                        transport: snapshot.transport.clone(),
+                        backend_pid: snapshot.backend_pid,
+                        started_by_frontend: snapshot.started_by_frontend,
+                        endpoint_path: snapshot.endpoint_path.clone(),
+                        drivers: snapshot
+                            .drivers
+                            .iter()
+                            .map(|driver| (driver.display_name.clone(), driver.driver_id.clone()))
+                            .collect(),
+                    }));
+                    // 还没有数据库连接：标题按 §5.1 回到 `Sqarvo`。
+                    events_state.title.set_title("Sqarvo");
+                    events_state.connection_name.replace(None);
                     // 重新握手成功后旧的工作区已失效（数据库会话不跨后端进程）。
                     if let Some(workspace) = events_state.workspace.borrow_mut().take() {
                         workspace.sql_page.close_query();
@@ -228,6 +297,10 @@ pub fn activate(app: &adw::Application) {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
                         events_state.new_connection.set_sensitive(false);
+                        events_state.title.set_title("Sqarvo");
+                        if let Some(actions) = events_state.actions.borrow().as_ref() {
+                            actions.set_backend_ready(false);
+                        }
                         show_error(
                             &events_state.slot,
                             &events_state.title,
@@ -240,7 +313,12 @@ pub fn activate(app: &adw::Application) {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
                         events_state.new_connection.set_sensitive(false);
+                        if let Some(actions) = events_state.actions.borrow().as_ref() {
+                            actions.set_backend_ready(false);
+                        }
                         events_state.title.set_subtitle("已断开");
+                        events_state.title.set_title("Sqarvo");
+                        events_state.connection_name.replace(None);
                         // 有工作区时保留它：已加载的行仍可查看，但明确标注失连，
                         // 不能因为断连就把用户看到的数据抹掉。
                         let workspace = events_state.workspace.borrow().as_ref().cloned();
@@ -248,6 +326,8 @@ pub fn activate(app: &adw::Application) {
                             Some(workspace) => {
                                 workspace.sql_page.mark_disconnected(&reason);
                                 workspace.data_page.mark_disconnected(&reason);
+                                workspace.status().set_connection(None);
+                                workspace.status().set_sql_summary("连接已断开");
                             }
                             None => show_disconnected(
                                 &events_state.slot,
@@ -326,15 +406,48 @@ pub fn activate(app: &adw::Application) {
                     }
                 }
                 Event::Query(event) => {
-                    let page = events_state
-                        .workspace
-                        .borrow()
-                        .as_ref()
-                        .map(|workspace| Rc::clone(&workspace.sql_page));
-                    let Some(page) = page else {
+                    let workspace = events_state.workspace.borrow().as_ref().cloned();
+                    let Some(workspace) = workspace else {
                         eprintln!("[sqarvo-desktop] 收到查询事件但没有工作区（忽略）");
                         continue;
                     };
+                    let page = Rc::clone(&workspace.sql_page);
+                    // 状态栏的 SQL 摘要与耗时只跟着事件走：不预测、不补零。
+                    match &event {
+                        QueryEvent::Started {
+                            statements,
+                            rows,
+                            has_more,
+                            ..
+                        } => {
+                            workspace.note_query_started(statements.len());
+                            // 一批就结束（has_more=false）时没有后续 Batch 事件：
+                            // 摘要与耗时必须在这里收尾，否则会一直停在「执行中」。
+                            if !has_more {
+                                workspace.note_query_finished(&format!("已返回 {} 行", rows.len()));
+                            }
+                        }
+                        QueryEvent::Batch {
+                            loaded, has_more, ..
+                        } => {
+                            workspace
+                                .status()
+                                .set_sql_summary(&format!("已返回 {loaded} 行"));
+                            if !has_more {
+                                workspace.note_query_finished(&format!("已返回 {loaded} 行"));
+                            }
+                        }
+                        QueryEvent::Cancelled { .. } => {
+                            workspace.note_query_finished("已取消");
+                        }
+                        QueryEvent::Limited { loaded, .. } => {
+                            workspace
+                                .note_query_finished(&format!("达到上限 · 已返回 {loaded} 行"));
+                        }
+                        QueryEvent::Failed(failure) => {
+                            workspace.note_query_finished(&format!("失败 [{}]", failure.code()));
+                        }
+                    }
                     match event {
                         QueryEvent::Started {
                             query_id,
@@ -497,6 +610,9 @@ fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionD
     let mut queued = false;
     if let Some(worker) = state.worker.borrow().as_ref() {
         if save {
+            // 会话显示名是标题规则（§5.1）里的「连接名」：只在这里临时记住，
+            // 不参与连接参数，也不进日志。
+            state.connection_name.replace(Some(draft.name.clone()));
             worker.save_and_connect(draft);
         } else {
             worker.test_connection(draft);
@@ -652,6 +768,15 @@ fn show_workspace(
     };
     // 驱动显示名来自 `ListDrivers`：会话信息里必须能看出连的是哪种数据库
     // （以前所有会话都按 user@host/db 派生，SQLite 会看不出区别）。
+    let driver_name = state
+        .drivers
+        .borrow()
+        .iter()
+        .find(|driver| driver.driver_id == outcome.driver_id)
+        .map_or_else(
+            || outcome.driver_id.clone(),
+            |driver| driver.display_name.clone(),
+        );
     let driver_label = state
         .drivers
         .borrow()
@@ -659,6 +784,17 @@ fn show_workspace(
         .find(|driver| driver.driver_id == outcome.driver_id)
         .map(|driver| format!("{}（{}）", driver.display_name, driver.driver_id))
         .unwrap_or_else(|| outcome.driver_id.clone());
+    // 标题规则（§5.1）：无标签时 = `<连接名> - <连接类型>`。
+    // 连接名来自连接对话框的草稿名；草稿没给名字时用连接 ID 的短形式，不编一个名字。
+    let connection_name = state
+        .connection_name
+        .borrow()
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("连接 {}", short_id(&outcome.connection_id)));
+    state
+        .title
+        .set_title(&format!("{connection_name} - {driver_name}"));
     state
         .title
         .set_subtitle(&format!("已连接 · {driver_label} · {version}"));
@@ -673,6 +809,10 @@ fn show_workspace(
         execute: {
             let state = Rc::clone(state);
             Rc::new(move |sql: String| {
+                // 耗时从「点执行」算起：等 Started 事件再计时，快查询会永远是 0 ms。
+                if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                    workspace.note_query_requested();
+                }
                 if let Some(worker) = state.worker.borrow().as_ref() {
                     worker.execute_sql(sql);
                 }
@@ -779,9 +919,19 @@ fn show_workspace(
     };
     let data_page = DataPage::new(data_callbacks);
 
-    let workspace = Workspace::new(&sql_page, &data_page, state, &outcome.session_id);
+    let workspace = Workspace::new(
+        &sql_page,
+        &data_page,
+        state,
+        &outcome.session_id,
+        &connection_name,
+    );
     state.workspace.replace(Some(Rc::clone(&workspace)));
     set_page(&state.slot, workspace.widget());
+    // 有工作区了：菜单里与会话相关的项才可点。
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        actions.set_workspace_ready(true);
+    }
     sql_page.focus_editor();
     eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
     // 工作区建立后立刻读取表列表（平铺回退视图）与对象树根层。
@@ -790,12 +940,18 @@ fn show_workspace(
     }
 }
 
-/// 工作区：左侧对象树（可切换为平铺列表）+ 右侧「SQL 工作区 / 数据页」+ 底部 DDL 面板。
+/// 工作区：六区域外壳（[`crate::shell`]）+ 对象树侧栏 + SQL / 数据页 + DDL 面板。
 ///
 /// 侧栏与数据页共用同一个数据库会话：树的每一层都走 `ListNodes`（懒加载），
 /// 平铺视图保留 v0.2.1 的一页表列表，用于驱动没有目录层时的回退与对照。
+///
+/// 区域与槽位的对应关系写在 [`crate::shell`] 的模块文档里；本结构只负责把内容
+/// 放进槽位，并把数据页快照转成状态栏与「表」菜单的可用性。
 struct Workspace {
+    /// 外壳根控件（区域 02–06）。
     root: gtk::Box,
+    /// 六区域外壳（工具条 / 侧栏 / 工作区 / 状态栏 / 信息面板槽位）。
+    shell: Rc<Shell>,
     /// 对象树（懒加载 + 搜索 + 跳转）。
     tree: Rc<TreePanel>,
     /// 平铺表列表（v0.2.1 视图；对象树不可用时的回退）。
@@ -806,6 +962,12 @@ struct Workspace {
     ddl: Rc<DdlPanel>,
     /// 打开表的统一入口（树、平铺列表与 QA 共用同一条路径）。
     open: Rc<dyn Fn(TableEntry)>,
+    /// 刷新对象树 + 表列表（「视图 → 刷新」与 F5）。
+    refresh: Rc<dyn Fn()>,
+    /// 当前查询的开始时刻（状态栏「耗时」= 开始事件 → 结束事件）。
+    query_started: Cell<Option<Instant>>,
+    /// 当前会话 ID（诊断信息里给出短形式）。
+    session_id: String,
 }
 
 impl Workspace {
@@ -814,7 +976,9 @@ impl Workspace {
         data_page: &Rc<DataPage>,
         state: &Rc<UiState>,
         session_id: &str,
+        connection_name: &str,
     ) -> Rc<Self> {
+        // ---- 区域 04 的内容：SQL 页 / 数据页 + 底部 DDL 面板 -------------------
         let page_stack = gtk::Stack::new();
         page_stack.set_vexpand(true);
         page_stack.set_hexpand(true);
@@ -869,6 +1033,7 @@ impl Workspace {
         };
 
         // ---- DDL 面板（底部可收起，常驻布局但不占空间） ------------------------
+        // #119 会把 DDL 迁进信息面板；迁移之前先把位置口径留在工作区里。
         let ddl_revealer = gtk::Revealer::new();
         ddl_revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
         ddl_revealer.set_reveal_child(false);
@@ -887,7 +1052,7 @@ impl Workspace {
         ddl_slot.replace(Some(Rc::clone(&ddl)));
         ddl_revealer.set_child(Some(ddl.widget()));
 
-        // ---- 侧栏栈：对象树 / 平铺列表 ----------------------------------------
+        // ---- 区域 03 的内容：侧栏栈（对象树 / 平铺列表）+ 页脚 -----------------
         let sidebar_stack = gtk::Stack::new();
         sidebar_stack.set_vexpand(true);
 
@@ -959,18 +1124,28 @@ impl Workspace {
             refresh_button.connect_clicked(move |_| refresh());
         }
 
-        {
+        // 视图切换的唯一状态：侧栏页脚按钮与状态栏开关都走这个闭包，
+        // 两处按钮的选中态因此不会各说各话。
+        let status_slot: Rc<RefCell<Option<Rc<StatusBar>>>> = Rc::new(RefCell::new(None));
+        let view_is_tree = Rc::new(Cell::new(true));
+        let set_view: Rc<dyn Fn(bool)> = {
             let stack = sidebar_stack.clone();
-            view_toggle.connect_clicked(move |button| {
-                let showing_tree = stack.visible_child_name().as_deref() == Some("tree");
-                if showing_tree {
-                    stack.set_visible_child_name("flat");
-                    button.set_label("对象树");
-                } else {
-                    stack.set_visible_child_name("tree");
-                    button.set_label("平铺列表");
+            let toggle = view_toggle.clone();
+            let slot = Rc::clone(&status_slot);
+            let state_cell = Rc::clone(&view_is_tree);
+            Rc::new(move |tree: bool| {
+                stack.set_visible_child_name(if tree { "tree" } else { "flat" });
+                toggle.set_label(if tree { "平铺列表" } else { "对象树" });
+                state_cell.set(tree);
+                if let Some(status) = slot.borrow().as_ref() {
+                    status.apply_view(tree);
                 }
-            });
+            })
+        };
+        {
+            let set_view = Rc::clone(&set_view);
+            let state_cell = Rc::clone(&view_is_tree);
+            view_toggle.connect_clicked(move |_| set_view(!state_cell.get()));
         }
 
         let ddl_button = gtk::Button::with_label("DDL");
@@ -1000,25 +1175,62 @@ impl Workspace {
         footer.append(&ddl_button);
 
         let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sidebar_box.set_size_request(280, -1);
+        // 可拖拽区间的下限由外壳的 GtkPaned 管（180）；这里只声明最小宽度。
+        sidebar_box.set_size_request(layout::SIDEBAR_MIN, -1);
         sidebar_box.append(&sql_button);
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         sidebar_box.append(&sidebar_stack);
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         sidebar_box.append(&footer);
 
-        // 右侧：主页面 + 底部 DDL。
-        let right = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        right.set_vexpand(true);
-        right.set_hexpand(true);
-        right.append(&page_stack);
-        right.append(&ddl_revealer);
+        // 右侧工作区：主页面 + 底部 DDL。
+        let work_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        work_box.set_vexpand(true);
+        work_box.set_hexpand(true);
+        work_box.append(&page_stack);
+        work_box.append(&ddl_revealer);
 
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        root.set_vexpand(true);
-        root.append(&sidebar_box);
-        root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        root.append(&right);
+        // ---- 区域 02–06：外壳 -------------------------------------------------
+        let shell = Shell::new(ShellHandlers {
+            sidebar: sidebar_box.upcast(),
+            work_area: work_box.upcast(),
+            row_op: {
+                let data_page = Rc::clone(data_page);
+                Rc::new(move |op| data_page.perform_row_op(op))
+            },
+            set_view: Rc::clone(&set_view),
+            connect: {
+                let state = Rc::clone(state);
+                Rc::new(move || open_connection_dialog(&state))
+            },
+            new_query: {
+                let stack = page_stack.clone();
+                let sql_page = Rc::clone(sql_page);
+                Rc::new(move || {
+                    stack.set_visible_child_name("sql");
+                    sql_page.focus_editor();
+                })
+            },
+        });
+        status_slot.replace(Some(Rc::clone(shell.status())));
+        shell.status().set_connection(Some(connection_name));
+
+        // 数据页 → 状态栏 / 工具条种类高亮 / 「表」菜单可用性。
+        {
+            let shell = Rc::downgrade(&shell);
+            let actions = state.actions.borrow().clone();
+            data_page.set_status_observer(Rc::new(move |snapshot: StatusSnapshot| {
+                if let Some(shell) = shell.upgrade() {
+                    shell.status().apply_snapshot(&snapshot);
+                    shell
+                        .toolbar()
+                        .set_kind(snapshot.table.as_ref().map(|table| table.kind));
+                }
+                if let Some(actions) = actions.as_ref() {
+                    actions.apply_row_ops(&snapshot.row_ops);
+                }
+            }));
+        }
 
         // 接线：树读根层，DDL 面板与树共用同一条元数据通道。
         match hub {
@@ -1029,19 +1241,61 @@ impl Workspace {
             None => tree.mark_unavailable("元数据通道启动失败：无法读取对象树"),
         }
 
+        let root = shell.widget().clone();
         Rc::new(Self {
             root,
+            shell,
             tree,
             flat,
             sql_page: Rc::clone(sql_page),
             data_page: Rc::clone(data_page),
             ddl,
             open,
+            refresh,
+            query_started: Cell::new(None),
+            session_id: session_id.to_owned(),
         })
     }
 
     fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// 区域 05：状态栏（查询事件与断连都要更新它）。
+    fn status(&self) -> &Rc<StatusBar> {
+        self.shell.status()
+    }
+
+    /// 点了「执行」：状态栏摘要立刻进入「执行中」，计时从现在起算。
+    fn note_query_requested(&self) {
+        self.query_started.set(Some(Instant::now()));
+        self.status().set_timing(None);
+        self.status().set_sql_summary("执行中");
+    }
+
+    /// 服务端确认开始执行：补上语句条数；计时仍以点击时刻为准。
+    fn note_query_started(&self, statements: usize) {
+        if self.query_started.get().is_none() {
+            self.query_started.set(Some(Instant::now()));
+            self.status().set_timing(None);
+        }
+        self.status()
+            .set_sql_summary(&format!("执行中 · {statements} 条语句"));
+    }
+
+    /// 查询结束：写入摘要与耗时（从 Started 到结束事件的毫秒数）。
+    fn note_query_finished(&self, outcome: &str) {
+        let millis = self
+            .query_started
+            .take()
+            .map(|start| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
+        self.status().set_sql_summary(outcome);
+        self.status().set_timing(millis);
+    }
+
+    /// 刷新对象树与表列表（「视图 → 刷新」与 F5）。
+    fn refresh_all(&self) {
+        (self.refresh)();
     }
 
     /// 按表名打开（数据页 QA 与「打开指定表」共用侧栏的同一条路径），走平铺列表。
@@ -1762,4 +2016,398 @@ fn truncate_for_log(text: &str, limit: usize) -> String {
     }
     let head: String = text.chars().take(limit).collect();
     format!("{head}…")
+}
+
+// ---- 区域 01 的主菜单与窗口级动作 -------------------------------------------
+//
+// Linux 不设窗口内菜单行（ADR 0023）：菜单挂在 headerbar 的主菜单按钮上，
+// 动作是窗口级 `win.*`（需要当前工作区），应用级只有退出/关窗。
+// 菜单集合固定为 文件 / 视图 / 查询 / 表 / 帮助；`Favorites`、`Tools`、`Window`
+// 在 v0.2.3 不出现（无收藏、无工具集、无多窗口）。
+//
+// 没有实现支撑的项**禁用并写明原因**（标签页 #116、导出 CSV #118 之后），
+// 不摆点了没反应的动作。
+
+/// 主菜单模型（`win.*` 动作由 [`install_window_actions`] 注册）。
+fn build_main_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+
+    let file = gio::Menu::new();
+    file.append(Some("新建连接"), Some("win.new-connection"));
+    file.append(
+        Some("新建查询标签（标签页在 v0.2.4 提供）"),
+        Some("win.new-tab"),
+    );
+    file.append(
+        Some("关闭标签（标签页在 v0.2.4 提供）"),
+        Some("win.close-tab"),
+    );
+    file.append(Some("退出"), Some("app.quit"));
+    menu.append_submenu(Some("文件"), &file);
+
+    let view = gio::Menu::new();
+    view.append(Some("对象树显隐"), Some("win.toggle-sidebar"));
+    view.append(Some("信息面板显隐"), Some("win.toggle-inspector"));
+    view.append(Some("刷新"), Some("win.refresh"));
+    menu.append_submenu(Some("视图"), &view);
+
+    let query = gio::Menu::new();
+    query.append(Some("执行"), Some("win.execute"));
+    query.append(Some("取消"), Some("win.cancel"));
+    menu.append_submenu(Some("查询"), &query);
+
+    let table = gio::Menu::new();
+    table.append(Some("开始事务…"), Some("win.begin-txn"));
+    table.append(Some("提交事务"), Some("win.commit-txn"));
+    table.append(Some("回滚事务"), Some("win.rollback-txn"));
+    table.append(Some("刷新当前表"), Some("win.refresh-table"));
+    table.append(Some("新增行"), Some("win.add-row"));
+    table.append(Some("删除选中行"), Some("win.delete-row"));
+    menu.append_submenu(Some("表"), &table);
+
+    let help = gio::Menu::new();
+    help.append(Some("关于 Sqarvo"), Some("win.about"));
+    help.append(Some("诊断信息…"), Some("win.diagnostics"));
+    menu.append_submenu(Some("帮助"), &help);
+
+    menu
+}
+
+/// 窗口级动作句柄：菜单项与快捷键共用同一份状态。
+struct WindowActions {
+    new_connection: gio::SimpleAction,
+    /// 标签页未实现（#116）：动作存在但永远禁用，菜单文案已写明原因。
+    new_tab: gio::SimpleAction,
+    close_tab: gio::SimpleAction,
+    toggle_sidebar: gio::SimpleAction,
+    toggle_inspector: gio::SimpleAction,
+    refresh: gio::SimpleAction,
+    execute: gio::SimpleAction,
+    cancel: gio::SimpleAction,
+    begin_txn: gio::SimpleAction,
+    commit_txn: gio::SimpleAction,
+    rollback_txn: gio::SimpleAction,
+    refresh_table: gio::SimpleAction,
+    add_row: gio::SimpleAction,
+    delete_row: gio::SimpleAction,
+}
+
+impl WindowActions {
+    /// 后端握手前「新建连接」不可用（与 headerbar 上的按钮同一口径）。
+    fn set_backend_ready(&self, ready: bool) {
+        self.new_connection.set_enabled(ready);
+        // 标签页（#116）之前保持禁用：动作存在，菜单文案已写明原因。
+        self.new_tab.set_enabled(false);
+        self.close_tab.set_enabled(false);
+    }
+
+    /// 「表」菜单的可用性完全跟随数据页（与状态栏行操作同一份快照）。
+    fn apply_row_ops(&self, ops: &RowOpsState) {
+        self.begin_txn.set_enabled(ops.begin_txn);
+        self.commit_txn.set_enabled(ops.commit_txn);
+        self.rollback_txn.set_enabled(ops.rollback_txn);
+        self.refresh_table.set_enabled(ops.refresh);
+        self.add_row.set_enabled(ops.add);
+        self.delete_row.set_enabled(ops.delete);
+    }
+
+    /// 没有工作区时，需要会话的动作一律禁用（不是点了没反应）。
+    fn set_workspace_ready(&self, ready: bool) {
+        for action in [
+            &self.toggle_sidebar,
+            &self.toggle_inspector,
+            &self.refresh,
+            &self.execute,
+            &self.cancel,
+        ] {
+            action.set_enabled(ready);
+        }
+        if !ready {
+            for action in [
+                &self.begin_txn,
+                &self.commit_txn,
+                &self.rollback_txn,
+                &self.refresh_table,
+                &self.add_row,
+                &self.delete_row,
+            ] {
+                action.set_enabled(false);
+            }
+        }
+    }
+}
+
+/// 注册窗口级动作并接到当前窗口。返回句柄供工作区更新可用性。
+fn install_window_actions(
+    window: &adw::ApplicationWindow,
+    state: &Rc<UiState>,
+) -> Rc<WindowActions> {
+    let new_connection = gio::SimpleAction::new("new-connection", None);
+    {
+        let state = Rc::clone(state);
+        new_connection.connect_activate(move |_, _| open_connection_dialog(&state));
+    }
+
+    let new_tab = gio::SimpleAction::new("new-tab", None);
+    new_tab.set_enabled(false);
+    let close_tab = gio::SimpleAction::new("close-tab", None);
+    close_tab.set_enabled(false);
+
+    let toggle_sidebar = gio::SimpleAction::new("toggle-sidebar", None);
+    {
+        let state = Rc::clone(state);
+        toggle_sidebar.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                let visible = workspace.shell.toggle_sidebar();
+                eprintln!(
+                    "[shell] 对象树侧栏：{}",
+                    if visible { "显示" } else { "隐藏" }
+                );
+            }
+        });
+    }
+
+    let toggle_inspector = gio::SimpleAction::new("toggle-inspector", None);
+    {
+        let state = Rc::clone(state);
+        toggle_inspector.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                let visible = workspace.shell.toggle_inspector();
+                eprintln!(
+                    "[shell] 信息面板：{}（内容由 #119 提供）",
+                    if visible { "展开" } else { "折叠" }
+                );
+            }
+        });
+    }
+
+    let refresh = gio::SimpleAction::new("refresh", None);
+    {
+        let state = Rc::clone(state);
+        refresh.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.refresh_all();
+            }
+        });
+    }
+
+    let execute = gio::SimpleAction::new("execute", None);
+    {
+        let state = Rc::clone(state);
+        execute.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.sql_page.execute();
+            }
+        });
+    }
+
+    let cancel = gio::SimpleAction::new("cancel", None);
+    {
+        let state = Rc::clone(state);
+        cancel.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.sql_page.request_cancel();
+            }
+        });
+    }
+
+    let begin_txn = gio::SimpleAction::new("begin-txn", None);
+    {
+        let state = Rc::clone(state);
+        begin_txn.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.data_page.begin_transaction();
+            }
+        });
+    }
+
+    let commit_txn = gio::SimpleAction::new("commit-txn", None);
+    {
+        let state = Rc::clone(state);
+        commit_txn.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.data_page.commit_transaction();
+            }
+        });
+    }
+
+    let rollback_txn = gio::SimpleAction::new("rollback-txn", None);
+    {
+        let state = Rc::clone(state);
+        rollback_txn.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.data_page.rollback_transaction();
+            }
+        });
+    }
+
+    let refresh_table = gio::SimpleAction::new("refresh-table", None);
+    {
+        let state = Rc::clone(state);
+        refresh_table.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.data_page.reload();
+            }
+        });
+    }
+
+    let add_row = gio::SimpleAction::new("add-row", None);
+    {
+        let state = Rc::clone(state);
+        add_row.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.data_page.begin_insert();
+            }
+        });
+    }
+
+    let delete_row = gio::SimpleAction::new("delete-row", None);
+    {
+        let state = Rc::clone(state);
+        delete_row.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.data_page.delete_selected_row();
+            }
+        });
+    }
+
+    let about = gio::SimpleAction::new("about", None);
+    {
+        let state = Rc::clone(state);
+        about.connect_activate(move |_, _| show_about(&state));
+    }
+
+    let diagnostics = gio::SimpleAction::new("diagnostics", None);
+    {
+        let state = Rc::clone(state);
+        diagnostics.connect_activate(move |_, _| show_diagnostics(&state));
+    }
+
+    for action in [
+        &new_connection,
+        &new_tab,
+        &close_tab,
+        &toggle_sidebar,
+        &toggle_inspector,
+        &refresh,
+        &execute,
+        &cancel,
+        &begin_txn,
+        &commit_txn,
+        &rollback_txn,
+        &refresh_table,
+        &add_row,
+        &delete_row,
+        &about,
+        &diagnostics,
+    ] {
+        window.add_action(action);
+    }
+
+    let actions = Rc::new(WindowActions {
+        new_connection,
+        new_tab,
+        close_tab,
+        toggle_sidebar,
+        toggle_inspector,
+        refresh,
+        execute,
+        cancel,
+        begin_txn,
+        commit_txn,
+        rollback_txn,
+        refresh_table,
+        add_row,
+        delete_row,
+    });
+    actions.set_backend_ready(false);
+    actions.set_workspace_ready(false);
+    actions
+}
+
+/// 「关于」：版本信息取自 cargo 包（不写死字符串）。
+fn show_about(state: &Rc<UiState>) {
+    let about = adw::AboutDialog::builder()
+        .application_name("Sqarvo")
+        .application_icon("io.sqarvo.Sqarvo")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments("轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）")
+        .build();
+    about.present(Some(&state.window));
+}
+
+/// 「帮助 → 诊断信息」：端点文件、后端版本与传输方式。
+///
+/// 端点路径原本在主界面底部常驻（workspace-model §5 要求迁走）：这里给出同一份
+/// 信息，但按需打开、只在本机显示，且**不含**密码、凭据引用与 token。
+fn show_diagnostics(state: &Rc<UiState>) {
+    let mut lines = vec![format!("端点文件：{}", state.endpoint_path.display())];
+    match state.backend.borrow().as_ref() {
+        Some(info) => {
+            lines.push(format!(
+                "后端版本：{}（协议 {}，{} 构建）",
+                info.service_version, info.protocol_version, info.build_profile
+            ));
+            lines.push(format!("传输方式：{}", info.transport));
+            lines.push(format!(
+                "后端进程：PID {}（由前端启动：{}）",
+                info.backend_pid,
+                if info.started_by_frontend {
+                    "是"
+                } else {
+                    "否"
+                }
+            ));
+            lines.push(format!("握手时的端点记录：{}", info.endpoint_path));
+            if info.drivers.is_empty() {
+                lines.push("已注册驱动：（后端未返回任何驱动）".to_owned());
+            } else {
+                lines.push(format!(
+                    "已注册驱动：{}",
+                    info.drivers
+                        .iter()
+                        .map(|(name, id)| format!("{name}（{id}）"))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ));
+            }
+        }
+        None => lines.push("后端：尚未握手完成".to_owned()),
+    }
+    if let Some(name) = state.connection_name.borrow().as_ref() {
+        lines.push(format!("连接：{name}"));
+    }
+    if let Some(workspace) = state.workspace.borrow().as_ref() {
+        lines.push(format!("会话：{}", short_id(&workspace.session_id)));
+    }
+    lines.push(String::new());
+    lines.push("本对话框只在本机显示，不含密码、凭据引用与 token。".to_owned());
+
+    let view = gtk::TextView::builder()
+        .editable(false)
+        .cursor_visible(false)
+        .monospace(true)
+        .build();
+    view.buffer().set_text(&lines.join("\n"));
+    view.set_left_margin(12);
+    view.set_right_margin(12);
+    view.set_top_margin(8);
+    view.set_bottom_margin(8);
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .vexpand(true)
+        .child(&view)
+        .build();
+
+    let dialog = adw::Dialog::builder()
+        .title("诊断信息")
+        .content_width(620)
+        .content_height(420)
+        .build();
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&adw::HeaderBar::new());
+    toolbar_view.set_content(Some(&scroll));
+    dialog.set_child(Some(&toolbar_view));
+    dialog.present(Some(&state.window));
 }

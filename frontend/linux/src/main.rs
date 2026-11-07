@@ -13,12 +13,15 @@ mod data_page;
 mod ddl;
 mod dialog;
 mod driver_form;
+mod layout;
 mod proto;
 mod qa;
 mod results;
+mod shell;
 mod sql_page;
 mod submit_batch;
 mod table_data;
+mod theme;
 mod tree;
 mod ui;
 
@@ -50,6 +53,16 @@ fn register_qa_options(app: &adw::Application) {
     use gtk::gio::prelude::*;
     use gtk::glib;
 
+    // 窗口尺寸是取证口径（1200×800 与 960×640 两档），不是产品功能：
+    // 产品默认值仍是 1200×800（workspace-model §1）。
+    app.add_main_option(
+        "window-size",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "开发/取证：初始窗口尺寸，格式 WIDTHxHEIGHT（产品默认 1200x800）",
+        Some("1200x800"),
+    );
     for (name, arg_description) in [
         ("screenshot", "/path/to/output.png"),
         ("screenshot-delay-ms", "milliseconds"),

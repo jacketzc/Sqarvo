@@ -566,7 +566,9 @@ impl TreePanel {
         stack.set_visible_child_name("tree");
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.set_size_request(260, -1);
+        // 侧栏最小宽度归外壳（GtkPaned）管：树自身只声明 §1 的可拖拽下限 180，
+        // 不能再钉 260——那会让 237 的默认宽度和 180 的下限都到不了。
+        root.set_size_request(crate::layout::SIDEBAR_MIN, -1);
         root.append(&search_entry);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&stack);
