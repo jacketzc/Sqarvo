@@ -43,9 +43,18 @@ fn main() -> adw::glib::ExitCode {
         return adw::glib::ExitCode::FAILURE;
     }
 
-    let app = adw::Application::builder()
-        .application_id("io.sqarvo.Sqarvo")
-        .build();
+    // 验收要与用户**正在运行**的实例共存：GApplication 按 application-id 做单实例转发，
+    // 同 id 的第二个进程会把激活转给用户那个窗口然后立刻以 0 退出（日志空白、无截图）。
+    // `SQARVO_QA_APP_ID` 只在 QA 参数启用时生效，产品默认 id 不变。
+    let app_id = if qa::enabled() {
+        std::env::var("SQARVO_QA_APP_ID")
+            .ok()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| "io.sqarvo.Sqarvo".to_owned())
+    } else {
+        "io.sqarvo.Sqarvo".to_owned()
+    };
+    let app = adw::Application::builder().application_id(app_id).build();
 
     install_app_actions(&app);
     register_qa_options(&app);

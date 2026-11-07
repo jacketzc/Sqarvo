@@ -3,7 +3,8 @@
 //! | 元素 | 说明 |
 //! |---|---|
 //! | 驱动 | `AdwComboRow`，选项来自 `SystemService.ListDrivers`（前端不硬编码清单） |
-//! | 主机 / 端口 / 数据库 / 用户名 | `AdwEntryRow`，服务器型驱动可见，即时校验非空与端口范围 |
+//! | 主机 / 端口 / 用户名 | `AdwEntryRow`，服务器型驱动可见，即时校验非空与端口范围 |
+//! | 数据库 | `AdwEntryRow`，服务器型驱动可见；**可选**（留空 = 连上后浏览所有库，ADR 0024） |
 //! | TLS 模式 | `AdwComboRow`，对应 `TlsMode` 五个取值（服务器型驱动可见）；`verify-ca` 的文案随驱动能力重建：驱动不支持「只校链」时标注「等同 verify-full」 |
 //! | 密码 | `AdwPasswordEntryRow`，绝不回显已保存的密码（没有「读出旧密码」的路径） |
 //! | 文件路径 | `AdwEntryRow` + 「浏览」按钮（`GtkFileDialog`），文件型驱动可见 |
@@ -161,7 +162,13 @@ impl ConnectionDialog {
             .build();
         let port_row = adw::EntryRow::builder().title("端口").text("3306").build();
         port_row.set_input_purpose(gtk::InputPurpose::Number);
-        let database_row = adw::EntryRow::builder().title("数据库").build();
+        // `AdwEntryRow` 没有独立的 placeholder 属性：行的标题本身就充当占位文案
+        // （有内容时标题仍在左侧）。因此把「留空」的语义写进标题，而不是加一句
+        // 只出现在 tooltip 里的说明。
+        let database_row = adw::EntryRow::builder()
+            .title("数据库（可选：留空则连接后浏览所有库）")
+            .build();
+        database_row.set_tooltip_text(Some("留空则连接后浏览所有库（不填默认库）"));
         let username_row = adw::EntryRow::builder().title("用户名").build();
 
         // TLS 标签随驱动能力变化（`verify-ca` 是否等同 `verify-full`），

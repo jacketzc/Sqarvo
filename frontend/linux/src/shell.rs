@@ -663,6 +663,8 @@ pub struct StatusBar {
     last_refresh: gtk::Label,
     session: gtk::Label,
     connection: RefCell<Option<String>>,
+    /// 当前表标签所属的库（`对象 @ 库` 的库）；没有表标签 / 查询标签时为空。
+    catalog: RefCell<Option<String>>,
     /// 启动态补充信息（驱动数 / 浏览会话数）；连接数据库后清空。
     idle_summary: RefCell<Option<String>>,
     txn: RefCell<String>,
@@ -859,6 +861,7 @@ impl StatusBar {
             last_refresh,
             session,
             connection: RefCell::new(None),
+            catalog: RefCell::new(None),
             idle_summary: RefCell::new(None),
             txn: RefCell::new(String::new()),
             timing_ms: Cell::new(None),
@@ -1055,11 +1058,31 @@ impl StatusBar {
         self.refresh_session();
     }
 
+    /// 当前表标签所属的库（标签名 `对象 @ 库` 里的库）。
+    ///
+    /// 无默认库连接也能从树里打开不同库的表，状态栏必须跟着**当前标签**说库，
+    /// 而不是说连接的默认库——两者在跨库浏览时可以完全不同（ADR 0024 §3）。
+    pub fn set_catalog(&self, catalog: Option<&str>) {
+        let next = catalog.map(str::to_owned);
+        if *self.catalog.borrow() == next {
+            return;
+        }
+        if let Some(catalog) = &next {
+            // 只在值变化时记一行：验收据此确认状态栏真的跟着标签换库。
+            eprintln!("[status] 状态栏显示所属库：{catalog}");
+        }
+        self.catalog.replace(next);
+        self.refresh_session();
+    }
+
     /// 「连接 · 事务 · 耗时」：只显示已知项，不写占位符。
     fn refresh_session(&self) {
         let mut parts: Vec<String> = Vec::new();
         if let Some(name) = self.connection.borrow().as_ref() {
             parts.push(name.clone());
+        }
+        if let Some(catalog) = self.catalog.borrow().as_ref() {
+            parts.push(format!("库：{catalog}"));
         }
         if let Some(summary) = self.idle_summary.borrow().as_ref() {
             parts.push(summary.clone());

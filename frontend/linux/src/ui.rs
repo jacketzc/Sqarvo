@@ -370,6 +370,7 @@ pub fn activate(app: &adw::Application) {
                             Some(workspace) => {
                                 workspace.tabs.mark_disconnected(&reason);
                                 workspace.status().set_connection(None);
+                                workspace.status().set_catalog(None);
                                 workspace.status().set_sql_summary("连接已断开");
                             }
                             None => show_disconnected(
@@ -760,7 +761,14 @@ fn maybe_run_qa_profile(state: &Rc<UiState>) {
             .path
             .as_deref()
             .map(|path| format!("路径 {path}"))
-            .unwrap_or_else(|| format!("{}:{}/{}", profile.host, profile.port, profile.database))
+            .unwrap_or_else(|| {
+                if profile.database.trim().is_empty() {
+                    // 无默认库：目标文案不带尾随斜杠。
+                    format!("{}:{}（无默认库）", profile.host, profile.port)
+                } else {
+                    format!("{}:{}/{}", profile.host, profile.port, profile.database)
+                }
+            })
     );
     // 让 GTK 先完成一次布局/绘制，再走与按钮完全相同的路径。
     let action = crate::qa::action();
@@ -983,6 +991,14 @@ fn apply_tab_status(
     match &status {
         crate::tabs::TabStatus::Table(snapshot) => {
             shell.status().apply_snapshot(snapshot);
+            // 状态栏说「当前标签属于哪个库」：跨库浏览时同一连接下两个标签的库不同，
+            // 不能拿连接的默认库顶替（ADR 0024 §3）。
+            let catalog = snapshot
+                .table
+                .as_ref()
+                .map(|table| table.reference.catalog.trim())
+                .filter(|catalog| !catalog.is_empty());
+            shell.status().set_catalog(catalog);
             shell
                 .toolbar()
                 .set_kind(snapshot.table.as_ref().map(|table| table.kind));
@@ -991,6 +1007,7 @@ fn apply_tab_status(
             }
         }
         crate::tabs::TabStatus::Query { summary, timing_ms } => {
+            shell.status().set_catalog(None);
             shell
                 .status()
                 .show_no_table("当前标签是查询标签：没有可编辑的表格");
@@ -1004,6 +1021,7 @@ fn apply_tab_status(
             }
         }
         crate::tabs::TabStatus::Objects => {
+            shell.status().set_catalog(None);
             shell
                 .status()
                 .show_no_table("Objects 页：在对象树里打开表或新建查询标签");
@@ -1372,7 +1390,10 @@ impl Workspace {
                 // #121 验收桥：只转发到既有的用户路径，不复制任何树/面板状态。
                 let tree_for_expand = Rc::clone(&tree_slot);
                 let tree_for_select = Rc::clone(&tree_slot);
+                let tree_for_open_in = Rc::clone(&tree_slot);
+                let tree_for_connection = Rc::clone(&tree_slot);
                 let shell_for_select = Rc::clone(&shell_slot);
+                let shell_for_connection = Rc::clone(&shell_slot);
                 let inspector_for_pane = Rc::clone(&inspector);
                 let shell_for_pane = Rc::clone(&shell_slot);
                 let inspector_for_observe = Rc::clone(&inspector);
@@ -1394,6 +1415,27 @@ impl Workspace {
                             .ok_or_else(|| "对象树尚未创建".to_owned())?
                             .qa_select(name)
                             .map(|node| format!("选中 {}（信息面板已切换）", node.path_label()))
+                    }),
+                    open_in: Rc::new(move |catalog: &str, name: &str| {
+                        tree_for_open_in
+                            .borrow()
+                            .as_ref()
+                            .ok_or_else(|| "对象树尚未创建".to_owned())?
+                            .qa_open_in(catalog, name)
+                            .map(|node| {
+                                format!("打开 {}（{}）", node.display_name, node.path_label())
+                            })
+                    }),
+                    select_connection: Rc::new(move |name: &str| {
+                        if let Some(shell) = shell_for_connection.borrow().as_ref() {
+                            shell.set_inspector_visible(true);
+                        }
+                        tree_for_connection
+                            .borrow()
+                            .as_ref()
+                            .ok_or_else(|| "对象树尚未创建".to_owned())?
+                            .qa_select_connection(name)
+                            .map(|()| format!("选中连接「{name}」（信息面板：连接）"))
                     }),
                     inspect: Rc::new(move |mode: &str| {
                         if let Some(shell) = shell_for_pane.borrow().as_ref() {

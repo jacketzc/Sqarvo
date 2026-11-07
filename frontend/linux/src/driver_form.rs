@@ -137,7 +137,11 @@ pub struct FormInput {
 /// 按驱动字段集校验输入并组装草稿；失败时返回可直接展示的中文原因。
 ///
 /// 校验只覆盖本驱动真正用到的字段：给 SQLite 传了主机/端口也不会被接受，
-/// 反过来 MariaDB 的空主机、空库名必须拦住。
+/// 反过来 MariaDB 的空主机、空端口、空用户名必须拦住。
+///
+/// 库名**不是**必填（ADR 0024 §3）：留空表示「连上服务器后浏览所有库」。
+/// 空库名会原样进入草稿（`database` 为空串），不会被解释成
+/// `information_schema` 或任何默认库。
 pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     let Some(family) = DriverFamily::for_id(&input.driver_id) else {
         return Err(format!(
@@ -180,11 +184,8 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
         draft.port = port;
     }
     if fields.database {
-        let database = input.database.trim();
-        if database.is_empty() {
-            return Err("请填写数据库名".to_owned());
-        }
-        draft.database = database.to_owned();
+        // 空库名是合法值：语义是「没有默认库」，不是「缺少必填项」。
+        draft.database = input.database.trim().to_owned();
     }
     if fields.username {
         let username = input.username.trim();
@@ -232,15 +233,26 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     Ok(draft)
 }
 
-/// 会话显示名：服务器型 `用户@主机/库`，文件型 `文件名（SQLite）`。
+/// 会话显示名：服务器型 `用户@主机/库`（无默认库时 `用户@主机`），
+/// 文件型 `文件名（SQLite）`。
 ///
 /// 名字里带驱动，是为了让会话列表/标题栏能看出连的是哪种数据库——
 /// 之前所有连接都按 `user@host/db` 派生，SQLite 的显示名会变成
 /// `/home/me/app.db@/home/me/app.db` 这种没有意义的东西。
+///
+/// 没有默认库时**不拼斜杠**：`user@host/` 这种残缺名字看不出「库为空」，
+/// 只会让用户以为库名丢了（ADR 0024 §3）。
 #[must_use]
 pub fn default_name(draft: &ConnectionDraft, family: DriverFamily) -> String {
     match family {
-        DriverFamily::MariaDb => format!("{}@{}/{}", draft.username, draft.host, draft.database),
+        DriverFamily::MariaDb => {
+            let database = draft.database.trim();
+            if database.is_empty() {
+                format!("{}@{}", draft.username, draft.host)
+            } else {
+                format!("{}@{}/{}", draft.username, draft.host, database)
+            }
+        }
         DriverFamily::Sqlite => {
             let file = Path::new(&draft.file_path)
                 .file_name()
@@ -324,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn mariadb_validation_blocks_empty_host_port_and_database() {
+    fn mariadb_validation_blocks_empty_host_port_and_username() {
         let mut input = mariadb_input();
         input.host = "   ".to_owned();
         assert_eq!(build_draft(&input).unwrap_err(), "请填写主机");
@@ -336,10 +348,6 @@ mod tests {
         let mut input = mariadb_input();
         input.port = "0".to_owned();
         assert!(build_draft(&input).unwrap_err().contains("端口"));
-
-        let mut input = mariadb_input();
-        input.database = String::new();
-        assert_eq!(build_draft(&input).unwrap_err(), "请填写数据库名");
 
         let mut input = mariadb_input();
         input.username = String::new();
@@ -354,6 +362,43 @@ mod tests {
         input.password = String::new();
         input.credential_ref = Some("sqarvo:conn/00000000-0000-4000-8000-000000000000".to_owned());
         assert!(build_draft(&input).is_ok());
+    }
+
+    #[test]
+    fn mariadb_accepts_an_empty_database_as_no_default_catalog() {
+        // 「先连服务器、再从树里挑库」是标准姿势：库名留空要能提交，
+        // 草稿里保持空串——不能在这里补成 information_schema 或别的默认库。
+        let mut input = mariadb_input();
+        input.database = String::new();
+        let draft = build_draft(&input).expect("空库名应可提交");
+        assert!(draft.database.is_empty());
+        assert_eq!(draft.host, "127.0.0.1");
+        assert_eq!(draft.port, 53306);
+        assert_eq!(draft.username, "sqarvo_test");
+
+        // 只留空白的库名与空串等价。
+        let mut input = mariadb_input();
+        input.database = "   ".to_owned();
+        let draft = build_draft(&input).expect("空白库名应可提交");
+        assert!(draft.database.is_empty());
+    }
+
+    #[test]
+    fn name_degrades_to_user_at_host_without_a_default_database() {
+        let mut input = mariadb_input();
+        input.database = String::new();
+        let draft = build_draft(&input).expect("空库名应可提交");
+        assert_eq!(draft.name, "sqarvo_test@127.0.0.1");
+        assert!(
+            !draft.name.ends_with('/'),
+            "不得生成残缺名字：{}",
+            draft.name
+        );
+        // 有默认库时保持既有格式（回归）。
+        assert_eq!(
+            build_draft(&mariadb_input()).unwrap().name,
+            "sqarvo_test@127.0.0.1/sqarvo_test"
+        );
     }
 
     #[test]

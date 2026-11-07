@@ -2648,6 +2648,37 @@ impl TreePanel {
         Err(format!("树里找不到节点 {name}（已展开 {opened} 个分组）"))
     }
 
+    /// 走用户路径打开**指定库**里的表 / 视图（跨库验收用）。
+    ///
+    /// 同名表可以同时存在于两个库，`qa_open(name)` 会命中树上第一个同名节点；
+    /// 这里用 `ObjectRef.catalog` 精确定位，再调用与行激活完全相同的打开回调。
+    pub fn qa_open_in(self: &Rc<Self>, catalog: &str, name: &str) -> Result<NodeView, String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Some(node) = view.node() else {
+                continue;
+            };
+            if node.display_name != name || node.reference.catalog != catalog {
+                continue;
+            }
+            if !is_browsable(node.kind) {
+                return Err(format!("{name} 不是表 / 视图，不能打开数据页"));
+            }
+            self.select_position(position);
+            (self.callbacks.open)(node.clone());
+            return Ok(node.clone());
+        }
+        let opened = self.expand_available_groups();
+        Err(format!(
+            "树里找不到库 {catalog} 里的 {name}（已展开 {opened} 个分组）"
+        ))
+    }
+
     /// 走用户路径查看 DDL：选中 + 触发「查看 DDL」回调。
     pub fn qa_show_ddl(self: &Rc<Self>, name: &str) -> Result<NodeView, String> {
         for position in 0..self.tree_model.n_items() {
