@@ -1278,6 +1278,7 @@ mod tests {
                         },
                         total_rows: None,
                         total_kind: TotalKind::Unknown,
+                        total_skipped: false,
                     });
                 }
             } else {
@@ -1374,6 +1375,7 @@ mod tests {
                 },
                 total_rows,
                 total_kind,
+                total_skipped: false,
             })
         }
     }

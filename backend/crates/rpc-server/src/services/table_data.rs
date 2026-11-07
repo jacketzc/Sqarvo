@@ -14,6 +14,22 @@
 //! 单格上限」。页大小由驱动按 `PageRequest::effective_page_size()` 钳制
 //! （默认 100、上限 500），越界不报错。
 //!
+//! # 精确计数的超时（#127）
+//!
+//! `include_total = true` 时的那次 `COUNT(*)` 有时间上界：`timeout_millis = 0` 用
+//! 服务端默认值（2 秒，`DEFAULT_COUNT_TIMEOUT`），其余值原样下传并在 SPI 层钳制到
+//! 60 秒上限。超时由驱动自己的中断机制切断这条计数语句（SQLite `sqlite3_interrupt` /
+//! MariaDB 控制连接 `KILL QUERY`），本层**照常返回本页数据**：
+//! `total_kind = UNKNOWN`、`total_rows = 0`、`total_skipped = true`。
+//!
+//! 不新增错误码、不报错：计数是可选信息，放弃它不该让「打开表格」失败。`total_skipped`
+//! 与「没请求总数」是两件事——前者界面显示「已跳过统计」，后者什么都不显示。
+//!
+//! 客户端取消在本版**做不到**：`BrowseTable` 是一元 RPC，响应返回前客户端没有可用的
+//! 取消通道（`QueryService.Cancel` 只认识 `Execute` 登记的 `query_id`，本 RPC 不带也不
+//! 登记 `query_id`）。因此本版给的是「有界超时 + 服务端中断」；是否补一个可取消的计数
+//! 入口（`query_id` + 登记表，或流式计数 RPC）见 PR 的待定项与 ADR 0022 §2 修订提案。
+//!
 //! # 错误分类
 //!
 //! | 情形 | gRPC 状态 | 稳定错误码 |
@@ -210,6 +226,9 @@ impl TableDataService for TableDataServiceImpl {
             ordering: ordering_to_proto(page.ordering) as i32,
             total_rows,
             total_kind: total_kind_to_proto(page.total_kind) as i32,
+            // 「请求了但没统计完」（#127）与「没请求」必须可区分：前者界面显示
+            // 「已跳过统计」，后者什么都不显示。
+            total_skipped: page.total_skipped,
         }))
     }
 
@@ -802,7 +821,19 @@ fn browse_options_from_proto(request: &BrowseTableRequest) -> Result<BrowseOptio
         sort,
         filter: filter_from_proto(request.filter.as_ref())?,
         include_total: request.include_total,
+        // 0 = 服务端默认值（驱动侧常量），其余原样交给驱动；上限钳制也在 SPI 层
+        // （`effective_total_timeout`），这一层只做「0 ↔ 未设置」的翻译。
+        total_timeout: count_timeout_from_millis(request.timeout_millis),
     })
+}
+
+/// `timeout_millis = 0` 表示「用服务端默认值」，与 `ExecuteQueryRequest.timeout_millis`
+/// 同一口径（proto3 无法区分「显式 0」与「未设置」）。
+///
+/// 不在这里报错或钳制：超时是保护，不是参数错误；上限由
+/// [`BrowseOptions::effective_total_timeout`] 统一处理，避免两处规则漂移。
+fn count_timeout_from_millis(millis: u32) -> Option<std::time::Duration> {
+    (millis > 0).then(|| std::time::Duration::from_millis(u64::from(millis)))
 }
 
 fn sort_key_from_proto(key: &ProtoSortKey) -> Result<SortKey, Status> {
@@ -1288,6 +1319,7 @@ mod tests {
             ordering: RowOrder::RequestedSort,
             total_rows: Some(42),
             total_kind: TotalKind::Exact,
+            total_skipped: false,
         };
         assert_eq!(total_rows_to_proto(&page), 42);
 
@@ -1299,6 +1331,78 @@ mod tests {
             total_rows_to_proto(&unknown),
             0,
             "UNKNOWN 时不得透出遗留数字"
+        );
+    }
+
+    /// 计数超时（#127）：`timeout_millis = 0` → 服务端默认值；显式值原样下传，
+    /// 上限在 SPI 层钳制。跳过标记与 `UNKNOWN` 必须一起出现。
+    #[test]
+    fn count_timeout_and_skip_flag_are_forwarded() {
+        // 0 = 未设置：交给驱动默认值（2 秒），不是「无超时」。
+        let request = BrowseTableRequest {
+            include_total: true,
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("默认超时合法");
+        assert_eq!(options.total_timeout, None);
+        assert_eq!(
+            options.effective_total_timeout(),
+            sqarvo_driver_api::DEFAULT_COUNT_TIMEOUT
+        );
+        // 只带 include_total 仍是 v0.2.3 路径（要计数），不能落回老路径。
+        assert!(!options.is_legacy());
+
+        let request = BrowseTableRequest {
+            include_total: true,
+            timeout_millis: 1_500,
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("显式超时合法");
+        assert_eq!(
+            options.total_timeout,
+            Some(std::time::Duration::from_millis(1_500))
+        );
+        assert_eq!(
+            options.effective_total_timeout(),
+            std::time::Duration::from_millis(1_500)
+        );
+
+        // 荒谬的大值按上限钳制，不报错：超时是保护，不是参数错误。
+        let request = BrowseTableRequest {
+            include_total: true,
+            timeout_millis: u32::MAX,
+            ..BrowseTableRequest::default()
+        };
+        let options = browse_options_from_proto(&request).expect("超上限也不报错");
+        assert_eq!(
+            options.effective_total_timeout(),
+            sqarvo_driver_api::MAX_COUNT_TIMEOUT
+        );
+
+        // 超时与「没请求计数」无关：老客户端不填 timeout_millis 时行为完全不变。
+        let legacy = browse_options_from_proto(&BrowseTableRequest::default()).expect("空请求合法");
+        assert!(legacy.is_legacy());
+        assert_eq!(legacy.total_timeout, None);
+
+        // 跳过时必须没有总数：两者一起出现才允许界面显示「已跳过统计」。
+        let skipped = TablePage {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            next_page_token: None,
+            has_more: false,
+            read_only: false,
+            read_only_reason: None,
+            ordering: RowOrder::PrimaryKeyAscending,
+            total_rows: None,
+            total_kind: TotalKind::Unknown,
+            total_skipped: true,
+        };
+        assert!(skipped.total_skipped);
+        assert_eq!(total_rows_to_proto(&skipped), 0);
+        assert_eq!(
+            total_kind_to_proto(skipped.total_kind),
+            ProtoTotalKind::Unknown,
+            "跳过统计必须是 UNKNOWN，不得伪称 EXACT/ESTIMATE"
         );
     }
 }

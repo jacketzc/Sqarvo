@@ -150,6 +150,7 @@ fn options(sort: Vec<SortKey>, filter: Option<Filter>, offset: Option<u64>) -> B
         sort,
         filter,
         include_total: false,
+        total_timeout: None,
     }
 }
 
@@ -751,6 +752,118 @@ async fn total_kind_unknown_and_exact_are_self_consistent() {
     assert_eq!(filtered.total_rows, Some(4));
     assert_eq!(filtered.rows.len(), 4);
     assert!(!filtered.has_more, "总数与页内容必须一致");
+
+    drop_table(&*session, &table).await;
+}
+
+/// 计数超时（#127）：`timeout_millis` 到点后放弃统计（`UNKNOWN` + `total_skipped`），
+/// 本页照常返回，且服务端不残留计数语句（`PROCESSLIST` 断言）。
+///
+/// 20 万行 + 筛选：无筛选时 15 万行以上会走 `TABLE_ROWS` 估计，只有带筛选才强制跑
+/// `COUNT(*)`，这里正是要给那次计数一个几毫秒的上界。
+#[tokio::test]
+async fn count_timeout_skips_the_total_and_leaves_no_statement_behind() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let table = table_name("count_timeout");
+    create_table(
+        &*session,
+        &table,
+        "id INT NOT NULL PRIMARY KEY, bucket INT NOT NULL, pad CHAR(8) NOT NULL",
+    )
+    .await;
+    exec(
+        &*session,
+        &format!(
+            "INSERT INTO `{table}` (id, bucket, pad) \
+             SELECT seq, seq % 4, 'x' FROM seq_1_to_200000"
+        ),
+    )
+    .await;
+    let object = object(&*session, &table);
+    let filtered = || {
+        Filter::new(vec![condition(
+            "bucket",
+            FilterOperator::Eq,
+            Some(Value::Int(1)),
+        )])
+    };
+    let short_timeout = BrowseOptions {
+        filter: Some(filtered()),
+        include_total: true,
+        total_timeout: Some(std::time::Duration::from_millis(1)),
+        ..BrowseOptions::default()
+    };
+
+    let started = Instant::now();
+    let first_page = browse(&*session, &object, &page(50, None), &short_timeout).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        first_page.total_kind,
+        TotalKind::Unknown,
+        "超时必须是 UNKNOWN，不得给出半截数量或伪称 EXACT"
+    );
+    assert!(
+        first_page.total_skipped,
+        "请求了却没算完必须显式标记 total_skipped"
+    );
+    assert_eq!(first_page.total_rows, None);
+    assert_eq!(first_page.rows.len(), 50, "本页数据不受计数超时影响");
+    assert!(
+        first_page.rows.iter().all(|row| int_at(row, 1) == 1),
+        "筛选必须仍然对整页生效"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "超时后必须尽快返回，实际 {elapsed:?}"
+    );
+
+    // 计数语句不得留在服务端。断言语句自己也会出现在 `PROCESSLIST` 里，因此用
+    // `CONCAT` 把模式拆开：检查语句的 INFO 不含连续的「SELECT COUNT(*) FROM `」，
+    // 不会自己命中自己。
+    let statement = format!(
+        "SELECT COUNT(*) FROM information_schema.PROCESSLIST \
+         WHERE INFO LIKE CONCAT('SELECT COUNT', '(*) FROM ', '`%', '{table}', '`%')"
+    );
+    let leftover = session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: statement,
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect("查询 PROCESSLIST");
+    let leftover = leftover.first_batch.expect("PROCESSLIST 应返回一行").rows[0][0]
+        .value
+        .clone();
+    match leftover {
+        Value::Int(count) => assert_eq!(count, 0, "超时后服务端仍残留该表的 COUNT(*)"),
+        Value::UInt(count) => assert_eq!(count, 0, "超时后服务端仍残留该表的 COUNT(*)"),
+        other => panic!("PROCESSLIST 计数类型异常：{other:?}"),
+    }
+
+    // 会话连接被 KILL QUERY 打断后必须仍然可用：再跑一次完整计数应拿到真实值。
+    let after = browse(
+        &*session,
+        &object,
+        &page(10, None),
+        &BrowseOptions {
+            filter: Some(filtered()),
+            include_total: true,
+            ..BrowseOptions::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        after.total_kind,
+        TotalKind::Exact,
+        "KILL QUERY 只打断那一条语句，会话必须继续可用"
+    );
+    assert_eq!(after.total_rows, Some(50_000));
+    assert!(!after.total_skipped, "算出来了就不能标成已跳过");
 
     drop_table(&*session, &table).await;
 }

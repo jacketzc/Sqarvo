@@ -169,6 +169,8 @@ fn browse_request(object: ObjectRef, page_size: u32, token: &str) -> BrowseTable
         sort: Vec::new(),
         filter: None,
         include_total: false,
+        // 0 = 服务端默认计数超时（#127）。
+        timeout_millis: 0,
     }
 }
 
@@ -406,6 +408,108 @@ async fn browse_table_pages_over_grpc_without_duplicates() {
     assert_eq!(applied.total_rows_affected, 1);
     assert!(!applied.clamped);
     assert_eq!(applied.deferred_changes, 0);
+
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: connected.connection_id.clone(),
+            })
+            .await,
+    );
+    server.stop().await;
+}
+
+/// #127：计数超时在真实 gRPC 链路上表现为「未统计」（`UNKNOWN` + `total_skipped`），
+/// 本页数据完整，且不返回任何错误。
+///
+/// 用视图放大 `COUNT(*)` 成本（240 × 240 的笛卡尔积），1 ms 上界必然先到。
+#[tokio::test]
+async fn browse_table_reports_a_skipped_total_after_the_count_timeout() {
+    let server = TableDataServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut queries =
+        QueryServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut table_data =
+        TableDataServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "table-data-count-timeout".to_owned(),
+            })
+            .await,
+    );
+    let session_id = connected.session_id.clone();
+
+    for sql in [
+        "CREATE TABLE count_src(id INTEGER PRIMARY KEY, v INTEGER)",
+        // 1000 × 1000 = 100 万行的交叉连接：1 ms 的计数预算在**任何**机器上都不可能完成，
+        // 否则「超时」用例会因 CI 比本地快而偶发失败（实测 CI 用 240×240 时计数在 1 ms 内就跑完了）。
+        "WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < 1000) \
+         INSERT INTO count_src(id, v) SELECT x, x FROM seq",
+        "CREATE VIEW slow_view AS SELECT a.id AS id, a.v AS v FROM count_src a, count_src b",
+    ] {
+        stage(
+            "Execute(DDL/DML)",
+            queries
+                .execute(ExecuteQueryRequest {
+                    session_id: session_id.clone(),
+                    sql: sql.to_owned(),
+                    ..ExecuteQueryRequest::default()
+                })
+                .await,
+        );
+    }
+
+    let slow_view = ObjectRef {
+        session_id: session_id.clone(),
+        name: "slow_view".to_owned(),
+        kind: ObjectKind::View as i32,
+        ..ObjectRef::default()
+    };
+    let mut request = browse_request(slow_view, 10, "");
+    request.include_total = true;
+    request.timeout_millis = 1;
+    let response = stage(
+        "BrowseTable(计数超时)",
+        table_data.browse_table(request).await,
+    );
+
+    assert_eq!(
+        response.total_kind,
+        sqarvo_rpc_server::proto::services::v1::TotalKind::Unknown as i32,
+        "超时必须是 UNKNOWN，不得伪称 EXACT/ESTIMATE"
+    );
+    assert!(
+        response.total_skipped,
+        "请求了却没统计完必须显式给出 total_skipped"
+    );
+    assert_eq!(response.total_rows, 0, "跳过时不得透出任何数字");
+    assert_eq!(response.rows.len(), 10, "本页数据不受计数超时影响");
+    assert_eq!(
+        response.rows[0].values.len(),
+        response.columns.len(),
+        "列元数据与每行 cells 仍须对齐"
+    );
+
+    // 同一个会话再来一次正常计数：超时的中断不得残留。
+    let mut counted = browse_request(table_ref(&session_id, "count_src"), 5, "");
+    counted.include_total = true;
+    let response = stage(
+        "BrowseTable(正常计数)",
+        table_data.browse_table(counted).await,
+    );
+    assert_eq!(
+        response.total_kind,
+        sqarvo_rpc_server::proto::services::v1::TotalKind::Exact as i32
+    );
+    assert_eq!(response.total_rows, 1000);
+    assert!(!response.total_skipped);
 
     stage(
         "Disconnect",

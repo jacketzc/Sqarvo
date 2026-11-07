@@ -50,6 +50,7 @@ impl TableDataProvider for NoInsertDriver {
             ordering: sqarvo_driver_api::RowOrder::Unstable,
             total_rows: None,
             total_kind: sqarvo_driver_api::TotalKind::Unknown,
+            total_skipped: false,
         })
     }
 }

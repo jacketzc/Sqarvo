@@ -282,8 +282,10 @@ pub struct BrowseOptions {
     pub sort: Vec<SortKey>,         // 空 = 主键升序（v0.2.2 行为）
     pub filter: Option<Filter>,     // None / 空 = 不过滤（v0.2.3 只支持 AND）
     pub include_total: bool,        // false → total_kind = Unknown
+    pub total_timeout: Option<Duration>,  // #127：None = DEFAULT_COUNT_TIMEOUT（2 s）
 }
-pub struct TablePage { /* …既有字段… */ pub total_rows: Option<u64>, pub total_kind: TotalKind }
+pub struct TablePage { /* …既有字段… */ pub total_rows: Option<u64>, pub total_kind: TotalKind,
+                       pub total_skipped: bool /* #127：请求了但没统计完 */ }
 
 // 插入行的 SPI 类型（#81）
 pub struct InsertRow { pub values: Vec<ColumnChange> }         // 省略的列 = 交给数据库默认值
@@ -305,7 +307,11 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
   页码跳转用 `BrowseOptions::offset`，与 `page_token` 互斥（同时给出 → `config.invalid`）；
   offset 不保证跨页稳定，驱动不得声称稳定。`sort` / `filter` 必须下推到 SQL：列名走
   `GetColumns` 白名单，值一律参数化绑定；总数三态由 `TablePage::total_kind` 显式给出，
-  未请求或给不出就是 `Unknown`，不得编数字。以上能力由
+  未请求或给不出就是 `Unknown`，不得编数字。精确计数**有界**（#127）：到
+  `BrowseOptions::effective_total_timeout()` 必须用驱动自己的服务端中断机制结束这条
+  计数语句，返回 `Unknown` + `total_skipped = true`，不得报错、不得给半截数量、不得
+  影响本页数据；`total_skipped = false` 的 `Unknown` 专指「没请求」或「因其它原因算不出」。
+  以上能力由
   `supports_browse_sort_filter_total()` / `Capabilities::table_browse_sort_filter_total`
   声明，`#110` / `#111` 落地前两个内置驱动都保持 `false`（忽略选项、返回 v0.2.2 行为）；
 - **无主键表**：`primary_key` 返回空的 `PrimaryKey`；`browse` 仍可用，但必须置

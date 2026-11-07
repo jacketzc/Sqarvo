@@ -199,7 +199,7 @@ impl SharedState {
 }
 
 /// 取消用的控制连接。
-struct ControlPlane {
+pub(crate) struct ControlPlane {
     opts: Opts,
     connection_id: u32,
     connect_timeout: Duration,
@@ -207,7 +207,7 @@ struct ControlPlane {
 }
 
 impl ControlPlane {
-    async fn kill_query(&self) -> Result<()> {
+    pub(crate) async fn kill_query(&self) -> Result<()> {
         let mut guard = self.conn.lock().await;
         if guard.is_none() {
             let conn = tokio::time::timeout(self.connect_timeout, Conn::new(self.opts.clone()))
@@ -272,6 +272,7 @@ impl MariaDbSession {
             receiver,
             Arc::clone(&state),
             default_isolation,
+            Arc::clone(&control),
         ));
 
         Ok(Self {
@@ -329,6 +330,7 @@ async fn run_session(
     mut receiver: mpsc::Receiver<Command>,
     state: Arc<SharedState>,
     default_isolation: Option<String>,
+    control: Arc<ControlPlane>,
 ) {
     let default_isolation = default_isolation
         .as_deref()
@@ -406,7 +408,7 @@ async fn run_session(
                     TransactionState::Failed { .. } => crate::table_data::EditTransaction::Failed,
                     TransactionState::Lost { .. } => crate::table_data::EditTransaction::Lost,
                 };
-                let result = crate::table_data::handle(&mut conn, context, request).await;
+                let result = crate::table_data::handle(&mut conn, &control, context, request).await;
                 if let Err(error) = &result {
                     // 死锁会由服务端回滚整个事务；连接不可用则事务丢失。
                     // 与 Execute 路径一致地更新状态，绝不让后续 COMMIT 变成空提交。

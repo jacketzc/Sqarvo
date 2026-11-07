@@ -99,6 +99,16 @@ MariaDB 没有「只读连接」概念，该原因在 MariaDB 上不会出现，
   未请求、或计数失败（被中断、锁等待超时）时是 `TOTAL_KIND_UNKNOWN` 且 `total_rows` 为空，
   **从不**给出估算值——SQLite 没有可靠的统计视图可用，`ESTIMATE` 在本驱动不会出现。
   总数是筛选后的全集，不随 offset 递减。
+- **计数超时与「未统计」（#127）**：`timeout_millis = 0` 用默认 **2000 ms**
+  （`DEFAULT_COUNT_TIMEOUT`），上限 **60 s**（`MAX_COUNT_TIMEOUT`，超出钳制、不报错）。
+  到点由独立的看门线程调用 `sqlite3_interrupt` 打断**这一条** `COUNT(*)`，然后返回
+  `TOTAL_KIND_UNKNOWN` + `total_skipped = true`：不报错、不给半截数量，本页 `rows`
+  与分页字段完全不受影响。看门线程在计数返回时被立刻唤醒并 `join`，因此中断绝不会漏到
+  后续语句（`sqlite3_interrupt` 本身也不作用于之后才开始的语句）；连接继续可用。
+  `total_skipped = false` 的 `UNKNOWN` 仍是「没请求」或「因其它原因算不出来」，两者
+  在界面上是两种文案。**客户端取消在本版做不到**：`BrowseTable` 是一元 RPC，返回前
+  没有取消通道（`QueryService.Cancel` 只认识 `Execute` 登记的 `query_id`），本版给的
+  是「有界超时 + 服务端中断」，见 ADR 0022 §2 修订提案。
 - **无主键表 / 视图**：允许排序、筛选与计数，但 `read_only` 仍为 true
   （`READ_ONLY_REASON_NO_PRIMARY_KEY`），`row_order` 恒为 `UNSTABLE`、不签发游标。
 - **锁等待**：连接建立时显式设置 `PRAGMA busy_timeout = 5000`（毫秒常量，

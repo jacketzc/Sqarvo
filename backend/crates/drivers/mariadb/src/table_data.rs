@@ -61,7 +61,7 @@ use sqarvo_driver_api::{
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 
-use crate::error::map_error;
+use crate::error::{is_query_interrupted, map_error};
 
 /// 元数据域的对象不存在码 → 表数据域的对象不存在码。
 ///
@@ -130,6 +130,7 @@ pub(crate) enum EditTransaction {
 /// 在会话任务（独占连接）上执行表数据请求。
 pub(crate) async fn handle(
     conn: &mut Conn,
+    control: &crate::session::ControlPlane,
     transaction: EditTransaction,
     request: TableDataRequest,
 ) -> Result<TableDataReply> {
@@ -139,7 +140,7 @@ pub(crate) async fn handle(
             page,
             options,
         } => Ok(TableDataReply::Page(
-            browse(conn, &object, &page, &options).await?,
+            browse(conn, control, &object, &page, &options).await?,
         )),
         TableDataRequest::Apply {
             object,
@@ -272,6 +273,7 @@ const EXACT_COUNT_MAX_ESTIMATED_ROWS: u64 = 100_000;
 
 async fn browse(
     conn: &mut Conn,
+    control: &crate::session::ControlPlane,
     object: &ObjectRef,
     page: &PageRequest,
     options: &BrowseOptions,
@@ -311,14 +313,10 @@ async fn browse(
     let filter = compile_filter(&columns, options.filter.as_ref())?;
     let order = compile_order(&columns, &primary_key, &options.sort)?;
 
-    // 总数是独立查询，与取页在同一个会话执行锁内（ADR 0008 / 0022 §2）。
-    let (total_rows, total_kind) = browse_total(
-        conn,
-        &database,
-        &table,
-        &qualified,
-        &filter,
-        options.include_total,
+    // 总数是独立查询，与取页在同一个会话执行锁内（ADR 0008 / 0022 §2），
+    // 且**有界**（#127）：超时只放弃统计，本页照常取。
+    let (total_rows, total_kind, total_skipped) = browse_total(
+        conn, control, &database, &table, &qualified, &filter, options,
     )
     .await?;
 
@@ -378,6 +376,7 @@ async fn browse(
         ordering,
         total_rows,
         total_kind,
+        total_skipped,
     })
 }
 
@@ -694,37 +693,86 @@ fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<Com
 /// 视图在 `information_schema.TABLES` 里 `TABLE_ROWS` 为 NULL，因此永远走精确计数。
 async fn browse_total(
     conn: &mut Conn,
+    control: &crate::session::ControlPlane,
     database: &str,
     table: &str,
     qualified: &str,
     filter: &CompiledFilter,
-    include_total: bool,
-) -> Result<(Option<u64>, TotalKind)> {
-    if !include_total {
-        return Ok((None, TotalKind::Unknown));
+    options: &BrowseOptions,
+) -> Result<(Option<u64>, TotalKind, bool)> {
+    if !options.include_total {
+        return Ok((None, TotalKind::Unknown, false));
     }
     if filter.is_empty()
         && let Some(estimate) = table_row_estimate(conn, database, table).await?
         && estimate > EXACT_COUNT_MAX_ESTIMATED_ROWS
     {
-        return Ok((Some(estimate), TotalKind::Estimate));
+        return Ok((Some(estimate), TotalKind::Estimate, false));
     }
-    let count = count_rows(conn, qualified, filter).await?;
-    Ok((Some(count), TotalKind::Exact))
+    count_rows(
+        conn,
+        control,
+        qualified,
+        filter,
+        options.effective_total_timeout(),
+    )
+    .await
 }
 
-/// `SELECT COUNT(*)`：与取页共用同一份筛选条件，因此总数与页内容始终自洽。
-async fn count_rows(conn: &mut Conn, qualified: &str, filter: &CompiledFilter) -> Result<u64> {
+/// `SELECT COUNT(*)`：与取页共用同一份筛选条件，因此总数与页内容始终自洽；**有界**（#127）。
+///
+/// 超时到点不报错，而是用本驱动既有的取消通道（另一条控制连接 `KILL QUERY`）打断
+/// 这一条计数语句，再把它读到结束——语句不会留在服务端（`PROCESSLIST` 可验证），
+/// 连接也不会停在「结果集读到一半」的状态。随后返回 `(None, Unknown, true)`：
+/// 「请求了但没统计完」，界面显示「已跳过统计」。
+///
+/// 唯一不能保证有界的路径是 `KILL QUERY` 本身失败（控制连接建不起来）：此时只能等
+/// 计数自行结束。这是故障路径，记录 warning，不把它伪装成成功或超时。
+async fn count_rows(
+    conn: &mut Conn,
+    control: &crate::session::ControlPlane,
+    qualified: &str,
+    filter: &CompiledFilter,
+    timeout: std::time::Duration,
+) -> Result<(Option<u64>, TotalKind, bool)> {
     let mut sql = format!("SELECT COUNT(*) FROM {qualified}");
     if !filter.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&filter.terms.join(" AND "));
     }
-    let count: Option<u64> = conn
-        .exec_first(&sql, Params::Positional(filter.params.clone()))
-        .await
-        .map_err(|error| map_error(error, "统计 MariaDB 表行数失败"))?;
-    count.ok_or_else(|| Error::internal("COUNT(*) 没有返回结果"))
+    // 先 pin 住查询 future 再套超时：`tokio::time::timeout` 超时会 drop 传入的 future，
+    // 而 mysql_async 的连接在语句跑到一半时被 drop 会留下只读了一半的结果集。这里
+    // 传 `&mut`，超时后仍能先把 KILL 发出去、再把同一个 future 读到结束。
+    let mut query =
+        Box::pin(conn.exec_first::<u64, _, _>(&sql, Params::Positional(filter.params.clone())));
+    match tokio::time::timeout(timeout, query.as_mut()).await {
+        Ok(Ok(Some(count))) => Ok((Some(count), TotalKind::Exact, false)),
+        Ok(Ok(None)) => Err(Error::internal("COUNT(*) 没有返回结果")),
+        Ok(Err(error)) => Err(map_error(error, "统计 MariaDB 表行数失败")),
+        Err(_elapsed) => {
+            if let Err(error) = control.kill_query().await {
+                tracing::warn!(
+                    %error,
+                    "MariaDB 精确计数超时后 KILL QUERY 失败，等计数自行结束（本次仍按未统计返回）"
+                );
+            }
+            // 读掉被中断语句的结果：正常是 1317（查询被中断）。KILL 落空时这里会等到
+            // 计数自然结束——结果一律不采用，截止时间已经过去。
+            match query.as_mut().await {
+                Ok(_) => {}
+                Err(error) => {
+                    if !is_query_interrupted(&error) {
+                        tracing::warn!(%error, "MariaDB 计数超时收尾时收到非中断错误");
+                    }
+                }
+            }
+            tracing::warn!(
+                ?timeout,
+                "MariaDB 精确计数超时，按未统计降级（本页数据不受影响）"
+            );
+            Ok((None, TotalKind::Unknown, true))
+        }
+    }
 }
 
 /// 读 `information_schema.TABLES.TABLE_ROWS`（`InnoDB` 估计值；视图为 NULL）。

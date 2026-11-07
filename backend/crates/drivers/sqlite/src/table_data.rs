@@ -65,6 +65,8 @@ use sqarvo_driver_api::{
 };
 use sqarvo_metadata::{decode_table_cursor, encode_table_cursor};
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{OBJECT_NOT_FOUND, map_sqlite_error};
 use crate::metadata;
@@ -388,7 +390,8 @@ fn browse(
         };
 
     // 总数是「筛选后的全集」，与游标/offset 无关；拿不到就 UNKNOWN，绝不伪造。
-    let (total_rows, total_kind) = count_total(connection, name, &filter, options.include_total);
+    // 计数有界（#127）：超时只放弃统计，本页数据照常返回。
+    let (total_rows, total_kind, total_skipped) = count_total(connection, name, &filter, options);
 
     Ok(TablePage {
         columns,
@@ -400,6 +403,7 @@ fn browse(
         ordering: row_order(&primary_key, &sort),
         total_rows,
         total_kind,
+        total_skipped,
     })
 }
 
@@ -664,41 +668,105 @@ impl BrowsePlan<'_> {
     }
 }
 
-/// 独立的精确计数（ADR 0022 §2）。
+/// 独立的精确计数（ADR 0022 §2），**有界**（#127）。
 ///
 /// 与取页共用同一连接、同一份筛选 `WHERE`，但不带游标条件（总数是筛选后的全集，
 /// 不是「本页之后还剩多少」），也不带 `ORDER BY` / `LIMIT` / `OFFSET`。
 ///
-/// 拿不到计数（被中断、锁等待超时、驱动层错误）时返回 `(None, Unknown)` 而不是
+/// 超时（[`BrowseOptions::effective_total_timeout`]）到点用 SQLite 自己的
+/// `sqlite3_interrupt` 打断**这一条**计数语句，然后返回
+/// `(None, Unknown, true)`——「请求了但没统计完」。不报错、不给半截数量，也不影响
+/// 本页数据（计数在取页之后执行，且 watchdog 在返回前已 `join`，绝不会漏到后面的语句）。
+///
+/// 拿不到计数（被中断、锁等待超时、驱动层错误）时同样返回 `(None, Unknown, _)` 而不是
 /// 编一个数字：契约允许「请求了但给不出」，**不允许**把估计/失败伪称 `EXACT`。
+/// 其中只有「超时被跳过」才置 `skipped = true`；其它失败仍是 `Unknown` + `false`
+/// ——「没算完」与「算出来但拿不到」在界面上是两种文案。
 fn count_total(
     connection: &Connection,
     table: &str,
     filter: &FilterSql,
-    requested: bool,
-) -> (Option<u64>, TotalKind) {
-    if !requested {
-        return (None, TotalKind::Unknown);
+    options: &BrowseOptions,
+) -> (Option<u64>, TotalKind, bool) {
+    if !options.include_total {
+        return (None, TotalKind::Unknown, false);
     }
     let mut sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
     if !filter.terms.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&filter.terms.join(" AND "));
     }
-    match connection.query_row(&sql, params_from_iter(filter.params.iter()), |row| {
+
+    // 计数是在会话线程上的同步阻塞调用：唯一的截止手段就是另一处调用
+    // `sqlite3_interrupt`。用一个只活到计数结束的看门线程，不用新运行时。
+    let deadline = options.effective_total_timeout();
+    let (done_sender, done_receiver) = std::sync::mpsc::channel::<()>();
+    let interrupt = connection.get_interrupt_handle();
+    let fired = Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let fired = Arc::clone(&fired);
+        match std::thread::Builder::new()
+            .name("sqarvo-sqlite-count-timeout".to_owned())
+            .spawn(move || {
+                // 计数结束（发送方被 drop）时立刻返回，不会白等到截止时间。
+                if done_receiver.recv_timeout(deadline).is_err() {
+                    fired.store(true, Ordering::SeqCst);
+                    interrupt.interrupt();
+                }
+            }) {
+            Ok(watchdog) => Some(watchdog),
+            Err(error) => {
+                // 线程起不来是环境故障（线程/内存耗尽）：这次计数没有截止手段，
+                // 记 warning 后如实继续，不假装「超时已生效」。
+                tracing::warn!(%error, "无法启动 SQLite 计数超时看门线程，本次计数没有上界");
+                None
+            }
+        }
+    };
+
+    let result = connection.query_row(&sql, params_from_iter(filter.params.iter()), |row| {
         row.get::<_, i64>(0)
-    }) {
+    });
+
+    // 先停表再判定：`join` 保证 watchdog 的 `interrupt` 一定发生在返回之前，
+    // 因此它不可能漏到下一次取页。
+    drop(done_sender);
+    if let Some(watchdog) = watchdog {
+        let _ = watchdog.join();
+    }
+
+    match result {
         Ok(count) => match u64::try_from(count) {
-            Ok(count) => (Some(count), TotalKind::Exact),
-            Err(_) => (None, TotalKind::Unknown),
+            Ok(count) => (Some(count), TotalKind::Exact, false),
+            Err(_) => (None, TotalKind::Unknown, false),
         },
         Err(error) => {
-            // 计数是一次独立查询：失败只影响「能否显示总数」，不影响这一页数据，
-            // 因此降级为 UNKNOWN 并记录原因，而不是让整个浏览失败。
-            tracing::warn!(%error, "SQLite 精确计数失败，按 UNKNOWN 降级");
-            (None, TotalKind::Unknown)
+            // 计数是一次独立查询：失败只影响「能否显示总数」，不影响这一页数据。
+            // 超时走 `skipped`（界面显示「已跳过统计」），其它错误仍是普通 UNKNOWN。
+            let skipped = fired.load(Ordering::SeqCst) && is_timeout_interrupt(&error);
+            if skipped {
+                tracing::warn!(
+                    ?deadline,
+                    "SQLite 精确计数超时，按未统计降级（本页数据不受影响）"
+                );
+            } else {
+                tracing::warn!(%error, "SQLite 精确计数失败，按 UNKNOWN 降级");
+            }
+            (None, TotalKind::Unknown, skipped)
         }
     }
+}
+
+/// 该错误是否来自 SQLite 的中断（`SQLITE_INTERRUPT`）。
+///
+/// 只认中断：看门线程可能刚好在计数返回后才置位（边界上的竞争），此时错误如果是
+/// 别的种类（锁等待、IO），把它说成「超时跳过」会误导用户。
+fn is_timeout_interrupt(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(inner, _)
+            if inner.code == rusqlite::ErrorCode::OperationInterrupted
+    )
 }
 
 /// 浏览选项的请求级非法参数（`config.invalid`）。
@@ -774,6 +842,8 @@ fn browse_without_primary_key(
         ordering: RowOrder::Unstable,
         total_rows: None,
         total_kind: TotalKind::Unknown,
+        // 老路径不计数，也不存在「请求了但没统计」。
+        total_skipped: false,
     })
 }
 

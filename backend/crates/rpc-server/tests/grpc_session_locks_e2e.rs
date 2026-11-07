@@ -319,6 +319,7 @@ impl TableDataProvider for LockSession {
             ordering: RowOrder::PrimaryKeyAscending,
             total_rows: None,
             total_kind: sqarvo_driver_api::TotalKind::Unknown,
+            total_skipped: false,
         })
     }
 
@@ -641,6 +642,8 @@ fn spawn_browse(
                 sort: Vec::new(),
                 filter: None,
                 include_total: false,
+                // 0 = 服务端默认计数超时（#127）。
+                timeout_millis: 0,
             })
             .await
             .map(Response::into_inner)
@@ -1146,6 +1149,8 @@ async fn sqlite_browse_pages_stay_consistent_with_concurrent_writes() {
                         sort: Vec::new(),
                         filter: None,
                         include_total: false,
+                        // 0 = 服务端默认计数超时（#127）。
+                        timeout_millis: 0,
                     })
                     .await
                     .map(Response::into_inner)

@@ -797,8 +797,34 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 - **估计就是估计**：`TABLE_ROWS` 来自 InnoDB 采样统计，偏差可达数十个百分点，永远以
   `ESTIMATE` 返回，绝不冒称 `EXACT`（实测 15 万行表报 149877）；
 - 有筛选时**不用** `TABLE_ROWS`：它反映不了筛选后的行数，拿它当筛选总数就是编数字；
-- 精确计数与取页在同一个会话执行锁内（ADR 0008），取消走该会话已有的 `KILL QUERY` 路径；
-  浏览请求没有独立的超时字段，`EXACT` 计数在大表上可能较慢（见「未支持清单」）。
+- 精确计数与取页在同一个会话执行锁内（ADR 0008）。计数**有界**（#127，见下），
+  超时只放弃统计、不影响本页，也不留残留语句。
+
+### 计数超时与「未统计」（v0.2.3，#127）
+
+`BrowseTableRequest.timeout_millis` 是这次精确计数的上界：
+
+| 取值 | 含义 |
+|---|---|
+| `0` | 服务端默认值 **2000 ms**（`DEFAULT_COUNT_TIMEOUT`） |
+| `1` … `60000` | 原样生效 |
+| `> 60000` | 钳制到 **60 s**（`MAX_COUNT_TIMEOUT`），不报错 |
+
+- 超时由本驱动**既有的取消通道**实现：主连接在跑 `COUNT(*)`，到点由控制连接发
+  `KILL QUERY <id>`，再把被中断的结果读到结束。语句不会留在服务端
+  （`information_schema.PROCESSLIST` 可验证），会话连接继续可用（KILL QUERY 只打断
+  那一条语句，打开的事务不受影响）；
+- 超时后返回 `total_kind = TOTAL_KIND_UNKNOWN`、`total_rows = 0`（proto 里固定回 0）、
+  `total_skipped = true`，**不返回错误**、**不返回半截数量**；本页 `rows` 与分页字段
+  完全不受影响——统计是可选的附加信息，不该让「打开表格」失败；
+- `total_skipped = false` 的 `UNKNOWN` 是另一种情况：没请求计数，或计数因为其它原因
+  （权限、锁等待、语句错误）失败。两者在界面上是两种文案，不能混；
+- **客户端取消在本版做不到**：`BrowseTable` 是一元 RPC，响应返回前没有可用的取消
+  通道——`QueryService.Cancel` 只认识 `Execute` 登记的 `query_id`，浏览请求既不带也不
+  登记 `query_id`。因此本版给的是「有界超时 + 服务端中断」。补一个可取消入口
+  （`query_id` + 登记表，或流式计数 RPC）是 ADR 0022 §2 的修订提案，尚未落地；
+- `KILL QUERY` 本身失败（例如控制连接建不起来）是故障路径：此时只能等计数自行结束，
+  仍按「未统计」返回并记 warning。
 
 ### 大 offset 的成本
 
@@ -840,8 +866,8 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 - 跨库的表数据浏览/行编辑：元数据可以跨库，`BrowseTable` 仍只作用于当前库；
 - 表数据浏览的任意页码跳转与「按主键估算位置」（ADR 0022 §5）：v0.2.3 只有首页 / 上页 /
   下页 / 末页，大 offset 的成本见「表数据浏览」；
-- 表数据浏览的**独立超时**：浏览请求没有超时字段，`include_total` 的精确计数与取页共用
-  会话执行锁，取消只能走会话级 `KILL QUERY`；
+- 表数据浏览计数的**客户端取消**：`BrowseTable` 是一元 RPC，返回前没有取消通道，本版只有
+  「有界超时 + 服务端 `KILL QUERY` 中断」（见「计数超时与『未统计』」，ADR 0022 §2 修订提案）；
 - 排序/筛选的**类型兼容性**预校验：值按 `ColumnType` 之外不加限制，比较语义交给 MariaDB
   隐式转换（例如 `int_col = 'abc'` 会按 0 比较），由客户端保证值的类型正确；
 - 单次执行超时：`ExecuteRequest.timeout` 非空时返回 `capability.unsupported`，不静默忽略；
