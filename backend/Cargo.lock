@@ -1996,6 +1996,7 @@ name = "sqarvo-backend-service"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "sqarvo-common",
  "sqarvo-connection",
  "sqarvo-drivers",

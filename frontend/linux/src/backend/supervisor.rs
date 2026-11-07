@@ -143,6 +143,7 @@ impl BackendSupervisor {
         progress(Stage::StartingBackend);
         let binary = locate_binary()?;
         let mut command = Command::new(&binary);
+        command.args(backend_args(std::process::id()));
         command.stdin(Stdio::null());
         if endpoint_override && let Some(root) = child_runtime_root {
             eprintln!(
@@ -235,6 +236,10 @@ impl BackendSupervisor {
             return Ok(());
         };
         let pid = child.id();
+        eprintln!(
+            "[sqarvo-desktop] 向后端 {pid} 发送 SIGTERM（最多等待 {} 秒）",
+            SHUTDOWN_GRACE.as_secs()
+        );
 
         // SAFETY: 只向本进程创建且尚未回收的子进程发送 SIGTERM；子进程未回收前
         // pid 不会被系统复用，因此不会误伤其他进程。
@@ -299,6 +304,16 @@ impl Drop for BackendSupervisor {
             let _ = child.wait();
         }
     }
+}
+
+/// 启动后端时追加的内部参数：父进程 pid。
+///
+/// 后端只有收到这个参数才设置 `PR_SET_PDEATHSIG` 并轮询 `getppid()`（#146）：
+/// 这样前端被 `SIGKILL` 时后端会自行清理退出，而用户手工启动、父进程是 shell
+/// 的后端不会因为 shell 退出被误杀。
+#[must_use]
+pub fn backend_args(parent_pid: u32) -> Vec<String> {
+    vec!["--parent-pid".to_owned(), parent_pid.to_string()]
 }
 
 /// 按固定优先级查找后端可执行文件：
@@ -370,6 +385,15 @@ mod tests {
     fn stage_messages_are_chinese_and_stable() {
         assert!(Stage::ReadingEndpoint.message().contains("端点"));
         assert!(Stage::WaitingEndpoint.message().contains("10 秒"));
+    }
+
+    #[test]
+    fn backend_args_request_parent_pid() {
+        // 后端只认显式的 --parent-pid：参数形态变化会破坏父进程监视（#146）。
+        assert_eq!(
+            backend_args(4321),
+            vec!["--parent-pid".to_owned(), "4321".to_owned()]
+        );
     }
 
     #[test]
