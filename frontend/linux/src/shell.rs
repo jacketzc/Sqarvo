@@ -475,6 +475,7 @@ pub struct Toolbar {
     root: gtk::Box,
     left: gtk::Box,
     right: gtk::Box,
+    new_query: gtk::Button,
     table: gtk::ToggleButton,
     view: gtk::ToggleButton,
     function: gtk::ToggleButton,
@@ -553,11 +554,22 @@ impl Toolbar {
             root,
             left,
             right,
+            new_query,
             table,
             view,
             function,
             query,
         })
+    }
+
+    /// 「新建查询」的可用性：未连接数据库时禁用并说明原因（不摆点了没反应的按钮）。
+    pub fn set_new_query_enabled(&self, enabled: bool) {
+        self.new_query.set_sensitive(enabled);
+        self.new_query.set_tooltip_text(Some(if enabled {
+            "新建查询标签（Ctrl+T）"
+        } else {
+            "尚未连接数据库：先连接再新建查询标签"
+        }));
     }
 
     fn widget(&self) -> &gtk::Box {
@@ -651,6 +663,8 @@ pub struct StatusBar {
     last_refresh: gtk::Label,
     session: gtk::Label,
     connection: RefCell<Option<String>>,
+    /// 启动态补充信息（驱动数 / 浏览会话数）；连接数据库后清空。
+    idle_summary: RefCell<Option<String>>,
     txn: RefCell<String>,
     timing_ms: Cell<Option<u64>>,
 }
@@ -845,6 +859,7 @@ impl StatusBar {
             last_refresh,
             session,
             connection: RefCell::new(None),
+            idle_summary: RefCell::new(None),
             txn: RefCell::new(String::new()),
             timing_ms: Cell::new(None),
         })
@@ -1034,11 +1049,20 @@ impl StatusBar {
         self.refresh_session();
     }
 
+    /// 启动态补充信息（`驱动 N · 浏览会话 M`）：只在未连接时出现。
+    pub fn set_idle_summary(&self, text: Option<&str>) {
+        self.idle_summary.replace(text.map(str::to_owned));
+        self.refresh_session();
+    }
+
     /// 「连接 · 事务 · 耗时」：只显示已知项，不写占位符。
     fn refresh_session(&self) {
         let mut parts: Vec<String> = Vec::new();
         if let Some(name) = self.connection.borrow().as_ref() {
             parts.push(name.clone());
+        }
+        if let Some(summary) = self.idle_summary.borrow().as_ref() {
+            parts.push(summary.clone());
         }
         let txn = self.txn.borrow();
         if !txn.is_empty() {
