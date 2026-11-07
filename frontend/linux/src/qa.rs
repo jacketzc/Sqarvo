@@ -46,6 +46,9 @@
 //!   用第二段 SQL 再执行一次，用于验证「达到上限/取消之后仍能继续查询」；
 //! - `--qa-column-info <column>`：打开表后点**该列的列头**展开列信息浮层并高亮该列
 //!   （点的是列头控件的真实几何位置，走与用户点击同一个列头点击处理）；
+//! - `--qa-column-width <column>:<width>`：打开表后把该列宽度设成指定像素（可重复），
+//!   走与用户拖拽列边界同一个 `fixed-width` 属性；截图时刻断言类型条带宽度与列宽一致
+//!   （#133）；
 //! - `--qa-expect-column <column>:<field>=<text>`：截图时刻断言浮层里该列某字段的控件
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
 //!   不符时退出码 3；
@@ -725,6 +728,10 @@ struct Args {
     expect_txn: Option<TxnExpectation>,
     /// `--qa-column-info <column>`：连接并打开表后点该列的列头，展开列信息浮层并高亮该列。
     column_info: Option<String>,
+    /// `--qa-column-width <column:width>`：把该列宽度设成指定像素（可重复）。走用户拖拽
+    /// 列边界同一条属性路径（`GtkColumnViewColumn::set_fixed_width`）；截图时刻断言
+    /// 类型条带宽度与列宽一致（#133）。
+    column_widths: Vec<(String, i32)>,
     /// `--qa-expect-column <column>:<field>=<value>`：列信息浮层上必须显示的文案（可重复）。
     expect_columns: Vec<ColumnExpectation>,
     /// `--qa-tree-expand <name>`：依次展开的节点名（可重复，逐层展开）。
@@ -1154,6 +1161,13 @@ pub fn expect_txn() -> Option<TxnExpectation> {
 #[must_use]
 pub fn column_info() -> Option<String> {
     ARGS.get().and_then(|args| args.column_info.clone())
+}
+
+/// 要在截图前设置的列宽（`--qa-column-width`，按登记顺序；#133）。
+#[must_use]
+pub fn column_widths() -> Vec<(String, i32)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.column_widths.clone())
 }
 
 /// 列信息浮层上必须显示的文案（`--qa-expect-column`，按登记顺序）。
@@ -1734,6 +1748,26 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-column-info 的列名不能为空".to_owned());
                 }
                 parsed.column_info = Some(value.clone());
+                index += 2;
+            }
+            "--qa-column-width" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-column-width 需要 column:width".to_owned())?;
+                let (column, width) = value
+                    .split_once(':')
+                    .ok_or_else(|| format!("--qa-column-width 需要 column:width，实际：{value}"))?;
+                if column.trim().is_empty() {
+                    return Err(format!("--qa-column-width 的列名为空：{value}"));
+                }
+                let width: i32 = width
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("--qa-column-width 的宽度不是合法像素值：{value}"))?;
+                if width <= 0 {
+                    return Err(format!("--qa-column-width 的宽度必须为正数：{value}"));
+                }
+                parsed.column_widths.push((column.to_owned(), width));
                 index += 2;
             }
             "--qa-expect-column" => {
@@ -2664,6 +2698,34 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn column_width_flag_is_repeatable_and_validated() {
+        // 可重复：一次跑里给多列设宽度（都走 fixed-width 属性）。
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-column-width",
+            "name:260",
+            "--qa-column-width",
+            "amount:96",
+        ]))
+        .unwrap();
+        assert_eq!(
+            parsed.column_widths,
+            vec![("name".to_owned(), 260), ("amount".to_owned(), 96)]
+        );
+        // 只按第一个 `:` 切分；列名不能为空、宽度必须是正数。
+        assert!(
+            parse(&args(&["app", "--qa-column-width", "a:b:120"]))
+                .unwrap_err()
+                .contains("宽度不是合法像素值")
+        );
+        assert!(parse(&args(&["app", "--qa-column-width"])).is_err());
+        assert!(parse(&args(&["app", "--qa-column-width", "name"])).is_err());
+        assert!(parse(&args(&["app", "--qa-column-width", ":120"])).is_err());
+        assert!(parse(&args(&["app", "--qa-column-width", "name:0"])).is_err());
+        assert!(parse(&args(&["app", "--qa-column-width", "name:-3"])).is_err());
     }
 
     #[test]

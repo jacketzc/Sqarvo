@@ -186,6 +186,7 @@ fn register_qa_options(app: &adw::Application) {
         ),
         ("qa-expect-txn", "auto|active|readonly|failed|disconnected"),
         ("qa-column-info", "column"),
+        ("qa-column-width", "column:width"),
         (
             "qa-expect-column",
             "column:name|type|nullable|default|charset|collation=text",
