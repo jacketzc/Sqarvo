@@ -35,7 +35,7 @@
 | 01 窗口外壳 | 64 | 标题栏 40（居中标题 + 右侧控件）+ 菜单行 24 | `AdwHeaderBar`（Linux 无菜单行，见 §8） |
 | 02 主工具条 | 76 | 左组：连接 / 新建查询；分隔线；右组：新建表 / 新建视图 / 新建函数 / 新建查询；当前种类高亮 | `GtkBox` + 自绘分组按钮 |
 | 03 对象树 | 604（自适应） | `My Connections` 头 + 多连接树 + 种类分组 | `GtkPaned` 左栏，`GtkTreeListModel` |
-| 04 工作区 | 604 | 标签条 24 + 表格工具条 32×2（事务控制行 / 行变更行）+ 表格 + 信息面板 | `AdwTabView` + `GtkStack` + `GtkColumnView` |
+| 04 工作区 | 604 | 标签条 47（`AdwTabBar` 实测）+ 表格工具条 32×2（事务控制行 / 行变更行）+ 表格 + 信息面板 | `AdwTabView` + `GtkStack` + `GtkColumnView` |
 | 05 状态栏 | 56 | 两行：搜索/行操作/分页器；SQL 摘要/记录计数/最后刷新/视图切换 | `GtkBox` 两行，手工对齐 |
 | （06 信息面板） | 与表格同高 | 连接 / 库 / 表三种内容 | `GtkBox` + `GtkStack` + `GtkRevealer` |
 
@@ -47,15 +47,15 @@
 ```text
 contentHeight = windowHeight - 140 - 56      # 140 = 外壳 64 + 工具条 76
 contentWidth  = windowWidth  - sidebarWidth
-tabStrip      顶高 24
+tabStrip      顶高 47                        # AdwTabBar 实测；原型画的是 24
 tableActions  顶高 32 × 2 = 64               # 第 1 行事务控制，第 2 行行变更与次要动作
-gridHeight   = contentHeight - 24 - 64
+gridHeight   = contentHeight - 47 - 64
 gridWidth    = contentWidth - 18（左内边距）- 3（右内边距）- [10（间隙）+ inspectorWidth]
 ```
 
-1200 × 800：`contentHeight = 604`、`gridHeight = 516`（#116 有了标签条之后；#113 落地时尚无标签条，
-表格实测高 540）。表格工具条在 960 宽下单行放不下全部控件（会截断、重叠），拆两行是**有意取舍**，
-见附录 A 第 8 条。
+1200 × 800：`contentHeight = 604`、`gridHeight = 493`（`= 604 − 47 − 64`）。表格工具条在 960 宽下
+单行放不下全部控件（会截断、重叠），拆两行是**有意取舍**，见附录 A 第 8 条；标签条高度取
+`AdwTabBar` 实测值而非原型的 24，见附录 A 第 10 条。
 
 1200 × 800 下的实际宽度：
 
@@ -224,3 +224,6 @@ macOS 把 `Ctrl` 换成 `⌘`，其余语义不变。快捷键不得引入无对
 8. 表格工具条为**两行**（事务控制行 / 行变更行），不是原型的一行：960 宽下 10 个控件一行放不下，
    实测会截断并重叠（#113 返工记录）。因此 `gridHeight` 比原型少 32px。
 9. 「对象树 / 平铺列表」切换放在**侧栏页脚**，不占状态栏（原型把它画在状态栏右侧，960 下被裁）。
+10. 标签条高 **47px**（`AdwTabBar` 实测）而非原型的 24：保留 GNOME 原生标签组件优先于像素一致
+    （ADR 0023），代价是表格比原型再少 23px。另：`AdwTabPage` 没有 closable / pinned API，
+    `Objects` 页只能在点击关闭时拒绝并说明，无法从控件层声明「不可关」。
