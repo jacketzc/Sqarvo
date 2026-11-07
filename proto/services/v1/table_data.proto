@@ -27,8 +27,10 @@ import "services/v1/metadata.proto";
 //   返回 `config.invalid`；**禁止**把用户输入拼进 SQL 文本；
 // * 值一律参数化绑定（`Filter.Condition.value`），不做字符串拼接；
 // * 总数三态（`TotalKind`）必须显式给出，客户端不得从「有没有 total_rows」推断：
-//   UNKNOWN 表示未请求或驱动给不出，ESTIMATE 来自统计信息（可能偏差很大），
-//   EXACT 才是真实计数。
+//   UNKNOWN 表示未请求、驱动给不出，或精确计数超时被跳过（此时
+//   `total_skipped = true`，与「没请求」区分），ESTIMATE 来自统计信息（可能偏差
+//   很大），EXACT 才是真实计数。精确计数自带超时上界（`timeout_millis`），
+//   超时只放弃统计、照常返回本页数据，不报错也不返回半截数量（#127）。
 //
 // 不支持的能力必须返回 `capability.unsupported`（驱动未实现行编辑）或
 // `table_data.no_primary_key`（无主键），不得静默降级为「尽力而为」的写入。
@@ -179,9 +181,23 @@ message BrowseTableRequest {
   Filter filter = 6;
   // 是否请求总行数。false 时 `total_kind` 必须为 `TOTAL_KIND_UNKNOWN`（v0.2.2 行为）。
   //
-  // 精确计数是一次独立查询，必须可取消、有超时，并与本次取页在同一会话执行锁内
+  // 精确计数是一次独立查询，必须有界、并与本次取页在同一会话执行锁内
   // （ADR 0008 / 0022 §2）。驱动可以只返回 `ESTIMATE`，**不得**把估计值伪称 `EXACT`。
   bool include_total = 7;
+  // 精确计数的超时（毫秒）；**0 = 服务端默认值**（2000 ms）。
+  //
+  // 只约束 `include_total = true` 时那次独立的 `COUNT(*)`，**不影响本页取数**：
+  // 到点按「未统计」降级（`total_kind = TOTAL_KIND_UNKNOWN` + `total_skipped = true`），
+  // 不报错，也不返回半截数量。默认值与上限由驱动侧钳制（见
+  // `BrowseOptions::effective_total_timeout`），超出上限按上限处理，不返回错误。
+  //
+  // 为什么每次都要带上界：`BrowseTable` 是一元 RPC，客户端在拿到响应前**没有**
+  // 取消通道（`QueryService.Cancel` 只认识 `Execute` 登记的 query_id），因此服务端
+  // 不能等用户点「取消」，只能给计数一个自带的截止时间。到点由驱动用自己的中断
+  // 机制（SQLite `sqlite3_interrupt` / MariaDB `KILL QUERY`）打断这一条计数语句。
+  //
+  // 字段号按 Issue #127 约定取 10（8 / 9 未使用，留给后续增量）。
+  uint32 timeout_millis = 10;
 }
 
 message BrowseTableResponse {
@@ -204,6 +220,16 @@ message BrowseTableResponse {
   uint64 total_rows = 8;
   // 总行数的可信程度（三态）。UNKNOWN = 未请求或驱动给不出。
   TotalKind total_kind = 9;
+  // 本次**没有统计**总数：已请求 `include_total = true`，但精确计数超时或被中断。
+  //
+  // * `true` 时 `total_kind` 必为 `TOTAL_KIND_UNKNOWN`、`total_rows` 必为 0，
+  //   且本页 `rows` 仍然完整——超时只放弃统计，不影响取页；
+  // * `include_total = false` 时恒为 `false`：「没请求」与「请求了但没统计完」是
+  //   两件事，混在一起会让界面把用户没要求的「未统计」也标出来。
+  //
+  // 客户端据此显示「已跳过统计」，不得把它当成「0 行」。字段号按 Issue #127
+  // 约定取 11（10 未使用，留给后续增量）。
+  bool total_skipped = 11;
 }
 
 // 只读原因。可编辑时 read_only=false 且本字段为 READ_ONLY_REASON_UNSPECIFIED。

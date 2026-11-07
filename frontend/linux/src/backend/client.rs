@@ -639,6 +639,8 @@ impl BackendClient {
             sort: Vec::new(),
             filter: None,
             include_total: false,
+            // 契约增量（#127）：0 = 服务端默认计数超时；前端本版不请求总数，字段留默认。
+            timeout_millis: 0,
         };
         let response = tokio::time::timeout(QUERY_RPC_TIMEOUT, client.browse_table(request))
             .await

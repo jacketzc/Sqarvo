@@ -87,6 +87,8 @@ fn table_data_message_field_numbers_are_frozen() {
             (5, "sort"),
             (6, "filter"),
             (7, "include_total"),
+            // #127：精确计数的超时上界（0 = 服务端默认值），只能追加。
+            (10, "timeout_millis"),
         ],
     );
     assert_fields(
@@ -102,6 +104,8 @@ fn table_data_message_field_numbers_are_frozen() {
             // #109：总数三态（UNKNOWN / ESTIMATE / EXACT）。
             (8, "total_rows"),
             (9, "total_kind"),
+            // #127：本次请求了但没统计完（超时/被中断），只能追加。
+            (11, "total_skipped"),
         ],
     );
     assert_fields(
@@ -689,6 +693,7 @@ impl TableDataProvider for FakeTableData {
                 ordering: RowOrder::PrimaryKeyAscending,
                 total_rows: None,
                 total_kind: sqarvo_driver_api::TotalKind::Unknown,
+                total_skipped: false,
             });
         };
         // 游标只能原样回传：篡改后必须显式拒绝，不能静默回到第一页。
@@ -708,6 +713,7 @@ impl TableDataProvider for FakeTableData {
             ordering: RowOrder::Unstable,
             total_rows: None,
             total_kind: sqarvo_driver_api::TotalKind::Unknown,
+            total_skipped: false,
         })
     }
 }

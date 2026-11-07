@@ -270,6 +270,8 @@ async fn browse(
                 sort: Vec::new(),
                 filter: None,
                 include_total: false,
+                // 0 = 服务端默认计数超时（#127）。
+                timeout_millis: 0,
             })
             .await,
     )

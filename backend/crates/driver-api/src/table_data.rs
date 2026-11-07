@@ -18,6 +18,7 @@ use async_trait::async_trait;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
 
@@ -35,6 +36,20 @@ pub const MAX_ROW_CHANGES_PER_BATCH: usize = 500;
 /// 单次提交预计影响超过该行数、且请求未带显式确认时，服务端返回
 /// `table_data.confirmation_required`。阈值由服务端决定，客户端不得自行放宽。
 pub const DEFAULT_RISK_CONFIRMATION_ROWS: u64 = 100;
+
+/// 精确计数的默认超时（ADR 0022 §2，#127）。
+///
+/// `BrowseOptions::total_timeout = None`（请求里 `timeout_millis = 0`）时用它。
+/// 取 2 秒：常规业务表的 `COUNT(*)` 在毫秒级，2 秒只会在真正的大表/慢盘上触发；
+/// 一旦触发就按「未统计」降级，而不是让「打开表格」无限等待。
+pub const DEFAULT_COUNT_TIMEOUT: Duration = Duration::from_millis(2_000);
+
+/// 精确计数超时的上限。
+///
+/// 调用方给出的值再大也按它钳制：计数持着会话执行锁（ADR 0008），没有上界时
+/// 一条 `COUNT(*)` 可以把整个会话锁住任意久。钳制**不报错**——超时是保护，
+/// 不是参数错误。
+pub const MAX_COUNT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 主键中的一列。
 ///
@@ -254,7 +269,7 @@ impl Filter {
 /// 误差可能很大；`Exact` 才是真实计数。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TotalKind {
-    /// 未请求，或请求了但驱动无法给出总数。
+    /// 未请求，或请求了但驱动无法给出总数（含精确计数超时被跳过）。
     #[default]
     Unknown,
     /// 来自统计信息的估计值。
@@ -295,12 +310,31 @@ pub struct BrowseOptions {
     /// 是否请求总行数。为 `false` 时 [`TablePage::total_kind`] 必须是
     /// [`TotalKind::Unknown`]（v0.2.2 行为）。
     pub include_total: bool,
+    /// 精确计数的超时；`None` 表示用驱动默认值 [`DEFAULT_COUNT_TIMEOUT`]。
+    ///
+    /// 只影响 `include_total = true` 时那次独立的计数查询。超时（或被服务端中断）
+    /// 时必须按「未统计」降级：[`TablePage::total_kind`] 为 [`TotalKind::Unknown`]、
+    /// [`TablePage::total_skipped`] 为 `true`，**不得**报错，也**不得**返回半截数量。
+    pub total_timeout: Option<Duration>,
 }
 
 impl BrowseOptions {
+    /// 实际生效的计数超时：`None` → [`DEFAULT_COUNT_TIMEOUT`]，其余值钳制在
+    /// `[1ms, MAX_COUNT_TIMEOUT]`。
+    ///
+    /// 钳制在 SPI 层而不是只为 gRPC 做：不经 gRPC 的调用方（测试、未来内嵌使用）
+    /// 同样不能把一条计数查询变成无限等待，规则只能有一个落点。
+    #[must_use]
+    pub fn effective_total_timeout(&self) -> Duration {
+        let requested = self.total_timeout.unwrap_or(DEFAULT_COUNT_TIMEOUT);
+        requested.clamp(Duration::from_millis(1), MAX_COUNT_TIMEOUT)
+    }
+
     /// 是否使用了任何 v0.2.3 新增的浏览维度。
     ///
     /// 全部为默认值时，驱动可以走 v0.2.2 的既有路径，行为必须与旧版本完全一致。
+    /// `total_timeout` **不参与**判定：它只在 `include_total = true` 时才有意义，
+    /// 单独出现不改变任何行为（否则带一个超时就会把请求踢出老路径）。
     #[must_use]
     pub fn is_legacy(&self) -> bool {
         self.offset.is_none_or(|offset| offset == 0)
@@ -347,6 +381,13 @@ pub struct TablePage {
     pub total_rows: Option<u64>,
     /// 总行数的可信程度。未请求 / 给不出时为 [`TotalKind::Unknown`]。
     pub total_kind: TotalKind,
+    /// 本次**没有统计**总数：已请求（`include_total = true`）但计数超时或被中断。
+    ///
+    /// 为 `true` 时 [`TablePage::total_kind`] 必须是 [`TotalKind::Unknown`]、
+    /// [`TablePage::total_rows`] 必须是 `None`，且 [`TablePage::rows`] 仍然完整——
+    /// 超时只放弃统计，不影响取页。未请求总数时为 `false`：把「没请求」也标成
+    /// 「已跳过」会让界面显示用户并没有要求的「未统计」（ADR 0022 §2）。
+    pub total_skipped: bool,
 }
 
 /// 定位行的主键值。顺序必须与 [`PrimaryKey::columns`] 一致。
@@ -914,7 +955,11 @@ pub trait TableDataProvider: Send + Sync {
     /// - 未声明 [`TableDataProvider::supports_browse_sort_filter_total`] 的实现必须
     ///   忽略 `options` 并返回旧行为，**不得**伪造排序、筛选或总数；
     /// - 未请求总数（`include_total = false`）时 [`TablePage::total_kind`] 必须是
-    ///   [`TotalKind::Unknown`]。
+    ///   [`TotalKind::Unknown`]、[`TablePage::total_skipped`] 必须是 `false`；
+    /// - 请求了总数时，精确计数必须有界：到 [`BrowseOptions::effective_total_timeout`]
+    ///   就用驱动自己的中断机制打断这条计数语句，返回 [`TotalKind::Unknown`] +
+    ///   [`TablePage::total_skipped`] `= true`，**不得**报错、不得返回半截数量，
+    ///   也不得影响本页数据（ADR 0022 §2，#127）。
     async fn browse(
         &self,
         object: &ObjectRef,
@@ -1460,6 +1505,47 @@ mod tests {
                 ..BrowseOptions::default()
             }
             .is_legacy()
+        );
+    }
+
+    /// 计数超时（#127）：默认值有上界、越界钳制、`None` 落到默认值。
+    #[test]
+    fn count_timeout_defaults_and_clamps() {
+        assert_eq!(DEFAULT_COUNT_TIMEOUT, Duration::from_millis(2_000));
+        assert_eq!(MAX_COUNT_TIMEOUT, Duration::from_secs(60));
+        let options = BrowseOptions::default();
+        assert_eq!(options.total_timeout, None);
+        assert_eq!(options.effective_total_timeout(), DEFAULT_COUNT_TIMEOUT);
+
+        // 显式值原样生效（1 毫秒的极小值也允许：测试与大表保护会用到）。
+        let tiny = BrowseOptions {
+            total_timeout: Some(Duration::from_millis(1)),
+            ..BrowseOptions::default()
+        };
+        assert_eq!(tiny.effective_total_timeout(), Duration::from_millis(1));
+
+        // 超过上限按上限钳制，不报错：超时是保护，不是参数错误。
+        let huge = BrowseOptions {
+            total_timeout: Some(Duration::from_secs(3_600)),
+            ..BrowseOptions::default()
+        };
+        assert_eq!(huge.effective_total_timeout(), MAX_COUNT_TIMEOUT);
+
+        // 0 值钳到 1ms，不会退化成「无超时」。
+        let zero = BrowseOptions {
+            total_timeout: Some(Duration::ZERO),
+            ..BrowseOptions::default()
+        };
+        assert_eq!(zero.effective_total_timeout(), Duration::from_millis(1));
+
+        // 单独给超时不算 v0.2.3 维度：不请求总数时它没有任何效果。
+        assert!(
+            BrowseOptions {
+                total_timeout: Some(Duration::from_millis(5)),
+                ..BrowseOptions::default()
+            }
+            .is_legacy(),
+            "timeout 只在 include_total 时生效，不能把老路径踢出"
         );
     }
 

@@ -719,6 +719,104 @@ async fn table_data_total_is_exact_or_unknown() {
     assert_eq!(after_insert.total_kind, TotalKind::Exact);
 }
 
+/// 计数超时（#127）：上限到点后放弃统计（`UNKNOWN` + `total_skipped`），
+/// 本页数据照样完整，连接仍可继续使用。
+///
+/// 成本用视图放大（1200 × 1200 的笛卡尔积），不插入几十万行：要验证的是超时分支
+/// 真的会被触发并干净收尾，不是压测计数速度。
+#[tokio::test]
+async fn count_timeout_skips_the_total_without_touching_the_page() {
+    let (_dir, session) = session().await;
+    exec(
+        session.as_ref(),
+        "CREATE TABLE count_base (id INTEGER PRIMARY KEY, v INTEGER)",
+    )
+    .await;
+    exec(
+        session.as_ref(),
+        "WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < 1200) \
+         INSERT INTO count_base(id, v) SELECT x, x % 13 FROM seq",
+    )
+    .await;
+    // 144 万行的 `COUNT(*)`：毫秒级超时一定先到。
+    exec(
+        session.as_ref(),
+        "CREATE VIEW slow_count AS SELECT a.id AS id, a.v AS v FROM count_base a, count_base b",
+    )
+    .await;
+
+    let provider = session.table_data().expect("表数据能力");
+    let slow = ObjectRef {
+        kind: ObjectKind::View,
+        ..object(session.as_ref(), "slow_count")
+    };
+
+    let started = std::time::Instant::now();
+    let first_page = provider
+        .browse(
+            &slow,
+            &page(50, None),
+            &BrowseOptions {
+                include_total: true,
+                total_timeout: Some(std::time::Duration::from_millis(1)),
+                ..BrowseOptions::default()
+            },
+        )
+        .await
+        .expect("计数超时只放弃统计，绝不能报错");
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        first_page.total_kind,
+        TotalKind::Unknown,
+        "超时必须是 UNKNOWN，不得给出半截数量或伪称 EXACT"
+    );
+    assert!(
+        first_page.total_skipped,
+        "请求了却没算完必须显式标记 total_skipped"
+    );
+    assert_eq!(first_page.total_rows, None);
+    assert_eq!(first_page.rows.len(), 50, "本页数据不受计数超时影响");
+    assert!(
+        first_page
+            .rows
+            .iter()
+            .all(|row| matches!(row[0].value, Value::Int(_))),
+        "本页每一行都必须完整（第一列是整型 id）"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "超时后必须尽快返回，实际 {elapsed:?}"
+    );
+
+    // 连接没有被留在「计数仍在跑」的状态：同一会话还能继续浏览与计数。
+    let after_timeout = provider
+        .browse(&slow, &page(5, None), &BrowseOptions::default())
+        .await
+        .expect("超时后连接必须仍然可用");
+    assert_eq!(after_timeout.rows.len(), 5);
+
+    let counted = object(session.as_ref(), "count_base");
+    let exact = provider
+        .browse(
+            &counted,
+            &page(5, None),
+            &BrowseOptions {
+                include_total: true,
+                ..BrowseOptions::default()
+            },
+        )
+        .await
+        .expect("超时后计数仍可用");
+    assert_eq!(
+        exact.total_kind,
+        TotalKind::Exact,
+        "超时的中断不得残留到下一条语句"
+    );
+    assert_eq!(exact.total_rows, Some(1_200));
+    assert!(!exact.total_skipped, "算出来了就不能标成已跳过");
+}
+
 /// 无主键表允许排序/筛选/计数，但仍只读、`ordering = Unstable`、不签发游标。
 #[tokio::test]
 async fn table_data_without_primary_key_browses_with_options() {
@@ -788,6 +886,7 @@ async fn table_data_without_primary_key_browses_with_options() {
                 Some(Value::Text("m".to_owned())),
             )]),
             include_total: true,
+            total_timeout: None,
         },
     )
     .await;

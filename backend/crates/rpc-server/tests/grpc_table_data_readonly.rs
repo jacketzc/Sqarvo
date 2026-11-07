@@ -166,6 +166,8 @@ fn browse_request(session_id: &str, name: &str, token: &str) -> BrowseTableReque
         sort: Vec::new(),
         filter: None,
         include_total: false,
+        // 0 = 服务端默认计数超时（#127）。
+        timeout_millis: 0,
     }
 }
 

@@ -93,6 +93,8 @@ fn browse_table_request_field_numbers_are_frozen() {
             (5, "sort"),
             (6, "filter"),
             (7, "include_total"),
+            // #127：只追加，8 / 9 留空未用（按 Issue 约定取 10）。
+            (10, "timeout_millis"),
         ],
     );
 
@@ -120,6 +122,18 @@ fn browse_table_request_field_numbers_are_frozen() {
         Type::Bool,
         "是否请求总数必须是显式布尔，不能靠 total_rows 是否为 0 推断"
     );
+    // #127：计数的超时上界。必须是毫秒整数（0 = 服务端默认值），
+    // 不是字符串、不是布尔——「有没有超时」不能靠别的字段推断。
+    assert_eq!(
+        field(request, "timeout_millis").r#type(),
+        Type::Uint32,
+        "timeout_millis 是无符号毫秒数，0 表示服务端默认值"
+    );
+    assert_eq!(
+        field(request, "timeout_millis").label(),
+        prost_types::field_descriptor_proto::Label::Optional,
+        "timeout_millis 是单值字段（proto3 标量），不得改成 repeated"
+    );
 }
 
 /// 响应只追加：旧字段 1-7 不动，新字段恰好是 8/9。
@@ -138,6 +152,8 @@ fn browse_table_response_field_numbers_are_frozen() {
             (7, "ordering"),
             (8, "total_rows"),
             (9, "total_kind"),
+            // #127：只追加，10 留空未用（按 Issue 约定取 11）。
+            (11, "total_skipped"),
         ],
     );
 
@@ -147,6 +163,13 @@ fn browse_table_response_field_numbers_are_frozen() {
         field(response, "total_kind").type_name(),
         ".sqarvo.services.v1.TotalKind",
         "总数三态必须由独立枚举表达，不能用 total_rows 是否缺省推断"
+    );
+    // #127：「请求了但没统计完」必须是独立布尔，不能塞进 total_kind 的新枚举值
+    // （那会让旧客户端把「跳过」读成 UNKNOWN 以外的语义），也不能用 total_rows = 0 表达。
+    assert_eq!(
+        field(response, "total_skipped").r#type(),
+        Type::Bool,
+        "total_skipped 必须与「没请求总数」可区分，且不得占用 TotalKind 的取值"
     );
 }
 
