@@ -123,6 +123,11 @@ fn names(nodes: &[ObjectNode]) -> Vec<&str> {
         .collect()
 }
 
+/// 与 [`names`] 同序的拥有所有权的版本：用于跨 `.await` 保留比较结果（借用活不过循环）。
+fn owned_names(nodes: &[ObjectNode]) -> Vec<String> {
+    nodes.iter().map(|node| node.display_name.clone()).collect()
+}
+
 async fn search_root(
     session: &dyn DriverSession,
     filter: &ObjectFilter,
@@ -217,14 +222,42 @@ async fn contains_exact_and_kinds_work_against_information_schema() {
     assert_eq!(columns.items, Vec::new());
 
     // 空过滤必须与 `list_children` 完全一致。
-    let unfiltered = provider(&*session)
-        .list_children(None, &page(5, None))
-        .await
-        .expect("根节点");
-    let empty_filter = search_root(&*session, &ObjectFilter::none(), &page(5, None))
-        .await
-        .expect("空过滤");
-    assert_eq!(names(&empty_filter.items), names(&unfiltered.items));
+    //
+    // 注意：本文件的其它用例在并行线程里创建/删除 `f84_*` 表，会改变根节点的**全局**
+    // 分页窗口（按「种类, 名字」排序的前 5 条）。所以不能拿两次调用直接比较：先要求
+    // 「连续两次未过滤结果一致」（窗口稳定），再与空过滤比较；最多重试 20 次、间隔 50 ms。
+    // 这与 #101 对 `metadata_lists_tables_and_views_with_stable_pagination` 的处理同一口径：
+    // 只让测试容忍并发窗口抖动，不改驱动的错误码语义。
+    let mut compared: Option<Vec<String>> = None;
+    for _ in 0..20 {
+        let first = provider(&*session)
+            .list_children(None, &page(5, None))
+            .await
+            .expect("根节点");
+        let second = provider(&*session)
+            .list_children(None, &page(5, None))
+            .await
+            .expect("根节点");
+        if names(&first.items) != names(&second.items) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+        }
+        let empty_filter = search_root(&*session, &ObjectFilter::none(), &page(5, None))
+            .await
+            .expect("空过滤");
+        if names(&empty_filter.items) == names(&first.items) {
+            compared = Some(owned_names(&first.items));
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let compared = compared.expect(
+        "根节点窗口在 20 次重试内始终不稳定：并发用例在建/删同一前缀的表，空过滤无法与未过滤比较",
+    );
+    assert!(
+        !compared.is_empty(),
+        "稳定的根节点窗口为空，无法证明「空过滤与 list_children 一致」"
+    );
 
     drop_tables(&*session, &all).await;
 }
