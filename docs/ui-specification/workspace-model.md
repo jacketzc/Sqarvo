@@ -88,6 +88,13 @@ gridWidth    = contentWidth - 18（左内边距）- 3（右内边距）- [10（�
 
 - 根是 `My Connections`，其下是**连接**（来自 `connections.json`），再下是 catalog
   （SQLite `main`/`temp`/`ATTACH`，MariaDB 为可见库），再下按种类分组。
+- 连接条目按**身份键**唯一（#145）：服务器型 = 驱动 + 主机（大小写不敏感）+ 端口 +
+  用户名 + 库（空库名也参与比较）；文件型 = 驱动 + 规范化绝对路径（`./a.db`、
+  `a.db` 与大小写差异视为同一文件）。再次「保存并连接」同一目标时**更新原条目**的
+  非身份字段（名称 / TLS 等；改库名、用户名或端口是另一个目标，各自独立），不追加；
+  凭据引用复用，密码变化覆盖原引用指向的密钥，
+  不在系统凭据库里堆新条目。加载配置时已有的重复条目按同一规则合并并记一行日志
+  （保留最近一次保存的那条，不静默丢数据）。
 - 种类分组的顺序固定：`Tables` → `Views` → `Functions` → `Queries`。
 - 分组是**客户端虚拟层**，不是服务端层级：契约中的层序只有
   Catalog → Table/View/Sequence → Column/Index/Trigger（见 `proto/services/v1/metadata.proto`

@@ -11,10 +11,11 @@
 //! 写入采用「临时文件 + 同目录 rename」：进程崩溃不会留下半个 JSON 文件，
 //! 下一次启动不会因为写入被打断而丢掉整个连接列表。
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,19 +59,39 @@ pub struct SavedConnection {
 }
 
 impl SavedConnection {
-    /// 条目身份：有凭据时按凭据引用，没有凭据（SQLite）时按驱动 + 路径。
+    /// 连接身份键：同一个「连接目标」共享一个键（#27 / #145）。
     ///
-    /// 只按 `credential_ref` 去重会让所有 SQLite 连接（引用都是空串）互相覆盖，
-    /// 导致连接列表永远只剩最后一条。
+    /// - 服务器型：`driver|host|port|username|database`；主机名大小写不敏感，
+    ///   库名留空也参与比较（`db_a` 与 `db_b` 是两条连接，不会互相覆盖）。
+    /// - 文件型（SQLite）：`driver|file|<规范化绝对路径>`；`./a.db`、相对路径与
+    ///   大小写差异视为同一个文件。**大小写不敏感是有意的取舍**：Linux 文件系统
+    ///   区分大小写，这里宁可把 `A.db` 与 `a.db` 合并，也不让用户每点一次就多一条
+    ///   指向同一个库的连接；真正的两个仅大小写不同的文件属于罕见冲突，合并后
+    ///   保留最近一次保存的路径。
+    ///
+    /// 这个身份**不是**凭据引用：同一目标换密码只覆盖原引用指向的密钥（ADR 0012），
+    /// 引用保持不变；因此不能用 `credential_ref` 当身份，否则同目标两次保存会
+    /// 各生成一个引用，配置与密钥环都堆条目。
     ///
     /// #114 起这个身份也是连接注册表里的节点键（树上的连接节点与之绑定），
     /// 所以它是 `pub` 的：注册表要用它把「刚建立的会话」对回「哪一条连接」。
     #[must_use]
     pub fn key(&self) -> String {
-        if self.credential_ref.is_empty() {
-            format!("{}|{}|{}", self.driver, self.host, self.file_path)
+        if self.driver == SQLITE_DRIVER_ID {
+            format!(
+                "{}|file|{}",
+                self.driver,
+                normalized_file_path(&self.file_path)
+            )
         } else {
-            self.credential_ref.clone()
+            format!(
+                "{}|{}|{}|{}|{}",
+                self.driver,
+                self.host.to_lowercase(),
+                self.port,
+                self.username,
+                self.database
+            )
         }
     }
 
@@ -100,6 +121,43 @@ impl SavedConnection {
             format!("{user}{}:{}/{}", self.host, self.port, self.database)
         }
     }
+}
+
+/// 文件型连接的身份路径：相对路径补成绝对路径，消掉 `.` / `..`，再统一小写。
+///
+/// 这里做**词法**规范化而不是 `canonicalize`：连接对话框允许输入尚不存在的新库文件，
+/// `canonicalize` 会失败；而且符号链接解析与否不影响「同一路径的两种写法」这个目标。
+fn normalized_file_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let raw = Path::new(path);
+    let absolute = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        // 取不到当前目录时退回原样（至少不会 panic，也不会把不同文件判成同一个）。
+        std::env::current_dir()
+            .map(|cwd| cwd.join(raw))
+            .unwrap_or_else(|_| raw.to_path_buf())
+    };
+    let mut parts: Vec<OsString> = Vec::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // 绝对路径的根不能被 `..` 弹掉；取不到 cwd 的退化路径按普通相对路径处理。
+                if parts.len() > 1 || !absolute.is_absolute() {
+                    parts.pop();
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                parts.push(component.as_os_str().to_owned());
+            }
+            Component::Normal(part) => parts.push(part.to_owned()),
+        }
+    }
+    let normalized: PathBuf = parts.iter().collect();
+    normalized.to_string_lossy().to_lowercase()
 }
 
 /// 配置文件结构。
@@ -164,10 +222,30 @@ pub fn saved_connections() -> Vec<SavedConnection> {
 
 /// 插入或更新一条连接，返回写入的路径。
 ///
-/// 以 `credential_ref` 作为标识：同一个引用视为同一条连接（用户改了主机/库名时更新原条目，
-/// 不会堆出多条指向同一份密码的记录）。
+/// 以 [`SavedConnection::key`]（连接身份）作为标识：同一个目标视为同一条连接，
+/// 后续保存**更新**原条目的非身份字段（名称 / TLS 等），不会追加重复项；改库名、
+/// 用户名或端口属于另一个目标，各自独立成条。
+/// 凭据引用由调用方（`run_save_and_connect`）在写入密码前按身份复用原条目的引用。
 pub fn upsert(connection: SavedConnection) -> Result<PathBuf, ConfigError> {
     upsert_in(&config_dir()?, connection)
+}
+
+/// 按连接身份查找已保存的条目（找到最近一次保存的那条）。
+///
+/// 「保存并连接」必须在**写凭据之前**调用它：命中说明这个目标已经有条目和凭据引用，
+/// 本次密码要覆盖原引用指向的密钥，而不是让后端生成一个新引用、在密钥环里多一条。
+#[must_use]
+pub fn find_by_identity(connection: &SavedConnection) -> Option<SavedConnection> {
+    let dir = config_dir().ok()?;
+    find_by_identity_in(&dir.join(FILE_NAME), connection)
+}
+
+fn find_by_identity_in(path: &Path, connection: &SavedConnection) -> Option<SavedConnection> {
+    let key = connection.key();
+    load_file(path)
+        .into_iter()
+        .rev()
+        .find(|existing| existing.key() == key)
 }
 
 fn load_file(path: &Path) -> Vec<SavedConnection> {
@@ -175,7 +253,17 @@ fn load_file(path: &Path) -> Vec<SavedConnection> {
         return Vec::new();
     };
     match serde_json::from_str::<Document>(&text) {
-        Ok(document) => document.connections,
+        Ok(document) => {
+            let (connections, merged) = merge_duplicates(document.connections);
+            if merged > 0 {
+                // 不静默丢数据：旧版本（身份按凭据引用）可能已经写进重复条目。
+                eprintln!(
+                    "[sqarvo-desktop] 已合并 {merged} 条重复连接（保留最近一次保存的条目）：{}",
+                    path.display()
+                );
+            }
+            connections
+        }
         Err(error) => {
             eprintln!(
                 "[sqarvo-desktop] 连接配置无法解析（{}）：{error}；本次按空列表处理，不会覆盖已有文件",
@@ -184,6 +272,24 @@ fn load_file(path: &Path) -> Vec<SavedConnection> {
             Vec::new()
         }
     }
+}
+
+/// 按身份合并重复条目，保留**最后一条**（追加写入在末尾，最后一条即最近一次保存）。
+///
+/// 返回合并后的列表与合并掉的条数；条目顺序按各自最后出现的位置排列，
+/// 未重复的条目位置不变。日志由调用方打，测试直接断言返回值，不依赖 stderr。
+fn merge_duplicates(connections: Vec<SavedConnection>) -> (Vec<SavedConnection>, usize) {
+    let mut merged: Vec<SavedConnection> = Vec::with_capacity(connections.len());
+    let mut removed = 0usize;
+    for connection in connections {
+        let key = connection.key();
+        if let Some(index) = merged.iter().position(|existing| existing.key() == key) {
+            merged.remove(index);
+            removed += 1;
+        }
+        merged.push(connection);
+    }
+    (merged, removed)
 }
 
 fn upsert_in(dir: &Path, connection: SavedConnection) -> Result<PathBuf, ConfigError> {
@@ -196,7 +302,17 @@ fn upsert_in(dir: &Path, connection: SavedConnection) -> Result<PathBuf, ConfigE
         .iter_mut()
         .find(|existing| existing.key() == key)
     {
-        Some(existing) => *existing = connection,
+        Some(existing) => {
+            // 命中身份：沿用原条目的凭据引用，避免同一连接的密码在密钥环里出现两份。
+            let reference = if connection.credential_ref.is_empty() {
+                existing.credential_ref.clone()
+            } else {
+                connection.credential_ref.clone()
+            };
+            let mut updated = connection;
+            updated.credential_ref = reference;
+            *existing = updated;
+        }
         None => connections.push(connection),
     }
     let document = Document {
@@ -394,20 +510,196 @@ mod tests {
             & 0o777;
         assert_eq!(dir_mode, 0o700, "配置目录必须是 0700，实际 {dir_mode:o}");
 
-        // 同一引用再次写入：更新原条目而不是追加。
+        // 同一目标再次写入（名称 / TLS 变了、引用复用）：更新原条目而不是追加。
         let mut updated = entry(REF);
-        updated.database = "renamed_db".to_owned();
-        upsert_in(&target, updated.clone()).expect("再次写入");
+        updated.name = "改过的名字".to_owned();
+        updated.tls_mode = "required".to_owned();
+        upsert_in(&target, updated).expect("再次写入");
         let connections = load_file(&path);
-        assert_eq!(connections.len(), 1);
-        assert_eq!(connections[0].database, "renamed_db");
+        assert_eq!(
+            connections.len(),
+            1,
+            "同一目标不能追加第二条：{connections:?}"
+        );
+        assert_eq!(connections[0].name, "改过的名字");
+        assert_eq!(connections[0].tls_mode, "required");
+        assert_eq!(connections[0].credential_ref, REF);
+    }
 
-        // 不同引用：追加。
+    #[test]
+    fn same_target_saved_twice_keeps_one_entry_with_last_values() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path();
+
+        let first = entry(REF);
+        let mut second = entry(REF);
+        second.name = "第二次保存".to_owned();
+        second.tls_mode = "verify-full".to_owned();
+
+        upsert_in(target, first).expect("第一次");
+        upsert_in(target, second).expect("第二次");
+
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(connections.len(), 1, "同一身份只保留一条：{connections:?}");
+        assert_eq!(connections[0].name, "第二次保存");
+        assert_eq!(connections[0].tls_mode, "verify-full");
+        assert_eq!(connections[0].credential_ref, REF, "引用应复用");
+    }
+
+    #[test]
+    fn same_target_with_new_reference_updates_instead_of_appending() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path();
         let other = "sqarvo:conn/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
-        upsert_in(&target, entry(other)).expect("第二条");
+
+        upsert_in(target, entry(REF)).expect("第一次");
+        upsert_in(target, entry(other)).expect("第二次");
+
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(connections.len(), 1, "身份不看引用：{connections:?}");
+        assert_eq!(connections[0].credential_ref, other, "应采用新的引用");
+    }
+
+    #[test]
+    fn different_database_user_or_port_stay_separate() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path();
+
+        let mut other_database = entry(REF);
+        other_database.database = "another_db".to_owned();
+        let mut other_user = entry(REF);
+        other_user.username = "another_user".to_owned();
+        let mut other_port = entry(REF);
+        other_port.port = 3306;
+
+        for (label, connection) in [
+            ("基准", entry(REF)),
+            ("换库", other_database),
+            ("换用户", other_user),
+            ("换端口", other_port),
+        ] {
+            upsert_in(target, connection).expect(label);
+        }
+
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(
+            connections.len(),
+            4,
+            "不同目标必须各自独立：{connections:?}"
+        );
+    }
+
+    #[test]
+    fn server_host_is_case_insensitive_and_empty_database_participates() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path();
+
+        let mut lower = entry(REF);
+        lower.host = "LocalHost".to_owned();
+        let mut upper = entry(REF);
+        upper.host = "LOCALHOST".to_owned();
+        let mut empty_database = entry(REF);
+        empty_database.database = String::new();
+
+        upsert_in(target, lower).expect("小写主机");
+        upsert_in(target, upper).expect("大写主机");
+        assert_eq!(
+            load_file(&target.join(FILE_NAME)).len(),
+            1,
+            "主机大小写不敏感"
+        );
+
+        upsert_in(target, empty_database).expect("空库名");
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(connections.len(), 2, "空库名是另一种目标：{connections:?}");
+    }
+
+    #[test]
+    fn sqlite_paths_that_normalize_to_the_same_file_share_one_entry() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path();
+        let file = dir.path().join("a.db");
+        let direct = file.display().to_string();
+        let dotted = dir.path().join(".").join("a.db").display().to_string();
+        let upper = dir.path().join("A.DB").display().to_string();
+
+        assert_eq!(normalized_file_path("a.db"), normalized_file_path("./a.db"));
+        assert_eq!(
+            normalized_file_path("/tmp/nested/../a.db"),
+            normalized_file_path("/tmp/a.db")
+        );
+        assert_eq!(normalized_file_path(&direct), normalized_file_path(&dotted));
+        assert_eq!(normalized_file_path(&direct), normalized_file_path(&upper));
+
+        upsert_in(target, sqlite_entry(&direct)).expect("直接路径");
+        upsert_in(target, sqlite_entry(&dotted)).expect("./ 路径");
+        upsert_in(target, sqlite_entry(&upper)).expect("大小写不同");
+        let connections = load_file(&target.join(FILE_NAME));
+        assert_eq!(
+            connections.len(),
+            1,
+            "规范化后同一文件只保留一条：{connections:?}"
+        );
+        assert_eq!(connections[0].file_path, upper, "保留最近一次保存的路径");
+    }
+
+    #[test]
+    fn loading_a_file_with_duplicates_merges_keeping_the_last() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join(FILE_NAME);
+
+        let mut first = entry(REF);
+        first.name = "旧的名字".to_owned();
+        let mut last = entry("sqarvo:conn/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+        last.name = "最近一次保存".to_owned();
+        let document = Document {
+            version: DOCUMENT_VERSION,
+            connections: vec![first, sqlite_entry("/tmp/other.db"), last],
+        };
+        fs::write(
+            &path,
+            serde_json::to_string(&document).expect("序列化重复配置"),
+        )
+        .expect("写入");
+
         let connections = load_file(&path);
-        assert_eq!(connections.len(), 2);
-        assert!(connections.iter().any(|c| c.credential_ref == other));
+        assert_eq!(connections.len(), 2, "重复条目应合并：{connections:?}");
+        let target = connections
+            .iter()
+            .find(|connection| connection.driver == "mariadb")
+            .expect("服务器条目");
+        assert_eq!(target.name, "最近一次保存");
+        assert_eq!(
+            target.credential_ref, "sqarvo:conn/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+            "保留最后一条（最近一次保存）"
+        );
+    }
+
+    #[test]
+    fn find_by_identity_returns_the_most_recent_entry() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join(FILE_NAME);
+
+        let mut older = entry(REF);
+        older.name = "旧的".to_owned();
+        let mut newer = entry("sqarvo:conn/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+        newer.name = "新的".to_owned();
+        let document = Document {
+            version: DOCUMENT_VERSION,
+            connections: vec![older, newer],
+        };
+        fs::write(&path, serde_json::to_string(&document).expect("序列化")).expect("写入");
+
+        let found = find_by_identity_in(&path, &entry(REF)).expect("应命中同一身份");
+        assert_eq!(found.name, "新的");
+        assert_eq!(
+            found.credential_ref,
+            "sqarvo:conn/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        );
+
+        let mut other = entry(REF);
+        other.database = "elsewhere".to_owned();
+        assert!(find_by_identity_in(&path, &other).is_none());
     }
 
     #[test]

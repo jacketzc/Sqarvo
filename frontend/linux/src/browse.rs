@@ -1068,8 +1068,13 @@ mod tests {
         let first = sqlite("a", "/tmp/a.sqlite");
         let second = sqlite("b", "/tmp/b.sqlite");
         assert_ne!(connection_key(&first), connection_key(&second));
-        let server = mariadb("x");
-        assert_eq!(connection_key(&server), server.credential_ref);
+        // #145：身份是「目标」而不是凭据引用。同一目标换一次密码、换一个引用，
+        // 仍然是同一条连接；不同名字/不同 TLS 也不改变身份。
+        let mut renamed = mariadb("另一个名字");
+        renamed.credential_ref = "sqarvo:conn/22222222-2222-4222-8222-222222222222".to_owned();
+        renamed.tls_mode = "required".to_owned();
+        assert_eq!(connection_key(&mariadb("x")), connection_key(&renamed));
+        assert_ne!(connection_key(&mariadb("x")), mariadb("x").credential_ref);
     }
 
     #[test]
