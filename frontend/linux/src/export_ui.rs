@@ -686,6 +686,10 @@ fn show_completion(parent: &gtk::Widget, plan: &ExportPlan, report: &export::Exp
     path_label.set_hexpand(true);
     row.append(&copy);
     dialog.set_extra_child(Some(&row));
+    // QA：退出步骤需要收起这个模态框（否则 `window.close()` 被拦住）。
+    if crate::qa::enabled() {
+        crate::qa::register_modal(&dialog);
+    }
     dialog.present(Some(parent));
 }
 

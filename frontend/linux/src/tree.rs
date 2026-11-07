@@ -1869,10 +1869,15 @@ impl TreePanel {
                 self.auto_expand_groups(level.key().to_owned(), parent.clone());
             }
             _ => {
+                crate::qa::note_list_nodes();
                 eprintln!(
                     "[tree] t=+{}ms 展开 {}（发送 ListNodes）",
                     crate::qa::elapsed_ms(),
                     level.label
+                );
+                eprintln!(
+                    "[tree] ListNodes 计数：本次累计 {} 次",
+                    crate::qa::list_nodes_total()
                 );
                 self.load_page(level_id, String::new());
             }

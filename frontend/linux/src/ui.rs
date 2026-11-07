@@ -1294,6 +1294,49 @@ impl Workspace {
                     }
                 })
             },
+            qa: {
+                // #121 验收桥：只转发到既有的用户路径，不复制任何树/面板状态。
+                let tree_for_expand = Rc::clone(&tree_slot);
+                let tree_for_select = Rc::clone(&tree_slot);
+                let shell_for_select = Rc::clone(&shell_slot);
+                let inspector_for_pane = Rc::clone(&inspector);
+                let shell_for_pane = Rc::clone(&shell_slot);
+                let inspector_for_observe = Rc::clone(&inspector);
+                Some(Rc::new(crate::tabs::QaBridge {
+                    expand: Rc::new(move |name: &str| {
+                        tree_for_expand
+                            .borrow()
+                            .as_ref()
+                            .ok_or_else(|| "对象树尚未创建".to_owned())?
+                            .qa_expand(name)
+                    }),
+                    select: Rc::new(move |name: &str| {
+                        if let Some(shell) = shell_for_select.borrow().as_ref() {
+                            shell.set_inspector_visible(true);
+                        }
+                        tree_for_select
+                            .borrow()
+                            .as_ref()
+                            .ok_or_else(|| "对象树尚未创建".to_owned())?
+                            .qa_select(name)
+                            .map(|node| format!("选中 {}（信息面板已切换）", node.path_label()))
+                    }),
+                    inspect: Rc::new(move |mode: &str| {
+                        if let Some(shell) = shell_for_pane.borrow().as_ref() {
+                            shell.set_inspector_visible(mode != "hide");
+                        }
+                        if let Some(pane) = crate::inspector::TablePage::parse(mode) {
+                            inspector_for_pane.set_pane(pane);
+                            return Ok(format!("信息面板：{}", pane.name()));
+                        }
+                        Ok(format!(
+                            "信息面板：{}",
+                            if mode == "hide" { "折叠" } else { "展开" }
+                        ))
+                    }),
+                    observe: Rc::new(move || inspector_for_observe.qa_observe()),
+                }))
+            },
             on_title: {
                 let state = Rc::clone(state);
                 Rc::new(move |title: &str, subtitle: &str| {

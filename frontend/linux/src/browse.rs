@@ -611,6 +611,12 @@ impl ConnectionRegistry {
         )
     }
 
+    /// 最近一次 `ListSessions` 返回的会话总数（QA 断言用；还没读过为 `None`）。
+    #[must_use]
+    pub fn session_count(&self) -> Option<usize> {
+        self.sessions.borrow().as_ref().map(Vec::len)
+    }
+
     /// 已连接的会话数（日志与断言用）。
     #[must_use]
     pub fn connected_count(&self) -> usize {

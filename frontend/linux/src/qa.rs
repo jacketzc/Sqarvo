@@ -70,10 +70,23 @@
 //! - #120 增补：`--qa-export <path>`（数据就绪后导出，仍走确认对话框并自动点「导出」）、
 //!   `--qa-export-hold`（停在确认框，截图用）、`--qa-export-cancel-after-rows <n>`
 //!   （写满 n 行后走取消路径，验证目标不留半截文件、临时文件被清理）。
+//! - #121 增补（全部是 `--qa-tabs-file` 的**脚本步骤**，不新增命令行开关）：
+//!   `expand <名字>`（展开树节点）、`select-node <名字>`（选中并切信息面板）、
+//!   `inspector <ddl|info|show|hide>`、`sort <标签> <列>[:shift]`、
+//!   `filter <标签> <列> <算子> <值>`、`page <标签> <next|prev|first|last>`、
+//!   `export <标签> <路径>`、`expect-file <路径> <最少字节>`、`screenshot <路径>`
+//!   （GTK 自渲染，仓库外取证）、`focus-search`（等价于 §10 的 Ctrl+F 焦点目标）、
+//!   `expect-focus search`、`mark-list-nodes` / `expect-list-nodes <n>`（展开一个
+//!   catalog 的 `ListNodes` 次数 = 分组数）、`expect-sessions <n>`（`ListSessions`
+//!   返回的会话总数）、`expect-browse <标签> <字段>=<值>`、
+//!   `expect-inspector <字段>=<值>`、`quit`（走正常清理路径关窗）。
+//!
+//! 这些都是「脚本 + 断言」的收拢：既有 `--qa-*` 的语义一个都没改。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
 //! 的捷径——自动化走的就是用户会走的那条路径。
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -1987,6 +2000,144 @@ where
     W: IsA<gtk::Widget> + IsA<gtk::Native>,
 {
     save_widget(window, window, path)
+}
+
+// ---------------------------------------------------------------------------
+// #121：验收用的两个计数/焦点探针（只读，不改任何产品路径）
+// ---------------------------------------------------------------------------
+
+/// 对象树真正发出 `ListNodes` 的次数（每次展开一层 +1）。
+///
+/// 只由 [`crate::tree`] 在展开请求的同一处调用；正常启动不会读它。验收脚本用它
+/// 断言「展开一个 catalog 的 RPC 次数 = 分组数」，而不是「预取全部」。
+static LIST_NODES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `mark-list-nodes` 记下的基线。
+static LIST_NODES_MARK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 记一次 `ListNodes` 展开请求（树调用；断言见 [`list_nodes_since_mark`]）。
+pub fn note_list_nodes() {
+    LIST_NODES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 把当前计数记为基线（脚本步骤 `mark-list-nodes`）。
+pub fn mark_list_nodes() {
+    LIST_NODES_MARK.store(
+        LIST_NODES.load(std::sync::atomic::Ordering::Relaxed),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// 自基线以来发出了多少次 `ListNodes`。
+#[must_use]
+pub fn list_nodes_since_mark() -> u64 {
+    LIST_NODES
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .saturating_sub(LIST_NODES_MARK.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 本次进程累计发出了多少次 `ListNodes`（日志/诊断用）。
+#[must_use]
+pub fn list_nodes_total() -> u64 {
+    LIST_NODES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 把焦点放到**对象树搜索框**上，并断言它真的拿到了焦点。
+///
+/// workspace-model §10 的 `Ctrl+F` 语义是「聚焦树搜索框」。产品当前还没有注册这条
+/// 快捷键（#121 的「待定」项），所以验收脚本走的是**同一个焦点目标**：找到树顶部那个
+/// `GtkSearchEntry`（placeholder「搜索表名、视图…」），`grab_focus()` 之后读回
+/// `window.focus()`。读到的是 GTK 的真实焦点链，不是「应该聚焦」的推断。
+pub fn focus_tree_search(window: &gtk::Window) -> Result<String, String> {
+    let window = window.clone();
+    let entry = find_tree_search(window.upcast_ref::<gtk::Widget>())
+        .ok_or_else(|| "对象树搜索框尚未创建".to_owned())?;
+    entry.grab_focus();
+    let widget = entry.clone().upcast::<gtk::Widget>();
+    let focus = gtk::prelude::GtkWindowExt::focus(&window);
+    // `GtkSearchEntry` 内部是 `GtkText`：实际焦点落在子控件上，所以按「焦点控件的祖先里
+    // 有没有这个搜索框」判断，而不是只比较顶层控件。
+    let focused = focus
+        .as_ref()
+        .is_some_and(|current| widget == *current || is_descendant_of(current, &widget));
+    if !focused {
+        let current = focus
+            .map(|widget| widget.type_().name().to_string())
+            .unwrap_or_else(|| "None".to_owned());
+        return Err(format!(
+            "对象树搜索框没有拿到焦点（mapped={}，can_focus={}，sensitive={}，window_active={}，当前焦点={current}）",
+            entry.is_mapped(),
+            entry.can_focus(),
+            entry.is_sensitive(),
+            window.is_active()
+        ));
+    }
+    Ok(format!(
+        "对象树搜索框获得焦点（placeholder「{}」）",
+        entry
+            .placeholder_text()
+            .map(|text| text.to_string())
+            .unwrap_or_default()
+    ))
+}
+
+// 最近一次呈现的模态提示（导出完成等）：退出前由 QA 收起。
+//
+// 模态 `AdwAlertDialog` 会拦住 `window.close()`；产品里由用户点「关闭」收场，
+// 无人值守时没有这个点击，所以退出步骤需要拿到同一个对象。
+thread_local! {
+    static MODAL_NOTICE: RefCell<Option<adw::AlertDialog>> = const { RefCell::new(None) };
+}
+
+/// 登记最近一次模态提示（只在提示构造处调用；正常交互路径不读它）。
+pub fn register_modal(dialog: &adw::AlertDialog) {
+    MODAL_NOTICE.with(|slot| *slot.borrow_mut() = Some(dialog.clone()));
+}
+
+/// 收起登记的模态提示；返回是否真的收起了一个。
+pub fn close_modal() -> bool {
+    use adw::prelude::AdwDialogExt;
+    MODAL_NOTICE.with(|slot| {
+        let Some(dialog) = slot.borrow_mut().take() else {
+            return false;
+        };
+        if dialog.is_visible() {
+            dialog.force_close();
+            return true;
+        }
+        false
+    })
+}
+
+/// 焦点控件是否位于 `ancestor` 之内（`GtkSearchEntry` 的真实焦点是内部的 `GtkText`）。
+fn is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
+    let mut current = widget.parent();
+    while let Some(parent) = current {
+        if parent == *ancestor {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// 深度优先找树顶部的搜索框（按 placeholder 识别，不依赖控件层级/名字）。
+fn find_tree_search(widget: &gtk::Widget) -> Option<gtk::SearchEntry> {
+    if let Some(entry) = widget.downcast_ref::<gtk::SearchEntry>()
+        && entry
+            .placeholder_text()
+            .is_some_and(|text| text.as_str().starts_with("搜索表名"))
+    {
+        return Some(entry.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(found) = find_tree_search(&current) {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
 }
 
 #[cfg(test)]

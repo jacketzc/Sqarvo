@@ -176,6 +176,7 @@ impl Shell {
             let placing = Rc::clone(&inspector_placing);
             // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（按连接记忆）。
             let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+            let pending_on_fire = Rc::clone(&pending);
             let on_width = Rc::clone(&handlers.on_inspector_width);
             work_pane.connect_notify_local(Some("position"), move |pane, _| {
                 if guard.get() || !visible.get() || placing.get() {
@@ -200,9 +201,15 @@ impl Shell {
                 }
                 let on_width = Rc::clone(&on_width);
                 let width = clamped;
+                let pending_for_timer = Rc::clone(&pending_on_fire);
                 *pending.borrow_mut() = Some(glib::timeout_add_local_once(
                     std::time::Duration::from_millis(400),
-                    move || on_width(width),
+                    move || {
+                        // 定时器已经触发：先把登记清掉，否则下一次 position 变化会对一个
+                        // 已经消耗掉的 SourceId 调 remove()，GLib 直接 abort（QA 链上实测）。
+                        pending_for_timer.borrow_mut().take();
+                        on_width(width);
+                    },
                 ));
             });
         }

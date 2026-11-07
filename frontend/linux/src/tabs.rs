@@ -341,6 +341,27 @@ pub struct TabContext {
     pub on_status: Rc<dyn Fn(TabStatus)>,
     /// 窗口标题（标题, 副标题）。
     pub on_title: TitleSink,
+    /// #121 验收桥：树 / 信息面板的 QA 动作。`None` = 只跑标签自身的步骤。
+    pub qa: Option<Rc<QaBridge>>,
+}
+
+/// 验收脚本里的「按名字做一件事」动作（`Err` = 还没就绪，由调度器重试）。
+pub type QaAction = Rc<dyn Fn(&str) -> Result<String, String>>;
+
+/// #121：验收脚本要用到的「树 / 信息面板」动作。
+///
+/// 全部由 `ui.rs` 用**已经存在的用户路径**接线（`tree.qa_expand` / `tree.qa_select` /
+/// `inspector.set_pane` / `shell.set_inspector_visible`），标签脚本不直接接触这些模块，
+/// 避免在 `tabs.rs` 里复制一套树或面板状态。
+pub struct QaBridge {
+    /// 展开树节点（连接 / catalog / 分组）；`Err` = 还没就绪。
+    pub expand: QaAction,
+    /// 选中树节点（信息面板随之切换）。
+    pub select: QaAction,
+    /// 信息面板：`ddl|info|show|hide`。
+    pub inspect: QaAction,
+    /// 信息面板快照（断言读真实控件文本）。
+    pub observe: Rc<dyn Fn() -> crate::inspector::InspectorObservation>,
 }
 
 /// 当前标签推给外壳的状态。
@@ -1846,6 +1867,266 @@ impl TabSet {
                     Err(format!("没有第 {tab} 个标签"))
                 }
             }
+            // ---- #121 验收链 ----
+            QaStep::Expand(name) => {
+                let bridge = self.context.qa.as_ref().ok_or_else(|| {
+                    "验收桥未接线（--qa-tabs-file 只能与工作区一起用）".to_owned()
+                })?;
+                (bridge.expand)(name).map(|note| format!("展开 {note}"))
+            }
+            QaStep::SelectNode(name) => {
+                let bridge = self
+                    .context
+                    .qa
+                    .as_ref()
+                    .ok_or_else(|| "验收桥未接线".to_owned())?;
+                (bridge.select)(name)
+            }
+            QaStep::Inspector(mode) => {
+                let bridge = self
+                    .context
+                    .qa
+                    .as_ref()
+                    .ok_or_else(|| "验收桥未接线".to_owned())?;
+                (bridge.inspect)(mode)
+            }
+            QaStep::Sort { tab, column, shift } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                data.qa_toggle_sort(column, *shift)
+                    .map(|()| format!("第 {tab} 个标签点列头排序：{column}（shift={shift}）"))
+            }
+            QaStep::Filter {
+                tab,
+                column,
+                operator,
+                value,
+            } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                let operator = qa_operator(operator)?;
+                data.qa_apply_filter(column, operator, value).map(|()| {
+                    format!(
+                        "第 {tab} 个标签应用筛选：{column} {} {value}",
+                        operator.sql()
+                    )
+                })
+            }
+            QaStep::Page { tab, action } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                let action = match action.as_str() {
+                    "next" => crate::data_page::PagerAction::Next,
+                    "prev" => crate::data_page::PagerAction::Previous,
+                    "first" => crate::data_page::PagerAction::First,
+                    _ => crate::data_page::PagerAction::Last,
+                };
+                data.navigate(action);
+                Ok(format!("第 {tab} 个标签分页器：{}", action.label()))
+            }
+            QaStep::Export { tab, path } => {
+                let handle = self
+                    .by_index(*tab)
+                    .ok_or_else(|| format!("没有第 {tab} 个标签"))?;
+                let data = handle
+                    .data
+                    .clone()
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                if data.export_row_count() == 0 {
+                    return Err(format!("第 {tab} 个标签还没有可导出的行"));
+                }
+                let parent = handle.page.child();
+                eprintln!(
+                    "[qa] t=+{}ms 导出第 {tab} 个标签的当前页到 {path}",
+                    crate::qa::elapsed_ms()
+                );
+                crate::export_ui::begin_qa(
+                    &parent,
+                    crate::export_ui::ExportSource::Table(Rc::clone(&data)),
+                    std::path::PathBuf::from(path),
+                );
+                Ok(format!("第 {tab} 个标签触发导出（{path}）"))
+            }
+            QaStep::ExpectFile { path, min_bytes } => {
+                let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                if size >= *min_bytes {
+                    Ok(format!(
+                        "断言 OK：文件已写入 {size} 字节（{path}，下限 {min_bytes}）"
+                    ))
+                } else {
+                    Err(format!(
+                        "文件 {path} 只有 {size} 字节（下限 {min_bytes}；导出可能还没写完）"
+                    ))
+                }
+            }
+            QaStep::Screenshot(path) => {
+                let window = self
+                    .window()
+                    .ok_or_else(|| "还没有主窗口（无法截图）".to_owned())?;
+                crate::qa::save_window(&window, std::path::Path::new(path))
+                    .map_err(|error| format!("截图失败：{error}"))?;
+                let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                eprintln!(
+                    "[qa] t=+{}ms 截图：{path}（{size} 字节）",
+                    crate::qa::elapsed_ms()
+                );
+                Ok(format!("截图 {path}（{size} 字节）"))
+            }
+            QaStep::FocusSearch => {
+                let window = self
+                    .window()
+                    .ok_or_else(|| "还没有主窗口（无法聚焦搜索框）".to_owned())?;
+                crate::qa::focus_tree_search(&window).map(|note| format!("焦点：{note}"))
+            }
+            QaStep::ExpectFocus(target) => {
+                if target != "search" {
+                    return Err(format!("不支持的焦点目标：{target}"));
+                }
+                let window = self
+                    .window()
+                    .ok_or_else(|| "还没有主窗口（无法聚焦搜索框）".to_owned())?;
+                crate::qa::focus_tree_search(&window).map(|note| format!("断言 OK：焦点在{note}"))
+            }
+            QaStep::MarkListNodes => {
+                crate::qa::mark_list_nodes();
+                Ok(format!(
+                    "ListNodes 基线已记录（累计 {} 次）",
+                    crate::qa::list_nodes_total()
+                ))
+            }
+            QaStep::ExpectListNodes(expected) => {
+                let actual = crate::qa::list_nodes_since_mark();
+                if actual == *expected {
+                    Ok(format!(
+                        "断言 OK：展开 catalog 的 ListNodes 次数={actual}（= 分组数；累计 {} 次）",
+                        crate::qa::list_nodes_total()
+                    ))
+                } else {
+                    Err(format!(
+                        "自基线以来 ListNodes 期望 {expected} 次，实际 {actual} 次"
+                    ))
+                }
+            }
+            QaStep::ExpectSessions(expected) => {
+                let registry = self
+                    .context
+                    .registry
+                    .as_ref()
+                    .ok_or_else(|| "没有连接注册表（无法读 ListSessions）".to_owned())?;
+                // 每轮都重新读一次：断言必须落在**这一次**的 ListSessions 上。
+                registry.log_sessions("验收断言");
+                match registry.session_count() {
+                    Some(count) if count == *expected => Ok(format!(
+                        "断言 OK：ListSessions 返回 {count} 条会话（期望 {expected}）"
+                    )),
+                    Some(count) => Err(format!(
+                        "ListSessions 返回 {count} 条会话，期望 {expected} 条"
+                    )),
+                    None => Err("还没有 ListSessions 结果".to_owned()),
+                }
+            }
+            QaStep::ExpectBrowse {
+                tab,
+                field,
+                expected,
+            } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                let observation = data.qa_observe();
+                let (actual, equal) = match field {
+                    BrowseField::Page => (observation.page_index.to_string(), true),
+                    BrowseField::Pages => (
+                        observation
+                            .page_count
+                            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                        true,
+                    ),
+                    BrowseField::Rows => (data.row_count().to_string(), true),
+                    BrowseField::Total => {
+                        (observation.total_text.clone().unwrap_or_default(), false)
+                    }
+                    BrowseField::Position => (observation.position_text.clone(), false),
+                    BrowseField::Sort => (
+                        observation
+                            .sort_keys
+                            .iter()
+                            .map(|(column, direction)| {
+                                format!("{column}:{}", if *direction == 1 { "asc" } else { "desc" })
+                            })
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        true,
+                    ),
+                    BrowseField::Filters => (observation.filter_conditions.to_string(), true),
+                    BrowseField::Summary => (observation.summary.clone(), false),
+                };
+                let ok = if equal {
+                    actual == *expected
+                } else {
+                    actual.contains(expected.as_str())
+                };
+                if ok {
+                    Ok(format!(
+                        "断言 OK：第 {tab} 个标签 {}={actual}（期望 {expected}）",
+                        field.name()
+                    ))
+                } else {
+                    Err(format!(
+                        "第 {tab} 个标签 {} 期望「{expected}」，实际「{actual}」",
+                        field.name()
+                    ))
+                }
+            }
+            QaStep::ExpectInspector { field, expected } => {
+                let bridge = self
+                    .context
+                    .qa
+                    .as_ref()
+                    .ok_or_else(|| "验收桥未接线".to_owned())?;
+                let observation = (bridge.observe)();
+                let (actual, equal) = match field {
+                    InspectorField::Page => (observation.page.clone(), true),
+                    InspectorField::TablePage => (observation.table_page.clone(), true),
+                    InspectorField::Columns => (observation.columns.to_string(), true),
+                    InspectorField::Visible => (observation.visible.to_string(), true),
+                    InspectorField::Title => (observation.title.clone(), false),
+                    InspectorField::DdlState => (observation.ddl_state.clone(), true),
+                };
+                let ok = if equal {
+                    actual == *expected
+                } else {
+                    actual.contains(expected.as_str())
+                };
+                if ok {
+                    Ok(format!(
+                        "断言 OK：信息面板 {}={actual}（期望 {expected}）",
+                        field.name()
+                    ))
+                } else {
+                    Err(format!(
+                        "信息面板 {} 期望「{expected}」，实际「{actual}」",
+                        field.name()
+                    ))
+                }
+            }
+            QaStep::Quit => {
+                let window = self
+                    .window()
+                    .ok_or_else(|| "还没有主窗口（无法退出）".to_owned())?;
+                // 导出完成提示是模态框，会拦住 `window.close()`：先收起它，再走与用户点
+                // 关闭按钮相同的清理路径（`connect_shutdown` → worker.shutdown + join）。
+                let closed_modal = crate::qa::close_modal();
+                glib::idle_add_local_once(move || {
+                    window.close();
+                });
+                Ok(format!(
+                    "要求关闭窗口（已收起模态提示：{closed_modal}；走正常清理路径）"
+                ))
+            }
             QaStep::Sessions(label) => {
                 if let Some(registry) = self.context.registry.as_ref() {
                     registry.log_sessions(label);
@@ -1875,6 +2156,13 @@ impl TabSet {
         }
     }
 
+    /// 主窗口（截图 / 关窗用；来自控件树根，不额外持有引用）。
+    fn window(&self) -> Option<gtk::Window> {
+        self.root
+            .root()
+            .and_then(|root| root.downcast::<gtk::Window>().ok())
+    }
+
     /// QA：打印标签与会话的对应关系（证据用）。
     pub fn log_state(&self, label: &str) {
         eprintln!(
@@ -1896,7 +2184,30 @@ impl QaStep {
                 | Self::ExpectTrace { .. }
                 | Self::ExpectRows { .. }
                 | Self::ExpectQuery { .. }
+                | Self::ExpectFile { .. }
+                | Self::ExpectFocus(_)
+                | Self::ExpectListNodes(_)
+                | Self::ExpectSessions(_)
+                | Self::ExpectBrowse { .. }
+                | Self::ExpectInspector { .. }
         )
+    }
+}
+
+/// `filter` 步骤的算子名 → 面板算子（与 `--qa-browse filter=` 同一份词表）。
+fn qa_operator(name: &str) -> Result<crate::browse_view::Operator, String> {
+    use crate::browse_view::Operator;
+    match name.to_ascii_lowercase().as_str() {
+        "eq" => Ok(Operator::Eq),
+        "ne" => Ok(Operator::Ne),
+        "lt" => Ok(Operator::Lt),
+        "le" => Ok(Operator::Le),
+        "gt" => Ok(Operator::Gt),
+        "ge" => Ok(Operator::Ge),
+        "like" => Ok(Operator::Like),
+        "null" => Ok(Operator::IsNull),
+        "notnull" => Ok(Operator::IsNotNull),
+        other => Err(format!("未知筛选算子：{other}")),
     }
 }
 
@@ -2043,6 +2354,84 @@ pub enum QaStep {
     },
     /// 写一次 `ListSessions` 日志（前后对比的证据）。
     Sessions(String),
+    // ---- #121 验收链（全部走既有用户路径） ----
+    /// `expand <名字>`：展开树节点（catalog 展开后才会有 Tables/Views 分组）。
+    Expand(String),
+    /// `select-node <名字>`：选中树节点（信息面板随之切换）。
+    SelectNode(String),
+    /// `inspector <ddl|info|show|hide>`：信息面板的页 / 显隐。
+    Inspector(String),
+    /// `sort <标签> <列>[:shift]`：点列头排序。
+    Sort {
+        /// 标签序号。
+        tab: usize,
+        /// 列名。
+        column: String,
+        /// 是否按住 Shift（多列排序）。
+        shift: bool,
+    },
+    /// `filter <标签> <列> <算子> <值>`：应用一条筛选条件。
+    Filter {
+        /// 标签序号。
+        tab: usize,
+        /// 列名。
+        column: String,
+        /// 算子（`eq|ne|lt|le|gt|ge|like`）。
+        operator: String,
+        /// 比较值。
+        value: String,
+    },
+    /// `page <标签> <next|prev|first|last>`：分页器动作。
+    Page {
+        /// 标签序号。
+        tab: usize,
+        /// 动作名。
+        action: String,
+    },
+    /// `export <标签> <路径>`：导出该标签当前页（走确认对话框并自动确认）。
+    Export {
+        /// 标签序号。
+        tab: usize,
+        /// 目标 CSV 路径。
+        path: String,
+    },
+    /// `expect-file <路径> <最少字节>`：等文件写完（导出是分 tick 写的）。
+    ExpectFile {
+        /// 目标文件。
+        path: String,
+        /// 最少字节数。
+        min_bytes: u64,
+    },
+    /// `screenshot <路径>`：GTK 自渲染截图（证据落在仓库外）。
+    Screenshot(String),
+    /// `focus-search`：把焦点放到对象树搜索框（workspace-model §10 的 Ctrl+F 焦点目标）。
+    FocusSearch,
+    /// `expect-focus search`：断言焦点真的在树搜索框上。
+    ExpectFocus(String),
+    /// `mark-list-nodes`：把 `ListNodes` 计数记为基线。
+    MarkListNodes,
+    /// `expect-list-nodes <n>`：断言自基线以来恰好发出 n 次 `ListNodes`。
+    ExpectListNodes(u64),
+    /// `expect-sessions <n>`：断言 `ListSessions` 返回的会话总数。
+    ExpectSessions(usize),
+    /// `expect-browse <标签> <字段>=<值>`：断言数据页的浏览状态。
+    ExpectBrowse {
+        /// 标签序号。
+        tab: usize,
+        /// 观测字段。
+        field: BrowseField,
+        /// 期望值。
+        expected: String,
+    },
+    /// `expect-inspector <字段>=<值>`：断言信息面板。
+    ExpectInspector {
+        /// 观测字段。
+        field: InspectorField,
+        /// 期望值。
+        expected: String,
+    },
+    /// `quit`：走正常清理路径关窗（脚本跑完的证据收尾）。
+    Quit,
     /// 断言标签总数。
     ExpectTabs(usize),
     /// 断言最近一次拒绝文案包含该子串。
@@ -2086,6 +2475,108 @@ impl QueryField {
             Self::State => "state",
             Self::First => "first",
             Self::Summary => "summary",
+        }
+    }
+}
+
+/// `expect-browse` 的观测字段（读的是数据页 `qa_observe` 的真实快照）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseField {
+    /// 页码（1 起，逐字相等）。
+    Page,
+    /// 页数（`None` 用 `-` 表示，逐字相等）。
+    Pages,
+    /// 本页已加载行数（逐字相等）。
+    Rows,
+    /// 总数文案（按包含比对）。
+    Total,
+    /// 记录位置文案（按包含比对）。
+    Position,
+    /// 排序键（`列:asc|desc`，逗号分隔，逐字相等）。
+    Sort,
+    /// 已应用筛选条件数（逐字相等）。
+    Filters,
+    /// 只读 SQL 摘要（按包含比对）。
+    Summary,
+}
+
+impl BrowseField {
+    /// 解析字段名（只接受这一份词表）。
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "page" => Ok(Self::Page),
+            "pages" => Ok(Self::Pages),
+            "rows" => Ok(Self::Rows),
+            "total" => Ok(Self::Total),
+            "position" => Ok(Self::Position),
+            "sort" => Ok(Self::Sort),
+            "filters" => Ok(Self::Filters),
+            "summary" => Ok(Self::Summary),
+            other => Err(format!(
+                "expect-browse 的字段只接受 page|pages|rows|total|position|sort|filters|summary，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段名（日志用）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Pages => "pages",
+            Self::Rows => "rows",
+            Self::Total => "total",
+            Self::Position => "position",
+            Self::Sort => "sort",
+            Self::Filters => "filters",
+            Self::Summary => "summary",
+        }
+    }
+}
+
+/// `expect-inspector` 的观测字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorField {
+    /// 当前页（`connection|catalog|table|column|...`，逐字相等）。
+    Page,
+    /// 表页子页（`ddl|info`）。
+    TablePage,
+    /// 表信息页的列数。
+    Columns,
+    /// 面板是否可见（`true|false`）。
+    Visible,
+    /// 标题（按包含比对）。
+    Title,
+    /// DDL 状态名（逐字相等）。
+    DdlState,
+}
+
+impl InspectorField {
+    /// 解析字段名。
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "page" => Ok(Self::Page),
+            "table_page" => Ok(Self::TablePage),
+            "columns" => Ok(Self::Columns),
+            "visible" => Ok(Self::Visible),
+            "title" => Ok(Self::Title),
+            "ddl_state" => Ok(Self::DdlState),
+            other => Err(format!(
+                "expect-inspector 的字段只接受 page|table_page|columns|visible|title|ddl_state，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段名（日志用）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::TablePage => "table_page",
+            Self::Columns => "columns",
+            Self::Visible => "visible",
+            Self::Title => "title",
+            Self::DdlState => "ddl_state",
         }
     }
 }
@@ -2196,6 +2687,149 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     })?),
                 },
             },
+            "expand" => QaStep::Expand(rest_of(&parts, 1, number, "节点名")?),
+            "select-node" => QaStep::SelectNode(rest_of(&parts, 1, number, "节点名")?),
+            "inspector" => {
+                let mode = parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少 ddl|info|show|hide", number + 1))?;
+                if !matches!(*mode, "ddl" | "info" | "show" | "hide") {
+                    return Err(format!(
+                        "第 {} 行的 inspector 只接受 ddl|info|show|hide，实际：{mode}",
+                        number + 1
+                    ));
+                }
+                QaStep::Inspector((*mode).to_owned())
+            }
+            "sort" => {
+                let index = parse_index(&parts, 1, number)?;
+                let value = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少列名", number + 1))?;
+                let (column, shift) = match value.split_once(':') {
+                    Some((column, "shift")) => (column, true),
+                    Some((_column, other)) => {
+                        return Err(format!(
+                            "第 {} 行 sort 的后缀只接受 :shift，实际：{other}",
+                            number + 1
+                        ));
+                    }
+                    None => (*value, false),
+                };
+                if column.is_empty() {
+                    return Err(format!("第 {} 行的列名不能为空", number + 1));
+                }
+                QaStep::Sort {
+                    tab: index,
+                    column: column.to_owned(),
+                    shift,
+                }
+            }
+            "filter" => {
+                let index = parse_index(&parts, 1, number)?;
+                let column = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少列名", number + 1))?;
+                let operator = parts
+                    .get(3)
+                    .ok_or_else(|| format!("第 {} 行缺少筛选算子", number + 1))?;
+                let value = parts
+                    .get(4)
+                    .ok_or_else(|| format!("第 {} 行缺少筛选值", number + 1))?;
+                QaStep::Filter {
+                    tab: index,
+                    column: (*column).to_owned(),
+                    operator: (*operator).to_owned(),
+                    value: (*value).to_owned(),
+                }
+            }
+            "page" => {
+                let index = parse_index(&parts, 1, number)?;
+                let action = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少 next|prev|first|last", number + 1))?;
+                if !matches!(*action, "next" | "prev" | "first" | "last") {
+                    return Err(format!(
+                        "第 {} 行的 page 只接受 next|prev|first|last，实际：{action}",
+                        number + 1
+                    ));
+                }
+                QaStep::Page {
+                    tab: index,
+                    action: (*action).to_owned(),
+                }
+            }
+            "export" => QaStep::Export {
+                tab: parse_index(&parts, 1, number)?,
+                path: parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少导出路径", number + 1))?
+                    .to_string(),
+            },
+            "expect-file" => QaStep::ExpectFile {
+                path: parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少文件路径", number + 1))?
+                    .to_string(),
+                min_bytes: parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少最少字节数", number + 1))?
+                    .parse::<u64>()
+                    .map_err(|_| format!("第 {} 行的字节数不合法", number + 1))?,
+            },
+            "screenshot" => QaStep::Screenshot(rest_of(&parts, 1, number, "截图路径")?),
+            "focus-search" => QaStep::FocusSearch,
+            "expect-focus" => {
+                let target = parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少焦点目标", number + 1))?;
+                if *target != "search" {
+                    return Err(format!(
+                        "第 {} 行的焦点目标只接受 search，实际：{target}",
+                        number + 1
+                    ));
+                }
+                QaStep::ExpectFocus((*target).to_owned())
+            }
+            "mark-list-nodes" => QaStep::MarkListNodes,
+            "expect-list-nodes" => QaStep::ExpectListNodes(
+                parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少次数", number + 1))?
+                    .parse::<u64>()
+                    .map_err(|_| format!("第 {} 行的次数不合法", number + 1))?,
+            ),
+            "expect-sessions" => QaStep::ExpectSessions(
+                parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少会话数", number + 1))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("第 {} 行的会话数不合法", number + 1))?,
+            ),
+            "expect-browse" => {
+                let (field, expected) = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少字段=值", number + 1))?
+                    .split_once('=')
+                    .ok_or_else(|| format!("第 {} 行需要 字段=值", number + 1))?;
+                QaStep::ExpectBrowse {
+                    tab: parse_index(&parts, 1, number)?,
+                    field: BrowseField::parse(field)?,
+                    expected: expected.to_owned(),
+                }
+            }
+            "expect-inspector" => {
+                let (field, expected) = parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少字段=值", number + 1))?
+                    .split_once('=')
+                    .ok_or_else(|| format!("第 {} 行需要 字段=值", number + 1))?;
+                QaStep::ExpectInspector {
+                    field: InspectorField::parse(field)?,
+                    expected: expected.to_owned(),
+                }
+            }
+            "quit" => QaStep::Quit,
             "sessions" => QaStep::Sessions(
                 parts
                     .get(1..)
@@ -2235,6 +2869,19 @@ fn parse_index(parts: &[&str], at: usize, line: usize) -> Result<usize, String> 
         .ok_or_else(|| format!("第 {} 行缺少标签序号", line + 1))?
         .parse::<usize>()
         .map_err(|_| format!("第 {} 行的标签序号不合法", line + 1))
+}
+
+/// 取从 `at` 开始的剩余参数并用空格拼回（名字 / 路径里允许空格）。
+fn rest_of(parts: &[&str], at: usize, line: usize, what: &str) -> Result<String, String> {
+    let rest = parts
+        .get(at..)
+        .filter(|rest| !rest.is_empty())
+        .map(|rest| rest.join(" "))
+        .ok_or_else(|| format!("第 {} 行缺少{what}", line + 1))?;
+    if rest.trim().is_empty() {
+        return Err(format!("第 {} 行的{what}不能为空", line + 1));
+    }
+    Ok(rest)
 }
 
 #[cfg(test)]
@@ -2471,5 +3118,111 @@ close 2
             }
             .is_assertion()
         );
+    }
+
+    #[test]
+    fn acceptance_steps_parse_without_new_switches() {
+        let script = "\
+expand main
+select-node accept_items
+inspector info
+sort 1 name:shift
+filter 1 category eq keep
+page 1 next
+export 1 /tmp/a.csv
+expect-file /tmp/a.csv 10
+screenshot /tmp/a.png
+focus-search
+expect-focus search
+mark-list-nodes
+expect-list-nodes 2
+expect-sessions 4
+expect-browse 1 page=2
+expect-inspector columns=4
+quit
+";
+        let steps = parse_script(script).expect("验收步骤应当可解析");
+        assert_eq!(steps.len(), 17);
+        assert_eq!(steps[0], QaStep::Expand("main".to_owned()));
+        assert_eq!(steps[1], QaStep::SelectNode("accept_items".to_owned()));
+        assert_eq!(steps[2], QaStep::Inspector("info".to_owned()));
+        assert_eq!(
+            steps[3],
+            QaStep::Sort {
+                tab: 1,
+                column: "name".to_owned(),
+                shift: true,
+            }
+        );
+        assert_eq!(
+            steps[4],
+            QaStep::Filter {
+                tab: 1,
+                column: "category".to_owned(),
+                operator: "eq".to_owned(),
+                value: "keep".to_owned(),
+            }
+        );
+        assert_eq!(steps[9], QaStep::FocusSearch);
+        assert_eq!(steps[10], QaStep::ExpectFocus("search".to_owned()));
+        assert_eq!(steps[11], QaStep::MarkListNodes);
+        assert_eq!(steps[12], QaStep::ExpectListNodes(2));
+        assert_eq!(steps[13], QaStep::ExpectSessions(4));
+        assert_eq!(steps[16], QaStep::Quit);
+        // 断言类步骤失败都以退出码 3 结束。
+        for step in &steps {
+            if matches!(
+                step,
+                QaStep::ExpectFile { .. }
+                    | QaStep::ExpectFocus(_)
+                    | QaStep::ExpectListNodes(_)
+                    | QaStep::ExpectSessions(_)
+                    | QaStep::ExpectBrowse { .. }
+                    | QaStep::ExpectInspector { .. }
+            ) {
+                assert!(step.is_assertion(), "{step:?} 应当是断言步骤");
+            }
+        }
+        assert!(!QaStep::Screenshot("/tmp/a.png".to_owned()).is_assertion());
+        assert!(!QaStep::Quit.is_assertion());
+    }
+
+    #[test]
+    fn acceptance_steps_reject_bad_values() {
+        assert!(parse_script("inspector bogus").is_err());
+        assert!(parse_script("sort 1 name:desc").is_err());
+        assert!(parse_script("page 1 jump").is_err());
+        assert!(parse_script("expect-focus mouse").is_err());
+        assert!(parse_script("expect-list-nodes many").is_err());
+        assert!(parse_script("expect-sessions x").is_err());
+        assert!(parse_script("expect-browse 1 bogus=1").is_err());
+        assert!(parse_script("expect-inspector bogus=1").is_err());
+        assert!(parse_script("export 1").is_err());
+        assert!(parse_script("expect-file /tmp/a.csv many").is_err());
+        assert!(parse_script("expand").is_err());
+        assert!(parse_script("screenshot").is_err());
+    }
+
+    #[test]
+    fn browse_and_inspector_fields_round_trip() {
+        for field in [
+            "page", "pages", "rows", "total", "position", "sort", "filters", "summary",
+        ] {
+            let parsed = BrowseField::parse(field).expect("字段应当可解析");
+            assert_eq!(parsed.name(), field);
+        }
+        for field in [
+            "page",
+            "table_page",
+            "columns",
+            "visible",
+            "title",
+            "ddl_state",
+        ] {
+            let parsed = InspectorField::parse(field).expect("字段应当可解析");
+            assert_eq!(parsed.name(), field);
+        }
+        assert!(BrowseField::parse("bogus").is_err());
+        assert!(InspectorField::parse("bogus").is_err());
     }
 }
