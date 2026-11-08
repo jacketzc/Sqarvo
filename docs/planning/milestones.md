@@ -328,7 +328,7 @@ frontend `cargo test` **311 passed / 0 failed / 1 ignored**，
   REQ-A11Y-001），决策记录见 ADR 0021–0023 与
   [workspace-model.md](../ui-specification/workspace-model.md)。
 - 2026-11-05：版本序列整体改标到 0.2 线：v0.3（数据浏览与编辑）→ **v0.2.1**、
-  v0.4（对象管理）→ **v0.2.2**、v0.5（导入导出）→ **v0.2.3**、v1.0（首个完整可用版本）→ **v0.2.4**。
+  v0.4（对象管理）→ **v0.2.2**、v0.5（导入导出）→ **v0.2.3**、v1.0（三端/三驱动可用版本）→ **v0.2.4**。
   各版本范围与退出标准不变；0.2 线改为以 `0.2.x` 增量交付，暂不设 1.0 / 兼容承诺节点。
   M4 对应版本随之改为 v0.2.1 / v0.2.2。同步更新：`release-plan.md`、`roadmap.md`、
   `requirements.md`（`REQ-SQL-004` 再评估时点改记 v0.2.2+）、`development-plan.md`（S5 / S7 版本标注）、
