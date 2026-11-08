@@ -20,6 +20,7 @@ mod export_ui;
 mod inspector;
 mod layout;
 mod layout_audit;
+mod logs;
 mod proto;
 mod qa;
 mod results;
@@ -42,6 +43,11 @@ fn main() -> adw::glib::ExitCode {
     if let Err(error) = qa::init(&args) {
         eprintln!("[sqarvo-desktop] 参数错误：{error}");
         return adw::glib::ExitCode::FAILURE;
+    }
+    // 日志同时落盘（`$XDG_STATE_HOME/sqarvo/desktop.log`）：产品里没有「断开后端」
+    // 这类入口，后端失效时用户需要能「查看日志」。失败只记一行、不阻断启动。
+    if let Some(path) = logs::install() {
+        eprintln!("[logs] 日志文件：{}", path.display());
     }
 
     // 验收要与用户**正在运行**的实例共存：GApplication 按 application-id 做单实例转发，
@@ -108,7 +114,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-disconnect", "connection-name"),
         ("qa-tree-select", "object-name"),
         ("qa-tree-select-connection", "connection-name"),
-        ("qa-inspector", "ddl|info|hidden|shown|toggle"),
+        ("qa-inspector", "ddl|info"),
         ("qa-inspector-width", "pixels"),
         ("qa-expect-tree", "field=value"),
         ("qa-expect-ddl", "field=value"),
@@ -121,6 +127,7 @@ fn register_qa_options(app: &adw::Application) {
         ),
         ("qa-export", "/path/to/output.csv"),
         ("qa-export-cancel-after-rows", "rows"),
+        ("qa-export-scope", "page|table"),
         ("qa-expect-about", "substring"),
     ] {
         app.add_main_option(

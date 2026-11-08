@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::backend::query::{
     format_datetime_iso, format_decimal, format_float, format_time_iso, format_timestamp_iso,
 };
+use crate::backend::table::BrowseQuery;
 use crate::proto::common::v1::{ColumnValue, ValueKind, column_value};
 
 /// 默认文件名（文件选择器里的初始名）。
@@ -190,6 +191,20 @@ pub fn fields_from_values(values: &[ColumnValue], width: usize) -> Vec<Field> {
     let mut fields: Vec<Field> = values.iter().take(width).map(field_from_value).collect();
     fields.resize(width, Field::Null);
     fields
+}
+
+/// 一行里被服务端截断的列下标（升序）。
+///
+/// 哪些列不完整**不**参与 CSV 转义规则，单独列出（#137）：整表导出要把它累计到
+/// 文件末尾的说明行，单页导出用它提示数量。
+#[must_use]
+pub fn truncated_columns(values: &[ColumnValue]) -> Vec<usize> {
+    values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.truncated)
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// 写出口径：与确认对话框里的开关一一对应。
@@ -710,6 +725,136 @@ fn rename_noreplace(from: &Path, to: &Path) -> Result<(), ExportError> {
             ExportError::Io(error.to_string())
         }
     })
+}
+
+// ---- 整表导出（#120 增补）：offset 逐页读取 ----
+
+/// 整表导出的分页游标：只管 offset，不碰文件、不碰 RPC（纯逻辑，单测覆盖）。
+///
+/// 一次只持有一页：内存里没有整表快照，CSV 边读边写。步进按**实际收到的行数**
+/// （不是页大小）：服务端给了短页却仍说 `has_more` 时不会跳过行；空页直接收尾，
+/// 避免「offset 不前进」的空转。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableExportCursor {
+    page_size: u32,
+    offset: u64,
+}
+
+/// 一页写完之后下一步做什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageStep {
+    /// 还有下一页：用 [`TableExportCursor::offset`] 继续。
+    Next,
+    /// 本轮结束（没有更多行，或服务端给了空页）。
+    Done,
+}
+
+impl TableExportCursor {
+    /// 从第 0 行开始按 `page_size` 分页（`0` 按 1 处理：不空转）。
+    #[must_use]
+    pub fn new(page_size: u32) -> Self {
+        Self {
+            page_size: page_size.max(1),
+            offset: 0,
+        }
+    }
+
+    /// 当前页的起始行（0 起）。
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// 每页行数。
+    #[must_use]
+    pub fn page_size(&self) -> u32 {
+        self.page_size
+    }
+
+    /// 本页请求：沿用基础查询的**排序与筛选**，只改 offset / 页大小，且不要总数。
+    ///
+    /// 总数只是页面上的展示信息：整表导出逐页读到 `has_more = false` 为止，
+    /// 第一页再请求一次 `COUNT(*)` 只会拖慢开始时间。
+    #[must_use]
+    pub fn query(&self, base: &BrowseQuery) -> BrowseQuery {
+        BrowseQuery {
+            offset: self.offset,
+            page_size: self.page_size,
+            sort: base.sort.clone(),
+            filter: base.filter.clone(),
+            include_total: false,
+        }
+    }
+
+    /// 登记一页的返回并给出下一步。
+    pub fn on_page(&mut self, received: usize, has_more: bool) -> PageStep {
+        if received == 0 {
+            // 空页：即使服务端说 has_more 也不能原地打转。
+            return PageStep::Done;
+        }
+        if !has_more {
+            return PageStep::Done;
+        }
+        let received = u64::try_from(received).unwrap_or(u64::MAX);
+        self.offset = self.offset.saturating_add(received);
+        PageStep::Next
+    }
+}
+
+/// 整表导出的行数累计（纯逻辑，单测覆盖）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportTally {
+    /// 已写入的数据行数（不含表头与末尾的截断说明）。
+    pub written: u64,
+    /// 被服务端截断的单元格数（同一行多列会各算一次）。
+    pub truncated_cells: u64,
+}
+
+impl ExportTally {
+    /// 累计一行。
+    pub fn record(&mut self, row: &ExportRow) {
+        self.written = self.written.saturating_add(1);
+        self.truncated_cells = self
+            .truncated_cells
+            .saturating_add(u64::try_from(row.truncated_columns.len()).unwrap_or(u64::MAX));
+    }
+
+    /// 是否已达到限定行数（QA 的「写满 N 行后取消」）；`None` = 不设上限。
+    #[must_use]
+    pub fn reached(&self, limit: Option<u64>) -> bool {
+        limit.is_some_and(|limit| self.written >= limit)
+    }
+}
+
+/// 整表导出从后台线程回到界面的消息。
+///
+/// **每页一条**：限流在产生端（`TABLE_PAGE_SIZE` 行一次），界面不会被逐行事件淹没。
+#[derive(Debug)]
+pub enum ExportProgress {
+    /// 又写完一页：`written` 是累计行数（含本页）。
+    Page {
+        /// 累计已写入行数。
+        written: u64,
+        /// 累计被截断的单元格数。
+        truncated_cells: u64,
+    },
+    /// 成功：文件已落盘（临时文件已改名到目标）。
+    Finished {
+        /// 行数 / 字节数 / 最终路径。
+        report: ExportReport,
+        /// 累计被截断的单元格数（完成提示要如实说明）。
+        truncated_cells: u64,
+    },
+    /// 已取消：临时文件已删除，目标路径没有新文件；`written` 是取消前的行数。
+    Cancelled {
+        /// 取消前已写入的行数。
+        written: u64,
+    },
+    /// 失败：文案已可直接展示（文件错误或「错误码 + 人话」的 RPC 失败）。
+    Failed {
+        /// 展示给用户的完整说明。
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -1305,6 +1450,104 @@ mod tests {
             let mode = fs::metadata(&target).expect("stat").permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "导出文件必须是 0600，实际 {mode:o}");
         }
+    }
+
+    // ---- 整表导出：#120 增补的纯逻辑 ----
+
+    #[test]
+    fn table_cursor_steps_by_received_rows() {
+        let mut cursor = TableExportCursor::new(500);
+        assert_eq!(cursor.offset(), 0);
+        assert_eq!(cursor.page_size(), 500);
+        // 满页 + has_more：前进一整页。
+        assert_eq!(cursor.on_page(500, true), PageStep::Next);
+        assert_eq!(cursor.offset(), 500);
+        assert_eq!(cursor.on_page(500, true), PageStep::Next);
+        assert_eq!(cursor.offset(), 1000);
+        // 短页但仍 has_more：按**实际行数**前进，绝不跳过行。
+        assert_eq!(cursor.on_page(37, true), PageStep::Next);
+        assert_eq!(cursor.offset(), 1037);
+    }
+
+    #[test]
+    fn table_cursor_stops_on_last_page_and_never_spins_on_empty_page() {
+        let mut cursor = TableExportCursor::new(500);
+        assert_eq!(cursor.on_page(0, true), PageStep::Done, "空页必须收尾");
+        assert_eq!(cursor.offset(), 0, "收尾时不再改 offset");
+        assert_eq!(cursor.on_page(12, false), PageStep::Done);
+        assert_eq!(cursor.offset(), 0, "已收尾的页不推进 offset");
+        // 页大小为 0 时按 1 处理：不出现除零，也不会原地打转。
+        let mut cursor = TableExportCursor::new(0);
+        assert_eq!(cursor.page_size(), 1);
+        assert_eq!(cursor.on_page(1, true), PageStep::Next);
+        assert_eq!(cursor.offset(), 1);
+    }
+
+    #[test]
+    fn table_cursor_query_keeps_sort_and_filter_but_never_counts() {
+        use crate::proto::services::v1::filter::Condition;
+        use crate::proto::services::v1::{Filter, SortDirection, SortKey};
+        let base = BrowseQuery {
+            offset: 900,
+            page_size: 20,
+            sort: vec![SortKey {
+                column: "created_at".to_owned(),
+                direction: SortDirection::Desc as i32,
+            }],
+            filter: Some(Filter {
+                conditions: vec![Condition {
+                    column: "status".to_owned(),
+                    operator: 1,
+                    value: Some(text("open")),
+                }],
+            }),
+            include_total: true,
+        };
+        let mut cursor = TableExportCursor::new(500);
+        let first = cursor.query(&base);
+        assert_eq!(first.offset, 0, "整表导出必须从第 0 行开始");
+        assert_eq!(first.page_size, 500);
+        assert_eq!(first.sort, base.sort, "必须沿用当前排序");
+        assert_eq!(first.filter, base.filter, "必须沿用当前筛选");
+        assert!(
+            !first.include_total,
+            "逐页读到 has_more=false 即可，不再计数"
+        );
+
+        cursor.on_page(500, true);
+        let second = cursor.query(&base);
+        assert_eq!(second.offset, 500);
+        assert_eq!(second.sort, base.sort);
+    }
+
+    #[test]
+    fn tally_counts_rows_and_truncated_cells() {
+        let mut tally = ExportTally::default();
+        assert_eq!(tally.written, 0);
+        tally.record(&ExportRow {
+            fields: vec![Field::Scalar("1".to_owned())],
+            truncated_columns: Vec::new(),
+        });
+        tally.record(&ExportRow {
+            fields: vec![Field::Scalar("2".to_owned())],
+            truncated_columns: vec![0, 2],
+        });
+        assert_eq!(tally.written, 2);
+        assert_eq!(tally.truncated_cells, 2);
+    }
+
+    #[test]
+    fn tally_limit_is_reached_exactly_at_the_limit() {
+        let mut tally = ExportTally::default();
+        assert!(!tally.reached(None), "不设上限时永远不「到顶」");
+        assert!(tally.reached(Some(0)), "0 行也满足 0 行上限");
+        tally.record(&ExportRow {
+            fields: vec![Field::Null],
+            truncated_columns: Vec::new(),
+        });
+        assert!(!tally.reached(Some(2)));
+        assert!(tally.reached(Some(1)));
+        assert!(tally.reached(Some(1)));
     }
 
     /// 10 万行基准（默认不跑）：

@@ -81,11 +81,11 @@
   PostgreSQL 驱动未实现，因此也没有该层的正例（Catalog / 表 / 视图 / 序列 / 索引 / 触发器已接入）；
 - MariaDB 索引与触发器的独立 DDL：`ObjectRef` 不携带所属表，明确报 `metadata.object_kind_unsupported`
   （可查看所属表的 `SHOW CREATE TABLE`）；
-- 结构修改（执行 DDL）、导入导出、结构对比与 ER 图：导入导出与结构对比属 v0.2.5（M8），
-  结构修改与 ER 图未排期（P2）；当前 `GetDdl` 只读；导出目前只有「当前结果 / 当前页 → CSV」；
+- 结构修改（执行 DDL）、导入、结构对比与 ER 图：导入与结构对比属 v0.2.5（M8），
+  结构修改与 ER 图未排期（P2）；当前 `GetDdl` 只读；导出 CSV 已支持「查询已加载行 /
+  表当前页 / 整张表（分页读取、可取消）」；
 - 数据页按非主键列排序；跨库的表数据浏览/行编辑/插入**已支持**（按 `ObjectRef.catalog` 定位，
   ADR 0024，驱动侧 #140 / 前端 #141）：连接可不填默认库，从树里选具体库的表；
-  平铺列表视图在无默认库的连接下仍是空（只影响这个 v0.2.1 遗留视图）；
 - `ColumnMeta.auto_increment`：自增列在 UI 只能默认留空并说明，无法禁止显式填写；
   「按主键回读单行」RPC 与插入批次取消同样待契约增量；
 - 事务 `Snapshot` 隔离级别（`capability.unsupported`）；savepoint 仅批次内部使用，未对外暴露；

@@ -55,10 +55,8 @@ pub struct SqlPageCallbacks {
     pub fetch: Rc<dyn Fn()>,
     /// 释放游标。
     pub close: Rc<dyn Fn()>,
-    /// 主动断开后端。
-    pub disconnect: Rc<dyn Fn()>,
-    /// 断连横幅上的「重新连接后端」。
-    pub reconnect: Rc<dyn Fn()>,
+    /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.4）。
+    pub backend_failure: Rc<dyn Fn()>,
 }
 
 /// SQL 工作区页面。
@@ -92,7 +90,7 @@ impl SqlPage {
     pub fn new(session_line: &str, callbacks: SqlPageCallbacks) -> Rc<Self> {
         let banner = adw::Banner::new("");
         banner.set_revealed(false);
-        banner.set_button_label(Some("重新连接后端"));
+        banner.set_button_label(Some("重启 Sqarvo"));
 
         let session_label = gtk::Label::new(Some(session_line));
         session_label.set_xalign(0.0);
@@ -110,9 +108,6 @@ impl SqlPage {
         cancel_button.set_sensitive(false);
         cancel_button.set_tooltip_text(Some("取消当前查询（Escape，可重复点击）"));
 
-        let disconnect_button = gtk::Button::with_label("断开后端");
-        disconnect_button.add_css_class("flat");
-
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         toolbar.set_margin_top(6);
         toolbar.set_margin_bottom(6);
@@ -121,7 +116,6 @@ impl SqlPage {
         toolbar.append(&session_label);
         toolbar.append(&execute_button);
         toolbar.append(&cancel_button);
-        toolbar.append(&disconnect_button);
 
         // 如实标注：没有语法高亮就不是语法高亮，不能靠配色暗示。
         let note = gtk::Label::new(Some("当前为纯文本编辑，语法高亮将在后续版本提供"));
@@ -215,11 +209,6 @@ impl SqlPage {
             button.connect_clicked(move |_| page.request_cancel());
         }
         {
-            let disconnect = Rc::clone(&page.callbacks.disconnect);
-            let button = disconnect_button.clone();
-            button.connect_clicked(move |_| disconnect());
-        }
-        {
             // EX（#120）：导出已加载的查询结果；与菜单 / Ctrl+Shift+E 同一个入口。
             let button = page.results.ex_button().clone();
             let page = Rc::clone(&page);
@@ -232,8 +221,8 @@ impl SqlPage {
         }
         {
             let banner = page.banner.clone();
-            let reconnect = Rc::clone(&page.callbacks.reconnect);
-            banner.connect_button_clicked(move |_| reconnect());
+            let backend_failure = Rc::clone(&page.callbacks.backend_failure);
+            banner.connect_button_clicked(move |_| backend_failure());
         }
         {
             // 只挂一个键盘控制器：捕获阶段先于 TextView 的默认处理，

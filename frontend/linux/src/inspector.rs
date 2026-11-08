@@ -186,66 +186,6 @@ pub fn catalog_facts(
     Fact::keep(facts)
 }
 
-/// 连接的概览快照：与面板 [`connection_facts`] 同字段、同顺序（#135）。
-#[must_use]
-pub fn connection_snapshot(saved: &SavedConnection, live: &ConnectionLive) -> InspectorSnapshot {
-    InspectorSnapshot::new(
-        "connection",
-        saved.name.clone(),
-        saved.driver.clone(),
-        endpoint_text(saved).unwrap_or_default(),
-        connection_facts(saved, live),
-    )
-}
-
-/// 库 / catalog 的概览快照：与面板 [`catalog_facts`] 同一份计数口径。
-#[must_use]
-pub fn catalog_snapshot(
-    name: &str,
-    kind: &str,
-    tables: Option<usize>,
-    views: Option<usize>,
-    complete: bool,
-) -> InspectorSnapshot {
-    InspectorSnapshot::new(
-        "catalog",
-        name,
-        kind,
-        name,
-        catalog_facts(name, tables, views, complete),
-    )
-}
-
-/// 列的概览快照：列信息六项与面板同一份 [`column_info_rows`]。
-///
-/// `kind_label` 由调用方给出，必须与面板副标题是同一段文字（树上进入列时带表名，
-/// 表头点击时只带类型）。
-#[must_use]
-pub fn column_snapshot(
-    column: &TableColumn,
-    kind_label: impl Into<String>,
-    path: impl Into<String>,
-) -> InspectorSnapshot {
-    let facts = column_info_rows(column)
-        .into_iter()
-        .map(|(label, value)| Fact::new(label, value))
-        .collect();
-    InspectorSnapshot::new("column", column.name.clone(), kind_label, path, facts)
-}
-
-/// 服务端对象的概览快照：标题 / 种类 / 限定名来自节点，`facts` 由调用方给出
-/// （表信息是异步的，回来一次更新一次，不重发请求）。
-#[must_use]
-pub fn object_snapshot(page: &str, node: &NodeView, facts: Vec<Fact>) -> InspectorSnapshot {
-    InspectorSnapshot::new(
-        page,
-        node.display_name.clone(),
-        kind_label(node.kind),
-        node.path_label(),
-        facts,
-    )
-}
-
 /// 主键的展示文案（按主键内顺序；空列表 = 确实没有主键）。
 #[must_use]
 pub fn primary_key_label(columns: &[(u32, String)]) -> String {
@@ -363,94 +303,6 @@ pub struct InspectorObservation {
     pub state_detail: String,
 }
 
-/// 对象概览快照（#135）：`Objects` 固定页与信息面板共用的**同一份**数据。
-///
-/// 纯数据，不含 GTK 控件。`Inspector` 每次切换选中对象（以及表信息的异步请求回来）
-/// 都生成一份，经 [`SnapshotRelay`] 推给 `Objects` 页；页面只渲染快照，不重发任何 RPC。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct InspectorSnapshot {
-    /// 对象名（与面板标题同一段文字）。
-    pub title: String,
-    /// 种类文案（面板副标题：`表` / `库` / `列 · varchar(64)` …）。
-    pub kind_label: String,
-    /// 限定名（连接 = 地址；表 = `库.表`；列 = `表.列`；没有就是空串，不显示占位）。
-    pub qualified_path: String,
-    /// 字段行（与面板**同一份** [`Fact`]、同一顺序）。
-    pub facts: Vec<Fact>,
-    /// 面板页名：`connection` / `catalog` / `table` / `column` / `ddl-only` / `state` / `empty`。
-    pub page: String,
-}
-
-/// `Objects` 页展示的关键属性上限（Issue #135：3–5 项；面板本身可以更长）。
-pub const KEY_FACTS_LIMIT: usize = 5;
-
-impl InspectorSnapshot {
-    fn new(
-        page: &str,
-        title: impl Into<String>,
-        kind_label: impl Into<String>,
-        qualified_path: impl Into<String>,
-        facts: Vec<Fact>,
-    ) -> Self {
-        Self {
-            title: title.into(),
-            kind_label: kind_label.into(),
-            qualified_path: qualified_path.into(),
-            facts,
-            page: page.to_owned(),
-        }
-    }
-
-    /// 概览只取前 5 项关键属性（顺序与面板一致，不重新排序/挑选）。
-    #[must_use]
-    pub fn key_facts(&self) -> &[Fact] {
-        &self.facts[..self.facts.len().min(KEY_FACTS_LIMIT)]
-    }
-
-    /// 没有选中对象：`Objects` 页显示空态文案，而不是空白。
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.page == "empty"
-    }
-}
-
-/// 快照观察者（`Objects` 页）：接收面板生成的同一份 [`InspectorSnapshot`]。
-pub type SnapshotObserver = Rc<dyn Fn(&InspectorSnapshot)>;
-
-/// 快照分发（#135）：保存最近一份，并在登记观察者时补发。
-///
-/// 不碰 GTK：`Objects` 页的观察者与「面板/概览取同一快照」都可以脱离显示服务器单测。
-#[derive(Default)]
-pub struct SnapshotRelay {
-    last: RefCell<Option<InspectorSnapshot>>,
-    observer: RefCell<Option<SnapshotObserver>>,
-}
-
-impl SnapshotRelay {
-    /// 发布一份快照：先记住，再推给已登记的观察者（观察者拿到的是同一份值）。
-    pub fn publish(&self, snapshot: InspectorSnapshot) {
-        *self.last.borrow_mut() = Some(snapshot.clone());
-        let observer = self.observer.borrow().clone();
-        if let Some(observer) = observer {
-            observer(&snapshot);
-        }
-    }
-
-    /// 登记观察者；如果已经有一份快照，立刻补发（对象先选中、页面后建也不会漏）。
-    pub fn set_observer(&self, observer: SnapshotObserver) {
-        if let Some(snapshot) = self.last.borrow().clone() {
-            observer(&snapshot);
-        }
-        *self.observer.borrow_mut() = Some(observer);
-    }
-
-    /// 最近一份快照（QA 与单测读它比对「同一份」）。
-    #[must_use]
-    pub fn last(&self) -> Option<InspectorSnapshot> {
-        self.last.borrow().clone()
-    }
-}
-
 /// 信息面板。
 pub struct Inspector {
     root: gtk::Box,
@@ -492,8 +344,6 @@ pub struct Inspector {
     object: RefCell<Option<NodeView>>,
     /// 当前标签 ID（记忆键）。
     tab_key: RefCell<String>,
-    /// 对象概览快照的分发点（#135：Objects 页只跟随它，不另发请求）。
-    relay: SnapshotRelay,
 }
 
 /// 表信息页的数据（每一项 `None` = 还没拿到，不渲染）。
@@ -508,32 +358,12 @@ struct TableInfo {
     children_error: Option<String>,
 }
 
-/// 表的「关键属性」（Objects 概览 3–5 项；面板里仍然是完整分节）。
-///
-/// 每一项都来自面板**已有请求**的结果；`None`（还没回来）就不出现，不用 0 冒充。
-fn table_key_facts(info: &TableInfo) -> Vec<Fact> {
-    let mut facts = Vec::new();
-    if let Some(columns) = info.columns.as_ref() {
-        facts.push(Fact::new("列数", format!("{} 列", columns.len())));
-    }
-    if let Some(primary_key) = info.primary_key.as_ref() {
-        facts.push(Fact::new("主键", primary_key_label(primary_key)));
-    }
-    if let Some(indexes) = info.indexes.as_ref() {
-        facts.push(list_fact("索引", indexes, "无索引"));
-    }
-    if let Some(triggers) = info.triggers.as_ref() {
-        facts.push(list_fact("触发器", triggers, "无触发器"));
-    }
-    if let Some(fact) = loaded_rows_fact(info.loaded_rows) {
-        facts.push(fact);
-    }
-    facts
-}
-
 impl Inspector {
-    /// 构建面板；`on_collapse` 由面板内的折叠按钮触发（与 `Ctrl+I` 同一条路径）。
-    pub fn new(on_collapse: Rc<dyn Fn()>) -> Rc<Self> {
+    /// 构建面板。
+    ///
+    /// v0.2.4 起面板**常驻**：没有折叠按钮，也没有 `Ctrl+I`（`shell.set_inspector_visible`
+    /// 不再是用户可达的动作）。宽度仍可拖、按连接记忆。
+    pub fn new() -> Rc<Self> {
         let title = gtk::Label::new(Some("信息面板"));
         title.set_xalign(0.0);
         title.set_hexpand(true);
@@ -546,14 +376,6 @@ impl Inspector {
         subtitle.add_css_class("dim-label");
         subtitle.add_css_class("caption");
 
-        let collapse = gtk::Button::from_icon_name("go-next-symbolic");
-        collapse.add_css_class("flat");
-        collapse.set_tooltip_text(Some("折叠信息面板（Ctrl+I）"));
-        {
-            let on_collapse = Rc::clone(&on_collapse);
-            collapse.connect_clicked(move |_| on_collapse());
-        }
-
         let header_text = gtk::Box::new(gtk::Orientation::Vertical, 0);
         header_text.append(&title);
         header_text.append(&subtitle);
@@ -561,9 +383,8 @@ impl Inspector {
         header.set_margin_top(6);
         header.set_margin_bottom(4);
         header.set_margin_start(10);
-        header.set_margin_end(4);
+        header.set_margin_end(10);
         header.append(&header_text);
-        header.append(&collapse);
 
         // 跨标签事务提示：同一 catalog 里别的标签还有未提交事务时出现（#116 待定项）。
         let txn_hint = gtk::Label::new(None);
@@ -696,7 +517,6 @@ impl Inspector {
             column: RefCell::new(None),
             object: RefCell::new(None),
             tab_key: RefCell::new("tree".to_owned()),
-            relay: SnapshotRelay::default(),
         });
         panel.install_toggles();
         panel
@@ -728,24 +548,6 @@ impl Inspector {
         self.ddl_only.attach_resolver(resolver);
     }
 
-    /// 登记 `Objects` 固定页的快照观察者（#135）。
-    ///
-    /// 页面从此只渲染面板生成的同一份 [`InspectorSnapshot`]：不复制面板、不新增 RPC。
-    pub fn set_observer(&self, observer: SnapshotObserver) {
-        self.relay.set_observer(observer);
-    }
-
-    /// 最近一份对象概览快照（QA 用来证明 Objects 页与面板取的是同一份）。
-    #[must_use]
-    pub fn snapshot(&self) -> Option<InspectorSnapshot> {
-        self.relay.last()
-    }
-
-    /// 把当前选中对象的快照推给 `Objects` 页。
-    fn publish(&self, snapshot: InspectorSnapshot) {
-        self.relay.publish(snapshot);
-    }
-
     /// 设为「没有选中对象」。
     pub fn show_empty(&self) {
         self.generation.set(self.generation.get() + 1);
@@ -754,7 +556,6 @@ impl Inspector {
         self.subtitle.set_text("");
         self.switch_bar.set_visible(false);
         self.set_page("empty");
-        self.publish(InspectorSnapshot::new("empty", "", "", "", Vec::new()));
     }
 
     /// 选中一条连接。
@@ -778,7 +579,6 @@ impl Inspector {
         let facts = connection_facts(saved, live);
         fill_facts(&self.connection_rows, &facts);
         self.set_page("connection");
-        self.publish(connection_snapshot(saved, live));
     }
 
     /// 选中一个库 / catalog。计数来自**已展开**的分组层（`None` = 该分组没展开过）。
@@ -797,7 +597,6 @@ impl Inspector {
         let facts = catalog_facts(name, tables, views, complete);
         fill_facts(&self.catalog_rows, &facts);
         self.set_page("catalog");
-        self.publish(catalog_snapshot(name, "库", tables, views, complete));
     }
 
     /// 选中一个服务端对象：按种类分派到表 / 列 / 仅 DDL / 状态页。
@@ -830,13 +629,6 @@ impl Inspector {
                     &catalog_facts(&node.display_name, None, None, false),
                 );
                 self.set_page("catalog");
-                self.publish(catalog_snapshot(
-                    &node.display_name,
-                    kind_label(node.kind),
-                    None,
-                    None,
-                    false,
-                ));
             }
             ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView => {
                 self.ddl.set_visible(true);
@@ -851,7 +643,6 @@ impl Inspector {
                 self.set_page("table");
                 // 先推一份只有对象身份的快照；表信息（列/主键/索引）回来时
                 // `render_table_info` 会用同一份数据补上关键属性。
-                self.publish(object_snapshot("table", &node, Vec::new()));
                 self.load_table(node, generation, loaded_rows);
             }
             ObjectKind::Column => {
@@ -861,11 +652,6 @@ impl Inspector {
                     &self.column_rows,
                     &[Fact::new("列名", node.display_name.clone())],
                 );
-                self.publish(object_snapshot(
-                    "column",
-                    &node,
-                    vec![Fact::new("列名", node.display_name.clone())],
-                ));
                 self.column_count.set(0);
                 match parent {
                     Some(table) if matches!(table.kind, ObjectKind::Table | ObjectKind::View) => {
@@ -889,7 +675,6 @@ impl Inspector {
                 self.ddl_only.set_visible(true);
                 self.switch_bar.set_visible(false);
                 self.set_page("ddl-only");
-                self.publish(object_snapshot("ddl-only", &node, Vec::new()));
                 self.ddl_only.show_for(node);
             }
             kind => {
@@ -918,11 +703,6 @@ impl Inspector {
         self.column.replace(Some(column.clone()));
         self.column_count.set(1);
         self.set_page("column");
-        self.publish(column_snapshot(
-            column,
-            format!("列 · {}", column.type_label),
-            column.name.clone(),
-        ));
         eprintln!(
             "[inspector] 列页：{} · {}（来自表头点击）",
             column.name, column.type_label
@@ -1035,13 +815,6 @@ impl Inspector {
         self.page.replace("state".to_owned());
         self.stack.set_visible_child_name("state");
         // 状态页也要推快照：Objects 页不能停留在上一个对象上（否则两处说法不一致）。
-        self.publish(InspectorSnapshot::new(
-            "state",
-            self.title.text().to_string(),
-            text.headline,
-            self.subtitle.text().to_string(),
-            Vec::new(),
-        ));
         eprintln!("[inspector] 状态页：{} [{}]", text.headline, text.code);
     }
 
@@ -1201,11 +974,6 @@ impl Inspector {
                         fill_facts(&panel.column_rows, &facts);
                         panel.column_count.set(1);
                         panel.set_page("column");
-                        panel.publish(column_snapshot(
-                            column,
-                            format!("列 · {} · {}", table.display_name, column.type_label),
-                            format!("{}.{}", table.display_name, column.name),
-                        ));
                     }
                     Err(error) => panel.show_state_error(&error),
                 }
@@ -1319,15 +1087,6 @@ impl Inspector {
         }
         if rendered > 0 {
             self.info_status.set_visible(false);
-        }
-        // #135：表信息是异步分几批回来的；每回来一批就用**同一份** `TableInfo`
-        // 重算概览关键属性。Objects 页只跟随快照，不另发请求。
-        if self.page.borrow().as_str() == "table" {
-            let facts = table_key_facts(&info);
-            drop(info);
-            if let Some(node) = self.object.borrow().clone() {
-                self.publish(object_snapshot("table", &node, facts));
-            }
         }
     }
 
@@ -1708,79 +1467,5 @@ mod tests {
         assert_eq!(TablePage::parse("表信息"), Some(TablePage::Info));
         assert_eq!(TablePage::parse("DDL"), Some(TablePage::Ddl));
         assert_eq!(TablePage::parse("nope"), None);
-    }
-
-    #[test]
-    fn panel_and_objects_page_share_the_same_snapshot() {
-        // 面板生成快照 → 观察者（Objects 页）收到的是同一份值。
-        let saved = saved("mariadb");
-        let live = ConnectionLive {
-            server_version: "10.6.16-MariaDB".to_owned(),
-            latency_millis: Some(12),
-            sessions: Some(3),
-        };
-        let expected = connection_snapshot(&saved, &live);
-        let relay = SnapshotRelay::default();
-        let seen: Rc<RefCell<Vec<InspectorSnapshot>>> = Rc::new(RefCell::new(Vec::new()));
-        {
-            let seen = Rc::clone(&seen);
-            relay.set_observer(Rc::new(move |snapshot| {
-                seen.borrow_mut().push(snapshot.clone());
-            }));
-        }
-        relay.publish(expected.clone());
-        assert_eq!(*seen.borrow(), vec![expected.clone()]);
-        assert_eq!(relay.last(), Some(expected.clone()));
-        // 同一输入再构造一次必须相等：概览字段不是另一套文案。
-        assert_eq!(connection_snapshot(&saved, &live), expected);
-        assert_eq!(expected.title, "本地测试库");
-        assert_eq!(expected.qualified_path, "127.0.0.1:53306");
-        assert_eq!(expected.facts, connection_facts(&saved, &live));
-        assert_eq!(expected.page, "connection");
-        // 空态是显式的：不是「facts 空」而是 page=empty。
-        let empty = InspectorSnapshot::new("empty", "", "", "", Vec::new());
-        assert!(empty.is_empty());
-        assert!(!expected.is_empty());
-    }
-
-    #[test]
-    fn observer_registered_late_still_receives_the_last_snapshot() {
-        // Objects 页后建也不会漏：登记观察者时补发最近一份。
-        let relay = SnapshotRelay::default();
-        let saved = saved("mariadb");
-        let expected = connection_snapshot(&saved, &ConnectionLive::default());
-        relay.publish(expected.clone());
-        let seen: Rc<RefCell<Option<InspectorSnapshot>>> = Rc::new(RefCell::new(None));
-        {
-            let seen = Rc::clone(&seen);
-            relay.set_observer(Rc::new(move |snapshot| {
-                *seen.borrow_mut() = Some(snapshot.clone());
-            }));
-        }
-        assert_eq!(*seen.borrow(), Some(expected));
-    }
-
-    #[test]
-    fn key_facts_keep_panel_order_and_cap_at_five() {
-        let saved = saved("mariadb");
-        let live = ConnectionLive {
-            server_version: "10.6.16-MariaDB".to_owned(),
-            latency_millis: Some(12),
-            sessions: Some(3),
-        };
-        let snapshot = connection_snapshot(&saved, &live);
-        assert_eq!(snapshot.facts.len(), 9);
-        let key = snapshot.key_facts();
-        assert_eq!(key.len(), KEY_FACTS_LIMIT);
-        // 顺序与面板一致：取的是前 5 项，不重新排序。
-        assert_eq!(
-            key.iter().map(|fact| fact.label).collect::<Vec<_>>(),
-            ["驱动", "地址", "默认库", "用户", "TLS"]
-        );
-        // 少于 5 项时原样返回（不补占位）。
-        let catalog = catalog_snapshot("sqarvo_test", "库", Some(6), None, true);
-        assert_eq!(catalog.key_facts().len(), 2);
-        assert_eq!(catalog.qualified_path, "sqarvo_test");
-        assert_eq!(catalog.facts[1].value, "6 个");
     }
 }

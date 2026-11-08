@@ -40,13 +40,14 @@ use crate::browse::{
     BrowseSession, ConnectionRegistry, ConnectionSnapshot, ConnectionState, SavedClickAction,
     SessionEvent, saved_click_action,
 };
-use crate::data_page::{DataState, RowOpsState, TableBrowser};
+use crate::data_page::{DataState, RowOpsState};
 use crate::dialog::ConnectionDialog;
-use crate::inspector::{ConnectionLive, Inspector, TablePage};
+use crate::inspector::{ConnectionLive, Inspector};
 use crate::layout;
+use crate::proto::services::v1::ObjectRef;
 use crate::shell::{Shell, ShellHandlers, StatusBar};
 use crate::theme;
-use crate::tree::{TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
+use crate::tree::{KindGroup, RowGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
 
 /// 主窗口与连接对话框共享的状态。
 struct UiState {
@@ -208,7 +209,6 @@ pub fn activate(app: &adw::Application) {
     app.set_accels_for_action("win.new-connection", &["<primary>n"]);
     // Ctrl+Enter / Escape 由编辑器自己的按键控制器处理（见 sql_page），这里只给
     // 侧栏与信息面板这类没有输入焦点的动作配快捷键。
-    app.set_accels_for_action("win.toggle-inspector", &["<primary>i"]);
     app.set_accels_for_action("win.refresh", &["F5"]);
     // 对象搜索（§10）：Ctrl+F 聚焦树的搜索框。
     app.set_accels_for_action("win.focus-search", &["<primary>f"]);
@@ -229,21 +229,6 @@ pub fn activate(app: &adw::Application) {
             show_loading(&state.slot, &state.title, "准备连接本地后端…");
             if let Some(worker) = state.worker.borrow().as_ref() {
                 worker.connect();
-            }
-        })
-    };
-
-    // 主动断开：terminate 自己启动的后端，随后进入 Disconnected。
-    let disconnect: Rc<dyn Fn()> = {
-        let state = Rc::clone(&state);
-        Rc::new(move || {
-            state.backend_ready.set(false);
-            if let Some(actions) = state.actions.borrow().as_ref() {
-                actions.set_backend_ready(false);
-            }
-            show_loading(&state.slot, &state.title, "正在断开并清理后端进程…");
-            if let Some(worker) = state.worker.borrow().as_ref() {
-                worker.disconnect();
             }
         })
     };
@@ -273,7 +258,6 @@ pub fn activate(app: &adw::Application) {
     let events_state = Rc::clone(&state);
     let events_closing = Rc::clone(&closing);
     let events_retry = Rc::clone(&retry);
-    let events_disconnect = Rc::clone(&disconnect);
 
     // 浏览会话事件泵（#114 / #144）：只在主线程改界面。
     //
@@ -285,8 +269,6 @@ pub fn activate(app: &adw::Application) {
         (state.registry.borrow().clone(), session_events)
     {
         let pump_state = Rc::clone(&state);
-        let pump_disconnect = Rc::clone(&events_disconnect);
-        let pump_retry = Rc::clone(&events_retry);
         glib::spawn_future_local(async move {
             while let Ok(event) = session_events.recv().await {
                 // 结果要在消费事件之前取出：dispatch 会把它搬进注册表状态。
@@ -318,14 +300,7 @@ pub fn activate(app: &adw::Application) {
                     pump_state
                         .connect_count
                         .set(pump_state.connect_count.get() + 1);
-                    browse_session_opened(
-                        &pump_state,
-                        &registry,
-                        &key,
-                        &session,
-                        &pump_disconnect,
-                        &pump_retry,
-                    );
+                    browse_session_opened(&pump_state, &registry, &key, &session);
                 }
                 if let Some((key, stage, message, code)) = failure
                     && code == "credential.not_found"
@@ -385,7 +360,7 @@ pub fn activate(app: &adw::Application) {
                         registry.reset_sessions("后端已重新握手：浏览会话需要重建");
                     }
                     // #139：握手成功即落地工作区外壳，不再停在 v0.1 诊断页。
-                    show_startup_workspace(&events_state, &snapshot, &events_disconnect);
+                    show_startup_workspace(&events_state, &snapshot);
                     // #144：启动态点击已保存连接（走行自己的 activated 信号）。
                     maybe_run_qa_startup_click(&events_state);
                     // #144：右键菜单（编辑 / 断开 / 删除）与删除连接的自动确认。
@@ -509,12 +484,7 @@ pub fn activate(app: &adw::Application) {
                             }
                             // 已连上数据库：启动态外壳由连接后的工作区整体替换。
                             events_state.startup.borrow_mut().take();
-                            show_workspace(
-                                &events_state,
-                                &outcome,
-                                &events_disconnect,
-                                &events_retry,
-                            );
+                            show_workspace(&events_state, &outcome);
                             maybe_run_qa_sql(&events_state);
                             maybe_run_qa_data(&events_state);
                             maybe_run_qa_browse(&events_state);
@@ -540,12 +510,13 @@ pub fn activate(app: &adw::Application) {
                     workspace.tabs.route_table(&tab_id, event);
                 }
                 Event::Tables(result) => {
-                    let workspace = events_state.workspace.borrow().as_ref().cloned();
-                    let Some(workspace) = workspace else {
-                        continue;
-                    };
+                    // v0.2.4：侧栏的平铺表列表已删除，`ListTables` 不再由界面发起。
+                    // 事件仍在这里消费并记一行日志（旧后端/旧脚本不会让界面崩）。
                     match result {
-                        Ok(tables) => workspace.flat.set_tables(tables),
+                        Ok(tables) => eprintln!(
+                            "[data] 收到 {} 条表列表（界面已不使用平铺列表，忽略）",
+                            tables.len()
+                        ),
                         Err(failure) => {
                             eprintln!(
                                 "[data] 表列表失败：[{}] {}",
@@ -622,7 +593,12 @@ pub fn activate(app: &adw::Application) {
         let exit_window = window.clone();
         glib::timeout_add_local_once(Duration::from_millis(millis), move || {
             eprintln!("[bench] t=+{}ms state=ExitTimer", crate::qa::elapsed_ms());
-            exit_window.close();
+            // 模态提示（导出完成 / 取消 / 失败）会拦住 `window.close()`：无人值守时
+            // 没人去点「关闭」，所以这里先收起登记的模态，再等一拍关窗。
+            if crate::qa::close_modal() {
+                eprintln!("[qa] 退出前收起模态提示");
+            }
+            glib::idle_add_local_once(move || exit_window.close());
         });
     }
 
@@ -898,8 +874,6 @@ fn browse_session_opened(
     registry: &Rc<ConnectionRegistry>,
     key: &str,
     session: &BrowseSession,
-    on_disconnect: &Rc<dyn Fn()>,
-    on_retry: &Rc<dyn Fn()>,
 ) {
     if state.workspace.borrow().is_some() {
         return;
@@ -931,9 +905,116 @@ fn browse_session_opened(
         short_id(&session.session_id)
     );
     state.startup.borrow_mut().take();
-    show_workspace(state, &outcome, on_disconnect, on_retry);
+    show_workspace(state, &outcome);
     if let Some(workspace) = state.workspace.borrow().as_ref() {
         workspace.expand_connection(key);
+    }
+}
+
+/// 后端失效时给用户的两条路：重启 Sqarvo、查看日志。
+///
+/// 设计原则（v0.2.4）：用户看不到「前端 / 后端」这层实现，只认识「这一个软件」。
+/// 所以这里不说「后端进程已退出」，只说「本地服务已失效」「需要重启」，并把
+/// 日志查看做成同一张卡片里的第二个出口——反馈问题时能直接拿到文件。
+fn show_backend_failure_dialog(state: &Rc<UiState>) {
+    let dialog = adw::AlertDialog::new(
+        Some("Sqarvo 需要重启"),
+        Some(
+            "本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，             未提交的更改会丢失。",
+        ),
+    );
+    dialog.add_response("cancel", "取消");
+    dialog.add_response("logs", "查看日志");
+    dialog.add_response("restart", "重启 Sqarvo");
+    dialog.set_response_appearance("restart", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let state_for_dialog = Rc::clone(state);
+    dialog.connect_response(None, move |_, response| match response {
+        "restart" => restart_software(&state_for_dialog),
+        "logs" => crate::logs::present_window(Some(state_for_dialog.window.upcast_ref())),
+        _ => {}
+    });
+    dialog.present(Some(&state.window));
+}
+
+/// 重启软件：释放工作区与全部标签会话 → 清掉后端会话登记 → 重新握手。
+///
+/// 不新开进程（本应用是单实例，第二个进程只会激活旧窗口），而是在同一个窗口里
+/// 把状态复位到「刚启动」——用户看到的是软件从头开始。
+fn restart_software(state: &Rc<UiState>) {
+    eprintln!("[recovery] 用户选择重启 Sqarvo：释放工作区、会话并重新握手");
+    if let Some(workspace) = state.workspace.borrow_mut().take() {
+        workspace.shutdown();
+    }
+    state.startup.borrow_mut().take();
+    if let Some(registry) = state.registry.borrow().clone() {
+        registry.reset_sessions("用户重启软件");
+    }
+    state.backend_ready.set(false);
+    state.connection_name.replace(None);
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        actions.set_backend_ready(false);
+        actions.set_workspace_ready(false);
+    }
+    state.title.set_title("Sqarvo");
+    state.title.set_subtitle("正在重启…");
+    show_loading(&state.slot, &state.title, "正在重启 Sqarvo…");
+    if let Some(worker) = state.worker.borrow().as_ref() {
+        worker.disconnect();
+        worker.connect();
+    }
+}
+
+/// 选中项 → `Objects` 固定页的作用域（catalog 引用 + 表/视图 + 页内文案）。
+///
+/// 规则（v0.2.4，按评审确认的口径）：
+/// - 选中库（catalog / schema）→ 该库的**表**；
+/// - 选中 `Tables` 或其下级 → 该库的表；
+/// - 选中 `Views` 或其下级 → 该库的视图；
+/// - 表下的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` → 该表所在库的表；
+/// - 连接、占位行 → `None`（页内回到空态）。
+fn objects_scope(selection: &TreeSelection) -> Option<(ObjectRef, Vec<ObjectKind>, String)> {
+    fn catalog_of(reference: &ObjectRef) -> ObjectRef {
+        let mut catalog = reference.clone();
+        catalog.kind = ObjectKind::Catalog as i32;
+        catalog.name = reference.catalog.clone();
+        catalog
+    }
+    let tables = vec![ObjectKind::Table];
+    let views = vec![ObjectKind::View, ObjectKind::MaterializedView];
+    match selection {
+        TreeSelection::Object { node, .. } => match node.kind {
+            ObjectKind::Catalog | ObjectKind::Schema => Some((
+                node.reference.clone(),
+                tables,
+                format!("{} · 表", node.display_name),
+            )),
+            ObjectKind::View | ObjectKind::MaterializedView => Some((
+                catalog_of(&node.reference),
+                views,
+                format!("{} · 视图", node.reference.catalog),
+            )),
+            _ => Some((
+                catalog_of(&node.reference),
+                tables,
+                format!("{} · 表", node.reference.catalog),
+            )),
+        },
+        TreeSelection::Group { group, parent } => match group {
+            RowGroup::Catalog(KindGroup::Views) => {
+                Some((parent.clone(), views, format!("{} · 视图", parent.catalog)))
+            }
+            RowGroup::Catalog(KindGroup::Tables) => {
+                Some((parent.clone(), tables, format!("{} · 表", parent.catalog)))
+            }
+            RowGroup::Table(_) => Some((
+                catalog_of(parent),
+                tables,
+                format!("{} · 表", parent.catalog),
+            )),
+        },
+        TreeSelection::Connection(_) | TreeSelection::None => None,
     }
 }
 
@@ -1117,11 +1198,7 @@ fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
 ///
 /// 侧栏是 `connections.json` 的已保存连接列表，主区域是固定 `Objects` 标签的空态，
 /// 状态栏显示「未连接」、驱动数与浏览会话数。后端诊断信息不在这里：见 [`show_about`]。
-fn show_startup_workspace(
-    state: &Rc<UiState>,
-    snapshot: &ConnectedSnapshot,
-    on_disconnect: &Rc<dyn Fn()>,
-) {
+fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
     // 重新握手时旧外壳整体重建：连接列表可能已经变化。
     state.startup.borrow_mut().take();
     if let Some(actions) = state.actions.borrow().as_ref() {
@@ -1163,7 +1240,6 @@ fn show_startup_workspace(
                 Rc::new(move |key: String| confirm_delete_saved(&state, &key))
             },
         },
-        disconnect: Rc::clone(on_disconnect),
     });
     state.startup.replace(Some(Rc::clone(&startup)));
     state.title.set_title("Sqarvo");
@@ -1313,12 +1389,7 @@ fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
 ///
 /// 标签、会话与页面都在 [`crate::tabs::TabSet`] 里；本函数只负责把它接上外壳、
 /// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与「表」菜单的可用性。
-fn show_workspace(
-    state: &Rc<UiState>,
-    outcome: &ConnectOutcome,
-    on_disconnect: &Rc<dyn Fn()>,
-    on_retry: &Rc<dyn Fn()>,
-) {
+fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
     let version = if outcome.server_version.trim().is_empty() {
         "未知（后端未返回）".to_owned()
     } else {
@@ -1360,23 +1431,13 @@ fn show_workspace(
         previous.shutdown();
     }
 
-    let workspace = Workspace::new(
-        state,
-        outcome,
-        &connection_name,
-        &driver_label,
-        &version,
-        on_disconnect,
-        on_retry,
-    );
+    let workspace = Workspace::new(state, outcome, &connection_name, &driver_label, &version);
     state.workspace.replace(Some(Rc::clone(&workspace)));
     set_page(&state.slot, workspace.widget());
     if let Some(actions) = state.actions.borrow().as_ref() {
         actions.set_workspace_ready(true);
     }
     eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
-    workspace.refresh_flat_tables();
-    workspace.schedule_flat_retry();
     // #144：树挂载后补一次「已连接连接层展开」。
     //
     // 浏览会话的 `Opened` 事件可能先于树订阅到达（notify 丢掉），而行又是懒创建的：
@@ -1487,14 +1548,10 @@ struct Workspace {
     shell: Rc<Shell>,
     /// 对象树（懒加载 + 搜索 + 跳转）。
     tree: Rc<TreePanel>,
-    /// 平铺表列表（v0.2.1 视图；对象树不可用时的回退）。
-    flat: Rc<TableBrowser>,
     /// 标签工作区（固定 Objects 页 + 表标签 + 查询标签）。
     tabs: Rc<crate::tabs::TabSet>,
     /// 信息面板（#119：连接 / 库 / 表三态；DDL 与表信息在面板内切换）。
     inspector: Rc<Inspector>,
-    /// 打开表的统一入口（树、平铺列表与 QA 共用同一条路径）。
-    open: Rc<dyn Fn(TableEntry)>,
     /// 刷新对象树 + 表列表（「视图 → 刷新」与 F5）。
     refresh: Rc<dyn Fn()>,
     /// 「保存并连接」时的会话 ID（「关于 Squarvo」里给出短形式；标签会话各自另有 ID）。
@@ -1524,8 +1581,6 @@ impl Workspace {
         connection_name: &str,
         driver_label: &str,
         version: &str,
-        on_disconnect: &Rc<dyn Fn()>,
-        on_retry: &Rc<dyn Fn()>,
     ) -> Rc<Self> {
         let worker = state
             .worker
@@ -1550,55 +1605,23 @@ impl Workspace {
         };
 
         // ---- 信息面板（区域 06，#119）---------------------------------------
-        // 外壳还没建：折叠按钮通过槽位回调（与 `Ctrl+I` 同一条路径）。
+        // v0.2.4：面板常驻（没有折叠按钮、没有 Ctrl+I），因此不需要回指外壳的槽位。
+        let inspector = Inspector::new();
+        // 外壳在标签工作区之后才建：状态栏 / 标签状态的接线要回指它（与面板显隐无关）。
         let shell_slot: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
-        let inspector = Inspector::new({
-            let slot = Rc::clone(&shell_slot);
-            Rc::new(move || {
-                if let Some(shell) = slot.borrow().as_ref() {
-                    shell.set_inspector_visible(false);
-                }
-            })
-        });
 
-        // ---- 区域 03 的内容：侧栏栈（对象树 / 平铺列表）+ 页脚 -----------------
-        let sidebar_stack = gtk::Stack::new();
-        sidebar_stack.set_vexpand(true);
-
-        let view_toggle = gtk::Button::with_label("平铺列表");
-        view_toggle.add_css_class("flat");
-        view_toggle.set_tooltip_text(Some("在对象树与平铺表列表之间切换"));
-
-        // 刷新回调要同时刷新树与平铺列表：两者在下面才建好，先占槽位。
+        // ---- 区域 03 的内容：对象树 + 页脚 ------------------------------------
+        // 平铺列表与「DDL」在 v0.2.4 删除：树是唯一入口，DDL 在信息面板里看。
         let tree_slot: Rc<RefCell<Option<Rc<TreePanel>>>> = Rc::new(RefCell::new(None));
-        let flat_slot: Rc<RefCell<Option<Rc<TableBrowser>>>> = Rc::new(RefCell::new(None));
         let refresh: Rc<dyn Fn()> = {
-            let state = Rc::clone(state);
             let tree_slot_for_cb = Rc::clone(&tree_slot);
-            let flat_slot_for_cb = Rc::clone(&flat_slot);
-            let refresh: Rc<dyn Fn()> = Rc::new(move || {
+            Rc::new(move || {
                 eprintln!("[tree] t=+{}ms 刷新对象树", crate::qa::elapsed_ms());
                 if let Some(tree) = tree_slot_for_cb.borrow().as_ref() {
                     tree.reload();
                 }
-                if let Some(flat) = flat_slot_for_cb.borrow().as_ref() {
-                    flat.set_tables(Vec::new());
-                }
-                if let Some(registry) = state.registry.borrow().clone()
-                    && let Some(session) = registry.session_for_active()
-                    && let Some(worker) = state.worker.borrow().as_ref()
-                {
-                    worker.list_tables(&session);
-                }
-            });
-            refresh
+            })
         };
-
-        let flat = TableBrowser::new(Rc::clone(&open), {
-            let refresh = Rc::clone(&refresh);
-            Rc::new(move || refresh())
-        });
-        flat_slot.replace(Some(Rc::clone(&flat)));
 
         let tree = TreePanel::new(TreeCallbacks {
             open: {
@@ -1609,28 +1632,6 @@ impl Workspace {
                         display_name: node.display_name,
                         kind: node.kind,
                     });
-                })
-            },
-            ddl: {
-                let inspector = Rc::clone(&inspector);
-                let shell_slot = Rc::clone(&shell_slot);
-                let tabs_slot = Rc::clone(&tabs_slot);
-                Rc::new(move |node: NodeView| {
-                    if let Some(shell) = shell_slot.borrow().as_ref() {
-                        shell.set_inspector_visible(true);
-                    }
-                    let tab_id = tabs_slot
-                        .borrow()
-                        .as_ref()
-                        .and_then(|tabs| tabs.current_id())
-                        .unwrap_or_else(|| "tree".to_owned());
-                    let loaded = tabs_slot
-                        .borrow()
-                        .as_ref()
-                        .and_then(|tabs| tabs.loaded_rows_for(&node.reference));
-                    inspector.show_object(node, None, loaded, &tab_id);
-                    // 「看 DDL」是显式动作：即使记得的是「表信息」也切到 DDL 页。
-                    inspector.set_pane(TablePage::Ddl);
                 })
             },
             select: {
@@ -1649,6 +1650,16 @@ impl Workspace {
                         .as_ref()
                         .and_then(|tabs| tabs.current_id())
                         .unwrap_or_else(|| "tree".to_owned());
+                    // Objects 固定页与树选中联动：选中库 / Tables / Views 及其下级时
+                    // 列出该库对应的表或视图；选连接或占位行时回到空态。
+                    if let Some(tabs) = tabs_slot.borrow().as_ref() {
+                        match objects_scope(&selection) {
+                            Some((parent, kinds, label)) => {
+                                tabs.show_objects(Some(parent), &kinds, &label);
+                            }
+                            None => tabs.show_objects(None, &[], ""),
+                        }
+                    }
                     match selection {
                         TreeSelection::Connection(snapshot) => {
                             let registry = state.registry.borrow().clone();
@@ -1700,6 +1711,12 @@ impl Workspace {
                             }
                             refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
                         }
+                        TreeSelection::Group { .. } => {
+                            // 分组行没有对象信息：面板回到空态，内容由上面的
+                            // Objects 页联动承接。
+                            inspector.show_empty();
+                            inspector.set_txn_hint(None);
+                        }
                         TreeSelection::None => {
                             inspector.show_empty();
                             inspector.set_txn_hint(None);
@@ -1708,14 +1725,8 @@ impl Workspace {
                 })
             },
             health: {
-                let stack = sidebar_stack.clone();
-                let toggle = view_toggle.clone();
                 Rc::new(move |health: TreeHealth| {
                     eprintln!("[tree] 健康状态：{}", health.name());
-                    if health == TreeHealth::Unsupported {
-                        stack.set_visible_child_name("flat");
-                        toggle.set_label("对象树");
-                    }
                 })
             },
             disconnect: {
@@ -1731,9 +1742,6 @@ impl Workspace {
         });
 
         tree_slot.replace(Some(Rc::clone(&tree)));
-        sidebar_stack.add_named(tree.widget(), Some("tree"));
-        sidebar_stack.add_named(flat.widget(), Some("flat"));
-        sidebar_stack.set_visible_child_name("tree");
 
         let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
         refresh_button.add_css_class("flat");
@@ -1743,57 +1751,18 @@ impl Workspace {
             refresh_button.connect_clicked(move |_| refresh());
         }
 
-        let view_is_tree = Rc::new(Cell::new(true));
-        let set_view: Rc<dyn Fn(bool)> = {
-            let stack = sidebar_stack.clone();
-            let toggle = view_toggle.clone();
-            let state_cell = Rc::clone(&view_is_tree);
-            Rc::new(move |tree: bool| {
-                stack.set_visible_child_name(if tree { "tree" } else { "flat" });
-                toggle.set_label(if tree { "平铺列表" } else { "对象树" });
-                state_cell.set(tree);
-            })
-        };
-        {
-            let set_view = Rc::clone(&set_view);
-            let state_cell = Rc::clone(&view_is_tree);
-            view_toggle.connect_clicked(move |_| set_view(!state_cell.get()));
-        }
-
-        let ddl_button = gtk::Button::with_label("DDL");
-        ddl_button.add_css_class("flat");
-        ddl_button.set_tooltip_text(Some(
-            "在信息面板里查看选中对象的 DDL（原文 / 由客户端拼装会标注）",
-        ));
-        {
-            let tree = Rc::clone(&tree);
-            let inspector = Rc::clone(&inspector);
-            let shell_slot = Rc::clone(&shell_slot);
-            ddl_button.connect_clicked(move |_| match tree.selected_node() {
-                Some(node) if !node.is_placeholder() => {
-                    if let Some(shell) = shell_slot.borrow().as_ref() {
-                        shell.set_inspector_visible(true);
-                    }
-                    // 与树上的「查看 DDL」走同一条回调：内容与来源标注只有一份。
-                    inspector.show_object(node, None, None, "tree");
-                    inspector.set_pane(TablePage::Ddl);
-                }
-                _ => eprintln!("[ddl] 先在对象树里选中一个对象，再点「DDL」"),
-            });
-        }
-
+        // 页脚只留刷新：平铺列表与 DDL 入口在 v0.2.4 删除（树是唯一入口，
+        // DDL 在信息面板的表页里看）。
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         footer.set_margin_start(6);
         footer.set_margin_end(6);
         footer.set_margin_top(2);
         footer.set_margin_bottom(4);
         footer.append(&refresh_button);
-        footer.append(&view_toggle);
-        footer.append(&ddl_button);
 
         let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar_box.set_size_request(layout::SIDEBAR_MIN, -1);
-        sidebar_box.append(&sidebar_stack);
+        sidebar_box.append(tree.widget());
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         sidebar_box.append(&footer);
 
@@ -1802,11 +1771,7 @@ impl Workspace {
             worker: Rc::clone(&worker),
             on_column: {
                 let inspector = Rc::clone(&inspector);
-                let shell_slot = Rc::clone(&shell_slot);
                 Rc::new(move |column: crate::backend::table::TableColumn| {
-                    if let Some(shell) = shell_slot.borrow().as_ref() {
-                        shell.set_inspector_visible(true);
-                    }
                     inspector.show_column(&column);
                 })
             },
@@ -1821,11 +1786,20 @@ impl Workspace {
                 .map(|key| registry_catalog(state, &key))
                 .unwrap_or_else(|| "默认".to_owned()),
             registry: state.registry.borrow().clone(),
-            disconnect_backend: Rc::clone(on_disconnect),
-            reconnect_backend: Rc::clone(on_retry),
+            backend_failure: {
+                let state = Rc::clone(state);
+                Rc::new(move || show_backend_failure_dialog(&state))
+            },
             resolve_table: {
-                let flat = Rc::clone(&flat);
-                Rc::new(move |name: &str| flat.entry_by_name(name))
+                // 平铺列表删除后，QA / 脚本按名字找表走对象树（同一份已加载节点）。
+                let tree = Rc::clone(&tree);
+                Rc::new(move |name: &str| {
+                    tree.lookup(name).map(|node| TableEntry {
+                        reference: node.reference,
+                        display_name: node.display_name,
+                        kind: node.kind,
+                    })
+                })
             },
             on_status: {
                 let shell_slot = Rc::clone(&shell_slot);
@@ -1853,10 +1827,7 @@ impl Workspace {
                 let tree_for_select = Rc::clone(&tree_slot);
                 let tree_for_open_in = Rc::clone(&tree_slot);
                 let tree_for_connection = Rc::clone(&tree_slot);
-                let shell_for_select = Rc::clone(&shell_slot);
-                let shell_for_connection = Rc::clone(&shell_slot);
                 let inspector_for_pane = Rc::clone(&inspector);
-                let shell_for_pane = Rc::clone(&shell_slot);
                 let inspector_for_observe = Rc::clone(&inspector);
                 Some(Rc::new(crate::tabs::QaBridge {
                     expand: Rc::new(move |name: &str| {
@@ -1867,9 +1838,6 @@ impl Workspace {
                             .qa_expand(name)
                     }),
                     select: Rc::new(move |name: &str| {
-                        if let Some(shell) = shell_for_select.borrow().as_ref() {
-                            shell.set_inspector_visible(true);
-                        }
                         tree_for_select
                             .borrow()
                             .as_ref()
@@ -1888,9 +1856,6 @@ impl Workspace {
                             })
                     }),
                     select_connection: Rc::new(move |name: &str| {
-                        if let Some(shell) = shell_for_connection.borrow().as_ref() {
-                            shell.set_inspector_visible(true);
-                        }
                         tree_for_connection
                             .borrow()
                             .as_ref()
@@ -1899,17 +1864,18 @@ impl Workspace {
                             .map(|()| format!("选中连接「{name}」（信息面板：连接）"))
                     }),
                     inspect: Rc::new(move |mode: &str| {
-                        if let Some(shell) = shell_for_pane.borrow().as_ref() {
-                            shell.set_inspector_visible(mode != "hide");
+                        // 面板常驻（v0.2.4）：`hide` / 折叠不再是可达状态。
+                        if mode == "hide" || mode == "hidden" || mode == "toggle" {
+                            return Err(
+                                "信息面板在 v0.2.4 起常驻，不能折叠（--qa-inspector 只接受 ddl/info）"
+                                    .to_owned(),
+                            );
                         }
                         if let Some(pane) = crate::inspector::TablePage::parse(mode) {
                             inspector_for_pane.set_pane(pane);
                             return Ok(format!("信息面板：{}", pane.name()));
                         }
-                        Ok(format!(
-                            "信息面板：{}",
-                            if mode == "hide" { "折叠" } else { "展开" }
-                        ))
+                        Ok("信息面板：常驻".to_owned())
                     }),
                     observe: Rc::new(move || inspector_for_observe.qa_observe()),
                 }))
@@ -1996,23 +1962,6 @@ impl Workspace {
             .status()
             .set_sql_summary(&format!("已连接 · {version}"));
 
-        // #135：`Objects` 固定页只跟随信息面板的**同一份**快照（不新增 RPC、不复制面板）。
-        if let Some(objects) = tabs.objects_overview() {
-            inspector.set_observer({
-                let objects = Rc::clone(&objects);
-                Rc::new(move |snapshot| objects.show_snapshot(snapshot))
-            });
-            // 快捷动作：切到面板的 DDL 页并展开面板——这是真实能做到的那一件事。
-            objects.set_ddl_action({
-                let shell = Rc::clone(&shell);
-                let inspector = Rc::clone(&inspector);
-                Rc::new(move || {
-                    shell.set_inspector_visible(true);
-                    inspector.set_pane(crate::inspector::TablePage::Ddl);
-                })
-            });
-        }
-
         // 接线：树与信息面板都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
         match state.registry.borrow().clone() {
             Some(registry) => {
@@ -2035,10 +1984,8 @@ impl Workspace {
             root,
             shell,
             tree,
-            flat,
             tabs,
             inspector,
-            open,
             refresh,
             session_id: outcome.session_id.clone(),
         })
@@ -2090,50 +2037,29 @@ impl Workspace {
         (self.refresh)();
     }
 
-    /// 平铺表列表：用当前连接的**浏览会话**（不占标签会话）。
-    fn refresh_flat_tables(&self) {
-        let Some(registry) = self.tabs.registry() else {
-            return;
-        };
-        let Some(session) = registry.session_for_active() else {
-            eprintln!("[data] 浏览会话尚未建立：表列表稍后重试");
-            return;
-        };
-        if let Some(worker) = self.worker() {
-            worker.list_tables(&session);
-        }
-    }
-
-    /// 浏览会话是异步建立的：头几秒内多试几次，直到表列表回来。
-    fn schedule_flat_retry(self: &Rc<Self>) {
-        for delay in [400u64, 1_200, 2_400, 4_000] {
-            let weak = Rc::downgrade(self);
-            glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                if let Some(workspace) = weak.upgrade()
-                    && workspace.flat.count() == 0
-                {
-                    workspace.refresh_flat_tables();
-                }
-            });
-        }
-    }
-
     fn worker(&self) -> Option<Rc<WorkerHandle>> {
         self.tabs.worker()
     }
 
-    /// 按表名打开（数据页 QA 与「打开指定表」共用侧栏的同一条路径），走平铺列表。
+    /// 按表名打开（数据页 QA 与「打开指定表」共用树的同一条路径）。
+    ///
+    /// v0.2.4 删掉侧栏平铺列表后，这里走 `qa_open`：选中 + 与双击行相同的打开回调，
+    /// 找不到时它自己会先把能展开的分组展开，调用方的重试下一拍就能命中。
     fn open_by_name(&self, name: &str) -> bool {
-        let Some(entry) = self.flat.entry_by_name(name) else {
-            return false;
-        };
-        eprintln!(
-            "[qa] t=+{}ms 从侧栏选择表 {}",
-            crate::qa::elapsed_ms(),
-            entry.display_name
-        );
-        (self.open)(entry);
-        true
+        match self.tree.qa_open(name) {
+            Ok(node) => {
+                eprintln!(
+                    "[qa] t=+{}ms 从对象树打开表 {}",
+                    crate::qa::elapsed_ms(),
+                    node.display_name
+                );
+                true
+            }
+            Err(reason) => {
+                eprintln!("[qa] 打开 {name} 失败：{reason}");
+                false
+            }
+        }
     }
 
     /// 停止工作区：关闭全部标签会话（窗口关闭 / 重新连接时调用）。
@@ -2264,18 +2190,6 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 900;
     }
 
-    if let Some(name) = crate::qa::tree_ddl() {
-        let tree = Rc::clone(&workspace.tree);
-        schedule_step(
-            delay,
-            Rc::new(move || {
-                tree.qa_show_ddl(&name)
-                    .map(|node| format!("查看 DDL：{}", node.path_label()))
-            }),
-        );
-        delay += 900;
-    }
-
     if let Some(name) = crate::qa::tree_select_connection() {
         let tree = Rc::clone(&workspace.tree);
         let shell = Rc::clone(&workspace.shell);
@@ -2326,35 +2240,22 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         schedule_step(
             delay,
             Rc::new(move || {
+                // 信息面板常驻（v0.2.4）：只剩「切到哪一页」这一个可执行动作。
                 match mode.as_str() {
-                    "hidden" => {
-                        shell.set_inspector_visible(false);
-                    }
-                    "shown" => {
-                        shell.set_inspector_visible(true);
+                    "hidden" | "hide" | "toggle" => {
+                        return Err(
+                            "信息面板在 v0.2.4 起常驻，不能折叠（--qa-inspector 只接受 ddl/info）"
+                                .to_owned(),
+                        );
                     }
                     "ddl" | "info" => {
-                        shell.set_inspector_visible(true);
                         let Some(pane) = crate::inspector::TablePage::parse(&mode) else {
                             return Err(format!("未知的 --qa-inspector 取值：{mode}"));
                         };
                         inspector.set_pane(pane);
-                        return Ok(format!("信息面板：展开 · {}", pane.name()));
+                        return Ok(format!("信息面板：常驻 · {}", pane.name()));
                     }
-                    "toggle" => {
-                        // 展开 → 再折叠：两次都走 `Ctrl+I` 的同一条路径，日志里能读到
-                        // 折叠前后面板实际占的宽度（#119 的「折叠不占宽」证据）。
-                        shell.set_inspector_visible(true);
-                        let shell_after = Rc::clone(&shell);
-                        glib::timeout_add_local_once(Duration::from_millis(900), move || {
-                            shell_after.toggle_inspector();
-                            eprintln!(
-                                "[qa] 信息面板：展开 → 折叠（宽 {}）",
-                                shell_after.inspector_width()
-                            );
-                        });
-                        return Ok("信息面板：展开后折叠（toggle）".to_owned());
-                    }
+                    "shown" => {}
                     other => return Err(format!("未知的 --qa-inspector 取值：{other}")),
                 }
                 Ok(format!(
@@ -3331,46 +3232,29 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         let observed = workspace
             .tabs
             .qa_observe_objects()
-            .ok_or_else(|| "Objects 固定页尚未建立：没有可断言的概览".to_owned())?;
-        // 同一份快照：页面上的对象名 / 种类必须就是面板这次推给它的那份（不是另一套文案）。
-        let panel = workspace.inspector.snapshot().unwrap_or_default();
-        if !observed.empty && (observed.name != panel.title || observed.kind != panel.kind_label) {
-            return Err(format!(
-                "Objects 页与信息面板快照不一致：页面「{} / {}」，快照「{} / {}」",
-                observed.name, observed.kind, panel.title, panel.kind_label
-            ));
-        }
+            .ok_or_else(|| "Objects 固定页尚未建立：没有可断言的列表".to_owned())?;
         for expectation in &objects_expectations {
             let actual = match expectation.field.as_str() {
-                "name" => observed.name.clone(),
-                "kind" => observed.kind.clone(),
-                "path" => observed.path.clone(),
-                "facts" => observed.facts.len().to_string(),
-                "fact_contains" => observed.facts.join(" · "),
-                "empty" => if observed.empty { "on" } else { "off" }.to_owned(),
-                "ddl_action" => if observed.ddl_action_visible {
-                    "on"
-                } else {
-                    "off"
-                }
-                .to_owned(),
+                "scope" => observed.scope.clone(),
+                "count" => observed.count.to_string(),
+                "first" => observed.first.clone(),
+                "status" => observed.status.clone(),
+                "empty" => if observed.empty() { "on" } else { "off" }.to_owned(),
                 other => return Err(format!("未知的 --qa-expect-objects 字段：{other}")),
             };
-            let matched = if matches!(
-                expectation.field.as_str(),
-                "name" | "kind" | "path" | "fact_contains"
-            ) {
+            let matched = if matches!(expectation.field.as_str(), "status") {
                 actual.contains(&expectation.expected)
             } else {
                 actual == expectation.expected
             };
             if !matched {
                 return Err(format!(
-                    "Objects 页 {} 期望「{}」，实际「{actual}」（页={}，属性：{}）",
+                    "Objects 页 {} 期望「{}」，实际「{actual}」（作用域={}，状态={}，行数={}）",
                     expectation.field,
                     expectation.expected,
-                    observed.page,
-                    observed.facts.join(" · ")
+                    observed.scope,
+                    observed.status,
+                    observed.count
                 ));
             }
             passed.push(format!("Objects {}={actual}", expectation.field));
@@ -3408,10 +3292,19 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
     }
 
     if let Some(expected) = crate::qa::expect_txn() {
-        if observed.badge_text != expected.label() {
+        // v0.2.4：工具条上没有「自动提交」徽标。`auto` 断言「状态栏没有事务一栏」，
+        // 其余状态断言那一栏包含状态文案——断言的是用户看得见的东西。
+        let visible = &observed.txn_visible;
+        let matched = if matches!(expected, crate::qa::TxnExpectation::AutoCommit) {
+            visible.is_empty()
+        } else {
+            visible.contains(expected.label())
+        };
+        if !matched {
             return Err(format!(
-                "事务徽标期望「{}」，实际「{}」",
+                "事务状态期望「{}」，实际状态栏「{}」（状态机「{}」）",
                 expected.label(),
+                visible,
                 observed.badge_text
             ));
         }
@@ -3419,7 +3312,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         // 也证明旧的（例如事务中的绿色）已经被摘掉。
         if observed.badge_classes != vec![expected.css_class()] {
             return Err(format!(
-                "事务徽标 CSS 期望 [{}]，实际 {:?}",
+                "事务状态 CSS 期望 [{}]，实际 {:?}（工具条徽标已在 v0.2.4 删除）",
                 expected.css_class(),
                 observed.badge_classes
             ));
@@ -3659,7 +3552,6 @@ fn build_main_menu() -> gio::Menu {
 
     let view = gio::Menu::new();
     view.append(Some("对象树显隐"), Some("win.toggle-sidebar"));
-    view.append(Some("信息面板显隐"), Some("win.toggle-inspector"));
     view.append(Some("刷新"), Some("win.refresh"));
     menu.append_submenu(Some("视图"), &view);
 
@@ -3694,7 +3586,6 @@ struct WindowActions {
     new_tab: gio::SimpleAction,
     close_tab: gio::SimpleAction,
     toggle_sidebar: gio::SimpleAction,
-    toggle_inspector: gio::SimpleAction,
     refresh: gio::SimpleAction,
     execute: gio::SimpleAction,
     cancel: gio::SimpleAction,
@@ -3728,7 +3619,6 @@ impl WindowActions {
     fn set_workspace_ready(&self, ready: bool) {
         for action in [
             &self.toggle_sidebar,
-            &self.toggle_inspector,
             &self.refresh,
             &self.execute,
             &self.cancel,
@@ -3794,20 +3684,6 @@ fn install_window_actions(
                 eprintln!(
                     "[shell] 对象树侧栏：{}",
                     if visible { "显示" } else { "隐藏" }
-                );
-            }
-        });
-    }
-
-    let toggle_inspector = gio::SimpleAction::new("toggle-inspector", None);
-    {
-        let state = Rc::clone(state);
-        toggle_inspector.connect_activate(move |_, _| {
-            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
-                let visible = workspace.shell.toggle_inspector();
-                eprintln!(
-                    "[shell] 信息面板：{}（内容由 #119 提供）",
-                    if visible { "展开" } else { "折叠" }
                 );
             }
         });
@@ -3953,7 +3829,6 @@ fn install_window_actions(
         &new_tab,
         &close_tab,
         &toggle_sidebar,
-        &toggle_inspector,
         &focus_search,
         &refresh,
         &execute,
@@ -3975,7 +3850,6 @@ fn install_window_actions(
         new_tab,
         close_tab,
         toggle_sidebar,
-        toggle_inspector,
         refresh,
         execute,
         cancel,
@@ -4190,5 +4064,97 @@ mod tests {
         let lines = backend_diagnostic_lines(&info).join("\n");
         assert!(lines.contains("端点记录的后端版本 0.2.2 与 GetVersion 返回的 0.2.3 不一致"));
         assert!(lines.contains("已注册驱动：（后端未返回任何驱动）"));
+    }
+
+    fn node(name: &str, kind: ObjectKind, catalog: &str) -> NodeView {
+        NodeView {
+            reference: ObjectRef {
+                session_id: "sess-1".to_owned(),
+                catalog: catalog.to_owned(),
+                schema: String::new(),
+                name: name.to_owned(),
+                kind: kind as i32,
+            },
+            display_name: name.to_owned(),
+            kind,
+            has_children: true,
+            comment: String::new(),
+        }
+    }
+
+    #[test]
+    fn objects_scope_follows_the_selected_node_kind() {
+        // 选中库 → 该库的表；文案带库名。
+        let selection = TreeSelection::Object {
+            node: Box::new(node("sqarvo_demo", ObjectKind::Catalog, "sqarvo_demo")),
+            parent: None,
+        };
+        let (parent, kinds, label) = objects_scope(&selection).expect("库应给出作用域");
+        assert_eq!(parent.catalog, "sqarvo_demo");
+        assert_eq!(kinds, vec![ObjectKind::Table]);
+        assert_eq!(label, "sqarvo_demo · 表");
+
+        // 选中视图 → 该库的视图（含物化视图）。
+        let selection = TreeSelection::Object {
+            node: Box::new(node("v_orders", ObjectKind::View, "sqarvo_demo")),
+            parent: None,
+        };
+        let (_, kinds, label) = objects_scope(&selection).expect("视图应给出作用域");
+        assert_eq!(kinds, vec![ObjectKind::View, ObjectKind::MaterializedView]);
+        assert_eq!(label, "sqarvo_demo · 视图");
+
+        // 选中表 / 列 / 索引 / 触发器 → 该表所在的库，列的是表。
+        for kind in [
+            ObjectKind::Table,
+            ObjectKind::Column,
+            ObjectKind::Index,
+            ObjectKind::Trigger,
+        ] {
+            let selection = TreeSelection::Object {
+                node: Box::new(node("orders", kind, "sqarvo_demo")),
+                parent: None,
+            };
+            let (parent, kinds, label) = objects_scope(&selection).expect("对象应给出作用域");
+            // 合成的 catalog 引用：kind = Catalog、name = catalog（驱动按它解析库）。
+            assert_eq!(parent.kind, ObjectKind::Catalog as i32);
+            assert_eq!(parent.name, "sqarvo_demo");
+            assert_eq!(kinds, vec![ObjectKind::Table]);
+            assert_eq!(label, "sqarvo_demo · 表");
+        }
+    }
+
+    #[test]
+    fn objects_scope_handles_group_rows_and_empty_selection() {
+        let catalog = node("sqarvo_demo", ObjectKind::Catalog, "sqarvo_demo");
+        let tables = TreeSelection::Group {
+            group: RowGroup::Catalog(KindGroup::Tables),
+            parent: catalog.reference.clone(),
+        };
+        assert_eq!(
+            objects_scope(&tables).expect("Tables 组应有作用域").1,
+            vec![ObjectKind::Table]
+        );
+        let views = TreeSelection::Group {
+            group: RowGroup::Catalog(KindGroup::Views),
+            parent: catalog.reference.clone(),
+        };
+        assert_eq!(
+            objects_scope(&views).expect("Views 组应有作用域").1,
+            vec![ObjectKind::View, ObjectKind::MaterializedView]
+        );
+        // 表下的二级分组（Fields / Indexes / Foreign Keys / Triggers）→ 该表所在库的表。
+        let table = node("orders", ObjectKind::Table, "sqarvo_demo");
+        for group in crate::tree::TableGroup::ALL {
+            let selection = TreeSelection::Group {
+                group: RowGroup::Table(group),
+                parent: table.reference.clone(),
+            };
+            let (parent, kinds, _) = objects_scope(&selection).expect("表分组应有作用域");
+            assert_eq!(parent.kind, ObjectKind::Catalog as i32);
+            assert_eq!(parent.name, "sqarvo_demo");
+            assert_eq!(kinds, vec![ObjectKind::Table]);
+        }
+        // 连接与占位行没有作用域：Objects 页回到空态。
+        assert!(objects_scope(&TreeSelection::None).is_none());
     }
 }

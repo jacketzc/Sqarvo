@@ -126,7 +126,8 @@ impl Shell {
 
         let inspector = gtk::Revealer::new();
         inspector.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
-        inspector.set_reveal_child(false);
+        // v0.2.4：信息面板常驻（不再有折叠入口），宽度仍可拖、按连接记忆。
+        inspector.set_reveal_child(true);
         inspector.set_child(Some(&inspector_box));
 
         // ---- 区域 04 | 06：工作区与信息面板共用一个 GtkPaned --------------------
@@ -167,8 +168,12 @@ impl Shell {
         }
 
         let inspector_width = Rc::new(Cell::new(layout::clamp_inspector(handlers.inspector_width)));
-        let inspector_visible = Rc::new(Cell::new(false));
-        let inspector_placing = Rc::new(Cell::new(false));
+        // 面板常驻：初始化即 true，`set_inspector_visible(false)` 不再有调用者。
+        let inspector_visible = Rc::new(Cell::new(true));
+        // 首帧的分栏不是用户拖的：从构造起就认作「正在放置」，直到第一次落位后
+        // 稳定一段时间。否则首帧的 240（分栏 clamp 下限）会被当成用户宽度记进
+        // window.json，默认 280 从此永远回不来。
+        let inspector_placing = Rc::new(Cell::new(true));
         {
             let guard = Cell::new(false);
             let width_cell = Rc::clone(&inspector_width);
@@ -241,9 +246,20 @@ impl Shell {
             let weak = Rc::downgrade(&shell);
             shell.root.connect_map(move |_| {
                 let weak = weak.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                glib::timeout_add_local_once(std::time::Duration::from_millis(0), move || {
                     if let Some(shell) = weak.upgrade() {
-                        shell.log_layout();
+                        // 面板常驻：首次映射后按记忆宽度把分栏落位一次（宽度未就绪时
+                        // 短轮询，不能把 0 宽算成一次落位）。
+                        shell.place_inspector_when_ready(0);
+                        let weak = Rc::downgrade(&shell);
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(400),
+                            move || {
+                                if let Some(shell) = weak.upgrade() {
+                                    shell.log_layout();
+                                }
+                            },
+                        );
                     }
                 });
             });
@@ -321,6 +337,10 @@ impl Shell {
     /// 把分隔条推到最右（起始子控件占满），展开时再恢复到记忆的宽度。
     pub fn set_inspector_visible(&self, visible: bool) -> bool {
         if visible == self.inspector_visible.get() {
+            // 常驻面板：重复「展开」只需确保分栏位置正确（首次映射后尺寸才有效）。
+            if visible {
+                self.place_inspector();
+            }
             return visible;
         }
         self.inspector_visible.set(visible);
@@ -412,10 +432,45 @@ impl Shell {
         visible
     }
 
-    /// 切换信息面板，返回新的可见性。
-    pub fn toggle_inspector(&self) -> bool {
-        let next = !self.inspector_visible.get();
-        self.set_inspector_visible(next)
+    /// 把分栏放到「右侧留出记忆宽度」的位置（首次映射与宽度变化都走这里）。
+    ///
+    /// 分栏还没有真实宽度时（首帧）直接返回，由 [`Self::place_inspector_when_ready`]
+    /// 短轮询到就绪再落位：否则 `pane_width - width` 会算成负数、被 clamp 到 240，
+    /// 再把 240 当成用户选择记进 `window.json`。
+    /// 落位后 600ms 才允许「拖拽采样」生效（记录防抖是 400ms）。
+    pub fn place_inspector(&self) {
+        let pane = &self.work_pane;
+        let pane_width = pane.width();
+        if pane_width <= 0 {
+            // 还没有分配尺寸：保持「正在放置」，等 map / 重试回调来落位。
+            self.inspector_placing.set(true);
+            return;
+        }
+        let width = layout::clamp_inspector(self.inspector_width.get());
+        self.inspector_placing.set(true);
+        pane.set_position(pane_width - width - 1);
+        let placing = Rc::clone(&self.inspector_placing);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+            placing.set(false);
+        });
+    }
+
+    /// 等分栏拿到真实宽度后再落位（首帧尺寸是 0；最多轮询 ~1 秒）。
+    pub fn place_inspector_when_ready(self: &Rc<Self>, attempts: u32) {
+        if self.work_pane.width() > 0 {
+            self.place_inspector();
+            return;
+        }
+        if attempts >= 25 {
+            eprintln!("[shell] 分栏宽度一直为 0：信息面板未落位（宽度保持记忆值）");
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(40), move || {
+            if let Some(shell) = weak.upgrade() {
+                shell.place_inspector_when_ready(attempts + 1);
+            }
+        });
     }
 
     /// 信息面板当前是否展开（布局自检与 QA 用）。
@@ -685,22 +740,49 @@ impl StatusBar {
         ops_row.add_css_class("linked");
         ops_row.set_valign(gtk::Align::Center);
 
-        let make_op = |label: &str, tooltip: &str, op: RowOp| {
-            let button = gtk::Button::with_label(label);
+        // v0.2.4：行操作只用图标 + tooltip（同一段文字同时登记为可访问名）。
+        // 六个动作语义固定：新增 / 删除 / 应用 / 撤销 / 刷新 / 取消。
+        let make_op = |icon: &str, tooltip: &str, op: RowOp| {
+            let button = gtk::Button::from_icon_name(icon);
             button.add_css_class("flat");
             button.set_sensitive(false);
             button.set_tooltip_text(Some(tooltip));
+            button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
             let handler = Rc::clone(&on_row_op);
             button.connect_clicked(move |_| handler(op));
             ops_row.append(&button);
             button
         };
-        let add = make_op("新增", "在当前表末尾新增一行", RowOp::Add);
-        let delete = make_op("删除", "标记删除选中行（提交前可撤销）", RowOp::Delete);
-        let apply = make_op("应用", "提交所有脏行的变更", RowOp::Apply);
-        let discard = make_op("撤销", "放弃全部未提交的编辑与删除标记", RowOp::Discard);
-        let refresh = make_op("刷新", "重新读取当前表的第一页", RowOp::Refresh);
-        let cancel = make_op("取消", "取消在途的提交批次", RowOp::Cancel);
+        let add = make_op(
+            "list-add-symbolic",
+            "新增行：在当前表末尾新增一行",
+            RowOp::Add,
+        );
+        let delete = make_op(
+            "list-remove-symbolic",
+            "删除选中行：标记为待删除（提交前可撤销）",
+            RowOp::Delete,
+        );
+        let apply = make_op(
+            "object-select-symbolic",
+            "应用：提交所有脏行的变更",
+            RowOp::Apply,
+        );
+        let discard = make_op(
+            "edit-undo-symbolic",
+            "撤销：放弃全部未提交的编辑与删除标记",
+            RowOp::Discard,
+        );
+        let refresh = make_op(
+            "view-refresh-symbolic",
+            "刷新：重新读取当前表的第一页",
+            RowOp::Refresh,
+        );
+        let cancel = make_op(
+            "process-stop-symbolic",
+            "取消：中止正在执行的提交批次（已执行的行会整批回滚）",
+            RowOp::Cancel,
+        );
 
         let ops_separator = gtk::Separator::new(gtk::Orientation::Vertical);
         ops_separator.set_size_request(-1, 18);

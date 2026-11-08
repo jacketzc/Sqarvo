@@ -46,8 +46,8 @@ use crate::browse_view::{
 };
 use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::{
-    Filter, IsolationLevel, ObjectKind, ReadOnlyReason, RowDelete, RowOrder, RowUpdate, SortKey,
-    TransactionState,
+    Filter, IsolationLevel, ObjectKind, ObjectRef, ReadOnlyReason, RowDelete, RowOrder, RowUpdate,
+    SortKey, TransactionState,
 };
 use crate::submit_batch::{
     CommitClick, SubmitPhase, SubmitSnapshot, commit_button_label, commit_click,
@@ -104,7 +104,12 @@ pub struct DataPageObservation {
     /// 数据页状态。
     pub state: DataState,
     /// 事务徽标的可见文本。
+    ///
+    /// v0.2.4 起工具条上没有「自动提交」徽标：这里的取值来自**状态机**（`badge.label()`），
+    /// 用于断言「状态是什么」；「界面上看得到什么」看 [`Self::txn_visible`]。
     pub badge_text: String,
+    /// 状态栏「事务」一栏的可见文本（没有事务时为空串）。
+    pub txn_visible: String,
     /// 徽标上带的 CSS 类（正常状态应恰好一个）。
     pub badge_classes: Vec<&'static str>,
     /// 「提交事务」是否可点。
@@ -319,10 +324,8 @@ pub struct DataCallbacks {
     pub rollback_txn: Rc<dyn Fn()>,
     /// 重新浏览当前表。
     pub reload: Rc<dyn Fn()>,
-    /// 主动断开后端。
-    pub disconnect: Rc<dyn Fn()>,
-    /// 断连横幅上的「重新连接后端」。
-    pub reconnect: Rc<dyn Fn()>,
+    /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.4）。
+    pub backend_failure: Rc<dyn Fn()>,
     /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
     pub on_column: Rc<dyn Fn(TableColumn)>,
 }
@@ -454,133 +457,6 @@ impl DataRowStore {
     }
 }
 
-/// 表列表侧栏。
-pub struct TableBrowser {
-    root: gtk::Box,
-    list: gtk::ListBox,
-    entries: RefCell<Vec<TableEntry>>,
-    count: gtk::Label,
-}
-
-impl TableBrowser {
-    /// 构建侧栏；`on_select` 在用户点击表时调用，`on_refresh` 由「刷新」触发。
-    pub fn new(on_select: Rc<dyn Fn(TableEntry)>, on_refresh: Rc<dyn Fn()>) -> Rc<Self> {
-        let title = gtk::Label::new(Some("表与视图"));
-        title.set_xalign(0.0);
-        title.add_css_class("heading");
-        title.set_hexpand(true);
-
-        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh.add_css_class("flat");
-        refresh.set_tooltip_text(Some("重新读取表列表（ListNodes）"));
-        refresh.connect_clicked(move |_| on_refresh());
-
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        header.set_margin_top(8);
-        header.set_margin_bottom(6);
-        header.set_margin_start(10);
-        header.set_margin_end(6);
-        header.append(&title);
-        header.append(&refresh);
-
-        let count = gtk::Label::new(None);
-        count.set_xalign(0.0);
-        count.set_margin_start(10);
-        count.set_margin_bottom(4);
-        count.add_css_class("dim-label");
-        count.add_css_class("caption");
-
-        let list = gtk::ListBox::new();
-        list.set_selection_mode(gtk::SelectionMode::Single);
-        list.add_css_class("navigation-sidebar");
-
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .vexpand(true)
-            .child(&list)
-            .build();
-
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.set_size_request(220, -1);
-        root.append(&header);
-        root.append(&count);
-        root.append(&scroll);
-
-        let browser = Rc::new(Self {
-            root,
-            list,
-            entries: RefCell::new(Vec::new()),
-            count,
-        });
-
-        let browser_for_activate = Rc::clone(&browser);
-        browser.list.connect_row_activated(move |_, row| {
-            let index = usize::try_from(row.index()).unwrap_or(usize::MAX);
-            let entry = browser_for_activate.entries.borrow().get(index).cloned();
-            if let Some(entry) = entry {
-                on_select(entry);
-            }
-        });
-        browser
-    }
-
-    /// 根控件。
-    pub fn widget(&self) -> &gtk::Box {
-        &self.root
-    }
-
-    /// 替换表列表。
-    pub fn set_tables(&self, tables: Vec<TableEntry>) {
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
-        let count = tables.len();
-        for table in &tables {
-            let name = gtk::Label::new(Some(&table.display_name));
-            name.set_xalign(0.0);
-            name.set_hexpand(true);
-            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            let kind = gtk::Label::new(Some(table.kind_label()));
-            kind.add_css_class("dim-label");
-            kind.add_css_class("caption");
-            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row_box.set_margin_top(6);
-            row_box.set_margin_bottom(6);
-            row_box.set_margin_start(8);
-            row_box.set_margin_end(8);
-            row_box.append(&name);
-            row_box.append(&kind);
-            let row = gtk::ListBoxRow::new();
-            row.set_child(Some(&row_box));
-            row.set_tooltip_text(Some(&format!(
-                "{}（{}）· 点击浏览表数据",
-                table.display_name,
-                table.kind_label()
-            )));
-            row.set_activatable(true);
-            self.list.append(&row);
-        }
-        self.count.set_text(&format!("共 {count} 个对象"));
-        self.entries.replace(tables);
-    }
-
-    /// 平铺列表里的条目数（工作区判断「表列表是否已经回来」用）。
-    #[must_use]
-    pub fn count(&self) -> usize {
-        self.entries.borrow().len()
-    }
-
-    /// 按名称找到条目（QA 与「打开指定表」用）。
-    pub fn entry_by_name(&self, name: &str) -> Option<TableEntry> {
-        self.entries
-            .borrow()
-            .iter()
-            .find(|entry| entry.display_name == name || entry.reference.name == name)
-            .cloned()
-    }
-}
-
 /// QA 的列宽证据（#133）：同一列的三份宽度放在一起，断言才有对照。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnWidthObservation {
@@ -593,6 +469,18 @@ pub struct ColumnWidthObservation {
     /// 表头标题控件的**自然宽度**（= GTK 的列宽测量值；`GtkColumnViewColumn` 没有公开的
     /// 宽度查询 API，所以从表头行读）。
     pub header_natural_width: i32,
+}
+
+/// 图标按钮（v0.2.4）：只显示图标 + tooltip，并把同一段文字登记为可访问名。
+///
+/// 为什么不用文字：工具条第 2 行在 960 宽下本来就挤，`FS` / `CC` / `EX` 三个缩写
+/// 只有看过文档的人认得出；图标 + tooltip 更容易看懂，键盘与读屏也有名字。
+fn icon_button(icon: &str, accessible_label: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(icon);
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some(accessible_label));
+    button.update_property(&[gtk::accessible::Property::Label(accessible_label)]);
+    button
 }
 
 /// 数据页。
@@ -608,7 +496,6 @@ pub struct DataPage {
     grid_scroll: gtk::ScrolledWindow,
     banner: adw::Banner,
     table_label: gtk::Label,
-    txn_badge: gtk::Label,
     status: gtk::Label,
     dirty_label: gtk::Label,
     spinner: gtk::Spinner,
@@ -732,7 +619,6 @@ struct DataButtons {
     add_row: gtk::Button,
     /// 导出当前页（#120）。
     export: gtk::Button,
-    disconnect: gtk::Button,
 }
 
 impl DataPage {
@@ -742,17 +628,12 @@ impl DataPage {
 
         let banner = adw::Banner::new("");
         banner.set_revealed(false);
-        banner.set_button_label(Some("重新连接后端"));
+        banner.set_button_label(Some("重启 Sqarvo"));
 
         let table_label = gtk::Label::new(Some("未选择表"));
         table_label.set_xalign(0.0);
         table_label.add_css_class("heading");
         table_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-
-        let txn_badge = gtk::Label::new(Some("自动提交"));
-        txn_badge.add_css_class("pill");
-        txn_badge.add_css_class("sqarvo-txn-commit");
-        txn_badge.set_tooltip_text(Some("事务状态：自动提交"));
 
         let begin = gtk::Button::with_label("开始事务");
         begin.add_css_class("flat");
@@ -769,30 +650,25 @@ impl DataPage {
         rollback.add_css_class("destructive-action");
         rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
 
-        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh.add_css_class("flat");
+        let refresh = icon_button("view-refresh-symbolic", "刷新当前表");
         refresh.set_tooltip_text(Some("重新读取当前表的第一页"));
 
-        // 列显隐（CC，#118）：只影响渲染，不影响导出/复制口径。
-        let cc_button = gtk::Button::with_label("CC");
-        cc_button.add_css_class("flat");
+        // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
+        let cc_button = icon_button("view-reveal-symbolic", "列显隐");
         cc_button.set_sensitive(false);
         cc_button.set_tooltip_text(Some("列显隐：隐藏列只影响渲染，不改变查询与导出口径"));
 
-        // 筛选与排序（FS，#118）：只支持 AND 多条件；应用后回到第 1 页。
-        let fs_button = gtk::Button::with_label("FS");
-        fs_button.add_css_class("flat");
+        // 筛选与排序（FS → 放大镜图标，#118）：只支持 AND 多条件；应用后回到第 1 页。
+        // Adwaita 图标主题里没有漏斗，`system-search-symbolic` 是 GNOME 应用里
+        // 「筛选 / 查找条件」的常用替身（不用自绘资源，也不依赖第三方主题）。
+        let fs_button = icon_button("system-search-symbolic", "筛选与排序");
         fs_button.set_sensitive(false);
         fs_button.set_tooltip_text(Some("筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"));
 
-        let disconnect = gtk::Button::with_label("断开后端");
-        disconnect.add_css_class("flat");
-
-        // 导出当前页（EX，#120）：只导出本页已加载行，不重新分页、不拉全表。
-        let export = gtk::Button::with_label("EX");
-        export.add_css_class("flat");
+        // 导出（EX → 导出图标，#120）：范围在确认对话框里选（当前页 / 整张表）。
+        let export = icon_button("document-send-symbolic", "导出为 CSV");
         export.set_sensitive(false);
-        export.set_tooltip_text(Some("导出当前页已加载的行为 CSV（Ctrl+Shift+E）"));
+        export.set_tooltip_text(Some("导出为 CSV（Ctrl+Shift+E）：可选当前页或整张表"));
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.set_margin_top(8);
@@ -801,28 +677,31 @@ impl DataPage {
         header.set_margin_end(12);
         header.append(&table_label);
         table_label.set_hexpand(true);
-        header.append(&txn_badge);
+        // 事务控制行（v0.2.4）：默认只有「开始事务」；开事务后才出现「提交事务 /
+        // 回滚事务」。「自动提交」徽标删掉——它不是可点的动作，也不是用户需要盯着
+        // 的状态（事务状态在状态栏里只在真有事务时出现）。只读开关在开始事务的卡片里。
         header.append(&begin);
-        header.append(&readonly_check);
         header.append(&commit_txn);
         header.append(&rollback);
+        commit_txn.set_visible(false);
+        rollback.set_visible(false);
 
-        let commit_changes = gtk::Button::with_label("提交更改");
+        let commit_changes = gtk::Button::with_label("提交");
         commit_changes.add_css_class("suggested-action");
         commit_changes.set_sensitive(false);
         commit_changes.set_tooltip_text(Some("提交所有脏行的变更（主键定位 + 列变更）"));
 
-        let discard = gtk::Button::with_label("放弃更改");
+        let discard = gtk::Button::with_label("撤销");
         discard.set_sensitive(false);
         discard.set_tooltip_text(Some("丢弃全部未提交的编辑与删除标记"));
 
-        let delete_row = gtk::Button::with_label("删除选中行");
+        let delete_row = gtk::Button::with_label("删除");
         delete_row.add_css_class("destructive-action");
         delete_row.set_sensitive(false);
         delete_row.set_tooltip_text(Some("把选中行标记为待删除（提交前仍可撤销）"));
 
         // 新增行（#88）：空行进入编辑态，默认值列显示数据库默认，自增列留空。
-        let add_row = gtk::Button::with_label("新增行");
+        let add_row = gtk::Button::with_label("新增");
         add_row.add_css_class("suggested-action");
         add_row.set_sensitive(false);
         add_row.set_tooltip_text(Some(
@@ -877,7 +756,6 @@ impl DataPage {
         controls.append(&fs_button);
         controls.append(&cc_button);
         controls.append(&export);
-        controls.append(&disconnect);
 
         let errors = gtk::ListBox::new();
         errors.set_selection_mode(gtk::SelectionMode::None);
@@ -1113,6 +991,7 @@ impl DataPage {
         txn_card.append(&txn_header);
         txn_card.append(&txn_note);
         txn_card.append(&txn_options);
+        txn_card.append(&readonly_check);
         txn_card.append(&txn_buttons);
         overlay.add_overlay(&txn_card);
 
@@ -1135,7 +1014,6 @@ impl DataPage {
             grid_scroll: scroll.clone(),
             banner,
             table_label,
-            txn_badge,
             status,
             dirty_label,
             spinner,
@@ -1156,7 +1034,6 @@ impl DataPage {
                 delete_row,
                 add_row,
                 export,
-                disconnect,
             },
 
             readonly_check,
@@ -1351,15 +1228,8 @@ impl DataPage {
         }
         {
             let page = Rc::clone(&page);
-            page.buttons
-                .disconnect
-                .clone()
-                .connect_clicked(move |_| (page.callbacks.disconnect)());
-        }
-        {
-            let page = Rc::clone(&page);
             page.banner.clone().connect_button_clicked(move |_| {
-                (page.callbacks.reconnect)();
+                (page.callbacks.backend_failure)();
             });
         }
         {
@@ -1463,6 +1333,19 @@ impl DataPage {
             .iter()
             .map(|column| column.name.clone())
             .collect()
+    }
+
+    /// 当前表的对象引用（含 worker 填上的**本标签会话 ID**）。
+    ///
+    /// 整表导出要用它定位「哪一张表、哪个标签」：`ExportSource` 只带得到数据页，
+    /// 带不到 `tab_id`，而一标签一会话，`session_id` 就是唯一的归属键。
+    /// 只读访问器，不改变任何既有行为。
+    #[must_use]
+    pub fn table_reference(&self) -> Option<ObjectRef> {
+        self.table
+            .borrow()
+            .as_ref()
+            .map(|table| table.reference.clone())
     }
 
     /// 导出当前页的值快照（按草稿的**当前值**；已提交删除的行不再导出）。
@@ -3406,11 +3289,15 @@ impl DataPage {
     pub fn qa_observe(&self) -> DataPageObservation {
         DataPageObservation {
             state: self.state.get(),
-            badge_text: self.txn_badge.text().to_string(),
-            badge_classes: TXN_CSS_CLASSES
-                .into_iter()
-                .filter(|class| self.txn_badge.has_css_class(class))
-                .collect(),
+            badge_text: self.badge.borrow().label(),
+            txn_visible: self.status_snapshot().txn_label,
+            badge_classes: {
+                let badge = self.badge.borrow();
+                TXN_CSS_CLASSES
+                    .into_iter()
+                    .filter(|class| badge.css_classes().contains(class))
+                    .collect()
+            },
             commit_enabled: self.buttons.commit_txn.is_sensitive(),
             rollback_enabled: self.buttons.rollback.is_sensitive(),
             edits_allowed: self.badge.borrow().edits_allowed(),
@@ -3493,7 +3380,14 @@ impl DataPage {
                 .as_ref()
                 .map_or(0, TableDraft::dirty_rows),
             pending: self.pending_change_count(),
-            txn_label: self.txn_badge.text().to_string(),
+            // 没有事务时不报「自动提交」：状态栏只在真的有事务时出现事务一栏。
+            txn_label: {
+                let badge = self.badge.borrow();
+                match badge.status() {
+                    TxnStatus::AutoCommit => String::new(),
+                    _ => badge.label(),
+                }
+            },
             row_ops: self.row_ops_state(),
             last_refresh: self.last_refresh.get(),
             status_text: self.status.text().to_string(),
@@ -3607,7 +3501,7 @@ impl DataPage {
         }
     }
 
-    /// 待提交条数（脏行 + 新行草稿）：与「提交更改（N）」文案里的 N 同一口径。
+    /// 待提交条数（脏行 + 新行草稿）：与「提交（N）」文案里的 N 同一口径。
     fn pending_change_count(&self) -> usize {
         let changes = self
             .draft
@@ -5077,7 +4971,6 @@ impl DataPage {
         self.buttons.export.set_tooltip_text(Some(&format!(
             "导出当前页已加载的 {export_rows} 行为 CSV（只含本页；JSON/SQL 格式在 v0.2.5；Ctrl+Shift+E）"
         )));
-        self.buttons.disconnect.set_sensitive(!disconnected);
         self.buttons
             .commit_changes
             .set_tooltip_text(Some(if badge.can_commit() {
@@ -5101,23 +4994,17 @@ impl DataPage {
 
     fn sync_badge(&self) {
         let badge = self.badge.borrow();
-        self.txn_badge.set_text(&badge.label());
-        for class in TXN_CSS_CLASSES {
-            self.txn_badge.remove_css_class(class);
-        }
-        for class in badge.css_classes() {
-            self.txn_badge.add_css_class(class);
-        }
-        self.txn_badge.set_tooltip_text(Some(match badge.status() {
-            TxnStatus::AutoCommit => "事务状态：自动提交（每条语句立即生效）",
-            TxnStatus::Active {
-                read_only: false, ..
-            } => "事务状态：事务中（提交或回滚前不会写库）",
-            TxnStatus::Active {
-                read_only: true, ..
-            } => "事务状态：只读事务（不能写入）",
-            TxnStatus::Failed { .. } => "事务状态：失败（只能回滚）",
-            TxnStatus::Disconnected => "事务状态：已断开（后端已强制回滚）",
+        // 事务控制行按状态互斥显示：没有事务时只看到「开始事务」，有事务（含失败态）
+        // 时只看到「提交事务 / 回滚事务」。
+        let status = badge.status();
+        let in_transaction = matches!(status, TxnStatus::Active { .. } | TxnStatus::Failed { .. });
+        self.buttons.begin.set_visible(!in_transaction);
+        self.buttons.commit_txn.set_visible(in_transaction);
+        self.buttons.rollback.set_visible(in_transaction);
+        self.buttons.begin.set_tooltip_text(Some(match status {
+            TxnStatus::AutoCommit => "在当前会话开始一个显式事务（可选只读）",
+            TxnStatus::Disconnected => "已断开：不能开始事务",
+            _ => "已有事务：先提交或回滚",
         }));
         // 只读事务要显式说明原因（不能只靠按钮置灰）。
         if matches!(
@@ -5137,7 +5024,7 @@ impl DataPage {
 
     fn show_banner(&self, text: &str) {
         self.banner_is_readonly.set(false);
-        self.banner.set_button_label(Some("重新连接后端"));
+        self.banner.set_button_label(Some("重启 Sqarvo"));
         self.banner.set_title(text);
         self.banner.set_revealed(true);
     }

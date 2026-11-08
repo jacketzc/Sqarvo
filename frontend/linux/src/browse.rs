@@ -914,6 +914,10 @@ impl ConnectionRegistry {
 
     /// 当前活动连接的浏览会话 ID（平铺表列表用它，不占标签会话）。
     #[must_use]
+    #[allow(
+        dead_code,
+        reason = "v0.2.4 删掉平铺表列表后没有调用方；保留给后续按活动连接取浏览会话的诊断"
+    )]
     pub fn session_for_active(&self) -> Option<String> {
         let active = self.active.borrow().clone()?;
         self.entries

@@ -15,6 +15,20 @@
 #     不提交进仓库。
 #   * 任何一步失败都以非零退出，末尾打印「N 项断言全过」。
 #
+# v0.2.4 UI 契约下的假设（脚本按这些行为保持有效；改脚本时先看这里）：
+#   * 单击只选中、双击 / 回车才激活：`select-node` 只选中（信息面板与 Objects 页跟着换内容）；
+#     `open-table` / `open-node` 直接打开数据标签（终点与树里双击表相同，表名从对象树解析，
+#     `open-node` 另按 `ObjectRef.catalog` 精确定位）。
+#   * 信息面板常驻：`inspector ddl|info` 只换页；`hide` / `hidden` / `toggle` 现在会明确报错，
+#     脚本不再使用面板显隐（`show` 仍被接受但无动作）。
+#   * 侧栏平铺列表、页脚「DDL」按钮、右键「查看 DDL」已删除：表名由对象树解析，
+#     DDL 只在信息面板的 `[DDL]` 页看，脚本不依赖平铺列表也不点右键菜单。
+#   * 对象树：展开 catalog 仍按分组数发 `ListNodes`（Tables / Views 两组 → 2 次）；
+#     描述表内部的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组不影响本链
+#     （脚本只展开到 catalog 与表，不展开表内分组）。
+#   * 应用内断言条数是**写死**的（主用例 16、跨库用例 22，见 `check_eq`）：增删任何
+#     `expect-*` / `focus-search` 步骤都必须同步这两个数字。
+#
 # 前置条件（脚本会检查并给出可读原因）：
 #   * 已构建的前端/后端二进制（默认执行 cargo build；`SQARVO_ACCEPTANCE_NO_BUILD=1` 跳过）；
 #   * 可用的图形会话（WAYLAND_DISPLAY 或 DISPLAY）；
@@ -429,6 +443,7 @@ EOF
     IN_APP_TOTAL=$((IN_APP_TOTAL + in_app))
     # 16 = 15 项原断言 + 1 项「Ctrl+F 经产品动作把焦点送到树搜索框」（#121 的残余项落地后
     # 该步骤从「只抓焦点」变成「先激活 win.focus-search 再只读断言」，多出一条断言行）。
+    # v0.2.4 逐条复核后仍为 16：`expect-tabs` 只打印「标签数=N」、不产出「断言 OK：」，不计入。
     check_eq "$case_name 应用内断言条数" 16 "$in_app"
 
     check_contains "$case_name 展开 catalog 的 ListNodes 次数" \
@@ -563,6 +578,7 @@ EOF
     IN_APP_TOTAL=$((IN_APP_TOTAL + in_app))
     # 22 = 两个库各 2 条（page/title）+ ListNodes 1 + 两个标签各 2 条（标题/总数）
     # + 分页/排序/行数/会话数 + 导出文件 + 连接面板 2 条。改动脚本时必须同步这里。
+    # v0.2.4 复核：仍然成立（`expect-tabs` 不产出「断言 OK：」，信息面板常驻不影响这些步骤）。
     check_eq "$case_name 应用内断言条数" 22 "$in_app"
 
     check_contains "$case_name 档案以「无默认库」填入对话框" '（无默认库）' "$log"

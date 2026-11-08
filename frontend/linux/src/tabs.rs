@@ -43,13 +43,14 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 
+use crate::backend::metadata::{MetadataHub, NodeView};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
 use crate::backend::worker::{TabSessionOpened, TableEvent, WorkerHandle};
 use crate::browse::ConnectionRegistry;
 use crate::data_page::{DataCallbacks, DataPage, RowOpsState, StatusSnapshot};
-use crate::inspector::InspectorSnapshot;
+use crate::proto::services::v1::{ObjectKind, ObjectRef};
 use crate::qa;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
 
@@ -205,10 +206,13 @@ impl ClosePrompt {
 #[must_use]
 pub fn close_prompt(title: &str, snapshot: Option<&StatusSnapshot>) -> ClosePrompt {
     let dirty = snapshot.map_or(0, |snapshot| snapshot.dirty.max(snapshot.pending));
-    // 「自动提交」与「已断开」不算未提交事务：断开的会话已经没有事务可回滚。
+    // 没有事务的三种表示都算「无事务」：air 串（v0.2.4 起状态栏不再显示「自动提交」）、
+    // 「自动提交」（旧口径）与「已断开」（断开的会话已经没有事务可回滚）。
+    // 漏掉空串会让每个普通标签关闭时都弹一次「有未提交事务」，验收链上表现为
+    // 「放弃后重新弹窗 → 最后按取消处理 → 标签关不掉」。
     let transaction = snapshot
         .map(|snapshot| snapshot.txn_label.clone())
-        .filter(|label| label != "自动提交" && label != "已断开");
+        .filter(|label| !label.trim().is_empty() && label != "自动提交" && label != "已断开");
     let mut lines: Vec<String> = Vec::new();
     if dirty > 0 {
         lines.push(format!(
@@ -328,10 +332,9 @@ pub struct TabContext {
     pub catalog: String,
     /// 连接注册表（解析标签属于哪条连接、取连接参数）。
     pub registry: Option<Rc<ConnectionRegistry>>,
-    /// 「断开后端」按钮与断连横幅的接线。
-    pub disconnect_backend: Rc<dyn Fn()>,
+    /// 后端失效横幅的接线（「重启 Sqarvo / 查看日志」对话框）。
     /// 「重新连接后端」。
-    pub reconnect_backend: Rc<dyn Fn()>,
+    pub backend_failure: Rc<dyn Fn()>,
     /// 按表名解析一个对象（QA 脚本与「打开指定表」共用平铺列表的同一条路径）。
     pub resolve_table: TableResolver,
     /// 当前标签的状态变化（状态栏 / 工具条 / 「表」菜单）。
@@ -387,213 +390,365 @@ pub enum TabStatus {
     },
 }
 
-/// `Objects` 页的 QA 观察结果（读真实控件文本，#135）。
+/// `Objects` 页的一次请求作用域：父对象（catalog）+ 要列出的种类。
+type ObjectsRequest = (ObjectRef, Vec<ObjectKind>);
+
+/// 双击列表行时要执行的动作（打开表数据标签）。
+type OpenEntry = Rc<dyn Fn(TableEntry)>;
+
+/// `Objects` 固定页的观察结果（读真实控件，QA 用）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObjectsObservation {
-    /// 面板页名（`empty` = 空态）。
-    pub page: String,
-    /// 是否空态。
-    pub empty: bool,
-    /// 对象名。
-    pub name: String,
-    /// 种类。
-    pub kind: String,
-    /// 限定名。
-    pub path: String,
-    /// 关键属性（`字段=值`，按渲染顺序）。
-    pub facts: Vec<String>,
-    /// 「在信息面板查看 DDL」是否出现。
-    pub ddl_action_visible: bool,
+    /// 当前作用域文案（空串 = 没有可联动的选中对象）。
+    pub scope: String,
+    /// 已渲染的行数。
+    pub count: usize,
+    /// 第一行的名字（没有行时为空串）。
+    pub first: String,
+    /// 状态行原文（`正在读取…` / `共 N 个对象` / 错误文案）。
+    pub status: String,
 }
 
-/// `Objects` 固定页的对象概览（#135）。
+impl ObjectsObservation {
+    /// 是否没有行（空态或还在读）。
+    #[must_use]
+    pub fn empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+/// `Objects` 固定页（v0.2.4）：与对象树联动，列出选中 catalog 里的表 / 视图。
 ///
-/// 只渲染信息面板推来的 [`InspectorSnapshot`]：同一份标题 / 种类 / 限定名 / 关键属性，
-/// 不复制面板的完整内容，也不发任何 RPC。没有选中对象时显示空态文案而不是空白。
-pub struct ObjectsOverview {
+/// 内容由树选中驱动：选中 catalog 或 `Tables` 分支 → 该库的**表**；
+/// 选中 `Views` 分支 → 该库的**视图**。页面自己发 `ListNodes(filter.kinds)` 并持有
+/// 自己的分页 token，不读树的分组层状态——树没展开过也要能看到完整列表。
+pub struct ObjectsPage {
     root: gtk::Box,
+    scope_label: gtk::Label,
     stack: gtk::Stack,
-    name: gtk::Label,
-    kind: gtk::Label,
-    path: gtk::Label,
-    facts: gtk::Box,
-    ddl_action: gtk::Button,
-    on_view_ddl: RefCell<Option<Rc<dyn Fn()>>>,
-    /// 当前快照（QA 读页名与「是否空态」）。
-    current: RefCell<InspectorSnapshot>,
+    list: gtk::ListBox,
+    status: gtk::Label,
+    more: gtk::Button,
+    rows: RefCell<Vec<TableEntry>>,
+    scope: RefCell<String>,
+    token: RefCell<String>,
+    generation: Cell<u64>,
+    open: RefCell<Option<OpenEntry>>,
+    /// 最近一次请求的作用域（分页按它继续）。
+    last_request: RefCell<Option<ObjectsRequest>>,
+    /// 最近一次请求用的元数据通道（同一条浏览会话）。
+    hub_slot: RefCell<Option<Rc<MetadataHub>>>,
 }
 
-impl ObjectsOverview {
+impl ObjectsPage {
     fn new() -> Rc<Self> {
-        let name = gtk::Label::new(None);
-        name.set_xalign(0.0);
-        name.set_wrap(true);
-        name.set_selectable(true);
-        name.add_css_class("heading");
+        let title = gtk::Label::new(Some("Objects"));
+        title.set_xalign(0.0);
+        title.add_css_class("sqarvo-title");
 
-        let kind = gtk::Label::new(None);
-        kind.set_xalign(0.0);
-        kind.add_css_class("dim-label");
-        kind.add_css_class("caption");
+        let scope_label = gtk::Label::new(Some("没有选中库"));
+        scope_label.set_xalign(0.0);
+        scope_label.add_css_class("dim-label");
+        scope_label.add_css_class("caption");
 
-        let path = gtk::Label::new(None);
-        path.set_xalign(0.0);
-        path.set_wrap(true);
-        path.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        path.set_selectable(true);
-        path.add_css_class("dim-label");
-        path.add_css_class("caption");
-        path.set_visible(false);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::None);
+        list.add_css_class("navigation-sidebar");
 
-        let facts = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        facts.set_visible(false);
+        let status = gtk::Label::new(None);
+        status.set_xalign(0.0);
+        status.set_wrap(true);
+        status.add_css_class("dim-label");
+        status.add_css_class("caption");
 
-        let ddl_action = gtk::Button::with_label("在信息面板查看 DDL");
-        ddl_action.set_halign(gtk::Align::Start);
-        ddl_action.set_tooltip_text(Some("切到右侧信息面板的 DDL 页"));
-        ddl_action.set_visible(false);
+        let more = gtk::Button::with_label("加载更多…");
+        more.add_css_class("flat");
+        more.set_halign(gtk::Align::Start);
+        more.set_visible(false);
 
-        let overview = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        overview.set_margin_top(8);
-        overview.append(&name);
-        overview.append(&kind);
-        overview.append(&path);
-        overview.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        overview.append(&facts);
-        overview.append(&ddl_action);
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&list)
+            .build();
 
         let empty = adw::StatusPage::new();
         empty.set_vexpand(true);
         empty.set_title("没有选中对象");
         empty.set_description(Some(
-            "在左侧对象树里选中一条连接、一个库、一张表或一列，这里会显示它的概览。",
+            "在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。",
         ));
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        content.set_vexpand(true);
+        content.append(&scroll);
+        content.append(&more);
+        content.append(&status);
 
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         stack.add_named(&empty, Some("empty"));
-        stack.add_named(&overview, Some("overview"));
+        stack.add_named(&content, Some("list"));
         stack.set_visible_child_name("empty");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.set_vexpand(true);
+        root.set_margin_top(12);
+        root.set_margin_start(12);
+        root.set_margin_end(12);
+        root.append(&title);
+        root.append(&scope_label);
         root.append(&stack);
 
-        let overview = Rc::new(Self {
+        let page = Rc::new(Self {
             root,
+            scope_label,
             stack,
-            name,
-            kind,
-            path,
-            facts,
-            ddl_action,
-            on_view_ddl: RefCell::new(None),
-            current: RefCell::new(InspectorSnapshot {
-                page: "empty".to_owned(),
-                ..InspectorSnapshot::default()
-            }),
+            list,
+            status,
+            more,
+            rows: RefCell::new(Vec::new()),
+            scope: RefCell::new(String::new()),
+            token: RefCell::new(String::new()),
+            generation: Cell::new(0),
+            open: RefCell::new(None),
+            last_request: RefCell::new(None),
+            hub_slot: RefCell::new(None),
         });
         {
-            let weak = Rc::downgrade(&overview);
-            overview.ddl_action.connect_clicked(move |_| {
-                if let Some(overview) = weak.upgrade()
-                    && let Some(action) = overview.on_view_ddl.borrow().clone()
-                {
-                    action();
+            let weak = Rc::downgrade(&page);
+            page.more.connect_clicked(move |_| {
+                if let Some(page) = weak.upgrade() {
+                    let token = page.token.borrow().clone();
+                    if !token.is_empty() {
+                        page.load(token);
+                    }
                 }
             });
         }
-        overview
+        page
     }
 
-    /// 根控件（嵌进 `Objects` 页）。
     fn widget(&self) -> &gtk::Box {
         &self.root
     }
 
-    /// 快捷动作的落地：切到信息面板的 DDL 页（由 `ui.rs` 接线，面板与外壳都在那里）。
-    pub fn set_ddl_action(&self, action: Rc<dyn Fn()>) {
-        self.on_view_ddl.replace(Some(action));
+    /// 双击行打开表数据标签（与树的双击同一条路径）。
+    pub fn set_open(&self, open: OpenEntry) {
+        self.open.replace(Some(open));
     }
 
-    /// 渲染面板推来的快照（唯一的数据入口）。
-    pub fn show_snapshot(&self, snapshot: &InspectorSnapshot) {
-        self.current.replace(snapshot.clone());
-        if snapshot.is_empty() {
-            self.name.set_text("");
-            self.kind.set_text("");
-            self.path.set_text("");
-            self.path.set_visible(false);
-            while let Some(child) = self.facts.first_child() {
-                self.facts.remove(&child);
-            }
-            self.facts.set_visible(false);
-            self.ddl_action.set_visible(false);
-            self.stack.set_visible_child_name("empty");
+    /// 清空并显示空态（没有可联动的选中对象）。
+    pub fn show_empty(&self) {
+        self.generation.set(self.generation.get() + 1);
+        self.rows.borrow_mut().clear();
+        self.token.replace(String::new());
+        self.scope.replace(String::new());
+        self.last_request.replace(None);
+        self.hub_slot.replace(None);
+        self.clear_rows();
+        self.scope_label.set_text("没有选中库");
+        self.status.set_text("");
+        self.more.set_visible(false);
+        self.stack.set_visible_child_name("empty");
+    }
+
+    /// 换作用域并读第一页。
+    pub fn show(
+        self: &Rc<Self>,
+        hub: Option<Rc<MetadataHub>>,
+        parent: ObjectRef,
+        kinds: Vec<ObjectKind>,
+        label: &str,
+    ) {
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        self.rows.borrow_mut().clear();
+        self.token.replace(String::new());
+        self.scope.replace(label.to_owned());
+        self.clear_rows();
+        self.more.set_visible(false);
+        self.scope_label.set_text(label);
+        self.stack.set_visible_child_name("list");
+        let Some(hub) = hub else {
+            self.status.set_text("这条连接没有浏览会话：展开连接后重试");
             return;
-        }
-        self.name.set_text(&snapshot.title);
-        self.kind.set_text(&snapshot.kind_label);
-        self.path.set_text(&snapshot.qualified_path);
-        self.path
-            .set_visible(!snapshot.qualified_path.trim().is_empty());
-        while let Some(child) = self.facts.first_child() {
-            self.facts.remove(&child);
-        }
-        let key_facts = snapshot.key_facts();
-        self.facts.set_visible(!key_facts.is_empty());
-        for fact in key_facts {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let label = gtk::Label::new(Some(fact.label));
-            label.set_size_request(72, -1);
-            label.set_xalign(0.0);
-            label.set_valign(gtk::Align::Start);
-            label.add_css_class("dim-label");
-            label.add_css_class("caption");
-            let value = gtk::Label::new(Some(&fact.value));
-            value.set_xalign(0.0);
-            value.set_wrap(true);
-            value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-            value.set_hexpand(true);
-            value.set_selectable(true);
-            value.add_css_class("caption");
-            row.append(&label);
-            row.append(&value);
-            self.facts.append(&row);
-        }
-        // 快捷动作只在真能工作时出现：表 / 视图的面板有 [DDL] 页；
-        // 序列 / 函数 / 类型的面板本来就是 DDL。其余种类没有这个页，不摆按钮。
-        let ddl_available = matches!(snapshot.page.as_str(), "table" | "ddl-only");
-        self.ddl_action.set_visible(ddl_available);
-        self.stack.set_visible_child_name("overview");
+        };
+        self.status.set_text("正在读取…");
+        let weak_open = self.open.borrow().clone();
+        self.request(hub, parent, kinds, String::new(), generation, weak_open);
     }
 
-    /// QA：从真实控件读回文案（不是从快照抄）。
+    fn load(self: &Rc<Self>, token: String) {
+        let Some((parent, kinds)) = self.saved_request() else {
+            return;
+        };
+        let generation = self.generation.get();
+        // 重新请求需要 hub：由 `show` 存下来的那份（同一会话）。
+        let Some(hub) = self.hub() else {
+            return;
+        };
+        self.status.set_text("正在读取…");
+        let open = self.open.borrow().clone();
+        self.request(hub, parent, kinds, token, generation, open);
+    }
+
+    fn request(
+        self: &Rc<Self>,
+        hub: Rc<MetadataHub>,
+        parent: ObjectRef,
+        kinds: Vec<ObjectKind>,
+        token: String,
+        generation: u64,
+        open: Option<Rc<dyn Fn(TableEntry)>>,
+    ) {
+        // 记住这次请求的作用域：分页与「加载更多」按它继续。
+        *self.last_request.borrow_mut() = Some((parent.clone(), kinds.clone()));
+        self.hub_slot.replace(Some(Rc::clone(&hub)));
+        let weak = Rc::downgrade(self);
+        hub.request_group(
+            parent,
+            &kinds,
+            &token,
+            Rc::new(move |result| {
+                let Some(page) = weak.upgrade() else {
+                    return;
+                };
+                if generation != page.generation.get() {
+                    eprintln!("[objects] 丢弃过期响应（页已换作用域）");
+                    return;
+                }
+                match result {
+                    Ok(nodes) => {
+                        let count = nodes.nodes.len();
+                        for node in &nodes.nodes {
+                            page.push_row(node, open.as_ref());
+                        }
+                        page.token.replace(nodes.next_page_token.clone());
+                        let has_more = nodes.has_more();
+                        page.more.set_visible(has_more);
+                        let total = page.rows.borrow().len();
+                        page.status.set_text(&format!(
+                            "共 {total} 个对象{}",
+                            if has_more { "（还有更多）" } else { "" }
+                        ));
+                        if count == 0 && total == 0 {
+                            page.status.set_text("（这个库里没有这类对象）");
+                        }
+                    }
+                    Err(error) => {
+                        page.more.set_visible(false);
+                        page.status.set_text(&format!(
+                            "读取失败：{}（{}）",
+                            error.headline(),
+                            error.code()
+                        ));
+                    }
+                }
+            }),
+        );
+    }
+
+    fn push_row(&self, node: &NodeView, open: Option<&Rc<dyn Fn(TableEntry)>>) {
+        let entry = TableEntry {
+            reference: node.reference.clone(),
+            display_name: node.display_name.clone(),
+            kind: node.kind,
+        };
+        self.rows.borrow_mut().push(entry.clone());
+        let name = gtk::Label::new(Some(&node.display_name));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let kind = gtk::Label::new(Some(entry.kind_label()));
+        kind.add_css_class("dim-label");
+        kind.add_css_class("caption");
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row_box.set_margin_top(6);
+        row_box.set_margin_bottom(6);
+        row_box.set_margin_start(10);
+        row_box.set_margin_end(10);
+        row_box.append(&name);
+        row_box.append(&kind);
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&row_box));
+        row.set_activatable(false);
+        row.set_tooltip_text(Some(&format!(
+            "{}（{}）· 双击打开",
+            entry.display_name,
+            entry.kind_label()
+        )));
+        if let Some(open) = open {
+            let open = Rc::clone(open);
+            let entry = entry.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(1);
+            gesture.connect_released(move |gesture, presses, _, _| {
+                if presses == 2 {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    open(entry.clone());
+                }
+            });
+            row.add_controller(gesture);
+        }
+        self.list.append(&row);
+    }
+
+    fn clear_rows(&self) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+    }
+
+    fn saved_request(&self) -> Option<ObjectsRequest> {
+        self.last_request.borrow().clone()
+    }
+
+    fn hub(&self) -> Option<Rc<MetadataHub>> {
+        self.hub_slot.borrow().clone()
+    }
+
+    /// QA：从真实控件读回作用域、行数、第一行与状态行。
     #[must_use]
     pub fn qa_observation(&self) -> ObjectsObservation {
-        let current = self.current.borrow().clone();
-        let mut facts = Vec::new();
-        let mut child = self.facts.first_child();
-        while let Some(row) = child {
-            if let (Some(label), Some(value)) = (
-                row.first_child()
-                    .and_then(|widget| widget.downcast::<gtk::Label>().ok()),
-                row.last_child()
-                    .and_then(|widget| widget.downcast::<gtk::Label>().ok()),
-            ) {
-                facts.push(format!("{}={}", label.text(), value.text()));
-            }
-            child = row.next_sibling();
-        }
+        let first = self
+            .list
+            .first_child()
+            .and_then(|row| row.downcast::<gtk::ListBoxRow>().ok())
+            .and_then(|row| row.child())
+            .and_then(|child| child.downcast::<gtk::Box>().ok())
+            .and_then(|row_box| row_box.first_child())
+            .and_then(|child| child.downcast::<gtk::Label>().ok())
+            .map(|label| label.text().to_string())
+            .unwrap_or_default();
         ObjectsObservation {
-            page: current.page.clone(),
-            empty: current.is_empty(),
-            name: self.name.text().to_string(),
-            kind: self.kind.text().to_string(),
-            path: self.path.text().to_string(),
-            facts,
-            ddl_action_visible: self.ddl_action.is_visible(),
+            scope: self.scope_label.text().to_string(),
+            count: self.rows.borrow().len(),
+            first,
+            status: self.status.text().to_string(),
         }
+    }
+}
+
+/// 递归收集标签条里的 `tab` 节点宽度（调试 / 验收用）。
+///
+/// `AdwTabBar` 内部结构不公开，这里只按类型名与 CSS 类识别，不依赖任何字段。
+fn collect_tab_widths(widget: &gtk::Widget, out: &mut Vec<(Vec<String>, i32)>) {
+    let type_name = widget.type_().name().to_string();
+    // 只要真正的 tab（`AdwTab`）：`AdwTabBar` / `AdwTabBox` 是容器，宽度没有意义。
+    if type_name == "AdwTab" {
+        let classes: Vec<String> = widget
+            .css_classes()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        out.push((classes, widget.width()));
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        collect_tab_widths(&current, out);
+        child = current.next_sibling();
     }
 }
 
@@ -604,7 +759,7 @@ pub struct TabSet {
     bar: adw::TabBar,
     tabs: RefCell<Vec<Rc<TabHandle>>>,
     /// 固定 `Objects` 页的对象概览（#135：只跟随信息面板的快照）。
-    objects: RefCell<Option<Rc<ObjectsOverview>>>,
+    objects: RefCell<Option<Rc<ObjectsPage>>>,
     context: TabContext,
     next_query_number: Cell<u32>,
     /// 标签 ID 的单调序号（关闭后也不复用：日志里能唯一对上）。
@@ -704,6 +859,19 @@ impl TabSet {
                 });
         }
         {
+            // 钉住页（Objects）的实际宽度：`AdwTabBar` 没有 per-page 宽度 API，宽度靠 CSS
+            // 选中，所以这里把实测值写进日志（截图之外还有可复核的数字）。
+            let weak = Rc::downgrade(&set);
+            set.root.connect_map(move |_| {
+                let weak = weak.clone();
+                glib::timeout_add_local_once(Duration::from_millis(600), move || {
+                    if let Some(set) = weak.upgrade() {
+                        set.log_tab_widths();
+                    }
+                });
+            });
+        }
+        {
             // 规范口径 24px 记在 layout.rs；libadwaita 自身的最小高度不同，这里如实记录
             // 一次实测值，审查时不必靠猜。
             let weak = Rc::downgrade(&set);
@@ -724,15 +892,31 @@ impl TabSet {
         set
     }
 
+    /// 把标签条里每个 tab 的实际宽度写进日志（钉住页 84px 的实测证据）。
+    fn log_tab_widths(&self) {
+        let mut widths = Vec::new();
+        collect_tab_widths(self.bar.upcast_ref(), &mut widths);
+        if widths.is_empty() {
+            eprintln!("[tabs] 标签条里还没有 tab（宽度未测）");
+            return;
+        }
+        let total: Vec<String> = widths
+            .iter()
+            .map(|(classes, width)| {
+                let tag = if classes.iter().any(|class| class == "pinned") {
+                    "pinned"
+                } else {
+                    "tab"
+                };
+                format!("{tag}={width}px")
+            })
+            .collect();
+        eprintln!("[tabs] 标签实际宽度：{}", total.join("，"));
+    }
+
     /// 标签条 + 标签视图。
     pub fn widget(&self) -> &gtk::Box {
         &self.root
-    }
-
-    /// 连接注册表（平铺列表与诊断用）。
-    #[must_use]
-    pub fn registry(&self) -> Option<Rc<ConnectionRegistry>> {
-        self.context.registry.clone()
     }
 
     /// worker 句柄（工作区级动作，例如平铺表列表）。
@@ -864,10 +1048,25 @@ impl TabSet {
             .cloned()
     }
 
-    /// 固定 `Objects` 页的概览（#135：外壳在这里登记信息面板的快照观察者）。
-    #[must_use]
-    pub fn objects_overview(&self) -> Option<Rc<ObjectsOverview>> {
-        self.objects.borrow().clone()
+    /// 固定 `Objects` 页跟随树选中：显示该库的表 / 视图列表。
+    ///
+    /// `parent` 是 catalog 引用，`kinds` 决定列表内容（表 / 视图），`label` 是页内
+    /// 作用域文案（例如「sqarvo_demo · 表」）。传 `None` 表示清空成空态。
+    pub fn show_objects(&self, parent: Option<ObjectRef>, kinds: &[ObjectKind], label: &str) {
+        let Some(objects) = self.objects.borrow().clone() else {
+            return;
+        };
+        match parent {
+            Some(parent) => {
+                let hub = self
+                    .context
+                    .registry
+                    .as_ref()
+                    .and_then(|registry| registry.hub_for_session(&parent.session_id));
+                objects.show(hub, parent, kinds.to_vec(), label);
+            }
+            None => objects.show_empty(),
+        }
     }
 
     /// QA：`Objects` 页的文案（读真实控件；页面没建时是 `None`）。
@@ -909,31 +1108,29 @@ impl TabSet {
 
     // -- 建标签 ------------------------------------------------------------
 
-    /// 固定 `Objects` 页。
+    /// 固定 `Objects` 页：钉在最左、只显示图标、没有关闭按钮。
     fn add_objects_page(self: &Rc<Self>) {
-        let page_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        page_box.set_margin_top(12);
-        page_box.set_margin_start(12);
-        page_box.set_margin_end(12);
-        let title = gtk::Label::new(Some("Objects"));
-        title.set_xalign(0.0);
-        title.add_css_class("sqarvo-title");
-        let subtitle = gtk::Label::new(Some(&format!(
-            "{} · 工作区固定页",
-            self.context.connection_name
-        )));
-        subtitle.set_xalign(0.0);
-        subtitle.add_css_class("dim-label");
-        // 概览内容只来自信息面板的快照（#135）；这里不摆任何占位属性。
-        let overview = ObjectsOverview::new();
-        page_box.append(&title);
-        page_box.append(&subtitle);
-        page_box.append(overview.widget());
-        self.objects.replace(Some(Rc::clone(&overview)));
+        let objects = ObjectsPage::new();
+        {
+            // 双击列表行 = 打开表标签（与树的双击同一条路径）。
+            let weak = Rc::downgrade(self);
+            objects.set_open(Rc::new(move |entry: TableEntry| {
+                if let Some(set) = weak.upgrade()
+                    && let Err(message) = set.open_table(entry)
+                {
+                    eprintln!("[tabs] 从 Objects 页打开表被拒绝：{message}");
+                }
+            }));
+        }
+        self.objects.replace(Some(Rc::clone(&objects)));
 
-        let page = self.view.add_page(&page_box, None);
+        let page = self.view.add_page(objects.widget(), None);
         page.set_title("Objects");
-        page.set_tooltip("固定页：当前选中对象的概览（与信息面板同源）");
+        page.set_tooltip("固定页：列出选中库的表 / 视图（钉住，不可关闭）");
+        // `AdwTabPage:pinned`（libadwaita 1.2+）：固定在最左、紧凑（只显示图标）、
+        // 没有关闭按钮，也无法关闭——比「点击关闭时拒绝」更贴近「固定页」语义。
+        page.set_icon(Some(&gtk::gio::ThemedIcon::new("view-grid-symbolic")));
+        self.view.set_page_pinned(&page, true);
         let handle = Rc::new(TabHandle {
             id: OBJECTS_TAB_ID.to_owned(),
             kind: TabKind::Objects,
@@ -1178,8 +1375,7 @@ impl TabSet {
                 let id = id.clone();
                 Rc::new(move || worker.reload_table(&id))
             },
-            disconnect: Rc::clone(&self.context.disconnect_backend),
-            reconnect: Rc::clone(&self.context.reconnect_backend),
+            backend_failure: Rc::clone(&self.context.backend_failure),
             on_column: Rc::clone(&self.context.on_column),
         };
         let page = DataPage::new(callbacks);
@@ -1226,8 +1422,7 @@ impl TabSet {
                 let id = id.clone();
                 Rc::new(move || worker.close_query(&id))
             },
-            disconnect: Rc::clone(&self.context.disconnect_backend),
-            reconnect: Rc::clone(&self.context.reconnect_backend),
+            backend_failure: Rc::clone(&self.context.backend_failure),
         };
         SqlPage::new("会话建立中…", callbacks)
     }
@@ -1904,7 +2099,7 @@ impl TabSet {
         match step {
             QaStep::OpenTable(name) => {
                 let entry = (self.context.resolve_table)(name)
-                    .ok_or_else(|| format!("平铺列表里还没有表 {name}"))?;
+                    .ok_or_else(|| format!("对象树里还没有表 {name}（先展开它所在的库）"))?;
                 let tab_id = self.open_table(entry)?;
                 Ok(format!("打开表标签 {name}（{tab_id}）"))
             }
@@ -3002,12 +3197,14 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                 }
             }
             "inspector" => {
+                // v0.2.4：信息面板常驻，只剩「切到哪一页」这一个动作；hide/hidden/
+                // toggle 在解析阶段就报错，不去骗脚本「脚本跑完了」。
                 let mode = parts
                     .get(1)
-                    .ok_or_else(|| format!("第 {} 行缺少 ddl|info|show|hide", number + 1))?;
-                if !matches!(*mode, "ddl" | "info" | "show" | "hide") {
+                    .ok_or_else(|| format!("第 {} 行缺少 ddl|info", number + 1))?;
+                if !matches!(*mode, "ddl" | "info") {
                     return Err(format!(
-                        "第 {} 行的 inspector 只接受 ddl|info|show|hide，实际：{mode}",
+                        "第 {} 行的 inspector 只接受 ddl|info（面板常驻，不能折叠），实际：{mode}",
                         number + 1
                     ));
                 }
@@ -3273,6 +3470,14 @@ mod tests {
     fn close_prompt_is_skipped_when_there_is_nothing_to_lose() {
         let prompt = close_prompt("items @ shop", Some(&snapshot(0, "自动提交")));
         assert!(!prompt.is_needed());
+        // v0.2.4：没有事务时 `txn_label` 是空串（状态栏不再显示「自动提交」）。
+        // 空串必须与「自动提交」等价，否则每个普通标签关闭都要多弹一次确认。
+        let prompt = close_prompt("items @ shop", Some(&snapshot(0, "")));
+        assert!(!prompt.is_needed(), "空串必须表示没有事务：{prompt:?}");
+        // 只有脏行时仍然要弹，且不带事务那一行。
+        let prompt = close_prompt("items @ shop", Some(&snapshot(2, "")));
+        assert!(prompt.is_needed());
+        assert!(prompt.transaction.is_none(), "{prompt:?}");
     }
 
     #[test]

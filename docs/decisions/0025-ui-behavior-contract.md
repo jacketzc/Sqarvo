@@ -30,9 +30,9 @@ Windows 与 macOS 前端即将接后端（M6 剩余条件），两端目前只�
 ### 缺口
 
 1. **动作级逻辑只在 GTK 代码里**：每个操作的前置条件、禁用理由、调用的 RPC 序列、
-   成功/失败后的状态跃迁、用户可见文案，没有任何一份成表的记录。窗口动作只注册了 19 条
-   （`frontend/linux/src/ui.rs::install_window_actions` 的 17 条 + `app.close-window` +
-   `app.quit`）；而右键菜单条目、单元格双击编辑、列头排序 / 拖宽 / 双击自适应、分页器、
+   成功/失败后的状态跃迁、用户可见文案，没有任何一份成表的记录。窗口动作只注册了 18 条
+   （`frontend/linux/src/ui.rs::install_window_actions` 的 16 条 + `app.close-window` +
+   `app.quit`；v0.2.4 删掉 `win.toggle-inspector` 后从 19 条减为 18 条）；而右键菜单条目、单元格双击编辑、列头排序 / 拖宽 / 双击自适应、分页器、
    脏行三选确认、导出取消、只读态禁用等路径**没有**进 GAction。恰恰是这些没进 GAction 的
    路径，新平台最容易漏。总量粗估 45–60 条，需在动作目录阶段实测清点。
 2. **文案散落**：用户可见中文以内联字面量与 `format!` 分布在源码各处，
@@ -172,6 +172,25 @@ rows.commit | 工具条第 2 行「提交」 | dirty > 0 且非只读；超过�
 
 全量动作目录 + 状态机粗估 2–3 天；此后随 Issue 增量维护，不再集中返工。
 
+## 附：v0.2.4 动作目录增量（讨论稿先记下来，评审后并入正文）
+
+本轮的 UI 逻辑调整直接改变了动作面，按下表登记（ID 命名口径沿用上文）：
+
+| 变化 | 动作 ID | 入口与语义 |
+|---|---|---|
+| 新增 | `tree.select` | 树行单击：只选中，信息面板与 `Objects` 页跟着换内容 |
+| 新增 | `tree.activate` | 树行双击 / 回车：表视图=打开；连接=连接；库/分组=展开收起 |
+| 新增 | `tree.group.expand` | 表节点下的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers`，每组一次 `ListNodes(filter.kinds)` |
+| 新增 | `objects.open_table` | `Objects` 页行双击 → 数据标签（与 `tab.open_table` 同一条 RPC 序列） |
+| 变更 | `tab.open_table` | 入口从「单击」改为「双击 / 右键打开」；右键菜单条目只剩「打开」 |
+| 删除 | `tree.view_ddl` | 右键「查看 DDL」删除；DDL 只在信息面板 `[DDL]` 页看 |
+| 删除 | `backend.disconnect` | 「断开后端」三处入口删除（用户可见面里没有前后端之分） |
+| 新增 | `backend.restart_app` | 后端失效对话框：「重启 Sqarvo」= 释放工作区与会话后重新握手 |
+| 新增 | `backend.open_logs` | 同一对话框：「查看日志」= `$XDG_STATE_HOME/sqarvo/desktop.log` 的末尾 200 KB |
+| 变更 | `export.csv` | 表数据新增 `scope = page | table`：`page` 写当前页已加载行；`table` 由 worker 后台线程按当前排序/筛选 offset 逐页读取、流式写同一文件，有进度、可取消（取消/失败不留半截文件） |
+| 变更 | `rows.cancel` | 语义不变（ADR 0018），入口从文字改为 `process-stop` 图标，tooltip 写明「整批回滚」 |
+| 变更 | `txn.begin` | 「自动提交」徽标删除；开始事务与提交/回滚互斥显示 |
+
 ## 未决问题（评审要回答的）
 
 1. **放哪里**：动作目录属于「技术事实」（`docs/ui-specification/`），还是与 fixture 同址
@@ -195,7 +214,7 @@ rows.commit | 工具条第 2 行「提交」 | dirty > 0 且非只读；超过�
 
 ## 参考（现状证据）
 
-- `frontend/linux/src/ui.rs::install_window_actions` —— 19 条 GAction 与 `set_accels_for_action`
+- `frontend/linux/src/ui.rs::install_window_actions` —— 18 条 GAction 与 `set_accels_for_action`
 - `frontend/linux/src/qa.rs` 模块文档 —— `--qa-tabs-file` 脚本 DSL（`open-table` / `sort` /
   `filter` / `page` / `export` / `expect-trace` / `expect-rows` …）及 #139 / #144 增补
 - `frontend/linux/src/layout_audit.rs` —— GTK 专用量化自检（失败以 5 退出）

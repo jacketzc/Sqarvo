@@ -53,7 +53,7 @@
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
 //!   不符时退出码 3；
 //! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开）、
-//!   `--qa-tree-open <name>`（打开表）、`--qa-tree-ddl <name>`（看 DDL）、
+//!   `--qa-tree-open <name>`（打开表）、
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
 //!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
@@ -74,6 +74,15 @@
 //!   `--qa-export-hold`（停在确认框，截图用）、`--qa-export-cancel-after-rows <n>`
 //!   （写满 n 行后走取消路径，验证目标不留半截文件、临时文件被清理）、
 //!   `--qa-export-raw-values`（关掉公式注入防护，验证 #137 的开关）。
+//! - #120 增补（整表导出）：`--qa-export-scope <page|table>`（默认 `page`，语义与
+//!   原来一致；`table` 走「后台 offset 逐页读取 + 流式写同一个 CSV」）。整表路径的
+//!   进度与取消断言**复用既有参数**，不新增开关：
+//!   `--qa-export-cancel-after-rows <n>` 在写满 n 行后停（与用户点「取消」同一条
+//!   清理路径：临时文件删除、目标不出现），日志里每页一行
+//!   `[export] 整表进度：offset=… 累计 N 行`，终态是
+//!   `[export] 整表导出已取消：已写入 N 行，临时文件已删除` 或
+//!   `[export] 整表导出完成：N 行，M 字节`；文件本身用 `--qa-tabs-file` 的
+//!   `expect-file <路径> <最少字节>` 断言。
 //! - #121 增补（全部是 `--qa-tabs-file` 的**脚本步骤**，不新增命令行开关）：
 //!   `expand <名字>`（展开树节点）、`select-node <名字>`（选中并切信息面板）、
 //!   `inspector <ddl|info|show|hide>`、`sort <标签> <列>[:shift]`、
@@ -641,12 +650,9 @@ impl ObjectsExpectation {
         let (field, expected) = value
             .split_once('=')
             .ok_or_else(|| format!("--qa-expect-objects 需要 字段=值，实际：{value}"))?;
-        if !matches!(
-            field,
-            "name" | "kind" | "path" | "facts" | "fact_contains" | "empty" | "ddl_action"
-        ) {
+        if !matches!(field, "scope" | "count" | "first" | "status" | "empty") {
             return Err(format!(
-                "--qa-expect-objects 只接受 name|kind|path|facts|fact_contains|empty|ddl_action，实际：{field}"
+                "--qa-expect-objects 只接受 scope|count|first|status|empty，实际：{field}"
             ));
         }
         Ok(Self {
@@ -767,8 +773,6 @@ struct Args {
     tree_expand: Vec<String>,
     /// `--qa-tree-open <name>`：在树里打开的表名。
     tree_open: Option<String>,
-    /// `--qa-tree-ddl <name>`：查看 DDL 的对象名。
-    tree_ddl: Option<String>,
     /// `--qa-tree-search <query>`：搜索关键词。
     tree_search: Option<String>,
     /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
@@ -781,7 +785,7 @@ struct Args {
     tree_select: Option<String>,
     /// `--qa-tree-select-connection <name>`：选中某条连接节点（#119）。
     tree_select_connection: Option<String>,
-    /// `--qa-inspector <ddl|info|hidden|shown|toggle>`：信息面板的初始状态（#119）。
+    /// `--qa-inspector <ddl|info>`：信息面板切到哪一页（#119；v0.2.4 起面板常驻、不能折叠）。
     inspector: Option<String>,
     /// `--qa-inspector-width <px>`：把面板拖到指定宽度（按连接记忆的证据，#119）。
     inspector_width: Option<i32>,
@@ -847,6 +851,31 @@ struct Args {
     export_cancel_after_rows: Option<u64>,
     /// `--qa-export-raw-values`：导出时关闭公式注入防护（写原始值，验证 #137 的开关）。
     export_raw_values: bool,
+    /// `--qa-export-scope <page|table>`：导出范围（默认当前页，与 #120 语义一致）。
+    export_scope: ExportScopeArg,
+}
+
+/// `--qa-export-scope` 的取值：整表导出（#120 增补）与默认的当前页。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportScopeArg {
+    /// 当前页 / 已加载的行（默认；行为与 #120 完全一致）。
+    #[default]
+    Page,
+    /// 整张表：worker 侧按当前排序与筛选 offset 逐页读取。
+    Table,
+}
+
+impl ExportScopeArg {
+    /// 解析 `page` / `table`（其它值报错，不静默退回默认）。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "page" => Ok(Self::Page),
+            "table" => Ok(Self::Table),
+            other => Err(format!(
+                "--qa-export-scope 只能是 page 或 table（收到 {other:?}）"
+            )),
+        }
+    }
 }
 
 /// `--qa-browse` 的一步（顺序执行；全部走用户会走的同一条界面路径）。
@@ -981,7 +1010,6 @@ pub fn enabled() -> bool {
             || args.column_info.is_some()
             || !args.tree_expand.is_empty()
             || args.tree_open.is_some()
-            || args.tree_ddl.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1073,6 +1101,13 @@ pub fn export_cancel_after_rows() -> Option<u64> {
 #[must_use]
 pub fn export_raw_values() -> bool {
     ARGS.get().is_some_and(|args| args.export_raw_values)
+}
+
+/// `--qa-export-scope`：导出范围（默认当前页；`table` 走整表分页导出）。
+#[must_use]
+pub fn export_scope() -> ExportScopeArg {
+    ARGS.get()
+        .map_or(ExportScopeArg::Page, |args| args.export_scope)
 }
 
 /// 是否登记了标签脚本（上限对话框在无人值守时会自动关闭）。
@@ -1221,12 +1256,6 @@ pub fn tree_open() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_open.clone())
 }
 
-/// 要查看 DDL 的对象名（`--qa-tree-ddl`）。
-#[must_use]
-pub fn tree_ddl() -> Option<String> {
-    ARGS.get().and_then(|args| args.tree_ddl.clone())
-}
-
 /// 搜索关键词（`--qa-tree-search`）。
 #[must_use]
 pub fn tree_search() -> Option<String> {
@@ -1264,7 +1293,7 @@ pub fn tree_select_connection() -> Option<String> {
         .and_then(|args| args.tree_select_connection.clone())
 }
 
-/// 信息面板的初始状态（`--qa-inspector`，#119）：`ddl|info|hidden|shown|toggle`。
+/// 信息面板的页选择（`--qa-inspector`，#119）：只有 `ddl|info`；面板常驻，不能折叠。
 #[must_use]
 pub fn inspector() -> Option<String> {
     ARGS.get().and_then(|args| args.inspector.clone())
@@ -1310,7 +1339,6 @@ pub fn tree_requested() -> bool {
     ARGS.get().is_some_and(|args| {
         !args.tree_expand.is_empty()
             || args.tree_open.is_some()
-            || args.tree_ddl.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1997,6 +2025,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.export_raw_values = true;
                 index += 1;
             }
+            "--qa-export-scope" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-export-scope 需要 page 或 table".to_owned())?;
+                parsed.export_scope = ExportScopeArg::parse(value)?;
+                index += 2;
+            }
             "--qa-export-cancel-after-rows" => {
                 let value = args
                     .get(index + 1)
@@ -2025,16 +2060,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-tree-open 的表名不能为空".to_owned());
                 }
                 parsed.tree_open = Some(value.clone());
-                index += 2;
-            }
-            "--qa-tree-ddl" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--qa-tree-ddl 需要一个对象名".to_owned())?;
-                if value.trim().is_empty() {
-                    return Err("--qa-tree-ddl 的对象名不能为空".to_owned());
-                }
-                parsed.tree_ddl = Some(value.clone());
                 index += 2;
             }
             "--qa-tree-search" => {
@@ -2088,13 +2113,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-inspector" => {
                 let value = args
                     .get(index + 1)
-                    .ok_or_else(|| "--qa-inspector 需要 ddl|info|hidden|shown".to_owned())?;
-                if !matches!(
-                    value.as_str(),
-                    "ddl" | "info" | "hidden" | "shown" | "toggle"
-                ) {
+                    .ok_or_else(|| "--qa-inspector 需要 ddl|info".to_owned())?;
+                // v0.2.4：信息面板常驻，`hidden` / `shown` / `toggle` 不再有意义。
+                // 解析阶段就拒掉，避免脚本以为「折叠 / 展开」被执行过。
+                if !matches!(value.as_str(), "ddl" | "info") {
                     return Err(format!(
-                        "--qa-inspector 只接受 ddl|info|hidden|shown|toggle，实际：{value}"
+                        "--qa-inspector 只接受 ddl|info（信息面板常驻，不能折叠），实际：{value}"
                     ));
                 }
                 parsed.inspector = Some(value.clone());
@@ -2158,6 +2182,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
                 parsed.password_env = Some(value.clone());
                 index += 2;
+            }
+            // 未知的 GLib 选项（`--window-size` 等由 GApplication 自己消费）照旧跳过；
+            // 但未知的 `--qa-*` 必须报错：v0.2.4 删掉的参数（如 `--qa-tree-ddl`）不能
+            // 被安静地忽略成「脚本跑完了、什么都没做」。
+            other if other.starts_with("--qa-") => {
+                return Err(format!(
+                    "未知的 QA 参数：{other}（v0.2.4 移除了旧的对象树 DDL 参数）"
+                ));
             }
             _ => index += 1,
         }
@@ -2783,31 +2815,31 @@ mod tests {
             "--screenshot",
             "/tmp/a.png",
             "--qa-expect-objects",
-            "name=accept_items",
+            "scope=sqarvo_demo · 表",
             "--qa-expect-objects",
-            "kind=表",
+            "count=3",
             "--qa-expect-objects",
-            "facts=3",
+            "first=accept_items",
             "--qa-expect-objects",
-            "ddl_action=on",
+            "empty=off",
         ]))
         .unwrap();
         assert_eq!(parsed.expect_objects.len(), 4);
         assert_eq!(
             parsed.expect_objects[0],
             ObjectsExpectation {
-                field: "name".to_owned(),
-                expected: "accept_items".to_owned(),
+                field: "scope".to_owned(),
+                expected: "sqarvo_demo · 表".to_owned(),
             }
         );
         // 没有截图就没有「断言这一刻」；未知字段与缺 `=` 都要报错。
         assert!(
-            parse(&args(&["app", "--qa-expect-objects", "name=x"]))
+            parse(&args(&["app", "--qa-expect-objects", "scope=x"]))
                 .unwrap_err()
                 .contains("--screenshot")
         );
         assert!(parse(&args(&["app", "--qa-expect-objects"])).is_err());
-        assert!(parse(&args(&["app", "--qa-expect-objects", "name"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-objects", "scope"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-objects", "bogus=x"])).is_err());
     }
 
@@ -2823,8 +2855,6 @@ mod tests {
             "orders",
             "--qa-tree-open",
             "orders",
-            "--qa-tree-ddl",
-            "orders",
             "--qa-tree-search",
             "ord",
             "--qa-tree-click-result",
@@ -2838,7 +2868,6 @@ mod tests {
         // 展开顺序就是参数顺序：先库、后表，跳转时的逐层展开依赖它。
         assert_eq!(parsed.tree_expand, vec!["sqarvo_test_86", "orders"]);
         assert_eq!(parsed.tree_open.as_deref(), Some("orders"));
-        assert_eq!(parsed.tree_ddl.as_deref(), Some("orders"));
         assert_eq!(parsed.tree_search.as_deref(), Some("ord"));
         assert!(parsed.tree_click_result);
         assert!(parsed.tree_load_more);
@@ -2889,17 +2918,46 @@ mod tests {
             "app",
             "--screenshot=/tmp/a.png",
             "--screenshot-delay-ms=2500",
-            "--qa-tree-ddl=orders",
             "--qa-expect-ddl=contains=CREATE TABLE",
         ]))
         .unwrap();
         let capture = parsed.capture.expect("应解析出截图请求");
         assert_eq!(capture.path, PathBuf::from("/tmp/a.png"));
         assert_eq!(capture.delay, Duration::from_millis(2500));
-        assert_eq!(parsed.tree_ddl.as_deref(), Some("orders"));
         // 值里可以有 `=`：只按第一个切分。
         assert_eq!(parsed.expect_ddl[0].expected, "CREATE TABLE");
         assert_eq!(parsed.expect_ddl[0].field, DdlField::Contains);
+    }
+
+    #[test]
+    fn export_scope_argument_is_parsed_and_validated() {
+        // 默认：当前页（语义与 #120 完全一致）。
+        assert_eq!(ExportScopeArg::default(), ExportScopeArg::Page);
+        let parsed = parse(&args(&["app"])).unwrap();
+        assert_eq!(parsed.export_scope, ExportScopeArg::Page);
+        // 显式整表。
+        let parsed = parse(&args(&["app", "--qa-export-scope", "table"])).unwrap();
+        assert_eq!(parsed.export_scope, ExportScopeArg::Table);
+        // `--opt=value` 形式同样接受。
+        let parsed = parse(&args(&["app", "--qa-export-scope=page"])).unwrap();
+        assert_eq!(parsed.export_scope, ExportScopeArg::Page);
+        // 非法值不静默退回默认：QA 参数写错就会让人以为跑的是另一条路径。
+        assert!(parse(&args(&["app", "--qa-export-scope"])).is_err());
+        assert!(parse(&args(&["app", "--qa-export-scope", "all"])).is_err());
+        // 范围与取消行数可以同时给：整表路径的取消断言用的就是这两个。
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-export",
+            "/tmp/whole.csv",
+            "--qa-export-scope",
+            "table",
+            "--qa-export-cancel-after-rows",
+            "1200",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.export_scope, ExportScopeArg::Table);
+        assert_eq!(parsed.export_cancel_after_rows, Some(1200));
+        assert_eq!(parsed.export_path, Some(PathBuf::from("/tmp/whole.csv")));
     }
 
     #[test]
@@ -2908,7 +2966,9 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-tree-expand", " "])).is_err());
         assert!(parse(&args(&["app", "--qa-tree-open"])).is_err());
         assert!(parse(&args(&["app", "--qa-tree-open", ""])).is_err());
-        assert!(parse(&args(&["app", "--qa-tree-ddl"])).is_err());
+        // `--qa-tree-ddl` 在 v0.2.4 随「查看 DDL」入口一起移除：旧脚本必须报错，
+        // 不能安静地跑成「什么都没做」。
+        assert!(parse(&args(&["app", "--qa-tree-ddl", "orders"])).is_err());
         assert!(parse(&args(&["app", "--qa-tree-search", "  "])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-tree", "selected"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-tree", "bogus=x"])).is_err());

@@ -30,15 +30,20 @@ MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径
 就不会继续拉取）。数值见 [`docs/releases/v0.2.md`](../../docs/releases/v0.2.md) 与下方
 「性能实测」。
 
-**对象树与 DDL 面板已接入**（#86）：连接后左侧是可展开的对象树（库 → 表 / 视图 →
-列 / 索引，`GtkTreeListModel` 逐层懒加载、每页 500、「加载更多」翻页），顶部搜索框
-按名称包含搜索并在树里逐层展开定位，底部 DDL 面板显式标注**原文 / 由客户端拼装**
-（`GetDdl.exact`）并提供「复制」。侧栏仍可切到 v0.2.1 的平铺表列表。
+**对象树已接入**（#86）：连接后左侧是可展开的对象树（库 → 表 / 视图 → 表下的
+`Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组，视图仍直接列出列；
+`GtkTreeListModel` 逐层懒加载、每页 500、「加载更多」翻页），顶部搜索框按名称包含搜索
+并在树里逐层展开定位。v0.2.4 起单击只选中（信息面板与 `Objects` 页跟着换内容），
+双击 / 回车才激活（表 / 视图 = 打开数据标签，连接 = 按保存的凭据连接，库 / 分组 = 展开收起）；
+表展开后先出四组，展开某组才发那一次 `ListNodes(filter.kinds)`，`Foreign Keys` 没有驱动
+实现、展开只显示「驱动未提供外键列表（capability.unsupported）」。DDL 在信息面板的
+`[DDL]` 页查看，显式标注**原文 / 由客户端拼装**（`GetDdl.exact`）并提供「复制」；
+侧栏平铺表列表、页脚「DDL」按钮与右键「查看 DDL」在 v0.2.4 一并删除。
 
-**表数据页已接入**（#48）：点击树里的表进入数据页——`TableDataService.BrowseTable` 按主键升序 + 不透明 cursor 翻页（每页
-500 行、滚动到底继续取）、`GtkColumnView` 虚拟化网格、单元格编辑（文本 → 强类型值，
+**表数据页已接入**（#48）：双击树里的表（或回车）进入数据标签——`TableDataService.BrowseTable` 按主键升序 + offset 分页（每页
+500 行，翻页由分页器驱动；滚动到底不再自动取下一页，见 ADR 0022）、`GtkColumnView` 虚拟化网格、单元格编辑（文本 → 强类型值，
 NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交、逐行错误展示、
-> 100 行/含删除的风险确认、事务徽标（自动提交 / 事务中 / 失败态 / 已断开）与
+> 100 行/含删除的风险确认、事务状态（状态栏：事务中 / 事务失败 / 已断开）与
 开始/提交/回滚按钮。无主键表只读并在横幅里说明「无稳定排序 / 无法稳定定位行」；
 断连时丢弃未提交变更并说明后端已强制回滚事务。**提交中可取消**（#89）：「提交更改」在
 批次执行期间变成「取消提交」，前端自己生成批次 `query_id` 并调 `CancelRowChanges`，
@@ -47,12 +52,11 @@ NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交�
 
 **六区域外壳已就位**（#113）：`AdwHeaderBar`（标题 / 副标题 / 主菜单）→ 76 高主工具条
 （连接 / 新建查询 │ 当前种类高亮）→ `GtkPaned`（侧栏 237，可拖 180–420 | 工作区 |
-信息面板空槽 280，可拖 240–520、默认折叠）→ 56 高两行状态栏。布局尺寸在一个纯函数
-模块里（`src/layout.rs`，有 1200×800 与 960×640 两档单测），紧凑密度（行高 24/32、
-字号 12/13/11）由 `src/theme.rs` 的全局 CSS 提供。主界面不再常驻「端点文件：…」，
-该信息移到「帮助 → 关于 Squarvo」（#139）。标签页（#116）、信息面板内容（#119）、多连接（#114）
-与页码分页（#118）还没实现：相关菜单项与工具条按钮**禁用并在文案 / tooltip 里写明原因**，
-不摆点了没反应的动作。
+信息面板 280（v0.2.4 起常驻：可拖 240–520，没有折叠按钮与 `Ctrl+I`）→ 56 高两行状态栏。
+布局尺寸在一个纯函数模块里（`src/layout.rs`，有 1200×800 与 960×640 两档单测），紧凑密度
+（行高 24/32、字号 12/13/11）由 `src/theme.rs` 的全局 CSS 提供。主界面不再常驻
+「端点文件：…」，该信息移到「帮助 → 关于 Squarvo」（#139）。标签工作区（#116）、
+信息面板内容（#119）、多连接（#114）与页码分页（#118）已在 v0.2.3 落地，见下文各节。
 
 **语法高亮尚未实现**：编辑器是纯文本，编辑器上方如实标注「当前为纯文本编辑，语法高亮
 将在后续版本提供」，不用配色暗示已有高亮。
@@ -134,7 +138,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 |---|---|
 | `src/main.rs` | 应用入口与动作（Ctrl+Q 退出、Ctrl+W 关闭窗口） |
 | `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、启动态落地与「关于 Squarvo」诊断、事件泵与关闭流程 |
-| `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板空槽、两行状态栏；模块文档给出六个区域的槽位表 |
+| `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板、两行状态栏；模块文档给出六个区域的槽位表 |
 | `src/startup.rs` | 启动落地工作区（#139）：未连接时的侧栏连接列表、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
 | `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
 | `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24） |
@@ -152,7 +156,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/sql_page.rs` | SQL 工作区：编辑器、执行/取消按钮与快捷键、页面状态机、QA 滚动与取消钩子 |
 | `src/backend/table.rs` | 表数据域：浏览结果/列元数据/只读原因/逐行结果/错误分类与文案（纯逻辑，不依赖 GTK） |
 | `src/table_data.rs` | 表编辑纯逻辑：文本 → 强类型值、NULL/空串、全文本草稿与批次构造、风险判定、只读文案、事务徽标状态机（可单测） |
-| `src/data_page.rs` | 数据页：平铺表列表侧栏（v0.2.1 视图，对象树不可用时的回退）、虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务徽标、逐行错误列表 |
+| `src/data_page.rs` | 数据页：虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务控制行（开始 / 提交 / 回滚互斥显示）、逐行错误列表 |
 | `src/backend/metadata.rs` | 元数据域（#86）：节点/种类映射、请求构造、DDL 来源与错误分类（纯逻辑，可单测）+ 独立元数据线程与主线程请求路由（`MetadataHub`） |
 | `src/tree.rs` | 对象树：`GtkTreeListModel` 懒加载、自定义展开箭头、分页「加载更多」、搜索防抖（250 ms）与跳转、树的健康状态 |
 | `src/ddl.rs` | DDL 面板：`GetDdl` 结果的原文/拼装标注、来源说明、等宽可滚动文本、复制按钮与四态文案 |
@@ -250,7 +254,7 @@ Channel）和同一套命令/事件通道。
 | 执行 | 「执行」按钮或 `Ctrl+Enter`（捕获阶段处理，不会插入换行） |
 | 取消 | 「取消」按钮或 `Escape`（幂等：重复点击不发第二次 RPC、不弹错误） |
 | 浏览结果 | 滚轮/滚动条；接近末尾时自动预取下一批 |
-| 断开后端 | 工作区右上「断开后端」（与状态页同一个断开路径） |
+| 后端失效 | 弹出「重启 Sqarvo」对话框（附「查看日志」，日志在 `$XDG_STATE_HOME/sqarvo/desktop.log`）；v0.2.4 删除了三处「断开后端」按钮 |
 
 ### 执行链路
 
@@ -456,9 +460,10 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
 ## 对象树、搜索与 DDL 面板（#86）
 
 连接数据库后，左侧是对象树：第一层是**目录层**（`ListNodes(parent.kind = CATALOG)`，
-列出当前账号可见的库），展开库得到表 / 视图 / 序列，再展开表得到列 / 索引 / 触发器。
+列出当前账号可见的库），展开库得到 `Tables` / `Views` 分组，再展开表先得到
+`Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组（视图直接列列）。
 驱动没有目录层（返回 `capability.unsupported`）时自动回退到「当前库对象」根层，
-两者都不可用时切到平铺列表并说明原因。
+两者都不可用时只在侧栏状态行说明原因（v0.2.4 删掉了平铺列表回退）。
 
 - **逐层懒加载**：只有展开才发 `ListNodes`。`GtkTreeExpander` 在 bind 时会向
   `GtkTreeListRow` 要子模型（用来决定有没有箭头），等于为每个可见行发一次请求，
@@ -481,8 +486,8 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
 
 ## 数据页（#48）
 
-连接数据库后，主区域左侧是对象树（可切换为 v0.2.1 的「表与视图」平铺列表，
-`ListNodes` 根节点，失败时用分类文案展示，不是空列表）；点击树里的表进入右侧数据页。
+连接数据库后，主区域左侧是对象树（`ListNodes` 根节点，失败时用分类文案展示，不是空列表；
+v0.2.4 删掉了「表与视图」平铺列表切换）；双击树里的表 / 视图（或回车）进入右侧数据标签。
 右上「SQL 工作区」切回编辑器，两个页面共用同一个数据库会话。
 
 ### 浏览与翻页
@@ -524,16 +529,21 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
 - 单批上限 500 行：服务端返回 `clamped` / `deferred_changes` 时，界面明确提示
   「还有 N 条未提交，请再次提交」，不静默丢弃。
 
-### 事务徽标与按钮
+### 事务控制行
 
-| 徽标 | 含义 | 允许的操作 |
+v0.2.4 起表格工具条不再有「自动提交」徽标：没有事务时只显示「开始事务」，有事务
+（含失败态）时只显示「提交事务 / 回滚事务」。事务状态在状态栏的会话栏展示，没有事务
+时不显示那一栏。
+
+| 状态 | 含义 | 允许的操作 |
 |---|---|---|
-| 自动提交 | 未打开事务，行变更立即生效 | 开始事务 |
+| 无事务 | 行变更按批次立即生效 | 开始事务 |
 | 事务中 / 事务中（只读） | 显式事务；只读事务禁止编辑 | 提交事务 / 回滚事务（只读态可编辑性另受限制） |
 | 事务失败（只能回滚） | 服务端 `transaction.failed` | 仅回滚 |
-| 已断开 | 后端/会话失效，后端已强制回滚 | 无（横幅提供重新连接） |
+| 已断开 | 后端/会话失效，后端已强制回滚 | 无（后端失效给「重启 Sqarvo」对话框） |
 
-- 「开始事务」带「只读」开关；只读事务下编辑与删除会被拒绝并说明原因；
+- 「只读」开关在「开始事务」的隔离级别卡片里（v0.2.4 起不再常驻工具条）；只读事务下
+  编辑与删除会被拒绝并说明原因；
 - 有未提交更改时「提交事务」不可用（先提交或放弃更改），避免误以为更改已随事务落库；
 - 事务结束（提交/回滚）后自动重新浏览当前表，显示数据库真实状态。
 
@@ -613,7 +623,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-cancel-after-ms <n>` | 提交**真正发出**后 n 毫秒点「取消提交」（真的发 `CancelRowChanges`） |
 | `--qa-expect-submit <phase\|outcome\|button\|status>=<value>` | 截图时刻断言在途批次（阶段/结束方式逐字相等，按钮与状态行按包含比对） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
-| `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务徽标（文案 + CSS 类 + 按钮可用性），不符则退出码 3 |
+| `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务状态（状态机文案 + CSS 类 + 按钮可用性；v0.2.4 起工具条徽标已删除），不符则退出码 3 |
 | `--qa-column-info <column>` | 打开表后**点该列的列头**展开浮层，并高亮该列（点击坐标取列头控件的真实几何中心，走与用户点击同一个列头点击处理） |
 | `--qa-expect-column <column>:<field>=<text>` | 截图时刻断言浮层里该列某字段的**控件文本**（可重复；field 取 `name\|type\|nullable\|default\|charset\|collation`），不符则退出码 3 |
 | `--qa-data-insert` | 打开表后点「新增行」（与工具栏按钮同一条路径），空行进入编辑态 |
@@ -928,7 +938,7 @@ DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 ./target/debug/sqarvo-desktop \
 启动日志里会打印一行布局自检，便于把公式与实际分配对上：
 
 ```text
-[shell] 布局 1200x800：工具条 76，状态栏 56（y=744），内容 963x604，表格 942x548，侧栏 237，信息面板 折叠
+[shell] 布局 1200x800：工具条 76，状态栏 56（y=744），内容 963x604，表格 942x548，侧栏 237，信息面板 280
 ```
 
 ### SQL 执行的无人值守验证（`--qa-sql-file` / `--qa-execute` / `--qa-scroll-to-row` / `--qa-cancel-after-ms`）
@@ -988,8 +998,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 # 展开两层 → 打开表 → 看 DDL，并在截图时刻断言「原文」标记
 ./target/debug/sqarvo-desktop \
   --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
-  --qa-tree-expand sqarvo_test_86 --qa-tree-open orders --qa-tree-ddl orders \
-  --screenshot ~/sqarvo-v022-shots/tree-ddl.png --screenshot-delay-ms 6500 \
+  --qa-tree-expand sqarvo_test_86 --qa-tree-open orders \
+  --screenshot ~/sqarvo-v022-shots/tree-open.png --screenshot-delay-ms 6500 \
   --qa-expect-tree health=Ready --qa-expect-tree selected=orders \
   --qa-expect-ddl provenance=原文 --qa-expect-ddl state=ready --qa-expect-ddl copy=on \
   '--qa-expect-ddl=contains=CREATE TABLE' '--qa-expect-ddl=detail_contains=SHOW CREATE TABLE'
@@ -1012,7 +1022,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 - `--qa-tree-expand <name>`：按名字展开节点（可重复，按参数顺序；每步都会重试到节点
   出现为止）。展开走 `GtkTreeListModel` 的真实展开路径，**只有展开才发 `ListNodes`**；
 - `--qa-tree-open <name>`：选中并打开表（与双击行同一条回调），进入数据页；
-- `--qa-tree-ddl <name>`：选中并触发树的「DDL」路径，打开底部 DDL 面板；
+- `--qa-tree-ddl` 在 v0.2.4 **已移除**（右键「查看 DDL」与侧栏 DDL 按钮一起删掉）：
+  旧脚本传这个参数会直接报错，不会安静地什么都不做。DDL 改在信息面板的 `[DDL]` 页看；
 - `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
   只是跳过键盘）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
   点第一个「加载更多…」占位行；`--qa-tree-disconnect <name>` 断开指定连接的浏览会话
@@ -1143,8 +1154,8 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 | `select-node <名字>` | 选中对象节点，信息面板随之切换 | 节点已加载 |
 | `select-connection <名字>` | 选中连接节点（信息面板切到「连接」态） | 连接节点已加载 |
 | `open-node <库> <表>` | 打开**指定库**里的表（与行激活同一条回调；同名表分属两库时用） | 该库已展开到表 |
-| `inspector <ddl\|info\|show\|hide>` | 信息面板换页 / 显隐 | 选中的是表/视图才能换页 |
-| `open-table <表名>` | 打开表标签（与点侧栏条目同一条路径） | 平铺表列表已加载 |
+| `inspector <ddl\|info>` | 信息面板换页（`show` 仍被接受但无动作；`hide` 在 v0.2.4 报错：面板常驻） | 选中的是表/视图才能换页 |
+| `open-table <表名>` | 打开表标签（终点与树里双击表相同；按名字解析已加载的树节点） | 该表已在树里加载 |
 | `select <n>` / `close <n> <save\|discard\|cancel>` | 切标签 / 关标签（0 是固定 `Objects` 页） | 标签存在 |
 | `sort <标签> <列>[:shift]` | 点列头排序 | 表标签；驱动声明排序能力 |
 | `filter <标签> <列> <算子> <值>` | 应用一条筛选（`eq/ne/lt/le/gt/ge/like/null/notnull`） | 表标签；驱动声明筛选能力 |
@@ -1164,10 +1175,26 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 `expect-*` 步骤在重试 40 次（约 8 秒）后仍不成立就以退出码 3 结束；退出码 4 表示脚本无法
 解析，2 表示截图失败（与既有 `--qa-*` 同一口径）。
 
-**已知限制（#121 待定）**：workspace-model §10 的 `Ctrl+F` 快捷键在产品里**尚未绑定**。
-验收脚本验证的是它的焦点目标——对象树搜索框能被聚焦、且焦点链确实落在它上面
-（`focus-search` / `expect-focus search`），不伪称按下了 `Ctrl+F`；快捷键本身需要在
-`ui.rs` 注册窗口动作（后续 Issue）。
+**`Ctrl+F` 的路径**：`focus-search` 不是测试代码自己抓焦点，它激活产品动作
+`win.focus-search`（`ui.rs` 里绑到 `<primary>f`），再只读断言焦点链落在对象树搜索框上；
+`expect-focus search` 只做那次只读断言。因此这一条证明的是「快捷键那条路径」。
+
+### v0.2.4 Objects 联动 / 导出范围验收
+
+```bash
+cd frontend/linux
+./scripts/v024-objects-export.sh
+# 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v024-shots，仍追加时间戳）
+#       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
+```
+
+自包含脚本：只用 `sqlite3` 在 mktemp 目录建一个临时库（1 张 30 行的表 + 索引 + 触发器 + 视图），
+**不需要 MariaDB、不需要密码**；串行跑 5 个应用实例（各自独立 `SQARVO_QA_APP_ID` 与
+`XDG_CONFIG_HOME`），覆盖 `Objects` 固定页随树选中切换（选中库 → 该库的表、选中视图 → 该库的
+视图，含作用域 / 行数 / 首行 / 空态 / 状态行断言与两张截图）、`EX` 整表导出（行数 = 数据行 + 1、
+权限 0600、目录无 `.sqarvo-tmp` 残留、日志命中完成与进度）、取消路径（目标不创建、无残留、
+日志写明「已写入 N 行后取消」）与默认的当前页导出对照。断言读控件文本、日志与文件事实，
+失败以非零退出，末尾打印「N 项断言全过」；证据全部落在仓库外。
 
 ### 连接对话框的无人值守验证（`--qa-profile` / `--qa-password-env`）
 

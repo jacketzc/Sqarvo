@@ -436,7 +436,9 @@ pub fn commit_button_label(snapshot: Option<&SubmitSnapshot>, pending: usize) ->
         Some(SubmitPhase::Submitting) => "取消提交".to_owned(),
         Some(SubmitPhase::Cancelling) => "正在取消…".to_owned(),
         Some(SubmitPhase::Idle | SubmitPhase::Done) | None => {
-            format!("提交更改（{pending}）")
+            // 960×640 下（信息面板常驻）表格工具条第 2 行只剩 511px：长标签会把
+            // 「导出」挤出可视区。这里用短标签 + tooltip 保留完整说明。
+            format!("提交（{pending}）")
         }
     }
 }
@@ -536,7 +538,7 @@ mod tests {
         );
     }
 
-    /// 1. 正常完成：登记清理、按钮回到「提交更改（N）」、不再有取消入口。
+    /// 1. 正常完成：登记清理、按钮回到「提交（N）」、不再有取消入口。
     #[test]
     fn normal_completion_clears_registration_and_restores_commit_button() {
         let (mut registry, snapshot) = started(3);
@@ -569,7 +571,7 @@ mod tests {
             }
         );
         // 按钮回到普通提交，成功文案交给 ApplyReport（这里不占用状态行）。
-        assert_eq!(commit_button_label(Some(&done), 5), "提交更改（5）");
+        assert_eq!(commit_button_label(Some(&done), 5), "提交（5）");
         assert_eq!(status_line(&done), None);
     }
 

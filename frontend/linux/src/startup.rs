@@ -70,8 +70,6 @@ pub struct StartupConfig {
     pub connect: Rc<dyn Fn()>,
     /// 侧栏行动作（点击连接 / 右键编辑 / 断开 / 删除）。
     pub actions: StartupActions,
-    /// 页脚「断开后端」：与状态页原来的按钮走同一条清理路径。
-    pub disconnect: Rc<dyn Fn()>,
 }
 
 /// 状态栏「驱动数 · 浏览会话数」文案。
@@ -154,20 +152,12 @@ impl StartupWorkspace {
             let connect = Rc::clone(&config.connect);
             connect_button.connect_clicked(move |_| connect());
         }
-        let disconnect_button = gtk::Button::with_label("断开后端");
-        disconnect_button.add_css_class("flat");
-        disconnect_button.set_tooltip_text(Some("停止本应用启动的后端进程并清理端点文件"));
-        {
-            let disconnect = Rc::clone(&config.disconnect);
-            disconnect_button.connect_clicked(move |_| disconnect());
-        }
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         footer.set_margin_start(6);
         footer.set_margin_end(6);
         footer.set_margin_top(2);
         footer.set_margin_bottom(4);
         footer.append(&connect_button);
-        footer.append(&disconnect_button);
 
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.set_size_request(crate::layout::SIDEBAR_MIN, -1);
