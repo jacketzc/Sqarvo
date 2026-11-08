@@ -18,6 +18,9 @@
 #      B2 取消：`--qa-export-cancel-after-rows 10` → 目标**不存在**、无临时文件、
 #         日志命中「整表导出已取消：已写入」「未创建」「已写入 10 行后取消」。
 #      B3 对照：默认 `page` 范围仍成功（表头 + 首页行数），日志范围是「当前页」。
+#   C. 双击 / 回车激活：表有四组子节点时也必须打开表标签（v0.2.3.2 修正）
+#      C1 `--qa-tree-activate` 走与双击相同的 `GtkListView::activate` 信号 →
+#         日志出现「新建表标签」，且**没有**落到「展开 <表>：建立 4 个二级分组」。
 #
 # 形如 v023-acceptance.sh 的约束（改动本脚本时先看这里）：
 #   * `XDG_CONFIG_HOME` 指向 mktemp 临时目录（每个用例一个子目录），验收产生的
@@ -423,7 +426,23 @@ check_mode "export-page 目标权限" 600 "$OUT/export-page/page.csv"
 check_no_tmp "export-page 目录没有 .sqarvo-tmp 残留" "$OUT/export-page"
 
 # ---------------------------------------------------------------------------
-# 5. 配置隔离与取证目录复核
+# 5. Case C：双击 / 回车激活（v0.2.3.2 修正）
+# ---------------------------------------------------------------------------
+
+# 表在 v0.2.3.2 起有四组子节点（`has_children=true`），激活时若先判 `expandable()`
+# 就只会展开、不会打开（用户反馈「双击表应该打开该表」）。这里走的是与双击 / 回车
+# 完全相同的 `GtkListView::activate` 信号（`--qa-tree-activate`），断言三件事：
+# 真的开了数据标签、日志里说明走的是 activate 信号、并且**没有**落到「展开表」那条路。
+launch tree-activate io.sqarvo.Sqarvo.QA0232Activate \
+    --qa-tree-expand main \
+    --qa-tree-activate "$TABLE" \
+    --qa-exit-after-ms 12000
+check_contains "tree-activate 新建了表标签" '[tabs] 新建表标签' "$CASE_LOG"
+check_contains "tree-activate 走的是 activate 信号" '双击 / 回车同一条 activate 信号' "$CASE_LOG"
+check_absent "tree-activate 没有落到「展开表」" "展开 $TABLE：建立" "$CASE_LOG"
+
+# ---------------------------------------------------------------------------
+# 6. 配置隔离与取证目录复核
 # ---------------------------------------------------------------------------
 
 REAL_AFTER=$(real_config_hash)
@@ -435,7 +454,7 @@ case "$OUT" in
 esac
 
 # ---------------------------------------------------------------------------
-# 6. 汇总
+# 7. 汇总
 # ---------------------------------------------------------------------------
 
 say ""

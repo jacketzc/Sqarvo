@@ -109,6 +109,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-data-scroll-to-row", "row"),
         ("qa-tree-expand", "node-name"),
         ("qa-tree-open", "table-name"),
+        ("qa-tree-activate", "table-name"),
         ("qa-tree-ddl", "object-name"),
         ("qa-tree-search", "query"),
         ("qa-tree-disconnect", "connection-name"),

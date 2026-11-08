@@ -54,6 +54,7 @@
 //!   不符时退出码 3；
 //! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开）、
 //!   `--qa-tree-open <name>`（打开表）、
+//!   `--qa-tree-activate <name>`（走双击 / 回车的 `activate` 信号激活节点，v0.2.3.2 回归）、
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
 //!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
@@ -773,6 +774,9 @@ struct Args {
     tree_expand: Vec<String>,
     /// `--qa-tree-open <name>`：在树里打开的表名。
     tree_open: Option<String>,
+    /// `--qa-tree-activate <name>`：走双击 / 回车那条 `GtkListView::activate` 信号激活
+    /// 节点（v0.2.3.2 回归：表有子节点之后双击仍应打开表，只选中不算）。
+    tree_activate: Option<String>,
     /// `--qa-tree-search <query>`：搜索关键词。
     tree_search: Option<String>,
     /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
@@ -1010,6 +1014,7 @@ pub fn enabled() -> bool {
             || args.column_info.is_some()
             || !args.tree_expand.is_empty()
             || args.tree_open.is_some()
+            || args.tree_activate.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1256,6 +1261,12 @@ pub fn tree_open() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_open.clone())
 }
 
+/// 要激活（双击 / 回车同一条 `activate` 信号）的节点名（`--qa-tree-activate`）。
+#[must_use]
+pub fn tree_activate() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_activate.clone())
+}
+
 /// 搜索关键词（`--qa-tree-search`）。
 #[must_use]
 pub fn tree_search() -> Option<String> {
@@ -1339,6 +1350,7 @@ pub fn tree_requested() -> bool {
     ARGS.get().is_some_and(|args| {
         !args.tree_expand.is_empty()
             || args.tree_open.is_some()
+            || args.tree_activate.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -2060,6 +2072,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-tree-open 的表名不能为空".to_owned());
                 }
                 parsed.tree_open = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-activate" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-activate 需要一个表名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-activate 的表名不能为空".to_owned());
+                }
+                parsed.tree_activate = Some(value.clone());
                 index += 2;
             }
             "--qa-tree-search" => {
@@ -2841,6 +2863,14 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-expect-objects"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-objects", "scope"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-objects", "bogus=x"])).is_err());
+    }
+
+    #[test]
+    fn tree_activate_flag_is_parsed_and_requires_a_name() {
+        let parsed = parse(&args(&["app", "--qa-tree-activate", "orders"])).unwrap();
+        assert_eq!(parsed.tree_activate.as_deref(), Some("orders"));
+        assert!(parse(&args(&["app", "--qa-tree-activate"])).is_err());
+        assert!(parse(&args(&["app", "--qa-tree-activate", " "])).is_err());
     }
 
     #[test]

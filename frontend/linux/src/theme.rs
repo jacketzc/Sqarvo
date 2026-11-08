@@ -67,6 +67,16 @@ pub fn stylesheet() -> String {
             font-size: {ui}px;
         }}
 
+        /* 表格右边界：Adwaita 的列分隔线画在「每个单元格 / 表头按钮的 border-left」上，
+           最后一列因此没有右边的竖线——窄表看起来像缺一条边，宽表被视口裁切时也看不出
+           表格在哪里结束。这里给最后一列补一条右侧竖线，颜色与列分隔线一致；类型条带的
+           最后一格同样补上，让表头 / 类型行 / 数据行在同一条竖线上收口。 */
+        window.{window_class} columnview.sqarvo-grid > listview > row > cell:last-child,
+        window.{window_class} columnview.sqarvo-grid > header > button:last-child,
+        window.{window_class} .sqarvo-type-row > box.sqarvo-type-cell:last-child {{
+            border-right: 1px solid alpha(currentColor, 0.10);
+        }}
+
         /* 区域 04 顶部：标签条 24（workspace-model §2.1 的 tabStrip） */
         .sqarvo-tab-strip {{
             min-height: {tab_strip}px;
@@ -155,6 +165,24 @@ mod tests {
         assert!(
             css.contains(&format!("min-height: {}px", layout::TAB_STRIP_HEIGHT)),
             "标签条高度缺失"
+        );
+    }
+
+    #[test]
+    fn grid_draws_its_right_edge() {
+        let css = stylesheet();
+        // 用户反馈「表格绘制时右侧边框遗漏」：Adwaita 的列分隔线是单元格的 border-left，
+        // 最后一列没有右边线。规则要覆盖数据行、表头与类型条带三处，否则三者右侧不齐。
+        for selector in [
+            "listview > row > cell:last-child",
+            "header > button:last-child",
+            ".sqarvo-type-row > box.sqarvo-type-cell:last-child",
+        ] {
+            assert!(css.contains(selector), "缺少表格右边界规则：{selector}");
+        }
+        assert!(
+            css.contains("border-right: 1px solid alpha(currentColor, 0.10)"),
+            "右边界线宽 / 颜色要与列分隔线一致"
         );
     }
 

@@ -1022,6 +1022,9 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 - `--qa-tree-expand <name>`：按名字展开节点（可重复，按参数顺序；每步都会重试到节点
   出现为止）。展开走 `GtkTreeListModel` 的真实展开路径，**只有展开才发 `ListNodes`**；
 - `--qa-tree-open <name>`：选中并打开表（与双击行同一条回调），进入数据页；
+- `--qa-tree-activate <name>`：**走双击 / 回车那条 `GtkListView::activate` 信号**激活节点
+  （v0.2.3.2）：表 / 视图应打开数据标签，库 / schema 才展开。与 `--qa-tree-open` 的区别是
+  它不直接调打开回调，而是回到「激活」的判定里，用来回归「双击表只展开、不打开」；
 - `--qa-tree-ddl` 在 v0.2.3.2 **已移除**（右键「查看 DDL」与侧栏 DDL 按钮一起删掉）：
   旧脚本传这个参数会直接报错，不会安静地什么都不做。DDL 改在信息面板的 `[DDL]` 页看；
 - `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，

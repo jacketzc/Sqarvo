@@ -608,6 +608,33 @@ impl Row {
     }
 }
 
+/// 双击 / 回车（`GtkListView::activate`）对对象行的语义。
+///
+/// 与「单击只选中」区分开：表 / 视图**一律打开**，展开它们的四组子节点走行首箭头。
+/// v0.2.3.2 之前这里先判 `expandable()`，而表在 v0.2.3.2 起有了 `Fields` / `Indexes` /
+/// `Foreign Keys` / `Triggers` 四组子节点 → `expandable()` 为真，双击表只会展开而
+/// 不会打开（用户反馈「双击表应该打开该表」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObjectActivation {
+    /// 表 / 视图：打开数据标签。
+    Open,
+    /// 其余可展开的容器（库 / schema）：切换展开。
+    ToggleExpand,
+    /// 既不打开也不能展开（列、索引、触发器等）：双击不发任何请求。
+    Ignore,
+}
+
+/// 按种类决定对象行的激活动作；可打开的种类优先于可展开。
+fn object_activation(node: &NodeView) -> ObjectActivation {
+    if is_browsable(node.kind) {
+        ObjectActivation::Open
+    } else if node.expandable() {
+        ObjectActivation::ToggleExpand
+    } else {
+        ObjectActivation::Ignore
+    }
+}
+
 mod node_object {
     use std::cell::{Cell, RefCell};
 
@@ -1746,15 +1773,11 @@ impl TreePanel {
                         (panel.callbacks.connect_saved)(snapshot.key.clone());
                     }
                     Row::Group(_) => row.set_expanded(!row.is_expanded()),
-                    Row::Object(node) => {
-                        if node.expandable() {
-                            row.set_expanded(!row.is_expanded());
-                            return;
-                        }
-                        if is_browsable(node.kind) {
-                            (panel.callbacks.open)(node);
-                        }
-                    }
+                    Row::Object(node) => match object_activation(&node) {
+                        ObjectActivation::Open => (panel.callbacks.open)(node),
+                        ObjectActivation::ToggleExpand => row.set_expanded(!row.is_expanded()),
+                        ObjectActivation::Ignore => {}
+                    },
                 }
             }
         });
@@ -2981,6 +3004,35 @@ impl TreePanel {
         Err(format!("树里找不到节点 {name}（已展开 {opened} 个分组）"))
     }
 
+    /// QA：走**双击 / 回车**那条路径激活节点。
+    ///
+    /// 直接发出 `GtkListView::activate(position)`——GTK 在用户双击行或按回车时发的就是
+    /// 这个信号，所以这里与真实交互共用同一段处理（含 v0.2.3.2 的「表 / 视图一律打开」），
+    /// 不像 `qa_open` 那样直接调打开回调。用于回归「双击表应该打开该表」。
+    pub fn qa_activate(self: &Rc<Self>, name: &str) -> Result<String, String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Some(node) = view.node() else {
+                continue;
+            };
+            if node.display_name != name {
+                continue;
+            }
+            self.select_position(position);
+            self.list_view.emit_by_name::<()>("activate", &[&position]);
+            return Ok(format!(
+                "激活 {}（双击 / 回车同一条 activate 信号）",
+                node.path_label()
+            ));
+        }
+        Err(format!("树里找不到节点 {name}"))
+    }
+
     /// 走用户路径打开**指定库**里的表 / 视图（跨库验收用）。
     ///
     /// 同名表可以同时存在于两个库，`qa_open(name)` 会命中树上第一个同名节点；
@@ -3418,5 +3470,60 @@ mod tests {
     fn debounce_window_is_250ms() {
         // 契约与验收都写的是 250ms 量级：改了要一起改 README 与 QA 时序。
         assert_eq!(SEARCH_DEBOUNCE, Duration::from_millis(250));
+    }
+
+    /// 反向构造：表在 v0.2.3.2 起有四组子节点，`has_children` 为真。
+    fn expandable_view(name: &str, kind: ObjectKind) -> NodeView {
+        let mut node = view(name, kind, "db1", "");
+        node.has_children = true;
+        node
+    }
+
+    #[test]
+    fn double_click_on_a_table_opens_it_even_though_it_has_child_groups() {
+        // 回归：v0.2.3.2 让表有了 Fields/Indexes/Foreign Keys/Triggers 四组，
+        // 若激活先判 expandable 就会只展开不打开（用户反馈）。
+        let table = expandable_view("orders", ObjectKind::Table);
+        assert!(table.expandable(), "前提：表此时可展开");
+        assert_eq!(object_activation(&table), ObjectActivation::Open);
+    }
+
+    #[test]
+    fn double_click_on_a_view_opens_it() {
+        let view_node = expandable_view("recent_orders", ObjectKind::View);
+        assert_eq!(object_activation(&view_node), ObjectActivation::Open);
+    }
+
+    #[test]
+    fn double_click_on_a_catalog_or_schema_toggles_expansion() {
+        for kind in [ObjectKind::Catalog, ObjectKind::Schema] {
+            let container = expandable_view("db1", kind);
+            assert_eq!(
+                object_activation(&container),
+                ObjectActivation::ToggleExpand,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_click_on_a_column_or_index_is_ignored() {
+        for kind in [ObjectKind::Column, ObjectKind::Index] {
+            let leaf = view("c1", kind, "db1", "");
+            assert!(!leaf.expandable(), "前提：{kind:?} 不可展开");
+            assert_eq!(
+                object_activation(&leaf),
+                ObjectActivation::Ignore,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_click_on_a_table_without_children_still_opens() {
+        // 驱动不给 has_children 时也要能打开（不依赖「有子节点」这个前提）。
+        let table = view("orders", ObjectKind::Table, "db1", "");
+        assert!(!table.expandable());
+        assert_eq!(object_activation(&table), ObjectActivation::Open);
     }
 }

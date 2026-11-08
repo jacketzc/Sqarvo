@@ -2190,6 +2190,13 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 900;
     }
 
+    // v0.2.3.2：双击 / 回车那条路径（`GtkListView::activate`），用于回归「双击表打开表」。
+    if let Some(name) = crate::qa::tree_activate() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(delay, Rc::new(move || tree.qa_activate(&name)));
+        delay += 900;
+    }
+
     if let Some(name) = crate::qa::tree_select_connection() {
         let tree = Rc::clone(&workspace.tree);
         let shell = Rc::clone(&workspace.shell);
