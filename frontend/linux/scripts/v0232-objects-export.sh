@@ -21,6 +21,9 @@
 #   C. 双击 / 回车激活：表有四组子节点时也必须打开表标签（v0.2.3.2 修正）
 #      C1 `--qa-tree-activate` 走与双击相同的 `GtkListView::activate` 信号 →
 #         日志出现「新建表标签」，且**没有**落到「展开 <表>：建立 4 个二级分组」。
+#   D. 960×640 打开表时的布局自检
+#      D1 `--qa-layout-audit` 报「20 项中 0 项超限」——行变更工具条第 2 行在 960 宽下
+#         需求 391 ≤ 分配 417（修正前 439 > 417）。
 #
 # 形如 v023-acceptance.sh 的约束（改动本脚本时先看这里）：
 #   * `XDG_CONFIG_HOME` 指向 mktemp 临时目录（每个用例一个子目录），验收产生的
@@ -284,9 +287,13 @@ CASE_OUT=""
 CASE_LOG=""
 LAST_CODE=0
 
+# 窗口尺寸：默认 1200×800；用例需要在 960×640 下取证时在 launch 前设 CASE_WINDOW=960x640。
+CASE_WINDOW=""
+
 launch() {
     local case_name=$1 app_id=$2
     shift 2
+    local size="${CASE_WINDOW:-1200x800}"
     CASE_OUT="$OUT/$case_name"
     CASE_LOG="$CASE_OUT/run.log"
     local run_root="$TMP/run-$case_name"
@@ -300,7 +307,7 @@ launch() {
         "SQARVO_BACKEND_BIN=$BACKEND" \
         "SQARVO_QA_APP_ID=$app_id" \
         timeout 180 "$BIN" \
-        --window-size 1200x800 \
+        --window-size "$size" \
         --qa-profile "$PROFILE" \
         "$@" > "$CASE_LOG" 2>&1
     LAST_CODE=$?
@@ -440,6 +447,23 @@ launch tree-activate io.sqarvo.Sqarvo.QA0232Activate \
 check_contains "tree-activate 新建了表标签" '[tabs] 新建表标签' "$CASE_LOG"
 check_contains "tree-activate 走的是 activate 信号" '双击 / 回车同一条 activate 信号' "$CASE_LOG"
 check_absent "tree-activate 没有落到「展开表」" "展开 $TABLE：建立" "$CASE_LOG"
+
+# ---------------------------------------------------------------------------
+# 5b. Case D：960×640 打开表时的布局自检
+# ---------------------------------------------------------------------------
+
+# 行变更工具条第 2 行在 960 宽下曾经需求 439 > 分配 417（超 22 px）。这里在 960 下真的
+# 打开表再跑 `--qa-layout-audit`：它逐区域比较最小/自然宽度与实际分配，超限时以 5 退出。
+CASE_WINDOW=960x640 launch layout-960 io.sqarvo.Sqarvo.QA0232Layout960 \
+    --qa-tree-expand main \
+    --qa-tree-open "$TABLE" \
+    --screenshot "$OUT/layout-960/01-wide-960.png" \
+    --screenshot-delay-ms 6000 \
+    --qa-layout-audit \
+    --qa-exit-after-ms 8000
+CASE_WINDOW=""
+check_contains "layout-960 20 项 0 超限" '20 项中 0 项超限' "$CASE_LOG"
+check_contains "layout-960 第 2 行工具条在分配宽度内" '第2行(行变更·次要动作)' "$CASE_LOG"
 
 # ---------------------------------------------------------------------------
 # 6. 配置隔离与取证目录复核
