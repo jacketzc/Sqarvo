@@ -941,6 +941,29 @@ DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 ./target/debug/sqarvo-desktop \
 [shell] 布局 1200x800：工具条 76，状态栏 56（y=744），内容 963x604，表格 942x548，侧栏 237，信息面板 280
 ```
 
+### README 首图怎么重现
+
+仓库根 `README.md` 的首图是 `docs/assets/screenshots/linux-main-window.png`，由本前端
+自渲染（不是桌面截图）。重现方式：用隔离的 `XDG_CONFIG_HOME` 连一个演示库，展开库并
+打开一张有主键的表，延迟 9 s 等数据与 DDL 就绪后写盘：
+
+```bash
+W=$(mktemp -d); mkdir -p "$W/cfg" "$W/run/sqarvo"
+cat > "$W/profile.json" <<'JSON'
+{"driver":"mariadb","host":"127.0.0.1","port":53306,"database":"sqarvo_demo","username":"sqarvo_test","tls_mode":"preferred","name":"sqarvo-demo"}
+JSON
+env XDG_CONFIG_HOME="$W/cfg" SQARVO_ENDPOINT_FILE="$W/run/sqarvo/backend-endpoint.json" \
+    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.ReadmeShot SQARVO_QA_PASSWORD=… \
+  ./target/debug/sqarvo-desktop --window-size 1400x900 \
+    --qa-profile "$W/profile.json" --qa-password-env SQARVO_QA_PASSWORD \
+    --qa-tree-expand sqarvo_demo --qa-tree-open orders \
+    --screenshot docs/assets/screenshots/linux-main-window.png \
+    --screenshot-delay-ms 9000 --qa-exit-after-ms 12000
+```
+
+密码只走环境变量（命令行里不出现明文）；`sqarvo_demo` 是本机演示库，换成你自己的库时
+改 `profile.json` 与 `--qa-tree-expand` 的库名即可。
+
 ### SQL 执行的无人值守验证（`--qa-sql-file` / `--qa-execute` / `--qa-scroll-to-row` / `--qa-cancel-after-ms`）
 
 ```bash

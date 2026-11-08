@@ -8,6 +8,11 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
+![Sqarvo 主窗口：对象树、表数据网格与信息面板 DDL（Linux / GTK4，v0.2.3.2）](docs/assets/screenshots/linux-main-window.png)
+
+*Linux 前端（GTK4 + libadwaita）：对象树 · 表数据网格 · 信息面板 DDL，连接 MariaDB 的
+`sqarvo_demo` 库（1400×900）。截图由前端自渲染生成（`--screenshot`），不是桌面截图。*
+
 > 当前版本为 **v0.2.3.2**（M6 前端硬化第二批）：在 v0.2.3.1 之上把界面行为收成一套口径——
 > 对象树单击只选中 / 双击激活、表下四组元数据、信息面板常驻、`Objects` 页与树联动、
 > 后端失效改为「重启 Sqarvo / 查看日志」（stderr 落盘）、表数据 `EX` 支持「当前页 / 整张表」。
