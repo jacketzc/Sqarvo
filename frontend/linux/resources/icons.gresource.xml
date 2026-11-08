@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  前端自有符号图标（v0.2.3.3）。
+
+  资源路径刻意与图标主题的目录形状一致（`scalable/actions/*-symbolic.svg`），这样
+  `src/icons.rs` 只要把 `/io/sqarvo/icons` 注册成 `GtkIconTheme` 的资源搜索路径，GTK
+  就会按主题前景色重着色、按请求的像素尺寸渲染——不需要额外的主题包，安装包里也不会
+  多出文件（资源编进二进制）。
+
+  注意 `alias`：`<file>` 的内容路径会**原样**拼在 prefix 后面，不用 alias 会变成
+  `.../scalable/actions/icons/xxx.svg`（多一层 `icons/`），图标主题就找不到它。
+
+  新增图标：把 SVG 放到 `resources/icons/`，在这里加一行 `<file alias="...">`。
+-->
+<gresources>
+  <gresource prefix="/io/sqarvo/icons/scalable">
+    <file alias="actions/sqarvo-filter-symbolic.svg">icons/sqarvo-filter-symbolic.svg</file>
+  </gresource>
+</gresources>

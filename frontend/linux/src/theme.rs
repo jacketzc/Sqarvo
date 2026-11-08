@@ -77,6 +77,25 @@ pub fn stylesheet() -> String {
             border-right: 1px solid alpha(currentColor, 0.10);
         }}
 
+        /* 表格下边界（v0.2.3.3）：Adwaita 的行分隔线是每行的 `border-top`，最后一行
+           因此没有下边线——数据不足一屏时表格底边是敞开的。给最后一行补一条同色的
+           下边线：列表虚拟化只在内容全部实现（也就是内容不足一屏、正好需要这条线）
+           时才有 `:last-child`，长表滚到底也不会在视口中间凭空多出一条。
+           `columnview` / `listview` 自己的 `border-bottom` 不会画出来（它们是滚动
+           内容节点），所以这条线必须挂在行上。 */
+        window.{window_class} columnview.sqarvo-grid > listview > row:last-child {{
+            border-bottom: 1px solid alpha(currentColor, 0.10);
+        }}
+
+        /* 图标按钮（v0.2.3.3）：命中区固定（§图标），内边距归零——图标自身的像素尺寸
+           由 `icons::OpticalWeight` 决定，容器不再给默认内边距，否则同一档图标在不同
+           容器里宽度会不一样。 */
+        window.{window_class} button.{icon_button_class} {{
+            padding: 0;
+            min-width: {icon_button_width}px;
+            min-height: {icon_button_height}px;
+        }}
+
         /* 区域 04 顶部：标签条 24（workspace-model §2.1 的 tabStrip） */
         .sqarvo-tab-strip {{
             min-height: {tab_strip}px;
@@ -145,6 +164,9 @@ pub fn stylesheet() -> String {
         data_row = layout::ROW_HEIGHT_DATA,
         target = layout::MIN_TARGET,
         tab_strip = layout::TAB_STRIP_HEIGHT,
+        icon_button_class = crate::icons::BUTTON_CLASS,
+        icon_button_width = layout::ICON_BUTTON_WIDTH,
+        icon_button_height = layout::ICON_BUTTON_HEIGHT,
     )
 }
 
@@ -184,6 +206,32 @@ mod tests {
             css.contains("border-right: 1px solid alpha(currentColor, 0.10)"),
             "右边界线宽 / 颜色要与列分隔线一致"
         );
+    }
+
+    #[test]
+    fn grid_draws_its_bottom_edge() {
+        let css = stylesheet();
+        // 用户反馈「数据少时表格底侧边框遗漏」：Adwaita 的行分隔线是 `border-top`，
+        // 最后一行没有下边线。规则必须挂在**行**上（`columnview` / `listview` 自己的
+        // `border-bottom` 不会渲染），而且只在内容不足一屏时命中 `:last-child`。
+        assert!(
+            css.contains(
+                "listview > row:last-child {\n            border-bottom: 1px solid alpha(currentColor, 0.10);"
+            ),
+            "缺少表格下边界规则"
+        );
+    }
+
+    #[test]
+    fn icon_buttons_take_their_size_from_one_standard() {
+        let css = stylesheet();
+        // 命中区与内边距只有一份口径：图标的像素档位由 icons::OpticalWeight 决定。
+        assert!(css.contains(&format!(
+            "button.{} {{\n            padding: 0;\n            min-width: {}px;\n            min-height: {}px;",
+            crate::icons::BUTTON_CLASS,
+            layout::ICON_BUTTON_WIDTH,
+            layout::ICON_BUTTON_HEIGHT
+        )));
     }
 
     #[test]

@@ -67,6 +67,9 @@ NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交�
 sudo apt install libgtk-4-dev libadwaita-1-dev build-essential pkg-config
 ```
 
+`build.rs` 还会调用 `glib-compile-resources`（`libglib2.0-dev`，装 GTK 开发包时已一并装上）
+把 `resources/icons/*.svg` 编成 `.gresource` 嵌进二进制；缺这个工具时构建会直接报出可读原因。
+
 GTK 4.16 及以上（`gtk4` crate 的 `v4_16` feature），libadwaita 1.6 及以上。
 本机已验证版本（2026-11-04，Ubuntu resolute）：GTK 4.22.4、libadwaita 1.9.1。
 
@@ -141,7 +144,8 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板、两行状态栏；模块文档给出六个区域的槽位表 |
 | `src/startup.rs` | 启动落地工作区（#139）：未连接时的侧栏连接列表、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
 | `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
-| `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24） |
+| `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24）；表格右边界与**下边界**（`row:last-child`）、图标按钮命中区 |
+| `src/icons.rs` + `resources/icons/` | 图标标准与自有符号图标：三档光学尺寸（16 / 18 / 14）+ 固定命中区 28×24，`--qa-layout-audit` 断言；`resources/icons/*.svg` 由 `build.rs` 编成 GResource（漏斗等 Adwaita 没有的形状） |
 | `src/backend/endpoint.rs` | 端点定位、解析、协议主版本校验、pid 存活探测 |
 | `src/backend/connection.rs` | 连接草稿、TLS 模式、`CredentialService`/`ConnectionService` 调用、错误分类 |
 | `src/config.rs` | `connections.json` 读写（目录 0700、文件 0600，只含非敏感字段） |

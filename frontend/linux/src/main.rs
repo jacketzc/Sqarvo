@@ -17,6 +17,7 @@ mod dialog;
 mod driver_form;
 mod export;
 mod export_ui;
+mod icons;
 mod inspector;
 mod layout;
 mod layout_audit;

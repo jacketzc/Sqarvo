@@ -72,6 +72,37 @@ fn main() {
         .build_transport(false)
         .compile_fds(file_descriptor_set)
         .expect("gRPC 客户端代码生成失败");
+
+    compile_icon_resources(&manifest_dir, &out_dir);
+}
+
+/// 把项目自有符号图标编成 `.gresource` 写进 `OUT_DIR`。
+///
+/// 图标只有一份来源（`resources/icons/*.svg`），由 [`crate::icons`] 在运行时注册成
+/// `GtkIconTheme` 的资源搜索路径；`.gresource` 通过 `include_bytes!` 进二进制，
+/// 安装包里不会多出需要维护的图标文件。
+fn compile_icon_resources(manifest_dir: &Path, out_dir: &Path) {
+    let source_dir = manifest_dir.join("resources");
+    let manifest = source_dir.join("icons.gresource.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rerun-if-changed={}", source_dir.display());
+
+    let target = out_dir.join("sqarvo-icons.gresource");
+    let output = Command::new("glib-compile-resources")
+        .arg("--sourcedir")
+        .arg(&source_dir)
+        .arg("--target")
+        .arg(&target)
+        .arg(&manifest)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!("无法执行 glib-compile-resources（需要 glib-2.0 开发包）：{error}")
+        });
+    assert!(
+        output.status.success(),
+        "编译图标资源失败: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// 递归收集 `.proto` 文件，排序在调用处完成。

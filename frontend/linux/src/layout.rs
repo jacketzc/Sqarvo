@@ -87,6 +87,24 @@ pub const FONT_STATUS: i32 = 11;
 /// 可焦点控件的最小点击区（§11：紧凑化不得小于它）。
 pub const MIN_TARGET: i32 = 24;
 
+/// 图标绘制的**基准**尺寸：满盒字形（`+`、`✓`、`■`、漏斗）按它绘制。
+///
+/// 图标尺寸是设计口径的一部分（`design-principles.md` §图标），三档取值只能来自
+/// 这里：改一个档位前先看 [`crate::icons::OpticalWeight`] 的分档理由。
+pub const ICON_BOX: i32 = 16;
+
+/// 单笔画 / 窄字形（`−`、撤销弧线）的绘制尺寸：+2 补偿墨迹不足。
+pub const ICON_STROKE: i32 = 18;
+
+/// 环 / 闭合字形（`⟳`）的绘制尺寸：−2 才不会比基准显大一圈。
+pub const ICON_RING: i32 = 14;
+
+/// 图标按钮的命中区宽度（统一，不按单个图标调）。
+pub const ICON_BUTTON_WIDTH: i32 = 28;
+
+/// 图标按钮的命中区高度：等于 §11 的最小点击区。
+pub const ICON_BUTTON_HEIGHT: i32 = MIN_TARGET;
+
 /// 内容区高度：两侧在状态栏之上、工具条之下。
 #[must_use]
 pub fn content_height(window_height: i32) -> i32 {
@@ -229,5 +247,18 @@ mod tests {
         const { assert!(ROW_HEIGHT_DATA >= MIN_TARGET) };
         const { assert!(FONT_TITLE > FONT_UI) };
         const { assert!(FONT_UI >= FONT_STATUS) };
+    }
+
+    #[test]
+    fn icon_scale_is_a_three_step_standard_around_the_box() {
+        // 三档：窄字形（+2）/ 满盒（基准）/ 环形（−2）。图标按钮的命中区固定，
+        // 不随图标档位变化——「按单个图标改尺寸」是这一版明确要消除的做法。
+        const { assert!(ICON_STROKE == ICON_BOX + 2) };
+        const { assert!(ICON_RING == ICON_BOX - 2) };
+        // 同一个命中区里放最大的图标仍要留出左右各 2px。
+        const { assert!(ICON_BUTTON_WIDTH - ICON_STROKE >= 4) };
+        // 状态栏 24 高的行里装得下按钮高度。
+        const { assert!(ICON_BUTTON_HEIGHT == MIN_TARGET) };
+        const { assert!(ICON_BUTTON_HEIGHT <= ROW_HEIGHT_TREE) };
     }
 }

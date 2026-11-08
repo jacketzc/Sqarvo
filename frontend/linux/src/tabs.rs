@@ -85,6 +85,26 @@ pub fn query_tab_title(number: u32, catalog: &str) -> String {
     table_tab_title(&format!("查询 {number}"), catalog)
 }
 
+/// 这个标签是不是「同一张表」：对象名 + catalog + 连接键三者完全一致。
+///
+/// 用于**复用已有表标签**（workspace-model §3）：同一张表重复打开时切过去，而不是
+/// 再开第二个会话。`catalog` 必须是 `open_table` 里算出来的那个（空库名已经回退到
+/// 连接级 catalog），否则同一张表会因为一边空串、一边实名而匹配不上。
+///
+/// 名字按原样比较（不折叠大小写）：不同驱动对标识符大小写的语义不同，前端不替它们
+/// 猜——`Items` 与 `items` 交给服务端与驱动判断，这里只认完全相同的字符串。
+#[must_use]
+pub fn matches_table(kind: &TabKind, name: &str, catalog: &str, connection_key: &str) -> bool {
+    match kind {
+        TabKind::Table {
+            name: tab_name,
+            catalog: tab_catalog,
+            connection_key: tab_key,
+        } => tab_name == name && tab_catalog == catalog && tab_key == connection_key,
+        TabKind::Objects | TabKind::Query { .. } => false,
+    }
+}
+
 /// 窗口标题（workspace-model §5.1）：`<当前标签对象> @ <catalog> (<连接名>)`。
 #[must_use]
 pub fn window_title_for(tab_title: &str, connection_name: &str) -> String {
@@ -1048,6 +1068,23 @@ impl TabSet {
             .cloned()
     }
 
+    /// 找到「同一张表」已经打开的标签（对象名 + catalog + 连接键，见 [`matches_table`]）。
+    ///
+    /// 只认表标签：`Objects` 与查询标签永远不会命中。
+    #[must_use]
+    pub fn find_table_tab(
+        &self,
+        name: &str,
+        catalog: &str,
+        connection_key: &str,
+    ) -> Option<Rc<TabHandle>> {
+        self.tabs
+            .borrow()
+            .iter()
+            .find(|tab| matches_table(&tab.kind, name, catalog, connection_key))
+            .cloned()
+    }
+
     /// 固定 `Objects` 页跟随树选中：显示该库的表 / 视图列表。
     ///
     /// `parent` 是 catalog 引用，`kinds` 决定列表内容（表 / 视图），`label` 是页内
@@ -1150,10 +1187,33 @@ impl TabSet {
         self.view.set_selected_page(&page);
     }
 
-    /// 打开表数据标签（树、平铺列表与 QA 共用这一条路径）。
+    /// 打开表数据标签（树、`Objects` 页与 QA 共用这一条路径）。
+    ///
+    /// 同一张表（对象名 + catalog + 连接键）**已经打开过**时不新建标签、不新建会话，
+    /// 只切到已有标签（workspace-model §3）：复用是**有意语义**，第二个会话会让同一张表
+    /// 出现两份脏行与两条互不可见的事务。
+    ///
+    /// 复用检查必须放在 [`MAX_TABS`] 之前：已经开满 8 个标签不该妨碍用户切到其中一个
+    /// 已存在的标签——上限约束的是「新建」，不是「切换」。
     ///
     /// 返回标签 ID；超限时返回可读原因（调用方负责展示，**不**静默失败）。
     pub fn open_table(self: &Rc<Self>, entry: TableEntry) -> Result<String, String> {
+        // 先按「新建分支」同一段逻辑算出连接键与 catalog，再去找已有标签：
+        // 两处一旦口径不同，空库名的表就会既有标签又新建一个。
+        let connection_key = self.resolve_connection_key(&entry);
+        let catalog = if entry.reference.catalog.trim().is_empty() {
+            self.catalog_for(&connection_key)
+        } else {
+            entry.reference.catalog.clone()
+        };
+        if let Some(existing) = self.find_table_tab(&entry.display_name, &catalog, &connection_key)
+        {
+            let title = existing.kind.title();
+            eprintln!("[tabs] 复用已有表标签 {}：{title}", existing.id);
+            // 只切页面：不碰会话、不发 BrowseTable、不丢脏行 / 事务状态。
+            self.select_page(&existing.page);
+            return Ok(existing.id.clone());
+        }
         if self.session_tab_count() >= MAX_TABS {
             let message = limit_message(self.session_tab_count());
             eprintln!("[tabs] 拒绝新建表标签：{message}");
@@ -1163,12 +1223,6 @@ impl TabSet {
         let seq = self.next_tab_seq.get();
         self.next_tab_seq.set(seq + 1);
         let tab_id = format!("tab-t{seq}");
-        let connection_key = self.resolve_connection_key(&entry);
-        let catalog = if entry.reference.catalog.trim().is_empty() {
-            self.catalog_for(&connection_key)
-        } else {
-            entry.reference.catalog.clone()
-        };
         let kind = TabKind::Table {
             name: entry.display_name.clone(),
             catalog,
@@ -3454,6 +3508,37 @@ mod tests {
         assert_eq!(query_tab_title(3, "shop"), "查询 3 @ shop");
         // catalog 缺失时不编造库名，用「默认」占位。
         assert_eq!(table_tab_title("items", ""), "items @ 默认");
+    }
+
+    #[test]
+    fn matches_table_requires_name_catalog_and_connection() {
+        let kind = TabKind::Table {
+            name: "items".to_owned(),
+            catalog: "main".to_owned(),
+            connection_key: "sqlite:/tmp/a.db".to_owned(),
+        };
+        // 三者全同 = 同一张表（重复打开要复用）。
+        assert!(matches_table(&kind, "items", "main", "sqlite:/tmp/a.db"));
+        // 任一不同都不是同一张表：同名不同库、同表不同连接、不同对象名。
+        assert!(!matches_table(&kind, "items", "shop", "sqlite:/tmp/a.db"));
+        assert!(!matches_table(&kind, "items", "main", "sqlite:/tmp/b.db"));
+        assert!(!matches_table(&kind, "orders", "main", "sqlite:/tmp/a.db"));
+        // 空 catalog 只有与空 catalog 的标签匹配（`open_table` 已把空库名回退成连接级
+        // catalog，所以真实标签里不会出现空串与实名混用的情况）。
+        assert!(!matches_table(&kind, "items", "", "sqlite:/tmp/a.db"));
+    }
+
+    #[test]
+    fn only_table_tabs_match_a_table() {
+        let objects = TabKind::Objects;
+        assert!(!matches_table(&objects, "items", "main", "k"));
+        let query = TabKind::Query {
+            number: 1,
+            catalog: "main".to_owned(),
+            connection_key: "k".to_owned(),
+        };
+        // 查询标签即使 catalog / 连接一致也不能被当成「同一张表」。
+        assert!(!matches_table(&query, "items", "main", "k"));
     }
 
     #[test]

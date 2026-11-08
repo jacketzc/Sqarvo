@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  「筛选」漏斗（v0.2.3.3）：GNOME 的 Adwaita / Yaru 图标主题里没有漏斗，之前用
+  `system-search-symbolic`（放大镜）代替，用户第一眼会读成「搜索」。这里自带一个
+  16×16 的符号图标。
+
+  实心而不是描边：16px 下描边漏斗的镂空只剩 2px 左右，缩小后会糊成一个三角形；
+  实心漏斗（Google 的 `filter_alt` 同一形状）在小尺寸下才立得住。符号图标由 GTK 按
+  主题前景色重着色，所以 fill 用固定深灰即可。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <path fill="#2e3436" d="M2 2.5h12L9.75 9v4.5h-3.5V9z"/>
+</svg>

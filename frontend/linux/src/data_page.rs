@@ -471,16 +471,13 @@ pub struct ColumnWidthObservation {
     pub header_natural_width: i32,
 }
 
-/// 图标按钮（v0.2.3.2）：只显示图标 + tooltip，并把同一段文字登记为可访问名。
+/// 图标按钮（v0.2.3.3）：尺寸与命中区走 [`crate::icons`] 的唯一标准；这里只做
+/// 「数据页次要动作」到图标的映射。
 ///
-/// 为什么不用文字：工具条第 2 行在 960 宽下本来就挤，`FS` / `CC` / `EX` 三个缩写
-/// 只有看过文档的人认得出；图标 + tooltip 更容易看懂，键盘与读屏也有名字。
-fn icon_button(icon: &str, accessible_label: &str) -> gtk::Button {
-    let button = gtk::Button::from_icon_name(icon);
-    button.add_css_class("flat");
-    button.set_tooltip_text(Some(accessible_label));
-    button.update_property(&[gtk::accessible::Property::Label(accessible_label)]);
-    button
+/// 为什么不用文字：工具条第 2 行在 960 宽下本来就挤，缩写只有看过文档的人认得出；
+/// 图标 + tooltip 更容易看懂，键盘与读屏也有名字。
+fn icon_button(icon: &str, weight: crate::icons::OpticalWeight, label: &str) -> gtk::Button {
+    crate::icons::button(icon, weight, label)
 }
 
 /// 数据页。
@@ -650,23 +647,41 @@ impl DataPage {
         rollback.add_css_class("destructive-action");
         rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
 
-        let refresh = icon_button("view-refresh-symbolic", "刷新当前表");
+        let refresh = icon_button(
+            "view-refresh-symbolic",
+            crate::icons::OpticalWeight::Ring,
+            "刷新当前表",
+        );
         refresh.set_tooltip_text(Some("重新读取当前表的第一页"));
 
         // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
-        let cc_button = icon_button("view-reveal-symbolic", "列显隐");
+        let cc_button = icon_button(
+            "view-reveal-symbolic",
+            crate::icons::OpticalWeight::Box,
+            "列显隐",
+        );
         cc_button.set_sensitive(false);
         cc_button.set_tooltip_text(Some("列显隐：隐藏列只影响渲染，不改变查询与导出口径"));
 
-        // 筛选与排序（FS → 放大镜图标，#118）：只支持 AND 多条件；应用后回到第 1 页。
-        // Adwaita 图标主题里没有漏斗，`system-search-symbolic` 是 GNOME 应用里
-        // 「筛选 / 查找条件」的常用替身（不用自绘资源，也不依赖第三方主题）。
-        let fs_button = icon_button("system-search-symbolic", "筛选与排序");
+        // 筛选与排序（v0.2.3.3 → 漏斗）：放大镜（`system-search-symbolic`）会被读成
+        // 「搜索」。Adwaita / Yaru 都没有漏斗，因此用项目自有的
+        // `sqarvo-filter-symbolic`（`resources/icons/`，编成 GResource）。
+        let fs_button = icon_button(
+            crate::icons::FILTER,
+            crate::icons::OpticalWeight::Box,
+            "筛选与排序",
+        );
         fs_button.set_sensitive(false);
         fs_button.set_tooltip_text(Some("筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"));
 
-        // 导出（EX → 导出图标，#120）：范围在确认对话框里选（当前页 / 整张表）。
-        let export = icon_button("document-send-symbolic", "导出为 CSV");
+        // 导出（v0.2.3.3 → 「下载成文件」）：`document-send-symbolic` 是纸飞机，
+        // 在这个位置会被读成「发送 / 分享」；导出写的是本地 CSV 文件，用
+        // `document-save-symbolic`（向下箭头落到一条基线）语义更直接。
+        let export = icon_button(
+            "document-save-symbolic",
+            crate::icons::OpticalWeight::Box,
+            "导出为 CSV",
+        );
         export.set_sensitive(false);
         export.set_tooltip_text(Some("导出为 CSV（Ctrl+Shift+E）：可选当前页或整张表"));
 

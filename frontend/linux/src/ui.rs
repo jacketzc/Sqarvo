@@ -42,6 +42,7 @@ use crate::browse::{
 };
 use crate::data_page::{DataState, RowOpsState};
 use crate::dialog::ConnectionDialog;
+use crate::icons;
 use crate::inspector::{ConnectionLive, Inspector};
 use crate::layout;
 use crate::proto::services::v1::ObjectRef;
@@ -110,6 +111,8 @@ pub fn activate(app: &adw::Application) {
 
     // 紧凑密度（§11）：全局 CSS 只装一次；class 只加在主窗口上。
     theme::install();
+    // 自有符号图标（v0.2.3.3）：注册成图标主题的资源搜索路径，之后建的图标按钮才取得到。
+    icons::install();
     let (default_width, default_height) = crate::qa::window_size().unwrap_or((1200, 800));
 
     let window = adw::ApplicationWindow::builder()
@@ -709,6 +712,23 @@ pub fn activate(app: &adw::Application) {
                         }
                         let window = (capture_state.window.width(), capture_state.window.height());
                         if !crate::layout_audit::report(window, &targets) {
+                            std::process::exit(5);
+                        }
+                        // 图标按钮的标准命中区（v0.2.3.3）：尺寸不按单个图标调，
+                        // 这一项就是「整体标准」的可执行版本。
+                        let icon_problems = crate::icons::audit(
+                            &capture_state.window.clone().upcast::<gtk::Widget>(),
+                        );
+                        if icon_problems.is_empty() {
+                            eprintln!(
+                                "[layout-audit] ✓ 图标按钮 命中区统一 {}x{}",
+                                layout::ICON_BUTTON_WIDTH,
+                                layout::ICON_BUTTON_HEIGHT
+                            );
+                        } else {
+                            for problem in &icon_problems {
+                                eprintln!("[layout-audit] ✗ 图标按钮标准：{problem}");
+                            }
                             std::process::exit(5);
                         }
                     }
