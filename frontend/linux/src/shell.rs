@@ -126,7 +126,7 @@ impl Shell {
 
         let inspector = gtk::Revealer::new();
         inspector.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
-        // v0.2.4：信息面板常驻（不再有折叠入口），宽度仍可拖、按连接记忆。
+        // v0.2.3.2：信息面板常驻（不再有折叠入口），宽度仍可拖、按连接记忆。
         inspector.set_reveal_child(true);
         inspector.set_child(Some(&inspector_box));
 
@@ -572,18 +572,21 @@ impl Toolbar {
         separator.set_margin_start(6);
         separator.set_margin_end(6);
 
-        let table = kind_button("表", "新建表在 v0.2.4 提供；此处只高亮对象树当前选中的种类");
+        let table = kind_button(
+            "表",
+            "新建表在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
+        );
         let view = kind_button(
             "视图",
-            "新建视图在 v0.2.4 提供；此处只高亮对象树当前选中的种类",
+            "新建视图在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
         );
         let function = kind_button(
             "函数",
-            "新建函数在 v0.2.4 提供；此处只高亮对象树当前选中的种类",
+            "新建函数在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
         );
         let query = kind_button(
             "查询",
-            "按种类筛选查询在 v0.2.4 提供；此处只高亮对象树当前选中的种类",
+            "按种类筛选查询在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
         );
         view.set_group(Some(&table));
         function.set_group(Some(&table));
@@ -740,7 +743,7 @@ impl StatusBar {
         ops_row.add_css_class("linked");
         ops_row.set_valign(gtk::Align::Center);
 
-        // v0.2.4：行操作只用图标 + tooltip（同一段文字同时登记为可访问名）。
+        // v0.2.3.2：行操作只用图标 + tooltip（同一段文字同时登记为可访问名）。
         // 六个动作语义固定：新增 / 删除 / 应用 / 撤销 / 刷新 / 取消。
         let make_op = |icon: &str, tooltip: &str, op: RowOp| {
             let button = gtk::Button::from_icon_name(icon);

@@ -1183,8 +1183,8 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 
 ```bash
 cd frontend/linux
-./scripts/v024-objects-export.sh
-# 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v024-shots，仍追加时间戳）
+./scripts/v0232-objects-export.sh
+# 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v0232-shots，仍追加时间戳）
 #       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
 ```
 

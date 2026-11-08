@@ -254,6 +254,26 @@ M6 剩余完成条件：
 验收链 139 项断言全过；CI 三作业 success。**M6 完成条件仍以本节上文的五条剩余项为准**
 （Windows / macOS 构建与接入、三端语义一致、release 基准、三端安全清单、宽表内存分配点）。
 
+### M6 前端硬化（v0.2.3.2 增量）
+
+状态：**进行中**（本增量把界面行为收成一套可移植口径，并补表数据的整表导出；M6 的跨平台与
+release 基准条件不变）。发布说明见 [v0.2.3.2](../releases/v0.2.3.2.md)，决策见 ADR 0022 增量节。
+
+| 能力 | 证据 |
+|---|---|
+| 对象树单击只选中、双击 / 回车激活；表下 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组，展开某组才发 `ListNodes`；外键显示 `capability.unsupported` 且不发 RPC；右键只剩「打开」 | #154（`1abbce7`）；`v023-acceptance.sh` 按新契约复核 139 项全过；树与分组单测 |
+| 信息面板常驻（无折叠按钮、无 `Ctrl+I`）；`Objects` 固定页钉在最左 84px 并与树联动 | `v0232-objects-export.sh` A1 / A2 两张截图与断言；`--qa-layout-audit` 两档各 20 项 0 超限 |
+| 后端失效改「重启 Sqarvo / 查看日志」；stderr 落盘 `$XDG_STATE_HOME/sqarvo/desktop.log` | 横幅与对话框文案；验收脚本读该日志文件断言导出进度 |
+| 表数据 `EX` 可选「当前页 / 整张表」；整表按 500 行逐页读、流式写同一 CSV，可取消且不留半截文件 | `v0232-objects-export.sh` B1 成功 / B2 取消 / B3 当前页对照，59 项断言全过 |
+| 事务行去「自动提交」徽标；行变更按钮短标签；FS / CC / EX 与状态栏行操作图标化 | `--qa-expect-txn` 与实现同口径；两档布局自检 0 超限 |
+
+复核（2026-11-08，Linux，main `1abbce7`）：backend `fmt` / `clippy -D warnings` 0 问题，
+frontend `365 passed / 0 failed / 1 ignored`；`v023-acceptance.sh` 139 项、
+`v0232-objects-export.sh` 59 项断言全过（其中 59 项在发版前用 `SQARVO_ACCEPTANCE_NO_BUILD=1` 复跑）；
+布局自检 1200×800 / 960×640 各 20 项 0 超限沿用实现时的记录。
+
+未验证：Windows / macOS 前端、release 构建、MariaDB 上的整表导出、日志轮转速率。
+
 ### M7 工作区 UI 重构（v0.2.3）
 
 目标：把「一窗口一会话一页面」改成「多连接 · 多标签 · 表格为中心」的工作区，并把表格浏览的

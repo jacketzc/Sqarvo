@@ -510,7 +510,7 @@ pub fn activate(app: &adw::Application) {
                     workspace.tabs.route_table(&tab_id, event);
                 }
                 Event::Tables(result) => {
-                    // v0.2.4：侧栏的平铺表列表已删除，`ListTables` 不再由界面发起。
+                    // v0.2.3.2：侧栏的平铺表列表已删除，`ListTables` 不再由界面发起。
                     // 事件仍在这里消费并记一行日志（旧后端/旧脚本不会让界面崩）。
                     match result {
                         Ok(tables) => eprintln!(
@@ -913,7 +913,7 @@ fn browse_session_opened(
 
 /// 后端失效时给用户的两条路：重启 Sqarvo、查看日志。
 ///
-/// 设计原则（v0.2.4）：用户看不到「前端 / 后端」这层实现，只认识「这一个软件」。
+/// 设计原则（v0.2.3.2）：用户看不到「前端 / 后端」这层实现，只认识「这一个软件」。
 /// 所以这里不说「后端进程已退出」，只说「本地服务已失效」「需要重启」，并把
 /// 日志查看做成同一张卡片里的第二个出口——反馈问题时能直接拿到文件。
 fn show_backend_failure_dialog(state: &Rc<UiState>) {
@@ -968,7 +968,7 @@ fn restart_software(state: &Rc<UiState>) {
 
 /// 选中项 → `Objects` 固定页的作用域（catalog 引用 + 表/视图 + 页内文案）。
 ///
-/// 规则（v0.2.4，按评审确认的口径）：
+/// 规则（v0.2.3.2，按评审确认的口径）：
 /// - 选中库（catalog / schema）→ 该库的**表**；
 /// - 选中 `Tables` 或其下级 → 该库的表；
 /// - 选中 `Views` 或其下级 → 该库的视图；
@@ -1605,13 +1605,13 @@ impl Workspace {
         };
 
         // ---- 信息面板（区域 06，#119）---------------------------------------
-        // v0.2.4：面板常驻（没有折叠按钮、没有 Ctrl+I），因此不需要回指外壳的槽位。
+        // v0.2.3.2：面板常驻（没有折叠按钮、没有 Ctrl+I），因此不需要回指外壳的槽位。
         let inspector = Inspector::new();
         // 外壳在标签工作区之后才建：状态栏 / 标签状态的接线要回指它（与面板显隐无关）。
         let shell_slot: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
 
         // ---- 区域 03 的内容：对象树 + 页脚 ------------------------------------
-        // 平铺列表与「DDL」在 v0.2.4 删除：树是唯一入口，DDL 在信息面板里看。
+        // 平铺列表与「DDL」在 v0.2.3.2 删除：树是唯一入口，DDL 在信息面板里看。
         let tree_slot: Rc<RefCell<Option<Rc<TreePanel>>>> = Rc::new(RefCell::new(None));
         let refresh: Rc<dyn Fn()> = {
             let tree_slot_for_cb = Rc::clone(&tree_slot);
@@ -1751,7 +1751,7 @@ impl Workspace {
             refresh_button.connect_clicked(move |_| refresh());
         }
 
-        // 页脚只留刷新：平铺列表与 DDL 入口在 v0.2.4 删除（树是唯一入口，
+        // 页脚只留刷新：平铺列表与 DDL 入口在 v0.2.3.2 删除（树是唯一入口，
         // DDL 在信息面板的表页里看）。
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         footer.set_margin_start(6);
@@ -1864,10 +1864,10 @@ impl Workspace {
                             .map(|()| format!("选中连接「{name}」（信息面板：连接）"))
                     }),
                     inspect: Rc::new(move |mode: &str| {
-                        // 面板常驻（v0.2.4）：`hide` / 折叠不再是可达状态。
+                        // 面板常驻（v0.2.3.2）：`hide` / 折叠不再是可达状态。
                         if mode == "hide" || mode == "hidden" || mode == "toggle" {
                             return Err(
-                                "信息面板在 v0.2.4 起常驻，不能折叠（--qa-inspector 只接受 ddl/info）"
+                                "信息面板在 v0.2.3.2 起常驻，不能折叠（--qa-inspector 只接受 ddl/info）"
                                     .to_owned(),
                             );
                         }
@@ -2043,7 +2043,7 @@ impl Workspace {
 
     /// 按表名打开（数据页 QA 与「打开指定表」共用树的同一条路径）。
     ///
-    /// v0.2.4 删掉侧栏平铺列表后，这里走 `qa_open`：选中 + 与双击行相同的打开回调，
+    /// v0.2.3.2 删掉侧栏平铺列表后，这里走 `qa_open`：选中 + 与双击行相同的打开回调，
     /// 找不到时它自己会先把能展开的分组展开，调用方的重试下一拍就能命中。
     fn open_by_name(&self, name: &str) -> bool {
         match self.tree.qa_open(name) {
@@ -2240,11 +2240,11 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         schedule_step(
             delay,
             Rc::new(move || {
-                // 信息面板常驻（v0.2.4）：只剩「切到哪一页」这一个可执行动作。
+                // 信息面板常驻（v0.2.3.2）：只剩「切到哪一页」这一个可执行动作。
                 match mode.as_str() {
                     "hidden" | "hide" | "toggle" => {
                         return Err(
-                            "信息面板在 v0.2.4 起常驻，不能折叠（--qa-inspector 只接受 ddl/info）"
+                            "信息面板在 v0.2.3.2 起常驻，不能折叠（--qa-inspector 只接受 ddl/info）"
                                 .to_owned(),
                         );
                     }
@@ -3292,7 +3292,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
     }
 
     if let Some(expected) = crate::qa::expect_txn() {
-        // v0.2.4：工具条上没有「自动提交」徽标。`auto` 断言「状态栏没有事务一栏」，
+        // v0.2.3.2：工具条上没有「自动提交」徽标。`auto` 断言「状态栏没有事务一栏」，
         // 其余状态断言那一栏包含状态文案——断言的是用户看得见的东西。
         let visible = &observed.txn_visible;
         let matched = if matches!(expected, crate::qa::TxnExpectation::AutoCommit) {
@@ -3312,7 +3312,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         // 也证明旧的（例如事务中的绿色）已经被摘掉。
         if observed.badge_classes != vec![expected.css_class()] {
             return Err(format!(
-                "事务状态 CSS 期望 [{}]，实际 {:?}（工具条徽标已在 v0.2.4 删除）",
+                "事务状态 CSS 期望 [{}]，实际 {:?}（工具条徽标已在 v0.2.3.2 删除）",
                 expected.css_class(),
                 observed.badge_classes
             ));

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sqarvo v0.2.4 验收：`Objects` 固定页 ↔ 对象树联动 + `EX` 导出范围三条路径。
+# Sqarvo v0.2.3.2 验收：`Objects` 固定页 ↔ 对象树联动 + `EX` 导出范围三条路径。
 #
 # 自包含：只用 `sqlite3` 在 mktemp 目录里建一个临时库，**不需要 MariaDB、不需要密码**，
 # 也不碰任何用户数据。串行跑 5 个应用实例（一次只有一个 GUI 进程），每个实例用独立的
@@ -22,7 +22,7 @@
 # 形如 v023-acceptance.sh 的约束（改动本脚本时先看这里）：
 #   * `XDG_CONFIG_HOME` 指向 mktemp 临时目录（每个用例一个子目录），验收产生的
 #     连接配置绝不写进用户真实配置；结束时用 sha256 断言真实 `connections.json` 逐字节未变。
-#   * 截图与日志落在仓库外（默认 `/home/jack/sqarvo-v024-shots/<时间戳>/`，
+#   * 截图与日志落在仓库外（默认 `/home/jack/sqarvo-v0232-shots/<时间戳>/`，
 #     可用 `SQARVO_ACCEPTANCE_DIR` 改基目录，仍然会追加 `<时间戳>/`）。目录落在仓库内即失败。
 #   * 任何一步失败都以非零退出，末尾打印「N 项断言全过」。
 #   * `--qa-expect-objects` 必须与 `--screenshot` 一起用（qa.rs 的解析强制），所以
@@ -52,8 +52,8 @@
 #   * `sqlite3` 命令行（测试库只用它建）。
 #
 # 用法：
-#   ./scripts/v024-objects-export.sh
-#   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v024-objects-export.sh
+#   ./scripts/v0232-objects-export.sh
+#   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
 
@@ -61,11 +61,11 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
 FRONTEND_DIR="$REPO_ROOT/frontend/linux"
 
-OUT_BASE=${SQARVO_ACCEPTANCE_DIR:-/home/jack/sqarvo-v024-shots}
+OUT_BASE=${SQARVO_ACCEPTANCE_DIR:-/home/jack/sqarvo-v0232-shots}
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="$OUT_BASE/$STAMP"
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/sqarvo-v024.XXXXXX")
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/sqarvo-v0232.XXXXXX")
 
 # 测试数据：1 张表（30 行，含 NULL 与文本）+ 1 个索引 + 1 个触发器 + 1 个视图。
 # Tables/Views 两个分组各有内容；表下的 Fields/Indexes/Triggers 也有内容。
@@ -270,7 +270,7 @@ check_eq "测试库触发器数（Triggers 分组有内容）" 1 \
 
 PROFILE="$TMP/profile-sqlite.json"
 cat > "$PROFILE" <<EOF
-{"driver":"sqlite","path":"$DB","read_only":false,"name":"v024-sqlite"}
+{"driver":"sqlite","path":"$DB","read_only":false,"name":"v0232-sqlite"}
 EOF
 
 # ---------------------------------------------------------------------------

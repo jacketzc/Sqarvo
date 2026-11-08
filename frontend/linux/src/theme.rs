@@ -85,7 +85,7 @@ pub fn stylesheet() -> String {
             font-size: {ui}px;
         }}
         .sqarvo-tab-strip button {{ min-height: {target}px; min-width: {target}px; }}
-        /* 固定 `Objects` 页（v0.2.4）：钉住的页永远排在最前，宽度按规范口径 84px。
+        /* 固定 `Objects` 页（v0.2.3.2）：钉住的页永远排在最前，宽度按规范口径 84px。
            `AdwTabBar` 没有 per-page 宽度 API；实测钉住页带 `pinned` 样式类
            （`[tabs] 标签实际宽度：pinned=26px`），所以按它选中。
            内容盒 84 + padding 0，避免被默认内边距撑大。 */

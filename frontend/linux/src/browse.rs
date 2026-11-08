@@ -916,7 +916,7 @@ impl ConnectionRegistry {
     #[must_use]
     #[allow(
         dead_code,
-        reason = "v0.2.4 删掉平铺表列表后没有调用方；保留给后续按活动连接取浏览会话的诊断"
+        reason = "v0.2.3.2 删掉平铺表列表后没有调用方；保留给后续按活动连接取浏览会话的诊断"
     )]
     pub fn session_for_active(&self) -> Option<String> {
         let active = self.active.borrow().clone()?;

@@ -55,7 +55,7 @@ pub struct SqlPageCallbacks {
     pub fetch: Rc<dyn Fn()>,
     /// 释放游标。
     pub close: Rc<dyn Fn()>,
-    /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.4）。
+    /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.3.2）。
     pub backend_failure: Rc<dyn Fn()>,
 }
 

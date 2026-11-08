@@ -281,7 +281,7 @@ impl KindGroup {
     }
 }
 
-/// 表节点下的二级分组（v0.2.4）：展开一张表先出现四行，再逐组按需拉取。
+/// 表节点下的二级分组（v0.2.3.2）：展开一张表先出现四行，再逐组按需拉取。
 ///
 /// 与 [`KindGroup`] 同构，但父节点是表而不是 catalog。`Fields` 复用原来的列层，
 /// `Indexes` / `Triggers` 后端已按 `filter.kinds` 支持；`Foreign Keys` 目前没有任何
@@ -1129,7 +1129,7 @@ impl TreePanel {
         root.append(&search_entry);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&stack);
-        // `status` 不再挂到界面上（v0.2.4：删掉「本页 N 条，累计 N 条」）。
+        // `status` 不再挂到界面上（v0.2.3.2：删掉「本页 N 条，累计 N 条」）。
         // 它的文本仍是分页/失败的可复核证据，留给日志与 QA 读取，用户看不到。
 
         let panel = Rc::new(Self {
@@ -2652,7 +2652,7 @@ impl TreePanel {
             }
             Row::Object(node) => {
                 // 右键只保留「打开表」：DDL 改由信息面板内的 [DDL] 页查看，
-                // 不再从树里发一个隐式的展示动作（v0.2.4，ADR 0025 动作目录同步）。
+                // 不再从树里发一个隐式的展示动作（v0.2.3.2，ADR 0025 动作目录同步）。
                 if is_browsable(node.kind) {
                     let open = Rc::clone(&self.callbacks.open);
                     let node = node.clone();

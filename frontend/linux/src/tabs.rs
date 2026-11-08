@@ -206,7 +206,7 @@ impl ClosePrompt {
 #[must_use]
 pub fn close_prompt(title: &str, snapshot: Option<&StatusSnapshot>) -> ClosePrompt {
     let dirty = snapshot.map_or(0, |snapshot| snapshot.dirty.max(snapshot.pending));
-    // 没有事务的三种表示都算「无事务」：air 串（v0.2.4 起状态栏不再显示「自动提交」）、
+    // 没有事务的三种表示都算「无事务」：air 串（v0.2.3.2 起状态栏不再显示「自动提交」）、
     // 「自动提交」（旧口径）与「已断开」（断开的会话已经没有事务可回滚）。
     // 漏掉空串会让每个普通标签关闭时都弹一次「有未提交事务」，验收链上表现为
     // 「放弃后重新弹窗 → 最后按取消处理 → 标签关不掉」。
@@ -417,7 +417,7 @@ impl ObjectsObservation {
     }
 }
 
-/// `Objects` 固定页（v0.2.4）：与对象树联动，列出选中 catalog 里的表 / 视图。
+/// `Objects` 固定页（v0.2.3.2）：与对象树联动，列出选中 catalog 里的表 / 视图。
 ///
 /// 内容由树选中驱动：选中 catalog 或 `Tables` 分支 → 该库的**表**；
 /// 选中 `Views` 分支 → 该库的**视图**。页面自己发 `ListNodes(filter.kinds)` 并持有
@@ -3197,7 +3197,7 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                 }
             }
             "inspector" => {
-                // v0.2.4：信息面板常驻，只剩「切到哪一页」这一个动作；hide/hidden/
+                // v0.2.3.2：信息面板常驻，只剩「切到哪一页」这一个动作；hide/hidden/
                 // toggle 在解析阶段就报错，不去骗脚本「脚本跑完了」。
                 let mode = parts
                     .get(1)
@@ -3470,7 +3470,7 @@ mod tests {
     fn close_prompt_is_skipped_when_there_is_nothing_to_lose() {
         let prompt = close_prompt("items @ shop", Some(&snapshot(0, "自动提交")));
         assert!(!prompt.is_needed());
-        // v0.2.4：没有事务时 `txn_label` 是空串（状态栏不再显示「自动提交」）。
+        // v0.2.3.2：没有事务时 `txn_label` 是空串（状态栏不再显示「自动提交」）。
         // 空串必须与「自动提交」等价，否则每个普通标签关闭都要多弹一次确认。
         let prompt = close_prompt("items @ shop", Some(&snapshot(0, "")));
         assert!(!prompt.is_needed(), "空串必须表示没有事务：{prompt:?}");

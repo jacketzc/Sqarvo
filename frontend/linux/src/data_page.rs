@@ -105,7 +105,7 @@ pub struct DataPageObservation {
     pub state: DataState,
     /// 事务徽标的可见文本。
     ///
-    /// v0.2.4 起工具条上没有「自动提交」徽标：这里的取值来自**状态机**（`badge.label()`），
+    /// v0.2.3.2 起工具条上没有「自动提交」徽标：这里的取值来自**状态机**（`badge.label()`），
     /// 用于断言「状态是什么」；「界面上看得到什么」看 [`Self::txn_visible`]。
     pub badge_text: String,
     /// 状态栏「事务」一栏的可见文本（没有事务时为空串）。
@@ -324,7 +324,7 @@ pub struct DataCallbacks {
     pub rollback_txn: Rc<dyn Fn()>,
     /// 重新浏览当前表。
     pub reload: Rc<dyn Fn()>,
-    /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.4）。
+    /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.3.2）。
     pub backend_failure: Rc<dyn Fn()>,
     /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
     pub on_column: Rc<dyn Fn(TableColumn)>,
@@ -471,7 +471,7 @@ pub struct ColumnWidthObservation {
     pub header_natural_width: i32,
 }
 
-/// 图标按钮（v0.2.4）：只显示图标 + tooltip，并把同一段文字登记为可访问名。
+/// 图标按钮（v0.2.3.2）：只显示图标 + tooltip，并把同一段文字登记为可访问名。
 ///
 /// 为什么不用文字：工具条第 2 行在 960 宽下本来就挤，`FS` / `CC` / `EX` 三个缩写
 /// 只有看过文档的人认得出；图标 + tooltip 更容易看懂，键盘与读屏也有名字。
@@ -677,7 +677,7 @@ impl DataPage {
         header.set_margin_end(12);
         header.append(&table_label);
         table_label.set_hexpand(true);
-        // 事务控制行（v0.2.4）：默认只有「开始事务」；开事务后才出现「提交事务 /
+        // 事务控制行（v0.2.3.2）：默认只有「开始事务」；开事务后才出现「提交事务 /
         // 回滚事务」。「自动提交」徽标删掉——它不是可点的动作，也不是用户需要盯着
         // 的状态（事务状态在状态栏里只在真有事务时出现）。只读开关在开始事务的卡片里。
         header.append(&begin);

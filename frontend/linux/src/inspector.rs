@@ -361,7 +361,7 @@ struct TableInfo {
 impl Inspector {
     /// 构建面板。
     ///
-    /// v0.2.4 起面板**常驻**：没有折叠按钮，也没有 `Ctrl+I`（`shell.set_inspector_visible`
+    /// v0.2.3.2 起面板**常驻**：没有折叠按钮，也没有 `Ctrl+I`（`shell.set_inspector_visible`
     /// 不再是用户可达的动作）。宽度仍可拖、按连接记忆。
     pub fn new() -> Rc<Self> {
         let title = gtk::Label::new(Some("信息面板"));

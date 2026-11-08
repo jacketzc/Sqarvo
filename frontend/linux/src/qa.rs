@@ -785,7 +785,7 @@ struct Args {
     tree_select: Option<String>,
     /// `--qa-tree-select-connection <name>`：选中某条连接节点（#119）。
     tree_select_connection: Option<String>,
-    /// `--qa-inspector <ddl|info>`：信息面板切到哪一页（#119；v0.2.4 起面板常驻、不能折叠）。
+    /// `--qa-inspector <ddl|info>`：信息面板切到哪一页（#119；v0.2.3.2 起面板常驻、不能折叠）。
     inspector: Option<String>,
     /// `--qa-inspector-width <px>`：把面板拖到指定宽度（按连接记忆的证据，#119）。
     inspector_width: Option<i32>,
@@ -2114,7 +2114,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| "--qa-inspector 需要 ddl|info".to_owned())?;
-                // v0.2.4：信息面板常驻，`hidden` / `shown` / `toggle` 不再有意义。
+                // v0.2.3.2：信息面板常驻，`hidden` / `shown` / `toggle` 不再有意义。
                 // 解析阶段就拒掉，避免脚本以为「折叠 / 展开」被执行过。
                 if !matches!(value.as_str(), "ddl" | "info") {
                     return Err(format!(
@@ -2184,11 +2184,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 index += 2;
             }
             // 未知的 GLib 选项（`--window-size` 等由 GApplication 自己消费）照旧跳过；
-            // 但未知的 `--qa-*` 必须报错：v0.2.4 删掉的参数（如 `--qa-tree-ddl`）不能
+            // 但未知的 `--qa-*` 必须报错：v0.2.3.2 删掉的参数（如 `--qa-tree-ddl`）不能
             // 被安静地忽略成「脚本跑完了、什么都没做」。
             other if other.starts_with("--qa-") => {
                 return Err(format!(
-                    "未知的 QA 参数：{other}（v0.2.4 移除了旧的对象树 DDL 参数）"
+                    "未知的 QA 参数：{other}（v0.2.3.2 移除了旧的对象树 DDL 参数）"
                 ));
             }
             _ => index += 1,
@@ -2966,7 +2966,7 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-tree-expand", " "])).is_err());
         assert!(parse(&args(&["app", "--qa-tree-open"])).is_err());
         assert!(parse(&args(&["app", "--qa-tree-open", ""])).is_err());
-        // `--qa-tree-ddl` 在 v0.2.4 随「查看 DDL」入口一起移除：旧脚本必须报错，
+        // `--qa-tree-ddl` 在 v0.2.3.2 随「查看 DDL」入口一起移除：旧脚本必须报错，
         // 不能安静地跑成「什么都没做」。
         assert!(parse(&args(&["app", "--qa-tree-ddl", "orders"])).is_err());
         assert!(parse(&args(&["app", "--qa-tree-search", "  "])).is_err());

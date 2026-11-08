@@ -219,7 +219,7 @@ pub enum Command {
     /// 列出某条会话的表与视图（元数据根节点）。使用调用方给定的会话（浏览会话）。
     #[allow(
         dead_code,
-        reason = "v0.2.4 删掉侧栏平铺列表后界面不再发起 ListTables；RPC 接线保留（Event::Tables 仍消费）"
+        reason = "v0.2.3.2 删掉侧栏平铺列表后界面不再发起 ListTables；RPC 接线保留（Event::Tables 仍消费）"
     )]
     ListTables {
         /// 用来查询元数据的会话 ID（不是标签会话）。
@@ -925,7 +925,7 @@ impl WorkerHandle {
     /// 请求列出某条会话的表（非阻塞）：用浏览会话，不占标签会话。
     #[allow(
         dead_code,
-        reason = "v0.2.4 删掉侧栏平铺列表后没有调用方；保留入口给后续「按会话列表」的诊断"
+        reason = "v0.2.3.2 删掉侧栏平铺列表后没有调用方；保留入口给后续「按会话列表」的诊断"
     )]
     pub fn list_tables(&self, session_id: &str) {
         let _ = self.commands.send(Command::ListTables {
