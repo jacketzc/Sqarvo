@@ -84,6 +84,12 @@ pub const FONT_TITLE: i32 = 13;
 /// 状态栏字号。
 pub const FONT_STATUS: i32 = 11;
 
+/// 数据网格单元格字号。
+///
+/// 不能降到 12px：GTK4 在 Linux 上以 12px 渲染 CJK 单元格时，会把「三 / 五 / 张」
+/// 这类字的底部笔画裁掉（13px 起完整）。32px 数据行仍能容纳 13px 文本。
+pub const FONT_DATA_CELL: i32 = 13;
+
 /// 可焦点控件的最小点击区（§11：紧凑化不得小于它）。
 pub const MIN_TARGET: i32 = 24;
 
@@ -247,6 +253,9 @@ mod tests {
         const { assert!(ROW_HEIGHT_DATA >= MIN_TARGET) };
         const { assert!(FONT_TITLE > FONT_UI) };
         const { assert!(FONT_UI >= FONT_STATUS) };
+        // 12px 会裁掉部分 CJK 底横（用户反馈 demo_users 的「三 / 五」缺笔画）。
+        const { assert!(FONT_DATA_CELL >= 13) };
+        const { assert!(FONT_DATA_CELL > FONT_UI) };
     }
 
     #[test]
