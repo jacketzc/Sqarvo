@@ -1227,15 +1227,12 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
     }
 
     let registry = state.registry.borrow().clone();
-    let connections = registry
-        .as_ref()
-        .map_or_else(Vec::new, |registry| startup_connections(registry));
     let browse_sessions = registry
         .as_ref()
         .map_or(0, |registry| registry.connected_count());
 
     let startup = crate::startup::StartupWorkspace::new(crate::startup::StartupConfig {
-        connections,
+        registry,
         driver_count: snapshot.drivers.len(),
         browse_sessions,
         connect: {
@@ -1270,32 +1267,6 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
         crate::qa::elapsed_ms(),
         startup.connection_count()
     );
-}
-
-/// 注册表快照 → 启动态侧栏的行数据（只含展示字段，不含密码）。
-fn startup_connections(registry: &ConnectionRegistry) -> Vec<crate::startup::StartupConnection> {
-    registry
-        .snapshots()
-        .into_iter()
-        .map(|row| crate::startup::StartupConnection {
-            key: row.key,
-            name: row.name,
-            driver: row.driver,
-            target: row.target,
-            state: row.state,
-        })
-        .collect()
-}
-
-/// 配置变化后重填启动态侧栏（删除连接后不重建整个外壳：状态栏与标签页都还在）。
-fn refresh_startup_connections(state: &Rc<UiState>) {
-    let (Some(startup), Some(registry)) = (
-        state.startup.borrow().clone(),
-        state.registry.borrow().clone(),
-    ) else {
-        return;
-    };
-    startup.set_connections(&startup_connections(&registry));
 }
 
 /// 断开一条连接的浏览会话（侧栏右键「断开」）：与树上的右键走同一条确认路径。
@@ -1368,7 +1339,7 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
                 }
             }
             registry.refresh_from_config();
-            refresh_startup_connections(&state);
+            // 对象树的注册表监听会自己刷新连接层；不在这里重建外壳。
             // 密钥条目尽力删除：删不掉不冒充成功，界面会写明「配置已删除，密钥条目未删除」。
             if reference.is_empty() {
                 eprintln!("[startup] 连接「{name}」没有凭据引用（无需清理密钥条目）");
@@ -1758,6 +1729,14 @@ impl Workspace {
             connect_saved: {
                 let state = Rc::clone(state);
                 Rc::new(move |key: String| connect_saved(&state, &key))
+            },
+            edit_saved: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
+            },
+            delete_saved: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| confirm_delete_saved(&state, &key))
             },
         });
 
