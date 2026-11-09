@@ -362,10 +362,11 @@ struct TableInfo {
 
 /// `[DDL] / [表信息]` 切换条的水平内缩。
 ///
-/// 面板正文的左边距是 10，而按钮自身有 8px 横向内边距（CSS `.sqarvo-pane-switch >
-/// button { padding: 0 8px }`）——容器留在 10 会让标签文字比标题右缩 8px，看着不对齐。
-/// 留 10 − 8 = 2：标签文字与面板标题、DDL 正文落在同一条竖线上，选中块向左探出 8px。
-const PANE_SWITCH_INSET: i32 = 2;
+/// 面板正文的左边距是 10，而按钮自身有横向内边距（CSS `.sqarvo-pane-switch >
+/// button { padding: 0 4px }`）。容器留 10 − 4 = 6：选中块与它的文字都落在标题 /
+/// 正文那条竖线附近（差 4px 是块自身的呼吸空间），不会再出现「块探出边距」或
+/// 「文字右缩一格」两种观感之一。
+const PANE_SWITCH_INSET: i32 = 6;
 
 impl Inspector {
     /// 构建面板。
@@ -417,6 +418,12 @@ impl Inspector {
         let ddl_toggle = gtk::ToggleButton::with_label("DDL");
         ddl_toggle.add_css_class("flat");
         ddl_toggle.set_tooltip_text(Some("显示该对象的 DDL"));
+        // 拉丁字母与 CJK 在同一行里光学中心差约 1.5px（「DDL」没有下缘、字身短，
+        // 「表信息」字形更高，两者的行盒居中后看起来「DDL」偏高）。给拉丁标签加 2px
+        // 上边距 → 标签在按钮内下移 1px，两个标签的视觉中心对齐。
+        if let Some(label) = ddl_toggle.child().and_downcast::<gtk::Label>() {
+            label.set_margin_top(2);
+        }
         let info_toggle = gtk::ToggleButton::with_label("表信息");
         info_toggle.add_css_class("flat");
         info_toggle.set_tooltip_text(Some("列、主键、索引与触发器、已加载行数"));

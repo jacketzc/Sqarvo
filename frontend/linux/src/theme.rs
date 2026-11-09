@@ -163,7 +163,7 @@ pub fn stylesheet() -> String {
         .sqarvo-pane-switch > button {{
             min-height: {target}px;
             min-width: {target}px;
-            padding: 0 8px;
+            padding: 0 4px;
             border: none;
             border-radius: 6px;
             background: transparent;
@@ -305,7 +305,7 @@ mod tests {
             "选中块要有圆角：{rule}"
         );
         assert!(
-            rule.contains("padding: 0 8px;"),
+            rule.contains("padding: 0 4px;"),
             "内边距要收小（贴着文字）：{rule}"
         );
         assert!(
