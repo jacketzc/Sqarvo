@@ -3010,21 +3010,12 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
             "启动态 Objects 标签应当 pinned=true，实际 pinned={objects_pinned}"
         ));
     }
-    // 启动态对象树还没有选中的连接：面板空态必须给出可执行的下一步。
-    let (empty_title, empty_description) = startup.inspector_empty_text();
-    if empty_title != "没有选中对象" || empty_description.contains("对象树") {
-        return Err(format!(
-            "启动态信息面板空态文案不应对照对象树（也没有选中连接可操作），实际标题「{empty_title}」说明「{empty_description}」"
-        ));
-    }
-    if !empty_description.contains("双击一条已保存的连接") {
-        return Err(format!(
-            "启动态信息面板空态说明应指向左侧已保存连接（「双击一条已保存的连接」），实际「{empty_description}」"
-        ));
-    }
+    // 信息面板空态与选中态共用同一套外壳（标题「信息面板」+ 分隔线），内容区留白；
+    // 不再有居中大标题 / 说明文字需要断言。
     Ok(format!(
-        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段，信息面板 {inspector_width}px 可见，Objects pinned，面板文案指向左侧连接）",
-        startup.connection_count()
+        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段，信息面板 {}px 可见，Objects pinned）",
+        startup.connection_count(),
+        inspector_width
     ))
 }
 

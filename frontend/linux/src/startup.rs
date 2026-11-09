@@ -72,11 +72,11 @@ pub struct StartupWorkspace {
     /// 六区域外壳。**必须持有**：`Shell::new` 在 `root.connect_map` 里注册的落位回调
     /// 用 `Weak<Shell>`，外壳 `Rc` 一丢，信息面板就不落位、布局自检也不打印（#139）。
     shell: Rc<Shell>,
-    /// 信息面板（启动态即常驻 280；没有选中对象时是同一份空态）。
+    /// 信息面板（启动态即常驻 280；空态与选中态同一套外壳）。
     ///
-    /// GTK 树持有控件本身；这里保存 `Rc` 是为了保证 Rust 侧的面板状态
-    /// （`show_empty` / `set_empty_text` 之后的页选择与文案）与控件同寿，
-    /// 并供 `inspector_empty_text()` 读取真实文案。
+    /// **这个字段只用来持有 `Rc`**，不会被读：GTK 树持有控件本身，但 Inspector 的
+    /// Rust 侧状态（当前页、标签记忆）需要 `Rc` 活着，`Weak` 回调才升级得到面板。
+    #[allow(dead_code)]
     inspector: Rc<crate::inspector::Inspector>,
     /// 固定的 `Objects` 标签页（QA 读 `is_pinned()` 用）。
     objects_page: adw::TabPage,
@@ -89,14 +89,10 @@ pub struct StartupWorkspace {
 impl StartupWorkspace {
     /// 组装启动态外壳（区域 02–06；区域 01 的 headerbar 在 `ui.rs`）。
     pub fn new(config: StartupConfig) -> Rc<Self> {
-        // ---- 区域 06：信息面板（视觉与连接态一致，文案换成未连接口径） ------
+        // ---- 区域 06：信息面板（与连接态同一套外壳：标题「信息面板」+ 分隔线，
+        //      未选中对象时内容区留白，不再写空态说明） ----------------------
         let inspector = crate::inspector::Inspector::new();
         inspector.show_empty();
-        // 启动态对象树还没有选中的连接：把同一份空态换成可执行的操作说明。
-        inspector.set_empty_text(
-            "没有选中对象",
-            "从左侧选择一个连接开始：双击一条已保存的连接即可连接。",
-        );
 
         // ---- 区域 03：侧栏 = 与连接态同一个对象树 --------------------------
         let tree = TreePanel::new(TreeCallbacks {
@@ -288,12 +284,6 @@ impl StartupWorkspace {
     #[must_use]
     pub(crate) fn objects_pinned(&self) -> bool {
         self.objects_page.is_pinned()
-    }
-
-    /// 启动态信息面板空态文案 `(标题, 说明)`（QA 断言用，读控件真实文本）。
-    #[must_use]
-    pub(crate) fn inspector_empty_text(&self) -> (String, String) {
-        self.inspector.empty_text()
     }
 
     /// QA（`--qa-startup-click <name>`）：按名字激活一条已保存连接。
