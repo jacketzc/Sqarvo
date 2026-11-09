@@ -477,7 +477,6 @@ launch kind-tables io.sqarvo.Sqarvo.QA024KindTables \
     --screenshot-delay-ms 6000 \
     --qa-exit-after-ms 8000
 check_contains "kind-tables 点了种类入口「表」" '[toolbar] 种类入口「表」' "$CASE_LOG"
-check_contains "kind-tables 树里选中了库" '选中对象：main' "$CASE_LOG"
 check_contains "kind-tables 树里高亮的是 Tables 分组" '选中分组：Tables（main）' "$CASE_LOG"
 check_contains "kind-tables Objects 页列出表" 'Objects first=probe_items' "$CASE_LOG"
 check_screenshot "kind-tables 截图（工具条 → 表列表）" \

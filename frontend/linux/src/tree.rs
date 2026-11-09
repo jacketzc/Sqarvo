@@ -2903,14 +2903,7 @@ impl TreePanel {
     /// 另一个库（每条连接都有多个 catalog），点按钮必须跟着**眼前这个库**走。
     #[must_use]
     pub fn selected_catalog(&self) -> Option<ObjectRef> {
-        let position = self
-            .list_view
-            .model()
-            .and_then(|model| model.downcast::<gtk::SingleSelection>().ok())?
-            .selected();
-        if position == u32::MAX {
-            return None;
-        }
+        let position = self.selected_position()?;
         let row = self.tree_row(position)?;
         match self.row_of(&row)? {
             Row::Object(node) => {
@@ -2928,19 +2921,41 @@ impl TreePanel {
         }
     }
 
-    /// 选中与「表 / 视图」入口等价的库节点。
+    /// 选中与「表 / 视图」入口等价的**分组行**（与用户点分组行同一条路径）。
     ///
-    /// 优先按调用方给的 `target`（当前选中项所在的库）**按 session_id + 库名**命中：
-    /// 多连接下同名库很常见（每条 SQLite 连接都有 `main`），只按名字会跳到别的连接。
-    /// `target` 为 `None` 或树里找不到时，退回活动连接里的第一个库。
-    pub fn select_catalog(&self, target: Option<&ObjectRef>) -> Result<ObjectRef, String> {
+    /// 一次到位：先定位目标库（只解析、**不选中**——先选中库会让高亮在库节点上闪一下，
+    /// 用户看到的就是「跳一下」），需要时展开它（分组行才会出现），等分组行出现后
+    /// 只选中一次。返回该库的引用，调用方用它把 `Objects` 页切到同一作用域。
+    pub fn select_kind(
+        self: &Rc<Self>,
+        target: Option<&ObjectRef>,
+        group: KindGroup,
+    ) -> Result<ObjectRef, String> {
+        let Some((position, catalog)) = self.catalog_row(target) else {
+            return Err("对象树里还没有可用的库：先展开连接".to_owned());
+        };
+        let Some(row) = self.tree_row(position) else {
+            return Err("对象树里找不到这个库的行".to_owned());
+        };
+        if !row.is_expanded() {
+            row.set_expanded(true);
+        }
+        self.select_group_when_ready(catalog.clone(), group, position);
+        Ok(catalog)
+    }
+
+    /// 解析目标库的行（**不改选中**）。
+    ///
+    /// 优先按 `target`（当前选中项所在的库）的 `session_id + 库名` 精确命中：多连接下
+    /// 同名库很常见（每条 SQLite 连接都有 `main`），只按名字会跳到别的连接；退一步只按
+    /// 库名，最后退回活动连接里的第一个库。
+    fn catalog_row(&self, target: Option<&ObjectRef>) -> Option<(u32, ObjectRef)> {
         if let Some(want) = target {
             let name = if want.catalog.is_empty() {
                 want.name.as_str()
             } else {
                 want.catalog.as_str()
             };
-            // 第一轮：session + 库名都命中；第二轮：只按库名（引用来自已断开的旧会话）。
             for require_session in [true, false] {
                 for position in 0..self.tree_model.n_items() {
                     let Some(row) = self.tree_row(position) else {
@@ -2958,8 +2973,7 @@ impl TreePanel {
                     if require_session && node.reference.session_id != want.session_id {
                         continue;
                     }
-                    self.select_position(position);
-                    return Ok(node.reference.clone());
+                    return Some((position, node.reference.clone()));
                 }
             }
         }
@@ -2985,49 +2999,27 @@ impl TreePanel {
                 None => true,
             };
             if in_active {
-                self.select_position(position);
-                return Ok(node.reference.clone());
+                return Some((position, node.reference.clone()));
             }
             if fallback.is_none() {
                 fallback = Some((position, node.reference.clone()));
             }
         }
-        if let Some((position, reference)) = fallback {
-            self.select_position(position);
-            return Ok(reference);
-        }
-        Err("对象树里还没有可用的库：先展开连接".to_owned())
+        fallback
     }
 
-    /// 选中某个库下的种类分组（与用户点分组行同一条路径）。
+    /// 等库的分组行出现后选中它（最多 ~1 秒）。
     ///
-    /// 分组行是展开库之后才建的，所以这里：先展开库（若未展开），再短轮询等分组行出现，
-    /// 出现后选中它。最多等 ~1 秒，失败只记一行日志（用户还可以自己点）。
-    pub fn select_catalog_group(self: &Rc<Self>, catalog: &ObjectRef, group: KindGroup) {
-        let mut found = false;
-        for position in 0..self.tree_model.n_items() {
-            let Some(row) = self.tree_row(position) else {
-                continue;
-            };
-            let Some(Row::Object(node)) = self.row_of(&row) else {
-                continue;
-            };
-            if node.reference != *catalog {
-                continue;
-            }
-            if !row.is_expanded() {
-                row.set_expanded(true);
-            }
-            found = true;
-            break;
-        }
-        if !found {
-            eprintln!("[tree] 种类入口：树里找不到库 {}", catalog.catalog);
-            return;
-        }
+    /// 已经在目标分组上就什么都不做——重复选中会再触发一次滚动，看起来又是一跳。
+    /// 分组行始终没出现时退回选中库节点，至少让用户看到落点。
+    fn select_group_when_ready(
+        self: &Rc<Self>,
+        parent: ObjectRef,
+        group: KindGroup,
+        fallback: u32,
+    ) {
         let attempts = Rc::new(Cell::new(0u32));
         let weak = Rc::downgrade(self);
-        let parent = catalog.clone();
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let Some(panel) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -3042,17 +3034,22 @@ impl TreePanel {
                 if group_row.parent != parent || group_row.group != RowGroup::Catalog(group) {
                     continue;
                 }
-                panel.select_position(position);
+                if panel.selected_position() != Some(position) {
+                    panel.select_position(position);
+                }
                 return glib::ControlFlow::Break;
             }
             let tick = attempts.get() + 1;
             attempts.set(tick);
             if tick >= 25 {
                 eprintln!(
-                    "[tree] 种类入口：{} 的 {} 分组没有出现（放弃选中）",
+                    "[tree] 种类入口：{} 的 {} 分组没有出现（选中库节点）",
                     parent.catalog,
                     group.label()
                 );
+                if panel.selected_position() != Some(fallback) {
+                    panel.select_position(fallback);
+                }
                 return glib::ControlFlow::Break;
             }
             glib::ControlFlow::Continue

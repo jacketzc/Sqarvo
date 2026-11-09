@@ -1571,16 +1571,14 @@ fn show_objects_for_kind(
             // 才退回活动连接的默认库。不能用「活动连接的默认库」直接决定——那会把
             // 按钮锁死在默认库上（用户反馈的 bug）。
             let target = tree.selected_catalog();
-            match tree.select_catalog(target.as_ref()) {
+            let group = match shortcut {
+                crate::tabs::KindShortcut::Views => crate::tree::KindGroup::Views,
+                _ => crate::tree::KindGroup::Tables,
+            };
+            match tree.select_kind(target.as_ref(), group) {
                 Ok(parent) => {
-                    // 两种入口都落在库下的**分组行**上（用户要求：点「表」高亮的应是
-                    // `Tables` 分组，而不是库节点本身）。分组行是展开库之后才建的，
-                    // `select_catalog_group` 会先展开再选中。
-                    let group = match shortcut {
-                        crate::tabs::KindShortcut::Views => crate::tree::KindGroup::Views,
-                        _ => crate::tree::KindGroup::Tables,
-                    };
-                    tree.select_catalog_group(&parent, group);
+                    // 树里只选中一次（直接落在分组行上）：先选库再选分组会看到高亮
+                    // 「跳一下」，那是两段选中 + 两次滚动叠出来的。
                     let scope = if parent.catalog.is_empty() {
                         parent.name.clone()
                     } else {
