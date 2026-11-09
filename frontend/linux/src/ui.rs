@@ -1578,34 +1578,34 @@ fn show_objects_for_kind(
     tabs_slot: &Rc<RefCell<Option<Rc<crate::tabs::TabSet>>>>,
     shortcut: crate::tabs::KindShortcut,
 ) {
+    use crate::tabs::KindShortcut;
     let Some(tabs) = tabs_slot.borrow().clone() else {
         return;
     };
-    match shortcut.kinds() {
-        Some(kinds) => {
-            let Some(tree) = tree_slot.borrow().clone() else {
-                return;
+    let Some(tree) = tree_slot.borrow().clone() else {
+        return;
+    };
+    // 目标库 = 树里当前选中项所在的库（用户可能刚切到另一个库）；没有选中时才退回
+    // 活动连接的默认库。不能用「活动连接的默认库」直接决定——那会把按钮锁死在默认库上。
+    let target = tree.selected_catalog();
+    let group = match shortcut {
+        KindShortcut::Views => crate::tree::KindGroup::Views,
+        KindShortcut::Functions => crate::tree::KindGroup::Functions,
+        KindShortcut::Queries => crate::tree::KindGroup::Queries,
+        KindShortcut::Tables => crate::tree::KindGroup::Tables,
+    };
+    match tree.select_kind(target.as_ref(), group) {
+        Ok(parent) => {
+            // 树里只选中一次（直接落在分组行上）：先选库再选分组会看到高亮「跳一下」，
+            // 那是两段选中 + 两次滚动叠出来的。
+            let scope = if parent.catalog.is_empty() {
+                parent.name.clone()
+            } else {
+                parent.catalog.clone()
             };
-            // 目标库 = 树里当前选中项所在的库（用户可能刚切到另一个库）；没有选中时
-            // 才退回活动连接的默认库。不能用「活动连接的默认库」直接决定——那会把
-            // 按钮锁死在默认库上（用户反馈的 bug）。
-            let target = tree.selected_catalog();
-            let group = match shortcut {
-                crate::tabs::KindShortcut::Views => crate::tree::KindGroup::Views,
-                _ => crate::tree::KindGroup::Tables,
-            };
-            match tree.select_kind(target.as_ref(), group) {
-                Ok(parent) => {
-                    // 树里只选中一次（直接落在分组行上）：先选库再选分组会看到高亮
-                    // 「跳一下」，那是两段选中 + 两次滚动叠出来的。
-                    let scope = if parent.catalog.is_empty() {
-                        parent.name.clone()
-                    } else {
-                        parent.catalog.clone()
-                    };
+            match shortcut.kinds() {
+                Some(kinds) => {
                     tabs.show_objects(Some(parent), &kinds);
-                    tabs.show_objects_page();
-                    tabs.refresh_current();
                     eprintln!(
                         "[toolbar] 种类入口「{}」：列出 {scope} 的 {}（{} 个种类）",
                         shortcut.label(),
@@ -1613,20 +1613,31 @@ fn show_objects_for_kind(
                         kinds.len()
                     );
                 }
-                Err(reason) => eprintln!(
-                    "[toolbar] 种类入口「{}」无法定位库：{reason}",
-                    shortcut.label()
-                ),
+                None => {
+                    // 入口已经有、列表还没有（Functions / Queries）：树里照样选中分组行，
+                    // 页面如实说明。两个方向都要能走通，才叫联动。
+                    tabs.show_objects_unavailable_for(shortcut);
+                    eprintln!(
+                        "[toolbar] 种类入口「{}」：{scope} 的 {} 列表尚未实现（页面已如实说明）",
+                        shortcut.label(),
+                        shortcut.label()
+                    );
+                }
             }
-        }
-        None => {
-            tabs.show_objects_unavailable_for(shortcut);
             tabs.show_objects_page();
             tabs.refresh_current();
+        }
+        Err(reason) => {
             eprintln!(
-                "[toolbar] 种类入口「{}」：列表尚未实现（页面已如实说明）",
+                "[toolbar] 种类入口「{}」无法定位库：{reason}",
                 shortcut.label()
             );
+            // 树里还没有库（例如尚未连接）：仍然切到页面并如实说明，不能点了没反应。
+            if shortcut.kinds().is_none() {
+                tabs.show_objects_unavailable_for(shortcut);
+                tabs.show_objects_page();
+                tabs.refresh_current();
+            }
         }
     }
 }

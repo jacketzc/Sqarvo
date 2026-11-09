@@ -488,7 +488,10 @@ launch kind-functions io.sqarvo.Sqarvo.QA024KindFunctions \
     --screenshot-delay-ms 5000 \
     --qa-exit-after-ms 7000
 check_contains "kind-functions 函数列表如实说明未实现" \
-    '[toolbar] 种类入口「Functions」：列表尚未实现' "$CASE_LOG"
+    '[toolbar] 种类入口「Functions」：main 的 Functions 列表尚未实现' "$CASE_LOG"
+# 两个方向都要通：点工具条也要在树里选中对应的分组行（否则只有一半联动）。
+check_contains "kind-functions 树里高亮的是 Functions 分组" \
+    '选中分组：Functions（main）' "$CASE_LOG"
 check_screenshot "kind-functions 截图（未实现说明）" \
     "$OUT/kind-functions/06-toolbar-functions.png"
 
