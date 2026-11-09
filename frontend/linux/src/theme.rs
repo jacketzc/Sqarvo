@@ -238,11 +238,8 @@ pub fn stylesheet() -> String {
         }}
         .sqarvo-fs .fs-action {{ min-height: 28px; padding: 2px 14px; }}
 
-        /* 当前种类高亮：按钮因「新建表/视图…」尚未实现而禁用，高亮仍要看得见 */
-        .sqarvo-kind-active:disabled {{
-            background: alpha(@accent_color, 0.20);
-            color: alpha(@accent_color, 0.90);
-        }}
+        /* 当前种类高亮：工具条上的种类入口（表 / 视图 / 函数 / 查询）不再禁用，
+           高亮只表示「现在列的是这一类」（v0.2.3.3 起它们会打开 Objects 页）。 */
         .sqarvo-kind-active {{ background: alpha(@accent_color, 0.20); }}
         "#,
         window_class = WINDOW_CLASS,

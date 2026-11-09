@@ -2895,6 +2895,113 @@ impl TreePanel {
             .scroll_to(position, gtk::ListScrollFlags::NONE, None);
     }
 
+    // -- 主工具条的种类入口（v0.2.3.3） -------------------------------------
+
+    /// 选中与「表」入口等价的树节点：活动连接里的那个库（只选中，不展开、不打开）。
+    ///
+    /// 走 `GtkListView` 的选中模型，触发与用户点一下相同的 `selected_notify`——信息面板
+    /// 与 `Objects` 页跟着换。返回库引用，调用方用它把列表切到同一作用域（已经选中的
+    /// 情况下 notify 不会再发，所以作用域必须由调用方显式给）。
+    pub fn select_catalog(&self, catalog: Option<&str>) -> Result<ObjectRef, String> {
+        let active = self.registry().and_then(|registry| registry.active_key());
+        let mut fallback: Option<(u32, ObjectRef)> = None;
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(Row::Object(node)) = self.row_of(&row) else {
+                continue;
+            };
+            if !matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
+                continue;
+            }
+            let in_active = match &active {
+                Some(key) => {
+                    self.registry()
+                        .and_then(|registry| registry.key_for_session(&node.reference.session_id))
+                        .as_deref()
+                        == Some(key.as_str())
+                }
+                None => true,
+            };
+            let name_matches = catalog.is_none_or(|name| {
+                name.is_empty() || node.display_name == name || node.reference.catalog == name
+            });
+            if in_active && name_matches {
+                self.select_position(position);
+                return Ok(node.reference.clone());
+            }
+            if fallback.is_none() && name_matches {
+                fallback = Some((position, node.reference.clone()));
+            }
+        }
+        if let Some((position, reference)) = fallback {
+            self.select_position(position);
+            return Ok(reference);
+        }
+        Err("对象树里还没有可用的库：先展开连接".to_owned())
+    }
+
+    /// 选中某个库下的种类分组（与用户点分组行同一条路径）。
+    ///
+    /// 分组行是展开库之后才建的，所以这里：先展开库（若未展开），再短轮询等分组行出现，
+    /// 出现后选中它。最多等 ~1 秒，失败只记一行日志（用户还可以自己点）。
+    pub fn select_catalog_group(self: &Rc<Self>, catalog: &ObjectRef, group: KindGroup) {
+        let mut found = false;
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(Row::Object(node)) = self.row_of(&row) else {
+                continue;
+            };
+            if node.reference != *catalog {
+                continue;
+            }
+            if !row.is_expanded() {
+                row.set_expanded(true);
+            }
+            found = true;
+            break;
+        }
+        if !found {
+            eprintln!("[tree] 种类入口：树里找不到库 {}", catalog.catalog);
+            return;
+        }
+        let attempts = Rc::new(Cell::new(0u32));
+        let weak = Rc::downgrade(self);
+        let parent = catalog.clone();
+        glib::timeout_add_local(Duration::from_millis(40), move || {
+            let Some(panel) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            for position in 0..panel.tree_model.n_items() {
+                let Some(row) = panel.tree_row(position) else {
+                    continue;
+                };
+                let Some(Row::Group(group_row)) = panel.row_of(&row) else {
+                    continue;
+                };
+                if group_row.parent != parent || group_row.group != RowGroup::Catalog(group) {
+                    continue;
+                }
+                panel.select_position(position);
+                return glib::ControlFlow::Break;
+            }
+            let tick = attempts.get() + 1;
+            attempts.set(tick);
+            if tick >= 25 {
+                eprintln!(
+                    "[tree] 种类入口：{} 的 {} 分组没有出现（放弃选中）",
+                    parent.catalog,
+                    group.label()
+                );
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     // -- QA（无人值守驱动用，全部走用户同一条路径） --------------------------
 
     /// 展开指定名字的节点（找不到返回原因；由调用方决定重试）。

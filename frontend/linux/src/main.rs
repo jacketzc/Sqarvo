@@ -118,6 +118,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-select-connection", "connection-name"),
         ("qa-objects-select", "object-name"),
         ("qa-objects-activate", "object-name"),
+        ("qa-kind", "tables|views|functions|queries"),
         ("qa-inspector", "ddl|info"),
         ("qa-inspector-width", "pixels"),
         ("qa-expect-tree", "field=value"),

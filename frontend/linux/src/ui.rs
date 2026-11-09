@@ -1510,9 +1510,12 @@ fn apply_tab_status(
                 .map(|table| table.reference.catalog.trim())
                 .filter(|catalog| !catalog.is_empty());
             shell.status().set_catalog(catalog);
-            shell
-                .toolbar()
-                .set_kind(snapshot.table.as_ref().map(|table| table.kind));
+            shell.toolbar().set_active(
+                snapshot
+                    .table
+                    .as_ref()
+                    .and_then(|table| crate::tabs::KindShortcut::of_kind(table.kind)),
+            );
             if let Some(actions) = actions {
                 actions.apply_row_ops(&snapshot.row_ops);
             }
@@ -1526,21 +1529,95 @@ fn apply_tab_status(
                 shell.status().set_sql_summary(summary);
             }
             shell.status().set_timing(*timing_ms);
-            shell.toolbar().set_kind(None);
+            shell.toolbar().set_active(None);
             if let Some(actions) = actions {
                 actions.apply_row_ops(&crate::tabs::TabSet::empty_row_ops());
             }
         }
-        crate::tabs::TabStatus::Objects => {
+        crate::tabs::TabStatus::Objects { shortcut } => {
             shell.status().set_catalog(None);
             shell
                 .status()
                 .show_no_table("Objects 页：在对象树里打开表或新建查询标签");
             shell.status().set_sql_summary("尚未执行");
-            shell.toolbar().set_kind(None);
+            // 高亮 = `Objects` 页现在列的种类（点工具条切过去时它立刻跟着变）。
+            shell.toolbar().set_active(*shortcut);
             if let Some(actions) = actions {
                 actions.apply_row_ops(&crate::tabs::TabSet::empty_row_ops());
             }
+        }
+    }
+}
+
+/// 主工具条的种类入口（表 / 视图 / 函数 / 查询）：切到 `Objects` 页并列出该种类。
+///
+/// 「表 / 视图」走与对象树选中**同一条**路径：先选中树里对应的库（视图还要选中它的
+/// `Views` 分组），信息面板随之切换；再把列表切到同一作用域。「函数 / 查询」没有可拉取
+/// 的列表，页面如实说明原因，不摆假数据。
+fn show_objects_for_kind(
+    state: &Rc<UiState>,
+    tree_slot: &Rc<RefCell<Option<Rc<TreePanel>>>>,
+    tabs_slot: &Rc<RefCell<Option<Rc<crate::tabs::TabSet>>>>,
+    shortcut: crate::tabs::KindShortcut,
+) {
+    let Some(tabs) = tabs_slot.borrow().clone() else {
+        return;
+    };
+    match shortcut.kinds() {
+        Some(kinds) => {
+            let catalog = state
+                .registry
+                .borrow()
+                .as_ref()
+                .and_then(|registry| registry.active_key())
+                .map(|key| registry_catalog(state, &key));
+            let Some(tree) = tree_slot.borrow().clone() else {
+                return;
+            };
+            match tree.select_catalog(catalog.as_deref()) {
+                Ok(parent) => {
+                    if shortcut == crate::tabs::KindShortcut::Views {
+                        tree.select_catalog_group(&parent, crate::tree::KindGroup::Views);
+                    }
+                    let scope = if parent.catalog.is_empty() {
+                        parent.name.clone()
+                    } else {
+                        parent.catalog.clone()
+                    };
+                    tabs.show_objects(Some(parent), &kinds);
+                    tabs.show_objects_page();
+                    tabs.refresh_current();
+                    eprintln!(
+                        "[toolbar] 种类入口「{}」：列出 {scope} 的 {}（{} 个种类）",
+                        shortcut.label(),
+                        shortcut.label(),
+                        kinds.len()
+                    );
+                }
+                Err(reason) => eprintln!(
+                    "[toolbar] 种类入口「{}」无法定位库：{reason}",
+                    shortcut.label()
+                ),
+            }
+        }
+        None => {
+            let (title, description) = match shortcut {
+                crate::tabs::KindShortcut::Functions => (
+                    "函数列表尚未实现",
+                    "驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。",
+                ),
+                _ => (
+                    "已保存的查询尚未实现",
+                    "本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。",
+                ),
+            };
+            tabs.show_objects_unavailable(shortcut, title, description);
+            tabs.show_objects_page();
+            tabs.refresh_current();
+            eprintln!(
+                "[toolbar] 种类入口「{}」：列表尚未实现（页面已如实说明）",
+                shortcut.label()
+            );
         }
     }
 }
@@ -1987,6 +2064,14 @@ impl Workspace {
                     }
                 })
             },
+            on_kind: {
+                let state = Rc::clone(state);
+                let tree_slot = Rc::clone(&tree_slot);
+                let tabs_slot = Rc::clone(&tabs_slot);
+                Rc::new(move |shortcut: crate::tabs::KindShortcut| {
+                    show_objects_for_kind(&state, &tree_slot, &tabs_slot, shortcut);
+                })
+            },
         });
         shell_slot.replace(Some(Rc::clone(&shell)));
         shell.status().set_connection(Some(connection_name));
@@ -2037,8 +2122,8 @@ impl Workspace {
             self.shell.toolbar().left_group().clone().upcast(),
         ));
         targets.push(Target::row(
-            "主工具条 右组(种类高亮)",
-            self.shell.toolbar().right_group().clone().upcast(),
+            "主工具条 种类入口(表·视图·函数·查询)",
+            self.shell.toolbar().kinds_group().clone().upcast(),
         ));
         targets.push(Target::row("侧栏", self.shell.sidebar().clone()));
         for (name, widget) in self.shell.status().audit_groups() {
@@ -2266,6 +2351,21 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
     if let Some(name) = crate::qa::objects_activate() {
         let tabs = Rc::clone(&workspace.tabs);
         schedule_step(delay, Rc::new(move || tabs.qa_objects_activate(&name)));
+        delay += 900;
+    }
+
+    if let Some(shortcut) = crate::qa::kind_click() {
+        let shell = Rc::clone(&workspace.shell);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                shell.toolbar().qa_click(shortcut);
+                Ok(format!(
+                    "主工具条种类入口「{}」（emit_clicked，与用户点击同一条信号）",
+                    shortcut.label()
+                ))
+            }),
+        );
         delay += 900;
     }
 

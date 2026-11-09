@@ -50,7 +50,6 @@ use gtk::glib;
 use crate::browse_view::relative_age;
 use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
 use crate::layout;
-use crate::proto::services::v1::ObjectKind;
 
 /// 状态栏「连接过滤」的提示：过滤未实现，树已按连接分组。
 const CONNECTION_FILTER_NOTE: &str = "连接过滤未实现；对象树已按连接分组（#114）";
@@ -79,6 +78,8 @@ pub struct ShellHandlers {
     pub connect: Rc<dyn Fn()>,
     /// 左组「新建查询」。
     pub new_query: Rc<dyn Fn()>,
+    /// 主工具条的种类入口（表 / 视图 / 函数 / 查询）：打开 `Objects` 页并列出该种类。
+    pub on_kind: Rc<dyn Fn(crate::tabs::KindShortcut)>,
 }
 
 /// 窗口内的外壳（区域 02–06）。
@@ -106,7 +107,11 @@ pub struct Shell {
 impl Shell {
     /// 组装五个区域（区域 01 的 headerbar 由 `ui.rs` 提供，不在本模块内）。
     pub fn new(handlers: ShellHandlers) -> Rc<Self> {
-        let toolbar = Toolbar::new(Rc::clone(&handlers.connect), Rc::clone(&handlers.new_query));
+        let toolbar = Toolbar::new(
+            Rc::clone(&handlers.connect),
+            Rc::clone(&handlers.new_query),
+            Rc::clone(&handlers.on_kind),
+        );
         let status = StatusBar::new(Rc::clone(&handlers.row_op), Rc::clone(&handlers.page_op));
         {
             // 相对时间（<1m / Nm）不会自己变：每 30 秒重算一次标签文本。
@@ -523,22 +528,27 @@ impl Shell {
 
 /// 区域 02：主工具条。
 ///
-/// 左组是真实动作（连接 / 新建查询）；右组是「当前种类」高亮。右组四枚按钮的
-/// 点击行为（新建表 / 视图 / 函数 / 查询）在 v0.2.3 没有实现，因此**禁用并写明原因**，
-/// 只承担高亮职责——不摆一个点了没反应的动作。
+/// 左组是真实动作（连接 / 新建查询）；分割线右侧是**种类入口**（表 / 视图 / 函数 / 查询），
+/// 与「新建查询」同一套按钮样式（flat、同高同内距）。点一下切到 `Objects` 页并列出该种类
+/// （v0.2.3.3：等同在对象树里选中对应的库 / 分组）。函数 / 查询没有可拉取的列表，点开后
+/// 页面如实说明原因，不摆假数据。
 pub struct Toolbar {
     root: gtk::Box,
     left: gtk::Box,
-    right: gtk::Box,
+    kinds: gtk::Box,
     new_query: gtk::Button,
-    table: gtk::ToggleButton,
-    view: gtk::ToggleButton,
-    function: gtk::ToggleButton,
-    query: gtk::ToggleButton,
+    table: gtk::Button,
+    view: gtk::Button,
+    function: gtk::Button,
+    query: gtk::Button,
 }
 
 impl Toolbar {
-    fn new(on_connect: Rc<dyn Fn()>, on_new_query: Rc<dyn Fn()>) -> Rc<Self> {
+    fn new(
+        on_connect: Rc<dyn Fn()>,
+        on_new_query: Rc<dyn Fn()>,
+        on_kind: Rc<dyn Fn(crate::tabs::KindShortcut)>,
+    ) -> Rc<Self> {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         root.add_css_class("sqarvo-toolbar");
         root.set_valign(gtk::Align::Center);
@@ -572,46 +582,57 @@ impl Toolbar {
         separator.set_margin_start(6);
         separator.set_margin_end(6);
 
-        let table = kind_button(
+        // 种类入口：与「新建查询」同一套按钮（flat / 同高同内距），只是动作不同。
+        let kind =
+            |label: &str, shortcut: crate::tabs::KindShortcut, tooltip: &str| -> gtk::Button {
+                let button = gtk::Button::with_label(label);
+                button.add_css_class("flat");
+                button.set_valign(gtk::Align::Center);
+                button.set_tooltip_text(Some(tooltip));
+                let handler = Rc::clone(&on_kind);
+                button.connect_clicked(move |_| handler(shortcut));
+                button
+            };
+        let table = kind(
             "表",
-            "新建表在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
+            crate::tabs::KindShortcut::Tables,
+            "在 Objects 页列出当前库的表（等同在对象树里选中该库）",
         );
-        let view = kind_button(
+        let view = kind(
             "视图",
-            "新建视图在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
+            crate::tabs::KindShortcut::Views,
+            "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）",
         );
-        let function = kind_button(
+        let function = kind(
             "函数",
-            "新建函数在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
+            crate::tabs::KindShortcut::Functions,
+            "函数列表：驱动尚未提供（点开看说明）",
         );
-        let query = kind_button(
+        let query = kind(
             "查询",
-            "按种类筛选查询在 v0.2.3.2 提供；此处只高亮对象树当前选中的种类",
+            crate::tabs::KindShortcut::Queries,
+            "已保存的查询：尚未实现（点开看说明）",
         );
-        view.set_group(Some(&table));
-        function.set_group(Some(&table));
-        query.set_group(Some(&table));
 
-        let right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        right.add_css_class("linked");
-        right.set_valign(gtk::Align::Center);
-        right.append(&table);
-        right.append(&view);
-        right.append(&function);
-        right.append(&query);
+        let kinds = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        kinds.set_valign(gtk::Align::Center);
+        kinds.append(&table);
+        kinds.append(&view);
+        kinds.append(&function);
+        kinds.append(&query);
 
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
 
         root.append(&left);
         root.append(&separator);
+        root.append(&kinds);
         root.append(&spacer);
-        root.append(&right);
 
         Rc::new(Self {
             root,
             left,
-            right,
+            kinds,
             new_query,
             table,
             view,
@@ -639,45 +660,39 @@ impl Toolbar {
         &self.left
     }
 
-    /// 右组（种类高亮）：同上。
-    pub fn right_group(&self) -> &gtk::Box {
-        &self.right
+    /// 种类入口组（表 / 视图 / 函数 / 查询）：同上。
+    pub fn kinds_group(&self) -> &gtk::Box {
+        &self.kinds
     }
 
-    /// 高亮「当前种类」：跟随当前打开对象的种类，而不是用户上次点的按钮。
-    pub fn set_kind(&self, kind: Option<ObjectKind>) {
-        let (table, view, function, query) = match kind {
-            Some(ObjectKind::Table | ObjectKind::Catalog | ObjectKind::Schema) => {
-                (true, false, false, false)
-            }
-            Some(ObjectKind::View | ObjectKind::MaterializedView) => (false, true, false, false),
-            Some(ObjectKind::Function | ObjectKind::Procedure) => (false, false, true, false),
-            _ => (false, false, false, false),
-        };
-        for (button, active) in [
-            (&self.table, table),
-            (&self.view, view),
-            (&self.function, function),
-            (&self.query, query),
+    /// 高亮「当前种类」：`Objects` 页列的种类，或当前表标签的种类。
+    pub fn set_active(&self, shortcut: Option<crate::tabs::KindShortcut>) {
+        use crate::tabs::KindShortcut;
+        for (button, choice) in [
+            (&self.table, KindShortcut::Tables),
+            (&self.view, KindShortcut::Views),
+            (&self.function, KindShortcut::Functions),
+            (&self.query, KindShortcut::Queries),
         ] {
-            button.set_active(active);
-            if active {
+            if Some(choice) == shortcut {
                 button.add_css_class("sqarvo-kind-active");
             } else {
                 button.remove_css_class("sqarvo-kind-active");
             }
         }
     }
-}
 
-/// 右组的种类按钮：禁用 + 原因（未实现的新建动作不该看起来可点）。
-fn kind_button(label: &str, reason: &str) -> gtk::ToggleButton {
-    let button = gtk::ToggleButton::with_label(label);
-    button.set_valign(gtk::Align::Center);
-    // 只做高亮：点击行为未实现，因此不可点，并用 tooltip 说明原因。
-    button.set_sensitive(false);
-    button.set_tooltip_text(Some(reason));
-    button
+    /// QA：点一下某个种类入口（`emit_clicked`，与用户点击同一条信号）。
+    pub fn qa_click(&self, shortcut: crate::tabs::KindShortcut) {
+        use crate::tabs::KindShortcut;
+        let button = match shortcut {
+            KindShortcut::Tables => &self.table,
+            KindShortcut::Views => &self.view,
+            KindShortcut::Functions => &self.function,
+            KindShortcut::Queries => &self.query,
+        };
+        button.emit_clicked();
+    }
 }
 
 /// 区域 05：状态栏（两行 56）。
@@ -1256,7 +1271,7 @@ mod tests {
     use crate::backend::table::TableEntry;
     use crate::browse_view::{PagerState, TotalInfo};
     use crate::data_page::RowOpsState;
-    use crate::proto::services::v1::{ObjectRef, TotalKind};
+    use crate::proto::services::v1::{ObjectKind, ObjectRef, TotalKind};
 
     fn table(name: &str) -> TableEntry {
         TableEntry {

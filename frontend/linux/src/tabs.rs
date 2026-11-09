@@ -394,11 +394,90 @@ pub struct QaBridge {
     pub observe: Rc<dyn Fn() -> crate::inspector::InspectorObservation>,
 }
 
+/// 主工具条「表 / 视图 / 函数 / 查询」四个入口（v0.2.3.3）。
+///
+/// 它同时表达「`Objects` 页现在列的是哪一类」：工具条高亮、页面内容、状态栏都按它对齐。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KindShortcut {
+    /// 表。
+    Tables,
+    /// 视图（含物化视图）。
+    Views,
+    /// 函数 / 过程（驱动未提供列表能力）。
+    Functions,
+    /// 已保存的查询（本版没有这一层）。
+    Queries,
+}
+
+impl KindShortcut {
+    /// 打开 `Objects` 页时要列出的种类；函数 / 查询没有可用的拉取能力，返回 `None`。
+    #[must_use]
+    pub fn kinds(self) -> Option<Vec<ObjectKind>> {
+        match self {
+            Self::Tables => Some(vec![ObjectKind::Table]),
+            Self::Views => Some(vec![ObjectKind::View, ObjectKind::MaterializedView]),
+            Self::Functions | Self::Queries => None,
+        }
+    }
+
+    /// 某个对象种类落在哪个入口下（表数据标签的「当前种类」高亮用）。
+    #[must_use]
+    pub fn of_kind(kind: ObjectKind) -> Option<Self> {
+        match kind {
+            ObjectKind::Table | ObjectKind::Catalog | ObjectKind::Schema => Some(Self::Tables),
+            ObjectKind::View | ObjectKind::MaterializedView => Some(Self::Views),
+            ObjectKind::Function | ObjectKind::Procedure => Some(Self::Functions),
+            _ => None,
+        }
+    }
+
+    /// 一组 `filter.kinds` 对应的入口（`Objects` 页按它决定工具条高亮）。
+    #[must_use]
+    pub fn of_kinds(kinds: &[ObjectKind]) -> Option<Self> {
+        if kinds
+            .iter()
+            .any(|kind| matches!(kind, ObjectKind::View | ObjectKind::MaterializedView))
+        {
+            Some(Self::Views)
+        } else if kinds.contains(&ObjectKind::Table) {
+            Some(Self::Tables)
+        } else {
+            None
+        }
+    }
+
+    /// 入口名（日志与文案用）。
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tables => "表",
+            Self::Views => "视图",
+            Self::Functions => "函数",
+            Self::Queries => "查询",
+        }
+    }
+
+    /// `--qa-kind` 的取值（ASCII，方便脚本）：`tables|views|functions|queries`。
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tables" | "table" => Some(Self::Tables),
+            "views" | "view" => Some(Self::Views),
+            "functions" | "function" => Some(Self::Functions),
+            "queries" | "query" => Some(Self::Queries),
+            _ => None,
+        }
+    }
+}
+
 /// 当前标签推给外壳的状态。
 #[derive(Debug, Clone)]
 pub enum TabStatus {
-    /// `Objects` 页：没有表格状态。
-    Objects,
+    /// `Objects` 页：没有表格状态；`shortcut` 是它当前列的种类（用于工具条高亮）。
+    Objects {
+        /// 当前列出的种类入口（空态 / 未实现时是点进来的那一个）。
+        shortcut: Option<KindShortcut>,
+    },
     /// 表数据标签：完整的数据页快照（箱装：比其它变体大得多）。
     Table(Box<StatusSnapshot>),
     /// 查询标签：SQL 摘要与上一次查询耗时。
@@ -479,6 +558,10 @@ pub struct ObjectsPage {
     stack: gtk::Stack,
     /// 空态页（`set_empty_text` 可改文案：启动态与连接态同一份实现，只是措辞不同）。
     empty: adw::StatusPage,
+    /// 空态文案的**默认值**：`show_empty` 回到它，`show_unavailable` 的临时文案不会残留。
+    empty_text: RefCell<(String, String)>,
+    /// 当前列的种类入口（工具条高亮读它；空态为 `None`）。
+    kind: RefCell<Option<KindShortcut>>,
     /// 行的数据模型：`BoxedAnyObject(TableEntry)`，只为可见行创建控件。
     store: gtk::gio::ListStore,
     /// 单选模型：单击选中、双击 / 回车激活（`single_click_activate(false)`）。
@@ -583,10 +666,13 @@ impl ObjectsPage {
 
         let empty = adw::StatusPage::new();
         empty.set_vexpand(true);
-        empty.set_title("没有选中对象");
-        empty.set_description(Some(
-            "在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。",
-        ));
+        let empty_text = (
+            "没有选中对象".to_owned(),
+            "在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。"
+                .to_owned(),
+        );
+        empty.set_title(&empty_text.0);
+        empty.set_description(Some(&empty_text.1));
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
         content.set_vexpand(true);
@@ -612,6 +698,8 @@ impl ObjectsPage {
             root,
             stack,
             empty,
+            empty_text: RefCell::new(empty_text),
+            kind: RefCell::new(None),
             store,
             selection,
             list,
@@ -683,11 +771,42 @@ impl ObjectsPage {
 
     /// 改写空态文案（启动态与连接态同一份实现，只是措辞不同）。
     ///
-    /// 启动态（未连接）用同一份 [`ObjectsPage`]，只把文案换成「未连接 / 从左侧选择
-    /// 一个连接开始」。之后调 [`Self::show_empty`] 不会把这段文案冲掉。
+    /// 这里改的是**默认文案**：`show_empty` 之后回到它，`show_unavailable` 的临时文案
+    /// 不会残留到下一次空态。
     pub(crate) fn set_empty_text(&self, title: &str, description: &str) {
+        self.empty_text
+            .replace((title.to_owned(), description.to_owned()));
         self.empty.set_title(title);
         self.empty.set_description(Some(description));
+    }
+
+    /// 把空态文案恢复成默认值。
+    fn apply_empty_text(&self) {
+        let (title, description) = self.empty_text.borrow().clone();
+        self.empty.set_title(&title);
+        self.empty.set_description(Some(&description));
+    }
+
+    /// 当前列的种类入口（工具条高亮读它）。
+    #[must_use]
+    pub fn kind_shortcut(&self) -> Option<KindShortcut> {
+        *self.kind.borrow()
+    }
+
+    /// 工具条点了**没有可用列表**的入口（函数 / 查询）：如实说明原因，不摆假数据。
+    pub fn show_unavailable(&self, shortcut: KindShortcut, title: &str, description: &str) {
+        self.generation.set(self.generation.get() + 1);
+        self.loaded.set(false);
+        self.token.replace(String::new());
+        self.last_request.replace(None);
+        self.hub_slot.replace(None);
+        self.clear_rows();
+        self.status.set_text("");
+        self.more.set_visible(false);
+        self.empty.set_title(title);
+        self.empty.set_description(Some(description));
+        self.kind.replace(Some(shortcut));
+        self.stack.set_visible_child_name("empty");
     }
 
     /// 双击 / 回车打开表数据标签（与树的双击同一条路径）。
@@ -713,6 +832,8 @@ impl ObjectsPage {
         self.clear_rows();
         self.status.set_text("");
         self.more.set_visible(false);
+        self.apply_empty_text();
+        self.kind.replace(None);
         self.stack.set_visible_child_name("empty");
     }
 
@@ -728,6 +849,7 @@ impl ObjectsPage {
         kinds: Vec<ObjectKind>,
     ) {
         let key: ObjectsRequest = (parent.clone(), kinds.clone());
+        self.kind.replace(KindShortcut::of_kinds(&kinds));
         self.stack.set_visible_child_name("list");
         // 树里换了选中：行高亮属于上一次浏览，先清掉。列表内容保留、不重发请求——
         // 否则会出现「右侧面板已经是新对象，列表还高亮着上一个」的错位。
@@ -1296,6 +1418,27 @@ impl TabSet {
         }
     }
 
+    /// 切到固定的 `Objects` 页（主工具条的种类入口点了以后走这里）。
+    pub fn show_objects_page(&self) {
+        self.select_index(0);
+    }
+
+    /// `Objects` 页当前列的种类入口（工具条高亮读它）。
+    #[must_use]
+    pub fn objects_shortcut(&self) -> Option<KindShortcut> {
+        self.objects
+            .borrow()
+            .as_ref()
+            .and_then(|objects| objects.kind_shortcut())
+    }
+
+    /// `Objects` 页显示「这一类暂时没有」的如实说明（函数 / 查询）。
+    pub fn show_objects_unavailable(&self, shortcut: KindShortcut, title: &str, description: &str) {
+        if let Some(objects) = self.objects.borrow().clone() {
+            objects.show_unavailable(shortcut, title, description);
+        }
+    }
+
     /// 固定 `Objects` 页的单击选中回调（同步信息面板）。
     ///
     /// 由 `ui.rs` 在信息面板建好之后接线：`TabSet` 不认识信息面板，回调里也不应该
@@ -1751,13 +1894,15 @@ impl TabSet {
         };
         (self.context.on_title)(&title, &self.context.subtitle);
         let status = match (&tab.kind, tab.data.as_ref(), tab.sql.as_ref()) {
-            (TabKind::Objects, _, _) => TabStatus::Objects,
+            (TabKind::Objects, _, _) => TabStatus::Objects {
+                shortcut: self.objects_shortcut(),
+            },
             (_, Some(data), _) => TabStatus::Table(Box::new(data.status_snapshot())),
             (_, _, Some(_)) => TabStatus::Query {
                 summary: tab.sql_summary.borrow().clone(),
                 timing_ms: tab.query_timing.get(),
             },
-            _ => TabStatus::Objects,
+            _ => TabStatus::Objects { shortcut: None },
         };
         (self.context.on_status)(status);
         eprintln!(

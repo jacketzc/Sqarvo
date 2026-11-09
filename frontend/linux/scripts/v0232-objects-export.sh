@@ -23,6 +23,8 @@
 #      「作用域未变」，列表仍是 1 行（不清空、不闪）。
 #   A5（v0.2.3.3）重新进入 Objects 页不选中任何行：列表选中 → 打开表标签 → 切回 Objects
 #      → 日志「重新进入 Objects 页：清掉行选中」，`selected=`（空串）断言成立。
+#   A6（v0.2.3.3）主工具条种类入口：点「表」→ 树里选中库 + 列表出表；点「函数」→ 如实说明
+#      未实现（两张截图）。
 #   B. EX 导出范围
 #      B1 整表：行数 = 数据行 + 1（表头）、目标权限 0600、目录里没有 `*.sqarvo-tmp`、
 #         日志命中「整表导出完成：」「整表进度：」。
@@ -71,7 +73,7 @@
 # 用法：
 #   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
 #   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
-#                                                          # 只跑 Objects 段（A1–A5）
+#                                                          # 只跑 Objects 段（A0–A6）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -464,6 +466,31 @@ check_contains "objects-reentry 行选中为空" 'Objects selected=' "$CASE_LOG"
 check_screenshot "objects-reentry 截图（重新进入后无高亮）" \
     "$OUT/objects-reentry/04-reentry-clears-selection.png"
 
+# A6（v0.2.3.3）：主工具条的种类入口。`--qa-kind` 发的是按钮自己的 `clicked` 信号。
+# 表：选中树里的库 + Objects 页列出表；函数：如实显示「尚未实现」，不摆假数据。
+launch kind-tables io.sqarvo.Sqarvo.QA024KindTables \
+    --qa-kind tables \
+    --qa-expect-objects count=1 \
+    --qa-expect-objects "first=$TABLE" \
+    --screenshot "$OUT/kind-tables/05-toolbar-tables.png" \
+    --screenshot-delay-ms 6000 \
+    --qa-exit-after-ms 8000
+check_contains "kind-tables 点了种类入口「表」" '[toolbar] 种类入口「表」' "$CASE_LOG"
+check_contains "kind-tables 树里选中了库" '选中对象：main' "$CASE_LOG"
+check_contains "kind-tables Objects 页列出表" 'Objects first=probe_items' "$CASE_LOG"
+check_screenshot "kind-tables 截图（工具条 → 表列表）" \
+    "$OUT/kind-tables/05-toolbar-tables.png"
+
+launch kind-functions io.sqarvo.Sqarvo.QA024KindFunctions \
+    --qa-kind functions \
+    --screenshot "$OUT/kind-functions/06-toolbar-functions.png" \
+    --screenshot-delay-ms 5000 \
+    --qa-exit-after-ms 7000
+check_contains "kind-functions 函数列表如实说明未实现" \
+    '[toolbar] 种类入口「函数」：列表尚未实现' "$CASE_LOG"
+check_screenshot "kind-functions 截图（未实现说明）" \
+    "$OUT/kind-functions/06-toolbar-functions.png"
+
 # ---------------------------------------------------------------------------
 # 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
 # ---------------------------------------------------------------------------
@@ -482,7 +509,7 @@ if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" 
         *) ok "证据目录在仓库外：$OUT" ;;
     esac
     say ""
-    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A1–A5）"
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A6）"
     say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
     say "证据目录：$OUT"
     say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"

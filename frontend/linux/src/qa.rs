@@ -788,6 +788,9 @@ struct Args {
     /// `--qa-objects-activate <name>`：激活 `Objects` 固定页的某一行（发
     /// `GtkListView::activate`，与双击 / 回车同一条路径）。
     objects_activate: Option<String>,
+    /// `--qa-kind <tables|views|functions|queries>`：点主工具条的种类入口（`emit_clicked`，
+    /// 与用户点击同一条信号；v0.2.3.3）。
+    kind_click: Option<crate::tabs::KindShortcut>,
     /// `--qa-inspector <ddl|info>`：信息面板切到哪一页（#119；v0.2.3.2 起面板常驻、不能折叠）。
     inspector: Option<String>,
     /// `--qa-inspector-width <px>`：把面板拖到指定宽度（窗口级记忆的证据，#119 / #155）。
@@ -1016,6 +1019,7 @@ pub fn enabled() -> bool {
             || args.tree_activate.is_some()
             || args.objects_select.is_some()
             || args.objects_activate.is_some()
+            || args.kind_click.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1317,6 +1321,12 @@ pub fn objects_activate() -> Option<String> {
     ARGS.get().and_then(|args| args.objects_activate.clone())
 }
 
+/// `--qa-kind <tables|views|functions|queries>`：点主工具条的种类入口。
+#[must_use]
+pub fn kind_click() -> Option<crate::tabs::KindShortcut> {
+    ARGS.get().and_then(|args| args.kind_click)
+}
+
 /// 信息面板的页选择（`--qa-inspector`，#119）：只有 `ddl|info`；面板常驻，不能折叠。
 #[must_use]
 pub fn inspector() -> Option<String> {
@@ -1372,6 +1382,7 @@ pub fn tree_requested() -> bool {
             || args.tree_select_connection.is_some()
             || args.objects_select.is_some()
             || args.objects_activate.is_some()
+            || args.kind_click.is_some()
             || args.inspector.is_some()
             || args.inspector_width.is_some()
     })
@@ -2165,6 +2176,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-objects-activate 的对象名不能为空".to_owned());
                 }
                 parsed.objects_activate = Some(value.clone());
+                index += 2;
+            }
+            "--qa-kind" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-kind 需要 tables|views|functions|queries".to_owned())?;
+                let shortcut = crate::tabs::KindShortcut::parse(value).ok_or_else(|| {
+                    format!("--qa-kind 只接受 tables|views|functions|queries，实际：{value}")
+                })?;
+                parsed.kind_click = Some(shortcut);
                 index += 2;
             }
             "--qa-inspector" => {

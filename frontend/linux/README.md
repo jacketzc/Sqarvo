@@ -54,8 +54,9 @@ NULL 与空串严格区分）、脏行标记与批量 `ApplyRowChanges` 提交�
 成功/失败/取消/断连后都会清理。
 
 **六区域外壳已就位**（#113）：`AdwHeaderBar`（标题 / 副标题 / 主菜单）→ 76 高主工具条
-（连接 / 新建查询 │ 当前种类高亮）→ `GtkPaned`（侧栏 237，可拖 180–420 | 工作区 |
-信息面板 280（v0.2.3.2 起常驻：可拖 240–520，没有折叠按钮与 `Ctrl+I`）→ 56 高两行状态栏。
+（连接 / 新建查询 │ 表 / 视图 / 函数 / 查询：点一下切到 `Objects` 页并列出该种类）→ `GtkPaned`
+（侧栏 237，可拖 180–420 | 工作区 | 信息面板 280（v0.2.3.2 起常驻：可拖 240–520，没有折叠按钮与
+`Ctrl+I`）→ 56 高两行状态栏。
 布局尺寸在一个纯函数模块里（`src/layout.rs`，有 1200×800 与 960×640 两档单测），紧凑密度
 （行高 24/32、字号 12/13/11）由 `src/theme.rs` 的全局 CSS 提供。主界面不再常驻
 「端点文件：…」，该信息移到「帮助 → 关于 Squarvo」（#139）。标签工作区（#116）、
@@ -1075,6 +1076,10 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   `--qa-tree-select` 之后，需要先让树选中一个库 / 分组把列表拉出来。
   v0.2.3.3 删除了页内作用域说明行，`--qa-expect-objects scope=` 随之删除：旧脚本传它
   会直接报错，而不是拿一个界面上已经没有的值「通过」；
+- `--qa-kind <tables|views|functions|queries>`（v0.2.3.3）：点主工具条的种类入口
+  （`emit_clicked`，与用户点击同一条信号）。`tables` / `views` 会选中树里对应的库 /
+  `Views` 分组并把 `Objects` 页切到该种类；`functions` / `queries` 打开「尚未实现」的
+  如实说明页；
 - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|loaded|
   status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`。断言读的是
   **控件上真实渲染的文本**（搜索状态行、DDL 缓冲区正文），不是「状态机里应该是」。
@@ -1278,7 +1283,7 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 ```bash
 cd frontend/linux
 ./scripts/v0232-objects-export.sh            # 全量（发布门禁：Objects + 导出 + 树激活 + 960 布局）
-SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects 段（A1–A5）
+SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects 段（A0–A6）
 # 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v0232-shots，仍追加时间戳）
 #       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
 ```

@@ -235,6 +235,20 @@ impl StartupWorkspace {
             new_query: Rc::new(|| {
                 eprintln!("[startup] 尚未连接数据库：先连接再新建查询标签");
             }),
+            on_kind: {
+                let objects = Rc::clone(&objects);
+                let view = view.clone();
+                let page = page.clone();
+                Rc::new(move |shortcut: crate::tabs::KindShortcut| {
+                    // 未连接：没有可列的库。把 Objects 页摆到前面、保持空态，不编造内容。
+                    objects.show_empty();
+                    view.set_selected_page(&page);
+                    eprintln!(
+                        "[startup] 种类入口「{}」：尚未连接数据库，Objects 页保持空态",
+                        shortcut.label()
+                    );
+                })
+            },
         });
         shell.toolbar().set_new_query_enabled(false);
 
