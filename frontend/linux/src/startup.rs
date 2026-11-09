@@ -183,10 +183,8 @@ impl StartupWorkspace {
         strip.append(&plus);
 
         let objects = crate::tabs::ObjectsPage::new();
-        // 先清空（作用域回到「没有选中库」）再改写空态文案：顺序反了会把作用域冲掉。
         objects.show_empty();
         objects.set_empty_text(
-            "未连接",
             "没有选中对象",
             "从左侧选择一个连接开始：双击一条已保存的连接即可连接。",
         );

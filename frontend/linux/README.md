@@ -1069,7 +1069,9 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   `Objects` 页里按名字选中 / 激活一行。选中走单选模型（与单击同一条路径，会同步信息
   面板），激活发 `GtkListView::activate`（与双击 / 回车同一条路径，会开表数据标签）；
   `--qa-expect-objects selected=<name>` 断言当前高亮的是哪一行。这两步排在
-  `--qa-tree-select` 之后，需要先让树选中一个库 / 分组把列表拉出来；
+  `--qa-tree-select` 之后，需要先让树选中一个库 / 分组把列表拉出来。
+  v0.2.3.3 删除了页内作用域说明行，`--qa-expect-objects scope=` 随之删除：旧脚本传它
+  会直接报错，而不是拿一个界面上已经没有的值「通过」；
 - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|loaded|
   status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`。断言读的是
   **控件上真实渲染的文本**（搜索状态行、DDL 缓冲区正文），不是「状态机里应该是」。
@@ -1270,15 +1272,17 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 
 ```bash
 cd frontend/linux
-./scripts/v0232-objects-export.sh
+./scripts/v0232-objects-export.sh            # 全量（发布门禁：Objects + 导出 + 树激活 + 960 布局）
+SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects 段（A1–A5）
 # 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v0232-shots，仍追加时间戳）
 #       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
 ```
 
 自包含脚本：只用 `sqlite3` 在 mktemp 目录建一个临时库（1 张 30 行的表 + 索引 + 触发器 + 视图），
-**不需要 MariaDB、不需要密码**；串行跑 5 个应用实例（各自独立 `SQARVO_QA_APP_ID` 与
+**不需要 MariaDB、不需要密码**；串行跑 8 个应用实例（各自独立 `SQARVO_QA_APP_ID` 与
 `XDG_CONFIG_HOME`），覆盖 `Objects` 固定页随树选中切换（选中库 → 该库的表、选中视图 → 该库的
-视图，含作用域 / 行数 / 首行 / 空态 / 状态行断言与两张截图）、`EX` 整表导出（行数 = 数据行 + 1、
+视图，含行数 / 首行 / 选中行 / 空态 / 状态行断言与截图）、单击选中同步信息面板、双击 / 回车
+激活开标签、作用域未变不重发、切回 `Objects` 页清掉行选中，`EX` 整表导出（行数 = 数据行 + 1、
 权限 0600、目录无 `.sqarvo-tmp` 残留、日志命中完成与进度）、取消路径（目标不创建、无残留、
 日志写明「已写入 N 行后取消」）与默认的当前页导出对照。断言读控件文本、日志与文件事实，
 失败以非零退出，末尾打印「N 项断言全过」；证据全部落在仓库外。

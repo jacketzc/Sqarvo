@@ -1002,7 +1002,7 @@ fn restart_software(state: &Rc<UiState>) {
     }
 }
 
-/// 选中项 → `Objects` 固定页的作用域（catalog 引用 + 表/视图 + 页内文案）。
+/// 选中项 → `Objects` 固定页的作用域（catalog 引用 + 表/视图）。
 ///
 /// 规则（v0.2.3.2，按评审确认的口径）：
 /// - 选中库（catalog / schema）→ 该库的**表**；
@@ -1010,7 +1010,10 @@ fn restart_software(state: &Rc<UiState>) {
 /// - 选中 `Views` 或其下级 → 该库的视图；
 /// - 表下的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` → 该表所在库的表；
 /// - 连接、占位行 → `None`（页内回到空态）。
-fn objects_scope(selection: &TreeSelection) -> Option<(ObjectRef, Vec<ObjectKind>, String)> {
+///
+/// v0.2.3.3 起不再产出页内文案：标题与列表之间那一行说明已删除（用户要求），
+/// 作用域只由列表内容表达。
+fn objects_scope(selection: &TreeSelection) -> Option<(ObjectRef, Vec<ObjectKind>)> {
     fn catalog_of(reference: &ObjectRef) -> ObjectRef {
         let mut catalog = reference.clone();
         catalog.kind = ObjectKind::Catalog as i32;
@@ -1021,34 +1024,16 @@ fn objects_scope(selection: &TreeSelection) -> Option<(ObjectRef, Vec<ObjectKind
     let views = vec![ObjectKind::View, ObjectKind::MaterializedView];
     match selection {
         TreeSelection::Object { node, .. } => match node.kind {
-            ObjectKind::Catalog | ObjectKind::Schema => Some((
-                node.reference.clone(),
-                tables,
-                format!("{} · 表", node.display_name),
-            )),
-            ObjectKind::View | ObjectKind::MaterializedView => Some((
-                catalog_of(&node.reference),
-                views,
-                format!("{} · 视图", node.reference.catalog),
-            )),
-            _ => Some((
-                catalog_of(&node.reference),
-                tables,
-                format!("{} · 表", node.reference.catalog),
-            )),
+            ObjectKind::Catalog | ObjectKind::Schema => Some((node.reference.clone(), tables)),
+            ObjectKind::View | ObjectKind::MaterializedView => {
+                Some((catalog_of(&node.reference), views))
+            }
+            _ => Some((catalog_of(&node.reference), tables)),
         },
         TreeSelection::Group { group, parent } => match group {
-            RowGroup::Catalog(KindGroup::Views) => {
-                Some((parent.clone(), views, format!("{} · 视图", parent.catalog)))
-            }
-            RowGroup::Catalog(KindGroup::Tables) => {
-                Some((parent.clone(), tables, format!("{} · 表", parent.catalog)))
-            }
-            RowGroup::Table(_) => Some((
-                catalog_of(parent),
-                tables,
-                format!("{} · 表", parent.catalog),
-            )),
+            RowGroup::Catalog(KindGroup::Views) => Some((parent.clone(), views)),
+            RowGroup::Catalog(KindGroup::Tables) => Some((parent.clone(), tables)),
+            RowGroup::Table(_) => Some((catalog_of(parent), tables)),
         },
         TreeSelection::Connection(_) | TreeSelection::None => None,
     }
@@ -1678,10 +1663,8 @@ impl Workspace {
                     // 列出该库对应的表或视图；选连接或占位行时回到空态。
                     if let Some(tabs) = tabs_slot.borrow().as_ref() {
                         match objects_scope(&selection) {
-                            Some((parent, kinds, label)) => {
-                                tabs.show_objects(Some(parent), &kinds, &label);
-                            }
-                            None => tabs.show_objects(None, &[], ""),
+                            Some((parent, kinds)) => tabs.show_objects(Some(parent), &kinds),
+                            None => tabs.show_objects(None, &[]),
                         }
                     }
                     match selection {
@@ -3325,7 +3308,6 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             .ok_or_else(|| "Objects 固定页尚未建立：没有可断言的列表".to_owned())?;
         for expectation in &objects_expectations {
             let actual = match expectation.field.as_str() {
-                "scope" => observed.scope.clone(),
                 "count" => observed.count.to_string(),
                 "first" => observed.first.clone(),
                 "selected" => observed.selected.clone(),
@@ -3340,12 +3322,8 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             };
             if !matched {
                 return Err(format!(
-                    "Objects 页 {} 期望「{}」，实际「{actual}」（作用域={}，状态={}，行数={}）",
-                    expectation.field,
-                    expectation.expected,
-                    observed.scope,
-                    observed.status,
-                    observed.count
+                    "Objects 页 {} 期望「{}」，实际「{actual}」（状态={}，行数={}）",
+                    expectation.field, expectation.expected, observed.status, observed.count
                 ));
             }
             passed.push(format!("Objects {}={actual}", expectation.field));
@@ -4171,24 +4149,22 @@ mod tests {
 
     #[test]
     fn objects_scope_follows_the_selected_node_kind() {
-        // 选中库 → 该库的表；文案带库名。
+        // 选中库 → 该库的表（页内不再有文案行，作用域只由列表内容表达）。
         let selection = TreeSelection::Object {
             node: Box::new(node("sqarvo_demo", ObjectKind::Catalog, "sqarvo_demo")),
             parent: None,
         };
-        let (parent, kinds, label) = objects_scope(&selection).expect("库应给出作用域");
+        let (parent, kinds) = objects_scope(&selection).expect("库应给出作用域");
         assert_eq!(parent.catalog, "sqarvo_demo");
         assert_eq!(kinds, vec![ObjectKind::Table]);
-        assert_eq!(label, "sqarvo_demo · 表");
 
         // 选中视图 → 该库的视图（含物化视图）。
         let selection = TreeSelection::Object {
             node: Box::new(node("v_orders", ObjectKind::View, "sqarvo_demo")),
             parent: None,
         };
-        let (_, kinds, label) = objects_scope(&selection).expect("视图应给出作用域");
+        let (_, kinds) = objects_scope(&selection).expect("视图应给出作用域");
         assert_eq!(kinds, vec![ObjectKind::View, ObjectKind::MaterializedView]);
-        assert_eq!(label, "sqarvo_demo · 视图");
 
         // 选中表 / 列 / 索引 / 触发器 → 该表所在的库，列的是表。
         for kind in [
@@ -4201,12 +4177,11 @@ mod tests {
                 node: Box::new(node("orders", kind, "sqarvo_demo")),
                 parent: None,
             };
-            let (parent, kinds, label) = objects_scope(&selection).expect("对象应给出作用域");
+            let (parent, kinds) = objects_scope(&selection).expect("对象应给出作用域");
             // 合成的 catalog 引用：kind = Catalog、name = catalog（驱动按它解析库）。
             assert_eq!(parent.kind, ObjectKind::Catalog as i32);
             assert_eq!(parent.name, "sqarvo_demo");
             assert_eq!(kinds, vec![ObjectKind::Table]);
-            assert_eq!(label, "sqarvo_demo · 表");
         }
     }
 
@@ -4236,7 +4211,7 @@ mod tests {
                 group: RowGroup::Table(group),
                 parent: table.reference.clone(),
             };
-            let (parent, kinds, _) = objects_scope(&selection).expect("表分组应有作用域");
+            let (parent, kinds) = objects_scope(&selection).expect("表分组应有作用域");
             assert_eq!(parent.kind, ObjectKind::Catalog as i32);
             assert_eq!(parent.name, "sqarvo_demo");
             assert_eq!(kinds, vec![ObjectKind::Table]);

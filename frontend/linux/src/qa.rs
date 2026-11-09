@@ -642,12 +642,9 @@ impl ObjectsExpectation {
         let (field, expected) = value
             .split_once('=')
             .ok_or_else(|| format!("--qa-expect-objects 需要 字段=值，实际：{value}"))?;
-        if !matches!(
-            field,
-            "scope" | "count" | "first" | "selected" | "status" | "empty"
-        ) {
+        if !matches!(field, "count" | "first" | "selected" | "status" | "empty") {
             return Err(format!(
-                "--qa-expect-objects 只接受 scope|count|first|selected|status|empty，实际：{field}"
+                "--qa-expect-objects 只接受 count|first|selected|status|empty，实际：{field}"
             ));
         }
         Ok(Self {
@@ -2873,11 +2870,11 @@ mod tests {
             "--screenshot",
             "/tmp/a.png",
             "--qa-expect-objects",
-            "scope=sqarvo_demo · 表",
-            "--qa-expect-objects",
             "count=3",
             "--qa-expect-objects",
             "first=accept_items",
+            "--qa-expect-objects",
+            "selected=accept_items",
             "--qa-expect-objects",
             "empty=off",
         ]))
@@ -2886,18 +2883,32 @@ mod tests {
         assert_eq!(
             parsed.expect_objects[0],
             ObjectsExpectation {
-                field: "scope".to_owned(),
-                expected: "sqarvo_demo · 表".to_owned(),
+                field: "count".to_owned(),
+                expected: "3".to_owned(),
             }
         );
         // 没有截图就没有「断言这一刻」；未知字段与缺 `=` 都要报错。
         assert!(
-            parse(&args(&["app", "--qa-expect-objects", "scope=x"]))
+            parse(&args(&["app", "--qa-expect-objects", "count=1"]))
                 .unwrap_err()
                 .contains("--screenshot")
         );
         assert!(parse(&args(&["app", "--qa-expect-objects"])).is_err());
-        assert!(parse(&args(&["app", "--qa-expect-objects", "scope"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-objects", "count"])).is_err());
+        // v0.2.3.3 删掉了页内作用域文案，`scope` 字段随之删除：旧脚本必须报错，
+        // 不能安静地拿一个没有控件承载的值「通过」。
+        let error = parse(&args(&[
+            "app",
+            "--screenshot",
+            "/tmp/a.png",
+            "--qa-expect-objects",
+            "scope=x",
+        ]))
+        .unwrap_err();
+        assert!(
+            error.contains("count|first|selected|status|empty"),
+            "{error}"
+        );
         assert!(parse(&args(&["app", "--qa-expect-objects", "bogus=x"])).is_err());
     }
 

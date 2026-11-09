@@ -8,9 +8,10 @@
 #
 # 覆盖的用例（断言读的是控件文本与文件本身，不看「状态机里应该是」）：
 #   A. Objects 页与对象树联动
-#      A1 `--qa-tree-expand main` → `--qa-tree-select main`：作用域「main · 表」、行数 1、
-#         首行 probe_items、`empty=off`、状态行「共 1 个对象」（不含「还有更多」）。
-#      A2 选中视图节点：作用域「main · 视图」、行数 1、首行 probe_recent_items。
+#      A1 `--qa-tree-expand main` → `--qa-tree-select main`：行数 1、首行 probe_items、
+#         `empty=off`、状态行「共 1 个对象」（不含「还有更多」）；v0.2.3.3 起页内不再有
+#         标题与列表之间的作用域说明行（`scope` 断言字段已删除，旧脚本会直接报错）。
+#      A2 选中视图节点：行数 1、首行 probe_recent_items。
 #      A1b（v0.2.3.3）单列表格的单击选中：`--qa-objects-select probe_items` → 该行高亮
 #         （`selected=probe_items`），信息面板同步成这张表。
 #      两张截图分别对应 A1 / A2，路径打到 stdout。
@@ -18,6 +19,8 @@
 #      `GtkListView::activate` → 日志出现「[objects] 激活行」与「[tabs] 新建表标签」。
 #   A4（v0.2.3.3）作用域没变不重发：树里先选库（main · 表）再选同一库的表 → 日志出现
 #      「作用域未变」，列表仍是 1 行（不清空、不闪）。
+#   A5（v0.2.3.3）重新进入 Objects 页不选中任何行：列表选中 → 打开表标签 → 切回 Objects
+#      → 日志「重新进入 Objects 页：清掉行选中」，`selected=`（空串）断言成立。
 #   B. EX 导出范围
 #      B1 整表：行数 = 数据行 + 1（表头）、目标权限 0600、目录里没有 `*.sqarvo-tmp`、
 #         日志命中「整表导出完成：」「整表进度：」。
@@ -64,7 +67,9 @@
 #   * `sqlite3` 命令行（测试库只用它建）。
 #
 # 用法：
-#   ./scripts/v0232-objects-export.sh
+#   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
+#   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
+#                                                          # 只跑 Objects 段（A1–A5）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -331,12 +336,11 @@ launch() {
 # 3. Case A：Objects 固定页 ↔ 对象树联动
 # ---------------------------------------------------------------------------
 
-# A1：选中库 → 列出该库的表（`objects_scope` 对 Catalog 给出的文案是「<库> · 表」，ui.rs:991）。
+# A1：选中库 → 列出该库的表（v0.2.3.3 起页内不再有「<库> · 表」说明行）。
 launch objects-tables io.sqarvo.Sqarvo.QA024ObjectsTables \
     --qa-tree-expand main \
     --qa-tree-select main \
     --qa-objects-select "$TABLE" \
-    --qa-expect-objects "scope=main · 表" \
     --qa-expect-objects count=1 \
     --qa-expect-objects "first=$TABLE" \
     --qa-expect-objects "selected=$TABLE" \
@@ -349,21 +353,21 @@ check_contains "objects-tables 展开 catalog（Tables/Views 各自建组）" '�
 check_contains "objects-tables 树里选中库节点" '选中节点 main' "$CASE_LOG"
 check_contains "objects-tables Objects 页选中行日志" "Objects 页选中「$TABLE」" "$CASE_LOG"
 check_contains "objects-tables 选中行同步信息面板" "选中行 $TABLE" "$CASE_LOG"
-check_contains "objects-tables Objects 页作用域=main · 表" \
-    '断言通过：Objects scope=main · 表' "$CASE_LOG"
 check_contains "objects-tables Objects 页行数" 'Objects count=1' "$CASE_LOG"
 check_contains "objects-tables Objects 页首行" "Objects first=$TABLE" "$CASE_LOG"
+check_contains "objects-tables Objects 页选中行" "Objects selected=$TABLE" "$CASE_LOG"
 check_contains "objects-tables Objects 页非空态" 'Objects empty=off' "$CASE_LOG"
 check_contains "objects-tables Objects 状态行" 'Objects status=共 1 个对象' "$CASE_LOG"
+# 页内不再有作用域说明行：截图路径与断言都证明不了它，所以直接断言字段被拒。
+check_absent "objects-tables 页内不再输出作用域文案" 'Objects scope=' "$CASE_LOG"
 # 单页数据不该出现「还有更多」：这条同时盯住「没有第二页时不要谎称还有」。
 check_absent "objects-tables Objects 状态行不谎称还有更多" '还有更多' "$CASE_LOG"
 check_screenshot "objects-tables 截图（选中库 → 表列表）" "$OUT/objects-tables/01-scope-tables.png"
 
-# A2：选中视图 → 列出该库的视图（ui.rs:993-997 的文案是「<库> · 视图」）。
+# A2：选中视图 → 列出该库的视图。
 launch objects-views io.sqarvo.Sqarvo.QA024ObjectsViews \
     --qa-tree-expand main \
     --qa-tree-select "$VIEW" \
-    --qa-expect-objects "scope=main · 视图" \
     --qa-expect-objects count=1 \
     --qa-expect-objects "first=$VIEW" \
     --qa-expect-objects empty=off \
@@ -373,8 +377,6 @@ launch objects-views io.sqarvo.Sqarvo.QA024ObjectsViews \
     --qa-exit-after-ms 11000
 check_contains "objects-views 树里选中视图节点" "选中节点" "$CASE_LOG"
 check_contains "objects-views 选中视图的路径带对象名" "$VIEW" "$CASE_LOG"
-check_contains "objects-views Objects 页作用域=main · 视图" \
-    '断言通过：Objects scope=main · 视图' "$CASE_LOG"
 check_contains "objects-views Objects 页行数（该库只有 1 个视图）" 'Objects count=1' "$CASE_LOG"
 check_contains "objects-views Objects 页首行" "Objects first=$VIEW" "$CASE_LOG"
 check_contains "objects-views Objects 状态行" 'Objects status=共 1 个对象' "$CASE_LOG"
@@ -390,29 +392,90 @@ launch objects-activate io.sqarvo.Sqarvo.QA024ObjectsActivate \
 check_contains "objects-activate 激活行日志" "[objects] 激活行 $TABLE" "$CASE_LOG"
 check_contains "objects-activate 新建了表标签" '[tabs] 新建表标签' "$CASE_LOG"
 
-# A4（v0.2.3.3）：作用域没变不重发。树里先选库（作用域 main · 表），再选同一库里的表——
-# 作用域仍是 (main, [Table])，列表应原样保留（日志「作用域未变」），行数仍是 1。
+# A4（v0.2.3.3）：作用域没变不重发。树里先选库（作用域 main · 表），在列表里点亮一行，
+# 再选同一库里的表——作用域仍是 (main, [Table])，列表原样保留（日志「作用域未变」），
+# 行数仍是 1，但行高亮被清掉（高亮属于上一次浏览，不该和右侧面板错位）。
 cat > "$TMP/objects-keep.txt" <<STEPS
 expand main
 select-node main
-sleep 1500
+sleep 1200
+objects-select $TABLE
+sleep 500
 select-node $TABLE
 sleep 500
 STEPS
 launch objects-keep io.sqarvo.Sqarvo.QA024ObjectsKeep \
     --qa-tabs-file "$TMP/objects-keep.txt" \
-    --qa-expect-objects "scope=main · 表" \
     --qa-expect-objects count=1 \
     --qa-expect-objects "first=$TABLE" \
+    --qa-expect-objects "selected=" \
     --screenshot "$OUT/objects-keep/03-scope-unchanged.png" \
     --screenshot-delay-ms 7000 \
     --qa-exit-after-ms 9000
-check_contains "objects-keep 作用域未变（保留列表与选中）" \
+check_contains "objects-keep 作用域未变（保留列表）" \
     '[objects] 作用域未变' "$CASE_LOG"
-check_contains "objects-keep 列表没有重发（作用域仍是 main · 表）" \
-    'Objects scope=main · 表' "$CASE_LOG"
+check_contains "objects-keep 树选中变化清掉行高亮" \
+    '[objects] 树选中变化：清掉行高亮' "$CASE_LOG"
+check_contains "objects-keep 列表没有重发（行数仍是 1）" 'Objects count=1' "$CASE_LOG"
+check_contains "objects-keep 行高亮为空" 'Objects selected=' "$CASE_LOG"
 check_screenshot "objects-keep 截图（作用域未变后列表仍在）" \
     "$OUT/objects-keep/03-scope-unchanged.png"
+
+# A5（v0.2.3.3）：重新进入 `Objects` 页不选中任何行。
+# 在列表里点亮一行 → 新建查询标签（切走，且**不经过树选中**，否则高亮会先被树清掉）
+# → `select 0` 切回 Objects：行高亮必须清空，断言 `selected=`（空串）成立。
+cat > "$TMP/objects-reentry.txt" <<STEPS
+expand main
+select-node main
+sleep 1200
+objects-select $TABLE
+sleep 500
+query-tab
+sleep 900
+select 0
+STEPS
+launch objects-reentry io.sqarvo.Sqarvo.QA024ObjectsReentry \
+    --qa-tabs-file "$TMP/objects-reentry.txt" \
+    --qa-expect-objects count=1 \
+    --qa-expect-objects "selected=" \
+    --screenshot "$OUT/objects-reentry/04-reentry-clears-selection.png" \
+    --screenshot-delay-ms 9000 \
+    --qa-exit-after-ms 11000
+check_contains "objects-reentry 切回 Objects 页清掉行选中" \
+    '[objects] 重新进入 Objects 页：清掉行选中' "$CASE_LOG"
+check_contains "objects-reentry 行选中为空" 'Objects selected=' "$CASE_LOG"
+check_screenshot "objects-reentry 截图（重新进入后无高亮）" \
+    "$OUT/objects-reentry/04-reentry-clears-selection.png"
+
+# ---------------------------------------------------------------------------
+# 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
+# ---------------------------------------------------------------------------
+# B 段（EX 导出 CSV，#120）、C 段（树激活回归）与 D 段（960 布局自检）都是发布门禁的
+# 一部分，但与 `Objects` 页无关：调 Objects 时跑它们每次多花几分钟、还会把无关用例的
+# 失败混进结论。要全量证据时不要设这个变量。
+if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" ]; then
+    if [ "$SQARVO_ACCEPTANCE_ONLY" != "objects" ]; then
+        say "SQARVO_ACCEPTANCE_ONLY 只接受 objects|all，实际：$SQARVO_ACCEPTANCE_ONLY"
+        exit 1
+    fi
+    REAL_AFTER=$(real_config_hash)
+    check_eq "真实连接配置逐字节未变（sha256）" "$REAL_BEFORE" "$REAL_AFTER"
+    case "$OUT" in
+        "$REPO_ROOT"/*) bad "证据目录落在仓库内：$OUT" ;;
+        *) ok "证据目录在仓库外：$OUT" ;;
+    esac
+    say ""
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A1–A5）"
+    say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
+    say "证据目录：$OUT"
+    say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"
+    if [ "$FAIL_COUNT" -gt 0 ]; then
+        say "验收失败：$FAIL_COUNT 项断言未通过（通过 $PASS_COUNT 项）"
+        exit 1
+    fi
+    say "验收结果：$((PASS_COUNT + IN_APP_TOTAL)) 项断言全过"
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Case B：EX 导出范围（整表 / 取消 / 当前页）

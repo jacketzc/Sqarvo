@@ -422,8 +422,6 @@ type SelectEntry = Rc<dyn Fn(TableEntry)>;
 /// `Objects` 固定页的观察结果（读真实控件，QA 用）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObjectsObservation {
-    /// 当前作用域文案（空串 = 没有可联动的选中对象）。
-    pub scope: String,
     /// 已渲染的行数。
     pub count: usize,
     /// 第一行的名字（没有行时为空串）。
@@ -456,6 +454,17 @@ fn row_parts(row_box: &gtk::Box) -> Option<(gtk::Image, gtk::Label, gtk::Label)>
     Some((icon, name, kind))
 }
 
+/// 作用域的可读名（只进日志）：优先 catalog，其次对象名。
+fn scope_name(parent: &ObjectRef) -> String {
+    if !parent.catalog.is_empty() {
+        parent.catalog.clone()
+    } else if !parent.name.is_empty() {
+        parent.name.clone()
+    } else {
+        "（默认库）".to_owned()
+    }
+}
+
 /// `Objects` 固定页（v0.2.3.2，v0.2.3.3 改为单列表格）：与对象树联动，列出选中
 /// catalog 里的表 / 视图。
 ///
@@ -467,12 +476,9 @@ fn row_parts(row_box: &gtk::Box) -> Option<(gtk::Image, gtk::Label, gtk::Label)>
 /// 主题的行状态给出，与数据网格同一口径（见 `theme::stylesheet` 的 `sqarvo-objects`）。
 pub struct ObjectsPage {
     root: gtk::Box,
-    scope_label: gtk::Label,
     stack: gtk::Stack,
     /// 空态页（`set_empty_text` 可改文案：启动态与连接态同一份实现，只是措辞不同）。
     empty: adw::StatusPage,
-    /// `set_empty_text` 设置的「作用域」文案；`show_empty` 复用它而不是写死默认值。
-    empty_scope: RefCell<Option<String>>,
     /// 行的数据模型：`BoxedAnyObject(TableEntry)`，只为可见行创建控件。
     store: gtk::gio::ListStore,
     /// 单选模型：单击选中、双击 / 回车激活（`single_click_activate(false)`）。
@@ -480,7 +486,6 @@ pub struct ObjectsPage {
     list: gtk::ListView,
     status: gtk::Label,
     more: gtk::Button,
-    scope: RefCell<String>,
     token: RefCell<String>,
     generation: Cell<u64>,
     /// 当前作用域的第一页是否已经成功返回（作用域没变时不重发、保留行与选中）。
@@ -498,11 +503,6 @@ impl ObjectsPage {
         let title = gtk::Label::new(Some("Objects"));
         title.set_xalign(0.0);
         title.add_css_class("sqarvo-title");
-
-        let scope_label = gtk::Label::new(Some("没有选中库"));
-        scope_label.set_xalign(0.0);
-        scope_label.add_css_class("dim-label");
-        scope_label.add_css_class("caption");
 
         // 单列表格（v0.2.3.3）：`GtkListView` + `GtkSingleSelection`。
         // 行结构（固定顺序，bind 靠它取控件）：[图标] [名称] [种类]。
@@ -600,27 +600,23 @@ impl ObjectsPage {
         stack.add_named(&content, Some("list"));
         stack.set_visible_child_name("empty");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.set_vexpand(true);
         root.set_margin_top(12);
         root.set_margin_start(12);
         root.set_margin_end(12);
         root.append(&title);
-        root.append(&scope_label);
         root.append(&stack);
 
         let page = Rc::new(Self {
             root,
-            scope_label,
             stack,
             empty,
-            empty_scope: RefCell::new(None),
             store,
             selection,
             list,
             status,
             more,
-            scope: RefCell::new(String::new()),
             token: RefCell::new(String::new()),
             generation: Cell::new(0),
             loaded: Cell::new(false),
@@ -685,15 +681,13 @@ impl ObjectsPage {
         &self.root
     }
 
-    /// 改写空态文案：`scope` 进作用域行，`title` / `description` 进空态页。
+    /// 改写空态文案（启动态与连接态同一份实现，只是措辞不同）。
     ///
     /// 启动态（未连接）用同一份 [`ObjectsPage`]，只把文案换成「未连接 / 从左侧选择
     /// 一个连接开始」。之后调 [`Self::show_empty`] 不会把这段文案冲掉。
-    pub(crate) fn set_empty_text(&self, scope: &str, title: &str, description: &str) {
+    pub(crate) fn set_empty_text(&self, title: &str, description: &str) {
         self.empty.set_title(title);
         self.empty.set_description(Some(description));
-        self.empty_scope.replace(Some(scope.to_owned()));
-        self.scope_label.set_text(scope);
     }
 
     /// 双击 / 回车打开表数据标签（与树的双击同一条路径）。
@@ -714,15 +708,9 @@ impl ObjectsPage {
         self.generation.set(self.generation.get() + 1);
         self.loaded.set(false);
         self.token.replace(String::new());
-        self.scope.replace(String::new());
         self.last_request.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
-        // 启动态通过 `set_empty_text` 换过作用域文案：清空时不能把它写回默认值。
-        match self.empty_scope.borrow().as_deref() {
-            Some(scope) => self.scope_label.set_text(scope),
-            None => self.scope_label.set_text("没有选中库"),
-        }
         self.status.set_text("");
         self.more.set_visible(false);
         self.stack.set_visible_child_name("empty");
@@ -738,14 +726,20 @@ impl ObjectsPage {
         hub: Option<Rc<MetadataHub>>,
         parent: ObjectRef,
         kinds: Vec<ObjectKind>,
-        label: &str,
     ) {
         let key: ObjectsRequest = (parent.clone(), kinds.clone());
-        self.scope.replace(label.to_owned());
-        self.scope_label.set_text(label);
         self.stack.set_visible_child_name("list");
+        // 树里换了选中：行高亮属于上一次浏览，先清掉。列表内容保留、不重发请求——
+        // 否则会出现「右侧面板已经是新对象，列表还高亮着上一个」的错位。
+        if self.selection.selected() != u32::MAX {
+            eprintln!("[objects] 树选中变化：清掉行高亮（列表内容保留）");
+            self.selection.set_selected(u32::MAX);
+        }
         if self.loaded.get() && self.last_request.borrow().as_ref() == Some(&key) {
-            eprintln!("[objects] 作用域未变（{label}），保留现有列表与选中");
+            eprintln!(
+                "[objects] 作用域未变（{}），保留现有列表（不重发）",
+                scope_name(&parent)
+            );
             return;
         }
         let generation = self.generation.get() + 1;
@@ -875,11 +869,10 @@ impl ObjectsPage {
         self.hub_slot.borrow().clone()
     }
 
-    /// QA：从真实控件读回作用域、行数、首行、选中行与状态行。
+    /// QA：从真实控件读回行数、首行、选中行与状态行。
     #[must_use]
     pub fn qa_observation(&self) -> ObjectsObservation {
         ObjectsObservation {
-            scope: self.scope_label.text().to_string(),
             count: self.store.n_items() as usize,
             first: self
                 .entry_at(0)
@@ -893,13 +886,23 @@ impl ObjectsPage {
         }
     }
 
+    /// 清掉行选中（切回本页时用：重新进入 `Objects` 页不该带着上一次的高亮）。
+    ///
+    /// 只改单选模型，不碰列表内容；`selected_notify` 会以 `u32::MAX` 回调，
+    /// `entry_at` 返回 `None`，所以不会反过来驱动信息面板。
+    pub fn clear_selection(&self) {
+        if self.selection.selected() != u32::MAX {
+            eprintln!("[objects] 重新进入 Objects 页：清掉行选中");
+            self.selection.set_selected(u32::MAX);
+        }
+    }
+
     /// QA：按名字选中一行（只走 `GtkSingleSelection`，与单击同一条路径）。
     pub fn qa_select(&self, name: &str) -> Result<String, String> {
         let position = self.position_of(name).ok_or_else(|| {
             format!(
-                "Objects 页没有「{name}」（当前 {} 行，作用域 {}）",
-                self.store.n_items(),
-                self.scope_label.text()
+                "Objects 页没有「{name}」（当前 {} 行）",
+                self.store.n_items()
             )
         })?;
         self.selection.set_selected(position);
@@ -913,9 +916,8 @@ impl ObjectsPage {
     pub fn qa_activate(&self, name: &str) -> Result<String, String> {
         let position = self.position_of(name).ok_or_else(|| {
             format!(
-                "Objects 页没有「{name}」（当前 {} 行，作用域 {}）",
-                self.store.n_items(),
-                self.scope_label.text()
+                "Objects 页没有「{name}」（当前 {} 行）",
+                self.store.n_items()
             )
         })?;
         self.selection.set_selected(position);
@@ -1027,10 +1029,15 @@ impl TabSet {
             // 选中变化 → 换标题 / 状态栏 / 工具条高亮（不重建会话）。
             let weak = Rc::downgrade(&set);
             set.view.connect_selected_page_notify(move |_| {
-                if let Some(set) = weak.upgrade()
-                    && !set.switching.get()
-                {
-                    set.refresh_current();
+                if let Some(set) = weak.upgrade() {
+                    // 重新进入 `Objects` 页时不带上次的行高亮（切换标签是「重新进入」的
+                    // 唯一入口；列表内容与信息面板都不动）。
+                    if set.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
+                        set.clear_objects_selection();
+                    }
+                    if !set.switching.get() {
+                        set.refresh_current();
+                    }
                 }
             });
         }
@@ -1262,9 +1269,10 @@ impl TabSet {
 
     /// 固定 `Objects` 页跟随树选中：显示该库的表 / 视图列表。
     ///
-    /// `parent` 是 catalog 引用，`kinds` 决定列表内容（表 / 视图），`label` 是页内
-    /// 作用域文案（例如「sqarvo_demo · 表」）。传 `None` 表示清空成空态。
-    pub fn show_objects(&self, parent: Option<ObjectRef>, kinds: &[ObjectKind], label: &str) {
+    /// `parent` 是 catalog 引用，`kinds` 决定列表内容（表 / 视图）。传 `None` 表示
+    /// 清空成空态。页内不再显示作用域文案（v0.2.3.3 去掉标题与列表之间的说明行），
+    /// 作用域只体现在列表本身。
+    pub fn show_objects(&self, parent: Option<ObjectRef>, kinds: &[ObjectKind]) {
         let Some(objects) = self.objects.borrow().clone() else {
             return;
         };
@@ -1275,9 +1283,16 @@ impl TabSet {
                     .registry
                     .as_ref()
                     .and_then(|registry| registry.hub_for_session(&parent.session_id));
-                objects.show(hub, parent, kinds.to_vec(), label);
+                objects.show(hub, parent, kinds.to_vec());
             }
             None => objects.show_empty(),
+        }
+    }
+
+    /// 切回 `Objects` 页时清掉行高亮（重新进入不带上一次的选中）。
+    pub fn clear_objects_selection(&self) {
+        if let Some(objects) = self.objects.borrow().clone() {
+            objects.clear_selection();
         }
     }
 
@@ -2611,6 +2626,7 @@ impl TabSet {
                     .ok_or_else(|| "验收桥未接线".to_owned())?;
                 (bridge.select)(name)
             }
+            QaStep::ObjectsSelect(name) => self.qa_objects_select(name),
             QaStep::SelectConnection(name) => {
                 let bridge = self
                     .context
@@ -3171,6 +3187,9 @@ pub enum QaStep {
     Expand(String),
     /// `select-node <名字>`：选中树节点（信息面板随之切换）。
     SelectNode(String),
+    /// `objects-select <名字>`：选中固定 `Objects` 页里的某一行（与单击同一条路径；
+    /// v0.2.3.3 单列表格）。
+    ObjectsSelect(String),
     /// `select-connection <名字>`：选中连接节点（信息面板切到「连接」态）。
     SelectConnection(String),
     /// `inspector <ddl|info|show|hide>`：信息面板的页 / 显隐。
@@ -3544,6 +3563,7 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
             },
             "expand" => QaStep::Expand(rest_of(&parts, 1, number, "节点名")?),
             "select-node" => QaStep::SelectNode(rest_of(&parts, 1, number, "节点名")?),
+            "objects-select" => QaStep::ObjectsSelect(rest_of(&parts, 1, number, "对象名")?),
             "select-connection" => QaStep::SelectConnection(rest_of(&parts, 1, number, "连接名")?),
             "open-node" => {
                 let catalog = parts
