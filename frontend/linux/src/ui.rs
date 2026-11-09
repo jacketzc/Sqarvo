@@ -1894,34 +1894,22 @@ impl Workspace {
         work_box.set_hexpand(true);
         work_box.append(tabs.widget());
 
-        // 面板宽度按连接记忆（独立的窗口状态文件，不写进 connections.json）。
-        let connection_key = state
-            .registry
-            .borrow()
-            .as_ref()
-            .and_then(|registry| registry.active_key());
-        let remembered_width = connection_key
-            .as_deref()
-            .and_then(crate::window_state::inspector_width)
-            .unwrap_or(layout::INSPECTOR_WIDTH);
-        eprintln!("[shell] 信息面板宽度按连接读取：{}", remembered_width);
+        // 面板宽度是**窗口级**记忆（#155）：启动态、连接态、切换连接读同一个值，
+        // 拖一次就全局生效；不再按连接分别记忆（那会在启动→连接时跳 40px）。
+        let remembered_width =
+            crate::window_state::last_inspector_width().unwrap_or(layout::INSPECTOR_WIDTH);
+        eprintln!("[shell] 信息面板宽度读取：{remembered_width}（窗口级）");
 
         let shell = Shell::new(ShellHandlers {
             sidebar: sidebar_box.upcast(),
             work_area: work_box.upcast(),
             inspector: inspector.widget().clone().upcast(),
             inspector_width: remembered_width,
-            on_inspector_width: {
-                let key = connection_key.clone();
-                Rc::new(move |width: i32| {
-                    let Some(key) = key.as_deref() else {
-                        return;
-                    };
-                    if let Err(error) = crate::window_state::remember_inspector_width(key, width) {
-                        eprintln!("[shell] 信息面板宽度未能记住：{error}");
-                    }
-                })
-            },
+            on_inspector_width: Rc::new(|width: i32| {
+                if let Err(error) = crate::window_state::remember_inspector_width(width) {
+                    eprintln!("[shell] 信息面板宽度未能记住：{error}");
+                }
+            }),
             row_op: {
                 let tabs = Rc::clone(&tabs);
                 Rc::new(move |op| {

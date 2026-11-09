@@ -217,12 +217,21 @@ impl StartupWorkspace {
         work_box.append(&strip);
         work_box.append(&view);
 
+        // 窗口级面板宽度（#155）：与连接态共用同一个值，启动态拖一次也会被带进工作区。
+        let inspector_width =
+            crate::window_state::last_inspector_width().unwrap_or(crate::layout::INSPECTOR_WIDTH);
+        eprintln!("[shell] 信息面板宽度读取：{inspector_width}（窗口级，启动态）");
+
         let shell = Shell::new(ShellHandlers {
             sidebar: sidebar.upcast(),
             work_area: work_box.upcast(),
             inspector: inspector.widget().clone().upcast(),
-            inspector_width: crate::layout::INSPECTOR_WIDTH,
-            on_inspector_width: Rc::new(|_| {}),
+            inspector_width,
+            on_inspector_width: Rc::new(|width: i32| {
+                if let Err(error) = crate::window_state::remember_inspector_width(width) {
+                    eprintln!("[shell] 信息面板宽度未能记住：{error}");
+                }
+            }),
             row_op: Rc::new(|_| {
                 eprintln!("[startup] 尚未连接数据库，忽略行操作");
             }),
