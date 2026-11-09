@@ -38,7 +38,7 @@ MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径
 双击 / 回车才激活（表 / 视图 = 打开数据标签，连接 = 按保存的凭据连接，库 / 分组 = 展开收起）；
 表展开后先出四组，展开某组才发那一次 `ListNodes(filter.kinds)`，`Foreign Keys` 没有驱动
 实现、展开只显示「驱动未提供外键列表（capability.unsupported）」。DDL 在信息面板的
-`[DDL]` 页查看：正文与数据网格同字号（13px / Medium），长语句横向滚动；只有
+`[DDL]` 页查看：正文与「表信息」页同一口径（13px / Medium），长语句横向滚动；只有
 `exact = false`（客户端拼装）时正文上方才出现一行琥珀警示。v0.2.3.3 起不再显示来源
 徽标、来源说明行与「复制」按钮，复制用选中 + `Ctrl+C`；
 侧栏平铺表列表、页脚「DDL」按钮与右键「查看 DDL」在 v0.2.3.2 一并删除。
@@ -166,7 +166,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/data_page.rs` | 数据页：虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务控制行（开始 / 提交 / 回滚互斥显示）、逐行错误列表 |
 | `src/backend/metadata.rs` | 元数据域（#86）：节点/种类映射、请求构造、DDL 来源与错误分类（纯逻辑，可单测）+ 独立元数据线程与主线程请求路由（`MetadataHub`） |
 | `src/tree.rs` | 对象树：`GtkTreeListModel` 懒加载、自定义展开箭头、分页「加载更多」、搜索防抖（250 ms）与跳转、树的健康状态 |
-| `src/ddl.rs` | DDL 面板：`GetDdl` 正文（与数据网格同字号、不折行、横向滚动）、拼装警示、四态文案 |
+| `src/ddl.rs` | DDL 面板：`GetDdl` 正文（与表信息同字号、不折行、横向滚动）、拼装警示、四态文案 |
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
 | `scripts/v023-acceptance.sh` | v0.2.3 验收链（#121）：SQLite + MariaDB 两库跑完整流程，配置隔离、逐项断言、仓库外取证 |
@@ -489,8 +489,9 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
   之间只是噪音）。Loading / Empty / Error / 不支持各有文案，
   `metadata.object_kind_unsupported` 与 `capability.unsupported` 分开显示；
   **不折行**：DDL 是代码，窄面板里折行会把一条语句断成两条，改为横向滚动并让滚动条
-  常驻（`overlay-scrolling = false`）；字号 / 字重跟数据网格同一个常量
-  （`.sqarvo-ddl-text` 与 `.sqarvo-cell` 共用 `layout::FONT_DATA_CELL`），复制用
+  常驻（`overlay-scrolling = false`）；字号 / 字重与「表信息」页同一个类
+  （`.sqarvo-panel-text`，`layout::FONT_PANEL` = 13px / Medium；分节标题同字号
+  Semibold），不再跟数据网格绑定，复制用
   选中 + `Ctrl+C`；
 - **线程**：树的每个展开、搜索、`GetDdl` 都发到独立的元数据线程（`MetadataHub` 按请求
   ID 路由回主线程），主线程只更新控件。

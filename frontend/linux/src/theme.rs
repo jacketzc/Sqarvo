@@ -152,9 +152,11 @@ pub fn stylesheet() -> String {
            避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
         .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
 
-        /* 信息面板的 DDL 正文：与数据网格**同一口径**（同一个字号常量 + Medium），
-           不再是等宽字——等宽字在 1x 屏幕上比网格正文更细更小，读起来像另一套界面。 */
-        .sqarvo-ddl-text {{ font-size: {data_font}px; font-weight: 500; }}
+        /* 信息面板正文（[DDL] 与 [表信息] 两页**同一口径**，v0.2.3.3）：13px / Medium。
+           12px 会裁 CJK 笔画（与数据网格同一个坑），13px Regular 在 1x 屏幕上发虚；
+           分节标题同字号、靠字重分层（Semibold），不再用 10px 的 caption。 */
+        .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: 500; }}
+        .sqarvo-panel-heading {{ font-size: {panel_font}px; font-weight: 600; }}
 
         /* 信息面板的 [DDL] / [表信息]（v0.2.3.3）：两个独立 toggle，选中态是贴着
            文字的**小圆角块，四个角都圆**。不用 `.linked` 分段容器：分段样式只圆外侧
@@ -232,6 +234,7 @@ pub fn stylesheet() -> String {
         status = layout::STATUS_HEIGHT,
         status_font = layout::FONT_STATUS,
         data_font = layout::FONT_DATA_CELL,
+        panel_font = layout::FONT_PANEL,
         toolbar = layout::TOOLBAR_HEIGHT,
         tree_row = layout::ROW_HEIGHT_TREE,
         data_row = layout::ROW_HEIGHT_DATA,
@@ -271,17 +274,27 @@ mod tests {
     }
 
     #[test]
-    fn ddl_text_shares_the_grid_metric() {
-        // 用户要求：DDL 正文的字号 / 字重与数据网格里的数据一致。两者必须读同一个
-        // 常量，否则下次调网格字号时 DDL 会悄悄留在旧值上。
+    fn panel_text_is_one_metric() {
+        // 用户要求：DDL 正文与「表信息」内容的字体 / 字号 / 格式一致，且不再与数据网格
+        // 共用口径。两页读同一个类、同一个常量，网格改字号时面板不会跟着跳。
         let css = stylesheet();
-        let expected = format!(
-            ".sqarvo-ddl-text {{ font-size: {}px; font-weight: 500; }}",
-            layout::FONT_DATA_CELL
+        let text = format!(
+            ".sqarvo-panel-text {{ font-size: {}px; font-weight: 500; }}",
+            layout::FONT_PANEL
+        );
+        assert!(css.contains(&text), "面板正文类缺失：{css}");
+        let heading = format!(
+            ".sqarvo-panel-heading {{ font-size: {}px; font-weight: 600; }}",
+            layout::FONT_PANEL
         );
         assert!(
-            css.contains(&expected),
-            "DDL 正文必须与数据网格同字号 / 字重：{css}"
+            css.contains(&heading),
+            "面板分节标题必须与正文同字号：{css}"
+        );
+        // 网格的类还在（那是它自己的口径），面板不能再用它。
+        assert!(
+            !css.contains(".sqarvo-ddl-text"),
+            "面板不应再挂数据网格的类"
         );
     }
 

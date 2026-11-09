@@ -160,7 +160,7 @@ gridWidth    = contentWidth - 18（左内边距）- 3（右内边距）- [10（�
 |---|---|---|
 | 连接 | 驱动、地址（`host:port` 或文件路径）、默认库、用户、TLS 模式、凭据引用（不含密码）、服务端版本、连接延迟、会话数 | `connections.json` + `ConnectOutcome` + `ListSessions` |
 | 库 / catalog | 名称、表与视图计数（以已展开结果为准，不主动全量统计） | `ListNodes` |
-| 表 / 视图 | 顶部切换 **[DDL] / [表信息]**；DDL = `GetDdl` 正文（与数据网格同字号、不折行、横向滚动；`exact=false` 时正文上方一行拼装警示）；表信息 = 列（类型/可空/默认值/字符集/排序规则）、主键、索引与触发器列表、已加载行数 | `GetDdl` / `GetColumns` / `GetPrimaryKey` / `ListNodes` |
+| 表 / 视图 | 顶部切换 **[DDL] / [表信息]**；DDL = `GetDdl` 正文（与表信息同字号、不折行、横向滚动；`exact=false` 时正文上方一行拼装警示）；表信息 = 列（类型/可空/默认值/字符集/排序规则）、主键、索引与触发器列表、已加载行数 | `GetDdl` / `GetColumns` / `GetPrimaryKey` / `ListNodes` |
 | 列 | 该列的完整属性（类型、可空、默认值四态、字符集与排序规则） | `GetColumns` |
 | 索引 / 触发器 | 仅 DDL；MariaDB 的索引与触发器无独立 DDL → 显示明确「不支持」文案与错误码 | `GetDdl` + `metadata.object_kind_unsupported` |
 
@@ -175,8 +175,11 @@ gridWidth    = contentWidth - 18（左内边距）- 3（右内边距）- [10（�
   （四角都圆、内边距 8、命中区仍不小于 24），与上方横线留 6px（v0.2.3.3）。
 - DDL 页只有正文：**不显示**来源徽标、来源说明行与「复制」按钮（它们夹在切换与正文之间
   只是噪音）；`exact = false`（客户端拼装）时正文上方仍必须有琥珀警示。复制走选中 +
-  `Ctrl+C`。正文不折行、横向滚动且滚动条常驻；字号 / 字重与数据网格同一口径（13px / Medium，
-  共用 `FONT_DATA_CELL`），不用等宽字。
+  `Ctrl+C`。正文不折行、横向滚动且滚动条常驻。
+- **面板正文只有一个口径**（v0.2.3.3）：DDL 正文与「表信息」内容同字体、同字号、同字重
+  ——`.sqarvo-panel-text` = 13px / Medium（`layout::FONT_PANEL`），分节标题同字号
+  Semibold（`.sqarvo-panel-heading`）。不再与数据网格绑定（网格改字号时面板不该跟着跳）；
+  不用等宽字，12px 会裁 CJK 笔画、13px Regular 在 1x 屏幕上发虚，所以正文统一 Medium。
 - 权限不足、对象不存在、不支持种类都要显示可读文案 + 稳定错误码。
 - DDL 面板从底部 `GtkRevealer`（现实现）迁入本面板；列信息从页内 Overlay 浮层迁入
   「表信息」页，浮层与其截图绕行代码一并删除。

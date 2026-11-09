@@ -13,9 +13,10 @@
 //! Ready。正文可选中（Ctrl+C 就是复制入口），**不折行**：DDL 是代码，在 280 宽的面板
 //! 里按词折行会把一条语句断成看起来像两条；宽语句横向滚动。
 //!
-//! 字号 / 字重与数据网格同一口径（`theme.rs` 的 `.sqarvo-ddl-text` 与 `.sqarvo-cell`
-//! 共用 `layout::FONT_DATA_CELL`）：等宽字体在 1x 屏幕上比网格正文更细更小，读起来
-//! 像另一套界面。
+//! 字号 / 字重与「表信息」页同一口径（`theme.rs` 的 `.sqarvo-panel-text`，
+//! `layout::FONT_PANEL` = 13px / Medium）：两页文字必须看起来是一套东西；12px 会裁
+//! CJK 笔画，等宽字在 1x 屏幕上又更细更小，所以不用等宽。横向滚动保留——DDL 是代码，
+//! 窄面板里按词折行会把一条语句断成两条。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -138,7 +139,7 @@ impl DdlPanel {
         text_view.set_bottom_margin(8);
         text_view.set_left_margin(10);
         text_view.set_right_margin(10);
-        text_view.add_css_class("sqarvo-ddl-text");
+        text_view.add_css_class("sqarvo-panel-text");
 
         // DDL 不折行：长语句必须能横向滚到，滚动条不能靠悬停才出现——这里关掉
         // overlay 自动淡出（与数据网格同一口径：能滚到的地方要看得见）。

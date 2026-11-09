@@ -433,7 +433,7 @@ impl Inspector {
         info_status.set_xalign(0.0);
         info_status.set_wrap(true);
         info_status.add_css_class("dim-label");
-        info_status.add_css_class("caption");
+        info_status.add_css_class("sqarvo-panel-text");
         info_status.set_visible(false);
         let info_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
         info_box.set_hexpand(true);
@@ -1054,6 +1054,7 @@ impl Inspector {
                     heading.set_xalign(0.0);
                     heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     heading.add_css_class("sqarvo-inspector-column-name");
+                    heading.add_css_class("sqarvo-panel-heading");
                     heading.set_tooltip_text(Some(&column.name));
                     card.append(&heading);
                     for (label, value) in [
@@ -1200,7 +1201,8 @@ fn fill_facts(container: &gtk::Box, facts: &[Fact]) {
         let label = gtk::Label::new(Some(fact.label));
         label.set_xalign(0.0);
         label.add_css_class("dim-label");
-        label.add_css_class("caption");
+        label.add_css_class("sqarvo-fact-label");
+        label.add_css_class("sqarvo-panel-text");
         let value = gtk::Label::new(Some(&fact.value));
         value.set_xalign(0.0);
         value.set_wrap(true);
@@ -1209,6 +1211,7 @@ fn fill_facts(container: &gtk::Box, facts: &[Fact]) {
         value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         value.set_selectable(true);
         value.set_hexpand(true);
+        value.add_css_class("sqarvo-panel-text");
         row.append(&label);
         row.append(&value);
         container.append(&row);
@@ -1221,8 +1224,7 @@ fn section(title: &str) -> gtk::Box {
     box_.set_hexpand(true);
     let label = gtk::Label::new(Some(title));
     label.set_xalign(0.0);
-    label.add_css_class("heading");
-    label.add_css_class("caption");
+    label.add_css_class("sqarvo-panel-heading");
     box_.append(&label);
     box_
 }
@@ -1233,7 +1235,7 @@ fn section_note(title: &str, note: &str) -> gtk::Box {
     label.set_xalign(0.0);
     label.set_wrap(true);
     label.add_css_class("dim-label");
-    label.add_css_class("caption");
+    label.add_css_class("sqarvo-panel-text");
     box_.append(&label);
     box_
 }
@@ -1246,14 +1248,14 @@ fn compact_row(label: &str, value: &str) -> gtk::Box {
     key.set_valign(gtk::Align::Start);
     key.set_size_request(48, -1);
     key.add_css_class("dim-label");
-    key.add_css_class("caption");
+    key.add_css_class("sqarvo-panel-text");
     let text = gtk::Label::new(Some(value));
     text.set_xalign(0.0);
     text.set_wrap(true);
     text.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     text.set_hexpand(true);
     text.set_selectable(true);
-    text.add_css_class("caption");
+    text.add_css_class("sqarvo-panel-text");
     row.append(&key);
     row.append(&text);
     row
@@ -1275,8 +1277,7 @@ fn walk(widget: &gtk::Widget, facts: &mut Vec<String>) {
             first.downcast_ref::<gtk::Label>(),
             second.downcast_ref::<gtk::Label>(),
         )
-        && label.has_css_class("caption")
-        && !label.has_css_class("heading")
+        && label.has_css_class("sqarvo-fact-label")
     {
         facts.push(format!("{}={}", label.text(), value.text()));
         return;
