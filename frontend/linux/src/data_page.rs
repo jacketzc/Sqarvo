@@ -799,9 +799,14 @@ impl DataPage {
         grid.set_reorderable(false);
         grid.add_css_class("sqarvo-grid");
 
+        // 横向滚动条必须**常驻可见**：GTK4 默认的 overlay 滚动条会在指针离开后
+        // 淡出，宽表在「默认窗口滚动到最右 → 最大化」后只剩几十像素可滚，用户既看
+        // 不到条也回不到第一列（workspace-model §6 要求横向滚动条始终可用）。
+        // 只在表格 / 结果容器上关闭 overlay，不影响侧栏、面板等系统惯例。
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
             .vexpand(true)
             .child(&grid)
             .build();
@@ -4585,6 +4590,18 @@ impl DataPage {
                 }
             })
             .collect()
+    }
+
+    /// 把横向滚动位置回到最左（窗口最大化后调用）。
+    ///
+    /// 只改滚动位置，不重新请求数据：重新浏览会丢编辑态，也可能在窄溢出时把
+    /// 用户留在最后一列。类型条带通过 `sync_header_scroll` 的 `value-changed`
+    /// 跟随同一个值。
+    pub fn scroll_to_first_column(&self) {
+        let adjustment = self.grid_scroll.hadjustment();
+        if adjustment.value() > adjustment.lower() {
+            adjustment.set_value(adjustment.lower());
+        }
     }
 
     /// 让类型行跟随网格的横向滚动（两条带共用同一个滚动位置）。

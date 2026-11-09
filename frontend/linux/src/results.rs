@@ -259,9 +259,12 @@ impl ResultsView {
         grid.set_reorderable(false);
         grid.add_css_class("sqarvo-grid");
 
+        // 与数据页同一口径：宽结果集的横向滚动条不能因 overlay 自动淡出而失去
+        // 回到左侧的入口（workspace-model §6）。
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
             .vexpand(true)
             .child(&grid)
             .build();
@@ -565,6 +568,16 @@ impl ResultsView {
     pub fn set_detail(&self, text: &str) {
         self.detail.set_text(text);
         self.detail.set_visible(!text.is_empty());
+    }
+
+    /// 把横向滚动位置回到最左（窗口最大化后调用；不重新执行查询）。
+    pub fn scroll_to_first_column(&self) {
+        let Some(adjustment) = self.grid.hadjustment() else {
+            return;
+        };
+        if adjustment.value() > adjustment.lower() {
+            adjustment.set_value(adjustment.lower());
+        }
     }
 
     /// 滚动到第 `row` 行（0 起），走 `GtkColumnView` 自己的滚动路径（内部就是调整

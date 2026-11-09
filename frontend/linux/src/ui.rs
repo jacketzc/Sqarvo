@@ -209,6 +209,23 @@ pub fn activate(app: &adw::Application) {
     // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
     let actions = install_window_actions(&window, &state);
     state.actions.replace(Some(Rc::clone(&actions)));
+
+    // 最大化后把表格 / 结果网格横向滚动重置到第一列：窗口变宽后内容可能刚好不再
+    // 溢出，滚动条随之消失；若还停在最后一列，用户就看不到第一列。这里只改滚动
+    // 位置，不重新浏览（不丢编辑态、不重发查询）。
+    {
+        let state = Rc::clone(&state);
+        window.connect_maximized_notify(move |window| {
+            if !window.is_maximized() {
+                return;
+            }
+            let workspace = state.workspace.borrow().as_ref().cloned();
+            if let Some(workspace) = workspace {
+                workspace.tabs.scroll_to_first_column();
+                eprintln!("[layout] 窗口已最大化：表格横向滚动回到第一列");
+            }
+        });
+    }
     app.set_accels_for_action("win.new-connection", &["<primary>n"]);
     // Ctrl+Enter / Escape 由编辑器自己的按键控制器处理（见 sql_page），这里只给
     // 侧栏与信息面板这类没有输入焦点的动作配快捷键。

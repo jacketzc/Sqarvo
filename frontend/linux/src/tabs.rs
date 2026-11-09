@@ -2101,6 +2101,21 @@ impl TabSet {
         targets
     }
 
+    /// 窗口最大化后，把所有表 / 结果网格横向滚动回到第一列。
+    ///
+    /// 遍历全部标签而不只当前标签：最大化后切到另一个仍停在末列的标签时，
+    /// 用户同样需要从第一列开始看。只改滚动位置，不重发查询、不丢编辑态。
+    pub fn scroll_to_first_column(&self) {
+        for tab in self.tabs.borrow().iter() {
+            if let Some(data) = tab.data.as_ref() {
+                data.scroll_to_first_column();
+            }
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.scroll_to_first_column();
+            }
+        }
+    }
+
     /// 当前标签（或指定标签）的数据页，供 QA 与「表」菜单用。
     #[must_use]
     pub fn data_page(&self) -> Option<Rc<DataPage>> {

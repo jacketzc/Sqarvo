@@ -339,6 +339,11 @@ impl SqlPage {
         self.results.first_cell_text()
     }
 
+    /// 把结果区横向滚动位置回到最左（窗口最大化后调用）。
+    pub fn scroll_to_first_column(&self) {
+        self.results.scroll_to_first_column();
+    }
+
     /// 滚动到第 `row` 行（0 起）。未加载时先记住目标并按批预取。
     pub fn scroll_to_row(self: &Rc<Self>, row: u32) {
         self.scroll_queue.borrow_mut().push_back(row);
