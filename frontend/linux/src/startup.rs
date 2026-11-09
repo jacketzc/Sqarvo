@@ -94,6 +94,16 @@ pub fn row_subtitle(connection: &StartupConnection) -> String {
 /// 启动态外壳：侧栏连接列表 + `Objects` 空态 + 状态栏。
 pub struct StartupWorkspace {
     root: gtk::Box,
+    /// 六区域外壳。**必须持有**：`Shell::new` 在 `root.connect_map` 里注册的落位回调
+    /// 用 `Weak<Shell>`，外壳 `Rc` 一丢，信息面板就不落位、布局自检也不打印（#139）。
+    shell: Rc<Shell>,
+    /// 信息面板（启动态即常驻 280；没有选中对象时是同一份空态）。
+    ///
+    /// 字段名带 `_`：面板控件的生命周期已由 GTK 树持有，这里保存 `Rc` 只是保证
+    /// Rust 侧的面板状态（`show_empty` 之后的页选择）与控件同寿，没有读取点。
+    _inspector: Rc<crate::inspector::Inspector>,
+    /// 固定的 `Objects` 标签页（QA 读 `is_pinned()` 用）。
+    objects_page: adw::TabPage,
     list: gtk::ListBox,
     count: gtk::Label,
     empty_hint: gtk::Label,
@@ -180,29 +190,26 @@ impl StartupWorkspace {
         strip.add_css_class("sqarvo-tab-strip");
         strip.append(&bar);
 
-        let page_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        page_box.set_margin_top(12);
-        page_box.set_margin_start(12);
-        page_box.set_margin_end(12);
-        let page_title = gtk::Label::new(Some("Objects"));
-        page_title.set_xalign(0.0);
-        page_title.add_css_class("sqarvo-title");
-        let page_subtitle = gtk::Label::new(Some("工作区固定页"));
-        page_subtitle.set_xalign(0.0);
-        page_subtitle.add_css_class("dim-label");
-        let page_note = gtk::Label::new(Some("从左侧选择一个连接开始"));
-        page_note.set_xalign(0.0);
-        page_note.set_wrap(true);
-        page_note.add_css_class("dim-label");
-        page_box.append(&page_title);
-        page_box.append(&page_subtitle);
-        page_box.append(&page_note);
+        let objects = crate::tabs::ObjectsPage::new();
+        // 先清空（作用域回到「没有选中库」）再改写空态文案：顺序反了会把作用域冲掉。
+        objects.show_empty();
+        objects.set_empty_text(
+            "未连接",
+            "没有选中对象",
+            "从左侧选择一个连接开始：双击一条已保存的连接即可连接。",
+        );
+        objects.set_open(Rc::new(|_entry: crate::backend::table::TableEntry| {
+            eprintln!("[startup] 尚未连接数据库，忽略打开表");
+        }));
 
-        let page = view.add_page(&page_box, None);
+        let page = view.add_page(objects.widget(), None);
         page.set_title("Objects");
-        page.set_tooltip("固定页：未连接时从左侧选择一个连接开始");
+        page.set_tooltip("固定页：未连接时从左侧选择一个连接开始（钉住，不可关闭）");
+        page.set_icon(Some(&gtk::gio::ThemedIcon::new("view-grid-symbolic")));
+        // 与连接态的固定存在同一语义（workspace-model §3）：钉住、紧凑、没有关闭按钮。
+        view.set_page_pinned(&page, true);
         view.set_selected_page(&page);
-        // Objects 是固定页：关闭请求直接拦下（与标签工作区同一条语义）。
+        // 钉住后不会再有关闭请求：这段拦截只是兜底，界面上不会出现可点的 ×。
         view.connect_close_page(|_, _| {
             eprintln!("[startup] Objects 页固定存在，不可关闭");
             gtk::glib::Propagation::Stop
@@ -214,13 +221,14 @@ impl StartupWorkspace {
         work_box.append(&strip);
         work_box.append(&view);
 
-        // 信息面板在启动态没有内容：仍由外壳提供槽位，默认折叠。
-        let inspector = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // 信息面板在启动态即常驻（v0.2.3.2）：内容与连接态同一份空态，不是空盒子。
+        let inspector = crate::inspector::Inspector::new();
+        inspector.show_empty();
 
         let shell = Shell::new(ShellHandlers {
             sidebar: sidebar.upcast(),
             work_area: work_box.upcast(),
-            inspector: inspector.upcast(),
+            inspector: inspector.widget().clone().upcast(),
             inspector_width: crate::layout::INSPECTOR_WIDTH,
             on_inspector_width: Rc::new(|_| {}),
             row_op: Rc::new(|_| {
@@ -248,6 +256,9 @@ impl StartupWorkspace {
 
         let workspace = Rc::new(Self {
             root: shell.widget().clone(),
+            shell,
+            _inspector: inspector,
+            objects_page: page,
             list,
             count,
             empty_hint,
@@ -274,6 +285,18 @@ impl StartupWorkspace {
             count += 1;
         }
         count
+    }
+
+    /// 信息面板状态（QA 断言用）：`(宽度, 是否展开)`，读外壳里的真实值。
+    #[must_use]
+    pub(crate) fn inspector_state(&self) -> (i32, bool) {
+        (self.shell.inspector_width(), self.shell.inspector_visible())
+    }
+
+    /// 启动态 `Objects` 标签是否固定（QA 断言用，读 `AdwTabPage:pinned` 真实值）。
+    #[must_use]
+    pub(crate) fn objects_pinned(&self) -> bool {
+        self.objects_page.is_pinned()
     }
 
     /// 重填连接列表（配置变化后由调用方触发；不含任何密码）。

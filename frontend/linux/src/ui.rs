@@ -2990,8 +2990,27 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
             ));
         }
     }
+    // v0.2.3.2：信息面板在启动态即常驻（280，240–520 为可拖区间），不是 0 宽的折叠态。
+    let (inspector_width, inspector_visible) = startup.inspector_state();
+    if !inspector_visible {
+        return Err(format!(
+            "启动态信息面板应当可见，实际 visible={inspector_visible}（宽度 {inspector_width}）"
+        ));
+    }
+    if !(240..=520).contains(&inspector_width) {
+        return Err(format!(
+            "启动态信息面板宽度应当在 240..=520（规范默认 280），实际 {inspector_width}"
+        ));
+    }
+    // 形状同一：启动态 `Objects` 也是钉住的固定页（窄、无关闭按钮），不是普通标签。
+    let objects_pinned = startup.objects_pinned();
+    if !objects_pinned {
+        return Err(format!(
+            "启动态 Objects 标签应当 pinned=true，实际 pinned={objects_pinned}"
+        ));
+    }
     Ok(format!(
-        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段）",
+        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段，信息面板 {inspector_width}px 可见，Objects pinned）",
         startup.connection_count()
     ))
 }

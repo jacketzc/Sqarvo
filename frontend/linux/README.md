@@ -1111,6 +1111,45 @@ cd frontend/linux
 
 断言读的是控件树里真实渲染的文本（`--qa-expect-about` 也是），不是状态机自述。
 
+启动态的形状与连接态一致（#155 之前启动态外壳的 `Rc<Shell>` 被丢弃，面板从不落位、
+`Objects` 也不是固定页）：
+
+- **信息面板在启动态即常驻 280**（240–520 可拖），不再折叠、也没有「无面板」那一档；
+- **`Objects` 页与连接态是同一实现**（`tabs::ObjectsPage`）：钉住（`AdwTabPage:pinned`）
+  在最左、只显示图标、没有关闭按钮，只是空态文案换成「未连接 / 从左侧选择一个连接开始」；
+- 截图的形状差异（侧栏 237、工作区到 x≈919、919–1200 是面板）可以这样重现，两次运行
+  都用隔离的 `XDG_CONFIG_HOME` 与端点文件，产物落在仓库外：
+
+```bash
+W=/tmp/sqarvo-layout-check
+rm -rf $W; mkdir -p $W/config/sqarvo/Sqarvo $W/runA/sqarvo $W/runB/sqarvo
+cp ~/.config/sqarvo/Sqarvo/connections.json $W/config/sqarvo/Sqarvo/
+
+# A 启动态（未连接）：断言 Objects 固定页 + 信息面板已落位
+env XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state \
+    SQARVO_ENDPOINT_FILE=$W/runA/sqarvo/backend-endpoint.json \
+    SQARVO_BACKEND_BIN=…/backend/target/debug/sqarvo-backend \
+    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QALayoutA \
+  ./target/release/sqarvo-desktop --window-size 1200x800 --qa-layout-audit \
+    --qa-startup-workspace --screenshot $W/01-startup.png --qa-exit-after-ms 8000
+
+# B 双击一条已保存连接之后：形状必须与 A 相同（竖线仍在 237 / 919）
+# 环境变量与 A 完全相同，只把 SQARVO_QA_APP_ID 换成 QALayoutB、端点文件换成 runB 下的同名文件
+env XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state \
+    SQARVO_ENDPOINT_FILE=$W/runB/sqarvo/backend-endpoint.json \
+    SQARVO_BACKEND_BIN=…/backend/target/debug/sqarvo-backend \
+    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QALayoutB \
+  ./target/release/sqarvo-desktop --window-size 1200x800 --qa-layout-audit \
+    --qa-startup-click "演示库 · demo.db（SQLite）" --qa-expect-startup-connect connects=1 \
+    --screenshot $W/02-after-connect.png --screenshot-delay-ms 6000 --qa-exit-after-ms 15000
+```
+
+`--qa-layout-audit` 不能省：`qa::enabled()` 只认它这一组参数，没有它 `SQARVO_QA_APP_ID`
+不生效，新进程会把激活转发给正在运行的同名实例（表现为退出码 0、日志只有一行
+「日志文件：…」）。端点文件必须正好是 `<runtime_root>/sqarvo/backend-endpoint.json`。
+A 的日志里应当有 `[shell] 布局 1200x800：… 侧栏 237，信息面板 280` 与
+「断言通过：…信息面板 280px 可见，Objects pinned」。
+
 ### v0.2.3 验收链（#121）
 
 ```bash
