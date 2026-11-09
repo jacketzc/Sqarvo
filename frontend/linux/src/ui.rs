@@ -3534,36 +3534,31 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         // DDL 已迁入信息面板：断言读面板里那块 DDL 的控件。
         let observed = workspace.inspector.ddl_panel().qa_observe();
         if !observed.visible {
-            return Err("DDL 面板没有打开：截图上不会有 DDL（检查 --qa-tree-ddl）".to_owned());
+            return Err(
+                "DDL 面板没有打开：截图上不会有 DDL（先 select-node 选中表，再 --qa-inspector ddl）"
+                    .to_owned(),
+            );
         }
         for expectation in &ddl_expectations {
             let actual = match expectation.field {
-                crate::qa::DdlField::Provenance => observed.provenance.clone(),
-                crate::qa::DdlField::DetailContains => observed.detail.clone(),
-                crate::qa::DdlField::ObjectContains => observed.object.clone(),
                 crate::qa::DdlField::Contains => observed.text.clone(),
                 crate::qa::DdlField::State => observed.state.name().to_owned(),
-                crate::qa::DdlField::Copy => {
-                    if observed.copy_enabled { "on" } else { "off" }.to_owned()
-                }
                 crate::qa::DdlField::Visible => {
                     if observed.visible { "on" } else { "off" }.to_owned()
                 }
             };
             let matched = match expectation.field {
-                crate::qa::DdlField::DetailContains
-                | crate::qa::DdlField::ObjectContains
-                | crate::qa::DdlField::Contains => actual.contains(&expectation.expected),
+                crate::qa::DdlField::Contains => actual.contains(&expectation.expected),
                 _ => actual == expectation.expected,
             };
             if !matched {
                 return Err(format!(
-                    "DDL 面板 {} 期望「{}」，实际「{}」（状态 {:?}，来源说明：{}）",
+                    "DDL 面板 {} 期望「{}」，实际「{}」（状态 {:?}，正文长度 {} 字符）",
                     expectation.field.name(),
                     expectation.expected,
                     truncate_for_log(&actual, 120),
                     observed.state,
-                    truncate_for_log(&observed.detail, 120)
+                    observed.text.chars().count()
                 ));
             }
             passed.push(format!(

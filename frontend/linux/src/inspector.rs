@@ -400,16 +400,21 @@ impl Inspector {
         txn_hint.set_visible(false);
 
         // `[DDL] / [表信息]`：面板内切换，只在表 / 视图页出现。
+        //
+        // 两个 toggle 是**独立**按钮（不用 `.linked` 分段容器）：分段样式只圆外侧两个
+        // 角、选中块比文字大一圈；这里要的是贴着文字的小圆角块，四个角都圆。间距与
+        // 上方横线的留白由 `switch_bar` 负责（横线 → 6px → 切换条 → 6px → 正文）。
         let ddl_toggle = gtk::ToggleButton::with_label("DDL");
         ddl_toggle.add_css_class("flat");
-        ddl_toggle.set_tooltip_text(Some("显示 GetDdl 的原文与来源标注"));
+        ddl_toggle.set_tooltip_text(Some("显示该对象的 DDL"));
         let info_toggle = gtk::ToggleButton::with_label("表信息");
         info_toggle.add_css_class("flat");
         info_toggle.set_tooltip_text(Some("列、主键、索引与触发器、已加载行数"));
         info_toggle.set_group(Some(&ddl_toggle));
         ddl_toggle.set_active(true);
-        let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        switch_bar.add_css_class("linked");
+        let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        switch_bar.add_css_class("sqarvo-pane-switch");
+        switch_bar.set_margin_top(6);
         switch_bar.set_margin_start(10);
         switch_bar.set_margin_end(10);
         switch_bar.set_margin_bottom(6);
@@ -423,8 +428,7 @@ impl Inspector {
         let column_rows = fact_container();
 
         // ---- 表 / 视图：DDL（迁入 ddl.rs 的面板）+ 表信息 --------------------
-        let ddl = DdlPanel::new(Rc::new(|| {}));
-        ddl.set_embedded(true);
+        let ddl = DdlPanel::new();
         let info_status = gtk::Label::new(None);
         info_status.set_xalign(0.0);
         info_status.set_wrap(true);
@@ -457,8 +461,7 @@ impl Inspector {
         let connection_page = scrolled(&connection_rows);
         let catalog_page = scrolled(&catalog_rows);
         let column_page = scrolled(&column_rows);
-        let ddl_only = DdlPanel::new(Rc::new(|| {}));
-        ddl_only.set_embedded(true);
+        let ddl_only = DdlPanel::new();
         let ddl_only_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         ddl_only_box.append(ddl_only.widget());
         ddl_only_box.set_vexpand(true);

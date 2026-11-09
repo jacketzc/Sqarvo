@@ -59,8 +59,8 @@
 //!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
-//!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：
-//!   `provenance|detail_contains|object_contains|contains|state|copy|visible`；
+//!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`
+//!   （v0.2.3.3 起来源徽标 / 来源说明 / 「复制」按钮已从面板移除，对应字段一并删除）；
 //! - `--qa-tabs-file <path>`（#116）：标签工作区脚本，每行一步，走与用户相同的路径
 //!   （`open-table` / `query-tab` / `begin` / `edit` / `apply` / `rollback` / `reload` /
 //!   `log-rows` / `sql` / `execute` / `close <n> <save|discard|cancel>` / `sessions <标签>` /
@@ -530,18 +530,10 @@ impl TreeExpectation {
 /// `--qa-expect-ddl` 要比对的字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DdlField {
-    /// 来源徽标（**原文** / **由客户端拼装**）。
-    Provenance,
-    /// 来源说明是否包含某段文本。
-    DetailContains,
-    /// 标题里的对象名是否包含某段文本。
-    ObjectContains,
     /// DDL 正文是否包含某段文本。
     Contains,
     /// 面板状态（idle / loading / ready / empty / error / unsupported）。
     State,
-    /// 「复制」是否可点（on / off）。
-    Copy,
     /// 面板是否可见（on / off）。
     Visible,
 }
@@ -550,15 +542,11 @@ impl DdlField {
     /// 参数里的字段名。
     fn parse(value: &str) -> Result<Self, String> {
         match value {
-            "provenance" => Ok(Self::Provenance),
-            "detail_contains" => Ok(Self::DetailContains),
-            "object_contains" => Ok(Self::ObjectContains),
             "contains" => Ok(Self::Contains),
             "state" => Ok(Self::State),
-            "copy" => Ok(Self::Copy),
             "visible" => Ok(Self::Visible),
             other => Err(format!(
-                "--qa-expect-ddl 的字段只接受 provenance|detail_contains|object_contains|contains|state|copy|visible，实际：{other}"
+                "--qa-expect-ddl 的字段只接受 contains|state|visible，实际：{other}"
             )),
         }
     }
@@ -567,12 +555,8 @@ impl DdlField {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
-            Self::Provenance => "provenance",
-            Self::DetailContains => "detail_contains",
-            Self::ObjectContains => "object_contains",
             Self::Contains => "contains",
             Self::State => "state",
-            Self::Copy => "copy",
             Self::Visible => "visible",
         }
     }
@@ -2895,7 +2879,7 @@ mod tests {
             "--qa-expect-tree",
             "selected=orders",
             "--qa-expect-ddl",
-            "provenance=原文",
+            "state=ready",
         ]))
         .unwrap();
         // 展开顺序就是参数顺序：先库、后表，跳转时的逐层展开依赖它。
@@ -2914,8 +2898,8 @@ mod tests {
         assert_eq!(
             parsed.expect_ddl[0],
             DdlExpectation {
-                field: DdlField::Provenance,
-                expected: "原文".to_owned(),
+                field: DdlField::State,
+                expected: "ready".to_owned(),
             }
         );
         // 字段名与断言读取用同一份词表。
@@ -2931,15 +2915,7 @@ mod tests {
         ] {
             assert_eq!(TreeField::parse(field.name()).unwrap(), field);
         }
-        for field in [
-            DdlField::Provenance,
-            DdlField::DetailContains,
-            DdlField::ObjectContains,
-            DdlField::Contains,
-            DdlField::State,
-            DdlField::Copy,
-            DdlField::Visible,
-        ] {
+        for field in [DdlField::Contains, DdlField::State, DdlField::Visible] {
             assert_eq!(DdlField::parse(field.name()).unwrap(), field);
         }
     }
@@ -3005,11 +2981,26 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-tree-search", "  "])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-tree", "selected"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-tree", "bogus=x"])).is_err());
-        assert!(parse(&args(&["app", "--qa-expect-ddl", "provenance"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-ddl", "state"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-ddl", "bogus=x"])).is_err());
+        // v0.2.3.3 删掉的字段（来源徽标 / 来源说明 / 复制）必须报错：旧脚本不能安静地
+        // 跑成「断言通过」，而那条断言背后已经没有控件了。
+        for removed in ["provenance=原文", "detail_contains=SHOW CREATE", "copy=on"] {
+            assert!(
+                parse(&args(&[
+                    "app",
+                    "--screenshot",
+                    "/tmp/a.png",
+                    "--qa-expect-ddl",
+                    removed
+                ]))
+                .is_err(),
+                "已移除的字段仍然被接受：{removed}"
+            );
+        }
         // 与其它 --qa-expect-* 一样：没有截图就没有「断言这一刻」。
         assert!(parse(&args(&["app", "--qa-expect-tree", "selected=orders"])).is_err());
-        assert!(parse(&args(&["app", "--qa-expect-ddl", "provenance=原文"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-ddl", "contains=CREATE TABLE"])).is_err());
     }
 
     #[test]

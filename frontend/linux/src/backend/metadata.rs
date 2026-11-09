@@ -279,35 +279,9 @@ impl DdlView {
         }
     }
 
-    /// 面板上的来源标记：**原文** / **由客户端拼装**。
-    ///
-    /// 只看 `exact`：`source = UNSPECIFIED` 时契约要求退回布尔值判断，
-    /// 不能把「没说明」当成原文。
-    #[must_use]
-    pub fn provenance_label(&self) -> &'static str {
-        if self.exact {
-            "原文"
-        } else {
-            "由客户端拼装"
-        }
-    }
-
-    /// 来源标记的补充说明（`UNSPECIFIED` 时提示服务端未说明来源）。
-    #[must_use]
-    pub fn provenance_note(&self) -> Option<&'static str> {
-        match self.source {
-            DdlSource::Unspecified => Some("服务端未说明来源（只能按 exact 判断）"),
-            DdlSource::Database if !self.exact => {
-                Some("来源与 exact 不一致：按 exact 处理，视为拼装")
-            }
-            DdlSource::Synthesized if self.exact => {
-                Some("来源与 exact 不一致：按 exact 处理，视为原文")
-            }
-            DdlSource::Database | DdlSource::Synthesized => None,
-        }
-    }
-
     /// 面板上展示的来源说明（`exact = false` 时必须能看出缺了什么）。
+    ///
+    /// v0.2.3.3 起界面只在拼装时显示一行警示，这条文案就是警示的正文。
     #[must_use]
     pub fn detail_text(&self) -> String {
         let mut detail = if self.source_detail.trim().is_empty() {
@@ -323,12 +297,6 @@ impl DdlView {
             detail.push_str(&format!("（拼装器版本 {}）", self.generator_version));
         }
         detail
-    }
-
-    /// 复制到剪贴板的文本：只有 DDL 本身，不带来源标注。
-    #[must_use]
-    pub fn clipboard_text(&self) -> String {
-        self.ddl.clone()
     }
 }
 
@@ -1270,9 +1238,8 @@ mod tests {
             source_detail: "SHOW CREATE TABLE".to_owned(),
             generator_version: String::new(),
         });
-        assert_eq!(exact.provenance_label(), "原文");
+        assert!(exact.exact);
         assert_eq!(exact.detail_text(), "SHOW CREATE TABLE");
-        assert!(exact.provenance_note().is_none());
 
         let synthesized = DdlView::from_proto(&GetDdlResponse {
             ddl: "CREATE TABLE t (id int);".to_owned(),
@@ -1282,7 +1249,7 @@ mod tests {
             generator_version: "1.4.0".to_owned(),
         });
         // exact=false 是**必须展示**的：拼装结果有信息损失。
-        assert_eq!(synthesized.provenance_label(), "由客户端拼装");
+        assert!(!synthesized.exact);
         assert!(
             synthesized.detail_text().contains("不含 CHECK 约束"),
             "{}",
@@ -1301,11 +1268,10 @@ mod tests {
             source_detail: String::new(),
             generator_version: String::new(),
         });
-        assert_eq!(view.provenance_label(), "由客户端拼装");
-        assert!(view.provenance_note().is_some());
+        assert!(!view.exact);
+        assert_eq!(view.source, DdlSource::Unspecified);
         // exact=false 且没有来源说明时，必须明确告诉用户不可信。
         assert!(view.detail_text().contains("不可据此判断完整结构"));
-        assert_eq!(view.clipboard_text(), "CREATE TABLE t (id int);");
     }
 
     #[test]

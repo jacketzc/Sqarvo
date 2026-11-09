@@ -38,7 +38,9 @@ MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径
 双击 / 回车才激活（表 / 视图 = 打开数据标签，连接 = 按保存的凭据连接，库 / 分组 = 展开收起）；
 表展开后先出四组，展开某组才发那一次 `ListNodes(filter.kinds)`，`Foreign Keys` 没有驱动
 实现、展开只显示「驱动未提供外键列表（capability.unsupported）」。DDL 在信息面板的
-`[DDL]` 页查看，显式标注**原文 / 由客户端拼装**（`GetDdl.exact`）并提供「复制」；
+`[DDL]` 页查看：正文与数据网格同字号（13px / Medium），长语句横向滚动；只有
+`exact = false`（客户端拼装）时正文上方才出现一行琥珀警示。v0.2.3.3 起不再显示来源
+徽标、来源说明行与「复制」按钮，复制用选中 + `Ctrl+C`；
 侧栏平铺表列表、页脚「DDL」按钮与右键「查看 DDL」在 v0.2.3.2 一并删除。
 
 **表数据页已接入**（#48）：双击树里的表（或回车）进入数据标签——`TableDataService.BrowseTable` 按主键升序 + offset 分页（每页
@@ -164,7 +166,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/data_page.rs` | 数据页：虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务控制行（开始 / 提交 / 回滚互斥显示）、逐行错误列表 |
 | `src/backend/metadata.rs` | 元数据域（#86）：节点/种类映射、请求构造、DDL 来源与错误分类（纯逻辑，可单测）+ 独立元数据线程与主线程请求路由（`MetadataHub`） |
 | `src/tree.rs` | 对象树：`GtkTreeListModel` 懒加载、自定义展开箭头、分页「加载更多」、搜索防抖（250 ms）与跳转、树的健康状态 |
-| `src/ddl.rs` | DDL 面板：`GetDdl` 结果的原文/拼装标注、来源说明、等宽可滚动文本、复制按钮与四态文案 |
+| `src/ddl.rs` | DDL 面板：`GetDdl` 正文（与数据网格同字号、不折行、横向滚动）、拼装警示、四态文案 |
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
 | `scripts/v023-acceptance.sh` | v0.2.3 验收链（#121）：SQLite + MariaDB 两库跑完整流程，配置隔离、逐项断言、仓库外取证 |
@@ -481,11 +483,15 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
   客户端不拼通配符、不做二次过滤（大小写敏感性跟随数据库）。空结果与
   `metadata.permission_denied` 是两句不同的话（后者给出授权建议）；点结果在树里
   逐层展开并选中，失败时在状态行说明「不在当前库的目录层下」；
-- **DDL 面板**：徽标显示**原文**或**由客户端拼装**（只看 `exact`，`source` 未说明时
-  按 `exact` 判断），来源说明始终展示（拼装时必须说清缺了什么），拼装结果额外一行
-  警示并给出 `generator_version`；Loading / Empty / Error / 不支持各有文案，
-  `metadata.object_kind_unsupported` 与 `capability.unsupported` 分开显示；长文本
-  可滚动，复制只复制 DDL 本身（不带来源标注）；
+- **DDL 面板**：只有正文与状态文案。`exact = false`（客户端拼装）时正文上方多一行
+  琥珀警示，并给出 `source_detail` 与 `generator_version`（拼装缺了什么、哪版拼的）；
+  原文不写来源徽标与说明行（v0.2.3.3 删掉了「原文 / 复制」那一条，它夹在页切换与正文
+  之间只是噪音）。Loading / Empty / Error / 不支持各有文案，
+  `metadata.object_kind_unsupported` 与 `capability.unsupported` 分开显示；
+  **不折行**：DDL 是代码，窄面板里折行会把一条语句断成两条，改为横向滚动并让滚动条
+  常驻（`overlay-scrolling = false`）；字号 / 字重跟数据网格同一个常量
+  （`.sqarvo-ddl-text` 与 `.sqarvo-cell` 共用 `layout::FONT_DATA_CELL`），复制用
+  选中 + `Ctrl+C`；
 - **线程**：树的每个展开、搜索、`GetDdl` 都发到独立的元数据线程（`MetadataHub` 按请求
   ID 路由回主线程），主线程只更新控件。
 
@@ -1023,14 +1029,13 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 ### 对象树、搜索与 DDL 面板的无人值守验证（#86）
 
 ```bash
-# 展开两层 → 打开表 → 看 DDL，并在截图时刻断言「原文」标记
+# 展开两层 → 选中表 → 看 DDL，并在截图时刻断言正文与状态
 ./target/debug/sqarvo-desktop \
   --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
   --qa-tree-expand sqarvo_test_86 --qa-tree-open orders \
   --screenshot ~/sqarvo-v022-shots/tree-open.png --screenshot-delay-ms 6500 \
   --qa-expect-tree health=Ready --qa-expect-tree selected=orders \
-  --qa-expect-ddl provenance=原文 --qa-expect-ddl state=ready --qa-expect-ddl copy=on \
-  '--qa-expect-ddl=contains=CREATE TABLE' '--qa-expect-ddl=detail_contains=SHOW CREATE TABLE'
+  --qa-expect-ddl state=ready '--qa-expect-ddl=contains=CREATE TABLE'
 
 # 搜索 → 点第一条结果 → 在树里逐层展开并选中
 ./target/debug/sqarvo-desktop \
@@ -1060,9 +1065,11 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   点第一个「加载更多…」占位行；`--qa-tree-disconnect <name>` 断开指定连接的浏览会话
   （与右键菜单「断开连接」同一条路径，包含确认框；排在搜索步骤之前）；
 - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|loaded|
-  status_contains`；`--qa-expect-ddl <field>=<value>`：`provenance|detail_contains|
-  object_contains|contains|state|copy|visible`。断言读的是**控件上真实渲染的文本**
-  （搜索状态行、DDL 徽标、缓冲区正文），不是「状态机里应该是」；
+  status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`。断言读的是
+  **控件上真实渲染的文本**（搜索状态行、DDL 缓冲区正文），不是「状态机里应该是」。
+  v0.2.3.3 起 DDL 面板不再显示来源徽标 / 来源说明 / 「复制」按钮，`provenance` /
+  `detail_contains` / `object_contains` / `copy` 四个字段随之删除——旧脚本传它们会直接
+  报错，而不是拿一条没有控件承载的断言「通过」；
 - `--opt=value` 与 `--opt value` 两种写法等价（GLib 的选项解析两种都接受，QA 的自解析
   必须一致，否则「参数没生效」会看起来像功能坏了）；
 - 并行开发时可以给每个 worktree 一个独立端点，避免互相杀掉对方的后端：

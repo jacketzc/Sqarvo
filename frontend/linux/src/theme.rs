@@ -152,6 +152,28 @@ pub fn stylesheet() -> String {
            避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
         .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
 
+        /* 信息面板的 DDL 正文：与数据网格**同一口径**（同一个字号常量 + Medium），
+           不再是等宽字——等宽字在 1x 屏幕上比网格正文更细更小，读起来像另一套界面。 */
+        .sqarvo-ddl-text {{ font-size: {data_font}px; font-weight: 500; }}
+
+        /* 信息面板的 [DDL] / [表信息]（v0.2.3.3）：两个独立 toggle，选中态是贴着
+           文字的**小圆角块，四个角都圆**。不用 `.linked` 分段容器：分段样式只圆外侧
+           两个角、命中块比文字大一圈。命中区仍不小于 24（§11），缩的是内边距。 */
+        .sqarvo-pane-switch > button {{
+            min-height: {target}px;
+            min-width: {target}px;
+            padding: 0 8px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            box-shadow: none;
+        }}
+        .sqarvo-pane-switch > button:hover {{ background: alpha(currentColor, 0.07); }}
+        .sqarvo-pane-switch > button:checked {{
+            background: alpha(currentColor, 0.10);
+            box-shadow: none;
+        }}
+
         /* 筛选与排序面板（popover）：密度跟对象树一致——12px 正文、24px 行高、
            11px 说明字。面板里不用 13px 标题，否则它在表格旁边比树「大一号」。 */
         .sqarvo-fs .fs-title {{ font-weight: 600; }}
@@ -245,6 +267,57 @@ mod tests {
         assert!(
             css.contains(&format!("min-height: {}px", layout::TAB_STRIP_HEIGHT)),
             "标签条高度缺失"
+        );
+    }
+
+    #[test]
+    fn ddl_text_shares_the_grid_metric() {
+        // 用户要求：DDL 正文的字号 / 字重与数据网格里的数据一致。两者必须读同一个
+        // 常量，否则下次调网格字号时 DDL 会悄悄留在旧值上。
+        let css = stylesheet();
+        let expected = format!(
+            ".sqarvo-ddl-text {{ font-size: {}px; font-weight: 500; }}",
+            layout::FONT_DATA_CELL
+        );
+        assert!(
+            css.contains(&expected),
+            "DDL 正文必须与数据网格同字号 / 字重：{css}"
+        );
+    }
+
+    #[test]
+    fn pane_switch_is_a_small_round_block() {
+        // 用户要求：选中态环绕文字、四个圆角、更小更贴近字体。分段容器（`.linked`）
+        // 只圆外侧两个角，所以规则必须挂在独立 toggle 上。
+        let css = stylesheet();
+        let start = css
+            .find(".sqarvo-pane-switch > button {")
+            .expect("缺少 [DDL] / [表信息] 切换的按钮规则");
+        let rule = &css[start..start + css[start..].find('}').expect("规则应当是闭合的")];
+        assert!(
+            rule.contains("border-radius: 6px;"),
+            "选中块要有圆角：{rule}"
+        );
+        assert!(
+            rule.contains("padding: 0 8px;"),
+            "内边距要收小（贴着文字）：{rule}"
+        );
+        assert!(
+            rule.contains(&format!("min-height: {}px;", layout::MIN_TARGET)),
+            "命中区不能低于最小点击区：{rule}"
+        );
+        let checked = css
+            .find(".sqarvo-pane-switch > button:checked {")
+            .expect("缺少选中态规则");
+        let checked_rule = &css[checked..checked + css[checked..].find('}').unwrap_or(0)];
+        // Adwaita 的 `button:checked` 是 30% 的整块底色，在 280 宽的面板里像一块砖。
+        assert!(
+            checked_rule.contains("background: alpha(currentColor, 0.10);"),
+            "选中态应是淡底：{checked_rule}"
+        );
+        assert!(
+            checked_rule.contains("box-shadow: none;"),
+            "不要整块阴影：{checked_rule}"
         );
     }
 

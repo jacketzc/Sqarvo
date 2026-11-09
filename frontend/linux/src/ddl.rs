@@ -1,30 +1,29 @@
-//! DDL 面板（#86）：显示 `GetDdl` 结果，并**显式标注来源**。
+//! DDL 面板（#86）：显示 `GetDdl` 的结果。
 //!
-//! # 为什么必须显示 `exact`
-//!
-//! `GetDdl` 的契约允许服务端在拿不到原文时**拼装** DDL（`exact = false`）。
-//! 拼装结果有信息损失（例如缺 CHECK 约束、缺索引），用户必须能一眼看出
-//! 「这是数据库给的原文」还是「这是拼出来的」，否则会拿不可信的 DDL 去做迁移。
-//! 因此面板上有三处固定信息：
-//!
-//! 1. 徽标：**原文** / **由客户端拼装**（只看 `exact`；`source` 未说明时按 `exact` 判断）；
-//! 2. 来源说明（`source_detail`）：原文取自哪里、拼装缺了什么；
-//! 3. 拼装时额外一行警示：`generator_version` 与「有信息损失」。
+//! v0.2.3.3 起界面只留正文：来源徽标、「复制」按钮、来源说明行与面板自己的标题
+//! 全部移除——它们夹在 `[DDL] / [表信息]` 切换和正文之间，而两个驱动都只交付数据库
+//! 原文，这几行只是噪音。安全底线保留：`exact = false`（客户端拼装）时仍显示一行
+//! 琥珀警示。拼装结果有信息损失（缺 CHECK 约束、缺索引……），用户必须知道，否则会
+//! 拿它去做迁移。
 //!
 //! # 状态
 //!
 //! Loading（spinner）/ Empty（DDL 为空）/ Error（对象不存在、后端不可用）/
 //! 不支持（`capability.unsupported` 与 `metadata.object_kind_unsupported` 分开）/
-//! Ready。长文本可滚动，内容是等宽字体，可一键复制。
+//! Ready。正文可选中（Ctrl+C 就是复制入口），**不折行**：DDL 是代码，在 280 宽的面板
+//! 里按词折行会把一条语句断成看起来像两条；宽语句横向滚动。
+//!
+//! 字号 / 字重与数据网格同一口径（`theme.rs` 的 `.sqarvo-ddl-text` 与 `.sqarvo-cell`
+//! 共用 `layout::FONT_DATA_CELL`）：等宽字体在 1x 屏幕上比网格正文更细更小，读起来
+//! 像另一套界面。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
 
 use crate::backend::metadata::{DdlView, MetadataError, MetadataHub, NodeView, kind_label};
-use crate::proto::services::v1::{DdlSource, ObjectRef};
+use crate::proto::services::v1::ObjectRef;
 
 /// 按对象的会话找元数据通道（多连接下 DDL 走对象**自己**那条浏览会话）。
 pub type HubResolver = Rc<dyn Fn(&ObjectRef) -> Option<Rc<MetadataHub>>>;
@@ -63,25 +62,21 @@ impl DdlState {
 }
 
 /// QA 从面板控件上读回的快照（断言读真实控件，不读状态机）。
+///
+/// 只保留控件上真实存在的东西：来源徽标、「复制」按钮与来源说明行在 v0.2.3.3 已从
+/// 界面移除，对应字段一并删除——留着它们只会让断言读一份没有控件承载的状态，永远
+/// 是绿的。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DdlObservation {
     /// 面板是否可见。
     pub visible: bool,
-    /// 标题上的对象名。
-    pub object: String,
-    /// 来源徽标文本（**原文** / **由客户端拼装**）。
-    pub provenance: String,
-    /// 来源说明文本。
-    pub detail: String,
     /// DDL 正文（只读文本视图的缓冲区）。
     pub text: String,
     /// 状态。
     pub state: DdlState,
-    /// 「复制」按钮是否可点。
-    pub copy_enabled: bool,
 }
 
-/// 面板 CSS：来源徽标必须**一眼可分辨**（原文 = 绿、拼装 = 琥珀）。
+/// 面板 CSS：拼装警示必须一眼可分辨（琥珀）。
 ///
 /// 与 `results.rs` / `data_page.rs` 一样：每个模块自己装一次，用 `OnceLock`
 /// 保证不会重复添加（重复添加会让样式叠加，颜色越来越深）。
@@ -95,14 +90,7 @@ fn install_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(
-        r#"
-        .sqarvo-ddl-badge { border-radius: 6px; padding: 0 6px; }
-        .sqarvo-ddl-badge.sqarvo-ddl-exact { background: alpha(@success_color, 0.15); color: @success_color; }
-        .sqarvo-ddl-badge.sqarvo-ddl-synth { background: alpha(@warning_color, 0.18); color: @warning_color; }
-        label.sqarvo-ddl-synth { color: @warning_color; }
-        "#,
-    );
+    provider.load_from_string(r#"label.sqarvo-ddl-synth { color: @warning_color; }"#);
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -110,36 +98,17 @@ fn install_css() {
     );
 }
 
-/// 徽标 CSS 类：原文与拼装必须能靠颜色分辨（也便于 QA 断言）。
-#[must_use]
-pub fn provenance_css(exact: bool) -> &'static str {
-    if exact {
-        "sqarvo-ddl-exact"
-    } else {
-        "sqarvo-ddl-synth"
-    }
-}
-
-/// DDL 面板。
+/// DDL 面板（嵌在信息面板里：没有自己的标题、关闭按钮与固定高度）。
 pub struct DdlPanel {
     root: gtk::Box,
     stack: gtk::Stack,
     state_page: adw::StatusPage,
     spinner: gtk::Spinner,
-    object_label: gtk::Label,
-    badge: gtk::Label,
-    detail: gtk::Label,
+    /// 只在 `exact = false`（客户端拼装）时出现的警示行。
     warning: gtk::Label,
     text_view: gtk::TextView,
-    copy: gtk::Button,
-    close: gtk::Button,
-    /// 是否嵌在信息面板里（#119）：嵌进去后不再显示自己的标题与关闭按钮，
-    /// 也不占一个固定高度——标题由面板头部负责，收起由面板负责。
-    embedded: Cell<bool>,
     /// 按对象自己的会话找元数据通道：两条连接各看各的 DDL（#114）。
     hub_of: RefCell<Option<HubResolver>>,
-    /// 最近一次的结果：复制按钮用它取**纯 DDL**（不带来源标注）。
-    last: RefCell<Option<DdlView>>,
     current: RefCell<Option<NodeView>>,
     state: Cell<DdlState>,
     /// 面板是否被用户打开着（由 ui.rs 的 revealer 状态驱动，这里只记一份）。
@@ -147,69 +116,36 @@ pub struct DdlPanel {
 }
 
 impl DdlPanel {
-    /// 构建面板；`on_close` 由「关闭」按钮触发。
-    pub fn new(on_close: Rc<dyn Fn()>) -> Rc<Self> {
-        let object_label = gtk::Label::new(Some("DDL"));
-        object_label.set_xalign(0.0);
-        object_label.set_hexpand(true);
-        object_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        object_label.add_css_class("heading");
-
-        let badge = gtk::Label::new(None);
-        badge.add_css_class("caption");
-        badge.add_css_class("sqarvo-ddl-badge");
-        badge.set_visible(false);
-
-        let detail = gtk::Label::new(None);
-        detail.set_xalign(0.0);
-        detail.set_wrap(true);
-        detail.set_visible(false);
-        detail.add_css_class("dim-label");
-        detail.add_css_class("caption");
-
+    /// 构建面板。
+    pub fn new() -> Rc<Self> {
         let warning = gtk::Label::new(None);
         warning.set_xalign(0.0);
         warning.set_wrap(true);
         warning.set_visible(false);
+        warning.set_margin_top(6);
+        warning.set_margin_bottom(2);
+        warning.set_margin_start(10);
+        warning.set_margin_end(10);
         warning.add_css_class("caption");
         warning.add_css_class("sqarvo-ddl-synth");
-
-        let copy = gtk::Button::with_label("复制");
-        copy.set_tooltip_text(Some("复制 DDL 到剪贴板"));
-        copy.add_css_class("flat");
-        copy.set_sensitive(false);
-
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
-        close.set_tooltip_text(Some("关闭 DDL 面板"));
-        close.add_css_class("flat");
-        {
-            let on_close = Rc::clone(&on_close);
-            close.connect_clicked(move |_| on_close());
-        }
-
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_margin_top(6);
-        header.set_margin_bottom(4);
-        header.set_margin_start(10);
-        header.set_margin_end(6);
-        header.append(&object_label);
-        header.append(&badge);
-        header.append(&copy);
-        header.append(&close);
 
         let text_view = gtk::TextView::new();
         text_view.set_editable(false);
         text_view.set_cursor_visible(false);
-        text_view.set_monospace(true);
+        // DDL 是代码：不折行，宽语句横向滚动（与数据网格同一读法）。
         text_view.set_wrap_mode(gtk::WrapMode::None);
-        text_view.set_top_margin(6);
-        text_view.set_bottom_margin(6);
-        text_view.set_left_margin(8);
-        text_view.set_right_margin(8);
+        text_view.set_top_margin(8);
+        text_view.set_bottom_margin(8);
+        text_view.set_left_margin(10);
+        text_view.set_right_margin(10);
+        text_view.add_css_class("sqarvo-ddl-text");
 
+        // DDL 不折行：长语句必须能横向滚到，滚动条不能靠悬停才出现——这里关掉
+        // overlay 自动淡出（与数据网格同一口径：能滚到的地方要看得见）。
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
             .vexpand(true)
             .hexpand(true)
             .child(&text_view)
@@ -231,11 +167,7 @@ impl DdlPanel {
         stack.set_visible_child_name("state");
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.set_size_request(-1, 220);
-        root.append(&header);
-        root.append(&detail);
         root.append(&warning);
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&stack);
 
         let panel = Rc::new(Self {
@@ -243,22 +175,14 @@ impl DdlPanel {
             stack,
             state_page,
             spinner,
-            object_label,
-            badge,
-            detail,
             warning,
             text_view,
-            copy,
-            close,
-            embedded: Cell::new(false),
             hub_of: RefCell::new(None),
-            last: RefCell::new(None),
             current: RefCell::new(None),
             state: Cell::new(DdlState::Idle),
             visible: Cell::new(false),
         });
 
-        panel.install_copy();
         install_css();
         panel
     }
@@ -281,42 +205,10 @@ impl DdlPanel {
         self.visible.set(visible);
     }
 
-    /// 嵌进信息面板（#119）：隐藏自己的标题与关闭按钮，去掉固定高度。
-    ///
-    /// DDL 内容、来源徽标与「复制」按钮保持不变——迁入的是**位置**，不是能力。
-    pub fn set_embedded(&self, embedded: bool) {
-        self.embedded.set(embedded);
-        self.object_label.set_visible(!embedded);
-        self.close.set_visible(!embedded);
-        self.root
-            .set_size_request(-1, if embedded { -1 } else { 220 });
-        // 280 宽的面板里不折行等于只能看到每行前 20 个字符：迁入后按词折行，
-        // 仍然可横向滚动（`WrapMode::None` 只在独立面板里保留，那里更宽）。
-        self.text_view.set_wrap_mode(if embedded {
-            gtk::WrapMode::WordChar
-        } else {
-            gtk::WrapMode::None
-        });
-    }
-
     /// 查看某个对象的 DDL（清空上一次内容并进入 Loading）。
     pub fn show_for(self: &Rc<Self>, node: NodeView) {
-        if !self.embedded.get() {
-            // 嵌进信息面板后标题由面板头部负责：这里不再写一遍对象名。
-            self.object_label.set_text(&format!(
-                "{} · {}",
-                node.display_name,
-                kind_label(node.kind)
-            ));
-            self.object_label.set_tooltip_text(Some(&node.path_label()));
-        }
-        self.badge.set_visible(false);
-        self.badge.set_text("");
-        self.detail.set_visible(false);
-        self.detail.set_text("");
         self.warning.set_visible(false);
         self.warning.set_text("");
-        self.copy.set_sensitive(false);
         self.buffer().set_text("");
         self.current.replace(Some(node.clone()));
         self.set_state(DdlState::Loading, "正在读取 DDL…", "等待 GetDdl 返回");
@@ -363,45 +255,18 @@ impl DdlPanel {
                     return;
                 }
                 self.buffer().set_text(&view.ddl);
-                self.last.replace(Some(view.clone()));
-                self.badge.set_text(view.provenance_label());
-                self.badge.remove_css_class(provenance_css(true));
-                self.badge.remove_css_class(provenance_css(false));
-                self.badge.add_css_class(provenance_css(view.exact));
-                self.badge.set_visible(true);
-                // 来源说明**始终**展示：exact=false 时用户必须知道缺了什么；
-                // source 与 exact 不一致（例如旧后端的 UNSPECIFIED）也要说明。
-                let mut detail_text = view.detail_text();
-                if let Some(note) = view.provenance_note() {
-                    detail_text.push_str(&format!(" · {note}"));
-                }
-                self.detail.set_text(&detail_text);
-                self.detail.set_visible(true);
                 if view.exact {
-                    self.warning.set_text(&format!(
-                        "数据库原文（{}）",
-                        match view.source {
-                            DdlSource::Database => "DDL_SOURCE_DATABASE",
-                            _ => "来源未说明",
-                        }
-                    ));
-                    self.warning.remove_css_class("sqarvo-ddl-synth");
-                    self.warning.add_css_class("dim-label");
+                    // 原文：不再写「数据库原文（DDL_SOURCE_DATABASE）」这类说明行。
+                    self.warning.set_text("");
+                    self.warning.set_visible(false);
                 } else {
-                    // 拼装结果：必须带警示，且要有生成器版本可追溯。
+                    // 拼装结果：必须带警示，且要能看出缺了什么、由哪版拼装器生成。
                     self.warning.set_text(&format!(
-                        "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失{}",
-                        if view.generator_version.trim().is_empty() {
-                            String::new()
-                        } else {
-                            format!("（拼装器 {}）", view.generator_version)
-                        }
+                        "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · {}",
+                        view.detail_text()
                     ));
-                    self.warning.remove_css_class("dim-label");
-                    self.warning.add_css_class("sqarvo-ddl-synth");
+                    self.warning.set_visible(true);
                 }
-                self.warning.set_visible(true);
-                self.copy.set_sensitive(true);
                 self.stack.set_visible_child_name("text");
                 self.state.set(DdlState::Ready);
                 eprintln!(
@@ -453,43 +318,10 @@ impl DdlPanel {
         self.text_view.buffer()
     }
 
-    fn install_copy(self: &Rc<Self>) {
-        self.copy.connect_clicked({
-            let weak = Rc::downgrade(self);
-            move |button| {
-                let Some(panel) = weak.upgrade() else {
-                    return;
-                };
-                // 复制的是 DDL 本身，不含「原文 / 由客户端拼装」标注：
-                // 标注是给人看的，粘到迁移脚本里只会变成语法错误。
-                let text = panel
-                    .last
-                    .borrow()
-                    .as_ref()
-                    .map(DdlView::clipboard_text)
-                    .unwrap_or_default();
-                if text.trim().is_empty() {
-                    return;
-                }
-                button.display().clipboard().set_text(&text);
-                let unit = text.len();
-                eprintln!("[ddl] 已复制 DDL 到剪贴板（{unit} 字节）");
-                button.set_label("已复制");
-                let button = button.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(1_500), move || {
-                    button.set_label("复制");
-                });
-            }
-        });
-    }
-
     /// QA：面板快照（全部来自真实控件文本）。
     pub fn qa_observe(&self) -> DdlObservation {
         DdlObservation {
             visible: self.visible.get(),
-            object: self.object_label.text().to_string(),
-            provenance: self.badge.text().to_string(),
-            detail: self.detail.text().to_string(),
             text: self
                 .buffer()
                 .text(
@@ -499,7 +331,6 @@ impl DdlPanel {
                 )
                 .to_string(),
             state: self.state.get(),
-            copy_enabled: self.copy.is_sensitive(),
         }
     }
 }
@@ -507,14 +338,6 @@ impl DdlPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn provenance_badge_classes_are_distinct() {
-        // 原文与拼装必须能靠样式区分：QA 会断言徽标文本，人靠颜色。
-        assert_ne!(provenance_css(true), provenance_css(false));
-        assert_eq!(provenance_css(true), "sqarvo-ddl-exact");
-        assert_eq!(provenance_css(false), "sqarvo-ddl-synth");
-    }
 
     #[test]
     fn state_names_are_stable_for_qa() {
