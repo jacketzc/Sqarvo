@@ -4,7 +4,8 @@
 
 **已接入后端 gRPC**：启动后按下面「启动顺序」完成握手，窗口在
 Loading / Connected / Error / Disconnected 四态之间切换。握手成功后**直接落地工作区**：
-侧栏是 `connections.json` 的已保存连接列表，主区域是固定 `Objects` 标签的空态
+侧栏是与连接态**同一个对象树**（搜索框 + `My Connections` + 页脚刷新，已保存连接全部处于
+未连接态），主区域是固定 `Objects` 标签的空态
 （「从左侧选择一个连接开始」），状态栏显示「未连接」、驱动数与浏览会话数；
 后端版本 / 协议 / PID / 端点文件 / 驱动清单在「帮助 → 关于 Squarvo」里
 （不再常驻主区域，见 #139）。
@@ -142,7 +143,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/main.rs` | 应用入口与动作（Ctrl+Q 退出、Ctrl+W 关闭窗口） |
 | `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、启动态落地与「关于 Squarvo」诊断、事件泵与关闭流程 |
 | `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板、两行状态栏；模块文档给出六个区域的槽位表 |
-| `src/startup.rs` | 启动落地工作区（#139）：未连接时的侧栏连接列表、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
+| `src/startup.rs` | 启动落地工作区（#139）：未连接时复用连接态的对象树（搜索 + `My Connections` + 页脚刷新）、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
 | `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
 | `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24）；表格右边界与**下边界**（`row:last-child`）、图标按钮命中区 |
 | `src/icons.rs` + `resources/icons/` | 图标标准与自有符号图标：三档光学尺寸（16 / 18 / 14）+ 固定命中区 28×24，`--qa-layout-audit` 断言；`resources/icons/*.svg` 由 `build.rs` 编成 GResource（漏斗等 Adwaita 没有的形状） |
@@ -1110,6 +1111,49 @@ cd frontend/linux
 3. 删除 `connections.json`：仍然落到同一个空态（0 条连接），不崩溃、不退回诊断页。
 
 断言读的是控件树里真实渲染的文本（`--qa-expect-about` 也是），不是状态机自述。
+
+启动态的形状与连接态一致（#155 之前启动态外壳的 `Rc<Shell>` 被丢弃，面板从不落位、
+`Objects` 也不是固定页；之后启动态侧栏也改为复用同一个对象树）：
+
+- **侧栏是同一个 `tree::TreePanel`**：搜索框、`My Connections`、已保存连接节点与页脚刷新
+  都与连接态一致，只是所有连接显示为「未连接」；不再是另一套大行连接列表；
+- **信息面板在启动态即常驻**（默认 280，240–520 可拖；**窗口级记忆**，启动态与连接态
+  读同一个值，点击连接不再从 280 跳成某条连接的 240），不再折叠、也没有「无面板」那一档；
+  面板空态与 `Objects` 页同一份实现，只是文案改成「双击一条已保存的连接即可连接」；
+- **`Objects` 页与连接态是同一实现**（`tabs::ObjectsPage`）：钉住（`AdwTabPage:pinned`）
+  在最左、只显示图标、没有关闭按钮，只是空态文案换成「未连接 / 从左侧选择一个连接开始」；
+- 截图的形状差异（侧栏 237、工作区到 x≈919、919–1200 是面板）可以这样重现，两次运行
+  都用隔离的 `XDG_CONFIG_HOME` 与端点文件，产物落在仓库外：
+
+```bash
+W=/tmp/sqarvo-layout-check
+rm -rf $W; mkdir -p $W/config/sqarvo/Sqarvo $W/runA/sqarvo $W/runB/sqarvo
+cp ~/.config/sqarvo/Sqarvo/connections.json $W/config/sqarvo/Sqarvo/
+
+# A 启动态（未连接）：断言 Objects 固定页 + 信息面板已落位
+env XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state \
+    SQARVO_ENDPOINT_FILE=$W/runA/sqarvo/backend-endpoint.json \
+    SQARVO_BACKEND_BIN=…/backend/target/debug/sqarvo-backend \
+    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QALayoutA \
+  ./target/release/sqarvo-desktop --window-size 1200x800 --qa-layout-audit \
+    --qa-startup-workspace --screenshot $W/01-startup.png --qa-exit-after-ms 8000
+
+# B 双击一条已保存连接之后：形状必须与 A 相同（竖线仍在 237 / 919）
+# 环境变量与 A 完全相同，只把 SQARVO_QA_APP_ID 换成 QALayoutB、端点文件换成 runB 下的同名文件
+env XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state \
+    SQARVO_ENDPOINT_FILE=$W/runB/sqarvo/backend-endpoint.json \
+    SQARVO_BACKEND_BIN=…/backend/target/debug/sqarvo-backend \
+    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QALayoutB \
+  ./target/release/sqarvo-desktop --window-size 1200x800 --qa-layout-audit \
+    --qa-startup-click "演示库 · demo.db（SQLite）" --qa-expect-startup-connect connects=1 \
+    --screenshot $W/02-after-connect.png --screenshot-delay-ms 6000 --qa-exit-after-ms 15000
+```
+
+`--qa-layout-audit` 不能省：`qa::enabled()` 只认它这一组参数，没有它 `SQARVO_QA_APP_ID`
+不生效，新进程会把激活转发给正在运行的同名实例（表现为退出码 0、日志只有一行
+「日志文件：…」）。端点文件必须正好是 `<runtime_root>/sqarvo/backend-endpoint.json`。
+A 的日志里应当有 `[shell] 布局 1200x800：… 侧栏 237，信息面板 280` 与
+「断言通过：…信息面板 280px 可见，Objects pinned」。
 
 ### v0.2.3 验收链（#121）
 

@@ -29,7 +29,7 @@
 //! | 03 | `Shell::sidebar_pane` 起始子控件 | #114 已实现：多连接树（仍是左栏） |
 //! | 04 | `Shell::work_pane` 起始子控件 | #116 标签条 + [`crate::tabs::TabSet`] |
 //! | 05 | `Shell::status`（[`StatusBar`]） | #118 分页器接真实页码 |
-//! | 06 | `Shell::inspector_box` | #119 已填入连接 / 库 / 表内容（可折叠、宽度按连接记忆） |
+//! | 06 | `Shell::inspector_box` | #119 已填入连接 / 库 / 表内容（常驻、宽度窗口级记忆） |
 //!
 //! # 不做什么
 //!
@@ -67,9 +67,9 @@ pub struct ShellHandlers {
     pub work_area: gtk::Widget,
     /// 信息面板内容（#119：连接 / 库 / 表三态检查器）。
     pub inspector: gtk::Widget,
-    /// 信息面板的初始宽度（按当前连接从窗口状态文件读回，已钳制）。
+    /// 信息面板的初始宽度（窗口级记忆，从窗口状态文件读回，已钳制）。
     pub inspector_width: i32,
-    /// 面板宽度变化（拖拽后）→ 调用方按连接记忆（写独立的窗口状态文件）。
+    /// 面板宽度变化（拖拽后）→ 调用方写入窗口状态文件（窗口级记忆）。
     pub on_inspector_width: Rc<dyn Fn(i32)>,
     /// 行操作（状态栏按钮组）。
     pub row_op: Rc<dyn Fn(RowOp)>,
@@ -99,7 +99,7 @@ pub struct Shell {
     /// 正在程序化分栏（展开 / 折叠 / 恢复宽度）：这期间的分栏位置变化不是用户拖拽，
     /// 不能当成新的宽度记下来。
     inspector_placing: Rc<Cell<bool>>,
-    /// 用户把面板拖到新宽度 → 按连接记住（写独立的窗口状态文件）。
+    /// 用户把面板拖到新宽度 → 窗口级记住（写独立的窗口状态文件）。
     on_inspector_width: Rc<dyn Fn(i32)>,
 }
 
@@ -126,7 +126,7 @@ impl Shell {
 
         let inspector = gtk::Revealer::new();
         inspector.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
-        // v0.2.3.2：信息面板常驻（不再有折叠入口），宽度仍可拖、按连接记忆。
+        // v0.2.3.2：信息面板常驻（不再有折叠入口），宽度仍可拖、窗口级记忆。
         inspector.set_reveal_child(true);
         inspector.set_child(Some(&inspector_box));
 
@@ -179,7 +179,7 @@ impl Shell {
             let width_cell = Rc::clone(&inspector_width);
             let visible = Rc::clone(&inspector_visible);
             let placing = Rc::clone(&inspector_placing);
-            // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（按连接记忆）。
+            // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（窗口级记忆）。
             let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
             let pending_on_fire = Rc::clone(&pending);
             let on_width = Rc::clone(&handlers.on_inspector_width);
@@ -485,7 +485,7 @@ impl Shell {
 
     /// 把面板设到指定宽度（拖拽结束后的落点；`--qa-inspector-width` 也走这里）。
     ///
-    /// 钳制到 240–520，展开状态下立刻重新分栏，并按连接记下来。
+    /// 钳制到 240–520，展开状态下立刻重新分栏，并窗口级记下来。
     pub fn set_inspector_width(&self, width: i32) {
         let width = layout::clamp_inspector(width);
         if width == self.inspector_width.get() {
@@ -502,7 +502,7 @@ impl Shell {
             placing.set(false);
         });
         (self.on_inspector_width)(width);
-        eprintln!("[shell] 信息面板宽度改为 {width}（已按连接记忆）");
+        eprintln!("[shell] 信息面板宽度改为 {width}（已窗口级记忆）");
     }
 
     /// 显隐对象树侧栏，返回新的可见性。

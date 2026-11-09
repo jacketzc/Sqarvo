@@ -1227,15 +1227,12 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
     }
 
     let registry = state.registry.borrow().clone();
-    let connections = registry
-        .as_ref()
-        .map_or_else(Vec::new, |registry| startup_connections(registry));
     let browse_sessions = registry
         .as_ref()
         .map_or(0, |registry| registry.connected_count());
 
     let startup = crate::startup::StartupWorkspace::new(crate::startup::StartupConfig {
-        connections,
+        registry,
         driver_count: snapshot.drivers.len(),
         browse_sessions,
         connect: {
@@ -1270,32 +1267,6 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
         crate::qa::elapsed_ms(),
         startup.connection_count()
     );
-}
-
-/// 注册表快照 → 启动态侧栏的行数据（只含展示字段，不含密码）。
-fn startup_connections(registry: &ConnectionRegistry) -> Vec<crate::startup::StartupConnection> {
-    registry
-        .snapshots()
-        .into_iter()
-        .map(|row| crate::startup::StartupConnection {
-            key: row.key,
-            name: row.name,
-            driver: row.driver,
-            target: row.target,
-            state: row.state,
-        })
-        .collect()
-}
-
-/// 配置变化后重填启动态侧栏（删除连接后不重建整个外壳：状态栏与标签页都还在）。
-fn refresh_startup_connections(state: &Rc<UiState>) {
-    let (Some(startup), Some(registry)) = (
-        state.startup.borrow().clone(),
-        state.registry.borrow().clone(),
-    ) else {
-        return;
-    };
-    startup.set_connections(&startup_connections(&registry));
 }
 
 /// 断开一条连接的浏览会话（侧栏右键「断开」）：与树上的右键走同一条确认路径。
@@ -1368,7 +1339,7 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
                 }
             }
             registry.refresh_from_config();
-            refresh_startup_connections(&state);
+            // 对象树的注册表监听会自己刷新连接层；不在这里重建外壳。
             // 密钥条目尽力删除：删不掉不冒充成功，界面会写明「配置已删除，密钥条目未删除」。
             if reference.is_empty() {
                 eprintln!("[startup] 连接「{name}」没有凭据引用（无需清理密钥条目）");
@@ -1759,6 +1730,14 @@ impl Workspace {
                 let state = Rc::clone(state);
                 Rc::new(move |key: String| connect_saved(&state, &key))
             },
+            edit_saved: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
+            },
+            delete_saved: {
+                let state = Rc::clone(state);
+                Rc::new(move |key: String| confirm_delete_saved(&state, &key))
+            },
         });
 
         tree_slot.replace(Some(Rc::clone(&tree)));
@@ -1915,34 +1894,22 @@ impl Workspace {
         work_box.set_hexpand(true);
         work_box.append(tabs.widget());
 
-        // 面板宽度按连接记忆（独立的窗口状态文件，不写进 connections.json）。
-        let connection_key = state
-            .registry
-            .borrow()
-            .as_ref()
-            .and_then(|registry| registry.active_key());
-        let remembered_width = connection_key
-            .as_deref()
-            .and_then(crate::window_state::inspector_width)
-            .unwrap_or(layout::INSPECTOR_WIDTH);
-        eprintln!("[shell] 信息面板宽度按连接读取：{}", remembered_width);
+        // 面板宽度是**窗口级**记忆（#155）：启动态、连接态、切换连接读同一个值，
+        // 拖一次就全局生效；不再按连接分别记忆（那会在启动→连接时跳 40px）。
+        let remembered_width =
+            crate::window_state::last_inspector_width().unwrap_or(layout::INSPECTOR_WIDTH);
+        eprintln!("[shell] 信息面板宽度读取：{remembered_width}（窗口级）");
 
         let shell = Shell::new(ShellHandlers {
             sidebar: sidebar_box.upcast(),
             work_area: work_box.upcast(),
             inspector: inspector.widget().clone().upcast(),
             inspector_width: remembered_width,
-            on_inspector_width: {
-                let key = connection_key.clone();
-                Rc::new(move |width: i32| {
-                    let Some(key) = key.as_deref() else {
-                        return;
-                    };
-                    if let Err(error) = crate::window_state::remember_inspector_width(key, width) {
-                        eprintln!("[shell] 信息面板宽度未能记住：{error}");
-                    }
-                })
-            },
+            on_inspector_width: Rc::new(|width: i32| {
+                if let Err(error) = crate::window_state::remember_inspector_width(width) {
+                    eprintln!("[shell] 信息面板宽度未能记住：{error}");
+                }
+            }),
             row_op: {
                 let tabs = Rc::clone(&tabs);
                 Rc::new(move |op| {
@@ -2990,8 +2957,39 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
             ));
         }
     }
+    // v0.2.3.2：信息面板在启动态即常驻（280，240–520 为可拖区间），不是 0 宽的折叠态。
+    let (inspector_width, inspector_visible) = startup.inspector_state();
+    if !inspector_visible {
+        return Err(format!(
+            "启动态信息面板应当可见，实际 visible={inspector_visible}（宽度 {inspector_width}）"
+        ));
+    }
+    if !(240..=520).contains(&inspector_width) {
+        return Err(format!(
+            "启动态信息面板宽度应当在 240..=520（规范默认 280），实际 {inspector_width}"
+        ));
+    }
+    // 形状同一：启动态 `Objects` 也是钉住的固定页（窄、无关闭按钮），不是普通标签。
+    let objects_pinned = startup.objects_pinned();
+    if !objects_pinned {
+        return Err(format!(
+            "启动态 Objects 标签应当 pinned=true，实际 pinned={objects_pinned}"
+        ));
+    }
+    // 启动态左侧是已保存连接列表，不是对象树：面板空态必须给出可执行的下一步。
+    let (empty_title, empty_description) = startup.inspector_empty_text();
+    if empty_title != "没有选中对象" || empty_description.contains("对象树") {
+        return Err(format!(
+            "启动态信息面板空态文案不应对照对象树（也没有选中连接可操作），实际标题「{empty_title}」说明「{empty_description}」"
+        ));
+    }
+    if !empty_description.contains("双击一条已保存的连接") {
+        return Err(format!(
+            "启动态信息面板空态说明应指向左侧已保存连接（「双击一条已保存的连接」），实际「{empty_description}」"
+        ));
+    }
     Ok(format!(
-        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段）",
+        "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段，信息面板 {inspector_width}px 可见，Objects pinned，面板文案指向左侧连接）",
         startup.connection_count()
     ))
 }

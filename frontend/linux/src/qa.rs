@@ -791,7 +791,7 @@ struct Args {
     tree_select_connection: Option<String>,
     /// `--qa-inspector <ddl|info>`：信息面板切到哪一页（#119；v0.2.3.2 起面板常驻、不能折叠）。
     inspector: Option<String>,
-    /// `--qa-inspector-width <px>`：把面板拖到指定宽度（按连接记忆的证据，#119）。
+    /// `--qa-inspector-width <px>`：把面板拖到指定宽度（窗口级记忆的证据，#119 / #155）。
     inspector_width: Option<i32>,
     /// `--qa-expect-tree <field>=<value>`：树 / 搜索的断言（可重复）。
     expect_tree: Vec<TreeExpectation>,

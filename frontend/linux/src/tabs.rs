@@ -446,6 +446,10 @@ pub struct ObjectsPage {
     root: gtk::Box,
     scope_label: gtk::Label,
     stack: gtk::Stack,
+    /// 空态页（`set_empty_text` 可改文案：启动态与连接态同一份实现，只是措辞不同）。
+    empty: adw::StatusPage,
+    /// `set_empty_text` 设置的「作用域」文案；`show_empty` 复用它而不是写死默认值。
+    empty_scope: RefCell<Option<String>>,
     list: gtk::ListBox,
     status: gtk::Label,
     more: gtk::Button,
@@ -461,7 +465,7 @@ pub struct ObjectsPage {
 }
 
 impl ObjectsPage {
-    fn new() -> Rc<Self> {
+    pub(crate) fn new() -> Rc<Self> {
         let title = gtk::Label::new(Some("Objects"));
         title.set_xalign(0.0);
         title.add_css_class("sqarvo-title");
@@ -525,6 +529,8 @@ impl ObjectsPage {
             root,
             scope_label,
             stack,
+            empty,
+            empty_scope: RefCell::new(None),
             list,
             status,
             more,
@@ -550,8 +556,19 @@ impl ObjectsPage {
         page
     }
 
-    fn widget(&self) -> &gtk::Box {
+    pub(crate) fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// 改写空态文案：`scope` 进作用域行，`title` / `description` 进空态页。
+    ///
+    /// 启动态（未连接）用同一份 [`ObjectsPage`]，只把文案换成「未连接 / 从左侧选择
+    /// 一个连接开始」。之后调 [`Self::show_empty`] 不会把这段文案冲掉。
+    pub(crate) fn set_empty_text(&self, scope: &str, title: &str, description: &str) {
+        self.empty.set_title(title);
+        self.empty.set_description(Some(description));
+        self.empty_scope.replace(Some(scope.to_owned()));
+        self.scope_label.set_text(scope);
     }
 
     /// 双击行打开表数据标签（与树的双击同一条路径）。
@@ -568,7 +585,11 @@ impl ObjectsPage {
         self.last_request.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
-        self.scope_label.set_text("没有选中库");
+        // 启动态通过 `set_empty_text` 换过作用域文案：清空时不能把它写回默认值。
+        match self.empty_scope.borrow().as_deref() {
+            Some(scope) => self.scope_label.set_text(scope),
+            None => self.scope_label.set_text("没有选中库"),
+        }
         self.status.set_text("");
         self.more.set_visible(false);
         self.stack.set_visible_child_name("empty");

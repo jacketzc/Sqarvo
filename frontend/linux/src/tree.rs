@@ -175,6 +175,10 @@ pub struct TreeCallbacks {
     /// 树不再自己判断「已连接 → 展开 / 未连接 → 连接」：这个判断在入口里只有一处，
     /// 否则同一个点击在两个位置会有两种语义。
     pub connect_saved: Rc<dyn Fn(String)>,
+    /// 右键「编辑连接…」（启动态与工作区共用同一条对话框路径）。
+    pub edit_saved: Rc<dyn Fn(String)>,
+    /// 右键「删除连接」（启动态与工作区共用同一条二次确认路径）。
+    pub delete_saved: Rc<dyn Fn(String)>,
 }
 
 /// 树上的一次选中（信息面板的输入）。
@@ -943,6 +947,7 @@ impl TreePanel {
                 gesture.set_button(3);
                 let slot = Rc::clone(&slot);
                 let item_weak = glib::object::ObjectExt::downgrade(item);
+                let anchor = row_box.clone();
                 gesture.connect_pressed(move |gesture, _, x, y| {
                     let Some(panel) = slot.borrow().as_ref().and_then(std::rc::Weak::upgrade)
                     else {
@@ -954,7 +959,8 @@ impl TreePanel {
                     let Some(row) = row_of_item(&item) else {
                         return;
                     };
-                    panel.show_context_menu(&row, gesture, x, y);
+                    let _ = gesture;
+                    panel.show_context_menu(&row, anchor.upcast_ref(), x, y);
                 });
                 row_box.add_controller(gesture);
             }
@@ -1489,7 +1495,7 @@ impl TreePanel {
 
     /// 展开注册表里所有**已连接**且用户没有主动收起的连接（#144 补一次）。
     ///
-    /// 为什么需要它：`set_connections` 的自动展开依赖 `registry.notify`。刚建立工作区时，
+    /// 为什么需要它：连接层刷新的自动展开依赖 `registry.notify`。刚建立工作区时，
     /// 浏览会话的 `Opened` 事件可能先于树订阅到达（notify 丢掉），而树的行是懒创建的
     /// （`GtkListView` 绑定后才 `tree_row()` 拿得到），所以即使收到 notify，第一次也
     /// 可能一个行都没有。这里在挂载后短轮询（与 `auto_expand_groups` 同一模式，不是
@@ -2595,7 +2601,7 @@ impl TreePanel {
     // -- 右键菜单 -----------------------------------------------------------
 
     /// 按行种类显示右键菜单（workspace-model §4：行内不放工具按钮）。
-    fn show_context_menu(self: &Rc<Self>, row: &Row, gesture: &gtk::GestureClick, x: f64, y: f64) {
+    fn show_context_menu(self: &Rc<Self>, row: &Row, anchor: &gtk::Widget, x: f64, y: f64) {
         if row.is_note() {
             return;
         }
@@ -2603,14 +2609,8 @@ impl TreePanel {
             previous.popdown();
             previous.unparent();
         }
-        let Some(anchor) = gesture
-            .widget()
-            .and_then(|widget| widget.downcast::<gtk::Widget>().ok())
-        else {
-            return;
-        };
         let popover = gtk::Popover::new();
-        popover.set_parent(&anchor);
+        popover.set_parent(anchor);
         popover.set_has_arrow(true);
         popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
             i32::try_from(x as i64).unwrap_or(0),
@@ -2655,6 +2655,30 @@ impl TreePanel {
                         }
                     }),
                 ));
+                {
+                    let edit = Rc::clone(&self.callbacks.edit_saved);
+                    let key = snapshot.key.clone();
+                    let name = snapshot.name.clone();
+                    entries.push((
+                        "编辑连接…".to_owned(),
+                        Rc::new(move || {
+                            eprintln!("[tree] 右键「编辑连接…」：{name}");
+                            edit(key.clone());
+                        }),
+                    ));
+                }
+                {
+                    let delete = Rc::clone(&self.callbacks.delete_saved);
+                    let key = snapshot.key.clone();
+                    let name = snapshot.name.clone();
+                    entries.push((
+                        "删除连接".to_owned(),
+                        Rc::new(move || {
+                            eprintln!("[tree] 右键「删除连接」：{name}");
+                            delete(key.clone());
+                        }),
+                    ));
+                }
             }
             Row::Group(group) => {
                 let panel = match self.registry() {
@@ -3132,6 +3156,92 @@ impl TreePanel {
             return Ok(());
         }
         Err(format!("树里找不到连接节点 {name}"))
+    }
+
+    /// 走用户路径激活一条**已保存连接**（启动态 `--qa-startup-click`）。
+    ///
+    /// 与左键点击 / 回车同一条 `connect_saved`：不绕过界面直接调 gRPC。
+    pub fn qa_activate_connection(self: &Rc<Self>, name: &str) -> Result<String, String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Row::Connection(snapshot) = view else {
+                continue;
+            };
+            if snapshot.name != name {
+                continue;
+            }
+            eprintln!("[qa] 启动态侧栏激活已保存连接「{name}」");
+            (self.callbacks.connect_saved)(snapshot.key.clone());
+            return Ok(name.to_owned());
+        }
+        Err(format!("树里没有连接「{name}」"))
+    }
+
+    /// 走用户右键菜单同一条路径打开连接菜单（`--qa-startup-menu`）。
+    pub fn qa_open_connection_menu(self: &Rc<Self>, name: &str) -> Result<(), String> {
+        let mut target = None;
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Row::Connection(snapshot) = view else {
+                continue;
+            };
+            if snapshot.name == name {
+                target = Some(snapshot.clone());
+                break;
+            }
+        }
+        let Some(snapshot) = target else {
+            return Err(format!("树里没有可点开右键菜单的连接「{name}」"));
+        };
+        self.show_context_menu(
+            &Row::Connection(snapshot),
+            self.list_view.upcast_ref::<gtk::Widget>(),
+            0.0,
+            0.0,
+        );
+        Ok(())
+    }
+
+    /// 点当前右键菜单里该文案的条目（`--qa-startup-menu-pick`）。
+    pub fn qa_pick_context_menu(&self, label: &str) -> Result<(), String> {
+        let Some(popover) = self.context_menu.borrow().clone() else {
+            return Err("右键菜单没有打开：无法选择条目".to_owned());
+        };
+        let Some(child) = popover.child() else {
+            return Err("右键菜单没有内容".to_owned());
+        };
+        let Some(list) = child.downcast_ref::<gtk::Box>() else {
+            return Err("右键菜单结构不是按钮列表".to_owned());
+        };
+        let mut cursor = list.first_child();
+        let mut labels = Vec::new();
+        while let Some(widget) = cursor {
+            cursor = widget.next_sibling();
+            let Some(button) = widget.downcast_ref::<gtk::Button>() else {
+                continue;
+            };
+            let current = button.label().unwrap_or_default().to_string();
+            if current == label {
+                eprintln!("[qa] 点右键菜单条目「{label}」");
+                button.emit_clicked();
+                return Ok(());
+            }
+            labels.push(current);
+        }
+        Err(format!(
+            "右键菜单里没有「{label}」（实际：{}）",
+            labels.join(" / ")
+        ))
     }
 
     /// 点击树里的第一个「加载更多…」占位行（分页证据）。

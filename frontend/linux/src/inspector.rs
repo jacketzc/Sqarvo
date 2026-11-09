@@ -325,6 +325,8 @@ pub struct Inspector {
     // 索引 / 触发器：仅 DDL。
     ddl_only: Rc<DdlPanel>,
     state_page: adw::StatusPage,
+    /// 「没有选中对象」空态页。启动态会改写成未连接时的操作说明。
+    empty_page: adw::StatusPage,
     hub_of: RefCell<Option<HubResolver>>,
     /// 当前对象（响应回来时比对，防止把 A 的列填进 B）。
     generation: Cell<u64>,
@@ -362,7 +364,7 @@ impl Inspector {
     /// 构建面板。
     ///
     /// v0.2.3.2 起面板**常驻**：没有折叠按钮，也没有 `Ctrl+I`（`shell.set_inspector_visible`
-    /// 不再是用户可达的动作）。宽度仍可拖、按连接记忆。
+    /// 不再是用户可达的动作）。宽度仍可拖、窗口级记忆。
     pub fn new() -> Rc<Self> {
         let title = gtk::Label::new(Some("信息面板"));
         title.set_xalign(0.0);
@@ -507,6 +509,7 @@ impl Inspector {
             info_status,
             ddl_only,
             state_page,
+            empty_page,
             hub_of: RefCell::new(None),
             generation: Cell::new(0),
             pane_memory: RefCell::new(HashMap::new()),
@@ -556,6 +559,27 @@ impl Inspector {
         self.subtitle.set_text("");
         self.switch_bar.set_visible(false);
         self.set_page("empty");
+    }
+
+    /// 改写「没有选中对象」空态的标题与说明。
+    ///
+    /// 启动态（还没有连接任何数据库）左侧是已保存连接列表，不是对象树：
+    /// 同一份空态页不能继续提示用户「在左侧对象树里选中……」。
+    pub fn set_empty_text(&self, title: &str, description: &str) {
+        self.empty_page.set_title(title);
+        self.empty_page.set_description(Some(description));
+    }
+
+    /// 当前空态文案 `(标题, 说明)`（QA 断言用，读控件里的真实文本）。
+    #[must_use]
+    pub fn empty_text(&self) -> (String, String) {
+        (
+            self.empty_page.title().to_string(),
+            self.empty_page
+                .description()
+                .map(|text| text.to_string())
+                .unwrap_or_default(),
+        )
     }
 
     /// 选中一条连接。
