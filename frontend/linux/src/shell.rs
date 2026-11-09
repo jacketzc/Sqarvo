@@ -776,19 +776,16 @@ pub struct StatusBar {
     row_one_right: gtk::Box,
     row_two: gtk::Box,
     row_two_left: gtk::Box,
-    row_two_middle: gtk::Box,
     row_two_right: gtk::Box,
     sql_summary: gtk::Label,
-    record: gtk::Label,
     last_refresh: gtk::Label,
+    /// 连接名 / 启动态摘要：**只在没有表标签时**出现（有表时这一行只留 SQL + Last Refresh）。
     session: gtk::Label,
     connection: RefCell<Option<String>>,
-    /// 当前表标签所属的库（`对象 @ 库` 的库）；没有表标签 / 查询标签时为空。
-    catalog: RefCell<Option<String>>,
     /// 启动态补充信息（驱动数 / 浏览会话数）；连接数据库后清空。
     idle_summary: RefCell<Option<String>>,
-    txn: RefCell<String>,
-    timing_ms: Cell<Option<u64>>,
+    /// 当前是否有表标签：决定 `session` 这一格要不要出现。
+    has_table: Cell<bool>,
 }
 
 impl StatusBar {
@@ -911,19 +908,14 @@ impl StatusBar {
         row_one.append(&row_one_right);
 
         // ---- 行 2 ------------------------------------------------------------
-        let sql_summary = gtk::Label::new(Some("SQL：尚未执行"));
+        // 行 2 的左侧文案用 ASCII 冒号：全角「：」会带来中文字体的行盒高度，
+        // 和右侧纯拉丁的「Last Refresh:」不在同一条基线上（实测偏高 2px）。
+        let sql_summary = gtk::Label::new(Some("SQL: 尚未执行"));
         sql_summary.set_xalign(0.0);
         sql_summary.set_hexpand(true);
         sql_summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
         sql_summary.set_valign(gtk::Align::Center);
         sql_summary.add_css_class("dim-label");
-
-        // 右段三个标签都必须能压缩：960 宽加上长连接名时宁可省略，也不能溢出窗口。
-        let record = gtk::Label::new(Some("未打开表"));
-        record.set_valign(gtk::Align::Center);
-        record.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        record.set_max_width_chars(46);
-        record.add_css_class("dim-label");
 
         let last_refresh = gtk::Label::new(None);
         last_refresh.set_valign(gtk::Align::Center);
@@ -942,21 +934,21 @@ impl StatusBar {
         session.add_css_class("dim-label");
         session.set_visible(false);
 
+        // v0.2.3.3：行 2 只留两段——左「SQL 摘要」，右「Last Refresh」。记录位置
+        // （第 N–M 行）与会话摘要（连接 / 库 / 事务 / 耗时）都拿掉了：页码在行 1 的
+        // 分页器里，表名 / 库 / 事务在表格工具条里，同一屏重复三遍只会挤。
+        // 空态（没有表标签）时才让 `session` 出来显示「未连接 / 驱动数」这类启动摘要。
         let row_two_left = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row_two_left.set_hexpand(true);
         row_two_left.append(&sql_summary);
 
-        let row_two_middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        row_two_middle.append(&record);
-
-        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row_two_right.append(&last_refresh);
         row_two_right.append(&session);
 
         let row_two = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row_two.add_css_class("sqarvo-status-row");
         row_two.append(&row_two_left);
-        row_two.append(&row_two_middle);
         row_two.append(&row_two_right);
 
         // 竖分割线：与侧栏 / 工作区之间的分栏线同一条（宽度由 `set_gutter_width` 跟随）。
@@ -1001,17 +993,13 @@ impl StatusBar {
             row_one_right,
             row_two,
             row_two_left,
-            row_two_middle,
             row_two_right,
             sql_summary,
-            record,
             last_refresh,
             session,
             connection: RefCell::new(None),
-            catalog: RefCell::new(None),
             idle_summary: RefCell::new(None),
-            txn: RefCell::new(String::new()),
-            timing_ms: Cell::new(None),
+            has_table: Cell::new(false),
         })
     }
 
@@ -1047,11 +1035,7 @@ impl StatusBar {
                 self.row_two_left.clone().upcast(),
             ),
             (
-                "状态栏 行2 中组(记录位置)",
-                self.row_two_middle.clone().upcast(),
-            ),
-            (
-                "状态栏 行2 右组(最后刷新·会话)",
+                "状态栏 行2 右组(最后刷新/空态摘要)",
                 self.row_two_right.clone().upcast(),
             ),
         ]
@@ -1100,13 +1084,7 @@ impl StatusBar {
         self.selected_label.set_tooltip_text(Some(&format!(
             "已选中 {selected} 行：Ctrl/Shift 可多选，删除按批量语义提交"
         )));
-        // 记录位置只在有表时出现：SQL 页没有「第 N 行」可报，就不占这一格。
-        self.record.set_visible(snapshot.table.is_some());
-        if snapshot.table.is_some() {
-            self.record.set_text(&record_text(snapshot));
-            self.record
-                .set_tooltip_text(Some(&record_tooltip(snapshot)));
-        }
+        self.has_table.set(snapshot.table.is_some());
         self.last_refresh_at.set(snapshot.last_refresh);
         self.last_refresh
             .set_visible(snapshot.last_refresh.is_some());
@@ -1120,7 +1098,6 @@ impl StatusBar {
                 clock_time(instant)
             )));
         }
-        self.txn.replace(snapshot.txn_label.clone());
         // 表标签的 SQL 摘要 = 当前筛选/排序拼出的只读 `SELECT … LIMIT …`（不执行）。
         if snapshot.table.is_some() && !snapshot.summary.is_empty() {
             self.set_sql_summary(&snapshot.summary);
@@ -1162,7 +1139,7 @@ impl StatusBar {
     /// 行操作全部禁用并用 tooltip 说明原因——不留下「看起来能点」的按钮。
     pub fn show_no_table(&self, reason: &str) {
         self.pager_summary.set_visible(false);
-        self.record.set_visible(false);
+        self.has_table.set(false);
         self.last_refresh.set_visible(false);
         self.selected_label.set_visible(false);
         // 没有表时翻页按钮一律禁用（不是「看起来能点」）。
@@ -1181,20 +1158,13 @@ impl StatusBar {
             rollback_txn: false,
             reason: Some(reason.to_owned()),
         });
-        self.txn.replace(String::new());
         self.refresh_session();
     }
 
     /// SQL 摘要（行 2 左段）：来自查询事件，不推测。
     pub fn set_sql_summary(&self, text: &str) {
-        self.sql_summary.set_text(&format!("SQL：{text}"));
+        self.sql_summary.set_text(&format!("SQL: {text}"));
         self.sql_summary.set_tooltip_text(Some(text));
-    }
-
-    /// 上一段查询的耗时（从开始到结束事件的毫秒数）。
-    pub fn set_timing(&self, millis: Option<u64>) {
-        self.timing_ms.set(millis);
-        self.refresh_session();
     }
 
     /// 当前连接名（连接建立后设置；断连时清空）。
@@ -1209,75 +1179,32 @@ impl StatusBar {
         self.refresh_session();
     }
 
-    /// 当前表标签所属的库（标签名 `对象 @ 库` 里的库）。
+    /// 连接名 / 启动态摘要：只在**没有表标签**时显示。
     ///
-    /// 无默认库连接也能从树里打开不同库的表，状态栏必须跟着**当前标签**说库，
-    /// 而不是说连接的默认库——两者在跨库浏览时可以完全不同（ADR 0024 §3）。
-    pub fn set_catalog(&self, catalog: Option<&str>) {
-        let next = catalog.map(str::to_owned);
-        if *self.catalog.borrow() == next {
-            return;
-        }
-        if let Some(catalog) = &next {
-            // 只在值变化时记一行：验收据此确认状态栏真的跟着标签换库。
-            eprintln!("[status] 状态栏显示所属库：{catalog}");
-        }
-        self.catalog.replace(next);
-        self.refresh_session();
-    }
-
-    /// 「连接 · 事务 · 耗时」：只显示已知项，不写占位符。
+    /// 有表时这一行只留「SQL 摘要 + Last Refresh」——表名、库、事务、耗时在表格工具条
+    /// 里已经有了，状态栏再写一遍就是重复（v0.2.3.3）。
     fn refresh_session(&self) {
         let mut parts: Vec<String> = Vec::new();
         if let Some(name) = self.connection.borrow().as_ref() {
             parts.push(name.clone());
         }
-        if let Some(catalog) = self.catalog.borrow().as_ref() {
-            parts.push(format!("库：{catalog}"));
-        }
         if let Some(summary) = self.idle_summary.borrow().as_ref() {
             parts.push(summary.clone());
-        }
-        let txn = self.txn.borrow();
-        if !txn.is_empty() {
-            parts.push(format!("事务：{txn}"));
-        }
-        drop(txn);
-        if let Some(millis) = self.timing_ms.get() {
-            parts.push(format!("上次查询 {millis} ms"));
         }
         let text = parts.join(" · ");
         self.session.set_text(&text);
         self.session.set_tooltip_text(Some(&text));
-        self.session.set_visible(!parts.is_empty());
+        self.session
+            .set_visible(session_row_visible(self.has_table.get(), parts.is_empty()));
     }
 }
 
-/// 行 2 中段：记录位置 = 本页在表里的**行号区间**。
+/// 行 2 右侧的会话摘要要不要出现：**有表标签时一律不出现**（v0.2.3.3）。
 ///
-/// 页码与总数只在分页器旁（行 1 右组）出现一次；这一格重复它们就成了同一句话说三遍
-/// （工具条下方还写过第三遍）。行号区间是分页器给不出的信息，两者互补而不重复。
-fn record_text(snapshot: &StatusSnapshot) -> String {
-    let Some(table) = snapshot.table.as_ref() else {
-        return "未打开表".to_owned();
-    };
-    let mut text = format!("{} · {}", table.display_name, snapshot.position_text);
-    if snapshot.pending > 0 {
-        text.push_str(&format!(" · 待提交 {} 条", snapshot.pending));
-    }
-    text
-}
-
-/// 记录位置的 tooltip：数据页状态行 + 脏行，解释数字的来历。
-fn record_tooltip(snapshot: &StatusSnapshot) -> String {
-    let mut text = snapshot.status_text.clone();
-    if snapshot.dirty > 0 {
-        text.push_str(&format!("\n脏行 {}", snapshot.dirty));
-    }
-    if text.is_empty() {
-        text.push_str("未打开表");
-    }
-    text
+/// 有表时这一行只留「SQL 摘要 + Last Refresh」——表名 / 库 / 事务在表格工具条里，
+/// 状态栏再写一遍就是重复；空态（没有表标签）才需要一行「未连接 · 驱动 N」这样的落点。
+fn session_row_visible(has_table: bool, parts_empty: bool) -> bool {
+    !has_table && !parts_empty
 }
 
 /// 把「某个 `Instant` 的墙上时间」格式化成 `HH:MM:SS`（本地时区）。
@@ -1306,123 +1233,14 @@ fn clock_time(instant: Instant) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::table::TableEntry;
-    use crate::browse_view::{PagerState, TotalInfo};
-    use crate::data_page::RowOpsState;
-    use crate::proto::services::v1::{ObjectKind, ObjectRef, TotalKind};
-
-    fn table(name: &str) -> TableEntry {
-        TableEntry {
-            reference: ObjectRef::default(),
-            display_name: name.to_owned(),
-            kind: ObjectKind::Table,
-        }
-    }
-
-    fn ops(all: bool) -> RowOpsState {
-        RowOpsState {
-            add: all,
-            delete: all,
-            apply: all,
-            discard: all,
-            refresh: all,
-            cancel: all,
-            begin_txn: all,
-            commit_txn: all,
-            rollback_txn: all,
-            reason: if all {
-                None
-            } else {
-                Some("尚未打开表".to_owned())
-            },
-        }
-    }
-
-    fn snapshot(state: DataState, table: Option<TableEntry>) -> StatusSnapshot {
-        StatusSnapshot {
-            state,
-            table,
-            rows: 0,
-            page_index: 1,
-            page_count: None,
-            total_text: None,
-            position_text: PagerState::new(0, 500, TotalInfo::unknown(), false, 0).position_text(),
-            selected_count: 0,
-            dirty: 0,
-            pending: 0,
-            txn_label: "自动提交".to_owned(),
-            row_ops: ops(false),
-            last_refresh: None,
-            status_text: String::new(),
-            summary: String::new(),
-            can_first: false,
-            can_previous: false,
-            can_next: false,
-            can_last: false,
-            sort_filter_total: true,
-        }
-    }
 
     #[test]
-    fn record_text_carries_the_row_span_without_repeating_page_or_total() {
-        let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
-        snapshot.rows = 500;
-        snapshot.position_text = PagerState::new(
-            0,
-            500,
-            TotalInfo::from_proto(TotalKind::Unknown as i32, 0, false),
-            true,
-            500,
-        )
-        .position_text();
-        let text = record_text(&snapshot);
-        assert_eq!(text, "items · 第 1–500 行");
-        // 页码与总数只在分页器旁出现一次：这一格重复它们就是同一句话说三遍。
-        assert!(!text.contains("页"), "实际：{text}");
-        assert!(!text.contains("共 "));
-        assert!(!text.contains(" of "));
-    }
-
-    #[test]
-    fn record_text_follows_the_offset_so_the_span_moves_with_the_page() {
-        let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
-        snapshot.rows = 500;
-        snapshot.page_index = 2;
-        snapshot.page_count = Some(3);
-        snapshot.total_text = Some("共 1200 行".to_owned());
-        snapshot.position_text = PagerState::new(
-            500,
-            500,
-            TotalInfo::from_proto(TotalKind::Exact as i32, 1200, false),
-            true,
-            500,
-        )
-        .position_text();
-        let text = record_text(&snapshot);
-        assert_eq!(text, "items · 第 501–1000 行");
-        assert!(!text.contains("页"), "页码不在这里重复：{text}");
-    }
-
-    #[test]
-    fn record_text_stops_at_the_loaded_rows_for_empty_tables() {
-        let snapshot = snapshot(DataState::Empty, Some(table("empty_items")));
-        assert_eq!(record_text(&snapshot), "empty_items · 空表");
-    }
-
-    #[test]
-    fn record_text_without_a_table_says_so_instead_of_zero() {
-        let text = record_text(&snapshot(DataState::Idle, None));
-        assert_eq!(text, "未打开表");
-    }
-
-    #[test]
-    fn record_tooltip_carries_the_data_page_status_line() {
-        let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
-        snapshot.status_text = "已加载 500 行 · 1 页".to_owned();
-        snapshot.dirty = 2;
-        let tooltip = record_tooltip(&snapshot);
-        assert!(tooltip.contains("已加载 500 行"));
-        assert!(tooltip.contains("脏行 2"));
+    fn bottom_row_keeps_only_sql_and_last_refresh_when_a_table_is_open() {
+        // 有表标签：会话摘要（连接 / 库 / 事务 / 耗时）一律不出现。
+        assert!(!session_row_visible(true, false));
+        // 空态：只有真的有内容时才占位，不用空串撑一格。
+        assert!(session_row_visible(false, false));
+        assert!(!session_row_visible(false, true));
     }
 
     #[test]

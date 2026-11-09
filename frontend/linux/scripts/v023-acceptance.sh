@@ -515,7 +515,7 @@ expect-inspector title=$CROSS_DB_B
 screenshot $case_out/01-tree-catalogs.png
 expand $CROSS_DB_B
 expect-list-nodes 2
-# 打开 B 库的表：标签名 = 对象 @ 库，状态栏显示库
+# 打开 B 库的表：标签名 = 对象 @ 库（状态栏自 v0.2.3.3 起不再显示库名）
 open-node $CROSS_DB_B $CROSS_TABLE
 expect-tabs 2
 expect-tab-title 1 $CROSS_TABLE @ $CROSS_DB_B
@@ -598,10 +598,8 @@ EOF
         'ListSessions（打开 B 库的表后）：后端共 2 条会话' "$log"
     check_contains "$case_name ListSessions 打开 A 库后" \
         'ListSessions（打开 A 库的表后）：后端共 3 条会话' "$log"
-    check_contains "$case_name 状态栏跟着标签换库（B）" \
-        "[status] 状态栏显示所属库：$CROSS_DB_B" "$log"
-    check_contains "$case_name 状态栏跟着标签换库（A）" \
-        "[status] 状态栏显示所属库：$CROSS_DB_A" "$log"
+    # v0.2.3.3：状态栏不再显示库名（行 2 只留 SQL + Last Refresh），换库改由上面的标签名
+    # 断言（`：$CROSS_TABLE @ 库`）覆盖——同一个事实只在一处取证。
 
     check_contains "$case_name B 库总数" "断言 OK：第 1 个标签 total=" "$log"
     check_contains "$case_name B 库排序" '断言 OK：第 1 个标签 sort=name:asc' "$log"

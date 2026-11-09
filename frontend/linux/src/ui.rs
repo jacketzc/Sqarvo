@@ -430,7 +430,6 @@ pub fn activate(app: &adw::Application) {
                             Some(workspace) => {
                                 workspace.tabs.mark_disconnected(&reason);
                                 workspace.status().set_connection(None);
-                                workspace.status().set_catalog(None);
                                 workspace.status().set_sql_summary("连接已断开");
                             }
                             None => show_disconnected(
@@ -1523,14 +1522,8 @@ fn apply_tab_status(
     match &status {
         crate::tabs::TabStatus::Table(snapshot) => {
             shell.status().apply_snapshot(snapshot);
-            // 状态栏说「当前标签属于哪个库」：跨库浏览时同一连接下两个标签的库不同，
-            // 不能拿连接的默认库顶替（ADR 0024 §3）。
-            let catalog = snapshot
-                .table
-                .as_ref()
-                .map(|table| table.reference.catalog.trim())
-                .filter(|catalog| !catalog.is_empty());
-            shell.status().set_catalog(catalog);
+            // 状态栏**不再重复报库名**（v0.2.3.3）：标签名 `对象 @ 库` 与表格工具条
+            // 已经写明当前标签属于哪个库，跨库浏览时看标签即可。
             shell.toolbar().set_active(
                 snapshot
                     .table
@@ -1542,21 +1535,19 @@ fn apply_tab_status(
             }
         }
         crate::tabs::TabStatus::Query { summary, timing_ms } => {
-            shell.status().set_catalog(None);
             shell
                 .status()
                 .show_no_table("当前标签是查询标签：没有可编辑的表格");
             if let Some(summary) = summary {
                 shell.status().set_sql_summary(summary);
             }
-            shell.status().set_timing(*timing_ms);
+            let _ = timing_ms;
             shell.toolbar().set_active(None);
             if let Some(actions) = actions {
                 actions.apply_row_ops(&crate::tabs::TabSet::empty_row_ops());
             }
         }
         crate::tabs::TabStatus::Objects { shortcut } => {
-            shell.status().set_catalog(None);
             shell
                 .status()
                 .show_no_table("Objects 页：在对象树里打开表或新建查询标签");
