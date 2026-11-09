@@ -478,6 +478,7 @@ launch kind-tables io.sqarvo.Sqarvo.QA024KindTables \
     --qa-exit-after-ms 8000
 check_contains "kind-tables 点了种类入口「表」" '[toolbar] 种类入口「表」' "$CASE_LOG"
 check_contains "kind-tables 树里选中了库" '选中对象：main' "$CASE_LOG"
+check_contains "kind-tables 树里高亮的是 Tables 分组" '选中分组：Tables（main）' "$CASE_LOG"
 check_contains "kind-tables Objects 页列出表" 'Objects first=probe_items' "$CASE_LOG"
 check_screenshot "kind-tables 截图（工具条 → 表列表）" \
     "$OUT/kind-tables/05-toolbar-tables.png"
@@ -505,6 +506,8 @@ check_contains "kind-follows 列出的是 temp（不是 main）" \
     '[toolbar] 种类入口「表」：列出 temp' "$CASE_LOG"
 check_absent "kind-follows 没有跳回默认库 main" \
     '[toolbar] 种类入口「表」：列出 main' "$CASE_LOG"
+check_contains "kind-follows 树里高亮的是 temp 的 Tables 分组" \
+    '选中分组：Tables（temp）' "$CASE_LOG"
 check_contains "kind-follows 树里选中的仍是 temp" '选中对象：temp（库）' "$CASE_LOG"
 check_screenshot "kind-follows 截图（跟着选中的库走）" \
     "$OUT/kind-follows/07-toolbar-follows-library.png"

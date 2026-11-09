@@ -1573,9 +1573,14 @@ fn show_objects_for_kind(
             let target = tree.selected_catalog();
             match tree.select_catalog(target.as_ref()) {
                 Ok(parent) => {
-                    if shortcut == crate::tabs::KindShortcut::Views {
-                        tree.select_catalog_group(&parent, crate::tree::KindGroup::Views);
-                    }
+                    // 两种入口都落在库下的**分组行**上（用户要求：点「表」高亮的应是
+                    // `Tables` 分组，而不是库节点本身）。分组行是展开库之后才建的，
+                    // `select_catalog_group` 会先展开再选中。
+                    let group = match shortcut {
+                        crate::tabs::KindShortcut::Views => crate::tree::KindGroup::Views,
+                        _ => crate::tree::KindGroup::Tables,
+                    };
+                    tree.select_catalog_group(&parent, group);
                     let scope = if parent.catalog.is_empty() {
                         parent.name.clone()
                     } else {
