@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ┌ 表列表（MetadataService.ListNodes）┐ ┌ 数据页 ────────────────────────────┐
-//! │ demo_items  表                      │ │ 表名 · 事务徽标 · 开始/提交/回滚    │
+//! │ demo_items  表                      │ │ 提交 · 撤销 · 删除 · 新增 · 事务    │
 //! │ demo_notes  表                      │ │ 只读/断连横幅                      │
 //! └─────────────────────────────────────┘ │ 状态行 · 脏行计数                  │
 //!                                          │ GtkColumnView（虚拟化，cursor 翻页）│
@@ -511,16 +511,13 @@ fn direction_text(direction: Direction) -> &'static str {
 /// 数据页。
 pub struct DataPage {
     root: gtk::Box,
-    /// 表格工具条第 1 行（表名 · 事务徽标 · 事务动作）。
-    header_row: gtk::Box,
-    /// 表格工具条第 2 行（行变更动作 + 右侧次要动作）。
+    /// 表格工具条（行变更动作 + 事务动作 + 右侧次要动作）。
     controls_row: gtk::Box,
     /// 表格工具条下方的状态行（加载状态 / 脏行计数）。
     status_row: gtk::Box,
     /// 数据网格的滚动容器（布局自检按视口算，不按全部列的自然宽度）。
     grid_scroll: gtk::ScrolledWindow,
     banner: adw::Banner,
-    table_label: gtk::Label,
     status: gtk::Label,
     dirty_label: gtk::Label,
     spinner: gtk::Spinner,
@@ -679,11 +676,6 @@ impl DataPage {
         banner.set_revealed(false);
         banner.set_button_label(Some("重启 Sqarvo"));
 
-        let table_label = gtk::Label::new(Some("未选择表"));
-        table_label.set_xalign(0.0);
-        table_label.add_css_class("heading");
-        table_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-
         let begin = gtk::Button::with_label("开始事务");
         begin.add_css_class("flat");
         begin.set_tooltip_text(Some("在当前会话开始一个显式事务"));
@@ -698,7 +690,11 @@ impl DataPage {
         let rollback = gtk::Button::with_label("回滚事务");
         rollback.add_css_class("destructive-action");
         rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
-
+        // 事务动作与行变更动作同一行：默认只有「开始事务」；开事务后才出现
+        // 「提交事务 / 回滚事务」。「自动提交」徽标删掉——它不是可点的动作，也不是
+        // 用户需要盯着看的状态（事务状态在状态栏里只在真有事务时出现）。
+        commit_txn.set_visible(false);
+        rollback.set_visible(false);
         // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
         let cc_button = icon_button("view-reveal-symbolic", "列显隐");
         cc_button.set_sensitive(false);
@@ -717,22 +713,6 @@ impl DataPage {
         let export = icon_button("document-save-symbolic", "导出为 CSV");
         export.set_sensitive(false);
         export.set_tooltip_text(Some("导出为 CSV（Ctrl+Shift+E）：可选当前页或整张表"));
-
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_margin_top(8);
-        header.set_margin_bottom(4);
-        header.set_margin_start(12);
-        header.set_margin_end(12);
-        header.append(&table_label);
-        table_label.set_hexpand(true);
-        // 事务控制行（v0.2.3.2）：默认只有「开始事务」；开事务后才出现「提交事务 /
-        // 回滚事务」。「自动提交」徽标删掉——它不是可点的动作，也不是用户需要盯着
-        // 的状态（事务状态在状态栏里只在真有事务时出现）。只读开关在开始事务的卡片里。
-        header.append(&begin);
-        header.append(&commit_txn);
-        header.append(&rollback);
-        commit_txn.set_visible(false);
-        rollback.set_visible(false);
 
         let commit_changes = gtk::Button::with_label("提交");
         commit_changes.add_css_class("suggested-action");
@@ -799,7 +779,12 @@ impl DataPage {
         controls.append(&discard);
         controls.append(&delete_row);
         controls.append(&add_row);
-        // 次要动作放第二行右侧：960 宽下第一行放不下，但功能一个不少。
+        // 事务动作紧跟在「新增」之后：「开始事务」常驻；开事务后原位换成
+        // 「提交事务 / 回滚事务」（互斥由 `sync_badge` 统一处理）。
+        controls.append(&begin);
+        controls.append(&commit_txn);
+        controls.append(&rollback);
+        // 次要动作（筛选 / 列显隐 / 导出）靠右：图标按钮不占按钮行左侧的动作位置。
         //
         // 「重新读取」不在这里：状态栏行 1 的行操作组和行 2「Last Refresh」旁的刷新
         // 按钮都走同一个 `RowOp::Refresh`，工具条上是第三个入口，纯重复。
@@ -1110,7 +1095,6 @@ impl DataPage {
         root.set_vexpand(true);
         root.set_valign(gtk::Align::Fill);
         root.append(&banner);
-        root.append(&header);
         root.append(&controls);
         root.append(&status_row);
         root.append(&badges_row);
@@ -1119,12 +1103,10 @@ impl DataPage {
 
         let page = Rc::new(Self {
             root,
-            header_row: header.clone(),
             controls_row: controls.clone(),
             status_row: status_row.clone(),
             grid_scroll: scroll.clone(),
             banner,
-            table_label,
             status,
             dirty_label,
             spinner,
@@ -1402,23 +1384,14 @@ impl DataPage {
         &self.root
     }
 
-    /// 表格工具条第 1 行的表名标签（布局自检按「全文」比较它）。
-    pub fn table_header_label(&self) -> &gtk::Label {
-        &self.table_label
-    }
-
-    /// 布局自检目标：表格工具条两行 + 状态行 + 数据网格视口。
+    /// 布局自检目标：表格工具条 + 状态行 + 数据网格视口。
     ///
     /// 表格按**滚动视口**检查（列的自然宽度允许横向滚动，不算裁切）；
     /// 视口自身的最小宽度必须小于等于实际分配宽度。
     pub fn audit_groups(&self) -> Vec<(&'static str, gtk::Widget)> {
         vec![
             (
-                "表格工具条 第1行(表名·事务)",
-                self.header_row.clone().upcast(),
-            ),
-            (
-                "表格工具条 第2行(行变更·次要动作)",
+                "表格工具条(行变更·事务·次要动作)",
                 self.controls_row.clone().upcast(),
             ),
             ("表格工具条 状态行", self.status_row.clone().upcast()),
@@ -3454,8 +3427,6 @@ impl DataPage {
         ));
         self.read_only_cause.replace(None);
         self.table.replace(Some(table.clone()));
-        self.table_label
-            .set_text(&format!("{} · {}", table.display_name, table.kind_label()));
         self.busy.set(false);
         self.set_state(DataState::Loading);
         self.placeholder.set_title("正在读取表数据");
@@ -3478,14 +3449,6 @@ impl DataPage {
         self.capabilities
             .set(BrowseCapabilities::from_names(&open.capabilities));
         self.table.replace(Some(open.table.clone()));
-        self.table_label.set_text(&format!(
-            "{} · {} · {}",
-            open.table.display_name,
-            open.table.kind_label(),
-            ordering_label(open.ordering)
-        ));
-        self.table_label
-            .set_tooltip_text(Some(&self.table_label.text()));
         self.columns.replace(open.columns.clone());
         self.build_columns(&open.columns);
         self.refresh_header_titles();
@@ -5826,17 +5789,6 @@ fn respond_dialog(dialog: &adw::AlertDialog, response: &str) {
 /// 值的一行展示（错误/日志用；NULL 明确写 NULL）。
 fn display_value(value: &ColumnValue) -> String {
     format_cell(value).text
-}
-
-fn ordering_label(ordering: RowOrder) -> &'static str {
-    match ordering {
-        RowOrder::PrimaryKeyAscending => "按主键升序",
-        RowOrder::Unstable => "无稳定排序",
-        // v0.2.3 契约增量（#109）：驱动能力位仍为 false，本值不会出现；
-        // 这里只补全 match（真正的列头排序 UI 由 #113 负责）。
-        RowOrder::RequestedSort => "按请求排序",
-        RowOrder::Unspecified => "排序未知",
-    }
 }
 
 /// 设置按钮可用性，并在不可用时摘掉建议/破坏性染色 class（#113/#116 遗留）。

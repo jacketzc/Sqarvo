@@ -2497,10 +2497,6 @@ impl TabSet {
             for (name, widget) in data.audit_groups() {
                 targets.push(crate::layout_audit::Target::row(name, widget));
             }
-            targets.push(crate::layout_audit::Target::full_text(
-                "表格工具条 表名(全文)",
-                data.table_header_label().clone().upcast(),
-            ));
         }
         targets
     }

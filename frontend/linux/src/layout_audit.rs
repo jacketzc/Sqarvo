@@ -25,8 +25,6 @@ pub struct Target {
     pub region: String,
     /// 要测量的控件。
     pub widget: gtk::Widget,
-    /// `true` = 要求**全文**放得下（不省略）；`false` = 只要最小尺寸放得下。
-    pub full_text: bool,
 }
 
 impl Target {
@@ -36,17 +34,6 @@ impl Target {
         Self {
             region: region.into(),
             widget,
-            full_text: false,
-        }
-    }
-
-    /// 全文目标：`natural_width ≤ allocated`（表名这类必须完整显示的文字）。
-    #[must_use]
-    pub fn full_text(region: impl Into<String>, widget: gtk::Widget) -> Self {
-        Self {
-            region: region.into(),
-            widget,
-            full_text: true,
         }
     }
 }
@@ -82,20 +69,16 @@ impl RowReport {
 #[must_use]
 pub fn check(target: &Target) -> RowReport {
     let widget = &target.widget;
-    let (min_width, natural_width, _min_baseline, _nat_baseline) =
+    let (min_width, _natural_width, _min_baseline, _nat_baseline) =
         widget.measure(gtk::Orientation::Horizontal, -1);
-    // 全文目标拿自然宽度比较（省略号也算截断）；普通目标拿最小宽度。
-    let required = if target.full_text {
-        natural_width
-    } else {
-        min_width
-    };
+    // 允许省略号收缩的标签按最小宽度比较；整行不允许被裁切。
+    let required = min_width;
     let allocated = widget.width();
     let mut notes = Vec::new();
 
     // GtkScrolledWindow 的滚动内容是**允许**超出视口的（横向滚动条就是为此存在），
     // 所以只检查视口自身，不把内容的最小宽度当裁切。
-    let inspect_children = (!target.full_text) && !widget.is::<gtk::ScrolledWindow>();
+    let inspect_children = !widget.is::<gtk::ScrolledWindow>();
 
     let mut child = widget.first_child();
     while let Some(current) = child {
@@ -146,7 +129,7 @@ pub fn check(target: &Target) -> RowReport {
 /// ```text
 /// [layout-audit] 窗口 960x640
 /// [layout-audit] ✓ 主工具条 左组 需求 163 ≤ 分配 163
-/// [layout-audit] ✗ 表格工具条 第1行 需求 745 > 分配 699（超 46 px）
+/// [layout-audit] ✗ 表格工具条 需求 745 > 分配 699（超 46 px）
 /// [layout-audit]    - button 需求 84 / 分配 60
 /// [layout-audit] 结论：15 项中 1 项超限
 /// ```
