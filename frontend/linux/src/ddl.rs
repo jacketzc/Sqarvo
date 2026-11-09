@@ -125,7 +125,7 @@ impl DdlPanel {
         warning.set_visible(false);
         warning.set_margin_top(6);
         warning.set_margin_bottom(2);
-        warning.set_margin_start(10);
+        warning.set_margin_start(0);
         warning.set_margin_end(10);
         warning.add_css_class("caption");
         warning.add_css_class("sqarvo-ddl-synth");
@@ -137,7 +137,8 @@ impl DdlPanel {
         text_view.set_wrap_mode(gtk::WrapMode::None);
         text_view.set_top_margin(8);
         text_view.set_bottom_margin(8);
-        text_view.set_left_margin(10);
+        // 左端贴内容区边缘：面板只有一条左基准线（与分隔线左顶点、标题同一列）。
+        text_view.set_left_margin(0);
         text_view.set_right_margin(10);
         text_view.add_css_class("sqarvo-panel-text");
 

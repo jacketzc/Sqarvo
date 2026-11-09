@@ -360,13 +360,15 @@ struct TableInfo {
     children_error: Option<String>,
 }
 
-/// `[DDL] / [表信息]` 切换条的水平内缩。
+/// 面板内容列的左边距。
 ///
-/// 面板正文的左边距是 10，而按钮自身有横向内边距（CSS `.sqarvo-pane-switch >
-/// button { padding: 0 4px }`）。容器留 10 − 4 = 6：选中块与它的文字都落在标题 /
-/// 正文那条竖线附近（差 4px 是块自身的呼吸空间），不会再出现「块探出边距」或
-/// 「文字右缩一格」两种观感之一。
-const PANE_SWITCH_INSET: i32 = 6;
+/// 分隔线是 root 的直接子控件，从左端铺满内容区；标题块 / 切换条 / 表信息 / DDL 正文
+/// 原先各自留 10px，读起来像每一块都被单独缩进，而且都比横线左顶点右移一格。统一贴到
+/// 内容区左端（0）后，整块面板只有一条左基准线。
+///
+/// 切换按钮自身还有 4px 横向内边距（CSS），所以选中块的**左边缘**贴基准线、标签文字
+/// 在块内缩进 4px——这是块状选中态无法避免的一点内缩。
+const PANEL_CONTENT_LEFT: i32 = 0;
 
 impl Inspector {
     /// 构建面板。
@@ -394,7 +396,7 @@ impl Inspector {
         // 被线切了一刀。10px 让「标题 + 副标题」自成一组（实测副标题笔画底到线约 13px）。
         header.set_margin_top(6);
         header.set_margin_bottom(10);
-        header.set_margin_start(10);
+        header.set_margin_start(PANEL_CONTENT_LEFT);
         header.set_margin_end(10);
         header.append(&header_text);
 
@@ -402,7 +404,7 @@ impl Inspector {
         let txn_hint = gtk::Label::new(None);
         txn_hint.set_xalign(0.0);
         txn_hint.set_wrap(true);
-        txn_hint.set_margin_start(10);
+        txn_hint.set_margin_start(PANEL_CONTENT_LEFT);
         txn_hint.set_margin_end(10);
         txn_hint.set_margin_bottom(8);
         txn_hint.add_css_class("caption");
@@ -434,7 +436,7 @@ impl Inspector {
         let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         switch_bar.add_css_class("sqarvo-pane-switch");
         switch_bar.set_margin_top(6);
-        switch_bar.set_margin_start(PANE_SWITCH_INSET);
+        switch_bar.set_margin_start(PANEL_CONTENT_LEFT);
         switch_bar.set_margin_end(10);
         switch_bar.set_margin_bottom(6);
         switch_bar.append(&ddl_toggle);
@@ -458,7 +460,7 @@ impl Inspector {
         info_box.set_hexpand(true);
         info_box.set_margin_top(6);
         info_box.set_margin_bottom(10);
-        info_box.set_margin_start(10);
+        info_box.set_margin_start(PANEL_CONTENT_LEFT);
         info_box.set_margin_end(10);
         info_box.append(&info_status);
         // 横向 Never 时子控件只拿到自己的最小宽度（折行标签的最小宽度可以很小），
@@ -1192,7 +1194,7 @@ fn fact_container() -> gtk::Box {
     let rows = gtk::Box::new(gtk::Orientation::Vertical, 6);
     rows.set_margin_top(8);
     rows.set_margin_bottom(8);
-    rows.set_margin_start(10);
+    rows.set_margin_start(PANEL_CONTENT_LEFT);
     rows.set_margin_end(10);
     rows.set_valign(gtk::Align::Start);
     rows
