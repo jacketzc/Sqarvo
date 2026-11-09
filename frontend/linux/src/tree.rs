@@ -586,7 +586,7 @@ impl Row {
                     }
                 };
                 format!(
-                    "{} · {}\n{}\n{}{}\n右键：连接 / 断开连接",
+                    "{} · {}\n{}\n{}{}\n右键：连接 / 断开连接 / 刷新连接",
                     snapshot.name,
                     snapshot.driver,
                     snapshot.target,
@@ -633,6 +633,46 @@ impl Row {
                 )
             }
             Self::Note(note) => note.text.clone(),
+        }
+    }
+}
+
+/// 树节点的右键菜单条目（文案与出现条件集中在这里，纯数据便于单测）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuItem {
+    /// 未连接：按已保存的凭据连接。
+    ConnectSaved,
+    /// 已连接：断开。
+    Disconnect,
+    /// 已连接：重读这条连接已经建立的层。
+    RefreshConnection,
+    /// 编辑已保存的连接。
+    EditSaved,
+    /// 删除已保存的连接。
+    DeleteSaved,
+    /// 重读该分组的第一页。
+    RefreshGroup,
+    /// 重读该库 / schema 已展开的分组与子对象层。
+    RefreshCatalog,
+    /// 打开表 / 视图。
+    Open,
+}
+
+/// 一个已接好线的菜单条目：文案 + 动作。
+type MenuEntry = (&'static str, Rc<dyn Fn()>);
+
+impl MenuItem {
+    /// 菜单文案（中文；不另加 tooltip）。
+    fn label(self) -> &'static str {
+        match self {
+            Self::ConnectSaved => "连接（使用已保存的凭据）",
+            Self::Disconnect => "断开连接",
+            Self::RefreshConnection => "刷新连接",
+            Self::EditSaved => "编辑连接…",
+            Self::DeleteSaved => "删除连接",
+            Self::RefreshGroup => "刷新这一组",
+            Self::RefreshCatalog => "刷新库",
+            Self::Open => "打开",
         }
     }
 }
@@ -2147,7 +2187,8 @@ impl TreePanel {
     ///
     /// `GtkTreeListModel` 的 `create_func` 在展开时调用。同一层的模型在展开期间
     /// 一直缓存；折叠后重新展开会再调一次 create_func，这里直接复用已加载的页
-    /// （不重复拉取）。要让服务端的数据变化可见，走侧栏「刷新」（[`TreePanel::reload`]）。
+    /// （不重复拉取）。要让服务端的数据变化可见，走菜单栏「刷新」（`F5`，整棵树）或
+    /// 连接 / 库节点的右键「刷新连接 / 刷新库」。
     fn level_for(self: &Rc<Self>, row: &Row) -> Rc<Level> {
         let source = match row {
             Row::Connection(snapshot) => LevelSource::Catalogs {
@@ -2298,22 +2339,30 @@ impl TreePanel {
 
     /// 作废某条连接下的全部层（断开 / 刷新用）。
     fn purge_levels(&self, key: &str) {
+        let removed = self.purge_levels_where(|level| level.key() == key);
+        if removed > 0 {
+            eprintln!("[tree] 作废连接 {key} 的 {removed} 个层");
+        }
+    }
+
+    /// 作废满足条件的层，返回作废数量（连接 / 库节点的刷新共用）。
+    fn purge_levels_where(&self, stale: impl Fn(&Level) -> bool) -> usize {
         let ids: Vec<u64> = self
             .levels
             .borrow()
             .values()
-            .filter(|level| level.key() == key)
+            .filter(|level| stale(level))
             .map(|level| level.id)
             .collect();
         if ids.is_empty() {
-            return;
+            return 0;
         }
         let removed = ids.len();
         let mut levels = self.levels.borrow_mut();
         for id in ids {
             levels.remove(&id);
         }
-        eprintln!("[tree] 作废连接 {key} 的 {removed} 个层");
+        removed
     }
 
     /// 发一页请求（`token` 为空 = 第一页）。
@@ -2646,6 +2695,108 @@ impl TreePanel {
 
     // -- 右键菜单 -----------------------------------------------------------
 
+    /// 返回这一行该显示的菜单条目（纯数据：不碰 GTK，便于单测文案与可用性）。
+    ///
+    /// 刷新入口在右键里：连接节点「刷新连接」重读该连接的已建立层，库 / schema
+    /// 节点「刷新库」重读已展开的 Tables / Views 等分组；侧栏底部不再有刷新按钮。
+    fn menu_items(row: &Row) -> Vec<MenuItem> {
+        match row {
+            Row::Connection(snapshot) => {
+                let mut items = Vec::new();
+                if snapshot.state.is_connected() {
+                    items.push(MenuItem::Disconnect);
+                    // 没有浏览会话时刷新读不到任何东西：菜单里不出现。
+                    items.push(MenuItem::RefreshConnection);
+                } else {
+                    items.push(MenuItem::ConnectSaved);
+                }
+                items.push(MenuItem::EditSaved);
+                items.push(MenuItem::DeleteSaved);
+                items
+            }
+            Row::Group(_) => vec![MenuItem::RefreshGroup],
+            Row::Object(node) => match node.kind {
+                ObjectKind::Catalog | ObjectKind::Schema => vec![MenuItem::RefreshCatalog],
+                kind => {
+                    // 表 / 视图只保留「打开」：DDL 由信息面板的 [DDL] 页查看
+                    // （v0.2.3.2，ADR 0025 动作目录同步）。
+                    if is_browsable(kind) {
+                        vec![MenuItem::Open]
+                    } else {
+                        Vec::new()
+                    }
+                }
+            },
+            Row::Note(_) => Vec::new(),
+        }
+    }
+
+    /// 把一个菜单条目接成动作（数据全部从行上取，避免持有过期快照）。
+    fn menu_action(self: &Rc<Self>, item: MenuItem, row: &Row) -> Rc<dyn Fn()> {
+        match (item, row) {
+            (MenuItem::Disconnect, Row::Connection(snapshot)) => {
+                let disconnect = Rc::clone(&self.callbacks.disconnect);
+                let snapshot = Rc::clone(snapshot);
+                Rc::new(move || disconnect((*snapshot).clone()))
+            }
+            (MenuItem::ConnectSaved, Row::Connection(snapshot)) => {
+                let callback = Rc::clone(&self.callbacks.connect_saved);
+                let key = snapshot.key.clone();
+                let name = snapshot.name.clone();
+                Rc::new(move || {
+                    eprintln!("[tree] 右键连接「{name}」→ connect_saved");
+                    callback(key.clone());
+                })
+            }
+            (MenuItem::RefreshConnection, Row::Connection(snapshot)) => {
+                let panel = Rc::clone(self);
+                let key = snapshot.key.clone();
+                let name = snapshot.name.clone();
+                Rc::new(move || {
+                    eprintln!("[tree] 右键「刷新连接」：{name}");
+                    panel.reload_connection(&key);
+                })
+            }
+            (MenuItem::EditSaved, Row::Connection(snapshot)) => {
+                let edit = Rc::clone(&self.callbacks.edit_saved);
+                let key = snapshot.key.clone();
+                let name = snapshot.name.clone();
+                Rc::new(move || {
+                    eprintln!("[tree] 右键「编辑连接…」：{name}");
+                    edit(key.clone());
+                })
+            }
+            (MenuItem::DeleteSaved, Row::Connection(snapshot)) => {
+                let delete = Rc::clone(&self.callbacks.delete_saved);
+                let key = snapshot.key.clone();
+                let name = snapshot.name.clone();
+                Rc::new(move || {
+                    eprintln!("[tree] 右键「删除连接」：{name}");
+                    delete(key.clone());
+                })
+            }
+            (MenuItem::RefreshGroup, Row::Group(group)) => {
+                let panel = Rc::clone(self);
+                let key = group.key.clone();
+                let parent = group.parent.clone();
+                let kind = group.group;
+                Rc::new(move || panel.reload_group(&key, &parent, kind))
+            }
+            (MenuItem::RefreshCatalog, Row::Object(node)) => {
+                let panel = Rc::clone(self);
+                let node = node.clone();
+                Rc::new(move || panel.reload_container(&node))
+            }
+            (MenuItem::Open, Row::Object(node)) => {
+                let open = Rc::clone(&self.callbacks.open);
+                let node = node.clone();
+                Rc::new(move || open(node.clone()))
+            }
+            // `menu_items` 只给对应的行种类发条目（单测锁着）；这里是兜底。
+            _ => Rc::new(|| {}),
+        }
+    }
+
     /// 按行种类显示右键菜单（workspace-model §4：行内不放工具按钮）。
     fn show_context_menu(self: &Rc<Self>, row: &Row, anchor: &gtk::Widget, x: f64, y: f64) {
         if row.is_note() {
@@ -2669,93 +2820,12 @@ impl TreePanel {
         list.set_margin_bottom(4);
         list.set_margin_start(4);
         list.set_margin_end(4);
-        let mut entries: Vec<(String, Rc<dyn Fn()>)> = Vec::new();
-        match row {
-            Row::Connection(snapshot) => {
-                if snapshot.state.is_connected() {
-                    entries.push(("断开连接".to_owned(), {
-                        let disconnect = Rc::clone(&self.callbacks.disconnect);
-                        let snapshot = Rc::clone(snapshot);
-                        Rc::new(move || disconnect((*snapshot).clone()))
-                    }));
-                } else {
-                    let callback = Rc::clone(&self.callbacks.connect_saved);
-                    let key = snapshot.key.clone();
-                    let name = snapshot.name.clone();
-                    entries.push((
-                        "连接（使用已保存的凭据）".to_owned(),
-                        Rc::new(move || {
-                            eprintln!("[tree] 右键连接「{name}」→ connect_saved");
-                            callback(key.clone());
-                        }),
-                    ));
-                }
-                let registry = self.registry();
-                let key = snapshot.key.clone();
-                entries.push((
-                    "刷新这条连接".to_owned(),
-                    Rc::new(move || {
-                        if let Some(registry) = registry.as_ref() {
-                            eprintln!("[tree] 刷新连接 {key} 的浏览会话");
-                            registry.open(&key);
-                        }
-                    }),
-                ));
-                {
-                    let edit = Rc::clone(&self.callbacks.edit_saved);
-                    let key = snapshot.key.clone();
-                    let name = snapshot.name.clone();
-                    entries.push((
-                        "编辑连接…".to_owned(),
-                        Rc::new(move || {
-                            eprintln!("[tree] 右键「编辑连接…」：{name}");
-                            edit(key.clone());
-                        }),
-                    ));
-                }
-                {
-                    let delete = Rc::clone(&self.callbacks.delete_saved);
-                    let key = snapshot.key.clone();
-                    let name = snapshot.name.clone();
-                    entries.push((
-                        "删除连接".to_owned(),
-                        Rc::new(move || {
-                            eprintln!("[tree] 右键「删除连接」：{name}");
-                            delete(key.clone());
-                        }),
-                    ));
-                }
-            }
-            Row::Group(group) => {
-                let panel = match self.registry() {
-                    Some(_) => Some(Rc::clone(self)),
-                    None => None,
-                };
-                let key = group.key.clone();
-                let parent = group.parent.clone();
-                let kind = group.group;
-                entries.push((
-                    "刷新这一组".to_owned(),
-                    Rc::new(move || {
-                        if let Some(panel) = panel.as_ref() {
-                            panel.reload_group(&key, &parent, kind);
-                        }
-                    }),
-                ));
-            }
-            Row::Object(node) => {
-                // 右键只保留「打开表」：DDL 改由信息面板内的 [DDL] 页查看，
-                // 不再从树里发一个隐式的展示动作（v0.2.3.2，ADR 0025 动作目录同步）。
-                if is_browsable(node.kind) {
-                    let open = Rc::clone(&self.callbacks.open);
-                    let node = node.clone();
-                    entries.push(("打开".to_owned(), Rc::new(move || open(node.clone()))));
-                }
-            }
-            Row::Note(_) => {}
-        }
+        let entries: Vec<MenuEntry> = Self::menu_items(row)
+            .into_iter()
+            .map(|item| (item.label(), self.menu_action(item, row)))
+            .collect();
         for (label, action) in entries {
-            let button = gtk::Button::with_label(&label);
+            let button = gtk::Button::with_label(label);
             button.add_css_class("flat");
             button.set_halign(gtk::Align::Fill);
             let popover_for_button = popover.clone();
@@ -2793,23 +2863,105 @@ impl TreePanel {
                 })
                 .map(|level| level.id)
         };
-        let Some(level_id) = level_id else {
+        if let Some(level_id) = level_id {
+            self.reload_level(level_id);
+        }
+    }
+
+    /// 重读某一层的第一页（「刷新这一组 / 刷新连接 / 刷新库」共用）。
+    ///
+    /// 就地清空这一层的 `ListStore` 再发第一页：已展开的行仍绑定同一个
+    /// store，刷新不会把子树收起。静态分组行层（`Groups` / `TableGroups`）只有
+    /// 客户端生成的固定行，没有服务端内容可重读。
+    fn reload_level(self: &Rc<Self>, level_id: u64) {
+        let Some(level) = self.levels.borrow().get(&level_id).cloned() else {
             return;
         };
-        let store = self
+        if matches!(
+            level.source,
+            LevelSource::Groups { .. } | LevelSource::TableGroups { .. }
+        ) {
+            return;
+        }
+        if level.loading.get() {
+            // 在读的第一页会写回同一个 store；此时清空再发会让两次响应交错。
+            eprintln!("[tree] {} 正在读取，忽略这次刷新", level.label);
+            return;
+        }
+        level.store.remove_all();
+        level.loaded.set(0);
+        level.next_token.replace(String::new());
+        level.exhausted.set(false);
+        eprintln!(
+            "[tree] t=+{}ms 重读 {}",
+            crate::qa::elapsed_ms(),
+            level.label
+        );
+        self.load_page(level_id, String::new());
+    }
+
+    /// 重读一条连接：目录层与已经建立的层（右键「刷新连接」）。
+    ///
+    /// 只重读这条连接自己的层；连接节点收起、一层都还没建立时不做请求，
+    /// 展开时按正常路径读取。整棵树的重建仍走 [`TreePanel::reload`]（菜单栏「刷新」）。
+    fn reload_connection(self: &Rc<Self>, key: &str) {
+        let ids: Vec<u64> = self
             .levels
             .borrow()
-            .get(&level_id)
-            .map(|level| level.store.clone());
-        if let Some(store) = store {
-            store.remove_all();
+            .values()
+            .filter(|level| level.key() == key)
+            .map(|level| level.id)
+            .collect();
+        if ids.is_empty() {
+            self.status
+                .set_text("这条连接还没有展开过：展开时会重新读取");
+            eprintln!("[tree] 刷新连接 {key}：还没有建立层，忽略");
+            return;
         }
-        if let Some(level) = self.levels.borrow().get(&level_id) {
-            level.loaded.set(0);
-            level.next_token.replace(String::new());
-            level.exhausted.set(false);
+        let count = ids.len();
+        for id in ids {
+            self.reload_level(id);
         }
-        self.load_page(level_id, String::new());
+        self.status
+            .set_text(&format!("正在重新读取这条连接（{count} 层）…"));
+        eprintln!("[tree] 刷新连接 {key}：重读 {count} 层");
+    }
+
+    /// 重读一个库 / schema：已展开的 Tables / Views 等分组与直接子对象层
+    /// （右键「刷新库」）。
+    ///
+    /// 分组都收起着（层还没建立）时只清掉这一层的缓存：下次展开按正常路径重读，
+    /// 不提前替用户发请求。
+    fn reload_container(self: &Rc<Self>, node: &NodeView) {
+        let key = self.connection_key_for_session(&node.reference.session_id);
+        let ids: Vec<u64> = self
+            .levels
+            .borrow()
+            .values()
+            .filter(|level| level.key() == key)
+            .filter(|level| level_parent(&level.source) == Some(&node.reference))
+            .map(|level| level.id)
+            .collect();
+        if ids.is_empty() {
+            let purged = self.purge_levels_where(|level| {
+                level.key() == key && level_parent(&level.source) == Some(&node.reference)
+            });
+            self.status.set_text("这个库的分组都收起着：展开时重新读取");
+            eprintln!(
+                "[tree] 刷新库 {}：没有展开的层，清掉 {purged} 个缓存层",
+                node.display_name
+            );
+            return;
+        }
+        let count = ids.len();
+        for id in ids {
+            self.reload_level(id);
+        }
+        self.status.set_text(&format!(
+            "正在重新读取库「{}」（{count} 层）…",
+            node.display_name
+        ));
+        eprintln!("[tree] 刷新库 {}：重读 {count} 层", node.display_name);
     }
 
     // -- 搜索跳转 -----------------------------------------------------------
@@ -3587,6 +3739,17 @@ impl TreePanel {
     }
 }
 
+/// 这一层挂在哪个服务端对象下（`Group` / `Children` 层的父节点；其它层返回 `None`）。
+///
+/// 「刷新库」用它把某个库 / schema 下的层挑出来：静态分组行层（`Groups` /
+/// `TableGroups`）没有服务端内容，不算在内。
+fn level_parent(source: &LevelSource) -> Option<&ObjectRef> {
+    match source {
+        LevelSource::Group { parent, .. } | LevelSource::Children { parent, .. } => Some(parent),
+        _ => None,
+    }
+}
+
 /// 由任意对象引用合成它所在的库引用（`kind = Catalog`、`name = catalog`）。
 ///
 /// 引用里没有 catalog（根层直接给对象）时返回 `None`——调用方自己决定退回哪个库。
@@ -3905,5 +4068,88 @@ mod tests {
         let table = view("orders", ObjectKind::Table, "db1", "");
         assert!(!table.expandable());
         assert_eq!(object_activation(&table), ObjectActivation::Open);
+    }
+
+    fn connection(state: ConnectionState) -> Row {
+        Row::Connection(Rc::new(ConnectionSnapshot {
+            key: "k1".to_owned(),
+            name: "本地".to_owned(),
+            driver: "sqlite".to_owned(),
+            target: "/tmp/a.sqlite".to_owned(),
+            state,
+            session_id: "sess".to_owned(),
+            detail: String::new(),
+            is_active: true,
+        }))
+    }
+
+    fn labels(row: &Row) -> Vec<&'static str> {
+        TreePanel::menu_items(row)
+            .into_iter()
+            .map(MenuItem::label)
+            .collect()
+    }
+
+    #[test]
+    fn context_menu_refresh_entries_follow_the_row() {
+        // 已连接：刷新连接在断开之后；未连接：没有刷新（没有浏览会话）。
+        assert_eq!(
+            labels(&connection(ConnectionState::Connected)),
+            ["断开连接", "刷新连接", "编辑连接…", "删除连接"]
+        );
+        assert_eq!(
+            labels(&connection(ConnectionState::Disconnected)),
+            ["连接（使用已保存的凭据）", "编辑连接…", "删除连接"]
+        );
+        assert_eq!(
+            labels(&connection(ConnectionState::Connecting)),
+            ["连接（使用已保存的凭据）", "编辑连接…", "删除连接"]
+        );
+        // 库 / schema：刷新库；表 / 视图仍是「打开」（语义不变）。
+        for kind in [ObjectKind::Catalog, ObjectKind::Schema] {
+            let node = view("db1", kind, "db1", "");
+            assert_eq!(labels(&Row::Object(node)), ["刷新库"], "{kind:?}");
+        }
+        let table = view("orders", ObjectKind::Table, "db1", "");
+        assert_eq!(labels(&Row::Object(table)), ["打开"]);
+        // 分组仍是「刷新这一组」。
+        assert_eq!(
+            labels(&group("k1", KindGroup::Tables, "db1")),
+            ["刷新这一组"]
+        );
+        // 占位行没有菜单。
+        let note = Row::Note(NoteRow {
+            text: "读取中…".to_owned(),
+            kind: NoteKind::Loading,
+        });
+        assert!(labels(&note).is_empty());
+    }
+
+    #[test]
+    fn refresh_container_matches_only_levels_under_that_node() {
+        let catalog = view("db1", ObjectKind::Catalog, "db1", "").reference;
+        let other = view("db2", ObjectKind::Catalog, "db2", "").reference;
+        let group_level = LevelSource::Group {
+            key: "k1".to_owned(),
+            parent: catalog.clone(),
+            group: RowGroup::Catalog(KindGroup::Tables),
+        };
+        assert_eq!(level_parent(&group_level), Some(&catalog));
+        assert_eq!(
+            level_parent(&LevelSource::Catalogs {
+                key: "k1".to_owned()
+            }),
+            None
+        );
+        // 静态分组行层不算「库下的可重读层」：它们只有客户端生成的固定行。
+        assert_eq!(
+            level_parent(&LevelSource::Groups {
+                key: "k1".to_owned(),
+                parent: catalog.clone(),
+            }),
+            None
+        );
+        assert_eq!(level_parent(&group_level), Some(&catalog));
+        assert_ne!(level_parent(&group_level), Some(&other));
     }
 }

@@ -4,7 +4,7 @@
 //! 连接数据库之后才建立。本模块把启动态也纳入同一套外壳（[`crate::shell`]）：
 //!
 //! - 侧栏 = 与连接态**同一个对象树**（[`crate::tree::TreePanel`]）：搜索框、
-//!   `My Connections` 下的已保存连接、页脚刷新；只是所有连接都处于「未连接」；
+//!   `My Connections` 下的已保存连接；只是所有连接都处于「未连接」；
 //! - 主区域 = 固定 `Objects` 标签，空态文案「从左侧选择一个连接开始」；
 //! - 状态栏显示「未连接」、驱动数与浏览器会话数（启动时为 0）。
 //!
@@ -141,26 +141,11 @@ impl StartupWorkspace {
             tree.attach(registry);
         }
 
-        let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_button.add_css_class("flat");
-        refresh_button.set_tooltip_text(Some("重新读取对象树（ListNodes）"));
-        {
-            let tree = Rc::clone(&tree);
-            refresh_button.connect_clicked(move |_| tree.reload());
-        }
-
-        let footer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        footer.set_margin_start(6);
-        footer.set_margin_end(6);
-        footer.set_margin_top(2);
-        footer.set_margin_bottom(4);
-        footer.append(&refresh_button);
-
+        // 侧栏就是对象树本体（页脚刷新按钮与分割线已删除）：启动态与连接态形状一致，
+        // 刷新在连接 / 库节点的右键菜单里。
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.set_size_request(crate::layout::SIDEBAR_MIN, -1);
         sidebar.append(tree.widget());
-        sidebar.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        sidebar.append(&footer);
 
         // ---- 区域 04：固定 Objects 标签空态 --------------------------------
         let view = adw::TabView::new();

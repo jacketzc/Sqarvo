@@ -1709,7 +1709,7 @@ impl Workspace {
         // 外壳在标签工作区之后才建：状态栏 / 标签状态的接线要回指它（与面板显隐无关）。
         let shell_slot: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
 
-        // ---- 区域 03 的内容：对象树 + 页脚 ------------------------------------
+        // ---- 区域 03 的内容：对象树 -------------------------------------------
         // 平铺列表与「DDL」在 v0.2.3.2 删除：树是唯一入口，DDL 在信息面板里看。
         let tree_slot: Rc<RefCell<Option<Rc<TreePanel>>>> = Rc::new(RefCell::new(None));
         let refresh: Rc<dyn Fn()> = {
@@ -1853,28 +1853,11 @@ impl Workspace {
 
         tree_slot.replace(Some(Rc::clone(&tree)));
 
-        let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_button.add_css_class("flat");
-        refresh_button.set_tooltip_text(Some("重新读取对象树（ListNodes）"));
-        {
-            let refresh = Rc::clone(&refresh);
-            refresh_button.connect_clicked(move |_| refresh());
-        }
-
-        // 页脚只留刷新：平铺列表与 DDL 入口在 v0.2.3.2 删除（树是唯一入口，
-        // DDL 在信息面板的表页里看）。
-        let footer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        footer.set_margin_start(6);
-        footer.set_margin_end(6);
-        footer.set_margin_top(2);
-        footer.set_margin_bottom(4);
-        footer.append(&refresh_button);
-
+        // 侧栏就是对象树本体：页脚刷新按钮与它上下的分割线已删除，刷新走
+        // 连接 / 库节点的右键菜单（`tree.rs`「刷新连接 / 刷新库」）。
         let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar_box.set_size_request(layout::SIDEBAR_MIN, -1);
         sidebar_box.append(tree.widget());
-        sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        sidebar_box.append(&footer);
 
         // ---- 外壳（区域 02–06） ----------------------------------------------
         let tabs = crate::tabs::TabSet::new(crate::tabs::TabContext {
