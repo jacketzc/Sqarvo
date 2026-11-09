@@ -48,7 +48,7 @@ pub fn stylesheet() -> String {
         /* 区域 01：标题 13 semibold（标题控件在 headerbar 里） */
         .sqarvo-title {{ font-size: {title}px; font-weight: 600; }}
 
-        /* 区域 02：主工具条 76 高，按钮不小于 24 */
+        /* 区域 02：主工具条 44 高（24 的按钮 + 上下各 10），按钮不小于 24 */
         .sqarvo-toolbar {{
             min-height: {toolbar}px;
             padding: 0 12px;
@@ -267,7 +267,10 @@ mod tests {
     #[test]
     fn stylesheet_carries_the_compact_metrics() {
         let css = stylesheet();
-        assert!(css.contains("min-height: 76px"), "工具条高度缺失：{css}");
+        assert!(
+            css.contains(&format!("min-height: {}px", layout::TOOLBAR_HEIGHT)),
+            "工具条高度缺失：{css}"
+        );
         assert!(css.contains("min-height: 56px"), "状态栏高度缺失");
         assert!(css.contains("min-height: 24px"), "树行高缺失");
         assert!(css.contains("min-height: 32px"), "数据行高缺失");

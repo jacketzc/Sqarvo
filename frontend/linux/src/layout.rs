@@ -5,7 +5,7 @@
 //! 服务器的环境里单测——布局算错时不该只能靠肉眼看截图。
 //!
 //! ```text
-//! contentHeight = windowHeight - 140 - 56      # 140 = 外壳 64 + 工具条 76
+//! contentHeight = windowHeight - 108 - 56      # 108 = 外壳 64 + 工具条 44
 //! contentWidth  = windowWidth  - sidebarWidth
 //! gridWidth     = contentWidth - 18（左内边距）- 3（右内边距）
 //!                 - [10（间隙）+ inspectorWidth]   # 面板折叠时两项一起收回
@@ -21,7 +21,10 @@
 pub const HEADER_HEIGHT: i32 = 64;
 
 /// 主工具条（区域 02）高度。
-pub const TOOLBAR_HEIGHT: i32 = 76;
+///
+/// v0.2.3.3：76 → 44。工具条只放一行 24 高的按钮，44 = 24 + 上下各 10 的呼吸；
+/// 省下的 32 px 全部还给数据区（用户要求「让目光更聚焦在数据区」）。
+pub const TOOLBAR_HEIGHT: i32 = 44;
 
 /// 状态栏（区域 05）高度，两行各 24 + 上下留白。
 pub const STATUS_HEIGHT: i32 = 56;
@@ -182,14 +185,14 @@ mod tests {
 
     #[test]
     fn content_height_matches_the_spec_for_both_target_sizes() {
-        assert_eq!(content_height(WINDOW_1200.1), 604);
-        assert_eq!(content_height(WINDOW_960.1), 444);
+        assert_eq!(content_height(WINDOW_1200.1), 636);
+        assert_eq!(content_height(WINDOW_960.1), 476);
     }
 
     #[test]
     fn header_toolbar_and_status_bar_add_up_to_the_chrome() {
-        assert_eq!(HEADER_HEIGHT + TOOLBAR_HEIGHT, 140);
-        assert_eq!(CHROME_HEIGHT + STATUS_HEIGHT, 196);
+        assert_eq!(HEADER_HEIGHT + TOOLBAR_HEIGHT, 108);
+        assert_eq!(CHROME_HEIGHT + STATUS_HEIGHT, 164);
     }
 
     #[test]
@@ -229,9 +232,9 @@ mod tests {
             );
             assert_eq!(status_y(window.1), window.1 - 56);
         }
-        // 604 − 24（标签条） − 64（两行工具条）= 516；960 档 444 − 24 − 64 = 356。
-        assert_eq!(grid_height(800), 516);
-        assert_eq!(grid_height(640), 356);
+        // 636 − 24（标签条） − 64（两行工具条）= 548；960 档 476 − 24 − 64 = 388。
+        assert_eq!(grid_height(800), 548);
+        assert_eq!(grid_height(640), 388);
     }
 
     #[test]

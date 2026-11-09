@@ -33,9 +33,9 @@
 | 区域 | 高度 | 内容 | GTK 载体 |
 |---|---|---|---|
 | 01 窗口外壳 | 64 | 标题栏 40（居中标题 + 右侧控件）+ 菜单行 24 | `AdwHeaderBar`（Linux 无菜单行，见 §8） |
-| 02 主工具条 | 76 | 左组：连接 / 新建查询；分隔线；**种类入口**（表 / 视图 / 函数 / 查询，与「新建查询」同一套 flat 样式、离分隔线同样 14px）；高亮 = 当前列的种类 | `GtkBox` + flat 按钮 |
-| 03 对象树 | 604（自适应） | `My Connections` 头 + 多连接树 + 种类分组 | `GtkPaned` 左栏，`GtkTreeListModel` |
-| 04 工作区 | 604 | 标签条 47（`AdwTabBar` 实测）+ 表格工具条 32×2（事务控制行 / 行变更行）+ 表格 + 信息面板 | `AdwTabView` + `GtkStack` + `GtkColumnView` |
+| 02 主工具条 | 44 | 左组：连接 / 新建查询；分隔线；**种类入口**（表 / 视图 / 函数 / 查询，与「新建查询」同一套 flat 样式、离分隔线同样 14px）；高亮 = 当前列的种类 | `GtkBox` + flat 按钮 |
+| 03 对象树 | 636（自适应） | `My Connections` 头 + 多连接树 + 种类分组 | `GtkPaned` 左栏，`GtkTreeListModel` |
+| 04 工作区 | 636 | 标签条 47（`AdwTabBar` 实测）+ 表格工具条 32×2（事务控制行 / 行变更行）+ 表格 + 信息面板 | `AdwTabView` + `GtkStack` + `GtkColumnView` |
 | 05 状态栏 | 56 | 两行：搜索/行操作/分页器；SQL 摘要/记录计数/最后刷新/视图切换 | `GtkBox` 两行，手工对齐 |
 | （06 信息面板） | 与表格同高 | 连接 / 库 / 表三种内容 | `GtkBox` + `GtkStack` + `GtkRevealer` |
 
@@ -45,7 +45,7 @@
 ### 2.1 布局算术
 
 ```text
-contentHeight = windowHeight - 140 - 56      # 140 = 外壳 64 + 工具条 76
+contentHeight = windowHeight - 108 - 56      # 108 = 外壳 64 + 工具条 44（v0.2.3.3：76 → 44）
 contentWidth  = windowWidth  - sidebarWidth
 tabStrip      顶高 47                        # AdwTabBar 实测；原型画的是 24
 tableActions  顶高 32 × 2 = 64               # 第 1 行事务控制，第 2 行行变更与次要动作
@@ -53,7 +53,7 @@ gridHeight   = contentHeight - 47 - 64
 gridWidth    = contentWidth - 18（左内边距）- 3（右内边距）- [10（间隙）+ inspectorWidth]
 ```
 
-1200 × 800：`contentHeight = 604`、`gridHeight = 493`（`= 604 − 47 − 64`）。表格工具条在 960 宽下
+1200 × 800：`contentHeight = 636`、`gridHeight = 525`（`= 636 − 47 − 64`）。表格工具条在 960 宽下
 单行放不下全部控件（会截断、重叠），拆两行是**有意取舍**，见附录 A 第 8 条；标签条高度取
 `AdwTabBar` 实测值而非原型的 24，见附录 A 第 10 条。
 
