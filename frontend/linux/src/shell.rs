@@ -17,7 +17,7 @@
 //!    左栏 237      │    标签条 24 → 标签页（表格工具条 → 数据网格）           │    Revealer
 //!    可拖 180–420  │                                                        │    280（240–520）
 //! ├────────────────┴────────────────────────────────────────────────────────┤
-//! 05 状态栏     Shell::status    高 56：行1 连接过滤 │ 行操作 │ 分页器
+//! 05 状态栏     Shell::status    高 56：左边沟(对象树功能区) │ 竖分割线 │ 行1 行操作·分页器 / 行2 SQL·记录
 //!                                行2 SQL 摘要 │ 记录位置 │ 最后刷新 · 连接·事务·耗时
 //! └──────────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -50,9 +50,6 @@ use gtk::glib;
 use crate::browse_view::relative_age;
 use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
 use crate::layout;
-
-/// 状态栏「连接过滤」的提示：过滤未实现，树已按连接分组。
-const CONNECTION_FILTER_NOTE: &str = "连接过滤未实现；对象树已按连接分组（#114）";
 
 /// 分页器的提示：offset 分页，页码只读，只提供首页/上页/下页/末页。
 const PAGER_NOTE: &str =
@@ -157,8 +154,11 @@ impl Shell {
         sidebar_pane.set_wide_handle(false);
 
         // 拖拽钳制：把位置拉回 180–420，避免拖成 0 宽或吃掉整个工作区。
+        // 同一处把状态栏的左边沟宽度对齐到分栏位置：竖分割线延伸到底部，左侧整块
+        // 属于对象树功能区（v0.2.3.3）。
         {
             let guard = Cell::new(false);
+            let status_for_gutter = Rc::clone(&status);
             sidebar_pane.connect_notify_local(Some("position"), move |pane, _| {
                 if guard.get() {
                     return;
@@ -169,7 +169,9 @@ impl Shell {
                     pane.set_position(clamped);
                     guard.set(false);
                 }
+                status_for_gutter.set_gutter_width(clamped);
             });
+            status.set_gutter_width(layout::clamp_sidebar(sidebar_pane.position()));
         }
 
         let inspector_width = Rc::new(Cell::new(layout::clamp_inspector(handlers.inspector_width)));
@@ -736,16 +738,26 @@ impl Toolbar {
 /// 三段归属（§7）：
 ///
 /// ```text
-/// 行1：[连接过滤] │ [新增 删除 应用 撤销 刷新 取消]                 [分页器]
-/// 行2：[SQL 摘要]              [已加载 N 行 · 第 P 页]  [最后刷新] [连接·事务·耗时]
+///       ← 对象树功能区 →│← 工作区（v0.2.3.3 起分割线延伸到底部）
+/// 行1：                 [新增 删除 应用 撤销 刷新 取消]                 [分页器]
+/// 行2：                 [SQL 摘要]        [已加载 N 行 · 第 P 页]  [最后刷新] [连接·事务·耗时]
 /// ```
+///
+/// 左边沟的宽度由 [`Shell`] 按侧栏分栏位置设置（[`StatusBar::set_gutter_width`]），
+/// 分割线与上面的分栏线是同一根轴；左侧整块属于对象树功能区，不再放「连接过滤」
+/// （树顶部已有对象 / 表名搜索）。
 ///
 /// 视图切换（对象树 / 平铺）**不在状态栏**：它在侧栏页脚（#113 之前的位置），
 /// 960×640 下放两处会把右组顶出窗口。这里只保留分页器。
 ///
 /// 读数全部来自数据页 / 查询事件：拿不到的（总数、页码跳转）不出现，不写 `—` 冒充。
 pub struct StatusBar {
+    /// 根：`左边沟 | 竖分割线 | 右列`——左沟宽度跟着侧栏分栏走，分割线与分栏线对齐。
     root: gtk::Box,
+    /// 分割线左侧的空白（v0.2.3.3：完全属于对象树功能区，不再放「连接过滤」）。
+    gutter: gtk::Box,
+    /// 分割线右侧：两行内容（行操作 / 分页器；SQL 摘要 / 记录 / 会话）。
+    right_column: gtk::Box,
     add: gtk::Button,
     delete: gtk::Button,
     apply: gtk::Button,
@@ -760,7 +772,6 @@ pub struct StatusBar {
     /// 最后刷新时刻（相对时间由定时器重算）。
     last_refresh_at: Cell<Option<Instant>>,
     row_one: gtk::Box,
-    row_one_left: gtk::Box,
     row_one_middle: gtk::Box,
     row_one_right: gtk::Box,
     row_two: gtk::Box,
@@ -783,13 +794,6 @@ pub struct StatusBar {
 impl StatusBar {
     fn new(on_row_op: Rc<dyn Fn(RowOp)>, on_page: Rc<dyn Fn(PagerAction)>) -> Rc<Self> {
         // ---- 行 1 ------------------------------------------------------------
-        let filter = gtk::SearchEntry::new();
-        filter.set_placeholder_text(Some("连接过滤"));
-        filter.set_width_chars(14);
-        filter.set_sensitive(false);
-        filter.set_tooltip_text(Some(CONNECTION_FILTER_NOTE));
-        filter.set_valign(gtk::Align::Center);
-
         let ops_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         ops_row.add_css_class("linked");
         ops_row.set_valign(gtk::Align::Center);
@@ -884,16 +888,14 @@ impl StatusBar {
         selected_label.set_valign(gtk::Align::Center);
         selected_label.set_visible(false);
 
-        // 行 1 分三组：连接过滤 │ 行操作 │ 选中数 + 分页器。
+        // 行 1 分两组：行操作 │ 选中数 + 分页器。
         //
         // 「对象树 / 平铺」切换**不放这里**：960×640 下它会把右组顶出窗口右边缘
         // （「平铺」只剩半个字）。该动作在侧栏页脚（#113 之前的位置）已有入口，
         // 这里不重复；状态栏只保留分页器。
-        let row_one_left = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        row_one_left.append(&filter);
-
+        // 行 1 从左起就是行操作：左侧那一列已经整块留给对象树（竖分割线延伸到底），
+        // 「连接过滤」与它前面的分割线在 v0.2.3.3 一并移除。
         let row_one_middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        row_one_middle.append(&ops_separator);
         row_one_middle.append(&ops_row);
 
         let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -902,7 +904,6 @@ impl StatusBar {
 
         let row_one = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row_one.add_css_class("sqarvo-status-row");
-        row_one.append(&row_one_left);
         row_one.append(&row_one_middle);
         let spacer_one = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer_one.set_hexpand(true);
@@ -929,17 +930,8 @@ impl StatusBar {
         last_refresh.add_css_class("dim-label");
         last_refresh.set_visible(false);
 
-        // 刷新入口就放在「Last Refresh」旁边（ADR 0022 §4：offset 分页不保证跨页稳定）。
-        let refresh_now = crate::icons::button(
-            "view-refresh-symbolic",
-            "刷新当前表（保持排序/筛选，回到第 1 页）",
-        );
-        refresh_now.set_valign(gtk::Align::Center);
-        refresh_now.set_sensitive(false);
-        {
-            let handler = Rc::clone(&on_row_op);
-            refresh_now.connect_clicked(move |_| handler(RowOp::Refresh));
-        }
+        // v0.2.3.3：右下角那个「刷新」删掉了——行操作里的 `⟳` 是同一个动作，
+        // 同一屏出现两个刷新按钮只会让人猜它们有什么区别（没有区别）。
 
         let session = gtk::Label::new(None);
         session.set_valign(gtk::Align::Center);
@@ -959,7 +951,6 @@ impl StatusBar {
 
         let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row_two_right.append(&last_refresh);
-        row_two_right.append(&refresh_now);
         row_two_right.append(&session);
 
         let row_two = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -968,14 +959,33 @@ impl StatusBar {
         row_two.append(&row_two_middle);
         row_two.append(&row_two_right);
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // 竖分割线：与侧栏 / 工作区之间的分栏线同一条（宽度由 `set_gutter_width` 跟随）。
+        let divider = gtk::Separator::new(gtk::Orientation::Vertical);
+        divider.add_css_class("sqarvo-status-divider");
+        divider.set_valign(gtk::Align::Fill);
+
+        let gutter = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        gutter.add_css_class("sqarvo-status-gutter");
+        gutter.set_width_request(layout::SIDEBAR_WIDTH);
+        gutter.set_hexpand(false);
+
+        let right_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        right_column.add_css_class("sqarvo-status-right");
+        right_column.set_hexpand(true);
+        right_column.append(&row_one);
+        right_column.append(&row_two);
+
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.add_css_class("sqarvo-status-bar");
         root.set_valign(gtk::Align::End);
-        root.append(&row_one);
-        root.append(&row_two);
+        root.append(&gutter);
+        root.append(&divider);
+        root.append(&right_column);
 
         Rc::new(Self {
             root,
+            gutter,
+            right_column,
             add,
             delete,
             apply,
@@ -987,7 +997,6 @@ impl StatusBar {
             selected_label,
             last_refresh_at: Cell::new(None),
             row_one,
-            row_one_left,
             row_one_middle,
             row_one_right,
             row_two,
@@ -1010,18 +1019,22 @@ impl StatusBar {
         &self.root
     }
 
-    /// 布局自检用的两行与三组（行 1：过滤 / 行操作 / 分页器；行 2：SQL 摘要 / 记录 / 右组）。
+    /// 左边沟宽度（= 侧栏分栏位置）：竖分割线要和上面的分栏线在同一根轴上。
+    pub fn set_gutter_width(&self, width: i32) {
+        if width > 0 && self.gutter.width_request() != width {
+            self.gutter.set_width_request(width);
+        }
+    }
+
+    /// 布局自检用的两行与三组（行 1：行操作 / 分页器；行 2：SQL 摘要 / 记录 / 右组）。
     ///
     /// 返回控件克隆，调用方只在布局稳定后读取几何，不参与显隐与业务逻辑。
     pub fn audit_groups(&self) -> Vec<(&'static str, gtk::Widget)> {
         vec![
+            ("状态栏 右列", self.right_column.clone().upcast()),
             ("状态栏 行1 整行", self.row_one.clone().upcast()),
             (
-                "状态栏 行1 左组(连接过滤)",
-                self.row_one_left.clone().upcast(),
-            ),
-            (
-                "状态栏 行1 中组(行操作)",
+                "状态栏 行1 操作组(新增·删除·应用·撤销·刷新·取消)",
                 self.row_one_middle.clone().upcast(),
             ),
             (
@@ -1038,7 +1051,7 @@ impl StatusBar {
                 self.row_two_middle.clone().upcast(),
             ),
             (
-                "状态栏 行2 右组(刷新·会话)",
+                "状态栏 行2 右组(最后刷新·会话)",
                 self.row_two_right.clone().upcast(),
             ),
         ]

@@ -150,9 +150,17 @@ pub fn stylesheet() -> String {
         .sqarvo-status-bar {{
             min-height: {status}px;
             font-size: {status_font}px;
-            padding: 0 12px;
             border-top: 1px solid alpha(currentColor, 0.10);
         }}
+        /* v0.2.3.3：状态栏分成「对象树功能区的左边沟 | 竖分割线 | 右列」。
+           左边沟宽度由 shell 跟着侧栏分栏位置设（`set_gutter_width`），右列自己带
+           左右 12px 内距——这样分割线与上面的分栏线在同一根轴上。 */
+        .sqarvo-status-gutter {{ min-height: {status}px; }}
+        .sqarvo-status-divider {{
+            min-width: 1px;
+            background: alpha(currentColor, 0.10);
+        }}
+        .sqarvo-status-right {{ padding: 0 12px; }}
         .sqarvo-status-row {{ min-height: {tree_row}px; }}
         .sqarvo-status-bar button {{
             min-height: {target}px;

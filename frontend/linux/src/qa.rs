@@ -2401,19 +2401,133 @@ pub fn save_widget(
     target: &impl IsA<gtk::Widget>,
     path: &std::path::Path,
 ) -> Result<(), String> {
+    // 第一帧可能还拿不到内容（刚切页 / 刚换选中 / 首帧合成未完成，实测偶发且能持续
+    // 数秒）：先多次重试，重试要**继续跑事件循环**，光 sleep 不会触发重绘。
+    match snapshot_with_retries(target, 12) {
+        Ok((node, width, height)) => render_node(anchor, &node, width, height, path),
+        Err(error) => {
+            // 退路：`GtkWindow` 自身偶尔交不出节点（窗口已 mapped 却没有可渲染内容），
+            // 但它的内容子控件能画——拍内容子控件，画面里 headerbar 一样在。
+            let widget = target.clone().upcast::<gtk::Widget>();
+            let Some(content) = widget.first_child() else {
+                return Err(error);
+            };
+            match snapshot_with_retries(&content, 6) {
+                Ok((node, width, height)) => {
+                    eprintln!("[qa] 窗口自身拿不到画面，改拍内容子控件（{width}x{height}）");
+                    render_node(anchor, &node, width, height, path)
+                }
+                Err(_) => Err(error),
+            }
+        }
+    }
+}
+
+/// 重试 `attempts` 次取快照；每次之间让出 40ms 并继续跑主循环。
+fn snapshot_with_retries(
+    target: &impl IsA<gtk::Widget>,
+    attempts: u32,
+) -> Result<(gtk::gsk::RenderNode, i32, i32), String> {
+    let mut last_error = String::new();
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            let context = gtk::glib::MainContext::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(40);
+            while std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+        }
+        match snapshot_node(target) {
+            Ok(node) => {
+                if attempt > 0 {
+                    eprintln!("[qa] 截图重试 {attempt} 次后拿到画面");
+                }
+                return Ok(node);
+            }
+            Err(message) => last_error = message,
+        }
+    }
+    Err(last_error)
+}
+
+/// 取 `target` 当前的绘制节点与它的尺寸（拿不到内容时给出窗口状态，便于判断是「还没
+/// 渲染」还是「窗口根本没映射」）。
+fn snapshot_node(
+    target: &impl IsA<gtk::Widget>,
+) -> Result<(gtk::gsk::RenderNode, i32, i32), String> {
     let width = target.width();
     let height = target.height();
     if width <= 0 || height <= 0 {
         return Err(format!("目标控件尺寸无效：{width}x{height}"));
     }
-
-    let paintable = gtk::WidgetPaintable::new(Some(target));
+    let widget = target.clone().upcast::<gtk::Widget>();
+    let paintable = gtk::WidgetPaintable::new(Some(&widget));
     let snapshot = gtk::Snapshot::new();
     paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
-    let node = snapshot
-        .to_node()
-        .ok_or_else(|| "控件快照为空（界面尚未渲染）".to_owned())?;
+    let node = snapshot.to_node().ok_or_else(|| {
+        format!(
+            "控件快照为空（界面尚未渲染）：{width}x{height}，mapped={}，realized={}，\
+             visible={}，opacity={:.2}；子层：{}",
+            widget.is_mapped(),
+            widget.is_realized(),
+            widget.is_visible(),
+            widget.opacity(),
+            describe_children(&widget)
+        )
+    })?;
+    Ok((node, width, height))
+}
 
+/// 失败诊断：顺着前两层子控件看谁画不出节点、谁被分到 0 尺寸。
+fn describe_children(widget: &gtk::Widget) -> String {
+    fn walk(widget: &gtk::Widget, depth: u32, parts: &mut Vec<String>) {
+        if depth > 3 || parts.len() >= 16 {
+            return;
+        }
+        let mut child = widget.first_child();
+        let mut index = 0;
+        while let Some(current) = child {
+            if index < 3 && parts.len() < 16 {
+                let width = current.width().max(1);
+                let height = current.height().max(1);
+                let paintable = gtk::WidgetPaintable::new(Some(&current));
+                let snapshot = gtk::Snapshot::new();
+                paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
+                parts.push(format!(
+                    "{}#{} {} {}x{} node={} vis={} mapped={}",
+                    "  ".repeat(depth as usize),
+                    index,
+                    current.type_().name(),
+                    current.width(),
+                    current.height(),
+                    snapshot.to_node().is_some(),
+                    current.is_visible(),
+                    current.is_mapped()
+                ));
+                walk(&current, depth + 1, parts);
+            }
+            index += 1;
+            child = current.next_sibling();
+        }
+    }
+    let mut parts = Vec::new();
+    walk(widget, 0, &mut parts);
+    if parts.is_empty() {
+        "（没有子控件）".to_owned()
+    } else {
+        parts.join("；")
+    }
+}
+
+/// 用锚点窗口的 `GskRenderer` 把节点渲染成 PNG。
+fn render_node(
+    anchor: &(impl IsA<gtk::Widget> + IsA<gtk::Native>),
+    node: &gtk::gsk::RenderNode,
+    width: i32,
+    height: i32,
+    path: &std::path::Path,
+) -> Result<(), String> {
     let native = anchor
         .native()
         .ok_or_else(|| "锚点窗口还没有 GdkSurface".to_owned())?;
@@ -2421,7 +2535,7 @@ pub fn save_widget(
         .renderer()
         .ok_or_else(|| "锚点窗口还没有 GskRenderer".to_owned())?;
     let viewport = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
-    let texture = renderer.render_texture(&node, Some(&viewport));
+    let texture = renderer.render_texture(node, Some(&viewport));
     texture
         .save_to_png(path)
         .map_err(|error| format!("写入 {} 失败：{error}", path.display()))
