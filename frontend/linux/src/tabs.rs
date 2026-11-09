@@ -682,6 +682,9 @@ impl ObjectsPage {
             .vexpand(true)
             .child(&list)
             .build();
+        // 列表外框：与表数据网格共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
+        // （1px / currentColor 18% / 直角）。线挂在滚动容器上，行本身不加线。
+        scroll.add_css_class("sqarvo-table-frame");
 
         let empty = adw::StatusPage::new();
         empty.set_vexpand(true);

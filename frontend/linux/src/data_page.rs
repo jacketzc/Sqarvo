@@ -852,6 +852,13 @@ impl DataPage {
 
         let grid_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
         grid_page.set_vexpand(true);
+        // 网格外框：与 `Objects` 列表共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
+        // （1px / currentColor 18% / 直角）。左右各让 12：边框与侧栏、信息面板的
+        // 分栏线错开，不然同一根轴上会并出两条线；也让两块表格的框到页边的距离一致。
+        grid_page.add_css_class("sqarvo-table-frame");
+        grid_page.set_margin_start(12);
+        grid_page.set_margin_end(12);
+        grid_page.set_margin_bottom(6);
         grid_page.append(&type_scroll);
         grid_page.append(&scroll);
 
