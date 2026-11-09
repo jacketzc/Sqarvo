@@ -99,9 +99,10 @@ pub struct StartupWorkspace {
     shell: Rc<Shell>,
     /// 信息面板（启动态即常驻 280；没有选中对象时是同一份空态）。
     ///
-    /// 字段名带 `_`：面板控件的生命周期已由 GTK 树持有，这里保存 `Rc` 只是保证
-    /// Rust 侧的面板状态（`show_empty` 之后的页选择）与控件同寿，没有读取点。
-    _inspector: Rc<crate::inspector::Inspector>,
+    /// GTK 树持有控件本身；这里保存 `Rc` 是为了保证 Rust 侧的面板状态
+    /// （`show_empty` / `set_empty_text` 之后的页选择与文案）与控件同寿，
+    /// 并供 `inspector_empty_text()` 读取真实文案。
+    inspector: Rc<crate::inspector::Inspector>,
     /// 固定的 `Objects` 标签页（QA 读 `is_pinned()` 用）。
     objects_page: adw::TabPage,
     list: gtk::ListBox,
@@ -224,6 +225,11 @@ impl StartupWorkspace {
         // 信息面板在启动态即常驻（v0.2.3.2）：内容与连接态同一份空态，不是空盒子。
         let inspector = crate::inspector::Inspector::new();
         inspector.show_empty();
+        // 启动态左侧没有对象树：把同一份空态换成可执行的操作说明。
+        inspector.set_empty_text(
+            "没有选中对象",
+            "从左侧选择一个连接开始：双击一条已保存的连接即可连接。",
+        );
 
         let shell = Shell::new(ShellHandlers {
             sidebar: sidebar.upcast(),
@@ -257,7 +263,7 @@ impl StartupWorkspace {
         let workspace = Rc::new(Self {
             root: shell.widget().clone(),
             shell,
-            _inspector: inspector,
+            inspector,
             objects_page: page,
             list,
             count,
@@ -297,6 +303,12 @@ impl StartupWorkspace {
     #[must_use]
     pub(crate) fn objects_pinned(&self) -> bool {
         self.objects_page.is_pinned()
+    }
+
+    /// 启动态信息面板空态文案 `(标题, 说明)`（QA 断言用，读控件真实文本）。
+    #[must_use]
+    pub(crate) fn inspector_empty_text(&self) -> (String, String) {
+        self.inspector.empty_text()
     }
 
     /// 重填连接列表（配置变化后由调用方触发；不含任何密码）。
