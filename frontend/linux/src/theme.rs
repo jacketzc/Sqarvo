@@ -152,11 +152,10 @@ pub fn stylesheet() -> String {
            避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
         .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
 
-        /* 信息面板正文（[DDL] 与 [表信息] 两页**同一口径**，v0.2.3.3）：13px / Medium。
-           12px 会裁 CJK 笔画（与数据网格同一个坑），13px Regular 在 1x 屏幕上发虚；
-           分节标题同字号、靠字重分层（Semibold），不再用 10px 的 caption。 */
-        .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: 500; }}
-        .sqarvo-panel-heading {{ font-size: {panel_font}px; font-weight: 600; }}
+        /* 信息面板正文（[DDL] 与 [表信息] 两页**同一口径**）：10px、不加粗。面板是
+           次要信息，视觉重心在数据网格——字号和字重都不许跟表格抢注意力。分层只靠
+           颜色（标签 dim）与分节间距，不再用 Medium / Semibold。 */
+        .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: 400; }}
 
         /* 信息面板的 [DDL] / [表信息]（v0.2.3.3）：两个独立 toggle，选中态是贴着
            文字的**小圆角块，四个角都圆**。不用 `.linked` 分段容器：分段样式只圆外侧
@@ -275,23 +274,17 @@ mod tests {
 
     #[test]
     fn panel_text_is_one_metric() {
-        // 用户要求：DDL 正文与「表信息」内容的字体 / 字号 / 格式一致，且不再与数据网格
-        // 共用口径。两页读同一个类、同一个常量，网格改字号时面板不会跟着跳。
+        // 用户要求：DDL 正文与「表信息」内容的字体 / 字号 / 格式一致，不加粗、10px——
+        // 视觉重心在数据网格，面板文字不许抢注意力。
         let css = stylesheet();
         let text = format!(
-            ".sqarvo-panel-text {{ font-size: {}px; font-weight: 500; }}",
+            ".sqarvo-panel-text {{ font-size: {}px; font-weight: 400; }}",
             layout::FONT_PANEL
         );
         assert!(css.contains(&text), "面板正文类缺失：{css}");
-        let heading = format!(
-            ".sqarvo-panel-heading {{ font-size: {}px; font-weight: 600; }}",
-            layout::FONT_PANEL
-        );
-        assert!(
-            css.contains(&heading),
-            "面板分节标题必须与正文同字号：{css}"
-        );
-        // 网格的类还在（那是它自己的口径），面板不能再用它。
+        assert_eq!(layout::FONT_PANEL, 10, "面板正文是 10px 档");
+        // 面板里不能再出现更大 / 更粗的正文类，也不再用数据网格的类。
+        assert!(!css.contains(".sqarvo-panel-heading"));
         assert!(
             !css.contains(".sqarvo-ddl-text"),
             "面板不应再挂数据网格的类"

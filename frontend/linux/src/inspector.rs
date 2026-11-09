@@ -360,6 +360,13 @@ struct TableInfo {
     children_error: Option<String>,
 }
 
+/// `[DDL] / [表信息]` 切换条的水平内缩。
+///
+/// 面板正文的左边距是 10，而按钮自身有 8px 横向内边距（CSS `.sqarvo-pane-switch >
+/// button { padding: 0 8px }`）——容器留在 10 会让标签文字比标题右缩 8px，看着不对齐。
+/// 留 10 − 8 = 2：标签文字与面板标题、DDL 正文落在同一条竖线上，选中块向左探出 8px。
+const PANE_SWITCH_INSET: i32 = 2;
+
 impl Inspector {
     /// 构建面板。
     ///
@@ -402,8 +409,11 @@ impl Inspector {
         // `[DDL] / [表信息]`：面板内切换，只在表 / 视图页出现。
         //
         // 两个 toggle 是**独立**按钮（不用 `.linked` 分段容器）：分段样式只圆外侧两个
-        // 角、选中块比文字大一圈；这里要的是贴着文字的小圆角块，四个角都圆。间距与
-        // 上方横线的留白由 `switch_bar` 负责（横线 → 6px → 切换条 → 6px → 正文）。
+        // 角、选中块比文字大一圈；这里要的是贴着文字的小圆角块，四个角都圆。
+        //
+        // 水平起点按「文字列」对齐：按钮自身有 8px 横向内边距，所以容器左侧只留
+        // 10 - 8 = 2px —— 选中块的文字与面板标题、DDL 正文落在同一条竖线上，块本身
+        // 向左边距里探出 8px。留 10px 会让「DDL」比上方标题右缩一格，看着不对齐。
         let ddl_toggle = gtk::ToggleButton::with_label("DDL");
         ddl_toggle.add_css_class("flat");
         ddl_toggle.set_tooltip_text(Some("显示该对象的 DDL"));
@@ -415,7 +425,7 @@ impl Inspector {
         let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         switch_bar.add_css_class("sqarvo-pane-switch");
         switch_bar.set_margin_top(6);
-        switch_bar.set_margin_start(10);
+        switch_bar.set_margin_start(PANE_SWITCH_INSET);
         switch_bar.set_margin_end(10);
         switch_bar.set_margin_bottom(6);
         switch_bar.append(&ddl_toggle);
@@ -1054,7 +1064,7 @@ impl Inspector {
                     heading.set_xalign(0.0);
                     heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     heading.add_css_class("sqarvo-inspector-column-name");
-                    heading.add_css_class("sqarvo-panel-heading");
+                    heading.add_css_class("sqarvo-panel-text");
                     heading.set_tooltip_text(Some(&column.name));
                     card.append(&heading);
                     for (label, value) in [
@@ -1224,7 +1234,7 @@ fn section(title: &str) -> gtk::Box {
     box_.set_hexpand(true);
     let label = gtk::Label::new(Some(title));
     label.set_xalign(0.0);
-    label.add_css_class("sqarvo-panel-heading");
+    label.add_css_class("sqarvo-panel-text");
     box_.append(&label);
     box_
 }

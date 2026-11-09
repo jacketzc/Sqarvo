@@ -93,11 +93,10 @@ pub const FONT_DATA_CELL: i32 = 13;
 
 /// 信息面板正文（DDL 与「表信息」两页）字号。
 ///
-/// 与 `FONT_DATA_CELL` **解耦**（v0.2.3.3）：面板正文曾经跟数据网格共用口径，但两处
-/// 阅读场景不同——网格改字号时面板不该跟着跳。取值仍是 13px，因为 12px 会裁掉 CJK
-/// 笔画（同 `FONT_DATA_CELL` 的结论），13px Regular 在 1x 屏幕上又发虚，正文统一
-/// Medium（500）、分节标题 Semibold（600）。
-pub const FONT_PANEL: i32 = 13;
+/// 与 `FONT_DATA_CELL` **解耦**：面板是次要信息，视觉重心在数据网格，所以正文比网格
+/// 小得多（10px），字重也不加粗（400）——面板不该和表格抢注意力。12px 会裁 CJK 笔画
+/// 的问题只约束**网格单元格**；面板沿用 `caption` 档（10px）的既有密度。
+pub const FONT_PANEL: i32 = 10;
 
 /// 可焦点控件的最小点击区（§11：紧凑化不得小于它）。
 pub const MIN_TARGET: i32 = 24;
@@ -265,8 +264,8 @@ mod tests {
         // 12px 会裁掉部分 CJK 底横（用户反馈 demo_users 的「三 / 五」缺笔画）。
         const { assert!(FONT_DATA_CELL >= 13) };
         const { assert!(FONT_DATA_CELL > FONT_UI) };
-        // 面板正文同样是 13px 起：12px 会裁 CJK 笔画（与网格同一个坑，不同口径）。
-        const { assert!(FONT_PANEL >= 13) };
+        // 面板正文比界面字号更小：它是次要信息，视觉重心在数据网格。
+        const { assert!(FONT_PANEL <= FONT_UI) };
     }
 
     #[test]

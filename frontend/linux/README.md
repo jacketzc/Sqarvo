@@ -38,7 +38,7 @@ MariaDB 是主机/端口/库/用户/TLS/密码，SQLite 是数据库文件路径
 双击 / 回车才激活（表 / 视图 = 打开数据标签，连接 = 按保存的凭据连接，库 / 分组 = 展开收起）；
 表展开后先出四组，展开某组才发那一次 `ListNodes(filter.kinds)`，`Foreign Keys` 没有驱动
 实现、展开只显示「驱动未提供外键列表（capability.unsupported）」。DDL 在信息面板的
-`[DDL]` 页查看：正文与「表信息」页同一口径（13px / Medium），长语句横向滚动；只有
+`[DDL]` 页查看：正文与「表信息」页同一口径（10px、不加粗），长语句横向滚动；只有
 `exact = false`（客户端拼装）时正文上方才出现一行琥珀警示。v0.2.3.3 起不再显示来源
 徽标、来源说明行与「复制」按钮，复制用选中 + `Ctrl+C`；
 侧栏平铺表列表、页脚「DDL」按钮与右键「查看 DDL」在 v0.2.3.2 一并删除。
@@ -490,8 +490,8 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
   `metadata.object_kind_unsupported` 与 `capability.unsupported` 分开显示；
   **不折行**：DDL 是代码，窄面板里折行会把一条语句断成两条，改为横向滚动并让滚动条
   常驻（`overlay-scrolling = false`）；字号 / 字重与「表信息」页同一个类
-  （`.sqarvo-panel-text`，`layout::FONT_PANEL` = 13px / Medium；分节标题同字号
-  Semibold），不再跟数据网格绑定，复制用
+  （`.sqarvo-panel-text`，`layout::FONT_PANEL` = 10px / 400）：面板是次要信息，
+  视觉重心在数据网格，正文比网格小、也不加粗；分节靠间距与颜色分层，复制用
   选中 + `Ctrl+C`；
 - **线程**：树的每个展开、搜索、`GetDdl` 都发到独立的元数据线程（`MetadataHub` 按请求
   ID 路由回主线程），主线程只更新控件。
