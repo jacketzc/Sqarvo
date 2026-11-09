@@ -233,11 +233,15 @@ pub enum KindGroup {
     Tables,
     /// 视图（含物化视图）。
     Views,
+    /// 函数 / 过程（后端还没有该种类的列表能力，v0.2.3.3 只画入口）。
+    Functions,
+    /// 已保存的查询（本版没有这一层，v0.2.3.3 只画入口）。
+    Queries,
 }
 
 impl KindGroup {
-    /// 分组的固定顺序。
-    pub const ALL: [Self; 2] = [Self::Tables, Self::Views];
+    /// 分组的固定顺序（分组名是英文，与 `Tables` / `Views` 同一套写法）。
+    pub const ALL: [Self; 4] = [Self::Tables, Self::Views, Self::Functions, Self::Queries];
 
     /// 分组名（与 workspace-model §4 的写法逐字一致；也是 QA 里的节点名）。
     #[must_use]
@@ -245,15 +249,21 @@ impl KindGroup {
         match self {
             Self::Tables => "Tables",
             Self::Views => "Views",
+            Self::Functions => "Functions",
+            Self::Queries => "Queries",
         }
     }
 
-    /// 该分组拉取时用的 `filter.kinds`。
+    /// 该分组拉取时用的 `filter.kinds`；`None` = 后端还没有这个能力。
+    ///
+    /// `Functions` / `Queries` 只是**入口**（v0.2.3.3 先做 UI）：契约里没有对应
+    /// 种类的列表拉取，展开时如实写一行说明，不发请求、不摆假数据（§9）。
     #[must_use]
-    pub fn kinds(self) -> Vec<ObjectKind> {
+    pub fn kinds(self) -> Option<Vec<ObjectKind>> {
         match self {
-            Self::Tables => vec![ObjectKind::Table],
-            Self::Views => vec![ObjectKind::View, ObjectKind::MaterializedView],
+            Self::Tables => Some(vec![ObjectKind::Table]),
+            Self::Views => Some(vec![ObjectKind::View, ObjectKind::MaterializedView]),
+            Self::Functions | Self::Queries => None,
         }
     }
 
@@ -263,15 +273,18 @@ impl KindGroup {
         match self {
             Self::Tables => kind == ObjectKind::Table,
             Self::Views => matches!(kind, ObjectKind::View | ObjectKind::MaterializedView),
+            Self::Functions | Self::Queries => false,
         }
     }
 
-    /// 分组行的图标。
+    /// 分组行的图标（与 `kind_icon` 的表 / 视图保持一致）。
     #[must_use]
     pub fn icon(self) -> &'static str {
         match self {
             Self::Tables => "view-grid-symbolic",
             Self::Views => "view-reveal-symbolic",
+            Self::Functions => "system-run-symbolic",
+            Self::Queries => "text-x-generic-symbolic",
         }
     }
 
@@ -281,6 +294,18 @@ impl KindGroup {
         match self {
             Self::Tables => "（这一组没有表）",
             Self::Views => "（这一组没有视图）",
+            Self::Functions => "（这一组没有函数）",
+            Self::Queries => "（还没有保存的查询）",
+        }
+    }
+
+    /// 后端还没有这个能力时的说明行文案；有列表能力的组返回 `None`。
+    #[must_use]
+    pub fn unsupported_note(self) -> Option<&'static str> {
+        match self {
+            Self::Functions => Some("函数列表尚未实现（点开看说明，不发请求）"),
+            Self::Queries => Some("已保存的查询尚未实现（点开看说明）"),
+            Self::Tables | Self::Views => None,
         }
     }
 }
@@ -400,7 +425,7 @@ impl RowGroup {
     #[must_use]
     pub fn kinds(self) -> Option<Vec<ObjectKind>> {
         match self {
-            Self::Catalog(group) => Some(group.kinds()),
+            Self::Catalog(group) => group.kinds(),
             Self::Table(group) => group.kinds(),
         }
     }
@@ -418,7 +443,7 @@ impl RowGroup {
     #[must_use]
     pub fn unsupported_note(self) -> Option<&'static str> {
         match self {
-            Self::Catalog(_) => None,
+            Self::Catalog(group) => group.unsupported_note(),
             Self::Table(group) => group.unsupported_note(),
         }
     }
@@ -1391,7 +1416,8 @@ impl TreePanel {
         }
     }
 
-    /// QA：把某个库的两个分组行一并展开（每组各自发一次 `filter.kinds` 请求）。
+    /// QA：把某个库的分组行一并展开（有列表能力的分组各发一次 `filter.kinds` 请求；
+    /// `Functions` / `Queries` 只写说明行，不发请求）。
     ///
     /// **只走 QA 路径**：用户双击库只展开库本身，分组保持收起（v0.2.3.3）——这里是把
     /// 「再点两下分组」自动化，不是产品行为。分组行是展开 catalog 时同步追加进子模型的，
@@ -1422,7 +1448,7 @@ impl TreePanel {
             }
             if opened > 0 {
                 eprintln!(
-                    "[tree] t=+{}ms（QA）{} 的两个分组一并展开（每组 1 次 ListNodes）",
+                    "[tree] t=+{}ms（QA）{} 的分组一并展开（有列表能力的每组 1 次 ListNodes）",
                     crate::qa::elapsed_ms(),
                     parent.catalog
                 );
@@ -1644,6 +1670,7 @@ impl TreePanel {
             match group {
                 RowGroup::Catalog(KindGroup::Tables) => tables = Some(loaded),
                 RowGroup::Catalog(KindGroup::Views) => views = Some(loaded),
+                RowGroup::Catalog(KindGroup::Functions | KindGroup::Queries) => continue,
                 RowGroup::Table(_) => continue,
             }
             complete &= done;
@@ -2204,7 +2231,7 @@ impl TreePanel {
                 }
                 level.exhausted.set(true);
                 eprintln!(
-                    "[tree] t=+{}ms 展开 {}：建立 {} 个分组（Tables / Views，保持收起）",
+                    "[tree] t=+{}ms 展开 {}：建立 {} 个分组（Tables / Views / Functions / Queries，保持收起）",
                     crate::qa::elapsed_ms(),
                     level.label,
                     KindGroup::ALL.len()
@@ -2226,6 +2253,16 @@ impl TreePanel {
                     level.label,
                     TableGroup::ALL.len()
                 );
+            }
+            LevelSource::Group { group, .. } if group.kinds().is_none() => {
+                // 没有列表能力的分组（`Functions` / `Queries` / `Foreign Keys`）：
+                // 展开只写一行说明，不发请求——日志也不能说「发送 ListNodes」。
+                eprintln!(
+                    "[tree] t=+{}ms 展开 {}（该分组没有列表能力，不发 ListNodes）",
+                    crate::qa::elapsed_ms(),
+                    level.label
+                );
+                self.load_page(level_id, String::new());
             }
             _ => {
                 crate::qa::note_list_nodes();
@@ -2342,7 +2379,9 @@ impl TreePanel {
             LevelSource::Group { parent, group, .. } => {
                 let Some(kinds) = group.kinds() else {
                     // 驱动没有这个能力：不发 RPC，也不摆一个「空」的样子——
-                    // 用一行说明写清楚「未提供」，并且不参与分页。
+                    // 用一行说明写清楚「未提供」，并且不参与分页。先把刚放上去的
+                    // 「读取中…」占位行收掉，否则它会永远留在说明行上面。
+                    self.remove_trailing_notes(&level);
                     let note = group
                         .unsupported_note()
                         .unwrap_or("该分组当前不可用（驱动未提供）：不发请求，也不显示假数据");
@@ -3085,7 +3124,7 @@ impl TreePanel {
             }
             if view.expandable() && !row.is_expanded() {
                 row.set_expanded(true);
-                // QA 便捷：库节点连同它的两个分组一起展开（把「用户再点两下分组」
+                // QA 便捷：库节点连同它的分组行一起展开（把「用户再点几下分组」
                 // 自动化；产品行为是分组保持收起）。表的二级分组不处理：QA 只用了
                 // 打开 / 选中，不依赖 Fields/Indexes 展开。
                 if let Some(node) = view.node()
@@ -3733,13 +3772,22 @@ mod tests {
 
     #[test]
     fn group_kinds_follow_workspace_model() {
-        // 分组顺序固定 Tables → Views；Functions / Queries 在 v0.2.3 不出现。
-        assert_eq!(KindGroup::ALL.map(KindGroup::label), ["Tables", "Views"]);
-        assert_eq!(KindGroup::Tables.kinds(), vec![ObjectKind::Table]);
+        // 顺序固定 Tables → Views → Functions → Queries（v0.2.3.3 补齐后两个入口）。
+        assert_eq!(
+            KindGroup::ALL.map(KindGroup::label),
+            ["Tables", "Views", "Functions", "Queries"]
+        );
+        assert_eq!(KindGroup::Tables.kinds(), Some(vec![ObjectKind::Table]));
         assert_eq!(
             KindGroup::Views.kinds(),
-            vec![ObjectKind::View, ObjectKind::MaterializedView]
+            Some(vec![ObjectKind::View, ObjectKind::MaterializedView])
         );
+        // Functions / Queries 只有入口：没有列表能力，展开时是「尚未实现」的说明行。
+        for group in [KindGroup::Functions, KindGroup::Queries] {
+            assert!(group.kinds().is_none(), "{group:?}");
+            assert!(group.unsupported_note().is_some(), "{group:?}");
+            assert!(!group.accepts(ObjectKind::Table), "{group:?}");
+        }
         assert!(KindGroup::Tables.accepts(ObjectKind::Table));
         assert!(!KindGroup::Tables.accepts(ObjectKind::View));
         assert!(KindGroup::Views.accepts(ObjectKind::MaterializedView));

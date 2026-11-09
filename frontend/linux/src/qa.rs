@@ -53,7 +53,8 @@
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
 //!   不符时退出码 3；
 //! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开；对**库**
-//!   节点会连它的 `Tables` / `Views` 两个分组一起展开——把「用户再点两下」自动化，
+//!   节点会连它的四个分组行一起展开（`Functions` / `Queries` 只出说明行）——把
+//!   「用户再点几下」自动化，
 //!   产品行为是双击库只展开库本身、分组保持收起，v0.2.3.3）、
 //!   `--qa-tree-open <name>`（打开表）、
 //!   `--qa-tree-activate <name>`（走双击 / 回车的 `activate` 信号激活节点，v0.2.3.2 回归）、
@@ -2189,15 +2190,22 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 index += 2;
             }
             "--qa-tree-select-group" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--qa-tree-select-group 需要 tables|views".to_owned())?;
+                let value = args.get(index + 1).ok_or_else(|| {
+                    "--qa-tree-select-group 需要 tables|views|functions|queries".to_owned()
+                })?;
                 if !matches!(
                     value.to_ascii_lowercase().as_str(),
-                    "tables" | "table" | "views" | "view"
+                    "tables"
+                        | "table"
+                        | "views"
+                        | "view"
+                        | "functions"
+                        | "function"
+                        | "queries"
+                        | "query"
                 ) {
                     return Err(format!(
-                        "--qa-tree-select-group 只接受 tables|views，实际：{value}"
+                        "--qa-tree-select-group 只接受 tables|views|functions|queries，实际：{value}"
                     ));
                 }
                 parsed.tree_select_group = Some(value.clone());

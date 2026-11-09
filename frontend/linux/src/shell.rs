@@ -596,22 +596,22 @@ impl Toolbar {
                 button
             };
         let table = kind(
-            "表",
+            "Tables",
             crate::tabs::KindShortcut::Tables,
-            "在 Objects 页列出当前库的表（等同在对象树里选中该库）",
+            "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）",
         );
         let view = kind(
-            "视图",
+            "Views",
             crate::tabs::KindShortcut::Views,
             "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）",
         );
         let function = kind(
-            "函数",
+            "Functions",
             crate::tabs::KindShortcut::Functions,
             "函数列表：驱动尚未提供（点开看说明）",
         );
         let query = kind(
-            "查询",
+            "Queries",
             crate::tabs::KindShortcut::Queries,
             "已保存的查询：尚未实现（点开看说明）",
         );

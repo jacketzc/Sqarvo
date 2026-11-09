@@ -410,7 +410,8 @@ pub enum KindShortcut {
 }
 
 impl KindShortcut {
-    /// 打开 `Objects` 页时要列出的种类；函数 / 查询没有可用的拉取能力，返回 `None`。
+    /// 打开 `Objects` 页时要列出的种类；`Functions` / `Queries` 还没有可用的拉取能力，
+    /// 返回 `None`（页面如实说明，不摆假数据）。
     #[must_use]
     pub fn kinds(self) -> Option<Vec<ObjectKind>> {
         match self {
@@ -450,10 +451,10 @@ impl KindShortcut {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Tables => "表",
-            Self::Views => "视图",
-            Self::Functions => "函数",
-            Self::Queries => "查询",
+            Self::Tables => "Tables",
+            Self::Views => "Views",
+            Self::Functions => "Functions",
+            Self::Queries => "Queries",
         }
     }
 
@@ -467,6 +468,24 @@ impl KindShortcut {
             "queries" | "query" => Some(Self::Queries),
             _ => None,
         }
+    }
+}
+
+/// `Functions` / `Queries` 的如实说明文案（树分组与工具条入口共用，避免两处文案漂移）。
+///
+/// 有列表能力的入口返回 `None`——它们不该走到「尚未实现」这条路径上。
+#[must_use]
+pub fn unavailable_copy(shortcut: KindShortcut) -> Option<(&'static str, &'static str)> {
+    match shortcut {
+        KindShortcut::Functions => Some((
+            "函数列表尚未实现",
+            "驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。",
+        )),
+        KindShortcut::Queries => Some((
+            "已保存的查询尚未实现",
+            "本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。",
+        )),
+        KindShortcut::Tables | KindShortcut::Views => None,
     }
 }
 
@@ -1448,6 +1467,14 @@ impl TabSet {
     }
 
     /// `Objects` 页显示「这一类暂时没有」的如实说明（函数 / 查询）。
+    /// 该入口没有列表能力时的如实说明页（树里选中分组与工具条入口共用一套文案）。
+    pub fn show_objects_unavailable_for(&self, shortcut: KindShortcut) {
+        let Some((title, description)) = unavailable_copy(shortcut) else {
+            return;
+        };
+        self.show_objects_unavailable(shortcut, title, description);
+    }
+
     pub fn show_objects_unavailable(&self, shortcut: KindShortcut, title: &str, description: &str) {
         if let Some(objects) = self.objects.borrow().clone() {
             objects.show_unavailable(shortcut, title, description);
@@ -3344,7 +3371,7 @@ pub enum QaStep {
     Sessions(String),
     // ---- #121 验收链（全部走既有用户路径） ----
     /// `expand <名字>`：展开树节点（catalog 展开后才会有 Tables/Views 分组；库节点连它
-    /// 的两个分组一起展开——QA 便捷，产品行为是分组保持收起）。
+    /// 的分组行一起展开——QA 便捷，产品行为是分组保持收起）。
     Expand(String),
     /// `select-node <名字>`：选中树节点（信息面板随之切换）。
     SelectNode(String),

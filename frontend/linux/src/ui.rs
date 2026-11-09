@@ -1013,7 +1013,17 @@ fn restart_software(state: &Rc<UiState>) {
 ///
 /// v0.2.3.3 起不再产出页内文案：标题与列表之间那一行说明已删除（用户要求），
 /// 作用域只由列表内容表达。
-fn objects_scope(selection: &TreeSelection) -> Option<(ObjectRef, Vec<ObjectKind>)> {
+/// 树选中在 `Objects` 页上落成什么。
+enum ObjectsTarget {
+    /// 能列出来：库引用 + 要列的种类。
+    List(ObjectRef, Vec<ObjectKind>),
+    /// 有入口、没有列表能力（`Functions` / `Queries`）：如实说明，不摆假数据。
+    Unavailable(crate::tabs::KindShortcut),
+    /// 没有作用域（连接、占位行）：空态。
+    Empty,
+}
+
+fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
     fn catalog_of(reference: &ObjectRef) -> ObjectRef {
         let mut catalog = reference.clone();
         catalog.kind = ObjectKind::Catalog as i32;
@@ -1024,18 +1034,27 @@ fn objects_scope(selection: &TreeSelection) -> Option<(ObjectRef, Vec<ObjectKind
     let views = vec![ObjectKind::View, ObjectKind::MaterializedView];
     match selection {
         TreeSelection::Object { node, .. } => match node.kind {
-            ObjectKind::Catalog | ObjectKind::Schema => Some((node.reference.clone(), tables)),
-            ObjectKind::View | ObjectKind::MaterializedView => {
-                Some((catalog_of(&node.reference), views))
+            ObjectKind::Catalog | ObjectKind::Schema => {
+                ObjectsTarget::List(node.reference.clone(), tables)
             }
-            _ => Some((catalog_of(&node.reference), tables)),
+            ObjectKind::View | ObjectKind::MaterializedView => {
+                ObjectsTarget::List(catalog_of(&node.reference), views)
+            }
+            _ => ObjectsTarget::List(catalog_of(&node.reference), tables),
         },
         TreeSelection::Group { group, parent } => match group {
-            RowGroup::Catalog(KindGroup::Views) => Some((parent.clone(), views)),
-            RowGroup::Catalog(KindGroup::Tables) => Some((parent.clone(), tables)),
-            RowGroup::Table(_) => Some((catalog_of(parent), tables)),
+            RowGroup::Catalog(KindGroup::Views) => ObjectsTarget::List(parent.clone(), views),
+            RowGroup::Catalog(KindGroup::Tables) => ObjectsTarget::List(parent.clone(), tables),
+            // 入口已画出、列表能力还没有：页内如实说明（与工具条入口同一套文案）。
+            RowGroup::Catalog(KindGroup::Functions) => {
+                ObjectsTarget::Unavailable(crate::tabs::KindShortcut::Functions)
+            }
+            RowGroup::Catalog(KindGroup::Queries) => {
+                ObjectsTarget::Unavailable(crate::tabs::KindShortcut::Queries)
+            }
+            RowGroup::Table(_) => ObjectsTarget::List(catalog_of(parent), tables),
         },
-        TreeSelection::Connection(_) | TreeSelection::None => None,
+        TreeSelection::Connection(_) | TreeSelection::None => ObjectsTarget::Empty,
     }
 }
 
@@ -1601,17 +1620,7 @@ fn show_objects_for_kind(
             }
         }
         None => {
-            let (title, description) = match shortcut {
-                crate::tabs::KindShortcut::Functions => (
-                    "函数列表尚未实现",
-                    "驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。",
-                ),
-                _ => (
-                    "已保存的查询尚未实现",
-                    "本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。",
-                ),
-            };
-            tabs.show_objects_unavailable(shortcut, title, description);
+            tabs.show_objects_unavailable_for(shortcut);
             tabs.show_objects_page();
             tabs.refresh_current();
             eprintln!(
@@ -1739,9 +1748,14 @@ impl Workspace {
                     // Objects 固定页与树选中联动：选中库 / Tables / Views 及其下级时
                     // 列出该库对应的表或视图；选连接或占位行时回到空态。
                     if let Some(tabs) = tabs_slot.borrow().as_ref() {
-                        match objects_scope(&selection) {
-                            Some((parent, kinds)) => tabs.show_objects(Some(parent), &kinds),
-                            None => tabs.show_objects(None, &[]),
+                        match objects_target(&selection) {
+                            ObjectsTarget::List(parent, kinds) => {
+                                tabs.show_objects(Some(parent), &kinds);
+                            }
+                            ObjectsTarget::Unavailable(shortcut) => {
+                                tabs.show_objects_unavailable_for(shortcut);
+                            }
+                            ObjectsTarget::Empty => tabs.show_objects(None, &[]),
                         }
                     }
                     match selection {
@@ -2121,7 +2135,7 @@ impl Workspace {
             self.shell.toolbar().left_group().clone().upcast(),
         ));
         targets.push(Target::row(
-            "主工具条 种类入口(表·视图·函数·查询)",
+            "主工具条 种类入口(Tables·Views·Functions·Queries)",
             self.shell.toolbar().kinds_group().clone().upcast(),
         ));
         targets.push(Target::row("侧栏", self.shell.sidebar().clone()));
@@ -2330,10 +2344,11 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
     if let Some(value) = crate::qa::tree_select_group() {
         let tree = Rc::clone(&workspace.tree);
         let shell = Rc::clone(&workspace.shell);
-        let group = if value.to_ascii_lowercase().starts_with("view") {
-            crate::tree::KindGroup::Views
-        } else {
-            crate::tree::KindGroup::Tables
+        let group = match value.to_ascii_lowercase().as_str() {
+            "views" | "view" => crate::tree::KindGroup::Views,
+            "functions" | "function" => crate::tree::KindGroup::Functions,
+            "queries" | "query" => crate::tree::KindGroup::Queries,
+            _ => crate::tree::KindGroup::Tables,
         };
         schedule_step(
             delay,
@@ -4264,13 +4279,15 @@ mod tests {
     }
 
     #[test]
-    fn objects_scope_follows_the_selected_node_kind() {
+    fn objects_target_follows_the_selected_node_kind() {
         // 选中库 → 该库的表（页内不再有文案行，作用域只由列表内容表达）。
         let selection = TreeSelection::Object {
             node: Box::new(node("sqarvo_demo", ObjectKind::Catalog, "sqarvo_demo")),
             parent: None,
         };
-        let (parent, kinds) = objects_scope(&selection).expect("库应给出作用域");
+        let ObjectsTarget::List(parent, kinds) = objects_target(&selection) else {
+            panic!("库应给出列表作用域");
+        };
         assert_eq!(parent.catalog, "sqarvo_demo");
         assert_eq!(kinds, vec![ObjectKind::Table]);
 
@@ -4279,7 +4296,9 @@ mod tests {
             node: Box::new(node("v_orders", ObjectKind::View, "sqarvo_demo")),
             parent: None,
         };
-        let (_, kinds) = objects_scope(&selection).expect("视图应给出作用域");
+        let ObjectsTarget::List(_, kinds) = objects_target(&selection) else {
+            panic!("视图应给出列表作用域");
+        };
         assert_eq!(kinds, vec![ObjectKind::View, ObjectKind::MaterializedView]);
 
         // 选中表 / 列 / 索引 / 触发器 → 该表所在的库，列的是表。
@@ -4293,7 +4312,9 @@ mod tests {
                 node: Box::new(node("orders", kind, "sqarvo_demo")),
                 parent: None,
             };
-            let (parent, kinds) = objects_scope(&selection).expect("对象应给出作用域");
+            let ObjectsTarget::List(parent, kinds) = objects_target(&selection) else {
+                panic!("对象应给出列表作用域");
+            };
             // 合成的 catalog 引用：kind = Catalog、name = catalog（驱动按它解析库）。
             assert_eq!(parent.kind, ObjectKind::Catalog as i32);
             assert_eq!(parent.name, "sqarvo_demo");
@@ -4302,24 +4323,41 @@ mod tests {
     }
 
     #[test]
-    fn objects_scope_handles_group_rows_and_empty_selection() {
+    fn objects_target_handles_group_rows_and_empty_selection() {
         let catalog = node("sqarvo_demo", ObjectKind::Catalog, "sqarvo_demo");
         let tables = TreeSelection::Group {
             group: RowGroup::Catalog(KindGroup::Tables),
             parent: catalog.reference.clone(),
         };
-        assert_eq!(
-            objects_scope(&tables).expect("Tables 组应有作用域").1,
-            vec![ObjectKind::Table]
-        );
+        let ObjectsTarget::List(_, kinds) = objects_target(&tables) else {
+            panic!("Tables 组应给出列表作用域");
+        };
+        assert_eq!(kinds, vec![ObjectKind::Table]);
+
         let views = TreeSelection::Group {
             group: RowGroup::Catalog(KindGroup::Views),
             parent: catalog.reference.clone(),
         };
-        assert_eq!(
-            objects_scope(&views).expect("Views 组应有作用域").1,
-            vec![ObjectKind::View, ObjectKind::MaterializedView]
-        );
+        let ObjectsTarget::List(_, kinds) = objects_target(&views) else {
+            panic!("Views 组应给出列表作用域");
+        };
+        assert_eq!(kinds, vec![ObjectKind::View, ObjectKind::MaterializedView]);
+
+        // Functions / Queries 只有入口：页内如实说明（不列假数据）。
+        for (group, expected) in [
+            (KindGroup::Functions, crate::tabs::KindShortcut::Functions),
+            (KindGroup::Queries, crate::tabs::KindShortcut::Queries),
+        ] {
+            let selection = TreeSelection::Group {
+                group: RowGroup::Catalog(group),
+                parent: catalog.reference.clone(),
+            };
+            let ObjectsTarget::Unavailable(shortcut) = objects_target(&selection) else {
+                panic!("{group:?} 组应落到「尚未实现」说明页");
+            };
+            assert_eq!(shortcut, expected);
+        }
+
         // 表下的二级分组（Fields / Indexes / Foreign Keys / Triggers）→ 该表所在库的表。
         let table = node("orders", ObjectKind::Table, "sqarvo_demo");
         for group in crate::tree::TableGroup::ALL {
@@ -4327,12 +4365,18 @@ mod tests {
                 group: RowGroup::Table(group),
                 parent: table.reference.clone(),
             };
-            let (parent, kinds) = objects_scope(&selection).expect("表分组应有作用域");
+            let ObjectsTarget::List(parent, kinds) = objects_target(&selection) else {
+                panic!("表分组应给出列表作用域");
+            };
             assert_eq!(parent.kind, ObjectKind::Catalog as i32);
             assert_eq!(parent.name, "sqarvo_demo");
             assert_eq!(kinds, vec![ObjectKind::Table]);
         }
+
         // 连接与占位行没有作用域：Objects 页回到空态。
-        assert!(objects_scope(&TreeSelection::None).is_none());
+        assert!(matches!(
+            objects_target(&TreeSelection::None),
+            ObjectsTarget::Empty
+        ));
     }
 }

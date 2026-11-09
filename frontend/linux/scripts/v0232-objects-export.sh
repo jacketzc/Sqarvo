@@ -74,7 +74,7 @@
 # 用法：
 #   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
 #   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
-#                                                          # 只跑 Objects 段（A0–A8）
+#                                                          # 只跑 Objects 段（A0–A9）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -349,11 +349,11 @@ launch tree-catalog io.sqarvo.Sqarvo.QA024TreeCatalog \
     --screenshot "$OUT/tree-catalog/00-catalog-collapsed.png" \
     --screenshot-delay-ms 6000 \
     --qa-exit-after-ms 8000
-check_contains "tree-catalog 双击库建立了两个分组行（保持收起）" \
-    '建立 2 个分组（Tables / Views，保持收起）' "$CASE_LOG"
+check_contains "tree-catalog 双击库建立了四个分组行（保持收起）" \
+    '建立 4 个分组（Tables / Views / Functions / Queries，保持收起）' "$CASE_LOG"
 check_absent "tree-catalog 没有自动展开分组" '分组一并展开' "$CASE_LOG"
 check_absent "tree-catalog 没有拉取分组" '分组 Tables 拉取第 1 页' "$CASE_LOG"
-check_screenshot "tree-catalog 截图（Tables / Views 收起）" \
+check_screenshot "tree-catalog 截图（四个分组收起）" \
     "$OUT/tree-catalog/00-catalog-collapsed.png"
 
 # A1：选中库 → 列出该库的表（v0.2.3.3 起页内不再有「<库> · 表」说明行）。
@@ -476,7 +476,7 @@ launch kind-tables io.sqarvo.Sqarvo.QA024KindTables \
     --screenshot "$OUT/kind-tables/05-toolbar-tables.png" \
     --screenshot-delay-ms 6000 \
     --qa-exit-after-ms 8000
-check_contains "kind-tables 点了种类入口「表」" '[toolbar] 种类入口「表」' "$CASE_LOG"
+check_contains "kind-tables 点了种类入口 Tables" '[toolbar] 种类入口「Tables」' "$CASE_LOG"
 check_contains "kind-tables 树里高亮的是 Tables 分组" '选中分组：Tables（main）' "$CASE_LOG"
 check_contains "kind-tables Objects 页列出表" 'Objects first=probe_items' "$CASE_LOG"
 check_screenshot "kind-tables 截图（工具条 → 表列表）" \
@@ -488,7 +488,7 @@ launch kind-functions io.sqarvo.Sqarvo.QA024KindFunctions \
     --screenshot-delay-ms 5000 \
     --qa-exit-after-ms 7000
 check_contains "kind-functions 函数列表如实说明未实现" \
-    '[toolbar] 种类入口「函数」：列表尚未实现' "$CASE_LOG"
+    '[toolbar] 种类入口「Functions」：列表尚未实现' "$CASE_LOG"
 check_screenshot "kind-functions 截图（未实现说明）" \
     "$OUT/kind-functions/06-toolbar-functions.png"
 
@@ -502,9 +502,9 @@ launch kind-follows io.sqarvo.Sqarvo.QA024KindFollows \
     --screenshot-delay-ms 6000 \
     --qa-exit-after-ms 8000
 check_contains "kind-follows 列出的是 temp（不是 main）" \
-    '[toolbar] 种类入口「表」：列出 temp' "$CASE_LOG"
+    '[toolbar] 种类入口「Tables」：列出 temp' "$CASE_LOG"
 check_absent "kind-follows 没有跳回默认库 main" \
-    '[toolbar] 种类入口「表」：列出 main' "$CASE_LOG"
+    '[toolbar] 种类入口「Tables」：列出 main' "$CASE_LOG"
 check_contains "kind-follows 树里高亮的是 temp 的 Tables 分组" \
     '选中分组：Tables（temp）' "$CASE_LOG"
 check_contains "kind-follows 树里选中的仍是 temp" '选中对象：temp（库）' "$CASE_LOG"
@@ -520,10 +520,25 @@ launch tree-kind-sync io.sqarvo.Sqarvo.QA024TreeKindSync \
     --screenshot-delay-ms 7000 \
     --qa-exit-after-ms 9000
 check_contains "tree-kind-sync 树里选中了 Views 分组" '选中分组：Views（main）' "$CASE_LOG"
-check_contains "tree-kind-sync 工具条高亮跟到「视图」" '[toolbar] 高亮种类：视图' "$CASE_LOG"
+check_contains "tree-kind-sync 工具条高亮跟到 Views" '[toolbar] 高亮种类：Views' "$CASE_LOG"
 check_contains "tree-kind-sync Objects 页列出视图" '断言通过：Objects count=1' "$CASE_LOG"
 check_screenshot "tree-kind-sync 截图（树 → 工具条）" \
     "$OUT/tree-kind-sync/08-tree-to-toolbar.png"
+
+# A9（v0.2.3.3）：`Functions` 分组只有入口、没有列表能力——选中时工具条跟随，页面如实说明，
+# 树里展开也只写一行说明，不发 RPC。
+launch tree-functions io.sqarvo.Sqarvo.QA024TreeFunctions \
+    --qa-tree-expand main \
+    --qa-tree-select-group functions \
+    --screenshot "$OUT/tree-functions/09-tree-functions.png" \
+    --screenshot-delay-ms 7000 \
+    --qa-exit-after-ms 9000
+check_contains "tree-functions 选中了 Functions 分组" '选中分组：Functions（main）' "$CASE_LOG"
+check_contains "tree-functions 工具条高亮跟到 Functions" '[toolbar] 高亮种类：Functions' "$CASE_LOG"
+check_contains "tree-functions 展开时如实说明不发请求" \
+    '展开 Functions · main（该分组没有列表能力，不发 ListNodes）' "$CASE_LOG"
+check_screenshot "tree-functions 截图（只有入口）" \
+    "$OUT/tree-functions/09-tree-functions.png"
 
 # ---------------------------------------------------------------------------
 # 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
@@ -543,7 +558,7 @@ if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" 
         *) ok "证据目录在仓库外：$OUT" ;;
     esac
     say ""
-    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A8）"
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A9）"
     say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
     say "证据目录：$OUT"
     say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"

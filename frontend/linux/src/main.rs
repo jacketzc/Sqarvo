@@ -116,7 +116,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-disconnect", "connection-name"),
         ("qa-tree-select", "object-name"),
         ("qa-tree-select-connection", "connection-name"),
-        ("qa-tree-select-group", "tables|views"),
+        ("qa-tree-select-group", "tables|views|functions|queries"),
         ("qa-objects-select", "object-name"),
         ("qa-objects-activate", "object-name"),
         ("qa-kind", "tables|views|functions|queries"),

@@ -1056,7 +1056,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 
 - `--qa-tree-expand <name>`：按名字展开节点（可重复，按参数顺序；每步都会重试到节点
   出现为止）。展开走 `GtkTreeListModel` 的真实展开路径，**只有展开才发 `ListNodes`**。
-  对**库**节点它会把 `Tables` / `Views` 两个分组一起展开（把「用户再点两下」自动化）；
+  对**库**节点它会把 `Tables` / `Views` / `Functions` / `Queries` 四个分组行一起展开
+  （把「用户再点几下」自动化；`Functions` / `Queries` 只出说明行，不发 RPC）；
   产品行为相反：双击库只展开库本身，分组保持收起（v0.2.3.3），要证明这条用
   `--qa-tree-activate <库名>`（走双击那条 `activate` 信号）；
 - `--qa-tree-open <name>`：选中并打开表（与双击行同一条回调），进入数据页；
