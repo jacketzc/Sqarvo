@@ -58,6 +58,10 @@
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
 //!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
+//! - `Objects` 固定页（v0.2.3.3 单列表格）：`--qa-objects-select <name>`（走单选模型，
+//!   与单击同一条路径，会同步信息面板）、`--qa-objects-activate <name>`（发
+//!   `GtkListView::activate`，与双击 / 回车同一条路径，会开表数据标签）；
+//!   `--qa-expect-objects selected=<name>` 断言哪一行处于选中态；
 //! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
 //!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`
 //!   （v0.2.3.3 起来源徽标 / 来源说明 / 「复制」按钮已从面板移除，对应字段一并删除）；
@@ -638,9 +642,12 @@ impl ObjectsExpectation {
         let (field, expected) = value
             .split_once('=')
             .ok_or_else(|| format!("--qa-expect-objects 需要 字段=值，实际：{value}"))?;
-        if !matches!(field, "scope" | "count" | "first" | "status" | "empty") {
+        if !matches!(
+            field,
+            "scope" | "count" | "first" | "selected" | "status" | "empty"
+        ) {
             return Err(format!(
-                "--qa-expect-objects 只接受 scope|count|first|status|empty，实际：{field}"
+                "--qa-expect-objects 只接受 scope|count|first|selected|status|empty，实际：{field}"
             ));
         }
         Ok(Self {
@@ -776,6 +783,12 @@ struct Args {
     tree_select: Option<String>,
     /// `--qa-tree-select-connection <name>`：选中某条连接节点（#119）。
     tree_select_connection: Option<String>,
+    /// `--qa-objects-select <name>`：选中 `Objects` 固定页里的某一行（走单选模型，
+    /// 与单击同一条路径；v0.2.3.3 的单列表格交互）。
+    objects_select: Option<String>,
+    /// `--qa-objects-activate <name>`：激活 `Objects` 固定页的某一行（发
+    /// `GtkListView::activate`，与双击 / 回车同一条路径）。
+    objects_activate: Option<String>,
     /// `--qa-inspector <ddl|info>`：信息面板切到哪一页（#119；v0.2.3.2 起面板常驻、不能折叠）。
     inspector: Option<String>,
     /// `--qa-inspector-width <px>`：把面板拖到指定宽度（窗口级记忆的证据，#119 / #155）。
@@ -1002,6 +1015,8 @@ pub fn enabled() -> bool {
             || !args.tree_expand.is_empty()
             || args.tree_open.is_some()
             || args.tree_activate.is_some()
+            || args.objects_select.is_some()
+            || args.objects_activate.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1291,6 +1306,18 @@ pub fn tree_select_connection() -> Option<String> {
         .and_then(|args| args.tree_select_connection.clone())
 }
 
+/// `--qa-objects-select <name>`：选中 `Objects` 页的一行（与单击同一条路径）。
+#[must_use]
+pub fn objects_select() -> Option<String> {
+    ARGS.get().and_then(|args| args.objects_select.clone())
+}
+
+/// `--qa-objects-activate <name>`：激活 `Objects` 页的一行（与双击 / 回车同一条路径）。
+#[must_use]
+pub fn objects_activate() -> Option<String> {
+    ARGS.get().and_then(|args| args.objects_activate.clone())
+}
+
 /// 信息面板的页选择（`--qa-inspector`，#119）：只有 `ddl|info`；面板常驻，不能折叠。
 #[must_use]
 pub fn inspector() -> Option<String> {
@@ -1344,6 +1371,8 @@ pub fn tree_requested() -> bool {
             || args.tree_disconnect.is_some()
             || args.tree_select.is_some()
             || args.tree_select_connection.is_some()
+            || args.objects_select.is_some()
+            || args.objects_activate.is_some()
             || args.inspector.is_some()
             || args.inspector_width.is_some()
     })
@@ -2117,6 +2146,26 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-tree-select-connection 的连接名不能为空".to_owned());
                 }
                 parsed.tree_select_connection = Some(value.clone());
+                index += 2;
+            }
+            "--qa-objects-select" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-objects-select 需要一个对象名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-objects-select 的对象名不能为空".to_owned());
+                }
+                parsed.objects_select = Some(value.clone());
+                index += 2;
+            }
+            "--qa-objects-activate" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-objects-activate 需要一个对象名".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-objects-activate 的对象名不能为空".to_owned());
+                }
+                parsed.objects_activate = Some(value.clone());
                 index += 2;
             }
             "--qa-inspector" => {

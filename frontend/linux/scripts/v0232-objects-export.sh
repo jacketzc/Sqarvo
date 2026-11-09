@@ -11,7 +11,13 @@
 #      A1 `--qa-tree-expand main` → `--qa-tree-select main`：作用域「main · 表」、行数 1、
 #         首行 probe_items、`empty=off`、状态行「共 1 个对象」（不含「还有更多」）。
 #      A2 选中视图节点：作用域「main · 视图」、行数 1、首行 probe_recent_items。
+#      A1b（v0.2.3.3）单列表格的单击选中：`--qa-objects-select probe_items` → 该行高亮
+#         （`selected=probe_items`），信息面板同步成这张表。
 #      两张截图分别对应 A1 / A2，路径打到 stdout。
+#   A3（v0.2.3.3）Objects 页双击 / 回车激活：`--qa-objects-activate` 发
+#      `GtkListView::activate` → 日志出现「[objects] 激活行」与「[tabs] 新建表标签」。
+#   A4（v0.2.3.3）作用域没变不重发：树里先选库（main · 表）再选同一库的表 → 日志出现
+#      「作用域未变」，列表仍是 1 行（不清空、不闪）。
 #   B. EX 导出范围
 #      B1 整表：行数 = 数据行 + 1（表头）、目标权限 0600、目录里没有 `*.sqarvo-tmp`、
 #         日志命中「整表导出完成：」「整表进度：」。
@@ -329,9 +335,11 @@ launch() {
 launch objects-tables io.sqarvo.Sqarvo.QA024ObjectsTables \
     --qa-tree-expand main \
     --qa-tree-select main \
+    --qa-objects-select "$TABLE" \
     --qa-expect-objects "scope=main · 表" \
     --qa-expect-objects count=1 \
     --qa-expect-objects "first=$TABLE" \
+    --qa-expect-objects "selected=$TABLE" \
     --qa-expect-objects empty=off \
     --qa-expect-objects "status=共 1 个对象" \
     --screenshot "$OUT/objects-tables/01-scope-tables.png" \
@@ -339,6 +347,8 @@ launch objects-tables io.sqarvo.Sqarvo.QA024ObjectsTables \
     --qa-exit-after-ms 11000
 check_contains "objects-tables 展开 catalog（Tables/Views 各自建组）" '展开 main' "$CASE_LOG"
 check_contains "objects-tables 树里选中库节点" '选中节点 main' "$CASE_LOG"
+check_contains "objects-tables Objects 页选中行日志" "Objects 页选中「$TABLE」" "$CASE_LOG"
+check_contains "objects-tables 选中行同步信息面板" "选中行 $TABLE" "$CASE_LOG"
 check_contains "objects-tables Objects 页作用域=main · 表" \
     '断言通过：Objects scope=main · 表' "$CASE_LOG"
 check_contains "objects-tables Objects 页行数" 'Objects count=1' "$CASE_LOG"
@@ -369,6 +379,40 @@ check_contains "objects-views Objects 页行数（该库只有 1 个视图）" '
 check_contains "objects-views Objects 页首行" "Objects first=$VIEW" "$CASE_LOG"
 check_contains "objects-views Objects 状态行" 'Objects status=共 1 个对象' "$CASE_LOG"
 check_screenshot "objects-views 截图（选中视图 → 视图列表）" "$OUT/objects-views/02-scope-views.png"
+
+# A3（v0.2.3.3）：Objects 页行双击 / 回车 = 激活。`--qa-objects-activate` 发的是
+# `GtkListView::activate`（与双击 / 回车同一条信号），走同一个打开回调 → 新建表标签。
+launch objects-activate io.sqarvo.Sqarvo.QA024ObjectsActivate \
+    --qa-tree-expand main \
+    --qa-tree-select main \
+    --qa-objects-activate "$TABLE" \
+    --qa-exit-after-ms 12000
+check_contains "objects-activate 激活行日志" "[objects] 激活行 $TABLE" "$CASE_LOG"
+check_contains "objects-activate 新建了表标签" '[tabs] 新建表标签' "$CASE_LOG"
+
+# A4（v0.2.3.3）：作用域没变不重发。树里先选库（作用域 main · 表），再选同一库里的表——
+# 作用域仍是 (main, [Table])，列表应原样保留（日志「作用域未变」），行数仍是 1。
+cat > "$TMP/objects-keep.txt" <<STEPS
+expand main
+select-node main
+sleep 1500
+select-node $TABLE
+sleep 500
+STEPS
+launch objects-keep io.sqarvo.Sqarvo.QA024ObjectsKeep \
+    --qa-tabs-file "$TMP/objects-keep.txt" \
+    --qa-expect-objects "scope=main · 表" \
+    --qa-expect-objects count=1 \
+    --qa-expect-objects "first=$TABLE" \
+    --screenshot "$OUT/objects-keep/03-scope-unchanged.png" \
+    --screenshot-delay-ms 7000 \
+    --qa-exit-after-ms 9000
+check_contains "objects-keep 作用域未变（保留列表与选中）" \
+    '[objects] 作用域未变' "$CASE_LOG"
+check_contains "objects-keep 列表没有重发（作用域仍是 main · 表）" \
+    'Objects scope=main · 表' "$CASE_LOG"
+check_screenshot "objects-keep 截图（作用域未变后列表仍在）" \
+    "$OUT/objects-keep/03-scope-unchanged.png"
 
 # ---------------------------------------------------------------------------
 # 4. Case B：EX 导出范围（整表 / 取消 / 当前页）

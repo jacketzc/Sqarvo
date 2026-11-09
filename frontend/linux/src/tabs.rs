@@ -43,7 +43,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::backend::metadata::{MetadataHub, NodeView};
+use crate::backend::metadata::{MetadataHub, NodeView, kind_icon};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
@@ -413,8 +413,11 @@ pub enum TabStatus {
 /// `Objects` 页的一次请求作用域：父对象（catalog）+ 要列出的种类。
 type ObjectsRequest = (ObjectRef, Vec<ObjectKind>);
 
-/// 双击列表行时要执行的动作（打开表数据标签）。
+/// 双击 / 回车激活一行时的动作（打开表数据标签）。
 type OpenEntry = Rc<dyn Fn(TableEntry)>;
+
+/// 单击选中一行时的动作（与对象树选中同一语义：同步信息面板）。
+type SelectEntry = Rc<dyn Fn(TableEntry)>;
 
 /// `Objects` 固定页的观察结果（读真实控件，QA 用）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -425,6 +428,8 @@ pub struct ObjectsObservation {
     pub count: usize,
     /// 第一行的名字（没有行时为空串）。
     pub first: String,
+    /// 当前选中行的名字（没有选中时为空串）。
+    pub selected: String,
     /// 状态行原文（`正在读取…` / `共 N 个对象` / 错误文案）。
     pub status: String,
 }
@@ -437,11 +442,29 @@ impl ObjectsObservation {
     }
 }
 
-/// `Objects` 固定页（v0.2.3.2）：与对象树联动，列出选中 catalog 里的表 / 视图。
+/// `GtkListItem` → 行数据（`BoxedAnyObject` 包着的 `TableEntry`）。
+fn item_entry(item: &gtk::ListItem) -> Option<TableEntry> {
+    let boxed = item.item()?.downcast::<glib::BoxedAnyObject>().ok()?;
+    Some(boxed.borrow::<TableEntry>().clone())
+}
+
+/// 行控件里的三件套（顺序在 `connect_setup` 里固定）：[图标] [名称] [种类]。
+fn row_parts(row_box: &gtk::Box) -> Option<(gtk::Image, gtk::Label, gtk::Label)> {
+    let icon = row_box.first_child()?.downcast::<gtk::Image>().ok()?;
+    let name = icon.next_sibling()?.downcast::<gtk::Label>().ok()?;
+    let kind = name.next_sibling()?.downcast::<gtk::Label>().ok()?;
+    Some((icon, name, kind))
+}
+
+/// `Objects` 固定页（v0.2.3.2，v0.2.3.3 改为单列表格）：与对象树联动，列出选中
+/// catalog 里的表 / 视图。
 ///
 /// 内容由树选中驱动：选中 catalog 或 `Tables` 分支 → 该库的**表**；
 /// 选中 `Views` 分支 → 该库的**视图**。页面自己发 `ListNodes(filter.kinds)` 并持有
 /// 自己的分页 token，不读树的分组层状态——树没展开过也要能看到完整列表。
+///
+/// 呈现层是 `GtkListView` + `GtkSingleSelection`（不是 `GtkListBox`）：选中 / 悬停由
+/// 主题的行状态给出，与数据网格同一口径（见 `theme::stylesheet` 的 `sqarvo-objects`）。
 pub struct ObjectsPage {
     root: gtk::Box,
     scope_label: gtk::Label,
@@ -450,14 +473,20 @@ pub struct ObjectsPage {
     empty: adw::StatusPage,
     /// `set_empty_text` 设置的「作用域」文案；`show_empty` 复用它而不是写死默认值。
     empty_scope: RefCell<Option<String>>,
-    list: gtk::ListBox,
+    /// 行的数据模型：`BoxedAnyObject(TableEntry)`，只为可见行创建控件。
+    store: gtk::gio::ListStore,
+    /// 单选模型：单击选中、双击 / 回车激活（`single_click_activate(false)`）。
+    selection: gtk::SingleSelection,
+    list: gtk::ListView,
     status: gtk::Label,
     more: gtk::Button,
-    rows: RefCell<Vec<TableEntry>>,
     scope: RefCell<String>,
     token: RefCell<String>,
     generation: Cell<u64>,
+    /// 当前作用域的第一页是否已经成功返回（作用域没变时不重发、保留行与选中）。
+    loaded: Cell<bool>,
     open: RefCell<Option<OpenEntry>>,
+    select: RefCell<Option<SelectEntry>>,
     /// 最近一次请求的作用域（分页按它继续）。
     last_request: RefCell<Option<ObjectsRequest>>,
     /// 最近一次请求用的元数据通道（同一条浏览会话）。
@@ -475,9 +504,64 @@ impl ObjectsPage {
         scope_label.add_css_class("dim-label");
         scope_label.add_css_class("caption");
 
-        let list = gtk::ListBox::new();
-        list.set_selection_mode(gtk::SelectionMode::None);
-        list.add_css_class("navigation-sidebar");
+        // 单列表格（v0.2.3.3）：`GtkListView` + `GtkSingleSelection`。
+        // 行结构（固定顺序，bind 靠它取控件）：[图标] [名称] [种类]。
+        let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let selection = gtk::SingleSelection::new(Some(store.clone()));
+        // 首行不自动选中：选中是用户的动作，也是信息面板的输入。
+        selection.set_autoselect(false);
+        selection.set_can_unselect(true);
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let icon = gtk::Image::new();
+            icon.set_pixel_size(crate::layout::ICON_BOX);
+            let name = gtk::Label::new(None);
+            name.set_xalign(0.0);
+            name.set_hexpand(true);
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            // 与数据网格同一口径：13px / Medium（12px 会裁掉 CJK 笔画）。
+            name.add_css_class("sqarvo-cell");
+            let kind = gtk::Label::new(None);
+            kind.add_css_class("dim-label");
+            kind.add_css_class("caption");
+            kind.set_margin_end(6);
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row_box.add_css_class("sqarvo-objects-row");
+            row_box.append(&icon);
+            row_box.append(&name);
+            row_box.append(&kind);
+            item.set_child(Some(&row_box));
+        });
+        factory.connect_bind(|_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(entry) = item_entry(item) else {
+                return;
+            };
+            let Some(row_box) = item.child().and_then(|c| c.downcast::<gtk::Box>().ok()) else {
+                return;
+            };
+            let Some((icon, name, kind)) = row_parts(&row_box) else {
+                return;
+            };
+            // 图标与对象树同一个映射（`kind_icon`）：表 view-grid、视图 view-reveal。
+            icon.set_icon_name(Some(kind_icon(entry.kind)));
+            name.set_text(&entry.display_name);
+            kind.set_text(entry.kind_label());
+            row_box.set_tooltip_text(Some(&format!(
+                "{}（{}）· 双击打开",
+                entry.display_name,
+                entry.kind_label()
+            )));
+        });
+        let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
+        list.add_css_class("sqarvo-objects");
+        // 单击只选中、双击 / 回车才激活（与对象树统一，不打开 = 不新建会话）。
+        list.set_single_click_activate(false);
 
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
@@ -531,14 +615,17 @@ impl ObjectsPage {
             stack,
             empty,
             empty_scope: RefCell::new(None),
+            store,
+            selection,
             list,
             status,
             more,
-            rows: RefCell::new(Vec::new()),
             scope: RefCell::new(String::new()),
             token: RefCell::new(String::new()),
             generation: Cell::new(0),
+            loaded: Cell::new(false),
             open: RefCell::new(None),
+            select: RefCell::new(None),
             last_request: RefCell::new(None),
             hub_slot: RefCell::new(None),
         });
@@ -550,6 +637,44 @@ impl ObjectsPage {
                     if !token.is_empty() {
                         page.load(token);
                     }
+                }
+            });
+        }
+        {
+            // 单击选中 → 同步信息面板（与树选中的语义一致）。
+            let weak = Rc::downgrade(&page);
+            page.selection.connect_selected_notify(move |selection| {
+                let Some(page) = weak.upgrade() else {
+                    return;
+                };
+                let Some(entry) = page.entry_at(selection.selected()) else {
+                    return;
+                };
+                let select = page.select.borrow().clone();
+                if let Some(select) = select {
+                    eprintln!(
+                        "[objects] 选中行 {}（{}）",
+                        entry.display_name,
+                        entry.kind_label()
+                    );
+                    select(entry);
+                }
+            });
+        }
+        {
+            // 双击 / 回车 → 打开表数据标签（与树的双击同一条路径）。
+            let weak = Rc::downgrade(&page);
+            page.list.connect_activate(move |_, position| {
+                let Some(page) = weak.upgrade() else {
+                    return;
+                };
+                let Some(entry) = page.entry_at(position) else {
+                    return;
+                };
+                let open = page.open.borrow().clone();
+                if let Some(open) = open {
+                    eprintln!("[objects] 激活行 {}（双击 / 回车）", entry.display_name);
+                    open(entry);
                 }
             });
         }
@@ -571,15 +696,23 @@ impl ObjectsPage {
         self.scope_label.set_text(scope);
     }
 
-    /// 双击行打开表数据标签（与树的双击同一条路径）。
+    /// 双击 / 回车打开表数据标签（与树的双击同一条路径）。
     pub fn set_open(&self, open: OpenEntry) {
         self.open.replace(Some(open));
+    }
+
+    /// 单击选中时同步信息面板（与对象树选中同一条语义）。
+    ///
+    /// 不反向改树的选中：「列表选中 → 树选中 → 按新选中重拉列表」会形成回环，
+    /// 而且会把用户正在浏览的位置跳走。
+    pub fn set_select(&self, select: SelectEntry) {
+        self.select.replace(Some(select));
     }
 
     /// 清空并显示空态（没有可联动的选中对象）。
     pub fn show_empty(&self) {
         self.generation.set(self.generation.get() + 1);
-        self.rows.borrow_mut().clear();
+        self.loaded.set(false);
         self.token.replace(String::new());
         self.scope.replace(String::new());
         self.last_request.replace(None);
@@ -595,7 +728,11 @@ impl ObjectsPage {
         self.stack.set_visible_child_name("empty");
     }
 
-    /// 换作用域并读第一页。
+    /// 换作用域并读第一页；**作用域没变就不重发**。
+    ///
+    /// 树里从「库 main」切到「某张表」时，列表作用域还是 `(main, [Table])`——旧实现
+    /// 每次都清空重建，行会闪一下、选中态也会被下一次选中冲掉。现在只在作用域真的
+    /// 变化（换了库 / 换了表与视图）时才重新发 `ListNodes`。
     pub fn show(
         self: &Rc<Self>,
         hub: Option<Rc<MetadataHub>>,
@@ -603,22 +740,27 @@ impl ObjectsPage {
         kinds: Vec<ObjectKind>,
         label: &str,
     ) {
-        let generation = self.generation.get() + 1;
-        self.generation.set(generation);
-        self.rows.borrow_mut().clear();
-        self.token.replace(String::new());
+        let key: ObjectsRequest = (parent.clone(), kinds.clone());
         self.scope.replace(label.to_owned());
-        self.clear_rows();
-        self.more.set_visible(false);
         self.scope_label.set_text(label);
         self.stack.set_visible_child_name("list");
+        if self.loaded.get() && self.last_request.borrow().as_ref() == Some(&key) {
+            eprintln!("[objects] 作用域未变（{label}），保留现有列表与选中");
+            return;
+        }
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        self.loaded.set(false);
+        self.token.replace(String::new());
+        self.clear_rows();
+        self.more.set_visible(false);
         let Some(hub) = hub else {
+            self.last_request.replace(None);
             self.status.set_text("这条连接没有浏览会话：展开连接后重试");
             return;
         };
         self.status.set_text("正在读取…");
-        let weak_open = self.open.borrow().clone();
-        self.request(hub, parent, kinds, String::new(), generation, weak_open);
+        self.request(hub, parent, kinds, String::new(), generation);
     }
 
     fn load(self: &Rc<Self>, token: String) {
@@ -631,8 +773,7 @@ impl ObjectsPage {
             return;
         };
         self.status.set_text("正在读取…");
-        let open = self.open.borrow().clone();
-        self.request(hub, parent, kinds, token, generation, open);
+        self.request(hub, parent, kinds, token, generation);
     }
 
     fn request(
@@ -642,7 +783,6 @@ impl ObjectsPage {
         kinds: Vec<ObjectKind>,
         token: String,
         generation: u64,
-        open: Option<Rc<dyn Fn(TableEntry)>>,
     ) {
         // 记住这次请求的作用域：分页与「加载更多」按它继续。
         *self.last_request.borrow_mut() = Some((parent.clone(), kinds.clone()));
@@ -664,12 +804,13 @@ impl ObjectsPage {
                     Ok(nodes) => {
                         let count = nodes.nodes.len();
                         for node in &nodes.nodes {
-                            page.push_row(node, open.as_ref());
+                            page.push_row(node);
                         }
                         page.token.replace(nodes.next_page_token.clone());
+                        page.loaded.set(true);
                         let has_more = nodes.has_more();
                         page.more.set_visible(has_more);
-                        let total = page.rows.borrow().len();
+                        let total = page.store.n_items() as usize;
                         page.status.set_text(&format!(
                             "共 {total} 个对象{}",
                             if has_more { "（还有更多）" } else { "" }
@@ -691,55 +832,39 @@ impl ObjectsPage {
         );
     }
 
-    fn push_row(&self, node: &NodeView, open: Option<&Rc<dyn Fn(TableEntry)>>) {
+    fn push_row(&self, node: &NodeView) {
         let entry = TableEntry {
             reference: node.reference.clone(),
             display_name: node.display_name.clone(),
             kind: node.kind,
         };
-        self.rows.borrow_mut().push(entry.clone());
-        let name = gtk::Label::new(Some(&node.display_name));
-        name.set_xalign(0.0);
-        name.set_hexpand(true);
-        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        let kind = gtk::Label::new(Some(entry.kind_label()));
-        kind.add_css_class("dim-label");
-        kind.add_css_class("caption");
-        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row_box.set_margin_top(6);
-        row_box.set_margin_bottom(6);
-        row_box.set_margin_start(10);
-        row_box.set_margin_end(10);
-        row_box.append(&name);
-        row_box.append(&kind);
-        let row = gtk::ListBoxRow::new();
-        row.set_child(Some(&row_box));
-        row.set_activatable(false);
-        row.set_tooltip_text(Some(&format!(
-            "{}（{}）· 双击打开",
-            entry.display_name,
-            entry.kind_label()
-        )));
-        if let Some(open) = open {
-            let open = Rc::clone(open);
-            let entry = entry.clone();
-            let gesture = gtk::GestureClick::new();
-            gesture.set_button(1);
-            gesture.connect_released(move |gesture, presses, _, _| {
-                if presses == 2 {
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
-                    open(entry.clone());
-                }
-            });
-            row.add_controller(gesture);
-        }
-        self.list.append(&row);
+        // 模型只持有数据：控件由 `GtkListView` 为可见行创建（几百行也不卡主线程）。
+        self.store.append(&glib::BoxedAnyObject::new(entry));
     }
 
     fn clear_rows(&self) {
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
+        self.store.remove_all();
+    }
+
+    /// 第 `position` 行的数据（`u32::MAX` = 没有选中）。
+    fn entry_at(&self, position: u32) -> Option<TableEntry> {
+        if position == u32::MAX {
+            return None;
         }
+        let boxed = self
+            .store
+            .item(position)?
+            .downcast::<glib::BoxedAnyObject>()
+            .ok()?;
+        Some(boxed.borrow::<TableEntry>().clone())
+    }
+
+    /// 按展示名找行号（QA 与「作用域未变」的定位用）。
+    fn position_of(&self, name: &str) -> Option<u32> {
+        (0..self.store.n_items()).find(|index| {
+            self.entry_at(*index)
+                .is_some_and(|entry| entry.display_name == name)
+        })
     }
 
     fn saved_request(&self) -> Option<ObjectsRequest> {
@@ -750,25 +875,54 @@ impl ObjectsPage {
         self.hub_slot.borrow().clone()
     }
 
-    /// QA：从真实控件读回作用域、行数、第一行与状态行。
+    /// QA：从真实控件读回作用域、行数、首行、选中行与状态行。
     #[must_use]
     pub fn qa_observation(&self) -> ObjectsObservation {
-        let first = self
-            .list
-            .first_child()
-            .and_then(|row| row.downcast::<gtk::ListBoxRow>().ok())
-            .and_then(|row| row.child())
-            .and_then(|child| child.downcast::<gtk::Box>().ok())
-            .and_then(|row_box| row_box.first_child())
-            .and_then(|child| child.downcast::<gtk::Label>().ok())
-            .map(|label| label.text().to_string())
-            .unwrap_or_default();
         ObjectsObservation {
             scope: self.scope_label.text().to_string(),
-            count: self.rows.borrow().len(),
-            first,
+            count: self.store.n_items() as usize,
+            first: self
+                .entry_at(0)
+                .map(|entry| entry.display_name)
+                .unwrap_or_default(),
+            selected: self
+                .entry_at(self.selection.selected())
+                .map(|entry| entry.display_name)
+                .unwrap_or_default(),
             status: self.status.text().to_string(),
         }
+    }
+
+    /// QA：按名字选中一行（只走 `GtkSingleSelection`，与单击同一条路径）。
+    pub fn qa_select(&self, name: &str) -> Result<String, String> {
+        let position = self.position_of(name).ok_or_else(|| {
+            format!(
+                "Objects 页没有「{name}」（当前 {} 行，作用域 {}）",
+                self.store.n_items(),
+                self.scope_label.text()
+            )
+        })?;
+        self.selection.set_selected(position);
+        Ok(format!(
+            "Objects 页选中「{name}」（第 {} 行）",
+            position + 1
+        ))
+    }
+
+    /// QA：按名字激活一行（发 `GtkListView::activate`，与双击 / 回车同一条路径）。
+    pub fn qa_activate(&self, name: &str) -> Result<String, String> {
+        let position = self.position_of(name).ok_or_else(|| {
+            format!(
+                "Objects 页没有「{name}」（当前 {} 行，作用域 {}）",
+                self.store.n_items(),
+                self.scope_label.text()
+            )
+        })?;
+        self.selection.set_selected(position);
+        self.list.emit_by_name::<()>("activate", &[&position]);
+        Ok(format!(
+            "Objects 页激活「{name}」（双击 / 回车同一条 activate 信号）"
+        ))
     }
 }
 
@@ -1127,6 +1281,16 @@ impl TabSet {
         }
     }
 
+    /// 固定 `Objects` 页的单击选中回调（同步信息面板）。
+    ///
+    /// 由 `ui.rs` 在信息面板建好之后接线：`TabSet` 不认识信息面板，回调里也不应该
+    /// 出现第二套面板状态。
+    pub fn set_objects_select(&self, select: Rc<dyn Fn(TableEntry)>) {
+        if let Some(objects) = self.objects.borrow().clone() {
+            objects.set_select(select);
+        }
+    }
+
     /// QA：`Objects` 页的文案（读真实控件；页面没建时是 `None`）。
     #[must_use]
     pub fn qa_observe_objects(&self) -> Option<ObjectsObservation> {
@@ -1134,6 +1298,26 @@ impl TabSet {
             .borrow()
             .as_ref()
             .map(|objects| objects.qa_observation())
+    }
+
+    /// QA：选中 `Objects` 页的一行（走 `GtkSingleSelection`，与单击同一条路径）。
+    pub fn qa_objects_select(&self, name: &str) -> Result<String, String> {
+        let objects = self
+            .objects
+            .borrow()
+            .clone()
+            .ok_or_else(|| "Objects 固定页尚未建立".to_owned())?;
+        objects.qa_select(name)
+    }
+
+    /// QA：激活 `Objects` 页的一行（走 `GtkListView::activate`，与双击 / 回车同一条路径）。
+    pub fn qa_objects_activate(&self, name: &str) -> Result<String, String> {
+        let objects = self
+            .objects
+            .borrow()
+            .clone()
+            .ok_or_else(|| "Objects 固定页尚未建立".to_owned())?;
+        objects.qa_activate(name)
     }
 
     /// 按位置找标签（QA 脚本用；0 = Objects）。

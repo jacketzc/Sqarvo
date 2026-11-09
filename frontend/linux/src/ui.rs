@@ -1922,6 +1922,34 @@ impl Workspace {
         });
         tabs_slot.replace(Some(Rc::clone(&tabs)));
 
+        // `Objects` 页单击选中 → 信息面板（与树选中同一条语义）。
+        // 不反向改树的选中：树选中会驱动 `Objects` 页换作用域，形成「列表选中 → 树选中
+        // → 重拉列表」的回环，还会把用户正在浏览的位置跳走。
+        {
+            let inspector = Rc::clone(&inspector);
+            let slot = Rc::clone(&tabs_slot);
+            let tree_for_hint = Rc::clone(&tree_slot);
+            tabs.set_objects_select(Rc::new(move |entry: TableEntry| {
+                let node = NodeView {
+                    reference: entry.reference.clone(),
+                    display_name: entry.display_name.clone(),
+                    kind: entry.kind,
+                    has_children: crate::backend::metadata::is_container(entry.kind),
+                    comment: String::new(),
+                };
+                let (tab_id, loaded) = match slot.borrow().as_ref() {
+                    Some(tabs) => (
+                        tabs.current_id()
+                            .unwrap_or_else(|| crate::tabs::OBJECTS_TAB_ID.to_owned()),
+                        tabs.loaded_rows_for(&node.reference),
+                    ),
+                    None => (crate::tabs::OBJECTS_TAB_ID.to_owned(), None),
+                };
+                inspector.show_object(node, None, loaded, &tab_id);
+                refresh_txn_hint(&inspector, &tree_for_hint, &slot);
+            }));
+        }
+
         let work_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         work_box.set_vexpand(true);
         work_box.set_hexpand(true);
@@ -2244,6 +2272,18 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
             }),
         );
         delay += 700;
+    }
+
+    if let Some(name) = crate::qa::objects_select() {
+        let tabs = Rc::clone(&workspace.tabs);
+        schedule_step(delay, Rc::new(move || tabs.qa_objects_select(&name)));
+        delay += 900;
+    }
+
+    if let Some(name) = crate::qa::objects_activate() {
+        let tabs = Rc::clone(&workspace.tabs);
+        schedule_step(delay, Rc::new(move || tabs.qa_objects_activate(&name)));
+        delay += 900;
     }
 
     if let Some(width) = crate::qa::inspector_width() {
@@ -3288,6 +3328,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
                 "scope" => observed.scope.clone(),
                 "count" => observed.count.to_string(),
                 "first" => observed.first.clone(),
+                "selected" => observed.selected.clone(),
                 "status" => observed.status.clone(),
                 "empty" => if observed.empty() { "on" } else { "off" }.to_owned(),
                 other => return Err(format!("未知的 --qa-expect-objects 字段：{other}")),

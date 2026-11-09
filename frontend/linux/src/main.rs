@@ -116,6 +116,8 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-disconnect", "connection-name"),
         ("qa-tree-select", "object-name"),
         ("qa-tree-select-connection", "connection-name"),
+        ("qa-objects-select", "object-name"),
+        ("qa-objects-activate", "object-name"),
         ("qa-inspector", "ddl|info"),
         ("qa-inspector-width", "pixels"),
         ("qa-expect-tree", "field=value"),

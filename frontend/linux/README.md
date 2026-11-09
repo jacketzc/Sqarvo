@@ -1065,6 +1065,11 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   只是跳过键盘）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
   点第一个「加载更多…」占位行；`--qa-tree-disconnect <name>` 断开指定连接的浏览会话
   （与右键菜单「断开连接」同一条路径，包含确认框；排在搜索步骤之前）；
+- `--qa-objects-select <name>` / `--qa-objects-activate <name>`（v0.2.3.3）：在固定
+  `Objects` 页里按名字选中 / 激活一行。选中走单选模型（与单击同一条路径，会同步信息
+  面板），激活发 `GtkListView::activate`（与双击 / 回车同一条路径，会开表数据标签）；
+  `--qa-expect-objects selected=<name>` 断言当前高亮的是哪一行。这两步排在
+  `--qa-tree-select` 之后，需要先让树选中一个库 / 分组把列表拉出来；
 - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|loaded|
   status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`。断言读的是
   **控件上真实渲染的文本**（搜索状态行、DDL 缓冲区正文），不是「状态机里应该是」。

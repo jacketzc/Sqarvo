@@ -123,6 +123,24 @@ pub fn stylesheet() -> String {
             padding: 0;
         }}
 
+        /* 区域 04：固定 `Objects` 页的**单列表格**（v0.2.3.3）。
+           四样口径都跟数据网格一致：行高 32、行分隔线 1px / 10%、hover 4%、
+           选中 accent 25%（与 `row:selected` 在 Adwaita 里的算法同色）。
+           不挂 `.navigation-sidebar`——它把选中态改成 10% 灰，与网格不是一套。 */
+        window.{window_class} listview.sqarvo-objects > row {{
+            min-height: {data_row}px;
+            /* 覆盖 Adwaita 的 `padding: 2px`：上下为零，行距才能与数据行同为 32（+1px 线）； */
+            /* 左右 8 是单元格内距（网格首列字距内容边约 14，这里图标起于 8）。 */
+            padding: 0 8px;
+            border-bottom: 1px solid alpha(currentColor, 0.10);
+        }}
+        window.{window_class} listview.sqarvo-objects > row:hover {{
+            background-color: alpha(currentColor, 0.04);
+        }}
+        window.{window_class} listview.sqarvo-objects > row:selected {{
+            background-color: alpha(@accent_color, 0.25);
+        }}
+
         /* 区域 05：状态栏 56 高（两行各 24），字号 11 */
         .sqarvo-status-bar {{
             min-height: {status}px;
@@ -369,6 +387,37 @@ mod tests {
             layout::ICON_BUTTON_WIDTH,
             layout::ICON_BUTTON_HEIGHT
         )));
+    }
+
+    #[test]
+    fn objects_list_uses_the_grid_row_metrics() {
+        // 用户要求：`Objects` 块做成单列表格，鼠标移入移出 / 点击选中的效果与数据网格一致。
+        // 行高、分隔线、hover、选中四样必须与网格同一口径；改网格时这一条会一起失败。
+        let css = stylesheet();
+        let rule = |selector: &str| -> String {
+            let start = css
+                .find(selector)
+                .unwrap_or_else(|| panic!("缺少规则：{selector}"));
+            let end = start + css[start..].find('}').expect("规则应当闭合");
+            css[start..end].to_owned()
+        };
+        let row = rule("listview.sqarvo-objects > row {");
+        assert!(
+            row.contains(&format!("min-height: {}px;", layout::ROW_HEIGHT_DATA)),
+            "行高必须跟数据行同档：{row}"
+        );
+        assert!(
+            row.contains("border-bottom: 1px solid alpha(currentColor, 0.10)"),
+            "行分隔线要跟网格同色同宽：{row}"
+        );
+        assert!(
+            rule("listview.sqarvo-objects > row:hover").contains("alpha(currentColor, 0.04)"),
+            "hover 底色要与网格一致（4%）"
+        );
+        assert!(
+            rule("listview.sqarvo-objects > row:selected").contains("alpha(@accent_color, 0.25)"),
+            "选中底色要与网格一致（accent 25%）"
+        );
     }
 
     #[test]
