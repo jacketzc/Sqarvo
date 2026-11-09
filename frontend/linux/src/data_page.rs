@@ -767,10 +767,11 @@ impl DataPage {
         badges_row.set_margin_bottom(4);
         badges_row.set_visible(false);
 
-        // 行变更按钮 + 次要动作图标（v0.2.3.2 修正）：960 宽下 8 个控件的最小宽度
-        // 曾经超出行宽 22 px（`--qa-layout-audit` 960×640 打开表）。这里把行内间距
-        // 从 8 收到 6，配合 CSS 的 `padding: 2px 6px`，一行仍放得下全部动作。
-        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // 行变更按钮 + 事务按钮 + 次要动作图标：960 宽下这一行有 9 个控件。
+        // v0.2.3.3 把「开始事务」从上一行并进来之后，960×640 实测「需求 433 > 分配 417」
+        // （`--qa-layout-audit`）：行内间距再收到 4、按钮横向 padding 收到 5px，
+        // 需求降到 407，两档宽度都不裁字。
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         controls.add_css_class("sqarvo-table-actions");
         controls.set_margin_start(12);
         controls.set_margin_end(12);
@@ -5856,11 +5857,10 @@ fn install_css() {
         .sqarvo-type-row { min-height: 24px; }
         .sqarvo-type-cell { min-height: 24px; }
         /* #133：类型条带不再把最小宽度上报给外层后，窗口在 960 宽下不再被撑大，
-           这一行的 9 个按钮必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
-           横向 padding 收 2px，最小宽度从 721 降到 697 以内。
-           v0.2.3.2 再收到 6px：加上行内间距 8→6，960×640 打开表时这一行从
-           「需求 439 > 分配 417」降到 400 以内（`--qa-layout-audit` 可复核）。 */
-        .sqarvo-table-actions button { padding: 2px 6px; }
+           这一行的控件必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
+           v0.2.3.3 收到 5px：把「开始事务」并进这一行后 9 个控件，960×640 打开表时
+           需求从 433 降到 407（分配 417，`--qa-layout-audit` 可复核）。 */
+        .sqarvo-table-actions button { padding: 2px 5px; }
         .sqarvo-header-name-row { min-height: 22px; }
         .sqarvo-header-name { font-size: 12px; font-weight: 600; }
         .sqarvo-header-name.sqarvo-header-sorted { color: @accent_color; }
