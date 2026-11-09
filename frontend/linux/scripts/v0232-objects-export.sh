@@ -8,6 +8,8 @@
 #
 # 覆盖的用例（断言读的是控件文本与文件本身，不看「状态机里应该是」）：
 #   A. Objects 页与对象树联动
+#      A0（v0.2.3.3）双击库只在树里展开库本身：`--qa-tree-activate main` → 建两个分组行、
+#         **没有**拉分组（`Tables` / `Views` 保持收起），截图取证。
 #      A1 `--qa-tree-expand main` → `--qa-tree-select main`：行数 1、首行 probe_items、
 #         `empty=off`、状态行「共 1 个对象」（不含「还有更多」）；v0.2.3.3 起页内不再有
 #         标题与列表之间的作用域说明行（`scope` 断言字段已删除，旧脚本会直接报错）。
@@ -335,6 +337,21 @@ launch() {
 # ---------------------------------------------------------------------------
 # 3. Case A：Objects 固定页 ↔ 对象树联动
 # ---------------------------------------------------------------------------
+
+# A0（v0.2.3.3）：双击库只展开库本身，`Tables` / `Views` 保持收起。走 `activate` 信号
+# （与双击 / 回车同一条路径）——这是产品行为；`--qa-tree-expand` 是 QA 便捷（会连分组
+# 一起展开），所以这一条不能拿它取证。
+launch tree-catalog io.sqarvo.Sqarvo.QA024TreeCatalog \
+    --qa-tree-activate main \
+    --screenshot "$OUT/tree-catalog/00-catalog-collapsed.png" \
+    --screenshot-delay-ms 6000 \
+    --qa-exit-after-ms 8000
+check_contains "tree-catalog 双击库建立了两个分组行（保持收起）" \
+    '建立 2 个分组（Tables / Views，保持收起）' "$CASE_LOG"
+check_absent "tree-catalog 没有自动展开分组" '分组一并展开' "$CASE_LOG"
+check_absent "tree-catalog 没有拉取分组" '分组 Tables 拉取第 1 页' "$CASE_LOG"
+check_screenshot "tree-catalog 截图（Tables / Views 收起）" \
+    "$OUT/tree-catalog/00-catalog-collapsed.png"
 
 # A1：选中库 → 列出该库的表（v0.2.3.3 起页内不再有「<库> · 表」说明行）。
 launch objects-tables io.sqarvo.Sqarvo.QA024ObjectsTables \

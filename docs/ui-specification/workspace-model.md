@@ -130,14 +130,17 @@ gridWidth    = contentWidth - 18（左内边距）- 3（右内边距）- [10（�
 - 分组是**客户端虚拟层**，不是服务端层级：契约中的层序只有
   Catalog → Table/View/Sequence → Column/Index/Trigger（见 `proto/services/v1/metadata.proto`
   的层级表）。分组通过 `ListNodesRequest.filter.kinds` 拉取，每个分组有自己的分页 token。
-  展开一个 catalog 由 1 次 RPC 变为按分组数次的 RPC，必须在展开时按需拉取，不得预取全部。
+  **展开 catalog 本身 0 次 RPC**（只建两个分组行）；只有展开某个分组才发那一次的
+  `filter.kinds`。v0.2.3.3 起分组**不随 catalog 自动展开**：双击库之后用户的注意力在
+  `Objects` 页（那里已经列出表），树里的 `Tables` / `Views` 保持收起，由用户点开。
 - v0.2.3 不出现 `Functions` / `Queries` 分组（无驱动支持 / 无已保存查询）：宁可不显示，
   不摆空分组。PostgreSQL 的 `TYPE` 分组同理。
 - 选中态：整行底色 + 3px 左侧色条；键盘上下移动必须与鼠标同效。
 - **单击 / 双击语义（v0.2.3.2，全树统一）**：单击**只选中**（信息面板与 `Objects` 页跟着
   选中换内容，不展开、不打开、不连接）；双击（或回车）= 激活：
   表 / 视图 → 打开数据标签；连接 → 按保存的凭据连接（已连接则展开 / 收起）；
-  库 / 分组 → 展开 / 收起。行首箭头按钮永远可以单击展开 / 收起。
+  库 / 分组 → 展开 / 收起（展开库只出现分组行，分组仍是收起的，见上一条）。
+  行首箭头按钮永远可以单击展开 / 收起。
   「加载更多…」是分页动作，单击（选中）即继续拉下一页——它不需要双击。
 - 展开一张**表**先出现四个二级分组行：`Fields` → `Indexes` → `Foreign Keys` →
   `Triggers`，展开某一组才发那一次的 `ListNodes(filter.kinds=…)`（各自分页 token）。

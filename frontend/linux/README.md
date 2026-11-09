@@ -1054,7 +1054,10 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 ```
 
 - `--qa-tree-expand <name>`：按名字展开节点（可重复，按参数顺序；每步都会重试到节点
-  出现为止）。展开走 `GtkTreeListModel` 的真实展开路径，**只有展开才发 `ListNodes`**；
+  出现为止）。展开走 `GtkTreeListModel` 的真实展开路径，**只有展开才发 `ListNodes`**。
+  对**库**节点它会把 `Tables` / `Views` 两个分组一起展开（把「用户再点两下」自动化）；
+  产品行为相反：双击库只展开库本身，分组保持收起（v0.2.3.3），要证明这条用
+  `--qa-tree-activate <库名>`（走双击那条 `activate` 信号）；
 - `--qa-tree-open <name>`：选中并打开表（与双击行同一条回调），进入数据页；
 - `--qa-tree-activate <name>`：**走双击 / 回车那条 `GtkListView::activate` 信号**激活节点
   （v0.2.3.2）：表 / 视图应打开数据标签，库 / schema 才展开。与 `--qa-tree-open` 的区别是
@@ -1103,8 +1106,10 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   --qa-tree-search demo --qa-tree-click-result --screenshot …/disconnect-one.png
 ```
 
-- 展开一个 catalog 会建立 `Tables` / `Views` 两个分组，**每组一次** `ListNodes`
-  （`filter.kinds`），日志里是 `分组 Tables 拉取第 1 页（filter.kinds=[Table]）`；
+- 展开一个 catalog 只建立 `Tables` / `Views` 两个**分组行**（0 次 RPC），分组保持收起
+  （v0.2.3.3：双击库时注意力在 `Objects` 页，那里已经列出表；树不再替用户展开分组）。
+  点开某一组才发那一次的 `ListNodes`（`filter.kinds`），日志里是
+  `分组 Tables 拉取第 1 页（filter.kinds=[Table]）`；
 - 断开连接只关它自己的浏览会话：`ListSessions` 从 3 条变 2 条（另一条连接的数据会话 +
   浏览会话不动），数据页不受影响；若断开的是当前数据页绑定的连接，确认框与日志都会写明；
 - 数据页只浏览当前连接的表：树里另一条连接的表被点开时，数据页横幅给出明确说明

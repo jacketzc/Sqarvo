@@ -1391,11 +1391,12 @@ impl TreePanel {
         }
     }
 
-    /// catalog 展开后把它的两个分组也展开（每组各自发一次 `filter.kinds` 请求）。
+    /// QA：把某个库的两个分组行一并展开（每组各自发一次 `filter.kinds` 请求）。
     ///
-    /// 分组行是这次 `create_func` 里刚追加进子模型的：等模型把它们挂上树之后再展开，
-    /// 所以这里用一个短轮询（最多 ~1 秒）；用户看到的是「库展开后表就在分组里」。
-    fn auto_expand_groups(self: &Rc<Self>, key: String, parent: ObjectRef) {
+    /// **只走 QA 路径**：用户双击库只展开库本身，分组保持收起（v0.2.3.3）——这里是把
+    /// 「再点两下分组」自动化，不是产品行为。分组行是展开 catalog 时同步追加进子模型的，
+    /// 所以仍用短轮询（最多 ~1 秒）等模型把它们挂上树。
+    fn expand_groups_qa(self: &Rc<Self>, parent: ObjectRef) {
         let attempts = Rc::new(Cell::new(0u32));
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(40), move || {
@@ -1410,7 +1411,10 @@ impl TreePanel {
                 let Some(Row::Group(group)) = panel.row_of(&row) else {
                     continue;
                 };
-                if group.key != key || group.parent != parent || row.is_expanded() {
+                if group.parent != parent
+                    || !matches!(group.group, RowGroup::Catalog(_))
+                    || row.is_expanded()
+                {
                     continue;
                 }
                 row.set_expanded(true);
@@ -1418,7 +1422,7 @@ impl TreePanel {
             }
             if opened > 0 {
                 eprintln!(
-                    "[tree] t=+{}ms {} 的分组已展开 {opened} 个（每组 1 次 ListNodes）",
+                    "[tree] t=+{}ms（QA）{} 的两个分组一并展开（每组 1 次 ListNodes）",
                     crate::qa::elapsed_ms(),
                     parent.catalog
                 );
@@ -1427,7 +1431,10 @@ impl TreePanel {
             let tick = attempts.get() + 1;
             attempts.set(tick);
             if tick >= 25 {
-                eprintln!("[tree] {} 的分组行没有出现（放弃自动展开）", parent.catalog);
+                eprintln!(
+                    "[tree]（QA）{} 的分组行没有出现（放弃展开）",
+                    parent.catalog
+                );
                 return glib::ControlFlow::Break;
             }
             glib::ControlFlow::Continue
@@ -2185,8 +2192,9 @@ impl TreePanel {
         };
         match &level.source {
             LevelSource::Groups { parent, .. } => {
-                // 分组行本身是静态的（0 次 RPC）；分组**随 catalog 一起展开**，
-                // 于是展开一个 catalog 的 RPC 次数 = 分组数（每组一次 filter.kinds）。
+                // 分组行本身是静态的（0 次 RPC）。v0.2.3.3 起**不随 catalog 一起展开**：
+                // 双击库之后用户注意力在 `Objects` 页（那里已经列出表），树里的分组保持
+                // 收起，点哪一组才发那一次的 `filter.kinds`。
                 for group in KindGroup::ALL {
                     level.store.append(&NodeObject::new(Row::Group(GroupRow {
                         key: level.key().to_owned(),
@@ -2196,12 +2204,11 @@ impl TreePanel {
                 }
                 level.exhausted.set(true);
                 eprintln!(
-                    "[tree] t=+{}ms 展开 {}：建立 {} 个分组（Tables / Views）",
+                    "[tree] t=+{}ms 展开 {}：建立 {} 个分组（Tables / Views，保持收起）",
                     crate::qa::elapsed_ms(),
                     level.label,
                     KindGroup::ALL.len()
                 );
-                self.auto_expand_groups(level.key().to_owned(), parent.clone());
             }
             LevelSource::TableGroups { parent, .. } => {
                 // 表下的四组同样是静态行：0 次 RPC，展开某一行才拉那一组。
@@ -2917,6 +2924,20 @@ impl TreePanel {
             }
             if view.expandable() && !row.is_expanded() {
                 row.set_expanded(true);
+                // QA 便捷：库节点连同它的两个分组一起展开（把「用户再点两下分组」
+                // 自动化；产品行为是分组保持收起）。表的二级分组不处理：QA 只用了
+                // 打开 / 选中，不依赖 Fields/Indexes 展开。
+                if let Some(node) = view.node()
+                    && matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema)
+                {
+                    let parent = node.reference.clone();
+                    let weak = Rc::downgrade(self);
+                    glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                        if let Some(panel) = weak.upgrade() {
+                            panel.expand_groups_qa(parent);
+                        }
+                    });
+                }
                 // 取证用：等这一层的分组/对象回来之后，把目标连同它的子层滚进视口。
                 // 只出现在 QA 路径上——正常点击展开时树不会跳。
                 let weak = Rc::downgrade(self);

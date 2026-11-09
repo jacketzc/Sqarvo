@@ -3183,7 +3183,8 @@ pub enum QaStep {
     /// 写一次 `ListSessions` 日志（前后对比的证据）。
     Sessions(String),
     // ---- #121 验收链（全部走既有用户路径） ----
-    /// `expand <名字>`：展开树节点（catalog 展开后才会有 Tables/Views 分组）。
+    /// `expand <名字>`：展开树节点（catalog 展开后才会有 Tables/Views 分组；库节点连它
+    /// 的两个分组一起展开——QA 便捷，产品行为是分组保持收起）。
     Expand(String),
     /// `select-node <名字>`：选中树节点（信息面板随之切换）。
     SelectNode(String),

@@ -52,7 +52,9 @@
 //! - `--qa-expect-column <column>:<field>=<text>`：截图时刻断言浮层里该列某字段的控件
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
 //!   不符时退出码 3；
-//! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开）、
+//! - 对象树 / 搜索 / DDL（#86）：`--qa-tree-expand <name>`（可重复，逐层展开；对**库**
+//!   节点会连它的 `Tables` / `Views` 两个分组一起展开——把「用户再点两下」自动化，
+//!   产品行为是双击库只展开库本身、分组保持收起，v0.2.3.3）、
 //!   `--qa-tree-open <name>`（打开表）、
 //!   `--qa-tree-activate <name>`（走双击 / 回车的 `activate` 信号激活节点，v0.2.3.2 回归）、
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
