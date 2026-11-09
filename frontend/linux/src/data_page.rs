@@ -41,8 +41,8 @@ use crate::backend::table::{
 };
 use crate::backend::worker::{BeginOptions, SubmitOptions};
 use crate::browse_view::{
-    BrowseCapabilities, ColumnVisibility, Condition, FilterSet, Operator, PagerState, SortOrder,
-    TotalInfo,
+    BrowseCapabilities, ColumnVisibility, Condition, Direction, FilterSet, Operator, PagerState,
+    SortOrder, TotalInfo,
 };
 use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::{
@@ -480,6 +480,34 @@ fn icon_button(icon: &str, weight: crate::icons::OpticalWeight, label: &str) -> 
     crate::icons::button(icon, weight, label)
 }
 
+/// 筛选/排序面板的宽度（popover 内容宽，约 640 的 2/3）。
+const FS_PANEL_WIDTH: i32 = 430;
+/// 锚点在面板上的水平位置：黄金分割（0.618）。用户要的是「漏斗在上沿偏右处」，
+/// 不是正中对齐。
+const GOLDEN_RATIO_ANCHOR: f64 = 0.618;
+/// 筛选列 / 排序列下拉的固定宽度（面板收窄后同步压缩）。
+const FS_COLUMN_WIDTH: i32 = 140;
+
+/// 空清单的说明行：不加这一行的话，用户分不清「没有条件」和「没渲染出来」。
+fn empty_hint(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.add_css_class("dim-label");
+    label.set_margin_top(4);
+    label.set_margin_bottom(4);
+    label.set_margin_start(8);
+    label.set_margin_end(8);
+    label
+}
+
+/// 排序方向文案：`asc` / `desc`（SQL 词，不翻译、不加图标）。
+fn direction_text(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Ascending => "asc",
+        Direction::Descending => "desc",
+    }
+}
+
 /// 数据页。
 pub struct DataPage {
     root: gtk::Box,
@@ -548,8 +576,10 @@ pub struct DataPage {
     cc_list: gtk::Box,
     /// 「FS」按钮：筛选与排序面板。
     fs_button: gtk::Button,
-    /// 筛选面板卡片。
+    /// 筛选面板卡片（独立窗口的内容根）。
     fs_card: gtk::Box,
+    /// 筛选面板的 popover（挂在漏斗按钮上）。
+    fs_popover: gtk::Popover,
     /// 筛选面板：列下拉。
     fs_column: gtk::DropDown,
     /// 筛选面板：算子下拉。
@@ -558,8 +588,26 @@ pub struct DataPage {
     fs_value: gtk::Entry,
     /// 筛选面板：错误提示。
     fs_error: gtk::Label,
-    /// 筛选面板：已添加条件列表。
-    fs_conditions: gtk::ListBox,
+    /// 筛选面板：已添加条件列表（普通 Box：行高 24，与对象树一致）。
+    fs_conditions: gtk::Box,
+    /// 筛选面板标题条右侧的状态文案（`已应用` / `有未应用的更改`）。
+    fs_state: gtk::Label,
+    /// 排序区：列下拉。
+    fs_sort_column: gtk::DropDown,
+    /// 排序区：方向下拉（0 = 升序，1 = 降序）。
+    fs_sort_direction: gtk::DropDown,
+    /// 排序区：排序键列表（同「条件列表」的密度）。
+    fs_sort_list: gtk::Box,
+    /// 面板草稿：筛选条件（点「应用」才写回 [`Self::filter`]）。
+    fs_filter_draft: RefCell<FilterSet>,
+    /// 面板草稿：排序键（点「应用」才写回 [`Self::sort`]）。
+    fs_sort_draft: RefCell<SortOrder>,
+    /// 草稿是否已经从**已应用**状态初始化过（打开面板 / 首次编辑时初始化一次）。
+    fs_draft_ready: Cell<bool>,
+    /// 正在就地编辑的条件下标（`None` = 没有编辑态）。
+    fs_editing: Cell<Option<usize>>,
+    /// 正在编辑的那一行（点面板空白处时按它的 bounds 判断「点在外面」）。
+    fs_edited_row: RefCell<Option<gtk::Widget>>,
     /// 表头上方的常驻徽标（只读 / 无主键 / 视图 / 无权限 / 未统计）。
     badges_row: gtk::Box,
     /// 表头第二行（原始类型）的条带容器；与网格共用横向滚动位置。
@@ -602,6 +650,11 @@ pub struct DataPage {
     status_observer: RefCell<Option<StatusObserver>>,
     /// 最后一次成功读取数据的时间（状态栏「最后刷新」）。
     last_refresh: Cell<Option<Instant>>,
+    /// 最近一次读取完成时的摘要（`本页 500 行 · 还有下一页` / `空表`）。
+    ///
+    /// 它**不占可见文案**（行数/页码/总数只在状态栏出现一次），只进状态栏那格
+    /// 「记录位置」的 tooltip，用来解释数字的来历。
+    last_load_note: RefCell<String>,
     callbacks: DataCallbacks,
 }
 
@@ -609,7 +662,6 @@ struct DataButtons {
     begin: gtk::Button,
     commit_txn: gtk::Button,
     rollback: gtk::Button,
-    refresh: gtk::Button,
     commit_changes: gtk::Button,
     discard: gtk::Button,
     delete_row: gtk::Button,
@@ -646,13 +698,6 @@ impl DataPage {
         let rollback = gtk::Button::with_label("回滚事务");
         rollback.add_css_class("destructive-action");
         rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
-
-        let refresh = icon_button(
-            "view-refresh-symbolic",
-            crate::icons::OpticalWeight::Ring,
-            "刷新当前表",
-        );
-        refresh.set_tooltip_text(Some("重新读取当前表的第一页"));
 
         // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
         let cc_button = icon_button(
@@ -767,10 +812,13 @@ impl DataPage {
         controls.append(&delete_row);
         controls.append(&add_row);
         // 次要动作放第二行右侧：960 宽下第一行放不下，但功能一个不少。
+        //
+        // 「重新读取」不在这里：状态栏行 1 的行操作组和行 2「Last Refresh」旁的刷新
+        // 按钮都走同一个 `RowOp::Refresh`，工具条上是第三个入口，纯重复。
         let controls_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         controls_spacer.set_hexpand(true);
+        controls_spacer.set_margin_start(6);
         controls.append(&controls_spacer);
-        controls.append(&refresh);
         controls.append(&fs_button);
         controls.append(&cc_button);
         controls.append(&export);
@@ -887,25 +935,45 @@ impl DataPage {
         cc_card.append(&cc_scroll);
         cc_card.append(&cc_note);
 
-        // 筛选与排序面板（FS）：列 + 算子 + 值；仅 AND 多条件。
+        // 筛选与排序面板（FS）：两个区（筛选条件 / 排序键）+ 底部应用。
+        //
+        // 形态是挂在漏斗按钮上的 **`GtkPopover`（`autohide = false`）**：
+        // - 位置由 GTK 贴着按钮算，Wayland 下这是唯一能「靠近按钮」的做法（应用没有
+        //   权限给独立 top-level 定位，`present()` 只会被合成器居中）；
+        // - popover 是独立 popup surface，不是主窗口 render tree 里的浮层，所以不会
+        //   出现「改 margin 重排 → 底层不重绘」的拖影；
+        // - `autohide = false`：点应用之后不关闭，点按钮 / ✕ / Esc 才关。
+        // 截图仍可做：`WidgetPaintable` 取的是控件画面（见 `qa::save_widget`）。
         let fs_title = gtk::Label::new(Some("筛选与排序"));
-        fs_title.add_css_class("heading");
         fs_title.set_xalign(0.0);
+        let fs_state = gtk::Label::new(None);
+        fs_state.set_xalign(1.0);
+        fs_state.add_css_class("dim-label");
         let fs_close = gtk::Button::from_icon_name("window-close-symbolic");
         fs_close.add_css_class("flat");
-        fs_close.set_tooltip_text(Some("关闭筛选面板"));
+        fs_close.set_tooltip_text(Some("关闭（未应用的改动会丢弃）"));
         let fs_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        fs_header.append(&fs_title);
+        fs_title.add_css_class("fs-title");
         fs_title.set_hexpand(true);
+        fs_header.append(&fs_title);
+        fs_header.append(&fs_state);
         fs_header.append(&fs_close);
 
+        // ---- 筛选条件区 ----
+        let fs_filter_title = gtk::Label::new(Some("筛选条件"));
+        fs_filter_title.set_xalign(0.0);
+        fs_filter_title.add_css_class("fs-section");
+        fs_filter_title.add_css_class("dim-label");
+        fs_filter_title.set_margin_top(4);
         let fs_column = gtk::DropDown::from_strings(&["（未打开表）"]);
-        fs_column.set_hexpand(true);
+        // 固定宽度：随 hexpand 拉伸会随窗口变宽变成一大条空白下拉，值输入框反而被挤小。
+        fs_column.set_size_request(FS_COLUMN_WIDTH, -1);
         fs_column.set_tooltip_text(Some("筛选列（来自 GetColumns 的列清单）"));
         let fs_operator = gtk::DropDown::from_strings(&Operator::ALL.map(Operator::label));
+        fs_operator.add_css_class("fs-symbol");
         fs_operator.set_tooltip_text(Some("算子：比较 / LIKE / IS NULL"));
         let fs_value = gtk::Entry::new();
-        fs_value.set_placeholder_text(Some("值（IS NULL 类算子不需要）"));
+        fs_value.set_placeholder_text(Some("值"));
         fs_value.set_hexpand(true);
         let fs_add = gtk::Button::with_label("添加条件");
         fs_add.add_css_class("flat");
@@ -915,16 +983,39 @@ impl DataPage {
         fs_row.append(&fs_value);
         fs_row.append(&fs_add);
 
-        let fs_conditions = gtk::ListBox::new();
-        fs_conditions.set_selection_mode(gtk::SelectionMode::None);
-        fs_conditions.add_css_class("boxed-list");
-        let fs_conditions_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .max_content_height(160)
-            .child(&fs_conditions)
-            .build();
+        // 条件清单用普通 `GtkBox` 而不是 `GtkListBox`：`boxed-list` 的主题内边距会把
+        // 一行撑到 ~44px，跟对象树的 24px 行高差一截。这里自己排（行间距 2、行内
+        // 2px 横向留白），密度与树一致。
+        let fs_conditions = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        fs_conditions.add_css_class("fs-list");
+        let fs_conditions_scroll = fs_conditions.clone();
+
+        // ---- 排序区 ----
+        let fs_sort_title = gtk::Label::new(Some("排序"));
+        fs_sort_title.set_xalign(0.0);
+        fs_sort_title.add_css_class("fs-section");
+        fs_sort_title.add_css_class("dim-label");
+        fs_sort_title.set_margin_top(8);
+        let fs_sort_column = gtk::DropDown::from_strings(&["（未打开表）"]);
+        // 与筛选列同宽（左对齐的一小组控件，不铺满整行）。
+        fs_sort_column.set_size_request(FS_COLUMN_WIDTH, -1);
+        fs_sort_column.set_tooltip_text(Some("排序列（来自 GetColumns 的列清单）"));
+        let fs_sort_direction = gtk::DropDown::from_strings(&["asc", "desc"]);
+        fs_sort_direction.add_css_class("fs-symbol");
+        fs_sort_direction.set_tooltip_text(Some("asc = 升序，desc = 降序"));
+        let fs_sort_add = gtk::Button::with_label("添加排序");
+        fs_sort_add.add_css_class("flat");
+        let fs_sort_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        fs_sort_row.append(&fs_sort_column);
+        fs_sort_row.append(&fs_sort_direction);
+        fs_sort_row.append(&fs_sort_add);
+        let fs_sort_row_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        fs_sort_row_spacer.set_hexpand(true);
+        fs_sort_row.append(&fs_sort_row_spacer);
+
+        let fs_sort_list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        fs_sort_list.add_css_class("fs-list");
+        let fs_sort_scroll = fs_sort_list.clone();
 
         let fs_error = gtk::Label::new(None);
         fs_error.set_xalign(0.0);
@@ -933,43 +1024,52 @@ impl DataPage {
         fs_error.add_css_class("caption");
         fs_error.set_visible(false);
 
-        let fs_note = gtk::Label::new(Some(
-            "只支持 AND 组合；应用后回到第 1 页。未知列 / 类型不兼容会在发送前报错，\
-             不会交给数据库报语法错。",
-        ));
-        fs_note.set_xalign(0.0);
-        fs_note.set_wrap(true);
-        fs_note.add_css_class("dim-label");
-        fs_note.add_css_class("caption");
-
-        let fs_apply = gtk::Button::with_label("应用筛选");
+        // 动作区：一行分隔线 + 右对齐两个按钮。文案就是「清空 / 应用」——作用域由面板
+        // 本身说明（面板里只有筛选与排序），不必把对象再写进按钮。
+        let fs_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+        fs_sep.set_margin_top(6);
+        let fs_apply = gtk::Button::with_label("应用");
         fs_apply.add_css_class("suggested-action");
-        let fs_clear = gtk::Button::with_label("清空筛选");
-        let fs_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        fs_apply.add_css_class("fs-action");
+        let fs_clear = gtk::Button::with_label("清空");
+        fs_clear.add_css_class("fs-action");
+        let fs_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         fs_buttons.set_halign(gtk::Align::End);
+        fs_buttons.set_margin_top(2);
         fs_buttons.append(&fs_clear);
         fs_buttons.append(&fs_apply);
 
         let fs_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        fs_card.add_css_class("sqarvo-column-info");
-        fs_card.set_size_request(620, -1);
-        fs_card.set_halign(gtk::Align::End);
-        fs_card.set_valign(gtk::Align::Start);
-        fs_card.set_margin_top(46);
-        fs_card.set_margin_end(12);
-        fs_card.set_visible(false);
+        fs_card.add_css_class("sqarvo-fs");
+        fs_card.set_size_request(FS_PANEL_WIDTH, -1);
         fs_card.append(&fs_header);
+        fs_card.append(&fs_filter_title);
         fs_card.append(&fs_row);
         fs_card.append(&fs_conditions_scroll);
+        fs_card.append(&fs_sort_title);
+        fs_card.append(&fs_sort_row);
+        fs_card.append(&fs_sort_scroll);
         fs_card.append(&fs_error);
-        fs_card.append(&fs_note);
+        fs_card.append(&fs_sep);
         fs_card.append(&fs_buttons);
+
+        // 独立窗口：窗管负责搬移（没有拖影），可以拖到主窗口之外；`hide_on_close`
+        // 让 ✕ 只是隐藏（草稿在关闭时丢弃，见 `close_filter_panel`）。
+        // 挂在漏斗按钮上的 popover：位置贴着按钮（Wayland 下应用无法给独立窗口定位，
+        // `present()` 只会被合成器居中）；它同时是独立 popup surface，不在主窗口的
+        // render tree 里重排，所以不会出现拖影。
+        let fs_popover = gtk::Popover::builder()
+            .autohide(false)
+            .has_arrow(true)
+            .position(gtk::PositionType::Bottom)
+            .child(&fs_card)
+            .build();
+        fs_popover.set_parent(&fs_button);
 
         let overlay = gtk::Overlay::new();
         overlay.set_vexpand(true);
         overlay.set_child(Some(&stack));
         overlay.add_overlay(&cc_card);
-        overlay.add_overlay(&fs_card);
 
         // 开始事务卡片（#88）：隔离级别只在**开始之前**选，不支持的项在这里就禁用
         // 并给出原因，而不是提交后才被服务端拒绝。
@@ -1051,7 +1151,6 @@ impl DataPage {
                 begin,
                 commit_txn,
                 rollback,
-                refresh,
                 commit_changes,
                 discard,
                 delete_row,
@@ -1090,11 +1189,21 @@ impl DataPage {
             cc_list: cc_list.clone(),
             fs_button: fs_button.clone(),
             fs_card: fs_card.clone(),
+            fs_popover: fs_popover.clone(),
             fs_column: fs_column.clone(),
             fs_operator: fs_operator.clone(),
             fs_value: fs_value.clone(),
             fs_error: fs_error.clone(),
             fs_conditions: fs_conditions.clone(),
+            fs_state: fs_state.clone(),
+            fs_sort_column: fs_sort_column.clone(),
+            fs_sort_direction: fs_sort_direction.clone(),
+            fs_sort_list: fs_sort_list.clone(),
+            fs_filter_draft: RefCell::new(FilterSet::new()),
+            fs_sort_draft: RefCell::new(SortOrder::new()),
+            fs_draft_ready: Cell::new(false),
+            fs_editing: Cell::new(None),
+            fs_edited_row: RefCell::new(None),
             badges_row: badges_row.clone(),
             type_row: type_row.clone(),
             type_scroll: type_scroll.clone(),
@@ -1116,6 +1225,7 @@ impl DataPage {
             qa_steps_done: Cell::new(false),
             status_observer: RefCell::new(None),
             last_refresh: Cell::new(None),
+            last_load_note: RefCell::new(String::new()),
             callbacks,
         });
 
@@ -1140,14 +1250,6 @@ impl DataPage {
                 .rollback
                 .clone()
                 .connect_clicked(move |_| page.rollback_transaction());
-        }
-        {
-            let page = Rc::clone(&page);
-            page.buttons.refresh.clone().connect_clicked(move |_| {
-                if page.draft.borrow().is_some() {
-                    page.reload();
-                }
-            });
         }
         {
             let page = Rc::clone(&page);
@@ -1214,12 +1316,12 @@ impl DataPage {
         {
             let page = Rc::clone(&page);
             page.fs_button.clone().connect_clicked(move |_| {
-                page.open_filter_panel();
+                page.toggle_filter_panel();
             });
         }
         {
-            let card = fs_card.clone();
-            fs_close.connect_clicked(move |_| card.set_visible(false));
+            let page = Rc::clone(&page);
+            fs_close.connect_clicked(move |_| page.close_filter_panel());
         }
         {
             let page = Rc::clone(&page);
@@ -1227,11 +1329,47 @@ impl DataPage {
         }
         {
             let page = Rc::clone(&page);
-            fs_apply.connect_clicked(move |_| page.apply_filter());
+            fs_sort_add.connect_clicked(move |_| page.add_sort_key());
+        }
+        {
+            let page = Rc::clone(&page);
+            fs_apply.connect_clicked(move |_| page.apply_browse_options());
         }
         {
             let page = Rc::clone(&page);
             fs_clear.connect_clicked(move |_| page.clear_filter());
+        }
+        {
+            // Esc：先收起行内编辑，没有编辑态时才关面板（一个 Esc 不该把整张面板关掉）。
+            let page = Rc::downgrade(&page);
+            let key = gtk::EventControllerKey::new();
+            key.connect_key_pressed(move |_, keyval, _, _| {
+                if keyval != gtk::gdk::Key::Escape {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(page) = page.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                if page.fs_editing.get().is_some() {
+                    page.cancel_condition_edit();
+                } else {
+                    page.close_filter_panel();
+                }
+                glib::Propagation::Stop
+            });
+            fs_popover.add_controller(key);
+        }
+        {
+            // 点面板空白处收起行内编辑态（点在被编辑的那一行里不算）。
+            let page = Rc::downgrade(&page);
+            let click = gtk::GestureClick::new();
+            click.connect_released(move |_, _, x, y| {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                page.collapse_condition_editor_at(x, y);
+            });
+            fs_card.add_controller(click);
         }
         {
             // 算子切换：IS NULL / IS NOT NULL 不需要值，输入框随之禁用。
@@ -1433,7 +1571,7 @@ impl DataPage {
         }
         self.publish_column_choices();
         self.cc_card.set_visible(!self.cc_card.is_visible());
-        self.fs_card.set_visible(false);
+        self.fs_popover.popdown();
     }
 
     /// 重建列显隐清单（换表 / 刷新时调用）。
@@ -1475,16 +1613,83 @@ impl DataPage {
         );
     }
 
-    /// 打开筛选面板：按当前列清单重建列下拉。
+    // ---- 筛选与排序面板（草稿模型） ----
+    //
+    // 面板里的改动是**草稿**：只有点「应用筛选与排序」才同时写回 `filter` / `sort`
+    // 并发一次请求。关闭面板丢弃草稿，所以草稿状态与「网格正在显示什么」永远分得开。
+
+    /// 「FS」按钮：开 / 关面板。
+    pub fn toggle_filter_panel(self: &Rc<Self>) {
+        if self.fs_popover.is_visible() {
+            self.close_filter_panel();
+        } else {
+            self.open_filter_panel();
+        }
+    }
+
+    /// 打开面板：按当前列清单重建下拉，并把已应用的状态复制成草稿。
     pub fn open_filter_panel(self: &Rc<Self>) {
         if !self.capabilities.get().filtering() {
             return;
         }
         self.rebuild_filter_columns();
-        self.render_filter_conditions();
+        self.fs_draft_ready.set(false);
+        self.ensure_filter_draft();
         self.fs_error.set_visible(false);
-        self.fs_card.set_visible(!self.fs_card.is_visible());
+        self.render_filter_conditions();
+        self.render_sort_keys();
+        self.update_filter_state();
         self.cc_card.set_visible(false);
+        // 锚点（漏斗按钮）落在面板上沿的**黄金分割点**（0.618 处，偏右）。
+        // 默认 popover 把锚点放在正中（0.5），所以向左偏移 0.118 × 面板宽。
+        let shift = -((f64::from(FS_PANEL_WIDTH) * GOLDEN_RATIO_ANCHOR
+            - f64::from(FS_PANEL_WIDTH) / 2.0)
+            .round()) as i32;
+        self.fs_popover.set_offset(shift, 0);
+        self.fs_popover.popup();
+    }
+
+    /// 关闭面板：未应用的改动丢弃（草稿模型的另一半）。
+    pub fn close_filter_panel(self: &Rc<Self>) {
+        self.fs_popover.popdown();
+        self.fs_editing.set(None);
+        self.fs_edited_row.replace(None);
+        self.fs_draft_ready.set(false);
+        self.fs_error.set_visible(false);
+    }
+
+    /// 面板控件（可见时返回）：截图取证用它。
+    ///
+    /// `WidgetPaintable` 取的是控件画面，popover 自己的 popup surface 也能取到。
+    #[must_use]
+    pub fn filter_panel_widget(&self) -> Option<gtk::Popover> {
+        self.fs_popover
+            .is_visible()
+            .then(|| self.fs_popover.clone())
+    }
+
+    /// 标签被摘掉时收尾：面板窗口必须跟着消失。
+    ///
+    /// 页面里的控件回调持有 `Rc<DataPage>`（面板也一样），页面本身不会立刻析构；
+    /// 对**独立窗口**来说，那意味着关掉标签后它还会留在屏幕上——所以显式隐藏。
+    pub fn hide_filter_panel(&self) {
+        self.fs_popover.popdown();
+    }
+
+    /// 草稿 = 已应用状态的副本（打开面板 / 换表后做一次）。
+    fn reset_filter_draft(&self) {
+        self.fs_filter_draft.replace(self.filter.borrow().clone());
+        self.fs_sort_draft.replace(self.sort.borrow().clone());
+        self.fs_editing.set(None);
+        self.fs_edited_row.replace(None);
+        self.fs_draft_ready.set(true);
+    }
+
+    /// 确保草稿存在：QA 与快捷键路径不经过「打开面板」，也要能编辑。
+    fn ensure_filter_draft(&self) {
+        if !self.fs_draft_ready.get() {
+            self.reset_filter_draft();
+        }
     }
 
     fn rebuild_filter_columns(&self) {
@@ -1498,90 +1703,452 @@ impl DataPage {
             return;
         }
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        // 两个下拉共用一份列清单（筛选列 / 排序列）：同一张表的列只取一次。
         let model = gtk::StringList::new(&names);
-        self.fs_column.set_model(Some(&model));
-        self.fs_column.set_selected(0);
+        for dropdown in [&self.fs_column, &self.fs_sort_column] {
+            dropdown.set_model(Some(&model));
+        }
+        self.fs_column
+            .set_selected(self.selected_or_default(&self.fs_column));
+        self.fs_sort_column
+            .set_selected(self.selected_or_default(&self.fs_sort_column));
     }
 
-    /// 「添加条件」：把面板里的列 + 算子 + 值追加到待应用清单。
+    /// 下拉当前下标；未选或越界时回到 0（列清单换了之后旧下标没有意义）。
+    fn selected_or_default(&self, dropdown: &gtk::DropDown) -> u32 {
+        let count = u32::try_from(self.columns.borrow().len()).unwrap_or(0);
+        let selected = dropdown.selected();
+        if selected == gtk::INVALID_LIST_POSITION || selected >= count {
+            0
+        } else {
+            selected
+        }
+    }
+
+    /// 「添加条件」：把编辑器里的列 + 算子 + 值追加到**草稿**。
     pub fn add_filter_condition(self: &Rc<Self>) {
-        let index = usize::try_from(self.fs_column.selected()).unwrap_or(0);
-        let Some(column) = self.columns.borrow().get(index).cloned() else {
-            self.show_filter_error("还没有可筛选的列：先打开一张表");
-            return;
+        self.ensure_filter_draft();
+        let columns = self.columns.borrow().clone();
+        let condition = match Self::read_condition_editor(
+            &columns,
+            &self.fs_column,
+            &self.fs_operator,
+            &self.fs_value,
+        ) {
+            Ok(condition) => condition,
+            Err(error) => {
+                self.show_filter_error(&error);
+                return;
+            }
         };
-        let operator = Operator::from_index(self.fs_operator.selected());
-        let text = self.fs_value.text().to_string();
+        self.fs_filter_draft.borrow_mut().push(condition.clone());
+        self.fs_error.set_visible(false);
+        self.fs_value.set_text("");
+        self.render_filter_conditions();
+        self.update_filter_state();
+        eprintln!(
+            "[data] 筛选条件已加入草稿：{} {} {}（尚未应用）",
+            condition.column,
+            condition.operator.sql(),
+            condition.value.as_deref().unwrap_or("")
+        );
+    }
+
+    /// 读一组「列 + 算子 + 值」控件，按列类型与算子规则校验。
+    ///
+    /// 值不能为空（`IS NULL` 类算子除外）：先在本地说清楚，不把空值发给服务端。
+    fn read_condition_editor(
+        columns: &[TableColumn],
+        column_dropdown: &gtk::DropDown,
+        operator_dropdown: &gtk::DropDown,
+        value: &gtk::Entry,
+    ) -> Result<Condition, String> {
+        let index = usize::try_from(column_dropdown.selected()).unwrap_or(0);
+        let column = columns
+            .get(index)
+            .ok_or_else(|| "还没有可筛选的列：先打开一张表".to_owned())?;
+        let operator = Operator::from_index(operator_dropdown.selected());
+        let text = value.text().to_string();
         if operator.needs_value() && text.trim().is_empty() {
-            self.show_filter_error(&format!(
+            return Err(format!(
                 "{} 需要一个值（列 {} · {}）",
                 operator.label(),
                 column.name,
                 column.type_label
             ));
-            return;
         }
-        {
-            let mut filter = self.filter.borrow_mut();
-            filter.push(Condition {
-                column: column.name.clone(),
-                operator,
-                value: operator.needs_value().then(|| text.clone()),
-            });
-        }
-        self.fs_error.set_visible(false);
-        self.fs_value.set_text("");
-        self.render_filter_conditions();
-        eprintln!(
-            "[data] 筛选条件已添加：{} {} {}",
-            column.name,
-            operator.sql(),
-            if operator.needs_value() {
-                text.as_str()
-            } else {
-                ""
-            }
-        );
+        Ok(Condition {
+            column: column.name.clone(),
+            operator,
+            value: operator.needs_value().then(|| text.clone()),
+        })
     }
 
+    /// 渲染条件清单：点某条进入**行内就地编辑**（列 / 算子 / 值三件套）。
     fn render_filter_conditions(self: &Rc<Self>) {
         while let Some(child) = self.fs_conditions.first_child() {
             self.fs_conditions.remove(&child);
         }
-        let conditions = self.filter.borrow().clone();
+        self.fs_edited_row.replace(None);
+        let editing = self.fs_editing.get();
+        let conditions = self.fs_filter_draft.borrow().clone();
+        if conditions.is_empty() {
+            let hint = empty_hint("无筛选条件");
+            hint.add_css_class("fs-row");
+            self.fs_conditions.append(&hint);
+            return;
+        }
         for (index, condition) in conditions.conditions().iter().enumerate() {
-            let label = gtk::Label::new(Some(&condition.describe()));
-            label.set_xalign(0.0);
-            label.set_hexpand(true);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.add_css_class("monospace");
-            let remove = gtk::Button::from_icon_name("list-remove-symbolic");
-            remove.add_css_class("flat");
-            remove.set_tooltip_text(Some("删除这条条件"));
-            {
-                let page = Rc::clone(self);
-                remove.connect_clicked(move |_| page.remove_filter_condition(index));
+            let row = if editing == Some(index) {
+                self.condition_editor_row(index, condition)
+            } else {
+                self.condition_label_row(index, condition)
+            };
+            self.fs_conditions.append(&row);
+        }
+    }
+
+    /// 条件行（只读态）：点条件文本 / 铅笔图标进入编辑，右侧 ✕ 删除。
+    fn condition_label_row(self: &Rc<Self>, index: usize, condition: &Condition) -> gtk::Box {
+        let label = gtk::Label::new(Some(&condition.describe()));
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_tooltip_text(Some("点击这一条可就地编辑（列 / 算子 / 值）"));
+        label.set_cursor_from_name(Some("text"));
+        {
+            let page = Rc::clone(self);
+            let click = gtk::GestureClick::new();
+            click.connect_released(move |_, _, _, _| page.start_condition_edit(index));
+            label.add_controller(click);
+        }
+        // 不再放铅笔图标：整行文字可点即编辑（多一个图标只增加噪音）。
+        let remove = gtk::Button::from_icon_name("window-close-symbolic");
+        remove.add_css_class("flat");
+        remove.set_tooltip_text(Some("删除这条条件（仍需点「应用」才生效）"));
+        {
+            let page = Rc::clone(self);
+            remove.connect_clicked(move |_| page.remove_filter_condition(index));
+        }
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row.add_css_class("fs-row");
+        row.set_margin_start(2);
+        row.set_margin_end(2);
+        row.append(&label);
+        row.append(&remove);
+        row
+    }
+
+    /// 条件行（编辑态）：列 + 算子 + 值三件套，回车 / 「确定」提交，「取消」或点空白处收起。
+    fn condition_editor_row(self: &Rc<Self>, index: usize, condition: &Condition) -> gtk::Box {
+        let names: Vec<String> = self
+            .columns
+            .borrow()
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let column_dropdown = gtk::DropDown::from_strings(&names);
+        column_dropdown.set_hexpand(true);
+        column_dropdown.set_tooltip_text(Some("筛选列"));
+        if let Some(position) = names.iter().position(|name| *name == condition.column) {
+            column_dropdown.set_selected(u32::try_from(position).unwrap_or(0));
+        }
+        let operator_dropdown = gtk::DropDown::from_strings(&Operator::ALL.map(Operator::label));
+        operator_dropdown.add_css_class("fs-symbol");
+        operator_dropdown.set_tooltip_text(Some("算子：比较 / LIKE / IS NULL"));
+        operator_dropdown.set_selected(condition.operator.index());
+        let value = gtk::Entry::new();
+        value.set_hexpand(true);
+        value.set_placeholder_text(Some("值"));
+        value.set_text(condition.value.as_deref().unwrap_or(""));
+        value.set_sensitive(condition.operator.needs_value());
+        {
+            let value = value.clone();
+            let page = Rc::downgrade(self);
+            operator_dropdown.connect_selected_notify(move |dropdown| {
+                let operator = Operator::from_index(dropdown.selected());
+                value.set_sensitive(operator.needs_value());
+                if !operator.needs_value() {
+                    value.set_text("");
+                }
+                if let Some(page) = page.upgrade() {
+                    page.fs_error.set_visible(false);
+                }
+            });
+        }
+        // 勾 / 叉：与行尾的 × 同一套线条图标，行高不变（文字按钮会把行撑高）。
+        let confirm = gtk::Button::from_icon_name("object-select-symbolic");
+        confirm.add_css_class("flat");
+        confirm.set_tooltip_text(Some("保存这条条件的修改（回车）"));
+        let cancel = gtk::Button::from_icon_name("window-close-symbolic");
+        cancel.add_css_class("flat");
+        cancel.set_tooltip_text(Some("放弃修改（Esc）"));
+        {
+            let page = Rc::clone(self);
+            let column = column_dropdown.clone();
+            let operator = operator_dropdown.clone();
+            let value = value.clone();
+            confirm.connect_clicked(move |_| {
+                page.commit_condition_edit(index, &column, &operator, &value);
+            });
+        }
+        {
+            let page = Rc::clone(self);
+            cancel.connect_clicked(move |_| page.cancel_condition_edit());
+        }
+        {
+            let page = Rc::clone(self);
+            let column = column_dropdown.clone();
+            let operator = operator_dropdown.clone();
+            value.connect_activate(move |entry| {
+                page.commit_condition_edit(index, &column, &operator, entry);
+            });
+        }
+        // 编辑态与只读态**同一套外观**（同底色、同行高）：只把文字换成控件，
+        // 不换颜色、不换字号，避免点一下整行「跳变」。
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row.add_css_class("fs-row");
+        row.set_margin_start(2);
+        row.set_margin_end(2);
+        row.append(&column_dropdown);
+        row.append(&operator_dropdown);
+        row.append(&value);
+        row.append(&confirm);
+        row.append(&cancel);
+        self.fs_edited_row.replace(Some(row.clone().upcast()));
+        row
+    }
+
+    fn start_condition_edit(self: &Rc<Self>, index: usize) {
+        if self.fs_editing.get() == Some(index) {
+            return;
+        }
+        self.fs_editing.set(Some(index));
+        self.fs_error.set_visible(false);
+        self.render_filter_conditions();
+    }
+
+    fn cancel_condition_edit(self: &Rc<Self>) {
+        if self.fs_editing.get().is_none() {
+            return;
+        }
+        self.fs_editing.set(None);
+        self.fs_edited_row.replace(None);
+        self.render_filter_conditions();
+    }
+
+    /// 点面板空白处（不在正在编辑的那一行里）收起编辑态。
+    fn collapse_condition_editor_at(self: &Rc<Self>, x: f64, y: f64) {
+        if self.fs_editing.get().is_none() {
+            return;
+        }
+        let inside = self
+            .fs_edited_row
+            .borrow()
+            .as_ref()
+            .and_then(|row| row.compute_bounds(&self.fs_card))
+            .is_some_and(|bounds| {
+                bounds.contains_point(&gtk::graphene::Point::new(x as f32, y as f32))
+            });
+        if inside {
+            return;
+        }
+        // 在焦点 / 手势回调里重建整行控件容易踩 GTK 的「先销毁后发信号」，
+        // 推迟到下一个主循环迭代再做。
+        let page = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(page) = page.upgrade() {
+                page.cancel_condition_edit();
             }
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
-            row.set_margin_start(8);
-            row.set_margin_end(8);
-            row.append(&label);
-            row.append(&remove);
-            let list_row = gtk::ListBoxRow::new();
-            list_row.set_child(Some(&row));
-            self.fs_conditions.append(&list_row);
+        });
+    }
+
+    fn commit_condition_edit(
+        self: &Rc<Self>,
+        index: usize,
+        column_dropdown: &gtk::DropDown,
+        operator_dropdown: &gtk::DropDown,
+        value: &gtk::Entry,
+    ) {
+        let columns = self.columns.borrow().clone();
+        let condition = match Self::read_condition_editor(
+            &columns,
+            column_dropdown,
+            operator_dropdown,
+            value,
+        ) {
+            Ok(condition) => condition,
+            Err(error) => {
+                self.show_filter_error(&error);
+                return;
+            }
+        };
+        let replaced = self
+            .fs_filter_draft
+            .borrow_mut()
+            .replace(index, condition.clone());
+        match replaced {
+            Ok(()) => {
+                self.fs_editing.set(None);
+                self.fs_edited_row.replace(None);
+                self.fs_error.set_visible(false);
+                self.render_filter_conditions();
+                self.update_filter_state();
+                eprintln!(
+                    "[data] 筛选条件已就地修改：{} {} {}（尚未应用）",
+                    condition.column,
+                    condition.operator.sql(),
+                    condition.value.as_deref().unwrap_or("")
+                );
+            }
+            Err(error) => self.show_filter_error(&error),
         }
     }
 
     fn remove_filter_condition(self: &Rc<Self>, index: usize) {
-        self.filter.borrow_mut().remove(index);
+        self.ensure_filter_draft();
+        self.fs_filter_draft.borrow_mut().remove(index);
+        self.fs_editing.set(None);
         self.render_filter_conditions();
+        self.update_filter_state();
         // 条件删光等于「清空筛选」：下一次应用即可恢复全表。
-        if self.filter.borrow().is_empty() {
-            self.set_status("筛选条件已清空（点「应用筛选」恢复全表）", "normal");
+        if self.fs_filter_draft.borrow().is_empty() {
+            self.set_status("筛选条件已清空（点「应用筛选与排序」恢复全表）", "normal");
         }
+    }
+
+    /// 「添加排序」：把排序列 + 方向加入草稿（同一列再次添加 = 就地改方向）。
+    pub fn add_sort_key(self: &Rc<Self>) {
+        self.ensure_filter_draft();
+        let index = usize::try_from(self.fs_sort_column.selected()).unwrap_or(0);
+        let Some(column) = self.columns.borrow().get(index).cloned() else {
+            self.show_filter_error("还没有可排序的列：先打开一张表");
+            return;
+        };
+        if !self.capabilities.get().sorting() {
+            self.show_filter_error("当前驱动不支持排序");
+            return;
+        }
+        let direction = if self.fs_sort_direction.selected() == 1 {
+            Direction::Descending
+        } else {
+            Direction::Ascending
+        };
+        self.fs_sort_draft
+            .borrow_mut()
+            .set_key(&column.name, direction);
+        self.fs_error.set_visible(false);
+        self.render_sort_keys();
+        self.update_filter_state();
+        eprintln!(
+            "[data] 排序键已加入草稿：{} {}（尚未应用）",
+            column.name,
+            direction.label()
+        );
+    }
+
+    /// 渲染排序清单：序号 + 列 + 方向，↑/↓ 调次序、✕ 删除，点行切换方向。
+    fn render_sort_keys(self: &Rc<Self>) {
+        while let Some(child) = self.fs_sort_list.first_child() {
+            self.fs_sort_list.remove(&child);
+        }
+        let keys = self.fs_sort_draft.borrow().keys().to_vec();
+        if keys.is_empty() {
+            let hint = empty_hint("默认排序（主键）");
+            hint.add_css_class("fs-row");
+            self.fs_sort_list.append(&hint);
+            return;
+        }
+        for (index, key) in keys.iter().enumerate() {
+            // 纯文本：列名 + asc/desc。不写序号——列表从上到下就是优先级，
+            // 序号与 ↑/↓ 表达的是同一件事，多一个数字只多一层噪音。
+            let label = gtk::Label::new(Some(&format!(
+                "{}  {}",
+                key.column,
+                direction_text(key.direction)
+            )));
+            label.set_xalign(0.0);
+            label.set_hexpand(true);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.set_tooltip_text(Some("点击切换 asc / desc"));
+            label.set_cursor_from_name(Some("pointer"));
+            {
+                let page = Rc::clone(self);
+                let click = gtk::GestureClick::new();
+                click.connect_released(move |_, _, _, _| page.toggle_sort_key_direction(index));
+                label.add_controller(click);
+            }
+            let up = gtk::Button::from_icon_name("go-up-symbolic");
+            up.add_css_class("flat");
+            up.set_tooltip_text(Some("上移（更优先）"));
+            up.set_sensitive(index > 0);
+            {
+                let page = Rc::clone(self);
+                up.connect_clicked(move |_| page.move_sort_key(index, true));
+            }
+            let down = gtk::Button::from_icon_name("go-down-symbolic");
+            down.add_css_class("flat");
+            down.set_tooltip_text(Some("下移（更次要）"));
+            down.set_sensitive(index + 1 < keys.len());
+            {
+                let page = Rc::clone(self);
+                down.connect_clicked(move |_| page.move_sort_key(index, false));
+            }
+            let remove = gtk::Button::from_icon_name("window-close-symbolic");
+            remove.add_css_class("flat");
+            remove.set_tooltip_text(Some("删掉这个排序键（仍需点「应用」才生效）"));
+            {
+                let page = Rc::clone(self);
+                remove.connect_clicked(move |_| page.remove_sort_key(index));
+            }
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            row.add_css_class("fs-row");
+            row.set_margin_start(2);
+            row.set_margin_end(2);
+            row.append(&label);
+            row.append(&up);
+            row.append(&down);
+            row.append(&remove);
+            self.fs_sort_list.append(&row);
+        }
+    }
+
+    fn toggle_sort_key_direction(self: &Rc<Self>, index: usize) {
+        self.ensure_filter_draft();
+        let current = self
+            .fs_sort_draft
+            .borrow()
+            .keys()
+            .get(index)
+            .map(|key| (key.column.clone(), key.direction));
+        let Some((column, direction)) = current else {
+            return;
+        };
+        self.fs_sort_draft
+            .borrow_mut()
+            .set_key(&column, direction.flipped());
+        self.render_sort_keys();
+        self.update_filter_state();
+    }
+
+    fn move_sort_key(self: &Rc<Self>, index: usize, up: bool) {
+        {
+            let mut draft = self.fs_sort_draft.borrow_mut();
+            if up {
+                draft.move_up(index);
+            } else {
+                draft.move_down(index);
+            }
+        }
+        self.render_sort_keys();
+        self.update_filter_state();
+    }
+
+    fn remove_sort_key(self: &Rc<Self>, index: usize) {
+        self.fs_sort_draft.borrow_mut().remove(index);
+        self.render_sort_keys();
+        self.update_filter_state();
     }
 
     fn show_filter_error(&self, message: &str) {
@@ -1590,12 +2157,37 @@ impl DataPage {
         self.fs_error.set_visible(true);
     }
 
-    /// 「应用筛选」：按列类型校验后发请求；失败就地显示可读原因，绝不发出去。
-    pub fn apply_filter(self: &Rc<Self>) {
+    /// 标题条右侧：草稿是否偏离已应用状态（用户必须能看出「点了应用才算数」）。
+    fn update_filter_state(&self) {
+        let same = *self.fs_filter_draft.borrow() == *self.filter.borrow()
+            && *self.fs_sort_draft.borrow() == *self.sort.borrow();
+        for class in ["dim-label", "warning"] {
+            self.fs_state.remove_css_class(class);
+        }
+        if same {
+            self.fs_state.set_text("已应用");
+            self.fs_state.add_css_class("dim-label");
+            self.fs_state
+                .set_tooltip_text(Some("面板里的筛选与排序就是表格正在用的那一套"));
+        } else {
+            self.fs_state.set_text("有未应用的更改");
+            self.fs_state.add_css_class("warning");
+            self.fs_state
+                .set_tooltip_text(Some("点「应用筛选与排序」才会生效；关闭面板会丢弃这些改动"));
+        }
+    }
+
+    /// 「应用筛选与排序」：按列类型校验草稿后**一次性**提交筛选 + 排序，回到第 1 页。
+    ///
+    /// 面板**不关闭**：用户要能连续微调条件（这正是这一版要解决的问题）。
+    pub fn apply_browse_options(self: &Rc<Self>) {
         if self.dirty_guard() {
             return;
         }
-        let proto = match self.filter.borrow().to_proto(&self.columns.borrow()) {
+        self.ensure_filter_draft();
+        let columns = self.columns.borrow().clone();
+        let filter_draft = self.fs_filter_draft.borrow().clone();
+        let proto = match filter_draft.to_proto(&columns) {
             Ok(proto) => proto,
             Err(error) => {
                 self.show_filter_error(&error);
@@ -1603,30 +2195,57 @@ impl DataPage {
                 return;
             }
         };
+        let sort_draft = self.fs_sort_draft.borrow().clone();
+        // 未知列在这里就拦下（与筛选同一条口径：不发出去等数据库报语法错）。
+        if let Some(unknown) = sort_draft
+            .keys()
+            .iter()
+            .find(|key| !columns.iter().any(|column| column.name == key.column))
+        {
+            let error = format!("排序列 {} 不在当前表的列清单里（未知列）", unknown.column);
+            self.show_filter_error(&error);
+            self.set_status(&error, "error");
+            return;
+        }
+        let condition_count = filter_draft.conditions().len();
+        let sort_count = sort_draft.keys().len();
+        // 草稿写回唯一状态：网格、摘要、表头标记此后都以它为口径。
+        self.filter.replace(filter_draft);
+        self.sort.replace(sort_draft);
         self.filter_proto.replace(proto.clone());
         self.fs_error.set_visible(false);
-        self.fs_card.set_visible(false);
-        // 筛选变了：回到第 1 页（与 worker 同一口径，界面先重置再请求）。
+        self.fs_editing.set(None);
+        self.render_filter_conditions();
+        self.refresh_header_titles();
+        self.update_filter_state();
+        // 筛选/排序变了：回到第 1 页（与 worker 同一口径，界面先重置再请求）。
         self.reset_pager_for_new_query();
         let sort = self.sort.borrow().to_proto();
         (self.callbacks.set_browse)(sort, proto);
-        let condition_count = self.filter.borrow().conditions().len();
         eprintln!(
-            "[data] t=+{}ms 应用筛选：{condition_count} 条条件（AND），已回到第 1 页",
+            "[data] t=+{}ms 应用筛选与排序：{condition_count} 条条件（AND）· {sort_count} 个排序键 · 已回到第 1 页",
             crate::qa::elapsed_ms()
         );
         self.set_status(
-            &format!("筛选已应用（{condition_count} 条，AND）· 回到第 1 页"),
+            &format!(
+                "筛选与排序已应用（{condition_count} 条条件 · {sort_count} 个排序键）· 回到第 1 页"
+            ),
             "normal",
         );
     }
 
-    /// 「清空筛选」：不发请求，等用户点应用；这里同步清空待应用清单。
+    /// 「清空条件与排序」：只清草稿，仍需点「应用」才生效（避免一按就改掉正在看的数据）。
     pub fn clear_filter(self: &Rc<Self>) {
-        self.filter.borrow_mut().clear();
+        self.ensure_filter_draft();
+        self.fs_filter_draft.borrow_mut().clear();
+        self.fs_sort_draft.borrow_mut().clear();
+        self.fs_editing.set(None);
+        self.fs_edited_row.replace(None);
         self.render_filter_conditions();
+        self.render_sort_keys();
         self.fs_error.set_visible(false);
-        self.set_status("筛选条件已清空", "normal");
+        self.update_filter_state();
+        self.set_status("条件与排序已清空（点「应用筛选与排序」恢复全表）", "normal");
     }
 
     /// 换排序（列头点击）：回到第 1 页。`extend` = Shift 多列排序。
@@ -1650,6 +2269,13 @@ impl DataPage {
             sort.toggle(&column, extend);
         }
         self.refresh_header_titles();
+        // 面板开着时表头点击也生效（列头本来就是排序的另一个入口）：把草稿同步过来，
+        // 否则用户在面板里点「应用」会把刚点的列头排序悄悄撤掉。
+        if self.fs_popover.is_visible() {
+            self.fs_sort_draft.replace(self.sort.borrow().clone());
+            self.render_sort_keys();
+            self.update_filter_state();
+        }
         let sort = self.sort.borrow().to_proto();
         let filter = self.filter_proto.borrow().clone();
         // 排序变了：回到第 1 页。
@@ -2672,10 +3298,59 @@ impl DataPage {
         if self.fs_error.is_visible() {
             return Err(self.fs_error.text().to_string());
         }
-        self.apply_filter();
+        self.apply_browse_options();
         if self.filter_proto.borrow().is_none() {
             return Err("筛选没有生效（filter_proto 为空）".to_owned());
         }
+        Ok(())
+    }
+
+    /// QA：走**面板的排序区**加一个排序键并应用（与点「添加排序 + 应用」同一条路径）。
+    pub fn qa_apply_sort(
+        self: &Rc<Self>,
+        column: &str,
+        direction: Direction,
+    ) -> Result<(), String> {
+        if !self.capabilities.get().sorting() {
+            return Err("当前驱动不支持排序".to_owned());
+        }
+        let index = self.column_index(column)?;
+        self.rebuild_filter_columns();
+        self.fs_sort_column
+            .set_selected(u32::try_from(index).unwrap_or(0));
+        self.fs_sort_direction
+            .set_selected(u32::from(direction == Direction::Descending));
+        self.add_sort_key();
+        if self.fs_error.is_visible() {
+            return Err(self.fs_error.text().to_string());
+        }
+        self.apply_browse_options();
+        let applied = self
+            .sort
+            .borrow()
+            .keys()
+            .iter()
+            .any(|key| key.column == column && key.direction == direction);
+        if !applied {
+            return Err(format!("排序没有生效（{column} {direction:?}）"));
+        }
+        Ok(())
+    }
+
+    /// QA：把第 `index` 条筛选条件切到行内编辑态（走与「点条件行」同一条路径）。
+    pub fn qa_edit_condition(self: &Rc<Self>, index: usize) -> Result<(), String> {
+        self.ensure_filter_draft();
+        let count = self.fs_filter_draft.borrow().conditions().len();
+        if index >= count {
+            return Err(format!(
+                "没有第 {} 条筛选条件（当前 {count} 条）",
+                index + 1
+            ));
+        }
+        if !self.fs_popover.is_visible() {
+            self.open_filter_panel();
+        }
+        self.start_condition_edit(index);
         Ok(())
     }
 
@@ -2775,6 +3450,10 @@ impl DataPage {
         self.insert.replace(None);
         self.after_insert_batch.replace(None);
         self.txn_card.set_visible(false);
+        // 面板草稿绑定旧表的列：换表/刷新后必须重新从已应用状态复制。
+        self.fs_draft_ready.set(false);
+        self.fs_editing.set(None);
+        self.fs_edited_row.replace(None);
         self.columns.borrow_mut().clear();
         self.has_more.set(false);
         self.loading_page.set(true);
@@ -3335,7 +4014,7 @@ impl DataPage {
                 .label()
                 .map(|label| label.to_string())
                 .unwrap_or_default(),
-            status_text: self.status.text().to_string(),
+            status_text: self.status_or_load_note(),
             submit_phase: self
                 .submit
                 .borrow()
@@ -3413,7 +4092,7 @@ impl DataPage {
             },
             row_ops: self.row_ops_state(),
             last_refresh: self.last_refresh.get(),
-            status_text: self.status.text().to_string(),
+            status_text: self.status_or_load_note(),
             summary: self.summary(),
             can_first: pager.can_first(),
             can_previous: pager.can_previous(),
@@ -3423,7 +4102,10 @@ impl DataPage {
         }
     }
 
-    /// 行操作可用性：直接读页内按钮的 `sensitive`，不重复一遍判定条件。
+    /// 行操作可用性：页内按钮直接读自身 `sensitive`，不重复一遍判定条件。
+    ///
+    /// 「重新读取」例外：它的入口只在状态栏（工具条那个纯重复的图标已删除），
+    /// 所以可用性在这里按状态判定（[`Self::refresh_available`]）。
     #[must_use]
     pub fn row_ops_state(&self) -> RowOpsState {
         let state = RowOpsState {
@@ -3431,7 +4113,7 @@ impl DataPage {
             delete: self.buttons.delete_row.is_sensitive(),
             apply: self.buttons.commit_changes.is_sensitive(),
             discard: self.buttons.discard.is_sensitive(),
-            refresh: self.buttons.refresh.is_sensitive(),
+            refresh: self.refresh_available(),
             cancel: self
                 .submit
                 .borrow()
@@ -3450,6 +4132,26 @@ impl DataPage {
                 ..state
             }
         }
+    }
+
+    /// 「重新读取当前表」是否可用。
+    ///
+    /// 三条约束：已打开表、没有 RPC 在途（也不在读取中/已断开）、**没有未提交的更改**
+    /// （`begin_open` 会清空草稿，刷新等于丢掉编辑；与翻页/排序/筛选同一条规则）。
+    #[must_use]
+    fn refresh_available(&self) -> bool {
+        let has_table = self.table.borrow().is_some();
+        let state_ok = matches!(
+            self.state.get(),
+            DataState::Ready | DataState::Empty | DataState::Error
+        );
+        let dirty = self
+            .draft
+            .borrow()
+            .as_ref()
+            .is_some_and(|draft| draft.dirty_rows() > 0);
+        let has_insert = self.insert.borrow().is_some();
+        has_table && state_ok && !self.busy.get() && !dirty && !has_insert
     }
 
     /// 为什么行操作一个都不能点（状态栏 tooltip 用，按当前状态给具体原因）。
@@ -3481,6 +4183,8 @@ impl DataPage {
             RowOp::Delete => self.delete_selected_row(),
             RowOp::Apply => self.on_commit_clicked(),
             RowOp::Discard => self.discard_changes(),
+            // 刷新会替换整页数据：与翻页/排序/筛选同一条守卫（有未提交更改时先提交或放弃）。
+            RowOp::Refresh if self.dirty_guard() => {}
             RowOp::Refresh => self.reload(),
             RowOp::Cancel => self.request_cancel_submit(),
         }
@@ -4823,8 +5527,22 @@ impl DataPage {
         }
     }
 
+    /// 状态栏 tooltip 用的文案：有临时消息就说消息，没有就说最近一次读取的摘要。
+    ///
+    /// 工具条下那行只显示消息；行数摘要不占可见文案，但仍要能被状态栏 tooltip
+    /// 解释「这 500 行是从哪来的」。
+    fn status_or_load_note(&self) -> String {
+        let text = self.status.text().to_string();
+        if text.trim().is_empty() {
+            self.last_load_note.borrow().clone()
+        } else {
+            text
+        }
+    }
+
     fn set_status(&self, text: &str, kind: &str) {
         self.status.set_text(text);
+
         for class in ["error", "warning", "success", "dim-label"] {
             self.status.remove_css_class(class);
         }
@@ -4843,36 +5561,20 @@ impl DataPage {
         self.last_refresh.set(Some(Instant::now()));
         self.loading_page.set(false);
         let rows = self.row_count();
-        let pager = self.pager.get();
-        let total = pager
-            .total
-            .text()
-            .map(|text| format!(" · {text}"))
-            .unwrap_or_default();
-        let position = format!(" · {}", pager.page_label());
         let suffix = if has_more { " · 还有下一页" } else { "" };
-        if rows == 0 {
-            // 空页不是「空表」：offset 超出时如实说明，不伪造总数。
-            self.set_status(
-                &if pager.offset > 0 {
-                    format!("本页无数据（offset {}）{total}{position}", pager.offset)
-                } else {
-                    format!("空表{total}{position}")
-                },
-                "dim-label",
-            );
-            return;
-        }
-        if self.is_read_only() {
-            self.set_status(
-                &format!("只读 · 本页 {rows} 行{total}{position}{suffix}"),
-                "warning",
-            );
+        // 行数 / 页码 / 总数只在状态栏出现一次（行 1 分页器 + 行 2 记录位置）。
+        // 工具条下方这一行只放**本次操作的临时消息**：读取完成时擦掉「正在读取…」，
+        // 摘要只写进 last_load_note（状态栏 tooltip），不占可见文案。
+        self.last_load_note.replace(if rows == 0 {
+            match self.pager.get().offset {
+                0 => "空表".to_owned(),
+                offset => format!("本页无数据（offset {offset}）"),
+            }
         } else {
-            self.set_status(
-                &format!("本页 {rows} 行{total}{position}{suffix}"),
-                "success",
-            );
+            format!("本页 {rows} 行{suffix}")
+        });
+        if self.status.text().starts_with("正在读取") {
+            self.set_status("", "normal");
         }
     }
 
@@ -4954,9 +5656,6 @@ impl DataPage {
             "destructive-action",
             badge.can_rollback() && !busy,
         );
-        self.buttons
-            .refresh
-            .set_sensitive(self.draft.borrow().is_some() && !busy);
         // 「提交更改」在在途时变成「取消提交」：必须可点；取消中（已在等结果）
         // 与普通状态都按原规则（有脏行且不在忙）。
         let submit_phase = self.submit.borrow().as_ref().map(|snapshot| snapshot.phase);

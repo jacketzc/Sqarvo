@@ -1530,6 +1530,19 @@ impl TabSet {
         let Some(tab) = self.current() else {
             return;
         };
+        // 筛选与排序面板是「某个表标签自己的独立窗口」：切走标签时必须收起，否则它会
+        // 悬在另一个标签的数据上，用户会以为那些条件作用于眼前这张表。
+        {
+            let current_id = tab.id.clone();
+            for other in self.tabs.borrow().iter() {
+                if other.id == current_id {
+                    continue;
+                }
+                if let Some(data) = other.data.as_ref() {
+                    data.hide_filter_panel();
+                }
+            }
+        }
         // 标题属于当前标签（§5.1）；副标题是连接级信息，不随标签改。
         let title = match &tab.kind {
             TabKind::Objects => format!(
@@ -1973,6 +1986,11 @@ impl TabSet {
         };
         if matches!(removed.kind, TabKind::Objects) {
             return;
+        }
+        // 筛选与排序面板是独立窗口：标签没了它必须跟着消失（页面回调持有 Rc，页面
+        // 不会立刻析构，不显式隐藏就留一扇空窗在屏幕上）。
+        if let Some(data) = removed.data.as_ref() {
+            data.hide_filter_panel();
         }
         // 关闭标签即释放它自己的会话：worker 的 `CloseTabSession` 先 Cancel 在途查询、
         // 再 Close 游标，最后 Disconnect。这里**不**单独发 `CloseQuery`——那会把游标
@@ -2449,6 +2467,47 @@ impl TabSet {
                     )
                 })
             }
+            QaStep::SortPanel {
+                tab,
+                column,
+                descending,
+            } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                let direction = if *descending {
+                    crate::browse_view::Direction::Descending
+                } else {
+                    crate::browse_view::Direction::Ascending
+                };
+                data.qa_apply_sort(column, direction).map(|()| {
+                    format!(
+                        "第 {tab} 个标签在筛选面板里排序：{column} {}",
+                        direction.label()
+                    )
+                })
+            }
+            QaStep::FilterPanel { tab, open } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                if *open {
+                    data.open_filter_panel();
+                } else {
+                    data.close_filter_panel();
+                }
+                Ok(format!(
+                    "第 {tab} 个标签{}筛选与排序面板",
+                    if *open { "打开" } else { "关闭" }
+                ))
+            }
+            QaStep::EditCondition { tab, index } => {
+                let data = self
+                    .data_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
+                data.qa_edit_condition(index.saturating_sub(1))
+                    .map(|()| format!("第 {tab} 个标签第 {index} 条条件进入行内编辑"))
+            }
             QaStep::Page { tab, action } => {
                 let data = self
                     .data_page_at(*tab)
@@ -2501,8 +2560,17 @@ impl TabSet {
                 let window = self
                     .window()
                     .ok_or_else(|| "还没有主窗口（无法截图）".to_owned())?;
-                crate::qa::save_window(&window, std::path::Path::new(path))
-                    .map_err(|error| format!("截图失败：{error}"))?;
+                // 筛选与排序面板是**独立窗口**：它开着时截图要拍它（用户此刻看到的就是
+                // 它），否则拍主窗口。渲染器仍借主窗口的 surface——`WidgetPaintable` 取的是
+                // 控件画面，跟做在哪个 surface 上无关。
+                let panel = self.data_page().and_then(|data| data.filter_panel_widget());
+                match panel {
+                    Some(panel) => {
+                        crate::qa::save_widget(&window, &panel, std::path::Path::new(path))
+                    }
+                    None => crate::qa::save_window(&window, std::path::Path::new(path)),
+                }
+                .map_err(|error| format!("截图失败：{error}"))?;
                 let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
                 eprintln!(
                     "[qa] t=+{}ms 截图：{path}（{size} 字节）",
@@ -2943,6 +3011,29 @@ pub enum QaStep {
         /// 比较值。
         value: String,
     },
+    /// `sort-panel <标签> <列> <asc|desc>`：走筛选与排序面板的排序区加键并应用。
+    SortPanel {
+        /// 标签序号。
+        tab: usize,
+        /// 列名。
+        column: String,
+        /// 是否降序。
+        descending: bool,
+    },
+    /// `filter-panel <标签> <open|close>`：开 / 关筛选与排序面板（截图取证用）。
+    FilterPanel {
+        /// 标签序号。
+        tab: usize,
+        /// 是否打开。
+        open: bool,
+    },
+    /// `edit-condition <标签> <序号>`：把第 N 条筛选条件切到行内编辑态（1 起）。
+    EditCondition {
+        /// 标签序号。
+        tab: usize,
+        /// 条件下标（1 起）。
+        index: usize,
+    },
     /// `page <标签> <next|prev|first|last>`：分页器动作。
     Page {
         /// 标签序号。
@@ -3340,6 +3431,58 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     column: (*column).to_owned(),
                     operator: (*operator).to_owned(),
                     value: (*value).to_owned(),
+                }
+            }
+            "sort-panel" => {
+                let index = parse_index(&parts, 1, number)?;
+                let column = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少列名", number + 1))?;
+                let direction = parts
+                    .get(3)
+                    .ok_or_else(|| format!("第 {} 行缺少 asc|desc", number + 1))?;
+                if !matches!(*direction, "asc" | "desc") {
+                    return Err(format!(
+                        "第 {} 行 sort-panel 的方向只接受 asc|desc，实际：{direction}",
+                        number + 1
+                    ));
+                }
+                QaStep::SortPanel {
+                    tab: index,
+                    column: (*column).to_owned(),
+                    descending: *direction == "desc",
+                }
+            }
+            "filter-panel" => {
+                let index = parse_index(&parts, 1, number)?;
+                let mode = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少 open|close", number + 1))?;
+                if !matches!(*mode, "open" | "close") {
+                    return Err(format!(
+                        "第 {} 行 filter-panel 只接受 open|close，实际：{mode}",
+                        number + 1
+                    ));
+                }
+                QaStep::FilterPanel {
+                    tab: index,
+                    open: *mode == "open",
+                }
+            }
+            "edit-condition" => {
+                let index = parse_index(&parts, 1, number)?;
+                let ordinal = parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少条件序号", number + 1))?;
+                let ordinal = ordinal.parse::<usize>().map_err(|_| {
+                    format!("第 {} 行的条件序号不是合法数字：{ordinal}", number + 1)
+                })?;
+                if ordinal == 0 {
+                    return Err(format!("第 {} 行的条件序号从 1 起", number + 1));
+                }
+                QaStep::EditCondition {
+                    tab: index,
+                    index: ordinal,
                 }
             }
             "page" => {

@@ -1200,8 +1200,10 @@ impl StatusBar {
     }
 }
 
-/// 行 2 中段：记录位置。总数三态由 `position_text` 表达（精确 / 估计 / 未知），
-/// 拿不到总数就不说总数（§9：不编造）。
+/// 行 2 中段：记录位置 = 本页在表里的**行号区间**。
+///
+/// 页码与总数只在分页器旁（行 1 右组）出现一次；这一格重复它们就成了同一句话说三遍
+/// （工具条下方还写过第三遍）。行号区间是分页器给不出的信息，两者互补而不重复。
 fn record_text(snapshot: &StatusSnapshot) -> String {
     let Some(table) = snapshot.table.as_ref() else {
         return "未打开表".to_owned();
@@ -1252,8 +1254,9 @@ fn clock_time(instant: Instant) -> String {
 mod tests {
     use super::*;
     use crate::backend::table::TableEntry;
+    use crate::browse_view::{PagerState, TotalInfo};
     use crate::data_page::RowOpsState;
-    use crate::proto::services::v1::ObjectRef;
+    use crate::proto::services::v1::{ObjectRef, TotalKind};
 
     fn table(name: &str) -> TableEntry {
         TableEntry {
@@ -1290,7 +1293,7 @@ mod tests {
             page_index: 1,
             page_count: None,
             total_text: None,
-            position_text: "第 1 页 · 本页 0 行".to_owned(),
+            position_text: PagerState::new(0, 500, TotalInfo::unknown(), false, 0).position_text(),
             selected_count: 0,
             dirty: 0,
             pending: 0,
@@ -1308,33 +1311,49 @@ mod tests {
     }
 
     #[test]
-    fn record_text_carries_the_position_text_without_inventing_a_total() {
+    fn record_text_carries_the_row_span_without_repeating_page_or_total() {
         let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
         snapshot.rows = 500;
-        snapshot.position_text = "第 1 页 · 本页 500 行".to_owned();
+        snapshot.position_text = PagerState::new(
+            0,
+            500,
+            TotalInfo::from_proto(TotalKind::Unknown as i32, 0, false),
+            true,
+            500,
+        )
+        .position_text();
         let text = record_text(&snapshot);
-        assert_eq!(text, "items · 第 1 页 · 本页 500 行");
-        // 未知总数时不能出现「共 / of」这种需要服务端总数的说法。
+        assert_eq!(text, "items · 第 1–500 行");
+        // 页码与总数只在分页器旁出现一次：这一格重复它们就是同一句话说三遍。
+        assert!(!text.contains("页"), "实际：{text}");
         assert!(!text.contains("共 "));
         assert!(!text.contains(" of "));
     }
 
     #[test]
-    fn record_text_uses_the_exact_total_when_the_server_gave_one() {
+    fn record_text_follows_the_offset_so_the_span_moves_with_the_page() {
         let mut snapshot = snapshot(DataState::Ready, Some(table("items")));
         snapshot.rows = 500;
-        snapshot.page_index = 1;
+        snapshot.page_index = 2;
         snapshot.page_count = Some(3);
         snapshot.total_text = Some("共 1200 行".to_owned());
-        snapshot.position_text = "Record 1 of 1200 in page 1".to_owned();
+        snapshot.position_text = PagerState::new(
+            500,
+            500,
+            TotalInfo::from_proto(TotalKind::Exact as i32, 1200, false),
+            true,
+            500,
+        )
+        .position_text();
         let text = record_text(&snapshot);
-        assert_eq!(text, "items · Record 1 of 1200 in page 1");
+        assert_eq!(text, "items · 第 501–1000 行");
+        assert!(!text.contains("页"), "页码不在这里重复：{text}");
     }
 
     #[test]
     fn record_text_stops_at_the_loaded_rows_for_empty_tables() {
         let snapshot = snapshot(DataState::Empty, Some(table("empty_items")));
-        assert_eq!(record_text(&snapshot), "empty_items · 第 1 页 · 本页 0 行");
+        assert_eq!(record_text(&snapshot), "empty_items · 空表");
     }
 
     #[test]

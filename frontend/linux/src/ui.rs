@@ -3836,7 +3836,8 @@ fn install_window_actions(
             if let Some(workspace) = state.workspace.borrow().as_ref().cloned()
                 && let Some(data) = workspace.tabs.data_page()
             {
-                data.reload();
+                // 与状态栏的刷新走同一条入口（含「有未提交更改时拒绝」的守卫）。
+                data.perform_row_op(crate::data_page::RowOp::Refresh);
             }
         });
     }

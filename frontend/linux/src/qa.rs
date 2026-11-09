@@ -87,6 +87,9 @@
 //! - #121 增补（全部是 `--qa-tabs-file` 的**脚本步骤**，不新增命令行开关）：
 //!   `expand <名字>`（展开树节点）、`select-node <名字>`（选中并切信息面板）、
 //!   `inspector <ddl|info|show|hide>`、`sort <标签> <列>[:shift]`、
+//!   `sort-panel <标签> <列> <asc|desc>`（走筛选面板的排序区）、
+//!   `filter-panel <标签> <open|close>`（面板截图取证）、`edit-condition <标签> <序号>`
+//!   （条件行内编辑态）、
 //!   `filter <标签> <列> <算子> <值>`、`page <标签> <next|prev|first|last>`、
 //!   `export <标签> <路径>`、`expect-file <路径> <最少字节>`、`screenshot <路径>`
 //!   （GTK 自渲染，仓库外取证）、`focus-search`（等价于 §10 的 Ctrl+F 焦点目标）、

@@ -152,6 +152,51 @@ pub fn stylesheet() -> String {
            避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
         .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
 
+        /* 筛选与排序面板（popover）：密度跟对象树一致——12px 正文、24px 行高、
+           11px 说明字。面板里不用 13px 标题，否则它在表格旁边比树「大一号」。 */
+        .sqarvo-fs .fs-title {{ font-weight: 600; }}
+        /* 面板里**只有一种字号** = 12px（与对象树一致）：正文、按钮、下拉、输入框、
+           说明字统一，层级只靠字重与颜色。11/12/13/14 混用正是「看起来不统一」的来源。 */
+        .sqarvo-fs label,
+        .sqarvo-fs button,
+        .sqarvo-fs entry,
+        .sqarvo-fs dropdown {{ font-size: {ui}px; }}
+        .sqarvo-fs button {{ min-height: 26px; padding: 2px 10px; }}
+        /* 纯符号下拉（算子 / 方向）不显示右侧箭头：旁边就是值，箭头只是噪音。
+           `arrow` 是 GTK 的下拉箭头 CSS **节点名**（`dropdown arrow`，见 GTK 默认主题
+           里的 `dropdown arrow {{ -gtk-icon-source: ... }}`），不是类名。 */
+        .sqarvo-fs dropdown.fs-symbol arrow {{
+            -gtk-icon-source: none;
+            min-width: 0;
+            min-height: 0;
+            padding: 0;
+            margin: 0;
+        }}
+        /* 条件 / 排序清单的行：24px 行高（与对象树一致）。已加的条件 / 排序键是淡底色 +
+           圆角的「实体条」，点它展开编辑器时形态连续，不会一行文字突然炸成控件。 */
+        .sqarvo-fs .fs-row {{
+            min-height: 24px;
+            padding: 0 4px;
+            border-radius: 6px;
+            background: alpha(currentColor, 0.06);
+            box-shadow: 0 1px 2px alpha(black, 0.06);
+        }}
+        .sqarvo-fs .fs-row:hover {{ background: alpha(currentColor, 0.10); }}
+        /* 行内控件 / 按钮都压在 24px：编辑态与只读态行高相同，点一下就换内容，
+           整行不跳高。 */
+        .sqarvo-fs .fs-row entry,
+        .sqarvo-fs .fs-row dropdown {{
+            min-height: 24px;
+            padding-top: 0;
+            padding-bottom: 0;
+        }}
+        .sqarvo-fs .fs-row button {{
+            min-height: 22px;
+            min-width: 22px;
+            padding: 0 2px;
+        }}
+        .sqarvo-fs .fs-action {{ min-height: 28px; padding: 2px 14px; }}
+
         /* 当前种类高亮：按钮因「新建表/视图…」尚未实现而禁用，高亮仍要看得见 */
         .sqarvo-kind-active:disabled {{
             background: alpha(@accent_color, 0.20);

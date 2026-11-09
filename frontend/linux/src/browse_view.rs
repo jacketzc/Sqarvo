@@ -234,6 +234,46 @@ impl SortOrder {
         }
     }
 
+    /// 面板「添加排序」：设置某列的方向。
+    ///
+    /// 与表头点击的 [`Self::toggle`] 不同，这里**不**清空其它键：面板里的排序是一张
+    /// 有序清单，用户显式指定方向；已存在的列就地改方向并保持它原来的次序。
+    pub fn set_key(&mut self, column: &str, direction: Direction) {
+        match self.keys.iter_mut().find(|key| key.column == column) {
+            Some(key) => key.direction = direction,
+            None => self.keys.push(SortSpec {
+                column: column.to_owned(),
+                direction,
+            }),
+        }
+    }
+
+    /// 删掉第 `index` 个键（越界忽略）。
+    pub fn remove(&mut self, index: usize) {
+        if index < self.keys.len() {
+            self.keys.remove(index);
+        }
+    }
+
+    /// 上移一个键（越界或已在首位时忽略）。
+    pub fn move_up(&mut self, index: usize) {
+        if index > 0 && index < self.keys.len() {
+            self.keys.swap(index - 1, index);
+        }
+    }
+
+    /// 下移一个键（越界或已在末位时忽略）。
+    pub fn move_down(&mut self, index: usize) {
+        if index + 1 < self.keys.len() {
+            self.keys.swap(index, index + 1);
+        }
+    }
+
+    /// 清空排序。
+    pub fn clear(&mut self) {
+        self.keys.clear();
+    }
+
     /// 某列表头的标记。
     #[must_use]
     pub fn marker(&self, column: &str) -> SortMarker {
@@ -307,19 +347,23 @@ impl Operator {
         Self::IsNotNull,
     ];
 
-    /// 下拉文案。
+    /// 下拉文案：**只写符号**。
+    ///
+    /// 「= 等于」这类翻译是给不懂符号的人看的，但在数据库客户端里读者就是懂的人：
+    /// 中文后缀把下拉撑宽、还要在窄面板里换行，收益是负的。`LIKE` / `IS NULL` 直接
+    /// 写 SQL 原文（它们没有通行符号）。
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Eq => "= 等于",
-            Self::Ne => "≠ 不等于",
-            Self::Lt => "< 小于",
-            Self::Le => "≤ 小于等于",
-            Self::Gt => "> 大于",
-            Self::Ge => "≥ 大于等于",
-            Self::Like => "LIKE 包含",
-            Self::IsNull => "IS NULL 为空",
-            Self::IsNotNull => "IS NOT NULL 非空",
+            Self::Eq => "=",
+            Self::Ne => "≠",
+            Self::Lt => "<",
+            Self::Le => "≤",
+            Self::Gt => ">",
+            Self::Ge => "≥",
+            Self::Like => "LIKE",
+            Self::IsNull => "IS NULL",
+            Self::IsNotNull => "IS NOT NULL",
         }
     }
 
@@ -443,6 +487,30 @@ impl FilterSet {
         if index < self.conditions.len() {
             self.conditions.remove(index);
         }
+    }
+
+    /// 就地替换第 `index` 条（面板里点条件编辑后「确定」）。
+    ///
+    /// 与 [`Self::push`] 的去重规则一致：换完不能和**别的**条件重复（同列同算子），
+    /// 否则返回可读原因，让用户当场改，而不是让两条一样的条件进摘要。
+    pub fn replace(&mut self, index: usize, condition: Condition) -> Result<(), String> {
+        if index >= self.conditions.len() {
+            return Err("筛选条件已变化：请重新打开筛选面板".to_owned());
+        }
+        let duplicate = self.conditions.iter().enumerate().any(|(other, existing)| {
+            other != index
+                && existing.column == condition.column
+                && existing.operator == condition.operator
+        });
+        if duplicate {
+            return Err(format!(
+                "已经有同样的条件：{} {}",
+                condition.column,
+                condition.operator.label()
+            ));
+        }
+        self.conditions[index] = condition;
+        Ok(())
     }
 
     /// 清空。
@@ -700,24 +768,27 @@ impl PagerState {
         }
     }
 
-    /// 记录位置：`Record 1 of 1200 in page 1`（精确）/ `第 1 页 · 共约 1200 行`（估计）
-    /// / `第 1 页 · 已加载 500 行`（未知）。
+    /// 记录位置：本页在表里的**行号区间**（`第 501–1000 行`）。
+    ///
+    /// 这里**不写页码、也不写总数**：页码与总数只在分页器旁出现一次（状态栏行 1），
+    /// 两处都写就成了同一句话说三遍（旧版还在表格工具条下方写过一遍）。行号区间是
+    /// 分页器给不出的信息——用户真正想知道的是「我现在看到第几行到第几行」。
+    ///
+    /// 本页为空时如实说明，不编造区间：首页空表就是「空表」，offset 越界说明 offset。
     #[must_use]
     pub fn position_text(self) -> String {
-        match self.total.kind {
-            TotalKind::Exact => format!(
-                "Record {} of {} in page {}",
-                self.first_row(),
-                self.total.rows,
-                self.page_index()
-            ),
-            TotalKind::Estimate => {
-                format!("第 {} 页 · 共约 {} 行", self.page_index(), self.total.rows)
-            }
-            _ if self.total.skipped => {
-                format!("第 {} 页 · 未统计总数", self.page_index())
-            }
-            _ => format!("第 {} 页 · 本页 {} 行", self.page_index(), self.rows),
+        if self.rows == 0 {
+            return if self.offset > 0 {
+                format!("本页无数据（offset {}）", self.offset)
+            } else {
+                "空表".to_owned()
+            };
+        }
+        let (first, last) = (self.first_row(), self.last_row());
+        if first == last {
+            format!("第 {first} 行")
+        } else {
+            format!("第 {first}–{last} 行")
         }
     }
 }
@@ -1016,6 +1087,76 @@ mod tests {
         assert_eq!(SortMarker::Descending { priority: 2 }.text(), "▼2");
     }
 
+    #[test]
+    fn panel_set_key_keeps_the_other_keys_and_updates_in_place() {
+        let mut sort = SortOrder::new();
+        sort.set_key("name", Direction::Ascending);
+        sort.set_key("id", Direction::Descending);
+        assert_eq!(
+            sort.keys()
+                .iter()
+                .map(|key| (key.column.as_str(), key.direction))
+                .collect::<Vec<_>>(),
+            vec![
+                ("name", Direction::Ascending),
+                ("id", Direction::Descending)
+            ],
+            "面板里加排序不能像表头点击那样清空其它键"
+        );
+        // 同一列再设一次：就地改方向，次序不变（多列排序的优先级不能因为改方向跳位）。
+        sort.set_key("name", Direction::Descending);
+        assert_eq!(sort.keys()[0].column, "name");
+        assert_eq!(sort.keys()[0].direction, Direction::Descending);
+        assert_eq!(sort.keys().len(), 2);
+    }
+
+    #[test]
+    fn panel_sort_rows_can_be_moved_and_removed() {
+        let mut sort = SortOrder::new();
+        sort.set_key("a", Direction::Ascending);
+        sort.set_key("b", Direction::Ascending);
+        sort.set_key("c", Direction::Ascending);
+        sort.move_up(2);
+        assert_eq!(
+            sort.keys()
+                .iter()
+                .map(|key| key.column.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+        // 首位上移 / 末位下移都是空操作，不 panic。
+        sort.move_up(0);
+        sort.move_down(2);
+        assert_eq!(sort.keys()[0].column, "a");
+        assert_eq!(sort.keys()[2].column, "b");
+        sort.remove(1);
+        assert_eq!(
+            sort.keys()
+                .iter()
+                .map(|key| key.column.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        sort.remove(9);
+        sort.clear();
+        assert!(sort.is_empty());
+    }
+
+    #[test]
+    fn sort_marker_shows_priority_for_multi_column_sorts() {
+        let mut sort = SortOrder::new();
+        sort.set_key("id", Direction::Descending);
+        sort.set_key("name", Direction::Ascending);
+        assert_eq!(sort.marker("id"), SortMarker::Descending { priority: 1 });
+        assert_eq!(sort.marker("name"), SortMarker::Ascending { priority: 2 });
+        sort.remove(0);
+        assert_eq!(
+            sort.marker("name"),
+            SortMarker::Ascending { priority: 0 },
+            "只剩一列时不显示次序数字"
+        );
+    }
+
     // ---- 筛选 ----
 
     #[test]
@@ -1102,6 +1243,59 @@ mod tests {
         assert_eq!(filter.describe(), "");
     }
 
+    #[test]
+    fn replace_edits_a_condition_in_place_and_refuses_duplicates() {
+        let mut filter = FilterSet::new();
+        filter.push(Condition {
+            column: "name".to_owned(),
+            operator: Operator::Like,
+            value: Some("ab%".to_owned()),
+        });
+        filter.push(Condition {
+            column: "id".to_owned(),
+            operator: Operator::Ge,
+            value: Some("10".to_owned()),
+        });
+        // 就地改第一条：次序不变，内容变了。
+        filter
+            .replace(
+                0,
+                Condition {
+                    column: "name".to_owned(),
+                    operator: Operator::Like,
+                    value: Some("xy%".to_owned()),
+                },
+            )
+            .expect("同列同算子的自我替换不是重复");
+        assert_eq!(filter.conditions()[0].value.as_deref(), Some("xy%"));
+        assert_eq!(filter.conditions()[1].column, "id");
+        // 改成和另一条同列同算子：拒绝，并给出可读原因（不是静默吞掉）。
+        let error = filter
+            .replace(
+                0,
+                Condition {
+                    column: "id".to_owned(),
+                    operator: Operator::Ge,
+                    value: Some("20".to_owned()),
+                },
+            )
+            .expect_err("与另一条重复应当被拒绝");
+        assert!(error.contains("已经有同样的条件"), "实际：{error}");
+        // 越界：给出可读原因，不 panic。
+        assert!(
+            filter
+                .replace(
+                    9,
+                    Condition {
+                        column: "id".to_owned(),
+                        operator: Operator::Eq,
+                        value: Some("1".to_owned()),
+                    },
+                )
+                .is_err()
+        );
+    }
+
     // ---- 总数与分页 ----
 
     #[test]
@@ -1143,25 +1337,39 @@ mod tests {
         assert_eq!(pager.page_label(), "第 1 页");
         assert!(!pager.can_last(), "总数未知时不给末页");
         assert_eq!(pager.last_offset(), None);
-        assert_eq!(pager.position_text(), "第 1 页 · 本页 500 行");
+        assert_eq!(pager.position_text(), "第 1–500 行");
     }
 
     #[test]
-    fn position_text_matches_the_three_total_kinds() {
+    fn position_text_is_a_row_span_without_repeating_page_or_total() {
+        // 行号区间是记录位置唯一的口径：页码与总数只在分页器旁出现一次。
         let exact = TotalInfo::from_proto(TotalKind::Exact as i32, 1200, false);
         assert_eq!(
             PagerState::new(0, 500, exact, true, 500).position_text(),
-            "Record 1 of 1200 in page 1"
+            "第 1–500 行"
+        );
+        assert_eq!(
+            PagerState::new(500, 500, exact, true, 500).position_text(),
+            "第 501–1000 行"
         );
         let estimate = TotalInfo::from_proto(TotalKind::Estimate as i32, 1200, false);
         assert_eq!(
-            PagerState::new(0, 500, estimate, true, 500).position_text(),
-            "第 1 页 · 共约 1200 行"
+            PagerState::new(1000, 500, estimate, false, 200).position_text(),
+            "第 1001–1200 行"
         );
-        let skipped = TotalInfo::from_proto(TotalKind::Unknown as i32, 0, true);
+        // 单行页不写区间。
         assert_eq!(
-            PagerState::new(0, 500, skipped, true, 500).position_text(),
-            "第 1 页 · 未统计总数"
+            PagerState::new(0, 500, TotalInfo::unknown(), false, 1).position_text(),
+            "第 1 行"
+        );
+        // 空页 / 空表如实说明，不编造区间。
+        assert_eq!(
+            PagerState::new(0, 500, TotalInfo::unknown(), false, 0).position_text(),
+            "空表"
+        );
+        assert_eq!(
+            PagerState::new(1500, 500, exact, false, 0).position_text(),
+            "本页无数据（offset 1500）"
         );
     }
 
