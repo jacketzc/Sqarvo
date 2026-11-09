@@ -56,6 +56,11 @@ pub fn stylesheet() -> String {
         }}
         .sqarvo-toolbar button {{ min-height: {target}px; padding: 2px 10px; }}
         .sqarvo-toolbar label {{ font-size: {ui}px; }}
+        /* 种类入口是纯拉丁文字（Tables / Views / Functions / Queries），和中文
+           「新建查询」同一行混排时，Pango 的中文 em 盒比拉丁大写字高更靠下：
+           盒子同高同 y 也会看起来「一高一低」。这里只把**字**下移 2px
+           （实测：中文 63–74、拉丁 62–71，视觉中线差 2px），命中区不变。 */
+        .sqarvo-toolbar button.sqarvo-kind label {{ margin-top: 2px; }}
 
         /* 区域 03 / 04：树行 24，数据行 32，表头 24 */
         window.{window_class} listview > row {{ min-height: {tree_row}px; }}
@@ -426,6 +431,22 @@ mod tests {
         // 紧凑化不能靠抹掉焦点可见性换密度（§11）。
         assert!(!css.contains("outline: none"));
         assert!(!css.contains("outline: 0"));
+    }
+
+    #[test]
+    fn toolbar_kind_labels_are_optically_centered_against_cjk() {
+        // 种类入口是纯拉丁文字，和中文「新建查询」同一行：Pango 的中文 em 盒更靠下，
+        // 盒子同高同 y 也会差 2px。这条补偿规则不能悄悄丢（丢了就是「一高一低」）。
+        let css = stylesheet();
+        assert!(
+            css.contains(".sqarvo-toolbar button.sqarvo-kind label { margin-top: 2px; }"),
+            "缺少种类入口的字面补偿规则"
+        );
+        // 命中区不变：按钮本身仍是同一个最小高度与内距。
+        assert!(css.contains(&format!(
+            ".sqarvo-toolbar button {{ min-height: {}px; padding: 2px 10px; }}",
+            crate::layout::MIN_TARGET
+        )));
     }
 
     #[test]

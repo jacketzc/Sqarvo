@@ -34,6 +34,12 @@
 |---|---|---|---|
 | 01 窗口外壳 | 64 | 标题栏 40（居中标题 + 右侧控件）+ 菜单行 24 | `AdwHeaderBar`（Linux 无菜单行，见 §8） |
 | 02 主工具条 | 44 | 左组：连接 / 新建查询；分隔线；**种类入口**（`Tables` / `Views` / `Functions` / `Queries`，纯文字无图标，与「新建查询」同一套 flat 样式、离分隔线同样 14px）；高亮 = 当前列的种类 | `GtkBox` + flat 按钮 |
+
+注：主工具条的种类入口是纯拉丁文字（`Tables` / `Views` / `Functions` / `Queries`），和中文
+「新建查询」同一行混排时，字面会比中文高 2px（Pango 的中文 em 盒更靠下）。按实测用
+`.sqarvo-kind label { margin-top: 2px }` 把字下移，**按钮盒子与命中区不变**（仍同高同 y），
+这条补偿有单测锁着。
+
 | 03 对象树 | 636（自适应） | `My Connections` 头 + 多连接树 + 种类分组 | `GtkPaned` 左栏，`GtkTreeListModel` |
 | 04 工作区 | 636 | 标签条 47（`AdwTabBar` 实测）+ 表格工具条 32×2（事务控制行 / 行变更行）+ 表格 + 信息面板 | `AdwTabView` + `GtkStack` + `GtkColumnView` |
 | 05 状态栏 | 56 | 两行：搜索/行操作/分页器；SQL 摘要/记录计数/最后刷新/视图切换 | `GtkBox` 两行，手工对齐 |

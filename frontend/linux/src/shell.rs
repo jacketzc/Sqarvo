@@ -301,6 +301,7 @@ impl Shell {
         };
         let inspector_label =
             inspector.map_or_else(|| "折叠".to_owned(), |value| value.to_string());
+        eprintln!("[shell] 工具条按钮几何：{}", self.toolbar.button_geometry());
         eprintln!(
             "[shell] 布局 {width}x{window_height}：工具条 {}，状态栏 {}（y={}），内容 {}x{}，表格 {}x{}，侧栏 {sidebar}，信息面板 {inspector_label}",
             self.toolbar.root.height(),
@@ -589,6 +590,9 @@ impl Toolbar {
             |label: &str, shortcut: crate::tabs::KindShortcut, tooltip: &str| -> gtk::Button {
                 let button = gtk::Button::with_label(label);
                 button.add_css_class("flat");
+                // 纯拉丁文字：与中文「新建查询」混排时字面会偏上 2px，
+                // 由 `theme` 里的 `.sqarvo-kind label` 补回来（按钮盒子仍同高同 y）。
+                button.add_css_class("sqarvo-kind");
                 button.set_valign(gtk::Align::Center);
                 button.set_tooltip_text(Some(tooltip));
                 let handler = Rc::clone(&on_kind);
@@ -666,6 +670,28 @@ impl Toolbar {
     /// 种类入口组（表 / 视图 / 函数 / 查询）：同上。
     pub fn kinds_group(&self) -> &gtk::Box {
         &self.kinds
+    }
+
+    /// 工具条按钮的几何（相对工具条根控件）：高度与 y 必须一致。
+    ///
+    /// 「Tables …」与左侧「新建查询」是同一套 flat 按钮，只要内距或字号跑偏，
+    /// 肉眼就会看到一高一低——这条日志把差异变成数字。
+    #[must_use]
+    pub fn button_geometry(&self) -> String {
+        let mut parts = Vec::new();
+        for (name, button) in [
+            ("新建查询", &self.new_query),
+            ("Tables", &self.table),
+            ("Views", &self.view),
+            ("Functions", &self.function),
+            ("Queries", &self.query),
+        ] {
+            let top = button
+                .compute_bounds(&self.root)
+                .map_or(-1.0, |rect| rect.y());
+            parts.push(format!("{name} h={} y={:.0}", button.height(), top));
+        }
+        parts.join(" · ")
     }
 
     /// 高亮「当前种类」：`Objects` 页列的种类，或当前表标签的种类。
