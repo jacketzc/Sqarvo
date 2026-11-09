@@ -109,7 +109,7 @@
 //!
 //! - #144 增补（启动态点击已保存连接；全部要求 `--screenshot`，`--qa-startup-click`
 //!   与 `--qa-startup-menu` 除外）：
-//!   `--qa-startup-click <名字>`（激活启动态侧栏的一行，走行自己的 `activated` 信号）、
+//!   `--qa-startup-click <名字>`（激活启动态侧栏的一行，走对象树行自己的 `activate` 信号）、
 //!   `--qa-expect-startup-connect <字段=值>`（可重复：`sessions|connects|log|
 //!   title_contains|connected|tree_expanded`）、`--qa-expect-dialog <子串>`（连接对话框
 //!   已打开且含该文案）、`--qa-startup-menu <名字>` + `--qa-startup-menu-pick <条目>`
@@ -822,7 +822,7 @@ struct Args {
     /// `--qa-startup-workspace`：截图时刻断言当前是未连接的启动工作区（Objects 空态）。
     startup_workspace: bool,
     // ---- #144 启动态点击已保存连接 ----
-    /// `--qa-startup-click <name>`：在启动态侧栏按名字激活一行（走 `activated` 同一条回调）。
+    /// `--qa-startup-click <name>`：在启动态侧栏按名字激活一行（走对象树 `activate` 同一条路径）。
     startup_click: Option<String>,
     /// `--qa-expect-startup-connect <字段=值>`：截图时刻断言「按保存凭据连接」的结果（可重复）。
     expect_startup_connect: Vec<(String, String)>,

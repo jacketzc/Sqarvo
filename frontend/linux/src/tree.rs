@@ -3160,7 +3160,8 @@ impl TreePanel {
 
     /// 走用户路径激活一条**已保存连接**（启动态 `--qa-startup-click`）。
     ///
-    /// 与左键点击 / 回车同一条 `connect_saved`：不绕过界面直接调 gRPC。
+    /// 与双击 / 回车同一条 `GtkListView::activate` 信号（`Row::Connection` 分支再调
+    /// `connect_saved`），不直接调回调；这样 QA 也能覆盖行激活本身。
     pub fn qa_activate_connection(self: &Rc<Self>, name: &str) -> Result<String, String> {
         for position in 0..self.tree_model.n_items() {
             let Some(row) = self.tree_row(position) else {
@@ -3176,8 +3177,9 @@ impl TreePanel {
                 continue;
             }
             eprintln!("[qa] 启动态侧栏激活已保存连接「{name}」");
-            (self.callbacks.connect_saved)(snapshot.key.clone());
-            return Ok(name.to_owned());
+            self.select_position(position);
+            self.list_view.emit_by_name::<()>("activate", &[&position]);
+            return Ok(format!("激活连接「{name}」（activate 信号）"));
         }
         Err(format!("树里没有连接「{name}」"))
     }
