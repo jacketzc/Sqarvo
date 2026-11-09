@@ -2897,12 +2897,72 @@ impl TreePanel {
 
     // -- 主工具条的种类入口（v0.2.3.3） -------------------------------------
 
-    /// 选中与「表」入口等价的树节点：活动连接里的那个库（只选中，不展开、不打开）。
+    /// 当前选中项所在的库（选中库 / 表 / 视图 / 分组都能给出；连接与占位行返回 `None`）。
     ///
-    /// 走 `GtkListView` 的选中模型，触发与用户点一下相同的 `selected_notify`——信息面板
-    /// 与 `Objects` 页跟着换。返回库引用，调用方用它把列表切到同一作用域（已经选中的
-    /// 情况下 notify 不会再发，所以作用域必须由调用方显式给）。
-    pub fn select_catalog(&self, catalog: Option<&str>) -> Result<ObjectRef, String> {
+    /// 工具条「表 / 视图」用它决定该列哪个库——不能用连接的默认库：用户可能在树里选了
+    /// 另一个库（每条连接都有多个 catalog），点按钮必须跟着**眼前这个库**走。
+    #[must_use]
+    pub fn selected_catalog(&self) -> Option<ObjectRef> {
+        let position = self
+            .list_view
+            .model()
+            .and_then(|model| model.downcast::<gtk::SingleSelection>().ok())?
+            .selected();
+        if position == u32::MAX {
+            return None;
+        }
+        let row = self.tree_row(position)?;
+        match self.row_of(&row)? {
+            Row::Object(node) => {
+                if matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
+                    Some(node.reference.clone())
+                } else {
+                    catalog_ref(&node.reference)
+                }
+            }
+            Row::Group(group) => match group.group {
+                RowGroup::Catalog(_) => Some(group.parent.clone()),
+                RowGroup::Table(_) => catalog_ref(&group.parent),
+            },
+            Row::Connection(_) | Row::Note(_) => None,
+        }
+    }
+
+    /// 选中与「表 / 视图」入口等价的库节点。
+    ///
+    /// 优先按调用方给的 `target`（当前选中项所在的库）**按 session_id + 库名**命中：
+    /// 多连接下同名库很常见（每条 SQLite 连接都有 `main`），只按名字会跳到别的连接。
+    /// `target` 为 `None` 或树里找不到时，退回活动连接里的第一个库。
+    pub fn select_catalog(&self, target: Option<&ObjectRef>) -> Result<ObjectRef, String> {
+        if let Some(want) = target {
+            let name = if want.catalog.is_empty() {
+                want.name.as_str()
+            } else {
+                want.catalog.as_str()
+            };
+            // 第一轮：session + 库名都命中；第二轮：只按库名（引用来自已断开的旧会话）。
+            for require_session in [true, false] {
+                for position in 0..self.tree_model.n_items() {
+                    let Some(row) = self.tree_row(position) else {
+                        continue;
+                    };
+                    let Some(Row::Object(node)) = self.row_of(&row) else {
+                        continue;
+                    };
+                    if !matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
+                        continue;
+                    }
+                    if node.display_name != name && node.reference.catalog != name {
+                        continue;
+                    }
+                    if require_session && node.reference.session_id != want.session_id {
+                        continue;
+                    }
+                    self.select_position(position);
+                    return Ok(node.reference.clone());
+                }
+            }
+        }
         let active = self.registry().and_then(|registry| registry.active_key());
         let mut fallback: Option<(u32, ObjectRef)> = None;
         for position in 0..self.tree_model.n_items() {
@@ -2924,14 +2984,11 @@ impl TreePanel {
                 }
                 None => true,
             };
-            let name_matches = catalog.is_none_or(|name| {
-                name.is_empty() || node.display_name == name || node.reference.catalog == name
-            });
-            if in_active && name_matches {
+            if in_active {
                 self.select_position(position);
                 return Ok(node.reference.clone());
             }
-            if fallback.is_none() && name_matches {
+            if fallback.is_none() {
                 fallback = Some((position, node.reference.clone()));
             }
         }
@@ -3467,6 +3524,19 @@ impl TreePanel {
     pub fn row_count(&self) -> u32 {
         self.tree_model.n_items()
     }
+}
+
+/// 由任意对象引用合成它所在的库引用（`kind = Catalog`、`name = catalog`）。
+///
+/// 引用里没有 catalog（根层直接给对象）时返回 `None`——调用方自己决定退回哪个库。
+fn catalog_ref(reference: &ObjectRef) -> Option<ObjectRef> {
+    if reference.catalog.is_empty() {
+        return None;
+    }
+    let mut catalog = reference.clone();
+    catalog.kind = ObjectKind::Catalog as i32;
+    catalog.name = reference.catalog.clone();
+    Some(catalog)
 }
 
 /// `GtkListItem` 当前绑定的行（bind 之后可用）。

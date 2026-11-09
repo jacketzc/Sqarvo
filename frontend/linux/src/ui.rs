@@ -1555,7 +1555,6 @@ fn apply_tab_status(
 /// `Views` 分组），信息面板随之切换；再把列表切到同一作用域。「函数 / 查询」没有可拉取
 /// 的列表，页面如实说明原因，不摆假数据。
 fn show_objects_for_kind(
-    state: &Rc<UiState>,
     tree_slot: &Rc<RefCell<Option<Rc<TreePanel>>>>,
     tabs_slot: &Rc<RefCell<Option<Rc<crate::tabs::TabSet>>>>,
     shortcut: crate::tabs::KindShortcut,
@@ -1565,16 +1564,14 @@ fn show_objects_for_kind(
     };
     match shortcut.kinds() {
         Some(kinds) => {
-            let catalog = state
-                .registry
-                .borrow()
-                .as_ref()
-                .and_then(|registry| registry.active_key())
-                .map(|key| registry_catalog(state, &key));
             let Some(tree) = tree_slot.borrow().clone() else {
                 return;
             };
-            match tree.select_catalog(catalog.as_deref()) {
+            // 目标库 = 树里当前选中项所在的库（用户可能刚切到另一个库）；没有选中时
+            // 才退回活动连接的默认库。不能用「活动连接的默认库」直接决定——那会把
+            // 按钮锁死在默认库上（用户反馈的 bug）。
+            let target = tree.selected_catalog();
+            match tree.select_catalog(target.as_ref()) {
                 Ok(parent) => {
                     if shortcut == crate::tabs::KindShortcut::Views {
                         tree.select_catalog_group(&parent, crate::tree::KindGroup::Views);
@@ -2065,11 +2062,10 @@ impl Workspace {
                 })
             },
             on_kind: {
-                let state = Rc::clone(state);
                 let tree_slot = Rc::clone(&tree_slot);
                 let tabs_slot = Rc::clone(&tabs_slot);
                 Rc::new(move |shortcut: crate::tabs::KindShortcut| {
-                    show_objects_for_kind(&state, &tree_slot, &tabs_slot, shortcut);
+                    show_objects_for_kind(&tree_slot, &tabs_slot, shortcut);
                 })
             },
         });

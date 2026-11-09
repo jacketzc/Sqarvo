@@ -25,6 +25,7 @@
 #      → 日志「重新进入 Objects 页：清掉行选中」，`selected=`（空串）断言成立。
 #   A6（v0.2.3.3）主工具条种类入口：点「表」→ 树里选中库 + 列表出表；点「函数」→ 如实说明
 #      未实现（两张截图）。
+#   A7（v0.2.3.3）种类入口跟着当前选中的库走：选 temp 再点「表」→ 列出 temp（不是默认的 main）。
 #   B. EX 导出范围
 #      B1 整表：行数 = 数据行 + 1（表头）、目标权限 0600、目录里没有 `*.sqarvo-tmp`、
 #         日志命中「整表导出完成：」「整表进度：」。
@@ -73,7 +74,7 @@
 # 用法：
 #   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
 #   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
-#                                                          # 只跑 Objects 段（A0–A6）
+#                                                          # 只跑 Objects 段（A0–A7）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -491,6 +492,23 @@ check_contains "kind-functions 函数列表如实说明未实现" \
 check_screenshot "kind-functions 截图（未实现说明）" \
     "$OUT/kind-functions/06-toolbar-functions.png"
 
+# A7（v0.2.3.3）：种类入口跟着**当前选中项所在的库**走，不锁死在默认库。
+# SQLite 目录层固定有 main 与 temp：先选 temp 再点「表」，列表必须是 temp 的（0 个对象）。
+launch kind-follows io.sqarvo.Sqarvo.QA024KindFollows \
+    --qa-tree-select temp \
+    --qa-kind tables \
+    --qa-expect-objects count=0 \
+    --screenshot "$OUT/kind-follows/07-toolbar-follows-library.png" \
+    --screenshot-delay-ms 6000 \
+    --qa-exit-after-ms 8000
+check_contains "kind-follows 列出的是 temp（不是 main）" \
+    '[toolbar] 种类入口「表」：列出 temp' "$CASE_LOG"
+check_absent "kind-follows 没有跳回默认库 main" \
+    '[toolbar] 种类入口「表」：列出 main' "$CASE_LOG"
+check_contains "kind-follows 树里选中的仍是 temp" '选中对象：temp（库）' "$CASE_LOG"
+check_screenshot "kind-follows 截图（跟着选中的库走）" \
+    "$OUT/kind-follows/07-toolbar-follows-library.png"
+
 # ---------------------------------------------------------------------------
 # 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
 # ---------------------------------------------------------------------------
@@ -509,7 +527,7 @@ if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" 
         *) ok "证据目录在仓库外：$OUT" ;;
     esac
     say ""
-    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A6）"
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A7）"
     say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
     say "证据目录：$OUT"
     say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"
