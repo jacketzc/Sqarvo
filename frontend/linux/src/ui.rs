@@ -738,10 +738,11 @@ pub fn activate(app: &adw::Application) {
                         );
                         if icon_problems.is_empty() {
                             eprintln!(
-                                "[layout-audit] ✓ 图标按钮 命中区统一 {}x{}，图标一律 {}px（与 `+` 同尺寸）",
+                                "[layout-audit] ✓ 图标按钮 命中区统一 {}x{}，图标基准 {}px（{}）",
                                 layout::ICON_BUTTON_WIDTH,
                                 layout::ICON_BUTTON_HEIGHT,
-                                layout::ICON_BOX
+                                layout::ICON_BOX,
+                                crate::icons::optical_summary()
                             );
                         } else {
                             for problem in &icon_problems {

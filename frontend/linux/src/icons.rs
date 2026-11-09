@@ -14,10 +14,11 @@
 //!    按钮都必须经 [`button`] 构造——单看某个字形觉得「大一点 / 小一点」就手改，
 //!    正是这一版要消灭的做法（`docs/ui-specification/design-principles.md` §图标）。
 //!
-//! 为什么不再分「光学档位」（v0.2.3.3 曾按墨迹分 16 / 18 / 14 三档）：三档追求的是
-//! 「墨迹等重」，但同一排里量出来的**长宽并不一致**，看起来就是一排大小不一的图标。
-//! 现在以几何为准：每个图标的长宽都不超过基准 `+`，且两维都与它相等；笔画粗细与
-//! 留白的差异交给图标本身，不再靠改尺寸补偿。
+//! 尺寸规则（v0.2.3.3 修订）：默认**所有图标都画在 [`layout::ICON_BOX`]（16）里**，
+//! 基准就是行操作里的 `+`。只有「墨迹比例明显偏离基准」的字形才在 [`OPTICAL_PX`] 里
+//! 登记一个补偿值——目标不是让它们看起来一样大，而是让**墨迹**落到基准 `+` 的 11×11
+//! 附近：铺满整盒的宽字形（`✓`、`⟳`）缩一档，墨迹偏小的实心块（`■`）与窄弧线（`↶`）
+//! 放大一档。每次改数都要量截图里的墨迹长宽并把数字记进注释，否则又是一轮「看着调」。
 
 use std::sync::OnceLock;
 
@@ -39,7 +40,48 @@ pub const BUTTON_CLASS: &str = "sqarvo-icon-button";
 /// 「筛选」漏斗（自有图标；Adwaita / Yaru 都没有漏斗）。
 pub const FILTER: &str = "sqarvo-filter-symbolic";
 
-/// 注册自有图标资源（进程内只做一次；没有显示服务时静默跳过，与 [`crate::theme`] 同一取舍）。
+/// 个别图标的**光学补偿**（px）：没登记的一律 [`layout::ICON_BOX`]。
+///
+/// 目标：墨迹落到基准 `+` 的 11×11 附近——宽字形缩一档、墨迹偏小的实心块 / 窄弧线放大
+/// 一档。数字后的墨迹是**截图量出来的**（阈值扫描状态栏行 1），不是估计值。
+pub const OPTICAL_PX: &[(&str, &str, i32)] = &[
+    // ✓ 应用：16px 时墨迹 14×10，比 `+` 的 11×11 宽一圈（用户反馈「偏大」）
+    // → 14px（量得 12×8）。
+    ("object-select-symbolic", "应用 ✓", 14),
+    // ⟳ 刷新：16px 时环 15×14，接近满盒（用户反馈「偏大」）→ 11px（量得 12×12）。
+    ("view-refresh-symbolic", "刷新 ⟳", 11),
+    // ↶ 放弃：16px 时弧线只有 11×9，看着不够宽（用户反馈「不够宽」）
+    // → 18px（量得 13×11）。
+    ("edit-undo-symbolic", "放弃 ↶", 18),
+    // ■ 取消（实心方块）：16px 时 10×10，实心块显小（用户反馈「偏小」）
+    // → 18px（量得 12×12）。
+    ("media-playback-stop-symbolic", "取消 ■", 18),
+];
+
+/// 该图标的绘制边长：表里登记过的用补偿值，其余一律 [`layout::ICON_BOX`]。
+#[must_use]
+pub fn px(icon: &str) -> i32 {
+    OPTICAL_PX
+        .iter()
+        .find_map(|(name, _, px)| (*name == icon).then_some(*px))
+        .unwrap_or(layout::ICON_BOX)
+}
+
+/// 补偿表的可读摘要（日志用）：「4 个补偿：应用 ✓ 14px、刷新 ⟳ 11px、…」。
+#[must_use]
+pub fn optical_summary() -> String {
+    let parts: Vec<String> = OPTICAL_PX
+        .iter()
+        .map(|(_, label, px)| format!("{label} {px}px"))
+        .collect();
+    if parts.is_empty() {
+        "无补偿".to_owned()
+    } else {
+        format!("{} 个补偿：{}", parts.len(), parts.join("、"))
+    }
+}
+
+/// 注册自有图标资源/// 注册自有图标资源（进程内只做一次；没有显示服务时静默跳过，与 [`crate::theme`] 同一取舍）。
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     if INSTALLED.set(()).is_err() {
@@ -64,7 +106,7 @@ pub fn install() {
 /// 默认值，量不到也就锁不住「所有图标与基准同尺寸」。
 pub fn button(icon: &str, tooltip: &str) -> gtk::Button {
     let image = gtk::Image::from_icon_name(icon);
-    image.set_pixel_size(layout::ICON_BOX);
+    image.set_pixel_size(px(icon));
     let button = gtk::Button::new();
     button.add_css_class("flat");
     button.add_css_class(BUTTON_CLASS);
@@ -80,7 +122,7 @@ pub fn button(icon: &str, tooltip: &str) -> gtk::Button {
 /// `.linked` 组会按边框取整（实测 28 → 29），那不是「凭喜好改尺寸」，而按图标像素与
 /// 命中区请求判断才正好盯住这条规矩本身。
 #[must_use]
-pub fn check_button(request: (i32, i32), icon_px: Option<i32>) -> Option<String> {
+pub fn check_button(request: (i32, i32), icon: Option<(&str, i32)>) -> Option<String> {
     let mut reasons = Vec::new();
     if request != (layout::ICON_BUTTON_WIDTH, layout::ICON_BUTTON_HEIGHT) {
         reasons.push(format!(
@@ -91,10 +133,11 @@ pub fn check_button(request: (i32, i32), icon_px: Option<i32>) -> Option<String>
             layout::ICON_BUTTON_HEIGHT
         ));
     }
-    match icon_px {
-        Some(px) if px == layout::ICON_BOX => {}
-        Some(px) => reasons.push(format!(
-            "图标 {px}px ≠ 基准 {}px（所有图标都必须与 `+` 同尺寸）",
+    match icon {
+        Some((name, px)) if px == self::px(name) => {}
+        Some((name, px)) => reasons.push(format!(
+            "图标 {name} 画在 {px}px，但标准是 {}px（基准 {}px + 光学补偿表）",
+            self::px(name),
             layout::ICON_BOX
         )),
         None => reasons.push("按钮里没有可测量的图标（GtkImage）".to_owned()),
@@ -124,16 +167,22 @@ fn collect_problems(widget: &gtk::Widget, problems: &mut Vec<String>) {
         .any(|class| class == BUTTON_CLASS);
     if is_icon_button && widget.is_visible() {
         let request = (widget.width_request(), widget.height_request());
-        let mut icon_px = None;
+        let mut icon = None;
         let mut child = widget.first_child();
         while let Some(current) = child {
             if let Some(image) = current.downcast_ref::<gtk::Image>() {
                 let px = image.pixel_size();
-                icon_px = (px > 0).then_some(px);
+                let name = image.icon_name();
+                if px > 0
+                    && let Some(name) = name
+                {
+                    icon = Some((name.to_string(), px));
+                }
             }
             child = current.next_sibling();
         }
-        if let Some(problem) = check_button(request, icon_px) {
+        let icon = icon.as_ref().map(|(name, px)| (name.as_str(), *px));
+        if let Some(problem) = check_button(request, icon) {
             let name = widget
                 .tooltip_text()
                 .map_or_else(|| "（无 tooltip）".to_owned(), |text| text.to_string());
@@ -152,6 +201,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn optical_compensation_is_measured_not_guessed() {
+        // 默认 = 基准盒；补偿表只给「墨迹比例明显偏离」的字形。上限 +2px（再大就撑破
+        // 命中区余量），下限 −6px（环的外框贴着整盒，缩得比别的档更多才不显大）。
+        assert_eq!(px("list-add-symbolic"), layout::ICON_BOX);
+        for (name, _, value) in OPTICAL_PX {
+            assert_ne!(
+                *value,
+                layout::ICON_BOX,
+                "{name} 登记了却不偏离基准，属多余"
+            );
+            assert!(
+                (layout::ICON_BOX - 6..=layout::ICON_BOX + 2).contains(value),
+                "{name} 的补偿 {value}px 超出 +2 / −6 的范围"
+            );
+        }
+        // 用户反馈的四项必须在表里（丢一条就回到「看起来偏大 / 偏小」）。
+        for name in [
+            "object-select-symbolic",
+            "view-refresh-symbolic",
+            "edit-undo-symbolic",
+            "media-playback-stop-symbolic",
+        ] {
+            assert!(
+                OPTICAL_PX.iter().any(|(entry, _, _)| *entry == name),
+                "{name} 缺补偿"
+            );
+        }
+    }
+
+    #[test]
     fn every_icon_uses_the_same_box_as_the_plus() {
         // 只有一个尺寸来源：layout::ICON_BOX（基准 = 行操作的 `+`）。
         // 谁想给某个图标单独放大 / 缩小，都得先改这里，而这里是设计口径。
@@ -164,15 +243,16 @@ mod tests {
     #[test]
     fn check_button_accepts_the_standard_and_rejects_tweaks() {
         let ok = (layout::ICON_BUTTON_WIDTH, layout::ICON_BUTTON_HEIGHT);
-        assert!(check_button(ok, Some(layout::ICON_BOX)).is_none());
+        assert!(check_button(ok, Some(("list-add-symbolic", layout::ICON_BOX))).is_none());
         let wrong_request = check_button(
             (layout::ICON_BUTTON_WIDTH + 2, ok.1),
-            Some(layout::ICON_BOX),
+            Some(("list-add-symbolic", layout::ICON_BOX)),
         )
         .expect("命中区被改要报出来");
         assert!(wrong_request.contains("命中区"), "{wrong_request}");
-        let stray_px = check_button(ok, Some(layout::ICON_BOX + 2)).expect("尺寸不同要报出来");
-        assert!(stray_px.contains("同尺寸"), "{stray_px}");
+        let stray_px = check_button(ok, Some(("list-add-symbolic", layout::ICON_BOX + 2)))
+            .expect("尺寸不同要报出来");
+        assert!(stray_px.contains("标准"), "{stray_px}");
         assert!(check_button(ok, None).is_some(), "量不到图标要报出来");
     }
 
