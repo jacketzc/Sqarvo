@@ -142,6 +142,14 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 布局；前端会把**子进程**的 `XDG_RUNTIME_DIR` 设为 `<runtime_root>`，让后端把 socket
 与端点写到同一目录。不符合该布局时前端直接报错说明原因，而不是空等超时。
 
+## 文档索引
+
+| 文档 | 管什么 |
+|---|---|
+| [`docs/ui-specification/ui-behavior-contract.md`](../../docs/ui-specification/ui-behavior-contract.md) | **行为口径以 `ui-behavior-contract.md` 为准**：动作、可用性、文案、快捷键、状态转换（依据本目录的代码，改行为须与代码同一个 PR 成对更新） |
+| [`docs/ui-specification/workspace-model.md`](../../docs/ui-specification/workspace-model.md) | 版式：区域、尺寸、布局算术（行为冲突不看这份，看契约） |
+| [`docs/ui-specification/design-principles.md`](../../docs/ui-specification/design-principles.md) | 设计原则与视觉取向 |
+
 ## 模块结构
 
 | 文件 | 职责 |
