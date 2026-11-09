@@ -795,48 +795,39 @@ impl StatusBar {
         ops_row.set_valign(gtk::Align::Center);
 
         // v0.2.3.3：行操作只用图标 + tooltip（同一段文字同时登记为可访问名）。
-        // 六个动作语义固定：新增 / 删除 / 应用 / 撤销 / 刷新 / 取消。图标尺寸不再
-        // 逐个「看着调」，而是按 `crate::icons::OpticalWeight` 的三档光学标准取
-        // （满盒 / 单笔画 / 环形），命中区统一。
-        let make_op =
-            |icon: &str, weight: crate::icons::OpticalWeight, tooltip: &str, op: RowOp| {
-                let button = crate::icons::button(icon, weight, tooltip);
-                button.set_sensitive(false);
-                let handler = Rc::clone(&on_row_op);
-                button.connect_clicked(move |_| handler(op));
-                ops_row.append(&button);
-                button
-            };
+        // 六个动作语义固定：新增 / 删除 / 应用 / 撤销 / 刷新 / 取消。图标尺寸只有一个
+        // 来源：`layout::ICON_BOX`（基准就是这里的 `+`）——长宽都不超过它，且与它相等；
+        // 命中区统一，不按单个字形调大小。
+        let make_op = |icon: &str, tooltip: &str, op: RowOp| {
+            let button = crate::icons::button(icon, tooltip);
+            button.set_sensitive(false);
+            let handler = Rc::clone(&on_row_op);
+            button.connect_clicked(move |_| handler(op));
+            ops_row.append(&button);
+            button
+        };
         let add = make_op(
             "list-add-symbolic",
-            crate::icons::OpticalWeight::Box,
             "新增行：在当前表末尾新增一行",
             RowOp::Add,
         );
         let delete = make_op(
             "list-remove-symbolic",
-            // 单笔画：横杠墨迹比 `+` 少，按标准放大一档才与基准等重。
-            crate::icons::OpticalWeight::Stroke,
             "删除选中行：标记为待删除（提交前可撤销）",
             RowOp::Delete,
         );
         let apply = make_op(
             "object-select-symbolic",
-            crate::icons::OpticalWeight::Box,
             "应用：提交所有脏行的变更",
             RowOp::Apply,
         );
         let discard = make_op(
             "edit-undo-symbolic",
-            // 单笔画：撤销弧线比满盒字形窄，同样放大一档。
-            crate::icons::OpticalWeight::Stroke,
             "撤销：放弃全部未提交的编辑与删除标记",
             RowOp::Discard,
         );
         let refresh = make_op(
             "view-refresh-symbolic",
-            // 环形：外框接近整盒，缩一档才不会比 `+` 显大。
-            crate::icons::OpticalWeight::Ring,
             "刷新：重新读取当前表的第一页",
             RowOp::Refresh,
         );
@@ -844,7 +835,6 @@ impl StatusBar {
             // 「取消」用实心方块（原本的 `process-stop-symbolic` 在 Yaru 是八边形、
             // 在 Adwaita 是叉号，两套主题两种样子，也不是「停止」的通用形态）。
             "media-playback-stop-symbolic",
-            crate::icons::OpticalWeight::Box,
             "取消：中止正在执行的提交批次（已执行的行会整批回滚）",
             RowOp::Cancel,
         );
@@ -942,7 +932,6 @@ impl StatusBar {
         // 刷新入口就放在「Last Refresh」旁边（ADR 0022 §4：offset 分页不保证跨页稳定）。
         let refresh_now = crate::icons::button(
             "view-refresh-symbolic",
-            crate::icons::OpticalWeight::Ring,
             "刷新当前表（保持排序/筛选，回到第 1 页）",
         );
         refresh_now.set_valign(gtk::Align::Center);

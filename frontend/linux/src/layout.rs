@@ -104,17 +104,13 @@ pub const FONT_PANEL: i32 = 10;
 /// 可焦点控件的最小点击区（§11：紧凑化不得小于它）。
 pub const MIN_TARGET: i32 = 24;
 
-/// 图标绘制的**基准**尺寸：满盒字形（`+`、`✓`、`■`、漏斗）按它绘制。
+/// 图标的绘制边长：**所有**图标按钮都以它为唯一尺寸，基准就是状态栏行操作里的 `+`。
 ///
-/// 图标尺寸是设计口径的一部分（`design-principles.md` §图标），三档取值只能来自
-/// 这里：改一个档位前先看 [`crate::icons::OpticalWeight`] 的分档理由。
+/// v0.2.3.3 曾按墨迹分三档（窄字形 +2、环形 −2）追求「光学等重」，结果同一排里量出来
+/// 的长宽不一致，看着就是一排大小不一的图标。现在改成**几何一致**：每个图标都画在
+/// `ICON_BOX × ICON_BOX` 里——长宽都不超过基准，且两维都与基准相等；形状差异由图标
+/// 本身承担，不再靠改尺寸补偿。尺寸标准写在 `design-principles.md` §图标。
 pub const ICON_BOX: i32 = 16;
-
-/// 单笔画 / 窄字形（`−`、撤销弧线）的绘制尺寸：+2 补偿墨迹不足。
-pub const ICON_STROKE: i32 = 18;
-
-/// 环 / 闭合字形（`⟳`）的绘制尺寸：−2 才不会比基准显大一圈。
-pub const ICON_RING: i32 = 14;
 
 /// 图标按钮的命中区宽度（统一，不按单个图标调）。
 pub const ICON_BUTTON_WIDTH: i32 = 28;
@@ -272,13 +268,11 @@ mod tests {
     }
 
     #[test]
-    fn icon_scale_is_a_three_step_standard_around_the_box() {
-        // 三档：窄字形（+2）/ 满盒（基准）/ 环形（−2）。图标按钮的命中区固定，
-        // 不随图标档位变化——「按单个图标改尺寸」是这一版明确要消除的做法。
-        const { assert!(ICON_STROKE == ICON_BOX + 2) };
-        const { assert!(ICON_RING == ICON_BOX - 2) };
-        // 同一个命中区里放最大的图标仍要留出左右各 2px。
-        const { assert!(ICON_BUTTON_WIDTH - ICON_STROKE >= 4) };
+    fn icon_scale_is_one_box_for_every_icon() {
+        // 只有一个尺寸：图标盒 = ICON_BOX（基准是行操作的 `+`），命中区固定。
+        // 「给某个图标单独调大小」是这一版明确要消除的做法。
+        // 同一个命中区里放下图标后左右各留 2px。
+        const { assert!(ICON_BUTTON_WIDTH - ICON_BOX >= 4) };
         // 状态栏 24 高的行里装得下按钮高度。
         const { assert!(ICON_BUTTON_HEIGHT == MIN_TARGET) };
         const { assert!(ICON_BUTTON_HEIGHT <= ROW_HEIGHT_TREE) };

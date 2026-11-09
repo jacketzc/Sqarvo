@@ -476,8 +476,8 @@ pub struct ColumnWidthObservation {
 ///
 /// 为什么不用文字：工具条第 2 行在 960 宽下本来就挤，缩写只有看过文档的人认得出；
 /// 图标 + tooltip 更容易看懂，键盘与读屏也有名字。
-fn icon_button(icon: &str, weight: crate::icons::OpticalWeight, label: &str) -> gtk::Button {
-    crate::icons::button(icon, weight, label)
+fn icon_button(icon: &str, label: &str) -> gtk::Button {
+    crate::icons::button(icon, label)
 }
 
 /// 筛选/排序面板的宽度（popover 内容宽，约 640 的 2/3）。
@@ -700,33 +700,21 @@ impl DataPage {
         rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
 
         // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
-        let cc_button = icon_button(
-            "view-reveal-symbolic",
-            crate::icons::OpticalWeight::Box,
-            "列显隐",
-        );
+        let cc_button = icon_button("view-reveal-symbolic", "列显隐");
         cc_button.set_sensitive(false);
         cc_button.set_tooltip_text(Some("列显隐：隐藏列只影响渲染，不改变查询与导出口径"));
 
         // 筛选与排序（v0.2.3.3 → 漏斗）：放大镜（`system-search-symbolic`）会被读成
         // 「搜索」。Adwaita / Yaru 都没有漏斗，因此用项目自有的
         // `sqarvo-filter-symbolic`（`resources/icons/`，编成 GResource）。
-        let fs_button = icon_button(
-            crate::icons::FILTER,
-            crate::icons::OpticalWeight::Box,
-            "筛选与排序",
-        );
+        let fs_button = icon_button(crate::icons::FILTER, "筛选与排序");
         fs_button.set_sensitive(false);
         fs_button.set_tooltip_text(Some("筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"));
 
         // 导出（v0.2.3.3 → 「下载成文件」）：`document-send-symbolic` 是纸飞机，
         // 在这个位置会被读成「发送 / 分享」；导出写的是本地 CSV 文件，用
         // `document-save-symbolic`（向下箭头落到一条基线）语义更直接。
-        let export = icon_button(
-            "document-save-symbolic",
-            crate::icons::OpticalWeight::Box,
-            "导出为 CSV",
-        );
+        let export = icon_button("document-save-symbolic", "导出为 CSV");
         export.set_sensitive(false);
         export.set_tooltip_text(Some("导出为 CSV（Ctrl+Shift+E）：可选当前页或整张表"));
 

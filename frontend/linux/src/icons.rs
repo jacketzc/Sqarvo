@@ -8,15 +8,16 @@
 //!    编成 `.gresource`、`include_bytes!` 进二进制；运行时把
 //!    [`RESOURCE_PATH`] 注册成 `GtkIconTheme` 的资源搜索路径，所以它仍然由主题
 //!    前景色重着色，不依赖第三方图标包，安装包里也不多出文件。
-//! 2. **尺寸标准**：[`OpticalWeight`] 只有三档，命中区固定
+//! 2. **尺寸标准**：所有图标都画在 [`layout::ICON_BOX`] × [`layout::ICON_BOX`] 里，
+//!    基准就是状态栏行操作里的 `+`；命中区固定
 //!    [`layout::ICON_BUTTON_WIDTH`] × [`layout::ICON_BUTTON_HEIGHT`]。所有只含图标的
 //!    按钮都必须经 [`button`] 构造——单看某个字形觉得「大一点 / 小一点」就手改，
 //!    正是这一版要消灭的做法（`docs/ui-specification/design-principles.md` §图标）。
 //!
-//! 分档依据是**墨迹形状**，不是喜好：`+`／`✓`／`■` 这类笔画贯通整盒的字形按
-//! [`layout::ICON_BOX`] 绘制，是基准；`−`／撤销弧线这类单笔画、窄字形墨迹少，放大
-//! 2px（[`layout::ICON_STROKE`]）才与基准等重；`⟳` 这类外框接近整盒的环，缩 2px
-//! （[`layout::ICON_RING`]）才不会显得比基准大一圈。
+//! 为什么不再分「光学档位」（v0.2.3.3 曾按墨迹分 16 / 18 / 14 三档）：三档追求的是
+//! 「墨迹等重」，但同一排里量出来的**长宽并不一致**，看起来就是一排大小不一的图标。
+//! 现在以几何为准：每个图标的长宽都不超过基准 `+`，且两维都与它相等；笔画粗细与
+//! 留白的差异交给图标本身，不再靠改尺寸补偿。
 
 use std::sync::OnceLock;
 
@@ -38,30 +39,6 @@ pub const BUTTON_CLASS: &str = "sqarvo-icon-button";
 /// 「筛选」漏斗（自有图标；Adwaita / Yaru 都没有漏斗）。
 pub const FILTER: &str = "sqarvo-filter-symbolic";
 
-/// 图标的**光学档位**。三档之外不新增：需要新形状时先判断它属于哪一档，
-/// 属不属于「满盒 / 单笔画 / 环」，而不是给它单独一个像素值。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpticalWeight {
-    /// 满盒字形：笔画贯通整盒（`+`、`✓`、`■`、漏斗）。基准档。
-    Box,
-    /// 单笔画 / 窄字形：`−`、撤销弧线。墨迹少，放大 2px 与基准等重。
-    Stroke,
-    /// 环 / 闭合字形：`⟳` 这类外框接近整盒。缩 2px 才不会比基准显大。
-    Ring,
-}
-
-impl OpticalWeight {
-    /// 该档的绘制尺寸（px，见 [`crate::layout`] 的常量与单测）。
-    #[must_use]
-    pub const fn px(self) -> i32 {
-        match self {
-            Self::Box => layout::ICON_BOX,
-            Self::Stroke => layout::ICON_STROKE,
-            Self::Ring => layout::ICON_RING,
-        }
-    }
-}
-
 /// 注册自有图标资源（进程内只做一次；没有显示服务时静默跳过，与 [`crate::theme`] 同一取舍）。
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -80,14 +57,14 @@ pub fn install() {
     }
 }
 
-/// 只含图标的扁平按钮：图标按 [`OpticalWeight`] 取尺寸，命中区固定，tooltip 同时
-/// 登记为可访问名（读屏与键盘用户拿到同一句话）。
+/// 只含图标的扁平按钮：图标固定画在 [`layout::ICON_BOX`] 见方里（与 `+` 同尺寸），
+/// 命中区固定，tooltip 同时登记为可访问名（读屏与键盘用户拿到同一句话）。
 ///
 /// 为什么不再用 `gtk::Button::from_icon_name`：它不暴露图标控件，尺寸只能靠全局
-/// 默认值，没法按光学档位取尺寸。
-pub fn button(icon: &str, weight: OpticalWeight, tooltip: &str) -> gtk::Button {
+/// 默认值，量不到也就锁不住「所有图标与基准同尺寸」。
+pub fn button(icon: &str, tooltip: &str) -> gtk::Button {
     let image = gtk::Image::from_icon_name(icon);
-    image.set_pixel_size(weight.px());
+    image.set_pixel_size(layout::ICON_BOX);
     let button = gtk::Button::new();
     button.add_css_class("flat");
     button.add_css_class(BUTTON_CLASS);
@@ -98,9 +75,10 @@ pub fn button(icon: &str, weight: OpticalWeight, tooltip: &str) -> gtk::Button {
     button
 }
 
-/// 自检一个图标按钮（纯函数，便于单测）：命中区请求必须等于标准，图标像素必须落在
-/// 三档之内。分配宽度不参与比较——`.linked` 组会按边框取整（实测 28 → 29），那不是
-/// 「凭喜好改尺寸」，而按图标像素与命中区请求判断才正好盯住这条规矩本身。
+/// 自检一个图标按钮（纯函数，便于单测）：命中区请求必须等于标准，图标像素必须等于
+/// [`layout::ICON_BOX`]（与 `+` 同尺寸，长宽都不得超过基准）。分配宽度不参与比较——
+/// `.linked` 组会按边框取整（实测 28 → 29），那不是「凭喜好改尺寸」，而按图标像素与
+/// 命中区请求判断才正好盯住这条规矩本身。
 #[must_use]
 pub fn check_button(request: (i32, i32), icon_px: Option<i32>) -> Option<String> {
     let mut reasons = Vec::new();
@@ -114,8 +92,11 @@ pub fn check_button(request: (i32, i32), icon_px: Option<i32>) -> Option<String>
         ));
     }
     match icon_px {
-        Some(px) if [layout::ICON_BOX, layout::ICON_STROKE, layout::ICON_RING].contains(&px) => {}
-        Some(px) => reasons.push(format!("图标 {px}px 不在三档（16 / 18 / 14）之内")),
+        Some(px) if px == layout::ICON_BOX => {}
+        Some(px) => reasons.push(format!(
+            "图标 {px}px ≠ 基准 {}px（所有图标都必须与 `+` 同尺寸）",
+            layout::ICON_BOX
+        )),
         None => reasons.push("按钮里没有可测量的图标（GtkImage）".to_owned()),
     }
     if reasons.is_empty() {
@@ -171,42 +152,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn optical_weights_match_the_layout_constants() {
-        // 三档尺寸只有一个来源（layout.rs），这里守护「别在别处再算一遍」。
-        assert_eq!(OpticalWeight::Box.px(), layout::ICON_BOX);
-        assert_eq!(OpticalWeight::Stroke.px(), layout::ICON_STROKE);
-        assert_eq!(OpticalWeight::Ring.px(), layout::ICON_RING);
-    }
-
-    #[test]
-    fn optical_weights_are_ordered_around_the_baseline() {
-        // 基准在中间：窄字形放大、环形缩小。顺序颠倒就说明分档理由被改坏了。
-        assert!(OpticalWeight::Stroke.px() > OpticalWeight::Box.px());
-        assert!(OpticalWeight::Ring.px() < OpticalWeight::Box.px());
+    fn every_icon_uses_the_same_box_as_the_plus() {
+        // 只有一个尺寸来源：layout::ICON_BOX（基准 = 行操作的 `+`）。
+        // 谁想给某个图标单独放大 / 缩小，都得先改这里，而这里是设计口径。
+        const { assert!(layout::ICON_BOX == 16) };
+        // 命中区放下图标后左右各留 2px，高度等于最小点击区。
+        const { assert!(layout::ICON_BUTTON_WIDTH - layout::ICON_BOX >= 4) };
+        const { assert!(layout::ICON_BUTTON_HEIGHT == layout::MIN_TARGET) };
     }
 
     #[test]
     fn check_button_accepts_the_standard_and_rejects_tweaks() {
         let ok = (layout::ICON_BUTTON_WIDTH, layout::ICON_BUTTON_HEIGHT);
-        for px in [layout::ICON_BOX, layout::ICON_STROKE, layout::ICON_RING] {
-            assert!(check_button(ok, Some(px)).is_none(), "{px}px 属于三档");
-        }
+        assert!(check_button(ok, Some(layout::ICON_BOX)).is_none());
         let wrong_request = check_button(
             (layout::ICON_BUTTON_WIDTH + 2, ok.1),
             Some(layout::ICON_BOX),
         )
         .expect("命中区被改要报出来");
         assert!(wrong_request.contains("命中区"), "{wrong_request}");
-        let stray_px = check_button(ok, Some(15)).expect("非三档像素要报出来");
-        assert!(stray_px.contains("三档"), "{stray_px}");
+        let stray_px = check_button(ok, Some(layout::ICON_BOX + 2)).expect("尺寸不同要报出来");
+        assert!(stray_px.contains("同尺寸"), "{stray_px}");
         assert!(check_button(ok, None).is_some(), "量不到图标要报出来");
     }
 
     #[test]
-    fn keep_every_weight_inside_the_button_target() {
-        // 图标不得撑破命中区：最大档 + 4px 余量仍要装得进按钮宽度，
+    fn keep_every_icon_inside_the_button_target() {
+        // 图标不得撑破命中区：图标盒 + 左右各 2px 仍要装得进按钮宽度，
         // 且按钮高度不低于 §11 的 24px 最小点击区。
-        const MAX: i32 = OpticalWeight::Stroke.px() + 4;
+        const MAX: i32 = layout::ICON_BOX + 4;
         const { assert!(MAX <= layout::ICON_BUTTON_WIDTH) };
         const { assert!(layout::ICON_BUTTON_HEIGHT >= layout::MIN_TARGET) };
     }

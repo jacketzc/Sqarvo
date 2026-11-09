@@ -149,7 +149,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/startup.rs` | 启动落地工作区（#139）：未连接时复用连接态的对象树（搜索 + `My Connections` + 页脚刷新）、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
 | `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
 | `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24）；表格右边界与**下边界**（`row:last-child`）、图标按钮命中区 |
-| `src/icons.rs` + `resources/icons/` | 图标标准与自有符号图标：三档光学尺寸（16 / 18 / 14）+ 固定命中区 28×24，`--qa-layout-audit` 断言；`resources/icons/*.svg` 由 `build.rs` 编成 GResource（漏斗等 Adwaita 没有的形状） |
+| `src/icons.rs` + `resources/icons/` | 图标标准与自有符号图标：唯一尺寸 16×16（以状态栏 `+` 为基准）+ 固定命中区 28×24，`--qa-layout-audit` 断言；`resources/icons/*.svg` 由 `build.rs` 编成 GResource（漏斗等 Adwaita 没有的形状） |
 | `src/backend/endpoint.rs` | 端点定位、解析、协议主版本校验、pid 存活探测 |
 | `src/backend/connection.rs` | 连接草稿、TLS 模式、`CredentialService`/`ConnectionService` 调用、错误分类 |
 | `src/config.rs` | `connections.json` 读写（目录 0700、文件 0600，只含非敏感字段） |
