@@ -563,7 +563,7 @@ impl Inspector {
 
     /// 改写「没有选中对象」空态的标题与说明。
     ///
-    /// 启动态（还没有连接任何数据库）左侧是已保存连接列表，不是对象树：
+    /// 启动态（还没有连接任何数据库）左侧对象树还没有选中的连接：
     /// 同一份空态页不能继续提示用户「在左侧对象树里选中……」。
     pub fn set_empty_text(&self, title: &str, description: &str) {
         self.empty_page.set_title(title);

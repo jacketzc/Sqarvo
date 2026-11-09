@@ -92,7 +92,7 @@ impl StartupWorkspace {
         // ---- 区域 06：信息面板（视觉与连接态一致，文案换成未连接口径） ------
         let inspector = crate::inspector::Inspector::new();
         inspector.show_empty();
-        // 启动态左侧没有对象树可选中：把同一份空态换成可执行的操作说明。
+        // 启动态对象树还没有选中的连接：把同一份空态换成可执行的操作说明。
         inspector.set_empty_text(
             "没有选中对象",
             "从左侧选择一个连接开始：双击一条已保存的连接即可连接。",

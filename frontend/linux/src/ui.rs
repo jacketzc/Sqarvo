@@ -3,7 +3,7 @@
 //! | 状态 | 界面表现 |
 //! |---|---|
 //! | Loading | 居中的 spinner + 当前握手阶段文案（握手期间的过渡态） |
-//! | Connected | 直接进入工作区外壳：侧栏连接列表 + `Objects` 空态 +「未连接」状态栏 |
+//! | Connected | 直接进入工作区外壳：侧栏对象树（未连接）+ `Objects` 空态 +「未连接」状态栏 |
 //! | Error | 可操作的错误文案（不含 token）与「重试」按钮 |
 //! | Disconnected | 连接结束原因与「重新连接」按钮 |
 //!
@@ -485,8 +485,8 @@ pub fn activate(app: &adw::Application) {
                                     ),
                                 }
                             }
-                            // 已连上数据库：启动态外壳由连接后的工作区整体替换。
-                            events_state.startup.borrow_mut().take();
+                            // 已连上数据库：启动态外壳由连接后的工作区整体替换
+                            // （当前宽度由 show_workspace 读走后再释放启动态）。
                             show_workspace(&events_state, &outcome);
                             maybe_run_qa_sql(&events_state);
                             maybe_run_qa_data(&events_state);
@@ -846,7 +846,7 @@ fn connect_saved(state: &Rc<UiState>, key: &str) {
         SavedClickAction::ToggleExpanded => {
             match state.workspace.borrow().as_ref() {
                 Some(workspace) => workspace.toggle_connection(key),
-                // 启动态没有对象树：连接已建立却还没有工作区时无事可做（正常路径不会到这里）。
+                // 启动态还没有工作区：连接已建立却还没有可展开的树节点（正常路径不会到这里）。
                 None => eprintln!(
                     "[startup] 「{}」已连接：启动态没有可展开的树节点",
                     saved.name
@@ -924,7 +924,6 @@ fn browse_session_opened(
         session.driver_id,
         short_id(&session.session_id)
     );
-    state.startup.borrow_mut().take();
     show_workspace(state, &outcome);
     if let Some(workspace) = state.workspace.borrow().as_ref() {
         workspace.expand_connection(key);
@@ -1064,8 +1063,8 @@ fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionD
 
 /// QA（`--qa-startup-click <name>`）：在启动态侧栏按名字激活一行。
 ///
-/// 走的是 `adw::ActionRow::activate()`：与用户左键点击 / 回车同一条 `activated`
-/// 信号，因此「按保存凭据连接」整条链路（connect_saved → registry.open →
+/// 走的是对象树的 `GtkListView::activate` 信号：与用户双击 / 回车同一条行激活
+/// 路径，因此「按保存凭据连接」整条链路（connect_saved → registry.open →
 /// Connect → 落到工作区）都被真实走到，没有绕过界面直调 gRPC。
 fn maybe_run_qa_startup_click(state: &Rc<UiState>) {
     let Some(name) = crate::qa::startup_click() else {
@@ -1087,8 +1086,8 @@ fn maybe_run_qa_startup_click(state: &Rc<UiState>) {
 
 /// QA（`--qa-startup-menu <name>` / `--qa-startup-menu-pick <label>`）：打开右键菜单并按文案点条目。
 ///
-/// 菜单本身由 [`crate::startup::StartupWorkspace::open_menu_named`] 用右键手势同一条
-/// [`crate::startup::show_row_menu`] 路径打开；点条目走按钮自己的 `clicked` 信号。
+/// 菜单本身由 [`crate::startup::StartupWorkspace::open_menu_named`] 走对象树的
+/// 右键菜单路径打开；点条目走按钮自己的 `clicked` 信号。
 fn maybe_run_qa_startup_menu(state: &Rc<UiState>) {
     let Some(name) = crate::qa::startup_menu() else {
         return;
@@ -1216,10 +1215,10 @@ fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
 
 /// Connected：握手成功即落到工作区外壳（#139）。
 ///
-/// 侧栏是 `connections.json` 的已保存连接列表，主区域是固定 `Objects` 标签的空态，
+/// 侧栏是对象树（已保存连接全部未连接），主区域是固定 `Objects` 标签的空态，
 /// 状态栏显示「未连接」、驱动数与浏览会话数。后端诊断信息不在这里：见 [`show_about`]。
 fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
-    // 重新握手时旧外壳整体重建：连接列表可能已经变化。
+    // 重新握手时旧外壳整体重建：连接注册表可能已经变化。
     state.startup.borrow_mut().take();
     if let Some(actions) = state.actions.borrow().as_ref() {
         // 没有数据库连接：标签 / 刷新 / 行操作都没有可作用的会话。
@@ -1381,6 +1380,15 @@ fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
 /// 标签、会话与页面都在 [`crate::tabs::TabSet`] 里；本函数只负责把它接上外壳、
 /// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与「表」菜单的可用性。
 fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
+    // 启动态刚拖过面板就立刻点连接时，400ms 的落盘防抖还没触发：先取当前外壳
+    // 的真实宽度带进新工作区，避免重读 window.json 拿到旧值（#155 复核）。
+    let startup_width = state
+        .startup
+        .borrow()
+        .as_ref()
+        .map(|startup| startup.inspector_state().0);
+    state.startup.borrow_mut().take();
+
     let version = if outcome.server_version.trim().is_empty() {
         "未知（后端未返回）".to_owned()
     } else {
@@ -1422,7 +1430,14 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
         previous.shutdown();
     }
 
-    let workspace = Workspace::new(state, outcome, &connection_name, &driver_label, &version);
+    let workspace = Workspace::new(
+        state,
+        outcome,
+        &connection_name,
+        &driver_label,
+        &version,
+        startup_width,
+    );
     state.workspace.replace(Some(Rc::clone(&workspace)));
     set_page(&state.slot, workspace.widget());
     if let Some(actions) = state.actions.borrow().as_ref() {
@@ -1572,6 +1587,7 @@ impl Workspace {
         connection_name: &str,
         driver_label: &str,
         version: &str,
+        startup_width: Option<i32>,
     ) -> Rc<Self> {
         let worker = state
             .worker
@@ -1895,9 +1911,10 @@ impl Workspace {
         work_box.append(tabs.widget());
 
         // 面板宽度是**窗口级**记忆（#155）：启动态、连接态、切换连接读同一个值，
-        // 拖一次就全局生效；不再按连接分别记忆（那会在启动→连接时跳 40px）。
-        let remembered_width =
-            crate::window_state::last_inspector_width().unwrap_or(layout::INSPECTOR_WIDTH);
+        // 拖一次就全局生效；启动态刚拖过就连接时用它的当前宽度（startup_width）。
+        let remembered_width = startup_width
+            .or_else(crate::window_state::last_inspector_width)
+            .unwrap_or(layout::INSPECTOR_WIDTH);
         eprintln!("[shell] 信息面板宽度读取：{remembered_width}（窗口级）");
 
         let shell = Shell::new(ShellHandlers {
@@ -2976,7 +2993,7 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
             "启动态 Objects 标签应当 pinned=true，实际 pinned={objects_pinned}"
         ));
     }
-    // 启动态左侧是已保存连接列表，不是对象树：面板空态必须给出可执行的下一步。
+    // 启动态对象树还没有选中的连接：面板空态必须给出可执行的下一步。
     let (empty_title, empty_description) = startup.inspector_empty_text();
     if empty_title != "没有选中对象" || empty_description.contains("对象树") {
         return Err(format!(
