@@ -148,9 +148,9 @@ pub fn stylesheet() -> String {
         .sqarvo-slot-note {{ font-size: {status_font}px; }}
 
         /* 数据网格单元格（结果表 / 表数据）：12px 下 GTK4 会裁掉部分 CJK 字形
-           笔画（用户反馈「张三 / 王五」显示残缺）；13px 是实测可完整显示的
-           最小字号，32px 行高仍装得下。 */
-        .sqarvo-cell {{ font-size: {data_font}px; }}
+           笔画（用户反馈「张三 / 王五」显示残缺）。13px 起完整；为在 1x 屏幕上
+           避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
+        .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
 
         /* 当前种类高亮：按钮因「新建表/视图…」尚未实现而禁用，高亮仍要看得见 */
         .sqarvo-kind-active:disabled {{
@@ -191,8 +191,11 @@ mod tests {
         assert!(css.contains("font-size: 13px"), "标题字号缺失");
         assert!(css.contains("font-size: 11px"), "状态栏字号缺失");
         assert!(
-            css.contains("font-size: 13px") && css.contains(".sqarvo-cell"),
-            "数据单元格字号缺失（12px 会裁掉部分 CJK 笔画）"
+            css.contains(&format!(
+                ".sqarvo-cell {{ font-size: {}px; font-weight: 500; }}",
+                layout::FONT_DATA_CELL
+            )),
+            "数据单元格字号 / 字重缺失（12px 会裁掉 CJK 笔画，13px Regular 会发虚）"
         );
         assert!(
             css.contains(&format!("min-height: {}px", layout::TAB_STRIP_HEIGHT)),
