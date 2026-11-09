@@ -2327,6 +2327,23 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 700;
     }
 
+    if let Some(value) = crate::qa::tree_select_group() {
+        let tree = Rc::clone(&workspace.tree);
+        let shell = Rc::clone(&workspace.shell);
+        let group = if value.to_ascii_lowercase().starts_with("view") {
+            crate::tree::KindGroup::Views
+        } else {
+            crate::tree::KindGroup::Tables
+        };
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                shell.set_inspector_visible(true);
+                tree.qa_select_group(group)
+            }),
+        );
+        delay += 700;
+    }
     if let Some(name) = crate::qa::tree_select() {
         let tree = Rc::clone(&workspace.tree);
         let shell = Rc::clone(&workspace.shell);

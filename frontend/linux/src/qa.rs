@@ -782,6 +782,8 @@ struct Args {
     tree_select: Option<String>,
     /// `--qa-tree-select-connection <name>`：选中某条连接节点（#119）。
     tree_select_connection: Option<String>,
+    /// `--qa-tree-select-group <tables|views>`：选中库下的种类分组行（v0.2.3.3）。
+    tree_select_group: Option<String>,
     /// `--qa-objects-select <name>`：选中 `Objects` 固定页里的某一行（走单选模型，
     /// 与单击同一条路径；v0.2.3.3 的单列表格交互）。
     objects_select: Option<String>,
@@ -1020,6 +1022,7 @@ pub fn enabled() -> bool {
             || args.objects_select.is_some()
             || args.objects_activate.is_some()
             || args.kind_click.is_some()
+            || args.tree_select_group.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1309,6 +1312,12 @@ pub fn tree_select_connection() -> Option<String> {
         .and_then(|args| args.tree_select_connection.clone())
 }
 
+/// `--qa-tree-select-group <tables|views>`：选中种类分组行。
+#[must_use]
+pub fn tree_select_group() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_select_group.clone())
+}
+
 /// `--qa-objects-select <name>`：选中 `Objects` 页的一行（与单击同一条路径）。
 #[must_use]
 pub fn objects_select() -> Option<String> {
@@ -1380,6 +1389,7 @@ pub fn tree_requested() -> bool {
             || args.tree_disconnect.is_some()
             || args.tree_select.is_some()
             || args.tree_select_connection.is_some()
+            || args.tree_select_group.is_some()
             || args.objects_select.is_some()
             || args.objects_activate.is_some()
             || args.kind_click.is_some()
@@ -2176,6 +2186,21 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-objects-activate 的对象名不能为空".to_owned());
                 }
                 parsed.objects_activate = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-select-group" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-select-group 需要 tables|views".to_owned())?;
+                if !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "tables" | "table" | "views" | "view"
+                ) {
+                    return Err(format!(
+                        "--qa-tree-select-group 只接受 tables|views，实际：{value}"
+                    ));
+                }
+                parsed.tree_select_group = Some(value.clone());
                 index += 2;
             }
             "--qa-kind" => {

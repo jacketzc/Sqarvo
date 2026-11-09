@@ -1409,6 +1409,21 @@ impl TabSet {
             }
             None => objects.show_empty(),
         }
+        // 树里选了 `Tables` / `Views` 分组（或任意对象）→ 工具条的「当前种类」跟着换。
+        self.sync_objects_status();
+    }
+
+    /// `Objects` 页换作用域后，把工具条高亮同步一次。
+    ///
+    /// 只在 `Objects` 页是当前标签时推：停在表标签上时，高亮的含义是「这个标签的表」，
+    /// 不该被树的选中改掉。
+    fn sync_objects_status(&self) {
+        if self.current_id().as_deref() != Some(OBJECTS_TAB_ID) {
+            return;
+        }
+        (self.context.on_status)(TabStatus::Objects {
+            shortcut: self.objects_shortcut(),
+        });
     }
 
     /// 切回 `Objects` 页时清掉行高亮（重新进入不带上一次的选中）。
@@ -1437,6 +1452,7 @@ impl TabSet {
         if let Some(objects) = self.objects.borrow().clone() {
             objects.show_unavailable(shortcut, title, description);
         }
+        self.sync_objects_status();
     }
 
     /// 固定 `Objects` 页的单击选中回调（同步信息面板）。

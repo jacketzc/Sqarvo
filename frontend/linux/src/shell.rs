@@ -541,6 +541,8 @@ pub struct Toolbar {
     view: gtk::Button,
     function: gtk::Button,
     query: gtk::Button,
+    /// 当前高亮的种类（只在变化时打日志，便于无人值守取证）。
+    active: Cell<Option<crate::tabs::KindShortcut>>,
 }
 
 impl Toolbar {
@@ -638,6 +640,7 @@ impl Toolbar {
             view,
             function,
             query,
+            active: Cell::new(None),
         })
     }
 
@@ -668,6 +671,13 @@ impl Toolbar {
     /// 高亮「当前种类」：`Objects` 页列的种类，或当前表标签的种类。
     pub fn set_active(&self, shortcut: Option<crate::tabs::KindShortcut>) {
         use crate::tabs::KindShortcut;
+        if self.active.get() != shortcut {
+            self.active.set(shortcut);
+            match shortcut {
+                Some(choice) => eprintln!("[toolbar] 高亮种类：{}", choice.label()),
+                None => eprintln!("[toolbar] 高亮种类：无"),
+            }
+        }
         for (button, choice) in [
             (&self.table, KindShortcut::Tables),
             (&self.view, KindShortcut::Views),

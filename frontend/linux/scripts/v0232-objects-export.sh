@@ -74,7 +74,7 @@
 # 用法：
 #   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
 #   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
-#                                                          # 只跑 Objects 段（A0–A7）
+#                                                          # 只跑 Objects 段（A0–A8）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -511,6 +511,20 @@ check_contains "kind-follows 树里选中的仍是 temp" '选中对象：temp（
 check_screenshot "kind-follows 截图（跟着选中的库走）" \
     "$OUT/kind-follows/07-toolbar-follows-library.png"
 
+# A8（v0.2.3.3）：反方向联动——在树里选中 `Views` 分组，工具条的种类高亮要跟着换。
+launch tree-kind-sync io.sqarvo.Sqarvo.QA024TreeKindSync \
+    --qa-tree-expand main \
+    --qa-tree-select-group views \
+    --qa-expect-objects count=1 \
+    --screenshot "$OUT/tree-kind-sync/08-tree-to-toolbar.png" \
+    --screenshot-delay-ms 7000 \
+    --qa-exit-after-ms 9000
+check_contains "tree-kind-sync 树里选中了 Views 分组" '选中分组：Views（main）' "$CASE_LOG"
+check_contains "tree-kind-sync 工具条高亮跟到「视图」" '[toolbar] 高亮种类：视图' "$CASE_LOG"
+check_contains "tree-kind-sync Objects 页列出视图" '断言通过：Objects count=1' "$CASE_LOG"
+check_screenshot "tree-kind-sync 截图（树 → 工具条）" \
+    "$OUT/tree-kind-sync/08-tree-to-toolbar.png"
+
 # ---------------------------------------------------------------------------
 # 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
 # ---------------------------------------------------------------------------
@@ -529,7 +543,7 @@ if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" 
         *) ok "证据目录在仓库外：$OUT" ;;
     esac
     say ""
-    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A7）"
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A8）"
     say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
     say "证据目录：$OUT"
     say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"

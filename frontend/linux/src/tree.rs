@@ -3319,6 +3319,31 @@ impl TreePanel {
         Err(format!("树里找不到节点 {name}（已展开 {opened} 个分组）"))
     }
 
+    /// QA：选中某个种类分组行（`Tables` / `Views`；与用户点分组行同一条路径）。
+    ///
+    /// 树里可能有多条连接的同名分组，这里取**第一行**命中——验收脚本都是单连接单库，
+    /// 需要精确到库时用 `--qa-tree-select-group` 配合先选中库。
+    pub fn qa_select_group(&self, group: KindGroup) -> Result<String, String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(Row::Group(group_row)) = self.row_of(&row) else {
+                continue;
+            };
+            if group_row.group != RowGroup::Catalog(group) {
+                continue;
+            }
+            self.select_position(position);
+            return Ok(format!(
+                "选中分组 {}（{}）",
+                group.label(),
+                group_row.parent.catalog
+            ));
+        }
+        Err(format!("树里还没有 {} 分组行（先展开库）", group.label()))
+    }
+
     /// 走用户路径选中一条**连接**节点（#119 截图用）。
     pub fn qa_select_connection(self: &Rc<Self>, name: &str) -> Result<(), String> {
         for position in 0..self.tree_model.n_items() {
