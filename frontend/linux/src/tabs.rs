@@ -1383,7 +1383,6 @@ impl TabSet {
 
         let page = self.view.add_page(objects.widget(), None);
         page.set_title("Objects");
-        page.set_tooltip("固定页：列出选中库的表 / 视图（钉住，不可关闭）");
         // `AdwTabPage:pinned`（libadwaita 1.2+）：固定在最左、紧凑（只显示图标）、
         // 没有关闭按钮，也无法关闭——比「点击关闭时拒绝」更贴近「固定页」语义。
         page.set_icon(Some(&gtk::gio::ThemedIcon::new("view-grid-symbolic")));

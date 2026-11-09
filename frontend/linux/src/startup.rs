@@ -194,7 +194,6 @@ impl StartupWorkspace {
 
         let page = view.add_page(objects.widget(), None);
         page.set_title("Objects");
-        page.set_tooltip("固定页：未连接时从左侧选择一个连接开始（钉住，不可关闭）");
         page.set_icon(Some(&gtk::gio::ThemedIcon::new("view-grid-symbolic")));
         // 与连接态的固定存在同一语义（workspace-model §3）：钉住、紧凑、没有关闭按钮。
         view.set_page_pinned(&page, true);
