@@ -390,8 +390,10 @@ impl Inspector {
         header_text.append(&title);
         header_text.append(&subtitle);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        // 标题块与下方横线之间留白：4px 时副标题（`表`）几乎贴住分隔线，面板头部看起来
+        // 被线切了一刀。10px 让「标题 + 副标题」自成一组（实测副标题笔画底到线约 13px）。
         header.set_margin_top(6);
-        header.set_margin_bottom(4);
+        header.set_margin_bottom(10);
         header.set_margin_start(10);
         header.set_margin_end(10);
         header.append(&header_text);
@@ -402,7 +404,7 @@ impl Inspector {
         txn_hint.set_wrap(true);
         txn_hint.set_margin_start(10);
         txn_hint.set_margin_end(10);
-        txn_hint.set_margin_bottom(4);
+        txn_hint.set_margin_bottom(8);
         txn_hint.add_css_class("caption");
         txn_hint.add_css_class("sqarvo-inspector-warning");
         txn_hint.set_visible(false);
