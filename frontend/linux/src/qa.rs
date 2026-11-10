@@ -60,6 +60,8 @@
 //!   `--qa-tree-activate <name>`（走双击 / 回车的 `activate` 信号激活节点，v0.2.3.2 回归）、
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
 //!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
+//!   `--qa-refresh`（触发与 `F5` / 菜单「视图 → 刷新」相同的 `win.refresh`：当前标签是
+//!   表数据页时刷该表，否则重建对象树；日志写出走的是哪一条）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //! - `Objects` 固定页（v0.2.3.3 单列表格）：`--qa-objects-select <name>`（走单选模型，
 //!   与单击同一条路径，会同步信息面板）、`--qa-objects-activate <name>`（发
@@ -769,6 +771,8 @@ struct Args {
     tree_expand: Vec<String>,
     /// `--qa-tree-open <name>`：在树里打开的表名。
     tree_open: Option<String>,
+    /// `--qa-refresh`：执行一次 `win.refresh`（有表标签刷当前表，否则刷对象树）。
+    refresh: bool,
     /// `--qa-tree-activate <name>`：走双击 / 回车那条 `GtkListView::activate` 信号激活
     /// 节点（v0.2.3.2 回归：表有子节点之后双击仍应打开表，只选中不算）。
     tree_activate: Option<String>,
@@ -1257,6 +1261,12 @@ pub fn tree_open() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_open.clone())
 }
 
+/// 是否触发一次 `win.refresh`（`--qa-refresh`）。
+#[must_use]
+pub fn refresh_requested() -> bool {
+    ARGS.get().is_some_and(|args| args.refresh)
+}
+
 /// 要激活（双击 / 回车同一条 `activate` 信号）的节点名（`--qa-tree-activate`）。
 #[must_use]
 pub fn tree_activate() -> Option<String> {
@@ -1370,6 +1380,7 @@ pub fn tree_requested() -> bool {
     ARGS.get().is_some_and(|args| {
         !args.tree_expand.is_empty()
             || args.tree_open.is_some()
+            || args.refresh
             || args.tree_activate.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
@@ -2097,6 +2108,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
                 parsed.tree_open = Some(value.clone());
                 index += 2;
+            }
+            "--qa-refresh" => {
+                parsed.refresh = true;
+                index += 1;
             }
             "--qa-tree-activate" => {
                 let value = args
@@ -3218,6 +3233,22 @@ mod tests {
         // 与其它 --qa-expect-* 一样：没有截图就没有「断言这一刻」。
         assert!(parse(&args(&["app", "--qa-expect-tree", "selected=orders"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-ddl", "contains=CREATE TABLE"])).is_err());
+    }
+
+    #[test]
+    fn refresh_flag_is_parsed_as_a_bare_switch() {
+        // `--qa-refresh` 走的是 `win.refresh` 动作，因此不取值；与 `--qa-tree-open`
+        // 组合时两者互不影响（先开后刷）。
+        let parsed = parse(&args(&["app", "--qa-tree-open", "users", "--qa-refresh"])).unwrap();
+        assert!(parsed.refresh);
+        assert_eq!(parsed.tree_open.as_deref(), Some("users"));
+        // 单独给出也合法：没有表标签时动作自己走对象树分支。
+        assert!(parse(&args(&["app", "--qa-refresh"])).unwrap().refresh);
+        assert!(
+            !parse(&args(&["app", "--qa-tree-open", "users"]))
+                .unwrap()
+                .refresh
+        );
     }
 
     #[test]

@@ -1635,6 +1635,17 @@ fn show_objects_for_kind(
     }
 }
 
+/// `win.refresh` 这次要刷什么：由当前标签决定。
+///
+/// 菜单「视图 → 刷新」、`F5` 与 QA 的 `--qa-refresh` 都读这一份判定，不各自猜。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RefreshTarget {
+    /// 当前标签是表数据页：刷新这张表（与「表 → 刷新当前表」同一个 `RowOp::Refresh`）。
+    Table(String),
+    /// 其余情况（查询标签 / `Objects` 页 / 启动态）：重建对象树。
+    Tree,
+}
+
 /// 工作区：六区域外壳（[`crate::shell`]）+ 对象树侧栏 + 标签工作区 + DDL 面板。
 ///
 /// 标签与会话的对应关系在 [`crate::tabs`]：一个标签一条数据库会话（ADR 0021），
@@ -2149,9 +2160,39 @@ impl Workspace {
         self.shell.status()
     }
 
-    /// 刷新对象树与平铺表列表（「视图 → 刷新」与 F5）。
+    /// 刷新对象树（整棵树，全部连接）。
     fn refresh_all(&self) {
         (self.refresh)();
+    }
+
+    /// `win.refresh` 的目标：当前标签是表数据页时是这张表，否则是对象树。
+    fn refresh_target(&self) -> RefreshTarget {
+        self.tabs.data_page().map_or(RefreshTarget::Tree, |data| {
+            RefreshTarget::Table(
+                data.table_reference()
+                    .map_or_else(|| "（未命名表）".to_owned(), |object| object.name),
+            )
+        })
+    }
+
+    /// 「视图 → 刷新」/ `F5`：有表标签时刷新当前表，否则重建对象树。
+    ///
+    /// 表标签下走 [`crate::data_page::DataPage::perform_row_op`] 的 `RowOp::Refresh`：
+    /// 与「表 → 刷新当前表」、状态栏 `⟳` 同一条入口，保持排序 / 筛选、回到第 1 页，
+    /// 有未提交更改时照旧被脏行守卫拒绝。其它标签（查询 / `Objects` / 启动态）走整棵树。
+    fn refresh(&self) {
+        match self.refresh_target() {
+            RefreshTarget::Table(name) => {
+                eprintln!(
+                    "[refresh] t=+{}ms 刷新当前表 {name}（与「表 → 刷新当前表」同一入口）",
+                    crate::qa::elapsed_ms()
+                );
+                if let Some(data) = self.tabs.data_page() {
+                    data.perform_row_op(crate::data_page::RowOp::Refresh);
+                }
+            }
+            RefreshTarget::Tree => self.refresh_all(),
+        }
     }
 
     fn worker(&self) -> Option<Rc<WorkerHandle>> {
@@ -2311,6 +2352,37 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
     if let Some(name) = crate::qa::tree_activate() {
         let tree = Rc::clone(&workspace.tree);
         schedule_step(delay, Rc::new(move || tree.qa_activate(&name)));
+        delay += 900;
+    }
+
+    // `--qa-refresh`：触发与 F5 / 菜单「视图 → 刷新」完全相同的 `win.refresh` 动作，
+    // 判定（刷当前表 / 刷对象树）只存在于动作处理器里，这里不复制一份。
+    if crate::qa::refresh_requested() {
+        let state = Rc::clone(state);
+        let workspace = Rc::clone(&workspace);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                // 表标签刚打开时第一页还在途：`Command::ReloadTable` 要求标签已就绪，
+                // 此刻按 F5 会被 worker 静默丢弃，看起来像「刷新没生效」。等它落地。
+                if let Some(data) = workspace.tabs.data_page()
+                    && data.qa_observe().state == DataState::Loading
+                {
+                    return Err("数据页仍在读取第一页".to_owned());
+                }
+                let note = match workspace.refresh_target() {
+                    RefreshTarget::Table(name) => format!("触发刷新：当前表 {name}"),
+                    RefreshTarget::Tree => "触发刷新：对象树".to_owned(),
+                };
+                // 走窗口控件的 `win.*` 动作组（与 F5 完全同一条动作）。
+                if let Err(error) =
+                    gtk::prelude::WidgetExt::activate_action(&state.window, "win.refresh", None)
+                {
+                    return Err(format!("win.refresh 动作不可用：{error}"));
+                }
+                Ok(note)
+            }),
+        );
         delay += 900;
     }
 
@@ -3869,7 +3941,8 @@ fn install_window_actions(
         let state = Rc::clone(state);
         refresh.connect_activate(move |_, _| {
             if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
-                workspace.refresh_all();
+                // 有表标签刷当前表，否则重建对象树（见 Workspace::refresh）。
+                workspace.refresh();
             }
         });
     }

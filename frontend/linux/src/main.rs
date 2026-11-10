@@ -156,6 +156,7 @@ fn register_qa_options(app: &adw::Application) {
     for name in [
         "qa-tree-click-result",
         "qa-tree-load-more",
+        "qa-refresh",
         "qa-data-begin-txn",
         "qa-data-read-only",
         "qa-data-commit",
