@@ -781,6 +781,7 @@ pub fn activate(app: &adw::Application) {
                     // 只有登记了 --qa-expect-* 才校验；退出码 3 与截图失败的 2 区分开。
                     if crate::qa::expect_data_state().is_some()
                         || crate::qa::expect_txn().is_some()
+                        || crate::qa::expect_status_dot().is_some()
                         || !crate::qa::expect_columns().is_empty()
                         || !crate::qa::expect_tree().is_empty()
                         || !crate::qa::expect_search().is_empty()
@@ -3929,6 +3930,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
     // 当前标签是表数据标签——没有数据页却登记了数据断言，是脚本错误，不能静默跳过。
     let needs_data_page = crate::qa::expect_data_state().is_some()
         || crate::qa::expect_txn().is_some()
+        || crate::qa::expect_status_dot().is_some()
         || !crate::qa::expect_columns().is_empty()
         || !crate::qa::expect_submit().is_empty();
     let Some(data_page) = workspace.tabs.data_page() else {
@@ -4006,6 +4008,23 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             | crate::qa::TxnExpectation::Disconnected => {}
         }
         passed.push(format!("事务徽标={}", observed.badge_text));
+    }
+
+    // 状态圆点（v0.2.4）：原来两段常驻文字的唯一可见出口是 tooltip。这里读
+    // `tooltip_text()`，所以「tooltip 里到底是哪一句」能被断言，而不是只凭截图猜。
+    if let Some(expected) = crate::qa::expect_status_dot() {
+        let tooltip = &observed.status_dot_tooltip;
+        if !tooltip.contains(&expected) {
+            return Err(format!(
+                "状态圆点 tooltip 期望包含「{expected}」，实际「{tooltip}」（脏行态={}）",
+                observed.status_dot_dirty
+            ));
+        }
+        passed.push(format!(
+            "状态圆点 tooltip=「{}」（有未提交更改={}）",
+            tooltip.replace('\n', "⏎"),
+            observed.status_dot_dirty
+        ));
     }
 
     // 在途提交批次（#89）：按钮文案、状态行、批次阶段与结束方式。

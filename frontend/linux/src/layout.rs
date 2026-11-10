@@ -132,6 +132,17 @@ pub const ICON_BUTTON_WIDTH: i32 = 28;
 /// 图标按钮的命中区高度：等于 §11 的最小点击区。
 pub const ICON_BUTTON_HEIGHT: i32 = MIN_TARGET;
 
+/// 表格工具条**状态圆点**的视觉直径（px）。
+///
+/// 口径是「漏斗图标的一半」：`sqarvo-filter-symbolic` 画在 16 × 16 的图标盒里，墨迹
+/// 实测 12 × 11（`resources/icons/sqarvo-filter-symbolic.svg` 的 path 从 2 到 14）；
+/// 一半是 6，图标盒的一半是 8，取 7 —— 两种读法都在「约一半」以内。
+///
+/// 视觉小、命中区不小：圆点挂在一个 [`MIN_TARGET`] × [`MIN_TARGET`] 的扁平按钮里
+/// （§11：紧凑化不得把可交互控件压到 24 以下），鼠标悬停读到 tooltip、读屏读到同一句话。
+/// 颜色与命中区的 CSS 在 `theme.rs`（`STATUS_DOT_BUTTON_CLASS` / `.sqarvo-status-dot`）。
+pub const STATUS_DOT_DIAMETER: i32 = 7;
+
 /// 内容区高度：两侧在状态栏之上、工具条之下。
 #[must_use]
 pub fn content_height(window_height: i32) -> i32 {

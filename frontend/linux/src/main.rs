@@ -210,6 +210,7 @@ fn register_qa_options(app: &adw::Application) {
             "loading|ready|empty|error|disconnected",
         ),
         ("qa-expect-txn", "auto|active|readonly|failed|disconnected"),
+        ("qa-expect-status-dot", "tooltip 子串"),
         ("qa-column-info", "column"),
         ("qa-column-width", "column:width"),
         (

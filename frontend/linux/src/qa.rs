@@ -927,6 +927,11 @@ struct Args {
     expect_data_state: Option<DataExpectation>,
     /// `--qa-expect-txn`：截图时必须成立的事务徽标状态。
     expect_txn: Option<TxnExpectation>,
+    /// `--qa-expect-status-dot <子串>`：截图时状态圆点的 tooltip 必须包含该子串。
+    ///
+    /// tooltip 是「事务徽标 + 脏行计数」两段文案的唯一可见出口，断言直接读
+    /// `widget.tooltip_text()`（GTK 头less 读回），不靠截图里能不能截到浮层。
+    expect_status_dot: Option<String>,
     /// `--qa-column-info <column>`：连接并打开表后点该列的列头，展开列信息浮层并高亮该列。
     column_info: Option<String>,
     /// `--qa-column-width <column:width>`：把该列宽度设成指定像素（可重复）。走用户拖拽
@@ -1427,6 +1432,12 @@ pub fn expect_data_state() -> Option<DataExpectation> {
 #[must_use]
 pub fn expect_txn() -> Option<TxnExpectation> {
     ARGS.get().and_then(|args| args.expect_txn)
+}
+
+/// 截图时状态圆点 tooltip 必须包含的文案（`--qa-expect-status-dot`）。
+#[must_use]
+pub fn expect_status_dot() -> Option<String> {
+    ARGS.get().and_then(|args| args.expect_status_dot.clone())
 }
 
 /// 打开表后要展开列信息浮层的目标列（`--qa-column-info`）。
@@ -2107,6 +2118,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.expect_txn = Some(TxnExpectation::parse(value)?);
                 index += 2;
             }
+            "--qa-expect-status-dot" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-status-dot 需要一段 tooltip 文案".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-expect-status-dot 的文案不能为空".to_owned());
+                }
+                parsed.expect_status_dot = Some(value.clone());
+                index += 2;
+            }
             "--qa-column-info" => {
                 let value = args
                     .get(index + 1)
@@ -2645,6 +2666,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     if parsed.capture.is_none()
         && (parsed.expect_data_state.is_some()
             || parsed.expect_txn.is_some()
+            || parsed.expect_status_dot.is_some()
             || !parsed.expect_columns.is_empty()
             || !parsed.expect_tree.is_empty()
             || !parsed.expect_ddl.is_empty()
@@ -3314,10 +3336,17 @@ mod tests {
             "error",
             "--qa-expect-txn",
             "failed",
+            "--qa-expect-status-dot",
+            "脏行 3 · 待提交 2 条",
         ]))
         .unwrap();
         assert_eq!(parsed.expect_data_state, Some(DataExpectation::Error));
         assert_eq!(parsed.expect_txn, Some(TxnExpectation::Failed));
+        // 状态圆点：tooltip 是原来两段常驻文字的唯一出口，子串原样保留。
+        assert_eq!(
+            parsed.expect_status_dot.as_deref(),
+            Some("脏行 3 · 待提交 2 条")
+        );
 
         // 断言比对的是界面上的真实文案与 CSS 类，文案必须和状态机一致。
         assert_eq!(TxnExpectation::Failed.label(), "事务失败（只能回滚）");
@@ -3685,6 +3714,10 @@ mod tests {
         // 没有截图就没有「断言这一刻」：静默忽略会让「跑了但没断言」看起来像通过。
         assert!(parse(&args(&["app", "--qa-expect-txn", "failed"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-data-state", "empty"])).is_err());
+        // 状态圆点的断言同样依附截图，而且空文案是脚本写错（不是「什么都不用查」）。
+        assert!(parse(&args(&["app", "--qa-expect-status-dot"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-status-dot", "  "])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-status-dot", "自动提交"])).is_err());
     }
 
     // ---- #88：插入行与隔离级别 ----

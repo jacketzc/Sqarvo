@@ -6,7 +6,7 @@
 //! ┌ 表列表（MetadataService.ListNodes）┐ ┌ 数据页 ────────────────────────────┐
 //! │ demo_items  表                      │ │ 提交 · 撤销 · 删除 · 新增 · 事务    │
 //! │ demo_notes  表                      │ │ 只读/断连横幅                      │
-//! └─────────────────────────────────────┘ │ 自动提交 · 脏行 0 ─ 漏斗 眼睛 导出  │
+//! └─────────────────────────────────────┘ │ ● ──── 漏斗 眼睛 导出        │
 //!                                          │ GtkColumnView（虚拟化，cursor 翻页）│
 //!                                          │ 逐行错误列表                       │
 //!                                          └────────────────────────────────────┘
@@ -111,11 +111,20 @@ pub struct DataPageObservation {
     /// 状态栏「事务」一栏的可见文本（没有事务时为空串；状态栏当前不渲染这一栏，
     /// 事务的**可见**表达在 [`Self::status_row_txn`]）。
     pub txn_visible: String,
-    /// 表格工具条状态簇里那枚**常驻**事务徽标的实际文本（隐藏时为空串）。
+    /// 表格工具条状态簇里那枚**常驻**事务徽标的实际文本（圆点不可见时为空串）。
     ///
     /// 与 `badge_text` 的区别：`badge_text` 是状态机的标签，这里读控件——断言
-    /// 「用户真的看得到」，而不是「状态机算得对」。
+    /// 「用户真的看得到」，而不是「状态机算得对」。v0.2.4 起徽标文字收进状态圆点的
+    /// tooltip，所以可见性看圆点（`status_dot.is_visible()`），文本仍取自 `txn_label`
+    /// 这一份唯一来源：`--qa-expect-txn` 的比对口径不变（没有表时为空串，同以前）。
     pub status_row_txn: String,
+    /// 状态圆点（代替上面两段文字的那个 7px 圆点）的 tooltip 原文。
+    ///
+    /// 由 `status_dot.tooltip_text()` 读回：两段文案与事务状态说明都在这一句里，
+    /// 因此 tooltip 的内容也能被断言，不必靠截图去截 GTK 的浮层。
+    pub status_dot_tooltip: String,
+    /// 状态圆点是否处于「有未提交的更改」态（CSS class 实测，不是状态机字段）。
+    pub status_dot_dirty: bool,
     /// 徽标上带的 CSS 类（正常状态应恰好一个）。
     pub badge_classes: Vec<&'static str>,
     /// 「提交事务」是否可点。
@@ -560,20 +569,34 @@ pub struct DataPage {
     root: gtk::Box,
     /// 表格工具条（行变更动作 + 事务动作 + 状态簇 + 右侧次要动作，**一行**）。
     controls_row: gtk::Box,
-    /// 工具条里漏斗左侧的状态簇（spinner / 过程消息 / 事务徽标 / 脏行计数）。
+    /// 工具条里漏斗左侧的状态簇（spinner / 过程消息 / 状态圆点）。
     ///
     /// 单独留一个句柄只为布局自检能定位「是状态簇撑了还是按钮撑了」；它已经是
     /// `controls_row` 的子节点，不再另占一行。
     status_cluster: gtk::Box,
+    /// 常驻**状态圆点**的命中区（24 × 24，§11）：tooltip 里是原来那两段文案。
+    ///
+    /// 它取代了工具条上「自动提交」与「脏行 N · 待提交 M 条」两段常驻文字：视觉只是
+    /// 一枚 7px 的实心圆（`layout::STATUS_DOT_DIAMETER`，约漏斗墨迹的一半），
+    /// 悬停读到「事务中 · 脏行 3 · 待提交 2 条」+ 状态说明。
+    status_dot: gtk::Button,
+    /// 圆点本体（视觉直径 7px、灰 / 红两态挂 CSS class；不参与命中区计算）。
+    status_dot_core: gtk::Box,
     /// 数据网格的滚动容器（布局自检按视口算，不按全部列的自然宽度）。
     grid_scroll: gtk::ScrolledWindow,
     banner: adw::Banner,
     status: gtk::Label,
-    dirty_label: gtk::Label,
-    /// 状态簇里的**常驻**事务徽标（自动提交 / 事务中 / 事务中（只读）/ 事务失败）。
+    /// 脏行计数文案（`脏行 N · 待提交 M 条`）。
     ///
-    /// 与「脏行 N · 待提交 M 条」同一行：事务状态是这一页的会话属性，用户不该靠
-    /// 「按钮少了一个」去反推；只在有表时显示（没有表时这一行说的是「请选择左侧的表」）。
+    /// 它**不再可见**：只作为唯一文案来源——状态圆点的 tooltip 由它拼出，QA 断言
+    /// （`qa_observe().status_row_txn` 与「脏行」文案）也读它。控件仍在控件树里
+    /// （挂在不可见的宿主盒里），只是不参与布局。
+    dirty_label: gtk::Label,
+    /// **常驻**事务徽标的文案源（自动提交 / 事务中 / 事务中（只读）/ 事务失败）。
+    ///
+    /// 事务状态是这一页的会话属性，用户不该靠「按钮少了一个」去反推。但从 v0.2.4
+    /// 起它不再占可见文案：文案与 CSS 类照样更新，供状态圆点的 tooltip 与 QA 断言
+    /// 读取（`qa_observe().status_row_txn` 读的还是这个控件的文本，所以断言路径不变）。
     txn_label: gtk::Label,
     spinner: gtk::Spinner,
     grid: gtk::ColumnView,
@@ -804,28 +827,48 @@ impl DataPage {
         status.set_max_width_chars(24);
         status.set_valign(gtk::Align::Center);
 
+        // 「脏行 N · 待提交 M 条」：从 v0.2.4 起**不再可见**，只作状态圆点 tooltip 的
+        // 文案来源（与 QA 断言读的同一份字符串）。仍按完整句子拼，不做省略号——
+        // tooltip 没有宽度压力。
         let dirty_label = gtk::Label::new(Some("脏行 0 · 待提交 0 条"));
         dirty_label.set_xalign(0.0);
         dirty_label.add_css_class("dim-label");
         dirty_label.add_css_class("caption");
-        // 挤的时候从头截断（「脏行 0 · 待提交…」），不撑宽整行；正常宽度下完整显示。
-        // 完整文案同时写进 tooltip：960×640 下这一行只放得下开头，数字仍要能查到。
-        dirty_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        dirty_label.set_max_width_chars(30);
         dirty_label.set_valign(gtk::Align::Center);
 
-        // 常驻事务徽标：文案与 `TransactionBadge::label()` 同一口径（四态），
-        // 位置在脏行计数左边。
+        // 常驻事务徽标的文案源（四态），同样只进 tooltip。
         let txn_label = gtk::Label::new(Some("自动提交"));
         txn_label.set_xalign(1.0);
         txn_label.add_css_class("caption");
         txn_label.set_visible(false);
         txn_label.set_valign(gtk::Align::Center);
-        // 最窄档（960×640）允许省略号：徽标宁可截成「事务…」也不许把动作按钮挤出可视区。
-        txn_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        txn_label.set_tooltip_text(Some(
-            "当前会话的事务状态（ADR 0017）：自动提交 / 事务中 / 事务中（只读）/ 事务失败",
-        ));
+
+        // 状态圆点（v0.2.4）：把上面两段常驻文字收成一枚实心小圆点。
+        //
+        // - 视觉：直径 `layout::STATUS_DOT_DIAMETER`（7px ≈ 漏斗墨迹 12×11 的一半），
+        //   由 CSS 上色（`.sqarvo-status-dot`：灰 = 没有未提交的更改，accent 底 =
+        //   有脏行 / 新行）。
+        // - 命中区：24 × 24（§11），视觉小、hover 区不小；tooltip 里是原来的两段
+        //   文案 + 事务状态说明（`sync_status_dot` 实时刷新）。
+        // - 不做成可点动作：`set_focusable(false)` 让它不进 Tab 序列，但仍在无障碍
+        //   树里（`update_property(Label)` 与 tooltip 同一句），鼠标与读屏都拿得到状态。
+        let status_dot_core = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        status_dot_core.add_css_class("sqarvo-status-dot");
+        status_dot_core.set_size_request(
+            crate::layout::STATUS_DOT_DIAMETER,
+            crate::layout::STATUS_DOT_DIAMETER,
+        );
+        status_dot_core.set_halign(gtk::Align::Center);
+        status_dot_core.set_valign(gtk::Align::Center);
+        let status_dot = gtk::Button::new();
+        status_dot.add_css_class("flat");
+        status_dot.add_css_class(crate::theme::STATUS_DOT_BUTTON_CLASS);
+        status_dot.set_child(Some(&status_dot_core));
+        status_dot.set_size_request(crate::layout::MIN_TARGET, crate::layout::MIN_TARGET);
+        status_dot.set_valign(gtk::Align::Center);
+        status_dot.set_focusable(false);
+        status_dot.set_focus_on_click(false);
+        status_dot.set_visible(false);
 
         // 常驻徽标行（#118 要求 10）：只读 / 无主键 / 视图 / 无权限 / 未统计。
         //
@@ -837,11 +880,13 @@ impl DataPage {
         badges_row.set_visible(false);
 
         // 行变更按钮 + 事务按钮 + 状态簇 + 次要动作图标：960 宽下这一行有 9 个控件
-        // （外加状态簇里的 spinner / 消息 / 事务徽标 / 脏行计数）。
+        // （外加状态簇里的 spinner / 消息 / 状态圆点）。
         // v0.2.3.3 把「开始事务」从上一行并进来之后，960×640 实测「需求 433 > 分配 417」
         // （`--qa-layout-audit`）：行内间距先收到 4、按钮横向 padding 收到 5px；事务打开后
         // 换成两个四字按钮仍超 24px，间距再收到 2、padding 4px（见 `install_css`）。
-        // v0.2.4 状态行并进本行后，宽度让给状态簇：消息与脏行计数都可以省略号收尾。
+        // v0.2.4 状态行并进本行后，宽度让给状态簇；后来「事务徽标 + 脏行计数」两段
+        // 常驻文字收成一枚 24×24 的圆点，整行最小需求降到 409（分配 417，
+        // `--qa-layout-audit` 实测 0 超限）。
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         controls.add_css_class("sqarvo-table-actions");
         controls.set_margin_start(12);
@@ -870,16 +915,27 @@ impl DataPage {
         controls_spacer.set_hexpand(true);
         controls_spacer.set_margin_start(6);
         controls.append(&controls_spacer);
-        // 状态簇（v0.2.4）：spinner + 本次操作的临时消息 + 常驻事务徽标 + 脏行计数。
+        // 状态簇（v0.2.4）：spinner + 本次操作的临时消息 + 常驻状态圆点。
         // 放在漏斗**左侧**——它说的是「这张表格此刻怎样」，读的时候先看状态、再看
         // 动表格的次要动作，和状态栏（会话级）分工清楚。
+        //
+        // 两段常驻文字（事务徽标 / 脏行计数）挂在 `status_sources` 里：宿主不可见，
+        // 所以不占布局、不参与测量；它们只当**文案来源**（状态圆点的 tooltip 由它们拼，
+        // QA 断言读同一份字符串）。可见性由圆点承担——注意 GTK4 的
+        // `is_visible()` 是递归的，父容器不可见时子控件也报不可见，所以
+        // `qa_observe().status_row_txn` 看的是 `status_dot.is_visible()`。
+        let status_sources = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        status_sources.set_visible(false);
+        status_sources.append(&txn_label);
+        status_sources.append(&dirty_label);
+
         let status_cluster = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         status_cluster.add_css_class("sqarvo-table-status");
         status_cluster.set_valign(gtk::Align::Center);
         status_cluster.append(&spinner);
         status_cluster.append(&status);
-        status_cluster.append(&txn_label);
-        status_cluster.append(&dirty_label);
+        status_cluster.append(&status_sources);
+        status_cluster.append(&status_dot);
         controls.append(&status_cluster);
         controls.append(&fs_button);
         controls.append(&cc_button);
@@ -1204,6 +1260,8 @@ impl DataPage {
             root,
             controls_row: controls.clone(),
             status_cluster: status_cluster.clone(),
+            status_dot,
+            status_dot_core,
             grid_scroll: scroll.clone(),
             banner,
             status,
@@ -1496,7 +1554,7 @@ impl DataPage {
                 self.controls_row.clone().upcast(),
             ),
             (
-                "表格工具条 状态簇(spinner·消息·事务·脏行)",
+                "表格工具条 状态簇(spinner·消息·状态圆点)",
                 self.status_cluster.clone().upcast(),
             ),
             ("表格 数据网格视口", self.grid_scroll.clone().upcast()),
@@ -4025,11 +4083,21 @@ impl DataPage {
             state: self.state.get(),
             badge_text: self.badge.borrow().label(),
             txn_visible: self.status_snapshot().txn_label,
-            status_row_txn: if self.txn_label.is_visible() {
+            status_row_txn: if self.status_dot.is_visible() {
+                // 文案仍读 `txn_label`（唯一来源），可见性看**状态圆点**：徽标本身
+                // 已经不占布局（挂在不可见的文案宿主里），圆点才是用户看得到的那一个。
                 self.txn_label.text().to_string()
             } else {
                 String::new()
             },
+            status_dot_tooltip: self
+                .status_dot
+                .tooltip_text()
+                .map(|text| text.to_string())
+                .unwrap_or_default(),
+            status_dot_dirty: self
+                .status_dot_core
+                .has_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS),
             badge_classes: {
                 let badge = self.badge.borrow();
                 TXN_CSS_CLASSES
@@ -5766,14 +5834,13 @@ impl DataPage {
         self.notify_status();
     }
 
-    /// 同步状态簇里的**常驻**事务徽标。
+    /// 同步状态簇里**常驻**事务徽标的文案（自动提交 / 事务中 / 事务中（只读）/ 事务失败）。
     ///
-    /// 文案与 [`TransactionBadge::label`] 完全同一份（自动提交 / 事务中 /
-    /// 事务中（只读）/ 事务失败），不在这里另拼一句：状态变化（`sync_badge`）与
-    /// 打开表（`update_dirty_label`）都调它，所以徽标常驻、不靠一次性消息留下痕迹。
-    /// 没有表时隐藏——那一行这时说的是「请选择左侧的表开始浏览」，没有会话可谈。
+    /// 文案与 [`TransactionBadge::label`] 完全同一份，不在这里另拼一句：状态变化
+    /// （`sync_badge`）与打开表（`update_dirty_label`）都调它，所以文案常驻、不靠一次性
+    /// 消息留下痕迹。v0.2.4 起这段文字不再可见（收进状态圆点的 tooltip），CSS 类仍挂在
+    /// 标签上，供调试与后续样式路径查看。
     fn sync_txn_label(&self) {
-        let has_table = self.table.borrow().is_some();
         let badge = self.badge.borrow();
         self.txn_label.set_text(&badge.label());
         for class in TXN_CSS_CLASSES {
@@ -5782,7 +5849,23 @@ impl DataPage {
         for class in badge.css_classes() {
             self.txn_label.add_css_class(class);
         }
-        self.txn_label.set_tooltip_text(Some(match badge.status() {
+        self.sync_status_dot();
+    }
+
+    /// 刷新状态圆点：颜色（灰 / 红）与 tooltip（原来的两段文案 + 事务状态说明）。
+    ///
+    /// 文案来源仍是 `txn_label` / `dirty_label`（两者只从可见布局里摘出，文本照常更新），
+    /// 所以 tooltip、QA 断言、状态栏三处读的是**同一份字符串**：tooltip 不会说「脏行 3」
+    /// 而断言读到 2。
+    ///
+    /// 颜色口径：有待提交内容（脏行 / 标记删除 / 新行草稿）→ `@accent_bg_color`
+    /// （与「新增」的 suggested-action 同一个 token，Yaru 下就是橙红）；否则灰点。
+    fn sync_status_dot(&self) {
+        let txn = self.txn_label.text().to_string();
+        let dirty = self.dirty_label.text().to_string();
+        // 事务状态的一句话解释：原来挂在事务徽标的 tooltip 上，现在并进圆点的 tooltip，
+        // 语义不丢（徽标文案本身已经是「事务中（只读）」这样的完整短语）。
+        let note = match self.badge.borrow().status() {
             TxnStatus::AutoCommit => "自动提交：每条语句自成一个事务（ADR 0017）",
             TxnStatus::Active {
                 read_only: true, ..
@@ -5790,8 +5873,21 @@ impl DataPage {
             TxnStatus::Active { .. } => "事务中：提交事务之前，改动只在当前会话可见",
             TxnStatus::Failed { .. } => "事务失败：只能回滚",
             TxnStatus::Disconnected => "已断开：事务已由后端回滚",
-        }));
-        self.txn_label.set_visible(has_table);
+        };
+        // 第一行 = 原来的两段常驻文案（「事务中 · 脏行 3 · 待提交 2 条」），
+        // 第二行 = 事务状态说明。没有表时不显示圆点，tooltip 也就不存在（同徽标口径）。
+        let tooltip = format!("{txn} · {dirty}\n{note}");
+        self.status_dot.set_tooltip_text(Some(&tooltip));
+        self.status_dot
+            .update_property(&[gtk::accessible::Property::Label(&tooltip)]);
+        if self.pending_change_count() > 0 {
+            self.status_dot_core
+                .add_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
+        } else {
+            self.status_dot_core
+                .remove_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
+        }
+        self.status_dot.set_visible(self.table.borrow().is_some());
     }
 
     fn sync_badge(&self) {

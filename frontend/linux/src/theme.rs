@@ -20,6 +20,15 @@ use crate::layout;
 /// 给窗口加 class 的名字：`GtkApplicationWindow` 上由 [`crate::ui`] 设置。
 pub const WINDOW_CLASS: &str = "sqarvo-compact";
 
+/// 表格工具条状态圆点的命中区 class（`data_page` 挂在圆点按钮上）。
+///
+/// 与 [`crate::icons::BUTTON_CLASS`] 分开：那一个 class 的按钮必须装一个可测量的
+/// `GtkImage`（`icons::audit` 会断言），而圆点是 CSS 画的实心块、不是图标主题的字形。
+pub const STATUS_DOT_BUTTON_CLASS: &str = "sqarvo-status-dot-button";
+
+/// 状态圆点「有未提交的更改」态（灰 → accent 底色）。
+pub const STATUS_DOT_DIRTY_CLASS: &str = "sqarvo-status-dot-dirty";
+
 /// 安装紧凑密度 CSS（进程内只装一次）。
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -115,6 +124,26 @@ pub fn stylesheet() -> String {
             padding: 0;
             min-width: {icon_button_width}px;
             min-height: {icon_button_height}px;
+        }}
+
+        /* 表格工具条状态圆点（v0.2.4）：原来那两段常驻文字（「自动提交」事务徽标 +
+           「脏行 N · 待提交 M 条」）收成一枚直径 {status_dot}px 的实心圆点——约漏斗
+           墨迹（12 × 11 @ 16px 图标盒）的一半。命中区仍是 {target} × {target}：
+           视觉可以小，hover / 点击区不许小（§11）。两段文案改由 tooltip 承载。 */
+        window.{window_class} .sqarvo-table-actions button.{status_dot_button} {{
+            padding: 0;
+            min-width: {target}px;
+            min-height: {target}px;
+        }}
+        /* 灰 = 没有未提交的更改（不是可点动作，别抢注意力）。 */
+        .sqarvo-status-dot {{
+            border-radius: 99px;
+            background-color: alpha(@window_fg_color, 0.35);
+        }}
+        /* 红 = 有未提交的更改：用 `@accent_bg_color`（suggested-action 的底色 token），
+           与「新增」按钮同一色系——Yaru 下就是橙红，Adwaita 下随系统强调色走。 */
+        .sqarvo-status-dot.{status_dot_dirty} {{
+            background-color: @accent_bg_color;
         }}
 
         /* 区域 04 顶部：标签条 24（workspace-model §2.1 的 tabStrip） */
@@ -353,6 +382,9 @@ pub fn stylesheet() -> String {
         icon_button_class = crate::icons::BUTTON_CLASS,
         icon_button_width = layout::ICON_BUTTON_WIDTH,
         icon_button_height = layout::ICON_BUTTON_HEIGHT,
+        status_dot = layout::STATUS_DOT_DIAMETER,
+        status_dot_button = STATUS_DOT_BUTTON_CLASS,
+        status_dot_dirty = STATUS_DOT_DIRTY_CLASS,
     )
 }
 
@@ -517,6 +549,45 @@ mod tests {
             layout::ICON_BUTTON_WIDTH,
             layout::ICON_BUTTON_HEIGHT
         )));
+    }
+
+    #[test]
+    fn status_dot_is_half_the_funnel_in_a_full_target() {
+        let css = stylesheet();
+        // 圆点 = 「事务徽标 + 脏行计数」两段常驻文字的唯一可见形态：视觉是一枚 7px 的
+        // 实心圆（约漏斗墨迹 12×11 的一半），命中区仍是 24×24（§11：视觉可以小，
+        // hover / 点击区不许小）。
+        assert!(
+            css.contains(&format!(
+                "button.{} {{\n            padding: 0;\n            min-width: {}px;\n            min-height: {}px;",
+                STATUS_DOT_BUTTON_CLASS,
+                layout::MIN_TARGET,
+                layout::MIN_TARGET
+            )),
+            "圆点命中区必须是 24×24、内边距 0：{css}"
+        );
+        // 圆点直径必须是 6–7px（用户口径），且不超过漏斗图标盒的一半。
+        const { assert!(layout::STATUS_DOT_DIAMETER * 2 <= layout::ICON_BOX) };
+        const { assert!(layout::STATUS_DOT_DIAMETER == 6 || layout::STATUS_DOT_DIAMETER == 7) };
+        // 两态只有两个颜色 token：未激活 = 前景色 35% 的灰；有脏行 = suggested-action
+        // 用的 `@accent_bg_color`（Yaru 下橙红）。不许出现第三态颜色。
+        let start = css.find(".sqarvo-status-dot {").expect("缺少状态圆点规则");
+        let rule = &css[start..start + css[start..].find('}').expect("规则应当闭合")];
+        assert!(
+            rule.contains("background-color: alpha(@window_fg_color, 0.35);"),
+            "未激活态是灰点：{rule}"
+        );
+        assert!(
+            rule.contains("border-radius: 99px;"),
+            "圆点必须是圆的（999 会被钳到半个盒子）：{rule}"
+        );
+        assert!(
+            css.contains(&format!(
+                ".sqarvo-status-dot.{} {{\n            background-color: @accent_bg_color;",
+                STATUS_DOT_DIRTY_CLASS
+            )),
+            "有脏行必须是 accent 底色（与 suggested-action 同一 token）"
+        );
     }
 
     #[test]
