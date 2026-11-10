@@ -60,6 +60,12 @@ pub const MAX_TABS: usize = 8;
 /// `Objects` 固定页的标签 ID。
 pub const OBJECTS_TAB_ID: &str = "tab-objects";
 
+/// `Objects` 三列表格里「类型」列的宽度：表 / 视图 / 物化视图（最多四个汉字）。
+///
+/// 行号列与数据列宽度不在这里另写一份——行号取 `data_page::ROW_NUMBER_WIDTH`，
+/// 表名初值取 `data_page::COLUMN_WIDTH`，与数据网格同一个来源。
+const OBJECTS_KIND_COLUMN_WIDTH: i32 = 120;
+
 /// 超限文案：必须含当前上限与关闭建议（不是静默失败）。
 #[must_use]
 pub fn limit_message(open: usize) -> String {
@@ -577,12 +583,11 @@ fn item_entry(item: &gtk::ListItem) -> Option<TableEntry> {
     Some(boxed.borrow::<TableEntry>().clone())
 }
 
-/// 行控件里的三件套（顺序在 `connect_setup` 里固定）：[图标] [名称] [种类]。
-fn row_parts(row_box: &gtk::Box) -> Option<(gtk::Image, gtk::Label, gtk::Label)> {
-    let icon = row_box.first_child()?.downcast::<gtk::Image>().ok()?;
+/// 表名列单元格里的两件套（顺序在 `name_factory` 的 setup 里固定）：[图标] [名称]。
+fn name_cell_parts(cell: &gtk::Box) -> Option<(gtk::Image, gtk::Label)> {
+    let icon = cell.first_child()?.downcast::<gtk::Image>().ok()?;
     let name = icon.next_sibling()?.downcast::<gtk::Label>().ok()?;
-    let kind = name.next_sibling()?.downcast::<gtk::Label>().ok()?;
-    Some((icon, name, kind))
+    Some((icon, name))
 }
 
 /// 作用域的可读名（只进日志）：优先 catalog，其次对象名。
@@ -596,15 +601,17 @@ fn scope_name(parent: &ObjectRef) -> String {
     }
 }
 
-/// `Objects` 固定页（v0.2.3.2，v0.2.3.3 改为单列表格）：与对象树联动，列出选中
-/// catalog 里的表 / 视图。
+/// `Objects` 固定页（v0.2.3.2；v0.2.4 起改成与数据网格同一套三列表格）：与对象树
+/// 联动，列出选中 catalog 里的表 / 视图。
 ///
 /// 内容由树选中驱动：选中 catalog 或 `Tables` 分支 → 该库的**表**；
 /// 选中 `Views` 分支 → 该库的**视图**。页面自己发 `ListNodes(filter.kinds)` 并持有
 /// 自己的分页 token，不读树的分组层状态——树没展开过也要能看到完整列表。
 ///
-/// 呈现层是 `GtkListView` + `GtkSingleSelection`（不是 `GtkListBox`）：选中 / 悬停由
-/// 主题的行状态给出，与数据网格同一口径（见 `theme::stylesheet` 的 `sqarvo-objects`）。
+/// 呈现层是 `GtkColumnView` + `GtkSingleSelection`，列固定为 `行号 / 表名 / 类型`：
+/// 与数据网格（`data_page.rs`）同一套渲染——行号列宽度复用 `data_page::ROW_NUMBER_WIDTH`，
+/// 行高 / 分隔线 / 悬停与选中底色 / 外框全部走同一组 CSS（`theme::stylesheet` 里
+/// `columnview.sqarvo-objects` 与 `columnview.sqarvo-grid` 并列的规则）。
 pub struct ObjectsPage {
     root: gtk::Box,
     stack: gtk::Stack,
@@ -618,7 +625,7 @@ pub struct ObjectsPage {
     store: gtk::gio::ListStore,
     /// 单选模型：单击选中、双击 / 回车激活（`single_click_activate(false)`）。
     selection: gtk::SingleSelection,
-    list: gtk::ListView,
+    grid: gtk::ColumnView,
     status: gtk::Label,
     more: gtk::Button,
     token: RefCell<String>,
@@ -639,15 +646,51 @@ impl ObjectsPage {
         title.set_xalign(0.0);
         title.add_css_class("sqarvo-title");
 
-        // 单列表格（v0.2.3.3）：`GtkListView` + `GtkSingleSelection`。
-        // 行结构（固定顺序，bind 靠它取控件）：[图标] [名称] [种类]。
+        // 三列表格（v0.2.4）：与数据网格同一套渲染——`GtkColumnView` +
+        // `GtkSingleSelection`，列固定为 `行号 | 表名 | 类型`。
+        // 行高 / 分隔线 / 悬停与选中底色 / 外框来自 `theme::stylesheet` 里与
+        // `columnview.sqarvo-grid` 并列的那组规则（同一个 class 口径，见主题注释）。
         let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         let selection = gtk::SingleSelection::new(Some(store.clone()));
         // 首行不自动选中：选中是用户的动作，也是信息面板的输入。
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
-        let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, item| {
+
+        // 行号列（32，与数据网格同一个常量）：行号 = 模型位置 + 1，不可拖。
+        let number_factory = gtk::SignalListItemFactory::new();
+        number_factory.connect_setup(|_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let label = gtk::Label::new(None);
+            label.set_xalign(1.0);
+            // 与数据网格同一份行号样式（11px monospace、右对齐、弱化）。
+            label.add_css_class("sqarvo-row-number");
+            item.set_child(Some(&label));
+        });
+        number_factory.connect_bind(|_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(label) = item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            // 回收的行控件可能还挂着旧行：`item()` 为空时不显示上一个行号。
+            if item.item().is_none() {
+                label.set_text("");
+                return;
+            }
+            let number = item.position() + 1;
+            label.set_text(&number.to_string());
+            label.set_tooltip_text(Some(&format!("第 {number} 行")));
+        });
+
+        // 表名列：图标 + 名称（图标与对象树同一个 `kind_icon` 映射）。
+        let name_factory = gtk::SignalListItemFactory::new();
+        name_factory.connect_setup(|_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
                 return;
             };
@@ -659,44 +702,101 @@ impl ObjectsPage {
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
             // 与数据网格同一口径：13px / Medium（12px 会裁掉 CJK 笔画）。
             name.add_css_class("sqarvo-cell");
-            let kind = gtk::Label::new(None);
-            kind.add_css_class("dim-label");
-            kind.add_css_class("caption");
-            kind.set_margin_end(6);
-            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row_box.add_css_class("sqarvo-objects-row");
-            row_box.append(&icon);
-            row_box.append(&name);
-            row_box.append(&kind);
-            item.set_child(Some(&row_box));
+            let cell = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            cell.add_css_class("sqarvo-objects-cell");
+            // 单元格内距与网格一致（网格靠 `cell` 的 padding，这里显式写一份）。
+            cell.set_margin_start(6);
+            cell.set_margin_end(6);
+            cell.append(&icon);
+            cell.append(&name);
+            item.set_child(Some(&cell));
         });
-        factory.connect_bind(|_, item| {
+        name_factory.connect_bind(|_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
                 return;
             };
             let Some(entry) = item_entry(item) else {
                 return;
             };
-            let Some(row_box) = item.child().and_then(|c| c.downcast::<gtk::Box>().ok()) else {
+            let Some(cell) = item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Box>().ok())
+            else {
                 return;
             };
-            let Some((icon, name, kind)) = row_parts(&row_box) else {
+            let Some((icon, name)) = name_cell_parts(&cell) else {
                 return;
             };
             // 图标与对象树同一个映射（`kind_icon`）：表 view-grid、视图 view-reveal。
             icon.set_icon_name(Some(kind_icon(entry.kind)));
             name.set_text(&entry.display_name);
-            kind.set_text(entry.kind_label());
-            row_box.set_tooltip_text(Some(&format!(
+            cell.set_tooltip_text(Some(&format!(
                 "{}（{}）· 双击打开",
                 entry.display_name,
                 entry.kind_label()
             )));
         });
-        let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
-        list.add_css_class("sqarvo-objects");
+
+        // 类型列：表 / 视图（物化视图）三档，文案来自 `TableEntry::kind_label`。
+        let kind_factory = gtk::SignalListItemFactory::new();
+        kind_factory.connect_setup(|_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let kind = gtk::Label::new(None);
+            kind.set_xalign(0.0);
+            kind.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            kind.add_css_class("sqarvo-cell");
+            // 类型是次要信息：字号与网格单元一致，颜色弱一档。
+            kind.add_css_class("dim-label");
+            kind.set_margin_start(6);
+            kind.set_margin_end(8);
+            item.set_child(Some(&kind));
+        });
+        kind_factory.connect_bind(|_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(entry) = item_entry(item) else {
+                return;
+            };
+            let Some(kind) = item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            kind.set_text(entry.kind_label());
+        });
+
+        let grid = gtk::ColumnView::new(Some(selection.clone()));
+        // 分隔线与数据网格同一套（行分隔线、列分隔线都由 GTK 画，颜色同源）。
+        grid.set_show_row_separators(true);
+        grid.set_show_column_separators(true);
+        // 列顺序固定为 行号 | 表名 | 类型，不许拖乱。
+        grid.set_reorderable(false);
+        grid.add_css_class("sqarvo-objects");
         // 单击只选中、双击 / 回车才激活（与对象树统一，不打开 = 不新建会话）。
-        list.set_single_click_activate(false);
+        grid.set_single_click_activate(false);
+
+        // 行号列宽度复用数据网格的常量（`data_page::ROW_NUMBER_WIDTH`），不可拖。
+        let number_column = gtk::ColumnViewColumn::new(Some("行号"), Some(number_factory));
+        number_column.set_fixed_width(crate::data_page::ROW_NUMBER_WIDTH);
+        number_column.set_resizable(false);
+        grid.append_column(&number_column);
+
+        // 表名列吃掉剩余宽度（初值与网格数据列同宽，可拖）。
+        let name_column = gtk::ColumnViewColumn::new(Some("表名"), Some(name_factory));
+        name_column.set_expand(true);
+        name_column.set_resizable(true);
+        name_column.set_fixed_width(crate::data_page::COLUMN_WIDTH);
+        grid.append_column(&name_column);
+
+        // 类型列固定窄宽（「物化视图」四个字放得下，可拖）。
+        let kind_column = gtk::ColumnViewColumn::new(Some("类型"), Some(kind_factory));
+        kind_column.set_resizable(true);
+        kind_column.set_fixed_width(OBJECTS_KIND_COLUMN_WIDTH);
+        grid.append_column(&kind_column);
 
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
@@ -709,13 +809,16 @@ impl ObjectsPage {
         more.set_halign(gtk::Align::Start);
         more.set_visible(false);
 
+        // 与数据网格同一口径：横向滚动条常驻可见（`overlay_scrolling(false)`），
+        // 用户把「表名」列拖宽后仍能回到行号列。
         let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
             .vexpand(true)
-            .child(&list)
+            .child(&grid)
             .build();
-        // 列表外框：与表数据网格共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
+        // 表格外框：与表数据网格共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
         // （2px / currentColor 30% / 8px 圆角）。线挂在滚动容器上，行本身不加线。
         // `GtkScrolledWindow` 默认就是 `overflow: hidden`，这里显式设一次：
         // 圆角要裁到首行 / 末行的 hover 与选中底色，不能只圆边框线。
@@ -760,7 +863,7 @@ impl ObjectsPage {
             kind: RefCell::new(None),
             store,
             selection,
-            list,
+            grid,
             status,
             more,
             token: RefCell::new(String::new()),
@@ -806,7 +909,7 @@ impl ObjectsPage {
         {
             // 双击 / 回车 → 打开表数据标签（与树的双击同一条路径）。
             let weak = Rc::downgrade(&page);
-            page.list.connect_activate(move |_, position| {
+            page.grid.connect_activate(move |_, position| {
                 let Some(page) = weak.upgrade() else {
                     return;
                 };
@@ -1012,7 +1115,7 @@ impl ObjectsPage {
             display_name: node.display_name.clone(),
             kind: node.kind,
         };
-        // 模型只持有数据：控件由 `GtkListView` 为可见行创建（几百行也不卡主线程）。
+        // 模型只持有数据：控件由 `GtkColumnView` 为可见行创建（几百行也不卡主线程）。
         self.store.append(&glib::BoxedAnyObject::new(entry));
     }
 
@@ -1092,7 +1195,7 @@ impl ObjectsPage {
         ))
     }
 
-    /// QA：按名字激活一行（发 `GtkListView::activate`，与双击 / 回车同一条路径）。
+    /// QA：按名字激活一行（发 `GtkColumnView::activate`，与双击 / 回车同一条路径）。
     pub fn qa_activate(&self, name: &str) -> Result<String, String> {
         let position = self.position_of(name).ok_or_else(|| {
             format!(
@@ -1101,7 +1204,7 @@ impl ObjectsPage {
             )
         })?;
         self.selection.set_selected(position);
-        self.list.emit_by_name::<()>("activate", &[&position]);
+        self.grid.emit_by_name::<()>("activate", &[&position]);
         Ok(format!(
             "Objects 页激活「{name}」（双击 / 回车同一条 activate 信号）"
         ))
@@ -1571,7 +1674,7 @@ impl TabSet {
         objects.qa_select(name)
     }
 
-    /// QA：激活 `Objects` 页的一行（走 `GtkListView::activate`，与双击 / 回车同一条路径）。
+    /// QA：激活 `Objects` 页的一行（走 `GtkColumnView::activate`，与双击 / 回车同一条路径）。
     pub fn qa_objects_activate(&self, name: &str) -> Result<String, String> {
         let objects = self
             .objects
@@ -3650,7 +3753,7 @@ pub enum QaStep {
     /// `select-node <名字>`：选中树节点（信息面板随之切换）。
     SelectNode(String),
     /// `objects-select <名字>`：选中固定 `Objects` 页里的某一行（与单击同一条路径；
-    /// v0.2.3.3 单列表格）。
+    /// v0.2.4 三列表格）。
     ObjectsSelect(String),
     /// `select-connection <名字>`：选中连接节点（信息面板切到「连接」态）。
     SelectConnection(String),

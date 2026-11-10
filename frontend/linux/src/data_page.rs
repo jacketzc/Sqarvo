@@ -76,9 +76,12 @@ pub enum DataState {
 }
 
 /// 行号列宽度（规范 §6：行号列 32）。
-const ROW_NUMBER_WIDTH: i32 = 32;
-/// 数据列固定宽度（类型行按同一宽度对齐）。
-const COLUMN_WIDTH: i32 = 200;
+///
+/// `Objects` 固定页的三列表格复用同一个常量（`tabs::ObjectsPage`）：两块表格的
+/// 行号列必须是同一宽度，否则两张表的列起点会差几个像素。
+pub(crate) const ROW_NUMBER_WIDTH: i32 = 32;
+/// 数据列固定宽度（类型行按同一宽度对齐；`Objects` 页的「表名」列同样取它作初值）。
+pub(crate) const COLUMN_WIDTH: i32 = 200;
 
 /// 事务徽标可能带的 CSS 类：同步徽标时先全部摘掉再加当前状态的那一个。
 ///
@@ -6093,13 +6096,9 @@ fn install_css() {
         .sqarvo-column-info-focus { background: alpha(@accent_color, 0.18); }
         .sqarvo-column-header { padding: 0 8px; min-height: 26px; }
         .sqarvo-column-header:hover { background: alpha(@accent_color, 0.12); }
-        /* #118：行号列（32）与两行表头（列名 12 / 原始类型 11 右对齐、色弱） */
-        .sqarvo-row-number {
-            font-family: monospace;
-            font-size: 11px;
-            opacity: 0.7;
-            padding-right: 4px;
-        }
+        /* 行号样式在主样式表（`theme::stylesheet` 的 `.sqarvo-row-number`）：
+           `Objects` 页也用同一份，不能只装在数据页的附加样式里。 */
+        /* #118：两行表头（列名 12 / 原始类型 11 右对齐、色弱） */
         .sqarvo-header-cell { padding: 1px 6px; min-height: 44px; }
         .sqarvo-type-row { min-height: 24px; }
         .sqarvo-type-cell { min-height: 24px; }

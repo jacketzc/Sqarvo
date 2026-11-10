@@ -77,12 +77,25 @@ pub fn stylesheet() -> String {
            （实测：中文 63–74、拉丁 62–71，视觉中线差 2px），命中区不变。 */
         .sqarvo-toolbar button.sqarvo-kind label {{ margin-top: 2px; }}
 
-        /* 区域 03 / 04：树行 24，数据行 32，表头 24 */
+        /* 区域 03 / 04：树行 24，数据行 32，表头 24。
+           `Objects` 固定页（v0.2.4）与数据网格同一套渲染：同一个 `GtkColumnView`
+           口径（`columnview` + 行 / 列分隔线），所以这两条规则同时选中
+           `.sqarvo-objects`——两张表的行高、表头高度只有一份定义，改一处两边一起变。 */
         window.{window_class} listview > row {{ min-height: {tree_row}px; }}
-        window.{window_class} columnview.sqarvo-grid > listview > row {{
+        window.{window_class} columnview.sqarvo-grid > listview > row,
+        window.{window_class} columnview.sqarvo-objects > listview > row {{
             min-height: {data_row}px;
         }}
-        window.{window_class} columnview.sqarvo-grid header button {{
+        /* `Objects` 的单元格里是「[图标] + 名称」的 `GtkBox`（数据网格的单元格里只有一个
+           Label）：Adwaita 给 `cell` 的上下内距会把这一类行从 32 撑到 35（实测），
+           两张表格就此差 3px。上下内距归零后行高回到 `min-height`（32），与数据网格
+           逐像素同高；左右内距保留（列内距仍由 Adwaita 给）。 */
+        window.{window_class} columnview.sqarvo-objects > listview > row > cell {{
+            padding-top: 0;
+            padding-bottom: 0;
+        }}
+        window.{window_class} columnview.sqarvo-grid header button,
+        window.{window_class} columnview.sqarvo-objects header button {{
             min-height: {tree_row}px;
             font-size: {ui}px;
         }}
@@ -90,9 +103,12 @@ pub fn stylesheet() -> String {
         /* 表格右边界：Adwaita 的列分隔线画在「每个单元格 / 表头按钮的 border-left」上，
            最后一列因此没有右边的竖线——窄表看起来像缺一条边，宽表被视口裁切时也看不出
            表格在哪里结束。这里给最后一列补一条右侧竖线，颜色与列分隔线一致；类型条带的
-           最后一格同样补上，让表头 / 类型行 / 数据行在同一条竖线上收口。 */
+           最后一格同样补上，让表头 / 类型行 / 数据行在同一条竖线上收口。
+           `Objects` 三列表格（行号 | 表名 | 类型）走同一组选择器。 */
         window.{window_class} columnview.sqarvo-grid > listview > row > cell:last-child,
+        window.{window_class} columnview.sqarvo-objects > listview > row > cell:last-child,
         window.{window_class} columnview.sqarvo-grid > header > button:last-child,
+        window.{window_class} columnview.sqarvo-objects > header > button:last-child,
         window.{window_class} .sqarvo-type-row > box.sqarvo-type-cell:last-child {{
             border-right: 1px solid alpha(currentColor, 0.10);
         }}
@@ -103,7 +119,8 @@ pub fn stylesheet() -> String {
            时才有 `:last-child`，长表滚到底也不会在视口中间凭空多出一条。
            `columnview` / `listview` 自己的 `border-bottom` 不会画出来（它们是滚动
            内容节点），所以这条线必须挂在行上。 */
-        window.{window_class} columnview.sqarvo-grid > listview > row:last-child {{
+        window.{window_class} columnview.sqarvo-grid > listview > row:last-child,
+        window.{window_class} columnview.sqarvo-objects > listview > row:last-child {{
             border-bottom: 1px solid alpha(currentColor, 0.10);
         }}
 
@@ -202,23 +219,11 @@ pub fn stylesheet() -> String {
             padding: 0;
         }}
 
-        /* 区域 04：固定 `Objects` 页的**单列表格**（v0.2.3.3）。
-           四样口径都跟数据网格一致：行高 32、行分隔线 1px / 10%、hover 4%、
-           选中 accent 25%（与 `row:selected` 在 Adwaita 里的算法同色）。
-           不挂 `.navigation-sidebar`——它把选中态改成 10% 灰，与网格不是一套。 */
-        window.{window_class} listview.sqarvo-objects > row {{
-            min-height: {data_row}px;
-            /* 覆盖 Adwaita 的 `padding: 2px`：上下为零，行距才能与数据行同为 32（+1px 线）； */
-            /* 左右 8 是单元格内距（网格首列字距内容边约 14，这里图标起于 8）。 */
-            padding: 0 8px;
-            border-bottom: 1px solid alpha(currentColor, 0.10);
-        }}
-        window.{window_class} listview.sqarvo-objects > row:hover {{
-            background-color: alpha(currentColor, 0.04);
-        }}
-        window.{window_class} listview.sqarvo-objects > row:selected {{
-            background-color: alpha(@accent_color, 0.25);
-        }}
+        /* 区域 04：固定 `Objects` 页（v0.2.4 起与数据网格同一套三列表格）。
+           它的行高 / 表头高度 / 右边界 / 下边界直接由上面 `columnview.sqarvo-objects`
+           那组规则给出，与 `columnview.sqarvo-grid` 并列；hover 与选中底色用 GTK/Adwaita
+           的 `row:hover` / `row:selected`——和数据网格是同一批控件、同一批默认样式，
+           不再像 v0.2.3.3 那样用自定义色值去「对齐」网格的观感。 */
 
         /* 区域 05：状态栏 48 高（两行各 24），字号 11 */
         .sqarvo-status-bar {{
@@ -298,6 +303,16 @@ pub fn stylesheet() -> String {
            笔画（用户反馈「张三 / 王五」显示残缺）。13px 起完整；为在 1x 屏幕上
            避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
         .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
+
+        /* 行号列（32px；v0.2.4 起数据网格与 `Objects` 三列表格共用同一份度量）：
+           11px monospace、右对齐、色弱一档。原来只写在 `data_page` 的附加样式里，
+           `Objects` 页先于任何表标签出现时拿不到这份规则，行号会和网格不一样。 */
+        .sqarvo-row-number {{
+            font-family: monospace;
+            font-size: {status_font}px;
+            opacity: 0.7;
+            padding-right: 4px;
+        }}
 
         /* 信息面板正文（[DDL] 与 [表信息] 两页**同一口径**）：10px、不加粗。面板是
            次要信息，视觉重心在数据网格——字号和字重都不许跟表格抢注意力。分层只靠
@@ -542,13 +557,14 @@ mod tests {
         );
         // 行级规则只允许分隔线方向（border-bottom / border-right），不能出现整圈边框。
         for selector in [
-            "listview.sqarvo-objects > row {",
-            "columnview.sqarvo-grid > listview > row {",
+            "columnview.sqarvo-objects > listview > row",
+            "columnview.sqarvo-grid > listview > row",
         ] {
             let start = css
                 .find(selector)
                 .unwrap_or_else(|| panic!("缺少规则：{selector}"));
-            let end = start + css[start..].find('}').expect("规则应当闭合");
+            let brace = start + css[start..].find('{').expect("规则应当有块");
+            let end = brace + css[brace..].find('}').expect("规则应当闭合");
             let rule = &css[start..end];
             assert!(
                 !rule.contains("\n            border: "),
@@ -634,33 +650,65 @@ mod tests {
     }
 
     #[test]
-    fn objects_list_uses_the_grid_row_metrics() {
-        // 用户要求：`Objects` 块做成单列表格，鼠标移入移出 / 点击选中的效果与数据网格一致。
-        // 行高、分隔线、hover、选中四样必须与网格同一口径；改网格时这一条会一起失败。
+    fn objects_table_uses_the_grid_row_metrics() {
+        // 用户要求（v0.2.4）：`Objects` 页改成与数据网格同一套三列表格（行号 | 表名 | 类型）。
+        // 行高 / 表头高度不各写一份——两条规则必须把 `columnview.sqarvo-grid` 与
+        // `columnview.sqarvo-objects` 并列，改网格时两张表一起变。
         let css = stylesheet();
+        // 返回「选择器组 + 规则体」：规则可能把数据网格与 `Objects` 两个选择器写在一起，
+        // 所以从命中的选择器向上把以逗号结尾的上一行也一起吃进来。
         let rule = |selector: &str| -> String {
-            let start = css
+            let mut start = css
                 .find(selector)
                 .unwrap_or_else(|| panic!("缺少规则：{selector}"));
-            let end = start + css[start..].find('}').expect("规则应当闭合");
+            loop {
+                let Some(newline) = css[..start].rfind('\n') else {
+                    break;
+                };
+                let line_start = css[..newline].rfind('\n').map_or(0, |i| i + 1);
+                if !css[line_start..newline].trim_end().ends_with(',') {
+                    break;
+                }
+                start = line_start;
+            }
+            let brace = start + css[start..].find('{').expect("规则应当有块");
+            let end = brace + css[brace..].find('}').expect("规则应当闭合");
             css[start..end].to_owned()
         };
-        let row = rule("listview.sqarvo-objects > row {");
+        let row = rule("columnview.sqarvo-objects > listview > row");
+        assert!(
+            row.contains("columnview.sqarvo-grid > listview > row"),
+            "行高规则必须与数据网格共用同一条：{row}"
+        );
         assert!(
             row.contains(&format!("min-height: {}px;", layout::ROW_HEIGHT_DATA)),
             "行高必须跟数据行同档：{row}"
         );
+        let header = rule("columnview.sqarvo-objects header button");
         assert!(
-            row.contains("border-bottom: 1px solid alpha(currentColor, 0.10)"),
-            "行分隔线要跟网格同色同宽：{row}"
+            header.contains("columnview.sqarvo-grid header button"),
+            "表头高度必须与数据网格共用同一条：{header}"
         );
         assert!(
-            rule("listview.sqarvo-objects > row:hover").contains("alpha(currentColor, 0.04)"),
-            "hover 底色要与网格一致（4%）"
+            header.contains(&format!("min-height: {}px;", layout::ROW_HEIGHT_TREE)),
+            "表头必须跟网格表头同档（24）：{header}"
         );
+        // 单元格上下内距必须归零：`Objects` 的单元格是「图标 + 名称」的 Box，Adwaita
+        // 给的上下内距会把行撑到 35（实测），与网格的 32 差 3px。
+        let cell = rule("columnview.sqarvo-objects > listview > row > cell {");
         assert!(
-            rule("listview.sqarvo-objects > row:selected").contains("alpha(@accent_color, 0.25)"),
-            "选中底色要与网格一致（accent 25%）"
+            cell.contains("padding-top: 0") && cell.contains("padding-bottom: 0"),
+            "单元格上下内距要归零，行高才由 min-height 决定（32）：{cell}"
+        );
+        let bottom = rule("columnview.sqarvo-objects > listview > row:last-child");
+        assert!(
+            bottom.contains("border-bottom: 1px solid alpha(currentColor, 0.10)"),
+            "不足一屏时表格下边界要与网格同色同宽：{bottom}"
+        );
+        // 旧单列列表（`GtkListView`）的规则已经删掉：留着就是第二套口径。
+        assert!(
+            !css.contains("listview.sqarvo-objects"),
+            "旧单列列表的 CSS 仍有残留"
         );
     }
 

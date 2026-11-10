@@ -53,9 +53,11 @@
 工作区里「列出一批对象」的界面（固定 `Objects` 页、搜索结果、将来的对象索引）都用表格行
 状态，不另造一套行样式：
 
-- **行状态只有一个来源**：悬停 `alpha(currentColor, 0.04)`、选中 `alpha(@accent_color, 0.25)`、
-  行分隔线 `alpha(currentColor, 0.10)`、行高 32 —— 与数据网格同一口径（`theme.rs` 的单测
-  锁住四条规则）。不要挂 `.navigation-sidebar`：它把选中态改成 10% 灰，和网格不是一套；
+- **行状态只有一个来源**：`Objects` 页的三列表格与数据网格是同一批 `GtkColumnView` 行，
+  悬停与选中直接吃 Adwaita 的 `row:hover` / `row:selected`（v0.2.4 起不再自写 4% /
+  accent 25% 去「对齐」网格——两套色值只会越调越远）；行分隔线 1px
+  `alpha(currentColor, 0.10)`、行高 32 只在 `theme.rs` 写一份（两处选择器并列）、单测锁住。
+  不要挂 `.navigation-sidebar`：它把选中态改成 10% 灰，和网格不是一套；
 - **图标复用对象树的种类映射**（`backend::metadata::kind_icon`）：同一个对象在树、列表、
   标签里长得一样，不按页面各写一份；
 - **外框只画一圈、口径只有一份**：`.sqarvo-table-frame` 是 2px `currentColor` 30% + 8px 圆角，

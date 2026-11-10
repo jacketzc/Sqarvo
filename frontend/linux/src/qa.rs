@@ -65,9 +65,10 @@
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //!   `--qa-tree-menu-group <tables|views>` + `--qa-tree-menu-pick <条目>`（在种类分组行上
 //!   打开右键菜单再点条目，与用户点同一条路径；未展开分组的「刷新这一组」提示用它取证）；
-//! - `Objects` 固定页（v0.2.3.3 单列表格）：`--qa-objects-select <name>`（走单选模型，
-//!   与单击同一条路径，会同步信息面板）、`--qa-objects-activate <name>`（发
-//!   `GtkListView::activate`，与双击 / 回车同一条路径，会开表数据标签）；
+//! - `Objects` 固定页（v0.2.4 三列表格，与数据网格同套渲染）：
+//!   `--qa-objects-select <name>`（走单选模型，与单击同一条路径，会同步信息面板）、
+//!   `--qa-objects-activate <name>`（发 `GtkColumnView::activate`，与双击 / 回车同一条
+//!   路径，会开表数据标签）；
 //!   `--qa-expect-objects selected=<name>` 断言哪一行处于选中态；
 //! - `--qa-search <query>`（走搜索框防抖同一条路径）+ `--qa-search-clear`（清空退出筛选）
 //!   + `--qa-search-click-object`（点结果里第一个表 / 视图行，走 `row-activated` 信号：
@@ -978,10 +979,10 @@ struct Args {
     /// `--qa-tree-menu-pick <label>`：点当前右键菜单里的这一项（与用户点同一条点击路径）。
     tree_menu_pick: Option<String>,
     /// `--qa-objects-select <name>`：选中 `Objects` 固定页里的某一行（走单选模型，
-    /// 与单击同一条路径；v0.2.3.3 的单列表格交互）。
+    /// 与单击同一条路径；v0.2.4 的三列表格交互）。
     objects_select: Option<String>,
     /// `--qa-objects-activate <name>`：激活 `Objects` 固定页的某一行（发
-    /// `GtkListView::activate`，与双击 / 回车同一条路径）。
+    /// `GtkColumnView::activate`，与双击 / 回车同一条路径）。
     objects_activate: Option<String>,
     /// `--qa-kind <tables|views|functions|queries>`：点主工具条的种类入口（`emit_clicked`，
     /// 与用户点击同一条信号；v0.2.3.3）。
