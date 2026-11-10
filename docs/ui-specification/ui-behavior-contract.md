@@ -442,8 +442,14 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见
 [`ui-behavior-contract.review.md`](ui-behavior-contract.review.md)。
 
-1. **对象树模块顶部注释过期**
-   代码如此：`KindGroup::ALL` 有四组 `Tables / Views / Functions / Queries`，展开库会建 4 行
-   （`src/tree.rs:244`、`src/tree.rs:2266-2272`）。
-   旧注释如此：`src/tree.rs:25` 仍写「v0.2.3 不出现 `Functions` / `Queries` 分组」。
-   建议：改注释（纯注释，不改行为），避免下一个人按注释误判。
+当前**无未收口项**（v0.2.3.3 收口，2026-11-10）。发现新偏差时按同样格式追加：
+「代码如此 / 文档如此 / 建议」，能当场改的就改掉再删条目，不要把已经改好的留在这一节。
+
+已知边界（不是偏差，正文已写明，列在这里方便检索）：
+
+| 边界 | 现状 | 正文 |
+|---|---|---|
+| Wayland 下的最小窗口尺寸 | 用 `set_size_request` 声明；X11 实测被抬到 960×640，Wayland 依赖合成器遵守 `xdg_toplevel.set_min_size`，未逐一手测 | §1.1 |
+| 快捷键验收方式 | 通过 GApplication 的 accel 表 + 同一 action 的 QA 驱动取证；测试环境没有物理按键注入 | §8.1 |
+| 事务失败态 | 与其它三态共用 `TransactionBadge::label()`，未单独截图 | §5.2 |
+| `Alt+N` 与拖拽重排 | 序号按 `AdwTabView::pages()` 实际顺序取，拖拽重排后的映射未实测 | §4 |

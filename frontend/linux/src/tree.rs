@@ -21,8 +21,9 @@
 //! 契约里的层级只有 Catalog → Table/View/Sequence → Column/Index/Trigger，没有
 //! 「Tables / Views」这一层：它是**客户端虚拟层**（workspace-model §4）。分组靠
 //! `ListNodesRequest.filter.kinds` 逐组拉取，每组有自己的分页 token；展开一个
-//! catalog 的 RPC 次数 = 分组数（这里是 2），不是把所有对象预取一遍。
-//! v0.2.3 不出现 `Functions` / `Queries` 分组（驱动没有对应实现 / 没有已保存查询）。
+//! catalog 的 RPC 次数 = 真正能列的分组数（v0.2.3.3 起为 2：Tables / Views），不是把所有
+//! 对象预取一遍。`Functions` / `Queries` 两组（v0.2.3.3 新增）只有入口：展开时写一行
+//! 「尚未实现」，0 次 RPC、不摆假数据（见 `KindGroup::unsupported_note`）。
 //!
 //! # 每连接一条会话
 //!
