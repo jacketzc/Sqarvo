@@ -82,7 +82,8 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 文件 → 退出 | 任意 | 与 `Ctrl+Q` / 关窗同一条守卫：先 `window.close()`（脏行确认照旧），再走清理流程 | `src/ui.rs:4377`（菜单项）、`src/main.rs:285-305`（`install_app_actions` / `quit_app`） |
 | 表 → 导出 CSV | 后端已握手**且**工作区存在；表数据页 / 查询结果页是否有可导出内容由动作自己判定 | 与表工具条 `EX`、`Ctrl+Shift+E` 同一条导出入口 | `src/ui.rs:4382`（菜单项）、`src/ui.rs:4702`（`win.export-csv` 接线）、`src/ui.rs:4472-4497`（工作区开关） |
 | 帮助 → 关于 Squarvo | 任意（不依赖后端） | 自绘对话框：版本、协议、后端诊断字段 | `src/ui.rs:4388`（菜单项）、`src/ui.rs:4714`（`win.about` 接线）、`src/ui.rs:4814`（`show_about`） |
-| 视图 / 查询 / 「关闭标签」/ 表的事务与行操作 | — | **不在菜单里**（菜单裁剪）：视图、查询两个子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 新增行 / 删除选中行只保留 `win.*` 动作——有快捷键的照旧（`Ctrl+W` / `F5`），其余由工具条、状态栏入口触发，可用性与工具条同一条口径。见 §8.1 的「只保留快捷键」行 | `src/ui.rs:4371-4391`（`build_main_menu`）、`src/ui.rs:4501`（`install_window_actions`）、`src/ui.rs:293-329`（快捷键绑定） |
+| 视图 → 界面密度 | 任意（不依赖后端）；当前显示器放不下的档禁用 | 三个单选项（行为见 §1.5），当前档打勾、选中即切档。**这一节是自绘控件**：`GMenu` 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项（`id=tier-section`），弹出时用 `PopoverMenu::add_child` 换成 `GtkCheckButton` 组；视图子菜单只为它而存在 | `src/ui.rs:4485-4499`（`build_main_menu` 的占位项与 `append_submenu`）、`src/ui.rs:5048`（`build_tier_menu`）、`src/ui.rs:5097`（`ensure_tier_menu`）、`src/ui.rs:2989`（QA 截图走同一路径） |
+| 查询 / 「关闭标签」/ 表的事务与行操作 | — | **不在菜单里**（菜单裁剪）：查询子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 新增行 / 删除选中行只保留 `win.*` 动作——有快捷键的照旧（`Ctrl+W` / `F5`），其余由工具条、状态栏入口触发，可用性与工具条同一条口径。见 §8.1 的「只保留快捷键」行 | `src/ui.rs:4471-4499`（`build_main_menu`）、`src/ui.rs:4625`（`install_window_actions`）、`src/ui.rs:293-329`（快捷键绑定） |
 
 ### 1.3 四个种类入口的联动
 
@@ -113,10 +114,16 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 升一档 | `Ctrl+Plus`（含 `Ctrl+KP_Add`、`Ctrl+=` 别名） | 走 `win.tier-up`：目标档可用就切（下一行）；已经在 `large` 时**什么都不做**并记 `[tier] 已经是最高档（large），Ctrl+Plus 忽略`；目标档在当前显示器放不下时不切换、不写盘，记 `[tier] … 不可用（需要 W×H），未切换` | `src/ui.rs:357-366`（accel 表）、`src/ui.rs:4859`（`tier-up`）、`src/density.rs:78`（`switch`） |
 | 降一档 | `Ctrl+minus`（含 `Ctrl+KP_Subtract`） | 同上，走 `win.tier-down`；已在 `compact` 时记 `[tier] 已经是最低档（compact），Ctrl+minus 忽略` | `src/ui.rs:365`、`src/ui.rs:4868` |
 | 重置档位 | `Ctrl+0` | 直接切到 `compact`（不是「回退一个可用档」） | `src/ui.rs:366`、`src/ui.rs:4877`（`tier-reset`） |
-| 菜单入口 | 主菜单 → 视图 → 界面密度 | 三个单选项，当前档打勾（程序化同步时不触发 action）。当前显示器放不下的档**禁用**，tooltip 写明缺多少：`当前显示器放不下 150%：需要 1440×960 逻辑工作区（当前 1280×698）`；可用项 tooltip：`切换到 舒适（125%）；窗口会按档位一起放大 / 收小` | `src/ui.rs:4977`（`sync_tier_checks`）、`src/ui.rs:5063`（`build_tier_menu`）、`src/ui.rs:5096`（`ensure_tier_menu`） |
+| 菜单入口 | 主菜单 → 视图 → 界面密度 | 三个单选项，当前档打勾（程序化同步时不触发 action）。当前显示器放不下的档**禁用**，tooltip 写明缺多少：`当前显示器放不下 150%：需要 1440×960 逻辑工作区（当前 1280×698）`；可用项 tooltip：`切换到 舒适（125%）；窗口会按档位一起放大 / 收小` | `src/ui.rs:4977`（`sync_tier_checks`）、`src/ui.rs:5048`（`build_tier_menu`）、`src/ui.rs:5097`（`ensure_tier_menu`） |
 | 切档后的界面 | 目标档可用 | **同一次动作里**：① 四套样式表（主壳 / 数据页 / 对象树 / DDL）用同一个 provider 重载；② 窗口按 §5.3 重算并钳到工作区（`[monitor] 档位导致窗口放大：1400x838 → 1888x1000（档位 large）`）；③ 侧栏 / 信息面板按 **compact 归一值 × 新档**换算（`[tier] 面板宽度随档位换算：侧栏 237 → 356，信息面板 280 → 420（compact → large）`），新窗口放不下 600px 表格区时收到各自下限并记日志；④ 已建列的固定宽度、行高、字号与图标按钮命中区按新档重设（只改样式不会动列宽）；⑤ 档位写入 `window.json` | `src/density.rs:78`（`switch`）、`src/theme.rs:123`（`reload`）、`src/window_size.rs:488`（`apply_for_tier`）、`src/shell.rs:591`（`reapply_tier`）、`src/data_page.rs:5432`（`reapply_metrics`）、`src/tabs.rs:2868`（`reapply_tier`） |
+| 切档后放不下面板 | 新档的侧栏 + 信息面板把表格挤到 600px 以下 | 侧栏 / 信息面板收到各自下限（`sidebar_min` / `inspector_min`），并记 `[tier] 工作区放不下 large 档的面板宽度：侧栏 / 信息面板收到下限 270 / 360（表格优先保留 600px）` | `src/shell.rs:591`（`reapply_tier`） |
 | 面板宽度跨档往返 | 任一档 | 宽度类字段一律按 **compact 归一值**（实际值 ÷ 档位倍率）存，读时乘当前档，所以 `100% → 150% → 100%` 往返不漂移（实测信息面板 280 → 420 → 280、侧栏 237 → 356 → 237） | `src/shell.rs:591`、`src/window_state.rs:199`（`saved_tier`）、`src/window_state.rs:309`（`remember_tier`） |
 | 跨档恢复窗口几何 | `window.json` 记的几何属于旧档 | 按新档重算并记 `[monitor] 档位导致窗口放大：1200x800 → 1888x1000（记忆尺寸属于 compact，当前 large）`；几何越界的校验规则不变（§1.1） | `src/window_size.rs:488`、`src/window_state.rs:309` |
+| QA 取证 | `--tier compact\|comfortable\|large`（与 `--window-size` 同一次解析） | 只决定起始档；非法值报 `--tier 只能是 compact\|comfortable\|large，实际：…` 并以失败退出 | `src/qa.rs:1786`（`tier()`）、`src/main.rs`（GApplication 选项注册） |
+
+**不做的事**：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100%
+的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位
+（三个轴分开，见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §1）。
 
 ---
 
