@@ -390,7 +390,7 @@ pub struct TabContext {
     pub backend_failure: Rc<dyn Fn()>,
     /// 按表名解析一个对象（QA 脚本与「打开指定表」共用平铺列表的同一条路径）。
     pub resolve_table: TableResolver,
-    /// 当前标签的状态变化（状态栏 / 工具条 / 「表」菜单）。
+    /// 当前标签的状态变化（状态栏 / 工具条 / 窗口动作）。
     pub on_status: Rc<dyn Fn(TabStatus)>,
     /// 窗口标题（标题, 副标题）。
     pub on_title: TitleSink,
@@ -2734,7 +2734,7 @@ impl TabSet {
         }
     }
 
-    /// 当前标签（或指定标签）的数据页，供 QA 与「表」菜单用。
+    /// 当前标签（或指定标签）的数据页，供 QA 与窗口动作使用。
     #[must_use]
     pub fn data_page(&self) -> Option<Rc<DataPage>> {
         self.current().and_then(|tab| tab.data.clone())

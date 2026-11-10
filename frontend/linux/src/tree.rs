@@ -36,8 +36,8 @@
 //! `GtkTreeListModel` 的 `create_func` 只在**展开**时被调用，因此每一层都有自己的
 //! `gio::ListStore` 与分页 token。折叠再展开时 `level_for` 会按 `source` 命中已有层
 //! **复用同一份内容**（0 次 RPC，不闪）；要看服务端最新数据必须显式刷新——右键
-//! 「刷新连接 / 刷新库 / 刷新这一组」，或菜单「视图 → 刷新」/ `F5`（当前标签不是表
-//! 数据页时它重建整棵树；表标签下 `F5` 刷的是当前表）。
+//! 「刷新连接 / 刷新库 / 刷新这一组」，或 `F5`（当前标签不是表数据页时它重建整棵树；
+//! 表标签下 `F5` 刷的是当前表）。
 //!
 //! # 状态
 //!
@@ -166,6 +166,8 @@ pub struct SearchSnapshot {
     pub rows: Vec<SearchRowSnapshot>,
     /// 状态行文本（真实控件文本）。
     pub status_text: String,
+    /// 已派发的搜索次数（含回车重搜；QA 断言「文本没变也重新搜了」用它）。
+    pub runs: u64,
 }
 
 /// 结果页一行的只读快照（路径用 `/` 分隔，QA 断言按它比对顺序与高亮）。
@@ -994,6 +996,11 @@ pub struct TreePanel {
     search_collapsed: Rc<RefCell<std::collections::HashSet<String>>>,
     search_state: Cell<SearchState>,
     search_generation: Cell<u64>,
+    /// 真正派发出去（走到 `run_search` 主体）的搜索次数。
+    ///
+    /// 只增不减：用于验证「文本没变时回车也要重新搜一次」——两次派发才是真的重搜，
+    /// 只改代次（`search_generation`）却没有第二次 `run_search` 不算。
+    search_dispatches: Cell<u64>,
     /// 还在等几条响应（目录层列表 + 逐库搜索）。
     search_pending: Cell<usize>,
     /// 每条已打开连接收集到的内容（结果树由它构造）。
@@ -1373,6 +1380,7 @@ impl TreePanel {
             search_collapsed: Rc::new(RefCell::new(std::collections::HashSet::new())),
             search_state: Cell::new(SearchState::Idle),
             search_generation: Cell::new(0),
+            search_dispatches: Cell::new(0),
             search_pending: Cell::new(0),
             search_runs: RefCell::new(Vec::new()),
             search_connections: Cell::new(0),
@@ -1898,6 +1906,7 @@ impl TreePanel {
                 })
                 .collect(),
             status_text: self.search_status.text().to_string(),
+            runs: self.search_dispatches.get(),
         }
     }
 
@@ -2060,11 +2069,10 @@ impl TreePanel {
                 let Some(panel) = weak.upgrade() else {
                     return;
                 };
-                if panel.debounce.borrow_mut().take().is_some() {
-                    let generation = panel.search_generation.get() + 1;
-                    panel.search_generation.set(generation);
-                    panel.run_search(&entry.text(), generation);
-                }
+                // 回车一律重搜：不再看「有没有待触发的防抖」——上一次搜过同样的词、
+                // 或者防抖已经跑完之后再按一次回车，也必须重新派发一次搜索（用户按
+                // 回车就是「现在再查一遍」，不是「取消防抖」）。
+                panel.search_now(&entry.text(), "回车");
             }
         });
         self.search_entry.connect_stop_search({
@@ -2148,6 +2156,27 @@ impl TreePanel {
             });
     }
 
+    /// 立即派发一次搜索：取消待触发的防抖，代次 +1，再走 [`Self::run_search`]。
+    ///
+    /// 两个入口共用这一条：回车（`activate` 信号）与 QA 直搜（[`Self::qa_search`]）。
+    /// 输入变化的防抖仍走 [`Self::on_query_changed`] 的定时器（250 ms 后直接调 `run_search`）。
+    /// 回车**不要求文本变化**：同样的关键词再按一次回车就是真的再查一遍（重新清行、重新发请求）。
+    fn search_now(self: &Rc<Self>, query: &str, trigger: &str) {
+        let generation = self.search_generation.get() + 1;
+        self.search_generation.set(generation);
+        if let Some(source) = self.debounce.borrow_mut().take() {
+            source.remove();
+        }
+        if should_search(query) {
+            eprintln!(
+                "[tree] t=+{}ms {trigger}：立即搜索「{query}」（第 {} 次派发）",
+                crate::qa::elapsed_ms(),
+                self.search_dispatches.get() + 1
+            );
+        }
+        self.run_search(query, generation);
+    }
+
     /// 搜索框内容变化：取消旧定时器，250ms 后发请求。
     fn on_query_changed(self: &Rc<Self>, text: &str) {
         let generation = self.search_generation.get() + 1;
@@ -2192,6 +2221,7 @@ impl TreePanel {
             self.clear_search();
             return;
         }
+        self.search_dispatches.set(self.search_dispatches.get() + 1);
         self.search_errors.borrow_mut().clear();
         self.search_rows.borrow_mut().clear();
         self.search_runs.borrow_mut().clear();
@@ -2643,7 +2673,7 @@ impl TreePanel {
     /// `GtkTreeListModel` 的 `create_func` 在展开时调用。同一层的模型在展开期间
     /// 一直缓存；折叠后重新展开会再调一次 create_func，这里直接复用已加载的页
     /// （不重复拉取）。要让服务端的数据变化可见，走连接 / 库节点的右键「刷新连接 /
-    /// 刷新库」，或菜单「视图 → 刷新」/ `F5`（当前标签不是表数据页时才重建整棵树）。
+    /// 刷新库」，或 `F5`（当前标签不是表数据页时才重建整棵树）。
     fn level_for(self: &Rc<Self>, row: &Row) -> Rc<Level> {
         let source = match row {
             Row::Connection(snapshot) => LevelSource::Catalogs {
@@ -4216,12 +4246,30 @@ impl TreePanel {
     /// 直接设置搜索框文本并立刻搜索（与用户输入同一条路径，只是跳过键盘）。
     pub fn qa_search(self: &Rc<Self>, query: &str) {
         self.search_entry.set_text(query);
-        let generation = self.search_generation.get() + 1;
-        self.search_generation.set(generation);
-        if let Some(source) = self.debounce.borrow_mut().take() {
-            source.remove();
+        self.search_now(query, "QA 直搜");
+    }
+
+    /// 在搜索框上发一次「回车」（`--qa-search-enter`）。
+    ///
+    /// 发的是真实的 `activate` 信号，与键盘 Enter 落到同一个处理器——不是另写一条
+    /// 「再搜一次」的捷径。返回值就是这一步的断言：派发次数必须比按之前多。
+    pub fn qa_press_search_enter(self: &Rc<Self>) -> Result<String, String> {
+        let text = self.search_entry.text().to_string();
+        let before = self.search_dispatches.get();
+        eprintln!(
+            "[qa] t=+{}ms 在搜索框按回车（文本「{text}」不变）",
+            crate::qa::elapsed_ms()
+        );
+        self.search_entry.emit_activate();
+        let after = self.search_dispatches.get();
+        if after <= before {
+            return Err(format!(
+                "回车没有触发搜索：派发次数仍是 {after}（文本「{text}」）"
+            ));
         }
-        self.run_search(query, generation);
+        Ok(format!(
+            "搜索框回车：文本「{text}」没变，重新派发了第 {after} 次搜索"
+        ))
     }
 
     /// 点第一条可跳转的搜索结果（与用户点击同一行；祖先分组行不可点）。

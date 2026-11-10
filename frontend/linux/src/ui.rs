@@ -66,6 +66,9 @@ struct UiState {
     backend_ready: Cell<bool>,
     /// 区域 01：窗口外壳（布局自检要用它核对标题与右组）。
     header: adw::HeaderBar,
+    /// headerbar 的主菜单按钮（`--qa-open-menu` 要打开并拍摄它的弹出层；
+    /// 产品路径除了构建时不读它）。
+    menu: RefCell<Option<gtk::MenuButton>>,
     /// 当前工作区（对象树 + SQL 编辑器 + 数据页 + DDL 面板；连接数据库后建立）。
     workspace: RefCell<Option<Rc<Workspace>>>,
     /// 启动态工作区（握手成功、尚未连接数据库时的六区域外壳；#139）。
@@ -168,7 +171,7 @@ pub fn activate(app: &adw::Application) {
     let menu_button = gtk::MenuButton::new();
     menu_button.set_icon_name("open-menu-symbolic");
     menu_button.add_css_class("flat");
-    menu_button.set_tooltip_text(Some("主菜单（文件 / 视图 / 查询 / 表 / 帮助）"));
+    menu_button.set_tooltip_text(Some("主菜单（文件 / 表 / 帮助）"));
     menu_button.set_menu_model(Some(&build_main_menu()));
 
     header.pack_end(&menu_button);
@@ -221,6 +224,7 @@ pub fn activate(app: &adw::Application) {
         drivers: RefCell::new(Vec::new()),
         backend_ready: Cell::new(false),
         header: header.clone(),
+        menu: RefCell::new(Some(menu_button.clone())),
         workspace: RefCell::new(None),
         startup: RefCell::new(None),
         about: RefCell::new(None),
@@ -777,6 +781,14 @@ pub fn activate(app: &adw::Application) {
             match result {
                 Ok(()) => {
                     eprintln!("[qa] 界面截图已写入 {}", capture.path.display());
+                    // 主菜单弹出层与「表」子菜单：不在窗口的绘制树里，窗口自渲染看不到，
+                    // 这里用同一个 GTK 渲染器单独拍，并把菜单模型逐项打进日志。
+                    if crate::qa::open_menu() {
+                        match capture_menu_popups(&capture_state, &capture.path) {
+                            Ok(note) => eprintln!("[qa] {note}"),
+                            Err(reason) => eprintln!("[qa] 菜单弹出层截图失败：{reason}"),
+                        }
+                    }
                     // 截图之后立刻断言：画面证据已经落盘，断言失败也不会丢证据。
                     // 只有登记了 --qa-expect-* 才校验；退出码 3 与截图失败的 2 区分开。
                     if crate::qa::expect_data_state().is_some()
@@ -1653,7 +1665,7 @@ fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
 /// 连接数据库后的主界面：左侧对象树 + 右侧标签工作区（一标签一会话）。
 ///
 /// 标签、会话与页面都在 [`crate::tabs::TabSet`] 里；本函数只负责把它接上外壳、
-/// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与「表」菜单的可用性。
+/// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与 `win.*` 动作的可用性。
 fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
     // 启动态刚拖过面板就立刻点连接时，400ms 的落盘防抖还没触发：先取当前外壳
     // 的真实宽度带进新工作区，避免重读 window.json 拿到旧值（#155 复核）。
@@ -1766,7 +1778,7 @@ fn refresh_txn_hint(
     }
 }
 
-/// 当前标签的状态 → 状态栏 / 工具条 / 「表」菜单。
+/// 当前标签的状态 → 状态栏 / 工具条 / `win.*` 动作。
 fn apply_tab_status(
     shell: &Rc<Shell>,
     actions: Option<&Rc<WindowActions>>,
@@ -1884,10 +1896,10 @@ fn show_objects_for_kind(
 
 /// `win.refresh` 这次要刷什么：由当前标签决定。
 ///
-/// 菜单「视图 → 刷新」、`F5` 与 QA 的 `--qa-refresh` 都读这一份判定，不各自猜。
+/// `F5`（菜单里已不再列「视图 → 刷新」）与 QA 的 `--qa-refresh` 都读这一份判定，不各自猜。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RefreshTarget {
-    /// 当前标签是表数据页：刷新这张表（与「表 → 刷新当前表」同一个 `RowOp::Refresh`）。
+    /// 当前标签是表数据页：刷新这张表（与状态栏 `⟳` 同一个 `RowOp::Refresh`）。
     Table(String),
     /// 其余情况（查询标签 / `Objects` 页 / 启动态）：重建对象树。
     Tree,
@@ -2596,7 +2608,7 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 900;
     }
 
-    // `--qa-refresh`：触发与 F5 / 菜单「视图 → 刷新」完全相同的 `win.refresh` 动作，
+    // `--qa-refresh`：触发与 F5 完全相同的 `win.refresh` 动作，
     // 判定（刷当前表 / 刷对象树）只存在于动作处理器里，这里不复制一份。
     if crate::qa::refresh_requested() {
         let state = Rc::clone(state);
@@ -2828,6 +2840,14 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 900;
     }
 
+    // 回车重搜（#搜索框）：文本**故意不变**，只发 `activate` 信号——验证「上一次搜过
+    // 同样的词之后再次回车也要重新派发」。这一步自己断言派发次数增加了。
+    if crate::qa::search_enter() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(delay, Rc::new(move || tree.qa_press_search_enter()));
+        delay += 900;
+    }
+
     // v0.2.4：点结果里的表 / 视图 = 打开数据标签，左侧结果页原样保留（不再切回树）。
     // 排在清空之前：脚本里两者不同时用，但顺序固定才能让日志可复读。
     // 重试预算比默认长：大库（几百个 catalog）的搜索要 9–10 s 才出结果。
@@ -2879,6 +2899,126 @@ const SEARCH_STEP_ATTEMPTS: u32 = 200;
 
 /// 默认的重试次数（40 × 150 ms ≈ 6 s）。
 const MAX_STEP_ATTEMPTS: u32 = 40;
+
+/// QA（`--qa-open-menu`）：把主菜单弹出层与「表」子菜单各渲染成 PNG，并列出菜单模型。
+///
+/// 弹出层（`GtkPopoverMenu`）是独立 surface：`save_window` 只渲染窗口本身，拍不到它。
+/// 这里用同一个 `GtkWidgetPaintable` 渲染器拍弹出层控件（画面仍来自 GTK 真实绘制），
+/// 同时把 `gio::Menu` 的逐项清单（标签 + 动作名）打进日志——「菜单里有什么」在日志里
+/// 是可直接比对的文本，不靠看图像猜。
+///
+/// 子菜单不靠「点一下」再找新 surface：无人值守窗口的合成时序让子 Popover 的映射
+/// 不稳定；这里按**同一个 menu model** 的子菜单项建 `GtkPopoverMenu` 渲染，内容与
+/// 用户点开时一致，日志里也把它与主菜单的层级一起列出。
+fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String, String> {
+    let button = state
+        .menu
+        .borrow()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "主菜单按钮尚未建立".to_owned())?;
+    let model = button
+        .menu_model()
+        .ok_or_else(|| "主菜单没有 menu model".to_owned())?;
+    let listing = describe_menu(&model, 0).join(" / ");
+    // 弹出层要**当场打开并当场拍**：Wayland 下非活动窗口的 popup 不会映射（GTK 只把
+    // 控件标成 visible，surface 没有 present），先把窗口抬到最前再 popup。
+    state.window.present();
+    spin_main_context(150);
+    button.popup();
+    spin_main_context(300);
+    let popover = button
+        .popover()
+        .ok_or_else(|| "主菜单弹出层尚未建立（popup 没生效？）".to_owned())?;
+    if !popover.is_mapped() {
+        popover.present();
+        spin_main_context(300);
+    }
+    if !popover.is_mapped() {
+        return Err(format!(
+            "主菜单弹出层未映射：visible={}，{}x{}（需要活动窗口；无人值守时用 Broadway/合成器跑）",
+            popover.is_visible(),
+            popover.width(),
+            popover.height()
+        ));
+    }
+    let main_path = with_stem_suffix(base, "-menu");
+    crate::qa::save_widget(&state.window, &popover, &main_path)?;
+    let mut note = format!("主菜单弹出层：{}；菜单项：{listing}", main_path.display());
+    popover.popdown();
+    spin_main_context(100);
+    if let Some(table_model) = submenu_model(&model, "表") {
+        let submenu = gtk::PopoverMenu::from_model(Some(&table_model));
+        submenu.set_parent(&button);
+        submenu.set_has_arrow(false);
+        submenu.popup();
+        spin_main_context(300);
+        let sub_path = with_stem_suffix(base, "-menu-table");
+        match crate::qa::save_widget(&state.window, &submenu, &sub_path) {
+            Ok(()) => note.push_str(&format!("；表子菜单：{}", sub_path.display())),
+            Err(error) => note.push_str(&format!("；表子菜单截图失败：{error}")),
+        }
+        submenu.popdown();
+        submenu.unparent();
+    } else {
+        note.push_str("；菜单模型里没有「表」这一项");
+    }
+    Ok(note)
+}
+
+/// `x.png` + `-menu` → `x-menu.png`（同目录，不改调用方给的路径）。
+fn with_stem_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(|| "menu".to_owned(), |stem| stem.to_string_lossy().into_owned());
+    path.with_file_name(format!("{stem}{suffix}.png"))
+}
+
+/// 把菜单模型逐项展开成 `标签 → 动作`（子菜单缩进一层）。
+fn describe_menu(model: &gio::MenuModel, depth: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for index in 0..model.n_items() {
+        let label = model
+            .item_attribute_value(index, "label", None)
+            .and_then(|value| value.str().map(str::to_owned))
+            .unwrap_or_else(|| "（无标签）".to_owned());
+        let action = model
+            .item_attribute_value(index, "action", None)
+            .and_then(|value| value.str().map(str::to_owned));
+        let indent = "  ".repeat(depth);
+        match action {
+            Some(action) => lines.push(format!("{indent}{label} → {action}")),
+            None => lines.push(format!("{indent}{label}")),
+        }
+        if let Some(submenu) = model.item_link(index, gio::MENU_LINK_SUBMENU.as_str()) {
+            lines.extend(describe_menu(&submenu, depth + 1));
+        }
+    }
+    lines
+}
+
+/// 按标签取子菜单模型（主菜单里的「表」）。
+fn submenu_model(model: &gio::MenuModel, label: &str) -> Option<gio::MenuModel> {
+    for index in 0..model.n_items() {
+        let item_label = model
+            .item_attribute_value(index, "label", None)
+            .and_then(|value| value.str().map(str::to_owned));
+        if item_label.as_deref() == Some(label) {
+            return model.item_link(index, gio::MENU_LINK_SUBMENU.as_str());
+        }
+    }
+    None
+}
+
+/// 让主循环跑 `millis` 毫秒（弹层要等一帧才映射、才能取到画面）。
+fn spin_main_context(millis: u64) {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + Duration::from_millis(millis);
+    while std::time::Instant::now() < deadline {
+        context.iteration(false);
+        std::thread::sleep(Duration::from_millis(4));
+    }
+}
 
 /// 执行一个 QA 步骤：`delay` 之后开始尝试，失败每 150ms 重试，最多 `attempts` 次。
 fn schedule_step_retrying(
@@ -3904,6 +4044,10 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
                         .state
                         .map_or_else(String::new, |state| state.name().to_owned()),
                 ),
+                crate::qa::SearchField::Runs => (
+                    snapshot.runs.to_string() == expectation.expected,
+                    snapshot.runs.to_string(),
+                ),
             };
             if !matched {
                 return Err(format!(
@@ -4213,8 +4357,13 @@ fn truncate_for_log(text: &str, limit: usize) -> String {
 //
 // Linux 不设窗口内菜单行（ADR 0023）：菜单挂在 headerbar 的主菜单按钮上，
 // 动作是窗口级 `win.*`（需要当前工作区），应用级只有退出/关窗。
-// 菜单集合固定为 文件 / 视图 / 查询 / 表 / 帮助；`Favorites`、`Tools`、`Window`
-// 在 v0.2.3 不出现（无收藏、无工具集、无多窗口）。
+// 菜单集合收缩为 文件 / 表 / 帮助：视图与查询的**全部子项**都不在菜单里，
+// 「表」只留「导出 CSV」。**动作与快捷键不受影响**——`win.*` 仍由
+// [`install_window_actions`] 注册，`Ctrl+T` / `Ctrl+W` / `F5` / `Ctrl+Enter` / `Ctrl+Shift+E`
+// 等照旧能触发，只是菜单里不再列出。
+//
+// 视图 / 查询没有留空的子菜单：`gio::Menu` 的空 submenu 会弹出一个空气泡（点了像坏掉），
+// 比「顶部少一项」更难解释，所以整项不挂。
 //
 // 没有实现支撑的项**禁用并写明原因**（导出 CSV 归 #118），不摆点了没反应的动作。
 
@@ -4225,27 +4374,11 @@ fn build_main_menu() -> gio::Menu {
     let file = gio::Menu::new();
     file.append(Some("新建连接"), Some("win.new-connection"));
     file.append(Some("新建查询标签"), Some("win.new-tab"));
-    file.append(Some("关闭标签"), Some("win.close-tab"));
     file.append(Some("退出"), Some("app.quit"));
     menu.append_submenu(Some("文件"), &file);
 
-    let view = gio::Menu::new();
-    view.append(Some("对象树显隐"), Some("win.toggle-sidebar"));
-    view.append(Some("刷新"), Some("win.refresh"));
-    menu.append_submenu(Some("视图"), &view);
-
-    let query = gio::Menu::new();
-    query.append(Some("执行"), Some("win.execute"));
-    query.append(Some("取消"), Some("win.cancel"));
-    menu.append_submenu(Some("查询"), &query);
-
+    // 「表」只保留导出：事务 / 刷新 / 行列编辑都在动作行与状态栏里，菜单不再重复一份。
     let table = gio::Menu::new();
-    table.append(Some("开始事务…"), Some("win.begin-txn"));
-    table.append(Some("提交事务"), Some("win.commit-txn"));
-    table.append(Some("回滚事务"), Some("win.rollback-txn"));
-    table.append(Some("刷新当前表"), Some("win.refresh-table"));
-    table.append(Some("新增行"), Some("win.add-row"));
-    table.append(Some("删除选中行"), Some("win.delete-row"));
     table.append(Some("导出 CSV"), Some("win.export-csv"));
     menu.append_submenu(Some("表"), &table);
 
@@ -4311,7 +4444,7 @@ impl WindowActions {
         }
     }
 
-    /// 「表」菜单的可用性完全跟随数据页（与状态栏行操作同一份快照）；
+    /// 表动作的可用性完全跟随数据页（与状态栏行操作同一份快照）；
     /// 后端未就绪时一律禁用（例如断开后保留的工作区）。
     fn apply_row_ops(&self, ops: &RowOpsState) {
         if !self.backend_ready.get() {
