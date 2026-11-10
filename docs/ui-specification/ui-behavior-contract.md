@@ -100,6 +100,24 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 反方向联动（树 → 页） | 树里选中分组 / 表 / 视图 / 库 | `Objects` 页换作用域（§3），工具条高亮在同一次刷新里跟上 | `src/ui.rs:1752-1764`、`src/ui.rs:1027-1060`（`objects_target`） |
 | 启动态（未连接）点任一种类入口 | 后端已握手、没有数据库连接 | 不编造内容：把固定 `Objects` 页摆到前面并**保持空态**，日志说明「尚未连接数据库」 | `src/startup.rs:275-284`（`StartupWorkspace::show_kind`） |
 
+### 1.5 界面密度档（100% / 125% / 150%）
+
+三档的**数字**唯一真值是 [metrics.toml](metrics.toml)（启动时解析一次，之后每个尺寸 / 字号 /
+行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」），规则见
+[scaling-and-window-sizing.md](scaling-and-window-sizing.md) §2–§4。本节只写行为。
+
+| 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| 启动档位 | 无 | 优先级：`--tier`（QA，取证用）→ `window.json` 的 `tier` → `compact`。日志 `[tier] 启动档位 compact（100%；来源=默认/记忆/QA）`；随后按当前工作区跑一次可用性守卫（下一行） | `src/density.rs:33`（`ensure_startup_tier`）、`src/layout.rs:446`（`Metrics::for_tier`）、`src/ui.rs`（读 `--tier`） |
+| 已保存的档位当前放不下 | 该档的 `min_window`（1200×800 / 1440×960）大于当前逻辑工作区 | **回退到下一个可用档**并记一行 `[tier] large 在当前工作区 1092x582 不可用（需要 1440×960），回退 comfortable`；不静默钳到 100%。连 `compact` 都放不下时保留 `compact`，窗口按 §5.4 收敛到工作区 | `src/density.rs:53`、`src/window_size.rs:225`（`available`）、`src/window_size.rs:232`（`first_available_from`） |
+| 升一档 | `Ctrl+Plus`（含 `Ctrl+KP_Add`、`Ctrl+=` 别名） | 走 `win.tier-up`：目标档可用就切（下一行）；已经在 `large` 时**什么都不做**并记 `[tier] 已经是最高档（large），Ctrl+Plus 忽略`；目标档在当前显示器放不下时不切换、不写盘，记 `[tier] … 不可用（需要 W×H），未切换` | `src/ui.rs:357-366`（accel 表）、`src/ui.rs:4859`（`tier-up`）、`src/density.rs:78`（`switch`） |
+| 降一档 | `Ctrl+minus`（含 `Ctrl+KP_Subtract`） | 同上，走 `win.tier-down`；已在 `compact` 时记 `[tier] 已经是最低档（compact），Ctrl+minus 忽略` | `src/ui.rs:365`、`src/ui.rs:4868` |
+| 重置档位 | `Ctrl+0` | 直接切到 `compact`（不是「回退一个可用档」） | `src/ui.rs:366`、`src/ui.rs:4877`（`tier-reset`） |
+| 菜单入口 | 主菜单 → 视图 → 界面密度 | 三个单选项，当前档打勾（程序化同步时不触发 action）。当前显示器放不下的档**禁用**，tooltip 写明缺多少：`当前显示器放不下 150%：需要 1440×960 逻辑工作区（当前 1280×698）`；可用项 tooltip：`切换到 舒适（125%）；窗口会按档位一起放大 / 收小` | `src/ui.rs:4977`（`sync_tier_checks`）、`src/ui.rs:5063`（`build_tier_menu`）、`src/ui.rs:5096`（`ensure_tier_menu`） |
+| 切档后的界面 | 目标档可用 | **同一次动作里**：① 四套样式表（主壳 / 数据页 / 对象树 / DDL）用同一个 provider 重载；② 窗口按 §5.3 重算并钳到工作区（`[monitor] 档位导致窗口放大：1400x838 → 1888x1000（档位 large）`）；③ 侧栏 / 信息面板按 **compact 归一值 × 新档**换算（`[tier] 面板宽度随档位换算：侧栏 237 → 356，信息面板 280 → 420（compact → large）`），新窗口放不下 600px 表格区时收到各自下限并记日志；④ 已建列的固定宽度、行高、字号与图标按钮命中区按新档重设（只改样式不会动列宽）；⑤ 档位写入 `window.json` | `src/density.rs:78`（`switch`）、`src/theme.rs:123`（`reload`）、`src/window_size.rs:488`（`apply_for_tier`）、`src/shell.rs:591`（`reapply_tier`）、`src/data_page.rs:5432`（`reapply_metrics`）、`src/tabs.rs:2868`（`reapply_tier`） |
+| 面板宽度跨档往返 | 任一档 | 宽度类字段一律按 **compact 归一值**（实际值 ÷ 档位倍率）存，读时乘当前档，所以 `100% → 150% → 100%` 往返不漂移（实测信息面板 280 → 420 → 280、侧栏 237 → 356 → 237） | `src/shell.rs:591`、`src/window_state.rs:199`（`saved_tier`）、`src/window_state.rs:309`（`remember_tier`） |
+| 跨档恢复窗口几何 | `window.json` 记的几何属于旧档 | 按新档重算并记 `[monitor] 档位导致窗口放大：1200x800 → 1888x1000（记忆尺寸属于 compact，当前 large）`；几何越界的校验规则不变（§1.1） | `src/window_size.rs:488`、`src/window_state.rs:309` |
+
 ---
 
 ## 2. 对象树
@@ -420,6 +438,9 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 取消查询 | `Esc` | 编辑器内生效；幂等（重复点不报错、不发 RPC）。**菜单「查询」整项不挂**，只保留快捷键与查询页按钮 | `src/sql_page.rs:239-245`、`src/sql_page.rs:308-325`、`src/ui.rs:4616`（`win.cancel`） |
 | 关闭筛选面板 / 收起条件编辑 | `Esc` | 只在筛选面板内生效：先收起行内编辑，没有编辑态时关面板 | `src/data_page.rs:1320-1339` |
 | 列表移动 / 激活 | `↑` `↓` / `Enter` | GTK 默认；`Enter` 等同双击（树与 `Objects` 页三列表格） | `src/tree.rs:1813`、`src/tabs.rs:909-925` |
+| 界面密度升一档 | `Ctrl+Plus`（`Ctrl+KP_Add`、`Ctrl+=`） | 见 §1.5：目标档在当前显示器放不下时忽略并记日志，已在最高档时同样忽略 | `src/ui.rs:357-366`、`src/ui.rs:4859` |
+| 界面密度降一档 | `Ctrl+minus`（`Ctrl+KP_Subtract`） | 见 §1.5；已在 `compact` 时忽略 | `src/ui.rs:365`、`src/ui.rs:4868` |
+| 界面密度重置 | `Ctrl+0` | 直接回到 `compact`（不是「回退一个可用档」） | `src/ui.rs:366`、`src/ui.rs:4877` |
 
 ### 8.2 危险操作确认规则
 
@@ -466,8 +487,8 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见
 [`ui-behavior-contract.review.md`](ui-behavior-contract.review.md)。
 
-当前**有 1 项未收口**（v0.2.3.4，2026-11-10 登记，均已建 Issue）：界面密度档（#160），口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) 与
-[ADR 0026](../decisions/0026-ui-scaling-window-sizing.md)。发现新偏差时按同样格式追加：
+当前**没有**未收口项（v0.2.3.4，2026-11-10 复核；最近一次收口是界面密度档 #160，口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) 与
+[ADR 0026](../decisions/0026-ui-scaling-window-sizing.md)，行为写在 §1.5）。发现新偏差时按同样格式追加：
 「代码如此 / 文档如此 / 建议」，能当场改的就改掉再删条目，不要把已经改好的留在这一节。
 
 已知边界（不是偏差，正文已写明，列在这里方便检索）：
@@ -480,4 +501,3 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 960×640 下状态簇 | 动作行分配约 417px；两段常驻文字收成 24×24 的状态圆点后，整行需求 409 ≤ 分配 417、状态簇自身需求 38（`--qa-layout-audit` 实测，17 项 0 超限）；过程消息仍按省略号收缩，完整文案留在圆点 tooltip 与状态栏 | §5.1 |
 | `Alt+N` 与拖拽重排 | 序号按 `AdwTabView::pages()` 实际顺序取，拖拽重排后的映射未实测 | §4 |
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
-| 界面密度档（**未收口**） | 代码只有一套固定尺寸（`layout.rs` 常量），没有 100% / 125% / 150% 三档、没有档位菜单与 `Ctrl+Plus` / `Ctrl+minus` / `Ctrl+0`；口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §2，实现跟踪 #160 | §1.1 |
