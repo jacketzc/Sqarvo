@@ -47,12 +47,12 @@
 | 应用启动 | 无 | 先 Loading（居中 spinner + 握手阶段文案），握手成功后**直接落地工作区**（未连接时的启动态外壳），不再停在诊断页。主工具条从窗口构建起就存在：后端未握手时六个按钮全部禁用（见 §1.2） | `src/ui.rs:121`（`activate`）、`src/ui.rs:218-236`（工具条构建与 `set_backend_ready(false)`）、`src/ui.rs:1447`（`show_startup_workspace`） |
 | 后端握手失败 | 无 | 主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、可操作文案 + 「重试」；标题栏回到 `Sqarvo`。工具条保留在错误页上方并**保持全部禁用**（日志「`[toolbar] 后端未握手：0/6 个按钮可用`」） | `src/ui.rs:3295`（`show_error`）、`src/ui.rs:473-481`（事件泵回退）、`src/shell.rs:705`（`set_backend_ready`） |
 | 连接数据库成功 | 有连接结果 | 标题 = `<连接名> - <驱动显示名>`；副标题 = `已连接 · <显示名>（<driver_id>）· <服务端版本>`（版本缺失时写「未知（后端未返回）」） | `src/ui.rs:1414-1448` |
-| 切换标签 | 工作区存在 | 标题跟着当前标签变：`Objects` → `<连接名> - <驱动>`；表 / 查询标签 → `<标签标题> (<连接名>)`；副标题不变（连接级信息） | `src/tabs.rs:1916-1941`（`refresh_current`）、`src/tabs.rs:110`（`window_title_for`） |
+| 切换标签 | 工作区存在 | 标题跟着当前标签变：`Objects` → `<连接名> - <驱动>`；表 / 查询标签 → `<标签标题> (<连接名>)`；副标题不变（连接级信息） | `src/tabs.rs:2069`（`refresh_current`）、`src/tabs.rs:128`（`window_title_for`） |
 | 后端断开 | 无 | 标题 `Sqarvo`、副标题「已断开」；**保留已建立的工作区**（已加载的行仍可查看）；所有标签标记失连；状态栏连接名清空、SQL 摘要写「连接已断开」 | `src/ui.rs:413-443`、`src/tabs.rs:2227`（`mark_disconnected`） |
 | 后端失效（进程没了） | 任一标签的横幅「重启 Sqarvo」按钮，或数据页错误横幅 | `AdwAlertDialog`「Sqarvo 需要重启」+ 说明「重启会关闭所有标签页，未提交的更改会丢失」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消） | `src/ui.rs:956`（`show_backend_failure_dialog`） |
 | 重启 Sqarvo | 同上 | 不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 回到 Loading「正在重启 Sqarvo…」→ 重新握手 | `src/ui.rs:982`（`restart_software`） |
-| 关闭窗口 | 标题栏按钮 / `Ctrl+Shift+W` | **先过脏行守卫**：任一表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时**不关窗**，弹「有未提交的更改」确认框（逐表列出，见 §8.2）；选「取消」什么都不做，选「放弃更改并退出」才继续。确认过一次后（标志位 `close_confirmed`）再关不再二次弹窗；已进入关闭流程（`closing == true`）时直接放行。继续后显示「正在停止后端并清理端点文件…」，等 worker 回报 `ShutdownComplete` 才销毁窗口 | `src/ui.rs:283-313`（`connect_close_request`）、`src/ui.rs:814`（`dirty_tab_summaries`）、`src/ui.rs:827`（`confirm_close_with_dirty`）、`src/tabs.rs:2580`、`src/data_page.rs:1562` |
-| 退出应用 | `Ctrl+Q` / 菜单「文件 → 退出」 | `app.quit`；`app.connect_shutdown` 里仍会 `worker.shutdown()` + `join()`，子进程不会变成孤儿 | `src/main.rs:72`、`src/ui.rs:597-605` |
+| 关闭窗口 | 标题栏按钮 / `Ctrl+Shift+W` | **先过脏行守卫**：任一表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时**不关窗**，弹「有未提交的更改」确认框（逐表列出，见 §8.2）；选「取消」什么都不做，选「放弃更改并退出」才继续。确认过一次后（标志位 `close_confirmed`）再关不再二次弹窗；已进入关闭流程（`closing == true`）时直接放行。继续后显示「正在停止后端并清理端点文件…」，等 worker 回报 `ShutdownComplete` 才销毁窗口 | `src/ui.rs:352`（`connect_close_request`）、`src/ui.rs:886`（`dirty_tab_summaries`）、`src/ui.rs:899`（`confirm_close_with_dirty`）、`src/tabs.rs:2555`（`close_current`）、`src/data_page.rs:1562` |
+| 退出应用 | `Ctrl+Q` / 菜单「文件 → 退出」 | 与关闭窗口同一条守卫：有窗口时先 `window.close()`（走上面那行 `close_request`，脏行未提交会先弹确认框），窗口关完后 GApplication 自然退出；没有窗口时才直接 `app.quit()`。两种情况 `app.connect_shutdown` 都会 `worker.shutdown()` + `join()`，子进程不会变成孤儿 | `src/main.rs:285-305`（`install_app_actions` / `quit_app`）、`src/ui.rs:702`（`connect_shutdown`） |
 
 ### 1.2 主工具条
 
@@ -207,10 +207,10 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 表数据标签标题 | 打开表 | `<对象名> @ <catalog>`；catalog 为空时用「默认」（不编造库名、不把连接名塞进标签）；tooltip `<标题> · 标签会话` | `src/tabs.rs:73-80`、`src/tabs.rs:1643-1645` |
-| 查询标签标题 | 新建查询 | `查询 <N> @ <catalog>`（序号自 1 起递增，不复用已关闭的序号）；tooltip 同上 | `src/tabs.rs:84-86`、`src/tabs.rs:158-166`、`src/tabs.rs:1676-1695` |
-| 新建查询标签 | 未达上限 | 四个入口同一条路径：工具条「新建查询」、标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后聚焦编辑器 | `src/tabs.rs:1669-1722`、`src/tabs.rs:1130-1139`、`src/ui.rs:3839-3849` |
-| 打开表（新建标签） | 未达上限 | 新建标签 + 请求一条**该标签自己的**数据库会话（`Connect`） | `src/tabs.rs:1608-1666`、`src/tabs.rs:1747-1777` |
+| 表数据标签标题 | 打开表 | `<对象名> @ <catalog>`；catalog 为空时用「默认」（不编造库名、不把连接名塞进标签）；tooltip `<标题> · 标签会话`（会话建立后阶段换成 `会话 <id 前 8 位>`） | `src/tabs.rs:73-80`、`src/tabs.rs:1686-1688`、`src/tabs.rs:2042-2067` |
+| 查询标签标题 | 新建查询 | `查询 <N>`（**不带 `@ 库`**；序号自 1 起递增，不复用已关闭的序号）。库与连接改放 tooltip：`查询 1 · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`；多连接同时开着各自「查询 1」时靠 tooltip 区分。窗口标题仍是 `<标签标题> (<连接名>)` | `src/tabs.rs:88-90`、`src/tabs.rs:1712-1758`、`src/tabs.rs:2042-2067` |
+| 新建查询标签 | 未达上限 | 四个入口同一条路径：工具条「新建查询」、标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后聚焦编辑器 | `src/tabs.rs:1712`、`src/tabs.rs:1765`、`src/ui.rs:979`、`src/ui.rs:4180` |
+| 打开表（新建标签） | 未达上限 | 新建标签 + 请求一条**该标签自己的**数据库会话（`Connect`） | `src/tabs.rs:1651`、`src/tabs.rs:1792` |
 | 打开同一张表（重复） | 已有同表标签 | 对象名 + catalog + 连接键三者完全一致即复用：只切到已有标签，**不新建标签、不新建会话、不重载数据**；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:97-106`、`src/tabs.rs:1617-1624` |
 | 标签上限 | 同时打开的「有会话标签」达到 8（`Objects` 不占名额） | 拒绝新建：`AdwAlertDialog`「无法新建标签」+「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案不重复弹 | `src/tabs.rs:58`、`src/tabs.rs:65-67`、`src/tabs.rs:2432-2462` |
 | 关闭标签（× / `Ctrl+W` / 菜单） | 非 `Objects` | 同一条 `close-page`：没有脏行、没有未提交事务 → 直接关；否则先弹三选 | `src/tabs.rs:1188-1196`、`src/tabs.rs:2243-2265` |
@@ -383,8 +383,11 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 新建连接 | `Ctrl+N` | 打开连接对话框（后端未握手时忽略） | `src/ui.rs:229` |
 | 新建查询标签 | `Ctrl+T` | 与 `＋`、工具条「新建查询」同一路径 | `src/ui.rs:236` |
 | 关闭当前标签 | `Ctrl+W` | 非 `Objects`；有脏行 / 事务时进入三选 | `src/ui.rs:237` |
-| 关闭窗口 | `Ctrl+Shift+W` | 与标题栏关闭按钮同一清理路径 | `src/ui.rs:156` |
-| 退出应用 | `Ctrl+Q` | `app.quit`（仍走 shutdown 清理） | `src/main.rs:72` |
+| 关闭窗口 | `Ctrl+Shift+W` | 与标题栏关闭按钮同一清理路径 | `src/ui.rs:167-171` |
+| 退出应用 | `Ctrl+Q` | 走关窗守卫：先 `window.close()` 主窗口（与标题栏关闭 / `Ctrl+Shift+W` 同一条 `close-request`），有未提交更改时先弹「有未提交的更改」（取消 / 放弃更改并退出），窗口关完后 GApplication 自然退出；只有没有窗口时才直接 `app.quit()` | `src/main.rs:285-305`、`src/ui.rs:352` |
+| 下一个标签 | `Ctrl+Tab` | 选中 `AdwTabView` 的下一个标签；最后一个再往后**回绕到第一个**（`Objects` 也在循环里）。`AdwTabView` 自带的同名快捷键已摘掉，只剩这一条路径 | `src/ui.rs:280`、`src/ui.rs:4205`、`src/tabs.rs:1990` |
+| 上一个标签 | `Ctrl+Shift+Tab` | 与上一行反向：第一个再往前回绕到最后一个 | `src/ui.rs:281`、`src/ui.rs:4214`、`src/tabs.rs:1990` |
+| 直选第 N 个标签 | `Alt+1`…`Alt+9` | 选中第 N 个标签（1 起，`Objects` 算第 1 个）；超出当前标签数时**什么都不做**（不弹框、不崩），只记一行 `[tabs] Alt+3：只有 2 个标签，忽略` | `src/ui.rs:283-285`、`src/ui.rs:4224-4236`、`src/tabs.rs:2010-2024` |
 | 刷新当前表 / 对象树 | `F5` | 当前标签是表数据页 → 刷当前表（保持排序 / 筛选、回到第 1 页；脏行守卫照旧）；否则刷整棵对象树 | `src/ui.rs:232`、`src/ui.rs:2178-2196` |
 | 聚焦对象搜索 | `Ctrl+F` | 焦点交给树顶部搜索框 | `src/ui.rs:234` |
 | 导出当前标签 | `Ctrl+Shift+E` | CSV（表标签先选范围） | `src/ui.rs:239` |
@@ -392,8 +395,6 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 取消查询 | `Esc` | 编辑器内生效；幂等（重复点不报错、不发 RPC） | `src/sql_page.rs:239-245`、`src/sql_page.rs:308-325` |
 | 关闭筛选面板 / 收起条件编辑 | `Esc` | 只在筛选面板内生效：先收起行内编辑，没有编辑态时关面板 | `src/data_page.rs:1320-1339` |
 | 列表移动 / 激活 | `↑` `↓` / `Enter` | GTK 默认；`Enter` 等同双击（树与 `Objects` 页） | `src/tree.rs:1813`、`src/tabs.rs:770-786` |
-
-> 未实现的快捷键（`Ctrl+Tab`、`Alt+1..9`）见 §9；不得在文档里把未接线的快捷键写成可用。
 
 ### 8.2 危险操作确认规则
 
@@ -407,7 +408,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 断开连接 | 已连接 | 标题「断开连接？」；说明只关浏览会话、数据页另一条会话仍可看已加载数据；按钮 取消 / 断开连接（破坏性，默认取消） | `src/ui.rs:2954-3009` |
 | 删除已保存连接 | 连接在配置里 | 标题「删除连接？」；按钮 取消 / 删除连接（破坏性，默认取消） | `src/ui.rs:1310-1389` |
 | 关闭含脏行或事务的标签 | 有脏行 / 有未提交事务 | 标题「关闭标签？」；按钮见 §4（默认取消） | `src/tabs.rs:227-253`、`src/tabs.rs:2270-2294` |
-| 关闭窗口（未提交的更改） | 任一表数据标签有未提交的更改：脏行（含标记删除）或「新增行」草稿 | 标题「有未提交的更改」；正文逐表列出（`users：3 行未提交`、`orders：1 行标记删除`，同一表同时有两类时写 `2 行未提交 · 1 行标记删除`），并给出「选『取消』回到工作区提交或放弃」的出口；按钮 取消 / 放弃更改并退出（破坏性，默认取消，关闭 = 取消）；取消 → 窗口保持原样，日志「取消关窗：保持在工作区」；放弃 → 日志「已放弃未提交更改并退出」，随后走 §1.1 的清理流程。确认过一次后不再二次弹窗；查询标签的未提交事务不在本守卫范围内（关标签时仍按上一行确认） | `src/ui.rs:827`（`confirm_close_with_dirty`）、`src/tabs.rs:260`（`close_guard_body`）、`src/data_page.rs:1562`（`dirty_tab_summary`） |
+| 关闭窗口（未提交的更改） | 任一表数据标签有未提交的更改：脏行（含标记删除）或「新增行」草稿 | 标题「有未提交的更改」；正文逐表列出（`users：3 行未提交`、`orders：1 行标记删除`，同一表同时有两类时写 `2 行未提交 · 1 行标记删除`），并给出「选『取消』回到工作区提交或放弃」的出口；按钮 取消 / 放弃更改并退出（破坏性，默认取消，关闭 = 取消）；取消 → 窗口保持原样，日志「取消关窗：保持在工作区」；放弃 → 日志「已放弃未提交更改并退出」，随后走 §1.1 的清理流程。确认过一次后不再二次弹窗；查询标签的未提交事务不在本守卫范围内（关标签时仍按上一行确认） | `src/ui.rs:899`（`confirm_close_with_dirty`）、`src/tabs.rs:276`（`close_guard_body`）、`src/data_page.rs:1562`（`dirty_tab_summary`） |
 | 覆盖已存在的导出文件 | 目标路径存在 | 再确认一次；默认**不覆盖**（默认取消） | `src/export_ui.rs:607-668` |
 | 重启 Sqarvo | 后端失效 | 标题「Sqarvo 需要重启」；正文写明会关闭所有标签页、未提交更改会丢失；重启按钮为破坏性 | `src/ui.rs:956-976` |
 
@@ -440,45 +441,27 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见
 [`ui-behavior-contract.review.md`](ui-behavior-contract.review.md)。
 
-1. **查询标签标题带 catalog**
-   代码如此：`query_tab_title` = `查询 <N> @ <catalog>`（`src/tabs.rs:84-86`）。
-   旧文档如此：`workspace-model.md` §3 写「查询标签（`查询 N`）」。
-   建议：二选一——把文档改成 `查询 N @ catalog`（与表标签同构，信息更全），或改代码去掉
-   `@ catalog`（标题更短）。二者都影响标签宽度与窗口标题，需要一次视觉确认。
-
-2. **`Ctrl+Q` 直接退出，不经过关窗脏行守卫**
-   代码如此：`app.quit` 绑定 `<primary>q`（`src/main.rs:72`）。标题栏关闭 / `Ctrl+Shift+W` 会先过
-   脏行确认（§1.1 / §8.2），`Ctrl+Q` 走 `app.quit`，不弹「有未提交的更改」。
-   这是已知边界：同一份未提交更改，点关闭会问、按 `Ctrl+Q` 不问。
-   建议：产品决定是让 `Ctrl+Q` 复用同一守卫，还是在菜单「文件 → 退出」上标注「立即退出」。
-
-3. **最小窗口 960×640 未强制**
+1. **最小窗口 960×640 未强制**
    代码如此：没有任何 `set_size_request` / geometry hints 限制窗口最小尺寸；960×640 只出现在
    `--window-size` 的校验下限（`src/qa.rs:1594-1597`）与布局单测（`src/layout.rs:211-216`）。
    建议：确认是否要真正强制（`gtk_widget_set_size_request` 只能给内容最小宽度，窗口级需要
    geometry hints / compositor 支持，跨 Wayland 不保证）；当前文档口径是「验收下限 960×640，
    低于此值不保证布局」（`workspace-model.md` §1）。
 
-4. **标签切换快捷键缺失**
-   代码如此：只注册了 `Ctrl+N/T/W`、`Ctrl+Shift+W`、`Ctrl+Q`、`Ctrl+F`、`F5`、
-   `Ctrl+Shift+E`（`src/ui.rs:229-239`、`src/main.rs:72`）；没有 `Ctrl+Tab`、`Alt+1..9`。
-   建议：要补就在 `TabSet` 上接 `AdwTabView` 的页面循环动作（`Alt+N` 需要逐标签注册动作，
-   成本不低）；不补则保持文档不列（`workspace-model.md` §10 已改为指向 §8.1）。
-
-5. **事务状态只有按钮互斥 + 一次性状态行文案，没有常驻徽标**
+2. **事务状态只有按钮互斥 + 一次性状态行文案，没有常驻徽标**
    代码如此：两组按钮互斥（`src/data_page.rs:5688-5701`）+ 只读横幅；每次事务状态变化还会在
    工具条下方状态行写一次「事务状态：{label}」（`src/data_page.rs:3812-3819`）；
    `TransactionBadge` 是纯状态模型，不渲染成常驻文字徽标；状态栏不写事务
    （`src/shell.rs:1181-1207`）。
    建议：保留现状（960 宽下工具条已无余量放常驻徽标）。
 
-6. **右键「刷新这一组」在未展开的分组上无反馈**
+3. **右键「刷新这一组」在未展开的分组上无反馈**
    代码如此：`reload_group` 只找已建立的 `LevelSource::Group` 层；分组从未展开过时找不到
    level，函数直接返回（`src/tree.rs:2851-2869`），既不发请求也没有状态行提示。
    建议：与「刷新连接」对齐——无层时写一行状态「这一组还没有展开过：展开时会重新读取」，
    避免用户以为菜单项坏了。
 
-7. **对象树模块顶部注释过期**
+4. **对象树模块顶部注释过期**
    代码如此：`KindGroup::ALL` 有四组 `Tables / Views / Functions / Queries`，展开库会建 4 行
    （`src/tree.rs:244`、`src/tree.rs:2266-2272`）。
    旧注释如此：`src/tree.rs:25` 仍写「v0.2.3 不出现 `Functions` / `Queries` 分组」。

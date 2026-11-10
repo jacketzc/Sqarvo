@@ -274,6 +274,32 @@ pub fn activate(app: &adw::Application) {
     // 标签快捷键（§10）：Ctrl+T 新建查询标签、Ctrl+W 关闭当前标签。
     app.set_accels_for_action("win.new-tab", &["<primary>t"]);
     app.set_accels_for_action("win.close-tab", &["<primary>w"]);
+    // 标签切换（§8.1）：Ctrl+Tab / Ctrl+Shift+Tab 循环（到头回绕），Alt+1..9 直选第 N 个。
+    // 这三个键在 `AdwTabView` 上各有一份内置快捷键，已在 `TabSet::new` 里摘掉：否则
+    // 谁先响应取决于焦点，「超出标签数忽略」和回绕语义都不再由我们决定。
+    app.set_accels_for_action("win.tab-next", &["<primary>Tab"]);
+    app.set_accels_for_action("win.tab-prev", &["<primary><shift>Tab"]);
+    for index in 1..=9 {
+        app.set_accels_for_action(&format!("win.tab-{index}"), &[&format!("<alt>{index}")]);
+    }
+    // 取证一行：GApplication 的加速度器表就是键盘分发真正用的那份数据，
+    // `accels_for_action` 读回来能复核绑定，不必只看源码常量。
+    {
+        let accels = |action: &str| {
+            app.accels_for_action(action)
+                .iter()
+                .map(|accel| accel.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        eprintln!(
+            "[tabs] 快捷键绑定：win.tab-next=[{}] win.tab-prev=[{}] win.tab-1=[{}] win.tab-9=[{}]",
+            accels("win.tab-next"),
+            accels("win.tab-prev"),
+            accels("win.tab-1"),
+            accels("win.tab-9")
+        );
+    }
     // 导出当前结果（§10）：Ctrl+Shift+E。
     app.set_accels_for_action("win.export-csv", &["<primary><shift>e"]);
 
@@ -3181,16 +3207,23 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
 
     // 8. 关窗守卫（`--qa-close-dirty answer=discard|cancel`）：脏行建好后触发产品的
     //    `app.close-window`（与 `Ctrl+Shift+W` / 标题栏关闭同一个 `close_request`）。
+    //    `--qa-quit` 把这一步换成 `app.quit`（`Ctrl+Q` 同一个动作）：两条入口都必须
+    //    落到同一张确认框上，这正是要验证的。
     //    确认框的答案由 `confirm_close_with_dirty` 的 QA 钩子稍后送进它自己的
     //    `response` 信号，这里不直接关窗、也不绕过确认。
     if crate::qa::close_dirty().is_some() {
         let window = state.window.clone();
+        let action = if crate::qa::quit_action() {
+            "app.quit"
+        } else {
+            "app.close-window"
+        };
         glib::timeout_add_local_once(Duration::from_millis(4_200), move || {
             eprintln!(
-                "[qa] t=+{}ms 触发 app.close-window（关窗守卫）",
+                "[qa] t=+{}ms 触发 {action}（关窗守卫）",
                 crate::qa::elapsed_ms()
             );
-            let _ = gtk::prelude::WidgetExt::activate_action(&window, "app.close-window", None);
+            let _ = gtk::prelude::WidgetExt::activate_action(&window, action, None);
         });
     }
 }
@@ -4166,6 +4199,42 @@ fn install_window_actions(
         });
     }
 
+    // 标签切换（§8.1）：Ctrl+Tab / Ctrl+Shift+Tab 循环切换、Alt+1..9 直选第 N 个标签。
+    // 三个入口都落到 `TabSet` 的同一对方法上——QA 脚本的 `tab-next` / `tab-prev` /
+    // `select-n` 也走这里，日志与用户按键完全一致。
+    let tab_next = gio::SimpleAction::new("tab-next", None);
+    {
+        let state = Rc::clone(state);
+        tab_next.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.tabs.step_selection(1, "Ctrl+Tab");
+            }
+        });
+    }
+    let tab_prev = gio::SimpleAction::new("tab-prev", None);
+    {
+        let state = Rc::clone(state);
+        tab_prev.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace.tabs.step_selection(-1, "Ctrl+Shift+Tab");
+            }
+        });
+    }
+    // `Alt+1`…`Alt+9`：逐个注册，动作名即快捷键的语义（`win.tab-3` = 第 3 个标签）。
+    // 没有工作区时什么都不做；超出标签数时由 `TabSet` 记一行「只有 N 个标签，忽略」。
+    for index in 1..=9u32 {
+        let action = gio::SimpleAction::new(&format!("tab-{index}"), None);
+        let state = Rc::clone(state);
+        action.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
+                workspace
+                    .tabs
+                    .select_position(index, &format!("Alt+{index}"));
+            }
+        });
+        window.add_action(&action);
+    }
+
     let toggle_sidebar = gio::SimpleAction::new("toggle-sidebar", None);
     {
         let state = Rc::clone(state);
@@ -4321,6 +4390,8 @@ fn install_window_actions(
         &new_connection,
         &new_tab,
         &close_tab,
+        &tab_next,
+        &tab_prev,
         &toggle_sidebar,
         &focus_search,
         &refresh,

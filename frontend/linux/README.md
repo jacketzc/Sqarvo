@@ -162,7 +162,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 
 | 文件 | 职责 |
 |---|---|
-| `src/main.rs` | 应用入口与动作（Ctrl+Q 退出、Ctrl+W 关闭窗口） |
+| `src/main.rs` | 应用入口与动作（`Ctrl+Q` 退出：有窗口时先 `window.close()`，与关闭按钮同一条脏行守卫） |
 | `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、启动态落地与「关于 Squarvo」诊断、事件泵与关闭流程 |
 | `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板、两行状态栏；模块文档给出六个区域的槽位表 |
 | `src/startup.rs` | 启动落地工作区（#139）：未连接时复用连接态的对象树（搜索 + `My Connections`）、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
@@ -196,6 +196,31 @@ UI 不直接接触 socket、进程或端点文件，只与 `backend::worker` 收
 对话框（#27）与 SQL 执行（#28）应复用 `BackendClient`（`channel()` 返回可克隆的
 Channel）和同一套命令/事件通道。
 
+## 键盘快捷键
+
+口径细节（前置条件、取消语义）以
+[`ui-behavior-contract.md`](../../docs/ui-specification/ui-behavior-contract.md) §8.1 为准。
+默认修饰键按平台走 `<primary>`（Linux 是 `Ctrl`）。
+
+| 快捷键 | 动作 | 备注 |
+|---|---|---|
+| `Ctrl+N` | 新建连接 | 后端未握手时忽略 |
+| `Ctrl+T` | 新建查询标签 | 与标签条 `＋`、工具条「新建查询」同一路径 |
+| `Ctrl+W` | 关闭当前标签 | 有脏行 / 未提交事务时进入三选（非 `Objects`） |
+| `Ctrl+Shift+W` | 关闭窗口 | 与标题栏关闭同一条清理路径 |
+| `Ctrl+Q` | 退出应用 | **先关主窗口**：与 `Ctrl+Shift+W` 同一条 `close_request`，未提交更改会先弹「有未提交的更改」；窗口关完由 GApplication 自然退出，只有没有窗口时才直接 `app.quit` |
+| `Ctrl+Tab` | 下一个标签 | 最后一个再往后回绕到第一个（`Objects` 也在循环里） |
+| `Ctrl+Shift+Tab` | 上一个标签 | 第一个再往前回绕到最后一个 |
+| `Alt+1`…`Alt+9` | 直选第 N 个标签 | 1 起（`Objects` 算第 1 个）；超出标签数什么都不做，只记 `[tabs] Alt+3：只有 2 个标签，忽略` |
+| `Ctrl+F` | 聚焦对象搜索 | 焦点交给树顶部搜索框 |
+| `F5` | 刷新当前表 / 对象树 | 表标签刷当前表，否则刷整棵树 |
+| `Ctrl+Shift+E` | 导出当前标签 | CSV |
+| `Ctrl+Enter` / `Esc` | 执行 / 取消查询 | 只在 SQL 编辑器内生效 |
+
+`Ctrl+Tab` / `Ctrl+Shift+Tab` / `Alt+1..9` 是应用的窗口动作（`win.tab-next` / `win.tab-prev` /
+`win.tab-1..9`），`AdwTabView` 自带的同名内置快捷键已在 `TabSet::new` 里摘掉——否则谁先响应
+取决于焦点，回绕与「超出忽略」的语义都不再由应用决定。
+
 ## 线程模型
 
 - tokio `current_thread` 运行时独占一个后台线程（`sqarvo-backend-worker`）；
@@ -209,11 +234,13 @@ Channel）和同一套命令/事件通道。
 
 ## 退出清理
 
-- 关闭窗口（标题栏、`Ctrl+Shift+W`）先过**脏行守卫**：任一表数据标签有未提交的更改
-  （脏行 / 标记删除 / 未提交的新增行）时不关窗，弹「有未提交的更改」确认框（逐表列出，
-  按钮 取消 / 放弃更改并退出）；选「取消」什么都不做，选「放弃更改并退出」才继续清理；
-- 关闭窗口与应用退出（Ctrl+Q、会话结束）走同一条清理路径：
-  先让 worker 停止，收到 `ShutdownComplete` 后才销毁窗口；
+- 关闭窗口（标题栏、`Ctrl+Shift+W`）与退出应用（`Ctrl+Q`、会话结束）都先过**脏行守卫**：
+  `Ctrl+Q` 不是直接 `app.quit`，而是先 `window.close()` 主窗口，因此与点关闭按钮落到同一条
+  `close_request`；任一表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时不关窗，
+  弹「有未提交的更改」确认框（逐表列出，按钮 取消 / 放弃更改并退出）；选「取消」什么都不做，
+  选「放弃更改并退出」才继续清理。只有没有窗口时 `app.quit` 才直接退出（没有守卫可走）；
+- 关窗与退出走同一条清理路径：先让 worker 停止，收到 `ShutdownComplete` 后才销毁窗口，
+  最后一个窗口关掉后 GApplication 自然退出；
 - 只终止**自己启动**的后端：先 `SIGTERM`，最多等 5 秒，超时再 `SIGKILL`，并如实
   报告「清理未完成」；不是自己启动的后端只断开连接，绝不删除其端点文件或 socket；
 - 后端收到 `SIGTERM` 后自行删除 socket 与端点文件。
@@ -656,6 +683,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-edit-range <start>:<count>:<column>:<value>` | 批量编辑连续行（每行都走与单元格编辑同一条路径），500 行批次用 |
 | `--qa-data-cancel-after-ms <n>` | 提交**真正发出**后 n 毫秒点「取消提交」（真的发 `CancelRowChanges`） |
 | `--qa-close-dirty answer=discard\|cancel` | 脏行建好后触发 `app.close-window`（与 `Ctrl+Shift+W` / 标题栏关闭同一条 `close_request`）：`discard` = 点「放弃更改并退出」（退出码 0，日志 `[close] 已放弃未提交更改并退出`）、`cancel` = 点「取消」（窗口保持打开，由 `--qa-exit-after-ms` 收尾，日志 `[close] 取消关窗：保持在工作区`）。答案走确认框自己的 `response` 信号；需配合 `--qa-data-table` 与编辑 / 标记删除步骤（否则建不出脏行，参数会直接报错） |
+| `--qa-quit` | 把 `--qa-close-dirty` 那一步的触发动作从 `app.close-window` 换成 `app.quit`（`Ctrl+Q` 同一个动作）：日志先出现 `[app] 退出请求：先关主窗口（脏行守卫照常生效）`，随后仍是同一张确认框。必须与 `--qa-close-dirty` 同用，单独出现直接报错 |
 | `--qa-expect-submit <phase\|outcome\|button\|status>=<value>` | 截图时刻断言在途批次（阶段/结束方式逐字相等，按钮与状态行按包含比对） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务状态（状态机文案 + CSS 类 + 按钮可用性；v0.2.3.2 起工具条徽标已删除），不符则退出码 3 |
@@ -1293,6 +1321,8 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 | `inspector <ddl\|info>` | 信息面板换页（`show` 仍被接受但无动作；`hide` 在 v0.2.3.2 报错：面板常驻） | 选中的是表/视图才能换页 |
 | `open-table <表名>` | 打开表标签（终点与树里双击表相同；按名字解析已加载的树节点） | 该表已在树里加载 |
 | `select <n>` / `close <n> <save\|discard\|cancel>` | 切标签 / 关标签（0 是固定 `Objects` 页） | 标签存在 |
+| `tab-next` / `tab-prev` | 与 `Ctrl+Tab` / `Ctrl+Shift+Tab` 同一条路径（同一个 `TabSet::step_selection`）：选下一个 / 上一个，到头回绕；日志写「当前标签 N/M：<标题>」 | 有工作区 |
+| `select-n <N>` | 与 `Alt+N` 同一条路径（`TabSet::select_position`）：直选第 N 个标签（1 起，含 `Objects`）；N 超过标签数时**不失败**，只记 `[tabs] Alt+3：只有 2 个标签，忽略` | 有工作区 |
 | `sort-panel <标签> <列> <asc\|desc>` | 在筛选与排序面板里加一个排序键并应用（表头不可点，排序只有这条路径） | 表标签；驱动声明排序能力 |
 | `filter <标签> <列> <算子> <值>` | 应用一条筛选（`eq/ne/lt/le/gt/ge/like/null/notnull`） | 表标签；驱动声明筛选能力 |
 | `page <标签> <next\|prev\|first\|last>` | 分页器动作 | 表标签；offset 分页 |

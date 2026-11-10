@@ -241,13 +241,14 @@ fn register_qa_options(app: &adw::Application) {
         "qa-data-insert",
         "qa-isolation-dialog",
         "qa-isolation-confirm",
+        "qa-quit",
     ] {
         app.add_main_option(
             name,
             glib::Char::from(b'\0'),
             glib::OptionFlags::NONE,
             glib::OptionArg::None,
-            "QA：插入新行 / 隔离级别选择（开发/验证用）",
+            "QA：插入新行 / 隔离级别选择 / Ctrl+Q 退出（开发/验证用）",
             None,
         );
     }
@@ -275,11 +276,32 @@ fn register_qa_options(app: &adw::Application) {
     }
 }
 
-/// 应用级「退出」动作：Ctrl+Q 与 D-Bus 都能触发，走同一条清理路径
-/// （`connect_shutdown` → 终止自己启动的后端子进程）。
+/// 应用级「退出」动作：`Ctrl+Q`、菜单「退出」与 D-Bus 都触发它。
+///
+/// 有主窗口时先把窗口关掉（`window.close()` → 该窗口的 `close-request`）：未提交更改的
+/// 确认框（`ui.rs` 的 `confirm_close_with_dirty`）因此照常出现，`Ctrl+Q` 与标题栏关闭 /
+/// `Ctrl+Shift+W` 是同一条清理路径；最后一个窗口关掉后 GApplication 自然退出。
+/// 没有窗口时才直接 `app.quit()`——那是唯一没有守卫可走的场景（启动态）。
 fn install_app_actions(app: &adw::Application) {
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let app_handle = app.clone();
-    quit.connect_activate(move |_, _| app_handle.quit());
+    quit.connect_activate(move |_, _| quit_app(&app_handle));
     app.add_action(&quit);
+}
+
+/// `app.quit` 的实际动作（`Ctrl+Q` / 菜单「退出」/ D-Bus 同一个入口）。
+fn quit_app(app: &adw::Application) {
+    let window = app
+        .active_window()
+        .or_else(|| app.windows().into_iter().next());
+    match window {
+        Some(window) => {
+            eprintln!("[app] 退出请求：先关主窗口（脏行守卫照常生效）");
+            window.close();
+        }
+        None => {
+            eprintln!("[app] 退出请求：没有窗口，直接退出");
+            app.quit();
+        }
+    }
 }

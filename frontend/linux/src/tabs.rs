@@ -79,10 +79,28 @@ pub fn table_tab_title(object: &str, catalog: &str) -> String {
     format!("{object} @ {catalog}")
 }
 
-/// 查询标签名 `查询 N`（workspace-model §3）。
+/// 查询标签名 `查询 N`（workspace-model §3 / ui-behavior-contract §4）。
+///
+/// 不带 `@ <catalog>`：查询标签的库与连接信息在 tooltip 里（见
+/// [`TabSet::tooltip_for`]）。表数据标签仍用 `对象 @ 库`，两者形状不同是有意的——
+/// 查询标签的序号已经能在同一连接里唯一区分，多连接靠 tooltip 区分。
 #[must_use]
-pub fn query_tab_title(number: u32, catalog: &str) -> String {
-    table_tab_title(&format!("查询 {number}"), catalog)
+pub fn query_tab_title(number: u32) -> String {
+    format!("查询 {number}")
+}
+
+/// 循环切换的目标位置（`Ctrl+Tab` = `delta 1`、`Ctrl+Shift+Tab` = `delta -1`）。
+///
+/// 回绕是契约明确的语义（§8.1）：最后一个往后是第一个，第一个往前是最后一个。
+/// 纯函数，便于单测两个边界；真实切换由 `TabSet::step_selection` 调用。
+#[must_use]
+pub fn wrap_position(current: u32, delta: i32, count: u32) -> Option<u32> {
+    if count == 0 {
+        return None;
+    }
+    let count = i32::try_from(count).ok()?;
+    let next = (i32::try_from(current).ok()? + delta).rem_euclid(count);
+    u32::try_from(next).ok()
 }
 
 /// 这个标签是不是「同一张表」：对象名 + catalog + 连接键三者完全一致。
@@ -159,9 +177,7 @@ impl TabKind {
         match self {
             Self::Objects => "Objects".to_owned(),
             Self::Table { name, catalog, .. } => table_tab_title(name, catalog),
-            Self::Query {
-                number, catalog, ..
-            } => query_tab_title(*number, catalog),
+            Self::Query { number, .. } => query_tab_title(*number),
         }
     }
 }
@@ -1137,6 +1153,16 @@ impl TabSet {
         let view = adw::TabView::new();
         view.set_vexpand(true);
         view.set_hexpand(true);
+        // `AdwTabView` 自带 `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Alt+1..9`。这三组键改由窗口
+        // 动作（`win.tab-next` / `win.tab-prev` / `win.tab-1..9`）接管：契约要的是确定的
+        // 回绕语义与「超出标签数只记日志」，而内置快捷键只在标签视图内有焦点时生效，
+        // 两边同时存在会让行为取决于焦点。其余内置键（`Ctrl+PageUp/Down` 等）保持不动。
+        view.set_shortcuts(
+            adw::TabViewShortcuts::ALL_SHORTCUTS
+                - adw::TabViewShortcuts::CONTROL_TAB
+                - adw::TabViewShortcuts::CONTROL_SHIFT_TAB
+                - adw::TabViewShortcuts::ALT_DIGITS,
+        );
 
         let bar = adw::TabBar::new();
         bar.set_view(Some(&view));
@@ -1659,7 +1685,7 @@ impl TabSet {
 
         let page = self.view.add_page(data.widget(), None);
         page.set_title(&title);
-        page.set_tooltip(&format!("{title} · 标签会话"));
+        page.set_tooltip(&self.tooltip_for(&kind, "标签会话"));
         let handle = Rc::new(TabHandle {
             id: tab_id.clone(),
             kind,
@@ -1709,7 +1735,9 @@ impl TabSet {
         let sql = self.build_sql_page(&tab_id);
         let page = self.view.add_page(sql.widget(), None);
         page.set_title(&title);
-        page.set_tooltip(&format!("{title} · 标签会话"));
+        // 标题里只有「查询 N」（契约 §4）：库与连接落到 tooltip，多连接时靠它区分。
+        let tooltip = self.tooltip_for(&kind, "标签会话");
+        page.set_tooltip(&tooltip);
         let handle = Rc::new(TabHandle {
             id: tab_id.clone(),
             kind,
@@ -1727,7 +1755,7 @@ impl TabSet {
         });
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
-        eprintln!("[tabs] 新建查询标签 {tab_id}：{title}");
+        eprintln!("[tabs] 新建查询标签 {tab_id}：{title}（tooltip「{tooltip}」）");
         self.request_session(&tab_id);
         sql.focus_editor();
         Ok(tab_id)
@@ -1927,6 +1955,114 @@ impl TabSet {
         self.view.set_selected_page(page);
         self.switching.set(false);
         self.refresh_current();
+    }
+
+    // -- 标签切换（§8.1：Ctrl+Tab / Ctrl+Shift+Tab / Alt+1..9） -----------------
+
+    /// 第 `position` 个页面（0 起，按 `AdwTabView` 的真实顺序，含钉住的 `Objects`）。
+    ///
+    /// 用 `pages()` 选择模型的顺序而不是 `self.tabs` 的插入顺序：用户拖动标签会改
+    /// `AdwTabView` 的顺序，`tabs` 只按创建先后排列。
+    fn page_at(&self, position: u32) -> Option<adw::TabPage> {
+        self.view
+            .pages()
+            .item(position)
+            .and_then(|object| object.downcast::<adw::TabPage>().ok())
+    }
+
+    /// 当前标签的位置（0 起）。
+    #[must_use]
+    pub fn current_position(&self) -> Option<u32> {
+        let page = self.view.selected_page()?;
+        u32::try_from(self.view.page_position(&page)).ok()
+    }
+
+    /// 标签总数（含 `Objects`）。
+    #[must_use]
+    pub fn page_count(&self) -> u32 {
+        u32::try_from(self.view.n_pages()).unwrap_or(0)
+    }
+
+    /// `Ctrl+Tab`（+1）/ `Ctrl+Shift+Tab`（-1）：选下一个 / 上一个标签，到头**回绕**。
+    ///
+    /// 回绕在这里自己做，不用 `AdwTabView::select_next_page`：契约要的是确定的回绕
+    /// 语义（最后一个 → 第一个、第一个 → 最后一个），不依赖 libadwaita 的边界处理。
+    pub fn step_selection(&self, delta: i32, trigger: &str) -> Option<String> {
+        let count = self.page_count();
+        if count == 0 {
+            eprintln!("[tabs] {trigger}：没有标签，忽略");
+            return None;
+        }
+        let current = self.current_position().unwrap_or(0);
+        let Some(next) = wrap_position(current, delta, count) else {
+            eprintln!("[tabs] {trigger}：标签数 {count} 无法循环，忽略");
+            return None;
+        };
+        let page = self.page_at(next)?;
+        self.select_page(&page);
+        Some(self.log_current(trigger))
+    }
+
+    /// `Alt+1`…`Alt+9`（QA `select-n N` 同一条路径）：直选第 N 个标签（1 起，含 `Objects`）。
+    ///
+    /// 超出标签数时什么都不做——不崩、不弹对话框，只记一行日志
+    /// （`[tabs] Alt+3：只有 2 个标签，忽略`）。
+    pub fn select_position(&self, one_based: u32, trigger: &str) -> Option<String> {
+        let count = self.page_count();
+        let Some(index) = one_based.checked_sub(1) else {
+            eprintln!("[tabs] {trigger}：标签序号从 1 起，忽略");
+            return None;
+        };
+        if index >= count {
+            eprintln!("[tabs] {trigger}：只有 {count} 个标签，忽略");
+            return None;
+        }
+        let page = self.page_at(index)?;
+        self.select_page(&page);
+        Some(self.log_current(trigger))
+    }
+
+    /// 记一行「当前标签」（QA 断言与日志取证用）。
+    fn log_current(&self, trigger: &str) -> String {
+        let count = self.page_count();
+        let position = self.current_position().map_or(0, |position| position + 1);
+        let title = self
+            .view
+            .selected_page()
+            .map_or_else(|| "（无）".to_owned(), |page| page.title().to_string());
+        let line = format!("当前标签 {position}/{count}：{title}");
+        eprintln!("[tabs] {trigger} → {line}");
+        line
+    }
+
+    /// 标签 tooltip：`<标题> · <阶段>`，查询标签再拼上库与连接（§4）。
+    ///
+    /// 查询标签标题不再带 `@ 库`，库与连接就落到这里：多连接同时开着各自「查询 1」时，
+    /// hover 能看出属于哪条连接。表数据标签的标题已经含 `@ 库`，这里不重复。
+    fn tooltip_for(&self, kind: &TabKind, stage: &str) -> String {
+        let mut text = format!("{} · {stage}", kind.title());
+        if let TabKind::Query {
+            catalog,
+            connection_key,
+            ..
+        } = kind
+        {
+            let catalog = if catalog.trim().is_empty() {
+                "默认"
+            } else {
+                catalog
+            };
+            text.push_str(&format!(" · 库 {catalog}"));
+            if let Some(name) = self
+                .context
+                .registry
+                .as_ref()
+                .and_then(|registry| registry.name_for_key(connection_key))
+            {
+                text.push_str(&format!(" · 连接 {name}"));
+            }
+        }
+        text
     }
 
     /// 切换标签：换窗口标题与状态栏，**不**重建会话、不改树的展开状态。
@@ -2164,11 +2300,9 @@ impl TabSet {
             return;
         };
         tab.set_session(opened.session_id.clone());
-        tab.page.set_tooltip(&format!(
-            "{} · 会话 {}",
-            tab.kind.title(),
-            short_id(&opened.session_id)
-        ));
+        tab.page.set_tooltip(
+            &self.tooltip_for(&tab.kind, &format!("会话 {}", short_id(&opened.session_id))),
+        );
         eprintln!(
             "[tabs] 标签 {} 会话就绪：{}（连接 {}，领养={}，{} ms，驱动 {}）",
             opened.tab_id,
@@ -2653,6 +2787,26 @@ impl TabSet {
                 } else {
                     Err(format!("没有第 {index} 个标签"))
                 }
+            }
+            // 下面三步走的是窗口快捷键动作里的**同一对方法**（`step_selection` /
+            // `select_position`），所以日志与用户按键完全一致，含「超出标签数忽略」。
+            QaStep::TabNext => Ok(format!(
+                "tab-next：{}",
+                self.step_selection(1, "Ctrl+Tab")
+                    .unwrap_or_else(|| "没有切换".to_owned())
+            )),
+            QaStep::TabPrev => Ok(format!(
+                "tab-prev：{}",
+                self.step_selection(-1, "Ctrl+Shift+Tab")
+                    .unwrap_or_else(|| "没有切换".to_owned())
+            )),
+            QaStep::SelectN(one_based) => {
+                let trigger = format!("Alt+{one_based}");
+                Ok(format!(
+                    "select-n {one_based}：{}",
+                    self.select_position(*one_based, &trigger)
+                        .unwrap_or_else(|| "没有切换（超界或没有标签）".to_owned())
+                ))
             }
             QaStep::Begin(index) => {
                 let data = self
@@ -3319,6 +3473,12 @@ pub enum QaStep {
     QueryTab,
     /// 选中第 n 个标签。
     Select(usize),
+    /// `tab-next`：`Ctrl+Tab` 同一条路径（选下一个，到头回绕）。
+    TabNext,
+    /// `tab-prev`：`Ctrl+Shift+Tab` 同一条路径（选上一个，到头回绕）。
+    TabPrev,
+    /// `select-n <N>`：`Alt+N` 同一条路径（直选第 N 个，超界只记日志）。
+    SelectN(u32),
     /// 在第 n 个表标签开始事务。
     Begin(usize),
     /// 编辑：`<tab> <row> <column> <value>`。
@@ -3677,6 +3837,17 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
             }
             "query-tab" => QaStep::QueryTab,
             "select" => QaStep::Select(parse_index(&parts, 1, number)?),
+            // `tab-next` / `tab-prev` 与 `Ctrl+Tab` / `Ctrl+Shift+Tab` 同一路径；
+            // `select-n <N>` 与 `Alt+N` 同一路径（1 起，含 Objects；超界只记日志）。
+            "tab-next" => QaStep::TabNext,
+            "tab-prev" => QaStep::TabPrev,
+            "select-n" => QaStep::SelectN(
+                parts
+                    .get(1)
+                    .ok_or_else(|| format!("第 {} 行缺少标签序号", number + 1))?
+                    .parse::<u32>()
+                    .map_err(|_| format!("第 {} 行的标签序号不合法", number + 1))?,
+            ),
             "begin" => QaStep::Begin(parse_index(&parts, 1, number)?),
             "edit" => QaStep::Edit {
                 tab: parse_index(&parts, 1, number)?,
@@ -4066,9 +4237,36 @@ mod tests {
     #[test]
     fn tab_titles_follow_object_at_catalog() {
         assert_eq!(table_tab_title("items", "shop"), "items @ shop");
-        assert_eq!(query_tab_title(3, "shop"), "查询 3 @ shop");
+        // 查询标签标题不带 `@ 库`（契约 §4）：库与连接在 tooltip 里。
+        assert_eq!(query_tab_title(3), "查询 3");
+        assert!(!query_tab_title(3).contains('@'));
         // catalog 缺失时不编造库名，用「默认」占位。
         assert_eq!(table_tab_title("items", ""), "items @ 默认");
+    }
+
+    #[test]
+    fn tab_switch_wraps_at_both_ends() {
+        // 3 个标签：0→1→2→0（Ctrl+Tab），0→2（Ctrl+Shift+Tab 从第一个往前）。
+        assert_eq!(wrap_position(2, 1, 3), Some(0));
+        assert_eq!(wrap_position(0, -1, 3), Some(2));
+        assert_eq!(wrap_position(0, 1, 3), Some(1));
+        assert_eq!(wrap_position(1, -1, 3), Some(0));
+        // 单个标签：原地不动（不 panic、不越界）。
+        assert_eq!(wrap_position(0, 1, 1), Some(0));
+        assert_eq!(wrap_position(0, -1, 1), Some(0));
+        // 没有标签：没有目标。
+        assert_eq!(wrap_position(0, 1, 0), None);
+    }
+
+    #[test]
+    fn qa_script_accepts_tab_switch_steps() {
+        let steps = parse_script("tab-next\ntab-prev\nselect-n 3\n").expect("脚本应能解析");
+        assert_eq!(
+            steps,
+            vec![QaStep::TabNext, QaStep::TabPrev, QaStep::SelectN(3)]
+        );
+        // 省略序号是语法错误，不是「默认第 1 个」。
+        assert!(parse_script("select-n\n").is_err());
     }
 
     #[test]

@@ -131,6 +131,8 @@
 //!
 //! - 关窗守卫：`--qa-close-dirty answer=discard|cancel`（先用 `--qa-data-edit` /
 //!   `--qa-data-delete-row` 建出脏行，再触发产品的 `app.close-window` 动作；
+//!   `--qa-quit` 把触发动作换成 `app.quit`（`Ctrl+Q` 同一个动作），用来证明两条
+//!   退出入口落到同一张确认框上；
 //!   `discard` = 放弃更改并退出（退出码 0，日志「已放弃未提交更改并退出」），
 //!   `cancel` = 取消关窗（进程不退出，由 `--qa-exit-after-ms` 收尾，日志
 //!   「取消关窗：保持在工作区」）。答案走确认框自己的 `response` 信号，不绕过确认）。
@@ -797,6 +799,9 @@ struct Args {
     /// `--qa-close-dirty answer=discard|cancel`：脏行建好后触发 `app.close-window`，
     /// 由确认框的 response 送答案（验证关窗守卫的两条去向）。
     close_dirty: Option<CloseDirtyAnswer>,
+    /// `--qa-quit`：把上面那一步改成触发产品的 `app.quit`（`Ctrl+Q` 同一个动作），
+    /// 用来验证「`Ctrl+Q` 也走脏行守卫」。
+    quit_action: bool,
     /// `--qa-expect-submit <field>=<value>`：在途提交批次的断言（可重复）。
     expect_submit: Vec<SubmitExpectation>,
     /// `--qa-expect-data-state`：截图时必须成立的数据页状态。
@@ -1066,6 +1071,7 @@ pub fn enabled() -> bool {
             || !args.data_edit_ranges.is_empty()
             || args.data_cancel_after_ms.is_some()
             || args.close_dirty.is_some()
+            || args.quit_action
             || args.isolation_dialog
             || args.isolation_confirm
             || args.layout_audit
@@ -1252,6 +1258,12 @@ pub fn data_cancel_after_ms() -> Option<u64> {
 #[must_use]
 pub fn close_dirty() -> Option<CloseDirtyAnswer> {
     ARGS.get().and_then(|args| args.close_dirty)
+}
+
+/// `--qa-quit`：用产品的 `app.quit`（`Ctrl+Q`）代替 `app.close-window` 触发同一条守卫。
+#[must_use]
+pub fn quit_action() -> bool {
+    ARGS.get().is_some_and(|args| args.quit_action)
 }
 
 /// `--qa-expect-submit` 的断言（截图时刻校验）。
@@ -1856,6 +1868,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.close_dirty = Some(CloseDirtyAnswer::parse(value)?);
                 index += 2;
             }
+            "--qa-quit" => {
+                parsed.quit_action = true;
+                index += 1;
+            }
             "--qa-expect-submit" => {
                 let value = args
                     .get(index + 1)
@@ -2372,6 +2388,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
         return Err(
             "--qa-close-dirty 需要 --qa-data-table（先用编辑 / 标记删除步骤建出脏行）".to_owned(),
         );
+    }
+    // `--qa-quit` 只改变「由哪个动作触发守卫」，本身不是触发条件：少了 close-dirty
+    // 就没有答案可送，跑完会变成一个看不出结论的「什么都没发生」。
+    if parsed.quit_action && parsed.close_dirty.is_none() {
+        return Err("--qa-quit 需要 --qa-close-dirty answer=discard|cancel".to_owned());
     }
     // 期望值只在截图那一刻校验：没有截图就没有「这一刻」，静默忽略会让
     // 「跑了但没断言」看起来像通过。
@@ -2966,6 +2987,24 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn quit_flag_reroutes_the_close_guard_trigger() {
+        // `--qa-quit` 只换触发的动作（`app.quit` = Ctrl+Q），答案仍由 close-dirty 提供。
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-data-table",
+            "users",
+            "--qa-close-dirty",
+            "answer=discard",
+            "--qa-quit",
+        ]))
+        .unwrap();
+        assert!(parsed.quit_action);
+        assert_eq!(parsed.close_dirty, Some(CloseDirtyAnswer::Discard));
+        // 没有 close-dirty 就没有触发条件与答案：直接报错，不静默跑完。
+        assert!(parse(&args(&["app", "--qa-quit"])).is_err());
     }
 
     #[test]
