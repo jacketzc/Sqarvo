@@ -18,7 +18,7 @@
 //!    左栏 237      │    标签条 24 → 标签页（表格工具条 → 数据网格）           │    Revealer
 //!    可拖 180–420  │                                                        │    280（240–520）
 //! ├────────────────┴────────────────────────────────────────────────────────┤
-//! 05 状态栏     Shell::status    高 56：左边沟(对象树功能区) │ 竖分割线 │ 行1 行操作·分页器 / 行2 SQL·记录
+//! 05 状态栏     Shell::status    高 48：左边沟(对象树搜索框·状态) │ 竖分割线 │ 行1 行操作·分页器 / 行2 SQL·记录
 //!                                行2 SQL 摘要 │ 记录位置 │ 最后刷新 · 连接·事务·耗时
 //! └──────────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -834,7 +834,7 @@ impl Toolbar {
     }
 }
 
-/// 区域 05：状态栏（两行 56）。
+/// 区域 05：状态栏（两行各 24，共 48）。
 ///
 /// 三段归属（§7）：
 ///
@@ -845,8 +845,8 @@ impl Toolbar {
 /// ```
 ///
 /// 左边沟的宽度由 [`Shell`] 按侧栏分栏位置设置（[`StatusBar::set_gutter_width`]），
-/// 分割线与上面的分栏线是同一根轴；左侧整块属于对象树功能区，不再放「连接过滤」
-/// （树顶部已有对象 / 表名搜索）。
+/// 分割线与上面的分栏线是同一根轴；左侧整块属于对象树功能区：对象树搜索框就挂在沟里
+/// （[`StatusBar::mount_search`]），因此与上面的树同一列宽，窗口左下角一眼可及。
 ///
 /// 视图切换（对象树 / 平铺）**不在状态栏**：平铺列表删除后它也随之移除，
 /// 960×640 下放两处会把右组顶出窗口。这里只保留分页器。
@@ -1112,6 +1112,62 @@ impl StatusBar {
         if width > 0 && self.gutter.width_request() != width {
             self.gutter.set_width_request(width);
         }
+    }
+
+    /// 把对象树搜索框挂进左边沟（窗口左下角，与树同一列宽）。
+    ///
+    /// 入口只负责**摆放**：垂直居中、左右 8px，高度沿用 `.sqarvo-status-bar entry`
+    /// 的 `layout::MIN_TARGET`，不让 24 高的搜索框把 48 高的状态栏撑起来。搜索逻辑
+    /// （防抖 250ms、结果页、`Ctrl+F` 的 `focus_search()`）仍归 [`crate::tree::TreePanel`]，
+    /// 这里不复制任何一份。
+    ///
+    /// `status` 传搜索状态标签时放在搜索框**下方**：字号 11（继承状态栏字号）、`dim-label`、
+    /// 单行省略（全文进 tooltip），没有文字时整行隐藏，不占高度。
+    pub fn mount_search(
+        &self,
+        entry: &impl IsA<gtk::Widget>,
+        status: Option<&impl IsA<gtk::Widget>>,
+    ) {
+        let entry = entry.as_ref().clone();
+        entry.set_hexpand(true);
+        entry.set_valign(gtk::Align::Center);
+        entry.set_margin_start(8);
+        entry.set_margin_end(8);
+        entry.set_margin_top(0);
+        entry.set_margin_bottom(0);
+
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.set_valign(gtk::Align::Center);
+        column.set_hexpand(true);
+        column.append(&entry);
+
+        if let Some(status) = status {
+            let status = status.as_ref().clone();
+            status.set_hexpand(true);
+            status.set_halign(gtk::Align::Fill);
+            status.set_valign(gtk::Align::Center);
+            status.set_margin_start(8);
+            status.set_margin_end(8);
+            status.set_margin_top(0);
+            status.set_margin_bottom(0);
+            if let Some(label) = status.downcast_ref::<gtk::Label>() {
+                // 一行、省略号：长文案（错误 / 连接失败）不把状态栏撑成三行。
+                label.set_wrap(false);
+                label.set_single_line_mode(true);
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.add_css_class("dim-label");
+                label.set_visible(false);
+                label.connect_label_notify(|label| {
+                    let text = label.text().to_string();
+                    label.set_tooltip_text(Some(text.as_str()));
+                    // 没有文字时整行隐藏：搜索框在沟里单独居中。
+                    label.set_visible(!text.is_empty());
+                });
+            }
+            column.append(&status);
+        }
+
+        self.gutter.append(&column);
     }
 
     /// 布局自检用的两行与三组（行 1：行操作 / 分页器；行 2：SQL 摘要 / 记录 / 右组）。

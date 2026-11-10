@@ -221,6 +221,10 @@ impl StartupWorkspace {
             toolbar: Rc::clone(&config.toolbar),
         });
         shell.toolbar().set_new_query_enabled(false);
+        // 搜索框搬到窗口左下角：挂进状态栏左边沟（`Shell::new` 晚于树，所以在这里接）。
+        shell
+            .status()
+            .mount_search(&tree.search_widget(), Some(&tree.search_status_widget()));
 
         shell.status().set_connection(Some("未连接"));
         shell.status().set_idle_summary(Some(&idle_status_text(

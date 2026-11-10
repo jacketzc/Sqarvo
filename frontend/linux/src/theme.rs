@@ -162,7 +162,7 @@ pub fn stylesheet() -> String {
             background-color: alpha(@accent_color, 0.25);
         }}
 
-        /* 区域 05：状态栏 56 高（两行各 24），字号 11 */
+        /* 区域 05：状态栏 48 高（两行各 24），字号 11 */
         .sqarvo-status-bar {{
             min-height: {status}px;
             font-size: {status_font}px;
@@ -300,7 +300,7 @@ mod tests {
             css.contains(&format!("min-height: {}px", layout::TOOLBAR_HEIGHT)),
             "工具条高度缺失：{css}"
         );
-        assert!(css.contains("min-height: 56px"), "状态栏高度缺失");
+        assert!(css.contains("min-height: 48px"), "状态栏高度缺失");
         assert!(css.contains("min-height: 24px"), "树行高缺失");
         assert!(css.contains("min-height: 32px"), "数据行高缺失");
         assert!(css.contains("font-size: 12px"), "界面字号缺失");

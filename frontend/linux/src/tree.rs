@@ -948,30 +948,26 @@ pub struct TreePanel {
 impl TreePanel {
     /// 构建面板（不含数据；[`TreePanel::attach`] 之后才开始读）。
     pub fn new(callbacks: TreeCallbacks) -> Rc<Self> {
+        // 搜索框**不挂在树自己的布局里**：外壳把它放进状态栏左边沟（窗口左下角，
+        // 与树同一列宽），见 [`StatusBar::mount_search`](crate::shell::StatusBar::mount_search)。
+        // 内边距也由那边给——这里只管控件本身，树的顶边就是工具条下方的第一行。
         let search_entry = gtk::SearchEntry::new();
         search_entry.set_placeholder_text(Some("搜索表名、视图…"));
         search_entry.set_hexpand(true);
-        search_entry.set_margin_top(6);
-        search_entry.set_margin_bottom(6);
-        search_entry.set_margin_start(8);
-        search_entry.set_margin_end(8);
 
         let search_list = gtk::ListBox::new();
         search_list.set_selection_mode(gtk::SelectionMode::None);
         search_list.add_css_class("navigation-sidebar");
 
+        // 搜索状态（结果条数 / 空 / 无权限 / 失败）跟搜索框一起搬到状态栏左边沟：
+        // 结果列表在上、状态文字在搜索框正下方，位置比「列表顶上另起一行」更近。
+        // 文字仍是这一份（`search_status`），没有第二份文案。
         let search_status = gtk::Label::new(None);
         search_status.set_xalign(0.0);
-        search_status.set_wrap(true);
-        search_status.set_margin_top(6);
-        search_status.set_margin_bottom(6);
-        search_status.set_margin_start(10);
-        search_status.set_margin_end(10);
         search_status.add_css_class("dim-label");
         search_status.add_css_class("caption");
 
         let search_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        search_page.append(&search_status);
         let search_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -1273,8 +1269,8 @@ impl TreePanel {
         // 侧栏最小宽度归外壳（GtkPaned）管：树自身只声明 §1 的可拖拽下限 180，
         // 不能再钉 260——那会让 237 的默认宽度和 180 的下限都到不了。
         root.set_size_request(crate::layout::SIDEBAR_MIN, -1);
-        root.append(&search_entry);
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        // 树本体从工具条下方**直接开始**：搜索框已搬到窗口左下角（状态栏左边沟），
+        // 原来「搜索框 + 分割线」占的那一条不在树里了，也不再留分割线。
         root.append(&stack);
         // 临时提示行挂在最底部：有话说时出现，几秒后自己收起（不常驻）。
         root.append(&hint);
@@ -1321,6 +1317,19 @@ impl TreePanel {
     /// 根控件。
     pub fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// 搜索框控件（搬去窗口左下角用）。
+    ///
+    /// 搜索框**不属于树的布局**：外壳把它挂进状态栏左边沟（[`crate::shell::StatusBar::mount_search`]），
+    /// 宽度跟侧栏分栏同步。搜索逻辑、防抖、`focus_search()` 都还在这里，搬的只是位置。
+    pub fn search_widget(&self) -> gtk::Widget {
+        self.search_entry.clone().upcast()
+    }
+
+    /// 搜索状态标签（跟搜索框同一处：左边沟里、搜索框正下方）。
+    pub fn search_status_widget(&self) -> gtk::Widget {
+        self.search_status.clone().upcast()
     }
 
     /// 接线到连接注册表并读取连接层。

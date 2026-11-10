@@ -2317,6 +2317,11 @@ impl Workspace {
             toolbar: state.toolbar(),
         });
         shell_slot.replace(Some(Rc::clone(&shell)));
+        // 搜索框搬到窗口左下角：挂进状态栏左边沟，宽度跟着侧栏分栏走，与树同一列宽。
+        // `Shell::new` 在树之后（它接管侧栏容器），所以接线只能放在这里。
+        shell
+            .status()
+            .mount_search(&tree.search_widget(), Some(&tree.search_status_widget()));
         // 工作区已建立：工具条「新建查询」恢复可点（后端就绪时再打一行 6/6 的实测日志）。
         shell.toolbar().set_new_query_enabled(true);
         shell.status().set_connection(Some(connection_name));
