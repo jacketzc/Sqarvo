@@ -5867,8 +5867,10 @@ impl DataPage {
         let dirty = self.dirty_label.text().to_string();
         // 事务状态的一句话解释：原来挂在事务徽标的 tooltip 上，现在并进圆点的 tooltip，
         // 语义不丢（徽标文案本身已经是「事务中（只读）」这样的完整短语）。
+        // 面向用户的文案不写 ADR 编号（出处见 docs/decisions/0017）；自动提交这一句
+        // 原来带的「（ADR 0017）」已去掉，只保留行为本身。
         let note = match self.badge.borrow().status() {
-            TxnStatus::AutoCommit => "自动提交：每条语句自成一个事务（ADR 0017）",
+            TxnStatus::AutoCommit => "自动提交：每条语句自成一个事务",
             TxnStatus::Active {
                 read_only: true, ..
             } => "只读事务：能查询，不能写入",
