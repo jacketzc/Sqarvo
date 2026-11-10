@@ -70,7 +70,9 @@
 //!   `GtkListView::activate`，与双击 / 回车同一条路径，会开表数据标签）；
 //!   `--qa-expect-objects selected=<name>` 断言哪一行处于选中态；
 //! - `--qa-search <query>`（走搜索框防抖同一条路径）+ `--qa-search-clear`（清空退出筛选）
-//!   + `--qa-expect-search <field>=<value>`：`hits|row|rows|highlight|status|state`，
+//!   + `--qa-search-click-object`（点结果里第一个表 / 视图行，走 `row-activated` 信号：
+//!     打开数据标签而结果页原地保留，v0.2.4）+ `--qa-expect-search <field>=<value>`：
+//!     `hits|row|rows|highlight|status|state`，
 //!     断言结果树的**行序**与**高亮行集合**（v0.2.4）；
 //! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
 //!   loaded|status_contains`（`results` 现为结果页行数，含祖先行）；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`
@@ -952,6 +954,9 @@ struct Args {
     search_clear: bool,
     /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
     tree_click_result: bool,
+    /// `--qa-search-click-object`（v0.2.4）：点结果里第一个**可打开的对象**行
+    /// （表 / 视图），走真实 `row-activated` 信号 → 打开数据标签，结果页原地保留。
+    search_click_object: bool,
     /// `--qa-tree-load-more`：点第一个「加载更多…」占位行。
     tree_load_more: bool,
     /// `--qa-tree-disconnect <name>`：断开指定连接的浏览会话（#114）。
@@ -1198,6 +1203,7 @@ pub fn enabled() -> bool {
             || args.search_query.is_some()
             || args.search_clear
             || args.tree_click_result
+            || args.search_click_object
             || args.tree_load_more
             || args.data_insert
             || !args.data_edit_ranges.is_empty()
@@ -1499,6 +1505,12 @@ pub fn tree_click_result() -> bool {
     ARGS.get().is_some_and(|args| args.tree_click_result)
 }
 
+/// 是否点结果里第一个可打开的对象行（`--qa-search-click-object`，v0.2.4）。
+#[must_use]
+pub fn search_click_object() -> bool {
+    ARGS.get().is_some_and(|args| args.search_click_object)
+}
+
 /// 是否点「加载更多…」（`--qa-tree-load-more`）。
 #[must_use]
 pub fn tree_load_more() -> bool {
@@ -1612,6 +1624,7 @@ pub fn tree_requested() -> bool {
             || args.search_query.is_some()
             || args.search_clear
             || args.tree_click_result
+            || args.search_click_object
             || args.tree_load_more
             || args.tree_disconnect.is_some()
             || args.tree_select.is_some()
@@ -2399,6 +2412,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.tree_click_result = true;
                 index += 1;
             }
+            "--qa-search-click-object" => {
+                parsed.search_click_object = true;
+                index += 1;
+            }
             "--qa-tree-load-more" => {
                 parsed.tree_load_more = true;
                 index += 1;
@@ -2614,6 +2631,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
     // 就没有答案可送，跑完会变成一个看不出结论的「什么都没发生」。
     if parsed.quit_action && parsed.close_dirty.is_none() {
         return Err("--qa-quit 需要 --qa-close-dirty answer=discard|cancel".to_owned());
+    }
+    // 点结果行必须先有结果：没有搜索参数时这一步只会重试 40 次后静悄悄过去，
+    // 直接拒掉才能看出是脚本写错了。
+    if parsed.search_click_object && parsed.search_query.is_none() && parsed.tree_search.is_none() {
+        return Err(
+            "--qa-search-click-object 需要 --qa-search 或 --qa-tree-search（先跑一次搜索）"
+                .to_owned(),
+        );
     }
     // 期望值只在截图那一刻校验：没有截图就没有「这一刻」，静默忽略会让
     // 「跑了但没断言」看起来像通过。
@@ -3473,6 +3498,7 @@ mod tests {
             "--qa-tree-search",
             "ord",
             "--qa-tree-click-result",
+            "--qa-search-click-object",
             "--qa-tree-load-more",
             "--qa-expect-tree",
             "selected=orders",
@@ -3485,6 +3511,7 @@ mod tests {
         assert_eq!(parsed.tree_open.as_deref(), Some("orders"));
         assert_eq!(parsed.tree_search.as_deref(), Some("ord"));
         assert!(parsed.tree_click_result);
+        assert!(parsed.search_click_object);
         assert!(parsed.tree_load_more);
         assert_eq!(
             parsed.expect_tree[0],
@@ -4042,6 +4069,17 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-expect-search", "hits"])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-search", "row="])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-search", "bogus=1"])).is_err());
+
+        // v0.2.4：`--qa-search-click-object` 要跟着一次搜索一起用（否则只会重试到超时）。
+        let clicked = parse(&args(&[
+            "app",
+            "--qa-search",
+            "user",
+            "--qa-search-click-object",
+        ]))
+        .unwrap();
+        assert!(clicked.search_click_object);
+        assert!(parse(&args(&["app", "--qa-search-click-object"])).is_err());
 
         // 路径断言：`*` 只匹配一段，不能把 `users` 当成 `user`。
         assert!(search_path_matches(

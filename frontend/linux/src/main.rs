@@ -163,6 +163,7 @@ fn register_qa_options(app: &adw::Application) {
     );
     for name in [
         "qa-search-clear",
+        "qa-search-click-object",
         "qa-tree-click-result",
         "qa-tree-load-more",
         "qa-refresh",

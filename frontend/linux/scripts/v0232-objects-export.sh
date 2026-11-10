@@ -2,7 +2,7 @@
 # Sqarvo v0.2.3.2 验收：`Objects` 固定页 ↔ 对象树联动 + `EX` 导出范围三条路径。
 #
 # 自包含：只用 `sqlite3` 在 mktemp 目录里建一个临时库，**不需要 MariaDB、不需要密码**，
-# 也不碰任何用户数据。串行跑 18 个应用实例（只跑 Objects 段时 13 个；一次只有一个 GUI
+# 也不碰任何用户数据。串行跑 19 个应用实例（只跑 Objects 段时 14 个；一次只有一个 GUI
 # 进程），每个实例用独立的
 # `SQARVO_QA_APP_ID`，避免单实例转发把后一个进程变成「激活旧窗口后退出」（那样日志与
 # 截图都是空的）。
@@ -38,6 +38,11 @@
 #      「1 张表 / 1 个视图 → count=1」，加第二张表会把它们一起改红。
 #   A11（v0.2.3.3）清空搜索 = 退出筛选：`--qa-search-clear` → `state=idle`、`hits=0`，
 #      日志「清空搜索框（回到树页）」，截图证明结果行与高亮都不残留。
+#   A12（v0.2.4）点结果里的表 = 打开数据标签，结果页原地保留：`--qa-search-click-object`
+#      走结果行真实的 `row-activated` 信号（不直接调打开回调）→ 日志「打开表 …（搜索结果
+#      点击…）」+「新建表标签」，**没有**「跳转成功」（不切回对象树去逐层定位），截图时刻
+#      `state=results` / `hits=3` 仍在（搜索框与结果行都没被清掉）。另建一个只给这条用例
+#      用的 sqlite 库（2 表 + 1 视图同命中 `user`），不动 A1 / A2 的「1 表 1 视图」口径。
 #   B. EX 导出范围
 #      B1 整表：行数 = 数据行 + 1（表头）、目标权限 0600、目录里没有 `*.sqarvo-tmp`、
 #         日志命中「整表导出完成：」「整表进度：」。
@@ -86,7 +91,7 @@
 # 用法：
 #   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
 #   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
-#                                                          # 只跑 Objects 段（A0–A11）
+#                                                          # 只跑 Objects 段（A0–A12）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -322,11 +327,16 @@ LAST_CODE=0
 
 # 窗口尺寸：默认 1200×800；用例需要在 960×640 下取证时在 launch 前设 CASE_WINDOW=960x640。
 CASE_WINDOW=""
+# 连接档案：默认用主夹具；某条用例要自己的库时在 launch 前设 CASE_PROFILE=<路径>
+# （launch 用过就清掉，下一条用例自动回到主夹具）。
+CASE_PROFILE=""
 
 launch() {
     local case_name=$1 app_id=$2
     shift 2
     local size="${CASE_WINDOW:-1200x800}"
+    local profile="${CASE_PROFILE:-$PROFILE}"
+    CASE_PROFILE=""
     CASE_OUT="$OUT/$case_name"
     CASE_LOG="$CASE_OUT/run.log"
     local run_root="$TMP/run-$case_name"
@@ -341,7 +351,7 @@ launch() {
         "SQARVO_QA_APP_ID=$app_id" \
         timeout 180 "$BIN" \
         --window-size "$size" \
-        --qa-profile "$PROFILE" \
+        --qa-profile "$profile" \
         "$@" > "$CASE_LOG" 2>&1
     LAST_CODE=$?
     check_eq "$case_name 进程退出码" 0 "$LAST_CODE"
@@ -608,6 +618,72 @@ check_absent "search-clear 没有停在结果页" '搜索 state=results' "$CASE_
 check_screenshot "search-clear 截图（回到正常树、无高亮残留）" \
     "$OUT/search-clear/11-search-cleared.png"
 
+# A12（v0.2.4）：点搜索结果里的表 = 打开数据标签，**结果页原地保留**。
+#
+# 修复前的现象：点命中行会先 `reveal`（把侧栏切回对象树）再逐层展开祖先去定位；大库里
+# 5000 张表的分页目录根本展开不到，7 秒后只剩一句「没有在树里定位到…」，搜索结果也没了。
+# 新行为：表 / 视图走树里双击同一条 `TreeCallbacks::open`（`row-activated` 信号），
+# 不切页、不清空搜索框、不调 `reveal`。
+#
+# 夹具独立：同一个库里要有 2 张表 + 1 个视图命中同一关键词，而 A1 / A2 / A6 / A8 断言的是
+# 「这个库只有 1 张表 1 个视图」，所以这里另建一个 sqlite 库，只给本用例用。
+A12_DB="$TMP/search-click.db"
+A12_KEYWORD=user
+A12_PROFILE="$TMP/profile-search-click.json"
+sqlite3 "$A12_DB" <<SQL
+DROP VIEW IF EXISTS user_recent;
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS users;
+
+CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE user_roles(user_id INTEGER NOT NULL, role TEXT NOT NULL, PRIMARY KEY(user_id, role));
+CREATE VIEW user_recent AS SELECT id, name FROM users;
+
+INSERT INTO users(id, name) VALUES (1, 'ada'), (2, 'linus'), (3, 'grace');
+INSERT INTO user_roles(user_id, role) VALUES (1, 'admin'), (2, 'reader');
+SQL
+if [ $? -ne 0 ]; then
+    fail_early "建 A12 测试库失败：$A12_DB"
+fi
+check_eq "A12 测试库表数（2 张表同命中 $A12_KEYWORD）" 2 \
+    "$(sqlite3 "$A12_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")"
+check_eq "A12 测试库视图数（1 个视图同命中）" 1 \
+    "$(sqlite3 "$A12_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='view';")"
+cat > "$A12_PROFILE" <<EOF
+{"driver":"sqlite","path":"$A12_DB","read_only":false,"name":"v0232-search"}
+EOF
+
+# `--qa-search-click-object` 走结果行真实的 `row-activated` 信号（用户单击 / 双击结果行时
+# GTK 发的就是它），所以日志里同时有 `[qa] … 点击搜索结果 <路径>` 与 `[tree] 打开表 <路径>`
+# （后者只可能来自 `row_activated` 里的新分支）。`--qa-expect-search` 在截图时刻（点完之后）
+# 才求值：`state=results` + `hits=3` + 状态行不变，证明结果页没被切走、搜索框没被清空。
+CASE_PROFILE="$A12_PROFILE"
+launch search-click-object io.sqarvo.Sqarvo.QA024SearchClickObject \
+    --qa-search "$A12_KEYWORD" \
+    --qa-search-click-object \
+    --qa-expect-search state=results \
+    --qa-expect-search hits=3 \
+    --qa-expect-search "row=*/main/Tables/users" \
+    --qa-expect-search "row=*/main/Views/user_recent" \
+    --qa-expect-search "status=1 个连接 · 3 个对象" \
+    --screenshot "$OUT/search-click-object/12-search-click-object.png" \
+    --screenshot-delay-ms 10000 \
+    --qa-exit-after-ms 12000
+check_contains "A12 点结果后搜索断言仍通过（state/hits/行/状态行）" '断言通过：搜索' "$CASE_LOG"
+check_contains "A12 结果页没有被切走（state=results）" '搜索 state=results' "$CASE_LOG"
+check_contains "A12 命中数不变（hits=3）" '搜索 hits=3' "$CASE_LOG"
+check_contains "A12 状态行不变（1 个连接 · 3 个对象）" '搜索 status=1 个连接 · 3 个对象' "$CASE_LOG"
+check_contains "A12 点击走的是结果行（row-activated）" \
+    '点击搜索结果 v0232-search/main/Tables/' "$CASE_LOG"
+check_contains "A12 命中的表被打开（与树里双击同一条 open）" '打开表 main.' "$CASE_LOG"
+check_contains "A12 真的建了表数据标签" '新建表标签' "$CASE_LOG"
+# 关键回归点：旧行为会在切回对象树后逐层展开（成功写「跳转成功」、失败写「跳转超时」）。
+check_absent "A12 没有切回对象树去逐层定位" '跳转成功' "$CASE_LOG"
+check_absent "A12 没有走到「定位超时」那条路" '跳转超时' "$CASE_LOG"
+check_absent "A12 没有清空搜索框" '清空搜索框' "$CASE_LOG"
+check_screenshot "A12 截图（左侧结果仍在 + 主区已打开表数据）" \
+    "$OUT/search-click-object/12-search-click-object.png"
+
 # ---------------------------------------------------------------------------
 # 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
 # ---------------------------------------------------------------------------
@@ -626,7 +702,7 @@ if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" 
         *) ok "证据目录在仓库外：$OUT" ;;
     esac
     say ""
-    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A11）"
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A12）"
     say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
     say "证据目录：$OUT"
     say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"

@@ -2077,7 +2077,8 @@ impl TreePanel {
             }
         });
 
-        // 搜索结果点击：连接行走「点连接」同一条路径；对象行在树里逐层展开并选中。
+        // 搜索结果点击：连接行走「点连接」同一条路径；表 / 视图走树里双击同一条 `open`
+        // （打开数据标签，结果页原地保留）；其余不可打开的对象行仍在树里逐层展开并选中。
         self.search_list.connect_row_activated({
             let weak = Rc::downgrade(self);
             move |_, row| {
@@ -2102,13 +2103,28 @@ impl TreePanel {
                         (panel.callbacks.connect_saved)(key);
                     }
                     Some(SearchTarget::Object(key, node)) => {
-                        eprintln!(
-                            "[tree] t=+{}ms 点击搜索结果 {}{}",
-                            crate::qa::elapsed_ms(),
-                            kind_label(node.kind),
-                            node.display_name
-                        );
-                        panel.reveal(&key, node);
+                        // 可打开的对象（表 / 视图）：与树里双击同一条 `TreeCallbacks::open`。
+                        // 这里**不切页、不清空搜索框、不调 `reveal`**——用户点完一条还要接着点
+                        // 下一条，结果行与命中数必须原样留在左侧；把侧栏切回对象树等于让 5000
+                        // 张表的分页目录挡在搜索结果前面（v0.2.4 修正）。
+                        if is_browsable(node.kind) {
+                            eprintln!(
+                                "[tree] t=+{}ms 打开{} {}（搜索结果点击，连接 {key}）",
+                                crate::qa::elapsed_ms(),
+                                kind_label(node.kind),
+                                node.path_label()
+                            );
+                            (panel.callbacks.open)(node);
+                        } else {
+                            // 库等不可打开的对象：保持原行为（在树里定位）。
+                            eprintln!(
+                                "[tree] t=+{}ms 点击搜索结果 {}{}（不可打开，在树里定位）",
+                                crate::qa::elapsed_ms(),
+                                kind_label(node.kind),
+                                node.display_name
+                            );
+                            panel.reveal(&key, node);
+                        }
                     }
                     None => {}
                 }
@@ -4236,6 +4252,40 @@ impl TreePanel {
                 Ok(format!("连接 {key}"))
             }
         }
+    }
+
+    /// 点第一条「可打开的对象」结果行（`--qa-search-click-object`）。
+    ///
+    /// 走**真实的 `row-activated` 信号**：用户单击 / 双击结果行时 GTK 发的就是这个信号
+    /// （`search_list` 用默认的 `activate-on-single-click`），所以这里不直接调打开回调——
+    /// 否则「点结果 = 打开表且结果页不动」这条行为根本没有被测到。
+    pub fn qa_click_first_object_result(self: &Rc<Self>) -> Result<String, String> {
+        let rows = self.search_rows.borrow();
+        let index = rows
+            .iter()
+            .enumerate()
+            .find(|(position, row)| {
+                matches!(&row.target, Some(SearchTarget::Object(_, node)) if is_browsable(node.kind))
+                    && self.list_row_at(*position).is_some_and(|row| row.is_visible())
+            })
+            .map(|(position, _)| position)
+            .ok_or_else(|| "没有可打开的对象结果行（先搜出表 / 视图）".to_owned())?;
+        let path = rows[index].path.clone();
+        drop(rows);
+        let list_row = self
+            .list_row_at(index)
+            .ok_or_else(|| format!("结果行 {index} 没有对应的控件"))?;
+        self.search_list
+            .emit_by_name::<()>("row-activated", &[&list_row]);
+        Ok(format!("点击搜索结果 {path}"))
+    }
+
+    /// 搜索结果第 `index` 行的控件（越界或未渲染时 `None`）。
+    fn list_row_at(&self, index: usize) -> Option<gtk::ListBoxRow> {
+        let Ok(index) = i32::try_from(index) else {
+            return None;
+        };
+        self.search_list.row_at_index(index)
     }
 
     /// 断开一条连接（与右键菜单「断开连接」同一条路径：确认框由回调负责）。

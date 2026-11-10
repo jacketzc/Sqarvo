@@ -1135,6 +1135,12 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   --qa-expect-search state=idle --qa-expect-search hits=0 \
   --screenshot /tmp/search-cleared.png --screenshot-delay-ms 7000 --qa-exit-after-ms 9000
 
+# v0.2.4：点结果里的表 = 打开数据标签，结果页与搜索框原地保留（不再切回对象树去定位）
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json \
+  --qa-search user --qa-search-click-object \
+  --qa-expect-search state=results --qa-expect-search hits=3 \
+  --screenshot /tmp/search-click-object.png --screenshot-delay-ms 10000 --qa-exit-after-ms 12000
+
 # 大库：展开 5000 对象的库（每页 500），再点一次「加载更多」，日志给出耗时
 ./target/debug/sqarvo-desktop \
   --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
@@ -1162,6 +1168,11 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   `rows=…`（完整行序，逐项相等）、`highlight=…`（**真正命中的行**按显示顺序逐项相等；
   界面自 v0.2.3.4 起不再画命中高亮，结果行与树里的同一行像素一致，这个字段只剩数据态）、
   `status=…`（状态行包含，如 `2 个连接 · 3 个对象`）、`state=results|empty|denied|failed|idle`；
+  `--qa-search-click-object`（v0.2.4）点结果里**第一个可打开的对象行**（表 / 视图），走结果行
+  真实的 `row-activated` 信号——与用户单击结果行同一条路径，不是直接调打开回调。日志里会出现
+  `[qa] … 点击搜索结果 <路径>` 与 `[tree] 打开表 <路径>（搜索结果点击…）` + `[tabs] 新建表标签`，
+  而**没有**「跳转成功」（说明没有切回对象树去逐层定位）；配合 `--qa-expect-search state=results`
+  可以断言点完之后结果页与搜索框仍原样保留。必须与 `--qa-search` / `--qa-tree-search` 同用；
 - `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
   只是跳过键盘；注意 `--qa-expect-tree results=N` 现在数的是**结果页行数**，含连接 /
   库 / 分组祖先行）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
@@ -1388,19 +1399,22 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 ```bash
 cd frontend/linux
 ./scripts/v0232-objects-export.sh            # 全量（发布门禁：Objects + 导出 + 树激活 + 960 布局）
-SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects + 搜索段（A0–A11）
+SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects + 搜索段（A0–A12）
 # 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v0232-shots，仍追加时间戳）
 #       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
 ```
 
 自包含脚本：只用 `sqlite3` 在 mktemp 目录建一个临时库（1 张 30 行的表 + 索引 + 触发器 + 视图），
-**不需要 MariaDB、不需要密码**；串行跑 18 个应用实例（只跑 Objects 段时 13 个；各自独立
+**不需要 MariaDB、不需要密码**；串行跑 19 个应用实例（只跑 Objects 段时 14 个；各自独立
 `SQARVO_QA_APP_ID` 与 `XDG_CONFIG_HOME`），覆盖 `Objects` 固定页随树选中切换（选中库 → 该库的
 表、选中视图 → 该库的视图，含行数 / 首行 / 选中行 / 空态 / 状态行断言与截图）、单击选中同步
 信息面板、双击 / 回车激活开标签、作用域未变不重发、切回 `Objects` 页清掉行选中、
 树形搜索结果（A10：`--qa-search probe` 命中表 + 视图共 2 个对象，`rows=` 断言
 连接 > 库 > `Tables` > 表 > `Views` > 视图的行序、`highlight=` 断言只有命中行高亮）、
-清空搜索退出筛选（A11：`state=idle` + `hits=0`）、`EX` 整表导出（行数 = 数据行 + 1、
+清空搜索退出筛选（A11：`state=idle` + `hits=0`）、点搜索结果里的表直接开数据标签且结果页原样
+保留（A12：`--qa-search-click-object` 走真实 `row-activated` 信号，日志有「打开表 …」与
+「新建表标签」、**没有**「跳转成功」/「跳转超时」，`state=results` + `hits=3` + 状态行不变）、
+`EX` 整表导出（行数 = 数据行 + 1、
 权限 0600、目录无 `.sqarvo-tmp` 残留、日志命中完成与进度）、取消路径（目标不创建、无残留、
 日志写明「已写入 N 行后取消」）与默认的当前页导出对照。断言读控件文本、日志与文件事实，
 失败以非零退出，末尾打印「N 项断言全过」；证据全部落在仓库外。

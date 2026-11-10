@@ -2827,6 +2827,19 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 900;
     }
 
+    // v0.2.4：点结果里的表 / 视图 = 打开数据标签，左侧结果页原样保留（不再切回树）。
+    // 排在清空之前：脚本里两者不同时用，但顺序固定才能让日志可复读。
+    // 重试预算比默认长：大库（几百个 catalog）的搜索要 9–10 s 才出结果。
+    if crate::qa::search_click_object() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step_retrying(
+            delay,
+            SEARCH_STEP_ATTEMPTS,
+            Rc::new(move || tree.qa_click_first_object_result()),
+        );
+        delay += 1_200;
+    }
+
     if crate::qa::tree_click_result() {
         let tree = Rc::clone(&workspace.tree);
         schedule_step(
@@ -2853,6 +2866,25 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
 
 /// 执行一个 QA 步骤：`delay` 之后开始尝试，失败每 150ms 重试，最多 40 次。
 fn schedule_step(delay: u64, action: Rc<dyn Fn() -> Result<String, String>>) {
+    schedule_step_retrying(delay, MAX_STEP_ATTEMPTS, action);
+}
+
+/// 等一次搜索跑完才能开始的步骤（`--qa-search-click-object`）最多重试这么多次。
+///
+/// 一次搜索要对**每个已连接库**各发一次 `ListNodes`：本机 MariaDB 演示库里几百个 catalog
+/// 时要 9–10 s，而默认的 40 次 × 150 ms 只有 6 s——搜索还没回来就判「没有可打开的对象」，
+/// 看起来像行为坏了，实际是 QA 等得不够久。
+const SEARCH_STEP_ATTEMPTS: u32 = 200;
+
+/// 默认的重试次数（40 × 150 ms ≈ 6 s）。
+const MAX_STEP_ATTEMPTS: u32 = 40;
+
+/// 执行一个 QA 步骤：`delay` 之后开始尝试，失败每 150ms 重试，最多 `attempts` 次。
+fn schedule_step_retrying(
+    delay: u64,
+    attempts_limit: u32,
+    action: Rc<dyn Fn() -> Result<String, String>>,
+) {
     glib::timeout_add_local_once(Duration::from_millis(delay), move || {
         let attempts = Rc::new(Cell::new(0u32));
         glib::timeout_add_local(Duration::from_millis(150), move || {
@@ -2864,14 +2896,14 @@ fn schedule_step(delay: u64, action: Rc<dyn Fn() -> Result<String, String>>) {
                 Err(reason) => {
                     let attempt = attempts.get() + 1;
                     attempts.set(attempt);
-                    // 第一次失败就记一行：否则要等到第 40 次才知道原因。
+                    // 第一次失败就记一行：否则要等到重试耗尽才知道原因。
                     if attempt == 1 || attempt.is_multiple_of(10) {
                         eprintln!(
                             "[qa] t=+{}ms 步骤未就绪（第 {attempt} 次）：{reason}",
                             crate::qa::elapsed_ms()
                         );
                     }
-                    if attempt >= 40 {
+                    if attempt >= attempts_limit {
                         // 不静默：断言/截图会把失败的界面拍下来，这里留下原因。
                         eprintln!(
                             "[qa] t=+{}ms 步骤失败（已重试 {attempt} 次）：{reason}",
