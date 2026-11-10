@@ -23,8 +23,9 @@
 | 项 | 值 |
 |---|---|
 | 参考窗口 | 1200 × 800 |
-| 默认窗口（Linux） | 1200 × 800（原 1100 × 720） |
-| 最小窗口 | 960 × 640（**强制**：窗口创建时以 `layout::MIN_WINDOW_WIDTH/HEIGHT` 交给 `GtkWidget::set_size_request`，Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal hints，拖不到更小；见 [ui-behavior-contract.md](ui-behavior-contract.md) §1） |
+| 默认窗口 | **按显示器逻辑工作区分四档**，规则与取值见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §5.2；1200 × 800 只是参考窗口，不再是默认值（原 1100 × 720） |
+| 最小窗口 | `min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)`（T = 密度档；见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §5.4，行为见 [ui-behavior-contract.md](ui-behavior-contract.md) §1.1）。100% 档且工作区足够时等于 960 × 640 |
+| 界面密度档 | 三档 `compact` 100% / `comfortable` 125% / `large` 150%，数字唯一真值是 [metrics.toml](metrics.toml)；本表其余数值都是 `compact` 档 |
 | 侧栏宽度 | 237（可拖拽，240–480 → 记为可调区间 180–420） |
 | 信息面板宽度 | 280（可拖拽 240–520；v0.2.3.2 起常驻，不可折叠） |
 | 行高 | 树 24；表头 **30**（单行「列名 · 原始类型」= 26 内容 + 上下 2px，原来是 24 类型行 + 30 列名行）；数据行 32 |

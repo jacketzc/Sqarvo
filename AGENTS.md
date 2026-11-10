@@ -332,6 +332,37 @@ The data grid should progressively support:
 
 Before adopting a specific control library or editor component, verify its license, cross-platform support, accessibility, maintenance status, and performance with large data volumes. Do not introduce dependencies based solely on popularity.
 
+### 8.6 Sizing, Density Scaling, Theme and Localization (binding, all three platforms)
+
+The single source of truth for every size number is `docs/ui-specification/metrics.toml`; the rules
+are in `docs/ui-specification/scaling-and-window-sizing.md`; the decision is
+[ADR 0026](docs/decisions/0026-ui-scaling-window-sizing.md).
+
+- Never hardcode a second copy of a size. Platform code reads `metrics.toml` (Linux parses it at
+  runtime; Windows/macOS generate constants at build time) and must fail the build when generation
+  fails. Do not compute `base × scale` in code: Rust, C# and Swift round differently and drift by 1px.
+- Exactly three density tiers exist: `compact` 100% (default), `comfortable` 125%, `large` 150%.
+  Do not add a tier without extending `metrics.toml` and its invariant tests. Tiers below 100% are
+  rejected by design (they break the 24px minimum target and the CJK 13px font floor).
+- The OS DPI / scale factor is never multiplied into application metrics. GTK logical pixels and
+  XAML DIPs are already density-independent; convert to physical pixels only when talking to
+  `AppWindow` / `DisplayArea` / `GdkMonitor::geometry`.
+- Window size is chosen from the **logical work area**, never from the screen resolution, and the
+  minimum window is `min(960·T, work_area − 32) × min(640·T, work_area − 48)`. A window must never
+  exceed the work area, including on 1080p@200% (logical 960×540).
+- Colors come from theme tokens only (`@define-color` / `ThemeResource`). A `#RRGGBB` literal in
+  interface CSS or XAML is a defect; the only allowed hex values are the Linux
+  `LIGHT_PALETTE` / `DARK_PALETTE` constants in `frontend/linux/src/theme.rs`. Windows must respect
+  the system accent color and high contrast; Linux must branch on `AdwStyleManager::is_high_contrast()`
+  where contrast matters.
+- Dark mode follows the system on all platforms. Do not implement a private light-only fallback;
+  Windows sets `Application.RequestedTheme` at startup only and switches at runtime through
+  element-level `FrameworkElement.RequestedTheme`, and always keeps the title bar in sync.
+- New user-facing strings go through a per-crate string catalog, not inline literals, even while
+  only Chinese ships. New interactive controls need an accessible name and a defined Tab position.
+- Any change to these numbers or rules updates `metrics.toml`, `scaling-and-window-sizing.md`,
+  and (for behavior) `docs/ui-specification/ui-behavior-contract.md` in the same PR.
+
 ## 9. Security and Privacy
 
 Database clients frequently handle highly sensitive credentials and production data. Security is a foundational capability, not an optional enhancement.

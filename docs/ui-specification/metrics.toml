@@ -1,0 +1,163 @@
+# Sqarvo 布局度量真值（单一口径）
+#
+# 这是三端（Linux GTK / Windows WinUI 3 / macOS SwiftUI）共享的**唯一**尺寸来源。
+# 规范文字见 scaling-and-window-sizing.md；本文件只放数字，数字改动必须与本文件同 PR。
+#
+# 为什么三档都写死整数、而不是「基准 × 缩放系数」：
+#   Rust 的 f64::round 是 half-away-from-zero，C# 的 Math.Round 默认是 half-to-even，
+#   Swift 的 rounded() 又是 half-away-from-zero。同一份 26×1.25 在两个语言里会得到 33 和 32，
+#   三端就会静默漂移。所有档位的取值在这里全量列出，各端只读、不计算。
+#
+# 颜色不在这里：颜色一律走主题 token（Linux 的 @define-color / WinUI 的 ThemeResource），
+# 任何界面 CSS / XAML 里出现 #RRGGBB 都算缺陷。
+#
+# 不随档位缩放的量（刻意排除）：
+#   border_width_px = 1        1px 描边在所有档位都保持 1px（1.5× 的 1.5px 细线会发糊）
+#   icon_stroke_px  = 1.6      符号图标描边来自图标网格，不随密度档变
+
+version = 1
+
+[meta]
+layout_reference_window = [1200, 800]   # 规范参考窗口（原型 / 截图基线），不是默认窗口
+default_tier = "compact"
+available_tiers = ["compact", "comfortable", "large"]
+border_width_px_never_scaled = 1
+
+[tier.compact]
+id = "compact"
+label = "紧凑（100%）"
+scale = 1.0
+header_height = 64   # 64 × 1.0 = 64
+toolbar_height = 44   # 44 × 1.0 = 44
+status_height = 48   # 48 × 1.0 = 48
+min_window_width = 960   # 960 × 1.0 = 960
+min_window_height = 640   # 640 × 1.0 = 640
+sidebar_width = 237   # 237 × 1.0 = 237
+sidebar_min = 180   # 180 × 1.0 = 180
+sidebar_max = 420   # 420 × 1.0 = 420
+inspector_width = 280   # 280 × 1.0 = 280
+inspector_min = 240   # 240 × 1.0 = 240
+inspector_max = 520   # 520 × 1.0 = 520
+tab_strip_height = 24   # 24 × 1.0 = 24
+table_actions_height = 46   # 46 × 1.0 = 46
+grid_padding_start = 18   # 18 × 1.0 = 18
+grid_padding_end = 3   # 3 × 1.0 = 3
+inspector_gap = 10   # 10 × 1.0 = 10
+row_height_tree = 24   # 24 × 1.0 = 24
+row_height_data = 32   # 32 × 1.0 = 32
+column_header_min_height = 26   # 26 × 1.0 = 26
+font_ui = 12   # 12 × 1.0 = 12
+font_title = 13   # 13 × 1.0 = 13
+font_status = 11   # 11 × 1.0 = 11
+font_data_cell = 13   # 13 × 1.0 = 13
+font_panel = 10   # 10 × 1.0 = 10
+min_target = 24   # 24 × 1.0 = 24
+icon_box = 16   # 16 × 1.0 = 16
+icon_button_width = 28   # 28 × 1.0 = 28
+icon_button_height = 24   # 24 × 1.0 = 24
+status_dot_diameter = 7   # 7 × 1.0 = 7
+toolbar_padding_h = 12   # 12 × 1.0 = 12
+objects_min_width = 84   # 84 × 1.0 = 84
+pager_font = 12   # 12 × 1.0 = 12
+badge_min_height = 26   # 26 × 1.0 = 26
+secondary_min_height = 22   # 22 × 1.0 = 22
+radius_sm = 6   # 6 × 1.0 = 6
+radius_md = 8   # 8 × 1.0 = 8
+tree_arrow_box = 18   # 18 × 1.0 = 18
+row_number_width = 32   # 32 × 1.0 = 32
+column_width = 200   # 200 × 1.0 = 200
+filter_panel_width = 430   # 430 × 1.0 = 430
+filter_column_width = 140   # 140 × 1.0 = 140
+
+[tier.comfortable]
+id = "comfortable"
+label = "舒适（125%）"
+scale = 1.25
+header_height = 80   # 64 × 1.25 = 80
+toolbar_height = 55   # 44 × 1.25 = 55
+status_height = 60   # 48 × 1.25 = 60
+min_window_width = 1200   # 960 × 1.25 = 1200
+min_window_height = 800   # 640 × 1.25 = 800
+sidebar_width = 296   # 237 × 1.25 = 296.25
+sidebar_min = 225   # 180 × 1.25 = 225
+sidebar_max = 525   # 420 × 1.25 = 525
+inspector_width = 350   # 280 × 1.25 = 350
+inspector_min = 300   # 240 × 1.25 = 300
+inspector_max = 650   # 520 × 1.25 = 650
+tab_strip_height = 30   # 24 × 1.25 = 30
+table_actions_height = 58   # 46 × 1.25 = 57.5
+grid_padding_start = 23   # 18 × 1.25 = 22.5
+grid_padding_end = 4   # 3 × 1.25 = 3.75
+inspector_gap = 13   # 10 × 1.25 = 12.5
+row_height_tree = 30   # 24 × 1.25 = 30
+row_height_data = 40   # 32 × 1.25 = 40
+column_header_min_height = 33   # 26 × 1.25 = 32.5
+font_ui = 15   # 12 × 1.25 = 15
+font_title = 16   # 13 × 1.25 = 16.25
+font_status = 14   # 11 × 1.25 = 13.75
+font_data_cell = 16   # 13 × 1.25 = 16.25
+font_panel = 13   # 10 × 1.25 = 12.5
+min_target = 30   # 24 × 1.25 = 30
+icon_box = 20   # 16 × 1.25 = 20
+icon_button_width = 35   # 28 × 1.25 = 35
+icon_button_height = 30   # 24 × 1.25 = 30
+status_dot_diameter = 9   # 7 × 1.25 = 8.75
+toolbar_padding_h = 15   # 12 × 1.25 = 15
+objects_min_width = 105   # 84 × 1.25 = 105
+pager_font = 15   # 12 × 1.25 = 15
+badge_min_height = 33   # 26 × 1.25 = 32.5
+secondary_min_height = 28   # 22 × 1.25 = 27.5
+radius_sm = 8   # 6 × 1.25 = 7.5
+radius_md = 10   # 8 × 1.25 = 10
+tree_arrow_box = 23   # 18 × 1.25 = 22.5
+row_number_width = 40   # 32 × 1.25 = 40
+column_width = 250   # 200 × 1.25 = 250
+filter_panel_width = 538   # 430 × 1.25 = 537.5
+filter_column_width = 175   # 140 × 1.25 = 175
+
+[tier.large]
+id = "large"
+label = "大（150%）"
+scale = 1.5
+header_height = 96   # 64 × 1.5 = 96
+toolbar_height = 66   # 44 × 1.5 = 66
+status_height = 72   # 48 × 1.5 = 72
+min_window_width = 1440   # 960 × 1.5 = 1440
+min_window_height = 960   # 640 × 1.5 = 960
+sidebar_width = 356   # 237 × 1.5 = 355.5
+sidebar_min = 270   # 180 × 1.5 = 270
+sidebar_max = 630   # 420 × 1.5 = 630
+inspector_width = 420   # 280 × 1.5 = 420
+inspector_min = 360   # 240 × 1.5 = 360
+inspector_max = 780   # 520 × 1.5 = 780
+tab_strip_height = 36   # 24 × 1.5 = 36
+table_actions_height = 69   # 46 × 1.5 = 69
+grid_padding_start = 27   # 18 × 1.5 = 27
+grid_padding_end = 5   # 3 × 1.5 = 4.5
+inspector_gap = 15   # 10 × 1.5 = 15
+row_height_tree = 36   # 24 × 1.5 = 36
+row_height_data = 48   # 32 × 1.5 = 48
+column_header_min_height = 39   # 26 × 1.5 = 39
+font_ui = 18   # 12 × 1.5 = 18
+font_title = 20   # 13 × 1.5 = 19.5
+font_status = 17   # 11 × 1.5 = 16.5
+font_data_cell = 20   # 13 × 1.5 = 19.5
+font_panel = 15   # 10 × 1.5 = 15
+min_target = 36   # 24 × 1.5 = 36
+icon_box = 24   # 16 × 1.5 = 24
+icon_button_width = 42   # 28 × 1.5 = 42
+icon_button_height = 36   # 24 × 1.5 = 36
+status_dot_diameter = 11   # 7 × 1.5 = 10.5
+toolbar_padding_h = 18   # 12 × 1.5 = 18
+objects_min_width = 126   # 84 × 1.5 = 126
+pager_font = 18   # 12 × 1.5 = 18
+badge_min_height = 39   # 26 × 1.5 = 39
+secondary_min_height = 33   # 22 × 1.5 = 33
+radius_sm = 9   # 6 × 1.5 = 9
+radius_md = 12   # 8 × 1.5 = 12
+tree_arrow_box = 27   # 18 × 1.5 = 27
+row_number_width = 48   # 32 × 1.5 = 48
+column_width = 300   # 200 × 1.5 = 300
+filter_panel_width = 645   # 430 × 1.5 = 645
+filter_column_width = 210   # 140 × 1.5 = 210
+

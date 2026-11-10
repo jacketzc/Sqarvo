@@ -186,6 +186,8 @@ cargo run
 - [Driver SPI](docs/database/driver-spi.md)
 - [UI 设计原则](docs/ui-specification/design-principles.md)
 - [工作区模型与区域规范](docs/ui-specification/workspace-model.md)
+- [UI 行为契约](docs/ui-specification/ui-behavior-contract.md)
+- [界面缩放、窗口尺寸与显示器适配](docs/ui-specification/scaling-and-window-sizing.md)（数字见 [metrics.toml](docs/ui-specification/metrics.toml)）
 - [决策记录](docs/decisions/)
 
 ## 任务与进度
