@@ -27,11 +27,8 @@ use adw::prelude::*;
 use gtk::gdk;
 use gtk::glib;
 
-use crate::layout;
+use crate::layout::{self, Tier};
 use crate::window_state;
-
-/// 本轮唯一档位：100%（compact）。参数已写成 `f64`，形状留给 #160 的三档密度。
-pub const TIER: f64 = 1.0;
 
 /// GNOME 顶栏高度估算（§5.1：`GdkMonitor` 没有 `workarea()`，工作区 = 几何 − 顶栏）。
 ///
@@ -71,8 +68,8 @@ impl From<gdk::Rectangle> for Rect {
 
 /// 面板可拖拽区间（由档位算出，§6.2 的「重设面板钳制区间」）。
 ///
-/// 本轮 `tier = 1.0`，四个数字与 `layout.rs` 的常量相同；写成结构体是为了让钳制区间
-/// 与窗口尺寸从同一个入口出，不再各读一份字面量。
+/// 四个数字直接取 `metrics.toml` 的 `sidebar_min/max`、`inspector_min/max`（不是
+/// 「基准 × 档位」）；区间与窗口尺寸从同一个入口出，不再各读一份字面量。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelBounds {
     pub sidebar_min: i32,
@@ -136,12 +133,7 @@ pub fn work_area(geometry: Rect) -> Rect {
 /// `scale` 本平台不参与算术（GTK 的逻辑像素已经除过系统缩放），保留参数是为了三端同形：
 /// Windows 的 `DisplayArea.WorkArea` 是物理像素，要先除栅格化比例。
 #[must_use]
-pub fn relayout(work: Rect, scale: f64, tier: f64) -> Sizing {
-    let tier = if tier.is_finite() && tier > 0.0 {
-        tier
-    } else {
-        1.0
-    };
+pub fn relayout(work: Rect, scale: f64, tier: Tier) -> Sizing {
     let (width, height) = recommended(work, tier);
     let min = min_window(work, tier);
     Sizing {
@@ -158,16 +150,13 @@ pub fn relayout(work: Rect, scale: f64, tier: f64) -> Sizing {
 
 /// 基准推荐尺寸（§5.2 四档 × 档位），再按下限收敛到工作区内。
 ///
-/// 下限是 `min(960·T, W-32) × min(640·T, H-48)`：屏比最小窗口还小时，**宁可挤也不
+/// 下限是 `min(960·T, W-32) × min(640·T, H-48)`（`metrics.toml` 的
+/// `min_window_*` 已是写死的 960/1200/1440）：屏比最小窗口还小时，**宁可挤也不
 /// 超出屏幕**（ADR 0026 取舍）。上限同样是 `(W-32, H-48)`，所以结果**永远**满足
 /// `w ≤ W-32`、`h ≤ H-48`（`--qa-report-monitor` 的验收条目）。
 #[must_use]
-pub fn recommended(work: Rect, tier: f64) -> (i32, i32) {
-    let tier = if tier.is_finite() && tier > 0.0 {
-        tier
-    } else {
-        1.0
-    };
+pub fn recommended(work: Rect, tier: Tier) -> (i32, i32) {
+    let tier_scale = tier.scale();
     let width_available = work.width.max(1);
     let height_available = work.height.max(1);
     let (base_width, base_height) = if width_available < 1200 {
@@ -189,33 +178,34 @@ pub fn recommended(work: Rect, tier: f64) -> (i32, i32) {
             scale_round(height_available, 0.78).min(1000),
         )
     };
+    let min = min_window(work, tier);
     (
         fit_axis(
-            scale_round(base_width, tier),
-            scale_round(layout::MIN_WINDOW_WIDTH, tier),
+            scale_round(base_width, tier_scale),
+            min.0,
             width_available - WIDTH_MARGIN,
         ),
         fit_axis(
-            scale_round(base_height, tier),
-            scale_round(layout::MIN_WINDOW_HEIGHT, tier),
+            scale_round(base_height, tier_scale),
+            min.1,
             height_available - HEIGHT_MARGIN,
         ),
     )
 }
 
 /// 最小窗口尺寸（§5.4）：`min(960·T, W-32) × min(640·T, H-48)`。
+///
+/// 960 / 1200 / 1440 直接取 `metrics.toml` 的 `min_window_width`——不再用倍率算。
 #[must_use]
-pub fn min_window(work: Rect, tier: f64) -> (i32, i32) {
-    let tier = if tier.is_finite() && tier > 0.0 {
-        tier
-    } else {
-        1.0
-    };
+pub fn min_window(work: Rect, tier: Tier) -> (i32, i32) {
+    let metrics = layout::Metrics::for_tier(tier);
     (
-        scale_round(layout::MIN_WINDOW_WIDTH, tier)
+        metrics
+            .min_window_width
             .min(work.width - WIDTH_MARGIN)
             .max(1),
-        scale_round(layout::MIN_WINDOW_HEIGHT, tier)
+        metrics
+            .min_window_height
             .min(work.height - HEIGHT_MARGIN)
             .max(1),
     )
@@ -227,19 +217,36 @@ fn fit_axis(value: i32, floor: i32, ceiling: i32) -> i32 {
     value.clamp(floor.min(ceiling), ceiling)
 }
 
-/// 面板可拖拽区间（档位缩放，§6.2）。
+/// 档位可用性守卫（§2.2）：工作区逻辑宽高都不小于该档的**未收敛**最小窗口。
+///
+/// 用 `metrics.toml` 的 `min_window_width/height`，不用收敛后的值——否则任何屏幕都
+/// 能声称自己支持 150%。
 #[must_use]
-pub fn panel_bounds(tier: f64) -> PanelBounds {
-    let tier = if tier.is_finite() && tier > 0.0 {
-        tier
-    } else {
-        1.0
-    };
+pub fn available(tier: Tier, work: Rect) -> bool {
+    let metrics = layout::Metrics::for_tier(tier);
+    work.width >= metrics.min_window_width && work.height >= metrics.min_window_height
+}
+
+/// 从 `tier` 起向下一档找一个可用档（含自身）；都不可用时返回 `None`。
+#[must_use]
+pub fn first_available_from(tier: Tier, work: Rect) -> Option<Tier> {
+    Tier::ALL
+        .iter()
+        .rev()
+        .filter(|candidate| **candidate <= tier)
+        .find(|candidate| available(**candidate, work))
+        .copied()
+}
+
+/// 面板可拖拽区间（直接取 `metrics.toml`，§6.2）。
+#[must_use]
+pub fn panel_bounds(tier: Tier) -> PanelBounds {
+    let metrics = layout::Metrics::for_tier(tier);
     PanelBounds {
-        sidebar_min: scale_round(layout::SIDEBAR_MIN, tier),
-        sidebar_max: scale_round(layout::SIDEBAR_MAX, tier),
-        inspector_min: scale_round(layout::INSPECTOR_MIN, tier),
-        inspector_max: scale_round(layout::INSPECTOR_MAX, tier),
+        sidebar_min: metrics.sidebar_min,
+        sidebar_max: metrics.sidebar_max,
+        inspector_min: metrics.inspector_min,
+        inspector_max: metrics.inspector_max,
     }
 }
 
@@ -318,6 +325,33 @@ fn monitor_rects(display: &gdk::Display) -> Vec<Rect> {
         .collect()
 }
 
+/// 窗口当前所在显示器的取值（surface / monitor 未就绪时为 `None`）。
+struct MonitorSnapshot {
+    monitor: gdk::Monitor,
+    geometry: Rect,
+    work: Rect,
+    scale: f64,
+}
+
+fn monitor_snapshot(window: &adw::ApplicationWindow) -> Option<MonitorSnapshot> {
+    let surface = window.surface()?;
+    let display = gtk::prelude::WidgetExt::display(window);
+    let monitor = display.monitor_at_surface(&surface)?;
+    let geometry = Rect::from(monitor.geometry());
+    Some(MonitorSnapshot {
+        work: work_area(geometry),
+        geometry,
+        scale: monitor.scale(),
+        monitor,
+    })
+}
+
+/// 当前窗口所在显示器的工作区（档位可用性守卫与 `density` 共用，不再各写一份减顶栏）。
+#[must_use]
+pub fn current_work(window: &adw::ApplicationWindow) -> Option<Rect> {
+    monitor_snapshot(window).map(|snapshot| snapshot.work)
+}
+
 /// 按窗口当前所在显示器重算并应用尺寸（启动与每次 relayout 都走这里）。
 ///
 /// 顺序按规范 §6.3：先 `present()`，拿到 surface 后调本函数。surface / monitor 尚未
@@ -328,16 +362,27 @@ pub fn apply(window: &adw::ApplicationWindow) -> Option<Report> {
 }
 
 fn apply_inner(window: &adw::ApplicationWindow, restore_saved: bool) -> Option<Report> {
-    let surface = window.surface()?;
+    let snapshot = monitor_snapshot(window)?;
     let display = gtk::prelude::WidgetExt::display(window);
-    let monitor = display.monitor_at_surface(&surface)?;
-    let geometry = Rect::from(monitor.geometry());
-    let work = work_area(geometry);
-    let sizing = relayout(work, monitor.scale(), TIER);
+    let tier = layout::current_tier();
+    let sizing = relayout(snapshot.work, snapshot.scale, tier);
 
     let mut size = sizing.window;
     let mut source = Source::Tier;
     let mut maximize = false;
+
+    // 档位可用性只在启动时决定一次（`density::ensure_startup_tier`）：之后的换屏若
+    // 放不下当前档，窗口仍按工作区钳制（§5.3），菜单里该项会显示为不可用。
+    if !restore_saved && !available(tier, snapshot.work) {
+        eprintln!(
+            "[tier] {} 在当前工作区 {}x{} 不可用（需要 {}×{}）：窗口按工作区钳制",
+            tier.id(),
+            snapshot.work.width,
+            snapshot.work.height,
+            layout::Metrics::for_tier(tier).min_window_width,
+            layout::Metrics::for_tier(tier).min_window_height
+        );
+    }
 
     // `--window-size` 优先于算出来的尺寸：取证要在固定尺寸下比对像素。
     if let Some((width, height)) = crate::qa::window_size() {
@@ -350,27 +395,52 @@ fn apply_inner(window: &adw::ApplicationWindow, restore_saved: bool) -> Option<R
         // 只有启动时恢复几何：之后的换屏 / 缩放变化按新工作区重新分档，
         // 否则换到小屏后仍会套用另一块屏记下的尺寸。
         if let Some(saved) = window_state::saved_geometry() {
-            if saved.fits_in(&monitor_rects(&display)) {
-                size = (saved.width, saved.height);
-                source = Source::Remembered;
-                maximize = saved.maximized;
-                eprintln!(
-                    "[monitor] 窗口几何来自记忆：{}x{}{}（最大化={}）",
-                    saved.width,
-                    saved.height,
-                    saved.origin_label(),
-                    maximize
-                );
+            if saved.tier == tier {
+                if saved.fits_in(&monitor_rects(&display)) {
+                    size = (saved.width, saved.height);
+                    source = Source::Remembered;
+                    maximize = saved.maximized;
+                    eprintln!(
+                        "[monitor] 窗口几何来自记忆：{}x{}{}（最大化={}）",
+                        saved.width,
+                        saved.height,
+                        saved.origin_label(),
+                        maximize
+                    );
+                } else {
+                    eprintln!(
+                        "[monitor] 几何越界已丢弃：记忆的窗口 {}x{}{} 不在任何当前显示器几何内（±{} 容差），回退推荐尺寸 {}x{}",
+                        saved.width,
+                        saved.height,
+                        saved.origin_label(),
+                        GEOMETRY_TOLERANCE,
+                        sizing.window.0,
+                        sizing.window.1
+                    );
+                }
             } else {
+                // 记忆的尺寸属于另一档：按当前档位重算推荐尺寸（§2.3）。这条日志就是
+                // 「1.5 档下用 1200 宽的窗口启动 → 自动放大」的证据。
+                let verb = if sizing.window.0 > saved.width || sizing.window.1 > saved.height {
+                    "档位导致窗口放大"
+                } else {
+                    "档位导致窗口重算"
+                };
                 eprintln!(
-                    "[monitor] 几何越界已丢弃：记忆的窗口 {}x{}{} 不在任何当前显示器几何内（±{} 容差），回退推荐尺寸 {}x{}",
+                    "[monitor] {verb}：{}x{} → {}x{}（记忆尺寸属于 {}，当前 {}{}）",
                     saved.width,
                     saved.height,
-                    saved.origin_label(),
-                    GEOMETRY_TOLERANCE,
                     sizing.window.0,
-                    sizing.window.1
+                    sizing.window.1,
+                    saved.tier.id(),
+                    tier.id(),
+                    if saved.maximized {
+                        "，保持最大化"
+                    } else {
+                        ""
+                    }
                 );
+                maximize = saved.maximized;
             }
         }
     }
@@ -393,17 +463,60 @@ fn apply_inner(window: &adw::ApplicationWindow, restore_saved: bool) -> Option<R
     }
 
     let report = Report {
-        connector: monitor
+        connector: snapshot
+            .monitor
             .connector()
             .map_or_else(|| "未知".to_owned(), |connector| connector.to_string()),
-        geometry,
+        geometry: snapshot.geometry,
         scale: sizing.scale,
-        work,
+        work: snapshot.work,
         window: (width, height),
-        tier: TIER,
+        tier: tier.scale(),
         source,
     };
     // 只读开关：打印一行，不改变任何尺寸（尺寸已经在上面按同一份结论应用）。
+    if crate::qa::report_monitor() {
+        report.print();
+    }
+    Some(report)
+}
+
+/// 切档时按规范 §5.3 重算窗口尺寸并应用（不用记忆几何，也不用 `--window-size`）。
+///
+/// 「切换档位时窗口跟着放大」是 §2.3 的硬要求：只放大界面不放大窗口，150% 档的表格
+/// 只剩 378px。放大到的尺寸仍受工作区钳制（`w ≤ W-32`、`h ≤ H-48`）。
+pub fn apply_for_tier(window: &adw::ApplicationWindow) -> Option<Report> {
+    let snapshot = monitor_snapshot(window)?;
+    let tier = layout::current_tier();
+    let sizing = relayout(snapshot.work, snapshot.scale, tier);
+    let previous = (window.default_width(), window.default_height());
+    window.set_size_request(sizing.min.0, sizing.min.1);
+    window.set_default_size(sizing.window.0, sizing.window.1);
+    let verb = if sizing.window.0 > previous.0 || sizing.window.1 > previous.1 {
+        "档位导致窗口放大"
+    } else {
+        "档位导致窗口重算"
+    };
+    eprintln!(
+        "[monitor] {verb}：{}x{} → {}x{}（档位 {}）",
+        previous.0,
+        previous.1,
+        sizing.window.0,
+        sizing.window.1,
+        tier.id()
+    );
+    let report = Report {
+        connector: snapshot
+            .monitor
+            .connector()
+            .map_or_else(|| "未知".to_owned(), |connector| connector.to_string()),
+        geometry: snapshot.geometry,
+        scale: sizing.scale,
+        work: snapshot.work,
+        window: sizing.window,
+        tier: tier.scale(),
+        source: Source::Tier,
+    };
     if crate::qa::report_monitor() {
         report.print();
     }
@@ -603,6 +716,7 @@ fn persist(window: &adw::ApplicationWindow) {
         x: None,
         y: None,
         maximized: window.is_maximized(),
+        tier: layout::current_tier(),
     };
     match window_state::remember_geometry(&geometry) {
         Ok(path) => eprintln!(
@@ -649,7 +763,11 @@ mod tests {
             (work(2048, 1120), (1400, 896)),
             (work(2560, 1408), (1680, 1000)),
         ] {
-            assert_eq!(recommended(area, 1.0), expected, "工作区 {area:?}");
+            assert_eq!(
+                recommended(area, Tier::Compact),
+                expected,
+                "工作区 {area:?}"
+            );
         }
     }
 
@@ -660,23 +778,23 @@ mod tests {
         // §5.3 的上限钳制 `(W-32, H-48)`：窄屏上两者差 8 / 24 px。验收条目（§9 #2
         // 「w ≤ W-32 且 h ≤ H-48」，`--qa-report-monitor` 按它判定）是硬口径，所以上限
         // 优先，这里钉住钳制后的值；§5.2「W<1200」那一行与它冲突，待规范回填。
-        assert_eq!(recommended(work(1199, 1000), 1.0), (1167, 952));
-        assert_eq!(recommended(work(1200, 1000), 1.0), (1144, 840));
-        assert_eq!(recommended(work(1699, 1000), 1.0), (1643, 840));
-        assert_eq!(recommended(work(1700, 1000), 1.0), (1400, 800));
-        assert_eq!(recommended(work(2199, 1000), 1.0), (1400, 800));
-        assert_eq!(recommended(work(2200, 1000), 1.0), (1680, 780));
+        assert_eq!(recommended(work(1199, 1000), Tier::Compact), (1167, 952));
+        assert_eq!(recommended(work(1200, 1000), Tier::Compact), (1144, 840));
+        assert_eq!(recommended(work(1699, 1000), Tier::Compact), (1643, 840));
+        assert_eq!(recommended(work(1700, 1000), Tier::Compact), (1400, 800));
+        assert_eq!(recommended(work(2199, 1000), Tier::Compact), (1400, 800));
+        assert_eq!(recommended(work(2200, 1000), Tier::Compact), (1680, 780));
     }
 
     #[test]
     fn minimum_window_collapses_on_a_short_screen() {
         // 1080p@200%：逻辑工作区 960×508 → 最小窗口比 960×640 矮，也窄（W-32）。
         let area = work(960, 508);
-        assert_eq!(min_window(area, 1.0), (928, 460));
+        assert_eq!(min_window(area, Tier::Compact), (928, 460));
         // 1366×768@125%：逻辑工作区 1092×582 → 高度收敛，宽度仍是 960。
-        assert_eq!(min_window(work(1092, 582), 1.0), (960, 534));
+        assert_eq!(min_window(work(1092, 582), Tier::Compact), (960, 534));
         // 正常屏上就是 960×640。
-        assert_eq!(min_window(work(1920, 1048), 1.0), (960, 640));
+        assert_eq!(min_window(work(1920, 1048), Tier::Compact), (960, 640));
     }
 
     #[test]
@@ -693,7 +811,7 @@ mod tests {
             work(3840, 2120),
             work(200, 200),
         ] {
-            let (width, height) = recommended(area, 1.0);
+            let (width, height) = recommended(area, Tier::Compact);
             assert!(
                 width <= area.width - 32,
                 "宽度 {width} 超出工作区 {} 的上限",
@@ -708,18 +826,68 @@ mod tests {
         }
         // H 小于最小窗口高度（逻辑 960×540 屏）：高度贴住 H-48 而不是 640。
         let short = work(960, 508);
-        assert_eq!(recommended(short, 1.0), (928, 460));
-        assert_eq!(min_window(short, 1.0).1, 460);
+        assert_eq!(recommended(short, Tier::Compact), (928, 460));
+        assert_eq!(min_window(short, Tier::Compact).1, 460);
     }
 
     #[test]
     fn tier_scales_recommendation_and_panels() {
-        // 125% 档（#160 才会接）：基准 × T 再钳到工作区。
+        // §5.3 的三档表：基准 × T 再钳到工作区。
         let area = work(1920, 1048);
-        assert_eq!(recommended(area, 1.25), (1750, 1000));
-        assert_eq!(min_window(area, 1.25), (1200, 800));
-        let panels = panel_bounds(1.25);
+        assert_eq!(recommended(area, Tier::Comfortable), (1750, 1000));
+        assert_eq!(recommended(area, Tier::Large), (1888, 1000));
+        assert_eq!(
+            recommended(work(2048, 1120), Tier::Comfortable),
+            (1750, 1072)
+        );
+        assert_eq!(recommended(work(2048, 1120), Tier::Large), (2016, 1072));
+        assert_eq!(
+            recommended(work(2560, 1408), Tier::Comfortable),
+            (2100, 1250)
+        );
+        assert_eq!(recommended(work(2560, 1408), Tier::Large), (2520, 1360));
+        // 最小窗口直接取 `metrics.toml` 的 960 / 1200 / 1440，不再用倍率算。
+        assert_eq!(min_window(area, Tier::Comfortable), (1200, 800));
+        assert_eq!(min_window(area, Tier::Large), (1440, 960));
+        let panels = panel_bounds(Tier::Comfortable);
         assert_eq!(panels.sidebar_min, 225);
         assert_eq!(panels.inspector_max, 650);
+        let large = panel_bounds(Tier::Large);
+        assert_eq!((large.sidebar_min, large.sidebar_max), (270, 630));
+        assert_eq!((large.inspector_min, large.inspector_max), (360, 780));
+    }
+
+    #[test]
+    fn tier_availability_uses_the_unclamped_minimum_window() {
+        // §2.2：1080p@150%（逻辑 1280×698）只有 compact 可用；菜单里另外两项禁用。
+        let short = work(1280, 698);
+        assert!(available(Tier::Compact, short));
+        assert!(!available(Tier::Comfortable, short));
+        assert!(!available(Tier::Large, short));
+        // 1366×768@125%（逻辑 1092×582）同理。
+        assert!(!available(Tier::Comfortable, work(1092, 582)));
+        // 1920×1048 三档都可用（large 需要 1440×960）。
+        assert!(available(Tier::Comfortable, work(1920, 1048)));
+        assert!(available(Tier::Large, work(1920, 1048)));
+        // 已保存档不可用时回退到下一个可用档（不静默钳到 100% 以外的档）。
+        assert_eq!(
+            first_available_from(Tier::Large, short),
+            Some(Tier::Compact)
+        );
+        // 1536×838 按 §2.2 的公式（高 ≥ 800）**可以**用 125% 档——§5.3 的表格把这一行
+        // 标成「不可用」，与 §2.2 冲突；实现按 §2.2 的显式判定规则（见汇报的待定项）。
+        assert_eq!(
+            first_available_from(Tier::Comfortable, work(1536, 838)),
+            Some(Tier::Comfortable)
+        );
+        // 1366×768@100%（逻辑 1366×736）：高 736 < 800，125% 不可用。
+        assert_eq!(
+            first_available_from(Tier::Comfortable, work(1366, 736)),
+            Some(Tier::Compact)
+        );
+        assert_eq!(
+            first_available_from(Tier::Large, work(1920, 1048)),
+            Some(Tier::Large)
+        );
     }
 }

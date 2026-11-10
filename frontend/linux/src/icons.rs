@@ -73,13 +73,38 @@ pub const OPTICAL_PX: &[(&str, &str, i32)] = &[
     ("media-playback-stop-symbolic", "取消 ■", 18),
 ];
 
-/// 该图标的绘制边长：表里登记过的用补偿值，其余一律 [`layout::ICON_BOX`]。
+/// 该图标的绘制边长（当前档位）：表里登记过的按**比例**缩放补偿值，其余一律
+/// [`layout::Metrics::icon_box`]。
 #[must_use]
 pub fn px(icon: &str) -> i32 {
-    OPTICAL_PX
+    px_at(icon, layout::current_tier())
+}
+
+/// 指定档位的图标绘制边长。
+///
+/// 光学补偿是「相对图标盒的偏移量」：18px（盒 16，+2）在 150% 档是 24 + 3 = 27，
+/// **不是** 18 × 1.5 = 27 那种巧合，也不是 18 + 9 = 27 之外的 34（§3.2 的实测口径）。
+/// 用整数分子 / 分母做比例，避免浮点取整在 1.25 档把 `+2` 算成 3（会顶破 −6..=+2 的
+/// 断言与命中区余量）。
+#[must_use]
+pub fn px_at(icon: &str, tier: layout::Tier) -> i32 {
+    let metrics = layout::Metrics::for_tier(tier);
+    let base = OPTICAL_PX
         .iter()
         .find_map(|(name, _, px)| (*name == icon).then_some(*px))
-        .unwrap_or(layout::ICON_BOX)
+        .unwrap_or(layout::ICON_BOX);
+    scale_from_box(base, tier, &metrics)
+}
+
+/// 把 100% 档的图标像素换成指定档位：保持「相对图标盒的偏移比例」。
+fn scale_from_box(base: i32, tier: layout::Tier, metrics: &layout::Metrics) -> i32 {
+    let (numerator, denominator) = match tier {
+        layout::Tier::Compact => (1, 1),
+        layout::Tier::Comfortable => (5, 4),
+        layout::Tier::Large => (3, 2),
+    };
+    let delta = base - layout::ICON_BOX;
+    metrics.icon_box + delta * numerator / denominator
 }
 
 /// 补偿表的可读摘要（日志用）：「4 个补偿：应用 ✓ 14px、刷新 ⟳ 11px、…」。
@@ -126,7 +151,8 @@ pub fn button(icon: &str, tooltip: &str) -> gtk::Button {
     button.add_css_class("flat");
     button.add_css_class(BUTTON_CLASS);
     button.set_child(Some(&image));
-    button.set_size_request(layout::ICON_BUTTON_WIDTH, layout::ICON_BUTTON_HEIGHT);
+    let metrics = layout::metrics();
+    button.set_size_request(metrics.icon_button_width, metrics.icon_button_height);
     button.set_tooltip_text(Some(tooltip));
     button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
     button
@@ -139,13 +165,11 @@ pub fn button(icon: &str, tooltip: &str) -> gtk::Button {
 #[must_use]
 pub fn check_button(request: (i32, i32), icon: Option<(&str, i32)>) -> Option<String> {
     let mut reasons = Vec::new();
-    if request != (layout::ICON_BUTTON_WIDTH, layout::ICON_BUTTON_HEIGHT) {
+    let metrics = layout::metrics();
+    if request != (metrics.icon_button_width, metrics.icon_button_height) {
         reasons.push(format!(
             "命中区请求 {}x{} ≠ 标准 {}x{}",
-            request.0,
-            request.1,
-            layout::ICON_BUTTON_WIDTH,
-            layout::ICON_BUTTON_HEIGHT
+            request.0, request.1, metrics.icon_button_width, metrics.icon_button_height
         ));
     }
     match icon {
@@ -153,7 +177,7 @@ pub fn check_button(request: (i32, i32), icon: Option<(&str, i32)>) -> Option<St
         Some((name, px)) => reasons.push(format!(
             "图标 {name} 画在 {px}px，但标准是 {}px（基准 {}px + 光学补偿表）",
             self::px(name),
-            layout::ICON_BOX
+            metrics.icon_box
         )),
         None => reasons.push("按钮里没有可测量的图标（GtkImage）".to_owned()),
     }
@@ -255,6 +279,55 @@ mod tests {
         // 命中区放下图标后左右各留 2px，高度等于最小点击区。
         const { assert!(layout::ICON_BUTTON_WIDTH - layout::ICON_BOX >= 4) };
         const { assert!(layout::ICON_BUTTON_HEIGHT == layout::MIN_TARGET) };
+    }
+
+    #[test]
+    fn optical_compensation_scales_with_the_tier() {
+        // §3.2：图标盒 16 / 20 / 24；补偿按**比例**缩放（18 → 27），不是加固定像素。
+        for tier in layout::Tier::ALL {
+            let metrics = layout::Metrics::for_tier(tier);
+            let box_px = metrics.icon_box;
+            // 允许区间也按比例缩放：−6..=+2 是 16px 盒上的口径，150% 档等价于 −9..=+3。
+            let (numerator, denominator) = match tier {
+                layout::Tier::Compact => (1, 1),
+                layout::Tier::Comfortable => (5, 4),
+                layout::Tier::Large => (3, 2),
+            };
+            let low = box_px + (-6) * numerator / denominator;
+            let high = box_px + 2 * numerator / denominator;
+            for (name, _, _) in OPTICAL_PX {
+                let value = px_at(name, tier);
+                assert_ne!(
+                    value,
+                    box_px,
+                    "{}：{name} 等于图标盒，补偿没生效",
+                    tier.id()
+                );
+                assert!(
+                    (low..=high).contains(&value),
+                    "{}：{name} 的补偿 {value}px 超出 {low}..={high}",
+                    tier.id()
+                );
+            }
+        }
+        // 规范点名的两个值：取消 ■ 18 → 27（不是 34）；刷新 ⟳ 14 → 21。
+        assert_eq!(
+            px_at("media-playback-stop-symbolic", layout::Tier::Compact),
+            18
+        );
+        assert_eq!(
+            px_at("media-playback-stop-symbolic", layout::Tier::Large),
+            27
+        );
+        assert_eq!(px_at("view-refresh-symbolic", layout::Tier::Large), 21);
+        // 未登记的图标恰好等于该档图标盒（16 / 20 / 24）。
+        for (tier, expected) in [
+            (layout::Tier::Compact, 16),
+            (layout::Tier::Comfortable, 20),
+            (layout::Tier::Large, 24),
+        ] {
+            assert_eq!(px_at("list-add-symbolic", tier), expected);
+        }
     }
 
     #[test]

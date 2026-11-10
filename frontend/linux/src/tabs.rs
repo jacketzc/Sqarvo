@@ -642,6 +642,29 @@ pub struct ObjectsPage {
 }
 
 impl ObjectsPage {
+    /// 切档后重设三列表格的固定列宽（重载 CSS 不会动列宽，否则「字变大了列没变」）。
+    pub(crate) fn reapply_tier(&self, _old: crate::layout::Tier, new: crate::layout::Tier) {
+        let m = crate::layout::Metrics::for_tier(new);
+        let columns = self.grid.columns();
+        if let Some(column) = columns
+            .item(0)
+            .and_then(|object| object.downcast::<gtk::ColumnViewColumn>().ok())
+        {
+            column.set_fixed_width(m.row_number_width);
+        }
+        if let Some(column) = columns
+            .item(1)
+            .and_then(|object| object.downcast::<gtk::ColumnViewColumn>().ok())
+        {
+            column.set_fixed_width(m.column_width);
+        }
+        eprintln!(
+            "[tier] Objects 表列宽已按 {} 重设（行号 {}，表名上限 {}）",
+            new.id(),
+            m.row_number_width,
+            m.column_width
+        );
+    }
     pub(crate) fn new() -> Rc<Self> {
         let title = gtk::Label::new(Some("Objects"));
         title.set_xalign(0.0);
@@ -782,7 +805,7 @@ impl ObjectsPage {
 
         // 行号列宽度复用数据网格的常量（`data_page::ROW_NUMBER_WIDTH`），不可拖。
         let number_column = gtk::ColumnViewColumn::new(Some("行号"), Some(number_factory));
-        number_column.set_fixed_width(crate::data_page::ROW_NUMBER_WIDTH);
+        number_column.set_fixed_width(crate::data_page::row_number_width());
         number_column.set_resizable(false);
         grid.append_column(&number_column);
 
@@ -790,7 +813,7 @@ impl ObjectsPage {
         let name_column = gtk::ColumnViewColumn::new(Some("表名"), Some(name_factory));
         name_column.set_expand(true);
         name_column.set_resizable(true);
-        name_column.set_fixed_width(crate::data_page::COLUMN_WIDTH);
+        name_column.set_fixed_width(crate::data_page::column_width());
         grid.append_column(&name_column);
 
         // 类型列固定窄宽（「物化视图」四个字放得下，可拖）。
@@ -2835,6 +2858,26 @@ impl TabSet {
             if let Some(sql) = tab.sql.as_ref() {
                 sql.scroll_to_first_column();
             }
+        }
+    }
+
+    /// 切档后把**已打开**的标签页重新落下新档位的尺寸（#160）。
+    ///
+    /// 数据页的列宽 / 行高请求、`Objects` 三列表的固定列宽都不会被「重载 CSS」改到，
+    /// 必须逐页重设；字体与行高由 CSS 自己换。
+    pub fn reapply_tier(&self, old: crate::layout::Tier, new: crate::layout::Tier) {
+        if let Some(objects) = self.objects.borrow().as_ref() {
+            objects.reapply_tier(old, new);
+        }
+        let mut pages = 0;
+        for tab in self.tabs.borrow().iter() {
+            if let Some(data) = tab.data.as_ref() {
+                data.reapply_metrics(old, new);
+                pages += 1;
+            }
+        }
+        if pages > 0 {
+            eprintln!("[tier] 已重设 {pages} 个表数据页的列宽 / 行高");
         }
     }
 

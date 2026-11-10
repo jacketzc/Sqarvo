@@ -1067,6 +1067,11 @@ struct Args {
     expect_about: Vec<String>,
     /// `--window-size <WIDTHxHEIGHT>`：取证用的初始窗口尺寸（产品默认 1200×800）。
     window_size: Option<(i32, i32)>,
+    /// `--tier <compact|comfortable|large>`：取证用的起始密度档（产品默认 compact / 记忆值）。
+    ///
+    /// 与 `--window-size` 同一次解析、同一套错误文案；只在「用户能走到」的意义上改用，
+    /// 不改变产品路径（菜单 / 快捷键才是用户入口）。
+    tier: Option<crate::layout::Tier>,
     // ---- #116 标签工作区 ----
     /// `--qa-tabs-file <path>`：标签工作区脚本（步骤见 `tabs::parse_script`）。
     tabs_script: Option<String>,
@@ -1253,6 +1258,7 @@ pub fn enabled() -> bool {
             || args.isolation_dialog
             || args.isolation_confirm
             || args.layout_audit
+            || args.tier.is_some()
             || args.tabs_script.is_some()
             || args.open_menu
             || !args.browse_steps.is_empty()
@@ -1773,6 +1779,12 @@ pub fn log_sql_preview(sql: &str) {
 #[must_use]
 pub fn window_size() -> Option<(i32, i32)> {
     ARGS.get().and_then(|args| args.window_size)
+}
+
+/// `--tier <compact|comfortable|large>`：起始密度档（未指定时为 `None`，按记忆 / 默认走）。
+#[must_use]
+pub fn tier() -> Option<crate::layout::Tier> {
+    ARGS.get().and_then(|args| args.tier)
 }
 
 /// 是否在截图之后做「无裁切」量化布局自检（`--qa-layout-audit`）。
@@ -2710,6 +2722,15 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.window_size = Some(parse_window_size(value)?);
                 index += 2;
             }
+            "--tier" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--tier 需要 compact|comfortable|large".to_owned())?;
+                parsed.tier = Some(crate::layout::Tier::from_id(value).ok_or_else(|| {
+                    format!("--tier 只能是 compact|comfortable|large，实际：{value}")
+                })?);
+                index += 2;
+            }
             "--qa-password-env" => {
                 let value = args
                     .get(index + 1)
@@ -3315,6 +3336,24 @@ mod tests {
         assert_eq!(parsed.exit_after_ms, Some(9000));
         // 不设置时没有定时退出：正常交互路径不受影响。
         assert_eq!(parse(&args(&["app"])).unwrap().exit_after_ms, None);
+    }
+
+    #[test]
+    fn tier_flag_takes_one_of_the_three_ids() {
+        let parsed = parse(&args(&["app", "--tier", "comfortable"])).expect("解析 --tier");
+        assert_eq!(parsed.tier, Some(crate::layout::Tier::Comfortable));
+        assert!(enabled_with(&parsed));
+        let parsed = parse(&args(&["app", "--tier=large"])).expect("解析 --tier=large");
+        assert_eq!(parsed.tier, Some(crate::layout::Tier::Large));
+        // 拼错不静默退回默认档：报错文案与 `--window-size` 同一风格。
+        let error = parse(&args(&["app", "--tier", "huge"])).expect_err("非法档位要报错");
+        assert!(error.contains("compact|comfortable|large"), "{error}");
+        assert!(parse(&args(&["app", "--tier"])).is_err(), "缺值要报错");
+    }
+
+    /// `parse` 之后的 QA 开关判定（`enabled()` 读全局 OnceLock，单测里直接看字段）。
+    fn enabled_with(parsed: &Args) -> bool {
+        parsed.tier.is_some() || parsed.capture.is_some() || parsed.report_monitor
     }
 
     #[test]

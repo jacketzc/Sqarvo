@@ -1354,7 +1354,7 @@ impl TreePanel {
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         // 侧栏最小宽度归外壳（GtkPaned）管：树自身只声明 §1 的可拖拽下限 180，
         // 不能再钉 260——那会让 237 的默认宽度和 180 的下限都到不了。
-        root.set_size_request(crate::layout::SIDEBAR_MIN, -1);
+        root.set_size_request(crate::layout::metrics().sidebar_min, -1);
         // 树本体从工具条下方**直接开始**：搜索框已搬到窗口左下角（状态栏左边沟），
         // 原来「搜索框 + 分割线」占的那一条不在树里了，也不再留分割线。
         root.append(&stack);
@@ -4413,7 +4413,24 @@ fn row_of_item(item: &gtk::ListItem) -> Option<Row> {
     Some(object.row())
 }
 
-/// 树的 CSS：箭头按钮要小，否则每行都被撑高、可视行数变少。
+// 树的 CSS：箭头按钮要小，否则每行都被撑高、可视行数变少。
+thread_local! {
+    /// 对象树附加样式的 provider（切档时用同一个句柄重载）。
+    static STYLE_PROVIDER: std::cell::RefCell<Option<gtk::CssProvider>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn stylesheet() -> String {
+    // 箭头的命中盒按当前档位的度量取，不再写死 18。
+    let m = metrics();
+    format!(
+        r#"
+        button.tree-arrow {{ min-width: {tree_arrow_box}px; min-height: {tree_arrow_box}px; padding: 0; margin: 0; }}
+        "#,
+        tree_arrow_box = m.tree_arrow_box,
+    )
+}
+
 fn install_css() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -4424,19 +4441,23 @@ fn install_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    // 箭头的命中盒按当前档位的度量取（#159），不再写死 18。
-    let m = metrics();
-    provider.load_from_string(&format!(
-        r#"
-        button.tree-arrow {{ min-width: {tree_arrow_box}px; min-height: {tree_arrow_box}px; padding: 0; margin: 0; }}
-        "#,
-        tree_arrow_box = m.tree_arrow_box,
-    ));
+    provider.load_from_string(&stylesheet());
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    STYLE_PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider));
+}
+
+/// 切档时重载对象树附加样式（同一个 provider）。
+pub(crate) fn reload_css() {
+    let css = stylesheet();
+    STYLE_PROVIDER.with(|slot| {
+        if let Some(provider) = slot.borrow().as_ref() {
+            provider.load_from_string(&css);
+        }
+    });
 }
 
 /// `candidate` 是否是 `target` 的祖先层（用于搜索跳转的逐层展开）。
