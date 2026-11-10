@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ┌ 表列表（MetadataService.ListNodes）┐ ┌ 数据页 ────────────────────────────┐
-//! │ demo_items  表                      │ │ 提交 · 撤销 · 删除 · 新增 · 事务    │
+//! │ demo_items  表                      │ │ 提交 · 撤销 · 删除 · 开始事务      │
 //! │ demo_notes  表                      │ │ 只读/断连横幅                      │
 //! └─────────────────────────────────────┘ │ ● ──── 漏斗 眼睛 导出        │
 //!                                          │ GtkColumnView（虚拟化，cursor 翻页）│
@@ -740,7 +740,6 @@ struct DataButtons {
     commit_changes: gtk::Button,
     discard: gtk::Button,
     delete_row: gtk::Button,
-    add_row: gtk::Button,
     /// 导出当前页（#120）。
     export: gtk::Button,
 }
@@ -754,8 +753,9 @@ impl DataPage {
         banner.set_revealed(false);
         banner.set_button_label(Some("重启 Sqarvo"));
 
+        // 「开始事务」是本行的中性动作：不挂 flat（那会丢掉背景框），也不用
+        // suggested-action / destructive-action 那种强调色——开事务不是主操作。
         let begin = gtk::Button::with_label("开始事务");
-        begin.add_css_class("flat");
         begin.set_tooltip_text(Some("在当前会话开始一个显式事务"));
 
         let readonly_check = gtk::CheckButton::with_label("只读");
@@ -806,13 +806,9 @@ impl DataPage {
         delete_row.set_sensitive(false);
         delete_row.set_tooltip_text(Some("把选中行标记为待删除（提交前仍可撤销）"));
 
-        // 新增行（#88）：空行进入编辑态，默认值列显示数据库默认，自增列留空。
-        let add_row = gtk::Button::with_label("新增");
-        add_row.add_css_class("suggested-action");
-        add_row.set_sensitive(false);
-        add_row.set_tooltip_text(Some(
-            "在表末尾插入一个新行：有默认值的列显示数据库默认值，自增列留空（省略即由数据库生成）",
-        ));
+        // 「新增行」（#88）不在这一行：入口是状态栏行操作组的 `+`（`RowOp::Add`）与
+        // 「表」菜单的「新增行」——两处都落到 `DataPage::begin_insert`。
+        // 工具条上再放一个同样的按钮只是第三个入口，还要和这一行的宽度预算抢像素。
 
         let spinner = gtk::Spinner::new();
         spinner.set_visible(false);
@@ -879,14 +875,13 @@ impl DataPage {
         badges_row.set_margin_bottom(4);
         badges_row.set_visible(false);
 
-        // 行变更按钮 + 事务按钮 + 状态簇 + 次要动作图标：960 宽下这一行有 9 个控件
-        // （外加状态簇里的 spinner / 消息 / 状态圆点）。
+        // 行变更按钮 + 事务按钮 + 状态簇 + 次要动作图标：960 宽下这一行要同时装下
+        // 4 个动作按钮、状态簇里的 spinner / 消息 / 状态圆点与 3 个图标。
         // v0.2.3.3 把「开始事务」从上一行并进来之后，960×640 实测「需求 433 > 分配 417」
-        // （`--qa-layout-audit`）：行内间距先收到 4、按钮横向 padding 收到 5px；事务打开后
-        // 换成两个四字按钮仍超 24px，间距再收到 2、padding 4px（见 `install_css`）。
-        // v0.2.4 状态行并进本行后，宽度让给状态簇；后来「事务徽标 + 脏行计数」两段
-        // 常驻文字收成一枚 24×24 的圆点，整行最小需求降到 409（分配 417，
-        // `--qa-layout-audit` 实测 0 超限）。
+        // （`--qa-layout-audit`）：行内间距收到 2、按钮横向 padding 收到 5 → 4px。
+        // v0.2.4 状态行并进本行、两段常驻文字收成一枚 24×24 圆点，需求降到 409。
+        // v0.2.4 末：工具条上的「新增」删掉（入口在状态栏行操作组），省下的宽度还给
+        // 剩下四个按钮的内距——`install_css` 里 padding 回到 4px 6px，需求仍在预算内。
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         controls.add_css_class("sqarvo-table-actions");
         controls.set_margin_start(12);
@@ -895,14 +890,18 @@ impl DataPage {
         // 与下方表格外框之间仍留 6。
         controls.set_margin_top(8);
         controls.set_margin_bottom(6);
+        // 行内容高度按 workspace-model §2.1 的口径钉在 32（46 = 上 8 + 内容 32 + 下 6）：
+        // 只靠按钮的自然高度时，按钮一长高就把下边距挤掉（实测按钮 32 高时留白只剩 2px）。
+        // 按钮渲染高度正好是 32（`padding: 4px 6px` + 13px 字号），不超过 24 的最小命中区
+        // 之外的任何余量都由这一行自己留出来。
+        controls.set_height_request(32);
         // 状态簇整体与图标按钮同一垂直中线：标签 / spinner 各自 valign=CENTER，
         // 容器本身也居中，行高由按钮决定时不会出现「字比图标低一行」。
         controls.set_valign(gtk::Align::Center);
         controls.append(&commit_changes);
         controls.append(&discard);
         controls.append(&delete_row);
-        controls.append(&add_row);
-        // 事务动作紧跟在「新增」之后：「开始事务」常驻；开事务后原位换成
+        // 事务动作紧跟行变更动作：「开始事务」常驻；开事务后原位换成
         // 「提交事务 / 回滚事务」（互斥由 `sync_badge` 统一处理）。
         controls.append(&begin);
         controls.append(&commit_txn);
@@ -1282,7 +1281,6 @@ impl DataPage {
                 commit_changes,
                 discard,
                 delete_row,
-                add_row,
                 export,
             },
 
@@ -1401,13 +1399,8 @@ impl DataPage {
                 .connect_clicked(move |_| page.delete_selected_row());
         }
         {
-            let page = Rc::clone(&page);
-            page.buttons
-                .add_row
-                .clone()
-                .connect_clicked(move |_| page.begin_insert());
-        }
-        {
+            // 新增行的工具条入口已删（v0.2.4）：状态栏 `+` / 菜单 / 快捷键都走
+            // `perform_row_op(RowOp::Add)` → `begin_insert`。
             // EX：导出当前页已加载行（#120）。与菜单 / Ctrl+Shift+E 走同一个入口。
             let page = Rc::clone(&page);
             page.buttons.export.clone().connect_clicked(move |_| {
@@ -3174,9 +3167,10 @@ impl DataPage {
 
     // ---- QA：插入行与隔离级别（#88） ----
 
-    /// QA：点「新增行」（与工具栏按钮同一条路径）。
+    /// QA：点「新增行」。走状态栏行操作组的那条路径（`RowOp::Add` → `begin_insert`），
+    /// 工具条上的按钮已删，QA 不该再假设它存在。
     pub fn qa_add_row(self: &Rc<Self>) {
-        self.begin_insert();
+        self.perform_row_op(RowOp::Add);
     }
 
     /// QA：给新行某列填值（`--qa-data-insert-set column:value`）。
@@ -4209,12 +4203,13 @@ impl DataPage {
 
     /// 行操作可用性：页内按钮直接读自身 `sensitive`，不重复一遍判定条件。
     ///
-    /// 「重新读取」例外：它的入口只在状态栏（工具条那个纯重复的图标已删除），
-    /// 所以可用性在这里按状态判定（[`Self::refresh_available`]）。
+    /// 两个例外：①「新增行」的工具条按钮已删（入口在状态栏 `+` / 「表」菜单），可用性
+    /// 走显式谓词 [`Self::add_row_available`]；②「重新读取」的入口只在状态栏（工具条那个
+    /// 纯重复的图标已删除），所以可用性在这里按状态判定（[`Self::refresh_available`]）。
     #[must_use]
     pub fn row_ops_state(&self) -> RowOpsState {
         let state = RowOpsState {
-            add: self.buttons.add_row.is_sensitive(),
+            add: self.add_row_available(),
             delete: self.buttons.delete_row.is_sensitive(),
             apply: self.buttons.commit_changes.is_sensitive(),
             discard: self.buttons.discard.is_sensitive(),
@@ -4257,6 +4252,19 @@ impl DataPage {
             .is_some_and(|draft| draft.dirty_rows() > 0);
         let has_insert = self.insert.borrow().is_some();
         has_table && state_ok && !self.busy.get() && !dirty && !has_insert
+    }
+
+    /// 「新增行」能否进入。
+    ///
+    /// 工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏行操作组 `+` 与「表」菜单的
+    /// 唯一可用性来源，所以判定必须显式写在这里，不能再读某个按钮的 `sensitive`。
+    fn add_row_available(&self) -> bool {
+        let editing_enabled = !self.is_read_only()
+            && matches!(
+                self.state.get(),
+                DataState::Ready | DataState::Empty | DataState::Error
+            );
+        editing_enabled && self.insert.borrow().is_none() && !self.busy.get()
     }
 
     /// 为什么行操作一个都不能点（状态栏 tooltip 用，按当前状态给具体原因）。
@@ -5795,11 +5803,6 @@ impl DataPage {
             "destructive-action",
             editing_enabled && has_selection && !busy,
         );
-        set_action(
-            &self.buttons.add_row,
-            "suggested-action",
-            editing_enabled && !has_insert && !busy,
-        );
         self.buttons
             .delete_row
             .set_tooltip_text(Some(if has_insert {
@@ -5823,7 +5826,6 @@ impl DataPage {
         // 只读原因一旦成立，编辑类按钮一律禁用（不是靠置灰暗示，状态行同时给出原因）。
         if let Some(reason) = self.read_only_reason() {
             self.buttons.delete_row.set_sensitive(false);
-            self.buttons.add_row.set_sensitive(false);
             self.buttons.commit_changes.set_sensitive(false);
             self.buttons.discard.set_sensitive(false);
             self.status.set_tooltip_text(Some(&reason));
@@ -6064,12 +6066,15 @@ fn install_css() {
         .sqarvo-type-cell { min-height: 24px; }
         /* #133：类型条带不再把最小宽度上报给外层后，窗口在 960 宽下不再被撑大，
            这一行的控件必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
-           v0.2.3.3 收到 5px：把「开始事务」并进这一行后 9 个控件，960×640 打开表时
-           需求从 433 降到 407（分配 417，`--qa-layout-audit` 可复核）。
-           事务打开后「开始事务」换成「提交事务 / 回滚事务」两个四字按钮，5px 下
-           960×640 实测需求 463 > 分配 439（超 24）：横向 padding 再收到 4px、行内
-           间距 4 → 2，需求降到 433 以内，两种事务状态都不裁字。 */
-        .sqarvo-table-actions button { padding: 2px 4px; }
+
+           v0.2.3.3 把「开始事务」并进这一行时，9 个控件在 960×640 下要求 433，
+           横向内距因此一路收到 4px。v0.2.4 末删掉工具条上的「新增」（入口在状态栏
+           行操作组）后，剩 4 个动作按钮，宽度还回来一点：内距改成 4px 6px，
+           按钮盒从 32 宽 × 28 高变成 36 宽 × 32 高
+           （32 正好是 §2.1 里这一行的内容高，工具条 46 的口径不变，控件行也显式
+           `set_height_request(32)` 把上下 8 / 6 的留白守住）。
+           960×640 实测「需求 407 ≤ 分配 417」（`--qa-layout-audit` 可复核）。 */
+        .sqarvo-table-actions button { padding: 4px 6px; }
         .sqarvo-header-name-row { min-height: 22px; }
         .sqarvo-header-name { font-size: 12px; font-weight: 600; }
         .sqarvo-header-name.sqarvo-header-sorted { color: @accent_color; }

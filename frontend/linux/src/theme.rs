@@ -141,7 +141,7 @@ pub fn stylesheet() -> String {
             background-color: alpha(@window_fg_color, 0.35);
         }}
         /* 红 = 有未提交的更改：用 `@accent_bg_color`（suggested-action 的底色 token），
-           与「新增」按钮同一色系——Yaru 下就是橙红，Adwaita 下随系统强调色走。 */
+           与「提交」按钮同一色系——Yaru 下就是橙红，Adwaita 下随系统强调色走。 */
         .sqarvo-status-dot.{status_dot_dirty} {{
             background-color: @accent_bg_color;
         }}

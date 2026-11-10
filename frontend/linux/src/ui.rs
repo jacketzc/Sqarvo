@@ -4547,7 +4547,8 @@ fn install_window_actions(
             if let Some(workspace) = state.workspace.borrow().as_ref().cloned()
                 && let Some(data) = workspace.tabs.data_page()
             {
-                data.begin_insert();
+                // 与状态栏行操作组 / 快捷键同一个入口（工具条上的按钮已在 v0.2.4 删除）。
+                data.perform_row_op(crate::data_page::RowOp::Add);
             }
         });
     }

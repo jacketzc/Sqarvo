@@ -999,7 +999,7 @@ struct Args {
     /// `--qa-expect-objects <field>=<value>`：`Objects` 固定页的断言（可重复，#135）。
     expect_objects: Vec<ObjectsExpectation>,
     // ---- #88 插入行与隔离级别 ----
-    /// `--qa-data-insert`：点「新增行」（与用户点工具栏按钮同一条路径）。
+    /// `--qa-data-insert`：点「新增行」（走状态栏行操作组 `RowOp::Add` 那条路径）。
     data_insert: bool,
     /// `--qa-data-insert-set <column:value>`：给新行某列填值（按列名，可重复）。
     data_insert_set: Vec<(String, String)>,
