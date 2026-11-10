@@ -29,6 +29,12 @@ pub const STATUS_DOT_BUTTON_CLASS: &str = "sqarvo-status-dot-button";
 /// 状态圆点「有未提交的更改」态（灰 → accent 底色）。
 pub const STATUS_DOT_DIRTY_CLASS: &str = "sqarvo-status-dot-dirty";
 
+/// 状态圆点「事务已打开」态（灰 → 与状态行 `.warning` 文字同源的棕色）。
+///
+/// 与 [`STATUS_DOT_DIRTY_CLASS`] 互斥：脏行压过事务态（见 `data_page::sync_status_dot`），
+/// 两枚 class 每次刷新都显式 add / remove 一次，不会同时残留。
+pub const STATUS_DOT_TXN_CLASS: &str = "sqarvo-status-dot-txn";
+
 /// 安装紧凑密度 CSS（进程内只装一次）。
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -135,13 +141,24 @@ pub fn stylesheet() -> String {
             min-width: {target}px;
             min-height: {target}px;
         }}
-        /* 灰 = 没有未提交的更改（不是可点动作，别抢注意力）。 */
+        /* 灰 = 没有未提交的更改、也没有打开的事务（不是可点动作，别抢注意力）。 */
         .sqarvo-status-dot {{
             border-radius: 99px;
             background-color: alpha(@window_fg_color, 0.35);
         }}
+        /* 棕 = 事务已打开（含只读 / 失败态）：token 与状态行 `.warning` 文字同源
+           （Adwaita / Yaru 的 `.warning` 是 `color: var(--warning-color)`，
+           `@warning_color` 就是它；Yaru 浅色下 = #9f4700）。这句状态原来以
+           「事务状态：事务中」的橙棕文字挂在动作行上，v0.2.4 后收进这枚圆点：
+           文字不写了，事务在不在靠颜色 + tooltip 读。规则放在脏行之前——
+           两枚 class 本已互斥，这里只是让 accent 在极端情况下也压得住。 */
+        .sqarvo-status-dot.{status_dot_txn} {{
+            background-color: @warning_color;
+        }}
         /* 红 = 有未提交的更改：用 `@accent_bg_color`（suggested-action 的底色 token），
-           与「提交」按钮同一色系——Yaru 下就是橙红，Adwaita 下随系统强调色走。 */
+           与「提交」按钮同一色系——Yaru 下就是橙红，Adwaita 下随系统强调色走。
+           优先级最高：脏行本身就是事务里的改动，「有待提交的东西」比「正在事务里」
+           更需要被看见。 */
         .sqarvo-status-dot.{status_dot_dirty} {{
             background-color: @accent_bg_color;
         }}
@@ -385,6 +402,7 @@ pub fn stylesheet() -> String {
         status_dot = layout::STATUS_DOT_DIAMETER,
         status_dot_button = STATUS_DOT_BUTTON_CLASS,
         status_dot_dirty = STATUS_DOT_DIRTY_CLASS,
+        status_dot_txn = STATUS_DOT_TXN_CLASS,
     )
 }
 
@@ -569,8 +587,10 @@ mod tests {
         // 圆点直径必须是 6–7px（用户口径），且不超过漏斗图标盒的一半。
         const { assert!(layout::STATUS_DOT_DIAMETER * 2 <= layout::ICON_BOX) };
         const { assert!(layout::STATUS_DOT_DIAMETER == 6 || layout::STATUS_DOT_DIAMETER == 7) };
-        // 两态只有两个颜色 token：未激活 = 前景色 35% 的灰；有脏行 = suggested-action
-        // 用的 `@accent_bg_color`（Yaru 下橙红）。不许出现第三态颜色。
+        // 三态各用一个颜色 token，不许写死 hex：未激活 = 前景色 35% 的灰；事务已打开
+        // = `@warning_color`（状态行 `.warning` 文字用的就是 `var(--warning-color)`，
+        // 所以圆点棕色与原来那句「事务状态：事务中」同源）；有脏行 = suggested-action
+        // 用的 `@accent_bg_color`（Yaru 下橙红）。
         let start = css.find(".sqarvo-status-dot {").expect("缺少状态圆点规则");
         let rule = &css[start..start + css[start..].find('}').expect("规则应当闭合")];
         assert!(
@@ -581,12 +601,35 @@ mod tests {
             rule.contains("border-radius: 99px;"),
             "圆点必须是圆的（999 会被钳到半个盒子）：{rule}"
         );
+        let rule = |selector: String| -> &str {
+            let start = css
+                .find(&selector)
+                .unwrap_or_else(|| panic!("缺少规则：{selector}"));
+            &css[start..start + css[start..].find('}').expect("规则应当闭合")]
+        };
+        let txn = rule(format!(
+            ".sqarvo-status-dot.{} {{\n            background-color: @warning_color;",
+            STATUS_DOT_TXN_CLASS
+        ));
         assert!(
-            css.contains(&format!(
-                ".sqarvo-status-dot.{} {{\n            background-color: @accent_bg_color;",
-                STATUS_DOT_DIRTY_CLASS
-            )),
-            "有脏行必须是 accent 底色（与 suggested-action 同一 token）"
+            !txn.contains('#'),
+            "事务激活态必须用 token（@warning_color），不许写死 hex：{txn}"
+        );
+        let dirty = rule(format!(
+            ".sqarvo-status-dot.{} {{\n            background-color: @accent_bg_color;",
+            STATUS_DOT_DIRTY_CLASS
+        ));
+        assert!(
+            !dirty.contains('#'),
+            "有脏行必须是 accent 底色（与 suggested-action 同一 token）：{dirty}"
+        );
+        // 优先级写进 CSS 顺序：脏行规则排在事务规则之后，两枚 class 万一同时出现
+        // （状态刷新与脏行刷新交错）也是 accent 赢——与 `sync_status_dot` 的
+        // 「脏行 > 事务 > 灰」同一口径。
+        assert!(
+            css.find(&format!(".sqarvo-status-dot.{STATUS_DOT_DIRTY_CLASS} {{"))
+                > css.find(&format!(".sqarvo-status-dot.{STATUS_DOT_TXN_CLASS} {{")),
+            "脏行规则必须排在事务规则之后（accent 压过 warning）"
         );
     }
 

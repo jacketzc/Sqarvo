@@ -125,6 +125,9 @@ pub struct DataPageObservation {
     pub status_dot_tooltip: String,
     /// 状态圆点是否处于「有未提交的更改」态（CSS class 实测，不是状态机字段）。
     pub status_dot_dirty: bool,
+    /// 状态圆点是否处于「事务已打开」态（CSS class 实测；与 `status_dot_dirty` 互斥，
+    /// 两者都 false 就是灰点）。
+    pub status_dot_txn: bool,
     /// 徽标上带的 CSS 类（正常状态应恰好一个）。
     pub badge_classes: Vec<&'static str>,
     /// 「提交事务」是否可点。
@@ -580,7 +583,7 @@ pub struct DataPage {
     /// 一枚 7px 的实心圆（`layout::STATUS_DOT_DIAMETER`，约漏斗墨迹的一半），
     /// 悬停读到「事务中 · 脏行 3 · 待提交 2 条」+ 状态说明。
     status_dot: gtk::Button,
-    /// 圆点本体（视觉直径 7px、灰 / 红两态挂 CSS class；不参与命中区计算）。
+    /// 圆点本体（视觉直径 7px、灰 / 棕 / 红三态挂 CSS class；不参与命中区计算）。
     status_dot_core: gtk::Box,
     /// 数据网格的滚动容器（布局自检按视口算，不按全部列的自然宽度）。
     grid_scroll: gtk::ScrolledWindow,
@@ -769,8 +772,8 @@ impl DataPage {
         rollback.add_css_class("destructive-action");
         rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
         // 事务动作与行变更动作同一行：默认只有「开始事务」；开事务后才出现
-        // 「提交事务 / 回滚事务」。「自动提交」徽标删掉——它不是可点的动作，也不是
-        // 用户需要盯着看的状态（事务状态在状态栏里只在真有事务时出现）。
+        // 「提交事务 / 回滚事务」。事务在不在由状态圆点（灰 / 棕）+ tooltip 表达，
+        // 动作行上不再写「事务状态：…」这样的文字。
         commit_txn.set_visible(false);
         rollback.set_visible(false);
         // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
@@ -842,8 +845,8 @@ impl DataPage {
         // 状态圆点（v0.2.4）：把上面两段常驻文字收成一枚实心小圆点。
         //
         // - 视觉：直径 `layout::STATUS_DOT_DIAMETER`（7px ≈ 漏斗墨迹 12×11 的一半），
-        //   由 CSS 上色（`.sqarvo-status-dot`：灰 = 没有未提交的更改，accent 底 =
-        //   有脏行 / 新行）。
+        //   由 CSS 上色（`.sqarvo-status-dot`：灰 = 没有未提交的更改、也没有打开的事务；
+        //   棕 = 事务已打开；accent 底 = 有脏行 / 新行）。
         // - 命中区：24 × 24（§11），视觉小、hover 区不小；tooltip 里是原来的两段
         //   文案 + 事务状态说明（`sync_status_dot` 实时刷新）。
         // - 不做成可点动作：`set_focusable(false)` 让它不进 Tab 序列，但仍在无障碍
@@ -3934,14 +3937,24 @@ impl DataPage {
             self.pending_batch.replace(None);
             self.callbacks.reload.as_ref()();
         }
-        self.set_status(
-            &format!("事务状态：{}", current.label()),
-            if current.can_rollback() {
-                "warning"
-            } else {
-                "success"
-            },
-        );
+        // 事务状态**不再**写可见过程消息（v0.2.4）：原来这里 `set_status("事务状态：{label}")`
+        // 会在动作行上留下「事务状态：事务中」/「事务状态：自动提交」两句文字，与圆点重复。
+        // 现在状态只在两处表达——状态圆点的颜色（打开 = 棕，见 `sync_status_dot`）+ 它的
+        // tooltip（首段 `label()`、次段状态说明，失败态写「事务失败（只能回滚）」/「事务失败：
+        // 只能回滚」）。这里不调 `set_status`，也就不会覆盖掉别的路径（读取 / 提交批次 / 错误）
+        // 正在显示的过程消息。
+        //
+        // 唯一要擦的是事务动作自己写的在途提示（`confirm_begin_transaction` 的 `begin_summary`
+        // 写「开始事务：…」，提交 / 回滚确认回调写「正在提交事务…」「正在回滚事务…」）：事务
+        // 状态落定后它们就过期了，以前靠上面那句「事务状态：」盖掉，现在没人盖，会长期停在动作
+        // 行上。口径同 `finish_load` 擦「正在读取…」——只按前缀认领这三句，错误与其它进度消息
+        // 一律不动。
+        for prefix in ["开始事务", "正在提交事务", "正在回滚事务"] {
+            if self.status.text().starts_with(prefix) {
+                self.set_status("", "normal");
+                break;
+            }
+        }
         self.update_dirty_label();
         self.update_buttons();
     }
@@ -4092,6 +4105,9 @@ impl DataPage {
             status_dot_dirty: self
                 .status_dot_core
                 .has_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS),
+            status_dot_txn: self
+                .status_dot_core
+                .has_css_class(crate::theme::STATUS_DOT_TXN_CLASS),
             badge_classes: {
                 let badge = self.badge.borrow();
                 TXN_CSS_CLASSES
@@ -5854,14 +5870,22 @@ impl DataPage {
         self.sync_status_dot();
     }
 
-    /// 刷新状态圆点：颜色（灰 / 红）与 tooltip（原来的两段文案 + 事务状态说明）。
+    /// 刷新状态圆点：颜色（灰 / 棕 / 红）与 tooltip（原来的两段文案 + 事务状态说明）。
     ///
     /// 文案来源仍是 `txn_label` / `dirty_label`（两者只从可见布局里摘出，文本照常更新），
     /// 所以 tooltip、QA 断言、状态栏三处读的是**同一份字符串**：tooltip 不会说「脏行 3」
     /// 而断言读到 2。
     ///
-    /// 颜色口径：有待提交内容（脏行 / 标记删除 / 新行草稿）→ `@accent_bg_color`
-    /// （与「新增」的 suggested-action 同一个 token，Yaru 下就是橙红）；否则灰点。
+    /// 颜色口径（互斥三态，优先级自上而下）：
+    /// 1. 有待提交内容（脏行 / 标记删除 / 新行草稿）→ `@accent_bg_color`
+    ///    （与「新增」的 suggested-action 同一个 token，Yaru 下就是橙红）；
+    /// 2. 事务已打开（读写 / 只读 / 失败态，即 `can_commit() || can_rollback()`）→
+    ///    `@warning_color`（状态行 `.warning` 文字用的同一个 token，Yaru 浅色下 #9f4700）。
+    ///    「事务状态：事务中」这句可见文字已经撤掉，事务在不在只靠这枚棕色圆点 + tooltip；
+    /// 3. 其余（自动提交 / 已断开）→ 灰点。
+    ///
+    /// 两枚 class 每次都显式落定（add 的那一路同时 remove 另一枚），所以脏行与事务
+    /// 同时刷新时不会留下上一态的 class。
     fn sync_status_dot(&self) {
         let txn = self.txn_label.text().to_string();
         let dirty = self.dirty_label.text().to_string();
@@ -5884,12 +5908,25 @@ impl DataPage {
         self.status_dot.set_tooltip_text(Some(&tooltip));
         self.status_dot
             .update_property(&[gtk::accessible::Property::Label(&tooltip)]);
-        if self.pending_change_count() > 0 {
-            self.status_dot_core
-                .add_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
+        // 失败态也能回滚，所以「事务打开」= 能提交或能回滚；自动提交 / 已断开都不算。
+        let txn_open = {
+            let badge = self.badge.borrow();
+            badge.can_commit() || badge.can_rollback()
+        };
+        let (dirty_on, txn_on) = if self.pending_change_count() > 0 {
+            (true, false)
         } else {
-            self.status_dot_core
-                .remove_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
+            (false, txn_open)
+        };
+        for (class, on) in [
+            (crate::theme::STATUS_DOT_DIRTY_CLASS, dirty_on),
+            (crate::theme::STATUS_DOT_TXN_CLASS, txn_on),
+        ] {
+            if on {
+                self.status_dot_core.add_css_class(class);
+            } else {
+                self.status_dot_core.remove_css_class(class);
+            }
         }
         self.status_dot.set_visible(self.table.borrow().is_some());
     }

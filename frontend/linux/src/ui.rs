@@ -4021,9 +4021,10 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             ));
         }
         passed.push(format!(
-            "状态圆点 tooltip=「{}」（有未提交更改={}）",
+            "状态圆点 tooltip=「{}」（有未提交更改={}，事务打开={}）",
             tooltip.replace('\n', "⏎"),
-            observed.status_dot_dirty
+            observed.status_dot_dirty,
+            observed.status_dot_txn
         ));
     }
 
