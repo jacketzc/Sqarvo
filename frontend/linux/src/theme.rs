@@ -82,18 +82,41 @@ pub fn stylesheet() -> String {
         window.{window_class} columnview.sqarvo-grid > listview > row {{
             min-height: {data_row}px;
         }}
-        window.{window_class} columnview.sqarvo-grid header button {{
-            min-height: {tree_row}px;
+        /* 表头只有**一行**（「列名 · 原始类型」）。底色取原来那条类型提示行的实测色：
+           `#fafafa` = `@theme_bg_color`（原 `sqarvo-type-row` 没有自己的底色，露出的
+           就是窗口 / 表格底色）；表头按钮原本的白底（`@headerbar_bg_color`）因此被
+           压平，表头与类型提示合成一条 30px 的条带（原来是 24px 类型行 + 30px 列名行
+           = 54px）。点击列头 = 查看列属性，hover 只做轻量反馈。 */
+        window.{window_class} columnview.sqarvo-grid > header > button {{
+            min-height: 26px;
+            padding: 2px 8px;
             font-size: {ui}px;
+            font-weight: 600;
+            color: @theme_fg_color;
+            background-color: @theme_bg_color;
+            background-image: none;
+            box-shadow: none;
+            border-radius: 0;
+        }}
+        /* Adwaita 给列表头的是弱化前景色（实测 #b4b4b4 上下），而且套在**标题 label**
+           这一层：只在按钮上给 `color` 不够。表头现在只剩这一行、又承载原始类型，
+           必须与数据行同一档可读性（实测与数据行同为 #3d3d3d）。 */
+        window.{window_class} columnview.sqarvo-grid > header > button label {{
+            color: @theme_fg_color;
+        }}
+        window.{window_class} columnview.sqarvo-grid > header > button:hover {{
+            background-color: alpha(@accent_bg_color, 0.10);
+        }}
+        window.{window_class} columnview.sqarvo-grid > header > button:active {{
+            background-color: alpha(@accent_bg_color, 0.18);
         }}
 
         /* 表格右边界：Adwaita 的列分隔线画在「每个单元格 / 表头按钮的 border-left」上，
            最后一列因此没有右边的竖线——窄表看起来像缺一条边，宽表被视口裁切时也看不出
-           表格在哪里结束。这里给最后一列补一条右侧竖线，颜色与列分隔线一致；类型条带的
-           最后一格同样补上，让表头 / 类型行 / 数据行在同一条竖线上收口。 */
+           表格在哪里结束。这里给最后一列补一条右侧竖线，颜色与列分隔线一致；数据行与
+           表头在同一条竖线上收口（表头只剩一行，没有第二条类型条带要对齐）。 */
         window.{window_class} columnview.sqarvo-grid > listview > row > cell:last-child,
-        window.{window_class} columnview.sqarvo-grid > header > button:last-child,
-        window.{window_class} .sqarvo-type-row > box.sqarvo-type-cell:last-child {{
+        window.{window_class} columnview.sqarvo-grid > header > button:last-child {{
             border-right: 1px solid alpha(currentColor, 0.10);
         }}
 
@@ -495,11 +518,11 @@ mod tests {
     fn grid_draws_its_right_edge() {
         let css = stylesheet();
         // 用户反馈「表格绘制时右侧边框遗漏」：Adwaita 的列分隔线是单元格的 border-left，
-        // 最后一列没有右边线。规则要覆盖数据行、表头与类型条带三处，否则三者右侧不齐。
+        // 最后一列没有右边线。规则要覆盖数据行与表头两处（表头已合并成一行，没有独立的
+        // 类型条带），否则两者右侧不齐。
         for selector in [
             "listview > row > cell:last-child",
             "header > button:last-child",
-            ".sqarvo-type-row > box.sqarvo-type-cell:last-child",
         ] {
             assert!(css.contains(selector), "缺少表格右边界规则：{selector}");
         }
@@ -507,6 +530,38 @@ mod tests {
             css.contains("border-right: 1px solid alpha(currentColor, 0.10)"),
             "右边界线宽 / 颜色要与列分隔线一致"
         );
+    }
+
+    #[test]
+    fn grid_header_is_one_row_with_type_strip_background() {
+        let css = stylesheet();
+        // 表头合并成一行（「列名 · 原始类型」）：底色取原来那条类型提示行的窗口底色，
+        // 前景必须与数据行同档（Adwaita 的表头按钮默认是弱化前景色，实测 #b4b4b4）。
+        let start = css
+            .find("columnview.sqarvo-grid > header > button {")
+            .expect("缺少合并后表头按钮的规则");
+        let rule = &css[start..start + css[start..].find('}').expect("规则应当是闭合的")];
+        assert!(
+            rule.contains("background-color: @theme_bg_color;"),
+            "表头底色要取原类型条带的窗口底色：{rule}"
+        );
+        assert!(
+            rule.contains("color: @theme_fg_color;"),
+            "表头文字必须可读，不能沿用 Adwaita 的弱化前景色：{rule}"
+        );
+        assert!(
+            rule.contains("min-height: 26px;"),
+            "表头是单行 30px 条带（26 + 上下 2px）：{rule}"
+        );
+        // 旧的两行表头 / 类型条带必须连样式一起消失，不能留孤立的类。
+        for dead in [
+            ".sqarvo-type-row",
+            ".sqarvo-type-cell",
+            ".sqarvo-header-name",
+            ".sqarvo-header-type",
+        ] {
+            assert!(!css.contains(dead), "两行表头已删除，样式里不该再有 {dead}");
+        }
     }
 
     #[test]

@@ -45,10 +45,13 @@
 //! - `--qa-second-sql-file <path>` + `--qa-execute-again-after-ms <n>`：首次执行后 n 毫秒
 //!   用第二段 SQL 再执行一次，用于验证「达到上限/取消之后仍能继续查询」；
 //! - `--qa-column-info <column>`：打开表后点**该列的列头**展开列信息浮层并高亮该列
-//!   （点的是列头控件的真实几何位置，走与用户点击同一个列头点击处理）；
+//!   （走列头点击同一个 `publish_column_info` 路径）；
 //! - `--qa-column-width <column>:<width>`：打开表后把该列宽度设成指定像素（可重复），
-//!   走与用户拖拽列边界同一个 `fixed-width` 属性；截图时刻断言类型条带宽度与列宽一致
+//!   走与用户拖拽列边界同一个 `fixed-width` 属性；截图时刻断言表头宽度与列宽一致
 //!   （#133）；
+//! - `--qa-expect-begin enabled|disabled`：截图时刻断言「开始事务」按钮的可点状态
+//!   （有未提交的更改时必须禁用，tooltip 给出原因；读控件自身的 `sensitive` 与
+//!   `tooltip_text()`）；
 //! - `--qa-expect-column <column>:<field>=<text>`：截图时刻断言浮层里该列某字段的控件
 //!   文本（可重复；field 取 `name|type|nullable|default|charset|collation`），
 //!   不符时退出码 3；
@@ -932,6 +935,11 @@ struct Args {
     /// tooltip 是「事务徽标 + 脏行计数」两段文案的唯一可见出口，断言直接读
     /// `widget.tooltip_text()`（GTK 头less 读回），不靠截图里能不能截到浮层。
     expect_status_dot: Option<String>,
+    /// `--qa-expect-begin <enabled|disabled>`：截图时「开始事务」按钮的可点状态必须如此。
+    ///
+    /// 有未提交的更改（脏行 / 标记删除 / 新行草稿）时必须禁用，且 tooltip 说明原因
+    /// （§5.1）；读的是按钮自己的 `sensitive` 与 `tooltip_text()`，不是状态机推算。
+    expect_begin: Option<bool>,
     /// `--qa-column-info <column>`：连接并打开表后点该列的列头，展开列信息浮层并高亮该列。
     column_info: Option<String>,
     /// `--qa-column-width <column:width>`：把该列宽度设成指定像素（可重复）。走用户拖拽
@@ -1438,6 +1446,12 @@ pub fn expect_txn() -> Option<TxnExpectation> {
 #[must_use]
 pub fn expect_status_dot() -> Option<String> {
     ARGS.get().and_then(|args| args.expect_status_dot.clone())
+}
+
+/// 截图时「开始事务」按钮必须的可点状态（`--qa-expect-begin`）。
+#[must_use]
+pub fn expect_begin() -> Option<bool> {
+    ARGS.get().and_then(|args| args.expect_begin)
 }
 
 /// 打开表后要展开列信息浮层的目标列（`--qa-column-info`）。
@@ -2128,6 +2142,21 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.expect_status_dot = Some(value.clone());
                 index += 2;
             }
+            "--qa-expect-begin" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-begin 需要 enabled|disabled".to_owned())?;
+                parsed.expect_begin = Some(match value.as_str() {
+                    "enabled" => true,
+                    "disabled" => false,
+                    other => {
+                        return Err(format!(
+                            "--qa-expect-begin 只接受 enabled|disabled，实际：{other}"
+                        ));
+                    }
+                });
+                index += 2;
+            }
             "--qa-column-info" => {
                 let value = args
                     .get(index + 1)
@@ -2667,6 +2696,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         && (parsed.expect_data_state.is_some()
             || parsed.expect_txn.is_some()
             || parsed.expect_status_dot.is_some()
+            || parsed.expect_begin.is_some()
             || !parsed.expect_columns.is_empty()
             || !parsed.expect_tree.is_empty()
             || !parsed.expect_ddl.is_empty()
@@ -3338,10 +3368,14 @@ mod tests {
             "failed",
             "--qa-expect-status-dot",
             "脏行 3 · 待提交 2 条",
+            "--qa-expect-begin",
+            "disabled",
         ]))
         .unwrap();
         assert_eq!(parsed.expect_data_state, Some(DataExpectation::Error));
         assert_eq!(parsed.expect_txn, Some(TxnExpectation::Failed));
+        // 「开始事务」的可用性：有未提交的更改时必须禁用（§5.1）。
+        assert_eq!(parsed.expect_begin, Some(false));
         // 状态圆点：tooltip 是原来两段常驻文字的唯一出口，子串原样保留。
         assert_eq!(
             parsed.expect_status_dot.as_deref(),

@@ -782,6 +782,7 @@ pub fn activate(app: &adw::Application) {
                     if crate::qa::expect_data_state().is_some()
                         || crate::qa::expect_txn().is_some()
                         || crate::qa::expect_status_dot().is_some()
+                        || crate::qa::expect_begin().is_some()
                         || !crate::qa::expect_columns().is_empty()
                         || !crate::qa::expect_tree().is_empty()
                         || !crate::qa::expect_search().is_empty()
@@ -3722,11 +3723,10 @@ fn verify_about(state: &Rc<UiState>) -> Result<String, String> {
     ))
 }
 
-/// #133：截图时刻核对「类型条带宽度 == 列宽」。
+/// #133：截图时刻核对「表头宽度 == 列宽」。
 ///
 /// 比较的是**分配宽度**（GTK 布局结果），不是刚调用 `set_fixed_width` 写进去的值：
-/// 类型条带如果仍被最小宽度或滚动位置影响，这里就会变红。表头标题控件的分配宽度是
-/// GTK 实际列宽的公开可见代理（`GtkColumnViewColumn` 在 4.22 没有宽度查询 API）。
+/// 列宽如果仍被最小宽度或滚动位置影响，这里就会变红。
 fn verify_column_widths(state: &Rc<UiState>) -> Result<String, String> {
     let workspace = state
         .workspace
@@ -3754,20 +3754,21 @@ fn verify_column_widths(state: &Rc<UiState>) -> Result<String, String> {
                 fact.fixed_width
             ));
         }
-        for (label, actual) in [
-            ("类型格", fact.type_cell_width),
-            ("表头自然宽", fact.header_natural_width),
-        ] {
-            if (actual - expected).abs() > 1 {
-                return Err(format!(
-                    "列 {column} 的{label}宽度={actual}，与列宽 {expected} 不一致"
-                ));
-            }
-            eprintln!("[qa] 断言 OK：列 {column} 列宽={expected}，{label}宽={actual}");
+        // 表头标题控件的分配宽度是 GTK 实际列宽的公开可见代理（`GtkColumnViewColumn`
+        // 在 4.22 没有宽度查询 API）。
+        if (fact.header_natural_width - expected).abs() > 1 {
+            return Err(format!(
+                "列 {column} 的表头自然宽度={}，与列宽 {expected} 不一致",
+                fact.header_natural_width
+            ));
         }
+        eprintln!(
+            "[qa] 断言 OK：列 {column} 列宽={expected}，表头宽={}",
+            fact.header_natural_width
+        );
         passed.push(format!(
-            "{column}: 列宽={expected} 类型格={} 表头={}",
-            fact.type_cell_width, fact.header_natural_width
+            "{column}: 列宽={expected} 表头={} 内容最长={}",
+            fact.header_natural_width, fact.content_width
         ));
     }
     Ok(passed.join("，"))
@@ -3931,6 +3932,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
     let needs_data_page = crate::qa::expect_data_state().is_some()
         || crate::qa::expect_txn().is_some()
         || crate::qa::expect_status_dot().is_some()
+        || crate::qa::expect_begin().is_some()
         || !crate::qa::expect_columns().is_empty()
         || !crate::qa::expect_submit().is_empty();
     let Some(data_page) = workspace.tabs.data_page() else {
@@ -4025,6 +4027,28 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
             tooltip.replace('\n', "⏎"),
             observed.status_dot_dirty,
             observed.status_dot_txn
+        ));
+    }
+
+    // 「开始事务」的可点状态：有未提交的更改时必须禁用，原因写在 tooltip 里（§5.1）。
+    if let Some(expected) = crate::qa::expect_begin() {
+        if observed.begin_enabled != expected {
+            return Err(format!(
+                "「开始事务」期望{}，实际{}（tooltip「{}」，脏行态={}）",
+                if expected { "可点" } else { "禁用" },
+                if observed.begin_enabled {
+                    "可点"
+                } else {
+                    "禁用"
+                },
+                observed.begin_tooltip,
+                observed.status_dot_dirty
+            ));
+        }
+        passed.push(format!(
+            "开始事务={}（tooltip=「{}」）",
+            if expected { "可点" } else { "禁用" },
+            observed.begin_tooltip
         ));
     }
 

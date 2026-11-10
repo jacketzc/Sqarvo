@@ -77,8 +77,12 @@ pub enum DataState {
 
 /// 行号列宽度（规范 §6：行号列 32）。
 const ROW_NUMBER_WIDTH: i32 = 32;
-/// 数据列固定宽度（类型行按同一宽度对齐）。
+/// 数据列的**最大**宽度：按内容自适应，长文本到此为止并省略（原固定宽度）。
 const COLUMN_WIDTH: i32 = 200;
+/// 按内容自适应时的最小列宽：窄到只剩一两个字符的列（`id` / 布尔）不至于挤成一条。
+const COLUMN_MIN_WIDTH: i32 = 64;
+/// 测量文本宽度时要预留的单元格横向内距（左右内边距 + 1px 列分隔线）。
+const CELL_PADDING_X: i32 = 16;
 
 /// 事务徽标可能带的 CSS 类：同步徽标时先全部摘掉再加当前状态的那一个。
 ///
@@ -130,6 +134,10 @@ pub struct DataPageObservation {
     pub status_dot_txn: bool,
     /// 徽标上带的 CSS 类（正常状态应恰好一个）。
     pub badge_classes: Vec<&'static str>,
+    /// 「开始事务」是否可点（有未提交的更改时禁用）。
+    pub begin_enabled: bool,
+    /// 「开始事务」的 tooltip（禁用原因的可见出口）。
+    pub begin_tooltip: String,
     /// 「提交事务」是否可点。
     pub commit_enabled: bool,
     /// 「回滚事务」是否可点。
@@ -516,18 +524,36 @@ impl DataRowStore {
     }
 }
 
-/// QA 的列宽证据（#133）：同一列的三份宽度放在一起，断言才有对照。
+/// QA 的列宽证据（#133）：同一列的固定宽度、表头自然宽度与内容测量宽度放在一起，
+/// 断言与截图之外还有可复核的数字。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnWidthObservation {
     /// 列名。
     pub name: String,
     /// `GtkColumnViewColumn::fixed_width()`（GTK 的 -1 = 按内容自适应）。
     pub fixed_width: i32,
-    /// 类型条带上对应格子的**分配宽度**（截图时刻实测）。
-    pub type_cell_width: i32,
     /// 表头标题控件的**自然宽度**（= GTK 的列宽测量值；`GtkColumnViewColumn` 没有公开的
     /// 宽度查询 API，所以从表头行读）。
     pub header_natural_width: i32,
+    /// 按本页已加载行测出的最长文字宽度（像素，不含单元格内距）。
+    pub content_width: i32,
+}
+
+/// 表头文案：`列名 · 原始类型`（类型为空时只有列名），排序标记跟在最后。
+///
+/// 表头合并成一行后，列名与原始类型同处一个 `GtkColumnViewColumn` 标题文本里，
+/// 自动列宽与 `refresh_header_titles` 共用这一份拼法，量出来的宽度与实际显示一致。
+fn header_title_text(column: &TableColumn, marker: &str) -> String {
+    let base = if column.type_label.trim().is_empty() {
+        column.name.clone()
+    } else {
+        format!("{} · {}", column.name, column.type_label)
+    };
+    if marker.is_empty() {
+        base
+    } else {
+        format!("{base} {marker}")
+    }
 }
 
 /// 图标按钮（v0.2.3.3）：尺寸与命中区走 [`crate::icons`] 的唯一标准；这里只做
@@ -688,15 +714,20 @@ pub struct DataPage {
     fs_edited_row: RefCell<Option<gtk::Widget>>,
     /// 表头上方的常驻徽标（只读 / 无主键 / 视图 / 无权限 / 未统计）。
     badges_row: gtk::Box,
-    /// 表头第二行（原始类型）的条带容器；与网格共用横向滚动位置。
-    type_row: gtk::Box,
-    /// 类型行外层滚动容器（只用于横向同步，滚动条永远隐藏）。
-    type_scroll: gtk::ScrolledWindow,
-    /// 每列的类型标签（顺序 = `columns`；点它看列信息）。
-    type_labels: RefCell<Vec<gtk::Label>>,
-    /// 每列类型行的格子容器（顺序 = `columns`）：列宽变化时改的是这一层的宽度，
-    /// 标签自己用 `hexpand` 填满格子，右对齐由标签的 `xalign` 决定。
-    type_cells: RefCell<Vec<gtk::Box>>,
+    /// 每列的表头按钮（GTK 的 `GtkColumnViewTitle`；点击 = 查看列属性）。
+    ///
+    /// 表头只有**一行**（「列名 · 原始类型」）：`GtkColumnView` 不允许逐列自定义表头
+    /// 控件，所以合并只能落在列标题文本上，点击手势挂在布局后的标题按钮上。
+    header_wired: RefCell<Vec<Option<gtk::Widget>>>,
+    /// 用户手动改过宽度的列（拖列边界 / 双击自适应 / QA 设宽）。
+    ///
+    /// 自动列宽（按内容测量）不得覆盖它，否则用户拖好的列在翻页 / 刷新后又跳回去。
+    user_sized: RefCell<Vec<bool>>,
+    /// 正在由代码写 `fixed-width`（自动列宽 / 双击自适应）：`notify::fixed-width`
+    /// 回调据此区分「用户拖的」与「我们设的」，不会把自动宽度记成用户宽度。
+    applying_width: Cell<bool>,
+    /// 上次记日志时的「开始事务被未提交更改挡住」条数（只在状态切换时打一行）。
+    begin_blocked_logged: Cell<usize>,
     /// 当前是否因权限不足进入只读（错误码含 permission）。
     permission_denied: Cell<bool>,
     /// 正在提交的批次（用于把逐行结果映射回行号）。
@@ -979,24 +1010,10 @@ impl DataPage {
             .child(&grid)
             .build();
 
-        // 表头第二行（原始类型）：GTK 4.22 的 `GtkColumnView` 没有「每列表头控件」的
-        // API（`header-factory` 只用于**分组小节表头**），所以类型行单独做一条与网格
-        // 列宽对齐的条带，和网格共用同一份横向滚动位置（见 `sync_header_scroll`）。
-        let type_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        type_row.add_css_class("sqarvo-type-row");
-        // 横向策略必须是 `External` 而不是 `Never`：`Never` 会把条带里全部格子的最小
-        // 宽度（200 × 列数）上报成外层最小宽度，宽表因此把信息面板压到 ~198px
-        // （v0.2.3 release notes 的已知问题，#133）。`External` 由外层共享滚动位置、
-        // 不显示滚动条，也不参与最小宽度传播（GTK 4.22 `gtkscrolledwindow.c`：
-        // 只有 `Never` 才累加子控件最小宽度）。
-        let type_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::External)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .child(&type_row)
-            .build();
-        type_scroll.add_css_class("sqarvo-type-scroll");
-        type_scroll.set_visible(false);
-
+        // 表头只有一行：「列名 · 原始类型」（列宽自动按内容测量，见
+        // `auto_size_columns`）。GTK 4.22 的 `GtkColumnView` 没有「每列表头控件」的
+        // API，所以合并写在 `GtkColumnViewColumn::set_title` 的文本上，点击手势挂在
+        // 布局后的标题按钮上（见 `refresh_header_tooltips`）。
         let grid_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
         grid_page.set_vexpand(true);
         // 网格外框：与 `Objects` 列表共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
@@ -1010,7 +1027,6 @@ impl DataPage {
         grid_page.set_margin_start(12);
         grid_page.set_margin_end(12);
         grid_page.set_margin_bottom(6);
-        grid_page.append(&type_scroll);
         grid_page.append(&scroll);
 
         let placeholder = adw::StatusPage::builder()
@@ -1334,10 +1350,10 @@ impl DataPage {
             fs_editing: Cell::new(None),
             fs_edited_row: RefCell::new(None),
             badges_row: badges_row.clone(),
-            type_row: type_row.clone(),
-            type_scroll: type_scroll.clone(),
-            type_labels: RefCell::new(Vec::new()),
-            type_cells: RefCell::new(Vec::new()),
+            header_wired: RefCell::new(Vec::new()),
+            user_sized: RefCell::new(Vec::new()),
+            applying_width: Cell::new(false),
+            begin_blocked_logged: Cell::new(0),
             permission_denied: Cell::new(false),
             pending_batch: RefCell::new(None),
             submit: RefCell::new(None),
@@ -1526,10 +1542,8 @@ impl DataPage {
                 });
         }
 
-        // 表头两行：第一行是 GTK 的列标题（列名 + 已应用排序标记，不可点；排序只在
-        // 筛选与排序面板里改），第二行是与列宽对齐的类型条带（点类型看列信息）。
-        // 滚动到底**不再**自动取下一页（#118）。
-        page.sync_header_scroll();
+        // 表头只有一行（「列名 · 原始类型」），排序只在筛选与排序面板里改，
+        // 点列头是「查看列属性」。滚动到底**不再**自动取下一页（#118）。
         page.update_buttons();
         page
     }
@@ -1708,11 +1722,6 @@ impl DataPage {
         for (index, column) in self.header_columns.borrow().iter().enumerate() {
             column.set_visible(visibility.is_visible(index));
         }
-        // 类型条带与列一一对应（#133）：隐藏的列必须同时收起它的类型格，否则后面的
-        // 格子整体左移，对齐就断了。
-        for (index, cell) in self.type_cells.borrow().iter().enumerate() {
-            cell.set_visible(visibility.is_visible(index));
-        }
     }
 
     /// 打开列显隐浮层：按当前列清单重建复选清单。
@@ -1756,6 +1765,8 @@ impl DataPage {
     fn on_column_choice_toggled(self: &Rc<Self>, index: usize, active: bool) {
         self.visibility.borrow_mut().set_visible(index, active);
         self.sync_column_visibility();
+        // 列显隐会让 GTK 重建表头（标题控件是布局时创建的）：点击手势与 tooltip 要重新挂。
+        self.refresh_header_tooltips();
         eprintln!(
             "[data] 列显隐：第 {} 列 → {}（可见 {} 列）",
             index + 1,
@@ -2368,6 +2379,7 @@ impl DataPage {
         self.fs_editing.set(None);
         self.render_filter_conditions();
         self.refresh_header_titles();
+        self.refresh_header_tooltips();
         self.update_filter_state();
         // 筛选/排序变了：回到第 1 页（与 worker 同一口径，界面先重置再请求）。
         self.reset_pager_for_new_query();
@@ -3029,7 +3041,8 @@ impl DataPage {
 
     /// 打开「开始事务」卡片：按当前驱动重建选项，不可用的项禁用并附原因。
     ///
-    /// 「表」菜单与页内按钮共用这个入口：隔离级别只在开始之前选。
+    /// 页内按钮与「表」菜单都先走 [`Self::begin_transaction`]（那里核「有未提交的更改
+    /// 不许开事务」），再落到这里；隔离级别只在开始之前选。
     pub fn open_txn_chooser(self: &Rc<Self>) {
         if !self.badge.borrow().can_begin() {
             self.set_status("该会话已有打开的事务（或已断开）", "warning");
@@ -3339,15 +3352,38 @@ impl DataPage {
             .ok_or_else(|| format!("列 {column} 不在当前表的列清单里"))
     }
 
-    /// 某列类型行上的控件（表头第二行；点击它把该列交给信息面板）。
+    /// 第 `index` 列的表头按钮（GTK 的 `GtkColumnViewTitle`，css 名 `button`）。
+    ///
+    /// 表头行是 `GtkColumnView` 的直接子控件（css 名 `header`），子节点顺序 = **可见**列
+    /// 顺序，第 0 个是行号列：隐藏过列以后下标不能直接 +1，要按显隐折算成位置。
+    /// 标题控件由 GTK 在布局时创建，布局前返回 `None`。
     fn header_title_widget(&self, index: usize) -> Option<gtk::Widget> {
-        self.type_labels
-            .borrow()
-            .get(index)
-            .map(|label| label.clone().upcast::<gtk::Widget>())
+        let position = {
+            let visibility = self.visibility.borrow();
+            (0..=index).filter(|i| visibility.is_visible(*i)).count()
+        };
+        let mut child = self.grid.first_child();
+        let mut header = None;
+        while let Some(widget) = child {
+            if widget.css_name().as_str() == "header" {
+                header = Some(widget);
+                break;
+            }
+            child = widget.next_sibling();
+        }
+        let mut title = header?.first_child();
+        for _ in 0..position {
+            title = title?.next_sibling();
+        }
+        title
     }
 
-    /// 给每列类型行挂上「点击查看列属性」的提示（列头控件在布局后才存在，所以延后一拍）。
+    /// 给每列表头挂上「点击查看列属性」的手势与提示（标题按钮在布局后才存在，所以
+    /// 延后一拍）。
+    ///
+    /// 表头只有一行（`列名 · 原始类型`），点列头的唯一语义就是查看列属性；排序只在
+    /// 筛选与排序面板里改（§5.3），表头不参与排序。*不* claim 事件序列：列边界上的
+    /// 拖拽手势属于 GTK 的自适应把手，点击手势只消费“离右边界足够远”的松开。
     fn refresh_header_tooltips(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
@@ -3356,20 +3392,47 @@ impl DataPage {
             };
             let titles = page.header_titles.borrow().clone();
             for (index, title) in titles.iter().enumerate() {
-                if let Some(widget) = page.header_title_widget(index) {
-                    widget.set_tooltip_text(Some(&format!("点击查看列属性：{title}")));
+                let Some(widget) = page.header_title_widget(index) else {
+                    continue;
+                };
+                widget.set_tooltip_text(Some(&format!("点击查看列属性：{title}")));
+                widget.add_css_class("sqarvo-merged-header");
+                let already_wired = page
+                    .header_wired
+                    .borrow()
+                    .get(index)
+                    .is_some_and(|wired| wired.as_ref() == Some(&widget));
+                if already_wired {
+                    continue;
                 }
+                let page_for_click = Rc::clone(&page);
+                let title_widget = widget.clone();
+                let gesture = gtk::GestureClick::new();
+                gesture.set_button(gtk::gdk::BUTTON_PRIMARY);
+                gesture.connect_released(move |_, _, x, _| {
+                    // 列边界（右缘 6px）留给 GTK 的拖拽把手，避免“拖宽”顺手打开卡片。
+                    if x > f64::from(title_widget.width()) - 6.0 {
+                        return;
+                    }
+                    page_for_click.publish_column_info(index);
+                });
+                widget.add_controller(gesture);
+                let mut wired = page.header_wired.borrow_mut();
+                if wired.len() <= index {
+                    wired.resize(index + 1, None);
+                }
+                wired[index] = Some(widget);
             }
         });
     }
 
-    /// 把第 `index` 列交给信息面板（表头类型行的点击与 QA 共用这一条路径）。
+    /// 把第 `index` 列交给信息面板（点列头与 QA 共用这一条路径）。
     fn publish_column_info(&self, index: usize) {
         let Some(column) = self.columns.borrow().get(index).cloned() else {
             return;
         };
         eprintln!(
-            "[data] 点击列类型行：{}（第 {} 列）→ 信息面板",
+            "[data] 点击列头：{}（第 {} 列）→ 信息面板",
             column.name,
             index + 1
         );
@@ -3498,12 +3561,12 @@ impl DataPage {
         Ok(())
     }
 
-    /// QA：点**该列的类型行**（与用户点击同一个入口）→ 该列交给信息面板。
+    /// QA：点**该列的表头**（与用户点击同一个入口）→ 该列交给信息面板。
     pub fn qa_open_column_info(&self, column: &str) -> Result<(), String> {
         let index = self.column_index(column)?;
         if self.header_title_widget(index).is_none() {
             return Err(format!(
-                "列 {column} 的类型行控件还没有（列在可视区外；先调用 qa_reveal_column_header）"
+                "列 {column} 的表头控件还没有（列在可视区外；先调用 qa_reveal_column_header）"
             ));
         }
         self.publish_column_info(index);
@@ -3588,6 +3651,7 @@ impl DataPage {
         self.columns.replace(open.columns.clone());
         self.build_columns(&open.columns);
         self.refresh_header_titles();
+        self.refresh_header_tooltips();
         // 列清单换了：显隐清单按新列重建（隐藏列下标对新表没有意义）。
         if self.visibility.borrow().hidden_count() > 0 {
             self.visibility.borrow_mut().reset();
@@ -3621,6 +3685,8 @@ impl DataPage {
         let rows: Vec<DataRow> = open.rows.iter().map(DataRow::from_table_row).collect();
         let count = rows.len();
         self.store.append(rows);
+        // 表头 / 单元格文本都就位了：按本页内容把列宽收到 clamp(64, 最长文字+内距, 200)。
+        self.auto_size_columns();
         self.has_more.set(open.has_more);
         self.loading_page.set(false);
         self.busy.set(false);
@@ -4115,6 +4181,13 @@ impl DataPage {
                     .filter(|class| badge.css_classes().contains(class))
                     .collect()
             },
+            begin_enabled: self.buttons.begin.is_sensitive(),
+            begin_tooltip: self
+                .buttons
+                .begin
+                .tooltip_text()
+                .map(|text| text.to_string())
+                .unwrap_or_default(),
             commit_enabled: self.buttons.commit_txn.is_sensitive(),
             rollback_enabled: self.buttons.rollback.is_sensitive(),
             edits_allowed: self.badge.borrow().edits_allowed(),
@@ -4615,7 +4688,18 @@ impl DataPage {
     }
 
     /// 开始事务（先选隔离级别，见 [`Self::open_txn_chooser`]）。
+    ///
+    /// 有未提交的更改（脏行 / 标记删除 / 新行草稿）时**不允许**开事务：置灰只是
+    /// 表面，这里再核一次，菜单动作、快捷键与 QA 走同一条命令都拦得住。
     pub fn begin_transaction(self: &Rc<Self>) {
+        let pending = self.pending_change_count();
+        if pending > 0 {
+            self.set_status(
+                &format!("还有 {pending} 行未提交的更改：先提交或放弃它们再开事务"),
+                "warning",
+            );
+            return;
+        }
         if !self.badge.borrow().can_begin() {
             self.set_status("该会话已有打开的事务（或已断开）", "warning");
             return;
@@ -5111,10 +5195,12 @@ impl DataPage {
 
     fn build_columns(self: &Rc<Self>, columns: &[TableColumn]) {
         self.clear_columns();
-        // 第一行表头用 GTK 自己的列标题（列名 + 排序标记）；第二行是 `rebuild_type_row`
-        // 生成的类型条带。
+        // 表头只有一行：「列名 · 原始类型」（点它看列属性），列宽按内容测量
+        // （`auto_size_columns`，上限仍是 `COLUMN_WIDTH`）。
         self.header_titles
             .replace(columns.iter().map(|column| column.name.clone()).collect());
+        self.header_wired.borrow_mut().clear();
+        self.user_sized.borrow_mut().clear();
         self.refresh_header_tooltips();
 
         // 行号列（32）：行号 = offset + 行下标（**不是**主键）；脏行/删除标记也在这一格。
@@ -5192,11 +5278,11 @@ impl DataPage {
             let factory = self.cell_factory(index);
             let view_column = gtk::ColumnViewColumn::new(Some(&column.name), Some(factory));
             view_column.set_expand(false);
-            // 数据列可拖拽（design-principles「结果网格」要求列宽调整；#118 为了类型行
-            // 对齐把它关掉是回归）。初始宽度仍取 COLUMN_WIDTH，类型条带由
-            // `notify::fixed-width` 跟随：GTK 拖拽列边界时走的就是
-            // `gtk_column_view_column_set_fixed_width`（gtkcolumnview.c 的
-            // `update_column_resize`），该 setter 会 `g_object_notify_by_pspec`。
+            // 数据列可拖拽（design-principles「结果网格」要求列宽调整）。初始宽度仍是
+            // `COLUMN_WIDTH`；本页行加载后 `auto_size_columns` 按内容把它收窄。
+            // GTK 拖拽列边界走的就是 `gtk_column_view_column_set_fixed_width`
+            // （gtkcolumnview.c 的 `update_column_resize`），该 setter 会
+            // `g_object_notify_by_pspec`，所以用户改宽在这里就能被记下来。
             view_column.set_resizable(true);
             view_column.set_fixed_width(COLUMN_WIDTH);
             {
@@ -5210,99 +5296,158 @@ impl DataPage {
             self.grid.append_column(&view_column);
             self.header_columns.borrow_mut().push(view_column);
         }
-        self.rebuild_type_row(columns);
         self.sync_column_visibility();
         self.refresh_header_titles();
+        self.refresh_header_tooltips();
+        // 先按表头把列收到内容宽度（空表 / 行还没到时也不留 200 的宽列）；
+        // 行到达后 `load_page` 末尾再按「表头 + 本页值」重算一次。
+        self.auto_size_columns();
     }
 
-    /// 重建表头第二行（原始类型）：32px 空位对齐行号列，之后每列一个固定宽度的
-    /// 右对齐标签（11px、色弱于列名）。点类型标签打开该列的列信息浮层。
-    fn rebuild_type_row(self: &Rc<Self>, columns: &[TableColumn]) {
-        while let Some(child) = self.type_row.first_child() {
-            self.type_row.remove(&child);
-        }
-        self.type_labels.borrow_mut().clear();
-        self.type_cells.borrow_mut().clear();
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        spacer.set_size_request(ROW_NUMBER_WIDTH, -1);
-        self.type_row.append(&spacer);
-        for (index, column) in columns.iter().enumerate() {
-            let cell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            cell.set_size_request(COLUMN_WIDTH, -1);
-            cell.add_css_class("sqarvo-type-cell");
-            let label = gtk::Label::new(Some(&column.type_label));
-            label.set_xalign(1.0);
-            label.set_hexpand(true);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.set_margin_start(6);
-            label.set_margin_end(6);
-            label.add_css_class("sqarvo-header-type");
-            label.set_tooltip_text(Some(&format!(
-                "点击查看列信息：{} · {}",
-                column.name, column.type_label
-            )));
-            {
-                let page = Rc::clone(self);
-                let gesture = gtk::GestureClick::new();
-                gesture.set_button(gtk::gdk::BUTTON_PRIMARY);
-                gesture.connect_pressed(move |_, _, _, _| {
-                    page.publish_column_info(index);
-                });
-                label.add_controller(gesture);
-            }
-            cell.append(&label);
-            self.type_row.append(&cell);
-            self.type_labels.borrow_mut().push(label);
-            self.type_cells.borrow_mut().push(cell);
-        }
-        self.type_scroll.set_visible(!columns.is_empty());
-    }
-
-    /// 数据列宽度变化（用户拖拽列边界 / 双击自适应 / QA 走同一条属性设置路径）。
+    /// 列宽变化（用户拖列边界 / 双击自适应 / QA 设宽 / 自动列宽）。
     ///
-    /// 类型条带是独立控件（GTK 4.22 没有逐列 `header_factory`），只能把对应格子的宽度
-    /// 改成与列一致；日志留一行数值对照，截图之外还有可复核的证据。
+    /// 只有**用户路径**才记进 `user_sized`：自动列宽自己也会写同一个属性，不能把
+    /// 自己写进去的宽度当成用户的选择，否则翻页 / 刷新后用户拖过的列会被「记住」
+    /// 成上一页的测量值。
     fn on_column_width_changed(self: &Rc<Self>, index: usize, width: i32) {
+        if self.applying_width.get() {
+            return;
+        }
+        if width < 0 {
+            // 双击列边界：GTK 把 `fixed-width` 复位成 -1（按内容自适应），新宽度要等
+            // 这一帧布局才算出来。GTK 4.22 没有公开的列宽查询 API，所以用与 GTK
+            // 相同的测量口径（表头标题 + 已创建数据单元格的自然宽度取最大）量出宽度
+            // 再固定，列宽与内容对齐不依赖未公开 API。
+            self.fit_column_after_double_click(index);
+            return;
+        }
+        self.mark_user_sized(index);
         let name = self.columns.borrow().get(index).map_or_else(
             || format!("第 {} 列", index + 1),
             |column| column.name.clone(),
         );
-        if width < 0 {
-            // 双击列边界：GTK 把 `fixed-width` 复位成 -1（按内容自适应），新宽度要等
-            // 这一帧布局才算出来。`GtkColumnViewColumn` 在 4.22 没有公开的宽度查询
-            // API，所以延后一拍读表头子控件的分配宽度（见 `header_column_width`）。
-            self.align_type_cell_after_autofit(index, &name);
-            return;
-        }
-        if let Some(applied) = self.set_type_cell_width(index, width) {
-            eprintln!("[data] 列宽变化：{name} 列宽={width} 类型格宽={applied}");
-        }
+        eprintln!("[data] 列宽变化：{name} 列宽={width}（用户调整）");
     }
 
-    /// 双击列边界后的对齐：GTK 把 `fixed-width` 复位成 -1（按内容自适应），新宽度要等
-    /// 这一帧布局才算出来。GTK 4.22 没有公开的列宽查询 API（
-    /// `gtk_column_view_column_get_allocation` 没有导出），所以用**与 GTK 相同的测量
-    /// 口径**（表头标题 + 已创建数据单元格的自然宽度取最大，见
-    /// `gtk_column_view_column_measure`）量出宽度，再把列固定到该值——列宽与类型格用
-    /// 同一个数字，对齐不依赖未公开 API。
-    fn align_type_cell_after_autofit(self: &Rc<Self>, index: usize, name: &str) {
+    /// 双击列边界后的自适应：量出内容宽度后固定列宽，并记为用户宽度（重载不覆写）。
+    fn fit_column_after_double_click(self: &Rc<Self>, index: usize) {
         let weak = Rc::downgrade(self);
-        let name = name.to_owned();
         glib::timeout_add_local_once(std::time::Duration::from_millis(32), move || {
             let Some(page) = weak.upgrade() else {
                 return;
             };
+            let name = page.columns.borrow().get(index).map_or_else(
+                || format!("第 {} 列", index + 1),
+                |column| column.name.clone(),
+            );
             let Some(width) = page.measured_column_width(index) else {
-                eprintln!("[data] 列宽变化：{name} 双击自适应后拿不到列内容宽度，类型格保持原宽");
+                eprintln!("[data] 列宽变化：{name} 双击自适应后拿不到列内容宽度，保持原宽");
                 return;
             };
-            page.set_type_cell_width(index, width);
-            let column = page.header_columns.borrow().get(index).cloned();
-            if let Some(column) = column {
-                column.set_fixed_width(width);
-            }
-            eprintln!("[data] 列宽变化：{name} 列宽={width}（双击自适应）类型格宽={width}");
+            page.set_column_width(index, width);
+            page.mark_user_sized(index);
+            eprintln!("[data] 列宽变化：{name} 列宽={width}（双击自适应）");
         });
+    }
+
+    /// 记录「用户手动改过这一列的宽度」：自动列宽不再覆写它。
+    fn mark_user_sized(&self, index: usize) {
+        let mut sized = self.user_sized.borrow_mut();
+        if sized.len() <= index {
+            sized.resize(index + 1, false);
+        }
+        sized[index] = true;
+    }
+
+    /// 由代码写列宽（自动列宽 / 双击自适应）。
+    ///
+    /// 带 `applying_width` 守卫：`notify::fixed-width` 回调据此把它与用户拖拽区分开。
+    fn set_column_width(&self, index: usize, width: i32) {
+        let Some(column) = self.header_columns.borrow().get(index).cloned() else {
+            return;
+        };
+        self.applying_width.set(true);
+        column.set_fixed_width(width);
+        self.applying_width.set(false);
+    }
+
+    /// 按本页已加载行（以及合并后的表头文本）测最大文字宽度，把每列收窄到
+    /// `clamp(COLUMN_MIN_WIDTH, 最长文字 + 单元格内距, COLUMN_WIDTH)`。
+    ///
+    /// - 上限仍是 `COLUMN_WIDTH`：长文本按原来的固定宽度显示并省略（单元格的
+    ///   `ellipsize` 不变），不会因为一行超长文本把表格撑爆。
+    /// - 行号列（`ROW_NUMBER_WIDTH`，不可拖）不参与。
+    /// - 用户在本页手动改过宽度的列（`user_sized`）不覆写。
+    /// - 一页最多 500 行，逐行测量在 UI 线程上可以接受（4 列 × 500 行实测 < 30ms）。
+    fn auto_size_columns(&self) {
+        let columns = self.columns.borrow().clone();
+        if columns.is_empty() {
+            return;
+        }
+        let user_sized = self.user_sized.borrow().clone();
+        let header_layout = self.text_layout(crate::layout::FONT_UI, gtk::pango::Weight::Semibold);
+        let cell_layout =
+            self.text_layout(crate::layout::FONT_DATA_CELL, gtk::pango::Weight::Medium);
+        for (index, column) in columns.iter().enumerate() {
+            if user_sized.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let marker = self.sort.borrow().marker(&column.name).text();
+            let header = header_title_text(column, &marker);
+            header_layout.set_text(&header);
+            let (_, logical) = header_layout.pixel_extents();
+            let header_width = logical.width();
+            let text_width = self.widest_cell_text(index, &cell_layout).max(header_width);
+            let width = (text_width + CELL_PADDING_X).clamp(COLUMN_MIN_WIDTH, COLUMN_WIDTH);
+            self.set_column_width(index, width);
+            eprintln!(
+                "[data] 自动列宽：{} 最长文字={text_width}px 列宽={width}px",
+                column.name
+            );
+        }
+    }
+
+    /// 一列里最长的一条显示文本（像素；不含单元格内距）。
+    fn widest_cell_text(&self, index: usize, layout: &gtk::pango::Layout) -> i32 {
+        let mut widest = 0;
+        for position in 0..self.store.n_items() {
+            let Some(object) = self.store.item(position) else {
+                continue;
+            };
+            let Ok(boxed) = object.downcast::<glib::BoxedAnyObject>() else {
+                continue;
+            };
+            let row = boxed.borrow::<Rc<RefCell<DataRow>>>().clone();
+            drop(boxed);
+            let row = row.borrow();
+            let Some(cell) = row.cells.get(index) else {
+                continue;
+            };
+            if cell.text.is_empty() {
+                continue;
+            }
+            layout.set_text(&cell.text);
+            let (_, logical) = layout.pixel_extents();
+            widest = widest.max(logical.width());
+        }
+        widest
+    }
+
+    /// 一份带显式字号 / 字重的 Pango 布局（与 `.sqarvo-cell` / 表头的 CSS 口径一致）。
+    ///
+    /// 字体族取 GTK 的系统字体（`gtk-font-name`），字号用 CSS 里的像素值——直接
+    /// `create_pango_layout` 会拿到窗口的界面字号，比单元格（13px Medium）小一档，
+    /// 量出来的列宽会偏窄。
+    fn text_layout(&self, pixel_size: i32, weight: gtk::pango::Weight) -> gtk::pango::Layout {
+        let base = gtk::Settings::default()
+            .and_then(|settings| settings.gtk_font_name())
+            .map_or_else(|| "Sans 11".to_owned(), |name| name.to_string());
+        let mut description = gtk::pango::FontDescription::from_string(&base);
+        description.set_absolute_size(f64::from(pixel_size) * f64::from(gtk::pango::SCALE));
+        description.set_weight(weight);
+        let layout = gtk::pango::Layout::new(&self.grid.pango_context());
+        layout.set_font_description(Some(&description));
+        layout
     }
 
     /// 某列按内容自适应的自然宽度：表头标题与**已创建**数据单元格的自然宽度取最大。
@@ -5335,49 +5480,21 @@ impl DataPage {
         }
         Some(width)
     }
-
-    /// 把第 `index` 列的类型格改成 `width`；返回写进 `size_request` 的宽度。
-    ///
-    /// 负值（GTK 的 -1 = 按内容自适应）在这里按 0 处理：调用方只会传真实宽度。
-    fn set_type_cell_width(&self, index: usize, width: i32) -> Option<i32> {
-        let cell = self.type_cells.borrow().get(index).cloned()?;
-        let width = width.max(0);
-        cell.set_size_request(width, -1);
-        Some(width)
-    }
-
     /// 第 `index` 列的**自然宽度**（读 GTK 表头行里对应标题控件的 measure 结果）。
     ///
-    /// `GtkColumnViewColumn`（GTK 4.22）没有公开的宽度 / allocation 查询 API；表头行是
-    /// `GtkColumnView` 的直接子控件，css 名固定为 `header`（gtkcolumnview.c 的
-    /// `gtk_widget_set_parent (self->header, ...)` 与 gtkcolumnviewrowwidget.c 的
-    /// `css-name` 属性），其子控件顺序 = 列顺序。`GtkColumnViewTitle` 的 measure 会把
-    /// CSS padding 加回去，所以固定宽度列的 natural 恰好等于 `fixed-width`（实测
-    /// 200 → 200，300 → 300）；它只给双击自适应与 QA 断言用，不参与常规布局。
+    /// `GtkColumnViewTitle` 的 measure 会把 CSS padding 加回去，所以固定宽度列的
+    /// natural 恰好等于 `fixed-width`（实测 200 → 200，300 → 300）；它给双击自适应
+    /// 与 QA 断言用，不参与常规布局。
     fn header_column_natural_width(&self, index: usize) -> Option<i32> {
-        let mut child = self.grid.first_child();
-        let mut header = None;
-        while let Some(widget) = child {
-            if widget.css_name().as_str() == "header" {
-                header = Some(widget);
-                break;
-            }
-            child = widget.next_sibling();
-        }
-        // 表头行同样有行号列（position 0），数据列下标与标题控件位置相差 1。
-        let mut title = header?.first_child();
-        for _ in 0..=index {
-            title = title?.next_sibling();
-        }
-        let (_, natural, _, _) = title?.measure(gtk::Orientation::Horizontal, -1);
+        let title = self.header_title_widget(index)?;
+        let (_, natural, _, _) = title.measure(gtk::Orientation::Horizontal, -1);
         Some(natural)
     }
 
     /// QA `--qa-column-width`：把某列宽度设成指定值。
     ///
     /// 走与用户拖拽列边界**同一个属性**（`GtkColumnViewColumn::set_fixed_width`，
-    /// GTK 的 `update_column_resize` 也是这一句），类型条带的跟随因此也是同一条
-    /// `notify::fixed-width` 路径，而不是测试专用的旁路。
+    /// GTK 的 `update_column_resize` 也是这一句），不是测试专用的旁路。
     pub fn qa_set_column_width(&self, column: &str, width: i32) -> Result<(), String> {
         if width <= 0 {
             return Err(format!("列宽必须是正数，实际：{width}"));
@@ -5401,26 +5518,20 @@ impl DataPage {
             .iter()
             .map(|column| column.name.clone())
             .collect();
+        let cell_layout =
+            self.text_layout(crate::layout::FONT_DATA_CELL, gtk::pango::Weight::Medium);
         names
             .iter()
             .enumerate()
-            .map(|(index, name)| {
-                let fixed_width = self
+            .map(|(index, name)| ColumnWidthObservation {
+                name: name.clone(),
+                fixed_width: self
                     .header_columns
                     .borrow()
                     .get(index)
-                    .map_or(-1, gtk::ColumnViewColumn::fixed_width);
-                let type_cell_width = self
-                    .type_cells
-                    .borrow()
-                    .get(index)
-                    .map_or(0, gtk::prelude::WidgetExt::width);
-                ColumnWidthObservation {
-                    name: name.clone(),
-                    fixed_width,
-                    type_cell_width,
-                    header_natural_width: self.header_column_natural_width(index).unwrap_or(0),
-                }
+                    .map_or(-1, gtk::ColumnViewColumn::fixed_width),
+                header_natural_width: self.header_column_natural_width(index).unwrap_or(0),
+                content_width: self.widest_cell_text(index, &cell_layout),
             })
             .collect()
     }
@@ -5428,8 +5539,7 @@ impl DataPage {
     /// 把横向滚动位置回到最左（窗口最大化后调用）。
     ///
     /// 只改滚动位置，不重新请求数据：重新浏览会丢编辑态，也可能在窄溢出时把
-    /// 用户留在最后一列。类型条带通过 `sync_header_scroll` 的 `value-changed`
-    /// 跟随同一个值。
+    /// 用户留在最后一列。
     pub fn scroll_to_first_column(&self) {
         let adjustment = self.grid_scroll.hadjustment();
         if adjustment.value() > adjustment.lower() {
@@ -5437,18 +5547,9 @@ impl DataPage {
         }
     }
 
-    /// 让类型行跟随网格的横向滚动（两条带共用同一个滚动位置）。
-    fn sync_header_scroll(self: &Rc<Self>) {
-        let adjustment = self.grid_scroll.hadjustment();
-        let type_scroll = self.type_scroll.clone();
-        let apply = move |value: f64| {
-            type_scroll.hadjustment().set_value(value);
-        };
-        apply(adjustment.value());
-        adjustment.connect_value_changed(move |adjustment| apply(adjustment.value()));
-    }
-
-    /// 刷新第一行表头：列名 + 排序标记（`▲` / `▼` / `▲2`）。
+    /// 刷新表头：`列名 · 原始类型` + 排序标记（`▲` / `▼` / `▲2`）。
+    ///
+    /// 表头只有一行：列名与原始类型在同一个标题文本里（类型为空时只显示列名）。
     fn refresh_header_titles(&self) {
         let columns = self.columns.borrow().clone();
         let columns_view = self.header_columns.borrow().clone();
@@ -5457,15 +5558,10 @@ impl DataPage {
                 continue;
             };
             let marker = self.sort.borrow().marker(&column.name).text();
-            let title = if marker.is_empty() {
-                column.name.clone()
-            } else {
-                format!("{} {marker}", column.name)
-            };
+            let title = header_title_text(column, &marker);
             view_column.set_title(Some(title.as_str()));
         }
     }
-
     fn cell_factory(self: &Rc<Self>, column_index: usize) -> gtk::SignalListItemFactory {
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, list_item| {
@@ -5756,6 +5852,20 @@ impl DataPage {
         ));
     }
 
+    /// 「开始事务」的 tooltip：有一种不可用原因就说清哪一种（有未提交更改优先，
+    /// 因为那是最容易踩到的）。按钮与状态栏 / 菜单读的是同一份判定。
+    fn begin_tooltip(&self) -> String {
+        let pending = self.pending_change_count();
+        if pending > 0 {
+            return format!("还有 {pending} 行未提交的更改：先提交或放弃它们再开事务");
+        }
+        match self.badge.borrow().status() {
+            TxnStatus::AutoCommit => "在当前会话开始一个显式事务（可选只读）".to_owned(),
+            TxnStatus::Disconnected => "已断开：不能开始事务".to_owned(),
+            _ => "已有事务：先提交或回滚".to_owned(),
+        }
+    }
+
     fn update_buttons(&self) {
         let busy = self.busy.get();
         let editing_enabled = !self.is_read_only()
@@ -5773,9 +5883,21 @@ impl DataPage {
         let disconnected = matches!(self.state.get(), DataState::Disconnected)
             || matches!(badge.status(), TxnStatus::Disconnected);
 
+        // 「开始事务」在有待提交内容时禁用（不是靠点了之后报错）：脏行必须先提交或
+        // 放弃，否则事务里混着上一轮的界面草稿，提交/回滚的语义会说不清。
         self.buttons
             .begin
-            .set_sensitive(badge.can_begin() && !disconnected && !busy);
+            .set_sensitive(badge.can_begin() && !disconnected && !busy && pending == 0);
+        self.buttons
+            .begin
+            .set_tooltip_text(Some(&self.begin_tooltip()));
+        if self.begin_blocked_logged.replace(pending) != pending {
+            if pending > 0 {
+                eprintln!("[data] 开始事务已禁用：{}", self.begin_tooltip());
+            } else {
+                eprintln!("[data] 开始事务恢复可用（没有未提交的更改）");
+            }
+        }
         // 建议/破坏性按钮置灰时去掉染色 class：insensitive 的粉/红色底会让人误以为
         // 按钮仍然可点（#113/#116 遗留）。
         set_action(
@@ -5940,11 +6062,9 @@ impl DataPage {
         self.buttons.begin.set_visible(!in_transaction);
         self.buttons.commit_txn.set_visible(in_transaction);
         self.buttons.rollback.set_visible(in_transaction);
-        self.buttons.begin.set_tooltip_text(Some(match status {
-            TxnStatus::AutoCommit => "在当前会话开始一个显式事务（可选只读）",
-            TxnStatus::Disconnected => "已断开：不能开始事务",
-            _ => "已有事务：先提交或回滚",
-        }));
+        self.buttons
+            .begin
+            .set_tooltip_text(Some(&self.begin_tooltip()));
         // 只读事务要显式说明原因（不能只靠按钮置灰）。
         if matches!(
             badge.status(),
@@ -6093,16 +6213,14 @@ fn install_css() {
         .sqarvo-column-info-focus { background: alpha(@accent_color, 0.18); }
         .sqarvo-column-header { padding: 0 8px; min-height: 26px; }
         .sqarvo-column-header:hover { background: alpha(@accent_color, 0.12); }
-        /* #118：行号列（32）与两行表头（列名 12 / 原始类型 11 右对齐、色弱） */
+        /* #118：行号列（32）。表头已合并成一行（「列名 · 原始类型」，见 theme.rs 的
+           `columnview.sqarvo-grid > header > button`），这里不再有第二行的类型条带。 */
         .sqarvo-row-number {
             font-family: monospace;
             font-size: 11px;
             opacity: 0.7;
             padding-right: 4px;
         }
-        .sqarvo-header-cell { padding: 1px 6px; min-height: 44px; }
-        .sqarvo-type-row { min-height: 24px; }
-        .sqarvo-type-cell { min-height: 24px; }
         /* #133：类型条带不再把最小宽度上报给外层后，窗口在 960 宽下不再被撑大，
            这一行的控件必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
 
@@ -6114,15 +6232,10 @@ fn install_css() {
            `set_height_request(32)` 把上下 8 / 6 的留白守住）。
            960×640 实测「需求 407 ≤ 分配 417」（`--qa-layout-audit` 可复核）。 */
         .sqarvo-table-actions button { padding: 4px 6px; }
-        .sqarvo-header-name-row { min-height: 22px; }
-        .sqarvo-header-name { font-size: 12px; font-weight: 600; }
-        .sqarvo-header-name.sqarvo-header-sorted { color: @accent_color; }
-        .sqarvo-header-sort { font-size: 10px; color: @accent_color; }
-        .sqarvo-header-type {
-            font-size: 11px;
-            opacity: 0.62;
-            font-weight: 400;
-        }
+        /* 表头只有一行：「列名 · 原始类型」（合并后的标题文本）。列名与类型同一字号，
+           靠中点分隔；底色与原来那条类型提示行一致（窗口底色），见 theme.rs 的
+           `columnview.sqarvo-grid > header` 规则。 */
+        .sqarvo-merged-header { font-size: 12px; font-weight: 600; }
         /* #118：表头上方的常驻徽标 */
         .sqarvo-badge-readonly { background: alpha(@warning_color, 0.25); }
         .sqarvo-badge-nokey { background: alpha(@warning_color, 0.18); }
