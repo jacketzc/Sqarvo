@@ -168,6 +168,36 @@ pub fn stylesheet() -> String {
             font-size: {status_font}px;
             border-top: 1px solid alpha(currentColor, 0.10);
         }}
+        /* 状态栏只有两种前景色（v0.2.3.4）：可用的按钮一个色（`@window_fg_color`），
+           文字与不可用（:disabled）的按钮同一个灰（55% 前景）。三档以上会让同一行里
+           `+` 很黑、`−` 半灰、页码文字又另一个灰，看起来像三套控件。
+           两个坑都在 `:disabled` 上：Adwaita 的 `.flat:disabled` 会再叠一层 opacity
+           （实测黑色图标被压到 #AFAFAF），`dim-label` 自己也带 0.55 透明度——全部用
+           `opacity: 1` 关掉，颜色才由这两条规则唯一决定。 */
+        window.{window_class} .sqarvo-status-bar {{
+            color: alpha(@window_fg_color, 0.55);
+        }}
+        window.{window_class} .sqarvo-status-bar label {{
+            color: alpha(@window_fg_color, 0.55);
+            opacity: 1;
+        }}
+        window.{window_class} .sqarvo-status-bar button {{
+            color: @window_fg_color;
+        }}
+        window.{window_class} .sqarvo-status-bar button label {{
+            color: inherit;
+        }}
+        /* 搜索框里用户输入的字按「激活」色：它是输入值，不是状态说明；占位符仍是淡色。 */
+        window.{window_class} .sqarvo-status-bar entry {{
+            color: @window_fg_color;
+        }}
+        window.{window_class} .sqarvo-status-bar button:disabled,
+        window.{window_class} .sqarvo-status-bar button.flat:disabled,
+        window.{window_class} .sqarvo-status-bar button.sqarvo-icon-button:disabled {{
+            color: alpha(@window_fg_color, 0.55);
+            opacity: 1;
+            filter: none;
+        }}
         /* v0.2.3.3：状态栏分成「对象树功能区的左边沟 | 竖分割线 | 右列」。
            左边沟宽度由 shell 跟着侧栏分栏位置设（`set_gutter_width`），右列自己带
            左右 12px 内距——这样分割线与上面的分栏线在同一根轴上。 */
