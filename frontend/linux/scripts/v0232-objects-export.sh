@@ -2,7 +2,8 @@
 # Sqarvo v0.2.3.2 验收：`Objects` 固定页 ↔ 对象树联动 + `EX` 导出范围三条路径。
 #
 # 自包含：只用 `sqlite3` 在 mktemp 目录里建一个临时库，**不需要 MariaDB、不需要密码**，
-# 也不碰任何用户数据。串行跑 5 个应用实例（一次只有一个 GUI 进程），每个实例用独立的
+# 也不碰任何用户数据。串行跑 18 个应用实例（只跑 Objects 段时 13 个；一次只有一个 GUI
+# 进程），每个实例用独立的
 # `SQARVO_QA_APP_ID`，避免单实例转发把后一个进程变成「激活旧窗口后退出」（那样日志与
 # 截图都是空的）。
 #
@@ -26,6 +27,16 @@
 #   A6（v0.2.3.3）主工具条种类入口：点「表」→ 树里选中库 + 列表出表；点「函数」→ 如实说明
 #      未实现（两张截图）。
 #   A7（v0.2.3.3）种类入口跟着当前选中的库走：选 temp 再点「表」→ 列出 temp（不是默认的 main）。
+#   A8（v0.2.3.3）反方向联动：树里选中 `Views` 分组 → 工具条种类高亮跟着换、页面列出视图。
+#   A9（v0.2.3.3）`Functions` 分组只有入口没有列表能力——选中时工具条跟随，页面如实说明，
+#      树里展开也只写一行说明、不发请求。
+#   A10（v0.2.3.3）树形搜索结果：`--qa-search probe` 命中「表 probe_items + 视图
+#      probe_recent_items」两个对象 → `hits=2`；行序是 `连接 > 库 > Tables > 表 >
+#      Views > 视图`（祖先行出现但不高亮，`highlight=` 只含两个对象行），状态行
+#      「1 个连接 · 2 个对象」。用现成夹具的关键词，不另加表：A1 / A2 / A6 / A8 断言
+#      「1 张表 / 1 个视图 → count=1」，加第二张表会把它们一起改红。
+#   A11（v0.2.3.3）清空搜索 = 退出筛选：`--qa-search-clear` → `state=idle`、`hits=0`，
+#      日志「清空搜索框（回到树页）」，截图证明结果行与高亮都不残留。
 #   B. EX 导出范围
 #      B1 整表：行数 = 数据行 + 1（表头）、目标权限 0600、目录里没有 `*.sqarvo-tmp`、
 #         日志命中「整表导出完成：」「整表进度：」。
@@ -74,7 +85,7 @@
 # 用法：
 #   ./scripts/v0232-objects-export.sh                     # 全量（发布门禁）
 #   SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh
-#                                                          # 只跑 Objects 段（A0–A9）
+#                                                          # 只跑 Objects 段（A0–A11）
 #   SQARVO_ACCEPTANCE_DIR=/tmp/shots SQARVO_ACCEPTANCE_NO_BUILD=1 ./scripts/v0232-objects-export.sh
 
 set -uo pipefail
@@ -206,6 +217,11 @@ fail_early() {
 if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ]; then
     fail_early "没有图形会话（WAYLAND_DISPLAY / DISPLAY 均为空）：截图与界面断言需要真实 GTK 窗口"
 fi
+
+# 自渲染截图在本机 Wayland 会话里偶发「控件快照为空」（窗口 mapped 却没有渲染节点，见
+# frontend/linux README 的「截图偶发失败」一节）；文档给出的处置是切 XWayland。这里默认
+# 设成 x11，调用方显式指定的值仍然优先。
+export GDK_BACKEND=${GDK_BACKEND:-x11}
 
 command -v sqlite3 >/dev/null 2>&1 || fail_early "找不到 sqlite3（本脚本只用它建测试库）"
 
@@ -543,6 +559,54 @@ check_contains "tree-functions 展开时如实说明不发请求" \
 check_screenshot "tree-functions 截图（只有入口）" \
     "$OUT/tree-functions/09-tree-functions.png"
 
+# A10（v0.2.3.3）：树形搜索结果。`--qa-search` 走搜索框 `changed` → 250 ms 防抖 → 请求的
+# 同一条路径（不是测试自己拼结果），所以 --screenshot-delay-ms 要给足：含建连 + 目录层读取。
+# 关键词 `probe` 在现成夹具里命中「表 probe_items」与「视图 probe_recent_items」两个对象；
+# 连接 `v0232-sqlite`（显示名来自 profile 的 name）与库 `main` 只是祖先，必须出现但不高亮。
+# `rows=` 断言完整行序（逐项相等），`highlight=` 只列真正命中的两行，两者一起证明
+# 「祖先出现、只有命中行高亮」；路径格式固定为 tree.rs 的 SearchRowSnapshot.path。
+launch search-hits io.sqarvo.Sqarvo.QA024SearchHits \
+    --qa-search probe \
+    --qa-expect-search hits=2 \
+    --qa-expect-search "row=v0232-sqlite/main/Tables/probe_items" \
+    --qa-expect-search "row=v0232-sqlite/main/Views/probe_recent_items" \
+    --qa-expect-search "rows=v0232-sqlite,v0232-sqlite/main,v0232-sqlite/main/Tables,v0232-sqlite/main/Tables/probe_items,v0232-sqlite/main/Views,v0232-sqlite/main/Views/probe_recent_items" \
+    --qa-expect-search "highlight=v0232-sqlite/main/Tables/probe_items,v0232-sqlite/main/Views/probe_recent_items" \
+    --qa-expect-search "status=个对象" \
+    --screenshot "$OUT/search-hits/10-search-hit-tree.png" \
+    --screenshot-delay-ms 7000 \
+    --qa-exit-after-ms 9000
+check_contains "search-hits 搜索断言通过" '断言通过：搜索' "$CASE_LOG"
+check_contains "search-hits 命中数=2（表 + 视图）" '搜索 hits=2' "$CASE_LOG"
+check_contains "search-hits 行序：连接 > 库 > Tables > 表 > Views > 视图" \
+    '搜索 rows=v0232-sqlite,v0232-sqlite/main,v0232-sqlite/main/Tables,v0232-sqlite/main/Tables/probe_items,v0232-sqlite/main/Views,v0232-sqlite/main/Views/probe_recent_items' \
+    "$CASE_LOG"
+check_contains "search-hits 只有对象行高亮（祖先行不高亮）" \
+    '搜索 highlight=v0232-sqlite/main/Tables/probe_items,v0232-sqlite/main/Views/probe_recent_items' \
+    "$CASE_LOG"
+check_contains "search-hits 状态行写的是连接数 + 对象数" '搜索 status=个对象' "$CASE_LOG"
+check_contains "search-hits 日志区分展示行数与命中数（6 行 / 2 对象 / 2 行命中）" \
+    '搜索「probe」完成：6 行（1 个连接 · 2 个对象，2 行命中）' "$CASE_LOG"
+check_screenshot "search-hits 截图（树形结果 + 仅命中行高亮）" \
+    "$OUT/search-hits/10-search-hit-tree.png"
+
+# A11（v0.2.3.3）：清空搜索 = 退出筛选。`--qa-search-clear` 走用户清空 / `Esc` 的同一条
+# 清理路径：结果列表与命中高亮随列表销毁，回到正常对象树（`state=idle`、`hits=0`）。
+launch search-clear io.sqarvo.Sqarvo.QA024SearchClear \
+    --qa-search probe \
+    --qa-search-clear \
+    --qa-expect-search state=idle \
+    --qa-expect-search hits=0 \
+    --screenshot "$OUT/search-clear/11-search-cleared.png" \
+    --screenshot-delay-ms 8000 \
+    --qa-exit-after-ms 10000
+check_contains "search-clear 退出筛选（state=idle）" '搜索 state=idle' "$CASE_LOG"
+check_contains "search-clear 无命中残留（hits=0）" '搜索 hits=0' "$CASE_LOG"
+check_contains "search-clear 日志写明回到树页" '清空搜索框（回到树页）' "$CASE_LOG"
+check_absent "search-clear 没有停在结果页" '搜索 state=results' "$CASE_LOG"
+check_screenshot "search-clear 截图（回到正常树、无高亮残留）" \
+    "$OUT/search-clear/11-search-cleared.png"
+
 # ---------------------------------------------------------------------------
 # 3b. 只跑 Objects 段（SQARVO_ACCEPTANCE_ONLY=objects）
 # ---------------------------------------------------------------------------
@@ -561,7 +625,7 @@ if [ -n "${SQARVO_ACCEPTANCE_ONLY:-}" ] && [ "$SQARVO_ACCEPTANCE_ONLY" != "all" 
         *) ok "证据目录在仓库外：$OUT" ;;
     esac
     say ""
-    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A9）"
+    say "SQARVO_ACCEPTANCE_ONLY=objects：只跑了 Objects 段（A0–A11）"
     say "跳过：B 段 EX 导出、C 段树激活、D 段 960 布局（与 Objects 无关）"
     say "证据目录：$OUT"
     say "应用内断言：$IN_APP_TOTAL 条；脚本断言：$((PASS_COUNT + FAIL_COUNT)) 条"
