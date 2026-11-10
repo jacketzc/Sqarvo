@@ -44,8 +44,8 @@
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 应用启动 | 无 | 先 Loading（居中 spinner + 握手阶段文案），握手成功后**直接落地工作区**（未连接时的启动态外壳），不再停在诊断页 | `src/ui.rs:106`（`activate`）、`src/ui.rs:148`、`src/ui.rs:1242`（`show_startup_workspace`） |
-| 后端握手失败 | 无 | 主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、可操作文案 + 「重试」；标题栏回到 `Sqarvo` | `src/ui.rs:3030`（`show_error`）、`src/ui.rs:397-411` |
+| 应用启动 | 无 | 先 Loading（居中 spinner + 握手阶段文案），握手成功后**直接落地工作区**（未连接时的启动态外壳），不再停在诊断页。主工具条从窗口构建起就存在：后端未握手时六个按钮全部禁用（见 §1.2） | `src/ui.rs:121`（`activate`）、`src/ui.rs:218-236`（工具条构建与 `set_backend_ready(false)`）、`src/ui.rs:1447`（`show_startup_workspace`） |
+| 后端握手失败 | 无 | 主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、可操作文案 + 「重试」；标题栏回到 `Sqarvo`。工具条保留在错误页上方并**保持全部禁用**（日志「`[toolbar] 后端未握手：0/6 个按钮可用`」） | `src/ui.rs:3295`（`show_error`）、`src/ui.rs:473-481`（事件泵回退）、`src/shell.rs:705`（`set_backend_ready`） |
 | 连接数据库成功 | 有连接结果 | 标题 = `<连接名> - <驱动显示名>`；副标题 = `已连接 · <显示名>（<driver_id>）· <服务端版本>`（版本缺失时写「未知（后端未返回）」） | `src/ui.rs:1414-1448` |
 | 切换标签 | 工作区存在 | 标题跟着当前标签变：`Objects` → `<连接名> - <驱动>`；表 / 查询标签 → `<标签标题> (<连接名>)`；副标题不变（连接级信息） | `src/tabs.rs:1916-1941`（`refresh_current`）、`src/tabs.rs:110`（`window_title_for`） |
 | 后端断开 | 无 | 标题 `Sqarvo`、副标题「已断开」；**保留已建立的工作区**（已加载的行仍可查看）；所有标签标记失连；状态栏连接名清空、SQL 摘要写「连接已断开」 | `src/ui.rs:413-443`、`src/tabs.rs:2227`（`mark_disconnected`） |
@@ -58,26 +58,30 @@
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 「连接」 | 始终可点 | 打开连接对话框；对话框已打开时只把它前置（不叠第二个）。后端未握手时动作**静默返回**（按钮不禁用，见 §9） | `src/shell.rs:561-568`（tooltip「打开连接对话框（Ctrl+N）」）、`src/ui.rs:785-793` |
-| 「新建查询」 | 已连接（工作区存在）；未连接时按钮 `sensitive=false` | 新建查询标签（§4）。禁用时 tooltip「尚未连接数据库：先连接再新建查询标签」；启用时为「新建查询标签（Ctrl+T）」 | `src/shell.rs:570-577`、`src/shell.rs:654-661` |
-| 种类入口 `Tables` / `Views` / `Functions` / `Queries` | 始终可点（启动态另有语义） | 见 §1.3；tooltip 分别说明「在 Objects 页列出当前库的…」/「函数列表：驱动尚未提供（点开看说明）」/「已保存的查询：尚未实现（点开看说明）」 | `src/shell.rs:604-623` |
-| 工具条高亮 | 随当前标签刷新 | 当前标签是表数据标签 → 该表的种类；`Objects` 页 → 页面正在列的种类；查询标签 → 无高亮。高亮实现为给对应按钮加 `sqarvo-kind-active`，同一时刻最多一个 | `src/ui.rs:1517-1561`（`apply_tab_status`）、`src/shell.rs:700-721`（`set_active`） |
+| 「连接」 | 后端已握手；未握手时 `sensitive=false`（tooltip「后端尚未就绪：正在连接本地后端，握手完成后才能新建连接」） | 打开连接对话框；对话框已打开时只把它前置（不叠第二个）。禁用时不发动作，只在处理器里留一条日志兜底 | `src/shell.rs:705-736`（`set_backend_ready`）、`src/ui.rs:989-994`（`open_connection_dialog_for` 的兜底判定） |
+| 「新建查询」 | 后端已握手**且**已连接（工作区存在）；任一条件不满足时 `sensitive=false` | 新建查询标签（§4）。未连接时 tooltip「尚未连接数据库：先连接再新建查询标签」；后端未就绪时「后端尚未就绪：握手完成且连接数据库后才能新建查询标签」；启用时为「新建查询标签（Ctrl+T）」 | `src/shell.rs:738-770`（`apply_new_query` / `set_new_query_enabled`）、`src/ui.rs:2272`（工作区建立时打开） |
+| 种类入口 `Tables` / `Views` / `Functions` / `Queries` | 后端已握手；未握手时四个按钮 `sensitive=false`（tooltip「后端尚未就绪：握手完成后可用」） | 见 §1.3；tooltip 分别说明「在 Objects 页列出当前库的…」/「函数列表：驱动尚未提供（点开看说明）」/「已保存的查询：尚未实现（点开看说明）」 | `src/shell.rs:604-638`（构建）、`src/shell.rs:720-735`（就绪开关）、`src/ui.rs:964`（`request_kind_entry`） |
+| 工具条高亮 | 随当前标签刷新 | 当前标签是表数据标签 → 该表的种类；`Objects` 页 → 页面正在列的种类；查询标签 → 无高亮。高亮实现为给对应按钮加 `sqarvo-kind-active`，同一时刻最多一个 | `src/ui.rs:1719-1763`（`apply_tab_status`）、`src/shell.rs:801`（`set_active`） |
+| 可用性日志 | 每次就绪状态变化 | `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`（数字由六个按钮的真实 `sensitive` 统计；启动态「新建查询」禁用时为 5/6） | `src/shell.rs:683-702`（`log_availability`） |
+
+工具条是**窗口级**控件（`ui.rs` 在 headerbar 之下创建），不随工作区重建：窗口构建后、拿到
+worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失效 / 退出 / 重启回退
+`false`。菜单侧走同一个状态（§1.4），两边不再各写一套判定。
 
 ### 1.4 菜单栏动作与可用性
 
-菜单栏与工具条是**同一批动作的两个入口**，可用性必须逐条对齐（`src/ui.rs:3725-3798`）。
+菜单栏与工具条是**同一批动作的两个入口**，可用性走同一个后端就绪状态
+（`Toolbar::set_backend_ready` 与 `WindowActions::set_backend_ready` 同时调用，
+`src/ui.rs:4058-4125`），不再出现「菜单禁用、按钮可点」。
 
 | 菜单项 | 前置状态与可用性 | 结果 | 源码依据 |
 |---|---|---|---|
-| 连接 → 新建连接 | 后端已握手才可点（`set_enabled(false)`） | 打开连接对话框；已打开时只前置，不重复创建 | `src/ui.rs:3786-3788`、`src/ui.rs:786-793` |
-| 查询 → 新建查询 / 执行 / 取消 | 执行与取消只对当前查询标签可用 | 与查询页按钮同一处理器 | `src/ui.rs:3730-3762` |
-| 表 → 开始事务… / 提交事务 / 回滚事务 / 新增行 / 删除选中行 / 刷新 / 导出 CSV | 与表数据页同名按钮共用 `apply_row_ops` 的可用性 | 调同一组动作，不复制实现 | `src/ui.rs:3740-3762`、`src/ui.rs:3790-3798` |
-| 视图 → 对象树显隐 | 工作区存在 | 收起 / 展开整个侧栏（`win.toggle-sidebar`） | `src/ui.rs:3736`（挂菜单）、`src/ui.rs:3860-3871`（接线） |
-| 视图 → 刷新（`F5`） | 工作区存在 | 当前标签是表数据页 → 刷新该表（保持排序 / 筛选、回到第 1 页，有未提交更改时被脏行守卫拒绝）；其它标签（查询 / `Objects` / 启动态）→ 重建整棵对象树 | `src/ui.rs:2178-2196`（`Workspace::refresh` / `refresh_target`）、`src/ui.rs:3939-3948` |
-| 帮助 → 关于 Squarvo | 任意 | 自绘对话框：版本、协议、后端诊断字段 | `src/ui.rs:3750-3760`、`src/ui.rs:4116` |
-
-> 与工具条的唯一差异：**「连接」按钮始终可点**（后端未握手时点击静默返回），
-> 而菜单「新建连接」在后端未握手时是禁用的。这是现状，不是笔误（见 §9 第 10 条）。
+| 连接 → 新建连接 | 后端已握手才可点（未就绪时禁用，与工具条「连接」同一条判定） | 打开连接对话框；已打开时只前置，不重复创建 | `src/ui.rs:3995`（菜单项）、`src/ui.rs:4058-4082`（`set_backend_ready`）、`src/ui.rs:989-994` |
+| 查询 → 新建查询 / 执行 / 取消 | 后端已握手**且**工作区存在；执行与取消另由查询页状态决定 | 与查询页按钮同一处理器 | `src/ui.rs:4009-4012`（菜单项）、`src/ui.rs:4107-4125`（`set_workspace_ready`）、`src/ui.rs:4203`（`win.execute` 接线） |
+| 表 → 开始事务… / 提交事务 / 回滚事务 / 新增行 / 删除选中行 / 刷新 / 导出 CSV | 与表数据页同名按钮共用 `apply_row_ops` 的可用性；后端未就绪时一律禁用 | 调同一组动作，不复制实现 | `src/ui.rs:4014-4023`（菜单项）、`src/ui.rs:4084-4105`（`apply_row_ops`） |
+| 视图 → 对象树显隐 | 后端已握手且工作区存在 | 收起 / 展开整个侧栏（`win.toggle-sidebar`） | `src/ui.rs:4003`（菜单项）、`src/ui.rs:4167-4180`（接线） |
+| 视图 → 刷新（`F5`） | 后端已握手且工作区存在 | 当前标签是表数据页 → 刷新该表（保持排序 / 筛选、回到第 1 页，有未提交更改时被脏行守卫拒绝）；其它标签（查询 / `Objects` / 启动态）→ 重建整棵对象树 | `src/ui.rs:2368`（`Workspace::refresh` / `refresh_target`）、`src/ui.rs:4181-4195`（`win.refresh` 接线） |
+| 帮助 → 关于 Squarvo | 任意（不依赖后端） | 自绘对话框：版本、协议、后端诊断字段 | `src/ui.rs:4031`（菜单项）、`src/ui.rs:4410`（`show_about`） |
 
 ### 1.3 四个种类入口的联动
 
@@ -87,13 +91,13 @@
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 点 `Tables` | 树里能定位到库 | 在树里**一次选中**该库的 `Tables` 分组行（库未展开先展开），切到 `Objects` 页并按 `filter.kinds=[TABLE]` 拉第一页；信息面板随树选中切换；工具条高亮 `Tables` | `src/ui.rs:1569-1636`（`show_objects_for_kind`）、`src/tree.rs:3120`（`select_kind`） |
+| 点 `Tables` | 树里能定位到库 | 在树里**一次选中**该库的 `Tables` 分组行（库未展开先展开），切到 `Objects` 页并按 `filter.kinds=[TABLE]` 拉第一页；信息面板随树选中切换；工具条高亮 `Tables` | `src/ui.rs:1771-1835`（`show_objects_for_kind`）、`src/tree.rs:3120`（`select_kind`） |
 | 点 `Views` | 同上 | 同上，分组行为 `Views`，`filter.kinds=[VIEW, MATERIALIZED_VIEW]` | 同上、`src/tree.rs:265` |
-| 点 `Functions` | 同上 | **树里照样选中 `Functions` 分组行**（联动两向都要通）；`Objects` 页写「函数列表尚未实现」+ 说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；**0 次 RPC** | `src/ui.rs:1609-1618`、`src/tabs.rs:478-490`（`unavailable_copy`） |
+| 点 `Functions` | 同上 | **树里照样选中 `Functions` 分组行**（联动两向都要通）；`Objects` 页写「函数列表尚未实现」+ 说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；**0 次 RPC** | `src/ui.rs:1806-1824`、`src/tabs.rs:478-490`（`unavailable_copy`） |
 | 点 `Queries` | 同上 | 同上，文案「已保存的查询尚未实现」+「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」 | 同上 |
-| 定位不到库（例如连接还没展开、树里没有库） | 入口仍可点 | `Functions` / `Queries`：切到 `Objects` 页并显示未实现说明（不静默）；`Tables` / `Views`：**只写日志，界面不变化**（见 §9） | `src/ui.rs:1623-1634` |
+| 定位不到库（例如连接还没展开、树里没有库） | 后端已握手，入口可点 | `Functions` / `Queries`：切到 `Objects` 页并显示未实现说明（不静默）；`Tables` / `Views`：**只写日志，界面不变化**（见 §9） | `src/ui.rs:1826-1840` |
 | 反方向联动（树 → 页） | 树里选中分组 / 表 / 视图 / 库 | `Objects` 页换作用域（§3），工具条高亮在同一次刷新里跟上 | `src/ui.rs:1752-1764`、`src/ui.rs:1027-1060`（`objects_target`） |
-| 启动态（未连接）点任一种类入口 | 后端已握手、没有数据库连接 | 不编造内容：把固定 `Objects` 页摆到前面并**保持空态**，日志说明「尚未连接数据库」 | `src/startup.rs:223-236` |
+| 启动态（未连接）点任一种类入口 | 后端已握手、没有数据库连接 | 不编造内容：把固定 `Objects` 页摆到前面并**保持空态**，日志说明「尚未连接数据库」 | `src/startup.rs:275-284`（`StartupWorkspace::show_kind`） |
 
 ---
 
@@ -507,13 +511,18 @@
    旧文档如此：`src/tree.rs:25` 的模块文档仍写「v0.2.3 不出现 `Functions` / `Queries` 分组」。
    建议：改注释（纯注释，不改行为），避免下一个人按注释误判。
 
-10. **后端断开后「连接」按钮可点但静默无反应**
-    代码如此：工具条「连接」始终可点（`src/shell.rs:561-568`），而
-    `open_connection_dialog_for` 在 `!backend_ready` 时只写日志就返回（`src/ui.rs:785-789`）。
-    后端断开后工作区被保留（`src/ui.rs:428-441`），于是按钮点下去没有任何界面反馈。
-    旧文档如此：`design-principles.md` / 本文件 §8.4 都要求「不能点了没反应」。
-    建议：断开态把「连接」置灰并在 tooltip 说明「后端已断开：请重启 Sqarvo」，或点击时
-    弹「Sqarvo 需要重启」对话框。
+10. **后端断开后「连接」按钮可点但静默无反应**（已按产品决定收口）
+    代码如此：主工具条从窗口构建起就存在，六个按钮的可用性只有一个开关
+    `Toolbar::set_backend_ready`（`src/shell.rs:705`）：窗口构建后先置 false、
+    握手完成置 true、后端失效 / 退出 / 重启回退 false（`src/ui.rs:232-236`、`src/ui.rs:425`、
+    `src/ui.rs:475`、`src/ui.rs:492`、`src/ui.rs:286`、`src/ui.rs:1196`）。
+    菜单侧 `WindowActions::set_backend_ready` 同时禁用新建连接 / 新建查询 / 执行 / 取消 /
+    表动作 / 刷新 / 侧栏显隐，并用同一个 `backend_ready` 状态阻止 `set_workspace_ready`
+    与 `apply_row_ops` 在后端未就绪时把动作打开（`src/ui.rs:4058-4125`）。
+    收口前：工具条「连接」始终可点，`open_connection_dialog_for` 在 `!backend_ready`
+    时只写日志就返回；菜单「新建连接」却已禁用——两套口径。
+    验收：日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；
+    握手失败（`SQARVO_BACKEND_BIN=/bin/false`）截图上六个按钮全为灰色。
 
 11. **`Ctrl+Q` 未进旧快捷键表**
     代码如此：`app.quit` 绑定 `<primary>q`（`src/main.rs:72`）。

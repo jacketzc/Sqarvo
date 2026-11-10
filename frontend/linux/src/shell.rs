@@ -10,7 +10,8 @@
 //! ```text
 //! 01 窗口外壳   AdwHeaderBar + AdwWindowTitle（在 ui.rs 里，含标题规则与主菜单）
 //! ┌──────────────────────────────────────────────────────────────────────────┐
-//! 02 主工具条   Shell::toolbar   高 44：左组 连接 / 新建查询 │ 种类入口（表 / 视图 / 函数 / 查询）
+//! 02 主工具条   窗口级（Shell::toolbar）  高 44：左组 连接 / 新建查询 │ 种类入口（表 / 视图 / 函数 / 查询）
+//!               后端未握手时全部禁用（`Toolbar::set_backend_ready`）
 //! ├────────────────┬────────────────────────────────────────────────────────┤
 //! 03 对象树       │ 04 工作区                                              │ 06 信息面板
 //!    side_pane     │    work_pane（起始子控件）                              │    inspector
@@ -25,7 +26,7 @@
 //! | 区域 | 字段 | 后续扩展 |
 //! |---|---|---|
 //! | 01 | 无（`ui.rs` 的 `AdwHeaderBar`） | 标题跟随当前连接（#114 已接连接注册表） |
-//! | 02 | `Shell::toolbar`（[`Toolbar`]） | #116 已把「新建查询」接到标签 |
+//! | 02 | `Shell::toolbar`（[`Toolbar`]，窗口级创建） | #116 已把「新建查询」接到标签；可用性由后端就绪状态统一控制 |
 //! | 03 | `Shell::sidebar_pane` 起始子控件 | #114 已实现：多连接树（仍是左栏） |
 //! | 04 | `Shell::work_pane` 起始子控件 | #116 标签条 + [`crate::tabs::TabSet`] |
 //! | 05 | `Shell::status`（[`StatusBar`]） | #118 分页器接真实页码 |
@@ -55,6 +56,15 @@ use crate::layout;
 const PAGER_NOTE: &str =
     "offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供";
 
+// 区域 02 的按钮 tooltip：后端就绪与否两套文案（禁用时必须说明原因）。
+const CONNECT_TOOLTIP: &str = "打开连接对话框（Ctrl+N）";
+const CONNECT_TOOLTIP_NOT_READY: &str = "后端尚未就绪：正在连接本地后端，握手完成后才能新建连接";
+const KIND_TOOLTIP_NOT_READY: &str = "后端尚未就绪：握手完成后可用";
+const KIND_TABLE_TOOLTIP: &str = "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）";
+const KIND_VIEW_TOOLTIP: &str = "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）";
+const KIND_FUNCTION_TOOLTIP: &str = "函数列表：驱动尚未提供（点开看说明）";
+const KIND_QUERY_TOOLTIP: &str = "已保存的查询：尚未实现（点开看说明）";
+
 /// 外壳需要的回调。
 pub struct ShellHandlers {
     /// 左栏内容（对象树）。
@@ -71,12 +81,9 @@ pub struct ShellHandlers {
     pub row_op: Rc<dyn Fn(RowOp)>,
     /// 分页器动作（首页 / 上页 / 下页 / 末页）。
     pub page_op: Rc<dyn Fn(PagerAction)>,
-    /// 左组「连接」。
-    pub connect: Rc<dyn Fn()>,
-    /// 左组「新建查询」。
-    pub new_query: Rc<dyn Fn()>,
-    /// 主工具条的种类入口（表 / 视图 / 函数 / 查询）：打开 `Objects` 页并列出该种类。
-    pub on_kind: Rc<dyn Fn(crate::tabs::KindShortcut)>,
+    /// 主工具条（区域 02）：由窗口在**握手之前**创建并挂在 headerbar 之下；
+    /// 外壳持有它供布局自检与高亮使用，可用性由 `Toolbar::set_backend_ready` 统一控制。
+    pub toolbar: Rc<Toolbar>,
 }
 
 /// 窗口内的外壳（区域 02–06）。
@@ -102,13 +109,10 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// 组装五个区域（区域 01 的 headerbar 由 `ui.rs` 提供，不在本模块内）。
+    /// 组装五个区域（区域 01 的 headerbar 与区域 02 的工具条由 `ui.rs` 提供，
+    /// 工具条在窗口构建时就已存在：后端未握手时按钮全部禁用，见 [`Toolbar::set_backend_ready`]）。
     pub fn new(handlers: ShellHandlers) -> Rc<Self> {
-        let toolbar = Toolbar::new(
-            Rc::clone(&handlers.connect),
-            Rc::clone(&handlers.new_query),
-            Rc::clone(&handlers.on_kind),
-        );
+        let toolbar = Rc::clone(&handlers.toolbar);
         let status = StatusBar::new(Rc::clone(&handlers.row_op), Rc::clone(&handlers.page_op));
         {
             // 相对时间（<1m / Nm）不会自己变：每 30 秒重算一次标签文本。
@@ -228,7 +232,8 @@ impl Shell {
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_vexpand(true);
-        root.append(toolbar.widget());
+        // 区域 02 的工具条由窗口（`ui.rs`）挂在 headerbar 之下：它在握手之前就存在，
+        // 外壳只占据自己的区域（03–06），不把工具条重新挂到别处。
         root.append(&sidebar_pane);
         root.append(status.widget());
 
@@ -289,7 +294,7 @@ impl Shell {
             }
             _ => (
                 self.root.width(),
-                self.root.height() + layout::HEADER_HEIGHT,
+                self.root.height() + layout::CHROME_HEIGHT,
             ),
         };
         if width <= 0 || window_height <= 0 {
@@ -539,6 +544,7 @@ pub struct Toolbar {
     root: gtk::Box,
     left: gtk::Box,
     kinds: gtk::Box,
+    connect: gtk::Button,
     new_query: gtk::Button,
     table: gtk::Button,
     view: gtk::Button,
@@ -546,10 +552,16 @@ pub struct Toolbar {
     query: gtk::Button,
     /// 当前高亮的种类（只在变化时打日志，便于无人值守取证）。
     active: Cell<Option<crate::tabs::KindShortcut>>,
+    /// 后端是否已握手：false 时六个按钮全部禁用（唯一开关，见 [`Self::set_backend_ready`]）。
+    backend_ready: Cell<bool>,
+    /// 「新建查询」是否已连接数据库：与后端就绪是两个独立条件，两者都满足才可点。
+    new_query_allowed: Cell<bool>,
 }
 
 impl Toolbar {
-    fn new(
+    /// 创建主工具条。按钮**初始全部禁用**：窗口构建时后端还没握手，等
+    /// [`Self::set_backend_ready`] 打开；调用方应在创建后立刻显式置一次状态（会打日志）。
+    pub fn new(
         on_connect: Rc<dyn Fn()>,
         on_new_query: Rc<dyn Fn()>,
         on_kind: Rc<dyn Fn(crate::tabs::KindShortcut)>,
@@ -561,7 +573,7 @@ impl Toolbar {
         let connect = gtk::Button::with_label("连接");
         connect.add_css_class("suggested-action");
         connect.set_valign(gtk::Align::Center);
-        connect.set_tooltip_text(Some("打开连接对话框（Ctrl+N）"));
+        connect.set_tooltip_text(Some(CONNECT_TOOLTIP));
         {
             let handler = Rc::clone(&on_connect);
             connect.connect_clicked(move |_| handler());
@@ -604,22 +616,18 @@ impl Toolbar {
         let table = kind(
             "Tables",
             crate::tabs::KindShortcut::Tables,
-            "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）",
+            KIND_TABLE_TOOLTIP,
         );
-        let view = kind(
-            "Views",
-            crate::tabs::KindShortcut::Views,
-            "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）",
-        );
+        let view = kind("Views", crate::tabs::KindShortcut::Views, KIND_VIEW_TOOLTIP);
         let function = kind(
             "Functions",
             crate::tabs::KindShortcut::Functions,
-            "函数列表：驱动尚未提供（点开看说明）",
+            KIND_FUNCTION_TOOLTIP,
         );
         let query = kind(
             "Queries",
             crate::tabs::KindShortcut::Queries,
-            "已保存的查询：尚未实现（点开看说明）",
+            KIND_QUERY_TOOLTIP,
         );
 
         let kinds = gtk::Box::new(gtk::Orientation::Horizontal, 2);
@@ -637,30 +645,123 @@ impl Toolbar {
         root.append(&kinds);
         root.append(&spacer);
 
+        // 初始禁用：窗口在握手之前就显示工具条，不能让用户点到「没有后端」的动作。
+        for button in [&connect, &new_query, &table, &view, &function, &query] {
+            button.set_sensitive(false);
+        }
+        connect.set_tooltip_text(Some(CONNECT_TOOLTIP_NOT_READY));
+
         Rc::new(Self {
             root,
             left,
             kinds,
+            connect,
             new_query,
             table,
             view,
             function,
             query,
             active: Cell::new(None),
+            backend_ready: Cell::new(false),
+            new_query_allowed: Cell::new(false),
         })
     }
 
-    /// 「新建查询」的可用性：未连接数据库时禁用并说明原因（不摆点了没反应的按钮）。
-    pub fn set_new_query_enabled(&self, enabled: bool) {
+    /// 六个可操作按钮（连接 / 新建查询 / 四个种类入口）：可用性只按这一份清单统计。
+    fn buttons(&self) -> [&gtk::Button; 6] {
+        [
+            &self.connect,
+            &self.new_query,
+            &self.table,
+            &self.view,
+            &self.function,
+            &self.query,
+        ]
+    }
+
+    /// 打一行可断言的可用性日志（数字取自按钮的真实 `sensitive`）。
+    fn log_availability(&self, ready: bool) {
+        let enabled = self
+            .buttons()
+            .iter()
+            .filter(|button| button.is_sensitive())
+            .count();
+        let state = if ready {
+            "后端已就绪"
+        } else {
+            "后端未握手"
+        };
+        eprintln!(
+            "[toolbar] {state}：{enabled}/{} 个按钮可用",
+            self.buttons().len()
+        );
+    }
+
+    /// 后端就绪开关（产品口径：未握手时工具条上的按钮**全部**禁用）。
+    ///
+    /// 这是工具条可操作性的唯一入口：窗口构建后、拿到 worker 之前先置 `false`；
+    /// 握手完成置 `true`；后端失效 / 退出回退 `false`。菜单侧同名状态由
+    /// `WindowActions::set_backend_ready` 同步（两边不各写一套判定）。
+    pub fn set_backend_ready(&self, ready: bool) {
+        self.backend_ready.set(ready);
+        self.connect.set_sensitive(ready);
+        // 禁用时摘掉 `suggested-action`：Adwaita 的 disabled suggested 按钮仍是橙色底，
+        // 视觉上像可点；摘掉后与其他禁用按钮一样是灰的（截图取证也一致）。
+        if ready {
+            self.connect.add_css_class("suggested-action");
+        } else {
+            self.connect.remove_css_class("suggested-action");
+        }
+        self.connect.set_tooltip_text(Some(if ready {
+            CONNECT_TOOLTIP
+        } else {
+            CONNECT_TOOLTIP_NOT_READY
+        }));
+        for (button, tooltip) in [
+            (&self.table, KIND_TABLE_TOOLTIP),
+            (&self.view, KIND_VIEW_TOOLTIP),
+            (&self.function, KIND_FUNCTION_TOOLTIP),
+            (&self.query, KIND_QUERY_TOOLTIP),
+        ] {
+            button.set_sensitive(ready);
+            button.set_tooltip_text(Some(if ready {
+                tooltip
+            } else {
+                KIND_TOOLTIP_NOT_READY
+            }));
+        }
+        self.apply_new_query();
+        self.log_availability(ready);
+    }
+
+    /// 按「后端就绪 + 已连接数据库」两个条件刷新「新建查询」。
+    fn apply_new_query(&self) {
+        let backend_ready = self.backend_ready.get();
+        let enabled = backend_ready && self.new_query_allowed.get();
         self.new_query.set_sensitive(enabled);
         self.new_query.set_tooltip_text(Some(if enabled {
             "新建查询标签（Ctrl+T）"
+        } else if !backend_ready {
+            "后端尚未就绪：握手完成且连接数据库后才能新建查询标签"
         } else {
             "尚未连接数据库：先连接再新建查询标签"
         }));
     }
 
-    fn widget(&self) -> &gtk::Box {
+    /// 「新建查询」的可用性：未连接数据库时禁用并说明原因（不摆点了没反应的按钮）。
+    ///
+    /// 与 [`Self::set_backend_ready`] 正交：后端未就绪时即使已连接也不会打开。
+    /// 后端已就绪时补一行日志——工作区建立后「6/6」的实测数字来自这里。
+    pub fn set_new_query_enabled(&self, enabled: bool) {
+        self.new_query_allowed.set(enabled);
+        self.apply_new_query();
+        if self.backend_ready.get() {
+            self.log_availability(true);
+        }
+    }
+
+    /// 工具条根控件（由窗口挂在 headerbar 之下）。
+    pub fn widget(&self) -> &gtk::Box {
         &self.root
     }
 

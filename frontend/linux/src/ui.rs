@@ -46,7 +46,7 @@ use crate::icons;
 use crate::inspector::{ConnectionLive, Inspector};
 use crate::layout;
 use crate::proto::services::v1::ObjectRef;
-use crate::shell::{Shell, ShellHandlers, StatusBar};
+use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
 use crate::theme;
 use crate::tree::{KindGroup, RowGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
 
@@ -80,12 +80,26 @@ struct UiState {
     connection_name: RefCell<Option<String>>,
     /// 窗口级动作（主菜单与快捷键）；`activate` 里建好后放进这里。
     actions: RefCell<Option<Rc<WindowActions>>>,
+    /// 主工具条（区域 02，窗口级）：握手前创建，可用性由
+    /// [`crate::shell::Toolbar::set_backend_ready`] 统一控制。
+    toolbar: RefCell<Option<Rc<crate::shell::Toolbar>>>,
     /// 连接注册表（`connections.json` 的全部连接 + 每连接一条浏览会话，#114）。
     registry: RefCell<Option<Rc<ConnectionRegistry>>>,
     /// 本次「保存并连接」的文件路径（把结果对回注册表条目用；SQLite 没有凭据可对）。
     pending_file_hint: RefCell<Option<String>>,
     /// 成功的 `Connect` 次数（浏览会话建立事件计数；QA 断言「只连一次」用）。
     connect_count: Cell<usize>,
+}
+
+impl UiState {
+    /// 窗口级主工具条（`activate` 创建后一定存在）。
+    fn toolbar(&self) -> Rc<Toolbar> {
+        self.toolbar
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("窗口构建时已创建主工具条")
+    }
 }
 
 /// `Connected` 事件携带的后端信息，「关于 Squarvo」的诊断区块用。
@@ -141,11 +155,12 @@ pub fn activate(app: &adw::Application) {
     let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
     slot.set_vexpand(true);
 
+    // 窗口根 = headerbar + 主工具条 + 页面槽位。工具条在**握手之前**就存在：
+    // 后端未就绪时六个按钮全部禁用（`Toolbar::set_backend_ready`），不会出现
+    // 「菜单禁用、按钮可点」或点了没反应的入口。
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&header);
-    root.append(&slot);
     window.set_content(Some(&root));
-    show_loading(&slot, &window_title, "准备连接本地后端…");
 
     // Ctrl+W 关闭**标签**（workspace-model §10）：关窗交给 Ctrl+Shift+W / 标题栏按钮。
     // 两条路径都走 `window.close()`，清理流程完全相同。
@@ -166,15 +181,6 @@ pub fn activate(app: &adw::Application) {
         }
     };
 
-    let (worker, events) = match WorkerHandle::spawn(endpoint_path.clone()) {
-        Ok(pair) => pair,
-        Err(error) => {
-            show_error(&slot, &window_title, &error.to_string(), &noop_handler());
-            window.present();
-            return;
-        }
-    };
-
     // 连接注册表（#114）：连接列表来自 `connections.json`，与后端是否握手无关；
     // 每条连接的浏览会话在真正展开/点击时才建立。
     let (registry, session_events) = match ConnectionRegistry::load(endpoint_path.clone()) {
@@ -189,7 +195,7 @@ pub fn activate(app: &adw::Application) {
         window: window.clone(),
         slot: slot.clone(),
         title: window_title.clone(),
-        worker: RefCell::new(Some(worker)),
+        worker: RefCell::new(None),
         dialog: RefCell::new(None),
         drivers: RefCell::new(Vec::new()),
         backend_ready: Cell::new(false),
@@ -201,10 +207,43 @@ pub fn activate(app: &adw::Application) {
         backend: RefCell::new(None),
         connection_name: RefCell::new(None),
         actions: RefCell::new(None),
+        toolbar: RefCell::new(None),
         registry: RefCell::new(registry),
         pending_file_hint: RefCell::new(None),
         connect_count: Cell::new(0),
     });
+
+    // ---- 区域 02：主工具条（窗口级，不随工作区重建） --------------------------
+    let toolbar = Toolbar::new(
+        {
+            let state = Rc::clone(&state);
+            Rc::new(move || open_connection_dialog(&state))
+        },
+        {
+            let state = Rc::clone(&state);
+            Rc::new(move || request_new_query_tab(&state))
+        },
+        {
+            let state = Rc::clone(&state);
+            Rc::new(move |shortcut| request_kind_entry(&state, shortcut))
+        },
+    );
+    root.append(toolbar.widget());
+    root.append(&slot);
+    state.toolbar.replace(Some(Rc::clone(&toolbar)));
+    // 拿到 worker 之前先置 false：从这一刻起按钮全是灰的，握手成功才打开。
+    toolbar.set_backend_ready(false);
+    show_loading(&slot, &window_title, "准备连接本地后端…");
+
+    let (worker, events) = match WorkerHandle::spawn(state.endpoint_path.clone()) {
+        Ok(pair) => pair,
+        Err(error) => {
+            show_error(&slot, &window_title, &error.to_string(), &noop_handler());
+            window.present();
+            return;
+        }
+    };
+    state.worker.replace(Some(worker));
 
     // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
     let actions = install_window_actions(&window, &state);
@@ -242,9 +281,13 @@ pub fn activate(app: &adw::Application) {
     let retry: Rc<dyn Fn()> = {
         let state = Rc::clone(&state);
         Rc::new(move || {
-            state.backend_ready.set(false);
-            if let Some(actions) = state.actions.borrow().as_ref() {
-                actions.set_backend_ready(false);
+            // 首次进入时工具条已由窗口置为未就绪（并打过一行 0/6）；只有从
+            // 已就绪状态回退时才需要再置一次，避免同一状态重复刷日志。
+            if state.backend_ready.replace(false) {
+                state.toolbar().set_backend_ready(false);
+                if let Some(actions) = state.actions.borrow().as_ref() {
+                    actions.set_backend_ready(false);
+                }
             }
             show_loading(&state.slot, &state.title, "准备连接本地后端…");
             if let Some(worker) = state.worker.borrow().as_ref() {
@@ -381,6 +424,7 @@ pub fn activate(app: &adw::Application) {
                     }
                     eprintln!("[bench] t=+{}ms state=Connected", crate::qa::elapsed_ms());
                     events_state.backend_ready.set(true);
+                    events_state.toolbar().set_backend_ready(true);
                     if let Some(actions) = events_state.actions.borrow().as_ref() {
                         actions.set_backend_ready(true);
                     }
@@ -430,6 +474,7 @@ pub fn activate(app: &adw::Application) {
                 Event::Error(message) => {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
+                        events_state.toolbar().set_backend_ready(false);
                         events_state.startup.borrow_mut().take();
                         events_state.title.set_title("Sqarvo");
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
@@ -446,6 +491,7 @@ pub fn activate(app: &adw::Application) {
                 Event::Disconnected(reason) => {
                     if !events_closing.get() {
                         events_state.backend_ready.set(false);
+                        events_state.toolbar().set_backend_ready(false);
                         events_state.startup.borrow_mut().take();
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
@@ -903,6 +949,37 @@ fn confirm_close_with_dirty(
     dialog.present(Some(&state.window));
 }
 
+/// 工具条 / 菜单「新建查询标签」：工作区存在时新建；启动态只写日志（按钮本身也禁用）。
+fn request_new_query_tab(state: &Rc<UiState>) {
+    let workspace = state.workspace.borrow().as_ref().cloned();
+    match workspace {
+        Some(workspace) => {
+            if let Err(message) = workspace.tabs.new_query_tab() {
+                eprintln!("[tabs] 新建查询标签被拒绝：{message}");
+            }
+        }
+        None => eprintln!("[startup] 尚未连接数据库：先连接再新建查询标签"),
+    }
+}
+
+/// 工具条四个种类入口：路由到当前工作区（连接态）或启动态外壳，只有一处判定。
+fn request_kind_entry(state: &Rc<UiState>, shortcut: crate::tabs::KindShortcut) {
+    let workspace = state.workspace.borrow().as_ref().cloned();
+    if let Some(workspace) = workspace {
+        workspace.show_kind(shortcut);
+        return;
+    }
+    let startup = state.startup.borrow().as_ref().cloned();
+    if let Some(startup) = startup {
+        startup.show_kind(shortcut);
+        return;
+    }
+    eprintln!(
+        "[toolbar] 种类入口「{}」：后端未就绪且没有工作区，忽略",
+        shortcut.label()
+    );
+}
+
 /// 打开（或呈现已打开的）连接对话框（新建连接）。
 fn open_connection_dialog(state: &Rc<UiState>) {
     open_connection_dialog_for(state, None);
@@ -1118,6 +1195,7 @@ fn restart_software(state: &Rc<UiState>) {
         registry.reset_sessions("用户重启软件");
     }
     state.backend_ready.set(false);
+    state.toolbar().set_backend_ready(false);
     state.connection_name.replace(None);
     if let Some(actions) = state.actions.borrow().as_ref() {
         actions.set_backend_ready(false);
@@ -1385,10 +1463,7 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
         registry,
         driver_count: snapshot.drivers.len(),
         browse_sessions,
-        connect: {
-            let state = Rc::clone(state);
-            Rc::new(move || open_connection_dialog(&state))
-        },
+        toolbar: state.toolbar(),
         actions: crate::startup::StartupActions {
             connect_saved: {
                 let state = Rc::clone(state);
@@ -1696,17 +1771,11 @@ fn apply_tab_status(
 /// `Views` 分组），信息面板随之切换；再把列表切到同一作用域。「函数 / 查询」没有可拉取
 /// 的列表，页面如实说明原因，不摆假数据。
 fn show_objects_for_kind(
-    tree_slot: &Rc<RefCell<Option<Rc<TreePanel>>>>,
-    tabs_slot: &Rc<RefCell<Option<Rc<crate::tabs::TabSet>>>>,
+    tree: &Rc<TreePanel>,
+    tabs: &Rc<crate::tabs::TabSet>,
     shortcut: crate::tabs::KindShortcut,
 ) {
     use crate::tabs::KindShortcut;
-    let Some(tabs) = tabs_slot.borrow().clone() else {
-        return;
-    };
-    let Some(tree) = tree_slot.borrow().clone() else {
-        return;
-    };
     // 目标库 = 树里当前选中项所在的库（用户可能刚切到另一个库）；没有选中时才退回
     // 活动连接的默认库。不能用「活动连接的默认库」直接决定——那会把按钮锁死在默认库上。
     let target = tree.selected_catalog();
@@ -1810,6 +1879,11 @@ impl Workspace {
     /// 补展开所有已连接的连接层（#144：树挂载后调一次，防止 notify 丢失/行未创建）。
     fn expand_connected_layers(&self) {
         self.tree.expand_connected();
+    }
+
+    /// 主工具条的四个种类入口（连接态）：与树里选中分组同一条路径。
+    fn show_kind(&self, shortcut: crate::tabs::KindShortcut) {
+        show_objects_for_kind(&self.tree, &self.tabs, shortcut);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2193,27 +2267,11 @@ impl Workspace {
                     }
                 })
             },
-            connect: {
-                let state = Rc::clone(state);
-                Rc::new(move || open_connection_dialog(&state))
-            },
-            new_query: {
-                let tabs = Rc::clone(&tabs);
-                Rc::new(move || {
-                    if let Err(message) = tabs.new_query_tab() {
-                        eprintln!("[tabs] 新建查询标签被拒绝：{message}");
-                    }
-                })
-            },
-            on_kind: {
-                let tree_slot = Rc::clone(&tree_slot);
-                let tabs_slot = Rc::clone(&tabs_slot);
-                Rc::new(move |shortcut: crate::tabs::KindShortcut| {
-                    show_objects_for_kind(&tree_slot, &tabs_slot, shortcut);
-                })
-            },
+            toolbar: state.toolbar(),
         });
         shell_slot.replace(Some(Rc::clone(&shell)));
+        // 工作区已建立：工具条「新建查询」恢复可点（后端就绪时再打一行 6/6 的实测日志）。
+        shell.toolbar().set_new_query_enabled(true);
         shell.status().set_connection(Some(connection_name));
         shell
             .status()
@@ -3988,16 +4046,57 @@ struct WindowActions {
     delete_row: gio::SimpleAction,
     /// 导出当前结果 / 当前页为 CSV（#120）。
     export_csv: gio::SimpleAction,
+    /// 后端是否已握手：与工具条 `Toolbar::set_backend_ready` 同一个状态。
+    /// 未就绪时所有会话类动作（含「新建连接」）一律禁用。
+    backend_ready: Cell<bool>,
 }
 
 impl WindowActions {
-    /// 后端握手前「新建连接」不可用（与工具条「连接」同一口径：入口只在握手后出现）。
+    /// 后端就绪开关：与工具条**同一口径**（菜单禁用 / 按钮可点的偏差就此收口）。
+    ///
+    /// 未就绪时禁用全部可操作项（新建连接、新建查询、查询执行 / 取消、表动作、
+    /// 刷新、侧栏显隐）；就绪后由 `set_workspace_ready` / `apply_row_ops` 按当前
+    /// 工作区恢复——它们都读 `backend_ready`，不会在后端未就绪时把动作打开。
     fn set_backend_ready(&self, ready: bool) {
+        self.backend_ready.set(ready);
         self.new_connection.set_enabled(ready);
+        if !ready {
+            for action in [
+                &self.new_tab,
+                &self.close_tab,
+                &self.toggle_sidebar,
+                &self.refresh,
+                &self.execute,
+                &self.cancel,
+                &self.begin_txn,
+                &self.commit_txn,
+                &self.rollback_txn,
+                &self.refresh_table,
+                &self.add_row,
+                &self.delete_row,
+                &self.export_csv,
+            ] {
+                action.set_enabled(false);
+            }
+        }
     }
 
-    /// 「表」菜单的可用性完全跟随数据页（与状态栏行操作同一份快照）。
+    /// 「表」菜单的可用性完全跟随数据页（与状态栏行操作同一份快照）；
+    /// 后端未就绪时一律禁用（例如断开后保留的工作区）。
     fn apply_row_ops(&self, ops: &RowOpsState) {
+        if !self.backend_ready.get() {
+            for action in [
+                &self.begin_txn,
+                &self.commit_txn,
+                &self.rollback_txn,
+                &self.refresh_table,
+                &self.add_row,
+                &self.delete_row,
+            ] {
+                action.set_enabled(false);
+            }
+            return;
+        }
         self.begin_txn.set_enabled(ops.begin_txn);
         self.commit_txn.set_enabled(ops.commit_txn);
         self.rollback_txn.set_enabled(ops.rollback_txn);
@@ -4008,6 +4107,7 @@ impl WindowActions {
 
     /// 没有工作区时，需要会话的动作一律禁用（不是点了没反应）。
     fn set_workspace_ready(&self, ready: bool) {
+        let ready = ready && self.backend_ready.get();
         for action in [
             &self.toggle_sidebar,
             &self.refresh,
@@ -4253,6 +4353,7 @@ fn install_window_actions(
         add_row,
         delete_row,
         export_csv,
+        backend_ready: Cell::new(false),
     });
     actions.set_backend_ready(false);
     actions.set_workspace_ready(false);

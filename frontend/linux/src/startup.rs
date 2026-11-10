@@ -52,8 +52,8 @@ pub struct StartupConfig {
     pub driver_count: usize,
     /// 当前浏览会话数（启动时为 0）。
     pub browse_sessions: usize,
-    /// 左组「连接」：打开既有的连接对话框。
-    pub connect: Rc<dyn Fn()>,
+    /// 主工具条（区域 02）：窗口在握手前创建，启动态外壳只把它放进外壳。
+    pub toolbar: Rc<crate::shell::Toolbar>,
     /// 侧栏行动作（点击连接 / 右键编辑 / 断开 / 删除）。
     pub actions: StartupActions,
 }
@@ -80,6 +80,8 @@ pub struct StartupWorkspace {
     inspector: Rc<crate::inspector::Inspector>,
     /// 固定的 `Objects` 标签页（QA 读 `is_pinned()` 用）。
     objects_page: adw::TabPage,
+    /// 标签视图：种类入口在启动态只把固定在首页的 `Objects` 摆到前面。
+    view: adw::TabView,
     /// 侧栏对象树（与连接态同一个组件；QA 与右键菜单都走它）。
     tree: Rc<TreePanel>,
     /// 连接注册表（只用于 `connection_count()` 与对象树接线）。
@@ -216,24 +218,7 @@ impl StartupWorkspace {
             page_op: Rc::new(|_| {
                 eprintln!("[startup] 尚未连接数据库，忽略分页动作");
             }),
-            connect: Rc::clone(&config.connect),
-            new_query: Rc::new(|| {
-                eprintln!("[startup] 尚未连接数据库：先连接再新建查询标签");
-            }),
-            on_kind: {
-                let objects = Rc::clone(&objects);
-                let view = view.clone();
-                let page = page.clone();
-                Rc::new(move |shortcut: crate::tabs::KindShortcut| {
-                    // 未连接：没有可列的库。把 Objects 页摆到前面、保持空态，不编造内容。
-                    objects.show_empty();
-                    view.set_selected_page(&page);
-                    eprintln!(
-                        "[startup] 种类入口「{}」：尚未连接数据库，Objects 页保持空态",
-                        shortcut.label()
-                    );
-                })
-            },
+            toolbar: Rc::clone(&config.toolbar),
         });
         shell.toolbar().set_new_query_enabled(false);
 
@@ -252,6 +237,7 @@ impl StartupWorkspace {
             shell,
             inspector,
             objects_page: page,
+            view,
             tree,
             registry: config.registry,
         })
@@ -280,6 +266,18 @@ impl StartupWorkspace {
     #[must_use]
     pub(crate) fn objects_pinned(&self) -> bool {
         self.objects_page.is_pinned()
+    }
+
+    /// 主工具条的四个种类入口（启动态）：未连接数据库，没有可列的库。
+    ///
+    /// 与连接态同一条入口语义：把 `Objects` 页摆到前面、保持空态，日志写明原因；
+    /// 不编造内容，也不因为「没东西可列」就让点击静默。
+    pub fn show_kind(&self, shortcut: crate::tabs::KindShortcut) {
+        self.view.set_selected_page(&self.objects_page);
+        eprintln!(
+            "[startup] 种类入口「{}」：尚未连接数据库，Objects 页保持空态",
+            shortcut.label()
+        );
     }
 
     /// QA（`--qa-startup-click <name>`）：按名字激活一条已保存连接。
