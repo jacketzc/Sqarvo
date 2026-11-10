@@ -76,16 +76,22 @@ pub enum DataState {
     Disconnected,
 }
 
-/// 行号列宽度（规范 §6：行号列 32）。
-/// 行号列宽度（规范 §6：行号列 32）。
+/// 行号列宽度（规范 §6：行号列 32；三档 32 / 40 / 48，取 `metrics.toml`）。
 ///
-/// `Objects` 固定页的三列表格复用同一个常量（`tabs::ObjectsPage`）：两块表格的
+/// `Objects` 固定页的三列表格复用同一份取值（`tabs::ObjectsPage`）：两块表格的
 /// 行号列必须是同一宽度，否则两张表的列起点会差几个像素。
-pub(crate) const ROW_NUMBER_WIDTH: i32 = 32;
+#[must_use]
+pub(crate) fn row_number_width() -> i32 {
+    metrics().row_number_width
+}
 /// 数据列的**最大**宽度：按内容自适应，长文本到此为止并省略（原固定宽度）。
+/// 三档 200 / 250 / 300（`metrics.toml` 的 `column_width`）。
 ///
 /// `Objects` 页的「表名」列同样取它作初值。
-pub(crate) const COLUMN_WIDTH: i32 = 200;
+#[must_use]
+pub(crate) fn column_width() -> i32 {
+    metrics().column_width
+}
 /// 按内容自适应时的最小列宽：窄到只剩一两个字符的列（`id` / 布尔）不至于挤成一条。
 const COLUMN_MIN_WIDTH: i32 = 64;
 /// 测量文本宽度时要预留的单元格横向内距（左右内边距 + 1px 列分隔线）。
@@ -572,13 +578,17 @@ fn icon_button(icon: &str, label: &str) -> gtk::Button {
     crate::icons::button(icon, label)
 }
 
-/// 筛选/排序面板的宽度（popover 内容宽，约 640 的 2/3）。
-const FS_PANEL_WIDTH: i32 = 430;
+/// 筛选/排序面板的宽度（popover 内容宽，约 640 的 2/3；三档 430 / 538 / 645）。
+fn fs_panel_width() -> i32 {
+    metrics().filter_panel_width
+}
 /// 锚点在面板上的水平位置：黄金分割（0.618）。用户要的是「漏斗在上沿偏右处」，
 /// 不是正中对齐。
 const GOLDEN_RATIO_ANCHOR: f64 = 0.618;
-/// 筛选列 / 排序列下拉的固定宽度（面板收窄后同步压缩）。
-const FS_COLUMN_WIDTH: i32 = 140;
+/// 筛选列 / 排序列下拉的固定宽度（面板收窄后同步压缩；三档 140 / 175 / 210）。
+fn fs_column_width() -> i32 {
+    metrics().filter_column_width
+}
 
 /// 空清单的说明行：不加这一行的话，用户分不清「没有条件」和「没渲染出来」。
 fn empty_hint(text: &str) -> gtk::Label {
@@ -891,10 +901,8 @@ impl DataPage {
         //   树里（`update_property(Label)` 与 tooltip 同一句），鼠标与读屏都拿得到状态。
         let status_dot_core = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         status_dot_core.add_css_class("sqarvo-status-dot");
-        status_dot_core.set_size_request(
-            crate::layout::STATUS_DOT_DIAMETER,
-            crate::layout::STATUS_DOT_DIAMETER,
-        );
+        status_dot_core
+            .set_size_request(metrics().status_dot_diameter, metrics().status_dot_diameter);
         status_dot_core.set_halign(gtk::Align::Center);
         status_dot_core.set_valign(gtk::Align::Center);
         let status_dot = gtk::Button::new();
@@ -1122,7 +1130,7 @@ impl DataPage {
         fs_filter_title.set_margin_top(gap(Gap::Xs));
         let fs_column = gtk::DropDown::from_strings(&["（未打开表）"]);
         // 固定宽度：随 hexpand 拉伸会随窗口变宽变成一大条空白下拉，值输入框反而被挤小。
-        fs_column.set_size_request(FS_COLUMN_WIDTH, -1);
+        fs_column.set_size_request(fs_column_width(), -1);
         fs_column.set_tooltip_text(Some("筛选列（来自 GetColumns 的列清单）"));
         let fs_operator = gtk::DropDown::from_strings(&Operator::ALL.map(Operator::label));
         fs_operator.add_css_class("fs-symbol");
@@ -1153,7 +1161,7 @@ impl DataPage {
         fs_sort_title.set_margin_top(gap(Gap::Md));
         let fs_sort_column = gtk::DropDown::from_strings(&["（未打开表）"]);
         // 与筛选列同宽（左对齐的一小组控件，不铺满整行）。
-        fs_sort_column.set_size_request(FS_COLUMN_WIDTH, -1);
+        fs_sort_column.set_size_request(fs_column_width(), -1);
         fs_sort_column.set_tooltip_text(Some("排序列（来自 GetColumns 的列清单）"));
         let fs_sort_direction = gtk::DropDown::from_strings(&["asc", "desc"]);
         fs_sort_direction.add_css_class("fs-symbol");
@@ -1196,7 +1204,7 @@ impl DataPage {
 
         let fs_card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
         fs_card.add_css_class("sqarvo-fs");
-        fs_card.set_size_request(FS_PANEL_WIDTH, -1);
+        fs_card.set_size_request(fs_panel_width(), -1);
         fs_card.append(&fs_header);
         fs_card.append(&fs_filter_title);
         fs_card.append(&fs_row);
@@ -1813,8 +1821,8 @@ impl DataPage {
         self.cc_card.set_visible(false);
         // 锚点（漏斗按钮）落在面板上沿的**黄金分割点**（0.618 处，偏右）。
         // 默认 popover 把锚点放在正中（0.5），所以向左偏移 0.118 × 面板宽。
-        let shift = -((f64::from(FS_PANEL_WIDTH) * GOLDEN_RATIO_ANCHOR
-            - f64::from(FS_PANEL_WIDTH) / 2.0)
+        let shift = -((f64::from(fs_panel_width()) * GOLDEN_RATIO_ANCHOR
+            - f64::from(fs_panel_width()) / 2.0)
             .round()) as i32;
         self.fs_popover.set_offset(shift, 0);
         self.fs_popover.popup();
@@ -5206,7 +5214,7 @@ impl DataPage {
     fn build_columns(self: &Rc<Self>, columns: &[TableColumn]) {
         self.clear_columns();
         // 表头只有一行：「列名 · 原始类型」（点它看列属性），列宽按内容测量
-        // （`auto_size_columns`，上限仍是 `COLUMN_WIDTH`）。
+        // （`auto_size_columns`，上限仍是 `column_width()`）。
         self.header_titles
             .replace(columns.iter().map(|column| column.name.clone()).collect());
         self.header_wired.borrow_mut().clear();
@@ -5280,7 +5288,7 @@ impl DataPage {
             label.set_tooltip_text(Some(&tooltip));
         });
         let number_column = gtk::ColumnViewColumn::new(Some("行号"), Some(number_factory));
-        number_column.set_fixed_width(ROW_NUMBER_WIDTH);
+        number_column.set_fixed_width(row_number_width());
         number_column.set_resizable(false);
         self.grid.append_column(&number_column);
 
@@ -5289,12 +5297,12 @@ impl DataPage {
             let view_column = gtk::ColumnViewColumn::new(Some(&column.name), Some(factory));
             view_column.set_expand(false);
             // 数据列可拖拽（design-principles「结果网格」要求列宽调整）。初始宽度仍是
-            // `COLUMN_WIDTH`；本页行加载后 `auto_size_columns` 按内容把它收窄。
+            // `column_width()`；本页行加载后 `auto_size_columns` 按内容把它收窄。
             // GTK 拖拽列边界走的就是 `gtk_column_view_column_set_fixed_width`
             // （gtkcolumnview.c 的 `update_column_resize`），该 setter 会
             // `g_object_notify_by_pspec`，所以用户改宽在这里就能被记下来。
             view_column.set_resizable(true);
-            view_column.set_fixed_width(COLUMN_WIDTH);
+            view_column.set_fixed_width(column_width());
             {
                 let page = Rc::downgrade(self);
                 view_column.connect_notify_local(Some("fixed-width"), move |column, _| {
@@ -5382,11 +5390,11 @@ impl DataPage {
     }
 
     /// 按本页已加载行（以及合并后的表头文本）测最大文字宽度，把每列收窄到
-    /// `clamp(COLUMN_MIN_WIDTH, 最长文字 + 单元格内距, COLUMN_WIDTH)`。
+    /// `clamp(COLUMN_MIN_WIDTH, 最长文字 + 单元格内距, column_width())`。
     ///
-    /// - 上限仍是 `COLUMN_WIDTH`：长文本按原来的固定宽度显示并省略（单元格的
+    /// - 上限仍是 `column_width()`：长文本按原来的固定宽度显示并省略（单元格的
     ///   `ellipsize` 不变），不会因为一行超长文本把表格撑爆。
-    /// - 行号列（`ROW_NUMBER_WIDTH`，不可拖）不参与。
+    /// - 行号列（`row_number_width()`，不可拖）不参与。
     /// - 用户在本页手动改过宽度的列（`user_sized`）不覆写。
     /// - 一页最多 500 行，逐行测量在 UI 线程上可以接受（4 列 × 500 行实测 < 30ms）。
     fn auto_size_columns(&self) {
@@ -5395,9 +5403,8 @@ impl DataPage {
             return;
         }
         let user_sized = self.user_sized.borrow().clone();
-        let header_layout = self.text_layout(crate::layout::FONT_UI, gtk::pango::Weight::Semibold);
-        let cell_layout =
-            self.text_layout(crate::layout::FONT_DATA_CELL, gtk::pango::Weight::Medium);
+        let header_layout = self.text_layout(metrics().font_ui, gtk::pango::Weight::Semibold);
+        let cell_layout = self.text_layout(metrics().font_data_cell, gtk::pango::Weight::Medium);
         for (index, column) in columns.iter().enumerate() {
             if user_sized.get(index).copied().unwrap_or(false) {
                 continue;
@@ -5408,13 +5415,58 @@ impl DataPage {
             let (_, logical) = header_layout.pixel_extents();
             let header_width = logical.width();
             let text_width = self.widest_cell_text(index, &cell_layout).max(header_width);
-            let width = (text_width + CELL_PADDING_X).clamp(COLUMN_MIN_WIDTH, COLUMN_WIDTH);
+            let width = (text_width + CELL_PADDING_X).clamp(COLUMN_MIN_WIDTH, column_width());
             self.set_column_width(index, width);
             eprintln!(
                 "[data] 自动列宽：{} 最长文字={text_width}px 列宽={width}px",
                 column.name
             );
         }
+    }
+
+    /// 切档后把**已建成**的控件重新落下新档位的尺寸（#160）。
+    ///
+    /// 重载 CSS 只改字体 / 行高 / 内距，不会动 `set_fixed_width` 与 `set_size_request`：
+    /// 不重设就是「字变大了列没变」。这里按规范 §2.3 的归一化口径换算用户拖过的列宽，
+    /// 其余列按新字号重新自适应。
+    pub(crate) fn reapply_metrics(&self, old: crate::layout::Tier, new: crate::layout::Tier) {
+        let m = crate::layout::Metrics::for_tier(new);
+        self.controls_row.set_height_request(m.row_height_data);
+        self.status_dot.set_size_request(m.min_target, m.min_target);
+        self.status_dot_core
+            .set_size_request(m.status_dot_diameter, m.status_dot_diameter);
+        // 行号列（不可拖）跟着档位走。
+        if let Some(column) = self
+            .grid
+            .columns()
+            .item(0)
+            .and_then(|object| object.downcast::<gtk::ColumnViewColumn>().ok())
+        {
+            column.set_fixed_width(m.row_number_width);
+        }
+        // 用户手动改过宽度的列：按档位归一化后再钳到新上限（§7 第 1 条）。
+        let user_sized = self.user_sized.borrow().clone();
+        for (index, column) in self.header_columns.borrow().iter().enumerate() {
+            if !user_sized.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let width = crate::window_state::rescale(column.fixed_width(), old, new)
+                .clamp(COLUMN_MIN_WIDTH, m.column_width);
+            self.set_column_width(index, width);
+        }
+        // 其余列按新档位的字号重新测量（`auto_size_columns` 读 `metrics()`）。
+        self.auto_size_columns();
+        // 筛选面板的固定尺寸（浮层按需打开，但已建好的控件在切档后要跟上）。
+        self.fs_card.set_size_request(m.filter_panel_width, -1);
+        self.fs_column.set_size_request(m.filter_column_width, -1);
+        self.fs_sort_column
+            .set_size_request(m.filter_column_width, -1);
+        eprintln!(
+            "[tier] 数据页列宽已按 {} 重设（行号 {}，上限 {}）",
+            new.id(),
+            m.row_number_width,
+            m.column_width
+        );
     }
 
     /// 一列里最长的一条显示文本（像素；不含单元格内距）。
@@ -5528,8 +5580,7 @@ impl DataPage {
             .iter()
             .map(|column| column.name.clone())
             .collect();
-        let cell_layout =
-            self.text_layout(crate::layout::FONT_DATA_CELL, gtk::pango::Weight::Medium);
+        let cell_layout = self.text_layout(metrics().font_data_cell, gtk::pango::Weight::Medium);
         names
             .iter()
             .enumerate()
@@ -6192,19 +6243,17 @@ fn set_action(button: &gtk::Button, class: &str, sensitive: bool) {
     }
 }
 
-fn install_css() {
-    use std::sync::OnceLock;
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    if INSTALLED.set(()).is_err() {
-        return;
-    }
-    let Some(display) = gtk::gdk::Display::default() else {
-        return;
-    };
-    let provider = gtk::CssProvider::new();
-    // 尺寸只从当前档位的度量取（#159）；1px 描边 / 分隔线与阴影模糊值不随档位缩放。
+thread_local! {
+    /// 数据页附加样式的 provider（切档时用同一个句柄重载）。
+    static STYLE_PROVIDER: std::cell::RefCell<Option<gtk::CssProvider>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 数据页附加样式表（尺寸取当前档位的度量）。
+fn stylesheet() -> String {
+    // 尺寸只从当前档位的度量取（#159 / #160）；1px 描边 / 分隔线与阴影模糊值不随档位缩放。
     let m = metrics();
-    provider.load_from_string(&format!(
+    format!(
         r#"
         /* 强调底（脏行单元格 / 事务徽标 / 列信息 focus / 表头 hover / View 徽标）
            已搬到 `theme::stylesheet`：色值只在那一处按 token 定义，这里只留语义色
@@ -6236,7 +6285,7 @@ fn install_css() {
            行操作组）后，剩 4 个动作按钮，宽度还回来一点：内距改成 4px 6px，
            按钮盒从 32 宽 × 28 高变成 36 宽 × 32 高
            （32 正好是 §2.1 里这一行的内容高，工具条 46 的口径不变，控件行也显式
-           `set_height_request(32)` 把上下 8 / 6 的留白守住）。
+           `set_height_request({row_height_data})` 把上下 8 / 6 的留白守住）。
            960×640 实测「需求 407 ≤ 分配 417」（`--qa-layout-audit` 可复核）。 */
         .sqarvo-table-actions button {{ padding: {gap_xs}px {gap_sm}px; }}
         /* 表头只有一行：「列名 · 原始类型」（合并后的标题文本）。列名与类型同一字号，
@@ -6264,10 +6313,35 @@ fn install_css() {
         gap_sm = m.gap_px(Gap::Sm),
         column_header_min_height = m.column_header_min_height,
         font_ui = m.font_ui,
-    ));
+        row_height_data = m.row_height_data,
+    )
+}
+
+fn install_css() {
+    use std::sync::OnceLock;
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.set(()).is_err() {
+        return;
+    }
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(&stylesheet());
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    STYLE_PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider));
+}
+
+/// 切档时重载数据页附加样式（同一个 provider）。
+pub(crate) fn reload_css() {
+    let css = stylesheet();
+    STYLE_PROVIDER.with(|slot| {
+        if let Some(provider) = slot.borrow().as_ref() {
+            provider.load_from_string(&css);
+        }
+    });
 }

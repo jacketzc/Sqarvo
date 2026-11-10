@@ -13,9 +13,16 @@
 //! 紧凑化作用在窗口的 `sqarvo-compact` class 下，不影响同一进程里没有这个 class
 //! 的其它窗口（对话框、浮层仍按 libadwaita 默认密度，避免对话框里挤成一行）。
 
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use crate::layout::{self, Gap};
+use crate::layout::{self, Gap, Tier};
+
+// 应用级 provider 的句柄：切档时用它重载同一份样式表（`load_from_string`），
+// 不再重复注册 provider。GTK 对象只在主线程用，所以放在 `thread_local`。
+thread_local! {
+    static PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+}
 
 /// 给窗口加 class 的名字：`GtkApplicationWindow` 上由 [`crate::ui`] 设置。
 pub const WINDOW_CLASS: &str = "sqarvo-compact";
@@ -101,25 +108,39 @@ pub fn install() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider.clone()));
     // 深浅色切换（系统设置 / libadwaita 的 prefer-dark）时重载同一份 provider。
     manager.connect_dark_notify(move |manager| {
         let _ = DARK.set(manager.is_dark());
-        provider.load_from_string(&stylesheet_for(manager.is_dark()));
+        provider.load_from_string(&stylesheet_for(manager.is_dark(), layout::current_tier()));
     });
 }
 
-/// 紧凑密度样式表（按当前深浅色取对应色板）。单独成函数，测试可以检查关键尺寸与色值。
-#[must_use]
-pub fn stylesheet() -> String {
-    stylesheet_for(is_dark())
+/// 切档时重载应用级样式表（同一个 provider，不重复注册）。
+///
+/// 尺寸字段在 [`stylesheet_for`] 里按**当前档位**取值；只重载字符串不会动控件上
+/// 已经写死的 `set_margin_*` / 列宽，那些由 [`crate::density`] 的重排补齐。
+pub fn reload() {
+    let css = stylesheet();
+    PROVIDER.with(|slot| {
+        if let Some(provider) = slot.borrow().as_ref() {
+            provider.load_from_string(&css);
+        }
+    });
 }
 
-/// 指定深浅色生成样式表：测试直接调它，断言两套色板都在。
+/// 当前档位的紧凑密度样式表（按当前深浅色取对应色板）。测试可以检查关键尺寸与色值。
 #[must_use]
-pub fn stylesheet_for(dark: bool) -> String {
+pub fn stylesheet() -> String {
+    stylesheet_for(is_dark(), layout::current_tier())
+}
+
+/// 指定深浅色与档位生成样式表：测试直接调它，断言两套色板与三档尺寸都在。
+#[must_use]
+pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
     let palette = if dark { &DARK_PALETTE } else { &LIGHT_PALETTE };
-    // 尺寸 / 字号 / 圆角 / 间距一律按当前档位取（#159），样式表里不再写死像素值。
-    let m = layout::metrics();
+    // 尺寸 / 字号 / 圆角 / 间距一律按档位取（`metrics.toml`），样式表里不再写死像素值。
+    let m = layout::Metrics::for_tier(tier);
     format!(
         r#"
         /* 品牌三档色板：界面上**所有**强调底色只从这里取，别处不许写 hex。
@@ -974,6 +995,45 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_tracks_the_tier_metrics() {
+        // 三档的样式表必须真的不同，且数字来自 `metrics.toml`：行高 24/30/36、
+        // 数据行 32/40/48、界面字号 12/15/18、标签条 24/30/36。
+        for (tier, tree_row, data_row, font_ui, tab_strip) in [
+            (Tier::Compact, 24, 32, 12, 24),
+            (Tier::Comfortable, 30, 40, 15, 30),
+            (Tier::Large, 36, 48, 18, 36),
+        ] {
+            let css = stylesheet_for(false, tier);
+            assert!(
+                css.contains(&format!("listview > row {{ min-height: {tree_row}px; }}")),
+                "{}：树行高不是 {tree_row}px",
+                tier.id()
+            );
+            assert!(
+                css.contains(&format!("min-height: {data_row}px;")),
+                "{}：数据行高不是 {data_row}px",
+                tier.id()
+            );
+            assert!(
+                css.contains(&format!(
+                    "window.sqarvo-compact {{ font-size: {font_ui}px; }}"
+                )),
+                "{}：界面字号不是 {font_ui}px",
+                tier.id()
+            );
+            assert!(
+                css.contains(&format!(
+                    ".sqarvo-tab-strip {{\n            min-height: {tab_strip}px;"
+                )),
+                "{}：标签条高度不是 {tab_strip}px",
+                tier.id()
+            );
+            // 1px 描边在任何档位都不变（§3.2）。
+            assert!(css.contains("border-bottom: 1px solid alpha(currentColor, 0.10)"));
+        }
+    }
+
+    #[test]
     fn stylesheet_never_disables_the_focus_ring() {
         let css = stylesheet();
         // 紧凑化不能靠抹掉焦点可见性换密度（§11）。
@@ -1092,7 +1152,7 @@ mod tests {
         // 暗色：同一组 token 换一套亮度。选择由 Rust 侧按 `AdwStyleManager::is_dark()` 做，
         // 不是 CSS 媒体查询——实测 `@media (prefers-color-scheme: dark)` 里的
         // `@define-color` 在应用级 provider 里不生效（窗口已暗、按钮仍是浅档色）。
-        let dark = stylesheet_for(true);
+        let dark = stylesheet_for(true, Tier::Compact);
         for token in [
             "@define-color sqarvo_brand_deep #7A456F;",
             "@define-color sqarvo_brand_mid #B98AB2;",

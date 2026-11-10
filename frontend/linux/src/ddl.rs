@@ -78,10 +78,18 @@ pub struct DdlObservation {
     pub state: DdlState,
 }
 
-/// 面板 CSS：拼装警示必须一眼可分辨（琥珀）。
-///
-/// 与 `results.rs` / `data_page.rs` 一样：每个模块自己装一次，用 `OnceLock`
-/// 保证不会重复添加（重复添加会让样式叠加，颜色越来越深）。
+// 面板 CSS：拼装警示必须一眼可分辨（琥珀）。
+//
+// 与 `results.rs` / `data_page.rs` 一样：每个模块自己装一次，用 `OnceLock`
+// 保证不会重复添加（重复添加会让样式叠加，颜色越来越深）。
+thread_local! {
+    /// DDL 面板附加样式的 provider（切档时用同一个句柄重载）。
+    static STYLE_PROVIDER: std::cell::RefCell<Option<gtk::CssProvider>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+const STYLESHEET: &str = r#"label.sqarvo-ddl-synth { color: @warning_color; }"#;
+
 fn install_css() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -92,12 +100,23 @@ fn install_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(r#"label.sqarvo-ddl-synth { color: @warning_color; }"#);
+    provider.load_from_string(STYLESHEET);
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    STYLE_PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider));
+}
+
+/// 切档时重载 DDL 面板样式（这份样式没有尺寸，但仍与其他附加样式同一条重载路径，
+/// 将来加尺寸时不会漏掉）。
+pub(crate) fn reload_css() {
+    STYLE_PROVIDER.with(|slot| {
+        if let Some(provider) = slot.borrow().as_ref() {
+            provider.load_from_string(STYLESHEET);
+        }
+    });
 }
 
 /// DDL 面板（嵌在信息面板里：没有自己的标题、关闭按钮与固定高度）。

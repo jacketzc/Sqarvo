@@ -90,6 +90,11 @@ pub struct StartupWorkspace {
 }
 
 impl StartupWorkspace {
+    /// 六区域外壳（切档时重设面板区间 / 宽度用；#160）。
+    pub fn shell(&self) -> &Rc<Shell> {
+        &self.shell
+    }
+
     /// 组装启动态外壳（区域 02–06；区域 01 的 headerbar 在 `ui.rs`）。
     pub fn new(config: StartupConfig) -> Rc<Self> {
         // ---- 区域 06：信息面板（与连接态同一套外壳：标题「信息面板」+ 分隔线，
@@ -147,7 +152,7 @@ impl StartupWorkspace {
         // 侧栏就是对象树本体（页脚刷新按钮与分割线已删除）：启动态与连接态形状一致，
         // 刷新在连接 / 库节点的右键菜单里。
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
-        sidebar.set_size_request(crate::layout::SIDEBAR_MIN, -1);
+        sidebar.set_size_request(crate::layout::metrics().sidebar_min, -1);
         sidebar.append(tree.widget());
 
         // ---- 区域 04：固定 Objects 标签空态 --------------------------------
@@ -199,8 +204,8 @@ impl StartupWorkspace {
         work_box.append(&view);
 
         // 窗口级面板宽度（#155）：与连接态共用同一个值，启动态拖一次也会被带进工作区。
-        let inspector_width =
-            crate::window_state::last_inspector_width().unwrap_or(crate::layout::INSPECTOR_WIDTH);
+        let inspector_width = crate::window_state::last_inspector_width()
+            .unwrap_or(crate::layout::metrics().inspector_width);
         eprintln!("[shell] 信息面板宽度读取：{inspector_width}（窗口级，启动态）");
 
         let shell = Shell::new(ShellHandlers {
@@ -209,8 +214,8 @@ impl StartupWorkspace {
             inspector: inspector.widget().clone().upcast(),
             inspector_width,
             sidebar_width: crate::window_state::last_sidebar_width()
-                .unwrap_or(crate::layout::SIDEBAR_WIDTH),
-            panel_bounds: crate::window_size::panel_bounds(crate::window_size::TIER),
+                .unwrap_or(crate::layout::metrics().sidebar_width),
+            panel_bounds: crate::window_size::panel_bounds(crate::layout::current_tier()),
             on_sidebar_width: Rc::new(|width: i32| {
                 if let Err(error) = crate::window_state::remember_sidebar_width(width) {
                     eprintln!("[shell] 侧栏宽度未能记住：{error}");

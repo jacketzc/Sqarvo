@@ -1,175 +1,309 @@
-//! 六区域外壳的布局算术（`docs/ui-specification/workspace-model.md` §1、§2.1）。
+//! 六区域外壳的布局算术与密度档度量（`docs/ui-specification/workspace-model.md` §1、§2.1）。
 //!
-//! 这里的常量与函数是**唯一一份**尺寸口径：外壳（[`crate::shell`]）、紧凑密度 CSS
-//! （[`crate::theme`]）与验收截图都以它为准。放进纯函数是为了能在没有 GTK 显示
-//! 服务器的环境里单测——布局算错时不该只能靠肉眼看截图。
+//! 尺寸的**唯一真值**是 `docs/ui-specification/metrics.toml`：本模块用
+//! `include_str!` 把它编进二进制，启动后解析一次（`toml` 依赖）。三档
+//! （`compact` 100% / `comfortable` 125% / `large` 150%）的每一个值都直接读表里
+//! 写死的整数，**不做「基准 × 缩放」**——三端取整规则不同，算出来的 1px 偏差肉眼
+//! 发现不了（规范 §3.1）。
 //!
 //! ```text
-//! contentHeight = windowHeight - 108 - 48      # 108 = 外壳 64 + 工具条 44；48 = 状态栏两行各 24
+//! contentHeight = windowHeight - headerHeight - toolbarHeight - statusHeight
 //! contentWidth  = windowWidth  - sidebarWidth
-//! gridWidth     = contentWidth - 18（左内边距）- 3（右内边距）
-//!                 - [10（间隙）+ inspectorWidth]   # 面板折叠时两项一起收回
+//! gridWidth     = contentWidth - gridPaddingStart - gridPaddingEnd
+//!                 - [inspectorGap + inspectorWidth]   # 面板折叠时两项一起收回
+//! gridHeight    = contentHeight - tabStripHeight - tableActionsHeight
 //! ```
 //!
-//! 1200×800 基准下 `gridWidth`：折叠 942、面板 280 时 652、面板 320 时 612
+//! 100% 档、1200×800 基准下 `gridWidth`：折叠 942、面板 280 时 652、面板 320 时 612
 //! （与规范表格逐字一致，见本模块的测试）。
+//!
+//! 纯算术放在这里是为了能在没有 GTK 显示服务器的环境里单测；运行期切换档位时对
+//! 已建成控件重新落数字的逻辑在 [`crate::density`]。
 
-/// 窗口外壳（区域 01）高度：`AdwHeaderBar` 40 + 菜单行 24。
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use serde::Deserialize;
+
+/// `metrics.toml` 原文（唯一真值，编进二进制；路径相对本文件）。
+const METRICS_TOML: &str = include_str!("../../../docs/ui-specification/metrics.toml");
+
+/// 窗口外壳（区域 01）高度：`AdwHeaderBar` 40 + 菜单行 24（100% 档）。
 ///
 /// Linux 不设菜单行（ADR 0023），但外壳高度按规范保持 64，工具条与状态栏的位置
 /// 才不会因平台而异——菜单行走 headerbar 主菜单。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const HEADER_HEIGHT: i32 = 64;
 
-/// 主工具条（区域 02）高度。
+/// 主工具条（区域 02）高度（100% 档）。
 ///
 /// v0.2.3.3：76 → 44。工具条只放一行 24 高的按钮，44 = 24 + 上下各 10 的呼吸；
 /// 省下的 32 px 全部还给数据区（用户要求「让目光更聚焦在数据区」）。
 pub const TOOLBAR_HEIGHT: i32 = 44;
 
-/// 状态栏（区域 05）高度：两行各 24（24 × 2 = 48），不再另加上下留白。
+/// 状态栏（区域 05）高度（100% 档）：两行各 24（24 × 2 = 48），不再另加上下留白。
 ///
 /// v0.2.4：56 → 48。搜索框搬到左边沟后沟里只放一个 24 高的入口，原来多出来的
 /// 8px 留白没有内容可撑，全部还给内容区（1200×800 下 +8）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const STATUS_HEIGHT: i32 = 48;
 
-/// 窗口最小宽度（workspace-model §1）。
+/// 窗口最小宽度（100% 档，workspace-model §1）。
 ///
-/// 960×640 是**强制下限**，不是验收参考：窗口创建时把它交给
-/// `GtkWidget::set_size_request`（`ui::activate`），GTK 会把它转成 toplevel 的最小尺寸，
-/// Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal hints，窗口管理器不允许
-/// 再缩小。布局算术在这一档以下没有保证，所以两边共用这一份常量，不再各写一个字面量。
+/// 960×640 是 100% 档的**强制下限**：`window_size::min_window` 按档位取
+/// `min(960·T, 工作区宽-32)` 后交给 `GtkWidget::set_size_request`，GTK 会把它转成
+/// toplevel 的最小尺寸（Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal
+/// hints），窗口管理器不允许再缩小。布局算术在这一档以下没有保证。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const MIN_WINDOW_WIDTH: i32 = 960;
 
-/// 窗口最小高度（workspace-model §1），与 [`MIN_WINDOW_WIDTH`] 同一条强制路径。
+/// 窗口最小高度（100% 档），与 [`MIN_WINDOW_WIDTH`] 同一条强制路径。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const MIN_WINDOW_HEIGHT: i32 = 640;
 
-/// 外壳 + 工具条的合计高度（§2.1 公式里的 140）。
+/// 外壳 + 工具条的合计高度（100% 档）。
 pub const CHROME_HEIGHT: i32 = HEADER_HEIGHT + TOOLBAR_HEIGHT;
 
-/// 侧栏（区域 03）默认宽度。
+/// 侧栏（区域 03）默认宽度（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const SIDEBAR_WIDTH: i32 = 237;
 
-/// 侧栏可拖拽下限。
+/// 侧栏可拖拽下限（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const SIDEBAR_MIN: i32 = 180;
 
-/// 侧栏可拖拽上限。
+/// 侧栏可拖拽上限（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const SIDEBAR_MAX: i32 = 420;
 
-/// 信息面板（区域 06）默认宽度。
+/// 信息面板（区域 06）默认宽度（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const INSPECTOR_WIDTH: i32 = 280;
 
-/// 信息面板可拖拽下限。
+/// 信息面板可拖拽下限（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const INSPECTOR_MIN: i32 = 240;
 
-/// 信息面板可拖拽上限。
+/// 信息面板可拖拽上限（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const INSPECTOR_MAX: i32 = 520;
 
-/// 标签条（区域 04 顶部）高度（workspace-model §2.1 的 `tabStrip`）。
-///
-/// 这是**规范口径**：`AdwTabBar` 自身的最小高度由 libadwaita 决定（实测比 24 高），
-/// 表格实际矮掉的差额由工作区吸收；`grid_height` 的记账口径只在这里维护一份。
+/// 标签条（区域 04 顶部）高度（100% 档，workspace-model §2.1 的 `tabStrip`）。
 pub const TAB_STRIP_HEIGHT: i32 = 24;
 
-/// 表格工具条（区域 04 中部）高度。
-///
-/// v0.2.4 起工具条只有**一行**：动作按钮 + 状态簇（spinner / 过程消息 / 事务徽标 /
-/// 脏行计数）+ 次要动作图标。高度 = 行高 32 + 上留白 8 + 下留白 6 = 46。
-/// 历史上这里是「按钮行 + 状态行」两行共 64，状态行并入动作行后记账口径一起收。
+/// 表格工具条（区域 04 中部）高度（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const TABLE_ACTIONS_HEIGHT: i32 = 46;
 
-/// 表格左内边距。
+/// 表格左内边距（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const GRID_PADDING_START: i32 = 18;
 
-/// 表格右内边距。
+/// 表格右内边距（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const GRID_PADDING_END: i32 = 3;
 
-/// 表格与信息面板之间的间隙（面板折叠时一并收回）。
+/// 表格与信息面板之间的间隙（100% 档；面板折叠时一并收回）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const INSPECTOR_GAP: i32 = 10;
 
-/// 树行高。
+/// 树行高（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const ROW_HEIGHT_TREE: i32 = 24;
 
-/// 数据行高。
+/// 数据行高（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const ROW_HEIGHT_DATA: i32 = 32;
 
-/// 界面字号。
+/// 界面字号（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const FONT_UI: i32 = 12;
 
-/// 标题字号（semibold 由 CSS 给出）。
+/// 标题字号（100% 档；semibold 由 CSS 给出）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const FONT_TITLE: i32 = 13;
 
-/// 状态栏字号。
+/// 状态栏字号（100% 档）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const FONT_STATUS: i32 = 11;
 
-/// 数据网格单元格字号。
+/// 数据网格单元格字号（100% 档）。
 ///
 /// 不能低于 13px：GTK4 在 Linux 上以 12px 渲染 CJK 单元格时，会把「三 / 五 / 张」
 /// 这类字的笔画裁掉。13px 起完整，但在 1x 屏幕上 Regular 横画仍容易发虚；
 /// 单元格统一用 Medium（500）加实笔画，字号保持 13px。32px 数据行仍能容纳。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const FONT_DATA_CELL: i32 = 13;
 
-/// 信息面板正文（DDL 与「表信息」两页）字号。
+/// 信息面板正文（DDL 与「表信息」两页）字号（100% 档）。
 ///
 /// 与 `FONT_DATA_CELL` **解耦**：面板是次要信息，视觉重心在数据网格，所以正文比网格
-/// 小得多（10px），字重也不加粗（400）——面板不该和表格抢注意力。12px 会裁 CJK 笔画
-/// 的问题只约束**网格单元格**；面板沿用 `caption` 档（10px）的既有密度。
+/// 小得多（10px），字重也不加粗（400）——面板不该和表格抢注意力。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const FONT_PANEL: i32 = 10;
 
-/// 可焦点控件的最小点击区（§11：紧凑化不得小于它）。
+/// 可焦点控件的最小点击区（100% 档，§11：紧凑化不得小于它）。
 pub const MIN_TARGET: i32 = 24;
 
-/// 图标的绘制边长：**所有**图标按钮都以它为唯一尺寸，基准就是状态栏行操作里的 `+`。
+/// 图标的绘制边长（100% 档）：**所有**图标按钮都以它为唯一尺寸。
 ///
 /// v0.2.3.3 曾按墨迹分三档（窄字形 +2、环形 −2）追求「光学等重」，结果同一排里量出来
 /// 的长宽不一致，看着就是一排大小不一的图标。现在改成**几何一致**：每个图标都画在
-/// `ICON_BOX × ICON_BOX` 里——长宽都不超过基准，且两维都与基准相等；形状差异由图标
-/// 本身承担，不再靠改尺寸补偿。尺寸标准写在 `design-principles.md` §图标。
+/// `icon_box × icon_box` 里——长宽都不超过基准，且两维都与基准相等；形状差异由图标
+/// 本身承担，不再靠改尺寸补偿。三档取值 16 / 20 / 24（`metrics.toml`）。
 pub const ICON_BOX: i32 = 16;
 
-/// 图标按钮的命中区宽度（统一，不按单个图标调）。
+/// 图标按钮的命中区宽度（100% 档；统一，不按单个图标调）。
 pub const ICON_BUTTON_WIDTH: i32 = 28;
 
-/// 图标按钮的命中区高度：等于 §11 的最小点击区。
+/// 图标按钮的命中区高度（100% 档）：等于 §11 的最小点击区。
 pub const ICON_BUTTON_HEIGHT: i32 = MIN_TARGET;
 
-/// 表格工具条**状态圆点**的视觉直径（px）。
+/// 表格工具条**状态圆点**的视觉直径（100% 档，px）。
 ///
 /// 口径是「漏斗图标的一半」：`sqarvo-filter-symbolic` 画在 16 × 16 的图标盒里，墨迹
-/// 实测 12 × 11（`resources/icons/sqarvo-filter-symbolic.svg` 的 path 从 2 到 14）；
-/// 一半是 6，图标盒的一半是 8，取 7 —— 两种读法都在「约一半」以内。
+/// 实测 12 × 11；一半是 6，图标盒的一半是 8，取 7 —— 两种读法都在「约一半」以内。
 ///
 /// 视觉小、命中区不小：圆点挂在一个 [`MIN_TARGET`] × [`MIN_TARGET`] 的扁平按钮里
 /// （§11：紧凑化不得把可交互控件压到 24 以下），鼠标悬停读到 tooltip、读屏读到同一句话。
-/// 颜色与命中区的 CSS 在 `theme.rs`（`STATUS_DOT_BUTTON_CLASS` / `.sqarvo-status-dot`）。
+#[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
 pub const STATUS_DOT_DIAMETER: i32 = 7;
 
 // ---------------------------------------------------------------------------
-// 密度档与度量门面（#159）
+// 密度档与度量门面（#159 / #160）
 // ---------------------------------------------------------------------------
 
 /// 界面密度档（`metrics.toml` 的 `available_tiers`，规则见
 /// `docs/ui-specification/scaling-and-window-sizing.md` §2）。
 ///
-/// 本单（#159）只把**取值的门面**与调用点落地：三档暂时取同一组值（= 100% 档的
-/// 字面量），档位切换、`metrics.toml` 解析与各档数字是 #160。档位名不许再增（§3.3）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// 三档固定，不许再增（§3.3）：要新增必须先满足九条不变量并回填 `metrics.toml`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Tier {
     /// 紧凑（100%）：默认档。
     #[default]
     Compact,
-    /// 舒适（125%）：#160 接线前不构造，取值同 [`Tier::Compact`]。
-    #[allow(dead_code)]
+    /// 舒适（125%）。
     Comfortable,
-    /// 大（150%）：#160 接线前不构造，取值同 [`Tier::Compact`]。
-    #[allow(dead_code)]
+    /// 大（150%）。
     Large,
+}
+
+impl Tier {
+    /// 全部档位，从密到松（菜单顺序、升降档、回退都读这一份）。
+    pub const ALL: [Self; 3] = [Self::Compact, Self::Comfortable, Self::Large];
+
+    /// `metrics.toml` / `window.json` 里的档位 id。
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Comfortable => "comfortable",
+            Self::Large => "large",
+        }
+    }
+
+    /// 菜单与日志里的中文标签。
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "紧凑（100%）",
+            Self::Comfortable => "舒适（125%）",
+            Self::Large => "大（150%）",
+        }
+    }
+
+    /// 百分比后缀（日志用，如 `100%`）。
+    #[must_use]
+    pub fn percent(self) -> &'static str {
+        match self {
+            Self::Compact => "100%",
+            Self::Comfortable => "125%",
+            Self::Large => "150%",
+        }
+    }
+
+    /// 档位倍率（**只**用于规范 §5.3 的窗口尺寸公式与宽度归一化；控件尺寸一律读
+    /// `metrics.toml` 的整数）。
+    #[must_use]
+    pub fn scale(self) -> f64 {
+        match self {
+            Self::Compact => 1.0,
+            Self::Comfortable => 1.25,
+            Self::Large => 1.5,
+        }
+    }
+
+    /// 解析档位 id（`--tier`、`window.json`）；未知值返回 `None`，由调用方决定报错
+    /// 还是回退默认档。
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id.trim() {
+            "compact" => Some(Self::Compact),
+            "comfortable" => Some(Self::Comfortable),
+            "large" => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    /// 升一档（到顶返回 `None`）。
+    #[must_use]
+    pub fn up(self) -> Option<Self> {
+        match self {
+            Self::Compact => Some(Self::Comfortable),
+            Self::Comfortable => Some(Self::Large),
+            Self::Large => None,
+        }
+    }
+
+    /// 降一档（到底返回 `None`）。
+    #[must_use]
+    pub fn down(self) -> Option<Self> {
+        match self {
+            Self::Compact => None,
+            Self::Comfortable => Some(Self::Compact),
+            Self::Large => Some(Self::Comfortable),
+        }
+    }
+
+    fn index(self) -> u8 {
+        match self {
+            Self::Compact => 0,
+            Self::Comfortable => 1,
+            Self::Large => 2,
+        }
+    }
+
+    fn from_index(index: u8) -> Self {
+        match index {
+            1 => Self::Comfortable,
+            2 => Self::Large,
+            _ => Self::Compact,
+        }
+    }
+}
+
+/// 当前档位（进程级）：启动时按 `--tier` / `window.json` 定，切档由
+/// [`crate::density`] 写入。默认 `compact`。
+static CURRENT_TIER: AtomicU8 = AtomicU8::new(0);
+
+/// 当前生效的密度档。
+#[must_use]
+pub fn current_tier() -> Tier {
+    Tier::from_index(CURRENT_TIER.load(Ordering::Relaxed))
+}
+
+/// 设置当前密度档。**只**应由 [`crate::density`] 调用：它还要重载 CSS、重排控件、
+/// 重算窗口；单独改这里会让三者不一致。
+pub fn set_current_tier(tier: Tier) {
+    CURRENT_TIER.store(tier.index(), Ordering::Relaxed);
 }
 
 /// 间距刻度：界面里的留白**只**从这几档取，不再写「随手一个 6px」。
 ///
-/// 取值是 [`Metrics`] 的 `gap_*` 字段（本轮 0 / 2 / 4 / 6 / 8 / 10 / 12 / 14，
-/// 以及 18 = 页面 / 对话框内容内边距，不属于 2px 步进的那一段）。刻度本身按档位
-/// 缩放，#160 才会出现第二组数字——本轮三档同值。
+/// 取值是 [`Metrics`] 的 `gap_*` 字段（100% 档 0 / 2 / 4 / 6 / 8 / 10 / 12 / 16 / 18，
+/// 以及 18 = 页面 / 对话框内容内边距）。`metrics.toml` 没有 gap 阶梯，三档取值按
+/// 档位倍率取整（见 [`Metrics::for_tier`] 的注释），语义（哪一档用在哪儿）不变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gap {
     /// 0：贴着排（列表行内、无间距的盒子）。
@@ -192,154 +326,125 @@ pub enum Gap {
     Page,
 }
 
-/// 当前档位的全部布局度量（`layout::metrics()` 的返回值）。
+impl Gap {
+    /// 全部刻度（重排时按序映射旧值 → 新值）。
+    pub const ALL: [Self; 9] = [
+        Self::None,
+        Self::Xxs,
+        Self::Xs,
+        Self::Sm,
+        Self::Md,
+        Self::Lg,
+        Self::Xl,
+        Self::Xxl,
+        Self::Page,
+    ];
+
+    /// 100% 档的基准值（间距阶梯的语义来源）。
+    #[must_use]
+    pub fn base_px(self) -> i32 {
+        match self {
+            Self::None => 0,
+            Self::Xxs => 2,
+            Self::Xs => 4,
+            Self::Sm => 6,
+            Self::Md => 8,
+            Self::Lg => 10,
+            Self::Xl => 12,
+            Self::Xxl => 14,
+            Self::Page => 18,
+        }
+    }
+}
+
+/// 一个档位的全部布局度量（[`metrics`] 的返回值）。
 ///
-/// 这是「按档位取度量」的唯一入口：控件代码要留白 / 固定尺寸时调 [`gap`] 或读
-/// 本结构的字段，不再写数字。字段名尽量与 `docs/ui-specification/metrics.toml`
-/// 同名同义；`metrics.toml` 里还没有对应项的（纯 CSS 的圆角、边框宽度、空态图标
-/// 等）集中在本结构末尾的「CSS 专用度量」一节，等 #160 定档时回填 TOML。
+/// 字段名与 `docs/ui-specification/metrics.toml` 同名同义；数值直接从 TOML 来。
+/// 表里没有的只有两类，集中在本结构末尾：
 ///
-/// 本轮（#159）三档全部等于 100% 档：数字与改前的字面量逐一相同，所以视觉零变化。
+/// 1. 间距阶梯 `gap_*`（0 / 2 / 4 / 6 / 8 / 10 / 12 / 14 / 18）：按档位倍率取整；
+/// 2. CSS 专用度量（圆角、表格外框线宽、分页按钮最小宽度等）：同样按倍率取整，
+///    **1px 描边与 2px 表格外框线宽不缩放**（§3.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Metrics {
-    /// 窗口外壳（`AdwHeaderBar` + 菜单行）高度。
+    // ---- metrics.toml 的同名项 ----
     pub header_height: i32,
-    /// 主工具条高度。
     pub toolbar_height: i32,
-    /// 状态栏高度。
     pub status_height: i32,
-    /// 标签条高度。
+    pub min_window_width: i32,
+    pub min_window_height: i32,
+    pub sidebar_width: i32,
+    pub sidebar_min: i32,
+    pub sidebar_max: i32,
+    pub inspector_width: i32,
+    pub inspector_min: i32,
+    pub inspector_max: i32,
     pub tab_strip_height: i32,
-    /// 表格工具条（动作行）高度。
     pub table_actions_height: i32,
-    /// 树行高。
+    pub grid_padding_start: i32,
+    pub grid_padding_end: i32,
+    pub inspector_gap: i32,
     pub row_height_tree: i32,
-    /// 数据行高。
     pub row_height_data: i32,
-    /// 表头最小高度。
     pub column_header_min_height: i32,
-    /// 界面字号。
     pub font_ui: i32,
-    /// 标题字号。
     pub font_title: i32,
-    /// 状态栏字号。
     pub font_status: i32,
-    /// 数据网格单元格字号。
     pub font_data_cell: i32,
-    /// 信息面板正文字号。
     pub font_panel: i32,
-    /// 可焦点控件的最小点击区。
     pub min_target: i32,
-    /// 图标按钮命中区宽度。
+    pub icon_box: i32,
     pub icon_button_width: i32,
-    /// 图标按钮命中区高度。
     pub icon_button_height: i32,
-    /// 状态圆点直径。
     pub status_dot_diameter: i32,
-    /// 工具条横向内边距。
     pub toolbar_padding_h: i32,
-    /// `Objects` 固定页（钉住标签）的宽度。
     pub objects_min_width: i32,
-    /// 分页器页码字号。
     pub pager_font: i32,
-    /// 次要按钮的命中盒边长（筛选行里的小按钮，正方形）。
+    pub badge_min_height: i32,
     pub secondary_min_height: i32,
-    /// 树展开箭头的命中盒边长。
-    pub tree_arrow_box: i32,
-    /// 小圆角（切换块、筛选行）。
     pub radius_sm: i32,
-    /// 中圆角（表格外框）。
     pub radius_md: i32,
-    /// 间距刻度：见 [`Gap`]。
+    pub tree_arrow_box: i32,
+    pub row_number_width: i32,
+    pub column_width: i32,
+    pub filter_panel_width: i32,
+    pub filter_column_width: i32,
+
+    // ---- 间距阶梯（TOML 无同名项，按档位倍率取整） ----
     pub gap_none: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_xxs: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_xs: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_sm: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_md: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_lg: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_xl: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_xxl: i32,
-    /// 间距刻度：见 [`Gap`]。
     pub gap_page: i32,
 
-    // ---- CSS 专用度量（`metrics.toml` 尚无同名项，#160 定档时回填） ----
-    /// 表格外框线宽（比 1px 分隔线粗一档；不是 §3.2 的 1px 描边）。
+    // ---- CSS 专用度量（TOML 无同名项） ----
+    /// 表格外框线宽：2px 在**所有档位**保持 2px（描边不随密度变，§3.2 的同一条理由）。
     pub frame_border_width: i32,
-    /// 大圆角（列信息 / 事务卡片的浮层）。
+    /// 大圆角（列信息 / 事务卡片的浮层）：12 / 15 / 18。
     pub radius_lg: i32,
     /// 饱和圆角：给圆点用，等于半个盒子（任何档位都不需要更大）。
     pub pill_radius: i32,
-    /// 分页器按钮最小宽度。
+    /// 分页器按钮最小宽度：26 / 33 / 39。
     pub pager_button_min_width: i32,
-    /// 筛选面板里的按钮最小高度。
+    /// 筛选面板里的按钮最小高度：26 / 33 / 39。
     pub fs_button_min_height: i32,
-    /// 筛选面板「应用」按钮最小高度。
+    /// 筛选面板「应用」按钮最小高度：28 / 35 / 42。
     pub fs_action_min_height: i32,
-    /// 空态占位图标的绘制边长。
+    /// 空态占位图标的绘制边长：48 / 60 / 72。
     pub empty_icon_px: i32,
-    /// 加载 spinner 的请求边长。
+    /// 加载 spinner 的请求边长：32 / 40 / 48。
     pub spinner_px: i32,
 }
 
 impl Metrics {
-    /// 100%（紧凑）档：数字与 `layout.rs` 的常量逐一相同（本轮唯一的取值）。
-    pub const COMPACT: Self = Self {
-        header_height: HEADER_HEIGHT,
-        toolbar_height: TOOLBAR_HEIGHT,
-        status_height: STATUS_HEIGHT,
-        tab_strip_height: TAB_STRIP_HEIGHT,
-        table_actions_height: TABLE_ACTIONS_HEIGHT,
-        row_height_tree: ROW_HEIGHT_TREE,
-        row_height_data: ROW_HEIGHT_DATA,
-        column_header_min_height: 26,
-        font_ui: FONT_UI,
-        font_title: FONT_TITLE,
-        font_status: FONT_STATUS,
-        font_data_cell: FONT_DATA_CELL,
-        font_panel: FONT_PANEL,
-        min_target: MIN_TARGET,
-        icon_button_width: ICON_BUTTON_WIDTH,
-        icon_button_height: ICON_BUTTON_HEIGHT,
-        status_dot_diameter: STATUS_DOT_DIAMETER,
-        toolbar_padding_h: 12,
-        objects_min_width: 84,
-        pager_font: 12,
-        secondary_min_height: 22,
-        tree_arrow_box: 18,
-        radius_sm: 6,
-        radius_md: 8,
-        gap_none: 0,
-        gap_xxs: 2,
-        gap_xs: 4,
-        gap_sm: 6,
-        gap_md: 8,
-        gap_lg: 10,
-        gap_xl: 12,
-        gap_xxl: 14,
-        gap_page: 18,
-        frame_border_width: 2,
-        radius_lg: 12,
-        pill_radius: 99,
-        pager_button_min_width: 26,
-        fs_button_min_height: 26,
-        fs_action_min_height: 28,
-        empty_icon_px: 48,
-        spinner_px: 32,
-    };
-
-    /// 取一档的度量。本轮三档都返回同一组值（#160 按 `metrics.toml` 分档）。
+    /// 取一档的度量（`metrics.toml` 解析一次后缓存）。
     #[must_use]
     pub fn for_tier(tier: Tier) -> Self {
-        match tier {
-            Tier::Compact | Tier::Comfortable | Tier::Large => Self::COMPACT,
-        }
+        catalog()[tier.index() as usize]
     }
 
     /// 间距刻度的像素值。
@@ -357,13 +462,71 @@ impl Metrics {
             Gap::Page => self.gap_page,
         }
     }
+
+    /// 内容区高度：两侧在状态栏之上、工具条之下。
+    #[must_use]
+    pub fn content_height(&self, window_height: i32) -> i32 {
+        window_height - self.header_height - self.toolbar_height - self.status_height
+    }
+
+    /// 内容区宽度：右侧工作区（不含侧栏）。
+    #[must_use]
+    pub fn content_width(&self, window_width: i32, sidebar_width: i32) -> i32 {
+        window_width - sidebar_width
+    }
+
+    /// 数据网格宽度；`inspector_width` 为 `None` 表示信息面板折叠。
+    #[must_use]
+    pub fn grid_width(
+        &self,
+        window_width: i32,
+        sidebar_width: i32,
+        inspector_width: Option<i32>,
+    ) -> i32 {
+        let base = self.content_width(window_width, sidebar_width)
+            - self.grid_padding_start
+            - self.grid_padding_end;
+        match inspector_width {
+            Some(width) => base - self.inspector_gap - width,
+            None => base,
+        }
+    }
+
+    /// 数据网格高度：标签条与表格工具条之下。
+    #[must_use]
+    pub fn grid_height(&self, window_height: i32) -> i32 {
+        self.content_height(window_height) - self.tab_strip_height - self.table_actions_height
+    }
+
+    /// 状态栏顶边 y 坐标（用于检查表格不压在状态栏上）。
+    #[must_use]
+    pub fn status_y(&self, window_height: i32) -> i32 {
+        window_height - self.status_height
+    }
+
+    /// 把侧栏宽度钳制到可拖拽区间。
+    #[must_use]
+    pub fn clamp_sidebar(&self, width: i32) -> i32 {
+        width.clamp(self.sidebar_min, self.sidebar_max)
+    }
+
+    /// 把信息面板宽度钳制到可拖拽区间。
+    #[must_use]
+    pub fn clamp_inspector(&self, width: i32) -> i32 {
+        width.clamp(self.inspector_min, self.inspector_max)
+    }
+}
+
+/// 按档位倍率取整（**只**用于 TOML 没有同名项的间距 / 圆角 / 装饰度量）。
+fn scaled(base: i32, scale: f64) -> i32 {
+    (f64::from(base) * scale).round() as i32
 }
 
 /// 当前档位的度量。界面里要留白 / 固定尺寸时从这里取，比如
 /// `widget.set_margin_start(gap(Gap::Page))`。
 #[must_use]
 pub fn metrics() -> Metrics {
-    Metrics::for_tier(Tier::Compact)
+    Metrics::for_tier(current_tier())
 }
 
 /// 当前档位下某一档间距刻度的像素值（[`metrics`] 的简写）。
@@ -372,57 +535,233 @@ pub fn gap(step: Gap) -> i32 {
     metrics().gap_px(step)
 }
 
+/// 估算的「compact 档 → 目标档」间距值（重排已建控件时按旧值查表用）。
+///
+/// 输入是**旧档位**的间距像素值；落在阶梯上就返回新档位同一刻度的值，否则 `None`
+/// （不是间距，别动它）。这是 [`crate::density`] 重排的关键：所有 `set_margin_*`
+/// 与 `Box` spacing 都由 [`Gap`] 产生，因此旧值一定能在阶梯上找到。
+#[must_use]
+pub fn remap_gap(old: &Metrics, new: &Metrics, value: i32) -> Option<i32> {
+    Gap::ALL
+        .iter()
+        .find(|step| old.gap_px(**step) == value)
+        .map(|step| new.gap_px(*step))
+}
+
+// ---------------------------------------------------------------------------
+// metrics.toml 解析
+// ---------------------------------------------------------------------------
+
+/// TOML 的原始结构：只做反序列化，字段与文件一一对应。
+#[derive(Debug, Deserialize)]
+struct CatalogFile {
+    #[serde(default)]
+    meta: MetaRaw,
+    tier: BTreeMap<String, RawTier>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MetaRaw {
+    #[serde(default)]
+    default_tier: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTier {
+    #[allow(dead_code)]
+    id: String,
+    #[allow(dead_code)]
+    label: String,
+    scale: f64,
+    header_height: i32,
+    toolbar_height: i32,
+    status_height: i32,
+    min_window_width: i32,
+    min_window_height: i32,
+    sidebar_width: i32,
+    sidebar_min: i32,
+    sidebar_max: i32,
+    inspector_width: i32,
+    inspector_min: i32,
+    inspector_max: i32,
+    tab_strip_height: i32,
+    table_actions_height: i32,
+    grid_padding_start: i32,
+    grid_padding_end: i32,
+    inspector_gap: i32,
+    row_height_tree: i32,
+    row_height_data: i32,
+    column_header_min_height: i32,
+    font_ui: i32,
+    font_title: i32,
+    font_status: i32,
+    font_data_cell: i32,
+    font_panel: i32,
+    min_target: i32,
+    icon_box: i32,
+    icon_button_width: i32,
+    icon_button_height: i32,
+    status_dot_diameter: i32,
+    toolbar_padding_h: i32,
+    objects_min_width: i32,
+    pager_font: i32,
+    badge_min_height: i32,
+    secondary_min_height: i32,
+    radius_sm: i32,
+    radius_md: i32,
+    tree_arrow_box: i32,
+    row_number_width: i32,
+    column_width: i32,
+    filter_panel_width: i32,
+    filter_column_width: i32,
+}
+
+/// 三档解析结果（顺序 = [`Tier::ALL`]）。
+static CATALOG: OnceLock<[Metrics; 3]> = OnceLock::new();
+
+fn catalog() -> &'static [Metrics; 3] {
+    CATALOG.get_or_init(|| {
+        let file: CatalogFile = toml::from_str(METRICS_TOML).unwrap_or_else(|error| {
+            panic!("metrics.toml 无法解析（编进二进制的唯一真值）：{error}")
+        });
+        let default = Tier::from_id(&file.meta.default_tier).unwrap_or_default();
+        assert_eq!(
+            default,
+            Tier::Compact,
+            "metrics.toml 的 default_tier 必须是 compact（规范 §2）"
+        );
+        let build = |tier: Tier| {
+            let raw = file
+                .tier
+                .get(tier.id())
+                .unwrap_or_else(|| panic!("metrics.toml 缺少 [tier.{}]（三档缺一档）", tier.id()));
+            Metrics::from_raw(raw)
+        };
+        Tier::ALL.map(build)
+    })
+}
+
+impl Metrics {
+    /// 把 TOML 的一档转成门面结构。表里没有的项在这里按档位倍率取整——这是**唯一**
+    /// 允许出现「基准 × 缩放」的地方，且只覆盖 TOML 未收录的间距阶梯与装饰度量
+    /// （规范 §3.1 的「各端只读、不计算」针对的是表里已经写死的值）。
+    fn from_raw(raw: &RawTier) -> Self {
+        let scale = raw.scale;
+        let gap = |step: Gap| scaled(step.base_px(), scale);
+        Self {
+            header_height: raw.header_height,
+            toolbar_height: raw.toolbar_height,
+            status_height: raw.status_height,
+            min_window_width: raw.min_window_width,
+            min_window_height: raw.min_window_height,
+            sidebar_width: raw.sidebar_width,
+            sidebar_min: raw.sidebar_min,
+            sidebar_max: raw.sidebar_max,
+            inspector_width: raw.inspector_width,
+            inspector_min: raw.inspector_min,
+            inspector_max: raw.inspector_max,
+            tab_strip_height: raw.tab_strip_height,
+            table_actions_height: raw.table_actions_height,
+            grid_padding_start: raw.grid_padding_start,
+            grid_padding_end: raw.grid_padding_end,
+            inspector_gap: raw.inspector_gap,
+            row_height_tree: raw.row_height_tree,
+            row_height_data: raw.row_height_data,
+            column_header_min_height: raw.column_header_min_height,
+            font_ui: raw.font_ui,
+            font_title: raw.font_title,
+            font_status: raw.font_status,
+            font_data_cell: raw.font_data_cell,
+            font_panel: raw.font_panel,
+            min_target: raw.min_target,
+            icon_box: raw.icon_box,
+            icon_button_width: raw.icon_button_width,
+            icon_button_height: raw.icon_button_height,
+            status_dot_diameter: raw.status_dot_diameter,
+            toolbar_padding_h: raw.toolbar_padding_h,
+            objects_min_width: raw.objects_min_width,
+            pager_font: raw.pager_font,
+            badge_min_height: raw.badge_min_height,
+            secondary_min_height: raw.secondary_min_height,
+            radius_sm: raw.radius_sm,
+            radius_md: raw.radius_md,
+            tree_arrow_box: raw.tree_arrow_box,
+            row_number_width: raw.row_number_width,
+            column_width: raw.column_width,
+            filter_panel_width: raw.filter_panel_width,
+            filter_column_width: raw.filter_column_width,
+            gap_none: gap(Gap::None),
+            gap_xxs: gap(Gap::Xxs),
+            gap_xs: gap(Gap::Xs),
+            gap_sm: gap(Gap::Sm),
+            gap_md: gap(Gap::Md),
+            gap_lg: gap(Gap::Lg),
+            gap_xl: gap(Gap::Xl),
+            gap_xxl: gap(Gap::Xxl),
+            gap_page: gap(Gap::Page),
+            // 描边类不随档位（§3.2）：1px 分隔线由 CSS 常量固定，2px 外框同理。
+            frame_border_width: 2,
+            radius_lg: scaled(12, scale),
+            pill_radius: 99,
+            pager_button_min_width: scaled(26, scale),
+            fs_button_min_height: scaled(26, scale),
+            fs_action_min_height: scaled(28, scale),
+            empty_icon_px: scaled(48, scale),
+            spinner_px: scaled(32, scale),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 当前档位下的布局算术（自由函数：调用点不必先取 Metrics）
+// ---------------------------------------------------------------------------
+
 /// 内容区高度：两侧在状态栏之上、工具条之下。
 #[must_use]
 pub fn content_height(window_height: i32) -> i32 {
-    window_height - CHROME_HEIGHT - STATUS_HEIGHT
+    metrics().content_height(window_height)
 }
 
 /// 内容区宽度：右侧工作区（不含侧栏）。
 #[must_use]
 pub fn content_width(window_width: i32, sidebar_width: i32) -> i32 {
-    window_width - sidebar_width
+    metrics().content_width(window_width, sidebar_width)
 }
 
 /// 数据网格宽度；`inspector_width` 为 `None` 表示信息面板折叠。
 #[must_use]
 pub fn grid_width(window_width: i32, sidebar_width: i32, inspector_width: Option<i32>) -> i32 {
-    let base = content_width(window_width, sidebar_width) - GRID_PADDING_START - GRID_PADDING_END;
-    match inspector_width {
-        Some(width) => base - INSPECTOR_GAP - width,
-        None => base,
-    }
+    metrics().grid_width(window_width, sidebar_width, inspector_width)
 }
 
 /// 数据网格高度：标签条与表格工具条之下。
 #[must_use]
 pub fn grid_height(window_height: i32) -> i32 {
-    content_height(window_height) - TAB_STRIP_HEIGHT - TABLE_ACTIONS_HEIGHT
+    metrics().grid_height(window_height)
 }
 
 /// 状态栏顶边 y 坐标（用于检查表格不压在状态栏上）。
 #[must_use]
 pub fn status_y(window_height: i32) -> i32 {
-    window_height - STATUS_HEIGHT
+    metrics().status_y(window_height)
 }
 
-/// 把侧栏宽度钳制到可拖拽区间。
+/// 把侧栏宽度钳制到当前档位的可拖拽区间。
 #[must_use]
 pub fn clamp_sidebar(width: i32) -> i32 {
-    width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+    metrics().clamp_sidebar(width)
 }
 
-/// 把信息面板宽度钳制到可拖拽区间。
+/// 把信息面板宽度钳制到当前档位的可拖拽区间。
 #[must_use]
 pub fn clamp_inspector(width: i32) -> i32 {
-    width.clamp(INSPECTOR_MIN, INSPECTOR_MAX)
+    metrics().clamp_inspector(width)
 }
 
-/// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制（1.0 档的基准算式）。
+/// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制（当前档位）。
 ///
-/// 分隔条位置是「左侧子控件占多少」，面板宽度 = 总宽 - 位置 - 1（分隔条）。
 /// 运行期走 [`crate::window_size::PanelBounds::inspector_width_from_position`]（同一算式
-/// 按档位缩放）；这份基准实现留给布局算术的单测与 #160 的对照。
+/// 按档位缩放）；这份实现留给布局算术的单测与对照。
 #[allow(dead_code)]
 #[must_use]
 pub fn inspector_width_from_position(pane_width: i32, position: i32) -> i32 {
@@ -438,8 +777,8 @@ mod tests {
 
     #[test]
     fn minimum_window_is_960x640() {
-        // 规范 §1 的最小窗口：`ui::activate` 用它强制窗口下限，单测在这里钉死数值，
-        // 防止有人只改一边（窗口与布局算术读同一份常量）。
+        // 规范 §1 的 100% 档最小窗口：`ui::activate` 用它强制首帧下限，单测在这里
+        // 钉死数值，防止有人只改一边（窗口与布局算术读同一份常量）。
         assert_eq!((MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT), (960, 640));
     }
 
@@ -517,22 +856,27 @@ mod tests {
         assert_eq!(inspector_width_from_position(1200, 1100), 240);
     }
 
-    /// 度量门面：本轮三档同值，且每一项都与常量 / 改前的字面量一致。
-    ///
-    /// 这张表就是「视觉零变化」在代码侧的证据：门面里换掉任何一个数字，
-    /// 100% 档的截图就会变（#160 分档时才允许各档不同）。
+    /// `metrics.toml` 的 compact 档必须与 `layout.rs` 的 100% 常量逐一相同：
+    /// 这是「compact 档视觉零变化」在代码侧的硬证据，也是常量与真值不许漂移的守卫。
     #[test]
-    fn metrics_facade_keeps_the_compact_numbers_for_every_tier() {
-        let compact = metrics();
-        assert_eq!(compact, Metrics::for_tier(Tier::Compact));
-        assert_eq!(compact, Metrics::for_tier(Tier::Comfortable));
-        assert_eq!(compact, Metrics::for_tier(Tier::Large));
-        // 与常量一一对应（这些常量是布局算术与单测的口径，不许两边漂移）。
+    fn parsed_compact_tier_matches_the_100_percent_constants() {
+        let compact = Metrics::for_tier(Tier::Compact);
         assert_eq!(compact.header_height, HEADER_HEIGHT);
         assert_eq!(compact.toolbar_height, TOOLBAR_HEIGHT);
         assert_eq!(compact.status_height, STATUS_HEIGHT);
+        assert_eq!(compact.min_window_width, MIN_WINDOW_WIDTH);
+        assert_eq!(compact.min_window_height, MIN_WINDOW_HEIGHT);
+        assert_eq!(compact.sidebar_width, SIDEBAR_WIDTH);
+        assert_eq!(compact.sidebar_min, SIDEBAR_MIN);
+        assert_eq!(compact.sidebar_max, SIDEBAR_MAX);
+        assert_eq!(compact.inspector_width, INSPECTOR_WIDTH);
+        assert_eq!(compact.inspector_min, INSPECTOR_MIN);
+        assert_eq!(compact.inspector_max, INSPECTOR_MAX);
         assert_eq!(compact.tab_strip_height, TAB_STRIP_HEIGHT);
         assert_eq!(compact.table_actions_height, TABLE_ACTIONS_HEIGHT);
+        assert_eq!(compact.grid_padding_start, GRID_PADDING_START);
+        assert_eq!(compact.grid_padding_end, GRID_PADDING_END);
+        assert_eq!(compact.inspector_gap, INSPECTOR_GAP);
         assert_eq!(compact.row_height_tree, ROW_HEIGHT_TREE);
         assert_eq!(compact.row_height_data, ROW_HEIGHT_DATA);
         assert_eq!(
@@ -544,30 +888,143 @@ mod tests {
             (FONT_DATA_CELL, FONT_PANEL)
         );
         assert_eq!(compact.min_target, MIN_TARGET);
+        assert_eq!(compact.icon_box, ICON_BOX);
         assert_eq!(
             (compact.icon_button_width, compact.icon_button_height),
             (ICON_BUTTON_WIDTH, ICON_BUTTON_HEIGHT)
         );
         assert_eq!(compact.status_dot_diameter, STATUS_DOT_DIAMETER);
-        // 间距刻度：0 / 2 / 4 / 6 / 8 / 10 / 12 / 14，页面档 18。
+        // 间距刻度：0 / 2 / 4 / 6 / 8 / 10 / 12 / 14，页面档 18（100% 档不变）。
         assert_eq!(
-            [
-                Gap::None,
-                Gap::Xxs,
-                Gap::Xs,
-                Gap::Sm,
-                Gap::Md,
-                Gap::Lg,
-                Gap::Xl,
-                Gap::Xxl,
-                Gap::Page
-            ]
-            .map(gap),
+            Gap::ALL.map(|step| compact.gap_px(step)),
             [0, 2, 4, 6, 8, 10, 12, 14, 18]
         );
-        // 1px 描边不在这里：§3.2 规定它任何档位都是 1px，所以门面里没有 1 这一档
-        // （表格外框的 2px 是另一回事）。
-        assert!(compact.gap_none == 0 && compact.frame_border_width == 2);
+        // 与运行期门面一致：默认档（compact）下 `metrics()` 就是这一组值。
+        assert_eq!(current_tier(), Tier::Compact);
+        assert_eq!(metrics(), compact);
+    }
+
+    /// 规范 §3.3 的九条不变量：三档都必须成立，数字取 `metrics.toml` 的实际值。
+    #[test]
+    fn every_tier_keeps_the_nine_density_invariants() {
+        for tier in Tier::ALL {
+            let m = Metrics::for_tier(tier);
+            let label = tier.id();
+            // ① 命中区不低于最小点击区，且三者在同一档行高里对齐。
+            assert_eq!(
+                (m.row_height_tree, m.min_target, m.icon_button_height),
+                (m.min_target, m.min_target, m.min_target),
+                "{label}：树行 / 最小点击区 / 图标按钮高度必须同值"
+            );
+            // ② 标题层级还在。
+            assert!(m.font_title > m.font_ui, "{label}：标题必须大于界面字号");
+            // ③ 网格字不裁 CJK 笔画、且比界面醒目。
+            assert!(
+                m.font_data_cell >= 13 && m.font_data_cell >= m.font_ui,
+                "{label}：单元格字号 {} 违反下限",
+                m.font_data_cell
+            );
+            // ④ 信息面板不抢注意力。
+            assert!(
+                m.font_panel <= m.font_ui,
+                "{label}：面板字号 {} 大于界面字号",
+                m.font_panel
+            );
+            // ⑤ 图标两侧各留 2px。
+            assert!(
+                m.icon_button_width - m.icon_box >= 4,
+                "{label}：图标按钮 {} - 图标盒 {} 不足 4",
+                m.icon_button_width,
+                m.icon_box
+            );
+            // ⑥ 行里装得下图标按钮。
+            assert!(
+                m.icon_button_height <= m.row_height_tree,
+                "{label}：图标按钮高于树行"
+            );
+            // ⑦⑧ 默认宽度在可拖区间内（严格不等）。
+            assert!(
+                m.sidebar_min < m.sidebar_width && m.sidebar_width < m.sidebar_max,
+                "{label}：侧栏默认 {} 不在 {}..{} 内",
+                m.sidebar_width,
+                m.sidebar_min,
+                m.sidebar_max
+            );
+            assert!(
+                m.inspector_min < m.inspector_width && m.inspector_width < m.inspector_max,
+                "{label}：面板默认 {} 不在 {}..{} 内",
+                m.inspector_width,
+                m.inspector_min,
+                m.inspector_max
+            );
+            // ⑨ 数据行比树行松。
+            assert!(
+                m.row_height_data > m.row_height_tree,
+                "{label}：数据行不比树行高"
+            );
+        }
+    }
+
+    /// 三档的数字必须真的不同（否则等于没接档位）；关键几项钉住 TOML 的取值。
+    #[test]
+    fn the_three_tiers_have_distinct_values_from_the_toml() {
+        let c = Metrics::for_tier(Tier::Compact);
+        let m = Metrics::for_tier(Tier::Comfortable);
+        let l = Metrics::for_tier(Tier::Large);
+        assert_ne!(c, m);
+        assert_ne!(m, l);
+        assert_eq!(
+            (c.row_height_data, m.row_height_data, l.row_height_data),
+            (32, 40, 48)
+        );
+        assert_eq!((c.font_ui, m.font_ui, l.font_ui), (12, 15, 18));
+        assert_eq!((c.icon_box, m.icon_box, l.icon_box), (16, 20, 24));
+        assert_eq!(
+            (c.sidebar_width, m.sidebar_width, l.sidebar_width),
+            (237, 296, 356)
+        );
+        assert_eq!(
+            (c.inspector_width, m.inspector_width, l.inspector_width),
+            (280, 350, 420)
+        );
+        assert_eq!(
+            (c.min_window_width, m.min_window_width, l.min_window_width),
+            (960, 1200, 1440)
+        );
+        assert_eq!(
+            (
+                c.min_window_height,
+                m.min_window_height,
+                l.min_window_height
+            ),
+            (640, 800, 960)
+        );
+        // 间距阶梯随档位放大，但语义（哪一档用在哪）不变：100% 档 18 → 125% 档 23。
+        assert_eq!(
+            (
+                c.gap_px(Gap::Page),
+                m.gap_px(Gap::Page),
+                l.gap_px(Gap::Page)
+            ),
+            (18, 23, 27)
+        );
+        assert_eq!(
+            (c.gap_px(Gap::Xxl), m.gap_px(Gap::Xxl), l.gap_px(Gap::Xxl)),
+            (14, 18, 21)
+        );
+    }
+
+    #[test]
+    fn remap_gap_moves_values_between_ladders_and_ignores_others() {
+        let c = Metrics::for_tier(Tier::Compact);
+        let l = Metrics::for_tier(Tier::Large);
+        assert_eq!(remap_gap(&c, &l, 0), Some(0));
+        assert_eq!(remap_gap(&c, &l, 2), Some(3));
+        assert_eq!(remap_gap(&c, &l, 18), Some(27));
+        // 1px 描边 / 2px 外框不在阶梯上：保持原值。
+        assert_eq!(remap_gap(&c, &l, 1), None);
+        assert_eq!(remap_gap(&c, &l, 2 + 2), Some(6));
+        assert_eq!(remap_gap(&l, &c, 27), Some(18));
     }
 
     #[test]
@@ -586,9 +1043,8 @@ mod tests {
 
     #[test]
     fn icon_scale_is_one_box_for_every_icon() {
-        // 只有一个尺寸：图标盒 = ICON_BOX（基准是行操作的 `+`），命中区固定。
+        // 只有一个尺寸：图标盒 = icon_box（基准是行操作的 `+`），命中区固定。
         // 「给某个图标单独调大小」是这一版明确要消除的做法。
-        // 同一个命中区里放下图标后左右各留 2px。
         const { assert!(ICON_BUTTON_WIDTH - ICON_BOX >= 4) };
         // 状态栏 24 高的行里装得下按钮高度。
         const { assert!(ICON_BUTTON_HEIGHT == MIN_TARGET) };

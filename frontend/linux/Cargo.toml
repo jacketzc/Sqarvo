@@ -19,6 +19,9 @@ prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt", "signal", "sync", "time"] }
+# `docs/ui-specification/metrics.toml` 是界面尺寸的唯一真值（#160）：运行时解析一次，
+# 不在三端各写一份「基准 × 缩放」。版本与 Cargo.lock 里已有的 0.8 线一致。
+toml = "0.8"
 tonic = "0.14"
 tonic-prost = "0.14"
 tower = { version = "0.5", features = ["util"] }

@@ -25,23 +25,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::layout::{self, Tier};
+
 /// 状态文件名（与 `connections.json` 同目录）。
 pub const FILE_NAME: &str = "window.json";
 
 /// 当前文档版本（v2：窗口几何 + 侧栏宽度 + 档位，§7）。
 const DOCUMENT_VERSION: u32 = 2;
-
-/// 本轮档位名（#160 接三档后由偏好决定；写进文件是为了让读回时能换算宽度）。
-const CURRENT_TIER: &str = "compact";
-
-/// 档位名 → 宽度倍率（ADR 0026：compact 100% / comfortable 125% / large 150%）。
-fn tier_scale(tier: Option<&str>) -> f64 {
-    match tier {
-        Some("comfortable") => 1.25,
-        Some("large") => 1.5,
-        _ => 1.0,
-    }
-}
 
 /// 实际像素 → 归一化值（÷ 档位）。
 fn normalized(width: i32, scale: f64) -> i32 {
@@ -53,7 +43,7 @@ fn normalized(width: i32, scale: f64) -> i32 {
     (f64::from(width) / scale).round() as i32
 }
 
-/// 归一化值 → 当前档位的实际像素（× 档位）。
+/// 归一化值 → 目标档位的实际像素（× 档位）。
 fn denormalized(width: i32, scale: f64) -> i32 {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -61,6 +51,16 @@ fn denormalized(width: i32, scale: f64) -> i32 {
         1.0
     };
     (f64::from(width) * scale).round() as i32
+}
+
+/// 把一个「某档实际像素」换成另一档的实际像素：先归一化到 compact，再乘目标档位。
+///
+/// 规范 §7 第 1 条：宽度类字段一律存 compact 档的归一化值。读回时不能直接按
+/// 目标档位乘一遍——要先除回 saved 档位（否则 1.5 档记的 420 会被当成 compact
+/// 的 420，切回 1.0 后被钳到 520 的边界上，看起来像设置被吃掉）。
+#[must_use]
+pub fn rescale(width: i32, from: Tier, to: Tier) -> i32 {
+    denormalized(normalized(width, from.scale()), to.scale())
 }
 
 /// 状态文件结构（v2）。
@@ -94,18 +94,28 @@ struct Document {
 }
 
 impl Document {
+    /// 文档里记着的档位（v1 / 缺字段按 compact）。
+    fn tier(&self) -> Tier {
+        self.tier
+            .as_deref()
+            .and_then(Tier::from_id)
+            .unwrap_or(Tier::Compact)
+    }
+
     /// 生效的面板宽度：优先窗口级值；没有则从旧版按连接记录迁移。
-    fn effective_inspector_width(&self, scale: f64) -> Option<i32> {
+    ///
+    /// 存储值是**写入时档位**的实际像素；`target_scale` 是读回的目标档位倍率。
+    fn effective_inspector_width(&self, target_scale: f64) -> Option<i32> {
         if let Some(width) = self.last_inspector_width {
-            return Some(crate::layout::clamp_inspector(denormalized(width, scale)));
+            // 落盘值一律是 compact 档的归一化值（§7 第 1 条）：读回只乘目标档位。
+            let actual = denormalized(width, target_scale);
+            return Some(layout::Metrics::for_tier(layout::current_tier()).clamp_inspector(actual));
         }
         // 旧版每条连接一个宽度。取出现次数最多的值（并列时取较小的宽度），
         // 升级后的第一次启动尽量接近用户最常用的宽度。
         let mut counts: BTreeMap<i32, usize> = BTreeMap::new();
         for width in self.inspector_width.values() {
-            *counts
-                .entry(crate::layout::clamp_inspector(*width))
-                .or_default() += 1;
+            *counts.entry(layout::clamp_inspector(*width)).or_default() += 1;
         }
         counts
             .into_iter()
@@ -113,10 +123,12 @@ impl Document {
             .map(|(width, _)| width)
     }
 
-    /// 生效的侧栏宽度（窗口级，已钳制）。
-    fn effective_sidebar_width(&self, scale: f64) -> Option<i32> {
-        self.last_sidebar_width
-            .map(|width| crate::layout::clamp_sidebar(denormalized(width, scale)))
+    /// 生效的侧栏宽度（窗口级，已按目标档位换算并钳制）。
+    fn effective_sidebar_width(&self, target_scale: f64) -> Option<i32> {
+        self.last_sidebar_width.map(|width| {
+            let actual = denormalized(width, target_scale);
+            layout::Metrics::for_tier(layout::current_tier()).clamp_sidebar(actual)
+        })
     }
 }
 
@@ -129,6 +141,11 @@ pub struct WindowGeometry {
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub maximized: bool,
+    /// 这组尺寸是**哪一档**下记的（`window_width/height` 是那一档的实际像素）。
+    ///
+    /// 切档后不能直接复用另一档的窗口尺寸：`window_size` 按当前档位重算推荐尺寸
+    /// （规范 §2.3：切档时窗口跟着放大 / 收小）。
+    pub tier: Tier,
 }
 
 impl WindowGeometry {
@@ -166,7 +183,7 @@ impl WindowGeometry {
 pub fn last_inspector_width() -> Option<i32> {
     let dir = crate::config::config_dir().ok()?;
     let document = load_from(&dir.join(FILE_NAME));
-    document.effective_inspector_width(tier_scale(document.tier.as_deref()))
+    document.effective_inspector_width(layout::current_tier().scale())
 }
 
 /// 窗口上次记住的侧栏宽度（#158；没有记录时为 `None`）。
@@ -174,10 +191,20 @@ pub fn last_inspector_width() -> Option<i32> {
 pub fn last_sidebar_width() -> Option<i32> {
     let dir = crate::config::config_dir().ok()?;
     let document = load_from(&dir.join(FILE_NAME));
-    document.effective_sidebar_width(tier_scale(document.tier.as_deref()))
+    document.effective_sidebar_width(layout::current_tier().scale())
+}
+
+/// 上次保存的档位（`window.json` 的 `tier`；v1 / 缺字段按 `compact`）。
+#[must_use]
+pub fn saved_tier() -> Option<Tier> {
+    let dir = crate::config::config_dir().ok()?;
+    let document = load_from(&dir.join(FILE_NAME));
+    document.tier.as_deref().map(|_| document.tier())
 }
 
 /// 上次记住的窗口几何；没有记录（或文件里没有尺寸）时为 `None`。
+///
+/// 尺寸是**记录时档位**的实际像素（`WindowGeometry::tier`），调用方按当前档位换算。
 #[must_use]
 pub fn saved_geometry() -> Option<WindowGeometry> {
     let dir = crate::config::config_dir().ok()?;
@@ -187,19 +214,17 @@ pub fn saved_geometry() -> Option<WindowGeometry> {
 /// [`saved_geometry`] 的路径参数版本（测试用）。
 fn saved_geometry_from(path: &Path) -> Option<WindowGeometry> {
     let document = load_from(path);
-    let scale = tier_scale(document.tier.as_deref());
-    let width = document
-        .window_width
-        .map(|value| denormalized(value, scale))?;
-    let height = document
-        .window_height
-        .map(|value| denormalized(value, scale))?;
+    let tier = document.tier();
+    // 文件里是 compact 归一化值；还原成「记录时档位的实际像素」，调用方再按当前档位换算。
+    let width = denormalized(document.window_width?, tier.scale());
+    let height = denormalized(document.window_height?, tier.scale());
     Some(WindowGeometry {
         width,
         height,
         x: document.window_x,
         y: document.window_y,
         maximized: document.maximized.unwrap_or(false),
+        tier,
     })
 }
 
@@ -214,11 +239,11 @@ pub fn remember_inspector_width(width: i32) -> Result<PathBuf, String> {
 
 /// [`remember_inspector_width`] 的目录参数版本（测试用，不影响生产路径）。
 fn remember_inspector_in(dir: &Path, width: i32) -> Result<PathBuf, String> {
-    let width = crate::layout::clamp_inspector(width);
+    let width = layout::clamp_inspector(width);
     let path = dir.join(FILE_NAME);
     let mut document = load_from(&path);
     stamp(&mut document);
-    document.last_inspector_width = Some(normalized(width, tier_scale(document.tier.as_deref())));
+    document.last_inspector_width = Some(normalized(width, layout::current_tier().scale()));
     document.inspector_width.clear();
     write_atomic(dir, &path, &document)?;
     eprintln!(
@@ -235,11 +260,11 @@ pub fn remember_sidebar_width(width: i32) -> Result<PathBuf, String> {
 }
 
 fn remember_sidebar_in(dir: &Path, width: i32) -> Result<PathBuf, String> {
-    let width = crate::layout::clamp_sidebar(width);
+    let width = layout::clamp_sidebar(width);
     let path = dir.join(FILE_NAME);
     let mut document = load_from(&path);
     stamp(&mut document);
-    document.last_sidebar_width = Some(normalized(width, tier_scale(document.tier.as_deref())));
+    document.last_sidebar_width = Some(normalized(width, layout::current_tier().scale()));
     write_atomic(dir, &path, &document)?;
     eprintln!(
         "[shell] 侧栏宽度 {width} 已记入 {}（窗口级）",
@@ -258,7 +283,7 @@ fn remember_geometry_in(dir: &Path, geometry: &WindowGeometry) -> Result<PathBuf
     let path = dir.join(FILE_NAME);
     let mut document = load_from(&path);
     stamp(&mut document);
-    let scale = tier_scale(document.tier.as_deref());
+    let scale = layout::current_tier().scale();
     document.window_width = Some(normalized(geometry.width, scale));
     document.window_height = Some(normalized(geometry.height, scale));
     // 位置没有可靠来源就不写：宁可缺字段，也不要存一个假的 0,0 让下次启动误判。
@@ -269,10 +294,31 @@ fn remember_geometry_in(dir: &Path, geometry: &WindowGeometry) -> Result<PathBuf
     Ok(path)
 }
 
-/// 写回时统一升级到当前版本并带上档位名（v1 → v2 的迁移点）。
+/// 写回时统一升级到当前版本，并记上**当前档位**（v1 → v2 的迁移点，也是切档的
+/// 落盘点：宽度字段与 `tier` 永远成对写入）。
 fn stamp(document: &mut Document) {
     document.version = DOCUMENT_VERSION;
-    document.tier = Some(CURRENT_TIER.to_owned());
+    document.tier = Some(layout::current_tier().id().to_owned());
+}
+
+/// 记下切换后的档位（切档时由 [`crate::density`] 调用）。
+///
+/// 只改 `tier`，不动宽度字段：宽度在切档时由调用方按新档位重新归一化后写入，
+/// 这里若顺带重写会让两次落盘之间的进程崩溃留下「档位已换、宽度还是旧档」的
+/// 半套状态。返回写入路径。
+pub fn remember_tier(tier: Tier) -> Result<PathBuf, String> {
+    let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
+    remember_tier_in(&dir, tier)
+}
+
+fn remember_tier_in(dir: &Path, tier: Tier) -> Result<PathBuf, String> {
+    let path = dir.join(FILE_NAME);
+    let mut document = load_from(&path);
+    document.version = DOCUMENT_VERSION;
+    document.tier = Some(tier.id().to_owned());
+    write_atomic(dir, &path, &document)?;
+    eprintln!("[tier] 档位 {} 已记入 {}", tier.id(), path.display());
+    Ok(path)
 }
 
 fn load_from(path: &Path) -> Document {
@@ -460,6 +506,7 @@ mod tests {
                 x: None,
                 y: None,
                 maximized: false,
+                tier: Tier::Compact,
             },
         )
         .expect("写入几何");
@@ -477,6 +524,7 @@ mod tests {
                 x: None,
                 y: None,
                 maximized: false,
+                tier: Tier::Compact,
             })
         );
     }
@@ -501,6 +549,7 @@ mod tests {
             x: Some(260),
             y: Some(120),
             maximized: false,
+            tier: Tier::Compact,
         };
         assert!(inside.fits_in(&monitors));
         // 手改 window_x = 99999：不在任何显示器内。
@@ -597,6 +646,26 @@ mod tests {
         assert_eq!(saved_geometry_from(&path), None);
         // 坏文件不会被读成空后导致下一次写入失败：整份替换仍然成功。
         assert_eq!(store_global(dir.path(), 300), Some(300));
+    }
+
+    #[test]
+    fn tier_is_persisted_and_widths_survive_a_tier_round_trip() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        // 1.0 档存 280（归一化 280）；1.5 档读回来是 420。
+        remember_tier_in(dir.path(), Tier::Compact).expect("写档位");
+        let path = remember_inspector_in(dir.path(), 280).expect("写宽度");
+        assert_eq!(
+            load_from(&path).effective_inspector_width(Tier::Large.scale()),
+            Some(420)
+        );
+        assert_eq!(rescale(280, Tier::Compact, Tier::Large), 420);
+        assert_eq!(rescale(420, Tier::Large, Tier::Compact), 280);
+        // 切到 1.5 档：文档记 large，宽度字段仍是 compact 归一化值（280），不随档位重写。
+        remember_tier_in(dir.path(), Tier::Large).expect("写档位");
+        let document = load_from(&path);
+        assert_eq!(document.tier, Some("large".to_owned()));
+        assert_eq!(document.version, DOCUMENT_VERSION);
+        assert_eq!(document.last_inspector_width, Some(280));
     }
 
     #[test]

@@ -28,6 +28,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
+use gtk::glib::variant::ToVariant;
 
 use crate::proto::services::v1::ObjectKind;
 
@@ -83,6 +84,8 @@ struct UiState {
     connection_name: RefCell<Option<String>>,
     /// 窗口级动作（主菜单与快捷键）；`activate` 里建好后放进这里。
     actions: RefCell<Option<Rc<WindowActions>>>,
+    /// 主菜单「视图 → 界面密度」的自绘小节（占位项在菜单第一次弹出时被替换）。
+    tier_menu: RefCell<Option<Rc<TierMenu>>>,
     /// 主工具条（区域 02，窗口级）：握手前创建，可用性由
     /// [`crate::shell::Toolbar::set_backend_ready`] 统一控制。
     toolbar: RefCell<Option<Rc<crate::shell::Toolbar>>>,
@@ -126,6 +129,26 @@ pub fn activate(app: &adw::Application) {
         return;
     }
 
+    // 密度档（§2）：`--tier`（QA）> `window.json` 的 tier > `compact`。这里先定档再建
+    // 控件——初建就按目标档的数字，截图不会出现「先紧凑再跳到大字号」。可用性守卫在
+    // `present()` 之后（`density::ensure_startup_tier`）：surface 未就绪时读不到工作区。
+    let initial_tier = crate::qa::tier()
+        .or_else(crate::window_state::saved_tier)
+        .unwrap_or_default();
+    layout::set_current_tier(initial_tier);
+    eprintln!(
+        "[tier] 启动档位 {}（{}；来源={}）",
+        initial_tier.id(),
+        initial_tier.percent(),
+        if crate::qa::tier().is_some() {
+            "QA"
+        } else if crate::window_state::saved_tier().is_some() {
+            "记忆"
+        } else {
+            "默认"
+        }
+    );
+
     // 紧凑密度（§11）：全局 CSS 只装一次；class 只加在主窗口上。
     theme::install();
     // 自有符号图标（v0.2.3.3）：注册成图标主题的资源搜索路径，之后建的图标按钮才取得到。
@@ -146,8 +169,8 @@ pub fn activate(app: &adw::Application) {
     // `window_size::apply` 会把它换成 `min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)`
     // ——1080p@200%（逻辑 960×540）这类屏上，绝对下限比屏幕还高，底部状态栏会看不见。
     window.set_size_request(
-        crate::layout::MIN_WINDOW_WIDTH,
-        crate::layout::MIN_WINDOW_HEIGHT,
+        crate::layout::metrics().min_window_width,
+        crate::layout::metrics().min_window_height,
     );
     window.add_css_class(theme::WINDOW_CLASS);
 
@@ -222,6 +245,7 @@ pub fn activate(app: &adw::Application) {
         backend: RefCell::new(None),
         connection_name: RefCell::new(None),
         actions: RefCell::new(None),
+        tier_menu: RefCell::new(Some(build_tier_menu(&window))),
         toolbar: RefCell::new(None),
         registry: RefCell::new(registry),
         pending_file_hint: RefCell::new(None),
@@ -263,6 +287,19 @@ pub fn activate(app: &adw::Application) {
     // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
     let actions = install_window_actions(&window, &state);
     state.actions.replace(Some(Rc::clone(&actions)));
+    // 菜单打开时刷新档位可用性并补 tooltip（GMenu 没有 per-item tooltip）。
+    {
+        let state = Rc::clone(&state);
+        let window_for_menu = window.clone();
+        let actions_for_menu = Rc::clone(&actions);
+        menu_button.connect_notify_local(Some("active"), move |button, _| {
+            if !button.is_active() {
+                return;
+            }
+            refresh_tier_actions(&window_for_menu, &state, &actions_for_menu);
+            ensure_tier_menu(button, &state);
+        });
+    }
 
     // 最大化后把表格 / 结果网格横向滚动重置到第一列：窗口变宽后内容可能刚好不再
     // 溢出，滚动条随之消失；若还停在最后一列，用户就看不到第一列。这里只改滚动
@@ -317,6 +354,16 @@ pub fn activate(app: &adw::Application) {
     }
     // 导出当前结果（§10）：Ctrl+Shift+E。
     app.set_accels_for_action("win.export-csv", &["<primary><shift>e"]);
+    // 界面密度档（§2.4）：Ctrl+Plus / Ctrl+KeyPadAdd 升一档、Ctrl+minus /
+    // Ctrl+KeyPadSubtract 降一档、Ctrl+0 回到 compact。`<primary>equal` 是 Ctrl+= 的
+    // 别名（很多键盘的 `+` 要按 Shift，用户按 Ctrl+= 时读到的 keyval 是 equal）。
+    // 不用 Ctrl+滚轮：滚轮在数据网格与编辑器里已有语义。
+    app.set_accels_for_action(
+        "win.tier-up",
+        &["<primary>plus", "<primary>KP_Add", "<primary>equal"],
+    );
+    app.set_accels_for_action("win.tier-down", &["<primary>minus", "<primary>KP_Subtract"]);
+    app.set_accels_for_action("win.tier-reset", &["<primary>0"]);
 
     // 重试 / 重新连接：先回到 Loading，再让 worker 重新握手。
     let retry: Rc<dyn Fn()> = {
@@ -728,6 +775,9 @@ pub fn activate(app: &adw::Application) {
     // #158：present 之后窗口才有 surface / 所在显示器。首次 relayout 在这里做
     // （改尺寸允许一帧跳动，规范 §6.3），同时把换屏 / 缩放变化的信号接到同一个入口。
     crate::window_size::watch(&window);
+    // #160：档位可用性守卫。`window.json` / `--tier` 指定的档位放不下时回退到下一个
+    // 可用档并记 `[tier]` 日志（规范 §2.2：不静默钳到 100%）。
+    crate::density::ensure_startup_tier(&window);
     retry();
 
     // 基准脚本用：定时关窗，退出仍走与用户关闭窗口相同的清理路径。
@@ -2133,7 +2183,7 @@ impl Workspace {
         // 侧栏就是对象树本体：页脚刷新按钮与它上下的分割线已删除，刷新走
         // 连接 / 库节点的右键菜单（`tree.rs`「刷新连接 / 刷新库」）。
         let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
-        sidebar_box.set_size_request(layout::SIDEBAR_MIN, -1);
+        sidebar_box.set_size_request(layout::metrics().sidebar_min, -1);
         sidebar_box.append(tree.widget());
 
         // ---- 外壳（区域 02–06） ----------------------------------------------
@@ -2297,7 +2347,7 @@ impl Workspace {
         // 拖一次就全局生效；启动态刚拖过就连接时用它的当前宽度（startup_width）。
         let remembered_width = startup_width
             .or_else(crate::window_state::last_inspector_width)
-            .unwrap_or(layout::INSPECTOR_WIDTH);
+            .unwrap_or(layout::metrics().inspector_width);
         eprintln!("[shell] 信息面板宽度读取：{remembered_width}（窗口级）");
 
         let shell = Shell::new(ShellHandlers {
@@ -2307,8 +2357,8 @@ impl Workspace {
             inspector_width: remembered_width,
             sidebar_width: startup_sidebar
                 .or_else(crate::window_state::last_sidebar_width)
-                .unwrap_or(layout::SIDEBAR_WIDTH),
-            panel_bounds: crate::window_size::panel_bounds(crate::window_size::TIER),
+                .unwrap_or(layout::metrics().sidebar_width),
+            panel_bounds: crate::window_size::panel_bounds(crate::layout::current_tier()),
             on_sidebar_width: Rc::new(|width: i32| {
                 if let Err(error) = crate::window_state::remember_sidebar_width(width) {
                     eprintln!("[shell] 侧栏宽度未能记住：{error}");
@@ -2936,6 +2986,8 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     // 控件标成 visible，surface 没有 present），先把窗口抬到最前再 popup。
     state.window.present();
     spin_main_context(150);
+    // 主菜单里「视图 → 界面密度」的占位项在这里换成自绘的三个单选项（与用户点开时同一路径）。
+    ensure_tier_menu(&button, state);
     button.popup();
     spin_main_context(300);
     let popover = button
@@ -2956,6 +3008,19 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     let main_path = with_stem_suffix(base, "-menu");
     crate::qa::save_widget(&state.window, &popover, &main_path)?;
     let mut note = format!("主菜单弹出层：{}；菜单项：{listing}", main_path.display());
+    // 「视图 → 界面密度」是自绘小节（三个单选项）：切到该子菜单再拍一张，勾选与
+    // 禁用状态才看得见。
+    if let Ok(popover_menu) = popover.clone().downcast::<gtk::PopoverMenu>() {
+        popover_menu.set_visible_submenu(Some("视图"));
+        spin_main_context(300);
+        let view_path = with_stem_suffix(base, "-menu-view");
+        match crate::qa::save_widget(&state.window, &popover, &view_path) {
+            Ok(()) => note.push_str(&format!("；视图子菜单：{}", view_path.display())),
+            Err(error) => note.push_str(&format!("；视图子菜单截图失败：{error}")),
+        }
+        popover_menu.set_visible_submenu(None);
+        spin_main_context(100);
+    }
     popover.popdown();
     spin_main_context(100);
     if let Some(table_model) = submenu_model(&model, "表") {
@@ -4417,6 +4482,22 @@ fn build_main_menu() -> gio::Menu {
     table.append(Some("导出 CSV"), Some("win.export-csv"));
     menu.append_submenu(Some("表"), &table);
 
+    // 视图 → 界面密度（§2.4）：三个单选项，当前档打勾。GMenu 没有 per-item tooltip，
+    // 所以这一节是一个占位项（id=tier-section），菜单弹出时用 `PopoverMenu::add_child`
+    // 换成自绘的三个 `GtkCheckButton`（同一 action 表、同一可用性判断）。不可用项禁用，
+    // tooltip 写明缺多少（规范 §2.2）。
+    let view = gio::Menu::new();
+    {
+        use gtk::gio::prelude::*;
+        let item = gio::MenuItem::new(Some("界面密度"), None);
+        // GTK 的 `gtk_popover_menu_add_child` 按 `custom` 属性匹配（不是 `id`）；
+        // 同时写 `id` 便于读模型时辨认。
+        item.set_attribute_value("custom", Some(&"tier-section".to_variant()));
+        item.set_attribute_value("id", Some(&"tier-section".to_variant()));
+        view.append_item(&item);
+    }
+    menu.append_submenu(Some("视图"), &view);
+
     let help = gio::Menu::new();
     // #139：后端版本 / 协议 / PID / 端点文件 / 驱动清单都在「关于 Squarvo」里，
     // 不再单独占一个「诊断信息」入口。
@@ -4444,6 +4525,14 @@ struct WindowActions {
     delete_row: gio::SimpleAction,
     /// 导出当前结果 / 当前页为 CSV（#120）。
     export_csv: gio::SimpleAction,
+    /// 界面密度档（#160）：三个 stateful 单选项，当前档 `state=true`（菜单里打勾）。
+    tier_compact: gio::SimpleAction,
+    tier_comfortable: gio::SimpleAction,
+    tier_large: gio::SimpleAction,
+    /// 升 / 降一档与重置（`Ctrl+Plus` / `Ctrl+minus` / `Ctrl+0`）。
+    tier_up: gio::SimpleAction,
+    tier_down: gio::SimpleAction,
+    tier_reset: gio::SimpleAction,
     /// 后端是否已握手：与工具条 `Toolbar::set_backend_ready` 同一个状态。
     /// 未就绪时所有会话类动作（含「新建连接」）一律禁用。
     backend_ready: Cell<bool>,
@@ -4752,6 +4841,48 @@ fn install_window_actions(
         about.connect_activate(move |_, _| show_about(&state));
     }
 
+    // ---- 界面密度档（#160，规范 §2.4） ------------------------------------
+    // 三个 stateful 单选项：菜单里当前项打勾；不可用项禁用（打开菜单时按工作区刷新）。
+    let tier_compact = gio::SimpleAction::new_stateful("tier-compact", None, &false.to_variant());
+    let tier_comfortable =
+        gio::SimpleAction::new_stateful("tier-comfortable", None, &false.to_variant());
+    let tier_large = gio::SimpleAction::new_stateful("tier-large", None, &false.to_variant());
+    for (action, tier) in [
+        (&tier_compact, layout::Tier::Compact),
+        (&tier_comfortable, layout::Tier::Comfortable),
+        (&tier_large, layout::Tier::Large),
+    ] {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        action.connect_activate(move |_, _| apply_tier_choice(&window, &state, tier));
+    }
+    let tier_up = gio::SimpleAction::new("tier-up", None);
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        tier_up.connect_activate(move |_, _| match layout::current_tier().up() {
+            Some(target) => apply_tier_choice(&window, &state, target),
+            None => eprintln!("[tier] 已经是最高档（large），Ctrl+Plus 忽略"),
+        });
+    }
+    let tier_down = gio::SimpleAction::new("tier-down", None);
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        tier_down.connect_activate(move |_, _| match layout::current_tier().down() {
+            Some(target) => apply_tier_choice(&window, &state, target),
+            None => eprintln!("[tier] 已经是最低档（compact），Ctrl+minus 忽略"),
+        });
+    }
+    let tier_reset = gio::SimpleAction::new("tier-reset", None);
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        tier_reset.connect_activate(move |_, _| {
+            apply_tier_choice(&window, &state, layout::Tier::Compact);
+        });
+    }
+
     for action in [
         &new_connection,
         &new_tab,
@@ -4771,6 +4902,12 @@ fn install_window_actions(
         &delete_row,
         &export_csv,
         &about,
+        &tier_compact,
+        &tier_comfortable,
+        &tier_large,
+        &tier_up,
+        &tier_down,
+        &tier_reset,
     ] {
         window.add_action(action);
     }
@@ -4790,11 +4927,195 @@ fn install_window_actions(
         add_row,
         delete_row,
         export_csv,
+        tier_compact,
+        tier_comfortable,
+        tier_large,
+        tier_up,
+        tier_down,
+        tier_reset,
         backend_ready: Cell::new(false),
     });
     actions.set_backend_ready(false);
     actions.set_workspace_ready(false);
+    refresh_tier_actions(window, state, &actions);
     actions
+}
+
+/// 按「当前工作区 + 当前档位」刷新三个单选项的勾选与可用性（§2.2）。
+///
+/// 不可用项 `set_enabled(false)`（菜单里灰掉）；缺多少由打开菜单时的 tooltip 说明。
+fn refresh_tier_actions(
+    window: &adw::ApplicationWindow,
+    state: &Rc<UiState>,
+    actions: &WindowActions,
+) {
+    let current = layout::current_tier();
+    let work = crate::window_size::current_work(window);
+    let available =
+        |tier: layout::Tier| work.is_none_or(|work| crate::window_size::available(tier, work));
+    for (action, tier) in [
+        (&actions.tier_compact, layout::Tier::Compact),
+        (&actions.tier_comfortable, layout::Tier::Comfortable),
+        (&actions.tier_large, layout::Tier::Large),
+    ] {
+        action.set_enabled(available(tier));
+        action.set_state(&(tier == current).to_variant());
+    }
+    actions
+        .tier_up
+        .set_enabled(current.up().is_some_and(available));
+    actions
+        .tier_down
+        .set_enabled(current.down().is_some_and(available));
+    actions
+        .tier_reset
+        .set_enabled(current != layout::Tier::Compact);
+    sync_tier_checks(window, state);
+}
+
+/// 把当前档位 / 可用性 / tooltip 同步到自绘的三个单选项。
+fn sync_tier_checks(window: &adw::ApplicationWindow, state: &UiState) {
+    let Some(menu) = state.tier_menu.borrow().as_ref().cloned() else {
+        return;
+    };
+    let current = layout::current_tier();
+    let work = crate::window_size::current_work(window);
+    menu.guard.set(true);
+    for (tier, check) in &menu.checks {
+        let available = work.is_none_or(|work| crate::window_size::available(*tier, work));
+        check.set_active(*tier == current);
+        check.set_sensitive(available);
+        let tooltip = match work {
+            Some(work) if !available => {
+                let metrics = layout::Metrics::for_tier(*tier);
+                format!(
+                    "当前显示器放不下 {}：需要 {}×{} 逻辑工作区（当前 {}×{}）",
+                    tier.percent(),
+                    metrics.min_window_width,
+                    metrics.min_window_height,
+                    work.width,
+                    work.height
+                )
+            }
+            _ if *tier == current => format!("当前档位：{}", tier.label()),
+            _ => format!(
+                "切换到 {}（{}）；窗口会按档位一起放大 / 收小",
+                tier.label(),
+                tier.percent()
+            ),
+        };
+        check.set_tooltip_text(Some(&tooltip));
+    }
+    menu.guard.set(false);
+}
+
+/// 密度档动作的唯一落点：走 [`crate::density::switch`]，然后刷新勾选 / 可用性。
+fn apply_tier_choice(window: &adw::ApplicationWindow, state: &Rc<UiState>, target: layout::Tier) {
+    let (shell, tabs) = {
+        let workspace = state.workspace.borrow();
+        if let Some(workspace) = workspace.as_ref() {
+            (
+                Some(Rc::clone(&workspace.shell)),
+                Some(Rc::clone(&workspace.tabs)),
+            )
+        } else {
+            let startup = state.startup.borrow();
+            (startup.as_ref().map(|s| Rc::clone(s.shell())), None)
+        }
+    };
+    match crate::density::switch(window, shell.as_ref(), tabs.as_ref(), target) {
+        Ok(()) => {
+            if let Some(actions) = state.actions.borrow().as_ref() {
+                refresh_tier_actions(window, state, actions);
+            }
+        }
+        Err(reason) => eprintln!("[tier] 未切换：{reason}"),
+    }
+}
+
+/// 主菜单里「视图 → 界面密度」的自绘小节（三个单选项）。
+///
+/// GMenu 的项没有 per-item tooltip，也无法按项禁用，所以这一节用
+/// `PopoverMenu::add_child` 把占位项换成三个真实 `GtkCheckButton`：勾选 = 当前档，
+/// 不可用项 `sensitive=false` + tooltip 写明缺多少（规范 §2.2）。
+struct TierMenu {
+    root: gtk::Box,
+    /// 程序化同步勾选状态时不触发 action。
+    guard: Rc<Cell<bool>>,
+    checks: Vec<(layout::Tier, gtk::CheckButton)>,
+}
+
+fn build_tier_menu(window: &adw::ApplicationWindow) -> Rc<TierMenu> {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+    root.set_margin_top(gap(Gap::Xxs));
+    root.set_margin_bottom(gap(Gap::Xs));
+    root.set_margin_start(gap(Gap::Sm));
+    root.set_margin_end(gap(Gap::Sm));
+    let title = gtk::Label::new(Some("界面密度"));
+    title.set_xalign(0.0);
+    title.add_css_class("dim-label");
+    title.set_margin_start(gap(Gap::Xs));
+    title.set_margin_bottom(gap(Gap::Xxs));
+    root.append(&title);
+    let guard = Rc::new(Cell::new(false));
+    let mut checks = Vec::new();
+    let mut first: Option<gtk::CheckButton> = None;
+    for tier in layout::Tier::ALL {
+        let check = gtk::CheckButton::with_label(tier.label());
+        if let Some(first) = first.as_ref() {
+            check.set_group(Some(first));
+        } else {
+            first = Some(check.clone());
+        }
+        check.set_margin_start(gap(Gap::Xs));
+        {
+            let window = window.clone();
+            let guard = Rc::clone(&guard);
+            check.connect_toggled(move |check| {
+                if guard.get() || !check.is_active() {
+                    return;
+                }
+                let action = match tier {
+                    layout::Tier::Compact => "win.tier-compact",
+                    layout::Tier::Comfortable => "win.tier-comfortable",
+                    layout::Tier::Large => "win.tier-large",
+                };
+                let _ = gtk::prelude::WidgetExt::activate_action(&window, action, None);
+            });
+        }
+        root.append(&check);
+        checks.push((tier, check));
+    }
+    Rc::new(TierMenu {
+        root,
+        guard,
+        checks,
+    })
+}
+
+/// 菜单弹出时把自绘小节换进占位项（只做一次），并同步勾选 / 可用性 / tooltip。
+fn ensure_tier_menu(button: &gtk::MenuButton, state: &UiState) {
+    let Some(menu) = state.tier_menu.borrow().as_ref().cloned() else {
+        return;
+    };
+    let Some(popover) = button
+        .popover()
+        .and_then(|popover| popover.downcast::<gtk::PopoverMenu>().ok())
+    else {
+        return;
+    };
+    if menu.root.parent().is_none() {
+        if popover.add_child(&menu.root, "tier-section") {
+            eprintln!(
+                "[tier] 主菜单「视图 → 界面密度」已挂载（{} 个单选项）",
+                menu.checks.len()
+            );
+        } else {
+            eprintln!("[tier] 主菜单里找不到界面密度的占位项：本节未挂载");
+            return;
+        }
+    }
+    sync_tier_checks(&state.window, state);
 }
 
 /// 后端诊断行（不含密码、凭据引用与 token）。

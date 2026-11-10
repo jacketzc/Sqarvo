@@ -13,6 +13,7 @@ mod column_info;
 mod config;
 mod data_page;
 mod ddl;
+mod density;
 mod dialog;
 mod driver_form;
 mod export;
@@ -92,6 +93,15 @@ fn register_qa_options(app: &adw::Application) {
         glib::OptionArg::String,
         "开发/取证：初始窗口尺寸，格式 WIDTHxHEIGHT（产品默认 1200x800）",
         Some("1200x800"),
+    );
+    // #160：取证用的起始密度档（产品路径是菜单 / 快捷键）。
+    app.add_main_option(
+        "tier",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "开发/取证：起始界面密度档 compact|comfortable|large（默认按 window.json / compact）",
+        Some("compact"),
     );
     for (name, arg_description) in [
         ("screenshot", "/path/to/output.png"),
