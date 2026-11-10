@@ -1017,26 +1017,39 @@ DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 ./target/debug/sqarvo-desktop \
 
 ### README 首图怎么重现
 
-仓库根 `README.md` 的首图是 `docs/assets/screenshots/linux-main-window.png`，由本前端
-自渲染（不是桌面截图）。重现方式：用隔离的 `XDG_CONFIG_HOME` 连一个演示库，展开库并
-打开一张有主键的表，延迟 9 s 等数据与 DDL 就绪后写盘：
+仓库根 `README.md` 的首图是 `docs/assets/screenshots/linux-main-window.png`（1200×800），由本前端
+自渲染（不是桌面截图）。自包含：`sqlite3` 造一个 5 张表 + 2 个视图的演示库，不需要 MariaDB 与密码；
+`--qa-tree-activate main` 让库行展开出四个分组（产品行为：分组保持收起），
+`--qa-tree-select main` 把 `Objects` 页切到该库的表，`--qa-objects-select orders` 选中一行并让
+信息面板同步到该表，延迟 9 s 等目录层、列表与 DDL 都就绪后写盘：
 
 ```bash
 W=$(mktemp -d); mkdir -p "$W/cfg" "$W/run/sqarvo"
-cat > "$W/profile.json" <<'JSON'
-{"driver":"mariadb","host":"127.0.0.1","port":53306,"database":"sqarvo_demo","username":"sqarvo_test","tls_mode":"preferred","name":"sqarvo-demo"}
+sqlite3 "$W/demo.db" <<'SQL'
+CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, created_at TEXT);
+CREATE TABLE orders(id INTEGER PRIMARY KEY, user_id INTEGER, total INTEGER, note TEXT);
+CREATE TABLE order_items(id INTEGER PRIMARY KEY, order_id INTEGER, sku TEXT);
+CREATE TABLE products(id INTEGER PRIMARY KEY, title TEXT, price INTEGER);
+CREATE TABLE audit_log(id INTEGER PRIMARY KEY, at TEXT, what TEXT);
+CREATE VIEW v_active_users AS SELECT id, name FROM users;
+CREATE VIEW v_order_totals AS SELECT user_id, count(*) FROM orders;
+SQL
+cat > "$W/profile.json" <<JSON
+{"driver":"sqlite","path":"$W/demo.db","read_only":false,"name":"sqarvo-demo"}
 JSON
-env XDG_CONFIG_HOME="$W/cfg" SQARVO_ENDPOINT_FILE="$W/run/sqarvo/backend-endpoint.json" \
-    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.ReadmeShot SQARVO_QA_PASSWORD=… \
-  ./target/debug/sqarvo-desktop --window-size 1400x900 \
-    --qa-profile "$W/profile.json" --qa-password-env SQARVO_QA_PASSWORD \
-    --qa-tree-expand sqarvo_demo --qa-tree-open orders \
-    --screenshot docs/assets/screenshots/linux-main-window.png \
-    --screenshot-delay-ms 9000 --qa-exit-after-ms 12000
+env GDK_BACKEND=x11 XDG_CONFIG_HOME="$W/cfg" \
+    SQARVO_ENDPOINT_FILE="$W/run/sqarvo/backend-endpoint.json" \
+    SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.ReadmeShot \
+  ./target/debug/sqarvo-desktop --window-size 1200x800 \
+    --qa-profile "$W/profile.json" \
+    --qa-tree-activate main --qa-tree-select main --qa-objects-select orders \
+    --screenshot ../docs/assets/screenshots/linux-main-window.png \
+    --screenshot-delay-ms 9000 --qa-exit-after-ms 11000
 ```
 
-密码只走环境变量（命令行里不出现明文）；`sqarvo_demo` 是本机演示库，换成你自己的库时
-改 `profile.json` 与 `--qa-tree-expand` 的库名即可。
+`GDK_BACKEND=x11` 是必需的：Wayland 会话下窗口 `mapped` 却拿不到渲染节点，截图会报「控件快照为空」。
+换成 MariaDB 演示库时改 `profile.json`（`driver` / `host` / `port` / `database` / `username` /
+`name`）并加 `--qa-password-env SQARVO_QA_PASSWORD`——密码只走环境变量，命令行里不出现明文。
 
 ### SQL 执行的无人值守验证（`--qa-sql-file` / `--qa-execute` / `--qa-scroll-to-row` / `--qa-cancel-after-ms`）
 
@@ -1372,16 +1385,19 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 ```bash
 cd frontend/linux
 ./scripts/v0232-objects-export.sh            # 全量（发布门禁：Objects + 导出 + 树激活 + 960 布局）
-SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects 段（A0–A8）
+SQARVO_ACCEPTANCE_ONLY=objects ./scripts/v0232-objects-export.sh   # 只跑 Objects + 搜索段（A0–A11）
 # 可选：SQARVO_ACCEPTANCE_DIR=/tmp/shots（默认 /home/jack/sqarvo-v0232-shots，仍追加时间戳）
 #       SQARVO_ACCEPTANCE_NO_BUILD=1（跳过 cargo build）
 ```
 
 自包含脚本：只用 `sqlite3` 在 mktemp 目录建一个临时库（1 张 30 行的表 + 索引 + 触发器 + 视图），
-**不需要 MariaDB、不需要密码**；串行跑 8 个应用实例（各自独立 `SQARVO_QA_APP_ID` 与
-`XDG_CONFIG_HOME`），覆盖 `Objects` 固定页随树选中切换（选中库 → 该库的表、选中视图 → 该库的
-视图，含行数 / 首行 / 选中行 / 空态 / 状态行断言与截图）、单击选中同步信息面板、双击 / 回车
-激活开标签、作用域未变不重发、切回 `Objects` 页清掉行选中，`EX` 整表导出（行数 = 数据行 + 1、
+**不需要 MariaDB、不需要密码**；串行跑 18 个应用实例（只跑 Objects 段时 13 个；各自独立
+`SQARVO_QA_APP_ID` 与 `XDG_CONFIG_HOME`），覆盖 `Objects` 固定页随树选中切换（选中库 → 该库的
+表、选中视图 → 该库的视图，含行数 / 首行 / 选中行 / 空态 / 状态行断言与截图）、单击选中同步
+信息面板、双击 / 回车激活开标签、作用域未变不重发、切回 `Objects` 页清掉行选中、
+树形搜索结果（A10：`--qa-search probe` 命中表 + 视图共 2 个对象，`rows=` 断言
+连接 > 库 > `Tables` > 表 > `Views` > 视图的行序、`highlight=` 断言只有命中行高亮）、
+清空搜索退出筛选（A11：`state=idle` + `hits=0`）、`EX` 整表导出（行数 = 数据行 + 1、
 权限 0600、目录无 `.sqarvo-tmp` 残留、日志命中完成与进度）、取消路径（目标不创建、无残留、
 日志写明「已写入 N 行后取消」）与默认的当前页导出对照。断言读控件文本、日志与文件事实，
 失败以非零退出，末尾打印「N 项断言全过」；证据全部落在仓库外。
