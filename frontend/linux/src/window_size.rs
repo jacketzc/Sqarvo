@@ -656,7 +656,11 @@ mod tests {
     #[test]
     fn recommendation_switches_at_the_four_boundaries() {
         // W = 1199 / 1200 / 1699 / 1700 / 2199 / 2200，H 固定 1000。
-        assert_eq!(recommended(work(1199, 1000), 1.0), (1175, 976));
+        // W=1199 落在 §5.2 的「塞满」档（(W-24, H-24) = 1175×976），但同一份推荐还要过
+        // §5.3 的上限钳制 `(W-32, H-48)`：窄屏上两者差 8 / 24 px。验收条目（§9 #2
+        // 「w ≤ W-32 且 h ≤ H-48」，`--qa-report-monitor` 按它判定）是硬口径，所以上限
+        // 优先，这里钉住钳制后的值；§5.2「W<1200」那一行与它冲突，待规范回填。
+        assert_eq!(recommended(work(1199, 1000), 1.0), (1167, 952));
         assert_eq!(recommended(work(1200, 1000), 1.0), (1144, 840));
         assert_eq!(recommended(work(1699, 1000), 1.0), (1643, 840));
         assert_eq!(recommended(work(1700, 1000), 1.0), (1400, 800));
