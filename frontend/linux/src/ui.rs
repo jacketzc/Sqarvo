@@ -2532,8 +2532,9 @@ fn schedule_step(delay: u64, action: Rc<dyn Fn() -> Result<String, String>>) {
 /// QA：表格浏览脚本（`--qa-browse`，#118）。
 ///
 /// 每一步都走用户会走的同一条路径：`open=` 按名打开表（与点侧栏条目同一条路径）、
-/// `sort=` 点列头排序、`filter=` 填筛选面板并应用、`next/prev/first/last` 点分页器、
+/// `filter=` 填筛选面板并应用、`next/prev/first/last` 点分页器、
 /// `select=` 多选、`hide=/show=` 列显隐、`log` 打印当前浏览状态。
+/// 排序没有步骤：表头不可点，排序只走筛选与排序面板（表标签脚本的 `sort-panel`）。
 /// 步骤之间留出一次 RPC 的时间，日志里的 `[qa]` 行就是验收证据。
 fn maybe_run_qa_browse(state: &Rc<UiState>) {
     let steps = crate::qa::browse_steps();
@@ -2554,14 +2555,6 @@ fn maybe_run_qa_browse(state: &Rc<UiState>) {
                     } else {
                         Err(format!("表列表里还没有 {table}"))
                     }
-                }
-                crate::qa::BrowseStep::Sort(column, shift) => {
-                    let Some(data) = workspace.tabs.data_page() else {
-                        eprintln!("[qa] 排序失败：当前不是表标签");
-                        return;
-                    };
-                    data.qa_toggle_sort(&column, shift)
-                        .map(|()| format!("点列头排序：{column}（shift={shift}）"))
                 }
                 crate::qa::BrowseStep::Filter(column, operator, value) => {
                     let Some(data) = workspace.tabs.data_page() else {

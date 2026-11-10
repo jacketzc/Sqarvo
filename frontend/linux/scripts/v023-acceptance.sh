@@ -384,8 +384,10 @@ sessions 打开 3 个标签后
 expect-sessions 4
 screenshot $case_out/02-tabs.png
 # --- 切回第一个表标签：排序 / 筛选 / 翻页都在同一个标签上做 ---
+# v0.2.3.3 移除表头点击排序（产品决定）：排序只走筛选与排序面板，这里用面板的
+# `sort-panel` 步骤（点「添加排序 + 应用」同一条路径）取代旧的列头 `sort` 步骤。
 select 1
-sort 1 name
+sort-panel 1 name asc
 expect-browse 1 sort=name:asc
 filter 1 category eq keep
 expect-browse 1 filters=1
@@ -521,7 +523,8 @@ expect-tabs 2
 expect-tab-title 1 $CROSS_TABLE @ $CROSS_DB_B
 expect-browse 1 total=$CROSS_ROWS
 expect-browse 1 rows=500
-sort 1 name
+# 排序走筛选与排序面板（v0.2.3.3 起表头不可点，没有列头排序步骤）。
+sort-panel 1 name asc
 expect-browse 1 sort=name:asc
 page 1 next
 expect-browse 1 page=2

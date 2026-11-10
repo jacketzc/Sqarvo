@@ -129,7 +129,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tabs-file", "/path/to/tabs.txt"),
         (
             "qa-browse",
-            "open=table|sort=column|filter=col:op:value|next|prev|first|last|select=N|hide=col|show=col|log",
+            "open=table|filter=col:op:value|next|prev|first|last|select=N|hide=col|show=col|log",
         ),
         ("qa-export", "/path/to/output.csv"),
         ("qa-export-cancel-after-rows", "rows"),

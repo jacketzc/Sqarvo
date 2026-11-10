@@ -2829,13 +2829,6 @@ impl TabSet {
                     .ok_or_else(|| "验收桥未接线".to_owned())?;
                 (bridge.inspect)(mode)
             }
-            QaStep::Sort { tab, column, shift } => {
-                let data = self
-                    .data_page_at(*tab)
-                    .ok_or_else(|| format!("第 {tab} 个标签不是表标签"))?;
-                data.qa_toggle_sort(column, *shift)
-                    .map(|()| format!("第 {tab} 个标签点列头排序：{column}（shift={shift}）"))
-            }
             QaStep::Filter {
                 tab,
                 column,
@@ -3381,15 +3374,6 @@ pub enum QaStep {
     SelectConnection(String),
     /// `inspector <ddl|info|show|hide>`：信息面板的页 / 显隐。
     Inspector(String),
-    /// `sort <标签> <列>[:shift]`：点列头排序。
-    Sort {
-        /// 标签序号。
-        tab: usize,
-        /// 列名。
-        column: String,
-        /// 是否按住 Shift（多列排序）。
-        shift: bool,
-    },
     /// `filter <标签> <列> <算子> <值>`：应用一条筛选条件。
     Filter {
         /// 标签序号。
@@ -3781,30 +3765,6 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     ));
                 }
                 QaStep::Inspector((*mode).to_owned())
-            }
-            "sort" => {
-                let index = parse_index(&parts, 1, number)?;
-                let value = parts
-                    .get(2)
-                    .ok_or_else(|| format!("第 {} 行缺少列名", number + 1))?;
-                let (column, shift) = match value.split_once(':') {
-                    Some((column, "shift")) => (column, true),
-                    Some((_column, other)) => {
-                        return Err(format!(
-                            "第 {} 行 sort 的后缀只接受 :shift，实际：{other}",
-                            number + 1
-                        ));
-                    }
-                    None => (*value, false),
-                };
-                if column.is_empty() {
-                    return Err(format!("第 {} 行的列名不能为空", number + 1));
-                }
-                QaStep::Sort {
-                    tab: index,
-                    column: column.to_owned(),
-                    shift,
-                }
             }
             "filter" => {
                 let index = parse_index(&parts, 1, number)?;
@@ -4333,7 +4293,7 @@ close 2
 expand main
 select-node accept_items
 inspector info
-sort 1 name:shift
+sort-panel 1 name desc
 filter 1 category eq keep
 page 1 next
 export 1 /tmp/a.csv
@@ -4355,10 +4315,10 @@ quit
         assert_eq!(steps[2], QaStep::Inspector("info".to_owned()));
         assert_eq!(
             steps[3],
-            QaStep::Sort {
+            QaStep::SortPanel {
                 tab: 1,
                 column: "name".to_owned(),
-                shift: true,
+                descending: true,
             }
         );
         assert_eq!(

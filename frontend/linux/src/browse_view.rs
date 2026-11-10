@@ -195,49 +195,10 @@ impl SortOrder {
         self.keys.is_empty()
     }
 
-    /// 点击表头：切换该列。
-    ///
-    /// - 未排序的列：升序追加（`extend = false` 时先清空其它键，单列排序）；
-    /// - 已升序的列：翻成降序；已降序的列：取消该列的排序；
-    /// - `extend = true`（Shift）时保留其它列，形成多列排序。
-    pub fn toggle(&mut self, column: &str, extend: bool) {
-        let existing = self.keys.iter().position(|key| key.column == column);
-        if !extend && self.keys.len() > 1 {
-            // 非 Shift 点击：只保留被点的这一列（其余全部去掉）。
-            let direction = existing
-                .map(|index| self.keys[index].direction.flipped())
-                .unwrap_or(Direction::Ascending);
-            self.keys.clear();
-            self.keys.push(SortSpec {
-                column: column.to_owned(),
-                direction,
-            });
-            return;
-        }
-        if !extend && existing.is_none() {
-            self.keys.clear();
-        }
-        match existing {
-            Some(index) => {
-                if self.keys[index].direction == Direction::Ascending {
-                    // 升序 → 降序；
-                    self.keys[index].direction = Direction::Descending;
-                } else {
-                    // 降序 → 取消（多列排序里只摘掉这一列）。
-                    self.keys.remove(index);
-                }
-            }
-            None => self.keys.push(SortSpec {
-                column: column.to_owned(),
-                direction: Direction::Ascending,
-            }),
-        }
-    }
-
     /// 面板「添加排序」：设置某列的方向。
     ///
-    /// 与表头点击的 [`Self::toggle`] 不同，这里**不**清空其它键：面板里的排序是一张
-    /// 有序清单，用户显式指定方向；已存在的列就地改方向并保持它原来的次序。
+    /// 表头不可点（v0.2.3.3 起排序只有这一个入口），所以这里**不**清空其它键：面板里的
+    /// 排序是一张有序清单，用户显式指定方向；已存在的列就地改方向并保持它原来的次序。
     pub fn set_key(&mut self, column: &str, direction: Direction) {
         match self.keys.iter_mut().find(|key| key.column == column) {
             Some(key) => key.direction = direction,
@@ -1038,23 +999,11 @@ mod tests {
     // ---- 排序 ----
 
     #[test]
-    fn header_click_cycles_ascending_descending_and_off() {
+    fn panel_keeps_the_other_keys_and_keeps_the_original_position() {
+        // 表头不可点（v0.2.3.3）：面板里加键不清空其它键，改方向也不换位置。
         let mut sort = SortOrder::new();
-        sort.toggle("name", false);
-        assert_eq!(sort.keys().len(), 1);
-        assert_eq!(sort.keys()[0].direction, Direction::Ascending);
-        sort.toggle("name", false);
-        assert_eq!(sort.keys()[0].direction, Direction::Descending);
-        sort.toggle("name", false);
-        assert!(sort.is_empty(), "再点一次应当取消该列的排序");
-    }
-
-    #[test]
-    fn plain_click_replaces_the_other_keys_but_shift_click_extends() {
-        let mut sort = SortOrder::new();
-        sort.toggle("name", false);
-        sort.toggle("name", true);
-        sort.toggle("id", true);
+        sort.set_key("name", Direction::Ascending);
+        sort.set_key("id", Direction::Ascending);
         assert_eq!(
             sort.keys()
                 .iter()
@@ -1063,17 +1012,15 @@ mod tests {
             vec!["name", "id"]
         );
         assert_eq!(sort.marker("id"), SortMarker::Ascending { priority: 2 });
-        // 不带 Shift 点第三列：只剩它自己。
-        sort.toggle("name", false);
-        assert_eq!(sort.keys().len(), 1);
+        sort.set_key("name", Direction::Descending);
         assert_eq!(sort.keys()[0].column, "name");
+        assert_eq!(sort.keys()[0].direction, Direction::Descending);
     }
 
     #[test]
     fn sort_proto_keeps_order_and_direction() {
         let mut sort = SortOrder::new();
-        sort.toggle("id", false);
-        sort.toggle("id", false);
+        sort.set_key("id", Direction::Descending);
         let keys = sort.to_proto();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].column, "id");
@@ -1379,7 +1326,7 @@ mod tests {
         session.goto(1_500);
         assert_eq!(session.offset, 1_500);
         let mut sort = SortOrder::new();
-        sort.toggle("name", false);
+        sort.set_key("name", Direction::Ascending);
         session.set_sort(sort);
         assert_eq!(session.offset, 0, "换排序后 offset 必须回到 0");
 
@@ -1399,7 +1346,7 @@ mod tests {
         let mut session = BrowseSession::new(500);
         session.goto(1_000);
         let mut sort = SortOrder::new();
-        sort.toggle("name", false);
+        sort.set_key("name", Direction::Ascending);
         session.set_sort(sort);
         session.goto(1_000);
         let mut filter = FilterSet::new();

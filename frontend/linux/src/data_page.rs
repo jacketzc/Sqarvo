@@ -1380,8 +1380,9 @@ impl DataPage {
                 });
         }
 
-        // 表头两行：第一行是 GTK 的列标题（列名 + 排序标记，点击排序），第二行是
-        // 与列宽对齐的类型条带（点类型看列信息）。滚动到底**不再**自动取下一页（#118）。
+        // 表头两行：第一行是 GTK 的列标题（列名 + 已应用排序标记，不可点；排序只在
+        // 筛选与排序面板里改），第二行是与列宽对齐的类型条带（点类型看列信息）。
+        // 滚动到底**不再**自动取下一页（#118）。
         page.sync_header_scroll();
         page.update_buttons();
         page
@@ -2215,54 +2216,6 @@ impl DataPage {
         self.fs_error.set_visible(false);
         self.update_filter_state();
         self.set_status("条件与排序已清空（点「应用筛选与排序」恢复全表）", "normal");
-    }
-
-    /// 换排序（列头点击）：回到第 1 页。`extend` = Shift 多列排序。
-    pub fn toggle_sort(self: &Rc<Self>, index: usize, extend: bool) {
-        if !self.capabilities.get().sorting() {
-            return;
-        }
-        if self.dirty_guard() {
-            return;
-        }
-        let Some(column) = self
-            .columns
-            .borrow()
-            .get(index)
-            .map(|column| column.name.clone())
-        else {
-            return;
-        };
-        {
-            let mut sort = self.sort.borrow_mut();
-            sort.toggle(&column, extend);
-        }
-        self.refresh_header_titles();
-        // 面板开着时表头点击也生效（列头本来就是排序的另一个入口）：把草稿同步过来，
-        // 否则用户在面板里点「应用」会把刚点的列头排序悄悄撤掉。
-        if self.fs_popover.is_visible() {
-            self.fs_sort_draft.replace(self.sort.borrow().clone());
-            self.render_sort_keys();
-            self.update_filter_state();
-        }
-        let sort = self.sort.borrow().to_proto();
-        let filter = self.filter_proto.borrow().clone();
-        // 排序变了：回到第 1 页。
-        self.reset_pager_for_new_query();
-        (self.callbacks.set_browse)(sort, filter);
-        let description = self.sort.borrow().describe();
-        eprintln!(
-            "[data] t=+{}ms 排序：{description}（已回到第 1 页）",
-            crate::qa::elapsed_ms()
-        );
-        self.set_status(
-            &if description.is_empty() {
-                "已取消排序（回到第 1 页）".to_owned()
-            } else {
-                format!("排序：{description} · 回到第 1 页")
-            },
-            "normal",
-        );
     }
 
     /// 分页器动作（状态栏按钮 / 快捷键）。
@@ -3241,14 +3194,7 @@ impl DataPage {
         (self.callbacks.on_column)(column);
     }
 
-    // ---- QA：排序 / 筛选 / 翻页 / 多选 / 列显隐（--qa-browse，#118） ----
-
-    /// QA：按列名切换排序（走与列头点击同一个 `toggle_sort`）。
-    pub fn qa_toggle_sort(self: &Rc<Self>, column: &str, shift: bool) -> Result<(), String> {
-        let index = self.column_index(column)?;
-        self.toggle_sort(index, shift);
-        Ok(())
-    }
+    // ---- QA：筛选 / 翻页 / 多选 / 列显隐（--qa-browse，#118） ----
 
     /// QA：填筛选面板并点「应用筛选」（走与用户同一条路径）。
     pub fn qa_apply_filter(

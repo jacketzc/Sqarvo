@@ -93,8 +93,9 @@
 //!   `expect-file <路径> <最少字节>` 断言。
 //! - #121 增补（全部是 `--qa-tabs-file` 的**脚本步骤**，不新增命令行开关）：
 //!   `expand <名字>`（展开树节点）、`select-node <名字>`（选中并切信息面板）、
-//!   `inspector <ddl|info|show|hide>`、`sort <标签> <列>[:shift]`、
-//!   `sort-panel <标签> <列> <asc|desc>`（走筛选面板的排序区）、
+//!   `inspector <ddl|info|show|hide>`、
+//!   `sort-panel <标签> <列> <asc|desc>`（走筛选面板的排序区；v0.2.3.3 删掉表头点击排序后
+//!   这是唯一的排序步骤）、
 //!   `filter-panel <标签> <open|close>`（面板截图取证）、`edit-condition <标签> <序号>`
 //!   （条件行内编辑态）、
 //!   `filter <标签> <列> <算子> <值>`、`page <标签> <next|prev|first|last>`、
@@ -892,8 +893,6 @@ impl ExportScopeArg {
 pub enum BrowseStep {
     /// `open=<table>`：按名打开表（与点侧栏条目同一条路径）。
     Open(String),
-    /// `sort=<column>[:shift]`：点该列列头排序（Shift = 多列排序）。
-    Sort(String, bool),
     /// `filter=<column>:<op>:<value>`：填筛选面板并应用（op = eq/ne/lt/le/gt/ge/like/null/notnull）。
     Filter(String, String, String),
     /// `next` / `prev` / `first` / `last`：分页器动作。
@@ -919,18 +918,6 @@ impl BrowseStep {
                     return Err("--qa-browse open= 的表名不能为空".to_owned());
                 }
                 Ok(Self::Open(value.to_owned()))
-            }
-            "sort" => {
-                let value = value.ok_or_else(|| "--qa-browse sort= 需要列名".to_owned())?;
-                let (column, shift) = match value.split_once(':') {
-                    Some((column, "shift")) => (column, true),
-                    Some((column, _)) => (column, false),
-                    None => (value, false),
-                };
-                if column.is_empty() {
-                    return Err("--qa-browse sort= 的列名不能为空".to_owned());
-                }
-                Ok(Self::Sort(column.to_owned(), shift))
             }
             "filter" => {
                 let value = value
@@ -977,7 +964,7 @@ impl BrowseStep {
                 Ok(Self::Log)
             }
             other => Err(format!(
-                "未知的 --qa-browse 步骤：{other}（可用：open/sort/filter/next/prev/first/last/select/hide/show/log）"
+                "未知的 --qa-browse 步骤：{other}（可用：open/filter/next/prev/first/last/select/hide/show/log）"
             )),
         }
     }
@@ -3564,14 +3551,6 @@ mod tests {
             BrowseStep::Open("demo_items".to_owned())
         );
         assert_eq!(
-            BrowseStep::parse("sort=name").expect("sort"),
-            BrowseStep::Sort("name".to_owned(), false)
-        );
-        assert_eq!(
-            BrowseStep::parse("sort=name:shift").expect("sort shift"),
-            BrowseStep::Sort("name".to_owned(), true)
-        );
-        assert_eq!(
             BrowseStep::parse("filter=name:like:a%").expect("filter"),
             BrowseStep::Filter("name".to_owned(), "like".to_owned(), "a%".to_owned())
         );
@@ -3593,7 +3572,6 @@ mod tests {
     #[test]
     fn browse_steps_reject_malformed_input() {
         assert!(BrowseStep::parse("open=").is_err());
-        assert!(BrowseStep::parse("sort=").is_err());
         assert!(BrowseStep::parse("filter=name").is_err());
         assert!(BrowseStep::parse("select=abc").is_err());
         assert!(BrowseStep::parse("next=1").is_err());
@@ -3607,7 +3585,7 @@ mod tests {
             "--qa-browse",
             "open=demo_items",
             "--qa-browse",
-            "sort=name",
+            "filter=name:like:a%",
             "--qa-browse",
             "next",
         ]))
@@ -3616,7 +3594,7 @@ mod tests {
             parsed.browse_steps,
             vec![
                 BrowseStep::Open("demo_items".to_owned()),
-                BrowseStep::Sort("name".to_owned(), false),
+                BrowseStep::Filter("name".to_owned(), "like".to_owned(), "a%".to_owned()),
                 BrowseStep::Page("next".to_owned()),
             ]
         );
