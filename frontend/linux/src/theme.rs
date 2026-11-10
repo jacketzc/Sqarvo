@@ -92,18 +92,20 @@ pub fn stylesheet() -> String {
             border-bottom: 1px solid alpha(currentColor, 0.10);
         }}
 
-        /* 表格外框（v0.2.3.4）：`Objects` 列表与表数据网格各套一圈 1px 线，让表格从
-           页面底色里跳出来，两块表格同一份口径。颜色与行 / 列分隔线同族
-           （`currentColor` 18%，分隔线 10%）：比分隔线实一档才看得出「这是一块表格」，
-           但仍远弱于文字与选中态。线只画在**容器**上（`.sqarvo-table-frame` 挂在包住
-           表格的盒子 / `ScrolledWindow`），行与单元格不加线，避免与
-           `cell:last-child` 的右边界叠成双线。
-           直角而非圆角：GTK 的容器按矩形裁切子节点，圆角只圆了边框线本身，首行的
-           hover / 选中底色会溢进弧内（`Objects` 首行选中时浅红底把左上角填成方角，
-           圆角只剩一条弧线）。两块表格统一直角，观感才一致。 */
+        /* 表格外框（v0.2.4）：`Objects` 列表与表数据网格各套一圈 2px 线 + 8px 圆角，
+           让表格从页面底色里跳出来，两块表格同一份口径。颜色与行 / 列分隔线同族
+           （`currentColor` 30%，分隔线 10%）：比分隔线实一档才看得出「这是一块表格」，
+           但仍弱于文字与选中态（accent 25% 起的选区底色照样压得住）。
+           线只画在**容器**上（`.sqarvo-table-frame` 挂在包住表格的盒子 /
+           `ScrolledWindow`），行与单元格不加线，避免与 `cell:last-child` 的右边界
+           叠成双线。
+           圆角靠 `GtkWidget:overflow = hidden`（`data_page.rs` / `tabs.rs` 各自在挂
+           class 的控件上设）：GTK4 默认不裁子节点，上一版因此只能退回直角——首行
+           选中底色会把左上角填成方角。现在容器的子节点按圆角裁切，首行 / 末行的
+           底色跟着边框收圆。 */
         window.{window_class} .sqarvo-table-frame {{
-            border: 1px solid alpha(currentColor, 0.18);
-            border-radius: 0;
+            border: 2px solid alpha(currentColor, 0.30);
+            border-radius: 8px;
         }}
 
         /* 图标按钮（v0.2.3.3）：命中区固定（§图标），内边距归零——图标自身的像素尺寸
@@ -406,7 +408,7 @@ mod tests {
 
     #[test]
     fn both_tables_share_one_frame_rule() {
-        // `Objects` 列表与表数据网格各自套一圈 1px 外框，两块表格同一份口径：
+        // `Objects` 列表与表数据网格各自套一圈 2px / 8px 圆角外框，两块表格同一份口径：
         // 线挂在容器上（`.sqarvo-table-frame`），行 / 单元格不加整圈边框，否则会和
         // `cell:last-child` 的右边界叠成双线。
         let css = stylesheet();
@@ -414,12 +416,12 @@ mod tests {
         let end = start + css[start..].find('}').expect("规则应当闭合");
         let rule = &css[start..end];
         assert!(
-            rule.contains("border: 1px solid alpha(currentColor, 0.18)"),
-            "外框颜色要与分隔线同一家族（18%）：{rule}"
+            rule.contains("border: 2px solid alpha(currentColor, 0.30)"),
+            "外框要比分隔线实一档、粗一档（2px / 30%）：{rule}"
         );
         assert!(
-            rule.contains("border-radius: 0"),
-            "外框用直角：容器按矩形裁切子节点，圆角会被首行底色填成方角：{rule}"
+            rule.contains("border-radius: 8px"),
+            "外框用 8px 圆角（子节点由 `overflow: hidden` 裁切，不再是直角）：{rule}"
         );
         // 行级规则只允许分隔线方向（border-bottom / border-right），不能出现整圈边框。
         for selector in [

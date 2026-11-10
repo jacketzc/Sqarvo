@@ -9,7 +9,7 @@
 //! ├──────────────────────────────────────────────────────────────┤
 //! │ AdwTabView                                                   │
 //! │   ├─ Objects（固定，不可关闭；对象概览待 #135）               │
-//! │   ├─ items @ shop（DataPage：表格工具条两行 + 数据网格）        │
+//! │   ├─ items @ shop（DataPage：表格工具条一行 + 数据网格）        │
 //! │   └─ 查询 1 @ shop（SqlPage：编辑器 + 结果区）                 │
 //! └──────────────────────────────────────────────────────────────┘
 //! ```
@@ -716,8 +716,11 @@ impl ObjectsPage {
             .child(&list)
             .build();
         // 列表外框：与表数据网格共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
-        // （1px / currentColor 18% / 直角）。线挂在滚动容器上，行本身不加线。
+        // （2px / currentColor 30% / 8px 圆角）。线挂在滚动容器上，行本身不加线。
+        // `GtkScrolledWindow` 默认就是 `overflow: hidden`，这里显式设一次：
+        // 圆角要裁到首行 / 末行的 hover 与选中底色，不能只圆边框线。
         scroll.add_css_class("sqarvo-table-frame");
+        scroll.set_overflow(gtk::Overflow::Hidden);
 
         let empty = adw::StatusPage::new();
         empty.set_vexpand(true);

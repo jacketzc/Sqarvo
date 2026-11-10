@@ -6,7 +6,7 @@
 //! ┌ 表列表（MetadataService.ListNodes）┐ ┌ 数据页 ────────────────────────────┐
 //! │ demo_items  表                      │ │ 提交 · 撤销 · 删除 · 新增 · 事务    │
 //! │ demo_notes  表                      │ │ 只读/断连横幅                      │
-//! └─────────────────────────────────────┘ │ 状态行 · 脏行计数                  │
+//! └─────────────────────────────────────┘ │ 自动提交 · 脏行 0 ─ 漏斗 眼睛 导出  │
 //!                                          │ GtkColumnView（虚拟化，cursor 翻页）│
 //!                                          │ 逐行错误列表                       │
 //!                                          └────────────────────────────────────┘
@@ -111,7 +111,7 @@ pub struct DataPageObservation {
     /// 状态栏「事务」一栏的可见文本（没有事务时为空串；状态栏当前不渲染这一栏，
     /// 事务的**可见**表达在 [`Self::status_row_txn`]）。
     pub txn_visible: String,
-    /// 表格工具条状态行右侧那枚**常驻**事务徽标的实际文本（隐藏时为空串）。
+    /// 表格工具条状态簇里那枚**常驻**事务徽标的实际文本（隐藏时为空串）。
     ///
     /// 与 `badge_text` 的区别：`badge_text` 是状态机的标签，这里读控件——断言
     /// 「用户真的看得到」，而不是「状态机算得对」。
@@ -558,16 +558,19 @@ fn direction_text(direction: Direction) -> &'static str {
 /// 数据页。
 pub struct DataPage {
     root: gtk::Box,
-    /// 表格工具条（行变更动作 + 事务动作 + 右侧次要动作）。
+    /// 表格工具条（行变更动作 + 事务动作 + 状态簇 + 右侧次要动作，**一行**）。
     controls_row: gtk::Box,
-    /// 表格工具条下方的状态行（加载状态 / 脏行计数）。
-    status_row: gtk::Box,
+    /// 工具条里漏斗左侧的状态簇（spinner / 过程消息 / 事务徽标 / 脏行计数）。
+    ///
+    /// 单独留一个句柄只为布局自检能定位「是状态簇撑了还是按钮撑了」；它已经是
+    /// `controls_row` 的子节点，不再另占一行。
+    status_cluster: gtk::Box,
     /// 数据网格的滚动容器（布局自检按视口算，不按全部列的自然宽度）。
     grid_scroll: gtk::ScrolledWindow,
     banner: adw::Banner,
     status: gtk::Label,
     dirty_label: gtk::Label,
-    /// 状态行右侧的**常驻**事务徽标（自动提交 / 事务中 / 事务中（只读）/ 事务失败）。
+    /// 状态簇里的**常驻**事务徽标（自动提交 / 事务中 / 事务中（只读）/ 事务失败）。
     ///
     /// 与「脏行 N · 待提交 M 条」同一行：事务状态是这一页的会话属性，用户不该靠
     /// 「按钮少了一个」去反推；只在有表时显示（没有表时这一行说的是「请选择左侧的表」）。
@@ -790,37 +793,39 @@ impl DataPage {
 
         let spinner = gtk::Spinner::new();
         spinner.set_visible(false);
+        spinner.set_valign(gtk::Align::Center);
 
         let status = gtk::Label::new(Some("请选择左侧的表开始浏览"));
         status.set_xalign(0.0);
         status.add_css_class("caption");
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        // 过程消息只是「这一刻在做什么」：放宽到 24 字（CJK）就够读，再长就让位给
+        // 事务徽标与脏行计数——960×640 下这一行还要放 5 个动作按钮 + 3 个图标。
+        status.set_max_width_chars(24);
+        status.set_valign(gtk::Align::Center);
 
         let dirty_label = gtk::Label::new(Some("脏行 0 · 待提交 0 条"));
-        dirty_label.set_xalign(1.0);
+        dirty_label.set_xalign(0.0);
         dirty_label.add_css_class("dim-label");
         dirty_label.add_css_class("caption");
+        // 挤的时候从头截断（「脏行 0 · 待提交…」），不撑宽整行；正常宽度下完整显示。
+        // 完整文案同时写进 tooltip：960×640 下这一行只放得下开头，数字仍要能查到。
+        dirty_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        dirty_label.set_max_width_chars(30);
+        dirty_label.set_valign(gtk::Align::Center);
 
         // 常驻事务徽标：文案与 `TransactionBadge::label()` 同一口径（四态），
-        // 位置在脏行计数左边。两枚标签都是 caption（11px）：960 宽下这一行的
-        // 最小宽度仍小于分配宽度（`--qa-layout-audit` 在 960×640 上复核）。
+        // 位置在脏行计数左边。
         let txn_label = gtk::Label::new(Some("自动提交"));
         txn_label.set_xalign(1.0);
         txn_label.add_css_class("caption");
         txn_label.set_visible(false);
+        txn_label.set_valign(gtk::Align::Center);
+        // 最窄档（960×640）允许省略号：徽标宁可截成「事务…」也不许把动作按钮挤出可视区。
+        txn_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         txn_label.set_tooltip_text(Some(
             "当前会话的事务状态（ADR 0017）：自动提交 / 事务中 / 事务中（只读）/ 事务失败",
         ));
-
-        let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        status_row.set_margin_start(12);
-        status_row.set_margin_end(12);
-        status_row.set_margin_bottom(4);
-        status_row.append(&spinner);
-        status_row.append(&status);
-        status.set_hexpand(true);
-        status_row.append(&txn_label);
-        status_row.append(&dirty_label);
 
         // 常驻徽标行（#118 要求 10）：只读 / 无主键 / 视图 / 无权限 / 未统计。
         //
@@ -831,15 +836,23 @@ impl DataPage {
         badges_row.set_margin_bottom(4);
         badges_row.set_visible(false);
 
-        // 行变更按钮 + 事务按钮 + 次要动作图标：960 宽下这一行有 9 个控件。
+        // 行变更按钮 + 事务按钮 + 状态簇 + 次要动作图标：960 宽下这一行有 9 个控件
+        // （外加状态簇里的 spinner / 消息 / 事务徽标 / 脏行计数）。
         // v0.2.3.3 把「开始事务」从上一行并进来之后，960×640 实测「需求 433 > 分配 417」
         // （`--qa-layout-audit`）：行内间距先收到 4、按钮横向 padding 收到 5px；事务打开后
         // 换成两个四字按钮仍超 24px，间距再收到 2、padding 4px（见 `install_css`）。
+        // v0.2.4 状态行并进本行后，宽度让给状态簇：消息与脏行计数都可以省略号收尾。
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         controls.add_css_class("sqarvo-table-actions");
         controls.set_margin_start(12);
         controls.set_margin_end(12);
+        // 上边距 8：动作行不再紧贴标签条的下边线（原来只有 6 的下边距，上边是 0），
+        // 与下方表格外框之间仍留 6。
+        controls.set_margin_top(8);
         controls.set_margin_bottom(6);
+        // 状态簇整体与图标按钮同一垂直中线：标签 / spinner 各自 valign=CENTER，
+        // 容器本身也居中，行高由按钮决定时不会出现「字比图标低一行」。
+        controls.set_valign(gtk::Align::Center);
         controls.append(&commit_changes);
         controls.append(&discard);
         controls.append(&delete_row);
@@ -857,6 +870,17 @@ impl DataPage {
         controls_spacer.set_hexpand(true);
         controls_spacer.set_margin_start(6);
         controls.append(&controls_spacer);
+        // 状态簇（v0.2.4）：spinner + 本次操作的临时消息 + 常驻事务徽标 + 脏行计数。
+        // 放在漏斗**左侧**——它说的是「这张表格此刻怎样」，读的时候先看状态、再看
+        // 动表格的次要动作，和状态栏（会话级）分工清楚。
+        let status_cluster = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        status_cluster.add_css_class("sqarvo-table-status");
+        status_cluster.set_valign(gtk::Align::Center);
+        status_cluster.append(&spinner);
+        status_cluster.append(&status);
+        status_cluster.append(&txn_label);
+        status_cluster.append(&dirty_label);
+        controls.append(&status_cluster);
         controls.append(&fs_button);
         controls.append(&cc_button);
         controls.append(&export);
@@ -918,9 +942,13 @@ impl DataPage {
         let grid_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
         grid_page.set_vexpand(true);
         // 网格外框：与 `Objects` 列表共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
-        // （1px / currentColor 18% / 直角）。左右各让 12：边框与侧栏、信息面板的
+        // （2px / currentColor 30% / 8px 圆角）。左右各让 12：边框与侧栏、信息面板的
         // 分栏线错开，不然同一根轴上会并出两条线；也让两块表格的框到页边的距离一致。
         grid_page.add_css_class("sqarvo-table-frame");
+        // 圆角必须真的裁到内容：GTK4 默认 `overflow: visible`，子节点按矩形铺满，
+        // 首行选中底色会把左上角填成方角（上一版因此退回直角）。设 hidden 后
+        // 整棵子树按边框圆角裁切。
+        grid_page.set_overflow(gtk::Overflow::Hidden);
         grid_page.set_margin_start(12);
         grid_page.set_margin_end(12);
         grid_page.set_margin_bottom(6);
@@ -1168,7 +1196,6 @@ impl DataPage {
         root.set_valign(gtk::Align::Fill);
         root.append(&banner);
         root.append(&controls);
-        root.append(&status_row);
         root.append(&badges_row);
         root.append(&errors_scroll);
         root.append(&overlay);
@@ -1176,7 +1203,7 @@ impl DataPage {
         let page = Rc::new(Self {
             root,
             controls_row: controls.clone(),
-            status_row: status_row.clone(),
+            status_cluster: status_cluster.clone(),
             grid_scroll: scroll.clone(),
             banner,
             status,
@@ -1458,17 +1485,20 @@ impl DataPage {
         &self.root
     }
 
-    /// 布局自检目标：表格工具条 + 状态行 + 数据网格视口。
+    /// 布局自检目标：表格工具条（含状态簇）+ 数据网格视口。
     ///
     /// 表格按**滚动视口**检查（列的自然宽度允许横向滚动，不算裁切）；
     /// 视口自身的最小宽度必须小于等于实际分配宽度。
     pub fn audit_groups(&self) -> Vec<(&'static str, gtk::Widget)> {
         vec![
             (
-                "表格工具条(行变更·事务·次要动作)",
+                "表格工具条(行变更·事务·状态·次要动作)",
                 self.controls_row.clone().upcast(),
             ),
-            ("表格工具条 状态行", self.status_row.clone().upcast()),
+            (
+                "表格工具条 状态簇(spinner·消息·事务·脏行)",
+                self.status_cluster.clone().upcast(),
+            ),
             ("表格 数据网格视口", self.grid_scroll.clone().upcast()),
         ]
     }
@@ -5570,7 +5600,7 @@ impl DataPage {
         let rows = self.row_count();
         let suffix = if has_more { " · 还有下一页" } else { "" };
         // 行数 / 页码 / 总数只在状态栏出现一次（行 1 分页器 + 行 2 记录位置）。
-        // 工具条下方这一行只放**本次操作的临时消息**：读取完成时擦掉「正在读取…」，
+        // 状态簇里只放**本次操作的临时消息**：读取完成时擦掉「正在读取…」，
         // 摘要只写进 last_load_note（状态栏 tooltip），不占可见文案。
         self.last_load_note.replace(if rows == 0 {
             match self.pager.get().offset {
@@ -5624,6 +5654,7 @@ impl DataPage {
             )
         };
         self.dirty_label.set_text(&text);
+        self.dirty_label.set_tooltip_text(Some(&text));
         // 常驻事务徽标与脏行计数同一行：换表 / 首次打开时也要立刻出现（不等状态变化）。
         self.sync_txn_label();
         // 在途时同一个按钮就是「取消提交」：文案由批次状态决定，不在这里拼。
@@ -5735,7 +5766,7 @@ impl DataPage {
         self.notify_status();
     }
 
-    /// 同步状态行右侧的**常驻**事务徽标。
+    /// 同步状态簇里的**常驻**事务徽标。
     ///
     /// 文案与 [`TransactionBadge::label`] 完全同一份（自动提交 / 事务中 /
     /// 事务中（只读）/ 事务失败），不在这里另拼一句：状态变化（`sync_badge`）与

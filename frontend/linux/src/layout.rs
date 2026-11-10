@@ -68,11 +68,11 @@ pub const INSPECTOR_MAX: i32 = 520;
 pub const TAB_STRIP_HEIGHT: i32 = 24;
 
 /// 表格工具条（区域 04 中部）高度。
-/// 行变更 / 事务动作行 + 下方状态行：两行共 64。
 ///
-/// 规范 §2.1 与附录 A 第 8 条：表格工具条是**两行**，每行 32。历史上这里只按
-/// 32 记账，导致 `gridHeight` 比实际可用高度多算 32px（#113/#116 遗留）。
-pub const TABLE_ACTIONS_HEIGHT: i32 = 64;
+/// v0.2.4 起工具条只有**一行**：动作按钮 + 状态簇（spinner / 过程消息 / 事务徽标 /
+/// 脏行计数）+ 次要动作图标。高度 = 行高 32 + 上留白 8 + 下留白 6 = 46。
+/// 历史上这里是「按钮行 + 状态行」两行共 64，状态行并入动作行后记账口径一起收。
+pub const TABLE_ACTIONS_HEIGHT: i32 = 46;
 
 /// 表格左内边距。
 pub const GRID_PADDING_START: i32 = 18;
@@ -246,9 +246,9 @@ mod tests {
             );
             assert_eq!(status_y(window.1), window.1 - 56);
         }
-        // 636 − 24（标签条） − 64（两行工具条）= 548；960 档 476 − 24 − 64 = 388。
-        assert_eq!(grid_height(800), 548);
-        assert_eq!(grid_height(640), 388);
+        // 636 − 24（标签条） − 46（一行工具条 + 上下留白）= 566；960 档 476 − 24 − 46 = 406。
+        assert_eq!(grid_height(800), 566);
+        assert_eq!(grid_height(640), 406);
     }
 
     #[test]

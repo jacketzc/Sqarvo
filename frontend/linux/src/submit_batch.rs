@@ -436,8 +436,8 @@ pub fn commit_button_label(snapshot: Option<&SubmitSnapshot>, pending: usize) ->
         Some(SubmitPhase::Submitting) => "取消提交".to_owned(),
         Some(SubmitPhase::Cancelling) => "正在取消…".to_owned(),
         Some(SubmitPhase::Idle | SubmitPhase::Done) | None => {
-            // 960×640 下（信息面板常驻）表格工具条第 2 行只剩 511px：长标签会把
-            // 「导出」挤出可视区。这里用短标签 + tooltip 保留完整说明。
+            // 960×640 下（信息面板常驻）表格工具条只有一行：动作按钮要和状态簇、三个图标
+            // 挤在同一行，长标签会把「导出」挤出可视区。这里用短标签 + tooltip 保留完整说明。
             format!("提交（{pending}）")
         }
     }
