@@ -953,6 +953,8 @@ impl StatusBar {
         pager_summary.set_valign(gtk::Align::Center);
         let pager = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         pager.add_css_class("linked");
+        // 翻页箭头按字号高度排版（见 theme.rs 的 `.sqarvo-pager button` 覆盖）。
+        pager.add_css_class("sqarvo-pager");
         pager.set_valign(gtk::Align::Center);
         let mut pager_buttons: Vec<gtk::Button> = Vec::new();
         for (icon, action, tip) in [

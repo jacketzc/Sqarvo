@@ -185,6 +185,15 @@ pub fn stylesheet() -> String {
             font-size: {status_font}px;
         }}
         .sqarvo-status-bar entry {{ min-height: {target}px; font-size: {status_font}px; }}
+        /* 分页器（v0.2.3.4）：翻页箭头原来按状态栏按钮的 24px 最小高度排版，比旁边
+           11px 的「第 x/y 页」文字还高一截，右下角看起来是两块东西。这里把它压到
+           字号高度，水平方向只留 4px，四个箭头仍然分得开。 */
+        window.{window_class} .sqarvo-pager button {{
+            min-height: 0;
+            min-width: 0;
+            padding: 0 4px;
+            -gtk-icon-size: {status_font}px;
+        }}
         .sqarvo-status-sep {{ min-height: {tree_row}px; }}
 
         /* 区域 06：信息面板（空槽，内容由 #119 填） */
