@@ -950,6 +950,8 @@ impl StatusBar {
         // 由数据页决定目标 offset（并在有未提交更改时拒绝）。
         let pager_summary = gtk::Label::new(Some("未打开表"));
         pager_summary.add_css_class("dim-label");
+        // 与 `+` 那一档按钮视觉对齐：字号 12（见 theme.rs 的 `.sqarvo-pager-label`）。
+        pager_summary.add_css_class("sqarvo-pager-label");
         pager_summary.set_valign(gtk::Align::Center);
         let pager = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         pager.add_css_class("linked");
@@ -965,8 +967,8 @@ impl StatusBar {
                 PagerAction::First,
                 "首页（offset = 0）",
             ),
-            ("go-previous-symbolic", PagerAction::Previous, "上一页"),
-            ("go-next-symbolic", PagerAction::Next, "下一页"),
+            (crate::icons::PAGE_PREV, PagerAction::Previous, "上一页"),
+            (crate::icons::PAGE_NEXT, PagerAction::Next, "下一页"),
             (
                 crate::icons::LAST_PAGE,
                 PagerAction::Last,

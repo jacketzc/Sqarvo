@@ -17,5 +17,7 @@
     <file alias="actions/sqarvo-filter-symbolic.svg">icons/sqarvo-filter-symbolic.svg</file>
     <file alias="actions/sqarvo-first-page-symbolic.svg">icons/sqarvo-first-page-symbolic.svg</file>
     <file alias="actions/sqarvo-last-page-symbolic.svg">icons/sqarvo-last-page-symbolic.svg</file>
+    <file alias="actions/sqarvo-page-prev-symbolic.svg">icons/sqarvo-page-prev-symbolic.svg</file>
+    <file alias="actions/sqarvo-page-next-symbolic.svg">icons/sqarvo-page-next-symbolic.svg</file>
   </gresource>
 </gresources>

@@ -185,14 +185,17 @@ pub fn stylesheet() -> String {
             font-size: {status_font}px;
         }}
         .sqarvo-status-bar entry {{ min-height: {target}px; font-size: {status_font}px; }}
-        /* 分页器（v0.2.3.4）：翻页箭头原来按状态栏按钮的 24px 最小高度排版，比旁边
-           11px 的「第 x/y 页」文字还高一截，右下角看起来是两块东西。这里把它压到
-           字号高度，水平方向只留 4px，四个箭头仍然分得开。 */
+        /* 分页器（v0.2.3.4）：尺寸对齐状态栏行操作里的 `+`（16px 图标盒、墨迹 11×11、
+           命中区 24 高）。图标 14px 时墨迹正好落在 11×11；按钮回到 24 高，与 `+` 同一档。
+           页码文字同步放大到 12px（沿用状态栏的 UI 字族，中文走系统 CJK 回退），
+           与图标的视觉高度对齐。 */
         window.{window_class} .sqarvo-pager button {{
-            min-height: 0;
-            min-width: 0;
+            min-height: {target}px;
+            min-width: 26px;
             padding: 0 4px;
-            -gtk-icon-size: {status_font}px;
+        }}
+        window.{window_class} .sqarvo-pager-label {{
+            font-size: 12px;
         }}
         .sqarvo-status-sep {{ min-height: {tree_row}px; }}
 

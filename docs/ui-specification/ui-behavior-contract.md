@@ -306,7 +306,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | 页大小 | — | 每页 **500 行**（`TABLE_PAGE_SIZE`） | `src/backend/table.rs:27` |
-| 分页器 | 有表标签 | 只有 首页 / 上页 / 下页 / 末页；页码**只读**显示；没有「跳转到第 N 页」。四个翻页箭头按状态栏字号排版（v0.2.3.4：图标与按钮高度都压到 11px，不再比旁边的页码文字高），水平内边距 4px。首页 / 末页用项目自有图标 `|<` / `>|`（`resources/icons/sqarvo-first-page-symbolic.svg` / `…-last-page-…`）：主题的 `«` / `»` 与相邻的 `‹` / `›` 在 11px 下只差一条线，读不出是两档不同的动作 | `src/shell.rs:949-986`、`src/icons.rs`（`FIRST_PAGE` / `LAST_PAGE`）、`src/theme.rs`（`.sqarvo-pager button`） |
+| 分页器 | 有表标签 | 只有 首页 / 上页 / 下页 / 末页；页码**只读**显示；没有「跳转到第 N 页」。尺寸对齐状态栏行操作里的 `+`（v0.2.3.4）：四个翻页图标都由本仓库提供（`resources/icons/sqarvo-first-page-symbolic.svg`、`…-page-prev-…`、`…-page-next-…`、`…-last-page-…`），统一画在 16×16 盒里、填充路径 + 内孔（描边会被 GTK 的符号重着色按 alpha 阈值放大，两笔在 11px 下糊成实心三角），渲染墨迹约 10–11px 高、与 `+` 同档；按钮命中区 24 高、水平内边距 4px；页码文字 12px（沿用状态栏的 UI 字族，中文走系统 CJK 回退）。首页 / 末页是 `|<` / `>|`：主题的 `«` / `»` 与相邻的 `‹` / `›` 只差一条线，读不出是两档不同的动作 | `src/shell.rs:949-996`、`src/icons.rs`（`FIRST_PAGE` / `PAGE_PREV` / `PAGE_NEXT` / `LAST_PAGE`）、`src/theme.rs`（`.sqarvo-pager button` / `.sqarvo-pager-label`） |
 | 状态栏行 1 文案 | 有表 | `第 N 页`；知道总页数时 `第 N / M 页`；有总数时追加 ` · 共 X 行` / ` · 约 X 行`（估计值必须带「约」） | `src/shell.rs:1047-1066`、`src/browse_view.rs:639-646` |
 | 总数三态 | 服务端返回 | 精确 `共 N 行`；估计 `约 N 行`；未知则不显示；计数超预算时 `未统计（超出计数预算）` 并出现「未统计」徽标 | `src/browse_view.rs:600-647`、`src/data_page.rs:3612-3618` |
 | 末页 | 总数未知 | 「末页」禁用（`can_last` 需要总页数）；点了也不会发请求，状态行「<动作>不可用（没有对应页）」 | `src/browse_view.rs:728-736`、`src/data_page.rs:2285-2291` |

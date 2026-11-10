@@ -47,6 +47,12 @@ pub const FIRST_PAGE: &str = "sqarvo-first-page-symbolic";
 /// 「最后一页」`>|`（自有图标），理由同上。
 pub const LAST_PAGE: &str = "sqarvo-last-page-symbolic";
 
+/// 「上一页」`‹`（自有图标）：与首末页同一套画法，四个翻页图标才同高同线宽。
+pub const PAGE_PREV: &str = "sqarvo-page-prev-symbolic";
+
+/// 「下一页」`›`（自有图标），与 [`PAGE_PREV`] 镜像。
+pub const PAGE_NEXT: &str = "sqarvo-page-next-symbolic";
+
 /// 个别图标的**光学补偿**（px）：没登记的一律 [`layout::ICON_BOX`]。
 ///
 /// 目标：墨迹落到基准 `+` 的 11×11 附近——宽字形缩一档、墨迹偏小的实心块 / 窄弧线放大

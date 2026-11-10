@@ -5,7 +5,7 @@
   分不清，竖条让它成为独立动作。16×16 盒、固定深灰、由 GTK 重着色。
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <rect x="11.8" y="1.8" width="1.4" height="12.4" rx="0.7" fill="#2e3436"/>
+  <rect x="11.23" y="2.73" width="1.19" height="10.54" rx="0.6" fill="#2e3436"/>
   <!-- 填充路径 + 内孔，理由同 `sqarvo-first-page-symbolic`。 -->
-  <path fill="#2e3436" d="M3.5 1.8 9.4 8l-5.9 6.2v-2.2L7.4 8l-3.9-4z"/>
+  <path fill="#2e3436" d="M4.18 2.73 9.19 8l-5.02 5.27v-1.87L7.49 8l-3.31 -3.4z"/>
 </svg>
