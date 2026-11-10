@@ -17,10 +17,14 @@
 //!                 [--qa-sql-file /tmp/q.sql] [--qa-execute]
 //!                 [--qa-scroll-to-row N]... [--qa-cancel-after-ms N]
 //!                 [--qa-exit-after-ms N]
+//!                 [--qa-report-monitor]          # 只读：打印一行显示器 / 工作区 / 窗口结论
 //! ```
 //!
-//! - `--window-size WIDTHxHEIGHT`：取证用的初始窗口尺寸（窗口最小 960×640 是**强制**
-//!   下限，更小的取值会被抬到下限）；不给就用产品默认 1200×800（workspace-model §1）。
+//! - `--window-size WIDTHxHEIGHT`：取证用的初始窗口尺寸（**优先于**按显示器工作区分档
+//!   算出来的尺寸，日志写明「来自 QA」；小于当次最小窗口时仍会被抬到下限）；
+//!   不给就按显示器逻辑工作区分档（scaling-and-window-sizing §5.2）。
+//! - `--qa-report-monitor`：只读打印 `[monitor] <connector> 几何 … → 窗口 … 档位=… 来源=…`
+//!   一行，**不改变任何尺寸**（#158 的回归入口）。
 //! - `--qa-layout-audit`：截图之后在当前窗口尺寸上做「无裁切」量化自检——
 //!   逐区域比较 GTK 最小/自然宽度与实际分配宽度，超限时以退出码 **5** 结束并打印
 //!   超出的 px 数；必须与 `--screenshot` 一起使用（自检发生在截图时刻）。
@@ -896,6 +900,8 @@ struct Args {
     cancel_after_ms: Option<u64>,
     /// `--qa-exit-after-ms`：启动后多少毫秒自动关闭窗口（基准脚本用，避免依赖人工关闭）。
     exit_after_ms: Option<u64>,
+    /// `--qa-report-monitor`：只读打印一行窗口 / 显示器 / 工作区 / 档位结论，不改任何尺寸。
+    report_monitor: bool,
     /// `--qa-second-sql-file`：第二次执行用的 SQL（验证触顶/取消后仍能继续查询）。
     second_sql: Option<String>,
     /// `--qa-execute-again-after-ms`：首次执行后多少毫秒用 `second_sql`（或同一 SQL）再执行一次。
@@ -1208,7 +1214,11 @@ pub fn elapsed_ms() -> u128 {
 #[must_use]
 pub fn enabled() -> bool {
     ARGS.get().is_some_and(|args| {
-        args.sql.is_some()
+        // `--screenshot` 也是 QA 参数：不把它算进来，只传截图时 application-id 不会换成
+        // `SQARVO_QA_APP_ID`，进程会转发给用户正在运行的实例后以 0 退出、不产图。
+        args.capture.is_some()
+            || args.report_monitor
+            || args.sql.is_some()
             || args.execute
             || !args.scroll_rows.is_empty()
             || args.cancel_after_ms.is_some()
@@ -1277,6 +1287,15 @@ pub fn cancel_after_ms() -> Option<u64> {
 #[must_use]
 pub fn exit_after_ms() -> Option<u64> {
     ARGS.get().and_then(|args| args.exit_after_ms)
+}
+
+/// `--qa-report-monitor`：只读打印一行窗口 / 显示器 / 工作区 / 档位结论（#158）。
+///
+/// 这个开关**不改任何尺寸**：它是 [crate::window_size] 决策过程的日志出口，
+/// 用来回归「1366×768@125% 这类场景下窗口不超工作区」。
+#[must_use]
+pub fn report_monitor() -> bool {
+    ARGS.get().is_some_and(|args| args.report_monitor)
 }
 
 /// 第二次执行用的 SQL（未设置时为 `None`，此时复用编辑器里的内容）。
@@ -1986,6 +2005,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .map_err(|_| format!("--qa-exit-after-ms 不是合法毫秒数：{value}"))?;
                 parsed.exit_after_ms = Some(millis);
                 index += 2;
+            }
+            "--qa-report-monitor" => {
+                parsed.report_monitor = true;
+                index += 1;
             }
             "--qa-second-sql-file" => {
                 let value = args
@@ -3292,6 +3315,16 @@ mod tests {
         assert_eq!(parsed.exit_after_ms, Some(9000));
         // 不设置时没有定时退出：正常交互路径不受影响。
         assert_eq!(parse(&args(&["app"])).unwrap().exit_after_ms, None);
+    }
+
+    #[test]
+    fn report_monitor_is_a_no_argument_switch() {
+        assert!(!parse(&args(&["app"])).unwrap().report_monitor);
+        let parsed = parse(&args(&["app", "--qa-report-monitor"])).unwrap();
+        assert!(parsed.report_monitor);
+        // 只读开关：不伪装成截图 / 退出请求。
+        assert!(parsed.capture.is_none());
+        assert_eq!(parsed.exit_after_ms, None);
     }
 
     #[test]

@@ -35,6 +35,7 @@ mod tabs;
 mod theme;
 mod tree;
 mod ui;
+mod window_size;
 mod window_state;
 
 use adw::prelude::*;
@@ -182,6 +183,8 @@ fn register_qa_options(app: &adw::Application) {
         "qa-startup-workspace",
         "qa-open-about",
         "qa-open-menu",
+        // #158：只读打印 `[monitor] …` 一行，不改任何尺寸。
+        "qa-report-monitor",
     ] {
         app.add_main_option(
             name,
