@@ -284,7 +284,8 @@ frontend `372 passed / 0 failed / 1 ignored`；`v023-acceptance.sh` 139 项、
 - 六区域（外壳、主工具条、对象树、标签工作区、状态栏、信息面板）在 1200×800 下可见、
   可拖拽调整，无控件被裁切；三端映射按 ADR 0023 记录，Windows/macOS 保持未验证标注；
 - 对象树支持多连接并列与种类分组；展开一个 catalog 的 `ListNodes` 次数与分组数一致，
-  未实现的种类分组（Functions / Queries）不出现，不用空分组冒充；
+  未实现的种类分组（Functions / Queries）不以空分组冒充（v0.2.3.3 起改为只画入口：
+  分组行可见、展开给「尚未实现」说明，0 次 RPC）；
 - 标签工作区：固定 `Objects` 页 + 表数据标签 + 查询标签；一标签一会话（ADR 0021），
   关闭有脏行的标签必须三选，超过标签上限时明确报错而不是静默失败；
 - 表格浏览：行号列、类型行、多选、列显隐、排序与筛选下推、offset 分页器与总数三态
@@ -307,12 +308,12 @@ frontend `372 passed / 0 failed / 1 ignored`；`v023-acceptance.sh` 139 项、
 | 完成标准 | 证据 |
 |---|---|
 | 六区域在 1200×800／960×640 可见、可拖拽、无裁切 | `--qa-layout-audit` 两档各 19 项 0 超限（#123、#129、#134 各自复跑）；`119-antiproof-collapse-keeps-width.png` 证明折叠省下 280px |
-| 多连接 + 种类分组；未实现分组不出现；展开 catalog 的 RPC 次数 = 分组数 | 验收链断言「展开 catalog 的 ListNodes 次数=2」；`Functions`/`Queries` 在 `NodeGroup` 里不存在；`114-two-connections.png` |
+| 多连接 + 种类分组；未实现分组不以空分组冒充；展开 catalog 的 RPC 次数 = 分组数 | 验收链断言「展开 catalog 的 ListNodes 次数=2」；v0.2.3 时 `Functions`/`Queries` 在 `NodeGroup` 里不存在（v0.2.3.3 起改为只画入口、给未实现说明）；`114-two-connections.png` |
 | 一标签一会话 + 关闭三选 + 超限报错 | `ListSessions` = 1 浏览 + 3 标签；关 1 个回 3；两标签事务互不可见；第 9 个标签被拒（文案含上限）；`backend/routing.rs` 8 个单测 |
 | 表格排序/筛选/分页/总数三态；翻页不靠滚动 | `--test table_browse_options`（SQLite 131 通过含 12 新用例）、`--test browse_pushdown`（MariaDB 13 通过）；三态截图 `mariadb-browse/-estimate/-skipped` |
 | 信息面板三态 + DDL/表信息切换；拿不到的字段不出现 | `119-inspector-{connection,catalog,ddl,info,index}.png`；索引给 `metadata.object_kind_unsupported` |
 | 导出 CSV 流式 + 路径校验 + 覆盖保护 + 10 万行基准 | 0.418 s / 7.4 MB / 峰值 RSS 增量 824 KiB；取消无半截文件；`../` 被拒 |
-| 未实现能力显式禁用并说明 | 导入按钮禁用并写「v0.2.5」；Functions/Queries 分组不出现；`Objects` 页文案改为「对象概览尚未实现（#135）」 |
+| 未实现能力显式禁用并说明 | 导入按钮禁用并写「v0.2.5」；Functions/Queries 分组 v0.2.3.3 起只画入口、展开给「尚未实现」说明（v0.2.3 时不显示）；`Objects` 页文案改为「对象概览尚未实现（#135）」 |
 | 文档落地 | `workspace-model.md` + ADR 0021／0022（含计数超时修订）／0023；`requirements.md` UI 条目状态列已更新 |
 
 交付与验证：13 个 PR 全部 squash/merge 进 main（#122、#123、#124、#125、#126、#128、#129、#130、#131、#132、#134、#136、#138），

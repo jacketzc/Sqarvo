@@ -109,7 +109,7 @@
 会话上的事务状态通过既有 `ConnectionService.ListSessions` 暴露（#44）：
 `SessionSummary.transaction`（`TransactionStatus`：`transaction_id` / `isolation` /
 `read_only` / `state`）在每次读取时现取，未打开事务时为空。该字段与
-`TransactionInfo.state` 都是**追加**字段，不改动既有字段号与语义；前端据此展示事务徽标，
+`TransactionInfo.state` 都是**追加**字段，不改动既有字段号与语义；前端据此展示事务状态，
 不需要新增独立 RPC。断连由后端强制回滚，清理结果计入进程内计数并以日志记录。
 
 分类映射（后端 `ErrorCategory` → gRPC code）：
@@ -141,9 +141,10 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 - `ExecuteQueryRequest.timeout_millis` 为执行超时，0 表示由服务端默认策略决定；
 - `FetchBatchRequest.statement_index` 标识结果集所属语句，v0.1 恒为 0（单语句）；
 - 元数据浏览使用 `PageRequest`/`PageInfo`，单页默认 100、上限 500；
-- 表数据浏览（`TableDataService.BrowseTable`）固定按主键升序，使用同语义的不透明
-  `page_token`（ADR 0017）：默认 100、上限 500、超限钳制；无主键表返回
-  `read_only=true` + `ordering=ROW_ORDER_UNSTABLE`，不得改用 `OFFSET` 分页；
+- 表数据浏览（`TableDataService.BrowseTable`）默认按主键升序，v0.2.3 起使用 **offset 分页**
+  （`offset` / `sort` / `filter` / `include_total`，ADR 0022）；不透明 `page_token` 只保留
+  v0.2.2 的 cursor 兼容路径，与 `sort` 或 `offset > 0` 并用返回 `config.invalid`；无主键表返回
+  `read_only=true` + `ordering=ROW_ORDER_UNSTABLE`（排序 / 筛选仍可用）；
 - 行变更单批上限 500 行，超限由服务端钳制并在响应里给出 `clamped` / `deferred_changes`；
 - 不允许通过提高 gRPC message 大小上限来解决大结果集问题。
 

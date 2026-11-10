@@ -369,7 +369,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行 1：分页器 | 有表标签 | 四个翻页按钮 + 只读摘要（§5.5）；无表时摘要为空且按钮全禁用；整组 tooltip 说明「offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供」 | `src/shell.rs:54-56`、`src/shell.rs:848-880`、`src/shell.rs:1046-1067` |
 | 行 2：左段 | — | `SQL: <摘要>`（ASCII 冒号）：表标签给当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（不执行）；`Objects` 页重置为「尚未执行」；查询标签显示最近一次查询摘要；断连时「连接已断开」 | `src/shell.rs:912-917`、`src/shell.rs:1163-1167`、`src/ui.rs:1554`、`src/browse_view.rs:860-883` |
 | 行 2：右段 | — | `Last Refresh: <相对时间>`（`<1m` / `Nm` 形式，每 30 秒重算；tooltip 给墙上时间 `HH:MM:SS` 与「offset 分页不保证跨页稳定」提示）；没有刷新过时整格隐藏 | `src/shell.rs:919-922`、`src/shell.rs:1088-1116` |
-| 行 2：空态摘要 | **只在没有表标签时** | 才让 `session` 一格出现：连接态显示连接名；启动态显示「未连接」+「驱动 N · 浏览会话 M」（合成一行 `未连接 · 驱动 N · 浏览会话 M`）。有表标签时一律不出现（表名 / 库 / 事务在表格工具条里已有） | `src/shell.rs:1181-1207`、`src/startup.rs:240-245` |
+| 行 2：空态摘要 | **只在没有表标签时** | 才让 `session` 一格出现：连接态显示连接名；启动态显示「未连接」+「驱动 N · 浏览会话 M」（合成一行 `未连接 · 驱动 N · 浏览会话 M`）。有表标签时一律不出现（表名 / 库在标签名里，事务在表格工具条里） | `src/shell.rs:1181-1207`、`src/startup.rs:240-245` |
 | 行 2 的排版约束 | — | 文案用**ASCII 冒号**（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线 | `src/shell.rs:909-917` |
 
 ---
@@ -436,9 +436,9 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 
 ## 9. 已知偏差与存疑
 
-本节只记录事实与建议，**不替产品做决定**。每条给出「代码如此 / 旧文档如此 / 建议」。
-第 2 条已在 v0.2.3.3 由产品决定收口（不实现表头排序、删掉死代码），第 3 条已由产品决定
-收口（`F5` 在表标签下刷当前表），两条都保留在此作为记录。
+**本节只列仍未收口的项**：代码与产品口径尚未一致、或实现留有已知边界的地方。已收口的条目
+已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见
+[`ui-behavior-contract.review.md`](ui-behavior-contract.review.md)。
 
 1. **查询标签标题带 catalog**
    代码如此：`query_tab_title` = `查询 <N> @ <catalog>`（`src/tabs.rs:84-86`）。
@@ -446,100 +446,40 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
    建议：二选一——把文档改成 `查询 N @ catalog`（与表标签同构，信息更全），或改代码去掉
    `@ catalog`（标题更短）。二者都影响标签宽度与窗口标题，需要一次视觉确认。
 
-2. **表头不可点：排序只在筛选与排序面板里**（v0.2.3.3 已按产品决定收口）
-   代码如此：表头没有点击手势、没有 `set_sorter`；第一行只显示列名 + 已应用排序标记
-   （`src/data_page.rs:1385-1391`、`src/data_page.rs:5228-5244`）。排序入口只有筛选与排序面板
-   （`src/data_page.rs:1992-2218`），面板里点列名切方向 / ↑↓ 调优先级 / ✕ 删除。
-   死代码已删：`DataPage::toggle_sort`（原 `src/data_page.rs:2221`）、`DataPage::qa_toggle_sort`
-   （原 `src/data_page.rs:3246`）、`SortOrder::toggle`（表头点击的三态循环），以及 QA 侧的
-   `--qa-browse sort=` 步骤与表标签脚本的 `sort <标签> <列>[:shift]` 步骤；验收脚本改用
-   `sort-panel <标签> <列> <asc|desc>`（面板路径）。
-   旧文档如此：`workspace-model.md` §6 写「表头点击排序」「表头 ▲▼ 标记同步」——已同步改为
-   「表头不可点，排序只在筛选与排序面板里改」。
+2. **`Ctrl+Q` 直接退出，不经过关窗脏行守卫**
+   代码如此：`app.quit` 绑定 `<primary>q`（`src/main.rs:72`）。标题栏关闭 / `Ctrl+Shift+W` 会先过
+   脏行确认（§1.1 / §8.2），`Ctrl+Q` 走 `app.quit`，不弹「有未提交的更改」。
+   这是已知边界：同一份未提交更改，点关闭会问、按 `Ctrl+Q` 不问。
+   建议：产品决定是让 `Ctrl+Q` 复用同一守卫，还是在菜单「文件 → 退出」上标注「立即退出」。
 
-3. **`F5` / 视图 → 刷新的目标随当前标签变化**（已按产品决定收口）
-   代码如此：`win.refresh` → `Workspace::refresh`（`src/ui.rs:2178-2196`，接线在
-   `src/ui.rs:3939-3948`）：当前标签是表数据页时调 `perform_row_op(RowOp::Refresh)`——
-   与「表 → 刷新当前表」、状态栏 `⟳` 同一条入口，保持排序 / 筛选、回到第 1 页，
-   有未提交更改时照旧被脏行守卫拒绝；查询标签 / `Objects` 页 / 启动态走
-   `refresh_all()` 重建整棵对象树（`src/ui.rs:2163-2165`、`src/tree.rs:1301-1321`）。
-   旧文档如此：`workspace-model.md` §10 写「刷新当前表 / 树 `F5`」，而当时的代码只刷树；
-   上一版契约把这条列为偏差。现在两者一致，§2.3 / §8.1 已按新语义改写。
-   验收：`--qa-refresh` 触发同一个 `win.refresh` 动作（不另开路径），日志写
-   「`[qa] … 触发刷新：当前表 <name>`」或「`[qa] … 触发刷新：对象树`」。
+3. **最小窗口 960×640 未强制**
+   代码如此：没有任何 `set_size_request` / geometry hints 限制窗口最小尺寸；960×640 只出现在
+   `--window-size` 的校验下限（`src/qa.rs:1594-1597`）与布局单测（`src/layout.rs:211-216`）。
+   建议：确认是否要真正强制（`gtk_widget_set_size_request` 只能给内容最小宽度，窗口级需要
+   geometry hints / compositor 支持，跨 Wayland 不保证）；当前文档口径是「验收下限 960×640，
+   低于此值不保证布局」（`workspace-model.md` §1）。
 
 4. **标签切换快捷键缺失**
    代码如此：只注册了 `Ctrl+N/T/W`、`Ctrl+Shift+W`、`Ctrl+Q`、`Ctrl+F`、`F5`、
    `Ctrl+Shift+E`（`src/ui.rs:229-239`、`src/main.rs:72`）；没有 `Ctrl+Tab`、`Alt+1..9`。
-   旧文档如此：`workspace-model.md` §10 列了「切换标签 `Ctrl+Tab` / `Alt+1..9`」。
-   建议：删掉文档条目，或在 `TabSet` 上补 `AdwTabView` 的页面循环动作（`Alt+N` 需要
-   逐标签注册动作，成本不低）。
+   建议：要补就在 `TabSet` 上接 `AdwTabView` 的页面循环动作（`Alt+N` 需要逐标签注册动作，
+   成本不低）；不补则保持文档不列（`workspace-model.md` §10 已改为指向 §8.1）。
 
-5. **关窗确认未提交更改**（v0.2.3.x 已按产品决定收口）
-   代码如此：`window.connect_close_request` 先查所有表数据标签的脏行（`TabSet::dirty_tab_summaries`），
-   有则弹「有未提交的更改」确认框（逐表列出，取消 / 放弃更改并退出），确认后才进入
-   「正在停止后端并清理端点文件…」并 `worker.shutdown()`（`src/ui.rs:283-313`、`src/ui.rs:827`）。
-   收口前：关窗直接 shutdown，不检查脏行；关**标签**有确认（`src/tabs.rs:227`），关**窗口**没有。
-   仍保留的边界：查询标签里未提交的**事务**不在关窗守卫范围内（只在关该标签时确认）；
-   这一点是有意的——事务可回滚，且没有脏行时不该在关窗时多一次确认。
-   验收：`--qa-close-dirty answer=discard|cancel` 两条路径（日志见 README 的 QA 参数表）。
-
-6. **最小窗口 960×640 未强制**
-   代码如此：没有任何 `set_size_request` / geometry hints 限制窗口最小尺寸；960×640 只出现在
-   `--window-size` 的校验下限（`src/qa.rs:1594-1597`）与布局单测（`src/layout.rs:211-216`）。
-   旧文档如此：`workspace-model.md` §1「最小窗口 960×640」。
-   建议：确认是否要真正强制（`gtk_widget_set_size_request` 只能给内容最小宽度，窗口级需要
-   geometry hints / compositor 支持，跨 Wayland 不保证）；若不强制，把文档改成「验收下限
-   960×640，低于此值不保证布局」。
-
-7. **事务状态只有按钮互斥 + 一次性状态行文案，没有常驻徽标**
+5. **事务状态只有按钮互斥 + 一次性状态行文案，没有常驻徽标**
    代码如此：两组按钮互斥（`src/data_page.rs:5688-5701`）+ 只读横幅；每次事务状态变化还会在
    工具条下方状态行写一次「事务状态：{label}」（`src/data_page.rs:3812-3819`）；
    `TransactionBadge` 是纯状态模型，不渲染成常驻文字徽标；状态栏不写事务
-   （`src/shell.rs:1181-1207`）。v0.2.3.3 核验时曾把这条写成「只靠按钮互斥」，漏了状态行文案。
-   建议：保留现状（960 宽下工具条已无余量放常驻徽标），文档口径已按此修正。
+   （`src/shell.rs:1181-1207`）。
+   建议：保留现状（960 宽下工具条已无余量放常驻徽标）。
 
-8. **摘要示例页大小与实现不一致**
-   代码如此：`TABLE_PAGE_SIZE = 500`，摘要拼 `LIMIT {offset}, {page_size}`
-   （`src/backend/table.rs:27`、`src/browse_view.rs:881`）。
-   旧文档如此：`workspace-model.md` §6 举例 `SELECT … LIMIT 0,1000`。
-   建议：把示例改成 `LIMIT 0,500`（只是文档示例，不涉及行为）。
+6. **右键「刷新这一组」在未展开的分组上无反馈**
+   代码如此：`reload_group` 只找已建立的 `LevelSource::Group` 层；分组从未展开过时找不到
+   level，函数直接返回（`src/tree.rs:2851-2869`），既不发请求也没有状态行提示。
+   建议：与「刷新连接」对齐——无层时写一行状态「这一组还没有展开过：展开时会重新读取」，
+   避免用户以为菜单项坏了。
 
-9. **对象树模块顶部注释过期**
+7. **对象树模块顶部注释过期**
    代码如此：`KindGroup::ALL` 有四组 `Tables / Views / Functions / Queries`，展开库会建 4 行
    （`src/tree.rs:244`、`src/tree.rs:2266-2272`）。
-   旧文档如此：`src/tree.rs:25` 的模块文档仍写「v0.2.3 不出现 `Functions` / `Queries` 分组」。
+   旧注释如此：`src/tree.rs:25` 仍写「v0.2.3 不出现 `Functions` / `Queries` 分组」。
    建议：改注释（纯注释，不改行为），避免下一个人按注释误判。
-
-10. **后端断开后「连接」按钮可点但静默无反应**（已按产品决定收口）
-    代码如此：主工具条从窗口构建起就存在，六个按钮的可用性只有一个开关
-    `Toolbar::set_backend_ready`（`src/shell.rs:705`）：窗口构建后先置 false、
-    握手完成置 true、后端失效 / 退出 / 重启回退 false（`src/ui.rs:232-236`、`src/ui.rs:425`、
-    `src/ui.rs:475`、`src/ui.rs:492`、`src/ui.rs:286`、`src/ui.rs:1196`）。
-    菜单侧 `WindowActions::set_backend_ready` 同时禁用新建连接 / 新建查询 / 执行 / 取消 /
-    表动作 / 刷新 / 侧栏显隐，并用同一个 `backend_ready` 状态阻止 `set_workspace_ready`
-    与 `apply_row_ops` 在后端未就绪时把动作打开（`src/ui.rs:4058-4125`）。
-    收口前：工具条「连接」始终可点，`open_connection_dialog_for` 在 `!backend_ready`
-    时只写日志就返回；菜单「新建连接」却已禁用——两套口径。
-    验收：日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；
-    握手失败（`SQARVO_BACKEND_BIN=/bin/false`）截图上六个按钮全为灰色。
-
-11. **`Ctrl+Q` 未进旧快捷键表**
-    代码如此：`app.quit` 绑定 `<primary>q`（`src/main.rs:72`）。
-    旧文档如此：`workspace-model.md` §10 没有这一条。
-    建议：补进快捷键表（本文件 §8.1 已按代码收录）。
-
-12. **右键「刷新这一组」在未展开的分组上无反馈**
-    代码如此：`reload_group` 只找已建立的 `LevelSource::Group` 层；分组从未展开过时找不到
-    level，函数直接返回（`src/tree.rs:2851-2869`），既不发请求也没有状态行提示。
-    旧文档如此：`workspace-model.md` §4 只说「分组节点是刷新这一组」。
-    建议：与「刷新连接」对齐——无层时写一行状态「这一组还没有展开过：展开时会重新读取」，
-    避免用户以为菜单项坏了。
-
-13. **树的选中态没有自定义色条**
-    代码如此：树 `GtkListView` 没有自定义 CSS，也没有 `.navigation-sidebar`；行只加了
-    `sqarvo-tree-row` 类（`src/tree.rs:1000`、`src/tree.rs:1174-1181`），选中态就是 GTK
-    默认的 `row:selected`。`Objects` 列表反而有自定义选中色（`src/theme.rs:159`）。
-    旧文档如此：`workspace-model.md` §4 写「选中态：整行底色 + 3px 左侧色条」。
-    建议：属于视觉决策——要么在 `theme.rs` 给树补上左侧色条（与 `Objects` 列表对齐），要么
-    把文档改成「沿用 GTK 行选中」。若补 CSS，只需改视觉，不需要改本文件的行为口径。

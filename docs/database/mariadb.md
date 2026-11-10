@@ -780,8 +780,9 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
   「不提供继续语义」，`has_more` 恒为 false）；
 - 无主键表允许排序 / 筛选 / 计数，但 `ordering = UNSTABLE`、`read_only = true`
   （编辑定位依赖主键，ADR 0017 / 0022 §6）；
-- offset 分页**不保证跨页稳定**：翻页期间有插入/删除会出现重复或漏行，界面必须在
-  「Last Refresh」旁提供刷新入口；连续翻页的稳定性只在「无 sort + `page_token`」时成立。
+- offset 分页**不保证跨页稳定**：翻页期间有插入/删除会出现重复或漏行，刷新入口在状态栏行操作
+  组的 `⟳`（v0.2.3.3 删除了「Last Refresh」旁的重复按钮）；连续翻页的稳定性只在「无 sort +
+  `page_token`」时成立。
 
 ### 总数三态与阈值
 

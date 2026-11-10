@@ -221,3 +221,12 @@ rows.commit | 工具条第 2 行「提交」 | dirty > 0 且非只读；超过�
 - `frontend/linux/scripts/v023-acceptance.sh` —— 139 项断言（54 应用内 + 85 脚本）
 - `frontend/windows/Sqarvo.Windows/{App.xaml,MainWindow.xaml}`、
   `frontend/macos/Sources/SqarvoApp/ContentView.swift` —— 两端骨架
+
+## 修订（v0.2.3.3）
+
+- 「缺口」第 1 条把「列头排序」列为尚未进 GAction 的路径；v0.2.3.3 已按产品决定**移除
+  表头点击排序**（表头不可点，排序只在筛选与排序面板里改），该路径不再存在，动作目录里
+  应记为 `grid.sort`（面板）而非表头点击。
+- 同条提到的「表格工具条第 2 行 `提交`」与 §附「`rows.commit` 入口＝工具条第 2 行」：现在
+  表数据工具条只有一行按钮（第二行是状态行），入口描述应改为「按钮行」。
+- 其余结论不变。行为口径以 `docs/ui-specification/ui-behavior-contract.md` 为准。
