@@ -212,6 +212,8 @@ enum SearchTarget {
 struct ConnectionSearch {
     key: String,
     name: String,
+    /// 行尾文字：与树里的连接行同一份连接态徽标（已连接 / 未连接 / 连接中…）。
+    badge: String,
     /// 连接名本身命中（客户端大小写不敏感 contains）。
     name_hit: bool,
     catalogs: Vec<CatalogSearch>,
@@ -988,6 +990,8 @@ pub struct TreePanel {
     collapsed: RefCell<std::collections::HashSet<String>>,
     /// 结果页当前的行（含祖先行；点击按 `ListBoxRow.index()` 对齐）。
     search_rows: RefCell<Vec<SearchRowView>>,
+    /// 结果页里被用户收起的祖先路径（与树里的收起意图同一套语义，清空搜索即忘掉）。
+    search_collapsed: Rc<RefCell<std::collections::HashSet<String>>>,
     search_state: Cell<SearchState>,
     search_generation: Cell<u64>,
     /// 还在等几条响应（目录层列表 + 逐库搜索）。
@@ -1026,6 +1030,9 @@ impl TreePanel {
         let search_list = gtk::ListBox::new();
         search_list.set_selection_mode(gtk::SelectionMode::None);
         search_list.add_css_class("navigation-sidebar");
+        // 检索结果行按树行的尺寸排版（同高、无额外内边距），见 `theme.rs` 的
+        // `list.sqarvo-search-list > row` 覆盖。
+        search_list.add_css_class("sqarvo-search-list");
 
         // 搜索状态（结果条数 / 空 / 无权限 / 失败）跟搜索框一起搬到状态栏左边沟：
         // 结果列表在上、状态文字在搜索框正下方，位置比「列表顶上另起一行」更近。
@@ -1363,6 +1370,7 @@ impl TreePanel {
             next_level_id: Cell::new(1),
             collapsed: RefCell::new(std::collections::HashSet::new()),
             search_rows: RefCell::new(Vec::new()),
+            search_collapsed: Rc::new(RefCell::new(std::collections::HashSet::new())),
             search_state: Cell::new(SearchState::Idle),
             search_generation: Cell::new(0),
             search_pending: Cell::new(0),
@@ -2199,6 +2207,7 @@ impl TreePanel {
                 runs.push(ConnectionSearch {
                     key: snapshot.key.clone(),
                     name: snapshot.name.clone(),
+                    badge: snapshot.state.badge().to_owned(),
                     name_hit,
                     catalogs: Vec::new(),
                 });
@@ -2412,6 +2421,8 @@ impl TreePanel {
         }
         self.search_rows.borrow_mut().clear();
         self.search_runs.borrow_mut().clear();
+        // 退出筛选：结果页里收起过的层级一并忘掉（下一次搜索按默认全展开）。
+        self.search_collapsed.borrow_mut().clear();
         self.search_connections.set(0);
         self.search_errors.borrow_mut().clear();
         self.search_pending.set(0);
@@ -2484,39 +2495,129 @@ impl TreePanel {
         );
     }
 
-    /// 把结果行渲染成缩进列表；只有真正命中的行加 `.sqarvo-search-hit`。
+    /// 把结果行渲染成缩进列表。
+    ///
+    /// 行结构与树里的行**逐控件一致**（v0.2.3.4）：`图标 + 名字 + 行尾文字`，
+    /// 同一套缩进（4 + 层数 × 14）、同一套外边距（上下 4）、同一套字体类
+    /// （连接 / 库 / 分组用 `heading`，行尾文字 `dim-label caption`）。
+    /// 检索结果相对树只差两件事：无关项不出现、祖先按命中层展开——
+    /// 不再有「命中高亮」，因为那会让同一批行看起来像另一种列表。
     fn render_search_rows(&self, rows: &[SearchRowView]) {
-        for row in rows {
+        let mut rendered: Vec<(String, u32, gtk::ListBoxRow)> = Vec::with_capacity(rows.len());
+        for (index, row) in rows.iter().enumerate() {
+            // 箭头与树里同一套：只有「紧接着还有更深一层」的行才有，初始是展开态
+            // （检索结果默认把命中所在的祖先链展开）。
+            let has_children = rows
+                .get(index + 1)
+                .is_some_and(|next| next.depth > row.depth);
+            let arrow = gtk::Image::from_icon_name(ARROW_EXPANDED);
+            let arrow_button = gtk::Button::new();
+            arrow_button.set_child(Some(&arrow));
+            arrow_button.add_css_class("flat");
+            arrow_button.add_css_class("tree-arrow");
+            arrow_button.set_focusable(false);
+            arrow_button.set_valign(gtk::Align::Center);
+            // 没有下级的行也留着这块位置（透明）：树里表 / 视图行本来就有箭头，
+            // 结果行要是把它摘掉，图标与文字会整列左移，看起来就不是同一棵树了。
+            if !has_children {
+                arrow_button.set_opacity(0.0);
+                arrow_button.set_sensitive(false);
+            }
+
             let icon = gtk::Image::from_icon_name(&row.icon);
             let name = gtk::Label::new(Some(&row.label));
             name.set_xalign(0.0);
             name.set_hexpand(true);
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            // 与树的 bind 同一套判定：连接（0）/ 库（1）/ 分组（2 且没有行尾文字）。
+            if row.depth <= 1 || (row.depth == 2 && row.kind_text.is_empty()) {
+                name.add_css_class("heading");
+            }
             let kind = gtk::Label::new(Some(&row.kind_text));
             kind.add_css_class("dim-label");
             kind.add_css_class("caption");
+            // 行尾文字留 6px，且声明最小宽度：名字列用省略号收缩，两者不互相挤压。
+            kind.set_margin_end(6);
             if row.kind_text.is_empty() {
                 kind.set_visible(false);
+            } else {
+                let (needed, _natural, _min_baseline, _natural_baseline) =
+                    kind.measure(gtk::Orientation::Horizontal, -1);
+                kind.set_size_request(needed, -1);
             }
             let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            top.add_css_class("sqarvo-tree-row");
+            top.append(&arrow_button);
             top.append(&icon);
             top.append(&name);
             top.append(&kind);
-            top.set_margin_top(3);
-            top.set_margin_bottom(3);
-            // 缩进按层数递增：0/16/32/48（连接 / 库 / 分组 / 对象）。
-            top.set_margin_start(8 + i32::try_from(row.depth).unwrap_or(0) * 16);
-            top.set_margin_end(8);
-            if row.hit {
-                // 命中高亮：左侧强调条 + 加粗 + 浅色底（与整行 accent 0.25 的选中态不同）。
-                top.add_css_class("sqarvo-search-hit");
-            }
+            top.set_margin_top(4);
+            top.set_margin_bottom(4);
+            top.set_margin_start(4 + i32::try_from(row.depth).unwrap_or(0) * 14);
             let list_row = gtk::ListBoxRow::new();
             list_row.set_child(Some(&top));
             list_row.set_activatable(row.target.is_some());
             list_row.set_tooltip_text(Some(&row.path));
             self.search_list.append(&list_row);
+            rendered.push((row.path.clone(), row.depth, list_row));
         }
+
+        // 收起 / 展开：与树里点分组箭头同一手感（收起后它下面那一支不再显示）。
+        // 状态按「路径」记，重画一次结果不会把用户收起的层级又弹开。
+        let collapsed = Rc::clone(&self.search_collapsed);
+        let rendered = Rc::new(rendered);
+        for (index, row) in rows.iter().enumerate() {
+            if !rows
+                .get(index + 1)
+                .is_some_and(|next| next.depth > row.depth)
+            {
+                continue;
+            }
+            let Some((_, _, list_row)) = rendered.get(index) else {
+                continue;
+            };
+            let Some(arrow_button) = list_row
+                .child()
+                .and_then(|child| child.downcast::<gtk::Box>().ok())
+                .and_then(|top| top.first_child())
+                .and_then(|child| child.downcast::<gtk::Button>().ok())
+            else {
+                continue;
+            };
+            let Some(arrow) = arrow_button
+                .child()
+                .and_then(|child| child.downcast::<gtk::Image>().ok())
+            else {
+                continue;
+            };
+            let path = row.path.clone();
+            // 上一次结果里收起的同名路径要延续：重画时箭头图标先对上，再装点击。
+            if collapsed.borrow().contains(&row.path) {
+                arrow.set_icon_name(Some(ARROW_COLLAPSED));
+            }
+            let rows_for_click = Rc::clone(&rendered);
+            let collapsed_for_click = Rc::clone(&collapsed);
+            let arrow_for_click = arrow.clone();
+            arrow_button.connect_clicked(move |_| {
+                let now_collapsed = {
+                    let mut set = collapsed_for_click.borrow_mut();
+                    if set.contains(&path) {
+                        set.remove(&path);
+                        false
+                    } else {
+                        set.insert(path.clone());
+                        true
+                    }
+                };
+                arrow_for_click.set_icon_name(Some(if now_collapsed {
+                    ARROW_COLLAPSED
+                } else {
+                    ARROW_EXPANDED
+                }));
+                apply_search_visibility(&rows_for_click, &collapsed_for_click);
+            });
+        }
+        apply_search_visibility(&rendered, &collapsed);
     }
 
     // -- 层级加载 -----------------------------------------------------------
@@ -4304,7 +4405,8 @@ fn build_search_rows(runs: &[ConnectionSearch]) -> Vec<SearchRowView> {
             depth: 0,
             label: run.name.clone(),
             icon: "network-server-symbolic".to_owned(),
-            kind_text: "连接".to_owned(),
+            // 与树里的连接行一致：行尾是连接态徽标，不是「连接」两个字。
+            kind_text: run.badge.clone(),
             hit: run.name_hit,
             path: run.name.clone(),
             target: Some(SearchTarget::Connection(run.key.clone())),
@@ -4397,6 +4499,48 @@ fn build_search_rows(runs: &[ConnectionSearch]) -> Vec<SearchRowView> {
         }
     }
     rows
+}
+
+/// 按「祖先是否被收起」重算结果行可见性（与树的收起 / 展开同一手感）。
+///
+/// 结果行是平铺的：每行记住自己的层数，某一行的可见性只取决于它上面那些层数更浅的
+/// 祖先有没有被收起。层级最多 4 层，直接回扫即可。
+fn apply_search_visibility(
+    rows: &[(String, u32, gtk::ListBoxRow)],
+    collapsed: &RefCell<std::collections::HashSet<String>>,
+) {
+    let collapsed = collapsed.borrow();
+    let layout: Vec<(String, u32)> = rows
+        .iter()
+        .map(|(path, depth, _)| (path.clone(), *depth))
+        .collect();
+    for (index, (_, _, list_row)) in rows.iter().enumerate() {
+        list_row.set_visible(!hidden_by_collapsed(&layout, index, &collapsed));
+    }
+}
+
+/// 第 `index` 行是否被某个「已收起的祖先」藏起来（纯逻辑，单测覆盖）。
+fn hidden_by_collapsed(
+    rows: &[(String, u32)],
+    index: usize,
+    collapsed: &std::collections::HashSet<String>,
+) -> bool {
+    let Some((_, depth)) = rows.get(index) else {
+        return false;
+    };
+    let mut current = *depth;
+    for (ancestor_path, ancestor_depth) in rows[..index].iter().rev() {
+        if *ancestor_depth < current {
+            if collapsed.contains(ancestor_path) {
+                return true;
+            }
+            current = *ancestor_depth;
+            if current == 0 {
+                break;
+            }
+        }
+    }
+    false
 }
 
 /// 搜索关键词是否应当发出请求（空白输入不搜）。
@@ -4750,12 +4894,14 @@ mod tests {
         let one = ConnectionSearch {
             key: "a".to_owned(),
             name: "连接 a".to_owned(),
+            badge: "已连接".to_owned(),
             name_hit: true,
             catalogs: Vec::new(),
         };
         let second = ConnectionSearch {
             key: "b".to_owned(),
             name: "连接 b".to_owned(),
+            badge: "已连接".to_owned(),
             name_hit: false,
             catalogs: vec![CatalogSearch {
                 catalog: view("main", ObjectKind::Catalog, "main", ""),
@@ -4805,12 +4951,57 @@ mod tests {
         assert!(rows[3].target.is_none());
     }
 
+    /// 结果页的收起只看祖先：收起「Tables」只藏它下面的对象，收起「库」藏整支。
+    #[test]
+    fn search_collapse_hides_only_descendants() {
+        let rows: Vec<(String, u32)> = vec![
+            ("c".to_owned(), 0),
+            ("c/main".to_owned(), 1),
+            ("c/main/Tables".to_owned(), 2),
+            ("c/main/Tables/a".to_owned(), 3),
+            ("c/main/Views".to_owned(), 2),
+            ("c/main/Views/b".to_owned(), 3),
+        ];
+        let collapsed = |paths: &[&str]| -> std::collections::HashSet<String> {
+            paths.iter().map(|path| (*path).to_owned()).collect()
+        };
+
+        let none = collapsed(&[]);
+        let hidden: Vec<bool> = (0..rows.len())
+            .map(|index| hidden_by_collapsed(&rows, index, &none))
+            .collect();
+        assert_eq!(hidden, vec![false; 6], "默认全展开");
+
+        let tables = collapsed(&["c/main/Tables"]);
+        let hidden: Vec<bool> = (0..rows.len())
+            .map(|index| hidden_by_collapsed(&rows, index, &tables))
+            .collect();
+        assert_eq!(
+            hidden,
+            vec![false, false, false, true, false, false],
+            "收起 Tables 只藏它自己的对象，Views 那一支不受影响"
+        );
+
+        let catalog = collapsed(&["c/main"]);
+        let hidden: Vec<bool> = (0..rows.len())
+            .map(|index| hidden_by_collapsed(&rows, index, &catalog))
+            .collect();
+        assert_eq!(hidden, vec![false, false, true, true, true, true]);
+
+        let connection = collapsed(&["c"]);
+        let hidden: Vec<bool> = (0..rows.len())
+            .map(|index| hidden_by_collapsed(&rows, index, &connection))
+            .collect();
+        assert_eq!(hidden, vec![false, true, true, true, true, true]);
+    }
+
     /// 同一库只一行、同一 `Tables` 分组只一行（多个命中归到同一组下）。
     #[test]
     fn search_rows_keep_one_row_per_catalog_and_group() {
         let run = ConnectionSearch {
             key: "b".to_owned(),
             name: "b".to_owned(),
+            badge: "已连接".to_owned(),
             name_hit: false,
             catalogs: vec![
                 CatalogSearch {

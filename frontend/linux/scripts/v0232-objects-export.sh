@@ -32,7 +32,8 @@
 #      树里展开也只写一行说明、不发请求。
 #   A10（v0.2.3.3）树形搜索结果：`--qa-search probe` 命中「表 probe_items + 视图
 #      probe_recent_items」两个对象 → `hits=2`；行序是 `连接 > 库 > Tables > 表 >
-#      Views > 视图`（祖先行出现但不高亮，`highlight=` 只含两个对象行），状态行
+#      Views > 视图`，结果是「那棵树去掉无关项」（v0.2.3.4 起不再有命中高亮，
+#      祖先行只是出现、不算命中，`highlight=` 只含两个对象行），状态行
 #      「1 个连接 · 2 个对象」。用现成夹具的关键词，不另加表：A1 / A2 / A6 / A8 断言
 #      「1 张表 / 1 个视图 → count=1」，加第二张表会把它们一起改红。
 #   A11（v0.2.3.3）清空搜索 = 退出筛选：`--qa-search-clear` → `state=idle`、`hits=0`，
@@ -581,13 +582,13 @@ check_contains "search-hits 命中数=2（表 + 视图）" '搜索 hits=2' "$CAS
 check_contains "search-hits 行序：连接 > 库 > Tables > 表 > Views > 视图" \
     '搜索 rows=v0232-sqlite,v0232-sqlite/main,v0232-sqlite/main/Tables,v0232-sqlite/main/Tables/probe_items,v0232-sqlite/main/Views,v0232-sqlite/main/Views/probe_recent_items' \
     "$CASE_LOG"
-check_contains "search-hits 只有对象行高亮（祖先行不高亮）" \
+check_contains "search-hits 命中行只含两个对象行（祖先行不算命中）" \
     '搜索 highlight=v0232-sqlite/main/Tables/probe_items,v0232-sqlite/main/Views/probe_recent_items' \
     "$CASE_LOG"
 check_contains "search-hits 状态行写的是连接数 + 对象数" '搜索 status=个对象' "$CASE_LOG"
 check_contains "search-hits 日志区分展示行数与命中数（6 行 / 2 对象 / 2 行命中）" \
     '搜索「probe」完成：6 行（1 个连接 · 2 个对象，2 行命中）' "$CASE_LOG"
-check_screenshot "search-hits 截图（树形结果 + 仅命中行高亮）" \
+check_screenshot "search-hits 截图（结果与树同样的行）" \
     "$OUT/search-hits/10-search-hit-tree.png"
 
 # A11（v0.2.3.3）：清空搜索 = 退出筛选。`--qa-search-clear` 走用户清空 / `Esc` 的同一条

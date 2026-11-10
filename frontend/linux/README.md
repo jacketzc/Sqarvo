@@ -1121,7 +1121,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   --qa-expect-tree search=results --qa-expect-tree first=order_items \
   --qa-expect-tree selected=order_items --qa-expect-tree page=tree
 
-# 树形搜索结果（v0.2.4）：连接名 + 表 / 视图在同一次搜索里，结果按层缩进并高亮命中行
+# 树形搜索结果（v0.2.4）：连接名 + 表 / 视图在同一次搜索里；结果就是那棵树（祖先自动展开、
+# 无关项不出现），v0.2.3.4 起不再有命中高亮
 ./target/debug/sqarvo-desktop \
   --qa-profile /tmp/sqlite.json \
   --qa-search user --qa-expect-search hits=3 \
@@ -1158,7 +1159,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   输入框，走用户清空 / `Esc` 的同一条清理路径（用于证明结果行与高亮不残留）；
   `--qa-expect-search <字段=值>`（可重复）在截图时刻断言搜索结果：
   `hits=N`（高亮行数）、`row=连接/库/Tables/表`（必须出现，`*` 匹配单段，可逗号分隔多条）、
-  `rows=…`（完整行序，逐项相等）、`highlight=…`（高亮行集合，按显示顺序逐项相等）、
+  `rows=…`（完整行序，逐项相等）、`highlight=…`（**真正命中的行**按显示顺序逐项相等；
+  界面自 v0.2.3.4 起不再画命中高亮，结果行与树里的同一行像素一致，这个字段只剩数据态）、
   `status=…`（状态行包含，如 `2 个连接 · 3 个对象`）、`state=results|empty|denied|failed|idle`；
 - `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
   只是跳过键盘；注意 `--qa-expect-tree results=N` 现在数的是**结果页行数**，含连接 /

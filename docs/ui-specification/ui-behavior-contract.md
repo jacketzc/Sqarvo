@@ -159,9 +159,9 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 |---|---|---|---|
 | 输入关键词 | 搜索框在**窗口左下角**（状态栏左边沟，与对象树同一列宽；`Ctrl+F` 聚焦），placeholder「搜索连接、库、表...」 | 防抖 **250 ms** 后搜索；空白串不搜索并回到树页。匹配语义是 `LIKE %关键词%`（不做分词）：**连接名**对注册表里的全部连接在客户端做大小写不敏感 contains；**库 / 表 / 视图**只查已打开（已连接、有浏览会话）的连接，且逐库发 `ListNodes` + `filter.name.contains`（服务端下推为 `LIKE '%kw%'`，前端不拼通配符） | `src/tree.rs:2162`（`run_search`）、`src/tree.rs:2250`（目录层）、`src/tree.rs:2352`（逐库搜索）、`src/backend/metadata.rs`（`contains_filter` / `search_request_in`） |
 | 回车 | 有防抖在等 | 立刻搜索（不等 250 ms） | `src/tree.rs`（`search_entry.connect_activate`） |
-| 停止搜索 / 清空（`Esc` 在搜索框内） | 搜索页 | 清空输入、回到树页；结果行与命中高亮随列表销毁（不残留） | `src/tree.rs:2407`（`clear_search`）、`src/tree.rs:4090`（`qa_clear_search`） |
-| 有结果 | 至少一行 | **树形缩进列表**（不是平铺命中行）：连接子集 → 库 → `Tables` / `Views` 分组 → 表 / 视图，缩进按层 0/16/32/48。只有「连接名命中」或「其中有命中」的连接出现；祖先行（库、分组、未命中的连接）**不高亮**，只有真正匹配的行高亮；同一库只一行，多个表命中归到同一个 `Tables` 下。搜索框下方状态行（单行省略、全文进 tooltip）写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图），有连接失败时追加「；K 条连接失败（…）」，没有已打开连接时追加「；没有已打开的连接，只匹配了连接名」 | `src/tree.rs:4292`（`build_search_rows`）、`src/tree.rs:2487`（`render_search_rows`）、`src/tree.rs:2430`（`finish_search_all`） |
-| 命中高亮 | 命中行 | 左侧 2px accent 强调条 + 文字加粗 + `alpha(@accent_color, 0.10)` 浅底，与行选中（整行 accent 25%）一眼可分；退出筛选即清除 | `src/theme.rs:280`（`.sqarvo-search-hit`） |
+| 停止搜索 / 清空（`Esc` 在搜索框内） | 搜索页 | 清空输入、回到树页；结果行随列表销毁（不残留），结果页里收起过的层级也一并忘掉 | `src/tree.rs:2417`（`clear_search`）、`src/tree.rs:4090`（`qa_clear_search`） |
+| 有结果 | 至少一行 | 结果**就是那棵树，只是无关项不出现**（v0.2.3.4）：行结构与树逐控件一致——`[箭头] 图标 名字 行尾文字`，缩进按层 4 + 14×层数（连接 / 库 / 分组 / 表 · 视图），行高 24、行尾文字同一套 `dim-label caption`；连接行的行尾是连接态徽标（已连接 / 未连接…），与树里同一份文案。只有「连接名命中」或「其中有命中」的连接出现，命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 `Tables` 下。**不再有命中高亮**：命中行看起来与树里那一行完全相同。祖先行带箭头，可以像树里一样把这一支收起 / 再展开（收起状态按路径记，重新搜索仍生效）。搜索框下方状态行（单行省略、全文进 tooltip）写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图），有连接失败时追加「；K 条连接失败（…）」，没有已打开连接时追加「；没有已打开的连接，只匹配了连接名」 | `src/tree.rs:4394`（`build_search_rows`）、`src/tree.rs:2505`（`render_search_rows`）、`src/tree.rs:4508`（`apply_search_visibility`）、`src/theme.rs:277`（`list.sqarvo-search-list > row`） |
+| 命中行（数据态） | 命中行 | 只用于状态行的对象计数与 QA 断言（`--qa-expect-search highlight=`）：界面**不再**画高亮、加粗或强调条，命中行与树里的同一行像素一致（v0.2.3.4 移除了命中样式） | `src/tree.rs:1882`（`search_snapshot`）、`src/tree.rs:4394`（`build_search_rows`） |
 | 没有匹配 | 请求成功但为空 | 状态「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」，与「没有权限」区分 | `src/tree.rs:2430` |
 | 没有权限 | 错误码 `metadata.permission_denied` | 「没有权限读取对象列表：<错误>」；搜索状态记为 `Denied` | `src/tree.rs:2430` |
 | 其它失败 | 请求失败 | 「搜索失败：<错误>」 | `src/tree.rs:2430` |
