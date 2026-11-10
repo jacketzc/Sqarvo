@@ -135,6 +135,27 @@ pub fn activate(app: &adw::Application) {
         .default_width(default_width)
         .default_height(default_height)
         .build();
+    // 最小窗口 960×640 是**强制下限**（workspace-model §1，契约 §9 已收口）：
+    // 交给 GTK 的尺寸请求，toplevel 的最小尺寸随之生效——Wayland 走
+    // `xdg_toplevel.set_min_size`，X11 走 WM normal hints，用户与窗口管理器都拖不到
+    // 更小。`--window-size` 给更小的值时窗口被抬到下限（`--qa-layout-audit` 的
+    // 「窗口 WxH」那一行就是实测值）。
+    window.set_size_request(
+        crate::layout::MIN_WINDOW_WIDTH,
+        crate::layout::MIN_WINDOW_HEIGHT,
+    );
+    if (default_width, default_height)
+        < (
+            crate::layout::MIN_WINDOW_WIDTH,
+            crate::layout::MIN_WINDOW_HEIGHT,
+        )
+    {
+        eprintln!(
+            "[ui] --window-size {default_width}x{default_height} 低于最小窗口 {}x{}：窗口会被抬到下限",
+            crate::layout::MIN_WINDOW_WIDTH,
+            crate::layout::MIN_WINDOW_HEIGHT
+        );
+    }
     window.add_css_class(theme::WINDOW_CLASS);
 
     // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
@@ -2631,6 +2652,30 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         );
         delay += 700;
     }
+    if let Some(value) = crate::qa::tree_menu_group() {
+        let tree = Rc::clone(&workspace.tree);
+        let group = match value.to_ascii_lowercase().as_str() {
+            "views" | "view" => crate::tree::KindGroup::Views,
+            "functions" | "function" => crate::tree::KindGroup::Functions,
+            "queries" | "query" => crate::tree::KindGroup::Queries,
+            _ => crate::tree::KindGroup::Tables,
+        };
+        schedule_step(delay, Rc::new(move || tree.qa_open_group_menu(group)));
+        delay += 700;
+    }
+
+    if let Some(label) = crate::qa::tree_menu_pick() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_pick_context_menu(&label)
+                    .map(|()| format!("点右键菜单条目「{label}」"))
+            }),
+        );
+        delay += 700;
+    }
+
     if let Some(name) = crate::qa::tree_select() {
         let tree = Rc::clone(&workspace.tree);
         let shell = Rc::clone(&workspace.shell);
@@ -3779,17 +3824,17 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
     }
 
     if let Some(expected) = crate::qa::expect_txn() {
-        // v0.2.3.2：工具条上没有「自动提交」徽标。`auto` 断言「状态栏没有事务一栏」，
-        // 其余状态断言那一栏包含状态文案——断言的是用户看得见的东西。
-        let visible = &observed.txn_visible;
-        let matched = if matches!(expected, crate::qa::TxnExpectation::AutoCommit) {
-            visible.is_empty()
+        // 事务状态现在是状态行右侧的**常驻**徽标（四态文案），断言读控件文本。
+        // 徽标在没有表时隐藏：那时「自动提交」没有会话可谈，空文本也算通过。
+        let visible = &observed.status_row_txn;
+        let matched = if visible.is_empty() {
+            matches!(expected, crate::qa::TxnExpectation::AutoCommit)
         } else {
-            visible.contains(expected.label())
+            visible == expected.label()
         };
         if !matched {
             return Err(format!(
-                "事务状态期望「{}」，实际状态栏「{}」（状态机「{}」）",
+                "事务状态期望「{}」，实际状态行徽标「{}」（状态机「{}」）",
                 expected.label(),
                 visible,
                 observed.badge_text
@@ -3799,7 +3844,7 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
         // 也证明旧的（例如事务中的绿色）已经被摘掉。
         if observed.badge_classes != vec![expected.css_class()] {
             return Err(format!(
-                "事务状态 CSS 期望 [{}]，实际 {:?}（工具条徽标已在 v0.2.3.2 删除）",
+                "事务状态 CSS 期望 [{}]，实际 {:?}（状态行徽标与状态机读同一份清单）",
                 expected.css_class(),
                 observed.badge_classes
             ));

@@ -24,7 +24,7 @@
 |---|---|
 | 参考窗口 | 1200 × 800 |
 | 默认窗口（Linux） | 1200 × 800（原 1100 × 720） |
-| 最小窗口 | 960 × 640（**验收下限**；窗口最小尺寸未在代码中强制，低于此值不保证布局，见 [ui-behavior-contract.md](ui-behavior-contract.md) §9） |
+| 最小窗口 | 960 × 640（**强制**：窗口创建时以 `layout::MIN_WINDOW_WIDTH/HEIGHT` 交给 `GtkWidget::set_size_request`，Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal hints，拖不到更小；见 [ui-behavior-contract.md](ui-behavior-contract.md) §1） |
 | 侧栏宽度 | 237（可拖拽，240–480 → 记为可调区间 180–420） |
 | 信息面板宽度 | 280（可拖拽 240–520；v0.2.3.2 起常驻，不可折叠） |
 | 行高 | 树 24；表头 24 + 类型行 24；数据行 32 |

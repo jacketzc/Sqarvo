@@ -106,10 +106,16 @@ pub struct DataPageObservation {
     /// 事务徽标的可见文本。
     ///
     /// v0.2.3.2 起工具条上没有「自动提交」徽标：这里的取值来自**状态机**（`badge.label()`），
-    /// 用于断言「状态是什么」；「界面上看得到什么」看 [`Self::txn_visible`]。
+    /// 用于断言「状态是什么」；「界面上看得到什么」看 [`Self::status_row_txn`]。
     pub badge_text: String,
-    /// 状态栏「事务」一栏的可见文本（没有事务时为空串）。
+    /// 状态栏「事务」一栏的可见文本（没有事务时为空串；状态栏当前不渲染这一栏，
+    /// 事务的**可见**表达在 [`Self::status_row_txn`]）。
     pub txn_visible: String,
+    /// 表格工具条状态行右侧那枚**常驻**事务徽标的实际文本（隐藏时为空串）。
+    ///
+    /// 与 `badge_text` 的区别：`badge_text` 是状态机的标签，这里读控件——断言
+    /// 「用户真的看得到」，而不是「状态机算得对」。
+    pub status_row_txn: String,
     /// 徽标上带的 CSS 类（正常状态应恰好一个）。
     pub badge_classes: Vec<&'static str>,
     /// 「提交事务」是否可点。
@@ -561,6 +567,11 @@ pub struct DataPage {
     banner: adw::Banner,
     status: gtk::Label,
     dirty_label: gtk::Label,
+    /// 状态行右侧的**常驻**事务徽标（自动提交 / 事务中 / 事务中（只读）/ 事务失败）。
+    ///
+    /// 与「脏行 N · 待提交 M 条」同一行：事务状态是这一页的会话属性，用户不该靠
+    /// 「按钮少了一个」去反推；只在有表时显示（没有表时这一行说的是「请选择左侧的表」）。
+    txn_label: gtk::Label,
     spinner: gtk::Spinner,
     grid: gtk::ColumnView,
     /// 内容区：占位页 / 数据网格。
@@ -790,6 +801,17 @@ impl DataPage {
         dirty_label.add_css_class("dim-label");
         dirty_label.add_css_class("caption");
 
+        // 常驻事务徽标：文案与 `TransactionBadge::label()` 同一口径（四态），
+        // 位置在脏行计数左边。两枚标签都是 caption（11px）：960 宽下这一行的
+        // 最小宽度仍小于分配宽度（`--qa-layout-audit` 在 960×640 上复核）。
+        let txn_label = gtk::Label::new(Some("自动提交"));
+        txn_label.set_xalign(1.0);
+        txn_label.add_css_class("caption");
+        txn_label.set_visible(false);
+        txn_label.set_tooltip_text(Some(
+            "当前会话的事务状态（ADR 0017）：自动提交 / 事务中 / 事务中（只读）/ 事务失败",
+        ));
+
         let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         status_row.set_margin_start(12);
         status_row.set_margin_end(12);
@@ -797,6 +819,7 @@ impl DataPage {
         status_row.append(&spinner);
         status_row.append(&status);
         status.set_hexpand(true);
+        status_row.append(&txn_label);
         status_row.append(&dirty_label);
 
         // 常驻徽标行（#118 要求 10）：只读 / 无主键 / 视图 / 无权限 / 未统计。
@@ -810,9 +833,9 @@ impl DataPage {
 
         // 行变更按钮 + 事务按钮 + 次要动作图标：960 宽下这一行有 9 个控件。
         // v0.2.3.3 把「开始事务」从上一行并进来之后，960×640 实测「需求 433 > 分配 417」
-        // （`--qa-layout-audit`）：行内间距再收到 4、按钮横向 padding 收到 5px，
-        // 需求降到 407，两档宽度都不裁字。
-        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        // （`--qa-layout-audit`）：行内间距先收到 4、按钮横向 padding 收到 5px；事务打开后
+        // 换成两个四字按钮仍超 24px，间距再收到 2、padding 4px（见 `install_css`）。
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         controls.add_css_class("sqarvo-table-actions");
         controls.set_margin_start(12);
         controls.set_margin_end(12);
@@ -1158,6 +1181,7 @@ impl DataPage {
             banner,
             status,
             dirty_label,
+            txn_label,
             spinner,
             grid: grid.clone(),
             content: stack.clone(),
@@ -3971,6 +3995,11 @@ impl DataPage {
             state: self.state.get(),
             badge_text: self.badge.borrow().label(),
             txn_visible: self.status_snapshot().txn_label,
+            status_row_txn: if self.txn_label.is_visible() {
+                self.txn_label.text().to_string()
+            } else {
+                String::new()
+            },
             badge_classes: {
                 let badge = self.badge.borrow();
                 TXN_CSS_CLASSES
@@ -5595,6 +5624,8 @@ impl DataPage {
             )
         };
         self.dirty_label.set_text(&text);
+        // 常驻事务徽标与脏行计数同一行：换表 / 首次打开时也要立刻出现（不等状态变化）。
+        self.sync_txn_label();
         // 在途时同一个按钮就是「取消提交」：文案由批次状态决定，不在这里拼。
         self.buttons.commit_changes.set_label(&commit_button_label(
             self.submit.borrow().as_ref(),
@@ -5704,6 +5735,34 @@ impl DataPage {
         self.notify_status();
     }
 
+    /// 同步状态行右侧的**常驻**事务徽标。
+    ///
+    /// 文案与 [`TransactionBadge::label`] 完全同一份（自动提交 / 事务中 /
+    /// 事务中（只读）/ 事务失败），不在这里另拼一句：状态变化（`sync_badge`）与
+    /// 打开表（`update_dirty_label`）都调它，所以徽标常驻、不靠一次性消息留下痕迹。
+    /// 没有表时隐藏——那一行这时说的是「请选择左侧的表开始浏览」，没有会话可谈。
+    fn sync_txn_label(&self) {
+        let has_table = self.table.borrow().is_some();
+        let badge = self.badge.borrow();
+        self.txn_label.set_text(&badge.label());
+        for class in TXN_CSS_CLASSES {
+            self.txn_label.remove_css_class(class);
+        }
+        for class in badge.css_classes() {
+            self.txn_label.add_css_class(class);
+        }
+        self.txn_label.set_tooltip_text(Some(match badge.status() {
+            TxnStatus::AutoCommit => "自动提交：每条语句自成一个事务（ADR 0017）",
+            TxnStatus::Active {
+                read_only: true, ..
+            } => "只读事务：能查询，不能写入",
+            TxnStatus::Active { .. } => "事务中：提交事务之前，改动只在当前会话可见",
+            TxnStatus::Failed { .. } => "事务失败：只能回滚",
+            TxnStatus::Disconnected => "已断开：事务已由后端回滚",
+        }));
+        self.txn_label.set_visible(has_table);
+    }
+
     fn sync_badge(&self) {
         let badge = self.badge.borrow();
         // 事务控制行按状态互斥显示：没有事务时只看到「开始事务」，有事务（含失败态）
@@ -5732,6 +5791,7 @@ impl DataPage {
             self.banner.set_revealed(false);
             self.banner_is_readonly.set(false);
         }
+        self.sync_txn_label();
     }
 
     fn show_banner(&self, text: &str) {
@@ -5878,8 +5938,11 @@ fn install_css() {
         /* #133：类型条带不再把最小宽度上报给外层后，窗口在 960 宽下不再被撑大，
            这一行的控件必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
            v0.2.3.3 收到 5px：把「开始事务」并进这一行后 9 个控件，960×640 打开表时
-           需求从 433 降到 407（分配 417，`--qa-layout-audit` 可复核）。 */
-        .sqarvo-table-actions button { padding: 2px 5px; }
+           需求从 433 降到 407（分配 417，`--qa-layout-audit` 可复核）。
+           事务打开后「开始事务」换成「提交事务 / 回滚事务」两个四字按钮，5px 下
+           960×640 实测需求 463 > 分配 439（超 24）：横向 padding 再收到 4px、行内
+           间距 4 → 2，需求降到 433 以内，两种事务状态都不裁字。 */
+        .sqarvo-table-actions button { padding: 2px 4px; }
         .sqarvo-header-name-row { min-height: 22px; }
         .sqarvo-header-name { font-size: 12px; font-weight: 600; }
         .sqarvo-header-name.sqarvo-header-sorted { color: @accent_color; }

@@ -866,6 +866,31 @@ impl Level {
     }
 }
 
+/// 未展开分组上点「刷新这一组」的提示文案（状态行与单测共用一份）。
+///
+/// 措辞只说事实与下一步：没有展开 = 没有层 = 没有可重读的内容，展开时会正常读取。
+const GROUP_NOT_EXPANDED_HINT: &str = "这个分组还没展开：展开时会重新读取";
+
+/// 临时提示行的存活时间（数秒后收起，回到原状）。
+const HINT_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// 分组刷新的两种结局：已经建过层 → 重读；没有层 → 只提示、不发请求。
+///
+/// 抽成纯函数是为了能单测「没有层时不发请求，但一定给提示」这条分支——
+/// `TreePanel` 自身要 GTK 显示服务器，测试里建不起来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupRefreshPlan {
+    /// 这一组已经展开过（层存在）：重读它的第一页。
+    Reload(u64),
+    /// 从未展开过：不发请求，状态行写一行提示。
+    NotExpanded,
+}
+
+/// 由「找到的层」决定刷新结局。
+fn group_refresh_plan(level_id: Option<u64>) -> GroupRefreshPlan {
+    level_id.map_or(GroupRefreshPlan::NotExpanded, GroupRefreshPlan::Reload)
+}
+
 /// 对象树面板。
 pub struct TreePanel {
     root: gtk::Box,
@@ -880,6 +905,14 @@ pub struct TreePanel {
     search_list: gtk::ListBox,
     search_status: gtk::Label,
     search_entry: gtk::SearchEntry,
+    /// 侧栏底部的临时提示行（隐藏时不占高度）。
+    ///
+    /// 一次性反馈用它：未展开分组上的「刷新这一组」不发请求，但必须说话，
+    /// 否则用户以为菜单项坏了。常驻的「本页 N 条」已在 v0.2.3.2 删除，
+    /// 这里只在有话说时出现，[`HINT_TIMEOUT`] 之后自行收起。
+    hint: gtk::Label,
+    /// 提示行的自动收起定时器（新提示覆盖旧的）。
+    hint_timer: RefCell<Option<glib::SourceId>>,
     /// 底部状态行。
     status: gtk::Label,
     /// 连接注册表（每条已连接连接有自己的浏览会话与元数据通道）。
@@ -1215,6 +1248,19 @@ impl TreePanel {
         status.add_css_class("dim-label");
         status.add_css_class("caption");
 
+        // 临时提示行：与 `status` 同一套 caption 密度，但**挂在界面上**（`status` 自
+        // v0.2.3.2 起只剩 QA/日志口径）。默认隐藏，隐藏时不占高度：侧栏布局不因它改变。
+        let hint = gtk::Label::new(None);
+        hint.set_xalign(0.0);
+        hint.set_wrap(true);
+        hint.set_margin_top(2);
+        hint.set_margin_bottom(6);
+        hint.set_margin_start(10);
+        hint.set_margin_end(10);
+        hint.add_css_class("dim-label");
+        hint.add_css_class("caption");
+        hint.set_visible(false);
+
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         stack.add_named(&tree_page, Some("tree"));
@@ -1229,6 +1275,8 @@ impl TreePanel {
         root.append(&search_entry);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&stack);
+        // 临时提示行挂在最底部：有话说时出现，几秒后自己收起（不常驻）。
+        root.append(&hint);
         // `status` 不再挂到界面上（v0.2.3.2：删掉「本页 N 条，累计 N 条」）。
         // 它的文本仍是分页/失败的可复核证据，留给日志与 QA 读取，用户看不到。
 
@@ -1242,6 +1290,8 @@ impl TreePanel {
             search_list,
             search_status,
             search_entry,
+            hint,
+            hint_timer: RefCell::new(None),
             status,
             registry: RefCell::new(None),
             levels: RefCell::new(HashMap::new()),
@@ -1760,6 +1810,43 @@ impl TreePanel {
     /// 状态行文本（真实控件）。
     pub fn status_text(&self) -> String {
         self.status.text().to_string()
+    }
+
+    /// 临时提示行的当前文本（隐藏时为空串；QA 与断言读它）。
+    pub fn hint_text(&self) -> String {
+        if self.hint.is_visible() {
+            self.hint.text().to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// 在侧栏底部的临时提示行写一行字，[`HINT_TIMEOUT`] 之后自动收起。
+    ///
+    /// 用来给「点了但确实什么都没发生」的操作一个可见交代（例如未展开分组上的
+    /// 刷新）。不常驻：隐藏的标签不占高度，侧栏布局不因它改变；新提示直接覆盖
+    /// 旧的，并取消旧的收起定时器，不会出现「后来的提示被前一个定时器提前抹掉」。
+    fn show_hint(self: &Rc<Self>, text: &str) {
+        self.hint.set_text(text);
+        self.hint.set_visible(true);
+        if let Some(timer) = self.hint_timer.borrow_mut().take() {
+            timer.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(HINT_TIMEOUT, move || {
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            panel.hint.set_text("");
+            panel.hint.set_visible(false);
+            panel.hint_timer.borrow_mut().take();
+        });
+        self.hint_timer.replace(Some(source));
+        eprintln!(
+            "[tree] t=+{}ms 状态行提示：{}",
+            crate::qa::elapsed_ms(),
+            self.hint_text()
+        );
     }
 
     /// 当前可见页（`tree` / `search` / `state`）。
@@ -2850,6 +2937,10 @@ impl TreePanel {
     }
 
     /// 重读某个分组的第一页（右键「刷新这一组」）。
+    ///
+    /// 分组从未展开过时没有 `LevelSource::Group` 层：**不发请求**（展开时才读），
+    /// 但必须在状态行给一行提示并记日志——否则右键点完什么都不发生，用户会以为
+    /// 菜单项坏了（与「刷新连接」同一条口径）。
     fn reload_group(self: &Rc<Self>, key: &str, parent: &ObjectRef, group: RowGroup) {
         let level_id = {
             let levels = self.levels.borrow();
@@ -2865,8 +2956,12 @@ impl TreePanel {
                 })
                 .map(|level| level.id)
         };
-        if let Some(level_id) = level_id {
-            self.reload_level(level_id);
+        match group_refresh_plan(level_id) {
+            GroupRefreshPlan::Reload(level_id) => self.reload_level(level_id),
+            GroupRefreshPlan::NotExpanded => {
+                eprintln!("[tree] 分组 {} 未展开，刷新跳过", group.label());
+                self.show_hint(GROUP_NOT_EXPANDED_HINT);
+            }
         }
     }
 
@@ -2915,8 +3010,7 @@ impl TreePanel {
             .map(|level| level.id)
             .collect();
         if ids.is_empty() {
-            self.status
-                .set_text("这条连接还没有展开过：展开时会重新读取");
+            self.show_hint("这条连接还没有展开过：展开时会重新读取");
             eprintln!("[tree] 刷新连接 {key}：还没有建立层，忽略");
             return;
         }
@@ -2948,7 +3042,7 @@ impl TreePanel {
             let purged = self.purge_levels_where(|level| {
                 level.key() == key && level_parent(&level.source) == Some(&node.reference)
             });
-            self.status.set_text("这个库的分组都收起着：展开时重新读取");
+            self.show_hint("这个库的分组都收起着：展开时重新读取");
             eprintln!(
                 "[tree] 刷新库 {}：没有展开的层，清掉 {purged} 个缓存层",
                 node.display_name
@@ -3537,6 +3631,65 @@ impl TreePanel {
         Err(format!("树里还没有 {} 分组行（先展开库）", group.label()))
     }
 
+    /// 在种类分组行上打开右键菜单（`--qa-tree-menu-group`）。
+    ///
+    /// 分组行必须已经出现在树里（展开库之后才有）。没有时先展开「连接 / 库」这两层
+    /// 静态祖先并返回原因——调用方（`schedule_step`）会重试，所以不需要在这里等待。
+    /// **不展开分组本身**：这一条正是为了验证「未展开的分组刷新也有反馈」。
+    pub fn qa_open_group_menu(self: &Rc<Self>, group: KindGroup) -> Result<String, String> {
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let Row::Group(view) = view else {
+                continue;
+            };
+            if view.group != RowGroup::Catalog(group) {
+                continue;
+            }
+            let expanded = row.is_expanded();
+            self.select_position(position);
+            self.show_context_menu(
+                &Row::Group(view.clone()),
+                self.list_view.upcast_ref::<gtk::Widget>(),
+                0.0,
+                0.0,
+            );
+            return Ok(format!(
+                "在分组「{}」上打开右键菜单（展开状态：{}）",
+                view.group.label(),
+                if expanded { "已展开" } else { "未展开" }
+            ));
+        }
+        // 没有分组行：把「连接 / 库」这两层祖先展开（**不碰分组本身**），下一轮重试就能
+        // 看到分组行。`expand_available_groups` 不能用——它会把分组一起展开。
+        let mut opened = 0;
+        for position in 0..self.tree_model.n_items() {
+            let Some(row) = self.tree_row(position) else {
+                continue;
+            };
+            let Some(view) = self.row_of(&row) else {
+                continue;
+            };
+            let expandable_ancestor = match &view {
+                Row::Connection(snapshot) => snapshot.state.is_connected(),
+                Row::Object(node) => matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema),
+                Row::Group(_) | Row::Note(_) => false,
+            };
+            if expandable_ancestor && !row.is_expanded() {
+                row.set_expanded(true);
+                opened += 1;
+            }
+        }
+        Err(format!(
+            "树里还没有 {} 分组行（已展开 {opened} 层祖先，等库的层读回）",
+            group.label()
+        ))
+    }
+
     /// 走用户路径选中一条**连接**节点（#119 截图用）。
     pub fn qa_select_connection(self: &Rc<Self>, name: &str) -> Result<(), String> {
         for position in 0..self.tree_model.n_items() {
@@ -3614,7 +3767,7 @@ impl TreePanel {
         Ok(())
     }
 
-    /// 点当前右键菜单里该文案的条目（`--qa-startup-menu-pick`）。
+    /// 点当前右键菜单里该文案的条目（`--qa-startup-menu-pick` / `--qa-tree-menu-pick`）。
     pub fn qa_pick_context_menu(&self, label: &str) -> Result<(), String> {
         let Some(popover) = self.context_menu.borrow().clone() else {
             return Err("右键菜单没有打开：无法选择条目".to_owned());
@@ -3864,6 +4017,21 @@ mod tests {
             parent: view(table, ObjectKind::Table, catalog, "").reference,
             group: RowGroup::Table(group),
         })
+    }
+
+    #[test]
+    fn refreshing_a_group_that_was_never_expanded_only_hints() {
+        // 没有层 = 什么都不读：不发请求，但一定落到「提示」分支（有可见反馈，
+        // 且有日志），不能静默返回。
+        assert_eq!(group_refresh_plan(None), GroupRefreshPlan::NotExpanded);
+        // 已经展开过：重读那一层，不提示。
+        assert_eq!(group_refresh_plan(Some(7)), GroupRefreshPlan::Reload(7));
+        // 文案只陈述事实与下一步：没有展开，展开时会重新读取。
+        assert_eq!(
+            GROUP_NOT_EXPANDED_HINT,
+            "这个分组还没展开：展开时会重新读取"
+        );
+        assert!(GROUP_NOT_EXPANDED_HINT.contains("展开时会重新读取"));
     }
 
     #[test]

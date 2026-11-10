@@ -19,8 +19,8 @@
 //!                 [--qa-exit-after-ms N]
 //! ```
 //!
-//! - `--window-size WIDTHxHEIGHT`：取证用的初始窗口尺寸（不低于 960×640）；
-//!   不给就用产品默认 1200×800（workspace-model §1）。
+//! - `--window-size WIDTHxHEIGHT`：取证用的初始窗口尺寸（窗口最小 960×640 是**强制**
+//!   下限，更小的取值会被抬到下限）；不给就用产品默认 1200×800（workspace-model §1）。
 //! - `--qa-layout-audit`：截图之后在当前窗口尺寸上做「无裁切」量化自检——
 //!   逐区域比较 GTK 最小/自然宽度与实际分配宽度，超限时以退出码 **5** 结束并打印
 //!   超出的 px 数；必须与 `--screenshot` 一起使用（自检发生在截图时刻）。
@@ -63,6 +63,8 @@
 //!   `--qa-refresh`（触发与 `F5` / 菜单「视图 → 刷新」相同的 `win.refresh`：当前标签是
 //!   表数据页时刷该表，否则重建对象树；日志写出走的是哪一条）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
+//!   `--qa-tree-menu-group <tables|views>` + `--qa-tree-menu-pick <条目>`（在种类分组行上
+//!   打开右键菜单再点条目，与用户点同一条路径；未展开分组的「刷新这一组」提示用它取证）；
 //! - `Objects` 固定页（v0.2.3.3 单列表格）：`--qa-objects-select <name>`（走单选模型，
 //!   与单击同一条路径，会同步信息面板）、`--qa-objects-activate <name>`（发
 //!   `GtkListView::activate`，与双击 / 回车同一条路径，会开表数据标签）；
@@ -839,6 +841,11 @@ struct Args {
     tree_select_connection: Option<String>,
     /// `--qa-tree-select-group <tables|views>`：选中库下的种类分组行（v0.2.3.3）。
     tree_select_group: Option<String>,
+    /// `--qa-tree-menu-group <tables|views>`：在库下的种类分组行上打开右键菜单
+    /// （未展开的分组刷新反馈用它取证；只有这两组带「刷新这一组」）。
+    tree_menu_group: Option<String>,
+    /// `--qa-tree-menu-pick <label>`：点当前右键菜单里的这一项（与用户点同一条点击路径）。
+    tree_menu_pick: Option<String>,
     /// `--qa-objects-select <name>`：选中 `Objects` 固定页里的某一行（走单选模型，
     /// 与单击同一条路径；v0.2.3.3 的单列表格交互）。
     objects_select: Option<String>,
@@ -1064,6 +1071,8 @@ pub fn enabled() -> bool {
             || args.objects_activate.is_some()
             || args.kind_click.is_some()
             || args.tree_select_group.is_some()
+            || args.tree_menu_group.is_some()
+            || args.tree_menu_pick.is_some()
             || args.tree_search.is_some()
             || args.tree_click_result
             || args.tree_load_more
@@ -1379,6 +1388,18 @@ pub fn tree_select_group() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_select_group.clone())
 }
 
+/// `--qa-tree-menu-group <tables|views|…>`：在种类分组行上打开右键菜单。
+#[must_use]
+pub fn tree_menu_group() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_menu_group.clone())
+}
+
+/// `--qa-tree-menu-pick <label>`：点当前右键菜单里的这一项。
+#[must_use]
+pub fn tree_menu_pick() -> Option<String> {
+    ARGS.get().and_then(|args| args.tree_menu_pick.clone())
+}
+
 /// `--qa-objects-select <name>`：选中 `Objects` 页的一行（与单击同一条路径）。
 #[must_use]
 pub fn objects_select() -> Option<String> {
@@ -1452,6 +1473,8 @@ pub fn tree_requested() -> bool {
             || args.tree_select.is_some()
             || args.tree_select_connection.is_some()
             || args.tree_select_group.is_some()
+            || args.tree_menu_group.is_some()
+            || args.tree_menu_pick.is_some()
             || args.objects_select.is_some()
             || args.objects_activate.is_some()
             || args.kind_click.is_some()
@@ -1639,9 +1662,11 @@ fn expand_equals(args: &[String]) -> Vec<String> {
     expanded
 }
 
-/// 解析 `WIDTHxHEIGHT`：两段都必须是正整数，尺寸太小按布局下限拒绝。
+/// 解析 `WIDTHxHEIGHT`：两段都必须是正整数。
 ///
-/// 拒绝而不是「尽量用」：窗口尺寸不对时截图会裁掉状态栏，看起来像布局 bug。
+/// 小于最小窗口（`layout::MIN_WINDOW_*`）的取值**照收**：960×640 已是窗口自己强制的
+/// 下限（`ui::activate` 的 `set_size_request`），窗口会被抬到下限；这一档正好用来
+/// 验证「强制生效」，实测尺寸看 `--qa-layout-audit` 的「窗口 WxH」那一行。
 fn parse_window_size(value: &str) -> Result<(i32, i32), String> {
     let (width, height) = value
         .split_once(['x', 'X'])
@@ -1652,11 +1677,9 @@ fn parse_window_size(value: &str) -> Result<(i32, i32), String> {
     let height: i32 = height
         .parse()
         .map_err(|_| format!("--window-size 的高度不是整数：{value}"))?;
-    // 960×640 是规范里的最小窗口：比它还小就只保证可用，取证没有意义。
-    if width < 960 || height < 640 {
-        return Err(format!(
-            "--window-size 不能小于 960x640（workspace-model §1），实际：{width}x{height}"
-        ));
+    // 0 / 负数不是尺寸：窗口没有意义，也拼不出合法的截图口径。
+    if width <= 0 || height <= 0 {
+        return Err(format!("--window-size 需要正整数，实际：{width}x{height}"));
     }
     Ok((width, height))
 }
@@ -2285,6 +2308,39 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     ));
                 }
                 parsed.tree_select_group = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-menu-group" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-menu-group 需要 tables|views".to_owned())?;
+                // 分组行一律带「刷新这一组」（`menu_items`），取值就按分组种类给全。
+                if !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "tables"
+                        | "table"
+                        | "views"
+                        | "view"
+                        | "functions"
+                        | "function"
+                        | "queries"
+                        | "query"
+                ) {
+                    return Err(format!(
+                        "--qa-tree-menu-group 只接受 tables|views|functions|queries，实际：{value}"
+                    ));
+                }
+                parsed.tree_menu_group = Some(value.clone());
+                index += 2;
+            }
+            "--qa-tree-menu-pick" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-tree-menu-pick 需要一个菜单条目文案".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-tree-menu-pick 的条目文案不能为空".to_owned());
+                }
+                parsed.tree_menu_pick = Some(value.clone());
                 index += 2;
             }
             "--qa-kind" => {
@@ -3710,12 +3766,33 @@ mod tests {
     }
 
     #[test]
-    fn window_size_rejects_malformed_or_below_minimum_values() {
+    fn window_size_rejects_malformed_values() {
         assert!(parse(&args(&["app", "--window-size", "960"])).is_err());
         assert!(parse(&args(&["app", "--window-size", "widex640"])).is_err());
-        // 规范的最小窗口是 960×640：比它小就不再是「验收尺寸」。
-        assert!(parse(&args(&["app", "--window-size", "900x640"])).is_err());
+        assert!(parse(&args(&["app", "--window-size", "0x640"])).is_err());
         assert!(parse(&args(&["app", "--window-size"])).is_err());
+    }
+
+    #[test]
+    fn window_size_below_the_minimum_is_accepted_for_enforcement_checks() {
+        // 960×640 由窗口自己强制（`layout::MIN_WINDOW_*`）：更小的请求照收，
+        // 窗口会被抬到下限——这个取值就是「强制生效」的取证入口。
+        assert_eq!(
+            parse(&args(&["app", "--window-size", "800x500"]))
+                .unwrap()
+                .window_size,
+            Some((800, 500))
+        );
+        assert!(
+            parse(&args(&["app", "--window-size", "800x500"]))
+                .unwrap()
+                .window_size
+                .unwrap()
+                < (
+                    crate::layout::MIN_WINDOW_WIDTH,
+                    crate::layout::MIN_WINDOW_HEIGHT
+                )
+        );
     }
 
     // ---- #118 浏览脚本（--qa-browse） ----

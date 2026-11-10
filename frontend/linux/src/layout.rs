@@ -29,6 +29,17 @@ pub const TOOLBAR_HEIGHT: i32 = 44;
 /// 状态栏（区域 05）高度，两行各 24 + 上下留白。
 pub const STATUS_HEIGHT: i32 = 56;
 
+/// 窗口最小宽度（workspace-model §1）。
+///
+/// 960×640 是**强制下限**，不是验收参考：窗口创建时把它交给
+/// `GtkWidget::set_size_request`（`ui::activate`），GTK 会把它转成 toplevel 的最小尺寸，
+/// Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal hints，窗口管理器不允许
+/// 再缩小。布局算术在这一档以下没有保证，所以两边共用这一份常量，不再各写一个字面量。
+pub const MIN_WINDOW_WIDTH: i32 = 960;
+
+/// 窗口最小高度（workspace-model §1），与 [`MIN_WINDOW_WIDTH`] 同一条强制路径。
+pub const MIN_WINDOW_HEIGHT: i32 = 640;
+
 /// 外壳 + 工具条的合计高度（§2.1 公式里的 140）。
 pub const CHROME_HEIGHT: i32 = HEADER_HEIGHT + TOOLBAR_HEIGHT;
 
@@ -177,7 +188,14 @@ mod tests {
     use super::*;
 
     const WINDOW_1200: (i32, i32) = (1200, 800);
-    const WINDOW_960: (i32, i32) = (960, 640);
+    const WINDOW_960: (i32, i32) = (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+
+    #[test]
+    fn minimum_window_is_960x640() {
+        // 规范 §1 的最小窗口：`ui::activate` 用它强制窗口下限，单测在这里钉死数值，
+        // 防止有人只改一边（窗口与布局算术读同一份常量）。
+        assert_eq!((MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT), (960, 640));
+    }
 
     #[test]
     fn content_height_matches_the_spec_for_both_target_sizes() {

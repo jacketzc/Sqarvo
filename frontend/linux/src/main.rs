@@ -118,6 +118,8 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-select", "object-name"),
         ("qa-tree-select-connection", "connection-name"),
         ("qa-tree-select-group", "tables|views|functions|queries"),
+        ("qa-tree-menu-group", "tables|views"),
+        ("qa-tree-menu-pick", "menu-label"),
         ("qa-objects-select", "object-name"),
         ("qa-objects-activate", "object-name"),
         ("qa-kind", "tables|views|functions|queries"),
