@@ -3,8 +3,9 @@
 //! # 结构（workspace-model §4）
 //!
 //! ```text
-//! 搜索框（防抖 250ms → filter.name.contains，向**每条已连接连接**各发一次）
-//! ├─ 搜索结果页：名称 · 种类 · 连接名 · 限定名，点一条 → 在树里逐层展开并选中
+//! 搜索框（防抖 250ms）：连接名客户端匹配；库 / 表 / 视图对**每条已打开连接**逐库
+//! `filter.name.contains`（服务端 `LIKE '%kw%'`）
+//! ├─ 搜索结果页：树形缩进（连接 → 库 → Tables/Views → 表/视图），只有命中行高亮
 //! └─ 树页：My Connections
 //!     ├─ 连接 A（来自 connections.json；未连接时点一下按保存的凭据建立浏览会话）
 //!     │   ├─ 库（CATALOG，目录层）
@@ -55,8 +56,8 @@ use gtk::glib;
 use gtk::glib::subclass::prelude::*;
 
 use crate::backend::metadata::{
-    MetadataError, MetadataHub, NodePage, NodeView, catalog_layer_parent, is_browsable, kind_icon,
-    kind_label,
+    MetadataError, MetadataHub, NodePage, NodeView, PageSink, catalog_layer_parent, is_browsable,
+    kind_icon, kind_label,
 };
 use crate::browse::{ConnectionRegistry, ConnectionSnapshot, ConnectionState};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
@@ -155,12 +156,75 @@ impl SearchState {
 pub struct SearchSnapshot {
     /// 状态。
     pub state: Option<SearchState>,
-    /// 结果条数。
+    /// 结果页的行数（含祖先行：连接 / 库 / `Tables` / `Views`）。
     pub count: usize,
-    /// 第一条结果的名字。
+    /// 高亮行数（真正命中关键词的行，不含祖先）。
+    pub hits: usize,
+    /// 第一行高亮结果的名字（没有命中时为 `None`）。
     pub first: Option<String>,
+    /// 结果页的行（按显示顺序）。
+    pub rows: Vec<SearchRowSnapshot>,
     /// 状态行文本（真实控件文本）。
     pub status_text: String,
+}
+
+/// 结果页一行的只读快照（路径用 `/` 分隔，QA 断言按它比对顺序与高亮）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRowSnapshot {
+    /// 缩进层数（0 = 连接，1 = 库，2 = 分组，3 = 表 / 视图）。
+    pub depth: u32,
+    /// `连接/库/Tables/表`。
+    pub path: String,
+    /// 是否真正命中（祖先行是 `false`）。
+    pub hit: bool,
+}
+
+/// 结果页一行：连接子集 + 展开到命中层（连接 > 库 > `Tables`/`Views` > 表/视图）。
+#[derive(Debug, Clone)]
+struct SearchRowView {
+    /// 缩进层数（0/1/2/3，对应 `margin_start` 0/16/32/48）。
+    depth: u32,
+    /// 显示名。
+    label: String,
+    /// 行首图标（种类图标或分组图标）。
+    icon: String,
+    /// 行尾文字（种类）；分组行为空。
+    kind_text: String,
+    /// 真正命中关键词（祖先行不高亮）。
+    hit: bool,
+    /// `连接/库/Tables/表`（QA 断言与 tooltip 共用）。
+    path: String,
+    /// 点击后的去向（分组行没有）。
+    target: Option<SearchTarget>,
+}
+
+/// 结果页一行的点击去向。
+#[derive(Debug, Clone)]
+enum SearchTarget {
+    /// 连接行：按树里「点连接」同一条路径（已连接则展开 / 收起）。
+    Connection(String),
+    /// 对象行：在树里逐层展开并选中。
+    Object(String, NodeView),
+}
+
+/// 一次搜索里某条连接收集到的内容（结果树只由它构造）。
+#[derive(Debug)]
+struct ConnectionSearch {
+    key: String,
+    name: String,
+    /// 连接名本身命中（客户端大小写不敏感 contains）。
+    name_hit: bool,
+    catalogs: Vec<CatalogSearch>,
+}
+
+/// 一条已打开连接里某个库的命中内容。
+#[derive(Debug)]
+struct CatalogSearch {
+    catalog: NodeView,
+    /// 库名命中（客户端大小写不敏感 contains）。
+    name_hit: bool,
+    /// 该库下名称命中的直接子对象（表 / 视图 / 序列…）。
+    objects: Vec<NodeView>,
 }
 
 /// 树面板的回调。
@@ -922,12 +986,16 @@ pub struct TreePanel {
     next_level_id: Cell<u64>,
     /// 用户主动收起的连接（不在自动展开之列）。
     collapsed: RefCell<std::collections::HashSet<String>>,
-    /// 搜索结果：`(连接键, 节点)`。
-    search_results: RefCell<Vec<(String, NodeView)>>,
+    /// 结果页当前的行（含祖先行；点击按 `ListBoxRow.index()` 对齐）。
+    search_rows: RefCell<Vec<SearchRowView>>,
     search_state: Cell<SearchState>,
     search_generation: Cell<u64>,
-    /// 还在等几条连接的搜索响应。
+    /// 还在等几条响应（目录层列表 + 逐库搜索）。
     search_pending: Cell<usize>,
+    /// 每条已打开连接收集到的内容（结果树由它构造）。
+    search_runs: RefCell<Vec<ConnectionSearch>>,
+    /// 本次实际发了对象搜索的连接数（0 = 只匹配连接名）。
+    search_connections: Cell<usize>,
     search_errors: RefCell<Vec<String>>,
     /// 防抖定时器（新输入到来时取消旧的）。
     debounce: RefCell<Option<glib::SourceId>>,
@@ -952,7 +1020,7 @@ impl TreePanel {
         // 与树同一列宽），见 [`StatusBar::mount_search`](crate::shell::StatusBar::mount_search)。
         // 内边距也由那边给——这里只管控件本身，树的顶边就是工具条下方的第一行。
         let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some("搜索表名、视图…"));
+        search_entry.set_placeholder_text(Some("搜索连接、库、表..."));
         search_entry.set_hexpand(true);
 
         let search_list = gtk::ListBox::new();
@@ -1294,10 +1362,12 @@ impl TreePanel {
             levels: RefCell::new(HashMap::new()),
             next_level_id: Cell::new(1),
             collapsed: RefCell::new(std::collections::HashSet::new()),
-            search_results: RefCell::new(Vec::new()),
+            search_rows: RefCell::new(Vec::new()),
             search_state: Cell::new(SearchState::Idle),
             search_generation: Cell::new(0),
             search_pending: Cell::new(0),
+            search_runs: RefCell::new(Vec::new()),
+            search_connections: Cell::new(0),
             search_errors: RefCell::new(Vec::new()),
             debounce: RefCell::new(None),
             context_menu: RefCell::new(None),
@@ -1803,16 +1873,22 @@ impl TreePanel {
         self.search_state.get()
     }
 
-    /// 搜索结果的只读快照（QA 断言读控件文本与计数）。
+    /// 搜索结果的只读快照（QA 断言读控件文本、行序与高亮行）。
     pub fn search_snapshot(&self) -> SearchSnapshot {
+        let rows = self.search_rows.borrow();
         SearchSnapshot {
             state: Some(self.search_state.get()),
-            count: self.search_results.borrow().len(),
-            first: self
-                .search_results
-                .borrow()
-                .first()
-                .map(|(_, node)| node.display_name.clone()),
+            count: rows.len(),
+            hits: rows.iter().filter(|row| row.hit).count(),
+            first: rows.iter().find(|row| row.hit).map(|row| row.label.clone()),
+            rows: rows
+                .iter()
+                .map(|row| SearchRowSnapshot {
+                    depth: row.depth,
+                    path: row.path.clone(),
+                    hit: row.hit,
+                })
+                .collect(),
             status_text: self.search_status.text().to_string(),
         }
     }
@@ -1993,7 +2069,7 @@ impl TreePanel {
             }
         });
 
-        // 搜索结果点击 → 在树里逐层展开并选中。
+        // 搜索结果点击：连接行走「点连接」同一条路径；对象行在树里逐层展开并选中。
         self.search_list.connect_row_activated({
             let weak = Rc::downgrade(self);
             move |_, row| {
@@ -2001,15 +2077,32 @@ impl TreePanel {
                     return;
                 };
                 let index = usize::try_from(row.index()).unwrap_or(usize::MAX);
-                let target = panel.search_results.borrow().get(index).cloned();
-                if let Some((key, target)) = target {
-                    eprintln!(
-                        "[tree] t=+{}ms 点击搜索结果 {}{}",
-                        crate::qa::elapsed_ms(),
-                        kind_label(target.kind),
-                        target.display_name
-                    );
-                    panel.reveal(&key, target);
+                let target = panel
+                    .search_rows
+                    .borrow()
+                    .get(index)
+                    .and_then(|row| row.target.clone());
+                match target {
+                    Some(SearchTarget::Connection(key)) => {
+                        eprintln!(
+                            "[tree] t=+{}ms 点击搜索结果：连接 {key}",
+                            crate::qa::elapsed_ms()
+                        );
+                        // 切到某条连接 = 退出筛选：清空输入（`changed` → `clear_search`），
+                        // 结果行与高亮随列表销毁，不留在后台做「上一次搜索」的残影。
+                        panel.search_entry.set_text("");
+                        (panel.callbacks.connect_saved)(key);
+                    }
+                    Some(SearchTarget::Object(key, node)) => {
+                        eprintln!(
+                            "[tree] t=+{}ms 点击搜索结果 {}{}",
+                            crate::qa::elapsed_ms(),
+                            kind_label(node.kind),
+                            node.display_name
+                        );
+                        panel.reveal(&key, node);
+                    }
+                    None => {}
                 }
             }
         });
@@ -2052,13 +2145,21 @@ impl TreePanel {
         let query = text.to_owned();
         let source = glib::timeout_add_local_once(SEARCH_DEBOUNCE, move || {
             if let Some(panel) = weak.upgrade() {
+                // 定时器已经触发：先摘掉句柄。否则之后清空输入 / `Esc` 会去 remove
+                // 一个已经结束的 source，glib 会 panic（"Failed to remove source"）。
+                panel.debounce.borrow_mut().take();
                 panel.run_search(&query, generation);
             }
         });
         self.debounce.replace(Some(source));
     }
 
-    /// 向**每条已连接的连接**各发一次搜索请求（各走自己的会话）。
+    /// 搜索：连接名在客户端匹配，库 / 表 / 视图向**每条已打开连接**的后端按库搜索。
+    ///
+    /// 契约里的 `ListNodes` 只返回直接子节点，没有「整棵子树搜索」：因此每条连接先读
+    /// 目录层（库名在客户端按大小写不敏感 contains 匹配），再以每个库为 `parent` 各发
+    /// 一次 `filter.name.contains`（服务端映射为 `LIKE '%kw%'`）。所有请求都走
+    /// `MetadataHub` 的异步通道，UI 线程只做收发，不等待网络。
     fn run_search(self: &Rc<Self>, query: &str, generation: u64) {
         if generation != self.search_generation.get() {
             return;
@@ -2067,8 +2168,9 @@ impl TreePanel {
             self.clear_search();
             return;
         }
-        self.search_results.borrow_mut().clear();
         self.search_errors.borrow_mut().clear();
+        self.search_rows.borrow_mut().clear();
+        self.search_runs.borrow_mut().clear();
         self.clear_search_rows();
         self.search_state.set(SearchState::Loading);
         self.stack.set_visible_child_name("search");
@@ -2077,48 +2179,229 @@ impl TreePanel {
             self.search_status.set_text("连接注册表尚未建立");
             return;
         };
-        let targets: Vec<(String, Rc<MetadataHub>)> = registry
-            .snapshots()
+        let snapshots = registry.snapshots();
+        if snapshots.is_empty() {
+            self.search_state.set(SearchState::Failed);
+            self.search_status
+                .set_text("连接注册表为空：先添加一条连接再搜索");
+            self.status.set_text("搜索失败：连接注册表为空");
+            return;
+        }
+        // 连接名对**注册表里的全部连接**匹配（未打开的也算：结果里点一下就能连）。
+        let mut name_hits = 0usize;
+        {
+            let mut runs = self.search_runs.borrow_mut();
+            for snapshot in &snapshots {
+                let name_hit = contains_ignore_case(&snapshot.name, query);
+                if name_hit {
+                    name_hits += 1;
+                }
+                runs.push(ConnectionSearch {
+                    key: snapshot.key.clone(),
+                    name: snapshot.name.clone(),
+                    name_hit,
+                    catalogs: Vec::new(),
+                });
+            }
+        }
+        // 库 / 表 / 视图只查**已打开（已连接、有浏览会话）**的连接。
+        let targets: Vec<(String, String, String, Rc<MetadataHub>)> = snapshots
             .into_iter()
             .filter(|snapshot| snapshot.state.is_connected())
             .filter_map(|snapshot| {
                 registry
                     .hub_for_session(&snapshot.session_id)
-                    .map(|hub| (snapshot.key, hub))
+                    .map(|hub| (snapshot.key, snapshot.name, snapshot.session_id, hub))
             })
             .collect();
+        self.search_connections.set(targets.len());
         if targets.is_empty() {
-            self.search_state.set(SearchState::Failed);
-            self.search_status
-                .set_text("没有已连接的连接：先展开一条连接再搜索");
-            self.status.set_text("搜索失败：没有可用的浏览会话");
+            self.search_pending.set(0);
+            eprintln!(
+                "[tree] 搜索「{query}」：没有已打开的连接，只匹配连接名（{name_hits} 条命中）"
+            );
+            self.finish_search_all(query);
             return;
         }
         self.search_pending.set(targets.len());
         self.search_status.set_text(&format!(
-            "正在 {} 条连接里搜索「{query}」…（服务端下推 filter.name.contains）",
+            "正在 {} 条已打开连接里搜索「{query}」…",
             targets.len()
         ));
         self.status.set_text(&format!("搜索「{query}」…"));
         eprintln!(
-            "[tree] t=+{}ms 搜索「{query}」（{} 条连接各自请求）",
+            "[tree] t=+{}ms 搜索「{query}」（{} 条连接各自读目录层 + 逐库搜索）",
             crate::qa::elapsed_ms(),
             targets.len()
         );
-        let weak = Rc::downgrade(self);
-        let query_owned = query.to_owned();
-        for (key, hub) in targets {
-            let weak = weak.clone();
-            let query_owned = query_owned.clone();
-            hub.request_search(
-                query,
-                "",
-                Rc::new(move |result| {
+        for (key, _name, session_id, hub) in targets {
+            let weak = Rc::downgrade(self);
+            let key_for = key.clone();
+            let query_owned = query.to_owned();
+            let sink: PageSink = Rc::new(move |result| {
+                if let Some(panel) = weak.upgrade() {
+                    panel.finish_catalog_list(&key_for, &query_owned, generation, result);
+                }
+            });
+            hub.request_children(Some(catalog_layer_parent(&session_id)), "", sink);
+        }
+    }
+
+    /// 目录层返回：库名命中在客户端判定，再逐库发一次名称包含搜索。
+    fn finish_catalog_list(
+        self: &Rc<Self>,
+        key: &str,
+        query: &str,
+        generation: u64,
+        result: Result<NodePage, MetadataError>,
+    ) {
+        if generation != self.search_generation.get() {
+            eprintln!("[tree] 丢弃过期目录层响应：{query}");
+            return;
+        }
+        let catalogs: Vec<NodeView> = match result {
+            Ok(page) => {
+                if !page.next_page_token.is_empty() {
+                    eprintln!(
+                        "[tree] 目录层还有下一页：本次搜索只覆盖前 {} 个库（分页 token 未消费）",
+                        page.nodes.len()
+                    );
+                }
+                page.nodes
+                    .into_iter()
+                    .filter(|node| matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema))
+                    .collect()
+            }
+            Err(error) => {
+                eprintln!(
+                    "[tree] 搜索「{query}」读目录层失败（连接 {key}）：[{}] {}",
+                    error.code(),
+                    error.message()
+                );
+                self.search_errors.borrow_mut().push(format!(
+                    "{}（{}）：{}",
+                    error.headline(),
+                    error.code(),
+                    error.hint()
+                ));
+                Vec::new()
+            }
+        };
+        for catalog in &catalogs {
+            if self
+                .search_runs
+                .borrow()
+                .iter()
+                .find(|run| run.key == key)
+                .is_some_and(|run| {
+                    run.catalogs
+                        .iter()
+                        .any(|item| item.catalog.display_name == catalog.display_name)
+                })
+            {
+                continue;
+            }
+            let name_hit = contains_ignore_case(&catalog.display_name, query);
+            if let Some(run) = self
+                .search_runs
+                .borrow_mut()
+                .iter_mut()
+                .find(|run| run.key == key)
+            {
+                run.catalogs.push(CatalogSearch {
+                    catalog: catalog.clone(),
+                    name_hit,
+                    objects: Vec::new(),
+                });
+            }
+        }
+        // 逐库搜索：每个库一次请求，各自带自己的分页 token（这里只取第一页）。
+        let hub = self.registry().and_then(|registry| {
+            registry
+                .snapshot(key)
+                .and_then(|snapshot| registry.hub_for_session(&snapshot.session_id))
+        });
+        if let Some(hub) = hub {
+            for catalog in catalogs {
+                self.search_pending.set(self.search_pending.get() + 1);
+                let weak = Rc::downgrade(self);
+                let key_for = key.to_owned();
+                let query_owned = query.to_owned();
+                let catalog_for_row = catalog.clone();
+                let sink: PageSink = Rc::new(move |result| {
                     if let Some(panel) = weak.upgrade() {
-                        panel.finish_search(&key, &query_owned, generation, result);
+                        panel.finish_catalog_search(
+                            &key_for,
+                            &catalog_for_row,
+                            &query_owned,
+                            generation,
+                            result,
+                        );
                     }
-                }),
-            );
+                });
+                hub.request_search_in(catalog.reference.clone(), query, "", sink);
+            }
+        }
+        self.search_pending
+            .set(self.search_pending.get().saturating_sub(1));
+        if self.search_pending.get() == 0 {
+            self.finish_search_all(query);
+        }
+    }
+
+    /// 某个库的搜索结果：命中项挂到该库下，由结果树统一构造行。
+    fn finish_catalog_search(
+        self: &Rc<Self>,
+        key: &str,
+        catalog: &NodeView,
+        query: &str,
+        generation: u64,
+        result: Result<NodePage, MetadataError>,
+    ) {
+        if generation != self.search_generation.get() {
+            eprintln!("[tree] 丢弃过期搜索响应：{query}");
+            return;
+        }
+        match result {
+            Ok(page) => {
+                eprintln!(
+                    "[tree] t=+{}ms 搜索「{query}」在连接 {key} 的库 {} 返回 {} 个结果",
+                    crate::qa::elapsed_ms(),
+                    catalog.display_name,
+                    page.nodes.len()
+                );
+                if let Some(run) = self
+                    .search_runs
+                    .borrow_mut()
+                    .iter_mut()
+                    .find(|run| run.key == key)
+                    && let Some(item) = run.catalogs.iter_mut().find(|item| {
+                        item.catalog.display_name == catalog.display_name
+                            && item.catalog.reference.catalog == catalog.reference.catalog
+                    })
+                {
+                    item.objects.extend(page.nodes);
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "[tree] 搜索「{query}」在连接 {key} 的库 {} 失败：[{}] {}",
+                    catalog.display_name,
+                    error.code(),
+                    error.message()
+                );
+                self.search_errors.borrow_mut().push(format!(
+                    "{}（{}）：{}",
+                    error.headline(),
+                    error.code(),
+                    error.hint()
+                ));
+            }
+        }
+        self.search_pending
+            .set(self.search_pending.get().saturating_sub(1));
+        if self.search_pending.get() == 0 {
+            self.finish_search_all(query);
         }
     }
 
@@ -2127,8 +2410,11 @@ impl TreePanel {
         if let Some(source) = self.debounce.borrow_mut().take() {
             source.remove();
         }
-        self.search_results.borrow_mut().clear();
+        self.search_rows.borrow_mut().clear();
+        self.search_runs.borrow_mut().clear();
+        self.search_connections.set(0);
         self.search_errors.borrow_mut().clear();
+        self.search_pending.set(0);
         self.clear_search_rows();
         self.search_state.set(SearchState::Idle);
         self.stack.set_visible_child_name("tree");
@@ -2141,66 +2427,19 @@ impl TreePanel {
         self.search_status.set_text("");
     }
 
-    fn finish_search(
-        self: &Rc<Self>,
-        key: &str,
-        query: &str,
-        generation: u64,
-        result: Result<NodePage, MetadataError>,
-    ) {
-        if generation != self.search_generation.get() {
-            // 慢响应：关键词已经变了，丢弃（不能把两次不同查询的结果拼在一起）。
-            eprintln!("[tree] 丢弃过期搜索响应：{query}");
-            return;
-        }
-        match result {
-            Ok(page) => {
-                for node in &page.nodes {
-                    self.append_search_row(key, node);
-                }
-                eprintln!(
-                    "[tree] t=+{}ms 搜索「{query}」在连接 {key} 返回 {} 个结果",
-                    crate::qa::elapsed_ms(),
-                    page.nodes.len()
-                );
-            }
-            Err(error) => {
-                eprintln!(
-                    "[tree] 搜索「{query}」在连接 {key} 失败：[{}] {}",
-                    error.code(),
-                    error.message()
-                );
-                self.search_errors.borrow_mut().push(format!(
-                    "{}（{}）：{}",
-                    error.headline(),
-                    error.code(),
-                    error.hint()
-                ));
-            }
-        }
-        let pending = self.search_pending.get().saturating_sub(1);
-        self.search_pending.set(pending);
-        if pending > 0 {
-            return;
-        }
-        self.finish_search_all(key, query);
-    }
-
-    fn finish_search_all(self: &Rc<Self>, _last_key: &str, query: &str) {
-        let total = self.search_results.borrow().len();
-        let connections = self
-            .search_results
-            .borrow()
-            .iter()
-            .map(|(key, _)| key.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-        let errors = self.search_errors.borrow().clone();
-        if total == 0 {
+    /// 所有连接 / 所有库都答完：构造结果树、渲染、写状态行。
+    fn finish_search_all(self: &Rc<Self>, query: &str) {
+        let rows = build_search_rows(&self.search_runs.borrow());
+        let hits = rows.iter().filter(|row| row.hit).count();
+        let connections = rows.iter().filter(|row| row.depth == 0).count();
+        let objects = rows.iter().filter(|row| row.depth > 0 && row.hit).count();
+        let errors = dedup_errors(self.search_errors.borrow().clone());
+        if rows.is_empty() {
             if errors.is_empty() {
                 self.search_state.set(SearchState::Empty);
-                self.search_status
-                    .set_text(&format!("没有名称包含「{query}」的对象。换个关键词试试。"));
+                self.search_status.set_text(&format!(
+                    "没有名称包含「{query}」的连接、库、表或视图。换个关键词试试。"
+                ));
                 self.status.set_text(&format!("搜索「{query}」：0 个结果"));
             } else if errors
                 .iter()
@@ -2220,64 +2459,64 @@ impl TreePanel {
             return;
         }
         self.search_state.set(SearchState::Results);
+        self.render_search_rows(&rows);
+        self.search_rows.borrow_mut().clone_from(&rows);
         let failure_note = if errors.is_empty() {
             String::new()
         } else {
             format!("；{} 条连接失败（{}）", errors.len(), errors.join("；"))
         };
+        let opened_note = if self.search_connections.get() == 0 {
+            "；没有已打开的连接，只匹配了连接名"
+        } else {
+            ""
+        };
         self.search_status.set_text(&format!(
-            "{total} 个结果（{connections} 条连接）· 点击跳到树中的位置{failure_note}"
+            "{connections} 个连接 · {objects} 个对象{opened_note}{failure_note}"
+        ));
+        self.status.set_text(&format!(
+            "搜索「{query}」：{connections} 个连接 · {objects} 个对象（{hits} 行命中）"
         ));
         eprintln!(
-            "[tree] t=+{}ms 搜索「{query}」共 {total} 个结果（{connections} 条连接）",
-            crate::qa::elapsed_ms()
+            "[tree] t=+{}ms 搜索「{query}」完成：{} 行（{connections} 个连接 · {objects} 个对象，{hits} 行命中）",
+            crate::qa::elapsed_ms(),
+            rows.len()
         );
     }
 
-    fn append_search_row(&self, key: &str, node: &NodeView) {
-        self.search_results
-            .borrow_mut()
-            .push((key.to_owned(), node.clone()));
-        let connection_name = self
-            .registry()
-            .and_then(|registry| registry.snapshot(key))
-            .map_or_else(|| key.to_owned(), |snapshot| snapshot.name);
-        let icon = gtk::Image::from_icon_name(kind_icon(node.kind));
-        let name = gtk::Label::new(Some(&node.display_name));
-        name.set_xalign(0.0);
-        name.set_hexpand(true);
-        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        let kind = gtk::Label::new(Some(kind_label(node.kind)));
-        kind.add_css_class("dim-label");
-        kind.add_css_class("caption");
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        top.append(&icon);
-        top.append(&name);
-        top.append(&kind);
-        // 两条连接可能有同名表：路径前面必须带连接名，否则「跳到树里」是猜的。
-        let path = gtk::Label::new(Some(&format!("{connection_name} · {}", node.path_label())));
-        path.set_xalign(0.0);
-        path.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        path.add_css_class("dim-label");
-        path.add_css_class("caption");
-        let row_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        row_box.append(&top);
-        row_box.append(&path);
-        row_box.set_margin_top(4);
-        row_box.set_margin_bottom(4);
-        row_box.set_margin_start(8);
-        row_box.set_margin_end(8);
-        let row = gtk::ListBoxRow::new();
-        row.set_child(Some(&row_box));
-        row.set_activatable(true);
-        row.set_tooltip_text(Some(&format!(
-            "在树中定位「{connection_name}」里的 {}{}",
-            kind_label(node.kind),
-            node.display_name
-        )));
-        // 行与结果的对应关系由 ListBoxRow.index() 给出：先追加的行在前，索引与
-        // `search_results` 一致（两者只在 clear_search_rows 里一起清空）。
-        self.search_list.append(&row);
+    /// 把结果行渲染成缩进列表；只有真正命中的行加 `.sqarvo-search-hit`。
+    fn render_search_rows(&self, rows: &[SearchRowView]) {
+        for row in rows {
+            let icon = gtk::Image::from_icon_name(&row.icon);
+            let name = gtk::Label::new(Some(&row.label));
+            name.set_xalign(0.0);
+            name.set_hexpand(true);
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let kind = gtk::Label::new(Some(&row.kind_text));
+            kind.add_css_class("dim-label");
+            kind.add_css_class("caption");
+            if row.kind_text.is_empty() {
+                kind.set_visible(false);
+            }
+            let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            top.append(&icon);
+            top.append(&name);
+            top.append(&kind);
+            top.set_margin_top(3);
+            top.set_margin_bottom(3);
+            // 缩进按层数递增：0/16/32/48（连接 / 库 / 分组 / 对象）。
+            top.set_margin_start(8 + i32::try_from(row.depth).unwrap_or(0) * 16);
+            top.set_margin_end(8);
+            if row.hit {
+                // 命中高亮：左侧强调条 + 加粗 + 浅色底（与整行 accent 0.25 的选中态不同）。
+                top.add_css_class("sqarvo-search-hit");
+            }
+            let list_row = gtk::ListBoxRow::new();
+            list_row.set_child(Some(&top));
+            list_row.set_activatable(row.target.is_some());
+            list_row.set_tooltip_text(Some(&row.path));
+            self.search_list.append(&list_row);
+        }
     }
 
     // -- 层级加载 -----------------------------------------------------------
@@ -3833,6 +4072,30 @@ impl TreePanel {
         Err("树里没有「加载更多…」占位行（可能已全部加载）".to_owned())
     }
 
+    /// 把关键词填进搜索框，走用户输入同一条 `changed` → 250ms 防抖 → 请求的路径。
+    ///
+    /// 与 [`Self::qa_search`] 的区别：这里**不**跳过防抖，用来验证「边打字边搜」的真实
+    /// 时序（`--qa-search`）。
+    pub fn qa_type_search(&self, query: &str) {
+        eprintln!(
+            "[qa] t=+{}ms 在搜索框输入「{query}」（走防抖 {} ms）",
+            crate::qa::elapsed_ms(),
+            SEARCH_DEBOUNCE.as_millis()
+        );
+        self.search_entry.set_text(query);
+    }
+
+    /// 清空搜索框（`--qa-search-clear`）：走用户清空 / `Esc` 的 `changed` → 清理路径。
+    ///
+    /// 结果行与高亮随列表一起销毁，界面回到树页——不是另写一条「假清空」。
+    pub fn qa_clear_search(&self) {
+        eprintln!(
+            "[qa] t=+{}ms 清空搜索框（退出筛选）",
+            crate::qa::elapsed_ms()
+        );
+        self.search_entry.set_text("");
+    }
+
     /// 直接设置搜索框文本并立刻搜索（与用户输入同一条路径，只是跳过键盘）。
     pub fn qa_search(self: &Rc<Self>, query: &str) {
         self.search_entry.set_text(query);
@@ -3844,22 +4107,34 @@ impl TreePanel {
         self.run_search(query, generation);
     }
 
-    /// 点第一条搜索结果（与用户点击同一行）。
+    /// 点第一条可跳转的搜索结果（与用户点击同一行；祖先分组行不可点）。
     pub fn qa_click_first_result(self: &Rc<Self>) -> Result<String, String> {
         let target = self
-            .search_results
+            .search_rows
             .borrow()
-            .first()
-            .cloned()
-            .ok_or_else(|| "没有搜索结果可点".to_owned())?;
-        let (key, node) = target;
-        let label = format!("{}{}", kind_label(node.kind), node.path_label());
-        eprintln!(
-            "[tree] t=+{}ms 点击第一条搜索结果 {label}（连接 {key}）",
-            crate::qa::elapsed_ms()
-        );
-        self.reveal(&key, node);
-        Ok(label)
+            .iter()
+            .find_map(|row| row.target.clone())
+            .ok_or_else(|| "没有可点击的搜索结果".to_owned())?;
+        match target {
+            SearchTarget::Object(key, node) => {
+                let label = format!("{}{}", kind_label(node.kind), node.path_label());
+                eprintln!(
+                    "[tree] t=+{}ms 点击第一条搜索结果 {label}（连接 {key}）",
+                    crate::qa::elapsed_ms()
+                );
+                self.reveal(&key, node);
+                Ok(label)
+            }
+            SearchTarget::Connection(key) => {
+                eprintln!(
+                    "[tree] t=+{}ms 点击第一条搜索结果：连接 {key}",
+                    crate::qa::elapsed_ms()
+                );
+                self.stack.set_visible_child_name("tree");
+                (self.callbacks.connect_saved)(key.clone());
+                Ok(format!("连接 {key}"))
+            }
+        }
     }
 
     /// 断开一条连接（与右键菜单「断开连接」同一条路径：确认框由回调负责）。
@@ -3985,6 +4260,143 @@ fn is_ancestor_of(candidate: &NodeView, target: &NodeView) -> bool {
         }
         _ => false,
     }
+}
+
+/// 大小写不敏感的名称包含匹配（客户端：连接名 / 库名；不做分词）。
+///
+/// 表 / 视图不在客户端比较：它们由后端 `filter.name.contains`（`LIKE '%kw%'`）匹配，
+/// 客户端只负责收行。
+#[must_use]
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// 同一条失败文案只留一份（多个库报同一个错误时状态行不会被同一句话刷屏）。
+fn dedup_errors(errors: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    errors
+        .into_iter()
+        .filter(|error| seen.insert(error.clone()))
+        .collect()
+}
+
+/// 由收集到的命中构造结果树（纯函数：不碰 GTK，单测直接比对行序与高亮集合）。
+///
+/// 形态：连接子集 → 库 → `Tables` / `Views` 分组 → 表 / 视图。只有真正匹配的行
+/// `hit = true`；连接 / 库 / 分组作为祖先出现时**不**高亮。同一库只出现一行，
+/// 该库的所有表命中归到同一个 `Tables` 下。
+#[must_use]
+fn build_search_rows(runs: &[ConnectionSearch]) -> Vec<SearchRowView> {
+    let mut rows = Vec::new();
+    for run in runs {
+        let has_content = run
+            .catalogs
+            .iter()
+            .any(|item| item.name_hit || !item.objects.is_empty());
+        if !run.name_hit && !has_content {
+            continue;
+        }
+        rows.push(SearchRowView {
+            depth: 0,
+            label: run.name.clone(),
+            icon: "network-server-symbolic".to_owned(),
+            kind_text: "连接".to_owned(),
+            hit: run.name_hit,
+            path: run.name.clone(),
+            target: Some(SearchTarget::Connection(run.key.clone())),
+        });
+        // 同名库只保留一行：目录层若重复返回同一个库（或分页重叠），命中的对象
+        // 合并到同一行下，不在结果里出现两个「库 c」。
+        let mut merged: Vec<(&NodeView, bool, Vec<&NodeView>)> = Vec::new();
+        for catalog in &run.catalogs {
+            if let Some(existing) = merged
+                .iter_mut()
+                .find(|existing| existing.0.display_name == catalog.catalog.display_name)
+            {
+                existing.1 |= catalog.name_hit;
+                existing.2.extend(catalog.objects.iter());
+            } else {
+                merged.push((
+                    &catalog.catalog,
+                    catalog.name_hit,
+                    catalog.objects.iter().collect(),
+                ));
+            }
+        }
+        for (catalog_node, catalog_hit, catalog_objects) in merged {
+            if !catalog_hit && catalog_objects.is_empty() {
+                continue;
+            }
+            let catalog_name = catalog_node.display_name.clone();
+            let catalog_path = format!("{}/{}", run.name, catalog_name);
+            rows.push(SearchRowView {
+                depth: 1,
+                label: catalog_name.clone(),
+                icon: kind_icon(ObjectKind::Catalog).to_owned(),
+                kind_text: kind_label(ObjectKind::Catalog).to_owned(),
+                hit: catalog_hit,
+                path: catalog_path.clone(),
+                target: Some(SearchTarget::Object(run.key.clone(), catalog_node.clone())),
+            });
+            let mut seen = std::collections::HashSet::new();
+            let mut tables = Vec::new();
+            let mut views = Vec::new();
+            let mut others = Vec::new();
+            for node in catalog_objects {
+                if !seen.insert((node.kind as i32, node.display_name.clone())) {
+                    continue;
+                }
+                match node.kind {
+                    ObjectKind::Table => tables.push(node),
+                    ObjectKind::View | ObjectKind::MaterializedView => views.push(node),
+                    // 契约里的目录层直接子对象还有 Sequence 等种类：它们不属于
+                    // Tables / Views，直接挂在库下（不硬塞进某个分组，也不丢行）。
+                    _ => others.push(node),
+                }
+            }
+            for (group, nodes) in [(KindGroup::Tables, tables), (KindGroup::Views, views)] {
+                if nodes.is_empty() {
+                    continue;
+                }
+                rows.push(SearchRowView {
+                    depth: 2,
+                    label: group.label().to_owned(),
+                    icon: group.icon().to_owned(),
+                    kind_text: String::new(),
+                    hit: false,
+                    path: format!("{catalog_path}/{}", group.label()),
+                    target: None,
+                });
+                for node in nodes {
+                    rows.push(SearchRowView {
+                        depth: 3,
+                        label: node.display_name.clone(),
+                        icon: kind_icon(node.kind).to_owned(),
+                        kind_text: kind_label(node.kind).to_owned(),
+                        hit: true,
+                        path: format!("{catalog_path}/{}/{}", group.label(), node.display_name),
+                        target: Some(SearchTarget::Object(run.key.clone(), node.clone())),
+                    });
+                }
+            }
+            for node in others {
+                rows.push(SearchRowView {
+                    depth: 2,
+                    label: node.display_name.clone(),
+                    icon: kind_icon(node.kind).to_owned(),
+                    kind_text: kind_label(node.kind).to_owned(),
+                    hit: true,
+                    path: format!("{catalog_path}/{}", node.display_name),
+                    target: Some(SearchTarget::Object(run.key.clone(), node.clone())),
+                });
+            }
+        }
+    }
+    rows
 }
 
 /// 搜索关键词是否应当发出请求（空白输入不搜）。
@@ -4331,5 +4743,124 @@ mod tests {
         );
         assert_eq!(level_parent(&group_level), Some(&catalog));
         assert_ne!(level_parent(&group_level), Some(&other));
+    }
+    /// 结果页是**树**：连接子集 + 展开到命中层；祖先行不高亮，只有真正匹配的行高亮。
+    #[test]
+    fn search_rows_expand_hits_to_their_tree_layer() {
+        let one = ConnectionSearch {
+            key: "a".to_owned(),
+            name: "连接 a".to_owned(),
+            name_hit: true,
+            catalogs: Vec::new(),
+        };
+        let second = ConnectionSearch {
+            key: "b".to_owned(),
+            name: "连接 b".to_owned(),
+            name_hit: false,
+            catalogs: vec![CatalogSearch {
+                catalog: view("main", ObjectKind::Catalog, "main", ""),
+                name_hit: false,
+                objects: vec![
+                    view("user_roles", ObjectKind::Table, "main", ""),
+                    view("users", ObjectKind::Table, "main", ""),
+                    view("v_users", ObjectKind::View, "main", ""),
+                ],
+            }],
+        };
+        let rows = build_search_rows(&[one, second]);
+        let paths: Vec<&str> = rows.iter().map(|row| row.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "连接 a",
+                "连接 b",
+                "连接 b/main",
+                "连接 b/main/Tables",
+                "连接 b/main/Tables/user_roles",
+                "连接 b/main/Tables/users",
+                "连接 b/main/Views",
+                "连接 b/main/Views/v_users",
+            ]
+        );
+        let depths: Vec<u32> = rows.iter().map(|row| row.depth).collect();
+        assert_eq!(depths, [0, 0, 1, 2, 3, 3, 2, 3]);
+        let hits: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.hit)
+            .map(|row| row.path.as_str())
+            .collect();
+        assert_eq!(
+            hits,
+            [
+                "连接 a",
+                "连接 b/main/Tables/user_roles",
+                "连接 b/main/Tables/users",
+                "连接 b/main/Views/v_users",
+            ],
+            "祖先连接 / 库 / 分组不是命中"
+        );
+        // 祖先行的点击去向：连接行与库行可跳转；分组行不可点。
+        assert!(matches!(rows[0].target, Some(SearchTarget::Connection(_))));
+        assert!(matches!(rows[2].target, Some(SearchTarget::Object(_, _))));
+        assert!(rows[3].target.is_none());
+    }
+
+    /// 同一库只一行、同一 `Tables` 分组只一行（多个命中归到同一组下）。
+    #[test]
+    fn search_rows_keep_one_row_per_catalog_and_group() {
+        let run = ConnectionSearch {
+            key: "b".to_owned(),
+            name: "b".to_owned(),
+            name_hit: false,
+            catalogs: vec![
+                CatalogSearch {
+                    catalog: view("c", ObjectKind::Catalog, "c", ""),
+                    name_hit: true,
+                    objects: vec![
+                        view("D", ObjectKind::Table, "c", ""),
+                        view("D", ObjectKind::Table, "c", ""),
+                        view("E", ObjectKind::Table, "c", ""),
+                    ],
+                },
+                CatalogSearch {
+                    catalog: view("c", ObjectKind::Catalog, "c", ""),
+                    name_hit: false,
+                    objects: vec![view("F", ObjectKind::View, "c", "")],
+                },
+            ],
+        };
+        let rows = build_search_rows(&[run]);
+        let paths: Vec<&str> = rows.iter().map(|row| row.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "b",
+                "b/c",
+                "b/c/Tables",
+                "b/c/Tables/D",
+                "b/c/Tables/E",
+                "b/c/Views",
+                "b/c/Views/F",
+            ],
+            "同名库合并成一行，重复的表只出现一次"
+        );
+        // 第二个同名库的视图归到同一个「库 c」下，不出现第二个 `b/c`。
+        assert_eq!(rows.iter().filter(|row| row.path == "b/c").count(), 1);
+    }
+
+    #[test]
+    fn search_terms_match_names_case_insensitively() {
+        assert!(contains_ignore_case("Connection A", "connection"));
+        assert!(contains_ignore_case("连接A", "接a"));
+        assert!(!contains_ignore_case("连接A", "b"));
+        assert!(!contains_ignore_case("连接A", "   "));
+        assert_eq!(
+            dedup_errors(vec![
+                "同一条".to_owned(),
+                "同一条".to_owned(),
+                "另一条".to_owned()
+            ]),
+            ["同一条", "另一条"]
+        );
     }
 }

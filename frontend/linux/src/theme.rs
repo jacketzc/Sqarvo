@@ -270,6 +270,19 @@ pub fn stylesheet() -> String {
         /* 当前种类高亮：工具条上的种类入口（表 / 视图 / 函数 / 查询）不再禁用，
            高亮只表示「现在列的是这一类」（v0.2.3.3 起它们会打开 Objects 页）。 */
         .sqarvo-kind-active {{ background: alpha(@accent_color, 0.20); }}
+
+        /* 搜索结果命中（v0.2.4）：只标**真正匹配关键词**的行，连接 / 库 / 分组这些
+           祖先行的 `hit = false`，不加这个类。样式必须与「选中」一眼可分：
+             - 选中 = 整行 accent 25%（`row:selected`，树与网格同一口径）；
+             - 命中 = 左侧 2px 强调条 + 文字加粗 + accent 10% 浅底。
+           浅底比选中轻，强调条与字重负责「这是命中」，因此同一行既选中又命中时
+           两种信号仍然读得出来（条 + 粗体不会被 25% 底色吃掉）。 */
+        window.{window_class} .sqarvo-search-hit {{
+            background-color: alpha(@accent_color, 0.10);
+            font-weight: 600;
+            box-shadow: inset 2px 0 0 0 @accent_color;
+            border-radius: 4px;
+        }}
         "#,
         window_class = WINDOW_CLASS,
         ui = layout::FONT_UI,
@@ -520,5 +533,36 @@ mod tests {
                 "规则 {rule} 没有挂在窗口 class 下"
             );
         }
+    }
+    /// 命中高亮必须与行选中**不同**：选中是整行 accent 25%，命中是 2px 条 + 加粗 + 10%。
+    /// 把命中样式改成与选中同色同重（或删掉左侧条）都会让这条变红。
+    #[test]
+    fn search_hit_style_is_distinct_from_row_selection() {
+        let css = stylesheet();
+        let start = css
+            .find(".sqarvo-search-hit {")
+            .expect("缺少搜索结果命中规则");
+        let end = start + css[start..].find('}').expect("规则应当闭合");
+        let rule = &css[start..end];
+        assert!(
+            rule.contains("background-color: alpha(@accent_color, 0.10)"),
+            "命中底色应当是 accent 10%：{rule}"
+        );
+        assert!(
+            rule.contains("font-weight: 600"),
+            "命中文字应当加粗：{rule}"
+        );
+        assert!(
+            rule.contains("box-shadow: inset 2px 0 0 0 @accent_color"),
+            "命中行应当有左侧 2px 强调条：{rule}"
+        );
+        assert!(
+            !rule.contains("0.25"),
+            "命中底色不能与选中（accent 25%）同强度：{rule}"
+        );
+        assert!(
+            css.contains("listview.sqarvo-objects > row:selected") && css.contains("0.25"),
+            "行选中仍是整行 accent 25%（两者必须并存且可区分）"
+        );
     }
 }

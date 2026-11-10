@@ -569,23 +569,24 @@ impl BackendClient {
         Ok(NodePage::from_proto(&response, session_id))
     }
 
-    /// 搜索当前连接库的对象（`ListNodes` 根层 + `filter.name.contains`）。
+    /// 在指定父节点下搜索（按库搜索时 `parent` = 该库的引用）。
     ///
-    /// 关键词原样传给服务端：`%` / `_` 由驱动按字面量转义，前端不拼通配符。
-    pub async fn search_nodes(
+    /// 关键词原样传给服务端：`filter.name.contains` 由驱动下推为 `LIKE '%kw%'`
+    /// （`%` / `_` 按字面量转义），前端不拼通配符。
+    pub async fn search_nodes_in(
         &self,
-        session_id: &str,
+        parent: &ObjectRef,
         query: &str,
         page_token: &str,
     ) -> Result<NodePage, MetadataError> {
         let mut client = self.metadata_service().map_err(metadata_local_failure)?;
-        let request = metadata::search_request(session_id, query, page_token);
+        let request = metadata::search_request_in(parent.clone(), query, page_token);
         let response = tokio::time::timeout(METADATA_RPC_TIMEOUT, client.list_nodes(request))
             .await
             .map_err(|_| metadata_timeout("搜索对象"))?
             .map_err(|status| metadata_failure_from_status(&status))?
             .into_inner();
-        Ok(NodePage::from_proto(&response, session_id))
+        Ok(NodePage::from_proto(&response, &parent.session_id))
     }
 
     /// 读取对象的 DDL（`GetDdl`）。

@@ -601,17 +601,22 @@ pub fn list_request(
     }
 }
 
-/// 搜索请求：根层 + 名称包含 + 第一页（或翻页 token）。
+/// 在任意父节点下搜索：`filter.name.contains`（服务端映射为 `LIKE '%kw%'`）。
 ///
-/// 搜索**只**查当前连接库的根层：跨库搜索需要逐库请求，契约没有「全库搜索」；
-/// 结果里若带 catalog，界面会展开到对应库的节点（见 [`crate::tree`] 的 reveal 逻辑）。
+/// 契约里的 `ListNodes` 只返回**直接子节点**，没有「整棵子树搜索」：根层搜索只覆盖
+/// 当前连接库里的表 / 视图；要按库搜索（SQLite 的 `temp` / `ATTACH`、MariaDB 的每个
+/// database），必须逐库以该库的 `ObjectRef` 为 `parent` 再发一次。
+///
+/// 关键词**不加通配符**：驱动把 `contains` 下推成 `'%' || ? || '%'`（SQLite）或
+/// `CONCAT('%', ?, '%')`（MariaDB），并转义用户输入里的 `%` / `_`。前端拼 `%` 会把
+/// 用户输入的 `_` 变成「任意一个字符」（ADR 0019）。
 #[must_use]
-pub fn search_request(
-    session_id: &str,
+pub fn search_request_in(
+    parent: ObjectRef,
     query: &str,
     page_token: &str,
 ) -> crate::proto::services::v1::ListNodesRequest {
-    list_request(root_parent(session_id), page_token, contains_filter(query))
+    list_request(parent, page_token, contains_filter(query))
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +641,8 @@ pub enum MetadataCommand {
     Search {
         /// 请求 ID。
         id: u64,
+        /// 父引用；`None` 表示当前连接库的根层。
+        parent: Option<ObjectRef>,
         /// 关键词。
         query: String,
         /// 分页 token。
@@ -771,10 +778,11 @@ impl MetadataWorker {
         });
     }
 
-    /// 搜索（非阻塞）。
-    pub fn search(&self, id: u64, query: &str, page_token: &str) {
+    /// 搜索（非阻塞；`parent = None` 表示当前连接库的根层）。
+    pub fn search(&self, id: u64, parent: Option<ObjectRef>, query: &str, page_token: &str) {
         let _ = self.commands.send(MetadataCommand::Search {
             id,
+            parent,
             query: query.to_owned(),
             page_token: page_token.to_owned(),
         });
@@ -842,11 +850,13 @@ async fn worker_loop(
             }
             MetadataCommand::Search {
                 id,
+                parent,
                 query,
                 page_token,
             } => {
+                let parent = parent.unwrap_or_else(|| root_parent(&session_id));
                 let result = match client_for(&mut client, &endpoint_path).await {
-                    Ok(client) => client.search_nodes(&session_id, &query, &page_token).await,
+                    Ok(client) => client.search_nodes_in(&parent, &query, &page_token).await,
                     Err(error) => Err(error),
                 };
                 if events
@@ -1007,10 +1017,16 @@ impl MetadataHub {
         self.worker.list_group(id, Some(parent), page_token, kinds);
     }
 
-    /// 请求搜索（根层 + 名称包含）。
-    pub fn request_search(&self, query: &str, page_token: &str, sink: PageSink) {
+    /// 在指定父节点下请求搜索（树形搜索按库逐个发；`filter.name.contains`）。
+    pub fn request_search_in(
+        &self,
+        parent: ObjectRef,
+        query: &str,
+        page_token: &str,
+        sink: PageSink,
+    ) {
         let id = self.take_id(Route::Page(sink));
-        self.worker.search(id, query, page_token);
+        self.worker.search(id, Some(parent), query, page_token);
     }
 
     /// 请求 DDL。
@@ -1194,7 +1210,7 @@ mod tests {
 
     #[test]
     fn search_request_uses_contains_filter_without_wildcards() {
-        let request = search_request("sess", "ord", "");
+        let request = search_request_in(root_parent("sess"), "ord", "");
         let filter = request.filter.as_ref().expect("搜索必须带名字过滤");
         match filter.name.as_ref().and_then(|name| name.r#match.as_ref()) {
             Some(object_name_filter::Match::Contains(value)) => assert_eq!(value, "ord"),
@@ -1205,7 +1221,7 @@ mod tests {
 
         // 空白关键词 = 不过滤（契约：空串不是「匹配全部」的简写）。
         assert!(contains_filter("   ").is_none());
-        let request = search_request("sess", "a_b%c", "next");
+        let request = search_request_in(root_parent("sess"), "a_b%c", "next");
         let filter = request.filter.unwrap();
         match filter.name.unwrap().r#match.unwrap() {
             object_name_filter::Match::Contains(value) => assert_eq!(value, "a_b%c"),

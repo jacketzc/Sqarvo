@@ -1108,6 +1108,19 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   --qa-expect-tree search=results --qa-expect-tree first=order_items \
   --qa-expect-tree selected=order_items --qa-expect-tree page=tree
 
+# 树形搜索结果（v0.2.4）：连接名 + 表 / 视图在同一次搜索里，结果按层缩进并高亮命中行
+./target/debug/sqarvo-desktop \
+  --qa-profile /tmp/sqlite.json \
+  --qa-search user --qa-expect-search hits=3 \
+  --qa-expect-search row=*/main/Tables/users --qa-expect-search row=*/main/Views/v_users \
+  --screenshot /tmp/search-tree.png --screenshot-delay-ms 6000 --qa-exit-after-ms 8000
+
+# 退出筛选：清空搜索框后回到树页，命中高亮不残留
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json \
+  --qa-search user --qa-search-clear \
+  --qa-expect-search state=idle --qa-expect-search hits=0 \
+  --screenshot /tmp/search-cleared.png --screenshot-delay-ms 7000 --qa-exit-after-ms 9000
+
 # 大库：展开 5000 对象的库（每页 500），再点一次「加载更多」，日志给出耗时
 ./target/debug/sqarvo-desktop \
   --qa-profile /tmp/profile.json --qa-password-env SQARVO_QA_PASSWORD \
@@ -1127,8 +1140,16 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   它不直接调打开回调，而是回到「激活」的判定里，用来回归「双击表只展开、不打开」；
 - `--qa-tree-ddl` 在 v0.2.3.2 **已移除**（右键「查看 DDL」与侧栏 DDL 按钮一起删掉）：
   旧脚本传这个参数会直接报错，不会安静地什么都不做。DDL 改在信息面板的 `[DDL]` 页看；
+- `--qa-search <query>`（v0.2.4）：把关键词填进搜索框，走用户输入同一条
+  `changed` → 250 ms 防抖 → 请求路径（**不**跳过防抖）；`--qa-search-clear` 随后清空
+  输入框，走用户清空 / `Esc` 的同一条清理路径（用于证明结果行与高亮不残留）；
+  `--qa-expect-search <字段=值>`（可重复）在截图时刻断言搜索结果：
+  `hits=N`（高亮行数）、`row=连接/库/Tables/表`（必须出现，`*` 匹配单段，可逗号分隔多条）、
+  `rows=…`（完整行序，逐项相等）、`highlight=…`（高亮行集合，按显示顺序逐项相等）、
+  `status=…`（状态行包含，如 `2 个连接 · 3 个对象`）、`state=results|empty|denied|failed|idle`；
 - `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
-  只是跳过键盘）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
+  只是跳过键盘；注意 `--qa-expect-tree results=N` 现在数的是**结果页行数**，含连接 /
+  库 / 分组祖先行）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
   点第一个「加载更多…」占位行；`--qa-tree-disconnect <name>` 断开指定连接的浏览会话
   （与右键菜单「断开连接」同一条路径，包含确认框；排在搜索步骤之前）；
 - `--qa-objects-select <name>` / `--qa-objects-activate <name>`（v0.2.3.3）：在固定

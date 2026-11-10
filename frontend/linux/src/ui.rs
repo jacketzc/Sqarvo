@@ -783,6 +783,7 @@ pub fn activate(app: &adw::Application) {
                         || crate::qa::expect_txn().is_some()
                         || !crate::qa::expect_columns().is_empty()
                         || !crate::qa::expect_tree().is_empty()
+                        || !crate::qa::expect_search().is_empty()
                         || !crate::qa::expect_ddl().is_empty()
                         || !crate::qa::expect_inspector().is_empty()
                         || !crate::qa::expect_objects().is_empty()
@@ -2802,6 +2803,30 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
         delay += 900;
     }
 
+    if let Some(query) = crate::qa::search_query() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_type_search(&query);
+                Ok(format!("在搜索框输入「{query}」（等防抖）"))
+            }),
+        );
+        delay += 900;
+    }
+
+    if crate::qa::search_clear() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_clear_search();
+                Ok("清空搜索框（回到树页）".to_owned())
+            }),
+        );
+        delay += 900;
+    }
+
     if crate::qa::tree_click_result() {
         let tree = Rc::clone(&workspace.tree);
         schedule_step(
@@ -3795,6 +3820,76 @@ fn verify_expectations(state: &Rc<UiState>) -> Result<String, String> {
                 ));
             }
             passed.push(format!("Objects {}={actual}", expectation.field));
+        }
+    }
+
+    let search_expectations = crate::qa::expect_search();
+    if !search_expectations.is_empty() {
+        let snapshot = workspace.tree.search_snapshot();
+        let row_paths: Vec<String> = snapshot.rows.iter().map(|row| row.path.clone()).collect();
+        let highlighted: Vec<String> = snapshot
+            .rows
+            .iter()
+            .filter(|row| row.hit)
+            .map(|row| row.path.clone())
+            .collect();
+        for expectation in &search_expectations {
+            use crate::qa::{search_path_matches, search_paths};
+            let (matched, actual) = match expectation.field {
+                crate::qa::SearchField::Hits => (
+                    snapshot.hits.to_string() == expectation.expected,
+                    snapshot.hits.to_string(),
+                ),
+                crate::qa::SearchField::Row => {
+                    let wanted = search_paths(&expectation.expected);
+                    (
+                        wanted.iter().all(|pattern| {
+                            row_paths
+                                .iter()
+                                .any(|path| search_path_matches(pattern, path))
+                        }),
+                        row_paths.join(","),
+                    )
+                }
+                crate::qa::SearchField::Rows => (
+                    row_paths == search_paths(&expectation.expected),
+                    row_paths.join(","),
+                ),
+                crate::qa::SearchField::Highlight => (
+                    highlighted == search_paths(&expectation.expected),
+                    highlighted.join(","),
+                ),
+                crate::qa::SearchField::Status => (
+                    snapshot.status_text.contains(&expectation.expected),
+                    snapshot.status_text.clone(),
+                ),
+                crate::qa::SearchField::State => (
+                    snapshot
+                        .state
+                        .is_some_and(|state| state.name() == expectation.expected),
+                    snapshot
+                        .state
+                        .map_or_else(String::new, |state| state.name().to_owned()),
+                ),
+            };
+            if !matched {
+                return Err(format!(
+                    "搜索结果 {} 期望「{}」，实际「{actual}」（状态行：{}；行：{}）",
+                    expectation.field.name(),
+                    expectation.expected,
+                    snapshot.status_text,
+                    row_paths.join(" / ")
+                ));
+            }
+            passed.push(format!(
+                "搜索 {}={}",
+                expectation.field.name(),
+                if expectation.field == crate::qa::SearchField::Status {
+                    expectation.expected.clone()
+                } else {
+                    actual
+                }
+            ));
         }
     }
 

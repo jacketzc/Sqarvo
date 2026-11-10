@@ -69,8 +69,11 @@
 //!   与单击同一条路径，会同步信息面板）、`--qa-objects-activate <name>`（发
 //!   `GtkListView::activate`，与双击 / 回车同一条路径，会开表数据标签）；
 //!   `--qa-expect-objects selected=<name>` 断言哪一行处于选中态；
+//! - `--qa-search <query>`（走搜索框防抖同一条路径）+ `--qa-search-clear`（清空退出筛选）
+//!   + `--qa-expect-search <field>=<value>`：`hits|row|rows|highlight|status|state`，
+//!     断言结果树的**行序**与**高亮行集合**（v0.2.4）；
 //! - `--qa-expect-tree <field>=<value>`：`health|selected|search|results|first|page|
-//!   loaded|status_contains`；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`
+//!   loaded|status_contains`（`results` 现为结果页行数，含祖先行）；`--qa-expect-ddl <field>=<value>`：`contains|state|visible`
 //!   （v0.2.3.3 起来源徽标 / 来源说明 / 「复制」按钮已从面板移除，对应字段一并删除）；
 //! - `--qa-tabs-file <path>`（#116）：标签工作区脚本，每行一步，走与用户相同的路径
 //!   （`open-table` / `query-tab` / `begin` / `edit` / `apply` / `rollback` / `reload` /
@@ -582,6 +585,118 @@ impl TreeExpectation {
     }
 }
 
+/// `--qa-expect-search` 要比对的字段（#搜索树）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchField {
+    /// 高亮行数（真正命中的行，不含连接 / 库 / 分组祖先）。
+    Hits,
+    /// 结果页必须包含某条路径（可重复 / 逗号分隔，`*` 匹配单段）。
+    Row,
+    /// 结果页的完整行序（逗号分隔，逐项相等）。
+    Rows,
+    /// 高亮行的完整集合（逗号分隔，逐项相等）。
+    Highlight,
+    /// 搜索状态行是否包含某段文本。
+    Status,
+    /// 搜索页状态（results / empty / denied / failed）。
+    State,
+}
+
+impl SearchField {
+    /// 参数里的字段名。
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "hits" => Ok(Self::Hits),
+            "row" => Ok(Self::Row),
+            "rows" => Ok(Self::Rows),
+            "highlight" => Ok(Self::Highlight),
+            "status" => Ok(Self::Status),
+            "state" => Ok(Self::State),
+            other => Err(format!(
+                "--qa-expect-search 的字段只接受 hits|row|rows|highlight|status|state，实际：{other}"
+            )),
+        }
+    }
+
+    /// 字段在参数里的名字（日志用，与 [`Self::parse`] 同一份词表）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Hits => "hits",
+            Self::Row => "row",
+            Self::Rows => "rows",
+            Self::Highlight => "highlight",
+            Self::Status => "status",
+            Self::State => "state",
+        }
+    }
+}
+
+/// `--qa-expect-search <field>=<value>` 的一条断言。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchExpectation {
+    /// 字段。
+    pub field: SearchField,
+    /// 期望值（`hits` 是数字；`rows` / `highlight` / `row` 是 `/` 分隔的路径列表，
+    /// 逗号分隔多条；`status` 是子串；其余逐字相等）。
+    pub expected: String,
+}
+
+impl SearchExpectation {
+    /// 解析 `字段=值`。
+    fn parse(value: &str) -> Result<Self, String> {
+        let (field, expected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("--qa-expect-search 需要 字段=值，实际：{value}"))?;
+        let field = SearchField::parse(field)?;
+        if field == SearchField::Hits {
+            expected
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("--qa-expect-search hits= 需要非负整数，实际：{expected}"))?;
+        }
+        if matches!(
+            field,
+            SearchField::Row | SearchField::Rows | SearchField::Highlight
+        ) && expected.trim().is_empty()
+        {
+            return Err(format!(
+                "--qa-expect-search {} 需要至少一条 `连接/库/.../对象` 路径",
+                field.name()
+            ));
+        }
+        Ok(Self {
+            field,
+            expected: expected.to_owned(),
+        })
+    }
+}
+
+/// 结果行路径匹配：`*` 匹配**一段**（连接名常有前缀 / 后缀，断言不必钉死它）。
+///
+/// 例如 `*/main/Tables/users` 命中 `ui-probe/main/Tables/users`；其它段逐字相等。
+#[must_use]
+pub fn search_path_matches(pattern: &str, actual: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').collect();
+    let actual: Vec<&str> = actual.split('/').collect();
+    pattern.len() == actual.len()
+        && pattern
+            .iter()
+            .zip(&actual)
+            .all(|(expected, got)| *expected == "*" || expected == got)
+}
+
+/// 逗号分隔的断言值 → 去空白的列表（`row=` / `rows=` / `highlight=` 共用）。
+#[must_use]
+pub fn search_paths(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// `--qa-expect-ddl` 要比对的字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DdlField {
@@ -829,6 +944,12 @@ struct Args {
     tree_activate: Option<String>,
     /// `--qa-tree-search <query>`：搜索关键词。
     tree_search: Option<String>,
+    /// `--qa-search <query>`：走搜索框 `changed` → 防抖 → 请求的同一条路径（#搜索树）。
+    search_query: Option<String>,
+    /// `--qa-expect-search <field>=<value>`：结果行序 / 高亮行集合的断言（可重复）。
+    expect_search: Vec<SearchExpectation>,
+    /// `--qa-search-clear`：搜索后把输入框清空（走用户清空 / Esc 同一条路径）。
+    search_clear: bool,
     /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
     tree_click_result: bool,
     /// `--qa-tree-load-more`：点第一个「加载更多…」占位行。
@@ -1074,6 +1195,8 @@ pub fn enabled() -> bool {
             || args.tree_menu_group.is_some()
             || args.tree_menu_pick.is_some()
             || args.tree_search.is_some()
+            || args.search_query.is_some()
+            || args.search_clear
             || args.tree_click_result
             || args.tree_load_more
             || args.data_insert
@@ -1351,6 +1474,25 @@ pub fn tree_search() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_search.clone())
 }
 
+/// 走搜索框同一条输入路径的关键词（`--qa-search`，含 250ms 防抖）。
+#[must_use]
+pub fn search_query() -> Option<String> {
+    ARGS.get().and_then(|args| args.search_query.clone())
+}
+
+/// 搜索后是否清空输入框（`--qa-search-clear`，走清空 / `Esc` 同一条清理路径）。
+#[must_use]
+pub fn search_clear() -> bool {
+    ARGS.get().is_some_and(|args| args.search_clear)
+}
+
+/// 结果树断言（`--qa-expect-search`，按登记顺序）。
+#[must_use]
+pub fn expect_search() -> Vec<SearchExpectation> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.expect_search.clone())
+}
+
 /// 是否点第一条搜索结果（`--qa-tree-click-result`）。
 #[must_use]
 pub fn tree_click_result() -> bool {
@@ -1467,6 +1609,8 @@ pub fn tree_requested() -> bool {
             || args.refresh
             || args.tree_activate.is_some()
             || args.tree_search.is_some()
+            || args.search_query.is_some()
+            || args.search_clear
             || args.tree_click_result
             || args.tree_load_more
             || args.tree_disconnect.is_some()
@@ -2230,6 +2374,27 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.tree_search = Some(value.clone());
                 index += 2;
             }
+            "--qa-search" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-search 需要一个关键词".to_owned())?;
+                if value.trim().is_empty() {
+                    return Err("--qa-search 的关键词不能为空".to_owned());
+                }
+                parsed.search_query = Some(value.clone());
+                index += 2;
+            }
+            "--qa-search-clear" => {
+                parsed.search_clear = true;
+                index += 1;
+            }
+            "--qa-expect-search" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-expect-search 需要 字段=值".to_owned())?;
+                parsed.expect_search.push(SearchExpectation::parse(value)?);
+                index += 2;
+            }
             "--qa-tree-click-result" => {
                 parsed.tree_click_result = true;
                 index += 1;
@@ -2802,7 +2967,7 @@ fn find_tree_search(widget: &gtk::Widget) -> Option<gtk::SearchEntry> {
     if let Some(entry) = widget.downcast_ref::<gtk::SearchEntry>()
         && entry
             .placeholder_text()
-            .is_some_and(|text| text.as_str().starts_with("搜索表名"))
+            .is_some_and(|text| text.as_str().starts_with("搜索连接"))
     {
         return Some(entry.clone());
     }
@@ -3851,5 +4016,46 @@ mod tests {
                 BrowseStep::Page("next".to_owned()),
             ]
         );
+    }
+    /// `--qa-search` 与 `--qa-expect-search` 的解析与取值校验（不接受空关键词 / 空路径）。
+    #[test]
+    fn search_tree_flags_parse_and_validate() {
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-search",
+            "user",
+            "--qa-expect-search",
+            "hits=3",
+            "--qa-expect-search",
+            "row=*/main/Tables/users",
+            "--qa-expect-search",
+            "highlight=*/main/Tables/users,*/main/Views/v_users",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.search_query.as_deref(), Some("user"));
+        assert_eq!(parsed.expect_search.len(), 3);
+        assert_eq!(parsed.expect_search[0].field, SearchField::Hits);
+        assert_eq!(parsed.expect_search[0].expected, "3");
+
+        assert!(parse(&args(&["app", "--qa-search", "  "])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-search", "hits=x"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-search", "hits"])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-search", "row="])).is_err());
+        assert!(parse(&args(&["app", "--qa-expect-search", "bogus=1"])).is_err());
+
+        // 路径断言：`*` 只匹配一段，不能把 `users` 当成 `user`。
+        assert!(search_path_matches(
+            "*/main/Tables/users",
+            "ui-probe/main/Tables/users"
+        ));
+        assert!(!search_path_matches(
+            "*/main/Tables/users",
+            "ui-probe/main/Tables/user"
+        ));
+        assert!(!search_path_matches(
+            "*/main/Tables/users",
+            "ui-probe/main/Tables/users/extra"
+        ));
+        assert_eq!(search_paths("a/b, c/d"), ["a/b", "c/d"]);
     }
 }

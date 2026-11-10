@@ -114,6 +114,11 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-tree-activate", "table-name"),
         ("qa-tree-ddl", "object-name"),
         ("qa-tree-search", "query"),
+        ("qa-search", "query"),
+        (
+            "qa-expect-search",
+            "hits=N|row=连接/库/表|rows=…|highlight=…|status=…|state=…",
+        ),
         ("qa-tree-disconnect", "connection-name"),
         ("qa-tree-select", "object-name"),
         ("qa-tree-select-connection", "connection-name"),
@@ -157,6 +162,7 @@ fn register_qa_options(app: &adw::Application) {
         None,
     );
     for name in [
+        "qa-search-clear",
         "qa-tree-click-result",
         "qa-tree-load-more",
         "qa-refresh",
