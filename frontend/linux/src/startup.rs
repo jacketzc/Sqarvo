@@ -207,6 +207,14 @@ impl StartupWorkspace {
             work_area: work_box.upcast(),
             inspector: inspector.widget().clone().upcast(),
             inspector_width,
+            sidebar_width: crate::window_state::last_sidebar_width()
+                .unwrap_or(crate::layout::SIDEBAR_WIDTH),
+            panel_bounds: crate::window_size::panel_bounds(crate::window_size::TIER),
+            on_sidebar_width: Rc::new(|width: i32| {
+                if let Err(error) = crate::window_state::remember_sidebar_width(width) {
+                    eprintln!("[shell] 侧栏宽度未能记住：{error}");
+                }
+            }),
             on_inspector_width: Rc::new(|width: i32| {
                 if let Err(error) = crate::window_state::remember_inspector_width(width) {
                     eprintln!("[shell] 信息面板宽度未能记住：{error}");
@@ -264,6 +272,11 @@ impl StartupWorkspace {
     #[must_use]
     pub(crate) fn inspector_state(&self) -> (i32, bool) {
         (self.shell.inspector_width(), self.shell.inspector_visible())
+    }
+
+    /// 启动态侧栏当前宽度（拖过就带进连接后的工作区，#158）。
+    pub(crate) fn sidebar_state(&self) -> i32 {
+        self.shell.sidebar_width()
     }
 
     /// 启动态 `Objects` 标签是否固定（QA 断言用，读 `AdwTabPage:pinned` 真实值）。

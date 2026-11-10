@@ -130,6 +130,10 @@ pub fn activate(app: &adw::Application) {
     theme::install();
     // 自有符号图标（v0.2.3.3）：注册成图标主题的资源搜索路径，之后建的图标按钮才取得到。
     icons::install();
+    // 首次 present 用产品基准 1200×800（`--window-size` 优先）：规范 §6.3 要求先按默认
+    // 尺寸呈现，拿到 surface 之后再按显示器逻辑工作区分档——surface 未就绪时读不到显示器，
+    // 猜一个只会让第一次跳动更大。分档与几何恢复在 `window.present()` 之后由
+    // `window_size::watch` 完成（#158）。
     let (default_width, default_height) = crate::qa::window_size().unwrap_or((1200, 800));
 
     let window = adw::ApplicationWindow::builder()
@@ -138,27 +142,13 @@ pub fn activate(app: &adw::Application) {
         .default_width(default_width)
         .default_height(default_height)
         .build();
-    // 最小窗口 960×640 是**强制下限**（workspace-model §1，契约 §9 已收口）：
-    // 交给 GTK 的尺寸请求，toplevel 的最小尺寸随之生效——Wayland 走
-    // `xdg_toplevel.set_min_size`，X11 走 WM normal hints，用户与窗口管理器都拖不到
-    // 更小。`--window-size` 给更小的值时窗口被抬到下限（`--qa-layout-audit` 的
-    // 「窗口 WxH」那一行就是实测值）。
+    // 首次 present 的下限先按规范基准 960×640（workspace-model §1）。拿到显示器后
+    // `window_size::apply` 会把它换成 `min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)`
+    // ——1080p@200%（逻辑 960×540）这类屏上，绝对下限比屏幕还高，底部状态栏会看不见。
     window.set_size_request(
         crate::layout::MIN_WINDOW_WIDTH,
         crate::layout::MIN_WINDOW_HEIGHT,
     );
-    if (default_width, default_height)
-        < (
-            crate::layout::MIN_WINDOW_WIDTH,
-            crate::layout::MIN_WINDOW_HEIGHT,
-        )
-    {
-        eprintln!(
-            "[ui] --window-size {default_width}x{default_height} 低于最小窗口 {}x{}：窗口会被抬到下限",
-            crate::layout::MIN_WINDOW_WIDTH,
-            crate::layout::MIN_WINDOW_HEIGHT
-        );
-    }
     window.add_css_class(theme::WINDOW_CLASS);
 
     // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
@@ -735,6 +725,9 @@ pub fn activate(app: &adw::Application) {
     });
 
     window.present();
+    // #158：present 之后窗口才有 surface / 所在显示器。首次 relayout 在这里做
+    // （改尺寸允许一帧跳动，规范 §6.3），同时把换屏 / 缩放变化的信号接到同一个入口。
+    crate::window_size::watch(&window);
     retry();
 
     // 基准脚本用：定时关窗，退出仍走与用户关闭窗口相同的清理路径。
@@ -1675,6 +1668,12 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
         .borrow()
         .as_ref()
         .map(|startup| startup.inspector_state().0);
+    // 侧栏同理（#158）：启动态拖过就带着当前宽度进新工作区，不等 400ms 落盘。
+    let startup_sidebar = state
+        .startup
+        .borrow()
+        .as_ref()
+        .map(|startup| startup.sidebar_state());
     state.startup.borrow_mut().take();
 
     let version = if outcome.server_version.trim().is_empty() {
@@ -1725,6 +1724,7 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
         &driver_label,
         &version,
         startup_width,
+        startup_sidebar,
     );
     state.workspace.replace(Some(Rc::clone(&workspace)));
     set_page(&state.slot, workspace.widget());
@@ -1956,6 +1956,7 @@ impl Workspace {
         driver_label: &str,
         version: &str,
         startup_width: Option<i32>,
+        startup_sidebar: Option<i32>,
     ) -> Rc<Self> {
         let worker = state
             .worker
@@ -2304,6 +2305,15 @@ impl Workspace {
             work_area: work_box.upcast(),
             inspector: inspector.widget().clone().upcast(),
             inspector_width: remembered_width,
+            sidebar_width: startup_sidebar
+                .or_else(crate::window_state::last_sidebar_width)
+                .unwrap_or(layout::SIDEBAR_WIDTH),
+            panel_bounds: crate::window_size::panel_bounds(crate::window_size::TIER),
+            on_sidebar_width: Rc::new(|width: i32| {
+                if let Err(error) = crate::window_state::remember_sidebar_width(width) {
+                    eprintln!("[shell] 侧栏宽度未能记住：{error}");
+                }
+            }),
             on_inspector_width: Rc::new(|width: i32| {
                 if let Err(error) = crate::window_state::remember_inspector_width(width) {
                     eprintln!("[shell] 信息面板宽度未能记住：{error}");

@@ -189,9 +189,12 @@ pub fn clamp_inspector(width: i32) -> i32 {
     width.clamp(INSPECTOR_MIN, INSPECTOR_MAX)
 }
 
-/// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制。
+/// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制（1.0 档的基准算式）。
 ///
 /// 分隔条位置是「左侧子控件占多少」，面板宽度 = 总宽 - 位置 - 1（分隔条）。
+/// 运行期走 [`crate::window_size::PanelBounds::inspector_width_from_position`]（同一算式
+/// 按档位缩放）；这份基准实现留给布局算术的单测与 #160 的对照。
+#[allow(dead_code)]
 #[must_use]
 pub fn inspector_width_from_position(pane_width: i32, position: i32) -> i32 {
     clamp_inspector(pane_width - position - 1)

@@ -75,8 +75,14 @@ pub struct ShellHandlers {
     pub inspector: gtk::Widget,
     /// 信息面板的初始宽度（窗口级记忆，从窗口状态文件读回，已钳制）。
     pub inspector_width: i32,
+    /// 侧栏的初始宽度（窗口级记忆，#158，已钳制）。
+    pub sidebar_width: i32,
+    /// 面板可拖拽区间（由当前档位算出，`window_size::panel_bounds`）。
+    pub panel_bounds: crate::window_size::PanelBounds,
     /// 面板宽度变化（拖拽后）→ 调用方写入窗口状态文件（窗口级记忆）。
     pub on_inspector_width: Rc<dyn Fn(i32)>,
+    /// 侧栏宽度变化（拖拽后）→ 同一个窗口状态文件（#158）。
+    pub on_sidebar_width: Rc<dyn Fn(i32)>,
     /// 行操作（状态栏按钮组）。
     pub row_op: Rc<dyn Fn(RowOp)>,
     /// 分页器动作（首页 / 上页 / 下页 / 末页）。
@@ -104,6 +110,8 @@ pub struct Shell {
     /// 正在程序化分栏（展开 / 折叠 / 恢复宽度）：这期间的分栏位置变化不是用户拖拽，
     /// 不能当成新的宽度记下来。
     inspector_placing: Rc<Cell<bool>>,
+    /// 面板可拖拽区间（窗口尺寸同一个入口算出来的，`window_size::PanelBounds`）。
+    panel_bounds: crate::window_size::PanelBounds,
     /// 用户把面板拖到新宽度 → 窗口级记住（写独立的窗口状态文件）。
     on_inspector_width: Rc<dyn Fn(i32)>,
 }
@@ -147,38 +155,66 @@ impl Shell {
         work_pane.set_wide_handle(false);
 
         // ---- 区域 03 | 04：侧栏与右侧工作区 ------------------------------------
+        // 面板钳制区间与窗口尺寸出自同一个入口（`window_size::relayout`）：
+        // 本轮 1.0 档就是 180–420 / 240–520，档位接上后一起放大。
+        let bounds = handlers.panel_bounds;
         let sidebar_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
         sidebar_pane.set_start_child(Some(&handlers.sidebar));
         sidebar_pane.set_end_child(Some(&work_pane));
-        sidebar_pane.set_position(layout::SIDEBAR_WIDTH);
+        sidebar_pane.set_position(bounds.clamp_sidebar(handlers.sidebar_width));
         sidebar_pane.set_resize_start_child(false);
         sidebar_pane.set_shrink_start_child(false);
         sidebar_pane.set_resize_end_child(true);
         sidebar_pane.set_shrink_end_child(false);
         sidebar_pane.set_wide_handle(false);
 
-        // 拖拽钳制：把位置拉回 180–420，避免拖成 0 宽或吃掉整个工作区。
+        // 拖拽钳制：把位置拉回可拖区间，避免拖成 0 宽或吃掉整个工作区。
         // 同一处把状态栏的左边沟宽度对齐到分栏位置：竖分割线延伸到底部，左侧整块
         // 属于对象树功能区（v0.2.3.3）。
+        // 首帧的落位不是用户拖的：`sidebar_placing` 在第一次映射后 600ms 才放开，
+        // 否则程序化的 237 会被当成用户选择写进 window.json。
+        let sidebar_placing = Rc::new(Cell::new(true));
         {
             let guard = Cell::new(false);
             let status_for_gutter = Rc::clone(&status);
+            let sidebar_width = Rc::new(Cell::new(bounds.clamp_sidebar(handlers.sidebar_width)));
+            let placing = Rc::clone(&sidebar_placing);
+            // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（与信息面板同一套）。
+            let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+            let pending_on_fire = Rc::clone(&pending);
+            let on_width = Rc::clone(&handlers.on_sidebar_width);
             sidebar_pane.connect_notify_local(Some("position"), move |pane, _| {
                 if guard.get() {
                     return;
                 }
-                let clamped = layout::clamp_sidebar(pane.position());
+                let clamped = bounds.clamp_sidebar(pane.position());
                 if clamped != pane.position() {
                     guard.set(true);
                     pane.set_position(clamped);
                     guard.set(false);
                 }
                 status_for_gutter.set_gutter_width(clamped);
+                if placing.get() || clamped == sidebar_width.get() {
+                    return;
+                }
+                sidebar_width.set(clamped);
+                if let Some(source) = pending.borrow_mut().take() {
+                    source.remove();
+                }
+                let on_width = Rc::clone(&on_width);
+                let pending_for_timer = Rc::clone(&pending_on_fire);
+                *pending.borrow_mut() = Some(glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(400),
+                    move || {
+                        pending_for_timer.borrow_mut().take();
+                        on_width(clamped);
+                    },
+                ));
             });
-            status.set_gutter_width(layout::clamp_sidebar(sidebar_pane.position()));
+            status.set_gutter_width(bounds.clamp_sidebar(sidebar_pane.position()));
         }
 
-        let inspector_width = Rc::new(Cell::new(layout::clamp_inspector(handlers.inspector_width)));
+        let inspector_width = Rc::new(Cell::new(bounds.clamp_inspector(handlers.inspector_width)));
         // 面板常驻：初始化即 true，`set_inspector_visible(false)` 不再有调用者。
         let inspector_visible = Rc::new(Cell::new(true));
         // 首帧的分栏不是用户拖的：从构造起就认作「正在放置」，直到第一次落位后
@@ -202,7 +238,7 @@ impl Shell {
                 if pane_width <= 0 {
                     return;
                 }
-                let clamped = layout::inspector_width_from_position(pane_width, pane.position());
+                let clamped = bounds.inspector_width_from_position(pane_width, pane.position());
                 if clamped != width_cell.get() {
                     width_cell.set(clamped);
                 }
@@ -250,15 +286,23 @@ impl Shell {
             inspector_width,
             inspector_visible,
             inspector_placing,
+            panel_bounds: bounds,
             on_inspector_width: Rc::clone(&handlers.on_inspector_width),
         });
         {
             // 首次拿到尺寸时把布局算式的实际结果写进日志：截图之外还有可复核的数字。
             // `map` 的时刻分配还没发生（宽高都是 0），所以推迟一拍再取尺寸。
             let weak = Rc::downgrade(&shell);
+            let sidebar_placing = Rc::clone(&sidebar_placing);
             shell.root.connect_map(move |_| {
                 let weak = weak.clone();
+                let sidebar_placing = Rc::clone(&sidebar_placing);
                 glib::timeout_add_local_once(std::time::Duration::from_millis(0), move || {
+                    let placing = Rc::clone(&sidebar_placing);
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(600),
+                        move || placing.set(false),
+                    );
                     if let Some(shell) = weak.upgrade() {
                         // 面板常驻：首次映射后按记忆宽度把分栏落位一次（宽度未就绪时
                         // 短轮询，不能把 0 宽算成一次落位）。
@@ -300,9 +344,14 @@ impl Shell {
         if width <= 0 || window_height <= 0 {
             return;
         }
-        let sidebar = layout::clamp_sidebar(self.sidebar_pane.position());
+        let sidebar = self
+            .panel_bounds
+            .clamp_sidebar(self.sidebar_pane.position());
         let inspector = if self.inspector_visible.get() {
-            Some(layout::clamp_inspector(self.inspector_width.get()))
+            Some(
+                self.panel_bounds
+                    .clamp_inspector(self.inspector_width.get()),
+            )
         } else {
             None
         };
@@ -385,7 +434,9 @@ impl Shell {
             if visible { "展开" } else { "折叠" },
             self.inspector_width.get()
         );
-        let width = layout::clamp_inspector(self.inspector_width.get());
+        let width = self
+            .panel_bounds
+            .clamp_inspector(self.inspector_width.get());
         let pane = self.work_pane.clone();
         let place = Rc::new(move || {
             let pane_width = pane.width();
@@ -459,7 +510,9 @@ impl Shell {
             self.inspector_placing.set(true);
             return;
         }
-        let width = layout::clamp_inspector(self.inspector_width.get());
+        let width = self
+            .panel_bounds
+            .clamp_inspector(self.inspector_width.get());
         self.inspector_placing.set(true);
         pane.set_position(pane_width - width - 1);
         let placing = Rc::clone(&self.inspector_placing);
@@ -496,11 +549,17 @@ impl Shell {
         self.inspector_width.get()
     }
 
+    /// 侧栏当前宽度（已钳制；未分配尺寸时给下限，拖动后立即反映）。
+    pub fn sidebar_width(&self) -> i32 {
+        self.panel_bounds
+            .clamp_sidebar(self.sidebar_pane.position())
+    }
+
     /// 把面板设到指定宽度（拖拽结束后的落点；`--qa-inspector-width` 也走这里）。
     ///
     /// 钳制到 240–520，展开状态下立刻重新分栏，并窗口级记下来。
     pub fn set_inspector_width(&self, width: i32) {
-        let width = layout::clamp_inspector(width);
+        let width = self.panel_bounds.clamp_inspector(width);
         if width == self.inspector_width.get() {
             return;
         }

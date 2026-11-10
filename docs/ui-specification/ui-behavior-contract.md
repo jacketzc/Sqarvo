@@ -45,7 +45,7 @@
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | 应用启动 | 无 | 先 Loading（居中 spinner + 握手阶段文案），握手成功后**直接落地工作区**（未连接时的启动态外壳），不再停在诊断页。主工具条从窗口构建起就存在：后端未握手时六个按钮全部禁用（见 §1.2） | `src/ui.rs:121`（`activate`）、`src/ui.rs:218-236`（工具条构建与 `set_backend_ready(false)`）、`src/ui.rs:1447`（`show_startup_workspace`） |
-| 窗口最小尺寸 | 窗口创建时 | 960 × 640 是**强制**下限，不是验收参考：`layout::MIN_WINDOW_WIDTH/HEIGHT` 交给 `GtkWidget::set_size_request`，GTK 把它转成 toplevel 的最小尺寸（Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal hints），拖不到更小。`--window-size` 给更小的值（如 `800x500`）时窗口被抬到下限并记一行 `[ui] --window-size … 低于最小窗口 …`，实测尺寸看 `--qa-layout-audit` 的「窗口 WxH」。**目标口径**（ADR 0026 / #158）是 `min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)`，当前实现尚未收敛，见 §9 | `src/ui.rs:143`（`activate` 的 `set_size_request`）、`src/layout.rs:32`（`MIN_WINDOW_WIDTH`） |
+| 窗口最小尺寸 | 窗口创建时 | 最小窗口按显示器逻辑工作区**收敛**：`min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)`（T = 密度档，本轮 1.0），由 `window_size::relayout` 算出后交给 `GtkWidget::set_size_request`，GTK 把它转成 toplevel 的最小尺寸（Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal hints）。1080p@200%（逻辑 960×540）与 1366×768@125% 这类屏上窗口不再比屏幕高；`--window-size` 给更小的值时被抬到当次下限并记一行 `[monitor] 目标窗口 … 低于最小窗口 …`，实测尺寸看 `--qa-layout-audit` 的「窗口 WxH」或 `--qa-report-monitor` 的 `[monitor]` 行 | `src/window_size.rs:139`（`relayout`）、`src/window_size.rs:208`（`min_window`）、`src/ui.rs:148`（`activate` 首次 `set_size_request`） |
 | 后端握手失败 | 无 | 主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、可操作文案 + 「重试」；标题栏回到 `Sqarvo`。工具条保留在错误页上方并**保持全部禁用**（日志「`[toolbar] 后端未握手：0/6 个按钮可用`」） | `src/ui.rs:3295`（`show_error`）、`src/ui.rs:473-481`（事件泵回退）、`src/shell.rs:705`（`set_backend_ready`） |
 | 连接数据库成功 | 有连接结果 | 标题 = `<连接名> - <驱动显示名>`；副标题 = `已连接 · <显示名>（<driver_id>）· <服务端版本>`（版本缺失时写「未知（后端未返回）」） | `src/ui.rs:1414-1448` |
 | 切换标签 | 工作区存在 | 标题跟着当前标签变：`Objects` → `<连接名> - <驱动>`；表 / 查询标签 → `<标签标题> (<连接名>)`；副标题不变（连接级信息） | `src/tabs.rs:2069`（`refresh_current`）、`src/tabs.rs:128`（`window_title_for`） |
@@ -466,8 +466,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见
 [`ui-behavior-contract.review.md`](ui-behavior-contract.review.md)。
 
-当前**有 3 项未收口**（v0.2.3.4，2026-11-10 登记，均已建 Issue）：界面密度档（#160）、最小窗口
-按工作区收敛与窗口几何记忆（#158），口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) 与
+当前**有 1 项未收口**（v0.2.3.4，2026-11-10 登记，均已建 Issue）：界面密度档（#160），口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) 与
 [ADR 0026](../decisions/0026-ui-scaling-window-sizing.md)。发现新偏差时按同样格式追加：
 「代码如此 / 文档如此 / 建议」，能当场改的就改掉再删条目，不要把已经改好的留在这一节。
 
@@ -482,5 +481,3 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | `Alt+N` 与拖拽重排 | 序号按 `AdwTabView::pages()` 实际顺序取，拖拽重排后的映射未实测 | §4 |
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
 | 界面密度档（**未收口**） | 代码只有一套固定尺寸（`layout.rs` 常量），没有 100% / 125% / 150% 三档、没有档位菜单与 `Ctrl+Plus` / `Ctrl+minus` / `Ctrl+0`；口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §2，实现跟踪 #160 | §1.1 |
-| 最小窗口按工作区收敛（**未收口**） | 代码是固定 960×640；目标口径 `min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)`，1080p@200%（逻辑 960×540）上底部状态栏会跑到屏幕外。跟踪 #158 | §1.1 |
-| 窗口几何记忆（**未收口**） | `window.json` 只存信息面板宽度（`version = 1`），窗口尺寸 / 位置 / 最大化不记忆；目标 schema v2 见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §7。跟踪 #158 | §1.1 |
