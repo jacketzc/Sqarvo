@@ -1146,6 +1146,15 @@ pub struct TabSet {
     self_ref: RefCell<Weak<TabSet>>,
     /// 最近一次「拒绝新建」的文案（QA 断言与日志用）。
     last_limit_message: RefCell<Option<String>>,
+    /// QA 的关闭回答（只有 `close-signal` 步骤会填）：`on_close_page` 取走后交给对话框
+    /// 的同一个 response 回调，不是绕过确认的另一条路径。
+    qa_close_answer: Cell<Option<CloseAnswer>>,
+    /// 被 `close-page` 信号拦下的关闭请求（等确认框回答）。
+    ///
+    /// libadwaita 的规矩：信号里返回 `Stop` 之后必须用 `close_page_finish(page, true)`
+    /// 收尾。若改成再发一次 `close_page()`，页面已经在「关闭中」，这次请求会被丢掉——
+    /// 标签既关不掉，后续每次关闭也都不再有任何反应（中键关脏标签就是这样卡住的）。
+    pending_close: RefCell<Option<adw::TabPage>>,
     /// 正在显示的上限提示对话框。
     limit_dialog: Rc<RefCell<Option<adw::AlertDialog>>>,
 }
@@ -1200,6 +1209,8 @@ impl TabSet {
             switching: Cell::new(false),
             self_ref: RefCell::new(Weak::new()),
             last_limit_message: RefCell::new(None),
+            qa_close_answer: Cell::new(None),
+            pending_close: RefCell::new(None),
             limit_dialog: Rc::new(RefCell::new(None)),
         });
         set.self_ref.replace(Rc::downgrade(&set));
@@ -2173,9 +2184,9 @@ impl TabSet {
         tab.close_phase.set(ClosePhase::Idle);
         eprintln!("[tabs] 标签 {} 的更改已保存，继续关闭", tab.id);
         // 这里可能正处在数据页自己的状态回调里：推迟一拍再摘页面。
-        let view = self.view.clone();
-        let page = tab.page.clone();
-        glib::idle_add_local_once(move || view.close_page(&page));
+        let set = Rc::clone(self);
+        let tab = Rc::clone(tab);
+        glib::idle_add_local_once(move || set.finish_close_page(&tab, true));
     }
 
     // -- worker 事件路由 ---------------------------------------------------
@@ -2412,10 +2423,56 @@ impl TabSet {
         let snapshot = tab.data.as_ref().map(|data| data.status_snapshot());
         let prompt = close_prompt(&tab.kind.title(), snapshot.as_ref());
         if !prompt.is_needed() {
+            self.clear_pending_close(page);
             return glib::Propagation::Proceed;
         }
-        self.present_close_dialog(&tab, &prompt, None);
+        // 同一个页面已经在等回答：不要再叠一个确认框（叠出来的框用户看不到，
+        // 表现就是「点关闭没有任何反应」）。用户关掉那个框、再点关闭才会重开。
+        if self
+            .pending_close
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending == page)
+        {
+            eprintln!("[tabs] 关闭标签 {} 的确认框已在显示，忽略重复请求", tab.id);
+            return glib::Propagation::Stop;
+        }
+        self.pending_close.replace(Some(page.clone()));
+        // QA 的 `close-signal` 步骤在这里把回答交给同一个 response 回调：走的仍是
+        // 「点标签中键 / Ctrl+W → close-page 信号 → 确认框」这条真实路径。
+        let forced = self.qa_close_answer.take();
+        self.present_close_dialog(&tab, &prompt, forced);
         glib::Propagation::Stop
+    }
+
+    /// 忘掉某个页面的待回答关闭请求（取消、页面已摘掉、或不需要确认时）。
+    fn clear_pending_close(self: &Rc<Self>, page: &adw::TabPage) {
+        let mut pending = self.pending_close.borrow_mut();
+        if pending.as_ref().is_some_and(|current| current == page) {
+            pending.take();
+        }
+    }
+
+    /// 确认框回答「关闭」之后真正摘页面。
+    ///
+    /// libadwaita 的规矩：`close-page` 里返回 `Stop` 之后，这次关闭请求必须由
+    /// `close_page_finish(page, confirm)` 收尾——`confirm=true` 关闭、`false` 放弃。
+    /// 只返回 `Stop` 而不收尾，页面会一直停在「正在关闭」，之后所有关闭请求都被丢掉
+    /// （用户中键关脏标签后标签既关不掉、再点也没有任何反应，就是这条路径）。
+    /// 重发 `close_page()` 同样不行：那只是又发一次请求，页面已经在关闭中，照样被丢。
+    ///
+    /// 没有被拦下过的关闭（QA 的 `close` 步骤、直接调用方）仍然走 `close_page()`。
+    fn finish_close_page(self: &Rc<Self>, tab: &Rc<TabHandle>, confirm: bool) {
+        let was_pending = self
+            .pending_close
+            .borrow_mut()
+            .take()
+            .is_some_and(|page| page == tab.page);
+        if was_pending {
+            self.view.close_page_finish(&tab.page, confirm);
+        } else if confirm {
+            self.view.close_page(&tab.page);
+        }
     }
 
     /// 关闭确认：保存 / 放弃 / 取消。
@@ -2486,17 +2543,20 @@ impl TabSet {
         match answer {
             CloseAnswer::Cancel => {
                 eprintln!("[tabs] 关闭标签 {} 已取消：标签与会话都保留", tab.id);
+                // 这次关闭请求已被拦下，必须明确收尾（confirm=false），否则页面会
+                // 一直停在「正在关闭」，用户下一次点关闭会被直接丢掉。
+                self.finish_close_page(tab, false);
             }
             CloseAnswer::Discard => {
                 if let Some(data) = tab.data.as_ref() {
                     data.discard_changes();
                 }
                 eprintln!("[tabs] 放弃更改并关闭标签 {}", tab.id);
-                self.view.close_page(&tab.page);
+                self.finish_close_page(tab, true);
             }
             CloseAnswer::Save => {
                 let Some(data) = tab.data.as_ref() else {
-                    self.view.close_page(&tab.page);
+                    self.finish_close_page(tab, true);
                     return;
                 };
                 let snapshot = data.status_snapshot();
@@ -2507,7 +2567,7 @@ impl TabSet {
                         eprintln!("[tabs] 保存后关闭标签 {}：提交事务", tab.id);
                         data.commit_transaction();
                     } else {
-                        self.view.close_page(&tab.page);
+                        self.finish_close_page(tab, true);
                     }
                     return;
                 }
@@ -2520,6 +2580,7 @@ impl TabSet {
 
     /// 页面被摘掉：释放该标签的会话（`Disconnect`），并从记录里移除。
     fn on_page_detached(self: &Rc<Self>, page: &adw::TabPage) {
+        self.clear_pending_close(page);
         let removed = {
             let mut tabs = self.tabs.borrow_mut();
             match tabs.iter().position(|tab| &tab.page == page) {
@@ -2984,6 +3045,23 @@ impl TabSet {
                 } else {
                     Err(format!("没有第 {tab} 个标签"))
                 }
+            }
+            QaStep::CloseSignal { tab, answer } => {
+                let Some(entry) = self.by_index(*tab) else {
+                    return Err(format!("没有第 {tab} 个标签"));
+                };
+                if matches!(entry.kind, TabKind::Objects) {
+                    return Err("Objects 页固定存在，不可关闭".to_owned());
+                }
+                // 与用户点标签中键 / 按 Ctrl+W 一样：只发关闭请求，不直接摘页面。
+                if !self.select_index(*tab) {
+                    return Err(format!("没有第 {tab} 个标签"));
+                }
+                self.qa_close_answer.set(*answer);
+                self.view.close_page(&entry.page);
+                Ok(format!(
+                    "请求关闭第 {tab} 个标签（走 close-page 信号，回答 {answer:?}）"
+                ))
             }
             // ---- #121 验收链 ----
             QaStep::Expand(name) => {
@@ -3553,6 +3631,16 @@ pub enum QaStep {
         /// 期望的回答（`None` = 直接关闭，不弹框）。
         answer: Option<CloseAnswer>,
     },
+    /// `close-signal <n> <save|discard|cancel>`：**走 `close-page` 信号**关闭第 n 个标签
+    /// （与点标签中键 / `Ctrl+W` 完全同一条路径：信号 → 确认框 → 回答）。
+    /// 与 `close` 的区别是 `close` 直接弹确认框，不经过 `AdwTabView` 的关闭请求——
+    /// 「脏标签关不掉」那类问题只在信号路径上出现。
+    CloseSignal {
+        /// 标签序号。
+        tab: usize,
+        /// 期望的回答（`None` = 不自动回答，只发请求）。
+        answer: Option<CloseAnswer>,
+    },
     /// 写一次 `ListSessions` 日志（前后对比的证据）。
     Sessions(String),
     // ---- #121 验收链（全部走既有用户路径） ----
@@ -3929,6 +4017,15 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                 }
             }
             "close" => QaStep::Close {
+                tab: parse_index(&parts, 1, number)?,
+                answer: match parts.get(2).copied() {
+                    None => None,
+                    Some(value) => Some(CloseAnswer::from_response(value).ok_or_else(|| {
+                        format!("第 {} 行的回答只接受 save|discard|cancel", number + 1)
+                    })?),
+                },
+            },
+            "close-signal" => QaStep::CloseSignal {
                 tab: parse_index(&parts, 1, number)?,
                 answer: match parts.get(2).copied() {
                     None => None,

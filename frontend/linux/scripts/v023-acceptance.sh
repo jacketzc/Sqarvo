@@ -724,6 +724,48 @@ fi
 run_cross_catalog_case
 
 # ---------------------------------------------------------------------------
+# 5c. 脏标签关闭回归（v0.2.3.4）
+# ---------------------------------------------------------------------------
+# 场景：表页改过一行 → 中键点标签 / Ctrl+W → 确认框「放弃更改并关闭」。
+# 这条路径是 `close-page` 信号（`close_tab_at` 不是）：libadwaita 要求被拦下的关闭请求
+# 用 `close_page_finish` 收尾；回归时重发 `close_page()` 会被丢掉，标签停在半关状态，
+# 之后再点关闭毫无反应。这里断言标签真的被摘掉，且第二次关闭落到「没有标签」。
+CLOSE_CASE="$OUT/close-dirty"
+mkdir -p "$CLOSE_CASE" "$TMP/run-close-dirty/sqarvo"
+cat > "$TMP/close-dirty.txt" <<STEPS
+expand main
+open-table accept_items
+sleep 1500
+edit 1 0 name dirty-probe
+sleep 600
+close-signal 1 discard
+sleep 1500
+close-signal 1 discard
+sleep 800
+quit
+STEPS
+env "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" \
+    "SQARVO_ENDPOINT_FILE=$TMP/run-close-dirty/sqarvo/backend-endpoint.json" \
+    "SQARVO_BACKEND_BIN=$BACKEND" \
+    "SQARVO_QA_APP_ID=io.sqarvo.Sqarvo.QA023CloseDirty" \
+    timeout 120 "$BIN" --window-size 1200x800 \
+    --qa-profile "$TMP/profile-sqlite.json" \
+    --qa-tabs-file "$TMP/close-dirty.txt" > "$CLOSE_CASE/run.log" 2>&1
+check_eq "close-dirty 进程退出码" 0 "$?"
+check_contains "close-dirty 走的是确认框的「放弃更改并关闭」" \
+    '放弃更改并关闭标签 tab-t1' "$CLOSE_CASE/run.log"
+check_contains "close-dirty 标签真的被摘掉（不再停在半关）" \
+    '已移除：会话' "$CLOSE_CASE/run.log"
+check_contains "close-dirty 摘页面后只剩 Objects 一个标签" \
+    '剩余 1 个标签' "$CLOSE_CASE/run.log"
+check_contains "close-dirty 第二次关闭落到「没有第 1 个标签」" \
+    '没有第 1 个标签' "$CLOSE_CASE/run.log"
+check_absent "close-dirty 没有把确认框叠起来" \
+    '的确认框已在显示' "$CLOSE_CASE/run.log"
+check_contains "close-dirty 退出时没有残留标签" \
+    '退出清理：开始（0 个标签）' "$CLOSE_CASE/run.log"
+
+# ---------------------------------------------------------------------------
 # 6. 配置隔离复核：真实连接配置一条都不能多
 # ---------------------------------------------------------------------------
 

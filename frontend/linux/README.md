@@ -1356,6 +1356,7 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 | `inspector <ddl\|info>` | 信息面板换页（`show` 仍被接受但无动作；`hide` 在 v0.2.3.2 报错：面板常驻） | 选中的是表/视图才能换页 |
 | `open-table <表名>` | 打开表标签（终点与树里双击表相同；按名字解析已加载的树节点） | 该表已在树里加载 |
 | `select <n>` / `close <n> <save\|discard\|cancel>` | 切标签 / 关标签（0 是固定 `Objects` 页） | 标签存在 |
+| `close-signal <n> <save\|discard\|cancel>` | **走 `close-page` 信号**关第 n 个标签：与点标签中键 / `Ctrl+W` 完全同一条路径（信号 → 确认框 → 回答）。`close` 直接弹确认框、不经过 `AdwTabView` 的关闭请求，所以「脏标签关不掉 / 关完之后再点没反应」这类问题只有 `close-signal` 能复现（v0.2.3.4 回归用例） | 标签存在且非 `Objects` |
 | `tab-next` / `tab-prev` | 与 `Ctrl+Tab` / `Ctrl+Shift+Tab` 同一条路径（同一个 `TabSet::step_selection`）：选下一个 / 上一个，到头回绕；日志写「当前标签 N/M：<标题>」 | 有工作区 |
 | `select-n <N>` | 与 `Alt+N` 同一条路径（`TabSet::select_position`）：直选第 N 个标签（1 起，含 `Objects`）；N 超过标签数时**不失败**，只记 `[tabs] Alt+3：只有 2 个标签，忽略` | 有工作区 |
 | `sort-panel <标签> <列> <asc\|desc>` | 在筛选与排序面板里加一个排序键并应用（表头不可点，排序只有这条路径） | 表标签；驱动声明排序能力 |
