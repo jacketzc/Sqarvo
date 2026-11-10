@@ -50,6 +50,7 @@ use crate::backend::worker::QueryEvent;
 use crate::backend::worker::{TabSessionOpened, TableEvent, WorkerHandle};
 use crate::browse::ConnectionRegistry;
 use crate::data_page::{DataCallbacks, DataPage, RowOpsState, StatusSnapshot};
+use crate::layout::{Gap, gap};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
 use crate::qa;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
@@ -702,11 +703,11 @@ impl ObjectsPage {
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
             // 与数据网格同一口径：13px / Medium（12px 会裁掉 CJK 笔画）。
             name.add_css_class("sqarvo-cell");
-            let cell = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let cell = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
             cell.add_css_class("sqarvo-objects-cell");
             // 单元格内距与网格一致（网格靠 `cell` 的 padding，这里显式写一份）。
-            cell.set_margin_start(6);
-            cell.set_margin_end(6);
+            cell.set_margin_start(gap(Gap::Sm));
+            cell.set_margin_end(gap(Gap::Sm));
             cell.append(&icon);
             cell.append(&name);
             item.set_child(Some(&cell));
@@ -749,8 +750,8 @@ impl ObjectsPage {
             kind.add_css_class("sqarvo-cell");
             // 类型是次要信息：字号与网格单元一致，颜色弱一档。
             kind.add_css_class("dim-label");
-            kind.set_margin_start(6);
-            kind.set_margin_end(8);
+            kind.set_margin_start(gap(Gap::Sm));
+            kind.set_margin_end(gap(Gap::Md));
             item.set_child(Some(&kind));
         });
         kind_factory.connect_bind(|_, item| {
@@ -835,7 +836,7 @@ impl ObjectsPage {
         empty.set_title(&empty_text.0);
         empty.set_description(Some(&empty_text.1));
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
         content.set_vexpand(true);
         content.append(&scroll);
         content.append(&more);
@@ -847,11 +848,11 @@ impl ObjectsPage {
         stack.add_named(&content, Some("list"));
         stack.set_visible_child_name("empty");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Md));
         root.set_vexpand(true);
-        root.set_margin_top(12);
-        root.set_margin_start(12);
-        root.set_margin_end(12);
+        root.set_margin_top(gap(Gap::Xl));
+        root.set_margin_start(gap(Gap::Xl));
+        root.set_margin_end(gap(Gap::Xl));
         root.append(&title);
         root.append(&stack);
 
@@ -1290,12 +1291,12 @@ impl TabSet {
         plus.set_tooltip_text(Some("新建查询标签（Ctrl+T）"));
         plus.set_valign(gtk::Align::Center);
 
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         strip.add_css_class("sqarvo-tab-strip");
         strip.append(&bar);
         strip.append(&plus);
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.set_vexpand(true);
         root.set_hexpand(true);
         root.append(&strip);

@@ -24,6 +24,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::query::{QueryFailure, RowView, StatementView};
+use crate::layout::{Gap, gap};
 use crate::qa;
 use crate::results::{ResultsView, RunState};
 
@@ -108,11 +109,11 @@ impl SqlPage {
         cancel_button.set_sensitive(false);
         cancel_button.set_tooltip_text(Some("取消当前查询（Escape，可重复点击）"));
 
-        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        toolbar.set_margin_top(6);
-        toolbar.set_margin_bottom(6);
-        toolbar.set_margin_start(12);
-        toolbar.set_margin_end(12);
+        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
+        toolbar.set_margin_top(gap(Gap::Sm));
+        toolbar.set_margin_bottom(gap(Gap::Sm));
+        toolbar.set_margin_start(gap(Gap::Xl));
+        toolbar.set_margin_end(gap(Gap::Xl));
         toolbar.append(&session_label);
         toolbar.append(&execute_button);
         toolbar.append(&cancel_button);
@@ -120,9 +121,9 @@ impl SqlPage {
         // 如实标注：没有语法高亮就不是语法高亮，不能靠配色暗示。
         let note = gtk::Label::new(Some("当前为纯文本编辑，语法高亮将在后续版本提供"));
         note.set_xalign(0.0);
-        note.set_margin_start(12);
-        note.set_margin_end(12);
-        note.set_margin_bottom(4);
+        note.set_margin_start(gap(Gap::Xl));
+        note.set_margin_end(gap(Gap::Xl));
+        note.set_margin_bottom(gap(Gap::Xs));
         note.add_css_class("dim-label");
         note.add_css_class("caption");
         note.add_css_class("sqarvo-note");
@@ -130,10 +131,10 @@ impl SqlPage {
         let editor = gtk::TextView::new();
         editor.set_monospace(true);
         editor.set_wrap_mode(gtk::WrapMode::WordChar);
-        editor.set_left_margin(8);
-        editor.set_right_margin(8);
-        editor.set_top_margin(6);
-        editor.set_bottom_margin(6);
+        editor.set_left_margin(gap(Gap::Md));
+        editor.set_right_margin(gap(Gap::Md));
+        editor.set_top_margin(gap(Gap::Sm));
+        editor.set_bottom_margin(gap(Gap::Sm));
         editor.add_css_class("sqarvo-sql-editor");
         editor.set_accepts_tab(true);
 
@@ -144,9 +145,9 @@ impl SqlPage {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&editor)
             .build();
-        editor_scroll.set_margin_start(12);
-        editor_scroll.set_margin_end(12);
-        editor_scroll.set_margin_bottom(8);
+        editor_scroll.set_margin_start(gap(Gap::Xl));
+        editor_scroll.set_margin_end(gap(Gap::Xl));
+        editor_scroll.set_margin_bottom(gap(Gap::Md));
         editor_scroll.add_css_class("card");
 
         // 单元格语义图例：让「NULL / 空串 / 二进制 / 截断」一眼可查，而不是靠猜。
@@ -154,10 +155,10 @@ impl SqlPage {
             "图例：NULL=灰色斜体 · ''=空字符串（与 NULL 不同）· 0x89 50…=二进制前缀 · …（已截断）=服务端只返回了前缀",
         ));
         legend.set_xalign(0.0);
-        legend.set_margin_start(12);
-        legend.set_margin_end(12);
-        legend.set_margin_top(4);
-        legend.set_margin_bottom(4);
+        legend.set_margin_start(gap(Gap::Xl));
+        legend.set_margin_end(gap(Gap::Xl));
+        legend.set_margin_top(gap(Gap::Xs));
+        legend.set_margin_bottom(gap(Gap::Xs));
         legend.set_wrap(true);
         legend.add_css_class("dim-label");
         legend.add_css_class("caption");
@@ -167,7 +168,7 @@ impl SqlPage {
             Rc::new(move || fetch())
         });
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         // 必须可扩展：否则页面按自然高度布局，结果表会溢出到窗口外（被底部状态行遮住）。
         root.set_vexpand(true);
         root.set_valign(gtk::Align::Fill);

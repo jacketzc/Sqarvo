@@ -60,6 +60,7 @@ use crate::backend::metadata::{
     kind_icon, kind_label,
 };
 use crate::browse::{ConnectionRegistry, ConnectionSnapshot, ConnectionState};
+use crate::layout::{Gap, gap, metrics};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
 
 /// 搜索防抖窗口。
@@ -1049,7 +1050,7 @@ impl TreePanel {
         search_status.add_css_class("dim-label");
         search_status.add_css_class("caption");
 
-        let search_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let search_page = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         let search_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -1109,15 +1110,15 @@ impl TreePanel {
                 kind.add_css_class("dim-label");
                 kind.add_css_class("caption");
                 // 侧栏 237 宽时行尾文字贴着右边界会被切掉半个字：留 6px 行尾留白。
-                kind.set_margin_end(6);
-                let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                kind.set_margin_end(gap(Gap::Sm));
+                let row_box = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
                 row_box.add_css_class("sqarvo-tree-row");
                 row_box.append(&arrow_button);
                 row_box.append(&icon);
                 row_box.append(&name);
                 row_box.append(&kind);
-                row_box.set_margin_top(4);
-                row_box.set_margin_bottom(4);
+                row_box.set_margin_top(gap(Gap::Xs));
+                row_box.set_margin_bottom(gap(Gap::Xs));
                 item.set_child(Some(&row_box));
 
                 // 右键菜单：每行一个手势（行控件由 ListView 复用，手势只装一次，
@@ -1310,12 +1311,12 @@ impl TreePanel {
         root_label.set_xalign(0.0);
         root_label.add_css_class("heading");
         root_label.add_css_class("caption");
-        root_label.set_margin_top(4);
-        root_label.set_margin_bottom(2);
-        root_label.set_margin_start(10);
+        root_label.set_margin_top(gap(Gap::Xs));
+        root_label.set_margin_bottom(gap(Gap::Xxs));
+        root_label.set_margin_start(gap(Gap::Lg));
         root_label.set_tooltip_text(Some("连接注册表：来自 connections.json，与是否已连接无关"));
 
-        let tree_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let tree_page = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         tree_page.set_vexpand(true);
         tree_page.append(&root_label);
         tree_page.append(&tree_scroll);
@@ -1323,10 +1324,10 @@ impl TreePanel {
         let status = gtk::Label::new(Some("尚未读取"));
         status.set_xalign(0.0);
         status.set_wrap(true);
-        status.set_margin_top(4);
-        status.set_margin_bottom(6);
-        status.set_margin_start(10);
-        status.set_margin_end(10);
+        status.set_margin_top(gap(Gap::Xs));
+        status.set_margin_bottom(gap(Gap::Sm));
+        status.set_margin_start(gap(Gap::Lg));
+        status.set_margin_end(gap(Gap::Lg));
         status.add_css_class("dim-label");
         status.add_css_class("caption");
 
@@ -1335,10 +1336,10 @@ impl TreePanel {
         let hint = gtk::Label::new(None);
         hint.set_xalign(0.0);
         hint.set_wrap(true);
-        hint.set_margin_top(2);
-        hint.set_margin_bottom(6);
-        hint.set_margin_start(10);
-        hint.set_margin_end(10);
+        hint.set_margin_top(gap(Gap::Xxs));
+        hint.set_margin_bottom(gap(Gap::Sm));
+        hint.set_margin_start(gap(Gap::Lg));
+        hint.set_margin_end(gap(Gap::Lg));
         hint.add_css_class("dim-label");
         hint.add_css_class("caption");
         hint.set_visible(false);
@@ -1350,7 +1351,7 @@ impl TreePanel {
         stack.add_named(&state_page, Some("state"));
         stack.set_visible_child_name("tree");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         // 侧栏最小宽度归外壳（GtkPaned）管：树自身只声明 §1 的可拖拽下限 180，
         // 不能再钉 260——那会让 237 的默认宽度和 180 的下限都到不了。
         root.set_size_request(crate::layout::SIDEBAR_MIN, -1);
@@ -2586,7 +2587,7 @@ impl TreePanel {
             kind.add_css_class("dim-label");
             kind.add_css_class("caption");
             // 行尾文字留 6px，且声明最小宽度：名字列用省略号收缩，两者不互相挤压。
-            kind.set_margin_end(6);
+            kind.set_margin_end(gap(Gap::Sm));
             if row.kind_text.is_empty() {
                 kind.set_visible(false);
             } else {
@@ -2594,14 +2595,14 @@ impl TreePanel {
                     kind.measure(gtk::Orientation::Horizontal, -1);
                 kind.set_size_request(needed, -1);
             }
-            let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let top = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
             top.add_css_class("sqarvo-tree-row");
             top.append(&arrow_button);
             top.append(&icon);
             top.append(&name);
             top.append(&kind);
-            top.set_margin_top(4);
-            top.set_margin_bottom(4);
+            top.set_margin_top(gap(Gap::Xs));
+            top.set_margin_bottom(gap(Gap::Xs));
             top.set_margin_start(4 + i32::try_from(row.depth).unwrap_or(0) * 14);
             let list_row = gtk::ListBoxRow::new();
             list_row.set_child(Some(&top));
@@ -3303,11 +3304,11 @@ impl TreePanel {
             1,
             1,
         )));
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        list.set_margin_top(4);
-        list.set_margin_bottom(4);
-        list.set_margin_start(4);
-        list.set_margin_end(4);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+        list.set_margin_top(gap(Gap::Xs));
+        list.set_margin_bottom(gap(Gap::Xs));
+        list.set_margin_start(gap(Gap::Xs));
+        list.set_margin_end(gap(Gap::Xs));
         let entries: Vec<MenuEntry> = Self::menu_items(row)
             .into_iter()
             .map(|item| (item.label(), self.menu_action(item, row)))
@@ -4423,11 +4424,14 @@ fn install_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(
+    // 箭头的命中盒按当前档位的度量取（#159），不再写死 18。
+    let m = metrics();
+    provider.load_from_string(&format!(
         r#"
-        button.tree-arrow { min-width: 18px; min-height: 18px; padding: 0; margin: 0; }
+        button.tree-arrow {{ min-width: {tree_arrow_box}px; min-height: {tree_arrow_box}px; padding: 0; margin: 0; }}
         "#,
-    );
+        tree_arrow_box = m.tree_arrow_box,
+    ));
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,

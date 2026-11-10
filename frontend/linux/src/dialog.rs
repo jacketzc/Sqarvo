@@ -31,6 +31,7 @@ use crate::backend::connection::{
 };
 use crate::config::SavedConnection;
 use crate::driver_form::{self, FieldSet, FormInput};
+use crate::layout::{Gap, gap};
 use crate::qa::QaProfile;
 
 /// 对话框提交回调：UI 层把草稿交给 worker。
@@ -227,11 +228,11 @@ impl ConnectionDialog {
         let save_button = gtk::Button::with_label("保存并连接");
         save_button.add_css_class("suggested-action");
 
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions.set_margin_top(8);
-        actions.set_margin_bottom(8);
-        actions.set_margin_start(12);
-        actions.set_margin_end(12);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
+        actions.set_margin_top(gap(Gap::Md));
+        actions.set_margin_bottom(gap(Gap::Md));
+        actions.set_margin_start(gap(Gap::Xl));
+        actions.set_margin_end(gap(Gap::Xl));
         actions.append(&status);
         actions.append(&test_button);
         actions.append(&save_button);

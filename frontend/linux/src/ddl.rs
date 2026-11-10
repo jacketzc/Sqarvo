@@ -24,6 +24,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use crate::backend::metadata::{DdlView, MetadataError, MetadataHub, NodeView, kind_label};
+use crate::layout::{Gap, gap};
 use crate::proto::services::v1::ObjectRef;
 
 /// 按对象的会话找元数据通道（多连接下 DDL 走对象**自己**那条浏览会话）。
@@ -123,10 +124,10 @@ impl DdlPanel {
         warning.set_xalign(0.0);
         warning.set_wrap(true);
         warning.set_visible(false);
-        warning.set_margin_top(6);
-        warning.set_margin_bottom(2);
-        warning.set_margin_start(0);
-        warning.set_margin_end(10);
+        warning.set_margin_top(gap(Gap::Sm));
+        warning.set_margin_bottom(gap(Gap::Xxs));
+        warning.set_margin_start(gap(Gap::None));
+        warning.set_margin_end(gap(Gap::Lg));
         warning.add_css_class("caption");
         warning.add_css_class("sqarvo-ddl-synth");
 
@@ -135,11 +136,11 @@ impl DdlPanel {
         text_view.set_cursor_visible(false);
         // DDL 是代码：不折行，宽语句横向滚动（与数据网格同一读法）。
         text_view.set_wrap_mode(gtk::WrapMode::None);
-        text_view.set_top_margin(8);
-        text_view.set_bottom_margin(8);
+        text_view.set_top_margin(gap(Gap::Md));
+        text_view.set_bottom_margin(gap(Gap::Md));
         // 左端贴内容区边缘：面板只有一条左基准线（与分隔线左顶点、标题同一列）。
-        text_view.set_left_margin(0);
-        text_view.set_right_margin(10);
+        text_view.set_left_margin(gap(Gap::None));
+        text_view.set_right_margin(gap(Gap::Lg));
         text_view.add_css_class("sqarvo-panel-text");
 
         // DDL 不折行：长语句必须能横向滚到，滚动条不能靠悬停才出现——这里关掉
@@ -155,8 +156,8 @@ impl DdlPanel {
 
         let spinner = gtk::Spinner::new();
         spinner.set_visible(false);
-        spinner.set_margin_top(18);
-        spinner.set_margin_bottom(18);
+        spinner.set_margin_top(gap(Gap::Page));
+        spinner.set_margin_bottom(gap(Gap::Page));
 
         let state_page = adw::StatusPage::new();
         state_page.set_vexpand(true);
@@ -168,7 +169,7 @@ impl DdlPanel {
         stack.add_named(&state_page, Some("state"));
         stack.set_visible_child_name("state");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.append(&warning);
         root.append(&stack);
 

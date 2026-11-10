@@ -25,6 +25,7 @@ use gtk::prelude::*;
 use crate::backend::query::{
     ColumnView, PrefetchDecision, PrefetchInput, PrefetchPause, RowView, prefetch_decision,
 };
+use crate::layout::{Gap, gap, metrics};
 
 mod row_store {
     use super::*;
@@ -220,20 +221,20 @@ impl ResultsView {
         detail.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         detail.set_selectable(true);
 
-        let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        status_row.set_margin_top(6);
-        status_row.set_margin_bottom(0);
-        status_row.set_margin_start(12);
-        status_row.set_margin_end(12);
+        let status_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
+        status_row.set_margin_top(gap(Gap::Sm));
+        status_row.set_margin_bottom(gap(Gap::None));
+        status_row.set_margin_start(gap(Gap::Xl));
+        status_row.set_margin_end(gap(Gap::Xl));
         status_row.append(&spinner);
         status_row.append(&status);
         status.set_hexpand(true);
 
         // 第二行放语句摘要 / 列类型 / 查询 ID：与「已加载 N 行」分开，避免挤在一行互相截断。
-        let detail_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        detail_row.set_margin_start(12);
-        detail_row.set_margin_end(12);
-        detail_row.set_margin_bottom(6);
+        let detail_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
+        detail_row.set_margin_start(gap(Gap::Xl));
+        detail_row.set_margin_end(gap(Gap::Xl));
+        detail_row.set_margin_bottom(gap(Gap::Sm));
         detail_row.append(&detail);
         detail.set_hexpand(true);
 
@@ -247,7 +248,7 @@ impl ResultsView {
         let placeholder = adw::StatusPage::builder().title("尚未执行查询").build();
         placeholder.set_vexpand(true);
         let placeholder_icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
-        placeholder_icon.set_pixel_size(48);
+        placeholder_icon.set_pixel_size(metrics().empty_icon_px);
         placeholder.set_child(Some(&placeholder_icon));
 
         let store = RowStore::default();
@@ -275,7 +276,7 @@ impl ResultsView {
         stack.add_named(&scroll, Some("grid"));
         stack.set_visible_child_name("placeholder");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.append(&status_row);
         root.append(&detail_row);
         root.append(&stack);

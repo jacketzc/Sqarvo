@@ -50,7 +50,7 @@ use gtk::glib;
 
 use crate::browse_view::relative_age;
 use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
-use crate::layout;
+use crate::layout::{self, Gap, gap};
 
 /// 分页器的提示：offset 分页，页码只读，只提供首页/上页/下页/末页。
 const PAGER_NOTE: &str =
@@ -134,7 +134,7 @@ impl Shell {
         }
 
         // ---- 区域 06：信息面板（#119 提供连接 / 库 / 表内容） -----------------
-        let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         inspector_box.add_css_class("sqarvo-inspector");
         inspector_box.append(&handlers.inspector);
 
@@ -266,7 +266,7 @@ impl Shell {
             });
         }
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.set_vexpand(true);
         // 区域 02 的工具条由窗口（`ui.rs`）挂在 headerbar 之下：它在握手之前就存在，
         // 外壳只占据自己的区域（03–06），不把工具条重新挂到别处。
@@ -625,7 +625,7 @@ impl Toolbar {
         on_new_query: Rc<dyn Fn()>,
         on_kind: Rc<dyn Fn(crate::tabs::KindShortcut)>,
     ) -> Rc<Self> {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         root.add_css_class("sqarvo-toolbar");
         root.set_valign(gtk::Align::Center);
 
@@ -647,7 +647,7 @@ impl Toolbar {
             new_query.connect_clicked(move |_| handler());
         }
 
-        let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let left = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         left.set_valign(gtk::Align::Center);
         left.append(&connect);
         left.append(&new_query);
@@ -655,8 +655,8 @@ impl Toolbar {
         let separator = gtk::Separator::new(gtk::Orientation::Vertical);
         separator.set_size_request(-1, 28);
         separator.set_valign(gtk::Align::Center);
-        separator.set_margin_start(6);
-        separator.set_margin_end(6);
+        separator.set_margin_start(gap(Gap::Sm));
+        separator.set_margin_end(gap(Gap::Sm));
 
         // 种类入口：与「新建查询」同一套按钮（flat / 同高同内距），只是动作不同。
         let kind =
@@ -689,14 +689,14 @@ impl Toolbar {
             KIND_QUERY_TOOLTIP,
         );
 
-        let kinds = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let kinds = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xxs));
         kinds.set_valign(gtk::Align::Center);
         kinds.append(&table);
         kinds.append(&view);
         kinds.append(&function);
         kinds.append(&query);
 
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         spacer.set_hexpand(true);
 
         root.append(&left);
@@ -951,7 +951,7 @@ pub struct StatusBar {
 impl StatusBar {
     fn new(on_row_op: Rc<dyn Fn(RowOp)>, on_page: Rc<dyn Fn(PagerAction)>) -> Rc<Self> {
         // ---- 行 1 ------------------------------------------------------------
-        let ops_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let ops_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         ops_row.add_css_class("linked");
         ops_row.set_valign(gtk::Align::Center);
 
@@ -1012,7 +1012,7 @@ impl StatusBar {
         // 与 `+` 那一档按钮视觉对齐：字号 12（见 theme.rs 的 `.sqarvo-pager-label`）。
         pager_summary.add_css_class("sqarvo-pager-label");
         pager_summary.set_valign(gtk::Align::Center);
-        let pager = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let pager = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         pager.add_css_class("linked");
         // 翻页箭头按字号高度排版（见 theme.rs 的 `.sqarvo-pager button` 覆盖）。
         pager.add_css_class("sqarvo-pager");
@@ -1043,7 +1043,7 @@ impl StatusBar {
             pager.append(&button);
             pager_buttons.push(button);
         }
-        let pager_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let pager_box = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         pager_box.set_valign(gtk::Align::Center);
         pager_box.append(&pager);
         pager_box.append(&pager_summary);
@@ -1061,17 +1061,17 @@ impl StatusBar {
         // 下把它放进状态栏也会把右组顶出窗口右边缘。状态栏只保留分页器。
         // 行 1 从左起就是行操作：左侧那一列已经整块留给对象树（竖分割线延伸到底），
         // 「连接过滤」与它前面的分割线在 v0.2.3.3 一并移除。
-        let row_one_middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let row_one_middle = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         row_one_middle.append(&ops_row);
 
-        let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         row_one_right.append(&selected_label);
         row_one_right.append(&pager_box);
 
-        let row_one = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let row_one = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         row_one.add_css_class("sqarvo-status-row");
         row_one.append(&row_one_middle);
-        let spacer_one = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let spacer_one = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         spacer_one.set_hexpand(true);
         row_one.append(&spacer_one);
         row_one.append(&row_one_right);
@@ -1099,7 +1099,7 @@ impl StatusBar {
         session.set_ellipsize(gtk::pango::EllipsizeMode::End);
         session.set_max_width_chars(48);
         // 窗口变窄时这一格最先被压：留出右边距，别让最后一个字贴着窗口边。
-        session.set_margin_end(6);
+        session.set_margin_end(gap(Gap::Sm));
         session.add_css_class("dim-label");
         session.set_visible(false);
 
@@ -1107,15 +1107,15 @@ impl StatusBar {
         // （第 N–M 行）与会话摘要（连接 / 库 / 事务 / 耗时）都拿掉了：页码在行 1 的
         // 分页器里，表名 / 库 / 事务在表格工具条里，同一屏重复三遍只会挤。
         // 空态（没有表标签）时才让 `session` 出来显示「未连接 / 驱动数」这类启动摘要。
-        let row_two_left = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let row_two_left = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         row_two_left.set_hexpand(true);
         row_two_left.append(&sql_summary);
 
-        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let row_two_right = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         row_two_right.append(&last_refresh);
         row_two_right.append(&session);
 
-        let row_two = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let row_two = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xl));
         row_two.add_css_class("sqarvo-status-row");
         row_two.append(&row_two_left);
         row_two.append(&row_two_right);
@@ -1125,18 +1125,18 @@ impl StatusBar {
         divider.add_css_class("sqarvo-status-divider");
         divider.set_valign(gtk::Align::Fill);
 
-        let gutter = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let gutter = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         gutter.add_css_class("sqarvo-status-gutter");
         gutter.set_width_request(layout::SIDEBAR_WIDTH);
         gutter.set_hexpand(false);
 
-        let right_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let right_column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         right_column.add_css_class("sqarvo-status-right");
         right_column.set_hexpand(true);
         right_column.append(&row_one);
         right_column.append(&row_two);
 
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         root.add_css_class("sqarvo-status-bar");
         root.set_valign(gtk::Align::End);
         root.append(&gutter);
@@ -1200,12 +1200,12 @@ impl StatusBar {
         let entry = entry.as_ref().clone();
         entry.set_hexpand(true);
         entry.set_valign(gtk::Align::Center);
-        entry.set_margin_start(8);
-        entry.set_margin_end(8);
-        entry.set_margin_top(0);
-        entry.set_margin_bottom(0);
+        entry.set_margin_start(gap(Gap::Md));
+        entry.set_margin_end(gap(Gap::Md));
+        entry.set_margin_top(gap(Gap::None));
+        entry.set_margin_bottom(gap(Gap::None));
 
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         column.set_valign(gtk::Align::Center);
         column.set_hexpand(true);
         column.append(&entry);
@@ -1215,10 +1215,10 @@ impl StatusBar {
             status.set_hexpand(true);
             status.set_halign(gtk::Align::Fill);
             status.set_valign(gtk::Align::Center);
-            status.set_margin_start(8);
-            status.set_margin_end(8);
-            status.set_margin_top(0);
-            status.set_margin_bottom(0);
+            status.set_margin_start(gap(Gap::Md));
+            status.set_margin_end(gap(Gap::Md));
+            status.set_margin_top(gap(Gap::None));
+            status.set_margin_bottom(gap(Gap::None));
             if let Some(label) = status.downcast_ref::<gtk::Label>() {
                 // 一行、省略号：长文案（错误 / 连接失败）不把状态栏撑成三行。
                 label.set_wrap(false);

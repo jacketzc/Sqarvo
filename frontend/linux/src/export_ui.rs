@@ -34,6 +34,7 @@ use gtk::glib;
 use crate::backend::worker::Command;
 use crate::data_page::DataPage;
 use crate::export::{self, CsvSink, ExportProgress, ExportRow, Field, FormatOptions, TargetState};
+use crate::layout::{Gap, gap};
 use crate::proto::common::v1::ColumnValue;
 use crate::results::{ResultsView, RunState};
 
@@ -723,7 +724,7 @@ fn run_export(
     path_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     path_label.add_css_class("monospace");
     path_label.add_css_class("caption");
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Md));
     content.append(&path_label);
     content.append(&progress);
     content.append(&status);
@@ -991,7 +992,7 @@ fn run_whole_table_export(
     path_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     path_label.add_css_class("monospace");
     path_label.add_css_class("caption");
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Md));
     content.append(&path_label);
     content.append(&progress);
     content.append(&status);
@@ -1291,7 +1292,7 @@ fn show_completion(
             }
         });
     }
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
     row.append(&path_label);
     path_label.set_hexpand(true);
     row.append(&copy);
