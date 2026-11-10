@@ -76,9 +76,15 @@ pub enum DataState {
 }
 
 /// 行号列宽度（规范 §6：行号列 32）。
-const ROW_NUMBER_WIDTH: i32 = 32;
+/// 行号列宽度（规范 §6：行号列 32）。
+///
+/// `Objects` 固定页的三列表格复用同一个常量（`tabs::ObjectsPage`）：两块表格的
+/// 行号列必须是同一宽度，否则两张表的列起点会差几个像素。
+pub(crate) const ROW_NUMBER_WIDTH: i32 = 32;
 /// 数据列的**最大**宽度：按内容自适应，长文本到此为止并省略（原固定宽度）。
-const COLUMN_WIDTH: i32 = 200;
+///
+/// `Objects` 页的「表名」列同样取它作初值。
+pub(crate) const COLUMN_WIDTH: i32 = 200;
 /// 按内容自适应时的最小列宽：窄到只剩一两个字符的列（`id` / 布尔）不至于挤成一条。
 const COLUMN_MIN_WIDTH: i32 = 64;
 /// 测量文本宽度时要预留的单元格横向内距（左右内边距 + 1px 列分隔线）。
@@ -6213,14 +6219,10 @@ fn install_css() {
         .sqarvo-column-info-focus { background: alpha(@accent_color, 0.18); }
         .sqarvo-column-header { padding: 0 8px; min-height: 26px; }
         .sqarvo-column-header:hover { background: alpha(@accent_color, 0.12); }
-        /* #118：行号列（32）。表头已合并成一行（「列名 · 原始类型」，见 theme.rs 的
+        /* 行号样式在主样式表（`theme::stylesheet` 的 `.sqarvo-row-number`）：
+           `Objects` 页也用同一份，不能只装在数据页的附加样式里。
+           表头已合并成一行（「列名 · 原始类型」，见 theme.rs 的
            `columnview.sqarvo-grid > header > button`），这里不再有第二行的类型条带。 */
-        .sqarvo-row-number {
-            font-family: monospace;
-            font-size: 11px;
-            opacity: 0.7;
-            padding-right: 4px;
-        }
         /* #133：类型条带不再把最小宽度上报给外层后，窗口在 960 宽下不再被撑大，
            这一行的控件必须真的放得进表格区（workspace-model 附录 A 第 8 条）。
 
