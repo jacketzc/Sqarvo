@@ -54,19 +54,49 @@
 状态，不另造一套行样式：
 
 - **行状态只有一个来源**：`Objects` 页的三列表格与数据网格是同一批 `GtkColumnView` 行，
-  悬停与选中直接吃 Adwaita 的 `row:hover` / `row:selected`（v0.2.4 起不再自写 4% /
-  accent 25% 去「对齐」网格——两套色值只会越调越远）；行分隔线 1px
+  悬停与选中的底色来自**同一条**品牌色规则（两张 `columnview` 与对象树、检索结果行并列在
+  `theme.rs` 里，见下一节）；行分隔线 1px
   `alpha(currentColor, 0.10)`、行高 32 只在 `theme.rs` 写一份（两处选择器并列）、单测锁住。
-  不要挂 `.navigation-sidebar`：它把选中态改成 10% 灰，和网格不是一套；
+  不要再挂 `.navigation-sidebar`：它把选中态改成 10% 灰，和网格不是一套；
 - **图标复用对象树的种类映射**（`backend::metadata::kind_icon`）：同一个对象在树、列表、
   标签里长得一样，不按页面各写一份；
 - **外框只画一圈、口径只有一份**：`.sqarvo-table-frame` 是 2px `currentColor` 30% + 8px 圆角，
-  比行 / 列分隔线（1px / 10%）实一档、粗一档，但仍弱于选中底色的 accent 25%——它只负责
+  比行 / 列分隔线（1px / 10%）实一档、粗一档，但仍弱于中档选中底色 `#A66FA0`——它只负责
   「这是一块表格」，不参与信息层级。圆角靠容器的 `overflow: hidden` 真的裁到内容，否则首行
   选中底色会把四角填成方角（那时宁可退回直角，也不要「弧线里塞一个方块」）；行、单元格不加
   整圈边框，避免与最后一列的边界线叠成双线；
 - **交互语义不在本文件**：单击 / 双击 / 回车、选中与联动刷新、双击打开标签等行为口径见
   [ui-behavior-contract.md](ui-behavior-contract.md) §2.2 / §3；本文件只管行状态的**视觉**口径。
+
+### 品牌三档色板：强调 / 选中 / 淡填充
+
+界面上所有「强调色背景」只从一个三档色板取，色值只在
+`frontend/linux/src/theme.rs` 的 `@define-color sqarvo_brand_*` 定义**一次**，别处只引用 token。
+（GTK 的命名颜色是 per-provider 的：另一个 `CssProvider` 解析不到这些 token，所以数据页那几条
+强调底也写在 `theme.rs`，而不是各自写 hex。）
+
+| 档位 | 底色 token / 色值 | 用在哪里 | 前景 token | 对比度（WCAG 2.1） |
+|---|---|---|---|---|
+| 深 | `@sqarvo_brand_deep` `#5B3256` | 实底强调：`suggested-action` 主操作按钮（连接 / 新建连接 / 保存 / 执行 / 提交 / 提交事务 / 应用筛选） | `@sqarvo_brand_on_deep` `#FFFFFF` | **10.32 : 1** ✓（正文 ≥ 4.5） |
+| 中 | `@sqarvo_brand_mid` `#A66FA0` | 选中态：数据网格行、`Objects` 三列表格行、对象树节点、检索结果行、标签条当前标签、工具条种类入口；`[DDL] / [表信息]` 小切换用它的 45% 透明底 | `@sqarvo_brand_on_mid` `#FFFFFF` | **3.89 : 1** ⚠（没到正文 4.5，高于图形 3.0） |
+| 浅 | `@sqarvo_brand_soft` `#D8B7D3` | 淡填充：行 hover、表头 hover、脏行单元格底、事务「自动提交」徽标、View 徽标、列信息高亮、筛选 / 排序面板条目与 hover、文本选区块 | `@sqarvo_brand_on_soft` = `@theme_fg_color`（Yaru 浅色 ≈ `#333336`） | **6.98 : 1** ✓（正文 ≥ 4.5） |
+
+- **中档 3.89 : 1 是本轮唯一低于正文阈值的组合，且无解**：`#A66FA0` 上白字 3.89、深灰
+  `#333336` 3.24、深档紫 2.65，三个候选前景都到不了 4.5。取舍是保住用户给定的色值与
+  「选中行整块铺满」的观感，取三者里最高的白字，并把数字记在这里；真要 4.5 只能把中档压到
+  `#9A6494`（白字 4.54），那是**换色**不是调前景，需要产品拍板。
+- **浅档上不许有白字**：带文字的浅底（脏行单元格、事务徽标、View 徽标）在 CSS 里成对写
+  `background` + `color`，否则会继承选中行的白字，变成「白字压浅紫」（1.81 : 1）。
+- **语义色不动**：`@error_color` / `@warning_color` / `@success_color` 及其派生底（只读 /
+  无主键 / 权限 / 事务已开 / 事务失败）保留原色；状态圆点的「脏行 = `@accent_bg_color`」
+  （系统强调色，Yaru 下橙红）是刻意的语义红，不随品牌色改。
+- **暗色不是第二套色相**：`theme.rs` 里有 `LIGHT_PALETTE` / `DARK_PALETTE` 两组常量
+  （深 `#7A456F`、中 `#B98AB2`、浅 `#4A2E45`；中档前景换成 `@view_bg_color` 的深色字，
+  5.88 : 1），`theme::install()` 按 `AdwStyleManager::is_dark()` 选一组写进 CSS，并在
+  `dark` 变化时重载同一份 provider。**没有用 `@media (prefers-color-scheme: dark)`**：
+  实测应用级 provider 里媒体查询内的 `@define-color` 不生效（`ADW_DEBUG_COLOR_SCHEME=prefer-dark`
+  下窗口已暗、`suggested-action` 仍是浅档 `#5B3256`），所以色板选择放在 Rust 侧，
+  色值仍然只在这两个常量里定义一次。
 
 ## 图标
 
@@ -111,7 +141,8 @@
 `frontend/linux/src/layout.rs` 的 `STATUS_DOT_DIAMETER` = 7px（约漏斗墨迹 12 × 11 的
 一半，实测截图 7 × 7），颜色三态互斥（灰 = 没有未提交的更改、也没有打开的事务；
 `@warning_color` = 事务已打开，与状态行 `.warning` 文字同一个 token；`@accent_bg_color` =
-有脏行 / 新行，与 `suggested-action` 同一 token，且压过事务态）；**视觉小、命中区不小**：它挂在一个
+有脏行 / 新行（系统强调色，Yaru 下橙红——刻意的语义红，**不是**主操作按钮那个品牌深档紫），
+且压过事务态）；**视觉小、命中区不小**：它挂在一个
 24 × 24 的扁平按钮里，tooltip 承载被它替代的文字（§11 的最小点击区对状态标记同样成立）。
 状态圆点是事务状态唯一的可见载体（颜色 + tooltip），因此不再另起一句「事务状态：…」的过程消息。
 

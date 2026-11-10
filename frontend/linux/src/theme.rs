@@ -35,7 +35,55 @@ pub const STATUS_DOT_DIRTY_CLASS: &str = "sqarvo-status-dot-dirty";
 /// 两枚 class 每次刷新都显式 add / remove 一次，不会同时残留。
 pub const STATUS_DOT_TXN_CLASS: &str = "sqarvo-status-dot-txn";
 
+/// 三档品牌色板的一份完整取值（底色 + 与之配对的前景）。
+///
+/// 浅色与暗色是**同一个色相的两套亮度**，不是两套色相：深档 `#5B3256` → `#7A456F`、
+/// 中档 `#A66FA0` → `#B98AB2`、浅档 `#D8B7D3` → `#4A2E45`（暗界面里亮底会刺眼，
+/// 所以「淡填充」在暗色下是**暗**填充）。前景随底色一起换，`on_soft` 用 `@theme_fg_color`
+/// / `#F3E7EF` 这类现有 token 表示，不新造色相。
+struct Palette {
+    deep: &'static str,
+    mid: &'static str,
+    soft: &'static str,
+    on_deep: &'static str,
+    on_mid: &'static str,
+    on_soft: &'static str,
+}
+
+const LIGHT_PALETTE: Palette = Palette {
+    deep: "#5B3256",
+    mid: "#A66FA0",
+    soft: "#D8B7D3",
+    on_deep: "#FFFFFF",
+    on_mid: "#FFFFFF",
+    on_soft: "@theme_fg_color",
+};
+
+const DARK_PALETTE: Palette = Palette {
+    deep: "#7A456F",
+    mid: "#B98AB2",
+    soft: "#4A2E45",
+    on_deep: "#FFFFFF",
+    // 中档在暗色下被提亮到 `#B98AB2`，白字只剩 2.86:1：这里改用暗色底的前景色
+    // （`@view_bg_color`，Yaru 暗色 = #1d1d20，5.88:1），是「颜色跟着底色走」的必然结果。
+    on_mid: "@view_bg_color",
+    on_soft: "#F3E7EF",
+};
+
+/// 当前是否暗色（由 [`install`] 从 `AdwStyleManager` 写入；测试环境下没有显示服务 → 浅色）。
+static DARK: OnceLock<bool> = OnceLock::new();
+
+fn is_dark() -> bool {
+    DARK.get().copied().unwrap_or(false)
+}
+
 /// 安装紧凑密度 CSS（进程内只装一次）。
+///
+/// 三档色板要跟着系统的深浅色走：**`@media (prefers-color-scheme: dark)` 里写
+/// `@define-color` 在应用级 provider 里不生效**（实测：`ADW_DEBUG_COLOR_SCHEME=prefer-dark`
+/// 下窗口已经是暗色，`suggested-action` 仍是浅色的 `#5B3256`），所以改为在这里读
+/// `AdwStyleManager::is_dark()` 生成对应的一套 token，并在 `dark` 变化时重载同一份
+/// provider——色值仍然只在 [`LIGHT_PALETTE`] / [`DARK_PALETTE`] 定义一次。
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     if INSTALLED.set(()).is_err() {
@@ -44,6 +92,8 @@ pub fn install() {
     let Some(display) = gtk::gdk::Display::default() else {
         return;
     };
+    let manager = adw::StyleManager::default();
+    let _ = DARK.set(manager.is_dark());
     let provider = gtk::CssProvider::new();
     provider.load_from_string(&stylesheet());
     gtk::style_context_add_provider_for_display(
@@ -51,13 +101,79 @@ pub fn install() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    // 深浅色切换（系统设置 / libadwaita 的 prefer-dark）时重载同一份 provider。
+    manager.connect_dark_notify(move |manager| {
+        let _ = DARK.set(manager.is_dark());
+        provider.load_from_string(&stylesheet_for(manager.is_dark()));
+    });
 }
 
-/// 紧凑密度样式表。单独成函数，测试可以检查关键尺寸是否真的写进去了。
+/// 紧凑密度样式表（按当前深浅色取对应色板）。单独成函数，测试可以检查关键尺寸与色值。
 #[must_use]
 pub fn stylesheet() -> String {
+    stylesheet_for(is_dark())
+}
+
+/// 指定深浅色生成样式表：测试直接调它，断言两套色板都在。
+#[must_use]
+pub fn stylesheet_for(dark: bool) -> String {
+    let palette = if dark { &DARK_PALETTE } else { &LIGHT_PALETTE };
     format!(
         r#"
+        /* 品牌三档色板：界面上**所有**强调底色只从这里取，别处不许写 hex。
+           深 = 实底强调（主操作按钮）；中 = 选中态（哪一行 / 哪一个当前选中）；
+           浅 = 淡填充（hover 底、脏行单元格底、徽标与面板的弱底）。
+           前景色与底色成对定义（on_*），对比度是按 WCAG 算过的：
+             深档 + 白字 10.32:1；中档 + 白字 3.89:1（见 design-principles 的色板表，
+             这是本轮唯一低于正文 4.5 的组合，仍高于图形 3.0）；浅档 + @theme_fg_color 6.98:1。
+           暗色不是另一套色相：同一组紫，提亮度、浅档改成暗填充（亮底在暗界面里刺眼），
+           由 Rust 侧按 `AdwStyleManager::is_dark()` 选一套写进来（CSS 媒体查询在本
+           provider 里对 `@define-color` 无效，实测见 `install` 的注释）。 */
+        @define-color sqarvo_brand_deep {deep};
+        @define-color sqarvo_brand_mid {mid};
+        @define-color sqarvo_brand_soft {soft};
+        @define-color sqarvo_brand_on_deep {on_deep};
+        @define-color sqarvo_brand_on_mid {on_mid};
+        @define-color sqarvo_brand_on_soft {on_soft};
+
+        /* 主操作按钮（「连接」/「新建连接」/「保存」/「提交」/「提交事务」/「执行」）：
+           实底 = 深档。libadwaita 的 hover / active 是用 `background-image` 叠一层
+           半透明色，所以只换 `background-color` 就覆盖了全部状态，不会在 hover 时
+           退回系统强调色（Yaru 下是橙红 #E95420）。 */
+        button.suggested-action {{
+            background-color: @sqarvo_brand_deep;
+            color: @sqarvo_brand_on_deep;
+        }}
+
+        /* 选中态（中档）：对象树节点、检索结果行、数据网格行、`Objects` 三列表格行
+           都是「当前选中的是哪一个」。原来这四处吃的是 Adwaita 默认
+           （`row:selected` = accent 25%），两张表因此会一个品牌色一个系统蓝 ——
+           这里把两张 `GtkColumnView` 与树写进同一条规则，四处的选中底色只有一份定义。
+           hover 在前、selected 在后：`:selected:hover` 同时命中两条，靠顺序让中档赢。 */
+        window.{window_class} listview.sqarvo-tree > row:hover,
+        window.{window_class} list.sqarvo-search-list > row:hover,
+        window.{window_class} columnview.sqarvo-grid > listview > row:hover,
+        window.{window_class} columnview.sqarvo-objects > listview > row:hover {{
+            background-color: alpha(@sqarvo_brand_soft, 0.55);
+        }}
+        window.{window_class} listview.sqarvo-tree > row:selected,
+        window.{window_class} list.sqarvo-search-list > row:selected,
+        window.{window_class} columnview.sqarvo-grid > listview > row:selected,
+        window.{window_class} columnview.sqarvo-objects > listview > row:selected,
+        window.{window_class} listview.sqarvo-tree > row:selected:hover,
+        window.{window_class} columnview.sqarvo-grid > listview > row:selected:hover,
+        window.{window_class} columnview.sqarvo-objects > listview > row:selected:hover {{
+            background-color: @sqarvo_brand_mid;
+            color: @sqarvo_brand_on_mid;
+        }}
+        /* 选中行里的语义文字（行号列的 ●脏 / ✕删除）保留记号本身，但换前景色：
+           原来的橙红 / 错误红压在中档选中底上只有 1.6–1.9:1，读不出来。 */
+        window.{window_class} columnview.sqarvo-grid > listview > row:selected .sqarvo-dirty,
+        window.{window_class} columnview.sqarvo-grid > listview > row:selected .sqarvo-deleted,
+        window.{window_class} columnview.sqarvo-objects > listview > row:selected .sqarvo-dirty {{
+            color: @sqarvo_brand_on_mid;
+        }}
+
         window.{window_class} {{ font-size: {ui}px; }}
 
         /* 区域 01：标题 13 semibold（标题控件在 headerbar 里） */
@@ -121,11 +237,11 @@ pub fn stylesheet() -> String {
         }}
         window.{window_class} columnview.sqarvo-grid > header > button:hover,
         window.{window_class} columnview.sqarvo-objects > header > button:hover {{
-            background-color: alpha(@accent_bg_color, 0.10);
+            background-color: alpha(@sqarvo_brand_soft, 0.55);
         }}
         window.{window_class} columnview.sqarvo-grid > header > button:active,
         window.{window_class} columnview.sqarvo-objects > header > button:active {{
-            background-color: alpha(@accent_bg_color, 0.18);
+            background-color: @sqarvo_brand_soft;
         }}
 
         /* 表格右边界：Adwaita 的列分隔线画在「每个单元格 / 表头按钮的 border-left」上，
@@ -154,7 +270,7 @@ pub fn stylesheet() -> String {
         /* 表格外框（v0.2.4）：`Objects` 列表与表数据网格各套一圈 2px 线 + 8px 圆角，
            让表格从页面底色里跳出来，两块表格同一份口径。颜色与行 / 列分隔线同族
            （`currentColor` 30%，分隔线 10%）：比分隔线实一档才看得出「这是一块表格」，
-           但仍弱于文字与选中态（accent 25% 起的选区底色照样压得住）。
+           但仍弱于文字与选中态（中档选中底照样压得住）。
            线只画在**容器**上（`.sqarvo-table-frame` 挂在包住表格的盒子 /
            `ScrolledWindow`），行与单元格不加线，避免与 `cell:last-child` 的右边界
            叠成双线。
@@ -199,8 +315,10 @@ pub fn stylesheet() -> String {
         .sqarvo-status-dot.{status_dot_txn} {{
             background-color: @warning_color;
         }}
-        /* 红 = 有未提交的更改：用 `@accent_bg_color`（suggested-action 的底色 token），
-           与「提交」按钮同一色系——Yaru 下就是橙红，Adwaita 下随系统强调色走。
+        /* 红 = 有未提交的更改：用 `@accent_bg_color`（系统强调色，Yaru 下橙红）。
+           这里是**刻意保留的语义色**：脏行记号在本轮换色之前就是 accent 红，用户
+           要求三档品牌色不得改写它（它与「提交」按钮的深档紫已经不是同一色系，
+           这是本轮之后的新事实——脏行靠这枚红点区分「有改动」）。
            优先级最高：脏行本身就是事务里的改动，「有待提交的东西」比「正在事务里」
            更需要被看见。 */
         .sqarvo-status-dot.{status_dot_dirty} {{
@@ -236,6 +354,22 @@ pub fn stylesheet() -> String {
             padding: 0 8px;
             font-size: {ui}px;
         }}
+        /* 标签条：hover = 浅档淡填充；当前标签 = 中档实底（「现在看的是哪一页」）。
+           Adwaita 的 `tab:selected` 是 currentColor 10% 的中性灰，不换的话标签选中
+           和两张表格的选中态会是两种颜色。`tab:selected:hover` 也要写，
+           否则 hover 时退回主题的 13% 灰。 */
+        .sqarvo-tab-bar tab:hover {{
+            background-color: alpha(@sqarvo_brand_soft, 0.55);
+        }}
+        .sqarvo-tab-bar tab:selected,
+        .sqarvo-tab-bar tab:selected:hover,
+        .sqarvo-tab-bar tab:selected:active {{
+            background-color: @sqarvo_brand_mid;
+            color: @sqarvo_brand_on_mid;
+        }}
+        .sqarvo-tab-bar tab:selected indicator {{
+            background: @sqarvo_brand_on_mid;
+        }}
         .sqarvo-tab-strip button {{ min-height: {target}px; min-width: {target}px; }}
         /* 固定 `Objects` 页（v0.2.3.2）：钉住的页永远排在最前，宽度按规范口径 84px。
            `AdwTabBar` 没有 per-page 宽度 API；实测钉住页带 `pinned` 样式类
@@ -248,9 +382,10 @@ pub fn stylesheet() -> String {
 
         /* 区域 04：固定 `Objects` 页（v0.2.4 起与数据网格同一套三列表格）。
            它的行高 / 表头高度 / 右边界 / 下边界直接由上面 `columnview.sqarvo-objects`
-           那组规则给出，与 `columnview.sqarvo-grid` 并列；hover 与选中底色用 GTK/Adwaita
-           的 `row:hover` / `row:selected`——和数据网格是同一批控件、同一批默认样式，
-           不再像 v0.2.3.3 那样用自定义色值去「对齐」网格的观感。 */
+           那组规则给出，与 `columnview.sqarvo-grid` 并列；hover（浅档）与选中（中档）
+           写在文件开头的品牌色板规则里——两张表和对象树共用同一条，不再各自吃
+           Adwaita 的 `row:hover` / `row:selected` 默认色（那是 accent 25%，会与
+           对象树的选中态不是一个颜色）。 */
 
         /* 区域 05：状态栏 48 高（两行各 24），字号 11 */
         .sqarvo-status-bar {{
@@ -358,9 +493,12 @@ pub fn stylesheet() -> String {
             background: transparent;
             box-shadow: none;
         }}
-        .sqarvo-pane-switch > button:hover {{ background: alpha(currentColor, 0.07); }}
+        .sqarvo-pane-switch > button:hover {{ background: alpha(@sqarvo_brand_soft, 0.55); }}
+        /* 选中态用中档的**半透明**（45%）：这是 10px 正文旁边的小切换块，
+           实底中档会重演一次「比文字大一圈的砖」。色相仍只来自 `sqarvo_brand_mid`，
+           不引入第四种颜色。 */
         .sqarvo-pane-switch > button:checked {{
-            background: alpha(currentColor, 0.10);
+            background: alpha(@sqarvo_brand_mid, 0.45);
             box-shadow: none;
         }}
 
@@ -385,15 +523,16 @@ pub fn stylesheet() -> String {
             margin: 0;
         }}
         /* 条件 / 排序清单的行：24px 行高（与对象树一致）。已加的条件 / 排序键是淡底色 +
-           圆角的「实体条」，点它展开编辑器时形态连续，不会一行文字突然炸成控件。 */
+           圆角的「实体条」，点它展开编辑器时形态连续，不会一行文字突然炸成控件。
+           底色取浅档（55%）：条目是常驻的，实底浅档会盖过面板本身的层次。 */
         .sqarvo-fs .fs-row {{
             min-height: 24px;
             padding: 0 4px;
             border-radius: 6px;
-            background: alpha(currentColor, 0.06);
+            background: alpha(@sqarvo_brand_soft, 0.55);
             box-shadow: 0 1px 2px alpha(black, 0.06);
         }}
-        .sqarvo-fs .fs-row:hover {{ background: alpha(currentColor, 0.10); }}
+        .sqarvo-fs .fs-row:hover {{ background: @sqarvo_brand_soft; }}
         /* 行内控件 / 按钮都压在 24px：编辑态与只读态行高相同，点一下就换内容，
            整行不跳高。 */
         .sqarvo-fs .fs-row entry,
@@ -410,8 +549,13 @@ pub fn stylesheet() -> String {
         .sqarvo-fs .fs-action {{ min-height: 28px; padding: 2px 14px; }}
 
         /* 当前种类高亮：工具条上的种类入口（表 / 视图 / 函数 / 查询）不再禁用，
-           高亮只表示「现在列的是这一类」（v0.2.3.3 起它们会打开 Objects 页）。 */
-        .sqarvo-kind-active {{ background: alpha(@accent_color, 0.20); }}
+           高亮只表示「现在列的是这一类」（v0.2.3.3 起它们会打开 Objects 页）。
+           这是「当前选中的是哪一个」→ 中档实底；原来是 accent 20% 的淡 tint，
+           和标签 / 表格行的选中态不是同一个颜色。 */
+        .sqarvo-kind-active {{
+            background: @sqarvo_brand_mid;
+            color: @sqarvo_brand_on_mid;
+        }}
 
         /* 检索结果行（v0.2.3.4）：与树行同高、同左边距。
            ListBox 默认按侧栏行排版（最小高度更大、左右各 6px 内边距），直接放进来
@@ -425,7 +569,36 @@ pub fn stylesheet() -> String {
                内容会比树左移 2px，缩放后看得很清楚。 */
             padding: 2px 2px;
         }}
+
+        /* 数据页的强调底（原来是 `data_page::install_css` 里按系统强调色算的半透明底）。
+           规则搬到这里是因为色值只在本样式表定义：另一个 provider 里的 `@sqarvo_brand_*`
+           解析不到（GTK 的命名颜色是 per-provider 的），写 hex 又会变成第二份色板。
+           这些类都带文字，所以底色 + 前景成对写：`@sqarvo_brand_on_soft` 在浅 / 暗两套
+           色板里分别是深色文字与近白，不会出现「白字压浅紫」。 */
+        .sqarvo-cell-dirty {{
+            background: @sqarvo_brand_soft;
+            color: @sqarvo_brand_on_soft;
+        }}
+        .sqarvo-txn-commit {{
+            background: @sqarvo_brand_soft;
+            color: @sqarvo_brand_on_soft;
+        }}
+        .sqarvo-column-info-focus {{ background: @sqarvo_brand_soft; }}
+        .sqarvo-column-header:hover {{ background: alpha(@sqarvo_brand_soft, 0.55); }}
+        .sqarvo-badge-view {{
+            background: @sqarvo_brand_soft;
+            color: @sqarvo_brand_on_soft;
+        }}
+        /* 文本选区块（输入框 / 可复制文本里拖选）：libadwaita 默认是 accent 30%。
+           浅档在浅色下是淡紫、暗色下是暗紫，文字颜色不动（两套底色都容得下本来的前景）。 */
+        selection:focus-within {{ background-color: @sqarvo_brand_soft; }}
         "#,
+        deep = palette.deep,
+        mid = palette.mid,
+        soft = palette.soft,
+        on_deep = palette.on_deep,
+        on_mid = palette.on_mid,
+        on_soft = palette.on_soft,
         window_class = WINDOW_CLASS,
         ui = layout::FONT_UI,
         title = layout::FONT_TITLE,
@@ -523,9 +696,10 @@ mod tests {
             .expect("缺少选中态规则");
         let checked_rule = &css[checked..checked + css[checked..].find('}').unwrap_or(0)];
         // Adwaita 的 `button:checked` 是 30% 的整块底色，在 280 宽的面板里像一块砖。
+        // 选中态现在是中档品牌色的 45%（色相只来自 `sqarvo_brand_mid`，不引入第四种颜色）。
         assert!(
-            checked_rule.contains("background: alpha(currentColor, 0.10);"),
-            "选中态应是淡底：{checked_rule}"
+            checked_rule.contains("background: alpha(@sqarvo_brand_mid, 0.45);"),
+            "选中态应是中档品牌色的半透明底：{checked_rule}"
         );
         assert!(
             checked_rule.contains("box-shadow: none;"),
@@ -618,8 +792,8 @@ mod tests {
         );
         // 行级规则只允许分隔线方向（border-bottom / border-right），不能出现整圈边框。
         for selector in [
-            "columnview.sqarvo-objects > listview > row",
-            "columnview.sqarvo-grid > listview > row",
+            "columnview.sqarvo-objects > listview > row {",
+            "columnview.sqarvo-grid > listview > row,",
         ] {
             let start = css
                 .find(selector)
@@ -736,7 +910,7 @@ mod tests {
             let end = brace + css[brace..].find('}').expect("规则应当闭合");
             css[start..end].to_owned()
         };
-        let row = rule("columnview.sqarvo-objects > listview > row");
+        let row = rule("columnview.sqarvo-objects > listview > row {");
         assert!(
             row.contains("columnview.sqarvo-grid > listview > row"),
             "行高规则必须与数据网格共用同一条：{row}"
@@ -860,6 +1034,127 @@ mod tests {
         assert!(
             !css.contains("sqarvo-search-hit"),
             "命中高亮已删除：检索结果不再与树里其它行看起来不一样"
+        );
+    }
+
+    /// 品牌三档色板：色值只在 `theme.rs` 定义一次，强调 / 选中 / hover 三类
+    /// 背景全部从 token 取。
+    ///
+    /// 两条口径钉死：① 深档只给实底强调（`suggested-action`），中档只给「当前选中是哪个」
+    /// （对象树 / 检索结果 / 数据网格 / `Objects` 表格 / 标签 / 种类入口），浅档只给淡填充；
+    /// ② 除状态圆点的「脏行 = accent 红」以外，样式表里不许再出现 `alpha(@accent_*)`
+    /// 派生的底色——那正是这一轮要收掉的一批系统强调色。
+    #[test]
+    fn brand_palette_is_defined_once_and_covers_every_fill() {
+        let css = stylesheet();
+        for token in [
+            "@define-color sqarvo_brand_deep #5B3256;",
+            "@define-color sqarvo_brand_mid #A66FA0;",
+            "@define-color sqarvo_brand_soft #D8B7D3;",
+            "@define-color sqarvo_brand_on_deep #FFFFFF;",
+            "@define-color sqarvo_brand_on_mid #FFFFFF;",
+            "@define-color sqarvo_brand_on_soft @theme_fg_color;",
+        ] {
+            assert!(css.contains(token), "缺少品牌色 token：{token}");
+        }
+        // 色值只有一份：同一个 hex 在样式表里出现两次就是第二份色板。
+        for hex in ["#5B3256", "#A66FA0", "#D8B7D3"] {
+            assert_eq!(
+                css.matches(hex).count(),
+                1,
+                "{hex} 应当只在 token 处出现一次"
+            );
+        }
+        // 暗色：同一组 token 换一套亮度。选择由 Rust 侧按 `AdwStyleManager::is_dark()` 做，
+        // 不是 CSS 媒体查询——实测 `@media (prefers-color-scheme: dark)` 里的
+        // `@define-color` 在应用级 provider 里不生效（窗口已暗、按钮仍是浅档色）。
+        let dark = stylesheet_for(true);
+        for token in [
+            "@define-color sqarvo_brand_deep #7A456F;",
+            "@define-color sqarvo_brand_mid #B98AB2;",
+            "@define-color sqarvo_brand_soft #4A2E45;",
+            "@define-color sqarvo_brand_on_mid @view_bg_color;",
+        ] {
+            assert!(dark.contains(token), "暗色缺档：{token}");
+        }
+        // 两套色板互不泄漏：浅色表里不该出现暗色值，暗色表里也不该出现浅色值。
+        for light_hex in ["#5B3256", "#A66FA0", "#D8B7D3"] {
+            assert!(
+                !dark.contains(light_hex),
+                "暗色样式表里混进了浅色值 {light_hex}"
+            );
+        }
+        for dark_hex in ["#7A456F", "#B98AB2", "#4A2E45"] {
+            assert!(
+                !css.contains(dark_hex),
+                "浅色样式表里混进了暗色值 {dark_hex}"
+            );
+        }
+
+        // 深档：实底强调按钮。
+        assert!(
+            css.contains(
+                "button.suggested-action {\n            background-color: @sqarvo_brand_deep;"
+            ),
+            "主操作按钮要取深档实底"
+        );
+        // 中档：五处「当前选中是哪个」写进同一条规则（两张表 / 树 / 检索结果）。
+        let start = css
+            .find("listview.sqarvo-tree > row:selected,")
+            .expect("缺少选中态规则（对象树）");
+        let mid_rule = &css[start..start + css[start..].find('}').expect("规则应当闭合")];
+        assert!(
+            mid_rule.contains("background-color: @sqarvo_brand_mid;")
+                && mid_rule.contains("color: @sqarvo_brand_on_mid;"),
+            "选中态要用中档 + 配对前景：{mid_rule}"
+        );
+        for selector in [
+            "list.sqarvo-search-list > row:selected",
+            "columnview.sqarvo-grid > listview > row:selected",
+            "columnview.sqarvo-objects > listview > row:selected",
+        ] {
+            assert!(
+                mid_rule.contains(selector),
+                "选中态漏了这个控件：{selector}"
+            );
+        }
+        // 标签条与种类入口同样是中档。
+        assert!(
+            css.contains(".sqarvo-tab-bar tab:selected,"),
+            "标签选中底要取中档"
+        );
+        let kind = css
+            .find(".sqarvo-kind-active {")
+            .expect("缺少种类入口高亮规则");
+        assert!(
+            css[kind..kind + css[kind..].find('}').unwrap()]
+                .contains("background: @sqarvo_brand_mid;"),
+            "种类入口高亮要取中档"
+        );
+
+        // 浅档：hover 与各类淡填充。
+        for rule in [
+            "alpha(@sqarvo_brand_soft, 0.55)",
+            "background: @sqarvo_brand_soft;",
+        ] {
+            assert!(css.contains(rule), "缺少浅档填充：{rule}");
+        }
+
+        // 不再有 accent 派生的**底色**（前景 token 不算）：圆点的脏行红是刻意的语义色。
+        assert!(
+            !css.contains("alpha(@accent_bg_color"),
+            "还有 accent 派生的半透明底"
+        );
+        assert!(
+            !css.contains("alpha(@accent_color"),
+            "还有 accent 派生的半透明底"
+        );
+        let dot = css
+            .find(".sqarvo-status-dot.sqarvo-status-dot-dirty {")
+            .expect("缺少脏行圆点规则");
+        assert!(
+            css[dot..dot + css[dot..].find('}').unwrap()].contains("@accent_bg_color"),
+            "脏行圆点保持 accent 红（语义色，本轮不动）"
         );
     }
 }

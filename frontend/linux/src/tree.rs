@@ -1293,6 +1293,9 @@ impl TreePanel {
             .single_click_activate(false)
             .vexpand(true)
             .build();
+        // 选中 / hover 底色按 `theme::stylesheet` 的三档品牌色走（中档选中、浅档 hover）：
+        // 类名是那条规则唯一的锚点，删掉它树行就会退回 Adwaita 的 accent 25%。
+        list_view.add_css_class("sqarvo-tree");
 
         let tree_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)

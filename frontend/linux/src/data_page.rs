@@ -6201,12 +6201,13 @@ fn install_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
         r#"
-        .sqarvo-cell-dirty { background: alpha(@accent_color, 0.12); }
+        /* 强调底（脏行单元格 / 事务徽标 / 列信息 focus / 表头 hover / View 徽标）
+           已搬到 `theme::stylesheet`：色值只在那一处按 token 定义，这里只留语义色
+           （脏 / 删除 / 警告 / 错误）与排版，不再出现任何 accent 派生底色。 */
         .sqarvo-row-deleted { text-decoration: line-through; opacity: 0.55; }
         .sqarvo-dirty { color: @accent_color; font-weight: 700; }
         .sqarvo-deleted { color: @error_color; font-weight: 700; }
         .sqarvo-dirty-indicator { font-family: monospace; }
-        .sqarvo-txn-commit { background: alpha(@accent_color, 0.15); }
         .sqarvo-txn-active { background: alpha(@warning_color, 0.30); font-weight: 600; }
         .sqarvo-txn-readonly { background: alpha(@warning_color, 0.30); }
         .sqarvo-txn-failed { background: alpha(@error_color, 0.30); font-weight: 600; }
@@ -6217,9 +6218,7 @@ fn install_css() {
             padding: 12px;
             box-shadow: 0 8px 24px alpha(black, 0.25);
         }
-        .sqarvo-column-info-focus { background: alpha(@accent_color, 0.18); }
         .sqarvo-column-header { padding: 0 8px; min-height: 26px; }
-        .sqarvo-column-header:hover { background: alpha(@accent_color, 0.12); }
         /* 行号样式在主样式表（`theme::stylesheet` 的 `.sqarvo-row-number`）：
            `Objects` 页也用同一份，不能只装在数据页的附加样式里。
            表头已合并成一行（「列名 · 原始类型」，见 theme.rs 的
@@ -6242,7 +6241,7 @@ fn install_css() {
         /* #118：表头上方的常驻徽标 */
         .sqarvo-badge-readonly { background: alpha(@warning_color, 0.25); }
         .sqarvo-badge-nokey { background: alpha(@warning_color, 0.18); }
-        .sqarvo-badge-view { background: alpha(@accent_color, 0.18); }
+        /* `.sqarvo-badge-view` 的底色在 theme.rs（浅档 + 配对前景） */
         .sqarvo-badge-permission { background: alpha(@error_color, 0.25); }
         .sqarvo-badge-total { background: alpha(@warning_color, 0.20); }
         .sqarvo-badge-limited { background: alpha(currentColor, 0.10); }
