@@ -161,6 +161,11 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ]; then
     fail_early "没有图形会话（WAYLAND_DISPLAY / DISPLAY 均为空）：截图与界面断言需要真实 GTK 窗口"
 fi
 
+# 自渲染截图在本机 Wayland 会话里偶发「控件快照为空」（窗口 mapped 却没有渲染节点，见
+# frontend/linux README 的「截图偶发失败」一节）；文档给出的处置是切 XWayland。这里默认
+# 设成 x11，调用方显式指定的值仍然优先。
+export GDK_BACKEND=${GDK_BACKEND:-x11}
+
 if ! PYTHON=$(pick_python); then
     fail_early "找不到可 import pymysql 的 Python 3（用 PYTHON=/path/to/python3 指定；本机可用 ~/.pyenv/versions/3.11.*/bin/python3）"
 fi
@@ -385,7 +390,8 @@ expect-sessions 4
 screenshot $case_out/02-tabs.png
 # --- 切回第一个表标签：排序 / 筛选 / 翻页都在同一个标签上做 ---
 # v0.2.3.3 移除表头点击排序（产品决定）：排序只走筛选与排序面板，这里用面板的
-# `sort-panel` 步骤（点「添加排序 + 应用」同一条路径）取代旧的列头 `sort` 步骤。
+# \`sort-panel\` 步骤（点「添加排序 + 应用」同一条路径）取代旧的列头 \`sort\` 步骤。
+# （本 heredoc 未加引号，需要 $变量 展开；正文里的反引号必须转义，否则会被当命令执行。）
 select 1
 sort-panel 1 name asc
 expect-browse 1 sort=name:asc
@@ -407,6 +413,10 @@ screenshot $case_out/04-info.png
 # --- 导出当前页（第 3 页，100 行） ---
 export 1 $case_out/page3.csv
 expect-file $case_out/page3.csv 1000
+# 导出完成会弹「导出完成」模态：AdwAlertDialog 的首帧尺寸是 0x0，那一刻整窗取不到渲染
+# 节点，截图会报「控件快照为空」（实测一次 1.5 s 重试内都没恢复）。等模态分配出真实尺寸
+# 再拍，画面上才有那张「导出完成」提示（run 成功的截图里可以看到模态正文与路径）。
+sleep 1500
 screenshot $case_out/05-export.png
 # --- 关一个标签：会话回到 3 ---
 close 3 discard
