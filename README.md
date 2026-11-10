@@ -8,12 +8,11 @@
 - 前端与后端通过 gRPC + Protobuf 通信；
 - 数据库通过可扩展的 Driver SPI 接入。
 
-![Sqarvo 主窗口：对象树、Objects 对象列表与信息面板 DDL（Linux / GTK4）](docs/assets/screenshots/linux-main-window.png)
+![Sqarvo 主窗口：对象树、表数据网格与信息面板 DDL（Linux / GTK4）](docs/assets/screenshots/linux-main-window.png)
 
-*Linux 前端（GTK4 + libadwaita）：对象树（连接 → 库 → `Tables`/`Views`/`Functions`/`Queries`
-四组）· `Objects` 对象列表（2px 圆角外框，选中行同步信息面板）· 信息面板 DDL · 左下角对象搜索框
-与 48px 状态栏，连接本地 SQLite 演示库（1200×800）。截图由前端自渲染生成（`--screenshot`），
-不是桌面截图。*
+*Linux 前端（GTK4 + libadwaita）：对象树 · `demo_users` 表数据网格（列名 + 类型行、行变更工具条）·
+信息面板 DDL · 左下角对象搜索框与 48px 状态栏，连接 MariaDB 的 `sqarvo_demo` 库（1200×800）。
+桌面截图（GNOME / Wayland，窗口原生尺寸）。*
 
 > 当前版本为 **v0.2.3.2**（M6 前端硬化第二批）：在 v0.2.3.1 之上把界面行为收成一套口径——
 > 对象树单击只选中 / 双击激活、表下四组元数据、信息面板常驻、`Objects` 页与树联动、
