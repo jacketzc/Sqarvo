@@ -204,7 +204,10 @@ Channel）和同一套命令/事件通道。
 
 ## 退出清理
 
-- 关闭窗口（标题栏或 Ctrl+W）与应用退出（Ctrl+Q、会话结束）走同一条清理路径：
+- 关闭窗口（标题栏、`Ctrl+Shift+W`）先过**脏行守卫**：任一表数据标签有未提交的更改
+  （脏行 / 标记删除 / 未提交的新增行）时不关窗，弹「有未提交的更改」确认框（逐表列出，
+  按钮 取消 / 放弃更改并退出）；选「取消」什么都不做，选「放弃更改并退出」才继续清理；
+- 关闭窗口与应用退出（Ctrl+Q、会话结束）走同一条清理路径：
   先让 worker 停止，收到 `ShutdownComplete` 后才销毁窗口；
 - 只终止**自己启动**的后端：先 `SIGTERM`，最多等 5 秒，超时再 `SIGKILL`，并如实
   报告「清理未完成」；不是自己启动的后端只断开连接，绝不删除其端点文件或 socket；
@@ -648,6 +651,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-data-replay-cancelled` | 重放「批次被取消（`cancelled=true`）」的结果（走同一个 `show_applied`；注入的是响应，不是真的取消，原因见下） |
 | `--qa-data-edit-range <start>:<count>:<column>:<value>` | 批量编辑连续行（每行都走与单元格编辑同一条路径），500 行批次用 |
 | `--qa-data-cancel-after-ms <n>` | 提交**真正发出**后 n 毫秒点「取消提交」（真的发 `CancelRowChanges`） |
+| `--qa-close-dirty answer=discard\|cancel` | 脏行建好后触发 `app.close-window`（与 `Ctrl+Shift+W` / 标题栏关闭同一条 `close_request`）：`discard` = 点「放弃更改并退出」（退出码 0，日志 `[close] 已放弃未提交更改并退出`）、`cancel` = 点「取消」（窗口保持打开，由 `--qa-exit-after-ms` 收尾，日志 `[close] 取消关窗：保持在工作区`）。答案走确认框自己的 `response` 信号；需配合 `--qa-data-table` 与编辑 / 标记删除步骤（否则建不出脏行，参数会直接报错） |
 | `--qa-expect-submit <phase\|outcome\|button\|status>=<value>` | 截图时刻断言在途批次（阶段/结束方式逐字相等，按钮与状态行按包含比对） |
 | `--qa-expect-data-state <loading\|ready\|empty\|error\|disconnected>` | 截图时刻断言数据页状态，不符则退出码 3 |
 | `--qa-expect-txn <auto\|active\|readonly\|failed\|disconnected>` | 截图时刻断言事务状态（状态机文案 + CSS 类 + 按钮可用性；v0.2.3.2 起工具条徽标已删除），不符则退出码 3 |

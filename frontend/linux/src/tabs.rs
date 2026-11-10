@@ -252,6 +252,23 @@ pub fn close_prompt(title: &str, snapshot: Option<&StatusSnapshot>) -> CloseProm
     }
 }
 
+/// 「关闭窗口」守卫的对话框正文：逐表列出未提交的更改。
+///
+/// 关标签的确认（[`close_prompt`]）只看一个标签；关窗要一次说清**所有**表标签，
+/// 否则用户「放弃更改并退出」时并不知道会丢掉哪几张表的编辑。
+#[must_use]
+pub fn close_guard_body(dirty: &[crate::data_page::DirtyTabSummary]) -> String {
+    let lines: Vec<String> = dirty
+        .iter()
+        .map(crate::data_page::DirtyTabSummary::line)
+        .collect();
+    format!(
+        "以下表标签有未提交的更改，退出 Sqarvo 会丢失这些修改：\n\n{}\n\n\
+         要保留这些更改，选「取消」回到工作区，先提交或放弃它们。",
+        lines.join("\n")
+    )
+}
+
 /// 「保存并关闭」的阶段：先提交脏行，再（如果标签有事务）提交事务，最后才摘页面。
 ///
 /// 少了后一步会骗人：在事务里提交脏行、然后断开会话，服务端会把事务回滚掉——
@@ -2555,6 +2572,20 @@ impl TabSet {
         self.by_index(index).and_then(|tab| tab.data.clone())
     }
 
+    /// 关闭窗口前的脏行汇总：所有表标签里未提交的更改（按标签顺序）。
+    ///
+    /// 空 `Vec` = 没有可丢失的编辑，关窗不需要确认。只读数据页与查询标签不参与：
+    /// 查询标签的未提交事务不在本守卫的范围内（见 `ui-behavior-contract` §8.2）。
+    #[must_use]
+    pub fn dirty_tab_summaries(&self) -> Vec<crate::data_page::DirtyTabSummary> {
+        self.tabs
+            .borrow()
+            .iter()
+            .filter_map(|tab| tab.data.as_ref())
+            .filter_map(|data| data.dirty_tab_summary())
+            .collect()
+    }
+
     /// 按 ID 取查询页。
     #[must_use]
     pub fn sql_page_at(&self, index: usize) -> Option<Rc<SqlPage>> {
@@ -4103,6 +4134,51 @@ mod tests {
         assert!(prompt.body.contains("2 行未提交的更改"));
         assert!(prompt.body.contains("保存"));
         assert!(prompt.body.contains("放弃"));
+    }
+
+    #[test]
+    fn close_guard_lists_every_dirty_table() {
+        use crate::data_page::DirtyTabSummary;
+        let dirty = vec![
+            DirtyTabSummary {
+                table: "users".to_owned(),
+                updates: 3,
+                deletes: 0,
+                insert: false,
+            },
+            DirtyTabSummary {
+                table: "orders".to_owned(),
+                updates: 0,
+                deletes: 1,
+                insert: false,
+            },
+        ];
+        assert_eq!(dirty[0].line(), "users：3 行未提交");
+        assert_eq!(dirty[1].line(), "orders：1 行标记删除");
+        assert_eq!(dirty[0].rows(), 3);
+        assert_eq!(dirty[1].rows(), 1);
+        let body = close_guard_body(&dirty);
+        // 逐表列出：用户在「放弃更改并退出」之前要知道会丢哪几张表。
+        assert!(body.contains("users：3 行未提交"), "{body}");
+        assert!(body.contains("orders：1 行标记删除"), "{body}");
+        assert!(body.contains("有未提交的更改"), "{body}");
+        assert!(body.contains("取消"), "{body}");
+    }
+
+    #[test]
+    fn close_guard_counts_updates_and_deletes_together() {
+        use crate::data_page::DirtyTabSummary;
+        let summary = DirtyTabSummary {
+            table: "items".to_owned(),
+            updates: 2,
+            deletes: 1,
+            insert: true,
+        };
+        assert_eq!(
+            summary.line(),
+            "items：2 行未提交 · 1 行标记删除 · 1 行新增未提交"
+        );
+        assert_eq!(summary.rows(), 4);
     }
 
     #[test]

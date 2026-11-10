@@ -129,6 +129,12 @@
 //!   （打开右键菜单并点条目）、`--qa-delete-connection <名字>`（走「删除连接」回调并
 //!   自动确认，仍经过二次确认对话框）。
 //!
+//! - 关窗守卫：`--qa-close-dirty answer=discard|cancel`（先用 `--qa-data-edit` /
+//!   `--qa-data-delete-row` 建出脏行，再触发产品的 `app.close-window` 动作；
+//!   `discard` = 放弃更改并退出（退出码 0，日志「已放弃未提交更改并退出」），
+//!   `cancel` = 取消关窗（进程不退出，由 `--qa-exit-after-ms` 收尾，日志
+//!   「取消关窗：保持在工作区」）。答案走确认框自己的 `response` 信号，不绕过确认）。
+//!
 //! 这些都是「脚本 + 断言」的收拢：既有 `--qa-*` 的语义一个都没改。
 //!
 //! 这些参数只影响启动参数，不改变任何正常启动路径；也不存在「绕过 UI 直接调 gRPC」
@@ -403,6 +409,41 @@ impl SubmitField {
             Self::Outcome => "outcome",
             Self::Button => "button",
             Self::Status => "status",
+        }
+    }
+}
+
+/// 关窗守卫的无人值守答案（`--qa-close-dirty answer=discard|cancel`）。
+///
+/// 触发的是产品的 `app.close-window` 动作（`Ctrl+Shift+W` 同一条路径），答案通过
+/// 确认框自己的 `response` 信号送出，不绕过确认直接关窗。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseDirtyAnswer {
+    /// 「放弃更改并退出」：进程正常退出（退出码 0）。
+    Discard,
+    /// 「取消」：不关窗，保持在工作区（由 `--qa-exit-after-ms` 收尾）。
+    Cancel,
+}
+
+impl CloseDirtyAnswer {
+    /// 参数里的写法（同时接受 `answer=` 前缀）。
+    fn parse(value: &str) -> Result<Self, String> {
+        let answer = value.strip_prefix("answer=").unwrap_or(value).trim();
+        match answer {
+            "discard" => Ok(Self::Discard),
+            "cancel" => Ok(Self::Cancel),
+            other => Err(format!(
+                "--qa-close-dirty 只接受 answer=discard 或 answer=cancel，实际：{other}"
+            )),
+        }
+    }
+
+    /// 对话框的 response 名（与 `ui` 里的按钮一一对应）。
+    #[must_use]
+    pub fn response(self) -> &'static str {
+        match self {
+            Self::Discard => "discard",
+            Self::Cancel => "cancel",
         }
     }
 }
@@ -753,6 +794,9 @@ struct Args {
     data_edit_ranges: Vec<(u32, u32, String, String)>,
     /// `--qa-data-cancel-after-ms <n>`：点「提交更改」后 n 毫秒点「取消提交」。
     data_cancel_after_ms: Option<u64>,
+    /// `--qa-close-dirty answer=discard|cancel`：脏行建好后触发 `app.close-window`，
+    /// 由确认框的 response 送答案（验证关窗守卫的两条去向）。
+    close_dirty: Option<CloseDirtyAnswer>,
     /// `--qa-expect-submit <field>=<value>`：在途提交批次的断言（可重复）。
     expect_submit: Vec<SubmitExpectation>,
     /// `--qa-expect-data-state`：截图时必须成立的数据页状态。
@@ -1021,6 +1065,7 @@ pub fn enabled() -> bool {
             || args.data_insert
             || !args.data_edit_ranges.is_empty()
             || args.data_cancel_after_ms.is_some()
+            || args.close_dirty.is_some()
             || args.isolation_dialog
             || args.isolation_confirm
             || args.layout_audit
@@ -1201,6 +1246,12 @@ pub fn data_edit_ranges() -> Vec<(u32, u32, String, String)> {
 #[must_use]
 pub fn data_cancel_after_ms() -> Option<u64> {
     ARGS.get().and_then(|args| args.data_cancel_after_ms)
+}
+
+/// `--qa-close-dirty` 的答案（未启用时为 `None`）：脏行建好后触发关窗守卫。
+#[must_use]
+pub fn close_dirty() -> Option<CloseDirtyAnswer> {
+    ARGS.get().and_then(|args| args.close_dirty)
 }
 
 /// `--qa-expect-submit` 的断言（截图时刻校验）。
@@ -1798,6 +1849,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.data_cancel_after_ms = Some(millis);
                 index += 2;
             }
+            "--qa-close-dirty" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-close-dirty 需要 answer=discard|cancel".to_owned())?;
+                parsed.close_dirty = Some(CloseDirtyAnswer::parse(value)?);
+                index += 2;
+            }
             "--qa-expect-submit" => {
                 let value = args
                     .get(index + 1)
@@ -2308,6 +2366,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
     }
     parsed.capture = path.map(|path| Capture { path, delay });
+    // 关窗守卫的答案要落在真实脏行上：没有 `--qa-data-table` 就没有编辑步骤，
+    // 「跑了但没弹窗」看起来会像通过，所以这里直接报错。
+    if parsed.close_dirty.is_some() && parsed.data_table.is_none() {
+        return Err(
+            "--qa-close-dirty 需要 --qa-data-table（先用编辑 / 标记删除步骤建出脏行）".to_owned(),
+        );
+    }
     // 期望值只在截图那一刻校验：没有截图就没有「这一刻」，静默忽略会让
     // 「跑了但没断言」看起来像通过。
     if parsed.capture.is_none()
@@ -2860,6 +2925,47 @@ mod tests {
         assert_eq!(parsed.exit_after_ms, Some(9000));
         // 不设置时没有定时退出：正常交互路径不受影响。
         assert_eq!(parse(&args(&["app"])).unwrap().exit_after_ms, None);
+    }
+
+    #[test]
+    fn close_dirty_flag_is_parsed_and_requires_a_table() {
+        // `answer=` 前缀与裸值都接受：命令行里两种写法都见过。
+        let parsed = parse(&args(&[
+            "app",
+            "--qa-data-table",
+            "users",
+            "--qa-close-dirty",
+            "answer=discard",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.close_dirty, Some(CloseDirtyAnswer::Discard));
+        assert_eq!(
+            CloseDirtyAnswer::parse("cancel").unwrap(),
+            CloseDirtyAnswer::Cancel
+        );
+        assert_eq!(CloseDirtyAnswer::Discard.response(), "discard");
+        assert_eq!(CloseDirtyAnswer::Cancel.response(), "cancel");
+        // 没有 `--qa-data-table` 就没有脏行：不能安静地跑完还当成「验证过」。
+        assert!(parse(&args(&["app", "--qa-close-dirty", "answer=discard"])).is_err());
+        assert!(
+            parse(&args(&[
+                "app",
+                "--qa-data-table",
+                "users",
+                "--qa-close-dirty",
+                "answer=maybe",
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&args(&[
+                "app",
+                "--qa-data-table",
+                "users",
+                "--qa-close-dirty",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

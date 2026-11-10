@@ -165,6 +165,47 @@ pub struct ColumnInfoRowObservation {
     pub collation: String,
 }
 
+/// 关窗守卫里的一张表：该表标签上未提交的更改。
+///
+/// 只读快照（纯数据、不持控件），供 [`crate::tabs::TabSet::dirty_tab_summaries`] 汇总、
+/// 关窗确认框逐表列出。口径与「关闭标签」确认一致：脏行（含标记删除）与「新增行」草稿
+/// 都是未提交的更改，关窗都会丢。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyTabSummary {
+    /// 表名（标签对应的表 / 视图显示名）。
+    pub table: String,
+    /// 已编辑、尚未提交的行数（不含标记删除）。
+    pub updates: usize,
+    /// 已标记删除、尚未提交的行数。
+    pub deletes: usize,
+    /// 是否有未提交的「新增行」草稿。
+    pub insert: bool,
+}
+
+impl DirtyTabSummary {
+    /// 确认框正文里的一行：`users：3 行未提交`、`orders：1 行标记删除`。
+    #[must_use]
+    pub fn line(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.updates > 0 {
+            parts.push(format!("{} 行未提交", self.updates));
+        }
+        if self.deletes > 0 {
+            parts.push(format!("{} 行标记删除", self.deletes));
+        }
+        if self.insert {
+            parts.push("1 行新增未提交".to_owned());
+        }
+        format!("{}：{}", self.table, parts.join(" · "))
+    }
+
+    /// 未提交的行数（日志用；标记删除与新增行各算一行）。
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.updates + self.deletes + usize::from(self.insert)
+    }
+}
+
 /// 状态栏「行操作」按钮组要触发的动作。
 ///
 /// 与页内按钮一一对应，走的是同一条方法：状态栏只是同一个动作的第二个入口，
@@ -1511,6 +1552,38 @@ impl DataPage {
             .as_ref()
             .map_or(0, crate::table_data::TableDraft::dirty_rows);
         (dirty, self.insert.borrow().is_some())
+    }
+
+    /// 关窗守卫用的一次摘要：本页未提交的更改（`None` = 没有可丢失的编辑）。
+    ///
+    /// 口径与「关闭标签」确认一致（`dirty.max(pending)`）：脏行含标记删除，另加
+    /// 「新增行」草稿——它是未提交的更改，关窗一样会丢。只读页 / 空页返回 `None`。
+    #[must_use]
+    pub fn dirty_tab_summary(&self) -> Option<DirtyTabSummary> {
+        let (dirty, risk) = match self.draft.borrow().as_ref() {
+            Some(draft) => (draft.dirty_rows(), draft.risk()),
+            None => (
+                0,
+                RiskAssessment {
+                    updates: 0,
+                    deletes: 0,
+                },
+            ),
+        };
+        let insert = self.insert.borrow().is_some();
+        if dirty == 0 && !insert {
+            return None;
+        }
+        Some(DirtyTabSummary {
+            table: self
+                .table
+                .borrow()
+                .as_ref()
+                .map_or_else(|| "表".to_owned(), |table| table.display_name.clone()),
+            updates: risk.updates,
+            deletes: risk.deletes,
+            insert,
+        })
     }
 
     /// 导出当前页（EX 按钮 /「表」菜单 / Ctrl+Shift+E 同一个入口）。

@@ -106,6 +106,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-execute-again-after-ms", "milliseconds"),
         ("qa-data-table", "table"),
         ("qa-data-edit", "row:column:value"),
+        ("qa-close-dirty", "answer=discard|cancel"),
         ("qa-data-delete-row", "row"),
         ("qa-data-scroll-to-row", "row"),
         ("qa-tree-expand", "node-name"),

@@ -253,11 +253,18 @@ pub fn activate(app: &adw::Application) {
         })
     };
 
+    // 关窗守卫（`ui-behavior-contract` §1.1 / §8.2）：有未提交的脏行时先确认，
+    // 「放弃更改并退出」才继续走清理流程；「取消」什么都不做。
     let closing = Rc::new(Cell::new(false));
-    window.connect_close_request({
+    // 用户已经确认过「放弃更改并退出」：再关不能二次弹窗（也覆盖 QA 的重复关窗）。
+    let close_confirmed = Rc::new(Cell::new(false));
+
+    // 关窗清理：先让 worker 停子进程，收到 ShutdownComplete 才销毁窗口。
+    // 没有 worker（端点路径解析失败等）时没有子进程要清理，直接放行。
+    let begin_shutdown: Rc<dyn Fn() -> glib::Propagation> = {
         let state = Rc::clone(&state);
         let closing = Rc::clone(&closing);
-        move |_window| {
+        Rc::new(move || {
             if closing.get() {
                 return glib::Propagation::Proceed;
             }
@@ -270,6 +277,32 @@ pub fn activate(app: &adw::Application) {
             worker.shutdown();
             // 等 worker 发来 ShutdownComplete 再销毁窗口，避免界面卡死。
             glib::Propagation::Stop
+        })
+    };
+
+    window.connect_close_request({
+        let state = Rc::clone(&state);
+        let closing = Rc::clone(&closing);
+        let close_confirmed = Rc::clone(&close_confirmed);
+        let begin_shutdown = Rc::clone(&begin_shutdown);
+        move |_window| {
+            // 关闭过程中（已开始清理）直接放行：不再检查脏行。
+            if closing.get() {
+                return glib::Propagation::Proceed;
+            }
+            if !close_confirmed.get()
+                && let Some(dirty) = dirty_tab_summaries(&state)
+            {
+                confirm_close_with_dirty(
+                    &state,
+                    &dirty,
+                    &close_confirmed,
+                    Rc::clone(&begin_shutdown),
+                );
+                // 关窗被守卫拦下：窗口保持打开，等用户回答。
+                return glib::Propagation::Stop;
+            }
+            begin_shutdown()
         }
     });
 
@@ -772,6 +805,102 @@ pub fn activate(app: &adw::Application) {
             }
         });
     }
+}
+
+/// 关窗守卫要看的脏行：任一个表数据标签有未提交的更改就返回逐表摘要。
+///
+/// 没有工作区（启动态 / 后端未就绪）时返回 `None`：那时没有可丢失的编辑，
+/// 关窗不该多一次确认。
+fn dirty_tab_summaries(state: &Rc<UiState>) -> Option<Vec<crate::data_page::DirtyTabSummary>> {
+    let workspace = state.workspace.borrow().as_ref().cloned()?;
+    let dirty = workspace.tabs.dirty_tab_summaries();
+    if dirty.is_empty() { None } else { Some(dirty) }
+}
+
+/// 关窗守卫的确认框（`ui-behavior-contract` §8.2）。
+///
+/// 与「断开连接」确认同一套写法：`AdwAlertDialog`、默认 / 关闭 response 都是「取消」、
+/// 「放弃更改并退出」是破坏性样式。选「取消」什么都不做（窗口保持原样）；
+/// 选「放弃更改并退出」才调用 `on_discard`（即原有的 shutdown 流程）。
+///
+/// `confirmed` 由调用方共享：一旦确认过，后续 `close_request` 不再弹第二次。
+fn confirm_close_with_dirty(
+    state: &Rc<UiState>,
+    dirty: &[crate::data_page::DirtyTabSummary],
+    confirmed: &Rc<Cell<bool>>,
+    on_discard: Rc<dyn Fn() -> glib::Propagation>,
+) {
+    let body = crate::tabs::close_guard_body(dirty);
+    let dialog = adw::AlertDialog::new(Some("有未提交的更改"), Some(&body));
+    dialog.add_response("cancel", "取消");
+    dialog.add_response("discard", "放弃更改并退出");
+    dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let rows: usize = dirty
+        .iter()
+        .map(crate::data_page::DirtyTabSummary::rows)
+        .sum();
+    eprintln!(
+        "[close] 关窗守卫：{} 个表标签有 {} 行未提交（{}）",
+        dirty.len(),
+        rows,
+        dirty
+            .iter()
+            .map(crate::data_page::DirtyTabSummary::line)
+            .collect::<Vec<_>>()
+            .join("；")
+    );
+    let handled = Rc::new(Cell::new(false));
+    {
+        let confirmed = Rc::clone(confirmed);
+        let handled = Rc::clone(&handled);
+        dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+            if handled.replace(true) {
+                return;
+            }
+            if response == "discard" {
+                eprintln!("[close] 已放弃未提交更改并退出（{rows} 行）");
+                confirmed.set(true);
+                // 忽略返回值：这里不需要把 Propagation 交给 GTK，窗口由
+                // `ShutdownComplete` 销毁（与原关窗路径一致）。
+                let _ = on_discard();
+            } else {
+                eprintln!("[close] 取消关窗：保持在工作区");
+            }
+        });
+    }
+    // 无人值守验证（`--qa-close-dirty answer=…`）：答案仍然走对话框自己的 response
+    // 信号，与用户点按钮同一个入口，不是绕过确认的另一条关窗路径。
+    if let Some(answer) = crate::qa::close_dirty() {
+        let dialog_for_qa = dialog.clone();
+        let confirmed = Rc::clone(confirmed);
+        glib::timeout_add_local_once(Duration::from_millis(1_200), move || {
+            // 对话框已经由别的关窗请求收场（例如截图后又关了一次窗）：不再送答案，
+            // 否则会在已关闭的对话框上 emit，只留下一条 Adwaita-CRITICAL。
+            if handled.get() {
+                eprintln!("[qa] 确认框已收场，不再送 answer={}", answer.response());
+                return;
+            }
+            eprintln!(
+                "[qa] t=+{}ms 关窗守卫：送 answer={} 到确认框",
+                crate::qa::elapsed_ms(),
+                answer.response()
+            );
+            let value = glib::Value::from(answer.response());
+            dialog_for_qa.emit_by_name::<()>("response", &[&value]);
+            if dialog_for_qa.is_visible() {
+                dialog_for_qa.close();
+            }
+            if answer == crate::qa::CloseDirtyAnswer::Cancel {
+                // 无人值守收尾：确认框已经答过一次，`--qa-exit-after-ms`（或截图后的
+                // 自动关窗）不该再撞上同一张确认框，否则进程只能等外部 timeout。
+                confirmed.set(true);
+                eprintln!("[qa] 取消关窗已取证：后续关窗直接放行（--qa-exit-after-ms 收尾）");
+            }
+        });
+    }
+    dialog.present(Some(&state.window));
 }
 
 /// 打开（或呈现已打开的）连接对话框（新建连接）。
@@ -2989,6 +3118,21 @@ fn maybe_run_qa_data(state: &Rc<UiState>) {
             };
             eprintln!("[qa] 重新浏览后的行值：");
             data.qa_log_rows();
+        });
+    }
+
+    // 8. 关窗守卫（`--qa-close-dirty answer=discard|cancel`）：脏行建好后触发产品的
+    //    `app.close-window`（与 `Ctrl+Shift+W` / 标题栏关闭同一个 `close_request`）。
+    //    确认框的答案由 `confirm_close_with_dirty` 的 QA 钩子稍后送进它自己的
+    //    `response` 信号，这里不直接关窗、也不绕过确认。
+    if crate::qa::close_dirty().is_some() {
+        let window = state.window.clone();
+        glib::timeout_add_local_once(Duration::from_millis(4_200), move || {
+            eprintln!(
+                "[qa] t=+{}ms 触发 app.close-window（关窗守卫）",
+                crate::qa::elapsed_ms()
+            );
+            let _ = gtk::prelude::WidgetExt::activate_action(&window, "app.close-window", None);
         });
     }
 }
