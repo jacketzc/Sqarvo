@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- Sqarvo 占位图标：项目自有图形（数据库圆柱），非第三方产品图标。
-       真正的品牌设计资产尚未提供，本文件仅为打包试用阶段的占位。 -->
   <rect x="4" y="4" width="120" height="120" rx="26" fill="#5B3256"/>
-  <g fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round">
-    <ellipse cx="64" cy="42" rx="26" ry="10"/>
-    <path d="M38 42v22c0 5.5 11.6 10 26 10s26-4.5 26-10V42"/>
-    <path d="M38 64v22c0 5.5 11.6 10 26 10s26-4.5 26-10V64"/>
+  <g transform="translate(-10.38,10.12)">
+<path d="M56,42 C56,36 50,33 44,33 C37,33 32,37 32,43 C32,49 36,52 44,54 C52,56 56,60 56,66 C56,72 50,75 44,75 C37,75 32,71 32,65" fill="none" stroke="#F3E7EF" stroke-width="11" stroke-linecap="round"/>
+<rect x="70.0" y="42.5" width="38.0" height="38.0" rx="5.5" fill="#F3E7EF"/>
+<path d="M81.525,54.785 L88.365,61.625 L81.525,68.465" fill="none" stroke="#5B3256" stroke-width="4.56" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="93.191" y="66.451" width="7.866" height="4.294" rx="2.147" fill="#5B3256"/>
+<rect x="111.5" y="69.5" width="11.0" height="11.0" rx="5.5" fill="#F3E7EF"/>
   </g>
 </svg>
