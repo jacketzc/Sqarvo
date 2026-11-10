@@ -163,6 +163,7 @@ fn register_qa_options(app: &adw::Application) {
     );
     for name in [
         "qa-search-clear",
+        "qa-search-enter",
         "qa-search-click-object",
         "qa-tree-click-result",
         "qa-tree-load-more",
@@ -180,6 +181,7 @@ fn register_qa_options(app: &adw::Application) {
         "qa-export-raw-values",
         "qa-startup-workspace",
         "qa-open-about",
+        "qa-open-menu",
     ] {
         app.add_main_option(
             name,

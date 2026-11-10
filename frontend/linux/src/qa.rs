@@ -63,7 +63,7 @@
 //!   `--qa-tree-activate <name>`（走双击 / 回车的 `activate` 信号激活节点，v0.2.3.2 回归）、
 //!   `--qa-tree-search <query>`（输入关键词）、`--qa-tree-click-result`（点第一条
 //!   结果跳转）、`--qa-tree-load-more`（点「加载更多…」翻页）、
-//!   `--qa-refresh`（触发与 `F5` / 菜单「视图 → 刷新」相同的 `win.refresh`：当前标签是
+//!   `--qa-refresh`（触发与 `F5` 相同的 `win.refresh`：当前标签是
 //!   表数据页时刷该表，否则重建对象树；日志写出走的是哪一条）、
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //!   `--qa-tree-menu-group <tables|views>` + `--qa-tree-menu-pick <条目>`（在种类分组行上
@@ -606,6 +606,8 @@ pub enum SearchField {
     Status,
     /// 搜索页状态（results / empty / denied / failed）。
     State,
+    /// 已派发的搜索次数（回车重搜会让它 +1）。
+    Runs,
 }
 
 impl SearchField {
@@ -618,8 +620,9 @@ impl SearchField {
             "highlight" => Ok(Self::Highlight),
             "status" => Ok(Self::Status),
             "state" => Ok(Self::State),
+            "runs" => Ok(Self::Runs),
             other => Err(format!(
-                "--qa-expect-search 的字段只接受 hits|row|rows|highlight|status|state，实际：{other}"
+                "--qa-expect-search 的字段只接受 hits|row|rows|highlight|status|state|runs，实际：{other}"
             )),
         }
     }
@@ -634,6 +637,7 @@ impl SearchField {
             Self::Highlight => "highlight",
             Self::Status => "status",
             Self::State => "state",
+            Self::Runs => "runs",
         }
     }
 }
@@ -660,6 +664,12 @@ impl SearchExpectation {
                 .trim()
                 .parse::<usize>()
                 .map_err(|_| format!("--qa-expect-search hits= 需要非负整数，实际：{expected}"))?;
+        }
+        if field == SearchField::Runs {
+            expected
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| format!("--qa-expect-search runs= 需要非负整数，实际：{expected}"))?;
         }
         if matches!(
             field,
@@ -966,6 +976,9 @@ struct Args {
     expect_search: Vec<SearchExpectation>,
     /// `--qa-search-clear`：搜索后把输入框清空（走用户清空 / Esc 同一条路径）。
     search_clear: bool,
+    /// `--qa-search-enter`：在搜索框上发一次真实的回车（`activate` 信号），
+    /// 文本不变也必须重新派发一次搜索。
+    search_enter: bool,
     /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
     tree_click_result: bool,
     /// `--qa-search-click-object`（v0.2.4）：点结果里第一个**可打开的对象**行
@@ -1042,6 +1055,8 @@ struct Args {
     delete_connection: Option<String>,
     /// `--qa-open-about`：握手完成后打开「关于 Squarvo」（截图与断言用）。
     open_about: bool,
+    /// `--qa-open-menu`：截图前打开 headerbar 主菜单（弹出层截图用）。
+    open_menu: bool,
     /// `--qa-expect-about <substring>`：「关于」对话框里必须出现的文案（可重复）。
     expect_about: Vec<String>,
     /// `--window-size <WIDTHxHEIGHT>`：取证用的初始窗口尺寸（产品默认 1200×800）。
@@ -1215,6 +1230,7 @@ pub fn enabled() -> bool {
             || args.tree_menu_pick.is_some()
             || args.tree_search.is_some()
             || args.search_query.is_some()
+            || args.search_enter
             || args.search_clear
             || args.tree_click_result
             || args.search_click_object
@@ -1228,6 +1244,7 @@ pub fn enabled() -> bool {
             || args.isolation_confirm
             || args.layout_audit
             || args.tabs_script.is_some()
+            || args.open_menu
             || !args.browse_steps.is_empty()
     })
 }
@@ -1518,6 +1535,12 @@ pub fn search_clear() -> bool {
     ARGS.get().is_some_and(|args| args.search_clear)
 }
 
+/// 是否在搜索框上按一次回车（`--qa-search-enter`）。
+#[must_use]
+pub fn search_enter() -> bool {
+    ARGS.get().is_some_and(|args| args.search_enter)
+}
+
 /// 结果树断言（`--qa-expect-search`，按登记顺序）。
 #[must_use]
 pub fn expect_search() -> Vec<SearchExpectation> {
@@ -1648,6 +1671,7 @@ pub fn tree_requested() -> bool {
             || args.tree_activate.is_some()
             || args.tree_search.is_some()
             || args.search_query.is_some()
+            || args.search_enter
             || args.search_clear
             || args.tree_click_result
             || args.search_click_object
@@ -1748,6 +1772,12 @@ pub fn startup_workspace() -> bool {
 #[must_use]
 pub fn open_about() -> bool {
     ARGS.get().is_some_and(|args| args.open_about)
+}
+
+/// 截图前是否打开 headerbar 主菜单（`--qa-open-menu`）。
+#[must_use]
+pub fn open_menu() -> bool {
+    ARGS.get().is_some_and(|args| args.open_menu)
 }
 
 /// 启动态侧栏要按名字激活的连接（`--qa-startup-click`，#144）。
@@ -2332,6 +2362,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.open_about = true;
                 index += 1;
             }
+            "--qa-open-menu" => {
+                parsed.open_menu = true;
+                index += 1;
+            }
             "--qa-expect-about" => {
                 let value = args
                     .get(index + 1)
@@ -2450,6 +2484,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--qa-search-clear" => {
                 parsed.search_clear = true;
+                index += 1;
+            }
+            "--qa-search-enter" => {
+                parsed.search_enter = true;
                 index += 1;
             }
             "--qa-expect-search" => {
@@ -2691,6 +2729,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 .to_owned(),
         );
     }
+    if parsed.search_enter && parsed.search_query.is_none() && parsed.tree_search.is_none() {
+        return Err(
+            "--qa-search-enter 需要 --qa-search 或 --qa-tree-search（先搜一次，再验证文本不变的重复搜索）"
+                .to_owned(),
+        );
+    }
     // 期望值只在截图那一刻校验：没有截图就没有「这一刻」，静默忽略会让
     // 「跑了但没断言」看起来像通过。
     if parsed.capture.is_none()
@@ -2711,11 +2755,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-layout-audit 必须与 --screenshot 一起使用（自检发生在截图时刻）".to_owned(),
         );
     }
-    if (parsed.startup_workspace || parsed.open_about || !parsed.expect_about.is_empty())
+    if (parsed.startup_workspace
+        || parsed.open_about
+        || parsed.open_menu
+        || !parsed.expect_about.is_empty())
         && parsed.capture.is_none()
     {
         return Err(
-            "--qa-startup-workspace / --qa-open-about / --qa-expect-about 必须与 --screenshot 一起使用"
+            "--qa-startup-workspace / --qa-open-about / --qa-open-menu / --qa-expect-about 必须与 --screenshot 一起使用"
                 .to_owned(),
         );
     }

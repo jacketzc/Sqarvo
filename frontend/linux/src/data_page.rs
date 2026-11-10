@@ -260,7 +260,7 @@ pub enum RowOp {
 
 /// 行操作按钮的可用性（读数来自页内按钮自身，不重复判定）。
 ///
-/// 状态栏与「表」菜单用它决定置灰；`reason` 是**全部禁用**时的原因，
+/// 状态栏与窗口动作用它决定置灰；`reason` 是**全部禁用**时的原因，
 /// 供 tooltip 说明「为什么现在不能点」，而不是让按钮无声地灰着。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowOpsState {
@@ -847,7 +847,7 @@ impl DataPage {
         delete_row.set_tooltip_text(Some("把选中行标记为待删除（提交前仍可撤销）"));
 
         // 「新增行」（#88）不在这一行：入口是状态栏行操作组的 `+`（`RowOp::Add`）与
-        // 「表」菜单的「新增行」——两处都落到 `DataPage::begin_insert`。
+        // `win.add-row` 动作（只保留快捷键，菜单里不再列）。两者都落到 `DataPage::begin_insert`。
         // 工具条上再放一个同样的按钮只是第三个入口，还要和这一行的宽度预算抢像素。
 
         let spinner = gtk::Spinner::new();
@@ -3047,8 +3047,9 @@ impl DataPage {
 
     /// 打开「开始事务」卡片：按当前驱动重建选项，不可用的项禁用并附原因。
     ///
-    /// 页内按钮与「表」菜单都先走 [`Self::begin_transaction`]（那里核「有未提交的更改
-    /// 不许开事务」），再落到这里；隔离级别只在开始之前选。
+    /// 页内按钮与 `win.begin-txn` 动作（「表」菜单在 v0.2.4 已不再列它）都先走
+    /// [`Self::begin_transaction`]（那里核「有未提交的更改不许开事务」），再落到这里；
+    /// 隔离级别只在开始之前选。
     pub fn open_txn_chooser(self: &Rc<Self>) {
         if !self.badge.borrow().can_begin() {
             self.set_status("该会话已有打开的事务（或已断开）", "warning");
@@ -4298,7 +4299,7 @@ impl DataPage {
 
     /// 行操作可用性：页内按钮直接读自身 `sensitive`，不重复一遍判定条件。
     ///
-    /// 两个例外：①「新增行」的工具条按钮已删（入口在状态栏 `+` / 「表」菜单），可用性
+    /// 两个例外：①「新增行」的工具条按钮已删（入口在状态栏 `+` / `win.add-row`），可用性
     /// 走显式谓词 [`Self::add_row_available`]；②「重新读取」的入口只在状态栏（工具条那个
     /// 纯重复的图标已删除），所以可用性在这里按状态判定（[`Self::refresh_available`]）。
     #[must_use]
@@ -4351,7 +4352,7 @@ impl DataPage {
 
     /// 「新增行」能否进入。
     ///
-    /// 工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏行操作组 `+` 与「表」菜单的
+    /// 工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏行操作组 `+` 与 `win.add-row` 的
     /// 唯一可用性来源，所以判定必须显式写在这里，不能再读某个按钮的 `sensitive`。
     fn add_row_available(&self) -> bool {
         let editing_enabled = !self.is_read_only()
@@ -5976,7 +5977,7 @@ impl DataPage {
         } else {
             self.status.set_tooltip_text(None);
         }
-        // 按钮可用性是状态栏行操作组与「表」菜单的唯一读数来源。
+        // 按钮可用性是状态栏行操作组与窗口动作的唯一读数来源。
         self.notify_status();
     }
 
