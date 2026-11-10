@@ -13,7 +13,7 @@
 //! 紧凑化作用在窗口的 `sqarvo-compact` class 下，不影响同一进程里没有这个 class
 //! 的其它窗口（对话框、浮层仍按 libadwaita 默认密度，避免对话框里挤成一行）。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::OnceLock;
 
 use crate::layout::{self, Gap, Tier};
@@ -42,7 +42,26 @@ pub const STATUS_DOT_DIRTY_CLASS: &str = "sqarvo-status-dot-dirty";
 /// 两枚 class 每次刷新都显式 add / remove 一次，不会同时残留。
 pub const STATUS_DOT_TXN_CLASS: &str = "sqarvo-status-dot-txn";
 
-/// 三档品牌色板的一份完整取值（底色 + 与之配对的前景）。
+/// 一档描边 / 分隔线 / 状态栏前景在 `@window_fg_color` 上的**不透明度**。
+///
+/// 不写 hex：四个值都是同一枚前景 token 的透明度变体，所以深浅色、系统强调色
+/// 与高对比主题（前景 / 底色由主题给）都不需要第二份色板。数值按 WCAG 2.1
+/// 的相对亮度反算（L = 0.2126R + 0.7152G + 0.0722B，各通道先做 sRGB 线性化；
+/// 对比度 = (L1 + 0.05) / (L2 + 0.05)）；每个取值旁边的注释是改动前后实测像素算出
+/// 来的数字：表内分隔线只要「看得出格子」，外框与浮层描边按图形对象 3:1 取。
+struct Tones {
+    /// 分隔线：工具条 / 标签条 / 状态栏 / 信息面板的分界线，以及网格的行列线。
+    separator: &'static str,
+    /// 表格外框（比同档分隔线实一档，2px 宽由度量表给）。
+    frame: &'static str,
+    /// 浮层描边：列显隐 / 事务卡片 / 筛选条件条。暗底上黑色阴影等于没有边界，
+    /// 边界改由这条 1px 线承担。
+    overlay: &'static str,
+    /// 状态栏前景（11px 小字与不可用按钮共用同一个灰度）。
+    status_fg: &'static str,
+}
+
+/// 三档品牌色板的一份完整取值（底色 + 与之配对的前景 + 两套描边强度）。
 ///
 /// 浅色与暗色是**同一个色相的两套亮度**，不是两套色相：深档 `#5B3256` → `#7A456F`、
 /// 中档 `#A66FA0` → `#B98AB2`、浅档 `#D8B7D3` → `#4A2E45`（暗界面里亮底会刺眼，
@@ -55,6 +74,12 @@ struct Palette {
     on_deep: &'static str,
     on_mid: &'static str,
     on_soft: &'static str,
+    /// 普通模式的描边 / 前景强度。
+    normal: Tones,
+    /// 高对比模式的描边 / 前景强度（`AdwStyleManager::is_high_contrast()` 为真时）。
+    /// 两套色板都定义同名 token，取值相同：高对比下前景与底色由 HighContrast 主题
+    /// 给出（黑 / 白），这里只决定「线有多实」。
+    high: Tones,
 }
 
 const LIGHT_PALETTE: Palette = Palette {
@@ -64,6 +89,18 @@ const LIGHT_PALETTE: Palette = Palette {
     on_deep: "#FFFFFF",
     on_mid: "#FFFFFF",
     on_soft: "@theme_fg_color",
+    normal: Tones {
+        separator: "0.10",
+        frame: "0.30",
+        overlay: "0.20",
+        status_fg: "0.82",
+    },
+    high: Tones {
+        separator: "0.45",
+        frame: "0.72",
+        overlay: "0.55",
+        status_fg: "0.85",
+    },
 };
 
 const DARK_PALETTE: Palette = Palette {
@@ -75,13 +112,49 @@ const DARK_PALETTE: Palette = Palette {
     // （`@view_bg_color`，Yaru 暗色 = #1d1d20，5.88:1），是「颜色跟着底色走」的必然结果。
     on_mid: "@view_bg_color",
     on_soft: "#F3E7EF",
+    normal: Tones {
+        // 暗底上 10% 前景的线只有 1.1–1.4:1（实测：状态栏上边线 1.17、网格右/下边线
+        // 1.35），表格看起来是敞开的：#161 把它提到 16%，与 Adwaita 自己画的网格内线
+        // （实测 15% / #3e3e40）同一档，行 / 列线不再一条深一条浅（1.63:1）。
+        separator: "0.16",
+        // 外框是「这是一块表格」的唯一提示，按图形对象 3:1 的下限取 45%（实测
+        // #878787 叠窗口底色 3.89:1；原来的 30% 只有 2.54:1）。
+        frame: "0.45",
+        // 浮层底色 = 窗口底色（暗色下同为 #2c2c2c），阴影是黑的、叠在暗底上等于没有：
+        // 边界只能靠这条 1px 线，取 36%（实测 #757575 叠卡片底色 3.03:1、叠表格 3.73:1）。
+        overlay: "0.36",
+        // 11px 小字要求 4.5:1；55% 的 #9c9c9c 只有 5.09:1（抗锯齿后更淡），62% 的
+        // #aaaaaa 到 6.01:1。
+        status_fg: "0.62",
+    },
+    high: Tones {
+        separator: "0.45",
+        frame: "0.72",
+        overlay: "0.55",
+        status_fg: "0.85",
+    },
 };
 
-/// 当前是否暗色（由 [`install`] 从 `AdwStyleManager` 写入；测试环境下没有显示服务 → 浅色）。
-static DARK: OnceLock<bool> = OnceLock::new();
+// 当前深浅色 / 高对比（由 [`install`] 从 `AdwStyleManager` 写入；测试环境下没有显示服务 → 都是假）。
+//
+// 用 `Cell` 而不是 `OnceLock`：深浅色与高对比都是**可变**状态，`OnceLock::set` 在
+// 第一次写入之后会静默失败，切档重载时就会读回装窗口那一刻的旧值（暗色下切档
+// 退回浅色样式表的正是这条）。GTK 对象只在主线程用，所以放在 `thread_local`。
+thread_local! {
+    static DARK: Cell<bool> = const { Cell::new(false) };
+    static HIGH_CONTRAST: Cell<bool> = const { Cell::new(false) };
+}
 
 fn is_dark() -> bool {
-    DARK.get().copied().unwrap_or(false)
+    DARK.with(Cell::get)
+}
+
+/// 当前是否高对比（`AdwStyleManager::is_high_contrast()`）。
+///
+/// 与 [`is_dark`] 同源：启动时读一次，`dark` / `high-contrast` 两个通知都重载样式表
+/// 并把值写回这里，所以切档（[`reload`]）读到的也是最新值。
+fn is_high_contrast() -> bool {
+    HIGH_CONTRAST.with(Cell::get)
 }
 
 /// 安装紧凑密度 CSS（进程内只装一次）。
@@ -91,6 +164,10 @@ fn is_dark() -> bool {
 /// 下窗口已经是暗色，`suggested-action` 仍是浅色的 `#5B3256`），所以改为在这里读
 /// `AdwStyleManager::is_dark()` 生成对应的一套 token，并在 `dark` 变化时重载同一份
 /// provider——色值仍然只在 [`LIGHT_PALETTE`] / [`DARK_PALETTE`] 定义一次。
+///
+/// 高对比同理：`AdwStyleManager::is_high_contrast()` 决定描边 / 分隔线 / 状态栏前景
+/// 取 `Tones::high` 还是 `Tones::normal`，`high-contrast` 的通知与 `dark` 的通知走
+/// 同一条重载路径（见 [`apply_style_manager`]）。
 pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     if INSTALLED.set(()).is_err() {
@@ -100,9 +177,8 @@ pub fn install() {
         return;
     };
     let manager = adw::StyleManager::default();
-    let _ = DARK.set(manager.is_dark());
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(&stylesheet());
+    apply_style_manager(&provider, &manager);
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -110,10 +186,32 @@ pub fn install() {
     );
     PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider.clone()));
     // 深浅色切换（系统设置 / libadwaita 的 prefer-dark）时重载同一份 provider。
+    let dark_provider = provider.clone();
     manager.connect_dark_notify(move |manager| {
-        let _ = DARK.set(manager.is_dark());
-        provider.load_from_string(&stylesheet_for(manager.is_dark(), layout::current_tier()));
+        apply_style_manager(&dark_provider, manager);
     });
+    // 高对比（系统设置 → 无障碍 → 高对比）同样重载：`AdwStyleManager::high-contrast`
+    // 自带 notify（libadwaita 0.9 的 `connect_high_contrast_notify`），不需要轮询。
+    let contrast_provider = provider.clone();
+    manager.connect_high_contrast_notify(move |manager| {
+        apply_style_manager(&contrast_provider, manager);
+    });
+}
+
+/// 把 `AdwStyleManager` 的当前取值写进两枚状态位并重载样式表。
+///
+/// `dark` 与 `high-contrast` 两个通知共用：任一变化都要重新生成整份样式表（色板与
+/// 描边强度都在里面），所以只留这一条写回 + 重载路径。
+fn apply_style_manager(provider: &gtk::CssProvider, manager: &adw::StyleManager) {
+    let dark = manager.is_dark();
+    let high_contrast = manager.is_high_contrast();
+    DARK.with(|slot| slot.set(dark));
+    HIGH_CONTRAST.with(|slot| slot.set(high_contrast));
+    provider.load_from_string(&stylesheet_for(dark, high_contrast, layout::current_tier()));
+    eprintln!(
+        "[theme] 样式重载：dark={dark} high_contrast={high_contrast} tier={}",
+        layout::current_tier().id()
+    );
 }
 
 /// 切档时重载应用级样式表（同一个 provider，不重复注册）。
@@ -129,16 +227,22 @@ pub fn reload() {
     });
 }
 
-/// 当前档位的紧凑密度样式表（按当前深浅色取对应色板）。测试可以检查关键尺寸与色值。
+/// 当前档位的紧凑密度样式表（按当前深浅色 / 高对比取对应色板）。测试可以检查关键尺寸与色值。
 #[must_use]
 pub fn stylesheet() -> String {
-    stylesheet_for(is_dark(), layout::current_tier())
+    stylesheet_for(is_dark(), is_high_contrast(), layout::current_tier())
 }
 
-/// 指定深浅色与档位生成样式表：测试直接调它，断言两套色板与三档尺寸都在。
+/// 指定深浅色、高对比与档位生成样式表：测试直接调它，断言两套色板、两档描边与三档尺寸都在。
 #[must_use]
-pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
+pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
     let palette = if dark { &DARK_PALETTE } else { &LIGHT_PALETTE };
+    // 高对比只换「线有多实」，不换色相：前景 / 底色由 HighContrast 主题决定。
+    let tones = if high_contrast {
+        &palette.high
+    } else {
+        &palette.normal
+    };
     // 尺寸 / 字号 / 圆角 / 间距一律按档位取（`metrics.toml`），样式表里不再写死像素值。
     let m = layout::Metrics::for_tier(tier);
     format!(
@@ -158,6 +262,18 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         @define-color sqarvo_brand_on_deep {on_deep};
         @define-color sqarvo_brand_on_mid {on_mid};
         @define-color sqarvo_brand_on_soft {on_soft};
+
+        /* 描边 / 分隔线的四枚 token（#161）：都是 `@window_fg_color` 的透明度变体，
+           深浅色与高对比各一套取值，来自 `Palette::normal` / `Palette::high`。
+           线宽仍是 1px（外框按度量表的 2px），只有浓淡变——所以切档不会重排。
+             separator：工具条 / 标签条 / 状态栏 / 信息面板的分界线 + 网格行列线
+             frame：表格外框（比同档分隔线实一档）
+             overlay：浮层（列显隐 / 事务卡片 / 筛选条件条）的 1px 描边
+             status_fg：状态栏 11px 小字与不可用按钮共用的前景 */
+        @define-color sqarvo_separator alpha(@window_fg_color, {separator});
+        @define-color sqarvo_frame alpha(@window_fg_color, {frame});
+        @define-color sqarvo_overlay alpha(@window_fg_color, {overlay});
+        @define-color sqarvo_status_fg alpha(@window_fg_color, {status_fg});
 
         /* 主操作按钮（「连接」/「新建连接」/「保存」/「提交」/「提交事务」/「执行」）：
            实底 = 深档。libadwaita 的 hover / active 是用 `background-image` 叠一层
@@ -206,7 +322,7 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         .sqarvo-toolbar {{
             min-height: {toolbar}px;
             padding: 0 {toolbar_padding_h}px;
-            border-bottom: 1px solid alpha(currentColor, 0.10);
+            border-bottom: 1px solid @sqarvo_separator;
         }}
         .sqarvo-toolbar button {{ min-height: {target}px; padding: {gap_xxs}px {gap_lg}px; }}
         .sqarvo-toolbar label {{ font-size: {ui}px; }}
@@ -276,7 +392,7 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         window.{window_class} columnview.sqarvo-objects > listview > row > cell:last-child,
         window.{window_class} columnview.sqarvo-grid > header > button:last-child,
         window.{window_class} columnview.sqarvo-objects > header > button:last-child {{
-            border-right: 1px solid alpha(currentColor, 0.10);
+            border-right: 1px solid @sqarvo_separator;
         }}
 
         /* 表格下边界（v0.2.3.3）：Adwaita 的行分隔线是每行的 `border-top`，最后一行
@@ -287,13 +403,13 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
            内容节点），所以这条线必须挂在行上。 */
         window.{window_class} columnview.sqarvo-grid > listview > row:last-child,
         window.{window_class} columnview.sqarvo-objects > listview > row:last-child {{
-            border-bottom: 1px solid alpha(currentColor, 0.10);
+            border-bottom: 1px solid @sqarvo_separator;
         }}
 
         /* 表格外框（v0.2.4）：`Objects` 列表与表数据网格各套一圈 2px 线 + 8px 圆角，
-           让表格从页面底色里跳出来，两块表格同一份口径。颜色与行 / 列分隔线同族
-           （`currentColor` 30%，分隔线 10%）：比分隔线实一档才看得出「这是一块表格」，
-           但仍弱于文字与选中态（中档选中底照样压得住）。
+           让表格从页面底色里跳出来，两块表格同一份口径。颜色取 `@sqarvo_frame`
+           （比同档分隔线实一档，浅色 30% / 暗色 45% / 高对比 72%）：暗色下 30% 的
+           前景叠在窗口底色上只有 2.8:1，表格几乎看不出是个「块」。
            线只画在**容器**上（`.sqarvo-table-frame` 挂在包住表格的盒子 /
            `ScrolledWindow`），行与单元格不加线，避免与 `cell:last-child` 的右边界
            叠成双线。
@@ -302,8 +418,20 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
            选中底色会把左上角填成方角。现在容器的子节点按圆角裁切，首行 / 末行的
            底色跟着边框收圆。 */
         window.{window_class} .sqarvo-table-frame {{
-            border: {frame_border_width}px solid alpha(currentColor, 0.30);
+            border: {frame_border_width}px solid @sqarvo_frame;
             border-radius: {radius_md}px;
+        }}
+
+        /* 浮层边界（#161）：列显隐 / 事务卡片与筛选条件条都只靠
+           `box-shadow: 0 8px 24px alpha(black, 0.25)` 划边界——阴影是**黑**的，叠在
+           暗色底（#2c2c2c）上等于没有，卡片与表格糊成一片。阴影保留，另加一条 1px
+           描边（`@sqarvo_overlay`，暗色 36% ≈ 3.1:1）承担边界；高对比下提到 55%。
+           `data_page.rs` 里只留阴影与圆角，描边放在这里——色值只从 token 取。
+           条件条（`.fs-row`）的描边写在下面它自己的规则里（用 inset 环而不是 border：
+           行高是 24px 的密度口径，`min-height` 是内容盒高，border 会把每行撑到 26，
+           inset 环不占尺寸）。 */
+        .sqarvo-column-info {{
+            border: 1px solid @sqarvo_overlay;
         }}
 
         /* 图标按钮（v0.2.3.3）：命中区固定（§图标），内边距归零——图标自身的像素尺寸
@@ -352,7 +480,7 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         .sqarvo-tab-strip {{
             min-height: {tab_strip}px;
             padding: 0 {gap_sm}px;
-            border-bottom: 1px solid alpha(currentColor, 0.10);
+            border-bottom: 1px solid @sqarvo_separator;
         }}
         /* AdwTabBar 默认把标签条撑到 ~47px；这里压到规范口径附近（24px 行高）。
            标签本身的最小点击区仍不小于 24（§11），缩的是外层留白。 */
@@ -414,19 +542,23 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         .sqarvo-status-bar {{
             min-height: {status}px;
             font-size: {status_font}px;
-            border-top: 1px solid alpha(currentColor, 0.10);
+            border-top: 1px solid @sqarvo_separator;
         }}
         /* 状态栏只有两种前景色（v0.2.3.4）：可用的按钮一个色（`@window_fg_color`），
-           文字与不可用（:disabled）的按钮同一个灰（55% 前景）。三档以上会让同一行里
-           `+` 很黑、`−` 半灰、页码文字又另一个灰，看起来像三套控件。
+           文字与不可用（:disabled）的按钮同一个灰（`@sqarvo_status_fg`）。三档以上会让
+           同一行里 `+` 很黑、`−` 半灰、页码文字又另一个灰，看起来像三套控件。
+           这个灰的浓淡按 WCAG 反算（#161）：11px 是「小字」，下限 4.5:1；旧值 55%
+           在浅色下只有 2.98:1（#929292 压 #fafafa，实测才是真正读不动的那一档）、
+           暗色下 5.09:1，分别提到 82% / 62%——实测浅色 #5f5f5f 6.12:1、暗色 #aaaaaa
+           6.01:1，仍明显弱于正文（13:1），但不再「看得见但费劲」。
            两个坑都在 `:disabled` 上：Adwaita 的 `.flat:disabled` 会再叠一层 opacity
            （实测黑色图标被压到 #AFAFAF），`dim-label` 自己也带 0.55 透明度——全部用
            `opacity: 1` 关掉，颜色才由这两条规则唯一决定。 */
         window.{window_class} .sqarvo-status-bar {{
-            color: alpha(@window_fg_color, 0.55);
+            color: @sqarvo_status_fg;
         }}
         window.{window_class} .sqarvo-status-bar label {{
-            color: alpha(@window_fg_color, 0.55);
+            color: @sqarvo_status_fg;
             opacity: 1;
         }}
         window.{window_class} .sqarvo-status-bar button {{
@@ -442,7 +574,7 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         window.{window_class} .sqarvo-status-bar button:disabled,
         window.{window_class} .sqarvo-status-bar button.flat:disabled,
         window.{window_class} .sqarvo-status-bar button.sqarvo-icon-button:disabled {{
-            color: alpha(@window_fg_color, 0.55);
+            color: @sqarvo_status_fg;
             opacity: 1;
             filter: none;
         }}
@@ -452,7 +584,7 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         .sqarvo-status-gutter {{ min-height: {status}px; }}
         .sqarvo-status-divider {{
             min-width: 1px;
-            background: alpha(currentColor, 0.10);
+            background: @sqarvo_separator;
         }}
         .sqarvo-status-right {{ padding: 0 {gap_xl}px; }}
         .sqarvo-status-row {{ min-height: {tree_row}px; }}
@@ -479,7 +611,7 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
 
         /* 区域 06：信息面板（空槽，内容由 #119 填） */
         .sqarvo-inspector {{
-            border-left: 1px solid alpha(currentColor, 0.10);
+            border-left: 1px solid @sqarvo_separator;
             padding: {gap_xl}px;
         }}
         .sqarvo-slot-note {{ font-size: {status_font}px; }}
@@ -547,13 +679,15 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         }}
         /* 条件 / 排序清单的行：24px 行高（与对象树一致）。已加的条件 / 排序键是淡底色 +
            圆角的「实体条」，点它展开编辑器时形态连续，不会一行文字突然炸成控件。
-           底色取浅档（55%）：条目是常驻的，实底浅档会盖过面板本身的层次。 */
+           底色取浅档（55%）：条目是常驻的，实底浅档会盖过面板本身的层次。
+           描边（#161）用 `@sqarvo_overlay` 的 inset 环：面板底色与条件条只差一档浅紫，
+           暗色下几乎看不出是一条「条」；inset 环不占尺寸，24px 行高与切档口径都不动。 */
         .sqarvo-fs .fs-row {{
             min-height: {tree_row}px;
             padding: 0 {gap_xs}px;
             border-radius: {radius_sm}px;
             background: alpha(@sqarvo_brand_soft, 0.55);
-            box-shadow: 0 1px 2px alpha(black, 0.06);
+            box-shadow: inset 0 0 0 1px @sqarvo_overlay, 0 1px 2px alpha(black, 0.06);
         }}
         .sqarvo-fs .fs-row:hover {{ background: @sqarvo_brand_soft; }}
         /* 行内控件 / 按钮都压在 24px：编辑态与只读态行高相同，点一下就换内容，
@@ -622,6 +756,10 @@ pub fn stylesheet_for(dark: bool, tier: Tier) -> String {
         on_deep = palette.on_deep,
         on_mid = palette.on_mid,
         on_soft = palette.on_soft,
+        separator = tones.separator,
+        frame = tones.frame,
+        overlay = tones.overlay,
+        status_fg = tones.status_fg,
         window_class = WINDOW_CLASS,
         // 尺寸与字号一律从当前档位的度量取（#159）：样式表里不再写死像素值。
         // 例外只有两类：1px 描边 / 分隔线（§3.2：任何档位都保持 1px），
@@ -765,7 +903,7 @@ mod tests {
             assert!(css.contains(selector), "缺少表格右边界规则：{selector}");
         }
         assert!(
-            css.contains("border-right: 1px solid alpha(currentColor, 0.10)"),
+            css.contains("border-right: 1px solid @sqarvo_separator"),
             "右边界线宽 / 颜色要与列分隔线一致"
         );
     }
@@ -812,7 +950,7 @@ mod tests {
         // `border-bottom` 不会渲染），而且只在内容不足一屏时命中 `:last-child`。
         assert!(
             css.contains(
-                "listview > row:last-child {\n            border-bottom: 1px solid alpha(currentColor, 0.10);"
+                "listview > row:last-child {\n            border-bottom: 1px solid @sqarvo_separator;"
             ),
             "缺少表格下边界规则"
         );
@@ -828,7 +966,7 @@ mod tests {
         let end = start + css[start..].find('}').expect("规则应当闭合");
         let rule = &css[start..end];
         assert!(
-            rule.contains("border: 2px solid alpha(currentColor, 0.30)"),
+            rule.contains("border: 2px solid @sqarvo_frame"),
             "外框要比分隔线实一档、粗一档（2px / 30%）：{rule}"
         );
         assert!(
@@ -984,7 +1122,7 @@ mod tests {
         );
         let bottom = rule("columnview.sqarvo-objects > listview > row:last-child");
         assert!(
-            bottom.contains("border-bottom: 1px solid alpha(currentColor, 0.10)"),
+            bottom.contains("border-bottom: 1px solid @sqarvo_separator"),
             "不足一屏时表格下边界要与网格同色同宽：{bottom}"
         );
         // 旧单列列表（`GtkListView`）的规则已经删掉：留着就是第二套口径。
@@ -1003,7 +1141,7 @@ mod tests {
             (Tier::Comfortable, 30, 40, 15, 30),
             (Tier::Large, 36, 48, 18, 36),
         ] {
-            let css = stylesheet_for(false, tier);
+            let css = stylesheet_for(false, false, tier);
             assert!(
                 css.contains(&format!("listview > row {{ min-height: {tree_row}px; }}")),
                 "{}：树行高不是 {tree_row}px",
@@ -1029,7 +1167,7 @@ mod tests {
                 tier.id()
             );
             // 1px 描边在任何档位都不变（§3.2）。
-            assert!(css.contains("border-bottom: 1px solid alpha(currentColor, 0.10)"));
+            assert!(css.contains("border-bottom: 1px solid @sqarvo_separator"));
         }
     }
 
@@ -1084,7 +1222,7 @@ mod tests {
             .expect("标签条规则应当存在");
         let end = start + css[start..].find('}').expect("规则应当闭合");
         assert!(
-            css[start..end].contains("border-bottom: 1px solid alpha(currentColor, 0.10)"),
+            css[start..end].contains("border-bottom: 1px solid @sqarvo_separator"),
             "标签条要保留自己那条 10% 下边线（与工具条 / 状态栏同口径）"
         );
         assert!(
@@ -1152,7 +1290,7 @@ mod tests {
         // 暗色：同一组 token 换一套亮度。选择由 Rust 侧按 `AdwStyleManager::is_dark()` 做，
         // 不是 CSS 媒体查询——实测 `@media (prefers-color-scheme: dark)` 里的
         // `@define-color` 在应用级 provider 里不生效（窗口已暗、按钮仍是浅档色）。
-        let dark = stylesheet_for(true, Tier::Compact);
+        let dark = stylesheet_for(true, false, Tier::Compact);
         for token in [
             "@define-color sqarvo_brand_deep #7A456F;",
             "@define-color sqarvo_brand_mid #B98AB2;",
@@ -1239,6 +1377,123 @@ mod tests {
         assert!(
             css[dot..dot + css[dot..].find('}').unwrap()].contains("@accent_bg_color"),
             "脏行圆点保持 accent 红（语义色，本轮不动）"
+        );
+    }
+
+    /// 从样式表里取一枚描边 token 的不透明度（`@define-color x alpha(@window_fg_color, 0.16)`）。
+    fn tone(css: &str, token: &str) -> f32 {
+        let head = format!("@define-color {token} alpha(@window_fg_color, ");
+        let start = css
+            .find(&head)
+            .unwrap_or_else(|| panic!("缺少 token：{token}"));
+        let rest = &css[start + head.len()..];
+        let end = rest.find(')').expect("token 应当是闭合的 alpha()");
+        rest[..end].parse().expect("不透明度应当是数字")
+    }
+
+    /// #161：高对比 = 同一组描边 token 更实一档，不是第二套色板。
+    ///
+    /// 三个验收点：① 高对比下四枚 token 都比同色板的普通值大；② 暗色的分隔线 / 外框 /
+    /// 浮层描边比浅色实（暗底上原来的线看不见）；③ 状态栏前景不再写死 55%。
+    #[test]
+    fn high_contrast_thickens_the_same_border_tokens() {
+        for dark in [false, true] {
+            let normal = stylesheet_for(dark, false, Tier::Compact);
+            let high = stylesheet_for(dark, true, Tier::Compact);
+            for token in [
+                "sqarvo_separator",
+                "sqarvo_frame",
+                "sqarvo_overlay",
+                "sqarvo_status_fg",
+            ] {
+                assert!(
+                    tone(&high, token) > tone(&normal, token),
+                    "{token}：高对比必须比普通模式更实（{} → {}）",
+                    tone(&normal, token),
+                    tone(&high, token)
+                );
+            }
+            // 只有浓度变：品牌色板（hex）在高对比下逐字相同。
+            for hex in ["#5B3256", "#7A456F", "#A66FA0", "#B98AB2"] {
+                if (dark && hex == "#5B3256") || (!dark && hex == "#7A456F") {
+                    continue;
+                }
+                assert_eq!(
+                    normal.matches(hex).count(),
+                    high.matches(hex).count(),
+                    "高对比不该换色相：{hex}"
+                );
+            }
+        }
+
+        let light = stylesheet_for(false, false, Tier::Compact);
+        let dark = stylesheet_for(true, false, Tier::Compact);
+        // 暗色下的线必须比浅色实：同样的 10% / 30% 在白底上够看，在 #2c2c2c 上没有。
+        assert!(
+            tone(&dark, "sqarvo_separator") > tone(&light, "sqarvo_separator"),
+            "暗色分隔线要比浅色实"
+        );
+        assert!(
+            tone(&dark, "sqarvo_frame") > tone(&light, "sqarvo_frame"),
+            "暗色外框要比浅色实"
+        );
+        // 状态栏前景：浅色底更亮，反而需要更深的字（82% > 62%）。
+        assert!(
+            tone(&light, "sqarvo_status_fg") > tone(&dark, "sqarvo_status_fg"),
+            "浅色状态栏前景要比暗色深"
+        );
+
+        // 状态栏三处（容器 / label / 不可用按钮）都取 token，不再写死 55%。
+        for css in [&light, &dark] {
+            assert!(
+                !css.contains("alpha(@window_fg_color, 0.55)"),
+                "状态栏前景不该再写死 55%"
+            );
+            assert_eq!(
+                css.matches("color: @sqarvo_status_fg;").count(),
+                3,
+                "状态栏三处前景（容器 / label / :disabled 按钮）都要取同一个 token"
+            );
+            // 浮层边界：卡片给 1px 描边，条件条给不占尺寸的 inset 环。
+            assert!(
+                css.contains(
+                    ".sqarvo-column-info {\n            border: 1px solid @sqarvo_overlay;"
+                ),
+                "浮层卡片缺少描边（暗底下黑色阴影等于没有边界）"
+            );
+            assert!(
+                css.contains(
+                    "box-shadow: inset 0 0 0 1px @sqarvo_overlay, 0 1px 2px alpha(black, 0.06);"
+                ),
+                "筛选条件条缺少 inset 描边（不能把 24px 行高撑大）"
+            );
+            // 外框与分隔线只从 token 取，样式表里不该再有 currentColor 派生的线。
+            assert!(
+                !css.contains("alpha(currentColor"),
+                "描边不该再按 currentColor 算透明度"
+            );
+        }
+    }
+
+    /// #161：高对比分支必须真的出自 `AdwStyleManager::is_high_contrast()`。
+    ///
+    /// `stylesheet_for` 只负责取参数；读 `StyleManager` 的那一步在 [`apply_style_manager`]，
+    /// 它同时写回 [`is_high_contrast`]，切档（[`reload`]）读到的才是最新值。
+    #[test]
+    fn high_contrast_is_read_from_the_style_manager() {
+        let source = include_str!("theme.rs");
+        assert!(
+            source.contains("manager.is_high_contrast()"),
+            "高对比必须读 AdwStyleManager，不能自己猜"
+        );
+        assert!(
+            source.contains("connect_high_contrast_notify"),
+            "高对比切换要接 StyleManager 的 notify 才会即时重载"
+        );
+        assert!(
+            source
+                .contains("stylesheet_for(is_dark(), is_high_contrast(), layout::current_tier())"),
+            "切档重载要带上高对比（否则切档会把高对比分支丢掉）"
         );
     }
 }

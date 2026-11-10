@@ -6270,6 +6270,9 @@ fn stylesheet() -> String {
             background-color: @theme_bg_color;
             border-radius: {radius_lg}px;
             padding: {gap_xl}px;
+            /* 阴影只负责「浮在表格上方」的层次；1px 描边在 `theme::stylesheet` 里
+               （#161：暗底下这条黑阴影看不见，边界改由 `@sqarvo_overlay` 承担，
+               色值只从那里的 token 取）。 */
             box-shadow: 0 8px 24px alpha(black, 0.25);
         }}
         .sqarvo-column-header {{ padding: 0 {gap_md}px; min-height: {column_header_min_height}px; }}
