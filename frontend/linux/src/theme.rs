@@ -129,6 +129,18 @@ pub fn stylesheet() -> String {
             padding: 0 2px;
             min-height: {tab_strip}px;
         }}
+        /* 标签条只许有一条下边线（v0.2.4 用户反馈「分割线像两条线叠在一起」）。
+           `AdwTabBar` 内部的 `.box` 自带 `box-shadow: inset 0 -1px
+           var(--headerbar-shade-color)`（见 libadwaita 的 `tabbar .box`），它画在
+           `.sqarvo-tab-strip` 的 `border-bottom` 正上方：两条 1px 线紧贴，颜色还不同
+           （shade 偏深、本项目的 10% 偏浅），看上去就是一条线被描了两遍。
+           标签条在工作区里只是一条普通行、不是 headerbar，所以去掉 libadwaita 那条
+           shade，只留上面那条 10% 的下边线——与工具条、状态栏同一口径。
+           选择器比 `tabbar .box` 多一层类（且本样式表优先级更高），高对比度模式里
+           同名 shade 的 `@media` 变体同样被压掉。 */
+        .sqarvo-tab-strip tabbar .box {{
+            box-shadow: none;
+        }}
         .sqarvo-tab-bar tab {{
             min-height: {target}px;
             padding: 0 8px;
@@ -576,6 +588,28 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn tab_strip_keeps_exactly_one_bottom_line() {
+        // 标签条与下方动作行之间只能有一条线：`AdwTabBar` 的 `.box` 自带
+        // `box-shadow: inset 0 -1px var(--headerbar-shade-color)`，与
+        // `.sqarvo-tab-strip` 的 `border-bottom` 紧贴成两条 1px 线（用户反馈
+        // 「分割线像两条线叠在一起」）。这条覆盖保证「压掉 shade、只留 10%」不被删。
+        let css = stylesheet();
+        let start = css
+            .find(".sqarvo-tab-strip {\n")
+            .expect("标签条规则应当存在");
+        let end = start + css[start..].find('}').expect("规则应当闭合");
+        assert!(
+            css[start..end].contains("border-bottom: 1px solid alpha(currentColor, 0.10)"),
+            "标签条要保留自己那条 10% 下边线（与工具条 / 状态栏同口径）"
+        );
+        assert!(
+            css.contains(".sqarvo-tab-strip tabbar .box {\n            box-shadow: none;"),
+            "缺少压掉 AdwTabBar headerbar shade 的规则：标签条下会出现两条叠在一起的线"
+        );
+    }
+
     /// 检索结果行必须与树行**同高、同左边距**（v0.2.3.4）：结果要读成同一棵树，
     /// 只是无关项不出现。删掉这条覆盖，ListBox 侧栏行会把结果撑得比树行高。
     #[test]
