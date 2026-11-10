@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  「最后一页」：右尖括号 + 竖条（`>|`），v0.2.3.4 起取代主题的 `go-last-symbolic`。
+  理由与 `sqarvo-first-page-symbolic` 相同：`»` 与旁边「下一页」的 `›` 在 11px 下
+  分不清，竖条让它成为独立动作。16×16 盒、固定深灰、由 GTK 重着色。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <rect x="11.8" y="1.8" width="1.4" height="12.4" rx="0.7" fill="#2e3436"/>
+  <!-- 填充路径 + 内孔，理由同 `sqarvo-first-page-symbolic`。 -->
+  <path fill="#2e3436" d="M3.5 1.8 9.4 8l-5.9 6.2v-2.2L7.4 8l-3.9-4z"/>
+</svg>

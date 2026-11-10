@@ -40,6 +40,13 @@ pub const BUTTON_CLASS: &str = "sqarvo-icon-button";
 /// 「筛选」漏斗（自有图标；Adwaita / Yaru 都没有漏斗）。
 pub const FILTER: &str = "sqarvo-filter-symbolic";
 
+/// 「第一页」`|<`（自有图标）：主题的 `go-first-symbolic` 是 `«`，与「上一页」的 `‹`
+/// 在 11px 下几乎一样，分不出是两档动作。
+pub const FIRST_PAGE: &str = "sqarvo-first-page-symbolic";
+
+/// 「最后一页」`>|`（自有图标），理由同上。
+pub const LAST_PAGE: &str = "sqarvo-last-page-symbolic";
+
 /// 个别图标的**光学补偿**（px）：没登记的一律 [`layout::ICON_BOX`]。
 ///
 /// 目标：墨迹落到基准 `+` 的 11×11 附近——宽字形缩一档、墨迹偏小的实心块 / 窄弧线放大

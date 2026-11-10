@@ -958,14 +958,20 @@ impl StatusBar {
         pager.set_valign(gtk::Align::Center);
         let mut pager_buttons: Vec<gtk::Button> = Vec::new();
         for (icon, action, tip) in [
+            // 首页 / 末页用自有图标 `|<` / `>|`：主题的双尖括号 `«` / `»` 与相邻的
+            // `‹` / `›` 只差一条线，压到 11px 后读不出是两档不同的动作。
             (
-                "go-first-symbolic",
+                crate::icons::FIRST_PAGE,
                 PagerAction::First,
                 "首页（offset = 0）",
             ),
             ("go-previous-symbolic", PagerAction::Previous, "上一页"),
             ("go-next-symbolic", PagerAction::Next, "下一页"),
-            ("go-last-symbolic", PagerAction::Last, "末页（需要总数）"),
+            (
+                crate::icons::LAST_PAGE,
+                PagerAction::Last,
+                "末页（需要总数）",
+            ),
         ] {
             let button = gtk::Button::from_icon_name(icon);
             button.add_css_class("flat");

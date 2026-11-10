@@ -15,5 +15,7 @@
 <gresources>
   <gresource prefix="/io/sqarvo/icons/scalable">
     <file alias="actions/sqarvo-filter-symbolic.svg">icons/sqarvo-filter-symbolic.svg</file>
+    <file alias="actions/sqarvo-first-page-symbolic.svg">icons/sqarvo-first-page-symbolic.svg</file>
+    <file alias="actions/sqarvo-last-page-symbolic.svg">icons/sqarvo-last-page-symbolic.svg</file>
   </gresource>
 </gresources>
