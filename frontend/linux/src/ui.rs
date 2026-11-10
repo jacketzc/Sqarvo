@@ -44,7 +44,7 @@ use crate::data_page::{DataState, RowOpsState};
 use crate::dialog::ConnectionDialog;
 use crate::icons;
 use crate::inspector::{ConnectionLive, Inspector};
-use crate::layout;
+use crate::layout::{self, Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
 use crate::theme;
@@ -166,13 +166,13 @@ pub fn activate(app: &adw::Application) {
 
     header.pack_end(&menu_button);
 
-    let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let slot = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
     slot.set_vexpand(true);
 
     // 窗口根 = headerbar + 主工具条 + 页面槽位。工具条在**握手之前**就存在：
     // 后端未就绪时六个按钮全部禁用（`Toolbar::set_backend_ready`），不会出现
     // 「菜单禁用、按钮可点」或点了没反应的入口。
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
     root.append(&header);
     window.set_content(Some(&root));
 
@@ -1490,8 +1490,8 @@ fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
         .description(stage)
         .build();
     let spinner = gtk::Spinner::new();
-    spinner.set_size_request(32, 32);
-    spinner.set_margin_top(12);
+    spinner.set_size_request(metrics().spinner_px, metrics().spinner_px);
+    spinner.set_margin_top(gap(Gap::Xl));
     spinner.start();
     page.set_child(Some(&spinner));
     set_page(slot, &page);
@@ -2132,7 +2132,7 @@ impl Workspace {
 
         // 侧栏就是对象树本体：页脚刷新按钮与它上下的分割线已删除，刷新走
         // 连接 / 库节点的右键菜单（`tree.rs`「刷新连接 / 刷新库」）。
-        let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         sidebar_box.set_size_request(layout::SIDEBAR_MIN, -1);
         sidebar_box.append(tree.widget());
 
@@ -2288,7 +2288,7 @@ impl Workspace {
             }));
         }
 
-        let work_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let work_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         work_box.set_vexpand(true);
         work_box.set_hexpand(true);
         work_box.append(tabs.widget());
@@ -3595,7 +3595,7 @@ fn show_error(slot: &gtk::Box, title: &adw::WindowTitle, message: &str, on_retry
         .build();
     let button = gtk::Button::with_label("重试");
     button.set_halign(gtk::Align::Center);
-    button.set_margin_top(18);
+    button.set_margin_top(gap(Gap::Page));
     button.add_css_class("suggested-action");
     button.add_css_class("pill");
     let handler = Rc::clone(on_retry);
@@ -3618,7 +3618,7 @@ fn show_disconnected(
         .build();
     let button = gtk::Button::with_label("重新连接");
     button.set_halign(gtk::Align::Center);
-    button.set_margin_top(18);
+    button.set_margin_top(gap(Gap::Page));
     button.add_css_class("suggested-action");
     button.add_css_class("pill");
     let handler = Rc::clone(on_retry);
@@ -4852,11 +4852,11 @@ fn show_about(state: &Rc<UiState>) {
         return;
     }
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Md));
+    content.set_margin_top(gap(Gap::Page));
+    content.set_margin_bottom(gap(Gap::Page));
+    content.set_margin_start(gap(Gap::Page));
+    content.set_margin_end(gap(Gap::Page));
 
     let name = gtk::Label::new(Some("Sqarvo"));
     name.set_xalign(0.0);
@@ -4875,7 +4875,7 @@ fn show_about(state: &Rc<UiState>) {
 
     let heading = gtk::Label::new(Some("后端诊断"));
     heading.set_xalign(0.0);
-    heading.set_margin_top(10);
+    heading.set_margin_top(gap(Gap::Lg));
     heading.add_css_class("heading");
     heading.add_css_class("caption");
     content.append(&heading);
@@ -4917,7 +4917,7 @@ fn show_about(state: &Rc<UiState>) {
     let note = gtk::Label::new(Some("本对话框只在本机显示，不含密码、凭据引用与 token。"));
     note.set_xalign(0.0);
     note.set_wrap(true);
-    note.set_margin_top(10);
+    note.set_margin_top(gap(Gap::Lg));
     note.add_css_class("dim-label");
     note.add_css_class("caption");
     content.append(&note);

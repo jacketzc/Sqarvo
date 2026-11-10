@@ -44,6 +44,7 @@ use crate::browse_view::{
     BrowseCapabilities, ColumnVisibility, Condition, Direction, FilterSet, Operator, PagerState,
     SortOrder, TotalInfo,
 };
+use crate::layout::{Gap, gap, metrics};
 use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::{
     Filter, IsolationLevel, ObjectKind, ObjectRef, ReadOnlyReason, RowDelete, RowOrder, RowUpdate,
@@ -584,10 +585,10 @@ fn empty_hint(text: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.set_xalign(0.0);
     label.add_css_class("dim-label");
-    label.set_margin_top(4);
-    label.set_margin_bottom(4);
-    label.set_margin_start(8);
-    label.set_margin_end(8);
+    label.set_margin_top(gap(Gap::Xs));
+    label.set_margin_bottom(gap(Gap::Xs));
+    label.set_margin_start(gap(Gap::Md));
+    label.set_margin_end(gap(Gap::Md));
     label
 }
 
@@ -888,7 +889,7 @@ impl DataPage {
         //   文案 + 事务状态说明（`sync_status_dot` 实时刷新）。
         // - 不做成可点动作：`set_focusable(false)` 让它不进 Tab 序列，但仍在无障碍
         //   树里（`update_property(Label)` 与 tooltip 同一句），鼠标与读屏都拿得到状态。
-        let status_dot_core = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let status_dot_core = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         status_dot_core.add_css_class("sqarvo-status-dot");
         status_dot_core.set_size_request(
             crate::layout::STATUS_DOT_DIAMETER,
@@ -909,10 +910,10 @@ impl DataPage {
         // 常驻徽标行（#118 要求 10）：只读 / 无主键 / 视图 / 无权限 / 未统计。
         //
         // 放在表头之上、且**不随状态变化消失**：用户不用去看禁用的按钮猜为什么不能编辑。
-        let badges_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        badges_row.set_margin_start(12);
-        badges_row.set_margin_end(12);
-        badges_row.set_margin_bottom(4);
+        let badges_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
+        badges_row.set_margin_start(gap(Gap::Xl));
+        badges_row.set_margin_end(gap(Gap::Xl));
+        badges_row.set_margin_bottom(gap(Gap::Xs));
         badges_row.set_visible(false);
 
         // 行变更按钮 + 事务按钮 + 状态簇 + 次要动作图标：960 宽下这一行要同时装下
@@ -922,19 +923,19 @@ impl DataPage {
         // v0.2.4 状态行并进本行、两段常驻文字收成一枚 24×24 圆点，需求降到 409。
         // v0.2.4 末：工具条上的「新增」删掉（入口在状态栏行操作组），省下的宽度还给
         // 剩下四个按钮的内距——`install_css` 里 padding 回到 4px 6px，需求仍在预算内。
-        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xxs));
         controls.add_css_class("sqarvo-table-actions");
-        controls.set_margin_start(12);
-        controls.set_margin_end(12);
+        controls.set_margin_start(gap(Gap::Xl));
+        controls.set_margin_end(gap(Gap::Xl));
         // 上边距 8：动作行不再紧贴标签条的下边线（原来只有 6 的下边距，上边是 0），
         // 与下方表格外框之间仍留 6。
-        controls.set_margin_top(8);
-        controls.set_margin_bottom(6);
+        controls.set_margin_top(gap(Gap::Md));
+        controls.set_margin_bottom(gap(Gap::Sm));
         // 行内容高度按 workspace-model §2.1 的口径钉在 32（46 = 上 8 + 内容 32 + 下 6）：
         // 只靠按钮的自然高度时，按钮一长高就把下边距挤掉（实测按钮 32 高时留白只剩 2px）。
         // 按钮渲染高度正好是 32（`padding: 4px 6px` + 13px 字号），不超过 24 的最小命中区
         // 之外的任何余量都由这一行自己留出来。
-        controls.set_height_request(32);
+        controls.set_height_request(metrics().row_height_data);
         // 状态簇整体与图标按钮同一垂直中线：标签 / spinner 各自 valign=CENTER，
         // 容器本身也居中，行高由按钮决定时不会出现「字比图标低一行」。
         controls.set_valign(gtk::Align::Center);
@@ -950,9 +951,9 @@ impl DataPage {
         //
         // 「重新读取」不在这里：状态栏行 1 的行操作组和行 2「Last Refresh」旁的刷新
         // 按钮都走同一个 `RowOp::Refresh`，工具条上是第三个入口，纯重复。
-        let controls_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let controls_spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         controls_spacer.set_hexpand(true);
-        controls_spacer.set_margin_start(6);
+        controls_spacer.set_margin_start(gap(Gap::Sm));
         controls.append(&controls_spacer);
         // 状态簇（v0.2.4）：spinner + 本次操作的临时消息 + 常驻状态圆点。
         // 放在漏斗**左侧**——它说的是「这张表格此刻怎样」，读的时候先看状态、再看
@@ -963,12 +964,12 @@ impl DataPage {
         // QA 断言读同一份字符串）。可见性由圆点承担——注意 GTK4 的
         // `is_visible()` 是递归的，父容器不可见时子控件也报不可见，所以
         // `qa_observe().status_row_txn` 看的是 `status_dot.is_visible()`。
-        let status_sources = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let status_sources = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         status_sources.set_visible(false);
         status_sources.append(&txn_label);
         status_sources.append(&dirty_label);
 
-        let status_cluster = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let status_cluster = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         status_cluster.add_css_class("sqarvo-table-status");
         status_cluster.set_valign(gtk::Align::Center);
         status_cluster.append(&spinner);
@@ -990,9 +991,9 @@ impl DataPage {
             .min_content_height(60)
             .child(&errors)
             .build();
-        errors_scroll.set_margin_start(12);
-        errors_scroll.set_margin_end(12);
-        errors_scroll.set_margin_bottom(6);
+        errors_scroll.set_margin_start(gap(Gap::Xl));
+        errors_scroll.set_margin_end(gap(Gap::Xl));
+        errors_scroll.set_margin_bottom(gap(Gap::Sm));
         errors_scroll.set_visible(false);
 
         let store = DataRowStore::default();
@@ -1020,7 +1021,7 @@ impl DataPage {
         // `auto_size_columns`）。GTK 4.22 的 `GtkColumnView` 没有「每列表头控件」的
         // API，所以合并写在 `GtkColumnViewColumn::set_title` 的文本上，点击手势挂在
         // 布局后的标题按钮上（见 `refresh_header_tooltips`）。
-        let grid_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let grid_page = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         grid_page.set_vexpand(true);
         // 网格外框：与 `Objects` 列表共用 `theme::stylesheet` 的 `.sqarvo-table-frame`
         // （2px / currentColor 30% / 8px 圆角）。左右各让 12：边框与侧栏、信息面板的
@@ -1030,9 +1031,9 @@ impl DataPage {
         // 首行选中底色会把左上角填成方角（上一版因此退回直角）。设 hidden 后
         // 整棵子树按边框圆角裁切。
         grid_page.set_overflow(gtk::Overflow::Hidden);
-        grid_page.set_margin_start(12);
-        grid_page.set_margin_end(12);
-        grid_page.set_margin_bottom(6);
+        grid_page.set_margin_start(gap(Gap::Xl));
+        grid_page.set_margin_end(gap(Gap::Xl));
+        grid_page.set_margin_bottom(gap(Gap::Sm));
         grid_page.append(&scroll);
 
         let placeholder = adw::StatusPage::builder()
@@ -1040,7 +1041,7 @@ impl DataPage {
             .description("在左侧表列表中选择一张表查看数据")
             .build();
         let placeholder_icon = gtk::Image::from_icon_name("x-office-spreadsheet-symbolic");
-        placeholder_icon.set_pixel_size(48);
+        placeholder_icon.set_pixel_size(metrics().empty_icon_px);
         placeholder.set_child(Some(&placeholder_icon));
 
         let stack = gtk::Stack::new();
@@ -1057,7 +1058,7 @@ impl DataPage {
         let cc_close = gtk::Button::from_icon_name("window-close-symbolic");
         cc_close.add_css_class("flat");
         cc_close.set_tooltip_text(Some("关闭列显隐"));
-        let cc_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let cc_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         cc_header.append(&cc_title);
         cc_title.set_hexpand(true);
         cc_header.append(&cc_close);
@@ -1068,7 +1069,7 @@ impl DataPage {
         cc_note.set_wrap(true);
         cc_note.add_css_class("dim-label");
         cc_note.add_css_class("caption");
-        let cc_list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let cc_list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
         let cc_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -1076,13 +1077,14 @@ impl DataPage {
             .max_content_height(260)
             .child(&cc_list)
             .build();
-        let cc_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let cc_card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
         cc_card.add_css_class("sqarvo-column-info");
         cc_card.set_size_request(300, -1);
         cc_card.set_halign(gtk::Align::End);
         cc_card.set_valign(gtk::Align::Start);
-        cc_card.set_margin_top(46);
-        cc_card.set_margin_end(12);
+        // 让开表格动作行（46）：卡片贴在表格顶部，而不是压在动作行上。
+        cc_card.set_margin_top(metrics().table_actions_height);
+        cc_card.set_margin_end(gap(Gap::Xl));
         cc_card.set_visible(false);
         cc_card.append(&cc_header);
         cc_card.append(&cc_scroll);
@@ -1105,7 +1107,7 @@ impl DataPage {
         let fs_close = gtk::Button::from_icon_name("window-close-symbolic");
         fs_close.add_css_class("flat");
         fs_close.set_tooltip_text(Some("关闭（未应用的改动会丢弃）"));
-        let fs_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let fs_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         fs_title.add_css_class("fs-title");
         fs_title.set_hexpand(true);
         fs_header.append(&fs_title);
@@ -1117,7 +1119,7 @@ impl DataPage {
         fs_filter_title.set_xalign(0.0);
         fs_filter_title.add_css_class("fs-section");
         fs_filter_title.add_css_class("dim-label");
-        fs_filter_title.set_margin_top(4);
+        fs_filter_title.set_margin_top(gap(Gap::Xs));
         let fs_column = gtk::DropDown::from_strings(&["（未打开表）"]);
         // 固定宽度：随 hexpand 拉伸会随窗口变宽变成一大条空白下拉，值输入框反而被挤小。
         fs_column.set_size_request(FS_COLUMN_WIDTH, -1);
@@ -1130,7 +1132,7 @@ impl DataPage {
         fs_value.set_hexpand(true);
         let fs_add = gtk::Button::with_label("添加条件");
         fs_add.add_css_class("flat");
-        let fs_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let fs_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         fs_row.append(&fs_column);
         fs_row.append(&fs_operator);
         fs_row.append(&fs_value);
@@ -1139,7 +1141,7 @@ impl DataPage {
         // 条件清单用普通 `GtkBox` 而不是 `GtkListBox`：`boxed-list` 的主题内边距会把
         // 一行撑到 ~44px，跟对象树的 24px 行高差一截。这里自己排（行间距 2、行内
         // 2px 横向留白），密度与树一致。
-        let fs_conditions = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let fs_conditions = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
         fs_conditions.add_css_class("fs-list");
         let fs_conditions_scroll = fs_conditions.clone();
 
@@ -1148,7 +1150,7 @@ impl DataPage {
         fs_sort_title.set_xalign(0.0);
         fs_sort_title.add_css_class("fs-section");
         fs_sort_title.add_css_class("dim-label");
-        fs_sort_title.set_margin_top(8);
+        fs_sort_title.set_margin_top(gap(Gap::Md));
         let fs_sort_column = gtk::DropDown::from_strings(&["（未打开表）"]);
         // 与筛选列同宽（左对齐的一小组控件，不铺满整行）。
         fs_sort_column.set_size_request(FS_COLUMN_WIDTH, -1);
@@ -1158,15 +1160,15 @@ impl DataPage {
         fs_sort_direction.set_tooltip_text(Some("asc = 升序，desc = 降序"));
         let fs_sort_add = gtk::Button::with_label("添加排序");
         fs_sort_add.add_css_class("flat");
-        let fs_sort_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let fs_sort_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         fs_sort_row.append(&fs_sort_column);
         fs_sort_row.append(&fs_sort_direction);
         fs_sort_row.append(&fs_sort_add);
-        let fs_sort_row_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let fs_sort_row_spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
         fs_sort_row_spacer.set_hexpand(true);
         fs_sort_row.append(&fs_sort_row_spacer);
 
-        let fs_sort_list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let fs_sort_list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
         fs_sort_list.add_css_class("fs-list");
         let fs_sort_scroll = fs_sort_list.clone();
 
@@ -1180,19 +1182,19 @@ impl DataPage {
         // 动作区：一行分隔线 + 右对齐两个按钮。文案就是「清空 / 应用」——作用域由面板
         // 本身说明（面板里只有筛选与排序），不必把对象再写进按钮。
         let fs_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-        fs_sep.set_margin_top(6);
+        fs_sep.set_margin_top(gap(Gap::Sm));
         let fs_apply = gtk::Button::with_label("应用");
         fs_apply.add_css_class("suggested-action");
         fs_apply.add_css_class("fs-action");
         let fs_clear = gtk::Button::with_label("清空");
         fs_clear.add_css_class("fs-action");
-        let fs_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let fs_buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         fs_buttons.set_halign(gtk::Align::End);
-        fs_buttons.set_margin_top(2);
+        fs_buttons.set_margin_top(gap(Gap::Xxs));
         fs_buttons.append(&fs_clear);
         fs_buttons.append(&fs_apply);
 
-        let fs_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let fs_card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
         fs_card.add_css_class("sqarvo-fs");
         fs_card.set_size_request(FS_PANEL_WIDTH, -1);
         fs_card.append(&fs_header);
@@ -1235,7 +1237,7 @@ impl DataPage {
         let txn_close = gtk::Button::from_icon_name("window-close-symbolic");
         txn_close.add_css_class("flat");
         txn_close.set_tooltip_text(Some("取消（不开始事务）"));
-        let txn_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let txn_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         txn_header.append(&txn_title);
         txn_title.set_hexpand(true);
         txn_header.append(&txn_close);
@@ -1246,23 +1248,24 @@ impl DataPage {
         txn_note.add_css_class("dim-label");
         txn_note.add_css_class("caption");
 
-        let txn_options = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        txn_options.set_margin_top(4);
+        let txn_options = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+        txn_options.set_margin_top(gap(Gap::Xs));
 
         let txn_confirm = gtk::Button::with_label("开始事务");
         txn_confirm.add_css_class("suggested-action");
         let txn_cancel = gtk::Button::with_label("取消");
-        let txn_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let txn_buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         txn_buttons.set_halign(gtk::Align::End);
         txn_buttons.append(&txn_cancel);
         txn_buttons.append(&txn_confirm);
 
-        let txn_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let txn_card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
         txn_card.add_css_class("sqarvo-column-info");
         txn_card.set_size_request(460, -1);
         txn_card.set_halign(gtk::Align::Center);
         txn_card.set_valign(gtk::Align::Start);
-        txn_card.set_margin_top(64);
+        // 让开窗口外壳（64）：事务卡片留在数据区中部，不钻到工具条下面。
+        txn_card.set_margin_top(metrics().header_height);
         txn_card.set_visible(false);
         txn_card.append(&txn_header);
         txn_card.append(&txn_note);
@@ -1271,7 +1274,7 @@ impl DataPage {
         txn_card.append(&txn_buttons);
         overlay.add_overlay(&txn_card);
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.set_vexpand(true);
         root.set_valign(gtk::Align::Fill);
         root.append(&banner);
@@ -1998,10 +2001,10 @@ impl DataPage {
             let page = Rc::clone(self);
             remove.connect_clicked(move |_| page.remove_filter_condition(index));
         }
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         row.add_css_class("fs-row");
-        row.set_margin_start(2);
-        row.set_margin_end(2);
+        row.set_margin_start(gap(Gap::Xxs));
+        row.set_margin_end(gap(Gap::Xxs));
         row.append(&label);
         row.append(&remove);
         row
@@ -2075,10 +2078,10 @@ impl DataPage {
         }
         // 编辑态与只读态**同一套外观**（同底色、同行高）：只把文字换成控件，
         // 不换颜色、不换字号，避免点一下整行「跳变」。
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         row.add_css_class("fs-row");
-        row.set_margin_start(2);
-        row.set_margin_end(2);
+        row.set_margin_start(gap(Gap::Xxs));
+        row.set_margin_end(gap(Gap::Xxs));
         row.append(&column_dropdown);
         row.append(&operator_dropdown);
         row.append(&value);
@@ -2270,10 +2273,10 @@ impl DataPage {
                 let page = Rc::clone(self);
                 remove.connect_clicked(move |_| page.remove_sort_key(index));
             }
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
             row.add_css_class("fs-row");
-            row.set_margin_start(2);
-            row.set_margin_end(2);
+            row.set_margin_start(gap(Gap::Xxs));
+            row.set_margin_end(gap(Gap::Xxs));
             row.append(&label);
             row.append(&up);
             row.append(&down);
@@ -2781,16 +2784,16 @@ impl DataPage {
         let apply = gtk::Button::with_label("应用");
         apply.add_css_class("suggested-action");
         let cancel = gtk::Button::with_label("取消");
-        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
         buttons.append(&apply);
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        content.set_margin_top(8);
-        content.set_margin_bottom(8);
-        content.set_margin_start(8);
-        content.set_margin_end(8);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
+        content.set_margin_top(gap(Gap::Md));
+        content.set_margin_bottom(gap(Gap::Md));
+        content.set_margin_start(gap(Gap::Md));
+        content.set_margin_end(gap(Gap::Md));
         content.set_size_request(340, -1);
         content.append(&title);
         content.append(&entry);
@@ -3091,7 +3094,7 @@ impl DataPage {
             note.set_wrap(true);
             note.add_css_class("caption");
             note.add_css_class("dim-label");
-            let line = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let line = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
             line.append(&check);
             line.append(&note);
             self.txn_options.append(&line);
@@ -4883,16 +4886,16 @@ impl DataPage {
         apply.add_css_class("suggested-action");
         let cancel = gtk::Button::with_label("取消");
 
-        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
         buttons.append(&apply);
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        content.set_margin_top(8);
-        content.set_margin_bottom(8);
-        content.set_margin_start(8);
-        content.set_margin_end(8);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
+        content.set_margin_top(gap(Gap::Md));
+        content.set_margin_bottom(gap(Gap::Md));
+        content.set_margin_start(gap(Gap::Md));
+        content.set_margin_end(gap(Gap::Md));
         content.set_size_request(320, -1);
         content.append(&title);
         content.append(&entry);
@@ -6131,10 +6134,10 @@ impl DataPage {
             row.set_wrap(true);
             row.add_css_class("caption");
             row.set_selectable(true);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
-            row.set_margin_start(8);
-            row.set_margin_end(8);
+            row.set_margin_top(gap(Gap::Xs));
+            row.set_margin_bottom(gap(Gap::Xs));
+            row.set_margin_start(gap(Gap::Md));
+            row.set_margin_end(gap(Gap::Md));
             self.errors.append(&row);
         }
         self.errors_scroll.set_visible(true);
@@ -6199,26 +6202,28 @@ fn install_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(
+    // 尺寸只从当前档位的度量取（#159）；1px 描边 / 分隔线与阴影模糊值不随档位缩放。
+    let m = metrics();
+    provider.load_from_string(&format!(
         r#"
         /* 强调底（脏行单元格 / 事务徽标 / 列信息 focus / 表头 hover / View 徽标）
            已搬到 `theme::stylesheet`：色值只在那一处按 token 定义，这里只留语义色
            （脏 / 删除 / 警告 / 错误）与排版，不再出现任何 accent 派生底色。 */
-        .sqarvo-row-deleted { text-decoration: line-through; opacity: 0.55; }
-        .sqarvo-dirty { color: @accent_color; font-weight: 700; }
-        .sqarvo-deleted { color: @error_color; font-weight: 700; }
-        .sqarvo-dirty-indicator { font-family: monospace; }
-        .sqarvo-txn-active { background: alpha(@warning_color, 0.30); font-weight: 600; }
-        .sqarvo-txn-readonly { background: alpha(@warning_color, 0.30); }
-        .sqarvo-txn-failed { background: alpha(@error_color, 0.30); font-weight: 600; }
-        .sqarvo-txn-disconnected { background: alpha(@error_color, 0.20); }
-        .sqarvo-column-info {
+        .sqarvo-row-deleted {{ text-decoration: line-through; opacity: 0.55; }}
+        .sqarvo-dirty {{ color: @accent_color; font-weight: 700; }}
+        .sqarvo-deleted {{ color: @error_color; font-weight: 700; }}
+        .sqarvo-dirty-indicator {{ font-family: monospace; }}
+        .sqarvo-txn-active {{ background: alpha(@warning_color, 0.30); font-weight: 600; }}
+        .sqarvo-txn-readonly {{ background: alpha(@warning_color, 0.30); }}
+        .sqarvo-txn-failed {{ background: alpha(@error_color, 0.30); font-weight: 600; }}
+        .sqarvo-txn-disconnected {{ background: alpha(@error_color, 0.20); }}
+        .sqarvo-column-info {{
             background-color: @theme_bg_color;
-            border-radius: 12px;
-            padding: 12px;
+            border-radius: {radius_lg}px;
+            padding: {gap_xl}px;
             box-shadow: 0 8px 24px alpha(black, 0.25);
-        }
-        .sqarvo-column-header { padding: 0 8px; min-height: 26px; }
+        }}
+        .sqarvo-column-header {{ padding: 0 {gap_md}px; min-height: {column_header_min_height}px; }}
         /* 行号样式在主样式表（`theme::stylesheet` 的 `.sqarvo-row-number`）：
            `Objects` 页也用同一份，不能只装在数据页的附加样式里。
            表头已合并成一行（「列名 · 原始类型」，见 theme.rs 的
@@ -6233,26 +6238,33 @@ fn install_css() {
            （32 正好是 §2.1 里这一行的内容高，工具条 46 的口径不变，控件行也显式
            `set_height_request(32)` 把上下 8 / 6 的留白守住）。
            960×640 实测「需求 407 ≤ 分配 417」（`--qa-layout-audit` 可复核）。 */
-        .sqarvo-table-actions button { padding: 4px 6px; }
+        .sqarvo-table-actions button {{ padding: {gap_xs}px {gap_sm}px; }}
         /* 表头只有一行：「列名 · 原始类型」（合并后的标题文本）。列名与类型同一字号，
            靠中点分隔；底色与原来那条类型提示行一致（窗口底色），见 theme.rs 的
            `columnview.sqarvo-grid > header` 规则。 */
-        .sqarvo-merged-header { font-size: 12px; font-weight: 600; }
+        .sqarvo-merged-header {{ font-size: {font_ui}px; font-weight: 600; }}
         /* #118：表头上方的常驻徽标 */
-        .sqarvo-badge-readonly { background: alpha(@warning_color, 0.25); }
-        .sqarvo-badge-nokey { background: alpha(@warning_color, 0.18); }
+        .sqarvo-badge-readonly {{ background: alpha(@warning_color, 0.25); }}
+        .sqarvo-badge-nokey {{ background: alpha(@warning_color, 0.18); }}
         /* `.sqarvo-badge-view` 的底色在 theme.rs（浅档 + 配对前景） */
-        .sqarvo-badge-permission { background: alpha(@error_color, 0.25); }
-        .sqarvo-badge-total { background: alpha(@warning_color, 0.20); }
-        .sqarvo-badge-limited { background: alpha(currentColor, 0.10); }
+        .sqarvo-badge-permission {{ background: alpha(@error_color, 0.25); }}
+        .sqarvo-badge-total {{ background: alpha(@warning_color, 0.20); }}
+        .sqarvo-badge-limited {{ background: alpha(currentColor, 0.10); }}
         /* 置灰的建议/破坏性按钮不带染色底（#113/#116 遗留） */
         button.suggested-action:disabled,
-        button.destructive-action:disabled {
+        button.destructive-action:disabled {{
             background: none;
             color: alpha(currentColor, 0.5);
-        }
+        }}
         "#,
-    );
+        radius_lg = m.radius_lg,
+        gap_xl = m.gap_px(Gap::Xl),
+        gap_md = m.gap_px(Gap::Md),
+        gap_xs = m.gap_px(Gap::Xs),
+        gap_sm = m.gap_px(Gap::Sm),
+        column_header_min_height = m.column_header_min_height,
+        font_ui = m.font_ui,
+    ));
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,

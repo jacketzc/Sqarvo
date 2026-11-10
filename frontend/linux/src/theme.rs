@@ -15,7 +15,7 @@
 
 use std::sync::OnceLock;
 
-use crate::layout;
+use crate::layout::{self, Gap};
 
 /// 给窗口加 class 的名字：`GtkApplicationWindow` 上由 [`crate::ui`] 设置。
 pub const WINDOW_CLASS: &str = "sqarvo-compact";
@@ -118,6 +118,8 @@ pub fn stylesheet() -> String {
 #[must_use]
 pub fn stylesheet_for(dark: bool) -> String {
     let palette = if dark { &DARK_PALETTE } else { &LIGHT_PALETTE };
+    // 尺寸 / 字号 / 圆角 / 间距一律按当前档位取（#159），样式表里不再写死像素值。
+    let m = layout::metrics();
     format!(
         r#"
         /* 品牌三档色板：界面上**所有**强调底色只从这里取，别处不许写 hex。
@@ -182,16 +184,16 @@ pub fn stylesheet_for(dark: bool) -> String {
         /* 区域 02：主工具条 44 高（24 的按钮 + 上下各 10），按钮不小于 24 */
         .sqarvo-toolbar {{
             min-height: {toolbar}px;
-            padding: 0 12px;
+            padding: 0 {toolbar_padding_h}px;
             border-bottom: 1px solid alpha(currentColor, 0.10);
         }}
-        .sqarvo-toolbar button {{ min-height: {target}px; padding: 2px 10px; }}
+        .sqarvo-toolbar button {{ min-height: {target}px; padding: {gap_xxs}px {gap_lg}px; }}
         .sqarvo-toolbar label {{ font-size: {ui}px; }}
         /* 种类入口是纯拉丁文字（Tables / Views / Functions / Queries），和中文
            「新建查询」同一行混排时，Pango 的中文 em 盒比拉丁大写字高更靠下：
            盒子同高同 y 也会看起来「一高一低」。这里只把**字**下移 2px
            （实测：中文 63–74、拉丁 62–71，视觉中线差 2px），命中区不变。 */
-        .sqarvo-toolbar button.sqarvo-kind label {{ margin-top: 2px; }}
+        .sqarvo-toolbar button.sqarvo-kind label {{ margin-top: {gap_xxs}px; }}
 
         /* 区域 03 / 04：树行 24，数据行 32，表头 24。
            `Objects` 固定页（v0.2.4）与数据网格同一套渲染：同一个 `GtkColumnView`
@@ -218,8 +220,8 @@ pub fn stylesheet_for(dark: bool) -> String {
         }}
         window.{window_class} columnview.sqarvo-grid > header > button,
         window.{window_class} columnview.sqarvo-objects > header > button {{
-            min-height: 26px;
-            padding: 2px 8px;
+            min-height: {column_header_min_height}px;
+            padding: {gap_xxs}px {gap_md}px;
             font-size: {ui}px;
             font-weight: 600;
             color: @theme_fg_color;
@@ -279,8 +281,8 @@ pub fn stylesheet_for(dark: bool) -> String {
            选中底色会把左上角填成方角。现在容器的子节点按圆角裁切，首行 / 末行的
            底色跟着边框收圆。 */
         window.{window_class} .sqarvo-table-frame {{
-            border: 2px solid alpha(currentColor, 0.30);
-            border-radius: 8px;
+            border: {frame_border_width}px solid alpha(currentColor, 0.30);
+            border-radius: {radius_md}px;
         }}
 
         /* 图标按钮（v0.2.3.3）：命中区固定（§图标），内边距归零——图标自身的像素尺寸
@@ -303,7 +305,7 @@ pub fn stylesheet_for(dark: bool) -> String {
         }}
         /* 灰 = 没有未提交的更改、也没有打开的事务（不是可点动作，别抢注意力）。 */
         .sqarvo-status-dot {{
-            border-radius: 99px;
+            border-radius: {pill_radius}px;
             background-color: alpha(@window_fg_color, 0.35);
         }}
         /* 棕 = 事务已打开（含只读 / 失败态）：token 与状态行 `.warning` 文字同源
@@ -328,13 +330,13 @@ pub fn stylesheet_for(dark: bool) -> String {
         /* 区域 04 顶部：标签条 24（workspace-model §2.1 的 tabStrip） */
         .sqarvo-tab-strip {{
             min-height: {tab_strip}px;
-            padding: 0 6px;
+            padding: 0 {gap_sm}px;
             border-bottom: 1px solid alpha(currentColor, 0.10);
         }}
         /* AdwTabBar 默认把标签条撑到 ~47px；这里压到规范口径附近（24px 行高）。
            标签本身的最小点击区仍不小于 24（§11），缩的是外层留白。 */
         .sqarvo-tab-bar {{
-            padding: 0 2px;
+            padding: 0 {gap_xxs}px;
             min-height: {tab_strip}px;
         }}
         /* 标签条只许有一条下边线（v0.2.4 用户反馈「分割线像两条线叠在一起」）。
@@ -351,7 +353,7 @@ pub fn stylesheet_for(dark: bool) -> String {
         }}
         .sqarvo-tab-bar tab {{
             min-height: {target}px;
-            padding: 0 8px;
+            padding: 0 {gap_md}px;
             font-size: {ui}px;
         }}
         /* 标签条：hover = 浅档淡填充；当前标签 = 中档实底（「现在看的是哪一页」）。
@@ -376,7 +378,7 @@ pub fn stylesheet_for(dark: bool) -> String {
            （`[tabs] 标签实际宽度：pinned=26px`），所以按它选中。
            内容盒 84 + padding 0，避免被默认内边距撑大。 */
         .sqarvo-tab-bar tab.pinned {{
-            min-width: 84px;
+            min-width: {objects_min_width}px;
             padding: 0;
         }}
 
@@ -431,12 +433,12 @@ pub fn stylesheet_for(dark: bool) -> String {
             min-width: 1px;
             background: alpha(currentColor, 0.10);
         }}
-        .sqarvo-status-right {{ padding: 0 12px; }}
+        .sqarvo-status-right {{ padding: 0 {gap_xl}px; }}
         .sqarvo-status-row {{ min-height: {tree_row}px; }}
         .sqarvo-status-bar button {{
             min-height: {target}px;
             min-width: {target}px;
-            padding: 0 8px;
+            padding: 0 {gap_md}px;
             font-size: {status_font}px;
         }}
         .sqarvo-status-bar entry {{ min-height: {target}px; font-size: {status_font}px; }}
@@ -446,18 +448,18 @@ pub fn stylesheet_for(dark: bool) -> String {
            与图标的视觉高度对齐。 */
         window.{window_class} .sqarvo-pager button {{
             min-height: {target}px;
-            min-width: 26px;
-            padding: 0 4px;
+            min-width: {pager_button_min_width}px;
+            padding: 0 {gap_xs}px;
         }}
         window.{window_class} .sqarvo-pager-label {{
-            font-size: 12px;
+            font-size: {pager_font}px;
         }}
         .sqarvo-status-sep {{ min-height: {tree_row}px; }}
 
         /* 区域 06：信息面板（空槽，内容由 #119 填） */
         .sqarvo-inspector {{
             border-left: 1px solid alpha(currentColor, 0.10);
-            padding: 12px;
+            padding: {gap_xl}px;
         }}
         .sqarvo-slot-note {{ font-size: {status_font}px; }}
 
@@ -473,7 +475,7 @@ pub fn stylesheet_for(dark: bool) -> String {
             font-family: monospace;
             font-size: {status_font}px;
             opacity: 0.7;
-            padding-right: 4px;
+            padding-right: {gap_xs}px;
         }}
 
         /* 信息面板正文（[DDL] 与 [表信息] 两页**同一口径**）：10px、不加粗。面板是
@@ -487,9 +489,9 @@ pub fn stylesheet_for(dark: bool) -> String {
         .sqarvo-pane-switch > button {{
             min-height: {target}px;
             min-width: {target}px;
-            padding: 0 4px;
+            padding: 0 {gap_xs}px;
             border: none;
-            border-radius: 6px;
+            border-radius: {radius_sm}px;
             background: transparent;
             box-shadow: none;
         }}
@@ -511,7 +513,7 @@ pub fn stylesheet_for(dark: bool) -> String {
         .sqarvo-fs button,
         .sqarvo-fs entry,
         .sqarvo-fs dropdown {{ font-size: {ui}px; }}
-        .sqarvo-fs button {{ min-height: 26px; padding: 2px 10px; }}
+        .sqarvo-fs button {{ min-height: {fs_button_min_height}px; padding: {gap_xxs}px {gap_lg}px; }}
         /* 纯符号下拉（算子 / 方向）不显示右侧箭头：旁边就是值，箭头只是噪音。
            `arrow` 是 GTK 的下拉箭头 CSS **节点名**（`dropdown arrow`，见 GTK 默认主题
            里的 `dropdown arrow {{ -gtk-icon-source: ... }}`），不是类名。 */
@@ -526,9 +528,9 @@ pub fn stylesheet_for(dark: bool) -> String {
            圆角的「实体条」，点它展开编辑器时形态连续，不会一行文字突然炸成控件。
            底色取浅档（55%）：条目是常驻的，实底浅档会盖过面板本身的层次。 */
         .sqarvo-fs .fs-row {{
-            min-height: 24px;
-            padding: 0 4px;
-            border-radius: 6px;
+            min-height: {tree_row}px;
+            padding: 0 {gap_xs}px;
+            border-radius: {radius_sm}px;
             background: alpha(@sqarvo_brand_soft, 0.55);
             box-shadow: 0 1px 2px alpha(black, 0.06);
         }}
@@ -537,16 +539,16 @@ pub fn stylesheet_for(dark: bool) -> String {
            整行不跳高。 */
         .sqarvo-fs .fs-row entry,
         .sqarvo-fs .fs-row dropdown {{
-            min-height: 24px;
+            min-height: {target}px;
             padding-top: 0;
             padding-bottom: 0;
         }}
         .sqarvo-fs .fs-row button {{
-            min-height: 22px;
-            min-width: 22px;
-            padding: 0 2px;
+            min-height: {secondary_min_height}px;
+            min-width: {secondary_min_height}px;
+            padding: 0 {gap_xxs}px;
         }}
-        .sqarvo-fs .fs-action {{ min-height: 28px; padding: 2px 14px; }}
+        .sqarvo-fs .fs-action {{ min-height: {fs_action_min_height}px; padding: {gap_xxs}px {gap_xxl}px; }}
 
         /* 当前种类高亮：工具条上的种类入口（表 / 视图 / 函数 / 查询）不再禁用，
            高亮只表示「现在列的是这一类」（v0.2.3.3 起它们会打开 Objects 页）。
@@ -567,7 +569,7 @@ pub fn stylesheet_for(dark: bool) -> String {
             margin: 0;
             /* 2px 左内边距与 `listview > row`（树）的默认内边距一致：少了它整列
                内容会比树左移 2px，缩放后看得很清楚。 */
-            padding: 2px 2px;
+            padding: {gap_xxs}px {gap_xxs}px;
         }}
 
         /* 数据页的强调底（原来是 `data_page::install_css` 里按系统强调色算的半透明底）。
@@ -600,24 +602,46 @@ pub fn stylesheet_for(dark: bool) -> String {
         on_mid = palette.on_mid,
         on_soft = palette.on_soft,
         window_class = WINDOW_CLASS,
-        ui = layout::FONT_UI,
-        title = layout::FONT_TITLE,
-        status = layout::STATUS_HEIGHT,
-        status_font = layout::FONT_STATUS,
-        data_font = layout::FONT_DATA_CELL,
-        panel_font = layout::FONT_PANEL,
-        toolbar = layout::TOOLBAR_HEIGHT,
-        tree_row = layout::ROW_HEIGHT_TREE,
-        data_row = layout::ROW_HEIGHT_DATA,
-        target = layout::MIN_TARGET,
-        tab_strip = layout::TAB_STRIP_HEIGHT,
+        // 尺寸与字号一律从当前档位的度量取（#159）：样式表里不再写死像素值。
+        // 例外只有两类：1px 描边 / 分隔线（§3.2：任何档位都保持 1px），
+        // 以及两处阴影的偏移 / 模糊值（不是间距，度量表里没有这一项）。
+        ui = m.font_ui,
+        title = m.font_title,
+        status = m.status_height,
+        status_font = m.font_status,
+        data_font = m.font_data_cell,
+        panel_font = m.font_panel,
+        toolbar = m.toolbar_height,
+        toolbar_padding_h = m.toolbar_padding_h,
+        tree_row = m.row_height_tree,
+        data_row = m.row_height_data,
+        target = m.min_target,
+        tab_strip = m.tab_strip_height,
         icon_button_class = crate::icons::BUTTON_CLASS,
-        icon_button_width = layout::ICON_BUTTON_WIDTH,
-        icon_button_height = layout::ICON_BUTTON_HEIGHT,
-        status_dot = layout::STATUS_DOT_DIAMETER,
+        icon_button_width = m.icon_button_width,
+        icon_button_height = m.icon_button_height,
+        status_dot = m.status_dot_diameter,
         status_dot_button = STATUS_DOT_BUTTON_CLASS,
         status_dot_dirty = STATUS_DOT_DIRTY_CLASS,
         status_dot_txn = STATUS_DOT_TXN_CLASS,
+        column_header_min_height = m.column_header_min_height,
+        frame_border_width = m.frame_border_width,
+        radius_sm = m.radius_sm,
+        radius_md = m.radius_md,
+        pill_radius = m.pill_radius,
+        objects_min_width = m.objects_min_width,
+        pager_button_min_width = m.pager_button_min_width,
+        pager_font = m.pager_font,
+        fs_button_min_height = m.fs_button_min_height,
+        fs_action_min_height = m.fs_action_min_height,
+        secondary_min_height = m.secondary_min_height,
+        gap_xxs = m.gap_px(Gap::Xxs),
+        gap_xs = m.gap_px(Gap::Xs),
+        gap_sm = m.gap_px(Gap::Sm),
+        gap_md = m.gap_px(Gap::Md),
+        gap_lg = m.gap_px(Gap::Lg),
+        gap_xl = m.gap_px(Gap::Xl),
+        gap_xxl = m.gap_px(Gap::Xxl),
     )
 }
 

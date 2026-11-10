@@ -143,6 +143,235 @@ pub const ICON_BUTTON_HEIGHT: i32 = MIN_TARGET;
 /// 颜色与命中区的 CSS 在 `theme.rs`（`STATUS_DOT_BUTTON_CLASS` / `.sqarvo-status-dot`）。
 pub const STATUS_DOT_DIAMETER: i32 = 7;
 
+// ---------------------------------------------------------------------------
+// 密度档与度量门面（#159）
+// ---------------------------------------------------------------------------
+
+/// 界面密度档（`metrics.toml` 的 `available_tiers`，规则见
+/// `docs/ui-specification/scaling-and-window-sizing.md` §2）。
+///
+/// 本单（#159）只把**取值的门面**与调用点落地：三档暂时取同一组值（= 100% 档的
+/// 字面量），档位切换、`metrics.toml` 解析与各档数字是 #160。档位名不许再增（§3.3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tier {
+    /// 紧凑（100%）：默认档。
+    #[default]
+    Compact,
+    /// 舒适（125%）：#160 接线前不构造，取值同 [`Tier::Compact`]。
+    #[allow(dead_code)]
+    Comfortable,
+    /// 大（150%）：#160 接线前不构造，取值同 [`Tier::Compact`]。
+    #[allow(dead_code)]
+    Large,
+}
+
+/// 间距刻度：界面里的留白**只**从这几档取，不再写「随手一个 6px」。
+///
+/// 取值是 [`Metrics`] 的 `gap_*` 字段（本轮 0 / 2 / 4 / 6 / 8 / 10 / 12 / 14，
+/// 以及 18 = 页面 / 对话框内容内边距，不属于 2px 步进的那一段）。刻度本身按档位
+/// 缩放，#160 才会出现第二组数字——本轮三档同值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gap {
+    /// 0：贴着排（列表行内、无间距的盒子）。
+    None,
+    /// 2：最小的一档（行内左右、字形的光学补偿）。
+    Xxs,
+    /// 4：小间距（行内左右、徽标内距）。
+    Xs,
+    /// 6：紧凑间距（控件之间的默认值）。
+    Sm,
+    /// 8：中等间距（成组的控件之间）。
+    Md,
+    /// 10：较宽间距（区块之间）。
+    Lg,
+    /// 12：宽间距（对话框 / 页面内容的左右内边距）。
+    Xl,
+    /// 14：动作按钮的横向内距。
+    Xxl,
+    /// 18：页面 / 对话框内容的整圈内边距（与 2px 步进分开的一档）。
+    Page,
+}
+
+/// 当前档位的全部布局度量（`layout::metrics()` 的返回值）。
+///
+/// 这是「按档位取度量」的唯一入口：控件代码要留白 / 固定尺寸时调 [`gap`] 或读
+/// 本结构的字段，不再写数字。字段名尽量与 `docs/ui-specification/metrics.toml`
+/// 同名同义；`metrics.toml` 里还没有对应项的（纯 CSS 的圆角、边框宽度、空态图标
+/// 等）集中在本结构末尾的「CSS 专用度量」一节，等 #160 定档时回填 TOML。
+///
+/// 本轮（#159）三档全部等于 100% 档：数字与改前的字面量逐一相同，所以视觉零变化。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Metrics {
+    /// 窗口外壳（`AdwHeaderBar` + 菜单行）高度。
+    pub header_height: i32,
+    /// 主工具条高度。
+    pub toolbar_height: i32,
+    /// 状态栏高度。
+    pub status_height: i32,
+    /// 标签条高度。
+    pub tab_strip_height: i32,
+    /// 表格工具条（动作行）高度。
+    pub table_actions_height: i32,
+    /// 树行高。
+    pub row_height_tree: i32,
+    /// 数据行高。
+    pub row_height_data: i32,
+    /// 表头最小高度。
+    pub column_header_min_height: i32,
+    /// 界面字号。
+    pub font_ui: i32,
+    /// 标题字号。
+    pub font_title: i32,
+    /// 状态栏字号。
+    pub font_status: i32,
+    /// 数据网格单元格字号。
+    pub font_data_cell: i32,
+    /// 信息面板正文字号。
+    pub font_panel: i32,
+    /// 可焦点控件的最小点击区。
+    pub min_target: i32,
+    /// 图标按钮命中区宽度。
+    pub icon_button_width: i32,
+    /// 图标按钮命中区高度。
+    pub icon_button_height: i32,
+    /// 状态圆点直径。
+    pub status_dot_diameter: i32,
+    /// 工具条横向内边距。
+    pub toolbar_padding_h: i32,
+    /// `Objects` 固定页（钉住标签）的宽度。
+    pub objects_min_width: i32,
+    /// 分页器页码字号。
+    pub pager_font: i32,
+    /// 次要按钮的命中盒边长（筛选行里的小按钮，正方形）。
+    pub secondary_min_height: i32,
+    /// 树展开箭头的命中盒边长。
+    pub tree_arrow_box: i32,
+    /// 小圆角（切换块、筛选行）。
+    pub radius_sm: i32,
+    /// 中圆角（表格外框）。
+    pub radius_md: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_none: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_xxs: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_xs: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_sm: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_md: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_lg: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_xl: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_xxl: i32,
+    /// 间距刻度：见 [`Gap`]。
+    pub gap_page: i32,
+
+    // ---- CSS 专用度量（`metrics.toml` 尚无同名项，#160 定档时回填） ----
+    /// 表格外框线宽（比 1px 分隔线粗一档；不是 §3.2 的 1px 描边）。
+    pub frame_border_width: i32,
+    /// 大圆角（列信息 / 事务卡片的浮层）。
+    pub radius_lg: i32,
+    /// 饱和圆角：给圆点用，等于半个盒子（任何档位都不需要更大）。
+    pub pill_radius: i32,
+    /// 分页器按钮最小宽度。
+    pub pager_button_min_width: i32,
+    /// 筛选面板里的按钮最小高度。
+    pub fs_button_min_height: i32,
+    /// 筛选面板「应用」按钮最小高度。
+    pub fs_action_min_height: i32,
+    /// 空态占位图标的绘制边长。
+    pub empty_icon_px: i32,
+    /// 加载 spinner 的请求边长。
+    pub spinner_px: i32,
+}
+
+impl Metrics {
+    /// 100%（紧凑）档：数字与 `layout.rs` 的常量逐一相同（本轮唯一的取值）。
+    pub const COMPACT: Self = Self {
+        header_height: HEADER_HEIGHT,
+        toolbar_height: TOOLBAR_HEIGHT,
+        status_height: STATUS_HEIGHT,
+        tab_strip_height: TAB_STRIP_HEIGHT,
+        table_actions_height: TABLE_ACTIONS_HEIGHT,
+        row_height_tree: ROW_HEIGHT_TREE,
+        row_height_data: ROW_HEIGHT_DATA,
+        column_header_min_height: 26,
+        font_ui: FONT_UI,
+        font_title: FONT_TITLE,
+        font_status: FONT_STATUS,
+        font_data_cell: FONT_DATA_CELL,
+        font_panel: FONT_PANEL,
+        min_target: MIN_TARGET,
+        icon_button_width: ICON_BUTTON_WIDTH,
+        icon_button_height: ICON_BUTTON_HEIGHT,
+        status_dot_diameter: STATUS_DOT_DIAMETER,
+        toolbar_padding_h: 12,
+        objects_min_width: 84,
+        pager_font: 12,
+        secondary_min_height: 22,
+        tree_arrow_box: 18,
+        radius_sm: 6,
+        radius_md: 8,
+        gap_none: 0,
+        gap_xxs: 2,
+        gap_xs: 4,
+        gap_sm: 6,
+        gap_md: 8,
+        gap_lg: 10,
+        gap_xl: 12,
+        gap_xxl: 14,
+        gap_page: 18,
+        frame_border_width: 2,
+        radius_lg: 12,
+        pill_radius: 99,
+        pager_button_min_width: 26,
+        fs_button_min_height: 26,
+        fs_action_min_height: 28,
+        empty_icon_px: 48,
+        spinner_px: 32,
+    };
+
+    /// 取一档的度量。本轮三档都返回同一组值（#160 按 `metrics.toml` 分档）。
+    #[must_use]
+    pub fn for_tier(tier: Tier) -> Self {
+        match tier {
+            Tier::Compact | Tier::Comfortable | Tier::Large => Self::COMPACT,
+        }
+    }
+
+    /// 间距刻度的像素值。
+    #[must_use]
+    pub fn gap_px(&self, step: Gap) -> i32 {
+        match step {
+            Gap::None => self.gap_none,
+            Gap::Xxs => self.gap_xxs,
+            Gap::Xs => self.gap_xs,
+            Gap::Sm => self.gap_sm,
+            Gap::Md => self.gap_md,
+            Gap::Lg => self.gap_lg,
+            Gap::Xl => self.gap_xl,
+            Gap::Xxl => self.gap_xxl,
+            Gap::Page => self.gap_page,
+        }
+    }
+}
+
+/// 当前档位的度量。界面里要留白 / 固定尺寸时从这里取，比如
+/// `widget.set_margin_start(gap(Gap::Page))`。
+#[must_use]
+pub fn metrics() -> Metrics {
+    Metrics::for_tier(Tier::Compact)
+}
+
+/// 当前档位下某一档间距刻度的像素值（[`metrics`] 的简写）。
+#[must_use]
+pub fn gap(step: Gap) -> i32 {
+    metrics().gap_px(step)
+}
+
 /// 内容区高度：两侧在状态栏之上、工具条之下。
 #[must_use]
 pub fn content_height(window_height: i32) -> i32 {
@@ -286,6 +515,59 @@ mod tests {
         assert_eq!(inspector_width_from_position(1200, 400), 520);
         // 拖到下限外：钳到 240。
         assert_eq!(inspector_width_from_position(1200, 1100), 240);
+    }
+
+    /// 度量门面：本轮三档同值，且每一项都与常量 / 改前的字面量一致。
+    ///
+    /// 这张表就是「视觉零变化」在代码侧的证据：门面里换掉任何一个数字，
+    /// 100% 档的截图就会变（#160 分档时才允许各档不同）。
+    #[test]
+    fn metrics_facade_keeps_the_compact_numbers_for_every_tier() {
+        let compact = metrics();
+        assert_eq!(compact, Metrics::for_tier(Tier::Compact));
+        assert_eq!(compact, Metrics::for_tier(Tier::Comfortable));
+        assert_eq!(compact, Metrics::for_tier(Tier::Large));
+        // 与常量一一对应（这些常量是布局算术与单测的口径，不许两边漂移）。
+        assert_eq!(compact.header_height, HEADER_HEIGHT);
+        assert_eq!(compact.toolbar_height, TOOLBAR_HEIGHT);
+        assert_eq!(compact.status_height, STATUS_HEIGHT);
+        assert_eq!(compact.tab_strip_height, TAB_STRIP_HEIGHT);
+        assert_eq!(compact.table_actions_height, TABLE_ACTIONS_HEIGHT);
+        assert_eq!(compact.row_height_tree, ROW_HEIGHT_TREE);
+        assert_eq!(compact.row_height_data, ROW_HEIGHT_DATA);
+        assert_eq!(
+            (compact.font_ui, compact.font_title, compact.font_status),
+            (FONT_UI, FONT_TITLE, FONT_STATUS)
+        );
+        assert_eq!(
+            (compact.font_data_cell, compact.font_panel),
+            (FONT_DATA_CELL, FONT_PANEL)
+        );
+        assert_eq!(compact.min_target, MIN_TARGET);
+        assert_eq!(
+            (compact.icon_button_width, compact.icon_button_height),
+            (ICON_BUTTON_WIDTH, ICON_BUTTON_HEIGHT)
+        );
+        assert_eq!(compact.status_dot_diameter, STATUS_DOT_DIAMETER);
+        // 间距刻度：0 / 2 / 4 / 6 / 8 / 10 / 12 / 14，页面档 18。
+        assert_eq!(
+            [
+                Gap::None,
+                Gap::Xxs,
+                Gap::Xs,
+                Gap::Sm,
+                Gap::Md,
+                Gap::Lg,
+                Gap::Xl,
+                Gap::Xxl,
+                Gap::Page
+            ]
+            .map(gap),
+            [0, 2, 4, 6, 8, 10, 12, 14, 18]
+        );
+        // 1px 描边不在这里：§3.2 规定它任何档位都是 1px，所以门面里没有 1 这一档
+        // （表格外框的 2px 是另一回事）。
+        assert!(compact.gap_none == 0 && compact.frame_border_width == 2);
     }
 
     #[test]

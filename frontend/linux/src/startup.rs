@@ -24,6 +24,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use crate::browse::{ConnectionRegistry, ConnectionSnapshot};
+use crate::layout::{Gap, gap};
 use crate::shell::{Shell, ShellHandlers};
 use crate::tree::{TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
 
@@ -145,7 +146,7 @@ impl StartupWorkspace {
 
         // 侧栏就是对象树本体（页脚刷新按钮与分割线已删除）：启动态与连接态形状一致，
         // 刷新在连接 / 库节点的右键菜单里。
-        let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let sidebar = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         sidebar.set_size_request(crate::layout::SIDEBAR_MIN, -1);
         sidebar.append(tree.widget());
 
@@ -158,7 +159,7 @@ impl StartupWorkspace {
         bar.set_autohide(false);
         bar.set_hexpand(true);
         bar.add_css_class("sqarvo-tab-bar");
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         strip.add_css_class("sqarvo-tab-strip");
         strip.append(&bar);
         // 与连接态的标签条同一位置、同一图标；未连接时不能新建查询，禁用而不是隐藏。
@@ -191,7 +192,7 @@ impl StartupWorkspace {
             gtk::glib::Propagation::Stop
         });
 
-        let work_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let work_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         work_box.set_vexpand(true);
         work_box.set_hexpand(true);
         work_box.append(&strip);

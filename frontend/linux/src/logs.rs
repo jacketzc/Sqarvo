@@ -17,6 +17,8 @@ use std::path::PathBuf;
 
 use adw::prelude::*;
 
+use crate::layout::{Gap, gap};
+
 /// 日志文件路径（`$XDG_STATE_HOME/sqarvo/desktop.log`，缺省 `~/.local/state/…`）。
 #[must_use]
 pub fn log_path() -> Option<PathBuf> {
@@ -167,9 +169,9 @@ pub fn present_window(parent: Option<&gtk::Window>) {
     view.set_editable(false);
     view.set_cursor_visible(false);
     view.set_monospace(true);
-    view.set_left_margin(10);
-    view.set_right_margin(10);
-    view.set_top_margin(8);
+    view.set_left_margin(gap(Gap::Lg));
+    view.set_right_margin(gap(Gap::Lg));
+    view.set_top_margin(gap(Gap::Md));
     view.set_wrap_mode(gtk::WrapMode::None);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -178,7 +180,7 @@ pub fn present_window(parent: Option<&gtk::Window>) {
         .child(&view)
         .build();
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
     root.append(&header);
     root.append(&scroll);
     window.set_content(Some(&root));

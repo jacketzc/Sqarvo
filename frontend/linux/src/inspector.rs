@@ -33,6 +33,7 @@ use crate::backend::table::TableColumn;
 use crate::column_info::{column_info_rows, default_label, nullable_label};
 use crate::config::SavedConnection;
 use crate::ddl::DdlPanel;
+use crate::layout::{Gap, gap};
 use crate::proto::services::v1::ObjectKind;
 
 /// DDL 面板的通道解析器（按对象自己的浏览会话找元数据通道）。
@@ -386,16 +387,16 @@ impl Inspector {
         subtitle.add_css_class("dim-label");
         subtitle.add_css_class("caption");
 
-        let header_text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let header_text = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         header_text.append(&title);
         header_text.append(&subtitle);
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         // 标题块与下方横线之间留白：4px 时副标题（`表`）几乎贴住分隔线，面板头部看起来
         // 被线切了一刀。10px 让「标题 + 副标题」自成一组（实测副标题笔画底到线约 13px）。
-        header.set_margin_top(6);
-        header.set_margin_bottom(10);
+        header.set_margin_top(gap(Gap::Sm));
+        header.set_margin_bottom(gap(Gap::Lg));
         header.set_margin_start(PANEL_CONTENT_LEFT);
-        header.set_margin_end(10);
+        header.set_margin_end(gap(Gap::Lg));
         header.append(&header_text);
 
         // 跨标签事务提示：同一 catalog 里别的标签还有未提交事务时出现（#116 待定项）。
@@ -403,8 +404,8 @@ impl Inspector {
         txn_hint.set_xalign(0.0);
         txn_hint.set_wrap(true);
         txn_hint.set_margin_start(PANEL_CONTENT_LEFT);
-        txn_hint.set_margin_end(10);
-        txn_hint.set_margin_bottom(8);
+        txn_hint.set_margin_end(gap(Gap::Lg));
+        txn_hint.set_margin_bottom(gap(Gap::Md));
         txn_hint.add_css_class("caption");
         txn_hint.add_css_class("sqarvo-inspector-warning");
         txn_hint.set_visible(false);
@@ -424,19 +425,19 @@ impl Inspector {
         // 「表信息」字形更高，两者的行盒居中后看起来「DDL」偏高）。给拉丁标签加 2px
         // 上边距 → 标签在按钮内下移 1px，两个标签的视觉中心对齐。
         if let Some(label) = ddl_toggle.child().and_downcast::<gtk::Label>() {
-            label.set_margin_top(2);
+            label.set_margin_top(gap(Gap::Xxs));
         }
         let info_toggle = gtk::ToggleButton::with_label("表信息");
         info_toggle.add_css_class("flat");
         info_toggle.set_tooltip_text(Some("列、主键、索引与触发器、已加载行数"));
         info_toggle.set_group(Some(&ddl_toggle));
         ddl_toggle.set_active(true);
-        let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xxs));
         switch_bar.add_css_class("sqarvo-pane-switch");
-        switch_bar.set_margin_top(6);
+        switch_bar.set_margin_top(gap(Gap::Sm));
         switch_bar.set_margin_start(PANEL_CONTENT_LEFT);
-        switch_bar.set_margin_end(10);
-        switch_bar.set_margin_bottom(6);
+        switch_bar.set_margin_end(gap(Gap::Lg));
+        switch_bar.set_margin_bottom(gap(Gap::Sm));
         switch_bar.append(&ddl_toggle);
         switch_bar.append(&info_toggle);
         switch_bar.set_visible(false);
@@ -454,12 +455,12 @@ impl Inspector {
         info_status.add_css_class("dim-label");
         info_status.add_css_class("sqarvo-panel-text");
         info_status.set_visible(false);
-        let info_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let info_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Lg));
         info_box.set_hexpand(true);
-        info_box.set_margin_top(6);
-        info_box.set_margin_bottom(10);
+        info_box.set_margin_top(gap(Gap::Sm));
+        info_box.set_margin_bottom(gap(Gap::Lg));
         info_box.set_margin_start(PANEL_CONTENT_LEFT);
-        info_box.set_margin_end(10);
+        info_box.set_margin_end(gap(Gap::Lg));
         info_box.append(&info_status);
         // 横向 Never 时子控件只拿到自己的最小宽度（折行标签的最小宽度可以很小），
         // 280 宽的面板会变成一条窄条：改用 Automatic——内容装得下就没有横向滚动条，
@@ -481,7 +482,7 @@ impl Inspector {
         let catalog_page = scrolled(&catalog_rows);
         let column_page = scrolled(&column_rows);
         let ddl_only = DdlPanel::new();
-        let ddl_only_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let ddl_only_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         ddl_only_box.append(ddl_only.widget());
         ddl_only_box.set_vexpand(true);
 
@@ -490,7 +491,7 @@ impl Inspector {
         state_page.set_title(" ");
 
         // 空态页：留白，不写任何说明（面板头部已经显示「信息面板」标题）。
-        let empty_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let empty_page = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         empty_page.set_vexpand(true);
 
         let stack = gtk::Stack::new();
@@ -504,7 +505,7 @@ impl Inspector {
         stack.add_named(&empty_page, Some("empty"));
         stack.set_visible_child_name("empty");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.add_css_class("sqarvo-inspector");
         root.append(&header);
         root.append(&txn_hint);
@@ -1042,7 +1043,7 @@ impl Inspector {
             } else {
                 let section = section("列");
                 for column in columns {
-                    let card = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                    let card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
                     card.set_hexpand(true);
                     card.add_css_class("sqarvo-inspector-column");
                     let heading =
@@ -1166,11 +1167,11 @@ impl Inspector {
 
 /// 字段行容器（可滚动、右内边距 10）。
 fn fact_container() -> gtk::Box {
-    let rows = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    rows.set_margin_top(8);
-    rows.set_margin_bottom(8);
+    let rows = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
+    rows.set_margin_top(gap(Gap::Md));
+    rows.set_margin_bottom(gap(Gap::Md));
     rows.set_margin_start(PANEL_CONTENT_LEFT);
-    rows.set_margin_end(10);
+    rows.set_margin_end(gap(Gap::Lg));
     rows.set_valign(gtk::Align::Start);
     rows
 }
@@ -1193,7 +1194,7 @@ fn fill_facts(container: &gtk::Box, facts: &[Fact]) {
         if fact.value.trim().is_empty() {
             continue;
         }
-        let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let row = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         let label = gtk::Label::new(Some(fact.label));
         label.set_xalign(0.0);
         label.add_css_class("dim-label");
@@ -1216,7 +1217,7 @@ fn fill_facts(container: &gtk::Box, facts: &[Fact]) {
 
 /// 一个带标题的分节。
 fn section(title: &str) -> gtk::Box {
-    let box_ = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let box_ = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xs));
     box_.set_hexpand(true);
     let label = gtk::Label::new(Some(title));
     label.set_xalign(0.0);
@@ -1237,7 +1238,7 @@ fn section_note(title: &str, note: &str) -> gtk::Box {
 }
 
 fn compact_row(label: &str, value: &str) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
     row.set_hexpand(true);
     let key = gtk::Label::new(Some(label));
     key.set_xalign(0.0);
