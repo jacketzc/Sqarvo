@@ -40,35 +40,10 @@
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
 
             <!-- 禁用文字 = 说明文字（同一种灰） -->
-            <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
 
             <!-- 种类入口：未选中 = 透明底 + 主文字；悬停 = 轻微填充；选中 = 轻微填充 + 强调色文字 -->
-            <StaticResource x:Key="ToggleButtonBackground" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrush" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPressed" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonForeground" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPointerOver" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPressed" ResourceKey="TextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="SubtleFillColorTertiaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="AccentTextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushChecked" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPressed" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedDisabled" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedDisabled" ResourceKey="TextFillColorSecondaryBrush" />
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Light">
@@ -80,33 +55,8 @@
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
 
-            <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
 
-            <StaticResource x:Key="ToggleButtonBackground" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrush" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPressed" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonForeground" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPointerOver" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPressed" ResourceKey="TextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="SubtleFillColorTertiaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="AccentTextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushChecked" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPressed" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedDisabled" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedDisabled" ResourceKey="TextFillColorSecondaryBrush" />
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Dark">
@@ -118,33 +68,8 @@
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
 
-            <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
 
-            <StaticResource x:Key="ToggleButtonBackground" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrush" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPressed" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonForeground" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPointerOver" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPressed" ResourceKey="TextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="SubtleFillColorTertiaryBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="AccentTextFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushChecked" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPressed" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedDisabled" ResourceKey="SubtleFillColorSecondaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedDisabled" ResourceKey="TextFillColorSecondaryBrush" />
         </ResourceDictionary>
 
         <!-- 高对比：同样指向系统 token，系统会替换成高对比色板 -->
@@ -157,35 +82,10 @@
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
 
             <!-- 高对比下不做「同一种灰」的收拢：禁用态必须与正文有足够对比度差，交给系统 -->
-            <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorDisabledBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorDisabledBrush" />
 
             <!-- 高对比下选中态只用系统高亮色，不靠浅填充 -->
-            <StaticResource x:Key="ToggleButtonBackground" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrush" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPointerOver" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushPressed" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
-            <StaticResource x:Key="ToggleButtonForeground" ResourceKey="TextFillColorPrimaryBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPointerOver" ResourceKey="SystemColorHighlightTextColorBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundPressed" ResourceKey="SystemColorHighlightTextColorBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="SystemColorHighlightTextColorBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="SystemColorHighlightTextColorBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="SystemColorHighlightTextColorBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushChecked" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPointerOver" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBorderBrushCheckedPressed" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonBackgroundCheckedDisabled" ResourceKey="SystemColorHighlightColorBrush" />
-            <StaticResource x:Key="ToggleButtonForegroundCheckedDisabled" ResourceKey="SystemColorHighlightTextColorBrush" />
         </ResourceDictionary>
 
     </ResourceDictionary.ThemeDictionaries>
