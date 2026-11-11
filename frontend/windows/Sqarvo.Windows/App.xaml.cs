@@ -234,7 +234,7 @@ public partial class App : Application
             var session = Backend;
             if (session is null)
             {
-                ConsoleBridge.WriteDiagnostic("[connect] 没有后端会话");
+                ConsoleBridge.WriteLine("[connect] 没有后端会话");
 
                 return;
             }
@@ -262,7 +262,7 @@ public partial class App : Application
 
             if (profile is null)
             {
-                ConsoleBridge.WriteDiagnostic($"[connect] 找不到连接条目 {name}（已保存 {profiles.Count} 条）");
+                ConsoleBridge.WriteLine($"[connect] 找不到连接条目 {name}（已保存 {profiles.Count} 条）");
 
                 return;
             }
@@ -274,7 +274,7 @@ public partial class App : Application
                     string.IsNullOrEmpty(profile.CredentialRef) ? null : profile.CredentialRef,
                     password).ConfigureAwait(true);
 
-                ConsoleBridge.WriteDiagnostic($"[connect] credential_ref={reference}");
+                ConsoleBridge.WriteLine($"[connect] credential_ref={reference}");
                 profile = profile with { CredentialRef = reference };
             }
 
@@ -292,7 +292,7 @@ public partial class App : Application
         }
         catch (Exception error)
         {
-            ConsoleBridge.WriteDiagnostic($"[connect] failed {error.GetType().Name}: {error.Message}");
+            ConsoleBridge.WriteLine($"[connect] failed {error.GetType().Name}: {error.Message}");
         }
         finally
         {
