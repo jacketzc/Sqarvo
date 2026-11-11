@@ -26,8 +26,14 @@ fn assert_store_semantics(store: &dyn CredentialStore, reference: &str) {
     store.set(reference, &Secret::new("second")).unwrap();
     assert_eq!(store.get(reference).unwrap().expose(), "second");
 
-    // 超长 secret（64 KiB）：不能截断、不能因为长度报错。
-    let long = "p".repeat(64 * 1024);
+    // 超长 secret：不能截断、不能因为长度报错。
+    //
+    // 长度按平台取：Windows Credential Manager 的单条 blob 上限是 2560 字节
+    // （`CRED_MAX_CREDENTIAL_BLOB_SIZE`，见 `credentials::windows_spec`），超过会被
+    // **明确拒绝**而不是截断；Linux Secret Service 没有这个限制，用 64 KiB 验证
+    // 长密码不被截断。
+    let long_len = if cfg!(windows) { 2000 } else { 64 * 1024 };
+    let long = "p".repeat(long_len);
     store.set(reference, &Secret::new(long.clone())).unwrap();
     assert_eq!(store.get(reference).unwrap().expose(), long);
 
@@ -78,6 +84,71 @@ fn factory_never_panics_and_reports_a_typed_error() {
         error.category(),
         error.message()
     );
+}
+
+/// 真实 Windows Credential Manager 用例（仅 Windows 编译，需实机运行）。
+///
+/// 运行方式（Windows 实机）：
+///
+/// ```text
+/// SQARVO_CREDMANAGER_TEST=1 cargo test -p sqarvo-local-store -- --nocapture
+/// ```
+///
+/// 缺省跳过并打印原因：该用例会真实写入当前用户的凭据管理器（「普通凭据」），
+/// 结束时删除自己创建的条目。
+#[cfg(windows)]
+#[test]
+fn windows_credential_manager_semantics() {
+    if std::env::var("SQARVO_CREDMANAGER_TEST").as_deref() != Ok("1") {
+        eprintln!(
+            "跳过 windows_credential_manager_semantics：未设置 SQARVO_CREDMANAGER_TEST=1；\
+             该用例会真实读写当前用户的 Windows 凭据管理器（CRED_TYPE_GENERIC）"
+        );
+        return;
+    }
+
+    let store = sqarvo_local_store::WindowsCredentialManagerStore::open("default").unwrap_or_else(
+        |error| {
+            panic!(
+                "打开 Windows 凭据管理器失败（{} / {}）：{error}",
+                error.code(),
+                error.category()
+            )
+        },
+    );
+
+    let reference = format!("sqarvo:conn/{}", Uuid::new_v4());
+    eprintln!("[live] 凭据引用 = {reference}");
+    assert_store_semantics(&store, &reference);
+    eprintln!("[live] 写入 / 覆盖写 / 读取 / 2000 字节长密码 / 删除 / 幂等删除 均符合契约");
+
+    // 非 ASCII 密码按 UTF-8 字节原样往返（blob 是字节序列，不做编码转换）。
+    store
+        .set(&reference, &Secret::new("密码🔐-pässwörd"))
+        .unwrap();
+    assert_eq!(
+        store.get(&reference).unwrap().expose(),
+        "密码🔐-pässwörd",
+        "非 ASCII 密码必须逐字节还原"
+    );
+
+    // 超过 2560 字节：明确拒绝，且不能改动已经保存的值（拒绝发生在写库之前）。
+    let error = store
+        .set(&reference, &Secret::new("p".repeat(2561)))
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::CREDENTIAL_UNAVAILABLE);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+    assert!(!error.to_string().contains(&"p".repeat(2561)));
+    assert_eq!(
+        store.get(&reference).unwrap().expose(),
+        "密码🔐-pässwörd",
+        "拒绝超长密码不应覆盖已保存的值"
+    );
+
+    store.delete(&reference).unwrap();
+    assert_not_found(&store, &reference);
+    store.delete(&reference).unwrap();
+    eprintln!("[live] 清理完成：凭据管理器中已无本次测试条目");
 }
 
 /// 真实 Secret Service 用例。

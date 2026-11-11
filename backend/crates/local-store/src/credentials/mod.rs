@@ -5,11 +5,43 @@
 //! | 平台 | 后端 | 状态 |
 //! | --- | --- | --- |
 //! | Linux | Secret Service（`org.freedesktop.secrets`，D-Bus） | 已实现，见 [`SecretServiceCredentialStore`] |
-//! | Windows | Credential Manager | 未实现，装配为 [`UnavailableCredentialStore`] |
+//! | Windows | Credential Manager（`CredWriteW` / `CredReadW` / `CredDeleteW`，`CRED_TYPE_GENERIC`，`CRED_PERSIST_LOCAL_MACHINE`） | 已实现，见 [`WindowsCredentialManagerStore`] |
 //! | macOS | Keychain | 未实现，装配为 [`UnavailableCredentialStore`] |
+//!
+//! 平台侧命名（ADR 0012）：
+//!
+//! | 平台 | 条目键 | 额外字段 |
+//! | --- | --- | --- |
+//! | Linux | 属性 `application` / `profile` / `reference`，label 固定 `Sqarvo` | `text/plain` 明文秘密 |
+//! | Windows | target name = 引用原文（`sqarvo:conn/<uuid-v4>`） | `UserName` 固定 `Sqarvo`，blob 是密码的 UTF-8 字节 |
+//!
+//! Windows 的 target name **不拼档案名**：引用在连接配置里必须唯一确定一条凭据，
+//! 拼 `profile:reference` 会引入一个隐式命名空间；当前只有 `default` 档案，非默认
+//! 档案在 Windows 上不产生独立命名空间（这是与 Linux 属性检索的唯一差异）。
 //!
 //! 「当前平台尚未实现」与「运行环境里没有可用的凭据服务」对调用方是同一种结果：
 //! 所有操作返回 `credential.unavailable`，上层必须如实展示给用户，不得伪造成功。
+//!
+//! # Windows 实现：本机（Linux）只做了编译检查
+//!
+//! `windows.rs` 的 P/Invoke 路径在 Linux 上**无法执行**，因此下列行为只经过
+//! `cargo check -p sqarvo-local-store --target x86_64-pc-windows-msvc` 的类型检查
+//! 与纯逻辑单测（`windows_spec.rs`），必须在 Windows 实机上复核后才算验证完成：
+//!
+//! 1. `CredWriteW` / `CredReadW` / `CredDeleteW` 的真实往返（写入 → 读回 → 覆盖写
+//!    → 删除 → 幂等删除），含中文密码（UTF-8 逐字节还原），以及零长度密码
+//!    （`CredentialBlobSize = 0` 时 `CredWriteW` 是否接受需实测；gRPC 层本就拒绝空
+//!    密码，见 `grpc_credential` 用例）；
+//! 2. 凭据管理器 UI 里的条目形状：`普通凭据`、target name 为引用原文、用户名
+//!    `Sqarvo`、无注释/别名；
+//! 3. 重启进程后仍能读回（`CRED_PERSIST_LOCAL_MACHINE` 的实际持久化范围：本机
+//!    所有用户共享的机器级存储，仍按当前用户隔离）；
+//! 4. 超过 2560 字节的密码被明确拒绝（`FailedPrecondition`），且凭据库里没有残留；
+//! 5. 非 UTF-8 内容与类型不匹配的存量条目被识别为 `FailedPrecondition`；
+//! 6. 以无登录会话的账户（如服务账户）运行时的 `ERROR_NO_SUCH_LOGON_SESSION`
+//!    分支确实走 `Unavailable`，并让 `open_credential_store` 退回「不可用」实现；
+//! 7. `CredFree` / `CloseHandle` 的释放路径没有句柄或内存泄漏（凭据管理器里反复
+//!    增删后进程句柄数稳定）。
 //!
 //! # 缺失时明确报错，绝不回退明文
 //!
@@ -41,14 +73,14 @@
 //!
 //! # 错误语义（ADR 0012）
 //!
-//! | 情形 | 错误码 | 分类 |
-//! | --- | --- | --- |
-//! | 引用不存在（配置还在、凭据已被删除） | `credential.not_found` | `NotFound` |
-//! | 引用格式不合法 | `config.invalid` | `InvalidArgument` |
-//! | 无会话总线 / 服务缺失 / 通信失败 / 密钥环已锁定 | `credential.unavailable` | `Unavailable` |
-//! | D-Bus 权限被拒 | `credential.unavailable` | `PermissionDenied` |
-//! | 需要用户在桌面会话确认（解锁提示）/ 存量凭据内容损坏 | `credential.unavailable` | `FailedPrecondition` |
-//! | 未预期的 Secret Service 错误 | `credential.unavailable` | `Internal` |
+//! | 情形 | 错误码 | 分类 | Windows 对应（Win32 错误码） |
+//! | --- | --- | --- | --- |
+//! | 引用不存在（配置还在、凭据已被删除） | `credential.not_found` | `NotFound` | `ERROR_NOT_FOUND`（1168） |
+//! | 引用格式不合法 | `config.invalid` | `InvalidArgument` | 同上：写库前由 `validate_reference` 拒绝 |
+//! | 无会话总线 / 服务缺失 / 通信失败 / 密钥环已锁定 | `credential.unavailable` | `Unavailable` | `ERROR_NO_SUCH_LOGON_SESSION`（1312），即没有可用登录会话 |
+//! | D-Bus 权限被拒 | `credential.unavailable` | `PermissionDenied` | `ERROR_ACCESS_DENIED`（5）/ `ERROR_PRIVILEGE_NOT_HELD`（1314） |
+//! | 需要用户在桌面会话确认（解锁提示）/ 存量凭据内容损坏 | `credential.unavailable` | `FailedPrecondition` | blob 不是 UTF-8 / 条目类型不是通用凭据 / 超过 2560 字节 |
+//! | 未预期的 Secret Service 错误 | `credential.unavailable` | `Internal` | 其它 Win32 错误码（错误码原文写进文案，便于排查） |
 
 use std::sync::Arc;
 
@@ -58,10 +90,20 @@ use uuid::{Uuid, Version};
 pub mod memory;
 #[cfg(target_os = "linux")]
 pub mod secret_service;
+/// Windows Credential Manager 实现（P/Invoke，仅 Windows 编译）。
+#[cfg(windows)]
+pub mod windows;
+/// Windows Credential Manager 实现的纯逻辑（编解码、target 命名、错误分类）。
+///
+/// 在 Linux 上随 `cargo test` 一起编译，安全语义因此不必等 Windows 实机才能断言。
+#[cfg(any(windows, test))]
+pub(crate) mod windows_spec;
 
 pub use memory::MemoryCredentialStore;
 #[cfg(target_os = "linux")]
 pub use secret_service::SecretServiceCredentialStore;
+#[cfg(windows)]
+pub use windows::WindowsCredentialManagerStore;
 
 pub use sqarvo_driver_api::Secret;
 
@@ -142,6 +184,27 @@ pub(crate) fn not_found_error() -> Error {
     )
 }
 
+/// 档案名最大长度：只是防止把路径或连接串误当档案名写进系统凭据库。
+pub(crate) const MAX_PROFILE_LEN: usize = 64;
+
+/// 校验用户档案名。
+///
+/// 三个平台的实现共用同一条规则（不能为空、不超过 64 字节、不含控制字符），
+/// 因为档案名会进系统凭据库的属性/键名，格式错了越早失败越好。
+pub(crate) fn validate_profile(profile: &str) -> Result<()> {
+    let valid = !profile.is_empty()
+        && profile.len() <= MAX_PROFILE_LEN
+        && !profile.chars().any(char::is_control);
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "用户档案名不合法：不能为空、不能超过 64 字节、不能包含控制字符",
+        ))
+    }
+}
+
 /// 占位实现：如实报告「不可用」。
 ///
 /// 用于尚未实现凭据存储的平台，以及运行环境里找不到凭据服务时由
@@ -198,7 +261,20 @@ pub fn open_credential_store(profile: &str) -> Arc<dyn CredentialStore> {
         ),
     }
 
-    #[cfg(not(target_os = "linux"))]
+    // Windows：Credential Manager 是 advapi32 里的 API，没有「服务未启动」状态；
+    // 构造时只做一次 `CredReadW` 探测（见 WindowsCredentialManagerStore::open）。
+    // 探测失败（例如进程没有登录会话）同样退回「不可用」，绝不回退明文。
+    #[cfg(windows)]
+    match WindowsCredentialManagerStore::open(profile) {
+        Ok(store) => return Arc::new(store),
+        Err(error) => tracing::warn!(
+            code = %error.code(),
+            category = %error.category(),
+            "Windows 凭据管理器不可用，凭据操作将如实报错：{error}"
+        ),
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = profile;
         tracing::warn!("当前平台尚未实现系统凭据存储，凭据操作将如实报错");
@@ -234,6 +310,20 @@ mod tests {
     #[test]
     fn valid_reference_is_accepted() {
         validate_reference("sqarvo:conn/3f9a1c4e-7b2d-4a6f-9c11-0d2b8e5a71f4").unwrap();
+    }
+
+    /// 三个平台的实现共用同一条档案名规则（Windows 实现在 Linux 上也会跑到这里）。
+    #[test]
+    fn profile_name_is_validated_for_every_platform() {
+        assert!(validate_profile(DEFAULT_PROFILE).is_ok());
+        assert!(validate_profile("work").is_ok());
+        let too_long = "x".repeat(MAX_PROFILE_LEN + 1);
+        for profile in ["", "with\ttab", "with\nnewline", too_long.as_str()] {
+            let error = validate_profile(profile).unwrap_err();
+            assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
+            assert_eq!(error.category(), ErrorCategory::InvalidArgument);
+        }
+        assert!(validate_profile(&"x".repeat(MAX_PROFILE_LEN)).is_ok());
     }
 
     #[test]

@@ -82,6 +82,20 @@ pub const CREDENTIAL_NOT_FOUND: Self = Self("credential.not_found");
   证据：`cargo test` 328 通过；验收链 139 项断言；隔离配置连续两次保存同一 MariaDB 目标后
   `connections.json` 1 条且 `credential_ref` 相同，Secret Service 按该引用只检索到 1 个条目
   （`sqarvo-v023-shots/145/verify-keyring.txt`）。
+- 2026-11-11：Windows Credential Manager 落地（`crates/local-store/src/credentials/`）。
+  条目形态：`CRED_TYPE_GENERIC`、**target name = 引用原文**（本节「取舍」里写的
+  `profile:reference` 组合未采用——引用在配置里必须唯一确定一条凭据，拼档案名会引入
+  隐式命名空间；当前只有 `default` 档案，非默认档案在 Windows 上不产生独立命名空间）、
+  `UserName` 固定 `Sqarvo`（不放数据库用户名）、blob 为密码的 UTF-8 字节、
+  `CRED_PERSIST_LOCAL_MACHINE`。单条上限 2560 字节（`CRED_MAX_CREDENTIAL_BLOB_SIZE`）：
+  超限按 `credential.unavailable` + `FailedPrecondition` 明确拒绝，**不截断**。
+  错误映射：`ERROR_NOT_FOUND`(1168) → `credential.not_found`；
+  `ERROR_ACCESS_DENIED`(5)/`ERROR_PRIVILEGE_NOT_HELD`(1314) → `PermissionDenied`；
+  `ERROR_NO_SUCH_LOGON_SESSION`(1312) → `Unavailable`；blob 非 UTF-8 / 类型不匹配 →
+  `FailedPrecondition`；其它 → `Internal`。删除不存在视为成功（幂等）。
+  **未验证**：P/Invoke 只在本机做了 `cargo check --target x86_64-pc-windows-msvc`
+  （含 `--all-targets`）与纯逻辑单测；真实往返、凭据管理器 UI 里的条目形状、重启后持久化、
+  超限拒绝、无登录会话分支均需 Windows 实机复核（清单见 `credentials` 模块文档）。
 
 ## 重新评估条件
 
