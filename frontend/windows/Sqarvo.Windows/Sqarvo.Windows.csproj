@@ -10,6 +10,11 @@
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
+    <!-- 实验：自包含 Windows App SDK 运行时（PowerToys 的 WinUI3 迁移指南明确要求 unpackaged 应用
+         同时设 WindowsPackageType=None + WindowsAppSDKSelfContained=true，否则启动即
+         COMException: ClassFactory cannot supply requested class）。 -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
