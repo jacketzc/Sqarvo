@@ -126,7 +126,8 @@
             x:Name="ToolbarBand"
             Grid.Row="1"
             Background="{ThemeResource SqarvoSurfaceBrush}"
-            Height="{StaticResource Size.ToolbarHeight}">
+            Height="{StaticResource Size.ToolbarHeight}"
+                Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
