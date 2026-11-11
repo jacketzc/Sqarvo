@@ -1256,11 +1256,48 @@ fn collect_tab_widths(widget: &gtk::Widget, out: &mut Vec<(Vec<String>, i32)>) {
     }
 }
 
+/// 标签条里所有 `AdwTab` 控件（按标签条的显示顺序：钉住页在前）。
+fn collect_tab_widgets(widget: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
+    if widget.type_().name() == "AdwTab" {
+        out.push(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        collect_tab_widgets(&current, out);
+        child = current.next_sibling();
+    }
+}
+
+/// 标签条里所有 `AdwTabBox` 的自然宽度之和（钉住标签盒 + 普通标签盒）。
+///
+/// `AdwTabBar` 内部结构不公开，这里只按类型名识别；内层的 `GtkScrolledWindow` 不向上
+/// 传递自然宽度（实测自然宽度恒为 100），所以只能直接量标签盒本身。
+fn tab_box_natural_width(widget: &gtk::Widget) -> Option<i32> {
+    let mut total = 0;
+    let mut found = false;
+    if widget.type_().name() == "AdwTabBox" {
+        let (_, natural, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
+        total += natural;
+        found = true;
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(inner) = tab_box_natural_width(&current) {
+            total += inner;
+            found = true;
+        }
+        child = current.next_sibling();
+    }
+    found.then_some(total)
+}
+
 /// 标签工作区。
 pub struct TabSet {
     root: gtk::Box,
     view: adw::TabView,
     bar: adw::TabBar,
+    /// 标签条的滚动容器（固定宽度标签放不下时靠它横向滚动）。
+    scroller: gtk::ScrolledWindow,
     tabs: RefCell<Vec<Rc<TabHandle>>>,
     /// 固定 `Objects` 页的对象概览（#135：只跟随信息面板的快照）。
     objects: RefCell<Option<Rc<ObjectsPage>>>,
@@ -1306,7 +1343,11 @@ impl TabSet {
         let bar = adw::TabBar::new();
         bar.set_view(Some(&view));
         bar.set_autohide(false);
-        bar.set_hexpand(true);
+        // 标签宽度按档位固定（`metrics.toml` 的 `tab_width`），不再平均铺满整条：
+        // 标签条自己不横向扩张，宽度由 `sync_bar_width` 钉成「n 个标签的自然宽度」。
+        bar.set_hexpand(false);
+        // 左对齐：宽度由 `sync_bar_width` 钉住，标签条不再被剩余空间撑开。
+        bar.set_halign(gtk::Align::Start);
         bar.add_css_class("sqarvo-tab-bar");
 
         let plus = gtk::Button::from_icon_name("tab-new-symbolic");
@@ -1316,7 +1357,22 @@ impl TabSet {
 
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         strip.add_css_class("sqarvo-tab-strip");
-        strip.append(&bar);
+        // 标签条外面再套一层滚动容器：固定宽度的标签一旦多到放不下，标签条**滚动**而不是
+        // 把自己撑宽——直接给标签条设宽度请求会把窗口最小宽度按标签数顶大，960×640 的下限
+        // 就保不住。滚动条是叠加式的（见下），不占标签条高度；选中标签时由
+        // `reveal_selected_tab` 把它滚进视野。
+        let scroller = gtk::ScrolledWindow::new();
+        // 横向 `Automatic`：放得下时不用滚动条（标签条不够宽也不会被拉伸），放不下时出现
+        // 叠加式滚动条——`overlay-scrolling` 默认开启，滚动条画在内容之上、不占高度。
+        scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+        scroller.set_propagate_natural_width(false);
+        scroller.set_hexpand(true);
+        // 外层再用一个不扩张的盒子兜住标签条：滚动容器会把子控件撑到视口宽度，
+        // 标签条在盒子里左对齐、保持自己的宽度，剩下的空白留在右侧。
+        let bar_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        bar_slot.append(&bar);
+        scroller.set_child(Some(&bar_slot));
+        strip.append(&scroller);
         strip.append(&plus);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
@@ -1328,6 +1384,7 @@ impl TabSet {
             root,
             view,
             bar,
+            scroller,
             tabs: RefCell::new(Vec::new()),
             objects: RefCell::new(None),
             context,
@@ -1366,6 +1423,8 @@ impl TabSet {
                     if !set.switching.get() {
                         set.refresh_current();
                     }
+                    // 宽度固定后标签可能超出可见区域：选中哪一个就把它滚进视野。
+                    set.reveal_selected_tab_later();
                 }
             });
         }
@@ -1385,6 +1444,17 @@ impl TabSet {
                 .connect_page_detached(move |_view, page, _position| {
                     if let Some(set) = weak.upgrade() {
                         set.on_page_detached(page);
+                        set.sync_bar_width_later();
+                    }
+                });
+        }
+        {
+            // 标签数变了就重钉一次标签条宽度（宽度 = n 个标签的自然宽度）。
+            let weak = Rc::downgrade(&set);
+            set.view
+                .connect_page_attached(move |_view, _page, _position| {
+                    if let Some(set) = weak.upgrade() {
+                        set.sync_bar_width_later();
                     }
                 });
         }
@@ -1396,6 +1466,7 @@ impl TabSet {
                 let weak = weak.clone();
                 glib::timeout_add_local_once(Duration::from_millis(600), move || {
                     if let Some(set) = weak.upgrade() {
+                        set.sync_bar_width();
                         set.log_tab_widths();
                     }
                 });
@@ -1420,6 +1491,78 @@ impl TabSet {
         }
         set.refresh_current();
         set
+    }
+
+    /// 把标签条（`AdwTabBar`）的宽度钉成「内部标签盒的自然宽度」。
+    ///
+    /// 为什么非要动这一层：`AdwTabBox` 把分到的宽度按标签数**等分**（`expand_tabs` 关闭
+    /// 时还有 220px 的上限），CSS 的 `min-width` / `max-width` 只能决定标签的**测量**
+    /// 宽度，决定不了它最终**拿到**多少——实测同样 3 个标签：1600 宽的窗口里每个分到
+    /// 215，1200 宽里分到 196，就是用户说的「伸缩宽度」。
+    /// 让标签条自身的宽度正好等于「n 个标签的自然宽度」后，等分的结果恒等于规范口径
+    /// （`metrics.toml` 的 `tab_width`）；放不下时外层滚动容器接管溢出，标签的宽度不变。
+    fn sync_bar_width(&self) {
+        // 标签条内侧的留白（CSS `.sqarvo-tab-bar { padding: 0 <gap_xxs>px }`）。
+        let padding = 2 * gap(Gap::Xxs);
+        let content = tab_box_natural_width(self.bar.upcast_ref());
+        match content {
+            Some(width) if width > 0 => self.bar.set_size_request(width + padding, -1),
+            // 还没有标签盒（窗口尚未建完）：清掉请求，别留一个 0 宽度的钉子。
+            _ => self.bar.set_size_request(-1, -1),
+        }
+    }
+
+    /// 选中变化后把当前标签滚进标签条的可见区域（下一次空闲，等布局落定）。
+    fn reveal_selected_tab_later(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(set) = weak.upgrade() {
+                set.reveal_selected_tab();
+            }
+        });
+    }
+
+    /// 把当前选中的标签滚进可视区域。
+    ///
+    /// 固定宽度之后标签可能超出标签条：`AdwTabBar` 自己的等分逻辑不再接管溢出，
+    /// 所以由外层滚动容器负责——选中谁就把它推进视野，别出现「切过去了但看不见」。
+    fn reveal_selected_tab(&self) {
+        let Some(page) = self.view.selected_page() else {
+            return;
+        };
+        let position = self.view.page_position(&page) as usize;
+        let mut widgets = Vec::new();
+        collect_tab_widgets(self.bar.upcast_ref(), &mut widgets);
+        let Some(tab) = widgets.get(position) else {
+            return;
+        };
+        let Some(bounds) = tab.compute_bounds(&self.bar.clone().upcast::<gtk::Widget>()) else {
+            return;
+        };
+        let adjustment = self.scroller.hadjustment();
+        let visible = adjustment.page_size();
+        let left = adjustment.value();
+        let tab_left = f64::from(bounds.x());
+        let tab_right = tab_left + f64::from(bounds.width());
+        if tab_left < left {
+            adjustment.set_value(tab_left);
+        } else if visible > 0.0 && tab_right > left + visible {
+            adjustment.set_value(tab_right - visible);
+        }
+    }
+
+    /// 标签数变化后在下一次空闲重钉标签条宽度（新建的标签此时还没有建好控件）。
+    fn sync_bar_width_later(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        // 新标签的 `AdwTab` 控件在一次布局之后才量得到真实宽度：等到下一轮空闲还不够
+        // （实测 idle 里量到的自然宽度会少一个标签），所以给它一小段时间。
+        glib::timeout_add_local_once(Duration::from_millis(150), move || {
+            if let Some(set) = weak.upgrade() {
+                set.sync_bar_width();
+                // 标签条变宽/变窄之后，当前标签的可见性要重新算一次。
+                set.reveal_selected_tab();
+            }
+        });
     }
 
     /// 把标签条里每个 tab 的实际宽度写进日志（钉住页 84px 的实测证据）。
@@ -2879,6 +3022,8 @@ impl TabSet {
         if pages > 0 {
             eprintln!("[tier] 已重设 {pages} 个表数据页的列宽 / 行高");
         }
+        // 标签宽度是档位度量：换档后重钉标签条（CSS 已换成新档，自然宽度随之改变）。
+        self.sync_bar_width();
     }
 
     /// 当前标签（或指定标签）的数据页，供 QA 与窗口动作使用。
@@ -3547,6 +3692,10 @@ impl TabSet {
                     Err(format!("标签数期望 {expected}，实际 {actual}"))
                 }
             }
+            QaStep::TabWidths => {
+                self.log_tab_widths();
+                Ok("已把标签实际宽度写进日志".to_owned())
+            }
             QaStep::ExpectTabTitle { tab, expected } => {
                 let handle = self
                     .by_index(*tab)
@@ -3904,6 +4053,8 @@ pub enum QaStep {
     Quit,
     /// 断言标签总数。
     ExpectTabs(usize),
+    /// `tab-widths`：把标签条里每个 tab 的实际宽度写进日志（版式取证，不断言）。
+    TabWidths,
     /// 断言最近一次拒绝文案包含该子串。
     ExpectLimit(String),
     /// 等待若干毫秒。
@@ -4385,6 +4536,7 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     .parse::<usize>()
                     .map_err(|_| format!("第 {} 行的数值不合法", number + 1))?,
             ),
+            "tab-widths" => QaStep::TabWidths,
             "expect-tab-title" => {
                 let tab = parse_index(&parts, 1, number)?;
                 let expected = parts
@@ -4683,6 +4835,7 @@ sessions 打开 3 个表标签后
 close 1 discard
 sessions 关闭 1 个后
 expect-tabs 3
+tab-widths
 begin 1
 edit 1 0 name changed
 apply 1
@@ -4692,7 +4845,7 @@ rollback 1
 sleep 200
 ";
         let steps = parse_script(script).expect("脚本应当可解析");
-        assert_eq!(steps.len(), 14);
+        assert_eq!(steps.len(), 15);
         assert_eq!(steps[0], QaStep::OpenTable("items".to_owned()));
         assert_eq!(steps[3], QaStep::Sessions("打开 3 个表标签后".to_owned()));
         assert_eq!(
@@ -4703,6 +4856,9 @@ sleep 200
             }
         );
         assert!(steps.iter().any(|step| step == &QaStep::ExpectTabs(3)));
+        // 版式取证步骤：只写日志不断言（标签宽度是几何事实，不是脚本能许诺的值）。
+        assert!(steps.iter().any(|step| step == &QaStep::TabWidths));
+        assert!(!QaStep::TabWidths.is_assertion());
         assert!(
             steps
                 .iter()
