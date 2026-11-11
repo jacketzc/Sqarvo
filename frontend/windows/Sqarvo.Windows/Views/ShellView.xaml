@@ -172,6 +172,7 @@
                     Grid.Column="2"
                     Orientation="Horizontal"
                     VerticalAlignment="Center"
+                    Visibility="Collapsed"
                     Spacing="{StaticResource Size.GridPaddingEnd}">
                     <ToggleButton
                         x:Name="ButtonTables"
