@@ -301,9 +301,29 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>把矩形喂给 <c>AppWindow</c>（物理像素），并记成还原边界。</summary>
+    /// <remarks>
+    /// 拒绝退化矩形，并把 WinRT 的 <c>ArgumentException</c> 挡在这里：
+    /// <c>MoveAndResize</c> 收到 0 或负尺寸会抛「参数错误」，而它常被事件回调（<c>AppWindow.Changed</c>）
+    /// 间接调用——那里没有 try/catch，异常会直接把进程带走（表现就是 0xc000027b 秒退）。
+    /// </remarks>
     private void ApplyGeometry(RectInt32 rect)
     {
-        AppWindow.MoveAndResize(rect);
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            ConsoleBridge.WriteDiagnostic($"[layout] 拒绝应用非法几何 {rect.Width}×{rect.Height}@{rect.X},{rect.Y}");
+            return;
+        }
+
+        try
+        {
+            AppWindow.MoveAndResize(rect);
+        }
+        catch (ArgumentException error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[layout] 应用几何被拒（{rect.Width}×{rect.Height}@{rect.X},{rect.Y}）：{error.Message}");
+            CrashLog.Write("geometry", error);
+            return;
+        }
 
         if (!IsMaximized)
         {
@@ -378,6 +398,16 @@ public sealed partial class MainWindow : Window
         _appliedMinPhysicalHeight = physicalHeight;
     }
 
+    /// <summary>
+    /// 把记住的几何换算成可用的窗口矩形；落在任何显示器之外或读不到显示器信息时一律放弃。
+    /// </summary>
+    /// <remarks>
+    /// WinRT 的 <c>IReadOnlyList&lt;DisplayArea&gt;</c> 在部分会话里连 <c>GetEnumerator()</c> 都会抛
+    /// <c>InvalidCastException: ClassFactory 无法供应请求的类</c>，所以**枚举整段**都要兜住，
+    /// 而不是只 try 住 <c>FindAll()</c>：上一版正是因为异常发生在 <c>foreach</c> 里，
+    /// Relayout 半途炸掉，随后在 <c>ApplyWindowGeometry</c> 里连锁崩成 0xc000027b。
+    /// 几何记忆只是便利功能，读不到就当「没有记忆」，绝不能让布局失败。
+    /// </remarks>
     private bool TryRestoreSavedGeometry(double scale, out RectInt32 rect)
     {
         rect = default;
@@ -390,47 +420,47 @@ public sealed partial class MainWindow : Window
         var width = _state.WindowWidth!.Value;
         var height = _state.WindowHeight!.Value;
 
-        // DisplayArea.FindAll() 在某些会话里会抛 InvalidCastException（ClassFactory 无法供应请求的类）；
-        // 几何记忆是便利功能，读不到就当「没有记忆」，绝不能让 Relayout 整个失败。
-        IReadOnlyList<DisplayArea> areas;
         try
         {
-            areas = DisplayArea.FindAll();
+            var areas = DisplayArea.FindAll();
+
+            // 索引用 Count/index 而不是 foreach：GetEnumerator() 本身就是要兜住的那一步。
+            for (var index = 0; index < areas.Count; index++)
+            {
+                var work = areas[index].WorkArea;
+                var insideX = x >= work.X - GeometryTolerance && x <= work.X + work.Width - GeometryTolerance;
+                var insideY = y >= work.Y - GeometryTolerance && y <= work.Y + work.Height - GeometryTolerance;
+                if (!insideX || !insideY)
+                {
+                    continue;
+                }
+
+                // 记忆尺寸也要过一遍窗口气的规则：旧档位 / 旧显示器上存的尺寸可能比当前工作区还大。
+                var areaWidthDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Width, scale));
+                var areaHeightDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Height, scale));
+                var (minWidth, minHeight) = WindowSizing.MinimumWindow(Metrics.Tier, areaWidthDips, areaHeightDips);
+                var clampedWidth = Math.Clamp(width, minWidth, Math.Max(minWidth, areaWidthDips - WindowSizing.WidthMargin));
+                var clampedHeight = Math.Clamp(height, minHeight, Math.Max(minHeight, areaHeightDips - WindowSizing.HeightMargin));
+
+                if (clampedWidth != width || clampedHeight != height)
+                {
+                    ConsoleBridge.WriteDiagnostic($"[layout] 记忆尺寸 {width}×{height} 收到工作区允许的 {clampedWidth}×{clampedHeight}");
+                }
+
+                rect = new RectInt32(
+                    x,
+                    y,
+                    WindowSizing.DipsToPhysical(clampedWidth, scale),
+                    WindowSizing.DipsToPhysical(clampedHeight, scale));
+                return true;
+            }
         }
         catch (Exception error)
         {
-            ConsoleBridge.WriteDiagnostic($"[layout] 枚举显示器失败（{error.GetType().Name}），丢弃几何记忆");
+            ConsoleBridge.WriteDiagnostic($"[layout] 读取显示器信息失败（{error.GetType().Name}），丢弃几何记忆");
+            CrashLog.Write("display", error);
+            rect = default;
             return false;
-        }
-
-        foreach (var area in areas)
-        {
-            var work = area.WorkArea;
-            var insideX = x >= work.X - GeometryTolerance && x <= work.X + work.Width - GeometryTolerance;
-            var insideY = y >= work.Y - GeometryTolerance && y <= work.Y + work.Height - GeometryTolerance;
-            if (!insideX || !insideY)
-            {
-                continue;
-            }
-
-            // 记忆尺寸也要过一遍窗口气的规则：旧档位 / 旧显示器上存的尺寸可能比当前工作区还大。
-            var areaWidthDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Width, scale));
-            var areaHeightDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Height, scale));
-            var (minWidth, minHeight) = WindowSizing.MinimumWindow(Metrics.Tier, areaWidthDips, areaHeightDips);
-            var clampedWidth = Math.Clamp(width, minWidth, Math.Max(minWidth, areaWidthDips - WindowSizing.WidthMargin));
-            var clampedHeight = Math.Clamp(height, minHeight, Math.Max(minHeight, areaHeightDips - WindowSizing.HeightMargin));
-
-            if (clampedWidth != width || clampedHeight != height)
-            {
-                ConsoleBridge.WriteDiagnostic($"[layout] 记忆尺寸 {width}×{height} 收到工作区允许的 {clampedWidth}×{clampedHeight}");
-            }
-
-            rect = new RectInt32(
-                x,
-                y,
-                WindowSizing.DipsToPhysical(clampedWidth, scale),
-                WindowSizing.DipsToPhysical(clampedHeight, scale));
-            return true;
         }
 
         ConsoleBridge.WriteDiagnostic($"[layout] 保存的几何 ({x},{y}) 已不在任何显示器工作区内，丢弃并改用分档推荐");
