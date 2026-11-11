@@ -354,10 +354,13 @@ public sealed partial class ShellView
             FontFamily = MonoFont(),
             FontSize = Metrics.FontDataCell,
             IsSpellCheckEnabled = false,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             PlaceholderText = "输入 SQL…（Ctrl+Enter 执行；选中一段则只执行选中部分）",
         };
+
+        // WinUI 3 没有 TextBox.VerticalScrollBarVisibility（那是 WPF）：滚动条挂在 ScrollViewer 的
+        // 附加属性上，XAML 里写 ScrollViewer.VerticalScrollBarVisibility，代码里就是 Set*。
+        ScrollViewer.SetVerticalScrollBarVisibility(tab.Editor, ScrollBarVisibility.Auto);
+        ScrollViewer.SetHorizontalScrollBarVisibility(tab.Editor, ScrollBarVisibility.Auto);
         AutomationProperties.SetName(tab.Editor, "SQL 编辑器");
         tab.Editor.TextChanged += (_, _) => OnQueryEditorChanged(captured);
         tab.Editor.PreviewKeyDown += (_, args) => OnQueryEditorKeyDown(captured, args);
