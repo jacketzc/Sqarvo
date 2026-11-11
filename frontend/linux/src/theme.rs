@@ -59,6 +59,10 @@ struct Tones {
     overlay: &'static str,
     /// 状态栏前景（11px 小字与不可用按钮共用同一个灰度）。
     status_fg: &'static str,
+    /// 标签条 hover 底（`@window_fg_color` 的透明度变体，中性灰）。
+    tab_hover: &'static str,
+    /// 标签条当前标签底（同上，比 hover 实一档）。
+    tab_selected: &'static str,
 }
 
 /// 三档品牌色板的一份完整取值（底色 + 与之配对的前景 + 两套描边强度）。
@@ -94,12 +98,16 @@ const LIGHT_PALETTE: Palette = Palette {
         frame: "0.30",
         overlay: "0.20",
         status_fg: "0.82",
+        tab_hover: "0.06",
+        tab_selected: "0.12",
     },
     high: Tones {
         separator: "0.45",
         frame: "0.72",
         overlay: "0.55",
         status_fg: "0.85",
+        tab_hover: "0.12",
+        tab_selected: "0.24",
     },
 };
 
@@ -126,12 +134,18 @@ const DARK_PALETTE: Palette = Palette {
         // 11px 小字要求 4.5:1；55% 的 #9c9c9c 只有 5.09:1（抗锯齿后更淡），62% 的
         // #aaaaaa 到 6.01:1。
         status_fg: "0.62",
+        // 暗底上同样的百分比要更实一档才看得出：8% 是 hover 的一层薄膜，
+        // 18% 让当前标签与非选中标签拉开（实测 #525252 vs 标签条底色 #2c2c2c）。
+        tab_hover: "0.08",
+        tab_selected: "0.18",
     },
     high: Tones {
         separator: "0.45",
         frame: "0.72",
         overlay: "0.55",
         status_fg: "0.85",
+        tab_hover: "0.14",
+        tab_selected: "0.30",
     },
 };
 
@@ -500,35 +514,27 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         .sqarvo-tab-strip tabbar .box {{
             box-shadow: none;
         }}
-        /* 标签宽度固定（v0.2.4）：`AdwTabBar` 默认按标签数平均铺满整条，2 个标签就各占一半，
-           5 个标签就挤成一条细带——同一个标签在不同时刻宽度都不一样。
-           这里把普通标签的宽度钉在档位度量 `tab_width`（180 / 225 / 270，见 metrics.toml）。
-           注意这两条只决定标签的**测量**宽度：`AdwTabBox` 是按分到的宽度等分的，所以
-           `tab_width` 真正落地还要靠 `TabSet::sync_bar_width` 把标签条自身的宽度钉住；
-           放不下时由标签条外层的滚动容器接管，不压缩标签。
-           长标题由 `AdwTab` 自己截断（1.9 是 `AdwFadingLabel` 两端渐隐），这里不动字号。 */
         .sqarvo-tab-bar tab {{
             min-height: {target}px;
-            min-width: {tab_width}px;
-            max-width: {tab_width}px;
             padding: 0 {gap_md}px;
             font-size: {ui}px;
         }}
-        /* 标签条：hover = 浅档淡填充；当前标签 = 中档实底（「现在看的是哪一页」）。
-           Adwaita 的 `tab:selected` 是 currentColor 10% 的中性灰，不换的话标签选中
-           和两张表格的选中态会是两种颜色。`tab:selected:hover` 也要写，
-           否则 hover 时退回主题的 13% 灰。 */
+        /* 标签条（v0.2.5）：选中 / hover 都是**中性灰**，不再用品牌紫。
+           标签回答的是「现在看的是哪一页」这种位置问题，不是「点这个」这种强调动作；
+           紫底会和工具条的主操作按钮、表格行选中抢同一层视觉。灰底仍由前景色透明度
+           派生（`@window_fg_color` + `Tones::tab_*`），深浅色与高对比各一套强度，
+           文字色不单独指定、跟随主题正文，对比度不用另算。
+           `tab:selected:hover` 也要写，否则 hover 时退回主题自己的底色。 */
         .sqarvo-tab-bar tab:hover {{
-            background-color: alpha(@sqarvo_brand_soft, 0.55);
+            background-color: alpha(@window_fg_color, {tab_hover});
         }}
         .sqarvo-tab-bar tab:selected,
         .sqarvo-tab-bar tab:selected:hover,
         .sqarvo-tab-bar tab:selected:active {{
-            background-color: @sqarvo_brand_mid;
-            color: @sqarvo_brand_on_mid;
+            background-color: alpha(@window_fg_color, {tab_selected});
         }}
         .sqarvo-tab-bar tab:selected indicator {{
-            background: @sqarvo_brand_on_mid;
+            background: @window_fg_color;
         }}
         .sqarvo-tab-strip button {{ min-height: {target}px; min-width: {target}px; }}
         /* 固定 `Objects` 页（v0.2.3.2）：钉住的页永远排在最前，宽度按规范口径 84px。
@@ -768,6 +774,8 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         deep = palette.deep,
         mid = palette.mid,
         soft = palette.soft,
+        tab_hover = tones.tab_hover,
+        tab_selected = tones.tab_selected,
         on_deep = palette.on_deep,
         on_mid = palette.on_mid,
         on_soft = palette.on_soft,
@@ -791,7 +799,6 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         data_row = m.row_height_data,
         target = m.min_target,
         tab_strip = m.tab_strip_height,
-        tab_width = m.tab_width,
         icon_button_class = crate::icons::BUTTON_CLASS,
         icon_button_width = m.icon_button_width,
         icon_button_height = m.icon_button_height,
@@ -1151,11 +1158,11 @@ mod tests {
     #[test]
     fn stylesheet_tracks_the_tier_metrics() {
         // 三档的样式表必须真的不同，且数字来自 `metrics.toml`：行高 24/30/36、
-        // 数据行 32/40/48、界面字号 12/15/18、标签条 24/30/36、标签宽 180/225/270。
-        for (tier, tree_row, data_row, font_ui, tab_strip, tab_width) in [
-            (Tier::Compact, 24, 32, 12, 24, 180),
-            (Tier::Comfortable, 30, 40, 15, 30, 225),
-            (Tier::Large, 36, 48, 18, 36, 270),
+        // 数据行 32/40/48、界面字号 12/15/18、标签条 24/30/36。
+        for (tier, tree_row, data_row, font_ui, tab_strip) in [
+            (Tier::Compact, 24, 32, 12, 24),
+            (Tier::Comfortable, 30, 40, 15, 30),
+            (Tier::Large, 36, 48, 18, 36),
         ] {
             let css = stylesheet_for(false, false, tier);
             assert!(
@@ -1184,13 +1191,6 @@ mod tests {
             );
             // 1px 描边在任何档位都不变（§3.2）。
             assert!(css.contains("border-bottom: 1px solid @sqarvo_separator"));
-            // 普通标签的固定宽度（min 与 max 同一值，才不会被平均铺满）。
-            assert!(
-                css.contains(&format!("min-width: {tab_width}px;"))
-                    && css.contains(&format!("max-width: {tab_width}px;")),
-                "{}：标签宽度不是 {tab_width}px",
-                tier.id()
-            );
         }
     }
 

@@ -39,7 +39,6 @@ inspector_width = 280   # 280 × 1.0 = 280
 inspector_min = 240   # 240 × 1.0 = 240
 inspector_max = 520   # 520 × 1.0 = 520
 tab_strip_height = 24   # 24 × 1.0 = 24
-tab_width = 180   # 180 × 1.0 = 180
 table_actions_height = 46   # 46 × 1.0 = 46
 grid_padding_start = 18   # 18 × 1.0 = 18
 grid_padding_end = 3   # 3 × 1.0 = 3
@@ -86,7 +85,6 @@ inspector_width = 350   # 280 × 1.25 = 350
 inspector_min = 300   # 240 × 1.25 = 300
 inspector_max = 650   # 520 × 1.25 = 650
 tab_strip_height = 30   # 24 × 1.25 = 30
-tab_width = 225   # 180 × 1.25 = 225
 table_actions_height = 58   # 46 × 1.25 = 57.5
 grid_padding_start = 23   # 18 × 1.25 = 22.5
 grid_padding_end = 4   # 3 × 1.25 = 3.75
@@ -133,7 +131,6 @@ inspector_width = 420   # 280 × 1.5 = 420
 inspector_min = 360   # 240 × 1.5 = 360
 inspector_max = 780   # 520 × 1.5 = 780
 tab_strip_height = 36   # 24 × 1.5 = 36
-tab_width = 270   # 180 × 1.5 = 270
 table_actions_height = 69   # 46 × 1.5 = 69
 grid_padding_start = 27   # 18 × 1.5 = 27
 grid_padding_end = 5   # 3 × 1.5 = 4.5

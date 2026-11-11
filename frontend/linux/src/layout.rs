@@ -380,8 +380,6 @@ pub struct Metrics {
     pub inspector_min: i32,
     pub inspector_max: i32,
     pub tab_strip_height: i32,
-    /// 单个标签的固定宽度（钉住页不用它，见 `objects_min_width`）：180 / 225 / 270。
-    pub tab_width: i32,
     pub table_actions_height: i32,
     pub grid_padding_start: i32,
     pub grid_padding_end: i32,
@@ -587,7 +585,6 @@ struct RawTier {
     inspector_min: i32,
     inspector_max: i32,
     tab_strip_height: i32,
-    tab_width: i32,
     table_actions_height: i32,
     grid_padding_start: i32,
     grid_padding_end: i32,
@@ -664,7 +661,6 @@ impl Metrics {
             inspector_min: raw.inspector_min,
             inspector_max: raw.inspector_max,
             tab_strip_height: raw.tab_strip_height,
-            tab_width: raw.tab_width,
             table_actions_height: raw.table_actions_height,
             grid_padding_start: raw.grid_padding_start,
             grid_padding_end: raw.grid_padding_end,
@@ -983,8 +979,6 @@ mod tests {
         );
         assert_eq!((c.font_ui, m.font_ui, l.font_ui), (12, 15, 18));
         assert_eq!((c.icon_box, m.icon_box, l.icon_box), (16, 20, 24));
-        // 标签宽度：180 × 1.25 = 225、180 × 1.5 = 270（整数倍，不存在取整分歧）。
-        assert_eq!((c.tab_width, m.tab_width, l.tab_width), (180, 225, 270));
         assert_eq!(
             (c.sidebar_width, m.sidebar_width, l.sidebar_width),
             (237, 296, 356)
