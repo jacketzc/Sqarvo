@@ -423,6 +423,20 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行 2：空态摘要 | **只在没有表标签时** | 才让 `session` 一格出现：连接态显示连接名；启动态显示「未连接」+「驱动 N · 浏览会话 M」（合成一行 `未连接 · 驱动 N · 浏览会话 M`）。有表标签时一律不出现（表名 / 库在标签名里，事务在表格工具条里） | `src/shell.rs:1181-1207`、`src/startup.rs:240-245` |
 | 行 2 的排版约束 | — | 文案用**ASCII 冒号**（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线 | `src/shell.rs:909-917` |
 
+### 7.1 Windows 端（#169）实现状态
+
+Windows 客户端在 #169 只落地「连接面」；本文件其余小节的口径仍然适用，下面只记录**这一片已经
+落地、以及仍被禁用**的入口，避免把计划当成已实现。
+
+| 入口 | Windows 现状 | 依据 |
+|---|---|---|
+| 文件 → 新建连接…、工具条「连接」 | 可用性读**同一个**后端状态位（`BackendState.IsReady`）：握手未完成时禁用，tooltip 逐条说明原因（不是统一一句「尚未实现」） | `frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs`（`ApplyBackendState` / `WireMenu`） |
+| 新建连接对话框 | MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；「测试连接」就地展示延迟与服务端版本；失败给「标题 + 后端文案 + 稳定错误码」；密码只进 Windows 凭据管理器，落盘只有 `credential_ref` | `Views/ConnectionDialog.xaml(.cs)`、`Connections/ConnectionForm.cs` |
+| 文件 → 新建查询标签、表 → 导出 CSV、工具条「新建查询」与四个种类入口、树搜索框、状态栏行操作 | 禁用，tooltip 逐条说明具体缺口（元数据树 #170 / SQL 编辑器与查询面 #171 / 表数据编辑更后） | 同上（`WireMenu`） |
+| 对象树 | `My Connections` → 已保存连接（`connections.json`；徽标 未连接 / 连接中… / 已连接）；连接成功后挂一行「正在加载对象列表…」，库 / 表留待 #170 | `Views/ShellView.xaml.cs`（`RebuildTree`） |
+| 状态栏行 2 右格 | `已连接 · 驱动 N · 浏览会话 M`（`GetHealth` 的真实计数，5 秒一轮）；未就绪时 `未连接 · 驱动 0 · 浏览会话 0` | `Workspace/BackendState.cs`（`StatusLine`） |
+| 断开 | 健康探测失败即回「未连接」，原因与稳定错误码写在行 2 左格（可选中复制）；不自动重启后端 | `Workspace/BackendSession.cs`（`RefreshHealthAsync`） |
+
 ---
 
 ## 8. 全局规则
@@ -509,3 +523,4 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 960×640 下状态簇 | 动作行分配约 417px；两段常驻文字收成 24×24 的状态圆点后，整行需求 409 ≤ 分配 417、状态簇自身需求 38（`--qa-layout-audit` 实测，17 项 0 超限）；过程消息仍按省略号收缩，完整文案留在圆点 tooltip 与状态栏；删除 / 放弃的操作结果也只写在 tooltip 末段「最近一次操作：…」，可见过程消息为空（`--qa-expect-status-dot` + 「状态簇」需求 42px 实测，1400 宽） | §5.1 |
 | `Alt+N` 与拖拽重排 | 序号按 `AdwTabView::pages()` 实际顺序取，拖拽重排后的映射未实测 | §4 |
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
+| Windows 端连接面（#169） | 只有连接配置、测试连接、建立会话与对象树连接层；元数据树、查询面、表数据面尚未实现，入口保持禁用并在 tooltip 里逐项说明原因 | §7.1 |
