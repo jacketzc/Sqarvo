@@ -60,6 +60,7 @@ public sealed partial class MainWindow : Window
 
     public MainWindow(WindowState state, AppOptions options)
     {
+        CrashLog.Trace("main.ctor.begin");
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(options);
 
@@ -69,6 +70,7 @@ public sealed partial class MainWindow : Window
         try
         {
             InitializeComponent();
+        CrashLog.Trace("main.ctor.after-init");
 
             _shell = CreateShell();
             ShellHost.Content = _shell;
@@ -212,9 +214,12 @@ public sealed partial class MainWindow : Window
                 RebuildShell(resolved);
             }
 
+            CrashLog.Trace("main.relayout.min-size");
             ApplyMinimumSize(scale, workWidthDips, workHeightDips);
 
+            CrashLog.Trace("main.relayout.geometry.begin");
             var source = ApplyWindowGeometry(reason, scale, workPhysical, workWidthDips, workHeightDips);
+            CrashLog.Trace("main.relayout.geometry.done");
 
             UpdateChromeMeasurements();
 
@@ -720,6 +725,7 @@ public sealed partial class MainWindow : Window
             var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
             var workWidthDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Width, scale));
             var workHeightDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Height, scale));
+            CrashLog.Trace("main.relayout.min-size");
             ApplyMinimumSize(scale, workWidthDips, workHeightDips);
         }
         catch (Exception error)

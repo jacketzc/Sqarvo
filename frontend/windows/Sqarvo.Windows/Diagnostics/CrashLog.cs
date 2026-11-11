@@ -33,6 +33,32 @@ internal static class CrashLog
         }
     }
 
+    /// <summary>启动路径的检查点（仅在 <c>SQARVO_TRACE=1</c> 时写）。</summary>
+    /// <remarks>
+    /// 启动期崩溃在托管侧没有堆栈（stowed exception），只能靠「最后写下的检查点」定位到具体一步。
+    /// 这条通道默认关闭：正常运行时它只会给日志添噪。
+    /// </remarks>
+    internal static void Trace(string step)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("SQARVO_TRACE"), "1", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            lock (Gate)
+            {
+                var path = FilePath;
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.AppendAllText(path, $"[{DateTimeOffset.Now:O}] trace {step}{Environment.NewLine}");
+            }
+        }
+        catch
+        {
+        }
+    }
+
     internal static void Write(string origin, Exception? error)
     {
         if (error is null)

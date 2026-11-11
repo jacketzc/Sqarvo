@@ -98,11 +98,13 @@ public sealed partial class ShellView : UserControl
 
     public ShellView(WindowState state)
     {
+        CrashLog.Trace("shell.ctor.begin");
         ArgumentNullException.ThrowIfNull(state);
 
         _state = state;
 
         InitializeComponent();
+        CrashLog.Trace("shell.ctor.after-init");
 
         _store = App.Profiles;
 
@@ -116,7 +118,9 @@ public sealed partial class ShellView : UserControl
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
 
+        CrashLog.Trace("shell.ctor.before-state");
         ApplyBackendState();
+        CrashLog.Trace("shell.ctor.done");
     }
 
     /// <summary>当前工作区状态。</summary>
@@ -187,6 +191,7 @@ public sealed partial class ShellView : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        CrashLog.Trace("shell.loaded.begin");
         if (_loaded)
         {
             return;
@@ -201,7 +206,9 @@ public sealed partial class ShellView : UserControl
         }
 
         _ = LoadProfilesAsync();
+        CrashLog.Trace("shell.loaded.profiles");
         ApplyBackendState();
+        CrashLog.Trace("shell.loaded.done");
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -626,6 +633,7 @@ public sealed partial class ShellView : UserControl
 
     private void ApplyMetrics()
     {
+        CrashLog.Trace("shell.metrics.begin");
         // 菜单行高度 = 外壳高 − 系统标题栏基准 × 档位 → 24 / 30 / 36。
         // 基准由度量推出（compact 外壳 64 − 菜单行 24 = 40），这里没有尺寸字面量。
         MenuBand.Height = WindowSizing.MenuRowHeight(Metrics.Tier);

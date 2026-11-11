@@ -66,7 +66,9 @@ public partial class App : Application
 
     public App()
     {
+        CrashLog.Trace("app.ctor.begin");
         InitializeComponent();
+        CrashLog.Trace("app.ctor.after-init");
 
         // 未处理异常一律落盘：WinUI 的启动期崩溃在事件日志里只有出错模块，没有托管堆栈。
         UnhandledException += (_, eventArgs) => CrashLog.Write("unhandled", eventArgs.Exception);
@@ -94,8 +96,10 @@ public partial class App : Application
         }
 
         Metrics.SetTier(Metrics.ParseTier(_state.Tier));
+        CrashLog.Trace("app.ctor.metrics");
 
         ThemeService.Initialize(this, _state.ThemePreference);
+        CrashLog.Trace("app.ctor.theme");
     }
 
     /// <summary>
@@ -109,6 +113,7 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        CrashLog.Trace("app.launch.begin");
         if (_options.SelfTestWindow)
         {
             Exit();
@@ -130,18 +135,22 @@ public partial class App : Application
             ConnectionFactory = endpoint => BackendConnection.Create(endpoint, DatabaseChannelOptions),
         }));
 
+        CrashLog.Trace("app.launch.window.begin");
         var window = new MainWindow(_state, _options);
+        CrashLog.Trace("app.launch.window.done");
         _window = window;
 
         // 退出前停后端：取消这次关闭，停机完成后再真正关（不阻塞 UI 线程）。
         window.AppWindow.Closing += OnWindowClosing;
 
         window.Activate();
+        CrashLog.Trace("app.launch.activated");
 
         ThemeService.ApplyToWindow(window);
 
         // 先试一次：XamlRoot 可能已经可用。第一次 Relayout 会改窗口尺寸，允许一帧跳动。
         window.Relayout(preferSavedGeometry: true);
+        CrashLog.Trace("app.launch.relayout");
 
         // 诊断开关只证明界面结构：不启动后端进程，也不碰凭据库。--no-backend 是同一类隔离手段，
         // 区别是它把窗口留在前台（诊断开关打完就退，没法观察运行期崩溃）。
