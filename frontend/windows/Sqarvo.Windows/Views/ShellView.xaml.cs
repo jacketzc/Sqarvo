@@ -200,7 +200,8 @@ public sealed partial class ShellView : UserControl
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        _healthTimer.IsEnabled = false;
+        // WinUI 3 的 DispatcherTimer.IsEnabled 只读，启停只能走 Start/Stop。
+        _healthTimer.Stop();
 
         if (_session is not null)
         {
@@ -281,7 +282,14 @@ public sealed partial class ShellView : UserControl
                     : WorkspaceState.Disconnected);
 
         // 只有就绪时才轮询健康：断连后停在 Disconnected 并保留原因，不静默重启后端。
-        _healthTimer.IsEnabled = ready;
+        if (ready)
+        {
+            _healthTimer.Start();
+        }
+        else
+        {
+            _healthTimer.Stop();
+        }
 
         UpdateConnectedNodes();
     }
