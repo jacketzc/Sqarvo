@@ -34,7 +34,8 @@ public sealed class AppOptions
         bool reportShell,
         bool selfTestWindow,
         string? qaTier,
-        string? qaConnect)
+        string? qaConnect,
+        bool noBackend)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -43,6 +44,7 @@ public sealed class AppOptions
         SelfTestWindow = selfTestWindow;
         QaTier = qaTier;
         QaConnect = qaConnect;
+        NoBackend = noBackend;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -71,6 +73,12 @@ public sealed class AppOptions
     /// </remarks>
     public string? QaConnect { get; }
 
+    /// <summary>
+    /// QA 专用：<c>--no-backend</c>。只开窗、不启动后端，用来隔离「界面自身」与「后端就绪后的接线」
+    /// 哪一侧导致崩溃（远程构建机上一个回合只能验一件事）。
+    /// </summary>
+    public bool NoBackend { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -98,6 +106,7 @@ public sealed class AppOptions
             reportShell: flags.Contains("report-shell"),
             selfTestWindow: flags.Contains("self-test-window"),
             qaConnect: Value(commandLine, "--qa-connect="),
+            noBackend: flags.Contains("no-backend"),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -130,5 +139,6 @@ public sealed class AppOptions
         "--self-test-window",
         "--qa-tier=<compact|comfortable|large>",
         "--qa-connect=<连接名称|@first>（配合环境变量 SQARVO_QA_PASSWORD）",
+        "--no-backend 只开窗、不启动后端（隔离崩溃源）",
     };
 }

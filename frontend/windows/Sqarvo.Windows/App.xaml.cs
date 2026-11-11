@@ -79,7 +79,7 @@ public partial class App : Application
         };
 
         _options = AppOptions.Parse(Environment.GetCommandLineArgs());
-        if (_options.HasReports || _options.QaConnect is { Length: > 0 })
+        if (_options.HasReports || _options.QaConnect is { Length: > 0 } || _options.NoBackend)
         {
             ConsoleBridge.Ensure();
         }
@@ -143,8 +143,9 @@ public partial class App : Application
         // 先试一次：XamlRoot 可能已经可用。第一次 Relayout 会改窗口尺寸，允许一帧跳动。
         window.Relayout(preferSavedGeometry: true);
 
-        // 诊断开关只证明界面结构：不启动后端进程，也不碰凭据库。
-        if (!_options.HasReports)
+        // 诊断开关只证明界面结构：不启动后端进程，也不碰凭据库。--no-backend 是同一类隔离手段，
+        // 区别是它把窗口留在前台（诊断开关打完就退，没法观察运行期崩溃）。
+        if (!_options.HasReports && !_options.NoBackend)
         {
             // 不 await：窗口先显示，握手进度通过 BackendState 写进状态栏。
             // StartAsync 不抛异常（失败落成 BackendReadiness.Failed）。
