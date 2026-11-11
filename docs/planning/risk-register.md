@@ -11,7 +11,7 @@
 | R-04 | 取消语义不可靠（阻塞驱动） | 高 | 高 | 阻塞调用走 `spawn_blocking`；驱动提供跨线程取消句柄；取消幂等测试 | 取消后连接不可用；取消耗时随查询增长 | 驱动 |
 | R-05 | 大结果集导致内存膨胀或 OOM | 中 | 高 | 批次上限、结果集内存上限、背压、截断；禁止一次性收集全部行 | 单查询内存随行数线性增长 | 后端 |
 | R-06 | 凭据存储三平台差异阻塞开发 | 高 | 中 | 先实现 Linux Secret Service + 内存测试替身；接口先行；缺失时明确报错 | 驱动测试需要真实密码；出现明文配置兜底 | 后端 / 平台 |
-| R-07 | Windows 传输（Named Pipe/ACL）长期未验证 | 高 | 中 | 当前回环 TCP + token；在文档与 SECURITY.md 标注缺口 | Windows 首次构建失败或 ACL 不生效 | 平台 |
+| R-07 | Windows 传输（Named Pipe/ACL）长期未验证 | 高 | 中 | 当前回环 TCP + token；在文档与 SECURITY.md 标注缺口。进程生命周期已按 Windows 语义适配（`crates/parent-watch`：`OpenProcess` + 创建时间校验防 pid 复用 + `WaitForSingleObject`，2026-11-11），端点路径改由显式 `--endpoint-file` 指定（`SQARVO_ENDPOINT_FILE` 降为 Unix 兼容口径）；`TerminateProcess` 不执行清理、端点文件由前端兜底删除，见 ADR 0002 附记。**仍待 Windows 实机验证**：目前只有 `cargo check --target x86_64-pc-windows-msvc` 类型检查，Job Object 与显式 DACL 都未实现 | Windows 首次构建失败或 ACL 不生效；父进程消失后后端不退出 | 平台 |
 | R-08 | 跨平台构建与打包不可控 | 高 | 中 | CI 先覆盖 Linux；Windows/macOS 每次发布至少一次真实构建并记录 | 发布前才发现 SDK/包版本不匹配 | 平台 |
 | R-09 | 范围蔓延（ER 图、同步、协作） | 高 | 中 | 需求分级 P0/P1/P2；版本退出标准明确「不包含」；新需求走评审 | 里程碑内出现未登记功能开发 | 产品 |
 | R-10 | 多 Agent 规划漂移 | 中 | 中 | 三级职责（产品/项目管理/开发）；规划文档单一来源；Issue 关联里程碑 | 仓库文档与 Issue 状态不一致 | 项目管理 |

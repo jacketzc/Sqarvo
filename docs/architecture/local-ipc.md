@@ -55,6 +55,12 @@ Named Pipe + ACL 是目标方案，但需要与 gRPC 传输层组合验证；在
 写入策略：临时文件 + `sync_all` + 原子 rename，避免读到半截 JSON。
 读取方必须校验 `protocol_version` 主版本，并在 `pid` 已不存在时视为残留。
 
+路径来源按优先级：显式 `--endpoint-file <PATH>`、环境变量 `SQARVO_ENDPOINT_FILE`
+（Unix 兼容口径，Linux 前端历史上依赖它 + `XDG_RUNTIME_DIR`）、默认运行时目录。
+Windows 没有 `XDG_RUNTIME_DIR`，前端必须显式传 `--endpoint-file`，否则「后端写哪儿」和
+「前端读哪儿」只能靠两套约定恰好一致。目录由后端创建并收紧到 0700（Unix），Windows 上
+依赖用户目录的 ACL 继承（显式 DACL 未实现）。
+
 ## 威胁模型
 
 | 威胁 | 缓解 |

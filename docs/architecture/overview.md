@@ -70,8 +70,10 @@ trailing metadata `sqarvo-error-code`；前端据此分支处理，而不是解�
 - 后端收到 SIGINT/SIGTERM 后停止接受连接、关闭会话、删除 socket 与端点文件；
 - 前端收到 `SIGTERM` / `SIGINT` / `SIGHUP` 时走**与关窗口相同**的清理路径
   （通知后端优雅退出 → 超时再 `SIGKILL` → 删除端点文件），不会留下孤儿后端（#146）；
-- 前端启动后端时追加内部参数 `--parent-pid <前端 pid>`：后端据此设置
-  `PR_SET_PDEATHSIG` 并低频轮询父进程，前端被 `SIGKILL`（来不及清理）时后端自行退出；
+- 前端启动后端时追加内部参数 `--parent-pid <前端 pid>`：后端据此监视父进程
+  （Linux：`PR_SET_PDEATHSIG` + 500 ms `getppid()` 轮询；Windows：`OpenProcess` +
+  进程创建时间校验 + `WaitForSingleObject`，实现见 `backend/crates/parent-watch`，
+  语义见 ADR 0002 附记），前端被 `SIGKILL`（来不及清理）时后端自行退出；
   没有该参数的后端（手工启动、多前端共用）**不**监视父进程，因此不会被误杀；
 - 崩溃残留：启动时只清理「确认为 socket」的残留文件，绝不删除未知文件；
 - 前端断开后，后端仍需回收未释放的查询与会话（后续阶段实现租约）。

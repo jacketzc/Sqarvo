@@ -21,15 +21,15 @@ Windows 端（`frontend/windows/`，约 2470 行）只有「窗口层 + 六区�
 
 后端 `LocalListener` 在非 Unix 上自动走**回环 TCP + 随机端口 + 每进程 token**，前端通过端点
 描述文件发现端点。也就是说 Windows 不需要 Named Pipe 也能连通，差距集中在以下几处（明细见
-`03-backend-contract.md`）：父进程消失检测、pid 判活、SIGTERM 退出、端点文件 ACL、
-Windows Credential Manager。
+`03-backend-contract.md`）：父进程消失检测（后端已实现，待 Windows 实机验证）、pid 判活、
+SIGTERM 退出、端点文件 ACL、Windows Credential Manager。
 
 | Linux 机制 | 位置 | Windows 替换 |
 |---|---|---|
 | UDS 监听/连接 | `crates/rpc-server/src/transport/mod.rs` | 已支持：`127.0.0.1:0` TCP（客户端只实现 TCP 分支） |
 | 端点文件 `0600`/目录 `0700` | `local-store/src/endpoint.rs`、`paths.rs` | 显式 DACL：仅当前用户 SID 完全控制、断继承 |
-| `PR_SET_PDEATHSIG` | `apps/backend-service/src/parent.rs` | Job Object（`KILL_ON_JOB_CLOSE`）或 `OpenProcess`+`WaitForSingleObject` |
-| `getppid()` 轮询 | 同上（非 Unix 返回 `None`，被判 Alive） | `OpenProcess(SYNCHRONIZE)` + 进程创建时间校验 |
+| `PR_SET_PDEATHSIG` | `crates/parent-watch/src/unix.rs` | 已实现（`crates/parent-watch/src/windows.rs`）：`OpenProcess` + 创建时间校验 + `WaitForSingleObject`；Job Object（`KILL_ON_JOB_CLOSE`）归前端，见 ADR 0002 附记 |
+| `getppid()` 轮询 | 同上（每 500 ms 一次） | 已实现：Windows 不轮询，父进程句柄 signal 即退出（`--parent-pid` 未给出时不装任何监视） |
 | `/proc/<pid>` 判活 | `frontend/linux/src/backend/endpoint.rs` | `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess` |
 | `SIGTERM` → 5s → `SIGKILL` | `frontend/linux/src/backend/supervisor.rs` | 先 gRPC 优雅退出（若有）→ `TerminateProcess`；前端兜底删端点文件 |
 | Secret Service | `local-store/src/credentials/mod.rs` | Windows Credential Manager（`CredWrite/CredRead/CredDelete`，`CRED_TYPE_GENERIC`） |
