@@ -372,11 +372,6 @@
                                 x:Name="ObjectsTab"
                                 IsClosable="False"
                                 AutomationProperties.Name="Objects 页">
-                                <TabViewItem.IconSource>
-                                    <FontIconSource
-                                        Glyph="&#xF0E2;"
-                                        FontFamily="{ThemeResource SymbolThemeFontFamily}" />
-                                </TabViewItem.IconSource>
 
                                 <Grid Background="{ThemeResource SqarvoSurfaceBrush}">
                                     <!--
