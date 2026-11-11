@@ -309,7 +309,7 @@ public sealed partial class ShellView : UserControl
                     : WorkspaceState.Disconnected);
 
         // 只有就绪时才轮询健康：断连后停在 Disconnected 并保留原因，不静默重启后端。
-        if (ready)
+        if (ready && !string.Equals(Environment.GetEnvironmentVariable("SQARVO_NO_HEALTH"), "1", StringComparison.Ordinal))
         {
             _healthTimer.Start();
         }
