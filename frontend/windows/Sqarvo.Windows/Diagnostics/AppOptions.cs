@@ -9,13 +9,14 @@ namespace Sqarvo.Windows.Diagnostics;
 /// </summary>
 public sealed class AppOptions
 {
-    private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool reportShell, bool selfTestWindow)
+    private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool reportShell, bool selfTestWindow, string? qaTier)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
         ReportMonitor = reportMonitor;
         ReportShell = reportShell;
         SelfTestWindow = selfTestWindow;
+        QaTier = qaTier;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -29,6 +30,9 @@ public sealed class AppOptions
 
     /// <summary>打印整棵控件树（UI Automation 的 ControlType + Name，缩进两格）。</summary>
     public bool ReportShell { get; }
+
+    /// <summary>QA 专用：启动时切到指定档位（<c>compact</c> / <c>comfortable</c> / <c>large</c>）。</summary>
+    public string? QaTier { get; }
 
     /// <summary>打印窗口尺寸算术的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
@@ -55,7 +59,12 @@ public sealed class AppOptions
             reportMetrics: flags.Contains("report-metrics"),
             reportMonitor: flags.Contains("report-monitor"),
             reportShell: flags.Contains("report-shell"),
-            selfTestWindow: flags.Contains("self-test-window"));
+            selfTestWindow: flags.Contains("self-test-window"),
+            qaTier: commandLine
+                .Skip(1)
+                .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
+                .Select(argument => argument.Substring("--qa-tier=".Length).Trim().ToLowerInvariant())
+                .FirstOrDefault());
     }
 
     /// <summary>已知开关清单（给文档用）。</summary>
@@ -66,5 +75,6 @@ public sealed class AppOptions
         "--report-monitor",
         "--report-shell",
         "--self-test-window",
+        "--qa-tier=<compact|comfortable|large>",
     };
 }

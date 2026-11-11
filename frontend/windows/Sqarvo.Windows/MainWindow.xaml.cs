@@ -174,7 +174,20 @@ public sealed partial class MainWindow : Window
         var width = WindowSizing.DipsToPhysical(_state.WindowWidth!.Value, scale);
         var height = WindowSizing.DipsToPhysical(_state.WindowHeight!.Value, scale);
 
-        foreach (var area in DisplayArea.FindAll())
+        // DisplayArea.FindAll() 在某些会话里会抛 InvalidCastException（ClassFactory 无法供应请求的类）；
+        // 几何记忆是便利功能，读不到就当「没有记忆」，绝不能让 Relayout 整个失败。
+        global::System.Collections.Generic.IReadOnlyList<DisplayArea> areas;
+        try
+        {
+            areas = DisplayArea.FindAll();
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[layout] 枚举显示器失败（{error.GetType().Name}），丢弃几何记忆");
+            return false;
+        }
+
+        foreach (var area in areas)
         {
             var work = area.WorkArea;
             var insideX = x >= work.X - GeometryTolerance && x <= work.X + work.Width - GeometryTolerance;
@@ -210,6 +223,24 @@ public sealed partial class MainWindow : Window
         _state.Tier = Metrics.TierId;
         WindowStateStore.Save(_state);
         Relayout(preferSavedGeometry: false);
+    }
+
+    /// <summary>
+    /// QA 专用：在运行时切一次档位并把来源标成 <c>QA</c>（<c>--qa-tier=&lt;id&gt;</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 为什么需要它：切档的真实入口是键盘快捷键，自动化里很难稳定注入；
+    /// 而「切档后窗口跟着改大小」这条必须能被重复复现。这个入口只做与快捷键完全相同的事
+    /// （<see cref="SwitchTier"/>），然后把来源标注改掉，不引入第二套逻辑。
+    /// </remarks>
+    public void SwitchTierForQa(DensityTier tier)
+    {
+        SwitchTier(tier);
+
+        if (LastLayout is { } layout)
+        {
+            LastLayout = layout with { Source = "QA" };
+        }
     }
 
     /// <summary>整棵内容树重建：新外壳实例 + 重写的尺寸资源 + 回放状态。</summary>
@@ -266,7 +297,9 @@ public sealed partial class MainWindow : Window
     }
 
     private void OnRootLoaded(object sender, RoutedEventArgs args)
-        => Relayout(preferSavedGeometry: true);
+    {
+        Relayout(preferSavedGeometry: true);
+    }
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {

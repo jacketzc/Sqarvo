@@ -59,6 +59,23 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 [metrics] tier=compact header=64 toolbar=44 status=48 minWindow=960x640 sidebar=237 inspector=280 rowTree=24 fontUi=12
 ```
 
+窗口层与外壳（#163 / #164）另有四个开关：
+
+```text
+--report-monitor          显示器 / 缩放 / 工作区（物理与 DIP）/ 最终窗口 / 档位 / 来源（分档|记忆|QA）
+--report-shell            UI Automation 枚举整棵控件树（ControlType + Name，缩进两格）
+--self-test-window        窗口尺寸算术的边界断言（纯函数，不建窗口；失败以非 0 退出）
+--qa-tier=<id>            QA 专用：启动后切到该密度档并把来源标成 QA，用来复现「切档后窗口跟着改大小」
+```
+
+实测（3840×2160@200%，逻辑工作区 1920×1032）：
+
+```text
+compact     → 窗口DIP=1400x826  物理=2800x1652
+comfortable → 窗口DIP=1750x984  物理=3500x1968
+large       → 窗口DIP=1888x984  物理=3776x1968   （宽被 W-32 封顶）
+```
+
 已知边界：`AccessibilitySettings.HighContrastChanged` 在未打包 WinUI 3 应用里订阅会抛
 `COMException`，高对比状态改由 `HKCU\Control Panel\Accessibility\HighContrast\Flags` 兜底读取；
 系统主题 / 强调色的跟随本身不受影响（那是 WinUI 与 `ThemeResource` 的职责）。
