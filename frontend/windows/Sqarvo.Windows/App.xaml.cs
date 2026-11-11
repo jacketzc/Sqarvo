@@ -71,6 +71,19 @@ public partial class App : Application
         CrashLog.Trace("app.ctor.after-init");
 
         // 未处理异常一律落盘：WinUI 的启动期崩溃在事件日志里只有出错模块，没有托管堆栈。
+        // FirstChance：stowed exception 在托管侧没有堆栈，只有「抛出那一刻」能拿到抛点与调用链。
+        // 只记录我们正在追的那一类（0x80040111 / LimitedAccessFeatures），否则日志会被噪音淹掉。
+        AppDomain.CurrentDomain.FirstChanceException += (_, eventArgs) =>
+        {
+            var error = eventArgs.Exception;
+            var hresult = error.HResult;
+            if (hresult == unchecked((int)0x80040111)
+                || (error.Message?.Contains("LimitedAccessFeatures", StringComparison.Ordinal) ?? false))
+            {
+                CrashLog.Write("firstchance", error);
+            }
+        };
+
         UnhandledException += (_, eventArgs) => CrashLog.Write("unhandled", eventArgs.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
             CrashLog.Write("domain", eventArgs.ExceptionObject as Exception);
