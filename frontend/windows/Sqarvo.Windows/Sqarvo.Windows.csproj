@@ -27,4 +27,28 @@
     <Protobuf Include="../../../proto/**/*.proto" ProtoRoot="../../../proto" GrpcServices="Client" />
   </ItemGroup>
 
+  <!--
+    布局度量真值：构建期从 docs/ui-specification/metrics.toml 生成 Metrics.g.cs（ADR 0026 决策 3）。
+    生成文件放 obj/ 下（不提交）；生成失败或三档不变量不成立都会让构建变红——
+    宁可构建失败，也不要三端静默漂移 1px。
+  -->
+  <PropertyGroup>
+    <MetricsTomlPath>$(MSBuildProjectDirectory)\..\..\..\docs\ui-specification\metrics.toml</MetricsTomlPath>
+    <MetricsGenerator>$(MSBuildProjectDirectory)\..\tools\gen-metrics.ps1</MetricsGenerator>
+    <MetricsGeneratedFile>$(MSBuildProjectDirectory)\obj\gen\Metrics.g.cs</MetricsGeneratedFile>
+  </PropertyGroup>
+
+  <Target Name="GenerateMetrics" BeforeTargets="BeforeCompile" Inputs="$(MetricsTomlPath);$(MetricsGenerator)" Outputs="$(MetricsGeneratedFile)">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MetricsGenerator)&quot; -TomlPath &quot;$(MetricsTomlPath)&quot; -OutPath &quot;$(MetricsGeneratedFile)&quot;" />
+  </Target>
+
+  <!--
+    生成文件在**求值期**就进 Compile 列表：XAML 编译器（MarkupCompilePass1）与 CoreCompile
+    都按求值期的 @(Compile) 工作，在目标里追加会让 XAML 编译器拿不到项目内类型
+    （WMC9999）。文件由上面的 GenerateMetrics 在编译前写好，obj/ 已被 .gitignore 覆盖。
+  -->
+  <ItemGroup>
+    <Compile Include="$(MetricsGeneratedFile)" />
+  </ItemGroup>
+
 </Project>

@@ -1,32 +1,113 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    #162 的落地页：只做「度量接入 + 主题三档」的自检面，不含六区域外壳（那是 #164）。
+
+    尺寸的写法有三条规矩，评审按这三条看：
+
+    1. 高度 / 字号一律 {StaticResource Size.*}，值来自 metrics.toml 的构建期生成
+       （Theming/MetricsResources.cs 写进 Application.Resources）。这里没有尺寸字面量，
+       也没有 #RRGGBB。
+    2. XAML 表达不了的尺寸（Padding 是 Thickness、CornerRadius 是结构体）在 code-behind
+       里从 Metrics 取，同样不写字面量——见 MainWindow.xaml.cs 的 ApplyMetrics()。
+    3. 颜色只用 ThemeResource（Tokens.xaml 的三套 ThemeDictionaries 别名到系统 token）。
+-->
 <Window
     x:Class="Sqarvo.Windows.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Sqarvo">
 
-    <Grid RowDefinitions="Auto,*" Padding="24">
-        <InfoBar
-            Grid.Row="0"
-            IsOpen="True"
-            IsClosable="False"
-            Severity="Warning"
-            Title="界面骨架"
-            Message="尚未连接后端，数据库功能未实现。请勿在此版本执行任何真实数据库操作。" />
+    <Grid Background="{ThemeResource SqarvoAppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
 
-        <StackPanel
+        <!-- 区域 01：窗口外壳条（系统标题栏之外的那一条，高度 = metrics.header_height） -->
+        <Border
+            x:Name="HeaderBand"
+            Grid.Row="0"
+            Background="{ThemeResource SqarvoSurfaceBrush}"
+            Height="{StaticResource Size.HeaderHeight}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel
+                    Grid.Column="0"
+                    Orientation="Horizontal"
+                    Spacing="{StaticResource Size.ToolbarPaddingH}"
+                    VerticalAlignment="Center">
+                    <TextBlock
+                        Text="Sqarvo"
+                        FontSize="{StaticResource Size.FontTitle}"
+                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                        VerticalAlignment="Center" />
+                    <TextBlock
+                        x:Name="TierText"
+                        FontSize="{StaticResource Size.FontStatus}"
+                        Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                        VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock
+                    x:Name="ThemeText"
+                    Grid.Column="1"
+                    FontSize="{StaticResource Size.FontStatus}"
+                    Foreground="{ThemeResource SqarvoAccentTextBrush}"
+                    VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <!-- 区域 02：主工具条（高度 = metrics.toolbar_height） -->
+        <Border
+            x:Name="ToolbarBand"
             Grid.Row="1"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Center"
-            Spacing="8">
+            Background="{ThemeResource SqarvoBandBrush}"
+            Height="{StaticResource Size.ToolbarHeight}">
             <TextBlock
-                Text="Sqarvo"
-                Style="{StaticResource TitleLargeTextBlockStyle}"
-                HorizontalAlignment="Center" />
+                Text="度量与主题自检 · 六区域外壳见 #164，后端接入见后续 Issue"
+                FontSize="{StaticResource Size.FontUi}"
+                Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                VerticalAlignment="Center" />
+        </Border>
+
+        <!-- 内容区：一页说明卡，证明度量与主题都已经接通 -->
+        <Border
+            x:Name="ContentCard"
+            Grid.Row="2"
+            BorderBrush="{ThemeResource SqarvoCardBorderBrush}"
+            Background="{ThemeResource SqarvoSurfaceBrush}">
+            <StackPanel x:Name="ContentStack" Spacing="{StaticResource Size.InspectorGap}">
+                <TextBlock
+                    Text="三档度量（来自 docs/ui-specification/metrics.toml）"
+                    FontSize="{StaticResource Size.FontTitle}"
+                    Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+                <TextBlock
+                    x:Name="MetricsSummaryText"
+                    FontSize="{StaticResource Size.FontUi}"
+                    Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                    TextWrapping="Wrap" />
+                <TextBlock
+                    Text="主题三档：跟随系统（含高对比）。运行中切换系统主题应立即生效，标题栏同步——标题栏不在 XAML 主题作用域内，由 ThemeService 单独处理。"
+                    FontSize="{StaticResource Size.FontPanel}"
+                    Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                    TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
+        <!-- 区域 05：状态栏（高度 = metrics.status_height） -->
+        <Grid
+            Grid.Row="3"
+            Height="{StaticResource Size.StatusHeight}"
+            Background="{ThemeResource SqarvoBandBrush}">
             <TextBlock
-                Text="原生数据库客户端 · 骨架版本"
-                HorizontalAlignment="Center"
-                Opacity="0.7" />
-        </StackPanel>
+                x:Name="StatusText"
+                FontSize="{StaticResource Size.FontStatus}"
+                Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                VerticalAlignment="Center" />
+        </Grid>
     </Grid>
 </Window>
