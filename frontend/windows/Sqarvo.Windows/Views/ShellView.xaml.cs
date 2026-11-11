@@ -771,10 +771,6 @@ public sealed partial class ShellView : UserControl
 
         // 种类入口只是「显示当前种类」的切换按钮：这里只保证同一时刻最多一个高亮，
         // 不保存「当前种类」（那是页面与对象树的渲染结果，等 #171 接线）。
-        ButtonTables.Checked += OnKindChecked;
-        ButtonViews.Checked += OnKindChecked;
-        ButtonFunctions.Checked += OnKindChecked;
-        ButtonQueries.Checked += OnKindChecked;
 
         ObjectTree.ItemInvoked += OnTreeItemInvoked;
         ObjectTree.SelectionChanged += OnTreeSelectionChanged;
@@ -795,21 +791,7 @@ public sealed partial class ShellView : UserControl
     /// 只做「互斥」这一件事：本类不保存「当前种类」，当前种类是 Objects 页 / 对象树的渲染结果
     /// （#171 接线后由那边推 IsChecked）。没有这段，用户点一下会在工具条上留下两个高亮。
     /// </remarks>
-    private void OnKindChecked(object sender, RoutedEventArgs e)
-    {
-        if (sender is not ToggleButton checkedOne)
-        {
-            return;
-        }
 
-        foreach (var other in new[] { ButtonTables, ButtonViews, ButtonFunctions, ButtonQueries })
-        {
-            if (!ReferenceEquals(other, checkedOne) && other.IsChecked == true)
-            {
-                other.IsChecked = false;
-            }
-        }
-    }
 
     // ---- 侧栏拖动 ----------------------------------------------------------------
 
