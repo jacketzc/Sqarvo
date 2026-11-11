@@ -64,6 +64,8 @@ public sealed partial class MainWindow : Window
             root.Loaded += OnRootLoaded;
         }
 
+        RegisterOemTierAccelerators();
+
         AppWindow.Changed += OnAppWindowChanged;
         ThemeService.SystemAppearanceChanged += OnSystemAppearanceChanged;
         Closed += OnClosed;
@@ -296,6 +298,25 @@ public sealed partial class MainWindow : Window
               $"(物理 {layout.WindowPhysicalWidth}×{layout.WindowPhysicalHeight}, scale {layout.Scale:0.##}, 来源 {layout.Source})";
     }
 
+    /// <summary>
+    /// 补上主键盘的 Ctrl+= / Ctrl+-（OEM 键 187 / 189）。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Windows.System.VirtualKey"/> 里只有数字键盘的 <c>Add</c> / <c>Subtract</c>
+    /// 有名字，OEM 键只能用数值构造；XAML 里写 <c>Key="187"</c> 会解析失败（枚举无此成员），
+    /// 所以这两个在 code-behind 注册。规范 §2.4 要求两条路径都通。
+    /// </remarks>
+    private void RegisterOemTierAccelerators()
+    {
+        var plus = new KeyboardAccelerator { Key = (global::Windows.System.VirtualKey)187, Modifiers = global::Windows.System.VirtualKeyModifiers.Control };
+        plus.Invoked += OnTierUp;
+        RootGrid.KeyboardAccelerators.Add(plus);
+
+        var minus = new KeyboardAccelerator { Key = (global::Windows.System.VirtualKey)189, Modifiers = global::Windows.System.VirtualKeyModifiers.Control };
+        minus.Invoked += OnTierDown;
+        RootGrid.KeyboardAccelerators.Add(minus);
+    }
+
     private void OnRootLoaded(object sender, RoutedEventArgs args)
     {
         // 第一次 Relayout：此时 XamlRoot 才可用（spec §6.3 允许首帧跳动）。
@@ -304,8 +325,10 @@ public sealed partial class MainWindow : Window
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
-        // 拖到另一块显示器 / 改分辨率：位置或尺寸变了都要按新工作区重算。
-        if (args.DidPositionChange || args.DidSizeChange)
+        // 只在**位置**变化时重算（换显示器 / 拖到另一块屏：工作区与缩放可能都变了）。
+        // 不能跟着 DidSizeChange 重算：用户自己拖窗口边改大小时会被立刻改回推荐尺寸，
+        // 表现为「窗口拖不动」。尺寸的唯一下限是 presenter 的最小尺寸（WM_GETMINMAXINFO 生效）。
+        if (args.DidPositionChange)
         {
             Relayout(preferSavedGeometry: false);
         }
