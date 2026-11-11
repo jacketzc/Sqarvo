@@ -351,6 +351,7 @@
 
                 <!-- 区域 04：工作区 -->
                 <Grid Grid.Column="2" Background="{ThemeResource SqarvoSurfaceBrush}">
+                        Visibility="Collapsed"
                     <TabView
                         x:Name="WorkspaceTabs"
                         CanDragTabs="False"
