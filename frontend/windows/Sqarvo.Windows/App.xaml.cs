@@ -351,6 +351,17 @@ public partial class App : Application
                     $"[connect] keep-alive sessions={session.OpenConnections.Count} 界面={Backend?.State.ActiveSessions}");
                 ConsoleBridge.WriteLine($"[connect] view={(_window as MainWindow)?.Shell.DescribeProfiles() ?? "(无窗口)"}");
 
+                // 截图要看到「展开的库 / 分组 / 表 + Objects 表格 + 面板内容」：给 --qa-signin 配上
+                // --qa-catalog 时，走与 --qa-metadata 同一条展开与选择路径（同一条代码，不另写一套）。
+                if (_options.QaCatalog is { Length: > 0 } catalog && (_window as MainWindow)?.Shell is { } shell)
+                {
+                    var expanded = await shell
+                        .ProbeMetadataAsync(profile.Key, catalog, CancellationToken.None)
+                        .ConfigureAwait(true);
+
+                    ConsoleBridge.WriteLine($"[connect] signin-metadata={(expanded ? "ok" : "incomplete")}");
+                }
+
                 return;
             }
 
