@@ -246,7 +246,7 @@ public partial class App : Application
             }
 
             var state = session.State;
-            ConsoleBridge.WriteDiagnostic(
+            ConsoleBridge.WriteLine(
                 $"[connect] backend={state.Readiness} drivers={state.RegisteredDrivers} version={state.Version?.ServiceVersion ?? "?"} message={state.Message}");
 
             if (!state.IsReady)
@@ -279,15 +279,15 @@ public partial class App : Application
             }
 
             var test = await session.TestConnectionAsync(profile).ConfigureAwait(true);
-            ConsoleBridge.WriteDiagnostic(
+            ConsoleBridge.WriteLine(
                 $"[connect] test reachable={test.Reachable} latency={test.LatencyMillis}ms server={test.ServerVersion} warnings={string.Join("|", test.Warnings)}");
 
             var open = await session.ConnectAsync(profile).ConfigureAwait(true);
-            ConsoleBridge.WriteDiagnostic(
+            ConsoleBridge.WriteLine(
                 $"[connect] connect driver={open.DriverId} server={open.ServerVersion} session={open.SessionId} capabilities={string.Join("|", open.Capabilities)} sessions={session.OpenConnections.Count}");
 
             var closed = await session.DisconnectAsync(profile.Key).ConfigureAwait(true);
-            ConsoleBridge.WriteDiagnostic(
+            ConsoleBridge.WriteLine(
                 $"[connect] disconnect closed={closed} sessions={session.OpenConnections.Count}");
         }
         catch (Exception error)
