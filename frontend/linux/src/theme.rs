@@ -747,8 +747,14 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             color: @sqarvo_brand_on_soft;
         }}
         /* 文本选区块（输入框 / 可复制文本里拖选）：libadwaita 默认是 accent 30%。
-           浅档在浅色下是淡紫、暗色下是暗紫，文字颜色不动（两套底色都容得下本来的前景）。 */
-        selection:focus-within {{ background-color: @sqarvo_brand_soft; }}
+           原先是**只给底色**（浅档淡紫）且不动前景——暗色下浅色正文压在淡紫底上几乎
+           读不出来（「选中底色盖住文字」）。现在底色与前景成对取自中档：
+           `@sqarvo_brand_mid` + `@sqarvo_brand_on_mid`（标签选中态已经在用这一对，
+           浅色 3.89:1、暗色取 `@view_bg_color`），两套色板下选中的字都是可读的。 */
+        selection:focus-within {{
+            background-color: @sqarvo_brand_mid;
+            color: @sqarvo_brand_on_mid;
+        }}
         "#,
         deep = palette.deep,
         mid = palette.mid,

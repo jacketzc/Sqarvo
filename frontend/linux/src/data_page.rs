@@ -4963,8 +4963,14 @@ impl DataPage {
             popover.unparent();
         });
         popover.popup();
-        entry.grab_focus();
-        entry.select_region(0, -1);
+        // `GtkWidget::grab_focus()` 对输入框的语义是「聚焦并全选」（gtk_entry_grab_focus
+        // 内部就是 select_all）——这正是双击后值被选中底色盖住的原因，光去掉
+        // `select_region` 不够。这里用 `grab_focus_without_selecting`：只聚焦，不选。
+        entry.grab_focus_without_selecting();
+        // 再把光标放到末尾：双击是为了**改**这个值（多半只改其中几个字），全选会让
+        // 用户第一眼读不到原值，随手按一个字符还会把整段替换掉。追加、退格、
+        // Ctrl+A 全选都还在。
+        entry.set_position(-1);
     }
 
     /// 为什么这个单元格不能编辑（可编辑时为 `None`）。
