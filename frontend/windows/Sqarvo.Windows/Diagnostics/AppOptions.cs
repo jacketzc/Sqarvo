@@ -37,7 +37,8 @@ public sealed class AppOptions
         string? qaConnect,
         string? qaMetadata,
         string? qaCatalog,
-        bool noBackend)
+        bool noBackend,
+        string? qaSignIn)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -49,6 +50,7 @@ public sealed class AppOptions
         QaMetadata = qaMetadata;
         QaCatalog = qaCatalog;
         NoBackend = noBackend;
+        QaSignIn = qaSignIn;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -98,6 +100,12 @@ public sealed class AppOptions
     /// </summary>
     public bool NoBackend { get; }
 
+    /// <summary>
+    /// QA 专用：<c>--qa-signin=&lt;名称|@first&gt;</c>。后端就绪后写入凭据并建立数据库会话，**保持窗口运行**，
+    /// 供外部截图与手工点检（与 <c>--qa-connect</c> 的区别是后者跑完就退出）。
+    /// </summary>
+    public string? QaSignIn { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -128,6 +136,7 @@ public sealed class AppOptions
             qaMetadata: Value(commandLine, "--qa-metadata="),
             qaCatalog: Value(commandLine, "--qa-catalog="),
             noBackend: flags.Contains("no-backend"),
+            qaSignIn: Value(commandLine, "--qa-signin="),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -162,5 +171,6 @@ public sealed class AppOptions
         "--qa-connect=<连接名称|@first>（配合环境变量 SQARVO_QA_PASSWORD）",
         "--qa-metadata=<连接名称|@first>（可选 --qa-catalog=<库名>；配合 SQARVO_QA_PASSWORD）",
         "--no-backend 只开窗、不启动后端（隔离崩溃源）",
+        "--qa-signin=<连接名称|@first>（写凭据 + 连接后保持运行，供截图）",
     };
 }

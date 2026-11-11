@@ -182,7 +182,14 @@ public partial class App : Application
             if (_options.QaConnect is { Length: > 0 } qaConnect)
             {
                 // QA 链路：不依赖鼠标点界面，直接把「握手 → 测试连接 → 连接 → 断开」跑一遍。
-                _ = RunQaConnectAsync(qaConnect);
+                _ = RunQaConnectAsync(qaConnect, keepAlive: false);
+                return;
+            }
+
+            if (_options.QaSignIn is { Length: > 0 } qaSignIn)
+            {
+                // 与 --qa-connect 同一条链路，但不退出也不断开：留给外部截图与手工点检。
+                _ = RunQaConnectAsync(qaSignIn, keepAlive: true);
                 return;
             }
 
@@ -273,7 +280,7 @@ public partial class App : Application
     /// 密码从 <c>SQARVO_QA_PASSWORD</c> 读，先 <c>CredentialService.StoreCredential</c> 写进系统凭据库
     /// 再连接，因此一趟同时验证了 Windows Credential Manager 与真实 gRPC 链路。
     /// </remarks>
-    private async Task RunQaConnectAsync(string target)
+    private async Task RunQaConnectAsync(string target, bool keepAlive)
     {
         try
         {
@@ -322,6 +329,10 @@ public partial class App : Application
 
                 ConsoleBridge.WriteLine($"[connect] credential_ref={reference}");
                 profile = profile with { CredentialRef = reference };
+
+                // 与连接对话框一致：密码写进系统凭据库后，引用要落回配置，否则下次启动又要重输。
+                Profiles.Upsert(profile);
+                ConsoleBridge.WriteLine("[connect] profile 已回写 connections.json");
             }
 
             var test = await session.TestConnectionAsync(profile).ConfigureAwait(true);
@@ -331,6 +342,14 @@ public partial class App : Application
             var open = await session.ConnectAsync(profile).ConfigureAwait(true);
             ConsoleBridge.WriteLine(
                 $"[connect] connect driver={open.DriverId} server={open.ServerVersion} session={open.SessionId} capabilities={string.Join("|", open.Capabilities)} sessions={session.OpenConnections.Count}");
+
+            if (keepAlive)
+            {
+                ConsoleBridge.WriteLine(
+                    $"[connect] keep-alive sessions={session.OpenConnections.Count}（窗口保持打开，供截图）");
+
+                return;
+            }
 
             var closed = await session.DisconnectAsync(profile.Key).ConfigureAwait(true);
             ConsoleBridge.WriteLine(
@@ -342,7 +361,11 @@ public partial class App : Application
         }
         finally
         {
-            Close();
+            // keepAlive（--qa-signin）时窗口留给外部截图与手工点检，不自动退出。
+            if (!keepAlive)
+            {
+                Close();
+            }
         }
     }
 
