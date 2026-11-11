@@ -94,6 +94,9 @@ public sealed partial class ShellView : UserControl
     private readonly HashSet<string> _connectingKeys = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _healthTimer;
 
+    /// <summary>ApplyBackendState 的调用计数（--qa-signin 诊断用：确认状态事件到底有没有走到渲染）。</summary>
+    private int _applyCount;
+
     /// <summary>每个可展开节点的分页 / 加载状态（引用键：节点被丢掉时整条一起丢）。</summary>
     private readonly Dictionary<TreeViewNode, NodeLoad> _loads = new();
 
@@ -315,6 +318,12 @@ public sealed partial class ShellView : UserControl
     /// <remarks>所有「后端是否可用」的判断都走 <see cref="BackendState.IsReady"/>，别处不再判断。</remarks>
     private void ApplyBackendState()
     {
+        _applyCount++;
+        ApplyBackendStateCore();
+    }
+
+    private void ApplyBackendStateCore()
+    {
         var state = _session?.State ?? BackendState.Initial;
         var ready = state.IsReady;
         var selected = SelectedProfile();
@@ -443,11 +452,13 @@ public sealed partial class ShellView : UserControl
         foreach (var profile in _profiles)
         {
             var connected = _session?.IsConnected(profile.Key) == true;
-            var hasNode = _nodes.ContainsKey(profile.Key);
-            parts.Add($"{profile.Key}|badge={(connected ? "已连接" : "未连接")}|node={(hasNode ? "有" : "无")}");
+            var hasNode = _nodes.TryGetValue(profile.Key, out var node);
+            var contentBadge = node?.Content is ConnectionNode row ? row.Badge : "(非ConnectionNode)";
+            parts.Add(
+                $"{profile.Key}|session={(connected ? "已连接" : "未连接")}|node={(hasNode ? "有" : "无")}|content={contentBadge}");
         }
 
-        return parts.Count == 0 ? "(空)" : string.Join("; ", parts);
+        return (parts.Count == 0 ? "(空)" : string.Join("; ", parts)) + $"|apply={_applyCount}";
     }
 
     private void UpdateConnectedNodes()
@@ -464,6 +475,7 @@ public sealed partial class ShellView : UserControl
             if (!Equals(node.Content, content))
             {
                 node.Content = content;
+                ConsoleBridge.WriteDiagnostic($"[tree] 徽标更新 {profile.Name} -> {content.Badge}");
             }
 
             if (connected && node.Children.Count == 0)
