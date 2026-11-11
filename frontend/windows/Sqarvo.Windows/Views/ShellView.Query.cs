@@ -978,6 +978,12 @@ public sealed partial class ShellView
             await handle.CloseAsync(timeout.Token).ConfigureAwait(true);
             closed = true;
         }
+        catch (ObjectDisposedException)
+        {
+            // 页面重建/退出时后端通道已经销毁：游标随进程一起没了，不算失败（否则每次关窗都留一条假告警）。
+            closed = true;
+            ConsoleBridge.WriteDiagnostic($"[query] {tab.State.Title} Close（{reason}）：通道已释放，视为已关闭");
+        }
         catch (Exception error)
         {
             ConsoleBridge.WriteDiagnostic(
@@ -1168,6 +1174,7 @@ public sealed partial class ShellView
             grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(first * rowHeight) });
             var spacer = new Border { Height = first * rowHeight, Background = ThemeBrush("SqarvoTransparentBrush") };
             Grid.SetRow(spacer, rowIndex);
+            Grid.SetColumnSpan(spacer, columns + 1);
             grid.Children.Add(spacer);
             rowIndex++;
         }
@@ -1177,6 +1184,11 @@ public sealed partial class ShellView
             grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(rowHeight) });
             var row = NewQueryRow(tab, index, rows[index], columns);
             Grid.SetRow(row, rowIndex++);
+
+            // 必须跨满所有列：行容器自带「行号列 + N 个数据列」的列定义，但不设 ColumnSpan 时它只落在
+            // 外层网格的第 0 列（宽度 = RowNumberWidth），数据列被裁成 0 宽——真机表现就是「行号有、
+            // 单元格全空」。
+            Grid.SetColumnSpan(row, columns + 1);
             grid.Children.Add(row);
         }
 
@@ -1186,6 +1198,7 @@ public sealed partial class ShellView
             grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(remaining) });
             var spacer = new Border { Height = remaining, Background = ThemeBrush("SqarvoTransparentBrush") };
             Grid.SetRow(spacer, rowIndex);
+            Grid.SetColumnSpan(spacer, columns + 1);
             grid.Children.Add(spacer);
         }
     }
