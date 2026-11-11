@@ -349,7 +349,7 @@ public partial class App : Application
                 await Task.Delay(1500).ConfigureAwait(true);
                 ConsoleBridge.WriteLine(
                     $"[connect] keep-alive sessions={session.OpenConnections.Count} 界面={Backend?.State.ActiveSessions}");
-                ConsoleBridge.WriteLine($"[connect] view={_window?.Shell.DescribeProfiles() ?? "(无窗口)"}");
+                ConsoleBridge.WriteLine($"[connect] view={(_window as MainWindow)?.Shell.DescribeProfiles() ?? "(无窗口)"}");
 
                 return;
             }
