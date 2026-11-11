@@ -500,8 +500,17 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         .sqarvo-tab-strip tabbar .box {{
             box-shadow: none;
         }}
+        /* 标签宽度固定（v0.2.4）：`AdwTabBar` 默认按标签数平均铺满整条，2 个标签就各占一半，
+           5 个标签就挤成一条细带——同一个标签在不同时刻宽度都不一样。
+           这里把普通标签的宽度钉在档位度量 `tab_width`（180 / 225 / 270，见 metrics.toml）。
+           注意这两条只决定标签的**测量**宽度：`AdwTabBox` 是按分到的宽度等分的，所以
+           `tab_width` 真正落地还要靠 `TabSet::sync_bar_width` 把标签条自身的宽度钉住；
+           放不下时由标签条外层的滚动容器接管，不压缩标签。
+           长标题由 `AdwTab` 自己截断（1.9 是 `AdwFadingLabel` 两端渐隐），这里不动字号。 */
         .sqarvo-tab-bar tab {{
             min-height: {target}px;
+            min-width: {tab_width}px;
+            max-width: {tab_width}px;
             padding: 0 {gap_md}px;
             font-size: {ui}px;
         }}
@@ -782,6 +791,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         data_row = m.row_height_data,
         target = m.min_target,
         tab_strip = m.tab_strip_height,
+        tab_width = m.tab_width,
         icon_button_class = crate::icons::BUTTON_CLASS,
         icon_button_width = m.icon_button_width,
         icon_button_height = m.icon_button_height,
@@ -1141,11 +1151,11 @@ mod tests {
     #[test]
     fn stylesheet_tracks_the_tier_metrics() {
         // 三档的样式表必须真的不同，且数字来自 `metrics.toml`：行高 24/30/36、
-        // 数据行 32/40/48、界面字号 12/15/18、标签条 24/30/36。
-        for (tier, tree_row, data_row, font_ui, tab_strip) in [
-            (Tier::Compact, 24, 32, 12, 24),
-            (Tier::Comfortable, 30, 40, 15, 30),
-            (Tier::Large, 36, 48, 18, 36),
+        // 数据行 32/40/48、界面字号 12/15/18、标签条 24/30/36、标签宽 180/225/270。
+        for (tier, tree_row, data_row, font_ui, tab_strip, tab_width) in [
+            (Tier::Compact, 24, 32, 12, 24, 180),
+            (Tier::Comfortable, 30, 40, 15, 30, 225),
+            (Tier::Large, 36, 48, 18, 36, 270),
         ] {
             let css = stylesheet_for(false, false, tier);
             assert!(
@@ -1174,6 +1184,13 @@ mod tests {
             );
             // 1px 描边在任何档位都不变（§3.2）。
             assert!(css.contains("border-bottom: 1px solid @sqarvo_separator"));
+            // 普通标签的固定宽度（min 与 max 同一值，才不会被平均铺满）。
+            assert!(
+                css.contains(&format!("min-width: {tab_width}px;"))
+                    && css.contains(&format!("max-width: {tab_width}px;")),
+                "{}：标签宽度不是 {tab_width}px",
+                tier.id()
+            );
         }
     }
 
