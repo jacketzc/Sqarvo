@@ -173,29 +173,28 @@
                     Orientation="Horizontal"
                     VerticalAlignment="Center"
                     Spacing="{StaticResource Size.GridPaddingEnd}">
-                    <ToggleButton
+                    <Button
                         x:Name="ButtonTables"
                         Content="Tables"
-                        IsChecked="True"
-                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        Style="{StaticResource SqarvoToolbarButtonStyle}"
                         IsEnabled="False"
                         AutomationProperties.Name="Tables" />
-                    <ToggleButton
+                    <Button
                         x:Name="ButtonViews"
                         Content="Views"
-                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        Style="{StaticResource SqarvoToolbarButtonStyle}"
                         IsEnabled="False"
                         AutomationProperties.Name="Views" />
-                    <ToggleButton
+                    <Button
                         x:Name="ButtonFunctions"
                         Content="Functions"
-                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        Style="{StaticResource SqarvoToolbarButtonStyle}"
                         IsEnabled="False"
                         AutomationProperties.Name="Functions" />
-                    <ToggleButton
+                    <Button
                         x:Name="ButtonQueries"
                         Content="Queries"
-                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        Style="{StaticResource SqarvoToolbarButtonStyle}"
                         IsEnabled="False"
                         AutomationProperties.Name="Queries" />
                 </StackPanel>
@@ -257,14 +256,13 @@
                         Grid.Row="2"
                         Orientation="Horizontal"
                         Spacing="{StaticResource Size.GridPaddingEnd}">
-                        <ToggleButton
+                        <Button
                             x:Name="InspectorDdlTab"
                             Content="DDL"
-                            IsChecked="True"
                             IsEnabled="False"
                             Style="{StaticResource SqarvoInspectorSectionStyle}"
                             AutomationProperties.Name="DDL" />
-                        <ToggleButton
+                        <Button
                             x:Name="InspectorInfoTab"
                             Content="表信息"
                             IsEnabled="False"
