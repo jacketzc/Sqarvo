@@ -35,6 +35,48 @@ Windows 端的窗口尺寸、密度档、主题与本地化口径已经定下，
 文件（新建连接… / 新建查询标签 / 退出）、表（导出 CSV…）、帮助（关于 Squarvo）；未实现的入口全部
 禁用并 tooltip「尚未接入后端」。
 
+### 六区域的形态与密度（#170）
+
+#164 只保证「区域都在」，控件形态还是骨架。#170 按
+[`workspace-model.md`](../../docs/ui-specification/workspace-model.md) 的 Windows 列把六区域补到可用形态，
+**只动外形 / 尺寸 / 层级，不接业务数据**（元数据是 #171）：
+
+- **工具条**：`CommandBar` + `AppBarButton` 换成自绘 `Grid`——左动作组（「连接」= 系统
+  `AccentButtonStyle`，即 `AccentFillColorDefaultBrush` 底 + `TextOnAccentFillColorPrimaryBrush` 字；
+  「新建查询」= 中性底）→ 1px 竖分隔（`DividerStrokeColorDefaultBrush`）→ 四个种类入口
+  （`ToggleButton`，当前项 = 系统轻微填充底 + `AccentTextFillColorPrimaryBrush` 文字）。高度
+  `toolbar_height`、内边距 `toolbar_padding_h`、按钮高 `badge_min_height`；四个入口的启用态读同一个
+  `BackendState.IsReady`（种类切换本身仍未接线）。
+- **标签条**：`Objects` 固定页只显图标（`FontIconSource`，Segoe Fluent Icons U+F0E2 = 2×2 网格），
+  宽 `objects_min_width`、高 `tab_strip_height`；`TabView.TabWidthMode="SizeToContent"`——默认的
+  `Equal` 会把单标签页拉成一整条。
+- **对象树**：行高 `row_height_tree`（`ItemContainerStyle` 的 `MinHeight`）+ 容器左内边距
+  `grid_padding_start`；行内容是 `Views/ConnectionRow.xaml`：图标位（`icon_box`）+ 名称（`font_ui`，
+  省略号）+ 右对齐徽标（`font_panel`；已连接 = 强调色文字，其余 = 次要文字）。为什么是 UserControl
+  而不是 `DataTemplate`：节点是手工建的 `TreeViewNode`，内容是私有类型（`x:Bind` 用不了），而颜色
+  只能写在 XAML 的 `ThemeResource` 里。
+- **状态栏**：两行——行 1 = 六个行操作图标（左）+ 分页器（右，页码只读），行 2 = `SQL:` 摘要（左）
+  + `Last Refresh` / 会话摘要（右）；按钮 `icon_button_width × icon_button_height`，两行各占
+  `status_height` 的一半（正好等于 `icon_button_height`）。**禁用态与说明文字同一种灰**：
+  `Tokens.xaml` 把 lightweight styling 键 `ButtonForegroundDisabled` 别名到
+  `TextFillColorSecondaryBrush`（否则框架的 disabled 灰会比说明文字再浅一档，状态栏出现第三档灰）。
+- **信息面板**：标题区（`font_title` semibold + `font_panel` 副标题）/ 分节标题（`DDL` · `表信息`）/
+  内容区三级；空态是一行居中、`font_panel` + 次要色的操作说明，不是空白 `Grid`。
+- **空态**：居中，主标题 `font_title` semibold > 副标题 `font_status` secondary，正文列宽
+  `filter_panel_width`（否则 3840 宽窗口会把一行说明拉成一条长线）。
+
+本机（Linux）能做的检查只有四项，**不能**代表已编译：
+
+```bash
+# XAML 良构
+python3 -c "import xml.dom.minidom,glob;[xml.dom.minidom.parse(p) for p in glob.glob('frontend/windows/Sqarvo.Windows/**/*.xaml',recursive=True)]"
+# 没有 #RRGGBB
+grep -rn '#[0-9A-Fa-f]\{6\}' frontend/windows/Sqarvo.Windows/ --include=*.xaml
+# Click= / Tapped= 都有同名处理器
+grep -rno 'Click="[^"]*"\|Tapped="[^"]*"' frontend/windows/Sqarvo.Windows/ --include=*.xaml
+# x:Name 不重复（按文件）
+```
+
 已接通（#162）：
 
 - **三档密度度量**：`docs/ui-specification/metrics.toml` → 构建期由

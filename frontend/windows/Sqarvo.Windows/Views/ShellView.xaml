@@ -1,19 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-#164 的六区域外壳 + #169 的后端接线（连接面）+ #168 的可拖面板（窗口层）。
+#164 的六区域外壳 + #169 的后端接线（连接面）+ #168 的可拖面板（窗口层）+ #170 的控件形态与密度。
 
     #169 起：菜单「文件 → 新建连接…」与工具条「连接」的启用态、状态栏两行、对象树的连接层
     全部由 code-behind 从 BackendState 这一份快照渲染（见 ShellView.ApplyBackendState）；
     未实现的入口保持禁用，原因逐条写在 tooltip 里。
     #168 起：侧栏与信息面板可拖（两条分隔线同时是拖动条），拖动范围与默认值全部来自 Metrics。
-    本文件里只有启用态、文案与两条拖动条，布局尺寸依旧在 code-behind 里从 Metrics 取。
+    #170 起：六区域按 docs/ui-specification/workspace-model.md 的形态与密度重做——
+      工具条 = 左侧动作组（连接 = 主操作 / 新建查询 = 次级）+ 竖向分隔 + 四个「种类」切换按钮；
+      标签条 = Objects 固定页（objects_min_width、只显图标、不可关闭）；
+      对象树 = row_height_tree 行高 + 图标位 / 名称 / 右对齐徽标（行形状在 ConnectionRow.xaml）；
+      状态栏 = 两行（行 1 行操作 + 分页器，行 2 SQL 摘要 + 最后一次刷新）；
+      信息面板 = 标题区 / 分节标题 / 内容区三级，空态给一行弱化占位；
+      空态 = 居中、主标题（font_title semibold）> 副标题（font_status secondary）。
+    本文件里只有启用态、文案、样式与两条拖动条；尺寸一律从 Metrics 取。
 
     区域与宿主控件严格按 docs/ui-specification/workspace-model.md §8 的 Windows 列：
-    系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（CommandBar）→
-    对象树（TreeView）→ 工作区（TabView）→ 状态栏（自绘两行）→ 信息面板（SplitView 右panel）。
+    系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（自绘 Grid，替掉 CommandBar，
+    因为 CommandBar 的 AppBarButton 表达不了「种类 = tab 形态的切换按钮」与左组 / 分隔 / 右组的
+    版式）→ 对象树（TreeView）→ 工作区（TabView）→ 状态栏（自绘两行）→ 信息面板（SplitView 右panel）。
 
-    尺寸：高度/字号全用 {StaticResource Size.*}；宽度这类 GridLength / 结构体在 code-behind 里
-    从 Metrics 取。颜色只用 ThemeResource，XAML 里没有 #RRGGBB。
+    尺寸：高度/字号全用 {StaticResource Size.*}；宽度、内边距这类 GridLength / Thickness /
+    CornerRadius 结构体在 code-behind 里从 Metrics 取。颜色只用 ThemeResource，XAML 里没有 #RRGGBB。
 -->
 <UserControl
     x:Class="Sqarvo.Windows.Views.ShellView"
@@ -23,12 +31,55 @@
 
     <UserControl.Resources>
         <!--
-            树行高来自度量（row_height_tree 24 / 30 / 36）。只加一个 MinHeight setter：
+            树行高来自度量（row_height_tree 24 / 30 / 36）。只加 MinHeight 与字号两个 setter：
             WinUI 3 的显式 Style 只覆盖同名 setter，模板仍由默认样式提供，所以不需要
             BasedOn（也就不会因为默认样式键改名而在启动时炸）。
+            字号取 font_ui：树的根节点（`My Connections`）是字符串内容，靠这里的继承拿到
+            12/15/18，否则它会用系统默认 14 把工作区的空态主标题（13）盖过去。
         -->
         <Style x:Key="SqarvoTreeRowStyle" TargetType="TreeViewItem">
             <Setter Property="MinHeight" Value="{StaticResource Size.RowHeightTree}" />
+            <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
+        </Style>
+
+        <!-- 工具条文字按钮（连接 / 新建查询）：高度 badge_min_height，字号 font_ui。 -->
+        <Style x:Key="SqarvoToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+            <Setter Property="Height" Value="{StaticResource Size.BadgeMinHeight}" />
+            <Setter Property="MinWidth" Value="{StaticResource Size.MinTarget}" />
+            <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!--
+            种类入口（Tables / Views / Functions / Queries）：tab 形态的切换按钮。
+            选中态靠 ToggleButton 的 lightweight styling 键（见 Tokens.xaml 的四套主题别名）：
+            选中底 = 系统「轻微填充」token，选中文字 = 强调色文字 token；这里不写任何颜色。
+        -->
+        <Style x:Key="SqarvoKindToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Height" Value="{StaticResource Size.BadgeMinHeight}" />
+            <Setter Property="MinWidth" Value="{StaticResource Size.MinTarget}" />
+            <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- 信息面板的分节标题（DDL / 表信息）：面板字号 font_panel，比工具条弱一档。 -->
+        <Style x:Key="SqarvoInspectorSectionStyle" TargetType="ToggleButton">
+            <Setter Property="Height" Value="{StaticResource Size.SecondaryMinHeight}" />
+            <Setter Property="MinWidth" Value="{StaticResource Size.MinTarget}" />
+            <Setter Property="FontSize" Value="{StaticResource Size.FontPanel}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <!-- 状态栏行操作 / 分页器的图标按钮：命中区取 icon_button_width × icon_button_height。 -->
+        <Style x:Key="SqarvoIconButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+            <Setter Property="Width" Value="{StaticResource Size.IconButtonWidth}" />
+            <Setter Property="Height" Value="{StaticResource Size.IconButtonHeight}" />
+            <!-- Padding / BorderThickness 的 0 是结构零值（没有内边距），不是尺寸字面量。 -->
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
     </UserControl.Resources>
 
@@ -62,31 +113,93 @@
             </MenuBar>
         </Border>
 
-        <!-- 区域 02：主工具条 -->
+        <!--
+            区域 02：主工具条（高 toolbar_height）。
+
+            版式按 workspace-model §8「主工具条」一行：左动作组（连接 = 主操作、新建查询 = 次级）
+            → 竖分隔（1px 不缩放的描边）→ 四个种类入口 → 弹性空白。
+            「连接」走系统 AccentButtonStyle：它内部就是 AccentFillColorDefaultBrush（底）+
+            TextOnAccentFillColorPrimaryBrush（字），并自带 hover / pressed / disabled 三态，
+            比手写 Background 更稳（手写只在 Normal 态生效）。
+        -->
         <Border
             x:Name="ToolbarBand"
             Grid.Row="1"
             Background="{ThemeResource SqarvoSurfaceBrush}"
             Height="{StaticResource Size.ToolbarHeight}">
-            <CommandBar
-                x:Name="MainToolbar"
-                DefaultLabelPosition="Right"
-                IsOpen="False"
-                AutomationProperties.Name="主工具条">
-                <AppBarButton x:Name="ButtonConnect" Label="连接"
-                              AutomationProperties.Name="连接" />
-                <AppBarButton x:Name="ButtonNewQuery" Label="新建查询" IsEnabled="False"
-                              AutomationProperties.Name="新建查询" />
-                <AppBarSeparator />
-                <AppBarButton x:Name="ButtonTables" Label="Tables" IsEnabled="False"
-                              AutomationProperties.Name="Tables" />
-                <AppBarButton x:Name="ButtonViews" Label="Views" IsEnabled="False"
-                              AutomationProperties.Name="Views" />
-                <AppBarButton x:Name="ButtonFunctions" Label="Functions" IsEnabled="False"
-                              AutomationProperties.Name="Functions" />
-                <AppBarButton x:Name="ButtonQueries" Label="Queries" IsEnabled="False"
-                              AutomationProperties.Name="Queries" />
-            </CommandBar>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel
+                    Grid.Column="0"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center"
+                    Spacing="{StaticResource Size.InspectorGap}">
+                    <Button
+                        x:Name="ButtonConnect"
+                        Content="连接"
+                        Style="{StaticResource AccentButtonStyle}"
+                        Height="{StaticResource Size.BadgeMinHeight}"
+                        FontSize="{StaticResource Size.FontUi}"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="连接" />
+                    <Button
+                        x:Name="ButtonNewQuery"
+                        Content="新建查询"
+                        Style="{StaticResource SqarvoToolbarButtonStyle}"
+                        IsEnabled="False"
+                        AutomationProperties.Name="新建查询" />
+                </StackPanel>
+
+                <Rectangle
+                    x:Name="ToolbarSeparator"
+                    Grid.Column="1"
+                    Width="{StaticResource Size.BorderWidthPxNeverScaled}"
+                    VerticalAlignment="Stretch"
+                    Fill="{ThemeResource SqarvoDividerBrush}" />
+
+                <!--
+                    四个种类入口：纯拉丁文字、tab 形态。当前项（Tables）的选中底 / 选中文字是声明式的，
+                    「同一时刻最多一个」由 code-behind 的 OnKindChecked 兜住；真正的种类切换要等
+                    对象树与元数据（#171），所以现在只经后端就绪位开放点击，不在这里盘「当前种类」。
+                -->
+                <StackPanel
+                    Grid.Column="2"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center"
+                    Spacing="{StaticResource Size.GridPaddingEnd}">
+                    <ToggleButton
+                        x:Name="ButtonTables"
+                        Content="Tables"
+                        IsChecked="True"
+                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        IsEnabled="False"
+                        AutomationProperties.Name="Tables" />
+                    <ToggleButton
+                        x:Name="ButtonViews"
+                        Content="Views"
+                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        IsEnabled="False"
+                        AutomationProperties.Name="Views" />
+                    <ToggleButton
+                        x:Name="ButtonFunctions"
+                        Content="Functions"
+                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        IsEnabled="False"
+                        AutomationProperties.Name="Functions" />
+                    <ToggleButton
+                        x:Name="ButtonQueries"
+                        Content="Queries"
+                        Style="{StaticResource SqarvoKindToggleStyle}"
+                        IsEnabled="False"
+                        AutomationProperties.Name="Queries" />
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!--
@@ -103,24 +216,78 @@
             DisplayMode="Inline"
             IsPaneOpen="True">
             <SplitView.Pane>
-                <Grid Background="{ThemeResource SqarvoBandBrush}">
+                <!--
+                    区域 06：信息面板。三级层级：
+                      一级 标题区（对象名 / 面板名 + 一行弱化副标题）
+                      二级 分节标题（DDL / 表信息，贴着分隔线左顶点）
+                      三级 内容区（空态是一行居中弱化的操作说明，不是空白 Grid）
+                    内边距（grid_padding_start / grid_padding_end）在 ApplyMetrics 里给。
+                -->
+                <Grid x:Name="InspectorPane" Background="{ThemeResource SqarvoBandBrush}">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <TextBlock
-                        x:Name="InspectorTitle"
-                        Grid.Row="0"
-                        Text="信息面板"
-                        FontSize="{StaticResource Size.FontTitle}"
-                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+
+                    <StackPanel x:Name="InspectorHeader" Grid.Row="0">
+                        <TextBlock
+                            x:Name="InspectorTitle"
+                            Text="信息面板"
+                            TextTrimming="CharacterEllipsis"
+                            FontSize="{StaticResource Size.FontTitle}"
+                            FontWeight="SemiBold"
+                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+                        <TextBlock
+                            x:Name="InspectorSubtitle"
+                            Text="未选中对象"
+                            TextTrimming="CharacterEllipsis"
+                            FontSize="{StaticResource Size.FontPanel}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+                    </StackPanel>
+
                     <Rectangle
                         Grid.Row="1"
                         Height="{StaticResource Size.BorderWidthPxNeverScaled}"
                         Fill="{ThemeResource SqarvoDividerBrush}" />
-                    <!-- 启动态内容区留白（规范 §5：不写「没有选中对象」这类说明文字） -->
-                    <Grid Grid.Row="2" x:Name="InspectorBody" AutomationProperties.Name="信息面板内容" />
+
+                    <StackPanel
+                        x:Name="InspectorSections"
+                        Grid.Row="2"
+                        Orientation="Horizontal"
+                        Spacing="{StaticResource Size.GridPaddingEnd}">
+                        <ToggleButton
+                            x:Name="InspectorDdlTab"
+                            Content="DDL"
+                            IsChecked="True"
+                            IsEnabled="False"
+                            Style="{StaticResource SqarvoInspectorSectionStyle}"
+                            AutomationProperties.Name="DDL" />
+                        <ToggleButton
+                            x:Name="InspectorInfoTab"
+                            Content="表信息"
+                            IsEnabled="False"
+                            Style="{StaticResource SqarvoInspectorSectionStyle}"
+                            AutomationProperties.Name="表信息" />
+                    </StackPanel>
+
+                    <Grid x:Name="InspectorBody" Grid.Row="3" AutomationProperties.Name="信息面板内容">
+                        <!--
+                            空态占位：居中 + font_panel + 次要文字色。规范 §5 要求启动态「内容区留白、
+                            不写『没有选中对象』」，这里给的是操作说明（选中后能看到什么），
+                            不是一个否定句——见 #170 的偏差记录（ui-behavior-contract §7.1）。
+                        -->
+                        <TextBlock
+                            x:Name="InspectorPlaceholder"
+                            Text="选中对象后，这里显示列、索引与 DDL。"
+                            TextAlignment="Center"
+                            TextWrapping="Wrap"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            FontSize="{StaticResource Size.FontPanel}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+                    </Grid>
                 </Grid>
             </SplitView.Pane>
 
@@ -132,7 +299,13 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <!-- 区域 03：对象树（侧栏）。没有搜索框、没有页脚按钮，树本身即侧栏。 -->
+                <!--
+                    区域 03：对象树（侧栏）。没有搜索框、没有页脚按钮，树本身即侧栏。
+                    行高 row_height_tree（样式），容器左内边距 grid_padding_start（ApplyMetrics）。
+                    行内容（图标位 / 名称 / 右对齐徽标）见 Views/ConnectionRow.xaml：TreeViewNode.Content
+                    直接放这个 UserControl，避免依赖 DataTemplate 的 DataContext 语义
+                    （本页的节点内容是私有类型，x:Bind 用不了）。
+                -->
                 <Grid Grid.Column="0" Background="{ThemeResource SqarvoBandBrush}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
@@ -183,29 +356,73 @@
                         CanDragTabs="False"
                         CanReorderTabs="False"
                         IsAddTabButtonVisible="False"
+                        TabWidthMode="SizeToContent"
                         AutomationProperties.Name="工作区标签">
                         <TabView.TabItems>
                             <!--
                                 固定的 Objects 页：WinUI 的 TabView 没有 pinned 概念，
                                 用 IsClosable=False + 固定首位 + 禁拖 等价实现（不是 API 缺失的将就：
                                 它的行为正好是「不能关、不能挪、恒在最左」，切换其它标签时不受影响）。
-                                宽度取 metrics 的 objects_min_width（84 / 105 / 126）。
+                                #170：宽度 objects_min_width（84 / 105 / 126）、只显图标不显文字
+                                （IconSource = 字体符号，仓库没有图标资源）、高 tab_strip_height。
+                                TabWidthMode=SizeToContent 让标签按内容（= MinWidth 84）定宽，
+                                否则默认的 Equal 模式会把它拉成一整条。
                             -->
-                            <TabViewItem x:Name="ObjectsTab" Header="Objects" IsClosable="False" AutomationProperties.Name="Objects 页">
+                            <TabViewItem
+                                x:Name="ObjectsTab"
+                                IsClosable="False"
+                                AutomationProperties.Name="Objects 页">
+                                <TabViewItem.IconSource>
+                                    <FontIconSource
+                                        Glyph="&#xF0E2;"
+                                        FontFamily="{ThemeResource SymbolThemeFontFamily}" />
+                                </TabViewItem.IconSource>
+
                                 <Grid Background="{ThemeResource SqarvoSurfaceBrush}">
-                                    <StackPanel x:Name="ObjectsPage" Spacing="{StaticResource Size.InspectorGap}">
+                                    <!--
+                                        Empty 态（后端已就绪、还没选中对象）：页内只有标题「Objects」
+                                        与居中的空态（规范 §3：页内不写作用域说明行）。
+                                    -->
+                                    <Grid x:Name="ObjectsPage" Background="Transparent">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+
                                         <TextBlock
+                                            x:Name="ObjectsPageTitle"
+                                            Grid.Row="0"
                                             Text="Objects"
                                             FontSize="{StaticResource Size.FontTitle}"
+                                            FontWeight="SemiBold"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
-                                        <TextBlock
-                                            Text="对象列表由元数据服务提供（工作包 #170）：本步只建立连接，库 / 表的列出还没接通，因此这里先保持为空。"
-                                            FontSize="{StaticResource Size.FontUi}"
-                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                                            TextWrapping="Wrap" />
-                                    </StackPanel>
 
-                                    <!-- 三态：Disconnected 常显；Loading / Empty 已实现但本轮不可达 -->
+                                        <!-- 空态：居中，主标题 font_title semibold > 副标题 font_status secondary -->
+                                        <StackPanel
+                                            x:Name="StateEmpty"
+                                            Grid.Row="1"
+                                            Visibility="Collapsed"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Spacing="{StaticResource Size.InspectorGap}">
+                                            <TextBlock
+                                                Text="没有选中对象"
+                                                FontSize="{StaticResource Size.FontTitle}"
+                                                FontWeight="SemiBold"
+                                                TextAlignment="Center"
+                                                HorizontalAlignment="Center"
+                                                Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+                                            <TextBlock
+                                                Text="在左侧对象树里选中一个库、表或分组。"
+                                                FontSize="{StaticResource Size.FontStatus}"
+                                                TextAlignment="Center"
+                                                TextWrapping="Wrap"
+                                                HorizontalAlignment="Center"
+                                                Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <!-- 三态：Disconnected 常显；Loading / Empty 已实现但本轮按后端状态切换 -->
                                     <StackPanel
                                         x:Name="StateDisconnected"
                                         VerticalAlignment="Center"
@@ -214,13 +431,17 @@
                                         <TextBlock
                                             Text="尚未连接数据库"
                                             FontSize="{StaticResource Size.FontTitle}"
-                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
-                                            HorizontalAlignment="Center" />
+                                            FontWeight="SemiBold"
+                                            TextAlignment="Center"
+                                            HorizontalAlignment="Center"
+                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
                                         <TextBlock
                                             Text="在「文件 → 新建连接…」里保存一条 MariaDB 连接；点侧栏里已保存的连接即可连接。"
                                             FontSize="{StaticResource Size.FontStatus}"
-                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                                            HorizontalAlignment="Center" />
+                                            TextAlignment="Center"
+                                            TextWrapping="Wrap"
+                                            HorizontalAlignment="Center"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
                                     </StackPanel>
 
                                     <StackPanel
@@ -229,31 +450,17 @@
                                         VerticalAlignment="Center"
                                         HorizontalAlignment="Center"
                                         Spacing="{StaticResource Size.InspectorGap}">
-                                        <ProgressRing IsActive="True" Width="{StaticResource Size.IconBox}"
-                                                      Height="{StaticResource Size.IconBox}" />
+                                        <ProgressRing
+                                            IsActive="True"
+                                            Width="{StaticResource Size.IconBox}"
+                                            Height="{StaticResource Size.IconBox}"
+                                            HorizontalAlignment="Center" />
                                         <TextBlock
                                             Text="正在连接…"
                                             FontSize="{StaticResource Size.FontUi}"
-                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                                            HorizontalAlignment="Center" />
-                                    </StackPanel>
-
-                                    <StackPanel
-                                        x:Name="StateEmpty"
-                                        Visibility="Collapsed"
-                                        VerticalAlignment="Center"
-                                        HorizontalAlignment="Center"
-                                        Spacing="{StaticResource Size.InspectorGap}">
-                                        <TextBlock
-                                            Text="没有选中对象"
-                                            FontSize="{StaticResource Size.FontTitle}"
-                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
-                                            HorizontalAlignment="Center" />
-                                        <TextBlock
-                                            Text="在左侧对象树里选中一个库、表或分组。"
-                                            FontSize="{StaticResource Size.FontStatus}"
-                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                                            HorizontalAlignment="Center" />
+                                            TextAlignment="Center"
+                                            HorizontalAlignment="Center"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
                                     </StackPanel>
                                 </Grid>
                             </TabViewItem>
@@ -287,7 +494,12 @@
             </Grid>
         </SplitView>
 
-        <!-- 区域 05：状态栏，两行，被侧栏分栏线分成左右两块 -->
+        <!--
+            区域 05：状态栏（高 status_height），两行，被侧栏分栏线分成左右两块。
+              行 1：行操作六个图标（左）+ 分页器（右，页码只读）
+              行 2：SQL 摘要（左，可省略）+ Last Refresh / 会话摘要（右）
+            两行各占一半（48 = 24 + 24 / 60 = 30 + 30 / 72 = 36 + 36），正好等于 icon_button_height。
+        -->
         <Grid
             x:Name="StatusBand"
             Grid.Row="3"
@@ -327,33 +539,58 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <StackPanel
-                    Grid.Row="0"
-                    Orientation="Horizontal"
-                    Spacing="{StaticResource Size.GridPaddingEnd}"
-                    VerticalAlignment="Center">
-                    <StackPanel.Resources>
-                        <Style TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
-                            <Setter Property="Width" Value="{StaticResource Size.IconButtonWidth}" />
-                            <Setter Property="Height" Value="{StaticResource Size.IconButtonHeight}" />
-                            <Setter Property="Padding" Value="0" />
-                            <Setter Property="IsEnabled" Value="False" />
-                        </Style>
-                    </StackPanel.Resources>
-                    <Button x:Name="ButtonRowAdd" Content="＋" AutomationProperties.Name="新增" />
-                    <Button x:Name="ButtonRowDelete" Content="－" AutomationProperties.Name="删除" />
-                    <Button x:Name="ButtonRowApply" Content="✓" AutomationProperties.Name="应用" />
-                    <Button x:Name="ButtonRowRevert" Content="↶" AutomationProperties.Name="撤销" />
-                    <Button x:Name="ButtonRowRefresh" Content="⟳" AutomationProperties.Name="刷新" />
-                    <Button x:Name="ButtonRowCancel" Content="■" AutomationProperties.Name="取消" />
-                    <TextBlock
-                        x:Name="PagerText"
-                        Text="0 / 0"
-                        FontSize="{StaticResource Size.PagerFont}"
-                        Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                        VerticalAlignment="Center" />
-                </StackPanel>
+                <!-- 行 1：左 = 行操作（尺寸 icon_button_width × icon_button_height），右 = 分页器 -->
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
+                    <StackPanel
+                        x:Name="RowOperations"
+                        Grid.Column="0"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Spacing="{StaticResource Size.GridPaddingEnd}">
+                        <Button x:Name="ButtonRowAdd" Content="＋" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="新增" />
+                        <Button x:Name="ButtonRowDelete" Content="－" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="删除" />
+                        <Button x:Name="ButtonRowApply" Content="✓" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="应用" />
+                        <Button x:Name="ButtonRowRevert" Content="↶" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="撤销" />
+                        <Button x:Name="ButtonRowRefresh" Content="⟳" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="刷新" />
+                        <Button x:Name="ButtonRowCancel" Content="■" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="取消" />
+                    </StackPanel>
+
+                    <!-- 分页器：页码只读（本版没有「跳到第 N 页」）；四个翻页按钮与行操作同尺寸。 -->
+                    <StackPanel
+                        x:Name="PagerPanel"
+                        Grid.Column="1"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Spacing="{StaticResource Size.GridPaddingEnd}">
+                        <Button x:Name="ButtonPageFirst" Content="|&lt;" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="首页" />
+                        <Button x:Name="ButtonPagePrev" Content="&lt;" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="上一页" />
+                        <TextBlock
+                            x:Name="PagerText"
+                            Text="0 / 0"
+                            FontSize="{StaticResource Size.PagerFont}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                            VerticalAlignment="Center" />
+                        <Button x:Name="ButtonPageNext" Content="&gt;" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="下一页" />
+                        <Button x:Name="ButtonPageLast" Content="&gt;|" Style="{StaticResource SqarvoIconButtonStyle}"
+                                IsEnabled="False" AutomationProperties.Name="末页" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- 行 2：SQL 摘要（ASCII 冒号）紧贴行操作正下方 + 右侧 Last Refresh -->
                 <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
