@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    通信与进程层：net8.0 普通类库，禁止依赖 WinUI / Windows App SDK。
+    存在理由见 docs/planning/windows-frontend-parity-plan.md §3：WinUI 的 XAML 不能在
+    Linux 上编译，而本仓库的 CI 与主要开发环境是 Linux。把可编译的业务层下沉到这里，
+    才能在本机（Linux）对真后端做集成测试。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Sqarvo.Core</RootNamespace>
+    <AssemblyName>Sqarvo.Core</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <!-- 公共 API 一律写英文 XML 注释；CS1591 对 protoc 生成的代码不适用，故整体关闭后靠评审保证。 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" Version="2.85.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <!--
+    前后端契约的唯一来源是仓库根目录 proto/。生成代码不提交；WinUI 工程不再生成自己的
+    副本（两处生成会产生同名类型冲突），proto 生成统一归本工程。
+  -->
+  <ItemGroup>
+    <Protobuf Include="../../../proto/**/*.proto" ProtoRoot="../../../proto" GrpcServices="Client" />
+  </ItemGroup>
+
+</Project>

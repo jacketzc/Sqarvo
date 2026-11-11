@@ -80,6 +80,41 @@ large       → 窗口DIP=1888x984  物理=3776x1968   （宽被 W-32 封顶）
 `COMException`，高对比状态改由 `HKCU\Control Panel\Accessibility\HighContrast\Flags` 兜底读取；
 系统主题 / 强调色的跟随本身不受影响（那是 WinUI 与 `ThemeResource` 的职责）。
 
+## 通信与进程层：`Sqarvo.Core`（可在 Linux 上编译与验证）
+
+WinUI 的 XAML 不能在 Linux 上编译，而本仓库的 CI 与主要开发环境是 Linux。因此**与 UI 无关的
+一切**（端点文件、Transport、后端进程生命周期、gRPC 通道与 token、7 个 service 的封装）都在
+普通 `net8.0` 类库 `frontend/windows/Sqarvo.Core` 里，`Sqarvo.Windows` 只引用它：
+
+```text
+Sqarvo.Windows → Sqarvo.Core → Grpc.Net.Client / Google.Protobuf
+```
+
+- **契约生成的唯一位置**是 `Sqarvo.Core`（`<Protobuf Include="../../../proto/**/*.proto" .../>`），
+  `Sqarvo.Windows.csproj` 不再有自己的 `<Protobuf>` 项，否则两处各生成一份同名类型。
+- Core 里**不允许**出现 `Microsoft.UI` / `Windows.UI` / Windows App SDK；平台差异走
+  `Platform/` 下的 `IPidLiveness`、`IProcessLauncher`、`IPathLayout`（默认实现内部按
+  `#if WINDOWS` 分支）。
+- 业务代码只接触 `BackendSupervisor` 与 `Clients/*`；`GrpcChannel`、`*ServiceClient`、token
+  metadata、deadline 都封装在 Core 内部（`ArchitectureTests` 会守住这条线）。
+
+分层与设计理由见 [`docs/planning/windows-frontend-parity-plan.md`](../../docs/planning/windows-frontend-parity-plan.md) §3。
+
+验证（Linux 上就能跑，含对**真后端进程**的集成测试）：
+
+```bash
+cd frontend/windows
+dotnet build Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj
+dotnet test  Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj --logger "console;verbosity=detailed"
+
+# 集成测试需要先构建后端（Linux 上用 --listen 走与 Windows 相同的回环 TCP 路径）
+cd backend && cargo build -p sqarvo-backend-service
+```
+
+集成测试固定端点文件路径（`DefaultPathLayout.ForEndpointFile`）并通过 `XDG_RUNTIME_DIR`
+让子进程写到同一位置，参数里带 `--listen 127.0.0.1:0`；因此它跑的是 Windows 端真正使用的
+TCP + token 路径，而不是 Linux 的 Unix 域套接字。
+
 ## 环境
 
 - Windows 10 1809+ / Windows 11
@@ -101,6 +136,7 @@ dotnet run -c Debug -p:Platform=x64
 
 - `Microsoft.WindowsAppSDK` 版本按 NuGet 当前稳定版填写，但**未在本仓库的验证环境（Linux）构建过**。
   首次在 Windows 上构建时请确认目标框架与包版本匹配，并在 PR 中记录实际构建结果。
-- `proto/` 中的契约通过 `Grpc.Tools` 在构建时生成 C# 客户端，生成代码不提交。
+- `proto/` 中的契约通过 `Grpc.Tools` 在构建时生成 C# 客户端，生成代码不提交；生成发生在
+  `Sqarvo.Core`（见上节），`Sqarvo.Windows` 只消费 Core 的封装。
 - 禁止引入 WebView2 来实现业务界面；复杂控件优先使用 WinUI 原生控件。
 - UI 线程禁止执行同步网络/磁盘/数据库操作；gRPC 调用必须可取消，并处理组件销毁后的回调。

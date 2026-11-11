@@ -22,9 +22,13 @@
     <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="All" />
   </ItemGroup>
 
-  <!-- 前后端契约唯一来源：仓库根目录 proto/。生成代码不提交。 -->
+  <!--
+    通信与进程层全部在 Sqarvo.Core（net8.0，无 WinUI 依赖），这样它能在 Linux 上编译与测试。
+    注意：这里**不再**生成 protobuf/gRPC 存根——proto 的生成统一归 Sqarvo.Core，
+    两处各生成一份会产生同名类型。
+  -->
   <ItemGroup>
-    <Protobuf Include="../../../proto/**/*.proto" ProtoRoot="../../../proto" GrpcServices="Client" />
+    <ProjectReference Include="..\Sqarvo.Core\Sqarvo.Core.csproj" />
   </ItemGroup>
 
   <!--
