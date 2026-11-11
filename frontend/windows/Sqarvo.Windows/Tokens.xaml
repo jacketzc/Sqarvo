@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    主题 token（颜色）与尺寸引用。
+
+    两条硬约束（AGENTS.md §8.2、docs/ui-specification/scaling-and-window-sizing.md §8）：
+
+    1. 颜色只用系统 ThemeResource，**这里不出现任何 #RRGGBB**：写死一处就放弃高对比与
+       系统强调色跟随（换主题时那几个像素不会变，而且没人会去查）。
+    2. 尺寸不在 XAML 里写字面量：`Size.*` 由 frontend/windows/tools/gen-metrics.ps1 从
+       docs/ui-specification/metrics.toml 生成到 Metrics.g.cs，运行时由
+       Theming/MetricsResources.cs 写进 Application.Resources。页面只引用键名。
+
+    三套 ThemeDictionaries（Default / Light / Dark / HighContrast）里的别名值全部指向系统
+    token，因此高对比下自动走系统色——不存在「我们有自己的一套高对比色板」这回事。
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ResourceDictionary.ThemeDictionaries>
+
+        <!-- 默认：跟随当前系统主题 -->
+        <ResourceDictionary x:Key="Default">
+            <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
+            <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
+        </ResourceDictionary>
+
+        <ResourceDictionary x:Key="Light">
+            <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
+            <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
+        </ResourceDictionary>
+
+        <ResourceDictionary x:Key="Dark">
+            <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
+            <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
+        </ResourceDictionary>
+
+        <!-- 高对比：同样指向系统 token，系统会替换成高对比色板 -->
+        <ResourceDictionary x:Key="HighContrast">
+            <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
+            <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
+        </ResourceDictionary>
+
+    </ResourceDictionary.ThemeDictionaries>
+
+</ResourceDictionary>

@@ -26,7 +26,36 @@ Windows 端的窗口尺寸、密度档、主题与本地化口径已经定下，
 
 ## 状态
 
-界面骨架。**尚未启动后端、尚未建立 gRPC 连接**；主窗口顶部固定显示警告信息。
+界面骨架 + 度量与主题自检页。**尚未启动后端、尚未建立 gRPC 连接**；工具条上的入口都还没有真实动作。
+
+已接通（#162）：
+
+- **三档密度度量**：`docs/ui-specification/metrics.toml` → 构建期由
+  `frontend/windows/tools/gen-metrics.ps1` 生成 `obj/gen/Metrics.g.cs`（不提交）。页面 XAML 只引用
+  `{StaticResource Size.*}`，code-behind 里 `Padding` / `BorderThickness` 也全部从 `Metrics` 取，
+  所以尺寸只有一个来源，运行时不做「基准 × scale」。
+- **主题三档**：`Tokens.xaml` 的三套 `ThemeDictionaries`（Default / Light / Dark / HighContrast）
+  全部别名到系统 token；启动期 `Application.RequestedTheme` 只在明确选了 Light/Dark 时写，
+  运行中切换走元素级 `RequestedTheme`；标题栏单独处理（跟随系统时
+  `TitleBarTheme.UseDefaultAppMode`，旧 API 回退 `DwmSetWindowAttribute`）。
+- **未打包持久化**：`%LOCALAPPDATA%\Sqarvo\window.json`（schema v2，与 Linux 同一份；写入用
+  「临时文件 + 替换」，读失败回退默认值，不弹窗）。
+
+诊断开关（只读，打印一行后退出；`stdout` 只有证据行，内部诊断走 `stderr`）：
+
+```powershell
+dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
+# 若 dotnet run 找错输出目录，直接跑 bin\x64\Debug\net8.0-windows10.0.19041.0\Sqarvo.Windows.exe
+```
+
+```text
+[theme] requested=System effective=Dark highContrast=False accent=#258292 titleBar=UseDefaultAppMode
+[metrics] tier=compact header=64 toolbar=44 status=48 minWindow=960x640 sidebar=237 inspector=280 rowTree=24 fontUi=12
+```
+
+已知边界：`AccessibilitySettings.HighContrastChanged` 在未打包 WinUI 3 应用里订阅会抛
+`COMException`，高对比状态改由 `HKCU\Control Panel\Accessibility\HighContrast\Flags` 兜底读取；
+系统主题 / 强调色的跟随本身不受影响（那是 WinUI 与 `ThemeResource` 的职责）。
 
 ## 环境
 
