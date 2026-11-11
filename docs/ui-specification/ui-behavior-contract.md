@@ -458,14 +458,16 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行 2：空态摘要 | **只在没有表标签时** | 才让 `session` 一格出现：连接态显示连接名；启动态显示「未连接」+「驱动 N · 浏览会话 M」（合成一行 `未连接 · 驱动 N · 浏览会话 M`）。有表标签时一律不出现（表名 / 库在标签名里，事务在表格工具条里） | `src/shell.rs:1181-1207`、`src/startup.rs:240-245` |
 | 行 2 的排版约束 | — | 文案用**ASCII 冒号**（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线 | `src/shell.rs:909-917` |
 
-### 7.1 Windows 端（#169 连接面 / #171 元数据面）实现状态
+### 7.1 Windows 端（#169 连接面 / #171 元数据面 / #172 查询面）实现状态
 
-Windows 客户端在 #169 落地「连接面」、#171 落地「元数据面」（对象树、`Objects` 页、信息面板三态）。
+Windows 客户端在 #169 落地「连接面」、#171 落地「元数据面」（对象树、`Objects` 页、信息面板三态）、
+#172 落地「查询面」（查询标签、SQL 编辑器、执行 / 取消、结果网格与分批续拉）。
 本文件其余小节的口径仍然适用，下面只记录**这一片已经落地、以及仍被禁用**的入口，避免把计划当成已实现。
 #170 的视觉重做（工具条拆 `CommandBar`、种类入口改 `ToggleButton`、`TabView` 加 `SizeToContent`、状态栏
 两行重写、对象树自定义行模板）在真机上秒级崩溃（0x80040111，实测 5/5、3/3）后已**整体回退**，
-当前外壳是 #169 时代的稳定版；#171 只在**内容层**扩展（树的分组与分页、`Objects` 页表格、信息面板内容），
-不改工具条 / 标签条 / 状态栏的外形与控件类型。
+当前外壳是 #169 时代的稳定版；#171 与 #172 都只在**内容层**扩展（#171：树的分组与分页、`Objects` 页表格、
+信息面板内容；#172：查询页整体在代码里搭，`ShellView.xaml` 一行没改），不改工具条 / 标签条 / 状态栏的
+外形与控件类型——#172 对状态栏只换文案。
 
 | 入口 | Windows 现状 | 依据 |
 |---|---|---|
@@ -473,6 +475,13 @@ Windows 客户端在 #169 落地「连接面」、#171 落地「元数据面」�
 | 新建连接对话框 | MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；「测试连接」就地展示延迟与服务端版本；失败给「标题 + 后端文案 + 稳定错误码」；密码只进 Windows 凭据管理器，落盘只有 `credential_ref` | `Views/ConnectionDialog.xaml(.cs)`、`Connections/ConnectionForm.cs` |
 | 对象树 | `My Connections` → 已保存连接（徽标 未连接 / 连接中… / 已连接）→ **库**（展开连接时一次目录层 `ListNodes`，无过滤）→ `Tables` / `Views` / `Functions` / `Queries` 四个分组行（展开库本身 **0 次 RPC**）→ 对象（展开分组时一次带 `filter.kinds` 的 `ListNodes`）。**每层 200 条一页**（`MetadataLabels.PageSize`，与密度档无关；Linux 是 500），续拉走各自的 `page_token` + 「加载更多…」行。展开连接 / 分组时先出占位行「正在加载对象列表…」，失败出「读取失败：<文案>（<错误码>）」行，点该行即重试（不弹窗）。收起节点取消在途请求，已读内容保留（再展开 0 次 RPC）。`Functions` / `Queries` 只有入口：展开写一行「尚未实现（点开看说明，不发请求）」，0 次 RPC。表节点在本片是叶子（表下 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组尚未实现，见 §9） | `Views/ShellView.xaml.cs`（`RebuildTree` / `UpdateConnectedNodes` / `OnTreeExpanding` / `EnsureCatalogsAsync` / `EnsureGroupLoadedAsync` / `LoadTreePageAsync`）、`Workspace/MetadataModel.cs` |
 | `Objects` 固定页 | 选中库 / 分组 / 表后显示**三列表格**：`行号`（宽 `row_number_width`、右对齐、等宽字体）/ `名称`（宽 `column_width`）/ `类型`（表 / 视图 / 物化视图）；行高 `row_height_data`。`↑` / `↓` 移动、`Enter` 打开（同步信息面板，**不反写树的选中**）。状态行给「正在读取…」/「已加载 N 个对象（还有更多）」/「（这个库里没有这类对象）」/「读取失败：<文案>（<错误码>）」；只有服务端给了 `next_page_token` 才显示「加载更多…」。**不显示总数**（`PageInfo.total_size = 0` 只表示未知）。作用域没变（同库同组）不重发 `ListNodes` | `Views/ShellView.xaml`（`ObjectsPage` 容器）、`Views/ShellView.xaml.cs`（`RenderObjectsPage` / `LoadPageAsync` / `SelectObjectRow` / `OnObjectsKeyDown`） |
+| 查询标签（#172） | 标签条新增可关闭的 `查询 N` 页（`Objects` 固定页仍钉在首位、`IsClosable=false`，不占标签名额）；`Ctrl+T` 新建、`Ctrl+W` 关当前页、`Ctrl+Enter` 执行、`Ctrl+.` 取消；标签名后缀 `*` = 编辑器内容与「按下执行那一刻的编辑器内容」不同（v0.1 没有「保存查询」，标记的口径就是「未执行」）。上限 8 个查询页（与后端 `QueryClient.MaxConcurrentQueries` 对齐），超限时状态栏写「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，不弹假对话框 | `Views/ShellView.Query.cs`（`CreateQueryTab` / `WireQuerySurface` / `UpdateQueryTabHeader`） |
+| SQL 编辑器 | 页内自上而下：动作行（执行 / 取消同一入口，跑起来文案变「取消」）→ 行号沟 + 等宽多行 `TextBox`（`AcceptsReturn`、不折行、自动滚动条）→ 五态一行 → 结果表头 → 结果行区 → 「加载更多」。**有选中就只执行选中部分**（`TextBox.SelectionLength > 0`），否则执行全文；空 SQL 只提示「SQL 不能为空：请输入后按 Ctrl+Enter」，不清理已有结果。没有语法高亮也没有假装有（`TextBox` 就是纯文本） | `Views/ShellView.Query.cs`（`BuildQueryPage` / `OnQueryEditorKeyDown` / `QuerySql.SelectedOrAll`） |
+| 结果网格 | 列头「列名 · 原始类型」（没有类型信息时只写列名）+ 行号列（`row_number_width`，1 起、右对齐、等宽）+ 数据列（`column_width` 固定宽，超宽走横向滚动，不挤压信息面板）。**虚拟化**：只建视口内的行，上下用高度占位撑出总高；表头与行区横向同步滚动。首批来自 `Execute`，之后每批 **200 行**由滚动到接近末尾（距末行 ≤ 20 行）或点「加载更多」触发 `FetchBatch`；同一时刻最多一批在飞。多结果集在表头上一行写「结果集 K 段」（v0.1 恒为 1，K > 1 时补「只显示第 1 段」）。无结果集语句（UPDATE / DDL）写「影响 N 行」而不是假装有结果 | `Views/ShellView.Query.cs`（`RenderQueryHeader` / `RenderQueryRows` / `MaybePrefetch` / `FetchMoreAsync`）、`Workspace/QueryModel.cs` |
+| 结果区五态 | 互斥且都带稳定文案：`Loading`「正在执行…（等待首批数据）」/ `Empty`「尚未执行」或「空结果…」或「影响 N 行（无结果集）」/ `Error`「查询失败：<文案>（<错误码>）」/ `Cancelled`「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ `ReadOnly`「只读结果：服务端声明该结果集只读」或「查询结果网格在本版不支持编辑」。`Error` / `Cancelled` 下**保留已加载行** | `Workspace/QueryModel.cs`（`QueryViewState` / `QueryTabState.StateText`） |
+| 状态栏行 2（查询页） | 当前标签是查询页时 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与 `N 行 / 已取 M 行`（总数未知写 `?` 行——协议不返回总数，读完时 N = M，不编造）；行 1 的「取消」按钮只在执行中可点，重复点幂等（只写日志） | `Views/ShellView.Query.cs`（`ApplyQueryStatus`） |
+| 查询游标的 Close 时机 | 执行结束必 Close：① 重新执行前先 Close 上一个游标；② 取消 = `Cancel` 后 Close；③ 关页 = 取消在途请求后 Close；④ 读到底（`complete` / `has_more=false`）由服务端释放，句柄随即丢弃；⑤ 离开查询页时**若有在途执行**则取消并 Close（空闲游标保留，便于切回来继续「加载更多」，8 页上限保证不会超过 8 个并发游标）；⑥ 页面重建 / 窗口关闭时逐个 Close | `Views/ShellView.Query.cs`（`ReleaseCursorAsync` / `CloseHandleAsync` / `CloseAllQueryCursors`） |
+| QA 开关 `--qa-query=<sql>` | 后端就绪后连接 `--qa-signin` 指定的条目（否则第一条），**真的**新建查询页 → 执行 SQL → 首批回来即打 `[query]` 证据行（`tab` / `state` / `rows` / `columns` / `statements` / `has_more` / `read_only` / `query_id` / `columns=` / `first-row=` / `status=` / `open-cursors=`）；不给 `--qa-signin` 时随后关页（验证 Close）并打印 `[query] closed-tabs=` 后退出，给了则保持运行供截图 | `App.xaml.cs`（`RunQaQueryAsync`）、`Views/ShellView.Query.cs`（`ProbeQueryAsync`） |
 | 信息面板：连接 | 标题 = 连接名、副标题 = 驱动；字段行给驱动、地址（`host:port` / 文件路径）、默认库、用户、TLS、凭据引用（**不含密码**）、服务端版本、会话前 8 位；拿不到的字段不出现 | `Views/ShellView.xaml.cs`（`BuildConnectionInspector`） |
 | 信息面板：库 / 分组 | 标题 = 库名、副标题「库」；表 / 视图计数只来自**已展开**的分组层（没展开过就不出现） | 同上（`BuildCatalogInspector` / `TryLoadedGroupCount`） |
 | 信息面板：表 / 视图 | 顶部「DDL」/「表信息」两个**独立按钮**（不是 `ToggleButton`，也不是分段容器）：DDL = `GetDdl` 正文（等宽字体、不折行、横向滚动、可选中复制；`exact=false` 时正文上方一行琥珀警示 + 来源说明）；表信息 = 列（列名 / 类型 / 可空 / 主键标记，四列表头）。失败给「DDL 读取失败：<文案>（<错误码>）」/「列读取失败：…」，不是空面板；主键读不到时给一行说明且不画任何主键标记 | 同上（`BuildObjectInspector` / `AddDdlPane` / `AddInfoPane` / `LoadColumnsAsync` / `LoadDdlAsync`） |
@@ -575,4 +584,5 @@ Windows 客户端在 #169 落地「连接面」、#171 落地「元数据面」�
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
 | Windows 端连接面（#169） | 只有连接配置、测试连接、建立会话与对象树连接层；元数据树、查询面、表数据面尚未实现，入口保持禁用并在 tooltip 里逐项说明原因 | §7.1 |
 | Windows 端元数据面（#171） | 已实现对象树的库 / 分组 / 对象三层与 200 条分页、`Objects` 页三列表格、信息面板三态；仍未实现：表节点下的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组、工具条四个种类入口的联动、对象树搜索、表数据标签（`Enter` 只同步信息面板并在状态栏说明数据标签尚未实现）、`PageInfo.total_size` 不可用因而不显示总数 | §7.1 |
+| Windows 端查询面（#172） | 已实现查询标签（新建 / 关闭 / `*` 未执行标记 / 上限 8）、等宽多行编辑器 + 行号、选中优先执行、执行 / 取消（同一入口切换）、结果网格（列头 + 行号 + 视口虚拟化 + 横向同步）、200 行一批的 `Execute` + `FetchBatch` 续拉、五态与状态栏行 2 摘要。**未在 Windows 上构建 / 运行**：XAML 未变（查询页整体在代码里搭），但事件签名（`TabView.SelectionChanged` / `TabCloseRequested`）、`InputKeyboardSource.GetKeyStateForCurrentThread`（`Ctrl+.`）与行号沟滚动同步只在替身类型下过了类型检查 | §7.1 |
 | Windows 端 `Objects` 列头用「名称」 | 与 Linux 的「表名」是同**一列、同一含义**（该列也列视图，「表名」在 Windows 片按 issue 要求写成「名称」）；语料待统一 | §3、§7.1 |

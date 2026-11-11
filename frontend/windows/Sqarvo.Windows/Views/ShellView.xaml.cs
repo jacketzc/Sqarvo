@@ -58,8 +58,12 @@ public enum WorkspaceState
 /// <see cref="SelectionKind"/> 现算，任何地方都不另存「当前库 / 当前表」。
 /// </para>
 /// <para>
-/// 未实现的入口保持禁用，并在 tooltip 里**逐项**说明原因（不写统一一句「尚未实现」）：
-/// SQL 编辑器与查询标签、表数据标签、导出、表数据编辑都在后续工作包。禁止出现假连接、假行数、假耗时。
+/// #172 起工作区真的能用：查询标签（新建 / 关闭 / `*` 未执行标记）、SQL 编辑器 + 行号、执行 / 取消、
+/// 结果网格（视口虚拟化 + 200 行一批的续拉）与五态都在 <c>ShellView.Query.cs</c> 里；本文件只负责
+/// 把「新建查询」入口接到 <see cref="CreateQueryTab"/> 并把状态栏行 2 交给 <c>ApplyQueryStatus</c>。
+///
+/// 仍未实现的入口保持禁用，并在 tooltip 里**逐项**说明原因（不写统一一句「尚未实现」）：
+/// 表数据标签与编辑、导出、对象树搜索都在后续工作包。禁止出现假连接、假行数、假耗时。
 /// </para>
 /// <para>
 /// 尺寸全部来自 <see cref="Metrics"/>（构建期生成）：高度/字号在 XAML 里用
@@ -152,6 +156,7 @@ public sealed partial class ShellView : UserControl
 
         ApplyMetrics();
         WireMenu();
+        WireQuerySurface();
         SetWorkspaceState(WorkspaceState.Disconnected);
 
         _healthTimer = new DispatcherTimer { Interval = BackendSupervisor.HealthPollInterval };
@@ -166,7 +171,7 @@ public sealed partial class ShellView : UserControl
     /// <summary>当前工作区状态。</summary>
     public WorkspaceState State { get; private set; } = WorkspaceState.Disconnected;
 
-    /// <summary>标签数量（Objects 页恒为 1；查询标签要等后续工作包）。</summary>
+    /// <summary>标签数量（Objects 固定页 + 已打开的查询标签）。</summary>
     public int WorkspaceTabCount => WorkspaceTabs.TabItems.Count;
 
     /// <summary>侧栏当前宽度（DIP，等于布局里那一列的像素宽度）。</summary>
@@ -179,15 +184,23 @@ public sealed partial class ShellView : UserControl
 
     /// <summary>页面里跨越「重建」的临时状态（切密度档会整页重建）。</summary>
     /// <remarks>
-    /// 只带「用户选的标签」这种纯界面状态：后端状态、已连接的连接、状态栏文案都从
+    /// 只带「用户选的标签」与「查询编辑器里的 SQL」这种纯界面状态：后端状态、已连接的连接、状态栏文案都从
     /// <see cref="BackendSession"/> 重新渲染，不从快照里回放——否则重建后可能显示过期状态。
+    /// 结果集不随快照保存（重建后编辑器文本还在，但要重新执行才看得到行）。
     /// </remarks>
-    public sealed record ViewSnapshot(int SelectedTab);
+    public sealed record ViewSnapshot(int SelectedTab, IReadOnlyList<string>? QuerySql = null);
+
+    /// <summary>本页重建后待回放的查询标签与选中位置（要等 <c>OnLoaded</c> 拿到后端会话才能建）。</summary>
+    private IReadOnlyList<string>? _pendingQuerySql;
+
+    private int? _pendingSelectedTab;
 
     /// <summary>切密度档前收集状态。</summary>
-    public ViewSnapshot CaptureSnapshot() => new(WorkspaceTabs.SelectedIndex);
+    public ViewSnapshot CaptureSnapshot() => new(
+        WorkspaceTabs.SelectedIndex,
+        _queryTabs.Values.Select(tab => tab.Editor.Text ?? string.Empty).ToArray());
 
-    /// <summary>重建后回放状态。</summary>
+    /// <summary>重建后回放状态（查询标签在这里只记意图，真正建页在 <c>OnLoaded</c>）。</summary>
     public void RestoreSnapshot(ViewSnapshot? snapshot)
     {
         if (snapshot is null)
@@ -195,10 +208,8 @@ public sealed partial class ShellView : UserControl
             return;
         }
 
-        if (snapshot.SelectedTab >= 0 && snapshot.SelectedTab < WorkspaceTabs.TabItems.Count)
-        {
-            WorkspaceTabs.SelectedIndex = snapshot.SelectedTab;
-        }
+        _pendingQuerySql = snapshot.QuerySql;
+        _pendingSelectedTab = snapshot.SelectedTab;
     }
 
     /// <summary>切换工作区状态（三态互斥）。</summary>
@@ -280,6 +291,9 @@ public sealed partial class ShellView : UserControl
         CancelDetail();
         CancelAllTreeLoads();
 
+        // 查询游标不随页面一起消失：取消在途执行并逐个 Close（8 个并发名额不能悬着）。
+        CloseAllQueryCursors("页面重建或退出");
+
         if (!_lifetime.IsCancellationRequested)
         {
             _lifetime.Cancel();
@@ -308,6 +322,9 @@ public sealed partial class ShellView : UserControl
 
         RebuildTree();
         ApplyBackendState();
+
+        // 切密度档会整页重建：把重建前开着的查询标签按编辑器文本恢复（结果集不恢复，重新执行才有行）。
+        RestorePendingQueryTabs();
     }
 
     // ------------------------------------------------------------------ 渲染（唯一入口）
@@ -329,6 +346,19 @@ public sealed partial class ShellView : UserControl
         var selected = SelectedProfile();
 
         MenuNewConnection.IsEnabled = ready;
+
+        // 新建查询（工具条 / 菜单 / Ctrl+T 同一条判定）：后端已握手 **且** 有数据库会话（契约 §1.2）。
+        var hasSession = _session is { } live && live.OpenConnections.Count > 0;
+        var canQuery = ready && hasSession;
+        ButtonNewQuery.IsEnabled = canQuery;
+        MenuNewQueryTab.IsEnabled = canQuery;
+        var queryTip = canQuery
+            ? "新建查询标签（Ctrl+T）"
+            : !ready
+                ? "后端尚未就绪：握手完成且连接数据库后才能新建查询标签"
+                : "尚未连接数据库：先在左侧对象树里选中一条已保存的连接并连接";
+        ToolTipService.SetToolTip(ButtonNewQuery, queryTip);
+        ToolTipService.SetToolTip(MenuNewQueryTab, queryTip);
 
         var selectedConnected = selected is not null && _session?.IsConnected(selected.Key) == true;
         ButtonConnect.IsEnabled = ready && selected is not null && !selectedConnected;
@@ -369,6 +399,9 @@ public sealed partial class ShellView : UserControl
         }
 
         UpdateConnectedNodes();
+
+        // 状态栏行 2 的最终口径：当前标签是查询页时换成「SQL 摘要 + N 行 / 已取 M 行」。
+        ApplyQueryStatus();
     }
 
     private async void OnHealthTick(object? sender, object e)
@@ -762,14 +795,14 @@ public sealed partial class ShellView : UserControl
         ToolTipService.SetToolTip(MenuNewConnection, "新建 MariaDB 连接：保存并连接后对象树出现连接节点");
         ToolTipService.SetToolTip(
             MenuNewQueryTab,
-            "新建查询标签尚未实现：SQL 编辑器与查询标签在后续工作包，现在只有固定的 Objects 页");
+            "新建查询标签（Ctrl+T）：一个标签一个 SQL 编辑器，执行结果在标签内分批显示");
         ToolTipService.SetToolTip(
             MenuExportCsv,
-            "导出 CSV 尚未实现：还没有结果集可以导出（查询面在后续工作包）");
+            "导出 CSV 尚未实现：结果集导出在后续工作包（本片只做了查询与结果显示）");
 
         ToolTipService.SetToolTip(
             ButtonNewQuery,
-            "新建查询尚未实现：SQL 编辑器在后续工作包");
+            "新建查询标签（Ctrl+T）");
         ToolTipService.SetToolTip(
             ButtonTables,
             "工具条的种类入口尚未接线：先在对象树里点开某个库的 Tables 分组（本片只做了树与 Objects 页）");
@@ -792,14 +825,14 @@ public sealed partial class ShellView : UserControl
         ToolTipService.SetToolTip(ButtonRowDelete, "删除行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
         ToolTipService.SetToolTip(ButtonRowApply, "应用修改尚未实现：表数据编辑在后续工作包（没有待提交的脏行）");
         ToolTipService.SetToolTip(ButtonRowRevert, "撤销修改尚未实现：表数据编辑在后续工作包（没有待撤销的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：元数据与结果集刷新在后续工作包");
-        ToolTipService.SetToolTip(ButtonRowCancel, "取消查询尚未实现：查询面在后续工作包");
+        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：表数据放在后续工作包（查询页用 Ctrl+Enter 重新执行）");
+        // 「取消」在查询页执行中由 ApplyQueryStatus 逐个刷新可用性与原因；这里是启动态的默认文案。
+        ToolTipService.SetToolTip(ButtonRowCancel, "取消：当前没有执行中的查询");
 
         MenuQuit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         MenuAbout.Click += OnAboutClick;
         MenuNewConnection.Click += async (_, _) => await ShowNewConnectionDialogAsync();
-        MenuNewQueryTab.Click += (_, _) => NotifyNotImplemented(
-            "新建查询标签尚未实现：SQL 编辑器在后续工作包");
+        MenuNewQueryTab.Click += (_, _) => CreateQueryTab();
         MenuExportCsv.Click += (_, _) => NotifyNotImplemented(
             "导出 CSV 尚未实现：还没有结果集可以导出");
 
@@ -811,8 +844,7 @@ public sealed partial class ShellView : UserControl
             }
         };
 
-        ButtonNewQuery.Click += (_, _) => NotifyNotImplemented(
-            "新建查询尚未实现：SQL 编辑器在工作包后续");
+        ButtonNewQuery.Click += (_, _) => CreateQueryTab();
 
         ObjectTree.ItemInvoked += OnTreeItemInvoked;
         ObjectTree.SelectionChanged += OnTreeSelectionChanged;
@@ -948,8 +980,9 @@ public sealed partial class ShellView : UserControl
                 $"驱动：{state.Drivers.Count} 个" +
                 (state.Drivers.Count == 0 ? string.Empty : "（" + string.Join("、", DriverLabels(state)) + "）") + "\n" +
                 "已实现：连接配置、测试连接、建立/断开会话、对象树（库 / 分组 / 对象，分页 200）、\n" +
-                "Objects 页三列表格、信息面板（连接 / 库 / 表，DDL 与列信息）。\n" +
-                "未实现：SQL 编辑器与结果集、表数据标签与编辑、导出、对象树搜索。\n" +
+                "Objects 页三列表格、信息面板（连接 / 库 / 表，DDL 与列信息）、\n" +
+                "查询标签（SQL 编辑器 + 行号、执行 / 取消、结果分批 200 行）、结果网格（虚拟化 + 加载更多）。\n" +
+                "未实现：表数据标签与编辑、导出、对象树搜索。\n" +
                 $"当前密度档：{Metrics.TierLabel}",
             CloseButtonText = "关闭",
             XamlRoot = XamlRoot,

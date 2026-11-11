@@ -38,7 +38,8 @@ public sealed class AppOptions
         string? qaMetadata,
         string? qaCatalog,
         bool noBackend,
-        string? qaSignIn)
+        string? qaSignIn,
+        string? qaQuery)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -51,6 +52,7 @@ public sealed class AppOptions
         QaCatalog = qaCatalog;
         NoBackend = noBackend;
         QaSignIn = qaSignIn;
+        QaQuery = qaQuery;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -106,6 +108,17 @@ public sealed class AppOptions
     /// </summary>
     public string? QaSignIn { get; }
 
+    /// <summary>
+    /// QA 专用：<c>--qa-query=&lt;sql&gt;</c>。后端就绪后连接该条目（<c>--qa-signin</c> 给出目标，否则取第一条），
+    /// 然后**真的**新建一个查询标签、执行这条 SQL，等首批回来就把 <c>[query]</c> 证据打到 stdout；
+    /// 与 <c>--qa-signin</c> 合用（它本身就是「保持运行供截图」的开关）时窗口留着供截图，否则打完就退出。
+    /// </summary>
+    /// <remarks>
+    /// 存在的理由与 <see cref="QaMetadata"/> 相同：远程构建机上没有可靠的 UI 自动化，而「执行 SQL 真的能拿到
+    /// 结果」「游标真的被 Close」必须被验证。它走与用户点击完全相同的路径（建标签 → Execute → 首批 → 渲染）。
+    /// </remarks>
+    public string? QaQuery { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -137,6 +150,7 @@ public sealed class AppOptions
             qaCatalog: Value(commandLine, "--qa-catalog="),
             noBackend: flags.Contains("no-backend"),
             qaSignIn: Value(commandLine, "--qa-signin="),
+            qaQuery: Value(commandLine, "--qa-query="),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -172,5 +186,6 @@ public sealed class AppOptions
         "--qa-metadata=<连接名称|@first>（可选 --qa-catalog=<库名>；配合 SQARVO_QA_PASSWORD）",
         "--no-backend 只开窗、不启动后端（隔离崩溃源）",
         "--qa-signin=<连接名称|@first>（写凭据 + 连接后保持运行，供截图）",
+        "--qa-query=<sql>（配合 --qa-signin 指定连接：建查询页 + 执行 SQL，打 [query] 证据）",
     };
 }
