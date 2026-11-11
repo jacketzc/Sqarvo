@@ -205,8 +205,15 @@ public sealed partial class ShellView : UserControl
             _session.StateChanged += OnBackendStateChanged;
         }
 
-        _ = LoadProfilesAsync();
-        CrashLog.Trace("shell.loaded.profiles");
+        if (!string.Equals(Environment.GetEnvironmentVariable("SQARVO_NO_PROFILES"), "1", StringComparison.Ordinal))
+        {
+            _ = LoadProfilesAsync();
+            CrashLog.Trace("shell.loaded.profiles");
+        }
+        else
+        {
+            CrashLog.Trace("shell.loaded.profiles-skipped");
+        }
         ApplyBackendState();
         CrashLog.Trace("shell.loaded.done");
     }
@@ -416,6 +423,12 @@ public sealed partial class ShellView : UserControl
     /// </remarks>
     private static object BuildConnectionRow(ConnectionProfile profile, string badge)
     {
+        if (string.Equals(Environment.GetEnvironmentVariable("SQARVO_SAFE_TREE"), "1", StringComparison.Ordinal))
+        {
+            CrashLog.Trace("tree.safe-mode");
+            return $"{profile.Name} · {badge}";
+        }
+
         try
         {
             var row = new ConnectionRow { Tag = profile };
