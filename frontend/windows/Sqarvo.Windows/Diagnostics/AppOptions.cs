@@ -35,6 +35,8 @@ public sealed class AppOptions
         bool selfTestWindow,
         string? qaTier,
         string? qaConnect,
+        string? qaMetadata,
+        string? qaCatalog,
         bool noBackend)
     {
         ReportTheme = reportTheme;
@@ -44,6 +46,8 @@ public sealed class AppOptions
         SelfTestWindow = selfTestWindow;
         QaTier = qaTier;
         QaConnect = qaConnect;
+        QaMetadata = qaMetadata;
+        QaCatalog = qaCatalog;
         NoBackend = noBackend;
     }
 
@@ -72,6 +76,21 @@ public sealed class AppOptions
     /// 因此这一趟同时验证了 Credential Manager。
     /// </remarks>
     public string? QaConnect { get; }
+
+    /// <summary>
+    /// QA 专用：<c>--qa-metadata=&lt;名称|@first&gt;</c>。后端就绪后连接该条目，然后**真的**展开
+    /// 对象树（库 → Tables → 第一张表）并把每一层的计数与列名打到 <c>[metadata]</c> 行；
+    /// 与 <c>--report-shell</c> 同时给出时，随后打印的那棵控件树就是「展开后的树 + 已填充的 Objects 页」。
+    /// </summary>
+    /// <remarks>
+    /// 存在的理由与 <see cref="QaConnect"/> 相同：远程构建机上没有可靠的 UI 自动化，而「元数据真的
+    /// 拉到了没有」必须被验证。它走的是与用户点击完全相同的加载路径，不是另一套快路径。
+    /// 密码同样来自环境变量 <c>SQARVO_QA_PASSWORD</c>（可选：已有凭据引用时不必给）。
+    /// </remarks>
+    public string? QaMetadata { get; }
+
+    /// <summary>QA 专用：<c>--qa-catalog=&lt;库名&gt;</c>，给 <c>--qa-metadata</c> 指定要展开的库（省略时取第一个可见库）。</summary>
+    public string? QaCatalog { get; }
 
     /// <summary>
     /// QA 专用：<c>--no-backend</c>。只开窗、不启动后端，用来隔离「界面自身」与「后端就绪后的接线」
@@ -106,6 +125,8 @@ public sealed class AppOptions
             reportShell: flags.Contains("report-shell"),
             selfTestWindow: flags.Contains("self-test-window"),
             qaConnect: Value(commandLine, "--qa-connect="),
+            qaMetadata: Value(commandLine, "--qa-metadata="),
+            qaCatalog: Value(commandLine, "--qa-catalog="),
             noBackend: flags.Contains("no-backend"),
             qaTier: commandLine
                 .Skip(1)
@@ -139,6 +160,7 @@ public sealed class AppOptions
         "--self-test-window",
         "--qa-tier=<compact|comfortable|large>",
         "--qa-connect=<连接名称|@first>（配合环境变量 SQARVO_QA_PASSWORD）",
+        "--qa-metadata=<连接名称|@first>（可选 --qa-catalog=<库名>；配合 SQARVO_QA_PASSWORD）",
         "--no-backend 只开窗、不启动后端（隔离崩溃源）",
     };
 }

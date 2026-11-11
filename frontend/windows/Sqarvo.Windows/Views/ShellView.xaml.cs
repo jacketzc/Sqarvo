@@ -3,7 +3,10 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Sqarvo.Common.V1;
 using Sqarvo.Core.Process;
+using Sqarvo.Services.V1;
 using Sqarvo.Windows.Connections;
 using Sqarvo.Windows.Diagnostics;
 using Sqarvo.Windows.Layout;
@@ -12,6 +15,8 @@ using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.System;
@@ -42,19 +47,31 @@ public enum WorkspaceState
 /// <c>DispatcherTimer</c> 每 <see cref="BackendSupervisor.HealthPollInterval"/> 拉一次。
 /// </para>
 /// <para>
+/// #171 起对象树接上真实元数据：<c>My Connections</c> → 连接 → 库（catalogs）→
+/// <c>Tables</c> / <c>Views</c> / <c>Functions</c> / <c>Queries</c> 分组 → 对象。展开连接发一次目录层
+/// <c>ListNodes</c>，展开分组发一次带 <c>filter.kinds</c> 的 <c>ListNodes</c>，每层 200 条一页、
+/// 各带自己的 <c>page_token</c>；展开库本身 0 次 RPC（只建四个分组行）。
+/// </para>
+/// <para>
+/// **单向数据流**：树选中 / Objects 页行选中 → <see cref="MetadataSelection"/>（唯一一份选中状态）
+/// → Objects 页内容 + 信息面板内容。页面作用域由 <see cref="ObjectsScope.For"/> 现算，信息面板由
+/// <see cref="SelectionKind"/> 现算，任何地方都不另存「当前库 / 当前表」。
+/// </para>
+/// <para>
 /// 未实现的入口保持禁用，并在 tooltip 里**逐项**说明原因（不写统一一句「尚未实现」）：
-/// 对象树分组/分页与元数据是 #170，SQL 编辑器与标签是 #171，导出与表数据编辑在其后。
-/// 禁止出现假连接、假行数、假耗时。
+/// SQL 编辑器与查询标签、表数据标签、导出、表数据编辑都在后续工作包。禁止出现假连接、假行数、假耗时。
 /// </para>
 /// <para>
 /// 尺寸全部来自 <see cref="Metrics"/>（构建期生成）：高度/字号在 XAML 里用
 /// <c>{StaticResource Size.*}</c>，宽度与 <c>Thickness</c> 这类结构体在
-/// <see cref="ApplyMetrics"/> 里从 Metrics 取。
+/// <see cref="ApplyMetrics"/> 里从 Metrics 取；颜色只用 <c>ThemeResource</c>（代码里经
+/// <see cref="ThemeBrush"/> 取同一批 token）。
 /// </para>
 /// <para>
 /// #168：侧栏与信息面板可拖。拖动只在**本类**里改布局（每帧钳到档位区间），
-/// 松手后才通过 <see cref="PanelWidthsChanged"/> 交给窗口层归一化写盘——
-/// 拖动过程中不碰磁盘，也不改 <see cref="Metrics"/>。
+/// 松手后才通过 <see cref="PanelWidthsChanged"/> 交给窗口层归一化写盘——拖动过程中不碰磁盘，
+/// 也不改 <see cref="Metrics"/>。#170 的视觉重做在真机上秒级崩溃后已整体回退，本类只在
+/// **内容层**扩展，不动工具条 / 标签条 / 状态栏的外形与控件类型。
 /// </para>
 /// </remarks>
 public sealed partial class ShellView : UserControl
@@ -65,16 +82,23 @@ public sealed partial class ShellView : UserControl
 
     private readonly WindowState _state;
 
-    /// <summary>
-    /// 连接节点下的加载态占位（子树在 #170 接通元数据前是空的，但状态必须可见）。
-    /// </summary>
-    private const string LoadingPlaceholder = "正在加载对象列表…（元数据服务随后续工作包接通，子树暂为空）";
+    /// <summary>树上的加载态占位行（连接层与分组层共用同一句文案）。</summary>
+    private const string LoadingPlaceholder = "正在加载对象列表…";
+
+    /// <summary>还有下一页时的续拉行。</summary>
+    private const string LoadMoreText = "加载更多…";
 
     private readonly ConnectionStore _store;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Dictionary<string, TreeViewNode> _nodes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _connectingKeys = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _healthTimer;
+
+    /// <summary>每个可展开节点的分页 / 加载状态（引用键：节点被丢掉时整条一起丢）。</summary>
+    private readonly Dictionary<TreeViewNode, NodeLoad> _loads = new();
+
+    /// <summary>占位 / 续拉 / 错误行的归属节点（点击这些行时要知道该给谁续页）。</summary>
+    private readonly Dictionary<TreeRow, TreeViewNode> _rowOwners = new();
 
     private BackendSession? _session;
     private IReadOnlyList<ConnectionProfile> _profiles = Array.Empty<ConnectionProfile>();
@@ -83,6 +107,29 @@ public sealed partial class ShellView : UserControl
     private bool _dialogOpen;
     private bool _connecting;
     private bool _healthInFlight;
+
+    /// <summary>唯一一份选中状态：树、Objects 页、信息面板都从这里派生。</summary>
+    private MetadataSelection _selection = MetadataSelection.None;
+
+    /// <summary>Objects 页当前作用域的数据（换作用域整体替换；同作用域保留行）。</summary>
+    private ObjectsPageState? _objects;
+
+    /// <summary>信息面板当前对象的数据。</summary>
+    private ObjectDetail? _detail;
+
+    /// <summary>Objects 页里被高亮的行（-1 = 没有；高亮属于上一次浏览，树选中变化即清）。</summary>
+    private int _objectsRow = -1;
+
+    /// <summary>信息面板当前页：<see langword="true"/> = DDL（默认），<see langword="false"/> = 表信息。</summary>
+    private bool _ddlPane = true;
+
+    /// <summary>信息面板的「看的是谁」：同键不重发 GetColumns / GetDdl。</summary>
+    private string _detailKey = string.Empty;
+
+    private CancellationTokenSource? _pageCts;
+    private CancellationTokenSource? _detailCts;
+    private Task _pageTask = Task.CompletedTask;
+    private Task _detailTask = Task.CompletedTask;
 
     /// <summary>用户点了「文件 → 退出」。</summary>
     public event EventHandler? QuitRequested;
@@ -116,7 +163,7 @@ public sealed partial class ShellView : UserControl
     /// <summary>当前工作区状态。</summary>
     public WorkspaceState State { get; private set; } = WorkspaceState.Disconnected;
 
-    /// <summary>标签数量（Objects 页恒为 1；查询标签要等 #171）。</summary>
+    /// <summary>标签数量（Objects 页恒为 1；查询标签要等后续工作包）。</summary>
     public int WorkspaceTabCount => WorkspaceTabs.TabItems.Count;
 
     /// <summary>侧栏当前宽度（DIP，等于布局里那一列的像素宽度）。</summary>
@@ -155,10 +202,24 @@ public sealed partial class ShellView : UserControl
     public void SetWorkspaceState(WorkspaceState state)
     {
         State = state;
-        StateDisconnected.Visibility = state == WorkspaceState.Disconnected ? Visibility.Visible : Visibility.Collapsed;
-        StateLoading.Visibility = state == WorkspaceState.Loading ? Visibility.Visible : Visibility.Collapsed;
-        StateEmpty.Visibility = state == WorkspaceState.Empty ? Visibility.Visible : Visibility.Collapsed;
-        ObjectsPage.Visibility = state == WorkspaceState.Empty ? Visibility.Visible : Visibility.Collapsed;
+        ApplyWorkspaceVisibility();
+    }
+
+    /// <summary>
+    /// 按当前状态与选中决定「页面 / 空态」谁可见。
+    /// </summary>
+    /// <remarks>
+    /// 空态页只在**没有作用域选中**时盖在 Objects 页上（「没有选中对象」）；选中了库 / 分组 / 表之后
+    /// 必须让表格可见，否则列表永远被那层说明挡住——这是 #171 之前最容易漏的一处。
+    /// </remarks>
+    private void ApplyWorkspaceVisibility()
+    {
+        StateDisconnected.Visibility = State == WorkspaceState.Disconnected ? Visibility.Visible : Visibility.Collapsed;
+        StateLoading.Visibility = State == WorkspaceState.Loading ? Visibility.Visible : Visibility.Collapsed;
+
+        var empty = State == WorkspaceState.Empty;
+        ObjectsPage.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        StateEmpty.Visibility = empty && !_selection.HasScope ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>把一条「为什么这个入口不可用」的说明写进状态栏（不弹假对话框）。</summary>
@@ -176,6 +237,9 @@ public sealed partial class ShellView : UserControl
         ToolTipService.SetToolTip(WorkspaceTabs, tip);
         AutomationProperties.SetName(WorkspaceTabs, $"工作区标签 · {tip}");
     }
+
+    /// <summary>重新按 <see cref="BackendState"/> 渲染一次（窗口层 / 壳外建立连接后调）。</summary>
+    public void RefreshFromBackend() => ApplyBackendState();
 
     // ------------------------------------------------------------------ 生命周期
 
@@ -208,7 +272,11 @@ public sealed partial class ShellView : UserControl
             _session.StateChanged -= OnBackendStateChanged;
         }
 
-        // 页面被重建（切密度档）或窗口关闭：取消在途 RPC，避免回调打到已经不在树上的控件。
+        // 页面被重建（切密度档）或窗口关闭：取消所有在途 RPC，避免回调打到已经不在树上的控件。
+        CancelPage();
+        CancelDetail();
+        CancelAllTreeLoads();
+
         if (!_lifetime.IsCancellationRequested)
         {
             _lifetime.Cancel();
@@ -331,9 +399,22 @@ public sealed partial class ShellView : UserControl
             return;
         }
 
+        CancelAllTreeLoads();
+        _loads.Clear();
+        _rowOwners.Clear();
+        _nodes.Clear();
+
+        // 重建树 = 上一次浏览的位置与内容都作废：选中回到空态，页面与面板一起清空。
+        _selection = MetadataSelection.None;
+        _detailKey = string.Empty;
+        _objects = null;
+        _detail = null;
+        _objectsRow = -1;
+        CancelPage();
+        CancelDetail();
+
         var root = ObjectTree.RootNodes[0];
         root.Children.Clear();
-        _nodes.Clear();
 
         foreach (var profile in _profiles)
         {
@@ -349,9 +430,12 @@ public sealed partial class ShellView : UserControl
         }
 
         root.IsExpanded = true;
+        RenderObjectsPage();
+        RenderInspector();
+        ApplyWorkspaceVisibility();
     }
 
-    /// <summary>刷新每个连接节点的徽标与「加载态」子树（不重建节点，展开状态与选中都保留）。</summary>
+    /// <summary>刷新每个连接节点的徽标与子树入口（不重建节点，展开状态与选中都保留）。</summary>
     private void UpdateConnectedNodes()
     {
         foreach (var profile in _profiles)
@@ -370,12 +454,22 @@ public sealed partial class ShellView : UserControl
 
             if (connected && node.Children.Count == 0)
             {
-                node.Children.Add(new TreeViewNode { Content = LoadingPlaceholder });
-                node.IsExpanded = true;
+                // 连上就先挂一行占位，让节点可展开；真正的目录层请求由 Expanding 触发（也可由
+                // 这里直接发起——节点原本就已经展开时不会再收到 Expanding）。
+                AddChild(node, PlaceholderNode());
+                if (!node.IsExpanded)
+                {
+                    node.IsExpanded = true;
+                }
+
+                _ = EnsureCatalogsAsync(node);
             }
             else if (!connected && node.Children.Count > 0)
             {
+                CancelNodeLoad(node);
+                _loads.Remove(node);
                 node.Children.Clear();
+                node.IsExpanded = false;
             }
         }
     }
@@ -394,15 +488,30 @@ public sealed partial class ShellView : UserControl
         ObjectTree.SelectedNode?.Content is ConnectionNode node ? node.Profile : null;
 
     private void OnTreeSelectionChanged(TreeView sender, TreeViewSelectionChangedEventArgs args)
-        => ApplyBackendState();
+    {
+        ApplyBackendState();
+        Select(SelectionFromTree());
+    }
 
     private async void OnTreeItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {
-        if (args.InvokedItem is not ConnectionNode node)
+        switch (args.InvokedItem)
         {
-            return;
-        }
+            case ConnectionNode node:
+                await InvokeConnectionAsync(node);
+                return;
 
+            case TreeRow row:
+                InvokeTreeRow(row);
+                return;
+
+            default:
+                return;
+        }
+    }
+
+    private async Task InvokeConnectionAsync(ConnectionNode node)
+    {
         var profile = node.Profile;
 
         // 已连接 → 展开/收起（与 Linux 客户端同一个交互）；未连接 → 用已保存的凭据连接。
@@ -419,47 +528,72 @@ public sealed partial class ShellView : UserControl
         await ConnectProfileAsync(profile);
     }
 
-    private async Task ConnectProfileAsync(ConnectionProfile profile)
+    /// <summary>占位 / 续拉 / 错误行被点击或回车时的动作。</summary>
+    private void InvokeTreeRow(TreeRow row)
     {
-        if (_session is null || _connecting)
+        if (!_rowOwners.TryGetValue(row, out var owner))
         {
             return;
         }
 
-        if (!_session.State.IsReady)
+        switch (row.Kind)
         {
-            _notice = $"本地后端尚未就绪：{_session.State.Message}";
-            ApplyBackendState();
+            case TreeRowKind.LoadMore:
+                _ = LoadNextTreePageAsync(owner);
+                break;
+
+            case TreeRowKind.Error:
+                // 失败行本身就是重试入口：不弹窗，重新发这一层的第一页。
+                _loads.Remove(owner);
+                _ = LoadNodeFromScratchAsync(owner);
+                break;
+        }
+    }
+
+    /// <summary>展开某一行时按需拉这一层（已读过则 0 次 RPC，复用已有子节点）。</summary>
+    private void OnTreeExpanding(TreeView sender, TreeViewExpandingEventArgs args)
+    {
+        if (args.Node is not { } node)
+        {
             return;
         }
 
-        _connecting = true;
-        _connectingKeys.Add(profile.Key);
-        _notice = $"正在连接 {profile.Name}…";
-        ApplyBackendState();
+        if (node.Content is ConnectionNode)
+        {
+            _ = EnsureCatalogsAsync(node);
+            return;
+        }
 
-        try
+        if (node.Content is TreeRow { Kind: TreeRowKind.Group } && !IsNodeLoaded(node))
         {
-            var open = await _session.ConnectAsync(profile, _lifetime.Token);
-            var version = string.IsNullOrWhiteSpace(open.ServerVersion) ? "未知" : open.ServerVersion;
-            _notice = $"{profile.Name} 已连接：驱动 {open.DriverId} · 服务端 {version}";
+            _ = EnsureGroupLoadedAsync(node);
+        }
+    }
 
-            // 立刻刷一次健康，让状态栏的「浏览会话」马上反映新会话（不必等 5 秒）。
-            await _session.RefreshHealthAsync(_lifetime.Token);
-        }
-        catch (OperationCanceledException)
+    /// <summary>收起某一行：**取消在途请求**，已读内容保留（再展开不重发）。</summary>
+    private void OnTreeCollapsed(TreeView sender, TreeViewCollapsedEventArgs args)
+    {
+        if (args.Node is { } node)
         {
-            _notice = null;
+            CancelNodeLoad(node);
         }
-        catch (Exception error)
+    }
+
+    private bool IsNodeLoaded(TreeViewNode node) => _loads.TryGetValue(node, out var load) && load.Loaded;
+
+    private void CancelNodeLoad(TreeViewNode node)
+    {
+        if (_loads.TryGetValue(node, out var load))
         {
-            _notice = $"{profile.Name} 连接失败：{SqarvoFailure.FromException(error)}";
+            load.Cts?.Cancel();
         }
-        finally
+    }
+
+    private void CancelAllTreeLoads()
+    {
+        foreach (var load in _loads.Values)
         {
-            _connecting = false;
-            _connectingKeys.Remove(profile.Key);
-            ApplyBackendState();
+            load.Cts?.Cancel();
         }
     }
 
@@ -566,6 +700,10 @@ public sealed partial class ShellView : UserControl
         ObjectsTab.MinHeight = Metrics.TabStripHeight;
         ObjectsPage.Padding = new Thickness(Metrics.GridPaddingStart, 0, Metrics.GridPaddingEnd, 0);
 
+        // 标题 / 状态行与表格之间的留白（同一套度量：grid_padding_end = 3 / 4 / 5）。
+        ObjectsTitle.Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd);
+        ObjectsStatus.Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd);
+
         MenuBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
         ToolbarBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
         StatusBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
@@ -579,44 +717,44 @@ public sealed partial class ShellView : UserControl
         ToolTipService.SetToolTip(MenuNewConnection, "新建 MariaDB 连接：保存并连接后对象树出现连接节点");
         ToolTipService.SetToolTip(
             MenuNewQueryTab,
-            "新建查询标签尚未实现：SQL 编辑器与查询标签在工作包 #171，现在只有固定的 Objects 页");
+            "新建查询标签尚未实现：SQL 编辑器与查询标签在后续工作包，现在只有固定的 Objects 页");
         ToolTipService.SetToolTip(
             MenuExportCsv,
-            "导出 CSV 尚未实现：还没有结果集可以导出（查询面 #171 之后）");
+            "导出 CSV 尚未实现：还没有结果集可以导出（查询面在后续工作包）");
 
         ToolTipService.SetToolTip(
             ButtonNewQuery,
-            "新建查询尚未实现：SQL 编辑器在工作包 #171");
+            "新建查询尚未实现：SQL 编辑器在后续工作包");
         ToolTipService.SetToolTip(
             ButtonTables,
-            "Tables 列表尚未实现：对象树分组与元数据列表在工作包 #170");
+            "工具条的种类入口尚未接线：先在对象树里点开某个库的 Tables 分组（本片只做了树与 Objects 页）");
         ToolTipService.SetToolTip(
             ButtonViews,
-            "Views 列表尚未实现：对象树分组与元数据列表在工作包 #170");
+            "工具条的种类入口尚未接线：先在对象树里点开某个库的 Views 分组（本片只做了树与 Objects 页）");
         ToolTipService.SetToolTip(
             ButtonFunctions,
-            "Functions 列表尚未实现：对象树分组与元数据列表在工作包 #170");
+            "Functions 列表尚未实现：契约里没有函数层的列表拉取（树里该分组只写说明，不发请求）");
         ToolTipService.SetToolTip(
             ButtonQueries,
-            "Queries 列表尚未实现：需要查询标签（工作包 #171）");
+            "Queries 列表尚未实现：本版没有「已保存的查询」这一层");
 
         ToolTipService.SetToolTip(
             TreeSearchBox,
-            "对象树搜索尚未实现：随元数据树（工作包 #170）一起提供");
+            "对象树搜索尚未实现：在后续工作包提供（服务端 filter.name.contains 已就绪）");
 
         // 状态栏行操作：表数据编辑与查询面都在后续工作包；逐个说明，不合并成一句。
         ToolTipService.SetToolTip(ButtonRowAdd, "新增行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
         ToolTipService.SetToolTip(ButtonRowDelete, "删除行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
         ToolTipService.SetToolTip(ButtonRowApply, "应用修改尚未实现：表数据编辑在后续工作包（没有待提交的脏行）");
         ToolTipService.SetToolTip(ButtonRowRevert, "撤销修改尚未实现：表数据编辑在后续工作包（没有待撤销的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：元数据与结果集刷新随工作包 #170 / #171");
-        ToolTipService.SetToolTip(ButtonRowCancel, "取消查询尚未实现：查询面在工作包 #171");
+        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：元数据与结果集刷新在后续工作包");
+        ToolTipService.SetToolTip(ButtonRowCancel, "取消查询尚未实现：查询面在后续工作包");
 
         MenuQuit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         MenuAbout.Click += OnAboutClick;
         MenuNewConnection.Click += async (_, _) => await ShowNewConnectionDialogAsync();
         MenuNewQueryTab.Click += (_, _) => NotifyNotImplemented(
-            "新建查询标签尚未实现：SQL 编辑器在工作包 #171");
+            "新建查询标签尚未实现：SQL 编辑器在后续工作包");
         MenuExportCsv.Click += (_, _) => NotifyNotImplemented(
             "导出 CSV 尚未实现：还没有结果集可以导出");
 
@@ -629,7 +767,7 @@ public sealed partial class ShellView : UserControl
         };
 
         ButtonNewQuery.Click += (_, _) => NotifyNotImplemented(
-            "新建查询尚未实现：SQL 编辑器在工作包 #171");
+            "新建查询尚未实现：SQL 编辑器在工作包后续");
 
         ObjectTree.ItemInvoked += OnTreeItemInvoked;
         ObjectTree.SelectionChanged += OnTreeSelectionChanged;
@@ -764,8 +902,9 @@ public sealed partial class ShellView : UserControl
                 $"后端版本：{version}\n" +
                 $"驱动：{state.Drivers.Count} 个" +
                 (state.Drivers.Count == 0 ? string.Empty : "（" + string.Join("、", DriverLabels(state)) + "）") + "\n" +
-                "已实现：连接配置、测试连接、建立/断开会话、对象树连接层。\n" +
-                "未实现：元数据树（#170）、SQL 编辑器与结果集（#171）、表数据编辑与导出。\n" +
+                "已实现：连接配置、测试连接、建立/断开会话、对象树（库 / 分组 / 对象，分页 200）、\n" +
+                "Objects 页三列表格、信息面板（连接 / 库 / 表，DDL 与列信息）。\n" +
+                "未实现：SQL 编辑器与结果集、表数据标签与编辑、导出、对象树搜索。\n" +
                 $"当前密度档：{Metrics.TierLabel}",
             CloseButtonText = "关闭",
             XamlRoot = XamlRoot,
@@ -780,11 +919,5 @@ public sealed partial class ShellView : UserControl
         {
             yield return driver.Label;
         }
-    }
-
-    /// <summary>树里的连接节点内容：文本即 <see cref="ToString"/>，徽标随连接状态变。</summary>
-    private sealed record ConnectionNode(ConnectionProfile Profile, string Badge)
-    {
-        public override string ToString() => $"{Profile.Name} · {Badge}";
     }
 }
