@@ -38,7 +38,8 @@ use zbus::blocking::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue, Value};
 
 use super::{
-    APPLICATION_ID, CredentialStore, ITEM_LABEL, Secret, not_found_error, validate_reference,
+    APPLICATION_ID, CredentialStore, ITEM_LABEL, Secret, not_found_error, validate_profile,
+    validate_reference,
 };
 
 /// Secret Service 的已知名。
@@ -67,9 +68,6 @@ const PROP_ATTRIBUTES: &str = "org.freedesktop.Secret.Item.Attributes";
 
 /// Secret Service 用来表示「没有对象/没有提示」的对象路径。
 const NONE_PATH: &str = "/";
-
-/// 档案名最大长度：只是防止把路径或连接串误当档案名写进密钥环属性。
-const MAX_PROFILE_LEN: usize = 64;
 
 /// Linux Secret Service 凭据存储。
 ///
@@ -340,20 +338,6 @@ fn decode_secret(bytes: &[u8]) -> Result<Secret> {
         Err(_) => Err(precondition_error(
             "系统凭据库中的凭据内容不是合法的 UTF-8 文本，请在应用内重新保存该连接的密码",
         )),
-    }
-}
-
-fn validate_profile(profile: &str) -> Result<()> {
-    let valid = !profile.is_empty()
-        && profile.len() <= MAX_PROFILE_LEN
-        && !profile.chars().any(char::is_control);
-    if valid {
-        Ok(())
-    } else {
-        Err(Error::invalid_argument(
-            ErrorCode::CONFIG_INVALID,
-            "用户档案名不合法：不能为空、不能超过 64 字节、不能包含控制字符",
-        ))
     }
 }
 
@@ -679,7 +663,8 @@ mod tests {
     #[test]
     fn profile_is_validated() {
         assert!(validate_profile("default").is_ok());
-        for profile in ["", "with\nnewline", &"x".repeat(MAX_PROFILE_LEN + 1)] {
+        let too_long = "x".repeat(crate::credentials::MAX_PROFILE_LEN + 1);
+        for profile in ["", "with\nnewline", too_long.as_str()] {
             let error = validate_profile(profile).unwrap_err();
             assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
         }

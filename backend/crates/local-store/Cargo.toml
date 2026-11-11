@@ -20,6 +20,22 @@ uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus.workspace = true
 
+# Windows 需要两件系统 API：端点文件/目录的显式 DACL（`SetNamedSecurityInfoW`、
+# `ConvertStringSecurityDescriptorToSecurityDescriptorW`、token 查 SID）与 Windows
+# Credential Manager（`CredWriteW` / `CredReadW` / `CredDeleteW`）。
+#
+# 只在 `cfg(windows)` 目标上编译，Linux 构建完全不引入这些符号；版本 0.61 与
+# `backend/Cargo.lock` 里已有的传递依赖（directories / rustix / anstream 等）一致，
+# 不引入第二个 windows-sys 版本。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true
 

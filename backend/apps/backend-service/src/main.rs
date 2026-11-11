@@ -95,8 +95,9 @@ async fn run(cli: Cli) -> Result<()> {
     if registry.is_empty() {
         tracing::warn!("当前版本没有内置数据库驱动：连接请求将返回 driver.not_found，这是预期行为");
     }
-    // 凭据存储：Linux 上是 Secret Service（D-Bus）。装配过程要连接会话总线并打开会话，
-    // 属于阻塞调用，放进阻塞池以免占住运行时 worker（ADR 0014）。
+    // 凭据存储：Linux 上是 Secret Service（D-Bus），Windows 上是 Credential Manager
+    // （advapi32 的 CredWrite/CredRead/CredDelete）。装配过程可能连接会话总线、读取
+    // 当前用户 SID 或探测凭据库，属于阻塞调用，放进阻塞池以免占住运行时 worker（ADR 0014）。
     // 失败不会 panic：退回「不可用」实现，凭据相关操作如实报 credential.unavailable；
     // 日志只记实现名与错误码，不记凭据。
     let credentials = match tokio::task::spawn_blocking(open_default_credential_store).await {

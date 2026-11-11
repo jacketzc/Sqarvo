@@ -4,7 +4,10 @@
 //! 只对当前用户可读：
 //!
 //! - Unix：父目录 0700，文件 0600，原子替换写入；
-//! - Windows：依赖用户配置目录 ACL，显式 DACL 收紧尚未实现（见文档）。
+//! - Windows：显式 DACL——文件与父目录都只保留「当前用户 SID 完全控制」这一条
+//!   ACE，并断开从父目录继承的 ACE（`SetNamedSecurityInfoW` +
+//!   `PROTECTED_DACL_SECURITY_INFORMATION`，见 `win_acl`）。收紧失败按错误上抛，
+//!   后端拒绝启动，不会「先写出去再说」。
 
 use std::fs;
 use std::io::Write;
@@ -56,7 +59,8 @@ pub struct EndpointInfo {
 /// 写入端点描述文件。
 ///
 /// 先写入同目录临时文件并 `sync_all`，再原子 rename，避免前端读到半截 JSON。
-/// Unix 下文件以 0600 创建。
+/// Unix 下文件以 0600 创建；Windows 下临时文件在**写入 token 之前**就先收紧
+/// DACL，因此不存在「内容已落盘、权限还是继承来的」窗口期。
 pub fn write_endpoint_file(path: &Path, info: &EndpointInfo) -> Result<()> {
     let parent = path
         .parent()
@@ -77,6 +81,11 @@ pub fn write_endpoint_file(path: &Path, info: &EndpointInfo) -> Result<()> {
             options.mode(0o600);
         }
         let mut file = options.open(&temporary).map_err(Error::from)?;
+        // Windows 没有「创建时指定模式位」的等价物：先在空文件上收紧 DACL，再写
+        // token。顺序反了就会有一个「token 已写入但继承 ACL 仍允许同机其他用户
+        // 读取」的窗口。
+        #[cfg(windows)]
+        restrict_file_to_owner(&temporary)?;
         file.write_all(&payload).map_err(Error::from)?;
         file.sync_all().map_err(Error::from)?;
     }
@@ -98,14 +107,25 @@ pub fn read_endpoint_file(path: &Path) -> Result<EndpointInfo> {
     })
 }
 
+/// 把端点描述文件的访问权限收紧到当前用户。
+///
+/// - Unix：`0600`；
+/// - Windows：显式 DACL（仅当前用户 SID 完全控制、断开继承）。失败返回可分类
+///   错误（`PermissionDenied` / `NotFound` / `Internal`），不会静默跳过。
 fn restrict_file_to_owner(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(Error::from)?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
+        crate::win_acl::apply::restrict_path(path, crate::win_acl::AclTarget::File)?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // 既不是 Unix 也不是 Windows 的目标（目前不存在）没有可移植的等价机制；
+        // 显式保留 no-op 而不是假装成功，调用方仍受 token 校验保护。
         let _ = path;
     }
     Ok(())

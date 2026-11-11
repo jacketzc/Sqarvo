@@ -48,7 +48,7 @@ impl AppPaths {
         }
     }
 
-    /// 创建目录，并在 Unix 上把权限收紧到 0700。
+    /// 创建目录，并把权限收紧到当前用户（Unix 0700；Windows 显式 DACL）。
     pub fn ensure_dirs(&self) -> Result<()> {
         for dir in [&self.config, &self.data, &self.runtime] {
             fs::create_dir_all(dir).map_err(Error::from)?;
@@ -88,9 +88,15 @@ impl AppPaths {
     }
 }
 
-/// 把目录权限收紧到当前用户（Unix 0700）。
+/// 把目录权限收紧到当前用户。
 ///
-/// Windows 下由用户配置目录的 ACL 继承提供隔离；显式 DACL 收紧尚未实现。
+/// - Unix：`0700`；
+/// - Windows：显式 DACL——仅当前用户 SID 完全控制，且断开继承；ACE 带
+///   `OICI`，因此目录内新建的文件/子目录继承同一条「仅当前用户」ACE。
+///
+/// 失败一律返回可分类错误（`PermissionDenied` / `NotFound` / `Internal`）。
+/// 这里**不做**「尽力而为」：目录里会放端点描述文件（含 token），权限没收紧
+/// 就等于把 token 交给同机其他用户，宁可让后端启动失败。
 pub fn restrict_to_owner(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -98,9 +104,14 @@ pub fn restrict_to_owner(path: &Path) -> Result<()> {
         let permissions = fs::Permissions::from_mode(0o700);
         fs::set_permissions(path, permissions).map_err(Error::from)?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Windows 下由用户目录 ACL 继承提供隔离；显式 DACL 收紧尚未实现。
+        crate::win_acl::apply::restrict_path(path, crate::win_acl::AclTarget::Directory)?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // 既不是 Unix 也不是 Windows 的目标（目前不存在）没有可移植的等价机制；
+        // 显式保留 no-op 而不是假装成功，调用方仍受 token 校验保护。
         let _ = path;
     }
     Ok(())
