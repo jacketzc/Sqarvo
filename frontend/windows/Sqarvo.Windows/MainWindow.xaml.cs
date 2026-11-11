@@ -387,9 +387,13 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        CrashLog.Trace($"main.min-size.presenter-ok tier={Metrics.Tier}");
+
         var (minWidth, minHeight) = WindowSizing.MinimumWindow(Metrics.Tier, workWidthDips, workHeightDips);
         var physicalWidth = WindowSizing.DipsToPhysical(minWidth, scale);
         var physicalHeight = WindowSizing.DipsToPhysical(minHeight, scale);
+
+        CrashLog.Trace($"main.min-size.values {minWidth}x{minHeight} -> {physicalWidth}x{physicalHeight}");
 
         // 拖窗口时 Changed 会连发几十次：值没变就不要碰 presenter（每次写都会触发一轮布局）。
         if (physicalWidth == _appliedMinPhysicalWidth && physicalHeight == _appliedMinPhysicalHeight)
@@ -397,8 +401,11 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        CrashLog.Trace("main.min-size.set-width");
         presenter.PreferredMinimumWidth = physicalWidth;
+        CrashLog.Trace("main.min-size.set-height");
         presenter.PreferredMinimumHeight = physicalHeight;
+        CrashLog.Trace("main.min-size.done");
         _appliedMinPhysicalWidth = physicalWidth;
         _appliedMinPhysicalHeight = physicalHeight;
     }
