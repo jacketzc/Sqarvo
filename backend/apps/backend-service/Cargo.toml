@@ -16,6 +16,7 @@ sqarvo-common.workspace = true
 sqarvo-connection.workspace = true
 sqarvo-drivers.workspace = true
 sqarvo-local-store.workspace = true
+sqarvo-parent-watch.workspace = true
 sqarvo-query-engine.workspace = true
 sqarvo-rpc-server.workspace = true
 time.workspace = true
@@ -23,8 +24,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc.workspace = true

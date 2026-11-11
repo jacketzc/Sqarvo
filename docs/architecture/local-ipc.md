@@ -79,6 +79,11 @@ Named Pipe + ACL 仍是目标方案（可省掉 token 文件与端口），但�
 写入 token 之前就完成收紧。两侧失败都返回可分类错误并阻止后端启动——端点文件是
 token 的唯一载体，权限没收紧就不能继续。
 
+路径来源按优先级：显式 `--endpoint-file <PATH>`、环境变量 `SQARVO_ENDPOINT_FILE`
+（Unix 兼容口径，Linux 前端历史上依赖它 + `XDG_RUNTIME_DIR`）、默认运行时目录。
+Windows 没有 `XDG_RUNTIME_DIR`，前端必须显式传 `--endpoint-file`，否则「后端写哪儿」和
+「前端读哪儿」只能靠两套约定恰好一致。
+
 凭据（数据库密码）**不在此文件中**：配置里只有引用 `sqarvo:conn/<uuid-v4>`，密码存
 系统凭据库（Linux Secret Service / Windows Credential Manager，见
 `crates/local-store/src/credentials/` 与 ADR 0012）。Windows 侧条目是

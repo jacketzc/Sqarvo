@@ -1,0 +1,19 @@
+[package]
+name = "sqarvo-parent-watch"
+description = "Sqarvo 后端父进程监视：前端（父进程）消失时给出可等待的退出信号"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+# 只用于 Linux 的 PR_SET_PDEATHSIG；其它平台（含 Windows）不引入任何 C 依赖，
+# 因此本 crate 可以单独通过 `cargo check --target x86_64-pc-windows-msvc`。
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

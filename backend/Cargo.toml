@@ -11,6 +11,7 @@ members = [
     "crates/drivers/sqlite",
     "crates/local-store",
     "crates/metadata",
+    "crates/parent-watch",
     "crates/query-engine",
     "crates/rpc-server",
     "crates/transaction",
@@ -33,6 +34,7 @@ sqarvo-driver-testkit = { path = "crates/driver-testkit" }
 sqarvo-drivers = { path = "crates/drivers" }
 sqarvo-local-store = { path = "crates/local-store" }
 sqarvo-metadata = { path = "crates/metadata" }
+sqarvo-parent-watch = { path = "crates/parent-watch" }
 sqarvo-query-engine = { path = "crates/query-engine" }
 sqarvo-rpc-server = { path = "crates/rpc-server" }
 sqarvo-transaction = { path = "crates/transaction" }

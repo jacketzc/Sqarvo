@@ -9,16 +9,39 @@
 //! 5. 收到 SIGINT/SIGTERM、或父进程（前端）消失后退出并清理。
 //!
 //! 安全约束：日志中绝不输出 token 原文；正常退出时删除 socket 与端点文件。
+//!
+//! # 退出与清理（三平台）
+//!
+//! Ctrl-C、Unix `SIGTERM`（Linux 上也可能来自 `PR_SET_PDEATHSIG`）与父进程消失三条
+//! 触发路径都汇入 [`shutdown_signal`]，之后统一执行 `sessions.close_all()` → 删除
+//! socket（仅 Unix）→ 删除端点文件。没有第二条清理路径，避免「某个分支忘了删文件」。
+//!
+//! **Windows 上没有可捕获的 `SIGTERM`**：前端如果直接用 `TerminateProcess` 结束后端，
+//! 进程不会执行这里的任何清理代码——会话不会优雅关闭，端点文件会残留。这是 Win32 的
+//! 语义（没有等价于 `SIGTERM` 的、可被所有进程处理的终止通知），不是本模块的缺陷：
+//!
+//! - 「前端退出后不留孤儿后端」由前端负责（创建 Job Object 并设置
+//!   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，把后端放进该 Job）；
+//! - 被 `TerminateProcess` 之后残留的端点文件也由前端删除，或由前端凭文件中的 pid
+//!   判活后当作残留忽略；
+//! - 后端保证的是：只要它还在运行且收到了可捕获的退出信号（Ctrl-C、父进程消失），
+//!   就一定走同一条清理路径。详见 `docs/decisions/0002-local-ipc-transport.md` 附记。
+//!
+//! # 端点描述文件路径
+//!
+//! 路径来源按优先级排列：显式 `--endpoint-file`、环境变量 `SQARVO_ENDPOINT_FILE`
+//! （Unix 兼容口径）、默认运行时目录。Windows 没有 `XDG_RUNTIME_DIR`，前端应始终
+//! 显式传 `--endpoint-file`，让「后端写哪儿」和「前端读哪儿」来自同一个参数，
+//! 而不是依赖两套约定恰好一致。
 
-mod parent;
-
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use sqarvo_common::Result;
+use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_connection::SessionManager;
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{
@@ -30,6 +53,12 @@ use sqarvo_rpc_server::{LocalListener, PROTOCOL_VERSION, Services, serve};
 use time::OffsetDateTime;
 use tracing_subscriber::EnvFilter;
 
+/// 端点描述文件路径的兼容环境变量。
+///
+/// Linux 前端历史上用它（配合 `XDG_RUNTIME_DIR`）覆盖端点位置，因此保留；
+/// 新代码（尤其 Windows 前端）应当传显式的 `--endpoint-file`。
+const ENDPOINT_FILE_ENV: &str = "SQARVO_ENDPOINT_FILE";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "sqarvo-backend",
@@ -40,6 +69,13 @@ struct Cli {
     /// Unix 域套接字路径；默认使用用户运行时目录。
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
+
+    /// 端点描述文件路径；优先于 `SQARVO_ENDPOINT_FILE` 与默认运行时目录。
+    ///
+    /// 前端（尤其 Windows）应当显式传入绝对路径：Windows 没有 `XDG_RUNTIME_DIR`，
+    /// 靠环境变量推导会让「后端写哪儿」和「前端读哪儿」依赖两套不同的约定。
+    #[arg(long, value_name = "PATH")]
+    endpoint_file: Option<PathBuf>,
 
     /// 仅用于开发调试：监听回环 TCP 地址，例如 127.0.0.1:0。
     #[arg(long, value_name = "ADDR")]
@@ -81,8 +117,11 @@ async fn run(cli: Cli) -> Result<()> {
     // 先注册 SIGTERM 处理器，再设置 PR_SET_PDEATHSIG：反过来会留下一个窗口期，
     // 父进程在这段时间退出时 SIGTERM 走默认处置（立刻终止），来不及清理。
     let signals = Signals::register();
-    let parent = parent::install(cli.parent_pid)?;
-    if let parent::Installed::ParentGone(pid) = parent {
+    let parent = sqarvo_parent_watch::install(cli.parent_pid).map_err(|error| {
+        // 参数错误的分类与文案由调用方决定：crate 只管判活，不认识项目错误码。
+        Error::invalid_argument(ErrorCode::CONFIG_INVALID, error.to_string())
+    })?;
+    if let sqarvo_parent_watch::Installed::ParentGone(pid) = parent {
         // 还没有创建目录、绑定 socket 或写端点文件：直接退出即可。
         tracing::warn!(parent_pid = pid, "父进程已不存在，退出");
         return Ok(());
@@ -90,6 +129,11 @@ async fn run(cli: Cli) -> Result<()> {
 
     let paths = AppPaths::discover()?;
     paths.ensure_dirs()?;
+    let endpoint_path = resolve_endpoint_path(
+        cli.endpoint_file,
+        std::env::var_os(ENDPOINT_FILE_ENV),
+        paths.endpoint_file(),
+    );
 
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     if registry.is_empty() {
@@ -133,7 +177,6 @@ async fn run(cli: Cli) -> Result<()> {
     };
 
     let token = AuthToken::generate();
-    let endpoint_path = paths.endpoint_file();
     let socket_path = listener.socket_path().map(Path::to_path_buf);
     let endpoint = build_endpoint_info(&listener, &token);
     write_endpoint_file(&endpoint_path, &endpoint)?;
@@ -145,11 +188,29 @@ async fn run(cli: Cli) -> Result<()> {
         "后端已启动"
     );
 
-    let result = serve(listener, token, services, shutdown_signal(signals, parent)).await;
+    let result = serve(listener, token, services, async move {
+        shutdown_signal(signals, parent).await.log();
+    })
+    .await;
 
+    // 唯一的清理路径：三种退出触发都从这里过。
     sessions.close_all().await;
     cleanup(socket_path.as_deref(), &endpoint_path);
     result
+}
+
+/// 端点描述文件路径：显式参数 > 环境变量 > 默认推导。
+///
+/// 空的环境变量按「未设置」处理：`SQARVO_ENDPOINT_FILE=` 这种写法应当退回默认值，
+/// 而不是让后端把路径变成空字符串后报错。
+fn resolve_endpoint_path(
+    explicit: Option<PathBuf>,
+    env: Option<OsString>,
+    default: PathBuf,
+) -> PathBuf {
+    explicit
+        .or_else(|| env.filter(|value| !value.is_empty()).map(PathBuf::from))
+        .unwrap_or(default)
 }
 
 fn build_endpoint_info(listener: &LocalListener, token: &AuthToken) -> EndpointInfo {
@@ -198,6 +259,8 @@ fn bind_socket(path: &Path) -> Result<LocalListener> {
 }
 
 /// 清理退出：只删除自己的 socket 与端点描述文件。
+///
+/// 幂等：文件已被别处删掉（例如前端在 `TerminateProcess` 之后补删）不算错误。
 fn cleanup(socket_path: Option<&Path>, endpoint_path: &Path) {
     if let Some(path) = socket_path
         && let Err(error) = std::fs::remove_file(path)
@@ -245,12 +308,41 @@ impl Signals {
         }
         #[cfg(not(unix))]
         {
+            // Windows：`TerminateProcess` 无法被捕获，只能等 Ctrl-C 或父进程消失。
             Self {}
         }
     }
 }
 
-async fn shutdown_signal(signals: Signals, parent: parent::Installed) {
+/// 退出触发原因。三条路径的**作用完全相同**，保留这个枚举只为日志措辞。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownReason {
+    /// Ctrl-C（Windows 控制台对应 `CTRL_C_EVENT`）。
+    Interrupt,
+    /// Unix `SIGTERM`（Linux 上也可能来自 `PR_SET_PDEATHSIG`）。
+    Terminate,
+    /// 前端父进程消失。
+    ParentGone(u32),
+}
+
+impl ShutdownReason {
+    /// 记录触发原因；不参与清理逻辑本身。
+    fn log(self) {
+        match self {
+            Self::Interrupt => tracing::info!("收到 Ctrl-C，正在退出"),
+            Self::Terminate => tracing::info!("收到 SIGTERM，正在退出"),
+            Self::ParentGone(pid) => {
+                tracing::warn!(parent_pid = pid, "父进程已消失，开始清理退出");
+            }
+        }
+    }
+}
+
+/// 等待停机触发；三条分支返回同一个 [`ShutdownReason`]，作用完全相同。
+async fn shutdown_signal(
+    signals: Signals,
+    parent: sqarvo_parent_watch::Installed,
+) -> ShutdownReason {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             tracing::warn!(%error, "无法监听 Ctrl-C 信号");
@@ -258,11 +350,9 @@ async fn shutdown_signal(signals: Signals, parent: parent::Installed) {
     };
 
     tokio::select! {
-        () = ctrl_c => tracing::info!("收到 Ctrl-C，正在退出"),
-        () = wait_terminate(signals) => tracing::info!("收到 SIGTERM，正在退出"),
-        pid = parent::wait_until_gone(parent) => {
-            tracing::warn!(parent_pid = pid, "父进程已消失，开始清理退出");
-        }
+        () = ctrl_c => ShutdownReason::Interrupt,
+        () = wait_terminate(signals) => ShutdownReason::Terminate,
+        pid = sqarvo_parent_watch::wait_until_gone(parent) => ShutdownReason::ParentGone(pid),
     }
 }
 
@@ -279,5 +369,92 @@ async fn wait_terminate(signals: Signals) {
     {
         let _ = signals;
         std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(raw: &str) -> PathBuf {
+        PathBuf::from(raw)
+    }
+
+    #[test]
+    fn explicit_endpoint_file_wins_over_env_and_default() {
+        assert_eq!(
+            resolve_endpoint_path(
+                Some(path("/run/explicit.json")),
+                Some(OsString::from("/run/from-env.json")),
+                path("/run/default.json"),
+            ),
+            path("/run/explicit.json")
+        );
+    }
+
+    #[test]
+    fn env_is_used_without_explicit_argument() {
+        // `SQARVO_ENDPOINT_FILE` 保留为 Unix 兼容口径。
+        assert_eq!(
+            resolve_endpoint_path(
+                None,
+                Some(OsString::from("/run/from-env.json")),
+                path("/run/default.json"),
+            ),
+            path("/run/from-env.json")
+        );
+    }
+
+    #[test]
+    fn default_is_used_without_any_override() {
+        assert_eq!(
+            resolve_endpoint_path(None, None, path("/run/default.json")),
+            path("/run/default.json")
+        );
+    }
+
+    #[test]
+    fn empty_env_value_falls_back_to_default() {
+        assert_eq!(
+            resolve_endpoint_path(None, Some(OsString::from("")), path("/run/default.json")),
+            path("/run/default.json")
+        );
+    }
+
+    #[test]
+    fn cleanup_removes_both_artifacts_and_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("backend.sock");
+        let endpoint = root.path().join("backend-endpoint.json");
+        std::fs::write(&socket, b"").unwrap();
+        std::fs::write(&endpoint, b"{}").unwrap();
+
+        cleanup(Some(&socket), &endpoint);
+        assert!(!socket.exists());
+        assert!(!endpoint.exists());
+
+        // 第二次调用（例如前端已经补删过）不应报错或 panic。
+        cleanup(Some(&socket), &endpoint);
+        assert!(!endpoint.exists());
+    }
+
+    #[test]
+    fn cleanup_without_socket_only_removes_endpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = root.path().join("backend-endpoint.json");
+        std::fs::write(&endpoint, b"{}").unwrap();
+
+        cleanup(None, &endpoint);
+        assert!(!endpoint.exists());
+    }
+
+    #[test]
+    fn shutdown_reasons_are_distinct_and_keep_parent_pid() {
+        assert_ne!(ShutdownReason::Interrupt, ShutdownReason::Terminate);
+        assert_eq!(
+            ShutdownReason::ParentGone(4321),
+            ShutdownReason::ParentGone(4321)
+        );
+        assert_ne!(ShutdownReason::ParentGone(1), ShutdownReason::ParentGone(2));
     }
 }
