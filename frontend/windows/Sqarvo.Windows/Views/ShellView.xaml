@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    #164 的六区域外壳（结构 + 三态 + 禁用入口，不接后端）。
-    #168：侧栏与信息面板可拖（两条分隔线同时是拖动条），拖动范围与默认值全部来自 Metrics。
+#164 的六区域外壳 + #169 的后端接线（连接面）+ #168 的可拖面板（窗口层）。
+
+    #169 起：菜单「文件 → 新建连接…」与工具条「连接」的启用态、状态栏两行、对象树的连接层
+    全部由 code-behind 从 BackendState 这一份快照渲染（见 ShellView.ApplyBackendState）；
+    未实现的入口保持禁用，原因逐条写在 tooltip 里。
+    #168 起：侧栏与信息面板可拖（两条分隔线同时是拖动条），拖动范围与默认值全部来自 Metrics。
+    本文件里只有启用态、文案与两条拖动条，布局尺寸依旧在 code-behind 里从 Metrics 取。
 
     区域与宿主控件严格按 docs/ui-specification/workspace-model.md §8 的 Windows 列：
     系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（CommandBar）→
@@ -42,7 +47,8 @@
             Background="{ThemeResource SqarvoBandBrush}">
             <MenuBar x:Name="MainMenu" AutomationProperties.Name="主菜单">
                 <MenuBarItem Title="文件">
-                    <MenuFlyoutItem x:Name="MenuNewConnection" Text="新建连接…" IsEnabled="False" />
+                    <!-- 启用态由 BackendState.IsReady 决定（ShellView.ApplyBackendState），tooltip 在 code-behind 逐项说明 -->
+                    <MenuFlyoutItem x:Name="MenuNewConnection" Text="新建连接…" />
                     <MenuFlyoutItem x:Name="MenuNewQueryTab" Text="新建查询标签" IsEnabled="False" />
                     <MenuFlyoutSeparator />
                     <MenuFlyoutItem x:Name="MenuQuit" Text="退出" />
@@ -67,19 +73,19 @@
                 DefaultLabelPosition="Right"
                 IsOpen="False"
                 AutomationProperties.Name="主工具条">
-                <AppBarButton x:Name="ButtonConnect" Label="连接" IsEnabled="False"
-                              AutomationProperties.Name="连接" ToolTipService.ToolTip="尚未接入后端" />
+                <AppBarButton x:Name="ButtonConnect" Label="连接"
+                              AutomationProperties.Name="连接" />
                 <AppBarButton x:Name="ButtonNewQuery" Label="新建查询" IsEnabled="False"
-                              AutomationProperties.Name="新建查询" ToolTipService.ToolTip="尚未接入后端" />
+                              AutomationProperties.Name="新建查询" />
                 <AppBarSeparator />
                 <AppBarButton x:Name="ButtonTables" Label="Tables" IsEnabled="False"
-                              AutomationProperties.Name="Tables" ToolTipService.ToolTip="尚未接入后端" />
+                              AutomationProperties.Name="Tables" />
                 <AppBarButton x:Name="ButtonViews" Label="Views" IsEnabled="False"
-                              AutomationProperties.Name="Views" ToolTipService.ToolTip="尚未接入后端" />
+                              AutomationProperties.Name="Views" />
                 <AppBarButton x:Name="ButtonFunctions" Label="Functions" IsEnabled="False"
-                              AutomationProperties.Name="Functions" ToolTipService.ToolTip="尚未接入后端" />
+                              AutomationProperties.Name="Functions" />
                 <AppBarButton x:Name="ButtonQueries" Label="Queries" IsEnabled="False"
-                              AutomationProperties.Name="Queries" ToolTipService.ToolTip="尚未接入后端" />
+                              AutomationProperties.Name="Queries" />
             </CommandBar>
         </Border>
 
@@ -193,7 +199,7 @@
                                             FontSize="{StaticResource Size.FontTitle}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
                                         <TextBlock
-                                            Text="尚未接入后端：对象列表为空。选中连接后的库或 Tables / Views 分组时，这里列出对象。"
+                                            Text="对象列表由元数据服务提供（工作包 #170）：本步只建立连接，库 / 表的列出还没接通，因此这里先保持为空。"
                                             FontSize="{StaticResource Size.FontUi}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             TextWrapping="Wrap" />
@@ -211,7 +217,7 @@
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
-                                            Text="点侧栏的连接即可连接（本轮工具条与行操作全部禁用：尚未接入后端）。"
+                                            Text="在「文件 → 新建连接…」里保存一条 MariaDB 连接；点侧栏里已保存的连接即可连接。"
                                             FontSize="{StaticResource Size.FontStatus}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
@@ -301,8 +307,7 @@
                     IsEnabled="False"
                     FontSize="{StaticResource Size.FontStatus}"
                     PlaceholderText="搜索连接、库、表..."
-                    AutomationProperties.Name="搜索连接、库、表"
-                    ToolTipService.ToolTip="尚未接入后端" />
+                    AutomationProperties.Name="搜索连接、库、表" />
                 <TextBlock
                     x:Name="SearchStatusText"
                     Visibility="Collapsed"
@@ -335,12 +340,12 @@
                             <Setter Property="IsEnabled" Value="False" />
                         </Style>
                     </StackPanel.Resources>
-                    <Button Content="＋" AutomationProperties.Name="新增" ToolTipService.ToolTip="尚未接入后端" />
-                    <Button Content="－" AutomationProperties.Name="删除" ToolTipService.ToolTip="尚未接入后端" />
-                    <Button Content="✓" AutomationProperties.Name="应用" ToolTipService.ToolTip="尚未接入后端" />
-                    <Button Content="↶" AutomationProperties.Name="撤销" ToolTipService.ToolTip="尚未接入后端" />
-                    <Button Content="⟳" AutomationProperties.Name="刷新" ToolTipService.ToolTip="尚未接入后端" />
-                    <Button Content="■" AutomationProperties.Name="取消" ToolTipService.ToolTip="尚未接入后端" />
+                    <Button x:Name="ButtonRowAdd" Content="＋" AutomationProperties.Name="新增" />
+                    <Button x:Name="ButtonRowDelete" Content="－" AutomationProperties.Name="删除" />
+                    <Button x:Name="ButtonRowApply" Content="✓" AutomationProperties.Name="应用" />
+                    <Button x:Name="ButtonRowRevert" Content="↶" AutomationProperties.Name="撤销" />
+                    <Button x:Name="ButtonRowRefresh" Content="⟳" AutomationProperties.Name="刷新" />
+                    <Button x:Name="ButtonRowCancel" Content="■" AutomationProperties.Name="取消" />
                     <TextBlock
                         x:Name="PagerText"
                         Text="0 / 0"

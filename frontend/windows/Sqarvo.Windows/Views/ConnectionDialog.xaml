@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    #169 连接对话框（MariaDB）。
+
+    驱动清单**只**来自 SystemService.ListDrivers（后端是唯一来源）；字段按驱动族显示，
+    本步只有服务器型驱动有表单，其它驱动如实说明「没有表单」而不是给一份填了也会被
+    后端拒绝的界面。
+
+    约束：颜色只用 ThemeResource / 系统主题画笔，尺寸只用 {StaticResource Size.*}
+    （docs/ui-specification/metrics.toml 的构建期生成物），本文件里没有 #RRGGBB，
+    也没有尺寸字面量。密码不写进任何配置文件：填了密码就调
+    CredentialService.StoreCredential 拿 credential_ref 再落盘。
+-->
+<ContentDialog
+    x:Class="Sqarvo.Windows.Views.ConnectionDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="新建连接"
+    PrimaryButtonText="保存并连接"
+    CloseButtonText="取消"
+    PrimaryButtonClick="OnPrimaryClick"
+    DefaultButton="Primary">
+
+    <StackPanel
+        MinWidth="{StaticResource Size.FilterPanelWidth}"
+        Spacing="{StaticResource Size.InspectorGap}">
+
+        <ComboBox
+            x:Name="DriverCombo"
+            Header="驱动"
+            DisplayMemberPath="Label"
+            HorizontalAlignment="Stretch"
+            AutomationProperties.Name="驱动"
+            SelectionChanged="OnDriverChanged" />
+
+        <TextBox
+            x:Name="HostBox"
+            Header="主机"
+            AutomationProperties.Name="主机" />
+
+        <TextBox
+            x:Name="PortBox"
+            Header="端口"
+            InputScope="Number"
+            AutomationProperties.Name="端口" />
+
+        <TextBox
+            x:Name="UsernameBox"
+            Header="用户名"
+            AutomationProperties.Name="用户名" />
+
+        <PasswordBox
+            x:Name="PasswordBox"
+            Header="密码"
+            PasswordRevealMode="Peek"
+            AutomationProperties.Name="密码" />
+
+        <TextBox
+            x:Name="DatabaseBox"
+            Header="数据库（可留空：连上后浏览所有库）"
+            AutomationProperties.Name="数据库" />
+
+        <ComboBox
+            x:Name="TlsCombo"
+            Header="TLS"
+            DisplayMemberPath="Label"
+            HorizontalAlignment="Stretch"
+            AutomationProperties.Name="TLS 模式" />
+
+        <TextBlock
+            Text="密码只写入 Windows 凭据管理器；connections.json 里只保存引用（credential_ref），不保存密码。"
+            FontSize="{StaticResource Size.FontStatus}"
+            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+            TextWrapping="Wrap" />
+
+        <Button
+            x:Name="TestButton"
+            Content="测试连接"
+            MinHeight="{StaticResource Size.MinTarget}"
+            HorizontalAlignment="Left"
+            AutomationProperties.Name="测试连接"
+            Click="OnTestClick" />
+
+        <TextBlock
+            x:Name="StatusText"
+            AutomationProperties.Name="测试结果"
+            Visibility="Collapsed"
+            FontSize="{StaticResource Size.FontUi}"
+            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+            IsTextSelectionEnabled="True"
+            TextWrapping="Wrap" />
+    </StackPanel>
+</ContentDialog>

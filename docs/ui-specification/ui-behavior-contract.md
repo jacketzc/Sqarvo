@@ -140,9 +140,9 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 最大化后关窗 / 退出 | 窗口处于最大化 | `window.json` 写**还原边界**（非最大化矩形）与 `maximized=true`，不写最大化后的屏幕尺寸；下次启动先还原矩形再最大化 | `MainWindow.xaml.cs:855` |
 | DPI / 系统缩放变化 | 运行中 | 从 `XamlRoot.Changed` 取 `RasterizationScale`（`DisplayInformation` 在 WinUI 3 抛异常），与窗口重算合并成**同一个入口**：保留当前窗口的 DIP 矩形（只钳到工作区与最小窗口），不居中、不改推荐尺寸；`[monitor] 来源=保留` | `MainWindow.xaml.cs:612`（`OnXamlRootChanged`）、`:139`（`Relayout`）、`:185`（`RelayoutCore`） |
 | 显示器 / 工作区变化 | 运行中 | 与上一行同一条路径；最小尺寸按新的逻辑工作区重算 `min(档位最小窗口, W−32) × min(…, H−48)`，窗口仍留在当前 DIP 位置 | `MainWindow.xaml.cs:612`、`:355` |
-| 菜单行高度 | 任意档 | 菜单行 = 外壳高 − 系统标题栏基准 × 档位 → 三档 **24 / 30 / 36**（基准 40 DIP 由度量相减推出：compact 外壳 64 − 菜单行 24，代码里没有 40 这个字面量）。系统标题栏是平台事实：实测值写进 `[monitor] titleBar=`，与口径偏差 > 2 DIP 时记 `[chrome] 系统标题栏实测 … DIP` 并按实测报外壳总高——不为了让总高等于度量而裁剪系统区域（裁了会切到窗口按钮） | `Views/ShellView.xaml.cs:167`（`ApplyMetrics`）、`Layout/WindowSizing.cs:89`（`MenuRowHeight`）、`:108`（`MeasuredNonClientDips`）、`MainWindow.xaml.cs:706`（`UpdateChromeMeasurements`） |
-| 拖动侧栏 | 任意档 | 侧栏分隔线本身是拖动条（`Thumb`，不引入第三方 GridSplitter）：命中区取 `grid_padding_end`，视觉线取不缩放的 1px 描边；范围 `sidebar_min..sidebar_max`（180–420 / 225–525 / 270–630），越界只钳制不报错；键盘 ←/→ 每次微调 `inspector_gap`；双击回到该档默认宽度 `sidebar_width` | `Views/ShellView.xaml.cs:214`（`OnSidebarSplitterDragDelta`）、`:151`（`ApplyPanelWidths`） |
-| 拖动信息面板 | 任意档 | 同上：范围 `inspector_min..inspector_max`（240–520 / 300–650 / 360–780），默认 `inspector_width`；面板常驻，没有折叠入口 | `Views/ShellView.xaml.cs:257`、`:151` |
+| 菜单行高度 | 任意档 | 菜单行 = 外壳高 − 系统标题栏基准 × 档位 → 三档 **24 / 30 / 36**（基准 40 DIP 由度量相减推出：compact 外壳 64 − 菜单行 24，代码里没有 40 这个字面量）。系统标题栏是平台事实：实测值写进 `[monitor] titleBar=`，与口径偏差 > 2 DIP 时记 `[chrome] 系统标题栏实测 … DIP` 并按实测报外壳总高——不为了让总高等于度量而裁剪系统区域（裁了会切到窗口按钮） | `Views/ShellView.xaml.cs:544`（`ApplyMetrics`）、`Layout/WindowSizing.cs:89`（`MenuRowHeight`）、`:108`（`MeasuredNonClientDips`）、`MainWindow.xaml.cs:706`（`UpdateChromeMeasurements`） |
+| 拖动侧栏 | 任意档 | 侧栏分隔线本身是拖动条（`Thumb`，不引入第三方 GridSplitter）：命中区取 `grid_padding_end`，视觉线取不缩放的 1px 描边；范围 `sidebar_min..sidebar_max`（180–420 / 225–525 / 270–630），越界只钳制不报错；键盘 ←/→ 每次微调 `inspector_gap`；双击回到该档默认宽度 `sidebar_width` | `Views/ShellView.xaml.cs:641`（`OnSidebarSplitterDragDelta`）、`:526`（`ApplyPanelWidths`） |
+| 拖动信息面板 | 任意档 | 同上：范围 `inspector_min..inspector_max`（240–520 / 300–650 / 360–780），默认 `inspector_width`；面板常驻，没有折叠入口 | `Views/ShellView.xaml.cs:684`（`OnInspectorSplitterDragDelta`）、`:526`（`ApplyPanelWidths`） |
 | 面板宽度写回 `window.json` | 拖动结束 / 键盘微调 / 双击复位 | **松手才写盘**：实际宽度 ÷ 档位系数 → compact 归一值写回，再用 `SidebarWidthFor` / `InspectorWidthFor` 换算回当前档校验并落回界面（因此界面显示的就是下次启动会恢复的值，不会出现「存 630 恢复 520」）；拖动过程中不写盘。诊断行 `[panel] 侧栏 … → 归一 …` | `MainWindow.xaml.cs:520`（`OnPanelWidthsChanged`）、`Storage/WindowState.cs:93`（`Normalize`）、`:97` / `:104`（`InspectorWidthFor` / `SidebarWidthFor`） |
 | 面板宽度跨档往返 | 切档 | 归一值 × 新档系数：侧栏 237 → 296 → 356、信息面板 280 → 350 → 420；`100% → 150% → 100%` 不漂移（钳制只发生在拖动越界时，不改写归一值） | `Storage/WindowState.cs:147`（`SelfTest`） |
 | 诊断开关 | — | `--report-monitor` 与 `--qa-report-monitor` 等价（别名表归一，规范与 README 两套写法都生效）；`[monitor]` 行给出 `scale` / 工作区（物理与 DIP）/ 窗口（DIP 与物理）/ `来源` / `最大化` / `titleBar`（实测）/ `menuRow` / `侧栏` / `面板`；`--self-test-window` 断言「最小窗口 = 度量真值」「菜单行 24/30/36」「面板归一往返」「1920×1032 三档推荐尺寸」，失败以非 0 退出 | `Diagnostics/AppOptions.cs:25`（`Aliases`）、`Diagnostics/DiagnosticReporter.cs:73`（`MonitorLine`）、`:92`（`SelfTestWindow`） |
@@ -458,6 +458,20 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行 2：空态摘要 | **只在没有表标签时** | 才让 `session` 一格出现：连接态显示连接名；启动态显示「未连接」+「驱动 N · 浏览会话 M」（合成一行 `未连接 · 驱动 N · 浏览会话 M`）。有表标签时一律不出现（表名 / 库在标签名里，事务在表格工具条里） | `src/shell.rs:1181-1207`、`src/startup.rs:240-245` |
 | 行 2 的排版约束 | — | 文案用**ASCII 冒号**（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线 | `src/shell.rs:909-917` |
 
+### 7.1 Windows 端（#169）实现状态
+
+Windows 客户端在 #169 只落地「连接面」；本文件其余小节的口径仍然适用，下面只记录**这一片已经
+落地、以及仍被禁用**的入口，避免把计划当成已实现。
+
+| 入口 | Windows 现状 | 依据 |
+|---|---|---|
+| 文件 → 新建连接…、工具条「连接」 | 可用性读**同一个**后端状态位（`BackendState.IsReady`）：握手未完成时禁用，tooltip 逐条说明原因（不是统一一句「尚未实现」） | `frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs`（`ApplyBackendState` / `WireMenu`） |
+| 新建连接对话框 | MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；「测试连接」就地展示延迟与服务端版本；失败给「标题 + 后端文案 + 稳定错误码」；密码只进 Windows 凭据管理器，落盘只有 `credential_ref` | `Views/ConnectionDialog.xaml(.cs)`、`Connections/ConnectionForm.cs` |
+| 文件 → 新建查询标签、表 → 导出 CSV、工具条「新建查询」与四个种类入口、树搜索框、状态栏行操作 | 禁用，tooltip 逐条说明具体缺口（元数据树 #170 / SQL 编辑器与查询面 #171 / 表数据编辑更后） | 同上（`WireMenu`） |
+| 对象树 | `My Connections` → 已保存连接（`connections.json`；徽标 未连接 / 连接中… / 已连接）；连接成功后挂一行「正在加载对象列表…」，库 / 表留待 #170 | `Views/ShellView.xaml.cs`（`RebuildTree`） |
+| 状态栏行 2 右格 | `已连接 · 驱动 N · 浏览会话 M`（`GetHealth` 的真实计数，5 秒一轮）；未就绪时 `未连接 · 驱动 0 · 浏览会话 0` | `Workspace/BackendState.cs`（`StatusLine`） |
+| 断开 | 健康探测失败即回「未连接」，原因与稳定错误码写在行 2 左格（可选中复制）；不自动重启后端 | `Workspace/BackendSession.cs`（`RefreshHealthAsync`） |
+
 ---
 
 ## 8. 全局规则
@@ -544,3 +558,4 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 960×640 下状态簇 | 动作行分配约 417px；两段常驻文字收成 24×24 的状态圆点后，整行需求 409 ≤ 分配 417、状态簇自身需求 38（`--qa-layout-audit` 实测，17 项 0 超限）；过程消息仍按省略号收缩，完整文案留在圆点 tooltip 与状态栏；删除 / 放弃的操作结果也只写在 tooltip 末段「最近一次操作：…」，可见过程消息为空（`--qa-expect-status-dot` + 「状态簇」需求 42px 实测，1400 宽） | §5.1 |
 | `Alt+N` 与拖拽重排 | 序号按 `AdwTabView::pages()` 实际顺序取，拖拽重排后的映射未实测 | §4 |
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
+| Windows 端连接面（#169） | 只有连接配置、测试连接、建立会话与对象树连接层；元数据树、查询面、表数据面尚未实现，入口保持禁用并在 tooltip 里逐项说明原因 | §7.1 |

@@ -28,6 +28,22 @@
     <ProjectReference Include="..\Sqarvo.Core\Sqarvo.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    Windows 前端里**不含 WinUI 类型**的那部分（连接配置、错误分类、状态快照）以源码方式编进测试
+    工程：它们只用到 System.Text.Json / System.IO 与 Sqarvo.Core，所以在 Linux 上可以真跑，
+    connections.json 的 schema、身份去重与「只存 credential_ref」这条安全约束就有回归测试。
+    WinUI 工程本身（net8.0-windows + XAML）在 Linux 上无法编译，不能直接被引用；
+    等 Windows CI 有测试工程后可以把这些用例搬过去。
+  -->
+  <ItemGroup>
+    <Compile Include="..\Sqarvo.Windows\Connections\ConnectionProfile.cs" Link="Windows\Connections\ConnectionProfile.cs" />
+    <Compile Include="..\Sqarvo.Windows\Connections\ConnectionStore.cs" Link="Windows\Connections\ConnectionStore.cs" />
+    <Compile Include="..\Sqarvo.Windows\Connections\ConnectionForm.cs" Link="Windows\Connections\ConnectionForm.cs" />
+    <Compile Include="..\Sqarvo.Windows\Connections\TlsModeChoice.cs" Link="Windows\Connections\TlsModeChoice.cs" />
+    <Compile Include="..\Sqarvo.Windows\Workspace\BackendState.cs" Link="Windows\Workspace\BackendState.cs" />
+    <Compile Include="..\Sqarvo.Windows\Workspace\SqarvoFailure.cs" Link="Windows\Workspace\SqarvoFailure.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
