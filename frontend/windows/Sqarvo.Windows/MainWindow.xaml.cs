@@ -7,7 +7,9 @@ using Sqarvo.Windows.Storage;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Views;
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using RectInt32 = global::Windows.Graphics.RectInt32;
 
 namespace Sqarvo.Windows;
 
@@ -16,19 +18,45 @@ namespace Sqarvo.Windows;
 /// <see cref="ShellView"/> 的六区域外壳里。
 /// </summary>
 /// <remarks>
-/// 与 #163 相同的三条硬约束：一个 <see cref="Relayout"/> 入口、两套像素单位（DIP 计算、
-/// 物理像素喂 <c>AppWindow</c>）、DPI 只从 <c>XamlRoot</c> 拿。
+/// <para>
+/// 与 #163 相同的三条硬约束：一个重算入口（<see cref="RelayoutCore"/>）、两套像素单位
+/// （DIP 计算、物理像素喂 <c>AppWindow</c>）、DPI 只从 <c>XamlRoot</c> 拿。
+/// </para>
+/// <para>
+/// #168 起再加一条：**位置与尺寸变化不重算窗口**。用户拖动窗口得到的矩形就是他要的矩形，
+/// 重算会把窗口按推荐尺寸拉回屏幕中央（这是原来最刺眼的一条缺陷）。位置 / 尺寸事件只做两件事：
+/// 记下还原边界（<c>_normalRect</c>）、按当前显示器刷新最小尺寸。
+/// </para>
 /// </remarks>
 public sealed partial class MainWindow : Window
 {
     /// <summary>几何恢复的容差（物理像素）。</summary>
     private const int GeometryTolerance = 32;
 
+    /// <summary>重算的重入上限（正常路径最多两趟：本趟 + 事件里排进来的那一趟）。</summary>
+    private const int MaxRelayoutPasses = 3;
+
+    /// <summary>系统标题栏与度量口径的允许偏差（DIP）：超了就记一行诊断。</summary>
+    private const double TitleBarToleranceDips = 2;
+
     private readonly WindowState _state;
     private readonly AppOptions _options;
     private ShellView _shell;
     private double _lastScale;
     private bool _relayouting;
+    private bool _relayoutPending;
+    private RelayoutReason _pendingReason;
+    private bool _xamlRootHooked;
+    private XamlRoot? _xamlRoot;
+
+    /// <summary>启动几何只应用一次：App 与 Loaded 都会请求 Startup，重复应用会让「刚刚还原过」的窗口再跳一次。</summary>
+    private bool _startupGeometryApplied;
+    private RectInt32 _normalRect;
+    private bool _hasNormalRect;
+    private double _measuredTitleBarDips;
+    private bool _titleBarDeviationLogged;
+    private int _appliedMinPhysicalWidth;
+    private int _appliedMinPhysicalHeight;
 
     public MainWindow(WindowState state, AppOptions options)
     {
@@ -42,19 +70,22 @@ public sealed partial class MainWindow : Window
         {
             InitializeComponent();
 
-            _shell = new ShellView();
-            _shell.QuitRequested += (_, _) => Close();
+            _shell = CreateShell();
             ShellHost.Content = _shell;
 
             if (Content is FrameworkElement root)
             {
                 root.ActualThemeChanged += OnActualThemeChanged;
                 root.Loaded += OnRootLoaded;
+                root.Unloaded += OnRootUnloaded;
             }
+
+            // 内容区尺寸变化是「非客户区高度」的唯一可靠来源（AppWindow.Size 含非客户区）。
+            RootGrid.SizeChanged += OnRootSizeChanged;
 
             RegisterOemTierAccelerators();
 
-        AppWindow.Changed += OnAppWindowChanged;
+            AppWindow.Changed += OnAppWindowChanged;
             ThemeService.SystemAppearanceChanged += OnSystemAppearanceChanged;
             Closed += OnClosed;
         }
@@ -65,16 +96,56 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>最近一次 <see cref="Relayout"/> 的结果，供 <c>--report-monitor</c> 输出。</summary>
+    /// <summary>触发窗口层重算的原因。</summary>
+    /// <remarks>
+    /// 位置变化与尺寸变化**不在**这个枚举里：它们只更新几何记忆，绝不重算（#168 第 2 条）。
+    /// </remarks>
+    private enum RelayoutReason
+    {
+        /// <summary>启动：优先恢复 <c>window.json</c> 的几何，没有记忆才按工作区分档。</summary>
+        Startup,
+
+        /// <summary>切密度档：按新档重算推荐尺寸并居中（规范 §2.3 要求窗口跟着放大）。</summary>
+        TierChanged,
+
+        /// <summary>DPI / 工作区变化：保留当前 DIP 矩形（只钳制），不改推荐尺寸。</summary>
+        DisplayChanged,
+    }
+
+    /// <summary>最近一次重算的结果，供 <c>--report-monitor</c> 输出。</summary>
     public WindowLayoutSnapshot? LastLayout { get; private set; }
 
     /// <summary>六区域外壳（<c>--report-shell</c> 从这里开始枚举控件树）。</summary>
     public ShellView Shell => _shell;
 
-    /// <summary>窗口层重算：显示器工作区 / 栅格化比例 / 档位 → 最小尺寸 + 窗口尺寸。</summary>
+    /// <summary>
+    /// 运行期的重算入口（启动与切档共用）：<paramref name="preferSavedGeometry"/> 为真时
+    /// 优先恢复 <c>window.json</c> 的几何。
+    /// </summary>
+    /// <remarks>
+    /// 保留这个布尔重载是为了「一个入口」的调用面不分裂：真实分支在 <see cref="RelayoutCore"/>，
+    /// 这里只把布尔翻译成原因。
+    /// </remarks>
     public void Relayout(bool preferSavedGeometry)
+        => Relayout(preferSavedGeometry ? RelayoutReason.Startup : RelayoutReason.TierChanged);
+
+    /// <summary>
+    /// 唯一的重算入口：显示器 / DPI / 档位的变化都从这里进。
+    /// </summary>
+    /// <remarks>
+    /// 重入（例如重算途中 XamlRoot 又报了新比例）不会丢：标记 pending 后在本趟结束后再跑一趟，
+    /// 但有次数上限——否则「改尺寸 → 事件 → 再改尺寸」会变成死循环。
+    /// </remarks>
+    private void Relayout(RelayoutReason reason)
     {
-        if (_relayouting || Content?.XamlRoot is not { } root)
+        if (_relayouting)
+        {
+            _relayoutPending = true;
+            _pendingReason = reason;
+            return;
+        }
+
+        if (Content?.XamlRoot is null)
         {
             return;
         }
@@ -82,7 +153,45 @@ public sealed partial class MainWindow : Window
         _relayouting = true;
         try
         {
-            var scale = root.RasterizationScale;
+            var passes = 0;
+            var current = reason;
+            while (true)
+            {
+                _relayoutPending = false;
+                RelayoutCore(current);
+                passes++;
+
+                if (!_relayoutPending)
+                {
+                    break;
+                }
+
+                if (passes >= MaxRelayoutPasses)
+                {
+                    ConsoleBridge.WriteDiagnostic($"[layout] 重算连续 {passes} 趟仍未收敛，放弃本轮的后续请求");
+                    break;
+                }
+
+                current = _pendingReason;
+            }
+        }
+        finally
+        {
+            _relayouting = false;
+        }
+    }
+
+    /// <summary>一趟重算：读工作区与比例 → 定档位 → 最小尺寸 → 窗口矩形 → 快照。</summary>
+    private void RelayoutCore(RelayoutReason reason)
+    {
+        if (Content?.XamlRoot is not { } root)
+        {
+            return;
+        }
+
+        try
+        {
+            var scale = root.RasterizationScale <= 0 ? 1 : root.RasterizationScale;
             _lastScale = scale;
 
             var display = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest);
@@ -105,22 +214,9 @@ public sealed partial class MainWindow : Window
 
             ApplyMinimumSize(scale, workWidthDips, workHeightDips);
 
-            string source;
-            if (preferSavedGeometry && TryRestoreSavedGeometry(scale, out var saved))
-            {
-                AppWindow.MoveAndResize(saved);
-                source = "记忆";
-            }
-            else
-            {
-                var (width, height) = WindowSizing.Recommended(Metrics.Tier, workWidthDips, workHeightDips);
-                var physicalWidth = WindowSizing.DipsToPhysical(width, scale);
-                var physicalHeight = WindowSizing.DipsToPhysical(height, scale);
-                var x = workPhysical.X + Math.Max(0, (workPhysical.Width - physicalWidth) / 2);
-                var y = workPhysical.Y + Math.Max(0, (workPhysical.Height - physicalHeight) / 2);
-                AppWindow.MoveAndResize(new global::Windows.Graphics.RectInt32(x, y, physicalWidth, physicalHeight));
-                source = "分档";
-            }
+            var source = ApplyWindowGeometry(reason, scale, workPhysical, workWidthDips, workHeightDips);
+
+            UpdateChromeMeasurements();
 
             var size = AppWindow.Size;
             LastLayout = new WindowLayoutSnapshot(
@@ -136,7 +232,12 @@ public sealed partial class MainWindow : Window
                 WindowPhysicalWidth: size.Width,
                 WindowPhysicalHeight: size.Height,
                 Tier: Metrics.Tier,
-                Source: source);
+                Source: source,
+                TitleBarDips: _measuredTitleBarDips,
+                MenuRowDips: WindowSizing.MenuRowHeight(Metrics.Tier),
+                Maximized: IsMaximized,
+                SidebarDips: _shell.SidebarWidth,
+                InspectorDips: _shell.InspectorWidth);
 
             _shell.UpdateTierLabel();
         }
@@ -144,12 +245,113 @@ public sealed partial class MainWindow : Window
         {
             ConsoleBridge.WriteDiagnostic($"[layout] 重算失败（{error.GetType().Name}: {error.Message}）");
         }
-        finally
+    }
+
+    /// <summary>按原因决定窗口矩形并应用，返回来源名（诊断行的「来源=」）。</summary>
+    private string ApplyWindowGeometry(
+        RelayoutReason reason,
+        double scale,
+        RectInt32 workPhysical,
+        int workWidthDips,
+        int workHeightDips)
+    {
+        // 最小化 / 最大化时窗口矩形由系统管着：改它只会得到一帧跳动和一个错位的还原点。
+        if (IsMinimized)
         {
-            _relayouting = false;
+            return "最小化";
+        }
+
+        if (IsMaximized)
+        {
+            _startupGeometryApplied = true;
+            return "最大化";
+        }
+
+        // 启动几何只应用一次（App 的首次调用与 Loaded 会各来一次，第二次不再动窗口）。
+        var restoreStartup = reason == RelayoutReason.Startup && !_startupGeometryApplied;
+        if (restoreStartup)
+        {
+            _startupGeometryApplied = true;
+        }
+
+        if (restoreStartup && TryRestoreSavedGeometry(scale, out var saved))
+        {
+            ApplyGeometry(saved);
+            if (_state.Maximized && Maximize())
+            {
+                return "记忆+最大化";
+            }
+
+            return "记忆";
+        }
+
+        if (reason == RelayoutReason.DisplayChanged
+            && TryKeepCurrentGeometry(scale, workPhysical, workWidthDips, workHeightDips, out var kept))
+        {
+            ApplyGeometry(kept);
+            return "保留";
+        }
+
+        var (width, height) = WindowSizing.Recommended(Metrics.Tier, workWidthDips, workHeightDips);
+        ApplyGeometry(Centered(workPhysical, width, height, scale));
+        return reason == RelayoutReason.TierChanged ? "档位" : "分档";
+    }
+
+    /// <summary>把矩形喂给 <c>AppWindow</c>（物理像素），并记成还原边界。</summary>
+    private void ApplyGeometry(RectInt32 rect)
+    {
+        AppWindow.MoveAndResize(rect);
+
+        if (!IsMaximized)
+        {
+            _normalRect = rect;
+            _hasNormalRect = true;
         }
     }
 
+    /// <summary>按推荐尺寸在工作区里居中。</summary>
+    private static RectInt32 Centered(RectInt32 workPhysical, int widthDips, int heightDips, double scale)
+    {
+        var physicalWidth = WindowSizing.DipsToPhysical(widthDips, scale);
+        var physicalHeight = WindowSizing.DipsToPhysical(heightDips, scale);
+        var x = workPhysical.X + Math.Max(0, (workPhysical.Width - physicalWidth) / 2);
+        var y = workPhysical.Y + Math.Max(0, (workPhysical.Height - physicalHeight) / 2);
+        return new RectInt32(x, y, physicalWidth, physicalHeight);
+    }
+
+    /// <summary>
+    /// 保留当前窗口的 DIP 矩形（DPI / 工作区变化时用）：尺寸收到 [最小窗口, 工作区 - 边距]，
+    /// 位置收进工作区。**不**用推荐尺寸——那等于把用户摆好的窗口再居一次。
+    /// </summary>
+    private bool TryKeepCurrentGeometry(double scale, RectInt32 workPhysical, int workWidthDips, int workHeightDips, out RectInt32 rect)
+    {
+        rect = default;
+
+        var size = AppWindow.Size;
+        var position = AppWindow.Position;
+        if (size.Width <= 0 || size.Height <= 0)
+        {
+            return false;
+        }
+
+        var (minWidth, minHeight) = WindowSizing.MinimumWindow(Metrics.Tier, workWidthDips, workHeightDips);
+        var maxWidth = Math.Max(minWidth, workWidthDips - WindowSizing.WidthMargin);
+        var maxHeight = Math.Max(minHeight, workHeightDips - WindowSizing.HeightMargin);
+
+        var widthDips = Math.Clamp(WindowSizing.RoundInt(WindowSizing.PhysicalToDips(size.Width, scale)), minWidth, maxWidth);
+        var heightDips = Math.Clamp(WindowSizing.RoundInt(WindowSizing.PhysicalToDips(size.Height, scale)), minHeight, maxHeight);
+
+        var physicalWidth = WindowSizing.DipsToPhysical(widthDips, scale);
+        var physicalHeight = WindowSizing.DipsToPhysical(heightDips, scale);
+
+        var x = Math.Clamp(position.X, workPhysical.X, workPhysical.X + Math.Max(0, workPhysical.Width - physicalWidth));
+        var y = Math.Clamp(position.Y, workPhysical.Y, workPhysical.Y + Math.Max(0, workPhysical.Height - physicalHeight));
+
+        rect = new RectInt32(x, y, physicalWidth, physicalHeight);
+        return true;
+    }
+
+    /// <summary>最小尺寸走 <c>OverlappedPresenter.PreferredMinimum*</c>（物理像素、含边框）。</summary>
     private void ApplyMinimumSize(double scale, int workWidthDips, int workHeightDips)
     {
         if (AppWindow.Presenter is not OverlappedPresenter presenter)
@@ -158,11 +360,22 @@ public sealed partial class MainWindow : Window
         }
 
         var (minWidth, minHeight) = WindowSizing.MinimumWindow(Metrics.Tier, workWidthDips, workHeightDips);
-        presenter.PreferredMinimumWidth = WindowSizing.DipsToPhysical(minWidth, scale);
-        presenter.PreferredMinimumHeight = WindowSizing.DipsToPhysical(minHeight, scale);
+        var physicalWidth = WindowSizing.DipsToPhysical(minWidth, scale);
+        var physicalHeight = WindowSizing.DipsToPhysical(minHeight, scale);
+
+        // 拖窗口时 Changed 会连发几十次：值没变就不要碰 presenter（每次写都会触发一轮布局）。
+        if (physicalWidth == _appliedMinPhysicalWidth && physicalHeight == _appliedMinPhysicalHeight)
+        {
+            return;
+        }
+
+        presenter.PreferredMinimumWidth = physicalWidth;
+        presenter.PreferredMinimumHeight = physicalHeight;
+        _appliedMinPhysicalWidth = physicalWidth;
+        _appliedMinPhysicalHeight = physicalHeight;
     }
 
-    private bool TryRestoreSavedGeometry(double scale, out global::Windows.Graphics.RectInt32 rect)
+    private bool TryRestoreSavedGeometry(double scale, out RectInt32 rect)
     {
         rect = default;
 
@@ -171,12 +384,12 @@ public sealed partial class MainWindow : Window
             return false;
         }
 
-        var width = WindowSizing.DipsToPhysical(_state.WindowWidth!.Value, scale);
-        var height = WindowSizing.DipsToPhysical(_state.WindowHeight!.Value, scale);
+        var width = _state.WindowWidth!.Value;
+        var height = _state.WindowHeight!.Value;
 
         // DisplayArea.FindAll() 在某些会话里会抛 InvalidCastException（ClassFactory 无法供应请求的类）；
         // 几何记忆是便利功能，读不到就当「没有记忆」，绝不能让 Relayout 整个失败。
-        global::System.Collections.Generic.IReadOnlyList<DisplayArea> areas;
+        IReadOnlyList<DisplayArea> areas;
         try
         {
             areas = DisplayArea.FindAll();
@@ -192,11 +405,29 @@ public sealed partial class MainWindow : Window
             var work = area.WorkArea;
             var insideX = x >= work.X - GeometryTolerance && x <= work.X + work.Width - GeometryTolerance;
             var insideY = y >= work.Y - GeometryTolerance && y <= work.Y + work.Height - GeometryTolerance;
-            if (insideX && insideY && width > 0 && height > 0)
+            if (!insideX || !insideY)
             {
-                rect = new global::Windows.Graphics.RectInt32(x, y, width, height);
-                return true;
+                continue;
             }
+
+            // 记忆尺寸也要过一遍窗口气的规则：旧档位 / 旧显示器上存的尺寸可能比当前工作区还大。
+            var areaWidthDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Width, scale));
+            var areaHeightDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Height, scale));
+            var (minWidth, minHeight) = WindowSizing.MinimumWindow(Metrics.Tier, areaWidthDips, areaHeightDips);
+            var clampedWidth = Math.Clamp(width, minWidth, Math.Max(minWidth, areaWidthDips - WindowSizing.WidthMargin));
+            var clampedHeight = Math.Clamp(height, minHeight, Math.Max(minHeight, areaHeightDips - WindowSizing.HeightMargin));
+
+            if (clampedWidth != width || clampedHeight != height)
+            {
+                ConsoleBridge.WriteDiagnostic($"[layout] 记忆尺寸 {width}×{height} 收到工作区允许的 {clampedWidth}×{clampedHeight}");
+            }
+
+            rect = new RectInt32(
+                x,
+                y,
+                WindowSizing.DipsToPhysical(clampedWidth, scale),
+                WindowSizing.DipsToPhysical(clampedHeight, scale));
+            return true;
         }
 
         ConsoleBridge.WriteDiagnostic($"[layout] 保存的几何 ({x},{y}) 已不在任何显示器工作区内，丢弃并改用分档推荐");
@@ -221,8 +452,12 @@ public sealed partial class MainWindow : Window
 
         RebuildShell(tier);
         _state.Tier = Metrics.TierId;
+        Relayout(RelayoutReason.TierChanged);
+
+        // 重算之后再写盘：这时 _normalRect 已经是新档位的窗口矩形，
+        // 切档后的几何与档位落在同一次写入里（契约 §1.5 ⑤）。
+        CaptureGeometry();
         WindowStateStore.Save(_state);
-        Relayout(preferSavedGeometry: false);
     }
 
     /// <summary>
@@ -252,14 +487,54 @@ public sealed partial class MainWindow : Window
 
         if (Application.Current is { } application)
         {
+            // 先清旧档位的 Size.* 键：残留键会被新页面里已解析的 StaticResource 命中，
+            // 症状是「切了档但某一个尺寸没变」。清完再写新档位。
+            MetricsResources.Clear(application.Resources);
             MetricsResources.Apply(application.Resources);
         }
 
-        var rebuilt = new ShellView();
-        rebuilt.QuitRequested += (_, _) => Close();
+        var rebuilt = CreateShell();
         ShellHost.Content = rebuilt;
         _shell = rebuilt;
         rebuilt.RestoreSnapshot(snapshot);
+    }
+
+    /// <summary>建一个外壳实例并把两个出口接上（窗口层是唯一负责持久化的一层）。</summary>
+    private ShellView CreateShell()
+    {
+        var shell = new ShellView(_state);
+        shell.QuitRequested += (_, _) => Close();
+        shell.PanelWidthsChanged += OnPanelWidthsChanged;
+        return shell;
+    }
+
+    /// <summary>
+    /// 侧栏 / 信息面板拖动结束：归一化写回 <c>window.json</c>，再按档位换算回来校验一次。
+    /// </summary>
+    /// <remarks>
+    /// 归一化用**档位**系数（<c>Metrics.*Scale</c>），不是系统 DPI（spec §7 规则 1）。
+    /// 写完用 <see cref="WindowState.SidebarWidthFor"/> / <see cref="WindowState.InspectorWidthFor"/>
+    /// 把值换回当前档位再落到界面上：界面上显示的就是下次启动会恢复的值，避免「存 630、
+    /// 恢复 520」这种看起来像设置被吃掉的差异。
+    /// </remarks>
+    private void OnPanelWidthsChanged(object? sender, EventArgs args)
+    {
+        var tier = Metrics.Tier;
+        var scale = WindowSizing.ScaleOf(tier);
+
+        _state.LastSidebarWidth = WindowState.Normalize(_shell.SidebarWidth, scale);
+        _state.LastInspectorWidth = WindowState.Normalize(_shell.InspectorWidth, scale);
+
+        var sidebar = _state.SidebarWidthFor(tier);
+        var inspector = _state.InspectorWidthFor(tier);
+        _shell.ApplyPanelWidths(sidebar, inspector);
+
+        // 顺手把当前窗口矩形一起带上：这次写盘不是关闭时那次，几何不能停在上一个会话。
+        CaptureGeometry();
+        WindowStateStore.Save(_state);
+
+        ConsoleBridge.WriteDiagnostic(
+            $"[panel] 侧栏 {sidebar} → 归一 {_state.LastSidebarWidth}；信息面板 {inspector} → 归一 {_state.LastInspectorWidth}（档位 {Metrics.TierId}）");
     }
 
     private void SnapshotWorkArea(out int workWidthDips, out int workHeightDips)
@@ -298,16 +573,204 @@ public sealed partial class MainWindow : Window
 
     private void OnRootLoaded(object sender, RoutedEventArgs args)
     {
-        Relayout(preferSavedGeometry: true);
+        HookXamlRoot();
+        Relayout(RelayoutReason.Startup);
     }
 
+    private void OnRootUnloaded(object sender, RoutedEventArgs args) => UnhookXamlRoot();
+
+    /// <summary>订阅 <c>XamlRoot.Changed</c>：DPI 只能从这里拿（<c>DisplayInformation</c> 在 WinUI 3 抛异常）。</summary>
+    private void HookXamlRoot()
+    {
+        if (_xamlRootHooked || Content?.XamlRoot is not { } root)
+        {
+            return;
+        }
+
+        _xamlRoot = root;
+        root.Changed += OnXamlRootChanged;
+        _xamlRootHooked = true;
+    }
+
+    /// <summary>退订（幂等）：外壳重建不换 XamlRoot，所以只在窗口卸载 / 关闭时调用。</summary>
+    private void UnhookXamlRoot()
+    {
+        if (!_xamlRootHooked)
+        {
+            return;
+        }
+
+        if (_xamlRoot is { } root)
+        {
+            root.Changed -= OnXamlRootChanged;
+        }
+
+        _xamlRoot = null;
+        _xamlRootHooked = false;
+    }
+
+    private void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    {
+        var scale = sender.RasterizationScale <= 0 ? 1 : sender.RasterizationScale;
+
+        if (Math.Abs(scale - _lastScale) > 0.001)
+        {
+            // DPI / 缩放档变化：与窗口重算走同一个入口。原因标成 DisplayChanged，
+            // 因此保留当前 DIP 矩形、不居中、不抢推荐尺寸。
+            ConsoleBridge.WriteDiagnostic($"[layout] 栅格化比例 {_lastScale:0.##} → {scale:0.##}，重算窗口层");
+            Relayout(RelayoutReason.DisplayChanged);
+            return;
+        }
+
+        // 纯尺寸变化（不是 DPI）：只刷新最小尺寸与非客户区测量，几何归 AppWindow.Changed 记账。
+        RefreshMinimumSize();
+        UpdateChromeMeasurements();
+    }
+
+    private void OnRootSizeChanged(object sender, SizeChangedEventArgs args)
+        => UpdateChromeMeasurements(forceLayout: false);
+
+    /// <summary>
+    /// 窗口位置 / 尺寸变化。
+    /// </summary>
+    /// <remarks>
+    /// 两类事件都**不**重算窗口：位置变化重算会把窗口拉回屏幕中央（P0 体验缺陷），
+    /// 尺寸变化重算会把用户刚拖出来的尺寸抢回推荐值。这里只做记账与最小尺寸刷新。
+    /// </remarks>
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
         if (args.DidPositionChange)
         {
-            Relayout(preferSavedGeometry: false);
+            RememberWindowGeometry();
+
+            // 可能整窗跨到另一块显示器了：最小尺寸按新的工作区刷新，但**不动**几何。
+            RefreshMinimumSize();
+        }
+
+        if (args.DidSizeChange)
+        {
+            RememberWindowGeometry();
+            UpdateChromeMeasurements();
         }
     }
+
+    /// <summary>记下非最大化时的矩形（= 最大化后的还原边界）；最大化 / 最小化尺寸不算。</summary>
+    private void RememberWindowGeometry()
+    {
+        if (IsMaximized || IsMinimized)
+        {
+            return;
+        }
+
+        var size = AppWindow.Size;
+        if (size.Width <= 0 || size.Height <= 0)
+        {
+            return;
+        }
+
+        var position = AppWindow.Position;
+        _normalRect = new RectInt32(position.X, position.Y, size.Width, size.Height);
+        _hasNormalRect = true;
+    }
+
+    /// <summary>只刷新最小尺寸（位置变化路径用：不动窗口矩形，因此不会「抢回」位置）。</summary>
+    private void RefreshMinimumSize()
+    {
+        if (Content?.XamlRoot is not { } root)
+        {
+            return;
+        }
+
+        var scale = root.RasterizationScale <= 0 ? 1 : root.RasterizationScale;
+        try
+        {
+            var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+            var workWidthDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Width, scale));
+            var workHeightDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Height, scale));
+            ApplyMinimumSize(scale, workWidthDips, workHeightDips);
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[layout] 刷新最小尺寸失败（{error.GetType().Name}: {error.Message}）");
+        }
+    }
+
+    /// <summary>
+    /// 测量非客户区（系统标题栏）高度并记一次偏差诊断。
+    /// </summary>
+    /// <remarks>
+    /// 这是「不再靠硬编码 40」的落点：菜单行高度由度量推出（<see cref="WindowSizing.MenuRowHeight"/>），
+    /// 而系统标题栏的真实高度是**平台事实**，只能量。两者不一致时写一行诊断并如实报出外壳总高，
+    /// 不为了让总高等于度量去裁剪系统标题栏（那是系统的区域，裁了会切到窗口按钮）。
+    /// </remarks>
+    private void UpdateChromeMeasurements(bool forceLayout = true)
+    {
+        // 比例只从 XamlRoot 拿；还没拿到（窗口未布局）就先不测，否则量出来的是「1x 下的高度」。
+        var scale = Content?.XamlRoot?.RasterizationScale ?? _lastScale;
+        if (scale <= 0)
+        {
+            return;
+        }
+
+        var measured = MeasureTitleBarDips(scale, forceLayout);
+        if (measured <= 0)
+        {
+            return;
+        }
+
+        _measuredTitleBarDips = measured;
+
+        if (_titleBarDeviationLogged || Math.Abs(measured - WindowSizing.TitleBarBaseDips) <= TitleBarToleranceDips)
+        {
+            return;
+        }
+
+        _titleBarDeviationLogged = true;
+        var menuRow = WindowSizing.MenuRowHeight(Metrics.Tier);
+        ConsoleBridge.WriteDiagnostic(
+            $"[chrome] 系统标题栏实测 {measured:0.#} DIP，度量口径 {WindowSizing.TitleBarBaseDips} DIP：" +
+            $"菜单行 {menuRow} DIP、外壳总高 {(measured + menuRow):0.#} DIP（不裁剪系统区域）");
+    }
+
+    /// <summary>实测非客户区高度（DIP）：窗口物理高 ÷ 比例 − 内容实际高。</summary>
+    /// <remarks>
+    /// <paramref name="forceLayout"/> 只在「布局回调之外」为真：在 SizeChanged 里再调
+    /// <c>UpdateLayout()</c> 会重入布局，所以那条路径用当前已算好的 ActualHeight。
+    /// </remarks>
+    private double MeasureTitleBarDips(double scale, bool forceLayout)
+    {
+        try
+        {
+            if (forceLayout)
+            {
+                // 强制一次同步布局：否则读到的 ActualHeight 是上一帧的，减法会得到 0 或负数。
+                RootGrid.UpdateLayout();
+            }
+
+            return WindowSizing.MeasuredNonClientDips(AppWindow.Size.Height, scale, RootGrid.ActualHeight);
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[chrome] 非客户区高度测量失败（{error.GetType().Name}）");
+            return 0;
+        }
+    }
+
+    /// <summary>最大化（首次恢复记忆里的「最大化」也走这里）。</summary>
+    private bool Maximize()
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter presenter)
+        {
+            return false;
+        }
+
+        presenter.Maximize();
+        return true;
+    }
+
+    private bool IsMaximized => AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Maximized };
+
+    private bool IsMinimized => AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized };
 
     private void OnSystemAppearanceChanged(object? sender, EventArgs e)
         => DispatcherQueue.TryEnqueue(() => ThemeService.ApplyToWindow(this));
@@ -368,6 +831,11 @@ public sealed partial class MainWindow : Window
     {
         ThemeService.SystemAppearanceChanged -= OnSystemAppearanceChanged;
 
+        if (_xamlRootHooked)
+        {
+            UnhookXamlRoot();
+        }
+
         if (_options.HasReports)
         {
             return;
@@ -379,20 +847,44 @@ public sealed partial class MainWindow : Window
         WindowStateStore.Save(_state);
     }
 
+    /// <summary>
+    /// 关窗时记几何：尺寸 / 位置写**还原边界**（非最大化矩形），并按当前是否最大化写
+    /// <see cref="WindowState.Maximized"/>。最大化时 <c>AppWindow.Size</c> 是屏幕大小，
+    /// 拿它当记忆会在下次启动得到一个贴满屏幕的普通窗口。
+    /// </summary>
     private void SaveGeometry()
     {
-        var scale = _lastScale <= 0 ? 1 : _lastScale;
-        var size = AppWindow.Size;
-        var position = AppWindow.Position;
+        CaptureGeometry();
 
-        _state.WindowWidth = WindowSizing.RoundInt(WindowSizing.PhysicalToDips(size.Width, scale));
-        _state.WindowHeight = WindowSizing.RoundInt(WindowSizing.PhysicalToDips(size.Height, scale));
-        _state.Maximized = AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Maximized };
-        if (!_state.Maximized)
+        ConsoleBridge.WriteDiagnostic(
+            $"[layout] 写回几何 {_state.WindowWidth}×{_state.WindowHeight}@({_state.WindowX},{_state.WindowY}) 最大化={_state.Maximized}");
+    }
+
+    /// <summary>
+    /// 把当前窗口矩形搬进 <see cref="WindowState"/>（不写盘）。
+    /// </summary>
+    /// <remarks>
+    /// 单独拆出来是因为「面板拖动后立刻写盘」那条路径也要带上几何：否则一次拖动会把
+    /// 上一会话的窗口矩形再写一遍，进程崩溃后窗口位置就退回上一会话的值。
+    /// </remarks>
+    private void CaptureGeometry()
+    {
+        var scale = _lastScale <= 0 ? 1 : _lastScale;
+
+        if (!IsMaximized && !IsMinimized)
         {
-            _state.WindowX = position.X;
-            _state.WindowY = position.Y;
+            RememberWindowGeometry();
         }
+
+        if (_hasNormalRect && _normalRect.Width > 0 && _normalRect.Height > 0)
+        {
+            _state.WindowWidth = WindowSizing.RoundInt(WindowSizing.PhysicalToDips(_normalRect.Width, scale));
+            _state.WindowHeight = WindowSizing.RoundInt(WindowSizing.PhysicalToDips(_normalRect.Height, scale));
+            _state.WindowX = _normalRect.X;
+            _state.WindowY = _normalRect.Y;
+        }
+
+        _state.Maximized = IsMaximized;
     }
 
     private static string TierLabelOf(DensityTier tier) => tier switch
@@ -403,7 +895,7 @@ public sealed partial class MainWindow : Window
     };
 
     /// <summary>显示器某一边（物理像素；只用于诊断输出，取不到就退回工作区尺寸）。</summary>
-    private static int GetMonitorSpan(global::Windows.Graphics.RectInt32 workArea, bool width)
+    private static int GetMonitorSpan(RectInt32 workArea, bool width)
     {
         try
         {
@@ -469,4 +961,9 @@ public sealed record WindowLayoutSnapshot(
     int WindowPhysicalWidth,
     int WindowPhysicalHeight,
     DensityTier Tier,
-    string Source);
+    string Source,
+    double TitleBarDips,
+    int MenuRowDips,
+    bool Maximized,
+    int SidebarDips,
+    int InspectorDips);
