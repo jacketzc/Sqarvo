@@ -68,6 +68,16 @@ public partial class App : Application
     {
         InitializeComponent();
 
+        // 未处理异常一律落盘：WinUI 的启动期崩溃在事件日志里只有出错模块，没有托管堆栈。
+        UnhandledException += (_, eventArgs) => CrashLog.Write("unhandled", eventArgs.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+            CrashLog.Write("domain", eventArgs.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
+        {
+            CrashLog.Write("task", eventArgs.Exception);
+            eventArgs.SetObserved();
+        };
+
         _options = AppOptions.Parse(Environment.GetCommandLineArgs());
         if (_options.HasReports || _options.QaConnect is { Length: > 0 })
         {

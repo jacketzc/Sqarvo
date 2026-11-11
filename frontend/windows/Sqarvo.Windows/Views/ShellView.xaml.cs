@@ -407,11 +407,21 @@ public sealed partial class ShellView : UserControl
     /// 这里只负责把连接塞进去并挂上 <c>Tag</c>——它在 <see cref="ResolveProfile"/> 里把
     /// 「点了哪一行」换回「哪条连接」，不依赖 Content 的类型。
     /// </remarks>
-    private static ConnectionRow BuildConnectionRow(ConnectionProfile profile, string badge)
+    private static object BuildConnectionRow(ConnectionProfile profile, string badge)
     {
-        var row = new ConnectionRow { Tag = profile };
-        row.Show(profile.Name, badge);
-        return row;
+        try
+        {
+            var row = new ConnectionRow { Tag = profile };
+            row.Show(profile.Name, badge);
+            return row;
+        }
+        catch (Exception error)
+        {
+            // 行模板加载失败不能让整棵树（乃至进程）挂掉：退回纯文本，把原因写进崩溃日志。
+            ConsoleBridge.WriteDiagnostic($"[tree] 连接行模板加载失败（{error.GetType().Name}: {error.Message}）");
+            CrashLog.Write("tree-row", error);
+            return $"{profile.Name} · {badge}";
+        }
     }
 
     private string BadgeFor(ConnectionProfile profile)

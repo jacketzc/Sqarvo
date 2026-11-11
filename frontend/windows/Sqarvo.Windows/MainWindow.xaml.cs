@@ -243,7 +243,10 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception error)
         {
+            // 只记类型+消息不足以定位（WinRT 的 ClassFactory 失败看不到是哪一步），
+            // 这里把完整异常（含堆栈）同时写进诊断日志与崩溃文件。
             ConsoleBridge.WriteDiagnostic($"[layout] 重算失败（{error.GetType().Name}: {error.Message}）");
+            CrashLog.Write("layout", error);
         }
     }
 
