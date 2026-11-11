@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    #163 的主窗口：外壳条 / 工具条 / 可重建的页面宿主 / 状态栏。
+    #164 主窗口：只做窗口层的事（尺寸 / DPI / 最小尺寸 / 密度档 / 标题栏 / 主题），
+    界面本身在 Views/ShellView.xaml 的六区域外壳里。
 
-    尺寸仍然只来自 {StaticResource Size.*}（构建期生成），Padding 这类结构体在 code-behind
-    从 Metrics 取。窗口尺寸、DPI 变化、最小尺寸、密度档全部走 MainWindow.Relayout()。
+    为什么外壳是一个 UserControl 而不是直接写在 Window 里：切密度档要「重建页面」
+    （StaticResource 只解析一次，改资源字典不会让已解析的界面变，见 ADR 0026 决策 5），
+    整棵内容树重建才真正让所有 Size.* 重新解析。
 -->
 <Window
     x:Class="Sqarvo.Windows.MainWindow"
@@ -19,81 +21,15 @@
                  见 MainWindow.RegisterTierAccelerators()。 -->
             <KeyboardAccelerator Key="Add" Modifiers="Control" Invoked="OnTierUp" />
             <KeyboardAccelerator Key="Subtract" Modifiers="Control" Invoked="OnTierDown" />
+            <KeyboardAccelerator Key="W" Modifiers="Control" Invoked="OnCloseTab" />
+            <KeyboardAccelerator Key="Q" Modifiers="Control" Invoked="OnQuit" />
+            <KeyboardAccelerator Key="N" Modifiers="Control" Invoked="OnNewConnection" />
+            <KeyboardAccelerator Key="T" Modifiers="Control" Invoked="OnNewQueryTab" />
         </Grid.KeyboardAccelerators>
 
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <Border
-            x:Name="HeaderBand"
-            Grid.Row="0"
-            Background="{ThemeResource SqarvoSurfaceBrush}"
-            Height="{StaticResource Size.HeaderHeight}">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <StackPanel
-                    Grid.Column="0"
-                    Orientation="Horizontal"
-                    Spacing="{StaticResource Size.ToolbarPaddingH}"
-                    VerticalAlignment="Center">
-                    <TextBlock
-                        Text="Sqarvo"
-                        FontSize="{StaticResource Size.FontTitle}"
-                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
-                        VerticalAlignment="Center" />
-                    <TextBlock
-                        x:Name="TierText"
-                        FontSize="{StaticResource Size.FontStatus}"
-                        Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                        VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock
-                    x:Name="ThemeText"
-                    Grid.Column="1"
-                    FontSize="{StaticResource Size.FontStatus}"
-                    Foreground="{ThemeResource SqarvoAccentTextBrush}"
-                    VerticalAlignment="Center" />
-            </Grid>
-        </Border>
-
-        <Border
-            x:Name="ToolbarBand"
-            Grid.Row="1"
-            Background="{ThemeResource SqarvoBandBrush}"
-            Height="{StaticResource Size.ToolbarHeight}">
-            <TextBlock
-                x:Name="ToolbarText"
-                FontSize="{StaticResource Size.FontUi}"
-                Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
-                VerticalAlignment="Center" />
-        </Border>
-
-        <!-- 页面宿主：切密度档时整页在这里被替换（重建，不热切）。 -->
-        <Border
-            x:Name="PageHostBorder"
-            Grid.Row="2"
-            Background="{ThemeResource SqarvoSurfaceBrush}"
-            BorderBrush="{ThemeResource SqarvoCardBorderBrush}">
-            <ContentControl x:Name="PageHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
-        </Border>
-
-        <Grid
-            x:Name="StatusBand"
-            Grid.Row="3"
-            Height="{StaticResource Size.StatusHeight}"
-            Background="{ThemeResource SqarvoBandBrush}">
-            <TextBlock
-                x:Name="StatusText"
-                FontSize="{StaticResource Size.FontStatus}"
-                Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                VerticalAlignment="Center" />
-        </Grid>
+        <ContentControl
+            x:Name="ShellHost"
+            HorizontalContentAlignment="Stretch"
+            VerticalContentAlignment="Stretch" />
     </Grid>
 </Window>

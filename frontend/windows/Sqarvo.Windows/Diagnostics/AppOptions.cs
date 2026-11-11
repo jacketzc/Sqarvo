@@ -5,17 +5,18 @@ using System.Linq;
 namespace Sqarvo.Windows.Diagnostics;
 
 /// <summary>
-/// 命令行开关。当前只有只读诊断开关（<c>--report-*</c> 与 <c>--self-test-window</c>）：
-/// 它们不改尺寸、不改主题、不写 <c>window.json</c>，只把「现在到底是什么状态」打印出来。
+/// 命令行开关。全部是只读诊断开关：不改尺寸、不改主题、不写 <c>window.json</c>。
 /// </summary>
 public sealed class AppOptions
 {
-    private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool selfTestWindow)
+    private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool reportShell, bool selfTestWindow, string? qaTier)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
         ReportMonitor = reportMonitor;
+        ReportShell = reportShell;
         SelfTestWindow = selfTestWindow;
+        QaTier = qaTier;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -27,14 +28,20 @@ public sealed class AppOptions
     /// <summary>打印 <c>[monitor]</c> 一行（显示器 / 缩放 / 工作区 / 最终窗口尺寸 / 档位 / 来源）。</summary>
     public bool ReportMonitor { get; }
 
+    /// <summary>打印整棵控件树（UI Automation 的 ControlType + Name，缩进两格）。</summary>
+    public bool ReportShell { get; }
+
+    /// <summary>QA 专用：启动时切到指定档位（<c>compact</c> / <c>comfortable</c> / <c>large</c>）。</summary>
+    public string? QaTier { get; }
+
     /// <summary>打印窗口尺寸算术的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
     /// <summary>是否有任何「打印后退出」的开关。</summary>
-    public bool HasReports => ReportTheme || ReportMetrics || ReportMonitor || SelfTestWindow;
+    public bool HasReports => ReportTheme || ReportMetrics || ReportMonitor || ReportShell || SelfTestWindow;
 
     /// <summary>是否需要窗口（自检是纯函数，不需要）。</summary>
-    public bool NeedsWindow => ReportTheme || ReportMetrics || ReportMonitor;
+    public bool NeedsWindow => ReportTheme || ReportMetrics || ReportMonitor || ReportShell;
 
     /// <summary>从完整命令行解析（第一项是 exe 路径，跳过）。</summary>
     public static AppOptions Parse(string[] commandLine)
@@ -51,7 +58,13 @@ public sealed class AppOptions
             reportTheme: flags.Contains("report-theme"),
             reportMetrics: flags.Contains("report-metrics"),
             reportMonitor: flags.Contains("report-monitor"),
-            selfTestWindow: flags.Contains("self-test-window"));
+            reportShell: flags.Contains("report-shell"),
+            selfTestWindow: flags.Contains("self-test-window"),
+            qaTier: commandLine
+                .Skip(1)
+                .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
+                .Select(argument => argument.Substring("--qa-tier=".Length).Trim().ToLowerInvariant())
+                .FirstOrDefault());
     }
 
     /// <summary>已知开关清单（给文档用）。</summary>
@@ -60,6 +73,8 @@ public sealed class AppOptions
         "--report-theme",
         "--report-metrics",
         "--report-monitor",
+        "--report-shell",
         "--self-test-window",
+        "--qa-tier=<compact|comfortable|large>",
     };
 }

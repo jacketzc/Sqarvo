@@ -110,7 +110,19 @@ public partial class App : Application
         }
 
         _reported = true;
+
+        // QA 档位：在这一刻切，窗口层已经算过第一次（切档 → 重算窗口 → 打印，来源标 QA）。
+        if (_options.QaTier is { Length: > 0 } qaTier)
+        {
+            window.SwitchTierForQa(Metrics.ParseTier(qaTier));
+        }
+
         DiagnosticReporter.Report(window, _options, window.LastLayout);
+
+                if (_options.ReportShell)
+                {
+                    ShellTreeDumper.Dump(window);
+                }
 
         // 诊断开关是「取一行证据」，不是交互模式：打印完就退出。
         window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Close);
