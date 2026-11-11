@@ -5,15 +5,16 @@ using System.Linq;
 namespace Sqarvo.Windows.Diagnostics;
 
 /// <summary>
-/// 命令行开关。当前只有只读诊断开关（<c>--report-*</c>）：
-/// 它们不改尺寸、不改主题，只把「现在到底是什么状态」打印出来。
+/// 命令行开关。当前只有只读诊断开关（<c>--report-*</c> 与 <c>--self-test-window</c>）：
+/// 它们不改尺寸、不改主题、不写 <c>window.json</c>，只把「现在到底是什么状态」打印出来。
 /// </summary>
 public sealed class AppOptions
 {
-    private AppOptions(bool reportTheme, bool reportMetrics, bool selfTestWindow)
+    private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool selfTestWindow)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
+        ReportMonitor = reportMonitor;
         SelfTestWindow = selfTestWindow;
     }
 
@@ -23,11 +24,17 @@ public sealed class AppOptions
     /// <summary>打印 <c>[metrics]</c> 一行。</summary>
     public bool ReportMetrics { get; }
 
-    /// <summary>打印窗口尺寸算术的边界断言（#163 的纯函数自检）。</summary>
+    /// <summary>打印 <c>[monitor]</c> 一行（显示器 / 缩放 / 工作区 / 最终窗口尺寸 / 档位 / 来源）。</summary>
+    public bool ReportMonitor { get; }
+
+    /// <summary>打印窗口尺寸算术的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
     /// <summary>是否有任何「打印后退出」的开关。</summary>
-    public bool HasReports => ReportTheme || ReportMetrics || SelfTestWindow;
+    public bool HasReports => ReportTheme || ReportMetrics || ReportMonitor || SelfTestWindow;
+
+    /// <summary>是否需要窗口（自检是纯函数，不需要）。</summary>
+    public bool NeedsWindow => ReportTheme || ReportMetrics || ReportMonitor;
 
     /// <summary>从完整命令行解析（第一项是 exe 路径，跳过）。</summary>
     public static AppOptions Parse(string[] commandLine)
@@ -43,14 +50,16 @@ public sealed class AppOptions
         return new AppOptions(
             reportTheme: flags.Contains("report-theme"),
             reportMetrics: flags.Contains("report-metrics"),
+            reportMonitor: flags.Contains("report-monitor"),
             selfTestWindow: flags.Contains("self-test-window"));
     }
 
-    /// <summary>已知开关清单（给 <c>--help</c> 与文档用）。</summary>
+    /// <summary>已知开关清单（给文档用）。</summary>
     public static IReadOnlyList<string> KnownSwitches { get; } = new[]
     {
         "--report-theme",
         "--report-metrics",
+        "--report-monitor",
         "--self-test-window",
     };
 }

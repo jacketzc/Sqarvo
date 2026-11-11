@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    工作区内容页（#162 的度量自检页，在 #163 里成为「可重建」的页面）。
+
+    它存在的意义不是展示产品界面，而是给两条验收提供实体：
+    1. 全部 41 个度量键按当前档位列出（证明度量真的接进来了、且内容可滚动）；
+    2. 一个「未提交编辑」输入框 + 滚动位置——切密度档要重建页面，重建后两者必须还在。
+
+    尺寸与颜色规矩同外层：尺寸只用 {StaticResource Size.*}，颜色只用 ThemeResource。
+-->
+<UserControl
+    x:Class="Sqarvo.Windows.Views.MetricsSelfCheckPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Background="{ThemeResource SqarvoAppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Spacing="{StaticResource Size.InspectorGap}">
+            <TextBlock
+                Text="三档度量（来自 docs/ui-specification/metrics.toml）"
+                FontSize="{StaticResource Size.FontTitle}"
+                Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+            <TextBlock
+                x:Name="SummaryText"
+                FontSize="{StaticResource Size.FontUi}"
+                Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                TextWrapping="Wrap" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Spacing="{StaticResource Size.BadgeMinHeight}">
+            <TextBlock
+                Text="未提交编辑（切档重建页面后应原样保留）："
+                FontSize="{StaticResource Size.FontStatus}"
+                Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+            <TextBox
+                x:Name="DraftBox"
+                FontSize="{StaticResource Size.FontUi}"
+                PlaceholderText="在这里输入几个字，然后按 Ctrl+Plus 切档"
+                AutomationProperties.Name="未提交编辑草稿" />
+        </StackPanel>
+
+        <ScrollViewer
+            x:Name="RowsScroller"
+            Grid.Row="2"
+            VerticalScrollBarVisibility="Auto"
+            HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl x:Name="RowsList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock
+                            Text="{Binding}"
+                            FontSize="{StaticResource Size.FontStatus}"
+                            FontFamily="Consolas"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                            IsTextSelectionEnabled="True" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

@@ -1,15 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    #162 的落地页：只做「度量接入 + 主题三档」的自检面，不含六区域外壳（那是 #164）。
+    #163 的主窗口：外壳条 / 工具条 / 可重建的页面宿主 / 状态栏。
 
-    尺寸的写法有三条规矩，评审按这三条看：
-
-    1. 高度 / 字号一律 {StaticResource Size.*}，值来自 metrics.toml 的构建期生成
-       （Theming/MetricsResources.cs 写进 Application.Resources）。这里没有尺寸字面量，
-       也没有 #RRGGBB。
-    2. XAML 表达不了的尺寸（Padding 是 Thickness、CornerRadius 是结构体）在 code-behind
-       里从 Metrics 取，同样不写字面量——见 MainWindow.xaml.cs 的 ApplyMetrics()。
-    3. 颜色只用 ThemeResource（Tokens.xaml 的三套 ThemeDictionaries 别名到系统 token）。
+    尺寸仍然只来自 {StaticResource Size.*}（构建期生成），Padding 这类结构体在 code-behind
+    从 Metrics 取。窗口尺寸、DPI 变化、最小尺寸、密度档全部走 MainWindow.Relayout()。
 -->
 <Window
     x:Class="Sqarvo.Windows.MainWindow"
@@ -17,7 +11,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Sqarvo">
 
-    <Grid Background="{ThemeResource SqarvoAppBackgroundBrush}">
+    <Grid x:Name="RootGrid" Background="{ThemeResource SqarvoAppBackgroundBrush}">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="Number0" Modifiers="Control" Invoked="OnTierReset" />
+            <KeyboardAccelerator Key="Add" Modifiers="Control" Invoked="OnTierUp" />
+            <KeyboardAccelerator Key="Subtract" Modifiers="Control" Invoked="OnTierDown" />
+        </Grid.KeyboardAccelerators>
+
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -25,7 +25,6 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 区域 01：窗口外壳条（系统标题栏之外的那一条，高度 = metrics.header_height） -->
         <Border
             x:Name="HeaderBand"
             Grid.Row="0"
@@ -61,45 +60,29 @@
             </Grid>
         </Border>
 
-        <!-- 区域 02：主工具条（高度 = metrics.toolbar_height） -->
         <Border
             x:Name="ToolbarBand"
             Grid.Row="1"
             Background="{ThemeResource SqarvoBandBrush}"
             Height="{StaticResource Size.ToolbarHeight}">
             <TextBlock
-                Text="度量与主题自检 · 六区域外壳见 #164，后端接入见后续 Issue"
+                x:Name="ToolbarText"
                 FontSize="{StaticResource Size.FontUi}"
                 Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                 VerticalAlignment="Center" />
         </Border>
 
-        <!-- 内容区：一页说明卡，证明度量与主题都已经接通 -->
+        <!-- 页面宿主：切密度档时整页在这里被替换（重建，不热切）。 -->
         <Border
-            x:Name="ContentCard"
+            x:Name="PageHostBorder"
             Grid.Row="2"
-            BorderBrush="{ThemeResource SqarvoCardBorderBrush}"
-            Background="{ThemeResource SqarvoSurfaceBrush}">
-            <StackPanel x:Name="ContentStack" Spacing="{StaticResource Size.InspectorGap}">
-                <TextBlock
-                    Text="三档度量（来自 docs/ui-specification/metrics.toml）"
-                    FontSize="{StaticResource Size.FontTitle}"
-                    Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
-                <TextBlock
-                    x:Name="MetricsSummaryText"
-                    FontSize="{StaticResource Size.FontUi}"
-                    Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                    TextWrapping="Wrap" />
-                <TextBlock
-                    Text="主题三档：跟随系统（含高对比）。运行中切换系统主题应立即生效，标题栏同步——标题栏不在 XAML 主题作用域内，由 ThemeService 单独处理。"
-                    FontSize="{StaticResource Size.FontPanel}"
-                    Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                    TextWrapping="Wrap" />
-            </StackPanel>
+            Background="{ThemeResource SqarvoSurfaceBrush}"
+            BorderBrush="{ThemeResource SqarvoCardBorderBrush}">
+            <ContentControl x:Name="PageHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
         </Border>
 
-        <!-- 区域 05：状态栏（高度 = metrics.status_height） -->
         <Grid
+            x:Name="StatusBand"
             Grid.Row="3"
             Height="{StaticResource Size.StatusHeight}"
             Background="{ThemeResource SqarvoBandBrush}">
