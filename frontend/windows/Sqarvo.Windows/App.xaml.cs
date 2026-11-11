@@ -97,6 +97,7 @@ public partial class App : Application
         if (_options.HasReports
             || _options.QaConnect is { Length: > 0 }
             || _options.QaMetadata is { Length: > 0 }
+            || _options.QaQuery is { Length: > 0 }
             || _options.NoBackend)
         {
             ConsoleBridge.Ensure();
@@ -172,12 +173,21 @@ public partial class App : Application
         // 区别是它把窗口留在前台（诊断开关打完就退，没法观察运行期崩溃）。
         // 例外：--qa-metadata 要连真库，它会启动后端；此时即使同时给了 --report-shell 也照常走
         // 「连接 → 展开 → 打印控件树」这条链路（否则后端根本不会启动，探针什么也拿不到）。
-        var needsBackendForMetadata = _options.QaMetadata is { Length: > 0 };
-        if ((!_options.HasReports || needsBackendForMetadata) && !_options.NoBackend)
+        // 两个「要连真库」的 QA 链路（元数据 / 查询）都必须真的把后端拉起来，否则探针什么也拿不到。
+        var needsBackendForProbe = _options.QaMetadata is { Length: > 0 } || _options.QaQuery is { Length: > 0 };
+        if ((!_options.HasReports || needsBackendForProbe) && !_options.NoBackend)
         {
             // 不 await：窗口先显示，握手进度通过 BackendState 写进状态栏。
             // StartAsync 不抛异常（失败落成 BackendReadiness.Failed）。
             _ = Backend.StartAsync();
+
+            if (_options.QaQuery is { Length: > 0 } qaQuery)
+            {
+                // 查询链路（#172）：连上之后**真的**建一个查询页、执行 SQL，把 [query] 证据打出来。
+                // 与 --qa-signin 合用时不退出（那条开关的语义就是「保持运行供截图」）。
+                _ = RunQaQueryAsync(window, qaQuery, keepAlive: _options.QaSignIn is { Length: > 0 });
+                return;
+            }
 
             if (_options.QaConnect is { Length: > 0 } qaConnect)
             {
@@ -464,6 +474,109 @@ public partial class App : Application
         finally
         {
             Report(window);
+        }
+    }
+
+    /// <summary>
+    /// <c>--qa-query=&lt;sql&gt;</c>：等后端就绪 → 连接（目标取 <c>--qa-signin</c>，否则第一条）→
+    /// **真的**新建查询页并执行 SQL → 打印 <c>[query]</c> 证据 → 关掉查询页（验证 Close）后退出；
+    /// 与 <c>--qa-signin</c> 合用时保持运行，供截图。
+    /// </summary>
+    /// <param name="window">主窗口（查询页挂在它的 <see cref="MainWindow.Shell"/> 上）。</param>
+    /// <param name="sql">要执行的 SQL。</param>
+    /// <param name="keepAlive">是否保持运行（<c>--qa-signin</c> 同时给出时为真）。</param>
+    /// <remarks>
+    /// 与 <see cref="RunQaMetadataAsync"/> 同一套取舍：不弹窗、只打印证据；失败也算「跑过一趟」。
+    /// 密码同样来自 <c>SQARVO_QA_PASSWORD</c>（可选：已有凭据引用时不必给）。
+    /// </remarks>
+    private async Task RunQaQueryAsync(MainWindow window, string sql, bool keepAlive)
+    {
+        try
+        {
+            var session = Backend;
+            if (session is null)
+            {
+                ConsoleBridge.WriteLine("[query] 没有后端会话");
+                return;
+            }
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            while (!session.State.IsReady && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(200).ConfigureAwait(true);
+            }
+
+            var state = session.State;
+            ConsoleBridge.WriteLine(
+                $"[query] backend={state.Readiness} drivers={state.RegisteredDrivers} version={state.Version?.ServiceVersion ?? "?"}");
+
+            if (!state.IsReady)
+            {
+                return;
+            }
+
+            var profiles = Profiles.Load();
+            var name = string.IsNullOrWhiteSpace(_options.QaSignIn) ? "@first" : _options.QaSignIn!.Trim();
+            var profile = string.Equals(name, "@first", StringComparison.OrdinalIgnoreCase)
+                ? profiles.FirstOrDefault()
+                : profiles.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+
+            if (profile is null)
+            {
+                ConsoleBridge.WriteLine($"[query] 找不到连接条目 {name}（已保存 {profiles.Count} 条）");
+                return;
+            }
+
+            var password = Environment.GetEnvironmentVariable("SQARVO_QA_PASSWORD");
+            if (!string.IsNullOrEmpty(password))
+            {
+                var reference = await session.StoreCredentialAsync(
+                    string.IsNullOrEmpty(profile.CredentialRef) ? null : profile.CredentialRef,
+                    password).ConfigureAwait(true);
+                profile = profile with { CredentialRef = reference };
+            }
+
+            var open = await session.ConnectAsync(profile).ConfigureAwait(true);
+            ConsoleBridge.WriteLine(
+                $"[query] connect driver={open.DriverId} server={open.ServerVersion} session={open.SessionId}");
+
+            // 壳外建立的连接要让「新建查询」的可用性判定看到（正常路径由 ApplyBackendState 驱动）。
+            window.Shell.RefreshFromBackend();
+
+            var complete = await window.Shell
+                .ProbeQueryAsync(sql, CancellationToken.None)
+                .ConfigureAwait(true);
+            ConsoleBridge.WriteLine($"[query] probe={(complete ? "ok" : "incomplete")}");
+
+            if (keepAlive)
+            {
+                // 截图要看到「编辑器 + 结果网格 + 状态栏行 2」：窗口留着，不关查询页（游标也还开着）。
+                await Task.Delay(500).ConfigureAwait(true);
+                ConsoleBridge.WriteLine($"[query] keep-alive tabs={window.Shell.QueryTabCount}");
+
+                if (_options.ReportShell)
+                {
+                    // 与 --report-shell 合用：这时候打出来的控件树里**有**查询页（编辑器 / 结果行 / 状态行）。
+                    ShellTreeDumper.Dump(window);
+                }
+
+                return;
+            }
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteLine($"[query] failed {error.GetType().Name}: {error.Message}");
+        }
+        finally
+        {
+            if (!keepAlive)
+            {
+                // 顺序要紧：先 Report（控件树里还看得到查询页；它排队的关窗晚于本段同步代码），
+                // 再关页取证 Close——与用户点 × 完全同一条路径。
+                Report(window);
+                var closedTabs = window.Shell.CloseAllQueryTabsForQa();
+                ConsoleBridge.WriteLine($"[query] closed-tabs={closedTabs} open-tabs={window.Shell.QueryTabCount}");
+            }
         }
     }
 

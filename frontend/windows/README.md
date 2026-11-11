@@ -113,7 +113,27 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 --qa-metadata=<名称|@first> QA 专用：连接后**真的**展开对象树（库 → Tables → 第一张表），
                           把每层计数与列名打到 [metadata] 行；可与 --report-shell 合用
 --qa-catalog=<库名>        给 --qa-metadata 指定要展开的库（省略时取第一个可见库）
+--qa-query=<sql>           QA 专用：连接后**真的**建一个查询标签并执行这条 SQL，首批回来即打 [query]
+                          证据（state / rows / columns / has_more / query_id / columns= / first-row= /
+                          status= / open-cursors=）；连接目标取 --qa-signin（否则第一条）。
+                          与 --qa-signin 合用时不退出（供截图），否则关页验证 Close 后退出
 ```
+
+### 查询面（#172）
+
+标签条新增可关闭的 `查询 N` 页（`Objects` 固定页仍在首位、不可关）；`Ctrl+T` 新建、`Ctrl+W` 关当前页、
+`Ctrl+Enter` 执行、`Ctrl+.` 取消。查询页**整页在代码里搭**（`Views/ShellView.Query.cs`），
+`ShellView.xaml` 一行未改——#170 的教训是外壳控件形态一动就可能秒崩，所以这一片只加内容：
+
+- 编辑器：等宽多行 `TextBox` + 行号沟（跟随编辑器内部 `ScrollViewer` 滚动）；**有选中就只执行选中部分**。
+- 结果网格：列头「列名 · 原始类型」+ 行号列 + 数据列；**只建视口内的行**（上下用高度占位撑总高），
+  表头与行区横向同步滚动；每批 200 行，滚动到接近末尾或点「加载更多」续拉 `FetchBatch`。
+- 五态：Loading / Empty / Error（文案 + 稳定错误码）/ Cancelled（保留已取行）/ ReadOnly；
+  状态栏行 2 换成 `SQL: <摘要>` 与 `N 行 / 已取 M 行`（总数未知写 `?`，不编造）。
+- 资源纪律：一个标签一个游标、标签上限 8；重新执行 / 取消 / 关页 / 读到底 / 离开页面（有在途执行时）
+  都必须 Close，页面重建与退出时逐个 Close。
+
+本机（Linux）能做的只有 Core 构建 / 测试 + 结构检查 + 替身类型编译；**XAML 与实机行为只能在 Windows 上验**。
 
 `--qa-metadata` 的存在理由：远程构建机上没有可靠的 UI 自动化，而「元数据真的拉到了没有」必须被验证。
 它走与用户点击完全相同的加载路径（`EnsureCatalogsAsync` / `EnsureGroupLoadedAsync` / `Select`），

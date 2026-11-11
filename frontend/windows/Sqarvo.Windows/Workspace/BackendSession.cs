@@ -99,6 +99,33 @@ public sealed class BackendSession
         }
     }
 
+    /// <summary>
+    /// 查询客户端（执行 / 取批 / 取消 / 关闭游标的唯一入口）；后端未就绪时返回 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="Metadata"/> 同一取舍：不抛异常，调用方据此显示「后端尚未就绪」。
+    /// 游标（<c>QueryHandle</c>）的 Close 义务不在本类：谁执行谁负责 <c>using</c>/<c>DisposeAsync</c>。
+    /// </remarks>
+    public QueryClient? Query
+    {
+        get
+        {
+            if (!State.IsReady)
+            {
+                return null;
+            }
+
+            try
+            {
+                return _supervisor.GetConnection().Queries;
+            }
+            catch (SqarvoException)
+            {
+                return null;
+            }
+        }
+    }
+
     /// <summary>某条已保存连接的会话身份（`session_id` / 服务端版本 / 驱动）；未连上时为 <see langword="null"/>。</summary>
     /// <param name="identity">连接身份键（<see cref="ConnectionProfile.Key"/>）。</param>
     /// <returns>这次连接的结果，或 <see langword="null"/>。</returns>
