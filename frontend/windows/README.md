@@ -109,6 +109,26 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 --report-shell            UI Automation 枚举整棵控件树（ControlType + Name，缩进两格）
 --self-test-window        窗口尺寸算术与面板宽度换算的边界断言（纯函数，不建窗口；失败以非 0 退出）
 --qa-tier=<id>            QA 专用：启动后切到该密度档并把来源标成 QA，用来复现「切档后窗口跟着改大小」
+--qa-connect=<名称|@first> QA 专用：握手 → 测试连接 → 连接 → 断开，打 [connect] 行后退出
+--qa-metadata=<名称|@first> QA 专用：连接后**真的**展开对象树（库 → Tables → 第一张表），
+                          把每层计数与列名打到 [metadata] 行；可与 --report-shell 合用
+--qa-catalog=<库名>        给 --qa-metadata 指定要展开的库（省略时取第一个可见库）
+```
+
+`--qa-metadata` 的存在理由：远程构建机上没有可靠的 UI 自动化，而「元数据真的拉到了没有」必须被验证。
+它走与用户点击完全相同的加载路径（`EnsureCatalogsAsync` / `EnsureGroupLoadedAsync` / `Select`），
+不是另一套快路径；`SQARVO_QA_PASSWORD` 给出时先写进 Windows 凭据库再连接。
+
+行的**字段格式**如下（下面的数值是格式示例，**不是**任何一次实测记录；真实值以实机输出为准）：
+
+```text
+[metadata] backend=<Readiness> drivers=<N> version=<版本>
+[metadata] catalogs=<N> names=<库名列表>
+[metadata] catalog=<库名> page-items=<N> page-error=<错误码或 ->
+[metadata] tree-tables=<N> tree-error=<错误码或 ->
+[metadata] table=<对象名> columns=<N> pk-error=<错误码或 -> ddl-len=<字符数或 -1> ddl-exact=<True|False|-> ddl-error=<错误码或 ->
+[metadata] columns=<列名:类型[:PK][,...]>（最多 8 列）
+[metadata] probe=<ok|incomplete>
 ```
 
 `--report-monitor` 与规范（`scaling-and-window-sizing.md` §9）里的 `--qa-report-monitor` **等价**：

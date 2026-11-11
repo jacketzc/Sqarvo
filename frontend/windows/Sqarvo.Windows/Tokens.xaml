@@ -41,6 +41,10 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
+            <!-- 列表选中行底色（Objects 页三列表格；与数据网格同一档浅底） -->
+            <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
+            <!-- 拼装 DDL 的警示（exact=false）：琥珀，系统 token，不写死颜色 -->
+            <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <!-- 禁用文字 = 说明文字（同一种灰） -->
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -81,6 +85,8 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
+            <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
+            <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -119,6 +125,8 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
+            <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
+            <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -158,6 +166,10 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
+
+            <!-- 高对比下选中行用系统高亮色，警示仍走系统 token -->
+            <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SystemColorHighlightColorBrush" />
+            <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <!-- 高对比下不做「同一种灰」的收拢：禁用态必须与正文有足够对比度差，交给系统 -->
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorDisabledBrush" />

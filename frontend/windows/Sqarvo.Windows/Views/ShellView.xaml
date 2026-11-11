@@ -143,7 +143,9 @@
                         SelectionMode="Single"
                         ItemContainerStyle="{StaticResource SqarvoTreeRowStyle}"
                         CanDragItems="False"
-                        CanReorderItems="False">
+                        CanReorderItems="False"
+                        Expanding="OnTreeExpanding"
+                        Collapsed="OnTreeCollapsed">
                         <TreeView.RootNodes>
                             <TreeViewNode Content="My Connections" IsExpanded="True" HasUnrealizedChildren="False" />
                         </TreeView.RootNodes>
@@ -193,19 +195,63 @@
                             -->
                             <TabViewItem x:Name="ObjectsTab" Header="Objects" IsClosable="False" AutomationProperties.Name="Objects 页">
                                 <Grid Background="{ThemeResource SqarvoSurfaceBrush}">
-                                    <StackPanel x:Name="ObjectsPage" Spacing="{StaticResource Size.InspectorGap}">
+                                    <!--
+                                        Objects 页（#171）：标题 + 状态行 + 三列表格 + 「加载更多…」。
+                                        表头与每一行都由 code-behind 建：列宽是 GridLength，不能从 double
+                                        类型的 Size.* 资源直接转换，因此宽度在 ApplyMetrics/ObjectRow 里取
+                                        Metrics（row_number_width / column_width / row_height_data）。
+                                        颜色只用 ThemeResource（SqarvoDividerBrush / SqarvoTextSecondaryBrush /
+                                        SqarvoSelectionBrush），不出现 #RRGGBB。
+                                    -->
+                                    <Grid x:Name="ObjectsPage">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
                                         <TextBlock
+                                            x:Name="ObjectsTitle"
+                                            Grid.Row="0"
                                             Text="Objects"
                                             FontSize="{StaticResource Size.FontTitle}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
-                                        <TextBlock
-                                            Text="对象列表由元数据服务提供（工作包 #170）：本步只建立连接，库 / 表的列出还没接通，因此这里先保持为空。"
-                                            FontSize="{StaticResource Size.FontUi}"
-                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
-                                            TextWrapping="Wrap" />
-                                    </StackPanel>
 
-                                    <!-- 三态：Disconnected 常显；Loading / Empty 已实现但本轮不可达 -->
+                                        <!-- 状态行：正在读取… / 已加载 N 个对象 / （这个库里没有这类对象）/ 读取失败…（错误码） -->
+                                        <TextBlock
+                                            x:Name="ObjectsStatus"
+                                            Grid.Row="1"
+                                            Visibility="Collapsed"
+                                            TextTrimming="CharacterEllipsis"
+                                            FontSize="{StaticResource Size.FontStatus}"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+
+                                        <ScrollViewer
+                                            x:Name="ObjectsListScroll"
+                                            Grid.Row="2"
+                                            IsTabStop="True"
+                                            AutomationProperties.Name="Objects 列表"
+                                            VerticalScrollBarVisibility="Auto"
+                                            VerticalScrollMode="Auto"
+                                            HorizontalScrollBarVisibility="Disabled"
+                                            KeyDown="OnObjectsKeyDown">
+                                            <!-- 表头与数据行共用同一份列定义（三列：行号 / 名称 / 类型），
+                                                 列宽来自 Metrics（RowNumberWidth / ColumnWidth / 自动），
+                                                 行高 row_height_data；全部在 code-behind 里建。 -->
+                                            <Grid x:Name="ObjectsTable" />
+                                        </ScrollViewer>
+
+                                        <Button
+                                            x:Name="ObjectsLoadMore"
+                                            Grid.Row="3"
+                                            Content="加载更多…"
+                                            Visibility="Collapsed"
+                                            AutomationProperties.Name="Objects 加载更多"
+                                            Click="OnObjectsLoadMoreClick" />
+                                    </Grid>
+
+                                    <!-- 三态：Disconnected 常显；Loading 是后端握手；Empty 是「没有选中对象」 -->
                                     <StackPanel
                                         x:Name="StateDisconnected"
                                         VerticalAlignment="Center"

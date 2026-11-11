@@ -94,7 +94,10 @@ public partial class App : Application
         };
 
         _options = AppOptions.Parse(Environment.GetCommandLineArgs());
-        if (_options.HasReports || _options.QaConnect is { Length: > 0 } || _options.NoBackend)
+        if (_options.HasReports
+            || _options.QaConnect is { Length: > 0 }
+            || _options.QaMetadata is { Length: > 0 }
+            || _options.NoBackend)
         {
             ConsoleBridge.Ensure();
         }
@@ -167,7 +170,10 @@ public partial class App : Application
 
         // 诊断开关只证明界面结构：不启动后端进程，也不碰凭据库。--no-backend 是同一类隔离手段，
         // 区别是它把窗口留在前台（诊断开关打完就退，没法观察运行期崩溃）。
-        if (!_options.HasReports && !_options.NoBackend)
+        // 例外：--qa-metadata 要连真库，它会启动后端；此时即使同时给了 --report-shell 也照常走
+        // 「连接 → 展开 → 打印控件树」这条链路（否则后端根本不会启动，探针什么也拿不到）。
+        var needsBackendForMetadata = _options.QaMetadata is { Length: > 0 };
+        if ((!_options.HasReports || needsBackendForMetadata) && !_options.NoBackend)
         {
             // 不 await：窗口先显示，握手进度通过 BackendState 写进状态栏。
             // StartAsync 不抛异常（失败落成 BackendReadiness.Failed）。
@@ -177,6 +183,13 @@ public partial class App : Application
             {
                 // QA 链路：不依赖鼠标点界面，直接把「握手 → 测试连接 → 连接 → 断开」跑一遍。
                 _ = RunQaConnectAsync(qaConnect);
+                return;
+            }
+
+            if (_options.QaMetadata is { Length: > 0 } qaMetadata)
+            {
+                // 元数据链路（#171）：连上之后**真的**展开对象树，再把控件树打出来。
+                _ = RunQaMetadataAsync(window, qaMetadata);
                 return;
             }
         }
@@ -330,6 +343,90 @@ public partial class App : Application
         finally
         {
             Close();
+        }
+    }
+
+    /// <summary>
+    /// <c>--qa-metadata=&lt;名称|@first&gt;</c>：等后端就绪 → 连接该条目 → 真的展开对象树
+    /// （库 → Tables → 第一张表）→ 打印 <c>[metadata]</c> 证据 → 按需打印控件树后退出。
+    /// </summary>
+    /// <param name="window">主窗口（探针要读它的外壳）。</param>
+    /// <param name="target">已保存连接的名称，或 <c>@first</c>。</param>
+    /// <remarks>
+    /// 与 <see cref="RunQaConnectAsync"/> 同一套取舍：不弹窗、只打印证据；失败也算「跑过一趟」，
+    /// 因为验收要看的是「这一趟发生了什么」，而不是进程退出码。
+    /// </remarks>
+    private async Task RunQaMetadataAsync(MainWindow window, string target)
+    {
+        try
+        {
+            var session = Backend;
+            if (session is null)
+            {
+                ConsoleBridge.WriteLine("[metadata] 没有后端会话");
+                return;
+            }
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            while (!session.State.IsReady && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(200).ConfigureAwait(true);
+            }
+
+            var state = session.State;
+            ConsoleBridge.WriteLine(
+                $"[metadata] backend={state.Readiness} drivers={state.RegisteredDrivers} version={state.Version?.ServiceVersion ?? "?"}");
+
+            if (!state.IsReady)
+            {
+                return;
+            }
+
+            var profiles = Profiles.Load();
+            var name = target.Trim();
+            var profile = string.Equals(name, "@first", StringComparison.OrdinalIgnoreCase)
+                ? profiles.FirstOrDefault()
+                : profiles.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+
+            if (profile is null)
+            {
+                ConsoleBridge.WriteLine($"[metadata] 找不到连接条目 {name}（已保存 {profiles.Count} 条）");
+                return;
+            }
+
+            var password = Environment.GetEnvironmentVariable("SQARVO_QA_PASSWORD");
+            if (!string.IsNullOrEmpty(password))
+            {
+                var reference = await session.StoreCredentialAsync(
+                    string.IsNullOrEmpty(profile.CredentialRef) ? null : profile.CredentialRef,
+                    password).ConfigureAwait(true);
+                profile = profile with { CredentialRef = reference };
+            }
+
+            var test = await session.TestConnectionAsync(profile).ConfigureAwait(true);
+            ConsoleBridge.WriteLine(
+                $"[metadata] test reachable={test.Reachable} latency={test.LatencyMillis}ms server={test.ServerVersion}");
+
+            var open = await session.ConnectAsync(profile).ConfigureAwait(true);
+            ConsoleBridge.WriteLine(
+                $"[metadata] connect driver={open.DriverId} server={open.ServerVersion} session={open.SessionId}");
+
+            // 壳外建立的连接要让树知道（正常路径由 ApplyBackendState 驱动）。
+            window.Shell.RefreshFromBackend();
+
+            var complete = await window.Shell
+                .ProbeMetadataAsync(profile.Key, _options.QaCatalog, CancellationToken.None)
+                .ConfigureAwait(true);
+
+            ConsoleBridge.WriteLine($"[metadata] probe={(complete ? "ok" : "incomplete")}");
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteLine($"[metadata] failed {error.GetType().Name}: {error.Message}");
+        }
+        finally
+        {
+            Report(window);
         }
     }
 

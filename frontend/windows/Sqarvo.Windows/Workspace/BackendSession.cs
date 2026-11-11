@@ -32,6 +32,7 @@ public sealed class BackendSession
     private readonly BackendSupervisor _supervisor;
     private readonly object _gate = new();
     private readonly Dictionary<string, string> _open = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ConnectionOpenResult> _opened = new(StringComparer.Ordinal);
 
     private BackendState _state = BackendState.Initial;
     private bool _started;
@@ -71,6 +72,44 @@ public sealed class BackendSession
         lock (_gate)
         {
             return _open.ContainsKey(identity);
+        }
+    }
+
+    /// <summary>
+    /// 元数据客户端（对象树 / 列 / DDL 的唯一入口）；后端未就绪时返回 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>不抛异常：调用方据此显示「后端尚未就绪」，而不是把启动期的异常带到 UI 线程。</remarks>
+    public MetadataClient? Metadata
+    {
+        get
+        {
+            if (!State.IsReady)
+            {
+                return null;
+            }
+
+            try
+            {
+                return _supervisor.GetConnection().Metadata;
+            }
+            catch (SqarvoException)
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>某条已保存连接的会话身份（`session_id` / 服务端版本 / 驱动）；未连上时为 <see langword="null"/>。</summary>
+    /// <param name="identity">连接身份键（<see cref="ConnectionProfile.Key"/>）。</param>
+    /// <returns>这次连接的结果，或 <see langword="null"/>。</returns>
+    /// <remarks>
+    /// 信息面板显示「服务端版本」时读这里，而不是在树、页面、面板各存一份连接结果。
+    /// </remarks>
+    public ConnectionOpenResult? OpenResult(string identity)
+    {
+        lock (_gate)
+        {
+            return _opened.TryGetValue(identity, out var result) ? result : null;
         }
     }
 
@@ -277,6 +316,7 @@ public sealed class BackendSession
         lock (_gate)
         {
             _open[profile.Key] = result.ConnectionId;
+            _opened[profile.Key] = result;
         }
 
         return result;
@@ -303,6 +343,7 @@ public sealed class BackendSession
         lock (_gate)
         {
             _open.Remove(identity);
+            _opened.Remove(identity);
         }
 
         return true;
@@ -370,6 +411,7 @@ public sealed class BackendSession
         lock (_gate)
         {
             _open.Clear();
+            _opened.Clear();
         }
     }
 
