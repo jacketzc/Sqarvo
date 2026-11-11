@@ -110,7 +110,12 @@ public partial class App : Application
         }
 
         _reported = true;
-        DiagnosticReporter.Report(window, _options, window.LastLayout);
+                DiagnosticReporter.Report(window, _options, window.LastLayout);
+
+                if (_options.ReportShell)
+                {
+                    ShellTreeDumper.Dump(window);
+                }
 
         // 诊断开关是「取一行证据」，不是交互模式：打印完就退出。
         window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Close);

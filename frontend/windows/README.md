@@ -28,6 +28,12 @@ Windows 端的窗口尺寸、密度档、主题与本地化口径已经定下，
 
 界面骨架 + 度量与主题自检页。**尚未启动后端、尚未建立 gRPC 连接**；工具条上的入口都还没有真实动作。
 
+六区域外壳（#164）：系统标题栏（`AppWindow`）+ 窗口内菜单行（`MenuBar`）→ 主工具条（`CommandBar`）→
+对象树（`TreeView`）→ 工作区（`TabView`，首标签 `Objects` 用 `IsClosable=false` + 固定首位 + 禁拖
+等价实现 pinned）→ 自绘双行状态栏 → 信息面板（`SplitView` 右面板）。菜单只有 文件 / 表 / 帮助 三个集合：
+文件（新建连接… / 新建查询标签 / 退出）、表（导出 CSV…）、帮助（关于 Squarvo）；未实现的入口全部
+禁用并 tooltip「尚未接入后端」。
+
 已接通（#162）：
 
 - **三档密度度量**：`docs/ui-specification/metrics.toml` → 构建期由

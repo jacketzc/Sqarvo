@@ -1,0 +1,308 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    #164 的六区域外壳（结构 + 三态 + 禁用入口，不接后端）。
+
+    区域与宿主控件严格按 docs/ui-specification/workspace-model.md §8 的 Windows 列：
+    系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（CommandBar）→
+    对象树（TreeView）→ 工作区（TabView）→ 状态栏（自绘两行）→ 信息面板（SplitView 右panel）。
+
+    尺寸：高度/字号全用 {StaticResource Size.*}；宽度这类 GridLength / 结构体在 code-behind 里
+    从 Metrics 取。颜色只用 ThemeResource，XAML 里没有 #RRGGBB。
+-->
+<UserControl
+    x:Class="Sqarvo.Windows.Views.ShellView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Background="{ThemeResource SqarvoAppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 区域 01：窗口内菜单行（Windows 的系统标题栏由 AppWindow 提供，不在这里自绘） -->
+        <Border
+            x:Name="MenuBand"
+            Grid.Row="0"
+            Background="{ThemeResource SqarvoBandBrush}">
+            <MenuBar x:Name="MainMenu" AutomationProperties.Name="主菜单">
+                <MenuBarItem Title="文件">
+                    <MenuFlyoutItem x:Name="MenuNewConnection" Text="新建连接…" IsEnabled="False" />
+                    <MenuFlyoutItem x:Name="MenuNewQueryTab" Text="新建查询标签" IsEnabled="False" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="MenuQuit" Text="退出" />
+                </MenuBarItem>
+                <MenuBarItem Title="表">
+                    <MenuFlyoutItem x:Name="MenuExportCsv" Text="导出 CSV…" IsEnabled="False" />
+                </MenuBarItem>
+                <MenuBarItem Title="帮助">
+                    <MenuFlyoutItem x:Name="MenuAbout" Text="关于 Squarvo" />
+                </MenuBarItem>
+            </MenuBar>
+        </Border>
+
+        <!-- 区域 02：主工具条 -->
+        <Border
+            x:Name="ToolbarBand"
+            Grid.Row="1"
+            Background="{ThemeResource SqarvoSurfaceBrush}"
+            Height="{StaticResource Size.ToolbarHeight}">
+            <CommandBar
+                x:Name="MainToolbar"
+                DefaultLabelPosition="Right"
+                IsOpen="False"
+                AutomationProperties.Name="主工具条">
+                <AppBarButton x:Name="ButtonConnect" Label="连接" IsEnabled="False"
+                              AutomationProperties.Name="连接" ToolTipService.ToolTip="尚未接入后端" />
+                <AppBarButton x:Name="ButtonNewQuery" Label="新建查询" IsEnabled="False"
+                              AutomationProperties.Name="新建查询" ToolTipService.ToolTip="尚未接入后端" />
+                <AppBarSeparator />
+                <AppBarButton x:Name="ButtonTables" Label="Tables" IsEnabled="False"
+                              AutomationProperties.Name="Tables" ToolTipService.ToolTip="尚未接入后端" />
+                <AppBarButton x:Name="ButtonViews" Label="Views" IsEnabled="False"
+                              AutomationProperties.Name="Views" ToolTipService.ToolTip="尚未接入后端" />
+                <AppBarButton x:Name="ButtonFunctions" Label="Functions" IsEnabled="False"
+                              AutomationProperties.Name="Functions" ToolTipService.ToolTip="尚未接入后端" />
+                <AppBarButton x:Name="ButtonQueries" Label="Queries" IsEnabled="False"
+                              AutomationProperties.Name="Queries" ToolTipService.ToolTip="尚未接入后端" />
+            </CommandBar>
+        </Border>
+
+        <!-- 区域 03 / 04 / 06：树 + 工作区 + 右侧信息面板 -->
+        <SplitView
+            x:Name="InspectorSplit"
+            Grid.Row="2"
+            PanePlacement="Right"
+            DisplayMode="Inline"
+            IsPaneOpen="True">
+            <SplitView.Pane>
+                <Grid Background="{ThemeResource SqarvoBandBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TextBlock
+                        x:Name="InspectorTitle"
+                        Grid.Row="0"
+                        Text="信息面板"
+                        FontSize="{StaticResource Size.FontTitle}"
+                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+                    <Rectangle
+                        Grid.Row="1"
+                        Height="{StaticResource Size.BorderWidthPxNeverScaled}"
+                        Fill="{ThemeResource SqarvoDividerBrush}" />
+                    <!-- 启动态内容区留白（规范 §5：不写「没有选中对象」这类说明文字） -->
+                    <Grid Grid.Row="2" x:Name="InspectorBody" AutomationProperties.Name="信息面板内容" />
+                </Grid>
+            </SplitView.Pane>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 区域 03：对象树（侧栏）。没有搜索框、没有页脚按钮，树本身即侧栏。 -->
+                <Grid Grid.Column="0" Background="{ThemeResource SqarvoBandBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TreeView
+                        x:Name="ObjectTree"
+                        AutomationProperties.Name="对象树"
+                        SelectionMode="Single"
+                        CanDragItems="False"
+                        CanReorderItems="False">
+                        <TreeView.RootNodes>
+                            <TreeViewNode Content="My Connections" IsExpanded="True" HasUnrealizedChildren="False" />
+                        </TreeView.RootNodes>
+                    </TreeView>
+                </Grid>
+
+                <Rectangle
+                    Grid.Column="1"
+                    Width="{StaticResource Size.BorderWidthPxNeverScaled}"
+                    Fill="{ThemeResource SqarvoDividerBrush}" />
+
+                <!-- 区域 04：工作区 -->
+                <Grid Grid.Column="2" Background="{ThemeResource SqarvoSurfaceBrush}">
+                    <TabView
+                        x:Name="WorkspaceTabs"
+                        CanDragTabs="False"
+                        CanReorderTabs="False"
+                        IsAddTabButtonVisible="False"
+                        AutomationProperties.Name="工作区标签">
+                        <TabView.TabItems>
+                            <!--
+                                固定的 Objects 页：WinUI 的 TabView 没有 pinned 概念，
+                                用 IsClosable=False + 固定首位 + 禁拖 等价实现（不是 API 缺失的将就：
+                                它的行为正好是「不能关、不能挪、恒在最左」，切换其它标签时不受影响）。
+                            -->
+                            <TabViewItem Header="Objects" IsClosable="False" AutomationProperties.Name="Objects 页">
+                                <Grid Background="{ThemeResource SqarvoSurfaceBrush}">
+                                    <StackPanel x:Name="ObjectsPage" Spacing="{StaticResource Size.InspectorGap}">
+                                        <TextBlock
+                                            Text="Objects"
+                                            FontSize="{StaticResource Size.FontTitle}"
+                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+                                        <TextBlock
+                                            Text="尚未接入后端：对象列表为空。选中连接后的库或 Tables / Views 分组时，这里列出对象。"
+                                            FontSize="{StaticResource Size.FontUi}"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+
+                                    <!-- 三态：Disconnected 常显；Loading / Empty 已实现但本轮不可达 -->
+                                    <StackPanel
+                                        x:Name="StateDisconnected"
+                                        VerticalAlignment="Center"
+                                        HorizontalAlignment="Center"
+                                        Spacing="{StaticResource Size.InspectorGap}">
+                                        <TextBlock
+                                            Text="尚未连接数据库"
+                                            FontSize="{StaticResource Size.FontTitle}"
+                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                            HorizontalAlignment="Center" />
+                                        <TextBlock
+                                            Text="点侧栏的连接即可连接（本轮工具条与行操作全部禁用：尚未接入后端）。"
+                                            FontSize="{StaticResource Size.FontStatus}"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                                            HorizontalAlignment="Center" />
+                                    </StackPanel>
+
+                                    <StackPanel
+                                        x:Name="StateLoading"
+                                        Visibility="Collapsed"
+                                        VerticalAlignment="Center"
+                                        HorizontalAlignment="Center"
+                                        Spacing="{StaticResource Size.InspectorGap}">
+                                        <ProgressRing IsActive="True" Width="{StaticResource Size.IconBox}"
+                                                      Height="{StaticResource Size.IconBox}" />
+                                        <TextBlock
+                                            Text="正在连接…"
+                                            FontSize="{StaticResource Size.FontUi}"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                                            HorizontalAlignment="Center" />
+                                    </StackPanel>
+
+                                    <StackPanel
+                                        x:Name="StateEmpty"
+                                        Visibility="Collapsed"
+                                        VerticalAlignment="Center"
+                                        HorizontalAlignment="Center"
+                                        Spacing="{StaticResource Size.InspectorGap}">
+                                        <TextBlock
+                                            Text="没有选中对象"
+                                            FontSize="{StaticResource Size.FontTitle}"
+                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                            HorizontalAlignment="Center" />
+                                        <TextBlock
+                                            Text="在左侧对象树里选中一个库、表或分组。"
+                                            FontSize="{StaticResource Size.FontStatus}"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                                            HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Grid>
+                            </TabViewItem>
+                        </TabView.TabItems>
+                    </TabView>
+                </Grid>
+            </Grid>
+        </SplitView>
+
+        <!-- 区域 05：状态栏，两行，被侧栏分栏线分成左右两块 -->
+        <Grid
+            x:Name="StatusBand"
+            Grid.Row="3"
+            Background="{ThemeResource SqarvoBandBrush}"
+            Height="{StaticResource Size.StatusHeight}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- 左边沟：对象树搜索框 + 其下方一行搜索状态（本轮禁用） -->
+            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="{StaticResource Size.GridPaddingEnd}">
+                <TextBox
+                    x:Name="TreeSearchBox"
+                    IsEnabled="False"
+                    FontSize="{StaticResource Size.FontStatus}"
+                    PlaceholderText="搜索连接、库、表..."
+                    AutomationProperties.Name="搜索连接、库、表"
+                    ToolTipService.ToolTip="尚未接入后端" />
+                <TextBlock
+                    x:Name="SearchStatusText"
+                    Visibility="Collapsed"
+                    FontSize="{StaticResource Size.FontStatus}"
+                    Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+            </StackPanel>
+
+            <Rectangle
+                Grid.Column="1"
+                Width="{StaticResource Size.BorderWidthPxNeverScaled}"
+                Fill="{ThemeResource SqarvoDividerBrush}"
+                VerticalAlignment="Stretch" />
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <StackPanel
+                    Grid.Row="0"
+                    Orientation="Horizontal"
+                    Spacing="{StaticResource Size.GridPaddingEnd}"
+                    VerticalAlignment="Center">
+                    <StackPanel.Resources>
+                        <Style TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                            <Setter Property="Width" Value="{StaticResource Size.IconButtonWidth}" />
+                            <Setter Property="Height" Value="{StaticResource Size.IconButtonHeight}" />
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="IsEnabled" Value="False" />
+                        </Style>
+                    </StackPanel.Resources>
+                    <Button Content="＋" AutomationProperties.Name="新增" ToolTipService.ToolTip="尚未接入后端" />
+                    <Button Content="－" AutomationProperties.Name="删除" ToolTipService.ToolTip="尚未接入后端" />
+                    <Button Content="✓" AutomationProperties.Name="应用" ToolTipService.ToolTip="尚未接入后端" />
+                    <Button Content="↶" AutomationProperties.Name="撤销" ToolTipService.ToolTip="尚未接入后端" />
+                    <Button Content="⟳" AutomationProperties.Name="刷新" ToolTipService.ToolTip="尚未接入后端" />
+                    <Button Content="■" AutomationProperties.Name="取消" ToolTipService.ToolTip="尚未接入后端" />
+                    <TextBlock
+                        x:Name="PagerText"
+                        Text="0 / 0"
+                        FontSize="{StaticResource Size.PagerFont}"
+                        Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                        VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="SqlSummaryText"
+                        Grid.Column="0"
+                        Text="SQL: —"
+                        TextTrimming="CharacterEllipsis"
+                        FontSize="{StaticResource Size.FontStatus}"
+                        Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                        VerticalAlignment="Center" />
+                    <TextBlock
+                        x:Name="LastRefreshText"
+                        Grid.Column="1"
+                        Text="未连接 · 驱动 0 · 浏览会话 0"
+                        FontSize="{StaticResource Size.FontStatus}"
+                        Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                        VerticalAlignment="Center" />
+                </Grid>
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

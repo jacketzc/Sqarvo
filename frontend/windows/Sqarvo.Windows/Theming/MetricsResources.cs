@@ -24,10 +24,14 @@ internal static class MetricsResources
 {
     /// <summary>把当前档位的全部尺寸键写入给定资源字典（覆盖同名键）。</summary>
     public static void Apply(ResourceDictionary target)
-    {
-        ArgumentNullException.ThrowIfNull(target);
-        Metrics.ForEachSizeToken((key, value) => target[key] = value);
-    }
+        {
+            ArgumentNullException.ThrowIfNull(target);
+            Metrics.ForEachSizeToken((key, value) => target[key] = value);
+
+            // 1px 描边不随档位缩放，所以它不在三档 token 里；但界面里确实要用同一个 key，
+            // 这里按「不缩放的尺寸 token」补一条，避免 XAML 里出现字面量 1。
+            target["Size.BorderWidthPxNeverScaled"] = (double)Metrics.BorderWidthPxNeverScaled;
+        }
 
     /// <summary>移除已写入的尺寸键（切档重建前调用，避免旧档位的残留键被 StaticResource 命中）。</summary>
     public static void Clear(ResourceDictionary target)
