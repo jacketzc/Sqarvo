@@ -214,7 +214,8 @@
             Grid.Row="2"
             PanePlacement="Right"
             DisplayMode="Inline"
-            IsPaneOpen="True">
+            IsPaneOpen="True"
+                Visibility="Collapsed">
             <SplitView.Pane>
                 <!--
                     区域 06：信息面板。三级层级：
