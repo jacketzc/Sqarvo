@@ -91,6 +91,27 @@ frontend/windows/
 - 键盘可达性与禁用原因逐条对照行为契约；未实现的入口保持禁用并说明原因，禁止假数据。
 - 每片必须同步 `docs/ui-specification/ui-behavior-contract.md`（若改变了行为）或明确声明「无契约变化」。
 
+### 5.1 Windows 端的启动回归门槛（2026-11 加入）
+
+WinUI 3 的启动崩溃可以是**延迟且抖动**的（同一份构建分别死在 1s / 3.5s / 4.5s / 7s），单次「活到 X 秒」
+不构成证据。凡改动 `frontend/windows/Sqarvo.Windows` 的 XAML 或窗口层：
+
+1. **同一份构建产物连跑 3 次**，每次采样 8 秒，要求 3 次都存活且 `%LOCALAPPDATA%\Sqarvo\crash.log`
+   无新的 `unhandled` 行；
+2. 崩溃取证先接 `Application.UnhandledException` + `AppDomain.UnhandledException` +
+   `FirstChanceException`，并可用 `SQARVO_TRACE=1` 打开启动检查点；
+3. `0x80040111 + Windows.ApplicationModel.LimitedAccessFeatures` 是 `RoOriginateError` 的调试噪声
+   （微软官方答复：调用实际返回 S_OK），不要据此定位；
+4. 二分用「整体回退到已知稳定版本 + 一块一块加回」，`Visibility="Collapsed"` 不算排除
+   （控件对象仍被构造），要排除控件类型必须真换掉或删掉。
+
+### 5.2 #170 的回退记录
+
+`agent/win-visual`（#170 六区域控件形态与密度）在真机上稳定秒级崩溃（5/5、3/3 两轮），
+已整体回退 `Views/ShellView.xaml` 与 `Views/ShellView.xaml.cs` 到 #170 之前（commit 95d4c04），
+回退后 0/3 崩。`Views/ConnectionRow.xaml` 与 `Tokens.xaml` 的新增别名保留待重建。
+视觉对齐改为按区块重建（状态栏 → 信息面板 → 标签条 → 树行 → 工具条），每块过上述 3 次门槛。
+
 ## 6. 风险
 
 | 风险 | 影响 | 处理 |
