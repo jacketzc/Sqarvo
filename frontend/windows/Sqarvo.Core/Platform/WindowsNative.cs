@@ -1,11 +1,11 @@
-#if WINDOWS
 using System.Runtime.InteropServices;
 
 namespace Sqarvo.Core.Platform;
 
 /// <summary>
 /// Win32 helpers used by the Windows implementations of <see cref="IPidLiveness"/> and the default
-/// process launcher. Everything in this file is compiled only for Windows targets.
+/// process launcher. Declarations are compiled on every target (a <c>DllImport</c> only fails when
+/// called); callers must guard with <see cref="System.OperatingSystem.IsWindows"/>.
 /// </summary>
 internal static class WindowsNative
 {
@@ -175,4 +175,3 @@ internal sealed class WindowsJobObject : IDisposable
     /// <summary>Terminates a process handle without going through <see cref="System.Diagnostics.Process"/>.</summary>
     internal static bool Terminate(IntPtr processHandle) => WindowsNative.TerminateProcess(processHandle, 1);
 }
-#endif

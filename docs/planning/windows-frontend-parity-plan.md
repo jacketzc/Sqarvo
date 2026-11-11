@@ -73,10 +73,10 @@ frontend/windows/
 
 | ID | 分支 | 范围 | 验收证据 |
 |---|---|---|---|
-| WP1 | `agent/win-backend-port` | 后端 Windows 适配：端点文件 DACL、父进程监视（`OpenProcess`+创建时间）、`pid_alive`、退出路径（`TerminateProcess` + 前端兜底）、`--endpoint-file` 显式参数替代 `XDG_RUNTIME_DIR`、Credential Manager（`CredWrite/CredRead/CredDelete`） | `cargo test -p sqarvo-local-store -p sqarvo-backend-service`（Linux）+ `cargo check --target x86_64-pc-windows-msvc --workspace` 全绿 + `cfg(windows)` 单测在 Windows 实跑（远程） |
-| WP2 | `agent/win-core-ipc` | `Sqarvo.Core`：`Transport` 抽象 + TCP 实现、端点文件读取（严格 schema）、`BackendSupervisor`（spawn `--parent-pid`、100ms 轮询端点、pid 匹配、10s 超时、5s 健康、退出停机）、token metadata 注入 | `dotnet test` 绿；集成测试用真后端（Linux TCP）跑通 spawn→握手→`GetVersion`→`ListDrivers`→正常退出 |
-| WP3 | `agent/win-window-fixes` | 窗口层修补：`XamlRoot.Changed`、`DidSizeChange`、「拖动窗口被拉回中央」修正、`Maximized` 恢复、`GridSplitter` 侧栏/面板、`SidebarWidthFor/InspectorWidthFor` 接线、未消费度量接线、`MinBase*` 改读生成值 | 远程 Windows 实跑 `--report-monitor` + 拖动/缩放实测记录 |
-| WP4 | `agent/win-connections` | 连接面：`connections.json` 模型（身份键去重）、凭据引用、连接对话框（驱动选择/TLS/测试连接）、对象树连接层与右键动作 | 远程：新建连接对 MariaDB → 树出现连接节点；截图 + `--report-shell` 树 |
+| WP1 | `agent/win-backend-port` | 后端 Windows 适配：端点文件 DACL、父进程监视（`OpenProcess`+创建时间）、`pid_alive`、退出路径（`TerminateProcess` + 前端兜底）、`--endpoint-file` 显式参数替代 `XDG_RUNTIME_DIR`、Credential Manager（`CredWrite/CredRead/CredDelete`） | ✅ Linux：`cargo test --workspace` 674 passed、`cargo check --target x86_64-pc-windows-msvc`；Windows：`cargo clean` 后全量重建 0 warning / 0 error。⏳ 凭据与 DACL 的真实往返仍待实机用例 |
+| WP2 | `agent/win-core-ipc` | `Sqarvo.Core`：`Transport` 抽象 + TCP 实现、端点文件读取（严格 schema）、`BackendSupervisor`（spawn `--parent-pid`、100ms 轮询端点、pid 匹配、10s 超时、5s 健康、退出停机）、token metadata 注入 | ✅ Linux：`dotnet test` 106 passed，其中集成用例真 spawn 后端并完成 GetVersion/ListDrivers/Shutdown；✅ Windows：工程参与 `Sqarvo.Windows` 构建，0 error |
+| WP3 | `agent/win-window-fixes` | 窗口层修补：`XamlRoot.Changed`、`DidSizeChange`、「拖动窗口被拉回中央」修正、`Maximized` 恢复、`GridSplitter` 侧栏/面板、`SidebarWidthFor/InspectorWidthFor` 接线、未消费度量接线、`MinBase*` 改读生成值 | ✅ 替身类型下编过 + `SelfTest` ALL PASS（三档菜单行 24/30/36、最小窗口 960×640/1200×800/1440×960）；✅ 真实构建 0 error；⏳ 拖动/最大化/DACL 实机行为待记录 |
+| WP4 | `agent/win-connections` | 连接面：`connections.json` 模型（身份键去重）、凭据引用、连接对话框（驱动选择/TLS/测试连接）、对象树连接层与右键动作 | ✅ Linux：纯逻辑对真后端跑通 StoreCredential→TestConnection→Connect→Disconnect；✅ 真实构建 0 error；⏳ 实机连库与截图 |
 | WP5 | `agent/win-metadata` | 元数据面：树的分组层与分页（`ListNodes` + 每层 token）、`Objects` 页三列表格、信息面板三态（连接/库/表 + DDL 切换） | 远程：展开库/表；`--report-shell` 断言节点与列 |
 | WP6 | `agent/win-query` | 查询面：标签条（新建/关闭/固定 `Objects`）、SQL 编辑器（高亮、行号、当前语句）、执行/取消、结果网格（虚拟化 + 分批 + 多结果集）、Error/Cancelled 态 | 远程：`SELECT` 2000 行分页滚动、`Ctrl+.` 取消、错误态截图 |
 | WP7 | `agent/win-tabledata` | 表数据面：`BrowseTable` 分页（offset 500）、排序/筛选下推、只读原因、脏行编辑、`ApplyRowChanges` 提交/撤销/确认阈值、事务状态圆点 | 远程：MariaDB 上改 3 行提交、故意超 100 行看确认 |

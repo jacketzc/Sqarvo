@@ -27,7 +27,14 @@ public sealed class AppOptions
         ["qa-report-monitor"] = "report-monitor",
     };
 
-    private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool reportShell, bool selfTestWindow, string? qaTier)
+    private AppOptions(
+        bool reportTheme,
+        bool reportMetrics,
+        bool reportMonitor,
+        bool reportShell,
+        bool selfTestWindow,
+        string? qaTier,
+        string? qaConnect)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -35,6 +42,7 @@ public sealed class AppOptions
         ReportShell = reportShell;
         SelfTestWindow = selfTestWindow;
         QaTier = qaTier;
+        QaConnect = qaConnect;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -51,6 +59,17 @@ public sealed class AppOptions
 
     /// <summary>QA 专用：启动时切到指定档位（<c>compact</c> / <c>comfortable</c> / <c>large</c>）。</summary>
     public string? QaTier { get; }
+
+    /// <summary>
+    /// QA 专用：<c>--qa-connect=&lt;名称|@first&gt;</c>。后端就绪后跑一遍
+    /// 「测试连接 → 连接 → 断开」，把证据打到 <c>[connect]</c> 行再退出。
+    /// </summary>
+    /// <remarks>
+    /// 存在的理由：远程构建机上没有可靠的 UI 自动化（点菜单要人工审批），而「连接数据库是否真的能成」
+    /// 必须被验证。密码来自环境变量 <c>SQARVO_QA_PASSWORD</c>，先写进系统凭据库再连接，
+    /// 因此这一趟同时验证了 Credential Manager。
+    /// </remarks>
+    public string? QaConnect { get; }
 
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
@@ -78,12 +97,21 @@ public sealed class AppOptions
             reportMonitor: flags.Contains("report-monitor"),
             reportShell: flags.Contains("report-shell"),
             selfTestWindow: flags.Contains("self-test-window"),
+            qaConnect: Value(commandLine, "--qa-connect="),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
                 .Select(argument => argument.Substring("--qa-tier=".Length).Trim().ToLowerInvariant())
                 .FirstOrDefault());
     }
+
+    /// <summary>取 <c>--name=value</c> 形式的取值（没有就给 <see langword="null"/>）。</summary>
+    private static string? Value(string[] commandLine, string prefix) =>
+        commandLine
+            .Skip(1)
+            .Where(argument => argument.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(argument => argument.Substring(prefix.Length).Trim())
+            .FirstOrDefault();
 
     /// <summary>把开关名归一：去 <c>--</c>、转小写、别名换规范名。</summary>
     private static string Canonical(string flag)
@@ -101,5 +129,6 @@ public sealed class AppOptions
         "--report-shell",
         "--self-test-window",
         "--qa-tier=<compact|comfortable|large>",
+        "--qa-connect=<连接名称|@first>（配合环境变量 SQARVO_QA_PASSWORD）",
     };
 }

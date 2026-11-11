@@ -23,9 +23,11 @@ public sealed class DefaultPidLiveness : IPidLiveness
             return false;
         }
 
-#if WINDOWS
-        return WindowsProcessInfo.IsAlive(pid);
-#else
+        if (OperatingSystem.IsWindows())
+        {
+            return WindowsProcessInfo.IsAlive(pid);
+        }
+
         if (OperatingSystem.IsLinux())
         {
             return IsAliveOnLinux(pid);
@@ -44,10 +46,8 @@ public sealed class DefaultPidLiveness : IPidLiveness
         {
             return false;
         }
-#endif
     }
 
-#if !WINDOWS
     private static bool IsAliveOnLinux(int pid)
     {
         var directory = "/proc/" + pid.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -93,5 +93,4 @@ public sealed class DefaultPidLiveness : IPidLiveness
 
         return true;
     }
-#endif
 }

@@ -45,6 +45,29 @@ public sealed class ArchitectureTests
         }
     }
 
+    /// <summary>
+    /// Core 的目标框架是 <c>net8.0</c>，SDK 只在 <c>net8.0-windows</c> 上定义 <c>WINDOWS</c> 符号，
+    /// 所以任何 <c>#if WINDOWS</c> 都会**永远**走 <c>#else</c>：Windows 上编译出来的仍然是 Unix 分支，
+    /// 运行到 <c>[DllImport("libc")]</c> 就是 <c>DllNotFoundException</c>（已在 Windows 实机复现过）。
+    /// 平台分支必须用 <see cref="OperatingSystem.IsWindows"/> 这类运行时判断。
+    /// </summary>
+    [Fact]
+    public void CoreSourcesDoNotUseTheWindowsPreprocessorSymbol()
+    {
+        var coreDirectory = Path.Combine(RepositoryRoot(), "frontend", "windows", "Sqarvo.Core");
+        var offenders = Directory
+            .EnumerateFiles(coreDirectory, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(path => File.ReadLines(path).Any(line =>
+                line.TrimStart().StartsWith("#if WINDOWS", StringComparison.Ordinal)
+                || line.TrimStart().StartsWith("#if !WINDOWS", StringComparison.Ordinal)
+                || line.TrimStart().StartsWith("#elif WINDOWS", StringComparison.Ordinal)))
+            .ToArray();
+
+        Assert.Empty(offenders);
+    }
+
     [Fact]
     public void CoreSourcesDoNotReferenceUiFrameworkTypes()
     {

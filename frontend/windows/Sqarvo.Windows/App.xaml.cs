@@ -11,6 +11,7 @@ using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace Sqarvo.Windows;
@@ -68,7 +69,7 @@ public partial class App : Application
         InitializeComponent();
 
         _options = AppOptions.Parse(Environment.GetCommandLineArgs());
-        if (_options.HasReports)
+        if (_options.HasReports || _options.QaConnect is { Length: > 0 })
         {
             ConsoleBridge.Ensure();
         }
@@ -138,6 +139,13 @@ public partial class App : Application
             // 不 await：窗口先显示，握手进度通过 BackendState 写进状态栏。
             // StartAsync 不抛异常（失败落成 BackendReadiness.Failed）。
             _ = Backend.StartAsync();
+
+            if (_options.QaConnect is { Length: > 0 } qaConnect)
+            {
+                // QA 链路：不依赖鼠标点界面，直接把「握手 → 测试连接 → 连接 → 断开」跑一遍。
+                _ = RunQaConnectAsync(qaConnect);
+                return;
+            }
         }
 
         if (!_options.HasReports)
@@ -208,6 +216,88 @@ public partial class App : Application
         }
 
         _window?.Close();
+    }
+
+    /// <summary>
+    /// <c>--qa-connect=&lt;名称|@first&gt;</c>：等后端就绪后跑一遍连接链路，打印 <c>[connect]</c> 证据后退出。
+    /// </summary>
+    /// <param name="target">已保存连接的名称，或 <c>@first</c>（取第一条）。</param>
+    /// <remarks>
+    /// 后端起不来、条目不存在、测试连接失败都只打印证据，不弹窗——这个开关的读者是验收脚本。
+    /// 密码从 <c>SQARVO_QA_PASSWORD</c> 读，先 <c>CredentialService.StoreCredential</c> 写进系统凭据库
+    /// 再连接，因此一趟同时验证了 Windows Credential Manager 与真实 gRPC 链路。
+    /// </remarks>
+    private async Task RunQaConnectAsync(string target)
+    {
+        try
+        {
+            var session = Backend;
+            if (session is null)
+            {
+                ConsoleBridge.WriteDiagnostic("[connect] 没有后端会话");
+
+                return;
+            }
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            while (!session.State.IsReady && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(200).ConfigureAwait(true);
+            }
+
+            var state = session.State;
+            ConsoleBridge.WriteDiagnostic(
+                $"[connect] backend={state.Readiness} drivers={state.RegisteredDrivers} version={state.Version?.ServiceVersion ?? "?"} message={state.Message}");
+
+            if (!state.IsReady)
+            {
+                return;
+            }
+
+            var profiles = Profiles.Load();
+            var name = target.Trim();
+            var profile = string.Equals(name, "@first", StringComparison.OrdinalIgnoreCase)
+                ? profiles.FirstOrDefault()
+                : profiles.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+
+            if (profile is null)
+            {
+                ConsoleBridge.WriteDiagnostic($"[connect] 找不到连接条目 {name}（已保存 {profiles.Count} 条）");
+
+                return;
+            }
+
+            var password = Environment.GetEnvironmentVariable("SQARVO_QA_PASSWORD");
+            if (!string.IsNullOrEmpty(password))
+            {
+                var reference = await session.StoreCredentialAsync(
+                    string.IsNullOrEmpty(profile.CredentialRef) ? null : profile.CredentialRef,
+                    password).ConfigureAwait(true);
+
+                ConsoleBridge.WriteDiagnostic($"[connect] credential_ref={reference}");
+                profile = profile with { CredentialRef = reference };
+            }
+
+            var test = await session.TestConnectionAsync(profile).ConfigureAwait(true);
+            ConsoleBridge.WriteDiagnostic(
+                $"[connect] test reachable={test.Reachable} latency={test.LatencyMillis}ms server={test.ServerVersion} warnings={string.Join("|", test.Warnings)}");
+
+            var open = await session.ConnectAsync(profile).ConfigureAwait(true);
+            ConsoleBridge.WriteDiagnostic(
+                $"[connect] connect driver={open.DriverId} server={open.ServerVersion} session={open.SessionId} capabilities={string.Join("|", open.Capabilities)} sessions={session.OpenConnections.Count}");
+
+            var closed = await session.DisconnectAsync(profile.Key).ConfigureAwait(true);
+            ConsoleBridge.WriteDiagnostic(
+                $"[connect] disconnect closed={closed} sessions={session.OpenConnections.Count}");
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[connect] failed {error.GetType().Name}: {error.Message}");
+        }
+        finally
+        {
+            Close();
+        }
     }
 
     private void Report(MainWindow window)

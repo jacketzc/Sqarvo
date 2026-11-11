@@ -209,10 +209,12 @@ public sealed class DefaultPathLayout : IPathLayout
 
     private static string DefaultEndpointFilePath()
     {
-#if WINDOWS
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        return Path.Combine(appData, "sqarvo", "Sqarvo", "data", "run", EndpointFile.FileName);
-#else
+        if (OperatingSystem.IsWindows())
+        {
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(appData, "sqarvo", "Sqarvo", "data", "run", EndpointFile.FileName);
+        }
+
         if (OperatingSystem.IsLinux())
         {
             var runtimeDirectory = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
@@ -237,11 +239,8 @@ public sealed class DefaultPathLayout : IPathLayout
             "io.sqarvo.Sqarvo",
             "run",
             EndpointFile.FileName);
-#endif
     }
 
-#if !WINDOWS
     private static string HomeDirectory() =>
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-#endif
 }

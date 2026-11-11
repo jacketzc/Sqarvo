@@ -110,19 +110,18 @@ internal sealed class DefaultProcessHandle : IProcessHandle
     private readonly StringBuilder _captured = new();
     private bool _disposed;
 
-#if WINDOWS
     private WindowsJobObject? _job;
     private bool _jobAssigned;
-#endif
 
     internal DefaultProcessHandle(DiagnosticsProcess process)
     {
         _process = process;
 
-#if WINDOWS
-        _job = WindowsJobObject.TryCreate();
-        _jobAssigned = _job is not null && _job.TryAssign(process.Handle);
-#endif
+        if (OperatingSystem.IsWindows())
+        {
+            _job = WindowsJobObject.TryCreate();
+            _jobAssigned = _job is not null && _job.TryAssign(process.Handle);
+        }
     }
 
     /// <inheritdoc />
@@ -180,12 +179,14 @@ internal sealed class DefaultProcessHandle : IProcessHandle
     /// <inheritdoc />
     public bool RequestGracefulExit()
     {
-#if WINDOWS
-        // Windows has no SIGTERM and the contract has no shutdown RPC: there is no graceful channel to
-        // the backend, so report "not delivered" and let the caller terminate after the grace period
-        // (the job object is the hard guarantee that nothing is left behind).
-        return false;
-#else
+        if (OperatingSystem.IsWindows())
+        {
+            // Windows has no SIGTERM and the contract has no shutdown RPC: there is no graceful channel
+            // to the backend, so report "not delivered" and let the caller terminate after the grace
+            // period (the job object is the hard guarantee that nothing is left behind).
+            return false;
+        }
+
         if (HasExited)
         {
             return false;
@@ -193,7 +194,6 @@ internal sealed class DefaultProcessHandle : IProcessHandle
 
         // SIGTERM lets the backend run its cleanup path (delete socket and endpoint file).
         return UnixSignals.SendTerminate(_process.Id);
-#endif
     }
 
     /// <inheritdoc />
@@ -293,7 +293,6 @@ internal sealed class DefaultProcessHandle : IProcessHandle
 
         _disposed = true;
 
-#if WINDOWS
         if (_job is not null)
         {
             // Closing the job handle terminates any process still in the job: the last-resort
@@ -301,12 +300,10 @@ internal sealed class DefaultProcessHandle : IProcessHandle
             _job.Dispose();
             _job = null;
         }
-#endif
         _process.Dispose();
     }
 }
 
-#if !WINDOWS
 /// <summary>Unix signal helpers. Only <c>SIGTERM</c> is used; termination uses
 /// <see cref="System.Diagnostics.Process.Kill(bool)"/>, which maps to <c>SIGKILL</c>.</summary>
 internal static class UnixSignals
@@ -323,4 +320,3 @@ internal static class UnixSignals
         return Kill(pid, SigTerm) == 0;
     }
 }
-#endif
