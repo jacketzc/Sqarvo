@@ -39,7 +39,8 @@ public sealed class AppOptions
         string? qaCatalog,
         bool noBackend,
         string? qaSignIn,
-        string? qaQuery)
+        string? qaQuery,
+        int qaQueryPages)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -53,6 +54,7 @@ public sealed class AppOptions
         NoBackend = noBackend;
         QaSignIn = qaSignIn;
         QaQuery = qaQuery;
+        QaQueryPages = Math.Clamp(qaQueryPages, 1, 8);
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -119,6 +121,9 @@ public sealed class AppOptions
     /// </remarks>
     public string? QaQuery { get; }
 
+    /// <summary>`--qa-query-pages=N`：首批之后最多再续拉 N-1 批（验证 has_more 与计数）。1..8。</summary>
+    public int QaQueryPages { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -151,6 +156,7 @@ public sealed class AppOptions
             noBackend: flags.Contains("no-backend"),
             qaSignIn: Value(commandLine, "--qa-signin="),
             qaQuery: Value(commandLine, "--qa-query="),
+            qaQueryPages: Number(commandLine, "--qa-query-pages=", 1),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -165,6 +171,10 @@ public sealed class AppOptions
             .Where(argument => argument.StartsWith(prefix, StringComparison.Ordinal))
             .Select(argument => argument.Substring(prefix.Length).Trim())
             .FirstOrDefault();
+
+    /// <summary>读一个整数开关；缺省或非法就用 <paramref name="fallback"/>（不抛、不打断启动）。</summary>
+    private static int Number(string[] commandLine, string prefix, int fallback) =>
+        int.TryParse(Value(commandLine, prefix), out var parsed) ? parsed : fallback;
 
     /// <summary>把开关名归一：去 <c>--</c>、转小写、别名换规范名。</summary>
     private static string Canonical(string flag)

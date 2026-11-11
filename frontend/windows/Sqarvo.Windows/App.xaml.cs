@@ -544,7 +544,7 @@ public partial class App : Application
             window.Shell.RefreshFromBackend();
 
             var complete = await window.Shell
-                .ProbeQueryAsync(sql, CancellationToken.None)
+                .ProbeQueryAsync(sql, _options.QaQueryPages, CancellationToken.None)
                 .ConfigureAwait(true);
             ConsoleBridge.WriteLine($"[query] probe={(complete ? "ok" : "incomplete")}");
 

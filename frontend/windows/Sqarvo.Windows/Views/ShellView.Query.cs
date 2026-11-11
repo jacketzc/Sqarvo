@@ -1484,7 +1484,7 @@ public sealed partial class ShellView
     /// <param name="sql">要执行的 SQL。</param>
     /// <param name="cancellationToken">放弃这次探针。</param>
     /// <returns>首批是否拿到了可展示的结果（有行 / 空结果都算成功，Error / Cancelled 算失败）。</returns>
-    public async Task<bool> ProbeQueryAsync(string sql, CancellationToken cancellationToken)
+    public async Task<bool> ProbeQueryAsync(string sql, int pages, CancellationToken cancellationToken)
     {
         try
         {
@@ -1501,6 +1501,18 @@ public sealed partial class ShellView
             tab.Editor.Focus(FocusState.Programmatic);
 
             var state = tab.State;
+
+            // 分批续拉：走与「滚动到底」同一条 FetchMoreAsync，验证 has_more/游标/计数都对得上。
+            for (var batch = 1; batch < pages && state.HasMore; batch++)
+            {
+                var before = state.Rows.Count;
+                await FetchMoreAsync(tab, reason: $"QA 续拉第 {batch} 批").ConfigureAwait(true);
+                state = tab.State;
+                ConsoleBridge.WriteLine(
+                    $"[query] page={batch + 1} rows={state.Rows.Count} added={state.Rows.Count - before} " +
+                    $"has_more={state.HasMore} state={StateName(state.View)}");
+            }
+
             ConsoleBridge.WriteLine(
                 $"[query] tab={state.Title} state={StateName(state.View)} rows={state.Rows.Count} " +
                 $"columns={state.Columns.Count} statements={state.StatementCount} has_more={state.HasMore} " +
