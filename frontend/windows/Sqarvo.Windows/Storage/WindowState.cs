@@ -1,5 +1,6 @@
 using Sqarvo.Windows.Theming;
 using System;
+using System.Collections.Generic;
 
 namespace Sqarvo.Windows.Storage;
 
@@ -16,6 +17,10 @@ namespace Sqarvo.Windows.Storage;
 /// 宽度类字段一律存 <b>compact 档的归一化值</b>（实际值 ÷ 档位 scale，四舍五入）。不归一化
 /// 就会在切档时来回钳制：1.5× 下存了 630，切回 1.0× 被 <c>inspector_max = 520</c> 钳成 520，
 /// 再切回 1.5× 就变成 520，看起来像设置被吃掉。
+/// </para>
+/// <para>
+/// 归一化用的是**档位**系数（<c>Metrics.*Scale</c>），不是系统 DPI：两者是互相独立的轴
+/// （spec §1），混用会在 125% 显示器上把 237 记成 189。
 /// </para>
 /// <para>
 /// <see cref="Theme"/> 是 Windows 独有的扩展字段（Linux 没有应用内主题设置，GTK 跟随系统）。
@@ -60,7 +65,10 @@ public sealed class WindowState
     /// <summary>上次窗口左上角 y（物理像素）。</summary>
     public int? WindowY { get; set; }
 
-    /// <summary>上次是否最大化。</summary>
+    /// <summary>
+    /// 上次是否最大化。恢复时先还原 <see cref="WindowWidth"/> / <see cref="WindowX"/> 这一组
+    /// **还原边界**（非最大化时的矩形），再最大化——否则还原出来的窗口是最大化尺寸。
+    /// </summary>
     public bool Maximized { get; set; }
 
     /// <summary>主题偏好（<c>system</c> / <c>light</c> / <c>dark</c>，Windows 扩展字段）。</summary>
@@ -88,24 +96,114 @@ public sealed class WindowState
     /// <summary>当前档位下的信息面板宽度（已钳到该档位的 min/max）。</summary>
     public int InspectorWidthFor(DensityTier tier)
     {
-        var (scale, minimum, maximum) = tier switch
-        {
-            DensityTier.Comfortable => (Metrics.ComfortableScale, Metrics.ComfortableInspectorMin, Metrics.ComfortableInspectorMax),
-            DensityTier.Large => (Metrics.LargeScale, Metrics.LargeInspectorMin, Metrics.LargeInspectorMax),
-            _ => (Metrics.CompactScale, Metrics.CompactInspectorMin, Metrics.CompactInspectorMax),
-        };
+        var (scale, minimum, maximum) = InspectorRangeOf(tier);
         return Denormalize(LastInspectorWidth, scale, minimum, maximum);
     }
 
     /// <summary>当前档位下的侧栏宽度（已钳到该档位的 min/max）。</summary>
     public int SidebarWidthFor(DensityTier tier)
     {
-        var (scale, minimum, maximum) = tier switch
-        {
-            DensityTier.Comfortable => (Metrics.ComfortableScale, Metrics.ComfortableSidebarMin, Metrics.ComfortableSidebarMax),
-            DensityTier.Large => (Metrics.LargeScale, Metrics.LargeSidebarMin, Metrics.LargeSidebarMax),
-            _ => (Metrics.CompactScale, Metrics.CompactSidebarMin, Metrics.CompactSidebarMax),
-        };
+        var (scale, minimum, maximum) = SidebarRangeOf(tier);
         return Denormalize(LastSidebarWidth, scale, minimum, maximum);
+    }
+
+    /// <summary>把一次拖动得到的侧栏宽度钳到当前档位的可拖区间（拖动过程中每帧都走它）。</summary>
+    public static int ClampSidebarWidth(int actual, DensityTier tier)
+    {
+        var (_, minimum, maximum) = SidebarRangeOf(tier);
+        return Math.Clamp(actual, minimum, maximum);
+    }
+
+    /// <summary>把一次拖动得到的信息面板宽度钳到当前档位的可拖区间。</summary>
+    public static int ClampInspectorWidth(int actual, DensityTier tier)
+    {
+        var (_, minimum, maximum) = InspectorRangeOf(tier);
+        return Math.Clamp(actual, minimum, maximum);
+    }
+
+    /// <summary>档位的（系数，可拖下限，可拖上限）——侧栏。</summary>
+    public static (double Scale, int Minimum, int Maximum) SidebarRangeOf(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => (Metrics.ComfortableScale, Metrics.ComfortableSidebarMin, Metrics.ComfortableSidebarMax),
+        DensityTier.Large => (Metrics.LargeScale, Metrics.LargeSidebarMin, Metrics.LargeSidebarMax),
+        _ => (Metrics.CompactScale, Metrics.CompactSidebarMin, Metrics.CompactSidebarMax),
+    };
+
+    /// <summary>档位的（系数，可拖下限，可拖上限）——信息面板。</summary>
+    public static (double Scale, int Minimum, int Maximum) InspectorRangeOf(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => (Metrics.ComfortableScale, Metrics.ComfortableInspectorMin, Metrics.ComfortableInspectorMax),
+        DensityTier.Large => (Metrics.LargeScale, Metrics.LargeInspectorMin, Metrics.LargeInspectorMax),
+        _ => (Metrics.CompactScale, Metrics.CompactInspectorMin, Metrics.CompactInspectorMax),
+    };
+
+    /// <summary>
+    /// 面板宽度归一化的纯函数自检（<c>--self-test-window</c> 调用）：返回失败项。
+    /// </summary>
+    /// <remarks>
+    /// 断言的是 spec §7 规则 1 与 §2.3 的跨档往返：<c>100% → 150% → 100%</c> 不漂移
+    /// （侧栏 237 → 356 → 237、信息面板 280 → 420 → 280），并且钳制只发生在越界时。
+    /// </remarks>
+    public static IReadOnlyList<string> SelfTest()
+    {
+        var failures = new List<string>();
+
+        void Check(string name, bool ok, string detail)
+        {
+            if (!ok)
+            {
+                failures.Add($"{name}（{detail}）");
+            }
+        }
+
+        var (compactScale, compactSidebarMin, compactSidebarMax) = SidebarRangeOf(DensityTier.Compact);
+        var (comfortableScale, comfortableSidebarMin, comfortableSidebarMax) = SidebarRangeOf(DensityTier.Comfortable);
+        var (largeScale, largeSidebarMin, largeSidebarMax) = SidebarRangeOf(DensityTier.Large);
+        var (_, compactInspectorMin, compactInspectorMax) = InspectorRangeOf(DensityTier.Compact);
+        var (_, comfortableInspectorMin, comfortableInspectorMax) = InspectorRangeOf(DensityTier.Comfortable);
+        var (_, largeInspectorMin, largeInspectorMax) = InspectorRangeOf(DensityTier.Large);
+
+        var sidebarCompact = Metrics.CompactSidebarWidth;
+        var sidebarComfortable = Denormalize(sidebarCompact, comfortableScale, comfortableSidebarMin, comfortableSidebarMax);
+        var sidebarLarge = Denormalize(sidebarCompact, largeScale, largeSidebarMin, largeSidebarMax);
+        Check("侧栏 100% → 125%", sidebarComfortable == Metrics.ComfortableSidebarWidth, sidebarComfortable.ToString());
+        Check("侧栏 100% → 150%", sidebarLarge == Metrics.LargeSidebarWidth, sidebarLarge.ToString());
+        Check("侧栏 150% 归一回到 compact 原值", Normalize(sidebarLarge, largeScale) == sidebarCompact,
+            Normalize(sidebarLarge, largeScale).ToString());
+        Check("侧栏 125% 归一回到 compact 原值", Normalize(sidebarComfortable, comfortableScale) == sidebarCompact,
+            Normalize(sidebarComfortable, comfortableScale).ToString());
+
+        var inspectorCompact = Metrics.CompactInspectorWidth;
+        var inspectorComfortable = Denormalize(inspectorCompact, comfortableScale, comfortableInspectorMin, comfortableInspectorMax);
+        var inspectorLarge = Denormalize(inspectorCompact, largeScale, largeInspectorMin, largeInspectorMax);
+        Check("面板 100% → 125%", inspectorComfortable == Metrics.ComfortableInspectorWidth, inspectorComfortable.ToString());
+        Check("面板 100% → 150%", inspectorLarge == Metrics.LargeInspectorWidth, inspectorLarge.ToString());
+        Check("面板 150% 归一回到 compact 原值", Normalize(inspectorLarge, largeScale) == inspectorCompact,
+            Normalize(inspectorLarge, largeScale).ToString());
+
+        // 拖动越界：钳到当前档位的区间（钳制只发生在拖动时，不改写归一值）。
+        Check("侧栏拖过上限在 compact 钳到 sidebar_max",
+            ClampSidebarWidth(largeSidebarMax, DensityTier.Compact) == compactSidebarMax,
+            ClampSidebarWidth(largeSidebarMax, DensityTier.Compact).ToString());
+        Check("侧栏拖过下限在 large 钳到 sidebar_min",
+            ClampSidebarWidth(1, DensityTier.Large) == largeSidebarMin,
+            ClampSidebarWidth(1, DensityTier.Large).ToString());
+        Check("面板拖过上限在 compact 钳到 inspector_max",
+            ClampInspectorWidth(largeInspectorMax, DensityTier.Compact) == compactInspectorMax,
+            ClampInspectorWidth(largeInspectorMax, DensityTier.Compact).ToString());
+        Check("面板拖过下限在 comfortable 钳到 inspector_min",
+            ClampInspectorWidth(1, DensityTier.Comfortable) == comfortableInspectorMin,
+            ClampInspectorWidth(1, DensityTier.Comfortable).ToString());
+
+        // 档位系数确实来自度量（不在这里另写 1.25 / 1.5）。
+        Check("compact 系数 = 1", Math.Abs(compactScale - 1.0) < 0.0001, compactScale.ToString("0.##"));
+        Check("面板 compact 默认在区间内",
+            compactInspectorMin < inspectorCompact && inspectorCompact < compactInspectorMax,
+            $"{compactInspectorMin} < {inspectorCompact} < {compactInspectorMax}");
+        Check("侧栏 compact 默认在区间内",
+            compactSidebarMin < sidebarCompact && sidebarCompact < compactSidebarMax,
+            $"{compactSidebarMin} < {sidebarCompact} < {compactSidebarMax}");
+
+        return failures;
     }
 }

@@ -7,8 +7,26 @@ namespace Sqarvo.Windows.Diagnostics;
 /// <summary>
 /// 命令行开关。全部是只读诊断开关：不改尺寸、不改主题、不写 <c>window.json</c>。
 /// </summary>
+/// <remarks>
+/// <para>
+/// 开关名有两套历史写法：规范（<c>scaling-and-window-sizing.md</c> §9 的验收表）写
+/// <c>--qa-report-monitor</c>，实现与 README 写 <c>--report-monitor</c>。两套都接受，
+/// 因为验收脚本是照着规范抄的，而人手册是照着 README 抄的——让其中一边静默失效等于
+/// 「跑了一次没输出的验收」。
+/// </para>
+/// <para>
+/// 别名表只做「名字归一」，不新增行为：归一后的名字进同一份 flags 集合，
+/// 后面所有判定都只看归一后的名字。
+/// </para>
+/// </remarks>
 public sealed class AppOptions
 {
+    /// <summary>别名 → 规范名（只登记真实存在过的两种写法）。</summary>
+    private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
+    {
+        ["qa-report-monitor"] = "report-monitor",
+    };
+
     private AppOptions(bool reportTheme, bool reportMetrics, bool reportMonitor, bool reportShell, bool selfTestWindow, string? qaTier)
     {
         ReportTheme = reportTheme;
@@ -25,7 +43,7 @@ public sealed class AppOptions
     /// <summary>打印 <c>[metrics]</c> 一行。</summary>
     public bool ReportMetrics { get; }
 
-    /// <summary>打印 <c>[monitor]</c> 一行（显示器 / 缩放 / 工作区 / 最终窗口尺寸 / 档位 / 来源）。</summary>
+    /// <summary>打印 <c>[monitor]</c> 一行（显示器 / 缩放 / 工作区 / 最终窗口尺寸 / 档位 / 来源 / 菜单行）。</summary>
     public bool ReportMonitor { get; }
 
     /// <summary>打印整棵控件树（UI Automation 的 ControlType + Name，缩进两格）。</summary>
@@ -34,7 +52,7 @@ public sealed class AppOptions
     /// <summary>QA 专用：启动时切到指定档位（<c>compact</c> / <c>comfortable</c> / <c>large</c>）。</summary>
     public string? QaTier { get; }
 
-    /// <summary>打印窗口尺寸算术的边界断言（纯函数自检，不建窗口）。</summary>
+    /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
     /// <summary>是否有任何「打印后退出」的开关。</summary>
@@ -51,7 +69,7 @@ public sealed class AppOptions
         var flags = commandLine
             .Skip(1)
             .Where(argument => argument.StartsWith("--", StringComparison.Ordinal))
-            .Select(argument => argument.TrimStart('-').ToLowerInvariant())
+            .Select(argument => Canonical(argument.TrimStart('-')))
             .ToHashSet(StringComparer.Ordinal);
 
         return new AppOptions(
@@ -67,12 +85,19 @@ public sealed class AppOptions
                 .FirstOrDefault());
     }
 
+    /// <summary>把开关名归一：去 <c>--</c>、转小写、别名换规范名。</summary>
+    private static string Canonical(string flag)
+    {
+        var name = flag.ToLowerInvariant();
+        return Aliases.TryGetValue(name, out var canonical) ? canonical : name;
+    }
+
     /// <summary>已知开关清单（给文档用）。</summary>
     public static IReadOnlyList<string> KnownSwitches { get; } = new[]
     {
         "--report-theme",
         "--report-metrics",
-        "--report-monitor",
+        "--report-monitor（别名 --qa-report-monitor）",
         "--report-shell",
         "--self-test-window",
         "--qa-tier=<compact|comfortable|large>",

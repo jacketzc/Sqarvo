@@ -22,7 +22,8 @@ Windows 端的窗口尺寸、密度档、主题与本地化口径已经定下，
 4. **主题**：`Application.RequestedTheme` 只能在启动时设；运行中切换用元素级
    `FrameworkElement.RequestedTheme`；**标题栏要单独处理**，否则暗色窗口顶上是白的。
 
-跟踪 Issue：#162（度量表生成 + 主题三档 + 标题栏 + 未打包持久化）、#163（窗口尺寸 / DPI / 最小尺寸 / 密度档重建）。
+跟踪 Issue：#162（度量表生成 + 主题三档 + 标题栏 + 未打包持久化）、#163（窗口尺寸 / DPI / 最小尺寸 /
+密度档重建）、#168（窗口层缺陷：DPI 订阅、位置 / 尺寸事件分流、最大化恢复、面板可拖、度量单一口径）。
 
 ## 状态
 
@@ -62,19 +63,66 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 窗口层与外壳（#163 / #164）另有四个开关：
 
 ```text
---report-monitor          显示器 / 缩放 / 工作区（物理与 DIP）/ 最终窗口 / 档位 / 来源（分档|记忆|QA）
+--report-monitor          显示器 / 缩放 / 工作区（物理与 DIP）/ 最终窗口 / 档位 / 来源 / 最大化 / 实测非客户区高
 --report-shell            UI Automation 枚举整棵控件树（ControlType + Name，缩进两格）
---self-test-window        窗口尺寸算术的边界断言（纯函数，不建窗口；失败以非 0 退出）
+--self-test-window        窗口尺寸算术与面板宽度换算的边界断言（纯函数，不建窗口；失败以非 0 退出）
 --qa-tier=<id>            QA 专用：启动后切到该密度档并把来源标成 QA，用来复现「切档后窗口跟着改大小」
 ```
 
-实测（3840×2160@200%，逻辑工作区 1920×1032）：
+`--report-monitor` 与规范（`scaling-and-window-sizing.md` §9）里的 `--qa-report-monitor` **等价**：
+`Diagnostics/AppOptions.cs` 的别名表把两套写法归一到同一个开关，验收脚本照规范抄也能跑。
+
+`[monitor]` 行的字段（改动要连同这里一起改）：
+
+```text
+[monitor] display=3840x2160 scale=2 workArea物理=3840x2064 工作区DIP=1920x1032 → 窗口DIP=1400x826 物理=2800x1652 tier=compact 来源=分档 最大化=否 titleBar=40 menuRow=24 侧栏=237 面板=280
+```
+
+- `来源`：`分档`（按工作区推荐）/ `记忆`（`window.json` 的几何）/ `记忆+最大化` / `保留`（DPI 或工作区
+  变了但保留当前矩形）/ `档位`（切档重算）/ `最大化` / `最小化` / `QA`（诊断开关强制）。
+- `titleBar` 是**实测**值（窗口物理高 ÷ 栅格化比例 − XAML 内容实际高），量不到时写 `待测`，不编数字。
+
+下面这组数字是**按规范 §5.3 推算**的（3840×2160@200%，逻辑工作区 1920×1032），并且已经被
+`--self-test-window` 逐条断言——所以它们不是「某次实测的记录」，而是在任何机器上都能复核的期望值；
+真实窗口尺寸以 `[monitor]` 行为准：
 
 ```text
 compact     → 窗口DIP=1400x826  物理=2800x1652
 comfortable → 窗口DIP=1750x984  物理=3500x1968
 large       → 窗口DIP=1888x984  物理=3776x1968   （宽被 W-32 封顶）
 ```
+
+## 窗口层行为（#168）
+
+窗口层的四类事件**不再互相借道**（原来位置变化会走推荐尺寸路径，把窗口拉回屏幕中央）：
+
+- **位置变化**（`AppWindow.Changed.DidPositionChange`）：只记账（还原边界）+ 按当前显示器刷新最小
+  尺寸，**不重算**窗口矩形。
+- **尺寸变化**（`DidSizeChange`）：只更新几何记忆，不抢回推荐尺寸。
+- **DPI / 缩放**（`XamlRoot.Changed` → `RasterizationScale`）：与窗口重算同一个入口，保留当前 DIP
+  矩形（只钳到工作区与最小窗口），不居中。
+- **切档**：按该档推荐尺寸重算并居中（规范 §2.3 要求窗口跟着放大）。
+
+最大化恢复按**还原边界**语义：`window.json` 里的 `window_width/height/x/y` 是**非最大化**矩形，
+`maximized=true` 时先还原该矩形再最大化，所以系统「还原」回到的是用户上次的窗口大小。
+
+侧栏与信息面板的分隔线本身就是拖动条（`Thumb`，不引入第三方 GridSplitter）：范围取 `sidebar_min..max`
+与 `inspector_min..max`，默认宽度取 `sidebar_width` / `inspector_width`；松手后按 compact 归一值写回
+`window.json`，再用 `SidebarWidthFor` / `InspectorWidthFor` 换算回当前档校验。
+
+验证（Windows PowerShell）：
+
+```powershell
+cd frontend\windows\Sqarvo.Windows
+dotnet build -c Debug -p:Platform=x64
+dotnet run -c Debug -p:Platform=x64 -- --self-test-window
+dotnet run -c Debug -p:Platform=x64 -- --report-monitor --report-metrics --qa-report-monitor
+```
+
+拖动实测（人工）：拖窗口到屏幕一角后松手 → 窗口必须留在原地；拖窗口右下角改尺寸 → 尺寸不被改回；
+最大化后关窗再启动 → 仍是最大化，且「还原」回到上次的非最大化矩形；拖两条分隔线到两端 → 宽度停在
+`sidebar_min/max` / `inspector_min/max`；重启应用 → 两条分隔线宽度保持；`Ctrl+Plus` 切到 150% 再切回
+`Ctrl+0` → 面板宽度回到 237 / 280（不漂移）。
 
 已知边界：`AccessibilitySettings.HighContrastChanged` 在未打包 WinUI 3 应用里订阅会抛
 `COMException`，高对比状态改由 `HKCU\Control Panel\Accessibility\HighContrast\Flags` 兜底读取；

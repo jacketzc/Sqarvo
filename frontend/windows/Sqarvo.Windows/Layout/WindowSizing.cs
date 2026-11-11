@@ -6,11 +6,17 @@ namespace Sqarvo.Windows.Layout;
 
 /// <summary>
 /// 窗口尺寸算术（纯函数）：按**逻辑工作区**分档取推荐尺寸、按工作区收敛最小尺寸、
-/// 判断档位在当前显示器上是否可用。
+/// 判断档位在当前显示器上是否可用、由度量推出菜单行高度。
 /// </summary>
 /// <remarks>
 /// <para>
-/// 规则来源：docs/ui-specification/scaling-and-window-sizing.md §5.2 / §5.3 / §5.4。
+/// 规则来源：docs/ui-specification/scaling-and-window-sizing.md §5.2 / §5.3 / §5.4；
+/// 数字来源只有一处——<c>docs/ui-specification/metrics.toml</c>（经 <see cref="Metrics"/> 读）。
+/// 本类**不**另写一份基准尺寸：100% 档的最小窗口就是 <c>Metrics.CompactMinWindowWidth</c> /
+/// <c>CompactMinWindowHeight</c>，其它档位读各自的档位常量（三档在 TOML 里都写死了整数，
+/// 这里只查表，不做「基准 × scale」，见 §3.1）。
+/// </para>
+/// <para>
 /// 这里是唯一实现，<c>--self-test-window</c> 直接断言本类的边界值，不经过 UI。
 /// </para>
 /// <para>
@@ -25,17 +31,11 @@ namespace Sqarvo.Windows.Layout;
 /// </remarks>
 public static class WindowSizing
 {
-    /// <summary>窗口宽上限 = 工作区宽 - 该值。</summary>
+    /// <summary>窗口宽上限 = 工作区宽 - 该值（规范 §5.4 的 <c>W-32</c>）。</summary>
     public const int WidthMargin = 32;
 
-    /// <summary>窗口高上限 = 工作区高 - 该值。</summary>
+    /// <summary>窗口高上限 = 工作区高 - 该值（规范 §5.4 的 <c>H-48</c>）。</summary>
     public const int HeightMargin = 48;
-
-    /// <summary>100% 档的最小窗口宽（= metrics.min_window_width[compact]）。</summary>
-    public const int MinBaseWidth = 960;
-
-    /// <summary>100% 档的最小窗口高（= metrics.min_window_height[compact]）。</summary>
-    public const int MinBaseHeight = 640;
 
     /// <summary>档位对应的密度系数（来自生成文件，不在这里另写一份）。</summary>
     public static double ScaleOf(DensityTier tier) => tier switch
@@ -45,14 +45,96 @@ public static class WindowSizing
         _ => Metrics.CompactScale,
     };
 
-    /// <summary>档位的最小窗口宽（<b>未</b>按工作区收敛；可用性守卫用它）。</summary>
-    public static int MinWindowWidth(DensityTier tier) => RoundInt(MinBaseWidth * ScaleOf(tier));
+    /// <summary>档位的外壳高度（<c>header_height</c>：64 / 80 / 96）。</summary>
+    public static int HeaderHeightOf(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => Metrics.ComfortableHeaderHeight,
+        DensityTier.Large => Metrics.LargeHeaderHeight,
+        _ => Metrics.CompactHeaderHeight,
+    };
 
-    /// <summary>档位的最小窗口高（未按工作区收敛）。</summary>
-    public static int MinWindowHeight(DensityTier tier) => RoundInt(MinBaseHeight * ScaleOf(tier));
+    /// <summary>档位的标签条 / 菜单行基准高度（<c>tab_strip_height</c>：24 / 30 / 36）。</summary>
+    public static int TabStripHeightOf(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => Metrics.ComfortableTabStripHeight,
+        DensityTier.Large => Metrics.LargeTabStripHeight,
+        _ => Metrics.CompactTabStripHeight,
+    };
+
+    /// <summary>档位的最小点击区（<c>min_target</c>：24 / 30 / 36）。</summary>
+    public static int MinTargetOf(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => Metrics.ComfortableMinTarget,
+        DensityTier.Large => Metrics.LargeMinTarget,
+        _ => Metrics.CompactMinTarget,
+    };
 
     /// <summary>
-    /// 最小窗口按工作区收敛：<c>min(960·T, W-32) × min(640·T, H-48)</c>。
+    /// 窗口内菜单行的高度（DIP）：<c>外壳高 − 系统标题栏基准 × 档位</c>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 三档取值 24 / 30 / 36，与 <c>tab_strip_height</c> 同值——这不是巧合：规范的外壳算术是
+    /// 「外壳 64 = 系统标题栏 40 + 菜单行 24」（workspace-model.md §2），按档位换算后
+    /// 80 = 50 + 30、96 = 60 + 36。菜单行是**我们的**元素，所以它按档位放大；
+    /// 系统标题栏不是我们的（§8.7「仅缩放在本文件管辖范围内的自有元素」）。
+    /// </para>
+    /// <para>
+    /// <see cref="TitleBarBaseDips"/> 由度量相减推出（64 − 24 = 40），代码里因此没有
+    /// 「40」这个字面量；实际系统标题栏高度由 <see cref="MeasuredNonClientDips"/> 在运行期
+    /// 测量并写进 <c>[monitor]</c> 行，偏离开口径时记一行诊断（不为了让总高等于度量而裁剪
+    /// 系统标题栏）。
+    /// </para>
+    /// </remarks>
+    public static int MenuRowHeight(DensityTier tier)
+    {
+        var scaledTitleBar = RoundInt(TitleBarBaseDips * ScaleOf(tier));
+        return Math.Max(MinTargetOf(tier), HeaderHeightOf(tier) - scaledTitleBar);
+    }
+
+    /// <summary>
+    /// 系统标题栏在 100% 档的高度（DIP），由度量推出而不是写字面量：
+    /// compact 外壳 64 − compact 菜单行 24 = 40。
+    /// </summary>
+    public static int TitleBarBaseDips => Metrics.CompactHeaderHeight - Metrics.CompactTabStripHeight;
+
+    /// <summary>
+    /// 实测非客户区高度（DIP）：<c>窗口物理高 ÷ 栅格化比例 − XAML 内容实际高</c>。
+    /// </summary>
+    /// <remarks>
+    /// XAML 的 DIP 与物理像素的唯一换算点就在这里（§8.1）。
+    /// 结果 ≤ 0 表示内容还没布局（或读不到），返回 0 让调用方当作「待测」。
+    /// </remarks>
+    public static double MeasuredNonClientDips(int windowPhysicalHeight, double scale, double contentDips)
+    {
+        if (windowPhysicalHeight <= 0 || contentDips <= 0)
+        {
+            return 0;
+        }
+
+        var windowDips = PhysicalToDips(windowPhysicalHeight, scale <= 0 ? 1 : scale);
+        var nonClient = windowDips - contentDips;
+        return nonClient <= 0 ? 0 : nonClient;
+    }
+
+    /// <summary>档位的最小窗口宽（<b>未</b>按工作区收敛；可用性守卫用它）。</summary>
+    public static int MinWindowWidth(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => Metrics.ComfortableMinWindowWidth,
+        DensityTier.Large => Metrics.LargeMinWindowWidth,
+        _ => Metrics.CompactMinWindowWidth,
+    };
+
+    /// <summary>档位的最小窗口高（未按工作区收敛）。</summary>
+    public static int MinWindowHeight(DensityTier tier) => tier switch
+    {
+        DensityTier.Comfortable => Metrics.ComfortableMinWindowHeight,
+        DensityTier.Large => Metrics.LargeMinWindowHeight,
+        _ => Metrics.CompactMinWindowHeight,
+    };
+
+    /// <summary>
+    /// 最小窗口按工作区收敛：<c>min(min_window_width(T), W-32) × min(min_window_height(T), H-48)</c>。
     /// </summary>
     /// <remarks>
     /// 不收敛的话 <c>960×640</c> 在 1920×1080@200%（逻辑 960×516）上比屏幕还高，
@@ -123,8 +205,9 @@ public static class WindowSizing
             height = Math.Min(0.78 * workHeight, 1000);
         }
 
-        var floorWidth = Math.Min(MinBaseWidth, workWidth - WidthMargin);
-        var floorHeight = Math.Min(MinBaseHeight, workHeight - HeightMargin);
+        // 100% 档的下限 = 度量真值里的 min_window_width/height[compact]（不再另写 960/640）。
+        var floorWidth = Math.Min(MinWindowWidth(DensityTier.Compact), workWidth - WidthMargin);
+        var floorHeight = Math.Min(MinWindowHeight(DensityTier.Compact), workHeight - HeightMargin);
         width = Math.Max(width, floorWidth);
         height = Math.Max(height, floorHeight);
 
@@ -167,7 +250,8 @@ public static class WindowSizing
     /// </summary>
     /// <remarks>
     /// 覆盖分档边界 <c>W = 1199 / 1200 / 1699 / 1700 / 2199 / 2200</c>，
-    /// 以及需求里的两条硬约束：窗口不超工作区、最小窗口按工作区收敛。
+    /// 以及需求里的几条硬约束：窗口不超工作区、最小窗口按工作区收敛、
+    /// 最小窗口直接等于度量真值、菜单行三档 24 / 30 / 36。
     /// </remarks>
     public static IReadOnlyList<string> SelfTest()
     {
@@ -220,6 +304,48 @@ public static class WindowSizing
             MinimumWindow(DensityTier.Compact, 1920, 516).ToString());
         Check("1366x614 的最小窗口收敛到 (960, 566)", MinimumWindow(DensityTier.Compact, 1366, 614) == (960, 566),
             MinimumWindow(DensityTier.Compact, 1366, 614).ToString());
+
+        // 最小窗口只有一个口径：就是度量真值（960 / 1200 / 1440 × 640 / 800 / 960），
+        // 不再由代码里的基准 × scale 算出来（#168 第 5 条）。
+        foreach (var tier in new[] { DensityTier.Compact, DensityTier.Comfortable, DensityTier.Large })
+        {
+            var expectedWidth = tier switch
+            {
+                DensityTier.Comfortable => Metrics.ComfortableMinWindowWidth,
+                DensityTier.Large => Metrics.LargeMinWindowWidth,
+                _ => Metrics.CompactMinWindowWidth,
+            };
+            var expectedHeight = tier switch
+            {
+                DensityTier.Comfortable => Metrics.ComfortableMinWindowHeight,
+                DensityTier.Large => Metrics.LargeMinWindowHeight,
+                _ => Metrics.CompactMinWindowHeight,
+            };
+            Check(
+                $"{tier} 最小窗口 = 度量真值 {expectedWidth}x{expectedHeight}",
+                MinWindowWidth(tier) == expectedWidth && MinWindowHeight(tier) == expectedHeight,
+                $"{MinWindowWidth(tier)}x{MinWindowHeight(tier)}");
+        }
+
+        // 菜单行三档 24 / 30 / 36：与 tab_strip_height 交叉校验（不是拿同一个式子自证）。
+        foreach (var tier in new[] { DensityTier.Compact, DensityTier.Comfortable, DensityTier.Large })
+        {
+            var menuRow = MenuRowHeight(tier);
+            Check(
+                $"{tier} 菜单行 = tab_strip_height({TabStripHeightOf(tier)})",
+                menuRow == TabStripHeightOf(tier),
+                $"菜单行 {menuRow}，标签条 {TabStripHeightOf(tier)}");
+            Check(
+                $"{tier} 菜单行不低于最小点击区",
+                menuRow >= MinTargetOf(tier),
+                $"菜单行 {menuRow}，最小点击区 {MinTargetOf(tier)}");
+        }
+
+        // 非客户区换算（实测用）：物理 2112 / 比例 2 → 1056 DIP；内容 1016 DIP → 非客户区 40。
+        Check(
+            "非客户区换算 2112px@2x, 内容 1016 DIP → 40",
+            Math.Abs(MeasuredNonClientDips(2112, 2, 1016) - 40) < 0.001,
+            MeasuredNonClientDips(2112, 2, 1016).ToString("0.##"));
 
         // 可用性守卫：1080p@150% 的逻辑工作区放不下 125% 档。
         Check("1280x698 上 large 不可用", !TierAvailable(DensityTier.Large, 1280, 698), "应为不可用");

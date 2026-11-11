@@ -30,7 +30,9 @@
   §9「已知偏差与存疑」并给出产品决策，不得由实现者自行拍定。
 
 **不覆盖**：Windows / macOS 客户端（尚未完成）。三端语义一致性要求见 `AGENTS.md` §2.1
-与 ADR 0023；本文件是 Linux 端的现状基线，也是将来另外两端对齐行为的参照。
+与 ADR 0023；本文件是 Linux 端的现状基线，也是将来另外两端对齐行为的参照。唯一例外是
+[§1.6](#16-windows-窗口层168)，那一节记 Windows 窗口层（#168）已经落地的行为，源码路径相对
+`frontend/windows/`。
 
 **QA 专用路径不算用户可达行为。** 代码里 `--qa-*` 开关（`qa.rs`）驱动的动作、自动确认、
 脚本步骤与断言，只在无人值守验收里存在；本文件只在「用户能走到」的意义上描述行为，
@@ -124,6 +126,39 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 **不做的事**：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100%
 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位
 （三个轴分开，见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) §1）。
+
+### 1.6 Windows 窗口层（#168）
+
+本节只记 Windows 端的窗口层行为（DPI、位置 / 尺寸、最大化恢复、面板拖动、菜单行）。
+其余各节仍以 Linux 客户端为基线；源码路径相对 `frontend/windows/`。
+
+| 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| 启动恢复窗口几何 | `window.json` 里有 `window_width/height/x/y` | 记忆尺寸先按当前档位钳到「最小窗口 ≤ 尺寸 ≤ 工作区−32 / −48」，再还原矩形；`maximized=true` 时**先还原这个矩形、再最大化**（还原边界 = 非最大化矩形，所以「还原」按钮回到该矩形而不是最大化尺寸）。记忆点不在任何显示器工作区内（容差 32px）时丢弃几何、改用 §5.2 分档推荐并记 `[layout] 保存的几何 … 已不在任何显示器工作区内`。`[monitor]` 的 `来源=记忆` / `记忆+最大化` | `Sqarvo.Windows/MainWindow.xaml.cs:251`（`ApplyWindowGeometry`）、`:378`（`TryRestoreSavedGeometry`）、`:855`（`SaveGeometry`） |
+| 拖动窗口（位置变化） | 任意 | **只记账、不重算**：记下还原边界，并按新显示器刷新最小尺寸。窗口留在用户放下的位置——不会被拉回屏幕中央，也不会被改回推荐尺寸（原来位置变化走推荐尺寸路径，是最刺眼的一条缺陷） | `MainWindow.xaml.cs:640`（`OnAppWindowChanged`）、`:658`（`RememberWindowGeometry`） |
+| 用户改窗口尺寸 | 任意（拖边 / 最大化按钮 / 双击标题栏） | 同上，只更新几何记忆，不抢回推荐尺寸；下限由 `OverlappedPresenter.PreferredMinimumWidth/Height`（物理像素）守住，不会出现「设了最小值还能拖更小」 | `MainWindow.xaml.cs:640`、`:355`（`ApplyMinimumSize`） |
+| 最大化后关窗 / 退出 | 窗口处于最大化 | `window.json` 写**还原边界**（非最大化矩形）与 `maximized=true`，不写最大化后的屏幕尺寸；下次启动先还原矩形再最大化 | `MainWindow.xaml.cs:855` |
+| DPI / 系统缩放变化 | 运行中 | 从 `XamlRoot.Changed` 取 `RasterizationScale`（`DisplayInformation` 在 WinUI 3 抛异常），与窗口重算合并成**同一个入口**：保留当前窗口的 DIP 矩形（只钳到工作区与最小窗口），不居中、不改推荐尺寸；`[monitor] 来源=保留` | `MainWindow.xaml.cs:612`（`OnXamlRootChanged`）、`:139`（`Relayout`）、`:185`（`RelayoutCore`） |
+| 显示器 / 工作区变化 | 运行中 | 与上一行同一条路径；最小尺寸按新的逻辑工作区重算 `min(档位最小窗口, W−32) × min(…, H−48)`，窗口仍留在当前 DIP 位置 | `MainWindow.xaml.cs:612`、`:355` |
+| 菜单行高度 | 任意档 | 菜单行 = 外壳高 − 系统标题栏基准 × 档位 → 三档 **24 / 30 / 36**（基准 40 DIP 由度量相减推出：compact 外壳 64 − 菜单行 24，代码里没有 40 这个字面量）。系统标题栏是平台事实：实测值写进 `[monitor] titleBar=`，与口径偏差 > 2 DIP 时记 `[chrome] 系统标题栏实测 … DIP` 并按实测报外壳总高——不为了让总高等于度量而裁剪系统区域（裁了会切到窗口按钮） | `Views/ShellView.xaml.cs:167`（`ApplyMetrics`）、`Layout/WindowSizing.cs:89`（`MenuRowHeight`）、`:108`（`MeasuredNonClientDips`）、`MainWindow.xaml.cs:706`（`UpdateChromeMeasurements`） |
+| 拖动侧栏 | 任意档 | 侧栏分隔线本身是拖动条（`Thumb`，不引入第三方 GridSplitter）：命中区取 `grid_padding_end`，视觉线取不缩放的 1px 描边；范围 `sidebar_min..sidebar_max`（180–420 / 225–525 / 270–630），越界只钳制不报错；键盘 ←/→ 每次微调 `inspector_gap`；双击回到该档默认宽度 `sidebar_width` | `Views/ShellView.xaml.cs:214`（`OnSidebarSplitterDragDelta`）、`:151`（`ApplyPanelWidths`） |
+| 拖动信息面板 | 任意档 | 同上：范围 `inspector_min..inspector_max`（240–520 / 300–650 / 360–780），默认 `inspector_width`；面板常驻，没有折叠入口 | `Views/ShellView.xaml.cs:257`、`:151` |
+| 面板宽度写回 `window.json` | 拖动结束 / 键盘微调 / 双击复位 | **松手才写盘**：实际宽度 ÷ 档位系数 → compact 归一值写回，再用 `SidebarWidthFor` / `InspectorWidthFor` 换算回当前档校验并落回界面（因此界面显示的就是下次启动会恢复的值，不会出现「存 630 恢复 520」）；拖动过程中不写盘。诊断行 `[panel] 侧栏 … → 归一 …` | `MainWindow.xaml.cs:520`（`OnPanelWidthsChanged`）、`Storage/WindowState.cs:93`（`Normalize`）、`:97` / `:104`（`InspectorWidthFor` / `SidebarWidthFor`） |
+| 面板宽度跨档往返 | 切档 | 归一值 × 新档系数：侧栏 237 → 296 → 356、信息面板 280 → 350 → 420；`100% → 150% → 100%` 不漂移（钳制只发生在拖动越界时，不改写归一值） | `Storage/WindowState.cs:147`（`SelfTest`） |
+| 诊断开关 | — | `--report-monitor` 与 `--qa-report-monitor` 等价（别名表归一，规范与 README 两套写法都生效）；`[monitor]` 行给出 `scale` / 工作区（物理与 DIP）/ 窗口（DIP 与物理）/ `来源` / `最大化` / `titleBar`（实测）/ `menuRow` / `侧栏` / `面板`；`--self-test-window` 断言「最小窗口 = 度量真值」「菜单行 24/30/36」「面板归一往返」「1920×1032 三档推荐尺寸」，失败以非 0 退出 | `Diagnostics/AppOptions.cs:25`（`Aliases`）、`Diagnostics/DiagnosticReporter.cs:73`（`MonitorLine`）、`:92`（`SelfTestWindow`） |
+
+已知边界（#168，都是「知道但本轮不扩范围」的）：
+
+- **表格区 600px 优先**：Linux 在面板挤压表格时把侧栏 / 面板收到下限（§1.5 那两行）；Windows
+  本轮只按 `sidebar_min..max` / `inspector_min..max` 钳制。600 不在 `metrics.toml` 里，
+  要做得先把它变成三端共用的度量，不在本 Issue 范围内。
+- **分隔条命中区**取 `grid_padding_end`（3 / 4 / 5 DIP）：`metrics.toml` 没有「分隔条宽度」这个键，
+  加键要三端同改并动生成器，本轮先用现有度量。鼠标命中偏窄，键盘 ←/→ 是补偿。
+- **菜单行 24 / 30 / 36** 的前提是系统标题栏 = 40 DIP（规范外壳算术 64 = 40 + 24）。
+  标题栏高度是系统给的，实测不同时按实测报外壳总高并记诊断，不裁剪系统区域。
+- **未在 Windows 上编译 / 运行**：WinUI XAML 无法在 Linux 上编译，本节的「已落地」指代码与
+  纯函数断言（`--self-test-window` 在 Linux 上以替身类型编译并执行通过），编译与运行验证命令
+  见 `frontend/windows/README.md`。
 
 ---
 
