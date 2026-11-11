@@ -319,6 +319,10 @@ public sealed class BackendSession
             _opened[profile.Key] = result;
         }
 
+        // 会话数变了就是状态变了：不发布的话界面要等下一次健康轮询（最多 5 秒）才更新，
+        // 程序化连接（--qa-signin / 未来的自动重连）期间会一直显示「未连接」。
+        PublishSessionCount();
+
         return result;
     }
 
@@ -345,6 +349,8 @@ public sealed class BackendSession
             _open.Remove(identity);
             _opened.Remove(identity);
         }
+
+        PublishSessionCount();
 
         return true;
     }
@@ -413,6 +419,18 @@ public sealed class BackendSession
             _open.Clear();
             _opened.Clear();
         }
+    }
+
+    /// <summary>会话数变化后发布一次状态（连接/断开），让界面立刻重画徽标与页面。</summary>
+    private void PublishSessionCount()
+    {
+        var count = 0u;
+        lock (_gate)
+        {
+            count = (uint)_open.Count;
+        }
+
+        Publish(State with { ActiveSessions = count });
     }
 
     private void Publish(BackendState state)
