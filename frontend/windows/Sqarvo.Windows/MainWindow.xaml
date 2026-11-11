@@ -1,32 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    #164 主窗口：只做窗口层的事（尺寸 / DPI / 最小尺寸 / 密度档 / 标题栏 / 主题），
+    界面本身在 Views/ShellView.xaml 的六区域外壳里。
+
+    为什么外壳是一个 UserControl 而不是直接写在 Window 里：切密度档要「重建页面」
+    （StaticResource 只解析一次，改资源字典不会让已解析的界面变，见 ADR 0026 决策 5），
+    整棵内容树重建才真正让所有 Size.* 重新解析。
+-->
 <Window
     x:Class="Sqarvo.Windows.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Sqarvo">
 
-    <Grid RowDefinitions="Auto,*" Padding="24">
-        <InfoBar
-            Grid.Row="0"
-            IsOpen="True"
-            IsClosable="False"
-            Severity="Warning"
-            Title="界面骨架"
-            Message="尚未连接后端，数据库功能未实现。请勿在此版本执行任何真实数据库操作。" />
+    <Grid x:Name="RootGrid" Background="{ThemeResource SqarvoAppBackgroundBrush}">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="Number0" Modifiers="Control" Invoked="OnTierReset" />
+            <!-- 规范要求 Ctrl+Plus / Ctrl+KeyPadAdd：Add/Subtract 是数字键盘。主键盘的 = 与 -
+                 是 OEM 键（187/189），VirtualKey 枚举里没有名字，只能在 code-behind 里按数值加，
+                 见 MainWindow.RegisterTierAccelerators()。 -->
+            <KeyboardAccelerator Key="Add" Modifiers="Control" Invoked="OnTierUp" />
+            <KeyboardAccelerator Key="Subtract" Modifiers="Control" Invoked="OnTierDown" />
+            <KeyboardAccelerator Key="W" Modifiers="Control" Invoked="OnCloseTab" />
+            <KeyboardAccelerator Key="Q" Modifiers="Control" Invoked="OnQuit" />
+            <KeyboardAccelerator Key="N" Modifiers="Control" Invoked="OnNewConnection" />
+            <KeyboardAccelerator Key="T" Modifiers="Control" Invoked="OnNewQueryTab" />
+        </Grid.KeyboardAccelerators>
 
-        <StackPanel
-            Grid.Row="1"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Center"
-            Spacing="8">
-            <TextBlock
-                Text="Sqarvo"
-                Style="{StaticResource TitleLargeTextBlockStyle}"
-                HorizontalAlignment="Center" />
-            <TextBlock
-                Text="原生数据库客户端 · 骨架版本"
-                HorizontalAlignment="Center"
-                Opacity="0.7" />
-        </StackPanel>
+        <ContentControl
+            x:Name="ShellHost"
+            HorizontalContentAlignment="Stretch"
+            VerticalContentAlignment="Stretch" />
     </Grid>
 </Window>

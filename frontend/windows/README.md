@@ -26,7 +26,59 @@ Windows 端的窗口尺寸、密度档、主题与本地化口径已经定下，
 
 ## 状态
 
-界面骨架。**尚未启动后端、尚未建立 gRPC 连接**；主窗口顶部固定显示警告信息。
+界面骨架 + 度量与主题自检页。**尚未启动后端、尚未建立 gRPC 连接**；工具条上的入口都还没有真实动作。
+
+六区域外壳（#164）：系统标题栏（`AppWindow`）+ 窗口内菜单行（`MenuBar`）→ 主工具条（`CommandBar`）→
+对象树（`TreeView`）→ 工作区（`TabView`，首标签 `Objects` 用 `IsClosable=false` + 固定首位 + 禁拖
+等价实现 pinned）→ 自绘双行状态栏 → 信息面板（`SplitView` 右面板）。菜单只有 文件 / 表 / 帮助 三个集合：
+文件（新建连接… / 新建查询标签 / 退出）、表（导出 CSV…）、帮助（关于 Squarvo）；未实现的入口全部
+禁用并 tooltip「尚未接入后端」。
+
+已接通（#162）：
+
+- **三档密度度量**：`docs/ui-specification/metrics.toml` → 构建期由
+  `frontend/windows/tools/gen-metrics.ps1` 生成 `obj/gen/Metrics.g.cs`（不提交）。页面 XAML 只引用
+  `{StaticResource Size.*}`，code-behind 里 `Padding` / `BorderThickness` 也全部从 `Metrics` 取，
+  所以尺寸只有一个来源，运行时不做「基准 × scale」。
+- **主题三档**：`Tokens.xaml` 的三套 `ThemeDictionaries`（Default / Light / Dark / HighContrast）
+  全部别名到系统 token；启动期 `Application.RequestedTheme` 只在明确选了 Light/Dark 时写，
+  运行中切换走元素级 `RequestedTheme`；标题栏单独处理（跟随系统时
+  `TitleBarTheme.UseDefaultAppMode`，旧 API 回退 `DwmSetWindowAttribute`）。
+- **未打包持久化**：`%LOCALAPPDATA%\Sqarvo\window.json`（schema v2，与 Linux 同一份；写入用
+  「临时文件 + 替换」，读失败回退默认值，不弹窗）。
+
+诊断开关（只读，打印一行后退出；`stdout` 只有证据行，内部诊断走 `stderr`）：
+
+```powershell
+dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
+# 若 dotnet run 找错输出目录，直接跑 bin\x64\Debug\net8.0-windows10.0.19041.0\Sqarvo.Windows.exe
+```
+
+```text
+[theme] requested=System effective=Dark highContrast=False accent=#258292 titleBar=UseDefaultAppMode
+[metrics] tier=compact header=64 toolbar=44 status=48 minWindow=960x640 sidebar=237 inspector=280 rowTree=24 fontUi=12
+```
+
+窗口层与外壳（#163 / #164）另有四个开关：
+
+```text
+--report-monitor          显示器 / 缩放 / 工作区（物理与 DIP）/ 最终窗口 / 档位 / 来源（分档|记忆|QA）
+--report-shell            UI Automation 枚举整棵控件树（ControlType + Name，缩进两格）
+--self-test-window        窗口尺寸算术的边界断言（纯函数，不建窗口；失败以非 0 退出）
+--qa-tier=<id>            QA 专用：启动后切到该密度档并把来源标成 QA，用来复现「切档后窗口跟着改大小」
+```
+
+实测（3840×2160@200%，逻辑工作区 1920×1032）：
+
+```text
+compact     → 窗口DIP=1400x826  物理=2800x1652
+comfortable → 窗口DIP=1750x984  物理=3500x1968
+large       → 窗口DIP=1888x984  物理=3776x1968   （宽被 W-32 封顶）
+```
+
+已知边界：`AccessibilitySettings.HighContrastChanged` 在未打包 WinUI 3 应用里订阅会抛
+`COMException`，高对比状态改由 `HKCU\Control Panel\Accessibility\HighContrast\Flags` 兜底读取；
+系统主题 / 强调色的跟随本身不受影响（那是 WinUI 与 `ThemeResource` 的职责）。
 
 ## 环境
 
