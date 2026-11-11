@@ -463,6 +463,30 @@ public sealed partial class ShellView : UserControl
 
     private void UpdateConnectedNodes()
     {
+        // WinUI 的 TreeView 不会因为 TreeViewNode.Content 被换掉而重画那一行（实测：内容对象已经变成
+        // 「已连接」，屏幕上是「未连接」）。连接/断开这种低频变化，直接把树按新徽标重建一次最省心：
+        // 重建后重新展开已连接的节点并把目录层拉起来。
+        var changed = false;
+        foreach (var profile in _profiles)
+        {
+            if (!_nodes.TryGetValue(profile.Key, out var node))
+            {
+                continue;
+            }
+
+            var content = new ConnectionNode(profile, BadgeFor(profile));
+            if (!Equals(node.Content, content))
+            {
+                changed = true;
+                ConsoleBridge.WriteDiagnostic($"[tree] 徽标变了 {profile.Name} -> {content.Badge}（重建树）");
+            }
+        }
+
+        if (changed)
+        {
+            RebuildTree();
+        }
+
         foreach (var profile in _profiles)
         {
             if (!_nodes.TryGetValue(profile.Key, out var node))
@@ -471,18 +495,13 @@ public sealed partial class ShellView : UserControl
             }
 
             var connected = _session?.IsConnected(profile.Key) == true;
-            var content = new ConnectionNode(profile, BadgeFor(profile));
-            if (!Equals(node.Content, content))
+            if (connected)
             {
-                node.Content = content;
-                ConsoleBridge.WriteDiagnostic($"[tree] 徽标更新 {profile.Name} -> {content.Badge}");
-            }
+                if (node.Children.Count == 0)
+                {
+                    AddChild(node, PlaceholderNode());
+                }
 
-            if (connected && node.Children.Count == 0)
-            {
-                // 连上就先挂一行占位，让节点可展开；真正的目录层请求由 Expanding 触发（也可由
-                // 这里直接发起——节点原本就已经展开时不会再收到 Expanding）。
-                AddChild(node, PlaceholderNode());
                 if (!node.IsExpanded)
                 {
                     node.IsExpanded = true;
@@ -490,7 +509,7 @@ public sealed partial class ShellView : UserControl
 
                 _ = EnsureCatalogsAsync(node);
             }
-            else if (!connected && node.Children.Count > 0)
+            else if (node.Children.Count > 0)
             {
                 CancelNodeLoad(node);
                 _loads.Remove(node);
