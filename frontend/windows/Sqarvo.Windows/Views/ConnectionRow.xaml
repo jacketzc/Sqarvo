@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    对象树里的一个连接节点行（#170）。
+
+    形态按 docs/ui-specification/workspace-model.md §4 与 Linux 参考：`[图标位] [名称] [右对齐徽标]`，
+    行高 row_height_tree（24 / 30 / 36），展开箭头位由 TreeViewItem 的默认模板提供（有子节点时出现），
+    这里只排内容区。徽标是右侧的弱化小字（Linux 的「库」「已连接」同一处）。
+
+    为什么是独立 UserControl 而不是 DataTemplate：
+      - 节点内容是手工建的 TreeViewNode.Content，没有可绑定的公开数据对象（本页的连接节点是私有
+        类型，x:Bind 用不了），DataTemplate 的 DataContext 在「手工建节点」这条路径上没有稳定保证；
+      - 颜色只能用 ThemeResource，而 ThemeResource 只能写在 XAML 里。所以把「形状 + 颜色」放在这个
+        文件，code-behind 只往里塞文案。
+      - WinUI 没有 DataTrigger，徽标的两档颜色（已连接 = 强调色 / 其余 = 次要文字）用两个
+        TextBlock 互斥显示，避免在代码里查资源字典取画刷。
+-->
+<UserControl
+    x:Class="Sqarvo.Windows.Views.ConnectionRow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="RowRoot" Height="{StaticResource Size.RowHeightTree}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <!-- 图标位：字体符号（仓库没有自带图标资源），尺寸取 icon_box -->
+        <FontIcon
+            x:Name="NodeIcon"
+            Grid.Column="0"
+            Glyph="&#xE71B;"
+            FontSize="{StaticResource Size.IconBox}"
+            VerticalAlignment="Center"
+            Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+
+        <!-- 名称：占满剩余宽度，过长按省略号截断（不换行、不撑高行） -->
+        <TextBlock
+            x:Name="NodeName"
+            Grid.Column="1"
+            FontSize="{StaticResource Size.FontUi}"
+            VerticalAlignment="Center"
+            TextTrimming="CharacterEllipsis"
+            TextWrapping="NoWrap"
+            Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
+
+        <!-- 徽标：右对齐的两档颜色（互斥显示），字号取 font_panel（比名称弱一档） -->
+        <TextBlock
+            x:Name="BadgeConnected"
+            Grid.Column="2"
+            Visibility="Collapsed"
+            FontSize="{StaticResource Size.FontPanel}"
+            VerticalAlignment="Center"
+            HorizontalAlignment="Right"
+            Foreground="{ThemeResource SqarvoAccentTextBrush}" />
+        <TextBlock
+            x:Name="BadgeIdle"
+            Grid.Column="2"
+            FontSize="{StaticResource Size.FontPanel}"
+            VerticalAlignment="Center"
+            HorizontalAlignment="Right"
+            Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
+    </Grid>
+</UserControl>

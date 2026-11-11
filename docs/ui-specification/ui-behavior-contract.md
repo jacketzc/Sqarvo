@@ -458,7 +458,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行 2：空态摘要 | **只在没有表标签时** | 才让 `session` 一格出现：连接态显示连接名；启动态显示「未连接」+「驱动 N · 浏览会话 M」（合成一行 `未连接 · 驱动 N · 浏览会话 M`）。有表标签时一律不出现（表名 / 库在标签名里，事务在表格工具条里） | `src/shell.rs:1181-1207`、`src/startup.rs:240-245` |
 | 行 2 的排版约束 | — | 文案用**ASCII 冒号**（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线 | `src/shell.rs:909-917` |
 
-### 7.1 Windows 端（#169）实现状态
+### 7.1 Windows 端（#169 / #170）实现状态
 
 Windows 客户端在 #169 只落地「连接面」；本文件其余小节的口径仍然适用，下面只记录**这一片已经
 落地、以及仍被禁用**的入口，避免把计划当成已实现。
@@ -467,10 +467,16 @@ Windows 客户端在 #169 只落地「连接面」；本文件其余小节的口
 |---|---|---|
 | 文件 → 新建连接…、工具条「连接」 | 可用性读**同一个**后端状态位（`BackendState.IsReady`）：握手未完成时禁用，tooltip 逐条说明原因（不是统一一句「尚未实现」） | `frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs`（`ApplyBackendState` / `WireMenu`） |
 | 新建连接对话框 | MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；「测试连接」就地展示延迟与服务端版本；失败给「标题 + 后端文案 + 稳定错误码」；密码只进 Windows 凭据管理器，落盘只有 `credential_ref` | `Views/ConnectionDialog.xaml(.cs)`、`Connections/ConnectionForm.cs` |
-| 文件 → 新建查询标签、表 → 导出 CSV、工具条「新建查询」与四个种类入口、树搜索框、状态栏行操作 | 禁用，tooltip 逐条说明具体缺口（元数据树 #170 / SQL 编辑器与查询面 #171 / 表数据编辑更后） | 同上（`WireMenu`） |
-| 对象树 | `My Connections` → 已保存连接（`connections.json`；徽标 未连接 / 连接中… / 已连接）；连接成功后挂一行「正在加载对象列表…」，库 / 表留待 #170 | `Views/ShellView.xaml.cs`（`RebuildTree`） |
+| 文件 → 新建查询标签、表 → 导出 CSV、工具条「新建查询」与四个种类入口、树搜索框、状态栏行操作 | 禁用，tooltip 逐条说明具体缺口（元数据树 #171 / SQL 编辑器与查询面 #171 / 表数据编辑更后） | 同上（`WireMenu`） |
+| 对象树 | `My Connections` → 已保存连接（`connections.json`；徽标 未连接 / 连接中… / 已连接，右对齐）；连接成功后挂一行「正在加载对象列表…」，库 / 表留待 #171 | `Views/ShellView.xaml.cs`（`RebuildTree` / `ConnectionRow`） |
 | 状态栏行 2 右格 | `已连接 · 驱动 N · 浏览会话 M`（`GetHealth` 的真实计数，5 秒一轮）；未就绪时 `未连接 · 驱动 0 · 浏览会话 0` | `Workspace/BackendState.cs`（`StatusLine`） |
 | 断开 | 健康探测失败即回「未连接」，原因与稳定错误码写在行 2 左格（可选中复制）；不自动重启后端 | `Workspace/BackendSession.cs`（`RefreshHealthAsync`） |
+| 六区域的形态与密度（#170） | 只做外形 / 尺寸 / 层级，不接业务数据：工具条 = 左动作组 + 竖分隔 + 四个种类切换按钮（当前项 = 轻微填充底 + 强调色文字，启用态读同一个 `IsReady`，种类切换本身仍未接线）；`Objects` 固定页 = 只显图标、宽 `objects_min_width`、不可关闭；对象树行 = 图标位 + 名称 + 右对齐徽标（`Views/ConnectionRow.xaml`）；状态栏 = 两行（行 1 行操作 + 右对齐分页器，行 2 SQL 摘要 + 会话摘要），禁用态与说明文字同一个灰；信息面板 = 标题区 / 分节标题（DDL · 表信息）/ 内容区三级 | `Views/ShellView.xaml(.cs)`、`Views/ConnectionRow.xaml(.cs)`、`Tokens.xaml` |
+| 信息面板空态（#170） | 内容区给一行**居中、弱化**的操作说明（「选中对象后，这里显示列、索引与 DDL。」）。这是对 `workspace-model.md` §5「启动态内容区留白、不写说明文字」的一处偏差：它写的是「选中后能看到什么」，不是「没有选中对象」这类否定句，选中对象后即消失 | `Views/ShellView.xaml`（`InspectorPlaceholder`） |
+
+> #170 的形态与密度**尚未在 Windows 上构建与截图**：本仓库的 CI / 开发环境是 Linux，WinUI 的 XAML
+> 无法在 Linux 上编译。已做的本机检查只有四项——XAML 良构（`xml.dom.minidom`）、无 `#RRGGBB`、
+> `Click=` / `Tapped=` 处理器同名、`x:Name` 不重复；真机构建与截图证据在 Windows 机器上补齐。
 
 ---
 
