@@ -38,7 +38,12 @@
     <MetricsGeneratedFile>$(MSBuildProjectDirectory)\obj\gen\Metrics.g.cs</MetricsGeneratedFile>
   </PropertyGroup>
 
-  <Target Name="GenerateMetrics" BeforeTargets="BeforeCompile" Inputs="$(MetricsTomlPath);$(MetricsGenerator)" Outputs="$(MetricsGeneratedFile)">
+  <!--
+    生成必须在编译链的最前面：挂在 BeforeCompile 上时，干净检出（obj/ 为空）的首次构建
+    里 CSC 会先跑并报 CS2001「找不到 Metrics.g.cs」——BeforeCompile 在 WinUI 的构建图里
+    不保证先于 XAML 编译器与 CSC 求值。挂 PrepareForBuild 是构建图里最早的一步，稳定。
+  -->
+  <Target Name="GenerateMetrics" BeforeTargets="PrepareForBuild" Inputs="$(MetricsTomlPath);$(MetricsGenerator)" Outputs="$(MetricsGeneratedFile)">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MetricsGenerator)&quot; -TomlPath &quot;$(MetricsTomlPath)&quot; -OutPath &quot;$(MetricsGeneratedFile)&quot;" />
   </Target>
 
