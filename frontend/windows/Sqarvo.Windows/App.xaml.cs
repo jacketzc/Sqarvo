@@ -345,8 +345,11 @@ public partial class App : Application
 
             if (keepAlive)
             {
+                // 等一拍让事件走完 DispatcherQueue，再报告界面侧看到的状态（排查「连上了但界面没变」）。
+                await Task.Delay(1500).ConfigureAwait(true);
                 ConsoleBridge.WriteLine(
-                    $"[connect] keep-alive sessions={session.OpenConnections.Count}（窗口保持打开，供截图）");
+                    $"[connect] keep-alive sessions={session.OpenConnections.Count} 界面={Backend?.State.ActiveSessions}");
+                ConsoleBridge.WriteLine($"[connect] view={_window?.Shell.DescribeProfiles() ?? "(无窗口)"}");
 
                 return;
             }
