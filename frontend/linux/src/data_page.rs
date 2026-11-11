@@ -781,6 +781,13 @@ pub struct DataPage {
     /// 它**不占可见文案**（行数/页码/总数只在状态栏出现一次），只进状态栏那格
     /// 「记录位置」的 tooltip，用来解释数字的来历。
     last_load_note: RefCell<String>,
+    /// 最近一次**已发生**的操作结果（「第 N 行已标记删除（提交前可撤销）」
+    /// 「已放弃未提交的更改（含新增行）」）。
+    ///
+    /// 它**不占可见文案**（见 [`DataPage::note_action`]）：只拼进状态圆点的 tooltip
+    /// 末段「最近一次操作：…」。这些句子回答的是「刚才那一下做了什么」，用户要复核
+    /// 时悬停圆点即可；动作行上只留「正在…」这类有时效的消息与 warning / error。
+    last_action_note: RefCell<String>,
     callbacks: DataCallbacks,
 }
 
@@ -1388,6 +1395,7 @@ impl DataPage {
             status_observer: RefCell::new(None),
             last_refresh: Cell::new(None),
             last_load_note: RefCell::new(String::new()),
+            last_action_note: RefCell::new(String::new()),
             callbacks,
         });
 
@@ -3627,6 +3635,8 @@ impl DataPage {
         self.submit.replace(None);
         self.insert.replace(None);
         self.after_insert_batch.replace(None);
+        // 换表 / 重新读取：上一屏的「最近一次操作」不再成立。
+        self.last_action_note.replace(String::new());
         self.txn_card.set_visible(false);
         // 面板草稿绑定旧表的列：换表/刷新后必须重新从已应用状态复制。
         self.fs_draft_ready.set(false);
@@ -3888,6 +3898,11 @@ impl DataPage {
         }
         let status = report.status_line(failures.len(), dirty);
         self.set_status(&status.text, status.tone.css_class());
+        // 提交落定：「已标记删除 N 行」这类结果已兑现（或被逐行失败取代），
+        // 不再写进圆点 tooltip——那里只放当前这一屏还成立的结果。
+        if !report.cancelled {
+            self.last_action_note.replace(String::new());
+        }
         eprintln!(
             "[data] 提交完成：影响 {} 行，逐行失败 {}，钳制={}，未执行 {}，已取消={}，已执行 {} 条，剩余脏行 {}",
             report.total_rows_affected,
@@ -4019,6 +4034,8 @@ impl DataPage {
                 draft.discard();
             }
             self.pending_batch.replace(None);
+            // 事务结束后这些界面更改已丢弃：「已标记删除 N 行」之类的结果不再成立。
+            self.last_action_note.replace(String::new());
             self.callbacks.reload.as_ref()();
         }
         // 事务状态**不再**写可见过程消息（v0.2.4）：原来这里 `set_status("事务状态：{label}")`
@@ -4091,14 +4108,13 @@ impl DataPage {
             self.refresh_row(index);
         }
         self.errors_scroll.set_visible(false);
-        self.set_status(
-            if had_insert {
-                "已放弃未提交的更改（含新增行）"
-            } else {
-                "已放弃未提交的更改"
-            },
-            "warning",
-        );
+        // 结果（不是「正在…」）收进状态圆点的 tooltip：放弃是立刻生效的事实，
+        // 脏行计数与圆点颜色已经说明「现在没有未提交的更改」。
+        self.note_action(if had_insert {
+            "已放弃未提交的更改（含新增行）"
+        } else {
+            "已放弃未提交的更改"
+        });
         self.update_dirty_label();
         self.update_buttons();
     }
@@ -4662,22 +4678,12 @@ impl DataPage {
         if let Some(error) = first_error {
             self.set_status(&error, "warning");
         } else if deleted == 1 {
-            let index = selected[0];
-            let number = self
-                .draft
-                .borrow()
-                .as_ref()
-                .and_then(|draft| draft.rows().get(index))
-                .map_or(index + 1, |row| usize::try_from(row.number).unwrap_or(0));
-            self.set_status(
-                &format!("第 {number} 行已标记删除（提交前可撤销）"),
-                "warning",
-            );
+            // 结果（不是「正在…」）收进状态圆点的 tooltip，可见过程消息清空：
+            // 标记删除是立刻生效的事实，不需要在动作行上一直占着位置。
+            let note = self.delete_note(selected[0]);
+            self.note_action(&note);
         } else {
-            self.set_status(
-                &format!("已标记删除 {deleted} 行（批量提交前可撤销）"),
-                "warning",
-            );
+            self.note_action(&format!("已标记删除 {deleted} 行（批量提交前可撤销）"));
         }
         eprintln!(
             "[data] t=+{}ms 标记删除：请求 {} 行，成功 {deleted} 行",
@@ -4686,6 +4692,21 @@ impl DataPage {
         );
         self.update_dirty_label();
         self.update_buttons();
+    }
+
+    /// 单行「已标记删除」的结果文案。
+    ///
+    /// 用户点「删除」（`delete_selected_row` 的单行分支）与 QA 的
+    /// `--qa-data-delete-row`（`qa_delete_row`）共用同一句：状态圆点 tooltip 里读到的
+    /// 就是用户在界面上会看到的那一句，不会出现两套措辞。
+    fn delete_note(&self, index: usize) -> String {
+        let number = self
+            .draft
+            .borrow()
+            .as_ref()
+            .and_then(|draft| draft.rows().get(index))
+            .map_or(index + 1, |row| usize::try_from(row.number).unwrap_or(0));
+        format!("第 {number} 行已标记删除（提交前可撤销）")
     }
 
     /// 选中行（升序下标）；多选时状态栏显示 `N selected`。
@@ -5125,6 +5146,9 @@ impl DataPage {
         draft.delete_row(row)?;
         drop(guard);
         self.refresh_row(row);
+        // 与用户点「删除」单行时同一条出口：结果收进状态圆点 tooltip，可见消息清空。
+        let note = self.delete_note(row);
+        self.note_action(&note);
         self.update_dirty_label();
         self.update_buttons();
         Ok(())
@@ -5842,6 +5866,33 @@ impl DataPage {
         self.notify_status();
     }
 
+    /// 一次**已经发生**的操作结果（不是「正在…」）：收进状态圆点的 tooltip，
+    /// 可见过程消息保持为空。
+    ///
+    /// 判断口径（判断依据写在这里，改口径先改这一处）：
+    /// - **收进圆点**：事实已经发生的操作结果——「第 N 行已标记删除（提交前可撤销）」
+    ///   「已放弃未提交的更改（含新增行）」。它们回答「刚才那一下做了什么」，用户想复核
+    ///   时悬停圆点即可；留在动作行上只是占位，还把 960 宽下有限的过程消息位挤掉。
+    /// - **保持可见**：「正在提交…」这类进行中消息（价值在时效，说完就该消失），
+    ///   以及 warning / error（用户必须立刻看到原因）——它们不走这个入口，照旧
+    ///   `set_status(text, kind)`。
+    /// - **圆点不存在时**（没有打开的表，`sync_status_dot` 按 `table.is_some()` 决定
+    ///   圆点可见性）不凭空造可见文案：只记一行日志，界面保持原样（例如
+    ///   「请选择左侧的表开始浏览」不该被擦掉）。
+    ///
+    /// 注记会在换表 / 重新读取（`begin_open`）、提交落定（`show_applied`）与事务结束
+    /// 丢弃草稿（`show_transaction`）时清空：它只描述**当前这一屏还成立**的结果。
+    fn note_action(&self, text: &str) {
+        self.last_action_note.replace(text.to_owned());
+        if self.table.borrow().is_some() {
+            // 圆点在：tooltip 会带上「最近一次操作」，可见过程消息清空。
+            self.set_status("", "normal");
+            self.sync_status_dot();
+        } else {
+            eprintln!("[data] 操作结果（无状态圆点，只记日志）：{text}");
+        }
+    }
+
     fn set_status_ready(&self, has_more: bool) {
         // 能走到这里说明数据确实读到了：这就是状态栏「最后刷新」的口径。
         self.last_refresh.set(Some(Instant::now()));
@@ -6053,7 +6104,8 @@ impl DataPage {
         self.sync_status_dot();
     }
 
-    /// 刷新状态圆点：颜色（灰 / 棕 / 红）与 tooltip（原来的两段文案 + 事务状态说明）。
+    /// 刷新状态圆点：颜色（灰 / 棕 / 红）与 tooltip（原来的两段文案 + 事务状态说明，
+    /// 必要时再接一行「最近一次操作：…」，见 [`DataPage::note_action`]）。
     ///
     /// 文案来源仍是 `txn_label` / `dirty_label`（两者只从可见布局里摘出，文本照常更新），
     /// 所以 tooltip、QA 断言、状态栏三处读的是**同一份字符串**：tooltip 不会说「脏行 3」
@@ -6086,8 +6138,14 @@ impl DataPage {
             TxnStatus::Disconnected => "已断开：事务已由后端回滚",
         };
         // 第一行 = 原来的两段常驻文案（「事务中 · 脏行 3 · 待提交 2 条」），
-        // 第二行 = 事务状态说明。没有表时不显示圆点，tooltip 也就不存在（同徽标口径）。
-        let tooltip = format!("{txn} · {dirty}\n{note}");
+        // 第二行 = 事务状态说明，第三行 = 最近一次已发生的操作结果（有才写）。
+        // 没有表时不显示圆点，tooltip 也就不存在（同徽标口径）。
+        let action = self.last_action_note.borrow().clone();
+        let tooltip = if action.trim().is_empty() {
+            format!("{txn} · {dirty}\n{note}")
+        } else {
+            format!("{txn} · {dirty}\n{note}\n最近一次操作：{action}")
+        };
         self.status_dot.set_tooltip_text(Some(&tooltip));
         self.status_dot
             .update_property(&[gtk::accessible::Property::Label(&tooltip)]);
