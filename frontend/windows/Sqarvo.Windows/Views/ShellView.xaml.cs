@@ -74,12 +74,6 @@ public sealed partial class ShellView : UserControl
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Dictionary<string, TreeViewNode> _nodes = new(StringComparer.Ordinal);
     private readonly HashSet<string> _connectingKeys = new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// 每个连接节点上一次画出来的徽标文案。徽标变了才重建那一行，避免每 5 秒一次的健康轮询
-    /// 把整棵树重建一遍（重建会丢掉展开状态与键盘焦点）。
-    /// </summary>
-    private readonly Dictionary<string, string> _badges = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _healthTimer;
 
     private BackendSession? _session;
@@ -98,13 +92,11 @@ public sealed partial class ShellView : UserControl
 
     public ShellView(WindowState state)
     {
-        CrashLog.Trace("shell.ctor.begin");
         ArgumentNullException.ThrowIfNull(state);
 
         _state = state;
 
         InitializeComponent();
-        CrashLog.Trace("shell.ctor.after-init");
 
         _store = App.Profiles;
 
@@ -118,9 +110,7 @@ public sealed partial class ShellView : UserControl
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
 
-        CrashLog.Trace("shell.ctor.before-state");
         ApplyBackendState();
-        CrashLog.Trace("shell.ctor.done");
     }
 
     /// <summary>当前工作区状态。</summary>
@@ -191,7 +181,6 @@ public sealed partial class ShellView : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        CrashLog.Trace("shell.loaded.begin");
         if (_loaded)
         {
             return;
@@ -205,17 +194,8 @@ public sealed partial class ShellView : UserControl
             _session.StateChanged += OnBackendStateChanged;
         }
 
-        if (!string.Equals(Environment.GetEnvironmentVariable("SQARVO_NO_PROFILES"), "1", StringComparison.Ordinal))
-        {
-            _ = LoadProfilesAsync();
-            CrashLog.Trace("shell.loaded.profiles");
-        }
-        else
-        {
-            CrashLog.Trace("shell.loaded.profiles-skipped");
-        }
+        _ = LoadProfilesAsync();
         ApplyBackendState();
-        CrashLog.Trace("shell.loaded.done");
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -272,13 +252,6 @@ public sealed partial class ShellView : UserControl
         var selected = SelectedProfile();
 
         MenuNewConnection.IsEnabled = ready;
-
-        // 四个种类入口：可用性读同一个后端就绪位（不各自盘状态）；当前种类的选中底/选中文字
-        // 是 XAML 里的声明（IsChecked），种类切换要等对象树与元数据（#171）再接线。
-        ButtonTables.IsEnabled = ready;
-        ButtonViews.IsEnabled = ready;
-        ButtonFunctions.IsEnabled = ready;
-        ButtonQueries.IsEnabled = ready;
 
         var selectedConnected = selected is not null && _session?.IsConnected(selected.Key) == true;
         ButtonConnect.IsEnabled = ready && selected is not null && !selectedConnected;
@@ -361,19 +334,16 @@ public sealed partial class ShellView : UserControl
         var root = ObjectTree.RootNodes[0];
         root.Children.Clear();
         _nodes.Clear();
-        _badges.Clear();
 
         foreach (var profile in _profiles)
         {
-            var badge = BadgeFor(profile);
             var node = new TreeViewNode
             {
-                Content = BuildConnectionRow(profile, badge),
+                Content = new ConnectionNode(profile, BadgeFor(profile)),
                 IsExpanded = false,
                 HasUnrealizedChildren = false,
             };
 
-            _badges[profile.Key] = badge;
             _nodes[profile.Key] = node;
             root.Children.Add(node);
         }
@@ -392,13 +362,10 @@ public sealed partial class ShellView : UserControl
             }
 
             var connected = _session?.IsConnected(profile.Key) == true;
-
-            // 徽标变了才重画那一行：健康轮询每 5 秒一次，整树重画会把焦点与展开状态抖掉。
-            var badge = BadgeFor(profile);
-            if (!_badges.TryGetValue(profile.Key, out var previous) || !string.Equals(previous, badge, StringComparison.Ordinal))
+            var content = new ConnectionNode(profile, BadgeFor(profile));
+            if (!Equals(node.Content, content))
             {
-                node.Content = BuildConnectionRow(profile, badge);
-                _badges[profile.Key] = badge;
+                node.Content = content;
             }
 
             if (connected && node.Children.Count == 0)
@@ -413,37 +380,6 @@ public sealed partial class ShellView : UserControl
         }
     }
 
-    /// <summary>
-    /// 画一行连接节点：图标位 + 名称 + 右对齐徽标，行高 <c>row_height_tree</c>。
-    /// </summary>
-    /// <remarks>
-    /// 形状在 <c>Views/ConnectionRow.xaml</c>（颜色只能从 ThemeResource 来，所以必须留在 XAML），
-    /// 这里只负责把连接塞进去并挂上 <c>Tag</c>——它在 <see cref="ResolveProfile"/> 里把
-    /// 「点了哪一行」换回「哪条连接」，不依赖 Content 的类型。
-    /// </remarks>
-    private static object BuildConnectionRow(ConnectionProfile profile, string badge)
-    {
-        if (string.Equals(Environment.GetEnvironmentVariable("SQARVO_SAFE_TREE"), "1", StringComparison.Ordinal))
-        {
-            CrashLog.Trace("tree.safe-mode");
-            return $"{profile.Name} · {badge}";
-        }
-
-        try
-        {
-            var row = new ConnectionRow { Tag = profile };
-            row.Show(profile.Name, badge);
-            return row;
-        }
-        catch (Exception error)
-        {
-            // 行模板加载失败不能让整棵树（乃至进程）挂掉：退回纯文本，把原因写进崩溃日志。
-            ConsoleBridge.WriteDiagnostic($"[tree] 连接行模板加载失败（{error.GetType().Name}: {error.Message}）");
-            CrashLog.Write("tree-row", error);
-            return $"{profile.Name} · {badge}";
-        }
-    }
-
     private string BadgeFor(ConnectionProfile profile)
     {
         if (_connectingKeys.Contains(profile.Key))
@@ -454,43 +390,20 @@ public sealed partial class ShellView : UserControl
         return _session?.IsConnected(profile.Key) == true ? "已连接" : "未连接";
     }
 
-    /// <summary>
-    /// 当前选中的连接。节点的 Content 是拼出来的 <see cref="ConnectionRow"/>，所以按「节点身份」
-    /// 反查连接，不再依赖 Content 的类型（那是形状，不是数据）。
-    /// </summary>
-    private ConnectionProfile? SelectedProfile()
-    {
-        var selected = ObjectTree.SelectedNode;
-        if (selected is null)
-        {
-            return null;
-        }
-
-        foreach (var profile in _profiles)
-        {
-            if (_nodes.TryGetValue(profile.Key, out var node) && ReferenceEquals(node, selected))
-            {
-                return profile;
-            }
-        }
-
-        return null;
-    }
+    private ConnectionProfile? SelectedProfile() =>
+        ObjectTree.SelectedNode?.Content is ConnectionNode node ? node.Profile : null;
 
     private void OnTreeSelectionChanged(TreeView sender, TreeViewSelectionChangedEventArgs args)
         => ApplyBackendState();
 
     private async void OnTreeItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {
-        // InvokedItem 在「手工建节点」时可能是节点本身，也可能是节点的 Content（我们画的 ConnectionRow），
-        // 两种都认。认不出来（例如点了根节点 `My Connections`）就什么都不做——绝不拿「当前选中项」凑数，
-        // 那会让点一下标题就去连上一个不相干的连接。
-        var profile = ResolveProfile(args.InvokedItem)
-            ?? (ObjectTree.SelectedNode?.Depth > 0 ? SelectedProfile() : null);
-        if (profile is null)
+        if (args.InvokedItem is not ConnectionNode node)
         {
             return;
         }
+
+        var profile = node.Profile;
 
         // 已连接 → 展开/收起（与 Linux 客户端同一个交互）；未连接 → 用已保存的凭据连接。
         if (_session?.IsConnected(profile.Key) == true)
@@ -505,14 +418,6 @@ public sealed partial class ShellView : UserControl
 
         await ConnectProfileAsync(profile);
     }
-
-    private ConnectionProfile? ResolveProfile(object? item) => item switch
-    {
-        ConnectionProfile profile => profile,
-        TreeViewNode node => ResolveProfile(node.Content),
-        ConnectionRow { Tag: ConnectionProfile tagged } => tagged,
-        _ => null,
-    };
 
     private async Task ConnectProfileAsync(ConnectionProfile profile)
     {
@@ -646,7 +551,6 @@ public sealed partial class ShellView : UserControl
 
     private void ApplyMetrics()
     {
-        CrashLog.Trace("shell.metrics.begin");
         // 菜单行高度 = 外壳高 − 系统标题栏基准 × 档位 → 24 / 30 / 36。
         // 基准由度量推出（compact 外壳 64 − 菜单行 24 = 40），这里没有尺寸字面量。
         MenuBand.Height = WindowSizing.MenuRowHeight(Metrics.Tier);
@@ -656,47 +560,15 @@ public sealed partial class ShellView : UserControl
 
         InspectorTitle.FontSize = Metrics.FontTitle;
 
-        // ---- 工具条：内边距是 Thickness（结构体，不能写 StaticResource），所以在这里从度量取。
-        var toolbarPadding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
-        ButtonConnect.Padding = toolbarPadding;
-        ButtonNewQuery.Padding = toolbarPadding;
-
-        // 种类入口的 tab 形态：圆角 radius_sm，四个入口与「新建查询」同一套内边距。
-        var kindRadius = new CornerRadius(Metrics.RadiusSm);
-        foreach (var kind in new[] { ButtonTables, ButtonViews, ButtonFunctions, ButtonQueries })
-        {
-            kind.Padding = toolbarPadding;
-            kind.CornerRadius = kindRadius;
-        }
-
-        // 竖向分隔线：上下留 margin，线高 = 工具条高 − 2 × inspector_gap。
-        ToolbarSeparator.Margin = new Thickness(Metrics.InspectorGap, Metrics.InspectorGap, Metrics.InspectorGap, Metrics.InspectorGap);
-
-        // ---- 对象树：容器左内边距 grid_padding_start（行内边距在 BuildConnectionRow 里）。
-        ObjectTree.Padding = new Thickness(Metrics.GridPaddingStart, 0, Metrics.GridPaddingEnd, 0);
-
-        // ---- 标签条 / Objects 固定页：宽度 objects_min_width、高 tab_strip_height。
+        // Objects 固定页：宽度 objects_min_width，标签条高 tab_strip_height，
+        // 内容内边距 grid_padding_start / grid_padding_end（与 Linux 的布局算术同一套数）。
         ObjectsTab.MinWidth = Metrics.ObjectsMinWidth;
         ObjectsTab.MinHeight = Metrics.TabStripHeight;
         ObjectsPage.Padding = new Thickness(Metrics.GridPaddingStart, 0, Metrics.GridPaddingEnd, 0);
-        ObjectsPageTitle.Margin = new Thickness(0, Metrics.GridPaddingEnd, 0, Metrics.GridPaddingEnd);
-
-        // ---- 信息面板：三级层级共用一条左基准线（grid_padding_start）。
-        InspectorHeader.Margin = new Thickness(Metrics.GridPaddingStart, Metrics.GridPaddingEnd, Metrics.GridPaddingStart, Metrics.GridPaddingEnd);
-        InspectorSections.Margin = new Thickness(Metrics.GridPaddingStart, 0, Metrics.GridPaddingStart, Metrics.GridPaddingEnd);
-        InspectorBody.Margin = new Thickness(Metrics.GridPaddingStart, 0, Metrics.GridPaddingEnd, Metrics.GridPaddingEnd);
-
-        // 空态正文不横跨整块工作区（窗口 3840 宽时一行说明会拉成一条长线）：
-        // 列宽取 filter_panel_width（430 / 538 / 645），是规范里唯一的「正文列宽」。
-        StateDisconnected.MaxWidth = Metrics.FilterPanelWidth;
-        StateLoading.MaxWidth = Metrics.FilterPanelWidth;
-        StateEmpty.MaxWidth = Metrics.FilterPanelWidth;
 
         MenuBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
         ToolbarBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
-
-        // 状态栏左边沟要跟树同一条左边界（沟宽 = 侧栏宽），所以水平内边距只留右端。
-        StatusBand.Padding = new Thickness(0, 0, Metrics.ToolbarPaddingH, 0);
+        StatusBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
 
         UpdateTierLabel();
     }
@@ -717,37 +589,27 @@ public sealed partial class ShellView : UserControl
             "新建查询尚未实现：SQL 编辑器在工作包 #171");
         ToolTipService.SetToolTip(
             ButtonTables,
-            "Tables：在 Objects 页列出当前库的表（列表与对象树分组在工作包 #171）");
+            "Tables 列表尚未实现：对象树分组与元数据列表在工作包 #170");
         ToolTipService.SetToolTip(
             ButtonViews,
-            "Views：在 Objects 页列出当前库的视图（列表与对象树分组在工作包 #171）");
+            "Views 列表尚未实现：对象树分组与元数据列表在工作包 #170");
         ToolTipService.SetToolTip(
             ButtonFunctions,
-            "Functions：驱动尚未提供函数列表（点开只说明，不摆假数据）");
+            "Functions 列表尚未实现：对象树分组与元数据列表在工作包 #170");
         ToolTipService.SetToolTip(
             ButtonQueries,
-            "Queries：已保存的查询尚未实现（查询标签在工作包 #171）");
+            "Queries 列表尚未实现：需要查询标签（工作包 #171）");
 
         ToolTipService.SetToolTip(
             TreeSearchBox,
-            "对象树搜索尚未实现：随元数据树（工作包 #171）一起提供");
-
-        // 信息面板的分节标题：现在没有选中对象，两个分节都不可切。
-        ToolTipService.SetToolTip(InspectorDdlTab, "DDL 页：先在对象树里选中一个表或视图");
-        ToolTipService.SetToolTip(InspectorInfoTab, "表信息页：先在对象树里选中一个表或视图");
-
-        // 分页器：offset 分页（首页 / 上页 / 下页 / 末页），页码只读；现在没有结果集可翻。
-        ToolTipService.SetToolTip(ButtonPageFirst, "首页：还没有结果集（表数据页在工作包 #171 之后）");
-        ToolTipService.SetToolTip(ButtonPagePrev, "上一页：还没有结果集（表数据页在工作包 #171 之后）");
-        ToolTipService.SetToolTip(ButtonPageNext, "下一页：还没有结果集（表数据页在工作包 #171 之后）");
-        ToolTipService.SetToolTip(ButtonPageLast, "末页：还没有结果集（表数据页在工作包 #171 之后）");
+            "对象树搜索尚未实现：随元数据树（工作包 #170）一起提供");
 
         // 状态栏行操作：表数据编辑与查询面都在后续工作包；逐个说明，不合并成一句。
         ToolTipService.SetToolTip(ButtonRowAdd, "新增行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
         ToolTipService.SetToolTip(ButtonRowDelete, "删除行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
         ToolTipService.SetToolTip(ButtonRowApply, "应用修改尚未实现：表数据编辑在后续工作包（没有待提交的脏行）");
         ToolTipService.SetToolTip(ButtonRowRevert, "撤销修改尚未实现：表数据编辑在后续工作包（没有待撤销的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：元数据与结果集刷新随工作包 #171");
+        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：元数据与结果集刷新随工作包 #170 / #171");
         ToolTipService.SetToolTip(ButtonRowCancel, "取消查询尚未实现：查询面在工作包 #171");
 
         MenuQuit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
@@ -769,13 +631,6 @@ public sealed partial class ShellView : UserControl
         ButtonNewQuery.Click += (_, _) => NotifyNotImplemented(
             "新建查询尚未实现：SQL 编辑器在工作包 #171");
 
-        // 种类入口只是「显示当前种类」的切换按钮：这里只保证同一时刻最多一个高亮，
-        // 不保存「当前种类」（那是页面与对象树的渲染结果，等 #171 接线）。
-        ButtonTables.Checked += OnKindChecked;
-        ButtonViews.Checked += OnKindChecked;
-        ButtonFunctions.Checked += OnKindChecked;
-        ButtonQueries.Checked += OnKindChecked;
-
         ObjectTree.ItemInvoked += OnTreeItemInvoked;
         ObjectTree.SelectionChanged += OnTreeSelectionChanged;
 
@@ -784,31 +639,6 @@ public sealed partial class ShellView : UserControl
         var newConnection = new KeyboardAccelerator { Key = VirtualKey.N, Modifiers = VirtualKeyModifiers.Control };
         newConnection.Invoked += OnNewConnectionAccelerator;
         KeyboardAccelerators.Add(newConnection);
-    }
-
-    // ---- 种类入口 ----------------------------------------------------------------
-
-    /// <summary>
-    /// 保证四个种类入口同一时刻最多一个处于选中态。
-    /// </summary>
-    /// <remarks>
-    /// 只做「互斥」这一件事：本类不保存「当前种类」，当前种类是 Objects 页 / 对象树的渲染结果
-    /// （#171 接线后由那边推 IsChecked）。没有这段，用户点一下会在工具条上留下两个高亮。
-    /// </remarks>
-    private void OnKindChecked(object sender, RoutedEventArgs e)
-    {
-        if (sender is not ToggleButton checkedOne)
-        {
-            return;
-        }
-
-        foreach (var other in new[] { ButtonTables, ButtonViews, ButtonFunctions, ButtonQueries })
-        {
-            if (!ReferenceEquals(other, checkedOne) && other.IsChecked == true)
-            {
-                other.IsChecked = false;
-            }
-        }
     }
 
     // ---- 侧栏拖动 ----------------------------------------------------------------
@@ -950,5 +780,11 @@ public sealed partial class ShellView : UserControl
         {
             yield return driver.Label;
         }
+    }
+
+    /// <summary>树里的连接节点内容：文本即 <see cref="ToString"/>，徽标随连接状态变。</summary>
+    private sealed record ConnectionNode(ConnectionProfile Profile, string Badge)
+    {
+        public override string ToString() => $"{Profile.Name} · {Badge}";
     }
 }
