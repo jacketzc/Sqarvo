@@ -95,7 +95,8 @@
         <Border
             x:Name="MenuBand"
             Grid.Row="0"
-            Background="{ThemeResource SqarvoBandBrush}">
+            Background="{ThemeResource SqarvoBandBrush}"
+                Visibility="Collapsed">
             <MenuBar x:Name="MainMenu" AutomationProperties.Name="主菜单">
                 <MenuBarItem Title="文件">
                     <!-- 启用态由 BackendState.IsReady 决定（ShellView.ApplyBackendState），tooltip 在 code-behind 逐项说明 -->
