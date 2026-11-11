@@ -1504,12 +1504,16 @@ impl TabSet {
     fn sync_bar_width(&self) {
         // 标签条内侧的留白（CSS `.sqarvo-tab-bar { padding: 0 <gap_xxs>px }`）。
         let padding = 2 * gap(Gap::Xxs);
-        let content = tab_box_natural_width(self.bar.upcast_ref());
-        match content {
-            Some(width) if width > 0 => self.bar.set_size_request(width + padding, -1),
-            // 还没有标签盒（窗口尚未建完）：清掉请求，别留一个 0 宽度的钉子。
-            _ => self.bar.set_size_request(-1, -1),
-        }
+        let metrics = crate::layout::metrics();
+        // 下界：钉住页 + 每个普通标签的规范宽度（`objects_min_width` / `tab_width`）。
+        // 自然宽度偶尔会量少一个标签（新 `AdwTab` 还没参与测量），一旦量少，`AdwTabBox`
+        // 就把已有标签**压窄**（实测 4 个标签时最后一个只剩 131px，选中标签被挤成一条）。
+        // 取较大值：量少了也不会压窄；量多了照旧按自然宽度（含标签之间的间距）。
+        let pages = self.view.n_pages().max(1);
+        let lower_bound = metrics.objects_min_width + metrics.tab_width * (pages - 1);
+        let content = tab_box_natural_width(self.bar.upcast_ref()).unwrap_or(lower_bound);
+        self.bar
+            .set_size_request(content.max(lower_bound) + padding, -1);
     }
 
     /// 选中变化后把当前标签滚进标签条的可见区域（下一次空闲，等布局落定）。
@@ -1561,6 +1565,15 @@ impl TabSet {
                 set.sync_bar_width();
                 // 标签条变宽/变窄之后，当前标签的可见性要重新算一次。
                 set.reveal_selected_tab();
+                // 再补一次：连续快速开标签时 150ms 仍可能量到「少一个标签」的自然宽度。
+                // 只补这一次（不循环）——下界已保证量少也不会压窄标签。
+                let weak = Rc::downgrade(&set);
+                glib::timeout_add_local_once(Duration::from_millis(250), move || {
+                    if let Some(set) = weak.upgrade() {
+                        set.sync_bar_width();
+                        set.reveal_selected_tab();
+                    }
+                });
             }
         });
     }
