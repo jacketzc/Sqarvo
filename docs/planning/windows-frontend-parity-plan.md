@@ -104,6 +104,10 @@ WinUI 3 的启动崩溃可以是**延迟且抖动**的（同一份构建分别�
    （微软官方答复：调用实际返回 S_OK），不要据此定位；
 4. 二分用「整体回退到已知稳定版本 + 一块一块加回」，`Visibility="Collapsed"` 不算排除
    （控件对象仍被构造），要排除控件类型必须真换掉或删掉。
+5. **改 code-behind 前后在 Linux 上跑一次「真类型」编译探针**：`net8.0-windows10.0.19041.0` +
+   `EnableWindowsTargeting=true` + 真实 `Microsoft.WindowsAppSDK` 引用程序集 + 从 XAML 生成的
+   `InitializeComponent()`/`x:Name` stub，可以捕获命名空间/类型/成员错误（实测能复现 `Rectangle` 缺
+   `using Microsoft.UI.Xaml.Shapes;` 与 `Window` 上没有 `Shell` 这两类）。它不验 XAML 属性与事件签名。
 
 ### 5.2 #170 的回退记录
 
