@@ -504,7 +504,8 @@
             x:Name="StatusBand"
             Grid.Row="3"
             Background="{ThemeResource SqarvoBandBrush}"
-            Height="{StaticResource Size.StatusHeight}">
+            Height="{StaticResource Size.StatusHeight}"
+                Visibility="Collapsed">
             <Grid.ColumnDefinitions>
                 <!-- 沟宽跟随侧栏分栏位置（拖分栏线同步），保证竖线与侧栏分隔线在同一根轴上 -->
                 <ColumnDefinition x:Name="StatusGutterColumn" Width="Auto" />
