@@ -52,7 +52,9 @@ public sealed partial class MainWindow : Window
                 root.Loaded += OnRootLoaded;
             }
 
-            AppWindow.Changed += OnAppWindowChanged;
+            RegisterOemTierAccelerators();
+
+        AppWindow.Changed += OnAppWindowChanged;
             ThemeService.SystemAppearanceChanged += OnSystemAppearanceChanged;
             Closed += OnClosed;
         }
@@ -237,12 +239,38 @@ public sealed partial class MainWindow : Window
         workHeightDips = (int)Math.Floor(WindowSizing.PhysicalToDips(work.Height, scale <= 0 ? 1 : scale));
     }
 
+    /// <summary>
+    /// 补上主键盘的 Ctrl+= / Ctrl+-（OEM 键 187 / 189）。
+    /// </summary>
+    /// <remarks>
+    /// VirtualKey 里只有数字键盘的 Add / Subtract 有名字，OEM 键只能用数值构造；
+    /// XAML 里写 Key="187" 会在解析时失败（枚举无此成员），所以在 code-behind 注册。
+    /// </remarks>
+    private void RegisterOemTierAccelerators()
+    {
+        var plus = new KeyboardAccelerator
+        {
+            Key = (global::Windows.System.VirtualKey)187,
+            Modifiers = global::Windows.System.VirtualKeyModifiers.Control,
+        };
+        plus.Invoked += OnTierUp;
+        RootGrid.KeyboardAccelerators.Add(plus);
+
+        var minus = new KeyboardAccelerator
+        {
+            Key = (global::Windows.System.VirtualKey)189,
+            Modifiers = global::Windows.System.VirtualKeyModifiers.Control,
+        };
+        minus.Invoked += OnTierDown;
+        RootGrid.KeyboardAccelerators.Add(minus);
+    }
+
     private void OnRootLoaded(object sender, RoutedEventArgs args)
         => Relayout(preferSavedGeometry: true);
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
-        if (args.DidPositionChange || args.DidSizeChange)
+        if (args.DidPositionChange)
         {
             Relayout(preferSavedGeometry: false);
         }
