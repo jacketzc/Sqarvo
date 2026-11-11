@@ -450,11 +450,6 @@
                                         VerticalAlignment="Center"
                                         HorizontalAlignment="Center"
                                         Spacing="{StaticResource Size.InspectorGap}">
-                                        <ProgressRing
-                                            IsActive="True"
-                                            Width="{StaticResource Size.IconBox}"
-                                            Height="{StaticResource Size.IconBox}"
-                                            HorizontalAlignment="Center" />
                                         <TextBlock
                                             Text="正在连接…"
                                             FontSize="{StaticResource Size.FontUi}"
