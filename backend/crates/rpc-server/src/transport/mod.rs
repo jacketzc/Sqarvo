@@ -7,19 +7,24 @@
 //! - 传输实现隐藏在 [`LocalListener`] 之后，业务层不感知 socket/TCP 差异；
 //! - 每个请求都经过 [`crate::auth::TokenInterceptor`] 校验 token。
 //!
-//! Windows 上的 Named Pipe + ACL 方案尚未实现；当前回退为回环 TCP + 随机 token，
-//! 端点文件权限收紧到当前用户仍依赖`%APPDATA%` 的 ACL 继承（见 `docs/`）。
+//! Windows 上的 Named Pipe + ACL 方案尚未实现；当前回退为回环 TCP + 随机 token。
+//! 端点文件的访问控制在 Windows 上由 `sqarvo_local_store` 写入显式 DACL
+//! （仅当前用户、断开继承），不再依赖 `%APPDATA%` 的 ACL 继承。
 
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_util::stream::{self, BoxStream, StreamExt};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
-use sqarvo_local_store::{AuthToken, TransportKind, restrict_to_owner};
+#[cfg(unix)]
+use sqarvo_local_store::restrict_to_owner;
+use sqarvo_local_store::{AuthToken, TransportKind};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 #[cfg(unix)]
