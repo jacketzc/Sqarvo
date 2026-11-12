@@ -154,6 +154,9 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-export-cancel-after-rows", "rows"),
         ("qa-export-scope", "page|table"),
         ("qa-export-format", "csv|insert|dump"),
+        ("qa-detail-view", "row-number"),
+        ("qa-row-menu", "row-number"),
+        ("qa-row-menu-pick", "item-label"),
         ("qa-expect-about", "substring"),
     ] {
         app.add_main_option(

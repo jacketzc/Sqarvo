@@ -1023,6 +1023,8 @@ pub struct StatusBar {
     refresh: gtk::Button,
     cancel: gtk::Button,
     pager_summary: gtk::Label,
+    /// 展示形式切换（按行 / 单行「字段 · 值」）；选中态由快照同步。
+    detail_toggle: gtk::ToggleButton,
     /// 分页器按钮（首页 / 上页 / 下页 / 末页），顺序与 `PagerAction` 对应。
     pager_buttons: RefCell<Vec<gtk::Button>>,
     /// 选中行数（`N selected`）。
@@ -1147,6 +1149,25 @@ impl StatusBar {
         pager_box.append(&pager_summary);
         pager_box.set_tooltip_text(Some(PAGER_NOTE));
 
+        // 展示形式切换（v0.2.5）：分页器**前方**。默认按行浏览；有行选中时可按下去，
+        // 数据网格换成「字段 | 值」两列（只讲选中的那一行）。再按一次切回。
+        // 它是 toggle：选中态由数据页的快照（`StatusSnapshot.detail_mode`）推回来，
+        // 不在这里自己记状态——否则切标签 / 换表后按钮和屏幕会各说一套。
+        let detail_toggle = gtk::ToggleButton::new();
+        detail_toggle.set_icon_name("view-dual-symbolic");
+        detail_toggle.add_css_class("flat");
+        detail_toggle.add_css_class("sqarvo-detail-toggle");
+        detail_toggle.set_valign(gtk::Align::Center);
+        detail_toggle.set_sensitive(false);
+        detail_toggle.set_tooltip_text(Some(
+            "字段 / 值：只看选中行的每个字段与它的值（先选中一行；再点一次切回按行浏览）",
+        ));
+        {
+            let handler = Rc::clone(&on_row_op);
+            // 只把「用户按了这一下」交给数据页；选中态由快照回来（可在回调里被纠正）。
+            detail_toggle.connect_clicked(move |_| handler(RowOp::ToggleDetail));
+        }
+
         // 「N selected」：多选时必须能一眼看到选了几行（状态栏右）。
         let selected_label = gtk::Label::new(None);
         selected_label.add_css_class("dim-label");
@@ -1164,6 +1185,7 @@ impl StatusBar {
 
         let row_one_right = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         row_one_right.append(&selected_label);
+        row_one_right.append(&detail_toggle);
         row_one_right.append(&pager_box);
 
         let row_one = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
@@ -1252,6 +1274,7 @@ impl StatusBar {
             refresh,
             cancel,
             pager_summary,
+            detail_toggle: detail_toggle.clone(),
             pager_buttons: RefCell::new(pager_buttons),
             selected_label,
             last_refresh_at: Cell::new(None),
@@ -1399,6 +1422,8 @@ impl StatusBar {
             button.set_sensitive(enabled && snapshot.table.is_some());
             button.set_tooltip_text(Some(tip));
         }
+        // 展示形式切换的选中态由页面推回来（切标签 / 换表 / 选中集清空后自动复位）。
+        self.detail_toggle.set_active(snapshot.detail_mode);
         // `N selected`：只在多选时出现（单选与 0 选都不占位置）。
         let selected = snapshot.selected_count;
         self.selected_label
@@ -1456,6 +1481,16 @@ impl StatusBar {
             };
             button.set_tooltip_text(Some(&tooltip));
         }
+        // 展示形式切换：只跟「有没有选中行」走（只读连接也能看详情）。
+        self.detail_toggle.set_sensitive(ops.detail);
+        let toggle_tip = match &ops.reason {
+            Some(reason) if !ops.detail => {
+                format!("字段 / 值：只看选中行的每个字段与它的值（当前不可用：{reason}）")
+            }
+            _ if !ops.detail => "字段 / 值：只看选中行的每个字段与它的值（先选中一行）".to_owned(),
+            _ => "字段 / 值：只看选中行的每个字段与它的值（再点一次切回按行浏览）".to_owned(),
+        };
+        self.detail_toggle.set_tooltip_text(Some(&toggle_tip));
     }
 
     /// 当前标签没有表格（Objects / 查询标签）：分页器与记录位置整格隐藏，
@@ -1479,6 +1514,7 @@ impl StatusBar {
             begin_txn: false,
             commit_txn: false,
             rollback_txn: false,
+            detail: false,
             reason: Some(reason.to_owned()),
         });
         self.refresh_session();

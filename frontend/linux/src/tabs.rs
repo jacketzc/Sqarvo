@@ -1468,6 +1468,7 @@ impl TabSet {
             begin_txn: false,
             commit_txn: false,
             rollback_txn: false,
+            detail: false,
             reason: Some("当前标签不是表数据标签".to_owned()),
         }
     }
@@ -4465,6 +4466,7 @@ mod tests {
             can_next: false,
             can_last: false,
             sort_filter_total: true,
+            detail_mode: false,
         }
     }
 

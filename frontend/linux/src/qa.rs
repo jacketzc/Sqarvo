@@ -1091,6 +1091,12 @@ struct Args {
     export_scope: ExportScopeArg,
     /// `--qa-export-format <csv|insert|dump>`：导出格式（默认 `csv`）。
     export_format: ExportFormatArg,
+    /// `--qa-row-menu <行号>`：选中该行并打开数据行右键菜单。
+    row_menu: Option<usize>,
+    /// `--qa-row-menu-pick <文案>`：点菜单里的条目（与用户点击同一个信号）。
+    row_menu_pick: Option<String>,
+    /// `--qa-detail-view <行号>`：选中该行并切到「字段 / 值」视图。
+    detail_view: Option<usize>,
 }
 
 /// `--qa-export-format` 的取值：CSV / 一行一条 INSERT / 转储表。
@@ -1383,6 +1389,21 @@ pub fn export_raw_values() -> bool {
 
 /// `--qa-export-scope`：导出范围（默认当前页；`table` 走整表分页导出）。
 #[must_use]
+/// `--qa-detail-view <行号>`：切到「字段 / 值」视图。
+pub fn detail_view() -> Option<usize> {
+    ARGS.get().and_then(|args| args.detail_view)
+}
+
+/// `--qa-row-menu <行号>`：打开数据行右键菜单。
+pub fn row_menu() -> Option<usize> {
+    ARGS.get().and_then(|args| args.row_menu)
+}
+
+/// `--qa-row-menu-pick <文案>`：点菜单里的条目。
+pub fn row_menu_pick() -> Option<String> {
+    ARGS.get().and_then(|args| args.row_menu_pick.clone())
+}
+
 /// `--qa-export-format`：导出格式（默认 CSV）。
 pub fn export_format() -> ExportFormatArg {
     ARGS.get()
@@ -2485,6 +2506,33 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .get(index + 1)
                     .ok_or_else(|| "--qa-export-format 需要 csv、insert 或 dump".to_owned())?;
                 parsed.export_format = ExportFormatArg::parse(value)?;
+                index += 2;
+            }
+            "--qa-detail-view" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-detail-view 需要行号".to_owned())?;
+                let row: usize = value
+                    .parse()
+                    .map_err(|_| format!("--qa-detail-view 的行号不合法：{value:?}"))?;
+                parsed.detail_view = Some(row);
+                index += 2;
+            }
+            "--qa-row-menu" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-row-menu 需要行号".to_owned())?;
+                let row: usize = value
+                    .parse()
+                    .map_err(|_| format!("--qa-row-menu 的行号不合法：{value:?}"))?;
+                parsed.row_menu = Some(row);
+                index += 2;
+            }
+            "--qa-row-menu-pick" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-row-menu-pick 需要条目文案".to_owned())?;
+                parsed.row_menu_pick = Some(value.clone());
                 index += 2;
             }
             "--qa-export-scope" => {

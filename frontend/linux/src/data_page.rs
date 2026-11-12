@@ -263,6 +263,8 @@ pub enum RowOp {
     Refresh,
     /// 取消在途提交批次。
     Cancel,
+    /// 切换数据网格的展示形式（按行 / 单行「字段 · 值」详情）。
+    ToggleDetail,
 }
 
 /// 行操作按钮的可用性（读数来自页内按钮自身，不重复判定）。
@@ -289,6 +291,8 @@ pub struct RowOpsState {
     pub commit_txn: bool,
     /// 回滚事务。
     pub rollback_txn: bool,
+    /// 「字段 / 值」视图可切换（有选中行；只读连接也允许——它只是看数据）。
+    pub detail: bool,
     /// 全部禁用时的原因（有任意一项可用时为 `None`）。
     pub reason: Option<String>,
 }
@@ -306,6 +310,7 @@ impl RowOpsState {
             || self.begin_txn
             || self.commit_txn
             || self.rollback_txn
+            || self.detail
     }
 }
 
@@ -381,6 +386,8 @@ pub struct StatusSnapshot {
     pub can_last: bool,
     /// 驱动是否支持排序/筛选/总数（false 时状态栏不显示总数入口）。
     pub sort_filter_total: bool,
+    /// 数据网格当前是否在「单行详情（字段 / 值）」视图。
+    pub detail_mode: bool,
 }
 
 /// 状态栏观察者：数据页每次刷新按钮/状态后回调一次。
@@ -556,6 +563,50 @@ pub struct ColumnWidthObservation {
 ///
 /// 表头合并成一行后，列名与原始类型同处一个 `GtkColumnViewColumn` 标题文本里，
 /// 自动列宽与 `refresh_header_titles` 共用这一份拼法，量出来的宽度与实际显示一致。
+/// 「字段 / 值」视图的单元格工厂：`index` 0 = 字段名，1 = 值。
+///
+/// 数据是 `(字段名, 值文本)` 元组；值与网格共用同一份显示文本（NULL 是 `NULL`、
+/// 空串是空白，口径与表格一致）。
+fn detail_cell_factory(index: usize) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_single_line_mode(true);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.add_css_class("sqarvo-cell");
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let Some(label) = item
+            .child()
+            .and_then(|child| child.downcast::<gtk::Label>().ok())
+        else {
+            return;
+        };
+        let text = item
+            .item()
+            .and_then(|object| object.downcast::<glib::BoxedAnyObject>().ok())
+            .map(|boxed| {
+                let pair = boxed.borrow::<(String, String)>();
+                if index == 0 {
+                    pair.0.clone()
+                } else {
+                    pair.1.clone()
+                }
+            })
+            .unwrap_or_default();
+        label.set_text(&text);
+    });
+    factory
+}
+
 fn header_title_text(column: &TableColumn, marker: &str) -> String {
     let base = if column.type_label.trim().is_empty() {
         column.name.clone()
@@ -630,6 +681,12 @@ pub struct DataPage {
     status_dot_core: gtk::Box,
     /// 数据网格的滚动容器（布局自检按视口算，不按全部列的自然宽度）。
     grid_scroll: gtk::ScrolledWindow,
+    /// 表格区里的**视图切换栈**：`grid` = 按行浏览（默认），`detail` = 单行「字段 / 值」。
+    view_stack: gtk::Stack,
+    /// 「字段 / 值」视图的数据源（`(字段名, 值文本)` 两列）。
+    detail_store: gio::ListStore,
+    /// 当前展示形式（false = 按行浏览，默认）。
+    detail_mode: Cell<bool>,
     banner: adw::Banner,
     status: gtk::Label,
     /// 脏行计数文案（`脏行 N · 待提交 M 条`）。
@@ -788,13 +845,14 @@ pub struct DataPage {
     /// 末段「最近一次操作：…」。这些句子回答的是「刚才那一下做了什么」，用户要复核
     /// 时悬停圆点即可；动作行上只留「正在…」这类有时效的消息与 warning / error。
     last_action_note: RefCell<String>,
-    /// 数据行右键菜单的两个动作（`删除行` / `复制为 INSERT`）。
-    ///
-    /// 菜单用 `PopoverMenu` + `gio::Menu`，条目靠 action 名绑定；可用性在每次右键时
-    /// 按 [`Self::delete_available`] / 选中行数置位（菜单里的禁用项是灰的，不是假入口）。
-    row_actions: RefCell<Option<(gio::SimpleAction, gio::SimpleAction)>>,
     /// 当前打开着的行右键菜单（再次右键 / 关闭标签时先 popdown）。
-    row_menu: RefCell<Option<gtk::PopoverMenu>>,
+    ///
+    /// 菜单是**纯控件**（`GtkPopover` + 扁平按钮 + 悬停展开的二级 popover），
+    /// 不挂 `gio::SimpleAction`：action 名要靠 `gio::Menu` 模型解析，一旦解析不到，
+    /// 条目看着能点、点了什么都不发生（v0.2.5 首版就是这样失效的）。
+    row_menu: RefCell<Option<gtk::Popover>>,
+    /// 当前菜单里的条目（文案 → 按钮）：QA 的 `--qa-row-menu-pick` 用它点同一个按钮。
+    row_menu_items: RefCell<Vec<(String, gtk::Button)>>,
     callbacks: DataCallbacks,
 }
 
@@ -1056,7 +1114,42 @@ impl DataPage {
         grid_page.set_margin_start(gap(Gap::Xl));
         grid_page.set_margin_end(gap(Gap::Xl));
         grid_page.set_margin_bottom(gap(Gap::Sm));
-        grid_page.append(&scroll);
+
+        // 两种展示形式共用同一块表格外框：按行浏览（网格）/ 单行详情（字段 · 值）。
+        // 由状态栏分页器左侧那枚按钮切换（`RowOp::ToggleDetail`）。
+        let detail_store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let detail_selection = gtk::NoSelection::new(Some(detail_store.clone()));
+        let detail_grid = gtk::ColumnView::new(Some(detail_selection));
+        detail_grid.set_show_row_separators(true);
+        detail_grid.set_show_column_separators(true);
+        detail_grid.set_reorderable(false);
+        detail_grid.add_css_class("sqarvo-grid");
+        {
+            let field_column =
+                gtk::ColumnViewColumn::new(Some("字段"), Some(detail_cell_factory(0)));
+            field_column.set_fixed_width(220);
+            field_column.set_resizable(true);
+            detail_grid.append_column(&field_column);
+            let value_column = gtk::ColumnViewColumn::new(Some("值"), Some(detail_cell_factory(1)));
+            value_column.set_resizable(true);
+            detail_grid.append_column(&value_column);
+        }
+        let detail_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
+            .vexpand(true)
+            .child(&detail_grid)
+            .build();
+
+        let view_stack = gtk::Stack::new();
+        view_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        view_stack.set_transition_duration(120);
+        view_stack.set_vexpand(true);
+        view_stack.add_named(&scroll, Some("grid"));
+        view_stack.add_named(&detail_scroll, Some("detail"));
+        view_stack.set_visible_child_name("grid");
+        grid_page.append(&view_stack);
 
         let placeholder = adw::StatusPage::builder()
             .title("尚未打开表")
@@ -1312,6 +1405,9 @@ impl DataPage {
             status_dot,
             status_dot_core,
             grid_scroll: scroll.clone(),
+            view_stack,
+            detail_store,
+            detail_mode: Cell::new(false),
             banner,
             status,
             dirty_label,
@@ -1401,8 +1497,8 @@ impl DataPage {
             last_refresh: Cell::new(None),
             last_load_note: RefCell::new(String::new()),
             last_action_note: RefCell::new(String::new()),
-            row_actions: RefCell::new(None),
             row_menu: RefCell::new(None),
+            row_menu_items: RefCell::new(Vec::new()),
             callbacks,
         });
 
@@ -1481,28 +1577,6 @@ impl DataPage {
             }
             popover.set_child(Some(&list));
             page.buttons.export.set_popover(Some(&popover));
-        }
-        {
-            // 数据行右键菜单的动作：与状态栏 / 工具条走同一批方法（不是另一套语义）。
-            let page = Rc::clone(&page);
-            let group = gio::SimpleActionGroup::new();
-            let delete = gio::SimpleAction::new("delete-row", None);
-            {
-                let page = Rc::clone(&page);
-                delete.connect_activate(move |_, _| page.delete_selected_row());
-            }
-            group.add_action(&delete);
-            let copy = gio::SimpleAction::new("copy-as-insert", None);
-            {
-                let page = Rc::clone(&page);
-                copy.connect_activate(move |_, _| match page.copy_selected_as_insert() {
-                    Ok(rows) => page.note_action(&format!("已复制 {rows} 行为 INSERT 语句")),
-                    Err(reason) => page.set_status(&reason, "warning"),
-                });
-            }
-            group.add_action(&copy);
-            page.root.insert_action_group("row", Some(&group));
-            page.row_actions.replace(Some((delete, copy)));
         }
         {
             let page = Rc::clone(&page);
@@ -1614,6 +1688,11 @@ impl DataPage {
                 .clone()
                 .connect_selection_changed(move |_, _, _| {
                     page.update_buttons();
+                    // 「字段 / 值」视图说的是**某一行**：选中集空了就退回按行浏览，
+                    // 否则屏幕上会留着一份已经不属于任何一行的详情。
+                    if page.detail_mode.get() && page.selected_rows().is_empty() {
+                        page.set_detail_mode(false);
+                    }
                 });
         }
 
@@ -1779,10 +1858,92 @@ impl DataPage {
         Ok(rows.len())
     }
 
+    /// 「字段 / 值」视图是否可用：有数据且选中了行。
+    ///
+    /// 只读连接也允许——它只是换一种看法，不写库。
+    #[must_use]
+    fn detail_available(&self) -> bool {
+        self.draft.borrow().is_some() && !self.selected_rows().is_empty()
+    }
+
+    /// 当前是否在「字段 / 值」视图。
+    #[must_use]
+    pub fn detail_mode(&self) -> bool {
+        self.detail_mode.get()
+    }
+
+    /// 切换数据网格的展示形式（状态栏分页器左侧那枚按钮 / `RowOp::ToggleDetail` 同一入口）。
+    ///
+    /// - 按行浏览 → 单行详情：需要**选中一行**，缺选中时状态行如实说明（不静默无视点击）。
+    /// - 单行详情 → 按行浏览：随时可切回，不动数据、不动选中。
+    pub fn toggle_detail_view(self: &Rc<Self>) {
+        if self.detail_mode.get() {
+            self.set_detail_mode(false);
+            self.note_action("已切回按行浏览");
+            return;
+        }
+        let Some(index) = self.selected_rows().first().copied() else {
+            self.set_status("先选中一行，再切换到「字段 / 值」视图", "warning");
+            return;
+        };
+        self.fill_detail(index);
+        self.set_detail_mode(true);
+        eprintln!(
+            "[data] 切换到「字段 / 值」视图：第 {} 行（{} 个字段）",
+            index + 1,
+            self.detail_store.n_items()
+        );
+    }
+
+    /// 只切展示形式（不动数据）。换表 / 选中集清空时用它退回按行浏览。
+    fn set_detail_mode(&self, on: bool) {
+        if self.detail_mode.replace(on) == on {
+            return;
+        }
+        self.view_stack
+            .set_visible_child_name(if on { "detail" } else { "grid" });
+        // 只打真实切换结果：截图看不出「栈里哪一页在显示」时，这行是唯一能断言的证据。
+        eprintln!(
+            "[data] 展示形式：{}（栈当前页 {}）",
+            if on { "字段 / 值" } else { "按行浏览" },
+            self.view_stack.visible_child_name().unwrap_or_default()
+        );
+        if !on {
+            self.detail_store.remove_all();
+        }
+        self.notify_status();
+    }
+
+    /// 把第 `index` 行的当前值填进「字段 / 值」视图（字段名 + 显示文本，与网格同一份）。
+    fn fill_detail(&self, index: usize) {
+        self.detail_store.remove_all();
+        let columns = self.columns.borrow().clone();
+        let draft = self.draft.borrow();
+        let Some(draft) = draft.as_ref() else {
+            return;
+        };
+        let Some(row) = draft.rows().get(index) else {
+            return;
+        };
+        for (position, column) in columns.iter().enumerate() {
+            // 与网格同一份显示文本：NULL 是 `NULL`、空串留白、类型样式不影响文本。
+            let value = row
+                .current
+                .get(position)
+                .map_or_else(|| "NULL".to_owned(), |cell| format_cell(cell).text);
+            self.detail_store
+                .append(&glib::BoxedAnyObject::new((column.name.clone(), value)));
+        }
+    }
+
     /// 数据行右键菜单：删除行 / 复制为 ▸ 复制为 INSERT。
     ///
     /// 右键落在未选中的行上时先把它选中（与常见客户端一致）；已经多选时保留多选，
     /// 菜单里的动作因此永远作用于**当前选中集**。
+    ///
+    /// 菜单用**纯控件**搭（不用 `gio::Menu` + action 名）：v0.2.5 首版用 `PopoverMenu`
+    /// 绑 `row.delete-row`，条目点下去没有任何反应——action 解析失败时 GTK 既不报错
+    /// 也不提示，界面上看不出区别。这里每个条目直接连闭包，与对象树右键菜单同一套做法。
     fn show_row_menu(self: &Rc<Self>, position: usize, anchor: &gtk::Widget, x: f64, y: f64) {
         if self.draft.borrow().is_none() {
             return;
@@ -1796,18 +1957,9 @@ impl DataPage {
             previous.popdown();
             previous.unparent();
         }
-        if let Some((delete, copy)) = self.row_actions.borrow().as_ref() {
-            delete.set_enabled(self.delete_available());
-            copy.set_enabled(!self.selected_rows().is_empty());
-        }
-        let menu = gio::Menu::new();
-        menu.append(Some("删除行"), Some("row.delete-row"));
-        let copy_menu = gio::Menu::new();
-        copy_menu.append(Some("复制为 INSERT"), Some("row.copy-as-insert"));
-        // 二级菜单：悬停「复制为」由 GTK 自己展开（与原生菜单同一套行为）。
-        menu.append_submenu(Some("复制为"), &copy_menu);
+        self.row_menu_items.borrow_mut().clear();
 
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        let popover = gtk::Popover::new();
         popover.set_has_arrow(true);
         popover.set_parent(&self.grid);
         let point = anchor
@@ -1819,13 +1971,108 @@ impl DataPage {
             1,
             1,
         )));
+
+        let list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+        list.set_margin_top(gap(Gap::Xs));
+        list.set_margin_bottom(gap(Gap::Xs));
+        list.set_margin_start(gap(Gap::Xs));
+        list.set_margin_end(gap(Gap::Xs));
+
+        // 「删除行」：与状态栏 `−` / `RowOp::Delete` 完全同一个方法。
+        let delete = gtk::Button::with_label("删除行");
+        delete.add_css_class("flat");
+        delete.set_halign(gtk::Align::Fill);
+        delete.set_sensitive(self.delete_available());
+        {
+            let page = Rc::clone(self);
+            let menu = popover.clone();
+            delete.connect_clicked(move |_| {
+                eprintln!("[data] 行右键菜单：删除行");
+                menu.popdown();
+                page.delete_selected_row();
+            });
+        }
+        list.append(&delete);
+
+        // 「复制为 ▸ 复制为 INSERT」：二级菜单在**悬停**时展开（点击也展开，键盘/触控板都能用）。
+        let copy_row = gtk::Button::new();
+        copy_row.add_css_class("flat");
+        copy_row.set_sensitive(!self.selected_rows().is_empty());
+        {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
+            let text = gtk::Label::new(Some("复制为"));
+            text.set_xalign(0.0);
+            text.set_hexpand(true);
+            let arrow = gtk::Image::from_icon_name("go-next-symbolic");
+            row.append(&text);
+            row.append(&arrow);
+            copy_row.set_child(Some(&row));
+        }
+        let submenu = gtk::Popover::new();
+        submenu.set_has_arrow(false);
+        submenu.set_parent(&copy_row);
+        let sub_list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+        sub_list.set_margin_top(gap(Gap::Xs));
+        sub_list.set_margin_bottom(gap(Gap::Xs));
+        sub_list.set_margin_start(gap(Gap::Xs));
+        sub_list.set_margin_end(gap(Gap::Xs));
+        let copy = gtk::Button::with_label("复制为 INSERT");
+        copy.add_css_class("flat");
+        copy.set_halign(gtk::Align::Fill);
+        copy.set_tooltip_text(Some(
+            "把选中行合成一条多值 INSERT 复制到剪贴板（含未提交编辑）",
+        ));
+        {
+            let page = Rc::clone(self);
+            let menu = popover.clone();
+            let submenu = submenu.clone();
+            copy.connect_clicked(move |_| {
+                eprintln!("[data] 行右键菜单：复制为 INSERT");
+                submenu.popdown();
+                menu.popdown();
+                match page.copy_selected_as_insert() {
+                    Ok(rows) => page.note_action(&format!("已复制 {rows} 行为 INSERT 语句")),
+                    Err(reason) => page.set_status(&reason, "warning"),
+                }
+            });
+        }
+        sub_list.append(&copy);
+        submenu.set_child(Some(&sub_list));
+        {
+            let submenu = submenu.clone();
+            copy_row.connect_clicked(move |_| {
+                if !submenu.is_visible() {
+                    submenu.popup();
+                }
+            });
+        }
+        {
+            // 悬停展开：指针进入「复制为」时把二级菜单弹出来（移开不主动收起，
+            // 否则指针从一级移到二级的途中会闪一下）。
+            let submenu = submenu.clone();
+            let motion = gtk::EventControllerMotion::new();
+            motion.connect_enter(move |_, _, _| {
+                if !submenu.is_visible() {
+                    submenu.popup();
+                }
+            });
+            copy_row.add_controller(motion);
+        }
+        list.append(&copy_row);
+
+        popover.set_child(Some(&list));
         {
             let page = Rc::clone(self);
             popover.connect_closed(move |popover| {
                 popover.unparent();
                 page.row_menu.borrow_mut().take();
+                page.row_menu_items.borrow_mut().clear();
             });
         }
+        self.row_menu_items.borrow_mut().extend([
+            ("删除行".to_owned(), delete),
+            ("复制为 INSERT".to_owned(), copy),
+        ]);
         eprintln!(
             "[data] 行右键菜单：第 {} 行（已选 {} 行）",
             position + 1,
@@ -1833,6 +2080,47 @@ impl DataPage {
         );
         self.row_menu.replace(Some(popover.clone()));
         popover.popup();
+    }
+
+    /// QA：打开数据行右键菜单（`--qa-row-menu <行号>`）。选中该行后走用户同一条路径。
+    pub fn qa_open_row_menu(self: &Rc<Self>, row: usize) -> Result<(), String> {
+        if self.draft.borrow().is_none() {
+            return Err("还没有打开表".to_owned());
+        }
+        let index = row.saturating_sub(1);
+        let count = self.row_count();
+        if index as u64 >= count {
+            return Err(format!("第 {row} 行不存在（共 {count} 行）"));
+        }
+        self.select_only(index);
+        self.show_row_menu(
+            index,
+            &self.grid.clone().upcast::<gtk::Widget>(),
+            40.0,
+            40.0,
+        );
+        Ok(())
+    }
+
+    /// QA：点行右键菜单里的条目（`--qa-row-menu-pick <文案>`）。
+    ///
+    /// 用按钮自己的 `emit_clicked()`：与用户真点走同一个信号，不是绕过界面直接调业务方法
+    /// （那正是 v0.2.5 首版「点了没反应」被绕过去的原因）。
+    pub fn qa_pick_row_menu(&self, label: &str) -> Result<(), String> {
+        let items = self.row_menu_items.borrow();
+        let button = items
+            .iter()
+            .find(|(text, _)| text == label)
+            .map(|(_, button)| button.clone())
+            .ok_or_else(|| {
+                format!(
+                    "菜单里没有「{label}」（现有：{:?}）",
+                    items.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>()
+                )
+            })?;
+        drop(items);
+        button.emit_clicked();
+        Ok(())
     }
 
     /// 导出当前页的值快照（按草稿的**当前值**；已提交删除的行不再导出）。
@@ -3447,6 +3735,35 @@ impl DataPage {
                 );
             });
         }
+        // 行右键菜单：先开菜单，再（可选）点其中一个条目——两步都用用户同一个信号。
+        if let Some(row) = crate::qa::row_menu() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(1100),
+                move || match page.qa_open_row_menu(row) {
+                    Ok(()) => eprintln!("[qa] 已打开第 {row} 行的右键菜单"),
+                    Err(reason) => eprintln!("[qa] 行右键菜单失败：{reason}"),
+                },
+            );
+            if let Some(label) = crate::qa::row_menu_pick() {
+                let page = Rc::clone(self);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                    match page.qa_pick_row_menu(&label) {
+                        Ok(()) => eprintln!("[qa] 已点击行右键菜单条目「{label}」"),
+                        Err(reason) => eprintln!("[qa] 点击行右键菜单失败：{reason}"),
+                    }
+                });
+            }
+        }
+        // QA：切到「字段 / 值」视图（先选中第 N 行，再走用户同一个 toggle 入口）。
+        if let Some(row) = crate::qa::detail_view() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
+                page.select_only(row.saturating_sub(1));
+                eprintln!("[qa] 选中第 {row} 行并切换到「字段 / 值」视图");
+                page.perform_row_op(RowOp::ToggleDetail);
+            });
+        }
         if crate::qa::data_insert() {
             let page = Rc::clone(self);
             glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
@@ -3798,6 +4115,8 @@ impl DataPage {
 
     /// 进入「正在打开表」状态：清空旧数据（旧表的草稿不能带到新表上）。
     pub fn begin_open(&self, table: TableEntry) {
+        // 换表 / 重新读取：详情视图讲的是上一屏的那一行，必须退回按行浏览。
+        self.set_detail_mode(false);
         self.banner.set_revealed(false);
         self.errors_scroll.set_visible(false);
         self.store.clear();
@@ -4493,6 +4812,7 @@ impl DataPage {
             can_next: pager.can_next(),
             can_last: pager.can_last(),
             sort_filter_total: capabilities.sort_filter_total,
+            detail_mode: self.detail_mode(),
         }
     }
 
@@ -4517,6 +4837,7 @@ impl DataPage {
             begin_txn: self.buttons.begin.is_sensitive(),
             commit_txn: self.buttons.commit_txn.is_sensitive(),
             rollback_txn: self.buttons.rollback.is_sensitive(),
+            detail: self.detail_available(),
             reason: None,
         };
         if state.any() {
@@ -4624,6 +4945,8 @@ impl DataPage {
             RowOp::Refresh if self.dirty_guard() => {}
             RowOp::Refresh => self.reload(),
             RowOp::Cancel => self.request_cancel_submit(),
+            // 展示形式切换不改数据、不受脏行守卫限制：它只是换一种看法。
+            RowOp::ToggleDetail => self.toggle_detail_view(),
         }
     }
 
