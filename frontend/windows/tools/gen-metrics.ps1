@@ -171,7 +171,16 @@ function Format-Number([double]$value) {
     return $text
 }
 
-$sha = (Get-FileHash -LiteralPath $TomlPath -Algorithm SHA256).Hash.ToLowerInvariant()
+# 不用 Get-FileHash：GitHub 的 windows-latest 上这一步实测报「找不到 Get-FileHash」
+# （CommandNotFoundException，2026-11-12 CI 第一次跑就红）。改用 .NET 直接算，不依赖 cmdlet。
+$sha256 = [Security.Cryptography.SHA256]::Create()
+try {
+    $bytes = [IO.File]::ReadAllBytes($TomlPath)
+    $sha = (([BitConverter]::ToString($sha256.ComputeHash($bytes))) -replace '-', '').ToLowerInvariant()
+}
+finally {
+    $sha256.Dispose()
+}
 
 # [meta] 段：默认档位、参考窗口、不缩放的 1px 描边。
 if (-not $sections.Contains('meta')) {
