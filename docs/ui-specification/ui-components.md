@@ -302,7 +302,7 @@ kind `container` · status `active` · parent `data_page`
 
 kind `row` · status `active` · parent `data_page.grid`
 
-- 样式：尺寸 `column_header_min_height`、`column_width`；状态 hover=`sqarvo_brand_soft`
+- 样式：尺寸 `column_header_min_height`、`column_width`、`font_ui`、`font_weight_title`；状态 hover=`sqarvo_brand_soft`
 - 无障碍：可访问名「（行内容：列名 · 原始类型）」
 - 同步：Linux done（§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips + header_title_text；Linux 表头无 PK 标记（见 impl_notes））；Windows partial（§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列宽固定 column_width，超宽走横向滚动；没有排序标记与点击查看列属性。）；macOS none
 - 实现备注：表头只有**一行**：标题文本是「列名 · 原始类型」（类型为空时只写列名）；整个标题可点，不是只有文字。主键标记只出现在声明了它的实现里（Windows 写「· PK」）；Linux 的表头不带主键标记，主键进信息面板的列页与徽标。拖宽把手在列右缘 6px 内，落在那里的松开不算「点击列头」。排序标记跟在标题末尾（▲ / ▼ / ▲2），与筛选面板共用同一份排序状态；表头本身不参与排序。
@@ -317,7 +317,7 @@ kind `row` · status `active` · parent `data_page.grid`
 
 kind `cell` · status `active` · parent `data_page.grid`
 
-- 样式：尺寸 `row_number_width`、`font_status`；颜色 `accent_bg_color`
+- 样式：尺寸 `row_number_width`、`font_status`、`font_weight_ui`；颜色 `accent_bg_color`
 - 无障碍：可访问名「（行内容：行号或未提交标记）」
 - 同步：Linux done（§5.4 行号标记；build_columns 的 number_factory（●N / ✕N / ＋ 与四条 tooltip））；Windows partial（§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。）；macOS none
 - 实现备注：宽度固定 row_number_width、右对齐、等宽字体、色弱一档；行号不是主键，也不可拖宽。四种写法互斥，按优先级：已删除（服务端报告行已不在）写 ✕N → 新行占位写 ＋ → 已标记删除写 ✕N → 有未提交更改写 ●N → 普通行号。放弃（状态栏行操作组 ↶ / 放弃未提交的更改）后 ●N / ✕N / ＋ 都回到普通行号；一次成功提交后被删行整行消失、脏行变普通行号。●N 的颜色是系统强调色（语义色），脏单元格的浅底是品牌浅档——两者刻意不同：一个是「有未提交的更改」，一个是「改过的格子」。
@@ -331,7 +331,7 @@ kind `cell` · status `active` · parent `data_page.grid`
 
 kind `cell` · status `active` · parent `data_page.grid`
 
-- 样式：尺寸 `row_height_data`、`column_width`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_on_soft`、`sqarvo_brand_mid`；状态 selected=`sqarvo_brand_mid`
+- 样式：尺寸 `row_height_data`、`column_width`、`font_data_cell`、`font_weight_cell`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_on_soft`、`sqarvo_brand_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「（行内容：单元格值）」
 - 同步：Linux done（§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason）；Windows partial（§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。）；macOS none
 - 实现备注：NULL 写「NULL」（弱色斜体，tooltip「SQL NULL（与空字符串不同）」）；空串**不能**与 NULL 长得一样：Linux 写空引号串，Windows 留空（§7.1 明确「空串保持空白」）。数值与二进制右对齐（便于比较），文本左对齐；超长文本省略号截断，全文进 tooltip。脏单元格是品牌浅档实底 + 对应深色前景（成对写，选中行里也不继承白字）；标记删除的行整行删除线 + 压暗。服务端截断的值 tooltip 追加「该值被截断：不能编辑（提交截断值会写坏数据）」，且不允许进入编辑。
@@ -1617,7 +1617,7 @@ kind `control` · status `active` · parent `objects_page`
 
 kind `container` · status `active` · parent `objects_page`
 
-- 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`row_number_width`、`column_width`、`column_header_min_height`、`frame_border_width`、`radius_md`；颜色 `sqarvo_frame`、`sqarvo_separator`
+- 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`row_number_width`、`column_width`、`column_header_min_height`、`frame_border_width`、`radius_md`、`font_ui`、`font_weight_title`；颜色 `sqarvo_frame`、`sqarvo_separator`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkColumnView / winui:待核 / swift:—
 - 同步：Linux done（§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。）；macOS none
@@ -1653,7 +1653,7 @@ kind `row` · status `active` · parent `objects_page.table`
 
 kind `cell` · status `active` · parent `objects_page.table.row`
 
-- 样式：尺寸 `row_number_width`、`font_status`
+- 样式：尺寸 `row_number_width`、`font_status`、`font_weight_ui`
 - 无障碍：可访问名「（行内容：第 N 行）」
 - 同步：Linux done（§3 行内容（行号列）；number_factory 的 bind 与 tooltip）；Windows partial（§7.1 记录行号宽 row_number_width、右对齐、等宽字体；「第 N 行」tooltip 与 11px 字号未记录。）；macOS none
 - 实现备注：行号 = 模型位置 + 1（不是主键）：右对齐、11px monospace、色弱一档（.sqarvo-row-number）；tooltip「第 N 行」。回收的行控件可能还挂着旧行：item() 为空时清空文本，不显示上一行的行号。
@@ -1662,7 +1662,7 @@ kind `cell` · status `active` · parent `objects_page.table.row`
 
 kind `cell` · status `active` · parent `objects_page.table.row`
 
-- 样式：尺寸 `column_width`、`icon_box`、`gap_md`、`gap_sm`
+- 样式：尺寸 `column_width`、`icon_box`、`gap_md`、`gap_sm`、`font_data_cell`、`font_weight_cell`
 - 无障碍：可访问名「（行内容：图标 + 对象名）」
 - 同步：Linux done（§3 行内容（表名列：图标 + 名称 + tooltip）；name_factory 的 bind）；Windows partial（§7.1 记录第二列为「名称」（宽 column_width）；表头文案写「名称」、种类图标与 tooltip 文案未记录。）；macOS none
 - 实现备注：GtkBox（图标 + Label）：图标与对象树共用 kind_icon 映射（表 view-grid、视图 view-reveal），尺寸取 icon_box；名称 xalign 0、hexpand、过长省略号。单元格内距与数据网格一致（左右各 gap_sm，图标与名称间距 gap_md）。
@@ -1675,7 +1675,7 @@ kind `cell` · status `active` · parent `objects_page.table.row`
 
 kind `cell` · status `active` · parent `objects_page.table.row`
 
-- 样式：尺寸 `font_data_cell`、`gap_sm`、`gap_md`
+- 样式：尺寸 `font_data_cell`、`font_weight_cell`、`gap_sm`、`gap_md`
 - 无障碍：可访问名「（行内容：表 / 视图 / 物化视图）」
 - 同步：Linux done（§3 行内容（类型列）；kind_factory 的 setup / bind）；Windows partial（§7.1 记录「类型」列取值（表 / 视图 / 物化视图）；次要信息弱色与列宽 120 未记录。）；macOS none
 - 实现备注：文案来自 TableEntry::kind_label，只有「表」「视图」「物化视图」三种；dim-label 次要信息色弱一档，过长省略号。「物化视图」四个汉字要放得下 —— 这也是该列固定宽度的来由（120，未进 metrics.toml）。
@@ -2696,7 +2696,7 @@ kind `container` · status `active` · parent `tabs.query`
 
 kind `control` · status `active` · parent `tabs.query.results`
 
-- 样式：尺寸 `column_header_min_height`、`font_status`
+- 样式：尺寸 `column_header_min_height`、`font_ui`、`font_weight_title`
 - 无障碍：可访问名「结果列头」
 - 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:68；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:402）；macOS none
 - 实现备注：一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。多结果集在表头**上方**补一行说明（「结果集 K 段」，K > 1 时再补「只显示第 1 段」）；Linux 目前只把多语句写进日志。
@@ -2709,7 +2709,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 kind `control` · status `active` · parent `tabs.query.results`
 
-- 样式：尺寸 `row_height_data`、`row_number_width`、`column_width`、`font_data_cell`
+- 样式：尺寸 `row_height_data`、`row_number_width`、`column_width`、`font_data_cell`、`font_weight_cell`
 - 无障碍：可访问名「查询结果」；Tab 可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）
 - 同步：Linux done（§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中）；Windows partial（视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。）；macOS none
 - 实现备注：虚拟化：只建视口内的行，滚动时不把整批行都做成控件；行号列跨批次连续（1 起、右对齐），宽表靠横向滚动而不是把列压碎。行号列与数据列的实际宽度目前是代码常量（行号 72、数据列 220，未进 metrics：metrics 里是 row_number_width / column_width），P1 收敛。取消 / 错误 / 断连之后不清空行区：已加载的行保留，状态行说明为什么停在这里。没有行级脏色 / 删除线之外的额外标记（查询标签的单表编辑归 §5.10，脏行数只在状态行与状态圆点）。

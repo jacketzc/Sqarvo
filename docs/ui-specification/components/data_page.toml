@@ -790,7 +790,7 @@ display_name = "列头（列名 · 原始类型 · 排序标记）"
 kind = "row"
 status = "active"
 a11y.name = "（行内容：列名 · 原始类型）"
-style.metrics = ["column_header_min_height", "column_width"]
+style.metrics = ["column_header_min_height", "column_width", "font_ui", "font_weight_title"]
 style.states = { hover = "sqarvo_brand_soft" }
 impl_notes = [
   "表头只有**一行**：标题文本是「列名 · 原始类型」（类型为空时只写列名）；整个标题可点，不是只有文字。",
@@ -819,7 +819,7 @@ source = "src/data_page.rs:5910、src/data_page.rs:5931"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d833413cb81f"
+spec_hash = "eb55028d5e3c"
 commit = ""
 evidence = "§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips + header_title_text；Linux 表头无 PK 标记（见 impl_notes）"
 
@@ -839,7 +839,7 @@ display_name = "行号列（行号 / 脏行 / 标删 / 新行）"
 kind = "cell"
 status = "active"
 a11y.name = "（行内容：行号或未提交标记）"
-style.metrics = ["row_number_width", "font_status"]
+style.metrics = ["row_number_width", "font_status", "font_weight_ui"]
 style.tokens = ["accent_bg_color"]
 impl_notes = [
   "宽度固定 row_number_width、右对齐、等宽字体、色弱一档；行号不是主键，也不可拖宽。",
@@ -862,7 +862,7 @@ source = "src/data_page.rs:5868"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "065e698ff671"
+spec_hash = "c09290d4c459"
 commit = ""
 evidence = "§5.4 行号标记；build_columns 的 number_factory（●N / ✕N / ＋ 与四条 tooltip）"
 
@@ -882,7 +882,7 @@ display_name = "数据单元格（值 · NULL / 空串 · 脏色）"
 kind = "cell"
 status = "active"
 a11y.name = "（行内容：单元格值）"
-style.metrics = ["row_height_data", "column_width"]
+style.metrics = ["row_height_data", "column_width", "font_data_cell", "font_weight_cell"]
 style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_on_soft", "sqarvo_brand_mid"]
 style.states = { selected = "sqarvo_brand_mid" }
 impl_notes = [
@@ -913,7 +913,7 @@ source = "src/data_page.rs:1248"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "694b2709c5af"
+spec_hash = "0a982d98943d"
 commit = ""
 evidence = "§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason"
 

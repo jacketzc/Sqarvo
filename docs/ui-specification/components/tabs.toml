@@ -568,7 +568,7 @@ display_name = "结果表头（列名 · 原始类型）"
 kind = "control"
 status = "active"
 a11y.name = "结果列头"
-style.metrics = ["column_header_min_height", "font_status"]
+style.metrics = ["column_header_min_height", "font_ui", "font_weight_title"]
 impl_notes = [
   "一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。",
   "表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。",
@@ -583,7 +583,7 @@ source = "src/results.rs:968、src/sql_page.rs:544、src/sql_page.rs:561"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "719abcce7626"
+spec_hash = "d8aacb5cfd03"
 evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装"
 
 [component.sync.windows]
@@ -603,7 +603,7 @@ kind = "control"
 status = "active"
 a11y.name = "查询结果"
 a11y.tab = "可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）"
-style.metrics = ["row_height_data", "row_number_width", "column_width", "font_data_cell"]
+style.metrics = ["row_height_data", "row_number_width", "column_width", "font_data_cell", "font_weight_cell"]
 impl_notes = [
   "虚拟化：只建视口内的行，滚动时不把整批行都做成控件；行号列跨批次连续（1 起、右对齐），宽表靠横向滚动而不是把列压碎。",
   "行号列与数据列的实际宽度目前是代码常量（行号 72、数据列 220，未进 metrics：metrics 里是 row_number_width / column_width），P1 收敛。",
@@ -621,7 +621,7 @@ platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚�
 
 [component.sync.linux]
 state = "done"
-spec_hash = "86ce86d71e39"
+spec_hash = "75589f33e315"
 evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
 
 [component.sync.windows]

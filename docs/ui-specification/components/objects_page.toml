@@ -118,6 +118,8 @@ style.metrics = [
   "column_header_min_height",
   "frame_border_width",
   "radius_md",
+  "font_ui",
+  "font_weight_title",
 ]
 style.tokens = ["sqarvo_frame", "sqarvo_separator"]
 a11y.name = "对象列表"
@@ -184,7 +186,7 @@ source = "src/tabs.rs:1366、src/tabs.rs:1202"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "4455a5f9fd98"
+spec_hash = "e520bd448e70"
 evidence = "§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照"
 
 [component.sync.windows]
@@ -251,7 +253,7 @@ parent = "objects_page.table.row"
 display_name = "行号格"
 kind = "cell"
 status = "active"
-style.metrics = ["row_number_width", "font_status"]
+style.metrics = ["row_number_width", "font_status", "font_weight_ui"]
 a11y.name = "（行内容：第 N 行）"
 impl_notes = [
   "行号 = 模型位置 + 1（不是主键）：右对齐、11px monospace、色弱一档（.sqarvo-row-number）；tooltip「第 N 行」。",
@@ -260,7 +262,7 @@ impl_notes = [
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a5e0854ca022"
+spec_hash = "01eff810f7aa"
 evidence = "§3 行内容（行号列）；number_factory 的 bind 与 tooltip"
 
 [component.sync.windows]
@@ -278,7 +280,7 @@ parent = "objects_page.table.row"
 display_name = "表名格（图标 + 名称）"
 kind = "cell"
 status = "active"
-style.metrics = ["column_width", "icon_box", "gap_md", "gap_sm"]
+style.metrics = ["column_width", "icon_box", "gap_md", "gap_sm", "font_data_cell", "font_weight_cell"]
 a11y.name = "（行内容：图标 + 对象名）"
 impl_notes = [
   "GtkBox（图标 + Label）：图标与对象树共用 kind_icon 映射（表 view-grid、视图 view-reveal），尺寸取 icon_box；名称 xalign 0、hexpand、过长省略号。",
@@ -293,7 +295,7 @@ source = "src/tabs.rs:759"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "064c23390814"
+spec_hash = "bd97742e6370"
 evidence = "§3 行内容（表名列：图标 + 名称 + tooltip）；name_factory 的 bind"
 
 [component.sync.windows]
@@ -311,7 +313,7 @@ parent = "objects_page.table.row"
 display_name = "类型格"
 kind = "cell"
 status = "active"
-style.metrics = ["font_data_cell", "gap_sm", "gap_md"]
+style.metrics = ["font_data_cell", "font_weight_cell", "gap_sm", "gap_md"]
 a11y.name = "（行内容：表 / 视图 / 物化视图）"
 impl_notes = [
   "文案来自 TableEntry::kind_label，只有「表」「视图」「物化视图」三种；dim-label 次要信息色弱一档，过长省略号。",
@@ -320,7 +322,7 @@ impl_notes = [
 
 [component.sync.linux]
 state = "done"
-spec_hash = "395bb90da65b"
+spec_hash = "89bf2a26ec68"
 evidence = "§3 行内容（类型列）；kind_factory 的 setup / bind"
 
 [component.sync.windows]
