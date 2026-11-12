@@ -10,7 +10,51 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 纯文档提交不必重打 .deb（Markdown 改不出新二进制）。标签与手动触发一律打包：
+  # 不能用 paths-ignore —— 同一个 push 触发器还挂着 tags v*，过滤会把发布构建一起跳掉。
+  guard:
+    name: 是否需要打包
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要跟 github.event.before 对比，必须拿到完整历史。
+          fetch-depth: 0
+
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" || "$REF" == refs/tags/* ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "发布标签 / 手动触发：一律打包"
+            exit 0
+          fi
+          if [[ -z "${BEFORE:-}" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            # 新分支或拿不到 before：按全历史判断，宁可多打一次。
+            BASE="$(git rev-list --max-parents=0 HEAD | tail -n1)"
+          else
+            BASE="$BEFORE"
+          fi
+          CHANGED="$(git diff --name-only "$BASE" HEAD)"
+          echo "变更文件："
+          echo "${CHANGED:-<空>}"
+          if [[ -n "$CHANGED" ]] && ! grep -qvE '^(docs/.*|.*\.md)$' <<< "$CHANGED"; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "纯文档改动：跳过打包"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "有代码 / 构建相关改动：打包"
+          fi
+
   deb:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     name: Linux .deb 打包与安装校验
     # 与 ci.yml 的前端作业一致：crate 构建期要求 GTK ≥ 4.16 / libadwaita ≥ 1.6，
     # ubuntu-24.04 的 4.14.2 / 1.5.0 连 pkg-config 都过不了。
