@@ -701,6 +701,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-export-hold` | 停在导出确认对话框（截图用，不自动确认、不写文件） |
 | `--qa-export-cancel-after-rows <n>` | 写满 n 行后走取消路径（验证临时文件清理与「不留半截文件」） |
 | `--qa-export-raw-values` | 关掉导出确认对话框里的「公式注入防护」开关，写原始值（验证 #137 的开关；默认开启防护） |
+| `--qa-export-format <csv\|insert\|dump>` | 导出格式：CSV（默认）/ 一行一条 INSERT / 转储表（建表语句 + 全部数据，固定整表）。`--qa-export-scope table` 与它一起决定 `export` 脚本步骤写什么 |
 | `--qa-startup-workspace` | 截图时刻断言未连接的启动工作区：主区域是 `Objects` 页、空态文案存在、**不含**「后端版本 / 端点文件」（#139） |
 | `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |
 | `--qa-expect-about <substring>` | 「关于 Squarvo」里必须出现的文案（可重复，例如 `后端版本`、`SQLite`；#139） |
@@ -717,10 +718,26 @@ rowid / ctid 之类的近似定位方式。
 光 sleep 不会触发重绘），仍拿不到就退到窗口的内容子控件；两次都失败才报错，报错信息里会打印
 前几层子控件的尺寸 / `node` / `visible` / `mapped`，便于判断是「还没渲染」还是「窗口没映射」。
 
-#### 导出 CSV（#120）
+#### 导出（CSV / INSERT 语句 / 转储表）
 
-`EX`（表工具条 / SQL 结果区）、「表 → 导出 CSV」与 `Ctrl+Shift+E` 走同一个入口：
-`GtkFileDialog` 选目标 → 确认口径 → 目标已存在时二次确认 → 逐行写临时文件 → 成功后改名。
+出口有四种：表工具条的 `导出 ▾` 菜单（CSV / INSERT 语句 / 转储表）、查询结果区的 `导出 ▾` 菜单
+（CSV / INSERT 语句）、对象树表节点右键 `转储表…`、以及「表 → 导出 CSV」/`Ctrl+Shift+E`
+（后两个固定 CSV）。四者走同一段流程：范围 / 文件 → 确认口径 → 目标已存在时二次确认 →
+临时文件逐行写 → 成功后改名。
+
+INSERT 语句（`*.sql`）的写出口径：一行一条 `INSERT INTO "t" ("c1", …) VALUES (…);`，
+NULL 写 `NULL`、空串写 `''`、数字与 Decimal 原文、日期时间加引号 ISO 8601、**BLOB 写 `NULL`**
+（客户端拿不到原始字节，文件末尾 `-- sqarvo:` 注释写明数量）；标识符与字符串按驱动引号
+（SQLite 双引号 / MariaDB 反引号）。转储表 = 建表语句 + 全部数据的 INSERT，可在另一个库直接重放：
+
+```bash
+# 表整表导出为 INSERT（SQLite 临时库；不打开标签也能转储时走对象树右键）
+./target/debug/sqarvo-desktop --qa-profile /tmp/sqlite.json --qa-tabs-file /tmp/tabs.txt \
+  --qa-export-scope table --qa-export-format insert
+# tabs.txt: expand main / open-table users / export 1 /tmp/users.sql / expect-file /tmp/users.sql 200 / quit
+
+sqlite3 /tmp/replay.db < /tmp/users-dump.sql   # 转储可直接重放
+```
 
 写出口径（确认对话框里逐条列出）：
 

@@ -83,7 +83,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 文件 → 新建连接 | 后端已握手才可点（未就绪时禁用，与工具条「连接」同一条判定） | 打开连接对话框；已打开时只前置，不重复创建 | `src/ui.rs:4375`（菜单项）、`src/ui.rs:4423-4447`（`set_backend_ready`）、`src/ui.rs:4505`（`win.new-connection` 接线）、`src/ui.rs:989-994` |
 | 文件 → 新建查询标签 | 后端已握手**且**工作区存在（`set_workspace_ready` 统一开关）；否则禁用 | 与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同一条 `TabSet::new_query_tab` | `src/ui.rs:4376`（菜单项）、`src/ui.rs:4472-4497`（`set_workspace_ready`）、`src/ui.rs:4511`（`win.new-tab` 接线） |
 | 文件 → 退出 | 任意 | 与 `Ctrl+Q` / 关窗同一条守卫：先 `window.close()`（脏行确认照旧），再走清理流程 | `src/ui.rs:4377`（菜单项）、`src/main.rs:285-305`（`install_app_actions` / `quit_app`） |
-| 表 → 导出 CSV | 后端已握手**且**工作区存在；表数据页 / 查询结果页是否有可导出内容由动作自己判定 | 与表工具条 `EX`、`Ctrl+Shift+E` 同一条导出入口 | `src/ui.rs:4382`（菜单项）、`src/ui.rs:4702`（`win.export-csv` 接线）、`src/ui.rs:4472-4497`（工作区开关） |
+| 表 → 导出 CSV | 后端已握手**且**工作区存在；表数据页 / 查询结果页是否有可导出内容由动作自己判定 | 与表工具条 `导出 ▾` 菜单的「导出 CSV…」、`Ctrl+Shift+E` 同一条导出入口（固定 CSV；INSERT 与转储表只在工具条 / 结果区 / 树右键菜单里） | `src/ui.rs:4382`（菜单项）、`src/ui.rs:4702`（`win.export-csv` 接线）、`src/ui.rs:4472-4497`（工作区开关） |
 | 帮助 → 关于 Squarvo | 任意（不依赖后端） | 自绘对话框：版本、协议、后端诊断字段 | `src/ui.rs:4388`（菜单项）、`src/ui.rs:4714`（`win.about` 接线）、`src/ui.rs:4814`（`show_about`） |
 | 视图 → 界面密度 | 任意（不依赖后端）；当前显示器放不下的档禁用 | 三个单选项（行为见 §1.5），当前档打勾、选中即切档。**这一节是自绘控件**：`GMenu` 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项（`id=tier-section`），弹出时用 `PopoverMenu::add_child` 换成 `GtkCheckButton` 组；视图子菜单只为它而存在 | `src/ui.rs:4485-4499`（`build_main_menu` 的占位项与 `append_submenu`）、`src/ui.rs:5048`（`build_tier_menu`）、`src/ui.rs:5097`（`ensure_tier_menu`）、`src/ui.rs:2989`（QA 截图走同一路径） |
 | 查询 / 「关闭标签」/ 表的事务与行操作 | — | **不在菜单里**（菜单裁剪）：查询子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 新增行 / 删除选中行只保留 `win.*` 动作——有快捷键的照旧（`Ctrl+W` / `F5`），其余由工具条、状态栏入口触发，可用性与工具条同一条口径。见 §8.1 的「只保留快捷键」行 | `src/ui.rs:4471-4499`（`build_main_menu`）、`src/ui.rs:4625`（`install_window_actions`）、`src/ui.rs:293-329`（快捷键绑定） |
@@ -210,7 +210,9 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | `删除连接` | 连接在配置里 | 二次确认「删除连接？」（正文写明从 `connections.json` 删除、树节点与浏览会话一并消失、其它连接不受影响）；确认后：关会话 → 删配置 → 尽量删密钥条目。配置删除失败 → 提示「删除连接失败」；配置已删但密钥没删 → 提示「配置已删除，密钥条目未删除（<code>）：<detail>」 | `src/ui.rs:1310-1389`、`src/ui.rs:454-472` |
 | 分组节点（`Tables` / `Views` / 表下的四组） | 分组行 | `刷新这一组`：已展开（层已建立）→ 重读该组第一页；未展开过（层还没建立）→ **不发请求**，侧栏底部临时提示行写「这个分组还没展开：展开时会重新读取」（4 秒后自行收起），并记日志 `[tree] 分组 <name> 未展开，刷新跳过`。静态分组行层（`Groups` / `TableGroups`）没有服务端内容，直接返回 | `src/tree.rs:2944`（`reload_group`）、`src/tree.rs:1829`（`show_hint`） |
 | 库 / schema 节点 | 对象行 | `刷新库`：重读该库下**已展开**的分组与直接子对象层；分组全收起时只清缓存，侧栏底部临时提示行写「这个库的分组都收起着：展开时重新读取」 | `src/tree.rs:3029-3063`（`reload_container`） |
-| 表 / 视图节点 | 可浏览对象 | 只有 `打开`（与双击同一条路径）。没有「查看 DDL」——DDL 在信息面板里 | `src/tree.rs:2718-2729`、`src/tree.rs:2790-2794` |
+| 表节点 | 可浏览对象 | 条目：`打开`（与双击同一条路径）、`转储表…`（v0.2.5）。没有「查看 DDL」——DDL 在信息面板里 | `src/tree.rs`（`menu_items`）、`src/tree.rs`（`menu_action` → `export_ui::begin_object_dump`） |
+| 视图节点 | 可浏览对象 | 只有 `打开`。**没有**「转储表」：往视图 INSERT 的语义取决于数据库，不能假装成可重放的数据 | 同上 |
+| `转储表…` | 表节点；该连接有浏览会话 | 不需要先打开标签：按对象引用里的浏览会话 offset 逐页读全表，建表语句与列名在同一个后台线程里读（同一会话，不跨连接）。弹确认（标题「转储表 <表名>？」）→ 选文件（默认 `<表名>.sql`，过滤 `*.sql`）→ 进度 / 可取消；取消或失败不留半截文件。SQL 引号按该连接的驱动（MariaDB 反引号 / SQLite 双引号） | `src/export_ui.rs`（`begin_object_dump`）、`src/backend/worker.rs`（`Command::ExportTable` → `run_table_export`） |
 | 其它对象（列 / 索引 / 触发器） | 非可浏览 | 没有菜单（`menu_items` 返回空） | `src/tree.rs:2720-2727` |
 | `F5`（菜单里已不列「视图 → 刷新」） | 工作区存在 | 当前标签是表数据页 → 调 `RowOp::Refresh` 刷该表（与状态栏 `⟳` 同一入口：保持排序 / 筛选、回到第 1 页，有未提交更改时被脏行守卫拒绝并说明原因）；查询标签 / `Objects` 页 / 启动态 → 整棵树（全部连接）重建：清已连接连接的层、重读连接层；状态行「正在重新读取对象树…」 | `src/ui.rs:2422-2457`（`refresh_target` / `refresh`）、`src/ui.rs:4582`（`win.refresh` 接线）、`src/tree.rs:1468` |
 
@@ -295,8 +297,11 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 
 工具条**只有一行**（v0.2.4：状态行并入动作行）：动作按钮 → 弹性空白 → **状态簇** → 次要动作。
 按钮顺序固定：
-`提交` `撤销` `删除` `开始事务`（开事务后原位换成 `提交事务` `回滚事务`）──弹性空白──
-[spinner · 过程消息 · ●] `筛选` `列显隐` `导出`。
+`提交` `开始事务`（开事务后原位换成 `提交事务` `回滚事务`）──弹性空白──
+[spinner · 过程消息 · ●] `筛选` `列显隐` `导出 ▾`。
+v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态栏行操作组（`↶` / `−`），
+`删除` 另有数据行右键菜单「删除行」；`导出` 是**带下拉箭头的菜单按钮**（一个入口三种出口，
+见 §5.7），不是单击即导出的图标。
 工具条上**没有「新增」**（v0.2.4 删除）：插入行的入口是状态栏行操作组 `+`
 （`RowOp::Add`）——菜单里不再列「新增行」，`win.add-row` 仍注册但没有快捷键。
 四个动作按钮共用一套内距（`padding: 4px 6px`，按钮盒 36 宽 × 32 高；v0.2.4 前是
@@ -316,8 +321,8 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | `提交` | 可编辑、有待提交变更（脏行或新行）、没有 RPC 在途 | 走风险判定（§8.2）后提交；按钮文案随待提交条数变化（`提交（N）`）。**在途时同一按钮变成「取消提交」且可点**，请求取消后显示「正在取消…」；取消中/已结束不会误触发新提交（幂等） | `src/data_page.rs:717-720`、`src/data_page.rs:4174-4204`、`src/submit_batch.rs:434-444`、`src/data_page.rs:5618-5637` |
-| `撤销` | 可编辑且（有脏行或有新行） | 丢弃全部未提交编辑与删除标记，新行占位行一并移除；结果是「已放弃未提交的更改」/「已放弃未提交的更改（含新增行）」——**不进可见过程消息**，只写状态圆点 tooltip 末段「最近一次操作：…」（口径见本节「操作结果收进圆点」一行），动作行保持为空；换表 / 重新读取后该段清空 | `src/data_page.rs:722-724`、`src/data_page.rs:4098`（`discard_changes`）、`src/data_page.rs:5885`（`note_action`） |
-| `删除` | 可编辑且有选中行 | 只把选中行**标记为待删除**（不立刻写库），结果是「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」——同样**不进可见过程消息**，只写状态圆点 tooltip 末段「最近一次操作：…」（QA 的 `--qa-data-delete-row` 与用户点「删除」同一句）；新行占位行不在删除范围，提示用「放弃更改」 | `src/data_page.rs:4637`（`delete_selected_row`）、`src/data_page.rs:4702`（`delete_note`）、`src/data_page.rs:5136`（`qa_delete_row`） |
+| `撤销`（**不在工具条**：v0.2.5 起唯一入口是状态栏行操作组 `↶`，与 `RowOp::Discard` 同一动作） | 可编辑且（有脏行或有新行） | 丢弃全部未提交编辑与删除标记，新行占位行一并移除；结果是「已放弃未提交的更改」/「已放弃未提交的更改（含新增行）」——**不进可见过程消息**，只写状态圆点 tooltip 末段「最近一次操作：…」（口径见本节「操作结果收进圆点」一行），动作行保持为空；换表 / 重新读取后该段清空 | `src/data_page.rs:722-724`、`src/data_page.rs:4098`（`discard_changes`）、`src/data_page.rs:5885`（`note_action`） |
+| `删除`（**不在工具条**：v0.2.5 起入口是状态栏 `−` 与数据行右键菜单「删除行」） | 可编辑且有选中行 | 只把选中行**标记为待删除**（不立刻写库），结果是「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」——同样**不进可见过程消息**，只写状态圆点 tooltip 末段「最近一次操作：…」（QA 的 `--qa-data-delete-row` 与用户点「删除」同一句）；新行占位行不在删除范围，提示用「放弃更改」 | `src/data_page.rs:4637`（`delete_selected_row`）、`src/data_page.rs:4702`（`delete_note`）、`src/data_page.rs:5136`（`qa_delete_row`） |
 | `新增行`（**不在工具条、也不在菜单里**：唯一入口是状态栏行操作组 `+`） | 可编辑且没有待插入行 | 在末尾插入一行草稿并进入可编辑态：有默认值的列显示数据库默认值原文，自增 / 无默认列保持「省略」（交给数据库生成）；已有待插入行时提示「已经有一行待插入的新行：先提交或放弃它」。入口走 `perform_row_op(RowOp::Add)` → `begin_insert`（`win.add-row` 仍注册，但**没有**绑快捷键、菜单里也不列）；工具条上的同名按钮已在 v0.2.4 删除，`+` 的可用性由 `add_row_available` 判定，不再读某个按钮的 `sensitive` | `src/data_page.rs:2488`（`begin_insert`）、`src/data_page.rs:4261`（`add_row_available`）、`src/data_page.rs:4293`（`perform_row_op`）、`src/shell.rs:914`（状态栏 `+`）、`src/ui.rs:4677`（`win.add-row` 动作） |
 | `开始事务` | 没有打开的事务、未断开，**且没有未提交的更改**（脏行 / 标记删除 / 新行草稿） | 打开隔离级别卡片（§5.2）；已有事务时按钮隐藏（不是置灰）。**有未提交的更改时按钮置灰**，tooltip 给原因「还有 N 行未提交的更改：先提交或放弃它们再开事务」；`begin_transaction()` 自己再核一遍同一条件（页内按钮、`win.begin-txn` 动作（菜单已不列）、QA 都走这一条命令），被挡住时状态行写同一句话、不打开卡片。中性动作：有底色但不用 `suggested-action` / `destructive-action`（v0.2.4 起不再是 `flat`）。QA：`--qa-expect-begin enabled\|disabled`（读按钮 `sensitive` 与 `tooltip_text()`） | `src/data_page.rs:4694`（`begin_transaction` 自检）、`src/data_page.rs:5857`（`begin_tooltip`）、`src/data_page.rs:5869`（`update_buttons`）、`src/data_page.rs:4311`（`row_ops.begin_txn` → 菜单）、`src/ui.rs:4519`（`win.begin-txn`） |
 | `提交事务` | 有活动事务且**没有脏行** | 提交；有脏行时拒绝并提示「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」 | `src/data_page.rs:4458-4482` |
@@ -325,7 +330,7 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 事务按钮互斥 | — | 无事务：只显示「开始事务」；有事务（含失败）：只显示「提交事务 / 回滚事务」 | `src/data_page.rs:5688-5701` |
 | `筛选`（漏斗） | 驱动声明支持筛选且已打开表 | 打开 / 收起筛选与排序面板（§5.3）；能力位为 false 时按钮**隐藏**（不是点了报错） | `src/data_page.rs:3470-3478`、`src/data_page.rs:1591-1600` |
 | `列显隐`（眼睛） | 有列 | 打开页内「列显隐」卡片；只影响渲染，不改变查询与导出口径 | `src/data_page.rs:699-701`、`src/data_page.rs:1524-1590` |
-| `导出` | 有已加载行且没有 RPC 在途 | 打开导出流程（§5.7）；tooltip 说明「导出当前页已加载的 N 行为 CSV（只含本页；JSON/SQL 格式在 v0.2.5；Ctrl+Shift+E）」 | `src/data_page.rs:5662-5666`、`src/export_ui.rs:323` |
+| `导出 ▾`（带下拉箭头） | 有已加载行且没有 RPC 在途 | 点一下展开三项：`导出 CSV…`、`导出为 INSERT 语句…`、`转储表…`（每一项都进入 §5.7 的同一条流程）；tooltip「导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 N 行（Ctrl+Shift+E 直接导出 CSV）」。菜单项用 `GtkPopover`（popup surface，窗口自渲染截图拍不到） | `src/data_page.rs`（`update_buttons` → `self.buttons.export`）、`src/data_page.rs`（导出菜单接线） |
 | 工具条状态簇（漏斗左侧） | — | spinner（有 RPC 在途时可见）+ 本次操作的临时消息（错误 / 进度 / 结果）+ **状态圆点**（7px 实心圆、命中区 24×24）；与动作按钮**同一行**、在漏斗左侧，全部 `valign=Center` 对齐图标按钮。圆点三态互斥：灰 = 没有未提交的更改、也没有打开的事务；`@warning_color` = 事务已打开（含只读 / 失败态，与状态行 `.warning` 文字同一 token）；`@accent_bg_color` = 有脏行 / 新行（压过事务态）；tooltip 是「`<事务状态> · 脏行 N · 待提交 M 条（含 K 个删除）· 新行 1 行`」换行接一行事务状态说明，有已发生的操作结果时再接第三行「`最近一次操作：…`」，随状态实时刷新（QA：`--qa-expect-status-dot`，读控件 tooltip）。读取完成后**擦掉**「正在读取…」，不在这一处重复行数 / 页码 / 总数；960 宽下只有过程消息按省略号收缩，行本身不溢出（`--qa-layout-audit` 复核「表格工具条」与「状态簇」两项：需求 407 ≤ 分配 417） | `src/data_page.rs:854-869`（圆点构造）、`src/data_page.rs:5877`（`sync_status_dot`）、`src/data_page.rs:5722`（`update_dirty_label`）、`src/layout.rs:144`（直径）、`src/theme.rs:252-275`（三态颜色）、`src/ui.rs:4015`（QA 断言） |
 | 过程消息的三类归属：操作结果收进圆点 | 任意 | 过程消息位只留两类：① **「正在…」进行中**（`正在提交…` / `正在取消提交（批次 …）…` / `正在读取表数据…`，读取完成后擦掉）——价值在时效；② **warning / error**（权限不足、类型不可编辑、行已标记删除、提交逐行失败…）——用户必须立刻看到原因。**已经发生的操作结果**（`第 N 行已标记删除（提交前可撤销）`、`已标记删除 N 行（批量提交前可撤销）`、`已放弃未提交的更改` / `（含新增行）`）**不占可见文案**：写进状态圆点 tooltip 末段「`最近一次操作：…`」，可见过程消息同时清空（`note_action` 的统一出口）。注记在换表 / 重新读取（`begin_open`）、提交落定（`show_applied`，未取消时）与事务结束丢弃草稿（`show_transaction`）后清空，只描述当前这一屏还成立的结果。**圆点不存在时**（没有打开的表）不凭空造可见文案，只记一行 `[data]` 日志。QA：`--qa-expect-status-dot 标记删除` 读控件 tooltip（实测 `自动提交 · 脏行 1 · 待提交 1 条（含 1 个删除）⏎自动提交：每条语句自成一个事务⏎最近一次操作：第 2 行已标记删除（提交前可撤销）`），同一次运行 `--qa-layout-audit` 的「状态簇」需求 42px（只剩圆点，没有文字） | `src/data_page.rs:5885`（`note_action`）、`src/data_page.rs:6147`（tooltip 第三行）、`src/data_page.rs:4098`（`discard_changes`）、`src/data_page.rs:4637` / `src/data_page.rs:5136`（删除，含 QA 入口）、`src/data_page.rs:3628` / `3903` / `4038`（清空注记） |
 | 表头上方徽标行 | 视情况常驻 | 只读 / 无主键 / 视图（种类名）/ 无权限 / 未统计 / 驱动不支持排序筛选；每枚带解释性 tooltip；有任意一枚时整行可见 | `src/data_page.rs:3573-3636` |
@@ -404,21 +409,35 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 | 只读（表级 / 视图 / 无主键 / 只读事务） | 服务端标记 | 横幅说明原因 + 「只读」「无主键」「视图」徽标；编辑类按钮禁用，状态行 tooltip 给同一原因（不能只靠禁用暗示） | `src/data_page.rs:3480-3515`、`src/data_page.rs:3578-3604`、`src/data_page.rs:5670-5682` |
 | 断连 | 会话丢失或后端断开 | 丢弃未提交更改；横幅「已断开：<原因> 未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚。」（无脏行时省略中间一句）；状态行「已断开 · 已加载 N 行（只读）」；**已加载数据保留** | `src/data_page.rs:3825-3856` |
 
-### 5.7 导出 CSV（`Ctrl+Shift+E`）
+### 5.7 导出（CSV / INSERT 语句 / 转储表）
+
+三种出口共用一条流程（范围 / 文件 / 确认 / 覆盖 / 进度 / 取消 / 完成），差别只在写出的格式与
+文件过滤器。`Ctrl+Shift+E` 与菜单「表 → 导出 CSV」仍是**直接导出 CSV**（不弹格式菜单）。
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 入口 | 当前标签是表数据页或查询页 | 三个入口同一条路径：工具条导出图标、菜单「表 → 导出 CSV」、`Ctrl+Shift+E`；没有可导出的结果页时只写日志 | `src/ui.rs:3992-4002`、`src/tabs.rs:2537`、`src/data_page.rs:1260-1268` |
-| 查询标签导出 | 有已加载行 | 只导**已加载的行**，不重跑 SQL；没有行 → 提示「没有可导出的行」+「当前标签没有已加载的行：先执行查询，再导出。」 | `src/export_ui.rs:323-337` |
-| 表标签：选范围 | 已打开表 | 对话框「导出范围」，正文分别说明「当前页」与「整张表」；按钮 取消 / 当前页 / **整张表**；默认「当前页」，整张表必须显式选择 | `src/export_ui.rs:343-416` |
-| 表标签：未打开表 | 标签还没有表 | 提示「没有可导出的行」+「这个标签还没有打开表：先在对象树里打开一张表，再导出。」 | `src/export_ui.rs:344-352` |
-| 明确知道 0 行 | 计划为空或总数为 0 | 提示「没有可导出的行」+「这张表当前没有可导出的行（或这一页还没加载到数据）。」，不进入文件选择器 | `src/export_ui.rs:398-411` |
-| 选择目标文件 | — | `GtkFileDialog`（标题「导出为 CSV」、过滤 `*.csv`、默认文件名）；在文件对话框取消 → 不写文件、不报错 | `src/export_ui.rs:419-451` |
-| 确认导出 | 已选路径 | 标题「导出已加载的 N 行为 CSV？」/「导出整张表为 CSV？」；附「公式注入防护」开关（**默认开**，关闭后写原始值）；按钮 取消 / 导出（建议） | `src/export_ui.rs:497-604` |
-| 目标已存在 | — | 再确认一次，默认**不覆盖**（默认响应「取消」），按钮 取消 / 覆盖 | `src/export_ui.rs:607-668` |
-| 整表导出进行中 | 已确认 | 进度对话框（已写行数 / 截断单元格数）+「取消」；取消或失败不留半截文件与临时文件 | `src/export_ui.rs:938-1100` |
-| 当前页导出的数据口径 | — | 写页面**当前的值，含未提交编辑**（对话框里写明）；整表导出写数据库已提交值，本页未提交编辑不在文件中 | `src/export_ui.rs:355-362` |
-| 列口径 | — | 导出**全部列**；列显隐只影响渲染 | `src/data_page.rs:1458-1466` |
+| 入口 | 当前标签是表数据页或查询页 | ① 表工具条的 `导出 ▾` 菜单（三项）；② 查询结果区的 `导出 ▾` 菜单（两项，无「转储表」）；③ 对象树表节点的右键「转储表…」；④ 菜单「表 → 导出 CSV」/`Ctrl+Shift+E`（= CSV）；没有可导出内容时只写日志 | `src/data_page.rs`、`src/sql_page.rs`、`src/tree.rs`、`src/ui.rs`、`src/tabs.rs` |
+| 查询标签导出 | 有已加载行 | 只导**已加载的行**，不重跑 SQL；范围固定，没有「整张表」。没有行 → 提示「没有可导出的行」+「当前标签没有已加载的行：先执行查询，再导出。」 | `src/export_ui.rs`（`begin` → `ExportSource::Query`） |
+| 查询结果导出 INSERT 的目标表名 | — | 结果集不携带来源表名：只接受**唯一一个顶层 `FROM`**（跳过字符串 / 注释 / 括号）并取其 `[库.]表` 的最后一段；推断不出（JOIN 外的第二个 FROM、`FROM (`、无 FROM）时写占位名 `result`，并在文件头加一行注释「结果集不携带来源表名：目标表写成占位名 result，导入前请替换成真实表名。」 | `src/export.rs`（`table_from_sql`）、`src/export_ui.rs`（`sql_table`） |
+| 表标签：选范围 | 已打开表 | 对话框「导出范围（CSV / INSERT 语句）」，正文分别说明「当前页」与「整张表」；按钮 取消 / 当前页 / **整张表**；默认「当前页」，整张表必须显式选择。**转储表不问范围**（天然整表） | `src/export_ui.rs`（`choose_range`） |
+| 明确知道 0 行 | 计划为空或总数为 0 | 提示「没有可导出的行」，不进入文件选择器。**转储表例外**：空表也允许，只写建表语句 | `src/export_ui.rs`（`begin`、`begin_qa`） |
+| 选择目标文件 | — | `GtkFileDialog`：CSV → 标题「导出为CSV」、过滤 `*.csv`、默认 `sqarvo-export.csv`；INSERT → 标题「导出为INSERT 语句」、过滤 `*.sql`、默认 `sqarvo-insert.sql`；转储 → 标题「导出为SQL 脚本」、默认 `<表名>.sql`。在文件对话框取消 → 不写文件、不报错 | `src/export_ui.rs`（`pick_target`）、`src/export.rs`（`Format::extension` / `default_file_name`） |
+| 确认导出 | 已选路径 | 标题：CSV「导出已加载的 N 行为 CSV？」/「导出整张表为 CSV？」；INSERT 同句式换成「INSERT 语句」；转储「转储表 <表名>？」。正文按格式给写出口径；**公式注入防护开关只给 CSV**（SQL 不经过表格软件）；按钮 取消 / 导出（建议） | `src/export_ui.rs`（`confirm`） |
+| INSERT 写出口径 | — | 一行一条 `INSERT INTO "t" ("c1", …) VALUES (…);`（LF 行尾）；NULL 写 `NULL`、空串写 `''`；数字 / Decimal 原文；日期时间加引号 ISO 8601；**BLOB 写 `NULL`**（客户端拿不到原始字节），文件末尾 `-- sqarvo:` 注释写明数量；被截断的文本只有前缀，同样在末尾注明。标识符与字符串按驱动：SQLite 双引号，MariaDB 反引号 + 反斜杠转义 | `src/export.rs`（`sql_literal` / `write_insert` / `write_sql_header`）、`src/backend/worker.rs` |
+| 转储表内容 | — | 文件头一行 `-- Sqarvo 导出：表 "t"（N 列）` → 可选注释 → **建表语句**（现场 `GetDdl`；`exact = false` 时加一行「建表语句由客户端拼装」）→ 每行一条 INSERT。列名与建表语句在同一个后台线程里读（同一会话）。可在另一个 SQLite 库里直接 `sqlite3 x.db < dump.sql` 重放 | `src/backend/worker.rs`（`run_table_export`） |
+| 目标已存在 | — | 再确认一次，默认**不覆盖**（默认响应「取消」），按钮 取消 / 覆盖 | `src/export_ui.rs`（`after_confirm`） |
+| 整表 / 转储进行中 | 已确认 | 进度对话框（已写行数 / 截断单元格数）+「取消」；取消或失败不留半截文件与临时文件 | `src/export_ui.rs`（`run_whole_table_export`） |
+| 当前页导出的数据口径 | — | 写页面**当前的值，含未提交编辑**（对话框里写明）；整表 / 转储写数据库已提交值，本页未提交编辑不在文件中 | `src/export_ui.rs`（`ExportScope::title` / `table_note`） |
+| 列口径 | — | 导出**全部列**；列显隐只影响渲染 | `src/data_page.rs`（`export_columns`） |
+
+### 5.8 数据行右键菜单（v0.2.5）
+
+| 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| 打开 | 已打开表（有草稿） | 在数据行（任意单元格）上右键：未选中的行先被选中，已多选时保留多选；菜单是贴着点击位置的 `GtkPopoverMenu`（popup surface） | `src/data_page.rs`（`show_row_menu`、`cell_factory` 的 button-3 手势） |
+| `删除行` | 可编辑且有选中行（`delete_available`，与状态栏 `−` 同一谓词） | 与状态栏 `−` / `RowOp::Delete` 完全同一方法：只把选中行**标记为待删除**，结果进状态圆点 tooltip 末段「最近一次操作：…」；新行占位行不在删除范围 | `src/data_page.rs`（`delete_selected_row`、`row.delete-row` 动作） |
+| `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单在悬停时由 GTK 展开 | `src/data_page.rs`（`copy_selected_as_insert`）、`src/export.rs`（`multi_row_insert`） |
+| 视图 / 只读连接 | 不可编辑 | `删除行` 灰掉（`delete_available` = false）；`复制为 INSERT` 仍可用（只读也要能导出数据） | 同上 |
 
 ---
 
