@@ -9,6 +9,8 @@ on:
       - 'docs/**'
       - '**/*.md'
       - 'scripts/**'   # 校验脚本不参与构建；它们由 ui-contract / readme 各自负责
+                       # （例外：scripts/xaml_lint.py 是下面 Windows 作业的一步，
+                       #  但它单独变更时不会触发本 workflow，改它请本地跑一次）
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -299,5 +301,50 @@ jobs:
             backend/cross-catalog-tests.log
           if-no-files-found: warn
 
-  # Windows / macOS 前端尚未接入后端，且需要对应平台 SDK，
-  # 因此暂不纳入 CI。接入后应各自增加构建任务。
+  # Windows 前端此前完全不在 CI 里：WinUI 3 的 XAML 编译只能在 Windows 上做，而开发机与
+  # 其余作业都是 Linux，于是 frontend/windows 的破坏只有人工在验证机上才会发现。
+  # 这条作业把「编得过（0 error）+ Core 单测 + XAML 门禁」变成每次 PR 的硬门槛。
+  #
+  # 两点口径：
+  #   - warning 不阻断（WinUI 生成的代码会带既存 warning），error 让 dotnet build 退出码非 0；
+  #   - Platform 必须显式给 x64：csproj 的 Platforms 是 x64;ARM64，不带参数会落到 AnyCPU。
+  # 也正因为这条作业在 Windows 上跑，它是唯一能验证「XAML 真的能编译」的地方——Linux 侧
+  # 的 Core 构建与测试不能替代它。
+  windows:
+    name: 前端（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend/windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # 未打包 WinUI 3 工程只要 NuGet 还原 Microsoft.WindowsAppSDK 就能构建，不需要
+      # Visual Studio 的「Windows 应用开发」工作负载（验证机上实测过）。
+      # Metrics.g.cs 由 tools/gen-metrics.ps1 在 PrepareForBuild 生成，用的是 runner 自带的
+      # Windows PowerShell 5.1，不要换成 pwsh（脚本按 Windows PowerShell 写）。
+      - name: 构建 WinUI 工程
+        run: dotnet build Sqarvo.Windows/Sqarvo.Windows.csproj -p:Platform=x64 -c Debug
+
+      # 集成测试（BackendIntegrationTests）在没有后端产物时于 Windows 上直接返回，
+      # 所以这里不依赖 Rust 后端，也不会把「没编后端」当成失败。
+      - name: Core 单元测试
+        run: dotnet test Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj -c Debug
+
+      # 门禁本身是纯 Python（标准库），与本作业的 Windows 环境无关，放在这里是为了
+      # 「XAML 能编译」与「XAML 没违反口径」在同一个作业里一起红。
+      # PYTHONUTF8 兜住 Windows 控制台默认代码页不是 UTF-8 的情况（输出里有中文）。
+      - name: XAML 门禁
+        working-directory: ${{ github.workspace }}
+        env:
+          PYTHONUTF8: '1'
+        run: python scripts/xaml_lint.py
+
+  # macOS 前端尚未接入后端，且需要对应平台 SDK，因此暂不纳入 CI。接入后照 Windows 作业
+  # 的形状增加一个 macos-latest 作业。
