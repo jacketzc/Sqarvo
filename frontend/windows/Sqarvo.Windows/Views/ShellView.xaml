@@ -345,7 +345,7 @@
                             Text="Tables"
                             FontSize="{StaticResource Size.FontUi}"
                             FontWeight="{StaticResource Weight.Title}"
-                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                            Foreground="{ThemeResource SqarvoOnSelectionTextBrush}"
                             VerticalAlignment="Center" />
                     </Border>
                     <Border

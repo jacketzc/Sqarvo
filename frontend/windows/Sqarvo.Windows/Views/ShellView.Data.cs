@@ -1869,6 +1869,13 @@ public sealed partial class ShellView
         AutomationProperties.SetName(
             grid,
             $"{numberText} {(columns > 0 ? DataCellText.Display(row.Value(0)) : string.Empty)}".Trim());
+
+        // 选中行底色是品牌中档：脏行强调色 / 次要色在紫底上都会糊，统一换配对前景。
+        if (selected)
+        {
+            ApplySelectionForeground(grid);
+        }
+
         return grid;
     }
 

@@ -755,6 +755,11 @@ public sealed partial class ShellView
         AddCell(grid, 1, entry.Name, secondary: false, rightAligned: false, fontSize: Metrics.FontDataCell, mono: false);
         AddCell(grid, 2, entry.KindLabel, secondary: true, rightAligned: false, fontSize: Metrics.FontDataCell, mono: false);
 
+        if (selected)
+        {
+            ApplySelectionForeground(grid);
+        }
+
         // 通栏可访问名：--report-shell 断言「行号 名称 类型」就靠它（只有一个 TextBlock 时读出的是纯名字）。
         AutomationProperties.SetName(grid, $"{index + 1} {entry.Name} {entry.KindLabel}");
 
@@ -793,6 +798,26 @@ public sealed partial class ShellView
         }
 
         return grid;
+    }
+
+    /// <summary>
+    /// 选中行底色是品牌中档，行内文字必须整体换成配对前景——否则次要列（行号 / 类型）与
+    /// 脏行强调色在紫底上直接糊掉。调用点都在行容器装好所有 TextBlock 之后。
+    /// </summary>
+    private void ApplySelectionForeground(Panel row)
+    {
+        if (ThemeBrush("SqarvoOnSelectionTextBrush") is not { } brush)
+        {
+            return;
+        }
+
+        foreach (var child in row.Children)
+        {
+            if (child is TextBlock text)
+            {
+                text.Foreground = brush;
+            }
+        }
     }
 
     private TextBlock AddCell(
@@ -1092,7 +1117,7 @@ public sealed partial class ShellView
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        if (ThemeBrush(active ? "SqarvoAccentTextBrush" : "SqarvoTextPrimaryBrush") is { } foreground)
+        if (ThemeBrush(active ? "SqarvoOnSelectionTextBrush" : "SqarvoTextPrimaryBrush") is { } foreground)
         {
             button.Foreground = foreground;
         }
