@@ -179,6 +179,7 @@ parent = "object_tree.tree.row"
 display_name = "连接行"
 kind = "row"
 status = "active"
+style.icon = ["tree.connection"]
 a11y.name = "（行内容：连接名 + 连接态徽标）"
 impl_notes = ["行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。"]
 
@@ -196,7 +197,7 @@ source = "src/tree.rs:2858"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "bab8fbfd18af"
+spec_hash = "4aaed15e7aad"
 commit = "7436cd5"
 evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
 
@@ -215,6 +216,7 @@ parent = "object_tree.tree.row"
 display_name = "库 / schema 行"
 kind = "row"
 status = "active"
+style.icon = ["object.catalog", "object.schema"]
 a11y.name = "（行内容：库 / schema 名）"
 impl_notes = ["库与 schema 不合并成一层：驱动给 schema 层就多一层，重名库靠「会话 + 库名」精确匹配。"]
 
@@ -232,7 +234,7 @@ source = "src/tree.rs:2858"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3b006552e122"
+spec_hash = "d22704420de4"
 commit = "7436cd5"
 evidence = "§2.1 展开库 / schema"
 
@@ -251,6 +253,7 @@ parent = "object_tree.tree.row"
 display_name = "分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers）"
 kind = "row"
 status = "active"
+style.icon = ["tree.group.tables", "tree.group.views", "tree.group.functions", "tree.group.queries", "tree.table_group.fields", "tree.table_group.indexes", "tree.table_group.foreign_keys", "tree.table_group.triggers"]
 a11y.name = "（行内容：分组名）"
 impl_notes = [
   "未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。",
@@ -278,7 +281,7 @@ source = "src/tree.rs:365、src/tree.rs:446、src/tree.rs:507"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "1267e871a958"
+spec_hash = "e4b508a48b36"
 commit = "7436cd5"
 evidence = "§2.1 分组与空态文案"
 
@@ -297,6 +300,7 @@ parent = "object_tree.tree.row"
 display_name = "表 / 视图行"
 kind = "row"
 status = "active"
+style.icon = ["object.table", "object.view"]
 a11y.name = "（行内容：对象名 + 种类）"
 impl_notes = ["可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。"]
 
@@ -314,7 +318,7 @@ source = "src/tree.rs:2681、src/tree.rs:2704"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c0dee29ad9a6"
+spec_hash = "ab8660f7e7db"
 commit = "7436cd5"
 evidence = "§2.2 双击表 / 视图"
 
@@ -333,6 +337,7 @@ parent = "object_tree.tree.row"
 display_name = "列 / 索引 / 触发器行"
 kind = "row"
 status = "active"
+style.icon = ["object.column", "object.index", "object.trigger", "object.type"]
 a11y.name = "（行内容：列 / 索引 / 触发器名）"
 impl_notes = ["叶子对象：没有子层、没有菜单、不发请求。"]
 
@@ -344,7 +349,7 @@ source = "src/tree.rs:769"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "9beb2c14507e"
+spec_hash = "2eca250a9431"
 commit = "7436cd5"
 evidence = "§2.2 双击列 / 索引 / 触发器"
 
@@ -363,6 +368,7 @@ parent = "object_tree.tree.row"
 display_name = "占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现）"
 kind = "row"
 status = "active"
+style.icon = ["tree.note.loading", "tree.note.warning", "tree.note.info"]
 a11y.name = "占位行"
 style.metrics = ["row_height_tree", "font_status"]
 impl_notes = ["占位行不可展开、不携带层；右键直接返回，不给菜单。"]
@@ -393,7 +399,7 @@ source = "src/tree.rs:3191"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "17fe419b72e2"
+spec_hash = "0df9bbc8ca0c"
 commit = "7436cd5"
 evidence = "§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单"
 

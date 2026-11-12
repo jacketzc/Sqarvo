@@ -105,6 +105,7 @@ parent = "dialogs.connection"
 display_name = "标题与副标题"
 kind = "control"
 status = "active"
+style.metrics = ["font_title", "font_panel"]
 style.slot = "dialogs"
 a11y.name = "连接对话框标题"
 impl_notes = [
@@ -126,7 +127,7 @@ source = "src/dialog.rs:485、src/dialog.rs:501"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f00032c5cc77"
+spec_hash = "9cb63643505c"
 commit = "7436cd5"
 evidence = "dialog.rs apply_selection / set_pending 复核"
 
@@ -145,6 +146,7 @@ parent = "dialogs.connection"
 display_name = "驱动下拉"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "驱动"
 a11y.tab = "可聚焦；↑ / ↓ 换驱动"
@@ -167,7 +169,7 @@ source = "src/dialog.rs:390、src/dialog.rs:293、src/dialog.rs:436"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c8096e08dee9"
+spec_hash = "63fe1d7cd5c6"
 commit = "7436cd5"
 evidence = "dialog.rs apply_selection 与 DriverChoice::from_summary 复核"
 
@@ -222,6 +224,7 @@ parent = "dialogs.connection.fields"
 display_name = "主机"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "主机"
 impl_notes = ["新建时的初值与切回服务器型驱动时的补值是 127.0.0.1；文件型驱动下不显示。"]
@@ -240,7 +243,7 @@ source = "src/driver_form.rs:169、src/dialog.rs:700"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "03d0525114d9"
+spec_hash = "0332ac1f48a8"
 commit = "7436cd5"
 evidence = "dialog.rs 默认值 + driver_form.rs 校验文案"
 
@@ -259,6 +262,7 @@ parent = "dialogs.connection.fields"
 display_name = "端口"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "端口"
 impl_notes = ["新建时的初值是 3306；输入框是数字用途（不是数字键盘强制的自绘控件）。"]
@@ -277,7 +281,7 @@ source = "src/driver_form.rs:176、src/driver_form.rs:181"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c5b82a679103"
+spec_hash = "e2745ea241c8"
 commit = "7436cd5"
 evidence = "driver_form.rs 端口解析与两条文案"
 
@@ -296,6 +300,7 @@ parent = "dialogs.connection.fields"
 display_name = "用户名"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "用户名"
 
@@ -307,7 +312,7 @@ source = "src/driver_form.rs:190、src/dialog.rs:700"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a3c7fc5cd8ab"
+spec_hash = "e17b4b593516"
 commit = "7436cd5"
 evidence = "driver_form.rs 用户名校验"
 
@@ -326,6 +331,7 @@ parent = "dialogs.connection.fields"
 display_name = "数据库（可选）"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "数据库"
 impl_notes = [
@@ -341,7 +347,7 @@ source = "src/dialog.rs:169、src/driver_form.rs:186、src/driver_form.rs:246"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ab2214fc2f1f"
+spec_hash = "c12f15394c07"
 commit = "7436cd5"
 evidence = "dialog.rs 行标题 + driver_form.rs default_name"
 
@@ -360,6 +366,7 @@ parent = "dialogs.connection.fields"
 display_name = "密码"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "密码"
 impl_notes = [
@@ -383,7 +390,7 @@ source = "src/driver_form.rs:200、src/dialog.rs:700"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "40af8edf2a80"
+spec_hash = "94b3a2af8827"
 commit = "7436cd5"
 evidence = "dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密码校验"
 
@@ -402,6 +409,7 @@ parent = "dialogs.connection.fields"
 display_name = "TLS 模式（五档）"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "TLS 模式"
 impl_notes = [
@@ -424,7 +432,7 @@ source = "src/dialog.rs:477、src/dialog.rs:750"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e8fe96f3cf3d"
+spec_hash = "fa339da22914"
 commit = "7436cd5"
 evidence = "dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for"
 
@@ -443,6 +451,7 @@ parent = "dialogs.connection.fields"
 display_name = "数据库文件（含「浏览」）"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "dialogs"
 a11y.name = "数据库文件"
 impl_notes = [
@@ -465,7 +474,7 @@ source = "src/driver_form.rs:207、src/driver_form.rs:214"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "aaea371b85e4"
+spec_hash = "f1d9c74ef524"
 commit = "7436cd5"
 evidence = "dialog.rs open_file_chooser + driver_form.rs 路径校验"
 
@@ -484,6 +493,7 @@ parent = "dialogs.connection.fields"
 display_name = "「只读打开」"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "min_target"]
 style.slot = "dialogs"
 a11y.name = "只读打开"
 impl_notes = ["副标题「以只读方式连接：数据库会拒绝任何写入（数据页会显示只读原因）」；只对文件型驱动显示。"]
@@ -496,7 +506,7 @@ source = "src/driver_form.rs:221、src/dialog.rs:192"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "09c7dca15226"
+spec_hash = "e5a1f6718b82"
 commit = "7436cd5"
 evidence = "driver_form.rs 只读 + 内存库互斥规则"
 
@@ -801,6 +811,7 @@ parent = "dialogs.about"
 display_name = "名称 / 版本 / 一句说明"
 kind = "control"
 status = "active"
+style.metrics = ["font_panel"]
 style.slot = "dialogs"
 a11y.name = "Sqarvo 版本"
 impl_notes = ["版本号取编译期包版本，不写死文案；字号来自 Adw 的 title-1 与 dim-label，未进 metrics。"]
@@ -813,7 +824,7 @@ source = "src/ui.rs:5301、src/ui.rs:5304、src/ui.rs:5307"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "05622bc1d6a1"
+spec_hash = "dab9db0aba6d"
 commit = "7436cd5"
 evidence = "ui.rs show_about 应用信息三行"
 

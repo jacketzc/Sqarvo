@@ -212,6 +212,7 @@ parent = "tabs.strip.tab"
 display_name = "标签关闭按钮（×）"
 kind = "control"
 status = "active"
+style.icon = ["action.close_tab"]
 a11y.name = "关闭标签"
 style.metrics = ["min_target"]
 impl_notes = [
@@ -254,7 +255,7 @@ source = "src/ui.rs:328、src/tabs.rs:2856"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "14b415cf7ea2"
+spec_hash = "6255d75d243d"
 evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current"
 
 [component.sync.windows]
@@ -272,6 +273,7 @@ parent = "tabs.strip"
 display_name = "「＋」新建查询标签"
 kind = "control"
 status = "active"
+style.icon = ["action.new_query"]
 a11y.name = "新建查询标签"
 style.metrics = ["min_target"]
 impl_notes = [
@@ -294,7 +296,7 @@ source = "src/ui.rs:327、src/ui.rs:4757、src/tabs.rs:1856"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ca149095cd4d"
+spec_hash = "fe7ea1ebdea1"
 evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作"
 
 [component.sync.windows]

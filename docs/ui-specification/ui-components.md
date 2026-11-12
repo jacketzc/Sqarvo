@@ -166,6 +166,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
 - 无障碍：可访问名「筛选与排序」；Tab 工具条次要动作组内第一枚
+- 图标：`action.filter`
 - 同步：Linux done（§5.1 / §5.3 能力位与面板开合；toggle_filter_panel + show_open）；Windows none（§7.1 未记录：Windows 数据页没有筛选 / 排序入口。）；macOS none
 - 实现备注：图标是项目自有的 sqarvo-filter-symbolic：放大镜会被读成「搜索」，Adwaita / Yaru 都没有漏斗。驱动能力位 filtering=false 时按钮**隐藏**（不是点了报错）；没有列时一并禁用。面板是挂在它上面的 popover（autohide=false），锚点落在面板上沿偏右（0.618）。
 
@@ -180,6 +181,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
 - 无障碍：可访问名「列显隐」；Tab 工具条次要动作组内第二枚
+- 图标：`action.columns`
 - 同步：Linux done（§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility）；Windows none（§7.1 未记录：Windows 数据页没有列显隐入口。）；macOS none
 - 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。与漏斗互斥：打开卡片会收起筛选面板。
 
@@ -207,6 +209,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
 - 无障碍：可访问名「导出」；Tab 工具条次要动作组内第三枚（最右）
+- 图标：`action.export`
 - 同步：Linux done（§5.1 导出 ▾ / §5.7 入口；MenuButton + 三个菜单项走 export_ui::begin）；Windows none（§7.1 未记录：Windows 数据页没有导出入口（对象树条目同样写明「数据页导出亦未实现」）。）；macOS none
 - 实现备注：图标 + 下拉箭头（always_show_arrow）：**一个入口三种出口**，不是单击即导出的图标；图标仍是 document-save-symbolic。tooltip：「导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 N 行（Ctrl+Shift+E 直接导出 CSV）」。有已加载行且没有 RPC 在途时可用；在途时禁用（避免写出半套状态）。Ctrl+Shift+E 与菜单「表 → 导出 CSV」仍是**直接导出 CSV**（不弹格式菜单），与这一格不是同一条路径。
 
@@ -623,7 +626,7 @@ kind `container` · status `active` · parent `dialogs`
 
 kind `control` · status `active` · parent `dialogs.connection`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_title`、`font_panel`
 - 无障碍：可访问名「连接对话框标题」
 - 同步：Linux done（dialog.rs apply_selection / set_pending 复核）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：副标题只说「当前驱动是谁」，不写主机 / 用户：那两样在表单里本身可见。标题字号由 AdwWindowTitle 决定，未进 metrics。
@@ -637,7 +640,7 @@ kind `control` · status `active` · parent `dialogs.connection`
 
 kind `control` · status `active` · parent `dialogs.connection`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「驱动」；Tab 可聚焦；↑ / ↓ 换驱动
 - 同步：Linux done（dialog.rs apply_selection 与 DriverChoice::from_summary 复核）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：清单只来自后端 SystemService.ListDrivers，前端不硬编码；默认值偏好 MariaDB 只是肌肉记忆，不是清单。下拉标签形如「显示名（driver_id）」；前端没有表单的驱动照样列出，标签追加「前端暂无表单」。
@@ -664,7 +667,7 @@ kind `container` · status `active` · parent `dialogs.connection`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「主机」
 - 同步：Linux done（dialog.rs 默认值 + driver_form.rs 校验文案）；Windows partial（§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。）；macOS none
 - 实现备注：新建时的初值与切回服务器型驱动时的补值是 127.0.0.1；文件型驱动下不显示。
@@ -678,7 +681,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「端口」
 - 同步：Linux done（driver_form.rs 端口解析与两条文案）；Windows partial（§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。）；macOS none
 - 实现备注：新建时的初值是 3306；输入框是数字用途（不是数字键盘强制的自绘控件）。
@@ -692,7 +695,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「用户名」
 - 同步：Linux done（driver_form.rs 用户名校验）；Windows partial（§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。）；macOS none
 
@@ -704,7 +707,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「数据库」
 - 同步：Linux done（dialog.rs 行标题 + driver_form.rs default_name）；Windows partial（§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。）；macOS none
 - 实现备注：行标题本身就是说明：「数据库（可选：留空则连接后浏览所有库）」，不靠 tooltip 才说清可选。空库名是合法值：语义是「没有默认库」，不是缺必填项。
@@ -717,7 +720,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「密码」
 - 平台差异：Windows：§7.1：密码只进 Windows 凭据管理器，落盘只有 credential_ref；密码行的留空与复用规则未记录。
 - 同步：Linux done（dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密码校验）；Windows partial（§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。）；macOS none
@@ -732,7 +735,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「TLS 模式」
 - 同步：Linux done（dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for）；Windows partial（§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。）；macOS none
 - 实现备注：五档固定顺序：禁用（disabled）/ 优先（preferred）/ 必需（required）/ 校验 CA（verify-ca）/ 完整校验（verify-full）；默认「优先」。标签随驱动能力重建：驱动做不到只校链时，第四档写「校验 CA（verify-ca，本驱动等同 verify-full）」并给副标题「本驱动无法只校验证书链：仍会校验主机名」。文件型驱动没有 TLS：不显示该行，落盘的 tls_mode 是 disabled，不写一个假的安全策略。
@@ -746,7 +749,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「数据库文件」
 - 同步：Linux done（dialog.rs open_file_chooser + driver_form.rs 路径校验）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：路径可手输，也可点行尾「浏览」用系统文件选择器（标题「选择 SQLite 数据库文件」，过滤 *.db、*.sqlite、*.sqlite3）。文件选择器取消不算错误：不写行、不记错误日志。:memory: 是合法路径：不要求文件存在。
@@ -760,7 +763,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 kind `control` · status `active` · parent `dialogs.connection.fields`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`min_target`
 - 无障碍：可访问名「只读打开」
 - 同步：Linux done（driver_form.rs 只读 + 内存库互斥规则）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：副标题「以只读方式连接：数据库会拒绝任何写入（数据页会显示只读原因）」；只对文件型驱动显示。
@@ -872,7 +875,7 @@ kind `container` · status `active` · parent `dialogs`
 
 kind `control` · status `active` · parent `dialogs.about`
 
-- 样式：槽位 `dialogs`
+- 样式：槽位 `dialogs`；尺寸 `font_panel`
 - 无障碍：可访问名「Sqarvo 版本」
 - 同步：Linux done（ui.rs show_about 应用信息三行）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：版本号取编译期包版本，不写死文案；字号来自 Adw 的 title-1 与 dim-label，未进 metrics。
@@ -1288,6 +1291,7 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：连接名 + 连接态徽标）」
+- 图标：`tree.connection`
 - 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）；Windows partial（已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。）；macOS none
 - 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。
 
@@ -1301,6 +1305,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：库 / schema 名）」
+- 图标：`object.catalog`、`object.schema`
 - 同步：Linux done（§2.1 展开库 / schema）；Windows partial（展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。）；macOS none
 - 实现备注：库与 schema 不合并成一层：驱动给 schema 层就多一层，重名库靠「会话 + 库名」精确匹配。
 
@@ -1314,6 +1319,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：分组名）」
+- 图标：`tree.group.tables`、`tree.group.views`、`tree.group.functions`、`tree.group.queries`、`tree.table_group.fields`、`tree.table_group.indexes`、`tree.table_group.foreign_keys`、`tree.table_group.triggers`
 - 同步：Linux done（§2.1 分组与空态文案）；Windows partial（四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。）；macOS none
 - 实现备注：未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。未实现分组展开只写一行说明：「函数列表尚未实现（点开看说明，不发请求）」「已保存的查询尚未实现（点开看说明）」「驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装」。空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。
 
@@ -1328,6 +1334,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：对象名 + 种类）」
+- 图标：`object.table`、`object.view`
 - 同步：Linux done（§2.2 双击表 / 视图）；Windows partial（双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。）；macOS none
 - 实现备注：可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。
 
@@ -1341,6 +1348,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：列 / 索引 / 触发器名）」
+- 图标：`object.column`、`object.index`、`object.trigger`、`object.type`
 - 同步：Linux done（§2.2 双击列 / 索引 / 触发器）；Windows none（表节点是叶子，四组尚未实现（§9 已知偏差）。）；macOS none
 - 实现备注：叶子对象：没有子层、没有菜单、不发请求。
 
@@ -1354,6 +1362,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 样式：尺寸 `row_height_tree`、`font_status`
 - 无障碍：可访问名「占位行」
+- 图标：`tree.note.loading`、`tree.note.warning`、`tree.note.info`
 - 同步：Linux done（§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单）；Windows partial（有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。）；macOS none
 - 实现备注：占位行不可展开、不携带层；右键直接返回，不给菜单。
 
@@ -1579,6 +1588,7 @@ kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
+- 图标：`tab.objects`
 - 同步：Linux done（§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支）；Windows partial（§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。）；macOS none
 - 实现备注：AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。
 
@@ -1691,7 +1701,7 @@ kind `control` · status `active` · parent `objects_page`
 
 kind `control` · status `active` · parent `objects_page`
 
-- 样式：槽位 `workspace.content`
+- 样式：槽位 `workspace.content`；尺寸 `font_title`、`font_panel`
 - 无障碍：可访问名「对象列表空态」
 - 同步：Linux done（§3 空态文案（连接态 / 启动态）+ Functions / Queries 未实现说明）；Windows none（§7.1 未记录（Objects 页的空态页文案与 Functions / Queries 未实现说明））；macOS none
 - 实现备注：adw::StatusPage，与「列表 + 状态行」在同一个 GtkStack 里互斥：要么列表，要么空态页，不存在半截。启动态与连接态是同一份实现，只换文案（set_empty_text 改的是默认文案）；未实现说明是临时文案，回到空态时恢复默认值，不残留。
@@ -1793,6 +1803,7 @@ kind `control` · status `active` · parent `shell`
 
 - 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`
 - 无障碍：可访问名「主菜单（文件 / 表 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
+- 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:MenuBar / swift:—
 - 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用菜单行承载同一批条目（§7.1「系统标题栏 + 菜单行」），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。
@@ -1805,6 +1816,7 @@ kind `control` · status `active` · parent `shell`
 
 kind `item` · status `active` · parent `shell.menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「新建连接」
 - 同步：Linux done（§1.4 文件 → 新建连接；open_connection_dialog_for 的未就绪兜底与「只前置」分支）；Windows done（§7.1「文件 → 新建连接…、工具条「连接」」：可用性读同一个后端状态位，握手未完成禁用并逐条给 tooltip 原因）；macOS none
 - 实现备注：与工具条「连接」、`Ctrl+N` 同一条判定与同一个动作（`win.new-connection`）。
@@ -1818,6 +1830,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 kind `item` · status `active` · parent `shell.menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「新建查询标签」
 - 同步：Linux done（§1.4 文件 → 新建查询标签；set_workspace_ready 与 new-tab 接线）；Windows none（§7.1 只记录 `Ctrl+T` 新建查询页，没有记录「文件 → 新建查询标签」这个菜单项。）；macOS none
 - 实现备注：与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同一条 `TabSet::new_query_tab`。
@@ -1831,6 +1844,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 kind `item` · status `active` · parent `shell.menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「退出」
 - 同步：Linux done（§1.1 退出应用；quit_app 的「先关窗」分支与 accel 绑定）；Windows none（§7.1 未记录「退出」菜单项与退出守卫。）；macOS none
 - 实现备注：菜单项走 `app.quit`，与 `Ctrl+Q`、D-Bus 同一个入口；有窗口时先关窗，因此脏行守卫照常生效。
@@ -1844,6 +1858,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 kind `item` · status `active` · parent `shell.menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「导出 CSV」
 - 同步：Linux done（§1.4 表 → 导出 CSV；export-csv 动作与 workspace ready 开关）；Windows none（§7.1 明确记录 Windows 数据页未实现导出 CSV。）；macOS none
 - 实现备注：与表工具条 `导出 ▾` 菜单的「导出 CSV…」、`Ctrl+Shift+E` 同一条导出入口；固定 CSV。INSERT 语句与转储表只在表工具条 / 结果区 / 树右键菜单里，菜单不重复。
@@ -1857,6 +1872,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 kind `item` · status `active` · parent `shell.menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「关于 Squarvo」
 - 同步：Linux done（§1.4 帮助 → 关于 Squarvo；show_about 的「已打开只前置」与诊断行）；Windows none（§7.1 未记录「帮助 → 关于」菜单项。）；macOS none
 - 实现备注：不依赖后端：握手前也能打开（诊断字段会写「未连接」/ 空）。对话框本体（版本、协议、后端诊断字段的排版）归 dialogs 区；这里只登记入口。
@@ -1911,6 +1927,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Tables」
+- 图标：`tree.group.tables`
 - 同步：Linux done（§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮）；Windows partial（入口是 AppBarButton，本片仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。）；macOS none
 - 实现备注：纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。tooltip：就绪「在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
 
@@ -1925,6 +1942,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Views」
+- 图标：`tree.group.views`
 - 同步：Linux done（§1.3 点 Views；KindGroup::Views 与 kinds 组合）；Windows partial（入口是 AppBarButton，本片仍未接线（§7.1），与 Tables 同一状态。）；macOS none
 - 实现备注：与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。tooltip：就绪「在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
 
@@ -1939,6 +1957,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Functions」
+- 图标：`tree.group.functions`
 - 同步：Linux done（§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文）；Windows partial（入口是 AppBarButton，未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。）；macOS none
 - 实现备注：有入口、没有列表能力：点了照样联动（树里选中分组行），页面如实说明原因，不摆假数据。tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
@@ -1953,6 +1972,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Queries」
+- 图标：`tree.group.queries`
 - 同步：Linux done（§1.3 点 Queries；unavailable_copy 的 Queries 原文）；Windows partial（入口是 AppBarButton，未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。）；macOS none
 - 实现备注：与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
@@ -2209,6 +2229,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「新增行：在当前表末尾新增一行」；Tab 在行操作组内依次 Tab 可达
+- 图标：`action.add`
 - 平台差异：Windows：按钮在（`ButtonRowAdd`），但本片恒禁用、无点击处理：tooltip「新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。§7.1 的新增入口在数据页动作行与双击表。
 - 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。）；macOS none
 - 实现备注：工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏 `+` 与 `win.add-row` 的唯一入口，可用性由数据页显式谓词给出。禁用时 tooltip 变成「在当前表末尾新增一行（当前不可用：<原因>）」。
@@ -2223,6 +2244,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「删除选中行：标记为待删除（提交前可撤销）」；Tab 在行操作组内依次 Tab 可达
+- 图标：`action.delete`
 - 平台差异：Windows：按钮在（`ButtonRowDelete`），本片恒禁用、无点击处理：tooltip「删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。标记删除只在数据页动作行与数据行右键菜单。
 - 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。）；macOS none
 - 实现备注：v0.2.5 起工具条上的「删除」已删，入口在这里与数据行右键菜单；两处共用同一条可用性谓词。只标记、不发 RPC：多条选中按批量语义一次标记。
@@ -2237,6 +2259,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「应用：提交所有脏行的变更」；Tab 在行操作组内依次 Tab 可达
+- 图标：`action.apply`
 - 平台差异：Windows：Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行时**不弹对话框**，改成「再按一次 Ctrl+S 确认」并带 `acknowledge_risk`（§7.1 与 Linux 的差异）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。
 - 同步：Linux done（§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同一状态））；Windows partial（§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行改「再按一次确认」；禁用态 tooltip 句式未记录。）；macOS none
 - 实现备注：与数据页的「提交更改」是同一个按钮状态：有脏行才亮，没有脏行时 tooltip 说明「没有可提交的更改」。危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。
@@ -2251,6 +2274,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「撤销：放弃全部未提交的编辑与删除标记」；Tab 在行操作组内依次 Tab 可达
+- 图标：`action.discard`
 - 平台差异：Windows：`ButtonRowRevert` 与 `Ctrl+Z` 同一 `RevertDataAsync`；无未提交更改时 tooltip「当前没有未提交的更改」；改动全部改回原值时顺手回滚空事务（与 Linux 同一条规则）。
 - 同步：Linux done（§7 行 1；RowOp::Discard → discard_changes）；Windows partial（§7.1 记录状态栏「撤销（↶）」与 Ctrl+Z 同一路径；可用性判定与禁用态 tooltip 未记录。）；macOS none
 - 实现备注：只丢弃本地未提交的编辑与删除标记，不动已提交的数据；改动全部改回原值时顺手回滚空事务。与「取消」不是一回事：取消是中止在途批次并整批回滚（ADR 0018）。
@@ -2265,6 +2289,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「刷新：重新读取当前表的第一页」；Tab 在行操作组内依次 Tab 可达
+- 图标：`action.refresh`
 - 平台差异：Windows：按钮在且可点（`ButtonRowRefresh` → `RefreshDataAsync`）：可用性 = 未加载中、未提交、无未提交更改，与 §7「刷新单独按状态判定」一致；被拦时 tooltip「刷新：有未提交的更改或请求进行中」，不是「（当前不可用：…）」。§7.1 只记了页内刷新。
 - 同步：Linux done（§7 行 1「刷新单独按状态判定」；refresh_available + RowOp::Refresh）；Windows partial（可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。）；macOS none
 - 实现备注：可用性单独判定，不读页内按钮（页内没有对应的刷新按钮）：已打开表、没有 RPC 在途、没有未提交的更改与未提交的新行。有未提交更改时不直接刷：走与翻页 / 排序 / 筛选同一条脏行守卫，先提示提交或放弃。F5 在表标签上走的是同一件事；状态栏不提供第二个刷新入口。
@@ -2279,6 +2304,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「取消：中止正在执行的提交批次（已执行的行会整批回滚）」；Tab 在行操作组内依次 Tab 可达
+- 图标：`action.cancel`
 - 平台差异：Windows：行 1 这枚「取消」两用：查询页按 `busy`（执行中 / 待执行）可点，点击取消查询、重复点幂等；数据页按 `tab.Loading || submitting` 可点，点击 `CancelDataRequests` 并在行 2 左格写「已取消表数据请求（已取到的行保留在页面上）」。停在别的页时禁用，tooltip「取消：当前没有执行中的查询」。§7.1 只记了查询页那一种。
 - 同步：Linux done（§7「取消只在批次在途时可点」；RowOpsState.cancel + request_cancel_submit）；Windows partial（§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。）；macOS none
 - 实现备注：图标用实心方块：主题的 process-stop 在 Yaru 是八边形、在 Adwaita 是叉号，两套主题两种样子，也不是「停止」的通用形态。只在提交批次在途时可点；重复点幂等，只写日志，不会误触发新提交。语义是中止本批并整批回滚，不是撤销已提交的数据（ADR 0018）。
@@ -2306,6 +2332,7 @@ kind `control` · status `active` · parent `status_bar.row1`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`、`gap_md`
 - 无障碍：可访问名「字段 / 值：只看选中行的每个字段与它的值」；Tab 在行操作组之后、分页器之前
+- 图标：`view.detail_toggle`
 - 同步：Linux done（§7 行 1 展示形式切换；v0.2.5 RowOp::ToggleDetail 与快照回推）；Windows none（Windows 没有展示形式切换：XAML 与代码里都没有「字段 | 值」视图，§7.1 未记录。）；macOS none
 - 实现备注：位置在分页器**前方**（§7 / workspace-model §7 的同一处摆放）：选中数 → 展示形式 → 分页器。它是 toggle，自己不记状态：按下只把「用户按了这一下」交给数据页，选中态由数据页快照推回，否则切标签 / 换表后按钮和屏幕会各说一套。按下态沿用 Adwaita 的 flat toggle 外观（未单独写主题 token，P1 定色）。只读连接也允许（它只是换一种看法，不写库）。
 
@@ -2333,6 +2360,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 - 样式：尺寸 `pager_button_min_width`、`min_target`
 - 无障碍：可访问名「首页（offset = 0）」；Tab 在分页器组内依次 Tab 可达
+- 图标：`pager.first`
 - 同步：Linux done（§7 行 1 分页器四按钮；PagerAction::First）；Windows none（§7.1 未记录状态栏分页器（翻页在数据页动作行）。）；macOS none
 - 实现备注：tooltip「首页（offset = 0）」；页码只读，按钮不显示页码数字。
 
@@ -2346,6 +2374,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 - 样式：尺寸 `pager_button_min_width`、`min_target`
 - 无障碍：可访问名「上一页」；Tab 在分页器组内依次 Tab 可达
+- 图标：`pager.previous`
 - 同步：Linux done（§7 行 1 分页器四按钮；PagerAction::Previous）；Windows none（§7.1 未记录状态栏分页器（翻页在数据页动作行）。）；macOS none
 - 实现备注：tooltip「上一页」；第一页时置灰，不是隐藏。
 
@@ -2359,6 +2388,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 - 样式：尺寸 `pager_button_min_width`、`min_target`
 - 无障碍：可访问名「下一页」；Tab 在分页器组内依次 Tab 可达
+- 图标：`pager.next`
 - 同步：Linux done（§7 行 1 分页器四按钮；PagerAction::Next）；Windows none（§7.1 未记录状态栏分页器（翻页在数据页动作行）。）；macOS none
 - 实现备注：tooltip「下一页」；没有下一页时置灰，不靠「点了没反应」表达边界。
 
@@ -2372,6 +2402,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 - 样式：尺寸 `pager_button_min_width`、`min_target`
 - 无障碍：可访问名「末页（需要总数）」；Tab 在分页器组内依次 Tab 可达
+- 图标：`pager.last`
 - 同步：Linux done（§7 行 1 分页器四按钮；PagerAction::Last 需要总数）；Windows none（§7.1 未记录状态栏分页器（翻页在数据页动作行）。）；macOS none
 - 实现备注：tooltip「末页（需要总数）」：总数未知（驱动不报总数或计数超时）时置灰，不猜页数。总数三态（共 N / 约 N / 共 ?）只体现在摘要里，按钮不显示总数。
 
@@ -2540,6 +2571,7 @@ kind `control` · status `active` · parent `tabs.strip.tab`
 
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「关闭标签」
+- 图标：`action.close_tab`
 - 同步：Linux done（§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current）；Windows partial（`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。）；macOS none
 - 实现备注：× 与 `Ctrl+W` 走同一条 `close-page`：只有这一条关闭入口，没有第二套旁路。`Objects` 固定页的 × 点了也不关：on_close_page 拒绝并记一行日志（AdwTabPage 没有「不可关闭」属性）。确认框已在显示时再点 × 只记日志，不叠第二个框。菜单里已不列「关闭标签」：入口只有标签上的 × 与 `Ctrl+W`，没有第三条旁路（菜单裁剪口径见契约 §1.4）。
 
@@ -2557,6 +2589,7 @@ kind `control` · status `active` · parent `tabs.strip`
 
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「新建查询标签」
+- 图标：`action.new_query`
 - 同步：Linux done（§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作）；Windows partial（`Ctrl+T` 新建查询页已落地；标签条上的 ＋ 按钮 §7.1 未记录（新建入口只写了 Ctrl+T 与菜单）。）；macOS none
 - 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。超限时不新建、只弹 tabs.limit（同一段文案不重复弹）；连点 ＋ 不会堆一摞对话框。
 

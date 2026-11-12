@@ -1,0 +1,273 @@
+# 图标语义表（三端按 id 取同一枚，不从俗）
+#
+# 规则（AGENTS §8.6 / §8.1）：组件只说「这里要哪一枚语义图标」（`style.icon = ["<id>"]`），
+# 各端按本表落到自己的字形。新增 id 必须有代码依据：`linux` 名必须能在
+# `frontend/linux/src/*.rs` 的字符串字面量里找到；`sqarvo-` 前缀的自有图标还要在
+# `frontend/linux/resources/icons/<name>.svg` 里存在。校验器逐条核对。
+#
+# winui 用 Segoe Fluent Icons 的码点；本机没有 Windows 环境，未核对的写 `待核`，不许猜。
+# swift 一律 `—`：macOS 端尚未接入。
+
+[[icon]]
+id = "object.catalog"
+linux = "drive-harddisk-symbolic"
+winui = "待核"
+swift = "—"
+note = "对象树里「库」这一层（多库驱动；SQLite 只有一个库）"
+
+[[icon]]
+id = "object.schema"
+linux = "folder-symbolic"
+winui = "待核"
+swift = "—"
+note = "驱动给出 schema 层时的那一层（PostgreSQL 类）"
+
+[[icon]]
+id = "object.table"
+linux = "view-grid-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "object.view"
+linux = "view-reveal-symbolic"
+winui = "待核"
+swift = "—"
+note = "视图与物化视图共用"
+
+[[icon]]
+id = "object.column"
+linux = "insert-text-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "object.index"
+linux = "view-sort-descending-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "object.sequence"
+linux = "view-list-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "object.function"
+linux = "application-x-executable-symbolic"
+winui = "待核"
+swift = "—"
+note = "函数与存储过程共用"
+
+[[icon]]
+id = "object.trigger"
+linux = "system-run-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "object.type"
+linux = "text-x-generic-symbolic"
+winui = "待核"
+swift = "—"
+note = "用户自定义类型；未识别种类也用这一枚"
+
+[[icon]]
+id = "tree.connection"
+linux = "network-server-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.group.tables"
+linux = "view-grid-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.group.views"
+linux = "view-reveal-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.group.functions"
+linux = "system-run-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.group.queries"
+linux = "text-x-generic-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.table_group.fields"
+linux = "view-list-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.table_group.indexes"
+linux = "view-sort-ascending-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.table_group.foreign_keys"
+linux = "insert-link-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.table_group.triggers"
+linux = "system-run-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tree.note.loading"
+linux = "content-loading-symbolic"
+winui = "待核"
+swift = "—"
+note = "占位行「读取中…」与「加载更多…」"
+
+[[icon]]
+id = "tree.note.warning"
+linux = "dialog-warning-symbolic"
+winui = "待核"
+swift = "—"
+note = "读取失败与能力不支持"
+
+[[icon]]
+id = "tree.note.info"
+linux = "dialog-information-symbolic"
+winui = "待核"
+swift = "—"
+note = "空分组说明与提示"
+
+[[icon]]
+id = "action.add"
+linux = "list-add-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.delete"
+linux = "list-remove-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.apply"
+linux = "object-select-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.discard"
+linux = "edit-undo-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.refresh"
+linux = "view-refresh-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.cancel"
+linux = "media-playback-stop-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.filter"
+linux = "sqarvo-filter-symbolic"
+winui = "待核"
+swift = "—"
+note = "自有图标：Adwaita / Yaru 没有漏斗，用放大镜会被读成搜索"
+
+[[icon]]
+id = "action.columns"
+linux = "view-reveal-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.export"
+linux = "document-save-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.new_query"
+linux = "tab-new-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "action.close_tab"
+linux = "window-close-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "menu.open"
+linux = "open-menu-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "view.detail_toggle"
+linux = "view-dual-symbolic"
+winui = "待核"
+swift = "—"
+note = "展示形式切换：按行浏览 ↔ 单行「字段 · 值」"
+
+[[icon]]
+id = "pager.first"
+linux = "sqarvo-first-page-symbolic"
+winui = "待核"
+swift = "—"
+note = "自有图标：主题的双尖括号与单箭头只差一条线，小字号读不出两档"
+
+[[icon]]
+id = "pager.previous"
+linux = "sqarvo-page-prev-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "pager.next"
+linux = "sqarvo-page-next-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "pager.last"
+linux = "sqarvo-last-page-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "sort.ascending"
+linux = "view-sort-ascending-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "sort.descending"
+linux = "view-sort-descending-symbolic"
+winui = "待核"
+swift = "—"
+
+[[icon]]
+id = "tab.objects"
+linux = "view-grid-symbolic"
+winui = "待核"
+swift = "—"
+note = "`Objects` 固定页页签的图标"

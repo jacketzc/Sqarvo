@@ -165,6 +165,7 @@ parent = "status_bar.row1.ops"
 display_name = "「新增」图标按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.add"]
 a11y.name = "新增行：在当前表末尾新增一行"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
@@ -183,7 +184,7 @@ source = "src/shell.rs:1066、src/data_page.rs:5049"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a37eae543e2f"
+spec_hash = "e58f5984fd26"
 commit = ""
 evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert"
 
@@ -202,6 +203,7 @@ parent = "status_bar.row1.ops"
 display_name = "「删除」图标按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.delete"]
 a11y.name = "删除选中行：标记为待删除（提交前可撤销）"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
@@ -220,7 +222,7 @@ source = "src/shell.rs:1066、src/data_page.rs:5049"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6b823444daae"
+spec_hash = "27fdf866d95e"
 commit = ""
 evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 
@@ -239,6 +241,7 @@ parent = "status_bar.row1.ops"
 display_name = "「应用」图标按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.apply"]
 a11y.name = "应用：提交所有脏行的变更"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
@@ -256,7 +259,7 @@ source = "src/shell.rs:1066、src/data_page.rs:5049、src/table_data.rs:489"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e2c99799bd28"
+spec_hash = "fd1005a8faa7"
 commit = ""
 evidence = "§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同一状态）"
 
@@ -275,6 +278,7 @@ parent = "status_bar.row1.ops"
 display_name = "「撤销」图标按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.discard"]
 a11y.name = "撤销：放弃全部未提交的编辑与删除标记"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
@@ -293,7 +297,7 @@ source = "src/shell.rs:1066、src/data_page.rs:5049"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "117da18a421c"
+spec_hash = "579c4410974b"
 commit = ""
 evidence = "§7 行 1；RowOp::Discard → discard_changes"
 
@@ -312,6 +316,7 @@ parent = "status_bar.row1.ops"
 display_name = "「刷新」图标按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.refresh"]
 a11y.name = "刷新：重新读取当前表的第一页"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
@@ -331,7 +336,7 @@ source = "src/shell.rs:1066、src/data_page.rs:4969、src/data_page.rs:5049"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "5cc16d80e34b"
+spec_hash = "a91d1de6d8cc"
 commit = ""
 evidence = "§7 行 1「刷新单独按状态判定」；refresh_available + RowOp::Refresh"
 
@@ -350,6 +355,7 @@ parent = "status_bar.row1.ops"
 display_name = "「取消」图标按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.cancel"]
 a11y.name = "取消：中止正在执行的提交批次（已执行的行会整批回滚）"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
@@ -369,7 +375,7 @@ source = "src/shell.rs:1066、src/data_page.rs:4943、src/data_page.rs:5049"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "16c5340e3568"
+spec_hash = "6c04cfc50017"
 commit = ""
 evidence = "§7「取消只在批次在途时可点」；RowOpsState.cancel + request_cancel_submit"
 
@@ -422,6 +428,7 @@ parent = "status_bar.row1"
 display_name = "展示形式切换（按行浏览 / 字段 · 值）"
 kind = "control"
 status = "active"
+style.icon = ["view.detail_toggle"]
 a11y.name = "字段 / 值：只看选中行的每个字段与它的值"
 a11y.tab = "在行操作组之后、分页器之前"
 style.metrics = ["icon_button_width", "icon_button_height", "gap_md"]
@@ -446,7 +453,7 @@ source = "src/shell.rs:1426、src/data_page.rs:2073"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d4180679c92f"
+spec_hash = "b8d08ac0d60c"
 commit = ""
 evidence = "§7 行 1 展示形式切换；v0.2.5 RowOp::ToggleDetail 与快照回推"
 
@@ -503,6 +510,7 @@ parent = "status_bar.row1.pager"
 display_name = "「首页」按钮"
 kind = "control"
 status = "active"
+style.icon = ["pager.first"]
 a11y.name = "首页（offset = 0）"
 a11y.tab = "在分页器组内依次 Tab 可达"
 style.metrics = ["pager_button_min_width", "min_target"]
@@ -516,7 +524,7 @@ source = "src/shell.rs:1142、src/data_page.rs:319"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "5b7eb40a086e"
+spec_hash = "7e32268c5bf1"
 commit = ""
 evidence = "§7 行 1 分页器四按钮；PagerAction::First"
 
@@ -535,6 +543,7 @@ parent = "status_bar.row1.pager"
 display_name = "「上一页」按钮"
 kind = "control"
 status = "active"
+style.icon = ["pager.previous"]
 a11y.name = "上一页"
 a11y.tab = "在分页器组内依次 Tab 可达"
 style.metrics = ["pager_button_min_width", "min_target"]
@@ -548,7 +557,7 @@ source = "src/shell.rs:1142、src/data_page.rs:319"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c5d13177f5d3"
+spec_hash = "57fa06558668"
 commit = ""
 evidence = "§7 行 1 分页器四按钮；PagerAction::Previous"
 
@@ -567,6 +576,7 @@ parent = "status_bar.row1.pager"
 display_name = "「下一页」按钮"
 kind = "control"
 status = "active"
+style.icon = ["pager.next"]
 a11y.name = "下一页"
 a11y.tab = "在分页器组内依次 Tab 可达"
 style.metrics = ["pager_button_min_width", "min_target"]
@@ -580,7 +590,7 @@ source = "src/shell.rs:1142、src/data_page.rs:319"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "7629ac293b2c"
+spec_hash = "0737f7aa02a8"
 commit = ""
 evidence = "§7 行 1 分页器四按钮；PagerAction::Next"
 
@@ -599,6 +609,7 @@ parent = "status_bar.row1.pager"
 display_name = "「末页」按钮"
 kind = "control"
 status = "active"
+style.icon = ["pager.last"]
 a11y.name = "末页（需要总数）"
 a11y.tab = "在分页器组内依次 Tab 可达"
 style.metrics = ["pager_button_min_width", "min_target"]
@@ -615,7 +626,7 @@ source = "src/shell.rs:1142、src/data_page.rs:319"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8b81c5eeb4aa"
+spec_hash = "7d490bfee694"
 commit = ""
 evidence = "§7 行 1 分页器四按钮；PagerAction::Last 需要总数"
 

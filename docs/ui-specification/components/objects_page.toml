@@ -51,6 +51,7 @@ parent = "objects_page"
 display_name = "固定页页签（pinned，无关闭按钮）"
 kind = "control"
 status = "active"
+style.icon = ["tab.objects"]
 style.slot = "workspace.tabstrip"
 style.metrics = ["objects_min_width", "tab_strip_height"]
 a11y.name = "Objects"
@@ -90,7 +91,7 @@ source = "src/tabs.rs:1377、src/tabs.rs:2655"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "22ca13ccb014"
+spec_hash = "e641a40a25b4"
 evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支"
 
 [component.sync.windows]
@@ -436,6 +437,7 @@ parent = "objects_page"
 display_name = "空态页"
 kind = "control"
 status = "active"
+style.metrics = ["font_title", "font_panel"]
 style.slot = "workspace.content"
 a11y.name = "对象列表空态"
 impl_notes = [
@@ -475,7 +477,7 @@ source = "src/tabs.rs:971、src/tabs.rs:1022"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "90cab8806136"
+spec_hash = "0680adafc61c"
 evidence = "§3 空态文案（连接态 / 启动态）+ Functions / Queries 未实现说明"
 
 [component.sync.windows]

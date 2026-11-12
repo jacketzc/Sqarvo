@@ -368,6 +368,7 @@ parent = "data_page.toolbar"
 display_name = "「筛选」（漏斗）按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.filter"]
 a11y.name = "筛选与排序"
 a11y.tab = "工具条次要动作组内第一枚"
 style.slot = "workspace.content"
@@ -392,7 +393,7 @@ source = "src/data_page.rs:4298、src/data_page.rs:4397"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "2b2cb1eebe3b"
+spec_hash = "5c08cf8d11ae"
 commit = ""
 evidence = "§5.1 / §5.3 能力位与面板开合；toggle_filter_panel + show_open"
 
@@ -411,6 +412,7 @@ parent = "data_page.toolbar"
 display_name = "「列显隐」（眼睛）按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.columns"]
 a11y.name = "列显隐"
 a11y.tab = "工具条次要动作组内第二枚"
 style.slot = "workspace.content"
@@ -429,7 +431,7 @@ source = "src/data_page.rs:2324、src/data_page.rs:1757"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ef2fbdd436ee"
+spec_hash = "6e023a095258"
 commit = ""
 evidence = "§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility"
 
@@ -490,6 +492,7 @@ parent = "data_page.toolbar"
 display_name = "「导出 ▾」菜单按钮"
 kind = "control"
 status = "active"
+style.icon = ["action.export"]
 a11y.name = "导出"
 a11y.tab = "工具条次要动作组内第三枚（最右）"
 style.slot = "workspace.content"
@@ -515,7 +518,7 @@ source = "src/data_page.rs:6579"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "2bd73c29a87a"
+spec_hash = "c820bd6cf424"
 commit = ""
 evidence = "§5.1 导出 ▾ / §5.7 入口；MenuButton + 三个菜单项走 export_ui::begin"
 

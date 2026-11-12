@@ -32,6 +32,9 @@ COMP_DIR = REPO / "docs/ui-specification/components"
 METRICS_PATH = REPO / "docs/ui-specification/metrics.toml"
 THEME_PATH = REPO / "frontend/linux/src/theme.rs"
 OUT_MD = REPO / "docs/ui-specification/ui-components.md"
+ICONS_PATH = REPO / "docs/ui-specification/icons.toml"
+LINUX_SRC_DIR = REPO / "frontend/linux/src"
+LINUX_ICON_DIR = REPO / "frontend/linux/resources/icons"
 
 PLATFORMS = ("linux", "windows", "macos")
 PLATFORM_LABEL = {"linux": "Linux", "windows": "Windows", "macos": "macOS"}
@@ -81,6 +84,7 @@ REF_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift)):(\d+)(?:-(\
 REF_BARE_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift))")
 TOKEN_RE = re.compile(r"@([A-Za-z0-9_]+)")
 HEX_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
+ICONS: dict[str, dict] = {}
 NATIVE_RE = re.compile(r"^gtk:.+ / winui:.+ / swift:.+$")
 
 
@@ -122,6 +126,37 @@ def load_theme_tokens() -> set[str]:
     return set(TOKEN_RE.findall(text))
 
 
+def load_icons(rep: "Report") -> dict[str, dict]:
+    """图标语义表：id → 各端字形。linux 名必须有代码依据，sqarvo-* 还必须有自有 SVG。"""
+    data = tomllib.loads(ICONS_PATH.read_text(encoding="utf-8"))
+    src = "\n".join(p.read_text(encoding="utf-8") for p in LINUX_SRC_DIR.rglob("*.rs"))
+    icons: dict[str, dict] = {}
+    for icon in data.get("icon", []):
+        iid = str(icon.get("id", ""))
+        if not iid:
+            rep.error("icons.toml", "缺少 id")
+            continue
+        if not ID_RE.match(iid):
+            rep.error("icons.toml", f"id 不合法：{iid!r}")
+        if iid in icons:
+            rep.error("icons.toml", f"id 重复：{iid}")
+        icons[iid] = icon
+        linux = str(icon.get("linux", ""))
+        if not linux:
+            rep.error(f"icons.toml#{iid}", "缺少 linux 名")
+        elif f'"{linux}"' not in src:
+            rep.error(
+                f"icons.toml#{iid}",
+                f"linux 名 {linux!r} 没有出现在 frontend/linux/src 的字符串字面量里",
+            )
+        elif linux.startswith("sqarvo-") and not (LINUX_ICON_DIR / f"{linux}.svg").is_file():
+            rep.error(f"icons.toml#{iid}", f"自有图标缺 SVG：resources/icons/{linux}.svg")
+        winui = str(icon.get("winui", ""))
+        if not re.match(r"^([0-9A-Fa-f]{4}|待核)$", winui):
+            rep.error(f"icons.toml#{iid}", f"winui 应为 4 位十六进制码点或「待核」，现为 {winui!r}")
+    return icons
+
+
 def load_areas() -> list[dict]:
     areas = []
     for path in sorted(COMP_DIR.glob("*.toml")):
@@ -161,6 +196,14 @@ def check_style(where: str, comp: dict, metrics: set[str], tokens: set[str], rep
             rep.error(where, f"style.states 的键 {state!r} 不在 {sorted(STATE_KEYS)}")
         if tok not in tokens:
             rep.error(where, f"style.states.{state} = {tok!r} 在 theme.rs 里找不到 @{tok}")
+    icon_ids = style.get("icon")
+    if icon_ids is not None:
+        ids = [icon_ids] if isinstance(icon_ids, str) else list(icon_ids)
+        if not ids:
+            rep.error(where, "style.icon 为空：要么给 id，要么不写这个字段")
+        for iid in ids:
+            if iid not in ICONS:
+                rep.error(where, f"style.icon 里的 {iid!r} 不在 icons.toml")
     for field in ("slot",):
         value = style.get(field)
         if isinstance(value, str) and HEX_RE.search(value):
@@ -309,8 +352,10 @@ def check_component(
 def run_check(strict: bool) -> int:
     metrics = load_metrics_keys()
     tokens = load_theme_tokens()
-    areas = load_areas()
     rep = Report(strict)
+    global ICONS
+    ICONS = load_icons(rep)
+    areas = load_areas()
 
     all_ids: dict[str, str] = {}
     for item in areas:
@@ -338,7 +383,8 @@ def run_check(strict: bool) -> int:
             )
 
     total = len(all_ids)
-    print(f"组件总数：{total}（{len(areas)} 个功能区）")
+    pending = sum(1 for i in ICONS.values() if str(i.get("winui", "")) == "待核")
+    print(f"组件总数：{total}（{len(areas)} 个功能区）· 图标语义 {len(ICONS)} 条（winui 待核 {pending}）")
     for item in areas:
         area = item["area"]
         comps = item["components"]
@@ -467,6 +513,10 @@ def run_gen() -> int:
                     bits.append(f"Tab {a11y['tab']}")
                 if bits:
                     out.append("- 无障碍：" + "；".join(bits))
+            icons = comp.get("style", {}).get("icon")
+            if icons:
+                ids = [icons] if isinstance(icons, str) else list(icons)
+                out.append("- 图标：" + "、".join(f"`{i}`" for i in ids))
             if comp.get("native_control"):
                 out.append("- 原生控件：" + comp["native_control"])
             if comp.get("hand_drawn"):
