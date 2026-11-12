@@ -184,18 +184,11 @@ public partial class App : Application
             // StartAsync 不抛异常（失败落成 BackendReadiness.Failed）。
             _ = Backend.StartAsync();
 
-            if (_options.QaQuery is { Length: > 0 } qaQuery)
+            if (_options.QaQuery is { Length: > 0 } || _options.QaData is { Length: > 0 })
             {
-                // 查询链路（#172）：连上之后**真的**建一个查询页、执行 SQL，把 [query] 证据打出来。
-                // 与 --qa-signin 合用时不退出（那条开关的语义就是「保持运行供截图」）。
-                _ = RunQaQueryAsync(window, qaQuery, keepAlive: _options.QaSignIn is { Length: > 0 });
-                return;
-            }
-
-            if (_options.QaData is { Length: > 0 } qaData)
-            {
-                // 表数据链路（#173）：连上之后**真的**开数据页、翻页、改一格提交、再撤销，把 [data] 证据打出来。
-                _ = RunQaDataAsync(window, qaData, keepAlive: _options.QaSignIn is { Length: > 0 });
+                // 查询（#172）与表数据（#173）两条链路可以在同一个进程里按顺序跑：截图需要同时看到
+                // 查询页与数据页，一个开关一个 return 会让后一条永远不执行（真机上踩过）。
+                _ = RunQaChainAsync(window, keepAlive: _options.QaSignIn is { Length: > 0 });
                 return;
             }
 
@@ -506,6 +499,34 @@ public partial class App : Application
     /// 与 <see cref="RunQaMetadataAsync"/> 同一套取舍：不弹窗、只打印证据；失败也算「跑过一趟」。
     /// 密码同样来自 <c>SQARVO_QA_PASSWORD</c>（可选：已有凭据引用时不必给）。
     /// </remarks>
+    /// <summary>
+    /// 把 <c>--qa-query</c> 与 <c>--qa-data</c> 串起来跑：各自都是「连上 → 开页 → 打证据」的完整链路，
+    /// 顺序执行，互不覆盖；<paramref name="keepAlive"/> 透传，保证截图时两条页都留着。
+    /// </summary>
+    private async Task RunQaChainAsync(MainWindow window, bool keepAlive)
+    {
+        if (_options.QaQuery is { Length: > 0 } qaQuery)
+        {
+            await RunQaQueryAsync(window, qaQuery, keepAlive).ConfigureAwait(true);
+        }
+
+        if (_options.QaData is { Length: > 0 } qaData)
+        {
+            await RunQaDataAsync(window, qaData, keepAlive).ConfigureAwait(true);
+        }
+
+        // 截图里要看到树展开到表：给链式链路补上 --qa-catalog 的展开 + 选择（与 --qa-metadata 同一条路径）。
+        if (_options.QaCatalog is { Length: > 0 } catalog
+            && window.Shell.FirstConnectedProfileKey() is { Length: > 0 } key)
+        {
+            var expanded = await window.Shell
+                .ProbeMetadataAsync(key, catalog, CancellationToken.None)
+                .ConfigureAwait(true);
+
+            ConsoleBridge.WriteLine($"[connect] chain-metadata={(expanded ? "ok" : "incomplete")}");
+        }
+    }
+
     private async Task RunQaQueryAsync(MainWindow window, string sql, bool keepAlive)
     {
         try

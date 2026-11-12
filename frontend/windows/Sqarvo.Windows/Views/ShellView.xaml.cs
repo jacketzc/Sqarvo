@@ -484,6 +484,20 @@ public sealed partial class ShellView : UserControl
 
     /// <summary>刷新每个连接节点的徽标与子树入口（不重建节点，展开状态与选中都保留）。</summary>
     /// <summary>诊断用：界面认为的「已保存连接」与它们的徽标（--qa-signin 失败时用来对比）。</summary>
+    /// <summary>第一个已连接的连接键（QA 探针共用：链式链路里后一步要知道连的是哪条）。</summary>
+    internal string? FirstConnectedProfileKey()
+    {
+        foreach (var profile in _profiles)
+        {
+            if (_session?.IsConnected(profile.Key) == true)
+            {
+                return profile.Key;
+            }
+        }
+
+        return null;
+    }
+
     internal string DescribeProfiles()
     {
         var parts = new System.Collections.Generic.List<string>();

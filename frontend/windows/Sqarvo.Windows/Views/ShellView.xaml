@@ -130,10 +130,12 @@
                         MinHeight="{StaticResource Size.SecondaryMinHeight}"
                         MinWidth="0"
                         Padding="0"
-                        Background="{ThemeResource SqarvoAccentFillBrush}"
+                        Background="Transparent"
                         AutomationProperties.Name="连接"
                         ToolTipService.ToolTip="打开连接对话框（Ctrl+N）">
-                        <Border x:Name="ConnectChip" Background="Transparent">
+                        <!-- 强调色必须落在内层 Border 上：Button 模板的 Normal 视觉态会用 setter 盖掉
+                             Button.Background 的本地值（真机上就是「设了 accent 却显示成普通浅色按钮」）。 -->
+                        <Border x:Name="ConnectChip" Background="{ThemeResource SqarvoAccentFillBrush}">
                             <StackPanel
                                 Orientation="Horizontal"
                                 VerticalAlignment="Center"
