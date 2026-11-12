@@ -1,0 +1,925 @@
+# 对话框功能区的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 收什么：独立于某个动作、有自己生命周期的表面 —— 新建 / 编辑连接对话框、关于对话框。
+# 不收什么：确认框跟随触发它的动作所属的区（关闭标签 → tabs，删除连接 / 断开连接 →
+# object_tree，后端重启 → shell，脏行三选 → tabs），不在这里重复登记。
+#
+# 行为条目取自 ui-behavior-contract.md §1.2（工具条「连接」）、§1.4（文件 → 新建连接、
+# 帮助 → 关于）、§2.3（编辑连接）、§7.1（Windows 新建连接对话框）；源码行号已按当前
+# dialog.rs / driver_form.rs / ui.rs 逐行复核，函数名仍是一级定位。
+
+[area]
+id = "dialogs"
+display_name = "对话框"
+summary = "连接对话框（新建 / 编辑两种模式共用一张表面）与关于对话框。连接对话框是唯一配置连接参数、测试连接、把密码交给系统凭据库的入口；关于对话框只陈述版本、协议与后端诊断，不依赖后端可用。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §1.2 / §1.4 / §2.3 / §7.1"
+
+[[component]]
+id = "dialogs"
+parent = ""
+display_name = "对话框区"
+kind = "area"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["gap_page"]
+impl_notes = [
+  "只收独立于某个动作、有自己生命周期的表面：新建 / 编辑连接对话框、关于对话框。",
+  "确认框跟随触发它的区：关闭标签确认在 tabs，删除 / 断开连接确认在 object_tree，后端重启确认在 shell —— 它们不是本区的组件。",
+  "两个对话框都是 Attached Modal 表面（AdwDialog 附着主窗口呈现），不新开顶层窗口；同一时刻各只有一个实例。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "588e07793c24"
+commit = "7436cd5"
+evidence = "dialog.rs（AdwDialog + AdwPreferencesPage）与 ui.rs show_about 逐条对照"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "588e07793c24"
+note = "§7.1 只记录了「新建连接对话框」一行；编辑模式与关于对话框未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection"
+parent = "dialogs"
+display_name = "连接对话框（新建 / 编辑）"
+kind = "container"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["gap_md", "gap_page"]
+a11y.name = "新建连接"
+a11y.tab = "默认动作是「保存并连接」（Enter 即保存并连接）"
+impl_notes = [
+  "宽度 560 是代码常量，未进 metrics（P1 补齐）。",
+  "标题始终是「新建连接」，编辑模式不改标题：两种模式的差异只在预填的字段与凭据引用上，不在措辞上。",
+  "标题栏左侧只有「取消」；主体是「连接参数」表单 + 凭据说明两块；底部是状态行与两个提交按钮。",
+  "字段显隐由 driver_form 的一张描述表决定，界面代码里没有按驱动 ID 分支：加驱动不改界面代码。",
+  "系统凭据库不可用或密码写入失败时如实报错，不回退明文保存；对话框只收集输入与展示结果，RPC 在 worker 线程执行。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端已握手（未握手时工具条「连接」与菜单项禁用，动作本身也直接返回）"
+result = "打开对话框：标题「新建连接」、副标题「未选择驱动」，驱动下拉默认选中 MariaDB（存在时）；已打开时只把它前置，不叠第二个"
+source = "src/ui.rs:1103、src/ui.rs:1108、src/dialog.rs:130"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "从对象树右键「编辑连接…」进入，或按保存凭据连接时发现缺密码"
+result = "用已保存连接预填非敏感字段（驱动、主机、端口、库、用户名、文件路径、只读、TLS 档位）；密码行留空，已有 credential_ref 时复用它；不自动连接，用户仍需点「测试连接」或「保存并连接」"
+source = "src/dialog.rs:582、src/ui.rs:1122、src/ui.rs:1218"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "92fabdaeabcb"
+commit = "7436cd5"
+evidence = "§2.3 编辑连接 + dialog.rs build / apply_saved 复核"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "92fabdaeabcb"
+note = "§7.1 只记录新建模式（Views/ConnectionDialog.xaml）；编辑模式、标题与宽度未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.header"
+parent = "dialogs.connection"
+display_name = "标题与副标题"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "连接对话框标题"
+impl_notes = [
+  "副标题只说「当前驱动是谁」，不写主机 / 用户：那两样在表单里本身可见。",
+  "标题字号由 AdwWindowTitle 决定，未进 metrics。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "对话框构建或驱动切换"
+result = "副标题 = 当前驱动的显示名（后端 ListDrivers 返回的 display_name）；没有可选驱动时写「未选择驱动」"
+source = "src/dialog.rs:425、src/dialog.rs:135"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "「测试连接」或「保存并连接」的请求在飞"
+result = "副标题改为「正在与数据库握手…」；回包后恢复为驱动显示名"
+source = "src/dialog.rs:485、src/dialog.rs:501"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "f00032c5cc77"
+commit = "7436cd5"
+evidence = "dialog.rs apply_selection / set_pending 复核"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.driver"
+parent = "dialogs.connection"
+display_name = "驱动下拉"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "驱动"
+a11y.tab = "可聚焦；↑ / ↓ 换驱动"
+impl_notes = [
+  "清单只来自后端 SystemService.ListDrivers，前端不硬编码；默认值偏好 MariaDB 只是肌肉记忆，不是清单。",
+  "下拉标签形如「显示名（driver_id）」；前端没有表单的驱动照样列出，标签追加「前端暂无表单」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "对话框构建"
+result = "列出后端全部驱动并默认选中 MariaDB（不存在时选第一个）；后端没返回驱动时只显示「（后端未返回任何驱动）」，下拉与两个提交按钮一并禁用，状态行写「后端没有注册任何驱动（ListDrivers 为空）：无法新建连接」"
+source = "src/dialog.rs:141、src/dialog.rs:272、src/dialog.rs:444"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切换驱动"
+result = "按驱动族重排字段可见性、按能力重建 TLS 档位标签、补回被清空的主机 / 端口默认值；前端没有该驱动表单时清空并禁用提交，状态行写「此版本前端没有驱动「<driver_id>」的连接表单：请升级前端，或换一个驱动」"
+source = "src/dialog.rs:390、src/dialog.rs:293、src/dialog.rs:436"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c8096e08dee9"
+commit = "7436cd5"
+evidence = "dialog.rs apply_selection 与 DriverChoice::from_summary 复核"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields"
+parent = "dialogs.connection"
+display_name = "连接参数表单（按驱动族显隐）"
+kind = "container"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["gap_xs", "gap_md"]
+impl_notes = [
+  "服务器型驱动显示主机 / 端口 / 库 / 用户名 / TLS / 密码；文件型驱动只显示数据库文件与只读打开。",
+  "隐藏的字段不进入 ConnectionParams：不是「显示了但不填」。",
+  "分组标题「连接参数」；顺序固定，不随驱动重排。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "驱动族确定（服务器型 / 文件型 / 前端不认识）"
+result = "按描述表显示或隐藏各行；切回服务器型驱动时空着的主机与端口补回默认值（用户没改过就不该看到空主机）"
+source = "src/dialog.rs:197、src/driver_form.rs:91、src/dialog.rs:411"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "00cc1cbf684d"
+commit = "7436cd5"
+evidence = "driver_form.rs fields_for 描述表 + dialog.rs 显隐接线"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "00cc1cbf684d"
+note = "§7.1 只记录 MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；文件型驱动的路径与只读未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.host"
+parent = "dialogs.connection.fields"
+display_name = "主机"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "主机"
+impl_notes = ["新建时的初值与切回服务器型驱动时的补值是 127.0.0.1；文件型驱动下不显示。"]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切到服务器型驱动且主机为空"
+result = "主机补回 127.0.0.1（用户改过就不动）"
+source = "src/dialog.rs:160、src/dialog.rs:411"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提交时主机为空"
+result = "状态行写「请填写主机」，不发任何 RPC"
+source = "src/driver_form.rs:169、src/dialog.rs:700"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "03d0525114d9"
+commit = "7436cd5"
+evidence = "dialog.rs 默认值 + driver_form.rs 校验文案"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "03d0525114d9"
+note = "§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.port"
+parent = "dialogs.connection.fields"
+display_name = "端口"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "端口"
+impl_notes = ["新建时的初值是 3306；输入框是数字用途（不是数字键盘强制的自绘控件）。"]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切到服务器型驱动且端口为空"
+result = "端口补回 3306"
+source = "src/dialog.rs:164、src/dialog.rs:414"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提交时端口不是数字，或不在 1-65535 之间"
+result = "状态行写「端口必须是 1-65535 之间的数字（当前：<输入>）」（空值或 0 写不带当前值的同一句），不发任何 RPC"
+source = "src/driver_form.rs:176、src/driver_form.rs:181"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c5b82a679103"
+commit = "7436cd5"
+evidence = "driver_form.rs 端口解析与两条文案"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "c5b82a679103"
+note = "§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.username"
+parent = "dialogs.connection.fields"
+display_name = "用户名"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "用户名"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提交时用户名为空（服务器型驱动）"
+result = "状态行写「请填写用户名」，不发任何 RPC"
+source = "src/driver_form.rs:190、src/dialog.rs:700"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a3c7fc5cd8ab"
+commit = "7436cd5"
+evidence = "driver_form.rs 用户名校验"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "a3c7fc5cd8ab"
+note = "§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.database"
+parent = "dialogs.connection.fields"
+display_name = "数据库（可选）"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "数据库"
+impl_notes = [
+  "行标题本身就是说明：「数据库（可选：留空则连接后浏览所有库）」，不靠 tooltip 才说清可选。",
+  "空库名是合法值：语义是「没有默认库」，不是缺必填项。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "服务器型驱动且库名留空"
+result = "按合法值处理：会话显示名不拼斜杠（用户@主机），连上后浏览所有库"
+source = "src/dialog.rs:169、src/driver_form.rs:186、src/driver_form.rs:246"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ab2214fc2f1f"
+commit = "7436cd5"
+evidence = "dialog.rs 行标题 + driver_form.rs default_name"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "ab2214fc2f1f"
+note = "§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.password"
+parent = "dialogs.connection.fields"
+display_name = "密码"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "密码"
+impl_notes = [
+  "输入框是密码专用的输入行（自带显示 / 隐藏切换），内容不进日志、不进配置。",
+  "密码永不回显：没有「读出旧密码」的路径，编辑模式下这一行一定是空的。",
+  "密码随草稿交给 worker 后即被对话框丢弃，本模块不保存它。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "编辑模式（有已保存连接）"
+result = "密码行留空，并复用已有的 credential_ref：后端从操作系统凭据库取密码，界面不展示任何已存密码；引用为空时状态行提示「已填入保存的连接；请输入密码后连接」"
+source = "src/dialog.rs:606、src/dialog.rs:611"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提交时密码为空且没有 credential_ref"
+result = "状态行写「请输入密码」，不发任何 RPC"
+source = "src/driver_form.rs:200、src/dialog.rs:700"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "40af8edf2a80"
+commit = "7436cd5"
+evidence = "dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密码校验"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "40af8edf2a80"
+note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.tls"
+parent = "dialogs.connection.fields"
+display_name = "TLS 模式（五档）"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "TLS 模式"
+impl_notes = [
+  "五档固定顺序：禁用（disabled）/ 优先（preferred）/ 必需（required）/ 校验 CA（verify-ca）/ 完整校验（verify-full）；默认「优先」。",
+  "标签随驱动能力重建：驱动做不到只校链时，第四档写「校验 CA（verify-ca，本驱动等同 verify-full）」并给副标题「本驱动无法只校验证书链：仍会校验主机名」。",
+  "文件型驱动没有 TLS：不显示该行，落盘的 tls_mode 是 disabled，不写一个假的安全策略。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "服务器型驱动"
+result = "按当前驱动能力重建五档标签，并把选中档位映射回新列表（换 model 会让选中失效，重建后显式选回同一档）"
+source = "src/dialog.rs:465、src/dialog.rs:737、src/backend/connection.rs:109"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中「校验 CA」且驱动不支持只校链"
+result = "该行副标题写「本驱动无法只校验证书链：仍会校验主机名」；切到别的档位时副标题立刻消失"
+source = "src/dialog.rs:477、src/dialog.rs:750"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e8fe96f3cf3d"
+commit = "7436cd5"
+evidence = "dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "e8fe96f3cf3d"
+note = "§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.file_path"
+parent = "dialogs.connection.fields"
+display_name = "数据库文件（含「浏览」）"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "数据库文件"
+impl_notes = [
+  "路径可手输，也可点行尾「浏览」用系统文件选择器（标题「选择 SQLite 数据库文件」，过滤 *.db、*.sqlite、*.sqlite3）。",
+  "文件选择器取消不算错误：不写行、不记错误日志。",
+  ":memory: 是合法路径：不要求文件存在。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "文件型驱动"
+result = "打开系统文件选择器；选中后只把路径写进输入行，其余流程与手输完全相同（取消则什么都不改）"
+source = "src/dialog.rs:186、src/dialog.rs:763"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提交时路径为空或文件不存在"
+result = "状态行写「请填写数据库文件路径（例如 /home/me/app.db）」或「数据库文件不存在：<路径>（请选择已有文件，或先用 sqlite3 创建）」，不发任何 RPC"
+source = "src/driver_form.rs:207、src/driver_form.rs:214"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "aaea371b85e4"
+commit = "7436cd5"
+evidence = "dialog.rs open_file_chooser + driver_form.rs 路径校验"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.fields.read_only"
+parent = "dialogs.connection.fields"
+display_name = "「只读打开」"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "只读打开"
+impl_notes = ["副标题「以只读方式连接：数据库会拒绝任何写入（数据页会显示只读原因）」；只对文件型驱动显示。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已勾选只读且路径是 :memory:"
+result = "状态行写「内存数据库（:memory:）不支持只读模式」，不发任何 RPC（与后端同一条规则，提前在界面说清）"
+source = "src/driver_form.rs:221、src/dialog.rs:192"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "09c7dca15226"
+commit = "7436cd5"
+evidence = "driver_form.rs 只读 + 内存库互斥规则"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.credential_note"
+parent = "dialogs.connection"
+display_name = "凭据说明行（「密码只写入系统凭据库」）"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["font_status"]
+a11y.name = "密码只写入系统凭据库"
+impl_notes = [
+  "只说事实，不说安全承诺以外的内容：配置里只有一个随机引用。",
+  "不需要密码的驱动隐藏这一行（说了也没有含义）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "当前驱动需要密码"
+result = "显示两行：「密码只写入系统凭据库」与「连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存」"
+source = "src/dialog.rs:209、src/dialog.rs:405"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "d00e93235e45"
+commit = "7436cd5"
+evidence = "dialog.rs credential_note 构建与显隐"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "d00e93235e45"
+note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；对话框内的说明行未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.status"
+parent = "dialogs.connection"
+display_name = "状态行（校验 / 测试结果 / 失败）"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["font_status"]
+a11y.name = "连接状态"
+impl_notes = [
+  "单行区，失败时按两行显示（分类主标题 + 后端文案与错误码），可换行、左对齐、占满可用宽度。",
+  "成功 / 失败 / 说明三种语义只靠样式类区分，不换控件。",
+  "状态行只在对话框里，不落到状态栏、不弹第二个提示框。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "保存前本地校验不通过"
+result = "写校验原因（例如「请填写主机」「端口必须是 1-65535 之间的数字（当前：abc）」「请输入密码」），不发任何 RPC，对话框保持打开"
+source = "src/driver_form.rs:145、src/dialog.rs:700"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "「测试连接」成功"
+result = "写「连接成功：延迟 <N> ms · 服务端版本 <version>」；后端未返回版本时写「未知（后端未返回版本）」，并把返回的凭据引用留在对话框里复用"
+source = "src/dialog.rs:509、src/ui.rs:612"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "测试或保存失败"
+result = "两行：分类主标题（如「认证失败：用户名或密码错误」「系统凭据库不可用（不会回退明文保存）」「连接超时」），下一行是后端文案加「[稳定错误码]」（如 mariadb.auth_failed / credential.not_found / timeout）"
+source = "src/dialog.rs:530、src/backend/connection.rs:479、src/backend/connection.rs:513"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切换驱动，或上一次的错误已不适用"
+result = "状态行收起，旧驱动的错误不留在屏幕上"
+source = "src/dialog.rs:432、src/dialog.rs:570"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "918d0445abcb"
+commit = "7436cd5"
+evidence = "§7.1 失败三段文案口径 + dialog.rs show_status / show_failure / show_test_report"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "918d0445abcb"
+note = "§7.1 记录「测试连接」就地展示延迟与服务端版本、失败给「标题 + 后端文案 + 稳定错误码」；状态行的位置与样式未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.actions"
+parent = "dialogs.connection"
+display_name = "底部操作条（状态行 + 两个按钮）"
+kind = "container"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["gap_md", "gap_xl", "fs_button_min_height", "min_target"]
+impl_notes = [
+  "状态行左对齐占满，两个按钮右对齐；底栏上下留白 gap_md、左右留白 gap_xl。",
+  "对话框本身没有「断开中」这一态：连接 / 断开中的重复点击由连接注册表忽略（见 object_tree 连接行），本对话框只在请求在飞期间整体禁用。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "「测试连接」或「保存并连接」的请求在飞"
+result = "两个按钮、驱动下拉与全部输入行一并禁用（sensitive=false），避免重复提交；回包后按驱动与能力恢复可用性"
+source = "src/dialog.rs:485、src/dialog.rs:717"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "99f3f0eab301"
+commit = "7436cd5"
+evidence = "dialog.rs actions 布局 + set_pending 禁用清单"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "99f3f0eab301"
+note = "§7.1 只记录「测试连接」一个按钮；操作条布局、另两个按钮与「进行中整体禁用」未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.actions.test"
+parent = "dialogs.connection.actions"
+display_name = "「测试连接」"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["fs_button_min_height", "min_target"]
+a11y.name = "测试连接"
+impl_notes = ["不落盘：测试成功只把凭据引用留在对话框里，配置与凭据都不写（写盘只发生在「保存并连接」）。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有可用驱动（ListDrivers 非空且前端认识该驱动），请求不在飞"
+result = "先做本地校验，通过后整体置为禁用、状态行写「正在测试连接…」，调 TestConnection；成功回「连接成功：延迟 … ms · 服务端版本 …」，失败回分类错误两行"
+source = "src/dialog.rs:227、src/dialog.rs:700、src/ui.rs:612"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "没有可用驱动（后端未返回驱动，或前端没有该驱动的表单）"
+result = "按钮禁用，点不动：不发测试请求，也不退回一份写死的 MariaDB 表单"
+source = "src/dialog.rs:420、src/dialog.rs:153"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "5f2015e247d9"
+commit = "7436cd5"
+evidence = "dialog.rs 测试按钮接线 + Event::Tested 回填"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "5f2015e247d9"
+note = "§7.1 记录「测试连接」就地展示延迟与服务端版本；按钮可用性判定未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.actions.save"
+parent = "dialogs.connection.actions"
+display_name = "「保存并连接」（建议动作）"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["fs_action_min_height", "min_target"]
+style.tokens = ["sqarvo_brand_deep", "sqarvo_brand_on_deep"]
+a11y.name = "保存并连接"
+impl_notes = [
+  "建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。",
+  "落盘只有两件事：connections.json 里的连接条目（含 credential_ref）与系统凭据库里的密码条目。",
+  "保存成功即建立会话并关闭对话框，落到工作区；保存失败则对话框留着、状态行给原因。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "本地校验通过，驱动可用"
+result = "整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区"
+source = "src/dialog.rs:700、src/ui.rs:1382、src/ui.rs:641"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "本地校验不通过"
+result = "不提交：状态行给原因，对话框保持打开，用户改正后可再点"
+source = "src/dialog.rs:701"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端 worker 不可用（已退出或未握手）"
+result = "状态行写「本地后端未连接」（错误码 backend.unavailable），按钮恢复可点，不假装已保存"
+source = "src/ui.rs:1399、src/ui.rs:1401、src/backend/connection.rs:489"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c33d2c341b98"
+commit = "7436cd5"
+evidence = "dialog.rs request + ui.rs submit / Event::ConnectResult 路径"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.connection.actions.cancel"
+parent = "dialogs.connection.actions"
+display_name = "「取消」"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["fs_button_min_height", "min_target"]
+a11y.name = "取消"
+impl_notes = ["在标题栏左侧，不在底部操作条里：破坏性为零的出口不需要挤在提交按钮旁边。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "对话框已打开"
+result = "直接关闭：不写配置、不写凭据、不建会话；再次打开从默认值重新开始"
+source = "src/dialog.rs:138、src/dialog.rs:286"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ed87dc8ff640"
+commit = "7436cd5"
+evidence = "dialog.rs cancel 接线与注释"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.about"
+parent = "dialogs"
+display_name = "关于对话框"
+kind = "container"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["gap_page", "gap_md", "gap_lg"]
+a11y.name = "关于 Squarvo"
+impl_notes = [
+  "自绘对话框：宽度 620、高度 520 是代码常量，未进 metrics（P1 补齐）。",
+  "不依赖后端：后端未握手时照样能打开，诊断区块改写端点文件与「后端：尚未握手完成」。",
+  "内容顺序固定：应用名与版本 → 「后端诊断」标题 → 诊断逐行 → 保密说明。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "帮助 → 关于 Squarvo（任意状态，不依赖后端）"
+result = "打开对话框；已打开时只把它前置，不叠第二个"
+source = "src/ui.rs:5289、src/ui.rs:5290、src/ui.rs:4623"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "内容高于可视区"
+result = "纵向滚动，横向永不滚动；长路径按字符折行，不让一个没有空格的长字符串把对话框顶宽"
+source = "src/ui.rs:5365、src/ui.rs:5351"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a4b6ad8d867a"
+commit = "7436cd5"
+evidence = "§1.4 帮助 → 关于 + ui.rs show_about 逐行对照"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.about.app_info"
+parent = "dialogs.about"
+display_name = "名称 / 版本 / 一句说明"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+a11y.name = "Sqarvo 版本"
+impl_notes = ["版本号取编译期包版本，不写死文案；字号来自 Adw 的 title-1 与 dim-label，未进 metrics。"]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "对话框打开"
+result = "三行：「Sqarvo」、「版本 <包版本>」、「轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）」"
+source = "src/ui.rs:5301、src/ui.rs:5304、src/ui.rs:5307"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "05622bc1d6a1"
+commit = "7436cd5"
+evidence = "ui.rs show_about 应用信息三行"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.about.protocol"
+parent = "dialogs.about"
+display_name = "后端版本与协议"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["font_status"]
+a11y.name = "后端版本与协议"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端已握手"
+result = "写「后端版本：<service_version>（协议 <protocol_version>，<build_profile> 构建）」"
+source = "src/ui.rs:5243"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端未握手"
+result = "不写版本与协议行，诊断区块改写「端点文件：<路径>」与「后端：尚未握手完成」——不编造版本号"
+source = "src/ui.rs:5326"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4a8b0ceaf7d2"
+commit = "7436cd5"
+evidence = "ui.rs backend_diagnostic_lines 首行与未握手分支"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.about.diagnostics"
+parent = "dialogs.about"
+display_name = "后端诊断字段"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["font_status", "gap_lg"]
+a11y.name = "后端诊断"
+impl_notes = [
+  "逐行一个标签，全部可选中复制（对报障有用），逐字折行。",
+  "版本不一致必须显式写出来，不能静默：可能连到了旧版本后端或读到了过期端点文件。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端已握手"
+result = "逐行给：传输方式、后端进程 PID（由前端启动：是 / 否）、端点文件、版本不一致时「注意：端点记录的后端版本 … 与 GetVersion 返回的 … 不一致。」、已注册驱动「显示名（driver_id）」清单（无驱动时写「已注册驱动：（后端未返回任何驱动）」）"
+source = "src/ui.rs:5243、src/ui.rs:5261、src/ui.rs:5268"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "有工作区"
+result = "追加连接名、初始会话短 ID（「连接对话框建立的初始会话：…（未领养时随退出释放）」）与逐条标签会话行"
+source = "src/ui.rs:5331、src/ui.rs:5334"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "f1e04163a20b"
+commit = "7436cd5"
+evidence = "ui.rs backend_diagnostic_lines + 会话行拼装"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "dialogs.about.privacy_note"
+parent = "dialogs.about"
+display_name = "保密说明行"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+style.metrics = ["font_status"]
+a11y.name = "保密说明"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "对话框打开"
+result = "写「本对话框只在本机显示，不含密码、凭据引用与 token。」（诊断字段里也确实没有这三样）"
+source = "src/ui.rs:5357"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "5d6546bb291c"
+commit = "7436cd5"
+evidence = "ui.rs show_about 结尾说明行"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""

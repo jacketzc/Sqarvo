@@ -1,0 +1,796 @@
+# 标签条与查询标签（编辑器 / 结果区）的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 区域边界：本区收「标签条 + 查询标签页里的编辑器与结果区」。表数据页的工具条、筛选、
+# 数据网格、分页、导出归 data_page；关闭标签的确认框跟随「关闭标签」这个动作留在本区
+# （README 区域边界：确认框跟随触发它的动作）。查询结果区的「导出 ▾」与状态圆点复用
+# data_page / status_bar 的记录，不在这里另立一条。
+#
+# 行为条目取自 ui-behavior-contract.md §4（标签全文）、§5.11（查询标签的版面收敛与
+# 不可用态）与 §7.1 里查询面的六行（查询标签、SQL 编辑器、结果网格、结果区五态、
+# 查询游标的 Close 时机、`*` 脏标记 / 上限 8）。源码行号已按当前 tabs.rs /
+# sql_page.rs / results.rs 复核，函数名仍是一级定位。
+
+[area]
+id = "tabs"
+display_name = "标签条与查询标签"
+summary = "工作区顶部的标签条，以及查询标签页里的动作行、编辑器与结果区：标签的新建 / 复用 / 上限 / 关闭守卫，查询的执行 / 取消、五态、结果表头与续拉。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §4、§5.11、§7.1"
+
+[[component]]
+id = "tabs"
+parent = ""
+display_name = "标签条与查询标签工作区"
+kind = "area"
+status = "active"
+style.slot = "workspace.tabstrip"
+style.metrics = ["tab_strip_height"]
+impl_notes = [
+  "标签条在最上，下面是当前标签的内容区。`Objects` 固定页钉在最左、没有会话、不占「有会话标签」的 8 个名额。",
+  "标签与内容同属一个 AdwTabView：先摘页面再释放会话（on_page_detached），避免闭包拿着已销毁的控件。",
+  "标签顺序即打开顺序；拖动标签会改 AdwTabView 的顺序，标签位次按 pages() 取而不是按创建顺序。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "aca4e74230da"
+evidence = "v0.2.5 Linux 客户端；§4 十一条逐条对照 tabs.rs（标签条 + 查询标签）"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "aca4e74230da"
+note = "TabView 承载：固定 Objects 页（IsClosable=false、不占名额）+ 可关闭的查询 / 数据页；标签条外形与密度档 §7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.strip"
+parent = "tabs"
+display_name = "标签条容器"
+kind = "container"
+status = "active"
+style.slot = "workspace.tabstrip"
+style.metrics = ["tab_strip_height", "gap_sm", "gap_xxs", "min_target", "objects_min_width"]
+style.tokens = ["sqarvo_separator"]
+impl_notes = [
+  "标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。",
+  "标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。",
+  "固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "142ce7541387"
+evidence = "§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "142ce7541387"
+note = "TabView 自带标签条（查询页可关闭、Objects 钉首位）；标签条上的 ＋ 按钮与拖拽重排 §7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.strip.tab"
+parent = "tabs.strip"
+display_name = "标签项（标题 · 关闭 ×）"
+kind = "row"
+status = "active"
+a11y.name = "（标签内容：标题）"
+a11y.tab = "可聚焦；Ctrl+Tab / Ctrl+Shift+Tab 循环切换，Alt+1..9 直选第 N 个"
+style.metrics = ["min_target", "font_ui"]
+style.tokens = ["window_fg_color"]
+style.states = { hover = "window_fg_color", selected = "window_fg_color" }
+impl_notes = [
+  "hover 与选中都是 @window_fg_color 的透明档（灰），不是品牌紫：标签回答「现在看的是哪一页」这种位置问题，不该和主操作按钮抢同一层视觉。",
+  "行结构：标题（单行，超宽省略）+ 关闭 ×。`Objects` 页也带 ×，但点它会被 on_close_page 拒绝并记日志（libadwaita 1.9 的 AdwTabPage 没有「不可关闭」属性）。",
+  "标签本身不显示会话状态：会话在不在看 tooltip 的「会话 <id 前 8 位>」。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "标签存在且不是当前页"
+result = "切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起"
+source = "src/tabs.rs:1361、src/tabs.rs:2173、src/tabs.rs:2289、src/tabs.rs:2302"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "页面已从标签条摘掉（detach）"
+result = "释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个"
+source = "src/tabs.rs:2819、src/tabs.rs:2834、src/tabs.rs:2839"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6c8176f57385"
+evidence = "§4 切换标签 / 标签被摘掉两行；select_page 与 on_page_detached"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "6c8176f57385"
+note = "标签可切、可关；切换不重建会话与 detach 时释放会话的顺序 §7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.strip.tab.table"
+parent = "tabs.strip.tab"
+display_name = "表数据标签（标题与 tooltip）"
+kind = "item"
+status = "active"
+a11y.name = "（行内容：<对象名> @ <catalog>）"
+impl_notes = [
+  "标题固定是 `<对象名> @ <catalog>`；catalog 为空写「默认」——不编造库名，也不把连接名塞进标签。",
+  "tooltip 是 `<标题> · 标签会话`；会话建立后阶段换成 `会话 <id 前 8 位>`。",
+  "窗口标题仍是 `<标签标题> (<连接名>)`（副标题是连接级信息，不随标签改）。",
+]
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限"
+result = "新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签"
+source = "src/tabs.rs:1795、src/tabs.rs:1832、src/tabs.rs:1903、src/tabs.rs:1936"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "已有对象名 + catalog + 连接键三者完全一致的表标签"
+result = "只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去"
+source = "src/tabs.rs:1804、src/tabs.rs:122、src/tabs.rs:1588"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "该标签的会话已建立"
+result = "tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里）"
+source = "src/tabs.rs:2552、src/tabs.rs:2262"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "044d086043af"
+evidence = "§4 表数据标签标题 / 打开表 / 复用三行；table_tab_title 与 tooltip_for"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "044d086043af"
+note = "标签名 `表名 @ 库`（库为空写「默认」）、同表复用、上限 8、有未提交改动带 `*` 已落地（§7.1 数据页 #173）；tooltip 的「会话 <id 前 8 位>」§7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.strip.tab.query"
+parent = "tabs.strip.tab"
+display_name = "查询标签（标题与 tooltip）"
+kind = "item"
+status = "active"
+a11y.name = "（行内容：查询 N）"
+impl_notes = [
+  "标题只有「查询 N」：**不带** `@ 库`。序号自 1 起递增、不复用已关闭的序号（关掉「查询 2」后下一个仍是「查询 3」）。",
+  "库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。",
+  "窗口标题仍是 `<标签标题> (<连接名>)`。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "新建查询标签"
+result = "标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」）"
+source = "src/tabs.rs:95、src/tabs.rs:1877、src/tabs.rs:1884、src/tabs.rs:2262"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "该查询标签的会话已建立"
+result = "tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段"
+source = "src/tabs.rs:2552"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ac7f8a5083f8"
+evidence = "§4 查询标签标题；query_tab_title 递增计数器与 tooltip_for"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "ac7f8a5083f8"
+note = "标签名 `查询 N`、`*`（编辑器内容 ≠ 执行那一刻的内容，v0.1 没有「保存查询」）、上限 8 已落地（§7.1 #172）；标签 tooltip 里的库 / 连接 / 会话三段 §7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.strip.tab.close"
+parent = "tabs.strip.tab"
+display_name = "标签关闭按钮（×）"
+kind = "control"
+status = "active"
+a11y.name = "关闭标签"
+style.metrics = ["min_target"]
+impl_notes = [
+  "× 与 `Ctrl+W` 走同一条 `close-page`：只有这一条关闭入口，没有第二套旁路。",
+  "`Objects` 固定页的 × 点了也不关：on_close_page 拒绝并记一行日志（AdwTabPage 没有「不可关闭」属性）。",
+  "确认框已在显示时再点 × 只记日志，不叠第二个框。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "非 Objects 页，且没有脏行、没有未提交事务"
+result = "直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect）"
+source = "src/tabs.rs:2645、src/tabs.rs:2662"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "非 Objects 页，且有脏行或有未提交事务"
+result = "先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场"
+source = "src/tabs.rs:2662、src/tabs.rs:2677、src/tabs.rs:2681"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该标签的确认框已在显示"
+result = "忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹"
+source = "src/tabs.rs:2674"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该标签是固定 `Objects` 页"
+result = "不关闭，记一行「Objects 页固定存在，不可关闭」"
+source = "src/tabs.rs:2657"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+W"]
+precondition = "存在当前标签"
+result = "关闭当前标签：与点 × 同一条 `close-page`（有脏行 / 事务时同样先弹三选）"
+source = "src/ui.rs:328、src/tabs.rs:2856"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "14b415cf7ea2"
+evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "14b415cf7ea2"
+note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.strip.new"
+parent = "tabs.strip"
+display_name = "「＋」新建查询标签"
+kind = "control"
+status = "active"
+a11y.name = "新建查询标签"
+style.metrics = ["min_target"]
+impl_notes = [
+  "四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。",
+  "超限时不新建、只弹 tabs.limit（同一段文案不重复弹）；连点 ＋ 不会堆一摞对话框。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端就绪、工作区已建立"
+result = "未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示"
+source = "src/tabs.rs:1352、src/tabs.rs:1856、src/tabs.rs:1904、src/ui.rs:263、src/ui.rs:4595"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+T"]
+precondition = "后端就绪、工作区已建立"
+result = "与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示"
+source = "src/ui.rs:327、src/ui.rs:4757、src/tabs.rs:1856"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ca149095cd4d"
+evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "ca149095cd4d"
+note = "`Ctrl+T` 新建查询页已落地；标签条上的 ＋ 按钮 §7.1 未记录（新建入口只写了 Ctrl+T 与菜单）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.limit"
+parent = "tabs"
+display_name = "「无法新建标签」提示"
+kind = "control"
+status = "active"
+a11y.name = "无法新建标签"
+style.slot = "dialogs"
+style.metrics = ["badge_min_height"]
+impl_notes = [
+  "上限是 8 个「有会话标签」（表数据 + 查询）；`Objects` 固定页不占名额。常量 MAX_TABS 与后端 QueryRegistry.max_concurrent 对齐。",
+  "同一段文案不重复弹：连点 ＋ / Ctrl+T 只留一个框，日志里仍每次记一行拒绝原因。",
+  "文案不是静默失败：必须同时给出上限、当前已开数量和「先关一个」的建议。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "同时打开的有会话标签达到 8 时请求新建（工具条 / ＋ / Ctrl+T / 菜单任一路径）"
+result = "拒绝新建并弹 AdwAlertDialog：标题「无法新建标签」，正文「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案已在显示时不重复弹"
+source = "src/tabs.rs:2884、src/tabs.rs:72、src/tabs.rs:59"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提示框在显示"
+result = "「知道了」关闭提示框；本次请求不新建任何标签"
+source = "src/tabs.rs:2884"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "f5202cef321d"
+evidence = "§4 标签上限；limit_message 与 show_limit"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "f5202cef321d"
+note = "上限 8 与同一段文案已落地，但走**状态栏**提示，不弹对话框（§7.1：不弹假对话框）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query"
+parent = "tabs"
+display_name = "查询标签页"
+kind = "container"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["gap_page"]
+impl_notes = [
+  "页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。",
+  "本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。",
+  "每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。",
+  "游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "5e420c7f2c60"
+evidence = "§5.11 版面收敛；SqlPage::new 的组装顺序"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "5e420c7f2c60"
+note = "查询页整体在代码里搭（#172，ShellView 一行未改）：动作行 / 编辑器 / 五态 / 表头 / 行区 / 加载更多；分隔线与留白 §7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.actions"
+parent = "tabs.query"
+display_name = "动作行（执行 / 取消）"
+kind = "control"
+status = "active"
+a11y.name = "查询动作"
+style.metrics = ["gap_md", "gap_sm", "min_target"]
+impl_notes = [
+  "按钮文案与可用性随状态互斥：空闲 → 「执行」可点、「取消」不可点；执行中 → 主按钮变「取消」（Linux 是并排两枚：执行置灰、取消可点）。取消可重复点击，第二次起只记日志、不发 RPC。",
+  "空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。",
+  "动作行左端是会话信息（有真实会话信息时才占位，不再写「会话建立中…」）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "没有查询在跑，编辑器里有 SQL"
+result = "执行编辑器里的 SQL；按钮在运行中变成「取消」（同一入口）；成功后结果区进入「执行中…」并等首批"
+source = "src/sql_page.rs:139、src/sql_page.rs:341、src/sql_page.rs:358、src/sql_page.rs:1052"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "编辑器为空或只有空白"
+result = "只写一行「SQL 不能为空：请输入后按 Ctrl+Enter」，不清掉已有结果、不发请求"
+source = "src/sql_page.rs:343"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Enter"]
+precondition = "没有查询在跑"
+result = "与点「执行」同一条方法（不存在「只有按钮能用」的旁路）"
+source = "src/sql_page.rs:300、src/sql_page.rs:341"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有查询在跑"
+result = "发 Cancel 并立即进入「已取消」；重复点幂等（不发 RPC、不报错），已取到的行保留"
+source = "src/sql_page.rs:143、src/sql_page.rs:395"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Esc"]
+precondition = "有查询在跑"
+result = "取消查询（同一按键在空闲时分流为「清空结果区行选中」）"
+source = "src/sql_page.rs:288、src/sql_page.rs:395"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "1187ec7564e2"
+evidence = "§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "1187ec7564e2"
+evidence = "§7.1 查询标签 / SQL 编辑器两行：执行 / 取消同一入口、跑起来文案变「取消」、Ctrl+Enter 执行、Ctrl+. 取消、空 SQL 只提示不清理结果"
+platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.editor"
+parent = "tabs.query"
+display_name = "SQL 编辑器（行号沟 + 等宽文本）"
+kind = "control"
+status = "active"
+a11y.name = "SQL 编辑器"
+a11y.tab = "新建查询标签后自动获得焦点"
+style.metrics = ["gap_md", "gap_sm", "font_data_cell"]
+impl_notes = [
+  "等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。",
+  "高度是内容高度区间（min 140 / max 220，未进 metrics：P1 补 key），超出后在编辑器内部滚动。",
+  "Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "新建查询标签成功"
+result = "键盘焦点直接落在编辑器上，可以马上输入 SQL"
+source = "src/tabs.rs:1904、src/sql_page.rs:336"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Enter"]
+precondition = "编辑器有焦点"
+result = "执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略"
+source = "src/sql_page.rs:300、src/sql_page.rs:341"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "d29bec6d14d6"
+evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "d29bec6d14d6"
+evidence = "§7.1 SQL 编辑器行：行号沟 + 等宽多行 TextBox（AcceptsReturn、不折行、自动滚动条）、无语法高亮"
+platform_notes.windows = "**有选中就只执行选中部分**（TextBox.SelectionLength > 0），否则执行全文；Linux 执行全文。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.state"
+parent = "tabs.query"
+display_name = "结果区状态行（五态）"
+kind = "control"
+status = "active"
+a11y.name = "查询状态"
+style.metrics = ["font_status", "gap_xl", "spinner_px"]
+style.tokens = ["warning_color"]
+impl_notes = [
+  "五态互斥且都带稳定文案：执行中带 spinner；空 / 错误 / 取消 / 只读 / 断开各一句，**没有**结果时同一句文案也做占位页的标题与说明。",
+  "正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。",
+  "Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。",
+  "Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "结果区状态变化"
+result = "写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行"
+source = "src/results.rs:1043、src/sql_page.rs:609、src/sql_page.rs:635"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "语句没有结果集（UPDATE / INSERT / DDL）"
+result = "不假装有结果：写「影响 N 行」而不是画一张空表（Linux 写「语句 N 影响 N 行（无结果集）」）"
+source = "src/sql_page.rs:548、src/sql_page.rs:552"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "9863fec61345"
+evidence = "§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "9863fec61345"
+evidence = "§7.1 结果区五态行：Loading / Empty / Error / Cancelled / ReadOnly 五态互斥，Error 与 Cancelled 保留已加载行"
+platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results"
+parent = "tabs.query"
+display_name = "结果区"
+kind = "container"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["gap_xl", "gap_sm", "radius_md", "frame_border_width"]
+style.tokens = ["sqarvo_frame"]
+impl_notes = [
+  "自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。",
+  "没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。",
+  "表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ec9afd09d462"
+evidence = "§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "ec9afd09d462"
+note = "状态行 + 表头 + 行区 + 「加载更多」已落地；状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.header"
+parent = "tabs.query.results"
+display_name = "结果表头（列名 · 原始类型）"
+kind = "control"
+status = "active"
+a11y.name = "结果列头"
+style.metrics = ["column_header_min_height", "font_status"]
+impl_notes = [
+  "一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。",
+  "表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。",
+  "多结果集在表头**上方**补一行说明（「结果集 K 段」，K > 1 时再补「只显示第 1 段」）；Linux 目前只把多语句写进日志。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "首批数据到达"
+result = "按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多结果集时表头上方一行「结果集 K 段」，K > 1 再补「只显示第 1 段」"
+source = "src/results.rs:968、src/sql_page.rs:544、src/sql_page.rs:561"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "719abcce7626"
+evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "719abcce7626"
+evidence = "§7.1 结果网格行：列头「列名 · 原始类型」（没有类型信息时只写列名）+ 多结果集在表头上一行写「结果集 K 段」，K > 1 补「只显示第 1 段」"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.grid"
+parent = "tabs.query.results"
+display_name = "结果行区（虚拟化表格）"
+kind = "control"
+status = "active"
+a11y.name = "查询结果"
+a11y.tab = "可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）"
+style.metrics = ["row_height_data", "row_number_width", "column_width", "font_data_cell"]
+impl_notes = [
+  "虚拟化：只建视口内的行，滚动时不把整批行都做成控件；行号列跨批次连续（1 起、右对齐），宽表靠横向滚动而不是把列压碎。",
+  "行号列与数据列的实际宽度目前是代码常量（行号 72、数据列 220，未进 metrics：metrics 里是 row_number_width / column_width），P1 收敛。",
+  "取消 / 错误 / 断连之后不清空行区：已加载的行保留，状态行说明为什么停在这里。",
+  "没有行级脏色 / 删除线之外的额外标记（查询标签的单表编辑归 §5.10，脏行数只在状态行与状态圆点）。",
+]
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Esc"]
+precondition = "结果区有选中行、没有查询在跑"
+result = "清空行选中；执行中的 Esc 仍分流为「取消查询」"
+source = "src/results.rs:379、src/results.rs:382"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0b7f6ebc270f"
+evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "0b7f6ebc270f"
+evidence = "§7.1 结果网格行：只建视口内的行、上下用高度占位撑出总高、表头与行区横向同步滚动"
+platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.more"
+parent = "tabs.query.results"
+display_name = "续拉（滚动到末尾自动续拉 / 「加载更多」）"
+kind = "control"
+status = "active"
+a11y.name = "加载更多"
+style.metrics = ["min_target"]
+impl_notes = [
+  "每批行数由服务端分批返回；同一时刻最多一批在飞，触顶（客户端结果集上限）之后不再续拉。",
+  "Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。",
+  "续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。",
+]
+
+[[component.interaction]]
+trigger = "scroll"
+precondition = "结果仍在分批读取（has_more），且滚动到接近末尾"
+result = "自动发一次 FetchBatch 续拉下一批；同一时刻最多一批在飞，触顶后不再拉（暂停原因写日志）"
+source = "src/results.rs:1181、src/results.rs:1003"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "服务端返回的批次读到底（has_more=false）"
+result = "不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」）"
+source = "src/results.rs:1043、src/sql_page.rs:585"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "3c40d041bb1f"
+evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "3c40d041bb1f"
+evidence = "§7.1 结果网格行：每批 200 行由滚动到接近末尾（距末行 ≤ 20 行）或点「加载更多」触发 FetchBatch，同一时刻最多一批在飞"
+platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.close_dialog"
+parent = "tabs"
+display_name = "关闭标签确认框"
+kind = "control"
+status = "active"
+a11y.name = "关闭标签？"
+style.slot = "dialogs"
+style.metrics = ["badge_min_height"]
+impl_notes = [
+  "只在有脏行或有未提交事务时出现；默认响应与关闭响应都是「取消」（关闭窗口的叉不会变成放弃）。",
+  "正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」——先说会话，再说脏行 / 事务。",
+  "被 `close-page` 信号拦下的那次关闭必须由 `close_page_finish(page, confirm)` 收尾：不回话页面会停在「正在关闭」，之后再点关闭毫无反应。",
+  "按钮的破坏性 / 建议档：放弃（或回滚）是破坏性、保存是建议、取消是默认；只有事务没有脏行时只给「回滚事务并关闭」+「取消」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "关闭一个有脏行或有未提交事务的标签"
+result = "标题「关闭标签？」；正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」；有脏行追加「该标签有 N 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。」；有事务追加「该标签有未提交事务（<标签>）：关闭将**回滚该标签的事务**，其它标签不受影响。」"
+source = "src/tabs.rs:250、src/tabs.rs:2718"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a14abd67065e"
+evidence = "§4 关闭对话框；close_prompt 与 present_close_dialog"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录（Windows 的关页守卫是状态栏二次提示，不弹对话框）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.close_dialog.discard"
+parent = "tabs.close_dialog"
+display_name = "「放弃更改并关闭」/「回滚事务并关闭」"
+kind = "item"
+status = "active"
+a11y.name = "放弃更改并关闭"
+impl_notes = [
+  "有脏行时文案是「放弃更改并关闭」；只有事务没有脏行时是「回滚事务并关闭」（关闭 = 回滚，不用「放弃」吓人）。",
+  "两个文案都是破坏性档（destructive），默认焦点不落在它们上。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "确认框在显示"
+result = "丢弃本地草稿与新增行（有事务时随会话断开由后端回滚），再关页面：被拦下的那次关闭用 `close_page_finish(page, true)` 收尾"
+source = "src/tabs.rs:2779、src/tabs.rs:2791、src/tabs.rs:2795、src/tabs.rs:2702"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "7e49fa7092d4"
+evidence = "§4 放弃并关闭 / 关闭对话框按钮；answer_close 的 Discard 分支"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.close_dialog.save"
+parent = "tabs.close_dialog"
+display_name = "「保存并关闭」/「保存、提交事务并关闭」"
+kind = "item"
+status = "active"
+a11y.name = "保存并关闭"
+impl_notes = [
+  "有事务时文案写「保存、提交事务并关闭」：在事务里只提交脏行就断开，服务端会把事务回滚 —— 用户以为「保存了」，实际什么都没留下。",
+  "顺序固定：先提交脏行 → 若标签有未提交事务再提交事务 → 最后才摘页面；任一步失败都保留标签并在页内说明原因。",
+  "建议档（suggested），但不做默认响应（默认是取消）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "确认框在显示且有脏行"
+result = "先提交脏行 → 再提交标签自己的事务 → 最后摘页面；提交失败时标签保留，页内提示「保存失败：事务处于「<标签>」，标签未关闭。请处理事务后再关闭。」"
+source = "src/tabs.rs:2797、src/tabs.rs:2348、src/tabs.rs:2390"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a25311d57fb2"
+evidence = "§4 保存并关闭；advance_close 的两段相位与失败保留"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.close_dialog.cancel"
+parent = "tabs.close_dialog"
+display_name = "「取消」"
+kind = "item"
+status = "active"
+a11y.name = "取消"
+impl_notes = [
+  "默认响应与窗口关闭响应都是它：误按 Esc / 点框外不会丢掉未提交的更改。",
+  "取消同样要给被拦下的关闭收尾（`close_page_finish(page, false)`），否则页面停在「正在关闭」、后续关闭请求全部失效。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "确认框在显示"
+result = "标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`）"
+source = "src/tabs.rs:2779、src/tabs.rs:2788、src/tabs.rs:2702"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "5c3e35d4ccc2"
+evidence = "§4 取消；answer_close 的 Cancel 分支与 finish_close_page(false)"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""

@@ -1,0 +1,961 @@
+# 窗口壳功能区的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 迁移状态：P0 第二区。行为条目取自 ui-behavior-contract.md §1.1–§1.6（窗口、标题、主工具条、
+# 菜单栏、界面密度档），源码行号已按当前 ui.rs / shell.rs / density.rs / window_size.rs 复核。
+#
+# 区域边界：
+# - 关闭窗口守卫的确认框本体（「有未提交的更改」）不在这里登记 —— 它跟随「关闭 / 退出」这个动作，
+#   但条目本身是独立表面，按 README 的边界留在触发方；这里只登记「入口被拦下」这件事。
+# - 关于对话框本体归 dialogs 区；这里只登记「帮助 → 关于 Squarvo」这个入口。
+# - 后端失效横幅的横幅控件画在标签页（SQL 编辑器）与数据页里，本区只登记窗口级的恢复入口：
+#   「Sqarvo 需要重启」对话框与「重启 Sqarvo」。
+
+[area]
+id = "shell"
+display_name = "窗口壳与主工具条"
+summary = "窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §1.1–§1.6"
+
+[[component]]
+id = "shell"
+parent = ""
+display_name = "窗口外壳"
+kind = "area"
+status = "active"
+style.metrics = ["header_height", "toolbar_height", "status_height", "min_window_width", "min_window_height"]
+impl_notes = [
+  "自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。",
+  "Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 有菜单行。",
+  "页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "f398d9283e00"
+evidence = "§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "f398d9283e00"
+note = "六区域外壳是 #169 稳定版：系统标题栏 + 菜单行 + CommandBar 工具条 + TreeView + TabView + 两行状态栏 + SplitView 信息面板（§7.1）；工具条种类入口未接线、无界面密度菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.window"
+parent = "shell"
+display_name = "主窗口（最小尺寸 · 几何恢复 · 关闭守卫入口）"
+kind = "container"
+status = "active"
+style.metrics = ["min_window_width", "min_window_height"]
+a11y.name = "Sqarvo 主窗口"
+impl_notes = [
+  "最小尺寸由 window_size::relayout 算出后交给 set_size_request，GTK 转成 toplevel 的最小尺寸（Wayland 走 xdg_toplevel.set_min_size，X11 走 WM normal hints）。",
+  "位置不恢复是平台事实：GTK4 没有读写 toplevel 位置的 API，window_x / window_y 照常写入与校验但不拿来挪窗口（blocked 的替代口径见 README「同步」一节）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "窗口创建 / 每次重排"
+result = "最小窗口按显示器逻辑工作区收敛：min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)（T = 密度档，取值来自 metrics.toml）；`--window-size` 给更小的值时被抬到当次下限并记 `[monitor] 目标窗口 … 低于最小窗口 …`"
+source = "src/window_size.rs:205、src/window_size.rs:136、src/ui.rs:171"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "window.json 里有记忆的尺寸 / 最大化"
+result = "尺寸与最大化恢复、**位置不恢复**；记忆矩形不落在任何当前显示器几何内（±32 容差）时丢弃几何、改用分档推荐并记 `[monitor] 几何越界已丢弃：…`"
+source = "src/window_size.rs:365、src/window_state.rs:209"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "点标题栏的关闭按钮"
+result = "先过脏行守卫：任一个表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时**不关窗**，弹「有未提交的更改」确认框（逐表列出；本体不在这里登记），选「取消」什么都不做、「放弃更改并退出」才继续。确认过一次后再关不再二次弹窗；继续后显示「正在停止后端并清理端点文件…」，等 worker 回报 `ShutdownComplete` 才销毁窗口"
+source = "src/ui.rs:414、src/ui.rs:985、src/ui.rs:972"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Shift+W"]
+precondition = "窗口存在"
+result = "与标题栏关闭按钮同一条 `window.close()` → 同一个 close_request（脏行守卫照旧）"
+source = "src/ui.rs:204、src/ui.rs:414"
+
+[component.platform_notes.windows]
+note = "位置可恢复（Linux 不可）：记忆矩形先钳到最小窗口..工作区再还原，maximized 时先还原矩形再最大化；拖动 / 改尺寸只记账不重算；DPI 与工作区变化合并成同一个入口并保留当前 DIP 矩形（§1.6）。"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0c6a24f07ea3"
+evidence = "§1.1 最小尺寸 / 几何恢复 / 关闭窗口；window_size.rs relayout + apply，ui.rs connect_close_request"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "0c6a24f07ea3"
+note = "几何恢复含位置、最大化写还原边界、DPI / 工作区变化单入口（§1.6）；脏行守卫换成「状态栏提示 + 第二次放行」的不弹框口径（§7.1 数据页关窗守卫），与 Linux 的确认框差一条。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.header"
+parent = "shell"
+display_name = "标题栏（窗口外壳）"
+kind = "container"
+status = "active"
+style.slot = "header"
+style.metrics = ["header_height", "font_ui", "gap_md"]
+style.tokens = ["sqarvo_separator"]
+impl_notes = [
+  "Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。",
+  "没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。",
+]
+
+[component.platform_notes.windows]
+note = "系统标题栏 + 菜单行：菜单行高度由外壳高减去系统标题栏实测值得出（按档位 24 / 30 / 36，这两组数字未进 metrics）；标题栏高度由系统给，实测不同时按实测报外壳总高，不裁剪系统区域（§1.6）。"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "fbda8f702e58"
+evidence = "§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "fbda8f702e58"
+note = "有系统标题栏与菜单行（§7.1「六区域外壳」）；菜单行高度推出的口径见 §1.6，标题 / 副标题的更新规则未核对。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.title"
+parent = "shell"
+display_name = "标题与副标题"
+kind = "control"
+status = "active"
+style.metrics = ["font_ui"]
+a11y.name = "窗口标题"
+impl_notes = [
+  "由 AdwWindowTitle 承载：字号随窗口继承 font_ui，字重由 Adwaita 的内部样式决定，`.sqarvo-title` 类只用在页内标题上。",
+  "标题跟着**当前标签**变，副标题是连接级信息、不随标签改 —— 这是两条不同的刷新路径。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "握手成功且还没有数据库连接"
+result = "标题「Sqarvo」、副标题「未连接」"
+source = "src/ui.rs:1561"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "连接数据库成功"
+result = "标题「<连接名> - <驱动显示名>」；副标题「已连接 · <显示名>（<driver_id>）· <服务端版本>」，版本缺失时写「未知（后端未返回）」"
+source = "src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切换标签"
+result = "标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息）"
+source = "src/tabs.rs:2289、src/tabs.rs:2307、src/tabs.rs:135"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端断开"
+result = "标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连"
+source = "src/ui.rs:587、src/tabs.rs:2629"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端握手失败"
+result = "标题回到「Sqarvo」、副标题「连接失败」"
+source = "src/ui.rs:567、src/ui.rs:3774"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "用户选择「重启 Sqarvo」"
+result = "副标题「正在重启…」，标题「Sqarvo」"
+source = "src/ui.rs:1300"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "3d3d47678dd2"
+evidence = "§1.1 六条标题 / 副标题规则；show_startup_workspace / show_workspace / TabSet::refresh_current"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录窗口标题 / 副标题的更新规则。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.menu"
+parent = "shell"
+display_name = "主菜单"
+kind = "control"
+status = "active"
+style.slot = "menubar"
+style.metrics = ["min_target", "icon_box"]
+a11y.name = "主菜单（文件 / 表 / 视图 / 帮助）"
+a11y.tab = "可聚焦；Enter / Space 展开菜单，Esc 收起"
+impl_notes = [
+  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。",
+  "「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
+  "「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "窗口存在"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项"
+source = "src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b73b6dd69bc0"
+evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "b73b6dd69bc0"
+note = "Windows 用菜单行承载同一批条目（§7.1「系统标题栏 + 菜单行」），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.menu.new_connection"
+parent = "shell.menu"
+display_name = "文件 → 新建连接"
+kind = "item"
+status = "active"
+a11y.name = "新建连接"
+impl_notes = ["与工具条「连接」、`Ctrl+N` 同一条判定与同一个动作（`win.new-connection`）。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手"
+result = "打开连接对话框；对话框已打开时只把它前置（不叠第二个）。未就绪时该项禁用，处理器里还有一条兜底日志「后端尚未连接，忽略「新建连接」」"
+source = "src/ui.rs:4751、src/ui.rs:1103"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+N"]
+precondition = "后端已握手"
+result = "与菜单项同一个动作 `win.new-connection`"
+source = "src/ui.rs:320"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "9ef8fc9e877c"
+evidence = "§1.4 文件 → 新建连接；open_connection_dialog_for 的未就绪兜底与「只前置」分支"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "9ef8fc9e877c"
+evidence = "§7.1「文件 → 新建连接…、工具条「连接」」：可用性读同一个后端状态位，握手未完成禁用并逐条给 tooltip 原因"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.menu.new_tab"
+parent = "shell.menu"
+display_name = "文件 → 新建查询标签"
+kind = "item"
+status = "active"
+a11y.name = "新建查询标签"
+impl_notes = ["与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同一条 `TabSet::new_query_tab`。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且工作区存在（`set_workspace_ready` 统一开关）"
+result = "新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应）"
+source = "src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1856"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+T"]
+precondition = "后端已握手且工作区存在"
+result = "与菜单项同一个动作 `win.new-tab`"
+source = "src/ui.rs:327"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "2b73fc3f7021"
+evidence = "§1.4 文件 → 新建查询标签；set_workspace_ready 与 new-tab 接线"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 只记录 `Ctrl+T` 新建查询页，没有记录「文件 → 新建查询标签」这个菜单项。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.menu.quit"
+parent = "shell.menu"
+display_name = "文件 → 退出"
+kind = "item"
+status = "active"
+a11y.name = "退出"
+impl_notes = ["菜单项走 `app.quit`，与 `Ctrl+Q`、D-Bus 同一个入口；有窗口时先关窗，因此脏行守卫照常生效。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "任意"
+result = "有窗口时先 `window.close()`（脏行未提交会先弹确认框），最后一个窗口关完后 GApplication 自然退出；没有窗口时才直接 `app.quit()`。两种情况 `connect_shutdown` 都会停后端并 join 子进程，不留孤儿进程"
+source = "src/ui.rs:4596、src/main.rs:353"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Q"]
+precondition = "任意"
+result = "`app.quit` 加速度器；与菜单项、D-Bus 走同一条 `quit_app`"
+source = "src/main.rs:76"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "623bfeb51b6a"
+evidence = "§1.1 退出应用；quit_app 的「先关窗」分支与 accel 绑定"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录「退出」菜单项与退出守卫。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.menu.export_csv"
+parent = "shell.menu"
+display_name = "表 → 导出 CSV"
+kind = "item"
+status = "active"
+a11y.name = "导出 CSV"
+impl_notes = [
+  "与表工具条 `导出 ▾` 菜单的「导出 CSV…」、`Ctrl+Shift+E` 同一条导出入口；固定 CSV。",
+  "INSERT 语句与转储表只在表工具条 / 结果区 / 树右键菜单里，菜单不重复。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且工作区存在；当前标签有没有可导出内容由动作自己判定"
+result = "导出当前结果页 / 当前页为 CSV；当前标签没有可导出的结果页时只写日志「当前标签没有可导出的结果页」，不弹空对话框"
+source = "src/ui.rs:4601、src/ui.rs:4945"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Shift+E"]
+precondition = "同上"
+result = "直接导出 CSV（与菜单项同一个 `win.export-csv`）"
+source = "src/ui.rs:356"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "9ebdeee8c6a9"
+evidence = "§1.4 表 → 导出 CSV；export-csv 动作与 workspace ready 开关"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 明确记录 Windows 数据页未实现导出 CSV。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.menu.about"
+parent = "shell.menu"
+display_name = "帮助 → 关于 Squarvo"
+kind = "item"
+status = "active"
+a11y.name = "关于 Squarvo"
+impl_notes = [
+  "不依赖后端：握手前也能打开（诊断字段会写「未连接」/ 空）。",
+  "对话框本体（版本、协议、后端诊断字段的排版）归 dialogs 区；这里只登记入口。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "任意"
+result = "打开「关于 Squarvo」对话框：版本、协议、后端诊断字段（不含密码、凭据引用与 token）；已打开时只前置，不叠第二个"
+source = "src/ui.rs:4623、src/ui.rs:5289、src/ui.rs:4957"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "479e5d8e8b9a"
+evidence = "§1.4 帮助 → 关于 Squarvo；show_about 的「已打开只前置」与诊断行"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录「帮助 → 关于」菜单项。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar"
+parent = "shell"
+display_name = "主工具条"
+kind = "container"
+status = "active"
+style.slot = "toolbar"
+style.metrics = ["toolbar_height", "toolbar_padding_h", "gap_sm", "min_target", "font_ui"]
+style.tokens = ["sqarvo_separator"]
+a11y.name = "主工具条"
+impl_notes = [
+  "窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。",
+  "左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。",
+  "六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；启动态「新建查询」禁用时是 5/6。",
+  "种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端就绪状态变化"
+result = "六个按钮同时切换可用性与 tooltip，并打一行可用性日志；菜单侧走同一个状态（`WindowActions::set_backend_ready`），不出现「菜单禁用、按钮可点」"
+source = "src/shell.rs:862、src/ui.rs:4666、src/shell.rs:840"
+
+[component.platform_notes.windows]
+note = "工具条是 CommandBar：左动作组 + 竖分隔 + 四个种类入口（AppBarButton），本片四个入口仍未接线（§7.1）。"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "428b776cb588"
+evidence = "§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "428b776cb588"
+note = "有 CommandBar 与六个入口（§7.1）；种类入口未接线、无高亮联动，工具条高度按 Metrics 取档但对外壳的分配未核对。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar.connect"
+parent = "shell.toolbar"
+display_name = "「连接」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui"]
+a11y.name = "连接"
+impl_notes = [
+  "主工具条上唯一的强调色按钮（`suggested-action`）；禁用时**摘掉**该类 —— Adwaita 的 disabled suggested 仍是橙底，视觉上像可点。",
+  "tooltip：就绪时「打开连接对话框（Ctrl+N）」；未就绪时「后端尚未就绪：正在连接本地后端，握手完成后才能新建连接」。",
+  "连接入口只有这一个（标题栏不放连接按钮）；连接对话框也能从「文件 → 新建连接」/ `Ctrl+N` 打开。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手"
+result = "打开连接对话框；对话框已打开时只把它前置，不叠第二个。禁用时不发动作，只在处理器里留一条日志兜底"
+source = "src/shell.rs:721、src/ui.rs:1096、src/ui.rs:1103"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a5a90c8823ed"
+evidence = "§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "a5a90c8823ed"
+note = "可用性读 BackendState.IsReady、未就绪禁用并逐条给 tooltip 原因（§7.1）；按钮的强调色与禁用时的强调色摘除未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar.new_query"
+parent = "shell.toolbar"
+display_name = "「新建查询」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui"]
+a11y.name = "新建查询"
+impl_notes = [
+  "两个独立条件同时满足才可点：后端已握手 **且** 已连接数据库（工作区存在）；两者正交，任一不满足都禁用。",
+  "tooltip 三态：启用「新建查询标签（Ctrl+T）」；未连接「尚未连接数据库：先连接再新建查询标签」；后端未就绪「后端尚未就绪：握手完成且连接数据库后才能新建查询标签」。",
+  "与标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」同一条 `TabSet::new_query_tab`。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且工作区存在"
+result = "新建查询标签并聚焦编辑器；工作区不存在时只写日志「尚未连接数据库：先连接再新建查询标签」"
+source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1856"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a27092daa726"
+evidence = "§1.2「新建查询」；apply_new_query 的两条件与三段 tooltip"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 只记录 `Ctrl+T` 新建查询页；工具条是否有「新建查询」按钮及其两段可用性未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar.tables"
+parent = "shell.toolbar"
+display_name = "种类入口「Tables」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui", "gap_xs"]
+style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.states = { selected = "sqarvo_brand_mid" }
+a11y.name = "Tables"
+impl_notes = [
+  "纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。",
+  "高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。",
+  "tooltip：就绪「在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）」；未就绪「后端尚未就绪：握手完成后可用」。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且树里能定位到库"
+result = "在树里**一次选中**该库的 `Tables` 分组行（库未展开先展开），切到 `Objects` 页并按 `filter.kinds=[TABLE]` 拉第一页；信息面板随树选中切换；工具条高亮 `Tables`"
+source = "src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "树里定位不到库（尚未连接 / 树里没有库）"
+result = "只写日志「种类入口「Tables」无法定位库：…」，界面不变化（§9 已知偏差）；启动态则把固定 `Objects` 页摆到前面并**保持空态**，日志「尚未连接数据库，Objects 页保持空态」"
+source = "src/ui.rs:1942、src/startup.rs:298"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4d2a836454bd"
+evidence = "§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "4d2a836454bd"
+note = "入口是 AppBarButton，本片仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar.views"
+parent = "shell.toolbar"
+display_name = "种类入口「Views」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui", "gap_xs"]
+style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.states = { selected = "sqarvo_brand_mid" }
+a11y.name = "Views"
+impl_notes = [
+  "与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。",
+  "tooltip：就绪「在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）」；未就绪「后端尚未就绪：握手完成后可用」。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且树里能定位到库"
+result = "在树里一次选中该库的 `Views` 分组行，切到 `Objects` 页并按 `filter.kinds=[VIEW, MATERIALIZED_VIEW]` 拉第一页；信息面板随树选中切换；工具条高亮 `Views`"
+source = "src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "树里定位不到库（尚未连接 / 树里没有库）"
+result = "只写日志，界面不变化（与 `Tables` 同一条分支）；启动态把固定 `Objects` 页摆到前面并保持空态"
+source = "src/ui.rs:1942、src/startup.rs:298"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "bc668bc95850"
+evidence = "§1.3 点 Views；KindGroup::Views 与 kinds 组合"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "bc668bc95850"
+note = "入口是 AppBarButton，本片仍未接线（§7.1），与 Tables 同一状态。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar.functions"
+parent = "shell.toolbar"
+display_name = "种类入口「Functions」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui", "gap_xs"]
+style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.states = { selected = "sqarvo_brand_mid" }
+a11y.name = "Functions"
+impl_notes = [
+  "有入口、没有列表能力：点了照样联动（树里选中分组行），页面如实说明原因，不摆假数据。",
+  "tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且树里能定位到库"
+result = "树里照样选中 `Functions` 分组行（联动两向都要通）；`Objects` 页写「函数列表尚未实现」+「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；**0 次 RPC**；工具条高亮 `Functions`"
+source = "src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "树里定位不到库"
+result = "仍然切到 `Objects` 页并显示未实现说明（不静默、不留空白页）"
+source = "src/ui.rs:1948"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a675fb97848e"
+evidence = "§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "a675fb97848e"
+note = "入口是 AppBarButton，未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.toolbar.queries"
+parent = "shell.toolbar"
+display_name = "种类入口「Queries」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui", "gap_xs"]
+style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.states = { selected = "sqarvo_brand_mid" }
+a11y.name = "Queries"
+impl_notes = [
+  "与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。",
+  "tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已握手且树里能定位到库"
+result = "树里选中 `Queries` 分组行；`Objects` 页写「已保存的查询尚未实现」+「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」；**0 次 RPC**；工具条高亮 `Queries`"
+source = "src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "树里定位不到库"
+result = "仍然切到 `Objects` 页并显示未实现说明（与 Functions 同一条分支）"
+source = "src/ui.rs:1948"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6ec5c3b0b7b8"
+evidence = "§1.3 点 Queries；unavailable_copy 的 Queries 原文"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "6ec5c3b0b7b8"
+note = "入口是 AppBarButton，未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.density"
+parent = "shell"
+display_name = "界面密度档（紧凑 / 舒适 / 大）"
+kind = "container"
+status = "active"
+style.slot = "overlay"
+style.metrics = ["font_ui", "font_status", "gap_xs"]
+a11y.name = "界面密度"
+a11y.tab = "菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择"
+impl_notes = [
+  "「视图 → 界面密度」这一项本身是 GMenu 的占位项：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时用 `PopoverMenu::add_child` 换成这一节（标题「界面密度」+ 三个 GtkCheckButton），视图子菜单只为它而存在。",
+  "三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。",
+  "不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。",
+  "切档后「表格区优先保留 600」是代码常量，未进 metrics。",
+]
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Plus", "Ctrl+KP_Add", "Ctrl+="]
+precondition = "窗口存在"
+result = "升一档（`win.tier-up`）：目标档可用就切；已经在「大（150%）」时什么都不做并记「[tier] 已经是最高档（large），Ctrl+Plus 忽略」；目标档在当前显示器放不下时不切换、不写盘并记「[tier] … 不可用（需要 W×H），未切换」"
+source = "src/ui.rs:361、src/ui.rs:4978"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+minus", "Ctrl+KP_Subtract"]
+precondition = "窗口存在"
+result = "降一档（`win.tier-down`）；已在「紧凑（100%）」时记「[tier] 已经是最低档（compact），Ctrl+minus 忽略」"
+source = "src/ui.rs:365、src/ui.rs:4987"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+0"]
+precondition = "窗口存在"
+result = "直接切到「紧凑（100%）」（`win.tier-reset`，不是「回退一个可用档」）；已经是紧凑时该项禁用"
+source = "src/ui.rs:366、src/ui.rs:4996、src/ui.rs:5091"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "启动"
+result = "启动档位优先级：`--tier`（QA，取证用）→ `window.json` 的 `tier` → 紧凑（100%）；日志 `[tier] 启动档位 …（来源=默认/记忆/QA）`。已保存的档位当前放不下时**回退到下一个可用档**并记 `[tier] … 在当前工作区 … 不可用（需要 W×H），回退 …`，不静默钳到紧凑；连紧凑都放不下时保留紧凑、窗口收敛到工作区"
+source = "src/ui.rs:135、src/density.rs:33、src/window_size.rs:237"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切档成功"
+result = "同一次动作里：① 四套样式表（主壳 / 数据页 / 对象树 / DDL）用同一个 provider 重载；② 窗口按新档重算并钳到工作区（日志「[monitor] 档位导致窗口放大：…」）；③ 侧栏 / 信息面板按 **compact 归一值 × 新档**换算（往返不漂移），新窗口放不下表格区下限时收到各自下限并记日志；④ 已建列的固定宽度、行高、字号与图标按钮命中区按新档重设；⑤ 档位写入 `window.json`"
+source = "src/density.rs:78、src/shell.rs:591、src/theme.rs:241"
+
+[component.platform_notes.windows]
+note = "菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）。"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "8599385e0ed0"
+evidence = "§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / tooltip 语义（档位本身见 §1.6）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.density.compact"
+parent = "shell.density"
+display_name = "「紧凑（100%）」单选项"
+kind = "item"
+status = "active"
+a11y.name = "紧凑（100%）"
+impl_notes = [
+  "当前档打勾；程序化同步勾选时不触发 action（guard 标志）。",
+  "是 `Ctrl+0` 的目标档，也是 `Ctrl+minus` 的下界。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该档在当前显示器可用"
+result = "切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」；tooltip 原文「当前档位：紧凑（100%）」/「切换到 紧凑（100%）；窗口会按档位一起放大 / 收小」"
+source = "src/ui.rs:5167、src/ui.rs:5132、src/density.rs:104"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "28812148094a"
+evidence = "§1.5 菜单入口；build_tier_menu 与 apply_tier_choice"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录本单选项。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.density.comfortable"
+parent = "shell.density"
+display_name = "「舒适（125%）」单选项"
+kind = "item"
+status = "active"
+a11y.name = "舒适（125%）"
+impl_notes = ["与其它两档同一组单选；本档放不下时禁用（`sensitive=false`）并给缺多少的 tooltip。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该档在当前显示器可用"
+result = "切到「舒适（125%）」；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用），tooltip 原文「当前显示器放不下 125%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」或「切换到 舒适（125%）；窗口会按档位一起放大 / 收小」"
+source = "src/ui.rs:5096、src/ui.rs:5132、src/window_size.rs:230"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a83d5ada6746"
+evidence = "§1.5 菜单入口与禁用 tooltip；sync_tier_checks"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录本单选项。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.density.large"
+parent = "shell.density"
+display_name = "「大（150%）」单选项"
+kind = "item"
+status = "active"
+a11y.name = "大（150%）"
+impl_notes = ["本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该档在当前显示器可用"
+result = "切到「大（150%）」；放不下时禁用并给「当前显示器放不下 150%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」；已是本档时 tooltip 写「当前档位：大（150%）」"
+source = "src/ui.rs:5096、src/ui.rs:5132"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "dbd7a7c034ad"
+evidence = "§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录本单选项。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.error"
+parent = "shell"
+display_name = "错误页（握手失败 / 无工作区断开）"
+kind = "container"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["font_title", "font_status", "gap_page"]
+a11y.name = "无法连接后端"
+impl_notes = [
+  "同一张 StatusPage 承载两种状态：握手失败「无法连接后端」与无工作区时的「已断开连接」；有工作区时断开**不**换页（保留已加载的行并标失连）。",
+  "工具条留在错误页上方并保持全部禁用，日志「[toolbar] 后端未握手：0/6 个按钮可用」—— 错误页不是「退化成没有工具栏」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端握手失败"
+result = "主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、描述为错误原文 + 「重试」按钮；标题栏回到「Sqarvo」；工具条保留在上方并保持全部禁用"
+source = "src/ui.rs:3774、src/ui.rs:567"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "后端断开且没有工作区"
+result = "同一张 StatusPage 换成「已断开连接」+ 断开原因 + 「重新连接」；标题「Sqarvo」、副标题「已断开」"
+source = "src/ui.rs:3792、src/ui.rs:602"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "bd6f6da90e50"
+evidence = "§1.1 后端握手失败 / 后端断开；show_error 与 show_disconnected"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 只记录「断开即回未连接、原因与错误码写状态栏」，没有核对错误页表面。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.error.retry"
+parent = "shell.error"
+display_name = "「重试」/「重新连接」"
+kind = "control"
+status = "active"
+style.metrics = ["min_target", "font_ui"]
+a11y.name = "重试"
+impl_notes = [
+  "同一枚按钮：握手失败页写「重试」，断开页写「重新连接」，走同一个回调。",
+  "强调色 + pill 外形；点击后回到 Loading，而不是停在原地重试。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "错误页 / 断开页可见"
+result = "回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（并打一行可用性日志），然后重新握手"
+source = "src/ui.rs:369、src/ui.rs:3786"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b9713a3eb891"
+evidence = "§1.1 错误页「重试」；retry 闭包的未就绪回退与 worker.connect"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录重试 / 重新连接入口。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.backend_failure"
+parent = "shell"
+display_name = "后端失效恢复（「重启 Sqarvo」对话框与重启流程）"
+kind = "container"
+status = "active"
+style.slot = "overlay"
+style.metrics = ["min_target", "font_ui"]
+a11y.name = "Sqarvo 需要重启"
+impl_notes = [
+  "横幅控件本身画在标签页（SQL 编辑器条）与数据页里，按钮文案「重启 Sqarvo」；本组件只登记窗口级的对话框与重启流程，横幅的位置归各自区的组件。",
+  "对话框文案不写「后端进程已退出」这类内部细节，只说「本地服务已失效」—— 进程死活不是用户能判断的事。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "点任一标签的后端失效横幅「重启 Sqarvo」，或数据页错误横幅"
+result = "弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，未提交的更改会丢失。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消）"
+source = "src/ui.rs:1274、src/sql_page.rs:128"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "对话框里选「重启 Sqarvo」"
+result = "不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 工具条 / 菜单回未就绪 → 标题「Sqarvo」、副标题「正在重启…」→ 回到 Loading「正在重启 Sqarvo…」→ 重新握手"
+source = "src/ui.rs:1300"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "对话框里选「查看日志」"
+result = "打开日志窗口；不重启、不改会话状态"
+source = "src/ui.rs:1282"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b65d1eadbaf0"
+evidence = "§1.1 后端失效 / 重启 Sqarvo；show_backend_failure_dialog 与 restart_software"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1：断开后回「未连接」并在状态栏给原因与错误码、不自动重启后端；没有「重启 Sqarvo」横幅 / 对话框的记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""

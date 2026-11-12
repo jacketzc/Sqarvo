@@ -1,0 +1,208 @@
+# 启动态外壳功能区的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 区域边界：只收「握手期间」与「握手成功但还没连上任何数据库」这两档表面。
+# - 侧栏对象树、Objects 页三列表格、信息面板、状态栏两行结构、主工具条都是连接态
+#   已有的组件，归各自功能区（object_tree / objects_page / inspector / status_bar / shell）；
+#   本区只登记启动态这一档的摆放、空态文案与摘要文案来源。
+# - 后端握手失败的错误页、握手期间的窗口标题（标题栏副标题改「正在连接…」）归 shell。
+#
+# 迁移状态：P0。行为条目取自 ui-behavior-contract.md §1.1（应用启动）、§3（启动态空态）、
+# §7（启动态状态栏摘要）与 workspace-model.md §4 / §5 的启动态段落；源码行号按当前
+# startup.rs / ui.rs / shell.rs / tree.rs 复核。
+
+[area]
+id = "startup"
+display_name = "启动态外壳"
+summary = "握手期间的 Loading 页，以及握手成功后、还没有连接数据库时的六区域外壳：侧栏是与连接态同一个对象树（全部「未连接」）、主区域是固定 Objects 页的空态、信息面板常驻留白、状态栏写「未连接」。这里登记的是「启动态」这一档表面，不重复登记表结构。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §1.1、§3、§7"
+
+[[component]]
+id = "startup"
+parent = ""
+display_name = "启动态外壳"
+kind = "area"
+status = "active"
+style.slot = "startup"
+style.metrics = ["sidebar_width", "inspector_width", "status_height"]
+impl_notes = [
+  "启动态不是独立一套界面：握手成功后 ui.rs 用 StartupWorkspace 组装六个区域，侧栏 / 标签条 / 信息面板与连接态是同一套实现，连上数据库后由 Workspace 整体替换。",
+  "后端诊断信息（版本 / 协议 / PID / 端点文件）不在启动态出现，在「帮助 → 关于 Squarvo」里。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4609e5ded0f3"
+commit = "7436cd5"
+evidence = "§1.1 应用启动；startup.rs 全模块为启动态唯一实现"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录启动态（握手成功、未连接数据库）外壳；只记录六区域外壳存在。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "startup.loading"
+parent = "startup"
+display_name = "Loading 页（标题 + 握手阶段文案 + 居中 spinner）"
+kind = "container"
+status = "active"
+style.slot = "startup"
+style.metrics = ["spinner_px", "gap_xl"]
+impl_notes = [
+  "AdwStatusPage：标题「正在连接后端」，说明行 = 当前握手阶段文案，子控件是 spinner（居中、上方留 gap_xl）。",
+  "页面只占窗口的页面槽位：Loading 期间侧栏、标签条、信息面板、状态栏都还不存在（窗口根是 headerbar + 主工具条 + 页面槽位）。",
+  "窗口标题（副标题改「正在连接…」）归 shell 的标题组件，本区不登记；后端握手失败后的错误页同样归 shell。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "应用启动 / 重新握手（worker 尚未回报 Connected）"
+result = "页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条在此之前已存在但六个按钮全禁用"
+source = "src/ui.rs:1543、src/ui.rs:275、src/ui.rs:274"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "537f9eb0440e"
+commit = "7436cd5"
+evidence = "§1.1 应用启动（先 Loading）；show_loading 组装 StatusPage + spinner"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "startup.loading.spinner"
+parent = "startup.loading"
+display_name = "加载 spinner"
+kind = "control"
+status = "active"
+a11y.name = "正在连接后端"
+style.metrics = ["spinner_px"]
+impl_notes = [
+  "GtkSpinner：边长取 spinner_px（请求值，由 GTK 决定实际绘制），构造后立即 start()。",
+  "阶段推进只改说明行，不重建 spinner（页面不闪）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Loading 页出现"
+result = "立即开始旋转（无静止帧）；握手阶段变化时不重建、不重启动画"
+source = "src/ui.rs:1549、src/ui.rs:1552"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e8566ec14f01"
+commit = "7436cd5"
+evidence = "show_loading 的 GtkSpinner + set_size_request(spinner_px) + start()"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "startup.loading.stage"
+parent = "startup.loading"
+display_name = "握手阶段文案"
+kind = "control"
+status = "active"
+a11y.name = "握手阶段"
+impl_notes = [
+  "阶段文案是六条固定原文，由后端 supervisor 的握手阶段枚举给（worker 以 Event::Stage 逐条推给界面），界面不拼接、不翻译。",
+  "六条原文：「读取端点描述文件…」「校验协议版本与后端进程…」「启动后端进程 sqarvo-backend…」「等待后端就绪（最多 10 秒）…」「建立 gRPC 通道并附带本地会话 token…」「调用 SystemService.GetVersion 核对版本…」；首帧另有一句「准备连接本地后端…」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "收到 Event::Stage（握手推进）"
+result = "说明行改写为阶段原文（六条之一）；只有文本变化，不出现进度百分比、不加按钮、不改标题"
+source = "src/backend/supervisor.rs:56、src/ui.rs:504、src/ui.rs:1547"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6d6b3619a063"
+commit = "7436cd5"
+evidence = "supervisor 六阶段文案 + Event::Stage 逐条改写说明行"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "startup.workspace"
+parent = "startup"
+display_name = "启动态工作区外壳（侧栏 + Objects + 信息面板 + 状态栏）"
+kind = "container"
+status = "active"
+style.slot = "startup"
+style.metrics = ["sidebar_width", "inspector_width", "status_height", "tab_strip_height"]
+impl_notes = [
+  "握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。",
+  "侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。",
+  "面板宽度读窗口级记忆（与连接态共用同一个值），启动态拖一次会被带进连上后的工作区。",
+  "标签条右侧的 ＋ 保留在启动态但置为不可用（tooltip「先连接数据库再新建查询标签」）；该按钮的登记权归标签条所属区，本区只在结果里提到它。",
+  "主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区只保证启动态停在这一页、不换内容。",
+  "启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。",
+  "启动态没有表标签：状态栏行 1 的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "握手成功（Event::Connected）"
+result = "外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板常驻且内容区留白、状态栏写「未连接」；连上数据库前不存在表标签"
+source = "src/ui.rs:1561、src/ui.rs:1599、src/startup.rs:99"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "主工具条是窗口级控件（不随外壳重建）"
+result = "握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时「新建查询」仍禁用、其余五个可用（5/6，tooltip「尚未连接数据库：先连接再新建查询标签」）"
+source = "src/startup.rs:237、src/shell.rs:862、src/shell.rs:912"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "连接注册表为空（没有已保存的连接）"
+result = "侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么"
+source = "src/tree.rs:1520、src/tree.rs:3179"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接"
+result = "把固定 Objects 页摆到最前并**保持空态**：说明行仍是「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」，不列库 / 表、不换成「未实现」说明（不编造内容）；日志「[startup] 种类入口「<名称>」：尚未连接数据库，Objects 页保持空态」"
+source = "src/startup.rs:298、src/ui.rs:1086"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "aa4bea3dac40"
+commit = "7436cd5"
+evidence = "§1.1 应用启动（落地工作区）+ §7 状态栏行 2；show_startup_workspace 与 StartupWorkspace::new"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录启动态外壳；只记录六区域外壳与固定 Objects 页存在。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""

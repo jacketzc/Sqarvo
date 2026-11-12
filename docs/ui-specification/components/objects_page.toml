@@ -1,0 +1,473 @@
+# Objects 固定页（`objects_page`）的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 行为条目取自 ui-behavior-contract.md §3（Objects 固定页）与 §7.1（Windows 现状），
+# 源码行号按当前 tabs.rs / ui.rs / startup.rs 复核；点击 / 键盘的行号一律给函数或接线行。
+#
+# 区域边界：固定页的「页签」记在本区（objects_page.tab），标签条本身的容器与关闭按钮
+# 属于 tabs 区；本区不重复登记标签条。
+
+[area]
+id = "objects_page"
+display_name = "Objects 固定页"
+summary = "工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容跟着对象树的选中换作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §3"
+
+[[component]]
+id = "objects_page"
+parent = ""
+display_name = "Objects 固定页"
+kind = "area"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["gap_xl", "gap_md"]
+impl_notes = [
+  "页内自上而下只有四件东西：标题「Objects」、三列表格、状态行、「加载更多…」；标题是静态标签（13 semibold，无交互），v0.2.3.3 起页面没有作用域说明行 —— 作用域只由列表内容表达。",
+  "页面没有自己的数据库会话：列表读这条连接的浏览会话（MetadataHub），与标签会话无关；关掉标签也不会动它。",
+  "启动态（未连接）用同一个 ObjectsPage 实现，只换空态文案（见 objects_page.empty）。",
+  "页内距 12 / 元素间距 8（gap_xl / gap_md），与数据页不同：这里没有工具条。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "87ee78c3f00a"
+evidence = "§3 页面结构逐条对照 tabs.rs（ObjectsPage::new 的 root 只有 title + stack）"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "87ee78c3f00a"
+note = "§7.1 记录「固定 Objects 页 + 三列表格 + 状态行 + 加载更多…」的存在；页内标题、无作用域说明行的版面与页内距未逐条记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.tab"
+parent = "objects_page"
+display_name = "固定页页签（pinned，无关闭按钮）"
+kind = "control"
+status = "active"
+style.slot = "workspace.tabstrip"
+style.metrics = ["objects_min_width", "tab_strip_height"]
+a11y.name = "Objects"
+a11y.tab = "可聚焦；固定在标签条首位"
+impl_notes = [
+  "AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。",
+  "页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。",
+  "不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "页签可见"
+result = "切到本页，并按当前树选中状态刷新列表；重新进入时清掉行选中（列表内容与信息面板都不动）"
+source = "src/tabs.rs:1361、src/tabs.rs:1366"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+W"]
+precondition = "当前页是 Objects"
+result = "拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框"
+source = "src/tabs.rs:2645、src/tabs.rs:2657"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "34e0d58db246"
+evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "34e0d58db246"
+note = "§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.table"
+parent = "objects_page"
+display_name = "三列表格（行号 · 表名 · 类型）"
+kind = "container"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = [
+  "row_height_data",
+  "row_number_width",
+  "column_width",
+  "column_header_min_height",
+  "frame_border_width",
+  "radius_md",
+]
+style.tokens = ["sqarvo_frame", "sqarvo_separator"]
+a11y.name = "对象列表"
+a11y.tab = "可聚焦；Tab 进入后 ↑ / ↓ 移动选中"
+impl_notes = [
+  "GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。",
+  "列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。",
+  "行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。",
+  "行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。",
+  "横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。",
+  "换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。",
+  "整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。",
+]
+
+[[component.interaction]]
+trigger = "key"
+keys = ["↑", "↓"]
+precondition = "表格有焦点且已有行"
+result = "移动选中（SingleSelection 默认行为）；选中变化与单击同效 —— 同步右侧信息面板"
+source = "src/tabs.rs:680、src/tabs.rs:917"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Enter"]
+precondition = "有选中行"
+result = "等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签）"
+source = "src/tabs.rs:938、src/tabs.rs:1750"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里选中库 / 它下面的 Tables 分组 / 表内分组（Fields 等）/ 某张表"
+result = "列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表"
+source = "src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里选中 Views 分组 / 某个视图"
+result = "列出该库的视图（[VIEW, MATERIALIZED_VIEW]）"
+source = "src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里选中 Functions / Queries 分组"
+result = "不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token"
+source = "src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里选中连接行 / 占位行（没有作用域）"
+result = "回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉"
+source = "src/ui.rs:1377、src/tabs.rs:1013"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表）"
+result = "不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览）"
+source = "src/tabs.rs:1032、src/tabs.rs:1044、src/tabs.rs:1047"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "从别的标签切回本页"
+result = "清掉行选中；列表内容与右侧信息面板都不动，不重发请求"
+source = "src/tabs.rs:1366、src/tabs.rs:1202"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "1fb55931aa11"
+evidence = "§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "1fb55931aa11"
+note = "§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.table.row"
+parent = "objects_page.table"
+display_name = "行模板（行号 · 图标 + 名称 · 类型）"
+kind = "row"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data", "gap_sm", "gap_md", "icon_box"]
+style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.states = { hover = "sqarvo_brand_soft", selected = "sqarvo_brand_mid" }
+a11y.name = "（行内容：行号 + 对象名 + 种类）"
+impl_notes = [
+  "hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid，与对象树行、数据网格行同一条规则（三个选择器并列，选中在前、hover 在后靠顺序让中档赢）。",
+  "行只由可见行创建控件（GtkColumnView 虚拟化），几百行也不卡主线程；模型里只放数据。",
+  "单元格上下内距归零，行高才落在 row_height_data（否则「图标 + 名称」的格子会被 Adwaita 撑到 35）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "行存在"
+result = "只选中：进入选中态并同步右侧信息面板；不反写树的选中（会形成回环并跳走浏览位置），不打开、不发请求"
+source = "src/tabs.rs:917、src/tabs.rs:1008"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "行存在"
+result = "打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据）"
+source = "src/tabs.rs:938、src/tabs.rs:1795"
+
+[[component.interaction]]
+trigger = "hover"
+precondition = "行存在"
+result = "底色换成品牌浅档（alpha 55%），前景不动；已选中的行 hover 仍是中档，不会退回系统强调色"
+source = "src/theme.rs:314"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "16c105e563c1"
+evidence = "§3 单击行 / 双击回车行 + theme.stylesheet 的行状态规则"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "16c105e563c1"
+note = "§7.1 只记录 ↑ / ↓ 移动、Enter 打开（同步信息面板、不反写树的选中）；双击打开与悬停 / 选中底色未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.table.row.number"
+parent = "objects_page.table.row"
+display_name = "行号格"
+kind = "cell"
+status = "active"
+style.metrics = ["row_number_width", "font_status"]
+a11y.name = "（行内容：第 N 行）"
+impl_notes = [
+  "行号 = 模型位置 + 1（不是主键）：右对齐、11px monospace、色弱一档（.sqarvo-row-number）；tooltip「第 N 行」。",
+  "回收的行控件可能还挂着旧行：item() 为空时清空文本，不显示上一行的行号。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a5e0854ca022"
+evidence = "§3 行内容（行号列）；number_factory 的 bind 与 tooltip"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "a5e0854ca022"
+note = "§7.1 记录行号宽 row_number_width、右对齐、等宽字体；「第 N 行」tooltip 与 11px 字号未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.table.row.name"
+parent = "objects_page.table.row"
+display_name = "表名格（图标 + 名称）"
+kind = "cell"
+status = "active"
+style.metrics = ["column_width", "icon_box", "gap_md", "gap_sm"]
+a11y.name = "（行内容：图标 + 对象名）"
+impl_notes = [
+  "GtkBox（图标 + Label）：图标与对象树共用 kind_icon 映射（表 view-grid、视图 view-reveal），尺寸取 icon_box；名称 xalign 0、hexpand、过长省略号。",
+  "单元格内距与数据网格一致（左右各 gap_sm，图标与名称间距 gap_md）。",
+]
+
+[[component.interaction]]
+trigger = "hover"
+precondition = "行存在"
+result = "悬停显示 tooltip「<名称>（<种类>）· 双击打开」（tooltip 挂在整格上，不是只挂在文字上）"
+source = "src/tabs.rs:759"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "064c23390814"
+evidence = "§3 行内容（表名列：图标 + 名称 + tooltip）；name_factory 的 bind"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "064c23390814"
+note = "§7.1 记录第二列为「名称」（宽 column_width）；表头文案写「名称」、种类图标与 tooltip 文案未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.table.row.kind"
+parent = "objects_page.table.row"
+display_name = "类型格"
+kind = "cell"
+status = "active"
+style.metrics = ["font_data_cell", "gap_sm", "gap_md"]
+a11y.name = "（行内容：表 / 视图 / 物化视图）"
+impl_notes = [
+  "文案来自 TableEntry::kind_label，只有「表」「视图」「物化视图」三种；dim-label 次要信息色弱一档，过长省略号。",
+  "「物化视图」四个汉字要放得下 —— 这也是该列固定宽度的来由（120，未进 metrics.toml）。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "395bb90da65b"
+evidence = "§3 行内容（类型列）；kind_factory 的 setup / bind"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "395bb90da65b"
+note = "§7.1 记录「类型」列取值（表 / 视图 / 物化视图）；次要信息弱色与列宽 120 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.status"
+parent = "objects_page"
+display_name = "状态行"
+kind = "control"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["font_status", "gap_sm"]
+a11y.name = "对象列表状态"
+impl_notes = [
+  "单行 Label，可换行（set_wrap(true)），dim-label + caption，左对齐；v0.2.4 起在「加载更多…」下方。",
+  "「共 N 个对象」的 N 是**已加载行数**，不是服务端 total_size —— 协议只给「还有更多」，页面不编造总数。",
+  "五种状态互斥且都有文案：读取中 / 有结果 / 空结果 / 读取失败 / 没有浏览会话；状态行与空态页也不共存（空态时状态行清空）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "作用域已变、请求在飞"
+result = "写「正在读取…」（首次首页与「加载更多…」续页都写这一句）"
+source = "src/tabs.rs:1065、src/tabs.rs:1078"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "首页或续页返回、有行"
+result = "写「共 N 个对象」；还有下一页时追加「（还有更多）」"
+source = "src/tabs.rs:1117"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "请求成功但 0 条（本页与累计都是空）"
+result = "写「（这个库里没有这类对象）」"
+source = "src/tabs.rs:1121、src/tabs.rs:1122"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "请求失败"
+result = "写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处"
+source = "src/tabs.rs:1126、src/tabs.rs:1127"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "该连接没有浏览会话（展开连接前 / 已断开）"
+result = "写「这条连接没有浏览会话：展开连接后重试」，不发请求"
+source = "src/tabs.rs:1060、src/tabs.rs:1062"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e0bbbe2299f6"
+evidence = "§3 读取中 / 读取成功 / 空结果 / 读取失败 / 没有浏览会话五条"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "e0bbbe2299f6"
+note = "§7.1 记录四种文案，但措辞不同：有结果写「已加载 N 个对象（还有更多）」（Linux「共 N 个对象（还有更多）」）；「这条连接没有浏览会话…」未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.more"
+parent = "objects_page"
+display_name = "「加载更多…」"
+kind = "control"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["min_target", "font_ui", "gap_sm"]
+a11y.name = "加载更多"
+impl_notes = [
+  "扁平按钮、左对齐、无图标；默认隐藏，只有服务端给了下一页 token 才出现。",
+  "分页是「接着取」而不是翻页：新行接在现有行后面，不跳页、不清已加载行、不改变滚动位置以外的状态。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "按钮可见（还有下一页）"
+result = "按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」"
+source = "src/tabs.rs:905、src/tabs.rs:1069"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "首页或续页返回"
+result = "有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏"
+source = "src/tabs.rs:1115、src/tabs.rs:1126"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4d4b91b4f4f7"
+evidence = "§3「加载更多…」；connect_clicked 与 has_more 驱动 set_visible"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "4d4b91b4f4f7"
+evidence = "§7.1：只有服务端给了 next_page_token 才显示「加载更多…」"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "objects_page.empty"
+parent = "objects_page"
+display_name = "空态页"
+kind = "control"
+status = "active"
+style.slot = "workspace.content"
+a11y.name = "对象列表空态"
+impl_notes = [
+  "adw::StatusPage，与「列表 + 状态行」在同一个 GtkStack 里互斥：要么列表，要么空态页，不存在半截。",
+  "启动态与连接态是同一份实现，只换文案（set_empty_text 改的是默认文案）；未实现说明是临时文案，回到空态时恢复默认值，不残留。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "连接态、树里没有可用作用域（选中连接 / 占位行）"
+result = "标题「没有选中对象」，说明「在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。」"
+source = "src/tabs.rs:854、src/tabs.rs:1013"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "启动态（未连接）"
+result = "标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」"
+source = "src/startup.rs:180、src/startup.rs:182"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里选中 Functions 分组"
+result = "标题「函数列表尚未实现」，说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；列表与分页 token 一并清空"
+source = "src/tabs.rs:520、src/tabs.rs:984"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "树里选中 Queries 分组"
+result = "标题「已保存的查询尚未实现」，说明「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」"
+source = "src/tabs.rs:524、src/tabs.rs:984"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "从空态 / 未实现说明回到空态"
+result = "恢复默认文案（上一次的临时说明不残留），并清空状态行与「加载更多…」"
+source = "src/tabs.rs:971、src/tabs.rs:1022"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "90cab8806136"
+evidence = "§3 空态文案（连接态 / 启动态）+ Functions / Queries 未实现说明"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录（Objects 页的空态页文案与 Functions / Queries 未实现说明）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""

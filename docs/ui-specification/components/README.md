@@ -31,11 +31,22 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
   `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`。
 - 层级必须与 `parent` 一致：`object_tree.tree.row.conn` 的 `parent` 是
   `object_tree.tree.row`（行模板挂在树容器下，行种类挂在行模板下）。
-- 根是功能区（`area`），目前九个：`shell` / `object_tree` / `objects_page` / `tabs` /
-  `data_page` / `inspector` / `status_bar` / `dialogs` / `startup`。
+- 根是功能区（`area`），目前九个：`shell`（窗口壳、标题、主工具条、菜单栏、密度档、错误页）/
+  `object_tree` / `objects_page` / `tabs`（标签条 + 查询标签的编辑器与结果区）/
+  `data_page`（表数据页：工具条、筛选、网格、编辑、分页、导出、行右键）/
+  `inspector` / `status_bar` / `dialogs`（连接对话框、关于）/ `startup`（启动态外壳、Loading）。
 - `display_name` 是中文显示名，**可以随文案演进**，不参与稳定性承诺。
 - **状态不进 id**：一条对象树行的默认 / 悬停 / 选中不是三个组件，是一个组件的三个
   `style.states`、或一条 `interaction` 的结果。
+
+### 区域边界（避免同一个东西登记两次）
+
+- 一个组件只属于一个区：`parent` 表达归属，`style.slot` 表达摆放位置。例：
+  `object_tree.search` 归属对象树，但摆在 `status_bar.left_gutter`。
+- 确认框 / 提示框跟随**触发它的动作**所属的区：关闭标签的确认框在 `tabs` 下，删除连接的
+  确认框在 `object_tree` 下。`dialogs` 只收独立于某个动作、有自己生命周期的表面：新建 /
+  编辑连接对话框、关于对话框。
+- 跨区引用只出现在 `interaction.result` 的说明文字里，不允许把别的区的 id 用作 `parent`。
 
 ## 粒度（硬规则）
 

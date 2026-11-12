@@ -504,8 +504,8 @@ from the shipped Linux client, so the code and the contract must agree at all ti
   恢复 `done` 要按新规范重新核对，再跑 `scripts/check-ui-sync.sh mark`。
   `partial` / `na` / `blocked` 必须写清差异，不接受「未同步」四个字。
 - `ui-components.md` 不许手改：CI 会跑 `gen` 并与工作树比对，有差异即失败。
-- 迁移期（P0–P1）只有 `object_tree` 一个功能区在册。其余功能区的行为仍以
-  `ui-behavior-contract.md` 为准；对已迁移的区，改行为要同时改契约本节与注册表。
+- 九个功能区已全部在册（186 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
+  改行为要同时改契约本节与注册表，直到 P3 删除旧章节。
 - 未实现的平台能力记 `sync = "blocked"` 并进行为契约 §9，不得只标「未同步」。
 
 ## 15. Agent Workflow

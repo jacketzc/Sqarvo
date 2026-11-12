@@ -1,0 +1,745 @@
+# 信息面板功能区的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 行为条目取自 ui-behavior-contract.md §6 与 workspace-model.md §5，源码行号按当前
+# inspector.rs / ddl.rs / column_info.rs 复核；函数名是一级定位，行号是二级定位。
+
+[area]
+id = "inspector"
+display_name = "信息面板"
+summary = "右侧常驻面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容只由「选中」事件驱动。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §6；docs/ui-specification/workspace-model.md §5"
+
+[[component]]
+id = "inspector"
+parent = ""
+display_name = "信息面板"
+kind = "area"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["inspector_width", "inspector_min", "inspector_max", "inspector_gap"]
+impl_notes = [
+  "区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。",
+  "分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。",
+  "宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。",
+  "宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。",
+  "面板内容只由「选中」事件驱动（树、Objects 页列表、数据网格列头）；鼠标经过不改面板。",
+]
+
+[[component.interaction]]
+trigger = "drag"
+precondition = "面板常驻"
+result = "拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹"
+source = "src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "对象树的选中发生变化"
+result = "按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态"
+source = "src/ui.rs:2101、src/inspector.rs:630"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e51804ae710f"
+evidence = "§6 面板存在 / 面板内容由谁驱动；shell.rs 分栏 clamp 与 window_state.rs 窗口级记忆"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "e51804ae710f"
+note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.header"
+parent = "inspector"
+display_name = "标题块（标题 · 副标题）与分隔线"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["gap_sm", "gap_lg", "gap_none"]
+impl_notes = [
+  "标题用 heading 类、单行省略；副标题 dim-label + caption，跟着选中换成驱动 / 种类 / 「库」。",
+  "标题与副标题之间不留间距（gap_none）：两块读成一组；标题块下沿与分隔线之间留一段（gap_lg），副标题不贴线。",
+  "分隔线是面板根容器的直接子控件，从左端铺满内容区；切换条在分隔线下方。",
+  "空态与选中态共用这一套外壳：只有标题文字回到「信息面板」、副标题清空。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "685b1e7ff485"
+evidence = "§6 空态保留面板外壳；inspector.rs::new 的 header 与 Separator"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "685b1e7ff485"
+note = "§7.1 记标题 = 连接名 / 库名、副标题 = 驱动 / 「库」；标题块留白与分隔线未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.empty"
+parent = "inspector"
+display_name = "空态（内容区留白）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["gap_xl"]
+impl_notes = [
+  "空页是一个不带子控件的盒子：标题仍写「信息面板」、分隔线仍在，内容区留白；说明文字由标题承担（§5）。",
+  "启动态还没有连上任何数据库时也走这一页，与连接态共用同一份实现，不存在「启动态无面板」这一档。",
+  "分组行被选中时同样落到这一页：分组没有对象信息，面板不另立一套空白文案。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中分组行，或树里没有任何选中对象"
+result = "保留面板外壳（标题「信息面板」+ 分隔线），副标题清空，内容区留白"
+source = "src/inspector.rs:576、src/ui.rs:2152"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "33fc2281fe42"
+evidence = "§6 没有选中对象；§5 空态与选中态共用外壳（inspector.rs::show_empty）"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "33fc2281fe42"
+evidence = "§7.1 信息面板空态：内容区留白"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.connection"
+parent = "inspector"
+display_name = "连接视图（标题 · 副标题 · 字段行）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["gap_sm", "gap_md", "gap_lg"]
+impl_notes = [
+  "字段行顺序固定：驱动、地址、默认库、用户、TLS、凭据引用、服务端版本、连接延迟、会话数。",
+  "地址是 host:port 或文件路径，不拼用户名与库名（它们各有独立字段）。",
+  "服务器型驱动没有默认库时写「未指定」（吞掉整行会像漏了字段）；文件型驱动没有 TLS 一层，这一行整行不出现。",
+  "凭据引用只写 credential_ref，面板里没有明文密码。",
+]
+platform_notes.windows = "§7.1：字段行给驱动、地址、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、会话前 8 位；不记连接延迟与会话数。"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中连接行且连接在配置里"
+result = "标题 = 连接名、副标题 = 驱动；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现"
+source = "src/ui.rs:2122、src/inspector.rs:586、src/inspector.rs:132"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中连接行但连接已不在配置里"
+result = "状态页「连接已不在配置里」+「connections.json 里已经没有这条连接（config.invalid）。刷新对象树后重试。」"
+source = "src/inspector.rs:590"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ff0220fb8f1d"
+evidence = "§6 选中连接；inspector.rs::connection_facts 与 show_connection"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "ff0220fb8f1d"
+evidence = "§7.1 信息面板：连接（字段行与「拿不到的不出现」）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.field"
+parent = "inspector"
+display_name = "字段行（标签 · 值）"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：字段标签 + 值）"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_sm", "gap_none"]
+impl_notes = [
+  "两行垂直布局：标签 dim-label、值同字号同字重（font_panel，不加粗）；值逐字折行、可选中复制。",
+  "值是长 token（如凭据引用）时按字符折行：按词折行会把面板的最小宽度顶大，面板就拖不回 inspector_width。",
+  "值为空白时整行不渲染，所以「拿不到」表现为这一行不出现（§5），不用占位符号冒充。",
+  "连接、库、列三种视图共用这一份行模板，不各自拼一套。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0e099676cda2"
+evidence = "§5 拿不到的字段不出现；inspector.rs::fill_facts"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "0e099676cda2"
+evidence = "§7.1 信息面板：连接 / 库 / 分组（拿不到的字段不出现）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.catalog"
+parent = "inspector"
+display_name = "库 / 分组视图（标题 · 副标题 · 计数）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["gap_sm", "gap_md", "gap_lg"]
+impl_notes = [
+  "字段：名称、表计数、视图计数；计数只来自树里已经展开过的分组层，打开一个库不顺带扫整库。",
+  "某个分组还没展开过时那一行不出现（不主动全量统计，也不写 0 冒充空库）。",
+  "该层还有下一页时补一行「计数说明：按已展开的结果统计（该层还有下一页）」，不把当前页当总数。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中库 / schema 行"
+result = "标题 = 库名、副标题「库」；字段行给名称与表 / 视图计数，计数只来自已展开的分组层，没展开过的那一行不出现"
+source = "src/ui.rs:2132、src/inspector.rs:609、src/inspector.rs:167"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中的是分组行（Tables / Views / Functions / Queries 等）"
+result = "分组行没有对象信息：面板回到空态，标题回到「信息面板」"
+source = "src/ui.rs:2152"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a4e8cfb1bd4a"
+evidence = "§6 选中库 / catalog；inspector.rs::catalog_facts 与 tree.group_counts 接线"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "a4e8cfb1bd4a"
+evidence = "§7.1 信息面板：库 / 分组（计数只来自已展开的分组层）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object"
+parent = "inspector"
+display_name = "表 / 视图视图（标题 · 切换条 · 两页）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["gap_sm", "gap_none"]
+impl_notes = [
+  "标题 = 对象名、副标题 = 对象种类；标题 tooltip 给完整路径。",
+  "顶部固定出现切换条，默认落在 DDL 页；两页共用一个 stack，同一时刻只有一页可见。",
+  "只切面板内的页，不改标签与树的选中。",
+  "对象名与种类来自选中节点，不等 GetDdl / GetColumns 返回：切换期间面板不会先空一下。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中表 / 视图 / 物化视图"
+result = "标题 = 对象名、副标题 = 种类；显示 [DDL] / [表信息] 切换条，按当前标签记住的页恢复（默认 DDL）"
+source = "src/inspector.rs:630、src/inspector.rs:657"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切换标签（看的还是同一个对象）"
+result = "只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息；不重发 GetDdl / GetColumns，也不重建标签"
+source = "src/inspector.rs:762、src/ui.rs:2248"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6d7917497976"
+evidence = "§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "6d7917497976"
+evidence = "§7.1 信息面板：表 / 视图（两页 + 两个独立按钮）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.pane_switch"
+parent = "inspector"
+display_name = "[DDL] / [表信息] 切换条"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["min_target", "radius_sm", "gap_xxs", "gap_sm", "gap_xs"]
+style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid"]
+style.states = { hover = "sqarvo_brand_soft", selected = "sqarvo_brand_mid" }
+impl_notes = [
+  "两个独立 toggle，不用 .linked 分段容器：选中块是贴着文字的小圆角块，四角都圆。",
+  "命中区仍不小于 min_target，缩的是内边距；hover 是 brand_soft 的半透明档，选中是 brand_mid 的半透明档（实底会把小号正文压成一块砖）。",
+  "拉丁标签「DDL」比「表信息」多一小段上边距做光学补偿：行盒居中会让前者看着偏高。",
+  "切换条与标题块、表信息行、DDL 正文共用一条左基准线（分隔线的左顶点）。",
+  "切换条只在表 / 视图视图里出现；其它视图与状态页隐藏。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "97c9709305d9"
+evidence = "§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "97c9709305d9"
+evidence = "§7.1 两个独立按钮：不是 ToggleButton，也不是分段容器"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.pane_switch.ddl"
+parent = "inspector.pane_switch"
+display_name = "「DDL」按钮"
+kind = "control"
+status = "active"
+a11y.name = "显示该对象的 DDL"
+a11y.tab = "可聚焦；面板内 Tab 次序为 DDL → 表信息"
+style.slot = "inspector"
+style.metrics = ["min_target", "radius_sm"]
+impl_notes = ["文字标签「DDL」，tooltip 同时登记为可访问名。", "与「表信息」互斥：按下本按钮即取消另一个的按下态。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前是表 / 视图视图"
+result = "切到 DDL 页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中"
+source = "src/inspector.rs:549、src/inspector.rs:779"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "bf0e4238b118"
+evidence = "§6 切换表页；inspector.rs::install_toggles / set_pane"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "bf0e4238b118"
+evidence = "§7.1 顶部「DDL」按钮（独立按钮）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.pane_switch.info"
+parent = "inspector.pane_switch"
+display_name = "「表信息」按钮"
+kind = "control"
+status = "active"
+a11y.name = "列、主键、索引与触发器、已加载行数"
+a11y.tab = "可聚焦；面板内 Tab 次序为 DDL → 表信息"
+style.slot = "inspector"
+style.metrics = ["min_target", "radius_sm"]
+impl_notes = ["文字标签「表信息」，tooltip 同时登记为可访问名。", "与「DDL」互斥：按下本按钮即取消另一个的按下态。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前是表 / 视图视图"
+result = "切到表信息页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中"
+source = "src/inspector.rs:549、src/inspector.rs:783"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e4ba94b9a39a"
+evidence = "§6 切换表页；inspector.rs::install_toggles / apply_pane"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "e4ba94b9a39a"
+evidence = "§7.1 顶部「表信息」按钮（独立按钮）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.info"
+parent = "inspector.object"
+display_name = "表信息页（列 · 主键 · 索引 · 触发器 · 已加载行数）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_lg", "gap_sm"]
+impl_notes = [
+  "分节渲染：列、主键、索引、触发器、行；没有数据的节整节不出现。",
+  "正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。",
+  "索引 / 触发器读取失败时那一节换成「读取失败」+「<文案>（<稳定错误码>）」，已读回的列仍然显示。",
+  "内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切到表信息页且列 / 主键 / 索引 / 触发器至少一项已返回"
+result = "按节渲染已读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码"
+source = "src/inspector.rs:1015、src/inspector.rs:1037、src/inspector.rs:1107"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "caa397c3cab7"
+evidence = "§6 表信息页；inspector.rs::render_table_info 的五节"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "caa397c3cab7"
+note = "§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.info.columns"
+parent = "inspector.object.info"
+display_name = "列清单（列名 · 类型 · 可空 · 主键）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_xxs", "gap_sm"]
+platform_notes.linux = "Linux 渲染为每列一张卡片：标题「列名 · 类型」+ 可空 / 默认值 / 字符集 / 排序规则四行；主键另起一节，不画四列表头。"
+impl_notes = [
+  "列的四个口径：列名、类型、可空（可空 / 不可空（NOT NULL）两态）、主键标记。",
+  "主键读不到时整列不打任何主键标记，也不把「读不到」画成「不是主键」。",
+  "列清单为空时写「服务端返回了空列清单」，不画空表头。",
+  "列名过长单行省略，全文进 tooltip。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "列已读回（GetColumns 成功）"
+result = "按列顺序给出列名、类型、可空、主键标记；主键读不到时整列不打标记"
+source = "src/inspector.rs:1037、src/inspector.rs:1044、src/column_info.rs:95"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6140fbb5f485"
+evidence = "§6 表信息给列与主键；inspector.rs 列节的渲染"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "6140fbb5f485"
+evidence = "§7.1 表信息 = 列（列名 / 类型 / 可空 / 主键标记，四列表头）"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.info.columns.row"
+parent = "inspector.object.info.columns"
+display_name = "列行（列名 · 类型 · 可空 · 主键标记）"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：列名 + 类型 + 可空 + 主键标记）"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_xxs", "gap_sm"]
+impl_notes = [
+  "不是可点行：列属性只在面板里读，点它不打开标签、不发请求。",
+  "默认值三态与两档缺失分开写：「未知（服务端未提供）」不等于「无默认值」，字符集 / 排序规则缺失写「不适用」。",
+  "行高随内容（可空与默认值可能折行），不套用网格的 row_height_data。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "52f283b1bc5a"
+evidence = "§6 表信息页的列；inspector.rs 列卡片的 compact_row 四行"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "52f283b1bc5a"
+evidence = "§7.1 列行给列名 / 类型 / 可空 / 主键标记"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.info.pk"
+parent = "inspector.object.info"
+display_name = "主键节（主键列 · 读不到时的说明行）"
+kind = "control"
+status = "active"
+a11y.name = "主键"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_xs", "gap_sm"]
+platform_notes.linux = "说明走在表信息页顶部的提示行（info_status），不在主键节里；主键节只在 GetPrimaryKey 读回后渲染。"
+impl_notes = [
+  "复合主键按主键内位置排序后用逗号连起来，不按名字排序。",
+  "确实没有主键时写「无主键」；读不到主键是另一回事，给一行说明，不写成「无主键」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "GetPrimaryKey 读回"
+result = "「主键列」一行按主键内顺序给列名（复合主键按位置排、逗号分隔）；确实没有主键时写「无主键」"
+source = "src/inspector.rs:1077、src/inspector.rs:192"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "GetPrimaryKey 失败"
+result = "给一行说明（错误 headline + 「<文案>（<稳定错误码>）」），列清单里不画任何主键标记"
+source = "src/inspector.rs:915、src/inspector.rs:1008"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "df8b658b8509"
+evidence = "§6 表信息给主键；inspector.rs::primary_key_label 与失败路径 info_note"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "df8b658b8509"
+evidence = "§7.1 主键读不到时给一行说明且不画任何主键标记"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.ddl"
+parent = "inspector.object"
+display_name = "DDL 正文"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_md", "gap_lg", "gap_none"]
+impl_notes = [
+  "正文与表信息同字号同字重（font_panel）、不折行；长语句横向滚动，滚动条常驻（关掉 overlay 自动淡出，能滚到的地方要看得见）。",
+  "正文可选中，复制走选中 + Ctrl+C；页内不画来源徽标、来源说明行与「复制」按钮。",
+  "服务端返回空 DDL 时正文区写「服务端返回了空 DDL」+ 说明，不当成对象没有结构。",
+  "没有浏览会话时正文区换状态页「这条连接没有浏览会话」+「对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。」",
+]
+platform_notes.windows = "§7.1：DDL 正文用等宽字体、不折行、横向滚动、可选中复制；正文上方只在 exact=false 时有一行琥珀警示。"
+platform_notes.linux = "Linux 侧不单独设等宽字族：§5 要求 DDL 正文与表信息同字体同字号，正文走 .sqarvo-panel-text。"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "切到 DDL 页（选中表 / 视图时默认落在这一页）"
+result = "发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」"
+source = "src/ddl.rs:231、src/ddl.rs:153、src/ddl.rs:167"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "GetDdl 失败"
+result = "正文区换状态页：标题给错误 headline、说明行给「<文案>（<稳定错误码>）」；§7.1 的文案口径为「DDL 读取失败：<文案>（<错误码>）」，不是空面板"
+source = "src/ddl.rs:302、src/ddl.rs:312"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "022e7d17af25"
+evidence = "§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "022e7d17af25"
+evidence = "§7.1 DDL 正文（等宽、不折行、横向滚动、可选中复制）与失败文案"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.ddl.warning"
+parent = "inspector.object.ddl"
+display_name = "DDL 琥珀警示（exact=false）"
+kind = "control"
+status = "active"
+a11y.name = "DDL 来源警示"
+style.slot = "inspector"
+style.metrics = ["font_status", "gap_sm", "gap_xxs"]
+style.tokens = ["warning_color"]
+impl_notes = [
+  "警示行在正文上方、可折行，颜色只走 @warning_color（与状态行的警告文字同源）。",
+  "exact=true（数据库原文）时整行不出现：原文不再另写来源说明。",
+  "文案里带来源说明（拼装器版本与缺失项），用户能看出这份 DDL 缺了什么。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "GetDdl 返回 exact=false（客户端拼装）"
+result = "正文上方出现一行琥珀警示「⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · <来源说明>」"
+source = "src/ddl.rs:284、src/ddl.rs:286、src/ddl.rs:91"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0f72ea521310"
+evidence = "§6 exact=false 时正文上方有琥珀警示；ddl.rs 的 warning 标签与样式表"
+
+[component.sync.windows]
+state = "done"
+spec_hash = "0f72ea521310"
+evidence = "§7.1 exact=false 时正文上方一行琥珀警示 + 来源说明"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.column"
+parent = "inspector"
+display_name = "列视图（六项属性）"
+kind = "container"
+status = "active"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_sm", "gap_md", "gap_lg"]
+impl_notes = [
+  "字段顺序固定：列名、原始类型、可空、默认值、字符集、排序规则。",
+  "默认值四态分开写：「未知（服务端未提供）」/「无默认值」/「默认 NULL」/ 表达式原文（原文为空写「表达式（服务端未给出文本）」）。",
+  "字符集 / 排序规则缺失写「不适用」；这两种缺失是数据库没有这一层，不是面板没读到。",
+  "从树上的列节点进来时副标题补所属表名（「列 · 表名 · 类型」），从网格列头进来只有类型。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中列节点且父节点是表 / 视图"
+result = "读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则"
+source = "src/inspector.rs:672、src/inspector.rs:959、src/column_info.rs:156"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "点数据网格的列头（该表已打开）"
+result = "进同一个列页：用 GetColumns 已有模型，不重发 RPC"
+source = "src/inspector.rs:716、src/ui.rs:2204"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "8e0b0c44ef8f"
+evidence = "§6 选中列（树 / 网格列头）；inspector.rs::show_column 与 load_columns_for_column"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.state"
+parent = "inspector"
+display_name = "状态页（不支持 · 无从判断）"
+kind = "control"
+status = "active"
+a11y.name = "面板状态"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_lg", "gap_md"]
+impl_notes = [
+  "权限不足、对象不存在、不支持种类都给可读文案 + 稳定错误码。",
+  "状态页会挤掉 DDL 与表信息两页的可见性，切换条同时隐藏：面板不会出现「空页 + 切换条」这种半截状态。",
+  "换对象时上一次的状态页文案要清掉，防止别的对象读到旧错误。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中索引 / 触发器（MariaDB 没有独立 DDL）"
+result = "状态页「该对象种类不支持查看 DDL」+「<种类>没有独立的 DDL：定义在所属表的 DDL 里（metadata.object_kind_unsupported）。换一个表 / 视图再试。」；不是空面板"
+source = "src/inspector.rs:704、src/inspector.rs:250"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "选中的列节点不在表 / 视图下面（拿不到父表）"
+result = "状态页「列的详细属性需要知道所属的表」+「从对象树里表的子节点进入列，才能读到 GetColumns 的完整属性。（metadata.object_not_found）」"
+source = "src/inspector.rs:688"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "3201f0fc87a1"
+evidence = "§6 选中索引 / 触发器、选中列（无父表）；inspector.rs::StateText"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.txn_hint"
+parent = "inspector"
+display_name = "跨标签事务提示行"
+kind = "control"
+status = "active"
+a11y.name = "未提交事务提示"
+style.slot = "inspector"
+style.metrics = ["font_status", "gap_md"]
+impl_notes = [
+  "一行可折行的 caption，没有未提交事务时整行隐藏（不占位）。",
+  "位置在标题块与分隔线之间：读面板内容之前先看到「别处还有没提交的事务」。",
+  "当前挂的 sqarvo-inspector-warning 类在 theme.rs 里还没有对应规则，颜色随正文色——警示色待补（未进 theme.rs 的 token）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "同一 catalog 的其它标签有未提交事务"
+result = "面板顶部常驻一行「同一 catalog 的其它标签还有未提交事务：<标签名…>」；没有则整行隐藏"
+source = "src/inspector.rs:809、src/ui.rs:1832"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c3e589348227"
+evidence = "§6 跨标签事务提示；inspector.rs::set_txn_hint"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "inspector.object.info.status"
+parent = "inspector.object.info"
+display_name = "表信息提示行（读取中 · 读取失败）"
+kind = "control"
+status = "active"
+a11y.name = "表信息状态"
+style.slot = "inspector"
+style.metrics = ["font_panel", "gap_sm"]
+impl_notes = [
+  "提示行在表信息页最上面、可折行；有分节渲染出来后它退场。",
+  "读取失败时提示行留在最上面，已读回的分节继续显示（不清空、不盖成空面板）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "表信息页开始读取"
+result = "写「正在读取列、主键与索引…」；没有浏览会话时写「这条连接没有浏览会话：列属性读不到（metadata.object_not_found）。在对象树里重新连接后再试。」"
+source = "src/inspector.rs:872、src/inspector.rs:873"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "列 / 主键读取失败"
+result = "提示行给错误 headline + 「<文案>（<稳定错误码>）」；§7.1 的文案口径为「列读取失败：<文案>（<错误码>）」，不是空面板"
+source = "src/inspector.rs:1008、src/inspector.rs:893"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e18b5b426013"
+evidence = "§6 表信息页的失败路径；inspector.rs::info_note 与 load_table 的提示行"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "e18b5b426013"
+note = "§7.1 只记「列读取失败：…」；「正在读取列、主键与索引…」与没有浏览会话时的说明未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""

@@ -1,0 +1,1642 @@
+# 表数据页功能区的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 迁移状态：P0 试点区。行为条目取自 ui-behavior-contract.md §5.1–§5.10
+# 与 workspace-model.md §6 / §6.1，源码行号按当前 frontend/linux/src 复核，
+# 函数名是一级定位（data_page.rs 的 fn 起始行）。
+#
+# 区域边界（别在这里重复登记的东西）：
+#   * 行操作组（新增 / 删除 / 应用 / 撤销 / 刷新 / 取消）、展示形式 toggle、
+#     分页器与页码摘要 —— 控件登记在 status_bar.toml（status_bar.row1.*），
+#     本区只登记它们作用在数据页上的语义（见 data_page.grid / data_page.detail）。
+#   * 标签条、关页守卫的确认框 —— 登记在 tabs 区。
+#   * 连接断开 / 重启的对话框 —— 登记在 shell 区。
+
+[area]
+id = "data_page"
+display_name = "表数据页"
+summary = "表数据页（含查询标签复用同一套编辑态）：单行工具条与事务、筛选与排序面板、列显隐、数据网格与就地编辑、脏行标记与批量提交、offset 分页、导出 CSV / INSERT / 转储表、数据行右键菜单、按行浏览与单行「字段 · 值」两种展示形式，以及只读 / 空 / 错误 / 断连四态。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §5.1–§5.10；docs/ui-specification/workspace-model.md §6 / §6.1"
+
+[[component]]
+id = "data_page"
+parent = ""
+display_name = "表数据页（整页）"
+kind = "area"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["table_actions_height", "row_height_data", "grid_padding_start"]
+impl_notes = [
+  "自上而下：横幅 → 单行工具条 → 表头上方徽标行 → 逐行错误列表 → 表格外框（网格 / 字段 · 值）→ 占位页。",
+  "页内浮层只有两块：列显隐卡片与「开始事务」卡片；筛选与排序面板是挂在漏斗按钮上的 popover（不进主窗口排版）。",
+  "表格外框与 Objects 列表共用同一份 .sqarvo-table-frame（外框线宽 frame_border_width、圆角 radius_lg），圆角靠 overflow=hidden 真正裁到内容。",
+  "行号列 32、表头 26、数据行 32 都只来自 metrics；页面本身不另存一份数字。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开表 / 换表 / 重新读取"
+result = "清空上一屏的草稿、选中、逐行错误与「最近一次操作」注记，退回按行浏览，占位页写「正在读取表数据」+「等待服务端返回第一页…」，工具条消息同步「正在读取表数据…」"
+source = "src/data_page.rs:4228、src/data_page.rs:4261"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "36a17ac4ffc4"
+commit = ""
+evidence = "v0.2.5 Linux 客户端；§5.1–§5.10 逐条对照 data_page.rs（begin_open / show_open / 四态）"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "36a17ac4ffc4"
+note = "§7.1 记录数据页（#173）已落地，但版面是「页内动作行 + 状态栏行 2」，没有页内徽标行 / 逐行错误列表 / 占位页；差异见本文件各条目的 windows note。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar"
+parent = "data_page"
+display_name = "单行工具条"
+kind = "container"
+status = "active"
+style.slot = "workspace.content"
+style.metrics = ["table_actions_height", "row_height_data"]
+impl_notes = [
+  "只有一行：提交 / 开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。",
+  "这一行**没有**「撤销」「删除」「新增」「刷新」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳。",
+  "四个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。",
+  "行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。",
+  "状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "dfb24c39e473"
+commit = ""
+evidence = "§5.1 单行工具条；data_page.rs new() 的 controls 行 + --qa-layout-audit「表格工具条 / 状态簇」两项"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "dfb24c39e473"
+note = "§7.1：页内动作行是「上一页 / 下一页 / 加载更多…」+ 编辑动作，没有筛选 / 列显隐 / 导出，也没有状态簇；事务与脏行写在状态栏行 2。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+[[component]]
+id = "data_page.toolbar.commit"
+parent = "data_page.toolbar"
+display_name = "「提交」按钮（待提交 N 条；在途变「取消提交」）"
+kind = "control"
+status = "active"
+a11y.name = "提交"
+a11y.tab = "工具条内第一枚动作按钮"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。",
+  "可用性只有一个读数来源（数据页按钮的 sensitive）：状态栏「应用（✓）」直接读它，不重复判定。",
+  "只读原因一旦成立，本按钮恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "可编辑、有待提交变更、没有 RPC 在途"
+result = "走风险判定后提交：逐行更新与删除按主键定位；按钮文案「提交（N）」，状态行「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」"
+source = "src/data_page.rs:5086、src/data_page.rs:5147、src/submit_batch.rs:434"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "变更超过 100 行或含删除（本地判定）"
+result = "弹「确认提交变更？」：正文给更新 / 删除行数，超过 100 行时追加「变更数超过 100 行的风险阈值…」；按钮 取消 / 确认提交（破坏性，默认取消）；取消则「已取消提交（未发送任何变更）」。服务端要求 acknowledge_risk 时再走同一个对话框"
+source = "src/table_data.rs:489、src/table_data.rs:515、src/data_page.rs:5199"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "提交在途"
+result = "同一按钮变成「取消提交」且可点：请求取消后显示「正在取消…」，整批回滚、界面保留脏行与编辑文本（不采信任何部分结果），可再次点「提交」重试；取消中 / 已结束的重复点击幂等"
+source = "src/data_page.rs:5115、src/submit_batch.rs:412、src/submit_batch.rs:449"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "只读 / 已断开 / RPC 在途 / 没有待提交变更"
+result = "按钮禁用（不弹错误）；只读与断连时过程消息的 tooltip 给同一句原因"
+source = "src/data_page.rs:6579、src/data_page.rs:4213"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "929f45eb049c"
+commit = ""
+evidence = "§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_clicked / request_commit / confirm_batch"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "929f45eb049c"
+note = "§7.1：Ctrl+S / 状态栏「应用（✓）」提交；超过 100 行时不弹对话框，改成「再按一次 Ctrl+S 确认」并带 acknowledge_risk；提交走 ApplyRowChanges（带 transaction_id），全部成功再 Commit。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.begin_txn"
+parent = "data_page.toolbar"
+display_name = "「开始事务」按钮"
+kind = "control"
+status = "active"
+a11y.name = "开始事务"
+a11y.tab = "工具条内、紧跟「提交」"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "打开事务后**隐藏**（不是置灰）：同一位置换成「提交事务 / 回滚事务」。",
+  "有未提交的更改时置灰，tooltip 给原因「还有 N 行未提交的更改：先提交或放弃它们再开事务」——最容易踩到的那一条优先。",
+  "页内按钮、win.begin-txn 动作与 QA 都落到 begin_transaction 这同一条命令，被挡住时状态行写同一句话、不打开卡片。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "没有打开的事务、未断开、没有未提交的更改（脏行 / 标记删除 / 新行草稿）"
+result = "打开「开始事务」卡片（隔离级别 + 只读勾选），不直接发 RPC"
+source = "src/data_page.rs:5368、src/data_page.rs:3643"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "有待提交的更改"
+result = "按钮置灰，tooltip「还有 N 行未提交的更改：先提交或放弃它们再开事务」；点了不打开卡片，状态行同一句"
+source = "src/data_page.rs:6567、src/data_page.rs:6579"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "驱动未声明显式事务 / 行编辑能力"
+result = "如实退回自动提交、不假装事务存在：状态圆点与 tooltip 首段仍是「自动提交」，日志与 tooltip 写明 capability.unsupported；Linux 侧同一能力位先落到只读原因上（横幅「只读：驱动未声明行编辑能力」+ 编辑类按钮禁用），事务棕只在事务真的打开时出现"
+source = "src/table_data.rs:952、src/data_page.rs:6705"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "516580471083"
+commit = ""
+evidence = "§5.1 开始事务 / §5.2；begin_transaction + begin_tooltip；驱动不支持时落只读原因 capability.unsupported"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "516580471083"
+note = "§7.1：第一次暂存才 Begin（没有改动就没有事务），没有隔离级别卡片与只读勾选；驱动不支持显式事务时如实退回自动提交。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.commit_txn"
+parent = "data_page.toolbar"
+display_name = "「提交事务」按钮"
+kind = "control"
+status = "active"
+a11y.name = "提交事务"
+a11y.tab = "有事务时出现在工具条动作区"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "只在有活动事务时可见（与「开始事务」原位互斥）；失败态**不可提交**，只剩回滚。",
+  "有脏行时拒绝：先「提交」或「放弃更改」，与工具条按钮同一套谓词。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有活动事务且没有脏行"
+result = "提交事务；成功后丢弃尚未提交的界面更改并重新读取当前表，圆点从棕回到灰"
+source = "src/data_page.rs:5386、src/data_page.rs:4604"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有活动事务但有脏行"
+result = "拒绝并写「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」"
+source = "src/data_page.rs:5386、src/data_page.rs:6579"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4fc4ee55abba"
+commit = ""
+evidence = "§5.1 / §5.2 事务按钮互斥与失败态；commit_transaction + sync_badge"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "4fc4ee55abba"
+note = "§7.1：Ctrl+S = ApplyRowChanges（带 transaction_id）→ 全部成功再 Commit；没有「提交事务」文字按钮，失败行保留在原处可重试。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.rollback_txn"
+parent = "data_page.toolbar"
+display_name = "「回滚事务」按钮"
+kind = "control"
+status = "active"
+a11y.name = "回滚事务"
+a11y.tab = "有事务时出现在「提交事务」右侧"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "破坏性动作（destructive-action）；失败态仍可用——「事务失败（只能回滚）」时这是唯一出口。",
+  "回滚完成 = 事务结束：丢弃界面草稿并重新读取当前表，让屏幕回到数据库真实状态。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有活动事务（含失败态）"
+result = "先确认「回滚事务？」（有脏行时正文写「回滚事务将丢弃数据库侧的变更，并放弃 N 行未提交的界面更改。」），按钮 取消 / 回滚（破坏性，默认取消）；确认后回滚，圆点回到灰"
+source = "src/data_page.rs:5413、src/data_page.rs:4604"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "00a535b0c5fd"
+commit = ""
+evidence = "§5.1 回滚事务 / §8.2 回滚确认；rollback_transaction 的 AlertDialog"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "00a535b0c5fd"
+note = "§7.1：Ctrl+Z / 状态栏「撤销（↶）」= 丢弃暂存 + Rollback，不弹确认对话框；有未提交改动时关页 / 关窗第一次只提示。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.status_cluster"
+parent = "data_page.toolbar"
+display_name = "工具条状态簇（spinner · 过程消息 · 状态圆点）"
+kind = "container"
+status = "active"
+a11y.name = "操作状态"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data", "status_dot_diameter"]
+impl_notes = [
+  "自左向右：spinner（有 RPC 在途时可见）→ 本次操作的临时消息 → 状态圆点；整体在漏斗左侧，与图标按钮同一垂直中线。",
+  "过程消息只留两类：①「正在…」进行中（正在提交… / 正在取消提交（批次 …）… / 正在读取表数据…，读取完成后擦掉）；② warning / error（权限不足、类型不可编辑、行已标记删除、提交逐行失败…）。",
+  "已经发生的操作结果（第 N 行已标记删除（提交前可撤销）、已放弃未提交的更改（含新增行））不占可见文案，只写进圆点 tooltip 末段「最近一次操作：…」。",
+  "这一处**不重复**行数 / 页码 / 总数：那些只在状态栏分页器显示一次。",
+  "撤销（放弃未提交的更改，状态栏行操作组 ↶ / RowOp::Discard）与删除（−）的结果同样不占可见文案：前者把 ●N / ✕N / ＋ 清回普通行号，后者把行标删；两句都只写进圆点 tooltip 的「最近一次操作：…」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "有 RPC 在途"
+result = "spinner 可见并转动，消息写「正在读取表数据…」/「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」/「正在取消提交（批次 …）：等驱动在行边界停下，已执行的行会整批回滚…」"
+source = "src/data_page.rs:6427、src/submit_batch.rs:449"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "读取完成"
+result = "擦掉「正在读取…」，消息位留空（不写行数 / 页码）；最近一次读取摘要只进状态栏那格的 tooltip"
+source = "src/data_page.rs:6442、src/data_page.rs:6494"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "83adab69bd22"
+commit = ""
+evidence = "§5.1 工具条状态簇与「操作结果收进圆点」；set_state / set_status / note_action"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录工具条状态簇：Windows 的脏行数 / 提交中 / 已回滚写在状态栏行 2 右侧。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.status_dot"
+parent = "data_page.toolbar"
+display_name = "状态圆点（灰 / 事务棕 / 脏行强调色）"
+kind = "control"
+status = "active"
+a11y.name = "事务与未提交更改的状态"
+a11y.tab = "不可聚焦（不占 Tab 位），仍在无障碍树里"
+style.slot = "workspace.content"
+style.metrics = ["status_dot_diameter"]
+style.tokens = ["warning_color", "accent_bg_color"]
+impl_notes = [
+  "视觉是一枚 status_dot_diameter 的实心圆（约漏斗墨迹的一半），命中区仍是 24×24；focusable=false，但 tooltip 同时登记为可访问名。",
+  "三态互斥、优先级自上而下：灰 = 没有未提交的更改、也没有打开的事务；@warning_color = 事务已打开（含只读 / 失败态）；@accent_bg_color = 有脏行 / 新行（压在事务态之上）。",
+  "没有打开的表时整枚隐藏——圆点说的是「这张表格此刻怎样」。",
+  "原来常驻的两段文字（自动提交徽标、脏行 N · 待提交 M 条）不再占可见文案，只作 tooltip 与 QA 断言的文案来源。",
+]
+
+[[component.interaction]]
+trigger = "hover"
+precondition = "已打开表"
+result = "tooltip 三段：第一段写事务状态 + 脏行 N · 待提交 M 条（含 K 个删除）· 新行 1 行，第二段是事务说明（「自动提交：每条语句自成一个事务」/「事务中：提交事务之前，改动只在当前会话可见」/「事务失败：只能回滚」/「已断开：事务已由后端回滚」），有已发生结果时第三段「最近一次操作：…」（如「第 2 行已标记删除（提交前可撤销）」「已放弃未提交的更改（含新增行）」）"
+source = "src/data_page.rs:6705、src/data_page.rs:6528"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "状态变化（开始 / 提交 / 回滚 / 失败 / 标记删除 / 放弃）"
+result = "颜色随状态实时切换（有脏行即强调色，否则事务打开即棕，否则灰）；状态变化本身**不**在过程消息位写任何可见文字"
+source = "src/data_page.rs:6705、src/data_page.rs:4604"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b8987116ec36"
+commit = ""
+evidence = "§5.1 状态圆点三态 / §5.2 事务状态的可见表达；sync_status_dot + update_dirty_label"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录工具条状态圆点：数据页状态按优先序写在状态栏行 2 右侧（只读 / 自动提交 / 未提交 N 行 / 提交中… / 已回滚）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.filter"
+parent = "data_page.toolbar"
+display_name = "「筛选」（漏斗）按钮"
+kind = "control"
+status = "active"
+a11y.name = "筛选与排序"
+a11y.tab = "工具条次要动作组内第一枚"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "图标是项目自有的 sqarvo-filter-symbolic：放大镜会被读成「搜索」，Adwaita / Yaru 都没有漏斗。",
+  "驱动能力位 filtering=false 时按钮**隐藏**（不是点了报错）；没有列时一并禁用。",
+  "面板是挂在它上面的 popover（autohide=false），锚点落在面板上沿偏右（0.618）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "驱动声明支持筛选且已打开表"
+result = "打开 / 收起筛选与排序面板；打开时把**已应用**的筛选与排序复制成草稿"
+source = "src/data_page.rs:2380、src/data_page.rs:2389"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开表时读到能力位 filtering=false"
+result = "漏斗隐藏；排序入口随之不生效；出现「驱动不支持排序/筛选」徽标"
+source = "src/data_page.rs:4298、src/data_page.rs:4397"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "2b2cb1eebe3b"
+commit = ""
+evidence = "§5.1 / §5.3 能力位与面板开合；toggle_filter_panel + show_open"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：Windows 数据页没有筛选 / 排序入口。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.columns"
+parent = "data_page.toolbar"
+display_name = "「列显隐」（眼睛）按钮"
+kind = "control"
+status = "active"
+a11y.name = "列显隐"
+a11y.tab = "工具条次要动作组内第二枚"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。",
+  "没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。",
+  "与漏斗互斥：打开卡片会收起筛选面板。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前表有列"
+result = "打开 / 收起页内「列显隐」卡片（复选框清单）；再点一次收起"
+source = "src/data_page.rs:2324、src/data_page.rs:1757"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "ef2fbdd436ee"
+commit = ""
+evidence = "§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：Windows 数据页没有列显隐入口。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.columns.card"
+parent = "data_page.toolbar.columns"
+display_name = "列显隐卡片（复选清单 + 说明）"
+kind = "container"
+status = "active"
+a11y.name = "列显隐"
+style.metrics = ["radius_lg", "row_height_data"]
+impl_notes = [
+  "页内右对齐卡片（不是独立窗口，也不是 popover）：标题「列显隐」+ 复选框清单 + ✕；卡片宽度 300 与清单最大高度 260 是代码常量，**未进 metrics**。",
+  "说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」",
+  "复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。",
+  "换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "卡片已打开、该列在清单里"
+result = "勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号"
+source = "src/data_page.rs:2361、src/data_page.rs:2316"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "卡片已打开"
+result = "点 ✕ 收起卡片，隐藏选择保持不变"
+source = "src/data_page.rs:1763"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "86fa1b4dee70"
+commit = ""
+evidence = "§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：Windows 数据页没有列显隐卡片。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.toolbar.export"
+parent = "data_page.toolbar"
+display_name = "「导出 ▾」菜单按钮"
+kind = "control"
+status = "active"
+a11y.name = "导出"
+a11y.tab = "工具条次要动作组内第三枚（最右）"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data"]
+impl_notes = [
+  "图标 + 下拉箭头（always_show_arrow）：**一个入口三种出口**，不是单击即导出的图标；图标仍是 document-save-symbolic。",
+  "tooltip：「导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 N 行（Ctrl+Shift+E 直接导出 CSV）」。",
+  "有已加载行且没有 RPC 在途时可用；在途时禁用（避免写出半套状态）。",
+  "Ctrl+Shift+E 与菜单「表 → 导出 CSV」仍是**直接导出 CSV**（不弹格式菜单），与这一格不是同一条路径。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有已加载行、没有 RPC 在途"
+result = "展开三项菜单：「导出 CSV…」「导出为 INSERT 语句…」「转储表…」；单击图标先展开菜单，范围（当前页 / 整张表）仍由紧接着的对话框显式选择"
+source = "src/data_page.rs:1075、src/data_page.rs:1698"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "没有已加载行（或正在提交）"
+result = "按钮禁用；没有可导出内容时不弹菜单、只写一行日志"
+source = "src/data_page.rs:6579"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "2bd73c29a87a"
+commit = ""
+evidence = "§5.1 导出 ▾ / §5.7 入口；MenuButton + 三个菜单项走 export_ui::begin"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：Windows 数据页没有导出入口（对象树条目同样写明「数据页导出亦未实现」）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.export_menu"
+parent = "data_page"
+display_name = "导出菜单（三项出口）"
+kind = "container"
+status = "active"
+style.slot = "overlay"
+impl_notes = [
+  "挂在「导出 ▾」按钮上的 GtkPopover（popup surface，窗口自渲染截图拍不到）；点任一项先收起菜单再执行。",
+  "三项都进入 export_ui::begin 这同一条流程：范围 → 文件 → 确认 → 覆盖 → 进度 / 取消 → 完成，差别只在写出的格式与文件过滤器。",
+  "菜单里没有第三条之外的路径（没有「复制到剪贴板」「导出全部结果」这类重复出口）。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "18b7e4d31b07"
+commit = ""
+evidence = "§5.7 三种出口共用一条流程；data_page new() 的 export popover + export_ui::begin"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：无导出菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.export_menu.csv"
+parent = "data_page.export_menu"
+display_name = "「导出 CSV…」"
+kind = "item"
+status = "active"
+a11y.name = "导出 CSV…"
+impl_notes = [
+  "范围对话框问当前页与整张表，默认当前页，整张表必须显式选择。",
+  "确认标题「导出已加载的 N 行为 CSV？」/「导出整张表为 CSV？」；正文给写出口径（空字段 = SQL NULL、空字符串写成空引号串、二进制写占位 (BLOB n bytes)、Decimal 保留原文、日期时间 ISO 8601）与截断警告。",
+  "公式注入防护开关**只给 CSV**（文本值以等号 / 加号 / 减号 / at 号 / 制表符 / 回车开头时前置单引号），默认开启。",
+  "文件对话框标题「导出为CSV」、过滤 *.csv、默认 sqarvo-export.csv；目标已存在时再确认一次，默认不覆盖。",
+  "当前页导出的数据口径：写页面当前的值，含未提交编辑（对话框里写明）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有已加载行"
+result = "选范围 → 选文件 → 确认「导出已加载的 N 行为 CSV？」→ 写文件；完成提示写已写行数、截断数与防护开关状态；在文件对话框取消则不写文件、不报错"
+source = "src/export_ui.rs:437、src/export_ui.rs:506、src/export_ui.rs:695"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "计划为空或总数为 0（明确知道 0 行）"
+result = "提示「没有可导出的行」，不进入文件选择器（转储表例外：空表也允许，只写建表语句）"
+source = "src/export_ui.rs:437"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "dc1460c46b88"
+commit = ""
+evidence = "§5.7 CSV 出口 / §6.1 导出口径与公式注入防护；export_ui::begin(ExportKind::Csv)"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：无导出。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.export_menu.insert"
+parent = "data_page.export_menu"
+display_name = "「导出为 INSERT 语句…」"
+kind = "item"
+status = "active"
+a11y.name = "导出为 INSERT 语句…"
+impl_notes = [
+  "范围同样问当前页 / 整张表；确认标题「导出已加载的 N 行为 INSERT 语句？」/「导出整张表为 INSERT 语句？」。",
+  "写出口径：一行一条 INSERT INTO 目标表 (列清单) VALUES (值清单);（LF 行尾）；NULL 写 NULL、空串写空引号串；数字 / Decimal 原文；日期时间加引号 ISO 8601；BLOB 写 NULL（客户端拿不到原始字节），文件末尾注释写明数量。",
+  "标识符与字符串按驱动：SQLite 双引号，MariaDB 反引号 + 反斜杠转义。",
+  "文件对话框标题「导出为INSERT 语句」、过滤 *.sql、默认 sqarvo-insert.sql。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有已加载行"
+result = "选范围 → 选文件 → 确认 → 写 SQL 脚本；不做公式注入防护（SQL 不经过表格软件）；截断单元格在文件末尾追加一行注释"
+source = "src/export_ui.rs:437、src/export_ui.rs:695、src/export.rs:348"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a262b11296cc"
+commit = ""
+evidence = "§5.7 INSERT 写出口径；export_ui::begin(ExportKind::Insert) + export 的 sql_literal / write_insert"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：无导出。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.export_menu.dump"
+parent = "data_page.export_menu"
+display_name = "「转储表…」"
+kind = "item"
+status = "active"
+a11y.name = "转储表…"
+impl_notes = [
+  "**不问范围**（天然整表）：确认标题「转储表 <表名>？」。",
+  "文件内容：文件头注释（Sqarvo 导出：表名与列数）→ 可选注释 → 建表语句（现场 GetDdl；exact=false 时注明「建表语句由客户端拼装」）→ 每行一条 INSERT；列名与建表语句在同一后台线程、同一会话里读。",
+  "空表也允许导出，只写建表语句；默认文件名 <表名>.sql，文件对话框标题「导出为SQL 脚本」。",
+  "同一个动作另有对象树表节点右键菜单入口（登记在 object_tree 区），两条入口共用 export_ui::begin_object_dump。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已打开表（有浏览会话）"
+result = "确认「转储表 <表名>？」→ 选文件 → 进度对话框（已写行数 / 截断单元格数）+「取消」；取消或失败不留半截文件与临时文件"
+source = "src/export_ui.rs:490、src/export_ui.rs:1197、src/export_ui.rs:1418"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "57d7566a541b"
+commit = ""
+evidence = "§5.7 转储表内容；export_ui::begin_object_dump + run_whole_table_export"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：无转储表入口。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.badges"
+parent = "data_page"
+display_name = "表头上方徽标行"
+kind = "container"
+status = "active"
+a11y.name = "表状态徽标"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data", "gap_sm"]
+style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_on_soft"]
+impl_notes = [
+  "六类徽标：只读 / 无主键 / 视图（写种类名）/ 无权限 / 未统计 / 驱动不支持排序筛选；每枚带解释性 tooltip，有任意一枚时整行可见。",
+  "不随状态变化消失：用户不用去看禁用的按钮猜为什么不能编辑。",
+  "「无权限」在读取或提交返回 permission 类错误码时置上，不只靠一句状态行。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开表（可叠加权限 / 统计 / 能力位结果）"
+result = "按条件逐枚追加：只读（tooltip 给具体原因）、无主键（「无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用」）、视图（「视图：数据来自查询定义，编辑受限…」）、无权限（「当前账号对该对象没有权限…」）、未统计（「精确计数超过预算，已跳过…」）、驱动不支持排序/筛选"
+source = "src/data_page.rs:4397"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "读取 / 提交返回 permission 类错误"
+result = "置上「无权限」徽标并常驻，直到重新打开表"
+source = "src/data_page.rs:4523"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "efc84d117a14"
+commit = ""
+evidence = "§5.1 表头上方徽标行 / §5.6 权限不足；update_badges + show_failure"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录页内徽标行：只读 / 无主键 / 驱动不支持只作为编辑被拒的原因出现在提示里。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.grid"
+parent = "data_page"
+display_name = "数据网格（表格外框 · 行号列 · 表头 · 数据行）"
+kind = "container"
+status = "active"
+a11y.name = "数据网格"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data", "column_header_min_height", "row_number_width", "column_width", "frame_border_width", "radius_lg", "grid_padding_start"]
+style.tokens = ["theme_bg_color", "theme_fg_color"]
+impl_notes = [
+  "结构：行号列（固定 row_number_width，行号 = offset + 行下标 + 1，**不是**主键）+ 单行表头 + 数据行。",
+  "列宽按**本页内容**自适应：表头文案与已加载值里最长文字 + 单元格内距，下限 64、上限 column_width；拖过列边界或双击自适应过的列记为用户宽度，翻页与刷新不再覆写（64 与内距是代码常量，未进 metrics）。",
+  "表头条带 26 内容 + 上下 2 内距（column_header_min_height）；底色取 theme_bg_color，文字与数据行同档。",
+  "横向滚动条常驻可见（关掉 overlay 自动淡出），宽表只横向滚动、不挤压右侧信息面板；窗口最大化后横向滚动位置回到第一列。",
+  "滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。",
+  "页码与总数只在状态栏分页器出现一次（status_bar.row1.pager / .summary）：三态是「共 N 行」/「约 N 行」（估计值必须带「约」）/「共 ? 行」（总数未知或计数超时写问号，不编造数字；Linux 未知时只写页码，Windows 写「共 ? 行」）；计数超预算时写「未统计（超出计数预算）」并出现「未统计」徽标。",
+  "每页 500 行（TABLE_PAGE_SIZE，实际 page_size 随第一页返回）；翻页 = 整页替换 + 回到顶部。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开表 / 翻页 / 刷新（无未提交更改）"
+result = "整页替换并写「正在读取 offset N …（<动作>）」；成功后回到第一行；翻页中再翻页写「上一页仍在读取：稍候再翻页」，不发第二次请求"
+source = "src/data_page.rs:3011、src/data_page.rs:4272、src/data_page.rs:4388、src/backend/table.rs:27"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "有脏行、标记删除或新行草稿"
+result = "翻页 / 排序 / 筛选 / 刷新一律拒绝，写「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」"
+source = "src/data_page.rs:3048、src/data_page.rs:3011"
+
+[[component.interaction]]
+trigger = "scroll"
+precondition = "滚到本页最后一行"
+result = "不自动取下一页（offset 分页互斥），页脚不出现「加载更多」"
+source = "src/data_page.rs:4388"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "463e5c13c776"
+commit = ""
+evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "463e5c13c776"
+note = "§7.1：行号列 row_number_width（行号 = offset + 下标 + 1）、单行表头、row_height_data / column_width、横向滚动一致；**每页 200 行**，翻页入口是页内「上一页 / 下一页 / 加载更多…」（offset = 已取行数续拉），页码写「第 N 页 / 共 ? 页」。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.grid.header"
+parent = "data_page.grid"
+display_name = "列头（列名 · 原始类型 · 排序标记）"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：列名 · 原始类型）"
+style.metrics = ["column_header_min_height", "column_width"]
+style.states = { hover = "sqarvo_brand_soft" }
+impl_notes = [
+  "表头只有**一行**：标题文本是「列名 · 原始类型」（类型为空时只写列名）；整个标题可点，不是只有文字。",
+  "主键标记只出现在声明了它的实现里（Windows 写「· PK」）；Linux 的表头不带主键标记，主键进信息面板的列页与徽标。",
+  "拖宽把手在列右缘 6px 内，落在那里的松开不算「点击列头」。",
+  "排序标记跟在标题末尾（▲ / ▼ / ▲2），与筛选面板共用同一份排序状态；表头本身不参与排序。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该列存在（松开点不在列右缘 6px 内）"
+result = "信息面板切到该列的列页（与树上列节点同一个页面，不重发 RPC）；**不改排序**"
+source = "src/data_page.rs:4013、src/data_page.rs:4056"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开表 / 排序变化 / 列显隐变化"
+result = "标题写「列名 · 原始类型」，有排序键时追加 ▲ / ▼ / ▲2（数字是优先级）；tooltip「点击查看列属性：<列名>」"
+source = "src/data_page.rs:763、src/data_page.rs:6194"
+
+[[component.interaction]]
+trigger = "drag"
+precondition = "指针落在列右缘的拖宽把手"
+result = "改列宽并记为**用户宽度**（翻页 / 刷新 / 自动列宽都不再覆写）；双击把手按内容自适应同样记为用户宽度"
+source = "src/data_page.rs:5910、src/data_page.rs:5931"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "d833413cb81f"
+commit = ""
+evidence = "§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips + header_title_text；Linux 表头无 PK 标记（见 impl_notes）"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "d833413cb81f"
+note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列宽固定 column_width，超宽走横向滚动；没有排序标记与点击查看列属性。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.grid.row_number"
+parent = "data_page.grid"
+display_name = "行号列（行号 / 脏行 / 标删 / 新行）"
+kind = "cell"
+status = "active"
+a11y.name = "（行内容：行号或未提交标记）"
+style.metrics = ["row_number_width", "font_status"]
+style.tokens = ["accent_bg_color"]
+impl_notes = [
+  "宽度固定 row_number_width、右对齐、等宽字体、色弱一档；行号不是主键，也不可拖宽。",
+  "四种写法互斥，按优先级：已删除（服务端报告行已不在）写 ✕N → 新行占位写 ＋ → 已标记删除写 ✕N → 有未提交更改写 ●N → 普通行号。",
+  "放弃（状态栏行操作组 ↶ / 放弃未提交的更改）后 ●N / ✕N / ＋ 都回到普通行号；一次成功提交后被删行整行消失、脏行变普通行号。",
+  "●N 的颜色是系统强调色（语义色），脏单元格的浅底是品牌浅档——两者刻意不同：一个是「有未提交的更改」，一个是「改过的格子」。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "行已加载"
+result = "普通行写行号（tooltip「第 N 行」）；脏行写「●N」（「第 N 行 · 有未提交的更改」）；标删写「✕N」（「第 N 行 · 已标记删除（提交前可撤销）」）；新行写「＋」（「新行 · 尚未提交（双击单元格填值）」）；被其它会话删除的行同样写「✕N」并给删除线与压暗"
+source = "src/data_page.rs:5845、src/data_page.rs:5851、src/data_page.rs:5857、src/data_page.rs:5839"
+
+[[component.interaction]]
+trigger = "hover"
+precondition = "行号格有标记"
+result = "tooltip 说明这一格为什么不是普通数字（有未提交的更改 / 已标记删除（提交前可撤销）/ 已删除 / 新行尚未提交）"
+source = "src/data_page.rs:5868"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "065e698ff671"
+commit = ""
+evidence = "§5.4 行号标记；build_columns 的 number_factory（●N / ✕N / ＋ 与四条 tooltip）"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "065e698ff671"
+note = "§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.grid.cell"
+parent = "data_page.grid"
+display_name = "数据单元格（值 · NULL / 空串 · 脏色）"
+kind = "cell"
+status = "active"
+a11y.name = "（行内容：单元格值）"
+style.metrics = ["row_height_data", "column_width"]
+style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_on_soft", "sqarvo_brand_mid"]
+style.states = { selected = "sqarvo_brand_mid" }
+impl_notes = [
+  "NULL 写「NULL」（弱色斜体，tooltip「SQL NULL（与空字符串不同）」）；空串**不能**与 NULL 长得一样：Linux 写空引号串，Windows 留空（§7.1 明确「空串保持空白」）。",
+  "数值与二进制右对齐（便于比较），文本左对齐；超长文本省略号截断，全文进 tooltip。",
+  "脏单元格是品牌浅档实底 + 对应深色前景（成对写，选中行里也不继承白字）；标记删除的行整行删除线 + 压暗。",
+  "服务端截断的值 tooltip 追加「该值被截断：不能编辑（提交截断值会写坏数据）」，且不允许进入编辑。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "行存在"
+result = "只选中行（Ctrl / Shift 多选），不改数据；状态栏选中数出现 N selected"
+source = "src/data_page.rs:1237、src/data_page.rs:6206"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "单元格可编辑"
+result = "打开编辑（见 data_page.editor）；不可编辑时状态行给具体原因：「该行已标记删除：撤销删除后才能编辑」「列 X 的值被服务端截断…」等，不弹空编辑器"
+source = "src/data_page.rs:6231、src/data_page.rs:5460、src/data_page.rs:5523"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Esc"]
+precondition = "网格有焦点、有选中行"
+result = "清空行选中（不影响 SQL 编辑器与对话框）"
+source = "src/data_page.rs:1248"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "694b2709c5af"
+commit = ""
+evidence = "§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "694b2709c5af"
+note = "§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.editor"
+parent = "data_page"
+display_name = "单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消）"
+kind = "container"
+status = "active"
+a11y.name = "编辑单元格"
+style.slot = "overlay"
+impl_notes = [
+  "同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。",
+  "标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。",
+  "进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。",
+  "可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。",
+  "值转换失败时错误就地显示、编辑框不关（可以在原处改）。",
+  "写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "输入合法（或勾选了设为 NULL）"
+result = "值写进界面草稿：单元格加脏色、行号变「●N」、状态圆点转强调色；编辑框收起。写库仍要等「提交」"
+source = "src/data_page.rs:570、src/data_page.rs:5578、src/data_page.rs:5615"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "编辑框已打开"
+result = "「取消」直接收起、不改草稿（与从未打开等价）"
+source = "src/data_page.rs:570"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Esc"]
+precondition = "编辑框已打开"
+result = "收起编辑框并放弃本次输入（Linux：popover 的 Esc 收起等同取消）；不写草稿、不写库"
+source = "src/data_page.rs:570、src/data_page.rs:646"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Enter"]
+precondition = "就地编辑态（Windows 口径）"
+result = "把输入提交到**本地暂存**（不落库）、单元格转脏；Linux 的编辑框是 应用 / 取消 两个按钮的形态，Enter 不提交（见 platform_notes.linux），最终草稿与提交口径一致"
+source = "src/data_page.rs:570、src/data_page.rs:5615"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["F2"]
+precondition = "网格有选中单元格"
+result = "进入编辑（与双击同一入口）；Linux 未绑 F2 —— 双击是唯一编辑入口（见 platform_notes.linux）"
+source = "src/data_page.rs:5460"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "编辑框已打开、点了编辑框以外的任何位置"
+result = "Linux：popover 自动收起，等同取消（没点「应用」就什么都没改）；Windows：按「暂存」处理，输入进本地草稿"
+source = "src/data_page.rs:578、src/data_page.rs:570"
+
+platform_notes.linux = "编辑是弹层形态（GtkPopover + 应用 / 取消），没有格内就地编辑：未绑 F2，Enter 不提交，点别处 = 取消（未应用则无改动）。"
+platform_notes.windows = "§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行时按「再按一次 Ctrl+S 确认」。"
+platform_notes.macos = "§7.1 未记录。"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b69688f4d30c"
+commit = ""
+evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "b69688f4d30c"
+note = "§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.row_menu"
+parent = "data_page"
+display_name = "数据行右键菜单"
+kind = "container"
+status = "active"
+a11y.name = "数据行菜单"
+style.slot = "overlay"
+impl_notes = [
+  "原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。",
+  "手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。",
+  "未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。",
+  "「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。",
+]
+
+[[component.interaction]]
+trigger = "right_click"
+precondition = "已打开表"
+result = "按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用"
+source = "src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "菜单打开中"
+result = "点菜单以外的任何地方（其它行、工具条、外面板）一律收起"
+source = "src/context_menu.rs:77"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e775021fcbba"
+commit = ""
+evidence = "§5.8 数据行右键菜单；show_row_menu + context_menu 模块"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录数据行右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.row_menu.delete"
+parent = "data_page.row_menu"
+display_name = "「删除行」"
+kind = "item"
+status = "active"
+a11y.name = "删除行"
+impl_notes = [
+  "与状态栏 − / RowOp::Delete 完全同一方法（delete_selected_row），可用性同一谓词（delete_available）。",
+  "只标记待删除，不立刻写库；新行占位行不在删除范围。",
+  "结果不占可见文案，只写状态圆点 tooltip 末段「最近一次操作：…」。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "可编辑且有选中行"
+result = "把选中行标记为待删除：行号变「✕N」、整行删除线 + 压暗；圆点注记「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」，一次「提交」才真正写库"
+source = "src/data_page.rs:5272、src/data_page.rs:5017、src/data_page.rs:5337"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "f81caed33111"
+commit = ""
+evidence = "§5.8 删除行；delete_selected_row + delete_note"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录数据行右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.row_menu.copy_insert"
+parent = "data_page.row_menu"
+display_name = "「复制为 ▸ 复制为 INSERT」"
+kind = "item"
+status = "active"
+a11y.name = "复制为 INSERT"
+impl_notes = [
+  "把选中行合成**一条多值** INSERT（目标表 + 列清单 + 多组 VALUES，行间换行）写进系统剪贴板，用选中行的**当前值**（含未提交编辑）。",
+  "BLOB / 非有限浮点写 NULL，并在末尾附一行 sqarvo 注释；标识符按该连接驱动引号。",
+  "只读也要能导出数据：本条目在只读连接下仍可用。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有选中行"
+result = "合成多值 INSERT 写入剪贴板；成功后圆点注记「已复制 N 行为 INSERT 语句」，失败写 warning 说明原因"
+source = "src/data_page.rs:2016、src/data_page.rs:2161"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "8ae1ca123860"
+commit = ""
+evidence = "§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录数据行右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.detail"
+parent = "data_page"
+display_name = "单行「字段 · 值」展示形式"
+kind = "container"
+status = "active"
+a11y.name = "字段 / 值视图"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data", "frame_border_width", "radius_lg"]
+impl_notes = [
+  "与网格共用同一块表格外框（sqarvo-table-frame），由视图栈切换；进场是 120ms 交叉淡入。",
+  "两列：字段（220，可拖）与值（自适应）；行 = 该行的每个字段，值取**当前值**（含未提交编辑），显示文本与网格**同一份**（NULL 为 NULL；空串在 Linux 写空引号串、Windows 留空）。220 是代码常量，未进 metrics。",
+  "只讲**第一个**选中的行（多选时）；日志「[data] 展示形式：字段 / 值（栈当前页 detail）」。",
+  "入口是状态栏分页器**前方**的 toggle（登记在 status_bar.row1.detail_toggle，属状态栏区）；本条目只登记这块内容与它的编辑 / 复位语义。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有选中行、当前是按行浏览（入口：状态栏的展示形式 toggle）"
+result = "表格外框内换成「字段 | 值」两列，只讲第一个选中行；按钮呈按下态（选中态由数据页快照推回，不在按钮自己记）"
+source = "src/data_page.rs:2053、src/data_page.rs:2093、src/data_page.rs:1291"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已在「字段 / 值」视图"
+result = "再按一次同一按钮切回按行浏览（同一动作幂等切换），网格原样回来，选中与脏行不变"
+source = "src/data_page.rs:2053、src/data_page.rs:2073"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "「值」列、该值可改（不是只读连接 / 只读事务 / 截断列 / 已标记删除的行）"
+result = "打开与网格同一个编辑器（行号 = 详情当前行、列号 = 字段下标）；改完立即按当前值重填整页（日志「详情第 N 行：id=2 · name=…」），提交仍走「提交」与脏行守卫"
+source = "src/data_page.rs:688、src/data_page.rs:753"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "没有选中行 / 换表 / 重新读取 / 选中集清空"
+result = "没有选中行时不切视图，状态行「先选中一行，再切换到「字段 / 值」视图」；换表与选中集清空**强制**回到按行浏览并清空详情数据"
+source = "src/data_page.rs:2053、src/data_page.rs:4228"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "04aa5ddb1ed8"
+commit = ""
+evidence = "§5.9 展示形式切换；toggle_detail_view / set_detail_mode / fill_detail / detail_cell_factory"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录展示形式切换（Windows 只有按行浏览）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.filter_panel"
+parent = "data_page"
+display_name = "筛选与排序面板（草稿 · 应用 / 清空）"
+kind = "container"
+status = "active"
+a11y.name = "筛选与排序"
+style.slot = "overlay"
+style.metrics = ["filter_panel_width", "filter_column_width", "radius_lg", "row_height_data"]
+impl_notes = [
+  "挂在漏斗按钮上的 GtkPopover（autohide=false），锚点落在上沿的黄金分割点（0.618，偏右）；面板宽 filter_panel_width。",
+  "面板里的改动是**草稿**：点「应用」才同时生效（筛选 + 排序一起提交，并回到第 1 页）；关闭面板丢弃草稿。标题右侧写「已应用」/「有未应用的更改」（warning + tooltip「点应用才生效；关闭会丢弃」）。",
+  "面板里只有一种字号（12px，与对象树一致）：正文、按钮、下拉、输入框、说明字统一，层级只靠字重与颜色；列表行 24 高。",
+  "底部只有一个调整区：分隔线 + 右对齐的「清空」「应用」；文案不带作用域，也不写说明段落。",
+  "两个区：筛选条件（列 + 算子 + 值 → 条件行，多条按 AND）与排序（列 + 方向 → 排序键，列表顺序即优先级）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开面板"
+result = "把**已应用**的筛选与排序复制成草稿并重建列下拉；状态文案回到「已应用」；错误提示清除"
+source = "src/data_page.rs:2389、src/data_page.rs:2919"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "草稿与已应用状态不同"
+result = "「应用」：未知列或算子缺值则面板内报错 + 状态行 error，不发请求；成功则写回唯一状态、回到第 1 页、重发浏览请求、状态行「筛选与排序已应用（N 条条件 · M 个排序键）· 回到第 1 页」；**面板不关闭**"
+source = "src/data_page.rs:2941"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有未提交更改"
+result = "「应用」被拒绝，状态行「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」，草稿保留"
+source = "src/data_page.rs:2941、src/data_page.rs:3048"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "面板已打开"
+result = "「清空」只清**草稿**（条件与排序键），仍需点「应用」才生效；状态行「条件与排序已清空（点「应用筛选与排序」恢复全表）」"
+source = "src/data_page.rs:2997"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "面板已打开"
+result = "点 ✕（或再点漏斗）关闭面板，未应用的改动丢弃"
+source = "src/data_page.rs:2411、src/data_page.rs:1773"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Esc"]
+precondition = "面板内有行内编辑态"
+result = "先收起行内编辑；没有编辑态时才关面板（一个 Esc 不该把整张面板关掉）"
+source = "src/data_page.rs:1792"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "12fda3e31c9f"
+commit = ""
+evidence = "§5.3 打开 / 关闭 / 应用 / 清空 / 草稿模型；open_filter_panel + apply_browse_options + clear_filter"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录筛选与排序面板（Windows 数据页没有筛选 / 排序入口）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.filter_panel.condition_composer"
+parent = "data_page.filter_panel"
+display_name = "条件编辑组（列 · 算子 · 值 · 添加条件）"
+kind = "container"
+status = "active"
+a11y.name = "添加筛选条件"
+style.metrics = ["filter_column_width", "row_height_data"]
+impl_notes = [
+  "列下拉固定 filter_column_width（不随面板拉伸）；算子下拉只写符号（= ≠ ≤ LIKE IS NULL 等）且**不显示下拉箭头**；值是单行输入框。",
+  "算子选 IS NULL / IS NOT NULL 时不需要值：输入框禁用并清空。",
+  "点「添加条件」把这一组追加到**草稿**（不改正在显示的数据），值输入框清空，条件出现在下方清单。",
+  "校验先在本地说清楚：缺值报「<算子> 需要一个值（列 X · 类型）」，未知列同样在面板内报错，不发请求。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有列清单、算子需要值且值非空（或算子为 IS NULL 类）"
+result = "条件追加到草稿并渲染成条件行（多条按 AND 组合）；日志「筛选条件已加入草稿：<列> <算子> <值>（尚未应用）」"
+source = "src/data_page.rs:2487、src/data_page.rs:2546"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "算子下拉可见"
+result = "只列出符号算子；选 IS NULL / IS NOT NULL 后值输入框禁用并清空（这两条不需要值）"
+source = "src/data_page.rs:1401、src/data_page.rs:2518"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "算子需要值但值被清空"
+result = "不加入条件，面板内红字「<算子> 需要一个值（列 X · 类型）」"
+source = "src/data_page.rs:2518、src/data_page.rs:2530"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "312faf6647dd"
+commit = ""
+evidence = "§5.3 添加筛选条件；add_filter_condition + read_condition_editor"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.filter_panel.condition_row"
+parent = "data_page.filter_panel"
+display_name = "条件行（列 · 算子 · 值，可就地编辑）"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：列 算子 值）"
+style.metrics = ["row_height_data"]
+style.tokens = ["sqarvo_brand_soft"]
+style.states = { hover = "sqarvo_brand_soft" }
+impl_notes = [
+  "只读态是一行文字（列 + 符号算子 + 值）+ 行尾一个 ✗；点这一行**就地展开**为三件套编辑器，不弹二级对话框。",
+  "编辑态与只读态同一套外观：同底色（不加强调色）、同行高、同字号，只把文字换成控件。",
+  "已加的条件是淡底色 + 圆角的实体条（品牌浅档的 55%，悬停变成浅档实色）；行尾始终只有一个 ✗。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该条件行不是编辑态"
+result = "就地展开为列 / 算子 / 值编辑器；回车或 ✓ 提交，✗ 或点面板空白处收起"
+source = "src/data_page.rs:2681、src/data_page.rs:2601"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Enter"]
+precondition = "条件行处于编辑态"
+result = "提交这一行修改（只改草稿），收起编辑器；校验失败时不收起并在面板内报错"
+source = "src/data_page.rs:2725"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "条件行存在"
+result = "点行尾 ✗ 从草稿里删掉这条条件（仍需点「应用」才影响数据）"
+source = "src/data_page.rs:2767、src/data_page.rs:2570"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e9e25f72bb2e"
+commit = ""
+evidence = "§5.3 编辑条件；condition_label_row / condition_editor_row / commit_condition_edit"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.filter_panel.sort_composer"
+parent = "data_page.filter_panel"
+display_name = "排序编辑组（列 · 方向 · 添加排序）"
+kind = "container"
+status = "active"
+a11y.name = "添加排序键"
+style.metrics = ["filter_column_width", "row_height_data"]
+impl_notes = [
+  "列下拉与筛选同宽（filter_column_width）；方向下拉只写 asc / desc（SQL 词，不翻译、不加方向图标、不显示箭头）。",
+  "点「添加排序」把键加入**草稿**；同一列再加一次只改方向，不产生重复键。",
+  "驱动不支持排序时面板内报「当前驱动不支持排序」，不加入。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有列清单且驱动支持排序"
+result = "列 + 方向加入草稿的排序键列表（列表顺序即优先级）；日志「排序键已加入草稿：<列> <asc|desc>（尚未应用）」"
+source = "src/data_page.rs:2780、src/data_page.rs:2810"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "驱动排序能力位为 false"
+result = "不加入，面板内报「当前驱动不支持排序」"
+source = "src/data_page.rs:2788"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "17fe9d3cb21c"
+commit = ""
+evidence = "§5.3 排序键；add_sort_key"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.filter_panel.sort_row"
+parent = "data_page.filter_panel"
+display_name = "排序键行（列名 · asc / desc · 上移 / 下移 / 删除）"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：列名 asc 或 desc）"
+style.metrics = ["row_height_data"]
+style.tokens = ["sqarvo_brand_soft"]
+style.states = { hover = "sqarvo_brand_soft" }
+impl_notes = [
+  "行文本是「列名  asc|desc」，**不写序号**：从上到下就是优先级，序号与上移 / 下移表达的是同一件事。",
+  "行尾三个线条图标按钮：上移（第一条禁用）、下移（最后一条禁用）、删除（✕）；与面板其它 ✗ 同一风格。",
+  "改动只进草稿，仍需点「应用」；与表头的 ▲ / ▼ 标记共用同一份排序状态。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "排序键行存在"
+result = "点列名切换 asc ↔ desc（只改草稿），列表重排并刷新标题状态"
+source = "src/data_page.rs:2875、src/data_page.rs:2837"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该键不是第一条 / 不是最后一条"
+result = "上移 / 下移把它在列表里挪一位，列表顺序即 SQL 的排序优先级"
+source = "src/data_page.rs:2893"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "排序键行存在"
+result = "点 ✕ 删除这个排序键（仍需「应用」才生效）"
+source = "src/data_page.rs:2906"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "127c9ad748a0"
+commit = ""
+evidence = "§5.3 排序键行；render_sort_keys + toggle_sort_key_direction / move_sort_key / remove_sort_key"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.txn_chooser"
+parent = "data_page"
+display_name = "「开始事务」卡片（隔离级别 · 只读）"
+kind = "container"
+status = "active"
+a11y.name = "开始事务"
+style.slot = "overlay"
+style.metrics = ["radius_lg"]
+impl_notes = [
+  "页内模态卡片（不是独立窗口，也不是 popover）：标题「开始事务」+ 隔离级别选项 +「只读」勾选 + 底部 取消 / 开始事务。",
+  "不支持的隔离级别**在开始前**就禁用并标「· 不可用」，说明行给原因——不让用户点完才知道不支持。",
+  "每次打开都按当前驱动重建选项（换库 / 换驱动后不能沿用旧能力表）；卡片宽 460 是代码常量，未进 metrics。",
+  "打开卡片前已经过 begin_transaction 的自检（无事务、未断开、无未提交更改），被挡住时根本不打开。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "工具条「开始事务」可用"
+result = "卡片出现：隔离级别（默认选中第一个可用项）、「只读」勾选、按钮「开始事务」/「取消」"
+source = "src/data_page.rs:3643、src/data_page.rs:3653"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已选可用隔离级别"
+result = "「开始事务」按所选级别（及只读勾选）发 RPC；在途提示「开始事务：<隔离级别> · 读写」，事务状态落定后清除，圆点转棕"
+source = "src/data_page.rs:3753、src/data_page.rs:1745"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "卡片已打开"
+result = "「取消」或 ✕ 收起卡片，不开始事务、不发 RPC"
+source = "src/data_page.rs:1749"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "56f25f4f800b"
+commit = ""
+evidence = "§5.2 打开「开始事务」卡片；open_txn_chooser + render_isolation_options + confirm_begin_transaction"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录隔离级别卡片：Windows 第一次暂存时直接 Begin（带 transaction_id），没有级别选择。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.placeholder"
+parent = "data_page"
+display_name = "占位页（尚未打开 / 正在读取 / 空表 / 本页没有数据）"
+kind = "container"
+status = "active"
+a11y.name = "数据页占位"
+style.slot = "workspace.content"
+impl_notes = [
+  "四段文案互斥：尚未打开表 / 正在读取表数据 / 空表 / 本页没有数据；「空」与「错」严格区分（错误走横幅 + 逐行错误列表，不占这一页）。",
+  "空态与越界页必须给**原因**，不能只写「没有数据」。",
+  "图标与说明只用 dim 文字，不放大色块。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "打开表 / 翻页请求已发出"
+result = "「正在读取表数据」+「等待服务端返回第一页…」"
+source = "src/data_page.rs:4261、src/data_page.rs:1313"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "第一页 0 行"
+result = "「空表」+「该表存在，但当前条件下没有任何行」/「该表存在，但目前没有任何行」（有筛选时写前者）；offset 越界时写「本页没有数据」+「offset 超出总数（服务端如实返回空行）；回首页或刷新再看」"
+source = "src/data_page.rs:4342"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "24ac51154c68"
+commit = ""
+evidence = "§5.6 打开表（加载中）/ 空表；begin_open + show_open 的占位页分支"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录数据页占位页文案（只记录总数三态与页码写法）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.banner"
+parent = "data_page"
+display_name = "页首横幅（只读 / 断连 / 错误）"
+kind = "control"
+status = "active"
+a11y.name = "数据页横幅"
+style.slot = "workspace.content"
+style.tokens = ["warning_color", "sqarvo_brand_soft", "sqarvo_brand_on_soft"]
+impl_notes = [
+  "只读横幅常驻（直到刷新事务状态）：正文是「<标题>：<解释>」，例如「只读：该表没有主键：无主键表只有无稳定排序的浏览顺序，无法稳定定位行，因此不能编辑…」。",
+  "断连横幅写明「未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚」（无脏行时省略中间一句），已加载数据**保留**为只读。",
+  "后端失效时的横幅带一枚「重启 Sqarvo」按钮（重启确认属 shell 区）。",
+  "横幅不替代徽标行与状态行：三者同时在，各自说明不同的层级（原因 / 能力 / 这一刻的动作结果）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "服务端标记只读（表级 / 视图 / 无主键 / 只读事务）"
+result = "横幅常驻显示只读原因；编辑类按钮禁用；过程消息 tooltip 给同一原因（不能只靠禁用暗示）"
+source = "src/data_page.rs:6802、src/data_page.rs:4334"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "会话丢失或后端断开"
+result = "丢弃未提交更改并写「已断开：<原因> 未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚。」；状态行「已断开 · 已加载 N 行（只读）」；已加载行保留"
+source = "src/data_page.rs:4666"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "读取 / 提交 / 事务操作失败"
+result = "横幅写服务端给的失败文案（错误码进日志与状态行），状态行转 error，逐行失败另见 data_page.errors；**已加载的行保留**、不清屏，可重试"
+source = "src/data_page.rs:4523、src/data_page.rs:4595"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "17689e61521a"
+commit = ""
+evidence = "§5.6 只读 / 断连；show_read_only_banner + mark_disconnected"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "17689e61521a"
+note = "§7.1：只读与失败原因写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页首横幅。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.errors"
+parent = "data_page"
+display_name = "逐行提交失败列表"
+kind = "container"
+status = "active"
+a11y.name = "提交失败的行"
+style.slot = "workspace.content"
+style.metrics = ["row_height_data", "gap_xs"]
+impl_notes = [
+  "位置在工具条下方、表格上方；一行一条「第 N 行：[错误码] 原因」，可选中复制。",
+  "只列**这一次提交里失败的行**；成功的行变干净，失败的行保留在原处可重试。",
+  "没有失败时整块隐藏（不占高度）；取消提交后整块清空（不采信任何部分结果）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "提交批次里有失败行"
+result = "逐行列出「第 N 行：[code] 原因」（如 table_data.row_deleted / table_data.rows_affected_mismatch）；块可见、已加载行保留；状态行与横幅同时给汇总"
+source = "src/data_page.rs:6810、src/data_page.rs:4487"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "437c40c53168"
+commit = ""
+evidence = "§5.4 提交结果；show_applied → show_failures"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "437c40c53168"
+note = "§7.1：失败的行保留在原处可重试，主键被删的行报 table_data.row_deleted、影响行数不符报 table_data.rows_affected_mismatch；没有逐行列表控件。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "data_page.query_edit"
+parent = "data_page"
+display_name = "查询结果的单表编辑（复用同一份草稿与提交路径）"
+kind = "container"
+status = "active"
+a11y.name = "查询结果编辑态"
+impl_notes = [
+  "查询标签的结果区默认只读；当结果**等价于一张表的当前页**时，状态栏的 + − ✓ ↶ 对它生效，口径与表数据页一致（同一份 TableDraft / InsertDraft / ApplyRowChanges）。",
+  "三个条件同时成立才装上编辑态：结果终态、SQL 是唯一顶层 FROM 的简单 SELECT（无 JOIN / 集合运算 / GROUP BY / 多表逗号）、结果列覆盖目标表全部主键列。",
+  "编辑用与网格同一个 open_cell_editor；提交目标表由 SQL 页显式给出，会话是本标签自己的会话。",
+  "本版边界：结果区**没有**行级脏色与删除线（脏行数只在状态行与圆点）；新增行一次只有一行；限流（Limited）结果不启用编辑。",
+  "重绘不是重跑：编辑 / 标删 / 新增 / 提交 / 放弃之后按草稿重绘并回到首行首列（避免停在最后一列）；只有**提交成功**才自动重跑同一条语句。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列"
+result = "装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色）"
+source = "src/sql_page.rs:708、src/result_edit.rs:45、src/results.rs:605"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "上述任一不成立"
+result = "行操作组整体置灰，tooltip 写明具体原因：「结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除」/「结果里没有主键列 X：定位不到要改的行，不能编辑」/「这张表没有主键：不能新增、编辑或删除」/「读取主键失败：…」——不静默灰掉"
+source = "src/sql_page.rs:715、src/sql_page.rs:740、src/result_edit.rs:78"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "结果可编辑、单元格可改"
+result = "打开与网格同一个编辑器；确定后按当前值重绘该行（未提交前不写库），并立刻重算行操作可用性（第一次编辑后 ✓ 即可点）"
+source = "src/results.rs:742、src/sql_page.rs:731"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有脏行 / 待插入行（入口：状态栏 ✓ / Ctrl+S）"
+result = "走 ApplyRowChanges；全部成功后**自动重跑同一条语句**（results.statement()，不是编辑器里的当前文本），结果区写「已提交 N 行 · 已自动重新执行查询」/「已插入 N 行 · 已自动重新执行查询」；有失败行时**不重跑**，失败行留在草稿里"
+source = "src/sql_page.rs:801、src/sql_page.rs:841、src/sql_page.rs:380"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "有脏行（入口：状态栏 ↶）"
+result = "全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」"
+source = "src/sql_page.rs:1020、src/results.rs:544"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "有未提交的更改且点了刷新（⟳）"
+result = "拒绝并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点）"
+source = "src/sql_page.rs:954"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e1cc87c8d7d5"
+commit = ""
+evidence = "§5.10 查询结果的单表编辑（v0.2.5）；sql_page try_enable_edit / on_applied，result_edit，results 重绘"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 明确「查询结果网格在本版不支持编辑」（结果区 ReadOnly 文案即此口径），没有 + − ✓ ↶ 与暂存。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
