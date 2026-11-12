@@ -268,9 +268,10 @@ spec_hash = "fcfd5efc278d"
 evidence = "§1.4 文件 → 新建连接；open_connection_dialog_for 的未就绪兜底与「只前置」分支"
 
 [component.sync.windows]
-state = "done"
-spec_hash = "9ef8fc9e877c"
-evidence = "§7.1「文件 → 新建连接…、工具条「连接」」：可用性读同一个后端状态位，握手未完成禁用并逐条给 tooltip 原因"
+state = "partial"
+spec_hash = "fcfd5efc278d"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:75；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:354；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:868"
+note = "菜单项与 Ctrl+N 走同一个处理器（ShowNewConnectionDialogAsync），未就绪时整项禁用；但工具条「连接」是另一条判定与另一个动作（直接连选中的已保存连接，不打开新建连接对话框），也没有逐项 tooltip 原因。"
 
 [component.sync.macos]
 state = "none"

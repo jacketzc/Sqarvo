@@ -425,7 +425,7 @@ evidence = "§3「加载更多…」；connect_clicked 与 has_more 驱动 set_v
 [component.sync.windows]
 state = "done"
 spec_hash = "4d4b91b4f4f7"
-evidence = "§7.1：只有服务端给了 next_page_token 才显示「加载更多…」"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:673；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:882"
 
 [component.sync.macos]
 state = "none"
