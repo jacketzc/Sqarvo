@@ -372,14 +372,12 @@ public sealed partial class ShellView : UserControl
                         ? $"{selected!.Name} 已经连着了：断开入口在后续工作包（浏览会话与对象树一起做）"
                         : "先在左侧对象树里选中一条已保存的连接");
 
-        // 状态栏右格：后端自报的真实计数（未就绪时不写假数字）。
-        LastRefreshText.Text = state.StatusLine;
-        ToolTipService.SetToolTip(
-            LastRefreshText,
-            state.Code.Length == 0 ? state.Message : $"{state.Message} [{state.Code}]");
+        // 状态栏：行 1 的状态格 + 行 2 的会话格（**搬移**到 ShellView.Chrome.cs，只是渲染，
+        // 判定仍在这里；原来这里往 LastRefreshText 写，行 1 的状态格现在是独立的一格）。
+        ApplyStatusChrome(state);
 
-        // 状态栏左格：默认是「SQL: —」；未就绪或刚操作完时说明原因（可选中复制）。
-        SqlSummaryText.Text = _notice ?? (ready ? "SQL: —" : state.Message);
+        // 状态栏左格：默认是「SQL: 尚未执行」（与 Linux 的 shell.rs 同一句）；未就绪或刚操作完时说明原因。
+        SqlSummaryText.Text = _notice ?? (ready ? "SQL: 尚未执行" : state.Message);
 
         SetWorkspaceState(
             ready
@@ -823,14 +821,26 @@ public sealed partial class ShellView : UserControl
             TreeSearchBox,
             "对象树搜索尚未实现：在后续工作包提供（服务端 filter.name.contains 已就绪）");
 
-        // 状态栏行操作：表数据编辑与查询面都在后续工作包；逐个说明，不合并成一句。
-        ToolTipService.SetToolTip(ButtonRowAdd, "新增行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
-        ToolTipService.SetToolTip(ButtonRowDelete, "删除行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
-        ToolTipService.SetToolTip(ButtonRowApply, "应用修改尚未实现：表数据编辑在后续工作包（没有待提交的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRevert, "撤销修改尚未实现：表数据编辑在后续工作包（没有待撤销的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：表数据放在后续工作包（查询页用 Ctrl+Enter 重新执行）");
+        // 状态栏行操作：动作名与 Linux（shell.rs `apply_row_ops`）逐字一致，后缀统一成一条「当前不可用」
+        // 的原因。原来六条各写一句「…尚未实现：表数据编辑在后续工作包」，同一句话在状态栏里出现五遍，
+        // 既占篇幅又看不出每个按钮到底做什么。
+        foreach (var (button, action) in new (Button Button, string Action)[]
+                 {
+                     (ButtonRowAdd, "在当前表末尾新增一行"),
+                     (ButtonRowDelete, "标记删除选中行（提交前可撤销）"),
+                     (ButtonRowApply, "提交所有脏行的变更"),
+                     (ButtonRowRevert, "放弃全部未提交的编辑与删除标记"),
+                     (ButtonRowRefresh, "重新读取当前表的第一页"),
+                 })
+        {
+            ToolTipService.SetToolTip(button, $"{action}（当前不可用：本版只有查询页，表数据面尚未接线）");
+        }
+
         // 「取消」在查询页执行中由 ApplyQueryStatus 逐个刷新可用性与原因；这里是启动态的默认文案。
-        ToolTipService.SetToolTip(ButtonRowCancel, "取消：当前没有执行中的查询");
+        ToolTipService.SetToolTip(ButtonRowCancel, "取消在途的提交批次（当前不可用：没有执行中的查询）");
+
+        // 左下角对象树搜索框与状态栏上的搜索入口是同一个动作，原因只写一处。
+        ToolTipService.SetToolTip(ButtonSearch, "对象树搜索（当前不可用：搜索尚未接线，服务端 filter.name.contains 已就绪）");
 
         MenuQuit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         MenuAbout.Click += OnAboutClick;
