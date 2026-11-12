@@ -58,7 +58,7 @@ install -Dm755 "$FRONTEND_BIN" "$PKG/usr/bin/sqarvo-desktop"
 install -Dm755 "$BACKEND_BIN"  "$PKG/usr/bin/sqarvo-backend"
 install -Dm644 "$SCRIPT_DIR/io.sqarvo.Sqarvo.desktop" \
   "$PKG/usr/share/applications/io.sqarvo.Sqarvo.desktop"
-install -Dm644 "$SCRIPT_DIR/io.sqarvo.Sqarvo.svg" \
+install -Dm644 "$SCRIPT_DIR/../../docs/assets/brand/sqarvo-logo.svg" \
   "$PKG/usr/share/icons/hicolor/scalable/apps/io.sqarvo.Sqarvo.svg"
 
 cat > "$PKG/usr/share/doc/sqarvo/copyright" <<'EOF'

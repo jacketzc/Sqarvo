@@ -1,218 +1,126 @@
 <p align="center">
-  <img src="packaging/linux/io.sqarvo.Sqarvo.svg" width="112" height="112" alt="Sqarvo logo">
+  <img src="docs/assets/brand/sqarvo-logo.svg" width="112" height="112" alt="Sqarvo logo">
 </p>
 
 <h1 align="center">Sqarvo</h1>
 
-开源、轻量、跨平台的原生桌面数据库客户端。目标是提供日常数据库管理所需的能力，
-同时保持低资源占用、快速启动和原生桌面体验。
+<p align="center">开源、轻量、跨平台的原生桌面数据库客户端</p>
 
-- 不使用 Electron / Chromium / WebView 作为 UI 运行时；
-- 数据库能力集中在独立的 Rust 后端进程中；
-- 前端与后端通过 gRPC + Protobuf 通信；
-- 数据库通过可扩展的 Driver SPI 接入。
+## 为什么是 Sqarvo
+
+**平台原生 UI，不是网页套壳。**
+Windows 用 WinUI 3 + C#，Linux 用 GTK4 + libadwaita，macOS 用 SwiftUI —— 每个平台都用自己的原生
+控件与交互约定。不使用 Electron / Chromium / CEF / WebView，界面里没有一行 JavaScript。
+数据库能力全部在独立的 Rust 后端进程里，前端只通过 gRPC + Protobuf 与它通信。
+
+**低占用。**
+单个 Rust 后端进程 + 原生前端，启动快、常驻内存小。查询结果分批拉取、表格虚拟化，大表与大结果集
+不会整块读进内存；连接、游标、临时文件都有明确的生命周期与清理路径。
+
+**简洁 UI。**
+六区域工作区（工具条 · 对象树 · 标签条 · 工作区 · 信息面板 · 状态栏），一个标签一条数据库会话，
+切标签不重建连接。常用操作键盘可达；加载 / 空 / 错误 / 取消 / 断连五态在界面上明确可见，
+不用弹窗替代状态说明。
 
 ![Sqarvo 主窗口：对象树、表数据网格与信息面板 DDL（Linux / GTK4）](docs/assets/screenshots/linux-main-window.png)
 
-*Linux 前端（GTK4 + libadwaita）：对象树 · `demo_users` 表数据网格（列名 + 类型行、行变更工具条）·
-信息面板 DDL · 左下角对象搜索框与 48px 状态栏，连接 MariaDB 的 `sqarvo_demo` 库（1200×800）。
-桌面截图（GNOME / Wayland，窗口原生尺寸）。*
+## 当前状态
 
-> 当前版本为 **v0.2.3.2**（M6 前端硬化第二批）：在 v0.2.3.1 之上把界面行为收成一套口径——
-> 对象树单击只选中 / 双击激活、表下四组元数据、信息面板常驻、`Objects` 页与树联动、
-> 后端失效改为「重启 Sqarvo / 查看日志」（stderr 落盘）、表数据 `EX` 支持「当前页 / 整张表」。
-> 后端（本地 IPC + gRPC + Driver SPI + SQLite / MariaDB 驱动 + 元数据与
-> 对象树 / DDL / 搜索 + 显式事务 + 插入行 + 表浏览排序/筛选/offset 分页/总数三态）、
-> Linux GTK4 前端（六区域工作区、多连接、标签工作区（一标签一会话）、表格浏览与多选、
-> 信息面板、导出 CSV、对象树 / DDL / 搜索、数据页浏览/编辑/插入）与凭据存储已可端到端使用。
-> **Windows / macOS 前端仍为窗口骨架，未接后端**。能力边界、支持矩阵与已知限制见
-> [v0.2.3.2 发布说明](docs/releases/v0.2.3.2.md)（v0.2.3 的完整交付见
-> [v0.2.3](docs/releases/v0.2.3.md)）。
+Linux 端已可端到端使用（SQLite 与 MariaDB）；Windows / macOS 仍是窗口骨架，尚未接后端。
+
+- **已有**：连接与测试连接、密码只写系统凭据库、对象树与元数据（逐层懒加载、按名搜索）、
+  SQL 编辑器与分批结果、表数据浏览 / 编辑 / 插入 / 显式事务、导出 CSV / INSERT / 转储表、
+  DDL 只读查看。
+- **未做**：PostgreSQL 驱动、多语句执行、DDL 修改、导入、结构对比与 ER 图、Windows / macOS
+  接入、远程 TLS。未实现的能力返回明确的 `UNIMPLEMENTED` / `capability.unsupported`，不伪造成功。
+- 能力清单与支持矩阵以 [产品需求](docs/product/requirements.md)、
+  [发布计划](docs/planning/release-plan.md) 为准；版本说明见 [`docs/releases/`](docs/releases/)。
 
 ## 目录结构
 
 ```text
-.
-├── AGENTS.md                 # 仓库级开发准则
-├── proto/                    # Protobuf 契约（前后端唯一事实来源）
-│   ├── common/v1/            # 错误、分页、值/列类型
-│   └── services/v1/          # system / connection / credential / metadata / query / transaction / table_data
-├── backend/                  # Rust workspace
-│   ├── apps/backend-service/ # 后端进程入口（本地 IPC + token 认证）
-│   └── crates/
-│       ├── common/           # 错误模型与标识符
-│       ├── driver-api/       # Driver SPI：能力、值模型、元数据、会话
-│       ├── drivers/          # 驱动注册表，drivers/sqlite、drivers/mariadb
-│       ├── connection/       # 连接与会话生命周期
-│       ├── query-engine/     # 查询登记、并发上限、幂等取消
-│       ├── metadata/         # 元数据分页逻辑
-│       ├── transaction/      # 显式事务状态机
-│       ├── local-store/      # 路径、端点文件、token、凭据引用
-│       └── rpc-server/       # gRPC 服务实现与本地传输层
-├── frontend/                 # 三个平台的原生前端（Linux 已接入后端；Windows/macOS 为骨架）
-│   ├── windows/              # WinUI 3 + C#
-│   ├── linux/                # GTK4 + libadwaita + Rust
-│   └── macos/                # SwiftUI + Swift
-├── docs/                     # 产品、架构、API、驱动、UI、决策记录
-├── tests/                    # 契约、集成测试与测试数据
-└── packaging/                # 各平台打包骨架
+proto/                 Proto 契约（前后端唯一事实来源）
+backend/               Rust workspace：Driver SPI、驱动（SQLite / MariaDB）、
+                       查询与事务、元数据、凭据、本地传输、gRPC 服务
+frontend/
+  linux/               GTK4 + libadwaita + Rust（已接入后端）
+  windows/             WinUI 3 + C#（窗口骨架）
+  macos/               SwiftUI + Swift（窗口骨架）
+docs/                  产品、规划、架构、API、驱动、UI 规范与决策记录
+tests/                 契约 / 集成测试与测试数据
+packaging/             各平台打包
 ```
 
-## 当前状态
+分层与职责边界（以及不允许出现的东西）写在 [AGENTS.md](AGENTS.md)。
 
-已实现且**有测试覆盖**（`cargo test`）：
+## 构建与运行
 
-| 能力 | 说明 |
-|---|---|
-| Protobuf/gRPC 契约 | 7 个域服务（system / connection / credential / metadata / query / transaction / table_data），构建时由 `proto/` 生成 Rust 代码 |
-| 本地传输 | Linux/macOS Unix 域套接字（目录 0700、socket 0600）；回环 TCP 仅用于 Windows/调试 |
-| 访问控制 | 每进程随机 256 位 token，写入 0600 端点文件；所有 RPC 经拦截器校验 |
-| Driver SPI | v0.2：多语句/语句摘要、事务与元数据接口、单元格截断；表数据浏览与参数化行编辑（ADR 0017） |
-| SQLite 驱动 | 连接 / 只读 / 单语句执行 / 分批游标 / 取消（已接入 gRPC） |
-| MariaDB 驱动 | 连接 / 测试连接 / 单语句执行 / 分批游标 / `KILL QUERY` 取消 / 类型映射；集成测试需 `SQARVO_MARIADB_URL`（未设置时跳过并打印原因） |
-| 类型映射与截断 | NULL/INTEGER/REAL/TEXT/BLOB 按存储类映射；NUMERIC 与日期类保留原始类型名；单格 64 KiB 截断标记 |
-| gRPC 端到端测试 | 真实 UDS + 临时 SQLite 库：查询、两批拉取、取消 2 秒内、断连归零 |
-| 驱动测试基架 | 脚本化测试会话 + 最小符合性检查 `smoke`（SQLite、MariaDB 均通过） |
-| 连接管理 | 会话建立/断开/列表、驱动不存在时明确报错 |
-| 查询登记 | 并发上限、批次上限、幂等取消 |
-| 元数据 | 两个驱动都实现逐层懒加载：Catalog → 表/视图/序列 → 列/索引/触发器（SQLite 的 catalog 为 `main` / `temp` / `ATTACH`，MariaDB 的 database 即 catalog）；跨库必须显式 catalog；schema 层两个数据库都不存在，显式 `capability.unsupported`；列保留原始类型名、可空性、默认值四态、字符集与排序规则；分页按（种类, 名字），token 带对象名集合指纹（非法 → `config.invalid`，集合变化 → `metadata.snapshot_changed`）。`metadata_hierarchy` 8 通过、`metadata` 13 通过、MariaDB 集成 69 通过 |
-| 显式事务 | `TransactionService.Begin` / `Commit` / `Rollback` 已接线；单会话单事务、失败态只允许回滚、重复提交/回滚幂等；状态经 `TransactionInfo.state` 与 `SessionSummary.transaction` 暴露；断连与后端退出强制回滚。SQLite `--test transactions` 9 通过、MariaDB 集成覆盖四档隔离级别与隐式提交拒绝、`grpc_transactions_e2e` 8 通过 |
-| 表数据浏览 / 行编辑 / 插入 | `TableDataService.BrowseTable` 默认主键升序，v0.2.3 起 **offset 分页** + `sort` / `filter` / `include_total`（不透明游标只保留兼容路径，与 offset 互斥；无主键表只读并标注 `Unstable`）；`ApplyRowChanges` 只传主键值 + 列变更，驱动内部参数化 DML，核对影响行数、批内 savepoint；`InsertRows` 区分省略列与显式 NULL、回传自增主键、整批原子（失败 → `rolled_back=true`）；单批 ≤ 500 行，> 100 行或含删除需显式确认。SQLite `--test table_data` 10 通过、`--test row_edits` 11 通过、`--test insert_rows` 9 通过，`grpc_table_data_e2e` 2 通过、`grpc_insert_rows_e2e` 2 通过 |
-| 本地存储 | 目录解析与权限、端点文件原子写入、凭据引用接口 |
-| 凭据存储（Linux） | Secret Service（D-Bus，zbus blocking）：get / set / delete；引用不存在 → `credential.not_found`，服务不可用 → `credential.unavailable`，绝不回退明文；真实密钥环用例由 `SQARVO_SECRET_SERVICE_TEST=1` 门控 |
-| 凭据接线 | `SessionManager` 注入 `CredentialStore`：`credential_ref` 经 `spawn_blocking` 解析为 `Secret` 后交给驱动，明文不缓存、不落日志；引用不存在 → `credential.not_found`（不连库），存储不可用/锁定 → `credential.unavailable`；gRPC 端到端用例用内存存储 + 真实 MariaDB |
-| Linux 前端（GTK4 / libadwaita） | 拉起后端进程、读端点文件、校验 `protocol_version`、token 握手与退出清理；连接对话框（测试连接、密码只写系统凭据库）；`Ctrl+Enter` 执行、`Escape`/按钮取消、`GtkColumnView` 虚拟化 + 每批 500 行预取；行数/估算字节上限与背压（`SQARVO_RESULT_ROW_LIMIT` / `SQARVO_RESULT_BYTES_LIMIT`）；可折叠对象树（逐层懒加载、每页 500、搜索跳转）、信息面板（DDL / 表信息，列信息页）；数据页（offset 分页、筛选与排序面板、单元格编辑与 NULL 开关、新增行、脏标记、风险确认、事务按钮互斥、只读态与断连提示）；开始事务可选隔离级别，提交行变更时可取消；`cd frontend/linux && cargo test` 192 通过，`./scripts/bench.sh` 可复现基准 |
-| gRPC 冒烟测试 | 真实 UDS + token 的端到端调用 |
-
-**尚未实现**（调用会得到 `UNIMPLEMENTED` 或明确的能力错误，不会伪造成功）：
-
-- PostgreSQL 驱动（连接请求返回 `driver.not_found`）；
-- 多语句执行（第二条语句返回 `capability.unsupported`）；
-- schema 层对象树：SQLite / MariaDB 没有独立 schema，请求即 `capability.unsupported`；
-  PostgreSQL 驱动未实现，因此也没有该层的正例（Catalog / 表 / 视图 / 序列 / 索引 / 触发器已接入）；
-- MariaDB 索引与触发器的独立 DDL：`ObjectRef` 不携带所属表，明确报 `metadata.object_kind_unsupported`
-  （可查看所属表的 `SHOW CREATE TABLE`）；
-- 结构修改（执行 DDL）、导入、结构对比与 ER 图：导入与结构对比属 v0.2.5（M8），
-  结构修改与 ER 图未排期（P2）；当前 `GetDdl` 只读；导出 CSV 已支持「查询已加载行 /
-  表当前页 / 整张表（分页读取、可取消）」；
-- 数据页按非主键列排序；跨库的表数据浏览/行编辑/插入**已支持**（按 `ObjectRef.catalog` 定位，
-  ADR 0024，驱动侧 #140 / 前端 #141）：连接可不填默认库，从树里选具体库的表；
-- `ColumnMeta.auto_increment`：自增列在 UI 只能默认留空并说明，无法禁止显式填写；
-  「按主键回读单行」RPC 与插入批次取消同样待契约增量；
-- 事务 `Snapshot` 隔离级别（`capability.unsupported`）；savepoint 仅批次内部使用，未对外暴露；
-- Windows / macOS 操作系统凭据存储（Linux Secret Service 已实现；其余平台装配为「不可用」实现）；
-- Windows / macOS 前端接入后端（两端仍只有窗口骨架，未构建、未运行验证）；
-- 大字段延迟加载（当前单格按 64 KiB 截断返回；Linux 前端已有行数/估算字节上限与背压）；
-- Windows Named Pipe + ACL 传输（当前回退为回环 TCP + token）；
-- **release 构建**的启动/内存/大结果集基准（现有基准用 debug 构建，搜索规模基准除外）；
-- 远程 TLS 连接与远程后端部署（测试容器未启用 TLS，未做真实握手验证）。
-
-## 构建与测试
-
-需要 Rust 1.88 及以上（`rust-toolchain.toml` 固定为 stable）。**不需要**预装 `protoc`：
-构建脚本使用 `protoc-bin-vendored` 生成描述符。
+需要 Rust 1.88+；**不需要**预装 `protoc`（构建脚本内置）。
 
 ```bash
 cd backend
-cargo build
-cargo test
-cargo clippy --all-targets
-cargo fmt --check
+cargo build && cargo test
+cargo clippy --all-targets && cargo fmt --check
 ```
 
-MariaDB 集成测试需要真实数据库（未设置环境变量时用例会跳过并打印原因）：
+运行后端（启动后写入含 token 的端点文件，权限 0600，正常退出时删除）：
+
+```bash
+cargo run -p sqarvo-backend-service
+# --socket /tmp/sqarvo.sock   --listen 127.0.0.1:0（调试）   --log-filter debug
+```
+
+运行 Linux 前端（GTK 4.16 / libadwaita 1.6+，会自行拉起后端并完成握手）：
+
+```bash
+sudo apt install libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+cd frontend/linux && cargo run
+```
+
+MariaDB 集成测试需要真实数据库（未设置环境变量时用例跳过并打印原因）：
 
 ```bash
 cd backend
-SQARVO_MARIADB_URL='mysql://sqarvo_test:sqarvo_test_only@127.0.0.1:53306/sqarvo_test' \
+SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
   cargo test -p sqarvo-driver-mariadb --test integration
 ```
 
 测试库启动方式见 [tests/integration/README.md](tests/integration/README.md)。
 
-运行后端：
-
-```bash
-cargo run -p sqarvo-backend-service
-# 指定 socket：   --socket /tmp/sqarvo.sock
-# 调试用回环 TCP：--listen 127.0.0.1:0
-# 日志级别：      --log-filter debug  或环境变量 SQARVO_LOG
-```
-
-启动后会写入端点描述文件（含 token，权限 0600）：
-
-- Linux：`$XDG_RUNTIME_DIR/sqarvo/backend-endpoint.json`（无 `XDG_RUNTIME_DIR` 时位于数据目录 `run/`）
-- macOS：`~/Library/Application Support/io.sqarvo.Sqarvo/run/backend-endpoint.json`
-
-正常退出（Ctrl-C / SIGTERM）会删除 socket 与端点文件。
-
-运行 Linux 前端（GTK4 + libadwaita，需 GTK 4.16 / libadwaita 1.6 及以上）：
-
-```bash
-sudo apt install libgtk-4-dev libadwaita-1-dev build-essential pkg-config
-cd frontend/linux
-cargo run
-```
-
-前端会按候选路径查找后端可执行文件并自行拉起（`SQARVO_BACKEND_BIN` 可显式指定），
-然后完成 token 握手。连接对话框、凭据写入、`--qa-*` 无人值守验证、结果集上限与基准脚本
-见 [frontend/linux/README.md](frontend/linux/README.md)。
-
-> 验证范围：本项目当前只在 Linux 上执行过构建与测试。Windows 与 macOS 的传输/UI
-> 代码尚未在本机验证，详见各平台 README。
+> 目前只在 Linux 上做过构建与测试；Windows / macOS 的传输与 UI 代码未在本机验证。
 
 ## 文档
 
-规划与决策（随代码版本化，是长期有效的唯一来源）：
-
-- [产品愿景与范围](docs/product/vision.md)
-- [产品定位与竞品差异](docs/product/positioning.md)
-- [产品需求（含优先级与实现状态）](docs/product/requirements.md)
-- [路线图](docs/product/roadmap.md)
-- [开发实施计划](docs/planning/development-plan.md)
-- [里程碑](docs/planning/milestones.md)
-- [发布计划](docs/planning/release-plan.md)
-- [风险登记](docs/planning/risk-register.md)
-- [规划文档与任务管理约定](docs/planning/README.md)
-- [v0.1 发布说明](docs/releases/v0.1.md)
-- [v0.2 发布说明](docs/releases/v0.2.md)
-- [v0.2.1 发布说明](docs/releases/v0.2.1.md)
-- [v0.2.2 发布说明](docs/releases/v0.2.2.md)
-- [v0.2.3 发布说明](docs/releases/v0.2.3.md)
-- [v0.2.3.1 发布说明](docs/releases/v0.2.3.1.md)
-- [v0.2.3.2 发布说明](docs/releases/v0.2.3.2.md)
-
-技术与设计：
-
-- [架构总览](docs/architecture/overview.md)
-- [本地 IPC 与访问控制](docs/architecture/local-ipc.md)
-- [gRPC 约定](docs/api/grpc-conventions.md)
-- [Driver SPI](docs/database/driver-spi.md)
-- [UI 设计原则](docs/ui-specification/design-principles.md)
-- [工作区模型与区域规范](docs/ui-specification/workspace-model.md)
-- [UI 行为契约](docs/ui-specification/ui-behavior-contract.md)
-- [界面缩放、窗口尺寸与显示器适配](docs/ui-specification/scaling-and-window-sizing.md)（数字见 [metrics.toml](docs/ui-specification/metrics.toml)）
-- [决策记录](docs/decisions/)
+- 产品：[愿景](docs/product/vision.md) · [定位](docs/product/positioning.md) ·
+  [需求](docs/product/requirements.md) · [路线图](docs/product/roadmap.md)
+- 规划：[开发计划](docs/planning/development-plan.md) · [里程碑](docs/planning/milestones.md) ·
+  [发布计划](docs/planning/release-plan.md) · [风险](docs/planning/risk-register.md)
+- 技术：[架构总览](docs/architecture/overview.md) · [本地 IPC](docs/architecture/local-ipc.md) ·
+  [gRPC 约定](docs/api/grpc-conventions.md) · [Driver SPI](docs/database/driver-spi.md)
+- UI：[设计原则](docs/ui-specification/design-principles.md) ·
+  [区域与版式](docs/ui-specification/workspace-model.md) ·
+  [行为契约与全局规则](docs/ui-specification/ui-behavior-contract.md) ·
+  [组件注册表](docs/ui-specification/components/README.md) ·
+  [缩放与窗口尺寸](docs/ui-specification/scaling-and-window-sizing.md)
+- 决策：[ADR](docs/decisions/)
 
 ## 任务与进度
 
-- 任务看板：[Sqarvo 开发路线](https://github.com/users/jacketzc/projects/2)
-- 任务列表：[Issues](https://github.com/jacketzc/Sqarvo/issues)（模板见 `.github/ISSUE_TEMPLATE/`）；
-- 里程碑与版本目标：仓库内 `docs/planning/`；
-- 同一份计划只在一个地方维护：仓库保存长期规划，GitHub 保存动态执行状态。
-
+任务看板 [Sqarvo 开发路线](https://github.com/users/jacketzc/projects/2)，
+任务列表 [Issues](https://github.com/jacketzc/Sqarvo/issues)。
+长期规划随代码放在 `docs/`，GitHub 只保存动态执行状态。
 
 ## 安全
 
-数据库客户端会处理高度敏感的凭据与生产数据。请不要在 Issue、PR、日志或测试快照中
-提交真实密码、连接串、数据库结构或数据。漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+数据库客户端处理高度敏感的凭据与生产数据。请不要在 Issue、PR、日志或测试快照里提交真实密码、
+连接串、库结构或数据。漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 参与贡献
 
-见 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须运行格式化、Clippy 与测试；
-任务需关联 GitHub Issue 与里程碑，PR 使用仓库模板。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须跑格式化、Clippy 与测试；任务要关联 Issue 与
+里程碑，PR 使用仓库模板。
 
 ## 许可
 
-[Apache License 2.0](LICENSE)。本项目为独立实现，与 Navicat 等商业产品无任何关联，
-不使用其代码、图标、文案或界面资源。
+[Apache License 2.0](LICENSE)。本项目为独立实现，与 Navicat 等商业产品无任何关联，不使用其代码、
+图标、文案或界面资源。

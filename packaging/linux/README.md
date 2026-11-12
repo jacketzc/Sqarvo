@@ -4,7 +4,7 @@
 
 - `io.sqarvo.Sqarvo.desktop`：桌面入口文件，`Exec` 指向 `sqarvo-desktop`
   （由 `frontend/linux` 构建的二进制重命名安装）。
-- `io.sqarvo.Sqarvo.svg`：**占位**图标（项目自绘的数据库圆柱，非第三方产品图标）。
+- 图标源文件在 [`docs/assets/brand/sqarvo-logo.svg`](../../docs/assets/brand/sqarvo-logo.svg)，打包时装成 `io.sqarvo.Sqarvo.svg`（与 `.desktop` 的 `Icon=` 对应）。项目自绘，非第三方产品图标。
   正式的品牌设计资产尚未提供，替换它即可，不需要改脚本。
 - `build-deb.sh`：一条命令产出 Debian / Ubuntu 安装包。
 
