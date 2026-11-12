@@ -1,0 +1,28 @@
+name: README
+
+# 中英两版 README 是一份交付物（AGENTS.md §14.1）。结构或链接一边多一边少就在这里红。
+# 纯文档改动，不涉及构建；ui-contract.yml 只管组件注册表，两边路径不重叠。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'README.zh-CN.md'
+      - 'scripts/check-readme-pair.py'
+      - '.github/workflows/readme.yml'
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'README.zh-CN.md'
+      - 'scripts/check-readme-pair.py'
+      - '.github/workflows/readme.yml'
+  workflow_dispatch:
+
+jobs:
+  pair:
+    name: README 中英一致
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验两版结构、链接与切换入口
+        run: python3 scripts/check-readme-pair.py

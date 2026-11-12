@@ -476,6 +476,9 @@ Rules:
   link set) and the language-switcher line at the top of both; wording is localised per language, but
   facts — commands, platform support, measured numbers, links — must never diverge. Touching one side only
   is an incomplete change, and neither file may drop the other's switcher link.
+  `scripts/check-readme-pair.py` (also run by `.github/workflows/readme.yml`) enforces the switcher
+  links, the relative-link set, and the structure counts (二级标题 / 代码块 / 图片); wording and facts
+  still need human review.
 
 ### 14.2 UI behavior: one source (binding)
 
