@@ -291,3 +291,25 @@ jobs:
 
   # Windows / macOS 前端尚未接入后端，且需要对应平台 SDK，
   # 因此暂不纳入 CI。接入后应各自增加构建任务。
+
+  # UI 组件注册表（ADR 0027）：结构 / 引用 / 同步哈希。只有结构错误会失败
+  # （id 重复、parent 断链、metrics / token / 源码引用不存在、state=done 却没有哈希）；
+  # 「某端未同步」只报告不阻断，否则会逼人乱标 done。
+  # 另外校验 ui-components.md 是生成物：有人手改或忘了重新生成，这里会红。
+  ui-contract:
+    name: UI 组件注册表
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验注册表
+        run: scripts/check-ui-sync.sh check
+
+      - name: 生成物与注册表一致
+        run: |
+          set -euo pipefail
+          scripts/check-ui-sync.sh gen
+          if ! git diff --exit-code -- docs/ui-specification/ui-components.md; then
+            echo "::error::ui-components.md 与 components/*.toml 不一致：跑 scripts/check-ui-sync.sh gen 并提交"
+            exit 1
+          fi

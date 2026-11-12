@@ -452,6 +452,7 @@ Add user documentation for user-visible features. Document every new configurati
 | Product planning (vision, positioning, requirements, roadmap) | `docs/product/` | product owner | low |
 | Development planning (plan, milestones, release, risks) | `docs/planning/` | project-management role | medium |
 | Technical facts (architecture, API, driver SPI, UI) | `docs/architecture/`, `docs/api/`, `docs/database/`, `docs/ui-specification/` | architecture / module owners | with code |
+| UI component registry (existence, style refs, per-platform sync) | `docs/ui-specification/components/` | UI owner | 每次改组件 |
 | Decisions | `docs/decisions/` | decision author | append-only |
 | Tasks, status, dependencies | GitHub Issues / Projects | development agents | high |
 
@@ -482,6 +483,23 @@ from the shipped Linux client, so the code and the contract must agree at all ti
   `design-principles.md`; those files must point at the contract for behavior instead of
   restating it.
 
+### 14.3 UI 组件注册表（绑定）
+
+`docs/ui-specification/components/*.toml` 是界面组成的唯一真值（决策见
+[ADR 0027](docs/decisions/0027-ui-component-registry.md)，字段与粒度见
+`components/README.md`）。`docs/ui-specification/ui-components.md` 是它的生成物。
+
+- 新增或改动用户可见的组件，必须在同一 PR 里改注册表。组件 `id` 发布后不改名；
+  `display_name` 可以随文案演进。
+- 样式只写 `metrics.toml` 的 key 名与主题 token 名。组件里出现 `px` 数字或 `#RRGGBB`
+  一律算缺陷（与 §8.6 同一条规则）。
+- `sync.<plat>.state = "done"` 必须带当前 `spec_hash`。改规范会让三端标记**自动失效**；
+  恢复 `done` 要按新规范重新核对，再跑 `scripts/check-ui-sync.sh mark`。
+  `partial` / `na` / `blocked` 必须写清差异，不接受「未同步」四个字。
+- `ui-components.md` 不许手改：CI 会跑 `gen` 并与工作树比对，有差异即失败。
+- 迁移期（P0–P1）只有 `object_tree` 一个功能区在册。其余功能区的行为仍以
+  `ui-behavior-contract.md` 为准；对已迁移的区，改行为要同时改契约本节与注册表。
+- 未实现的平台能力记 `sync = "blocked"` 并进行为契约 §9，不得只标「未同步」。
 
 ## 15. Agent Workflow
 

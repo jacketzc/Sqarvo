@@ -165,6 +165,11 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 
 ## 2. 对象树
 
+> **组件级记录（P0 试点）**：本节的行为已逐条登记为组件
+> （[components/object_tree.toml](components/object_tree.toml)，可读版
+> [ui-components.md](ui-components.md)），带三端同步状态。P0 过渡期内行为口径仍以本节为准，
+> 改行为要同时改本节与注册表对应组件；P1 结束后本节退役为指针（ADR 0027）。
+
 ### 2.1 结构、懒加载与分组
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

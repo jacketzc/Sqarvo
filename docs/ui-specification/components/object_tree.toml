@@ -1,0 +1,886 @@
+# 对象树功能区的组件注册表（唯一真值）。
+#
+# 规范与用法：components/README.md；决策：ADR 0027。
+# 数字只引用 metrics.toml 的 key，颜色只引用主题 token —— 这里不许出现 px 与 #RRGGBB。
+# spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
+#
+# 迁移状态：P0 试点区。行为条目取自 ui-behavior-contract.md §2（对象树），
+# 源码行号已按当前 tree.rs 复核，函数名仍是一级定位。
+
+[area]
+id = "object_tree"
+display_name = "对象树"
+summary = "左侧栏：对象树本体、搜索区、右键菜单与临时提示行。对象树是唯一的数据库对象入口，Objects 页与信息面板都跟着它的选中变化。"
+legacy_ref = "docs/ui-specification/ui-behavior-contract.md §2"
+
+[[component]]
+id = "object_tree"
+parent = ""
+display_name = "对象树侧栏"
+kind = "area"
+status = "active"
+style.slot = "sidebar"
+style.metrics = ["sidebar_width", "sidebar_min", "sidebar_max", "row_height_tree"]
+impl_notes = [
+  "侧栏只有对象树：没有页脚按钮、没有刷新按钮、没有平铺列表、没有分页统计。",
+  "搜索框与搜索状态行不画在侧栏里，放在状态栏左边沟（见 object_tree.search），宽度跟随分栏线。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "120ff4886203"
+commit = "7436cd5"
+evidence = "v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "120ff4886203"
+note = "侧栏是 TreeView + SplitView；无搜索沟、无侧栏提示行。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree"
+parent = "object_tree"
+display_name = "树本体"
+kind = "container"
+status = "active"
+style.slot = "sidebar"
+style.metrics = ["row_height_tree", "badge_min_height"]
+a11y.name = "对象树"
+a11y.tab = "可聚焦；Tab 进入后 ↑ / ↓ 移动选中"
+impl_notes = [
+  "GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。",
+  "折叠后重新展开复用已读内容、不发请求。",
+]
+
+[[component.interaction]]
+trigger = "key"
+keys = ["↑", "↓"]
+precondition = "树有焦点"
+result = "移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随）"
+source = "src/tree.rs:1970"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Enter"]
+precondition = "行有焦点"
+result = "等同于双击（同一回调，走 activate 信号）"
+source = "src/tree.rs:2009"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "1b79a66abdaa"
+commit = "7436cd5"
+evidence = "§2.5 键盘表 + tree.rs install_handlers"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "1b79a66abdaa"
+note = "TreeView 承载，↑ / ↓ / Enter 同语义；无自定义按键控制器差异待核。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row"
+parent = "object_tree.tree"
+display_name = "行模板（箭头 · 图标 · 名称 · 行尾文字）"
+kind = "row"
+status = "active"
+a11y.name = "对象树行"
+style.slot = "sidebar"
+style.metrics = ["row_height_tree", "tree_arrow_box", "gap_xs", "font_status"]
+style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.states = { hover = "sqarvo_brand_soft", selected = "sqarvo_brand_mid" }
+impl_notes = [
+  "hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中底 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid。",
+  "缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。",
+  "搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。",
+  "行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "行存在"
+result = "只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接"
+source = "src/tree.rs:1970"
+
+[[component.interaction]]
+trigger = "hover"
+precondition = "行存在"
+result = "底色换成品牌浅档（alpha 55%），不动前景色"
+source = "src/theme.rs:312"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "3a55b23eabfc"
+commit = "7436cd5"
+evidence = "§2.2 单击行 + theme.rs 行状态规则"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "3a55b23eabfc"
+note = "行模板与徽标文案一致；缩进量未对齐（Linux 为 4 + 14/层）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.expander"
+parent = "object_tree.tree.row"
+display_name = "行首箭头"
+kind = "control"
+status = "active"
+a11y.name = "展开 / 收起"
+a11y.tab = "不可聚焦（不占 Tab 位）"
+style.metrics = ["tree_arrow_box"]
+impl_notes = ["扁平按钮 + 箭头图标；只在行可展开时出现，不可展开的行留同宽空白。"]
+platform_notes.windows = "TreeView 自带展开箭头，命中区由控件决定，不接受单独定制。"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "行可展开"
+result = "单击即展开 / 收起，不需要双击"
+source = "src/tree.rs:1245"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c91da7cf96bd"
+commit = "7436cd5"
+evidence = "§2.2 行首箭头；arrow_button 接线与 set_focusable(false)"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "c91da7cf96bd"
+note = "命中区与外观由 TreeView 决定，无法逐像素对齐（接受）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.conn"
+parent = "object_tree.tree.row"
+display_name = "连接行"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：连接名 + 连接态徽标）"
+impl_notes = ["行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。"]
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "连接行"
+result = "已连接 → 展开 / 收起；未连接 → 按保存的凭据连接；凭据缺失 → 明确提示并打开预填对话框；连接中 / 断开中 → 忽略并写日志"
+source = "src/tree.rs:769、src/tree.rs:1688、src/ui.rs:845"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "已连接"
+result = "首次展开发一次目录层 ListNodes 列出库，每页 500（NODE_PAGE_SIZE），带自己的分页 token"
+source = "src/tree.rs:2858"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "bab8fbfd18af"
+commit = "7436cd5"
+evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "bab8fbfd18af"
+note = "已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.catalog"
+parent = "object_tree.tree.row"
+display_name = "库 / schema 行"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：库 / schema 名）"
+impl_notes = ["库与 schema 不合并成一层：驱动给 schema 层就多一层，重名库靠「会话 + 库名」精确匹配。"]
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "行可展开"
+result = "展开 / 收起（展开库只出现分组行，分组仍保持收起）"
+source = "src/tree.rs:769"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "展开库 / schema"
+result = "0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开"
+source = "src/tree.rs:2858"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "3b006552e122"
+commit = "7436cd5"
+evidence = "§2.1 展开库 / schema"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "3b006552e122"
+note = "展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.group"
+parent = "object_tree.tree.row"
+display_name = "分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers）"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：分组名）"
+impl_notes = [
+  "未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。",
+  "空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。",
+]
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "分组行"
+result = "展开 / 收起"
+source = "src/tree.rs:769"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "展开某个分组"
+result = "发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明"
+source = "src/tree.rs:2858、src/tree.rs:376"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "服务端返回空"
+result = "说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」"
+source = "src/tree.rs:365、src/tree.rs:446、src/tree.rs:507"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "1267e871a958"
+commit = "7436cd5"
+evidence = "§2.1 分组与空态文案"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "1267e871a958"
+note = "四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.object"
+parent = "object_tree.tree.row"
+display_name = "表 / 视图行"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：对象名 + 种类）"
+impl_notes = ["可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。"]
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "行可打开"
+result = "打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据）"
+source = "src/tree.rs:769、src/tabs.rs:1608"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "a2362386f1e0"
+commit = "7436cd5"
+evidence = "§2.2 双击表 / 视图"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "a2362386f1e0"
+note = "双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.field"
+parent = "object_tree.tree.row"
+display_name = "列 / 索引 / 触发器行"
+kind = "row"
+status = "active"
+a11y.name = "（行内容：列 / 索引 / 触发器名）"
+impl_notes = ["叶子对象：没有子层、没有菜单、不发请求。"]
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "叶子对象行"
+result = "无动作（不发请求）"
+source = "src/tree.rs:769"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "9beb2c14507e"
+commit = "7436cd5"
+evidence = "§2.2 双击列 / 索引 / 触发器"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "表节点是叶子，四组尚未实现（§9 已知偏差）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.tree.row.placeholder"
+parent = "object_tree.tree.row"
+display_name = "占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现）"
+kind = "row"
+status = "active"
+a11y.name = "占位行"
+style.metrics = ["row_height_tree", "font_status"]
+impl_notes = ["占位行不可展开、不携带层；右键直接返回，不给菜单。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "「加载更多…」行且还有下一页"
+result = "选中即继续拉下一页（分页动作不要求双击）"
+source = "src/tree.rs:2962、src/tree.rs:1970"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "任意占位行"
+result = "信息面板收到 None（回到空态 / 留白）；不打开任何东西"
+source = "src/tree.rs:1970"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "层在飞 / 请求失败"
+result = "占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分"
+source = "src/tree.rs:2977、src/tree.rs:3148"
+
+[[component.interaction]]
+trigger = "right_click"
+precondition = "占位行"
+result = "直接返回，不弹菜单"
+source = "src/tree.rs:3191"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "17fe419b72e2"
+commit = "7436cd5"
+evidence = "§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单"
+
+[component.sync.windows]
+state = "partial"
+spec_hash = "17fe419b72e2"
+note = "有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.search"
+parent = "object_tree"
+display_name = "对象树搜索区（状态栏左边沟）"
+kind = "container"
+status = "active"
+style.slot = "status_bar.left_gutter"
+style.metrics = ["status_height", "sidebar_width"]
+impl_notes = ["v0.2.4 从树顶部搬到状态栏左边沟：宽度跟随分栏线，搜索框不把它撑宽，竖线延伸到底。"]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "1bea41512340"
+commit = "7436cd5"
+evidence = "§7 状态栏左边沟 + §2.4 搜索"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "对象树没有搜索入口（§7.1 未记录）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.search.box"
+parent = "object_tree.search"
+display_name = "搜索输入框"
+kind = "control"
+status = "active"
+style.slot = "status_bar.left_gutter"
+a11y.name = "搜索连接、库、表"
+a11y.tab = "Ctrl+F 聚焦；Esc 清空并回到树页"
+impl_notes = ["placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。"]
+
+[[component.interaction]]
+trigger = "key"
+keys = ["任意输入"]
+precondition = "搜索框有输入"
+result = "防抖 250 ms 后搜索；空白串不搜索并回到树页"
+source = "src/tree.rs:2185、src/tree.rs:2220"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Enter"]
+precondition = "搜索框内有文本"
+result = "无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理"
+source = "src/tree.rs:2070、src/tree.rs:2168"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+F"]
+precondition = "工作区存在"
+result = "把焦点交给搜索框（状态栏左边沟）"
+source = "src/ui.rs:3884、src/tree.rs:1441"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Esc"]
+precondition = "搜索框有焦点"
+result = "清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉"
+source = "src/tree.rs:2467"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "274db5cf1640"
+commit = "7436cd5"
+evidence = "§2.4 搜索；Ctrl+F / Enter / Esc 三键"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无搜索框。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.search.status"
+parent = "object_tree.search"
+display_name = "搜索状态行"
+kind = "control"
+status = "active"
+a11y.name = "搜索状态"
+style.slot = "status_bar.left_gutter"
+style.metrics = ["font_status"]
+impl_notes = ["单行省略，全文进 tooltip。"]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "搜索完成"
+result = "写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图）；有失败追加「；K 条连接失败（…）」；没有已打开连接追加「；没有已打开的连接，只匹配了连接名」；无匹配写「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」；无权限写「没有权限读取对象列表：<错误>」；其它失败写「搜索失败：<错误>」"
+source = "src/tree.rs:2555、src/tree.rs:2220"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "bd767c471d9f"
+commit = "7436cd5"
+evidence = "§2.4 状态行与三种失败文案"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无搜索。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.search.results"
+parent = "object_tree.search"
+display_name = "搜索结果列表"
+kind = "container"
+status = "active"
+style.slot = "status_bar.left_gutter"
+impl_notes = [
+  "结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。",
+  "v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "表 / 视图行"
+result = "打开该对象的数据标签（与树双击同一条 open）；侧栏仍停在结果页，搜索框与命中数原样保留"
+source = "src/tree.rs:2094、src/tree.rs:4501"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "库行"
+result = "在树里逐层展开祖先并选中（切到树页）"
+source = "src/tree.rs:3469、src/tree.rs:2094"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "连接行"
+result = "按该连接「点连接」同一条路径（未连接则连接、已连接则展开），并清空搜索框退出筛选"
+source = "src/tree.rs:2094"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "分组行"
+result = "只有行内箭头能收起 / 展开；点行本身没有可点目标、不触发打开"
+source = "src/tree.rs:2094"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e6490d62a054"
+commit = "7436cd5"
+evidence = "§2.4 结果行点击语义"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无搜索。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu"
+parent = "object_tree"
+display_name = "右键菜单"
+kind = "container"
+status = "active"
+style.slot = "overlay"
+impl_notes = ["贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。"]
+
+[[component.interaction]]
+trigger = "right_click"
+precondition = "非占位行"
+result = "按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空）"
+source = "src/tree.rs:3191、src/tree.rs:3313"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c3183bae184a"
+commit = "7436cd5"
+evidence = "§2.3 右键菜单"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "对象树没有右键菜单（§7.1 未记录）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.connect_saved"
+parent = "object_tree.ctx_menu"
+display_name = "「连接（使用已保存的凭据）」"
+kind = "item"
+a11y.name = "连接（使用已保存的凭据）"
+status = "active"
+impl_notes = ["只读 credential_ref，不读也不写明文密码。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "连接未连接 / 失败"
+result = "与左键双击同一条 connect_saved；失败给出可读原因"
+source = "src/tree.rs:3230、src/ui.rs:845"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "32d0f629e92e"
+commit = "7436cd5"
+evidence = "§2.3 连接（使用已保存的凭据）"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.disconnect"
+parent = "object_tree.ctx_menu"
+display_name = "「断开连接」"
+kind = "item"
+a11y.name = "断开连接"
+status = "active"
+impl_notes = ["只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该连接已连接"
+result = "先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认后才断开"
+source = "src/tree.rs:3230、src/ui.rs:2954"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6a853a4f74db"
+commit = "7436cd5"
+evidence = "§2.3 断开连接"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.refresh_connection"
+parent = "object_tree.ctx_menu"
+display_name = "「刷新连接」"
+kind = "item"
+a11y.name = "刷新连接"
+status = "active"
+impl_notes = ["就地清空该层 store 再发第一页，不收起子树；一层都没建立过时不发请求。只在右键菜单里，没有快捷键。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "该连接已连接"
+result = "重读这条连接已经建立的层；一层都没有时侧栏底部提示行写「这条连接还没有展开过：展开时会重新读取」"
+source = "src/tree.rs:3407、src/tree.rs:3376、src/tree.rs:1936"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "16d12f41fd1c"
+commit = "7436cd5"
+evidence = "§2.3 刷新连接"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.refresh_catalog"
+parent = "object_tree.ctx_menu"
+display_name = "「刷新库」"
+kind = "item"
+a11y.name = "刷新库"
+status = "active"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "库 / schema 节点"
+result = "重读该库下已展开的分组与直接子对象层；分组全收起时只清缓存，提示行写「这个库的分组都收起着：展开时重新读取」"
+source = "src/tree.rs:3434、src/tree.rs:1936"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "cad24936133a"
+commit = "7436cd5"
+evidence = "§2.3 刷新库"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.refresh_group"
+parent = "object_tree.ctx_menu"
+display_name = "「刷新这一组」"
+kind = "item"
+a11y.name = "刷新这一组"
+status = "active"
+impl_notes = ["静态分组行（Groups / TableGroups）没有服务端内容，刷新直接返回。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "分组节点"
+result = "已展开（层已建立）→ 重读该组第一页；未展开过 → 不发请求，提示行写「这个分组还没展开：展开时会重新读取」（4 秒后自行收起）并记日志"
+source = "src/tree.rs:3347、src/tree.rs:1936"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "21f2d2bb56e6"
+commit = "7436cd5"
+evidence = "§2.3 刷新这一组"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.edit_connection"
+parent = "object_tree.ctx_menu"
+display_name = "「编辑连接…」"
+kind = "item"
+a11y.name = "编辑连接…"
+status = "active"
+impl_notes = ["密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "连接存在于配置里"
+result = "打开连接对话框并预填非敏感字段"
+source = "src/ui.rs:785、src/ui.rs:989"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "9fae87f53a63"
+commit = "7436cd5"
+evidence = "§2.3 编辑连接"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.delete_connection"
+parent = "object_tree.ctx_menu"
+display_name = "「删除连接」"
+kind = "item"
+a11y.name = "删除连接"
+status = "active"
+impl_notes = ["配置删除与密钥删除分开报告：配置已删而密钥没删时明确说明。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "连接存在于配置里"
+result = "二次确认「删除连接？」（写明从 connections.json 删除、树节点与浏览会话一并消失、其它连接不受影响）；确认后关会话 → 删配置 → 尽量删密钥条目"
+source = "src/ui.rs:1310、src/ui.rs:454"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "767979f9afc7"
+commit = "7436cd5"
+evidence = "§2.3 删除连接"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.open"
+parent = "object_tree.ctx_menu"
+display_name = "「打开」"
+kind = "item"
+a11y.name = "打开"
+status = "active"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "表 / 视图节点"
+result = "与双击同一条路径打开数据标签"
+source = "src/tree.rs:3191、src/tree.rs:3230"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "d876bb8f84e9"
+commit = "7436cd5"
+evidence = "§2.3 表 / 视图节点"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.dump_table"
+parent = "object_tree.ctx_menu"
+display_name = "「转储表…」"
+kind = "item"
+a11y.name = "转储表…"
+status = "active"
+impl_notes = [
+  "只有表节点有；视图没有（往视图 INSERT 不可重放）。",
+  "按浏览会话 offset 逐页读全表，建表语句与列名在同一后台线程读，不跨连接。",
+  "取消或失败不留半截文件；SQL 引号按该连接驱动（MariaDB 反引号 / SQLite 双引号）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "表节点且该连接有浏览会话"
+result = "弹确认「转储表 <表名>？」→ 选文件（默认 <表名>.sql，过滤 *.sql）→ 进度 / 可取消；不需要先打开标签"
+source = "src/tree.rs:3230、src/tree.rs:731、src/export_ui.rs"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0e142223351b"
+commit = "7436cd5"
+evidence = "§2.3 转储表…（v0.2.5）"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无树右键菜单（数据页导出亦未实现）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.hint"
+parent = "object_tree"
+display_name = "侧栏底部临时提示行"
+kind = "control"
+status = "active"
+a11y.name = "侧栏提示"
+style.slot = "sidebar"
+style.metrics = ["font_status", "gap_xs"]
+impl_notes = ["只用于「刷新这一组 / 刷新库 / 刷新连接」的跳过后说明；4 秒后自行收起。"]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "刷新被跳过"
+result = "写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起"
+source = "src/tree.rs:1936"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4796458298f7"
+commit = "7436cd5"
+evidence = "§2.3 刷新这一组 / 刷新库的跳过后提示"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "无侧栏提示行。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
