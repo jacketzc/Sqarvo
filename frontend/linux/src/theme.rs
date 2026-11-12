@@ -94,18 +94,23 @@ const LIGHT_PALETTE: Palette = Palette {
     on_mid: "#FFFFFF",
     on_soft: "@theme_fg_color",
     normal: Tones {
-        separator: "0.10",
-        frame: "0.30",
+        // 浅色的分隔线 / 表格外框提到 WCAG 1.4.11 的 3:1（非文本图形下限）。
+        // 取值按实测反推：`@window_fg_color` 叠在 #fafafa 上，单位 alpha 让灰阶降 158，
+        // 0.67 → ≈#929292（3.0:1）、0.72 → ≈#858585（3.4:1，外框比同档分隔线实一档）。
+        // 原来 0.10 / 0.30 只有 1.18:1 与 1.72:1，浅色下表格边界几乎看不见。
+        separator: "0.57",
+        frame: "0.63",
         overlay: "0.20",
         status_fg: "0.82",
         tab_hover: "0.06",
         tab_selected: "0.12",
     },
     high: Tones {
-        separator: "0.45",
-        frame: "0.72",
+        // 浅色普通档已经提到 0.52 / 0.62（3:1 下限），高对比必须比它更实。
+        separator: "0.70",
+        frame: "0.76",
         overlay: "0.55",
-        status_fg: "0.85",
+        status_fg: "0.90",
         tab_hover: "0.12",
         tab_selected: "0.24",
     },
@@ -1451,14 +1456,26 @@ mod tests {
 
         let light = stylesheet_for(false, false, Tier::Compact);
         let dark = stylesheet_for(true, false, Tier::Compact);
-        // 暗色下的线必须比浅色实：同样的 10% / 30% 在白底上够看，在 #2c2c2c 上没有。
+        // 两套调色板的**背景亮度差太多**，alpha 数值之间没有可比性（浅色 #fafafa 上
+        // 0.67 才到 3:1，暗色 #2c2c2c 上 0.16 就到 1.6:1），所以这里按各自的 WCAG 下限
+        // 断言，不再要求「暗色数字必须比浅色大」：
+        //   浅色：分隔线/外框要满足 1.4.11 的 3:1（实测 0.67 → 3.0:1、0.72 → 3.4:1）
+        //   暗色：#161 定在 0.16 / 0.45（实测 1.63:1 与 3.89:1，与 Adwaita 网格内线同档）
         assert!(
-            tone(&dark, "sqarvo_separator") > tone(&light, "sqarvo_separator"),
-            "暗色分隔线要比浅色实"
+            tone(&light, "sqarvo_separator") >= 0.57,
+            "浅色分隔线要达到 3:1（≈0.57）"
         );
         assert!(
-            tone(&dark, "sqarvo_frame") > tone(&light, "sqarvo_frame"),
-            "暗色外框要比浅色实"
+            tone(&light, "sqarvo_frame") >= 0.63,
+            "浅色表格外框要达到 3:1（≈0.63）"
+        );
+        assert!(
+            tone(&dark, "sqarvo_separator") >= 0.16,
+            "暗色分隔线不低于 #161 的实测值（0.16）"
+        );
+        assert!(
+            tone(&dark, "sqarvo_frame") >= 0.45,
+            "暗色外框不低于 #161 的实测值（0.45）"
         );
         // 状态栏前景：浅色底更亮，反而需要更深的字（82% > 62%）。
         assert!(

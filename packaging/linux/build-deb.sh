@@ -108,6 +108,11 @@ esac
 
 INSTALLED_SIZE=$(du -sk --exclude=DEBIAN "$PKG" | cut -f1)
 
+# 高对比（无障碍）依赖 `gnome-accessibility-themes` 提供的 HighContrast 主题：
+# 应用侧只负责在 `is_high_contrast()` 为真时加强描边与前景（theme.rs 的 Palette::high），
+# 完整的黑底白框外观来自系统主题。GNOME 的「高对比」开关只翻转
+# `org.gnome.desktop.a11y.interface high-contrast`，不会自己装主题，所以这里用
+# Recommends（不是 Depends）：Ubuntu 桌面默认已带，最小安装环境才会由用户补装。
 step "写 control"
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: sqarvo
@@ -118,7 +123,7 @@ Architecture: $ARCH
 Maintainer: Sqarvo contributors <noreply@sqarvo.invalid>
 Installed-Size: $INSTALLED_SIZE
 Depends: $DEPS
-Recommends: gnome-keyring
+Recommends: gnome-keyring, gnome-accessibility-themes
 Description: 轻量原生数据库客户端（GTK4 + libadwaita）
  Sqarvo is an open-source, lightweight, native desktop database client.
  The Linux frontend is written with GTK4 + libadwaita and talks to a local
