@@ -160,8 +160,13 @@ pub fn recommended(work: Rect, tier: Tier) -> (i32, i32) {
     let width_available = work.width.max(1);
     let height_available = work.height.max(1);
     let (base_width, base_height) = if width_available < 1200 {
-        // 塞满：只留 12 的呼吸，左右各 12。
-        (width_available - 24, height_available - 24)
+        // 塞满：与上层钳制同一口径（`(W-32, H-48)`）。规范 §5.2 原写 `(W-24, H-24)`，
+        // 与 §5.3 的上限钳制 / §9 #2 的验收冲突（W=1199 时 1175×976 vs 1167×952），
+        // 2026-11-11 规范按钳制口径统一，这里跟着写成同一个式子。
+        (
+            width_available - WIDTH_MARGIN,
+            height_available - HEIGHT_MARGIN,
+        )
     } else if width_available < 1700 {
         (
             width_available - 56,
@@ -774,10 +779,9 @@ mod tests {
     #[test]
     fn recommendation_switches_at_the_four_boundaries() {
         // W = 1199 / 1200 / 1699 / 1700 / 2199 / 2200，H 固定 1000。
-        // W=1199 落在 §5.2 的「塞满」档（(W-24, H-24) = 1175×976），但同一份推荐还要过
-        // §5.3 的上限钳制 `(W-32, H-48)`：窄屏上两者差 8 / 24 px。验收条目（§9 #2
-        // 「w ≤ W-32 且 h ≤ H-48」，`--qa-report-monitor` 按它判定）是硬口径，所以上限
-        // 优先，这里钉住钳制后的值；§5.2「W<1200」那一行与它冲突，待规范回填。
+        // W=1199 走 §5.2 的「塞满」档：2026-11-11 起该档与上限钳制同一口径
+        // `(W-32, H-48)`，所以就是 1167×952（原写的 1175×976 与 §9 #2
+        // 「w ≤ W-32 且 h ≤ H-48」冲突，已按钳制统一）。
         assert_eq!(recommended(work(1199, 1000), Tier::Compact), (1167, 952));
         assert_eq!(recommended(work(1200, 1000), Tier::Compact), (1144, 840));
         assert_eq!(recommended(work(1699, 1000), Tier::Compact), (1643, 840));
