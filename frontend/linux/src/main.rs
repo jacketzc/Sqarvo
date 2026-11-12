@@ -25,6 +25,7 @@ mod layout_audit;
 mod logs;
 mod proto;
 mod qa;
+mod result_edit;
 mod results;
 mod shell;
 mod signals;
@@ -157,6 +158,9 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-detail-view", "row-number"),
         ("qa-row-menu", "row-number"),
         ("qa-row-menu-pick", "item-label"),
+        ("qa-query-edit", "row:column:value"),
+        ("qa-query-delete", "row"),
+        ("qa-query-insert", "column:value"),
         ("qa-expect-about", "substring"),
     ] {
         app.add_main_option(
@@ -168,6 +172,22 @@ fn register_qa_options(app: &adw::Application) {
             Some(arg_description),
         );
     }
+    app.add_main_option(
+        "qa-query-add",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "QA：查询标签结果区开始一笔新行草稿（开发/验证用）",
+        None,
+    );
+    app.add_main_option(
+        "qa-query-apply",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "QA：查询标签结果区按一次「提交」（开发/验证用）",
+        None,
+    );
     app.add_main_option(
         "qa-execute",
         glib::Char::from(b'\0'),

@@ -930,6 +930,16 @@ struct Args {
     data_fail_txn: bool,
     /// `--qa-data-replay-cancelled`：把「批次被取消」的响应重放到界面。
     data_replay_cancelled: bool,
+    /// `--qa-query-edit <row>:<column>:<value>`：查询标签结果区的单元格编辑（v0.2.5）。
+    query_edits: Vec<(u32, String, String)>,
+    /// `--qa-query-delete <row>`：查询标签结果区的标删行（v0.2.5）。
+    query_deletes: Vec<u32>,
+    /// `--qa-query-apply`：查询标签结果区按一次「提交」（v0.2.5）。
+    query_apply: bool,
+    /// `--qa-query-add`：查询标签结果区开始一笔新行草稿（v0.2.5）。
+    query_add: bool,
+    /// `--qa-query-insert <column>:<value>`：给新行草稿填一格（v0.2.5）。
+    query_inserts: Vec<(String, String)>,
     /// `--qa-data-edit-range <start>:<count>:<column>:<value>`：批量编辑连续行
     /// （每行都走与单元格编辑相同的一条路径）。
     data_edit_ranges: Vec<(u32, u32, String, String)>,
@@ -1437,6 +1447,39 @@ pub fn data_begin_transaction() -> bool {
 #[must_use]
 pub fn data_read_only() -> bool {
     ARGS.get().is_some_and(|args| args.data_read_only)
+}
+
+/// `--qa-query-edit` 的编辑序列。
+#[must_use]
+pub fn query_edits() -> Vec<(u32, String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.query_edits.clone())
+}
+
+/// `--qa-query-delete` 的标删行号。
+#[must_use]
+pub fn query_deletes() -> Vec<u32> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.query_deletes.clone())
+}
+
+/// `--qa-query-add`：结果区是否开始一笔新行草稿。
+#[must_use]
+pub fn query_add() -> bool {
+    ARGS.get().is_some_and(|args| args.query_add)
+}
+
+/// `--qa-query-insert` 的新行填值序列。
+#[must_use]
+pub fn query_inserts() -> Vec<(String, String)> {
+    ARGS.get()
+        .map_or_else(Vec::new, |args| args.query_inserts.clone())
+}
+
+/// `--qa-query-apply`：结果区是否按一次提交。
+#[must_use]
+pub fn query_apply() -> bool {
+    ARGS.get().is_some_and(|args| args.query_apply)
 }
 
 /// 按顺序应用的单元格编辑 `(行, 列名, 文本)`。
@@ -2117,6 +2160,62 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-data-read-only" => {
                 parsed.data_read_only = true;
                 index += 1;
+            }
+            "--qa-query-edit" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-query-edit 需要 row:column:value".to_owned())?;
+                let mut parts = value.splitn(3, ':');
+                let row = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-query-edit 缺少行号：{value}"))?
+                    .parse::<u32>()
+                    .map_err(|_| format!("--qa-query-edit 的行号不合法：{value}"))?;
+                let column = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-query-edit 缺少列名：{value}"))?
+                    .to_owned();
+                let text = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-query-edit 缺少值：{value}"))?
+                    .to_owned();
+                parsed.query_edits.push((row, column, text));
+                index += 2;
+            }
+            "--qa-query-delete" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-query-delete 需要一个行号".to_owned())?;
+                let row = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("--qa-query-delete 的行号不合法：{value}"))?;
+                parsed.query_deletes.push(row);
+                index += 2;
+            }
+            "--qa-query-apply" => {
+                parsed.query_apply = true;
+                index += 1;
+            }
+            "--qa-query-add" => {
+                parsed.query_add = true;
+                index += 1;
+            }
+            "--qa-query-insert" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-query-insert 需要 column:value".to_owned())?;
+                let mut parts = value.splitn(2, ':');
+                let column = parts
+                    .next()
+                    .filter(|column| !column.is_empty())
+                    .ok_or_else(|| format!("--qa-query-insert 缺少列名：{value}"))?;
+                let text = parts
+                    .next()
+                    .ok_or_else(|| format!("--qa-query-insert 缺少值：{value}"))?;
+                parsed
+                    .query_inserts
+                    .push((column.to_owned(), text.to_owned()));
+                index += 2;
             }
             "--qa-data-edit" => {
                 let value = args

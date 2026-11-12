@@ -673,6 +673,7 @@ pub fn activate(app: &adw::Application) {
                             show_workspace(&events_state, &outcome);
                             maybe_run_qa_sql(&events_state);
                             maybe_run_qa_data(&events_state);
+                            maybe_run_qa_query(&events_state);
                             maybe_run_qa_browse(&events_state);
                             maybe_run_qa_tree(&events_state);
                         }
@@ -739,6 +740,12 @@ pub fn activate(app: &adw::Application) {
                     if let Some(workspace) = workspace {
                         workspace.tabs.on_tab_lost(&tab_id, &reason);
                         eprintln!("[tabs] 标签 {tab_id} 会话失效：{reason}");
+                    }
+                }
+                Event::QueryEdit { tab_id, result } => {
+                    let workspace = events_state.workspace.borrow().as_ref().cloned();
+                    if let Some(workspace) = workspace {
+                        workspace.tabs.route_query_edit(&tab_id, result);
                     }
                 }
                 Event::Query { tab_id, event } => {
@@ -1850,17 +1857,19 @@ fn apply_tab_status(
                 actions.apply_row_ops(&snapshot.row_ops);
             }
         }
-        crate::tabs::TabStatus::Query { summary, timing_ms } => {
-            shell
-                .status()
-                .show_no_table("当前标签是查询标签：没有可编辑的表格");
+        crate::tabs::TabStatus::Query {
+            summary,
+            timing_ms,
+            row_ops,
+        } => {
+            shell.status().show_query_ops(&row_ops);
             if let Some(summary) = summary {
                 shell.status().set_sql_summary(summary);
             }
             let _ = timing_ms;
             shell.toolbar().set_active(None);
             if let Some(actions) = actions {
-                actions.apply_row_ops(&crate::tabs::TabSet::empty_row_ops());
+                actions.apply_row_ops(&row_ops);
             }
         }
         crate::tabs::TabStatus::Objects { shortcut } => {
@@ -2374,8 +2383,11 @@ impl Workspace {
                 Rc::new(move |op| {
                     if let Some(data) = tabs.data_page() {
                         data.perform_row_op(op);
+                    } else if let Some(sql) = tabs.sql_page() {
+                        // v0.2.5：查询标签的单表结果也用同一组 `+ - ✓ ↶`。
+                        sql.perform_row_op(op);
                     } else {
-                        eprintln!("[tabs] 当前标签不是表数据标签，忽略行操作");
+                        eprintln!("[tabs] 当前标签没有可编辑的表格，忽略行操作");
                     }
                 })
             },
@@ -3259,6 +3271,94 @@ fn browse_operator(name: &str) -> Result<crate::browse_view::Operator, String> {
 /// 全部动作走用户会走的同一条路径：按名选择侧栏条目（会打开一个表标签）、编辑态的
 /// 值转换、「提交更改」按钮（含风险确认对话框）、事务按钮。标签是异步建立的，所以
 /// 每一步都在执行时刻从**当前标签**取数据页，而不是提前抓一个引用。
+/// QA：查询标签结果区的编辑 / 标删 / 提交（v0.2.5，`--qa-query-*`）。
+///
+/// 与数据页的 `--qa-data-edit` 是同一思路：走**按钮同一条入口**
+/// （`qa_edit_named` / `qa_delete_row` / `perform_row_op(Apply)`），不另开捷径。
+fn maybe_run_qa_query(state: &Rc<UiState>) {
+    let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {
+        return;
+    };
+    for (index, (row, column, value)) in crate::qa::query_edits().into_iter().enumerate() {
+        let workspace = Rc::clone(&workspace);
+        let delay = 2_600 + 180 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                eprintln!("[qa] 查询结果编辑：当前标签不是查询标签");
+                return;
+            };
+            eprintln!(
+                "[qa] t=+{}ms 查询结果编辑第 {} 行 {} = {}",
+                crate::qa::elapsed_ms(),
+                row,
+                column,
+                value
+            );
+            match page.qa_edit_named(usize::try_from(row).unwrap_or(0), &column, &value) {
+                Ok(()) => {}
+                Err(error) => eprintln!("[qa] 查询结果编辑失败：{error}"),
+            }
+        });
+    }
+    for (index, row) in crate::qa::query_deletes().into_iter().enumerate() {
+        let workspace = Rc::clone(&workspace);
+        let delay = 3_000 + 180 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                return;
+            };
+            eprintln!(
+                "[qa] t=+{}ms 查询结果标删第 {} 行",
+                crate::qa::elapsed_ms(),
+                row
+            );
+            match page.qa_delete_row(usize::try_from(row).unwrap_or(0)) {
+                Ok(()) => {}
+                Err(error) => eprintln!("[qa] 查询结果标删失败：{error}"),
+            }
+        });
+    }
+    if crate::qa::query_add() {
+        let workspace = Rc::clone(&workspace);
+        glib::timeout_add_local_once(Duration::from_millis(2_400), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                return;
+            };
+            eprintln!("[qa] t=+{}ms 查询结果新增行", crate::qa::elapsed_ms());
+            page.perform_row_op(crate::data_page::RowOp::Add);
+        });
+    }
+    for (index, (column, value)) in crate::qa::query_inserts().into_iter().enumerate() {
+        let workspace = Rc::clone(&workspace);
+        let delay = 2_800 + 180 * u64::try_from(index).unwrap_or(0);
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                return;
+            };
+            eprintln!(
+                "[qa] t=+{}ms 查询结果新行 {} = {}",
+                crate::qa::elapsed_ms(),
+                column,
+                value
+            );
+            match page.qa_insert_value(&column, &value) {
+                Ok(()) => {}
+                Err(error) => eprintln!("[qa] 新行填值失败：{error}"),
+            }
+        });
+    }
+    if crate::qa::query_apply() {
+        let workspace = Rc::clone(&workspace);
+        glib::timeout_add_local_once(Duration::from_millis(3_800), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                return;
+            };
+            eprintln!("[qa] t=+{}ms 查询结果提交", crate::qa::elapsed_ms());
+            page.perform_row_op(crate::data_page::RowOp::Apply);
+        });
+    }
+}
+
 fn maybe_run_qa_data(state: &Rc<UiState>) {
     let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {
         return;

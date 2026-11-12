@@ -563,6 +563,123 @@ pub struct ColumnWidthObservation {
 ///
 /// 表头合并成一行后，列名与原始类型同处一个 `GtkColumnViewColumn` 标题文本里，
 /// 自动列宽与 `refresh_header_titles` 共用这一份拼法，量出来的宽度与实际显示一致。
+/// 单元格编辑器（数据网格与查询结果共用同一份 UI 与交互）。
+///
+/// 只管「弹一个编辑框、把结果交给 `on_apply`」：值转换由调用方走
+/// [`crate::table_data::parse_cell_input`]，两边口径因此是同一份。
+pub(crate) fn open_cell_editor(
+    anchor: &gtk::Widget,
+    title_text: &str,
+    initial: &str,
+    is_null: bool,
+    nullable: bool,
+    on_apply: Rc<dyn Fn(Option<String>) -> Result<(), String>>,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_parent(anchor);
+    popover.set_autohide(true);
+    popover.set_has_arrow(true);
+
+    let title = gtk::Label::new(Some(title_text));
+    title.set_xalign(0.0);
+    title.add_css_class("heading");
+
+    let entry = gtk::Entry::new();
+    entry.set_text(initial);
+    entry.set_hexpand(true);
+
+    let null_check = gtk::CheckButton::with_label("设为 NULL（SQL 空值）");
+    null_check.set_active(is_null);
+    entry.set_sensitive(!is_null);
+    {
+        let entry = entry.clone();
+        null_check.connect_toggled(move |check| {
+            entry.set_sensitive(!check.is_active());
+        });
+    }
+
+    let hint = gtk::Label::new(Some(if nullable {
+        "空文本在文本列表示空字符串 ''；要写 NULL 请勾选上方选项"
+    } else {
+        "该列不允许 NULL：请输入合法值"
+    }));
+    hint.set_xalign(0.0);
+    hint.set_wrap(true);
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    if !nullable {
+        null_check.set_sensitive(false);
+    }
+
+    let error = gtk::Label::new(None);
+    error.set_xalign(0.0);
+    error.set_wrap(true);
+    error.add_css_class("error");
+    error.add_css_class("caption");
+    error.set_visible(false);
+
+    let apply = gtk::Button::with_label("应用");
+    apply.add_css_class("suggested-action");
+    let cancel = gtk::Button::with_label("取消");
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
+    buttons.set_halign(gtk::Align::End);
+    buttons.append(&cancel);
+    buttons.append(&apply);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
+    content.set_margin_top(gap(Gap::Md));
+    content.set_margin_bottom(gap(Gap::Md));
+    content.set_margin_start(gap(Gap::Md));
+    content.set_margin_end(gap(Gap::Md));
+    content.set_size_request(320, -1);
+    content.append(&title);
+    content.append(&entry);
+    content.append(&null_check);
+    content.append(&hint);
+    content.append(&error);
+    content.append(&buttons);
+    popover.set_child(Some(&content));
+
+    {
+        let popover_for_cancel = popover.clone();
+        cancel.connect_clicked(move |_| popover_for_cancel.popdown());
+    }
+    {
+        let popover_for_apply = popover.clone();
+        let entry = entry.clone();
+        let null_check = null_check.clone();
+        let error = error.clone();
+        let on_apply = Rc::clone(&on_apply);
+        apply.connect_clicked(move |_| {
+            let result = if null_check.is_active() {
+                on_apply(None)
+            } else {
+                on_apply(Some(entry.text().to_string()))
+            };
+            match result {
+                Ok(()) => popover_for_apply.popdown(),
+                Err(message) => {
+                    error.set_text(&message);
+                    error.set_visible(true);
+                }
+            }
+        });
+    }
+    popover.connect_closed(|popover| {
+        popover.unparent();
+    });
+    popover.popup();
+    // `GtkWidget::grab_focus()` 对输入框的语义是「聚焦并全选」（gtk_entry_grab_focus
+    // 内部就是 select_all）——这正是双击后值被选中底色盖住的原因，光去掉
+    // `select_region` 不够。这里用 `grab_focus_without_selecting`：只聚焦，不选。
+    entry.grab_focus_without_selecting();
+    // 再把光标放到末尾：双击是为了**改**这个值（多半只改其中几个字），全选会让
+    // 用户第一眼读不到原值，随手按一个字符还会把整段替换掉。追加、退格、
+    // Ctrl+A 全选都还在。
+    entry.set_position(-1);
+}
+
 /// 「字段 / 值」视图的单元格工厂：`index` 0 = 字段名，1 = 值。
 ///
 /// 数据是 `(字段名, 值文本)` 元组；值与网格共用同一份显示文本（NULL 是 `NULL`、
@@ -5461,109 +5578,20 @@ impl DataPage {
             })
         };
 
-        let popover = gtk::Popover::new();
-        popover.set_parent(anchor);
-        popover.set_autohide(true);
-        popover.set_has_arrow(true);
-
-        let title = gtk::Label::new(Some(&format!("编辑 {column_name} · {type_label}")));
-        title.set_xalign(0.0);
-        title.add_css_class("heading");
-
-        let entry = gtk::Entry::new();
-        entry.set_text(&initial);
-        entry.set_hexpand(true);
-
-        let null_check = gtk::CheckButton::with_label("设为 NULL（SQL 空值）");
-        null_check.set_active(is_null);
-        entry.set_sensitive(!is_null);
-        {
-            let entry = entry.clone();
-            null_check.connect_toggled(move |check| {
-                entry.set_sensitive(!check.is_active());
+        let page = Rc::clone(self);
+        let on_apply: Rc<dyn Fn(Option<String>) -> Result<(), String>> =
+            Rc::new(move |value: Option<String>| match value {
+                None => page.apply_cell_null(row, column),
+                Some(text) => page.apply_cell_text(row, column, &text),
             });
-        }
-
-        let hint = gtk::Label::new(Some(if nullable {
-            "空文本在文本列表示空字符串 ''；要写 NULL 请勾选上方选项"
-        } else {
-            "该列不允许 NULL：请输入合法值"
-        }));
-        hint.set_xalign(0.0);
-        hint.set_wrap(true);
-        hint.add_css_class("dim-label");
-        hint.add_css_class("caption");
-        if !nullable {
-            null_check.set_sensitive(false);
-        }
-
-        let error = gtk::Label::new(None);
-        error.set_xalign(0.0);
-        error.set_wrap(true);
-        error.add_css_class("error");
-        error.add_css_class("caption");
-        error.set_visible(false);
-
-        let apply = gtk::Button::with_label("应用");
-        apply.add_css_class("suggested-action");
-        let cancel = gtk::Button::with_label("取消");
-
-        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
-        buttons.set_halign(gtk::Align::End);
-        buttons.append(&cancel);
-        buttons.append(&apply);
-
-        let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
-        content.set_margin_top(gap(Gap::Md));
-        content.set_margin_bottom(gap(Gap::Md));
-        content.set_margin_start(gap(Gap::Md));
-        content.set_margin_end(gap(Gap::Md));
-        content.set_size_request(320, -1);
-        content.append(&title);
-        content.append(&entry);
-        content.append(&null_check);
-        content.append(&hint);
-        content.append(&error);
-        content.append(&buttons);
-        popover.set_child(Some(&content));
-
-        {
-            let popover_for_cancel = popover.clone();
-            cancel.connect_clicked(move |_| popover_for_cancel.popdown());
-        }
-        {
-            let page = Rc::clone(self);
-            let popover_for_apply = popover.clone();
-            let entry = entry.clone();
-            let null_check = null_check.clone();
-            let error = error.clone();
-            apply.connect_clicked(move |_| {
-                let result = if null_check.is_active() {
-                    page.apply_cell_null(row, column)
-                } else {
-                    page.apply_cell_text(row, column, &entry.text())
-                };
-                match result {
-                    Ok(()) => popover_for_apply.popdown(),
-                    Err(message) => {
-                        error.set_text(&message);
-                        error.set_visible(true);
-                    }
-                }
-            });
-        }
-        popover.connect_closed(|popover| {
-            popover.unparent();
-        });
-        popover.popup();
-        // `GtkWidget::grab_focus()` 对输入框的语义是「聚焦并全选」（gtk_entry_grab_focus
-        // 内部就是 select_all）——这正是双击后值被选中底色盖住的原因，光去掉
-        // `select_region` 不够。这里用 `grab_focus_without_selecting`：只聚焦，不选。
-        entry.grab_focus_without_selecting();
-        // 再把光标放到末尾：双击是为了**改**这个值（多半只改其中几个字），全选会让
-        // 用户第一眼读不到原值，随手按一个字符还会把整段替换掉。追加、退格、
-        // Ctrl+A 全选都还在。
-        entry.set_position(-1);
+        open_cell_editor(
+            anchor,
+            &format!("编辑 {column_name} · {type_label}"),
+            &initial,
+            is_null,
+            nullable,
+            on_apply,
+        );
     }
 
     /// 为什么这个单元格不能编辑（可编辑时为 `None`）。

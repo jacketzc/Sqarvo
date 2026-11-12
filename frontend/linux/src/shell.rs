@@ -1465,7 +1465,7 @@ impl StatusBar {
     }
 
     /// 行操作按钮组：可用性与页内按钮完全一致，全部禁用时用 tooltip 说明原因。
-    fn apply_row_ops(&self, ops: &RowOpsState) {
+    pub fn apply_row_ops(&self, ops: &RowOpsState) {
         for (button, enabled, base) in [
             (&self.add, ops.add, "在当前表末尾新增一行"),
             (&self.delete, ops.delete, "标记删除选中行（提交前可撤销）"),
@@ -1495,6 +1495,19 @@ impl StatusBar {
 
     /// 当前标签没有表格（Objects / 查询标签）：分页器与记录位置整格隐藏，
     /// 行操作全部禁用并用 tooltip 说明原因——不留下「看起来能点」的按钮。
+    /// 查询标签：没有分页器，但行操作组按结果是否可编辑生效（v0.2.5）。
+    pub fn show_query_ops(&self, ops: &RowOpsState) {
+        self.pager_summary.set_visible(false);
+        self.has_table.set(false);
+        self.last_refresh.set_visible(false);
+        self.selected_label.set_visible(false);
+        for button in self.pager_buttons.borrow().iter() {
+            button.set_sensitive(false);
+        }
+        self.apply_row_ops(ops);
+        self.refresh_session();
+    }
+
     pub fn show_no_table(&self, reason: &str) {
         self.pager_summary.set_visible(false);
         self.has_table.set(false);

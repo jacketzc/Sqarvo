@@ -288,10 +288,22 @@ pub enum Command {
         /// QA：写满 N 行后走与「取消」相同的清理路径。
         cancel_after_rows: Option<u64>,
     },
+    /// 读取某个对象的元数据，判断查询结果能否当表来编辑（v0.2.5）。
+    ///
+    /// 只看主键：没有主键就没法 `WHERE 主键 = …`，编辑与删除必须整体禁用。
+    ReadQueryEdit {
+        /// 标签 ID（会话归属）。
+        tab_id: TabId,
+        /// 目标表（`session_id` 由界面填成该标签自己的会话）。
+        object: Box<ObjectRef>,
+    },
     /// 提交一批行变更（值已按列类型转换；不带任何 SQL 文本）。
     ApplyRowChanges {
         /// 标签 ID。
         tab_id: TabId,
+        /// 显式目标表：查询标签没有浏览状态，必须由调用方给出；
+        /// `None` 表示用该标签当前浏览的表（表数据页的老路径）。
+        object: Option<Box<ObjectRef>>,
         /// 更新（主键值 + 列变更）。
         updates: Vec<RowUpdate>,
         /// 删除。
@@ -783,6 +795,13 @@ pub enum Event {
         /// 结果。
         result: Result<(), String>,
     },
+    /// 查询结果能否当表编辑（v0.2.5）：成功时带回主键列名。
+    QueryEdit {
+        /// 标签 ID。
+        tab_id: TabId,
+        /// 结果。
+        result: Result<QueryEditMeta, String>,
+    },
     /// 某个标签的会话失效（例如数据库侧断开）：界面把它标成 Disconnected，保留已加载行。
     TabLost {
         /// 标签 ID。
@@ -993,6 +1012,7 @@ impl WorkerHandle {
     ) {
         let _ = self.commands.send(Command::ApplyRowChanges {
             tab_id: tab_id.to_owned(),
+            object: None,
             updates,
             deletes,
             options,
@@ -1000,6 +1020,32 @@ impl WorkerHandle {
     }
 
     /// 请求取消在途的行变更批次（幂等：重复调用不会重复发 RPC）。
+    /// 查询标签：读主键，判断结果能不能当表编辑（v0.2.5）。
+    pub fn read_query_edit(&self, tab_id: &str, object: crate::proto::services::v1::ObjectRef) {
+        let _ = self.commands.send(Command::ReadQueryEdit {
+            tab_id: tab_id.to_owned(),
+            object: Box::new(object),
+        });
+    }
+
+    /// 查询标签提交行变更：目标表由调用方显式给出（没有浏览状态可用）。
+    pub fn apply_row_changes_for(
+        &self,
+        tab_id: &str,
+        object: crate::proto::services::v1::ObjectRef,
+        updates: Vec<RowUpdate>,
+        deletes: Vec<RowDelete>,
+        options: SubmitOptions,
+    ) {
+        let _ = self.commands.send(Command::ApplyRowChanges {
+            tab_id: tab_id.to_owned(),
+            object: Some(Box::new(object)),
+            updates,
+            deletes,
+            options,
+        });
+    }
+
     pub fn cancel_row_changes(&self, tab_id: &str) {
         let _ = self.commands.send(Command::CancelRowChanges {
             tab_id: tab_id.to_owned(),
@@ -1058,6 +1104,13 @@ struct Session {
     version_mismatch: bool,
     /// 后端注册的驱动（连接对话框的下拉数据源）。
     drivers: Vec<DriverSummary>,
+}
+
+/// 查询结果编辑的元数据（v0.2.5）：目前只有主键，够用来判断「能不能编」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryEditMeta {
+    /// 主键列名（按主键位置升序）。
+    pub primary_key: Vec<String>,
 }
 
 /// 一个标签的会话状态（一标签一会话，ADR 0021 §1）。
@@ -2092,8 +2145,49 @@ async fn worker_loop(
                             Some(primary_key),
                         );
                     }
+                    Command::ReadQueryEdit { tab_id, object } => {
+                        let Some(tab) = tabs.get(&tab_id) else {
+                            eprintln!("[query] 忽略主键读取：标签 {tab_id} 不存在");
+                            continue;
+                        };
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = events
+                                .send(Event::QueryEdit {
+                                    tab_id,
+                                    result: Err("尚未连接数据库".to_string()),
+                                })
+                                .await;
+                            continue;
+                        };
+                        if !tab.is_ready() {
+                            let _ = events
+                                .send(Event::QueryEdit {
+                                    tab_id,
+                                    result: Err("该标签的会话尚未建立".to_string()),
+                                })
+                                .await;
+                            continue;
+                        }
+                        let client = active_session.client.clone();
+                        let events_for_task = events.clone();
+                        tokio::spawn(async move {
+                            let result = match client.get_primary_key_metadata(&object).await {
+                                Ok(columns) => Ok(QueryEditMeta {
+                                    primary_key: columns
+                                        .iter()
+                                        .map(|column| column.name.clone())
+                                        .collect(),
+                                }),
+                                Err(error) => Err(error.message().to_string()),
+                            };
+                            let _ = events_for_task
+                                .send(Event::QueryEdit { tab_id, result })
+                                .await;
+                        });
+                    }
                     Command::ApplyRowChanges {
                         tab_id,
+                        object,
                         updates,
                         deletes,
                         options,
@@ -2124,17 +2218,26 @@ async fn worker_loop(
                             .await;
                             continue;
                         }
-                        let Some(object) = tab.table.as_ref().map(|state| state.object.clone()) else {
-                            send_tab_table(
-                                &events,
-                                &tab_id,
-                                TableEvent::Failed(TableFailure::Other {
-                                    code: "table_data.not_open".to_owned(),
-                                    message: "尚未打开表：行变更未提交".to_owned(),
-                                }),
-                            )
-                            .await;
-                            continue;
+                        // 查询标签没有浏览状态：调用方显式给 object；表数据页沿用当前表。
+                        let object = match object {
+                            Some(object) => *object,
+                            None => {
+                                let Some(object) =
+                                    tab.table.as_ref().map(|state| state.object.clone())
+                                else {
+                                    send_tab_table(
+                                        &events,
+                                        &tab_id,
+                                        TableEvent::Failed(TableFailure::Other {
+                                            code: "table_data.not_open".to_owned(),
+                                            message: "尚未打开表：行变更未提交".to_owned(),
+                                        }),
+                                    )
+                                    .await;
+                                    continue;
+                                };
+                                object
+                            }
                         };
                         if let Some(open) = tab.transaction.as_ref()
                             && open.failed

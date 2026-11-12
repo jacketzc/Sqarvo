@@ -704,6 +704,11 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-detail-view <行号>` | 选中该行并切到「字段 / 值」视图（与状态栏分页器左侧那枚 toggle 同一条入口） |
 | `--qa-row-menu <行号>` | 打开数据行右键菜单（先选中该行；菜单是 popup surface，截图拍不到，用日志 + 下面的 pick 取证） |
 | `--qa-row-menu-pick <文案>` | 点菜单里的条目（`emit_clicked()`，与真点同一个信号；例：`删除行` / `复制为 INSERT`） |
+| `--qa-query-edit <行>:<列名>:<值>` | 查询标签结果区改一格（与双击编辑器同一条路径；行号 0 起） |
+| `--qa-query-delete <行号>` | 查询标签结果区标删一行（与「删除行」同一个入口） |
+| `--qa-query-add` | 查询标签结果区开始一笔新行草稿（与 `+` 同一个入口） |
+| `--qa-query-insert <列名>:<值>` | 给新行草稿填一格（与双击新行单元格同一条路径） |
+| `--qa-query-apply` | 查询标签结果区按一次「提交」（与 `✓` 同一个入口） |
 | `--qa-export-format <csv\|insert\|dump>` | 导出格式：CSV（默认）/ 一行一条 INSERT / 转储表（建表语句 + 全部数据，固定整表）。`--qa-export-scope table` 与它一起决定 `export` 脚本步骤写什么 |
 | `--qa-startup-workspace` | 截图时刻断言未连接的启动工作区：主区域是 `Objects` 页、空态文案存在、**不含**「后端版本 / 端点文件」（#139） |
 | `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |

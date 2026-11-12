@@ -545,6 +545,8 @@ pub enum TabStatus {
         summary: Option<String>,
         /// 上一次查询耗时（毫秒；没有就是 `None`）。
         timing_ms: Option<u64>,
+        /// 状态栏行操作（v0.2.5）：结果可编辑时 `+ - ✓ ↶` 才亮。
+        row_ops: crate::data_page::RowOpsState,
     },
 }
 
@@ -2072,8 +2074,76 @@ impl TabSet {
                 Rc::new(move || worker.close_query(&id))
             },
             backend_failure: Rc::clone(&self.context.backend_failure),
+            edit_target: {
+                let weak = Rc::downgrade(self);
+                let id = id.clone();
+                Rc::new(move |table: &str| {
+                    let set = weak.upgrade()?;
+                    set.edit_object_for(&id, table)
+                })
+            },
+            read_query_edit: {
+                let worker = Rc::clone(&worker);
+                let id = id.clone();
+                Rc::new(move |object| worker.read_query_edit(&id, object))
+            },
+            apply_changes: {
+                let worker = Rc::clone(&worker);
+                let id = id.clone();
+                Rc::new(move |object, batch, options| {
+                    worker.apply_row_changes_for(
+                        &id,
+                        object,
+                        batch.updates,
+                        batch.deletes,
+                        options,
+                    );
+                })
+            },
         };
-        SqlPage::new("会话建立中…", callbacks)
+        let page = SqlPage::new("会话建立中…", callbacks);
+        page.set_on_selection_changed({
+            let weak = Rc::downgrade(self);
+            Rc::new(move || {
+                if let Some(set) = weak.upgrade() {
+                    set.refresh_current();
+                }
+            })
+        });
+        page
+    }
+
+    /// 查询结果的编辑目标：表名 → 该标签会话下的对象引用（v0.2.5）。
+    ///
+    /// `session_id` 必须是**这个标签自己的会话**（事务与提交都走它）；catalog / schema
+    /// 优先取对象树里已加载的节点（那是权威值），树里没有就用连接级 catalog。
+    fn edit_object_for(self: &Rc<Self>, tab_id: &str, table: &str) -> Option<ObjectRef> {
+        let tab = self.by_id(tab_id)?;
+        let session_id = tab.session()?.to_owned();
+        let resolved = (self.context.resolve_table)(table);
+        let (catalog, schema, kind) = match resolved.map(|entry| entry.reference) {
+            Some(reference) => (
+                if reference.catalog.is_empty() {
+                    self.context.catalog.clone()
+                } else {
+                    reference.catalog
+                },
+                reference.schema,
+                reference.kind,
+            ),
+            None => (
+                self.context.catalog.clone(),
+                String::new(),
+                ObjectKind::Table as i32,
+            ),
+        };
+        Some(ObjectRef {
+            session_id,
+            catalog,
+            schema,
+            name: table.to_owned(),
+            kind,
+        })
     }
 
     /// 查询标签里的「执行」：会话还没建立时先把 SQL 记下来，建立后跑一次。
@@ -2239,9 +2309,10 @@ impl TabSet {
                 shortcut: self.objects_shortcut(),
             },
             (_, Some(data), _) => TabStatus::Table(Box::new(data.status_snapshot())),
-            (_, _, Some(_)) => TabStatus::Query {
+            (_, _, Some(page)) => TabStatus::Query {
                 summary: tab.sql_summary.borrow().clone(),
                 timing_ms: tab.query_timing.get(),
+                row_ops: page.row_ops(),
             },
             _ => TabStatus::Objects { shortcut: None },
         };
@@ -2333,8 +2404,13 @@ impl TabSet {
             return;
         }
         tab.record(event.name());
+        // 查询标签的单表编辑也走表事件（提交状态 / 结果回填）：投给 SQL 页。
         let Some(data) = tab.data.as_ref() else {
-            eprintln!("[tabs] 丢弃表数据事件：标签 {tab_id} 不是表标签");
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.on_table_event(event);
+            } else {
+                eprintln!("[tabs] 丢弃表数据事件：标签 {tab_id} 既不是表标签也不是查询标签");
+            }
             return;
         };
         match event {
@@ -2348,6 +2424,23 @@ impl TabSet {
             TableEvent::Failed(failure) => data.show_failure(&failure),
             TableEvent::Transaction(snapshot) => data.show_transaction(&snapshot),
         }
+    }
+
+    /// 查询结果的编辑元数据（v0.2.5）：投给该标签的 SQL 页。
+    pub fn route_query_edit(
+        self: &Rc<Self>,
+        tab_id: &str,
+        result: Result<crate::backend::worker::QueryEditMeta, String>,
+    ) {
+        let Some(tab) = self.by_id(tab_id) else {
+            eprintln!("[query] 丢弃编辑元数据：未知标签 {tab_id}");
+            return;
+        };
+        let Some(page) = tab.sql.as_ref() else {
+            eprintln!("[query] 丢弃编辑元数据：标签 {tab_id} 不是查询标签");
+            return;
+        };
+        page.on_query_edit(result);
     }
 
     /// 查询事件：按 `tab_id` 投递到该标签自己的 SQL 页，并更新摘要。

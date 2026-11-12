@@ -761,6 +761,126 @@ pub fn table_from_sql(sql: &str) -> Option<String> {
     last.filter(|name| !name.is_empty())
 }
 
+/// 从一条查询语句里推断「可以当表来编辑」的目标表（比 [`table_from_sql`] 更严）。
+///
+/// 编辑要落到具体行上，所以只接受**真正等价于一张表**的简单 SELECT：唯一顶层
+/// `FROM`，且 FROM 子句之后不再出现 `JOIN` / 第二个表（逗号）/ `GROUP BY` /
+/// `HAVING` / `UNION` / `ON` / `USING`。JOIN 的结果集里同一行可能对应多行源数据，
+/// 「删一行」写回时到底删哪一行没有唯一答案——宁可整块禁用，也不猜。
+#[must_use]
+pub fn editable_table_from_sql(sql: &str) -> Option<String> {
+    let table = table_from_sql(sql)?;
+    // FROM 子句之后只允许这些收尾关键字出现（大小写不敏感）。
+    const ALLOWED: [&str; 7] = ["where", "order", "limit", "offset", "fetch", "for", "rows"];
+    let chars: Vec<char> = sql.chars().collect();
+    let mut index = 0;
+    let mut depth = 0i32;
+    let mut seen_from = false;
+    while index < chars.len() {
+        let current = chars[index];
+        match current {
+            '\'' => {
+                index += 1;
+                while index < chars.len() {
+                    if chars[index] == '\'' {
+                        if chars.get(index + 1) == Some(&'\'') {
+                            index += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            '"' | '`' => {
+                let quote = current;
+                index += 1;
+                while index < chars.len() && chars[index] != quote {
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            '-' if chars.get(index + 1) == Some(&'-') => {
+                while index < chars.len() && chars[index] != '\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            '/' if chars.get(index + 1) == Some(&'*') => {
+                index += 2;
+                while index + 1 < chars.len() && !(chars[index] == '*' && chars[index + 1] == '/') {
+                    index += 1;
+                }
+                index += 2;
+                continue;
+            }
+            '(' => {
+                depth += 1;
+                index += 1;
+                continue;
+            }
+            ')' => {
+                depth -= 1;
+                index += 1;
+                continue;
+            }
+            ';' if depth == 0 => break,
+            ',' if depth == 0 && seen_from => return None,
+            _ => {}
+        }
+        if current.is_ascii_alphabetic() || current == '_' {
+            let start = index;
+            while index < chars.len()
+                && (chars[index].is_ascii_alphanumeric() || chars[index] == '_')
+            {
+                index += 1;
+            }
+            if depth > 0 {
+                continue;
+            }
+            let word: String = chars[start..index].iter().collect();
+            let lower = word.to_ascii_lowercase();
+            if !seen_from {
+                if lower == "from" {
+                    seen_from = true;
+                }
+                continue;
+            }
+            if ALLOWED.contains(&lower.as_str()) {
+                continue;
+            }
+            // FROM 之后允许出现的东西只有：[库.]表 与可选别名，以及收尾关键字。
+            // 任何 JOIN / 集合运算 / 分组关键字都说明「一行结果 ≠ 一行源数据」。
+            const FORBIDDEN: [&str; 15] = [
+                "join",
+                "inner",
+                "left",
+                "right",
+                "full",
+                "cross",
+                "outer",
+                "natural",
+                "on",
+                "using",
+                "group",
+                "having",
+                "union",
+                "intersect",
+                "except",
+            ];
+            if FORBIDDEN.contains(&lower.as_str()) {
+                return None;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    Some(table)
+}
+
 /// 目标路径的现状。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetState {
@@ -2334,5 +2454,62 @@ mod tests {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod editable_sql_tests {
+    use super::editable_table_from_sql;
+
+    #[test]
+    fn simple_select_is_editable() {
+        assert_eq!(
+            editable_table_from_sql("select * from users order by id").as_deref(),
+            Some("users")
+        );
+        assert_eq!(
+            editable_table_from_sql("SELECT id, name FROM main.users u WHERE id > 0").as_deref(),
+            Some("users")
+        );
+        assert_eq!(
+            editable_table_from_sql("select count(*) from users").as_deref(),
+            Some("users")
+        );
+    }
+
+    #[test]
+    fn join_and_set_operations_are_not_editable() {
+        assert_eq!(
+            editable_table_from_sql("select * from users u join orders o on o.uid = u.id"),
+            None
+        );
+        assert_eq!(
+            editable_table_from_sql("select * from users u, orders o where o.uid = u.id"),
+            None
+        );
+        assert_eq!(
+            editable_table_from_sql("select id from users union select id from orders"),
+            None
+        );
+        assert_eq!(
+            editable_table_from_sql("select name, count(*) from users group by name"),
+            None
+        );
+        assert_eq!(
+            editable_table_from_sql("select * from (select * from users) t"),
+            None
+        );
+    }
+
+    #[test]
+    fn keywords_inside_strings_do_not_block_editing() {
+        assert_eq!(
+            editable_table_from_sql("select * from users where name = 'a join b'").as_deref(),
+            Some("users")
+        );
+        assert_eq!(
+            editable_table_from_sql("select * from users -- join orders\n where id > 1").as_deref(),
+            Some("users")
+        );
     }
 }

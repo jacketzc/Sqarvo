@@ -451,6 +451,22 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 | 切回按行浏览 | 在详情视图 | 再按一次同一按钮（`RowOp::ToggleDetail` 幂等切换），网格原样回来，选中与脏行不变 | 同上 |
 | 自动复位 | 换表 / 重新读取 / 选中集清空 | 强制回到按行浏览并清空详情数据（详情讲的是上一屏那一行） | `src/data_page.rs`（`begin_open`、`selection_changed`） |
 
+### 5.10 查询结果的单表编辑（v0.2.5）
+
+查询标签的结果区默认只读。当结果**等价于一张表的当前页**时，状态栏的 `+ - ✓ ↶` 对它生效，
+口径与表数据页一致（同一份 `TableDraft` / `InsertDraft` / `ApplyRowChanges`）。
+
+| 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| 何时可编辑 | 结果**终态**（读完 / 触顶 / 取消）、SQL 是**唯一顶层 FROM** 的简单 SELECT（无 JOIN / 集合运算 / `GROUP BY` / 多表逗号）、结果列**覆盖目标表全部主键列** | 三项都成立才装上编辑态；日志 `[query] 结果可编辑：表 users，3 行，主键 ["id"]` | `src/export.rs`（`editable_table_from_sql`）、`src/result_edit.rs`（`pk_coverage_gap`）、`src/sql_page.rs`（`try_enable_edit` / `on_query_edit`） |
+| 不可编辑时的表现 | 上述任一不成立 | 行操作组整体置灰，tooltip 写明**具体原因**：`结果不是单表查询（JOIN / 聚合 / 子查询）…` / `结果里没有主键列 X…` / `这张表没有主键…` / `读取主键失败：…`（状态圆点同样透出），不静默灰掉 | `src/sql_page.rs`（`edit_note`、`row_ops`） |
+| 改一格 | 可编辑 | **双击单元格**打开与网格同一个编辑器（`open_cell_editor`）；确定后按当前值重绘该行，未提交前不写库 | `src/results.rs`（`cell_factory` / `open_cell_editor_at` / `refresh_row`） |
+| 新增行 | 可编辑且没有未提交改动 / 没有待插入行 | 结果末尾追加一行占位（各列 `（默认）`），双击各列填值；提交时按「省略未填列、交给数据库默认值」生成单行 INSERT；日志 `[query] 新行草稿：第 N 行（占位）` | `src/results.rs`（`begin_insert_row`）、`src/result_edit.rs`（`begin_insert` / `insert_cell_view`） |
+| 删除行 | 可编辑且有选中行 | `−` 把它标记删除（不立刻写库），可 `↶` 放弃；状态行「已标记删除 N 行（提交前可以放弃）」 | `src/sql_page.rs`（`perform_row_op`） |
+| 提交 | 有脏行 / 待插入行 | 走 `ApplyRowChanges`（目标表由 SQL 页显式给出，会话 = 本标签自己的会话）；提交后**不自动重跑查询**，状态行写「已提交 N 行 · 重新执行查询可看到库里最新的值」；失败的行走逐行结果留在草稿里 | `src/sql_page.rs`（`on_applied` / `on_inserted`）、`src/backend/worker.rs`（`apply_row_changes_for`） |
+| 放弃 | 有脏行 | 全部编辑、删除标记与新行草稿一起清掉，状态行「已放弃未提交的更改」 | `src/sql_page.rs`（`RowOp::Discard`） |
+| 边界（本版不做） | — | 结果区**没有**行级脏色 / 删除线（脏行数只在状态行与圆点）；新增行一次只有一行；限流（`Limited`）结果不启用编辑 | 同左 |
+
 ---
 
 ## 6. 信息面板（Inspector）

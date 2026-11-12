@@ -24,9 +24,16 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::query::{QueryFailure, RowView, StatementView};
+use crate::backend::table::TableColumn;
+use crate::backend::table::{ApplyReport, InsertReport};
+use crate::backend::worker::{QueryEditMeta, SubmitOptions, TableEvent};
+use crate::data_page::{RowOp, RowOpsState};
 use crate::layout::{Gap, gap};
+use crate::proto::services::v1::ObjectRef;
 use crate::qa;
+use crate::result_edit::ResultEdit;
 use crate::results::{ResultsView, RunState};
+use crate::table_data::ChangeBatch;
 
 /// 页面状态（与 [`RunState`] 分开：后者只管结果区，前者还管按钮可用性）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +65,12 @@ pub struct SqlPageCallbacks {
     pub close: Rc<dyn Fn()>,
     /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.3.2）。
     pub backend_failure: Rc<dyn Fn()>,
+    /// 解析编辑目标：结果表的表名 → 该标签会话下的 `ObjectRef`（v0.2.5）。
+    pub edit_target: Rc<dyn Fn(&str) -> Option<ObjectRef>>,
+    /// 读主键：判断结果能不能当表来编辑（v0.2.5）。
+    pub read_query_edit: Rc<dyn Fn(ObjectRef)>,
+    /// 提交行变更：目标表由 SQL 页显式给出（v0.2.5）。
+    pub apply_changes: Rc<dyn Fn(ObjectRef, ChangeBatch, SubmitOptions)>,
 }
 
 /// SQL 工作区页面。
@@ -84,6 +97,14 @@ pub struct SqlPage {
     session_base: String,
     /// worker 命令回调。
     callbacks: SqlPageCallbacks,
+    /// 本轮执行是否已经问过「结果能不能当表编辑」（每次执行只问一次）。
+    edit_probe: Cell<bool>,
+    /// 不能编辑的原因（状态栏行操作 tooltip 用）。
+    edit_note: RefCell<Option<String>>,
+    /// 正在等主键的目标表。
+    pending_target: RefCell<Option<ObjectRef>>,
+    /// 最近一次发出的提交批次（逐行结果回填要用同一份定位）。
+    last_batch: RefCell<Option<ChangeBatch>>,
 }
 
 impl SqlPage {
@@ -196,6 +217,10 @@ impl SqlPage {
             query_id: RefCell::new(None),
             session_base: session_line.to_owned(),
             callbacks,
+            edit_probe: Cell::new(false),
+            edit_note: RefCell::new(None),
+            pending_target: RefCell::new(None),
+            last_batch: RefCell::new(None),
         });
 
         {
@@ -463,6 +488,7 @@ impl SqlPage {
     ) {
         self.query_id.replace(Some(query_id.to_owned()));
         self.qa_export_started.set(false);
+        self.reset_edit();
         eprintln!(
             "[query] t=+{}ms 首批到达：{} 行，has_more={has_more}，query_id={query_id}",
             qa::elapsed_ms(),
@@ -526,6 +552,7 @@ impl SqlPage {
         );
         self.ensure_scroll_target();
         if !has_more {
+            self.try_enable_edit();
             self.maybe_qa_export();
         }
     }
@@ -548,6 +575,7 @@ impl SqlPage {
         );
         if !has_more {
             eprintln!("[query] t=+{}ms 结果读完，共 {loaded} 行", qa::elapsed_ms());
+            self.try_enable_edit();
             self.maybe_qa_export();
         }
         self.ensure_scroll_target();
@@ -637,6 +665,329 @@ impl SqlPage {
     }
 
     /// 更新按钮可用性与状态行。
+    // ---- 查询结果编辑（v0.2.5） -------------------------------------------
+
+    /// 执行开始：上一轮的编辑态作废（新查询的结果可能根本不是同一张表）。
+    fn reset_edit(&self) {
+        self.edit_probe.set(false);
+        self.edit_note.replace(None);
+        self.pending_target.replace(None);
+        self.last_batch.replace(None);
+        self.results.clear_edit();
+    }
+
+    /// 接线：结果区行选中变化时刷新状态栏（v0.2.5）。
+    pub fn set_on_selection_changed(&self, callback: Rc<dyn Fn()>) {
+        self.results.set_on_selection_changed(callback);
+    }
+
+    /// 结果进入终态：试着把它接上编辑引擎（每次执行只问一次后端）。
+    fn try_enable_edit(&self) {
+        if self.edit_probe.replace(true) {
+            return;
+        }
+        let statement = self.results.statement();
+        let Some(table) = crate::export::editable_table_from_sql(&statement) else {
+            self.edit_note.replace(Some(
+                "结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除".to_owned(),
+            ));
+            eprintln!("[query] 结果不可编辑：不是单表查询");
+            return;
+        };
+        let Some(object) = (self.callbacks.edit_target)(&table) else {
+            self.edit_note
+                .replace(Some(format!("解析不到表 {table}：不能编辑")));
+            eprintln!("[query] 结果不可编辑：解析不到表 {table}");
+            return;
+        };
+        self.pending_target.replace(Some(object.clone()));
+        (self.callbacks.read_query_edit)(object);
+    }
+
+    /// 主键回来了：结果列覆盖主键就装上编辑态，否则记下具体原因。
+    pub fn on_query_edit(self: &Rc<Self>, result: Result<QueryEditMeta, String>) {
+        let Some(object) = self.pending_target.borrow_mut().take() else {
+            return;
+        };
+        match result {
+            Ok(meta) if !meta.primary_key.is_empty() => {
+                let views = self.results.column_views();
+                let names: Vec<String> = views.iter().map(|view| view.name.clone()).collect();
+                if let Some(missing) = ResultEdit::pk_coverage_gap(&names, &meta.primary_key) {
+                    let note = format!("结果里没有主键列 {missing}：定位不到要改的行，不能编辑");
+                    eprintln!("[query] 结果不可编辑：{note}");
+                    self.edit_note.replace(Some(note));
+                    return;
+                }
+                let columns: Vec<TableColumn> = views
+                    .iter()
+                    .map(|view| TableColumn {
+                        name: view.name.clone(),
+                        ordinal: view.ordinal,
+                        kind: view.kind,
+                        type_label: view.type_label.clone(),
+                        nullable: view.nullable,
+                        unsigned: false,
+                        with_time_zone: false,
+                        scale: None,
+                        default_value: crate::column_info::ColumnDefaultState::Unknown,
+                        character_set: None,
+                        collation: None,
+                        primary_key_position: meta
+                            .primary_key
+                            .iter()
+                            .position(|key| *key == view.name)
+                            .map(|position| position as u32 + 1),
+                    })
+                    .collect();
+                let rows = self.results.loaded_rows();
+                let edit = Rc::new(ResultEdit::build(object, columns, meta.primary_key, &rows));
+                self.results.enable_edit(edit);
+                self.edit_note.replace(None);
+            }
+            Ok(_) => {
+                let note = "这张表没有主键：不能新增、编辑或删除".to_owned();
+                eprintln!("[query] 结果不可编辑：{note}");
+                self.edit_note.replace(Some(note));
+            }
+            Err(reason) => {
+                let note = format!("读取主键失败：{reason}");
+                eprintln!("[query] 结果不可编辑：{note}");
+                self.edit_note.replace(Some(note));
+            }
+        }
+    }
+
+    /// 表事件（提交状态 / 逐行结果）落到结果区。
+    pub fn on_table_event(self: &Rc<Self>, event: TableEvent) {
+        match event {
+            TableEvent::Applied(report) => self.on_applied(&report),
+            TableEvent::Inserted(report) => self.on_inserted(&report),
+            TableEvent::Submit(_) => {}
+            TableEvent::Failed(failure) => {
+                let message = failure.message();
+                eprintln!("[query] 提交失败：{message}");
+                self.set_state(PageState::Complete, Some(&format!("提交失败：{message}")));
+            }
+            TableEvent::Opened(_) | TableEvent::Transaction(_) => {}
+        }
+    }
+
+    /// 更新 / 删除的逐行结果：成功的行摘掉脏标记，失败的留在草稿里。
+    fn on_applied(self: &Rc<Self>, report: &ApplyReport) {
+        let Some(edit) = self.results.edit() else {
+            return;
+        };
+        let failures = match self.last_batch.borrow().as_ref() {
+            Some(batch) => edit.apply_results(batch, &report.results),
+            None => Vec::new(),
+        };
+        for row in 0..self.results.loaded_rows().len() {
+            self.results.refresh_row(row);
+        }
+        self.last_batch.replace(None);
+        let note = if failures.is_empty() {
+            format!(
+                "已提交 {} 行 · 重新执行查询可看到库里最新的值",
+                report.total_rows_affected
+            )
+        } else {
+            format!(
+                "已提交 {} 行，{} 行失败（未提交的仍在草稿里）",
+                report.total_rows_affected,
+                failures.len()
+            )
+        };
+        eprintln!("[query] {note}");
+        self.set_state(PageState::Complete, Some(&note));
+    }
+
+    /// 新行插入结果。
+    fn on_inserted(self: &Rc<Self>, report: &InsertReport) {
+        if report.rolled_back {
+            let note = "新行插入失败（整批已回滚）：草稿还在，改完可重试".to_owned();
+            eprintln!("[query] {note}");
+            self.set_state(PageState::Complete, Some(&note));
+            return;
+        }
+        self.results.remove_insert_row();
+        let note = format!(
+            "已插入 {} 行 · 重新执行查询可看到库里最新的值",
+            report.inserted_rows
+        );
+        eprintln!("[query] {note}");
+        self.set_state(PageState::Complete, Some(&note));
+    }
+
+    /// QA：按列名改一格（与双击编辑器同一条路径）。
+    pub fn qa_edit_named(&self, row: usize, column: &str, text: &str) -> Result<(), String> {
+        let edit = self
+            .results
+            .edit()
+            .ok_or_else(|| "结果不可编辑".to_owned())?;
+        let index = edit
+            .columns
+            .iter()
+            .position(|meta| meta.name == column)
+            .ok_or_else(|| format!("结果里没有列 {column}"))?;
+        edit.set_text(row, index, text)?;
+        self.results.refresh_row(row);
+        Ok(())
+    }
+
+    /// QA：给新行草稿填一格（与双击新行单元格同一条路径）。
+    pub fn qa_insert_value(&self, column: &str, text: &str) -> Result<(), String> {
+        let edit = self
+            .results
+            .edit()
+            .ok_or_else(|| "结果不可编辑".to_owned())?;
+        let index = edit
+            .columns
+            .iter()
+            .position(|meta| meta.name == column)
+            .ok_or_else(|| format!("结果里没有列 {column}"))?;
+        edit.set_insert_text(index, text)?;
+        if let Some(row) = self.results.insert_row_index() {
+            self.results.refresh_row(row);
+        }
+        Ok(())
+    }
+
+    /// QA：标删一行（与「删除行」同一个入口）。
+    pub fn qa_delete_row(&self, row: usize) -> Result<(), String> {
+        let edit = self
+            .results
+            .edit()
+            .ok_or_else(|| "结果不可编辑".to_owned())?;
+        edit.delete(&[row])?;
+        self.results.refresh_row(row);
+        Ok(())
+    }
+
+    /// 状态栏行操作可用性（查询标签：只有可编辑结果才亮）。
+    #[must_use]
+    pub fn row_ops(&self) -> RowOpsState {
+        let mut ops = RowOpsState {
+            add: false,
+            delete: false,
+            apply: false,
+            discard: false,
+            refresh: false,
+            cancel: false,
+            begin_txn: false,
+            commit_txn: false,
+            rollback_txn: false,
+            detail: false,
+            reason: None,
+        };
+        let Some(edit) = self.results.edit() else {
+            ops.reason = Some(
+                self.edit_note
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| "结果只读：执行单表查询后才能编辑".to_owned()),
+            );
+            return ops;
+        };
+        let selected = self.results.selected_rows().len();
+        let dirty = edit.dirty_rows();
+        ops.add = edit.can_insert();
+        ops.delete = selected > 0 && !edit.has_insert();
+        ops.apply = dirty > 0;
+        ops.discard = dirty > 0;
+        if !ops.any() {
+            ops.reason = Some(if edit.has_insert() {
+                "新行还是空的：双击各列填值后再提交".to_owned()
+            } else {
+                "选中一行后可以删除；双击单元格可以改值".to_owned()
+            });
+        }
+        ops
+    }
+
+    /// 行操作入口（查询标签）。
+    pub fn perform_row_op(self: &Rc<Self>, op: RowOp) {
+        match op {
+            RowOp::Add => match self.results.begin_insert_row() {
+                Ok(_) => {
+                    let note = "新行：双击单元格填值；提交前可以放弃".to_owned();
+                    self.set_state(PageState::Complete, Some(&note));
+                }
+                Err(reason) => {
+                    eprintln!("[query] 新增行未开始：{reason}");
+                    self.set_state(PageState::Complete, Some(&reason));
+                }
+            },
+            RowOp::Delete => {
+                let Some(edit) = self.results.edit() else {
+                    return;
+                };
+                let rows = self.results.selected_rows();
+                match edit.delete(&rows) {
+                    Ok(count) => {
+                        for row in &rows {
+                            self.results.refresh_row(*row);
+                        }
+                        let note = format!("已标记删除 {count} 行（提交前可以放弃）");
+                        eprintln!("[query] {note}");
+                        self.set_state(PageState::Complete, Some(&note));
+                    }
+                    Err(reason) => {
+                        eprintln!("[query] 标记删除失败：{reason}");
+                        self.set_state(PageState::Complete, Some(&reason));
+                    }
+                }
+            }
+            RowOp::Apply => {
+                let Some(edit) = self.results.edit() else {
+                    return;
+                };
+                let (batch, insert) = match edit.batch() {
+                    Ok(batch) => batch,
+                    Err(reason) => {
+                        eprintln!("[query] 提交未发出：{reason}");
+                        self.set_state(PageState::Complete, Some(&reason));
+                        return;
+                    }
+                };
+                // 与数据页同一口径：超过阈值或含删除时需要「确认」；查询标签没有确认
+                // 对话框，把风险写在提交日志与状态行里（行数由用户自己框定，见契约 §5.10）。
+                let risk = edit.risk();
+                if risk.needs_confirmation() {
+                    eprintln!("[query] 风险提示：{}", risk.summary());
+                }
+                let mut options = SubmitOptions::changes(true);
+                if let Some(row) = insert {
+                    options.inserts.push(row);
+                }
+                eprintln!(
+                    "[query] 提交：更新 {} 行，删除 {} 行，插入 {} 行（待提交共 {} 项）",
+                    batch.updates.len(),
+                    batch.deletes.len(),
+                    options.inserts.len(),
+                    edit.pending()
+                );
+                self.last_batch.replace(Some(batch.clone()));
+                (self.callbacks.apply_changes)(edit.object.clone(), batch, options);
+            }
+            RowOp::Discard => {
+                let Some(edit) = self.results.edit() else {
+                    return;
+                };
+                edit.discard();
+                self.results.remove_insert_row();
+                let rows = self.results.loaded_rows().len();
+                for row in 0..rows {
+                    self.results.refresh_row(row);
+                }
+                self.set_state(PageState::Complete, Some("已放弃未提交的更改"));
+            }
+            RowOp::Refresh | RowOp::Cancel | RowOp::ToggleDetail => {
+                eprintln!("[query] 行操作 {:?} 在查询标签里不适用（忽略）", op);
+            }
+        }
+    }
+
     fn set_state(self: &Rc<Self>, state: PageState, _note: Option<&str>) {
         self.state.set(state);
         let active = state.is_active();

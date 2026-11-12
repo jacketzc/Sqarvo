@@ -23,7 +23,8 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::backend::query::{
-    ColumnView, PrefetchDecision, PrefetchInput, PrefetchPause, RowView, prefetch_decision,
+    CellStyle, CellView, ColumnView, PrefetchDecision, PrefetchInput, PrefetchPause, RowView,
+    prefetch_decision,
 };
 use crate::layout::{Gap, gap, metrics};
 
@@ -108,6 +109,47 @@ impl RowStore {
         self.imp().rows.borrow().len()
     }
 
+    /// 换掉一行（编辑后用当前值重绘；通知只用一次 `items_changed`）。
+    pub fn replace(&self, index: usize, row: RowView) {
+        let replaced = {
+            let mut rows = self.imp().rows.borrow_mut();
+            match rows.get_mut(index) {
+                Some(slot) => {
+                    *slot = Rc::new(row);
+                    true
+                }
+                None => false,
+            }
+        };
+        if !replaced {
+            return;
+        }
+        // 同一位置必须换一个新对象：`BoxedAnyObject` 的身份参与选择状态。
+        self.imp().items.borrow_mut()[index] = None;
+        self.items_changed(index as u32, 1, 1);
+    }
+
+    /// 追加一行（新行草稿的占位行）。
+    pub fn push(&self, row: RowView) -> usize {
+        let index = self.rows_len();
+        self.append(std::iter::once(row));
+        index
+    }
+
+    /// 删掉最后一行（放弃新行草稿时用）。
+    pub fn pop(&self) -> Option<Rc<RowView>> {
+        let removed = {
+            let mut rows = self.imp().rows.borrow_mut();
+            rows.pop()
+        };
+        if removed.is_some() {
+            let len = self.rows_len();
+            self.imp().items.borrow_mut().pop();
+            self.items_changed(len as u32, 1, 0);
+        }
+        removed
+    }
+
     /// 清空（新查询开始时调用）。
     pub fn clear(&self) {
         let removed = self.n_items();
@@ -174,12 +216,16 @@ pub struct ResultsView {
     placeholder: adw::StatusPage,
     grid: gtk::ColumnView,
     store: RowStore,
+    /// 行选择（v0.2.5：单表结果可编辑，删除按选中集）。
+    selection: gtk::MultiSelection,
     status: gtk::Label,
     spinner: gtk::Spinner,
     detail: gtk::Label,
     columns: RefCell<Vec<gtk::ColumnViewColumn>>,
     /// 导出的表头（不含行号列；`set_columns` 时记录）。
     column_names: RefCell<Vec<String>>,
+    /// 列视图（名字 + 类型标签）：可编辑时据此构造 `TableColumn`。
+    column_views: RefCell<Vec<ColumnView>>,
     /// 最近一次执行的 SQL 文本（「导出为 INSERT 语句」用它推断目标表名）。
     statement: RefCell<String>,
     /// 本次执行所在连接的驱动 ID（SQL 方言按它选）。
@@ -203,6 +249,12 @@ pub struct ResultsView {
     last_fetch_loaded: Cell<u64>,
     /// 上一次记录的暂停原因：只在原因变化时打日志，避免滚动时刷屏。
     last_pause: Cell<Option<PrefetchPause>>,
+    /// 编辑态（v0.2.5）：只有「唯一顶层 FROM + 结果含主键」的终态结果才有。
+    edit: RefCell<Option<Rc<crate::result_edit::ResultEdit>>>,
+    /// 新行草稿占位行在网格里的下标（`None` = 没有新行）。
+    insert_row: Cell<Option<usize>>,
+    /// 行选中变化：状态栏「删除行」的可用性随它变化（v0.2.5）。
+    on_selection_changed: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl ResultsView {
@@ -263,9 +315,10 @@ impl ResultsView {
         placeholder.set_child(Some(&placeholder_icon));
 
         let store = RowStore::default();
-        // ColumnView 需要 SelectionModel；这里不需要多选，用 NoSelection 包一层。
-        let selection = gtk::NoSelection::new(Some(store.clone()));
-        let grid = gtk::ColumnView::new(Some(selection));
+        // v0.2.5：单表结果可编辑 → 需要行选中（删除按选中集）；只读结果里它只多出
+        // 一层「选中一行」的高亮，不改其它行为。
+        let selection = gtk::MultiSelection::new(Some(store.clone()));
+        let grid = gtk::ColumnView::new(Some(selection.clone()));
         grid.set_show_row_separators(true);
         grid.set_show_column_separators(true);
         grid.set_reorderable(false);
@@ -298,11 +351,13 @@ impl ResultsView {
             placeholder,
             grid: grid.clone(),
             store,
+            selection: selection.clone(),
             status,
             spinner,
             detail,
             columns: RefCell::new(Vec::new()),
             column_names: RefCell::new(Vec::new()),
+            column_views: RefCell::new(Vec::new()),
             statement: RefCell::new(String::new()),
             driver: RefCell::new(None),
             truncated_cells: Cell::new(0),
@@ -316,6 +371,21 @@ impl ResultsView {
             last_fetch_value: Cell::new(0.0),
             last_fetch_loaded: Cell::new(0),
             last_pause: Cell::new(None),
+            edit: RefCell::new(None),
+            insert_row: Cell::new(None),
+            on_selection_changed: RefCell::new(None),
+        });
+
+        // 行选中变化只用于「删除行」的可用性：把信号转给状态栏刷新。
+        view.selection.connect_selection_changed({
+            let weak = Rc::downgrade(&view);
+            move |_, _, _| {
+                if let Some(view) = weak.upgrade()
+                    && let Some(callback) = view.on_selection_changed.borrow().as_ref()
+                {
+                    callback();
+                }
+            }
         });
 
         // 预取：滚动位置或内容高度变化时判断是否已接近末尾。
@@ -348,9 +418,217 @@ impl ResultsView {
         self.loaded.get()
     }
 
+    /// 接线：行选中变化时通知状态栏重算行操作可用性。
+    pub fn set_on_selection_changed(&self, callback: Rc<dyn Fn()>) {
+        self.on_selection_changed.replace(Some(callback));
+    }
+
+    /// 选中行下标（删除按选中集）。
+    #[must_use]
+    pub fn selected_rows(&self) -> Vec<usize> {
+        (0..self.selection.n_items())
+            .filter(|position| self.selection.is_selected(*position))
+            .filter_map(|position| usize::try_from(position).ok())
+            .collect()
+    }
+
+    /// 启用编辑态（单表结果、终态、主键齐全时由 SQL 页调用）。
+    pub fn enable_edit(&self, edit: Rc<crate::result_edit::ResultEdit>) {
+        eprintln!(
+            "[query] 结果可编辑：表 {}，{} 行，主键 {:?}",
+            edit.object.name,
+            self.store.rows_len(),
+            edit.primary_key
+        );
+        self.edit.replace(Some(edit));
+    }
+
+    /// 当前编辑态（`None` = 只读结果）。
+    #[must_use]
+    pub fn edit(&self) -> Option<Rc<crate::result_edit::ResultEdit>> {
+        self.edit.borrow().clone()
+    }
+
+    /// 放弃编辑态（新查询开始时调用）。
+    pub fn clear_edit(&self) {
+        self.edit.replace(None);
+        self.remove_insert_row();
+    }
+
+    /// 追加「新行」占位行（`+` 的入口；返回占位行下标）。
+    pub fn begin_insert_row(&self) -> Result<usize, String> {
+        let Some(edit) = self.edit() else {
+            return Err("结果不是单表查询：不能新增行".to_owned());
+        };
+        if !edit.can_insert() {
+            return Err("已经有未提交的更改：先提交或放弃，再新增行".to_owned());
+        }
+        edit.begin_insert()?;
+        let row = self.placeholder_row(&edit);
+        let index = self.store.push(row);
+        self.insert_row.set(Some(index));
+        eprintln!("[query] 新行草稿：第 {} 行（占位）", index + 1);
+        Ok(index)
+    }
+
+    /// 新行占位行下标（没有新行时 `None`）。
+    #[must_use]
+    pub fn insert_row_index(&self) -> Option<usize> {
+        self.insert_row.get()
+    }
+
+    /// 去掉新行占位行（放弃 / 提交成功后调用）。
+    pub fn remove_insert_row(&self) {
+        if self.insert_row.take().is_some() {
+            self.store.pop();
+        }
+    }
+
+    /// 占位行（所有列显示「（默认）」）。
+    fn placeholder_row(&self, edit: &Rc<crate::result_edit::ResultEdit>) -> RowView {
+        let mut cells = Vec::with_capacity(edit.columns.len());
+        let mut values = Vec::with_capacity(edit.columns.len());
+        for column in 0..edit.columns.len() {
+            if let Some(view) = edit.insert_cell_view(column) {
+                cells.push(CellView {
+                    text: view.text,
+                    style: CellStyle::Normal,
+                    tooltip: view.tooltip,
+                    truncated: false,
+                });
+                values.push(crate::table_data::null_value());
+            }
+        }
+        RowView {
+            number: self.store.rows_len() as u64 + 1,
+            cells,
+            values,
+        }
+    }
+
+    /// 编辑后按当前值重绘一行（含占位行）。
+    pub fn refresh_row(&self, row: usize) {
+        if self.insert_row.get() == Some(row) {
+            if let Some(edit) = self.edit() {
+                let placeholder = self.placeholder_row(&edit);
+                self.store.replace(row, placeholder);
+            }
+            return;
+        }
+        if let Some(edit) = self.edit()
+            && let Some(view) = edit.row_view(row)
+        {
+            self.store.replace(row, view);
+        }
+    }
+
+    /// 双击单元格 → 编辑器（与数据网格共用同一份 UI）。
+    fn open_cell_editor_at(self: &Rc<Self>, row: usize, column: usize, anchor: &gtk::Widget) {
+        let Some(edit) = self.edit() else {
+            return;
+        };
+        let is_insert = self.insert_row.get() == Some(row);
+        let (title, initial, is_null) = if is_insert {
+            let Some(view) = edit.insert_cell_view(column) else {
+                return;
+            };
+            (
+                "新行".to_owned(),
+                if view.hint { String::new() } else { view.text },
+                false,
+            )
+        } else {
+            let Some(values) = edit.current_values(row) else {
+                return;
+            };
+            let Some(value) = values.get(column) else {
+                return;
+            };
+            let null = crate::proto::common::v1::ValueKind::try_from(value.kind)
+                == Ok(crate::proto::common::v1::ValueKind::Null);
+            ("编辑".to_owned(), crate::table_data::edit_text(value), null)
+        };
+        let Some(column_meta) = edit.columns.get(column) else {
+            return;
+        };
+        let nullable = column_meta.nullable;
+        let title = format!(
+            "{} {} · {}",
+            title, column_meta.name, column_meta.type_label
+        );
+        let page = Rc::clone(self);
+        let on_apply: Rc<dyn Fn(Option<String>) -> Result<(), String>> =
+            Rc::new(move |value: Option<String>| {
+                if is_insert {
+                    match value {
+                        None => edit.set_insert_null(column)?,
+                        Some(text) => edit.set_insert_text(column, &text)?,
+                    }
+                } else {
+                    match value {
+                        None => edit.set_null(row, column)?,
+                        Some(text) => edit.set_text(row, column, &text)?,
+                    }
+                }
+                page.refresh_row(row);
+                Ok(())
+            });
+        crate::data_page::open_cell_editor(anchor, &title, &initial, is_null, nullable, on_apply);
+    }
+
+    /// 结果区单元格工厂：绑定文本 + 双击进入编辑（只读结果里双击不做事）。
+    fn cell_factory(self: &Rc<Self>, column_index: usize) -> gtk::SignalListItemFactory {
+        let factory = text_factory(column_index, true);
+        let page = Rc::clone(self);
+        factory.connect_setup(move |_, list_item| {
+            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(label) = list_item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            let page = Rc::clone(&page);
+            let item = list_item.clone();
+            let anchor = label.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(1);
+            gesture.connect_pressed(move |gesture, presses, _, _| {
+                if presses < 2 {
+                    return;
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.open_cell_editor_at(
+                    usize::try_from(item.position()).unwrap_or(usize::MAX),
+                    column_index,
+                    anchor.upcast_ref(),
+                );
+            });
+            label.add_controller(gesture);
+        });
+        factory
+    }
+
     /// 当前状态。
     pub fn state(&self) -> RunState {
         self.state.get()
+    }
+
+    /// 已加载的行（编辑态建立时的初始行）。
+    #[must_use]
+    pub fn loaded_rows(&self) -> Vec<RowView> {
+        (0..self.store.rows_len())
+            .filter_map(|index| self.store.row_at(index))
+            .map(|row| (*row).clone())
+            .collect()
+    }
+
+    /// 列视图（名字 + 类型标签）。
+    #[must_use]
+    pub fn column_views(&self) -> Vec<ColumnView> {
+        self.column_views.borrow().clone()
     }
 
     /// 导出的列名（不含行号列）。
@@ -434,10 +712,11 @@ impl ResultsView {
     }
 
     /// 按列元数据重建列：每列一个 `GtkColumnViewColumn`，单元格工厂只为可见行创建 widget。
-    pub fn set_columns(&self, columns: &[ColumnView]) {
+    pub fn set_columns(self: &Rc<Self>, columns: &[ColumnView]) {
         self.clear_columns();
         self.column_names
             .replace(columns.iter().map(|column| column.name.clone()).collect());
+        self.column_views.replace(columns.to_vec());
 
         // 行号列：跨批次连续，便于对照「已加载到第几行」。
         let number_factory = text_factory(usize::MAX, false);
@@ -448,7 +727,7 @@ impl ResultsView {
         self.columns.borrow_mut().push(number_column);
 
         for (index, column) in columns.iter().enumerate() {
-            let factory = text_factory(index, true);
+            let factory = self.cell_factory(index);
             let title = if column.type_label.is_empty() {
                 column.name.clone()
             } else {
