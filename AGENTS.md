@@ -489,6 +489,13 @@ from the shipped Linux client, so the code and the contract must agree at all ti
 [ADR 0027](docs/decisions/0027-ui-component-registry.md)，字段与粒度见
 `components/README.md`）。`docs/ui-specification/ui-components.md` 是它的生成物。
 
+- **改 UI 之前先报组件名，并让维护者确认。** 拿到任何「改一下这个界面」的需求，先说清这次改动
+  对应哪个 / 哪些组件（`id` + `display_name`，例如 `object_tree.tree.row.conn`「连接行」、
+  `object_tree.ctx_menu.refresh_group`「刷新这一组」），请维护者确认范围后再动手。这不是形式：
+  `id` 是 PR、Issue、QA 断言与三端同步标记共用的键，维护者只有反复看到同一个名字才能形成记忆；
+  省掉这一步，同一个东西迟早会在三处叫三个名。
+- 若改动落在还没登记的功能区（P0–P1 迁移期），先说明「这个区还没进注册表」并指出它将来归哪个区、
+  哪一级，再动手；不要临时自造 id。
 - 新增或改动用户可见的组件，必须在同一 PR 里改注册表。组件 `id` 发布后不改名；
   `display_name` 可以随文案演进。
 - 样式只写 `metrics.toml` 的 key 名与主题 token 名。组件里出现 `px` 数字或 `#RRGGBB`
@@ -507,7 +514,7 @@ Follow this sequence when executing a task:
 
 1. Read this file and any other `AGENTS.md` files in the directories involved in the task.
 2. Read the relevant product requirements, architecture documents, ADRs, and existing code. Do not guess the state of the project based only on the task description.
-3. Confirm the requirements, scope of impact, module boundaries, acceptance criteria, and the associated Issue/milestone. For complex tasks, provide a brief implementation plan first.
+3. Confirm the requirements, scope of impact, module boundaries, acceptance criteria, and the associated Issue/milestone. For complex tasks, provide a brief implementation plan first. 涉及 UI 时先按 §14.3 报出对应的组件 `id` 与名称，得到维护者确认后再动手。
 4. Prefer the smallest complete and verifiable change. Do not opportunistically rewrite unrelated modules.
 5. Before changing APIs or public types, inspect all callers and compatibility implications.
 6. Add or update tests, documentation, and examples.
