@@ -156,6 +156,18 @@ def load_icons(rep: "Report") -> dict[str, dict]:
         winui = str(icon.get("winui", ""))
         if not re.match(r"^([0-9A-Fa-f]{4}|待核)$", winui):
             rep.error(f"icons.toml#{iid}", f"winui 应为 4 位十六进制码点或「待核」，现为 {winui!r}")
+        # 码点必须配官方字形名，否则没人能复核这 4 位数字是从哪来的（AGENTS §8.1：不许猜码点）。
+        winui_name = str(icon.get("winui_name", ""))
+        if winui != "待核":
+            if not winui_name:
+                rep.error(f"icons.toml#{iid}", "winui 有码点但缺 winui_name（Segoe Fluent 字形名）")
+            elif not re.match(r"^[A-Za-z][A-Za-z0-9]*$", winui_name):
+                rep.error(
+                    f"icons.toml#{iid}",
+                    f"winui_name 应为官方字形名（ASCII 字母数字），现为 {winui_name!r}",
+                )
+        elif winui_name:
+            rep.error(f"icons.toml#{iid}", "winui 还是「待核」却写了 winui_name，删掉或补上码点")
     return icons
 
 

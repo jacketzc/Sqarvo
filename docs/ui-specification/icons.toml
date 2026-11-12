@@ -5,269 +5,336 @@
 # `frontend/linux/src/*.rs` 的字符串字面量里找到；`sqarvo-` 前缀的自有图标还要在
 # `frontend/linux/resources/icons/<name>.svg` 里存在。校验器逐条核对。
 #
-# winui 用 Segoe Fluent Icons 的码点；本机没有 Windows 环境，未核对的写 `待核`，不许猜。
+# winui = Segoe Fluent Icons 码点（4 位十六进制）；winui_name = 该码点在官方字形表里的名字，
+# 两者必须成对出现，供 Windows 端与设计复核。来源：Microsoft Learn《Segoe Fluent Icons font》
+# v1.56 字形表，2026-11-12 取：
+# https://learn.microsoft.com/en-us/windows/apps/design/iconography/segoe-fluent-icons-font
+#
+# 选点原则：优先 E 段（Win10 的 Segoe MDL2 Assets 就有），F 段字形较新，Win10 目标机要目视确认。
+# XAML 用 <FontIcon Glyph="&#xE710;" FontFamily="{ThemeResource SymbolThemeFontFamily}"/>，
+# 不要用 Symbol 枚举（只覆盖一部分码点，写错不报错、只渲染成空格）。
+# winui_note 非空表示「Segoe 没有等价字形，这是近似」——Windows 端不得当成语义精确匹配，
+# 也不许为了对齐猜新的码点。
+#
 # swift 一律 `—`：macOS 端尚未接入。
 
 [[icon]]
 id = "object.catalog"
 linux = "drive-harddisk-symbolic"
-winui = "待核"
+winui = "EDA2"
+winui_name = "HardDrive"
 swift = "—"
 note = "对象树里「库」这一层（多库驱动；SQLite 只有一个库）"
+winui_note = "Linux 用 drive-harddisk；Segoe 没有「数据库」字形，库/目录层用硬盘"
 
 [[icon]]
 id = "object.schema"
 linux = "folder-symbolic"
-winui = "待核"
+winui = "E8B7"
+winui_name = "Folder"
 swift = "—"
 note = "驱动给出 schema 层时的那一层（PostgreSQL 类）"
 
 [[icon]]
 id = "object.table"
 linux = "view-grid-symbolic"
-winui = "待核"
+winui = "F0E2"
+winui_name = "GridView"
 swift = "—"
+winui_note = "Segoe 没有「表」字形，用网格"
 
 [[icon]]
 id = "object.view"
 linux = "view-reveal-symbolic"
-winui = "待核"
+winui = "E890"
+winui_name = "View"
 swift = "—"
 note = "视图与物化视图共用"
 
 [[icon]]
 id = "object.column"
 linux = "insert-text-symbolic"
-winui = "待核"
+winui = "EA37"
+winui_name = "List"
 swift = "—"
+winui_note = "近似：Segoe 没有「列」字形"
 
 [[icon]]
 id = "object.index"
 linux = "view-sort-descending-symbolic"
-winui = "待核"
+winui = "E8CB"
+winui_name = "Sort"
 swift = "—"
+winui_note = "近似：无「索引」字形"
 
 [[icon]]
 id = "object.sequence"
 linux = "view-list-symbolic"
-winui = "待核"
+winui = "E8FD"
+winui_name = "BulletedList"
 swift = "—"
+winui_note = "近似：无「序列」字形"
 
 [[icon]]
 id = "object.function"
 linux = "application-x-executable-symbolic"
-winui = "待核"
+winui = "E943"
+winui_name = "Code"
 swift = "—"
 note = "函数与存储过程共用"
 
 [[icon]]
 id = "object.trigger"
 linux = "system-run-symbolic"
-winui = "待核"
+winui = "E945"
+winui_name = "LightningBolt"
 swift = "—"
 
 [[icon]]
 id = "object.type"
 linux = "text-x-generic-symbolic"
-winui = "待核"
+winui = "E8D2"
+winui_name = "Font"
 swift = "—"
 note = "用户自定义类型；未识别种类也用这一枚"
+winui_note = "近似：无「用户类型」字形"
 
 [[icon]]
 id = "tree.connection"
 linux = "network-server-symbolic"
-winui = "待核"
+winui = "E968"
+winui_name = "Network"
 swift = "—"
+winui_note = "近似：Segoe 无 server 字形；连接对象用网络"
 
 [[icon]]
 id = "tree.group.tables"
 linux = "view-grid-symbolic"
-winui = "待核"
+winui = "F0E2"
+winui_name = "GridView"
 swift = "—"
 
 [[icon]]
 id = "tree.group.views"
 linux = "view-reveal-symbolic"
-winui = "待核"
+winui = "E890"
+winui_name = "View"
 swift = "—"
 
 [[icon]]
 id = "tree.group.functions"
 linux = "system-run-symbolic"
-winui = "待核"
+winui = "E943"
+winui_name = "Code"
 swift = "—"
 
 [[icon]]
 id = "tree.group.queries"
 linux = "text-x-generic-symbolic"
-winui = "待核"
+winui = "E8A5"
+winui_name = "Document"
 swift = "—"
 
 [[icon]]
 id = "tree.table_group.fields"
 linux = "view-list-symbolic"
-winui = "待核"
+winui = "EA37"
+winui_name = "List"
 swift = "—"
 
 [[icon]]
 id = "tree.table_group.indexes"
 linux = "view-sort-ascending-symbolic"
-winui = "待核"
+winui = "E8CB"
+winui_name = "Sort"
 swift = "—"
 
 [[icon]]
 id = "tree.table_group.foreign_keys"
 linux = "insert-link-symbolic"
-winui = "待核"
+winui = "E71B"
+winui_name = "Link"
 swift = "—"
 
 [[icon]]
 id = "tree.table_group.triggers"
 linux = "system-run-symbolic"
-winui = "待核"
+winui = "E945"
+winui_name = "LightningBolt"
 swift = "—"
 
 [[icon]]
 id = "tree.note.loading"
 linux = "content-loading-symbolic"
-winui = "待核"
+winui = "E895"
+winui_name = "Sync"
 swift = "—"
 note = "占位行「读取中…」与「加载更多…」"
+winui_note = "近似：Segoe 无 spinner 字形，读取中用循环箭头"
 
 [[icon]]
 id = "tree.note.warning"
 linux = "dialog-warning-symbolic"
-winui = "待核"
+winui = "E7BA"
+winui_name = "Warning"
 swift = "—"
 note = "读取失败与能力不支持"
 
 [[icon]]
 id = "tree.note.info"
 linux = "dialog-information-symbolic"
-winui = "待核"
+winui = "E946"
+winui_name = "Info"
 swift = "—"
 note = "空分组说明与提示"
 
 [[icon]]
 id = "action.add"
 linux = "list-add-symbolic"
-winui = "待核"
+winui = "E710"
+winui_name = "Add"
 swift = "—"
 
 [[icon]]
 id = "action.delete"
 linux = "list-remove-symbolic"
-winui = "待核"
+winui = "E74D"
+winui_name = "Delete"
 swift = "—"
 
 [[icon]]
 id = "action.apply"
 linux = "object-select-symbolic"
-winui = "待核"
+winui = "E8FB"
+winui_name = "Accept"
 swift = "—"
 
 [[icon]]
 id = "action.discard"
 linux = "edit-undo-symbolic"
-winui = "待核"
+winui = "E7A7"
+winui_name = "Undo"
 swift = "—"
 
 [[icon]]
 id = "action.refresh"
 linux = "view-refresh-symbolic"
-winui = "待核"
+winui = "E72C"
+winui_name = "Refresh"
 swift = "—"
 
 [[icon]]
 id = "action.cancel"
 linux = "media-playback-stop-symbolic"
-winui = "待核"
+winui = "E71A"
+winui_name = "Stop"
 swift = "—"
+winui_note = "与 Linux 的停止方块同义，不用 E711 Cancel"
 
 [[icon]]
 id = "action.filter"
 linux = "sqarvo-filter-symbolic"
-winui = "待核"
+winui = "E71C"
+winui_name = "Filter"
 swift = "—"
 note = "自有图标：Adwaita / Yaru 没有漏斗，用放大镜会被读成搜索"
 
 [[icon]]
 id = "action.columns"
 linux = "view-reveal-symbolic"
-winui = "待核"
+winui = "E8A9"
+winui_name = "ViewAll"
 swift = "—"
+winui_note = "近似：Segoe 无「列显隐」字形"
 
 [[icon]]
 id = "action.export"
 linux = "document-save-symbolic"
-winui = "待核"
+winui = "EDE1"
+winui_name = "Export"
 swift = "—"
+winui_note = "Linux 用 document-save；这里取语义更准的 Export"
 
 [[icon]]
 id = "action.new_query"
 linux = "tab-new-symbolic"
-winui = "待核"
+winui = "EA1A"
+winui_name = "PageAdd"
 swift = "—"
 
 [[icon]]
 id = "action.close_tab"
 linux = "window-close-symbolic"
-winui = "待核"
+winui = "E711"
+winui_name = "Cancel"
 swift = "—"
+winui_note = "WinUI TabView 的关闭按钮用 Cancel；ChromeClose 留给窗口"
 
 [[icon]]
 id = "menu.open"
 linux = "open-menu-symbolic"
-winui = "待核"
+winui = "E700"
+winui_name = "GlobalNavButton"
 swift = "—"
 
 [[icon]]
 id = "view.detail_toggle"
 linux = "view-dual-symbolic"
-winui = "待核"
+winui = "E8FF"
+winui_name = "Preview"
 swift = "—"
 note = "展示形式切换：按行浏览 ↔ 单行「字段 · 值」"
+winui_note = "近似：无「字段·值视图」字形"
 
 [[icon]]
 id = "pager.first"
 linux = "sqarvo-first-page-symbolic"
-winui = "待核"
+winui = "E892"
+winui_name = "Previous"
 swift = "—"
 note = "自有图标：主题的双尖括号与单箭头只差一条线，小字号读不出两档"
+winui_note = "Segoe 没有首/末双箭头字形，只能与 previous 同枚兜底；Windows 端应自绘 PathIcon 或加文字"
 
 [[icon]]
 id = "pager.previous"
 linux = "sqarvo-page-prev-symbolic"
-winui = "待核"
+winui = "E892"
+winui_name = "Previous"
 swift = "—"
 
 [[icon]]
 id = "pager.next"
 linux = "sqarvo-page-next-symbolic"
-winui = "待核"
+winui = "E893"
+winui_name = "Next"
 swift = "—"
 
 [[icon]]
 id = "pager.last"
 linux = "sqarvo-last-page-symbolic"
-winui = "待核"
+winui = "E893"
+winui_name = "Next"
 swift = "—"
+winui_note = "同 pager.first：无末页字形，兜底与 next 同枚"
 
 [[icon]]
 id = "sort.ascending"
 linux = "view-sort-ascending-symbolic"
-winui = "待核"
+winui = "E70E"
+winui_name = "ChevronUp"
 swift = "—"
 
 [[icon]]
 id = "sort.descending"
 linux = "view-sort-descending-symbolic"
-winui = "待核"
+winui = "E70D"
+winui_name = "ChevronDown"
 swift = "—"
 
 [[icon]]
 id = "tab.objects"
 linux = "view-grid-symbolic"
-winui = "待核"
+winui = "F0E2"
+winui_name = "GridView"
 swift = "—"
 note = "`Objects` 固定页页签的图标"
