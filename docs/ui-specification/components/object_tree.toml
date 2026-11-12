@@ -125,6 +125,8 @@ precondition = "行存在"
 result = "底色换成品牌浅档（alpha 55%），不动前景色"
 source = "src/theme.rs:312"
 
+platform_notes.windows = "树行文字由 TreeViewNode.ToString() + 默认模板的 ContentPresenter 呈现，没有可单独设字重的 TextBlock；容器级 FontWeight（DispatcherQueue 里给 TreeViewItem 设）实测只对 1 行生效：8 行里只有 information_schema 变粗，连接名与 Tables/Views/Functions/Queries 分组名仍是 400。该实现已在 08151b1 撤回，Windows 树行统一 400。字重（连接/分组/库 = heading）与行首图标要等「树行换成自带图标与字重的行模板」那一类一起做。"
+
 [component.sync.linux]
 state = "done"
 spec_hash = "3a55b23eabfc"
