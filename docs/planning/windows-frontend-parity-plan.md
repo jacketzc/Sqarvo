@@ -131,3 +131,56 @@ WinUI 3 的启动崩溃可以是**延迟且抖动**的（同一份构建分别�
 - Windows 上端点文件的确切落地路径（`ProjectDirs` 实测值）：WP1 里由远程实测并写回文档。
 - Named Pipe 传输是否需要（当前 TCP+token 已够用）：暂不做，保留 `Transport` 抽象以便后续接入。
 - Windows CI：GitHub 托管 runner 有 `windows-latest`，WP8 评估是否把 `dotnet build` 加入 CI。
+## 8. 一致性复核（2026-11，Windows 端逐项核对结论）
+
+复核方法：同一数据状态两端各截一张（Linux `--screenshot` + `--window-size`；Windows 外部抓窗口）、
+逐区对照 `docs/ui-specification`（metrics.toml / components / ui-behavior-contract），
+并把差异落到 `file:line`。分析报告见仓库外 `~/tmp/sqarvo-win-linux-parity-review.md`（256 行）。
+
+### 8.1 已修（本轮，均已进 main）
+
+| 项 | 提交 | 说明 |
+|---|---|---|
+| 自绘标题行 | `5cf4841` | 系统 caption 按钮 + 自绘 header（图标 / 标题 + 副标题 / 汉堡菜单）；`ExtendsContentIntoTitleBar` + `SetTitleBar` 在 WinAppSDK 2.6.5 实测可用 |
+| 图标字体钉 MDL2 | `c72d923` | 42 个码点用 `GetGlyphIndicesW` 核过；`Segoe Fluent Icons` 是 Win11 独有，Win10 会退默认字体 |
+| 选中行品牌紫 | `7316bac` | 底色改品牌中档 + 配对前景；TreeView 键覆盖待真机确认 |
+| Windows CI 门禁 | `219b06d` `7faae69` `07ffe0e` | `windows-latest` 跑 build + Core 测试 + `scripts/xaml_lint.py`；首次运行即抓到两个真 bug |
+| 字号 / 字重令牌 | `d37c32a` `a2da8c2` `bf75fa3` | `font_weight_ui/cell/title/heading` 四档；表格 12/600 与 13/500 按注册表改正 |
+| 证据锚点校验 | `de6ac20` `cdb5856` | `sync.windows` 判 done 必须给真实 `file:line`，`done` 出现「待核」直接 error |
+| 注册表回填 | `c60cf61` | 菜单行退役、`native_control` 改 `Button(Flyout: MenuFlyout)` |
+
+### 8.2 仍不一致（按严重度）
+
+1. **行为缺失**（契约有、Windows 没有）：断开 / 刷新 / F5、对象树与数据行右键菜单、事务入口、
+   关标签三选、`N selected`、标签条 `＋`、表数据工具条 6 类控件、列头点击排序与列宽拖拽。
+2. **`Ctrl+Enter` 语义相反**：契约是整段执行，Windows 实现是「有选中就执行选中」。
+3. **树行字号/字重**：容器级 `FontWeight` 只对部分行生效（实测 8 行仅 1 行变粗），
+   要修必须换行模板（`DataTemplate` 在本仓库是禁用控件，需先定替代写法）。
+4. **诊断能力断层**：Linux 有 30+ 个 `--qa-*` / `--screenshot` 开关，Windows 只有 3 个 `--report-*`；
+   结果是「截图靠外部 BitBlt、布局靠肉眼」，这正是差异长期积累的原因之一。
+   正在补 `--screenshot` 与 `--qa-layout-audit`。
+5. **Win10 未实测**：验证机是 Win11 26200。F 段码点（`F0E2` 等）在旧版 MDL2 上是否齐全只有文档依据，
+   已在 `icons.toml` 的 `winui_note` 里写明回退码点。
+
+### 8.3 根因（为什么差距会长这么大）
+
+- **R1 验收口径**：早期 ADR 0023 写的是「语义一致、控件原生、验收不按像素」，
+  于是「控件是原生的」被当成合规，视觉规格（字号、行高、内距）不在验收项里。
+- **R2 无编译门禁**：Windows 代码长期没有 CI，编译错误与测试回归无人拦；本机无法编译 WinUI，
+  只能靠远程手跑，跑不跑取决于当次是否想起来。
+- **R3 规范只有数值没有语义**：metrics 曾有 144 个尺寸键却没有任何字重键、没有图标语义表，
+  实现只能拿框架默认值填，默认 14px 就这么漏进 7 处。
+- **R4 台账可自称**：`sync.windows.state = "done"` 曾不要求证据，done 与「实现过」之间没有桥。
+- **R5 对比入口缺失**：两端没有「同一状态、同一尺寸、同一开关」的取证方式，
+  差异只能靠人眼在两个不同分辨率的截图上找。
+
+### 8.4 防复发（已落地 / 已排期）
+
+- **数值单源**：`metrics.toml` → 构建期生成 `Metrics.g.cs`，生成失败即构建失败；禁止平台代码自算 `base × scale`。
+- **可 diff 的视觉证据**：两端各出 `--screenshot` + `--qa-layout-audit`（几何 + 实际字号 JSON），
+  同一状态下的两份 JSON 做机械比较，不再靠目视。
+- **可判定的行为台账**：每个组件的 `interactions` 必须给 `frontend/<plat>/…:行` 锚点，`done` 不得留「待核」。
+- **门禁三件套**：`windows-latest` CI（build + 测试 + XAML lint）、`check-ui-sync.sh release-check`
+  （发版前 sync 不得有缺口）、`gen` 产物与注册表一致性检查。
+- **流程**：改 UI 之前先报组件 `id`（AGENTS §14.3）；每轮改完必须交两端同状态截图 + layout JSON diff，
+  两者缺一不算完成。
