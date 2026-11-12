@@ -2407,18 +2407,24 @@ impl TabSet {
             eprintln!("[tabs] {}", DropReason::UnknownTab.log_line(tab_id));
             return;
         };
-        if let Delivery::Drop(reason) = routing::route(Some(tab.kind.channel()), Channel::Table) {
-            eprintln!("[tabs] {}", reason.log_line(tab_id));
-            return;
-        }
-        tab.record(event.name());
-        // 查询标签的单表编辑也走表事件（提交状态 / 结果回填）：投给 SQL 页。
-        let Some(data) = tab.data.as_ref() else {
+        // 查询标签的单表编辑（v0.2.5）也走表事件（提交状态 / 逐行结果）：必须先判，
+        // 否则会被下面的「通道不符」整批丢掉——那样提交后既没有回填也不会自动重跑
+        // （实测日志 `丢弃事件：标签 tab-q1 是查询标签，不接收表数据事件`）。
+        if tab.data.is_none() {
+            tab.record(event.name());
             if let Some(sql) = tab.sql.as_ref() {
                 sql.on_table_event(event);
             } else {
                 eprintln!("[tabs] 丢弃表数据事件：标签 {tab_id} 既不是表标签也不是查询标签");
             }
+            return;
+        }
+        if let Delivery::Drop(reason) = routing::route(Some(tab.kind.channel()), Channel::Table) {
+            eprintln!("[tabs] {}", reason.log_line(tab_id));
+            return;
+        }
+        tab.record(event.name());
+        let Some(data) = tab.data.as_ref() else {
             return;
         };
         match event {

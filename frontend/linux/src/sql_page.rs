@@ -107,6 +107,8 @@ pub struct SqlPage {
     pending_target: RefCell<Option<ObjectRef>>,
     /// 最近一次发出的提交批次（逐行结果回填要用同一份定位）。
     last_batch: RefCell<Option<ChangeBatch>>,
+    /// 提交后自动重跑要补在结果区的一句话（重跑会重置结果区，所以要跨过去）。
+    pending_commit_note: RefCell<Option<String>>,
 }
 
 impl SqlPage {
@@ -200,6 +202,7 @@ impl SqlPage {
             edit_note: RefCell::new(None),
             pending_target: RefCell::new(None),
             last_batch: RefCell::new(None),
+            pending_commit_note: RefCell::new(None),
         });
 
         {
@@ -338,6 +341,12 @@ impl SqlPage {
             // 已经在执行：忽略重复的 Ctrl+Enter，避免两条查询排在会话里。
             return;
         }
+        eprintln!("[query] t=+{}ms 点击执行", qa::elapsed_ms());
+        self.execute_sql(sql);
+    }
+
+    /// 真正发出一条 SQL（执行按钮、Ctrl+Enter、提交后自动重跑共用）。
+    fn execute_sql(self: &Rc<Self>, sql: String) {
         self.query_id.replace(None);
         self.cancel_sent.set(false);
         self.cancel_clicked_at.set(None);
@@ -348,11 +357,29 @@ impl SqlPage {
         self.results
             .set_state(RunState::Loading, 0, false, Some("正在执行…"));
         self.set_state(PageState::Running, None);
-        eprintln!("[query] t=+{}ms 点击执行", qa::elapsed_ms());
         let sql_len = sql.lines().count();
         eprintln!("[query] SQL 共 {sql_len} 行");
         qa::log_sql_preview(&sql);
         (self.callbacks.execute)(sql);
+    }
+
+    /// 提交落定后自动重跑（用户要求「提交后自动重跑」）。
+    ///
+    /// 重跑的是**上一次执行的那条 SQL**（`results.statement()`），不是编辑器里的当前
+    /// 内容：提交的是那条语句的结果，用户可能已经在编辑器里改了别的 SQL，拿新文本重跑
+    /// 会答非所问。重跑会重建结果区，所以「已提交 N 行」这句话要跨过重置补回去。
+    fn rerun_after_commit(self: &Rc<Self>, note: &str) {
+        if self.state.get().is_active() {
+            eprintln!("[query] 提交后重跑跳过：已有查询在跑");
+            return;
+        }
+        let sql = self.results.statement();
+        if sql.trim().is_empty() {
+            return;
+        }
+        self.pending_commit_note.replace(Some(note.to_owned()));
+        eprintln!("[query] t=+{}ms 提交后自动重跑", qa::elapsed_ms());
+        self.execute_sql(sql);
     }
 
     /// 取消按钮、Escape 与 QA 共用的入口（幂等）。
@@ -484,6 +511,10 @@ impl SqlPage {
         // 语句摘要仍写进日志，排障时查日志；界面只留真正需要说明的状态（失败 / 触顶 / 取消）。
         let statement = statements.first().cloned();
         self.results.set_detail("");
+        // 提交后自动重跑：结果区刚被重置，把「已提交 N 行」那句话补回来。
+        if let Some(note) = self.pending_commit_note.borrow_mut().take() {
+            self.results.set_detail(&note);
+        }
         // 语句摘要仍保留在日志里（排障要看），只是不再常驻界面。
         eprintln!(
             "[query] 语句摘要：{}（query_id={query_id}）",
@@ -775,21 +806,26 @@ impl SqlPage {
         };
         self.results.after_batch(&touched);
         self.last_batch.replace(None);
-        let note = if failures.is_empty() {
-            format!(
-                "已提交 {} 行 · 重新执行查询可看到库里最新的值",
+        if failures.is_empty() {
+            let note = format!(
+                "已提交 {} 行 · 已自动重新执行查询",
                 report.total_rows_affected
-            )
+            );
+            eprintln!("[query] {note}");
+            self.set_state(PageState::Complete, Some(&note));
+            (self.callbacks.state_changed)();
+            self.rerun_after_commit(&note);
         } else {
-            format!(
-                "已提交 {} 行，{} 行失败（未提交的仍在草稿里）",
+            // 有失败行时不重跑：重跑会把「哪几行没提交」这件事从界面上抹掉。
+            let note = format!(
+                "已提交 {} 行，{} 行失败（未提交的仍在草稿里，界面不重跑）",
                 report.total_rows_affected,
                 failures.len()
-            )
-        };
-        eprintln!("[query] {note}");
-        self.set_state(PageState::Complete, Some(&note));
-        (self.callbacks.state_changed)();
+            );
+            eprintln!("[query] {note}");
+            self.set_state(PageState::Complete, Some(&note));
+            (self.callbacks.state_changed)();
+        }
     }
 
     /// 新行插入结果。
@@ -801,12 +837,11 @@ impl SqlPage {
             return;
         }
         self.results.remove_insert_row();
-        let note = format!(
-            "已插入 {} 行 · 重新执行查询可看到库里最新的值",
-            report.inserted_rows
-        );
+        let note = format!("已插入 {} 行 · 已自动重新执行查询", report.inserted_rows);
         eprintln!("[query] {note}");
         self.set_state(PageState::Complete, Some(&note));
+        (self.callbacks.state_changed)();
+        self.rerun_after_commit(&note);
     }
 
     /// QA：按列名改一格（与双击编辑器同一条路径）。
