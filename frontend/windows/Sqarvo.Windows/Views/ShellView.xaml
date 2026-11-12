@@ -9,7 +9,7 @@
     本文件里只有启用态、文案与两条拖动条，布局尺寸依旧在 code-behind 里从 Metrics 取。
 
     区域与宿主控件严格按 docs/ui-specification/workspace-model.md §8 的 Windows 列：
-    系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（自绘 Grid：动作按钮 + 种类入口）→
+    自绘标题行（图标 + 标题 / 副标题 + 汉堡菜单；窗口按钮仍是系统的）→ 主工具条（自绘 Grid：动作按钮 + 种类入口）→
     对象树（TreeView）→ 工作区（TabView）→ 状态栏（自绘两行）→ 信息面板（SplitView 右panel）。
 
     尺寸：高度/字号全用 {StaticResource Size.*}；宽度这类 GridLength / 结构体在 code-behind 里
@@ -64,61 +64,153 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 区域 01：窗口内菜单行（Windows 的系统标题栏由 AppWindow 提供，不在这里自绘） -->
+        <!--
+            区域 01：自绘标题行（#180）。
+
+            形态与 Linux 的 AdwHeaderBar 同构：左侧应用图标 → 标题 / 副标题竖排 → 余下留白 →
+            右侧一个汉堡菜单按钮。窗口最小化 / 最大化 / 关闭仍然是**系统**的 caption 按钮
+            （ADR 0023「控件原生」的边界）：窗口层把内容延伸到标题栏（ExtendsContentIntoTitleBar），
+            只把中间那段（图标右边 → 按钮左边）交给 SetTitleBar 当拖拽区，
+            所以按钮与图标的命中语义不变，右侧还要给 caption 按钮让位（内距由 code-behind 叠加）。
+
+            为什么菜单是 MenuFlyout + MenuFlyoutSubItem 而不是 MenuBar：MenuBar 自带一整行，
+            而这里要的是「一个按钮里的三层菜单」。条目名（MenuFile / MenuNewConnection /
+            MenuNewQueryTab / MenuQuit / MenuExportCsv / MenuAbout）与原来一致，
+            WireMenu() 仍按名字接 Click / IsEnabled，事件语义没变。
+            字形仍用 Segoe Fluent Icons 的字符（TextBlock + FontFamily），不额外实例化图标控件。
+        -->
         <Border
-            x:Name="MenuBand"
+            x:Name="HeaderBand"
             Grid.Row="0"
+            Height="{StaticResource Size.HeaderHeight}"
             Background="{ThemeResource SqarvoBandBrush}">
-            <MenuBar
-                x:Name="MainMenu"
-                FontSize="{StaticResource Size.FontUi}"
-                FontWeight="{StaticResource Weight.Ui}"
-                AutomationProperties.Name="主菜单">
-                <MenuBarItem
-                    Title="文件"
-                    FontSize="{StaticResource Size.FontUi}"
-                    FontWeight="{StaticResource Weight.Ui}">
-                    <!-- 启用态由 BackendState.IsReady 决定（ShellView.ApplyBackendState），tooltip 在 code-behind 逐项说明 -->
-                    <MenuFlyoutItem
-                        x:Name="MenuNewConnection"
-                        Text="新建连接…"
-                        FontSize="{StaticResource Size.FontUi}"
-                        FontWeight="{StaticResource Weight.Ui}" />
-                    <MenuFlyoutItem
-                        x:Name="MenuNewQueryTab"
-                        Text="新建查询标签"
-                        IsEnabled="False"
-                        FontSize="{StaticResource Size.FontUi}"
-                        FontWeight="{StaticResource Weight.Ui}" />
-                    <MenuFlyoutSeparator />
-                    <MenuFlyoutItem
-                        x:Name="MenuQuit"
-                        Text="退出"
-                        FontSize="{StaticResource Size.FontUi}"
-                        FontWeight="{StaticResource Weight.Ui}" />
-                </MenuBarItem>
-                <MenuBarItem
-                    Title="表"
-                    FontSize="{StaticResource Size.FontUi}"
-                    FontWeight="{StaticResource Weight.Ui}">
-                    <MenuFlyoutItem
-                        x:Name="MenuExportCsv"
-                        Text="导出 CSV…"
-                        IsEnabled="False"
-                        FontSize="{StaticResource Size.FontUi}"
-                        FontWeight="{StaticResource Weight.Ui}" />
-                </MenuBarItem>
-                <MenuBarItem
-                    Title="帮助"
-                    FontSize="{StaticResource Size.FontUi}"
-                    FontWeight="{StaticResource Weight.Ui}">
-                    <MenuFlyoutItem
-                        x:Name="MenuAbout"
-                        Text="关于 Squarvo"
-                        FontSize="{StaticResource Size.FontUi}"
-                        FontWeight="{StaticResource Weight.Ui}" />
-                </MenuBarItem>
-            </MenuBar>
+            <Grid
+                x:Name="HeaderRow"
+                ColumnSpacing="{StaticResource Size.GapSm}"
+                AutomationProperties.Name="标题行">
+                <Grid.ColumnDefinitions>
+                    <!-- 图标（不参与拖拽） -->
+                    <ColumnDefinition Width="Auto" />
+                    <!-- 标题 + 副标题；这一列整个是拖拽区 -->
+                    <ColumnDefinition Width="*" />
+                    <!-- 汉堡菜单（不参与拖拽） -->
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- ms-appx 指到输出目录里的 Assets/app.ico（csproj 的 Content CopyToOutputDirectory） -->
+                <Image
+                    x:Name="HeaderAppIcon"
+                    Grid.Column="0"
+                    Width="{StaticResource Size.MinTarget}"
+                    Height="{StaticResource Size.MinTarget}"
+                    VerticalAlignment="Center"
+                    Source="ms-appx:///Assets/app.ico"
+                    AutomationProperties.Name="Sqarvo"
+                    ImageFailed="OnHeaderAppIconFailed" />
+
+                <!--
+                    Background 必须非空：透明画刷也让这一列可命中，SetTitleBar 才拖得动窗口。
+                    「透明」用 SqarvoTransparentBrush（SubtleFillColorTransparentBrush 的别名），
+                    与状态栏 / 工具条的透明底同一个 token。
+                -->
+                <Border
+                    x:Name="HeaderDragArea"
+                    Grid.Column="1"
+                    Background="{ThemeResource SqarvoTransparentBrush}">
+                    <StackPanel
+                        x:Name="HeaderTitles"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center">
+                        <TextBlock
+                            x:Name="HeaderTitle"
+                            Text="Sqarvo"
+                            FontSize="{StaticResource Size.FontTitle}"
+                            FontWeight="{StaticResource Weight.Title}"
+                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                            TextTrimming="CharacterEllipsis" />
+                        <!-- 文案不在这里写：ApplyBackendState 一处写（BackendState 的现有状态文案） -->
+                        <TextBlock
+                            x:Name="HeaderSubtitle"
+                            FontSize="{StaticResource Size.FontStatus}"
+                            FontWeight="{StaticResource Weight.Ui}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                            TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Border>
+
+                <Button
+                    x:Name="HeaderMenuButton"
+                    Grid.Column="2"
+                    Width="{StaticResource Size.IconButtonWidth}"
+                    Height="{StaticResource Size.IconButtonHeight}"
+                    MinWidth="{StaticResource Size.IconButtonWidth}"
+                    MinHeight="{StaticResource Size.IconButtonHeight}"
+                    Padding="0"
+                    VerticalAlignment="Center"
+                    Background="{ThemeResource SqarvoTransparentBrush}"
+                    BorderThickness="0"
+                    AutomationProperties.Name="主菜单">
+                    <Button.Flyout>
+                        <MenuFlyout Placement="BottomEdgeAlignedRight">
+                            <MenuFlyoutSubItem
+                                x:Name="MenuFile"
+                                Text="文件"
+                                FontSize="{StaticResource Size.FontUi}"
+                                FontWeight="{StaticResource Weight.Ui}">
+                                <!-- 启用态由 BackendState.IsReady 决定（ShellView.ApplyBackendState），tooltip 在 code-behind 逐项说明 -->
+                                <MenuFlyoutItem
+                                    x:Name="MenuNewConnection"
+                                    Text="新建连接…"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}" />
+                                <MenuFlyoutItem
+                                    x:Name="MenuNewQueryTab"
+                                    Text="新建查询标签"
+                                    IsEnabled="False"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}" />
+                                <MenuFlyoutSeparator />
+                                <MenuFlyoutItem
+                                    x:Name="MenuQuit"
+                                    Text="退出"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}" />
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutSubItem
+                                x:Name="MenuTable"
+                                Text="表"
+                                FontSize="{StaticResource Size.FontUi}"
+                                FontWeight="{StaticResource Weight.Ui}">
+                                <MenuFlyoutItem
+                                    x:Name="MenuExportCsv"
+                                    Text="导出 CSV…"
+                                    IsEnabled="False"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}" />
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutSubItem
+                                x:Name="MenuHelp"
+                                Text="帮助"
+                                FontSize="{StaticResource Size.FontUi}"
+                                FontWeight="{StaticResource Weight.Ui}">
+                                <MenuFlyoutItem
+                                    x:Name="MenuAbout"
+                                    Text="关于 Squarvo"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}" />
+                            </MenuFlyoutSubItem>
+                        </MenuFlyout>
+                    </Button.Flyout>
+                    <!-- E700 = GlobalNavButton（汉堡三横）；字形 16（icon_box），命中区 28×24（icon_button_*） -->
+                    <TextBlock
+                        FontFamily="Segoe Fluent Icons"
+                        Text="&#xE700;"
+                        FontSize="{StaticResource Size.IconBox}"
+                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center" />
+                </Button>
+            </Grid>
         </Border>
 
         <!--

@@ -75,6 +75,10 @@ public sealed partial class MainWindow : Window
             _shell = CreateShell();
             ShellHost.Content = _shell;
 
+            // 自绘标题行（#180）：内容延伸到标题栏，窗口最小化/最大化/关闭仍是系统的 caption 按钮。
+            // 拖拽区必须等元素进入可视树（布局之后）再指，见 OnRootLoaded。
+            EnableExtendedTitleBar();
+
             if (Content is FrameworkElement root)
             {
                 root.ActualThemeChanged += OnActualThemeChanged;
@@ -542,6 +546,10 @@ public sealed partial class MainWindow : Window
         ShellHost.Content = rebuilt;
         _shell = rebuilt;
         rebuilt.RestoreSnapshot(snapshot);
+
+        // 新外壳是新的可视元素：等它进入可视树再把拖拽区指过来（内容刚换上去时还没布局），
+        // 只订阅一次，指完就退订。
+        rebuilt.Loaded += OnRebuiltShellLoaded;
     }
 
     /// <summary>建一个外壳实例并把两个出口接上（窗口层是唯一负责持久化的一层）。</summary>
@@ -620,9 +628,24 @@ public sealed partial class MainWindow : Window
     {
         HookXamlRoot();
         Relayout(RelayoutReason.Startup);
+
+        // 标题行拖拽区：要等元素进入可视树并完成首次布局（Relayout 里会强制一次布局）之后再指，
+        // 构造里指会得到一块零宽的区域。
+        AttachTitleBarDragRegion();
     }
 
     private void OnRootUnloaded(object sender, RoutedEventArgs args) => UnhookXamlRoot();
+
+    /// <summary>切密度档重建外壳后：新实例进入可视树，把标题行拖拽区重新指过来（一次性订阅）。</summary>
+    private void OnRebuiltShellLoaded(object sender, RoutedEventArgs args)
+    {
+        if (sender is ShellView shell)
+        {
+            shell.Loaded -= OnRebuiltShellLoaded;
+        }
+
+        AttachTitleBarDragRegion();
+    }
 
     /// <summary>订阅 <c>XamlRoot.Changed</c>：DPI 只能从这里拿（<c>DisplayInformation</c> 在 WinUI 3 抛异常）。</summary>
     private void HookXamlRoot()
@@ -758,6 +781,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // 标题行右侧要给系统 caption 按钮让位：宽度随 DPI / 最大化的变化，跟着这次测量一起刷。
+        UpdateCaptionInset(scale);
+
         var measured = MeasureTitleBarDips(scale, forceLayout);
         if (measured <= 0)
         {
@@ -799,6 +825,150 @@ public sealed partial class MainWindow : Window
         {
             ConsoleBridge.WriteDiagnostic($"[chrome] 非客户区高度测量失败（{error.GetType().Name}）");
             return 0;
+        }
+    }
+
+    // ------------------------------------------------------------------ 自绘标题行（#180）
+
+    /// <summary>
+    /// 把内容延伸到标题栏：标题行由外壳自绘，最小化 / 最大化 / 关闭仍是**系统**的 caption 按钮
+    /// （ADR 0023「控件原生」的边界）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 主路径是 WinUI 3 的 <c>Window.ExtendsContentIntoTitleBar</c>；若当前 SDK（2.6.5）的
+    /// <c>Window</c> 上没有这个属性、调用抛 <see cref="MissingMethodException"/> /
+    /// <see cref="System.NotSupportedException"/>，退回 <c>AppWindow.TitleBar.ExtendsContentIntoTitleBar</c>。
+    /// 两条都失败就记一行诊断并保持系统标题栏——界面照样能用，只是多一行标题。
+    /// </para>
+    /// <para>
+    /// 这里只做「延伸」，不指拖拽区：拖拽区要等元素进入可视树，见 <see cref="AttachTitleBarDragRegion"/>。
+    /// 窗口尺寸 / 最小尺寸 / DPI / 密度档一律不在这里碰。
+    /// </para>
+    /// </remarks>
+    private void EnableExtendedTitleBar()
+    {
+        try
+        {
+            ExtendsContentIntoTitleBar = true;
+            CrashLog.Trace("main.titlebar.extends.window");
+            return;
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic(
+                $"[chrome] Window.ExtendsContentIntoTitleBar 不可用（{error.GetType().Name}: {error.Message}），改走 AppWindow");
+        }
+
+        try
+        {
+            AppWindow.TitleBar.ExtendsContentIntoTitleBar = true;
+            CrashLog.Trace("main.titlebar.extends.appwindow");
+        }
+        catch (Exception error)
+        {
+            // 保持系统标题栏：这是「少一行自绘标题」，不是崩溃。
+            ConsoleBridge.WriteDiagnostic(
+                $"[chrome] 内容延伸进标题栏失败（{error.GetType().Name}: {error.Message}），保留系统标题栏");
+            CrashLog.Write("titlebar", error);
+        }
+    }
+
+    /// <summary>
+    /// 把标题行里「图标右边 → 汉堡按钮左边」那一段指成拖拽区，并把 caption 按钮占的宽度交给外壳。
+    /// </summary>
+    /// <remarks>
+    /// 这个仓库在标题栏上踩过崩溃（0xc000027b），所以整段兜住：指不上拖拽区时把扩展标题栏退回去，
+    /// 让系统标题栏回来——**没有拖拽区的自绘标题行等于窗口拖不动**，那比多一行标题糟得多。
+    /// 切密度档会换外壳实例，这里必须能重复调用。
+    /// </remarks>
+    private void AttachTitleBarDragRegion()
+    {
+        if (_shell?.HeaderDragRegion is not { } dragRegion)
+        {
+            return;
+        }
+
+        // 元素还没接进可视树（刚重建外壳、这一帧还没布局）：等它的 Loaded 再来一次。
+        // 这里**不能**当成失败去回退，否则一次正常的重建就会把自绘标题行永久换回系统标题栏。
+        if (dragRegion is not FrameworkElement { XamlRoot: not null })
+        {
+            return;
+        }
+
+        try
+        {
+            SetTitleBar(dragRegion);
+            CrashLog.Trace("main.titlebar.set");
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic(
+                $"[chrome] SetTitleBar 失败（{error.GetType().Name}: {error.Message}），回退系统标题栏");
+            CrashLog.Write("titlebar", error);
+
+            try
+            {
+                SetTitleBar(null);
+            }
+            catch (Exception)
+            {
+                // 已经指不上了，清空失败也无所谓。
+            }
+
+            try
+            {
+                ExtendsContentIntoTitleBar = false;
+            }
+            catch (Exception)
+            {
+                try
+                {
+                    AppWindow.TitleBar.ExtendsContentIntoTitleBar = false;
+                }
+                catch (Exception)
+                {
+                    // 两条回退都失败：结论不变（没有拖拽区就不能延伸），界面仍然可用。
+                }
+            }
+
+            _shell.SetCaptionInsets(0, 0);
+            return;
+        }
+
+        UpdateCaptionInset();
+    }
+
+    /// <summary>
+    /// 系统 caption 按钮占的宽度（物理像素 → DIP）交给外壳，作为标题行右侧的额外内距。
+    /// </summary>
+    /// <remarks>
+    /// 用 <c>AppWindow.TitleBar.RightInset / LeftInset</c> 这一对平台值，而不是硬编码三颗按钮的宽度：
+    /// 不同 DPI、不同系统版本、最大化与否，caption 区的宽度都不同。
+    /// </remarks>
+    private void UpdateCaptionInset(double? knownScale = null)
+    {
+        if (_shell is null)
+        {
+            return;
+        }
+
+        var scale = knownScale ?? Content?.XamlRoot?.RasterizationScale ?? _lastScale;
+        if (scale <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var titleBar = AppWindow.TitleBar;
+            _shell.SetCaptionInsets(titleBar.LeftInset / scale, titleBar.RightInset / scale);
+        }
+        catch (Exception error)
+        {
+            // 内距读不到就退回只有 toolbar_padding_h：最坏情况是汉堡按钮被 caption 按钮压住一点，
+            // 但绝不因为读不到一个装饰性数字而让窗口层失败。
+            ConsoleBridge.WriteDiagnostic($"[chrome] 读取标题栏内距失败（{error.GetType().Name}）");
         }
     }
 
