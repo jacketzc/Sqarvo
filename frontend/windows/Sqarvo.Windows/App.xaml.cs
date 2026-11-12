@@ -95,6 +95,7 @@ public partial class App : Application
 
         _options = AppOptions.Parse(Environment.GetCommandLineArgs());
         if (_options.HasReports
+            || _options.HasWindowDiagnostics
             || _options.QaConnect is { Length: > 0 }
             || _options.QaMetadata is { Length: > 0 }
             || _options.QaQuery is { Length: > 0 }
@@ -185,7 +186,9 @@ public partial class App : Application
         // 两个「要连真库」的 QA 链路（元数据 / 查询）都必须真的把后端拉起来，否则探针什么也拿不到。
         var needsBackendForProbe = _options.QaMetadata is { Length: > 0 }
             || _options.QaQuery is { Length: > 0 }
-            || _options.QaData is { Length: > 0 };
+            || _options.QaData is { Length: > 0 }
+            || _options.HasWindowDiagnostics;
+        var qaChainStarted = false;
         if ((!_options.HasReports || needsBackendForProbe) && !_options.NoBackend)
         {
             // 不 await：窗口先显示，握手进度通过 BackendState 写进状态栏。
@@ -197,29 +200,39 @@ public partial class App : Application
                 // 查询（#172）与表数据（#173）两条链路可以在同一个进程里按顺序跑：截图需要同时看到
                 // 查询页与数据页，一个开关一个 return 会让后一条永远不执行（真机上踩过）。
                 _ = RunQaChainAsync(window, keepAlive: _options.QaSignIn is { Length: > 0 });
-                return;
+                qaChainStarted = true;
             }
-
-            if (_options.QaConnect is { Length: > 0 } qaConnect)
+            else if (_options.QaConnect is { Length: > 0 } qaConnect)
             {
                 // QA 链路：不依赖鼠标点界面，直接把「握手 → 测试连接 → 连接 → 断开」跑一遍。
                 _ = RunQaConnectAsync(qaConnect, keepAlive: false);
-                return;
+                qaChainStarted = true;
             }
-
-            if (_options.QaSignIn is { Length: > 0 } qaSignIn)
+            else if (_options.QaSignIn is { Length: > 0 } qaSignIn)
             {
                 // 与 --qa-connect 同一条链路，但不退出也不断开：留给外部截图与手工点检。
                 _ = RunQaConnectAsync(qaSignIn, keepAlive: true);
-                return;
+                qaChainStarted = true;
             }
-
-            if (_options.QaMetadata is { Length: > 0 } qaMetadata)
+            else if (_options.QaMetadata is { Length: > 0 } qaMetadata)
             {
                 // 元数据链路（#171）：连上之后**真的**展开对象树，再把控件树打出来。
                 _ = RunQaMetadataAsync(window, qaMetadata);
-                return;
+                qaChainStarted = true;
             }
+        }
+
+        // 截图 / 布局审计：与上面任何一条 QA 链路并行跑（它们要的是"连接之后的界面"），
+        // 因此这里不能像 --report-* 那样先 return —— 先派发，再交给同一个后台任务收尾。
+        if (_options.HasWindowDiagnostics)
+        {
+            _ = RunWindowDiagnosticsAsync(window);
+            return;
+        }
+
+        if (qaChainStarted)
+        {
+            return;
         }
 
         if (!_options.HasReports)
@@ -244,6 +257,42 @@ public partial class App : Application
             }
 
             content.Loaded += OnLoaded;
+        }
+    }
+
+    /// <summary>
+    /// <c>--screenshot=&lt;路径&gt;</c> / <c>--qa-layout-audit=&lt;路径&gt;</c>：等界面稳定后取图、取布局，
+    /// 然后按「有没有 keepAlive 开关」决定关窗还是留着。
+    /// </summary>
+    /// <remarks>
+    /// 这两件事都要在"连接之后"的界面上做才有意义，因此它们与 QA 链路并行，而不是串在某一条链路后面；
+    /// 判定依据是「窗口起来了没有 / 后端连上了没有」，不是开关的书写顺序。
+    /// <c>--qa-signin</c>（以及带它的 <c>--qa-query</c> / <c>--qa-data</c>）是"保持运行供点检"的开关：
+    /// 有它就绝不关窗，没有就写完后 <c>Close()</c>、退出码 0。
+    /// </remarks>
+    private async Task RunWindowDiagnosticsAsync(MainWindow window)
+    {
+        if (_options.ScreenshotPath is { Length: > 0 } screenshot)
+        {
+            await ScreenshotService.CaptureAsync(window, screenshot, _options.ScreenshotDelaySeconds);
+        }
+
+        if (_options.LayoutAudit)
+        {
+            await LayoutAudit.RunAsync(window, _options.LayoutAuditPath);
+        }
+
+        // 同时给了 --report-*：照旧打印证据并退出（Report 自己在低优先级队列里关窗）。
+        if (_options.HasReports)
+        {
+            Report(window);
+
+            return;
+        }
+
+        if (_options.QaSignIn is not { Length: > 0 })
+        {
+            window.Close();
         }
     }
 
