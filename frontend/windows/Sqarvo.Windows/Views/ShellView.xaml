@@ -9,7 +9,7 @@
     本文件里只有启用态、文案与两条拖动条，布局尺寸依旧在 code-behind 里从 Metrics 取。
 
     区域与宿主控件严格按 docs/ui-specification/workspace-model.md §8 的 Windows 列：
-    系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（CommandBar）→
+    系统标题栏（AppWindow）+ 窗口内菜单行（MenuBar）→ 主工具条（自绘 Grid：动作按钮 + 种类入口）→
     对象树（TreeView）→ 工作区（TabView）→ 状态栏（自绘两行）→ 信息面板（SplitView 右panel）。
 
     尺寸：高度/字号全用 {StaticResource Size.*}；宽度这类 GridLength / 结构体在 code-behind 里
@@ -62,31 +62,172 @@
             </MenuBar>
         </Border>
 
-        <!-- 区域 02：主工具条 -->
+        <!--
+            区域 02：主工具条。
+
+            形态与 Linux 客户端的 Toolbar（shell.rs `Toolbar::new`）同构：
+            左动作组（连接 = 主操作 · 新建查询 = 次要）→ 1px 竖分隔线 → 四个种类入口 → 余下留白。
+
+            为什么是 Button + Border + TextBlock 而不是 CommandBar / AppBarButton / ToggleButton：
+            #170 把整块换成 CommandBar + AppBarButton + ToggleButton 之后在真机上秒级崩溃
+            （0xc000027b，5/5 与 3/3 两轮），整块已回退。这里只用最朴素的原语：
+            Button 提供命中区、Tab 焦点与启用态（code-behind 仍在改 ButtonConnect.IsEnabled，
+            所以两个动作必须是 Button 而不是 Border），颜色与字形落在 Border / TextBlock 上；
+            种类入口不接动作、只表达「现在列的是哪一类」，用 Border + TextBlock。
+
+            图标是 Segoe Fluent Icons 的**字形**（TextBlock + FontFamily），不是 FontIcon：
+            字形只是一个字符，不额外实例化控件。高度 / 字号 / 内边距全部来自 Metrics
+            （高度与字号用 Size.*，Padding / CornerRadius 这类结构体在 ShellView.Chrome.cs 里取）。
+        -->
         <Border
             x:Name="ToolbarBand"
             Grid.Row="1"
             Background="{ThemeResource SqarvoSurfaceBrush}"
             Height="{StaticResource Size.ToolbarHeight}">
-            <CommandBar
-                x:Name="MainToolbar"
-                DefaultLabelPosition="Right"
-                IsOpen="False"
-                AutomationProperties.Name="主工具条">
-                <AppBarButton x:Name="ButtonConnect" Label="连接"
-                              AutomationProperties.Name="连接" />
-                <AppBarButton x:Name="ButtonNewQuery" Label="新建查询" IsEnabled="False"
-                              AutomationProperties.Name="新建查询" />
-                <AppBarSeparator />
-                <AppBarButton x:Name="ButtonTables" Label="Tables" IsEnabled="False"
-                              AutomationProperties.Name="Tables" />
-                <AppBarButton x:Name="ButtonViews" Label="Views" IsEnabled="False"
-                              AutomationProperties.Name="Views" />
-                <AppBarButton x:Name="ButtonFunctions" Label="Functions" IsEnabled="False"
-                              AutomationProperties.Name="Functions" />
-                <AppBarButton x:Name="ButtonQueries" Label="Queries" IsEnabled="False"
-                              AutomationProperties.Name="Queries" />
-            </CommandBar>
+            <Grid x:Name="MainToolbar" AutomationProperties.Name="主工具条">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel
+                    x:Name="ToolbarActions"
+                    Grid.Column="0"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center"
+                    Spacing="{StaticResource Size.InspectorGap}">
+                    <!-- 主操作：系统强调色底 + 反白文字。禁用态的底色由 Button 的模板视觉状态接管
+                         （VisualState 的 setter 会盖掉这里的本地值），所以没后端时它自然变灰。 -->
+                    <Button
+                        x:Name="ButtonConnect"
+                        Height="{StaticResource Size.BadgeMinHeight}"
+                        MinHeight="{StaticResource Size.SecondaryMinHeight}"
+                        MinWidth="0"
+                        Padding="0"
+                        Background="{ThemeResource SqarvoAccentFillBrush}"
+                        AutomationProperties.Name="连接"
+                        ToolTipService.ToolTip="打开连接对话框（Ctrl+N）">
+                        <Border x:Name="ConnectChip" Background="Transparent">
+                            <StackPanel
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Spacing="{StaticResource Size.GridPaddingEnd}">
+                                <TextBlock
+                                    FontFamily="Segoe Fluent Icons"
+                                    Text="&#xE71B;"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    Foreground="{ThemeResource SqarvoOnAccentTextBrush}"
+                                    VerticalAlignment="Center" />
+                                <TextBlock
+                                    Text="连接"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    Foreground="{ThemeResource SqarvoOnAccentTextBrush}"
+                                    VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                    </Button>
+
+                    <!-- 次要动作：中性底（透明）+ 主文字色，与种类入口同一套 flat 形态。 -->
+                    <Button
+                        x:Name="ButtonNewQuery"
+                        Height="{StaticResource Size.BadgeMinHeight}"
+                        MinHeight="{StaticResource Size.SecondaryMinHeight}"
+                        MinWidth="0"
+                        Padding="0"
+                        IsEnabled="False"
+                        Background="{ThemeResource SqarvoTransparentBrush}"
+                        AutomationProperties.Name="新建查询"
+                        ToolTipService.ToolTip="新建查询标签（Ctrl+T）">
+                        <Border x:Name="NewQueryChip" Background="Transparent">
+                            <StackPanel
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Spacing="{StaticResource Size.GridPaddingEnd}">
+                                <TextBlock
+                                    FontFamily="Segoe Fluent Icons"
+                                    Text="&#xE710;"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                    VerticalAlignment="Center" />
+                                <TextBlock
+                                    Text="新建查询"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                    VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                    </Button>
+                </StackPanel>
+
+                <!-- 左组与种类入口之间的 1px 竖分隔线：视觉线 1px、命中区/间距取 inspector_gap。
+                     不用 Border.BorderThickness（Thickness 无法从 double 资源转），用 Rectangle。 -->
+                <Grid Grid.Column="1" Width="{StaticResource Size.InspectorGap}">
+                    <Rectangle
+                        Width="{StaticResource Size.BorderWidthPxNeverScaled}"
+                        Height="{StaticResource Size.IconButtonHeight}"
+                        Fill="{ThemeResource SqarvoDividerBrush}"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center" />
+                </Grid>
+
+                <!-- 种类入口：选中 = 浅填充底 + 文字加粗（SemiBold），未选中 = 透明底 + 次要色弱化文字。
+                     当前静态标在 Tables（与 Linux 截图一致：Objects 页列的是表）；种类切换接线后
+                     由 code-behind 改这四个 Border 的 Background 与文字字重，不需要新控件类型。 -->
+                <StackPanel
+                    x:Name="ToolbarKinds"
+                    Grid.Column="2"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center"
+                    Spacing="{StaticResource Size.GridPaddingEnd}">
+                    <Border
+                        x:Name="ButtonTables"
+                        Height="{StaticResource Size.IconButtonHeight}"
+                        Background="{ThemeResource SqarvoSelectionBrush}"
+                        AutomationProperties.Name="Tables">
+                        <TextBlock
+                            Text="Tables"
+                            FontSize="{StaticResource Size.FontUi}"
+                            FontWeight="SemiBold"
+                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                            VerticalAlignment="Center" />
+                    </Border>
+                    <Border
+                        x:Name="ButtonViews"
+                        Height="{StaticResource Size.IconButtonHeight}"
+                        Background="{ThemeResource SqarvoTransparentBrush}"
+                        AutomationProperties.Name="Views">
+                        <TextBlock
+                            Text="Views"
+                            FontSize="{StaticResource Size.FontUi}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                            VerticalAlignment="Center" />
+                    </Border>
+                    <Border
+                        x:Name="ButtonFunctions"
+                        Height="{StaticResource Size.IconButtonHeight}"
+                        Background="{ThemeResource SqarvoTransparentBrush}"
+                        AutomationProperties.Name="Functions">
+                        <TextBlock
+                            Text="Functions"
+                            FontSize="{StaticResource Size.FontUi}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                            VerticalAlignment="Center" />
+                    </Border>
+                    <Border
+                        x:Name="ButtonQueries"
+                        Height="{StaticResource Size.IconButtonHeight}"
+                        Background="{ThemeResource SqarvoTransparentBrush}"
+                        AutomationProperties.Name="Queries">
+                        <TextBlock
+                            Text="Queries"
+                            FontSize="{StaticResource Size.FontUi}"
+                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                            VerticalAlignment="Center" />
+                    </Border>
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!--
@@ -275,8 +416,13 @@
                                         VerticalAlignment="Center"
                                         HorizontalAlignment="Center"
                                         Spacing="{StaticResource Size.InspectorGap}">
-                                        <ProgressRing IsActive="True" Width="{StaticResource Size.IconBox}"
-                                                      Height="{StaticResource Size.IconBox}" />
+                                        <!-- 加载态：不引入 ProgressRing（#170 崩溃排查里它曾被逐个隔离过，
+                                             这里用字形「…」+ 文案表达同一件事，少一个控件实例）。 -->
+                                        <TextBlock
+                                            Text="…"
+                                            FontSize="{StaticResource Size.FontTitle}"
+                                            Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
+                                            HorizontalAlignment="Center" />
                                         <TextBlock
                                             Text="正在连接…"
                                             FontSize="{StaticResource Size.FontUi}"

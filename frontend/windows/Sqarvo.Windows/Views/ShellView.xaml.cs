@@ -786,6 +786,9 @@ public sealed partial class ShellView : UserControl
         ToolbarBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
         StatusBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
 
+        // 工具条 / 状态栏 / 标签条的结构体尺寸（Thickness / CornerRadius）集中在这里取 Metrics。
+        ApplyToolbarMetrics();
+
         UpdateTierLabel();
     }
 

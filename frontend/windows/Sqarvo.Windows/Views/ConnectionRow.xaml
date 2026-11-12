@@ -26,11 +26,15 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- 图标位：字体符号（仓库没有自带图标资源），尺寸取 icon_box -->
-        <FontIcon
+        <!-- 图标位：字体符号（仓库没有自带图标资源），尺寸取 icon_box。
+
+             用 TextBlock + FontFamily 而不是 FontIcon：#170 的 FontIcon 是崩溃排查里逐个隔离过的
+             控件之一，字形只需要一个 TextBlock，少一个控件实例、少一层模板。 -->
+        <TextBlock
             x:Name="NodeIcon"
             Grid.Column="0"
-            Glyph="&#xE71B;"
+            FontFamily="Segoe Fluent Icons"
+            Text="&#xE71B;"
             FontSize="{StaticResource Size.IconBox}"
             VerticalAlignment="Center"
             Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
