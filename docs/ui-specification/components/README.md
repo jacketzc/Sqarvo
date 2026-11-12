@@ -169,3 +169,6 @@ evidence = "--qa-layout-audit 通过"  # 证据（可空，done 时缺失只报�
 
 **发版门禁**：`scripts/check-ui-sync.sh release-check` —— 发布前所有 `active` 组件在 Linux / Windows
 必须 `done`（或 `na` / `blocked` 且有说明），否则返回非 0。规则见 AGENTS.md §14.4。
+
+**CI 分工**：代码改动走 `ci.yml`（后端 / 前端 / MariaDB）；注册表与 UI 规格文档走
+`ui-contract.yml`（按路径触发，同时覆盖 `theme.rs` 与 `metrics.toml` 这两个校验输入）。
