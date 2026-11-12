@@ -8,19 +8,11 @@
 
 ## 为什么是 Sqarvo
 
-**平台原生 UI，不是网页套壳。**
-Windows 用 WinUI 3 + C#，Linux 用 GTK4 + libadwaita，macOS 用 SwiftUI —— 每个平台都用自己的原生
-控件与交互约定。不使用 Electron / Chromium / CEF / WebView，界面里没有一行 JavaScript。
-数据库能力全部在独立的 Rust 后端进程里，前端只通过 gRPC + Protobuf 与它通信。
+**平台原生。** 每个平台都用系统自己的界面组件，不使用 Electron / Chromium / WebView，也没有 JavaScript。
 
-**低占用。**
-单个 Rust 后端进程 + 原生前端，启动快、常驻内存小。查询结果分批拉取、表格虚拟化，大表与大结果集
-不会整块读进内存；连接、游标、临时文件都有明确的生命周期与清理路径。
+**低占用。** 原生界面 + 单个后端进程，启动快、常驻内存小。
 
-**简洁 UI。**
-六区域工作区（工具条 · 对象树 · 标签条 · 工作区 · 信息面板 · 状态栏），一个标签一条数据库会话，
-切标签不重建连接。常用操作键盘可达；加载 / 空 / 错误 / 取消 / 断连五态在界面上明确可见，
-不用弹窗替代状态说明。
+**简洁。** 只留下日常真正用到的能力：连接、写 SQL、看数据。
 
 ![Sqarvo 主窗口：对象树、表数据网格与信息面板 DDL（Linux / GTK4）](docs/assets/screenshots/linux-main-window.png)
 
