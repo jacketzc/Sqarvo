@@ -29,6 +29,11 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <!-- 图标字体：钉在 Segoe MDL2 Assets。Win10 1809+ 与 Win11 都自带它；
+         Segoe Fluent Icons 只有 Win11 有，Win10 上会退回默认字体 → 方块。
+         码点一律取 MDL2 里存在的（见 docs/ui-specification/icons.toml 的规则）。 -->
+    <FontFamily x:Key="SqarvoIconFontFamily">Segoe MDL2 Assets</FontFamily>
+
     <ResourceDictionary.ThemeDictionaries>
 
         <!-- 默认：跟随当前系统主题 -->

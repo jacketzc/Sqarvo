@@ -33,7 +33,7 @@
         <TextBlock
             x:Name="NodeIcon"
             Grid.Column="0"
-            FontFamily="Segoe Fluent Icons"
+            FontFamily="{StaticResource SqarvoIconFontFamily}"
             Text="&#xE71B;"
             FontSize="{StaticResource Size.IconBox}"
             VerticalAlignment="Center"

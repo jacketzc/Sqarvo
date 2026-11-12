@@ -5,7 +5,7 @@
 # `frontend/linux/src/*.rs` 的字符串字面量里找到；`sqarvo-` 前缀的自有图标还要在
 # `frontend/linux/resources/icons/<name>.svg` 里存在。校验器逐条核对。
 #
-# winui = Segoe Fluent Icons 码点（4 位十六进制）；winui_name = 该码点在官方字形表里的名字，
+# winui = Segoe MDL2 Assets 码点（4 位十六进制，Win10 1809+ 与 Win11 都自带该字体）；winui_name = 该码点在官方字形表里的名字，
 # 两者必须成对出现，供 Windows 端与设计复核。来源：Microsoft Learn《Segoe Fluent Icons font》
 # v1.56 字形表，2026-11-12 取：
 # https://learn.microsoft.com/en-us/windows/apps/design/iconography/segoe-fluent-icons-font
@@ -41,7 +41,7 @@ linux = "view-grid-symbolic"
 winui = "F0E2"
 winui_name = "GridView"
 swift = "—"
-winui_note = "Segoe 没有「表」字形，用网格"
+winui_note = "Segoe 没有「表」字形，用网格；F0E2 在官方 MDL2 表里存在，但个别旧版 Win10 的 MDL2 可能缺，真机见方块就退回 E8A9 ViewAll"
 
 [[icon]]
 id = "object.view"
@@ -113,6 +113,7 @@ linux = "view-grid-symbolic"
 winui = "F0E2"
 winui_name = "GridView"
 swift = "—"
+winui_note = "同 object.table：F0E2 GridView；旧版 Win10 如缺字形退 E8A9"
 
 [[icon]]
 id = "tree.group.views"
@@ -258,9 +259,10 @@ winui_note = "Linux 用 document-save；这里取语义更准的 Export"
 [[icon]]
 id = "action.new_query"
 linux = "tab-new-symbolic"
-winui = "EA1A"
-winui_name = "PageAdd"
+winui = "E710"
+winui_name = "Add"
 swift = "—"
+winui_note = "MDL2 没有 PageAdd（EA1A 只有 Segoe Fluent Icons 有）；与新增行同用 Add 字形，靠文字区分"
 
 [[icon]]
 id = "action.close_tab"
@@ -268,7 +270,7 @@ linux = "window-close-symbolic"
 winui = "E711"
 winui_name = "Cancel"
 swift = "—"
-winui_note = "WinUI TabView 的关闭按钮用 Cancel；ChromeClose 留给窗口"
+winui_note = "MDL2 没有 PageAdd（EA1A 只有 Segoe Fluent Icons 有）；新建查询与新增行同用 Add 字形，靠文字区分"
 
 [[icon]]
 id = "menu.open"
@@ -338,3 +340,4 @@ winui = "F0E2"
 winui_name = "GridView"
 swift = "—"
 note = "`Objects` 固定页页签的图标"
+winui_note = "同 object.table：F0E2 GridView；旧版 Win10 如缺字形退 E8A9"

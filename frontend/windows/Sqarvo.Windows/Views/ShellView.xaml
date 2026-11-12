@@ -77,7 +77,7 @@
             而这里要的是「一个按钮里的三层菜单」。条目名（MenuFile / MenuNewConnection /
             MenuNewQueryTab / MenuQuit / MenuExportCsv / MenuAbout）与原来一致，
             WireMenu() 仍按名字接 Click / IsEnabled，事件语义没变。
-            字形仍用 Segoe Fluent Icons 的字符（TextBlock + FontFamily），不额外实例化图标控件。
+            字形仍用 Segoe MDL2 Assets 的字符（TextBlock + FontFamily），不额外实例化图标控件。
         -->
         <Border
             x:Name="HeaderBand"
@@ -203,7 +203,7 @@
                     </Button.Flyout>
                     <!-- E700 = GlobalNavButton（汉堡三横）；字形 16（icon_box），命中区 28×24（icon_button_*） -->
                     <TextBlock
-                        FontFamily="Segoe Fluent Icons"
+                        FontFamily="{StaticResource SqarvoIconFontFamily}"
                         Text="&#xE700;"
                         FontSize="{StaticResource Size.IconBox}"
                         Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
@@ -226,7 +226,7 @@
             所以两个动作必须是 Button 而不是 Border），颜色与字形落在 Border / TextBlock 上；
             种类入口不接动作、只表达「现在列的是哪一类」，用 Border + TextBlock。
 
-            图标是 Segoe Fluent Icons 的**字形**（TextBlock + FontFamily），不是 FontIcon：
+            图标是 Segoe MDL2 Assets 的**字形**（TextBlock + FontFamily），不是 FontIcon：
             字形只是一个字符，不额外实例化控件。高度 / 字号 / 内边距全部来自 Metrics
             （高度与字号用 Size.*，Padding / CornerRadius 这类结构体在 ShellView.Chrome.cs 里取）。
         -->
@@ -268,7 +268,7 @@
                                 VerticalAlignment="Center"
                                 Spacing="{StaticResource Size.GridPaddingEnd}">
                                 <TextBlock
-                                    FontFamily="Segoe Fluent Icons"
+                                    FontFamily="{StaticResource SqarvoIconFontFamily}"
                                     Text="&#xE71B;"
                                     FontSize="{StaticResource Size.IconBox}"
                                     Foreground="{ThemeResource SqarvoOnAccentTextBrush}"
@@ -300,7 +300,7 @@
                                 VerticalAlignment="Center"
                                 Spacing="{StaticResource Size.GridPaddingEnd}">
                                 <TextBlock
-                                    FontFamily="Segoe Fluent Icons"
+                                    FontFamily="{StaticResource SqarvoIconFontFamily}"
                                     Text="&#xE710;"
                                     FontSize="{StaticResource Size.IconBox}"
                                     Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
@@ -502,7 +502,7 @@
 
                                 标签内容按 Linux 的 pinned 页形态（theme.rs `.sqarvo-tab-bar tab.pinned`：
                                 min-width 84、padding 0、字号 ui）——只显图标 + 短文字，紧凑。
-                                图标是 Segoe Fluent Icons 字形（2×2 网格），不是 FontIcon；
+                                图标是 Segoe MDL2 Assets 字形（2×2 网格），不是 FontIcon；
                                 宽度 / 高度由 ApplyMetrics 从 Metrics.ObjectsMinWidth / TabStripHeight 写。
                                 TabView 自身的属性（TabWidthMode / IsAddTabButtonVisible / CanReorderTabs）
                                 一律不动：#170 改这几个属性是崩溃边界之一，本片不碰。
@@ -514,7 +514,7 @@
                                         VerticalAlignment="Center"
                                         Spacing="{StaticResource Size.GridPaddingEnd}">
                                         <TextBlock
-                                            FontFamily="Segoe Fluent Icons"
+                                            FontFamily="{StaticResource SqarvoIconFontFamily}"
                                             Text="&#xF0E2;"
                                             FontSize="{StaticResource Size.FontUi}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
@@ -763,22 +763,22 @@
                             VerticalAlignment="Center"
                             Spacing="{StaticResource Size.GridPaddingEnd}">
                             <Button x:Name="ButtonRowAdd" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="新增行">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE710;" FontSize="{StaticResource Size.IconBox}" />
+                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE710;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowDelete" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="删除选中行">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE738;" FontSize="{StaticResource Size.IconBox}" />
+                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE738;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowApply" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="提交变更">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8FB;" FontSize="{StaticResource Size.IconBox}" />
+                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE8FB;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowRevert" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="撤销修改">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7A7;" FontSize="{StaticResource Size.IconBox}" />
+                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE7A7;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowRefresh" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="刷新">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE72C;" FontSize="{StaticResource Size.IconBox}" />
+                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE72C;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowCancel" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="取消">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE711;" FontSize="{StaticResource Size.IconBox}" />
+                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE711;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                         </StackPanel>
 
@@ -788,7 +788,7 @@
                             Style="{StaticResource SqarvoStatusIconButton}"
                             IsEnabled="False"
                             AutomationProperties.Name="搜索对象树">
-                            <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE721;" FontSize="{StaticResource Size.IconBox}" />
+                            <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE721;" FontSize="{StaticResource Size.IconBox}" />
                         </Button>
 
                         <!-- 结果行数（查询页在飞时由 ApplyQueryStatus 写「N 行 / 已取 M 行」） -->
