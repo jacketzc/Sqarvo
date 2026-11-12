@@ -54,6 +54,7 @@ parent = "tabs"
 display_name = "标签条容器"
 kind = "container"
 status = "active"
+native_control = "gtk:AdwTabBar + AdwTabView / winui:TabView / swift:—"
 style.slot = "workspace.tabstrip"
 style.metrics = ["tab_strip_height", "gap_sm", "gap_xxs", "min_target", "objects_min_width"]
 style.tokens = ["sqarvo_separator"]
@@ -65,12 +66,12 @@ impl_notes = [
 
 [component.sync.linux]
 state = "done"
-spec_hash = "142ce7541387"
+spec_hash = "08a335ff11c2"
 evidence = "§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "142ce7541387"
+spec_hash = "08a335ff11c2"
 note = "TabView 自带标签条（查询页可关闭、Objects 钉首位）；标签条上的 ＋ 按钮与拖拽重排 §7.1 未记录。"
 
 [component.sync.macos]
@@ -440,6 +441,7 @@ parent = "tabs.query"
 display_name = "SQL 编辑器（行号沟 + 等宽文本）"
 kind = "control"
 status = "active"
+native_control = "gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—"
 a11y.name = "SQL 编辑器"
 a11y.tab = "新建查询标签后自动获得焦点"
 style.metrics = ["gap_md", "gap_sm", "font_data_cell"]
@@ -464,12 +466,12 @@ source = "src/sql_page.rs:300、src/sql_page.rs:341"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d29bec6d14d6"
+spec_hash = "a73ab27b40f0"
 evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "d29bec6d14d6"
+spec_hash = "a73ab27b40f0"
 evidence = "§7.1 SQL 编辑器行：行号沟 + 等宽多行 TextBox（AcceptsReturn、不折行、自动滚动条）、无语法高亮"
 platform_notes.windows = "**有选中就只执行选中部分**（TextBox.SelectionLength > 0），否则执行全文；Linux 执行全文。"
 

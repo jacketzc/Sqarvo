@@ -94,6 +94,7 @@ parent = "objects_page"
 display_name = "三列表格（行号 · 表名 · 类型）"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkColumnView / winui:待核 / swift:—"
 style.slot = "workspace.content"
 style.metrics = [
   "row_height_data",
@@ -168,12 +169,12 @@ source = "src/tabs.rs:1366、src/tabs.rs:1202"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "1fb55931aa11"
+spec_hash = "4455a5f9fd98"
 evidence = "§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "1fb55931aa11"
+spec_hash = "4455a5f9fd98"
 note = "§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。"
 
 [component.sync.macos]

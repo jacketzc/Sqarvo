@@ -71,6 +71,9 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | `style.tokens` | 建议 | 主题 token 名（**不写 `#RRGGBB`**），必须能在 `frontend/linux/src/theme.rs` 找到 `@<name>` |
 | `style.states` | 可选 | 键限 `hover` / `active` / `selected` / `focus` / `disabled`，值是 token 名 |
 | `a11y.name` / `a11y.tab` | P1 补 | 可访问名与 Tab 次序；缺了报警告，不失败。`（行内容：…）` 表示名字由行内容生成（列表行没有静态名） |
+| `native_control` | 选型有意义时 | `gtk:<控件> / winui:<控件> / swift:<控件>`；未实现写 `—`，未核对写 `待核`。纯文本、行模板不必填 |
+| `hand_drawn` | 可选 | `true` = 视觉是自绘的（不是原生控件渲染），此时必须给 `why_not_native` |
+| `why_not_native` | `hand_drawn=true` 时 | 为什么没有用原生控件；也可以用在 `hand_drawn` 之外，解释「为什么没用最直觉的那个原生控件」 |
 | `interaction[]` | 有交互时必填 | `trigger` / `precondition` / `result` / `source`，`key` 触发必带 `keys` |
 | `impl_notes[]` | 可选 | 某端的实现细节（不参与哈希、不是规范） |
 | `platform_notes.<plat>` | 可选 | 平台差异与限制（不参与哈希） |
@@ -89,6 +92,29 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 **样式只放引用，不放数字和色值。** `metrics.toml` 是尺寸的唯一真值，主题 token 是颜色的
 唯一真值（AGENTS.md §8.6）。组件条目里出现 `200`、`#A66FA0` 一律视为缺陷 —— 三端取整
 规则不同，第二份数字必然漂 1px；alpha、1px 描边这类细节写进 `impl_notes`。
+
+## 原生控件优先（L0–L3）
+
+新界面一律先找系统原生控件（见 AGENTS.md §8.1）。四档：
+
+| 档 | 含义 | 处理 |
+|---|---|---|
+| L0 | 原生控件，默认样式 | 正常 |
+| L1 | 原生控件 + 主题定制（样式落在原生控件与它的行 / 格上） | 正常，仍算原生用法 |
+| L2 | 自绘视觉，或把原生控件自组装成工具包没有的复合件 | 允许；必须在组件里登记 `hand_drawn` / `why_not_native`，**登记即可，不另开 ADR** |
+| L3 | 有原生等价物却自己实现（自绘菜单、对话框、表格、标签条） | 禁止；确需例外先写 ADR |
+
+- 三端只承诺**行为**一致（条目、顺序、可用性、快捷键、文案）；分隔线、图标、字号从俗。
+- 原生控件名记在 `native_control`，没实现的端写 `—`，没核对过的写 `待核` —— 不要拿猜测填空。
+
+## 禁用项：能力性 vs 状态性
+
+- **能力性不可用**（这条连接 / 这个驱动 / 这一端根本不支持，近期也不会支持）：**不出现**。
+  菜单项不列出、按钮不渲染，不要留一个永远点不动的灰控件。
+- **状态性不可用**（当前上下文暂不满足：未连接、没选中、没脏行、只读、RPC 在途）：**可见 +
+  置灰 + 给原因**（tooltip / 状态行），因为用户下一步就能让它可用。
+- 既有例外：对象树里未实现的分组仍显示一行说明（行为契约 §2.1 的「不静默」决定）。要改这条，
+  先改 §2.1 与 `object_tree.tree.row.group`。
 
 ## 同步（`sync`）
 

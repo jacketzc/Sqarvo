@@ -53,6 +53,7 @@ parent = "dialogs"
 display_name = "连接对话框（新建 / 编辑）"
 kind = "container"
 status = "active"
+native_control = "gtk:AdwDialog + AdwPreferencesPage / winui:待核 / swift:—"
 style.slot = "dialogs"
 style.metrics = ["gap_md", "gap_page"]
 a11y.name = "新建连接"
@@ -79,13 +80,13 @@ source = "src/dialog.rs:582、src/ui.rs:1122、src/ui.rs:1218"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "92fabdaeabcb"
+spec_hash = "2793c0c8d517"
 commit = "7436cd5"
 evidence = "§2.3 编辑连接 + dialog.rs build / apply_saved 复核"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "92fabdaeabcb"
+spec_hash = "2793c0c8d517"
 note = "§7.1 只记录新建模式（Views/ConnectionDialog.xaml）；编辑模式、标题与宽度未记录。"
 
 [component.sync.macos]
@@ -748,6 +749,7 @@ parent = "dialogs"
 display_name = "关于对话框"
 kind = "container"
 status = "active"
+native_control = "gtk:AdwDialog（自绘内容） / winui:— / swift:—"
 style.slot = "dialogs"
 style.metrics = ["gap_page", "gap_md", "gap_lg"]
 a11y.name = "关于 Squarvo"
@@ -771,7 +773,7 @@ source = "src/ui.rs:5365、src/ui.rs:5351"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a4b6ad8d867a"
+spec_hash = "5d6291ee129b"
 commit = "7436cd5"
 evidence = "§1.4 帮助 → 关于 + ui.rs show_about 逐行对照"
 

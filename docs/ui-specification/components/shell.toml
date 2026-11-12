@@ -202,6 +202,7 @@ parent = "shell"
 display_name = "主菜单"
 kind = "control"
 status = "active"
+native_control = "gtk:MenuButton(GMenu → PopoverMenu) / winui:MenuBar / swift:—"
 style.slot = "menubar"
 style.metrics = ["min_target", "icon_box"]
 a11y.name = "主菜单（文件 / 表 / 视图 / 帮助）"
@@ -220,12 +221,12 @@ source = "src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b73b6dd69bc0"
+spec_hash = "1bb20680efda"
 evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "b73b6dd69bc0"
+spec_hash = "1bb20680efda"
 note = "Windows 用菜单行承载同一批条目（§7.1「系统标题栏 + 菜单行」），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
 
 [component.sync.macos]
@@ -690,6 +691,7 @@ parent = "shell"
 display_name = "界面密度档（紧凑 / 舒适 / 大）"
 kind = "container"
 status = "active"
+why_not_native = "GMenu 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项，弹出时换成 PopoverMenu 里的一组 GtkCheckButton（控件仍是原生，菜单模型自组装）。"
 style.slot = "overlay"
 style.metrics = ["font_ui", "font_status", "gap_xs"]
 a11y.name = "界面密度"
@@ -739,7 +741,7 @@ note = "菜单行高度按档位推出、面板宽度按归一值跨档往返（
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8599385e0ed0"
+spec_hash = "798c5cf88dfc"
 evidence = "§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫"
 
 [component.sync.windows]

@@ -319,6 +319,8 @@ parent = "data_page.toolbar"
 display_name = "状态圆点（灰 / 事务棕 / 脏行强调色）"
 kind = "control"
 status = "active"
+hand_drawn = true
+why_not_native = "没有原生等价物：GTK / Adw 没有「状态圆点」控件；用 GtkBox + CSS 画 7px 圆（尺寸走 metrics.status_dot_diameter，颜色走 token），命中区仍是 24×24 的 GtkButton。"
 a11y.name = "事务与未提交更改的状态"
 a11y.tab = "不可聚焦（不占 Tab 位），仍在无障碍树里"
 style.slot = "workspace.content"
@@ -345,7 +347,7 @@ source = "src/data_page.rs:6705、src/data_page.rs:4604"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b8987116ec36"
+spec_hash = "54dca8a34269"
 commit = ""
 evidence = "§5.1 状态圆点三态 / §5.2 事务状态的可见表达；sync_status_dot + update_dirty_label"
 
@@ -530,6 +532,7 @@ parent = "data_page"
 display_name = "导出菜单（三项出口）"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 style.slot = "overlay"
 impl_notes = [
   "挂在「导出 ▾」按钮上的 GtkPopover（popup surface，窗口自渲染截图拍不到）；点任一项先收起菜单再执行。",
@@ -539,7 +542,7 @@ impl_notes = [
 
 [component.sync.linux]
 state = "done"
-spec_hash = "18b7e4d31b07"
+spec_hash = "2cc1e43b8e8f"
 commit = ""
 evidence = "§5.7 三种出口共用一条流程；data_page new() 的 export popover + export_ui::begin"
 
@@ -713,6 +716,7 @@ parent = "data_page"
 display_name = "数据网格（表格外框 · 行号列 · 表头 · 数据行）"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—"
 a11y.name = "数据网格"
 style.slot = "workspace.content"
 style.metrics = ["row_height_data", "column_header_min_height", "row_number_width", "column_width", "frame_border_width", "radius_lg", "grid_padding_start"]
@@ -747,13 +751,13 @@ source = "src/data_page.rs:4388"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "463e5c13c776"
+spec_hash = "e07473853476"
 commit = ""
 evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "463e5c13c776"
+spec_hash = "e07473853476"
 note = "§7.1：行号列 row_number_width（行号 = offset + 下标 + 1）、单行表头、row_height_data / column_width、横向滚动一致；**每页 200 行**，翻页入口是页内「上一页 / 下一页 / 加载更多…」（offset = 已取行数续拉），页码写「第 N 页 / 共 ? 页」。"
 
 [component.sync.macos]
@@ -909,6 +913,7 @@ parent = "data_page"
 display_name = "单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消）"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkPopover / winui:就地 TextBox（§7.1） / swift:—"
 a11y.name = "编辑单元格"
 style.slot = "overlay"
 impl_notes = [
@@ -965,13 +970,13 @@ platform_notes.macos = "§7.1 未记录。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b69688f4d30c"
+spec_hash = "985762f37b60"
 commit = ""
 evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "b69688f4d30c"
+spec_hash = "985762f37b60"
 note = "§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。"
 
 [component.sync.macos]
@@ -984,6 +989,7 @@ parent = "data_page"
 display_name = "数据行右键菜单"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 a11y.name = "数据行菜单"
 style.slot = "overlay"
 impl_notes = [
@@ -1007,7 +1013,7 @@ source = "src/context_menu.rs:77"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e775021fcbba"
+spec_hash = "a060853acbec"
 commit = ""
 evidence = "§5.8 数据行右键菜单；show_row_menu + context_menu 模块"
 
@@ -1149,6 +1155,7 @@ parent = "data_page"
 display_name = "筛选与排序面板（草稿 · 应用 / 清空）"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkPopover / winui:— / swift:—"
 a11y.name = "筛选与排序"
 style.slot = "overlay"
 style.metrics = ["filter_panel_width", "filter_column_width", "radius_lg", "row_height_data"]
@@ -1199,7 +1206,7 @@ source = "src/data_page.rs:1792"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "12fda3e31c9f"
+spec_hash = "ec72d4f8c528"
 commit = ""
 evidence = "§5.3 打开 / 关闭 / 应用 / 清空 / 草稿模型；open_filter_panel + apply_browse_options + clear_filter"
 

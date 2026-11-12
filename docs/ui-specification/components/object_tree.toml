@@ -47,6 +47,7 @@ parent = "object_tree"
 display_name = "树本体"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkListView / winui:TreeView / swift:—"
 style.slot = "sidebar"
 style.metrics = ["row_height_tree", "badge_min_height"]
 a11y.name = "对象树"
@@ -72,13 +73,13 @@ source = "src/tree.rs:2009"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "1b79a66abdaa"
+spec_hash = "50da9f7dc0b7"
 commit = "7436cd5"
 evidence = "§2.5 键盘表 + tree.rs install_handlers"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "1b79a66abdaa"
+spec_hash = "50da9f7dc0b7"
 note = "TreeView 承载，↑ / ↓ / Enter 同语义；无自定义按键控制器差异待核。"
 
 [component.sync.macos]
@@ -557,6 +558,7 @@ parent = "object_tree"
 display_name = "右键菜单"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 style.slot = "overlay"
 impl_notes = ["贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。"]
 
@@ -568,7 +570,7 @@ source = "src/tree.rs:3191、src/tree.rs:3313"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c3183bae184a"
+spec_hash = "68b63df50825"
 commit = "7436cd5"
 evidence = "§2.3 右键菜单"
 

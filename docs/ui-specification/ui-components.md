@@ -150,6 +150,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 - 样式：槽位 `workspace.content`；尺寸 `status_dot_diameter`；颜色 `warning_color`、`accent_bg_color`
 - 无障碍：可访问名「事务与未提交更改的状态」；Tab 不可聚焦（不占 Tab 位），仍在无障碍树里
+- 自绘：没有原生等价物：GTK / Adw 没有「状态圆点」控件；用 GtkBox + CSS 画 7px 圆（尺寸走 metrics.status_dot_diameter，颜色走 token），命中区仍是 24×24 的 GtkButton。
 - 同步：Linux done（§5.1 状态圆点三态 / §5.2 事务状态的可见表达；sync_status_dot + update_dirty_label）；Windows none（§7.1 未记录工具条状态圆点：数据页状态按优先序写在状态栏行 2 右侧（只读 / 自动提交 / 未提交 N 行 / 提交中… / 已回滚）。）；macOS none
 - 实现备注：视觉是一枚 status_dot_diameter 的实心圆（约漏斗墨迹的一半），命中区仍是 24×24；focusable=false，但 tooltip 同时登记为可访问名。三态互斥、优先级自上而下：灰 = 没有未提交的更改、也没有打开的事务；@warning_color = 事务已打开（含只读 / 失败态）；@accent_bg_color = 有脏行 / 新行（压在事务态之上）。没有打开的表时整枚隐藏——圆点说的是「这张表格此刻怎样」。原来常驻的两段文字（自动提交徽标、脏行 N · 待提交 M 条）不再占可见文案，只作 tooltip 与 QA 断言的文案来源。
 
@@ -218,6 +219,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `overlay`
+- 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§5.7 三种出口共用一条流程；data_page new() 的 export popover + export_ui::begin）；Windows none（§7.1 未记录：无导出菜单。）；macOS none
 - 实现备注：挂在「导出 ▾」按钮上的 GtkPopover（popup surface，窗口自渲染截图拍不到）；点任一项先收起菜单再执行。三项都进入 export_ui::begin 这同一条流程：范围 → 文件 → 确认 → 覆盖 → 进度 / 取消 → 完成，差别只在写出的格式与文件过滤器。菜单里没有第三条之外的路径（没有「复制到剪贴板」「导出全部结果」这类重复出口）。
 
@@ -278,6 +280,7 @@ kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`column_header_min_height`、`row_number_width`、`column_width`、`frame_border_width`、`radius_lg`、`grid_padding_start`；颜色 `theme_bg_color`、`theme_fg_color`
 - 无障碍：可访问名「数据网格」
+- 原生控件：gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—
 - 同步：Linux done（§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top）；Windows partial（§7.1：行号列 row_number_width（行号 = offset + 下标 + 1）、单行表头、row_height_data / column_width、横向滚动一致；**每页 200 行**，翻页入口是页内「上一页 / 下一页 / 加载更多…」（offset = 已取行数续拉），页码写「第 N 页 / 共 ? 页」。）；macOS none
 - 实现备注：结构：行号列（固定 row_number_width，行号 = offset + 行下标 + 1，**不是**主键）+ 单行表头 + 数据行。列宽按**本页内容**自适应：表头文案与已加载值里最长文字 + 单元格内距，下限 64、上限 column_width；拖过列边界或双击自适应过的列记为用户宽度，翻页与刷新不再覆写（64 与内距是代码常量，未进 metrics）。表头条带 26 内容 + 上下 2 内距（column_header_min_height）；底色取 theme_bg_color，文字与数据行同档。横向滚动条常驻可见（关掉 overlay 自动淡出），宽表只横向滚动、不挤压右侧信息面板；窗口最大化后横向滚动位置回到第一列。滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。页码与总数只在状态栏分页器出现一次（status_bar.row1.pager / .summary）：三态是「共 N 行」/「约 N 行」（估计值必须带「约」）/「共 ? 行」（总数未知或计数超时写问号，不编造数字；Linux 未知时只写页码，Windows 写「共 ? 行」）；计数超预算时写「未统计（超出计数预算）」并出现「未统计」徽标。每页 500 行（TABLE_PAGE_SIZE，实际 page_size 随第一页返回）；翻页 = 整页替换 + 回到顶部。
 
@@ -337,6 +340,7 @@ kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「编辑单元格」
+- 原生控件：gtk:GtkPopover / winui:就地 TextBox（§7.1） / swift:—
 - 同步：Linux done（§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor）；Windows partial（§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。）；macOS none
 - 实现备注：同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。值转换失败时错误就地显示、编辑框不关（可以在原处改）。写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。
 
@@ -355,6 +359,7 @@ kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「数据行菜单」
+- 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows none（§7.1 未记录数据行右键菜单。）；macOS none
 - 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。
 
@@ -409,6 +414,7 @@ kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `overlay`；尺寸 `filter_panel_width`、`filter_column_width`、`radius_lg`、`row_height_data`
 - 无障碍：可访问名「筛选与排序」
+- 原生控件：gtk:GtkPopover / winui:— / swift:—
 - 同步：Linux done（§5.3 打开 / 关闭 / 应用 / 清空 / 草稿模型；open_filter_panel + apply_browse_options + clear_filter）；Windows none（§7.1 未记录筛选与排序面板（Windows 数据页没有筛选 / 排序入口）。）；macOS none
 - 实现备注：挂在漏斗按钮上的 GtkPopover（autohide=false），锚点落在上沿的黄金分割点（0.618，偏右）；面板宽 filter_panel_width。面板里的改动是**草稿**：点「应用」才同时生效（筛选 + 排序一起提交，并回到第 1 页）；关闭面板丢弃草稿。标题右侧写「已应用」/「有未应用的更改」（warning + tooltip「点应用才生效；关闭会丢弃」）。面板里只有一种字号（12px，与对象树一致）：正文、按钮、下拉、输入框、说明字统一，层级只靠字重与颜色；列表行 24 高。底部只有一个调整区：分隔线 + 右对齐的「清空」「应用」；文案不带作用域，也不写说明段落。两个区：筛选条件（列 + 算子 + 值 → 条件行，多条按 AND）与排序（列 + 方向 → 排序键，列表顺序即优先级）。
 
@@ -599,6 +605,7 @@ kind `container` · status `active` · parent `dialogs`
 
 - 样式：槽位 `dialogs`；尺寸 `gap_md`、`gap_page`
 - 无障碍：可访问名「新建连接」；Tab 默认动作是「保存并连接」（Enter 即保存并连接）
+- 原生控件：gtk:AdwDialog + AdwPreferencesPage / winui:待核 / swift:—
 - 同步：Linux done（§2.3 编辑连接 + dialog.rs build / apply_saved 复核）；Windows partial（§7.1 只记录新建模式（Views/ConnectionDialog.xaml）；编辑模式、标题与宽度未记录。）；macOS none
 - 实现备注：宽度 560 是代码常量，未进 metrics（P1 补齐）。标题始终是「新建连接」，编辑模式不改标题：两种模式的差异只在预填的字段与凭据引用上，不在措辞上。标题栏左侧只有「取消」；主体是「连接参数」表单 + 凭据说明两块；底部是状态行与两个提交按钮。字段显隐由 driver_form 的一张描述表决定，界面代码里没有按驱动 ID 分支：加驱动不改界面代码。系统凭据库不可用或密码写入失败时如实报错，不回退明文保存；对话框只收集输入与展示结果，RPC 在 worker 线程执行。
 
@@ -844,6 +851,7 @@ kind `container` · status `active` · parent `dialogs`
 
 - 样式：槽位 `dialogs`；尺寸 `gap_page`、`gap_md`、`gap_lg`
 - 无障碍：可访问名「关于 Squarvo」
+- 原生控件：gtk:AdwDialog（自绘内容） / winui:— / swift:—
 - 同步：Linux done（§1.4 帮助 → 关于 + ui.rs show_about 逐行对照）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：自绘对话框：宽度 620、高度 520 是代码常量，未进 metrics（P1 补齐）。不依赖后端：后端未握手时照样能打开，诊断区块改写端点文件与「后端：尚未握手完成」。内容顺序固定：应用名与版本 → 「后端诊断」标题 → 诊断逐行 → 保密说明。
 
@@ -1018,6 +1026,7 @@ kind `container` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `min_target`、`radius_sm`、`gap_xxs`、`gap_sm`、`gap_xs`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
+- 原生选型说明：原生 GtkStackSwitcher 的样式与命中区不符合「两个按钮各自贴边、各自 tooltip」，改用两个 set_group 的 GtkToggleButton 拼装（控件原生）。
 - 同步：Linux done（§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则）；Windows done（§7.1 两个独立按钮：不是 ToggleButton，也不是分段容器）；macOS none
 - 实现备注：两个独立 toggle，不用 .linked 分段容器：选中块是贴着文字的小圆角块，四角都圆。命中区仍不小于 min_target，缩的是内边距；hover 是 brand_soft 的半透明档，选中是 brand_mid 的半透明档（实底会把小号正文压成一块砖）。拉丁标签「DDL」比「表信息」多一小段上边距做光学补偿：行盒居中会让前者看着偏高。切换条与标题块、表信息行、DDL 正文共用一条左基准线（分隔线的左顶点）。切换条只在表 / 视图视图里出现；其它视图与状态页隐藏。
 
@@ -1101,6 +1110,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 kind `container` · status `active` · parent `inspector.object`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_md`、`gap_lg`、`gap_none`
+- 原生控件：gtk:GtkTextView / winui:等宽 TextBox（§7.1） / swift:—
 - 平台差异：Windows：§7.1：DDL 正文用等宽字体、不折行、横向滚动、可选中复制；正文上方只在 exact=false 时有一行琥珀警示。；Linux：Linux 侧不单独设等宽字族：§5 要求 DDL 正文与表信息同字体同字号，正文走 .sqarvo-panel-text。
 - 同步：Linux done（§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow）；Windows done（§7.1 DDL 正文（等宽、不折行、横向滚动、可选中复制）与失败文案）；macOS none
 - 实现备注：正文与表信息同字号同字重（font_panel）、不折行；长语句横向滚动，滚动条常驻（关掉 overlay 自动淡出，能滚到的地方要看得见）。正文可选中，复制走选中 + Ctrl+C；页内不画来源徽标、来源说明行与「复制」按钮。服务端返回空 DDL 时正文区写「服务端返回了空 DDL」+ 说明，不当成对象没有结构。没有浏览会话时正文区换状态页「这条连接没有浏览会话」+「对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。」
@@ -1223,6 +1233,7 @@ kind `container` · status `active` · parent `object_tree`
 
 - 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`badge_min_height`
 - 无障碍：可访问名「对象树」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
+- 原生控件：gtk:GtkListView / winui:TreeView / swift:—
 - 同步：Linux done（§2.5 键盘表 + tree.rs install_handlers）；Windows partial（TreeView 承载，↑ / ↓ / Enter 同语义；无自定义按键控制器差异待核。）；macOS none
 - 实现备注：GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。折叠后重新展开复用已读内容、不发请求。
 
@@ -1396,6 +1407,7 @@ kind `container` · status `active` · parent `object_tree.search`
 kind `container` · status `active` · parent `object_tree`
 
 - 样式：槽位 `overlay`
+- 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§2.3 右键菜单）；Windows none（对象树没有右键菜单（§7.1 未记录）。）；macOS none
 - 实现备注：贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。
 
@@ -1567,6 +1579,7 @@ kind `container` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`row_number_width`、`column_width`、`column_header_min_height`、`frame_border_width`、`radius_md`；颜色 `sqarvo_frame`、`sqarvo_separator`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
+- 原生控件：gtk:GtkColumnView / winui:待核 / swift:—
 - 同步：Linux done（§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。）；macOS none
 - 实现备注：GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。
 
@@ -1764,6 +1777,7 @@ kind `control` · status `active` · parent `shell`
 
 - 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`
 - 无障碍：可访问名「主菜单（文件 / 表 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
+- 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:MenuBar / swift:—
 - 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用菜单行承载同一批条目（§7.1「系统标题栏 + 菜单行」），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。
 
@@ -1937,6 +1951,7 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `overlay`；尺寸 `font_ui`、`font_status`、`gap_xs`
 - 无障碍：可访问名「界面密度」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
+- 原生选型说明：GMenu 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项，弹出时换成 PopoverMenu 里的一组 GtkCheckButton（控件仍是原生，菜单模型自组装）。
 - 平台差异：Windows：{'note': '菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）。'}
 - 同步：Linux done（§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫）；Windows none（§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / tooltip 语义（档位本身见 §1.6）。）；macOS none
 - 实现备注：「视图 → 界面密度」这一项本身是 GMenu 的占位项：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时用 `PopoverMenu::add_child` 换成这一节（标题「界面密度」+ 三个 GtkCheckButton），视图子菜单只为它而存在。三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。切档后「表格区优先保留 600」是代码常量，未进 metrics。
@@ -2443,6 +2458,7 @@ kind `area` · status `active`
 kind `container` · status `active` · parent `tabs`
 
 - 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`、`gap_sm`、`gap_xxs`、`min_target`、`objects_min_width`；颜色 `sqarvo_separator`
+- 原生控件：gtk:AdwTabBar + AdwTabView / winui:TabView / swift:—
 - 同步：Linux done（§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则）；Windows partial（TabView 自带标签条（查询页可关闭、Objects 钉首位）；标签条上的 ＋ 按钮与拖拽重排 §7.1 未记录。）；macOS none
 - 实现备注：标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。
 
@@ -2563,6 +2579,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
+- 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
 - 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段））；Windows done（§7.1 SQL 编辑器行：行号沟 + 等宽多行 TextBox（AcceptsReturn、不折行、自动滚动条）、无语法高亮）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。高度是内容高度区间（min 140 / max 220，未进 metrics：P1 补 key），超出后在编辑器内部滚动。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。
 

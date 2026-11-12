@@ -277,6 +277,7 @@ parent = "inspector"
 display_name = "[DDL] / [表信息] 切换条"
 kind = "container"
 status = "active"
+why_not_native = "原生 GtkStackSwitcher 的样式与命中区不符合「两个按钮各自贴边、各自 tooltip」，改用两个 set_group 的 GtkToggleButton 拼装（控件原生）。"
 style.slot = "inspector"
 style.metrics = ["min_target", "radius_sm", "gap_xxs", "gap_sm", "gap_xs"]
 style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid"]
@@ -291,12 +292,12 @@ impl_notes = [
 
 [component.sync.linux]
 state = "done"
-spec_hash = "97c9709305d9"
+spec_hash = "7cceb8b38fa1"
 evidence = "§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "97c9709305d9"
+spec_hash = "7cceb8b38fa1"
 evidence = "§7.1 两个独立按钮：不是 ToggleButton，也不是分段容器"
 
 [component.sync.macos]
@@ -514,6 +515,7 @@ parent = "inspector.object"
 display_name = "DDL 正文"
 kind = "container"
 status = "active"
+native_control = "gtk:GtkTextView / winui:等宽 TextBox（§7.1） / swift:—"
 style.slot = "inspector"
 style.metrics = ["font_panel", "gap_md", "gap_lg", "gap_none"]
 impl_notes = [
@@ -539,12 +541,12 @@ source = "src/ddl.rs:302、src/ddl.rs:312"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "022e7d17af25"
+spec_hash = "7da31b7e4648"
 evidence = "§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "022e7d17af25"
+spec_hash = "7da31b7e4648"
 evidence = "§7.1 DDL 正文（等宽、不折行、横向滚动、可选中复制）与失败文案"
 
 [component.sync.macos]

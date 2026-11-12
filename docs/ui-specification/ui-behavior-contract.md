@@ -644,8 +644,8 @@ Windows 客户端在 #169 落地「连接面」、#171 落地「元数据面」�
 ## 9. 已知偏差与存疑
 
 **本节只列仍未收口的项**：代码与产品口径尚未一致、或实现留有已知边界的地方。已收口的条目
-已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见
-[`ui-behavior-contract.review.md`](ui-behavior-contract.review.md)。
+已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见 git 历史（`32b049c`
+的 `ui-behavior-contract.review.md`，已删除，只作为那次核验的记录存在）。
 
 当前**没有**未收口项（v0.2.3.4，2026-11-10 复核；最近一次收口是界面密度档 #160，口径见 [scaling-and-window-sizing.md](scaling-and-window-sizing.md) 与
 [ADR 0026](../decisions/0026-ui-scaling-window-sizing.md)，行为写在 §1.5）。发现新偏差时按同样格式追加：

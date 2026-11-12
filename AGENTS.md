@@ -282,6 +282,9 @@ Do not solve large-result-set problems by simply increasing the gRPC message-siz
 - Implement business interactions with native components. Reuse of pure algorithm libraries or generated protocol code is acceptable when necessary, but Web UI must not replace desktop UI.
 - Do not break platform interaction conventions in pursuit of pixel-level consistency across the three platforms.
 - Core operation semantics, states, error messages, and data content must remain consistent.
+- **Prefer the platform's own controls.** Every new surface starts from a native control (menus, popovers, dialogs, tables, tabs, pagination, toggles). Four levels: **L0** native control with default styling; **L1** native control styled with theme tokens (its own cells and rows included); **L2** a self-drawn visual, or native controls hand-assembled into a composite the toolkit does not ship — allowed, but it must be registered in the component registry with `hand_drawn` / `why_not_native` (registration is enough, no ADR); **L3** hand-implementing what the toolkit already provides (own menu, own dialog, own table, own tab strip) — forbidden, an ADR is required before implementing.
+- **An unavailable item is not a greyed placeholder.** Capability-level unavailability (this connection, this driver or this platform does not support it at all) must not appear: the item is not listed, the button is not rendered. State-level unavailability (nothing selected, no dirty rows, read-only, RPC in flight) stays visible and disabled with the reason in a tooltip / status line, because the user can make it available in one step. The one existing exception is the object tree's "not implemented" group rows (behavior contract §2.1 keeps them visible on purpose).
+- Cross-platform consistency is **behavior**, not appearance: items, order, availability, shortcuts and copy must match; separators, icons and type sizes follow each platform's conventions.
 
 ### 8.2 Windows
 

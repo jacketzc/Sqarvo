@@ -73,6 +73,7 @@ REF_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift)):(\d+)(?:-(\
 REF_BARE_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift))")
 TOKEN_RE = re.compile(r"@([A-Za-z0-9_]+)")
 HEX_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
+NATIVE_RE = re.compile(r"^gtk:.+ / winui:.+ / swift:.+$")
 
 
 class Report:
@@ -244,6 +245,19 @@ def check_component(
     a11y = comp.get("a11y", {})
     if kind in {"control", "row", "item"} and interactions and not a11y.get("name"):
         rep.warn(where, "有交互但缺 a11y.name（P1 补全）")
+
+    hand = comp.get("hand_drawn", False)
+    why = comp.get("why_not_native")
+    if hand and not why:
+        rep.error(where, "hand_drawn=true 必须给 why_not_native（自绘要有理由）")
+    if why is not None and not isinstance(why, str):
+        rep.error(where, "why_not_native 必须是字符串")
+    native = comp.get("native_control")
+    if native is not None and not NATIVE_RE.match(native):
+        rep.error(
+            where,
+            f"native_control 应形如 `gtk:<控件> / winui:<控件> / swift:<控件>`，现为 {native!r}",
+        )
 
     sync = comp.get("sync", {})
     for plat in PLATFORMS:
@@ -430,6 +444,12 @@ def run_gen() -> int:
                     bits.append(f"Tab {a11y['tab']}")
                 if bits:
                     out.append("- 无障碍：" + "；".join(bits))
+            if comp.get("native_control"):
+                out.append("- 原生控件：" + comp["native_control"])
+            if comp.get("hand_drawn"):
+                out.append("- 自绘：" + comp.get("why_not_native", ""))
+            elif comp.get("why_not_native"):
+                out.append("- 原生选型说明：" + comp["why_not_native"])
             notes = comp.get("platform_notes", {})
             if notes:
                 out.append(
