@@ -161,6 +161,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-query-edit", "row:column:value"),
         ("qa-query-delete", "row"),
         ("qa-query-insert", "column:value"),
+        ("qa-query-hscroll", "pixels"),
         ("qa-expect-about", "substring"),
     ] {
         app.add_main_option(

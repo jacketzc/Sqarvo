@@ -499,6 +499,43 @@ impl ResultsView {
         self.on_selection_changed.replace(Some(callback));
     }
 
+    /// QA：把结果网格的横向滚动挪到 `px`（模拟「用户在第 N 列改完值」的状态）。
+    pub fn qa_set_hscroll(&self, px: f64) {
+        if let Some(adjustment) = self.grid.hadjustment() {
+            adjustment.set_value(px);
+            eprintln!(
+                "[qa] 结果网格横向滚动 → {px:.0}（范围 {:.0}..{:.0}）",
+                adjustment.lower(),
+                adjustment.upper()
+            );
+        }
+    }
+
+    /// 回到首行**首列**。
+    ///
+    /// 只传行号不够：`GtkColumnView` 会为了露出「当前焦点所在的那一列」而横向滚动，
+    /// 用户在最后一列改完值再提交，重绘后就停在了最后一列（用户报「刷新后跳到最后一列」）。
+    /// 这里显式点名第一列，并在下一帧再兜一次横向 adjustment（焦点恢复发生在那之后）。
+    pub fn scroll_home(&self) {
+        let first = self.columns.borrow().first().cloned();
+        self.grid
+            .scroll_to(0, first.as_ref(), gtk::ListScrollFlags::NONE, None);
+        let grid = self.grid.clone();
+        glib::idle_add_local_once(move || {
+            let Some(adjustment) = grid.hadjustment() else {
+                return;
+            };
+            let before = adjustment.value();
+            let lower = adjustment.lower();
+            if (before - lower).abs() > 0.5 {
+                adjustment.set_value(lower);
+                eprintln!(
+                    "[query] 水平滚动复位：{before:.0} → {lower:.0}（重绘/重建列后回到首列）"
+                );
+            }
+        });
+    }
+
     /// 按草稿当前值整表重绘，并把视图回到第一行。
     ///
     /// 用户要求：新增 / 编辑 / 删除后「触发一次刷新、回到表格开始的位置」——重绘保证
@@ -957,6 +994,9 @@ impl ResultsView {
             self.grid.append_column(&view_column);
             self.columns.borrow_mut().push(view_column);
         }
+        // 追加列时 `GtkColumnView` 会把视图滚到新加的列；结果列每次重跑都重建，
+        // 不收回来就会「第二次执行后从最后一列开始」。布局稳定后再兜一次。
+        self.scroll_home();
     }
 
     /// 追加一批行并更新状态。

@@ -710,6 +710,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-query-insert <列名>:<值>` | 给新行草稿填一格（与双击新行单元格同一条路径） |
 | `--qa-query-apply` | 查询标签结果区按一次「提交」（与 `✓` 同一个入口） |
 | `--qa-query-refresh` | 查询标签按一次状态栏「刷新」（重跑当前 SQL，与 `⟳` 同一个入口） |
+| `--qa-query-hscroll <px>` | 把结果网格横向滚到该像素（验证重绘 / 重跑后是否回到首列） |
 | `--qa-export-format <csv\|insert\|dump>` | 导出格式：CSV（默认）/ 一行一条 INSERT / 转储表（建表语句 + 全部数据，固定整表）。`--qa-export-scope table` 与它一起决定 `export` 脚本步骤写什么 |
 | `--qa-startup-workspace` | 截图时刻断言未连接的启动工作区：主区域是 `Objects` 页、空态文案存在、**不含**「后端版本 / 端点文件」（#139） |
 | `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |

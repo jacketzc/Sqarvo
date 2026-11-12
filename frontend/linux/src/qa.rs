@@ -940,6 +940,8 @@ struct Args {
     query_add: bool,
     /// `--qa-query-refresh`：查询标签按一次状态栏「刷新」（重跑当前 SQL）。
     query_refresh: bool,
+    /// `--qa-query-hscroll <px>`：结果网格横向滚动到该位置（验证重绘后回到首列）。
+    query_hscroll: Option<f64>,
     /// `--qa-query-insert <column>:<value>`：给新行草稿填一格（v0.2.5）。
     query_inserts: Vec<(String, String)>,
     /// `--qa-data-edit-range <start>:<count>:<column>:<value>`：批量编辑连续行
@@ -1463,6 +1465,12 @@ pub fn query_edits() -> Vec<(u32, String, String)> {
 pub fn query_deletes() -> Vec<u32> {
     ARGS.get()
         .map_or_else(Vec::new, |args| args.query_deletes.clone())
+}
+
+/// `--qa-query-hscroll` 的目标位置。
+#[must_use]
+pub fn query_hscroll() -> Option<f64> {
+    ARGS.get().and_then(|args| args.query_hscroll)
 }
 
 /// `--qa-query-refresh`：是否按一次状态栏「刷新」。
@@ -2211,6 +2219,17 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-query-refresh" => {
                 parsed.query_refresh = true;
                 index += 1;
+            }
+            "--qa-query-hscroll" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-query-hscroll 需要像素值".to_owned())?;
+                parsed.query_hscroll = Some(
+                    value
+                        .parse::<f64>()
+                        .map_err(|_| format!("--qa-query-hscroll 不是合法数字：{value}"))?,
+                );
+                index += 2;
             }
             "--qa-query-insert" => {
                 let value = args

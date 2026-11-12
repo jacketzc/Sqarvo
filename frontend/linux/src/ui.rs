@@ -3347,6 +3347,15 @@ fn maybe_run_qa_query(state: &Rc<UiState>) {
             }
         });
     }
+    if let Some(px) = crate::qa::query_hscroll() {
+        let workspace = Rc::clone(&workspace);
+        glib::timeout_add_local_once(Duration::from_millis(2_600), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                return;
+            };
+            page.qa_hscroll(px);
+        });
+    }
     if crate::qa::query_refresh() {
         let workspace = Rc::clone(&workspace);
         glib::timeout_add_local_once(Duration::from_millis(3_600), move || {

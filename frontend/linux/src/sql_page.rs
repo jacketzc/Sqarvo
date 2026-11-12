@@ -844,6 +844,11 @@ impl SqlPage {
         self.rerun_after_commit(&note);
     }
 
+    /// QA：把结果网格横向滚到 `px`（用于验证「重绘后回到首列」）。
+    pub fn qa_hscroll(&self, px: f64) {
+        self.results.qa_set_hscroll(px);
+    }
+
     /// QA：按列名改一格（与双击编辑器同一条路径）。
     pub fn qa_edit_named(&self, row: usize, column: &str, text: &str) -> Result<(), String> {
         let edit = self
