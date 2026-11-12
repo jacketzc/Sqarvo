@@ -334,12 +334,13 @@ surface 未就绪时读不到显示器。第一次 `relayout` 会改窗口尺寸
 
 | 边界 | 现状 | 处置 |
 |---|---|---|
-| Wayland 下的最小尺寸 | 依赖合成器遵守 `xdg_toplevel.set_min_size`，未逐一手测 | 与 `ui-behavior-contract.md` §9 同一条，保留 |
+| Wayland 下的最小尺寸 | 客户端侧已实测：`WAYLAND_DEBUG=1` 抓包显示 1920×1048 工作区下下发 `xdg_toplevel.set_min_size(960, 640)`（另有一次 GTK 内容自然最小尺寸 1010×690 的早期请求）；合成器是否据此拦住拖拽，仍需一次手动拖拽复核 | 与 `ui-behavior-contract.md` §9 同一条 |
+| 密度档菜单禁用（真机） | 2026-11-12 用真实显示器临时切到 1280×720（工作区 1280×688，等同 1080p@150% 的逻辑高）实测：`[tier] large 在当前工作区 1280x688 不可用（需要 1440×960），回退 compact`；菜单「视图 → 界面密度」里 125% / 150% 均禁用、compact 打勾；窗口 1224×640 不超过工作区，`--qa-layout-audit` 0 项超限 | §2.2 / §5.3（截图 `/home/jack/tmp/d-1080p150-menu-view.png`） |
 | GNOME 分数缩放 | `GdkMonitor::scale()` 是 f64（1.25 等）；`geometry()` 给整数逻辑像素 | 允许 ±1px 误差，验收按「不超工作区」判定，不按精确像素 |
 | 窗口位置恢复（Linux） | GTK4 没有读写 toplevel 位置的 API（Wayland 不允许、X11 后端未暴露），`window.json` 里的 `window_x/y` 只写不读 | 按平台能力实现：字段与校验保留，恢复只做尺寸与最大化（§7 规则 3 的能力表） |
 | 系统字号放大 | 本机 `text-scaling-factor = 1.0`，未实测 1.5 下的行高自适应 | §4 的公式先落地，实测后回填 |
 | macOS | 只有骨架，未验证 | 本文件的 macOS 列属未验证口径，接入时复核 |
-| 高对比（Linux） | 已接入（#161）：`AdwStyleManager::is_high_contrast()` 决定分隔线 / 外框 / 浮层描边 / 状态栏前景的强度，并接 `connect_high_contrast_notify` 重载样式表。本机 Yaru 没有 HighContrast 变体，完整 HC 主题下的观感未复核 | `theme.rs` 的 `Palette::high` |
+| 高对比（Linux） | 已接入（#161）：`AdwStyleManager::is_high_contrast()` 决定分隔线 / 外框 / 浮层描边 / 状态栏前景的强度，并接 `connect_high_contrast_notify` 重载样式表。本机已装 `gnome-accessibility-themes`（`/usr/share/themes/HighContrast` 存在），但 GNOME 42+ 的「高对比」开关只翻转 `a11y.interface high-contrast`，不会把 `gtk-theme` 从 Yaru 切成 HighContrast——**完整 HC 主题观感**需 `GTK_THEME=HighContrast` 或系统里改 `gtk-theme`，未复核 | `theme.rs` 的 `Palette::high` |
 
 ## 变更记录
 
