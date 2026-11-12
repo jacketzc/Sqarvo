@@ -154,8 +154,11 @@ WinUI 3 的启动崩溃可以是**延迟且抖动**的（同一份构建分别�
 1. **行为缺失**（契约有、Windows 没有）：断开 / 刷新 / F5、对象树与数据行右键菜单、事务入口、
    关标签三选、`N selected`、标签条 `＋`、表数据工具条 6 类控件、列头点击排序与列宽拖拽。
 2. **`Ctrl+Enter` 语义相反**：契约是整段执行，Windows 实现是「有选中就执行选中」。
-3. **树行字号/字重**：容器级 `FontWeight` 只对部分行生效（实测 8 行仅 1 行变粗），
-   要修必须换行模板（`DataTemplate` 在本仓库是禁用控件，需先定替代写法）。
+3. **树行字号/字重 + 选中态**：容器级 `FontWeight` 只对部分行生效（实测 8 行仅 1 行变粗）；
+   程序化选中节点后也没有整行底色——`TreeViewItemBackgroundSelected` / `ForegroundSelected`
+   三组资源键不被默认模板读取（写等于没写，已删除），实际只有一条细指示条。
+   三件都要靠同一个改动解决：给 `TreeViewItem` 自带 `ControlTemplate`（含箭头 / 缩进 / 展开动画），
+   在此之前不逐个打补丁。
 4. **诊断能力断层**：Linux 有 30+ 个 `--qa-*` / `--screenshot` 开关，Windows 只有 3 个 `--report-*`；
    结果是「截图靠外部 BitBlt、布局靠肉眼」，这正是差异长期积累的原因之一。
    正在补 `--screenshot` 与 `--qa-layout-audit`。
