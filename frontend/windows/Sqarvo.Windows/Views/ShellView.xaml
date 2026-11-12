@@ -461,7 +461,7 @@
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
-                                            Text="在「文件 → 新建连接…」里保存一条 MariaDB 连接；点侧栏里已保存的连接即可连接。"
+                                            Text="用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。"
                                             FontSize="{StaticResource Size.FontStatus}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
@@ -501,7 +501,7 @@
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
-                                            Text="在左侧对象树里选中一个库、表或分组。"
+                                            Text="在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。"
                                             FontSize="{StaticResource Size.FontStatus}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />

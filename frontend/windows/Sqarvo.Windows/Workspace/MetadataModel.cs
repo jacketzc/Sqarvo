@@ -61,12 +61,13 @@ internal static class MetadataLabels
     };
 
     /// <summary>空的说明（「确实没有」而不是读取失败）。</summary>
+    /// <remarks>与 Linux 的 Objects 页状态行同一句：「（这个库里没有这类对象）」。</remarks>
     public static string EmptyNote(ObjectGroup group) => group switch
     {
-        ObjectGroup.Tables => "（这一组没有表）",
-        ObjectGroup.Views => "（这一组没有视图）",
-        ObjectGroup.Functions => "（这一组没有函数）",
-        _ => "（还没有保存的查询）",
+        ObjectGroup.Tables => "（这个库里没有这类对象）",
+        ObjectGroup.Views => "（这个库里没有这类对象）",
+        ObjectGroup.Functions => "（这个库里没有这类对象）",
+        _ => UnsupportedNote(ObjectGroup.Queries) ?? "（这个库里没有这类对象）",
     };
 
     /// <summary>后端没有该能力时的说明行；有列表能力的组返回 <see langword="null"/>。</summary>

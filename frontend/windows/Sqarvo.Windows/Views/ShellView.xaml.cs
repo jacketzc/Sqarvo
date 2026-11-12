@@ -87,7 +87,7 @@ public sealed partial class ShellView : UserControl
     private readonly WindowState _state;
 
     /// <summary>树上的加载态占位行（连接层与分组层共用同一句文案）。</summary>
-    private const string LoadingPlaceholder = "正在加载对象列表…";
+    private const string LoadingPlaceholder = "读取中…";
 
     /// <summary>还有下一页时的续拉行。</summary>
     private const string LoadMoreText = "加载更多…";
@@ -807,16 +807,16 @@ public sealed partial class ShellView : UserControl
             "新建查询标签（Ctrl+T）");
         ToolTipService.SetToolTip(
             ButtonTables,
-            "工具条的种类入口尚未接线：先在对象树里点开某个库的 Tables 分组（本片只做了树与 Objects 页）");
+            "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）；种类入口尚未接线，现在请直接在对象树里展开该分组");
         ToolTipService.SetToolTip(
             ButtonViews,
-            "工具条的种类入口尚未接线：先在对象树里点开某个库的 Views 分组（本片只做了树与 Objects 页）");
+            "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）；种类入口尚未接线，现在请直接在对象树里展开该分组");
         ToolTipService.SetToolTip(
             ButtonFunctions,
-            "Functions 列表尚未实现：契约里没有函数层的列表拉取（树里该分组只写说明，不发请求）");
+            "函数列表：驱动尚未提供（对象树里该分组只写说明，不发请求）");
         ToolTipService.SetToolTip(
             ButtonQueries,
-            "Queries 列表尚未实现：本版没有「已保存的查询」这一层");
+            "已保存的查询：尚未实现（本版没有这一层，查询只存在于打开着的查询标签里）");
 
         ToolTipService.SetToolTip(
             TreeSearchBox,
