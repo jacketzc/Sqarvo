@@ -82,6 +82,8 @@ HASH_EXCLUDE = {"sync", "impl_notes", "platform_notes"}
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 REF_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift)):(\d+)(?:-(\d+))?")
 REF_BARE_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift))")
+# Windows 台账里「未核对（待核）」的标记：done 时不允许出现，否则等于没核对就宣称完成。
+PENDING_RE = re.compile("待核")
 TOKEN_RE = re.compile(r"@([A-Za-z0-9_]+)")
 HEX_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
 ICONS: dict[str, dict] = {}
@@ -347,6 +349,26 @@ def check_component(
         note = entry.get("note") or comp.get("platform_notes", {}).get(plat)
         if state in {"partial", "na", "blocked", "present"} and not note:
             rep.warn(where, f"sync.{plat}={state} 但没有说明（note / platform_notes.{plat}）")
+        # Windows 侧没有 CI 构建与手势级 QA，唯一能拦住「口述 done」的就是这条锚点规则：
+        # evidence / note 里必须有一条 frontend/windows/…:行，并且路径与行号要真实存在。
+        # P1 先记 warning（82 条 partial 尚未补锚点），转 error 的触发条件写在 Issue 里。
+        if plat == "windows" and state in {"done", "partial"}:
+            blob = " ".join(x for x in (entry.get("evidence") or "", note or "") if x)
+            if state == "done" and PENDING_RE.search(blob):
+                rep.error(
+                    where,
+                    "sync.windows=done 但依据里写着「待核」：没核对过就只能记 partial/none",
+                )
+            win_refs = [r for r in REF_RE.findall(blob) if r[0].startswith("frontend/windows/")]
+            if not win_refs:
+                rep.warn(
+                    where,
+                    "sync.windows 的 evidence/note 里没有 frontend/windows/…:行 锚点"
+                    "（P1 转 error；先按代码核对再补）",
+                )
+            else:
+                joined = "；".join(f"{path}:{start}" + (f"-{end}" if end else "") for path, start, end in win_refs)
+                check_source(where, joined, rep)
 
 
 def run_check(strict: bool) -> int:
