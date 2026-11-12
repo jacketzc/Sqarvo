@@ -50,9 +50,16 @@ public sealed class PidLivenessTests
     [Fact]
     public void DefaultPathLayoutDerivesChildRuntimeRootFromStandardLayout()
     {
-        Assert.Equal("/tmp/run-root", DefaultPathLayout.ChildRuntimeRoot("/tmp/run-root/sqarvo/backend-endpoint.json"));
-        Assert.Null(DefaultPathLayout.ChildRuntimeRoot("/tmp/other/backend-endpoint.json"));
-        Assert.Null(DefaultPathLayout.ChildRuntimeRoot("/tmp/run-root/not-the-name.json"));
+        // 期望值用 Path.Combine 拼：Windows 的分隔符是反斜杠，硬编码 "/tmp/..." 只在 Linux 成立
+        // （CI 第一次跑 windows-latest 就红在这个断言上）。
+        var root = Path.Combine(Path.GetTempPath(), "run-root");
+        var projectDirectory = Path.Combine(root, "sqarvo");
+        var endpoint = Path.Combine(projectDirectory, Sqarvo.Core.Ipc.EndpointFile.FileName);
+
+        Assert.Equal(root, DefaultPathLayout.ChildRuntimeRoot(endpoint));
+        Assert.Null(DefaultPathLayout.ChildRuntimeRoot(
+            Path.Combine(Path.GetTempPath(), "other", Sqarvo.Core.Ipc.EndpointFile.FileName)));
+        Assert.Null(DefaultPathLayout.ChildRuntimeRoot(Path.Combine(projectDirectory, "not-the-name.json")));
     }
 
     [Fact]
