@@ -71,7 +71,7 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | `style.slot` | 建议 | 布局槽，见下方清单 |
 | `style.metrics` | 建议 | `metrics.toml` 的 key 名（**不写数字**） |
 | `style.tokens` | 建议 | 主题 token 名（**不写 `#RRGGBB`**），必须能在 `frontend/linux/src/theme.rs` 找到 `@<name>` |
-| `style.icon` | 有图标时 | 语义图标 id（字符串或数组），必须在 [`icons.toml`](../icons.toml) 里存在；各端按 id 取自己的字形 |
+| `style.icon` | 有图标时 | 语义图标 id（字符串或数组），必须在 [`icons.toml`](../icons.toml) 里存在；各端按 id 取自己的字形（该表 `winui` 已是 Segoe Fluent 码点，`winui_name` 是官方字形名；`winui_note` 非空表示是近似字形） |
 | `style.states` | 可选 | 键限 `hover` / `active` / `selected` / `focus` / `disabled`，值是 token 名 |
 | `a11y.name` / `a11y.tab` | P1 补 | 可访问名与 Tab 次序；缺了报警告，不失败。`（行内容：…）` 表示名字由行内容生成（列表行没有静态名） |
 | `native_control` | 选型有意义时 | `gtk:<控件> / winui:<控件> / swift:<控件>`；未实现写 `—`，未核对写 `待核`。纯文本、行模板不必填 |
