@@ -3347,6 +3347,16 @@ fn maybe_run_qa_query(state: &Rc<UiState>) {
             }
         });
     }
+    if crate::qa::query_refresh() {
+        let workspace = Rc::clone(&workspace);
+        glib::timeout_add_local_once(Duration::from_millis(3_600), move || {
+            let Some(page) = workspace.tabs.sql_page() else {
+                return;
+            };
+            eprintln!("[qa] t=+{}ms 查询结果刷新", crate::qa::elapsed_ms());
+            page.perform_row_op(crate::data_page::RowOp::Refresh);
+        });
+    }
     if crate::qa::query_apply() {
         let workspace = Rc::clone(&workspace);
         glib::timeout_add_local_once(Duration::from_millis(3_800), move || {

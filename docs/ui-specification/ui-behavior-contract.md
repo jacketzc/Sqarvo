@@ -466,6 +466,20 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 | 提交 | 有脏行 / 待插入行 | 走 `ApplyRowChanges`（目标表由 SQL 页显式给出，会话 = 本标签自己的会话）；提交后**不自动重跑查询**，状态行写「已提交 N 行 · 重新执行查询可看到库里最新的值」；失败的行走逐行结果留在草稿里 | `src/sql_page.rs`（`on_applied` / `on_inserted`）、`src/backend/worker.rs`（`apply_row_changes_for`） |
 | 放弃 | 有脏行 | 全部编辑、删除标记与新行草稿一起清掉，状态行「已放弃未提交的更改」 | `src/sql_page.rs`（`RowOp::Discard`） |
 | 边界（本版不做） | — | 结果区**没有**行级脏色 / 删除线（脏行数只在状态行与圆点）；新增行一次只有一行；限流（`Limited`）结果不启用编辑 | 同左 |
+| 首次编辑就生效 | 可编辑、结果区空闲 | 改完一格立刻重算行操作可用性（`notify_state_changed` → 状态栏重算）：`✓` 在**第一次**编辑后即可点，不需要再改第二处才亮；日志 `[query] 状态圆点：亮（脏行 1 · 待提交 1 条）` | `src/results.rs`（`open_cell_editor_at` → `notify_state_changed`）、`src/sql_page.rs`（`row_ops` / `callbacks.state_changed`） |
+| 状态圆点（导出左侧） | 可编辑 | 与表工具条同一枚 7px 圆点、同一套 CSS 与文案口径：有未提交更改（脏行 / 标记删除 / 新行）时为强调色并显示「自动提交 · 脏行 N · 待提交 M 条 ⏎ 自动提交：每条语句自成一个事务」；没有脏行时隐藏 | `src/results.rs`（`sync_edit_dot`）、`src/theme.rs`（状态圆点三态） |
+| `⟳` 刷新 | 执行过查询（结果区空闲） | 用编辑器里当前的 SQL 重跑（与「执行」同一入口）。**有未提交的更改时拒绝**并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点） | `src/sql_page.rs`（`perform_row_op` → `RowOp::Refresh`） |
+| 提交后的重绘范围 | 提交落定 | 只重绘本批变过的行（`dirty_indices`），不再把已加载的每一行都 `items_changed` 一遍：几百行结果里改两行提交，行数越多越快（用户反馈「按下去到成功像卡了 1 秒」的直接原因是本次的全量重绘） | `src/result_edit.rs`（`dirty_indices`）、`src/sql_page.rs`（`on_applied` / `Discard`） |
+| ESC 取消选中 | 结果区有选中行、没有查询在跑 | 清空行选中（`selection.unselect_all()`）；**执行中**的 ESC 仍是「取消查询」（同一按键按状态分流） | `src/results.rs`（网格 `EventControllerKey`）、`src/sql_page.rs`（按键分流） |
+
+### 5.11 查询标签的版面收敛与不可用态（v0.2.5）
+
+| 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| 去掉的常驻文字 | 查询标签 | 不再显示：`会话建立中…`（会话行空着就不占位，有真实会话信息时才显示）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`（正常路径的状态行）、`语句 1：… · 查询 query_xxx`（语句摘要改写到日志 `[query] 语句摘要：…`）。失败 / 触顶 / 取消 / 断连 / 执行中的一句话仍保留（那是必须让用户看见的原因） | `src/sql_page.rs`（工具栏与结果区）、`src/results.rs`（`set_state` 的可见性判断） |
+| 不可用按钮的外观 | 状态栏任一行操作按钮 / 展示形式 toggle / 分页器 | 不可用时同时降色与降透明度（`color: @sqarvo_status_fg` + `opacity: 0.45`）：原来只有颜色差（6:1 的灰 vs 正文色），11px 图标上看起来「激活与非激活一样」 | `src/theme.rs`（`.sqarvo-status-bar button:disabled`） |
+| ESC 取消选中（表数据页） | 数据网格有选中行 | 清空选中；网格上按（焦点在网格里时生效），不影响 SQL 编辑器与对话框 | `src/data_page.rs`（网格 `EventControllerKey`） |
+| 行右键「复制为」的二级菜单 | 选中行后右击 | 展开在「复制为」的**右侧**（原来默认向下，会压住菜单下方条目） | `src/data_page.rs`（`submenu.set_position(Right)`） |
 
 ---
 

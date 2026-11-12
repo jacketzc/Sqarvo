@@ -592,11 +592,14 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         window.{window_class} .sqarvo-status-bar entry {{
             color: @window_fg_color;
         }}
+        /* v0.2.5：只有颜色差（6:1 的灰 vs 正文色）在 11px 图标上看着「一样亮」——用户反馈
+           「激活 / 非激活看起来一样」。补一档不透明度让不可用态一眼可辨：0.45 时浅色下
+           实际渲染约 #a8a8a8，与可用态（#1f1f1f）拉开到 5 倍以上对比。 */
         window.{window_class} .sqarvo-status-bar button:disabled,
         window.{window_class} .sqarvo-status-bar button.flat:disabled,
         window.{window_class} .sqarvo-status-bar button.sqarvo-icon-button:disabled {{
             color: @sqarvo_status_fg;
-            opacity: 1;
+            opacity: 0.45;
             filter: none;
         }}
         /* v0.2.3.3：状态栏分成「对象树功能区的左边沟 | 竖分割线 | 右列」。

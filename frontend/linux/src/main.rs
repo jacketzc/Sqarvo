@@ -173,6 +173,14 @@ fn register_qa_options(app: &adw::Application) {
         );
     }
     app.add_main_option(
+        "qa-query-refresh",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "QA：查询标签按一次状态栏「刷新」（重跑当前 SQL）",
+        None,
+    );
+    app.add_main_option(
         "qa-query-add",
         glib::Char::from(b'\0'),
         glib::OptionFlags::NONE,

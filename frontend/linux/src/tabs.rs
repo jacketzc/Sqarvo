@@ -2087,6 +2087,14 @@ impl TabSet {
                 let id = id.clone();
                 Rc::new(move |object| worker.read_query_edit(&id, object))
             },
+            state_changed: {
+                let weak = Rc::downgrade(self);
+                Rc::new(move || {
+                    if let Some(set) = weak.upgrade() {
+                        set.refresh_current();
+                    }
+                })
+            },
             apply_changes: {
                 let worker = Rc::clone(&worker);
                 let id = id.clone();
@@ -2101,7 +2109,7 @@ impl TabSet {
                 })
             },
         };
-        let page = SqlPage::new("会话建立中…", callbacks);
+        let page = SqlPage::new("", callbacks);
         page.set_on_selection_changed({
             let weak = Rc::downgrade(self);
             Rc::new(move || {

@@ -255,6 +255,11 @@ pub struct ResultsView {
     insert_row: Cell<Option<usize>>,
     /// 行选中变化：状态栏「删除行」的可用性随它变化（v0.2.5）。
     on_selection_changed: RefCell<Option<Rc<dyn Fn()>>>,
+    /// 编辑态圆点（有未提交更改时亮起）。
+    status_dot: gtk::Button,
+    status_dot_core: gtk::Box,
+    /// 圆点当前是否亮着（只在变化时打日志）。
+    dot_on: Cell<bool>,
 }
 
 impl ResultsView {
@@ -292,11 +297,31 @@ impl ResultsView {
         detail_row.set_margin_end(gap(Gap::Xl));
         detail_row.set_margin_bottom(gap(Gap::Sm));
         detail_row.append(&detail);
-        detail.set_hexpand(true);
+        // 弹性空白由后面的 spacer 独占：说明文字只按自然宽度占位（超出用省略号）。
+        detail.set_hexpand(false);
 
         // 导出（v0.2.5）：与表工具条**同一个形态**——图标 + 下拉箭头，两项
         // （导出 CSV / 导出为 INSERT 语句），范围固定为「已加载的结果行」。
         // 由 `sql_page` 接上菜单与 `export_ui`。
+        // 状态圆点（v0.2.5）：与表工具条同一套 CSS / 文案口径，摆在导出按钮**前方**。
+        // 表数据页的那一枚在 `data_page.rs`，两处只共用 CSS 类与直径口径。
+        let status_dot_core = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
+        status_dot_core.add_css_class("sqarvo-status-dot");
+        status_dot_core
+            .set_size_request(metrics().status_dot_diameter, metrics().status_dot_diameter);
+        status_dot_core.set_halign(gtk::Align::Center);
+        status_dot_core.set_valign(gtk::Align::Center);
+        let status_dot = gtk::Button::new();
+        status_dot.add_css_class("flat");
+        status_dot.add_css_class(crate::theme::STATUS_DOT_BUTTON_CLASS);
+        status_dot.set_child(Some(&status_dot_core));
+        status_dot.set_size_request(crate::layout::MIN_TARGET, crate::layout::MIN_TARGET);
+        status_dot.set_valign(gtk::Align::Center);
+        status_dot.set_focusable(false);
+        status_dot.set_focus_on_click(false);
+        status_dot.set_visible(false);
+        status_dot.set_margin_end(gap(Gap::Xs));
+
         let ex_button = gtk::MenuButton::new();
         ex_button.set_icon_name("document-save-symbolic");
         ex_button.add_css_class("flat");
@@ -306,6 +331,12 @@ impl ResultsView {
         ex_button.set_tooltip_text(Some(
             "导出已加载的查询结果：CSV 或 INSERT 语句（Ctrl+Shift+E 直接导出 CSV）",
         ));
+        // 说明文字被隐藏时行会向左塌缩，把圆点与导出甩到左边；用一枚可扩展的空盒占住
+        // 弹性空白，保持「右端是状态圆点 + 导出」这一版式（与表工具条同一侧）。
+        let detail_spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
+        detail_spacer.set_hexpand(true);
+        detail_row.append(&detail_spacer);
+        detail_row.append(&status_dot);
         detail_row.append(&ex_button);
 
         let placeholder = adw::StatusPage::builder().title("尚未执行查询").build();
@@ -323,6 +354,19 @@ impl ResultsView {
         grid.set_show_column_separators(true);
         grid.set_reorderable(false);
         grid.add_css_class("sqarvo-grid");
+        // ESC 取消行选中（v0.2.5）：与表数据页同一行为，不劫持其它键。
+        {
+            let selection = selection.clone();
+            let keys = gtk::EventControllerKey::new();
+            keys.connect_key_pressed(move |_, keyval, _, _| {
+                if keyval == gtk::gdk::Key::Escape {
+                    selection.unselect_all();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            grid.add_controller(keys);
+        }
 
         // 与数据页同一口径：宽结果集的横向滚动条不能因 overlay 自动淡出而失去
         // 回到左侧的入口（workspace-model §6）。
@@ -374,6 +418,9 @@ impl ResultsView {
             edit: RefCell::new(None),
             insert_row: Cell::new(None),
             on_selection_changed: RefCell::new(None),
+            status_dot,
+            status_dot_core,
+            dot_on: Cell::new(false),
         });
 
         // 行选中变化只用于「删除行」的可用性：把信号转给状态栏刷新。
@@ -423,6 +470,52 @@ impl ResultsView {
         self.on_selection_changed.replace(Some(callback));
     }
 
+    /// 通知外部「页面内的可编辑状态变了」（状态栏据此重算按钮可用性）。
+    pub fn notify_state_changed(&self) {
+        if let Some(callback) = self.on_selection_changed.borrow().as_ref() {
+            callback();
+        }
+    }
+
+    /// 清空行选中（ESC）。
+    pub fn clear_selection(&self) {
+        self.selection.unselect_all();
+    }
+
+    /// 编辑态圆点：有未提交的更改（含新行）时亮起，口径与表工具条一致。
+    pub fn sync_edit_dot(&self) {
+        let (dirty, pending) = match self.edit.borrow().as_ref() {
+            Some(edit) => (edit.dirty_rows(), edit.pending()),
+            None => (0, 0),
+        };
+        let on = dirty > 0;
+        // 只在「亮起 / 熄灭」变化时打一行日志（QA 断言与排障用）。
+        if on != self.dot_on.get() {
+            self.dot_on.set(on);
+            eprintln!(
+                "[query] 状态圆点：{}（脏行 {dirty} · 待提交 {pending} 条）",
+                if on { "亮" } else { "灭" }
+            );
+        }
+        if on {
+            let tooltip = format!(
+                "自动提交 · 脏行 {dirty} · 待提交 {pending} 条\n自动提交：每条语句自成一个事务"
+            );
+            self.status_dot.set_tooltip_text(Some(&tooltip));
+            self.status_dot
+                .update_property(&[gtk::accessible::Property::Label(&tooltip)]);
+            self.status_dot_core
+                .add_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
+            self.status_dot_core
+                .remove_css_class(crate::theme::STATUS_DOT_TXN_CLASS);
+        } else {
+            self.status_dot_core
+                .remove_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
+            self.status_dot.set_tooltip_text(None);
+        }
+        self.status_dot.set_visible(on);
+    }
+
     /// 选中行下标（删除按选中集）。
     #[must_use]
     pub fn selected_rows(&self) -> Vec<usize> {
@@ -441,6 +534,7 @@ impl ResultsView {
             edit.primary_key
         );
         self.edit.replace(Some(edit));
+        self.sync_edit_dot();
     }
 
     /// 当前编辑态（`None` = 只读结果）。
@@ -453,6 +547,7 @@ impl ResultsView {
     pub fn clear_edit(&self) {
         self.edit.replace(None);
         self.remove_insert_row();
+        self.sync_edit_dot();
     }
 
     /// 追加「新行」占位行（`+` 的入口；返回占位行下标）。
@@ -508,6 +603,7 @@ impl ResultsView {
 
     /// 编辑后按当前值重绘一行（含占位行）。
     pub fn refresh_row(&self, row: usize) {
+        self.sync_edit_dot();
         if self.insert_row.get() == Some(row) {
             if let Some(edit) = self.edit() {
                 let placeholder = self.placeholder_row(&edit);
@@ -571,6 +667,8 @@ impl ResultsView {
                     }
                 }
                 page.refresh_row(row);
+                // 首次编辑也必须立刻让状态栏亮起 ✓（用户反馈：第一次改值按钮不变）。
+                page.notify_state_changed();
                 Ok(())
             });
         crate::data_page::open_cell_editor(anchor, &title, &initial, is_null, nullable, on_apply);
@@ -824,6 +922,16 @@ impl ResultsView {
             RunState::Disconnected => format!("已断开 · 已保留 {loaded} 行"),
         };
         self.status.set_text(&text);
+        // v0.2.5：正常路径不再常驻说明文案（「已完成 · 已加载 N 行 · 共 N 行」这类）。
+        // 只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。
+        self.status.set_visible(matches!(
+            state,
+            RunState::Loading
+                | RunState::Error
+                | RunState::Limited
+                | RunState::Cancelled
+                | RunState::Disconnected
+        ));
         self.status.remove_css_class("error");
         self.status.remove_css_class("success");
         self.status.remove_css_class("warning");

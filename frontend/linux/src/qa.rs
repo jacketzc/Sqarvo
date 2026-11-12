@@ -938,6 +938,8 @@ struct Args {
     query_apply: bool,
     /// `--qa-query-add`：查询标签结果区开始一笔新行草稿（v0.2.5）。
     query_add: bool,
+    /// `--qa-query-refresh`：查询标签按一次状态栏「刷新」（重跑当前 SQL）。
+    query_refresh: bool,
     /// `--qa-query-insert <column>:<value>`：给新行草稿填一格（v0.2.5）。
     query_inserts: Vec<(String, String)>,
     /// `--qa-data-edit-range <start>:<count>:<column>:<value>`：批量编辑连续行
@@ -1461,6 +1463,12 @@ pub fn query_edits() -> Vec<(u32, String, String)> {
 pub fn query_deletes() -> Vec<u32> {
     ARGS.get()
         .map_or_else(Vec::new, |args| args.query_deletes.clone())
+}
+
+/// `--qa-query-refresh`：是否按一次状态栏「刷新」。
+#[must_use]
+pub fn query_refresh() -> bool {
+    ARGS.get().is_some_and(|args| args.query_refresh)
 }
 
 /// `--qa-query-add`：结果区是否开始一笔新行草稿。
@@ -2198,6 +2206,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--qa-query-add" => {
                 parsed.query_add = true;
+                index += 1;
+            }
+            "--qa-query-refresh" => {
+                parsed.query_refresh = true;
                 index += 1;
             }
             "--qa-query-insert" => {

@@ -1241,6 +1241,19 @@ impl DataPage {
         grid.set_show_column_separators(true);
         grid.set_reorderable(false);
         grid.add_css_class("sqarvo-grid");
+        // ESC 取消行选中（v0.2.5）：与查询结果区同一行为。
+        {
+            let selection = selection.clone();
+            let keys = gtk::EventControllerKey::new();
+            keys.connect_key_pressed(move |_, keyval, _, _| {
+                if keyval == gtk::gdk::Key::Escape {
+                    selection.unselect_all();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            grid.add_controller(keys);
+        }
 
         // 横向滚动条必须**常驻可见**：GTK4 默认的 overlay 滚动条会在指针离开后
         // 淡出，宽表在「默认窗口滚动到最右 → 最大化」后只剩几十像素可滚，用户既看
@@ -2188,6 +2201,9 @@ impl DataPage {
         }
         let submenu = gtk::Popover::new();
         submenu.set_has_arrow(false);
+        // 用户反馈：二级菜单原来默认向下展开。子菜单应出现在「复制为」的**右侧**
+        // （与桌面惯例一致，也不遮住下方条目）。
+        submenu.set_position(gtk::PositionType::Right);
         submenu.set_parent(&copy_row);
         let sub_list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
         sub_list.set_margin_top(gap(Gap::Xs));

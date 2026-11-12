@@ -110,6 +110,22 @@ impl ResultEdit {
         self.insert.borrow().is_some()
     }
 
+    /// 脏行 / 标记删除行的下标（提交与放弃后只重绘这些行）。
+    ///
+    /// 用户反馈「改两行提交却像卡了 1 秒」：原先把**所有**已加载行都重绘一遍，
+    /// 每行一次 `items_changed`，几百行时就是几百次视图重建。只重绘真正变过的行。
+    #[must_use]
+    pub fn dirty_indices(&self) -> Vec<usize> {
+        let draft = self.draft.borrow();
+        draft
+            .rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_dirty() || row.removed)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// 当前显示值（草稿里的当前值；越界返回 `None`）。
     #[must_use]
     pub fn current_values(&self, row: usize) -> Option<Vec<ColumnValue>> {

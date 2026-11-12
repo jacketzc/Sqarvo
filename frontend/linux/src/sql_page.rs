@@ -71,6 +71,8 @@ pub struct SqlPageCallbacks {
     pub read_query_edit: Rc<dyn Fn(ObjectRef)>,
     /// 提交行变更：目标表由 SQL 页显式给出（v0.2.5）。
     pub apply_changes: Rc<dyn Fn(ObjectRef, ChangeBatch, SubmitOptions)>,
+    /// 页面内的可编辑状态变了（脏行 / 选中 / 是否可编辑）：让状态栏重算按钮可用性。
+    pub state_changed: Rc<dyn Fn()>,
 }
 
 /// SQL 工作区页面。
@@ -114,7 +116,9 @@ impl SqlPage {
         banner.set_revealed(false);
         banner.set_button_label(Some("重启 Sqarvo"));
 
+        // v0.2.5：不再显示「会话建立中…」这类占位文案；有真实会话信息时才显示。
         let session_label = gtk::Label::new(Some(session_line));
+        session_label.set_visible(!session_line.trim().is_empty());
         session_label.set_xalign(0.0);
         session_label.set_hexpand(true);
         session_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -139,16 +143,6 @@ impl SqlPage {
         toolbar.append(&execute_button);
         toolbar.append(&cancel_button);
 
-        // 如实标注：没有语法高亮就不是语法高亮，不能靠配色暗示。
-        let note = gtk::Label::new(Some("当前为纯文本编辑，语法高亮将在后续版本提供"));
-        note.set_xalign(0.0);
-        note.set_margin_start(gap(Gap::Xl));
-        note.set_margin_end(gap(Gap::Xl));
-        note.set_margin_bottom(gap(Gap::Xs));
-        note.add_css_class("dim-label");
-        note.add_css_class("caption");
-        note.add_css_class("sqarvo-note");
-
         let editor = gtk::TextView::new();
         editor.set_monospace(true);
         editor.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -171,19 +165,6 @@ impl SqlPage {
         editor_scroll.set_margin_bottom(gap(Gap::Md));
         editor_scroll.add_css_class("card");
 
-        // 单元格语义图例：让「NULL / 空串 / 二进制 / 截断」一眼可查，而不是靠猜。
-        let legend = gtk::Label::new(Some(
-            "图例：NULL=灰色斜体 · ''=空字符串（与 NULL 不同）· 0x89 50…=二进制前缀 · …（已截断）=服务端只返回了前缀",
-        ));
-        legend.set_xalign(0.0);
-        legend.set_margin_start(gap(Gap::Xl));
-        legend.set_margin_end(gap(Gap::Xl));
-        legend.set_margin_top(gap(Gap::Xs));
-        legend.set_margin_bottom(gap(Gap::Xs));
-        legend.set_wrap(true);
-        legend.add_css_class("dim-label");
-        legend.add_css_class("caption");
-
         let results = ResultsView::new({
             let fetch = Rc::clone(&callbacks.fetch);
             Rc::new(move || fetch())
@@ -195,10 +176,8 @@ impl SqlPage {
         root.set_valign(gtk::Align::Fill);
         root.append(&banner);
         root.append(&toolbar);
-        root.append(&note);
         root.append(&editor_scroll);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        root.append(&legend);
         root.append(results.widget());
 
         let page = Rc::new(Self {
@@ -295,7 +274,13 @@ impl SqlPage {
                     return glib::Propagation::Stop;
                 }
                 if keyval == gtk::gdk::Key::Escape {
-                    page_for_keys.request_cancel();
+                    // 执行中：ESC 取消查询；空闲时：ESC 只取消行选中（v0.2.5）。
+                    if page_for_keys.state.get().is_active() {
+                        page_for_keys.request_cancel();
+                    } else {
+                        page_for_keys.results.clear_selection();
+                        (page_for_keys.callbacks.state_changed)();
+                    }
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -495,19 +480,19 @@ impl SqlPage {
             rows.len()
         );
 
-        // v0.1 单语句：结果集来自 statement_index=0；多语句时如实列出全部摘要。
+        // v0.2.5：不再把「语句 1 … · 查询 query_xxx」常驻在结果区（用户要求去掉这些文字）。
+        // 语句摘要仍写进日志，排障时查日志；界面只留真正需要说明的状态（失败 / 触顶 / 取消）。
         let statement = statements.first().cloned();
-        let mut detail = statements
-            .iter()
-            .map(StatementView::summary_line)
-            .collect::<Vec<_>>()
-            .join(" · ");
-        if detail.is_empty() {
-            detail = format!("查询 {query_id}");
-        } else {
-            detail.push_str(&format!(" · 查询 {query_id}"));
-        }
-        self.results.set_detail(&detail);
+        self.results.set_detail("");
+        // 语句摘要仍保留在日志里（排障要看），只是不再常驻界面。
+        eprintln!(
+            "[query] 语句摘要：{}（query_id={query_id}）",
+            statements
+                .iter()
+                .map(StatementView::summary_line)
+                .collect::<Vec<_>>()
+                .join(" · ")
+        );
 
         if let Some(statement) = &statement {
             eprintln!(
@@ -534,8 +519,7 @@ impl SqlPage {
             }
         }
         if statements.len() > 1 {
-            detail.push_str(" · 结果集仅展示第 1 条语句（v0.1 限制）");
-            self.results.set_detail(&detail);
+            eprintln!("[query] 多语句：界面只展示第 1 条语句的结果集（v0.1 限制）");
         }
 
         self.results.append_rows(rows, has_more, loaded);
@@ -664,7 +648,6 @@ impl SqlPage {
         self.set_state(PageState::Disconnected, Some("已断开"));
     }
 
-    /// 更新按钮可用性与状态行。
     // ---- 查询结果编辑（v0.2.5） -------------------------------------------
 
     /// 执行开始：上一轮的编辑态作废（新查询的结果可能根本不是同一张表）。
@@ -744,6 +727,7 @@ impl SqlPage {
                 let edit = Rc::new(ResultEdit::build(object, columns, meta.primary_key, &rows));
                 self.results.enable_edit(edit);
                 self.edit_note.replace(None);
+                (self.callbacks.state_changed)();
             }
             Ok(_) => {
                 let note = "这张表没有主键：不能新增、编辑或删除".to_owned();
@@ -778,13 +762,21 @@ impl SqlPage {
         let Some(edit) = self.results.edit() else {
             return;
         };
+        // 先记下要重绘的行（apply_results 会把脏标记清掉），再回填结果。
+        let touched = edit.dirty_indices();
         let failures = match self.last_batch.borrow().as_ref() {
             Some(batch) => edit.apply_results(batch, &report.results),
             None => Vec::new(),
         };
-        for row in 0..self.results.loaded_rows().len() {
+        let touched = if touched.is_empty() {
+            edit.dirty_indices()
+        } else {
+            touched
+        };
+        for row in touched {
             self.results.refresh_row(row);
         }
+        self.results.sync_edit_dot();
         self.last_batch.replace(None);
         let note = if failures.is_empty() {
             format!(
@@ -800,6 +792,7 @@ impl SqlPage {
         };
         eprintln!("[query] {note}");
         self.set_state(PageState::Complete, Some(&note));
+        (self.callbacks.state_changed)();
     }
 
     /// 新行插入结果。
@@ -832,6 +825,8 @@ impl SqlPage {
             .ok_or_else(|| format!("结果里没有列 {column}"))?;
         edit.set_text(row, index, text)?;
         self.results.refresh_row(row);
+        // 与双击编辑器同一条提示路径（QA 也必须走到状态栏重算，否则验不出真行为）。
+        self.results.notify_state_changed();
         Ok(())
     }
 
@@ -850,6 +845,7 @@ impl SqlPage {
         if let Some(row) = self.results.insert_row_index() {
             self.results.refresh_row(row);
         }
+        self.results.notify_state_changed();
         Ok(())
     }
 
@@ -861,6 +857,7 @@ impl SqlPage {
             .ok_or_else(|| "结果不可编辑".to_owned())?;
         edit.delete(&[row])?;
         self.results.refresh_row(row);
+        self.results.notify_state_changed();
         Ok(())
     }
 
@@ -880,6 +877,8 @@ impl SqlPage {
             detail: false,
             reason: None,
         };
+        // 刷新与编辑无关：只要有执行过的语句就能重跑（用户反馈「刷新按钮没用」）。
+        ops.refresh = !self.results.statement().trim().is_empty() && !self.state.get().is_active();
         let Some(edit) = self.results.edit() else {
             ops.reason = Some(
                 self.edit_note
@@ -912,6 +911,7 @@ impl SqlPage {
                 Ok(_) => {
                     let note = "新行：双击单元格填值；提交前可以放弃".to_owned();
                     self.set_state(PageState::Complete, Some(&note));
+                    (self.callbacks.state_changed)();
                 }
                 Err(reason) => {
                     eprintln!("[query] 新增行未开始：{reason}");
@@ -931,6 +931,7 @@ impl SqlPage {
                         let note = format!("已标记删除 {count} 行（提交前可以放弃）");
                         eprintln!("[query] {note}");
                         self.set_state(PageState::Complete, Some(&note));
+                        (self.callbacks.state_changed)();
                     }
                     Err(reason) => {
                         eprintln!("[query] 标记删除失败：{reason}");
@@ -968,21 +969,39 @@ impl SqlPage {
                     edit.pending()
                 );
                 self.last_batch.replace(Some(batch.clone()));
+                (self.callbacks.state_changed)();
                 (self.callbacks.apply_changes)(edit.object.clone(), batch, options);
             }
             RowOp::Discard => {
                 let Some(edit) = self.results.edit() else {
                     return;
                 };
+                let touched = edit.dirty_indices();
                 edit.discard();
                 self.results.remove_insert_row();
-                let rows = self.results.loaded_rows().len();
-                for row in 0..rows {
+                for row in touched {
                     self.results.refresh_row(row);
                 }
+                self.results.sync_edit_dot();
                 self.set_state(PageState::Complete, Some("已放弃未提交的更改"));
+                (self.callbacks.state_changed)();
             }
-            RowOp::Refresh | RowOp::Cancel | RowOp::ToggleDetail => {
+            RowOp::Refresh => {
+                // 「刷新」= 用编辑器里当前的 SQL 重跑（与「执行」同一个入口）。
+                // 有未提交的更改时先拒绝：重跑会换掉整个结果集，草稿留着也没有落点
+                // （与表数据页的刷新手卫同一口径，不静默丢弃编辑）。
+                if let Some(edit) = self.results.edit()
+                    && edit.dirty_rows() > 0
+                {
+                    let note = "有未提交的更改：先提交或放弃，再刷新";
+                    eprintln!("[query] 刷新未执行：{note}");
+                    self.set_state(PageState::Complete, Some(note));
+                    return;
+                }
+                eprintln!("[query] 刷新：重跑当前查询");
+                self.execute();
+            }
+            RowOp::Cancel | RowOp::ToggleDetail => {
                 eprintln!("[query] 行操作 {:?} 在查询标签里不适用（忽略）", op);
             }
         }
