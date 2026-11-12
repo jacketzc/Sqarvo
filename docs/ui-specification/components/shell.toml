@@ -779,6 +779,7 @@ parent = "shell.density"
 display_name = "「紧凑（100%）」单选项"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "紧凑（100%）"
 impl_notes = [
   "当前档打勾；程序化同步勾选时不触发 action（guard 标志）。",
@@ -793,7 +794,7 @@ source = "src/ui.rs:5167、src/ui.rs:5132、src/density.rs:104"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "28812148094a"
+spec_hash = "cb21f1e8c41d"
 evidence = "§1.5 菜单入口；build_tier_menu 与 apply_tier_choice"
 
 [component.sync.windows]
@@ -811,6 +812,7 @@ parent = "shell.density"
 display_name = "「舒适（125%）」单选项"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "舒适（125%）"
 impl_notes = ["与其它两档同一组单选；本档放不下时禁用（`sensitive=false`）并给缺多少的 tooltip。"]
 
@@ -822,7 +824,7 @@ source = "src/ui.rs:5096、src/ui.rs:5132、src/window_size.rs:230"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a83d5ada6746"
+spec_hash = "f836305c0a47"
 evidence = "§1.5 菜单入口与禁用 tooltip；sync_tier_checks"
 
 [component.sync.windows]
@@ -840,6 +842,7 @@ parent = "shell.density"
 display_name = "「大（150%）」单选项"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "大（150%）"
 impl_notes = ["本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现。"]
 
@@ -851,7 +854,7 @@ source = "src/ui.rs:5096、src/ui.rs:5132"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "dbd7a7c034ad"
+spec_hash = "def5dd2c2812"
 evidence = "§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定"
 
 [component.sync.windows]

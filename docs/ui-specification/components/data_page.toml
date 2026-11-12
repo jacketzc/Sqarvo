@@ -567,6 +567,7 @@ parent = "data_page.export_menu"
 display_name = "「导出 CSV…」"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "导出 CSV…"
 impl_notes = [
   "范围对话框问当前页与整张表，默认当前页，整张表必须显式选择。",
@@ -590,7 +591,7 @@ source = "src/export_ui.rs:437"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "dc1460c46b88"
+spec_hash = "cbec81923beb"
 commit = ""
 evidence = "§5.7 CSV 出口 / §6.1 导出口径与公式注入防护；export_ui::begin(ExportKind::Csv)"
 
@@ -609,6 +610,7 @@ parent = "data_page.export_menu"
 display_name = "「导出为 INSERT 语句…」"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "导出为 INSERT 语句…"
 impl_notes = [
   "范围同样问当前页 / 整张表；确认标题「导出已加载的 N 行为 INSERT 语句？」/「导出整张表为 INSERT 语句？」。",
@@ -626,7 +628,7 @@ source = "src/export_ui.rs:437、src/export_ui.rs:695、src/export.rs:348"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a262b11296cc"
+spec_hash = "a3adabf3c3b6"
 commit = ""
 evidence = "§5.7 INSERT 写出口径；export_ui::begin(ExportKind::Insert) + export 的 sql_literal / write_insert"
 
@@ -645,6 +647,7 @@ parent = "data_page.export_menu"
 display_name = "「转储表…」"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "转储表…"
 impl_notes = [
   "**不问范围**（天然整表）：确认标题「转储表 <表名>？」。",
@@ -661,7 +664,7 @@ source = "src/export_ui.rs:490、src/export_ui.rs:1197、src/export_ui.rs:1418"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "57d7566a541b"
+spec_hash = "e4cbbb528dcd"
 commit = ""
 evidence = "§5.7 转储表内容；export_ui::begin_object_dump + run_whole_table_export"
 
@@ -1049,6 +1052,7 @@ parent = "data_page.row_menu"
 display_name = "「删除行」"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "删除行"
 impl_notes = [
   "与状态栏 − / RowOp::Delete 完全同一方法（delete_selected_row），可用性同一谓词（delete_available）。",
@@ -1064,7 +1068,7 @@ source = "src/data_page.rs:5272、src/data_page.rs:5017、src/data_page.rs:5337"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f81caed33111"
+spec_hash = "c1d666ff7ed9"
 commit = ""
 evidence = "§5.8 删除行；delete_selected_row + delete_note"
 
@@ -1083,6 +1087,7 @@ parent = "data_page.row_menu"
 display_name = "「复制为 ▸ 复制为 INSERT」"
 kind = "item"
 status = "active"
+style.metrics = ["font_ui"]
 a11y.name = "复制为 INSERT"
 impl_notes = [
   "把选中行合成**一条多值** INSERT（目标表 + 列清单 + 多组 VALUES，行间换行）写进系统剪贴板，用选中行的**当前值**（含未提交编辑）。",
@@ -1098,7 +1103,7 @@ source = "src/data_page.rs:2016、src/data_page.rs:2161"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8ae1ca123860"
+spec_hash = "71912e7913bd"
 commit = ""
 evidence = "§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert"
 

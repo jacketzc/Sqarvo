@@ -231,6 +231,7 @@ kind `container` · status `active` · parent `data_page`
 
 kind `item` · status `active` · parent `data_page.export_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「导出 CSV…」
 - 同步：Linux done（§5.7 CSV 出口 / §6.1 导出口径与公式注入防护；export_ui::begin(ExportKind::Csv)）；Windows none（§7.1 未记录：无导出。）；macOS none
 - 实现备注：范围对话框问当前页与整张表，默认当前页，整张表必须显式选择。确认标题「导出已加载的 N 行为 CSV？」/「导出整张表为 CSV？」；正文给写出口径（空字段 = SQL NULL、空字符串写成空引号串、二进制写占位 (BLOB n bytes)、Decimal 保留原文、日期时间 ISO 8601）与截断警告。公式注入防护开关**只给 CSV**（文本值以等号 / 加号 / 减号 / at 号 / 制表符 / 回车开头时前置单引号），默认开启。文件对话框标题「导出为CSV」、过滤 *.csv、默认 sqarvo-export.csv；目标已存在时再确认一次，默认不覆盖。当前页导出的数据口径：写页面当前的值，含未提交编辑（对话框里写明）。
@@ -244,6 +245,7 @@ kind `item` · status `active` · parent `data_page.export_menu`
 
 kind `item` · status `active` · parent `data_page.export_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「导出为 INSERT 语句…」
 - 同步：Linux done（§5.7 INSERT 写出口径；export_ui::begin(ExportKind::Insert) + export 的 sql_literal / write_insert）；Windows none（§7.1 未记录：无导出。）；macOS none
 - 实现备注：范围同样问当前页 / 整张表；确认标题「导出已加载的 N 行为 INSERT 语句？」/「导出整张表为 INSERT 语句？」。写出口径：一行一条 INSERT INTO 目标表 (列清单) VALUES (值清单);（LF 行尾）；NULL 写 NULL、空串写空引号串；数字 / Decimal 原文；日期时间加引号 ISO 8601；BLOB 写 NULL（客户端拿不到原始字节），文件末尾注释写明数量。标识符与字符串按驱动：SQLite 双引号，MariaDB 反引号 + 反斜杠转义。文件对话框标题「导出为INSERT 语句」、过滤 *.sql、默认 sqarvo-insert.sql。目标表名（查询结果导出时才需要推导）：只接受**唯一一个**顶层 FROM（跳过字符串 / 注释 / 括号）并取 `[库.]表` 的最后一段；JOIN 外的第二个 FROM、`FROM (`、没有 FROM 时推断不出，写占位名 `result` 并在文件头加注释「结果集不携带来源表名：目标表写成占位名 result，导入前请替换成真实表名。」。
@@ -256,6 +258,7 @@ kind `item` · status `active` · parent `data_page.export_menu`
 
 kind `item` · status `active` · parent `data_page.export_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「转储表…」
 - 同步：Linux done（§5.7 转储表内容；export_ui::begin_object_dump + run_whole_table_export）；Windows none（§7.1 未记录：无转储表入口。）；macOS none
 - 实现备注：**不问范围**（天然整表）：确认标题「转储表 <表名>？」。文件内容：文件头注释（Sqarvo 导出：表名与列数）→ 可选注释 → 建表语句（现场 GetDdl；exact=false 时注明「建表语句由客户端拼装」）→ 每行一条 INSERT；列名与建表语句在同一后台线程、同一会话里读。空表也允许导出，只写建表语句；默认文件名 <表名>.sql，文件对话框标题「导出为SQL 脚本」。同一个动作另有对象树表节点右键菜单入口（登记在 object_tree 区），两条入口共用 export_ui::begin_object_dump。
@@ -377,6 +380,7 @@ kind `container` · status `active` · parent `data_page`
 
 kind `item` · status `active` · parent `data_page.row_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「删除行」
 - 同步：Linux done（§5.8 删除行；delete_selected_row + delete_note）；Windows none（§7.1 未记录数据行右键菜单。）；macOS none
 - 实现备注：与状态栏 − / RowOp::Delete 完全同一方法（delete_selected_row），可用性同一谓词（delete_available）。只标记待删除，不立刻写库；新行占位行不在删除范围。结果不占可见文案，只写状态圆点 tooltip 末段「最近一次操作：…」。
@@ -389,6 +393,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 
 kind `item` · status `active` · parent `data_page.row_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「复制为 INSERT」
 - 同步：Linux done（§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert）；Windows none（§7.1 未记录数据行右键菜单。）；macOS none
 - 实现备注：把选中行合成**一条多值** INSERT（目标表 + 列清单 + 多组 VALUES，行间换行）写进系统剪贴板，用选中行的**当前值**（含未提交编辑）。BLOB / 非有限浮点写 NULL，并在末尾附一行 sqarvo 注释；标识符按该连接驱动引号。只读也要能导出数据：本条目在只读连接下仍可用。
@@ -1385,7 +1390,7 @@ kind `container` · status `active` · parent `object_tree`
 
 kind `control` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `status_bar.left_gutter`
+- 样式：槽位 `status_bar.left_gutter`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「搜索连接、库、表」；Tab Ctrl+F 聚焦；Esc 清空并回到树页
 - 同步：Linux done（§2.4 搜索；Ctrl+F / Enter / Esc 三键）；Windows none（无搜索框。）；macOS none
 - 实现备注：placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。
@@ -1442,6 +1447,7 @@ kind `container` · status `active` · parent `object_tree`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「连接（使用已保存的凭据）」
 - 同步：Linux done（§2.3 连接（使用已保存的凭据））；Windows none（无树右键菜单。）；macOS none
 - 实现备注：只读 credential_ref，不读也不写明文密码。
@@ -1454,6 +1460,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「断开连接」
 - 同步：Linux done（§2.3 断开连接）；Windows none（无树右键菜单。）；macOS none
 - 实现备注：只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看；其它连接的浏览会话不受影响。
@@ -1466,6 +1473,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「刷新连接」
 - 同步：Linux done（§2.3 刷新连接）；Windows none（无树右键菜单。）；macOS none
 - 实现备注：就地清空该层 store 再发第一页，不收起子树；一层都没建立过时不发请求。只在右键菜单里，没有快捷键。
@@ -1478,6 +1486,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「刷新库」
 - 同步：Linux done（§2.3 刷新库）；Windows none（无树右键菜单。）；macOS none
 
@@ -1489,6 +1498,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「刷新这一组」
 - 同步：Linux done（§2.3 刷新这一组）；Windows none（无树右键菜单。）；macOS none
 - 实现备注：静态分组行（Groups / TableGroups）没有服务端内容，刷新直接返回。
@@ -1501,6 +1511,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「编辑连接…」
 - 同步：Linux done（§2.3 编辑连接）；Windows none（无树右键菜单。）；macOS none
 - 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。
@@ -1513,6 +1524,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「删除连接」
 - 同步：Linux done（§2.3 删除连接）；Windows none（无树右键菜单。）；macOS none
 - 实现备注：配置删除与密钥删除分开报告：配置删除失败提示「删除连接失败」；配置已删而密钥没删提示「配置已删除，密钥条目未删除（<code>）：<detail>」。
@@ -1525,6 +1537,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「打开」
 - 同步：Linux done（§2.3 表 / 视图节点）；Windows none（无树右键菜单。）；macOS none
 
@@ -1536,6 +1549,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 kind `item` · status `active` · parent `object_tree.ctx_menu`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「转储表…」
 - 同步：Linux done（§2.3 转储表…（v0.2.5））；Windows none（无树右键菜单（数据页导出亦未实现）。）；macOS none
 - 实现备注：只有表节点有；视图没有（往视图 INSERT 不可重放）。按浏览会话 offset 逐页读全表，建表语句与列名在同一后台线程读，不跨连接。取消或失败不留半截文件；SQL 引号按该连接驱动（MariaDB 反引号 / SQLite 双引号）。
@@ -2003,6 +2017,7 @@ kind `container` · status `active` · parent `shell`
 
 kind `item` · status `active` · parent `shell.density`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「紧凑（100%）」
 - 同步：Linux done（§1.5 菜单入口；build_tier_menu 与 apply_tier_choice）；Windows none（§7.1 未记录本单选项。）；macOS none
 - 实现备注：当前档打勾；程序化同步勾选时不触发 action（guard 标志）。是 `Ctrl+0` 的目标档，也是 `Ctrl+minus` 的下界。
@@ -2015,6 +2030,7 @@ kind `item` · status `active` · parent `shell.density`
 
 kind `item` · status `active` · parent `shell.density`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「舒适（125%）」
 - 同步：Linux done（§1.5 菜单入口与禁用 tooltip；sync_tier_checks）；Windows none（§7.1 未记录本单选项。）；macOS none
 - 实现备注：与其它两档同一组单选；本档放不下时禁用（`sensitive=false`）并给缺多少的 tooltip。
@@ -2027,6 +2043,7 @@ kind `item` · status `active` · parent `shell.density`
 
 kind `item` · status `active` · parent `shell.density`
 
+- 样式：尺寸 `font_ui`
 - 无障碍：可访问名「大（150%）」
 - 同步：Linux done（§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定）；Windows none（§7.1 未记录本单选项。）；macOS none
 - 实现备注：本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现。

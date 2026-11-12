@@ -443,6 +443,7 @@ parent = "object_tree.search"
 display_name = "搜索输入框"
 kind = "control"
 status = "active"
+style.metrics = ["font_ui", "secondary_min_height"]
 style.slot = "status_bar.left_gutter"
 a11y.name = "搜索连接、库、表"
 a11y.tab = "Ctrl+F 聚焦；Esc 清空并回到树页"
@@ -481,7 +482,7 @@ source = "src/tree.rs:2467"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "274db5cf1640"
+spec_hash = "31e9a7e977e3"
 commit = "7436cd5"
 evidence = "§2.4 搜索；Ctrl+F / Enter / Esc 三键"
 
@@ -620,6 +621,7 @@ display_name = "「连接（使用已保存的凭据）」"
 kind = "item"
 a11y.name = "连接（使用已保存的凭据）"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = ["只读 credential_ref，不读也不写明文密码。"]
 
 [[component.interaction]]
@@ -630,7 +632,7 @@ source = "src/tree.rs:3230、src/ui.rs:845"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "32d0f629e92e"
+spec_hash = "0c23bde570df"
 commit = "7436cd5"
 evidence = "§2.3 连接（使用已保存的凭据）"
 
@@ -650,6 +652,7 @@ display_name = "「断开连接」"
 kind = "item"
 a11y.name = "断开连接"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = ["只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看；其它连接的浏览会话不受影响。"]
 
 [[component.interaction]]
@@ -660,7 +663,7 @@ source = "src/tree.rs:3230、src/ui.rs:2954"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6a853a4f74db"
+spec_hash = "db48894ab78d"
 commit = "7436cd5"
 evidence = "§2.3 断开连接"
 
@@ -680,6 +683,7 @@ display_name = "「刷新连接」"
 kind = "item"
 a11y.name = "刷新连接"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = ["就地清空该层 store 再发第一页，不收起子树；一层都没建立过时不发请求。只在右键菜单里，没有快捷键。"]
 
 [[component.interaction]]
@@ -690,7 +694,7 @@ source = "src/tree.rs:3407、src/tree.rs:3376、src/tree.rs:1936"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "16d12f41fd1c"
+spec_hash = "9f8d499f776b"
 commit = "7436cd5"
 evidence = "§2.3 刷新连接"
 
@@ -710,6 +714,7 @@ display_name = "「刷新库」"
 kind = "item"
 a11y.name = "刷新库"
 status = "active"
+style.metrics = ["font_ui"]
 
 [[component.interaction]]
 trigger = "click"
@@ -719,7 +724,7 @@ source = "src/tree.rs:3434、src/tree.rs:1936"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "cad24936133a"
+spec_hash = "a81fba0723d7"
 commit = "7436cd5"
 evidence = "§2.3 刷新库"
 
@@ -739,6 +744,7 @@ display_name = "「刷新这一组」"
 kind = "item"
 a11y.name = "刷新这一组"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = ["静态分组行（Groups / TableGroups）没有服务端内容，刷新直接返回。"]
 
 [[component.interaction]]
@@ -749,7 +755,7 @@ source = "src/tree.rs:3347、src/tree.rs:1936"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "21f2d2bb56e6"
+spec_hash = "c831e2e56c1c"
 commit = "7436cd5"
 evidence = "§2.3 刷新这一组"
 
@@ -769,6 +775,7 @@ display_name = "「编辑连接…」"
 kind = "item"
 a11y.name = "编辑连接…"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = ["密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。"]
 
 [[component.interaction]]
@@ -779,7 +786,7 @@ source = "src/ui.rs:785、src/ui.rs:989"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "9fae87f53a63"
+spec_hash = "266a294cca36"
 commit = "7436cd5"
 evidence = "§2.3 编辑连接"
 
@@ -799,6 +806,7 @@ display_name = "「删除连接」"
 kind = "item"
 a11y.name = "删除连接"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = ["配置删除与密钥删除分开报告：配置删除失败提示「删除连接失败」；配置已删而密钥没删提示「配置已删除，密钥条目未删除（<code>）：<detail>」。"]
 
 [[component.interaction]]
@@ -809,7 +817,7 @@ source = "src/ui.rs:1310、src/ui.rs:454"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "767979f9afc7"
+spec_hash = "fef4619b3e67"
 commit = "7436cd5"
 evidence = "§2.3 删除连接"
 
@@ -829,6 +837,7 @@ display_name = "「打开」"
 kind = "item"
 a11y.name = "打开"
 status = "active"
+style.metrics = ["font_ui"]
 
 [[component.interaction]]
 trigger = "click"
@@ -838,7 +847,7 @@ source = "src/tree.rs:3191、src/tree.rs:3230"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d876bb8f84e9"
+spec_hash = "35b0c10421f4"
 commit = "7436cd5"
 evidence = "§2.3 表 / 视图节点"
 
@@ -858,6 +867,7 @@ display_name = "「转储表…」"
 kind = "item"
 a11y.name = "转储表…"
 status = "active"
+style.metrics = ["font_ui"]
 impl_notes = [
   "只有表节点有；视图没有（往视图 INSERT 不可重放）。",
   "按浏览会话 offset 逐页读全表，建表语句与列名在同一后台线程读，不跨连接。",
@@ -872,7 +882,7 @@ source = "src/tree.rs:3230、src/tree.rs:731、src/export_ui.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0e142223351b"
+spec_hash = "27ae7916b89b"
 commit = "7436cd5"
 evidence = "§2.3 转储表…（v0.2.5）"
 
