@@ -65,13 +65,6 @@
                  同层文字一律换 SqarvoOnSelectionTextBrush。 -->
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SqarvoBrandMidBrush" />
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
-            <!-- TreeView 选中态：WinUI 的 TreeViewItem 模板取这几个键；HC 不覆盖（走系统高亮） -->
-            <StaticResource x:Key="TreeViewItemBackgroundSelected" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemBackgroundSelectedPointerOver" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemBackgroundSelectedPressed" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelected" ResourceKey="SqarvoOnBrandTextBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelectedPointerOver" ResourceKey="SqarvoOnBrandTextBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelectedPressed" ResourceKey="SqarvoOnBrandTextBrush" />
             <!-- 拼装 DDL 的警示（exact=false）：琥珀，系统 token，不写死颜色 -->
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
@@ -129,13 +122,6 @@
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SqarvoBrandMidBrush" />
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
-            <!-- TreeView 选中态：WinUI 的 TreeViewItem 模板取这几个键；HC 不覆盖（走系统高亮） -->
-            <StaticResource x:Key="TreeViewItemBackgroundSelected" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemBackgroundSelectedPointerOver" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemBackgroundSelectedPressed" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelected" ResourceKey="SqarvoOnBrandTextBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelectedPointerOver" ResourceKey="SqarvoOnBrandTextBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelectedPressed" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -191,13 +177,6 @@
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SqarvoBrandMidBrush" />
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
-            <!-- TreeView 选中态：WinUI 的 TreeViewItem 模板取这几个键；HC 不覆盖（走系统高亮） -->
-            <StaticResource x:Key="TreeViewItemBackgroundSelected" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemBackgroundSelectedPointerOver" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemBackgroundSelectedPressed" ResourceKey="SqarvoBrandMidBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelected" ResourceKey="SqarvoOnBrandTextBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelectedPointerOver" ResourceKey="SqarvoOnBrandTextBrush" />
-            <StaticResource x:Key="TreeViewItemForegroundSelectedPressed" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />

@@ -34,6 +34,11 @@
                  还大一档，标题反而「弱于树」。取 font_ui 后层级才成立。
                  层级缩进由 TreeViewItem 的默认模板按深度给（框架行为，不覆盖模板）。 -->
             <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
+            <!-- 选中态：这里只样式化、不换模板，所以选中是 TreeViewItem 默认模板那条细指示条，
+                 不是 Linux 的整行品牌紫。整行紫要自带 ControlTemplate（含箭头 / 缩进 / 展开动画），
+                 属结构改动，已记在 docs/planning/windows-frontend-parity-plan.md §8.2。
+                 注意：不要试图用 TreeViewItemBackgroundSelected 之类的资源键覆盖——真机截图证明
+                 默认模板不读它们（写了等于没写）。 -->
         </Style>
 
         <!--
