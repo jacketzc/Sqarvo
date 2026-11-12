@@ -289,6 +289,8 @@ public sealed partial class ShellView
         tab.RunButton = new Button
         {
             Content = "执行",
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
             MinWidth = Metrics.ColumnWidth / 2,
             Height = Metrics.SecondaryMinHeight,
             Padding = new Thickness(Metrics.InspectorGap, 0, Metrics.InspectorGap, 0),
@@ -303,6 +305,7 @@ public sealed partial class ShellView
         {
             Text = "Ctrl+Enter 执行 · Ctrl+. 取消 · 选中一段则只执行选中部分 · Ctrl+T 新建 / Ctrl+W 关闭",
             FontSize = Metrics.FontStatus,
+            FontWeight = TypeTokens.Ui,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
@@ -325,6 +328,7 @@ public sealed partial class ShellView
             Text = "1",
             FontFamily = MonoFont(),
             FontSize = Metrics.FontDataCell,
+            FontWeight = TypeTokens.Ui,
             TextAlignment = TextAlignment.Right,
             TextWrapping = TextWrapping.NoWrap,
             IsTextSelectionEnabled = false,
@@ -354,6 +358,7 @@ public sealed partial class ShellView
             TextWrapping = TextWrapping.NoWrap,
             FontFamily = MonoFont(),
             FontSize = Metrics.FontDataCell,
+            FontWeight = TypeTokens.Ui,
             IsSpellCheckEnabled = false,
             PlaceholderText = "输入 SQL…（Ctrl+Enter 执行；选中一段则只执行选中部分）",
         };
@@ -377,6 +382,7 @@ public sealed partial class ShellView
         {
             Text = state.StateText,
             FontSize = Metrics.FontStatus,
+            FontWeight = TypeTokens.Ui,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd),
         };
@@ -388,6 +394,7 @@ public sealed partial class ShellView
         {
             Text = state.MetaText,
             FontSize = Metrics.FontPanel,
+            FontWeight = TypeTokens.Ui,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd),
         };
@@ -449,6 +456,8 @@ public sealed partial class ShellView
         {
             Content = LoadMoreText,
             Visibility = Visibility.Collapsed,
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
             Height = Metrics.SecondaryMinHeight,
             Padding = new Thickness(Metrics.InspectorGap, 0, Metrics.InspectorGap, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
@@ -470,6 +479,7 @@ public sealed partial class ShellView
             // × 是 TabView 模板里的关闭按钮，命中区由框架给（24×24 档，≥ 规范要求的 16），
             // 这里不覆盖模板（覆盖模板 = #170 的崩溃面）。
             FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
         };
         AutomationProperties.SetName(item, state.Title);
         ToolTipService.SetToolTip(item, $"{state.Title} · 查询标签（Ctrl+W 关闭）");
@@ -1113,14 +1123,14 @@ public sealed partial class ShellView
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.ColumnWidth) });
         }
 
-        var number = AddQueryCell(grid, 0, "行号", secondary: true, right: true, mono: true);
+        var number = AddQueryCell(grid, 0, "行号", secondary: true, right: true, mono: true, header: true);
         AutomationProperties.SetName(number, "行号");
 
         var count = Math.Max(1, tab.ColumnCount);
         for (var index = 0; index < count; index++)
         {
             var text = index < tab.State.Columns.Count ? tab.State.Columns[index].HeaderText : string.Empty;
-            var cell = AddQueryCell(grid, index + 1, text, secondary: true, right: false, mono: false);
+            var cell = AddQueryCell(grid, index + 1, text, secondary: true, right: false, mono: false, header: true);
             AutomationProperties.SetName(cell, text.Length == 0 ? $"列 {index + 1}" : text);
         }
 
@@ -1247,12 +1257,16 @@ public sealed partial class ShellView
         bool secondary,
         bool right,
         bool mono,
-        bool weak = false)
+        bool weak = false,
+        bool header = false)
     {
         var block = new TextBlock
         {
             Text = text,
             FontSize = mono ? Metrics.FontStatus : Metrics.FontDataCell,
+            // 列头 title(600) / 行号 ui(400) / 数据 cell(500)：与 Linux 的
+            // columnview header（fw_title）与 .sqarvo-cell（fw_cell）同一口径。
+            FontWeight = header ? TypeTokens.Title : mono ? TypeTokens.Ui : TypeTokens.Cell,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = right ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             TextTrimming = TextTrimming.CharacterEllipsis,

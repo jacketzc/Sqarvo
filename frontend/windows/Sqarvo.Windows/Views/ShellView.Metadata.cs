@@ -16,6 +16,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.System;
+using Windows.UI.Text;
 
 namespace Sqarvo.Windows.Views;
 
@@ -387,6 +388,58 @@ public sealed partial class ShellView
         {
             AddChild(node, child);
         }
+
+        // 新加的这一层要按「连接 / 分组 = 700，其余 = 400」上字重（容器在布局后才存在）。
+        QueueTreeRowWeights(node);
+    }
+
+    /// <summary>
+    /// 给树行的 <see cref="TreeViewItem"/> 容器上字重：连接名与分组名 <c>heading</c>(700)，
+    /// 其余行（库 / 对象 / 说明 / 续拉 / 失败）<c>ui</c>(400)。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 树行内容只是一个带 <c>ToString()</c> 的文本对象（刻意不用 DataTemplate，见 TreeRow 注释），
+    /// 文字由默认模板的 ContentPresenter 生成，没有可以单独设字重的 TextBlock。字重因此落在
+    /// 行的容器上（TreeViewItem 把 FontWeight 继承给内部的 TextBlock）。
+    /// </para>
+    /// <para>
+    /// 容器要等这一层布局完成才存在，所以排进 DispatcherQueue 的低优先级回调：
+    /// 此时代码里的节点已经加完，布局也刚跑过。只走本次新增的这一层与已展开的子树。
+    /// </para>
+    /// </remarks>
+    private void QueueTreeRowWeights(TreeViewNode node)
+    {
+        if (ObjectTree.DispatcherQueue is { } queue)
+        {
+            queue.TryEnqueue(
+                Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                () => ApplyTreeRowWeights(node));
+            return;
+        }
+
+        ApplyTreeRowWeights(node);
+    }
+
+    private void ApplyTreeRowWeights(TreeViewNode node)
+    {
+        foreach (var child in node.Children)
+        {
+            if (ObjectTree.ContainerFromNode(child) is TreeViewItem container)
+            {
+                container.FontWeight = child.Content switch
+                {
+                    ConnectionNode => TypeTokens.Heading,
+                    TreeRow { Kind: TreeRowKind.Group } => TypeTokens.Heading,
+                    _ => TypeTokens.Ui,
+                };
+            }
+
+            if (child.IsExpanded)
+            {
+                ApplyTreeRowWeights(child);
+            }
+        }
     }
 
     private NodeLoad LoadFor(TreeViewNode node)
@@ -716,9 +769,9 @@ public sealed partial class ShellView
         var grid = NewObjectsRow(Metrics.ColumnHeaderMinHeight, background: null);
 
         // 表头三个单元格各给一个可访问名（= 列头文字），--report-shell 才能断言列序。
-        var numberHeader = AddCell(grid, 0, "行号", secondary: true, rightAligned: true, fontSize: Metrics.FontStatus, mono: true);
-        var nameHeader = AddCell(grid, 1, "表名", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false);
-        var kindHeader = AddCell(grid, 2, "类型", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false);
+        var numberHeader = AddCell(grid, 0, "行号", secondary: true, rightAligned: true, fontSize: Metrics.FontStatus, mono: true, header: true);
+        var nameHeader = AddCell(grid, 1, "表名", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false, header: true);
+        var kindHeader = AddCell(grid, 2, "类型", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false, header: true);
         AutomationProperties.SetName(numberHeader, "行号");
         AutomationProperties.SetName(nameHeader, "表名");
         AutomationProperties.SetName(kindHeader, "类型");
@@ -801,12 +854,16 @@ public sealed partial class ShellView
         bool secondary,
         bool rightAligned,
         int fontSize,
-        bool mono)
+        bool mono,
+        bool header = false)
     {
         var block = new TextBlock
         {
             Text = text,
             FontSize = fontSize,
+            // 列头 title(600) / 行号 ui(400) / 数据 cell(500)：与数据网格同一口径
+            // （Linux 的 Objects 与数据网格共用一套 header / .sqarvo-cell 规则）。
+            FontWeight = header ? TypeTokens.Title : mono ? TypeTokens.Ui : TypeTokens.Cell,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = rightAligned ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -941,13 +998,13 @@ public sealed partial class ShellView
 
         if (profile is null)
         {
-            panel.Children.Add(Line("连接已不在配置里", size: Metrics.FontTitle));
+            panel.Children.Add(Line("连接已不在配置里", size: Metrics.FontTitle, weight: TypeTokens.Heading));
             panel.Children.Add(Line("connections.json 里已经没有这一条；错误码 config.invalid", secondary: true));
             ShowInspector(panel);
             return;
         }
 
-        panel.Children.Add(Line(profile.Name, size: Metrics.FontTitle));
+        panel.Children.Add(Line(profile.Name, size: Metrics.FontTitle, weight: TypeTokens.Heading));
         panel.Children.Add(Line(profile.Driver, secondary: true));
         panel.Children.Add(Divider());
 
@@ -971,7 +1028,7 @@ public sealed partial class ShellView
     {
         var catalog = _selection.Catalog;
         var panel = NewPanel();
-        panel.Children.Add(Line(string.IsNullOrEmpty(_selection.CatalogName) ? "（未命名库）" : _selection.CatalogName, size: Metrics.FontTitle));
+        panel.Children.Add(Line(string.IsNullOrEmpty(_selection.CatalogName) ? "（未命名库）" : _selection.CatalogName, size: Metrics.FontTitle, weight: TypeTokens.Heading));
         panel.Children.Add(Line("库", secondary: true));
         panel.Children.Add(Divider());
 
@@ -1045,7 +1102,7 @@ public sealed partial class ShellView
         }
 
         var panel = NewPanel();
-        panel.Children.Add(Line(entry.Name, size: Metrics.FontTitle));
+        panel.Children.Add(Line(entry.Name, size: Metrics.FontTitle, weight: TypeTokens.Heading));
         panel.Children.Add(Line(entry.KindLabel, secondary: true));
 
         // [DDL] / [表信息]：两个独立按钮（不是 ToggleButton，也不是分段容器——#170 的回退教训）。
@@ -1081,6 +1138,7 @@ public sealed partial class ShellView
         {
             Content = text,
             FontSize = Metrics.FontPanel,
+            FontWeight = TypeTokens.Ui,
             Height = Metrics.SecondaryMinHeight,
             Padding = new Thickness(Metrics.GridPaddingEnd, 0, Metrics.GridPaddingEnd, 0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -1144,6 +1202,7 @@ public sealed partial class ShellView
             Text = ddl.Text,
             FontFamily = MonoFont(),
             FontSize = Metrics.FontPanel,
+            FontWeight = TypeTokens.Ui,
             TextWrapping = TextWrapping.NoWrap,
             IsTextSelectionEnabled = true,
         };
@@ -1237,6 +1296,7 @@ public sealed partial class ShellView
         {
             Text = text,
             FontSize = Metrics.FontPanel,
+            FontWeight = header ? TypeTokens.Title : TypeTokens.Ui,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
@@ -1268,12 +1328,21 @@ public sealed partial class ShellView
         Padding = new Thickness(0, 0, Metrics.GridPaddingEnd, 0),
     };
 
-    private TextBlock Line(string text, bool secondary = false, bool warning = false, double? size = null)
+    /// <summary>
+    /// 信息面板里的一行文字。
+    /// </summary>
+    /// <remarks>
+    /// 字重默认 <c>ui</c>(400)：信息面板是次要信息，不跟数据网格抢注意力（Linux 的
+    /// <c>.sqarvo-panel-text</c> 同一口径）。面板标题（卡片 / 分节 / 对象名）显式传
+    /// <see cref="TypeTokens.Heading"/>。
+    /// </remarks>
+    private TextBlock Line(string text, bool secondary = false, bool warning = false, double? size = null, FontWeight? weight = null)
     {
         var block = new TextBlock
         {
             Text = text,
             FontSize = size ?? Metrics.FontPanel,
+            FontWeight = weight ?? TypeTokens.Ui,
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = true,
         };

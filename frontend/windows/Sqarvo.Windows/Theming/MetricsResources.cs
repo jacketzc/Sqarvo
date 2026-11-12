@@ -4,7 +4,7 @@ using System;
 namespace Sqarvo.Windows.Theming;
 
 /// <summary>
-/// 把生成的三档度量写成 XAML 资源键（<c>Size.*</c>）。
+/// 把生成的三档度量写成 XAML 资源键（<c>Size.*</c>），并注册四档字重（<c>Weight.*</c>）。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,7 +26,22 @@ internal static class MetricsResources
     /// <summary>不随档位缩放的 1px 描边键（不在三档 token 里，单独补一条）。</summary>
     private const string BorderWidthKey = "Size.BorderWidthPxNeverScaled";
 
-    /// <summary>把当前档位的全部尺寸键写入给定资源字典（覆盖同名键）。</summary>
+    /// <summary>
+    /// 字重四档的 XAML 资源键。名字不带 <c>Size.</c>：<c>Size.*</c> 一律是 <see cref="double"/>，
+    /// 而 FontWeight 属性要的是 <see cref="Windows.UI.Text.FontWeight"/>（见 <see cref="TypeTokens"/>）。
+    /// </summary>
+    private const string WeightUiKey = "Weight.Ui";
+
+    private const string WeightCellKey = "Weight.Cell";
+
+    private const string WeightTitleKey = "Weight.Title";
+
+    private const string WeightHeadingKey = "Weight.Heading";
+
+    /// <summary>四档字重键的完整名单（切档重建时逐条清掉）。</summary>
+    private static readonly string[] WeightKeys = [WeightUiKey, WeightCellKey, WeightTitleKey, WeightHeadingKey];
+
+    /// <summary>把当前档位的全部尺寸键与字重键写入给定资源字典（覆盖同名键）。</summary>
     public static void Apply(ResourceDictionary target)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -35,6 +50,13 @@ internal static class MetricsResources
         // 1px 描边不随档位缩放，所以它不在三档 token 里；但界面里确实要用同一个 key，
         // 这里按「不缩放的尺寸 token」补一条，避免 XAML 里出现字面量 1。
         target[BorderWidthKey] = (double)Metrics.BorderWidthPxNeverScaled;
+
+        // 四档字重：值与字号键同源（metrics.toml），页面里因此没有 400 / 500 / 600 / 700 字面量。
+        // 每次现取（不缓存成字段）：TypeTokens 按 Metrics 的当前档位取值。
+        target[WeightUiKey] = TypeTokens.Ui;
+        target[WeightCellKey] = TypeTokens.Cell;
+        target[WeightTitleKey] = TypeTokens.Title;
+        target[WeightHeadingKey] = TypeTokens.Heading;
     }
 
     /// <summary>
@@ -50,5 +72,9 @@ internal static class MetricsResources
         ArgumentNullException.ThrowIfNull(target);
         Metrics.ForEachSizeToken((key, _) => target.Remove(key));
         target.Remove(BorderWidthKey);
+        foreach (var key in WeightKeys)
+        {
+            target.Remove(key);
+        }
     }
 }

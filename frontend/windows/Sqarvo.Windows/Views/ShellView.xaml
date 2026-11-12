@@ -69,19 +69,54 @@
             x:Name="MenuBand"
             Grid.Row="0"
             Background="{ThemeResource SqarvoBandBrush}">
-            <MenuBar x:Name="MainMenu" AutomationProperties.Name="主菜单">
-                <MenuBarItem Title="文件">
+            <MenuBar
+                x:Name="MainMenu"
+                FontSize="{StaticResource Size.FontUi}"
+                FontWeight="{StaticResource Weight.Ui}"
+                AutomationProperties.Name="主菜单">
+                <MenuBarItem
+                    Title="文件"
+                    FontSize="{StaticResource Size.FontUi}"
+                    FontWeight="{StaticResource Weight.Ui}">
                     <!-- 启用态由 BackendState.IsReady 决定（ShellView.ApplyBackendState），tooltip 在 code-behind 逐项说明 -->
-                    <MenuFlyoutItem x:Name="MenuNewConnection" Text="新建连接…" />
-                    <MenuFlyoutItem x:Name="MenuNewQueryTab" Text="新建查询标签" IsEnabled="False" />
+                    <MenuFlyoutItem
+                        x:Name="MenuNewConnection"
+                        Text="新建连接…"
+                        FontSize="{StaticResource Size.FontUi}"
+                        FontWeight="{StaticResource Weight.Ui}" />
+                    <MenuFlyoutItem
+                        x:Name="MenuNewQueryTab"
+                        Text="新建查询标签"
+                        IsEnabled="False"
+                        FontSize="{StaticResource Size.FontUi}"
+                        FontWeight="{StaticResource Weight.Ui}" />
                     <MenuFlyoutSeparator />
-                    <MenuFlyoutItem x:Name="MenuQuit" Text="退出" />
+                    <MenuFlyoutItem
+                        x:Name="MenuQuit"
+                        Text="退出"
+                        FontSize="{StaticResource Size.FontUi}"
+                        FontWeight="{StaticResource Weight.Ui}" />
                 </MenuBarItem>
-                <MenuBarItem Title="表">
-                    <MenuFlyoutItem x:Name="MenuExportCsv" Text="导出 CSV…" IsEnabled="False" />
+                <MenuBarItem
+                    Title="表"
+                    FontSize="{StaticResource Size.FontUi}"
+                    FontWeight="{StaticResource Weight.Ui}">
+                    <MenuFlyoutItem
+                        x:Name="MenuExportCsv"
+                        Text="导出 CSV…"
+                        IsEnabled="False"
+                        FontSize="{StaticResource Size.FontUi}"
+                        FontWeight="{StaticResource Weight.Ui}" />
                 </MenuBarItem>
-                <MenuBarItem Title="帮助">
-                    <MenuFlyoutItem x:Name="MenuAbout" Text="关于 Squarvo" />
+                <MenuBarItem
+                    Title="帮助"
+                    FontSize="{StaticResource Size.FontUi}"
+                    FontWeight="{StaticResource Weight.Ui}">
+                    <MenuFlyoutItem
+                        x:Name="MenuAbout"
+                        Text="关于 Squarvo"
+                        FontSize="{StaticResource Size.FontUi}"
+                        FontWeight="{StaticResource Weight.Ui}" />
                 </MenuBarItem>
             </MenuBar>
         </Border>
@@ -143,12 +178,13 @@
                                 <TextBlock
                                     FontFamily="Segoe Fluent Icons"
                                     Text="&#xE71B;"
-                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontSize="{StaticResource Size.IconBox}"
                                     Foreground="{ThemeResource SqarvoOnAccentTextBrush}"
                                     VerticalAlignment="Center" />
                                 <TextBlock
                                     Text="连接"
                                     FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}"
                                     Foreground="{ThemeResource SqarvoOnAccentTextBrush}"
                                     VerticalAlignment="Center" />
                             </StackPanel>
@@ -174,12 +210,13 @@
                                 <TextBlock
                                     FontFamily="Segoe Fluent Icons"
                                     Text="&#xE710;"
-                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontSize="{StaticResource Size.IconBox}"
                                     Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                     VerticalAlignment="Center" />
                                 <TextBlock
                                     Text="新建查询"
                                     FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}"
                                     Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                     VerticalAlignment="Center" />
                             </StackPanel>
@@ -215,7 +252,7 @@
                         <TextBlock
                             Text="Tables"
                             FontSize="{StaticResource Size.FontUi}"
-                            FontWeight="SemiBold"
+                            FontWeight="{StaticResource Weight.Title}"
                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                             VerticalAlignment="Center" />
                     </Border>
@@ -227,6 +264,7 @@
                         <TextBlock
                             Text="Views"
                             FontSize="{StaticResource Size.FontUi}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                     </Border>
@@ -238,6 +276,7 @@
                         <TextBlock
                             Text="Functions"
                             FontSize="{StaticResource Size.FontUi}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                     </Border>
@@ -249,6 +288,7 @@
                         <TextBlock
                             Text="Queries"
                             FontSize="{StaticResource Size.FontUi}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                     </Border>
@@ -289,6 +329,7 @@
                         Grid.Row="0"
                         Text="信息面板"
                         FontSize="{StaticResource Size.FontTitle}"
+                        FontWeight="{StaticResource Weight.Heading}"
                         Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
                     <Rectangle
                         Grid.Row="1"
@@ -389,6 +430,7 @@
                                         <TextBlock
                                             Text="Objects"
                                             FontSize="{StaticResource Size.FontUi}"
+                                            FontWeight="{StaticResource Weight.Ui}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             VerticalAlignment="Center" />
                                     </StackPanel>
@@ -415,6 +457,7 @@
                                             Grid.Row="0"
                                             Text="Objects"
                                             FontSize="{StaticResource Size.FontTitle}"
+                                            FontWeight="{StaticResource Weight.Heading}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}" />
 
                                         <!-- 状态行：正在读取… / 已加载 N 个对象 / （这个库里没有这类对象）/ 读取失败…（错误码） -->
@@ -424,6 +467,7 @@
                                             Visibility="Collapsed"
                                             TextTrimming="CharacterEllipsis"
                                             FontSize="{StaticResource Size.FontStatus}"
+                                            FontWeight="{StaticResource Weight.Ui}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}" />
 
                                         <ScrollViewer
@@ -446,6 +490,8 @@
                                             Grid.Row="3"
                                             Content="加载更多…"
                                             Visibility="Collapsed"
+                                            FontSize="{StaticResource Size.FontUi}"
+                                            FontWeight="{StaticResource Weight.Ui}"
                                             AutomationProperties.Name="Objects 加载更多"
                                             Click="OnObjectsLoadMoreClick" />
                                     </Grid>
@@ -459,12 +505,13 @@
                                         <TextBlock
                                             Text="尚未连接数据库"
                                             FontSize="{StaticResource Size.FontTitle}"
-                                            FontWeight="SemiBold"
+                                            FontWeight="{StaticResource Weight.Title}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
                                             Text="用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。"
                                             FontSize="{StaticResource Size.FontStatus}"
+                                            FontWeight="{StaticResource Weight.Ui}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
                                     </StackPanel>
@@ -480,12 +527,13 @@
                                         <TextBlock
                                             Text="…"
                                             FontSize="{StaticResource Size.FontTitle}"
+                                            FontWeight="{StaticResource Weight.Ui}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
                                             Text="正在连接…"
                                             FontSize="{StaticResource Size.FontUi}"
-                                            FontWeight="SemiBold"
+                                            FontWeight="{StaticResource Weight.Title}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
                                     </StackPanel>
@@ -499,12 +547,13 @@
                                         <TextBlock
                                             Text="没有选中对象"
                                             FontSize="{StaticResource Size.FontTitle}"
-                                            FontWeight="SemiBold"
+                                            FontWeight="{StaticResource Weight.Title}"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
                                             Text="在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。"
                                             FontSize="{StaticResource Size.FontStatus}"
+                                            FontWeight="{StaticResource Weight.Ui}"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
                                     </StackPanel>
@@ -577,6 +626,7 @@
                     MinHeight="{StaticResource Size.IconButtonHeight}"
                     IsEnabled="False"
                     FontSize="{StaticResource Size.FontStatus}"
+                    FontWeight="{StaticResource Weight.Ui}"
                     PlaceholderText="搜索连接、库、表..."
                     AutomationProperties.Name="搜索连接、库、表" />
             </StackPanel>
@@ -606,6 +656,7 @@
                         Grid.Column="0"
                         Text="连接中 · 驱动 0 · 浏览会话 0"
                         FontSize="{StaticResource Size.FontStatus}"
+                        FontWeight="{StaticResource Weight.Ui}"
                         Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                         VerticalAlignment="Center" />
 
@@ -620,22 +671,22 @@
                             VerticalAlignment="Center"
                             Spacing="{StaticResource Size.GridPaddingEnd}">
                             <Button x:Name="ButtonRowAdd" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="新增行">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE710;" FontSize="{StaticResource Size.FontUi}" />
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE710;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowDelete" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="删除选中行">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE738;" FontSize="{StaticResource Size.FontUi}" />
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE738;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowApply" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="提交变更">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8FB;" FontSize="{StaticResource Size.FontUi}" />
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8FB;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowRevert" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="撤销修改">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7A7;" FontSize="{StaticResource Size.FontUi}" />
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7A7;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowRefresh" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="刷新">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE72C;" FontSize="{StaticResource Size.FontUi}" />
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE72C;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                             <Button x:Name="ButtonRowCancel" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="取消">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE711;" FontSize="{StaticResource Size.FontUi}" />
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE711;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
                         </StackPanel>
 
@@ -645,13 +696,14 @@
                             Style="{StaticResource SqarvoStatusIconButton}"
                             IsEnabled="False"
                             AutomationProperties.Name="搜索对象树">
-                            <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE721;" FontSize="{StaticResource Size.FontUi}" />
+                            <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE721;" FontSize="{StaticResource Size.IconBox}" />
                         </Button>
 
                         <!-- 结果行数（查询页在飞时由 ApplyQueryStatus 写「N 行 / 已取 M 行」） -->
                         <TextBlock
                             x:Name="LastRefreshText"
                             FontSize="{StaticResource Size.FontStatus}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
 
@@ -660,6 +712,7 @@
                             x:Name="PagerText"
                             Text="第 ? / ? 页"
                             FontSize="{StaticResource Size.PagerFont}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                     </StackPanel>
@@ -678,6 +731,7 @@
                         Text="SQL: 尚未执行"
                         TextTrimming="CharacterEllipsis"
                         FontSize="{StaticResource Size.FontStatus}"
+                        FontWeight="{StaticResource Weight.Ui}"
                         Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                         VerticalAlignment="Center" />
 
@@ -691,6 +745,7 @@
                             x:Name="TransactionText"
                             Text="自动提交"
                             FontSize="{StaticResource Size.FontStatus}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                         <TextBlock
@@ -698,12 +753,14 @@
                             Text="未连接"
                             TextTrimming="CharacterEllipsis"
                             FontSize="{StaticResource Size.FontStatus}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                         <TextBlock
                             x:Name="RefreshAgeText"
                             Text="Last Refresh: —"
                             FontSize="{StaticResource Size.FontStatus}"
+                            FontWeight="{StaticResource Weight.Ui}"
                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                             VerticalAlignment="Center" />
                     </StackPanel>
