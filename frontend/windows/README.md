@@ -35,35 +35,36 @@ Windows 端的窗口尺寸、密度档、主题与本地化口径已经定下，
 文件（新建连接… / 新建查询标签 / 退出）、表（导出 CSV…）、帮助（关于 Squarvo）；未实现的入口全部
 禁用并 tooltip「尚未接入后端」。
 
-### 六区域的形态与密度（#170）
+### 六区域的形态与密度（#170，已按五块重做）
 
-#164 只保证「区域都在」，控件形态还是骨架。#170 按
-[`workspace-model.md`](../../docs/ui-specification/workspace-model.md) 的 Windows 列把六区域补到可用形态，
-**只动外形 / 尺寸 / 层级，不接业务数据**（元数据是 #171）：
+#164 只保证「区域都在」。#170 的第一版把六区域整体重写（`CommandBar` + `AppBarButton`、
+`ToggleButton` 种类入口、`TabView.TabWidthMode=SizeToContent`、`ProgressRing`、`FontIcon`），
+在真机上 5/5、3/3 **启动即崩**（`0xc000027b`），已整体回退。
 
-- **工具条**：`CommandBar` + `AppBarButton` 换成自绘 `Grid`——左动作组（「连接」= 系统
-  `AccentButtonStyle`，即 `AccentFillColorDefaultBrush` 底 + `TextOnAccentFillColorPrimaryBrush` 字；
-  「新建查询」= 中性底）→ 1px 竖分隔（`DividerStrokeColorDefaultBrush`）→ 四个种类入口
-  （`ToggleButton`，当前项 = 系统轻微填充底 + `AccentTextFillColorPrimaryBrush` 文字）。高度
-  `toolbar_height`、内边距 `toolbar_padding_h`、按钮高 `badge_min_height`；四个入口的启用态读同一个
-  `BackendState.IsReady`（种类切换本身仍未接线）。
-- **标签条**：`Objects` 固定页只显图标（`FontIconSource`，Segoe Fluent Icons U+F0E2 = 2×2 网格），
-  宽 `objects_min_width`、高 `tab_strip_height`；`TabView.TabWidthMode="SizeToContent"`——默认的
-  `Equal` 会把单标签页拉成一整条。
-- **对象树**：行高 `row_height_tree`（`ItemContainerStyle` 的 `MinHeight`）+ 容器左内边距
-  `grid_padding_start`；行内容是 `Views/ConnectionRow.xaml`：图标位（`icon_box`）+ 名称（`font_ui`，
-  省略号）+ 右对齐徽标（`font_panel`；已连接 = 强调色文字，其余 = 次要文字）。为什么是 UserControl
-  而不是 `DataTemplate`：节点是手工建的 `TreeViewNode`，内容是私有类型（`x:Bind` 用不了），而颜色
-  只能写在 XAML 的 `ThemeResource` 里。
-- **状态栏**：两行——行 1 = 六个行操作图标（左）+ 分页器（右，页码只读），行 2 = `SQL:` 摘要（左）
-  + `Last Refresh` / 会话摘要（右）；按钮 `icon_button_width × icon_button_height`，两行各占
-  `status_height` 的一半（正好等于 `icon_button_height`）。**禁用态与说明文字同一种灰**：
-  `Tokens.xaml` 把 lightweight styling 键 `ButtonForegroundDisabled` 别名到
-  `TextFillColorSecondaryBrush`（否则框架的 disabled 灰会比说明文字再浅一档，状态栏出现第三档灰）。
-- **信息面板**：标题区（`font_title` semibold + `font_panel` 副标题）/ 分节标题（`DDL` · `表信息`）/
-  内容区三级；空态是一行居中、`font_panel` + 次要色的操作说明，不是空白 `Grid`。
-- **空态**：居中，主标题 `font_title` semibold > 副标题 `font_status` secondary，正文列宽
-  `filter_panel_width`（否则 3840 宽窗口会把一行说明拉成一条长线）。
+现在的做法是**分五块、每块一个可单独 revert 的提交，且一律不引入新控件类型**：
+
+- **工具条**：`Grid` 四列。左动作组是两个 `Button`（内容 `Border` + `TextBlock`，图标用
+  `Segoe Fluent Icons` 的**字形**，不是 `FontIcon`）；「连接」的强调色落在**内层 `Border`** 上——
+  `Button` 模板的 Normal 视觉态会盖掉 `Button.Background` 的本地值，写在 Button 上等于没写（真机踩过）。
+  → 1px 竖分隔（`ControlStrokeColorSecondaryBrush`；`DividerStrokeColorDefaultBrush` 太淡，1px 看不见）
+  → 四个种类入口是 `Border` + `TextBlock`，选中项浅底 + SemiBold，未选中次要色。
+- **标签条**：`Objects` 固定页 `IsClosable=false`、恒在最左，页头是字形 + 短文字；查询页与数据页可关。
+  `TabView` 自身属性一个都不动（`TabWidthMode` 保持默认 `Equal`，代价是单标签会被拉满整条）。
+- **状态栏**：两行。行 1 = 状态文案 + 六个行操作图标（`SqarvoStatusIconButton` 样式把框架
+  `MinHeight=32` 压到 `icon_button_height`）+ 搜索 + 结果行数 + 分页器（`第 ? / ? 页`，不写死 `0 / 0`）；
+  行 2 = `SQL:` 摘要 + 事务状态（`TransactionText`）+ 会话名 + `Last Refresh`。
+- **树与间距**：行高 `row_height_tree`、行字号 `font_ui`（框架默认 14 比空态标题还大）；树右留
+  `tree_arrow_box`；工具条下缘与状态栏上缘各一条 1px 线；空态居中、主标题 SemiBold。
+- **文案**：树根 / 分组 / 空态 / 列头与 Linux 客户端逐字一致（每条改动在提交说明里附了
+  `frontend/linux/src` 的出处行）。
+
+树行**没有**做到「徽标右对齐弱色、分组加粗」：现在整行文本仍由 `TreeViewNode.Content` 的
+`ToString()` 提供，`OnTreeItemInvoked` 按 `Content` 运行时类型分派——换行模板就等于改分派，#170
+的回退边界就在这里。前置条件是先做「节点 → 行身份映射」（见 issue #173）。
+
+NULL 与空串的渲染口径：查询结果把空文本渲染成 `''`（证明「有值但为空」），表数据页保持空白；
+两者的 NULL 都是**三级文字色 + 斜体**（只用二级色在真机上与正文分不出来，`TextFillColorTertiaryBrush`）。
+
 
 本机（Linux）能做的检查只有四项，**不能**代表已编译：
 
