@@ -40,7 +40,8 @@ public sealed class AppOptions
         bool noBackend,
         string? qaSignIn,
         string? qaQuery,
-        int qaQueryPages)
+        int qaQueryPages,
+        string? qaData)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -55,6 +56,7 @@ public sealed class AppOptions
         QaSignIn = qaSignIn;
         QaQuery = qaQuery;
         QaQueryPages = Math.Clamp(qaQueryPages, 1, 8);
+        QaData = qaData;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -124,6 +126,17 @@ public sealed class AppOptions
     /// <summary>`--qa-query-pages=N`：首批之后最多再续拉 N-1 批（验证 has_more 与计数）。1..8。</summary>
     public int QaQueryPages { get; }
 
+    /// <summary>
+    /// QA 专用：<c>--qa-data=&lt;库.表&gt;</c>。后端就绪后连接 <c>--qa-signin</c> 指定的条目（否则第一条），
+    /// 然后**真的**打开表数据页：翻一页 → 改一格并提交 → 还原 → 再改一格并撤销，把 <c>[data]</c> 证据打到 stdout。
+    /// </summary>
+    /// <remarks>
+    /// 存在的理由与 <see cref="QaQuery"/> 相同：远程构建机上没有可靠的 UI 自动化，而「表数据真的能读、
+    /// 提交真的落库、撤销真的回滚」必须被验证。它走与用户点击完全相同的路径（同一个打开 / 翻页 / 暂存 / 提交）。
+    /// 探针会先写入再还原开发库的一个单元格，**不要指向生产库**。
+    /// </remarks>
+    public string? QaData { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -157,6 +170,7 @@ public sealed class AppOptions
             qaSignIn: Value(commandLine, "--qa-signin="),
             qaQuery: Value(commandLine, "--qa-query="),
             qaQueryPages: Number(commandLine, "--qa-query-pages=", 1),
+            qaData: Value(commandLine, "--qa-data="),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -197,5 +211,6 @@ public sealed class AppOptions
         "--no-backend 只开窗、不启动后端（隔离崩溃源）",
         "--qa-signin=<连接名称|@first>（写凭据 + 连接后保持运行，供截图）",
         "--qa-query=<sql>（配合 --qa-signin 指定连接：建查询页 + 执行 SQL，打 [query] 证据）",
+        "--qa-data=<库.表>（配合 --qa-signin 指定连接：开数据页 + 翻页 + 改一格提交 + 撤销，打 [data] 证据；会写开发库）",
     };
 }

@@ -126,6 +126,54 @@ public sealed class BackendSession
         }
     }
 
+    /// <summary>
+    /// 表数据客户端（`BrowseTable` / `ApplyRowChanges` 的唯一入口）；后端未就绪时返回 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>与 <see cref="Metadata"/> / <see cref="Query"/> 同一取舍：不抛异常，调用方据此显示「后端尚未就绪」。</remarks>
+    public TableDataClient? TableData
+    {
+        get
+        {
+            if (!State.IsReady)
+            {
+                return null;
+            }
+
+            try
+            {
+                return _supervisor.GetConnection().TableData;
+            }
+            catch (SqarvoException)
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 事务客户端（`Begin` / `Commit` / `Rollback` 的唯一入口）；后端未就绪时返回 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>数据页的显式事务只从这里来：界面不自己拼事务 id，也不假设驱动一定支持事务。</remarks>
+    public TransactionClient? Transactions
+    {
+        get
+        {
+            if (!State.IsReady)
+            {
+                return null;
+            }
+
+            try
+            {
+                return _supervisor.GetConnection().Transactions;
+            }
+            catch (SqarvoException)
+            {
+                return null;
+            }
+        }
+    }
+
     /// <summary>某条已保存连接的会话身份（`session_id` / 服务端版本 / 驱动）；未连上时为 <see langword="null"/>。</summary>
     /// <param name="identity">连接身份键（<see cref="ConnectionProfile.Key"/>）。</param>
     /// <returns>这次连接的结果，或 <see langword="null"/>。</returns>
