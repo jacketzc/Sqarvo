@@ -434,9 +434,9 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 打开 | 已打开表（有草稿） | 在数据行（任意单元格）上右键：未选中的行先被选中，已多选时保留多选；菜单是贴着点击位置的 `GtkPopover`（popup surface），每条目是**普通扁平按钮**（不挂 `gio::SimpleAction`） | `src/data_page.rs`（`show_row_menu`、`cell_factory` 的 button-3 手势） |
+| 打开 | 已打开表（有草稿） | 在数据行的**任意位置**右键——单元格文字、列分隔线、行分隔线、末列右侧的空白都算：手势挂在**行控件**上（`label → cell → row` 爬两层，一行只挂一次，用 `sqarvo-row-menu-host` 类做标记），只有表格下方的空白区不属于任何行、不响应。未选中的行先被选中，已多选时保留多选；菜单是贴着点击位置的 `GtkPopover`（popup surface），每条目是**普通扁平按钮**（不挂 `gio::SimpleAction`） | `src/data_page.rs`（`cell_factory` 的 bind、`show_row_menu`） |
 | `删除行` | 可编辑且有选中行（`delete_available`，与状态栏 `−` 同一谓词） | 与状态栏 `−` / `RowOp::Delete` 完全同一方法：只把选中行**标记为待删除**，结果进状态圆点 tooltip 末段「最近一次操作：…」；新行占位行不在删除范围 | `src/data_page.rs`（`delete_selected_row`、`show_row_menu` 里的 `connect_clicked`） |
-| `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单在悬停时由 GTK 展开 | `src/data_page.rs`（`copy_selected_as_insert`）、`src/export.rs`（`multi_row_insert`） |
+| `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单在**悬停**时展开（菜单显示后 250ms 内的 enter 事件忽略：一级菜单本就出现在指针下方，否则「复制为 INSERT」一弹出来就是展开的） | `src/data_page.rs`（`copy_selected_as_insert`、`show_row_menu` 的 motion 控制器）、`src/export.rs`（`multi_row_insert`） |
 | 视图 / 只读连接 | 不可编辑 | `删除行` 灰掉（`delete_available` = false）；`复制为 INSERT` 仍可用（只读也要能导出数据） | 同上 |
 | 菜单条目失效的教训（v0.2.5 首版回归） | — | 首版用 `gio::Menu` + `PopoverMenu` 绑 `row.delete-row` / `row.copy-as-insert`，控件装的 `SimpleActionGroup` 解析不到时 GTK **既不报错也不置灰**：菜单照常弹出，点下去什么都不发生。现改为纯控件（闭包直连），与对象树右键菜单同一套写法；QA 走 `qa_pick_row_menu` → 按钮 `emit_clicked()`（与真点同一个信号）证明接线 | `src/data_page.rs`（`show_row_menu`、`qa_pick_row_menu`） |
 
@@ -446,6 +446,7 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 |---|---|---|---|
 | 入口 | 表数据标签 | 状态栏分页器**前方**的 toggle（图标 `view-dual-symbolic`，与状态栏其它图标同一尺寸与命中区） | `src/shell.rs`（`StatusBar::new`） |
 | 切到「字段 / 值」 | 有选中行 | 表格外框内换成两列：`字段`（220px，可拖）与 `值`（自适应）；行 = 该行的每个字段，值取**当前值**（含未提交编辑，NULL 显示 `NULL`、空串留白）。只讲**第一个**选中的行（多选时）；日志 `[data] 展示形式：字段 / 值（栈当前页 detail）` | `src/data_page.rs`（`toggle_detail_view` / `fill_detail` / `detail_cell_factory`） |
+| 编辑 | 有值可改（不是只读连接 / 只读事务 / 截断列 / 已标记删除的行） | **双击「值」列**打开与网格同一个编辑器（`open_editor`，行号 = 详情当前行、列号 = 字段下标）；改完立即按当前值重填整页（日志 `[data] 详情第 N 行：id=2 · name=…`），提交仍走「提交」按钮与脏行守卫 | `src/data_page.rs`（`detail_cell_factory` 的 button-1 手势、`after_edit`） |
 | 没有选中行 | 无选中 | 按钮置灰（`RowOpsState.detail`）；即使被程序调用也只写状态行「先选中一行，再切换到「字段 / 值」视图」，不切视图 | `src/shell.rs`（`apply_row_ops`）、`src/data_page.rs`（`toggle_detail_view`） |
 | 切回按行浏览 | 在详情视图 | 再按一次同一按钮（`RowOp::ToggleDetail` 幂等切换），网格原样回来，选中与脏行不变 | 同上 |
 | 自动复位 | 换表 / 重新读取 / 选中集清空 | 强制回到按行浏览并清空详情数据（详情讲的是上一屏那一行） | `src/data_page.rs`（`begin_open`、`selection_changed`） |

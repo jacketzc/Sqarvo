@@ -566,8 +566,9 @@ pub struct ColumnWidthObservation {
 /// 「字段 / 值」视图的单元格工厂：`index` 0 = 字段名，1 = 值。
 ///
 /// 数据是 `(字段名, 值文本)` 元组；值与网格共用同一份显示文本（NULL 是 `NULL`、
-/// 空串是空白，口径与表格一致）。
-fn detail_cell_factory(index: usize) -> gtk::SignalListItemFactory {
+/// 空串是空白，口径与表格一致）。**值列可双击编辑**：走网格同一个 `open_editor`
+/// （行号 = 详情视图当前那一行，列号 = 元组下标），改完立刻回填详情。
+fn detail_cell_factory(page: &Rc<DataPage>, index: usize) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
@@ -604,6 +605,41 @@ fn detail_cell_factory(index: usize) -> gtk::SignalListItemFactory {
             .unwrap_or_default();
         label.set_text(&text);
     });
+    if index == 1 {
+        let page = Rc::clone(page);
+        factory.connect_setup(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(label) = item
+                .child()
+                .and_then(|child| child.downcast::<gtk::Label>().ok())
+            else {
+                return;
+            };
+            label.set_tooltip_text(Some("双击编辑这个字段的值（与网格同一个编辑器）"));
+            let page = Rc::clone(&page);
+            let item = item.clone();
+            let anchor = label.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(1);
+            gesture.connect_pressed(move |gesture, presses, _, _| {
+                if presses < 2 {
+                    return;
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(row) = page.detail_row.get() else {
+                    return;
+                };
+                page.open_editor(
+                    row,
+                    usize::try_from(item.position()).unwrap_or(usize::MAX),
+                    anchor.upcast_ref(),
+                );
+            });
+            label.add_controller(gesture);
+        });
+    }
     factory
 }
 
@@ -685,6 +721,10 @@ pub struct DataPage {
     view_stack: gtk::Stack,
     /// 「字段 / 值」视图的数据源（`(字段名, 值文本)` 两列）。
     detail_store: gio::ListStore,
+    /// 「字段 / 值」视图的表格（列在 `Rc<Self>` 建好后才挂：编辑回调要持有页面）。
+    detail_grid: gtk::ColumnView,
+    /// 详情视图当前讲的是第几行（`None` = 不在详情视图 / 没有行）。
+    detail_row: Cell<Option<usize>>,
     /// 当前展示形式（false = 按行浏览，默认）。
     detail_mode: Cell<bool>,
     banner: adw::Banner,
@@ -1124,16 +1164,6 @@ impl DataPage {
         detail_grid.set_show_column_separators(true);
         detail_grid.set_reorderable(false);
         detail_grid.add_css_class("sqarvo-grid");
-        {
-            let field_column =
-                gtk::ColumnViewColumn::new(Some("字段"), Some(detail_cell_factory(0)));
-            field_column.set_fixed_width(220);
-            field_column.set_resizable(true);
-            detail_grid.append_column(&field_column);
-            let value_column = gtk::ColumnViewColumn::new(Some("值"), Some(detail_cell_factory(1)));
-            value_column.set_resizable(true);
-            detail_grid.append_column(&value_column);
-        }
         let detail_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -1407,6 +1437,8 @@ impl DataPage {
             grid_scroll: scroll.clone(),
             view_stack,
             detail_store,
+            detail_grid,
+            detail_row: Cell::new(None),
             detail_mode: Cell::new(false),
             banner,
             status,
@@ -1696,6 +1728,20 @@ impl DataPage {
                 });
         }
 
+        // 「字段 / 值」视图的两列在这里挂：cell 工厂要捕获 `Rc<Self>`（双击编辑
+        // 走的是网格同一个 `open_editor`），而 `Rc<Self>` 在构造函数末尾才存在。
+        {
+            let column =
+                gtk::ColumnViewColumn::new(Some("字段"), Some(detail_cell_factory(&page, 0)));
+            column.set_fixed_width(220);
+            column.set_resizable(true);
+            page.detail_grid.append_column(&column);
+            let column =
+                gtk::ColumnViewColumn::new(Some("值"), Some(detail_cell_factory(&page, 1)));
+            column.set_resizable(true);
+            page.detail_grid.append_column(&column);
+        }
+
         // 表头只有一行（「列名 · 原始类型」），排序只在筛选与排序面板里改，
         // 点列头是「查看列属性」。滚动到底**不再**自动取下一页（#118）。
         page.update_buttons();
@@ -1910,12 +1956,14 @@ impl DataPage {
         );
         if !on {
             self.detail_store.remove_all();
+            self.detail_row.set(None);
         }
         self.notify_status();
     }
 
     /// 把第 `index` 行的当前值填进「字段 / 值」视图（字段名 + 显示文本，与网格同一份）。
     fn fill_detail(&self, index: usize) {
+        self.detail_row.set(Some(index));
         self.detail_store.remove_all();
         let columns = self.columns.borrow().clone();
         let draft = self.draft.borrow();
@@ -1934,6 +1982,19 @@ impl DataPage {
             self.detail_store
                 .append(&glib::BoxedAnyObject::new((column.name.clone(), value)));
         }
+        // 详情内容是「当前值」——编辑后要能断言这一点，所以直接打出来（字段=值）。
+        let summary: Vec<String> = (0..self.detail_store.n_items())
+            .filter_map(|position| {
+                self.detail_store
+                    .item(position)
+                    .and_then(|object| object.downcast::<glib::BoxedAnyObject>().ok())
+                    .map(|boxed| {
+                        let pair = boxed.borrow::<(String, String)>();
+                        format!("{}={}", pair.0, pair.1)
+                    })
+            })
+            .collect();
+        eprintln!("[data] 详情第 {} 行：{}", index + 1, summary.join(" · "));
     }
 
     /// 数据行右键菜单：删除行 / 复制为 ▸ 复制为 INSERT。
@@ -2049,9 +2110,17 @@ impl DataPage {
         {
             // 悬停展开：指针进入「复制为」时把二级菜单弹出来（移开不主动收起，
             // 否则指针从一级移到二级的途中会闪一下）。
+            //
+            // 但**菜单刚弹出的那一帧不算悬停**：一级菜单就出现在指针下方，GTK 会立刻
+            // 发一次 enter，于是「复制为 INSERT」一出来就是展开的（用户报的就是这个）。
+            // 显示后 250ms 内的 enter 一律忽略。
             let submenu = submenu.clone();
+            let shown_at = std::time::Instant::now();
             let motion = gtk::EventControllerMotion::new();
             motion.connect_enter(move |_, _, _| {
+                if shown_at.elapsed() < std::time::Duration::from_millis(250) {
+                    return;
+                }
                 if !submenu.is_visible() {
                     submenu.popup();
                 }
@@ -5591,6 +5660,10 @@ impl DataPage {
     }
 
     fn after_edit(self: &Rc<Self>, row: usize, column: usize) {
+        // 详情视图正在讲这一行：改完立刻按当前值重填（否则屏幕还显示旧值）。
+        if self.detail_mode.get() && self.detail_row.get() == Some(row) {
+            self.fill_detail(row);
+        }
         let (number, column_name, text) = {
             let draft = self.draft.borrow();
             let Some(draft) = draft.as_ref() else {
@@ -6215,25 +6288,6 @@ impl DataPage {
                     });
                     label.add_controller(gesture);
                 }
-
-                // 右键 → 数据行菜单（删除行 / 复制为 INSERT）。
-                {
-                    let page = Rc::clone(&page);
-                    let item = list_item.clone();
-                    let click_target = label.clone();
-                    let gesture = gtk::GestureClick::new();
-                    gesture.set_button(3);
-                    gesture.connect_pressed(move |gesture, _, x, y| {
-                        gesture.set_state(gtk::EventSequenceState::Claimed);
-                        page.show_row_menu(
-                            usize::try_from(item.position()).unwrap_or(usize::MAX),
-                            click_target.upcast_ref(),
-                            x,
-                            y,
-                        );
-                    });
-                    label.add_controller(gesture);
-                }
             });
         }
         factory.connect_bind(move |_, list_item| {
@@ -6300,6 +6354,54 @@ impl DataPage {
                 label.set_tooltip_text(Some(&tooltip));
             }
         });
+        // 右键 → 数据行菜单（删除行 / 复制为 INSERT）。
+        //
+        // 挂在**行控件**上，而不是单元格的 label 上：单元格之间的列分隔线、行分隔线与
+        // 末列右侧的空白都属于行控件，挂 label 时那些位置右键什么都不会发生（用户报的
+        // 正是这一点）。`GtkListItem` 不是控件，所以只能在 bind 里从 label 往上爬两层
+        // （label → cell → row）；一行只挂一次，用 CSS 类做标记，否则 N 个单元格会往
+        // 同一行控件上叠 N 个控制器。
+        {
+            let page = Rc::clone(self);
+            factory.connect_bind(move |_, list_item| {
+                let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                    return;
+                };
+                let Some(label) = list_item
+                    .child()
+                    .and_then(|child| child.downcast::<gtk::Label>().ok())
+                else {
+                    return;
+                };
+                let Some(row_widget) = label.parent().and_then(|cell| cell.parent()) else {
+                    return;
+                };
+                if row_widget.has_css_class("sqarvo-row-menu-host") {
+                    return;
+                }
+                row_widget.add_css_class("sqarvo-row-menu-host");
+                eprintln!(
+                    "[data] 行右键手势已挂：{}（行控件 {}）",
+                    row_widget.css_name(),
+                    row_widget.type_().name()
+                );
+                let page = Rc::clone(&page);
+                let item = list_item.clone();
+                let anchor = row_widget.clone();
+                let gesture = gtk::GestureClick::new();
+                gesture.set_button(3);
+                gesture.connect_pressed(move |gesture, _, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    page.show_row_menu(
+                        usize::try_from(item.position()).unwrap_or(usize::MAX),
+                        anchor.upcast_ref(),
+                        x,
+                        y,
+                    );
+                });
+                row_widget.add_controller(gesture);
+            });
+        }
         factory
     }
 
