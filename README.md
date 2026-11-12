@@ -1,4 +1,8 @@
-# Sqarvo
+<p align="center">
+  <img src="packaging/linux/io.sqarvo.Sqarvo.svg" width="112" height="112" alt="Sqarvo logo">
+</p>
+
+<h1 align="center">Sqarvo</h1>
 
 开源、轻量、跨平台的原生桌面数据库客户端。目标是提供日常数据库管理所需的能力，
 同时保持低资源占用、快速启动和原生桌面体验。
