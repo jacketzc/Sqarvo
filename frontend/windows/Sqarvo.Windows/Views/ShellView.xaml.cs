@@ -89,7 +89,7 @@ public sealed partial class ShellView : UserControl
     private readonly WindowState _state;
 
     /// <summary>树上的加载态占位行（连接层与分组层共用同一句文案）。</summary>
-    private const string LoadingPlaceholder = "正在加载对象列表…";
+    private const string LoadingPlaceholder = "读取中…";
 
     /// <summary>还有下一页时的续拉行。</summary>
     private const string LoadMoreText = "加载更多…";
@@ -378,14 +378,12 @@ public sealed partial class ShellView : UserControl
                         ? $"{selected!.Name} 已经连着了：断开入口在后续工作包（浏览会话与对象树一起做）"
                         : "先在左侧对象树里选中一条已保存的连接");
 
-        // 状态栏右格：后端自报的真实计数（未就绪时不写假数字）。
-        LastRefreshText.Text = state.StatusLine;
-        ToolTipService.SetToolTip(
-            LastRefreshText,
-            state.Code.Length == 0 ? state.Message : $"{state.Message} [{state.Code}]");
+        // 状态栏：行 1 的状态格 + 行 2 的会话格（**搬移**到 ShellView.Chrome.cs，只是渲染，
+        // 判定仍在这里；原来这里往 LastRefreshText 写，行 1 的状态格现在是独立的一格）。
+        ApplyStatusChrome(state);
 
-        // 状态栏左格：默认是「SQL: —」；未就绪或刚操作完时说明原因（可选中复制）。
-        SqlSummaryText.Text = _notice ?? (ready ? "SQL: —" : state.Message);
+        // 状态栏左格：默认是「SQL: 尚未执行」（与 Linux 的 shell.rs 同一句）；未就绪或刚操作完时说明原因。
+        SqlSummaryText.Text = _notice ?? (ready ? "SQL: 尚未执行" : state.Message);
 
         SetWorkspaceState(
             ready
@@ -793,6 +791,10 @@ public sealed partial class ShellView : UserControl
         ToolbarBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
         StatusBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
 
+        // 工具条 / 状态栏 / 标签条的结构体尺寸（Thickness / CornerRadius）集中在这里取 Metrics。
+        ApplyToolbarMetrics();
+        ApplyTreeChrome();
+
         UpdateTierLabel();
     }
 
@@ -812,30 +814,40 @@ public sealed partial class ShellView : UserControl
             "新建查询标签（Ctrl+T）");
         ToolTipService.SetToolTip(
             ButtonTables,
-            "工具条的种类入口尚未接线：先在对象树里点开某个库的 Tables 分组（本片只做了树与 Objects 页）");
+            "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）；种类入口尚未接线，现在请直接在对象树里展开该分组");
         ToolTipService.SetToolTip(
             ButtonViews,
-            "工具条的种类入口尚未接线：先在对象树里点开某个库的 Views 分组（本片只做了树与 Objects 页）");
+            "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）；种类入口尚未接线，现在请直接在对象树里展开该分组");
         ToolTipService.SetToolTip(
             ButtonFunctions,
-            "Functions 列表尚未实现：契约里没有函数层的列表拉取（树里该分组只写说明，不发请求）");
+            "函数列表：驱动尚未提供（对象树里该分组只写说明，不发请求）");
         ToolTipService.SetToolTip(
             ButtonQueries,
-            "Queries 列表尚未实现：本版没有「已保存的查询」这一层");
+            "已保存的查询：尚未实现（本版没有这一层，查询只存在于打开着的查询标签里）");
 
         ToolTipService.SetToolTip(
             TreeSearchBox,
             "对象树搜索尚未实现：在后续工作包提供（服务端 filter.name.contains 已就绪）");
 
-        // 状态栏行操作：应用 / 撤销 / 刷新在表数据页里由 ApplyDataStatus 逐项刷新可用性与原因；
-        // 新增 / 删除行不在本片（#173 只做单元格编辑与提交），这里如实说明。
-        ToolTipService.SetToolTip(ButtonRowAdd, "新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
-        ToolTipService.SetToolTip(ButtonRowDelete, "删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
-        ToolTipService.SetToolTip(ButtonRowApply, "应用：在表数据页里提交待提交的更改（Ctrl+S）；当前没有可编辑的表格");
-        ToolTipService.SetToolTip(ButtonRowRevert, "撤销：在表数据页里放弃未提交的更改并回滚事务（Ctrl+Z）；当前没有可编辑的表格");
-        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新：在表数据页里重读当前页；当前没有可编辑的表格");
+        // 状态栏行操作：动作名与 Linux（shell.rs `apply_row_ops`）逐字一致。可用性与「为什么不可用」
+        // 由 ApplyDataStatus / ApplyQueryStatus 在各自的页里逐项刷新，这里的默认文案只说明动作本身。
+        // 新增行 / 删除行不在本版（#173 只做单元格编辑与提交），如实写「请用 SQL」。
+        foreach (var (button, action, reason) in new (Button Button, string Action, string Reason)[]
+                 {
+                     (ButtonRowAdd, "在当前表末尾新增一行", "本版不支持新增行，请用 SQL"),
+                     (ButtonRowDelete, "标记删除选中行（提交前可撤销）", "本版不支持删除行，请用 SQL"),
+                     (ButtonRowApply, "提交所有脏行的变更", "当前没有待提交的更改"),
+                     (ButtonRowRevert, "放弃全部未提交的编辑与删除标记", "当前没有未提交的更改"),
+                     (ButtonRowRefresh, "重新读取当前表的第一页", "当前没有可刷新的数据页"),
+                 })
+        {
+            ToolTipService.SetToolTip(button, $"{action}（{reason}）");
+        }
         // 「取消」在查询页执行中由 ApplyQueryStatus 逐个刷新可用性与原因；这里是启动态的默认文案。
-        ToolTipService.SetToolTip(ButtonRowCancel, "取消：当前没有执行中的查询");
+        ToolTipService.SetToolTip(ButtonRowCancel, "取消在途的提交批次（当前不可用：没有执行中的查询）");
+
+        // 左下角对象树搜索框与状态栏上的搜索入口是同一个动作，原因只写一处。
+        ToolTipService.SetToolTip(ButtonSearch, "对象树搜索（当前不可用：搜索尚未接线，服务端 filter.name.contains 已就绪）");
 
         MenuQuit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         MenuAbout.Click += OnAboutClick;

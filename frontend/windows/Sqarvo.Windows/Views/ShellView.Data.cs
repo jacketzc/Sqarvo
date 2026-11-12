@@ -1924,7 +1924,8 @@ public sealed partial class ShellView
         if (tab is null)
         {
             // 回到 Objects / 查询页：分页摘要回到默认（行 2 的文案由查询 / 后端路径自己写）。
-            PagerText.Text = "0 / 0";
+            PagerText.Text = "第 ? / ? 页";
+            TransactionText.Text = "自动提交";
             ButtonRowApply.IsEnabled = false;
             ButtonRowRevert.IsEnabled = false;
             ButtonRowRefresh.IsEnabled = false;
@@ -1942,9 +1943,9 @@ public sealed partial class ShellView
         var page = tab.Page;
         var submitting = tab.Submitting;
         var label = DataStatusText.TransactionLabel(page.ReadOnly, tab.Phase, submitting, page.DirtyRowCount);
-        LastRefreshText.Text = label;
+        TransactionText.Text = label;
         ToolTipService.SetToolTip(
-            LastRefreshText,
+            TransactionText,
             tab.TransactionId.Length == 0
                 ? $"事务：{label}（没有显式事务：提交时按自动提交执行）"
                 : $"事务：{label} · 事务 {ShortId(tab.TransactionId)}");

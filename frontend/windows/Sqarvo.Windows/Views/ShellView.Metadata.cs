@@ -651,7 +651,7 @@ public sealed partial class ShellView
         ObjectsStatus.Text = ObjectsStatusText(scope, state);
         ObjectsStatus.Visibility = ObjectsStatus.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
 
-        // 状态行也登记可访问名：--report-shell 能直接读到「已加载 N 个对象」这类真实计数。
+        // 状态行也登记可访问名：--report-shell 能直接读到「共 N 个对象」这类真实计数。
         AutomationProperties.SetName(
             ObjectsStatus,
             ObjectsStatus.Text.Length == 0 ? "对象列表状态" : ObjectsStatus.Text);
@@ -705,9 +705,10 @@ public sealed partial class ShellView
             return MetadataLabels.EmptyNote(scope.Group);
         }
 
+        // 文案与 Linux 的 Objects 页状态行一致：「共 N 个对象」/「共 N 个对象（还有更多）」。
         return state.HasMore
-            ? $"已加载 {state.Items.Count} 个对象（还有更多）"
-            : $"已加载 {state.Items.Count} 个对象";
+            ? $"共 {state.Items.Count} 个对象（还有更多）"
+            : $"共 {state.Items.Count} 个对象";
     }
 
     private void AddObjectsHeaderRow(ObjectsScope scope)
@@ -716,10 +717,10 @@ public sealed partial class ShellView
 
         // 表头三个单元格各给一个可访问名（= 列头文字），--report-shell 才能断言列序。
         var numberHeader = AddCell(grid, 0, "行号", secondary: true, rightAligned: true, fontSize: Metrics.FontStatus, mono: true);
-        var nameHeader = AddCell(grid, 1, "名称", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false);
+        var nameHeader = AddCell(grid, 1, "表名", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false);
         var kindHeader = AddCell(grid, 2, "类型", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false);
         AutomationProperties.SetName(numberHeader, "行号");
-        AutomationProperties.SetName(nameHeader, "名称");
+        AutomationProperties.SetName(nameHeader, "表名");
         AutomationProperties.SetName(kindHeader, "类型");
 
         AutomationProperties.SetName(
@@ -977,12 +978,12 @@ public sealed partial class ShellView
         // 计数只来自**已展开**的分组层：没展开过就不出现，不主动全量统计、不写 0 冒充。
         if (TryLoadedGroupCount(_selection.ConnectionKey, catalog, ObjectGroup.Tables, out var tables))
         {
-            AddField(panel, "表", $"已加载 {tables} 项");
+            AddField(panel, "表", $"{tables} 个");
         }
 
         if (TryLoadedGroupCount(_selection.ConnectionKey, catalog, ObjectGroup.Views, out var views))
         {
-            AddField(panel, "视图", $"已加载 {views} 项");
+            AddField(panel, "视图", $"{views} 个");
         }
 
         if (_selection.Kind == SelectionKind.Group)
