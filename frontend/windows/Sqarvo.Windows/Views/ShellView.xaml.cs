@@ -37,7 +37,7 @@ public enum WorkspaceState
 }
 
 /// <summary>
-/// 六区域外壳：菜单行 / 主工具条 / 对象树 / 工作区 / 状态栏 / 信息面板。
+/// 六区域外壳：标题行 / 主工具条 / 对象树 / 工作区 / 状态栏 / 信息面板。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -258,6 +258,31 @@ public sealed partial class ShellView : UserControl
     /// <summary>重新按 <see cref="BackendState"/> 渲染一次（窗口层 / 壳外建立连接后调）。</summary>
     public void RefreshFromBackend() => ApplyBackendState();
 
+    // ------------------------------------------------------------------ 标题行（窗口层接线）
+
+    /// <summary>
+    /// 标题行里可拖拽的那一段（窗口层用 <c>SetTitleBar</c> 指到这里）。
+    /// </summary>
+    /// <remarks>
+    /// 只包含「图标右边 → 汉堡按钮左边」这一列：图标与菜单按钮不在里面，它们的点击语义不变。
+    /// 切密度档会重建外壳（新实例），窗口层必须在重建后重新指一次，否则拖拽区指向已不在树上的元素。
+    /// </remarks>
+    public UIElement HeaderDragRegion => HeaderDragArea;
+
+    /// <summary>
+    /// 系统 caption 按钮占的宽度（DIP）：窗口层从 <c>AppWindow.TitleBar.LeftInset/RightInset</c>
+    /// （物理像素）除以栅格化比例后传进来，标题行的左右内距在 toolbar_padding_h 之上叠加它。
+    /// </summary>
+    public void SetCaptionInsets(double leftDips, double rightDips)
+    {
+        _captionInsetLeft = Math.Max(0, leftDips);
+        _captionInsetRight = Math.Max(0, rightDips);
+        ApplyHeaderChrome();
+    }
+
+    /// <summary>副标题文案（唯一写入点是 ApplyBackendState → ApplyHeaderStatus）。</summary>
+    public void SetHeaderSubtitle(string text) => HeaderSubtitle.Text = text ?? string.Empty;
+
     // ------------------------------------------------------------------ 生命周期
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -381,6 +406,10 @@ public sealed partial class ShellView : UserControl
         // 状态栏：行 1 的状态格 + 行 2 的会话格（**搬移**到 ShellView.Chrome.cs，只是渲染，
         // 判定仍在这里；原来这里往 LastRefreshText 写，行 1 的状态格现在是独立的一格）。
         ApplyStatusChrome(state);
+
+        // 标题行副标题：与状态栏同一份文案来源（BackendState.StatusLine / Describe），不另造一句。
+        // 副标题只跟后端状态走：切标签不改它（本轮不做「标题跟标签走」）。
+        ApplyHeaderStatus(state);
 
         // 状态栏左格：默认是「SQL: 尚未执行」（与 Linux 的 shell.rs 同一句）；未就绪或刚操作完时说明原因。
         SqlSummaryText.Text = _notice ?? (ready ? "SQL: 尚未执行" : state.Message);
@@ -783,9 +812,9 @@ public sealed partial class ShellView : UserControl
 
     private void ApplyMetrics()
     {
-        // 菜单行高度 = 外壳高 − 系统标题栏基准 × 档位 → 24 / 30 / 36。
-        // 基准由度量推出（compact 外壳 64 − 菜单行 24 = 40），这里没有尺寸字面量。
-        MenuBand.Height = WindowSizing.MenuRowHeight(Metrics.Tier);
+        // 自绘标题行高度 = header_height（64 / 80 / 96）：它现在占的是原来「系统标题栏 + 菜单行」
+        // 那一整块（窗口内容延伸到标题栏），所以高度取外壳高度而不是菜单行高度。
+        HeaderBand.Height = Metrics.HeaderHeight;
 
         // 侧栏 / 信息面板：默认宽度来自度量，持久化值是 compact 归一值（state 负责换算）。
         ApplyPanelWidths(_state.SidebarWidthFor(Metrics.Tier), _state.InspectorWidthFor(Metrics.Tier));
@@ -802,7 +831,9 @@ public sealed partial class ShellView : UserControl
         ObjectsTitle.Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd);
         ObjectsStatus.Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd);
 
-        MenuBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
+        // 标题行 / 工具条 / 状态栏共用同一套左右内距（toolbar_padding_h）；
+        // 标题行右侧还要再叠加系统 caption 按钮占的宽度，见 ApplyHeaderChrome。
+        ApplyHeaderChrome();
         ToolbarBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
         StatusBand.Padding = new Thickness(Metrics.ToolbarPaddingH, 0, Metrics.ToolbarPaddingH, 0);
 

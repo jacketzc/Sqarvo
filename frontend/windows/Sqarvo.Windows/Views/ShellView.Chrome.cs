@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Sqarvo.Windows.Diagnostics;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
 using System.Collections.Generic;
@@ -26,6 +27,62 @@ namespace Sqarvo.Windows.Views;
 /// </remarks>
 public sealed partial class ShellView
 {
+    /// <summary>标题行左右为系统 caption 按钮让出的宽度（DIP；窗口层按 RightInset / 比例换算后交进来）。</summary>
+    private double _captionInsetLeft;
+
+    /// <summary>同 <see cref="_captionInsetLeft"/>，右侧。</summary>
+    private double _captionInsetRight;
+
+    /// <summary>
+    /// 标题行：高度已由 <c>ApplyMetrics</c> 从 Metrics.HeaderHeight 写好，这里只给内距。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Thickness"/> 是结构体，XAML 里只能写字面量，所以「左右内距 = toolbar_padding_h，
+    /// 右侧再叠加系统 caption 按钮宽度」这条算术留在这里。<see cref="SetCaptionInsets"/> 也会调它，
+    /// 因此 DPI 变化 / 最大化后 caption 区变宽时标题行跟着让位。
+    /// </remarks>
+    private void ApplyHeaderChrome()
+    {
+        HeaderBand.Padding = new Thickness(
+            Metrics.ToolbarPaddingH + _captionInsetLeft,
+            0,
+            Metrics.ToolbarPaddingH + _captionInsetRight,
+            0);
+    }
+
+    /// <summary>
+    /// 标题行副标题：只换文案，不新造句子。
+    /// </summary>
+    /// <remarks>
+    /// 就绪 / 启动中取 <see cref="BackendState.StatusLine"/>（「已连接 · 驱动 N · 浏览会话 M」/
+    /// 「连接中 · 驱动 0 · 浏览会话 0」），断开 / 失败取 <see cref="BackendState.Describe"/>（「已断开：…」），
+    /// 两者都是状态栏与「关于」本来就在用的同一份文案。
+    /// </remarks>
+    private void ApplyHeaderStatus(BackendState state)
+    {
+        var subtitle = state.Readiness is BackendReadiness.Disconnected or BackendReadiness.Failed
+            ? state.Describe()
+            : state.StatusLine;
+
+        SetHeaderSubtitle(subtitle);
+
+        // 断开原因可能被省略号截掉：与状态栏行 1 一样，全文放 tooltip。
+        ToolTipService.SetToolTip(HeaderSubtitle, subtitle);
+    }
+
+    /// <summary>
+    /// 图标解码失败（.ico 在不打包场景下读不到 / 解码不了）：记一行诊断，把图隐藏。
+    /// </summary>
+    /// <remarks>
+    /// 图标是装饰：读不到就空着，绝不让它影响启动。这里不抛、不重试第二条路径。
+    /// </remarks>
+    private void OnHeaderAppIconFailed(object sender, ExceptionRoutedEventArgs args)
+    {
+        ConsoleBridge.WriteDiagnostic(
+            $"[chrome] 标题行图标加载失败（{args.ErrorMessage}），隐藏图标");
+        HeaderAppIcon.Visibility = Visibility.Collapsed;
+    }
+
     /// <summary>工具条：两个动作按钮与四个种类入口的内边距 / 圆角（高度与字号在 XAML 里取 Size.*）。</summary>
     private void ApplyToolbarMetrics()
     {

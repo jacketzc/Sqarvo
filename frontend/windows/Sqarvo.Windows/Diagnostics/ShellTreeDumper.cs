@@ -20,7 +20,7 @@ internal static class ShellTreeDumper
 {
     private static readonly string[] RegionNames =
     {
-        "MenuBand", "ToolbarBand", "ObjectTree", "WorkspaceTabs", "StatusBand", "InspectorSplit", "InspectorBody",
+        "HeaderBand", "ToolbarBand", "ObjectTree", "WorkspaceTabs", "StatusBand", "InspectorSplit", "InspectorBody",
     };
 
     /// <summary>从窗口内容开始打印。</summary>
