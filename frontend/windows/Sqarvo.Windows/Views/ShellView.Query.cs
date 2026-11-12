@@ -1263,7 +1263,8 @@ public sealed partial class ShellView
         var block = new TextBlock
         {
             Text = text,
-            FontSize = mono ? Metrics.FontStatus : Metrics.FontDataCell,
+            // 列头 12（font_ui + 600）、行号 11（font_status）、数据格 13（font_data_cell + 500）。
+            FontSize = header ? Metrics.FontUi : mono ? Metrics.FontStatus : Metrics.FontDataCell,
             // 列头 title(600) / 行号 ui(400) / 数据 cell(500)：与 Linux 的
             // columnview header（fw_title）与 .sqarvo-cell（fw_cell）同一口径。
             FontWeight = header ? TypeTokens.Title : mono ? TypeTokens.Ui : TypeTokens.Cell,

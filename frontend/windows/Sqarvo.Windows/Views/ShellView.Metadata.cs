@@ -717,9 +717,9 @@ public sealed partial class ShellView
         var grid = NewObjectsRow(Metrics.ColumnHeaderMinHeight, background: null);
 
         // 表头三个单元格各给一个可访问名（= 列头文字），--report-shell 才能断言列序。
-        var numberHeader = AddCell(grid, 0, "行号", secondary: true, rightAligned: true, fontSize: Metrics.FontStatus, mono: true, header: true);
-        var nameHeader = AddCell(grid, 1, "表名", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false, header: true);
-        var kindHeader = AddCell(grid, 2, "类型", secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false, header: true);
+        var numberHeader = AddCell(grid, 0, "行号", secondary: true, rightAligned: true, fontSize: Metrics.FontUi, mono: true, header: true);
+        var nameHeader = AddCell(grid, 1, "表名", secondary: true, rightAligned: false, fontSize: Metrics.FontUi, mono: false, header: true);
+        var kindHeader = AddCell(grid, 2, "类型", secondary: true, rightAligned: false, fontSize: Metrics.FontUi, mono: false, header: true);
         AutomationProperties.SetName(numberHeader, "行号");
         AutomationProperties.SetName(nameHeader, "表名");
         AutomationProperties.SetName(kindHeader, "类型");
@@ -752,8 +752,8 @@ public sealed partial class ShellView
             selected ? ThemeBrush("SqarvoSelectionBrush") : ThemeBrush("SqarvoTransparentBrush"));
 
         AddCell(grid, 0, (index + 1).ToString(CultureInfo.InvariantCulture), secondary: true, rightAligned: true, fontSize: Metrics.FontStatus, mono: true);
-        AddCell(grid, 1, entry.Name, secondary: false, rightAligned: false, fontSize: Metrics.FontUi, mono: false);
-        AddCell(grid, 2, entry.KindLabel, secondary: true, rightAligned: false, fontSize: Metrics.FontStatus, mono: false);
+        AddCell(grid, 1, entry.Name, secondary: false, rightAligned: false, fontSize: Metrics.FontDataCell, mono: false);
+        AddCell(grid, 2, entry.KindLabel, secondary: true, rightAligned: false, fontSize: Metrics.FontDataCell, mono: false);
 
         // 通栏可访问名：--report-shell 断言「行号 名称 类型」就靠它（只有一个 TextBlock 时读出的是纯名字）。
         AutomationProperties.SetName(grid, $"{index + 1} {entry.Name} {entry.KindLabel}");
