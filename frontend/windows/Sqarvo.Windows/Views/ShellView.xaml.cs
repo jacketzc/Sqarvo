@@ -478,8 +478,6 @@ public sealed partial class ShellView : UserControl
 
         root.IsExpanded = true;
 
-        // 连接行是 heading(700)：容器的字重要等布局后才有对象可设（见 QueueTreeRowWeights）。
-        QueueTreeRowWeights(root);
         RenderObjectsPage();
         RenderInspector();
         ApplyWorkspaceVisibility();

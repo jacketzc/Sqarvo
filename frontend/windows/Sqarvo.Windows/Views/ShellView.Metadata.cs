@@ -388,58 +388,6 @@ public sealed partial class ShellView
         {
             AddChild(node, child);
         }
-
-        // 新加的这一层要按「连接 / 分组 = 700，其余 = 400」上字重（容器在布局后才存在）。
-        QueueTreeRowWeights(node);
-    }
-
-    /// <summary>
-    /// 给树行的 <see cref="TreeViewItem"/> 容器上字重：连接名与分组名 <c>heading</c>(700)，
-    /// 其余行（库 / 对象 / 说明 / 续拉 / 失败）<c>ui</c>(400)。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// 树行内容只是一个带 <c>ToString()</c> 的文本对象（刻意不用 DataTemplate，见 TreeRow 注释），
-    /// 文字由默认模板的 ContentPresenter 生成，没有可以单独设字重的 TextBlock。字重因此落在
-    /// 行的容器上（TreeViewItem 把 FontWeight 继承给内部的 TextBlock）。
-    /// </para>
-    /// <para>
-    /// 容器要等这一层布局完成才存在，所以排进 DispatcherQueue 的低优先级回调：
-    /// 此时代码里的节点已经加完，布局也刚跑过。只走本次新增的这一层与已展开的子树。
-    /// </para>
-    /// </remarks>
-    private void QueueTreeRowWeights(TreeViewNode node)
-    {
-        if (ObjectTree.DispatcherQueue is { } queue)
-        {
-            queue.TryEnqueue(
-                Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-                () => ApplyTreeRowWeights(node));
-            return;
-        }
-
-        ApplyTreeRowWeights(node);
-    }
-
-    private void ApplyTreeRowWeights(TreeViewNode node)
-    {
-        foreach (var child in node.Children)
-        {
-            if (ObjectTree.ContainerFromNode(child) is TreeViewItem container)
-            {
-                container.FontWeight = child.Content switch
-                {
-                    ConnectionNode => TypeTokens.Heading,
-                    TreeRow { Kind: TreeRowKind.Group } => TypeTokens.Heading,
-                    _ => TypeTokens.Ui,
-                };
-            }
-
-            if (child.IsExpanded)
-            {
-                ApplyTreeRowWeights(child);
-            }
-        }
     }
 
     private NodeLoad LoadFor(TreeViewNode node)
