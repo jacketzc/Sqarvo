@@ -1120,10 +1120,7 @@ mod tests {
             let mut start = css
                 .find(selector)
                 .unwrap_or_else(|| panic!("缺少规则：{selector}"));
-            loop {
-                let Some(newline) = css[..start].rfind('\n') else {
-                    break;
-                };
+            while let Some(newline) = css[..start].rfind('\n') {
                 let line_start = css[..newline].rfind('\n').map_or(0, |i| i + 1);
                 if !css[line_start..newline].trim_end().ends_with(',') {
                     break;

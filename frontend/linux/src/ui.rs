@@ -1862,14 +1862,14 @@ fn apply_tab_status(
             timing_ms,
             row_ops,
         } => {
-            shell.status().show_query_ops(&row_ops);
+            shell.status().show_query_ops(row_ops);
             if let Some(summary) = summary {
                 shell.status().set_sql_summary(summary);
             }
             let _ = timing_ms;
             shell.toolbar().set_active(None);
             if let Some(actions) = actions {
-                actions.apply_row_ops(&row_ops);
+                actions.apply_row_ops(row_ops);
             }
         }
         crate::tabs::TabStatus::Objects { shortcut } => {

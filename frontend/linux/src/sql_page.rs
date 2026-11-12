@@ -66,14 +66,23 @@ pub struct SqlPageCallbacks {
     /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.3.2）。
     pub backend_failure: Rc<dyn Fn()>,
     /// 解析编辑目标：结果表的表名 → 该标签会话下的 `ObjectRef`（v0.2.5）。
-    pub edit_target: Rc<dyn Fn(&str) -> Option<ObjectRef>>,
+    pub edit_target: EditTarget,
     /// 读主键：判断结果能不能当表来编辑（v0.2.5）。
     pub read_query_edit: Rc<dyn Fn(ObjectRef)>,
     /// 提交行变更：目标表由 SQL 页显式给出（v0.2.5）。
-    pub apply_changes: Rc<dyn Fn(ObjectRef, ChangeBatch, SubmitOptions)>,
+    pub apply_changes: ApplyChanges,
     /// 页面内的可编辑状态变了（脏行 / 选中 / 是否可编辑）：让状态栏重算按钮可用性。
     pub state_changed: Rc<dyn Fn()>,
 }
+
+/// 解析编辑目标的回调签名：结果表名 → 该标签会话下的对象引用。
+pub type EditTarget = Rc<dyn Fn(&str) -> Option<ObjectRef>>;
+
+/// 提交行变更的回调签名：目标表 + 批次 + 选项。
+///
+/// 单独起名字是因为写在内联位置会触发 `clippy::type_complexity`（CI 用 `-D warnings`，
+/// 一条都不放过）。
+pub type ApplyChanges = Rc<dyn Fn(ObjectRef, ChangeBatch, SubmitOptions)>;
 
 /// SQL 工作区页面。
 pub struct SqlPage {
