@@ -225,7 +225,7 @@ precondition = "窗口存在"
 result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项"
 source = "src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216"
 
-platform_notes.windows = "菜单行由 WinUI 的 MenuBar / MenuBarItem 承载。实测这三类控件忽略 FontSize：在 MenuBar、MenuBarItem、MenuFlyoutItem 三处显式写 Size.FontUi 之后，菜单行文字的像素高度与改动前完全一致（2 倍截图逐行量 ink 高度均为 19px），字号由框架模板固定、比 font_ui 大一档。要改只能自绘菜单行（L3，AGENTS §8.1 禁止），故按「控件原生」接受该差异；菜单条目、顺序、可用性与快捷键仍按规范。"
+platform_notes.windows = "菜单行由 WinUI 的 MenuBar / MenuBarItem 承载。显式 FontSize 不生效：在 MenuBar、MenuBarItem、MenuFlyoutItem 三处写 Size.FontUi 之后，同一窗口的 A/B 像素 diff 显示菜单文字所在行（y 87-105 @2x）没有任何变化；菜单行字号由框架模板固定，与 font_ui 的差值未量准（多次独立测量落在 9.5–11.5 DIP 之间，不一致），因此本端不写具体差值。要精确对齐只能自绘菜单行（L3，AGENTS §8.1 禁止），按「控件原生」接受该差异；菜单条目、顺序、可用性与快捷键仍按规范。"
 
 [component.sync.linux]
 state = "done"
