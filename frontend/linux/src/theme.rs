@@ -630,9 +630,11 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         }}
         .sqarvo-status-sep {{ min-height: {tree_row}px; }}
 
-        /* 区域 06：信息面板（空槽，内容由 #119 填） */
+        /* 区域 06：信息面板（空槽，内容由 #119 填）
+           v0.2.5：不再画 `border-left`。工作区与面板之间是 `GtkPaned`，它自己就有一条
+           1px 分栏线；面板上再加一条，两条并排就是一堵双线（用户：「有点多余」）。
+           分隔只由 Paned 提供，面板只留内边距。 */
         .sqarvo-inspector {{
-            border-left: 1px solid @sqarvo_separator;
             padding: {gap_xl}px;
         }}
         .sqarvo-slot-note {{ font-size: {status_font}px; }}
