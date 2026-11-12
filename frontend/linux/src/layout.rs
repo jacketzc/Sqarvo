@@ -301,9 +301,8 @@ pub fn set_current_tier(tier: Tier) {
 
 /// 间距刻度：界面里的留白**只**从这几档取，不再写「随手一个 6px」。
 ///
-/// 取值是 [`Metrics`] 的 `gap_*` 字段（100% 档 0 / 2 / 4 / 6 / 8 / 10 / 12 / 16 / 18，
-/// 以及 18 = 页面 / 对话框内容内边距）。`metrics.toml` 没有 gap 阶梯，三档取值按
-/// 档位倍率取整（见 [`Metrics::for_tier`] 的注释），语义（哪一档用在哪儿）不变。
+/// 取值是 [`Metrics`] 的 `gap_*` 字段（100% 档 0 / 2 / 4 / 6 / 8 / 10 / 12 / 14 / 18），
+/// 三档的数字都写在 `docs/ui-specification/metrics.toml` 里，代码不做倍率计算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gap {
     /// 0：贴着排（列表行内、无间距的盒子）。
@@ -339,32 +338,15 @@ impl Gap {
         Self::Xxl,
         Self::Page,
     ];
-
-    /// 100% 档的基准值（间距阶梯的语义来源）。
-    #[must_use]
-    pub fn base_px(self) -> i32 {
-        match self {
-            Self::None => 0,
-            Self::Xxs => 2,
-            Self::Xs => 4,
-            Self::Sm => 6,
-            Self::Md => 8,
-            Self::Lg => 10,
-            Self::Xl => 12,
-            Self::Xxl => 14,
-            Self::Page => 18,
-        }
-    }
 }
 
 /// 一个档位的全部布局度量（[`metrics`] 的返回值）。
 ///
-/// 字段名与 `docs/ui-specification/metrics.toml` 同名同义；数值直接从 TOML 来。
-/// 表里没有的只有两类，集中在本结构末尾：
-///
-/// 1. 间距阶梯 `gap_*`（0 / 2 / 4 / 6 / 8 / 10 / 12 / 14 / 18）：按档位倍率取整；
-/// 2. CSS 专用度量（圆角、表格外框线宽、分页按钮最小宽度等）：同样按倍率取整，
-///    **1px 描边与 2px 表格外框线宽不缩放**（§3.2）。
+/// 字段名与 `docs/ui-specification/metrics.toml` 同名同义；**所有**数值都直接从 TOML 来，
+/// 包括末尾的间距阶梯 `gap_*` 与 CSS 专用度量（圆角、表格外框线宽、分页按钮最小宽度等）：
+/// 三档全部写死整数，代码里不做「基准 × 倍率」。原因是各语言取整规则不同（Rust / Swift
+/// half-away-from-zero、C# half-to-even），同一份 26×1.25 会算成 33 与 32，三端静默漂移。
+/// 例外是**1px 描边与 2px 表格外框线宽**：TOML 里三档同值，本来就不随密度变（§3.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Metrics {
     // ---- metrics.toml 的同名项 ----
@@ -410,7 +392,7 @@ pub struct Metrics {
     pub filter_panel_width: i32,
     pub filter_column_width: i32,
 
-    // ---- 间距阶梯（TOML 无同名项，按档位倍率取整） ----
+    // ---- 间距阶梯（`metrics.toml` 的 `gap_*`，三档写死整数） ----
     pub gap_none: i32,
     pub gap_xxs: i32,
     pub gap_xs: i32,
@@ -421,7 +403,7 @@ pub struct Metrics {
     pub gap_xxl: i32,
     pub gap_page: i32,
 
-    // ---- CSS 专用度量（TOML 无同名项） ----
+    // ---- CSS 专用度量（`metrics.toml` 的圆角 / 线宽 / 按钮 / 空态与加载） ----
     /// 表格外框线宽：2px 在**所有档位**保持 2px（描边不随密度变，§3.2 的同一条理由）。
     pub frame_border_width: i32,
     /// 大圆角（列信息 / 事务卡片的浮层）：12 / 15 / 18。
@@ -518,10 +500,6 @@ impl Metrics {
 }
 
 /// 按档位倍率取整（**只**用于 TOML 没有同名项的间距 / 圆角 / 装饰度量）。
-fn scaled(base: i32, scale: f64) -> i32 {
-    (f64::from(base) * scale).round() as i32
-}
-
 /// 当前档位的度量。界面里要留白 / 固定尺寸时从这里取，比如
 /// `widget.set_margin_start(gap(Gap::Page))`。
 #[must_use]
@@ -572,6 +550,9 @@ struct RawTier {
     id: String,
     #[allow(dead_code)]
     label: String,
+    /// 档位倍率。解析出来只用于「文件自洽性」检查与日志；**不参与任何尺寸计算**
+    /// （三档数字都写死在表里，见 [`Metrics::from_raw`] 的注释）。
+    #[allow(dead_code)]
     scale: f64,
     header_height: i32,
     toolbar_height: i32,
@@ -614,6 +595,23 @@ struct RawTier {
     column_width: i32,
     filter_panel_width: i32,
     filter_column_width: i32,
+    gap_none: i32,
+    gap_xxs: i32,
+    gap_xs: i32,
+    gap_sm: i32,
+    gap_md: i32,
+    gap_lg: i32,
+    gap_xl: i32,
+    gap_xxl: i32,
+    gap_page: i32,
+    frame_border_width: i32,
+    radius_lg: i32,
+    pill_radius: i32,
+    pager_button_min_width: i32,
+    fs_button_min_height: i32,
+    fs_action_min_height: i32,
+    empty_icon_px: i32,
+    spinner_px: i32,
 }
 
 /// 三档解析结果（顺序 = [`Tier::ALL`]）。
@@ -646,8 +644,6 @@ impl Metrics {
     /// 允许出现「基准 × 缩放」的地方，且只覆盖 TOML 未收录的间距阶梯与装饰度量
     /// （规范 §3.1 的「各端只读、不计算」针对的是表里已经写死的值）。
     fn from_raw(raw: &RawTier) -> Self {
-        let scale = raw.scale;
-        let gap = |step: Gap| scaled(step.base_px(), scale);
         Self {
             header_height: raw.header_height,
             toolbar_height: raw.toolbar_height,
@@ -690,24 +686,27 @@ impl Metrics {
             column_width: raw.column_width,
             filter_panel_width: raw.filter_panel_width,
             filter_column_width: raw.filter_column_width,
-            gap_none: gap(Gap::None),
-            gap_xxs: gap(Gap::Xxs),
-            gap_xs: gap(Gap::Xs),
-            gap_sm: gap(Gap::Sm),
-            gap_md: gap(Gap::Md),
-            gap_lg: gap(Gap::Lg),
-            gap_xl: gap(Gap::Xl),
-            gap_xxl: gap(Gap::Xxl),
-            gap_page: gap(Gap::Page),
+            // 间距阶梯与 CSS 专用度量现在也来自 `metrics.toml`：三档全部写死整数，
+            // 代码里不再「基准 × 倍率」——Rust / C# / Swift 的取整规则不同（half-away
+            // vs half-to-even），同一份 26×1.25 会得到 33 和 32，三端会静默漂移 1px。
+            gap_none: raw.gap_none,
+            gap_xxs: raw.gap_xxs,
+            gap_xs: raw.gap_xs,
+            gap_sm: raw.gap_sm,
+            gap_md: raw.gap_md,
+            gap_lg: raw.gap_lg,
+            gap_xl: raw.gap_xl,
+            gap_xxl: raw.gap_xxl,
+            gap_page: raw.gap_page,
             // 描边类不随档位（§3.2）：1px 分隔线由 CSS 常量固定，2px 外框同理。
-            frame_border_width: 2,
-            radius_lg: scaled(12, scale),
-            pill_radius: 99,
-            pager_button_min_width: scaled(26, scale),
-            fs_button_min_height: scaled(26, scale),
-            fs_action_min_height: scaled(28, scale),
-            empty_icon_px: scaled(48, scale),
-            spinner_px: scaled(32, scale),
+            frame_border_width: raw.frame_border_width,
+            radius_lg: raw.radius_lg,
+            pill_radius: raw.pill_radius,
+            pager_button_min_width: raw.pager_button_min_width,
+            fs_button_min_height: raw.fs_button_min_height,
+            fs_action_min_height: raw.fs_action_min_height,
+            empty_icon_px: raw.empty_icon_px,
+            spinner_px: raw.spinner_px,
         }
     }
 }

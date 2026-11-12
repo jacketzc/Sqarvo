@@ -14,6 +14,16 @@
 # 不随档位缩放的量（刻意排除）：
 #   border_width_px = 1        1px 描边在所有档位都保持 1px（1.5× 的 1.5px 细线会发糊）
 #   icon_stroke_px  = 1.6      符号图标描边来自图标网格，不随密度档变
+#   frame_border_width = 2     表格外框线宽同理：三档同值（每档里也照写一遍，便于各端直接读）
+#   pill_radius = 99           饱和圆角（半个盒子），三档同值
+#
+# 收录范围（2026-11-11 补齐）：除了六个区域的高度 / 宽度 / 字号 / 行高，还包含
+#   1. 间距阶梯 gap_none / gap_xxs / gap_xs / gap_sm / gap_md / gap_lg / gap_xl /
+#      gap_xxl / gap_page —— 界面里的 margin 与 Box spacing 只从这九档取；
+#   2. CSS 专用度量 radius_lg / pager_button_min_width / fs_button_min_height /
+#      fs_action_min_height / empty_icon_px / spinner_px。
+#   这两组以前在代码里按「基准 × 倍率」算，现已全部展开成三档整数：任何一端都不许
+#   再自己乘一遍（取整规则不同会漂 1px）。
 
 version = 1
 
@@ -68,6 +78,26 @@ row_number_width = 32   # 32 × 1.0 = 32
 column_width = 200   # 200 × 1.0 = 200
 filter_panel_width = 430   # 430 × 1.0 = 430
 filter_column_width = 140   # 140 × 1.0 = 140
+# ---- 间距阶梯（`layout::Gap` 门面按这里取值；代码里不再算「基准 × 倍率」） ----
+gap_none = 0   # 0 × 1.0 = 0
+gap_xxs = 2   # 2 × 1.0 = 2
+gap_xs = 4   # 4 × 1.0 = 4
+gap_sm = 6   # 6 × 1.0 = 6
+gap_md = 8   # 8 × 1.0 = 8
+gap_lg = 10   # 10 × 1.0 = 10
+gap_xl = 12   # 12 × 1.0 = 12
+gap_xxl = 14   # 14 × 1.0 = 14
+gap_page = 18   # 18 × 1.0 = 18
+
+# ---- CSS 专用度量（圆角 / 线宽 / 分页与筛选按钮 / 空态与加载） ----
+frame_border_width = 2   # 表格外框线宽：三档都是 2px（描边不随密度变）
+radius_lg = 12   # 12 × 1.0 = 12（列信息 / 事务卡片浮层）
+pill_radius = 99   # 饱和圆角：状态圆点等，三档同值
+pager_button_min_width = 26   # 26 × 1.0 = 26
+fs_button_min_height = 26   # 26 × 1.0 = 26（筛选面板的条件行按钮）
+fs_action_min_height = 28   # 28 × 1.0 = 28（筛选面板「应用」按钮）
+empty_icon_px = 48   # 48 × 1.0 = 48（空态占位图标）
+spinner_px = 32   # 32 × 1.0 = 32（加载 spinner 请求边长）
 
 [tier.comfortable]
 id = "comfortable"
@@ -114,6 +144,26 @@ row_number_width = 40   # 32 × 1.25 = 40
 column_width = 250   # 200 × 1.25 = 250
 filter_panel_width = 538   # 430 × 1.25 = 537.5
 filter_column_width = 175   # 140 × 1.25 = 175
+# ---- 间距阶梯（`layout::Gap` 门面按这里取值；代码里不再算「基准 × 倍率」） ----
+gap_none = 0   # 0 × 1.25 = 0
+gap_xxs = 3   # 2 × 1.25 = 3
+gap_xs = 5   # 4 × 1.25 = 5
+gap_sm = 8   # 6 × 1.25 = 8
+gap_md = 10   # 8 × 1.25 = 10
+gap_lg = 13   # 10 × 1.25 = 13
+gap_xl = 15   # 12 × 1.25 = 15
+gap_xxl = 18   # 14 × 1.25 = 18
+gap_page = 23   # 18 × 1.25 = 23
+
+# ---- CSS 专用度量（圆角 / 线宽 / 分页与筛选按钮 / 空态与加载） ----
+frame_border_width = 2   # 表格外框线宽：三档都是 2px（描边不随密度变）
+radius_lg = 15   # 12 × 1.25 = 15（列信息 / 事务卡片浮层）
+pill_radius = 99   # 饱和圆角：状态圆点等，三档同值
+pager_button_min_width = 33   # 26 × 1.25 = 33
+fs_button_min_height = 33   # 26 × 1.25 = 33（筛选面板的条件行按钮）
+fs_action_min_height = 35   # 28 × 1.25 = 35（筛选面板「应用」按钮）
+empty_icon_px = 60   # 48 × 1.25 = 60（空态占位图标）
+spinner_px = 40   # 32 × 1.25 = 40（加载 spinner 请求边长）
 
 [tier.large]
 id = "large"
@@ -160,4 +210,24 @@ row_number_width = 48   # 32 × 1.5 = 48
 column_width = 300   # 200 × 1.5 = 300
 filter_panel_width = 645   # 430 × 1.5 = 645
 filter_column_width = 210   # 140 × 1.5 = 210
+# ---- 间距阶梯（`layout::Gap` 门面按这里取值；代码里不再算「基准 × 倍率」） ----
+gap_none = 0   # 0 × 1.5 = 0
+gap_xxs = 3   # 2 × 1.5 = 3
+gap_xs = 6   # 4 × 1.5 = 6
+gap_sm = 9   # 6 × 1.5 = 9
+gap_md = 12   # 8 × 1.5 = 12
+gap_lg = 15   # 10 × 1.5 = 15
+gap_xl = 18   # 12 × 1.5 = 18
+gap_xxl = 21   # 14 × 1.5 = 21
+gap_page = 27   # 18 × 1.5 = 27
+
+# ---- CSS 专用度量（圆角 / 线宽 / 分页与筛选按钮 / 空态与加载） ----
+frame_border_width = 2   # 表格外框线宽：三档都是 2px（描边不随密度变）
+radius_lg = 18   # 12 × 1.5 = 18（列信息 / 事务卡片浮层）
+pill_radius = 99   # 饱和圆角：状态圆点等，三档同值
+pager_button_min_width = 39   # 26 × 1.5 = 39
+fs_button_min_height = 39   # 26 × 1.5 = 39（筛选面板的条件行按钮）
+fs_action_min_height = 42   # 28 × 1.5 = 42（筛选面板「应用」按钮）
+empty_icon_px = 72   # 48 × 1.5 = 72（空态占位图标）
+spinner_px = 48   # 32 × 1.5 = 48（加载 spinner 请求边长）
 
