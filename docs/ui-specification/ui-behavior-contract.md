@@ -196,8 +196,9 @@ worker 之前先 `set_backend_ready(false)`；握手完成置 `true`；后端失
 
 ### 2.3 右键菜单
 
-菜单按**行种类**给条目，不给占位行（占位行右键直接返回）。菜单是贴着点击位置的 `GtkPopover`，
-点任一条目先收起菜单再执行动作。
+菜单按**行种类**给条目，不给占位行（占位行右键直接返回）。菜单是**原生 `GtkPopoverMenu`**
+（与 SQL 编辑器上右击弹出的那一套同一个控件：同一套圆角、条目高度、悬停底、禁用色、键盘操作，
+点空白处由 GTK 自己收起），贴着点击位置弹出，点任一条目由 GTK 收起后再执行动作。
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -434,13 +435,11 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 打开 | 已打开表（有草稿） | 在数据行的**任意位置**右键——单元格文字、列分隔线、行分隔线、末列右侧的空白都算：手势挂在**行控件**上（`label → cell → row` 爬两层，一行只挂一次，用 `sqarvo-row-menu-host` 类做标记），只有表格下方的空白区不属于任何行、不响应。未选中的行先被选中，已多选时保留多选；菜单是贴着点击位置的 `GtkPopover`（popup surface），每条目是**普通扁平按钮**（不挂 `gio::SimpleAction`） | `src/data_page.rs`（`cell_factory` 的 bind、`show_row_menu`） |
+| 打开 | 已打开表（有草稿） | 在数据行的**任意位置**右键——单元格文字、列分隔线、行分隔线、末列右侧的空白都算：手势挂在**行控件**上（`label → cell → row` 爬两层，一行只挂一次，用 `sqarvo-row-menu-host` 类做标记），只有表格下方的空白区不属于任何行、不响应。未选中的行先被选中，已多选时保留多选；菜单是**原生 `GtkPopoverMenu`**（popup surface，与系统右键菜单同一外观，见 `context_menu` 模块），每个条目一个 `gio::SimpleAction`，且动作组 `insert_action_group` 在**菜单自己**身上——名字一定解析得到（v0.2.5 首版把 action 名挂在外层控件上，解析不到时 GTK 既不报错也不置灰，菜单照弹、点了没反应） | `src/data_page.rs`（`cell_factory` 的 bind、`show_row_menu`）、`src/context_menu.rs` |
 | `删除行` | 可编辑且有选中行（`delete_available`，与状态栏 `−` 同一谓词） | 与状态栏 `−` / `RowOp::Delete` 完全同一方法：只把选中行**标记为待删除**，结果进状态圆点 tooltip 末段「最近一次操作：…」；新行占位行不在删除范围 | `src/data_page.rs`（`delete_selected_row`、`show_row_menu` 里的 `connect_clicked`） |
-| `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单在**悬停**时展开（菜单显示后 250ms 内的 enter 事件忽略：一级菜单本就出现在指针下方，否则「复制为 INSERT」一弹出来就是展开的） | `src/data_page.rs`（`copy_selected_as_insert`、`show_row_menu` 的 motion 控制器）、`src/export.rs`（`multi_row_insert`） |
+| `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单由 GTK 原生渲染（`gio::Menu::append_submenu`，悬停 / 右击展开、方向由 GTK 决定，自绘版曾经出现「一弹出来就展开」「移出去不收回」「条目不对齐」三个问题，全部随自绘列表一起消失） | `src/data_page.rs`（`copy_selected_as_insert`、`show_row_menu`）、`src/context_menu.rs`、`src/export.rs`（`multi_row_insert`） |
+| 点空白处关闭 | 菜单打开中 | 由 `GtkPopoverMenu` 的 autohide 负责：点菜单以外的任何地方（含表格其它行、工具条、外面板）一律收起。自绘 `GtkPopover` 版本里，鼠标先悬停过某个条目再点空白处会关不掉（条目抢了 hover/键盘 grab）——换成原生菜单后这条路径由 GTK 处理 | `src/context_menu.rs` |
 | 视图 / 只读连接 | 不可编辑 | `删除行` 灰掉（`delete_available` = false）；`复制为 INSERT` 仍可用（只读也要能导出数据） | 同上 |
-| 条目对齐 | — | 「删除行」与「复制为」都做成 `[左对齐文字][16px 尾槽]` 的同一结构：原来「删除行」用 `Button::with_label`（文字**居中**）、「复制为」是 Box + 左对齐 Label，两个条目文字起点不同（用户报「没有对齐」） | `src/data_page.rs`（`MENU_ITEM_TAIL_WIDTH`、`show_row_menu`） |
-| 二级菜单的悬停 | 指针在「复制为」上 | 进入即展开；**移出 220ms 后收起**（宽限期内把指针移进二级菜单则取消收起，移出二级菜单再给一次同样的宽限期）。原来的实现「移开不主动收起」，菜单会一直挂着（用户报「移出去不收回」） | `src/data_page.rs`（`arm_grace` / `cancel_grace`） |
-| 菜单条目失效的教训（v0.2.5 首版回归） | — | 首版用 `gio::Menu` + `PopoverMenu` 绑 `row.delete-row` / `row.copy-as-insert`，控件装的 `SimpleActionGroup` 解析不到时 GTK **既不报错也不置灰**：菜单照常弹出，点下去什么都不发生。现改为纯控件（闭包直连），与对象树右键菜单同一套写法；QA 走 `qa_pick_row_menu` → 按钮 `emit_clicked()`（与真点同一个信号）证明接线 | `src/data_page.rs`（`show_row_menu`、`qa_pick_row_menu`） |
 
 ### 5.9 展示形式切换（按行浏览 / 单行「字段 · 值」，v0.2.5）
 

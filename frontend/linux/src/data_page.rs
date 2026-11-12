@@ -680,9 +680,6 @@ pub(crate) fn open_cell_editor(
     entry.set_position(-1);
 }
 
-/// 行右键菜单条目右侧「尾槽」宽度（箭头 / 空占位同宽，保证文字左侧对齐）。
-const MENU_ITEM_TAIL_WIDTH: i32 = 16;
-
 /// 「字段 / 值」视图的单元格工厂：`index` 0 = 字段名，1 = 值。
 ///
 /// 数据是 `(字段名, 值文本)` 元组；值与网格共用同一份显示文本（NULL 是 `NULL`、
@@ -1010,9 +1007,8 @@ pub struct DataPage {
     /// 菜单是**纯控件**（`GtkPopover` + 扁平按钮 + 悬停展开的二级 popover），
     /// 不挂 `gio::SimpleAction`：action 名要靠 `gio::Menu` 模型解析，一旦解析不到，
     /// 条目看着能点、点了什么都不发生（v0.2.5 首版就是这样失效的）。
-    row_menu: RefCell<Option<gtk::Popover>>,
+    row_menu: RefCell<Option<Rc<crate::context_menu::ContextMenu>>>,
     /// 当前菜单里的条目（文案 → 按钮）：QA 的 `--qa-row-menu-pick` 用它点同一个按钮。
-    row_menu_items: RefCell<Vec<(String, gtk::Button)>>,
     callbacks: DataCallbacks,
 }
 
@@ -1663,7 +1659,6 @@ impl DataPage {
             last_load_note: RefCell::new(String::new()),
             last_action_note: RefCell::new(String::new()),
             row_menu: RefCell::new(None),
-            row_menu_items: RefCell::new(Vec::new()),
             callbacks,
         });
 
@@ -2149,211 +2144,60 @@ impl DataPage {
         }
         if let Some(previous) = self.row_menu.borrow_mut().take() {
             previous.popdown();
-            previous.unparent();
+            previous.popover().unparent();
         }
-        self.row_menu_items.borrow_mut().clear();
 
-        let popover = gtk::Popover::new();
-        popover.set_has_arrow(true);
-        popover.set_parent(&self.grid);
-        let point = anchor
-            .compute_point(&self.grid, &gtk::graphene::Point::new(x as f32, y as f32))
-            .unwrap_or_else(|| gtk::graphene::Point::new(0.0, 0.0));
-        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-            point.x() as i32,
-            point.y() as i32,
-            1,
-            1,
-        )));
-
-        let list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
-        list.set_margin_top(gap(Gap::Xs));
-        list.set_margin_bottom(gap(Gap::Xs));
-        list.set_margin_start(gap(Gap::Xs));
-        list.set_margin_end(gap(Gap::Xs));
-
-        // 「删除行」：与状态栏 `−` / `RowOp::Delete` 完全同一个方法。
-        //
-        // 结构必须与下面「复制为」一致：`Button::with_label` 把文字**居中**，而「复制为」
-        // 是 Box + 左对齐 Label，两个条目看起来一个左一个中（用户报「没有对齐」）。
-        // 两行都改成 [左对齐文字][16px 尾槽]，文字起点与右端宽度都相同。
-        let delete = gtk::Button::new();
-        delete.add_css_class("flat");
-        delete.set_halign(gtk::Align::Fill);
-        delete.set_sensitive(self.delete_available());
-        {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
-            let text = gtk::Label::new(Some("删除行"));
-            text.set_xalign(0.0);
-            text.set_hexpand(true);
-            row.append(&text);
-            let tail = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
-            tail.set_size_request(MENU_ITEM_TAIL_WIDTH, -1);
-            row.append(&tail);
-            delete.set_child(Some(&row));
-        }
+        // 原生 `GtkPopoverMenu`（与系统右键菜单同一套外观与键盘操作）：
+        // 「删除行」与「复制为 ▸ 复制为 INSERT」都是 action，禁用态由 `set_enabled` 交给
+        // GTK 画灰——不再自绘按钮列表（那套样式与系统菜单不一致）。
+        let delete_enabled = self.delete_available();
+        let copy_enabled = !self.selected_rows().is_empty();
         {
             let page = Rc::clone(self);
-            let menu = popover.clone();
-            delete.connect_clicked(move |_| {
-                eprintln!("[data] 行右键菜单：删除行");
-                menu.popdown();
-                page.delete_selected_row();
+            let delete = crate::context_menu::Entry::action("删除行", delete_enabled, {
+                let page = Rc::clone(&page);
+                Rc::new(move || page.delete_selected_row())
             });
-        }
-        list.append(&delete);
-
-        // 「复制为 ▸ 复制为 INSERT」：二级菜单在**悬停**时展开（点击也展开，键盘/触控板都能用）。
-        let copy_row = gtk::Button::new();
-        copy_row.add_css_class("flat");
-        copy_row.set_sensitive(!self.selected_rows().is_empty());
-        {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
-            let text = gtk::Label::new(Some("复制为"));
-            text.set_xalign(0.0);
-            text.set_hexpand(true);
-            let arrow = gtk::Image::from_icon_name("go-next-symbolic");
-            let tail = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
-            tail.set_size_request(MENU_ITEM_TAIL_WIDTH, -1);
-            tail.append(&arrow);
-            row.append(&text);
-            row.append(&tail);
-            copy_row.set_child(Some(&row));
-        }
-        let submenu = gtk::Popover::new();
-        submenu.set_has_arrow(false);
-        // 用户反馈：二级菜单原来默认向下展开。子菜单应出现在「复制为」的**右侧**
-        // （与桌面惯例一致，也不遮住下方条目）。
-        submenu.set_position(gtk::PositionType::Right);
-        submenu.set_parent(&copy_row);
-        let sub_list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
-        sub_list.set_margin_top(gap(Gap::Xs));
-        sub_list.set_margin_bottom(gap(Gap::Xs));
-        sub_list.set_margin_start(gap(Gap::Xs));
-        sub_list.set_margin_end(gap(Gap::Xs));
-        let copy = gtk::Button::with_label("复制为 INSERT");
-        copy.add_css_class("flat");
-        copy.set_halign(gtk::Align::Fill);
-        copy.set_tooltip_text(Some(
-            "把选中行合成一条多值 INSERT 复制到剪贴板（含未提交编辑）",
-        ));
-        {
-            let page = Rc::clone(self);
-            let menu = popover.clone();
-            let submenu = submenu.clone();
-            copy.connect_clicked(move |_| {
-                eprintln!("[data] 行右键菜单：复制为 INSERT");
-                submenu.popdown();
-                menu.popdown();
-                match page.copy_selected_as_insert() {
+            let copy = crate::context_menu::Entry::action("复制为 INSERT", copy_enabled, {
+                let page = Rc::clone(&page);
+                Rc::new(move || match page.copy_selected_as_insert() {
                     Ok(rows) => page.note_action(&format!("已复制 {rows} 行为 INSERT 语句")),
                     Err(reason) => page.set_status(&reason, "warning"),
-                }
+                })
             });
-        }
-        sub_list.append(&copy);
-        submenu.set_child(Some(&sub_list));
-        {
-            let submenu = submenu.clone();
-            copy_row.connect_clicked(move |_| {
-                if !submenu.is_visible() {
-                    submenu.popup();
-                }
-            });
-        }
-        {
-            // 悬停展开 / 移出收起：
-            // - 进入「复制为」立刻展开二级菜单；
-            // - 离开「复制为」时**不立即**收起，留 220ms 宽限期——指针从一级移到二级的
-            //   途中会短暂离开，立即收起会让菜单闪一下、也点不到；
-            // - 宽限期内进入二级菜单就取消收起；离开二级菜单再给一次同样的宽限期，
-            //   没有回来就收起（用户反馈「鼠标移出去二级菜单不收回」）。
-            //
-            // 另外：**菜单刚弹出的那一帧不算悬停**（一级菜单出现在指针下方，GTK 会立刻发
-            // 一次 enter，于是「复制为 INSERT」一出来就是展开的），显示后 250ms 内的
-            // enter 一律忽略。
-            let shown_at = std::time::Instant::now();
-            let grace: Rc<std::cell::Cell<Option<glib::SourceId>>> =
-                Rc::new(std::cell::Cell::new(None));
-
-            let cancel_grace = {
-                let grace = Rc::clone(&grace);
-                move || {
-                    if let Some(source) = grace.take() {
-                        source.remove();
-                    }
-                }
-            };
-
-            let arm_grace = {
-                let submenu = submenu.clone();
-                let grace = Rc::clone(&grace);
-                move || {
-                    if let Some(source) = grace.take() {
-                        source.remove();
-                    }
-                    let submenu = submenu.clone();
-                    let grace_for_timer = Rc::clone(&grace);
-                    let source = glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(220),
-                        move || {
-                            grace_for_timer.set(None);
-                            submenu.popdown();
-                        },
-                    );
-                    grace.set(Some(source));
-                }
-            };
-
-            {
-                let submenu = submenu.clone();
-                let cancel_grace = cancel_grace.clone();
-                let motion = gtk::EventControllerMotion::new();
-                motion.connect_enter(move |_, _, _| {
-                    cancel_grace();
-                    if shown_at.elapsed() < std::time::Duration::from_millis(250) {
-                        return;
-                    }
-                    if !submenu.is_visible() {
-                        submenu.popup();
-                    }
-                });
-                motion.connect_leave({
-                    let arm_grace = arm_grace.clone();
-                    move |_| arm_grace()
-                });
-                copy_row.add_controller(motion);
-            }
-            {
-                let cancel_grace = cancel_grace.clone();
-                let motion = gtk::EventControllerMotion::new();
-                motion.connect_enter(move |_, _, _| cancel_grace());
-                motion.connect_leave(move |_| arm_grace());
-                sub_list.add_controller(motion);
-            }
-        }
-        list.append(&copy_row);
-
-        popover.set_child(Some(&list));
-        {
+            let entries = vec![
+                delete,
+                crate::context_menu::Entry::submenu("复制为", copy_enabled, vec![copy]),
+            ];
+            // 点击点换算到网格坐标系（popover 挂在网格上）。
+            let point = anchor
+                .compute_point(&self.grid, &gtk::graphene::Point::new(x as f32, y as f32))
+                .unwrap_or_else(|| gtk::graphene::Point::new(0.0, 0.0));
+            let menu = crate::context_menu::ContextMenu::popup(
+                &self.grid,
+                f64::from(point.x()),
+                f64::from(point.y()),
+                entries,
+            );
             let page = Rc::clone(self);
-            popover.connect_closed(move |popover| {
-                popover.unparent();
-                page.row_menu.borrow_mut().take();
-                page.row_menu_items.borrow_mut().clear();
+            menu.popover().connect_closed({
+                let menu = Rc::downgrade(&menu);
+                move |popover| {
+                    popover.unparent();
+                    if let Some(menu) = menu.upgrade() {
+                        let _ = menu;
+                    }
+                    page.row_menu.borrow_mut().take();
+                }
             });
+            self.row_menu.replace(Some(menu));
         }
-        self.row_menu_items.borrow_mut().extend([
-            ("删除行".to_owned(), delete),
-            ("复制为 INSERT".to_owned(), copy),
-        ]);
+
         eprintln!(
             "[data] 行右键菜单：第 {} 行（已选 {} 行）",
             position + 1,
             self.selected_rows().len()
         );
-        self.row_menu.replace(Some(popover.clone()));
-        popover.popup();
     }
 
     /// QA：打开数据行右键菜单（`--qa-row-menu <行号>`）。选中该行后走用户同一条路径。
@@ -2381,20 +2225,13 @@ impl DataPage {
     /// 用按钮自己的 `emit_clicked()`：与用户真点走同一个信号，不是绕过界面直接调业务方法
     /// （那正是 v0.2.5 首版「点了没反应」被绕过去的原因）。
     pub fn qa_pick_row_menu(&self, label: &str) -> Result<(), String> {
-        let items = self.row_menu_items.borrow();
-        let button = items
-            .iter()
-            .find(|(text, _)| text == label)
-            .map(|(_, button)| button.clone())
-            .ok_or_else(|| {
-                format!(
-                    "菜单里没有「{label}」（现有：{:?}）",
-                    items.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>()
-                )
-            })?;
-        drop(items);
-        button.emit_clicked();
-        Ok(())
+        let menu = self.row_menu.borrow().clone();
+        let Some(menu) = menu else {
+            return Err("右键菜单没有打开：无法选择条目".to_owned());
+        };
+        eprintln!("[qa] 点右键菜单条目「{label}」");
+        menu.activate(label)
+            .map_err(|error| format!("{error}（现有：{:?}）", menu.labels()))
     }
 
     /// 导出当前页的值快照（按草稿的**当前值**；已提交删除的行不再导出）。

@@ -732,9 +732,6 @@ enum MenuItem {
     DumpTable,
 }
 
-/// 一个已接好线的菜单条目：文案 + 动作。
-type MenuEntry = (&'static str, Rc<dyn Fn()>);
-
 impl MenuItem {
     /// 菜单文案（中文；不另加 tooltip）。
     fn label(self) -> &'static str {
@@ -1015,7 +1012,7 @@ pub struct TreePanel {
     /// 防抖定时器（新输入到来时取消旧的）。
     debounce: RefCell<Option<glib::SourceId>>,
     /// 当前打开的右键菜单（同一时刻只有一个）。
-    context_menu: RefCell<Option<gtk::Popover>>,
+    context_menu: RefCell<Option<Rc<crate::context_menu::ContextMenu>>>,
     health: Cell<TreeHealth>,
     callbacks: TreeCallbacks,
     /// 最近一次展开一层的耗时（毫秒；QA 与 PR 里报告用）。
@@ -3319,47 +3316,27 @@ impl TreePanel {
         }
         if let Some(previous) = self.context_menu.borrow_mut().take() {
             previous.popdown();
-            previous.unparent();
+            previous.popover().unparent();
         }
-        let popover = gtk::Popover::new();
-        popover.set_parent(anchor);
-        popover.set_has_arrow(true);
-        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-            i32::try_from(x as i64).unwrap_or(0),
-            i32::try_from(y as i64).unwrap_or(0),
-            1,
-            1,
-        )));
-        let list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
-        list.set_margin_top(gap(Gap::Xs));
-        list.set_margin_bottom(gap(Gap::Xs));
-        list.set_margin_start(gap(Gap::Xs));
-        list.set_margin_end(gap(Gap::Xs));
-        let entries: Vec<MenuEntry> = Self::menu_items(row)
+        // 原生 `GtkPopoverMenu`：与系统右键菜单（SQL 编辑器那一套）同一外观与键盘操作。
+        // 条目动作挂在本模块现建的 action group 上（`context_menu` 模块里解释过为什么）。
+        let entries: Vec<crate::context_menu::Entry> = Self::menu_items(row)
             .into_iter()
-            .map(|item| (item.label(), self.menu_action(item, row)))
+            .map(|item| {
+                let label = item.label();
+                let action = self.menu_action(item, row);
+                crate::context_menu::Entry::action(label, true, action)
+            })
             .collect();
-        for (label, action) in entries {
-            let button = gtk::Button::with_label(label);
-            button.add_css_class("flat");
-            button.set_halign(gtk::Align::Fill);
-            let popover_for_button = popover.clone();
-            button.connect_clicked(move |_| {
-                popover_for_button.popdown();
-                action();
-            });
-            list.append(&button);
-        }
-        popover.set_child(Some(&list));
+        let menu = crate::context_menu::ContextMenu::popup(anchor, x, y, entries);
         {
             let panel = Rc::clone(self);
-            popover.connect_closed(move |popover| {
+            menu.popover().connect_closed(move |popover| {
                 popover.unparent();
                 panel.context_menu.borrow_mut().take();
             });
         }
-        self.context_menu.replace(Some(popover.clone()));
-        popover.popup();
+        self.context_menu.replace(Some(menu));
     }
 
     /// 重读某个分组的第一页（右键「刷新这一组」）。
@@ -4195,34 +4172,12 @@ impl TreePanel {
 
     /// 点当前右键菜单里该文案的条目（`--qa-startup-menu-pick` / `--qa-tree-menu-pick`）。
     pub fn qa_pick_context_menu(&self, label: &str) -> Result<(), String> {
-        let Some(popover) = self.context_menu.borrow().clone() else {
+        let Some(menu) = self.context_menu.borrow().clone() else {
             return Err("右键菜单没有打开：无法选择条目".to_owned());
         };
-        let Some(child) = popover.child() else {
-            return Err("右键菜单没有内容".to_owned());
-        };
-        let Some(list) = child.downcast_ref::<gtk::Box>() else {
-            return Err("右键菜单结构不是按钮列表".to_owned());
-        };
-        let mut cursor = list.first_child();
-        let mut labels = Vec::new();
-        while let Some(widget) = cursor {
-            cursor = widget.next_sibling();
-            let Some(button) = widget.downcast_ref::<gtk::Button>() else {
-                continue;
-            };
-            let current = button.label().unwrap_or_default().to_string();
-            if current == label {
-                eprintln!("[qa] 点右键菜单条目「{label}」");
-                button.emit_clicked();
-                return Ok(());
-            }
-            labels.push(current);
-        }
-        Err(format!(
-            "右键菜单里没有「{label}」（实际：{}）",
-            labels.join(" / ")
-        ))
+        eprintln!("[qa] 点右键菜单条目「{label}」");
+        menu.activate(label)
+            .map_err(|error| format!("{error}（现有：{:?}）", menu.labels()))
     }
 
     /// 点击树里的第一个「加载更多…」占位行（分页证据）。

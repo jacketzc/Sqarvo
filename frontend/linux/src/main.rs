@@ -11,6 +11,7 @@ mod browse;
 mod browse_view;
 mod column_info;
 mod config;
+mod context_menu;
 mod data_page;
 mod ddl;
 mod density;
