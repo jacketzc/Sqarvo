@@ -820,7 +820,14 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         fw_ui = m.font_weight_ui,
         fw_cell = m.font_weight_cell,
         fw_title = m.font_weight_title,
-        fw_heading = m.font_weight_heading,
+        // 高对比下不施加 heading 字重：HC 主题靠描边与色差表达层级，而原 Adwaita
+        // `.heading` 在 HC 主题里的实际字重不归本仓库所有（libadwaita 的 HC 样式表
+        // 不在本机可核对范围内）。显式回到正文字重，保证「HC 下标题不会比改动前更粗」。
+        fw_heading = if high_contrast {
+            m.font_weight_ui
+        } else {
+            m.font_weight_heading
+        },
         toolbar = m.toolbar_height,
         toolbar_padding_h = m.toolbar_padding_h,
         tree_row = m.row_height_tree,
@@ -876,6 +883,24 @@ mod tests {
                 m.font_weight_heading
             )),
             "缺少 .sqarvo-heading 规则"
+        );
+
+        // 高对比下不许加粗：HC 主题靠描边与色差表达层级，且原 Adwaita `.heading`
+        // 在 HC 里的字重不归本仓库所有。这里锁住「HC 样式表里 heading = 正文字重」。
+        let hc = stylesheet_for(false, true, Tier::Compact);
+        assert!(
+            hc.contains(&format!(
+                ".sqarvo-heading {{ font-weight: {}; }}",
+                m.font_weight_ui
+            )),
+            "高对比下 .sqarvo-heading 必须回到正文字重"
+        );
+        assert!(
+            !hc.contains(&format!(
+                ".sqarvo-heading {{ font-weight: {}; }}",
+                m.font_weight_heading
+            )),
+            "高对比下不许再出现 heading 的 700 字重"
         );
         assert!(css.contains(&format!(
             ".sqarvo-title {{ font-size: {}px; font-weight: {}; }}",
