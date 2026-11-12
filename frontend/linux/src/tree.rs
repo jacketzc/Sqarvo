@@ -728,6 +728,8 @@ enum MenuItem {
     RefreshCatalog,
     /// 打开表 / 视图。
     Open,
+    /// 转储表：建表语句 + 全部数据的 INSERT（只有表节点有）。
+    DumpTable,
 }
 
 /// 一个已接好线的菜单条目：文案 + 动作。
@@ -745,6 +747,7 @@ impl MenuItem {
             Self::RefreshGroup => "刷新这一组",
             Self::RefreshCatalog => "刷新库",
             Self::Open => "打开",
+            Self::DumpTable => "转储表…",
         }
     }
 }
@@ -3206,9 +3209,15 @@ impl TreePanel {
             Row::Group(_) => vec![MenuItem::RefreshGroup],
             Row::Object(node) => match node.kind {
                 ObjectKind::Catalog | ObjectKind::Schema => vec![MenuItem::RefreshCatalog],
+                ObjectKind::Table => {
+                    // 表：打开 + 转储表（v0.2.5）。转储读的是整表已提交的值，
+                    // 不依赖标签，也不需要先打开。
+                    vec![MenuItem::Open, MenuItem::DumpTable]
+                }
                 kind => {
-                    // 表 / 视图只保留「打开」：DDL 由信息面板的 [DDL] 页查看
-                    // （v0.2.3.2，ADR 0025 动作目录同步）。
+                    // 视图 / 其它对象只保留「打开」：DDL 由信息面板的 [DDL] 页查看
+                    // （v0.2.3.2，ADR 0025 动作目录同步）。视图没有「转储」：
+                    // 往视图 INSERT 的语义取决于数据库，不能假装成可重放的数据。
                     if is_browsable(kind) {
                         vec![MenuItem::Open]
                     } else {
@@ -3280,6 +3289,23 @@ impl TreePanel {
                 let open = Rc::clone(&self.callbacks.open);
                 let node = node.clone();
                 Rc::new(move || open(node.clone()))
+            }
+            (MenuItem::DumpTable, Row::Object(node)) => {
+                // 驱动 ID 从连接注册表按会话查（决定 SQL 的引号风格），
+                // 父控件用树自己的根：对话框由导出流程弹，属于这个窗口。
+                let parent = self.root.clone().upcast::<gtk::Widget>();
+                let reference = node.reference.clone();
+                let driver = self
+                    .registry
+                    .borrow()
+                    .as_ref()
+                    .and_then(|registry| registry.driver_for_session(&reference.session_id))
+                    .unwrap_or_default();
+                let name = reference.name.clone();
+                Rc::new(move || {
+                    eprintln!("[tree] 右键「转储表」：{name}");
+                    crate::export_ui::begin_object_dump(&parent, reference.clone(), &driver);
+                })
             }
             // `menu_items` 只给对应的行种类发条目（单测锁着）；这里是兜底。
             _ => Rc::new(|| {}),
@@ -4972,8 +4998,11 @@ mod tests {
             let node = view("db1", kind, "db1", "");
             assert_eq!(labels(&Row::Object(node)), ["刷新库"], "{kind:?}");
         }
+        // 表：打开 + 转储表（v0.2.5）；视图没有「转储」（往视图 INSERT 不可重放）。
         let table = view("orders", ObjectKind::Table, "db1", "");
-        assert_eq!(labels(&Row::Object(table)), ["打开"]);
+        assert_eq!(labels(&Row::Object(table)), ["打开", "转储表…"]);
+        let view_node = view("v_orders", ObjectKind::View, "db1", "");
+        assert_eq!(labels(&Row::Object(view_node)), ["打开"]);
         // 分组仍是「刷新这一组」。
         assert_eq!(
             labels(&group("k1", KindGroup::Tables, "db1")),

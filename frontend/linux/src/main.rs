@@ -153,6 +153,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-export", "/path/to/output.csv"),
         ("qa-export-cancel-after-rows", "rows"),
         ("qa-export-scope", "page|table"),
+        ("qa-export-format", "csv|insert|dump"),
         ("qa-expect-about", "substring"),
     ] {
         app.add_main_option(

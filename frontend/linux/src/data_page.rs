@@ -4,9 +4,9 @@
 //!
 //! ```text
 //! ┌ 表列表（MetadataService.ListNodes）┐ ┌ 数据页 ────────────────────────────┐
-//! │ demo_items  表                      │ │ 提交 · 撤销 · 删除 · 开始事务      │
+//! │ demo_items  表                      │ │ 提交 · 开始事务                    │
 //! │ demo_notes  表                      │ │ 只读/断连横幅                      │
-//! └─────────────────────────────────────┘ │ ● ──── 漏斗 眼睛 导出        │
+//! └─────────────────────────────────────┘ │ ● ──── 漏斗 眼睛 导出▾       │
 //!                                          │ GtkColumnView（虚拟化，cursor 翻页）│
 //!                                          │ 逐行错误列表                       │
 //!                                          └────────────────────────────────────┘
@@ -788,6 +788,13 @@ pub struct DataPage {
     /// 末段「最近一次操作：…」。这些句子回答的是「刚才那一下做了什么」，用户要复核
     /// 时悬停圆点即可；动作行上只留「正在…」这类有时效的消息与 warning / error。
     last_action_note: RefCell<String>,
+    /// 数据行右键菜单的两个动作（`删除行` / `复制为 INSERT`）。
+    ///
+    /// 菜单用 `PopoverMenu` + `gio::Menu`，条目靠 action 名绑定；可用性在每次右键时
+    /// 按 [`Self::delete_available`] / 选中行数置位（菜单里的禁用项是灰的，不是假入口）。
+    row_actions: RefCell<Option<(gio::SimpleAction, gio::SimpleAction)>>,
+    /// 当前打开着的行右键菜单（再次右键 / 关闭标签时先 popdown）。
+    row_menu: RefCell<Option<gtk::PopoverMenu>>,
     callbacks: DataCallbacks,
 }
 
@@ -796,10 +803,11 @@ struct DataButtons {
     commit_txn: gtk::Button,
     rollback: gtk::Button,
     commit_changes: gtk::Button,
-    discard: gtk::Button,
-    delete_row: gtk::Button,
-    /// 导出当前页（#120）。
-    export: gtk::Button,
+    /// 导出菜单（v0.2.5：CSV / INSERT 语句 / 转储表三项）。
+    ///
+    /// 「撤销」「删除」两个文字按钮已从这一行删掉：两个动作仍在状态栏行操作组
+    /// （`↶` / `−`），删除另有数据行右键菜单「删除行」，这一行只留提交 + 事务。
+    export: gtk::MenuButton,
 }
 
 impl DataPage {
@@ -844,25 +852,26 @@ impl DataPage {
         fs_button.set_tooltip_text(Some("筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"));
 
         // 导出（v0.2.3.3 → 「下载成文件」）：`document-send-symbolic` 是纸飞机，
-        // 在这个位置会被读成「发送 / 分享」；导出写的是本地 CSV 文件，用
+        // 在这个位置会被读成「发送 / 分享」；导出写的是本地文件，用
         // `document-save-symbolic`（向下箭头落到一条基线）语义更直接。
-        let export = icon_button("document-save-symbolic", "导出为 CSV");
+        //
+        // v0.2.5：这一格变成**带下拉箭头的菜单按钮**（一个入口，三种出口）：
+        // 导出 CSV / 导出为 INSERT 语句 / 转储表。单击图标先展开菜单，范围
+        // （当前页 / 整张表）仍由紧接着的对话框显式选择。
+        let export = gtk::MenuButton::new();
+        export.set_icon_name("document-save-symbolic");
+        export.add_css_class("flat");
+        export.set_always_show_arrow(true);
         export.set_sensitive(false);
-        export.set_tooltip_text(Some("导出为 CSV（Ctrl+Shift+E）：可选当前页或整张表"));
+        export.set_valign(gtk::Align::Center);
+        export.set_tooltip_text(Some(
+            "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表（Ctrl+Shift+E 直接导出 CSV）",
+        ));
 
         let commit_changes = gtk::Button::with_label("提交");
         commit_changes.add_css_class("suggested-action");
         commit_changes.set_sensitive(false);
         commit_changes.set_tooltip_text(Some("提交所有脏行的变更（主键定位 + 列变更）"));
-
-        let discard = gtk::Button::with_label("撤销");
-        discard.set_sensitive(false);
-        discard.set_tooltip_text(Some("丢弃全部未提交的编辑与删除标记"));
-
-        let delete_row = gtk::Button::with_label("删除");
-        delete_row.add_css_class("destructive-action");
-        delete_row.set_sensitive(false);
-        delete_row.set_tooltip_text(Some("把选中行标记为待删除（提交前仍可撤销）"));
 
         // 「新增行」（#88）不在这一行：入口是状态栏行操作组的 `+`（`RowOp::Add`）与
         // `win.add-row` 动作（只保留快捷键，菜单里不再列）。两者都落到 `DataPage::begin_insert`。
@@ -955,8 +964,6 @@ impl DataPage {
         // 容器本身也居中，行高由按钮决定时不会出现「字比图标低一行」。
         controls.set_valign(gtk::Align::Center);
         controls.append(&commit_changes);
-        controls.append(&discard);
-        controls.append(&delete_row);
         // 事务动作紧跟行变更动作：「开始事务」常驻；开事务后原位换成
         // 「提交事务 / 回滚事务」（互斥由 `sync_badge` 统一处理）。
         controls.append(&begin);
@@ -1322,8 +1329,6 @@ impl DataPage {
                 commit_txn,
                 rollback,
                 commit_changes,
-                discard,
-                delete_row,
                 export,
             },
 
@@ -1396,6 +1401,8 @@ impl DataPage {
             last_refresh: Cell::new(None),
             last_load_note: RefCell::new(String::new()),
             last_action_note: RefCell::new(String::new()),
+            row_actions: RefCell::new(None),
+            row_menu: RefCell::new(None),
             callbacks,
         });
 
@@ -1429,30 +1436,73 @@ impl DataPage {
                 .connect_clicked(move |_| page.on_commit_clicked());
         }
         {
+            // 导出菜单（v0.2.5）：一个入口三种出口。每一项都走 `export_ui::begin`
+            // 这同一条路径——范围选择 / 确认 / 进度 / 取消都与菜单项、QA 共用。
             let page = Rc::clone(&page);
-            page.buttons
-                .discard
-                .clone()
-                .connect_clicked(move |_| page.discard_changes());
+            let popover = gtk::Popover::new();
+            let list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+            list.set_margin_top(gap(Gap::Xs));
+            list.set_margin_bottom(gap(Gap::Xs));
+            list.set_margin_start(gap(Gap::Xs));
+            list.set_margin_end(gap(Gap::Xs));
+            for (label, tooltip, kind) in [
+                (
+                    "导出 CSV…",
+                    "当前页或整张表；空字段 = NULL，文本按 RFC 4180 转义",
+                    crate::export_ui::ExportKind::Csv,
+                ),
+                (
+                    "导出为 INSERT 语句…",
+                    "当前页或整张表；每行一条 INSERT INTO … VALUES (…);",
+                    crate::export_ui::ExportKind::Insert,
+                ),
+                (
+                    "转储表…",
+                    "建表语句 + 全部数据的 INSERT（整张表，不再问范围）",
+                    crate::export_ui::ExportKind::Dump,
+                ),
+            ] {
+                let button = gtk::Button::with_label(label);
+                button.add_css_class("flat");
+                button.set_halign(gtk::Align::Fill);
+                button.set_tooltip_text(Some(tooltip));
+                let page_for_item = Rc::clone(&page);
+                let popover_for_item = popover.clone();
+                button.connect_clicked(move |_| {
+                    eprintln!("[data] 导出菜单：{label}");
+                    popover_for_item.popdown();
+                    crate::export_ui::begin(
+                        page_for_item.root.upcast_ref::<gtk::Widget>(),
+                        crate::export_ui::ExportSource::Table(Rc::clone(&page_for_item)),
+                        kind,
+                    );
+                });
+                list.append(&button);
+            }
+            popover.set_child(Some(&list));
+            page.buttons.export.set_popover(Some(&popover));
         }
         {
+            // 数据行右键菜单的动作：与状态栏 / 工具条走同一批方法（不是另一套语义）。
             let page = Rc::clone(&page);
-            page.buttons
-                .delete_row
-                .clone()
-                .connect_clicked(move |_| page.delete_selected_row());
-        }
-        {
-            // 新增行的工具条入口已删（v0.2.4）：状态栏 `+` / 菜单 / 快捷键都走
-            // `perform_row_op(RowOp::Add)` → `begin_insert`。
-            // EX：导出当前页已加载行（#120）。与菜单 / Ctrl+Shift+E 走同一个入口。
-            let page = Rc::clone(&page);
-            page.buttons.export.clone().connect_clicked(move |_| {
-                crate::export_ui::begin(
-                    page.root.upcast_ref::<gtk::Widget>(),
-                    crate::export_ui::ExportSource::Table(Rc::clone(&page)),
-                );
-            });
+            let group = gio::SimpleActionGroup::new();
+            let delete = gio::SimpleAction::new("delete-row", None);
+            {
+                let page = Rc::clone(&page);
+                delete.connect_activate(move |_, _| page.delete_selected_row());
+            }
+            group.add_action(&delete);
+            let copy = gio::SimpleAction::new("copy-as-insert", None);
+            {
+                let page = Rc::clone(&page);
+                copy.connect_activate(move |_, _| match page.copy_selected_as_insert() {
+                    Ok(rows) => page.note_action(&format!("已复制 {rows} 行为 INSERT 语句")),
+                    Err(reason) => page.set_status(&reason, "warning"),
+                });
+            }
+            group.add_action(&copy);
+            page.root.insert_action_group("row", Some(&group));
+            page.row_actions.replace(Some((delete, copy)));
         }
         {
             let page = Rc::clone(&page);
@@ -1667,6 +1717,124 @@ impl DataPage {
             .map(|table| table.reference.clone())
     }
 
+    /// 当前表所在连接的驱动 ID（SQL 方言按它选：MariaDB 用反引号、SQLite 用双引号）。
+    #[must_use]
+    pub fn driver_id(&self) -> Option<String> {
+        self.driver_id.borrow().clone()
+    }
+
+    /// 选中行的原始值（按草稿的**当前值**，含未提交编辑；已提交删除的行跳过）。
+    ///
+    /// 「复制为 INSERT」用它：复制的总是用户眼前看到的值，而不是数据库里的旧值。
+    #[must_use]
+    pub fn selected_values(&self) -> Vec<Vec<ColumnValue>> {
+        let selected = self.selected_rows();
+        let draft = self.draft.borrow();
+        let Some(draft) = draft.as_ref() else {
+            return Vec::new();
+        };
+        selected
+            .into_iter()
+            .filter_map(|index| draft.rows().get(index))
+            .filter(|row| !row.removed)
+            .map(|row| row.current.clone())
+            .collect()
+    }
+
+    /// 当前表在 SQL 里的目标表描述（表名 + 方言）。
+    fn sql_table(&self) -> Result<crate::export::SqlTable, String> {
+        let Some(object) = self.table_reference() else {
+            return Err("还没有打开表：先打开一张表再复制".to_owned());
+        };
+        Ok(crate::export::SqlTable {
+            name: object.name,
+            dialect: crate::export::SqlDialect::from_driver(
+                self.driver_id().as_deref().unwrap_or(""),
+            ),
+            comment: None,
+            prelude: None,
+        })
+    }
+
+    /// 把选中行复制成**一条多值 INSERT**（`INSERT INTO … VALUES (…), (…);`）。
+    ///
+    /// 与导出同一份字面量口径（NULL / 数字 / 带引号的文本 / BLOB 写 NULL），
+    /// 差别只是多行合成一条语句——粘进编辑器就能执行。
+    pub fn copy_selected_as_insert(&self) -> Result<usize, String> {
+        let rows = self.selected_values();
+        if rows.is_empty() {
+            return Err("没有选中行：先选中要复制的行".to_owned());
+        }
+        let table = self.sql_table()?;
+        let text = crate::export::multi_row_insert(&table, &self.export_columns(), &rows);
+        let display = gtk::gdk::Display::default()
+            .ok_or_else(|| "没有可用的显示服务，无法写入剪贴板".to_owned())?;
+        display.clipboard().set_text(&text);
+        eprintln!(
+            "[data] 复制为 INSERT：{} 行，{} 字节（目标表 {}）",
+            rows.len(),
+            text.len(),
+            table.name
+        );
+        Ok(rows.len())
+    }
+
+    /// 数据行右键菜单：删除行 / 复制为 ▸ 复制为 INSERT。
+    ///
+    /// 右键落在未选中的行上时先把它选中（与常见客户端一致）；已经多选时保留多选，
+    /// 菜单里的动作因此永远作用于**当前选中集**。
+    fn show_row_menu(self: &Rc<Self>, position: usize, anchor: &gtk::Widget, x: f64, y: f64) {
+        if self.draft.borrow().is_none() {
+            return;
+        }
+        if let Ok(position) = u32::try_from(position)
+            && !self.selection.is_selected(position)
+        {
+            self.select_only(position as usize);
+        }
+        if let Some(previous) = self.row_menu.borrow_mut().take() {
+            previous.popdown();
+            previous.unparent();
+        }
+        if let Some((delete, copy)) = self.row_actions.borrow().as_ref() {
+            delete.set_enabled(self.delete_available());
+            copy.set_enabled(!self.selected_rows().is_empty());
+        }
+        let menu = gio::Menu::new();
+        menu.append(Some("删除行"), Some("row.delete-row"));
+        let copy_menu = gio::Menu::new();
+        copy_menu.append(Some("复制为 INSERT"), Some("row.copy-as-insert"));
+        // 二级菜单：悬停「复制为」由 GTK 自己展开（与原生菜单同一套行为）。
+        menu.append_submenu(Some("复制为"), &copy_menu);
+
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popover.set_has_arrow(true);
+        popover.set_parent(&self.grid);
+        let point = anchor
+            .compute_point(&self.grid, &gtk::graphene::Point::new(x as f32, y as f32))
+            .unwrap_or_else(|| gtk::graphene::Point::new(0.0, 0.0));
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+            point.x() as i32,
+            point.y() as i32,
+            1,
+            1,
+        )));
+        {
+            let page = Rc::clone(self);
+            popover.connect_closed(move |popover| {
+                popover.unparent();
+                page.row_menu.borrow_mut().take();
+            });
+        }
+        eprintln!(
+            "[data] 行右键菜单：第 {} 行（已选 {} 行）",
+            position + 1,
+            self.selected_rows().len()
+        );
+        self.row_menu.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
     /// 导出当前页的值快照（按草稿的**当前值**；已提交删除的行不再导出）。
     ///
     /// 一次最多一页（`TABLE_PAGE_SIZE` 行），导出期间刷新页面不会写出半新半旧的数据。
@@ -1733,11 +1901,15 @@ impl DataPage {
         })
     }
 
-    /// 导出当前页（EX 按钮 /「表」菜单 / Ctrl+Shift+E 同一个入口）。
+    /// 导出 CSV（「表」菜单 / `Ctrl+Shift+E` 同一个入口；工具条菜单里还有 INSERT 与转储）。
+    ///
+    /// 快捷键保持「直接导出 CSV」：它是一条不需要先选格式的旧路径，用户已有的肌肉记忆
+    /// 不该在 v0.2.5 变成「弹一个菜单」。
     pub fn export(self: &Rc<Self>) {
         crate::export_ui::begin(
             self.root.upcast_ref::<gtk::Widget>(),
             crate::export_ui::ExportSource::Table(Rc::clone(self)),
+            crate::export_ui::ExportKind::Csv,
         );
     }
 
@@ -4326,16 +4498,16 @@ impl DataPage {
 
     /// 行操作可用性：页内按钮直接读自身 `sensitive`，不重复一遍判定条件。
     ///
-    /// 两个例外：①「新增行」的工具条按钮已删（入口在状态栏 `+` / `win.add-row`），可用性
-    /// 走显式谓词 [`Self::add_row_available`]；②「重新读取」的入口只在状态栏（工具条那个
-    /// 纯重复的图标已删除），所以可用性在这里按状态判定（[`Self::refresh_available`]）。
+    /// 例外（页内没有按钮的动作一律走显式谓词）：①「新增行」；②「重新读取」；
+    /// ③「撤销」「删除」——v0.2.5 起它们的工具条按钮已删，入口在状态栏行操作组与
+    /// 数据行右键菜单（[`Self::discard_available`] / [`Self::delete_available`]）。
     #[must_use]
     pub fn row_ops_state(&self) -> RowOpsState {
         let state = RowOpsState {
             add: self.add_row_available(),
-            delete: self.buttons.delete_row.is_sensitive(),
+            delete: self.delete_available(),
             apply: self.buttons.commit_changes.is_sensitive(),
-            discard: self.buttons.discard.is_sensitive(),
+            discard: self.discard_available(),
             refresh: self.refresh_available(),
             cancel: self
                 .submit
@@ -4388,6 +4560,35 @@ impl DataPage {
                 DataState::Ready | DataState::Empty | DataState::Error
             );
         editing_enabled && self.insert.borrow().is_none() && !self.busy.get()
+    }
+
+    /// 「放弃更改（撤销）」是否可用（状态栏 `↶` 的唯一可用性来源）。
+    ///
+    /// v0.2.5 起工具条上的「撤销」按钮已删，判定不能再读按钮状态。
+    #[must_use]
+    pub fn discard_available(&self) -> bool {
+        let editing_enabled = !self.is_read_only()
+            && matches!(
+                self.state.get(),
+                DataState::Ready | DataState::Empty | DataState::Error
+            );
+        let dirty = self
+            .draft
+            .borrow()
+            .as_ref()
+            .is_some_and(|draft| draft.dirty_rows() > 0);
+        editing_enabled && (dirty || self.insert.borrow().is_some()) && !self.busy.get()
+    }
+
+    /// 「删除选中行」是否可用（状态栏 `−` 与数据行右键菜单「删除行」共用）。
+    #[must_use]
+    pub fn delete_available(&self) -> bool {
+        let editing_enabled = !self.is_read_only()
+            && matches!(
+                self.state.get(),
+                DataState::Ready | DataState::Empty | DataState::Error
+            );
+        editing_enabled && !self.selected_rows().is_empty() && !self.busy.get()
     }
 
     /// 为什么行操作一个都不能点（状态栏 tooltip 用，按当前状态给具体原因）。
@@ -5655,17 +5856,63 @@ impl DataPage {
     }
     fn cell_factory(self: &Rc<Self>, column_index: usize) -> gtk::SignalListItemFactory {
         let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, list_item| {
-            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            let label = gtk::Label::new(None);
-            label.set_xalign(0.0);
-            label.set_single_line_mode(true);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.add_css_class("sqarvo-cell");
-            list_item.set_child(Some(&label));
-        });
+        // 手势在 **setup** 里挂一次，位置在按下时读 `list_item.position()`：
+        // 挂到 bind 里会随每次重绑累积控制器，而且闭包捕获的是**旧的**行号
+        // （滚动后右键会打到别的行）。
+        {
+            let page = Rc::clone(self);
+            factory.connect_setup(move |_, list_item| {
+                let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                    return;
+                };
+                let label = gtk::Label::new(None);
+                label.set_xalign(0.0);
+                label.set_single_line_mode(true);
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.add_css_class("sqarvo-cell");
+                list_item.set_child(Some(&label));
+
+                // 双击 → 进入单元格编辑（单击只做「选中一行」）。
+                {
+                    let page = Rc::clone(&page);
+                    let item = list_item.clone();
+                    let click_target = label.clone();
+                    let gesture = gtk::GestureClick::new();
+                    gesture.set_button(1);
+                    gesture.connect_pressed(move |gesture, presses, _, _| {
+                        if presses < 2 {
+                            return;
+                        }
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        page.open_editor(
+                            usize::try_from(item.position()).unwrap_or(usize::MAX),
+                            column_index,
+                            click_target.upcast_ref(),
+                        );
+                    });
+                    label.add_controller(gesture);
+                }
+
+                // 右键 → 数据行菜单（删除行 / 复制为 INSERT）。
+                {
+                    let page = Rc::clone(&page);
+                    let item = list_item.clone();
+                    let click_target = label.clone();
+                    let gesture = gtk::GestureClick::new();
+                    gesture.set_button(3);
+                    gesture.connect_pressed(move |gesture, _, x, y| {
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        page.show_row_menu(
+                            usize::try_from(item.position()).unwrap_or(usize::MAX),
+                            click_target.upcast_ref(),
+                            x,
+                            y,
+                        );
+                    });
+                    label.add_controller(gesture);
+                }
+            });
+        }
         factory.connect_bind(move |_, list_item| {
             let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
                 return;
@@ -5729,39 +5976,6 @@ impl DataPage {
             if !tooltip.is_empty() {
                 label.set_tooltip_text(Some(&tooltip));
             }
-        });
-        let weak_for_gesture = Rc::downgrade(self);
-        factory.connect_bind(move |_, list_item| {
-            let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            let Some(label) = list_item
-                .child()
-                .and_then(|child| child.downcast::<gtk::Label>().ok())
-            else {
-                return;
-            };
-            let Some(page) = weak_for_gesture.upgrade() else {
-                return;
-            };
-            let position = list_item.position();
-            let gesture = gtk::GestureClick::new();
-            gesture.set_button(1);
-            let page = Rc::clone(&page);
-            let label_for_click = label.clone();
-            gesture.connect_pressed(move |gesture, presses, _, _| {
-                if presses < 2 {
-                    // 单击只做「选中一行」，双击才进入编辑态。
-                    return;
-                }
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-                page.open_editor(
-                    usize::try_from(position).unwrap_or(usize::MAX),
-                    column_index,
-                    label_for_click.upcast_ref(),
-                );
-            });
-            label.add_controller(gesture);
         });
         factory
     }
@@ -6048,29 +6262,14 @@ impl DataPage {
                 .commit_changes
                 .remove_css_class("suggested-action");
         }
-        set_action(
-            &self.buttons.discard,
-            "",
-            editing_enabled && (dirty > 0 || has_insert) && !busy,
-        );
-        let has_selection = !self.selected_rows().is_empty();
-        set_action(
-            &self.buttons.delete_row,
-            "destructive-action",
-            editing_enabled && has_selection && !busy,
-        );
-        self.buttons
-            .delete_row
-            .set_tooltip_text(Some(if has_insert {
-                "新行尚未提交：先提交或「放弃更改」"
-            } else {
-                "把选中行标记为待删除（提交前仍可撤销）"
-            }));
-        // 导出当前页（#120）：有已加载行即可导出；提交在途时避免写出半套状态。
+        // v0.2.5：「撤销」「删除」两个按钮已从这一行删掉（动作仍在状态栏行操作组，
+        // 删除另有数据行右键菜单）。它们的可用性由 [`Self::discard_available`] /
+        // [`Self::delete_available`] 这两个谓词表达，状态栏与菜单读同一份判定。
+        // 导出菜单：有已加载行即可用；提交在途时避免写出半套状态。
         let export_rows = self.export_row_count();
         self.buttons.export.set_sensitive(export_rows > 0 && !busy);
         self.buttons.export.set_tooltip_text(Some(&format!(
-            "导出当前页已加载的 {export_rows} 行为 CSV（只含本页；JSON/SQL 格式在 v0.2.5；Ctrl+Shift+E）"
+            "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 {export_rows} 行（Ctrl+Shift+E 直接导出 CSV）"
         )));
         self.buttons
             .commit_changes
@@ -6081,9 +6280,7 @@ impl DataPage {
             }));
         // 只读原因一旦成立，编辑类按钮一律禁用（不是靠置灰暗示，状态行同时给出原因）。
         if let Some(reason) = self.read_only_reason() {
-            self.buttons.delete_row.set_sensitive(false);
             self.buttons.commit_changes.set_sensitive(false);
-            self.buttons.discard.set_sensitive(false);
             self.status.set_tooltip_text(Some(&reason));
         } else {
             self.status.set_tooltip_text(None);

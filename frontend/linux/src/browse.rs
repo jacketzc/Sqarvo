@@ -871,6 +871,16 @@ impl ConnectionRegistry {
             .map(|entry| entry.key.clone())
     }
 
+    /// 某条会话所在连接的驱动 ID（SQL 引号风格按它选）。
+    #[must_use]
+    pub fn driver_for_session(&self, session_id: &str) -> Option<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.session_id == session_id)
+            .map(|entry| entry.saved.driver.clone())
+    }
+
     /// 某条连接保存的参数（打开标签时 `Connect` 用；只含凭据引用，不含密码）。
     #[must_use]
     pub fn params_for_key(&self, key: &str) -> Option<ConnectionParams> {

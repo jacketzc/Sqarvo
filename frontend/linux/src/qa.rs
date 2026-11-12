@@ -1089,6 +1089,34 @@ struct Args {
     export_raw_values: bool,
     /// `--qa-export-scope <page|table>`：导出范围（默认当前页，与 #120 语义一致）。
     export_scope: ExportScopeArg,
+    /// `--qa-export-format <csv|insert|dump>`：导出格式（默认 `csv`）。
+    export_format: ExportFormatArg,
+}
+
+/// `--qa-export-format` 的取值：CSV / 一行一条 INSERT / 转储表。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportFormatArg {
+    /// CSV（默认，行为与 #120 完全一致）。
+    #[default]
+    Csv,
+    /// 一行一条 `INSERT INTO … VALUES (…);`。
+    Insert,
+    /// 建表语句 + 全部数据（固定整表）。
+    Dump,
+}
+
+impl ExportFormatArg {
+    /// 解析 `csv` / `insert` / `dump`（其它值报错，不静默退回默认）。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "csv" => Ok(Self::Csv),
+            "insert" => Ok(Self::Insert),
+            "dump" => Ok(Self::Dump),
+            other => Err(format!(
+                "--qa-export-format 只能是 csv、insert 或 dump（收到 {other:?}）"
+            )),
+        }
+    }
 }
 
 /// `--qa-export-scope` 的取值：整表导出（#120 增补）与默认的当前页。
@@ -1355,6 +1383,12 @@ pub fn export_raw_values() -> bool {
 
 /// `--qa-export-scope`：导出范围（默认当前页；`table` 走整表分页导出）。
 #[must_use]
+/// `--qa-export-format`：导出格式（默认 CSV）。
+pub fn export_format() -> ExportFormatArg {
+    ARGS.get()
+        .map_or(ExportFormatArg::Csv, |args| args.export_format)
+}
+
 pub fn export_scope() -> ExportScopeArg {
     ARGS.get()
         .map_or(ExportScopeArg::Page, |args| args.export_scope)
@@ -2445,6 +2479,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--qa-export-raw-values" => {
                 parsed.export_raw_values = true;
                 index += 1;
+            }
+            "--qa-export-format" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-export-format 需要 csv、insert 或 dump".to_owned())?;
+                parsed.export_format = ExportFormatArg::parse(value)?;
+                index += 2;
             }
             "--qa-export-scope" => {
                 let value = args

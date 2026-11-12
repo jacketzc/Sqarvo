@@ -210,15 +210,47 @@ impl SqlPage {
             button.connect_clicked(move |_| page.request_cancel());
         }
         {
-            // EX（#120）：导出已加载的查询结果；与菜单 / Ctrl+Shift+E 同一个入口。
+            // 导出菜单（v0.2.5）：与表工具条同款的图标 + 下拉箭头，两项：
+            // 导出 CSV / 导出为 INSERT 语句。范围固定「已加载的结果行」。
             let button = page.results.ex_button().clone();
             let page = Rc::clone(&page);
-            button.connect_clicked(move |_| {
-                crate::export_ui::begin(
-                    page.root.upcast_ref::<gtk::Widget>(),
-                    crate::export_ui::ExportSource::Query(Rc::clone(&page.results)),
-                );
-            });
+            let popover = gtk::Popover::new();
+            let list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
+            list.set_margin_top(gap(Gap::Xs));
+            list.set_margin_bottom(gap(Gap::Xs));
+            list.set_margin_start(gap(Gap::Xs));
+            list.set_margin_end(gap(Gap::Xs));
+            for (label, tooltip, kind) in [
+                (
+                    "导出 CSV…",
+                    "已加载的结果行；空字段 = NULL，文本按 RFC 4180 转义",
+                    crate::export_ui::ExportKind::Csv,
+                ),
+                (
+                    "导出为 INSERT 语句…",
+                    "已加载的结果行；每行一条 INSERT INTO … VALUES (…);",
+                    crate::export_ui::ExportKind::Insert,
+                ),
+            ] {
+                let item = gtk::Button::with_label(label);
+                item.add_css_class("flat");
+                item.set_halign(gtk::Align::Fill);
+                item.set_tooltip_text(Some(tooltip));
+                let page = Rc::clone(&page);
+                let popover_for_item = popover.clone();
+                item.connect_clicked(move |_| {
+                    eprintln!("[query] 导出菜单：{label}");
+                    popover_for_item.popdown();
+                    crate::export_ui::begin(
+                        page.root.upcast_ref::<gtk::Widget>(),
+                        crate::export_ui::ExportSource::Query(Rc::clone(&page.results)),
+                        kind,
+                    );
+                });
+                list.append(&item);
+            }
+            popover.set_child(Some(&list));
+            button.set_popover(Some(&popover));
         }
         {
             let banner = page.banner.clone();
@@ -260,6 +292,11 @@ impl SqlPage {
         self.session_label.set_text(text);
     }
 
+    /// 记录本标签连接的驱动（SQL 导出的引号风格按它选）。
+    pub fn set_driver(&self, driver: &str) {
+        self.results.set_driver(Some(driver));
+    }
+
     /// 把 SQL 放进编辑器缓冲区（与用户输入同一个控件；QA 也走这里）。
     pub fn set_sql(&self, sql: &str) {
         self.editor.buffer().set_text(sql);
@@ -295,6 +332,8 @@ impl SqlPage {
         self.cancel_sent.set(false);
         self.cancel_clicked_at.set(None);
         self.banner.set_revealed(false);
+        // 「导出为 INSERT 语句」要用这条语句推断目标表名（结果集本身不带来源表）。
+        self.results.set_statement(&sql);
         self.results.reset();
         self.results
             .set_state(RunState::Loading, 0, false, Some("正在执行…"));
@@ -379,11 +418,12 @@ impl SqlPage {
         }
     }
 
-    /// 导出已加载的查询结果（EX 按钮 /「表」菜单 / Ctrl+Shift+E 同一个入口）。
+    /// 导出 CSV（「表」菜单 / `Ctrl+Shift+E` 同一个入口；结果区菜单里还有 INSERT）。
     pub fn export(self: &Rc<Self>) {
         crate::export_ui::begin(
             self.root.upcast_ref::<gtk::Widget>(),
             crate::export_ui::ExportSource::Query(Rc::clone(&self.results)),
+            crate::export_ui::ExportKind::Csv,
         );
     }
 

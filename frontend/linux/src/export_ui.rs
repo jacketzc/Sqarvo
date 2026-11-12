@@ -1,16 +1,21 @@
-//! 导出交互（#120）：范围选择 → 文件选择 → 口径确认 → 覆盖确认 → 进度/取消 → 完成提示。
+//! 导出交互（#120 / v0.2.5 SQL 导出）：种类 → 范围 → 文件选择 → 口径确认 →
+//! 覆盖确认 → 进度/取消 → 完成提示。
 //!
-//! 真正写文件的是 [`crate::export::CsvSink`]（临时文件 → 成功后改名）。本模块只做：
+//! 真正写文件的是 [`export::ExportSink`]（临时文件 → 成功后改名）。本模块只做：
 //!
-//! - **范围如实陈述，由用户显式选择**：表数据的 EX 先问「当前页 / 整张表」——默认
+//! - **三种出口（[`ExportKind`]）**：CSV、一行一条 INSERT 的 SQL 脚本、转储表
+//!   （建表语句 + 全部数据的 INSERT）。表标签三种都给；查询结果只给前两种，范围
+//!   固定「已加载的行」（结果集没有「整张表」语义）。
+//! - **范围如实陈述，由用户显式选择**：表数据的导出先问「当前页 / 整张表」——默认
 //!   当前页，整张表是显式动作；查询结果写「已加载的 N 行」，客户端上限 / 仍在加载 /
-//!   取消时明说「文件不是全部结果」。
+//!   取消时明说「文件不是全部结果」。转储表天然是整表，不再问范围。
 //! - **逐行写、可取消**：
 //!   - 当前页 / 查询结果：每条 `glib` 定时回调最多写 [`ROWS_PER_TICK`] 行，取消标志
-//!     在行与行之间检查；取消后丢弃 `CsvSink`，临时文件由它的 `Drop` 删除。
+//!     在行与行之间检查；取消后丢弃 sink，临时文件由它的 `Drop` 删除。
 //!   - 整张表：交给 worker 侧的后台线程 offset 逐页读取、流式写入同一个文件（见
 //!     [`crate::backend::worker::Command::ExportTable`]）；界面只轮询进度与结果，
 //!     不碰 RPC、不碰磁盘。取消是置位一个 `Arc<AtomicBool>`（幂等：重复取消不报错）。
+//!     转储表的建表语句也在这个线程里读（DDL 与数据同一个会话）。
 //! - **默认不覆盖**：目标已存在时必须再经过一次「覆盖已有文件？」确认。
 //! - 成功后给出**可选中的完整路径**与「复制路径」按钮。
 //!
@@ -33,7 +38,9 @@ use gtk::glib;
 
 use crate::backend::worker::Command;
 use crate::data_page::DataPage;
-use crate::export::{self, CsvSink, ExportProgress, ExportRow, Field, FormatOptions, TargetState};
+use crate::export::{
+    self, ExportProgress, ExportRow, ExportSink, Field, FormatOptions, TargetState,
+};
 use crate::layout::{Gap, gap};
 use crate::proto::common::v1::ColumnValue;
 use crate::results::{ResultsView, RunState};
@@ -51,6 +58,54 @@ pub enum ExportSource {
     Query(Rc<ResultsView>),
     /// 表数据标签：建立计划时取当前页的值快照。
     Table(Rc<DataPage>),
+    /// 对象树里的表：**没有标签**，只有「转储表」（整表 + 建表语句）。
+    ///
+    /// 它不走标签会话：行由 worker 用对象引用里的浏览会话按 offset 逐页读，
+    /// 列名与建表语句也在后台线程里读（同一会话，不会跨连接错位）。
+    Object {
+        /// 目标表（含浏览会话 ID）。
+        reference: Box<crate::proto::services::v1::ObjectRef>,
+        /// 驱动 ID（SQL 引号风格）。
+        driver: String,
+    },
+}
+
+/// 导出种类（工具条菜单里的项）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    /// CSV（RFC 4180）。
+    Csv,
+    /// 一行一条 `INSERT INTO … VALUES (…);` 的 SQL 脚本。
+    Insert,
+    /// 转储表：建表语句 + 全部数据的 INSERT（固定整表，不再问范围）。
+    Dump,
+}
+
+impl ExportKind {
+    /// 真正写出的格式（转储表也是 INSERT 脚本，只是多了建表语句）。
+    #[must_use]
+    fn format(self) -> export::Format {
+        match self {
+            Self::Csv => export::Format::Csv,
+            Self::Insert | Self::Dump => export::Format::InsertSql,
+        }
+    }
+
+    /// 界面文案里的写法（对话框标题 / 完成提示）。
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Csv => "CSV",
+            Self::Insert => "INSERT 语句",
+            Self::Dump => "SQL 脚本",
+        }
+    }
+
+    /// 是否在文件头写建表语句。
+    #[must_use]
+    fn with_ddl(self) -> bool {
+        self == Self::Dump
+    }
 }
 
 /// 导出的范围说明（界面文案的唯一来源）。
@@ -246,6 +301,8 @@ impl ExportSource {
                     table_rows: Some(rows),
                 }
             }
+            // 对象树里的表没有「当前页」这个概念：计划就是整表。
+            Self::Object { .. } => self.plan_whole_table(),
         }
     }
 
@@ -254,12 +311,10 @@ impl ExportSource {
         let width = plan.titles.len();
         let empty = || ExportRow {
             fields: vec![Field::Null; width],
+            values: vec![ColumnValue::default(); width],
             truncated_columns: Vec::new(),
         };
-        let build = |values: &[ColumnValue]| ExportRow {
-            fields: export::fields_from_values(values, width),
-            truncated_columns: export::truncated_columns(values),
-        };
+        let build = |values: &[ColumnValue]| ExportRow::from_values(values, width);
         match self {
             Self::Query(results) => results
                 .row_at(index)
@@ -267,6 +322,8 @@ impl ExportSource {
             Self::Table(_) => plan.table_rows.as_ref().map_or_else(empty, |rows| {
                 rows.get(index).map_or_else(empty, |values| build(values))
             }),
+            // 对象树的转储一律走整表后台线程，不会逐行读这里。
+            Self::Object { .. } => empty(),
         }
     }
 
@@ -298,6 +355,18 @@ impl ExportSource {
                     table_rows: None,
                 }
             }
+            // 没有标签：列名与总数都在后台线程里读（这里不编造）。
+            Self::Object { .. } => ExportPlan {
+                titles: Vec::new(),
+                row_count: 0,
+                truncated_cells: 0,
+                scope: ExportScope::TableAll {
+                    total: None,
+                    dirty_rows: 0,
+                    has_insert: false,
+                },
+                table_rows: None,
+            },
         }
     }
 
@@ -307,6 +376,48 @@ impl ExportSource {
         match self {
             Self::Query(_) => None,
             Self::Table(data) => data.table_reference(),
+            Self::Object { reference, .. } => Some((**reference).clone()),
+        }
+    }
+
+    /// SQL 导出的目标表（表名 + 方言 + 可选的文件头说明）。
+    ///
+    /// - 表数据：表名与驱动都来自这个标签，含义明确。
+    /// - 查询结果：结果集不携带来源表名，只从**唯一一个顶层 FROM** 推断；推断不出
+    ///   时用占位名 `result`，并在文件头写一行注释让用户替换（不猜错表）。
+    #[must_use]
+    pub fn sql_table(&self) -> Option<crate::export::SqlTable> {
+        match self {
+            Self::Table(data) => {
+                let object = data.table_reference()?;
+                Some(crate::export::SqlTable {
+                    name: object.name,
+                    dialect: crate::export::SqlDialect::from_driver(
+                        data.driver_id().as_deref().unwrap_or(""),
+                    ),
+                    comment: None,
+                    prelude: None,
+                })
+            }
+            Self::Object { reference, driver } => Some(crate::export::SqlTable {
+                name: reference.name.clone(),
+                dialect: crate::export::SqlDialect::from_driver(driver),
+                comment: None,
+                prelude: None,
+            }),
+            Self::Query(results) => {
+                let detected = crate::export::table_from_sql(&results.statement());
+                let comment = detected.is_none().then(|| {
+                    "结果集不携带来源表名：目标表写成占位名 result，导入前请替换成真实表名。"
+                        .to_owned()
+                });
+                Some(crate::export::SqlTable {
+                    name: detected.unwrap_or_else(|| "result".to_owned()),
+                    dialect: results.dialect(),
+                    comment,
+                    prelude: None,
+                })
+            }
         }
     }
 }
@@ -320,11 +431,43 @@ pub enum ExportRange {
     WholeTable,
 }
 
-/// 入口（EX 按钮 / 菜单 / 快捷键）：表数据先选范围，再选目标 → 确认 → 导出。
-pub fn begin(parent: &gtk::Widget, source: ExportSource) {
-    match &source {
-        // 查询结果：导出行为与 #120 保持一致（只导已加载的行），没有「整表」这个选择。
-        ExportSource::Query(_) => {
+/// 入口（导出菜单 / 菜单项 / 快捷键）：按种类分派。
+///
+/// 表数据先选范围（转储表例外：它天然是整表）；查询结果直接选目标文件。
+pub fn begin(parent: &gtk::Widget, source: ExportSource, kind: ExportKind) {
+    match (&source, kind) {
+        // 转储表：整表 + 建表语句，没有「当前页」这个选项。
+        (ExportSource::Table(_), ExportKind::Dump) => {
+            if source.object_reference().is_none() {
+                show_notice(
+                    parent,
+                    "没有可转储的表",
+                    "这个标签还没有打开表：先在对象树里打开一张表，再转储。",
+                );
+                return;
+            }
+            eprintln!(
+                "[export] 转储表：{}（整表 + 建表语句）",
+                source
+                    .sql_table()
+                    .map_or_else(|| "未知表".to_owned(), |table| table.name)
+            );
+            let plan = Rc::new(source.plan_whole_table());
+            pick_target(parent, source, plan, kind, false);
+        }
+        // 对象树里的表：只有一个出口——转储表（整表 + 建表语句）。
+        (ExportSource::Object { .. }, _) => {
+            eprintln!(
+                "[export] 对象树转储表：{}（整表 + 建表语句）",
+                source
+                    .sql_table()
+                    .map_or_else(|| "未知表".to_owned(), |table| table.name)
+            );
+            let plan = Rc::new(source.plan_whole_table());
+            pick_target(parent, source, plan, ExportKind::Dump, false);
+        }
+        // 查询结果：没有「整表」语义，范围固定为已加载行。
+        (ExportSource::Query(_), _) => {
             let plan = source.plan();
             if plan.row_count == 0 {
                 show_notice(
@@ -334,14 +477,33 @@ pub fn begin(parent: &gtk::Widget, source: ExportSource) {
                 );
                 return;
             }
-            pick_target(parent, source, Rc::new(plan), false);
+            pick_target(parent, source, Rc::new(plan), kind, false);
         }
-        ExportSource::Table(_) => choose_range(parent, source),
+        // 表数据：先选范围（当前页 / 整张表）。
+        (ExportSource::Table(_), _) => choose_range(parent, source, kind),
     }
 }
 
+/// 对象树右键「转储表」的入口：没有标签，直接按对象引用 + 会话转储。
+///
+/// `driver` 决定 SQL 引号风格（由树的连接注册表按会话查得）；空串按标准写法。
+pub fn begin_object_dump(
+    parent: &gtk::Widget,
+    reference: crate::proto::services::v1::ObjectRef,
+    driver: &str,
+) {
+    begin(
+        parent,
+        ExportSource::Object {
+            reference: Box::new(reference),
+            driver: driver.to_owned(),
+        },
+        ExportKind::Dump,
+    );
+}
+
 /// 表数据的范围选择：默认「当前页」，整张表是显式选项（AGENTS.md / workspace-model §6.1）。
-fn choose_range(parent: &gtk::Widget, source: ExportSource) {
+fn choose_range(parent: &gtk::Widget, source: ExportSource, kind: ExportKind) {
     // 还没打开表：连范围都没得选，直接说清楚。
     if source.object_reference().is_none() {
         show_notice(
@@ -354,13 +516,14 @@ fn choose_range(parent: &gtk::Widget, source: ExportSource) {
     let page_plan = source.plan();
     let page_rows = page_plan.row_count;
     let body = format!(
-        "选择导出范围：\n\n\
+        "选择导出范围（{}）：\n\n\
          当前页：只写这一页已加载的 {page_rows} 行（写的是页面上当前的值，含未提交编辑）。\n\n\
          整张表：按当前标签的排序与筛选逐页读取，边读边写同一个文件。\n\
          · 不设行数上限，读多少写多少；\n\
          · 进度可见，随时可以取消；\n\
          · 取消或失败不会留下半截文件，目标路径不会出现新文件；\n\
-         · 读的是数据库里已提交的值，本页未提交的编辑不在文件中。"
+         · 读的是数据库里已提交的值，本页未提交的编辑不在文件中。",
+        kind.label()
     );
     let dialog = adw::AlertDialog::new(Some("导出范围"), Some(&body));
     dialog.add_response("cancel", "取消");
@@ -385,12 +548,13 @@ fn choose_range(parent: &gtk::Widget, source: ExportSource) {
                 }
             };
             eprintln!(
-                "[export] 用户选择导出范围：{}",
+                "[export] 用户选择导出范围：{}（{}）",
                 if range == ExportRange::WholeTable {
                     "整张表"
                 } else {
                     "当前页"
-                }
+                },
+                kind.label()
             );
             let plan = match range {
                 ExportRange::Page => source.plan(),
@@ -410,23 +574,45 @@ fn choose_range(parent: &gtk::Widget, source: ExportSource) {
                 );
                 return;
             }
-            pick_target(&parent, source.clone(), Rc::new(plan), false);
+            pick_target(&parent, source.clone(), Rc::new(plan), kind, false);
         });
     }
     dialog.present(Some(parent));
 }
 
 /// 选目标文件 → 进入确认（不写任何文件）。
-fn pick_target(parent: &gtk::Widget, source: ExportSource, plan: Rc<ExportPlan>, qa: bool) {
+///
+/// 过滤器、默认文件名与标题按种类给：CSV 是 `*.csv`，INSERT / 转储是 `*.sql`
+/// （转储默认用 `<表名>.sql`，用户不用先删一遍默认名）。
+fn pick_target(
+    parent: &gtk::Widget,
+    source: ExportSource,
+    plan: Rc<ExportPlan>,
+    kind: ExportKind,
+    qa: bool,
+) {
+    let format = kind.format();
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("CSV（*.csv）"));
-    filter.add_pattern("*.csv");
+    filter.set_name(Some(&if format == export::Format::Csv {
+        "CSV（*.csv）".to_owned()
+    } else {
+        "SQL 脚本（*.sql）".to_owned()
+    }));
+    filter.add_pattern(&format!("*.{}", format.extension()));
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
+    let initial_name = if kind == ExportKind::Dump {
+        source.sql_table().map_or_else(
+            || format.default_file_name().to_owned(),
+            |table| format!("{}.{}", table.name, format.extension()),
+        )
+    } else {
+        format.default_file_name().to_owned()
+    };
     let dialog = gtk::FileDialog::builder()
-        .title("导出为 CSV")
+        .title(format!("导出为{}", kind.label()))
         .modal(true)
-        .initial_name(export::DEFAULT_FILE_NAME)
+        .initial_name(initial_name)
         .filters(&filters)
         .build();
     let parent = parent.clone();
@@ -440,7 +626,7 @@ fn pick_target(parent: &gtk::Widget, source: ExportSource, plan: Rc<ExportPlan>,
                     return;
                 };
                 let source = source.clone();
-                confirm(&parent, source, Rc::clone(&plan), path, qa);
+                confirm(&parent, source, Rc::clone(&plan), path, qa, kind);
             }
             Err(error) => {
                 if !error.matches(gio::IOErrorEnum::Cancelled) {
@@ -456,9 +642,18 @@ fn pick_target(parent: &gtk::Widget, source: ExportSource, plan: Rc<ExportPlan>,
 /// 范围由 `--qa-export-scope page|table` 决定（默认当前页，语义与 #120 一致）；
 /// `--qa-export-hold` 停在确认框。
 pub fn begin_qa(parent: &gtk::Widget, source: ExportSource, target: PathBuf) {
-    let range = match crate::qa::export_scope() {
-        crate::qa::ExportScopeArg::Table => ExportRange::WholeTable,
-        crate::qa::ExportScopeArg::Page => ExportRange::Page,
+    let kind = match crate::qa::export_format() {
+        crate::qa::ExportFormatArg::Csv => ExportKind::Csv,
+        crate::qa::ExportFormatArg::Insert => ExportKind::Insert,
+        crate::qa::ExportFormatArg::Dump => ExportKind::Dump,
+    };
+    let range = if kind == ExportKind::Dump {
+        ExportRange::WholeTable
+    } else {
+        match crate::qa::export_scope() {
+            crate::qa::ExportScopeArg::Table => ExportRange::WholeTable,
+            crate::qa::ExportScopeArg::Page => ExportRange::Page,
+        }
     };
     let plan = match (range, &source) {
         // 查询结果没有整表语义：范围参数只对表数据生效。
@@ -467,8 +662,9 @@ pub fn begin_qa(parent: &gtk::Widget, source: ExportSource, target: PathBuf) {
     };
     let plan = Rc::new(plan);
     eprintln!(
-        "[export] QA 触发：目标 {}，范围 {}，{}，截断单元格 {}，公式注入防护 {}",
+        "[export] QA 触发：目标 {}，格式 {}，范围 {}，{}，截断单元格 {}，公式注入防护 {}",
         target.display(),
+        kind.label(),
         if plan.scope.is_whole_table() {
             "整张表"
         } else {
@@ -482,8 +678,9 @@ pub fn begin_qa(parent: &gtk::Widget, source: ExportSource, target: PathBuf) {
             "开启"
         }
     );
+    // 转储表允许空表（只写建表语句）；其它格式没有行就没东西可写。
     let empty = match plan.scope {
-        ExportScope::TableAll { total: Some(0), .. } => true,
+        ExportScope::TableAll { total: Some(0), .. } => kind != ExportKind::Dump,
         ExportScope::TableAll { .. } => false,
         _ => plan.row_count == 0,
     };
@@ -491,7 +688,7 @@ pub fn begin_qa(parent: &gtk::Widget, source: ExportSource, target: PathBuf) {
         eprintln!("[export] QA 跳过：没有可导出的行");
         return;
     }
-    confirm(parent, source, plan, target, true);
+    confirm(parent, source, plan, target, true, kind);
 }
 
 /// 确认导出范围 + 写出口径；确认后才创建临时文件。
@@ -501,6 +698,7 @@ fn confirm(
     plan: Rc<ExportPlan>,
     target: PathBuf,
     qa: bool,
+    kind: ExportKind,
 ) {
     let mut body = plan.scope.title();
     if let Some(note) = plan.scope.partial_note() {
@@ -515,11 +713,28 @@ fn confirm(
              · 取消或失败会删除临时文件，目标路径不会出现半截文件。",
         );
     }
-    body.push_str(
-        "\n\n写出口径：空字段 = SQL NULL；空字符串写为 \"\"。\
-         二进制写占位 (BLOB n bytes)，不导出原始字节；\
-         Decimal 保留原文，日期时间用 ISO 8601。",
-    );
+    match kind.format() {
+        export::Format::Csv => body.push_str(
+            "\n\n写出口径：空字段 = SQL NULL；空字符串写为 \"\"。\
+             二进制写占位 (BLOB n bytes)，不导出原始字节；\
+             Decimal 保留原文，日期时间用 ISO 8601。",
+        ),
+        export::Format::InsertSql => {
+            if kind.with_ddl() {
+                body.push_str(
+                    "\n\n文件内容：先是建表语句，之后每行一条 INSERT INTO … VALUES (…);\
+                     \n数据是数据库里已提交的全部行；BLOB 写成 NULL（文件末尾注明数量），\
+                     被服务端截断的文本只有前缀。",
+                );
+            } else {
+                body.push_str(
+                    "\n\n写出口径：每行一条 INSERT INTO … VALUES (…);\
+                     \nNULL 写 NULL、空串写 ''；BLOB 写成 NULL（文件末尾注明数量）；\
+                     Decimal 用原文，日期时间用 ISO 8601。",
+                );
+            }
+        }
+    }
     if plan.truncated_cells > 0 {
         body.push_str(&format!(
             "\n\n警告：有 {} 个单元格被服务端截断，文件里只有前缀。",
@@ -532,14 +747,23 @@ fn confirm(
     }
     body.push_str(&format!("\n\n目标文件：{}", target.display()));
 
-    let dialog = adw::AlertDialog::new(
-        Some(&if plan.scope.is_whole_table() {
-            "导出整张表为 CSV？".to_owned()
-        } else {
-            format!("导出已加载的 {} 行为 CSV？", plan.row_count)
-        }),
-        Some(&body),
-    );
+    let title = match kind {
+        ExportKind::Csv if plan.scope.is_whole_table() => "导出整张表为 CSV？".to_owned(),
+        ExportKind::Csv => format!("导出已加载的 {} 行为 CSV？", plan.row_count),
+        ExportKind::Insert if plan.scope.is_whole_table() => {
+            "导出整张表为 INSERT 语句？".to_owned()
+        }
+        ExportKind::Insert => {
+            format!("导出已加载的 {} 行为 INSERT 语句？", plan.row_count)
+        }
+        ExportKind::Dump => {
+            let name = source
+                .sql_table()
+                .map_or_else(|| "这张表".to_owned(), |table| table.name);
+            format!("转储表 {name}？")
+        }
+    };
+    let dialog = adw::AlertDialog::new(Some(&title), Some(&body));
     dialog.add_response("cancel", "取消");
     dialog.add_response("export", "导出");
     dialog.set_response_appearance("export", adw::ResponseAppearance::Suggested);
@@ -548,12 +772,16 @@ fn confirm(
 
     // #137：公式注入防护开关。默认开启；关掉就写原始值（由用户明确承担风险）。
     // QA 的 `--qa-export-raw-values` 拨的就是这个开关，走的仍是同一份写出口径。
+    // SQL 导出不经过表格软件，开关对它没有意义：只给 CSV 显示（但仍保留一个控件，
+    // 让确认回调读同一份 options）。
     let guard = adw::SwitchRow::builder()
         .title("公式注入防护")
         .subtitle("文本以 = + - @、制表符或回车开头时前置单引号；数值与日期时间不受影响")
         .active(!crate::qa::export_raw_values())
         .build();
-    dialog.set_extra_child(Some(&guard));
+    if kind.format() == export::Format::Csv {
+        dialog.set_extra_child(Some(&guard));
+    }
 
     {
         let parent = parent.clone();
@@ -571,8 +799,9 @@ fn confirm(
                     guard_formulas: guard.is_active(),
                 };
                 eprintln!(
-                    "[export] 用户确认导出：{}（目标 {}，公式注入防护 {}）",
+                    "[export] 用户确认导出：{}（{}，目标 {}，公式注入防护 {}）",
                     plan.scope.title(),
+                    kind.label(),
                     target.display(),
                     if options.guard_formulas {
                         "开启"
@@ -587,6 +816,7 @@ fn confirm(
                     target.clone(),
                     qa,
                     options,
+                    kind,
                 );
             } else {
                 eprintln!("[export] 用户在确认对话框取消，未写任何文件");
@@ -612,10 +842,11 @@ fn after_confirm(
     target: PathBuf,
     qa: bool,
     options: FormatOptions,
+    kind: ExportKind,
 ) {
     match export::inspect_target(&target) {
         Err(error) => show_notice(parent, "无法导出", &error.message()),
-        Ok(TargetState::New) => run_export(parent, source, plan, target, false, options),
+        Ok(TargetState::New) => run_export(parent, source, plan, target, false, options, kind),
         Ok(TargetState::Existing) => {
             let dialog = adw::AlertDialog::new(
                 Some("覆盖已有文件？"),
@@ -648,6 +879,7 @@ fn after_confirm(
                             target.clone(),
                             true,
                             options,
+                            kind,
                         );
                     } else {
                         eprintln!("[export] 用户放弃覆盖，未写任何文件");
@@ -675,7 +907,9 @@ struct ExportJob {
     target: PathBuf,
     /// 写出口径（完成提示要如实说明是否做了公式注入防护）。
     options: FormatOptions,
-    sink: RefCell<Option<CsvSink>>,
+    /// 导出种类（进度 / 完成文案与 sink 的格式都由它决定）。
+    kind: ExportKind,
+    sink: RefCell<Option<ExportSink>>,
     index: Cell<usize>,
     cancelled: Cell<bool>,
     finished: Cell<bool>,
@@ -691,17 +925,35 @@ fn run_export(
     target: PathBuf,
     allow_overwrite: bool,
     options: FormatOptions,
+    kind: ExportKind,
 ) {
     if plan.scope.is_whole_table() {
         // 整表：交给 worker 侧的后台线程（逐页读、流式写），界面只轮询进度。
-        run_whole_table_export(parent, &source, plan, target, allow_overwrite, options);
+        run_whole_table_export(
+            parent,
+            &source,
+            plan,
+            target,
+            allow_overwrite,
+            options,
+            kind,
+        );
         return;
     }
-    let mut sink = match CsvSink::create_with_options(&target, allow_overwrite, options) {
+    let created = match kind.format() {
+        export::Format::Csv => ExportSink::create_with_options(&target, allow_overwrite, options)
+            .map_err(|error| error.message()),
+        export::Format::InsertSql => match source.sql_table() {
+            Some(table) => ExportSink::create_sql(&target, allow_overwrite, table)
+                .map_err(|error| error.message()),
+            None => Err("INSERT 导出缺少目标表：这张表还没有打开".to_owned()),
+        },
+    };
+    let mut sink = match created {
         Ok(sink) => sink,
-        Err(error) => {
-            eprintln!("[export] 创建临时文件失败：{}", error.message());
-            show_notice(parent, "无法导出", &error.message());
+        Err(message) => {
+            eprintln!("[export] 创建临时文件失败：{message}");
+            show_notice(parent, "无法导出", &message);
             return;
         }
     };
@@ -734,7 +986,7 @@ fn run_export(
         body.push_str("\n\n");
         body.push_str(&note);
     }
-    let dialog = adw::AlertDialog::new(Some("正在导出 CSV…"), Some(&body));
+    let dialog = adw::AlertDialog::new(Some(&format!("正在导出{}…", kind.label())), Some(&body));
     dialog.add_response("cancel", "取消");
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -746,6 +998,7 @@ fn run_export(
         plan,
         target: target.clone(),
         options,
+        kind,
         sink: RefCell::new(Some(sink)),
         index: Cell::new(0),
         cancelled: Cell::new(false),
@@ -768,8 +1021,9 @@ fn run_export(
     dialog.present(Some(parent));
 
     eprintln!(
-        "[export] 开始导出：{}，目标 {}，已加载 {} 行，公式注入防护 {}",
+        "[export] 开始导出：{}（{}），目标 {}，已加载 {} 行，公式注入防护 {}",
         job.plan.scope.title(),
+        kind.label(),
         job.target.display(),
         job.plan.row_count,
         if options.guard_formulas {
@@ -896,11 +1150,12 @@ impl ExportJob {
         };
         self.dialog.force_close();
         eprintln!(
-            "[export] 完成：{} 行，{} 字节，目标 {}（{}）",
+            "[export] 完成：{} 行，{} 字节，目标 {}（{}，{}）",
             report.rows,
             report.bytes,
             report.target.display(),
-            self.plan.scope.title()
+            self.plan.scope.title(),
+            self.kind.label()
         );
         show_completion(
             &self.parent,
@@ -908,6 +1163,7 @@ impl ExportJob {
             &report,
             self.options,
             self.plan.truncated_cells,
+            self.kind,
         );
     }
 }
@@ -929,6 +1185,8 @@ struct WholeTableJob {
     target: PathBuf,
     plan: Rc<ExportPlan>,
     options: FormatOptions,
+    /// 导出种类（CSV / INSERT / 转储）。
+    kind: ExportKind,
 }
 
 /// 整表导出：建进度对话框 → 把命令投给 worker → 轮询进度/结果。
@@ -943,6 +1201,7 @@ fn run_whole_table_export(
     target: PathBuf,
     allow_overwrite: bool,
     options: FormatOptions,
+    kind: ExportKind,
 ) {
     let Some(object) = source.object_reference() else {
         show_notice(
@@ -1002,7 +1261,14 @@ fn run_whole_table_export(
         body.push_str("\n\n");
         body.push_str(&note);
     }
-    let dialog = adw::AlertDialog::new(Some("正在导出整张表…"), Some(&body));
+    let dialog = adw::AlertDialog::new(
+        Some(&match kind {
+            ExportKind::Csv => "正在导出整张表为 CSV…".to_owned(),
+            ExportKind::Insert => "正在导出整张表为 INSERT 语句…".to_owned(),
+            ExportKind::Dump => "正在转储表…".to_owned(),
+        }),
+        Some(&body),
+    );
     dialog.add_response("cancel", "取消");
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -1010,11 +1276,26 @@ fn run_whole_table_export(
 
     let (sender, receiver) = std::sync::mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
+    let sql = match kind.format() {
+        export::Format::Csv => None,
+        export::Format::InsertSql => source.sql_table(),
+    };
     let queued = port.send(Command::ExportTable {
         object: Box::new(object),
         target: target.clone(),
         titles: plan.titles.clone(),
         options,
+        sql,
+        with_ddl: kind.with_ddl(),
+        // 表标签：用标签里冻结的排序 / 筛选（worker 自己按会话 ID 找标签）。
+        // 对象树：没有标签，给一份「第一页、无排序无筛选」，表名与会话在对象引用里。
+        base: match source {
+            ExportSource::Object { .. } => Some(crate::backend::table::BrowseQuery::first_page(
+                crate::backend::table::TABLE_PAGE_SIZE,
+                false,
+            )),
+            _ => None,
+        },
         allow_overwrite,
         cancel: Arc::clone(&cancel),
         progress: sender,
@@ -1043,6 +1324,7 @@ fn run_whole_table_export(
         target: target.clone(),
         plan: Rc::clone(&plan),
         options,
+        kind,
     });
     {
         let job = Rc::clone(&job);
@@ -1054,8 +1336,9 @@ fn run_whole_table_export(
     }
     dialog.present(Some(parent));
     eprintln!(
-        "[export] 整表导出已交给后台：{}，目标 {}，公式注入防护 {}",
+        "[export] 整表导出已交给后台：{}（{}），目标 {}，公式注入防护 {}",
         plan.scope.title(),
+        kind.label(),
         target.display(),
         if options.guard_formulas {
             "开启"
@@ -1165,11 +1448,12 @@ impl WholeTableJob {
         }
         self.dialog.force_close();
         eprintln!(
-            "[export] 整表导出完成：{} 行，{} 字节，目标 {}（{}）",
+            "[export] 整表导出完成：{} 行，{} 字节，目标 {}（{}，{}）",
             report.rows,
             report.bytes,
             report.target.display(),
-            self.plan.scope.title()
+            self.plan.scope.title(),
+            self.kind.label()
         );
         show_completion(
             &self.parent,
@@ -1177,6 +1461,7 @@ impl WholeTableJob {
             report,
             self.options,
             truncated_cells,
+            self.kind,
         );
     }
 
@@ -1243,28 +1528,48 @@ fn show_completion(
     report: &export::ExportReport,
     options: FormatOptions,
     truncated_cells: u64,
+    kind: ExportKind,
 ) {
     let mut body = format!(
-        "已完成：{}，写出 {} 行（{}，CSV）。",
+        "已完成：{}，写出 {} 行（{}，{}）。",
         plan.scope.title(),
         report.rows,
-        human_bytes(report.bytes)
+        human_bytes(report.bytes),
+        kind.label()
     );
-    body.push_str("\n空字段 = SQL NULL；空字符串写为 \"\"。");
+    match kind.format() {
+        export::Format::Csv => {
+            body.push_str("\n空字段 = SQL NULL；空字符串写为 \"\"。");
+        }
+        export::Format::InsertSql => {
+            body.push_str(if kind.with_ddl() {
+                "\n文件里先是建表语句，之后每行一条 INSERT INTO … VALUES (…);。"
+            } else {
+                "\n每行一条 INSERT INTO … VALUES (…);，可直接在 SQL 编辑器里执行。"
+            });
+        }
+    }
     if let Some(note) = plan.scope.partial_note() {
         body.push_str("\n\n");
         body.push_str(&note);
     }
-    if options.guard_formulas {
-        body.push_str(
-            "\n公式注入防护已开启：以 = + - @、制表符或回车开头的文本前置了单引号（数值与日期时间未改动）。",
-        );
-    } else {
-        body.push_str("\n公式注入防护已关闭：文本按原样写出，打开文件时不要直接启用宏或公式。");
+    if kind.format() == export::Format::Csv {
+        if options.guard_formulas {
+            body.push_str(
+                "\n公式注入防护已开启：以 = + - @、制表符或回车开头的文本前置了单引号（数值与日期时间未改动）。",
+            );
+        } else {
+            body.push_str("\n公式注入防护已关闭：文本按原样写出，打开文件时不要直接启用宏或公式。");
+        }
     }
     if truncated_cells > 0 {
+        let prefix = if kind.format() == export::Format::Csv {
+            "# sqarvo:"
+        } else {
+            "-- sqarvo:"
+        };
         body.push_str(&format!(
-            "\n有 {truncated_cells} 个单元格被服务端截断：文件里只有前缀，文件末尾有一行以 `# sqarvo:` 开头的注释列出相关列。"
+            "\n有 {truncated_cells} 个单元格被服务端截断：文件里只有前缀，文件末尾有一行以 `{prefix}` 开头的注释列出相关列。"
         ));
     }
     let dialog = adw::AlertDialog::new(Some("导出完成"), Some(&body));

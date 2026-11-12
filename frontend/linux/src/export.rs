@@ -37,8 +37,11 @@ use crate::backend::query::{
 use crate::backend::table::BrowseQuery;
 use crate::proto::common::v1::{ColumnValue, ValueKind, column_value};
 
-/// 默认文件名（文件选择器里的初始名）。
+/// 默认文件名（文件选择器里的初始名，CSV）。
 pub const DEFAULT_FILE_NAME: &str = "sqarvo-export.csv";
+
+/// INSERT 脚本的默认文件名（表标签 / 查询结果都用它，用户可改）。
+pub const INSERT_FILE_NAME: &str = "sqarvo-insert.sql";
 
 /// 行结束符：RFC 4180 的 CRLF（Excel / LibreOffice 都能直接打开）。
 const ROW_TERMINATOR: &[u8] = b"\r\n";
@@ -312,6 +315,115 @@ pub fn write_header<W: Write>(
     write_record(out, &fields, options)
 }
 
+/// SQL 文件的头部：一行来源说明 + 可选注释 + 可选建表语句，末尾留一个空行。
+fn write_sql_header(out: &mut Vec<u8>, table: &SqlTable, columns: &[String]) {
+    out.extend_from_slice(
+        format!(
+            "-- Sqarvo 导出：表 {}（{} 列）\n",
+            table.dialect.quote_ident(&table.name),
+            columns.len()
+        )
+        .as_bytes(),
+    );
+    if let Some(comment) = table.comment.as_deref() {
+        for line in comment.lines() {
+            out.extend_from_slice(format!("-- {line}\n").as_bytes());
+        }
+    }
+    if let Some(prelude) = table.prelude.as_deref() {
+        let trimmed = prelude.trim();
+        if !trimmed.is_empty() {
+            out.extend_from_slice(b"\n");
+            out.extend_from_slice(trimmed.as_bytes());
+            if !trimmed.ends_with(';') {
+                out.extend_from_slice(b";");
+            }
+            out.extend_from_slice(b"\n");
+        }
+    }
+    out.extend_from_slice(b"\n");
+}
+
+/// 写一条 `INSERT INTO … VALUES (…);`（单行，LF 结尾）。
+fn write_insert(
+    out: &mut Vec<u8>,
+    table: &SqlTable,
+    columns: &[String],
+    values: &[ColumnValue],
+    loss: &mut SqlLoss,
+) {
+    let name = table.dialect.quote_ident(&table.name);
+    if columns.is_empty() {
+        // 没有列清单：只有 DEFAULT VALUES 是两种方言都认的写法。
+        out.extend_from_slice(format!("INSERT INTO {name} DEFAULT VALUES;\n").as_bytes());
+        return;
+    }
+    let names: Vec<String> = columns
+        .iter()
+        .map(|column| table.dialect.quote_ident(column))
+        .collect();
+    let literals: Vec<String> = values
+        .iter()
+        .map(|value| sql_literal(value, table.dialect, loss))
+        .collect();
+    out.extend_from_slice(
+        format!(
+            "INSERT INTO {name} ({}) VALUES ({});\n",
+            names.join(", "),
+            literals.join(", ")
+        )
+        .as_bytes(),
+    );
+}
+
+/// 一行的原始值 → 一条多值 INSERT 的 SQL 文本（数据页「复制为 Insert」用）。
+///
+/// 与导出口径一致：一行一条时用 `write_insert`；这里把选中的多行合成**一条**
+/// `INSERT INTO … VALUES (…), (…);`，方便直接粘进编辑器执行。
+#[must_use]
+pub fn multi_row_insert(table: &SqlTable, columns: &[String], rows: &[Vec<ColumnValue>]) -> String {
+    let name = table.dialect.quote_ident(&table.name);
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut loss = SqlLoss::default();
+    let mut text = String::new();
+    if let Some(comment) = table.comment.as_deref() {
+        for line in comment.lines() {
+            text.push_str("-- ");
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    let names: Vec<String> = columns
+        .iter()
+        .map(|column| table.dialect.quote_ident(column))
+        .collect();
+    text.push_str(&format!(
+        "INSERT INTO {name} ({}) VALUES\n",
+        names.join(", ")
+    ));
+    for (index, row) in rows.iter().enumerate() {
+        let literals: Vec<String> = row
+            .iter()
+            .map(|value| sql_literal(value, table.dialect, &mut loss))
+            .collect();
+        text.push_str(&format!("({})", literals.join(", ")));
+        if index + 1 == rows.len() {
+            text.push_str(";\n");
+        } else {
+            text.push_str(",\n");
+        }
+    }
+    if loss.blobs > 0 || loss.non_finite > 0 {
+        text.push_str(&format!(
+            "-- sqarvo: {} 个 BLOB 值 / {} 个非有限浮点数写成 NULL\n",
+            loss.blobs, loss.non_finite
+        ));
+    }
+    text
+}
+
 /// 文件末尾的截断说明（没有截断时返回 `None`）。
 ///
 /// 只在**本文件确实含截断单元格**时追加一行；前缀固定 `# sqarvo:`，行尾与数据行
@@ -332,6 +444,321 @@ pub fn truncation_note(truncated_cells: u64, columns: &[String]) -> Option<Strin
         note.push_str(&names.join(", "));
     }
     Some(note)
+}
+
+// ---- SQL 导出（INSERT 脚本 / 转储表） ---------------------------------
+//
+// 口径与 CSV 一致（只用内存里已有的值、NULL 不丢、Decimal 用原文、截断值如实
+// 标注），差别只在于写法：CSV 是给人看表格，SQL 是给数据库重放。
+//
+// - **一行一条 `INSERT INTO … VALUES (…);`**，不做多值合并：行数大时可分批执行，
+//   单行报错也不会连带整批。行尾 `\n`（不是 CSV 的 CRLF）。
+// - **NULL 写 `NULL`**、空串写 `''`，二者在 SQL 里本来就不同。
+// - **BLOB 写 `NULL`**：客户端从来拿不到原始字节（服务端按字段类型截断），
+//   写占位字符串会污染数据；文件末尾用 `-- sqarvo:` 注释写明数量。
+// - **标识符与字符串按驱动引号**：SQLite / PostgreSQL 用 `"`，MariaDB / MySQL 用
+//   反引号 + 反斜杠转义（`"` 在 MariaDB 默认模式下是字符串，不是标识符）。
+// - 转储表 = 建表语句 + 全部数据：建表语句写在文件头（`prelude`），数据行照常。
+
+/// 导出格式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// CSV（RFC 4180）。
+    Csv,
+    /// 一行一条 `INSERT INTO … VALUES (…);` 的 SQL 脚本。
+    InsertSql,
+}
+
+impl Format {
+    /// 文件扩展名（文件选择器的过滤器按它生成）。
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::InsertSql => "sql",
+        }
+    }
+
+    /// 默认文件名。
+    #[must_use]
+    pub fn default_file_name(self) -> &'static str {
+        match self {
+            Self::Csv => DEFAULT_FILE_NAME,
+            Self::InsertSql => INSERT_FILE_NAME,
+        }
+    }
+}
+
+/// SQL 方言：只影响标识符引号与字符串转义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlDialect {
+    /// 标准 / SQLite / PostgreSQL：标识符 `"…"`，字符串只把 `'` 翻倍。
+    Standard,
+    /// MariaDB / MySQL：标识符 `` `…` ``，字符串里 `\` 与 `'` 都要转义。
+    Mysql,
+}
+
+impl SqlDialect {
+    /// 按驱动 ID 选方言（未知驱动按标准写法，SQLite 与 MariaDB 都读得懂 `'…'`）。
+    #[must_use]
+    pub fn from_driver(driver: &str) -> Self {
+        match driver {
+            "mariadb" | "mysql" => Self::Mysql,
+            _ => Self::Standard,
+        }
+    }
+
+    /// 标识符引号。
+    #[must_use]
+    pub fn quote_ident(self, name: &str) -> String {
+        match self {
+            Self::Standard => format!("\"{}\"", name.replace('"', "\"\"")),
+            Self::Mysql => format!("`{}`", name.replace('`', "``")),
+        }
+    }
+
+    /// 字符串字面量（含两侧引号）。
+    #[must_use]
+    pub fn quote_text(self, text: &str) -> String {
+        match self {
+            // MariaDB / MySQL 默认把反斜杠当转义引导符：不翻倍会把 `\n` 吃掉。
+            Self::Mysql => format!(
+                "'{}'",
+                text.replace('\\', "\\\\")
+                    .replace('\0', "\\0")
+                    .replace('\'', "''")
+            ),
+            Self::Standard => format!("'{}'", text.replace('\'', "''")),
+        }
+    }
+}
+
+/// INSERT 输出的目标表描述（列名由 [`ExportSink::header`] 提供，避免存两份）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlTable {
+    /// 表名（不加库 / schema 前缀：转储文件应当能在另一个库里重放）。
+    pub name: String,
+    /// 方言。
+    pub dialect: SqlDialect,
+    /// 文件头注释（例如「结果集不携带来源表名，表名为占位」）；按行拆成 `-- …`。
+    pub comment: Option<String>,
+    /// 建表语句（转储表）；写在注释之后、数据之前。
+    pub prelude: Option<String>,
+}
+
+/// 一个值在 SQL 里无法原样写出时的说明（文件末尾按类别汇总）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqlLoss {
+    /// BLOB 写成 `NULL` 的个数（客户端拿不到原始字节）。
+    pub blobs: u64,
+    /// 非有限浮点数（NaN / ±Inf）写成 `NULL` 的个数。
+    pub non_finite: u64,
+}
+
+/// 把一个原始值渲染成 SQL 字面量（NULL / 数字 / 字符串 / 日期都带引号）。
+///
+/// 不借用 CSV 的 [`Field`]：CSV 里日期与文本都是「一串字符」，SQL 里必须知道
+/// 该不该加引号，混用会让 `2024-01-01` 变成减法、让 `'42'` 变成字符串。
+#[must_use]
+pub fn sql_literal(value: &ColumnValue, dialect: SqlDialect, loss: &mut SqlLoss) -> String {
+    let kind = ValueKind::try_from(value.kind).unwrap_or(ValueKind::Unspecified);
+    match (kind, value.value.as_ref()) {
+        (ValueKind::Null, _) => "NULL".to_owned(),
+        (ValueKind::Bool, Some(column_value::Value::BoolValue(flag))) => {
+            if *flag { "TRUE" } else { "FALSE" }.to_owned()
+        }
+        (ValueKind::Int64, Some(column_value::Value::Int64Value(number))) => number.to_string(),
+        (ValueKind::Uint64, Some(column_value::Value::Uint64Value(number))) => number.to_string(),
+        (ValueKind::Float64, Some(column_value::Value::Float64Value(number))) => {
+            if number.is_finite() {
+                format_float(*number)
+            } else {
+                loss.non_finite = loss.non_finite.saturating_add(1);
+                "NULL".to_owned()
+            }
+        }
+        (ValueKind::Decimal, Some(column_value::Value::DecimalValue(decimal))) => {
+            format_decimal(&decimal.unscaled_value, decimal.scale)
+        }
+        (ValueKind::Text, Some(column_value::Value::TextValue(text)))
+        | (ValueKind::Json, Some(column_value::Value::JsonValue(text)))
+        | (ValueKind::Uuid, Some(column_value::Value::UuidValue(text)))
+        | (ValueKind::Unsupported, Some(column_value::Value::UnsupportedValue(text))) => {
+            dialect.quote_text(text)
+        }
+        (ValueKind::Bytes, Some(column_value::Value::BytesValue(_))) => {
+            // 绝不写原始字节（也没拿到）：写 NULL 并在文件末尾说明，别塞占位字符串。
+            loss.blobs = loss.blobs.saturating_add(1);
+            "NULL".to_owned()
+        }
+        (ValueKind::Date, Some(column_value::Value::DateValue(date))) => dialect.quote_text(
+            &format!("{:04}-{:02}-{:02}", date.year, date.month, date.day),
+        ),
+        (ValueKind::Time, Some(column_value::Value::TimeValue(time))) => dialect.quote_text(
+            &format_time_iso(time.hour, time.minute, time.second, time.nanosecond),
+        ),
+        (ValueKind::Datetime, Some(column_value::Value::DatetimeValue(datetime))) => dialect
+            .quote_text(&format_datetime_iso(
+                i64::from(datetime.year),
+                datetime.month,
+                datetime.day,
+                datetime.hour,
+                datetime.minute,
+                datetime.second,
+                datetime.nanosecond,
+            )),
+        (ValueKind::Timestamp, Some(column_value::Value::TimestampValue(timestamp))) => dialect
+            .quote_text(&format_timestamp_iso(
+                timestamp.unix_nanos,
+                timestamp.offset_seconds,
+            )),
+        (ValueKind::Array, Some(column_value::Value::ArrayValue(array))) => {
+            let mut parts = Vec::with_capacity(array.elements.len());
+            for element in &array.elements {
+                parts.push(inline_value(element));
+            }
+            dialect.quote_text(&format!("[{}]", parts.join(", ")))
+        }
+        // 契约要求 kind 与 value 一致；不一致时如实写注释式占位，不编造值。
+        (kind, value) => {
+            dialect.quote_text(&format!("(值缺失：{kind:?} / {})", value_kind_name(value)))
+        }
+    }
+}
+
+/// 从一条查询语句里推断 INSERT 的目标表名（只认**唯一一个顶层 FROM**）。
+///
+/// 结果集本身不带来源表名，导成 INSERT 时必须猜一个：这里只接受「简单 SELECT」
+/// ——跳过字符串、注释与括号内的内容，找深度 0 的 `from`，取它后面的
+/// `[库.]表` 的最后一段。JOIN 多条、子查询里第一个 FROM、`FROM` 后面跟 `(`
+/// 都返回 `None`（调用方退回占位表名并在文件头注明，不猜错表）。
+#[must_use]
+pub fn table_from_sql(sql: &str) -> Option<String> {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut index = 0;
+    let mut depth = 0i32;
+    let mut from_at: Option<usize> = None;
+    while index < chars.len() {
+        let current = chars[index];
+        match current {
+            '\'' => {
+                index += 1;
+                while index < chars.len() {
+                    if chars[index] == '\'' {
+                        // '' 是转义的单引号，继续。
+                        if chars.get(index + 1) == Some(&'\'') {
+                            index += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            '"' | '`' => {
+                let quote = current;
+                index += 1;
+                while index < chars.len() && chars[index] != quote {
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            '-' if chars.get(index + 1) == Some(&'-') => {
+                while index < chars.len() && chars[index] != '\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            '/' if chars.get(index + 1) == Some(&'*') => {
+                index += 2;
+                while index + 1 < chars.len() && !(chars[index] == '*' && chars[index + 1] == '/') {
+                    index += 1;
+                }
+                index += 2;
+                continue;
+            }
+            '(' => {
+                depth += 1;
+                index += 1;
+                continue;
+            }
+            ')' => {
+                depth -= 1;
+                index += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if current.is_ascii_alphabetic() || current == '_' {
+            let start = index;
+            while index < chars.len()
+                && (chars[index].is_ascii_alphanumeric() || chars[index] == '_')
+            {
+                index += 1;
+            }
+            let word: String = chars[start..index].iter().collect();
+            if depth == 0 && word.eq_ignore_ascii_case("from") {
+                if from_at.is_some() {
+                    // 第二个顶层 FROM（UNION / 多语句）：不猜。
+                    return None;
+                }
+                from_at = Some(index);
+            }
+            continue;
+        }
+        index += 1;
+    }
+    let mut index = from_at?;
+    // 跳过空白
+    while index < chars.len() && chars[index].is_whitespace() {
+        index += 1;
+    }
+    if index >= chars.len() || chars[index] == '(' {
+        return None;
+    }
+    // 读 [库.]表（允许带引号），只取最后一段。
+    let mut last: Option<String> = None;
+    loop {
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+        if index >= chars.len() {
+            break;
+        }
+        let (segment, next) = match chars[index] {
+            '"' | '`' => {
+                let quote = chars[index];
+                let start = index + 1;
+                let mut end = start;
+                while end < chars.len() && chars[end] != quote {
+                    end += 1;
+                }
+                (chars[start..end].iter().collect::<String>(), end + 1)
+            }
+            c if c.is_ascii_alphabetic() || c == '_' => {
+                let start = index;
+                let mut end = index;
+                while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
+                {
+                    end += 1;
+                }
+                (chars[start..end].iter().collect::<String>(), end)
+            }
+            _ => break,
+        };
+        last = Some(segment);
+        index = next;
+        // 只在紧邻 `.` 时继续（库.表.列 之外的东西到此为止）。
+        if chars.get(index) == Some(&'.') {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    last.filter(|name| !name.is_empty())
 }
 
 /// 目标路径的现状。
@@ -457,27 +884,45 @@ pub fn inspect_target(path: &Path) -> Result<TargetState, ExportError> {
     }
 }
 
-/// 一行的导出数据：字段 + 被服务端截断的列下标（0 起，与表头对齐）。
+/// 一行的导出数据：CSV 字段 + SQL 用的原始值 + 被服务端截断的列下标（0 起，与表头对齐）。
 ///
 /// 截断信息不放进 [`Field`]：写出的字节与「是否完整」是两件事，分开表达才能让
-/// 转义规则保持简单（#137）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 转义规则保持简单（#137）。**原始值也要留着**：SQL 导出要知道一个值是数字、
+/// 日期还是文本，才能决定加不加引号（`Field` 已经把类型抹平了）。
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExportRow {
-    /// 与表头等宽的字段。
+    /// 与表头等宽的字段（CSV 口径）。
     pub fields: Vec<Field>,
+    /// 同一行的原始值（SQL 口径；长度必须与表头等宽）。
+    pub values: Vec<ColumnValue>,
     /// 被截断的列下标（升序、无重复）。
     pub truncated_columns: Vec<usize>,
 }
 
-/// 流式 CSV 写入器：临时文件 → 成功后改名。
-pub struct CsvSink {
+impl ExportRow {
+    /// 从原始值建立一行（截断列由 `truncated` 标记推出）。
+    #[must_use]
+    pub fn from_values(values: &[ColumnValue], width: usize) -> Self {
+        Self {
+            fields: fields_from_values(values, width),
+            values: values.to_vec(),
+            truncated_columns: truncated_columns(values),
+        }
+    }
+}
+
+/// 流式导出写入器：临时文件 → 成功后改名。
+///
+/// 两种格式共用同一套落盘口径（临时文件、`0600`、`fsync`、原子改名、Drop 清理），
+/// 差别只在 `sql` 是否为 `None`：`None` 写 CSV，`Some(..)` 写一行一条 INSERT。
+pub struct ExportSink {
     target: PathBuf,
     temp: PathBuf,
     writer: Option<BufWriter<File>>,
     /// 复用的单行缓冲：峰值内存与行数无关。
     row_buf: Vec<u8>,
     allow_overwrite: bool,
-    /// 写出口径（公式注入防护开关）。
+    /// 写出口径（公式注入防护开关；SQL 导出不使用它）。
     options: FormatOptions,
     /// 表头列名：文件末尾的截断说明要列出**列名**而不是下标。
     titles: Vec<String>,
@@ -485,6 +930,12 @@ pub struct CsvSink {
     truncated_columns: Vec<usize>,
     /// 被截断的单元格总数（同一列可以出现在多行）。
     truncated_cells: u64,
+    /// SQL 输出的目标表（`None` = CSV）。
+    sql: Option<SqlTable>,
+    /// SQL 输出里被写成 NULL 的 BLOB 个数。
+    sql_blobs: u64,
+    /// SQL 输出里被写成 NULL 的非有限浮点数个数。
+    sql_non_finite: u64,
     rows: u64,
     bytes: u64,
     committed: bool,
@@ -501,14 +952,40 @@ pub struct ExportReport {
     pub target: PathBuf,
 }
 
-impl CsvSink {
-    /// 创建临时文件并准备表头。默认不覆盖已有目标。
+impl ExportSink {
+    /// 创建 **CSV** 写入器。默认不覆盖已有目标。
     ///
     /// `options` 是写出口径：用户关掉公式注入防护时从确认对话框传进来（#137）。
     pub fn create_with_options(
         target: &Path,
         allow_overwrite: bool,
         options: FormatOptions,
+    ) -> Result<Self, ExportError> {
+        Self::create(target, allow_overwrite, options, None)
+    }
+
+    /// 创建 **INSERT 脚本** 写入器（一行一条 `INSERT INTO … VALUES (…);`）。
+    ///
+    /// SQL 不用公式注入防护：它不是给表格软件打开的。
+    pub fn create_sql(
+        target: &Path,
+        allow_overwrite: bool,
+        table: SqlTable,
+    ) -> Result<Self, ExportError> {
+        Self::create(
+            target,
+            allow_overwrite,
+            FormatOptions::default(),
+            Some(table),
+        )
+    }
+
+    /// 两种格式共用的创建路径（临时文件、权限、重名重试）。
+    fn create(
+        target: &Path,
+        allow_overwrite: bool,
+        options: FormatOptions,
+        sql: Option<SqlTable>,
     ) -> Result<Self, ExportError> {
         let state = inspect_target(target)?;
         if state == TargetState::Existing && !allow_overwrite {
@@ -550,6 +1027,9 @@ impl CsvSink {
                         titles: Vec::new(),
                         truncated_columns: Vec::new(),
                         truncated_cells: 0,
+                        sql,
+                        sql_blobs: 0,
+                        sql_non_finite: 0,
                         rows: 0,
                         bytes: 0,
                         committed: false,
@@ -567,17 +1047,26 @@ impl CsvSink {
         )))
     }
 
-    /// 写表头。
+    /// 写表头（CSV）/ 文件头注释 + 建表语句（SQL）。
     pub fn header(&mut self, titles: &[String]) -> Result<(), ExportError> {
         self.titles = titles.to_vec();
         self.row_buf.clear();
-        write_header(&mut self.row_buf, titles, self.options)
-            .map_err(|error| ExportError::Io(error.to_string()))?;
+        if let Some(sql) = self.sql.as_ref() {
+            write_sql_header(&mut self.row_buf, sql, titles);
+        } else {
+            write_header(&mut self.row_buf, titles, self.options)
+                .map_err(|error| ExportError::Io(error.to_string()))?;
+        }
         self.write_buffered()
     }
 
-    /// 写一行字段。
+    /// 写一行 CSV 字段（SQL 导出要走 [`Self::record_row`]：它需要原始值）。
     pub fn record(&mut self, fields: &[Field]) -> Result<(), ExportError> {
+        if self.sql.is_some() {
+            return Err(ExportError::Io(
+                "INSERT 导出必须走 record_row（需要原始值，字段已被格式化成文本）".to_owned(),
+            ));
+        }
         self.row_buf.clear();
         write_record(&mut self.row_buf, fields, self.options)
             .map_err(|error| ExportError::Io(error.to_string()))?;
@@ -587,7 +1076,26 @@ impl CsvSink {
 
     /// 写一行并累计截断列（文件末尾的说明行用它）。
     pub fn record_row(&mut self, row: &ExportRow) -> Result<(), ExportError> {
-        self.record(&row.fields)?;
+        match self.sql.as_ref() {
+            None => self.record(&row.fields)?,
+            Some(sql) => {
+                // SQL 行必须带原始值：缺了就报错，绝不静默写一列 NULL。
+                if row.values.len() != self.titles.len() {
+                    return Err(ExportError::Io(format!(
+                        "INSERT 导出的行缺少原始值（{} 个值 vs 表头 {} 列）",
+                        row.values.len(),
+                        self.titles.len()
+                    )));
+                }
+                self.row_buf.clear();
+                let mut loss = SqlLoss::default();
+                write_insert(&mut self.row_buf, sql, &self.titles, &row.values, &mut loss);
+                self.sql_blobs = self.sql_blobs.saturating_add(loss.blobs);
+                self.sql_non_finite = self.sql_non_finite.saturating_add(loss.non_finite);
+                self.rows += 1;
+                self.write_buffered()?;
+            }
+        }
         for column in &row.truncated_columns {
             self.truncated_cells = self.truncated_cells.saturating_add(1);
             if !self.truncated_columns.contains(column) {
@@ -597,8 +1105,14 @@ impl CsvSink {
         Ok(())
     }
 
-    /// 追加文件末尾的截断说明（只在有截断时写一行，行尾与数据行一致）。
-    fn write_truncation_note(&mut self) -> Result<(), ExportError> {
+    /// 追加文件末尾的说明行（截断 / BLOB / 非有限浮点；没有就什么都不写）。
+    ///
+    /// CSV 用 `# sqarvo:` 注释行 + CRLF；SQL 用 `-- sqarvo:` + LF。
+    fn write_file_notes(&mut self) -> Result<(), ExportError> {
+        let sql_mode = self.sql.is_some();
+        let terminator: &[u8] = if sql_mode { b"\n" } else { ROW_TERMINATOR };
+        let mut lines: Vec<String> = Vec::new();
+
         let mut columns: Vec<usize> = self.truncated_columns.clone();
         columns.sort_unstable();
         let names: Vec<String> = columns
@@ -610,12 +1124,35 @@ impl CsvSink {
                     .unwrap_or_else(|| format!("第 {} 列", index + 1))
             })
             .collect();
-        let Some(note) = truncation_note(self.truncated_cells, &names) else {
+        if let Some(note) = truncation_note(self.truncated_cells, &names) {
+            lines.push(if sql_mode {
+                note.replacen("# ", "-- ", 1)
+            } else {
+                note
+            });
+        }
+        if sql_mode {
+            if self.sql_blobs > 0 {
+                lines.push(format!(
+                    "-- sqarvo: 本文件含 {} 个 BLOB 值写成 NULL（客户端不导出原始字节）",
+                    self.sql_blobs
+                ));
+            }
+            if self.sql_non_finite > 0 {
+                lines.push(format!(
+                    "-- sqarvo: 本文件含 {} 个非有限浮点数（NaN / Inf）写成 NULL",
+                    self.sql_non_finite
+                ));
+            }
+        }
+        if lines.is_empty() {
             return Ok(());
-        };
+        }
         self.row_buf.clear();
-        self.row_buf.extend_from_slice(note.as_bytes());
-        self.row_buf.extend_from_slice(ROW_TERMINATOR);
+        for line in lines {
+            self.row_buf.extend_from_slice(line.as_bytes());
+            self.row_buf.extend_from_slice(terminator);
+        }
         self.write_buffered()
     }
 
@@ -632,8 +1169,8 @@ impl CsvSink {
 
     /// 落盘（flush + fsync）后改名到目标。失败时临时文件由 `Drop` 清理。
     pub fn finish(mut self) -> Result<ExportReport, ExportError> {
-        // 截断说明必须在所有数据行之后、flush 之前写。
-        self.write_truncation_note()?;
+        // 说明行必须在所有数据行之后、flush 之前写。
+        self.write_file_notes()?;
         let Some(mut writer) = self.writer.take() else {
             return Err(ExportError::Io("写入器已关闭".to_owned()));
         };
@@ -662,7 +1199,7 @@ impl CsvSink {
     }
 }
 
-impl Drop for CsvSink {
+impl Drop for ExportSink {
     fn drop(&mut self) {
         if self.committed {
             return;
@@ -886,8 +1423,8 @@ mod tests {
     }
 
     /// 测试用的默认写出口径（公式注入防护开启）。
-    fn sink(target: &Path, allow_overwrite: bool) -> Result<CsvSink, ExportError> {
-        CsvSink::create_with_options(target, allow_overwrite, FormatOptions::default())
+    fn sink(target: &Path, allow_overwrite: bool) -> Result<ExportSink, ExportError> {
+        ExportSink::create_with_options(target, allow_overwrite, FormatOptions::default())
     }
 
     fn export(titles: &[&str], rows: &[Vec<Field>], target: &Path) -> ExportReport {
@@ -1377,6 +1914,7 @@ mod tests {
                 Field::Scalar("1".to_owned()),
                 Field::Text("prefix".to_owned()),
             ],
+            values: Vec::new(),
             truncated_columns: vec![1],
         })
         .expect("第一行");
@@ -1385,6 +1923,7 @@ mod tests {
                 Field::Scalar("2".to_owned()),
                 Field::Text("prefix".to_owned()),
             ],
+            values: Vec::new(),
             truncated_columns: vec![1],
         })
         .expect("第二行");
@@ -1393,6 +1932,7 @@ mod tests {
                 Field::Scalar("3".to_owned()),
                 Field::Text("full".to_owned()),
             ],
+            values: Vec::new(),
             truncated_columns: Vec::new(),
         })
         .expect("第三行");
@@ -1422,6 +1962,7 @@ mod tests {
         sink.header(&["id".to_owned()]).expect("表头");
         sink.record_row(&ExportRow {
             fields: vec![Field::Scalar("1".to_owned())],
+            values: Vec::new(),
             truncated_columns: Vec::new(),
         })
         .expect("一行");
@@ -1526,10 +2067,12 @@ mod tests {
         assert_eq!(tally.written, 0);
         tally.record(&ExportRow {
             fields: vec![Field::Scalar("1".to_owned())],
+            values: Vec::new(),
             truncated_columns: Vec::new(),
         });
         tally.record(&ExportRow {
             fields: vec![Field::Scalar("2".to_owned())],
+            values: Vec::new(),
             truncated_columns: vec![0, 2],
         });
         assert_eq!(tally.written, 2);
@@ -1543,6 +2086,7 @@ mod tests {
         assert!(tally.reached(Some(0)), "0 行也满足 0 行上限");
         tally.record(&ExportRow {
             fields: vec![Field::Null],
+            values: Vec::new(),
             truncated_columns: Vec::new(),
         });
         assert!(!tally.reached(Some(2)));
@@ -1611,6 +2155,175 @@ mod tests {
                 "导出 10 万行 RSS 增量应低于 8 MiB，实际 {delta} KiB"
             );
         }
+    }
+
+    // ---- SQL 导出（v0.2.5） ------------------------------------------
+
+    fn int(value: i64) -> ColumnValue {
+        ColumnValue {
+            kind: ValueKind::Int64 as i32,
+            value: Some(column_value::Value::Int64Value(value)),
+            truncated: false,
+            original_type_name: "bigint".to_owned(),
+        }
+    }
+
+    fn blob(bytes: usize) -> ColumnValue {
+        ColumnValue {
+            kind: ValueKind::Bytes as i32,
+            value: Some(column_value::Value::BytesValue(vec![0u8; bytes])),
+            truncated: false,
+            original_type_name: "blob".to_owned(),
+        }
+    }
+
+    fn sql_table(name: &str, dialect: SqlDialect) -> SqlTable {
+        SqlTable {
+            name: name.to_owned(),
+            dialect,
+            comment: None,
+            prelude: None,
+        }
+    }
+
+    #[test]
+    fn insert_export_writes_one_statement_per_row_with_column_list() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("rows.sql");
+        let mut sink =
+            ExportSink::create_sql(&target, false, sql_table("users", SqlDialect::Standard))
+                .expect("创建导出");
+        sink.header(&["id".to_owned(), "name".to_owned()])
+            .expect("表头");
+        sink.record_row(&ExportRow::from_values(&[int(1), text("O'Brien")], 2))
+            .expect("第一行");
+        sink.record_row(&ExportRow::from_values(&[int(2), null()], 2))
+            .expect("第二行");
+        sink.finish().expect("完成");
+
+        let content = read(&target);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines[0], "-- Sqarvo 导出：表 \"users\"（2 列）");
+        assert_eq!(lines[1], "");
+        assert_eq!(
+            lines[2],
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES (1, 'O''Brien');"
+        );
+        assert_eq!(
+            lines[3],
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES (2, NULL);"
+        );
+        // SQL 文件用 LF，不是 CSV 的 CRLF。
+        assert!(!content.contains('\r'), "{content:?}");
+    }
+
+    #[test]
+    fn insert_export_uses_mysql_quoting_and_escapes_backslash() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("mysql.sql");
+        let mut sink = ExportSink::create_sql(&target, false, sql_table("t", SqlDialect::Mysql))
+            .expect("创建导出");
+        sink.header(&["v".to_owned()]).expect("表头");
+        sink.record_row(&ExportRow::from_values(&[text("a\\b'c")], 1))
+            .expect("一行");
+        sink.finish().expect("完成");
+
+        let content = read(&target);
+        // 反斜杠翻倍、单引号翻倍；标识符用反引号（MariaDB 默认模式下 " 是字符串）。
+        assert!(
+            content.contains("INSERT INTO `t` (`v`) VALUES ('a\\\\b''c');"),
+            "{content:?}"
+        );
+    }
+
+    #[test]
+    fn dump_writes_create_statement_before_rows() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("dump.sql");
+        let mut table = sql_table("t", SqlDialect::Standard);
+        table.prelude = Some("CREATE TABLE t (id INT)".to_owned());
+        table.comment = Some("建表语句由客户端拼装。".to_owned());
+        let mut sink = ExportSink::create_sql(&target, false, table).expect("创建导出");
+        sink.header(&["id".to_owned()]).expect("表头");
+        sink.record_row(&ExportRow::from_values(&[int(7)], 1))
+            .expect("一行");
+        sink.finish().expect("完成");
+
+        let content = read(&target);
+        let create = content.find("CREATE TABLE t (id INT);").expect("建表语句");
+        let insert = content
+            .find("INSERT INTO \"t\" (\"id\") VALUES (7);")
+            .expect("INSERT");
+        assert!(create < insert, "{content:?}");
+        assert!(content.contains("-- 建表语句由客户端拼装。"), "{content:?}");
+    }
+
+    #[test]
+    fn blob_and_non_finite_floats_become_null_with_trailing_note() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let target = dir.path().join("lossy.sql");
+        let mut sink = ExportSink::create_sql(&target, false, sql_table("t", SqlDialect::Standard))
+            .expect("创建导出");
+        sink.header(&["payload".to_owned()]).expect("表头");
+        sink.record_row(&ExportRow::from_values(&[blob(4)], 1))
+            .expect("一行");
+        sink.finish().expect("完成");
+
+        let content = read(&target);
+        assert!(
+            content.contains("INSERT INTO \"t\" (\"payload\") VALUES (NULL);"),
+            "{content:?}"
+        );
+        assert!(
+            content.contains("-- sqarvo: 本文件含 1 个 BLOB 值写成 NULL"),
+            "{content:?}"
+        );
+    }
+
+    #[test]
+    fn table_from_sql_only_accepts_a_single_top_level_from() {
+        assert_eq!(
+            table_from_sql("select * from users where id = 1"),
+            Some("users".to_owned())
+        );
+        assert_eq!(
+            table_from_sql("SELECT a FROM \"main\".\"users\""),
+            Some("users".to_owned())
+        );
+        assert_eq!(
+            table_from_sql("select * from `db`.`t`"),
+            Some("t".to_owned())
+        );
+        // 字符串 / 注释里的 FROM 不算。
+        assert_eq!(
+            table_from_sql("select 'from x' as s -- from y\n from real_t"),
+            Some("real_t".to_owned())
+        );
+        // 两个顶层 FROM（UNION）：不猜。
+        assert_eq!(
+            table_from_sql("select * from a union select * from b"),
+            None
+        );
+        // FROM 后面是子查询：不猜。
+        assert_eq!(table_from_sql("select * from (select 1) t"), None);
+        // 没有 FROM。
+        assert_eq!(table_from_sql("select 1"), None);
+    }
+
+    #[test]
+    fn multi_row_insert_merges_rows_into_one_statement() {
+        let table = sql_table("t", SqlDialect::Standard);
+        let text = multi_row_insert(
+            &table,
+            &["id".to_owned(), "name".to_owned()],
+            &[vec![int(1), text("a")], vec![int(2), text("b")]],
+        );
+        assert_eq!(
+            text,
+            "INSERT INTO \"t\" (\"id\", \"name\") VALUES\n(1, 'a'),\n(2, 'b');\n"
+        );
+        // 空选择不产出一句半截的 SQL。
+        assert!(multi_row_insert(&table, &["id".to_owned()], &[]).is_empty());
     }
 
     fn peak_rss_kib() -> Option<u64> {

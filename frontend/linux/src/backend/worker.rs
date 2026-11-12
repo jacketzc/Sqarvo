@@ -70,8 +70,7 @@ use crate::backend::table::{
 use crate::browse_view::BrowseCapabilities;
 use crate::config::{self, SavedConnection};
 use crate::export::{
-    CsvSink, ExportProgress, ExportRow, ExportTally, FormatOptions, PageStep, TableExportCursor,
-    fields_from_values, truncated_columns,
+    ExportProgress, ExportRow, ExportTally, FormatOptions, PageStep, SqlTable, TableExportCursor,
 };
 use crate::proto::services::v1::{
     ConnectionParams, DisconnectRequest, Filter, InsertRow, IsolationLevel, ObjectRef, RowDelete,
@@ -265,12 +264,21 @@ pub enum Command {
     ExportTable {
         /// 目标表的对象引用（含所属标签的会话 ID：`ExportSource` 拿不到 `tab_id`）。
         object: Box<ObjectRef>,
-        /// 目标文件（绝对路径；写入前由 `CsvSink` 再校验一次）。
+        /// 目标文件（绝对路径；写入前由 `ExportSink` 再校验一次）。
         target: PathBuf,
         /// 表头列名（与界面列顺序一致；导出不受列显隐影响）。
         titles: Vec<String>,
-        /// 写出口径（公式注入防护开关）。
+        /// 写出口径（公式注入防护开关；SQL 导出不使用）。
         options: FormatOptions,
+        /// SQL 输出参数（`None` = CSV，一行一条 INSERT 时是 `Some`）。
+        sql: Option<SqlTable>,
+        /// 是否在文件头写建表语句（转储表）。
+        with_ddl: bool,
+        /// 冻结的浏览查询：`None` = 用该标签当前的排序 / 筛选。
+        ///
+        /// 对象树右键「转储表」没有标签：这里直接给一份「第一页、无排序无筛选」，
+        /// 表名与会话仍在 `object` 里，因此不需要标签也能读完整张表。
+        base: Option<BrowseQuery>,
         /// 目标已存在时是否覆盖（界面已经确认过）。
         allow_overwrite: bool,
         /// 取消位（点取消 / 关闭标签 / 断连 / 退出都会置位；重复置位无副作用）。
@@ -1878,67 +1886,97 @@ async fn worker_loop(
                         target,
                         titles,
                         options,
+                        sql,
+                        with_ddl,
+                        base,
                         allow_overwrite,
                         cancel: token,
                         progress,
                         cancel_after_rows,
                     } => {
-                        // `ExportSource` 只带得到页面对象，带不到 tab_id：用对象里的会话 ID
-                        // 定位标签（一标签一会话，session_id 唯一），再核对表名/库名/类型。
-                        let session_scope = object.session_id.clone();
-                        let found = tabs
-                            .values_mut()
-                            .find(|tab| {
-                                tab.is_ready()
-                                    && tab.session_id == session_scope
-                                    && tab.table.as_ref().is_some_and(|state| {
-                                        state.object.name == object.name
-                                            && state.object.catalog == object.catalog
-                                            && state.object.kind == object.kind
-                                    })
-                            })
-                            .map(|tab| (tab.tab_id.clone(), tab));
-                        let Some((tab_id, tab)) = found else {
-                            eprintln!(
-                                "[export] 忽略整表导出：找不到表 {} 的浏览会话（标签可能已关闭）",
-                                object.name
-                            );
-                            let _ = progress.send(ExportProgress::Failed {
-                                message: "整表导出未开始：这张表的标签已经关闭，或它已被重新打开。"
-                                    .to_owned(),
-                            });
-                            continue;
-                        };
                         let Some(active_session) = session.as_ref() else {
                             let _ = progress.send(ExportProgress::Failed {
                                 message: "整表导出未开始：尚未连接数据库。".to_owned(),
                             });
                             continue;
                         };
-                        let Some(state) = tab.table.as_ref() else {
-                            let _ = progress.send(ExportProgress::Failed {
-                                message: "整表导出未开始：这个标签还没有打开表。".to_owned(),
-                            });
-                            continue;
+                        // 两种来源：
+                        // - `base = Some(..)`：对象树「转储表」，没有标签，会话来自 `object.session_id`；
+                        // - `base = None`：表标签的整表导出，用标签冻结的排序 / 筛选与取消登记。
+                        let (tab_id, job_base, export_registration) = match base {
+                            Some(query) => {
+                                if object.session_id.is_empty() {
+                                    let _ = progress.send(ExportProgress::Failed {
+                                        message: "整表导出未开始：这个对象没有可用的数据库会话。"
+                                            .to_owned(),
+                                    });
+                                    continue;
+                                }
+                                (None, query, None)
+                            }
+                            None => {
+                                // `ExportSource` 只带得到页面对象，带不到 tab_id：用对象里的
+                                // 会话 ID 定位标签（一标签一会话，session_id 唯一），再核对
+                                // 表名/库名/类型。
+                                let session_scope = object.session_id.clone();
+                                let found = tabs
+                                    .values_mut()
+                                    .find(|tab| {
+                                        tab.is_ready()
+                                            && tab.session_id == session_scope
+                                            && tab.table.as_ref().is_some_and(|state| {
+                                                state.object.name == object.name
+                                                    && state.object.catalog == object.catalog
+                                                    && state.object.kind == object.kind
+                                            })
+                                    })
+                                    .map(|tab| (tab.tab_id.clone(), tab));
+                                let Some((tab_id, tab)) = found else {
+                                    eprintln!(
+                                        "[export] 忽略整表导出：找不到表 {} 的浏览会话（标签可能已关闭）",
+                                        object.name
+                                    );
+                                    let _ = progress.send(ExportProgress::Failed {
+                                        message: "整表导出未开始：这张表的标签已经关闭，或它已被重新打开。"
+                                            .to_owned(),
+                                    });
+                                    continue;
+                                };
+                                let Some(state) = tab.table.as_ref() else {
+                                    let _ = progress.send(ExportProgress::Failed {
+                                        message: "整表导出未开始：这个标签还没有打开表。"
+                                            .to_owned(),
+                                    });
+                                    continue;
+                                };
+                                // 冻结排序/筛选：导出期间用户改排序，不会把两种顺序混进同一个文件。
+                                let query = state.query.clone();
+                                let registration = tab.exports.begin(Arc::clone(&token));
+                                (Some(tab_id), query, Some(registration))
+                            }
                         };
-                        // 冻结排序/筛选：导出期间用户改排序，不会把两种顺序混进同一个文件。
                         let job = TableExportJob {
                             client: active_session.client.clone(),
                             object: *object,
-                            base: state.query.clone(),
+                            base: job_base,
                             titles,
                             target,
                             options,
+                            sql,
+                            with_ddl,
                             allow_overwrite,
                             cancel: Arc::clone(&token),
                             progress,
                             cancel_after_rows,
                         };
-                        let id = tab.exports.begin(token);
                         eprintln!(
-                            "[export] t=+{}ms 整表导出开始：标签 {tab_id} 表 {}，排序键 {} 个，筛选 {} 条，页大小 {TABLE_PAGE_SIZE}，目标 {}",
+                            "[export] t=+{}ms 整表导出开始：{} 表 {}，格式 {}，排序键 {} 个，筛选 {} 条，页大小 {TABLE_PAGE_SIZE}，目标 {}",
                             crate::qa::elapsed_ms(),
+                            tab_id
+                                .as_ref()
+                                .map_or_else(|| "对象树".to_owned(), |id| format!("标签 {id}")),
                             job.object.name,
+                            if job.sql.is_some() { "INSERT" } else { "CSV" },
                             job.base.sort.len(),
                             job.base
                                 .filter
@@ -1946,7 +1984,7 @@ async fn worker_loop(
                                 .map_or(0, |filter| filter.conditions.len()),
                             job.target.display()
                         );
-                        spawn_table_export(job, commands_tx.clone(), tab_id, id);
+                        spawn_table_export(job, commands_tx.clone(), tab_id, export_registration);
                     }
                     Command::BrowseToOffset { tab_id, offset } => {
                         let Some(tab) = tabs.get_mut(&tab_id) else { continue };
@@ -3215,9 +3253,9 @@ async fn handle_fetched(
 struct TableExportJob {
     /// 该标签的 gRPC 客户端（跨线程复用同一条通道）。
     client: BackendClient,
-    /// 目标表的对象引用（含标签的会话 ID）。
+    /// 目标表的对象引用（含会话 ID）。
     object: ObjectRef,
-    /// 该标签当前的浏览查询：**排序与筛选从这里冻结**，offset/页大小由游标改写。
+    /// 冻结的浏览查询：**排序与筛选从这里来**，offset/页大小由游标改写。
     base: BrowseQuery,
     /// 表头列名。
     titles: Vec<String>,
@@ -3225,6 +3263,10 @@ struct TableExportJob {
     target: PathBuf,
     /// 写出口径。
     options: FormatOptions,
+    /// SQL 输出参数（`None` = CSV）。
+    sql: Option<SqlTable>,
+    /// 是否在文件头写建表语句（转储表）。
+    with_ddl: bool,
     /// 目标已存在时是否覆盖。
     allow_overwrite: bool,
     /// 取消位（界面 / 关标签 / 断连 / 退出共用同一个）。
@@ -3235,22 +3277,26 @@ struct TableExportJob {
     cancel_after_rows: Option<u64>,
 }
 
-/// 整表导出：在**独立线程**里 offset 逐页读取并流式写 CSV。
+/// 整表导出：在**独立线程**里 offset 逐页读取并流式写出（CSV 或 INSERT）。
 ///
 /// 为什么不放在 worker 的事件循环里：每页 500 行的 RPC 往返与磁盘写入都是阻塞
 /// 耗时，塞进 current-thread 运行时会和「打开标签 / 翻页 / 取消」排同一条队。
 /// 独立线程自带一个单线程运行时，只借用 worker 的 `BackendClient`（gRPC 通道可
-/// 跨线程复用）；读写失败与取消都在这个线程里收尾，临时文件由 `CsvSink::drop` 删除。
+/// 跨线程复用）；读写失败与取消都在这个线程里收尾，临时文件由 `ExportSink::drop` 删除。
+///
+/// `tab` 为 `None` 时是对象树发起的转储（没有标签、不登记取消）：结束时也不发
+/// `TableExportDone`。
 fn spawn_table_export(
     job: TableExportJob,
     sender: UnboundedSender<Command>,
-    tab_id: TabId,
-    id: u64,
+    tab_id: Option<TabId>,
+    registration: Option<u64>,
 ) {
     let done_sender = sender.clone();
     let done_tab = tab_id.clone();
     let error_sender = sender;
-    let error_tab = tab_id;
+    let error_tab = tab_id.clone();
+    let error_registration = registration;
     let error_progress = job.progress.clone();
     let error_target = job.target.clone();
     let spawned = std::thread::Builder::new()
@@ -3267,11 +3313,10 @@ fn spawn_table_export(
                     });
                 }
             }
-            // 线程结束：无论成功、取消还是失败，都要摘掉取消登记。
-            let _ = done_sender.send(Command::Task(TaskUpdate::TableExportDone {
-                tab_id: done_tab,
-                id,
-            }));
+            // 线程结束：无论成功、取消还是失败，都要摘掉取消登记（没有标签的转储不登记）。
+            if let (Some(tab_id), Some(id)) = (done_tab, registration) {
+                let _ = done_sender.send(Command::Task(TaskUpdate::TableExportDone { tab_id, id }));
+            }
         });
     if let Err(error) = spawned {
         let _ = error_progress.send(ExportProgress::Failed {
@@ -3280,28 +3325,87 @@ fn spawn_table_export(
                 error_target.display()
             ),
         });
-        let _ = error_sender.send(Command::Task(TaskUpdate::TableExportDone {
-            tab_id: error_tab,
-            id,
-        }));
+        if let (Some(tab_id), Some(id)) = (error_tab, error_registration) {
+            let _ = error_sender.send(Command::Task(TaskUpdate::TableExportDone { tab_id, id }));
+        }
     }
 }
 
 /// 导出线程主体：逐页读、逐行写，每页回报一次进度。
 ///
-/// 取消位在每个 RPC 之前与每行之间检查一次：取消后立刻丢弃 `CsvSink`
+/// 取消位在每个 RPC 之前与每行之间检查一次：取消后立刻丢弃 `ExportSink`
 /// （临时文件随之删除），目标路径不会出现半截文件。
 async fn run_table_export(job: TableExportJob) {
-    let width = job.titles.len();
-    let mut sink = match CsvSink::create_with_options(&job.target, job.allow_overwrite, job.options)
-    {
+    let mut titles = job.titles.clone();
+    let mut table = job.sql.clone();
+    // 对象树的转储没有标签，列名也就没先读过：INSERT 的列清单必须在现场取，
+    // 否则会写成没有列名的 `INSERT INTO t VALUES (…)`（跨表结构不一定对得上）。
+    if job.sql.is_some() && titles.is_empty() {
+        match job.client.get_columns(&job.object).await {
+            Ok(columns) => {
+                titles = columns.iter().map(|column| column.name.clone()).collect();
+                eprintln!("[export] 转储表：读到 {} 列", titles.len());
+            }
+            Err(error) => {
+                report_export_failed(
+                    &job.progress,
+                    &format!("转储表未开始：读取列信息失败（{}）", error.message()),
+                );
+                return;
+            }
+        }
+    }
+    let width = titles.len();
+    // 转储表：建表语句在现场读（DDL 与数据用同一个会话，不会跨连接错位）。
+    if job.with_ddl {
+        match job.client.get_ddl(&job.object).await {
+            Ok(view) => {
+                let mut comment = table
+                    .as_ref()
+                    .and_then(|table| table.comment.clone())
+                    .unwrap_or_default();
+                if !view.exact {
+                    if !comment.is_empty() {
+                        comment.push('\n');
+                    }
+                    comment
+                        .push_str("建表语句由客户端拼装（不是数据库原文），可能与实际定义有差异。");
+                }
+                let ddl_lines = view.ddl.lines().count();
+                let exact = view.exact;
+                if let Some(table) = table.as_mut() {
+                    table.prelude = Some(view.ddl);
+                    table.comment = (!comment.is_empty()).then_some(comment);
+                }
+                eprintln!("[export] 转储表：已读取建表语句（{ddl_lines} 行，exact={exact}）");
+            }
+            Err(error) => {
+                report_export_failed(
+                    &job.progress,
+                    &format!("转储表未开始：读取建表语句失败（{}）", error.message()),
+                );
+                return;
+            }
+        }
+    }
+    let sink = match table {
+        Some(table) => {
+            crate::export::ExportSink::create_sql(&job.target, job.allow_overwrite, table)
+        }
+        None => crate::export::ExportSink::create_with_options(
+            &job.target,
+            job.allow_overwrite,
+            job.options,
+        ),
+    };
+    let mut sink = match sink {
         Ok(sink) => sink,
         Err(error) => {
             report_export_failed(&job.progress, &error.message());
             return;
         }
     };
-    if let Err(error) = sink.header(&job.titles) {
+    if let Err(error) = sink.header(&titles) {
         // 直接返回：sink 的 Drop 删临时文件。
         report_export_failed(&job.progress, &error.message());
         return;
@@ -3336,10 +3440,7 @@ async fn run_table_export(job: TableExportJob) {
                 stop = true;
                 break;
             }
-            let export_row = ExportRow {
-                fields: fields_from_values(&row.values, width),
-                truncated_columns: truncated_columns(&row.values),
-            };
+            let export_row = ExportRow::from_values(&row.values, width);
             if let Err(error) = sink.record_row(&export_row) {
                 drop(sink);
                 report_export_failed(&job.progress, &error.message());

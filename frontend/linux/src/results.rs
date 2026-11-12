@@ -180,10 +180,14 @@ pub struct ResultsView {
     columns: RefCell<Vec<gtk::ColumnViewColumn>>,
     /// 导出的表头（不含行号列；`set_columns` 时记录）。
     column_names: RefCell<Vec<String>>,
+    /// 最近一次执行的 SQL 文本（「导出为 INSERT 语句」用它推断目标表名）。
+    statement: RefCell<String>,
+    /// 本次执行所在连接的驱动 ID（SQL 方言按它选）。
+    driver: RefCell<Option<String>>,
     /// 已加载行里被服务端截断的单元格数（导出确认对话框统计用）。
     truncated_cells: Cell<u64>,
-    /// 「EX」导出按钮（SQL 结果区，#120）。
-    ex_button: gtk::Button,
+    /// 导出菜单按钮（SQL 结果区；v0.2.5 起与表工具条同一个入口形态）。
+    ex_button: gtk::MenuButton,
     state: Cell<RunState>,
     loaded: Cell<u64>,
     has_more: Cell<bool>,
@@ -238,11 +242,18 @@ impl ResultsView {
         detail_row.append(&detail);
         detail.set_hexpand(true);
 
-        // 导出（EX，#120）：只导出已加载行；由 `sql_page` 接到 `export_ui`。
-        let ex_button = gtk::Button::with_label("EX");
+        // 导出（v0.2.5）：与表工具条**同一个形态**——图标 + 下拉箭头，两项
+        // （导出 CSV / 导出为 INSERT 语句），范围固定为「已加载的结果行」。
+        // 由 `sql_page` 接上菜单与 `export_ui`。
+        let ex_button = gtk::MenuButton::new();
+        ex_button.set_icon_name("document-save-symbolic");
         ex_button.add_css_class("flat");
+        ex_button.set_always_show_arrow(true);
         ex_button.set_sensitive(false);
-        ex_button.set_tooltip_text(Some("导出已加载的查询结果为 CSV（Ctrl+Shift+E）"));
+        ex_button.set_valign(gtk::Align::Center);
+        ex_button.set_tooltip_text(Some(
+            "导出已加载的查询结果：CSV 或 INSERT 语句（Ctrl+Shift+E 直接导出 CSV）",
+        ));
         detail_row.append(&ex_button);
 
         let placeholder = adw::StatusPage::builder().title("尚未执行查询").build();
@@ -292,6 +303,8 @@ impl ResultsView {
             detail,
             columns: RefCell::new(Vec::new()),
             column_names: RefCell::new(Vec::new()),
+            statement: RefCell::new(String::new()),
+            driver: RefCell::new(None),
             truncated_cells: Cell::new(0),
             ex_button,
             state: Cell::new(RunState::Idle),
@@ -345,6 +358,27 @@ impl ResultsView {
         self.column_names.borrow().clone()
     }
 
+    /// 记录本次执行的 SQL（「导出为 INSERT 语句」推断目标表名用）。
+    pub fn set_statement(&self, sql: &str) {
+        self.statement.replace(sql.to_owned());
+    }
+
+    /// 最近一次执行的 SQL（没有执行过时为空串）。
+    pub fn statement(&self) -> String {
+        self.statement.borrow().clone()
+    }
+
+    /// 记录所在连接的驱动 ID（SQL 方言按它选）。
+    pub fn set_driver(&self, driver: Option<&str>) {
+        self.driver
+            .replace(driver.map(str::to_owned).filter(|id| !id.is_empty()));
+    }
+
+    /// SQL 方言（未知驱动按标准写法）。
+    pub fn dialect(&self) -> crate::export::SqlDialect {
+        crate::export::SqlDialect::from_driver(self.driver.borrow().as_deref().unwrap_or(""))
+    }
+
     /// 已加载的行数（`usize`，导出按下标读取）。
     pub fn rows_len(&self) -> usize {
         self.store.rows_len()
@@ -360,8 +394,8 @@ impl ResultsView {
         self.truncated_cells.get()
     }
 
-    /// 「EX」按钮（由 `sql_page` 接线到 `export_ui`）。
-    pub fn ex_button(&self) -> &gtk::Button {
+    /// 导出菜单按钮（由 `sql_page` 接线到 `export_ui`）。
+    pub fn ex_button(&self) -> &gtk::MenuButton {
         &self.ex_button
     }
 
@@ -482,7 +516,7 @@ impl ResultsView {
         self.spinner.set_visible(matches!(state, RunState::Loading));
         self.ex_button.set_sensitive(loaded > 0);
         self.ex_button.set_tooltip_text(Some(&format!(
-            "导出已加载的 {loaded} 行为 CSV（只含内存中已有的行；JSON/SQL 格式在 v0.2.5；Ctrl+Shift+E）"
+            "导出已加载的 {loaded} 行（只含内存中已有的行）：CSV 或 INSERT 语句；Ctrl+Shift+E 直接导出 CSV"
         )));
         if matches!(state, RunState::Loading) {
             self.spinner.start();

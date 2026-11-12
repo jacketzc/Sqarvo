@@ -2460,6 +2460,8 @@ impl TabSet {
                 opened.driver_id,
                 tab.kind.title()
             ));
+            // SQL 导出的引号风格按驱动选（MariaDB 反引号 / SQLite 双引号）。
+            sql.set_driver(&opened.driver_id);
         }
         if let Some(entry) = tab.pending_open.borrow_mut().take() {
             let mut reference = entry.reference.clone();
