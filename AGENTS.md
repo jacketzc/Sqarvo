@@ -510,6 +510,11 @@ from the shipped Linux client, so the code and the contract must agree at all ti
 - 九个功能区已全部在册（186 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
   改行为要同时改契约本节与注册表，直到 P3 删除旧章节。
 - 未实现的平台能力记 `sync = "blocked"` 并进行为契约 §9，不得只标「未同步」。
+- **「这版不要它了」用生命周期，不用「禁用」。** `status = "removed"` + `removed_in`（如 `v0.3.0`）
+  + `removed_reason`；还在用但下版会被取代 / 移除用 `deprecated`。**不许直接删条目** —— 别的端要靠它
+  知道「要去掉什么」；三端都清干净后才归档到 `components/_archived.toml`。退役组件的 `sync` 只写
+  `removed`（该端已清：代码删了或界面隐藏了）/ `present`（还留着）/ `na`，且不记 `spec_hash`。
+  单端不做记 `sync.<plat> = "na"`，那不算全局退役。查询用 `scripts/check-ui-sync.sh pending`。
 
 ## 15. Agent Workflow
 

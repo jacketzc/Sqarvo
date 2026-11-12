@@ -7,6 +7,8 @@
     check [--strict]   结构、引用、哈希检查；有硬错误返回 1
     gen                生成 docs/ui-specification/ui-components.md（不要手改产物）
     mark               把某端记录的 spec_hash 刷新为当前规范哈希
+    pending [--release v0.3.0]
+                       列出退役组件（deprecated / removed）与各端清理进度
 
 设计约束（不要为了「方便」放宽）：
   * 数字只来自 metrics.toml，颜色只来自主题 token —— 组件里出现 px 或 #RRGGBB 是缺陷；
@@ -46,7 +48,9 @@ TRIGGERS = {
     "load",
 }
 STATE_KEYS = {"hover", "active", "selected", "focus", "disabled"}
-SYNC_STATES = {"done", "partial", "none", "na", "blocked"}
+SYNC_STATES = {"done", "partial", "none", "na", "blocked", "removed", "present"}
+# 退役组件（status=removed）只表达清理进度，不表达"做到没有"。
+RETIRED_SYNC_STATES = {"removed", "present", "na"}
 
 # P0 暂定槽位；workspace-model 发布正式槽位 id 后改为读它。
 SLOTS = {
@@ -209,11 +213,17 @@ def check_component(
     status = comp.get("status")
     if status not in STATUSES:
         rep.error(where, f"status = {status!r} 不在 {sorted(STATUSES)}")
-    if status == "deprecated":
-        if not comp.get("superseded_by"):
-            rep.error(where, "status=deprecated 必须给 superseded_by")
-        elif comp["superseded_by"] not in ids:
-            rep.error(where, f"superseded_by = {comp['superseded_by']!r} 不存在")
+    if status in {"deprecated", "removed"}:
+        removed_in = comp.get("removed_in")
+        if not removed_in:
+            rep.error(where, f"status={status} 必须给 removed_in（从哪个版本起不要它）")
+        elif not re.match(r"^v\d+\.\d+", str(removed_in)):
+            rep.error(where, f"removed_in 形如 v0.3.0，现为 {removed_in!r}")
+    if status == "removed" and not comp.get("removed_reason"):
+        rep.error(where, "status=removed 必须给 removed_reason（被合并 / 产品砍掉 / 不再提供）")
+    superseded = comp.get("superseded_by")
+    if superseded and superseded not in ids:
+        rep.error(where, f"superseded_by = {superseded!r} 不存在")
 
     parent = comp.get("parent", "")
     kind = comp.get("kind")
@@ -269,6 +279,13 @@ def check_component(
         if state not in SYNC_STATES:
             rep.error(where, f"sync.{plat}.state = {state!r} 不在 {sorted(SYNC_STATES)}")
             continue
+        allowed = RETIRED_SYNC_STATES if status == "removed" else SYNC_STATES - {"removed", "present"}
+        if state not in allowed:
+            rep.error(
+                where,
+                f"status={status} 时 sync.{plat}.state 只能是 {sorted(allowed)}，现为 {state!r}",
+            )
+            continue
         recorded = entry.get("spec_hash", "")
         current = canonical_hash(comp)
         if state in {"done", "partial"}:
@@ -281,7 +298,7 @@ def check_component(
         if state == "done" and not entry.get("evidence"):
             rep.warn(where, f"sync.{plat}=done 但没有 evidence")
         note = entry.get("note") or comp.get("platform_notes", {}).get(plat)
-        if state in {"partial", "na", "blocked"} and not note:
+        if state in {"partial", "na", "blocked", "present"} and not note:
             rep.warn(where, f"sync.{plat}={state} 但没有说明（note / platform_notes.{plat}）")
 
 
@@ -367,7 +384,8 @@ def join_notes(items: list[str]) -> str:
 def sync_cell(comp: dict, plat: str) -> str:
     entry = comp.get("sync", {}).get(plat, {})
     state = entry.get("state", "?")
-    mark = {"done": "done", "partial": "partial", "none": "—", "na": "na", "blocked": "blocked"}
+    mark = {"done": "done", "partial": "partial", "none": "—", "na": "na", "blocked": "blocked",
+            "removed": "已清", "present": "待清"}
     if state in mark:
         return mark[state]
     return str(state)
@@ -387,7 +405,8 @@ def run_gen() -> int:
     total = sum(len(a["components"]) for a in areas)
     out.append(f"共 {total} 个组件 / {len(areas)} 个功能区。同步列：`done` 已实现并按本规范核对过，")
     out.append("`partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，")
-    out.append("`blocked` 平台能力做不到。")
+    out.append("`blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」")
+    out.append("与「还留着」的清理进度（见文末「待清理」）。")
     out.append("")
 
     for item in areas:
@@ -484,6 +503,25 @@ def run_gen() -> int:
                     )
             out.append("")
 
+    retired = [
+        c for item in areas for c in item["components"] if c.get("status") in {"deprecated", "removed"}
+    ]
+    if retired:
+        retired.sort(key=lambda c: (str(c.get("removed_in", "")), c["id"]))
+        out.append("## 待清理（按版本）")
+        out.append("")
+        out.append("退役组件的条目**不删**：别的端要靠它知道「要去掉什么」。三端都成 `已清` 之后再归档。")
+        out.append("")
+        out.append("| 版本 | 组件 | 名称 | status | Linux | Windows | macOS | 理由 |")
+        out.append("|---|---|---|---|---|---|---|---|")
+        for comp in retired:
+            out.append(
+                f"| {comp.get('removed_in', '?')} | `{comp['id']}` | {comp.get('display_name', '')} "
+                f"| {comp.get('status')} | {sync_cell(comp, 'linux')} | {sync_cell(comp, 'windows')} "
+                f"| {sync_cell(comp, 'macos')} | {comp.get('removed_reason', '—')} |"
+            )
+        out.append("")
+
     OUT_MD.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
     print(f"已生成 {OUT_MD.relative_to(REPO)}（{total} 个组件）")
     return 0
@@ -519,7 +557,7 @@ def run_mark(cid: str | None, plat: str, all_mode: bool) -> int:
             if comp is None:
                 continue
             state = comp.get("sync", {}).get(plat, {}).get("state", "none")
-            if state in {"none", "na", "blocked"}:
+            if state in {"none", "na", "blocked", "removed", "present"}:
                 if not all_mode:
                     print(f"{this_id}: state={state}，不记哈希（先改 state 再 mark）")
                 continue
@@ -553,6 +591,46 @@ def run_mark(cid: str | None, plat: str, all_mode: bool) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 退役清单
+
+
+def run_pending(release: str | None) -> int:
+    """列出退役组件与各端清理进度。retired 组件的 sync 只表达清理到哪一步。"""
+    areas = load_areas()
+    rows = []
+    for item in areas:
+        for comp in item["components"]:
+            if comp.get("status") not in {"deprecated", "removed"}:
+                continue
+            if release and comp.get("removed_in") != release:
+                continue
+            rows.append(comp)
+    if not rows:
+        print("没有退役组件" + (f"（版本 {release}）" if release else "") + "。")
+        return 0
+
+    rows.sort(key=lambda c: (str(c.get("removed_in", "")), c["id"]))
+    label = {"removed": "已清", "present": "待清", "na": "无此项"}
+    current = None
+    for comp in rows:
+        version = str(comp.get("removed_in", "?"))
+        if version != current:
+            print(f"\n{version}")
+            current = version
+        parts = []
+        for plat in PLATFORMS:
+            state = comp.get("sync", {}).get(plat, {}).get("state", "?")
+            parts.append(f"{PLATFORM_LABEL[plat]} {label.get(state, state)}")
+        print(f"  {comp['id']}「{comp.get('display_name', '')}」（{comp.get('status')}）")
+        print("      " + "、".join(parts))
+        if comp.get("removed_reason"):
+            print(f"      理由：{comp['removed_reason']}")
+        if comp.get("superseded_by"):
+            print(f"      替代：{comp['superseded_by']}")
+    print(f"\n共 {len(rows)} 个退役组件" + (f"（{release}）" if release else "") + "。")
+    return 0
+
+
 # ---------------------------------------------------------------- 入口
 
 
@@ -566,6 +644,12 @@ def main(argv: list[str]) -> int:
         return run_check(strict="--strict" in args)
     if cmd == "gen":
         return run_gen()
+    if cmd == "pending":
+        release = None
+        for i, a in enumerate(args):
+            if a == "--release" and i + 1 < len(args):
+                release = args[i + 1]
+        return run_pending(release)
     if cmd == "mark":
         plat = "linux"
         cid = None

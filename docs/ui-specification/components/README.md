@@ -64,8 +64,10 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `id` / `parent` / `display_name` / `kind` | 是 | `parent` 为空仅限区域根 |
-| `status` | 是 | `active` / `deprecated` / `removed` |
-| `superseded_by` | `deprecated` 时必填 | 指向替代它的组件 id |
+| `status` | 是 | `active` / `deprecated` / `removed`，语义见「生命周期」一节 |
+| `removed_in` | `deprecated` / `removed` 时必填 | 从哪个版本起不要它，形如 `v0.3.0` |
+| `removed_reason` | `removed` 时必填 | 一句话：被合并 / 产品砍掉 / 不再提供 |
+| `superseded_by` | 可选 | 有替代组件时指向它的 id（必须存在） |
 | `style.slot` | 建议 | 布局槽，见下方清单 |
 | `style.metrics` | 建议 | `metrics.toml` 的 key 名（**不写数字**） |
 | `style.tokens` | 建议 | 主题 token 名（**不写 `#RRGGBB`**），必须能在 `frontend/linux/src/theme.rs` 找到 `@<name>` |
@@ -106,6 +108,32 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 
 - 三端只承诺**行为**一致（条目、顺序、可用性、快捷键、文案）；分隔线、图标、字号从俗。
 - 原生控件名记在 `native_control`，没实现的端写 `—`，没核对过的写 `待核` —— 不要拿猜测填空。
+
+## 生命周期：active / deprecated / removed
+
+「这版不要它了」是产品决定，不是运行时状态。三值：
+
+| status | 含义 | 必填 |
+|---|---|---|
+| `active` | 在用 | — |
+| `deprecated` | 这版还在用，下版会被取代或移除 | `removed_in`（有替代时加 `superseded_by`） |
+| `removed` | 这版起产品不需要 | `removed_in` + `removed_reason` |
+
+- **removed 的条目不许直接删。** 删了条目，别的端就失去「要去掉什么」的对照物，正好违背这条设计
+  的目的。三端都清干净后，才把它归档到 `components/_archived.toml`（保留可查：上一版删过什么）。
+- 退役组件（`deprecated` / `removed`）的 `sync` 只允许三种值：`removed`（该端已按退役处理：
+  代码删了，或界面隐藏了）/ `present`（还留着，待清理）/ `na`（该端本来就没有）。**这三种不记
+  `spec_hash`** —— 退役没有「按规范实现」这回事，只有一个清理进度。
+- **单端不做 ≠ 全局退役**：macOS 不做密度三档是 `sync.macos = "na"`，不是 `status = "removed"`。
+- 动态查询：`scripts/check-ui-sync.sh pending` 列出所有退役组件与各端清理进度，
+  `--release v0.3.0` 只看某一版。
+
+## 两个「不可用」不要混
+
+| 概念 | 写法 | 语义 |
+|---|---|---|
+| 产品不想要它了 | `status = "removed"` + `removed_in` | 代码删，或界面暂时隐藏；条目保留到三端清零 |
+| 控件在、当前不可用 | `style.states.disabled` / 交互里的前置条件 | 可见 + 置灰 + 原因（见下节） |
 
 ## 禁用项：能力性 vs 状态性
 

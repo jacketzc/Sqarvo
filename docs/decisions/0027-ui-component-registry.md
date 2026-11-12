@@ -75,6 +75,11 @@ ADR 0025 曾提出「动作目录 + 状态机 + 回放 fixture」，其动作目
 - **粒度三条件**：能独立命名、有独立交互或独立可见状态、三端能各自判断「做到没有」。
   缺一就下沉成父组件的状态或子字段。容器与背景板只记 `style`，不编造交互。
 
+`status` 是**生命周期**，不是运行时可用性：`removed`（这版不要了）必须带 `removed_in` +
+`removed_reason`，条目**不删** —— 别的端要靠它知道「要去掉什么」；该组件的 `sync` 改用
+`removed`（已清）/ `present`（还留着）/ `na` 表达清理进度、不记哈希，三端清零后才归档到
+`components/_archived.toml`。运行时灰掉是另一回事（`style.states.disabled` + 前置条件）。
+
 ### 3. 同步：派生而非纪律
 
 每个组件的规范内容（除 `sync` / `impl_notes` / `platform_notes`）算一个 12 位哈希，
