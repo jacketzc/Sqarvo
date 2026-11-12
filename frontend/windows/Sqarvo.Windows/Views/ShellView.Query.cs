@@ -465,6 +465,10 @@ public sealed partial class ShellView
             Header = state.Title,
             IsClosable = true,
             Content = root,
+            // 标签字号取度量（font_ui）：Objects 固定页的标签也是这个字号，两种页并排不会一大一小。
+            // × 是 TabView 模板里的关闭按钮，命中区由框架给（24×24 档，≥ 规范要求的 16），
+            // 这里不覆盖模板（覆盖模板 = #170 的崩溃面）。
+            FontSize = Metrics.FontUi,
         };
         AutomationProperties.SetName(item, state.Title);
         ToolTipService.SetToolTip(item, $"{state.Title} · 查询标签（Ctrl+W 关闭）");

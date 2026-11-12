@@ -347,9 +347,33 @@
                                 固定的 Objects 页：WinUI 的 TabView 没有 pinned 概念，
                                 用 IsClosable=False + 固定首位 + 禁拖 等价实现（不是 API 缺失的将就：
                                 它的行为正好是「不能关、不能挪、恒在最左」，切换其它标签时不受影响）。
-                                宽度取 metrics 的 objects_min_width（84 / 105 / 126）。
+
+                                标签内容按 Linux 的 pinned 页形态（theme.rs `.sqarvo-tab-bar tab.pinned`：
+                                min-width 84、padding 0、字号 ui）——只显图标 + 短文字，紧凑。
+                                图标是 Segoe Fluent Icons 字形（2×2 网格），不是 FontIcon；
+                                宽度 / 高度由 ApplyMetrics 从 Metrics.ObjectsMinWidth / TabStripHeight 写。
+                                TabView 自身的属性（TabWidthMode / IsAddTabButtonVisible / CanReorderTabs）
+                                一律不动：#170 改这几个属性是崩溃边界之一，本片不碰。
                             -->
-                            <TabViewItem x:Name="ObjectsTab" Header="Objects" IsClosable="False" AutomationProperties.Name="Objects 页">
+                            <TabViewItem x:Name="ObjectsTab" IsClosable="False" AutomationProperties.Name="Objects 页">
+                                <TabViewItem.Header>
+                                    <StackPanel
+                                        Orientation="Horizontal"
+                                        VerticalAlignment="Center"
+                                        Spacing="{StaticResource Size.GridPaddingEnd}">
+                                        <TextBlock
+                                            FontFamily="Segoe Fluent Icons"
+                                            Text="&#xF0E2;"
+                                            FontSize="{StaticResource Size.FontUi}"
+                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                            VerticalAlignment="Center" />
+                                        <TextBlock
+                                            Text="Objects"
+                                            FontSize="{StaticResource Size.FontUi}"
+                                            Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                            VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </TabViewItem.Header>
                                 <Grid Background="{ThemeResource SqarvoSurfaceBrush}">
                                     <!--
                                         Objects 页（#171）：标题 + 状态行 + 三列表格 + 「加载更多…」。
