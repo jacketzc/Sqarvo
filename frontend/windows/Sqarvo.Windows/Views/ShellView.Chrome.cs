@@ -44,6 +44,18 @@ public sealed partial class ShellView
     }
 
     /// <summary>
+    /// 对象树的行容器留白：整棵树右缩 grid_padding_end，右侧留 tree_arrow_box（徽标 / 箭头同一根轴）。
+    /// </summary>
+    /// <remarks>
+    /// 行高与行字号在 <c>SqarvoTreeRowStyle</c> 里（item 级），这里只给树控件本身的内边距——
+    /// <see cref="Thickness"/> 没法从 double 资源转，所以放在代码里取 Metrics。
+    /// </remarks>
+    private void ApplyTreeChrome()
+    {
+        ObjectTree.Padding = new Thickness(Metrics.GridPaddingEnd, 0, Metrics.TreeArrowBox, 0);
+    }
+
+    /// <summary>
     /// 状态栏的两格：行 1 左 = 后端状态（已连接 / 连接中 / 未连接 · 驱动 N · 浏览会话 N），
     /// 行 2 右 = 当前会话名（没有会话就是「未连接」）。
     /// </summary>

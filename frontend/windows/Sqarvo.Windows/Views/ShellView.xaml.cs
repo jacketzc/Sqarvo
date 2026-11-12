@@ -786,6 +786,7 @@ public sealed partial class ShellView : UserControl
 
         // 工具条 / 状态栏 / 标签条的结构体尺寸（Thickness / CornerRadius）集中在这里取 Metrics。
         ApplyToolbarMetrics();
+        ApplyTreeChrome();
 
         UpdateTierLabel();
     }

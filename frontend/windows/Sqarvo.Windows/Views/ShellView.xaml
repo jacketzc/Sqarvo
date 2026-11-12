@@ -28,7 +28,12 @@
             BasedOn（也就不会因为默认样式键改名而在启动时炸）。
         -->
         <Style x:Key="SqarvoTreeRowStyle" TargetType="TreeViewItem">
+            <!-- 行高 row_height_tree（24 / 30 / 36）：与 Linux 的 tree_row 同一档 -->
             <Setter Property="MinHeight" Value="{StaticResource Size.RowHeightTree}" />
+            <!-- 行字号 font_ui（12 / 15 / 18）：树行原本吃框架默认 14，比中央空态主标题（font_title 13）
+                 还大一档，标题反而「弱于树」。取 font_ui 后层级才成立。
+                 层级缩进由 TreeViewItem 的默认模板按深度给（框架行为，不覆盖模板）。 -->
+            <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
         </Style>
 
         <!--
@@ -51,7 +56,11 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <!-- 工具条下边线（1px，不参与缩放） -->
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <!-- 状态栏上边线（1px，不参与缩放） -->
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -245,6 +254,14 @@
             </Grid>
         </Border>
 
+        <!-- 工具条下边线：与 Linux 的 `.sqarvo-toolbar` border-bottom 同一口径，
+             厚度取 BorderWidthPxNeverScaled（1px，不随密度档变粗）。 -->
+        <Rectangle
+            Grid.Row="2"
+            Height="{StaticResource Size.BorderWidthPxNeverScaled}"
+            Fill="{ThemeResource SqarvoDividerBrush}"
+            HorizontalAlignment="Stretch" />
+
         <!--
             区域 03 / 04 / 06：树 + 工作区 + 右侧信息面板。
 
@@ -254,7 +271,7 @@
         -->
         <SplitView
             x:Name="InspectorSplit"
-            Grid.Row="2"
+            Grid.Row="3"
             PanePlacement="Right"
             DisplayMode="Inline"
             IsPaneOpen="True">
@@ -440,6 +457,7 @@
                                         <TextBlock
                                             Text="尚未连接数据库"
                                             FontSize="{StaticResource Size.FontTitle}"
+                                            FontWeight="SemiBold"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
@@ -465,6 +483,7 @@
                                         <TextBlock
                                             Text="正在连接…"
                                             FontSize="{StaticResource Size.FontUi}"
+                                            FontWeight="SemiBold"
                                             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
                                             HorizontalAlignment="Center" />
                                     </StackPanel>
@@ -478,6 +497,7 @@
                                         <TextBlock
                                             Text="没有选中对象"
                                             FontSize="{StaticResource Size.FontTitle}"
+                                            FontWeight="SemiBold"
                                             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                             HorizontalAlignment="Center" />
                                         <TextBlock
@@ -528,9 +548,16 @@
             行 2：左 = SQL 摘要；右 = 会话名 + Last Refresh。
             读数只写真实值：分页器没有数据时写「? / ?」，不写死 0 / 0。
         -->
+        <!-- 状态栏上边线：Linux 的 `.sqarvo-status-bar` border-top 同一口径 -->
+        <Rectangle
+            Grid.Row="4"
+            Height="{StaticResource Size.BorderWidthPxNeverScaled}"
+            Fill="{ThemeResource SqarvoDividerBrush}"
+            HorizontalAlignment="Stretch" />
+
         <Grid
             x:Name="StatusBand"
-            Grid.Row="3"
+            Grid.Row="5"
             Background="{ThemeResource SqarvoBandBrush}"
             Height="{StaticResource Size.StatusHeight}">
             <Grid.ColumnDefinitions>
