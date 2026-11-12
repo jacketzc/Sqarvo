@@ -354,10 +354,14 @@ are in `docs/ui-specification/scaling-and-window-sizing.md`; the decision is
   minimum window is `min(960·T, work_area − 32) × min(640·T, work_area − 48)`. A window must never
   exceed the work area, including on 1080p@200% (logical 960×540).
 - Colors come from theme tokens only (`@define-color` / `ThemeResource`). A `#RRGGBB` literal in
-  interface CSS or XAML is a defect; the only allowed hex values are the Linux
-  `LIGHT_PALETTE` / `DARK_PALETTE` constants in `frontend/linux/src/theme.rs`. Windows must respect
-  the system accent color and high contrast; Linux must branch on `AdwStyleManager::is_high_contrast()`
-  where contrast matters.
+  interface CSS or XAML is a defect; the only allowed hex values are the **brand palette**: the Linux
+  `LIGHT_PALETTE` / `DARK_PALETTE` constants in `frontend/linux/src/theme.rs` and the matching
+  `SqarvoBrand*` brushes in `frontend/windows/Sqarvo.Windows/Tokens.xaml`. The two copies must stay
+  value-identical (same three tones per theme), and high contrast uses system colors on both ends.
+  Brand surfaces — primary-action fill, current-kind highlight, accent text/markers — must use the
+  brand mid tone on **every** platform; the OS accent color is only for what the platform itself
+  draws (focus rects, system menus, system dialogs). Linux must branch on
+  `AdwStyleManager::is_high_contrast()` where contrast matters.
 - Dark mode follows the system on all platforms. Do not implement a private light-only fallback;
   Windows sets `Application.RequestedTheme` at startup only and switches at runtime through
   element-level `FrameworkElement.RequestedTheme`, and always keeps the title bar in sync.

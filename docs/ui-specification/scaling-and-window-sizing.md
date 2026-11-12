@@ -310,8 +310,10 @@ surface 未就绪时读不到显示器。第一次 `relayout` 会改窗口尺寸
 7. **Windows 用系统标准密度，不复刻 Linux 的紧凑档**（ADR 0023 已授权：三端区域一致、控件原生，
    密度不必一致）。`compact` 档在 Windows 上映射为「系统标准密度」，`comfortable` / `large`
    映射为系统密度的 1.25 / 1.5 倍（仅缩放在本文件管辖范围内的自有元素）。
-8. **颜色一律走 `ThemeResource`**，XAML 里不写 `#RRGGBB`；高对比用
-   `AccessibilitySettings.HighContrast`，系统强调色用 `UISettings.GetColorValue(UIColorType.Accent)`。
+8. **颜色一律走 `ThemeResource`**，XAML 里不写 `#RRGGBB`；唯一例外是 `Tokens.xaml` 里的
+   `SqarvoBrand*` 品牌色板（与 Linux 的 `LIGHT_PALETTE` / `DARK_PALETTE` 逐值一致）。品牌表面
+   （主按钮填充、当前种类高亮、强调文字）用品牌中档；系统强调色只用于平台自己画的东西
+   （焦点框、系统菜单/对话框）。高对比用 `AccessibilitySettings.HighContrast`，此时不套品牌色。
 
 ## 9. 验收
 

@@ -89,7 +89,7 @@
 | 多窗口归属 | 现在定义「会话属于哪个窗口」 | ADR 0023 说 v0.2.3 不做多窗口，但归属模型不定，以后拆窗口要动会话生命周期 |
 | 数字排版 | 数字列 `tabular-nums`，等宽字体取系统偏好 | 字体规则散进多份 CSS 后是全局搜替换 |
 | 大字段 | 单元格只拿前缀 + 长度，展开再分块取 | 渲染器按整值写，以后改是重写渲染器 |
-| 颜色 | 界面 CSS / XAML 里不出现 `#RRGGBB`（现有唯一例外是 `LIGHT_PALETTE` / `DARK_PALETTE` 两个常量） | 写死一处就放弃高对比与系统强调色跟随 |
+| 颜色 | 界面 CSS / XAML 里不出现 `#RRGGBB`（例外只有品牌色板：Linux 的 `LIGHT_PALETTE` / `DARK_PALETTE` 与 Windows `Tokens.xaml` 的 `SqarvoBrand*`，两处逐值一致；高对比走系统色） | 品牌色不是系统 token，只能显式登记；散写则会放弃高对比 |
 
 ## 取舍
 

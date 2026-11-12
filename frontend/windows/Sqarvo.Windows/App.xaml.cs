@@ -158,6 +158,14 @@ public partial class App : Application
         CrashLog.Trace("app.launch.window.done");
         _window = window;
 
+        // 标题栏 / 任务栏图标：未打包应用没有 AppxManifest 的图标声明，exe 图标由 csproj 的
+        // ApplicationIcon 提供，窗口图标仍要显式指到同一份文件，否则标题栏是默认方块。
+        var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
+        if (System.IO.File.Exists(iconPath))
+        {
+            window.AppWindow.SetIcon(iconPath);
+        }
+
         // 退出前停后端：取消这次关闭，停机完成后再真正关（不阻塞 UI 线程）。
         window.AppWindow.Closing += OnWindowClosing;
 

@@ -4,8 +4,9 @@
 
     两条硬约束（AGENTS.md §8.2、docs/ui-specification/scaling-and-window-sizing.md §8）：
 
-    1. 颜色只用系统 ThemeResource，**这里不出现任何 #RRGGBB**：写死一处就放弃高对比与
-       系统强调色跟随（换主题时那几个像素不会变，而且没人会去查）。
+    1. 颜色默认只用系统 ThemeResource。唯一例外是**品牌色板**：本文件里的四个
+       SqarvoBrand* 与 theme.rs 的 LIGHT_PALETTE / DARK_PALETTE 同值（两处必须逐值一致），
+       因为品牌色不是系统 token。高对比档不定义品牌色，沿用系统色。
     2. 尺寸不在 XAML 里写字面量：`Size.*` 由 frontend/windows/tools/gen-metrics.ps1 从
        docs/ui-specification/metrics.toml 生成到 Metrics.g.cs，运行时由
        Theming/MetricsResources.cs 写进 Application.Resources。页面只引用键名。
@@ -32,6 +33,11 @@
 
         <!-- 默认：跟随当前系统主题 -->
         <ResourceDictionary x:Key="Default">
+            <!-- 品牌色（与 frontend/linux/src/theme.rs 的 LIGHT_PALETTE 逐值一致；两处必须同步改）。 -->
+            <SolidColorBrush x:Key="SqarvoBrandDeepBrush" Color="#5B3256" />
+            <SolidColorBrush x:Key="SqarvoBrandMidBrush" Color="#A66FA0" />
+            <SolidColorBrush x:Key="SqarvoBrandSoftBrush" Color="#D8B7D3" />
+            <SolidColorBrush x:Key="SqarvoOnBrandTextBrush" Color="#FFFFFF" />
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
@@ -43,12 +49,11 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
             <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
-            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
-                 用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
-                 换主题/高对比时统一由 ThemeDictionaries 接管。 -->
-            <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="AccentFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="SqarvoBrandMidBrush" />
+            <!-- 主操作（工具条的「连接」）：品牌中档填充 + 反白文字。别名让 XAML 只认
+                 Sqarvo* 这一组键；高对比档不定义品牌色，仍指向系统强调色。 -->
+            <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="SqarvoBrandMidBrush" />
+            <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
             <!-- 列表选中行底色（Objects 页三列表格；与数据网格同一档浅底） -->
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
@@ -85,6 +90,11 @@
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Light">
+            <!-- 品牌色（与 frontend/linux/src/theme.rs 的 LIGHT_PALETTE 逐值一致；两处必须同步改）。 -->
+            <SolidColorBrush x:Key="SqarvoBrandDeepBrush" Color="#5B3256" />
+            <SolidColorBrush x:Key="SqarvoBrandMidBrush" Color="#A66FA0" />
+            <SolidColorBrush x:Key="SqarvoBrandSoftBrush" Color="#D8B7D3" />
+            <SolidColorBrush x:Key="SqarvoOnBrandTextBrush" Color="#FFFFFF" />
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
@@ -96,12 +106,11 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
             <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
-            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
-                 用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
-                 换主题/高对比时统一由 ThemeDictionaries 接管。 -->
-            <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="AccentFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="SqarvoBrandMidBrush" />
+            <!-- 主操作（工具条的「连接」）：品牌中档填充 + 反白文字。别名让 XAML 只认
+                 Sqarvo* 这一组键；高对比档不定义品牌色，仍指向系统强调色。 -->
+            <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="SqarvoBrandMidBrush" />
+            <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
@@ -134,6 +143,12 @@
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Dark">
+            <!-- 品牌色（暗色档，与 theme.rs 的 DARK_PALETTE 逐值一致；两色块必须同步改）。 -->
+            <SolidColorBrush x:Key="SqarvoBrandDeepBrush" Color="#7A456F" />
+            <SolidColorBrush x:Key="SqarvoBrandMidBrush" Color="#B98AB2" />
+            <SolidColorBrush x:Key="SqarvoBrandSoftBrush" Color="#4A2E45" />
+            <!-- 暗色下中档被提亮，白字只剩 2.86:1：Linux 用 @view_bg_color 当前景，这里取同一档。 -->
+            <StaticResource x:Key="SqarvoOnBrandTextBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
@@ -145,12 +160,11 @@
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
             <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
             <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
-            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
-                 用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
-                 换主题/高对比时统一由 ThemeDictionaries 接管。 -->
-            <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="AccentFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+            <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="SqarvoBrandMidBrush" />
+            <!-- 主操作（工具条的「连接」）：品牌中档填充 + 反白文字。别名让 XAML 只认
+                 Sqarvo* 这一组键；高对比档不定义品牌色，仍指向系统强调色。 -->
+            <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="SqarvoBrandMidBrush" />
+            <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
@@ -196,9 +210,8 @@
             <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
             <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
-            <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
-                 用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
-                 换主题/高对比时统一由 ThemeDictionaries 接管。 -->
+            <!-- 主操作（工具条的「连接」）：品牌中档填充 + 反白文字。别名让 XAML 只认
+                 Sqarvo* 这一组键；高对比档不定义品牌色，仍指向系统强调色。 -->
             <StaticResource x:Key="SqarvoAccentFillBrush" ResourceKey="AccentFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoOnAccentTextBrush" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTransparentBrush" ResourceKey="SubtleFillColorTransparentBrush" />
