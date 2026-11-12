@@ -35,7 +35,7 @@
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
@@ -84,7 +84,7 @@
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
@@ -129,7 +129,7 @@
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
@@ -175,7 +175,7 @@
             <StaticResource x:Key="SqarvoAppBackgroundBrush" ResourceKey="ApplicationPageBackgroundThemeBrush" />
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
-            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="DividerStrokeColorDefaultBrush" />
+            <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
