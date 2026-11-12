@@ -29,7 +29,7 @@ status = "active"
 style.metrics = ["header_height", "toolbar_height", "status_height", "min_window_width", "min_window_height"]
 impl_notes = [
   "自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。",
-  "Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 有菜单行。",
+  "Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 同样没有独立菜单行——菜单收进自绘标题行右侧的汉堡按钮（v0.2.5 起）。",
   "页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。",
 ]
 
@@ -41,7 +41,7 @@ evidence = "§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar �
 [component.sync.windows]
 state = "partial"
 spec_hash = "f398d9283e00"
-note = "六区域外壳是 #169 稳定版：系统标题栏 + 菜单行 + CommandBar 工具条 + TreeView + TabView + 两行状态栏 + SplitView 信息面板（§7.1）；工具条种类入口未接线、无界面密度菜单。"
+note = "六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。"
 
 [component.sync.macos]
 state = "none"
@@ -122,7 +122,7 @@ impl_notes = [
   "没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。",
 ]
 
-platform_notes.windows = "系统标题栏 + 菜单行：菜单行高度由外壳高减去系统标题栏实测值得出（按档位 24 / 30 / 36，这两组数字未进 metrics）；标题栏高度由系统给，实测不同时按实测报外壳总高，不裁剪系统区域（§1.6）。"
+platform_notes.windows = "自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。"
 
 [component.sync.linux]
 state = "done"
@@ -132,7 +132,7 @@ evidence = "§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主�
 [component.sync.windows]
 state = "partial"
 spec_hash = "fbda8f702e58"
-note = "有系统标题栏与菜单行（§7.1「六区域外壳」）；菜单行高度推出的口径见 §1.6，标题 / 副标题的更新规则未核对。"
+note = "有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。"
 
 [component.sync.macos]
 state = "none"
@@ -208,7 +208,7 @@ display_name = "主菜单"
 kind = "control"
 status = "active"
 style.icon = ["menu.open"]
-native_control = "gtk:MenuButton(GMenu → PopoverMenu) / winui:MenuBar / swift:—"
+native_control = "gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—"
 style.slot = "menubar"
 style.metrics = ["min_target", "icon_box"]
 a11y.name = "主菜单（文件 / 表 / 视图 / 帮助）"
@@ -225,7 +225,7 @@ precondition = "窗口存在"
 result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项"
 source = "src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216"
 
-platform_notes.windows = "菜单行由 WinUI 的 MenuBar / MenuBarItem 承载。显式 FontSize 不生效：在 MenuBar、MenuBarItem、MenuFlyoutItem 三处写 Size.FontUi 之后，同一窗口的 A/B 像素 diff 显示菜单文字所在行（y 87-105 @2x）没有任何变化；菜单行字号由框架模板固定，与 font_ui 的差值未量准（多次独立测量落在 9.5–11.5 DIP 之间，不一致），因此本端不写具体差值。要精确对齐只能自绘菜单行（L3，AGENTS §8.1 禁止），按「控件原生」接受该差异；菜单条目、顺序、可用性与快捷键仍按规范。"
+platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，三个 MenuFlyoutSubItem（文件 / 表 / 帮助）装同一批条目，条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
@@ -235,7 +235,7 @@ evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
 [component.sync.windows]
 state = "partial"
 spec_hash = "1bb20680efda"
-note = "Windows 用菜单行承载同一批条目（§7.1「系统标题栏 + 菜单行」），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
+note = "Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
 
 [component.sync.macos]
 state = "none"

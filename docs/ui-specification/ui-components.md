@@ -1764,8 +1764,8 @@ kind `control` · status `active` · parent `objects_page`
 kind `area` · status `active`
 
 - 样式：尺寸 `header_height`、`toolbar_height`、`status_height`、`min_window_width`、`min_window_height`
-- 同步：Linux done（§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序）；Windows partial（六区域外壳是 #169 稳定版：系统标题栏 + 菜单行 + CommandBar 工具条 + TreeView + TabView + 两行状态栏 + SplitView 信息面板（§7.1）；工具条种类入口未接线、无界面密度菜单。）；macOS none
-- 实现备注：自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 有菜单行。页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。
+- 同步：Linux done（§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序）；Windows partial（六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。）；macOS none
+- 实现备注：自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 同样没有独立菜单行——菜单收进自绘标题行右侧的汉堡按钮（v0.2.5 起）。页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。
 
 ### `shell.window` 主窗口（最小尺寸 · 几何恢复 · 关闭守卫入口）
 
@@ -1789,8 +1789,8 @@ kind `container` · status `active` · parent `shell`
 kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `header`；尺寸 `header_height`、`font_ui`、`gap_md`；颜色 `sqarvo_separator`
-- 平台差异：Windows：系统标题栏 + 菜单行：菜单行高度由外壳高减去系统标题栏实测值得出（按档位 24 / 30 / 36，这两组数字未进 metrics）；标题栏高度由系统给，实测不同时按实测报外壳总高，不裁剪系统区域（§1.6）。
-- 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）；Windows partial（有系统标题栏与菜单行（§7.1「六区域外壳」）；菜单行高度推出的口径见 §1.6，标题 / 副标题的更新规则未核对。）；macOS none
+- 平台差异：Windows：自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。
+- 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）；Windows partial（有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。）；macOS none
 - 实现备注：Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。
 
 ### `shell.title` 标题与副标题
@@ -1818,8 +1818,8 @@ kind `control` · status `active` · parent `shell`
 - 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`
 - 无障碍：可访问名「主菜单（文件 / 表 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
-- 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:MenuBar / swift:—
-- 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用菜单行承载同一批条目（§7.1「系统标题栏 + 菜单行」），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
+- 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
+- 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
