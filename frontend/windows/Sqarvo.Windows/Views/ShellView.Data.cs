@@ -338,13 +338,20 @@ public sealed partial class ShellView
         }
 
         var flyout = new MenuFlyout();
-        var browse = new MenuFlyoutItem { Text = "浏览数据" };
+        var browse = new MenuFlyoutItem
+        {
+            Text = "浏览数据",
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
+        };
         browse.Click += async (_, _) => await OpenTableDataAsync(target);
         flyout.Items.Add(browse);
 
         var caption = new MenuFlyoutItem
         {
             Text = $"{target.Entry.Name} · {target.Entry.KindLabel}",
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
             IsEnabled = false,
         };
         flyout.Items.Add(caption);
@@ -536,6 +543,7 @@ public sealed partial class ShellView
         {
             Text = "双击单元格或 F2 编辑 · Enter 暂存 · Esc 取消 · Ctrl+S 提交 · Ctrl+Z 撤销",
             FontSize = Metrics.FontStatus,
+            FontWeight = TypeTokens.Ui,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(Metrics.InspectorGap, 0, 0, 0),
@@ -553,6 +561,7 @@ public sealed partial class ShellView
         tab.StateText = new TextBlock
         {
             FontSize = Metrics.FontStatus,
+            FontWeight = TypeTokens.Ui,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd),
             Visibility = Visibility.Collapsed,
@@ -565,6 +574,7 @@ public sealed partial class ShellView
         tab.BannerText = new TextBlock
         {
             FontSize = Metrics.FontStatus,
+            FontWeight = TypeTokens.Ui,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd),
             Visibility = Visibility.Collapsed,
@@ -582,6 +592,7 @@ public sealed partial class ShellView
         tab.MetaText = new TextBlock
         {
             FontSize = Metrics.FontPanel,
+            FontWeight = TypeTokens.Ui,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd),
         };
@@ -652,6 +663,10 @@ public sealed partial class ShellView
             Header = tab.Title,
             IsClosable = true,
             Content = root,
+            // 标签字号取度量（font_ui）：与查询标签、Objects 固定页同一档，
+            // 否则表数据标签吃框架默认 14，同类标签并排会一大一小。
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
         };
         AutomationProperties.SetName(item, tab.Title);
         ToolTipService.SetToolTip(item, $"{tab.Title} · 表数据标签（Ctrl+W 关闭；Ctrl+S 提交 / Ctrl+Z 撤销）");
@@ -666,6 +681,7 @@ public sealed partial class ShellView
         Height = Metrics.SecondaryMinHeight,
         Padding = new Thickness(Metrics.InspectorGap, 0, Metrics.InspectorGap, 0),
         FontSize = Metrics.FontStatus,
+        FontWeight = TypeTokens.Ui,
     };
 
     /// <summary>读一页（`BrowseTable`）。首页替换、续拉追加；任何失败都保留已取到的行。</summary>
@@ -1666,13 +1682,13 @@ public sealed partial class ShellView
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.ColumnWidth) });
         }
 
-        var number = AddDataCell(grid, 0, "行号", secondary: true, right: true, mono: true, nullCell: false);
+        var number = AddDataCell(grid, 0, "行号", secondary: true, right: true, mono: true, nullCell: false, header: true);
         AutomationProperties.SetName(number, "行号");
 
         for (var index = 0; index < page.Columns.Count; index++)
         {
             var column = page.Columns[index];
-            var cell = AddDataCell(grid, index + 1, column.HeaderText, secondary: true, right: false, mono: false, nullCell: false);
+            var cell = AddDataCell(grid, index + 1, column.HeaderText, secondary: true, right: false, mono: false, nullCell: false, header: true);
             if (column.PrimaryKey && ThemeBrush("SqarvoAccentTextBrush") is { } accent)
             {
                 // 主键列标记：用强调色（主题 token，不是颜色字面量）。
@@ -1779,6 +1795,7 @@ public sealed partial class ShellView
                 {
                     Text = edit.Draft,
                     FontSize = Metrics.FontDataCell,
+                    FontWeight = TypeTokens.Cell,
                     FontFamily = MonoFont(),
                     PlaceholderText = isNull ? "NULL" : string.Empty,
                     IsSpellCheckEnabled = false,
@@ -1862,12 +1879,17 @@ public sealed partial class ShellView
         bool secondary,
         bool right,
         bool mono,
-        bool nullCell)
+        bool nullCell,
+        bool header = false)
     {
         var block = new TextBlock
         {
             Text = text,
-            FontSize = mono ? Metrics.FontStatus : Metrics.FontDataCell,
+            // 列头 12（font_ui + 600）、行号 11（font_status）、数据格 13（font_data_cell + 500）。
+            FontSize = header ? Metrics.FontUi : mono ? Metrics.FontStatus : Metrics.FontDataCell,
+            // 列头 title(600) / 行号 ui(400) / 数据 cell(500)：与 Linux 的
+            // columnview header（fw_title）与 .sqarvo-cell（fw_cell）同一口径。
+            FontWeight = header ? TypeTokens.Title : mono ? TypeTokens.Ui : TypeTokens.Cell,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = right ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             TextTrimming = TextTrimming.CharacterEllipsis,

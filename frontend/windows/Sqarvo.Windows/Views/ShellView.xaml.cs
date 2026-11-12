@@ -477,6 +477,7 @@ public sealed partial class ShellView : UserControl
         }
 
         root.IsExpanded = true;
+
         RenderObjectsPage();
         RenderInspector();
         ApplyWorkspaceVisibility();

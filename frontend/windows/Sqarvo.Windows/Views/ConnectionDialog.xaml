@@ -19,7 +19,9 @@
     PrimaryButtonText="保存并连接"
     CloseButtonText="取消"
     PrimaryButtonClick="OnPrimaryClick"
-    DefaultButton="Primary">
+    DefaultButton="Primary"
+    FontSize="{StaticResource Size.FontUi}"
+    FontWeight="{StaticResource Weight.Ui}">
 
     <StackPanel
         MinWidth="{StaticResource Size.FilterPanelWidth}"
@@ -30,34 +32,46 @@
             Header="驱动"
             DisplayMemberPath="Label"
             HorizontalAlignment="Stretch"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             AutomationProperties.Name="驱动"
             SelectionChanged="OnDriverChanged" />
 
         <TextBox
             x:Name="HostBox"
             Header="主机"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             AutomationProperties.Name="主机" />
 
         <TextBox
             x:Name="PortBox"
             Header="端口"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             InputScope="Number"
             AutomationProperties.Name="端口" />
 
         <TextBox
             x:Name="UsernameBox"
             Header="用户名"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             AutomationProperties.Name="用户名" />
 
         <PasswordBox
             x:Name="PasswordBox"
             Header="密码"
             PasswordRevealMode="Peek"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             AutomationProperties.Name="密码" />
 
         <TextBox
             x:Name="DatabaseBox"
             Header="数据库（可留空：连上后浏览所有库）"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             AutomationProperties.Name="数据库" />
 
         <ComboBox
@@ -65,11 +79,14 @@
             Header="TLS"
             DisplayMemberPath="Label"
             HorizontalAlignment="Stretch"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             AutomationProperties.Name="TLS 模式" />
 
         <TextBlock
             Text="密码只写入 Windows 凭据管理器；connections.json 里只保存引用（credential_ref），不保存密码。"
             FontSize="{StaticResource Size.FontStatus}"
+            FontWeight="{StaticResource Weight.Ui}"
             Foreground="{ThemeResource SqarvoTextSecondaryBrush}"
             TextWrapping="Wrap" />
 
@@ -77,6 +94,8 @@
             x:Name="TestButton"
             Content="测试连接"
             MinHeight="{StaticResource Size.MinTarget}"
+            FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             HorizontalAlignment="Left"
             AutomationProperties.Name="测试连接"
             Click="OnTestClick" />
@@ -86,6 +105,7 @@
             AutomationProperties.Name="测试结果"
             Visibility="Collapsed"
             FontSize="{StaticResource Size.FontUi}"
+            FontWeight="{StaticResource Weight.Ui}"
             Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
             IsTextSelectionEnabled="True"
             TextWrapping="Wrap" />
