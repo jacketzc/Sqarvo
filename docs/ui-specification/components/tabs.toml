@@ -435,7 +435,7 @@ evidence = "§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分�
 [component.sync.windows]
 state = "done"
 spec_hash = "19146e5c30b7"
-evidence = "§7.1 查询标签 / SQL 编辑器两行：执行 / 取消同一入口、跑起来文案变「取消」、Ctrl+Enter 执行、Ctrl+. 取消、空 SQL 只提示不清理结果"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700"
 
 [component.sync.macos]
 state = "none"
@@ -478,9 +478,10 @@ spec_hash = "e0c1f76592db"
 evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "e0c1f76592db"
-evidence = "§7.1 SQL 编辑器行：行号沟 + 等宽多行 TextBox（AcceptsReturn、不折行、自动滚动条）、无语法高亮"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:351；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:323"
+note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
 
 [component.sync.macos]
 state = "none"
@@ -523,7 +524,7 @@ evidence = "§5.11 保留的一句话；results.rs set_state 的可见性与 CSS
 [component.sync.windows]
 state = "done"
 spec_hash = "0252eb126c67"
-evidence = "§7.1 结果区五态行：Loading / Empty / Error / Cancelled / ReadOnly 五态互斥，Error 与 Cancelled 保留已加载行"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:379"
 
 [component.sync.macos]
 state = "none"
@@ -588,7 +589,7 @@ evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题
 [component.sync.windows]
 state = "done"
 spec_hash = "719abcce7626"
-evidence = "§7.1 结果网格行：列头「列名 · 原始类型」（没有类型信息时只写列名）+ 多结果集在表头上一行写「结果集 K 段」，K > 1 补「只显示第 1 段」"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:68；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:402"
 
 [component.sync.macos]
 state = "none"
@@ -624,9 +625,10 @@ spec_hash = "86ce86d71e39"
 evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "86ce86d71e39"
-evidence = "§7.1 结果网格行：只建视口内的行、上下用高度占位撑出总高、表头与行区横向同步滚动"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1139；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1166"
+note = "视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。"
 
 [component.sync.macos]
 state = "none"
@@ -667,7 +669,7 @@ evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）�
 [component.sync.windows]
 state = "done"
 spec_hash = "646be58b5fc1"
-evidence = "§7.1 结果网格行：每批 200 行由滚动到接近末尾（距末行 ≤ 20 行）或点「加载更多」触发 FetchBatch，同一时刻最多一批在飞"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52"
 
 [component.sync.macos]
 state = "none"

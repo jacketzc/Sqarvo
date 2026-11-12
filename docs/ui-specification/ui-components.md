@@ -936,18 +936,18 @@ kind `control` · status `active` · parent `dialogs.about`
 |---|---|---|---|---|---|---|
 | `inspector` | 信息面板 | area | active | done | partial | — |
 | `inspector.header` | 　标题块（标题 · 副标题）与分隔线 | container | active | done | partial | — |
-| `inspector.empty` | 　空态（内容区留白） | container | active | done | done | — |
+| `inspector.empty` | 　空态（内容区留白） | container | active | done | partial | — |
 | `inspector.connection` | 　连接视图（标题 · 副标题 · 字段行） | container | active | done | done | — |
 | `inspector.field` | 　字段行（标签 · 值） | row | active | done | done | — |
-| `inspector.catalog` | 　库 / 分组视图（标题 · 副标题 · 计数） | container | active | done | done | — |
-| `inspector.object` | 　表 / 视图视图（标题 · 切换条 · 两页） | container | active | done | done | — |
-| `inspector.pane_switch` | 　[DDL] / [表信息] 切换条 | container | active | done | done | — |
+| `inspector.catalog` | 　库 / 分组视图（标题 · 副标题 · 计数） | container | active | done | partial | — |
+| `inspector.object` | 　表 / 视图视图（标题 · 切换条 · 两页） | container | active | done | partial | — |
+| `inspector.pane_switch` | 　[DDL] / [表信息] 切换条 | container | active | done | partial | — |
 | `inspector.pane_switch.ddl` | 　　「DDL」按钮 | control | active | done | done | — |
 | `inspector.pane_switch.info` | 　　「表信息」按钮 | control | active | done | done | — |
 | `inspector.object.info` | 　　表信息页（列 · 主键 · 索引 · 触发器 · 已加载行数） | container | active | done | partial | — |
 | `inspector.object.info.columns` | 　　　列清单（列名 · 类型 · 可空 · 主键） | container | active | done | done | — |
 | `inspector.object.info.columns.row` | 　　　　列行（列名 · 类型 · 可空 · 主键标记） | row | active | done | done | — |
-| `inspector.object.info.pk` | 　　　主键节（主键列 · 读不到时的说明行） | control | active | done | done | — |
+| `inspector.object.info.pk` | 　　　主键节（主键列 · 读不到时的说明行） | control | active | done | partial | — |
 | `inspector.object.ddl` | 　　DDL 正文 | container | active | done | done | — |
 | `inspector.object.ddl.warning` | 　　　DDL 琥珀警示（exact=false） | control | active | done | done | — |
 | `inspector.column` | 　列视图（六项属性） | container | active | done | — | — |
@@ -981,7 +981,7 @@ kind `container` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_xl`
-- 同步：Linux done（§6 没有选中对象；§5 空态与选中态共用外壳（inspector.rs::show_empty））；Windows done（§7.1 信息面板空态：内容区留白）；macOS none
+- 同步：Linux done（§6 没有选中对象；§5 空态与选中态共用外壳（inspector.rs::show_empty））；Windows partial（无选中时内容区留白（RenderInspector 的默认分支只清空 InspectorBody，外壳与「信息面板」标题保留）；但选中分组行时 Windows 走库视图（带「当前分组」字段），没有回到规范要求的空态。）；macOS none
 - 实现备注：空页是一个不带子控件的盒子：标题仍写「信息面板」、分隔线仍在，内容区留白；说明文字由标题承担（§5）。启动态还没有连上任何数据库时也走这一页，与连接态共用同一份实现，不存在「启动态无面板」这一档。分组行被选中时同样落到这一页：分组没有对象信息，面板不另立一套空白文案。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -994,7 +994,7 @@ kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_md`、`gap_lg`
 - 平台差异：Windows：§7.1：字段行给驱动、地址、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、会话前 8 位；不记连接延迟与会话数。
-- 同步：Linux done（§6 选中连接；inspector.rs::connection_facts 与 show_connection）；Windows done（§7.1 信息面板：连接（字段行与「拿不到的不出现」））；macOS none
+- 同步：Linux done（§6 选中连接；inspector.rs::connection_facts 与 show_connection）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:937；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:954；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:963）；macOS none
 - 实现备注：字段行顺序固定：驱动、地址、默认库、用户、TLS、凭据引用、服务端版本、连接延迟、会话数。地址是 host:port 或文件路径，不拼用户名与库名（它们各有独立字段）。服务器型驱动没有默认库时写「未指定」（吞掉整行会像漏了字段）；文件型驱动没有 TLS 一层，这一行整行不出现。凭据引用只写 credential_ref，面板里没有明文密码。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1008,7 +1008,7 @@ kind `row` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_sm`、`gap_none`
 - 无障碍：可访问名「（行内容：字段标签 + 值）」
-- 同步：Linux done（§5 拿不到的字段不出现；inspector.rs::fill_facts）；Windows done（§7.1 信息面板：连接 / 库 / 分组（拿不到的字段不出现））；macOS none
+- 同步：Linux done（§5 拿不到的字段不出现；inspector.rs::fill_facts）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1256；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1262）；macOS none
 - 实现备注：两行垂直布局：标签 dim-label、值同字号同字重（font_panel，不加粗）；值逐字折行、可选中复制。值是长 token（如凭据引用）时按字符折行：按词折行会把面板的最小宽度顶大，面板就拖不回 inspector_width。值为空白时整行不渲染，所以「拿不到」表现为这一行不出现（§5），不用占位符号冒充。连接、库、列三种视图共用这一份行模板，不各自拼一套。
 
 ### `inspector.catalog` 库 / 分组视图（标题 · 副标题 · 计数）
@@ -1016,7 +1016,7 @@ kind `row` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_md`、`gap_lg`
-- 同步：Linux done（§6 选中库 / catalog；inspector.rs::catalog_facts 与 tree.group_counts 接线）；Windows done（§7.1 信息面板：库 / 分组（计数只来自已展开的分组层））；macOS none
+- 同步：Linux done（§6 选中库 / catalog；inspector.rs::catalog_facts 与 tree.group_counts 接线）；Windows partial（标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。）；macOS none
 - 实现备注：字段：名称、表计数、视图计数；计数只来自树里已经展开过的分组层，打开一个库不顺带扫整库。某个分组还没展开过时那一行不出现（不主动全量统计，也不写 0 冒充空库）。该层还有下一页时补一行「计数说明：按已展开的结果统计（该层还有下一页）」，不把当前页当总数。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1029,7 +1029,7 @@ kind `container` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_none`
-- 同步：Linux done（§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支）；Windows done（§7.1 信息面板：表 / 视图（两页 + 两个独立按钮））；macOS none
+- 同步：Linux done（§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支）；Windows partial（表 / 视图的标题、两个独立按钮与两页切换都实现了；但序列 / 函数 / 过程 / 类型照样出现切换条并会去读列（规范要求这类对象只显示 DDL 页、切换条隐藏），标题也没有完整路径 tooltip。）；macOS none
 - 实现备注：标题 = 对象名、副标题 = 对象种类；标题 tooltip 给完整路径。顶部固定出现切换条，默认落在 DDL 页；两页共用一个 stack，同一时刻只有一页可见。只切面板内的页，不改标签与树的选中。对象名与种类来自选中节点，不等 GetDdl / GetColumns 返回：切换期间面板不会先空一下。序列 / 函数 / 过程 / 类型没有表信息页：只显示 DDL 正文一页，切换条整条隐藏（不是出现切换条却点不动）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1044,7 +1044,7 @@ kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `min_target`、`radius_sm`、`gap_xxs`、`gap_sm`、`gap_xs`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 原生选型说明：原生 GtkStackSwitcher 的样式与命中区不符合「两个按钮各自贴边、各自 tooltip」，改用两个 set_group 的 GtkToggleButton 拼装（控件原生）。
-- 同步：Linux done（§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则）；Windows done（§7.1 两个独立按钮：不是 ToggleButton，也不是分段容器）；macOS none
+- 同步：Linux done（§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则）；Windows partial（两个独立 Button（不是 ToggleButton、也不是分段容器）已实现；但切换条对表 / 视图以外的种类也出现，规范要求它只在表 / 视图视图里出现，按钮也没有 tooltip。）；macOS none
 - 实现备注：两个独立 toggle，不用 .linked 分段容器：选中块是贴着文字的小圆角块，四角都圆。命中区仍不小于 min_target，缩的是内边距；hover 是 brand_soft 的半透明档，选中是 brand_mid 的半透明档（实底会把小号正文压成一块砖）。拉丁标签「DDL」比「表信息」多一小段上边距做光学补偿：行盒居中会让前者看着偏高。切换条与标题块、表信息行、DDL 正文共用一条左基准线（分隔线的左顶点）。切换条只在表 / 视图视图里出现；其它视图与状态页隐藏。
 
 ### `inspector.pane_switch.ddl` 「DDL」按钮
@@ -1053,7 +1053,7 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 
 - 样式：槽位 `inspector`；尺寸 `min_target`、`radius_sm`
 - 无障碍：可访问名「显示该对象的 DDL」；Tab 可聚焦；面板内 Tab 次序为 DDL → 表信息
-- 同步：Linux done（§6 切换表页；inspector.rs::install_toggles / set_pane）；Windows done（§7.1 顶部「DDL」按钮（独立按钮））；macOS none
+- 同步：Linux done（§6 切换表页；inspector.rs::install_toggles / set_pane）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1053）；macOS none
 - 实现备注：文字标签「DDL」，tooltip 同时登记为可访问名。与「表信息」互斥：按下本按钮即取消另一个的按下态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1066,7 +1066,7 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 
 - 样式：槽位 `inspector`；尺寸 `min_target`、`radius_sm`
 - 无障碍：可访问名「列、主键、索引与触发器、已加载行数」；Tab 可聚焦；面板内 Tab 次序为 DDL → 表信息
-- 同步：Linux done（§6 切换表页；inspector.rs::install_toggles / apply_pane）；Windows done（§7.1 顶部「表信息」按钮（独立按钮））；macOS none
+- 同步：Linux done（§6 切换表页；inspector.rs::install_toggles / apply_pane）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1058）；macOS none
 - 实现备注：文字标签「表信息」，tooltip 同时登记为可访问名。与「DDL」互斥：按下本按钮即取消另一个的按下态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1091,7 +1091,7 @@ kind `container` · status `active` · parent `inspector.object.info`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_xxs`、`gap_sm`
 - 平台差异：Linux：Linux 渲染为每列一张卡片：标题「列名 · 类型」+ 可空 / 默认值 / 字符集 / 排序规则四行；主键另起一节，不画四列表头。
-- 同步：Linux done（§6 表信息给列与主键；inspector.rs 列节的渲染）；Windows done（§7.1 表信息 = 列（列名 / 类型 / 可空 / 主键标记，四列表头））；macOS none
+- 同步：Linux done（§6 表信息给列与主键；inspector.rs 列节的渲染）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1203；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208）；macOS none
 - 实现备注：列的四个口径：列名、类型、可空（可空 / 不可空（NOT NULL）两态）、主键标记。主键读不到时整列不打任何主键标记，也不把「读不到」画成「不是主键」。列清单为空时写「服务端返回了空列清单」，不画空表头。列名过长单行省略，全文进 tooltip。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1104,7 +1104,7 @@ kind `row` · status `active` · parent `inspector.object.info.columns`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_xxs`、`gap_sm`
 - 无障碍：可访问名「（行内容：列名 + 类型 + 可空 + 主键标记）」
-- 同步：Linux done（§6 表信息页的列；inspector.rs 列卡片的 compact_row 四行）；Windows done（§7.1 列行给列名 / 类型 / 可空 / 主键标记）；macOS none
+- 同步：Linux done（§6 表信息页的列；inspector.rs 列卡片的 compact_row 四行）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1230）；macOS none
 - 实现备注：不是可点行：列属性只在面板里读，点它不打开标签、不发请求。默认值三态与两档缺失分开写：「未知（服务端未提供）」不等于「无默认值」，字符集 / 排序规则缺失写「不适用」。行高随内容（可空与默认值可能折行），不套用网格的 row_height_data。
 
 ### `inspector.object.info.pk` 主键节（主键列 · 读不到时的说明行）
@@ -1114,7 +1114,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_xs`、`gap_sm`
 - 无障碍：可访问名「主键」
 - 平台差异：Linux：说明走在表信息页顶部的提示行（info_status），不在主键节里；主键节只在 GetPrimaryKey 读回后渲染。
-- 同步：Linux done（§6 表信息给主键；inspector.rs::primary_key_label 与失败路径 info_note）；Windows done（§7.1 主键读不到时给一行说明且不画任何主键标记）；macOS none
+- 同步：Linux done（§6 表信息给主键；inspector.rs::primary_key_label 与失败路径 info_note）；Windows partial（主键读不到时的说明行与列尾的 PK 标记都有；但没有规范要求的主键节「主键列」一行，也没有「无主键」这句，主键只能从列尾标记读出来。）；macOS none
 - 实现备注：复合主键按主键内位置排序后用逗号连起来，不按名字排序。确实没有主键时写「无主键」；读不到主键是另一回事，给一行说明，不写成「无主键」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1129,7 +1129,7 @@ kind `container` · status `active` · parent `inspector.object`
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_md`、`gap_lg`、`gap_none`
 - 原生控件：gtk:GtkTextView / winui:等宽 TextBox（§7.1） / swift:—
 - 平台差异：Windows：§7.1：DDL 正文用等宽字体、不折行、横向滚动、可选中复制；正文上方只在 exact=false 时有一行琥珀警示。；Linux：Linux 侧不单独设等宽字族：§5 要求 DDL 正文与表信息同字体同字号，正文走 .sqarvo-panel-text。
-- 同步：Linux done（§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow）；Windows done（§7.1 DDL 正文（等宽、不折行、横向滚动、可选中复制）与失败文案）；macOS none
+- 同步：Linux done（§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1145；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1159）；macOS none
 - 实现备注：正文与表信息同字号同字重（font_panel）、不折行；长语句横向滚动，滚动条常驻（关掉 overlay 自动淡出，能滚到的地方要看得见）。正文可选中，复制走选中 + Ctrl+C；页内不画来源徽标、来源说明行与「复制」按钮。服务端返回空 DDL 时正文区写「服务端返回了空 DDL」+ 说明，不当成对象没有结构。没有浏览会话时正文区换状态页「这条连接没有浏览会话」+「对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。」
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1143,7 +1143,7 @@ kind `control` · status `active` · parent `inspector.object.ddl`
 
 - 样式：槽位 `inspector`；尺寸 `font_status`、`gap_sm`、`gap_xxs`；颜色 `warning_color`
 - 无障碍：可访问名「DDL 来源警示」
-- 同步：Linux done（§6 exact=false 时正文上方有琥珀警示；ddl.rs 的 warning 标签与样式表）；Windows done（§7.1 exact=false 时正文上方一行琥珀警示 + 来源说明）；macOS none
+- 同步：Linux done（§6 exact=false 时正文上方有琥珀警示；ddl.rs 的 warning 标签与样式表）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1129；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1132）；macOS none
 - 实现备注：警示行在正文上方、可折行，颜色只走 @warning_color（与状态行的警告文字同源）。exact=true（数据库原文）时整行不出现：原文不再另写来源说明。文案里带来源说明（拼装器版本与缺失项），用户能看出这份 DDL 缺了什么。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1703,7 +1703,7 @@ kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `min_target`、`font_ui`、`gap_sm`
 - 无障碍：可访问名「加载更多」
-- 同步：Linux done（§3「加载更多…」；connect_clicked 与 has_more 驱动 set_visible）；Windows done（§7.1：只有服务端给了 next_page_token 才显示「加载更多…」）；macOS none
+- 同步：Linux done（§3「加载更多…」；connect_clicked 与 has_more 驱动 set_visible）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:673；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:882）；macOS none
 - 实现备注：扁平按钮、左对齐、无图标；默认隐藏，只有服务端给了下一页 token 才出现。分页是「接着取」而不是翻页：新行接在现有行后面，不跳页、不清已加载行、不改变滚动位置以外的状态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1739,7 +1739,7 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.header` | 　标题栏（窗口外壳） | container | active | done | partial | — |
 | `shell.title` | 　标题与副标题 | control | active | done | — | — |
 | `shell.menu` | 　主菜单 | control | active | done | partial | — |
-| `shell.menu.new_connection` | 　　文件 → 新建连接 | item | active | done | done | — |
+| `shell.menu.new_connection` | 　　文件 → 新建连接 | item | active | done | partial | — |
 | `shell.menu.new_tab` | 　　文件 → 新建查询标签 | item | active | done | — | — |
 | `shell.menu.quit` | 　　文件 → 退出 | item | active | done | — | — |
 | `shell.menu.export_csv` | 　　表 → 导出 CSV | item | active | done | — | — |
@@ -1832,7 +1832,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「新建连接」
-- 同步：Linux done（§1.4 文件 → 新建连接；open_connection_dialog_for 的未就绪兜底与「只前置」分支）；Windows done（§7.1「文件 → 新建连接…、工具条「连接」」：可用性读同一个后端状态位，握手未完成禁用并逐条给 tooltip 原因）；macOS none
+- 同步：Linux done（§1.4 文件 → 新建连接；open_connection_dialog_for 的未就绪兜底与「只前置」分支）；Windows partial（菜单项与 Ctrl+N 走同一个处理器（ShowNewConnectionDialogAsync），未就绪时整项禁用；但工具条「连接」是另一条判定与另一个动作（直接连选中的已保存连接，不打开新建连接对话框），也没有逐项 tooltip 原因。）；macOS none
 - 实现备注：与工具条「连接」、`Ctrl+N` 同一条判定与同一个动作（`win.new-connection`）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2512,11 +2512,11 @@ kind `control` · status `active` · parent `status_bar.row2`
 | `tabs.limit` | 　「无法新建标签」提示 | control | active | done | partial | — |
 | `tabs.query` | 　查询标签页 | container | active | done | partial | — |
 | `tabs.query.actions` | 　　动作行（执行 / 取消） | control | active | done | done | — |
-| `tabs.query.editor` | 　　SQL 编辑器（行号沟 + 等宽文本） | control | active | done | done | — |
+| `tabs.query.editor` | 　　SQL 编辑器（行号沟 + 等宽文本） | control | active | done | partial | — |
 | `tabs.query.state` | 　　结果区状态行（五态） | control | active | done | done | — |
 | `tabs.query.results` | 　　结果区 | container | active | done | partial | — |
 | `tabs.query.results.header` | 　　　结果表头（列名 · 原始类型） | control | active | done | done | — |
-| `tabs.query.results.grid` | 　　　结果行区（虚拟化表格） | control | active | done | done | — |
+| `tabs.query.results.grid` | 　　　结果行区（虚拟化表格） | control | active | done | partial | — |
 | `tabs.query.results.more` | 　　　续拉（滚动到末尾自动续拉 / 「加载更多」） | control | active | done | done | — |
 | `tabs.close_dialog` | 　关闭标签确认框 | control | active | done | — | — |
 | `tabs.close_dialog.discard` | 　　「放弃更改并关闭」/「回滚事务并关闭」 | item | active | done | — | — |
@@ -2644,7 +2644,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`min_target`
 - 无障碍：可访问名「查询动作」
-- 同步：Linux done（§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流）；Windows done（§7.1 查询标签 / SQL 编辑器两行：执行 / 取消同一入口、跑起来文案变「取消」、Ctrl+Enter 执行、Ctrl+. 取消、空 SQL 只提示不清理结果）；macOS none
+- 同步：Linux done（§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700）；macOS none
 - 实现备注：按钮文案与可用性随状态互斥：空闲 → 「执行」可点、「取消」不可点；执行中 → 主按钮变「取消」（Linux 是并排两枚：执行置灰、取消可点）。取消可重复点击，第二次起只记日志、不发 RPC。空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。动作行左端是会话信息（有真实会话信息时才占位，不再写「会话建立中…」）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2662,7 +2662,7 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
 - 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
-- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段））；Windows done（§7.1 SQL 编辑器行：行号沟 + 等宽多行 TextBox（AcceptsReturn、不折行、自动滚动条）、无语法高亮）；macOS none
+- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。高度是内容高度区间（min 140 / max 220，未进 metrics：P1 补 key），超出后在编辑器内部滚动。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2676,7 +2676,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `font_status`、`gap_xl`、`spinner_px`；颜色 `warning_color`
 - 无障碍：可访问名「查询状态」
-- 同步：Linux done（§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档）；Windows done（§7.1 结果区五态行：Loading / Empty / Error / Cancelled / ReadOnly 五态互斥，Error 与 Cancelled 保留已加载行）；macOS none
+- 同步：Linux done（§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:379）；macOS none
 - 实现备注：五态互斥且都带稳定文案：执行中带 spinner；空 / 错误 / 取消 / 只读 / 断开各一句，**没有**结果时同一句文案也做占位页的标题与说明。正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2698,7 +2698,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `column_header_min_height`、`font_status`
 - 无障碍：可访问名「结果列头」
-- 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows done（§7.1 结果网格行：列头「列名 · 原始类型」（没有类型信息时只写列名）+ 多结果集在表头上一行写「结果集 K 段」，K > 1 补「只显示第 1 段」）；macOS none
+- 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:68；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:402）；macOS none
 - 实现备注：一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。多结果集在表头**上方**补一行说明（「结果集 K 段」，K > 1 时再补「只显示第 1 段」）；Linux 目前只把多语句写进日志。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2711,7 +2711,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `row_height_data`、`row_number_width`、`column_width`、`font_data_cell`
 - 无障碍：可访问名「查询结果」；Tab 可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）
-- 同步：Linux done（§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中）；Windows done（§7.1 结果网格行：只建视口内的行、上下用高度占位撑出总高、表头与行区横向同步滚动）；macOS none
+- 同步：Linux done（§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中）；Windows partial（视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。）；macOS none
 - 实现备注：虚拟化：只建视口内的行，滚动时不把整批行都做成控件；行号列跨批次连续（1 起、右对齐），宽表靠横向滚动而不是把列压碎。行号列与数据列的实际宽度目前是代码常量（行号 72、数据列 220，未进 metrics：metrics 里是 row_number_width / column_width），P1 收敛。取消 / 错误 / 断连之后不清空行区：已加载的行保留，状态行说明为什么停在这里。没有行级脏色 / 删除线之外的额外标记（查询标签的单表编辑归 §5.10，脏行数只在状态行与状态圆点）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2724,7 +2724,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「加载更多」
-- 同步：Linux done（§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch）；Windows done（§7.1 结果网格行：每批 200 行由滚动到接近末尾（距末行 ≤ 20 行）或点「加载更多」触发 FetchBatch，同一时刻最多一批在飞）；macOS none
+- 同步：Linux done（§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52）；macOS none
 - 实现备注：每批行数由服务端分批返回；同一时刻最多一批在飞，触顶（客户端结果集上限）之后不再续拉。Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

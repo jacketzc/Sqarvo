@@ -110,9 +110,10 @@ spec_hash = "33fc2281fe42"
 evidence = "§6 没有选中对象；§5 空态与选中态共用外壳（inspector.rs::show_empty）"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "33fc2281fe42"
-evidence = "§7.1 信息面板空态：内容区留白"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:290；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:900"
+note = "无选中时内容区留白（RenderInspector 的默认分支只清空 InspectorBody，外壳与「信息面板」标题保留）；但选中分组行时 Windows 走库视图（带「当前分组」字段），没有回到规范要求的空态。"
 
 [component.sync.macos]
 state = "none"
@@ -154,7 +155,7 @@ evidence = "§6 选中连接；inspector.rs::connection_facts 与 show_connectio
 [component.sync.windows]
 state = "done"
 spec_hash = "ff0220fb8f1d"
-evidence = "§7.1 信息面板：连接（字段行与「拿不到的不出现」）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:937；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:954；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:963"
 
 [component.sync.macos]
 state = "none"
@@ -184,7 +185,7 @@ evidence = "§5 拿不到的字段不出现；inspector.rs::fill_facts"
 [component.sync.windows]
 state = "done"
 spec_hash = "0e099676cda2"
-evidence = "§7.1 信息面板：连接 / 库 / 分组（拿不到的字段不出现）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1256；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1262"
 
 [component.sync.macos]
 state = "none"
@@ -222,9 +223,10 @@ spec_hash = "a4e8cfb1bd4a"
 evidence = "§6 选中库 / catalog；inspector.rs::catalog_facts 与 tree.group_counts 接线"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "a4e8cfb1bd4a"
-evidence = "§7.1 信息面板：库 / 分组（计数只来自已展开的分组层）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:974；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:981"
+note = "标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。"
 
 [component.sync.macos]
 state = "none"
@@ -270,9 +272,10 @@ spec_hash = "f893ab606b91"
 evidence = "§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "f893ab606b91"
-evidence = "§7.1 信息面板：表 / 视图（两页 + 两个独立按钮）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1048；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1066"
+note = "表 / 视图的标题、两个独立按钮与两页切换都实现了；但序列 / 函数 / 过程 / 类型照样出现切换条并会去读列（规范要求这类对象只显示 DDL 页、切换条隐藏），标题也没有完整路径 tooltip。"
 
 [component.sync.macos]
 state = "none"
@@ -303,9 +306,10 @@ spec_hash = "7cceb8b38fa1"
 evidence = "§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "7cceb8b38fa1"
-evidence = "§7.1 两个独立按钮：不是 ToggleButton，也不是分段容器"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1052；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1063"
+note = "两个独立 Button（不是 ToggleButton、也不是分段容器）已实现；但切换条对表 / 视图以外的种类也出现，规范要求它只在表 / 视图视图里出现，按钮也没有 tooltip。"
 
 [component.sync.macos]
 state = "none"
@@ -337,7 +341,7 @@ evidence = "§6 切换表页；inspector.rs::install_toggles / set_pane"
 [component.sync.windows]
 state = "done"
 spec_hash = "bf0e4238b118"
-evidence = "§7.1 顶部「DDL」按钮（独立按钮）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1053"
 
 [component.sync.macos]
 state = "none"
@@ -369,7 +373,7 @@ evidence = "§6 切换表页；inspector.rs::install_toggles / apply_pane"
 [component.sync.windows]
 state = "done"
 spec_hash = "e4ba94b9a39a"
-evidence = "§7.1 顶部「表信息」按钮（独立按钮）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1058"
 
 [component.sync.macos]
 state = "none"
@@ -440,7 +444,7 @@ evidence = "§6 表信息给列与主键；inspector.rs 列节的渲染"
 [component.sync.windows]
 state = "done"
 spec_hash = "6140fbb5f485"
-evidence = "§7.1 表信息 = 列（列名 / 类型 / 可空 / 主键标记，四列表头）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1203；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208"
 
 [component.sync.macos]
 state = "none"
@@ -469,7 +473,7 @@ evidence = "§6 表信息页的列；inspector.rs 列卡片的 compact_row 四�
 [component.sync.windows]
 state = "done"
 spec_hash = "52f283b1bc5a"
-evidence = "§7.1 列行给列名 / 类型 / 可空 / 主键标记"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1230"
 
 [component.sync.macos]
 state = "none"
@@ -508,9 +512,10 @@ spec_hash = "df8b658b8509"
 evidence = "§6 表信息给主键；inspector.rs::primary_key_label 与失败路径 info_note"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "df8b658b8509"
-evidence = "§7.1 主键读不到时给一行说明且不画任何主键标记"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1187；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208"
+note = "主键读不到时的说明行与列尾的 PK 标记都有；但没有规范要求的主键节「主键列」一行，也没有「无主键」这句，主键只能从列尾标记读出来。"
 
 [component.sync.macos]
 state = "none"
@@ -554,7 +559,7 @@ evidence = "§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow"
 [component.sync.windows]
 state = "done"
 spec_hash = "7da31b7e4648"
-evidence = "§7.1 DDL 正文（等宽、不折行、横向滚动、可选中复制）与失败文案"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1145；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1159"
 
 [component.sync.macos]
 state = "none"
@@ -590,7 +595,7 @@ evidence = "§6 exact=false 时正文上方有琥珀警示；ddl.rs 的 warning 
 [component.sync.windows]
 state = "done"
 spec_hash = "0f72ea521310"
-evidence = "§7.1 exact=false 时正文上方一行琥珀警示 + 来源说明"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1129；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1132"
 
 [component.sync.macos]
 state = "none"
