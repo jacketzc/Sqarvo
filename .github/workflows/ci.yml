@@ -8,14 +8,16 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
-      - 'scripts/**'   # 校验脚本不参与构建；它们由 ui-contract / readme 各自负责
-                       # （例外：scripts/xaml_lint.py 是下面 Windows 作业的一步，
-                       #  但它单独变更时不会触发本 workflow，改它请本地跑一次）
+      # 校验脚本不参与构建（各自的 workflow 负责）；但 xaml_lint.py 是下面 Windows
+      # 作业的一步，它变了必须触发本 workflow，所以只忽略 Shell 包装脚本与注册表校验器。
+      - 'scripts/*.sh'
+      - 'scripts/check-ui-sync.*'
   pull_request:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
-      - 'scripts/**'
+      - 'scripts/*.sh'
+      - 'scripts/check-ui-sync.*'
 
 jobs:
   backend:
