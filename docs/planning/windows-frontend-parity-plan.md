@@ -73,14 +73,14 @@ frontend/windows/
 
 | ID | 分支 | 范围 | 验收证据 |
 |---|---|---|---|
-| WP1 | `agent/win-backend-port` | 后端 Windows 适配：端点文件 DACL、父进程监视（`OpenProcess`+创建时间）、`pid_alive`、退出路径（`TerminateProcess` + 前端兜底）、`--endpoint-file` 显式参数替代 `XDG_RUNTIME_DIR`、Credential Manager（`CredWrite/CredRead/CredDelete`） | ✅ Linux：`cargo test --workspace` 674 passed、`cargo check --target x86_64-pc-windows-msvc`；Windows：`cargo clean` 后全量重建 0 warning / 0 error。⏳ 凭据与 DACL 的真实往返仍待实机用例 |
-| WP2 | `agent/win-core-ipc` | `Sqarvo.Core`：`Transport` 抽象 + TCP 实现、端点文件读取（严格 schema）、`BackendSupervisor`（spawn `--parent-pid`、100ms 轮询端点、pid 匹配、10s 超时、5s 健康、退出停机）、token metadata 注入 | ✅ Linux：`dotnet test` 106 passed，其中集成用例真 spawn 后端并完成 GetVersion/ListDrivers/Shutdown；✅ Windows：工程参与 `Sqarvo.Windows` 构建，0 error |
-| WP3 | `agent/win-window-fixes` | 窗口层修补：`XamlRoot.Changed`、`DidSizeChange`、「拖动窗口被拉回中央」修正、`Maximized` 恢复、`GridSplitter` 侧栏/面板、`SidebarWidthFor/InspectorWidthFor` 接线、未消费度量接线、`MinBase*` 改读生成值 | ✅ 替身类型下编过 + `SelfTest` ALL PASS（三档菜单行 24/30/36、最小窗口 960×640/1200×800/1440×960）；✅ 真实构建 0 error；⏳ 拖动/最大化/DACL 实机行为待记录 |
-| WP4 | `agent/win-connections` | 连接面：`connections.json` 模型（身份键去重）、凭据引用、连接对话框（驱动选择/TLS/测试连接）、对象树连接层与右键动作 | ✅ Linux：纯逻辑对真后端跑通 StoreCredential→TestConnection→Connect→Disconnect；✅ 真实构建 0 error；⏳ 实机连库与截图 |
-| WP5 | `agent/win-metadata` | 元数据面：树的分组层与分页（`ListNodes` + 每层 token）、`Objects` 页三列表格、信息面板三态（连接/库/表 + DDL 切换） | 远程：展开库/表；`--report-shell` 断言节点与列 |
+| WP1 | `agent/win-backend-port` | 后端 Windows 适配：端点文件 DACL、父进程监视（`OpenProcess`+创建时间）、`pid_alive`、退出路径（`TerminateProcess` + 前端兜底）、`--endpoint-file` 显式参数替代 `XDG_RUNTIME_DIR`、Credential Manager（`CredWrite/CredRead/CredDelete`） | ✅ 已合并（#165/#166）：`local-store` Windows DACL + Credential Manager、`parent-watch`、`--endpoint-file` 优先级；真机 0/0 构建、退出无残留进程 |
+| WP2 | `agent/win-core-ipc` | `Sqarvo.Core`：`Transport` 抽象 + TCP 实现、端点文件读取（严格 schema）、`BackendSupervisor`（spawn `--parent-pid`、100ms 轮询端点、pid 匹配、10s 超时、5s 健康、退出停机）、token metadata 注入 | ✅ 已合并（#167）：端点文件读取、`BackendSupervisor`、运行时分派（`OperatingSystem.IsWindows()`）；107 测试通过，含禁用 `#if WINDOWS` 的架构测试 |
+| WP3 | `agent/win-window-fixes` | 窗口层修补：`XamlRoot.Changed`、`DidSizeChange`、「拖动窗口被拉回中央」修正、`Maximized` 恢复、`GridSplitter` 侧栏/面板、`SidebarWidthFor/InspectorWidthFor` 接线、未消费度量接线、`MinBase*` 改读生成值 | ✅ 已合并（#168）：DPI 变化、拖动/尺寸变化区分、最大化恢复、GridSplitter 两处、`Metrics.*MinWindow*`；真机 1280/1920/3840 三档复验 |
+| WP4 | `agent/win-connections` | 连接面：`connections.json` 模型（身份键去重）、凭据引用、连接对话框（驱动选择/TLS/测试连接）、对象树连接层与右键动作 | ✅ 已合并（#169）：真机 `[connect] backend=Ready drivers=2 version=0.1.0` → 连库成功、树出现 `dev-mariadb · 已连接`、断开后重建为 `未连接`；凭据写进 Windows 凭据管理器后重连不再要密码 |
+| WP5 | `agent/win-metadata` | 元数据面：树的分组层与分页（`ListNodes` + 每层 token）、`Objects` 页三列表格、信息面板三态（连接/库/表 + DDL 切换） | ✅ 已合并（#171）：真机 `--qa-metadata` 打出 `catalogs=2 / tree-tables=2 / ddl-exact=True`，截图可见树展开到表 + Objects 三列 + 面板列信息与 DDL |
 | WP6 | `agent/win-query` | 查询面：标签条（新建/关闭/固定 `Objects`）、SQL 编辑器（行号、选中优先执行；**语法高亮不在本片**，如实标注纯文本）、执行/取消、结果网格（虚拟化 + 200 行分批 + 多结果集段数）、五态（Loading/Empty/Error/Cancelled/ReadOnly） | ✅ 已合并（`39f7e12` + `5586615`）：Linux Core 0 error / 107 tests、真类型探针 0 error；Windows 0 warning 0 error、三种配置 3×8s 启动门槛通过、`[query]` 首批 200 行 + `--qa-query-pages=6` 续拉到 1200 行 `has_more=False`、状态栏计数同步 |
-| WP7 | `agent/win-tabledata` | 表数据面：`BrowseTable` 分页（offset 500）、排序/筛选下推、只读原因、脏行编辑、`ApplyRowChanges` 提交/撤销/确认阈值、事务状态圆点 | 远程：MariaDB 上改 3 行提交、故意超 100 行看确认 |
-| WP8 | `agent/win-surface` | 表面收尾：导出 CSV、日志面板、窗口标题规则、`--qa-report-*` 对齐、Windows CI 构建任务 | 远程：导出文件内容比对；CI 绿灯 |
+| WP7 | `agent/win-tabledata` | 表数据面：`BrowseTable` 分页（offset 500）、排序/筛选下推、只读原因、脏行编辑、`ApplyRowChanges` 提交/撤销/确认阈值、事务状态圆点 | ✅ 已合并（#174）：真机全链路 `edit → 未提交 1 行 → submit applied=1 → verify → restore → revert 已回滚 → verify-after-revert 原值`；NULL 弱色斜体、空串按契约区分 |
+| WP8 | `agent/win-surface` | 表面收尾：导出 CSV、日志面板、窗口标题规则、`--qa-report-*` 对齐、Windows CI 构建任务 | ⏳ 未做：导出 CSV、日志面板、Windows CI 构建任务 |
 
 ## 5. 验收口径（所有片共用）
 
