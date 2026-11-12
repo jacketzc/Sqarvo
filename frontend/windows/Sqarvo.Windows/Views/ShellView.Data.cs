@@ -1498,9 +1498,22 @@ public sealed partial class ShellView
     /// </remarks>
     public bool TryBlockWindowClose()
     {
+        // 只按「真的有未提交改动」判定：已回滚/已提交的事务（Phase=RolledBack 但还没被用户看见）
+        // 曾经把关窗拦下来过一次——界面写「还有 0 行未提交」却关不掉，是自相矛盾的提示。
+        // 开着但没有改动的事务不需要拦：关窗时下面照样回滚它。
         var pending = _dataTabs.Values
-            .Where(tab => !tab.Closed && (tab.Page.HasChanges || tab.TransactionId.Length > 0))
+            .Where(tab => !tab.Closed && (tab.Page.HasChanges || tab.Page.DirtyRowCount > 0))
             .ToList();
+
+        if (pending.Count == 0 && _dataTabs.Count > 0)
+        {
+            var shapes = string.Join(
+                "；",
+                _dataTabs.Values.Select(tab =>
+                    $"{tab.TableName} dirty={tab.Page.DirtyRowCount} changes={tab.Page.ChangeCount} " +
+                    $"txn={(tab.TransactionId.Length > 0 ? "开" : "空")} phase={tab.Phase}"));
+            ConsoleBridge.WriteDiagnostic($"[data] 关窗：没有未提交改动，直接放行（{shapes}）");
+        }
 
         if (pending.Count == 0)
         {
