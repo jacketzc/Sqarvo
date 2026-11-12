@@ -13,7 +13,7 @@
 id = "status_bar"
 display_name = "状态栏"
 summary = "窗口底部两行：左边沟（对象树搜索区）、行 1 的行操作与分页器、行 2 的 SQL 摘要与 Last Refresh。它是同一个动作的第二个入口——可用性与读数全部来自当前标签，不在这里另存一份状态。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §7"
+legacy_ref = "ui-behavior-contract.md §7（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "status_bar"
@@ -24,12 +24,13 @@ status = "active"
 style.metrics = ["status_height", "row_height_tree"]
 style.tokens = ["sqarvo_separator", "sqarvo_status_fg", "window_fg_color"]
 impl_notes = [
-  "两行各 24（row_height_tree），总高 status_height = 48；两行的高度不单独进 metrics，48 = 2 × 24 由这两个 key 共同表达。",
+  "两行各 24（row_height_tree），总高 status_height = 48（v0.2.4 从 56 收到 48）；两行的高度不单独进 metrics，48 = 2 × 24 由这两个 key 共同表达。",
   "整条贴窗口底部（valign = End），上边界一条 1px 分隔线（@sqarvo_separator）：1px 描边不进 metrics。",
   "只有两种前景色：可用按钮与输入值一个色（@window_fg_color），说明文字与禁用按钮同一个灰（@sqarvo_status_fg）；状态栏里不允许出现第三档灰。",
   "行 1 与行 2 之外没有第三行：记录位置、连接名、库名、事务状态、耗时都不在状态栏（v0.2.3.3 删除），右下角也没有第二个刷新按钮。",
   "左边沟在构造时按侧栏宽度给初值，之后跟着分栏线走；搜索框垂直居中、不撑高状态栏。",
 ]
+platform_notes.windows = "同一副骨架（`ShellView.xaml` 的 `StatusBand`）：贴底、总高 `StatusHeight`、两行各一档行高的网格；列 0 = 左边沟（宽 = 侧栏 + `GridPaddingEnd`）、列 1 = 一条 `Stretch` 到底的竖分割线、列 2 = 两行网格。行 1 左格是后端状态线、右格是六个行操作按钮 + 搜索 + 结果行数 + 只读页码；行 2 左格是 SQL 摘要或一次性提示、右格是事务状态 · 会话名 · `Last Refresh`。尺寸只走 `Metrics`、颜色只走 `ThemeResource`（底色 `SqarvoBandBrush`、竖线 `SqarvoDividerBrush`）。"
 
 [component.sync.linux]
 state = "done"
@@ -40,7 +41,7 @@ evidence = "v0.2.5 Linux 客户端；§7 两行结构逐条对照 shell.rs（Sta
 [component.sync.windows]
 state = "partial"
 spec_hash = "65e45bcbacb2"
-note = "§7.1 记录了两行状态栏外壳与行 2 右格 `已连接 · 驱动 N · 浏览会话 M`；行 1 的图标组与分页器外形属 #170 已整体回退的那批，现状按 #169 稳定版（§7.1 未记录行 1 结构与左边沟）。"
+note = "§7.1 只记了「两行状态栏外壳」这一句；行 1 / 行 2 的真实分格与文案来源见 `platform_notes.windows`（`已连接 · 驱动 N · 浏览会话 M` 在行 1 左格，不在 §7.1 说的行 2 右格）。#170 的视觉重做已整体回退，现状是 #169 稳定版外壳，#172 / #173 对状态栏只换文案。"
 
 [component.sync.macos]
 state = "none"
@@ -60,6 +61,7 @@ impl_notes = [
   "沟里只放对象树搜索框与它下方一行搜索状态（归属对象树功能区，见 object_tree.search / .box / .status）；搜索框本体不在这里重复登记。",
   "沟本身不加内边距：搜索框的左右 8（gap_md）记在搜索框自己的 margin 上，改宽度不会把它撑开。",
 ]
+platform_notes.windows = "同一个沟：`StatusGutterColumn` 宽 = 侧栏 + `GridPaddingEnd`（拖分栏线同步），里面一个 `TreeSearchBox`（宽 = 侧栏、垂直居中、**禁用**：搜索尚未接线，tooltip 给「对象树搜索（当前不可用：搜索尚未接线，服务端 filter.name.contains 已就绪）」）；搜索框下方没有搜索状态行。"
 
 [[component.interaction]]
 trigger = "drag"
@@ -74,9 +76,9 @@ commit = ""
 evidence = "§7 左边沟（宽度跟分栏、竖线到底）；set_gutter_width 与 mount_search"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录状态栏左边沟（对象树没有搜索入口）。"
+state = "partial"
+spec_hash = "f5e7e4e045bc"
+note = "沟与宽度联动已按 §7 做（`UpdateStatusGutter`：沟宽 = 侧栏 + `GridPaddingEnd`、竖线 `Stretch` 到底）；搜索框在场但恒禁用（未接线），「下方一行搜索状态」没有。§7.1 未记录这个沟。"
 
 [component.sync.macos]
 state = "none"
@@ -95,6 +97,7 @@ impl_notes = [
   "中间一个可扩展空白把右组（选中数 · 展示形式 · 分页器）推到窗口右端；间距 8（gap_md）。",
   "行 1 自己没有交互与读数：可用性来自 status_bar.row1.ops 的六个按钮、分页器来自 status_bar.row1.pager，本组件只记布局。",
 ]
+platform_notes.windows = "行 1 实为两格：左格 `StatusLineText` = 后端状态线（`已连接 · 驱动 N · 浏览会话 M` / `连接中 · 驱动 0 · 浏览会话 0` / `未连接 · 驱动 0 · 浏览会话 0`，tooltip 带 `[<错误码>]`）；右格依次是六个行操作按钮、搜索按钮（恒禁用）、结果行数（查询页写 `N 行 / 已取 M 行`）、只读页码 `第 N 页 / 共 ? 页`。选中数、展示形式切换、四个翻页按钮都不在行 1。"
 
 [component.sync.linux]
 state = "done"
@@ -105,7 +108,7 @@ evidence = "§7 行 1；shell.rs 行 1 三组的组装与 audit_groups 自检"
 [component.sync.windows]
 state = "partial"
 spec_hash = "097b113df3f1"
-note = "行 1 存在但只有「应用（✓）/ 撤销（↶）/ 取消」三个按钮；选中数、展示形式切换、分页器在 §7.1 未记录。"
+note = "行 1 存在：左格后端状态线、右格六个行操作按钮 + 搜索（禁用）+ 结果行数 + 只读页码；选中数与展示形式切换没有，翻页动作在数据页动作行。§7.1 只记了「应用 / 撤销 / 取消」三枚按钮，与 XAML 不符，以 `platform_notes.windows` 为准。"
 
 [component.sync.macos]
 state = "none"
@@ -125,6 +128,7 @@ impl_notes = [
   "这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。",
   "§7 把「查询标签没有可编辑表格」概括为一句话；实现按结果可编辑性给更具体的原因（只读结果、新行还空着、没有选中行各一句），见 sql_page 的行操作可用性。",
 ]
+platform_notes.windows = "六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增 / 删除本片恒禁用，理由是「新增行 / 删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。"
 
 [[component.interaction]]
 trigger = "load"
@@ -147,7 +151,7 @@ evidence = "§7 行 1 行操作与可用性来源；apply_row_ops / show_no_tabl
 [component.sync.windows]
 state = "partial"
 spec_hash = "4c6a1a14d8ec"
-note = "§7.1 只记录了「应用（✓）」「撤销（↶）」「取消」三个按钮；「新增 / 删除 / 刷新」与禁用态 tooltip 的「（当前不可用：<原因>）」句式未记录。"
+note = "§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。"
 
 [component.sync.macos]
 state = "none"
@@ -167,6 +171,8 @@ impl_notes = [
   "禁用时 tooltip 变成「在当前表末尾新增一行（当前不可用：<原因>）」。",
 ]
 
+platform_notes.windows = "按钮在（`ButtonRowAdd`），但本片恒禁用、无点击处理：tooltip「新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。§7.1 的新增入口在数据页动作行与双击表。"
+
 [[component.interaction]]
 trigger = "click"
 precondition = "可编辑的表标签，且没有在途请求、没有未提交的新行草稿"
@@ -180,9 +186,9 @@ commit = ""
 evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录状态栏「新增」按钮（§7.1 的新增入口在数据页动作行与双击表）。"
+state = "partial"
+spec_hash = "a37eae543e2f"
+note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。"
 
 [component.sync.macos]
 state = "none"
@@ -202,6 +208,8 @@ impl_notes = [
   "只标记、不发 RPC：多条选中按批量语义一次标记。",
 ]
 
+platform_notes.windows = "按钮在（`ButtonRowDelete`），本片恒禁用、无点击处理：tooltip「删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。标记删除只在数据页动作行与数据行右键菜单。"
+
 [[component.interaction]]
 trigger = "click"
 precondition = "可编辑的表标签且有选中行，无在途请求"
@@ -215,9 +223,9 @@ commit = ""
 evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录状态栏「删除」按钮。"
+state = "partial"
+spec_hash = "6b823444daae"
+note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。"
 
 [component.sync.macos]
 state = "none"
@@ -236,7 +244,7 @@ impl_notes = [
   "与数据页的「提交更改」是同一个按钮状态：有脏行才亮，没有脏行时 tooltip 说明「没有可提交的更改」。",
   "危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。",
 ]
-platform_notes.windows = "Windows 数据页没有这枚状态栏按钮：`Ctrl+S` 提交；>100 行时**不弹对话框**，改成「再按一次 Ctrl+S 确认」并带 `acknowledge_risk`（§7.1 与 Linux 的差异）。"
+platform_notes.windows = "Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行时**不弹对话框**，改成「再按一次 Ctrl+S 确认」并带 `acknowledge_risk`（§7.1 与 Linux 的差异）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。"
 
 [[component.interaction]]
 trigger = "click"
@@ -272,6 +280,8 @@ impl_notes = [
   "只丢弃本地未提交的编辑与删除标记，不动已提交的数据；改动全部改回原值时顺手回滚空事务。",
   "与「取消」不是一回事：取消是中止在途批次并整批回滚（ADR 0018）。",
 ]
+
+platform_notes.windows = "`ButtonRowRevert` 与 `Ctrl+Z` 同一 `RevertDataAsync`；无未提交更改时 tooltip「当前没有未提交的更改」；改动全部改回原值时顺手回滚空事务（与 Linux 同一条规则）。"
 
 [[component.interaction]]
 trigger = "click"
@@ -309,6 +319,8 @@ impl_notes = [
   "F5 在表标签上走的是同一件事；状态栏不提供第二个刷新入口。",
 ]
 
+platform_notes.windows = "按钮在且可点（`ButtonRowRefresh` → `RefreshDataAsync`）：可用性 = 未加载中、未提交、无未提交更改，与 §7「刷新单独按状态判定」一致；被拦时 tooltip「刷新：有未提交的更改或请求进行中」，不是「（当前不可用：…）」。§7.1 只记了页内刷新。"
+
 [[component.interaction]]
 trigger = "click"
 precondition = "已打开表、无 RPC 在途、无脏行与未提交新行"
@@ -322,9 +334,9 @@ commit = ""
 evidence = "§7 行 1「刷新单独按状态判定」；refresh_available + RowOp::Refresh"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录状态栏「刷新」按钮（数据页的刷新在页内动作行）。"
+state = "partial"
+spec_hash = "5cc16d80e34b"
+note = "可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。"
 
 [component.sync.macos]
 state = "none"
@@ -345,6 +357,8 @@ impl_notes = [
   "语义是中止本批并整批回滚，不是撤销已提交的数据（ADR 0018）。",
 ]
 
+platform_notes.windows = "行 1 这枚「取消」两用：查询页按 `busy`（执行中 / 待执行）可点，点击取消查询、重复点幂等；数据页按 `tab.Loading || submitting` 可点，点击 `CancelDataRequests` 并在行 2 左格写「已取消表数据请求（已取到的行保留在页面上）」。停在别的页时禁用，tooltip「取消：当前没有执行中的查询」。§7.1 只记了查询页那一种。"
+
 [[component.interaction]]
 trigger = "click"
 precondition = "提交批次在途（Submitting）"
@@ -360,7 +374,7 @@ evidence = "§7「取消只在批次在途时可点」；RowOpsState.cancel + re
 [component.sync.windows]
 state = "partial"
 spec_hash = "16c5340e3568"
-note = "§7.1：查询页执行中「取消」可点、重复点幂等（只写日志）；数据页提交批次的取消可用性未记录。"
+note = "§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。"
 
 [component.sync.macos]
 state = "none"
@@ -394,7 +408,7 @@ evidence = "§7 行 1 选中数；apply_snapshot 的 selected_count"
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "§7.1 未记录 `N selected`。"
+note = "行 1 没有选中数：XAML 里没有 `N selected` 这一格，§7.1 也未记录。"
 
 [component.sync.macos]
 state = "none"
@@ -437,7 +451,7 @@ evidence = "§7 行 1 展示形式切换；v0.2.5 RowOp::ToggleDetail 与快照�
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "§7.1 未记录展示形式切换。"
+note = "Windows 没有展示形式切换：XAML 与代码里都没有「字段 | 值」视图，§7.1 未记录。"
 
 [component.sync.macos]
 state = "none"
@@ -458,6 +472,8 @@ impl_notes = [
   "按钮动作只交给当前数据页，由数据页决定目标 offset 并在有未提交更改时拒绝——状态栏不自己算页码。",
 ]
 
+platform_notes.windows = "行 1 右端只有只读页码 `第 N 页 / 共 ? 页`（`PagerText`，`DataStatusText.PageLabel`），没有四个翻页按钮、没有页码输入；上一页 / 下一页 / 加载更多都在数据页动作行。"
+
 [[component.interaction]]
 trigger = "load"
 precondition = "当前标签不是表标签"
@@ -471,9 +487,9 @@ commit = ""
 evidence = "§7 行 1 分页器；PAGER_NOTE + apply_snapshot 的可见性与可用性"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录状态栏分页器：Windows 的翻页在数据页动作行（上一页 / 下一页 / 加载更多），页码在页内。"
+state = "partial"
+spec_hash = "a67598c6e550"
+note = "只有只读页码一格，没有四枚翻页按钮；取数动作在数据页动作行，§7.1 未记录状态栏分页器。"
 
 [component.sync.macos]
 state = "none"
@@ -624,6 +640,8 @@ impl_notes = [
   "文案用拉丁数字与中文标点，字号按 pager_font 与翻页按钮的视觉高度对齐。",
 ]
 
+platform_notes.windows = "同一格文案 `第 N 页 / 共 ? 页`（总数已知时 `第 N / M 页`）：总数未知一律 `?`，没有「共 N 行 / 约 N 行」后缀，也没有「读取中…」「已断开」这类中间态（由页内状态行承担）。"
+
 [[component.interaction]]
 trigger = "load"
 precondition = "表标签"
@@ -637,9 +655,9 @@ commit = ""
 evidence = "§7 行 1 分页器只读摘要；apply_snapshot 的 pager_text"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录状态栏页码摘要；页内写「第 N 页 / 共 ? 页」。"
+state = "partial"
+spec_hash = "5f8c3d371068"
+note = "有只读页码，没有总数后缀与中间态文案；§7.1 未记录状态栏页码摘要。"
 
 [component.sync.macos]
 state = "none"
@@ -659,6 +677,7 @@ impl_notes = [
   "文案一律用 ASCII 冒号（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线（实测偏高 2px）。",
   "行号区间、连接名、库名、事务状态、上次耗时都不在这里：表名 / 库在标签名里，事务在表格工具条里。",
 ]
+platform_notes.windows = "行 2 两格与 §7 不同：左格是 `SQL: <摘要>` 或**一次性提示**（`_notice` 优先：编辑被拒原因 / 提交结果 / 守卫说明 / 标签上限），右格依次是**事务状态**、会话名、`Last Refresh`。事务状态取 `只读` / `自动提交` / `未提交 N 行` / `提交中…` / `已回滚`（优先序 提交中 → 只读 → 有脏行 → 已回滚 → 自动提交），无显式事务时 tooltip 写「事务：<label>（没有显式事务：提交时按自动提交执行）」——Linux 状态栏没有这一格（v0.2.3.3 删掉，事务在表格工具条）。"
 
 [component.sync.linux]
 state = "done"
@@ -669,7 +688,7 @@ evidence = "§7 行 2；workspace-model §7 的两段排版与 ASCII 冒号约�
 [component.sync.windows]
 state = "partial"
 spec_hash = "57f23edf914c"
-note = "§7.1：行 2 左格 `SQL: <摘要>`、右格 `已连接 · 驱动 N · 浏览会话 M`（未就绪 `未连接 · 驱动 0 · 浏览会话 0`）；`Last Refresh` 与空态摘要的先后顺序未记录。"
+note = "§7.1 只记了行 2 左格 `SQL: <摘要>` 与一行连接状态；代码现状是左格 SQL 摘要 / 提示、右格 事务状态 · 会话名 · `Last Refresh`（连接状态线在行 1 左格，见 `platform_notes.windows`）。"
 
 [component.sync.macos]
 state = "none"
@@ -689,6 +708,7 @@ impl_notes = [
   "当前标签是「字段 | 值」视图或正在编辑时也照旧显示这一页的摘要——摘要讲的是取数语句，不是展示形式。",
   "连接刚建立、还没有标签状态推送时，这一格会短暂显示「SQL: 已连接 · <服务端版本>」，首个标签状态到达后被覆盖。",
 ]
+platform_notes.windows = "这一格在 Windows 兼作一次性提示行：`_notice`（编辑被拒原因 / 提交结果 / 守卫说明 / 「新建连接失败：<文案>」/「无法新建标签：标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」）优先于摘要；断连与未就绪也写这里（`已断开：<文案>`、`SQL: 尚未执行`）；数据页没有 SQL 摘要，写 `表 <表名> · <页码> · <总数>`。"
 
 [[component.interaction]]
 trigger = "load"
@@ -723,7 +743,7 @@ evidence = "§7 行 2 左段三种来源 + 断连 / 未执行文案"
 [component.sync.windows]
 state = "partial"
 spec_hash = "3859890ae206"
-note = "§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；表数据页的 `SQL: … LIMIT …` 未记录。"
+note = "§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；数据页左格写的是 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。"
 
 [component.sync.macos]
 state = "none"
@@ -743,6 +763,8 @@ impl_notes = [
   "tooltip 给墙上时间 `HH:MM:SS` 并提示「offset 分页不保证跨页稳定」——相对时间只是一句提示，精确时刻在 tooltip 里。",
   "墙上时间由「现在减去已经过去的时长」反推（Instant 没有日历语义），转换失败时退回相对时间，不显示错误时间戳。",
 ]
+
+platform_notes.windows = "行 2 右格第三段 `RefreshAgeText` 默认写「Last Refresh: —」——没刷新过时是占位破折号，不隐藏；代码里没有 30 秒重算的定时器，也没有墙上时间 tooltip（§7.1 未记录这一格）。行数读数不在这一格：查询页由行 1 的 `LastRefreshText` 写 `N 行 / 已取 M 行`（还有更多时 `? 行 / 已取 N 行（还有更多）`）。"
 
 [[component.interaction]]
 trigger = "load"
@@ -765,7 +787,7 @@ evidence = "§7 行 2 右段；apply_snapshot / tick_relative_time / clock_time"
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "§7.1 未记录 `Last Refresh` 相对时间与 30 秒重算。"
+note = "Windows 有这一格但是静态占位「Last Refresh: —」：§7.1 未记录相对时间、30 秒重算与 tooltip。"
 
 [component.sync.macos]
 state = "none"
@@ -785,6 +807,7 @@ impl_notes = [
   "连接后显示连接名；断连后连接名被清空，只剩驱动与浏览会话计数。",
   "单行省略、最多 48 个字符宽，窗口变窄时这一格最先被压（右侧留 6 的边距，最后一个字不贴窗口边）。",
 ]
+platform_notes.windows = "这一格在 Windows 是 `SessionText`：列出所有已连接连接的**名字**（多个用「 · 」拼），没有会话写「未连接」；驱动 / 浏览会话计数在行 1 左的后端状态线里，不重复写这一格。"
 
 [[component.interaction]]
 trigger = "load"
@@ -801,7 +824,7 @@ evidence = "§7 行 2 空态摘要；refresh_session + session_row_visible + idl
 [component.sync.windows]
 state = "partial"
 spec_hash = "4beb06b2dd72"
-note = "§7.1 行 2 右格 `已连接 · 驱动 N · 浏览会话 M`（GetHealth 真实计数，5 秒一轮）、未就绪时 `未连接 · 驱动 0 · 浏览会话 0`、断连原因与稳定错误码写在行 2 左格；「有表标签时整格隐藏」未记录。"
+note = "§7.1 记的是 `已连接 · 驱动 N · 浏览会话 M`（GetHealth 真实计数，5 秒一轮；未就绪 `未连接 · 驱动 0 · 浏览会话 0`，另有 `连接中 · 驱动 0 · 浏览会话 0` 一档）；代码把这条放在行 1 左格，行 2 这一格只写会话名，见 `platform_notes.windows`；「有表标签时整格隐藏」未记录。"
 
 [component.sync.macos]
 state = "none"

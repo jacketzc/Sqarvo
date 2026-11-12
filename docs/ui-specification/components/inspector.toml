@@ -11,7 +11,7 @@
 id = "inspector"
 display_name = "信息面板"
 summary = "右侧常驻面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容只由「选中」事件驱动。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §6；docs/ui-specification/workspace-model.md §5"
+legacy_ref = "ui-behavior-contract.md §6；workspace-model.md §5（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "inspector"
@@ -243,6 +243,7 @@ impl_notes = [
   "顶部固定出现切换条，默认落在 DDL 页；两页共用一个 stack，同一时刻只有一页可见。",
   "只切面板内的页，不改标签与树的选中。",
   "对象名与种类来自选中节点，不等 GetDdl / GetColumns 返回：切换期间面板不会先空一下。",
+  "序列 / 函数 / 过程 / 类型没有表信息页：只显示 DDL 正文一页，切换条整条隐藏（不是出现切换条却点不动）。",
 ]
 
 [[component.interaction]]
@@ -257,14 +258,20 @@ precondition = "切换标签（看的还是同一个对象）"
 result = "只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息；不重发 GetDdl / GetColumns，也不重建标签"
 source = "src/inspector.rs:762、src/ui.rs:2248"
 
+[[component.interaction]]
+trigger = "load"
+precondition = "选中序列 / 函数 / 过程 / 类型（有 DDL 的种类）"
+result = "标题 = 对象名、副标题 = 种类（标题 tooltip 给完整路径）；只显示 DDL 正文一页，不出现 [DDL] / [表信息] 切换条，也没有表信息页"
+source = "src/inspector.rs:640、src/inspector.rs:697、src/inspector.rs:700"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "6d7917497976"
+spec_hash = "f893ab606b91"
 evidence = "§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "6d7917497976"
+spec_hash = "f893ab606b91"
 evidence = "§7.1 信息面板：表 / 视图（两页 + 两个独立按钮）"
 
 [component.sync.macos]

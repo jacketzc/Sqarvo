@@ -16,7 +16,7 @@
 id = "dialogs"
 display_name = "对话框"
 summary = "连接对话框（新建 / 编辑两种模式共用一张表面）与关于对话框。连接对话框是唯一配置连接参数、测试连接、把密码交给系统凭据库的入口；关于对话框只陈述版本、协议与后端诊断，不依赖后端可用。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §1.2 / §1.4 / §2.3 / §7.1"
+legacy_ref = "ui-behavior-contract.md §1.2 / §1.4 / §2.3 / §7.1（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "dialogs"
@@ -68,25 +68,31 @@ impl_notes = [
 
 [[component.interaction]]
 trigger = "load"
-precondition = "后端已握手（未握手时工具条「连接」与菜单项禁用，动作本身也直接返回）"
+precondition = "后端已握手（未握手时工具条「连接」与菜单项禁用；动作本身也直接返回，只记日志「后端尚未连接，忽略「新建连接」」，不发任何请求）"
 result = "打开对话框：标题「新建连接」、副标题「未选择驱动」，驱动下拉默认选中 MariaDB（存在时）；已打开时只把它前置，不叠第二个"
-source = "src/ui.rs:1103、src/ui.rs:1108、src/dialog.rs:130"
+source = "src/ui.rs:1103、src/ui.rs:1105、src/ui.rs:1108、src/dialog.rs:130"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "从对象树右键「编辑连接…」进入，或按保存凭据连接时发现缺密码"
-result = "用已保存连接预填非敏感字段（驱动、主机、端口、库、用户名、文件路径、只读、TLS 档位）；密码行留空，已有 credential_ref 时复用它；不自动连接，用户仍需点「测试连接」或「保存并连接」"
-source = "src/dialog.rs:582、src/ui.rs:1122、src/ui.rs:1218"
+result = "用已保存连接预填非敏感字段（驱动、主机、端口、库、用户名、文件路径、只读、TLS 档位）；密码行留空，已有 credential_ref 时复用它并在状态行提示「已填入保存的连接：密码将从系统凭据库读取」，引用为空时提示「已填入保存的连接；请输入密码后连接」；不自动连接，用户仍需点「测试连接」或「保存并连接」"
+source = "src/dialog.rs:582、src/dialog.rs:611、src/dialog.rs:614、src/ui.rs:1122"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "从对象树 / 启动态按保存的凭据连接时凭据缺失（配置里没有引用，或后端回 credential.not_found）"
+result = "打开预填对话框，并在状态行写「这条连接缺少密码，请编辑后重试（<原因>）」：原因分别是「配置里没有凭据引用」或「<stage>: <message>（credential.not_found）」；不发连接 RPC，真正的失败分类由用户重新提交后的结果给出"
+source = "src/ui.rs:490、src/ui.rs:1193、src/ui.rs:1220、src/dialog.rs:546"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "2793c0c8d517"
+spec_hash = "1b573b8cebd3"
 commit = "7436cd5"
 evidence = "§2.3 编辑连接 + dialog.rs build / apply_saved 复核"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "2793c0c8d517"
+spec_hash = "1b573b8cebd3"
 note = "§7.1 只记录新建模式（Views/ConnectionDialog.xaml）；编辑模式、标题与宽度未记录。"
 
 [component.sync.macos]
@@ -187,6 +193,7 @@ impl_notes = [
   "隐藏的字段不进入 ConnectionParams：不是「显示了但不填」。",
   "分组标题「连接参数」；顺序固定，不随驱动重排。",
 ]
+platform_notes.windows = "§7.1：MariaDB 字段为主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档；文件型驱动的数据库文件路径与只读打开未记录。"
 
 [[component.interaction]]
 trigger = "load"
@@ -360,6 +367,7 @@ impl_notes = [
   "密码永不回显：没有「读出旧密码」的路径，编辑模式下这一行一定是空的。",
   "密码随草稿交给 worker 后即被对话框丢弃，本模块不保存它。",
 ]
+platform_notes.windows = "§7.1：密码只进 Windows 凭据管理器，落盘只有 credential_ref；密码行的留空与复用规则未记录。"
 
 [[component.interaction]]
 trigger = "load"
@@ -546,10 +554,11 @@ style.slot = "dialogs"
 style.metrics = ["font_status"]
 a11y.name = "连接状态"
 impl_notes = [
-  "单行区，失败时按两行显示（分类主标题 + 后端文案与错误码），可换行、左对齐、占满可用宽度。",
+  "单行区，失败时按两行显示三段：分类主标题、后端文案、稳定错误码（形如「认证失败：用户名或密码错误」/「<detail> [<code>]」），可换行、左对齐、占满可用宽度。",
   "成功 / 失败 / 说明三种语义只靠样式类区分，不换控件。",
   "状态行只在对话框里，不落到状态栏、不弹第二个提示框。",
 ]
+platform_notes.windows = "§7.1：测试连接就地展示延迟与服务端版本；失败给「标题 + 后端文案 + 稳定错误码」；状态行的位置与两行样式未记录。"
 
 [[component.interaction]]
 trigger = "load"

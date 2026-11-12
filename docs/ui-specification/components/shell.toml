@@ -18,7 +18,7 @@
 id = "shell"
 display_name = "窗口壳与主工具条"
 summary = "窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §1.1–§1.6"
+legacy_ref = "ui-behavior-contract.md §1.1–§1.6（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "shell"
@@ -58,6 +58,7 @@ a11y.name = "Sqarvo 主窗口"
 impl_notes = [
   "最小尺寸由 window_size::relayout 算出后交给 set_size_request，GTK 转成 toplevel 的最小尺寸（Wayland 走 xdg_toplevel.set_min_size，X11 走 WM normal hints）。",
   "位置不恢复是平台事实：GTK4 没有读写 toplevel 位置的 API，window_x / window_y 照常写入与校验但不拿来挪窗口（blocked 的替代口径见 README「同步」一节）。",
+  "关闭是一次性的：确认过一次（`close_confirmed`）后再关不二次弹窗，已进入关闭流程（`closing == true`）时的重复关闭请求直接放行，不重复跑清理。",
 ]
 
 [[component.interaction]]
@@ -73,6 +74,12 @@ result = "尺寸与最大化恢复、**位置不恢复**；记忆矩形不落在
 source = "src/window_size.rs:365、src/window_state.rs:209"
 
 [[component.interaction]]
+trigger = "load"
+precondition = "window.json 记的几何属于旧档（记忆尺寸的档位 ≠ 当前档）"
+result = "按当前档重算窗口并记 `[monitor] 档位导致窗口放大：1200x800 → 1888x1000（记忆尺寸属于 compact，当前 large）`；记忆矩形越界的校验规则不变（±32 容差内才恢复，否则丢弃改推荐尺寸）"
+source = "src/window_size.rs:365、src/window_size.rs:429"
+
+[[component.interaction]]
 trigger = "click"
 precondition = "点标题栏的关闭按钮"
 result = "先过脏行守卫：任一个表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时**不关窗**，弹「有未提交的更改」确认框（逐表列出；本体不在这里登记），选「取消」什么都不做、「放弃更改并退出」才继续。确认过一次后再关不再二次弹窗；继续后显示「正在停止后端并清理端点文件…」，等 worker 回报 `ShutdownComplete` 才销毁窗口"
@@ -85,17 +92,16 @@ precondition = "窗口存在"
 result = "与标题栏关闭按钮同一条 `window.close()` → 同一个 close_request（脏行守卫照旧）"
 source = "src/ui.rs:204、src/ui.rs:414"
 
-[component.platform_notes.windows]
-note = "位置可恢复（Linux 不可）：记忆矩形先钳到最小窗口..工作区再还原，maximized 时先还原矩形再最大化；拖动 / 改尺寸只记账不重算；DPI 与工作区变化合并成同一个入口并保留当前 DIP 矩形（§1.6）。"
+platform_notes.windows = "位置可恢复（Linux 不可）：记忆矩形先钳到「最小窗口 ≤ 尺寸 ≤ 工作区−32 / −48」再还原，记忆点不在任何显示器工作区内（容差 32px）时丢弃几何、改用分档推荐并记 `[layout]` 日志；`maximized=true` 时先还原这个矩形再最大化，关窗写的是**还原边界**（非最大化矩形）而不是最大化后的屏幕尺寸。拖动 / 改尺寸只记账不重算（不会被拉回屏幕中央、也不会改回推荐尺寸），下限由 `OverlappedPresenter.PreferredMinimumWidth/Height`（物理像素）守住。DPI 与工作区变化合并成同一个入口：缩放取 `XamlRoot.Changed` 的 `RasterizationScale`（`DisplayInformation` 在 WinUI 3 抛异常），保留当前 DIP 矩形、不居中，`[monitor]` 的来源写「记忆 / 记忆+最大化 / 保留」（§1.6）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0c6a24f07ea3"
+spec_hash = "5e266c21d40d"
 evidence = "§1.1 最小尺寸 / 几何恢复 / 关闭窗口；window_size.rs relayout + apply，ui.rs connect_close_request"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "0c6a24f07ea3"
+spec_hash = "5e266c21d40d"
 note = "几何恢复含位置、最大化写还原边界、DPI / 工作区变化单入口（§1.6）；脏行守卫换成「状态栏提示 + 第二次放行」的不弹框口径（§7.1 数据页关窗守卫），与 Linux 的确认框差一条。"
 
 [component.sync.macos]
@@ -116,8 +122,7 @@ impl_notes = [
   "没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。",
 ]
 
-[component.platform_notes.windows]
-note = "系统标题栏 + 菜单行：菜单行高度由外壳高减去系统标题栏实测值得出（按档位 24 / 30 / 36，这两组数字未进 metrics）；标题栏高度由系统给，实测不同时按实测报外壳总高，不裁剪系统区域（§1.6）。"
+platform_notes.windows = "系统标题栏 + 菜单行：菜单行高度由外壳高减去系统标题栏实测值得出（按档位 24 / 30 / 36，这两组数字未进 metrics）；标题栏高度由系统给，实测不同时按实测报外壳总高，不裁剪系统区域（§1.6）。"
 
 [component.sync.linux]
 state = "done"
@@ -426,6 +431,7 @@ impl_notes = [
   "窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。",
   "左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。",
   "六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；启动态「新建查询」禁用时是 5/6。",
+  "四个种类入口共用一条目标库解析：取树里**当前选中项所在的库**（选中的表 / 视图 / 分组也算），只有什么都没选中时才退回活动连接的默认库；多连接按「会话 ID + 库名」精确匹配，避免同名 `main` 跳到别的连接（`selected_catalog` / `catalog_row` 的 require_session 一遍）。",
   "种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。",
 ]
 
@@ -435,17 +441,22 @@ precondition = "后端就绪状态变化"
 result = "六个按钮同时切换可用性与 tooltip，并打一行可用性日志；菜单侧走同一个状态（`WindowActions::set_backend_ready`），不出现「菜单禁用、按钮可点」"
 source = "src/shell.rs:862、src/ui.rs:4666、src/shell.rs:840"
 
-[component.platform_notes.windows]
-note = "工具条是 CommandBar：左动作组 + 竖分隔 + 四个种类入口（AppBarButton），本片四个入口仍未接线（§7.1）。"
+[[component.interaction]]
+trigger = "load"
+precondition = "当前标签切换 / 每次标签状态刷新"
+result = "高亮跟着当前标签：表数据标签 → 该表的种类；`Objects` 页 → 页面**正在列**的种类（树里换分组导致页换作用域时，高亮在同一次刷新里跟上）；查询标签 → 无高亮。同一时刻最多一个按钮带 `sqarvo-kind-active`"
+source = "src/ui.rs:1840、src/shell.rs:958"
+
+platform_notes.windows = "工具条是 CommandBar：左动作组 + 竖分隔 + 四个种类入口（AppBarButton），本片四个入口仍未接线（§7.1）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "428b776cb588"
+spec_hash = "19a2a91b6aba"
 evidence = "§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "428b776cb588"
+spec_hash = "19a2a91b6aba"
 note = "有 CommandBar 与六个入口（§7.1）；种类入口未接线、无高亮联动，工具条高度按 Metrics 取档但对外壳的分配未核对。"
 
 [component.sync.macos]
@@ -736,12 +747,11 @@ precondition = "切档成功"
 result = "同一次动作里：① 四套样式表（主壳 / 数据页 / 对象树 / DDL）用同一个 provider 重载；② 窗口按新档重算并钳到工作区（日志「[monitor] 档位导致窗口放大：…」）；③ 侧栏 / 信息面板按 **compact 归一值 × 新档**换算（往返不漂移），新窗口放不下表格区下限时收到各自下限并记日志；④ 已建列的固定宽度、行高、字号与图标按钮命中区按新档重设；⑤ 档位写入 `window.json`"
 source = "src/density.rs:78、src/shell.rs:591、src/theme.rs:241"
 
-[component.platform_notes.windows]
-note = "菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）。"
+platform_notes.windows = "菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）；「表格区优先保留 600」本轮未实现——只按 `sidebar_min..max` / `inspector_min..max` 钳制，600 未进 metrics.toml（§1.6 已知边界）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "798c5cf88dfc"
+spec_hash = "6d2dfd97d0ba"
 evidence = "§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫"
 
 [component.sync.windows]

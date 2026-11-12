@@ -14,7 +14,7 @@
 id = "objects_page"
 display_name = "Objects 固定页"
 summary = "工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容跟着对象树的选中换作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §3"
+legacy_ref = "ui-behavior-contract.md §3（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "objects_page"
@@ -59,12 +59,20 @@ impl_notes = [
   "AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。",
   "页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。",
   "不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。",
+  "启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。",
+  "页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。",
 ]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "工作区建立 / 启动态落地"
+result = "在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表"
+source = "src/tabs.rs:1745、src/tabs.rs:1761、src/tabs.rs:1765、src/startup.rs:178"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "页签可见"
-result = "切到本页，并按当前树选中状态刷新列表；重新进入时清掉行选中（列表内容与信息面板都不动）"
+result = "只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新"
 source = "src/tabs.rs:1361、src/tabs.rs:1366"
 
 [[component.interaction]]
@@ -74,14 +82,20 @@ precondition = "当前页是 Objects"
 result = "拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框"
 source = "src/tabs.rs:2645、src/tabs.rs:2657"
 
+[[component.interaction]]
+trigger = "click"
+precondition = "中键点页签，或任何程序化 close_page 请求（当前页是 Objects）"
+result = "与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论"
+source = "src/tabs.rs:1377、src/tabs.rs:2655"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "34e0d58db246"
+spec_hash = "22ca13ccb014"
 evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "34e0d58db246"
+spec_hash = "22ca13ccb014"
 note = "§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。"
 
 [component.sync.macos]

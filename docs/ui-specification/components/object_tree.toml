@@ -11,7 +11,7 @@
 id = "object_tree"
 display_name = "对象树"
 summary = "左侧栏：对象树本体、搜索区、右键菜单与临时提示行。对象树是唯一的数据库对象入口，Objects 页与信息面板都跟着它的选中变化。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §2"
+legacy_ref = "ui-behavior-contract.md §2（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "object_tree"
@@ -26,15 +26,22 @@ impl_notes = [
   "搜索框与搜索状态行不画在侧栏里，放在状态栏左边沟（见 object_tree.search），宽度跟随分栏线。",
 ]
 
+[[component.interaction]]
+trigger = "key"
+keys = ["F5"]
+precondition = "工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态）"
+result = "整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树"
+source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1453"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "120ff4886203"
+spec_hash = "c9c1a528b7da"
 commit = "7436cd5"
 evidence = "v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "120ff4886203"
+spec_hash = "c9c1a528b7da"
 note = "侧栏是 TreeView + SplitView；无搜索沟、无侧栏提示行。"
 
 [component.sync.macos]
@@ -55,6 +62,8 @@ a11y.tab = "可聚焦；Tab 进入后 ↑ / ↓ 移动选中"
 impl_notes = [
   "GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。",
   "折叠后重新展开复用已读内容、不发请求。",
+  "层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（来自 connections.json，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。",
+  "树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。",
 ]
 
 [[component.interaction]]
@@ -245,6 +254,7 @@ status = "active"
 a11y.name = "（行内容：分组名）"
 impl_notes = [
   "未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。",
+  "未实现分组展开只写一行说明：「函数列表尚未实现（点开看说明，不发请求）」「已保存的查询尚未实现（点开看说明）」「驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装」。",
   "空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。",
 ]
 
@@ -296,15 +306,21 @@ precondition = "行可打开"
 result = "打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据）"
 source = "src/tree.rs:769、src/tabs.rs:1608"
 
+[[component.interaction]]
+trigger = "load"
+precondition = "展开表节点"
+result = "0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes"
+source = "src/tree.rs:2681、src/tree.rs:2704"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "a2362386f1e0"
+spec_hash = "c0dee29ad9a6"
 commit = "7436cd5"
 evidence = "§2.2 双击表 / 视图"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a2362386f1e0"
+spec_hash = "c0dee29ad9a6"
 note = "双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。"
 
 [component.sync.macos]
@@ -424,7 +440,10 @@ status = "active"
 style.slot = "status_bar.left_gutter"
 a11y.name = "搜索连接、库、表"
 a11y.tab = "Ctrl+F 聚焦；Esc 清空并回到树页"
-impl_notes = ["placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。"]
+impl_notes = [
+  "placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。",
+  "连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。",
+]
 
 [[component.interaction]]
 trigger = "key"
@@ -511,6 +530,7 @@ style.slot = "status_bar.left_gutter"
 impl_notes = [
   "结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。",
   "v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。",
+  "只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。",
 ]
 
 [[component.interaction]]
@@ -560,7 +580,11 @@ kind = "container"
 status = "active"
 native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 style.slot = "overlay"
-impl_notes = ["贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。"]
+impl_notes = [
+  "贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。",
+  "条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。",
+  "没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。",
+]
 
 [[component.interaction]]
 trigger = "right_click"
@@ -620,7 +644,7 @@ display_name = "「断开连接」"
 kind = "item"
 a11y.name = "断开连接"
 status = "active"
-impl_notes = ["只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看。"]
+impl_notes = ["只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看；其它连接的浏览会话不受影响。"]
 
 [[component.interaction]]
 trigger = "click"
@@ -769,7 +793,7 @@ display_name = "「删除连接」"
 kind = "item"
 a11y.name = "删除连接"
 status = "active"
-impl_notes = ["配置删除与密钥删除分开报告：配置已删而密钥没删时明确说明。"]
+impl_notes = ["配置删除与密钥删除分开报告：配置删除失败提示「删除连接失败」；配置已删而密钥没删提示「配置已删除，密钥条目未删除（<code>）：<detail>」。"]
 
 [[component.interaction]]
 trigger = "click"

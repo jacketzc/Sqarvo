@@ -468,23 +468,23 @@ Rules:
 - Development agents update Issues and PRs. They do not rewrite product requirements, milestones, or the development plan unless explicitly assigned that role.
 - A milestone is only marked complete with recorded verification evidence (commands and results), not with a summary claim.
 
-### 14.2 UI Behavior Contract (binding)
+### 14.2 UI behavior: one source (binding)
 
-`docs/ui-specification/ui-behavior-contract.md` is the **single source of truth for UI behavior**
-(what an action does, when it is enabled, what it reports, which keys trigger it). It is derived
-from the shipped Linux client, so the code and the contract must agree at all times.
+Per-component behavior — actions, availability conditions, result copy, shortcuts, source references —
+lives in the component registry (`docs/ui-specification/components/*.toml`, see §14.3).
+`ui-behavior-contract.md` is now only **global rules** (§8: shortcuts, destructive-action confirmation,
+the five states, error-copy constraints) plus **known deviations** (§9); its §1–§7 are pointers into
+the registry. `workspace-model.md` is now only layout and regions.
 
-- **Any change that alters UI behavior or interaction must update that contract in the same
-  commit/PR.** If the change does not alter behavior, say so explicitly in the PR description
-  ("no contract change: pure refactor/visual tweak") instead of silently skipping it.
-- A behavior the contract does not cover yet is not "done": add the row (action / precondition /
-  result / source `file:line`) before reporting completion.
-- If code and contract disagree, fix the one that is wrong; do not leave the disagreement in place.
-  Real remaining gaps go to the contract's §9 "known deviations", with code-vs-doc and a
-  recommendation — never silently deleted.
-- Visual specification (sizes, spacing, colors) stays in `workspace-model.md` /
-  `design-principles.md`; those files must point at the contract for behavior instead of
-  restating it.
+- Changing one component's behavior → edit that component and `mark` (§14.3). The contract needs no
+  matching edit.
+- Changing a global rule (shortcut, destructive confirmation, state semantics, error copy) → edit
+  contract §8 and update every component it touches.
+- Code and registry disagree → record it in contract §9.1 "pending decisions" (code does / doc says /
+  recommendation). Do not leave it silent, and do not let an implementer settle product semantics alone.
+- `ui-components.md` is generated; never hand-edit it.
+- Visual specification (sizes, spacing, colors) stays in `metrics.toml` / `workspace-model.md` /
+  `design-principles.md`, and must reference tokens instead of restating numbers.
 
 ### 14.3 UI 组件注册表（绑定）
 
@@ -542,8 +542,9 @@ Follow this sequence when executing a task:
 5. Before changing APIs or public types, inspect all callers and compatibility implications.
 6. Add or update tests, documentation, and examples.
 7. Run relevant formatters, static checks, unit tests, and integration tests.
-7a. Update `docs/ui-specification/ui-behavior-contract.md` for any UI behavior change (see §14.2);
-    a UI change whose contract is stale is an incomplete change.
+7a. Update the component registry (`docs/ui-specification/components/*.toml`) for any UI behavior or
+    component change, and `mark` the platforms you verified (see §14.2/§14.3); a UI change whose
+    registry entry is stale is an incomplete change.
 8. Review `git diff` to ensure it contains no secrets, personal data, generated artifacts, temporary files, or unrelated formatting changes.
 9. Report completed work, key design decisions, test results, unfinished items, and known risks; update the Issue status and link the PR.
 

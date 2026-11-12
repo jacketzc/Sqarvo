@@ -18,7 +18,7 @@
 id = "startup"
 display_name = "启动态外壳"
 summary = "握手期间的 Loading 页，以及握手成功后、还没有连接数据库时的六区域外壳：侧栏是与连接态同一个对象树（全部「未连接」）、主区域是固定 Objects 页的空态、信息面板常驻留白、状态栏写「未连接」。这里登记的是「启动态」这一档表面，不重复登记表结构。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §1.1、§3、§7"
+legacy_ref = "ui-behavior-contract.md §1.1、§3、§7（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "startup"
@@ -31,6 +31,7 @@ style.metrics = ["sidebar_width", "inspector_width", "status_height"]
 impl_notes = [
   "启动态不是独立一套界面：握手成功后 ui.rs 用 StartupWorkspace 组装六个区域，侧栏 / 标签条 / 信息面板与连接态是同一套实现，连上数据库后由 Workspace 整体替换。",
   "后端诊断信息（版本 / 协议 / PID / 端点文件）不在启动态出现，在「帮助 → 关于 Squarvo」里。",
+  "启动顺序（窗口级，全在 ui.rs::activate）：建窗口并把 headerbar（ui.rs:177-199）、主工具条与页面槽位（ui.rs:270-271）挂进根容器 → toolbar.set_backend_ready(false)（ui.rs:274，随即打一行 0/6）→ show_loading「准备连接本地后端…」（ui.rs:275）→ WorkerHandle::spawn（ui.rs:277）→ 每个 Event::Stage 改写说明行（ui.rs:504-506）→ Event::Connected 置就绪、标题回 Sqarvo /「未连接」、show_startup_workspace（ui.rs:538-548）。页面槽位里 Loading 与启动态外壳互斥，任一时刻只有一个。",
 ]
 
 [component.sync.linux]
@@ -93,18 +94,18 @@ a11y.name = "正在连接后端"
 style.metrics = ["spinner_px"]
 impl_notes = [
   "GtkSpinner：边长取 spinner_px（请求值，由 GTK 决定实际绘制），构造后立即 start()。",
-  "阶段推进只改说明行，不重建 spinner（页面不闪）。",
+  "阶段推进走同一个 show_loading：set_page 先清空页面槽位再挂新的 StatusPage 与 spinner（ui.rs:1532-1554），上一帧的动画状态不保留；两帧之间只差一行说明，视觉上仍是同一处居中 spinner、没有静止帧。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "Loading 页出现"
-result = "立即开始旋转（无静止帧）；握手阶段变化时不重建、不重启动画"
+result = "立即开始旋转（无静止帧）；阶段推进只换说明行，spinner 一直在转（整页替换时不出现静止帧、不闪）"
 source = "src/ui.rs:1549、src/ui.rs:1552"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e8566ec14f01"
+spec_hash = "ccc3a5d0e62f"
 commit = "7436cd5"
 evidence = "show_loading 的 GtkSpinner + set_size_request(spinner_px) + start()"
 
@@ -126,7 +127,8 @@ status = "active"
 a11y.name = "握手阶段"
 impl_notes = [
   "阶段文案是六条固定原文，由后端 supervisor 的握手阶段枚举给（worker 以 Event::Stage 逐条推给界面），界面不拼接、不翻译。",
-  "六条原文：「读取端点描述文件…」「校验协议版本与后端进程…」「启动后端进程 sqarvo-backend…」「等待后端就绪（最多 10 秒）…」「建立 gRPC 通道并附带本地会话 token…」「调用 SystemService.GetVersion 核对版本…」；首帧另有一句「准备连接本地后端…」。",
+  "六条原文：「读取端点描述文件…」「校验协议版本与后端进程…」「启动后端进程 sqarvo-backend…」「等待后端就绪（最多 10 秒）…」「建立 gRPC 通道并附带本地会话 token…」「调用 SystemService.GetVersion 核对版本…」。",
+  "说明行不总是阶段原文：show_loading 的说明是调用方给的字符串——首帧 / 重新握手「准备连接本地后端…」（ui.rs:275、ui.rs:380）、重启「正在重启 Sqarvo…」（ui.rs:1318）、关窗前「正在停止后端并清理端点文件…」（ui.rs:407）；标题恒为「正在连接后端」，界面只换说明行。",
 ]
 
 [[component.interaction]]
@@ -164,6 +166,8 @@ impl_notes = [
   "面板宽度读窗口级记忆（与连接态共用同一个值），启动态拖一次会被带进连上后的工作区。",
   "标签条右侧的 ＋ 保留在启动态但置为不可用（tooltip「先连接数据库再新建查询标签」）；该按钮的登记权归标签条所属区，本区只在结果里提到它。",
   "主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区只保证启动态停在这一页、不换内容。",
+  "这一页是 startup.rs 自己建的（不走 tabs::add_objects_page）：页签标题 / 图标 / pinned 与连接态同语义（startup.rs:188-192），关闭请求有兜底日志「[startup] Objects 页固定存在，不可关闭」（startup.rs:195-198），页内 open 回调换成日志「[startup] 尚未连接数据库，忽略打开表」（startup.rs:184-186，启动态不会有可打开的行）。页签结构仍归 objects_page 区，本区只记这一份构造。",
+  "信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时那两行不出现，不编造，startup.rs:110-135）。",
   "启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。",
   "启动态没有表标签：状态栏行 1 的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。",
 ]

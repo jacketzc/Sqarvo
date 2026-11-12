@@ -19,7 +19,7 @@
 id = "data_page"
 display_name = "表数据页"
 summary = "表数据页（含查询标签复用同一套编辑态）：单行工具条与事务、筛选与排序面板、列显隐、数据网格与就地编辑、脏行标记与批量提交、offset 分页、导出 CSV / INSERT / 转储表、数据行右键菜单、按行浏览与单行「字段 · 值」两种展示形式，以及只读 / 空 / 错误 / 断连四态。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §5.1–§5.10；docs/ui-specification/workspace-model.md §6 / §6.1"
+legacy_ref = "ui-behavior-contract.md §5.1–§5.10；workspace-model.md §6 / §6.1（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "data_page"
@@ -101,6 +101,8 @@ impl_notes = [
   "文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。",
   "可用性只有一个读数来源（数据页按钮的 sensitive）：状态栏「应用（✓）」直接读它，不重复判定。",
   "只读原因一旦成立，本按钮恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。",
+  "提交顺序：有新行时 `InsertRows` **先行**（整批原子，任一行失败则整批回滚），成功后才提交脏行；插入失败则一条脏行都不提交——避免库里留下半套状态。",
+  "单批上限 500 行：超出时只执行前 N 条，其余留待下次，横幅「单批上限 500 行：本次只执行了前 N 条，还有 M 条未提交——请再次点「提交更改」续传。」；逐行失败的行留在草稿里，可改完再提交。",
 ]
 
 [[component.interaction]]
@@ -538,6 +540,7 @@ impl_notes = [
   "挂在「导出 ▾」按钮上的 GtkPopover（popup surface，窗口自渲染截图拍不到）；点任一项先收起菜单再执行。",
   "三项都进入 export_ui::begin 这同一条流程：范围 → 文件 → 确认 → 覆盖 → 进度 / 取消 → 完成，差别只在写出的格式与文件过滤器。",
   "菜单里没有第三条之外的路径（没有「复制到剪贴板」「导出全部结果」这类重复出口）。",
+  "查询标签的结果区复用同一份「导出 ▾」（入口在 tabs 的查询结果区、由本区记录）：只有 CSV / INSERT 两项，**没有**「转储表」；范围固定为已加载行、没有「整张表」，不重跑 SQL；没有已加载行时提示「没有可导出的行」+「当前标签没有已加载的行：先执行查询，再导出。」。",
 ]
 
 [component.sync.linux]
@@ -609,6 +612,7 @@ impl_notes = [
   "写出口径：一行一条 INSERT INTO 目标表 (列清单) VALUES (值清单);（LF 行尾）；NULL 写 NULL、空串写空引号串；数字 / Decimal 原文；日期时间加引号 ISO 8601；BLOB 写 NULL（客户端拿不到原始字节），文件末尾注释写明数量。",
   "标识符与字符串按驱动：SQLite 双引号，MariaDB 反引号 + 反斜杠转义。",
   "文件对话框标题「导出为INSERT 语句」、过滤 *.sql、默认 sqarvo-insert.sql。",
+  "目标表名（查询结果导出时才需要推导）：只接受**唯一一个**顶层 FROM（跳过字符串 / 注释 / 括号）并取 `[库.]表` 的最后一段；JOIN 外的第二个 FROM、`FROM (`、没有 FROM 时推断不出，写占位名 `result` 并在文件头加注释「结果集不携带来源表名：目标表写成占位名 result，导入前请替换成真实表名。」。",
 ]
 
 [[component.interaction]]
@@ -729,7 +733,16 @@ impl_notes = [
   "滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。",
   "页码与总数只在状态栏分页器出现一次（status_bar.row1.pager / .summary）：三态是「共 N 行」/「约 N 行」（估计值必须带「约」）/「共 ? 行」（总数未知或计数超时写问号，不编造数字；Linux 未知时只写页码，Windows 写「共 ? 行」）；计数超预算时写「未统计（超出计数预算）」并出现「未统计」徽标。",
   "每页 500 行（TABLE_PAGE_SIZE，实际 page_size 随第一页返回）；翻页 = 整页替换 + 回到顶部。",
+  "刷新（状态栏 ⟳ / 表菜单）走**同一条** dirty_guard：有脏行 / 标删 / 新行时被拒绝并说明原因，按钮禁用时 tooltip 附同一句——数据页只给谓词与文案，按钮本身在 status_bar。",
+  "末页需要总页数：总数未知时 can_last = false（按钮禁用），点了也不发请求，状态行写「<动作>不可用（没有对应页）」；驱动不声明 totals 与非精确计数同一写法（不显示总数）。",
+  "新行占位行是**网格里的最后一行**（行号列写 ＋，行号 0 = 尚未落库）：提交成功后按返回的主键定位再赋真实行号；整批全部省略时提交即 INSERT DEFAULT VALUES（自增 / 默认值列由数据库填）。",
 ]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "可编辑且没有待插入行（入口：状态栏行操作组 +，工具条与菜单里都没有）"
+result = "在末尾追加一行草稿并进入可编辑态：有默认值的列显示数据库默认值原文、自增 / 无默认列写「省略（交给数据库默认值）」；已有待插入行时先选中它并写「已经有一行待插入的新行：先提交或放弃它」，不再追加；每格双击填值，点「提交」才发 InsertRows"
+source = "src/data_page.rs:3099、src/data_page.rs:4988、src/data_page.rs:5049"
 
 [[component.interaction]]
 trigger = "load"
@@ -751,13 +764,13 @@ source = "src/data_page.rs:4388"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e07473853476"
+spec_hash = "59900abdc23b"
 commit = ""
 evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e07473853476"
+spec_hash = "59900abdc23b"
 note = "§7.1：行号列 row_number_width（行号 = offset + 下标 + 1）、单行表头、row_height_data / column_width、横向滚动一致；**每页 200 行**，翻页入口是页内「上一页 / 下一页 / 加载更多…」（offset = 已取行数续拉），页码写「第 N 页 / 共 ? 页」。"
 
 [component.sync.macos]
@@ -923,6 +936,7 @@ impl_notes = [
   "可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。",
   "值转换失败时错误就地显示、编辑框不关（可以在原处改）。",
   "写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。",
+  "新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。",
 ]
 
 [[component.interaction]]
@@ -1593,8 +1607,12 @@ impl_notes = [
   "查询标签的结果区默认只读；当结果**等价于一张表的当前页**时，状态栏的 + − ✓ ↶ 对它生效，口径与表数据页一致（同一份 TableDraft / InsertDraft / ApplyRowChanges）。",
   "三个条件同时成立才装上编辑态：结果终态、SQL 是唯一顶层 FROM 的简单 SELECT（无 JOIN / 集合运算 / GROUP BY / 多表逗号）、结果列覆盖目标表全部主键列。",
   "编辑用与网格同一个 open_cell_editor；提交目标表由 SQL 页显式给出，会话是本标签自己的会话。",
-  "本版边界：结果区**没有**行级脏色与删除线（脏行数只在状态行与圆点）；新增行一次只有一行；限流（Limited）结果不启用编辑。",
-  "重绘不是重跑：编辑 / 标删 / 新增 / 提交 / 放弃之后按草稿重绘并回到首行首列（避免停在最后一列）；只有**提交成功**才自动重跑同一条语句。",
+  "本版边界（仍成立）：新增行一次只有一行；限流（Limited）结果不启用编辑；查询标签没有提交确认对话框（风险只写进状态行与日志）。行级脏色与删除线在 v0.2.5 **已落地**：改过的单元格 `.sqarvo-cell-dirty`、标删的行 `.sqarvo-row-deleted`（删除线 + 0.55 透明度）、新行占位整行按「待提交」着色，与数据页同一套 class；`.sqarvo-row-deleted` 原先只定义在数据页自己的 provider 里，查询标签没打开过数据页时根本没加载，现搬到全局样式表（theme::stylesheet）两处共用。",
+  "重绘不是重跑：编辑 / 标删 / 新增 / 提交 / 放弃之后按草稿重绘（重跑会丢掉未提交的草稿）；只有**提交成功**才自动重跑同一条语句。",
+  "重绘范围：小结果集（≤ 5000 行，RELOAD_ROW_LIMIT）整表重绘、只发一次 items_changed；更大的结果集只重绘变过的行，但仍回到首行。提交落定后只重绘本批变过的行（dirty_indices），不再把已加载的每一行都 items_changed 一遍。",
+  "回到的是**首行首列**（scroll_home）：只把行滚到 0 不够——GtkColumnView 会为露出「焦点所在的那一列」而横向滚动，在最后一列改完值再提交就会停在那里（用户报「刷新后跳到最后一列」）；做法是点名第一列 + 下一帧再兜一次横向 adjustment（焦点恢复发生在那之后），有变化时写日志「[query] 水平滚动复位：X → 0」。每次重跑重建列也走这条。",
+  "状态圆点是**常驻**的（不是「有脏行才出现」）：没有未提交更改时是灰点、tooltip「没有未提交的更改」；有脏行 / 标删 / 新行时强调色，tooltip「自动提交 · 脏行 N · 待提交 M 条 ⏎ 自动提交：每条语句自成一个事务」口径同表工具条同一枚圆点（同一套 CSS 与文案）。",
+  "表事件的归属：路由层先判「该标签没有浏览状态」再投给 SQL 页（tabs::route_table），**不能**让它撞上「通道不符」被整批丢弃——否则提交后既没有回填也不会自动重跑（日志「丢弃事件：标签 tab-q1 是查询标签，不接收表数据事件」就是这条路径走错了）。",
 ]
 
 [[component.interaction]]
@@ -1617,6 +1635,18 @@ source = "src/results.rs:742、src/sql_page.rs:731"
 
 [[component.interaction]]
 trigger = "click"
+precondition = "可编辑、没有未提交改动、没有待插入行（入口：状态栏 +）"
+result = "结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」"
+source = "src/results.rs:672、src/sql_page.rs:956、src/result_edit.rs:198"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "可编辑且有选中行（入口：状态栏 −）"
+result = "把选中行标记待删除（不立刻写库），可 ↶ 放弃；重绘后整行删除线 + 压暗，状态行「已标记删除 N 行（提交前可以放弃）」"
+source = "src/sql_page.rs:968、src/result_edit.rs:176"
+
+[[component.interaction]]
+trigger = "click"
 precondition = "有脏行 / 待插入行（入口：状态栏 ✓ / Ctrl+S）"
 result = "走 ApplyRowChanges；全部成功后**自动重跑同一条语句**（results.statement()，不是编辑器里的当前文本），结果区写「已提交 N 行 · 已自动重新执行查询」/「已插入 N 行 · 已自动重新执行查询」；有失败行时**不重跑**，失败行留在草稿里"
 source = "src/sql_page.rs:801、src/sql_page.rs:841、src/sql_page.rs:380"
@@ -1635,7 +1665,7 @@ source = "src/sql_page.rs:954"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e1cc87c8d7d5"
+spec_hash = "84b4a963bda7"
 commit = ""
 evidence = "§5.10 查询结果的单表编辑（v0.2.5）；sql_page try_enable_edit / on_applied，result_edit，results 重绘"
 

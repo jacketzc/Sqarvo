@@ -18,7 +18,7 @@
 id = "tabs"
 display_name = "标签条与查询标签"
 summary = "工作区顶部的标签条，以及查询标签页里的动作行、编辑器与结果区：标签的新建 / 复用 / 上限 / 关闭守卫，查询的执行 / 取消、五态、结果表头与续拉。"
-legacy_ref = "docs/ui-specification/ui-behavior-contract.md §4、§5.11、§7.1"
+legacy_ref = "ui-behavior-contract.md §4、§5.11、§7.1（原章节已退役为指针，行为见本文件）"
 
 [[component]]
 id = "tabs"
@@ -178,6 +178,7 @@ impl_notes = [
   "库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。",
   "窗口标题仍是 `<标签标题> (<连接名>)`。",
 ]
+platform_notes.windows = "标签名后缀 `*` = 编辑器内容与「按下执行那一刻的编辑器内容」不同（v0.1 没有「保存查询」，标记口径就是「未执行」）；Linux 的标题只有「查询 N」，不带任何标记。"
 
 [[component.interaction]]
 trigger = "load"
@@ -217,6 +218,7 @@ impl_notes = [
   "× 与 `Ctrl+W` 走同一条 `close-page`：只有这一条关闭入口，没有第二套旁路。",
   "`Objects` 固定页的 × 点了也不关：on_close_page 拒绝并记一行日志（AdwTabPage 没有「不可关闭」属性）。",
   "确认框已在显示时再点 × 只记日志，不叠第二个框。",
+  "菜单里已不列「关闭标签」：入口只有标签上的 × 与 `Ctrl+W`，没有第三条旁路（菜单裁剪口径见契约 §1.4）。",
 ]
 
 [[component.interaction]]
@@ -318,6 +320,7 @@ impl_notes = [
   "同一段文案不重复弹：连点 ＋ / Ctrl+T 只留一个框，日志里仍每次记一行拒绝原因。",
   "文案不是静默失败：必须同时给出上限、当前已开数量和「先关一个」的建议。",
 ]
+platform_notes.windows = "超限提示走**状态栏**一行文字（§7.1：不弹假对话框），文案与 Linux 同一句「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」；Linux 是 `AdwAlertDialog`。名额也略窄：Windows 数的是查询页（与后端 `QueryClient.MaxConcurrentQueries` 对齐），Linux 数的是全部「有会话标签」（表数据 + 查询）。"
 
 [[component.interaction]]
 trigger = "load"
@@ -357,6 +360,7 @@ impl_notes = [
   "页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。",
   "本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。",
   "每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。",
+  "v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。",
   "游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。",
 ]
 
@@ -419,17 +423,17 @@ keys = ["Esc"]
 precondition = "有查询在跑"
 result = "取消查询（同一按键在空闲时分流为「清空结果区行选中」）"
 source = "src/sql_page.rs:288、src/sql_page.rs:395"
+platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "1187ec7564e2"
+spec_hash = "19146e5c30b7"
 evidence = "§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "1187ec7564e2"
+spec_hash = "19146e5c30b7"
 evidence = "§7.1 查询标签 / SQL 编辑器两行：执行 / 取消同一入口、跑起来文案变「取消」、Ctrl+Enter 执行、Ctrl+. 取消、空 SQL 只提示不清理结果"
-platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。"
 
 [component.sync.macos]
 state = "none"
@@ -449,6 +453,7 @@ impl_notes = [
   "等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。",
   "高度是内容高度区间（min 140 / max 220，未进 metrics：P1 补 key），超出后在编辑器内部滚动。",
   "Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。",
+  "编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。",
 ]
 
 [[component.interaction]]
@@ -463,17 +468,17 @@ keys = ["Ctrl+Enter"]
 precondition = "编辑器有焦点"
 result = "执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略"
 source = "src/sql_page.rs:300、src/sql_page.rs:341"
+platform_notes.windows = "**有选中就只执行选中部分**（TextBox.SelectionLength > 0），否则执行全文；Linux 执行全文。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a73ab27b40f0"
+spec_hash = "e0c1f76592db"
 evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "a73ab27b40f0"
+spec_hash = "e0c1f76592db"
 evidence = "§7.1 SQL 编辑器行：行号沟 + 等宽多行 TextBox（AcceptsReturn、不折行、自动滚动条）、无语法高亮"
-platform_notes.windows = "**有选中就只执行选中部分**（TextBox.SelectionLength > 0），否则执行全文；Linux 执行全文。"
 
 [component.sync.macos]
 state = "none"
@@ -506,17 +511,17 @@ trigger = "load"
 precondition = "语句没有结果集（UPDATE / INSERT / DDL）"
 result = "不假装有结果：写「影响 N 行」而不是画一张空表（Linux 写「语句 N 影响 N 行（无结果集）」）"
 source = "src/sql_page.rs:548、src/sql_page.rs:552"
+platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "9863fec61345"
+spec_hash = "0252eb126c67"
 evidence = "§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "9863fec61345"
+spec_hash = "0252eb126c67"
 evidence = "§7.1 结果区五态行：Loading / Empty / Error / Cancelled / ReadOnly 五态互斥，Error 与 Cancelled 保留已加载行"
-platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。"
 
 [component.sync.macos]
 state = "none"
@@ -535,6 +540,8 @@ impl_notes = [
   "自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。",
   "没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。",
   "表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。",
+  "不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。",
+  "语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。",
 ]
 
 [component.sync.linux]
@@ -607,17 +614,17 @@ keys = ["Esc"]
 precondition = "结果区有选中行、没有查询在跑"
 result = "清空行选中；执行中的 Esc 仍分流为「取消查询」"
 source = "src/results.rs:379、src/results.rs:382"
+platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0b7f6ebc270f"
+spec_hash = "86ce86d71e39"
 evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "0b7f6ebc270f"
+spec_hash = "86ce86d71e39"
 evidence = "§7.1 结果网格行：只建视口内的行、上下用高度占位撑出总高、表头与行区横向同步滚动"
-platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
 
 [component.sync.macos]
 state = "none"
@@ -648,17 +655,17 @@ trigger = "load"
 precondition = "服务端返回的批次读到底（has_more=false）"
 result = "不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」）"
 source = "src/results.rs:1043、src/sql_page.rs:585"
+platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3c40d041bb1f"
+spec_hash = "646be58b5fc1"
 evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "3c40d041bb1f"
+spec_hash = "646be58b5fc1"
 evidence = "§7.1 结果网格行：每批 200 行由滚动到接近末尾（距末行 ≤ 20 行）或点「加载更多」触发 FetchBatch，同一时刻最多一批在飞"
-platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
 
 [component.sync.macos]
 state = "none"
