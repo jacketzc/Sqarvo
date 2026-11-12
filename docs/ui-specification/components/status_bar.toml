@@ -121,8 +121,10 @@ display_name = "行操作按钮组（新增 / 删除 / 应用 / 撤销 / 刷新 
 kind = "container"
 status = "active"
 style.metrics = ["icon_button_width", "icon_button_height"]
+style.states = { disabled = "sqarvo_status_fg" }
 impl_notes = [
   "六个图标按钮连成一组（linked，组内间距 0），图标盒与命中区统一走 icon_button_width / icon_button_height，不按单个字形调大小。",
+  "禁用态：前景换 @sqarvo_status_fg 并叠 opacity 0.45（v0.2.5 加，为「激活 / 非激活一眼可辨」）；同时用 opacity: 1 / filter: none 压掉 Adwaita `.flat:disabled` 与 `dim-label` 自带的透明度，颜色只由这两条规则决定。",
   "组尾一条竖分隔线（1px、按行高居中）把行操作与右侧读数隔开；分隔线没有交互，不单独登记。",
   "按钮只显示图标，tooltip 同时登记为可访问名；tooltip 文案是动作本身（不带「新增行：」这类前缀），可访问名仍是构建时那句带前缀的话。",
   "这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。",
@@ -144,13 +146,13 @@ source = "src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page
 
 [component.sync.linux]
 state = "done"
-spec_hash = "4c6a1a14d8ec"
+spec_hash = "c5ac7dd10c67"
 commit = ""
 evidence = "§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "4c6a1a14d8ec"
+spec_hash = "c5ac7dd10c67"
 note = "§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。"
 
 [component.sync.macos]

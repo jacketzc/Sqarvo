@@ -2193,10 +2193,10 @@ kind `container` · status `active` · parent `status_bar`
 
 kind `container` · status `active` · parent `status_bar.row1`
 
-- 样式：尺寸 `icon_button_width`、`icon_button_height`
+- 样式：尺寸 `icon_button_width`、`icon_button_height`；状态 disabled=`sqarvo_status_fg`
 - 平台差异：Windows：六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增 / 删除本片恒禁用，理由是「新增行 / 删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。
 - 同步：Linux done（§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops）；Windows partial（§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。）；macOS none
-- 实现备注：六个图标按钮连成一组（linked，组内间距 0），图标盒与命中区统一走 icon_button_width / icon_button_height，不按单个字形调大小。组尾一条竖分隔线（1px、按行高居中）把行操作与右侧读数隔开；分隔线没有交互，不单独登记。按钮只显示图标，tooltip 同时登记为可访问名；tooltip 文案是动作本身（不带「新增行：」这类前缀），可访问名仍是构建时那句带前缀的话。这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。§7 把「查询标签没有可编辑表格」概括为一句话；实现按结果可编辑性给更具体的原因（只读结果、新行还空着、没有选中行各一句），见 sql_page 的行操作可用性。
+- 实现备注：六个图标按钮连成一组（linked，组内间距 0），图标盒与命中区统一走 icon_button_width / icon_button_height，不按单个字形调大小。禁用态：前景换 @sqarvo_status_fg 并叠 opacity 0.45（v0.2.5 加，为「激活 / 非激活一眼可辨」）；同时用 opacity: 1 / filter: none 压掉 Adwaita `.flat:disabled` 与 `dim-label` 自带的透明度，颜色只由这两条规则决定。组尾一条竖分隔线（1px、按行高居中）把行操作与右侧读数隔开；分隔线没有交互，不单独登记。按钮只显示图标，tooltip 同时登记为可访问名；tooltip 文案是动作本身（不带「新增行：」这类前缀），可访问名仍是构建时那句带前缀的话。这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。§7 把「查询标签没有可编辑表格」概括为一句话；实现按结果可编辑性给更具体的原因（只读结果、新行还空着、没有选中行各一句），见 sql_page 的行操作可用性。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
