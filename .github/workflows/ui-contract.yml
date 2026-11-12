@@ -1,0 +1,46 @@
+name: UI 契约
+
+# 只跑注册表 / UI 规格文档的校验。代码改动走 ci.yml（那边 paths-ignore 掉文档）。
+# theme.rs 与 metrics.toml 是校验器的输入（token 与尺寸 key），必须留在这里，
+# 否则改了它们不会有任何校验。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/ui-specification/**'
+      - 'AGENTS.md'
+      - 'scripts/check-ui-sync.sh'
+      - 'scripts/check-ui-sync.py'
+      - '.github/workflows/ui-contract.yml'
+      - 'frontend/linux/src/theme.rs'
+  pull_request:
+    paths:
+      - 'docs/ui-specification/**'
+      - 'AGENTS.md'
+      - 'scripts/check-ui-sync.sh'
+      - 'scripts/check-ui-sync.py'
+      - '.github/workflows/ui-contract.yml'
+      - 'frontend/linux/src/theme.rs'
+  workflow_dispatch:
+
+jobs:
+  contract:
+    name: UI 组件注册表
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 结构错误才失败：id 重复、parent 断链、metrics / token / 源码引用不存在、
+      # state=done 却没有哈希。「某端未同步」只报告不阻断（ADR 0027）。
+      - name: 校验注册表
+        run: scripts/check-ui-sync.sh check
+
+      # 有人手改 ui-components.md、或改了注册表忘了 gen，这里会红。
+      - name: 生成物与注册表一致
+        run: |
+          set -euo pipefail
+          scripts/check-ui-sync.sh gen
+          if ! git diff --exit-code -- docs/ui-specification/ui-components.md; then
+            echo "::error::ui-components.md 与 components/*.toml 不一致：跑 scripts/check-ui-sync.sh gen 并提交"
+            exit 1
+          fi
