@@ -41,6 +41,8 @@
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
+            <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
                  用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
@@ -92,6 +94,8 @@
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
+            <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
                  用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
@@ -139,6 +143,8 @@
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
+            <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
                  用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，
@@ -187,6 +193,8 @@
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
+            <!-- NULL / 空串这类「不是值」的格子：更弱一级，配斜体（真机上二级色与正文区分不出来）。 -->
+            <StaticResource x:Key="SqarvoTextTertiaryBrush" ResourceKey="TextFillColorTertiaryBrush" />
             <StaticResource x:Key="SqarvoAccentTextBrush" ResourceKey="AccentTextFillColorPrimaryBrush" />
             <!-- 主操作（工具条的「连接」）：系统强调色填充 + 反白文字。
                  用别名而不是直写 AccentFillColorDefaultBrush，是为了让 XAML 只认 Sqarvo* 这一组键，

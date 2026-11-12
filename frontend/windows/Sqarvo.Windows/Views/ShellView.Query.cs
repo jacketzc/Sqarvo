@@ -1223,7 +1223,14 @@ public sealed partial class ShellView
         {
             var text = column < cells.Count ? cells[column] : string.Empty;
             var numeric = column < tab.State.Columns.Count && tab.State.Columns[column].Numeric;
-            AddQueryCell(grid, column + 1, text, secondary: QueryCellText.IsWeak(text), right: numeric, mono: false);
+            AddQueryCell(
+                grid,
+                column + 1,
+                text,
+                secondary: QueryCellText.IsWeak(text),
+                right: numeric,
+                mono: false,
+                weak: QueryCellText.IsWeak(text));
         }
 
         // 整行可访问名：--report-shell 断言「行号 + 首列」就靠它。
@@ -1238,7 +1245,8 @@ public sealed partial class ShellView
         string text,
         bool secondary,
         bool right,
-        bool mono)
+        bool mono,
+        bool weak = false)
     {
         var block = new TextBlock
         {
@@ -1256,7 +1264,16 @@ public sealed partial class ShellView
             block.FontFamily = MonoFont();
         }
 
-        if (ThemeBrush(secondary ? "SqarvoTextSecondaryBrush" : "SqarvoTextPrimaryBrush") is { } brush)
+        if (weak)
+        {
+            // NULL / 空串：弱色 + 斜体，和「真的有值」的格子一眼能分开（真机上只用二级色看不出差别）。
+            block.FontStyle = FontStyle.Italic;
+        }
+
+        var brushKey = weak
+            ? "SqarvoTextTertiaryBrush"
+            : secondary ? "SqarvoTextSecondaryBrush" : "SqarvoTextPrimaryBrush";
+        if (ThemeBrush(brushKey) is { } brush)
         {
             block.Foreground = brush;
         }

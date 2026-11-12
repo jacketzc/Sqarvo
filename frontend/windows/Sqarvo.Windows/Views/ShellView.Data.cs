@@ -1886,7 +1886,10 @@ public sealed partial class ShellView
             block.FontStyle = FontStyle.Italic;
         }
 
-        if (ThemeBrush(secondary ? "SqarvoTextSecondaryBrush" : "SqarvoTextPrimaryBrush") is { } brush)
+        var brushKey = nullCell
+            ? "SqarvoTextTertiaryBrush"
+            : secondary ? "SqarvoTextSecondaryBrush" : "SqarvoTextPrimaryBrush";
+        if (ThemeBrush(brushKey) is { } brush)
         {
             block.Foreground = brush;
         }
