@@ -44,7 +44,7 @@ jobs:
           CHANGED="$(git diff --name-only "$BASE" HEAD)"
           echo "变更文件："
           echo "${CHANGED:-<空>}"
-          if [[ -n "$CHANGED" ]] && ! grep -qvE '^(docs/.*|.*\.md)$' <<< "$CHANGED"; then
+          if [[ -n "$CHANGED" ]] && ! grep -qvE '^(docs/.*|.*\.md|scripts/check-[a-z-]+\.(py|sh)|\.github/workflows/.*)$' <<< "$CHANGED"; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "纯文档改动：跳过打包"
           else

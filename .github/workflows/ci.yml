@@ -8,10 +8,12 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - 'scripts/**'   # 校验脚本不参与构建；它们由 ui-contract / readme 各自负责
   pull_request:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - 'scripts/**'
 
 jobs:
   backend:
