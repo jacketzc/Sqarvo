@@ -36,6 +36,8 @@
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <!-- 工具条竖分隔线专用：CardStroke 在浅色底上仍低于可见阈值（1px 竖线在真机上看不见）。 -->
+            <StaticResource x:Key="SqarvoDividerStrongBrush" ResourceKey="ControlStrokeColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
@@ -85,6 +87,8 @@
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <!-- 工具条竖分隔线专用：CardStroke 在浅色底上仍低于可见阈值（1px 竖线在真机上看不见）。 -->
+            <StaticResource x:Key="SqarvoDividerStrongBrush" ResourceKey="ControlStrokeColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
@@ -130,6 +134,8 @@
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <!-- 工具条竖分隔线专用：CardStroke 在浅色底上仍低于可见阈值（1px 竖线在真机上看不见）。 -->
+            <StaticResource x:Key="SqarvoDividerStrongBrush" ResourceKey="ControlStrokeColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />
@@ -176,6 +182,8 @@
             <StaticResource x:Key="SqarvoSurfaceBrush" ResourceKey="CardBackgroundFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoBandBrush" ResourceKey="LayerFillColorDefaultBrush" />
             <StaticResource x:Key="SqarvoDividerBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <!-- 工具条竖分隔线专用：CardStroke 在浅色底上仍低于可见阈值（1px 竖线在真机上看不见）。 -->
+            <StaticResource x:Key="SqarvoDividerStrongBrush" ResourceKey="ControlStrokeColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoCardBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <StaticResource x:Key="SqarvoTextPrimaryBrush" ResourceKey="TextFillColorPrimaryBrush" />
             <StaticResource x:Key="SqarvoTextSecondaryBrush" ResourceKey="TextFillColorSecondaryBrush" />

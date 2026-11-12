@@ -192,8 +192,8 @@
                 <Grid Grid.Column="1" Width="{StaticResource Size.InspectorGap}">
                     <Rectangle
                         Width="{StaticResource Size.BorderWidthPxNeverScaled}"
-                        Height="{StaticResource Size.IconButtonHeight}"
-                        Fill="{ThemeResource SqarvoDividerBrush}"
+                        Height="{StaticResource Size.ToolbarHeight}"
+                        Fill="{ThemeResource SqarvoDividerStrongBrush}"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Center" />
                 </Grid>
