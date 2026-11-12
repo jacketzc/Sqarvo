@@ -434,10 +434,21 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 
 | 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| 打开 | 已打开表（有草稿） | 在数据行（任意单元格）上右键：未选中的行先被选中，已多选时保留多选；菜单是贴着点击位置的 `GtkPopoverMenu`（popup surface） | `src/data_page.rs`（`show_row_menu`、`cell_factory` 的 button-3 手势） |
-| `删除行` | 可编辑且有选中行（`delete_available`，与状态栏 `−` 同一谓词） | 与状态栏 `−` / `RowOp::Delete` 完全同一方法：只把选中行**标记为待删除**，结果进状态圆点 tooltip 末段「最近一次操作：…」；新行占位行不在删除范围 | `src/data_page.rs`（`delete_selected_row`、`row.delete-row` 动作） |
+| 打开 | 已打开表（有草稿） | 在数据行（任意单元格）上右键：未选中的行先被选中，已多选时保留多选；菜单是贴着点击位置的 `GtkPopover`（popup surface），每条目是**普通扁平按钮**（不挂 `gio::SimpleAction`） | `src/data_page.rs`（`show_row_menu`、`cell_factory` 的 button-3 手势） |
+| `删除行` | 可编辑且有选中行（`delete_available`，与状态栏 `−` 同一谓词） | 与状态栏 `−` / `RowOp::Delete` 完全同一方法：只把选中行**标记为待删除**，结果进状态圆点 tooltip 末段「最近一次操作：…」；新行占位行不在删除范围 | `src/data_page.rs`（`delete_selected_row`、`show_row_menu` 里的 `connect_clicked`） |
 | `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单在悬停时由 GTK 展开 | `src/data_page.rs`（`copy_selected_as_insert`）、`src/export.rs`（`multi_row_insert`） |
 | 视图 / 只读连接 | 不可编辑 | `删除行` 灰掉（`delete_available` = false）；`复制为 INSERT` 仍可用（只读也要能导出数据） | 同上 |
+| 菜单条目失效的教训（v0.2.5 首版回归） | — | 首版用 `gio::Menu` + `PopoverMenu` 绑 `row.delete-row` / `row.copy-as-insert`，控件装的 `SimpleActionGroup` 解析不到时 GTK **既不报错也不置灰**：菜单照常弹出，点下去什么都不发生。现改为纯控件（闭包直连），与对象树右键菜单同一套写法；QA 走 `qa_pick_row_menu` → 按钮 `emit_clicked()`（与真点同一个信号）证明接线 | `src/data_page.rs`（`show_row_menu`、`qa_pick_row_menu`） |
+
+### 5.9 展示形式切换（按行浏览 / 单行「字段 · 值」，v0.2.5）
+
+| 行为/操作 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| 入口 | 表数据标签 | 状态栏分页器**前方**的 toggle（图标 `view-dual-symbolic`，与状态栏其它图标同一尺寸与命中区） | `src/shell.rs`（`StatusBar::new`） |
+| 切到「字段 / 值」 | 有选中行 | 表格外框内换成两列：`字段`（220px，可拖）与 `值`（自适应）；行 = 该行的每个字段，值取**当前值**（含未提交编辑，NULL 显示 `NULL`、空串留白）。只讲**第一个**选中的行（多选时）；日志 `[data] 展示形式：字段 / 值（栈当前页 detail）` | `src/data_page.rs`（`toggle_detail_view` / `fill_detail` / `detail_cell_factory`） |
+| 没有选中行 | 无选中 | 按钮置灰（`RowOpsState.detail`）；即使被程序调用也只写状态行「先选中一行，再切换到「字段 / 值」视图」，不切视图 | `src/shell.rs`（`apply_row_ops`）、`src/data_page.rs`（`toggle_detail_view`） |
+| 切回按行浏览 | 在详情视图 | 再按一次同一按钮（`RowOp::ToggleDetail` 幂等切换），网格原样回来，选中与脏行不变 | 同上 |
+| 自动复位 | 换表 / 重新读取 / 选中集清空 | 强制回到按行浏览并清空详情数据（详情讲的是上一屏那一行） | `src/data_page.rs`（`begin_open`、`selection_changed`） |
 
 ---
 
@@ -472,6 +483,7 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 | 行 1：各按钮可用性 | — | 与页内按钮**完全一致**（直接读数据页按钮的 `sensitive`，不重复判定）；「刷新」例外，单独按状态判定（已打开表、无 RPC 在途、无脏行）；「取消」只在提交批次在途时可点。全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」 | `src/shell.rs:1119-1135`、`src/data_page.rs:4069-4114` |
 | 行 1：无表标签 | `Objects` / 查询标签 / 启动态 | 行操作全部禁用并给原因；分页摘要与翻页按钮整格隐藏；选中数隐藏；`Last Refresh` 隐藏。原因按场景不同：「Objects 页：在对象树里打开表或新建查询标签」/「当前标签是查询标签：没有可编辑的表格」/「未连接：从左侧选择一个连接开始」 | `src/shell.rs:1139-1161`、`src/ui.rs:1537-1560`、`src/startup.rs:246-248` |
 | 行 1：选中数 | 有选中行 | 显示 `N selected`（>0 即出现，不只多选）；tooltip「已选中 N 行：Ctrl/Shift 可多选，删除按批量语义提交」 | `src/shell.rs:1078-1085` |
+| 行 1：展示形式切换 | 有表标签且**有选中行**（只读连接也允许） | 分页器**前方**的 toggle（`view-dual-symbolic`）：按下去 → 数据网格换成「字段 \| 值」两列，只讲选中的那一行（字段名 + 当前值，与网格同一份显示文本）；再按一次切回按行浏览。选中态由数据页快照推回（切标签 / 换表 / 选中集清空自动复位到按行浏览）；不可用时置灰，tooltip 给原因（「先选中一行」/ 具体禁用原因） | `src/shell.rs`（`StatusBar::new`、`apply_row_ops`）、`src/data_page.rs`（`toggle_detail_view` / `set_detail_mode`） |
 | 行 1：分页器 | 有表标签 | 四个翻页按钮 + 只读摘要（§5.5）；无表时摘要为空且按钮全禁用；整组 tooltip 说明「offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供」 | `src/shell.rs:54-56`、`src/shell.rs:848-880`、`src/shell.rs:1046-1067` |
 | 行 2：左段 | — | `SQL: <摘要>`（ASCII 冒号）：表标签给当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（不执行）；`Objects` 页重置为「尚未执行」；查询标签显示最近一次查询摘要；断连时「连接已断开」 | `src/shell.rs:912-917`、`src/shell.rs:1163-1167`、`src/ui.rs:1554`、`src/browse_view.rs:860-883` |
 | 行 2：右段 | — | `Last Refresh: <相对时间>`（`<1m` / `Nm` 形式，每 30 秒重算；tooltip 给墙上时间 `HH:MM:SS` 与「offset 分页不保证跨页稳定」提示）；没有刷新过时整格隐藏 | `src/shell.rs:919-922`、`src/shell.rs:1088-1116` |

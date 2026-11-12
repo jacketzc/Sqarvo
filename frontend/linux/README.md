@@ -701,6 +701,9 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-export-hold` | 停在导出确认对话框（截图用，不自动确认、不写文件） |
 | `--qa-export-cancel-after-rows <n>` | 写满 n 行后走取消路径（验证临时文件清理与「不留半截文件」） |
 | `--qa-export-raw-values` | 关掉导出确认对话框里的「公式注入防护」开关，写原始值（验证 #137 的开关；默认开启防护） |
+| `--qa-detail-view <行号>` | 选中该行并切到「字段 / 值」视图（与状态栏分页器左侧那枚 toggle 同一条入口） |
+| `--qa-row-menu <行号>` | 打开数据行右键菜单（先选中该行；菜单是 popup surface，截图拍不到，用日志 + 下面的 pick 取证） |
+| `--qa-row-menu-pick <文案>` | 点菜单里的条目（`emit_clicked()`，与真点同一个信号；例：`删除行` / `复制为 INSERT`） |
 | `--qa-export-format <csv\|insert\|dump>` | 导出格式：CSV（默认）/ 一行一条 INSERT / 转储表（建表语句 + 全部数据，固定整表）。`--qa-export-scope table` 与它一起决定 `export` 脚本步骤写什么 |
 | `--qa-startup-workspace` | 截图时刻断言未连接的启动工作区：主区域是 `Objects` 页、空态文案存在、**不含**「后端版本 / 端点文件」（#139） |
 | `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |
