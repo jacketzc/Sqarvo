@@ -762,6 +762,13 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             background: @sqarvo_brand_soft;
             color: @sqarvo_brand_on_soft;
         }}
+        /* 标记删除的行（未提交）：删除线 + 压暗。v0.2.5 之前这条规则只在数据页自己的
+           provider 里，查询结果区没有打开表数据页时那条规则根本没装——查询标签里标删
+           一行看不到删除线（用户反馈「没有脏行交互」）。搬到全局样式表，两处共用。 */
+        .sqarvo-row-deleted {{
+            text-decoration: line-through;
+            opacity: 0.55;
+        }}
         .sqarvo-txn-commit {{
             background: @sqarvo_brand_soft;
             color: @sqarvo_brand_on_soft;

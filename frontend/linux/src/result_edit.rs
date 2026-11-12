@@ -110,6 +110,18 @@ impl ResultEdit {
         self.insert.borrow().is_some()
     }
 
+    /// 某一行的展示标记：`(是否待删除, 每列是否脏)`；越界返回 `None`。
+    ///
+    /// 结果区据此给单元格加 `.sqarvo-cell-dirty` / `.sqarvo-row-deleted`，
+    /// 与表数据页的脏行视觉同一套 CSS。
+    #[must_use]
+    pub fn row_flags(&self, row: usize) -> Option<(bool, Vec<bool>)> {
+        let draft = self.draft.borrow();
+        let draft_row = draft.rows().get(row)?;
+        let deleted = draft_row.deleted || draft_row.removed;
+        Some((deleted, draft_row.dirty.clone()))
+    }
+
     /// 脏行 / 标记删除行的下标（提交与放弃后只重绘这些行）。
     ///
     /// 用户反馈「改两行提交却像卡了 1 秒」：原先把**所有**已加载行都重绘一遍，

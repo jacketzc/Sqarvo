@@ -773,10 +773,7 @@ impl SqlPage {
         } else {
             touched
         };
-        for row in touched {
-            self.results.refresh_row(row);
-        }
-        self.results.sync_edit_dot();
+        self.results.after_batch(&touched);
         self.last_batch.replace(None);
         let note = if failures.is_empty() {
             format!(
@@ -824,7 +821,7 @@ impl SqlPage {
             .position(|meta| meta.name == column)
             .ok_or_else(|| format!("结果里没有列 {column}"))?;
         edit.set_text(row, index, text)?;
-        self.results.refresh_row(row);
+        self.results.after_edit(row);
         // 与双击编辑器同一条提示路径（QA 也必须走到状态栏重算，否则验不出真行为）。
         self.results.notify_state_changed();
         Ok(())
@@ -843,7 +840,7 @@ impl SqlPage {
             .ok_or_else(|| format!("结果里没有列 {column}"))?;
         edit.set_insert_text(index, text)?;
         if let Some(row) = self.results.insert_row_index() {
-            self.results.refresh_row(row);
+            self.results.after_edit(row);
         }
         self.results.notify_state_changed();
         Ok(())
@@ -856,7 +853,7 @@ impl SqlPage {
             .edit()
             .ok_or_else(|| "结果不可编辑".to_owned())?;
         edit.delete(&[row])?;
-        self.results.refresh_row(row);
+        self.results.after_edit(row);
         self.results.notify_state_changed();
         Ok(())
     }
@@ -909,6 +906,7 @@ impl SqlPage {
         match op {
             RowOp::Add => match self.results.begin_insert_row() {
                 Ok(_) => {
+                    self.results.reload_from_draft();
                     let note = "新行：双击单元格填值；提交前可以放弃".to_owned();
                     self.set_state(PageState::Complete, Some(&note));
                     (self.callbacks.state_changed)();
@@ -925,9 +923,7 @@ impl SqlPage {
                 let rows = self.results.selected_rows();
                 match edit.delete(&rows) {
                     Ok(count) => {
-                        for row in &rows {
-                            self.results.refresh_row(*row);
-                        }
+                        self.results.reload_from_draft();
                         let note = format!("已标记删除 {count} 行（提交前可以放弃）");
                         eprintln!("[query] {note}");
                         self.set_state(PageState::Complete, Some(&note));
@@ -979,10 +975,7 @@ impl SqlPage {
                 let touched = edit.dirty_indices();
                 edit.discard();
                 self.results.remove_insert_row();
-                for row in touched {
-                    self.results.refresh_row(row);
-                }
-                self.results.sync_edit_dot();
+                self.results.after_batch(&touched);
                 self.set_state(PageState::Complete, Some("已放弃未提交的更改"));
                 (self.callbacks.state_changed)();
             }

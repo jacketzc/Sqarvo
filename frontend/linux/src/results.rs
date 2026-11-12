@@ -150,6 +150,20 @@ impl RowStore {
         removed
     }
 
+    /// 整表换一批行（编辑后重绘用）：只发一次 `items_changed`。
+    pub fn replace_all(&self, rows: Vec<RowView>) {
+        let old_len = self.rows_len();
+        let new_len = rows.len();
+        {
+            let mut inner = self.imp().rows.borrow_mut();
+            inner.clear();
+            inner.extend(rows.into_iter().map(Rc::new));
+        }
+        self.imp().items.borrow_mut().clear();
+        self.imp().items.borrow_mut().resize(new_len, None);
+        self.items_changed(0, old_len as u32, new_len as u32);
+    }
+
     /// 清空（新查询开始时调用）。
     pub fn clear(&self) {
         let removed = self.n_items();
@@ -262,6 +276,9 @@ pub struct ResultsView {
     dot_on: Cell<bool>,
 }
 
+/// 编辑后整表重绘的行数上限：超过它只重绘被改的那一行（避免几十万行时逐行重建）。
+const RELOAD_ROW_LIMIT: usize = 5_000;
+
 impl ResultsView {
     /// 构建结果区；`on_fetch` 在接近末尾时被调用。
     pub fn new(on_fetch: Rc<dyn Fn()>) -> Rc<Self> {
@@ -319,7 +336,9 @@ impl ResultsView {
         status_dot.set_valign(gtk::Align::Center);
         status_dot.set_focusable(false);
         status_dot.set_focus_on_click(false);
-        status_dot.set_visible(false);
+        // 常驻（用户要求）：没有脏行时是灰点，有脏行时换成强调色——不是「有事才出现」。
+        status_dot.set_visible(true);
+        status_dot.set_tooltip_text(Some("没有未提交的更改"));
         status_dot.set_margin_end(gap(Gap::Xs));
 
         let ex_button = gtk::MenuButton::new();
@@ -381,7 +400,17 @@ impl ResultsView {
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         stack.add_named(&placeholder, Some("placeholder"));
-        stack.add_named(&scroll, Some("grid"));
+        // 网格外框：与表数据页 / Objects 列表同款（`.sqarvo-table-frame`：2px 边框、
+        // 8px 圆角），圆角靠 `overflow=hidden` 真正裁到内容。
+        let grid_frame = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        grid_frame.add_css_class("sqarvo-table-frame");
+        grid_frame.set_overflow(gtk::Overflow::Hidden);
+        grid_frame.set_vexpand(true);
+        grid_frame.set_margin_start(gap(Gap::Xl));
+        grid_frame.set_margin_end(gap(Gap::Xl));
+        grid_frame.set_margin_bottom(gap(Gap::Sm));
+        grid_frame.append(&scroll);
+        stack.add_named(&grid_frame, Some("grid"));
         stack.set_visible_child_name("placeholder");
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
@@ -470,6 +499,59 @@ impl ResultsView {
         self.on_selection_changed.replace(Some(callback));
     }
 
+    /// 按草稿当前值整表重绘，并把视图回到第一行。
+    ///
+    /// 用户要求：新增 / 编辑 / 删除后「触发一次刷新、回到表格开始的位置」——重绘保证
+    /// 脏行底色 / 删除线 / 新行占位立刻正确，回到首行避免停在半屏残影的位置。
+    /// 只发一次 `items_changed`（`replace_all`），不做逐行通知。
+    pub fn reload_from_draft(&self) {
+        let Some(edit) = self.edit() else {
+            return;
+        };
+        let total = self.store.rows_len();
+        let mut rows = Vec::with_capacity(total);
+        for index in 0..total {
+            if self.insert_row.get() == Some(index) {
+                rows.push(self.placeholder_row(&edit, index));
+            } else if let Some(view) = edit.row_view(index) {
+                rows.push(view);
+            }
+        }
+        if !rows.is_empty() {
+            self.store.replace_all(rows);
+        }
+        self.grid
+            .scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
+    }
+
+    /// 一次编辑之后的重绘入口：小结果集整表重绘 + 回到首行，大结果集只重绘这一行
+    /// （整表重绘在几十万行时成本不可接受，但仍回到首行——用户要的是「回到开始位置」）。
+    pub fn after_edit(&self, row: usize) {
+        if self.store.rows_len() <= RELOAD_ROW_LIMIT {
+            self.reload_from_draft();
+        } else {
+            self.refresh_row(row);
+            self.grid
+                .scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
+        }
+        self.sync_edit_dot();
+    }
+
+    /// 一次批量变更（提交 / 放弃 / 多行标删）之后的重绘：小结果集整表重绘 + 回到首行，
+    /// 大结果集只重绘 `touched` 里的行（仍然回到首行）。
+    pub fn after_batch(&self, touched: &[usize]) {
+        if self.store.rows_len() <= RELOAD_ROW_LIMIT {
+            self.reload_from_draft();
+        } else {
+            for row in touched {
+                self.refresh_row(*row);
+            }
+            self.grid
+                .scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
+        }
+        self.sync_edit_dot();
+    }
+
     /// 通知外部「页面内的可编辑状态变了」（状态栏据此重算按钮可用性）。
     pub fn notify_state_changed(&self) {
         if let Some(callback) = self.on_selection_changed.borrow().as_ref() {
@@ -511,9 +593,8 @@ impl ResultsView {
         } else {
             self.status_dot_core
                 .remove_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
-            self.status_dot.set_tooltip_text(None);
+            self.status_dot.set_tooltip_text(Some("没有未提交的更改"));
         }
-        self.status_dot.set_visible(on);
     }
 
     /// 选中行下标（删除按选中集）。
@@ -559,7 +640,8 @@ impl ResultsView {
             return Err("已经有未提交的更改：先提交或放弃，再新增行".to_owned());
         }
         edit.begin_insert()?;
-        let row = self.placeholder_row(&edit);
+        let index = self.store.rows_len();
+        let row = self.placeholder_row(&edit, index);
         let index = self.store.push(row);
         self.insert_row.set(Some(index));
         eprintln!("[query] 新行草稿：第 {} 行（占位）", index + 1);
@@ -580,7 +662,7 @@ impl ResultsView {
     }
 
     /// 占位行（所有列显示「（默认）」）。
-    fn placeholder_row(&self, edit: &Rc<crate::result_edit::ResultEdit>) -> RowView {
+    fn placeholder_row(&self, edit: &Rc<crate::result_edit::ResultEdit>, index: usize) -> RowView {
         let mut cells = Vec::with_capacity(edit.columns.len());
         let mut values = Vec::with_capacity(edit.columns.len());
         for column in 0..edit.columns.len() {
@@ -595,7 +677,8 @@ impl ResultsView {
             }
         }
         RowView {
-            number: self.store.rows_len() as u64 + 1,
+            // 行号按**位置**算：占位行是第 index+1 行（不读 store 长度，重绘时才不漂移）。
+            number: index as u64 + 1,
             cells,
             values,
         }
@@ -606,7 +689,7 @@ impl ResultsView {
         self.sync_edit_dot();
         if self.insert_row.get() == Some(row) {
             if let Some(edit) = self.edit() {
-                let placeholder = self.placeholder_row(&edit);
+                let placeholder = self.placeholder_row(&edit, row);
                 self.store.replace(row, placeholder);
             }
             return;
@@ -666,7 +749,7 @@ impl ResultsView {
                         Some(text) => edit.set_text(row, column, &text)?,
                     }
                 }
-                page.refresh_row(row);
+                page.after_edit(row);
                 // 首次编辑也必须立刻让状态栏亮起 ✓（用户反馈：第一次改值按钮不变）。
                 page.notify_state_changed();
                 Ok(())
@@ -674,9 +757,44 @@ impl ResultsView {
         crate::data_page::open_cell_editor(anchor, &title, &initial, is_null, nullable, on_apply);
     }
 
-    /// 结果区单元格工厂：绑定文本 + 双击进入编辑（只读结果里双击不做事）。
+    /// 结果区单元格工厂：绑定文本 + 脏行样式 + 双击进入编辑（只读结果里双击不做事）。
     fn cell_factory(self: &Rc<Self>, column_index: usize) -> gtk::SignalListItemFactory {
         let factory = text_factory(column_index, true);
+        // 脏行 / 标记删除 / 新行的视觉：与表数据页同一套 class（`theme.rs` 里定义），
+        // 因此底色、删除线、透明度完全一致（用户反馈查询结果「没有脏行交互」）。
+        {
+            let page = Rc::clone(self);
+            factory.connect_bind(move |_, list_item| {
+                let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+                    return;
+                };
+                let Some(label) = list_item
+                    .child()
+                    .and_then(|child| child.downcast::<gtk::Label>().ok())
+                else {
+                    return;
+                };
+                for class in ["sqarvo-cell-dirty", "sqarvo-row-deleted"] {
+                    label.remove_css_class(class);
+                }
+                let Some(edit) = page.edit() else {
+                    return;
+                };
+                let row = usize::try_from(list_item.position()).unwrap_or(usize::MAX);
+                if page.insert_row.get() == Some(row) {
+                    // 新行草稿：整行按「待提交」着色。
+                    label.add_css_class("sqarvo-cell-dirty");
+                    return;
+                }
+                match edit.row_flags(row) {
+                    Some((true, _)) => label.add_css_class("sqarvo-row-deleted"),
+                    Some((false, dirty)) if dirty.get(column_index).copied().unwrap_or(false) => {
+                        label.add_css_class("sqarvo-cell-dirty");
+                    }
+                    Some(_) | None => {}
+                }
+            });
+        }
         let page = Rc::clone(self);
         factory.connect_setup(move |_, list_item| {
             let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {

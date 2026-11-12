@@ -680,6 +680,9 @@ pub(crate) fn open_cell_editor(
     entry.set_position(-1);
 }
 
+/// 行右键菜单条目右侧「尾槽」宽度（箭头 / 空占位同宽，保证文字左侧对齐）。
+const MENU_ITEM_TAIL_WIDTH: i32 = 16;
+
 /// 「字段 / 值」视图的单元格工厂：`index` 0 = 字段名，1 = 值。
 ///
 /// 数据是 `(字段名, 值文本)` 元组；值与网格共用同一份显示文本（NULL 是 `NULL`、
@@ -2170,10 +2173,25 @@ impl DataPage {
         list.set_margin_end(gap(Gap::Xs));
 
         // 「删除行」：与状态栏 `−` / `RowOp::Delete` 完全同一个方法。
-        let delete = gtk::Button::with_label("删除行");
+        //
+        // 结构必须与下面「复制为」一致：`Button::with_label` 把文字**居中**，而「复制为」
+        // 是 Box + 左对齐 Label，两个条目看起来一个左一个中（用户报「没有对齐」）。
+        // 两行都改成 [左对齐文字][16px 尾槽]，文字起点与右端宽度都相同。
+        let delete = gtk::Button::new();
         delete.add_css_class("flat");
         delete.set_halign(gtk::Align::Fill);
         delete.set_sensitive(self.delete_available());
+        {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
+            let text = gtk::Label::new(Some("删除行"));
+            text.set_xalign(0.0);
+            text.set_hexpand(true);
+            row.append(&text);
+            let tail = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
+            tail.set_size_request(MENU_ITEM_TAIL_WIDTH, -1);
+            row.append(&tail);
+            delete.set_child(Some(&row));
+        }
         {
             let page = Rc::clone(self);
             let menu = popover.clone();
@@ -2195,8 +2213,11 @@ impl DataPage {
             text.set_xalign(0.0);
             text.set_hexpand(true);
             let arrow = gtk::Image::from_icon_name("go-next-symbolic");
+            let tail = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
+            tail.set_size_request(MENU_ITEM_TAIL_WIDTH, -1);
+            tail.append(&arrow);
             row.append(&text);
-            row.append(&arrow);
+            row.append(&tail);
             copy_row.set_child(Some(&row));
         }
         let submenu = gtk::Popover::new();
@@ -2241,24 +2262,75 @@ impl DataPage {
             });
         }
         {
-            // 悬停展开：指针进入「复制为」时把二级菜单弹出来（移开不主动收起，
-            // 否则指针从一级移到二级的途中会闪一下）。
+            // 悬停展开 / 移出收起：
+            // - 进入「复制为」立刻展开二级菜单；
+            // - 离开「复制为」时**不立即**收起，留 220ms 宽限期——指针从一级移到二级的
+            //   途中会短暂离开，立即收起会让菜单闪一下、也点不到；
+            // - 宽限期内进入二级菜单就取消收起；离开二级菜单再给一次同样的宽限期，
+            //   没有回来就收起（用户反馈「鼠标移出去二级菜单不收回」）。
             //
-            // 但**菜单刚弹出的那一帧不算悬停**：一级菜单就出现在指针下方，GTK 会立刻
-            // 发一次 enter，于是「复制为 INSERT」一出来就是展开的（用户报的就是这个）。
-            // 显示后 250ms 内的 enter 一律忽略。
-            let submenu = submenu.clone();
+            // 另外：**菜单刚弹出的那一帧不算悬停**（一级菜单出现在指针下方，GTK 会立刻发
+            // 一次 enter，于是「复制为 INSERT」一出来就是展开的），显示后 250ms 内的
+            // enter 一律忽略。
             let shown_at = std::time::Instant::now();
-            let motion = gtk::EventControllerMotion::new();
-            motion.connect_enter(move |_, _, _| {
-                if shown_at.elapsed() < std::time::Duration::from_millis(250) {
-                    return;
+            let grace: Rc<std::cell::Cell<Option<glib::SourceId>>> =
+                Rc::new(std::cell::Cell::new(None));
+
+            let cancel_grace = {
+                let grace = Rc::clone(&grace);
+                move || {
+                    if let Some(source) = grace.take() {
+                        source.remove();
+                    }
                 }
-                if !submenu.is_visible() {
-                    submenu.popup();
+            };
+
+            let arm_grace = {
+                let submenu = submenu.clone();
+                let grace = Rc::clone(&grace);
+                move || {
+                    if let Some(source) = grace.take() {
+                        source.remove();
+                    }
+                    let submenu = submenu.clone();
+                    let grace_for_timer = Rc::clone(&grace);
+                    let source = glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(220),
+                        move || {
+                            grace_for_timer.set(None);
+                            submenu.popdown();
+                        },
+                    );
+                    grace.set(Some(source));
                 }
-            });
-            copy_row.add_controller(motion);
+            };
+
+            {
+                let submenu = submenu.clone();
+                let cancel_grace = cancel_grace.clone();
+                let motion = gtk::EventControllerMotion::new();
+                motion.connect_enter(move |_, _, _| {
+                    cancel_grace();
+                    if shown_at.elapsed() < std::time::Duration::from_millis(250) {
+                        return;
+                    }
+                    if !submenu.is_visible() {
+                        submenu.popup();
+                    }
+                });
+                motion.connect_leave({
+                    let arm_grace = arm_grace.clone();
+                    move |_| arm_grace()
+                });
+                copy_row.add_controller(motion);
+            }
+            {
+                let cancel_grace = cancel_grace.clone();
+                let motion = gtk::EventControllerMotion::new();
+                motion.connect_enter(move |_, _, _| cancel_grace());
+                motion.connect_leave(move |_| arm_grace());
+                sub_list.add_controller(motion);
+            }
         }
         list.append(&copy_row);
 
@@ -6988,7 +7060,6 @@ fn stylesheet() -> String {
         /* 强调底（脏行单元格 / 事务徽标 / 列信息 focus / 表头 hover / View 徽标）
            已搬到 `theme::stylesheet`：色值只在那一处按 token 定义，这里只留语义色
            （脏 / 删除 / 警告 / 错误）与排版，不再出现任何 accent 派生底色。 */
-        .sqarvo-row-deleted {{ text-decoration: line-through; opacity: 0.55; }}
         .sqarvo-dirty {{ color: @accent_color; font-weight: 700; }}
         .sqarvo-deleted {{ color: @error_color; font-weight: 700; }}
         .sqarvo-dirty-indicator {{ font-family: monospace; }}

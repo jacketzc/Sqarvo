@@ -438,6 +438,8 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 | `删除行` | 可编辑且有选中行（`delete_available`，与状态栏 `−` 同一谓词） | 与状态栏 `−` / `RowOp::Delete` 完全同一方法：只把选中行**标记为待删除**，结果进状态圆点 tooltip 末段「最近一次操作：…」；新行占位行不在删除范围 | `src/data_page.rs`（`delete_selected_row`、`show_row_menu` 里的 `connect_clicked`） |
 | `复制为 ▸ 复制为 INSERT` | 有选中行 | 把选中行合成**一条多值 INSERT**（`INSERT INTO "t" (…) VALUES\n(…),\n(…);`）写入系统剪贴板，用选中行的**当前值**（含未提交编辑）；成功后状态圆点注记「已复制 N 行为 INSERT 语句」。BLOB / 非有限浮点写成 NULL 并在末尾附一行 `-- sqarvo:` 注释。二级菜单在**悬停**时展开（菜单显示后 250ms 内的 enter 事件忽略：一级菜单本就出现在指针下方，否则「复制为 INSERT」一弹出来就是展开的） | `src/data_page.rs`（`copy_selected_as_insert`、`show_row_menu` 的 motion 控制器）、`src/export.rs`（`multi_row_insert`） |
 | 视图 / 只读连接 | 不可编辑 | `删除行` 灰掉（`delete_available` = false）；`复制为 INSERT` 仍可用（只读也要能导出数据） | 同上 |
+| 条目对齐 | — | 「删除行」与「复制为」都做成 `[左对齐文字][16px 尾槽]` 的同一结构：原来「删除行」用 `Button::with_label`（文字**居中**）、「复制为」是 Box + 左对齐 Label，两个条目文字起点不同（用户报「没有对齐」） | `src/data_page.rs`（`MENU_ITEM_TAIL_WIDTH`、`show_row_menu`） |
+| 二级菜单的悬停 | 指针在「复制为」上 | 进入即展开；**移出 220ms 后收起**（宽限期内把指针移进二级菜单则取消收起，移出二级菜单再给一次同样的宽限期）。原来的实现「移开不主动收起」，菜单会一直挂着（用户报「移出去不收回」） | `src/data_page.rs`（`arm_grace` / `cancel_grace`） |
 | 菜单条目失效的教训（v0.2.5 首版回归） | — | 首版用 `gio::Menu` + `PopoverMenu` 绑 `row.delete-row` / `row.copy-as-insert`，控件装的 `SimpleActionGroup` 解析不到时 GTK **既不报错也不置灰**：菜单照常弹出，点下去什么都不发生。现改为纯控件（闭包直连），与对象树右键菜单同一套写法；QA 走 `qa_pick_row_menu` → 按钮 `emit_clicked()`（与真点同一个信号）证明接线 | `src/data_page.rs`（`show_row_menu`、`qa_pick_row_menu`） |
 
 ### 5.9 展示形式切换（按行浏览 / 单行「字段 · 值」，v0.2.5）
@@ -467,7 +469,10 @@ v0.2.5 起这一行**没有「撤销」「删除」**：两个动作仍在状态
 | 放弃 | 有脏行 | 全部编辑、删除标记与新行草稿一起清掉，状态行「已放弃未提交的更改」 | `src/sql_page.rs`（`RowOp::Discard`） |
 | 边界（本版不做） | — | 结果区**没有**行级脏色 / 删除线（脏行数只在状态行与圆点）；新增行一次只有一行；限流（`Limited`）结果不启用编辑 | 同左 |
 | 首次编辑就生效 | 可编辑、结果区空闲 | 改完一格立刻重算行操作可用性（`notify_state_changed` → 状态栏重算）：`✓` 在**第一次**编辑后即可点，不需要再改第二处才亮；日志 `[query] 状态圆点：亮（脏行 1 · 待提交 1 条）` | `src/results.rs`（`open_cell_editor_at` → `notify_state_changed`）、`src/sql_page.rs`（`row_ops` / `callbacks.state_changed`） |
-| 状态圆点（导出左侧） | 可编辑 | 与表工具条同一枚 7px 圆点、同一套 CSS 与文案口径：有未提交更改（脏行 / 标记删除 / 新行）时为强调色并显示「自动提交 · 脏行 N · 待提交 M 条 ⏎ 自动提交：每条语句自成一个事务」；没有脏行时隐藏 | `src/results.rs`（`sync_edit_dot`）、`src/theme.rs`（状态圆点三态） |
+| 状态圆点（导出左侧） | 常驻 | 与表工具条同一枚 7px 圆点、同一套 CSS 与文案口径。**常驻**（不是「有脏行才出现」）：没有未提交更改时是灰点、tooltip「没有未提交的更改」；有脏行 / 标记删除 / 新行时为强调色，tooltip「自动提交 · 脏行 N · 待提交 M 条 ⏎ 自动提交：每条语句自成一个事务」 | `src/results.rs`（`sync_edit_dot`）、`src/theme.rs`（状态圆点三态） |
+| 脏行视觉 | 有脏行 / 标记删除 / 新行 | 与表数据页**同一套 class**：改过的单元格 `.sqarvo-cell-dirty`（品牌浅底 + 对应前景色）、标记删除的行 `.sqarvo-row-deleted`（删除线 + 0.55 透明度）、新行占位整行按「待提交」着色。`.sqarvo-row-deleted` 原先只定义在数据页自己的 CSS provider 里，查询标签没打开过数据页时根本没加载——v0.2.5 搬进全局样式表（`theme::stylesheet`），两处共用 | `src/results.rs`（`cell_factory` 的 `bind`）、`src/result_edit.rs`（`row_flags`）、`src/theme.rs` |
+| 编辑后的重绘 | 编辑 / 标删 / 新增 / 提交 / 放弃之后 | 立刻按草稿重绘一次并**回到第一行**（`reload_from_draft` → `scroll_to(0)`）：用户要求「触发一次刷新、回到表格开始的位置」，避免停在半屏残影处。小结果集（≤ 5000 行）整表重绘、只发一次 `items_changed`；更大的结果集只重绘变过的行，但仍回到首行。**注意**：这是重绘，不重跑 SQL（重跑会丢掉未提交的草稿） | `src/results.rs`（`reload_from_draft` / `after_edit` / `after_batch`）、`src/sql_page.rs`（各操作分支） |
+| 表格外框 | 有结果 | 与表数据页 / `Objects` 列表同款 `.sqarvo-table-frame`（2px 边框 + 8px 圆角），圆角靠 `overflow = hidden` 真正裁到内容；左右各让 12，与侧栏、信息面板的分栏线错开 | `src/results.rs`（`grid_frame`）、`src/theme.rs`（`.sqarvo-table-frame`） |
 | `⟳` 刷新 | 执行过查询（结果区空闲） | 用编辑器里当前的 SQL 重跑（与「执行」同一入口）。**有未提交的更改时拒绝**并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点） | `src/sql_page.rs`（`perform_row_op` → `RowOp::Refresh`） |
 | 提交后的重绘范围 | 提交落定 | 只重绘本批变过的行（`dirty_indices`），不再把已加载的每一行都 `items_changed` 一遍：几百行结果里改两行提交，行数越多越快（用户反馈「按下去到成功像卡了 1 秒」的直接原因是本次的全量重绘） | `src/result_edit.rs`（`dirty_indices`）、`src/sql_page.rs`（`on_applied` / `Discard`） |
 | ESC 取消选中 | 结果区有选中行、没有查询在跑 | 清空行选中（`selection.unselect_all()`）；**执行中**的 ESC 仍是「取消查询」（同一按键按状态分流） | `src/results.rs`（网格 `EventControllerKey`）、`src/sql_page.rs`（按键分流） |
