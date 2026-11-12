@@ -516,6 +516,21 @@ from the shipped Linux client, so the code and the contract must agree at all ti
   `removed`（该端已清：代码删了或界面隐藏了）/ `present`（还留着）/ `na`，且不记 `spec_hash`。
   单端不做记 `sync.<plat> = "na"`，那不算全局退役。查询用 `scripts/check-ui-sync.sh pending`。
 
+### 14.4 发版门禁：已支持平台的 UI 行为必须同步（绑定）
+
+每次在 GitHub 发布 Release（含预发布）前，注册表里**所有 `active` / `deprecated` 组件**在当前
+支持平台上的 `sync` 必须是 `done`，或 `na` / `blocked`（并有说明）。
+
+- **当前支持平台：Linux、Windows。** macOS 尚未接入，`sync.macos` 不参与门禁。
+- 门禁命令：`scripts/check-ui-sync.sh release-check [--release v0.3.0]`。有缺口返回非 0，并逐条列出
+  「哪个组件、哪个平台、什么状态」；带 `--release` 时还会检查该版本要删的组件是否已清干净。
+- 算缺口：`partial` / `none` / `present` / 标记过期（规范改了没重新核对）。不算缺口：`na`（该平台
+  不做）、`blocked`（平台能力做不到，且已在行为契约 §9 记录）。
+- 确实要带已知差异发版：在发布说明（`docs/releases/<version>.md`）里单列一节「未同步的 UI 行为」，
+  写明组件 `id`、平台、原因、计划版本，并在对应 Issue 里取得维护者明确批准；不允许静默发布。
+- 与 §14.3 的分工：§14.3 管日常（改了规范就要重新核对），本节管发版（发版前不允许留缺口）。
+- 新增支持平台（如 macOS 接入）时，把它加进 `SUPPORTED_PLATFORMS` 并同步本节与 §14.1 的分层表。
+
 ## 15. Agent Workflow
 
 Follow this sequence when executing a task:

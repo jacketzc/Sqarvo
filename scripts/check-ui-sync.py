@@ -9,6 +9,8 @@
     mark               把某端记录的 spec_hash 刷新为当前规范哈希
     pending [--release v0.3.0]
                        列出退役组件（deprecated / removed）与各端清理进度
+    release-check [--release v0.3.0]
+                       发版门禁：已支持平台（Linux / Windows）的 active 组件必须 done / na / blocked
 
 设计约束（不要为了「方便」放宽）：
   * 数字只来自 metrics.toml，颜色只来自主题 token —— 组件里出现 px 或 #RRGGBB 是缺陷；
@@ -33,6 +35,8 @@ OUT_MD = REPO / "docs/ui-specification/ui-components.md"
 
 PLATFORMS = ("linux", "windows", "macos")
 PLATFORM_LABEL = {"linux": "Linux", "windows": "Windows", "macos": "macOS"}
+# 当前支持的桌面端：发版门禁只看这两端。macOS 未接入，不参与门禁。
+SUPPORTED_PLATFORMS = ("linux", "windows")
 
 KINDS = {"area", "container", "control", "row", "cell", "item", "slot"}
 STATUSES = {"active", "deprecated", "removed"}
@@ -631,6 +635,73 @@ def run_pending(release: str | None) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 发版门禁
+
+
+def parse_version(text: str | None) -> tuple[int, int, int]:
+    m = re.match(r"v?(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    if not m:
+        return (0, 0, 0)
+    return tuple(int(g) if g else 0 for g in m.groups())  # type: ignore[return-value]
+
+
+def run_release_check(release: str | None) -> int:
+    """发版门禁：已支持平台上，产品里还存在的组件必须已同步。
+
+    done 要求哈希与当前规范一致（否则就是"规范改了没重新核对"）；na / blocked 不算缺口 ——
+    前者该平台不做，后者是平台能力限制且已在契约 §9 记录。--release 额外检查该版本要删的组件。
+    """
+    areas = load_areas()
+    gaps: list[tuple[str, str, str]] = []
+    ok = 0
+    target = parse_version(release) if release else None
+
+    for item in areas:
+        for comp in item["components"]:
+            status = comp.get("status")
+            if status == "removed":
+                if target and parse_version(comp.get("removed_in")) <= target:
+                    for plat in SUPPORTED_PLATFORMS:
+                        state = comp.get("sync", {}).get(plat, {}).get("state")
+                        if state in {"removed", "na"}:
+                            ok += 1
+                        else:
+                            gaps.append((comp["id"], plat, f"退役未清理（{state}）"))
+                continue
+            for plat in SUPPORTED_PLATFORMS:
+                entry = comp.get("sync", {}).get(plat) or {}
+                state = entry.get("state")
+                if state == "done":
+                    if entry.get("spec_hash") != canonical_hash(comp):
+                        gaps.append((comp["id"], plat, "标记过期（规范改了没重新核对）"))
+                    else:
+                        ok += 1
+                elif state in {"na", "blocked"}:
+                    ok += 1
+                else:
+                    gaps.append((comp["id"], plat, state or "缺失"))
+
+    print("发版门禁：已支持平台 " + " / ".join(PLATFORM_LABEL[p] for p in SUPPORTED_PLATFORMS)
+          + "（macOS 未接入，不参与）")
+    if release:
+        print(f"目标版本：{release}（同时检查该版本要删的组件是否已清干净）")
+    if not gaps:
+        print(f"\n全部同步：{ok} 项检查通过，0 个缺口。可以发版。")
+        return 0
+
+    by_plat: dict[str, int] = {}
+    for _, plat, _ in gaps:
+        by_plat[plat] = by_plat.get(plat, 0) + 1
+    print(f"\n通过 {ok} 项，缺口 {len(gaps)} 条（"
+          + "、".join(f"{PLATFORM_LABEL[p]} {n}" for p, n in sorted(by_plat.items())) + "）")
+    for cid, plat, why in gaps[:40]:
+        print(f"  x {cid} [{plat}] {why}")
+    if len(gaps) > 40:
+        print(f"  …还有 {len(gaps) - 40} 条（跑 check 看全量）")
+    print("\n发版被门禁拦住。要么补齐实现并 mark，要么按 AGENTS.md §14.4 在发布说明里列明并取得批准。")
+    return 1
+
+
 # ---------------------------------------------------------------- 入口
 
 
@@ -650,6 +721,12 @@ def main(argv: list[str]) -> int:
             if a == "--release" and i + 1 < len(args):
                 release = args[i + 1]
         return run_pending(release)
+    if cmd == "release-check":
+        release = None
+        for i, a in enumerate(args):
+            if a == "--release" and i + 1 < len(args):
+                release = args[i + 1]
+        return run_release_check(release)
     if cmd == "mark":
         plat = "linux"
         cid = None

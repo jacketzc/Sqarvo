@@ -285,12 +285,15 @@ CI（`a74ca8f`）三作业 success；`scripts/check-tracking.sh --state all` 无
 
 1. `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 通过；
 2. 目标平台完成真实构建与启动验证（无法验证的平台明确标注）；
-3. `docs/product/requirements.md` 的状态列与实现一致；
-4. 支持矩阵（数据库 × 能力）更新，未支持项写明错误语义；
-5. 安全复核：日志无 token/密码、端点文件 0600、IPC 仅本机、错误信息无敏感内容；
-6. 升级/兼容：proto 无破坏性变更，或有主版本升级说明；
-7. 打包产物与安装步骤在干净环境验证；
-8. 发布说明包含：新增能力、行为变化、已知限制、升级注意事项。
+3. **UI 行为同步门禁**：`scripts/check-ui-sync.sh release-check --release <版本>` 通过 —— 已支持平台
+   （Linux、Windows）的每个 `active` 组件都是 `done`，或 `na` / `blocked` 已说明；该版本要删的组件已清干净。
+   未通过时不得发版，除非按 AGENTS.md §14.4 在发布说明里列出「未同步的 UI 行为」并取得维护者批准；
+4. `docs/product/requirements.md` 的状态列与实现一致；
+5. 支持矩阵（数据库 × 能力）更新，未支持项写明错误语义；
+6. 安全复核：日志无 token/密码、端点文件 0600、IPC 仅本机、错误信息无敏感内容；
+7. 升级/兼容：proto 无破坏性变更，或有主版本升级说明；
+8. 打包产物与安装步骤在干净环境验证；
+9. 发布说明包含：新增能力、行为变化、已知限制、升级注意事项。
 
 ## 支持矩阵（v0.2.2）
 

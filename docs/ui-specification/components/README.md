@@ -166,3 +166,6 @@ evidence = "--qa-layout-audit 通过"  # 证据（可空，done 时缺失只报�
 谁要恢复 `done`，就得按新规范核对一遍再 `mark`。这样「改了就清标记」不需要纪律。
 
 `--strict` 用于 CI 之后收紧：结构错误始终失败，过期在 P1 起可设为失败。
+
+**发版门禁**：`scripts/check-ui-sync.sh release-check` —— 发布前所有 `active` 组件在 Linux / Windows
+必须 `done`（或 `na` / `blocked` 且有说明），否则返回非 0。规则见 AGENTS.md §14.4。
