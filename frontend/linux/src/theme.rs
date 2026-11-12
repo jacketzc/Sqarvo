@@ -336,7 +336,11 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         window.{window_class} {{ font-size: {ui}px; }}
 
         /* 区域 01：标题 13 semibold（标题控件在 headerbar 里） */
-        .sqarvo-title {{ font-size: {title}px; font-weight: 600; }}
+        .sqarvo-title {{ font-size: {title}px; font-weight: {fw_title}; }}
+        /* 卡片 / 面板 / 对象树的连接与分组名：原来是 Adwaita 的 `.heading`（它只有
+           font-weight: 700 一条规则）。改成自有类，字重由 metrics.toml 的
+           font_weight_heading 决定，不再随 libadwaita 版本变。 */
+        .sqarvo-heading {{ font-weight: {fw_heading}; }}
 
         /* 区域 02：主工具条 44 高（24 的按钮 + 上下各 10），按钮不小于 24 */
         .sqarvo-toolbar {{
@@ -380,7 +384,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             min-height: {column_header_min_height}px;
             padding: {gap_xxs}px {gap_md}px;
             font-size: {ui}px;
-            font-weight: 600;
+            font-weight: {fw_title};
             color: @theme_fg_color;
             background-color: @theme_bg_color;
             background-image: none;
@@ -645,7 +649,9 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         /* 数据网格单元格（结果表 / 表数据）：12px 下 GTK4 会裁掉部分 CJK 字形
            笔画（用户反馈「张三 / 王五」显示残缺）。13px 起完整；为在 1x 屏幕上
            避免 Regular 横画发虚，字号保持 13px、字重提升到 Medium（500）。 */
-        .sqarvo-cell {{ font-size: {data_font}px; font-weight: 500; }}
+        .sqarvo-cell {{ font-size: {data_font}px; font-weight: {fw_cell}; }}
+        /* 布尔值单元格（true / false）比普通值重一档标题字重，便于扫读。 */
+        .sqarvo-cell-bool {{ font-weight: {fw_title}; }}
 
         /* 行号列（32px；v0.2.4 起数据网格与 `Objects` 三列表格共用同一份度量）：
            11px monospace、右对齐、色弱一档。原来只写在 `data_page` 的附加样式里，
@@ -660,7 +666,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         /* 信息面板正文（[DDL] 与 [表信息] 两页**同一口径**）：10px、不加粗。面板是
            次要信息，视觉重心在数据网格——字号和字重都不许跟表格抢注意力。分层只靠
            颜色（标签 dim）与分节间距，不再用 Medium / Semibold。 */
-        .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: 400; }}
+        .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: {fw_ui}; }}
 
         /* 信息面板的 [DDL] / [表信息]（v0.2.3.3）：两个独立 toggle，选中态是贴着
            文字的**小圆角块，四个角都圆**。不用 `.linked` 分段容器：分段样式只圆外侧
@@ -685,7 +691,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
 
         /* 筛选与排序面板（popover）：密度跟对象树一致——12px 正文、24px 行高、
            11px 说明字。面板里不用 13px 标题，否则它在表格旁边比树「大一号」。 */
-        .sqarvo-fs .fs-title {{ font-weight: 600; }}
+        .sqarvo-fs .fs-title {{ font-weight: {fw_title}; }}
         /* 面板里**只有一种字号** = 12px（与对象树一致）：正文、按钮、下拉、输入框、
            说明字统一，层级只靠字重与颜色。11/12/13/14 混用正是「看起来不统一」的来源。 */
         .sqarvo-fs label,
@@ -811,6 +817,10 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         status_font = m.font_status,
         data_font = m.font_data_cell,
         panel_font = m.font_panel,
+        fw_ui = m.font_weight_ui,
+        fw_cell = m.font_weight_cell,
+        fw_title = m.font_weight_title,
+        fw_heading = m.font_weight_heading,
         toolbar = m.toolbar_height,
         toolbar_padding_h = m.toolbar_padding_h,
         tree_row = m.row_height_tree,
@@ -850,6 +860,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn font_weights_come_from_metrics() {
+        // 四档字重是规范值（metrics.toml 的 font_weight_*）：样式表里不许再有字面量，
+        // 也不许再借 Adwaita 的 `.heading`（它只设 700，但值归依赖所有）。
+        let css = stylesheet();
+        let m = layout::Metrics::for_tier(Tier::Compact);
+        assert_eq!(m.font_weight_ui, 400, "正文字重是 400");
+        assert_eq!(m.font_weight_cell, 500, "单元格字重是 500");
+        assert_eq!(m.font_weight_title, 600, "标题字重是 600");
+        assert_eq!(m.font_weight_heading, 700, "卡片 / 面板标题字重是 700");
+
+        assert!(
+            css.contains(&format!(
+                ".sqarvo-heading {{ font-weight: {}; }}",
+                m.font_weight_heading
+            )),
+            "缺少 .sqarvo-heading 规则"
+        );
+        assert!(css.contains(&format!(
+            ".sqarvo-title {{ font-size: {}px; font-weight: {}; }}",
+            m.font_title, m.font_weight_title
+        )));
+        assert!(css.contains(&format!(
+            ".sqarvo-cell {{ font-size: {}px; font-weight: {}; }}",
+            m.font_data_cell, m.font_weight_cell
+        )));
+        assert!(css.contains(&format!(
+            ".sqarvo-panel-text {{ font-size: {}px; font-weight: {}; }}",
+            m.font_panel, m.font_weight_ui
+        )));
+    }
+
+    #[test]
     fn stylesheet_carries_the_compact_metrics() {
         let css = stylesheet();
         assert!(
@@ -864,8 +906,9 @@ mod tests {
         assert!(css.contains("font-size: 11px"), "状态栏字号缺失");
         assert!(
             css.contains(&format!(
-                ".sqarvo-cell {{ font-size: {}px; font-weight: 500; }}",
-                layout::FONT_DATA_CELL
+                ".sqarvo-cell {{ font-size: {}px; font-weight: {}; }}",
+                layout::FONT_DATA_CELL,
+                layout::Metrics::for_tier(Tier::Compact).font_weight_cell
             )),
             "数据单元格字号 / 字重缺失（12px 会裁掉 CJK 笔画，13px Regular 会发虚）"
         );
@@ -881,8 +924,9 @@ mod tests {
         // 视觉重心在数据网格，面板文字不许抢注意力。
         let css = stylesheet();
         let text = format!(
-            ".sqarvo-panel-text {{ font-size: {}px; font-weight: 400; }}",
-            layout::FONT_PANEL
+            ".sqarvo-panel-text {{ font-size: {}px; font-weight: {}; }}",
+            layout::FONT_PANEL,
+            layout::Metrics::for_tier(Tier::Compact).font_weight_ui
         );
         assert!(css.contains(&text), "面板正文类缺失：{css}");
         assert_eq!(layout::FONT_PANEL, 10, "面板正文是 10px 档");

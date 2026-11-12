@@ -286,7 +286,7 @@ impl ResultsView {
 
         let status = gtk::Label::new(Some("尚未执行查询"));
         status.set_xalign(0.0);
-        status.add_css_class("heading");
+        status.add_css_class("sqarvo-heading");
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
         let spinner = gtk::Spinner::new();
@@ -1330,7 +1330,6 @@ fn install_css() {
         .sqarvo-cell-null { font-style: italic; opacity: 0.55; }
         .sqarvo-cell-empty { font-style: italic; opacity: 0.7; }
         .sqarvo-cell-mono, .sqarvo-cell-number { font-family: monospace; }
-        .sqarvo-cell-bool { font-weight: 600; }
         .sqarvo-cell-temporal { font-family: monospace; }
         .sqarvo-cell-structured { font-family: monospace; }
         .sqarvo-cell-unsupported { font-style: italic; }

@@ -5316,7 +5316,7 @@ fn show_about(state: &Rc<UiState>) {
     let heading = gtk::Label::new(Some("后端诊断"));
     heading.set_xalign(0.0);
     heading.set_margin_top(gap(Gap::Lg));
-    heading.add_css_class("heading");
+    heading.add_css_class("sqarvo-heading");
     heading.add_css_class("caption");
     content.append(&heading);
 

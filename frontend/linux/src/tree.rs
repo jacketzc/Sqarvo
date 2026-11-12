@@ -1212,13 +1212,13 @@ impl TreePanel {
                 icon.set_icon_name(Some(row.icon()));
                 icon.set_visible(true);
                 name.remove_css_class("dim-label");
-                name.remove_css_class("heading");
+                name.remove_css_class("sqarvo-heading");
                 match &row {
                     Row::Note(_) => name.add_css_class("dim-label"),
-                    Row::Connection(_) | Row::Group(_) => name.add_css_class("heading"),
+                    Row::Connection(_) | Row::Group(_) => name.add_css_class("sqarvo-heading"),
                     Row::Object(node) => {
                         if node.kind == ObjectKind::Catalog {
-                            name.add_css_class("heading");
+                            name.add_css_class("sqarvo-heading");
                         }
                     }
                 }
@@ -1309,7 +1309,7 @@ impl TreePanel {
         // 连接列表永远在根上，少一层缩进在 237 宽侧栏里能多显示几个字符。
         let root_label = gtk::Label::new(Some(ROOT_LABEL));
         root_label.set_xalign(0.0);
-        root_label.add_css_class("heading");
+        root_label.add_css_class("sqarvo-heading");
         root_label.add_css_class("caption");
         root_label.set_margin_top(gap(Gap::Xs));
         root_label.set_margin_bottom(gap(Gap::Xxs));
@@ -2581,7 +2581,7 @@ impl TreePanel {
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
             // 与树的 bind 同一套判定：连接（0）/ 库（1）/ 分组（2 且没有行尾文字）。
             if row.depth <= 1 || (row.depth == 2 && row.kind_text.is_empty()) {
-                name.add_css_class("heading");
+                name.add_css_class("sqarvo-heading");
             }
             let kind = gtk::Label::new(Some(&row.kind_text));
             kind.add_css_class("dim-label");

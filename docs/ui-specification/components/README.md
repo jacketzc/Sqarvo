@@ -106,7 +106,10 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | L2 | 自绘视觉，或把原生控件自组装成工具包没有的复合件 | 允许；必须在组件里登记 `hand_drawn` / `why_not_native`，**登记即可，不另开 ADR** |
 | L3 | 有原生等价物却自己实现（自绘菜单、对话框、表格、标签条） | 禁止；确需例外先写 ADR |
 
-- 三端只承诺**行为**一致（条目、顺序、可用性、快捷键、文案）；分隔线、图标、字号从俗。
+- 三端只承诺**行为**一致（条目、顺序、可用性、快捷键、文案）。字号 / 字重 / 行高 / 间距 / 颜色
+  一律取 `metrics.toml` 与主题 token，任何一个平台都不许从自己的控件库里「借」一个尺寸或字重当作
+  平台惯例 —— 产品用了这个值，它就该进 `metrics.toml`。只有**字体族**允许按平台不同（写
+  `platform_notes.*`，例如「Windows 用 Segoe UI」）。
 - 原生控件名记在 `native_control`，没实现的端写 `—`，没核对过的写 `待核` —— 不要拿猜测填空。
 
 ## 生命周期：active / deprecated / removed

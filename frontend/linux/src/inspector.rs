@@ -379,7 +379,7 @@ impl Inspector {
         title.set_xalign(0.0);
         title.set_hexpand(true);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        title.add_css_class("heading");
+        title.add_css_class("sqarvo-heading");
 
         let subtitle = gtk::Label::new(None);
         subtitle.set_xalign(0.0);

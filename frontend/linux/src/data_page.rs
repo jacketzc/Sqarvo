@@ -582,7 +582,7 @@ pub(crate) fn open_cell_editor(
 
     let title = gtk::Label::new(Some(title_text));
     title.set_xalign(0.0);
-    title.add_css_class("heading");
+    title.add_css_class("sqarvo-heading");
 
     let entry = gtk::Entry::new();
     entry.set_text(initial);
@@ -1327,7 +1327,7 @@ impl DataPage {
         // 列显隐浮层（CC）：一个按钮 + 列清单。做成页内浮层而不是 Popover——与
         // 列信息卡片同一取舍（无人值守截图只能渲染窗口自己的节点树）。
         let cc_title = gtk::Label::new(Some("列显隐"));
-        cc_title.add_css_class("heading");
+        cc_title.add_css_class("sqarvo-heading");
         cc_title.set_xalign(0.0);
         let cc_close = gtk::Button::from_icon_name("window-close-symbolic");
         cc_close.add_css_class("flat");
@@ -1506,7 +1506,7 @@ impl DataPage {
         // 做成页内浮层而不是独立 `GtkWindow`：Wayland 会话没有系统截屏权限，
         // 独立 surface 无法用 `WidgetPaintable` 自渲染取证（与 #87 列信息浮层同一处理）。
         let txn_title = gtk::Label::new(Some("开始事务"));
-        txn_title.add_css_class("heading");
+        txn_title.add_css_class("sqarvo-heading");
         txn_title.set_xalign(0.0);
         let txn_close = gtk::Button::from_icon_name("window-close-symbolic");
         txn_close.add_css_class("flat");
@@ -3308,7 +3308,7 @@ impl DataPage {
 
         let title = gtk::Label::new(Some(&format!("新行 · {column_name} · {type_label}")));
         title.set_xalign(0.0);
-        title.add_css_class("heading");
+        title.add_css_class("sqarvo-heading");
 
         let entry = gtk::Entry::new();
         entry.set_text(&initial);
@@ -6897,12 +6897,12 @@ fn stylesheet() -> String {
         /* 强调底（脏行单元格 / 事务徽标 / 列信息 focus / 表头 hover / View 徽标）
            已搬到 `theme::stylesheet`：色值只在那一处按 token 定义，这里只留语义色
            （脏 / 删除 / 警告 / 错误）与排版，不再出现任何 accent 派生底色。 */
-        .sqarvo-dirty {{ color: @accent_color; font-weight: 700; }}
-        .sqarvo-deleted {{ color: @error_color; font-weight: 700; }}
+        .sqarvo-dirty {{ color: @accent_color; font-weight: {fw_heading}; }}
+        .sqarvo-deleted {{ color: @error_color; font-weight: {fw_heading}; }}
         .sqarvo-dirty-indicator {{ font-family: monospace; }}
-        .sqarvo-txn-active {{ background: alpha(@warning_color, 0.30); font-weight: 600; }}
+        .sqarvo-txn-active {{ background: alpha(@warning_color, 0.30); font-weight: {fw_title}; }}
         .sqarvo-txn-readonly {{ background: alpha(@warning_color, 0.30); }}
-        .sqarvo-txn-failed {{ background: alpha(@error_color, 0.30); font-weight: 600; }}
+        .sqarvo-txn-failed {{ background: alpha(@error_color, 0.30); font-weight: {fw_title}; }}
         .sqarvo-txn-disconnected {{ background: alpha(@error_color, 0.20); }}
         .sqarvo-column-info {{
             background-color: @theme_bg_color;
@@ -6932,7 +6932,7 @@ fn stylesheet() -> String {
         /* 表头只有一行：「列名 · 原始类型」（合并后的标题文本）。列名与类型同一字号，
            靠中点分隔；底色与原来那条类型提示行一致（窗口底色），见 theme.rs 的
            `columnview.sqarvo-grid > header` 规则。 */
-        .sqarvo-merged-header {{ font-size: {font_ui}px; font-weight: 600; }}
+        .sqarvo-merged-header {{ font-size: {font_ui}px; font-weight: {fw_title}; }}
         /* #118：表头上方的常驻徽标 */
         .sqarvo-badge-readonly {{ background: alpha(@warning_color, 0.25); }}
         .sqarvo-badge-nokey {{ background: alpha(@warning_color, 0.18); }}
@@ -6948,6 +6948,8 @@ fn stylesheet() -> String {
         }}
         "#,
         radius_lg = m.radius_lg,
+        fw_heading = m.font_weight_heading,
+        fw_title = m.font_weight_title,
         gap_xl = m.gap_px(Gap::Xl),
         gap_md = m.gap_px(Gap::Md),
         gap_xs = m.gap_px(Gap::Xs),
