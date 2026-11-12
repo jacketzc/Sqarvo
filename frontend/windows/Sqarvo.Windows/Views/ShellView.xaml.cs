@@ -63,7 +63,9 @@ public enum WorkspaceState
 /// 把「新建查询」入口接到 <see cref="CreateQueryTab"/> 并把状态栏行 2 交给 <c>ApplyQueryStatus</c>。
 ///
 /// 仍未实现的入口保持禁用，并在 tooltip 里**逐项**说明原因（不写统一一句「尚未实现」）：
-/// 表数据标签与编辑、导出、对象树搜索都在后续工作包。禁止出现假连接、假行数、假耗时。
+/// 导出、对象树搜索、新增 / 删除行、排序与筛选下推都在后续工作包。禁止出现假连接、假行数、假耗时。
+/// #173 起表数据页（浏览 / 分页 / 单元格暂存 / 提交 / 撤销 / 事务状态）在 <c>ShellView.Data.cs</c>，
+/// 本文件只在构造函数、<c>OnUnloaded</c>、<c>ApplyBackendStateCore</c> 与 <c>WireMenu</c> 加接线点。
 /// </para>
 /// <para>
 /// 尺寸全部来自 <see cref="Metrics"/>（构建期生成）：高度/字号在 XAML 里用
@@ -157,6 +159,7 @@ public sealed partial class ShellView : UserControl
         ApplyMetrics();
         WireMenu();
         WireQuerySurface();
+        WireDataSurface();
         SetWorkspaceState(WorkspaceState.Disconnected);
 
         _healthTimer = new DispatcherTimer { Interval = BackendSupervisor.HealthPollInterval };
@@ -294,6 +297,9 @@ public sealed partial class ShellView : UserControl
         // 查询游标不随页面一起消失：取消在途执行并逐个 Close（8 个并发名额不能悬着）。
         CloseAllQueryCursors("页面重建或退出");
 
+        // 表数据页同理：取消在途的 Browse / Apply，并回滚打开着的事务（不在后端留悬着的事务）。
+        CloseAllDataTabsForUnload("页面重建或退出");
+
         if (!_lifetime.IsCancellationRequested)
         {
             _lifetime.Cancel();
@@ -400,8 +406,9 @@ public sealed partial class ShellView : UserControl
 
         UpdateConnectedNodes();
 
-        // 状态栏行 2 的最终口径：当前标签是查询页时换成「SQL 摘要 + N 行 / 已取 M 行」。
+        // 状态栏行 2 的最终口径：查询页 → 「SQL 摘要 + N 行 / 已取 M 行」；数据页 → 「表摘要 + 事务状态」。
         ApplyQueryStatus();
+        ApplyDataStatus();
     }
 
     private async void OnHealthTick(object? sender, object e)
@@ -820,12 +827,13 @@ public sealed partial class ShellView : UserControl
             TreeSearchBox,
             "对象树搜索尚未实现：在后续工作包提供（服务端 filter.name.contains 已就绪）");
 
-        // 状态栏行操作：表数据编辑与查询面都在后续工作包；逐个说明，不合并成一句。
-        ToolTipService.SetToolTip(ButtonRowAdd, "新增行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
-        ToolTipService.SetToolTip(ButtonRowDelete, "删除行尚未实现：表数据编辑在后续工作包（现在没有可编辑的结果集）");
-        ToolTipService.SetToolTip(ButtonRowApply, "应用修改尚未实现：表数据编辑在后续工作包（没有待提交的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRevert, "撤销修改尚未实现：表数据编辑在后续工作包（没有待撤销的脏行）");
-        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新尚未实现：表数据放在后续工作包（查询页用 Ctrl+Enter 重新执行）");
+        // 状态栏行操作：应用 / 撤销 / 刷新在表数据页里由 ApplyDataStatus 逐项刷新可用性与原因；
+        // 新增 / 删除行不在本片（#173 只做单元格编辑与提交），这里如实说明。
+        ToolTipService.SetToolTip(ButtonRowAdd, "新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
+        ToolTipService.SetToolTip(ButtonRowDelete, "删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
+        ToolTipService.SetToolTip(ButtonRowApply, "应用：在表数据页里提交待提交的更改（Ctrl+S）；当前没有可编辑的表格");
+        ToolTipService.SetToolTip(ButtonRowRevert, "撤销：在表数据页里放弃未提交的更改并回滚事务（Ctrl+Z）；当前没有可编辑的表格");
+        ToolTipService.SetToolTip(ButtonRowRefresh, "刷新：在表数据页里重读当前页；当前没有可编辑的表格");
         // 「取消」在查询页执行中由 ApplyQueryStatus 逐个刷新可用性与原因；这里是启动态的默认文案。
         ToolTipService.SetToolTip(ButtonRowCancel, "取消：当前没有执行中的查询");
 
@@ -981,8 +989,9 @@ public sealed partial class ShellView : UserControl
                 (state.Drivers.Count == 0 ? string.Empty : "（" + string.Join("、", DriverLabels(state)) + "）") + "\n" +
                 "已实现：连接配置、测试连接、建立/断开会话、对象树（库 / 分组 / 对象，分页 200）、\n" +
                 "Objects 页三列表格、信息面板（连接 / 库 / 表，DDL 与列信息）、\n" +
-                "查询标签（SQL 编辑器 + 行号、执行 / 取消、结果分批 200 行）、结果网格（虚拟化 + 加载更多）。\n" +
-                "未实现：表数据标签与编辑、导出、对象树搜索。\n" +
+                "查询标签（SQL 编辑器 + 行号、执行 / 取消、结果分批 200 行）、结果网格（虚拟化 + 加载更多）、\n" +
+                "表数据页（浏览 / 上一页 / 下一页 / 加载更多、单元格暂存与 Ctrl+S 提交 / Ctrl+Z 撤销、事务状态）。\n" +
+                "未实现：导出 CSV、对象树搜索、新增 / 删除行、排序与筛选下推。\n" +
                 $"当前密度档：{Metrics.TierLabel}",
             CloseButtonText = "关闭",
             XamlRoot = XamlRoot,

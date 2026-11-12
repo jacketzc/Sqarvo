@@ -845,8 +845,8 @@ public sealed partial class ShellView
 
         if (announce)
         {
-            // 表数据标签不在本片范围：如实说明，不假装已经打开了数据页。
-            _notice = $"{entry.Name}（{entry.KindLabel}）：信息面板已打开；表数据标签尚未实现（表数据面工作包）";
+            // 这一层只同步信息面板：数据页的入口是树上的双击 / 回车 / 右键「浏览数据」（#173）。
+            _notice = $"{entry.Name}（{entry.KindLabel}）：信息面板已打开；双击左侧树里的这一项或右键「浏览数据」打开数据页";
             ApplyBackendState();
         }
     }

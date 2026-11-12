@@ -98,6 +98,7 @@ public partial class App : Application
             || _options.QaConnect is { Length: > 0 }
             || _options.QaMetadata is { Length: > 0 }
             || _options.QaQuery is { Length: > 0 }
+            || _options.QaData is { Length: > 0 }
             || _options.NoBackend)
         {
             ConsoleBridge.Ensure();
@@ -174,7 +175,9 @@ public partial class App : Application
         // 例外：--qa-metadata 要连真库，它会启动后端；此时即使同时给了 --report-shell 也照常走
         // 「连接 → 展开 → 打印控件树」这条链路（否则后端根本不会启动，探针什么也拿不到）。
         // 两个「要连真库」的 QA 链路（元数据 / 查询）都必须真的把后端拉起来，否则探针什么也拿不到。
-        var needsBackendForProbe = _options.QaMetadata is { Length: > 0 } || _options.QaQuery is { Length: > 0 };
+        var needsBackendForProbe = _options.QaMetadata is { Length: > 0 }
+            || _options.QaQuery is { Length: > 0 }
+            || _options.QaData is { Length: > 0 };
         if ((!_options.HasReports || needsBackendForProbe) && !_options.NoBackend)
         {
             // 不 await：窗口先显示，握手进度通过 BackendState 写进状态栏。
@@ -186,6 +189,13 @@ public partial class App : Application
                 // 查询链路（#172）：连上之后**真的**建一个查询页、执行 SQL，把 [query] 证据打出来。
                 // 与 --qa-signin 合用时不退出（那条开关的语义就是「保持运行供截图」）。
                 _ = RunQaQueryAsync(window, qaQuery, keepAlive: _options.QaSignIn is { Length: > 0 });
+                return;
+            }
+
+            if (_options.QaData is { Length: > 0 } qaData)
+            {
+                // 表数据链路（#173）：连上之后**真的**开数据页、翻页、改一格提交、再撤销，把 [data] 证据打出来。
+                _ = RunQaDataAsync(window, qaData, keepAlive: _options.QaSignIn is { Length: > 0 });
                 return;
             }
 
@@ -243,6 +253,13 @@ public partial class App : Application
     {
         if (_shutdownStarted)
         {
+            return;
+        }
+
+        // 表数据页有未提交改动 / 打开的事务：先拦一次（非模态提示行写在状态栏），第二次才放行并回滚。
+        if (_window is MainWindow guarded && guarded.Shell.TryBlockWindowClose())
+        {
+            args.Cancel = true;
             return;
         }
 
@@ -576,6 +593,122 @@ public partial class App : Application
                 Report(window);
                 var closedTabs = window.Shell.CloseAllQueryTabsForQa();
                 ConsoleBridge.WriteLine($"[query] closed-tabs={closedTabs} open-tabs={window.Shell.QueryTabCount}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>--qa-data=&lt;库.表&gt;</c>：等后端就绪 → 连接（目标取 <c>--qa-signin</c>，否则第一条）→
+    /// **真的**打开表数据页、翻一页、改一格并提交、还原、再改一格并撤销 → 打印 <c>[data]</c> 证据；
+    /// 不给 <c>--qa-signin</c> 时随后关页（验证事务回滚与 Close）后退出，给了则保持运行供截图。
+    /// </summary>
+    /// <param name="window">主窗口（数据页挂在它的 <see cref="MainWindow.Shell"/> 上）。</param>
+    /// <param name="spec">`库.表`（没有点号时整串当表名，库取 <c>--qa-catalog</c> 或第一个可见库）。</param>
+    /// <param name="keepAlive">是否保持运行（<c>--qa-signin</c> 同时给出时为真）。</param>
+    /// <remarks>
+    /// 与 <see cref="RunQaMetadataAsync"/> 同一套取舍：不弹窗、只打印证据。探针会先写入再还原开发库的
+    /// 一个单元格，**不要指向生产库**。
+    /// </remarks>
+    private async Task RunQaDataAsync(MainWindow window, string spec, bool keepAlive)
+    {
+        try
+        {
+            var session = Backend;
+            if (session is null)
+            {
+                ConsoleBridge.WriteLine("[data] 没有后端会话");
+                return;
+            }
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            while (!session.State.IsReady && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(200).ConfigureAwait(true);
+            }
+
+            var state = session.State;
+            ConsoleBridge.WriteLine(
+                $"[data] backend={state.Readiness} drivers={state.RegisteredDrivers} version={state.Version?.ServiceVersion ?? "?"}");
+
+            if (!state.IsReady)
+            {
+                return;
+            }
+
+            var profiles = Profiles.Load();
+            var name = string.IsNullOrWhiteSpace(_options.QaSignIn) ? "@first" : _options.QaSignIn!.Trim();
+            var profile = string.Equals(name, "@first", StringComparison.OrdinalIgnoreCase)
+                ? profiles.FirstOrDefault()
+                : profiles.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+
+            if (profile is null)
+            {
+                ConsoleBridge.WriteLine($"[data] 找不到连接条目 {name}（已保存 {profiles.Count} 条）");
+                return;
+            }
+
+            var password = Environment.GetEnvironmentVariable("SQARVO_QA_PASSWORD");
+            if (!string.IsNullOrEmpty(password))
+            {
+                var reference = await session.StoreCredentialAsync(
+                    string.IsNullOrEmpty(profile.CredentialRef) ? null : profile.CredentialRef,
+                    password).ConfigureAwait(true);
+                profile = profile with { CredentialRef = reference };
+            }
+
+            var open = await session.ConnectAsync(profile).ConfigureAwait(true);
+            ConsoleBridge.WriteLine(
+                $"[data] connect driver={open.DriverId} server={open.ServerVersion} session={open.SessionId}");
+
+            // 壳外建立的连接要让「打开表」的会话解析看到（正常路径由 ApplyBackendState 驱动）。
+            window.Shell.RefreshFromBackend();
+
+            var trimmed = spec.Trim();
+            var catalog = _options.QaCatalog;
+            var table = trimmed;
+            var dot = trimmed.IndexOf('.');
+            if (dot > 0)
+            {
+                catalog = trimmed[..dot];
+                table = trimmed[(dot + 1)..];
+            }
+
+            if (table.Length == 0)
+            {
+                ConsoleBridge.WriteLine($"[data] 无法解析表名：{spec}（用法：--qa-data=<库.表>）");
+                return;
+            }
+
+            var complete = await window.Shell
+                .ProbeDataAsync(profile.Key, catalog, table, CancellationToken.None)
+                .ConfigureAwait(true);
+            ConsoleBridge.WriteLine($"[data] probe={(complete ? "ok" : "incomplete")}");
+
+            if (keepAlive)
+            {
+                // 截图要看到「数据页 + 状态栏行 2 右侧的事务状态」：窗口留着，数据页不关。
+                await Task.Delay(500).ConfigureAwait(true);
+                ConsoleBridge.WriteLine($"[data] keep-alive tabs={window.Shell.DataTabCount}");
+
+                if (_options.ReportShell)
+                {
+                    ShellTreeDumper.Dump(window);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteLine($"[data] failed {error.GetType().Name}: {error.Message}");
+        }
+        finally
+        {
+            if (!keepAlive)
+            {
+                // 顺序要紧：先 Report（控件树里还看得到数据页；它排队的关窗晚于本段同步代码），
+                // 再关页取证「事务回滚 + Close」——与用户点 × 完全同一条路径。
+                Report(window);
+                var closed = window.Shell.CloseAllDataTabsForQa();
+                ConsoleBridge.WriteLine($"[data] closed-tabs={closed} open-tabs={window.Shell.DataTabCount}");
             }
         }
     }
