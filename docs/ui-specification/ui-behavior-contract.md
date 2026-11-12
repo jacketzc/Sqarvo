@@ -140,17 +140,22 @@
 组件注册表时，暴露出若干「实现与文档 / 与注册表口径不一致」的条目，列在下面 §9.1，逐条带代码依据；
 它们需要产品或实现裁决，不由文档单方面拍定。
 
-### 9.1 待裁决：注册表 / 契约与实现不一致
+### 9.1 待实现：注册表与 Windows 实现不一致（2026-11-12 已裁决）
 
-| 项 | 代码如此 | 文档如此 | 建议 |
+先收口三条**文档侧**（以代码为准，已改）：Windows 状态栏「已连接 · 驱动 N · 浏览会话 M」在行 1
+左格而非旧 §7.1 写的行 2 右格；`objects_page.tab` 的启动态副本由 `startup.rs` 自建；Linux 无表标签
+时分页器置灰不隐藏（保持行 1 右组宽度不跳）。
+
+下面三条已裁决、待 Windows 端实现（另一任务执行，锚点与验收见表格）：
+
+| 项 | 决定 | 实现锚点 | 完成后 |
 |---|---|---|---|
-| Windows 状态栏「已连接 · 驱动 N · 浏览会话 M」的位置 | 行 1 左格（`ShellView.Chrome.cs` 的 `ApplyStatusChrome`） | §7.1 记在行 2 右格 | 改文档，以代码为准（位置属外观，语义不变） |
-| Windows 断连原因「可选中复制」 | `SqlSummaryText` 未设 `IsTextSelectionEnabled`，选不中 | §7.1 写「可选中复制」 | 补实现（错误码可复制是硬需求），文档不动 |
-| Windows「新增 / 删除」行按钮 | 渲染成恒禁用按钮，tooltip「不在本片…请用 SQL」 | `components/README.md`：能力性不可用**不渲染** | 二者择一：不渲染（推荐）或记成有意差异 |
-| Linux 无表标签时的分页器 | 置灰，不隐藏 | §7 写「整格隐藏」 | 改文档，以代码为准 |
-| Windows 行 2 会话格 | 恒写入，没有「有表标签时隐藏」的逻辑 | §7 写有表标签时整格不出现 | 待裁决：偏差还是平台差异 |
-| Windows 侧栏 / 信息面板拖动 | 未实现（`object_tree` / `inspector` 的 `sync.windows` 仍是 partial） | §1.6 提到拖动 | 记为实现缺口，不阻塞文档 |
-| `objects_page.tab` 的构造路径 | 启动态那份由 `startup.rs` 自建，不走 `tabs::add_objects_page` | 组件 evidence 只指向 `tabs.rs` | 补 evidence（本轮已在组件 impl_notes 记明） |
+| 断连原因可复制 | 补 | `Views/ShellView.xaml` 的 `SqlSummaryText`（约 :676）加 `IsTextSelectionEnabled="True"` | `status_bar.row2.sql` 的 windows note 去掉该差异 |
+| 「新增 / 删除」行按钮 | **不渲染**（不是置灰） | `Views/ShellView.xaml` 删 `ButtonRowAdd` / `ButtonRowDelete`（:622 / :625）及接线与 tooltip；`Ctrl+S` / `Ctrl+Z` 仍是提交 / 撤销入口 | `status_bar.row1.ops.add` / `.delete` 的 `sync.windows` 改 `na` + note |
+| 行 2 会话格 | 与 Linux 一致：当前标签是表数据标签时整格不出现 | `Views/ShellView.Chrome.cs` 的 `ApplyStatusChrome` 按当前标签切可见性，切标签即时刷新 | `status_bar.row2.session` 去掉「恒写入」差异 |
+
+还有一条是实现缺口、不阻塞文档：Windows 侧栏与信息面板拖动未实现（`object_tree` / `inspector` 的
+`sync.windows` 仍是 `partial`），归 `docs/planning/windows-frontend-parity-plan.md`。
 
 已知边界（不是偏差，列在这里方便检索；「正文」列的 § 是已退役章节的编号，对应组件见 §1–§7 指针）：
 

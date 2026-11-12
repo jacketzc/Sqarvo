@@ -190,7 +190,7 @@ evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert"
 [component.sync.windows]
 state = "partial"
 spec_hash = "a37eae543e2f"
-note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。"
+note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。"
 
 [component.sync.macos]
 state = "none"
@@ -227,7 +227,7 @@ evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 [component.sync.windows]
 state = "partial"
 spec_hash = "6b823444daae"
-note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。"
+note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。"
 
 [component.sync.macos]
 state = "none"
@@ -470,7 +470,7 @@ impl_notes = [
   "四个翻页按钮连成一组（组内间距 0）+ 只读摘要，两者间距 6（gap_sm）；整组共用一条 tooltip。",
   "整组 tooltip：「offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供」。",
   "首页 / 末页用自有图标（`|<` / `>|`）：主题的双尖括号与相邻的单箭头只差一条线，压到小字号后读不出是两档不同动作。",
-  "没有表标签时摘要整格隐藏、四个按钮置灰但不隐藏（保持行 1 右组宽度不跳，避免切标签时整行抖动）。§7 写的是「按钮整格隐藏」，这里的实现差异待 §7 对齐。",
+  "没有表标签时摘要整格隐藏、四个按钮置灰但不隐藏（保持行 1 右组宽度不跳，避免切标签时整行抖动）。旧契约 §7 写「按钮整格隐藏」，2026-11-12 按实现定稿为置灰不隐藏（契约 §9.1 已收口）。",
   "按钮动作只交给当前数据页，由数据页决定目标 offset 并在有未提交更改时拒绝——状态栏不自己算页码。",
 ]
 
@@ -745,7 +745,7 @@ evidence = "§7 行 2 左段三种来源 + 断连 / 未执行文案"
 [component.sync.windows]
 state = "partial"
 spec_hash = "3859890ae206"
-note = "§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；数据页左格写的是 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。"
+note = "§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；数据页左格写的是 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。契约 §9.1 已裁决：`SqlSummaryText` 补 `IsTextSelectionEnabled`（断连原因要可复制）；Windows 端待实现。"
 
 [component.sync.macos]
 state = "none"
@@ -826,7 +826,7 @@ evidence = "§7 行 2 空态摘要；refresh_session + session_row_visible + idl
 [component.sync.windows]
 state = "partial"
 spec_hash = "4beb06b2dd72"
-note = "§7.1 记的是 `已连接 · 驱动 N · 浏览会话 M`（GetHealth 真实计数，5 秒一轮；未就绪 `未连接 · 驱动 0 · 浏览会话 0`，另有 `连接中 · 驱动 0 · 浏览会话 0` 一档）；代码把这条放在行 1 左格，行 2 这一格只写会话名，见 `platform_notes.windows`；「有表标签时整格隐藏」未记录。"
+note = "§7.1 记的是 `已连接 · 驱动 N · 浏览会话 M`（GetHealth 真实计数，5 秒一轮；未就绪 `未连接 · 驱动 0 · 浏览会话 0`，另有 `连接中 · 驱动 0 · 浏览会话 0` 一档）；代码把这条放在行 1 左格，行 2 这一格只写会话名，见 `platform_notes.windows`；「有表标签时整格隐藏」未记录。契约 §9.1 已裁决：与 Linux 一致，当前是表数据标签时整格不出现；Windows 端待实现。"
 
 [component.sync.macos]
 state = "none"
