@@ -17,6 +17,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.System;
+using Windows.UI.Text;
 
 namespace Sqarvo.Windows.Views;
 
