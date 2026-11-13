@@ -904,6 +904,9 @@ pub struct DataPage {
     /// 「CC」按钮：列显隐浮层。
     cc_button: gtk::Button,
     /// 列显隐浮层卡片。
+    /// 列显隐弹层（挂在眼睛按钮上的 `GtkPopover`，与筛选面板同一形态）。
+    cc_popover: gtk::Popover,
+    /// 列显隐弹层的内容（标题 / 说明 / 复选清单 / ✕）。
     cc_card: gtk::Box,
     /// 列显隐浮层里的复选控件（顺序 = `columns`）。
     cc_checks: RefCell<Vec<gtk::CheckButton>>,
@@ -1348,21 +1351,28 @@ impl DataPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
-            .max_content_height(260)
+            .max_content_height(metrics().column_list_max_height)
             .child(&cc_list)
             .build();
         let cc_card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
-        cc_card.add_css_class("sqarvo-column-info");
-        cc_card.set_size_request(300, -1);
-        cc_card.set_halign(gtk::Align::End);
-        cc_card.set_valign(gtk::Align::Start);
-        // 让开表格动作行（46）：卡片贴在表格顶部，而不是压在动作行上。
-        cc_card.set_margin_top(metrics().table_actions_height);
-        cc_card.set_margin_end(gap(Gap::Xl));
-        cc_card.set_visible(false);
+        // 弹层内容：圆角与底色由 `GtkPopover` 自己画，这里只挂列显隐专用的类
+        // （勾选态配色在 theme.rs 的 `.sqarvo-columns` 里）。
+        cc_card.add_css_class("sqarvo-columns");
+        cc_card.set_size_request(metrics().column_panel_width, -1);
         cc_card.append(&cc_header);
         cc_card.append(&cc_scroll);
         cc_card.append(&cc_note);
+
+        // 形态与「筛选」一致（#175）：挂在眼睛按钮上的 `GtkPopover`，带指示箭头，
+        // 锚点落在上沿的黄金分割处。内容样式不变，只是不再是页内浮层——
+        // popover 是独立 surface，不会随网格重排出现拖影，位置也由 GTK 贴着按钮算。
+        let cc_popover = gtk::Popover::builder()
+            .autohide(false)
+            .has_arrow(true)
+            .position(gtk::PositionType::Bottom)
+            .child(&cc_card)
+            .build();
+        cc_popover.set_parent(&cc_button);
 
         // 筛选与排序面板（FS）：两个区（筛选条件 / 排序键）+ 底部应用。
         //
@@ -1498,7 +1508,6 @@ impl DataPage {
         let overlay = gtk::Overlay::new();
         overlay.set_vexpand(true);
         overlay.set_child(Some(&stack));
-        overlay.add_overlay(&cc_card);
 
         // 开始事务卡片（#88）：隔离级别只在**开始之前**选，不支持的项在这里就禁用
         // 并给出原因，而不是提交后才被服务端拒绝。
@@ -1615,6 +1624,7 @@ impl DataPage {
             capabilities: Cell::new(BrowseCapabilities::none()),
             visibility: RefCell::new(ColumnVisibility::new()),
             cc_button: cc_button.clone(),
+            cc_popover: cc_popover.clone(),
             cc_card: cc_card.clone(),
             cc_checks: RefCell::new(Vec::new()),
             cc_list: cc_list.clone(),
@@ -1759,8 +1769,8 @@ impl DataPage {
             });
         }
         {
-            let card = cc_card.clone();
-            cc_close.connect_clicked(move |_| card.set_visible(false));
+            let page = Rc::clone(&page);
+            cc_close.connect_clicked(move |_| page.close_column_visibility());
         }
         {
             let page = Rc::clone(&page);
@@ -2142,9 +2152,11 @@ impl DataPage {
         {
             self.select_only(position as usize);
         }
-        if let Some(previous) = self.row_menu.borrow_mut().take() {
+        // 同对象树：先让出槽位再 popdown；摘控件树交给 `ContextMenu` 在 idle 里做
+        // （closed 里同步 unparent 会让条目动作解析不到，见 context_menu 模块文档）。
+        let previous = self.row_menu.borrow_mut().take();
+        if let Some(previous) = previous {
             previous.popdown();
-            previous.popover().unparent();
         }
 
         // 原生 `GtkPopoverMenu`（与系统右键菜单同一套外观与键盘操作）：
@@ -2180,14 +2192,14 @@ impl DataPage {
                 entries,
             );
             let page = Rc::clone(self);
-            menu.popover().connect_closed({
-                let menu = Rc::downgrade(&menu);
-                move |popover| {
-                    popover.unparent();
-                    if let Some(menu) = menu.upgrade() {
-                        let _ = menu;
-                    }
-                    page.row_menu.borrow_mut().take();
+            let this = Rc::downgrade(&menu);
+            menu.connect_closed(move || {
+                let mut slot = page.row_menu.borrow_mut();
+                let same = slot
+                    .as_ref()
+                    .is_some_and(|current| std::rc::Weak::ptr_eq(&Rc::downgrade(current), &this));
+                if same {
+                    slot.take();
                 }
             });
             self.row_menu.replace(Some(menu));
@@ -2320,14 +2332,38 @@ impl DataPage {
         }
     }
 
-    /// 打开列显隐浮层：按当前列清单重建复选清单。
+    /// 开 / 关列显隐弹层：按当前列清单重建复选清单。
+    ///
+    /// 与「筛选」互斥：打开一个就收起另一个（两个面板盖在同一块区域上，同时开着
+    /// 用户分不清正在改哪个）。
     pub fn open_column_visibility(self: &Rc<Self>) {
         if self.columns.borrow().is_empty() {
             return;
         }
+        if self.cc_popover.is_visible() {
+            self.close_column_visibility();
+            return;
+        }
         self.publish_column_choices();
-        self.cc_card.set_visible(!self.cc_card.is_visible());
         self.fs_popover.popdown();
+        // 锚点（眼睛按钮）落在弹层上沿的黄金分割点（偏右），与筛选面板同一算法。
+        let width = f64::from(metrics().column_panel_width);
+        let shift = -((width * GOLDEN_RATIO_ANCHOR - width / 2.0).round()) as i32;
+        self.cc_popover.set_offset(shift, 0);
+        self.cc_popover.popup();
+    }
+
+    /// 收起列显隐弹层（勾选结果保留，只收起面板）。
+    pub fn close_column_visibility(&self) {
+        self.cc_popover.popdown();
+    }
+
+    /// 列显隐弹层控件（可见时返回）：截图取证用它（与筛选面板同一条路径）。
+    #[must_use]
+    pub fn column_panel_widget(&self) -> Option<gtk::Popover> {
+        self.cc_popover
+            .is_visible()
+            .then(|| self.cc_popover.clone())
     }
 
     /// 重建列显隐清单（换表 / 刷新时调用）。
@@ -2397,7 +2433,8 @@ impl DataPage {
         self.render_filter_conditions();
         self.render_sort_keys();
         self.update_filter_state();
-        self.cc_card.set_visible(false);
+        // 与列显隐互斥（同一形态的两个弹层）。
+        self.cc_popover.popdown();
         // 锚点（漏斗按钮）落在面板上沿的**黄金分割点**（0.618 处，偏右）。
         // 默认 popover 把锚点放在正中（0.5），所以向左偏移 0.118 × 面板宽。
         let shift = -((f64::from(fs_panel_width()) * GOLDEN_RATIO_ANCHOR
@@ -6037,6 +6074,7 @@ impl DataPage {
         // 其余列按新档位的字号重新测量（`auto_size_columns` 读 `metrics()`）。
         self.auto_size_columns();
         // 筛选面板的固定尺寸（浮层按需打开，但已建好的控件在切档后要跟上）。
+        self.cc_card.set_size_request(m.column_panel_width, -1);
         self.fs_card.set_size_request(m.filter_panel_width, -1);
         self.fs_column.set_size_request(m.filter_column_width, -1);
         self.fs_sort_column

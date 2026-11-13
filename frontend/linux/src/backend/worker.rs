@@ -179,6 +179,8 @@ pub enum Command {
     },
     /// 保存并连接：写凭据 → `TestConnection` → `Connect` → `ListSessions` → 写配置。
     SaveAndConnect(Box<ConnectionDraft>),
+    /// 只保存（编辑已有连接）：写凭据 → 写配置，**不**建会话、不连库。
+    SaveOnly(Box<ConnectionDraft>),
     /// 为标签建立一条**新的**数据库会话（或领养「保存并连接」留下的那条）。
     OpenTabSession {
         /// 标签 ID。
@@ -774,6 +776,8 @@ pub enum Event {
     Tested(Result<TestReport, ConnectionFailure>),
     /// 「保存并连接」结果。
     ConnectResult(Result<ConnectOutcome, ConnectionFailure>),
+    /// 「保存」（编辑态，只写配置与凭据）结果：成功带回保存后的条目与配置文件路径。
+    Saved(Result<SaveOutcome, ConnectionFailure>),
     /// 删除凭据条目的结果（#144）。
     CredentialDeleted {
         /// 被删除的凭据引用。
@@ -895,6 +899,11 @@ impl WorkerHandle {
     /// 请求保存并连接，非阻塞。
     pub fn save_and_connect(&self, draft: ConnectionDraft) {
         let _ = self.commands.send(Command::SaveAndConnect(Box::new(draft)));
+    }
+
+    /// 只保存连接信息（编辑已有连接用）：写凭据 + 写配置，不建会话。
+    pub fn save_only(&self, draft: ConnectionDraft) {
+        let _ = self.commands.send(Command::SaveOnly(Box::new(draft)));
     }
 
     /// 删除一条凭据条目（幂等；失败由 [`Event::CredentialDeleted`] 回报）。
@@ -1417,6 +1426,21 @@ async fn worker_loop(
                             );
                         }
                         let _ = events.send(Event::ConnectResult(outcome)).await;
+                    }
+                    Command::SaveOnly(draft) => {
+                        let outcome = match session.as_ref() {
+                            Some(active_session) => {
+                                run_save_only(&active_session.client, &draft).await
+                            }
+                            None => Err(ConnectionFailure::backend_unavailable()),
+                        };
+                        if let Ok(saved) = &outcome {
+                            eprintln!(
+                                "[connections] 已保存连接「{}」（不重连，下次连接时生效）",
+                                saved.saved.display_label()
+                            );
+                        }
+                        let _ = events.send(Event::Saved(outcome)).await;
                     }
                     Command::OpenTabSession {
                         tab_id,
@@ -3839,6 +3863,7 @@ struct PreparedCredential {
 fn identity_candidate(draft: &ConnectionDraft) -> SavedConnection {
     SavedConnection {
         name: draft.name.clone(),
+        alias: draft.alias.clone(),
         driver: draft.driver_id.clone(),
         host: draft.host.clone(),
         port: draft.port,
@@ -3962,6 +3987,65 @@ async fn run_test(
 /// 先测试再建会话：用户能立刻看到服务端版本与延迟，而且认证失败时不会留下半死会话。
 /// 同一目标（[`SavedConnection::key`]）再次保存时更新原条目、复用原 `credential_ref`，
 /// 不在 `connections.json` 追加、也不在密钥环里新增（#145）。
+/// 草稿 → 配置条目（`connections.json` 的唯一映射点）。
+///
+/// 「保存并连接」与「保存」共用它：两条路径落盘的字段必须一致，否则同一条连接
+/// 走不同入口会得到不同配置。别名只进配置，不进连接参数。
+fn saved_from_draft(draft: &ConnectionDraft, credential_ref: &str) -> SavedConnection {
+    SavedConnection {
+        name: draft.name.clone(),
+        alias: draft.alias.clone(),
+        driver: draft.driver_id.clone(),
+        host: draft.host.clone(),
+        port: draft.port,
+        database: draft.database.clone(),
+        username: draft.username.clone(),
+        file_path: draft.file_path.clone(),
+        read_only: draft.read_only,
+        tls_mode: draft.tls_mode.config_value().to_owned(),
+        credential_ref: credential_ref.to_owned(),
+    }
+}
+
+/// 「保存」的结果（编辑态保存，不建会话）。
+#[derive(Debug, Clone)]
+pub struct SaveOutcome {
+    /// 写回配置后的条目（界面用它刷新树上的那一行）。
+    pub saved: SavedConnection,
+    /// 配置文件路径（状态行文案用；失败时为空）。
+    pub path: String,
+}
+
+/// 「保存」：写凭据 → 写配置。**不发** `Connect`，也不建会话。
+///
+/// 与 [`run_save_and_connect`] 共用凭据准备逻辑（同一身份命中时覆盖原有引用），
+/// 区别只在于不连接、不测试、不读会话列表：编辑连接时用户的意图是「改配置」，
+/// 不该顺手连一次库（尤其是确定要断开的连接）。
+async fn run_save_only(
+    client: &BackendClient,
+    draft: &ConnectionDraft,
+) -> Result<SaveOutcome, ConnectionFailure> {
+    let existing = config::find_by_identity(&identity_candidate(draft));
+    let prepared = prepare_reference(client, draft, existing.as_ref(), true).await?;
+
+    let saved = saved_from_draft(draft, &prepared.reference);
+    match config::upsert(saved.clone()) {
+        Ok(path) => Ok(SaveOutcome {
+            saved,
+            path: path.display().to_string(),
+        }),
+        Err(error) => {
+            // 配置没写成功：刚创建的凭据没有配置引用它，留着就是密钥环垃圾。
+            if prepared.created {
+                discard_credential(client, &prepared.reference).await;
+            }
+            Err(ConnectionFailure::InvalidInput {
+                message: format!("写入连接配置失败：{error}"),
+            })
+        }
+    }
+}
+
 async fn run_save_and_connect(
     client: &BackendClient,
     draft: &ConnectionDraft,
@@ -4014,20 +4098,9 @@ async fn run_save_and_connect(
     });
 
     // 配置只保存引用与「怎么连」；密码已经在凭据库里（SQLite 没有密码）。
-    let config = config::upsert(SavedConnection {
-        name: draft.name.clone(),
-        driver: draft.driver_id.clone(),
-        host: draft.host.clone(),
-        port: draft.port,
-        database: draft.database.clone(),
-        username: draft.username.clone(),
-        file_path: draft.file_path.clone(),
-        read_only: draft.read_only,
-        tls_mode: draft.tls_mode.config_value().to_owned(),
-        credential_ref: reference.clone(),
-    })
-    .map(|path| path.display().to_string())
-    .map_err(|error| error.to_string());
+    let config = config::upsert(saved_from_draft(draft, &reference))
+        .map(|path| path.display().to_string())
+        .map_err(|error| error.to_string());
 
     // 「先测试连接、再保存」会留下测试生成的引用：本次密码已经覆盖到复用引用上，
     // 那条临时引用若不再被任何配置条目引用，就是密钥环里的垃圾，尽力清掉。
@@ -4244,12 +4317,44 @@ mod tests {
     }
 
     #[test]
+    fn saved_from_draft_carries_alias_but_not_identity() {
+        use crate::backend::connection::TlsMode;
+
+        let draft = ConnectionDraft {
+            alias: "KDEV 开发库".to_owned(),
+            name: "kdev@127.0.0.1:3308/kdev".to_owned(),
+            driver_id: "mariadb".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 3308,
+            database: "kdev".to_owned(),
+            username: "kdev".to_owned(),
+            tls_mode: TlsMode::Preferred,
+            file_path: String::new(),
+            read_only: false,
+            credential_ref: None,
+            password: String::new(),
+        };
+        let saved = saved_from_draft(&draft, "sqarvo:conn/abc");
+        assert_eq!(saved.alias, "KDEV 开发库");
+        assert_eq!(saved.credential_ref, "sqarvo:conn/abc");
+        assert_eq!(saved.display_label(), "KDEV 开发库");
+        // 别名不进身份键：同一条草稿换个别名仍是同一条连接。
+        let mut renamed = draft;
+        renamed.alias = "另一个名字".to_owned();
+        assert_eq!(
+            saved_from_draft(&renamed, "sqarvo:conn/abc").key(),
+            saved.key()
+        );
+    }
+
+    #[test]
     fn identity_candidate_matches_saved_connection_identity() {
         // 草稿 → 身份键的映射必须与 config 的身份规则一致：否则「保存并连接」
         // 查不到已有条目，又退回追加（#145 的原始缺陷）。
         use crate::backend::connection::TlsMode;
 
         let draft = ConnectionDraft {
+            alias: String::new(),
             name: "显示名不参与身份".to_owned(),
             driver_id: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
@@ -4264,6 +4369,7 @@ mod tests {
         };
         let saved = SavedConnection {
             name: "另一个名字".to_owned(),
+            alias: String::new(),
             driver: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,

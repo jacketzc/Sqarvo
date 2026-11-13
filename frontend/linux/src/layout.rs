@@ -396,6 +396,10 @@ pub struct Metrics {
     pub column_width: i32,
     pub filter_panel_width: i32,
     pub filter_column_width: i32,
+    /// 列显隐弹层的内容宽（`metrics.toml` 的 `column_panel_width`）。
+    pub column_panel_width: i32,
+    /// 列显隐清单的最大可见高度，超出滚动。
+    pub column_list_max_height: i32,
 
     // ---- 间距阶梯（`metrics.toml` 的 `gap_*`，三档写死整数） ----
     pub gap_none: i32,
@@ -604,6 +608,8 @@ struct RawTier {
     column_width: i32,
     filter_panel_width: i32,
     filter_column_width: i32,
+    column_panel_width: i32,
+    column_list_max_height: i32,
     gap_none: i32,
     gap_xxs: i32,
     gap_xs: i32,
@@ -699,6 +705,8 @@ impl Metrics {
             column_width: raw.column_width,
             filter_panel_width: raw.filter_panel_width,
             filter_column_width: raw.filter_column_width,
+            column_panel_width: raw.column_panel_width,
+            column_list_max_height: raw.column_list_max_height,
             // 间距阶梯与 CSS 专用度量现在也来自 `metrics.toml`：三档全部写死整数，
             // 代码里不再「基准 × 倍率」——Rust / C# / Swift 的取整规则不同（half-away
             // vs half-to-even），同一份 26×1.25 会得到 33 和 32，三端会静默漂移 1px。

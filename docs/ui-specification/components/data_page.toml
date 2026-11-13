@@ -420,18 +420,19 @@ style.metrics = ["row_height_data"]
 impl_notes = [
   "只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。",
   "没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。",
-  "与漏斗互斥：打开卡片会收起筛选面板。",
+  "卡片是挂在它上面的 popover（autohide=false），锚点落在面板上沿偏右（0.618），与「筛选」同一形态。",
+  "与漏斗互斥：打开一个就收起另一个（同一块区域不让两个弹层同时开）。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "当前表有列"
-result = "打开 / 收起页内「列显隐」卡片（复选框清单）；再点一次收起"
-source = "src/data_page.rs:2324、src/data_page.rs:1757"
+result = "打开 / 收起列显隐弹层（挂在眼睛按钮上的 popover，带指示箭头，锚点在上沿 0.618 处）；再点一次收起"
+source = "src/data_page.rs:2337、src/data_page.rs:1771"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6e023a095258"
+spec_hash = "04602b802e72"
 commit = ""
 evidence = "§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility"
 
@@ -447,13 +448,18 @@ spec_hash = ""
 [[component]]
 id = "data_page.toolbar.columns.card"
 parent = "data_page.toolbar.columns"
-display_name = "列显隐卡片（复选清单 + 说明）"
+display_name = "列显隐弹层（复选清单 + 说明）"
 kind = "container"
 status = "active"
 a11y.name = "列显隐"
-style.metrics = ["radius_lg", "row_height_data"]
+style.slot = "overlay"
+style.metrics = ["column_panel_width", "column_list_max_height", "radius_lg", "row_height_data"]
+style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+native_control = "gtk:GtkPopover / winui:— / swift:—"
 impl_notes = [
-  "页内右对齐卡片（不是独立窗口，也不是 popover）：标题「列显隐」+ 复选框清单 + ✕；卡片宽度 300 与清单最大高度 260 是代码常量，**未进 metrics**。",
+  "挂在眼睛按钮上的 GtkPopover（与筛选面板同一形态）：带指示箭头，内容宽取 metrics 的 column_panel_width。",
+  "标题「列显隐」+ 复选框清单 + ✕；清单最大高度取 metrics 的 column_list_max_height，超出滚动。",
+  "勾选态是复选控件自己的 :checked 圆点：底色用中档品牌紫（theme.rs 的 .sqarvo-columns 规则），高对比模式退回系统 accent。",
   "说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」",
   "复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。",
   "换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。",
@@ -467,13 +473,13 @@ source = "src/data_page.rs:2361、src/data_page.rs:2316"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "卡片已打开"
-result = "点 ✕ 收起卡片，隐藏选择保持不变"
-source = "src/data_page.rs:1763"
+precondition = "弹层已打开"
+result = "点 ✕ 收起弹层，隐藏选择保持不变"
+source = "src/data_page.rs:1773"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "86fa1b4dee70"
+spec_hash = "8ab6fd053dde"
 commit = ""
 evidence = "§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled"
 

@@ -458,6 +458,15 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             border: 1px solid @sqarvo_overlay;
         }}
 
+        /* 列显隐弹层里的勾选态（#175）：中档品牌紫 = 「当前选中」这一语义，与标签
+           选中态、文本选区同一对色。高对比模式退回系统 accent —— HC 主题靠描边与
+           系统色表达状态，品牌中间调在 HC 下对比不足。 */
+        .sqarvo-columns checkbutton:checked > check,
+        .sqarvo-columns check:checked {{
+            background-color: {checked_bg};
+            color: {checked_fg};
+        }}
+
         /* 图标按钮（v0.2.3.3）：命中区固定（§图标），内边距归零——图标自身的像素尺寸
            由 `icons::OpticalWeight` 决定，容器不再给默认内边距，否则同一档图标在不同
            容器里宽度会不一样。 */
@@ -807,6 +816,16 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         frame = tones.frame,
         overlay = tones.overlay,
         status_fg = tones.status_fg,
+        checked_bg = if high_contrast {
+            "@accent_bg_color"
+        } else {
+            "@sqarvo_brand_mid"
+        },
+        checked_fg = if high_contrast {
+            "@accent_fg_color"
+        } else {
+            "@sqarvo_brand_on_mid"
+        },
         window_class = WINDOW_CLASS,
         // 尺寸与字号一律从当前档位的度量取（#159）：样式表里不再写死像素值。
         // 例外只有两类：1px 描边 / 分隔线（§3.2：任何档位都保持 1px），

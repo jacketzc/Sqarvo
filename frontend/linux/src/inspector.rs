@@ -1293,6 +1293,7 @@ mod tests {
     fn saved(driver: &str) -> SavedConnection {
         SavedConnection {
             name: "本地测试库".to_owned(),
+            alias: String::new(),
             driver: driver.to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,
@@ -1308,6 +1309,7 @@ mod tests {
     fn sqlite(path: &str) -> SavedConnection {
         SavedConnection {
             name: "demo.db".to_owned(),
+            alias: String::new(),
             driver: crate::config::SQLITE_DRIVER_ID.to_owned(),
             host: String::new(),
             port: 0,

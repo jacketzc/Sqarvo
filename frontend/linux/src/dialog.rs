@@ -96,6 +96,8 @@ pub struct ConnectionDialog {
     dialog: adw::Dialog,
     title: adw::WindowTitle,
     driver_row: adw::ComboRow,
+    /// 「别名（可选）」：只影响对象树连接行的显示，不参与身份键与连接参数。
+    alias_row: adw::EntryRow,
     choices: Vec<DriverChoice>,
     host_row: adw::EntryRow,
     port_row: adw::EntryRow,
@@ -118,6 +120,10 @@ pub struct ConnectionDialog {
     credential_ref: RefCell<Option<String>>,
     /// QA 档案指定的会话显示名（正常路径由驱动族派生）。
     name_override: RefCell<Option<String>>,
+    /// 对话框当前是否开着（`AdwDialog` 没有可读的 visible 属性，靠 `present` / `closed` 记）。
+    open: Rc<Cell<bool>>,
+    /// 编辑态（从「编辑连接…」进来）：标题「编辑连接」、底部按钮「保存」、不重连。
+    editing: Cell<bool>,
     test_handler: RefCell<Option<SubmitHandler>>,
     save_handler: RefCell<Option<SubmitHandler>>,
 }
@@ -156,6 +162,12 @@ impl ConnectionDialog {
         } else {
             "字段随驱动切换".to_owned()
         });
+
+        // 别名只用于对象树上的显示：不改身份键、不进连接参数、不改会话显示名。
+        let alias_row = adw::EntryRow::builder().title("别名（可选）").build();
+        alias_row.set_tooltip_text(Some(
+            "只影响对象树连接行的显示；留空则显示 用户名@主机:端口/数据库",
+        ));
 
         let host_row = adw::EntryRow::builder()
             .title("主机")
@@ -196,6 +208,7 @@ impl ConnectionDialog {
 
         let group = adw::PreferencesGroup::builder().title("连接参数").build();
         group.add(&driver_row);
+        group.add(&alias_row);
         group.add(&path_row);
         group.add(&read_only_row);
         group.add(&host_row);
@@ -247,6 +260,7 @@ impl ConnectionDialog {
             dialog,
             title,
             driver_row,
+            alias_row,
             choices,
             host_row,
             port_row,
@@ -264,6 +278,8 @@ impl ConnectionDialog {
             subtitle: RefCell::new(String::new()),
             credential_ref: RefCell::new(None),
             name_override: RefCell::new(None),
+            open: Rc::new(Cell::new(false)),
+            editing: Cell::new(false),
             test_handler: RefCell::new(None),
             save_handler: RefCell::new(None),
         });
@@ -280,6 +296,10 @@ impl ConnectionDialog {
         }
         this.apply_selection(initial);
         this.dialog.set_default_widget(Some(&this.save_button));
+        {
+            let open = Rc::clone(&this.open);
+            this.dialog.connect_closed(move |_| open.set(false));
+        }
 
         {
             let dialog = this.dialog.clone();
@@ -343,7 +363,47 @@ impl ConnectionDialog {
 
     /// 呈现对话框（模态附着在主窗口上）。
     pub fn present(&self, parent: &impl IsA<gtk::Widget>) {
+        self.open.set(true);
         self.dialog.present(Some(parent));
+    }
+
+    /// 切到编辑态（从「编辑连接…」进来时调用）：标题改「编辑连接」、底部按钮改「保存」。
+    ///
+    /// 编辑态的「保存」只写配置与凭据，**不**建立会话、不重连（用户下次自己连）。
+    /// 新建态保持「保存并连接」的一键语义。
+    pub fn set_editing(&self, editing: bool) {
+        if self.editing.get() == editing {
+            return;
+        }
+        self.editing.set(editing);
+        let (title, action) = if editing {
+            ("编辑连接", "保存")
+        } else {
+            ("新建连接", "保存并连接")
+        };
+        self.title.set_title(title);
+        self.dialog.set_title(title);
+        self.save_button.set_label(action);
+        self.save_button.set_tooltip_text(Some(if editing {
+            "只保存连接配置与凭据，不会重新连接；下次连接时生效"
+        } else {
+            "保存配置并立即建立会话"
+        }));
+    }
+
+    /// 是否是编辑态。
+    #[must_use]
+    pub fn is_editing(&self) -> bool {
+        self.editing.get()
+    }
+
+    /// 对话框是否还开着。
+    ///
+    /// 调用方要靠它决定「复用」还是「重建」：对已关闭的 `AdwDialog` 调 `present()`
+    /// 是空操作，而复用一个关闭的实例正是「编辑连接…点了没反应」的一条路径（#175）。
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.open.get()
     }
 
     /// 关闭对话框。
@@ -580,6 +640,8 @@ impl ConnectionDialog {
     /// 只填非敏感字段；已有 `credential_ref` 时保留它，密码行留空——后端会从系统
     /// 凭据库读取密码。**不**发起连接：用户仍需点「测试连接」/「保存并连接」。
     pub fn apply_saved(&self, saved: &SavedConnection) -> Result<(), String> {
+        // 预填 = 编辑已有连接：标题与底部按钮要跟着变（#175 追加要求）。
+        self.set_editing(true);
         let index = self
             .choices
             .iter()
@@ -594,6 +656,7 @@ impl ConnectionDialog {
         self.driver_row.set_selected(index);
         self.apply_selection(index);
 
+        self.alias_row.set_text(saved.alias.trim());
         self.host_row.set_text(&saved.host);
         self.port_row.set_text(&saved.port.to_string());
         self.database_row.set_text(&saved.database);
@@ -693,7 +756,10 @@ impl ConnectionDialog {
             password: self.password_row.text().to_string(),
             name_override: self.name_override.borrow().clone(),
         };
-        driver_form::build_draft(&input)
+        let mut draft = driver_form::build_draft(&input)?;
+        // 别名是纯客户端字段（不进 gRPC 参数）：在这里补，`driver_form` 不管它。
+        draft.alias = self.alias_row.text().trim().to_owned();
+        Ok(draft)
     }
 
     /// 校验 → 置为进行中 → 调用注册的回调。

@@ -5,13 +5,27 @@
 //! 悬停底、禁用色都不一样（用户报「样式与系统不一致」）。这里走 GTK 自己的菜单控件，
 //! 外观、键盘操作（上下键 / Enter / Esc）、点击外部关闭全部由 GTK 负责。
 //!
-//! # 为什么动作挂在菜单自己身上
+//! # 动作挂在哪
 //!
-//! v0.2.5 首版用 `gio::Menu` + `PopoverMenu` 绑 `row.delete-row` 这类**外部 action 名**
-//! 踩过坑：名字解析不到时 GTK 既不报错也不置灰，菜单照弹、点了没反应。这里的每个条目
-//! 都由本模块现建一个 `SimpleAction`，并 `insert_action_group` 到**弹出菜单自己**身上
-//! ——解析范围就在菜单内，不存在「名字找不到」的情况；禁用态也用 `set_enabled`，
-//! GTK 会按原生样式画灰。
+//! 每个条目都由本模块现建一个 `SimpleAction`，`insert_action_group` 到**弹出菜单自己**
+//! 身上：`GtkPopoverMenu` 的条目沿 action muxer 链解析（条目 → … → popover → 挂靠控件
+//! → 窗口），popover 本身就在这条链上，所以名字一定找得到；禁用态用 `set_enabled`，
+//! GTK 按原生样式画灰。
+//!
+//! # 为什么 `closed` 里**不能**同步 `unparent()`（#175）
+//!
+//! `GtkModelButton` 被点击时的顺序是：先 `gtk_popover_popdown()`（**同步**发 `closed`），
+//! 再 `gtk_action_helper_activate()`（`gtk/gtkmodelbutton.c`）。如果在 `closed` 处理器里
+//! 同步把 popover 从控件树上摘掉，按钮就已经脱离 action muxer 链，动作名解析不到 ——
+//! 表现出来就是「菜单收起、点了什么都没有、日志也干净」。实测对照（真鼠标点击）：
+//!
+//! | `closed` 里做什么 | 结果 |
+//! |---|---|
+//! | 同步 `unparent()` | 无动作执行 |
+//! | 不 `unparent` / 推迟到 idle | 动作执行 |
+//!
+//! 因此本模块把 `unparent()` 统一推迟到 idle 派发，调用方只通过
+//! [`ContextMenu::connect_closed`] 收通知（同样在 idle 里），不要自己动控件树。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -58,9 +72,13 @@ impl Entry {
 /// 一个已经弹出的右键菜单。
 pub struct ContextMenu {
     popover: gtk::PopoverMenu,
+    /// 本菜单自己的动作组。popover 已经持有一份引用，这里留着是为了在
+    /// [`Self::activate`] 里给出「名字不存在」的可读错误。
     group: gio::SimpleActionGroup,
     /// 文案 → action 名（QA 按文案点条目用；GTK 内部不暴露这个对应关系）。
     index: RefCell<Vec<(String, String)>>,
+    /// 收起之后要做的收尾（清调用方的槽位等）。在 idle 里执行。
+    closed_hooks: RefCell<Vec<Rc<dyn Fn()>>>,
 }
 
 impl ContextMenu {
@@ -86,15 +104,47 @@ impl ContextMenu {
         )));
         // 动作只在这个菜单的解析范围里，名字一定找得到。
         popover.insert_action_group("ctx", Some(&group));
-        popover.popup();
-        Rc::new(Self {
-            popover,
+        let menu = Rc::new(Self {
+            popover: popover.clone(),
             group,
             index: RefCell::new(index.into_inner()),
-        })
+            closed_hooks: RefCell::new(Vec::new()),
+        });
+        {
+            let weak = Rc::downgrade(&menu);
+            popover.connect_closed(move |popover| {
+                // 见模块文档：closed 由 `gtk_popover_popdown()` 同步派发，此时条目还没
+                // 激活动作。摘控件树必须推迟到 idle，否则动作名解析不到（点了没反应）。
+                let popover = popover.clone();
+                let weak = weak.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    popover.unparent();
+                    if let Some(menu) = weak.upgrade() {
+                        let hooks = menu.closed_hooks.borrow_mut().drain(..).collect::<Vec<_>>();
+                        drop(menu);
+                        for hook in hooks {
+                            hook();
+                        }
+                    }
+                });
+            });
+        }
+        popover.popup();
+        menu
     }
 
-    /// 按文案激活条目（QA 用：与用户点它走同一条 action 路径）。
+    /// 菜单收起后的回调（在 idle 里执行；此时 popover 已经 `unparent`）。
+    ///
+    /// 调用方用它清自己的槽位。**不要**在回调里 popdown / unparent / 重建菜单控件树。
+    pub fn connect_closed(&self, hook: impl Fn() + 'static) {
+        self.closed_hooks.borrow_mut().push(Rc::new(hook));
+    }
+
+    /// 按文案激活条目（QA 用）。
+    ///
+    /// 走 `popover.activate_action("ctx.mN")` —— 与条目自己激活时**同一条 muxer 解析链**
+    /// （popover → 挂靠控件 → 窗口）。刻意不用 `group.lookup_action(...).activate()`：
+    /// 那会绕过解析链，「动作挂错位置 / 控件树被摘掉」这类缺陷 QA 就查不出来（#175）。
     pub fn activate(&self, label: &str) -> Result<(), String> {
         let name = {
             let index = self.index.borrow();
@@ -106,11 +156,19 @@ impl ContextMenu {
         let Some(name) = name else {
             return Err(format!("右键菜单里没有「{label}」"));
         };
-        let Some(action) = self.group.lookup_action(&name) else {
-            return Err(format!("右键菜单条目「{label}」没有挂动作"));
-        };
-        action.activate(None);
-        Ok(())
+        if name.is_empty() {
+            return Err(format!("「{label}」是二级菜单标题，不能直接激活"));
+        }
+        // 名字必须真在这个 group 里：否则 GTK 沿解析链找不到动作时会静默失败，
+        // QA 只能看到「点了没反应」。这一层给出可读原因。
+        if self.group.lookup_action(&name).is_none() {
+            return Err(format!("右键菜单条目「{label}」没有挂动作（{name}）"));
+        }
+        self.popover
+            .activate_action(&format!("ctx.{name}"), None)
+            .map_err(|error| {
+                format!("右键菜单条目「{label}」的动作解析失败（ctx.{name}）：{error}")
+            })
     }
 
     /// 菜单里有哪些文案（顺序与渲染一致；含子菜单里的条目）。
@@ -126,12 +184,6 @@ impl ContextMenu {
     /// 收起。
     pub fn popdown(&self) {
         self.popover.popdown();
-    }
-
-    /// 菜单控件（调用方据此 `unparent` / 接 `closed` 信号）。
-    #[must_use]
-    pub fn popover(&self) -> &gtk::PopoverMenu {
-        &self.popover
     }
 }
 

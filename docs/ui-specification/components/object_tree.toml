@@ -183,8 +183,12 @@ display_name = "连接行"
 kind = "row"
 status = "active"
 style.icon = ["tree.connection"]
-a11y.name = "（行内容：连接名 + 连接态徽标）"
-impl_notes = ["行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。"]
+a11y.name = "（行内容：别名或 用户名@主机:端口/库 + 连接态徽标）"
+impl_notes = [
+  "行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。",
+  "行名 = 连接别名；没起别名时回落 用户名@主机:端口/库（文件型驱动是文件路径）。别名只影响显示：不参与身份键、不进连接参数、不改会话显示名。",
+  "tooltip 首行同一个显示名；有别名时另起一行给「连接名：<派生名>」，同别名不同目标也能分辨。",
+]
 
 [[component.interaction]]
 trigger = "double_click"
@@ -200,7 +204,7 @@ source = "src/tree.rs:2858"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "4aaed15e7aad"
+spec_hash = "208a674fae13"
 commit = "7436cd5"
 evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
 
@@ -592,6 +596,7 @@ native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 style.slot = "overlay"
 impl_notes = [
   "贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。",
+  "收起时把 popover 的 unparent 推迟到 idle：GtkModelButton 是先 popdown（同步发 closed）再激活动作，closed 里同步摘控件树会让动作名解析不到 —— 表现就是「菜单收起、点了没反应」（#175 实测对照）。",
   "条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。",
   "没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。",
 ]
@@ -779,17 +784,21 @@ kind = "item"
 a11y.name = "编辑连接…"
 status = "active"
 style.metrics = ["font_ui"]
-impl_notes = ["密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。"]
+impl_notes = [
+  "密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。",
+  "按 saved_key 重建对话框：对已关闭的 AdwDialog 调 present() 是空操作，复用旧实例会让这个条目「点了没反应」（#175）。",
+  "编辑期间不留旧会话：配置改动只在下次连接时生效，留着旧标签会让人误以为已经生效。",
+]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "连接存在于配置里"
-result = "打开连接对话框并预填非敏感字段"
-source = "src/ui.rs:785、src/ui.rs:989"
+result = "该连接已连接时先弹确认（见 edit_connection.confirm）：确认后关闭它名下所有标签、断开连接，再打开已预填的「编辑连接」对话框；未连接时直接打开对话框"
+source = "src/ui.rs:3781、src/ui.rs:3826"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "266a294cca36"
+spec_hash = "b97f99439c9e"
 commit = "7436cd5"
 evidence = "§2.3 编辑连接"
 
@@ -797,6 +806,42 @@ evidence = "§2.3 编辑连接"
 state = "none"
 spec_hash = ""
 note = "无树右键菜单。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "object_tree.ctx_menu.edit_connection.confirm"
+parent = "object_tree.ctx_menu.edit_connection"
+display_name = "编辑连接前的关闭确认框"
+kind = "container"
+status = "active"
+a11y.name = "编辑连接？"
+style.slot = "overlay"
+native_control = "gtk:AdwAlertDialog / winui:— / swift:—"
+impl_notes = [
+  "只在连接**已连接**时弹：没有会话、没有标签可关的条目直接进编辑，不多一次点击。",
+  "正文两句，第二句单独一行：「未提交的更改会一并丢弃。」；有脏行时换成「其中 N 个标签有未提交的更改，确认后一并丢弃。」",
+  "确认后才关标签、断连接，然后打开对话框；取消则连接与标签保持原样。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "连接已连接"
+result = "取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
+source = "src/ui.rs:3781、src/tabs.rs:2892"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "f2c1c4b681d2"
+commit = ""
+evidence = "AdwAlertDialog + close_tabs_for_connection + registry.disconnect"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 未记录：Windows 没有树右键菜单，也没有编辑前的关闭确认。"
 
 [component.sync.macos]
 state = "none"

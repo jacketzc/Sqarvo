@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 186 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 188 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -26,7 +26,7 @@
 | `data_page.toolbar.status_dot` | 　　状态圆点（灰 / 事务棕 / 脏行强调色） | control | active | done | — | — |
 | `data_page.toolbar.filter` | 　　「筛选」（漏斗）按钮 | control | active | done | — | — |
 | `data_page.toolbar.columns` | 　　「列显隐」（眼睛）按钮 | control | active | done | — | — |
-| `data_page.toolbar.columns.card` | 　　　列显隐卡片（复选清单 + 说明） | container | active | done | — | — |
+| `data_page.toolbar.columns.card` | 　　　列显隐弹层（复选清单 + 说明） | container | active | done | — | — |
 | `data_page.toolbar.export` | 　　「导出 ▾」菜单按钮 | control | active | done | — | — |
 | `data_page.export_menu` | 　导出菜单（三项出口） | container | active | done | — | — |
 | `data_page.export_menu.csv` | 　　「导出 CSV…」 | item | active | done | — | — |
@@ -183,25 +183,26 @@ kind `control` · status `active` · parent `data_page.toolbar`
 - 无障碍：可访问名「列显隐」；Tab 工具条次要动作组内第二枚
 - 图标：`action.columns`
 - 同步：Linux done（§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility）；Windows none（§7.1 未记录：Windows 数据页没有列显隐入口。）；macOS none
-- 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。与漏斗互斥：打开卡片会收起筛选面板。
+- 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。卡片是挂在它上面的 popover（autohide=false），锚点落在面板上沿偏右（0.618），与「筛选」同一形态。与漏斗互斥：打开一个就收起另一个（同一块区域不让两个弹层同时开）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前表有列 | 打开 / 收起页内「列显隐」卡片（复选框清单）；再点一次收起 | `src/data_page.rs:2324、src/data_page.rs:1757` |
+| click | 当前表有列 | 打开 / 收起列显隐弹层（挂在眼睛按钮上的 popover，带指示箭头，锚点在上沿 0.618 处）；再点一次收起 | `src/data_page.rs:2337、src/data_page.rs:1771` |
 
-### `data_page.toolbar.columns.card` 列显隐卡片（复选清单 + 说明）
+### `data_page.toolbar.columns.card` 列显隐弹层（复选清单 + 说明）
 
 kind `container` · status `active` · parent `data_page.toolbar.columns`
 
-- 样式：尺寸 `radius_lg`、`row_height_data`
+- 样式：槽位 `overlay`；尺寸 `column_panel_width`、`column_list_max_height`、`radius_lg`、`row_height_data`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`
 - 无障碍：可访问名「列显隐」
+- 原生控件：gtk:GtkPopover / winui:— / swift:—
 - 同步：Linux done（§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled）；Windows none（§7.1 未记录：Windows 数据页没有列显隐卡片。）；macOS none
-- 实现备注：页内右对齐卡片（不是独立窗口，也不是 popover）：标题「列显隐」+ 复选框清单 + ✕；卡片宽度 300 与清单最大高度 260 是代码常量，**未进 metrics**。说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」；复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。
+- 实现备注：挂在眼睛按钮上的 GtkPopover（与筛选面板同一形态）：带指示箭头，内容宽取 metrics 的 column_panel_width。标题「列显隐」+ 复选框清单 + ✕；清单最大高度取 metrics 的 column_list_max_height，超出滚动。勾选态是复选控件自己的 :checked 圆点：底色用中档品牌紫（theme.rs 的 .sqarvo-columns 规则），高对比模式退回系统 accent。说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」；复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 卡片已打开、该列在清单里 | 勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号 | `src/data_page.rs:2361、src/data_page.rs:2316` |
-| click | 卡片已打开 | 点 ✕ 收起卡片，隐藏选择保持不变 | `src/data_page.rs:1763` |
+| click | 弹层已打开 | 点 ✕ 收起弹层，隐藏选择保持不变 | `src/data_page.rs:1773` |
 
 ### `data_page.toolbar.export` 「导出 ▾」菜单按钮
 
@@ -584,6 +585,7 @@ kind `container` · status `active` · parent `data_page`
 | `dialogs.connection.driver` | 　　驱动下拉 | control | active | done | — | — |
 | `dialogs.connection.fields` | 　　连接参数表单（按驱动族显隐） | container | active | done | partial | — |
 | `dialogs.connection.fields.host` | 　　　主机 | control | active | done | partial | — |
+| `dialogs.connection.fields.alias` | 　　　别名（可选） | control | active | done | — | — |
 | `dialogs.connection.fields.port` | 　　　端口 | control | active | done | partial | — |
 | `dialogs.connection.fields.username` | 　　　用户名 | control | active | done | partial | — |
 | `dialogs.connection.fields.database` | 　　　数据库（可选） | control | active | done | partial | — |
@@ -595,7 +597,7 @@ kind `container` · status `active` · parent `data_page`
 | `dialogs.connection.status` | 　　状态行（校验 / 测试结果 / 失败） | control | active | done | partial | — |
 | `dialogs.connection.actions` | 　　底部操作条（状态行 + 两个按钮） | container | active | done | partial | — |
 | `dialogs.connection.actions.test` | 　　　「测试连接」 | control | active | done | partial | — |
-| `dialogs.connection.actions.save` | 　　　「保存并连接」（建议动作） | control | active | done | — | — |
+| `dialogs.connection.actions.save` | 　　　保存动作（新建：「保存并连接」/ 编辑：「保存」） | control | active | done | — | — |
 | `dialogs.connection.actions.cancel` | 　　　「取消」 | control | active | done | — | — |
 | `dialogs.about` | 　关于对话框 | container | active | done | — | — |
 | `dialogs.about.app_info` | 　　名称 / 版本 / 一句说明 | control | active | done | — | — |
@@ -634,11 +636,12 @@ kind `control` · status `active` · parent `dialogs.connection`
 - 样式：槽位 `dialogs`；尺寸 `font_title`、`font_panel`
 - 无障碍：可访问名「连接对话框标题」
 - 同步：Linux done（dialog.rs apply_selection / set_pending 复核）；Windows none（§7.1 未记录）；macOS none
-- 实现备注：副标题只说「当前驱动是谁」，不写主机 / 用户：那两样在表单里本身可见。标题字号由 AdwWindowTitle 决定，未进 metrics。
+- 实现备注：副标题只说「当前驱动是谁」，不写主机 / 用户：那两样在表单里本身可见。标题字号由 AdwWindowTitle 决定，未进 metrics。标题按入口变：工具条「连接」是「新建连接」，对象树「编辑连接…」是「编辑连接」（同时改窗口标题与标题栏）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 对话框构建或驱动切换 | 副标题 = 当前驱动的显示名（后端 ListDrivers 返回的 display_name）；没有可选驱动时写「未选择驱动」 | `src/dialog.rs:425、src/dialog.rs:135` |
+| load | 从「编辑连接…」进入 | 标题改「编辑连接」；对话框标题属性与标题栏同步改 | `src/dialog.rs:390、src/ui.rs:3826` |
 | load | 「测试连接」或「保存并连接」的请求在飞 | 副标题改为「正在与数据库握手…」；回包后恢复为驱动显示名 | `src/dialog.rs:485、src/dialog.rs:501` |
 
 ### `dialogs.connection.driver` 驱动下拉
@@ -681,6 +684,20 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 |---|---|---|---|
 | load | 切到服务器型驱动且主机为空 | 主机补回 127.0.0.1（用户改过就不动） | `src/dialog.rs:160、src/dialog.rs:411` |
 | click | 提交时主机为空 | 状态行写「请填写主机」，不发任何 RPC | `src/driver_form.rs:169、src/dialog.rs:700` |
+
+### `dialogs.connection.fields.alias` 别名（可选）
+
+kind `control` · status `active` · parent `dialogs.connection.fields`
+
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
+- 无障碍：可访问名「别名（可选）」；Tab 驱动下拉之后、主机之前
+- 同步：Linux done（别名行 + apply_saved 预填 + 写盘时进 config）；Windows none（§7.1 未记录：Windows 连接对话框没有别名字段。）；macOS none
+- 实现备注：只影响对象树连接行的显示：留空则显示 用户名@主机:端口/库（文件型驱动是文件路径）。别名不参与 SavedConnection::key()、不进连接参数、不改会话显示名：同一条连接改别名不会变成两条。旧 connections.json 没有 alias 字段时按空串读（serde(default)），不需要迁移。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | 打开新建 / 编辑连接对话框 | 编辑时填入保存的别名；新建时留空 | `src/dialog.rs:174、src/dialog.rs:600` |
+| click | 点「保存并连接」且校验通过 | trim 后写进 connections.json 的 alias；gRPC 请求里没有这个字段 | `src/dialog.rs:700、src/backend/worker.rs:4019` |
 
 ### `dialogs.connection.fields.port` 端口
 
@@ -833,18 +850,19 @@ kind `control` · status `active` · parent `dialogs.connection.actions`
 | click | 有可用驱动（ListDrivers 非空且前端认识该驱动），请求不在飞 | 先做本地校验，通过后整体置为禁用、状态行写「正在测试连接…」，调 TestConnection；成功回「连接成功：延迟 … ms · 服务端版本 …」，失败回分类错误两行 | `src/dialog.rs:227、src/dialog.rs:700、src/ui.rs:612` |
 | click | 没有可用驱动（后端未返回驱动，或前端没有该驱动的表单） | 按钮禁用，点不动：不发测试请求，也不退回一份写死的 MariaDB 表单 | `src/dialog.rs:420、src/dialog.rs:153` |
 
-### `dialogs.connection.actions.save` 「保存并连接」（建议动作）
+### `dialogs.connection.actions.save` 保存动作（新建：「保存并连接」/ 编辑：「保存」）
 
 kind `control` · status `active` · parent `dialogs.connection.actions`
 
 - 样式：槽位 `dialogs`；尺寸 `fs_action_min_height`、`min_target`；颜色 `sqarvo_brand_deep`、`sqarvo_brand_on_deep`
-- 无障碍：可访问名「保存并连接」
+- 无障碍：可访问名「保存并连接（新建）/ 保存（编辑）」
 - 同步：Linux done（dialog.rs request + ui.rs submit / Event::ConnectResult 路径）；Windows none（§7.1 未记录）；macOS none
-- 实现备注：建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。落盘只有两件事：connections.json 里的连接条目（含 credential_ref）与系统凭据库里的密码条目。保存成功即建立会话并关闭对话框，落到工作区；保存失败则对话框留着、状态行给原因。
+- 实现备注：建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。两种入口两种语义：新建 = 保存并立即连接；编辑 = **只保存**（写配置与凭据，不建会话、不重连），下次连接时生效。落盘只有两件事：connections.json 里的连接条目（含 credential_ref）与系统凭据库里的密码条目；别名只进配置。新建保存成功即建立会话并关闭对话框，落到工作区；编辑保存成功只关闭对话框并刷新树上那一行；保存失败则对话框留着、状态行给原因。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 本地校验通过，驱动可用 | 整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区 | `src/dialog.rs:700、src/ui.rs:1382、src/ui.rs:641` |
+| click | 新建态（工具条「连接」进入）、本地校验通过、驱动可用 | 整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区 | `src/dialog.rs:700、src/ui.rs:1382、src/ui.rs:641` |
+| click | 编辑态（「编辑连接…」进入）、本地校验通过 | 按钮文案是「保存」：写凭据 + 写 connections.json，**不发 Connect**；成功后关闭对话框、对象树那一行按新别名/新目标重绘，连接状态仍是未连接 | `src/dialog.rs:390、src/ui.rs:1391、src/backend/worker.rs:3994` |
 | click | 本地校验不通过 | 不提交：状态行给原因，对话框保持打开，用户改正后可再点 | `src/dialog.rs:701` |
 | click | 后端 worker 不可用（已退出或未握手） | 状态行写「本地后端未连接」（错误码 backend.unavailable），按钮恢复可点，不假装已保存 | `src/ui.rs:1399、src/ui.rs:1401、src/backend/connection.rs:489` |
 
@@ -1231,6 +1249,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 | `object_tree.ctx_menu.refresh_catalog` | 　　「刷新库」 | item | active | done | — | — |
 | `object_tree.ctx_menu.refresh_group` | 　　「刷新这一组」 | item | active | done | — | — |
 | `object_tree.ctx_menu.edit_connection` | 　　「编辑连接…」 | item | active | done | — | — |
+| `object_tree.ctx_menu.edit_connection.confirm` | 　　　编辑连接前的关闭确认框 | container | active | done | — | — |
 | `object_tree.ctx_menu.delete_connection` | 　　「删除连接」 | item | active | done | — | — |
 | `object_tree.ctx_menu.open` | 　　「打开」 | item | active | done | — | — |
 | `object_tree.ctx_menu.dump_table` | 　　「转储表…」 | item | active | done | — | — |
@@ -1295,10 +1314,10 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：连接名 + 连接态徽标）」
+- 无障碍：可访问名「（行内容：别名或 用户名@主机:端口/库 + 连接态徽标）」
 - 图标：`tree.connection`
 - 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）；Windows partial（已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。）；macOS none
-- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。
+- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。行名 = 连接别名；没起别名时回落 用户名@主机:端口/库（文件型驱动是文件路径）。别名只影响显示：不参与身份键、不进连接参数、不改会话显示名。tooltip 首行同一个显示名；有别名时另起一行给「连接名：<派生名>」，同别名不同目标也能分辨。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1437,7 +1456,7 @@ kind `container` · status `active` · parent `object_tree`
 - 样式：槽位 `overlay`
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§2.3 右键菜单）；Windows none（对象树没有右键菜单（§7.1 未记录）。）；macOS none
-- 实现备注：贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
+- 实现备注：贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。收起时把 popover 的 unparent 推迟到 idle：GtkModelButton 是先 popdown（同步发 closed）再激活动作，closed 里同步摘控件树会让动作名解析不到 —— 表现就是「菜单收起、点了没反应」（#175 实测对照）。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1514,11 +1533,25 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「编辑连接…」
 - 同步：Linux done（§2.3 编辑连接）；Windows none（无树右键菜单。）；macOS none
-- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。
+- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。按 saved_key 重建对话框：对已关闭的 AdwDialog 调 present() 是空操作，复用旧实例会让这个条目「点了没反应」（#175）。编辑期间不留旧会话：配置改动只在下次连接时生效，留着旧标签会让人误以为已经生效。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接存在于配置里 | 打开连接对话框并预填非敏感字段 | `src/ui.rs:785、src/ui.rs:989` |
+| click | 连接存在于配置里 | 该连接已连接时先弹确认（见 edit_connection.confirm）：确认后关闭它名下所有标签、断开连接，再打开已预填的「编辑连接」对话框；未连接时直接打开对话框 | `src/ui.rs:3781、src/ui.rs:3826` |
+
+### `object_tree.ctx_menu.edit_connection.confirm` 编辑连接前的关闭确认框
+
+kind `container` · status `active` · parent `object_tree.ctx_menu.edit_connection`
+
+- 样式：槽位 `overlay`
+- 无障碍：可访问名「编辑连接？」
+- 原生控件：gtk:AdwAlertDialog / winui:— / swift:—
+- 同步：Linux done（AdwAlertDialog + close_tabs_for_connection + registry.disconnect）；Windows none（§7.1 未记录：Windows 没有树右键菜单，也没有编辑前的关闭确认。）；macOS none
+- 实现备注：只在连接**已连接**时弹：没有会话、没有标签可关的条目直接进编辑，不多一次点击。正文两句，第二句单独一行：「未提交的更改会一并丢弃。」；有脏行时换成「其中 N 个标签有未提交的更改，确认后一并丢弃。」；确认后才关标签、断连接，然后打开对话框；取消则连接与标签保持原样。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2892` |
 
 ### `object_tree.ctx_menu.delete_connection` 「删除连接」
 

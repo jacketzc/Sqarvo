@@ -637,6 +637,45 @@ pub fn activate(app: &adw::Application) {
                         }
                     }
                 }
+                Event::Saved(result) => {
+                    let dialog = events_state.dialog.borrow().as_ref().cloned();
+                    if let Some(dialog) = dialog.as_ref() {
+                        dialog.set_pending(false);
+                    }
+                    match result {
+                        Ok(outcome) => {
+                            if let Some(dialog) = dialog.as_ref() {
+                                dialog.close();
+                            }
+                            // 只保存不连接：配置已经落盘，重读注册表让树上那一行按
+                            // 新别名 / 新目标重绘；连接状态保持原样（仍是未连接）。
+                            if let Some(registry) = events_state.registry.borrow().clone() {
+                                registry.refresh_from_config();
+                            }
+                            if let Some(workspace) =
+                                events_state.workspace.borrow().as_ref().cloned()
+                            {
+                                workspace.status().set_idle_summary(Some(&format!(
+                                    "已保存连接「{}」（不重连，下次连接时生效）",
+                                    outcome.saved.display_label()
+                                )));
+                            }
+                            eprintln!(
+                                "[connections] 已保存连接「{}」→ {}（不重连）",
+                                outcome.saved.display_label(),
+                                outcome.path
+                            );
+                        }
+                        Err(failure) => match dialog.as_ref() {
+                            Some(dialog) => dialog.show_failure(&failure),
+                            None => eprintln!(
+                                "[sqarvo-desktop] 保存连接失败（对话框已关闭）：[{}] {}",
+                                failure.code(),
+                                failure.detail()
+                            ),
+                        },
+                    }
+                }
                 Event::ConnectResult(result) => {
                     let dialog = events_state.dialog.borrow().as_ref().cloned();
                     if let Some(dialog) = dialog.as_ref() {
@@ -1105,9 +1144,17 @@ fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
         eprintln!("[sqarvo-desktop] 后端尚未连接，忽略「新建连接」");
         return;
     }
-    if let Some(dialog) = state.dialog.borrow().as_ref() {
-        dialog.present(&state.window);
-        return;
+    // 槽位里的对话框只有「还开着」才复用：`present()` 对已经关闭的 `AdwDialog`
+    // 是空操作，复用旧实例会让「编辑连接…」看起来没反应（#175）。要点编辑某条
+    // 连接时必须按那条连接重建，否则会把别的连接的字段带过来。
+    // 先把强引用拿出来：借用不能活到下面的 `borrow_mut()`（RefCell 会二次借用 panic）。
+    let existing = state.dialog.borrow().as_ref().cloned();
+    if let Some(dialog) = existing {
+        if saved_key.is_none() && dialog.is_open() {
+            dialog.present(&state.window);
+            return;
+        }
+        state.dialog.borrow_mut().take();
     }
 
     let drivers = state.drivers.borrow().clone();
@@ -1382,7 +1429,10 @@ fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
 fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionDraft, save: bool) {
     let mut queued = false;
     if let Some(worker) = state.worker.borrow().as_ref() {
-        if save {
+        if save && dialog.is_editing() {
+            // 编辑态（从「编辑连接…」进来）：「保存」只写配置与凭据，不建会话、不重连。
+            worker.save_only(draft);
+        } else if save {
             // 会话显示名是标题规则（§5.1）里的「连接名」：只在这里临时记住，
             // 不参与连接参数，也不进日志。
             state.connection_name.replace(Some(draft.name.clone()));
@@ -2179,7 +2229,7 @@ impl Workspace {
             },
             edit_saved: {
                 let state = Rc::clone(state);
-                Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
+                Rc::new(move |key: String| confirm_edit_saved(&state, &key))
             },
             delete_saved: {
                 let state = Rc::clone(state);
@@ -3689,6 +3739,65 @@ fn schedule_retry(attempts: u32, action: Rc<dyn Fn() -> Result<(), String>>) {
             }
         }
     });
+}
+
+/// 「编辑连接…」：先确认「会关闭连接与所有已打开的相关窗口」，再关标签、断连接、开对话框。
+///
+/// 顺序是「先收拾现场再编辑」：编辑后的配置只在**下次连接**时生效，所以在编辑期间
+/// 留着旧会话与旧标签只会让人误以为改动已经生效（#175 追加要求）。
+///
+/// 连接本来就没连上时不弹确认：没有会话、没有标签可关，多一次点击没有信息量。
+fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
+    let Some(registry) = state.registry.borrow().clone() else {
+        open_connection_dialog_for(state, Some(key));
+        return;
+    };
+    let Some(snapshot) = registry.snapshot(key) else {
+        eprintln!("[connections] 编辑：注册表里没有连接键 {key}，按新建连接打开");
+        open_connection_dialog_for(state, None);
+        return;
+    };
+    if !snapshot.state.is_connected() {
+        open_connection_dialog_for(state, Some(key));
+        return;
+    }
+
+    let workspace = state.workspace.borrow().as_ref().cloned();
+    let dirty = workspace.as_ref().map_or(0, |workspace| {
+        workspace.tabs.dirty_tab_count_for_connection(key)
+    });
+    // 第二句单独一行（维护者要求换行）：有脏行时说清有几个，没有时也不隐瞒这条后果。
+    let dirty_line = if dirty > 0 {
+        format!("其中 {dirty} 个标签有未提交的更改，确认后一并丢弃。")
+    } else {
+        "未提交的更改会一并丢弃。".to_owned()
+    };
+    let body = format!("编辑连接将关闭连接以及所有已打开的相关窗口。\n{dirty_line}");
+    let dialog = adw::AlertDialog::new(Some("编辑连接？"), Some(&body));
+    dialog.add_response("cancel", "取消");
+    dialog.add_response("edit", "关闭并编辑");
+    dialog.set_response_appearance("edit", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    {
+        let state = Rc::clone(state);
+        let registry = Rc::clone(&registry);
+        let key = key.to_owned();
+        let name = snapshot.label().to_owned();
+        let handled = Rc::new(Cell::new(false));
+        dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+            if handled.replace(true) || response != "edit" {
+                return;
+            }
+            let closed = state.workspace.borrow().as_ref().map_or(0, |workspace| {
+                workspace.tabs.close_tabs_for_connection(&key)
+            });
+            eprintln!("[connections] 编辑连接：已关闭 {closed} 个标签，断开「{name}」");
+            registry.disconnect(&key);
+            open_connection_dialog_for(&state, Some(&key));
+        });
+    }
+    dialog.present(Some(&state.window));
 }
 
 /// 断开一条连接的浏览会话（#114）：先确认，再关会话，并在前后各写一次会话数。

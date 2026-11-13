@@ -586,7 +586,8 @@ impl Row {
     /// 展示名。
     fn display_name(&self) -> &str {
         match self {
-            Self::Connection(snapshot) => &snapshot.name,
+            // 别名优先，空则回落 `user@host:port/db`（`ConnectionSnapshot::label`）。
+            Self::Connection(snapshot) => snapshot.label(),
             Self::Group(group) => group.group.label(),
             Self::Object(node) => &node.display_name,
             Self::Note(note) => &note.text,
@@ -657,11 +658,19 @@ impl Row {
                         snapshot.detail.clone()
                     }
                 };
+                // 别名只是显示名：tooltip 里仍要给出真正的目标与保存名，
+                // 否则两条不同目标起了同名别名就没法分辨。
+                let saved_name = if snapshot.alias.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n连接名：{}", snapshot.name)
+                };
                 format!(
-                    "{} · {}\n{}\n{}{}\n右键：连接 / 断开连接 / 刷新连接",
-                    snapshot.name,
+                    "{} · {}\n{}{}\n{}{}\n右键：连接 / 断开连接 / 刷新连接",
+                    snapshot.label(),
                     snapshot.driver,
                     snapshot.target,
+                    saved_name,
                     state,
                     if snapshot.is_active {
                         "\n（当前数据页绑定的连接）"
@@ -2250,13 +2259,15 @@ impl TreePanel {
         {
             let mut runs = self.search_runs.borrow_mut();
             for snapshot in &snapshots {
-                let name_hit = contains_ignore_case(&snapshot.name, query);
+                // 别名与连接名都参与匹配；结果行显示与树行同一个名字（别名优先）。
+                let name_hit = contains_ignore_case(&snapshot.name, query)
+                    || contains_ignore_case(&snapshot.alias, query);
                 if name_hit {
                     name_hits += 1;
                 }
                 runs.push(ConnectionSearch {
                     key: snapshot.key.clone(),
-                    name: snapshot.name.clone(),
+                    name: snapshot.label().to_owned(),
                     badge: snapshot.state.badge().to_owned(),
                     name_hit,
                     catalogs: Vec::new(),
@@ -3314,9 +3325,12 @@ impl TreePanel {
         if row.is_note() {
             return;
         }
-        if let Some(previous) = self.context_menu.borrow_mut().take() {
+        // 先把槽位让出来再 popdown：`take()` 的临时借用不能活到 popdown 里，
+        // 否则 `closed` 处理器回填时会把 RefCell 二次借用（#175 的 abort）。
+        // 摘控件树由 `ContextMenu` 自己在 idle 里做，这里不碰。
+        let previous = self.context_menu.borrow_mut().take();
+        if let Some(previous) = previous {
             previous.popdown();
-            previous.popover().unparent();
         }
         // 原生 `GtkPopoverMenu`：与系统右键菜单（SQL 编辑器那一套）同一外观与键盘操作。
         // 条目动作挂在本模块现建的 action group 上（`context_menu` 模块里解释过为什么）。
@@ -3330,10 +3344,17 @@ impl TreePanel {
             .collect();
         let menu = crate::context_menu::ContextMenu::popup(anchor, x, y, entries);
         {
+            // 只清自己那一份：`closed` 是异步派发的，新菜单可能已经装进字段了。
             let panel = Rc::clone(self);
-            menu.popover().connect_closed(move |popover| {
-                popover.unparent();
-                panel.context_menu.borrow_mut().take();
+            let this = Rc::downgrade(&menu);
+            menu.connect_closed(move || {
+                let mut slot = panel.context_menu.borrow_mut();
+                let same = slot
+                    .as_ref()
+                    .is_some_and(|current| std::rc::Weak::ptr_eq(&Rc::downgrade(current), &this));
+                if same {
+                    slot.take();
+                }
             });
         }
         self.context_menu.replace(Some(menu));
@@ -4759,11 +4780,50 @@ mod tests {
     }
 
     #[test]
+    fn connection_row_name_prefers_alias_then_target() {
+        let base = ConnectionSnapshot {
+            key: "k1".to_owned(),
+            name: "kdev@127.0.0.1:3308/kdev".to_owned(),
+            label: "kdev@127.0.0.1:3308/kdev".to_owned(),
+            alias: String::new(),
+            driver: "mariadb".to_owned(),
+            target: "kdev@127.0.0.1:3308/kdev".to_owned(),
+            state: ConnectionState::Disconnected,
+            session_id: String::new(),
+            detail: String::new(),
+            is_active: false,
+        };
+        let plain = Row::Connection(Rc::new(base.clone()));
+        assert_eq!(
+            plain.display_name(),
+            "kdev@127.0.0.1:3308/kdev",
+            "没别名时回落 用户名@主机:端口/库"
+        );
+
+        let mut named = base;
+        named.alias = "KDEV 开发库".to_owned();
+        named.label = "KDEV 开发库".to_owned();
+        let row = Row::Connection(Rc::new(named));
+        assert_eq!(row.display_name(), "KDEV 开发库", "有别名时显示别名");
+        let tooltip = row.tooltip();
+        assert!(
+            tooltip.contains("KDEV 开发库"),
+            "tooltip 首行用同一个显示名：{tooltip}"
+        );
+        assert!(
+            tooltip.contains("连接名：kdev@127.0.0.1:3308/kdev"),
+            "有别名时 tooltip 仍要给出保存的连接名：{tooltip}"
+        );
+    }
+
+    #[test]
     fn connection_rows_are_ancestors_of_their_own_connection_only() {
         let table = view("orders", ObjectKind::Table, "db1", "");
         let snapshot = ConnectionSnapshot {
             key: "k1".to_owned(),
             name: "本地".to_owned(),
+            label: "/tmp/a.sqlite".to_owned(),
+            alias: String::new(),
             driver: "sqlite".to_owned(),
             target: "/tmp/a.sqlite".to_owned(),
             state: ConnectionState::Connected,
@@ -4917,6 +4977,8 @@ mod tests {
         Row::Connection(Rc::new(ConnectionSnapshot {
             key: "k1".to_owned(),
             name: "本地".to_owned(),
+            label: "/tmp/a.sqlite".to_owned(),
+            alias: String::new(),
             driver: "sqlite".to_owned(),
             target: "/tmp/a.sqlite".to_owned(),
             state,

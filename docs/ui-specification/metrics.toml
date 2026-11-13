@@ -21,7 +21,8 @@
 #   1. 间距阶梯 gap_none / gap_xxs / gap_xs / gap_sm / gap_md / gap_lg / gap_xl /
 #      gap_xxl / gap_page —— 界面里的 margin 与 Box spacing 只从这九档取；
 #   2. CSS 专用度量 radius_lg / pager_button_min_width / fs_button_min_height /
-#      fs_action_min_height / empty_icon_px / spinner_px。
+#      fs_action_min_height / empty_icon_px / spinner_px / column_panel_width /
+#      column_list_max_height（列显隐弹层）。
 #   这两组以前在代码里按「基准 × 倍率」算，现已全部展开成三档整数：任何一端都不许
 #   再自己乘一遍（取整规则不同会漂 1px）。
 
@@ -83,6 +84,8 @@ row_number_width = 32   # 32 × 1.0 = 32
 column_width = 200   # 200 × 1.0 = 200
 filter_panel_width = 430   # 430 × 1.0 = 430
 filter_column_width = 140   # 140 × 1.0 = 140
+column_panel_width = 300   # 300 × 1.0 = 300（列显隐弹层内容宽）
+column_list_max_height = 260   # 260 × 1.0 = 260（列显隐清单最大高度）
 # ---- 间距阶梯（`layout::Gap` 门面按这里取值；代码里不再算「基准 × 倍率」） ----
 gap_none = 0   # 0 × 1.0 = 0
 gap_xxs = 2   # 2 × 1.0 = 2
@@ -153,6 +156,8 @@ row_number_width = 40   # 32 × 1.25 = 40
 column_width = 250   # 200 × 1.25 = 250
 filter_panel_width = 538   # 430 × 1.25 = 537.5
 filter_column_width = 175   # 140 × 1.25 = 175
+column_panel_width = 375   # 300 × 1.25 = 375
+column_list_max_height = 325   # 260 × 1.25 = 325
 # ---- 间距阶梯（`layout::Gap` 门面按这里取值；代码里不再算「基准 × 倍率」） ----
 gap_none = 0   # 0 × 1.25 = 0
 gap_xxs = 3   # 2 × 1.25 = 3
@@ -223,6 +228,8 @@ row_number_width = 48   # 32 × 1.5 = 48
 column_width = 300   # 200 × 1.5 = 300
 filter_panel_width = 645   # 430 × 1.5 = 645
 filter_column_width = 210   # 140 × 1.5 = 210
+column_panel_width = 450   # 300 × 1.5 = 450
+column_list_max_height = 390   # 260 × 1.5 = 390
 # ---- 间距阶梯（`layout::Gap` 门面按这里取值；代码里不再算「基准 × 倍率」） ----
 gap_none = 0   # 0 × 1.5 = 0
 gap_xxs = 3   # 2 × 1.5 = 3

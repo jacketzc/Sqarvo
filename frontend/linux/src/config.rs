@@ -31,8 +31,14 @@ pub const SQLITE_DRIVER_ID: &str = "sqlite";
 /// 一条保存的连接（不含任何敏感信息）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedConnection {
-    /// 用户可见名称。
+    /// 派生出来的连接名（`user@host:port/db` 或文件名）；不是用户输入。
     pub name: String,
+    /// 用户给的别名（可空）。
+    ///
+    /// 只影响对象树连接行的显示文案：**不参与** [`Self::key`]、不进连接参数、
+    /// 不改会话显示名。旧配置没有这个字段时按空串读（`serde(default)`）。
+    #[serde(default)]
+    pub alias: String,
     /// 驱动 ID（来自 `ListDrivers`）。
     pub driver: String,
     /// 主机（服务器型驱动）。
@@ -100,6 +106,19 @@ impl SavedConnection {
     pub fn file_target(&self) -> Option<&str> {
         (self.driver == SQLITE_DRIVER_ID && !self.file_path.is_empty())
             .then_some(self.file_path.as_str())
+    }
+
+    /// 界面上的连接名：别名优先，空（或只有空白）则回落 [`Self::target_label`]。
+    ///
+    /// 别名只是显示名，不参与身份：[`Self::key`] 与它无关。
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        let alias = self.alias.trim();
+        if alias.is_empty() {
+            self.target_label()
+        } else {
+            alias.to_owned()
+        }
     }
 
     /// 连接目标的展示文案：服务器型 `user@host:port/db`，文件型是文件路径。
@@ -419,6 +438,7 @@ mod tests {
     fn entry(reference: &str) -> SavedConnection {
         SavedConnection {
             name: "sqarvo_test@127.0.0.1/sqarvo_test".to_owned(),
+            alias: String::new(),
             driver: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,
@@ -435,6 +455,7 @@ mod tests {
     fn sqlite_entry(path: &str) -> SavedConnection {
         SavedConnection {
             name: "demo.db（SQLite）".to_owned(),
+            alias: String::new(),
             driver: "sqlite".to_owned(),
             host: String::new(),
             port: 0,
@@ -549,6 +570,56 @@ mod tests {
         assert_eq!(connections[0].name, "改过的名字");
         assert_eq!(connections[0].tls_mode, "required");
         assert_eq!(connections[0].credential_ref, REF);
+    }
+
+    #[test]
+    fn alias_is_not_part_of_the_identity_key() {
+        // 改别名不能变成第二条连接：身份键只由「怎么连」决定。
+        let mut renamed = entry(REF);
+        renamed.alias = "KDEV 开发库".to_owned();
+        assert_eq!(renamed.key(), entry(REF).key());
+
+        let mut sqlite = sqlite_entry("/tmp/a.sqlite");
+        sqlite.alias = "本地演示库".to_owned();
+        assert_eq!(sqlite.key(), sqlite_entry("/tmp/a.sqlite").key());
+        assert_eq!(
+            sqlite.display_label(),
+            "本地演示库",
+            "有别名时界面名字取别名"
+        );
+    }
+
+    #[test]
+    fn old_config_without_alias_still_reads() {
+        // 旧 connections.json 没有 alias 字段：按空串读，不要求迁移。
+        let json = r#"{
+            "version": 1,
+            "connections": [{
+                "name": "kdev@127.0.0.1:3308/kdev",
+                "driver": "mariadb",
+                "host": "127.0.0.1",
+                "port": 3308,
+                "database": "kdev",
+                "username": "kdev",
+                "tls_mode": "preferred",
+                "credential_ref": "sqarvo:conn/abc"
+            }]
+        }"#;
+        let parsed: Document = serde_json::from_str(json).expect("旧配置应能反序列化");
+        assert_eq!(parsed.connections.len(), 1);
+        assert_eq!(parsed.connections[0].alias, "");
+        assert_eq!(
+            parsed.connections[0].display_label(),
+            "kdev@127.0.0.1:3308/kdev",
+            "没别名时回落目标文案"
+        );
+    }
+
+    #[test]
+    fn blank_alias_falls_back_to_the_target_label() {
+        let mut saved = entry(REF);
+        saved.alias = "   ".to_owned();
+        assert_eq!(saved.display_label(), saved.target_label());
     }
 
     #[test]

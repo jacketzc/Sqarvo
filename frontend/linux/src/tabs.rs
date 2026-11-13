@@ -168,6 +168,17 @@ impl TabKind {
         !matches!(self, Self::Objects)
     }
 
+    /// 这条标签绑定的连接键（`Objects` 页没有）。
+    #[must_use]
+    pub fn connection_key(&self) -> Option<&str> {
+        match self {
+            Self::Objects => None,
+            Self::Table { connection_key, .. } | Self::Query { connection_key, .. } => {
+                Some(connection_key)
+            }
+        }
+    }
+
     /// 事件通道：会话级事件只能投给同种标签（判定在 `backend::routing`）。
     #[must_use]
     pub fn channel(&self) -> Channel {
@@ -1713,6 +1724,50 @@ impl TabSet {
 
     /// 按位置找标签（QA 脚本用；0 = Objects）。
     #[must_use]
+    /// 关闭某条连接名下的所有标签（表标签与查询标签）。
+    ///
+    /// 编辑已有连接前调用：用户已经在确认框里同意「关闭所有已打开的相关窗口」，
+    /// 所以这里按「放弃更改」关闭（`CloseAnswer::Discard`），走的是与用户点 ✕
+    /// 完全相同的清理路径（取消在途查询、释放会话、清槽位）。
+    ///
+    /// 返回实际关掉的标签数（`Objects` 固定页不参与）。
+    pub fn close_tabs_for_connection(self: &Rc<Self>, key: &str) -> usize {
+        let indices: Vec<usize> = {
+            let tabs = self.tabs.borrow();
+            tabs.iter()
+                .enumerate()
+                .filter(|(_, tab)| tab.kind.connection_key() == Some(key))
+                .map(|(index, _)| index)
+                .collect()
+        };
+        let mut closed = 0;
+        // 从后往前关：`close_tab_at` 用的是下标，删前面的会让后面的下标前移。
+        for index in indices.into_iter().rev() {
+            if self.close_tab_at(index, Some(CloseAnswer::Discard)) {
+                closed += 1;
+            }
+        }
+        if closed > 0 {
+            eprintln!("[tabs] 编辑连接前关闭了 {closed} 个标签（连接键 {key}）");
+        }
+        closed
+    }
+
+    /// 某条连接名下「有未提交更改」的标签数（编辑连接确认框里那句话用）。
+    #[must_use]
+    pub fn dirty_tab_count_for_connection(&self, key: &str) -> usize {
+        self.tabs
+            .borrow()
+            .iter()
+            .filter(|tab| tab.kind.connection_key() == Some(key))
+            .filter(|tab| {
+                tab.data
+                    .as_ref()
+                    .is_some_and(|data| data.dirty_tab_summary().is_some())
+            })
+            .count()
+    }
+
     pub fn by_index(&self, index: usize) -> Option<Rc<TabHandle>> {
         self.tabs.borrow().get(index).cloned()
     }
@@ -3465,7 +3520,13 @@ impl TabSet {
                 // 筛选与排序面板是**独立窗口**：它开着时截图要拍它（用户此刻看到的就是
                 // 它），否则拍主窗口。渲染器仍借主窗口的 surface——`WidgetPaintable` 取的是
                 // 控件画面，跟做在哪个 surface 上无关。
-                let panel = self.data_page().and_then(|data| data.filter_panel_widget());
+                // 列显隐弹层与筛选面板都是挂按钮的 popover：哪一个开着就拍哪一个
+                // （两个互斥，不会同时可见）。
+                let page = self.data_page();
+                let panel = page
+                    .as_ref()
+                    .and_then(|data| data.column_panel_widget())
+                    .or_else(|| page.as_ref().and_then(|data| data.filter_panel_widget()));
                 match panel {
                     Some(panel) => {
                         crate::qa::save_widget(&window, &panel, std::path::Path::new(path))
