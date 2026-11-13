@@ -499,6 +499,37 @@
                         CanReorderTabs="False"
                         IsAddTabButtonVisible="False"
                         AutomationProperties.Name="工作区标签">
+                        <!--
+                            标签条右侧的「＋ 新建查询标签」（组件 tabs.strip.new）：补齐四个入口里
+                            Windows 原先缺的那一个。放 TabView.TabStripFooter（标签条自带的尾部槽位），
+                            不碰 IsAddTabButtonVisible / TabWidthMode / CanReorderTabs —— 这三个属性是
+                            #170 的崩溃边界（改动后真机 5/5、3/3 启动即崩），TabView 自身属性一个都不动。
+                            字形用 TextBlock + SqarvoIconFontFamily（不实例化 FontIcon），尺寸取 metrics
+                            生成的 Size.IconButtonWidth / Size.IconButtonHeight；MinWidth / MinHeight 压到
+                            同值，否则 WinUI 默认 MinHeight=32 会把高度顶回去。点击与可用性在
+                            ShellView.xaml.cs 接线：走 CreateQueryTab()，与 MenuNewQueryTab 同一 canQuery 谓词。
+                        -->
+                        <TabView.TabStripFooter>
+                            <Button
+                                x:Name="TabStripNewTabButton"
+                                Width="{StaticResource Size.IconButtonWidth}"
+                                Height="{StaticResource Size.IconButtonHeight}"
+                                MinWidth="{StaticResource Size.IconButtonWidth}"
+                                MinHeight="{StaticResource Size.IconButtonHeight}"
+                                Padding="0"
+                                IsEnabled="False"
+                                Background="{ThemeResource SqarvoTransparentBrush}"
+                                AutomationProperties.Name="新建查询标签"
+                                ToolTipService.ToolTip="新建查询标签（Ctrl+T）">
+                                <TextBlock
+                                    FontFamily="{StaticResource SqarvoIconFontFamily}"
+                                    Text="&#xE710;"
+                                    FontSize="{StaticResource Size.IconBox}"
+                                    Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center" />
+                            </Button>
+                        </TabView.TabStripFooter>
                         <TabView.TabItems>
                             <!--
                                 固定的 Objects 页：WinUI 的 TabView 没有 pinned 概念，

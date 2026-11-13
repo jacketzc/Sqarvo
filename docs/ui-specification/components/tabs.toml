@@ -301,8 +301,9 @@ evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.n
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "ca149095cd4d"
-note = "`Ctrl+T` 新建查询页已落地；标签条上的 ＋ 按钮 §7.1 未记录（新建入口只写了 Ctrl+T 与菜单）。"
+spec_hash = "fe7ea1ebdea1"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:512（TabView.TabStripFooter 的 ＋ 按钮）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:391（IsEnabled=canQuery，与 MenuNewQueryTab 同一谓词）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:921（Click → CreateQueryTab）"
+note = "四个入口（工具条「新建查询」/ 标签条 ＋ / Ctrl+T / 菜单「文件 → 新建查询标签」）全部走 CreateQueryTab、同一 canQuery 谓词已落地；＋ 放在 TabView.TabStripFooter，不碰 IsAddTabButtonVisible / TabWidthMode / CanReorderTabs（#170 崩溃边界）。剩余差异：新建后焦点不自动落编辑器（见 tabs.query.editor）、超限提示走状态栏而非对话框（见 tabs.limit）。"
 
 [component.sync.macos]
 state = "none"
