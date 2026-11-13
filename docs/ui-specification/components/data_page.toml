@@ -783,7 +783,7 @@ evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_colu
 [component.sync.windows]
 state = "partial"
 spec_hash = "59900abdc23b"
-note = "§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1769 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2099 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2078 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2037 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。"
+note = "§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1824 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2173 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2152 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2111 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。"
 
 [component.sync.macos]
 state = "none"
@@ -832,7 +832,7 @@ evidence = "§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips
 [component.sync.windows]
 state = "partial"
 spec_hash = "eb55028d5e3c"
-note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列右缘现在是可拖宽的把手（column_resize_hit 命中热区 + 双击自适应），列宽不再固定 column_width，表头与行共用一份列宽状态（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2099）；没有排序标记与点击查看列属性。"
+note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列右缘现在是可拖宽的把手（column_resize_hit 命中热区 + 双击自适应），列宽不再固定 column_width，表头与行共用一份列宽状态（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2173）；没有排序标记与点击查看列属性。"
 
 [component.sync.macos]
 state = "none"
@@ -1044,9 +1044,10 @@ commit = ""
 evidence = "§5.8 数据行右键菜单；show_row_menu + context_menu 模块"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "整片未实现：数据页没有「删除行」（标记 ✕N、删除线、撤销、提交生成 DELETE 都没有），右键菜单的两个条目都无从接起；`Views/ShellView.Data.cs:2041-2043` 目前只把行删除按钮禁用并写「请用 SQL」。已记 docs/planning/windows-frontend-parity-plan.md §8.2。"
+state = "partial"
+spec_hash = "a060853acbec"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2565 行右键 MenuFlyout（删除行 / 复制为 ▸ 复制为 INSERT）；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2025 ✕N 行号与整行删除线 + 压暗"
+note = "已落地：手势挂在整行 Grid 上（单元格文字 / 列分隔处 / 行分隔线 / 末列右侧空白都落在同一行容器里），表格下方空白不属于任何行、不挂手势；右键先选中该行，菜单用 WinUI 原生 MenuFlyout / MenuFlyoutSubItem（不是 GTK 弹层），点菜单外由 WinUI 收起。差异：Windows 数据页当前是单选、没有 Ctrl/Shift 多选集，没有 Linux 的状态圆点 tooltip 末段「最近一次操作」；故记 partial，不宣称与 Linux 逐字一致。见 docs/planning/windows-frontend-parity-plan.md §8.2。"
 
 [component.sync.macos]
 state = "none"
@@ -1079,9 +1080,10 @@ commit = ""
 evidence = "§5.8 删除行；delete_selected_row + delete_note"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录数据行右键菜单。"
+state = "partial"
+spec_hash = "c1d666ff7ed9"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2533 标记删除；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1299 提交把完整主键装进 request.Deletes；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1445 Ctrl+Z 复位；frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:631 提交成功后整行移除"
+note = "与状态栏 −（status_bar.row1.ops.delete）共用 DeleteSelectedRows：DataRow.MarkedForDeletion + Removed=true，行号 ✕N、整行删除线 + 压暗；状态行写「第 N 行已标记删除（提交前可撤销）」/「已标记删除 N 行（批量提交前可撤销）」。撤销走现有 RevertDataAsync 把 Removed 一起复位。提交对标记删除行按主键全列生成 RowDelete（值走协议已有的强类型参数化路径，不拼 SQL），与 updates 放进同一个 ApplyRowChangesRequest、同一个显式事务；后端驱动用 prepared statement 生成 DELETE FROM … WHERE …。删除执行成功后行退出提交集合（DataRow.DeleteExecuted），避免部分失败后再按 Ctrl+S 重复发同一条 DELETE；整批提交成功才把已执行的行移出页面（RemoveExecutedDeletes），状态行写「已提交：删除 N 行」。被单批上限 500 钳制而 deferred 的删除仍带标记留在页面上、状态行给续传提示。可用性 = 可编辑且非 Loading/Submitting 且有选中行且该行可主键定位（Locatable）；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip；无主键表整页只读照旧；Windows 端没有新行占位行，故不在删除范围。差异：结果文案落在状态栏行 2、当前单选无多选批量入口，故记 partial。"
 
 [component.sync.macos]
 state = "none"
@@ -1114,9 +1116,10 @@ commit = ""
 evidence = "§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录数据行右键菜单。"
+state = "partial"
+spec_hash = "71912e7913bd"
+evidence = "frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:1215 多值 INSERT 生成器；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2637 写入系统剪贴板"
+note = "始终可用（只读连接也能复制数据），复用既有值格式化口径 QueryCellText.Format。Windows 端没有现成的导出 INSERT 生成器（Linux 的在 frontend/linux/src/export.rs，Rust，不可直接复用），因此在 Workspace/DataModel.cs 内按注册表写出口径实现最小生成器 DataInsertSql：把选中行当前值（含未提交编辑）合成一条多值 INSERT INTO 表 (列清单) VALUES (…),(…); 写进系统剪贴板；标识符双引号、字符串单引号（' 转义成 ''）、NULL 写 NULL、BLOB / 非有限浮点 / 截断值写 NULL 并在末尾附 sqarvo 注释。差异：标识符固定双引号、不按驱动区分 SQLite / MariaDB，剪贴板写入失败只写状态行 warning；故记 partial。"
 
 [component.sync.macos]
 state = "none"

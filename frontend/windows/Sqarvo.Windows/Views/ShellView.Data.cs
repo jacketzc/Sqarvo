@@ -17,6 +17,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 using Windows.UI.Text;
 
@@ -255,6 +256,15 @@ public sealed partial class ShellView
             if (CurrentDataTab() is { } tab)
             {
                 _ = RevertDataAsync(tab);
+            }
+        };
+
+        // 状态栏「−」与数据行右键菜单共用同一条删除方法（只标记、不写库）。
+        ButtonRowDelete.Click += (_, _) =>
+        {
+            if (CurrentDataTab() is { } tab)
+            {
+                DeleteSelectedRows(tab);
             }
         };
 
@@ -937,6 +947,9 @@ public sealed partial class ShellView
         tab.SelectedRow = row;
         tab.SelectedColumn = column;
         RenderDataRows(tab);
+        // 状态栏「−」（status_bar.row1.ops.delete）的可用性是在 ApplyDataStatus 里算的，
+        // 只重画行不刷新状态栏的话，选中行之后按钮仍是置灰的（实测 UIA enabled=False 永远点不动）。
+        ApplyDataStatus();
     }
 
     /// <summary>F2：从选中格进入编辑态。</summary>
@@ -1242,7 +1255,7 @@ public sealed partial class ShellView
         }
 
         var changes = DataChangePlan.Build(page);
-        if (changes.Updates.Count == 0)
+        if (changes.Updates.Count == 0 && changes.Deletes.Count == 0)
         {
             _notice = "没有待提交的更改";
             ApplyDataStatus();
@@ -1283,9 +1296,11 @@ public sealed partial class ShellView
             AcknowledgeRisk = plan.AcknowledgeRisk,
         };
         request.Updates.AddRange(changes.Updates);
+        request.Deletes.AddRange(changes.Deletes);
 
         ConsoleBridge.WriteDiagnostic(
             $"[data] {tab.TableName} 提交：rows={changes.Rows.Count} changes={changes.ChangeCount} " +
+            $"updates={changes.Updates.Count} deletes={changes.Deletes.Count} " +
             $"txn={(tab.TransactionId.Length == 0 ? "自动提交" : ShortId(tab.TransactionId))} ack={plan.AcknowledgeRisk}");
 
         try
@@ -1309,14 +1324,19 @@ public sealed partial class ShellView
                 if (tab.TransactionId.Length > 0)
                 {
                     var committed = await CommitTransactionAsync(tab).ConfigureAwait(true);
-                    _notice = committed
-                        ? $"已提交 {report.Applied} 行（事务已提交）"
-                        : $"已写入 {report.Applied} 行，但事务提交失败：改动仍在事务里（Ctrl+Z 可回滚）";
+                    if (committed)
+                    {
+                        _notice = CommittedNotice(tab, page, report, "（事务已提交）");
+                    }
+                    else
+                    {
+                        _notice = $"已写入 {report.Applied} 行，但事务提交失败：改动仍在事务里（Ctrl+Z 可回滚）";
+                    }
                 }
                 else
                 {
                     tab.Phase = DataTxnPhase.AutoCommit;
-                    _notice = $"已提交 {report.Applied} 行（自动提交：本批一个隐式事务）";
+                    _notice = CommittedNotice(tab, page, report, "（自动提交：本批一个隐式事务）");
                 }
             }
             else
@@ -1355,6 +1375,41 @@ public sealed partial class ShellView
             {
                 RenderDataPage(tab);
             }
+        }
+    }
+
+    /// <summary>
+    /// 提交成功后的收尾：只把「已执行」的删除行移出页面；被单批上限 deferred、还没执行的删除仍带标记留在
+    /// 页面上，并且续传提示优先于「已提交：删除 N 行」（否则用户会以为都删完了）。
+    /// </summary>
+    private string CommittedNotice(DataTab tab, DataPage page, DataApplyReport report, string suffix)
+    {
+        var removed = page.RemoveExecutedDeletes();
+        ClampSelectionAfterDelete(tab, page);
+
+        if (report.Clamped && report.Deferred > 0)
+        {
+            return DataStatusText.SubmitSummary(report, (int)report.Deferred) + suffix;
+        }
+
+        return removed > 0
+            ? DataStatusText.DeleteCommittedText(removed) + suffix
+            : $"已提交 {report.Applied} 行{suffix}";
+    }
+
+    /// <summary>删除行移出页面后把选区夹回有效范围（删掉最后一行时退回「无选中」）。</summary>
+    private static void ClampSelectionAfterDelete(DataTab tab, DataPage page)
+    {
+        if (page.Rows.Count == 0)
+        {
+            tab.SelectedRow = -1;
+            tab.SelectedColumn = -1;
+            return;
+        }
+
+        if (tab.SelectedRow >= page.Rows.Count)
+        {
+            tab.SelectedRow = page.Rows.Count - 1;
         }
     }
 
@@ -1403,7 +1458,7 @@ public sealed partial class ShellView
 
         CancelEdit(tab);
         var page = tab.Page;
-        var changes = page.ChangeCount;
+        var changes = page.ChangeCount + page.MarkedDeleteCount;
         if (changes == 0 && tab.TransactionId.Length == 0)
         {
             _notice = "没有待撤销的更改";
@@ -1860,11 +1915,13 @@ public sealed partial class ShellView
 
         ToolTipService.SetToolTip(
             number,
-            row.Removed
-                ? $"第 {row.Number} 行 · 已被其它会话删除（刷新可看到最新数据）"
-                : row.Dirty
-                    ? $"第 {row.Number} 行 · 有未提交的更改（{row.Edits.Count} 列）"
-                    : $"第 {row.Number} 行");
+            row.MarkedForDeletion
+                ? $"第 {row.Number} 行 · 已标记删除（提交前可撤销）"
+                : row.Removed
+                    ? $"第 {row.Number} 行 · 已被其它会话删除（刷新可看到最新数据）"
+                    : row.Dirty
+                        ? $"第 {row.Number} 行 · 有未提交的更改（{row.Edits.Count} 列）"
+                        : $"第 {row.Number} 行");
 
         for (var column = 0; column < columns; column++)
         {
@@ -1958,6 +2015,23 @@ public sealed partial class ShellView
         {
             ApplySelectionForeground(grid);
         }
+
+        if (row.Removed)
+        {
+            // 标记删除 / 已被其它会话删除：整行删除线 + 压暗（与 Linux 的
+            // .sqarvo-row-deleted 同一视觉：0.55 透明度）。背景板不动，只压文字。
+            foreach (var block in grid.Children.OfType<TextBlock>())
+            {
+                block.TextDecorations = TextDecorations.Strikethrough;
+                block.Opacity = 0.55;
+            }
+        }
+
+        // 行右键菜单挂在整行容器上：单元格文字、列分隔处、行分隔线、末列右侧空白
+        // 都落在同一行 Grid 里；表格下方空白不属于任何行，不挂手势、不响应。
+        var menuTab = tab;
+        var menuRow = index;
+        grid.RightTapped += (_, args) => OnDataRowRightTapped(menuTab, menuRow, args);
 
         return grid;
     }
@@ -2391,7 +2465,7 @@ public sealed partial class ShellView
         ToolTipService.SetToolTip(
             ButtonRowApply,
             canApply
-                ? $"应用：提交 {page.ChangeCount} 条变更（Ctrl+S）"
+                ? $"应用：提交 {page.ChangeCount + page.MarkedDeleteCount} 条变更（Ctrl+S）"
                 : page.ReadOnly
                     ? DataStatusText.ReadOnlyReasonText(page.ReadOnlyReason)
                     : submitting
@@ -2414,11 +2488,186 @@ public sealed partial class ShellView
             ButtonRowCancel,
             ButtonRowCancel.IsEnabled ? "取消正在进行的表数据请求（已取到的行保留）" : "取消：当前没有进行中的表数据请求");
 
-        // 新增 / 删除行不在本片（只做单元格编辑与提交）：如实说明，不假装有入口。
+        // 新增行仍不在本片；删除行走「标记 → 提交」整片（右键菜单 / 状态栏「−」同一方法）。
         ButtonRowAdd.IsEnabled = false;
-        ButtonRowDelete.IsEnabled = false;
         ToolTipService.SetToolTip(ButtonRowAdd, "新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
-        ToolTipService.SetToolTip(ButtonRowDelete, "删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
+        var canDelete = CanDeleteRows(tab, out var deleteReason);
+        ButtonRowDelete.IsEnabled = canDelete;
+        ToolTipService.SetToolTip(ButtonRowDelete, deleteReason);
+    }
+
+    /// <summary>「删除行」可用性：可编辑、没有在途请求、有选中行（复用只读原因做 tooltip）。</summary>
+    private static bool CanDeleteRows(DataTab tab, out string reason)
+    {
+        var page = tab.Page;
+        if (page.ReadOnly)
+        {
+            reason = DataStatusText.ReadOnlyReasonText(page.ReadOnlyReason);
+            return false;
+        }
+
+        if (tab.Loading || tab.Submitting)
+        {
+            reason = "正在读取 / 提交：稍候再删除行";
+            return false;
+        }
+
+        if (tab.SelectedRow < 0 || tab.SelectedRow >= page.Rows.Count)
+        {
+            reason = "先选中一行再删除";
+            return false;
+        }
+
+        // 拿不到主键的行无法定位（DELETE 要按主键），标了也提交不了：直接不给标。
+        if (!page.Rows[tab.SelectedRow].Locatable)
+        {
+            reason = "这一行没有主键值，无法定位：不能删除（请用 SQL）";
+            return false;
+        }
+
+        reason = "删除行：标记选中行为待删除（提交前可 Ctrl+Z 撤销）";
+        return true;
+    }
+
+    /// <summary>标记删除（右键菜单 / 状态栏「−」共用）：只改本地行状态，不写库。</summary>
+    private void DeleteSelectedRows(DataTab tab)
+    {
+        if (!CanDeleteRows(tab, out var reason))
+        {
+            _notice = reason;
+            ApplyDataStatus();
+            return;
+        }
+
+        var page = tab.Page;
+        var row = page.Rows[tab.SelectedRow];
+        if (row.MarkedForDeletion)
+        {
+            _notice = $"第 {row.Number} 行已经标记删除（Ctrl+Z 可撤销）";
+            ApplyDataStatus();
+            return;
+        }
+
+        row.MarkedForDeletion = true;
+        row.Removed = true; // ✕N + 删除线 + 压暗
+        tab.Failures = Array.Empty<DataRowFailure>();
+        tab.RiskArmed = false;
+        _ = EnsureTransactionAsync(tab);
+
+        var marked = page.MarkedDeleteCount;
+        _notice = marked == 1
+            ? DataStatusText.MarkDeletedText(row.Number)
+            : DataStatusText.MarkDeletedBatchText(marked);
+        RenderDataPage(tab);
+    }
+
+    /// <summary>数据行右键：先选中该行，再弹「删除行」/「复制为 ▸ 复制为 INSERT」。</summary>
+    private void OnDataRowRightTapped(DataTab tab, int rowIndex, RightTappedRoutedEventArgs args)
+    {
+        var page = tab.Page;
+        if (rowIndex < 0 || rowIndex >= page.Rows.Count)
+        {
+            return;
+        }
+
+        // 若已选中这一行就保留选中集（本片是单选）；否则先选中它，菜单动作永远作用于当前选中集。
+        // 列光标保持不动：右键不该把用户正在编辑的那一列弹回首列。
+        if (tab.SelectedRow != rowIndex)
+        {
+            tab.SelectedRow = rowIndex;
+            if (tab.SelectedColumn < 0 || tab.SelectedColumn >= page.Columns.Count)
+            {
+                tab.SelectedColumn = 0;
+            }
+
+            RenderDataRows(tab);
+            ApplyDataStatus();
+        }
+
+        var canDelete = CanDeleteRows(tab, out var reason);
+        var flyout = new MenuFlyout();
+
+        var delete = new MenuFlyoutItem
+        {
+            Text = "删除行",
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
+            IsEnabled = canDelete,
+        };
+        if (!canDelete)
+        {
+            ToolTipService.SetToolTip(delete, reason);
+        }
+
+        delete.Click += (_, _) => DeleteSelectedRows(tab);
+        flyout.Items.Add(delete);
+
+        // 二级菜单：「复制为 ▸ 复制为 INSERT」始终可用（只读连接也能复制数据）。
+        var copy = new MenuFlyoutSubItem
+        {
+            Text = "复制为",
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
+        };
+        var insert = new MenuFlyoutItem
+        {
+            Text = "复制为 INSERT",
+            FontSize = Metrics.FontUi,
+            FontWeight = TypeTokens.Ui,
+        };
+        insert.Click += (_, _) => CopySelectedAsInsert(tab);
+        copy.Items.Add(insert);
+        flyout.Items.Add(copy);
+
+        try
+        {
+            // RenderDataRows 重建了行容器，锚点必须用不会被重建的 BodyScroll。
+            flyout.ShowAt(tab.BodyScroll, args.GetPosition(tab.BodyScroll));
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[data] 行右键菜单打开失败：{error.GetType().Name}: {error.Message}");
+            return;
+        }
+
+        args.Handled = true;
+    }
+
+    /// <summary>「复制为 INSERT」：选中行当前值合成一条多值 INSERT，写进系统剪贴板。</summary>
+    private void CopySelectedAsInsert(DataTab tab)
+    {
+        var page = tab.Page;
+        if (tab.SelectedRow < 0 || tab.SelectedRow >= page.Rows.Count)
+        {
+            _notice = "复制为 INSERT 失败：先选中一行";
+            ApplyDataStatus();
+            return;
+        }
+
+        var sql = DataInsertSql.Build(page, new[] { page.Rows[tab.SelectedRow] });
+        if (sql.Length == 0)
+        {
+            _notice = "复制为 INSERT 失败：这一页没有可复制的列";
+            ApplyDataStatus();
+            return;
+        }
+
+        try
+        {
+            var package = new DataPackage();
+            package.SetText(sql);
+            Clipboard.SetContent(package);
+            // 不 Flush 的话，应用退出后剪贴板内容可能在被粘贴前失效（WinUI 的已知行为）。
+            Clipboard.Flush();
+            _notice = "已复制 1 行为 INSERT 语句";
+        }
+        catch (Exception error)
+        {
+            _notice = $"复制为 INSERT 失败：{error.GetType().Name}: {error.Message}";
+            ConsoleBridge.WriteDiagnostic($"[data] 复制为 INSERT 失败：{error.GetType().Name}: {error.Message}");
+        }
+
+        ApplyDataStatus();
     }
 
     private static string ShortId(string value) => value.Length <= 8 ? value : value[..8];

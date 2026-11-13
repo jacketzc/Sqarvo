@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 
 namespace Sqarvo.Windows.Workspace;
 
@@ -287,8 +288,18 @@ internal sealed class DataRow
     /// <summary>本地暂存：列序 → 新值（只放真正改过的列）。</summary>
     public Dictionary<int, ColumnValue> Edits { get; } = new();
 
-    /// <summary>这一行在服务端已不存在（提交时被判 `ROW_NOT_FOUND`）：不再参与提交。</summary>
+    /// <summary>删除态（行号写「✕N」、整行删除线 + 压暗）：用户标记删除或服务端报告行已不存在。</summary>
     public bool Removed { get; set; }
+
+    /// <summary>用户标记删除（右键 / 状态栏「−」）：提交时按主键生成 DELETE，Ctrl+Z 可复位。</summary>
+    public bool MarkedForDeletion { get; set; }
+
+    /// <summary>
+    /// 删除已经在服务端（当前事务或自动提交批次）执行成功。置位的行退出提交集合 —— 否则下一次
+    /// Ctrl+S 会把同一条 DELETE 再发一遍，服务端回 ROW_NOT_FOUND，行被误标成「已被其它会话删除」。
+    /// 提交成功由 <see cref="DataPage.RemoveExecutedDeletes"/> 整行移出；事务回滚 / Ctrl+Z 复位。
+    /// </summary>
+    public bool DeleteExecuted { get; set; }
 
     /// <summary>有未提交的更改。</summary>
     public bool Dirty => Edits.Count > 0;
@@ -470,16 +481,26 @@ internal sealed class DataPage
         : null;
 
     /// <summary>下一次「加载更多」的 offset。</summary>
-    public long NextOffset => Offset + Rows.Count;
+    /// <remarks>
+    /// 用「已从服务端取到的行数」而不是 <c>Rows.Count</c>：提交成功后已执行的删除行会被移出页面，
+    /// 用 <c>Rows.Count</c> 会让 offset 回退，接着「加载更多」就把已经显示过的行再拉一遍。
+    /// </remarks>
+    public long NextOffset => Offset + LoadedRowCount;
 
-    /// <summary>有未提交更改的行数。</summary>
-    public int DirtyRowCount => Rows.Count(row => row.Dirty);
+    /// <summary>已经从服务端取到并追加进页面的行数（删除不移除计数，换页清零）。</summary>
+    public int LoadedRowCount { get; private set; }
 
-    /// <summary>待提交的变更条数（= 各脏行的改动列数之和）。</summary>
+    /// <summary>有未提交更改的行数（编辑 + 标记删除）。</summary>
+    public int DirtyRowCount => Rows.Count(row => row.Dirty || row.MarkedForDeletion);
+
+    /// <summary>标记删除、待提交的行数。</summary>
+    public int MarkedDeleteCount => Rows.Count(row => row.MarkedForDeletion);
+
+    /// <summary>待提交的变更条数（= 各脏行的改动列数之和；删除行数另见 MarkedDeleteCount）。</summary>
     public int ChangeCount => Rows.Sum(row => row.Edits.Count);
 
-    /// <summary>有没有未提交的更改。</summary>
-    public bool HasChanges => ChangeCount > 0;
+    /// <summary>有没有未提交的更改（编辑或标记删除）。</summary>
+    public bool HasChanges => ChangeCount > 0 || MarkedDeleteCount > 0;
 
     /// <summary>`库.表`（库名未知时只写表名）。</summary>
     public string TableLabel => CatalogName.Length == 0 ? TableName : $"{CatalogName}.{TableName}";
@@ -504,6 +525,7 @@ internal sealed class DataPage
         {
             Columns.Clear();
             Rows.Clear();
+            LoadedRowCount = 0;
         }
 
         var incoming = new List<DataColumn>(response.Columns.Count);
@@ -560,8 +582,9 @@ internal sealed class DataPage
                 }
             }
 
-            var number = Offset + Rows.Count + 1;
+            var number = Offset + LoadedRowCount + 1;
             Rows.Add(new DataRow(Rows.Count, number, values, key));
+            LoadedRowCount++;
         }
 
         HasMore = response.HasMore;
@@ -605,23 +628,43 @@ internal sealed class DataPage
         return keyed.OrderBy(item => item.Position).Select(item => item.Index).ToList();
     }
 
-    /// <summary>丢弃全部本地暂存。</summary>
+    /// <summary>丢弃全部本地暂存与删除标记（Ctrl+Z：把 Removed 一起复位）。</summary>
     public void DiscardAllEdits()
     {
         foreach (var row in Rows)
         {
             row.DiscardEdits();
+            // 自己标删 / 已执行删除的行回到原样；服务端报告「行已不存在」的 Removed 不动。
+            if (row.MarkedForDeletion || row.DeleteExecuted)
+            {
+                row.MarkedForDeletion = false;
+                row.DeleteExecuted = false;
+                row.Removed = false;
+            }
         }
     }
+
+    /// <summary>提交成功后把已执行删除的行移出页面（被单批上限 deferred、还没执行的行留在页面上）。</summary>
+    /// <returns>移除的行数。</returns>
+    public int RemoveExecutedDeletes() => Rows.RemoveAll(row => row.DeleteExecuted);
 }
 
 /// <summary>一次提交要发给服务端的行变更（纯值，可直接断言）。</summary>
 internal sealed record DataChangePlan(
     IReadOnlyList<RowUpdate> Updates,
+    IReadOnlyList<RowDelete> Deletes,
     IReadOnlyList<DataRow> Rows,
-    int ChangeCount)
+    int ChangeCount,
+    int DeleteCount,
+    int UpdateRowCount)
 {
-    /// <summary>按当前页面状态生成更新列表（脏行 → `RowUpdate`：主键定位 + 列变更）。</summary>
+    /// <summary>按当前页面状态生成变更列表（脏行 → `RowUpdate`；标记删除 → `RowDelete`）。</summary>
+    /// <remarks>
+    /// `Rows` 的顺序即 `apply_row_changes` 响应里 `change_index` 的下标：协议规定
+    /// updates 在前、deletes 在后，在同一个请求（同一个显式事务）里顺序执行。
+    /// 删除只传完整主键值，`DELETE FROM … WHERE …` 由后端驱动用 prepared statement 绑定参数生成，
+    /// 前端不拼 SQL 字符串。
+    /// </remarks>
     /// <param name="page">数据页。</param>
     /// <returns>提交计划。</returns>
     public static DataChangePlan Build(DataPage page)
@@ -629,12 +672,14 @@ internal sealed record DataChangePlan(
         ArgumentNullException.ThrowIfNull(page);
 
         var updates = new List<RowUpdate>();
+        var deletes = new List<RowDelete>();
         var rows = new List<DataRow>();
         var changes = 0;
 
+        // updates 在前：脏行（跳过标记删除 / 已删除的行）。
         foreach (var row in page.Rows)
         {
-            if (!row.Dirty || row.Removed)
+            if (!row.Dirty || row.Removed || row.MarkedForDeletion)
             {
                 continue;
             }
@@ -669,7 +714,26 @@ internal sealed record DataChangePlan(
             rows.Add(row);
         }
 
-        return new DataChangePlan(updates, rows, changes);
+        var updateRowCount = rows.Count;
+
+        // deletes 在后：多列主键全列、强类型值，走协议已有的参数化路径。
+        foreach (var row in page.Rows)
+        {
+            if (!row.MarkedForDeletion || !row.Locatable)
+            {
+                continue;
+            }
+
+            var delete = new RowDelete { ExpectedRowsAffected = 1 };
+            var key = new RowKey();
+            key.Values.AddRange(row.Key);
+            delete.Key = key;
+            deletes.Add(delete);
+            rows.Add(row);
+            changes++;
+        }
+
+        return new DataChangePlan(updates, deletes, rows, changes, deletes.Count, updateRowCount);
     }
 }
 
@@ -696,22 +760,37 @@ internal sealed record DataSubmitPlan(
         }
 
         var rows = page.DirtyRowCount;
-        var changes = page.ChangeCount;
+        var deletes = page.MarkedDeleteCount;
+        var changes = page.ChangeCount + deletes;
         if (changes == 0)
         {
-            return new DataSubmitPlan(false, false, false, 0, 0, "没有待提交的更改：双击单元格或按 F2 修改后按 Enter 暂存，再按 Ctrl+S 提交");
+            return new DataSubmitPlan(false, false, false, 0, 0, "没有待提交的更改：双击单元格或按 F2 修改后按 Enter 暂存，或右键标记删除，再按 Ctrl+S 提交");
         }
 
         if (rows > DataLimits.RiskConfirmationRows && !riskArmed)
         {
             // 一次改这么多行是不可逆的高风险动作：本版不弹对话框，改成「再按一次确认」。
+            var deletePart = deletes > 0 ? $"（其中删除 {deletes} 行）" : string.Empty;
             return new DataSubmitPlan(
                 false,
                 true,
                 false,
                 rows,
                 changes,
-                $"本次提交 {rows} 行，超过风险阈值 {DataLimits.RiskConfirmationRows} 行：再按一次 Ctrl+S（或再点「应用」）确认提交");
+                $"本次提交 {rows} 行{deletePart}，超过风险阈值 {DataLimits.RiskConfirmationRows} 行：再按一次 Ctrl+S（或再点「应用」）确认提交");
+        }
+
+        // ui-behavior-contract §8.2：变更里**含任何删除**都必须确认（删除单独警告）。本端没有模态对话框，
+        // 与超阈值同一套「再按一次」语义，但确认文案单列删除行数。
+        if (deletes > 0 && !riskArmed)
+        {
+            return new DataSubmitPlan(
+                false,
+                true,
+                false,
+                rows,
+                changes,
+                $"本次提交包含删除 {deletes} 行（删除不可撤销）：再按一次 Ctrl+S（或再点「应用」）确认提交");
         }
 
         return new DataSubmitPlan(
@@ -767,10 +846,22 @@ internal sealed record DataApplyReport(
 
             seen.Add(index);
             var row = plan.Rows[index];
+            var isDelete = index >= plan.UpdateRowCount;
             switch (result.Outcome)
             {
                 case ChangeOutcome.Applied:
-                    row.AcceptEdits();
+                    // 更新成功落回原值；删除成功则退出提交集合（保留 ✕N / 删除线，等事务提交后整行移出）——
+                    // 不移除标记的话，部分失败那一轮之后的下一次 Ctrl+S 会重复发同一条 DELETE。
+                    if (isDelete)
+                    {
+                        row.MarkedForDeletion = false;
+                        row.DeleteExecuted = true;
+                        row.Removed = true;
+                    }
+                    else
+                    {
+                        row.AcceptEdits();
+                    }
                     applied++;
                     break;
 
@@ -778,6 +869,11 @@ internal sealed record DataApplyReport(
                     // 主键被别的会话删掉了：再重试也不会成功，行标成「已不存在」并退出提交集合。
                     row.DiscardEdits();
                     row.Removed = true;
+                    if (isDelete)
+                    {
+                        // 已经被别的会话删掉了：别再把它当待删除行重试。
+                        row.MarkedForDeletion = false;
+                    }
                     failures.Add(DataConflicts.RowNotFound(row, result));
                     break;
 
@@ -1042,6 +1138,17 @@ internal static class DataStatusText
         return text;
     }
 
+    /// <summary>标记删除（单行）：状态栏行 2 文案。</summary>
+    public static string MarkDeletedText(long rowNumber) =>
+        $"第 {rowNumber} 行已标记删除（提交前可撤销）";
+
+    /// <summary>标记删除（批量）：状态栏行 2 文案。</summary>
+    public static string MarkDeletedBatchText(int count) =>
+        $"已标记删除 {count} 行（批量提交前可撤销）";
+
+    /// <summary>提交成功：状态栏行 2 文案。</summary>
+    public static string DeleteCommittedText(int count) => $"已提交：删除 {count} 行";
+
     /// <summary>编辑被拒绝时的原因（逐条不同，不写统一一句「不可编辑」）。</summary>
     /// <param name="page">数据页。</param>
     /// <param name="row">目标行。</param>
@@ -1086,5 +1193,107 @@ internal static class DataStatusText
         }
 
         return null;
+    }
+}
+
+/// <summary>
+/// 「复制为 INSERT」的写出口径（#1）：把选中行的当前值（含未提交编辑）合成一条多值 INSERT。
+/// </summary>
+/// <remarks>
+/// 与 Linux 端 <c>frontend/linux/src/export.rs</c> 的 <c>multi_row_insert</c> / <c>sql_literal</c>
+/// 同一口径：标识符双引号、字符串单引号（<c>'</c> 转义成 <c>''</c>）、NULL 写 <c>NULL</c>、
+/// 数字 / Decimal 原文、BLOB / 非有限浮点 / 截断值写 NULL 并在末尾附 sqarvo 注释。
+/// 值格式化复用 <see cref="QueryCellText.Format"/>（同一程序集的既有值 → 文本口径）。
+/// 生成的是**供粘贴执行的文本**，不经过数据库写入路径，不拼进任何 gRPC 请求。
+/// </remarks>
+internal static class DataInsertSql
+{
+    /// <summary>合成一条多值 INSERT 语句。</summary>
+    /// <param name="page">数据页（取表名 / 库名 / 列清单）。</param>
+    /// <param name="rows">选中行（取当前值）。</param>
+    /// <returns>以 LF 结尾的 INSERT 语句；没有列或没有行时返回空串。</returns>
+    public static string Build(DataPage page, IReadOnlyList<DataRow> rows)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(rows);
+
+        if (page.Columns.Count == 0 || rows.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var table = page.CatalogName.Length == 0
+            ? Quote(page.TableName)
+            : Quote(page.CatalogName) + "." + Quote(page.TableName);
+        var columns = string.Join(", ", page.Columns.Select(column => Quote(column.Name)));
+
+        var text = new StringBuilder();
+        text.Append("INSERT INTO ").Append(table).Append(" (").Append(columns).Append(") VALUES\n");
+        var nulled = 0;
+        for (var index = 0; index < rows.Count; index++)
+        {
+            var values = new List<string>(page.Columns.Count);
+            for (var column = 0; column < page.Columns.Count; column++)
+            {
+                values.Add(Literal(rows[index].Value(column), ref nulled));
+            }
+
+            text.Append('(').Append(string.Join(", ", values)).Append(')');
+            text.Append(index + 1 < rows.Count ? ",\n" : ";\n");
+        }
+
+        if (nulled > 0)
+        {
+            text.Append("-- sqarvo: ").Append(nulled)
+                .Append(" 个 BLOB / 非有限浮点 / 截断值写成 NULL（客户端不导出原始字节）\n");
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>标识符引号（双引号内嵌双引号转义）。</summary>
+    private static string Quote(string identifier) => "\"" + identifier.Replace("\"", "\"\"") + "\"";
+
+    /// <summary>单个值的 SQL 字面量。</summary>
+    private static string Literal(ColumnValue? value, ref int nulled)
+    {
+        if (value is null || value.Kind == ValueKind.Null || value.Truncated)
+        {
+            if (value is not null && value.Truncated)
+            {
+                nulled++;
+            }
+
+            return "NULL";
+        }
+
+        switch (value.ValueCase)
+        {
+            case ColumnValue.ValueOneofCase.BoolValue:
+                // TRUE / FALSE 在 PostgreSQL 是唯一可用写法，MySQL / MariaDB / SQLite 都把它们当 1 / 0。
+                return value.BoolValue ? "TRUE" : "FALSE";
+            case ColumnValue.ValueOneofCase.Int64Value:
+                return value.Int64Value.ToString(CultureInfo.InvariantCulture);
+            case ColumnValue.ValueOneofCase.Uint64Value:
+                return value.Uint64Value.ToString(CultureInfo.InvariantCulture);
+            case ColumnValue.ValueOneofCase.Float64Value:
+                if (double.IsFinite(value.Float64Value))
+                {
+                    return value.Float64Value.ToString("R", CultureInfo.InvariantCulture);
+                }
+
+                nulled++;
+                return "NULL";
+            case ColumnValue.ValueOneofCase.DecimalValue:
+                return QueryCellText.Format(value);
+            case ColumnValue.ValueOneofCase.BytesValue:
+                nulled++;
+                return "NULL";
+            case ColumnValue.ValueOneofCase.TextValue:
+                return "'" + value.TextValue.Replace("'", "''") + "'";
+            default:
+                // 日期 / 时间 / JSON / UUID / 数组等：复用查询结果的值格式化口径，加单引号。
+                return "'" + QueryCellText.Format(value).Replace("'", "''") + "'";
+        }
     }
 }
