@@ -5,13 +5,17 @@
 //! 悬停底、禁用色都不一样（用户报「样式与系统不一致」）。这里走 GTK 自己的菜单控件，
 //! 外观、键盘操作（上下键 / Enter / Esc）、点击外部关闭全部由 GTK 负责。
 //!
-//! # 为什么动作挂在菜单自己身上
+//! # 动作挂在哪：锚点控件（popover 的 parent），不是 popover 自己
 //!
 //! v0.2.5 首版用 `gio::Menu` + `PopoverMenu` 绑 `row.delete-row` 这类**外部 action 名**
-//! 踩过坑：名字解析不到时 GTK 既不报错也不置灰，菜单照弹、点了没反应。这里的每个条目
-//! 都由本模块现建一个 `SimpleAction`，并 `insert_action_group` 到**弹出菜单自己**身上
-//! ——解析范围就在菜单内，不存在「名字找不到」的情况；禁用态也用 `set_enabled`，
-//! GTK 会按原生样式画灰。
+//! 踩过坑：名字解析不到时 GTK 既不报错也不置灰，菜单照弹、点了没反应。第二次修法把
+//! `SimpleAction` 装到 **popover 自己**身上，仍然点不动——GTK 文档对
+//! `gtk_popover_menu_new_from_model()` 写得很清楚：条目连到的 action 是在
+//! **菜单的 attach widget（popover 的 parent）及其祖先**里解析的。装在 popover 自己身上
+//! 不在那条查找链上（#175 的第二处根因）。
+//!
+//! 所以这里把 action group 装到 `parent` 上，菜单关闭时摘掉；`activate()` 也走
+//! `parent.activate_action("ctx.mN")` ——QA 点条目与用户点条目是同一条解析路径。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -58,7 +62,8 @@ impl Entry {
 /// 一个已经弹出的右键菜单。
 pub struct ContextMenu {
     popover: gtk::PopoverMenu,
-    group: gio::SimpleActionGroup,
+    /// 锚点控件：action group 挂在它身上（GTK 从这个控件向上解析菜单项的 action）。
+    parent: gtk::Widget,
     /// 文案 → action 名（QA 按文案点条目用；GTK 内部不暴露这个对应关系）。
     index: RefCell<Vec<(String, String)>>,
 }
@@ -84,17 +89,30 @@ impl ContextMenu {
             1,
             1,
         )));
-        // 动作只在这个菜单的解析范围里，名字一定找得到。
-        popover.insert_action_group("ctx", Some(&group));
+        // 动作装在**锚点控件**上：菜单项的 action 从 attach widget 及其祖先里解析，
+        // 装在 popover 自己身上是找不到的（装了也「点了没反应」）。
+        let anchor = parent.clone().upcast::<gtk::Widget>();
+        anchor.insert_action_group("ctx", Some(&group));
+        {
+            // 收起时摘掉：同名 group 会被下一个菜单替换，留着只会让旧名字短暂可达。
+            let anchor = anchor.clone();
+            popover.connect_closed(move |_| {
+                anchor.insert_action_group("ctx", None::<&gio::SimpleActionGroup>);
+            });
+        }
         popover.popup();
         Rc::new(Self {
             popover,
-            group,
+            parent: anchor,
             index: RefCell::new(index.into_inner()),
         })
     }
 
-    /// 按文案激活条目（QA 用：与用户点它走同一条 action 路径）。
+    /// 按文案激活条目（QA 用）。
+    ///
+    /// 走 `parent.activate_action("ctx.mN")`：与菜单项被真实点击时同一条 action
+    /// 解析路径（GTK 从 attach widget 向上找）。以前直接 `group.lookup_action()`，
+    /// 绕过了解析 —— 于是「action 装错位置、真人点不动」这类缺陷 QA 永远发现不了。
     pub fn activate(&self, label: &str) -> Result<(), String> {
         let name = {
             let index = self.index.borrow();
@@ -106,11 +124,12 @@ impl ContextMenu {
         let Some(name) = name else {
             return Err(format!("右键菜单里没有「{label}」"));
         };
-        let Some(action) = self.group.lookup_action(&name) else {
-            return Err(format!("右键菜单条目「{label}」没有挂动作"));
-        };
-        action.activate(None);
-        Ok(())
+        if name.is_empty() {
+            return Err(format!("右键菜单条目「{label}」是子菜单标题，没有动作"));
+        }
+        self.parent
+            .activate_action(&format!("ctx.{name}"), None)
+            .map_err(|error| format!("右键菜单条目「{label}」的动作解析失败：{error}"))
     }
 
     /// 菜单里有哪些文案（顺序与渲染一致；含子菜单里的条目）。
