@@ -60,6 +60,9 @@ struct UiState {
     worker: RefCell<Option<Rc<WorkerHandle>>>,
     /// 当前打开的连接对话框（未打开为 `None`）。
     dialog: RefCell<Option<Rc<ConnectionDialog>>>,
+    /// QA 的树 / 搜索步骤是否已经排过（工作区可能出现两次：`ConnectResult` 里与
+    /// 浏览会话建立后各一次；重复排程会让同一步开两次菜单、自己把自己关掉）。
+    qa_tree_scheduled: std::cell::Cell<bool>,
     /// `SystemService.ListDrivers` 的结果（连接对话框下拉的数据源）。
     drivers: RefCell<Vec<crate::backend::client::DriverSummary>>,
     /// 后端 gRPC 是否已握手成功：未成功时窗口级「新建连接」动作不可用（此时只会得到
@@ -234,6 +237,7 @@ pub fn activate(app: &adw::Application) {
         title: window_title.clone(),
         worker: RefCell::new(None),
         dialog: RefCell::new(None),
+        qa_tree_scheduled: std::cell::Cell::new(false),
         drivers: RefCell::new(Vec::new()),
         backend_ready: Cell::new(false),
         header: header.clone(),
@@ -2657,6 +2661,12 @@ fn maybe_run_qa_sql(state: &Rc<UiState>) {
 /// 「等待时间」的证据。重试到条件成立为止（上限 6 秒），日志里记下每一步的耗时。
 fn maybe_run_qa_tree(state: &Rc<UiState>) {
     if !crate::qa::tree_requested() {
+        return;
+    }
+    // 只排一次：工作区可能在 `ConnectResult` 与浏览会话建立后各出现一次，
+    // 排两遍会让「打开右键菜单」执行两次——第二次把第一次的菜单关掉，
+    // 后面的「点条目」就落在没有菜单的状态上。
+    if state.qa_tree_scheduled.replace(true) {
         return;
     }
     let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {

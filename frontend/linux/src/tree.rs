@@ -3371,7 +3371,16 @@ impl TreePanel {
             let panel = Rc::clone(self);
             menu.popover().connect_closed(move |popover| {
                 popover.unparent();
-                panel.context_menu.borrow_mut().take();
+                // 只清掉**这一个**菜单：`closed` 是异步派发的，上一个菜单收起时
+                // 新菜单可能已经装进来了——无条件 take() 会把新菜单也从字段里拿走，
+                // 于是「菜单明明还开着，点条目却报没有菜单」（QA 里就是这样暴露的）。
+                let mut slot = panel.context_menu.borrow_mut();
+                if slot
+                    .as_ref()
+                    .is_some_and(|current| current.popover() == popover)
+                {
+                    slot.take();
+                }
             });
         }
         self.context_menu.replace(Some(menu));
