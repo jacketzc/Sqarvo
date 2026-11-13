@@ -229,7 +229,7 @@ evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 [component.sync.windows]
 state = "partial"
 spec_hash = "27fdf866d95e"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:229 状态栏「−」接线；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2114 可用性与只读原因 tooltip"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:229 状态栏「−」接线；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2142 可用性与只读原因 tooltip"
 note = "按钮（ButtonRowDelete）现在可点：与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip。能力已实现，按钮不再属于契约 §9.1 说的「能力性不可用」，因此不删按钮、不改 na。差异：§7.1 未记录状态栏删除，且当前单选、没有 Linux 的多选批量入口；故保留 partial。"
 
 [component.sync.macos]

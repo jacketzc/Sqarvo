@@ -383,7 +383,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「删除行」
-- 同步：Linux done（§5.8 删除行；delete_selected_row + delete_note）；Windows partial（与状态栏 −（status_bar.row1.ops.delete）共用 DeleteSelectedRows：DataRow.MarkedForDeletion + Removed=true，行号 ✕N、整行删除线 + 压暗；状态行写「第 N 行已标记删除（提交前可撤销）」/「已标记删除 N 行（批量提交前可撤销）」。撤销走现有 RevertDataAsync 把 Removed 一起复位。提交对标记删除行按主键全列生成 RowDelete（值走协议已有的强类型参数化路径，不拼 SQL），与 updates 放进同一个 ApplyRowChangesRequest、同一个显式事务；后端驱动用 prepared statement 生成 DELETE FROM … WHERE …。成功后该行从页面消失、状态行写「已提交：删除 N 行」。可用性 = 可编辑且非 Loading/Submitting 且有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip；无主键表整页只读照旧；Windows 端没有新行占位行，故不在删除范围。差异：结果文案落在状态栏行 2、当前单选无多选批量入口，故记 partial。）；macOS none
+- 同步：Linux done（§5.8 删除行；delete_selected_row + delete_note）；Windows partial（与状态栏 −（status_bar.row1.ops.delete）共用 DeleteSelectedRows：DataRow.MarkedForDeletion + Removed=true，行号 ✕N、整行删除线 + 压暗；状态行写「第 N 行已标记删除（提交前可撤销）」/「已标记删除 N 行（批量提交前可撤销）」。撤销走现有 RevertDataAsync 把 Removed 一起复位。提交对标记删除行按主键全列生成 RowDelete（值走协议已有的强类型参数化路径，不拼 SQL），与 updates 放进同一个 ApplyRowChangesRequest、同一个显式事务；后端驱动用 prepared statement 生成 DELETE FROM … WHERE …。删除执行成功后行退出提交集合（DataRow.DeleteExecuted），避免部分失败后再按 Ctrl+S 重复发同一条 DELETE；整批提交成功才把已执行的行移出页面（RemoveExecutedDeletes），状态行写「已提交：删除 N 行」。被单批上限 500 钳制而 deferred 的删除仍带标记留在页面上、状态行给续传提示。可用性 = 可编辑且非 Loading/Submitting 且有选中行且该行可主键定位（Locatable）；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip；无主键表整页只读照旧；Windows 端没有新行占位行，故不在删除范围。差异：结果文案落在状态栏行 2、当前单选无多选批量入口，故记 partial。）；macOS none
 - 实现备注：与状态栏 − / RowOp::Delete 完全同一方法（delete_selected_row），可用性同一谓词（delete_available）。只标记待删除，不立刻写库；新行占位行不在删除范围。结果不占可见文案，只写状态圆点 tooltip 末段「最近一次操作：…」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

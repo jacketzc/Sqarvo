@@ -1318,16 +1318,12 @@ public sealed partial class ShellView
             }
             else if (report.Failures.Count == 0)
             {
-                var deleted = page.MarkedDeleteCount;
                 if (tab.TransactionId.Length > 0)
                 {
                     var committed = await CommitTransactionAsync(tab).ConfigureAwait(true);
                     if (committed)
                     {
-                        page.RemoveMarkedDeletes();
-                        _notice = deleted > 0
-                            ? DataStatusText.DeleteCommittedText(deleted)
-                            : $"已提交 {report.Applied} 行（事务已提交）";
+                        _notice = CommittedNotice(tab, page, report, "（事务已提交）");
                     }
                     else
                     {
@@ -1337,10 +1333,7 @@ public sealed partial class ShellView
                 else
                 {
                     tab.Phase = DataTxnPhase.AutoCommit;
-                    page.RemoveMarkedDeletes();
-                    _notice = deleted > 0
-                        ? DataStatusText.DeleteCommittedText(deleted)
-                        : $"已提交 {report.Applied} 行（自动提交：本批一个隐式事务）";
+                    _notice = CommittedNotice(tab, page, report, "（自动提交：本批一个隐式事务）");
                 }
             }
             else
@@ -1379,6 +1372,41 @@ public sealed partial class ShellView
             {
                 RenderDataPage(tab);
             }
+        }
+    }
+
+    /// <summary>
+    /// 提交成功后的收尾：只把「已执行」的删除行移出页面；被单批上限 deferred、还没执行的删除仍带标记留在
+    /// 页面上，并且续传提示优先于「已提交：删除 N 行」（否则用户会以为都删完了）。
+    /// </summary>
+    private string CommittedNotice(DataTab tab, DataPage page, DataApplyReport report, string suffix)
+    {
+        var removed = page.RemoveExecutedDeletes();
+        ClampSelectionAfterDelete(tab, page);
+
+        if (report.Clamped && report.Deferred > 0)
+        {
+            return DataStatusText.SubmitSummary(report, (int)report.Deferred) + suffix;
+        }
+
+        return removed > 0
+            ? DataStatusText.DeleteCommittedText(removed) + suffix
+            : $"已提交 {report.Applied} 行{suffix}";
+    }
+
+    /// <summary>删除行移出页面后把选区夹回有效范围（删掉最后一行时退回「无选中」）。</summary>
+    private static void ClampSelectionAfterDelete(DataTab tab, DataPage page)
+    {
+        if (page.Rows.Count == 0)
+        {
+            tab.SelectedRow = -1;
+            tab.SelectedColumn = -1;
+            return;
+        }
+
+        if (tab.SelectedRow >= page.Rows.Count)
+        {
+            tab.SelectedRow = page.Rows.Count - 1;
         }
     }
 
@@ -2487,6 +2515,13 @@ public sealed partial class ShellView
             return false;
         }
 
+        // 拿不到主键的行无法定位（DELETE 要按主键），标了也提交不了：直接不给标。
+        if (!page.Rows[tab.SelectedRow].Locatable)
+        {
+            reason = "这一行没有主键值，无法定位：不能删除（请用 SQL）";
+            return false;
+        }
+
         reason = "删除行：标记选中行为待删除（提交前可 Ctrl+Z 撤销）";
         return true;
     }
@@ -2533,10 +2568,15 @@ public sealed partial class ShellView
         }
 
         // 若已选中这一行就保留选中集（本片是单选）；否则先选中它，菜单动作永远作用于当前选中集。
+        // 列光标保持不动：右键不该把用户正在编辑的那一列弹回首列。
         if (tab.SelectedRow != rowIndex)
         {
             tab.SelectedRow = rowIndex;
-            tab.SelectedColumn = 0;
+            if (tab.SelectedColumn < 0 || tab.SelectedColumn >= page.Columns.Count)
+            {
+                tab.SelectedColumn = 0;
+            }
+
             RenderDataRows(tab);
         }
 
@@ -2613,6 +2653,8 @@ public sealed partial class ShellView
             var package = new DataPackage();
             package.SetText(sql);
             Clipboard.SetContent(package);
+            // 不 Flush 的话，应用退出后剪贴板内容可能在被粘贴前失效（WinUI 的已知行为）。
+            Clipboard.Flush();
             _notice = "已复制 1 行为 INSERT 语句";
         }
         catch (Exception error)

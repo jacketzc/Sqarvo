@@ -294,6 +294,13 @@ internal sealed class DataRow
     /// <summary>用户标记删除（右键 / 状态栏「−」）：提交时按主键生成 DELETE，Ctrl+Z 可复位。</summary>
     public bool MarkedForDeletion { get; set; }
 
+    /// <summary>
+    /// 删除已经在服务端（当前事务或自动提交批次）执行成功。置位的行退出提交集合 —— 否则下一次
+    /// Ctrl+S 会把同一条 DELETE 再发一遍，服务端回 ROW_NOT_FOUND，行被误标成「已被其它会话删除」。
+    /// 提交成功由 <see cref="DataPage.RemoveExecutedDeletes"/> 整行移出；事务回滚 / Ctrl+Z 复位。
+    /// </summary>
+    public bool DeleteExecuted { get; set; }
+
     /// <summary>有未提交的更改。</summary>
     public bool Dirty => Edits.Count > 0;
 
@@ -474,7 +481,14 @@ internal sealed class DataPage
         : null;
 
     /// <summary>下一次「加载更多」的 offset。</summary>
-    public long NextOffset => Offset + Rows.Count;
+    /// <remarks>
+    /// 用「已从服务端取到的行数」而不是 <c>Rows.Count</c>：提交成功后已执行的删除行会被移出页面，
+    /// 用 <c>Rows.Count</c> 会让 offset 回退，接着「加载更多」就把已经显示过的行再拉一遍。
+    /// </remarks>
+    public long NextOffset => Offset + LoadedRowCount;
+
+    /// <summary>已经从服务端取到并追加进页面的行数（删除不移除计数，换页清零）。</summary>
+    public int LoadedRowCount { get; private set; }
 
     /// <summary>有未提交更改的行数（编辑 + 标记删除）。</summary>
     public int DirtyRowCount => Rows.Count(row => row.Dirty || row.MarkedForDeletion);
@@ -511,6 +525,7 @@ internal sealed class DataPage
         {
             Columns.Clear();
             Rows.Clear();
+            LoadedRowCount = 0;
         }
 
         var incoming = new List<DataColumn>(response.Columns.Count);
@@ -567,8 +582,9 @@ internal sealed class DataPage
                 }
             }
 
-            var number = Offset + Rows.Count + 1;
+            var number = Offset + LoadedRowCount + 1;
             Rows.Add(new DataRow(Rows.Count, number, values, key));
+            LoadedRowCount++;
         }
 
         HasMore = response.HasMore;
@@ -618,17 +634,19 @@ internal sealed class DataPage
         foreach (var row in Rows)
         {
             row.DiscardEdits();
-            if (row.MarkedForDeletion)
+            // 自己标删 / 已执行删除的行回到原样；服务端报告「行已不存在」的 Removed 不动。
+            if (row.MarkedForDeletion || row.DeleteExecuted)
             {
                 row.MarkedForDeletion = false;
+                row.DeleteExecuted = false;
                 row.Removed = false;
             }
         }
     }
 
-    /// <summary>提交成功后把标记删除的行移出页面（整行消失）。</summary>
+    /// <summary>提交成功后把已执行删除的行移出页面（被单批上限 deferred、还没执行的行留在页面上）。</summary>
     /// <returns>移除的行数。</returns>
-    public int RemoveMarkedDeletes() => Rows.RemoveAll(row => row.MarkedForDeletion);
+    public int RemoveExecutedDeletes() => Rows.RemoveAll(row => row.DeleteExecuted);
 }
 
 /// <summary>一次提交要发给服务端的行变更（纯值，可直接断言）。</summary>
@@ -742,7 +760,8 @@ internal sealed record DataSubmitPlan(
         }
 
         var rows = page.DirtyRowCount;
-        var changes = page.ChangeCount + page.MarkedDeleteCount;
+        var deletes = page.MarkedDeleteCount;
+        var changes = page.ChangeCount + deletes;
         if (changes == 0)
         {
             return new DataSubmitPlan(false, false, false, 0, 0, "没有待提交的更改：双击单元格或按 F2 修改后按 Enter 暂存，或右键标记删除，再按 Ctrl+S 提交");
@@ -751,13 +770,27 @@ internal sealed record DataSubmitPlan(
         if (rows > DataLimits.RiskConfirmationRows && !riskArmed)
         {
             // 一次改这么多行是不可逆的高风险动作：本版不弹对话框，改成「再按一次确认」。
+            var deletePart = deletes > 0 ? $"（其中删除 {deletes} 行）" : string.Empty;
             return new DataSubmitPlan(
                 false,
                 true,
                 false,
                 rows,
                 changes,
-                $"本次提交 {rows} 行，超过风险阈值 {DataLimits.RiskConfirmationRows} 行：再按一次 Ctrl+S（或再点「应用」）确认提交");
+                $"本次提交 {rows} 行{deletePart}，超过风险阈值 {DataLimits.RiskConfirmationRows} 行：再按一次 Ctrl+S（或再点「应用」）确认提交");
+        }
+
+        // ui-behavior-contract §8.2：变更里**含任何删除**都必须确认（删除单独警告）。本端没有模态对话框，
+        // 与超阈值同一套「再按一次」语义，但确认文案单列删除行数。
+        if (deletes > 0 && !riskArmed)
+        {
+            return new DataSubmitPlan(
+                false,
+                true,
+                false,
+                rows,
+                changes,
+                $"本次提交包含删除 {deletes} 行（删除不可撤销）：再按一次 Ctrl+S（或再点「应用」）确认提交");
         }
 
         return new DataSubmitPlan(
@@ -817,8 +850,15 @@ internal sealed record DataApplyReport(
             switch (result.Outcome)
             {
                 case ChangeOutcome.Applied:
-                    // 更新成功落回原值；删除成功的行留给提交流程整行移出页面。
-                    if (!isDelete)
+                    // 更新成功落回原值；删除成功则退出提交集合（保留 ✕N / 删除线，等事务提交后整行移出）——
+                    // 不移除标记的话，部分失败那一轮之后的下一次 Ctrl+S 会重复发同一条 DELETE。
+                    if (isDelete)
+                    {
+                        row.MarkedForDeletion = false;
+                        row.DeleteExecuted = true;
+                        row.Removed = true;
+                    }
+                    else
                     {
                         row.AcceptEdits();
                     }
@@ -1230,7 +1270,8 @@ internal static class DataInsertSql
         switch (value.ValueCase)
         {
             case ColumnValue.ValueOneofCase.BoolValue:
-                return value.BoolValue ? "1" : "0";
+                // TRUE / FALSE 在 PostgreSQL 是唯一可用写法，MySQL / MariaDB / SQLite 都把它们当 1 / 0。
+                return value.BoolValue ? "TRUE" : "FALSE";
             case ColumnValue.ValueOneofCase.Int64Value:
                 return value.Int64Value.ToString(CultureInfo.InvariantCulture);
             case ColumnValue.ValueOneofCase.Uint64Value:
