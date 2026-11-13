@@ -470,7 +470,7 @@ keys = ["Ctrl+Enter"]
 precondition = "编辑器有焦点"
 result = "执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略"
 source = "src/sql_page.rs:300、src/sql_page.rs:341"
-platform_notes.windows = "**有选中就只执行选中部分**（TextBox.SelectionLength > 0），否则执行全文；Linux 执行全文。"
+platform_notes.windows = "v0.2.5 起整段执行（`Views/ShellView.Query.cs:704-705`）：不看选区、不找当前语句，与 Linux 一致；此前是「有选中就只执行选中」，属于记录在案的偏差，已按契约收紧。"
 
 [component.sync.linux]
 state = "done"
@@ -480,7 +480,7 @@ evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+E
 [component.sync.windows]
 state = "partial"
 spec_hash = "e0c1f76592db"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:351；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:323"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:704；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1461"
 note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
 
 [component.sync.macos]

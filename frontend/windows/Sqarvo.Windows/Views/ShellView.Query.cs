@@ -698,11 +698,11 @@ public sealed partial class ShellView
 
         tab.RunPending = true;
 
+        // 契约（ui-behavior-contract.md §8「执行 SQL」）与 Linux 实现都是**整段执行**：
+        // 不看选区、也不找「当前语句」。这里曾按「有选中就只执行选中」实现，已收紧；
+        // 执行期间编辑器被改动的判断（tab.LastEditorText）仍用同一份快照。
         var editorTextAtExecute = tab.Editor.Text ?? string.Empty;
-        var sql = QuerySql.SelectedOrAll(
-            editorTextAtExecute,
-            tab.Editor.SelectionStart,
-            tab.Editor.SelectionLength);
+        var sql = editorTextAtExecute;
 
         if (sql.Trim().Length == 0)
         {

@@ -254,25 +254,6 @@ internal static class QuerySql
         return text.Length > maxLength ? text[..maxLength] + "…" : text;
     }
 
-    /// <summary>
-    /// 要执行的 SQL：**有选中就只执行选中部分**，没有选中就是整个编辑器内容。
-    /// </summary>
-    /// <param name="text">编辑器全文。</param>
-    /// <param name="selectionStart">选区起点（0 起）。</param>
-    /// <param name="selectionLength">选区长度。</param>
-    /// <returns>实际要发出去的 SQL（未做 trim：后端会收到用户看到的那段原文）。</returns>
-    public static string SelectedOrAll(string text, int selectionStart, int selectionLength)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-
-        if (selectionLength <= 0 || selectionStart < 0 || selectionStart >= text.Length)
-        {
-            return text;
-        }
-
-        var length = Math.Min(selectionLength, text.Length - selectionStart);
-        return text.Substring(selectionStart, length);
-    }
 }
 
 /// <summary>
