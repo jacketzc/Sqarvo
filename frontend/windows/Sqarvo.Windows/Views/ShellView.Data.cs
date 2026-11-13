@@ -1,3 +1,4 @@
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -167,6 +168,25 @@ public sealed partial class ShellView
         /// <summary>表头与行区横向滚动同步的重入闸。</summary>
         public bool SyncingScroll { get; set; }
 
+        /// <summary>
+        /// 每个数据列的**当前宽度**（下标 = 列序号）：表头、行区与每一行都从这一份状态取
+        /// <see cref="GridLength"/>，所以表头与行永远同宽。默认值是 column_width（上限）。
+        /// 它挂在 DataTab 上：翻页 / 刷新 / 重新读取都会重画但不清空它；换表是新的 DataTab，天然重置。
+        /// </summary>
+        public List<double> ColumnWidths { get; } = new();
+
+        /// <summary>被用户拖过 / 双击自适应过的列（「用户宽度」：重画不覆写，只换表才重置）。</summary>
+        public HashSet<int> UserSizedColumns { get; } = new();
+
+        /// <summary>正在拖的列序号（-1 = 没有在拖）。</summary>
+        public int ResizeColumn { get; set; } = -1;
+
+        /// <summary>按下时指针相对把手的 X（拖宽手势的起点）。</summary>
+        public double ResizeStartX { get; set; }
+
+        /// <summary>按下时该列的宽度（拖宽手势的起始宽度）。</summary>
+        public double ResizeStartWidth { get; set; }
+
         /// <summary>标签名（`表名 @ 库`，有未提交改动时带 `*`）。</summary>
         public string Title
         {
@@ -190,6 +210,20 @@ public sealed partial class ShellView
 
         /// <summary>已经提交 / 取消（输入框的 LostFocus 迟到时不要重复暂存）。</summary>
         public bool Closed { get; set; }
+    }
+
+    /// <summary>
+    /// 列宽拖拽把手：命中间件本身是一块带透明背景的 Panel，构造时把指针光标设成 SizeWestEast。
+    /// WinUI 3 的 <c>Border</c> 是 sealed，不能派生；<c>ProtectedCursor</c> 又是 protected 属性，
+    /// 所以从非密封的 <c>Panel</c> 派生一个最小的命中宿主来设它。这里不引入新控件类型、不改外壳形态
+    /// （#170 的教训：外壳控件形态一动就可能秒崩）。
+    /// </summary>
+    private sealed class ColumnResizeGrip : Panel
+    {
+        public ColumnResizeGrip()
+        {
+            ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeWestEast);
+        }
     }
 
     // ------------------------------------------------------------------ 接线（构造函数调用一次）
@@ -1600,6 +1634,9 @@ public sealed partial class ShellView
             return;
         }
 
+        // 表头与所有行共用同一份列宽状态：重画前把它对齐到当前列数（已有的用户宽度一律保留）。
+        EnsureColumnWidths(tab);
+
         var page = tab.Page;
 
         var state = DataStatusText.StateText(page);
@@ -1696,19 +1733,20 @@ public sealed partial class ShellView
         AutomationProperties.SetName(tab.Item, page.HasChanges ? $"{tab.TableName}（有未提交的更改）" : tab.TableName);
     }
 
-    /// <summary>表头：行号 + 每列「列名 · 类型（· PK）」（每次整体重建）。</summary>
+    /// <summary>表头：行号 + 每列「列名 · 类型（· PK）」+ 列右缘的拖宽把手（每次整体重建）。</summary>
     private void RenderDataHeader(DataTab tab)
     {
         var page = tab.Page;
         var grid = tab.HeaderGrid;
         grid.Children.Clear();
         grid.ColumnDefinitions.Clear();
-        grid.Width = DataTotalWidth(page);
+        grid.Width = DataTotalWidth(tab);
 
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.RowNumberWidth) });
         for (var column = 0; column < page.Columns.Count; column++)
         {
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.ColumnWidth) });
+            // 表头与行区、每一行都读 tab.ColumnWidths 这一份共享状态，永远同宽。
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(tab.ColumnWidths[column]) });
         }
 
         var number = AddDataCell(grid, 0, "行号", secondary: true, right: true, mono: true, nullCell: false, header: true);
@@ -1725,6 +1763,21 @@ public sealed partial class ShellView
             }
 
             AutomationProperties.SetName(cell, column.HeaderText);
+
+            // 列边界的拖宽把手：命中热区取 metrics.column_resize_hit，指针变 SizeWestEast；
+            // 拖动改该列宽（受上下限约束），双击按本页内容自适应。
+            var grip = new ColumnResizeGrip
+            {
+                Width = Metrics.ColumnResizeHit,
+                Background = ThemeBrush("SqarvoTransparentBrush"),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Stretch,
+            };
+            Grid.SetColumn(grip, index + 1);
+            AutomationProperties.SetName(grip, $"调整 {column.HeaderText} 列宽");
+            ToolTipService.SetToolTip(grip, "拖动改列宽 · 双击按本页内容自适应");
+            WireColumnResize(grip, tab, index);
+            grid.Children.Add(grip);
         }
 
         AutomationProperties.SetName(
@@ -1742,13 +1795,13 @@ public sealed partial class ShellView
         grid.Children.Clear();
         grid.RowDefinitions.Clear();
         grid.ColumnDefinitions.Clear();
-        grid.Width = DataTotalWidth(page);
+        grid.Width = DataTotalWidth(tab);
 
         var columns = page.Columns.Count;
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.RowNumberWidth) });
         for (var column = 0; column < columns; column++)
         {
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.ColumnWidth) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(tab.ColumnWidths[column]) });
         }
 
         tab.EditBox = null;
@@ -1777,7 +1830,8 @@ public sealed partial class ShellView
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.RowNumberWidth) });
         for (var column = 0; column < columns; column++)
         {
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.ColumnWidth) });
+            // 行容器自带列定义，也读同一份共享状态：表头与每一行始终同宽。
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(tab.ColumnWidths[column]) });
         }
 
         // 底色：选中 / 脏行都能看出来（脏行另有行号列的 ● 标记）。
@@ -1957,9 +2011,304 @@ public sealed partial class ShellView
         return block;
     }
 
-    /// <summary>表格总宽（行号列 + 每列固定 <c>column_width</c>；超宽交给横向滚动）。</summary>
-    private static double DataTotalWidth(DataPage page) =>
-        Metrics.RowNumberWidth + Math.Max(1, page.Columns.Count) * (double)Metrics.ColumnWidth;
+    /// <summary>表格总宽（行号列 + 每个数据列的当前宽度；超宽交给横向滚动）。</summary>
+    private static double DataTotalWidth(DataTab tab)
+    {
+        EnsureColumnWidths(tab);
+        var total = (double)Metrics.RowNumberWidth;
+        if (tab.ColumnWidths.Count == 0)
+        {
+            // 还没有列时也给一列宽，表头 / 行区不塌成 0（与原来的 Math.Max(1, …) 同义）。
+            return total + Metrics.ColumnWidth;
+        }
+
+        foreach (var width in tab.ColumnWidths)
+        {
+            total += width;
+        }
+
+        return total;
+    }
+
+    /// <summary>
+    /// 把共享列宽状态对齐到当前列数：新出现的列补默认 column_width，已有列（含用户宽度）一律保留。
+    /// 翻页 / 刷新 / 重新读取只是重画、不清这份状态；换表是新的 DataTab，天然重置（改动确认单 #2）。
+    /// </summary>
+    private static void EnsureColumnWidths(DataTab tab)
+    {
+        var count = tab.Page.Columns.Count;
+        if (count == 0)
+        {
+            // 换页 / 刷新刚换了 DataPage，列还没回来（这一帧只是 Loading 重画）。此时按 count=0 裁剪
+            // 会把用户的列宽与 UserSizedColumns 一起清空 —— 等响应填好列再画就全退回默认了。
+            return;
+        }
+
+        while (tab.ColumnWidths.Count < count)
+        {
+            tab.ColumnWidths.Add(Metrics.ColumnWidth);
+        }
+
+        if (tab.ColumnWidths.Count > count)
+        {
+            tab.ColumnWidths.RemoveRange(count, tab.ColumnWidths.Count - count);
+        }
+
+        tab.UserSizedColumns.RemoveWhere(index => index >= count);
+    }
+
+    /// <summary>列宽约束：下限 metrics.column_min_width、上限 metrics.column_width（拖拽与自适应共用）。</summary>
+    private static double ClampColumnWidth(double width) =>
+        Math.Clamp(width, Metrics.ColumnMinWidth, Metrics.ColumnWidth);
+
+    /// <summary>把某个 Grid 里第 column 个数据列的宽度设成给定值（第 0 列是行号列，跳过）。</summary>
+    private static void SetColumnWidth(Grid grid, int column, double width)
+    {
+        var index = column + 1;
+        if (index < grid.ColumnDefinitions.Count)
+        {
+            grid.ColumnDefinitions[index].Width = new GridLength(width);
+        }
+    }
+
+    /// <summary>
+    /// 拖动中只改各 Grid 里那一列的 GridLength，不重建表头：重建会销毁正在捕获指针的把手，
+    /// 拖拽会当场断掉。表头、行区与每一行都改，保证拖动过程中也始终同宽。
+    /// </summary>
+    private static void ApplyColumnWidthLive(DataTab tab, int column, double width)
+    {
+        tab.ColumnWidths[column] = width;
+        tab.UserSizedColumns.Add(column);
+
+        SetColumnWidth(tab.HeaderGrid, column, width);
+        SetColumnWidth(tab.RowsGrid, column, width);
+        foreach (var child in tab.RowsGrid.Children)
+        {
+            if (child is Grid row)
+            {
+                SetColumnWidth(row, column, width);
+            }
+        }
+
+        var total = DataTotalWidth(tab);
+        tab.HeaderGrid.Width = total;
+        tab.RowsGrid.Width = total;
+    }
+
+    /// <summary>给列右缘的把手接上拖动手势与双击自适应。</summary>
+    private void WireColumnResize(ColumnResizeGrip grip, DataTab tab, int column)
+    {
+        grip.PointerPressed += (_, args) =>
+        {
+            if (tab.Closed)
+            {
+                return;
+            }
+
+            EnsureColumnWidths(tab);
+            if (column >= tab.ColumnWidths.Count)
+            {
+                return;
+            }
+
+            var point = args.GetCurrentPoint(tab.RowsGrid);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            tab.ResizeColumn = column;
+            // 参照系必须是不随列宽移动的元素：把手自己贴在列右缘、跟着列一起右移，用 grip 取点等于拿
+            // 一把会动的尺子量位移（W ← 2·W0 + d − W_cur，拖起来来回抖、默认列宽还已到上限）。
+            // RowsGrid 的左缘在拖动期间固定，横向滚动也不会在按下 ~ 松开之间发生。
+            tab.ResizeStartX = point.Position.X;
+            tab.ResizeStartWidth = tab.ColumnWidths[column];
+            if (!grip.CapturePointer(args.Pointer))
+            {
+                tab.ResizeColumn = -1;
+                return;
+            }
+
+            args.Handled = true;
+        };
+
+        grip.PointerMoved += (_, args) =>
+        {
+            if (tab.Closed || tab.ResizeColumn != column || column >= tab.ColumnWidths.Count)
+            {
+                return;
+            }
+
+            var point = args.GetCurrentPoint(tab.RowsGrid);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                // 按键早松了但没收到 PointerReleased（捕获丢了）：按取消处理，别让用户没按键地改列宽。
+                tab.ResizeColumn = -1;
+                return;
+            }
+
+            var width = ClampColumnWidth(tab.ResizeStartWidth + (point.Position.X - tab.ResizeStartX));
+            if (width != tab.ColumnWidths[column])
+            {
+                ApplyColumnWidthLive(tab, column, width);
+            }
+
+            args.Handled = true;
+        };
+
+        grip.PointerReleased += (_, args) =>
+        {
+            if (tab.ResizeColumn != column)
+            {
+                return;
+            }
+
+            tab.ResizeColumn = -1;
+            grip.ReleasePointerCapture(args.Pointer);
+            args.Handled = true;
+        };
+
+        grip.PointerCaptureLost += (_, _) =>
+        {
+            if (tab.ResizeColumn == column)
+            {
+                tab.ResizeColumn = -1;
+            }
+        };
+
+        grip.DoubleTapped += (_, args) =>
+        {
+            args.Handled = true;
+            AutoFitColumn(tab, column);
+        };
+    }
+
+    /// <summary>双击把手：按表头文案与已加载值里最长文字 + 单元格内距自适应，受上下限约束，记为用户宽度。</summary>
+    private void AutoFitColumn(DataTab tab, int column)
+    {
+        if (tab.Closed)
+        {
+            return;
+        }
+
+        EnsureColumnWidths(tab);
+        if (column < 0 || column >= tab.ColumnWidths.Count)
+        {
+            return;
+        }
+
+        var measured = MeasureAutoFitWidth(tab, column);
+        if (measured <= 0)
+        {
+            // 量不到（游离 TextBlock 没展开模板时可能返回 0）：保持当前宽度，不要把整列压到下限 64。
+            ConsoleBridge.WriteDiagnostic(
+                $"[colwidth] 自适应放弃 column={column}：量不到内容宽度（保持 " +
+                $"{tab.ColumnWidths[column].ToString("0.##", CultureInfo.InvariantCulture)}）");
+            return;
+        }
+
+        var width = ClampColumnWidth(measured + 2 * (double)Metrics.ColumnCellPadding);
+        tab.ColumnWidths[column] = width;
+        tab.UserSizedColumns.Add(column);
+        RenderDataPage(tab);
+        ConsoleBridge.WriteDiagnostic(
+            $"[colwidth] 自适应 column={column} width={width.ToString("0.##", CultureInfo.InvariantCulture)} " +
+            $"min={Metrics.ColumnMinWidth} max={Metrics.ColumnWidth}");
+    }
+
+    /// <summary>最长文字（表头 + 已加载值）的自然宽度；量不到时返回 0（由调用方决定保持原宽）。</summary>
+    private static double MeasureAutoFitWidth(DataTab tab, int column)
+    {
+        // 表头用 font_ui + title(600)、数据格用 font_data_cell + cell(500)（AddDataCell 的口径），
+        // 测量必须两边分开，否则表头会量得偏窄 / 偏宽。
+        var longest = MeasureTextWidth(tab.Page.Columns[column].HeaderText, Metrics.FontUi, TypeTokens.Title);
+        foreach (var row in tab.Page.Rows)
+        {
+            var text = DataCellText.Display(row.Value(column));
+            if (text.Length > 0)
+            {
+                longest = Math.Max(longest,
+                    MeasureTextWidth(text, Metrics.FontDataCell, TypeTokens.Cell));
+            }
+        }
+
+        return longest;
+    }
+
+    /// <summary>用游离 TextBlock 量一段单行文字的自然宽度（字号 / 字重由调用方按格类型给）。</summary>
+    private static double MeasureTextWidth(string text, double fontSize, FontWeight fontWeight)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        try
+        {
+            var probe = new TextBlock
+            {
+                Text = text,
+                FontSize = fontSize,
+                FontWeight = fontWeight,
+                TextWrapping = TextWrapping.NoWrap,
+                TextTrimming = TextTrimming.None,
+            };
+            probe.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            return probe.DesiredSize.Width;
+        }
+        catch (Exception error)
+        {
+            ConsoleBridge.WriteDiagnostic($"[colwidth] 文本测量失败：{error.GetType().Name}: {error.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// QA 钩子（<c>--qa-column-width=&lt;列序号&gt;:&lt;宽度&gt;</c>）：**只在诊断路径**把某列设成用户宽度，
+    /// 用于截图 / --qa-layout-audit 取证。拖拽动作本身无法用脚本模拟，这个开关等价于「用户把该列拖到某宽度」，
+    /// 走的是与拖拽完全相同的共享列宽状态与重画路径；正常用户路径不会调用它。
+    /// </summary>
+    public void ApplyQaColumnWidth(int index, double width)
+    {
+        var tab = CurrentDataTab() ?? _activeDataTab;
+        if (tab is null || tab.Closed)
+        {
+            ConsoleBridge.WriteLine("[colwidth] no-active-tab（没有已打开的数据页，QA 宽度未设置）");
+            return;
+        }
+
+        EnsureColumnWidths(tab);
+        if (index < 0 || index >= tab.ColumnWidths.Count)
+        {
+            ConsoleBridge.WriteLine($"[colwidth] out-of-range index={index} columns={tab.ColumnWidths.Count}");
+            return;
+        }
+
+        var applied = ClampColumnWidth(width);
+        tab.ColumnWidths[index] = applied;
+        tab.UserSizedColumns.Add(index);
+        RenderDataPage(tab);
+        ConsoleBridge.WriteLine(
+            $"[colwidth] index={index} requested={width.ToString("0.##", CultureInfo.InvariantCulture)} " +
+            $"applied={applied.ToString("0.##", CultureInfo.InvariantCulture)} " +
+            $"min={Metrics.ColumnMinWidth} max={Metrics.ColumnWidth} user_sized={tab.UserSizedColumns.Count}");
+    }
+
+    /// <summary>
+    /// 布局审计（<c>--qa-layout-audit</c>）用：当前激活数据页每个数据列的宽度（共享列宽状态）。
+    /// 表头与所有行都从这份状态取绝对值 GridLength，因此它既是设定值、也是实际渲染宽度。
+    /// </summary>
+    public IReadOnlyList<double>? ActiveDataColumnWidths()
+    {
+        var tab = CurrentDataTab() ?? _activeDataTab;
+        if (tab is null || tab.Closed)
+        {
+            return null;
+        }
+
+        EnsureColumnWidths(tab);
+        return tab.ColumnWidths.ToArray();
+    }
 
     /// <summary>表头与行区横向滚动互相同步（纵向各管各的）。</summary>
     private void SyncDataScroll(DataTab tab, bool fromBody)

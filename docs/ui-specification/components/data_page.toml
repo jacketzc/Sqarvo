@@ -739,7 +739,7 @@ style.metrics = ["row_height_data", "column_header_min_height", "row_number_widt
 style.tokens = ["theme_bg_color", "theme_fg_color"]
 impl_notes = [
   "结构：行号列（固定 row_number_width，行号 = offset + 行下标 + 1，**不是**主键）+ 单行表头 + 数据行。",
-  "列宽按**本页内容**自适应：表头文案与已加载值里最长文字 + 单元格内距，下限 64、上限 column_width；拖过列边界或双击自适应过的列记为用户宽度，翻页与刷新不再覆写（64 与内距是代码常量，未进 metrics）。",
+  "列宽默认 column_width；列右缘 column_resize_hit 命中热区（指针 SizeWestEast）可拖动改列宽，双击把手按**本页内容**自适应（表头文案与已加载值里最长文字 + 单元格内距 column_cell_padding），下限 column_min_width、上限 column_width 都取 metrics；拖过 / 自适应过的列记为用户宽度，表头与所有行共用同一份列宽状态，翻页 / 刷新 / 重读不覆写、换表重置。",
   "表头条带 26 内容 + 上下 2 内距（column_header_min_height）；底色取 theme_bg_color，文字与数据行同档。",
   "横向滚动条常驻可见（关掉 overlay 自动淡出），宽表只横向滚动、不挤压右侧信息面板；窗口最大化后横向滚动位置回到第一列。",
   "滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。",
@@ -783,7 +783,7 @@ evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_colu
 [component.sync.windows]
 state = "partial"
 spec_hash = "59900abdc23b"
-note = "§7.1：行号列 row_number_width（行号 = offset + 下标 + 1）、单行表头、row_height_data / column_width、横向滚动一致；**每页 200 行**，翻页入口是页内「上一页 / 下一页 / 加载更多…」（offset = 已取行数续拉），页码写「第 N 页 / 共 ? 页」。"
+note = "§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1769 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2099 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2078 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2037 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。"
 
 [component.sync.macos]
 state = "none"
@@ -831,8 +831,8 @@ evidence = "§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "d833413cb81f"
-note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列宽固定 column_width，超宽走横向滚动；没有排序标记与点击查看列属性。"
+spec_hash = "eb55028d5e3c"
+note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列右缘现在是可拖宽的把手（column_resize_hit 命中热区 + 双击自适应），列宽不再固定 column_width，表头与行共用一份列宽状态（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2099）；没有排序标记与点击查看列属性。"
 
 [component.sync.macos]
 state = "none"

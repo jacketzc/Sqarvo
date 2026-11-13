@@ -122,6 +122,9 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
                           再改一格并撤销，打 [data] 证据；连接目标取 --qa-signin（否则第一条）。
                           与 --qa-signin 合用时不退出（供截图），否则关页验证回滚与 Close 后退出。
                           注意：**会写入再还原开发库里的一个单元格**，不要指向生产库
+--qa-column-width=<列>:<宽> QA 专用：把第 <列> 列（0 起）设成用户宽度 <宽>（DIP），走与拖拽完全相同的
+                          共享列宽状态 + 重画路径，用于截图 / --qa-layout-audit 取证。**只在 --qa-data 的
+                          数据页路径里生效**（不给 --qa-data 会静默无效）；所见即所得，不写 window.json
 ```
 
 ### 查询面（#172）

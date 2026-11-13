@@ -49,7 +49,8 @@ public sealed class AppOptions
         string? screenshotPath,
         double screenshotDelaySeconds,
         bool layoutAudit,
-        string? layoutAuditPath)
+        string? layoutAuditPath,
+        (int Index, double Width)? qaColumnWidth)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -69,6 +70,7 @@ public sealed class AppOptions
         ScreenshotDelaySeconds = screenshotDelaySeconds < 0 ? 0 : screenshotDelaySeconds;
         LayoutAudit = layoutAudit;
         LayoutAuditPath = layoutAuditPath;
+        QaColumnWidth = qaColumnWidth;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -171,6 +173,13 @@ public sealed class AppOptions
     /// <summary><c>--qa-layout-audit</c> 的输出路径；<see langword="null"/> = 打到 stdout。</summary>
     public string? LayoutAuditPath { get; }
 
+    /// <summary>
+    /// QA 钩子：<c>--qa-column-width=&lt;列序号&gt;:&lt;宽度&gt;</c>。只在诊断路径里把某数据列设成用户宽度
+    /// （拖拽动作无法脚本模拟，用它做截图 / 布局审计取证）；不改窗口几何、不写 window.json。
+    /// <b>只在 --qa-data 的数据页路径里消费</b>（<c>RunQaDataAsync</c>）：单独给这个开关不会有任何效果。
+    /// </summary>
+    public (int Index, double Width)? QaColumnWidth { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -218,6 +227,7 @@ public sealed class AppOptions
             screenshotDelaySeconds: Seconds(commandLine, "--screenshot-delay=", 2.0),
             layoutAudit: Has(commandLine, "--qa-layout-audit", "--layout-audit"),
             layoutAuditPath: FirstValue(commandLine, "--qa-layout-audit=", "--layout-audit="),
+            qaColumnWidth: ParseColumnWidth(commandLine),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -285,6 +295,35 @@ public sealed class AppOptions
             ? parsed
             : fallback;
 
+    /// <summary>
+    /// 解析 <c>--qa-column-width=&lt;列序号&gt;:&lt;宽度&gt;</c>：列序号从 0 起，宽度是 DIP。
+    /// 非法 / 越界写法一律返回 null（诊断开关不该因为格式问题打断启动）。
+    /// </summary>
+    private static (int Index, double Width)? ParseColumnWidth(string[] commandLine)
+    {
+        var raw = Value(commandLine, "--qa-column-width=");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var parts = raw.Split(':', 2);
+        if (parts.Length != 2
+            || !int.TryParse(parts[0], System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var index)
+            || index < 0
+            || !double.TryParse(parts[1], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var width)
+            || !double.IsFinite(width))
+        {
+            ConsoleBridge.WriteDiagnostic(
+                $"[colwidth] 无法解析 --qa-column-width={raw}（用法：<列序号>:<宽度>）");
+            return null;
+        }
+
+        return (index, width);
+    }
+
     /// <summary>把开关名归一：去 <c>--</c>、转小写、别名换规范名。</summary>
     private static string Canonical(string flag)
     {
@@ -307,5 +346,6 @@ public sealed class AppOptions
         "--qa-signin=<连接名称|@first>（写凭据 + 连接后保持运行，供截图）",
         "--qa-query=<sql>（配合 --qa-signin 指定连接：建查询页 + 执行 SQL，打 [query] 证据）",
         "--qa-data=<库.表>（配合 --qa-signin 指定连接：开数据页 + 翻页 + 改一格提交 + 撤销，打 [data] 证据；会写开发库）",
+        "--qa-column-width=<列序号>:<宽度>（QA 钩子：诊断路径上把某列设成用户宽度，供截图 / 布局审计取证；拖拽本身无法脚本模拟）",
     };
 }

@@ -82,6 +82,9 @@ radius_md = 8   # 8 × 1.0 = 8
 tree_arrow_box = 18   # 18 × 1.0 = 18
 row_number_width = 32   # 32 × 1.0 = 32
 column_width = 200   # 200 × 1.0 = 200
+column_resize_hit = 6   # 列边界拖宽把手的命中热区（DIP）：6 × 1.0 = 6（与 Linux 的 6px 同口径）
+column_min_width = 64   # 列宽下限（DIP）：64 × 1.0 = 64
+column_cell_padding = 8   # 双击自适应时为单元格文字预留的左右内距（DIP，各一份）：8 × 1.0 = 8
 filter_panel_width = 430   # 430 × 1.0 = 430
 filter_column_width = 140   # 140 × 1.0 = 140
 column_panel_width = 300   # 300 × 1.0 = 300（列显隐弹层内容宽）
@@ -154,6 +157,9 @@ radius_md = 10   # 8 × 1.25 = 10
 tree_arrow_box = 23   # 18 × 1.25 = 22.5
 row_number_width = 40   # 32 × 1.25 = 40
 column_width = 250   # 200 × 1.25 = 250
+column_resize_hit = 8   # 6 × 1.25 = 7.5 → 8
+column_min_width = 80   # 64 × 1.25 = 80
+column_cell_padding = 10   # 8 × 1.25 = 10
 filter_panel_width = 538   # 430 × 1.25 = 537.5
 filter_column_width = 175   # 140 × 1.25 = 175
 column_panel_width = 375   # 300 × 1.25 = 375
@@ -226,6 +232,9 @@ radius_md = 12   # 8 × 1.5 = 12
 tree_arrow_box = 27   # 18 × 1.5 = 27
 row_number_width = 48   # 32 × 1.5 = 48
 column_width = 300   # 200 × 1.5 = 300
+column_resize_hit = 9   # 6 × 1.5 = 9
+column_min_width = 96   # 64 × 1.5 = 96
+column_cell_padding = 12   # 8 × 1.5 = 12
 filter_panel_width = 645   # 430 × 1.5 = 645
 filter_column_width = 210   # 140 × 1.5 = 210
 column_panel_width = 450   # 300 × 1.5 = 450

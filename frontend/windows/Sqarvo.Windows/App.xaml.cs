@@ -762,6 +762,14 @@ public partial class App : Application
                 .ConfigureAwait(true);
             ConsoleBridge.WriteLine($"[data] probe={(complete ? "ok" : "incomplete")}");
 
+            // QA 取证钩子（--qa-column-width）：数据页已经打开、列已加载，这里把某列设成用户宽度，
+            // 走与拖拽完全相同的共享列宽状态与重画路径，供随后的截图 / --qa-layout-audit 读取。
+            // 拖拽动作本身无法脚本模拟，这是只读诊断开关，不在正常用户路径调用。
+            if (_options.QaColumnWidth is { } qaWidth)
+            {
+                window.Shell.ApplyQaColumnWidth(qaWidth.Index, qaWidth.Width);
+            }
+
             if (keepAlive)
             {
                 // 截图要看到「数据页 + 状态栏行 2 右侧的事务状态」：窗口留着，数据页不关。
