@@ -383,11 +383,12 @@ public sealed partial class ShellView : UserControl
 
         MenuNewConnection.IsEnabled = ready;
 
-        // 新建查询（工具条 / 菜单 / Ctrl+T 同一条判定）：后端已握手 **且** 有数据库会话（契约 §1.2）。
+        // 新建查询（工具条 / 标签条 ＋ / 菜单 / Ctrl+T 同一条判定）：后端已握手 **且** 有数据库会话（契约 §1.2）。
         var hasSession = _session is { } live && live.OpenConnections.Count > 0;
         var canQuery = ready && hasSession;
         ButtonNewQuery.IsEnabled = canQuery;
         MenuNewQueryTab.IsEnabled = canQuery;
+        TabStripNewTabButton.IsEnabled = canQuery;
         var queryTip = canQuery
             ? "新建查询标签（Ctrl+T）"
             : !ready
@@ -395,6 +396,7 @@ public sealed partial class ShellView : UserControl
                 : "尚未连接数据库：先在左侧对象树里选中一条已保存的连接并连接";
         ToolTipService.SetToolTip(ButtonNewQuery, queryTip);
         ToolTipService.SetToolTip(MenuNewQueryTab, queryTip);
+        ToolTipService.SetToolTip(TabStripNewTabButton, queryTip);
 
         var selectedConnected = selected is not null && _session?.IsConnected(selected.Key) == true;
         ButtonConnect.IsEnabled = ready && selected is not null && !selectedConnected;
@@ -916,6 +918,7 @@ public sealed partial class ShellView : UserControl
         };
 
         ButtonNewQuery.Click += (_, _) => CreateQueryTab();
+        TabStripNewTabButton.Click += (_, _) => CreateQueryTab();
 
         ObjectTree.ItemInvoked += OnTreeItemInvoked;
         ObjectTree.SelectionChanged += OnTreeSelectionChanged;
