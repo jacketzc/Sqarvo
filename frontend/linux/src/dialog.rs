@@ -3,6 +3,7 @@
 //! | 元素 | 说明 |
 //! |---|---|
 //! | 驱动 | `AdwComboRow`，选项来自 `SystemService.ListDrivers`（前端不硬编码清单） |
+//! | 别名 | `AdwEntryRow`，**可选**：只改对象树连接行显示的名字，不参与身份键与会话名 |
 //! | 主机 / 端口 / 用户名 | `AdwEntryRow`，服务器型驱动可见，即时校验非空与端口范围 |
 //! | 数据库 | `AdwEntryRow`，服务器型驱动可见；**可选**（留空 = 连上后浏览所有库，ADR 0024） |
 //! | TLS 模式 | `AdwComboRow`，对应 `TlsMode` 五个取值（服务器型驱动可见）；`verify-ca` 的文案随驱动能力重建：驱动不支持「只校链」时标注「等同 verify-full」 |
@@ -96,6 +97,8 @@ pub struct ConnectionDialog {
     dialog: adw::Dialog,
     title: adw::WindowTitle,
     driver_row: adw::ComboRow,
+    /// 「别名（可选）」：只影响对象树连接行的展示（空 = 用派生名）。
+    alias_row: adw::EntryRow,
     choices: Vec<DriverChoice>,
     host_row: adw::EntryRow,
     port_row: adw::EntryRow,
@@ -157,6 +160,13 @@ impl ConnectionDialog {
             "字段随驱动切换".to_owned()
         });
 
+        // 别名与驱动族无关：不随 `FieldSet` 显隐，所有驱动都允许取别名。
+        // 它不是连接参数，改了不影响身份键与已有会话的显示名。
+        let alias_row = adw::EntryRow::builder().title("别名（可选）").build();
+        alias_row.set_tooltip_text(Some(
+            "只改左侧列表里这条连接显示的名字；不参与连接身份，也不影响已连接的会话",
+        ));
+
         let host_row = adw::EntryRow::builder()
             .title("主机")
             .text("127.0.0.1")
@@ -196,6 +206,7 @@ impl ConnectionDialog {
 
         let group = adw::PreferencesGroup::builder().title("连接参数").build();
         group.add(&driver_row);
+        group.add(&alias_row);
         group.add(&path_row);
         group.add(&read_only_row);
         group.add(&host_row);
@@ -247,6 +258,7 @@ impl ConnectionDialog {
             dialog,
             title,
             driver_row,
+            alias_row,
             choices,
             host_row,
             port_row,
@@ -489,6 +501,7 @@ impl ConnectionDialog {
         self.save_button.set_sensitive(sensitive && supported);
         self.driver_row
             .set_sensitive(sensitive && !self.choices.is_empty());
+        self.alias_row.set_sensitive(sensitive);
         self.host_row.set_sensitive(sensitive);
         self.port_row.set_sensitive(sensitive);
         self.database_row.set_sensitive(sensitive);
@@ -594,6 +607,7 @@ impl ConnectionDialog {
         self.driver_row.set_selected(index);
         self.apply_selection(index);
 
+        self.alias_row.set_text(&saved.alias);
         self.host_row.set_text(&saved.host);
         self.port_row.set_text(&saved.port.to_string());
         self.database_row.set_text(&saved.database);
@@ -692,6 +706,7 @@ impl ConnectionDialog {
             credential_ref: self.credential_ref.borrow().clone(),
             password: self.password_row.text().to_string(),
             name_override: self.name_override.borrow().clone(),
+            alias: self.alias_row.text().to_string(),
         };
         driver_form::build_draft(&input)
     }

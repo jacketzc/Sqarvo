@@ -219,6 +219,42 @@ state = "none"
 spec_hash = ""
 
 [[component]]
+id = "dialogs.connection.fields.alias"
+parent = "dialogs.connection.fields"
+display_name = "别名（可选）"
+kind = "control"
+status = "active"
+a11y.name = "别名（可选）"
+a11y.tab = "连接参数组内第二行（驱动之后、主机 / 文件路径之前）"
+style.slot = "dialogs"
+style.metrics = ["font_ui", "secondary_min_height"]
+impl_notes = [
+  "所有驱动都显示（不随驱动族显隐）：别名不是连接参数，SQLite 与服务器型驱动都能取。",
+  "只影响对象树连接行与信息面板的标题；不参与连接身份键、不进 gRPC 连接参数、不做会话显示名。",
+  "留空 = 没有别名，界面回落到派生名；保存时去掉首尾空白。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "对话框已打开（新建或编辑），点了「保存并连接」"
+result = "别名随其余非敏感字段一起写入 connections.json 的 alias；旧配置没有该字段时按空别名读取"
+source = "src/dialog.rs:190、src/driver_form.rs:172、src/backend/worker.rs:4018"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "78b03e21ce7a"
+commit = ""
+evidence = "cargo test：别名不进身份键 / 旧配置可读 / 别名不脱敏连接参数"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
 id = "dialogs.connection.fields.host"
 parent = "dialogs.connection.fields"
 display_name = "主机"

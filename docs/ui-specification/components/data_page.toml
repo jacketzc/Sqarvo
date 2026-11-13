@@ -420,18 +420,19 @@ style.metrics = ["row_height_data"]
 impl_notes = [
   "只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。",
   "没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。",
-  "与漏斗互斥：打开卡片会收起筛选面板。",
+  "与漏斗互斥：打开它会把筛选面板 popdown。",
+  "面板形态与筛选面板一致：挂在按钮上的 GtkPopover（autohide=false），不再是主窗口里的页内卡片。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "当前表有列"
-result = "打开 / 收起页内「列显隐」卡片（复选框清单）；再点一次收起"
-source = "src/data_page.rs:2324、src/data_page.rs:1757"
+result = "打开 / 收起挂在按钮上的「列显隐」popover（复选框清单）；再点一次收起"
+source = "src/data_page.rs:2337、src/data_page.rs:1371"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6e023a095258"
+spec_hash = "327a0fa3ba76"
 commit = ""
 evidence = "§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility"
 
@@ -453,10 +454,12 @@ status = "active"
 a11y.name = "列显隐"
 style.metrics = ["radius_lg", "row_height_data"]
 impl_notes = [
-  "页内右对齐卡片（不是独立窗口，也不是 popover）：标题「列显隐」+ 复选框清单 + ✕；卡片宽度 300 与清单最大高度 260 是代码常量，**未进 metrics**。",
-  "说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」",
+  "`GtkPopover`（`autohide=false`），挂在眼睛按钮上：标题「列显隐」+ 分区标题「列」+ 复选框清单 + ✕ + 说明行；宽度取 `metrics.filter_panel_width`，清单高度与筛选面板的条件清单同口径（140 上限 / 60 下限）。",
+  "样式与筛选面板**同一套**：容器 `sqarvo-fs`，标题 `fs-title`，分区 `fs-section`，清单 `fs-list`，复选行 `fs-row`（24px 行高、淡底、1px 描边）。",
+  "说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与导出口径不变。」",
   "复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。",
   "换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。",
+  "是独立 popup surface，不在主窗口 render tree 里：截图取证要用 `qa::save_widget` 拍控件本身。",
 ]
 
 [[component.interaction]]
@@ -468,12 +471,12 @@ source = "src/data_page.rs:2361、src/data_page.rs:2316"
 [[component.interaction]]
 trigger = "click"
 precondition = "卡片已打开"
-result = "点 ✕ 收起卡片，隐藏选择保持不变"
-source = "src/data_page.rs:1763"
+result = "点 ✕ 收起 popover，隐藏选择保持不变"
+source = "src/data_page.rs:1893"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "86fa1b4dee70"
+spec_hash = "507aab2f7d24"
 commit = ""
 evidence = "§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled"
 

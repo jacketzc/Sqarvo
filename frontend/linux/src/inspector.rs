@@ -598,7 +598,8 @@ impl Inspector {
             });
             return;
         };
-        self.title.set_text(&saved.name);
+        // 标题与对象树连接行同一个口径：别名优先，没有别名回落派生名。
+        self.title.set_text(saved.label());
         self.subtitle.set_text(&saved.driver);
         let facts = connection_facts(saved, live);
         fill_facts(&self.connection_rows, &facts);
@@ -1292,6 +1293,7 @@ mod tests {
 
     fn saved(driver: &str) -> SavedConnection {
         SavedConnection {
+            alias: String::new(),
             name: "本地测试库".to_owned(),
             driver: driver.to_owned(),
             host: "127.0.0.1".to_owned(),
@@ -1307,6 +1309,7 @@ mod tests {
 
     fn sqlite(path: &str) -> SavedConnection {
         SavedConnection {
+            alias: String::new(),
             name: "demo.db".to_owned(),
             driver: crate::config::SQLITE_DRIVER_ID.to_owned(),
             host: String::new(),

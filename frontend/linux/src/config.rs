@@ -31,8 +31,14 @@ pub const SQLITE_DRIVER_ID: &str = "sqlite";
 /// 一条保存的连接（不含任何敏感信息）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedConnection {
-    /// 用户可见名称。
+    /// 用户可见名称（会话显示名 / 标题规则用的「连接名」，由驱动与目标派生或用户指定）。
     pub name: String,
+    /// 用户给这条连接起的别名（可空）。
+    ///
+    /// 只影响界面展示（对象树连接行）：空 = 显示 [`Self::name`]。**不参与**
+    /// [`Self::key`]（改别名不是换一条连接），也不进连接参数与会话显示名。
+    #[serde(default)]
+    pub alias: String,
     /// 驱动 ID（来自 `ListDrivers`）。
     pub driver: String,
     /// 主机（服务器型驱动）。
@@ -100,6 +106,19 @@ impl SavedConnection {
     pub fn file_target(&self) -> Option<&str> {
         (self.driver == SQLITE_DRIVER_ID && !self.file_path.is_empty())
             .then_some(self.file_path.as_str())
+    }
+
+    /// 界面上显示的名字：别名优先，没有别名回落 [`Self::name`]。
+    ///
+    /// 别名只影响展示：会话显示名、标题规则与连接身份键仍用 [`Self::name`] /
+    /// [`Self::key`]，否则改个显示名会连带换掉会话与凭据归属。
+    #[must_use]
+    pub fn label(&self) -> &str {
+        if self.alias.trim().is_empty() {
+            &self.name
+        } else {
+            &self.alias
+        }
     }
 
     /// 连接目标的展示文案：服务器型 `user@host:port/db`，文件型是文件路径。
@@ -419,6 +438,7 @@ mod tests {
     fn entry(reference: &str) -> SavedConnection {
         SavedConnection {
             name: "sqarvo_test@127.0.0.1/sqarvo_test".to_owned(),
+            alias: String::new(),
             driver: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,
@@ -435,6 +455,7 @@ mod tests {
     fn sqlite_entry(path: &str) -> SavedConnection {
         SavedConnection {
             name: "demo.db（SQLite）".to_owned(),
+            alias: String::new(),
             driver: "sqlite".to_owned(),
             host: String::new(),
             port: 0,
@@ -743,6 +764,57 @@ mod tests {
             assert!(dir.ends_with("sqarvo/Sqarvo"), "{}", dir.display());
             assert_eq!(dir.join(FILE_NAME).file_name().unwrap(), FILE_NAME);
         }
+    }
+
+    // -- 别名（#175）：只影响展示，不进身份键 --------------------------------
+
+    #[test]
+    fn alias_does_not_participate_in_the_identity_key() {
+        let plain = entry(REF);
+        let mut aliased = entry(REF);
+        aliased.alias = "开发库".to_owned();
+
+        assert_eq!(
+            plain.key(),
+            aliased.key(),
+            "改别名不是换一条连接：身份键必须不变"
+        );
+        // 别名也不会写进目标文案（树 tooltip 的第二行是连接参数）。
+        assert_eq!(plain.target_label(), aliased.target_label());
+    }
+
+    #[test]
+    fn label_falls_back_to_name_when_alias_is_empty() {
+        let mut connection = entry(REF);
+        assert_eq!(connection.label(), connection.name);
+
+        connection.alias = "   ".to_owned();
+        assert_eq!(connection.label(), connection.name, "只有空白等于没填别名");
+
+        connection.alias = "开发库".to_owned();
+        assert_eq!(connection.label(), "开发库");
+    }
+
+    #[test]
+    fn alias_survives_a_roundtrip_and_old_files_still_load() {
+        let mut connection = entry(REF);
+        connection.alias = "开发库".to_owned();
+        let document = Document {
+            version: DOCUMENT_VERSION,
+            connections: vec![connection.clone()],
+        };
+        let json = serde_json::to_string(&document).expect("序列化");
+        assert!(json.contains("\"alias\""), "别名要落盘：{json}");
+        let parsed: Document = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(parsed.connections[0].alias, "开发库");
+
+        // 旧版本文件没有 alias 字段：必须照样读成空别名，不是解析失败。
+        let legacy = r#"{"version":1,"connections":[{"name":"旧条目","driver":"mariadb",
+            "host":"127.0.0.1","port":3306,"database":"d","username":"u",
+            "tls_mode":"preferred","credential_ref":""}]}"#;
+        let parsed: Document = serde_json::from_str(legacy).expect("旧文件应能解析");
+        assert_eq!(parsed.connections[0].alias, "");
+        assert_eq!(parsed.connections[0].label(), "旧条目");
     }
 
     // -- #144：删除连接（启动态侧栏右键「删除连接」） ------------------------

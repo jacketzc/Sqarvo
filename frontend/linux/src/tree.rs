@@ -586,7 +586,8 @@ impl Row {
     /// 展示名。
     fn display_name(&self) -> &str {
         match self {
-            Self::Connection(snapshot) => &snapshot.name,
+            // 连接行显示别名（没有别名时 label() 回落到派生名）。
+            Self::Connection(snapshot) => snapshot.label(),
             Self::Group(group) => group.group.label(),
             Self::Object(node) => &node.display_name,
             Self::Note(note) => &note.text,
@@ -657,9 +658,16 @@ impl Row {
                         snapshot.detail.clone()
                     }
                 };
+                // 别名优先显示；有别名时把连接名一并给出（同一个目标的第二条连接
+                // 只能靠它区分）。
+                let title = if snapshot.label() == snapshot.name {
+                    snapshot.name.clone()
+                } else {
+                    format!("{}（连接名 {}）", snapshot.label(), snapshot.name)
+                };
                 format!(
                     "{} · {}\n{}\n{}{}\n右键：连接 / 断开连接 / 刷新连接",
-                    snapshot.name,
+                    title,
                     snapshot.driver,
                     snapshot.target,
                     state,
@@ -707,6 +715,12 @@ impl Row {
             Self::Note(note) => note.text.clone(),
         }
     }
+}
+
+/// 按名字找连接行：**别名与连接名都算**（用户看得到的是别名，配置里的
+/// 会话名仍是 `name`；两条都必须能指认同一行）。
+fn connection_matches(snapshot: &ConnectionSnapshot, name: &str) -> bool {
+    snapshot.label() == name || snapshot.name == name
 }
 
 /// 树节点的右键菜单条目（文案与出现条件集中在这里，纯数据便于单测）。
@@ -1123,6 +1137,12 @@ impl TreePanel {
 
                 // 右键菜单：每行一个手势（行控件由 ListView 复用，手势只装一次，
                 // 每次点击时按当前 item 解析行数据）。
+                //
+                // 锚点**不能**是行控件本身：`GtkListView` 会回收/重绑行控件，树上任何一次
+                // 刷新（选中连接、注册表通知、`ListSessions` 回来）都会让菜单连同它的父
+                // 控件一起消失——用户点下去时菜单已不在指针下，那一击落到树行上，表现为
+                // 「点了编辑连接…什么都没发生」（#175）。锚点固定为树视图，点击坐标从
+                // 行控件换算过去。
                 let gesture = gtk::GestureClick::new();
                 gesture.set_button(3);
                 let slot = Rc::clone(&slot);
@@ -1140,7 +1160,19 @@ impl TreePanel {
                         return;
                     };
                     let _ = gesture;
-                    panel.show_context_menu(&row, anchor.upcast_ref(), x, y);
+                    let origin = gtk::graphene::Point::new(x as f32, y as f32);
+                    let Some(point) = anchor.compute_point(&panel.list_view, &origin) else {
+                        // 取不到换算（行控件已不在树视图里）：直接用行控件兜底，
+                        // 至少菜单还出得来，不比改之前差。
+                        panel.show_context_menu(&row, anchor.upcast_ref(), x, y);
+                        return;
+                    };
+                    panel.show_context_menu(
+                        &row,
+                        panel.list_view.upcast_ref::<gtk::Widget>(),
+                        f64::from(point.x()),
+                        f64::from(point.y()),
+                    );
                 });
                 row_box.add_controller(gesture);
             }
@@ -1991,7 +2023,7 @@ impl TreePanel {
                 let selection = panel.current_selection();
                 match &selection {
                     TreeSelection::Connection(snapshot) => {
-                        eprintln!("[tree] 选中连接：{}", snapshot.name);
+                        eprintln!("[tree] 选中连接：{}", snapshot.label());
                     }
                     TreeSelection::Object { node, .. } => eprintln!(
                         "[tree] 选中对象：{}（{}）",
@@ -2043,7 +2075,7 @@ impl TreePanel {
                         // 判断与启动态侧栏共用（`connect_saved`，AGENTS §13 的单测覆盖它）。
                         eprintln!(
                             "[tree] 点击连接「{}」（{}）→ connect_saved",
-                            snapshot.name,
+                            snapshot.label(),
                             snapshot.state.name()
                         );
                         (panel.callbacks.connect_saved)(snapshot.key.clone());
@@ -2250,13 +2282,15 @@ impl TreePanel {
         {
             let mut runs = self.search_runs.borrow_mut();
             for snapshot in &snapshots {
-                let name_hit = contains_ignore_case(&snapshot.name, query);
+                // 别名也参与匹配：树上显示的是别名，搜连接名搜不到会让人以为没有这条。
+                let name_hit = contains_ignore_case(snapshot.label(), query)
+                    || contains_ignore_case(&snapshot.name, query);
                 if name_hit {
                     name_hits += 1;
                 }
                 runs.push(ConnectionSearch {
                     key: snapshot.key.clone(),
-                    name: snapshot.name.clone(),
+                    name: snapshot.label().to_owned(),
                     badge: snapshot.state.badge().to_owned(),
                     name_hit,
                     catalogs: Vec::new(),
@@ -3314,7 +3348,11 @@ impl TreePanel {
         if row.is_note() {
             return;
         }
-        if let Some(previous) = self.context_menu.borrow_mut().take() {
+        // 先把旧菜单从字段里**取出来**，再收起它：`popdown()` 会同步触发 `closed`
+        // 处理器里的 `context_menu.borrow_mut()`，借用还活着时重入会 panic
+        // （`RefCell already borrowed`），而在 C 回调里不能 unwind → 整个进程 abort。
+        let previous = self.context_menu.borrow_mut().take();
+        if let Some(previous) = previous {
             previous.popdown();
             previous.popover().unparent();
         }
@@ -4105,7 +4143,7 @@ impl TreePanel {
             let Row::Connection(snapshot) = view else {
                 continue;
             };
-            if snapshot.name != name {
+            if !connection_matches(&snapshot, name) {
                 continue;
             }
             self.select_position(position);
@@ -4129,7 +4167,7 @@ impl TreePanel {
             let Row::Connection(snapshot) = view else {
                 continue;
             };
-            if snapshot.name != name {
+            if !connection_matches(&snapshot, name) {
                 continue;
             }
             eprintln!("[qa] 启动态侧栏激活已保存连接「{name}」");
@@ -4153,7 +4191,7 @@ impl TreePanel {
             let Row::Connection(snapshot) = view else {
                 continue;
             };
-            if snapshot.name == name {
+            if connection_matches(&snapshot, name) {
                 target = Some(snapshot.clone());
                 break;
             }
@@ -4333,7 +4371,7 @@ impl TreePanel {
             let Some(Row::Connection(snapshot)) = self.row_of(&row) else {
                 continue;
             };
-            if snapshot.name != name {
+            if !connection_matches(&snapshot, name) {
                 continue;
             }
             states.push(snapshot.state.name());
@@ -4762,6 +4800,7 @@ mod tests {
     fn connection_rows_are_ancestors_of_their_own_connection_only() {
         let table = view("orders", ObjectKind::Table, "db1", "");
         let snapshot = ConnectionSnapshot {
+            alias: String::new(),
             key: "k1".to_owned(),
             name: "本地".to_owned(),
             driver: "sqlite".to_owned(),
@@ -4915,6 +4954,7 @@ mod tests {
 
     fn connection(state: ConnectionState) -> Row {
         Row::Connection(Rc::new(ConnectionSnapshot {
+            alias: String::new(),
             key: "k1".to_owned(),
             name: "本地".to_owned(),
             driver: "sqlite".to_owned(),

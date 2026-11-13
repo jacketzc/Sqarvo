@@ -130,6 +130,8 @@ pub struct FormInput {
     pub credential_ref: Option<String>,
     /// 本次输入的密码。
     pub password: String,
+    /// 用户给这条连接起的别名（可空；只影响对象树连接行的展示）。
+    pub alias: String,
     /// QA 档案指定的会话显示名。
     pub name_override: Option<String>,
 }
@@ -152,6 +154,8 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     let fields = fields_for(family);
     let mut draft = ConnectionDraft {
         name: String::new(),
+        // 别名与驱动族无关：所有驱动都允许取别名，且不参与身份键。
+        alias: input.alias.trim().to_owned(),
         driver_id: input.driver_id.clone(),
         host: String::new(),
         port: 0,
@@ -462,6 +466,40 @@ mod tests {
         let draft = build_draft(&input).expect("只读草稿应有效");
         assert!(draft.read_only);
         assert_eq!(draft.name, "demo.db（SQLite 只读）");
+    }
+
+    #[test]
+    fn alias_is_carried_into_the_draft_and_trimmed() {
+        let mut input = mariadb_input();
+        input.alias = "  开发库  ".to_owned();
+        let draft = build_draft(&input).expect("别名不影响校验");
+        assert_eq!(draft.alias, "开发库", "别名要去掉首尾空白");
+
+        // 别名不是连接参数：派生名、身份键（配置层）都不受影响。
+        assert_eq!(draft.name, "sqarvo_test@127.0.0.1/sqarvo_test");
+        let params = draft.params("sqarvo:conn/ignored");
+        assert_eq!(params.host, "127.0.0.1");
+        assert!(
+            !format!("{params:?}").contains("开发库"),
+            "别名不进连接参数"
+        );
+    }
+
+    #[test]
+    fn alias_is_optional_and_empty_by_default() {
+        let draft = build_draft(&mariadb_input()).expect("默认无别名");
+        assert!(draft.alias.is_empty(), "没填别名就是空串，不是 None/占位");
+
+        // 文件型驱动同样允许别名（与驱动族无关）。
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("demo.db");
+        std::fs::write(&path, b"").expect("建空文件");
+        let mut input = sqlite_input(path.to_str().expect("UTF-8 路径"));
+        input.alias = "本地库".to_owned();
+        assert_eq!(
+            build_draft(&input).expect("SQLite 也允许别名").alias,
+            "本地库"
+        );
     }
 
     #[test]

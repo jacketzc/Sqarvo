@@ -485,6 +485,10 @@ pub fn activate(app: &adw::Application) {
                         .connect_count
                         .set(pump_state.connect_count.get() + 1);
                     browse_session_opened(&pump_state, &registry, &key, &session);
+                    // 启动态点击（`--qa-startup-click`）连上之后工作区才出现：树 / 搜索等
+                    // QA 步骤要在这一步之后才排得上（`ConnectResult` 路径里那次调用此时
+                    // 还没有工作区，直接返回）。
+                    maybe_run_qa_tree(&pump_state);
                 }
                 if let Some((key, stage, message, code)) = failure
                     && code == "credential.not_found"
@@ -1105,9 +1109,20 @@ fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
         eprintln!("[sqarvo-desktop] 后端尚未连接，忽略「新建连接」");
         return;
     }
-    if let Some(dialog) = state.dialog.borrow().as_ref() {
-        dialog.present(&state.window);
-        return;
+    // 已有对话框时不能一律「呈现旧的」：
+    // - 新建（`saved_key` 为空）：同一张表单，呈现它即可；
+    // - 编辑：旧实例可能停在另一条连接上，也可能已经被关闭（对已关闭的
+    //   `AdwDialog` 调 `present()` 是空操作，用户看到的就是「点了没反应」，#175），
+    //   因此丢弃旧实例、按 `saved_key` 重建。
+    // 借用先取出来：`force_close()` 会同步触发 `closed` 处理器里的 `borrow_mut()`。
+    let existing = state.dialog.borrow().as_ref().cloned();
+    if let Some(existing) = existing {
+        if saved_key.is_none() {
+            existing.present(&state.window);
+            return;
+        }
+        existing.force_close();
+        state.dialog.borrow_mut().take();
     }
 
     let drivers = state.drivers.borrow().clone();
@@ -2753,6 +2768,18 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
             _ => crate::tree::KindGroup::Tables,
         };
         schedule_step(delay, Rc::new(move || tree.qa_open_group_menu(group)));
+        delay += 700;
+    }
+
+    if let Some(name) = crate::qa::tree_menu_connection() {
+        let tree = Rc::clone(&workspace.tree);
+        schedule_step(
+            delay,
+            Rc::new(move || {
+                tree.qa_open_connection_menu(&name)
+                    .map(|()| format!("打开发连接「{name}」的右键菜单"))
+            }),
+        );
         delay += 700;
     }
 

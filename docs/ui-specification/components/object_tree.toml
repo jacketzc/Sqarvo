@@ -183,8 +183,13 @@ display_name = "连接行"
 kind = "row"
 status = "active"
 style.icon = ["tree.connection"]
-a11y.name = "（行内容：连接名 + 连接态徽标）"
-impl_notes = ["行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。"]
+a11y.name = "（行内容：连接名或别名 + 连接态徽标）"
+impl_notes = [
+  "行首文字优先显示**别名**（`SavedConnection.alias`），别名为空或只有空白时回落到派生名（`user@host[/db]`、`文件名（SQLite）`）。",
+  "别名只影响展示：连接身份键、会话显示名、标题规则与断开/删除用的键仍是被派生名与目标算出的那一份。",
+  "tooltip 第一行是别名优先的标题；有别名时同一行里补「（连接名 …）」，免得同一个目标的第二条连接看不出区别。",
+  "行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案；搜索同时匹配别名与连接名。",
+]
 
 [[component.interaction]]
 trigger = "double_click"
@@ -200,7 +205,7 @@ source = "src/tree.rs:2858"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "4aaed15e7aad"
+spec_hash = "a4dcdb39d68f"
 commit = "7436cd5"
 evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
 
@@ -779,19 +784,23 @@ kind = "item"
 a11y.name = "编辑连接…"
 status = "active"
 style.metrics = ["font_ui"]
-impl_notes = ["密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。"]
+impl_notes = [
+  "密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。",
+  "菜单的 popover 锚在**树视图**上（不是行控件）：GtkListView 会回收行控件，锚在行上时树一刷新菜单就消失，点击落到树行 →「点了没反应」。",
+  "编辑时若已存在对话框，先丢弃旧实例再按这条连接的键重建并预填：对已关闭的 AdwDialog 调 present() 是空操作。",
+]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "连接存在于配置里"
-result = "打开连接对话框并预填非敏感字段"
-source = "src/ui.rs:785、src/ui.rs:989"
+result = "打开连接对话框并预填非敏感字段（含别名）"
+source = "src/tree.rs:3347、src/ui.rs:1107"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "266a294cca36"
-commit = "7436cd5"
-evidence = "§2.3 编辑连接"
+spec_hash = "fc3dfc8a2bff"
+commit = ""
+evidence = "§2.3 编辑连接；--qa-tree-menu-connection + --qa-tree-menu-pick 编辑连接… → 日志「已用已保存连接…预填对话框」"
 
 [component.sync.windows]
 state = "none"

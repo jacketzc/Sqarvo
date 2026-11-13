@@ -154,8 +154,10 @@ pub fn saved_click_action(state: ConnectionState, saved: &SavedConnection) -> Sa
 pub struct ConnectionSnapshot {
     /// 节点键（[`SavedConnection::key`]，断开/连接都靠它定位）。
     pub key: String,
-    /// 用户可见名称。
+    /// 用户可见名称（会话显示名 / 标题规则；连接身份不变）。
     pub name: String,
+    /// 用户起的别名（可空；对象树连接行优先显示它）。
+    pub alias: String,
     /// 驱动 ID。
     pub driver: String,
     /// 目标（`user@host:port/db` 或文件路径）。
@@ -171,6 +173,19 @@ pub struct ConnectionSnapshot {
 }
 
 impl ConnectionSnapshot {
+    /// 界面上显示的名字：别名优先，没有别名回落 [`Self::name`]。
+    ///
+    /// 与 [`crate::config::SavedConnection::label`] 同一条规则（树只拿得到快照，
+    /// 拿不到整份配置）。只影响展示：会话、断开与标题仍用 `name` / `key`。
+    #[must_use]
+    pub fn label(&self) -> &str {
+        if self.alias.trim().is_empty() {
+            &self.name
+        } else {
+            &self.alias
+        }
+    }
+
     /// 短会话 ID（界面展示用；完整值在日志与 tooltip 里）。
     #[must_use]
     pub fn short_session(&self) -> String {
@@ -210,6 +225,7 @@ pub fn connection_key(saved: &SavedConnection) -> String {
 pub fn draft_from_saved(saved: &SavedConnection) -> ConnectionDraft {
     ConnectionDraft {
         name: saved.name.clone(),
+        alias: saved.alias.clone(),
         driver_id: saved.driver.clone(),
         host: saved.host.clone(),
         port: saved.port,
@@ -645,6 +661,7 @@ impl ConnectionRegistry {
             .map(|entry| ConnectionSnapshot {
                 key: entry.key.clone(),
                 name: entry.saved.name.clone(),
+                alias: entry.saved.alias.clone(),
                 driver: entry.saved.driver.clone(),
                 target: entry.saved.target_label(),
                 state: entry.state,
@@ -1103,6 +1120,7 @@ mod tests {
     fn sqlite(name: &str, path: &str) -> SavedConnection {
         SavedConnection {
             name: name.to_owned(),
+            alias: String::new(),
             driver: "sqlite".to_owned(),
             host: String::new(),
             port: 0,
@@ -1118,6 +1136,7 @@ mod tests {
     fn mariadb(name: &str) -> SavedConnection {
         SavedConnection {
             name: name.to_owned(),
+            alias: String::new(),
             driver: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,

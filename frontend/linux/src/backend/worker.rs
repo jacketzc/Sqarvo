@@ -3839,6 +3839,7 @@ struct PreparedCredential {
 fn identity_candidate(draft: &ConnectionDraft) -> SavedConnection {
     SavedConnection {
         name: draft.name.clone(),
+        alias: draft.alias.clone(),
         driver: draft.driver_id.clone(),
         host: draft.host.clone(),
         port: draft.port,
@@ -4016,6 +4017,7 @@ async fn run_save_and_connect(
     // 配置只保存引用与「怎么连」；密码已经在凭据库里（SQLite 没有密码）。
     let config = config::upsert(SavedConnection {
         name: draft.name.clone(),
+        alias: draft.alias.clone(),
         driver: draft.driver_id.clone(),
         host: draft.host.clone(),
         port: draft.port,
@@ -4251,6 +4253,7 @@ mod tests {
 
         let draft = ConnectionDraft {
             name: "显示名不参与身份".to_owned(),
+            alias: String::new(),
             driver_id: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,
@@ -4264,6 +4267,7 @@ mod tests {
         };
         let saved = SavedConnection {
             name: "另一个名字".to_owned(),
+            alias: "别名也不参与身份".to_owned(),
             driver: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 53306,
