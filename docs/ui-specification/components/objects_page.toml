@@ -39,6 +39,7 @@ evidence = "§3 页面结构逐条对照 tabs.rs（ObjectsPage::new 的 root 只
 [component.sync.windows]
 state = "partial"
 spec_hash = "87ee78c3f00a"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:544"
 note = "§7.1 记录「固定 Objects 页 + 三列表格 + 状态行 + 加载更多…」的存在；页内标题、无作用域说明行的版面与页内距未逐条记录。"
 
 [component.sync.macos]
@@ -96,7 +97,8 @@ evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "22ca13ccb014"
+spec_hash = "e641a40a25b4"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:515"
 note = "§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。"
 
 [component.sync.macos]
@@ -191,7 +193,8 @@ evidence = "§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域�
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "4455a5f9fd98"
+spec_hash = "e520bd448e70"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:579；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:582"
 note = "§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。"
 
 [component.sync.macos]
@@ -241,7 +244,8 @@ evidence = "§3 单击行 / 双击回车行 + theme.stylesheet 的行状态规�
 [component.sync.windows]
 state = "partial"
 spec_hash = "16c105e563c1"
-note = "§7.1 只记录 ↑ / ↓ 移动、Enter 打开（同步信息面板、不反写树的选中）；双击打开与悬停 / 选中底色未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:772；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:905"
+note = "code-vs-doc 差异（AGENTS §14.2）：契约 double_click（:224-228）要求打开数据标签且 Linux 已 done；Windows 双击 / Enter 只调 SelectObjectRow 同步信息面板、不打开表数据标签（ShellView.Metadata.cs:772-776、879-880、905-908），是 Windows 未实现而非文档漏记。建议把 Objects 页双击 / Enter 接到与树双击同一条 OpenTableDataAsync。悬停 / 选中底色差异另待核对；保持 partial，不标 done、不删条目。"
 
 [component.sync.macos]
 state = "none"
@@ -267,7 +271,8 @@ evidence = "§3 行内容（行号列）；number_factory 的 bind 与 tooltip"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a5e0854ca022"
+spec_hash = "01eff810f7aa"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:789"
 note = "§7.1 记录行号宽 row_number_width、右对齐、等宽字体；「第 N 行」tooltip 与 11px 字号未记录。"
 
 [component.sync.macos]
@@ -300,7 +305,8 @@ evidence = "§3 行内容（表名列：图标 + 名称 + tooltip）；name_fact
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "064c23390814"
+spec_hash = "bd97742e6370"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:790"
 note = "§7.1 记录第二列为「名称」（宽 column_width）；表头文案写「名称」、种类图标与 tooltip 文案未记录。"
 
 [component.sync.macos]
@@ -327,7 +333,8 @@ evidence = "§3 行内容（类型列）；kind_factory 的 setup / bind"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "395bb90da65b"
+spec_hash = "89bf2a26ec68"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:722"
 note = "§7.1 记录「类型」列取值（表 / 视图 / 物化视图）；次要信息弱色与列宽 120 未记录。"
 
 [component.sync.macos]
@@ -387,6 +394,7 @@ evidence = "§3 读取中 / 读取成功 / 空结果 / 读取失败 / 没有浏�
 [component.sync.windows]
 state = "partial"
 spec_hash = "e0bbbe2299f6"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:562；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:652"
 note = "§7.1 记录四种文案，但措辞不同：有结果写「已加载 N 个对象（还有更多）」（Linux「共 N 个对象（还有更多）」）；「这条连接没有浏览会话…」未记录。"
 
 [component.sync.macos]

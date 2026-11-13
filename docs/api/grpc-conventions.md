@@ -57,6 +57,7 @@
 | `transaction.not_found` | `NOT_FOUND` | 写入指向的事务不存在或已结束；**不得**退化为自动提交 |
 | `transaction.already_active` | `ALREADY_EXISTS` | 会话已有打开的事务（一个会话同时最多一个） |
 | `transaction.failed` | `FAILED_PRECONDITION` | 事务处于失败态，只能回滚 |
+| `query.id_in_use` | `ALREADY_EXISTS` | 行变更批次的 `query_id` 已有在途批次，同一 ID 不得并发复用（`table_data.proto:304`、`common/src/error.rs:95`；ADR 0018） |
 
 对象树、DDL 与插入行（ADR 0019，v0.2.2）：
 
@@ -71,6 +72,7 @@
 | `table_data.not_null_without_default` | `INVALID_ARGUMENT` | 省略 NOT NULL 列且该列没有默认值可兜底 |
 | `table_data.column_not_insertable` | `INVALID_ARGUMENT` | 列由数据库生成（`GENERATED ALWAYS` 身份列、计算列）；普通 `AUTO_INCREMENT` 不在此列 |
 | `table_data.permission_denied` | `PERMISSION_DENIED` | 缺少 INSERT 权限 |
+| `table_data.truncated_value` | `INVALID_ARGUMENT` | 提交的是被截断的前缀值，不能写回（`table_data.proto:380`、`rpc-server/src/services/mapping.rs:199-206`；ADR 0007） |
 
 两条 NOT NULL 错误**不能合并**：`not_null_violation` 的处置是「去掉这一列或改值」，
 `not_null_without_default` 的处置是「补一个值」，前端提示必须不同。
@@ -83,7 +85,7 @@
 | 取值 | 数值 | 含义 | 前端处置 |
 |---|---|---|---|
 | `READ_ONLY_REASON_UNSPECIFIED` | 0 | 可编辑（`read_only = false`） | 单元格可进入编辑态 |
-| `READ_ONLY_REASON_NO_PRIMARY_KEY` | 1 | 表/视图没有主键，无法稳定定位行；`row_order` 为 `ROW_ORDER_UNSTABLE` | 显示「无主键」文案，禁用编辑 |
+| `READ_ONLY_REASON_NO_PRIMARY_KEY` | 1 | 表/视图没有主键，无法稳定定位行；`ordering` 为 `ROW_ORDER_UNSTABLE` | 显示「无主键」文案，禁用编辑 |
 | `READ_ONLY_REASON_DRIVER_UNSUPPORTED` | 2 | 驱动未声明行编辑能力（`capability.unsupported`） | 显示「驱动不支持」文案，禁用编辑 |
 | `READ_ONLY_REASON_CONNECTION_READ_ONLY` | 3 | 连接以只读方式打开（SQLite `read_only`），写入必被拒 | 显示「连接只读」文案，禁用编辑；提示改用可写连接 |
 
@@ -129,34 +131,114 @@
 | unavailable | `UNAVAILABLE` |
 | internal | `INTERNAL` |
 
+### 错误码的分层（proto 之外的码）
+
+上面各表登记的是**服务端返回**的稳定错误码：它们不在 `proto/` 契约里
+（AGENTS.md §4.3：Protobuf 是前后端通信契约的唯一真值），而是放在 gRPC
+trailing metadata `sqarvo-error-code`（`proto/common/v1/common.proto:7`、
+`frontend/windows/Sqarvo.Core/Protocol/RpcErrorMapper.cs:18`）；前端
+`failure_from_status` 读该键再按码分支（`frontend/linux/src/backend/query.rs:285-300`）。
+此外还有一批码由**客户端本地构造**或**驱动告警**产生，同样不属于 proto 契约，
+按下表分层（Linux 前端路径相对 `frontend/linux/src/backend/`，后端相对 `backend/crates/`）：
+
+| 类别 | 错误码 | 产生位置与去向 |
+|---|---|---|
+| 服务端返回 | `session.not_found`、`query.not_found`、`query.cancelled`、`query.limit_reached`、`transport.failed` | 后端常量 `common/src/error.rs:87,89,91,93,161`；经 trailing metadata `sqarvo-error-code` 返回 |
+| 客户端本地构造 | `table_data.insert_failed` | `table.rs:536`：逐行错误码为空时的本地兜底 |
+| 客户端本地构造 | `table_data.not_open` | `worker.rs:2232`：未打开表时的本地事件 |
+| 客户端本地构造 | `backend.unavailable` | `query.rs:264`、`table.rs:743`、`connection.rs:528`：`UNAVAILABLE` 的本地分类 |
+| 客户端本地构造 | `transport.timeout` | `SqarvoFailure.cs:78`（Windows）、`connection.rs:441`：连接超时的本地映射 |
+| 客户端本地构造 | `query.timeout` | `query.rs:261`：超时的本地分类 |
+| 客户端本地构造 | `result.limit_reached` | `query.rs:262`、:204-207：前端为保护内存主动停止拉取，明确「**不是服务端错误**」 |
+| 驱动告警 | `mariadb.*`：`mariadb.auth_failed`、`mariadb.connect_timeout`、`mariadb.transaction_lost` 等 | 驱动侧稳定码，作为 `sqarvo-error-code` 返回（`connection.rs:520`、`SqarvoFailure.cs:72,79`、`connection/src/manager.rs:1058`） |
+| 驱动告警 | `mariadb.tls_fallback` 等 | 非致命告警走响应内 `Warning`（`common.proto:44-47`、`query.proto:46`；`mariadb.md:673` 的输出里即 `Warning { code: "mariadb.tls_fallback" }`），前端 `client.rs:443-447` 格式化展示，不得丢弃 |
+
+`session.not_found` / `query.not_found` / `query.cancelled` / `transport.failed` 在前端也有
+同名的本地分类兜底（`query.rs:257-264`、`table.rs:742-743`），但主来源是服务端 trailer；
+上表按**主要来源**归类，避免把这些码误读成 proto 字段或新增契约。
+
+`sqarvo-failed-statement=<index>` 仅见于 `docs/decisions/0006-multi-statement-policy.md:25`
+（全仓仅此一处），是 **ADR 规划项，当前未实现**，不是现有契约；v0.1 多语句本就被
+`capability.unsupported` 拒绝（ADR 0006:26-27），不会走到这条 metadata。
+
 ## 认证
 
 所有 RPC 必须携带 metadata `x-sqarvo-token`；缺失或错误返回 `UNAUTHENTICATED`。
 token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/local-ipc.md)。
 
+## 驱动能力位（SystemService.ListDrivers）
+
+`DriverInfo.capabilities`（`proto/services/v1/system.proto:52`）是字符串列表；
+`system.proto:49-50` 只举例 4 项，完整清单以 `Capabilities::names()`
+（`backend/crates/driver-api/src/capabilities.rs:65-104`）的 12 项为准，含义取自
+同文件各字段注释（:15-59）：
+
+| 能力名 | 含义 |
+|---|---|
+| `transactions` | 支持显式事务 |
+| `query_cancellation` | 支持取消正在执行的查询 |
+| `streaming_results` | 支持分批 / 流式读取结果集 |
+| `multiple_statements` | 支持一次提交多条语句（ADR 0006） |
+| `ddl_generation` | 支持生成 DDL |
+| `server_side_pagination` | 支持服务端分页（而不是拉全量后切分） |
+| `catalogs` | 存在 Catalog 层级 |
+| `schemas` | 存在 Schema 层级 |
+| `row_editing` | 支持行编辑：`ApplyRowChanges` 可提交 update / delete（ADR 0017） |
+| `parameterized_statements` | 支持参数化语句：值经绑定占位符进入语句，不拼进 SQL 文本 |
+| `tls_verify_ca_chain_only` | 支持「只校链、不校主机名」的 TLS 模式（ADR 0020） |
+| `table_browse_sort_filter_total` | 表浏览支持排序、筛选与精确总数（ADR 0022） |
+
+名称是稳定标识，**只追加**：不改名、不改变既有项含义、既有顺序不动
+（`system.proto:50-51`、`capabilities.rs:128`）；前端按「未出现即不支持」解释
+（`system.proto:51-52`），不得尝试执行后再判断。
+`table_browse_sort_filter_total` 在 `Capabilities::default()` 里仍为 `false`
+（`capabilities.rs:57-59,171-175`），但两个内置驱动已翻为 `true`：
+`sqlite/src/driver.rs:65`、`mariadb/src/driver.rs:70`（#110 / #111）。
+
 ## 结果集与分页
 
-- `QueryService.Execute` 只返回首批数据（默认 200 行，单批上限 5000 行）；
-- 后续批次通过 `FetchBatch(query_id, statement_index, page_token)` 拉取，token 不透明；
+- `QueryService.Execute` 只返回首批数据（默认 200 行，单批上限 5000 行）——**当前实现默认值，
+  非 proto 契约**：`query.proto:22-23` 只写「0 表示服务端默认值，超过上限压到上限」，未写死数字；
+- `ExecuteQueryResponse.statements[]` / `StatementSummary`（`query.proto:29-47`）在**当前单语句
+  下已实际接线，不是「闲置」**：后端 `rpc-server/src/services/mapping.rs:53,75-86` 把
+  `ExecutionStart.statements` 逐条映射，`ExecutionStart::single` 只填 1 条
+  （`driver-api/src/driver.rs:285-287`），`statement_index` 恒为 0
+  （`rpc-server/tests/grpc_sqlite_e2e.rs:272`）；Linux `frontend/linux/src/backend/client.rs:439`
+  与 Windows `frontend/windows/Sqarvo.Core/Clients/QueryHandle.cs:55` 都读取该字段，三端已接线。
+  ADR 0006 定 **v0.1 单语句约束**：检测到多语句返回 `capability.unsupported`（:26-27），
+  多语句能力由 `multiple_statements` 能力位声明，长期方案才让 `statements[]` 承载多条；
+- 后续批次通过 `FetchBatch(query_id, page_token, max_rows, statement_index)` 拉取
+  （`query.proto:49-55`：字段号 1 / 2 / 3 / 4，按此顺序），token 不透明；
 - `ExecuteQueryRequest.timeout_millis` 为执行超时，0 表示由服务端默认策略决定；
 - `FetchBatchRequest.statement_index` 标识结果集所属语句，v0.1 恒为 0（单语句）；
-- 元数据浏览使用 `PageRequest`/`PageInfo`，单页默认 100、上限 500；
-- 表数据浏览（`TableDataService.BrowseTable`）默认按主键升序，v0.2.3 起使用 **offset 分页**
-  （`offset` / `sort` / `filter` / `include_total`，ADR 0022）；不透明 `page_token` 只保留
-  v0.2.2 的 cursor 兼容路径，与 `sort` 或 `offset > 0` 并用返回 `config.invalid`；无主键表返回
-  `read_only=true` + `ordering=ROW_ORDER_UNSTABLE`（排序 / 筛选仍可用）；
+- 元数据浏览使用 `PageRequest`/`PageInfo`，单页默认 100、上限 500——**当前实现默认值，
+  非 proto 契约**：`common.proto:27-28` 只写「0 表示使用服务端默认值」，未写死数字；
+- 表数据浏览（`TableDataService.BrowseTable`）默认按主键升序，支持 **双模分页并列一等**
+  （`table_data.proto:13-18`，ADR 0022）：不透明 `page_token` 的 cursor 连续翻页与 `offset`
+  页码跳页是两种并列方式，**不是**「只保留 v0.2.2 的 cursor 兼容路径」。
+  互斥只发生在 `offset > 0` 且 `page_token` 非空时，返回 `config.invalid`
+  （`table_data.proto:161-163,166-167`；`rpc-server/src/services/table_data.rs:42,807,1162`
+  也只列 offset 与 page_token 并用）；`sort` 与 `page_token` **是合法组合**——文件头
+  :17-18 只是说「不带 sort、用 page_token 的连续翻页才稳定」，带 `sort` 仍可用 token，
+  但页间稳定性取决于排序列是否唯一（`table_data.proto:87-90`）；
+- 无主键表返回 `read_only=true` + `ordering=ROW_ORDER_UNSTABLE`（排序 / 筛选仍可用）；
 - 行变更单批上限 500 行，超限由服务端钳制并在响应里给出 `clamped` / `deferred_changes`；
 - 不允许通过提高 gRPC message 大小上限来解决大结果集问题。
 
 ## 对象树与搜索（v0.2.2，ADR 0019）
+
+> 本节即 `proto/services/v1/metadata.proto:132` 引用的「对象层级」小节（标题沿用「对象树与
+> 搜索」），该处对目录层请求方式的引用指向本节；不改 proto。
 
 - `ListNodes` **逐层懒加载**：`parent` 为空表示根（当前连接库的对象）；一次只返回直接子节点，
   禁止一次拉整棵树；
 - **目录层怎么请求**（v0.2.2，#82）：`parent.kind = OBJECT_KIND_CATALOG` 且不带名字
   （`catalog` / `schema` / `name` 全空）表示「列出全部 Catalog」；带名字表示展开该目录。
   目录节点的 `catalog` 与 `name` **都**是库名，客户端把节点引用原样回传即可展开。
-  ⚠️ 这是本版实现取的读法：冻结的 `ObjectKind` 注释只写了「根 → 表/视图/序列」与
-  「CATALOG → 表/视图/序列」，没有给「列出全部 Catalog」的独立表达方式；细节见 PR「待定」；
+  该读法已在 `proto/services/v1/metadata.proto:130-132` **明确写入**（`ca0df3c`，#102）：
+  `parent.kind = OBJECT_KIND_CATALOG` 且 `catalog` / `schema` / `name` 全空即「列出全部
+  Catalog」，不再是「待定」。冻结的 `ObjectKind` 注释（:27-57）只描述层级展开，
+  独立表达方式写在 `ListNodesRequest.parent` 的字段注释里；
 - **子节点顺序**：先按种类（`ObjectKind` 声明顺序）、再按名字。v0.2.1 的纯字母序不再是契约，
   客户端不要自己重排（会让分页顺序与 token 语义不一致）；
 - 层级由 `ObjectKind` + `ObjectRef(catalog, schema, name)` 共同表达，展开规则写在
@@ -249,9 +331,16 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 
 ## 取消与幂等
 
-- `Cancel` 必须幂等：重复取消不报错；
+- `QueryService.Cancel`（`query.proto:15`）必须幂等：重复取消不报错；
 - 已完成、已取消或不存在的查询返回成功（`OK`），避免前端重复取消变成错误提示；
-- 取消后仍可能收到最后一批已产生的数据，前端应忽略。
+- 取消后仍可能收到最后一批已产生的数据，前端应忽略；
+- `QueryService.Close`（`query.proto:16`）是与 `Cancel` 并列的独立 RPC（文件头 :8
+  「取消、关闭」；`CancelQueryRequest` / `CloseQueryRequest` 都只带 `query_id`，:65-71）；
+  前端 `QueryHandle.cs:51` 注明 `Cancel` / `Close` 都需要 `QueryId`；
+- 行变更批次的取消走独立的 `TableDataService.CancelRowChanges`（`table_data.proto:57`），
+  **不复用** `QueryService.Cancel`（`table_data.proto:43-44`）；它同样幂等——重复取消、
+  取消已完成 / 不存在的批次都返回成功（`table_data.proto:48,359-363`），驱动未实现取消时
+  返回 `capability.unsupported`（`table_data.proto:56`）。
 
 ## 列元数据的存在性语义
 

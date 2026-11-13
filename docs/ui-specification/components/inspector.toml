@@ -49,6 +49,7 @@ evidence = "§6 面板存在 / 面板内容由谁驱动；shell.rs 分栏 clamp 
 [component.sync.windows]
 state = "partial"
 spec_hash = "e51804ae710f"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:928；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:670"
 note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录。"
 
 [component.sync.macos]
@@ -68,6 +69,7 @@ impl_notes = [
   "标题与副标题之间不留间距（gap_none）：两块读成一组；标题块下沿与分隔线之间留一段（gap_lg），副标题不贴线。",
   "分隔线是面板根容器的直接子控件，从左端铺满内容区；切换条在分隔线下方。",
   "空态与选中态共用这一套外壳：只有标题文字回到「信息面板」、副标题清空。",
+  "纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。",
 ]
 
 [component.sync.linux]
@@ -78,6 +80,7 @@ evidence = "§6 空态保留面板外壳；inspector.rs::new 的 header 与 Sepa
 [component.sync.windows]
 state = "partial"
 spec_hash = "685b1e7ff485"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:425"
 note = "§7.1 记标题 = 连接名 / 库名、副标题 = 驱动 / 「库」；标题块留白与分隔线未记录。"
 
 [component.sync.macos]
@@ -112,7 +115,7 @@ evidence = "§6 没有选中对象；§5 空态与选中态共用外壳（inspec
 [component.sync.windows]
 state = "partial"
 spec_hash = "33fc2281fe42"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:290；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:900"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:290；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:930"
 note = "无选中时内容区留白（RenderInspector 的默认分支只清空 InspectorBody，外壳与「信息面板」标题保留）；但选中分组行时 Windows 走库视图（带「当前分组」字段），没有回到规范要求的空态。"
 
 [component.sync.macos]
@@ -408,6 +411,7 @@ evidence = "§6 表信息页；inspector.rs::render_table_info 的五节"
 [component.sync.windows]
 state = "partial"
 spec_hash = "caa397c3cab7"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1235"
 note = "§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。"
 
 [component.sync.macos]
@@ -752,6 +756,7 @@ evidence = "§6 表信息页的失败路径；inspector.rs::info_note 与 load_t
 [component.sync.windows]
 state = "partial"
 spec_hash = "e18b5b426013"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1206；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1212"
 note = "§7.1 只记「列读取失败：…」；「正在读取列、主键与索引…」与没有浏览会话时的说明未记录。"
 
 [component.sync.macos]

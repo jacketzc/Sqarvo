@@ -41,6 +41,7 @@ evidence = "v0.2.5 Linux 客户端；§7 两行结构逐条对照 shell.rs（Sta
 [component.sync.windows]
 state = "partial"
 spec_hash = "65e45bcbacb2"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:706-716"
 note = "§7.1 只记了「两行状态栏外壳」这一句；行 1 / 行 2 的真实分格与文案来源见 `platform_notes.windows`（`已连接 · 驱动 N · 浏览会话 M` 在行 1 左格，不在 §7.1 说的行 2 右格）。#170 的视觉重做已整体回退，现状是 #169 稳定版外壳，#172 / #173 对状态栏只换文案。"
 
 [component.sync.macos]
@@ -54,12 +55,13 @@ display_name = "左边沟（分栏线左侧整块）"
 kind = "container"
 status = "active"
 style.slot = "status_bar.left_gutter"
-style.metrics = ["sidebar_width", "status_height"]
+style.metrics = ["sidebar_width", "status_height", "grid_padding_end"]
 style.tokens = ["sqarvo_separator"]
 impl_notes = [
   "宽度 = 侧栏当前宽度（set_gutter_width），右侧一条竖分割线一直延伸到底，与上面的分栏线同一根轴。",
   "沟里只放对象树搜索框与它下方一行搜索状态（归属对象树功能区，见 object_tree.search / .box / .status）；搜索框本体不在这里重复登记。",
   "沟本身不加内边距：搜索框的左右 8（gap_md）记在搜索框自己的 margin 上，改宽度不会把它撑开。",
+  "本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。",
 ]
 platform_notes.windows = "同一个沟：`StatusGutterColumn` 宽 = 侧栏 + `GridPaddingEnd`（拖分栏线同步），里面一个 `TreeSearchBox`（宽 = 侧栏、垂直居中、**禁用**：搜索尚未接线，tooltip 给「对象树搜索（当前不可用：搜索尚未接线，服务端 filter.name.contains 已就绪）」）；搜索框下方没有搜索状态行。"
 
@@ -71,13 +73,14 @@ source = "src/shell.rs:1301、src/shell.rs:1250"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f5e7e4e045bc"
+spec_hash = "4c872715c9f9"
 commit = ""
 evidence = "§7 左边沟（宽度跟分栏、竖线到底）；set_gutter_width 与 mount_search"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "f5e7e4e045bc"
+spec_hash = "4c872715c9f9"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:713-729；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:810"
 note = "沟与宽度联动已按 §7 做（`UpdateStatusGutter`：沟宽 = 侧栏 + `GridPaddingEnd`、竖线 `Stretch` 到底）；搜索框在场但恒禁用（未接线），「下方一行搜索状态」没有。§7.1 未记录这个沟。"
 
 [component.sync.macos]
@@ -96,6 +99,7 @@ impl_notes = [
   "左起就是行操作：左边沟已经整块留给对象树，行 1 里没有「连接过滤」也没有第二个刷新按钮。",
   "中间一个可扩展空白把右组（选中数 · 展示形式 · 分页器）推到窗口右端；间距 8（gap_md）。",
   "行 1 自己没有交互与读数：可用性来自 status_bar.row1.ops 的六个按钮、分页器来自 status_bar.row1.pager，本组件只记布局。",
+  "本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。",
 ]
 platform_notes.windows = "行 1 实为两格：左格 `StatusLineText` = 后端状态线（`已连接 · 驱动 N · 浏览会话 M` / `连接中 · 驱动 0 · 浏览会话 0` / `未连接 · 驱动 0 · 浏览会话 0`，tooltip 带 `[<错误码>]`）；右格依次是六个行操作按钮、搜索按钮（恒禁用）、结果行数（查询页写 `N 行 / 已取 M 行`）、只读页码 `第 N 页 / 共 ? 页`。选中数、展示形式切换、四个翻页按钮都不在行 1。"
 
@@ -108,6 +112,7 @@ evidence = "§7 行 1；shell.rs 行 1 三组的组装与 audit_groups 自检"
 [component.sync.windows]
 state = "partial"
 spec_hash = "097b113df3f1"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:743-758；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:766"
 note = "行 1 存在：左格后端状态线、右格六个行操作按钮 + 搜索（禁用）+ 结果行数 + 只读页码；选中数与展示形式切换没有，翻页动作在数据页动作行。§7.1 只记了「应用 / 撤销 / 取消」三枚按钮，与 XAML 不符，以 `platform_notes.windows` 为准。"
 
 [component.sync.macos]
@@ -120,7 +125,7 @@ parent = "status_bar.row1"
 display_name = "行操作按钮组（新增 / 删除 / 应用 / 撤销 / 刷新 / 取消）"
 kind = "container"
 status = "active"
-style.metrics = ["icon_button_width", "icon_button_height"]
+style.metrics = ["icon_button_width", "icon_button_height", "grid_padding_end"]
 style.states = { disabled = "sqarvo_status_fg" }
 impl_notes = [
   "六个图标按钮连成一组（linked，组内间距 0），图标盒与命中区统一走 icon_button_width / icon_button_height，不按单个字形调大小。",
@@ -146,13 +151,14 @@ source = "src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c5ac7dd10c67"
+spec_hash = "c3969c7caea2"
 commit = ""
 evidence = "§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "c5ac7dd10c67"
+spec_hash = "c3969c7caea2"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:766-788；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:883-898"
 note = "§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。"
 
 [component.sync.macos]
@@ -190,8 +196,9 @@ evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a37eae543e2f"
-note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。"
+spec_hash = "e58f5984fd26"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:770；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2069-2072"
+note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。§9.1 裁决待落实：按钮仍渲染并禁用（未删除），保持 partial，不改 `na`。"
 
 [component.sync.macos]
 state = "none"
@@ -228,8 +235,9 @@ evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "6b823444daae"
-note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。"
+spec_hash = "27fdf866d95e"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:773；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2069-2072"
+note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。§9.1 裁决待落实：按钮仍渲染并禁用（未删除），保持 partial，不改 `na`。"
 
 [component.sync.macos]
 state = "none"
@@ -265,7 +273,8 @@ evidence = "§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同�
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e2c99799bd28"
+spec_hash = "fd1005a8faa7"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:776；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:211-215；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2041"
 note = "§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行改「再按一次确认」；禁用态 tooltip 句式未记录。"
 
 [component.sync.macos]
@@ -303,7 +312,8 @@ evidence = "§7 行 1；RowOp::Discard → discard_changes"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "117da18a421c"
+spec_hash = "579c4410974b"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:779；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:219-223；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2053"
 note = "§7.1 记录状态栏「撤销（↶）」与 Ctrl+Z 同一路径；可用性判定与禁用态 tooltip 未记录。"
 
 [component.sync.macos]
@@ -342,7 +352,8 @@ evidence = "§7 行 1「刷新单独按状态判定」；refresh_available + Row
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "5cc16d80e34b"
+spec_hash = "a91d1de6d8cc"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:782；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:227-231；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2058-2061"
 note = "可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。"
 
 [component.sync.macos]
@@ -381,7 +392,8 @@ evidence = "§7「取消只在批次在途时可点」；RowOpsState.cancel + re
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "16c5340e3568"
+spec_hash = "6c04cfc50017"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:785；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:235-239；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2063-2066"
 note = "§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。"
 
 [component.sync.macos]
@@ -498,6 +510,7 @@ evidence = "§7 行 1 分页器；PAGER_NOTE + apply_snapshot 的可见性与可
 [component.sync.windows]
 state = "partial"
 spec_hash = "a67598c6e550"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:807-814；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2037"
 note = "只有只读页码一格，没有四枚翻页按钮；取数动作在数据页动作行，§7.1 未记录状态栏分页器。"
 
 [component.sync.macos]
@@ -670,6 +683,7 @@ evidence = "§7 行 1 分页器只读摘要；apply_snapshot 的 pager_text"
 [component.sync.windows]
 state = "partial"
 spec_hash = "5f8c3d371068"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:809-814；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2037-2038"
 note = "有只读页码，没有总数后缀与中间态文案；§7.1 未记录状态栏页码摘要。"
 
 [component.sync.macos]
@@ -689,6 +703,7 @@ impl_notes = [
   "左段紧贴行操作正下方（同一左边界），不跨到窗口最左。",
   "文案一律用 ASCII 冒号（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线（实测偏高 2px）。",
   "行号区间、连接名、库名、事务状态、上次耗时都不在这里：表名 / 库在标签名里，事务在表格工具条里。",
+  "本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。",
 ]
 platform_notes.windows = "行 2 两格与 §7 不同：左格是 `SQL: <摘要>` 或**一次性提示**（`_notice` 优先：编辑被拒原因 / 提交结果 / 守卫说明 / 标签上限），右格依次是**事务状态**、会话名、`Last Refresh`。事务状态取 `只读` / `自动提交` / `未提交 N 行` / `提交中…` / `已回滚`（优先序 提交中 → 只读 → 有脏行 → 已回滚 → 自动提交），无显式事务时 tooltip 写「事务：<label>（没有显式事务：提交时按自动提交执行）」——Linux 状态栏没有这一格（v0.2.3.3 删掉，事务在表格工具条）。"
 
@@ -701,6 +716,7 @@ evidence = "§7 行 2；workspace-model §7 的两段排版与 ASCII 冒号约�
 [component.sync.windows]
 state = "partial"
 spec_hash = "57f23edf914c"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:818-864"
 note = "§7.1 只记了行 2 左格 `SQL: <摘要>` 与一行连接状态；代码现状是左格 SQL 摘要 / 提示、右格 事务状态 · 会话名 · `Last Refresh`（连接状态线在行 1 左格，见 `platform_notes.windows`）。"
 
 [component.sync.macos]
@@ -756,6 +772,7 @@ evidence = "§7 行 2 左段三种来源 + 断连 / 未执行文案"
 [component.sync.windows]
 state = "partial"
 spec_hash = "3859890ae206"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:825-833；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2029-2030"
 note = "§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；数据页左格写的是 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。契约 §9.1 已裁决：`SqlSummaryText` 补 `IsTextSelectionEnabled`（断连原因要可复制）；Windows 端待实现。"
 
 [component.sync.macos]
@@ -837,6 +854,7 @@ evidence = "§7 行 2 空态摘要；refresh_session + session_row_visible + idl
 [component.sync.windows]
 state = "partial"
 spec_hash = "4beb06b2dd72"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:848-855"
 note = "§7.1 记的是 `已连接 · 驱动 N · 浏览会话 M`（GetHealth 真实计数，5 秒一轮；未就绪 `未连接 · 驱动 0 · 浏览会话 0`，另有 `连接中 · 驱动 0 · 浏览会话 0` 一档）；代码把这条放在行 1 左格，行 2 这一格只写会话名，见 `platform_notes.windows`；「有表标签时整格隐藏」未记录。契约 §9.1 已裁决：与 Linux 一致，当前是表数据标签时整格不出现；Windows 端待实现。"
 
 [component.sync.macos]

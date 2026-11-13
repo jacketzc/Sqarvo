@@ -71,7 +71,7 @@ kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `table_actions_height`、`row_height_data`
 - 同步：Linux done（§5.1 单行工具条；data_page.rs new() 的 controls 行 + --qa-layout-audit「表格工具条 / 状态簇」两项）；Windows partial（§7.1：页内动作行是「上一页 / 下一页 / 加载更多…」+ 编辑动作，没有筛选 / 列显隐 / 导出，也没有状态簇；事务与脏行写在状态栏行 2。）；macOS none
-- 实现备注：只有一行：提交 / 开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。这一行**没有**「撤销」「删除」「新增」「刷新」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳。四个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。
+- 实现备注：只有一行：提交 / 开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。这一行**没有**「撤销」「删除」「新增」「刷新」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳。四个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 ### `data_page.toolbar.commit` 「提交」按钮（待提交 N 条；在途变「取消提交」）
 
@@ -225,7 +225,7 @@ kind `container` · status `active` · parent `data_page`
 - 样式：槽位 `overlay`
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§5.7 三种出口共用一条流程；data_page new() 的 export popover + export_ui::begin）；Windows none（§7.1 未记录：无导出菜单。）；macOS none
-- 实现备注：挂在「导出 ▾」按钮上的 GtkPopover（popup surface，窗口自渲染截图拍不到）；点任一项先收起菜单再执行。三项都进入 export_ui::begin 这同一条流程：范围 → 文件 → 确认 → 覆盖 → 进度 / 取消 → 完成，差别只在写出的格式与文件过滤器。菜单里没有第三条之外的路径（没有「复制到剪贴板」「导出全部结果」这类重复出口）。查询标签的结果区复用同一份「导出 ▾」（入口在 tabs 的查询结果区、由本区记录）：只有 CSV / INSERT 两项，**没有**「转储表」；范围固定为已加载行、没有「整张表」，不重跑 SQL；没有已加载行时提示「没有可导出的行」+「当前标签没有已加载的行：先执行查询，再导出。」。
+- 实现备注：挂在「导出 ▾」按钮上的 GtkPopover（popup surface，窗口自渲染截图拍不到）；点任一项先收起菜单再执行。三项都进入 export_ui::begin 这同一条流程：范围 → 文件 → 确认 → 覆盖 → 进度 / 取消 → 完成，差别只在写出的格式与文件过滤器。菜单里没有第三条之外的路径（没有「复制到剪贴板」「导出全部结果」这类重复出口）。查询标签的结果区复用同一份「导出 ▾」（入口在 tabs 的查询结果区、由本区记录）：只有 CSV / INSERT 两项，**没有**「转储表」；范围固定为已加载行、没有「整张表」，不重跑 SQL；没有已加载行时提示「没有可导出的行」+「当前标签没有已加载的行：先执行查询，再导出。」。本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 ### `data_page.export_menu.csv` 「导出 CSV…」
 
@@ -297,6 +297,7 @@ kind `container` · status `active` · parent `data_page`
 | load | 打开表 / 翻页 / 刷新（无未提交更改） | 整页替换并写「正在读取 offset N …（<动作>）」；成功后回到第一行；翻页中再翻页写「上一页仍在读取：稍候再翻页」，不发第二次请求 | `src/data_page.rs:3011、src/data_page.rs:4272、src/data_page.rs:4388、src/backend/table.rs:27` |
 | load | 有脏行、标记删除或新行草稿 | 翻页 / 排序 / 筛选 / 刷新一律拒绝，写「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」 | `src/data_page.rs:3048、src/data_page.rs:3011` |
 | scroll | 滚到本页最后一行 | 不自动取下一页（offset 分页互斥），页脚不出现「加载更多」 | `src/data_page.rs:4388` |
+| key F5 | 当前标签是表数据页（F5 在这一上下文刷当前表；查询标签 / Objects 页 / 启动态的 F5 重建对象树，归 object_tree 区） | 重新读取当前表的第一页：与状态栏 ⟳ / 表菜单「刷新当前表」同一条入口，保持当前排序与筛选、回到第 1 页；有脏行 / 标记删除 / 新行草稿时一律被脏行守卫拒绝并说明原因（先提交或「放弃更改」），不发请求；状态栏不提供第二个刷新入口 | `frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:271-282、src/ui.rs:2519-2532` |
 
 ### `data_page.grid.header` 列头（列名 · 原始类型 · 排序标记）
 
@@ -334,7 +335,7 @@ kind `cell` · status `active` · parent `data_page.grid`
 - 样式：尺寸 `row_height_data`、`column_width`、`font_data_cell`、`font_weight_cell`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_on_soft`、`sqarvo_brand_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「（行内容：单元格值）」
 - 同步：Linux done（§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason）；Windows partial（§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。）；macOS none
-- 实现备注：NULL 写「NULL」（弱色斜体，tooltip「SQL NULL（与空字符串不同）」）；空串**不能**与 NULL 长得一样：Linux 写空引号串，Windows 留空（§7.1 明确「空串保持空白」）。数值与二进制右对齐（便于比较），文本左对齐；超长文本省略号截断，全文进 tooltip。脏单元格是品牌浅档实底 + 对应深色前景（成对写，选中行里也不继承白字）；标记删除的行整行删除线 + 压暗。服务端截断的值 tooltip 追加「该值被截断：不能编辑（提交截断值会写坏数据）」，且不允许进入编辑。
+- 实现备注：NULL 写「NULL」（弱色斜体，tooltip「SQL NULL（与空字符串不同）」）；空串**不能**与 NULL 长得一样：Linux 写空引号串，Windows 留空（§7.1 明确「空串保持空白」）。数值与二进制右对齐（便于比较），文本左对齐；超长文本省略号截断，全文进 tooltip。脏单元格是品牌浅档实底 + 对应深色前景（成对写，选中行里也不继承白字）；标记删除的行整行删除线 + 压暗。服务端截断的值 tooltip 追加「该值被截断：不能编辑（提交截断值会写坏数据）」，且不允许进入编辑。Esc 清空行选中为局部键，归组件注册表。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -349,8 +350,9 @@ kind `container` · status `active` · parent `data_page`
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「编辑单元格」
 - 原生控件：gtk:GtkPopover / winui:就地 TextBox（§7.1） / swift:—
+- 平台差异：Linux：编辑是弹层形态（GtkPopover + 应用 / 取消），没有格内就地编辑：未绑 F2，Enter 不提交，点别处 = 取消（未应用则无改动）。；Windows：§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行时按「再按一次 Ctrl+S 确认」。；macOS：§7.1 未记录。
 - 同步：Linux done（§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor）；Windows partial（§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。）；macOS none
-- 实现备注：同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。值转换失败时错误就地显示、编辑框不关（可以在原处改）。写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。
+- 实现备注：同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。值转换失败时错误就地显示、编辑框不关（可以在原处改）。写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。F2 进入编辑 / Enter 暂存 / Esc 取消均为局部键，归组件注册表（§8.1 全局快捷键清单不列）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -426,7 +428,7 @@ kind `container` · status `active` · parent `data_page`
 - 无障碍：可访问名「筛选与排序」
 - 原生控件：gtk:GtkPopover / winui:— / swift:—
 - 同步：Linux done（§5.3 打开 / 关闭 / 应用 / 清空 / 草稿模型；open_filter_panel + apply_browse_options + clear_filter）；Windows none（§7.1 未记录筛选与排序面板（Windows 数据页没有筛选 / 排序入口）。）；macOS none
-- 实现备注：挂在漏斗按钮上的 GtkPopover（autohide=false），锚点落在上沿的黄金分割点（0.618，偏右）；面板宽 filter_panel_width。面板里的改动是**草稿**：点「应用」才同时生效（筛选 + 排序一起提交，并回到第 1 页）；关闭面板丢弃草稿。标题右侧写「已应用」/「有未应用的更改」（warning + tooltip「点应用才生效；关闭会丢弃」）。面板里只有一种字号（12px，与对象树一致）：正文、按钮、下拉、输入框、说明字统一，层级只靠字重与颜色；列表行 24 高。底部只有一个调整区：分隔线 + 右对齐的「清空」「应用」；文案不带作用域，也不写说明段落。两个区：筛选条件（列 + 算子 + 值 → 条件行，多条按 AND）与排序（列 + 方向 → 排序键，列表顺序即优先级）。
+- 实现备注：挂在漏斗按钮上的 GtkPopover（autohide=false），锚点落在上沿的黄金分割点（0.618，偏右）；面板宽 filter_panel_width。面板里的改动是**草稿**：点「应用」才同时生效（筛选 + 排序一起提交，并回到第 1 页）；关闭面板丢弃草稿。标题右侧写「已应用」/「有未应用的更改」（warning + tooltip「点应用才生效；关闭会丢弃」）。面板里只有一种字号（12px，与对象树一致）：正文、按钮、下拉、输入框、说明字统一，层级只靠字重与颜色；列表行 24 高。底部只有一个调整区：分隔线 + 右对齐的「清空」「应用」；文案不带作用域，也不写说明段落。两个区：筛选条件（列 + 算子 + 值 → 条件行，多条按 AND）与排序（列 + 方向 → 排序键，列表顺序即优先级）。Esc（先收起行内编辑，再关面板）为局部键，归组件注册表。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -459,7 +461,7 @@ kind `row` · status `active` · parent `data_page.filter_panel`
 - 样式：尺寸 `row_height_data`；颜色 `sqarvo_brand_soft`；状态 hover=`sqarvo_brand_soft`
 - 无障碍：可访问名「（行内容：列 算子 值）」
 - 同步：Linux done（§5.3 编辑条件；condition_label_row / condition_editor_row / commit_condition_edit）；Windows none（§7.1 未记录。）；macOS none
-- 实现备注：只读态是一行文字（列 + 符号算子 + 值）+ 行尾一个 ✗；点这一行**就地展开**为三件套编辑器，不弹二级对话框。编辑态与只读态同一套外观：同底色（不加强调色）、同行高、同字号，只把文字换成控件。已加的条件是淡底色 + 圆角的实体条（品牌浅档的 55%，悬停变成浅档实色）；行尾始终只有一个 ✗。
+- 实现备注：只读态是一行文字（列 + 符号算子 + 值）+ 行尾一个 ✗；点这一行**就地展开**为三件套编辑器，不弹二级对话框。编辑态与只读态同一套外观：同底色（不加强调色）、同行高、同字号，只把文字换成控件。已加的条件是淡底色 + 圆角的实体条（品牌浅档的 55%，悬停变成浅档实色）；行尾始终只有一个 ✗。条件行编辑态的 Enter 提交为局部键，归组件注册表。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -531,7 +533,7 @@ kind `control` · status `active` · parent `data_page`
 
 - 样式：槽位 `workspace.content`；颜色 `warning_color`、`sqarvo_brand_soft`、`sqarvo_brand_on_soft`
 - 无障碍：可访问名「数据页横幅」
-- 同步：Linux done（§5.6 只读 / 断连；show_read_only_banner + mark_disconnected）；Windows partial（§7.1：只读与失败原因写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页首横幅。）；macOS none
+- 同步：Linux done（§5.6 只读 / 断连；show_read_only_banner + mark_disconnected）；Windows partial（§7.1：Windows 有表数据横幅（BannerText 常驻只读原因），形态与 Linux 的页首横幅不同——只读与失败原因也写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页内徽标行 / 逐行错误列表那种版式。）；macOS none
 - 实现备注：只读横幅常驻（直到刷新事务状态）：正文是「<标题>：<解释>」，例如「只读：该表没有主键：无主键表只有无稳定排序的浏览顺序，无法稳定定位行，因此不能编辑…」。断连横幅写明「未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚」（无脏行时省略中间一句），已加载数据**保留**为只读。后端失效时的横幅带一枚「重启 Sqarvo」按钮（重启确认属 shell 区）。横幅不替代徽标行与状态行：三者同时在，各自说明不同的层级（原因 / 能力 / 这一刻的动作结果）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -974,7 +976,7 @@ kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_lg`、`gap_none`
 - 同步：Linux done（§6 空态保留面板外壳；inspector.rs::new 的 header 与 Separator）；Windows partial（§7.1 记标题 = 连接名 / 库名、副标题 = 驱动 / 「库」；标题块留白与分隔线未记录。）；macOS none
-- 实现备注：标题用 heading 类、单行省略；副标题 dim-label + caption，跟着选中换成驱动 / 种类 / 「库」。标题与副标题之间不留间距（gap_none）：两块读成一组；标题块下沿与分隔线之间留一段（gap_lg），副标题不贴线。分隔线是面板根容器的直接子控件，从左端铺满内容区；切换条在分隔线下方。空态与选中态共用这一套外壳：只有标题文字回到「信息面板」、副标题清空。
+- 实现备注：标题用 heading 类、单行省略；副标题 dim-label + caption，跟着选中换成驱动 / 种类 / 「库」。标题与副标题之间不留间距（gap_none）：两块读成一组；标题块下沿与分隔线之间留一段（gap_lg），副标题不贴线。分隔线是面板根容器的直接子控件，从左端铺满内容区；切换条在分隔线下方。空态与选中态共用这一套外壳：只有标题文字回到「信息面板」、副标题清空。纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 ### `inspector.empty` 空态（内容区留白）
 
@@ -1246,7 +1248,7 @@ kind `area` · status `active`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key F5 | 工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态） | 整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树 | `src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1453` |
+| key F5 | 工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态） | 整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树 | `src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1527` |
 
 ### `object_tree.tree` 树本体
 
@@ -1260,21 +1262,22 @@ kind `container` · status `active` · parent `object_tree`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key ↑ / ↓ | 树有焦点 | 移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随） | `src/tree.rs:1970` |
+| key ↑ / ↓ | 树有焦点 | 移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随） | `src/tree.rs:2002` |
 | key Enter | 行有焦点 | 等同于双击（同一回调，走 activate 信号） | `src/tree.rs:2009` |
 
 ### `object_tree.tree.row` 行模板（箭头 · 图标 · 名称 · 行尾文字）
 
 kind `row` · status `active` · parent `object_tree.tree`
 
-- 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`tree_arrow_box`、`gap_xs`、`font_status`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
+- 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`tree_arrow_box`、`gap_xs`、`font_status`、`font_weight_heading`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「对象树行」
+- 平台差异：Windows：树行文字由 TreeViewNode.ToString() + 默认模板的 ContentPresenter 呈现，没有可单独设字重的 TextBlock；容器级 FontWeight（DispatcherQueue 里给 TreeViewItem 设）实测只对 1 行生效：8 行里只有 information_schema 变粗，连接名与 Tables/Views/Functions/Queries 分组名仍是 400。该实现已在 08151b1 撤回，Windows 树行统一 400。字重（连接/分组/库 = heading）与行首图标要等「树行换成自带图标与字重的行模板」那一类一起做。
 - 同步：Linux done（§2.2 单击行 + theme.rs 行状态规则）；Windows partial（行模板与徽标文案一致；缩进量未对齐（Linux 为 4 + 14/层）。）；macOS none
-- 实现备注：hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中底 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid。缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。
+- 实现备注：hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中底 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid。缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。font_weight_heading 只登记 metrics.toml:68 的真值 key 引用：Windows 侧 Theming/TypeTokens.cs:39 已用它包出 FontWeight.Heading（仅登记该引用，不代表 #179 的树行字重分派已合并；#178 新增的三个 key 在 main 上不存在，不引用）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行存在 | 只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接 | `src/tree.rs:1970` |
+| click | 行存在 | 只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接 | `src/tree.rs:2002` |
 | hover | 行存在 | 底色换成品牌浅档（alpha 55%），不动前景色 | `src/theme.rs:312` |
 
 ### `object_tree.tree.row.expander` 行首箭头
@@ -1373,8 +1376,8 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 「加载更多…」行且还有下一页 | 选中即继续拉下一页（分页动作不要求双击） | `src/tree.rs:2962、src/tree.rs:1970` |
-| click | 任意占位行 | 信息面板收到 None（回到空态 / 留白）；不打开任何东西 | `src/tree.rs:1970` |
+| click | 「加载更多…」行且还有下一页 | 选中即继续拉下一页（分页动作不要求双击） | `src/tree.rs:2996、src/tree.rs:2002` |
+| click | 任意占位行 | 信息面板收到 None（回到空态 / 留白）；不打开任何东西 | `src/tree.rs:2002` |
 | load | 层在飞 / 请求失败 | 占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分 | `src/tree.rs:2977、src/tree.rs:3148` |
 | right_click | 占位行 | 直接返回，不弹菜单 | `src/tree.rs:3191` |
 
@@ -1640,7 +1643,7 @@ kind `row` · status `active` · parent `objects_page.table`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`gap_sm`、`gap_md`、`icon_box`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「（行内容：行号 + 对象名 + 种类）」
-- 同步：Linux done（§3 单击行 / 双击回车行 + theme.stylesheet 的行状态规则）；Windows partial（§7.1 只记录 ↑ / ↓ 移动、Enter 打开（同步信息面板、不反写树的选中）；双击打开与悬停 / 选中底色未记录。）；macOS none
+- 同步：Linux done（§3 单击行 / 双击回车行 + theme.stylesheet 的行状态规则）；Windows partial（code-vs-doc 差异（AGENTS §14.2）：契约 double_click（:224-228）要求打开数据标签且 Linux 已 done；Windows 双击 / Enter 只调 SelectObjectRow 同步信息面板、不打开表数据标签（ShellView.Metadata.cs:772-776、879-880、905-908），是 Windows 未实现而非文档漏记。建议把 Objects 页双击 / Enter 接到与树双击同一条 OpenTableDataAsync。悬停 / 选中底色差异另待核对；保持 partial，不标 done、不删条目。）；macOS none
 - 实现备注：hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid，与对象树行、数据网格行同一条规则（三个选择器并列，选中在前、hover 在后靠顺序让中档赢）。行只由可见行创建控件（GtkColumnView 虚拟化），几百行也不卡主线程；模型里只放数据。单元格上下内距归零，行高才落在 row_height_data（否则「图标 + 名称」的格子会被 Adwaita 撑到 35）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1773,6 +1776,7 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：尺寸 `min_window_width`、`min_window_height`
 - 无障碍：可访问名「Sqarvo 主窗口」
+- 平台差异：Windows：位置可恢复（Linux 不可）：记忆矩形先钳到「最小窗口 ≤ 尺寸 ≤ 工作区−32 / −48」再还原，记忆点不在任何显示器工作区内（容差 32px）时丢弃几何、改用分档推荐并记 `[layout]` 日志；`maximized=true` 时先还原这个矩形再最大化，关窗写的是**还原边界**（非最大化矩形）而不是最大化后的屏幕尺寸。拖动 / 改尺寸只记账不重算（不会被拉回屏幕中央、也不会改回推荐尺寸），下限由 `OverlappedPresenter.PreferredMinimumWidth/Height`（物理像素）守住。DPI 与工作区变化合并成同一个入口：缩放取 `XamlRoot.Changed` 的 `RasterizationScale`（`DisplayInformation` 在 WinUI 3 抛异常），保留当前 DIP 矩形、不居中，`[monitor]` 的来源写「记忆 / 记忆+最大化 / 保留」（§1.6）。
 - 同步：Linux done（§1.1 最小尺寸 / 几何恢复 / 关闭窗口；window_size.rs relayout + apply，ui.rs connect_close_request）；Windows partial（几何恢复含位置、最大化写还原边界、DPI / 工作区变化单入口（§1.6）；脏行守卫换成「状态栏提示 + 第二次放行」的不弹框口径（§7.1 数据页关窗守卫），与 Linux 的确认框差一条。）；macOS none
 - 实现备注：最小尺寸由 window_size::relayout 算出后交给 set_size_request，GTK 转成 toplevel 的最小尺寸（Wayland 走 xdg_toplevel.set_min_size，X11 走 WM normal hints）。位置不恢复是平台事实：GTK4 没有读写 toplevel 位置的 API，window_x / window_y 照常写入与校验但不拿来挪窗口（blocked 的替代口径见 README「同步」一节）。关闭是一次性的：确认过一次（`close_confirmed`）后再关不二次弹窗，已进入关闭流程（`closing == true`）时的重复关闭请求直接放行，不重复跑清理。
 
@@ -1791,7 +1795,7 @@ kind `container` · status `active` · parent `shell`
 - 样式：槽位 `header`；尺寸 `header_height`、`font_ui`、`gap_md`；颜色 `sqarvo_separator`
 - 平台差异：Windows：自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。
 - 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）；Windows partial（有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。）；macOS none
-- 实现备注：Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。
+- 实现备注：Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 ### `shell.title` 标题与副标题
 
@@ -1805,7 +1809,7 @@ kind `control` · status `active` · parent `shell`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 握手成功且还没有数据库连接 | 标题「Sqarvo」、副标题「未连接」 | `src/ui.rs:1561` |
-| load | 连接数据库成功 | 标题「<连接名> - <驱动显示名>」；副标题「已连接 · <显示名>（<driver_id>）· <服务端版本>」，版本缺失时写「未知（后端未返回）」 | `src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770` |
+| load | 连接数据库成功 | 标题「<连接名> - <驱动显示名>」；副标题「已连接 · <显示名>（<driver_id>）· <服务端版本>」，版本缺失时写「未知（后端未返回）」 | `src/ui.rs:1782、src/ui.rs:1767、src/ui.rs:1770` |
 | load | 切换标签 | 标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息） | `src/tabs.rs:2289、src/tabs.rs:2307、src/tabs.rs:135` |
 | load | 后端断开 | 标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连 | `src/ui.rs:587、src/tabs.rs:2629` |
 | load | 后端握手失败 | 标题回到「Sqarvo」、副标题「连接失败」 | `src/ui.rs:567、src/ui.rs:3774` |
@@ -1819,12 +1823,13 @@ kind `control` · status `active` · parent `shell`
 - 无障碍：可访问名「主菜单（文件 / 表 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
+- 平台差异：Windows：v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，三个 MenuFlyoutSubItem（文件 / 表 / 帮助）装同一批条目，条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。
 - 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项 | `src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216` |
+| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项 | `src/ui.rs:184、src/ui.rs:4617、src/ui.rs:5243` |
 
 ### `shell.menu.new_connection` 文件 → 新建连接
 
@@ -1837,7 +1842,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手 | 打开连接对话框；对话框已打开时只把它前置（不叠第二个）。未就绪时该项禁用，处理器里还有一条兜底日志「后端尚未连接，忽略「新建连接」」 | `src/ui.rs:4751、src/ui.rs:1103` |
+| click | 后端已握手 | 打开连接对话框；对话框已打开时只把它前置（不叠第二个）。未就绪时该项禁用，处理器里还有一条兜底日志「后端尚未连接，忽略「新建连接」」 | `src/ui.rs:1107、src/ui.rs:1109` |
 | key Ctrl+N | 后端已握手 | 与菜单项同一个动作 `win.new-connection` | `src/ui.rs:320` |
 
 ### `shell.menu.new_tab` 文件 → 新建查询标签
@@ -1851,7 +1856,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应） | `src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1856` |
+| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应） | `src/ui.rs:4742、src/ui.rs:4784、src/tabs.rs:1856` |
 | key Ctrl+T | 后端已握手且工作区存在 | 与菜单项同一个动作 `win.new-tab` | `src/ui.rs:327` |
 
 ### `shell.menu.quit` 文件 → 退出
@@ -1865,7 +1870,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 任意 | 有窗口时先 `window.close()`（脏行未提交会先弹确认框），最后一个窗口关完后 GApplication 自然退出；没有窗口时才直接 `app.quit()`。两种情况 `connect_shutdown` 都会停后端并 join 子进程，不留孤儿进程 | `src/ui.rs:4596、src/main.rs:353` |
+| click | 任意 | 有窗口时先 `window.close()`（脏行未提交会先弹确认框），最后一个窗口关完后 GApplication 自然退出；没有窗口时才直接 `app.quit()`。两种情况 `connect_shutdown` 都会停后端并 join 子进程，不留孤儿进程 | `src/ui.rs:4623、src/main.rs:353` |
 | key Ctrl+Q | 任意 | `app.quit` 加速度器；与菜单项、D-Bus 走同一条 `quit_app` | `src/main.rs:76` |
 
 ### `shell.menu.export_csv` 表 → 导出 CSV
@@ -1879,7 +1884,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在；当前标签有没有可导出内容由动作自己判定 | 导出当前结果页 / 当前页为 CSV；当前标签没有可导出的结果页时只写日志「当前标签没有可导出的结果页」，不弹空对话框 | `src/ui.rs:4601、src/ui.rs:4945` |
+| click | 后端已握手且工作区存在；当前标签有没有可导出内容由动作自己判定 | 导出当前结果页 / 当前页为 CSV；当前标签没有可导出的结果页时只写日志「当前标签没有可导出的结果页」，不弹空对话框 | `src/ui.rs:4628、src/ui.rs:4975` |
 | key Ctrl+Shift+E | 同上 | 直接导出 CSV（与菜单项同一个 `win.export-csv`） | `src/ui.rs:356` |
 
 ### `shell.menu.about` 帮助 → 关于 Squarvo
@@ -1893,7 +1898,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 任意 | 打开「关于 Squarvo」对话框：版本、协议、后端诊断字段（不含密码、凭据引用与 token）；已打开时只前置，不叠第二个 | `src/ui.rs:4623、src/ui.rs:5289、src/ui.rs:4957` |
+| click | 任意 | 打开「关于 Squarvo」对话框：版本、协议、后端诊断字段（不含密码、凭据引用与 token）；已打开时只前置，不叠第二个 | `src/ui.rs:4650、src/ui.rs:4987、src/ui.rs:5316` |
 
 ### `shell.toolbar` 主工具条
 
@@ -1901,12 +1906,13 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `toolbar`；尺寸 `toolbar_height`、`toolbar_padding_h`、`gap_sm`、`min_target`、`font_ui`；颜色 `sqarvo_separator`
 - 无障碍：可访问名「主工具条」
+- 平台差异：Windows：工具条是 CommandBar：左动作组 + 竖分隔 + 四个种类入口（AppBarButton），本片四个入口仍未接线（§7.1）。
 - 同步：Linux done（§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability）；Windows partial（有 CommandBar 与六个入口（§7.1）；种类入口未接线、无高亮联动，工具条高度按 Metrics 取档但对外壳的分配未核对。）；macOS none
 - 实现备注：窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；启动态「新建查询」禁用时是 5/6。四个种类入口共用一条目标库解析：取树里**当前选中项所在的库**（选中的表 / 视图 / 分组也算），只有什么都没选中时才退回活动连接的默认库；多连接按「会话 ID + 库名」精确匹配，避免同名 `main` 跳到别的连接（`selected_catalog` / `catalog_row` 的 require_session 一遍）。种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 后端就绪状态变化 | 六个按钮同时切换可用性与 tooltip，并打一行可用性日志；菜单侧走同一个状态（`WindowActions::set_backend_ready`），不出现「菜单禁用、按钮可点」 | `src/shell.rs:862、src/ui.rs:4666、src/shell.rs:840` |
+| load | 后端就绪状态变化 | 六个按钮同时切换可用性与 tooltip，并打一行可用性日志；菜单侧走同一个状态（`WindowActions::set_backend_ready`），不出现「菜单禁用、按钮可点」 | `src/shell.rs:862、src/ui.rs:4693、src/shell.rs:840` |
 | load | 当前标签切换 / 每次标签状态刷新 | 高亮跟着当前标签：表数据标签 → 该表的种类；`Objects` 页 → 页面**正在列**的种类（树里换分组导致页换作用域时，高亮在同一次刷新里跟上）；查询标签 → 无高亮。同一时刻最多一个按钮带 `sqarvo-kind-active` | `src/ui.rs:1840、src/shell.rs:958` |
 
 ### `shell.toolbar.connect` 「连接」
@@ -1942,7 +1948,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Tables」
 - 图标：`tree.group.tables`
-- 同步：Linux done（§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮）；Windows partial（入口是 AppBarButton，本片仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。）；macOS none
+- 同步：Linux done（§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮）；Windows partial（反证锚点 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:227-232：这里写明种类入口是 Border + TextBlock（#170 已把 CommandBar / AppBarButton 整块回退，种类入口不接动作、只表示当前列的种类），不是 AppBarButton；仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。§9.1 裁决的「能力性不渲染」在 main a84560f 上未落实，按不静默删原则保留 partial。）；macOS none
 - 实现备注：纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。tooltip：就绪「在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1957,7 +1963,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Views」
 - 图标：`tree.group.views`
-- 同步：Linux done（§1.3 点 Views；KindGroup::Views 与 kinds 组合）；Windows partial（入口是 AppBarButton，本片仍未接线（§7.1），与 Tables 同一状态。）；macOS none
+- 同步：Linux done（§1.3 点 Views；KindGroup::Views 与 kinds 组合）；Windows partial（反证锚点 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:227-232：这里写明种类入口是 Border + TextBlock（#170 已把 CommandBar / AppBarButton 整块回退，种类入口不接动作、只表示当前列的种类），不是 AppBarButton；本片仍未接线（§7.1），与 Tables 同一状态。§9.1 裁决的「能力性不渲染」在 main a84560f 上未落实，按不静默删原则保留 partial。）；macOS none
 - 实现备注：与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。tooltip：就绪「在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1972,7 +1978,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Functions」
 - 图标：`tree.group.functions`
-- 同步：Linux done（§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文）；Windows partial（入口是 AppBarButton，未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。）；macOS none
+- 同步：Linux done（§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文）；Windows partial（反证锚点 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:227-232：这里写明种类入口是 Border + TextBlock（#170 已把 CommandBar / AppBarButton 整块回退，种类入口不接动作、只表示当前列的种类），不是 AppBarButton；未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。§9.1 裁决的「能力性不渲染」在 main a84560f 上未落实，按不静默删原则保留 partial。）；macOS none
 - 实现备注：有入口、没有列表能力：点了照样联动（树里选中分组行），页面如实说明原因，不摆假数据。tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1987,7 +1993,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Queries」
 - 图标：`tree.group.queries`
-- 同步：Linux done（§1.3 点 Queries；unavailable_copy 的 Queries 原文）；Windows partial（入口是 AppBarButton，未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。）；macOS none
+- 同步：Linux done（§1.3 点 Queries；unavailable_copy 的 Queries 原文）；Windows partial（反证锚点 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:227-232：这里写明种类入口是 Border + TextBlock（#170 已把 CommandBar / AppBarButton 整块回退，种类入口不接动作、只表示当前列的种类），不是 AppBarButton；未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。§9.1 裁决的「能力性不渲染」在 main a84560f 上未落实，按不静默删原则保留 partial。）；macOS none
 - 实现备注：与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2002,14 +2008,15 @@ kind `container` · status `active` · parent `shell`
 - 样式：槽位 `overlay`；尺寸 `font_ui`、`font_status`、`gap_xs`
 - 无障碍：可访问名「界面密度」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
 - 原生选型说明：GMenu 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项，弹出时换成 PopoverMenu 里的一组 GtkCheckButton（控件仍是原生，菜单模型自组装）。
+- 平台差异：Windows：菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）；「表格区优先保留 600」本轮未实现——只按 `sidebar_min..max` / `inspector_min..max` 钳制，600 未进 metrics.toml（§1.6 已知边界）。
 - 同步：Linux done（§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫）；Windows none（§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / tooltip 语义（档位本身见 §1.6）。）；macOS none
 - 实现备注：「视图 → 界面密度」这一项本身是 GMenu 的占位项：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时用 `PopoverMenu::add_child` 换成这一节（标题「界面密度」+ 三个 GtkCheckButton），视图子菜单只为它而存在。三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。切档后「表格区优先保留 600」是代码常量，未进 metrics。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key Ctrl+Plus / Ctrl+KP_Add / Ctrl+= | 窗口存在 | 升一档（`win.tier-up`）：目标档可用就切；已经在「大（150%）」时什么都不做并记「[tier] 已经是最高档（large），Ctrl+Plus 忽略」；目标档在当前显示器放不下时不切换、不写盘并记「[tier] … 不可用（需要 W×H），未切换」 | `src/ui.rs:361、src/ui.rs:4978` |
-| key Ctrl+minus / Ctrl+KP_Subtract | 窗口存在 | 降一档（`win.tier-down`）；已在「紧凑（100%）」时记「[tier] 已经是最低档（compact），Ctrl+minus 忽略」 | `src/ui.rs:365、src/ui.rs:4987` |
-| key Ctrl+0 | 窗口存在 | 直接切到「紧凑（100%）」（`win.tier-reset`，不是「回退一个可用档」）；已经是紧凑时该项禁用 | `src/ui.rs:366、src/ui.rs:4996、src/ui.rs:5091` |
+| key Ctrl+Plus / Ctrl+KP_Add / Ctrl+= | 窗口存在 | 升一档（`win.tier-up`）：目标档可用就切；已经在「大（150%）」时什么都不做并记「[tier] 已经是最高档（large），Ctrl+Plus 忽略」；目标档在当前显示器放不下时不切换、不写盘并记「[tier] … 不可用（需要 W×H），未切换」 | `src/ui.rs:361、src/ui.rs:5009` |
+| key Ctrl+minus / Ctrl+KP_Subtract | 窗口存在 | 降一档（`win.tier-down`）；已在「紧凑（100%）」时记「[tier] 已经是最低档（compact），Ctrl+minus 忽略」 | `src/ui.rs:365、src/ui.rs:5018` |
+| key Ctrl+0 | 窗口存在 | 直接切到「紧凑（100%）」（`win.tier-reset`，不是「回退一个可用档」）；已经是紧凑时该项禁用 | `src/ui.rs:366、src/ui.rs:5023、src/ui.rs:5117` |
 | load | 启动 | 启动档位优先级：`--tier`（QA，取证用）→ `window.json` 的 `tier` → 紧凑（100%）；日志 `[tier] 启动档位 …（来源=默认/记忆/QA）`。已保存的档位当前放不下时**回退到下一个可用档**并记 `[tier] … 在当前工作区 … 不可用（需要 W×H），回退 …`，不静默钳到紧凑；连紧凑都放不下时保留紧凑、窗口收敛到工作区 | `src/ui.rs:135、src/density.rs:33、src/window_size.rs:237` |
 | load | 切档成功 | 同一次动作里：① 四套样式表（主壳 / 数据页 / 对象树 / DDL）用同一个 provider 重载；② 窗口按新档重算并钳到工作区（日志「[monitor] 档位导致窗口放大：…」）；③ 侧栏 / 信息面板按 **compact 归一值 × 新档**换算（往返不漂移），新窗口放不下表格区下限时收到各自下限并记日志；④ 已建列的固定宽度、行高、字号与图标按钮命中区按新档重设；⑤ 档位写入 `window.json` | `src/density.rs:78、src/shell.rs:591、src/theme.rs:241` |
 
@@ -2024,7 +2031,7 @@ kind `item` · status `active` · parent `shell.density`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该档在当前显示器可用 | 切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」；tooltip 原文「当前档位：紧凑（100%）」/「切换到 紧凑（100%）；窗口会按档位一起放大 / 收小」 | `src/ui.rs:5167、src/ui.rs:5132、src/density.rs:104` |
+| click | 该档在当前显示器可用 | 切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」；tooltip 原文「当前档位：紧凑（100%）」/「切换到 紧凑（100%）；窗口会按档位一起放大 / 收小」 | `src/ui.rs:5159、src/ui.rs:5132、src/density.rs:104` |
 
 ### `shell.density.comfortable` 「舒适（125%）」单选项
 
@@ -2037,7 +2044,7 @@ kind `item` · status `active` · parent `shell.density`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该档在当前显示器可用 | 切到「舒适（125%）」；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用），tooltip 原文「当前显示器放不下 125%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」或「切换到 舒适（125%）；窗口会按档位一起放大 / 收小」 | `src/ui.rs:5096、src/ui.rs:5132、src/window_size.rs:230` |
+| click | 该档在当前显示器可用 | 切到「舒适（125%）」；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用），tooltip 原文「当前显示器放不下 125%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」或「切换到 舒适（125%）；窗口会按档位一起放大 / 收小」 | `src/ui.rs:5107、src/ui.rs:5132、src/window_size.rs:230` |
 
 ### `shell.density.large` 「大（150%）」单选项
 
@@ -2050,7 +2057,7 @@ kind `item` · status `active` · parent `shell.density`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该档在当前显示器可用 | 切到「大（150%）」；放不下时禁用并给「当前显示器放不下 150%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」；已是本档时 tooltip 写「当前档位：大（150%）」 | `src/ui.rs:5096、src/ui.rs:5132` |
+| click | 该档在当前显示器可用 | 切到「大（150%）」；放不下时禁用并给「当前显示器放不下 150%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」；已是本档时 tooltip 写「当前档位：大（150%）」 | `src/ui.rs:5107、src/ui.rs:5132` |
 
 ### `shell.error` 错误页（握手失败 / 无工作区断开）
 
@@ -2077,7 +2084,7 @@ kind `control` · status `active` · parent `shell.error`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 错误页 / 断开页可见 | 回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（并打一行可用性日志），然后重新握手 | `src/ui.rs:369、src/ui.rs:3786` |
+| click | 错误页 / 断开页可见 | 回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（并打一行可用性日志），然后重新握手 | `src/ui.rs:369、src/ui.rs:1558` |
 
 ### `shell.backend_failure` 后端失效恢复（「重启 Sqarvo」对话框与重启流程）
 
@@ -2208,10 +2215,10 @@ kind `area` · status `active`
 
 kind `container` · status `active` · parent `status_bar`
 
-- 样式：槽位 `status_bar.left_gutter`；尺寸 `sidebar_width`、`status_height`；颜色 `sqarvo_separator`
+- 样式：槽位 `status_bar.left_gutter`；尺寸 `sidebar_width`、`status_height`、`grid_padding_end`；颜色 `sqarvo_separator`
 - 平台差异：Windows：同一个沟：`StatusGutterColumn` 宽 = 侧栏 + `GridPaddingEnd`（拖分栏线同步），里面一个 `TreeSearchBox`（宽 = 侧栏、垂直居中、**禁用**：搜索尚未接线，tooltip 给「对象树搜索（当前不可用：搜索尚未接线，服务端 filter.name.contains 已就绪）」）；搜索框下方没有搜索状态行。
 - 同步：Linux done（§7 左边沟（宽度跟分栏、竖线到底）；set_gutter_width 与 mount_search）；Windows partial（沟与宽度联动已按 §7 做（`UpdateStatusGutter`：沟宽 = 侧栏 + `GridPaddingEnd`、竖线 `Stretch` 到底）；搜索框在场但恒禁用（未接线），「下方一行搜索状态」没有。§7.1 未记录这个沟。）；macOS none
-- 实现备注：宽度 = 侧栏当前宽度（set_gutter_width），右侧一条竖分割线一直延伸到底，与上面的分栏线同一根轴。沟里只放对象树搜索框与它下方一行搜索状态（归属对象树功能区，见 object_tree.search / .box / .status）；搜索框本体不在这里重复登记。沟本身不加内边距：搜索框的左右 8（gap_md）记在搜索框自己的 margin 上，改宽度不会把它撑开。
+- 实现备注：宽度 = 侧栏当前宽度（set_gutter_width），右侧一条竖分割线一直延伸到底，与上面的分栏线同一根轴。沟里只放对象树搜索框与它下方一行搜索状态（归属对象树功能区，见 object_tree.search / .box / .status）；搜索框本体不在这里重复登记。沟本身不加内边距：搜索框的左右 8（gap_md）记在搜索框自己的 margin 上，改宽度不会把它撑开。本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2224,13 +2231,13 @@ kind `container` · status `active` · parent `status_bar`
 - 样式：槽位 `status_bar.row1`；尺寸 `row_height_tree`、`gap_md`
 - 平台差异：Windows：行 1 实为两格：左格 `StatusLineText` = 后端状态线（`已连接 · 驱动 N · 浏览会话 M` / `连接中 · 驱动 0 · 浏览会话 0` / `未连接 · 驱动 0 · 浏览会话 0`，tooltip 带 `[<错误码>]`）；右格依次是六个行操作按钮、搜索按钮（恒禁用）、结果行数（查询页写 `N 行 / 已取 M 行`）、只读页码 `第 N 页 / 共 ? 页`。选中数、展示形式切换、四个翻页按钮都不在行 1。
 - 同步：Linux done（§7 行 1；shell.rs 行 1 三组的组装与 audit_groups 自检）；Windows partial（行 1 存在：左格后端状态线、右格六个行操作按钮 + 搜索（禁用）+ 结果行数 + 只读页码；选中数与展示形式切换没有，翻页动作在数据页动作行。§7.1 只记了「应用 / 撤销 / 取消」三枚按钮，与 XAML 不符，以 `platform_notes.windows` 为准。）；macOS none
-- 实现备注：左起就是行操作：左边沟已经整块留给对象树，行 1 里没有「连接过滤」也没有第二个刷新按钮。中间一个可扩展空白把右组（选中数 · 展示形式 · 分页器）推到窗口右端；间距 8（gap_md）。行 1 自己没有交互与读数：可用性来自 status_bar.row1.ops 的六个按钮、分页器来自 status_bar.row1.pager，本组件只记布局。
+- 实现备注：左起就是行操作：左边沟已经整块留给对象树，行 1 里没有「连接过滤」也没有第二个刷新按钮。中间一个可扩展空白把右组（选中数 · 展示形式 · 分页器）推到窗口右端；间距 8（gap_md）。行 1 自己没有交互与读数：可用性来自 status_bar.row1.ops 的六个按钮、分页器来自 status_bar.row1.pager，本组件只记布局。本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 ### `status_bar.row1.ops` 行操作按钮组（新增 / 删除 / 应用 / 撤销 / 刷新 / 取消）
 
 kind `container` · status `active` · parent `status_bar.row1`
 
-- 样式：尺寸 `icon_button_width`、`icon_button_height`；状态 disabled=`sqarvo_status_fg`
+- 样式：尺寸 `icon_button_width`、`icon_button_height`、`grid_padding_end`；状态 disabled=`sqarvo_status_fg`
 - 平台差异：Windows：六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增 / 删除本片恒禁用，理由是「新增行 / 删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。
 - 同步：Linux done（§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops）；Windows partial（§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。）；macOS none
 - 实现备注：六个图标按钮连成一组（linked，组内间距 0），图标盒与命中区统一走 icon_button_width / icon_button_height，不按单个字形调大小。禁用态：前景换 @sqarvo_status_fg 并叠 opacity 0.45（v0.2.5 加，为「激活 / 非激活一眼可辨」）；同时用 opacity: 1 / filter: none 压掉 Adwaita `.flat:disabled` 与 `dim-label` 自带的透明度，颜色只由这两条规则决定。组尾一条竖分隔线（1px、按行高居中）把行操作与右侧读数隔开；分隔线没有交互，不单独登记。按钮只显示图标，tooltip 同时登记为可访问名；tooltip 文案是动作本身（不带「新增行：」这类前缀），可访问名仍是构建时那句带前缀的话。这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。§7 把「查询标签没有可编辑表格」概括为一句话；实现按结果可编辑性给更具体的原因（只读结果、新行还空着、没有选中行各一句），见 sql_page 的行操作可用性。
@@ -2248,7 +2255,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「新增行：在当前表末尾新增一行」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.add`
 - 平台差异：Windows：按钮在（`ButtonRowAdd`），但本片恒禁用、无点击处理：tooltip「新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。§7.1 的新增入口在数据页动作行与双击表。
-- 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。）；macOS none
+- 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。§9.1 裁决待落实：按钮仍渲染并禁用（未删除），保持 partial，不改 `na`。）；macOS none
 - 实现备注：工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏 `+` 与 `win.add-row` 的唯一入口，可用性由数据页显式谓词给出。禁用时 tooltip 变成「在当前表末尾新增一行（当前不可用：<原因>）」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2263,7 +2270,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「删除选中行：标记为待删除（提交前可撤销）」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.delete`
 - 平台差异：Windows：按钮在（`ButtonRowDelete`），本片恒禁用、无点击处理：tooltip「删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。标记删除只在数据页动作行与数据行右键菜单。
-- 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。）；macOS none
+- 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。§9.1 裁决待落实：按钮仍渲染并禁用（未删除），保持 partial，不改 `na`。）；macOS none
 - 实现备注：v0.2.5 起工具条上的「删除」已删，入口在这里与数据行右键菜单；两处共用同一条可用性谓词。只标记、不发 RPC：多条选中按批量语义一次标记。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2448,7 +2455,7 @@ kind `container` · status `active` · parent `status_bar`
 - 样式：槽位 `status_bar.row2`；尺寸 `row_height_tree`、`gap_xl`、`gap_md`
 - 平台差异：Windows：行 2 两格与 §7 不同：左格是 `SQL: <摘要>` 或**一次性提示**（`_notice` 优先：编辑被拒原因 / 提交结果 / 守卫说明 / 标签上限），右格依次是**事务状态**、会话名、`Last Refresh`。事务状态取 `只读` / `自动提交` / `未提交 N 行` / `提交中…` / `已回滚`（优先序 提交中 → 只读 → 有脏行 → 已回滚 → 自动提交），无显式事务时 tooltip 写「事务：<label>（没有显式事务：提交时按自动提交执行）」——Linux 状态栏没有这一格（v0.2.3.3 删掉，事务在表格工具条）。
 - 同步：Linux done（§7 行 2；workspace-model §7 的两段排版与 ASCII 冒号约束）；Windows partial（§7.1 只记了行 2 左格 `SQL: <摘要>` 与一行连接状态；代码现状是左格 SQL 摘要 / 提示、右格 事务状态 · 会话名 · `Last Refresh`（连接状态线在行 1 左格，见 `platform_notes.windows`）。）；macOS none
-- 实现备注：只有两段：左段 SQL 摘要（可省略），右段 Last Refresh，空态时右段换成一行启动摘要（连接名，或「未连接 · 驱动 N · 浏览会话 M」）。左段紧贴行操作正下方（同一左边界），不跨到窗口最左。文案一律用 ASCII 冒号（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线（实测偏高 2px）。行号区间、连接名、库名、事务状态、上次耗时都不在这里：表名 / 库在标签名里，事务在表格工具条里。
+- 实现备注：只有两段：左段 SQL 摘要（可省略），右段 Last Refresh，空态时右段换成一行启动摘要（连接名，或「未连接 · 驱动 N · 浏览会话 M」）。左段紧贴行操作正下方（同一左边界），不跨到窗口最左。文案一律用 ASCII 冒号（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线（实测偏高 2px）。行号区间、连接名、库名、事务状态、上次耗时都不在这里：表名 / 库在标签名里，事务在表格工具条里。本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。
 
 ### `status_bar.row2.sql` SQL 摘要（左段）
 
@@ -2538,7 +2545,7 @@ kind `container` · status `active` · parent `tabs`
 - 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`、`gap_sm`、`gap_xxs`、`min_target`、`objects_min_width`；颜色 `sqarvo_separator`
 - 原生控件：gtk:AdwTabBar + AdwTabView / winui:TabView / swift:—
 - 同步：Linux done（§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则）；Windows partial（TabView 自带标签条（查询页可关闭、Objects 钉首位）；标签条上的 ＋ 按钮与拖拽重排 §7.1 未记录。）；macOS none
-- 实现备注：标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。
+- 实现备注：标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留
 
 ### `tabs.strip.tab` 标签项（标题 · 关闭 ×）
 
@@ -2553,6 +2560,9 @@ kind `row` · status `active` · parent `tabs.strip`
 |---|---|---|---|
 | click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1361、src/tabs.rs:2173、src/tabs.rs:2289、src/tabs.rs:2302` |
 | load | 页面已从标签条摘掉（detach） | 释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个 | `src/tabs.rs:2819、src/tabs.rs:2834、src/tabs.rs:2839` |
+| key Ctrl+Tab | 存在可切换的标签 | 选中下一个标签；到最后一个时回绕到第一个（Objects 固定页也在循环里）；AdwTabView 内置的同名快捷键已摘掉，只走这一条路径 | `src/ui.rs:332、src/ui.rs:4805、src/tabs.rs:2210` |
+| key Ctrl+Shift+Tab | 存在可切换的标签 | 选中上一个标签；到第一个时回绕到最后一个 | `src/ui.rs:333、src/ui.rs:4814、src/tabs.rs:2210` |
+| key Alt+1 / Alt+2 / Alt+3 / Alt+4 / Alt+5 / Alt+6 / Alt+7 / Alt+8 / Alt+9 | 存在工作区 | 选中第 N 个标签（1 起，Objects 算第 1 个）；超出当前标签数时什么都不做（不弹框、不崩），只记一行「[tabs] Alt+N：只有 M 个标签，忽略」 | `src/ui.rs:334-335、src/ui.rs:4826、src/tabs.rs:2230` |
 
 ### `tabs.strip.tab.table` 表数据标签（标题与 tooltip）
 
@@ -2607,7 +2617,7 @@ kind `control` · status `active` · parent `tabs.strip`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「新建查询标签」
 - 图标：`action.new_query`
-- 同步：Linux done（§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作）；Windows partial（`Ctrl+T` 新建查询页已落地；标签条上的 ＋ 按钮 §7.1 未记录（新建入口只写了 Ctrl+T 与菜单）。）；macOS none
+- 同步：Linux done（§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作）；Windows partial（反证锚点 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:500：main a84560f 上 `IsAddTabButtonVisible="False"`，标签条上的 ＋ 入口不存在（#176 未合并）；`Ctrl+T` 与菜单新建查询页已落地。按 AGENTS §14.2 保留 partial 并写明 code-vs-doc 差异：契约 tabs.strip.new 的 click 条目要求 ＋ 新建查询标签，Windows 端尚未实现，建议按 #176 用 TabView.TabStripFooter 补齐（TabView 自身属性属 #170 崩溃边界，不可改）。）；macOS none
 - 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。超限时不新建、只弹 tabs.limit（同一段文案不重复弹）；连点 ＋ 不会堆一摞对话框。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2636,7 +2646,7 @@ kind `container` · status `active` · parent `tabs`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_page`
 - 同步：Linux done（§5.11 版面收敛；SqlPage::new 的组装顺序）；Windows partial（查询页整体在代码里搭（#172，ShellView 一行未改）：动作行 / 编辑器 / 五态 / 表头 / 行区 / 加载更多；分隔线与留白 §7.1 未记录。）；macOS none
-- 实现备注：页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。
+- 实现备注：页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留
 
 ### `tabs.query.actions` 动作行（执行 / 取消）
 
@@ -2644,7 +2654,8 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`min_target`
 - 无障碍：可访问名「查询动作」
-- 同步：Linux done（§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700）；macOS none
+- 平台差异：Windows：取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。
+- 同步：Linux done（§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1103；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700）；macOS none
 - 实现备注：按钮文案与可用性随状态互斥：空闲 → 「执行」可点、「取消」不可点；执行中 → 主按钮变「取消」（Linux 是并排两枚：执行置灰、取消可点）。取消可重复点击，第二次起只记日志、不发 RPC。空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。动作行左端是会话信息（有真实会话信息时才占位，不再写「会话建立中…」）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2662,6 +2673,7 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
 - 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
+- 平台差异：Windows：v0.2.5 起整段执行（`Views/ShellView.Query.cs:704-705`）：不看选区、不找当前语句，与 Linux 一致；此前是「有选中就只执行选中」，属于记录在案的偏差，已按契约收紧。
 - 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。高度是内容高度区间（min 140 / max 220，未进 metrics：P1 补 key），超出后在编辑器内部滚动。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。
 
@@ -2676,7 +2688,8 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `font_status`、`gap_xl`、`spinner_px`；颜色 `warning_color`
 - 无障碍：可访问名「查询状态」
-- 同步：Linux done（§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:379）；macOS none
+- 平台差异：Windows：五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。
+- 同步：Linux done（§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:358）；macOS none
 - 实现备注：五态互斥且都带稳定文案：执行中带 spinner；空 / 错误 / 取消 / 只读 / 断开各一句，**没有**结果时同一句文案也做占位页的标题与说明。正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2690,7 +2703,7 @@ kind `container` · status `active` · parent `tabs.query`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_xl`、`gap_sm`、`radius_md`、`frame_border_width`；颜色 `sqarvo_frame`
 - 同步：Linux done（§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`）；Windows partial（状态行 + 表头 + 行区 + 「加载更多」已落地；状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。）；macOS none
-- 实现备注：自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。
+- 实现备注：自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留
 
 ### `tabs.query.results.header` 结果表头（列名 · 原始类型）
 
@@ -2711,6 +2724,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `row_height_data`、`row_number_width`、`column_width`、`font_data_cell`、`font_weight_cell`
 - 无障碍：可访问名「查询结果」；Tab 可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）
+- 平台差异：Windows：列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。
 - 同步：Linux done（§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中）；Windows partial（视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。）；macOS none
 - 实现备注：虚拟化：只建视口内的行，滚动时不把整批行都做成控件；行号列跨批次连续（1 起、右对齐），宽表靠横向滚动而不是把列压碎。行号列与数据列的实际宽度目前是代码常量（行号 72、数据列 220，未进 metrics：metrics 里是 row_number_width / column_width），P1 收敛。取消 / 错误 / 断连之后不清空行区：已加载的行保留，状态行说明为什么停在这里。没有行级脏色 / 删除线之外的额外标记（查询标签的单表编辑归 §5.10，脏行数只在状态行与状态圆点）。
 
@@ -2724,6 +2738,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「加载更多」
+- 平台差异：Windows：另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。
 - 同步：Linux done（§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52）；macOS none
 - 实现备注：每批行数由服务端分批返回；同一时刻最多一批在飞，触顶（客户端结果集上限）之后不再续拉。Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。
 

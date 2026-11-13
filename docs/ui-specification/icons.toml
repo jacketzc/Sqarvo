@@ -17,6 +17,9 @@
 # 也不许为了对齐猜新的码点。
 #
 # swift 一律 `—`：macOS 端尚未接入。
+#
+# 图标语义共 40 条。
+# 已移除 2 条无引用且无代码语义的排序方向重复登记（改动确认单 #5）
 
 [[icon]]
 id = "object.catalog"
@@ -68,6 +71,7 @@ swift = "—"
 winui_note = "近似：无「索引」字形"
 
 [[icon]]
+# 当前注册表未引用，但代码中有真实对象种类语义（frontend/linux/src/backend/metadata.rs:75 的 ObjectKind::Sequence → view-list-symbolic；frontend/linux/src/tree.rs:426 的 Fields 分组复用同字形），属组件覆盖缺口而非多余图标，保留待补登记。
 id = "object.sequence"
 linux = "view-list-symbolic"
 winui = "E8FD"
@@ -76,6 +80,7 @@ swift = "—"
 winui_note = "近似：无「序列」字形"
 
 [[icon]]
+# 当前注册表未引用，但代码中有真实对象种类语义（frontend/linux/src/backend/metadata.rs:76 的 ObjectKind::Function | ObjectKind::Procedure → application-x-executable-symbolic），属组件覆盖缺口而非多余图标，保留待补登记。
 id = "object.function"
 linux = "application-x-executable-symbolic"
 winui = "E943"
@@ -318,20 +323,6 @@ winui = "E893"
 winui_name = "Next"
 swift = "—"
 winui_note = "同 pager.first：无末页字形，兜底与 next 同枚"
-
-[[icon]]
-id = "sort.ascending"
-linux = "view-sort-ascending-symbolic"
-winui = "E70E"
-winui_name = "ChevronUp"
-swift = "—"
-
-[[icon]]
-id = "sort.descending"
-linux = "view-sort-descending-symbolic"
-winui = "E70D"
-winui_name = "ChevronDown"
-swift = "—"
 
 [[icon]]
 id = "tab.objects"

@@ -519,8 +519,9 @@ the registry. `workspace-model.md` is now only layout and regions.
   恢复 `done` 要按新规范重新核对，再跑 `scripts/check-ui-sync.sh mark`。
   `partial` / `na` / `blocked` 必须写清差异，不接受「未同步」四个字。
 - `ui-components.md` 不许手改：CI 会跑 `gen` 并与工作树比对，有差异即失败。
-- 九个功能区已全部在册（186 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
-  改行为要同时改契约本节与注册表，直到 P3 删除旧章节。
+- 九个功能区已全部在册（187 个组件）。**组件注册表是界面组成与逐组件行为的唯一真值**；
+  `ui-behavior-contract.md` 的 §1–§7 只是各区指针，正文只管全局规则（§8）与已知偏差（§9），
+  旧功能章节已迁出、不再作为行为叙述来源。
 - 未实现的平台能力记 `sync = "blocked"` 并进行为契约 §9，不得只标「未同步」。
 - **「这版不要它了」用生命周期，不用「禁用」。** `status = "removed"` + `removed_in`（如 `v0.3.0`）
   + `removed_reason`；还在用但下版会被取代 / 移除用 `deprecated`。**不许直接删条目** —— 别的端要靠它
