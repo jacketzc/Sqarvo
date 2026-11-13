@@ -150,6 +150,7 @@
                                     x:Name="ExpandCollapseChevron"
                                     Grid.Column="1"
                                     Width="{StaticResource Size.TreeArrowBox}"
+                                    Opacity="{TemplateBinding GlyphOpacity}"
                                     Background="{ThemeResource SqarvoTransparentBrush}">
                                     <TextBlock
                                         x:Name="CollapsedGlyph"
@@ -158,6 +159,8 @@
                                         FontSize="{StaticResource Size.FontUi}"
                                         Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                         Visibility="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=TreeViewItemTemplateSettings.CollapsedGlyphVisibility}"
+                                        AutomationProperties.AccessibilityView="Raw"
+                                        IsTextScaleFactorEnabled="False"
                                         VerticalAlignment="Center" />
                                     <TextBlock
                                         x:Name="ExpandedGlyph"
@@ -166,6 +169,8 @@
                                         FontSize="{StaticResource Size.FontUi}"
                                         Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
                                         Visibility="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=TreeViewItemTemplateSettings.ExpandedGlyphVisibility}"
+                                        AutomationProperties.AccessibilityView="Raw"
+                                        IsTextScaleFactorEnabled="False"
                                         VerticalAlignment="Center" />
                                 </Grid>
 

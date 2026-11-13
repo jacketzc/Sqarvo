@@ -1288,7 +1288,7 @@ kind `row` · status `active` · parent `object_tree.tree`
 
 - 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`tree_arrow_box`、`gap_xs`、`font_status`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「对象树行」
-- 同步：Linux done（§2.2 单击行 + theme.rs 行状态规则）；Windows partial（行模板与徽标文案一致；缩进量未对齐（Linux 为 4 + 14/层）。）；macOS none
+- 同步：Linux done（§2.2 单击行 + theme.rs 行状态规则）；Windows partial（自带 ControlTemplate（ShellView.xaml:58）：缩进走 TreeViewItemTemplateSettings.Indentation、折叠箭头 SqarvoIconFontFamily + Size.TreeArrowBox、选中整行 SqarvoSelectionBrush + SqarvoOnSelectionTextBrush（:80）、内容呈现器显式 TemplateBinding FontSize/FontWeight（:185）。字重按行种类由 OnTreeRowLoaded（ShellView.xaml.cs:728）分派，每一行都吃到；带 <ItemsPresenter/> 作为模板部件（WinUI 3 扁平树里子节点由 TreeViewList 承载）。展开/收起仍走 OnTreeExpanding/OnTreeCollapsed、HasUnrealizedChildren 不变。仍未对齐：行首图标、徽标右对齐弱色、Linux 4 + 14/层 缩进量。）；macOS none
 - 实现备注：hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中底 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid。缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1302,8 +1302,8 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 - 样式：尺寸 `tree_arrow_box`
 - 无障碍：可访问名「展开 / 收起」；Tab 不可聚焦（不占 Tab 位）
-- 平台差异：Windows：TreeView 自带展开箭头，命中区由控件决定，不接受单独定制。
-- 同步：Linux done（§2.2 行首箭头；arrow_button 接线与 set_focusable(false)）；Windows partial（命中区与外观由 TreeView 决定，无法逐像素对齐（接受）。）；macOS none
+- 平台差异：Windows：展开箭头落在自带 ControlTemplate 内（Views/ShellView.xaml:152）：SqarvoIconFontFamily 的 MDL2 字形（收起 E76C / 展开 E70D）+ Size.TreeArrowBox 命中区，可见性仍绑 TreeViewItemTemplateSettings 的 Collapsed/ExpandedGlyphVisibility，叶子行由框架把 GlyphOpacity 设 0（ExpandCollapseChevron 保留该 TemplateBinding）隐藏，不可展开的行留同宽空白；不再由 TreeView 默认模板独占。
+- 同步：Linux done（§2.2 行首箭头；arrow_button 接线与 set_focusable(false)）；Windows partial（折叠箭头在自带 ControlTemplate 内（ShellView.xaml:152）：SqarvoIconFontFamily 字形（收起 E76C / 展开 E70D）+ Size.TreeArrowBox 命中区，可见性随展开态由 TreeViewItemTemplateSettings 切换；单击展开/收起仍走 OnTreeExpanding/OnTreeCollapsed。命中区与外观不再由 TreeView 默认模板独占，但仍无法与 Linux 逐像素对齐（接受）。）；macOS none
 - 实现备注：扁平按钮 + 箭头图标；只在行可展开时出现，不可展开的行留同宽空白。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1316,7 +1316,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：别名或 用户名@主机:端口/库 + 连接态徽标）」
 - 图标：`tree.connection`
-- 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）；Windows partial（已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。）；macOS none
+- 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）；Windows partial（已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。本单起连接行字重 = Weight.Heading（OnTreeRowLoaded 按 ConnectionNode 分派，ShellView.xaml.cs:728），选中整行 SqarvoSelectionBrush + SqarvoOnSelectionTextBrush（ShellView.xaml:80）；右键菜单「浏览数据」等条目与数据模型未改。行首图标与右对齐弱色徽标未做。）；macOS none
 - 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。行名 = 连接别名；没起别名时回落 用户名@主机:端口/库（文件型驱动是文件路径）。别名只影响显示：不参与身份键、不进连接参数、不改会话显示名。tooltip 首行同一个显示名；有别名时另起一行给「连接名：<派生名>」，同别名不同目标也能分辨。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1330,7 +1330,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：库 / schema 名）」
 - 图标：`object.catalog`、`object.schema`
-- 同步：Linux done（§2.1 展开库 / schema）；Windows partial（展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。）；macOS none
+- 同步：Linux done（§2.1 展开库 / schema）；Windows partial（展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。本单起库行字重 = Weight.Heading（OnTreeRowLoaded 按 TreeRowKind.Catalog 分派，ShellView.xaml.cs:728），选中整行 SqarvoSelectionBrush（ShellView.xaml:80）；右键菜单未改。）；macOS none
 - 实现备注：库与 schema 不合并成一层：驱动给 schema 层就多一层，重名库靠「会话 + 库名」精确匹配。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1344,7 +1344,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：分组名）」
 - 图标：`tree.group.tables`、`tree.group.views`、`tree.group.functions`、`tree.group.queries`、`tree.table_group.fields`、`tree.table_group.indexes`、`tree.table_group.foreign_keys`、`tree.table_group.triggers`
-- 同步：Linux done（§2.1 分组与空态文案）；Windows partial（四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。）；macOS none
+- 同步：Linux done（§2.1 分组与空态文案）；Windows partial（四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。本单起分组行字重 = Weight.Heading（OnTreeRowLoaded 按 TreeRowKind.Group 分派，ShellView.xaml.cs:728），选中整行 SqarvoSelectionBrush（ShellView.xaml:80）；未实现分组的空/说明文案未改。）；macOS none
 - 实现备注：未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。未实现分组展开只写一行说明：「函数列表尚未实现（点开看说明，不发请求）」「已保存的查询尚未实现（点开看说明）」「驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装」。空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1359,7 +1359,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：对象名 + 种类）」
 - 图标：`object.table`、`object.view`
-- 同步：Linux done（§2.2 双击表 / 视图）；Windows partial（双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。）；macOS none
+- 同步：Linux done（§2.2 双击表 / 视图）；Windows partial（双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。本单起对象行字重 = Weight.Ui（Style 默认，ShellView.xaml:55），与连接 / 库 / 分组的 Heading 形成层级差；选中整行 SqarvoSelectionBrush（ShellView.xaml:80）。双击打开数据页与右键「浏览数据」路径未改。）；macOS none
 - 实现备注：可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
