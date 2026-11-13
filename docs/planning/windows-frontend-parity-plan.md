@@ -161,7 +161,12 @@ WinUI 3 的启动崩溃可以是**延迟且抖动**的（同一份构建分别�
    在此之前不逐个打补丁。
 4. **诊断能力断层**：Linux 有 30+ 个 `--qa-*` / `--screenshot` 开关，Windows 只有 3 个 `--report-*`；
    结果是「截图靠外部 BitBlt、布局靠肉眼」，这正是差异长期积累的原因之一。
-   正在补 `--screenshot` 与 `--qa-layout-audit`。
+   已补 `--screenshot=<路径>`（`RenderTargetBitmap` 进程内渲染）与 `--qa-layout-audit=<路径>`
+   （具名元素的实际宽高 / 坐标 / 字号 JSON）。compact 档实测：`HeaderBand 64`、`ToolbarBand 44`、
+   `StatusBand 48`、`SidebarColumn 237`、`InspectorColumn 279`、`TabStrip` 容器 904×161.5、
+   `ObjectsTable 883×91`、`HeaderTitle fs=13`、`HeaderSubtitle fs=11`、`InspectorTitle fs=13`
+   ——六个带的数值与 `metrics.toml` 对得上，所以剩下的差异在带内部（内距、控件尺寸、对齐），
+   不在带高。
 5. **Win10 未实测**：验证机是 Win11 26200。F 段码点（`F0E2` 等）在旧版 MDL2 上是否齐全只有文档依据，
    已在 `icons.toml` 的 `winui_note` 里写明回退码点。
 
