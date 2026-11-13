@@ -95,6 +95,24 @@ internal static class LayoutAudit
                 }
             }
 
+            // 数据网格列宽（--qa-layout-audit 扩展）：每个数据列一行，读共享列宽状态。
+            // 表头与所有行都用绝对值 GridLength 从这份状态取值，因此它就是实际渲染宽度；
+            // 没有激活的数据页时不静默跳过，给一行明确的 missing。
+            var columnWidths = shell.ActiveDataColumnWidths();
+            if (columnWidths is null)
+            {
+                lines.Add("{\"name\":\"DataColumn\",\"missing\":true}");
+            }
+            else
+            {
+                for (var index = 0; index < columnWidths.Count; index++)
+                {
+                    lines.Add(
+                        "{\"name\":\"DataColumn." + index.ToString(CultureInfo.InvariantCulture) + "\""
+                        + ",\"actual_w\":" + Number(columnWidths[index]) + "}");
+                }
+            }
+
             var scale = shell.XamlRoot?.RasterizationScale ?? 1d;
             lines.Add(
                 "{\"tier\":\"" + Metrics.TierId + "\""
