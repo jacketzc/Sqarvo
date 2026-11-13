@@ -23,22 +23,177 @@
 
     <UserControl.Resources>
         <!--
-            树行高来自度量（row_height_tree 24 / 30 / 36）。只加一个 MinHeight setter：
-            WinUI 3 的显式 Style 只覆盖同名 setter，模板仍由默认样式提供，所以不需要
-            BasedOn（也就不会因为默认样式键改名而在启动时炸）。
+            树行 = 自带 ControlTemplate 的 TreeViewItem（改动确认单 #3）。
+
+            复刻默认模板（generic.xaml 的 MUX_TreeViewItemStyle）的全部具名部件：
+            ContentPresenterGrid / SelectionIndicator / MultiSelectGrid / ExpandCollapseChevron /
+            CollapsedGlyph / ExpandedGlyph / ContentPresenter / MultiSelectCheckBox /
+            MultiArrangeOverlayTextBorder / MultiArrangeOverlayText 一个不少 —— TreeViewItem 的
+            OnApplyTemplate 与 VisualStateManager.GoToState 按名字找它们，缺件会在真机上抛空引用
+            （#170 那次 0xc000027b 就是模板部件缺失这一类的）。显式 Style 仍不写 BasedOn：
+            除这里覆盖的 setter 外，其余属性照旧由默认样式提供。
+
+            四处改动：
+              1. 缩进走 TreeViewItemTemplateSettings.Indentation（层级由框架按深度给）；
+              2. 选中态把 ContentPresenterGrid.Background 换成 SqarvoSelectionBrush（整行品牌紫），
+                 文字与箭头前景一起换 SqarvoOnSelectionTextBrush（紫底上不糊）；
+              3. ContentPresenter 显式 TemplateBinding FontSize / FontWeight —— 默认模板那条
+                 隐式 TextBlock 会截断容器级字重（实测 8 行只粗 1 行），模板化后每一行都吃到；
+                 具体哪几行用 Heading 由 OnTreeRowLoaded 按内容种类分派；
+              4. 折叠箭头用 SqarvoIconFontFamily 的字形，命中区取 Size.TreeArrowBox，
+                 可见性仍绑 TreeViewItemTemplateSettings 的 Collapsed/ExpandedGlyphVisibility。
+
+            <ItemsPresenter/>：确认单要求带上。注意 WinUI 3 的 TreeView 是扁平的 TreeViewList
+            （子节点由列表增删 + Indentation 模拟层级），并不靠 TreeViewItem 模板里的
+            ItemsPresenter 承载子节点；这里保留它仅作为模板部件清单的一项，展开 / 收起
+            仍走 OnTreeExpanding / OnTreeCollapsed 与 HasUnrealizedChildren 原语义。
         -->
         <Style x:Key="SqarvoTreeRowStyle" TargetType="TreeViewItem">
-            <!-- 行高 row_height_tree（24 / 30 / 36）：与 Linux 的 tree_row 同一档 -->
             <Setter Property="MinHeight" Value="{StaticResource Size.RowHeightTree}" />
-            <!-- 行字号 font_ui（12 / 15 / 18）：树行原本吃框架默认 14，比中央空态主标题（font_title 13）
-                 还大一档，标题反而「弱于树」。取 font_ui 后层级才成立。
-                 层级缩进由 TreeViewItem 的默认模板按深度给（框架行为，不覆盖模板）。 -->
             <Setter Property="FontSize" Value="{StaticResource Size.FontUi}" />
-            <!-- 选中态：这里只样式化、不换模板，所以选中是 TreeViewItem 默认模板那条细指示条，
-                 不是 Linux 的整行品牌紫。整行紫要自带 ControlTemplate（含箭头 / 缩进 / 展开动画），
-                 属结构改动，已记在 docs/planning/windows-frontend-parity-plan.md §8.2。
-                 注意：不要试图用 TreeViewItemBackgroundSelected 之类的资源键覆盖——真机截图证明
-                 默认模板不读它们（写了等于没写）。 -->
+            <!-- 默认字重（对象 / 占位 / 说明行）；连接 / 库 / 分组由 OnTreeRowLoaded 提到 Heading -->
+            <Setter Property="FontWeight" Value="{StaticResource Weight.Ui}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <Grid
+                            x:Name="ContentPresenterGrid"
+                            Background="{TemplateBinding Background}"
+                            Loaded="OnTreeRowLoaded">
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal" />
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenterGrid.Background" Value="{ThemeResource SqarvoBrandSoftBrush}" />
+                                            <Setter Target="SelectionIndicator.Opacity" Value="0" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenterGrid.Background" Value="{ThemeResource SqarvoBrandSoftBrush}" />
+                                            <Setter Target="SelectionIndicator.Opacity" Value="0" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Selected">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenterGrid.Background" Value="{ThemeResource SqarvoSelectionBrush}" />
+                                            <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="CollapsedGlyph.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="ExpandedGlyph.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="SelectionIndicator.Opacity" Value="0" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="PointerOverSelected">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenterGrid.Background" Value="{ThemeResource SqarvoSelectionBrush}" />
+                                            <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="CollapsedGlyph.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="ExpandedGlyph.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="SelectionIndicator.Opacity" Value="0" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="PressedSelected">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenterGrid.Background" Value="{ThemeResource SqarvoSelectionBrush}" />
+                                            <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="CollapsedGlyph.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="ExpandedGlyph.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="SelectionIndicator.Opacity" Value="0" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled" />
+                                    <VisualState x:Name="SelectedDisabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenterGrid.Background" Value="{ThemeResource SqarvoSelectionBrush}" />
+                                            <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource SqarvoOnSelectionTextBrush}" />
+                                            <Setter Target="SelectionIndicator.Opacity" Value="0" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="ReorderedPlaceholder" />
+                                </VisualStateGroup>
+                                <!-- 保留默认模板的状态名：TreeViewItem 内部 GoToState 会按名切，缺了会静默失效 -->
+                                <VisualStateGroup x:Name="TreeViewMultiSelectStates">
+                                    <VisualState x:Name="TreeViewMultiSelectDisabled" />
+                                    <VisualState x:Name="TreeViewMultiSelectEnabledUnselected" />
+                                    <VisualState x:Name="TreeViewMultiSelectEnabledSelected" />
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="DragStates">
+                                    <VisualState x:Name="NotDragging" />
+                                    <VisualState x:Name="MultipleDraggingPrimary" />
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+
+                            <!-- 选中指示条：保留具名部件；整行底色已表达选中，这里恒隐藏 -->
+                            <Rectangle x:Name="SelectionIndicator" Opacity="0" Visibility="Collapsed" />
+
+                            <!-- 缩进：Padding 由 TreeViewItemTemplateSettings.Indentation 按深度给 -->
+                            <Grid
+                                x:Name="MultiSelectGrid"
+                                Padding="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=TreeViewItemTemplateSettings.Indentation}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 多选部件：SelectionMode=Single 用不到，保留默认模板的部件名 -->
+                                <Grid Grid.Column="0">
+                                    <CheckBox x:Name="MultiSelectCheckBox" Visibility="Collapsed" IsTabStop="False" />
+                                    <Border x:Name="MultiArrangeOverlayTextBorder" Visibility="Collapsed">
+                                        <TextBlock x:Name="MultiArrangeOverlayText" />
+                                    </Border>
+                                </Grid>
+
+                                <!-- 折叠箭头：可见性随展开态由 TreeViewItemTemplateSettings 切换 -->
+                                <Grid
+                                    x:Name="ExpandCollapseChevron"
+                                    Grid.Column="1"
+                                    Width="{StaticResource Size.TreeArrowBox}"
+                                    Opacity="{TemplateBinding GlyphOpacity}"
+                                    Background="{ThemeResource SqarvoTransparentBrush}">
+                                    <TextBlock
+                                        x:Name="CollapsedGlyph"
+                                        Text="&#xE76C;"
+                                        FontFamily="{StaticResource SqarvoIconFontFamily}"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                        Visibility="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=TreeViewItemTemplateSettings.CollapsedGlyphVisibility}"
+                                        AutomationProperties.AccessibilityView="Raw"
+                                        IsTextScaleFactorEnabled="False"
+                                        VerticalAlignment="Center" />
+                                    <TextBlock
+                                        x:Name="ExpandedGlyph"
+                                        Text="&#xE70D;"
+                                        FontFamily="{StaticResource SqarvoIconFontFamily}"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        Foreground="{ThemeResource SqarvoTextPrimaryBrush}"
+                                        Visibility="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=TreeViewItemTemplateSettings.ExpandedGlyphVisibility}"
+                                        AutomationProperties.AccessibilityView="Raw"
+                                        IsTextScaleFactorEnabled="False"
+                                        VerticalAlignment="Center" />
+                                </Grid>
+
+                                <!-- 内容呈现器：字重 / 字号显式继承容器，保证每一行都吃到 -->
+                                <ContentPresenter
+                                    x:Name="ContentPresenter"
+                                    Grid.Column="2"
+                                    Content="{TemplateBinding Content}"
+                                    ContentTemplate="{TemplateBinding ContentTemplate}"
+                                    Foreground="{TemplateBinding Foreground}"
+                                    FontSize="{TemplateBinding FontSize}"
+                                    FontWeight="{TemplateBinding FontWeight}"
+                                    VerticalContentAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Margin="{TemplateBinding Padding}" />
+                            </Grid>
+
+                            <!-- 确认单要求的子节点容器；WinUI 3 扁平树里由 TreeViewList 承载（见上） -->
+                            <ItemsPresenter IsHitTestVisible="False" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!--

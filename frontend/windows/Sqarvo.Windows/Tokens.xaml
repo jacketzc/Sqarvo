@@ -229,6 +229,9 @@
             <!-- 高对比下选中行用系统高亮色，警示仍走系统 token -->
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SystemColorHighlightColorBrush" />
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SystemColorHighlightTextColorBrush" />
+            <!-- 品牌浅档（hover / pressed 底色）：高对比档不定义品牌色，改成系统「次级填充」，
+                 与 ToggleButtonBackgroundCheckedDisabled 同一 token；不能留给硬编码 #D8B7D3。 -->
+            <StaticResource x:Key="SqarvoBrandSoftBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
 
             <!-- 高对比下不做「同一种灰」的收拢：禁用态必须与正文有足够对比度差，交给系统 -->
