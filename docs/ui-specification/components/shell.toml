@@ -500,7 +500,7 @@ evidence = "§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 
 [component.sync.windows]
 state = "partial"
 spec_hash = "a5a90c8823ed"
-note = "可用性读 BackendState.IsReady、未就绪禁用并逐条给 tooltip 原因（§7.1）；按钮的强调色与禁用时的强调色摘除未记录。"
+note = "可用性读 BackendState.IsReady、未就绪禁用并逐条给 tooltip 原因（§7.1）；按钮的强调色与禁用时的强调色摘除未记录。几何 v0.2.5 修正：高取 `min_target`(24)，此前误用 `badge_min_height`(26)，比 Linux 高 2 DIP（`Views/ShellView.xaml:261-262`）。"
 
 [component.sync.macos]
 state = "none"
@@ -534,7 +534,7 @@ evidence = "§1.2「新建查询」；apply_new_query 的两条件与三段 tool
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "§7.1 只记录 `Ctrl+T` 新建查询页；工具条是否有「新建查询」按钮及其两段可用性未记录。"
+note = "v0.2.5 起与 Linux 同尺寸：高取 `min_target`(24)（此前 26）。（`Views/ShellView.xaml:294-295`）"
 
 [component.sync.macos]
 state = "none"

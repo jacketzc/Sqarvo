@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 186 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 187 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -183,11 +183,11 @@ kind `control` · status `active` · parent `data_page.toolbar`
 - 无障碍：可访问名「列显隐」；Tab 工具条次要动作组内第二枚
 - 图标：`action.columns`
 - 同步：Linux done（§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility）；Windows none（§7.1 未记录：Windows 数据页没有列显隐入口。）；macOS none
-- 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。与漏斗互斥：打开卡片会收起筛选面板。
+- 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。与漏斗互斥：打开它会把筛选面板 popdown。面板形态与筛选面板一致：挂在按钮上的 GtkPopover（autohide=false），不再是主窗口里的页内卡片。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前表有列 | 打开 / 收起页内「列显隐」卡片（复选框清单）；再点一次收起 | `src/data_page.rs:2324、src/data_page.rs:1757` |
+| click | 当前表有列 | 打开 / 收起挂在按钮上的「列显隐」popover（复选框清单）；再点一次收起 | `src/data_page.rs:2337、src/data_page.rs:1371` |
 
 ### `data_page.toolbar.columns.card` 列显隐卡片（复选清单 + 说明）
 
@@ -196,12 +196,12 @@ kind `container` · status `active` · parent `data_page.toolbar.columns`
 - 样式：尺寸 `radius_lg`、`row_height_data`
 - 无障碍：可访问名「列显隐」
 - 同步：Linux done（§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled）；Windows none（§7.1 未记录：Windows 数据页没有列显隐卡片。）；macOS none
-- 实现备注：页内右对齐卡片（不是独立窗口，也不是 popover）：标题「列显隐」+ 复选框清单 + ✕；卡片宽度 300 与清单最大高度 260 是代码常量，**未进 metrics**。说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」；复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。
+- 实现备注：`GtkPopover`（`autohide=false`），挂在眼睛按钮上：标题「列显隐」+ 分区标题「列」+ 复选框清单 + ✕ + 说明行；宽度取 `metrics.filter_panel_width`，清单高度与筛选面板的条件清单同口径（140 上限 / 60 下限）。样式与筛选面板**同一套**：容器 `sqarvo-fs`，标题 `fs-title`，分区 `fs-section`，清单 `fs-list`，复选行 `fs-row`（24px 行高、淡底、1px 描边）。说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与导出口径不变。」；复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。是独立 popup surface，不在主窗口 render tree 里：截图取证要用 `qa::save_widget` 拍控件本身。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 卡片已打开、该列在清单里 | 勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号 | `src/data_page.rs:2361、src/data_page.rs:2316` |
-| click | 卡片已打开 | 点 ✕ 收起卡片，隐藏选择保持不变 | `src/data_page.rs:1763` |
+| click | 卡片已打开 | 点 ✕ 收起 popover，隐藏选择保持不变 | `src/data_page.rs:1893` |
 
 ### `data_page.toolbar.export` 「导出 ▾」菜单按钮
 
@@ -583,6 +583,7 @@ kind `container` · status `active` · parent `data_page`
 | `dialogs.connection.header` | 　　标题与副标题 | control | active | done | — | — |
 | `dialogs.connection.driver` | 　　驱动下拉 | control | active | done | — | — |
 | `dialogs.connection.fields` | 　　连接参数表单（按驱动族显隐） | container | active | done | partial | — |
+| `dialogs.connection.fields.alias` | 　　　别名（可选） | control | active | done | — | — |
 | `dialogs.connection.fields.host` | 　　　主机 | control | active | done | partial | — |
 | `dialogs.connection.fields.port` | 　　　端口 | control | active | done | partial | — |
 | `dialogs.connection.fields.username` | 　　　用户名 | control | active | done | partial | — |
@@ -667,6 +668,19 @@ kind `container` · status `active` · parent `dialogs.connection`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 驱动族确定（服务器型 / 文件型 / 前端不认识） | 按描述表显示或隐藏各行；切回服务器型驱动时空着的主机与端口补回默认值（用户没改过就不该看到空主机） | `src/dialog.rs:197、src/driver_form.rs:91、src/dialog.rs:411` |
+
+### `dialogs.connection.fields.alias` 别名（可选）
+
+kind `control` · status `active` · parent `dialogs.connection.fields`
+
+- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
+- 无障碍：可访问名「别名（可选）」；Tab 连接参数组内第二行（驱动之后、主机 / 文件路径之前）
+- 同步：Linux done（cargo test：别名不进身份键 / 旧配置可读 / 别名不脱敏连接参数）；Windows none；macOS none
+- 实现备注：所有驱动都显示（不随驱动族显隐）：别名不是连接参数，SQLite 与服务器型驱动都能取。只影响对象树连接行与信息面板的标题；不参与连接身份键、不进 gRPC 连接参数、不做会话显示名。留空 = 没有别名，界面回落到派生名；保存时去掉首尾空白。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 对话框已打开（新建或编辑），点了「保存并连接」 | 别名随其余非敏感字段一起写入 connections.json 的 alias；旧配置没有该字段时按空别名读取 | `src/dialog.rs:190、src/driver_form.rs:172、src/backend/worker.rs:4018` |
 
 ### `dialogs.connection.fields.host` 主机
 
@@ -1295,10 +1309,10 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：连接名 + 连接态徽标）」
+- 无障碍：可访问名「（行内容：连接名或别名 + 连接态徽标）」
 - 图标：`tree.connection`
 - 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）；Windows partial（已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。）；macOS none
-- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。
+- 实现备注：行首文字优先显示**别名**（`SavedConnection.alias`），别名为空或只有空白时回落到派生名（`user@host[/db]`、`文件名（SQLite）`）。别名只影响展示：连接身份键、会话显示名、标题规则与断开/删除用的键仍是被派生名与目标算出的那一份。tooltip 第一行是别名优先的标题；有别名时同一行里补「（连接名 …）」，免得同一个目标的第二条连接看不出区别。行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案；搜索同时匹配别名与连接名。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1513,12 +1527,12 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「编辑连接…」
-- 同步：Linux done（§2.3 编辑连接）；Windows none（无树右键菜单。）；macOS none
-- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。
+- 同步：Linux done（§2.3 编辑连接；--qa-tree-menu-connection + --qa-tree-menu-pick 编辑连接… → 日志「已用已保存连接…预填对话框」）；Windows none（无树右键菜单。）；macOS none
+- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。菜单的 popover 锚在**树视图**上（不是行控件）：GtkListView 会回收行控件，锚在行上时树一刷新菜单就消失，点击落到树行 →「点了没反应」。编辑时若已存在对话框，先丢弃旧实例再按这条连接的键重建并预填：对已关闭的 AdwDialog 调 present() 是空操作。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接存在于配置里 | 打开连接对话框并预填非敏感字段 | `src/ui.rs:785、src/ui.rs:989` |
+| click | 连接存在于配置里 | 打开连接对话框并预填非敏感字段（含别名） | `src/tree.rs:3347、src/ui.rs:1107` |
 
 ### `object_tree.ctx_menu.delete_connection` 「删除连接」
 
@@ -1915,7 +1929,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「连接」
-- 同步：Linux done（§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂）；Windows partial（可用性读 BackendState.IsReady、未就绪禁用并逐条给 tooltip 原因（§7.1）；按钮的强调色与禁用时的强调色摘除未记录。）；macOS none
+- 同步：Linux done（§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂）；Windows partial（可用性读 BackendState.IsReady、未就绪禁用并逐条给 tooltip 原因（§7.1）；按钮的强调色与禁用时的强调色摘除未记录。几何 v0.2.5 修正：高取 `min_target`(24)，此前误用 `badge_min_height`(26)，比 Linux 高 2 DIP（`Views/ShellView.xaml:261-262`）。）；macOS none
 - 实现备注：主工具条上唯一的强调色按钮（`suggested-action`）；禁用时**摘掉**该类 —— Adwaita 的 disabled suggested 仍是橙底，视觉上像可点。tooltip：就绪时「打开连接对话框（Ctrl+N）」；未就绪时「后端尚未就绪：正在连接本地后端，握手完成后才能新建连接」。连接入口只有这一个（标题栏不放连接按钮）；连接对话框也能从「文件 → 新建连接」/ `Ctrl+N` 打开。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1928,7 +1942,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「新建查询」
-- 同步：Linux done（§1.2「新建查询」；apply_new_query 的两条件与三段 tooltip）；Windows none（§7.1 只记录 `Ctrl+T` 新建查询页；工具条是否有「新建查询」按钮及其两段可用性未记录。）；macOS none
+- 同步：Linux done（§1.2「新建查询」；apply_new_query 的两条件与三段 tooltip）；Windows none（v0.2.5 起与 Linux 同尺寸：高取 `min_target`(24)（此前 26）。（`Views/ShellView.xaml:294-295`））；macOS none
 - 实现备注：两个独立条件同时满足才可点：后端已握手 **且** 已连接数据库（工作区存在）；两者正交，任一不满足都禁用。tooltip 三态：启用「新建查询标签（Ctrl+T）」；未连接「尚未连接数据库：先连接再新建查询标签」；后端未就绪「后端尚未就绪：握手完成且连接数据库后才能新建查询标签」。与标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」同一条 `TabSet::new_query_tab`。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

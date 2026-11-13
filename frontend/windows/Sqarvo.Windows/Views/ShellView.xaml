@@ -258,8 +258,8 @@
                          （VisualState 的 setter 会盖掉这里的本地值），所以没后端时它自然变灰。 -->
                     <Button
                         x:Name="ButtonConnect"
-                        Height="{StaticResource Size.BadgeMinHeight}"
-                        MinHeight="{StaticResource Size.SecondaryMinHeight}"
+                        Height="{StaticResource Size.MinTarget}"
+                        MinHeight="{StaticResource Size.MinTarget}"
                         MinWidth="0"
                         Padding="0"
                         Background="Transparent"
@@ -291,8 +291,8 @@
                     <!-- 次要动作：中性底（透明）+ 主文字色，与种类入口同一套 flat 形态。 -->
                     <Button
                         x:Name="ButtonNewQuery"
-                        Height="{StaticResource Size.BadgeMinHeight}"
-                        MinHeight="{StaticResource Size.SecondaryMinHeight}"
+                        Height="{StaticResource Size.MinTarget}"
+                        MinHeight="{StaticResource Size.MinTarget}"
                         MinWidth="0"
                         Padding="0"
                         IsEnabled="False"
