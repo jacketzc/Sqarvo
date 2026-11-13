@@ -2037,6 +2037,13 @@ public sealed partial class ShellView
     private static void EnsureColumnWidths(DataTab tab)
     {
         var count = tab.Page.Columns.Count;
+        if (count == 0)
+        {
+            // 换页 / 刷新刚换了 DataPage，列还没回来（这一帧只是 Loading 重画）。此时按 count=0 裁剪
+            // 会把用户的列宽与 UserSizedColumns 一起清空 —— 等响应填好列再画就全退回默认了。
+            return;
+        }
+
         while (tab.ColumnWidths.Count < count)
         {
             tab.ColumnWidths.Add(Metrics.ColumnWidth);
@@ -2104,25 +2111,49 @@ public sealed partial class ShellView
                 return;
             }
 
-            tab.ResizeColumn = column;
-            tab.ResizeStartX = args.GetCurrentPoint(grip).Position.X;
-            tab.ResizeStartWidth = tab.ColumnWidths[column];
-            grip.CapturePointer(args.Pointer);
-        };
-
-        grip.PointerMoved += (_, args) =>
-        {
-            if (tab.Closed || tab.ResizeColumn != column)
+            var point = args.GetCurrentPoint(tab.RowsGrid);
+            if (!point.Properties.IsLeftButtonPressed)
             {
                 return;
             }
 
-            var x = args.GetCurrentPoint(grip).Position.X;
-            var width = ClampColumnWidth(tab.ResizeStartWidth + (x - tab.ResizeStartX));
+            tab.ResizeColumn = column;
+            // 参照系必须是不随列宽移动的元素：把手自己贴在列右缘、跟着列一起右移，用 grip 取点等于拿
+            // 一把会动的尺子量位移（W ← 2·W0 + d − W_cur，拖起来来回抖、默认列宽还已到上限）。
+            // RowsGrid 的左缘在拖动期间固定，横向滚动也不会在按下 ~ 松开之间发生。
+            tab.ResizeStartX = point.Position.X;
+            tab.ResizeStartWidth = tab.ColumnWidths[column];
+            if (!grip.CapturePointer(args.Pointer))
+            {
+                tab.ResizeColumn = -1;
+                return;
+            }
+
+            args.Handled = true;
+        };
+
+        grip.PointerMoved += (_, args) =>
+        {
+            if (tab.Closed || tab.ResizeColumn != column || column >= tab.ColumnWidths.Count)
+            {
+                return;
+            }
+
+            var point = args.GetCurrentPoint(tab.RowsGrid);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                // 按键早松了但没收到 PointerReleased（捕获丢了）：按取消处理，别让用户没按键地改列宽。
+                tab.ResizeColumn = -1;
+                return;
+            }
+
+            var width = ClampColumnWidth(tab.ResizeStartWidth + (point.Position.X - tab.ResizeStartX));
             if (width != tab.ColumnWidths[column])
             {
                 ApplyColumnWidthLive(tab, column, width);
             }
+
+            args.Handled = true;
         };
 
         grip.PointerReleased += (_, args) =>
@@ -2134,6 +2165,7 @@ public sealed partial class ShellView
 
             tab.ResizeColumn = -1;
             grip.ReleasePointerCapture(args.Pointer);
+            args.Handled = true;
         };
 
         grip.PointerCaptureLost += (_, _) =>
@@ -2165,7 +2197,17 @@ public sealed partial class ShellView
             return;
         }
 
-        var width = MeasureAutoFitWidth(tab, column);
+        var measured = MeasureAutoFitWidth(tab, column);
+        if (measured <= 0)
+        {
+            // 量不到（游离 TextBlock 没展开模板时可能返回 0）：保持当前宽度，不要把整列压到下限 64。
+            ConsoleBridge.WriteDiagnostic(
+                $"[colwidth] 自适应放弃 column={column}：量不到内容宽度（保持 " +
+                $"{tab.ColumnWidths[column].ToString("0.##", CultureInfo.InvariantCulture)}）");
+            return;
+        }
+
+        var width = ClampColumnWidth(measured + 2 * (double)Metrics.ColumnCellPadding);
         tab.ColumnWidths[column] = width;
         tab.UserSizedColumns.Add(column);
         RenderDataPage(tab);
@@ -2174,25 +2216,27 @@ public sealed partial class ShellView
             $"min={Metrics.ColumnMinWidth} max={Metrics.ColumnWidth}");
     }
 
-    /// <summary>最长文字（表头 + 已加载值）测量宽度 + 左右各一份单元格内距，再钳到上下限。</summary>
+    /// <summary>最长文字（表头 + 已加载值）的自然宽度；量不到时返回 0（由调用方决定保持原宽）。</summary>
     private static double MeasureAutoFitWidth(DataTab tab, int column)
     {
-        var longest = MeasureTextWidth(tab.Page.Columns[column].HeaderText);
+        // 表头用 font_ui + title(600)、数据格用 font_data_cell + cell(500)（AddDataCell 的口径），
+        // 测量必须两边分开，否则表头会量得偏窄 / 偏宽。
+        var longest = MeasureTextWidth(tab.Page.Columns[column].HeaderText, Metrics.FontUi, TypeTokens.Title);
         foreach (var row in tab.Page.Rows)
         {
             var text = DataCellText.Display(row.Value(column));
             if (text.Length > 0)
             {
-                longest = Math.Max(longest, MeasureTextWidth(text));
+                longest = Math.Max(longest,
+                    MeasureTextWidth(text, Metrics.FontDataCell, TypeTokens.Cell));
             }
         }
 
-        // 纯文字宽量不到（游离 TextBlock 的模板没展开）时降级到下限，不崩、也不写死像素。
-        return ClampColumnWidth(longest + 2 * (double)Metrics.ColumnCellPadding);
+        return longest;
     }
 
-    /// <summary>用游离 TextBlock 量一段单行文字的自然宽度（数据格字号 / 字重取 metrics 与 TypeTokens）。</summary>
-    private static double MeasureTextWidth(string text)
+    /// <summary>用游离 TextBlock 量一段单行文字的自然宽度（字号 / 字重由调用方按格类型给）。</summary>
+    private static double MeasureTextWidth(string text, double fontSize, FontWeight fontWeight)
     {
         if (string.IsNullOrEmpty(text))
         {
@@ -2204,8 +2248,8 @@ public sealed partial class ShellView
             var probe = new TextBlock
             {
                 Text = text,
-                FontSize = Metrics.FontDataCell,
-                FontWeight = TypeTokens.Cell,
+                FontSize = fontSize,
+                FontWeight = fontWeight,
                 TextWrapping = TextWrapping.NoWrap,
                 TextTrimming = TextTrimming.None,
             };

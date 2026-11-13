@@ -176,6 +176,7 @@ public sealed class AppOptions
     /// <summary>
     /// QA 钩子：<c>--qa-column-width=&lt;列序号&gt;:&lt;宽度&gt;</c>。只在诊断路径里把某数据列设成用户宽度
     /// （拖拽动作无法脚本模拟，用它做截图 / 布局审计取证）；不改窗口几何、不写 window.json。
+    /// <b>只在 --qa-data 的数据页路径里消费</b>（<c>RunQaDataAsync</c>）：单独给这个开关不会有任何效果。
     /// </summary>
     public (int Index, double Width)? QaColumnWidth { get; }
 
