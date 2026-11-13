@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace Sqarvo.Windows.Diagnostics;
@@ -25,6 +26,9 @@ public sealed class AppOptions
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
     {
         ["qa-report-monitor"] = "report-monitor",
+        ["qa-screenshot"] = "screenshot",
+        ["qa-screenshot-delay"] = "screenshot-delay",
+        ["qa-layout-audit"] = "layout-audit",
     };
 
     private AppOptions(
@@ -41,7 +45,11 @@ public sealed class AppOptions
         string? qaSignIn,
         string? qaQuery,
         int qaQueryPages,
-        string? qaData)
+        string? qaData,
+        string? screenshotPath,
+        double screenshotDelaySeconds,
+        bool layoutAudit,
+        string? layoutAuditPath)
     {
         ReportTheme = reportTheme;
         ReportMetrics = reportMetrics;
@@ -57,6 +65,10 @@ public sealed class AppOptions
         QaQuery = qaQuery;
         QaQueryPages = Math.Clamp(qaQueryPages, 1, 8);
         QaData = qaData;
+        ScreenshotPath = screenshotPath;
+        ScreenshotDelaySeconds = screenshotDelaySeconds < 0 ? 0 : screenshotDelaySeconds;
+        LayoutAudit = layoutAudit;
+        LayoutAuditPath = layoutAuditPath;
     }
 
     /// <summary>打印 <c>[theme]</c> 一行。</summary>
@@ -137,6 +149,28 @@ public sealed class AppOptions
     /// </remarks>
     public string? QaData { get; }
 
+    /// <summary>
+    /// 诊断专用：<c>--screenshot=&lt;路径&gt;</c>（别名 <c>--qa-screenshot</c>）。窗口激活后延迟
+    /// <see cref="ScreenshotDelaySeconds"/> 秒，用 <c>RenderTargetBitmap</c> 渲染窗口内容并存 PNG。
+    /// </summary>
+    /// <remarks>
+    /// 存在的理由：外部截图（GDI BitBlt / 剪贴板）会抓到别的窗口，而且每次都要过审批；界面自身的
+    /// 渲染结果才是"用户看到的界面"。只给开关不给值时写到 <c>%TEMP%\sqarvo-shot.png</c>。
+    /// </remarks>
+    public string? ScreenshotPath { get; }
+
+    /// <summary><c>--screenshot-delay=&lt;秒&gt;</c>：截图前等多久（默认 2.0，负数按 0 处理）。</summary>
+    public double ScreenshotDelaySeconds { get; }
+
+    /// <summary>
+    /// 诊断专用：<c>--qa-layout-audit[=&lt;路径&gt;]</c>（别名 <c>--layout-audit</c>）。逐个打印具名元素的
+    /// 实际布局（宽 / 高 / 相对窗口的 x、y / 字号），末尾打印档位与缩放。不给路径就打到 stdout。
+    /// </summary>
+    public bool LayoutAudit { get; }
+
+    /// <summary><c>--qa-layout-audit</c> 的输出路径；<see langword="null"/> = 打到 stdout。</summary>
+    public string? LayoutAuditPath { get; }
+
     /// <summary>打印窗口尺寸算术与面板宽度换算的边界断言（纯函数自检，不建窗口）。</summary>
     public bool SelfTestWindow { get; }
 
@@ -145,6 +179,15 @@ public sealed class AppOptions
 
     /// <summary>是否需要窗口（自检是纯函数，不需要）。</summary>
     public bool NeedsWindow => ReportTheme || ReportMetrics || ReportMonitor || ReportShell;
+
+    /// <summary>
+    /// 关窗时是否跳过写 <c>window.json</c>：诊断开关不该改用户记忆的窗口几何
+    /// （<c>--report-*</c> 一直如此；新加的截图 / 布局审计开关同样只读）。
+    /// </summary>
+    public bool SuppressesGeometrySave => HasReports || ScreenshotPath is not null || LayoutAudit;
+
+    /// <summary>是否有任何「窗口起来之后才有话可说」的诊断开关（截图 / 布局审计）。</summary>
+    public bool HasWindowDiagnostics => ScreenshotPath is not null || LayoutAudit;
 
     /// <summary>从完整命令行解析（第一项是 exe 路径，跳过）。</summary>
     public static AppOptions Parse(string[] commandLine)
@@ -171,6 +214,10 @@ public sealed class AppOptions
             qaQuery: Value(commandLine, "--qa-query="),
             qaQueryPages: Number(commandLine, "--qa-query-pages=", 1),
             qaData: Value(commandLine, "--qa-data="),
+            screenshotPath: ScreenshotTarget(commandLine),
+            screenshotDelaySeconds: Seconds(commandLine, "--screenshot-delay=", 2.0),
+            layoutAudit: Has(commandLine, "--qa-layout-audit", "--layout-audit"),
+            layoutAuditPath: FirstValue(commandLine, "--qa-layout-audit=", "--layout-audit="),
             qaTier: commandLine
                 .Skip(1)
                 .Where(argument => argument.StartsWith("--qa-tier=", StringComparison.Ordinal))
@@ -186,9 +233,57 @@ public sealed class AppOptions
             .Select(argument => argument.Substring(prefix.Length).Trim())
             .FirstOrDefault();
 
+    /// <summary>某个开关是否出现（<c>--name</c> 或 <c>--name=…</c> 都算；别名由调用方一并给出）。</summary>
+    private static bool Has(string[] commandLine, params string[] names) =>
+        commandLine
+            .Skip(1)
+            .Any(argument => names.Any(name =>
+                string.Equals(argument, name, StringComparison.OrdinalIgnoreCase)
+                || argument.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>多个前缀里第一个非空取值（<c>--qa-x=…</c> 与 <c>--x=…</c> 两种写法）。</summary>
+    private static string? FirstValue(string[] commandLine, params string[] prefixes)
+    {
+        foreach (var prefix in prefixes)
+        {
+            var value = Value(commandLine, prefix);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <c>--screenshot</c> 的目标路径：给了开关但没给值 → <c>%TEMP%\sqarvo-shot.png</c>；
+    /// 没给开关 → <see langword="null"/>（不截图）。
+    /// </summary>
+    private static string? ScreenshotTarget(string[] commandLine)
+    {
+        if (!Has(commandLine, "--screenshot", "--qa-screenshot"))
+        {
+            return null;
+        }
+
+        var explicitPath = FirstValue(commandLine, "--screenshot=", "--qa-screenshot=");
+        return explicitPath ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sqarvo-shot.png");
+    }
+
     /// <summary>读一个整数开关；缺省或非法就用 <paramref name="fallback"/>（不抛、不打断启动）。</summary>
     private static int Number(string[] commandLine, string prefix, int fallback) =>
         int.TryParse(Value(commandLine, prefix), out var parsed) ? parsed : fallback;
+
+    /// <summary>读一个小数开关（秒）；缺省或非法就用 <paramref name="fallback"/>。</summary>
+    private static double Seconds(string[] commandLine, string prefix, double fallback) =>
+        double.TryParse(
+            Value(commandLine, prefix),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsed)
+            ? parsed
+            : fallback;
 
     /// <summary>把开关名归一：去 <c>--</c>、转小写、别名换规范名。</summary>
     private static string Canonical(string flag)

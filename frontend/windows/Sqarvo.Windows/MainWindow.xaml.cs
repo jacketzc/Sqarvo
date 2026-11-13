@@ -1052,7 +1052,8 @@ public sealed partial class MainWindow : Window
             UnhookXamlRoot();
         }
 
-        if (_options.HasReports)
+        // --report-* 与 --screenshot / --qa-layout-audit 都是只读诊断：不写用户记忆的窗口几何。
+        if (_options.SuppressesGeometrySave)
         {
             return;
         }

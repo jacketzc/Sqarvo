@@ -270,6 +270,11 @@ public sealed partial class ShellView : UserControl
     public UIElement HeaderDragRegion => HeaderDragArea;
 
     /// <summary>
+    /// 布局审计（<c>--qa-layout-audit</c>）的根元素：就是本控件，因此审计出来的坐标与窗口内容同坐标系。
+    /// </summary>
+    public FrameworkElement AuditRoot => this;
+
+    /// <summary>
     /// 系统 caption 按钮占的宽度（DIP）：窗口层从 <c>AppWindow.TitleBar.LeftInset/RightInset</c>
     /// （物理像素）除以栅格化比例后传进来，标题行的左右内距在 toolbar_padding_h 之上叠加它。
     /// </summary>
