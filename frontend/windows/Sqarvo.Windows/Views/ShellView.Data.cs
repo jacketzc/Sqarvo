@@ -268,6 +268,35 @@ public sealed partial class ShellView
         };
         KeyboardAccelerators.Add(revert);
 
+        // F5（ui-behavior-contract.md §8「刷新当前表 / 对象树」）：当前标签是表数据页就刷那张表
+        // （脏行守卫照旧），否则重建整棵对象树。状态栏不提供第二个刷新入口，所以这里是唯一快捷键。
+        var refresh = new KeyboardAccelerator { Key = VirtualKey.F5 };
+        refresh.Invoked += (sender, args) =>
+        {
+            args.Handled = true;
+
+            if (CurrentDataTab() is { } tab)
+            {
+                if (tab.Refresh.IsEnabled)
+                {
+                    _ = RefreshDataAsync(tab);
+                }
+                else
+                {
+                    _notice = "有未提交的更改：先 Ctrl+S 提交或 Ctrl+Z 放弃，再刷新";
+                    ApplyDataStatus();
+                }
+
+                return;
+            }
+
+            // 不在表标签上：整棵树重建（作废已连接的层，回到连接层重读）。文案按契约写在状态行行 2 左格。
+            SqlSummaryText.Text = "正在重新读取对象树…";
+            ToolTipService.SetToolTip(SqlSummaryText, "F5：当前不是表数据页，所以重建整棵对象树");
+            RebuildTree();
+        };
+        KeyboardAccelerators.Add(refresh);
+
         var edit = new KeyboardAccelerator { Key = VirtualKey.F2 };
         edit.Invoked += (sender, args) =>
         {

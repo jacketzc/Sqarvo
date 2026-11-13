@@ -42,7 +42,8 @@ evidence = "v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs"
 [component.sync.windows]
 state = "partial"
 spec_hash = "c9c1a528b7da"
-note = "侧栏是 TreeView + SplitView；无搜索沟、无侧栏提示行。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:273"
+note = "F5 已接（`:273` 起的 KeyboardAccelerator：当前是表数据页就刷那张表并走脏行守卫，否则 `RebuildTree()` 并把「正在重新读取对象树…」写进状态行行 2 左格）；侧栏仍是 TreeView + SplitView，无搜索沟、无侧栏提示行。"
 
 [component.sync.macos]
 state = "none"

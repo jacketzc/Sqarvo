@@ -1241,7 +1241,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 kind `area` · status `active`
 
 - 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`、`row_height_tree`
-- 同步：Linux done（v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs）；Windows partial（侧栏是 TreeView + SplitView；无搜索沟、无侧栏提示行。）；macOS none
+- 同步：Linux done（v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs）；Windows partial（F5 已接（`:273` 起的 KeyboardAccelerator：当前是表数据页就刷那张表并走脏行守卫，否则 `RebuildTree()` 并把「正在重新读取对象树…」写进状态行行 2 左格）；侧栏仍是 TreeView + SplitView，无搜索沟、无侧栏提示行。）；macOS none
 - 实现备注：侧栏只有对象树：没有页脚按钮、没有刷新按钮、没有平铺列表、没有分页统计。搜索框与搜索状态行不画在侧栏里，放在状态栏左边沟（见 object_tree.search），宽度跟随分栏线。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
