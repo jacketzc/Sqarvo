@@ -2621,7 +2621,7 @@ kind `control` · status `active` · parent `tabs.strip`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「新建查询标签」
 - 图标：`action.new_query`
-- 同步：Linux done（§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作）；Windows partial（`Ctrl+T` 新建查询页已落地；标签条上的 ＋ 按钮 §7.1 未记录（新建入口只写了 Ctrl+T 与菜单）。）；macOS none
+- 同步：Linux done（§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作）；Windows partial（四个入口（工具条「新建查询」/ 标签条 ＋ / Ctrl+T / 菜单「文件 → 新建查询标签」）全部走 CreateQueryTab、同一 canQuery 谓词已落地；＋ 放在 TabView.TabStripFooter，不碰 IsAddTabButtonVisible / TabWidthMode / CanReorderTabs（#170 崩溃边界）。剩余差异：新建后焦点不自动落编辑器（见 tabs.query.editor）、超限提示走状态栏而非对话框（见 tabs.limit）。）；macOS none
 - 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。超限时不新建、只弹 tabs.limit（同一段文案不重复弹）；连点 ＋ 不会堆一摞对话框。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
