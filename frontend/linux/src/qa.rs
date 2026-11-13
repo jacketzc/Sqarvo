@@ -72,8 +72,6 @@
 //!   `--qa-tree-disconnect <name>`（右键「断开连接」同一条路径，含确认框）；
 //!   `--qa-tree-menu-group <tables|views>` + `--qa-tree-menu-pick <条目>`（在种类分组行上
 //!   打开右键菜单再点条目，与用户点同一条路径；未展开分组的「刷新这一组」提示用它取证）；
-//!   `--qa-tree-menu-connection <连接名>` + `--qa-tree-menu-pick <条目>`（在工作区对象树里
-//!   打开发连接行的右键菜单再点条目：编辑连接 / 断开 / 删除走用户同一条路径）；
 //! - `Objects` 固定页（v0.2.4 三列表格，与数据网格同套渲染）：
 //!   `--qa-objects-select <name>`（走单选模型，与单击同一条路径，会同步信息面板）、
 //!   `--qa-objects-activate <name>`（发 `GtkColumnView::activate`，与双击 / 回车同一条
@@ -1019,9 +1017,6 @@ struct Args {
     /// `--qa-tree-menu-group <tables|views>`：在库下的种类分组行上打开右键菜单
     /// （未展开的分组刷新反馈用它取证；只有这两组带「刷新这一组」）。
     tree_menu_group: Option<String>,
-    /// `--qa-tree-menu-connection <name>`：在工作区对象树里打开发连接行的右键菜单
-    /// （与用户右击同一条 `show_context_menu` 路径；编辑连接 / 断开 / 删除的取证入口）。
-    tree_menu_connection: Option<String>,
     /// `--qa-tree-menu-pick <label>`：点当前右键菜单里的这一项（与用户点同一条点击路径）。
     tree_menu_pick: Option<String>,
     /// `--qa-objects-select <name>`：选中 `Objects` 固定页里的某一行（走单选模型，
@@ -1295,7 +1290,6 @@ pub fn enabled() -> bool {
             || args.kind_click.is_some()
             || args.tree_select_group.is_some()
             || args.tree_menu_group.is_some()
-            || args.tree_menu_connection.is_some()
             || args.tree_menu_pick.is_some()
             || args.tree_search.is_some()
             || args.search_query.is_some()
@@ -1748,13 +1742,6 @@ pub fn tree_menu_pick() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_menu_pick.clone())
 }
 
-/// `--qa-tree-menu-connection <name>`：在工作区对象树里打开发连接行的右键菜单。
-#[must_use]
-pub fn tree_menu_connection() -> Option<String> {
-    ARGS.get()
-        .and_then(|args| args.tree_menu_connection.clone())
-}
-
 /// `--qa-objects-select <name>`：选中 `Objects` 页的一行（与单击同一条路径）。
 #[must_use]
 pub fn objects_select() -> Option<String> {
@@ -1833,7 +1820,6 @@ pub fn tree_requested() -> bool {
             || args.tree_select_connection.is_some()
             || args.tree_select_group.is_some()
             || args.tree_menu_group.is_some()
-            || args.tree_menu_connection.is_some()
             || args.tree_menu_pick.is_some()
             || args.objects_select.is_some()
             || args.objects_activate.is_some()
@@ -2880,16 +2866,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-tree-menu-pick 的条目文案不能为空".to_owned());
                 }
                 parsed.tree_menu_pick = Some(value.clone());
-                index += 2;
-            }
-            "--qa-tree-menu-connection" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--qa-tree-menu-connection 需要一个连接名".to_owned())?;
-                if value.trim().is_empty() {
-                    return Err("--qa-tree-menu-connection 的连接名不能为空".to_owned());
-                }
-                parsed.tree_menu_connection = Some(value.clone());
                 index += 2;
             }
             "--qa-kind" => {

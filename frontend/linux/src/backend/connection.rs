@@ -204,10 +204,6 @@ impl DriverFamily {
 pub struct ConnectionDraft {
     /// 会话显示名（从用户、主机、库名派生；文件型驱动从文件名派生）。
     pub name: String,
-    /// 用户给这条连接起的别名（可空；只影响对象树连接行的展示）。
-    ///
-    /// 与 `name` 分开保存：别名不参与连接身份键、不进连接参数，也不做会话显示名。
-    pub alias: String,
     /// 驱动 ID（来自 `ListDrivers`）。
     pub driver_id: String,
     /// 主机（服务器型驱动）。
@@ -235,7 +231,6 @@ impl fmt::Debug for ConnectionDraft {
         formatter
             .debug_struct("ConnectionDraft")
             .field("name", &self.name)
-            .field("alias", &self.alias)
             .field("driver_id", &self.driver_id)
             .field("host", &self.host)
             .field("port", &self.port)
@@ -788,7 +783,6 @@ mod tests {
     fn draft_debug_redacts_password() {
         let draft = ConnectionDraft {
             name: "root@127.0.0.1/sqarvo".to_owned(),
-            alias: String::new(),
             driver_id: "mariadb".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 3306,
@@ -863,7 +857,6 @@ mod tests {
     fn params_carry_reference_and_no_password() {
         let draft = ConnectionDraft {
             name: "n".to_owned(),
-            alias: String::new(),
             driver_id: "mariadb".to_owned(),
             host: "db.internal".to_owned(),
             port: 3307,
@@ -890,7 +883,6 @@ mod tests {
     fn sqlite_draft(read_only: bool) -> ConnectionDraft {
         ConnectionDraft {
             name: "demo.db（SQLite）".to_owned(),
-            alias: String::new(),
             driver_id: "sqlite".to_owned(),
             // 故意带上主机/端口/库名：SQLite 的 `params()` 必须完全忽略它们。
             host: "127.0.0.1".to_owned(),

@@ -903,8 +903,8 @@ pub struct DataPage {
     visibility: RefCell<ColumnVisibility>,
     /// 「CC」按钮：列显隐浮层。
     cc_button: gtk::Button,
-    /// 列显隐浮层（挂在眼睛按钮上；与筛选面板同一形态）。
-    cc_popover: gtk::Popover,
+    /// 列显隐浮层卡片。
+    cc_card: gtk::Box,
     /// 列显隐浮层里的复选控件（顺序 = `columns`）。
     cc_checks: RefCell<Vec<gtk::CheckButton>>,
     /// 列显隐浮层里的清单容器。
@@ -1324,57 +1324,45 @@ impl DataPage {
         stack.add_named(&grid_page, Some("grid"));
         stack.set_visible_child_name("placeholder");
 
-        // 列显隐浮层（CC）：与「筛选与排序」**同一个形态**——挂在眼睛按钮上的
-        // `GtkPopover`（`autohide = false`），标题 / 分区 / 清单复用 `sqarvo-fs`
-        // 那一套样式（同一字号、同一 24px 行高、同一条说明行）。以前它是主窗口里的
-        // 一张右对齐卡片，用户看到的差异是「两个弹出框长得不一样」（#175）。
+        // 列显隐浮层（CC）：一个按钮 + 列清单。做成页内浮层而不是 Popover——与
+        // 列信息卡片同一取舍（无人值守截图只能渲染窗口自己的节点树）。
         let cc_title = gtk::Label::new(Some("列显隐"));
-        cc_title.add_css_class("fs-title");
+        cc_title.add_css_class("sqarvo-heading");
         cc_title.set_xalign(0.0);
-        cc_title.set_hexpand(true);
         let cc_close = gtk::Button::from_icon_name("window-close-symbolic");
         cc_close.add_css_class("flat");
         cc_close.set_tooltip_text(Some("关闭列显隐"));
         let cc_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         cc_header.append(&cc_title);
+        cc_title.set_hexpand(true);
         cc_header.append(&cc_close);
-        let cc_section = gtk::Label::new(Some("列"));
-        cc_section.set_xalign(0.0);
-        cc_section.add_css_class("fs-section");
-        cc_section.add_css_class("dim-label");
-        cc_section.set_margin_top(gap(Gap::Xs));
         let cc_note = gtk::Label::new(Some(
-            "隐藏列只影响这张表格的渲染；查询、复制与导出口径不变。",
+            "隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。",
         ));
         cc_note.set_xalign(0.0);
         cc_note.set_wrap(true);
         cc_note.add_css_class("dim-label");
         cc_note.add_css_class("caption");
         let cc_list = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
-        cc_list.add_css_class("fs-list");
-        // 清单高度与筛选面板的条件清单同一口径（不另造一个常量）。
         let cc_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
-            .max_content_height(140)
-            .min_content_height(60)
+            .max_content_height(260)
             .child(&cc_list)
             .build();
         let cc_card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
-        cc_card.add_css_class("sqarvo-fs");
-        cc_card.set_size_request(fs_panel_width(), -1);
+        cc_card.add_css_class("sqarvo-column-info");
+        cc_card.set_size_request(300, -1);
+        cc_card.set_halign(gtk::Align::End);
+        cc_card.set_valign(gtk::Align::Start);
+        // 让开表格动作行（46）：卡片贴在表格顶部，而不是压在动作行上。
+        cc_card.set_margin_top(metrics().table_actions_height);
+        cc_card.set_margin_end(gap(Gap::Xl));
+        cc_card.set_visible(false);
         cc_card.append(&cc_header);
-        cc_card.append(&cc_section);
         cc_card.append(&cc_scroll);
         cc_card.append(&cc_note);
-        let cc_popover = gtk::Popover::builder()
-            .autohide(false)
-            .has_arrow(true)
-            .position(gtk::PositionType::Bottom)
-            .child(&cc_card)
-            .build();
-        cc_popover.set_parent(&cc_button);
 
         // 筛选与排序面板（FS）：两个区（筛选条件 / 排序键）+ 底部应用。
         //
@@ -1510,6 +1498,7 @@ impl DataPage {
         let overlay = gtk::Overlay::new();
         overlay.set_vexpand(true);
         overlay.set_child(Some(&stack));
+        overlay.add_overlay(&cc_card);
 
         // 开始事务卡片（#88）：隔离级别只在**开始之前**选，不支持的项在这里就禁用
         // 并给出原因，而不是提交后才被服务端拒绝。
@@ -1626,7 +1615,7 @@ impl DataPage {
             capabilities: Cell::new(BrowseCapabilities::none()),
             visibility: RefCell::new(ColumnVisibility::new()),
             cc_button: cc_button.clone(),
-            cc_popover: cc_popover.clone(),
+            cc_card: cc_card.clone(),
             cc_checks: RefCell::new(Vec::new()),
             cc_list: cc_list.clone(),
             fs_button: fs_button.clone(),
@@ -1770,8 +1759,8 @@ impl DataPage {
             });
         }
         {
-            let popover = cc_popover.clone();
-            cc_close.connect_clicked(move |_| popover.popdown());
+            let card = cc_card.clone();
+            cc_close.connect_clicked(move |_| card.set_visible(false));
         }
         {
             let page = Rc::clone(&page);
@@ -2141,10 +2130,9 @@ impl DataPage {
     /// 右键落在未选中的行上时先把它选中（与常见客户端一致）；已经多选时保留多选，
     /// 菜单里的动作因此永远作用于**当前选中集**。
     ///
-    /// 菜单由 [`crate::context_menu`] 用**菜单行直接连闭包**搭（不绑 action 名）：
-    /// v0.2.5 首版用 `PopoverMenu` 绑 `row.delete-row`，条目点下去没有任何反应——action
-    /// 解析失败时 GTK 既不报错也不提示；本机 GTK 4.22 上原生菜单条目根本绑不上 action
-    /// （实测 `GtkModelButton action=None`），所以整个模块改成直接连闭包。
+    /// 菜单用**纯控件**搭（不用 `gio::Menu` + action 名）：v0.2.5 首版用 `PopoverMenu`
+    /// 绑 `row.delete-row`，条目点下去没有任何反应——action 解析失败时 GTK 既不报错
+    /// 也不提示，界面上看不出区别。这里每个条目直接连闭包，与对象树右键菜单同一套做法。
     fn show_row_menu(self: &Rc<Self>, position: usize, anchor: &gtk::Widget, x: f64, y: f64) {
         if self.draft.borrow().is_none() {
             return;
@@ -2332,20 +2320,14 @@ impl DataPage {
         }
     }
 
-    /// 开合列显隐浮层：打开时按当前列清单重建复选清单。
-    ///
-    /// 与筛选面板同一条规则：同时只开一个（打开它就把漏斗的面板收起）。
+    /// 打开列显隐浮层：按当前列清单重建复选清单。
     pub fn open_column_visibility(self: &Rc<Self>) {
         if self.columns.borrow().is_empty() {
             return;
         }
-        if self.cc_popover.is_visible() {
-            self.cc_popover.popdown();
-            return;
-        }
         self.publish_column_choices();
+        self.cc_card.set_visible(!self.cc_card.is_visible());
         self.fs_popover.popdown();
-        self.cc_popover.popup();
     }
 
     /// 重建列显隐清单（换表 / 刷新时调用）。
@@ -2366,8 +2348,6 @@ impl DataPage {
                     page.on_column_choice_toggled(index, check.is_active());
                 });
             }
-            // 与筛选面板的条件条目同一行样式（24px 行高、淡底、描边）。
-            check.add_css_class("fs-row");
             check.set_tooltip_text(Some(&format!(
                 "{}（{}）· 取消勾选只隐藏这一列，不影响数据与导出口径",
                 column.name, column.type_label
@@ -2417,7 +2397,7 @@ impl DataPage {
         self.render_filter_conditions();
         self.render_sort_keys();
         self.update_filter_state();
-        self.cc_popover.popdown();
+        self.cc_card.set_visible(false);
         // 锚点（漏斗按钮）落在面板上沿的**黄金分割点**（0.618 处，偏右）。
         // 默认 popover 把锚点放在正中（0.5），所以向左偏移 0.118 × 面板宽。
         let shift = -((f64::from(fs_panel_width()) * GOLDEN_RATIO_ANCHOR

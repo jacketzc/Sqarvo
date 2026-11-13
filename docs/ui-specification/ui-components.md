@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 187 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 186 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -40,7 +40,7 @@
 | `data_page.editor` | 　单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消） | container | active | done | partial | — |
 | `data_page.row_menu` | 　数据行右键菜单 | container | active | done | — | — |
 | `data_page.row_menu.delete` | 　　「删除行」 | item | active | done | — | — |
-| `data_page.row_menu.copy_insert` | 　　「复制为 INSERT」（「复制为」分区下） | item | active | done | — | — |
+| `data_page.row_menu.copy_insert` | 　　「复制为 ▸ 复制为 INSERT」 | item | active | done | — | — |
 | `data_page.detail` | 　单行「字段 · 值」展示形式 | container | active | done | — | — |
 | `data_page.filter_panel` | 　筛选与排序面板（草稿 · 应用 / 清空） | container | active | done | — | — |
 | `data_page.filter_panel.condition_composer` | 　　条件编辑组（列 · 算子 · 值 · 添加条件） | container | active | done | — | — |
@@ -183,11 +183,11 @@ kind `control` · status `active` · parent `data_page.toolbar`
 - 无障碍：可访问名「列显隐」；Tab 工具条次要动作组内第二枚
 - 图标：`action.columns`
 - 同步：Linux done（§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility）；Windows none（§7.1 未记录：Windows 数据页没有列显隐入口。）；macOS none
-- 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。与漏斗互斥：打开它会把筛选面板 popdown。面板形态与筛选面板一致：挂在按钮上的 GtkPopover（autohide=false），不再是主窗口里的页内卡片。
+- 实现备注：只影响渲染：不改变查询、复制与导出口径（导出始终包含全部列）。没有列时隐藏；有列时不依赖驱动能力位（与筛选取舍相反）。与漏斗互斥：打开卡片会收起筛选面板。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前表有列 | 打开 / 收起挂在按钮上的「列显隐」popover（复选框清单）；再点一次收起 | `src/data_page.rs:2337、src/data_page.rs:1371` |
+| click | 当前表有列 | 打开 / 收起页内「列显隐」卡片（复选框清单）；再点一次收起 | `src/data_page.rs:2324、src/data_page.rs:1757` |
 
 ### `data_page.toolbar.columns.card` 列显隐卡片（复选清单 + 说明）
 
@@ -196,12 +196,12 @@ kind `container` · status `active` · parent `data_page.toolbar.columns`
 - 样式：尺寸 `radius_lg`、`row_height_data`
 - 无障碍：可访问名「列显隐」
 - 同步：Linux done（§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled）；Windows none（§7.1 未记录：Windows 数据页没有列显隐卡片。）；macOS none
-- 实现备注：`GtkPopover`（`autohide=false`），挂在眼睛按钮上：标题「列显隐」+ 分区标题「列」+ 复选框清单 + ✕ + 说明行；宽度取 `metrics.filter_panel_width`，清单高度与筛选面板的条件清单同口径（140 上限 / 60 下限）。样式与筛选面板**同一套**：容器 `sqarvo-fs`，标题 `fs-title`，分区 `fs-section`，清单 `fs-list`，复选行 `fs-row`（24px 行高、淡底、1px 描边）。说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与导出口径不变。」；复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。是独立 popup surface，不在主窗口 render tree 里：截图取证要用 `qa::save_widget` 拍控件本身。
+- 实现备注：页内右对齐卡片（不是独立窗口，也不是 popover）：标题「列显隐」+ 复选框清单 + ✕；卡片宽度 300 与清单最大高度 260 是代码常量，**未进 metrics**。说明行原文：「隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。」；复选标签是「列名 · 原始类型」，tooltip 追加「取消勾选只隐藏这一列，不影响数据与导出口径」。换表 / 刷新后按新列清单重建，隐藏状态复位（旧下标对新表没有意义）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 卡片已打开、该列在清单里 | 勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号 | `src/data_page.rs:2361、src/data_page.rs:2316` |
-| click | 卡片已打开 | 点 ✕ 收起 popover，隐藏选择保持不变 | `src/data_page.rs:1893` |
+| click | 卡片已打开 | 点 ✕ 收起卡片，隐藏选择保持不变 | `src/data_page.rs:1763` |
 
 ### `data_page.toolbar.export` 「导出 ▾」菜单按钮
 
@@ -369,11 +369,11 @@ kind `container` · status `active` · parent `data_page`
 - 无障碍：可访问名「数据行菜单」
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows none（整片未实现：数据页没有「删除行」（标记 ✕N、删除线、撤销、提交生成 DELETE 都没有），右键菜单的两个条目都无从接起；`Views/ShellView.Data.cs:2041-2043` 目前只把行删除按钮禁用并写「请用 SQL」。已记 docs/planning/windows-frontend-parity-plan.md §8.2。）；macOS none
-- 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；条目由 `context_menu` 用菜单行直接连闭包搭，不绑 action 名（GTK 4.22 上 action 条目绑不上，点了没反应）。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」不再是箭头二级菜单：新 popover 只能替换叶子条目，这条渲染成**分区标题「复制为」+ 子项「复制为 INSERT」**两行，点得到。
+- 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 已打开表 | 按点击位置弹出菜单：「删除行」、分区「复制为」下的「复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用 | `src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71` |
+| right_click | 已打开表 | 按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用 | `src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71` |
 | click | 菜单打开中 | 点菜单以外的任何地方（其它行、工具条、外面板）一律收起 | `src/context_menu.rs:77` |
 
 ### `data_page.row_menu.delete` 「删除行」
@@ -389,7 +389,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 |---|---|---|---|
 | click | 可编辑且有选中行 | 把选中行标记为待删除：行号变「✕N」、整行删除线 + 压暗；圆点注记「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」，一次「提交」才真正写库 | `src/data_page.rs:5272、src/data_page.rs:5017、src/data_page.rs:5337` |
 
-### `data_page.row_menu.copy_insert` 「复制为 INSERT」（「复制为」分区下）
+### `data_page.row_menu.copy_insert` 「复制为 ▸ 复制为 INSERT」
 
 kind `item` · status `active` · parent `data_page.row_menu`
 
@@ -583,7 +583,6 @@ kind `container` · status `active` · parent `data_page`
 | `dialogs.connection.header` | 　　标题与副标题 | control | active | done | — | — |
 | `dialogs.connection.driver` | 　　驱动下拉 | control | active | done | — | — |
 | `dialogs.connection.fields` | 　　连接参数表单（按驱动族显隐） | container | active | done | partial | — |
-| `dialogs.connection.fields.alias` | 　　　别名（可选） | control | active | done | — | — |
 | `dialogs.connection.fields.host` | 　　　主机 | control | active | done | partial | — |
 | `dialogs.connection.fields.port` | 　　　端口 | control | active | done | partial | — |
 | `dialogs.connection.fields.username` | 　　　用户名 | control | active | done | partial | — |
@@ -668,19 +667,6 @@ kind `container` · status `active` · parent `dialogs.connection`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 驱动族确定（服务器型 / 文件型 / 前端不认识） | 按描述表显示或隐藏各行；切回服务器型驱动时空着的主机与端口补回默认值（用户没改过就不该看到空主机） | `src/dialog.rs:197、src/driver_form.rs:91、src/dialog.rs:411` |
-
-### `dialogs.connection.fields.alias` 别名（可选）
-
-kind `control` · status `active` · parent `dialogs.connection.fields`
-
-- 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
-- 无障碍：可访问名「别名（可选）」；Tab 连接参数组内第二行（驱动之后、主机 / 文件路径之前）
-- 同步：Linux done（cargo test：别名不进身份键 / 旧配置可读 / 别名不脱敏连接参数）；Windows none；macOS none
-- 实现备注：所有驱动都显示（不随驱动族显隐）：别名不是连接参数，SQLite 与服务器型驱动都能取。只影响对象树连接行与信息面板的标题；不参与连接身份键、不进 gRPC 连接参数、不做会话显示名。留空 = 没有别名，界面回落到派生名；保存时去掉首尾空白。
-
-| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
-|---|---|---|---|
-| click | 对话框已打开（新建或编辑），点了「保存并连接」 | 别名随其余非敏感字段一起写入 connections.json 的 alias；旧配置没有该字段时按空别名读取 | `src/dialog.rs:190、src/driver_form.rs:172、src/backend/worker.rs:4018` |
 
 ### `dialogs.connection.fields.host` 主机
 
@@ -1309,10 +1295,10 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：连接名或别名 + 连接态徽标）」
+- 无障碍：可访问名「（行内容：连接名 + 连接态徽标）」
 - 图标：`tree.connection`
 - 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）；Windows partial（已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。）；macOS none
-- 实现备注：行首文字优先显示**别名**（`SavedConnection.alias`），别名为空或只有空白时回落到派生名（`user@host[/db]`、`文件名（SQLite）`）。别名只影响展示：连接身份键、会话显示名、标题规则与断开/删除用的键仍是被派生名与目标算出的那一份。tooltip 第一行是别名优先的标题；有别名时同一行里补「（连接名 …）」，免得同一个目标的第二条连接看不出区别。行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案；搜索同时匹配别名与连接名。
+- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1451,11 +1437,11 @@ kind `container` · status `active` · parent `object_tree`
 - 样式：槽位 `overlay`
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§2.3 右键菜单）；Windows none（对象树没有右键菜单（§7.1 未记录）。）；macOS none
-- 实现备注：贴着点击位置的 GtkPopoverMenu；点任一条目先收起菜单再执行动作；占位行不给菜单。条目**不绑 action 名**：原生 popover 里用 `PopoverMenu::add_child()` 换成菜单行控件，`connect_clicked` 直接调闭包。本机 GTK 4.22 上 `gio::Menu` 的 action 条目根本绑不上（实测 `GtkModelButton action=None`），绑了就是「菜单照弹、点条目没反应」。锚点固定为树视图而不是行控件：GtkListView 复用行控件，锚在行上时树一刷新菜单就消失。菜单在鼠标**松开**时弹出（按下时序列还握在行的手势里，popover 拿不到抓取权，会当场被这次 release 关掉）。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
+- 实现备注：贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3191、src/tree.rs:3400、src/context_menu.rs:100` |
+| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3191、src/tree.rs:3313` |
 
 ### `object_tree.ctx_menu.connect_saved` 「连接（使用已保存的凭据）」
 
@@ -1527,12 +1513,12 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「编辑连接…」
-- 同步：Linux done（§2.3 编辑连接；--qa-tree-menu-connection + --qa-tree-menu-pick 编辑连接… → 日志「已用已保存连接…预填对话框」）；Windows none（无树右键菜单。）；macOS none
-- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。菜单的 popover 锚在**树视图**上（不是行控件）：GtkListView 会回收行控件，锚在行上时树一刷新菜单就消失，点击落到树行 →「点了没反应」。编辑时若已存在对话框，先丢弃旧实例再按这条连接的键重建并预填：对已关闭的 AdwDialog 调 present() 是空操作。
+- 同步：Linux done（§2.3 编辑连接）；Windows none（无树右键菜单。）；macOS none
+- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接存在于配置里 | 打开连接对话框并预填非敏感字段（含别名） | `src/tree.rs:3347、src/ui.rs:1107` |
+| click | 连接存在于配置里 | 打开连接对话框并预填非敏感字段 | `src/ui.rs:785、src/ui.rs:989` |
 
 ### `object_tree.ctx_menu.delete_connection` 「删除连接」
 
