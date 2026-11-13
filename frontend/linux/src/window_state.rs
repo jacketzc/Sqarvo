@@ -71,6 +71,12 @@ struct Document {
     /// 写入时的密度档名（v2）：宽度字段是这一档的归一化值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tier: Option<String>,
+    /// 主题偏好（`system` / `light` / `dark`，与 Windows 同键同值）。
+    ///
+    /// 可缺：缺字段 = 跟随系统（与 `windows/Sqarvo.Windows/Storage/WindowState.cs` 的
+    /// `theme` 兼容）。加字段不升版本——读侧按「缺 = 默认」处理，写回时原样保留。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme: Option<String>,
     /// 窗口级信息面板宽度（归一化值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_inspector_width: Option<i32>,
@@ -202,6 +208,20 @@ pub fn saved_tier() -> Option<Tier> {
     document.tier.as_deref().map(|_| document.tier())
 }
 
+/// 上次保存的主题偏好（`window.json` 的 `theme`；缺字段 / 读不到文件时为 `None`）。
+///
+/// 只做「文件里有没有值」，不认识的值由调用方（`theme::Scheme::from_id`）判成
+/// `None` 并回退跟随系统——这里不替用户改写文件。
+#[must_use]
+pub fn saved_theme() -> Option<String> {
+    let dir = crate::config::config_dir().ok()?;
+    saved_theme_from(&dir.join(FILE_NAME))
+}
+
+fn saved_theme_from(path: &Path) -> Option<String> {
+    load_from(path).theme
+}
+
 /// 上次记住的窗口几何；没有记录（或文件里没有尺寸）时为 `None`。
 ///
 /// 尺寸是**记录时档位**的实际像素（`WindowGeometry::tier`），调用方按当前档位换算。
@@ -318,6 +338,25 @@ fn remember_tier_in(dir: &Path, tier: Tier) -> Result<PathBuf, String> {
     document.tier = Some(tier.id().to_owned());
     write_atomic(dir, &path, &document)?;
     eprintln!("[tier] 档位 {} 已记入 {}", tier.id(), path.display());
+    Ok(path)
+}
+
+/// 记下主题偏好（主菜单「视图 → 深色模式」），返回写入路径。
+///
+/// 与 [`remember_tier`] 同样的取舍：只改 `theme`，不动宽度与几何字段，一次动作只
+/// 落一份「自己那一项」的状态。
+pub fn remember_theme(theme: &str) -> Result<PathBuf, String> {
+    let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
+    remember_theme_in(&dir, theme)
+}
+
+fn remember_theme_in(dir: &Path, theme: &str) -> Result<PathBuf, String> {
+    let path = dir.join(FILE_NAME);
+    let mut document = load_from(&path);
+    document.version = DOCUMENT_VERSION;
+    document.theme = Some(theme.to_owned());
+    write_atomic(dir, &path, &document)?;
+    eprintln!("[theme] 主题偏好 {} 已记入 {}", theme, path.display());
     Ok(path)
 }
 
@@ -666,6 +705,27 @@ mod tests {
         assert_eq!(document.tier, Some("large".to_owned()));
         assert_eq!(document.version, DOCUMENT_VERSION);
         assert_eq!(document.last_inspector_width, Some(280));
+    }
+
+    /// 主题偏好与档位 / 宽度互不覆盖：一次动作只写自己那一项（`remember_*` 都走
+    /// `load_from` 再写回，缺任何一个字段都会在这里露出来）。
+    #[test]
+    fn theme_is_persisted_without_touching_other_fields() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        remember_theme_in(dir.path(), "dark").expect("写主题");
+        let path = dir.path().join(FILE_NAME);
+        assert_eq!(saved_theme_from(&path).as_deref(), Some("dark"));
+
+        remember_tier_in(dir.path(), Tier::Comfortable).expect("写档位");
+        let document = load_from(&path);
+        assert_eq!(document.theme.as_deref(), Some("dark"));
+        assert_eq!(document.tier.as_deref(), Some("comfortable"));
+
+        // 缺字段 = 跟随系统；坏文件按默认值处理，不 panic。
+        fs::write(&path, "{\"version\":2}").expect("写文件");
+        assert_eq!(saved_theme_from(&path), None);
+        fs::write(&path, "{ not json").expect("写坏文件");
+        assert_eq!(saved_theme_from(&path), None);
     }
 
     #[test]

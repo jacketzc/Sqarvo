@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 188 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 192 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -1763,7 +1763,7 @@ kind `control` · status `active` · parent `objects_page`
 
 ## 窗口壳与主工具条（`shell`）
 
-窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。
+窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、深色模式三档、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。
 
 | 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |
 |---|---|---|---|---|---|---|
@@ -1784,6 +1784,10 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.toolbar.views` | 　　种类入口「Views」 | control | active | done | partial | — |
 | `shell.toolbar.functions` | 　　种类入口「Functions」 | control | active | done | partial | — |
 | `shell.toolbar.queries` | 　　种类入口「Queries」 | control | active | done | partial | — |
+| `shell.theme` | 　深色模式（跟随系统 / 浅色 / 深色） | container | active | done | — | — |
+| `shell.theme.system` | 　　「跟随系统」单选项 | item | active | done | — | — |
+| `shell.theme.light` | 　　「浅色」单选项 | item | active | done | — | — |
+| `shell.theme.dark` | 　　「深色」单选项 | item | active | done | — | — |
 | `shell.density` | 　界面密度档（紧凑 / 舒适 / 大） | container | active | done | — | — |
 | `shell.density.compact` | 　　「紧凑（100%）」单选项 | item | active | done | — | — |
 | `shell.density.comfortable` | 　　「舒适（125%）」单选项 | item | active | done | — | — |
@@ -1853,11 +1857,11 @@ kind `control` · status `active` · parent `shell`
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
 - 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
-- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。
+- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项 | `src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216` |
+| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性 | `src/ui.rs:4755、src/ui.rs:314、src/ui.rs:5272` |
 
 ### `shell.menu.new_connection` 文件 → 新建连接
 
@@ -2028,15 +2032,66 @@ kind `control` · status `active` · parent `shell.toolbar`
 | click | 后端已握手且树里能定位到库 | 树里选中 `Queries` 分组行；`Objects` 页写「已保存的查询尚未实现」+「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」；**0 次 RPC**；工具条高亮 `Queries` | `src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928` |
 | click | 树里定位不到库 | 仍然切到 `Objects` 页并显示未实现说明（与 Functions 同一条分支） | `src/ui.rs:1948` |
 
+### `shell.theme` 深色模式（跟随系统 / 浅色 / 深色）
+
+kind `container` · status `active` · parent `shell`
+
+- 样式：槽位 `overlay`；尺寸 `font_ui`
+- 无障碍：可访问名「深色模式」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
+- 同步：Linux done（§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png）；Windows none（§7.1 没有任何主题菜单入口（ThemeService 三档只在启动期读 window.json，运行中无 UI 可切）。）；macOS none
+- 实现备注：位置：「视图 → 深色模式」的三级子菜单（与「界面密度」同级，排在它上面），三项各绑一个 stateful `win.theme-*` 动作，当前偏好打勾。生效方式是 `AdwStyleManager::set_color_scheme`：跟随系统 = `Default`，浅色 / 深色 = `ForceLight` / `ForceDark`（用户明确点了选择，不再被系统偏好改回去）。`dark` 通知重载样式表，四套 CSS 不各自监听主题。偏好写 `window.json` 的 `theme`（`system` / `light` / `dark`，与 Windows 同键同值）；启动优先级 `--theme`（QA）→ `window.json` → 跟随系统，并在 `theme::install()` 之前设定，避免先浅色再闪成深色。不做的事：不提供「浅色 / 深色 跟随系统但覆盖强调色」这类组合；系统强调色仍归平台（Windows 的强调色只用于系统绘制的部件）。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 窗口存在 | 展开「视图 → 深色模式」：跟随系统（当前系统值打勾时无覆盖）/ 浅色 / 深色；点任一项即切换主题、写 `window.json` 并打勾，日志 `[theme] 主题偏好：浅色（light）` 与 `[theme] 主题偏好 light 已记入 <path>`；无后端依赖，握手前后都可用 | `src/ui.rs:5164、src/ui.rs:5315、src/theme.rs:239` |
+
+### `shell.theme.system` 「跟随系统」单选项
+
+kind `item` · status `active` · parent `shell.theme`
+
+- 样式：尺寸 `font_ui`
+- 无障碍：可访问名「跟随系统」
+- 同步：Linux done（§1.5 三档之一；apply_theme_choice → theme::set_scheme）；Windows none；macOS none
+- 实现备注：默认档：不写 `color-scheme`（`Default`），深浅色完全由系统 / libadwaita 决定；系统切换时 `dark` 通知重载样式表。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 窗口存在 | 把偏好设回跟随系统（`AdwStyleManager::set_color_scheme(Default)`），`window.json` 的 `theme` 写 `system`，本项打勾 | `src/ui.rs:5247、src/ui.rs:5188` |
+
+### `shell.theme.light` 「浅色」单选项
+
+kind `item` · status `active` · parent `shell.theme`
+
+- 样式：尺寸 `font_ui`
+- 无障碍：可访问名「浅色」
+- 同步：Linux done（§1.5 三档之一；--theme light 与菜单同一落点）；Windows none；macOS none
+- 实现备注：`ForceLight`：系统是深色时也强制浅色。样式表由 `dark` 通知重载，不重建控件。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 窗口存在 | 强制浅色（`ForceLight`），`window.json` 的 `theme` 写 `light`，本项打勾；日志同上 | `src/ui.rs:5188、src/theme.rs:246` |
+
+### `shell.theme.dark` 「深色」单选项
+
+kind `item` · status `active` · parent `shell.theme`
+
+- 样式：尺寸 `font_ui`
+- 无障碍：可访问名「深色」
+- 同步：Linux done（§1.5 三档之一；--theme dark 与菜单同一落点）；Windows none；macOS none
+- 实现备注：`ForceDark`：系统是浅色时也强制深色。深色色板是浅色同一组色相的提亮版（`theme.rs` 的 `DARK_PALETTE`），不是第二套色相。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 窗口存在 | 强制深色（`ForceDark`），`window.json` 的 `theme` 写 `dark`，本项打勾；日志同上 | `src/ui.rs:5188、src/theme.rs:246` |
+
 ### `shell.density` 界面密度档（紧凑 / 舒适 / 大）
 
 kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `overlay`；尺寸 `font_ui`、`font_status`、`gap_xs`
 - 无障碍：可访问名「界面密度」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
-- 原生选型说明：GMenu 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项，弹出时换成 PopoverMenu 里的一组 GtkCheckButton（控件仍是原生，菜单模型自组装）。
-- 同步：Linux done（§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫）；Windows none（§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / tooltip 语义（档位本身见 §1.6）。）；macOS none
-- 实现备注：「视图 → 界面密度」这一项本身是 GMenu 的占位项：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时用 `PopoverMenu::add_child` 换成这一节（标题「界面密度」+ 三个 GtkCheckButton），视图子菜单只为它而存在。三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。切档后「表格区优先保留 600」是代码常量，未进 metrics。
+- 同步：Linux done（§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字）；Windows none（§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / 条目文字语义（档位本身见 §1.6）。）；macOS none
+- 实现备注：位置：「视图 → 界面密度」的三级子菜单（紧接「深色模式」），三个 stateful `win.tier-*` 动作，当前档打勾。GMenu 没有逐项 tooltip：某档在当前工作区放不下时，条目文字追加「，放不下」，完整原因（需要 W×H、当前工作区多大）进日志 `[tier] … 不可用`；该档动作同时 `enabled=false`。换文字只能重填这一节 —— GMenu 在 append 时就把条目属性复制进模型，之后再改 MenuItem 不生效。三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。切档后「表格区优先保留 600」是代码常量，未进 metrics。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2052,12 +2107,12 @@ kind `item` · status `active` · parent `shell.density`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「紧凑（100%）」
-- 同步：Linux done（§1.5 菜单入口；build_tier_menu 与 apply_tier_choice）；Windows none（§7.1 未记录本单选项。）；macOS none
-- 实现备注：当前档打勾；程序化同步勾选时不触发 action（guard 标志）。是 `Ctrl+0` 的目标档，也是 `Ctrl+minus` 的下界。
+- 同步：Linux done（§1.5 菜单入口；build_main_menu 的密度子菜单与 apply_tier_choice）；Windows none（§7.1 未记录本单选项。）；macOS none
+- 实现备注：当前档打勾：勾选来自 stateful action 的 state，点击后由 `refresh_tier_actions` 写回。是 `Ctrl+0` 的目标档，也是 `Ctrl+minus` 的下界。条目文字就是 `tier.label()`；放不下时由 `fill_density_section` 改成「紧凑（100%），放不下」并禁用。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该档在当前显示器可用 | 切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」；tooltip 原文「当前档位：紧凑（100%）」/「切换到 紧凑（100%）；窗口会按档位一起放大 / 收小」 | `src/ui.rs:5167、src/ui.rs:5132、src/density.rs:104` |
+| click | 该档在当前显示器可用 | 切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」 | `src/ui.rs:5183、src/ui.rs:5303、src/density.rs:104` |
 
 ### `shell.density.comfortable` 「舒适（125%）」单选项
 
@@ -2065,12 +2120,12 @@ kind `item` · status `active` · parent `shell.density`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「舒适（125%）」
-- 同步：Linux done（§1.5 菜单入口与禁用 tooltip；sync_tier_checks）；Windows none（§7.1 未记录本单选项。）；macOS none
-- 实现备注：与其它两档同一组单选；本档放不下时禁用（`sensitive=false`）并给缺多少的 tooltip。
+- 同步：Linux done（§1.5 菜单入口、逐项禁用与「放不下」条目文字；refresh_tier_actions 与 fill_density_section）；Windows none（§7.1 未记录本单选项。）；macOS none
+- 实现备注：与其它两档同一组单选；本档放不下时动作 `enabled=false`（菜单里灰掉）、条目文字追加「，放不下」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该档在当前显示器可用 | 切到「舒适（125%）」；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用），tooltip 原文「当前显示器放不下 125%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」或「切换到 舒适（125%）；窗口会按档位一起放大 / 收小」 | `src/ui.rs:5096、src/ui.rs:5132、src/window_size.rs:230` |
+| click | 该档在当前显示器可用 | 切到「舒适（125%）」（窗口按档位一起放大 / 收小）；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用，条目文字为「舒适（125%），放不下」），完整原因记「[tier] … 不可用（需要 W×H）」 | `src/ui.rs:5183、src/ui.rs:5303、src/window_size.rs:230` |
 
 ### `shell.density.large` 「大（150%）」单选项
 
@@ -2079,11 +2134,11 @@ kind `item` · status `active` · parent `shell.density`
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「大（150%）」
 - 同步：Linux done（§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定）；Windows none（§7.1 未记录本单选项。）；macOS none
-- 实现备注：本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现。
+- 实现备注：本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现（菜单里灰掉 + 文字标「放不下」）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该档在当前显示器可用 | 切到「大（150%）」；放不下时禁用并给「当前显示器放不下 150%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」；已是本档时 tooltip 写「当前档位：大（150%）」 | `src/ui.rs:5096、src/ui.rs:5132` |
+| click | 该档在当前显示器可用 | 切到「大（150%）」（窗口按档位一起放大 / 收小）；放不下时动作禁用、条目文字为「大（150%），放不下」，完整原因进日志；已是本档时点击不重复重排 | `src/ui.rs:5183、src/ui.rs:5303` |
 
 ### `shell.error` 错误页（握手失败 / 无工作区断开）
 

@@ -257,6 +257,7 @@ surface 未就绪时读不到显示器。第一次 `relayout` 会改窗口尺寸
 {
   "version": 2,
   "tier": "compact",
+  "theme": "system",
   "last_inspector_width": 280,
   "last_sidebar_width": 237,
   "window_width": 1400,
@@ -286,6 +287,10 @@ surface 未就绪时读不到显示器。第一次 `relayout` 会改窗口尺寸
    | Linux（GTK4） | **无 API** | **无 API**（Wayland 明确不允许；X11 后端同样未暴露 `gtk_window_move` 的替代） | 尺寸 + 最大化；位置不恢复 |
 4. 写入用「临时文件 + rename」，进程崩溃不留半个 JSON；读失败一律回退默认值，不报错弹窗。
 5. 文件里不含任何凭据（这条与连接配置分离的原则见 `window_state.rs` 模块注释）。
+6. `theme`（`system` / `light` / `dark`）记主题偏好，与 Windows 同键同值；**可缺**，缺 = 跟随系统。
+   它是加法字段，不升 `version`：读侧按「缺 = 默认」处理，写回时原样保留。启动优先级是
+   `--theme`（QA）→ `window.json` 的 `theme` → 跟随系统，且在装样式表之前定下来（否则先浅色再闪
+   成深色）。入口与行为见组件 `shell.theme`。
 
 ## 8. 平台映射要点（Windows 原生支持）
 

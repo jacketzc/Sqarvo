@@ -5,7 +5,7 @@
 # spec_hash 由 scripts/check-ui-sync.sh mark 生成，不要手填。
 #
 # 迁移状态：P0 第二区。行为条目取自 ui-behavior-contract.md §1.1–§1.6（窗口、标题、主工具条、
-# 菜单栏、界面密度档），源码行号已按当前 ui.rs / shell.rs / density.rs / window_size.rs 复核。
+# 菜单栏、深色模式三档、界面密度档），源码行号已按当前 ui.rs / shell.rs / density.rs / window_size.rs 复核。
 #
 # 区域边界：
 # - 关闭窗口守卫的确认框本体（「有未提交的更改」）不在这里登记 —— 它跟随「关闭 / 退出」这个动作，
@@ -17,7 +17,7 @@
 [area]
 id = "shell"
 display_name = "窗口壳与主工具条"
-summary = "窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。"
+summary = "窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、深色模式三档、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。"
 legacy_ref = "ui-behavior-contract.md §1.1–§1.6（原章节已退役为指针，行为见本文件）"
 
 [[component]]
@@ -214,22 +214,22 @@ style.metrics = ["min_target", "icon_box"]
 a11y.name = "主菜单（文件 / 表 / 视图 / 帮助）"
 a11y.tab = "可聚焦；Enter / Space 展开菜单，Esc 收起"
 impl_notes = [
-  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 帮助）」——「视图」只在菜单里，tooltip 没列，是现状。",
+  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。",
   "「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
-  "「视图 → 界面密度」的条目是占位项（id=tier-section）：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时被 shell.density 的自绘小节替换。",
+  "「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "窗口存在"
-result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（界面密度）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选与逐项可用性，并把自绘小节挂进占位项"
-source = "src/ui.rs:184、src/ui.rs:4590、src/ui.rs:5216"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性"
+source = "src/ui.rs:4755、src/ui.rs:314、src/ui.rs:5272"
 
 platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，三个 MenuFlyoutSubItem（文件 / 表 / 帮助）装同一批条目，条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "7c02a7384d67"
+spec_hash = "bf50bc8a9211"
 evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
 
 [component.sync.windows]
@@ -710,18 +710,145 @@ state = "none"
 spec_hash = ""
 
 [[component]]
+id = "shell.theme"
+parent = "shell"
+display_name = "深色模式（跟随系统 / 浅色 / 深色）"
+kind = "container"
+status = "active"
+style.slot = "overlay"
+style.metrics = ["font_ui"]
+a11y.name = "深色模式"
+a11y.tab = "菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择"
+impl_notes = [
+  "位置：「视图 → 深色模式」的三级子菜单（与「界面密度」同级，排在它上面），三项各绑一个 stateful `win.theme-*` 动作，当前偏好打勾。",
+  "生效方式是 `AdwStyleManager::set_color_scheme`：跟随系统 = `Default`，浅色 / 深色 = `ForceLight` / `ForceDark`（用户明确点了选择，不再被系统偏好改回去）。`dark` 通知重载样式表，四套 CSS 不各自监听主题。",
+  "偏好写 `window.json` 的 `theme`（`system` / `light` / `dark`，与 Windows 同键同值）；启动优先级 `--theme`（QA）→ `window.json` → 跟随系统，并在 `theme::install()` 之前设定，避免先浅色再闪成深色。",
+  "不做的事：不提供「浅色 / 深色 跟随系统但覆盖强调色」这类组合；系统强调色仍归平台（Windows 的强调色只用于系统绘制的部件）。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "窗口存在"
+result = "展开「视图 → 深色模式」：跟随系统（当前系统值打勾时无覆盖）/ 浅色 / 深色；点任一项即切换主题、写 `window.json` 并打勾，日志 `[theme] 主题偏好：浅色（light）` 与 `[theme] 主题偏好 light 已记入 <path>`；无后端依赖，握手前后都可用"
+source = "src/ui.rs:5164、src/ui.rs:5315、src/theme.rs:239"
+
+platform_notes.windows = "Windows 的 Theming/ThemeService.cs 已有同一套三档与 `window.json` 的 `theme` 键（启动期 `Application.RequestedTheme` + 运行期元素级 `RequestedTheme` + 标题栏），但**没有任何界面入口**：既无「视图」小菜单，也没有设置页，`Preference` 没有 setter —— 只能跟随系统。"
+platform_notes.macos = "macOS 未接入，没有「视图」小菜单。"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c243d0ec6348"
+evidence = "§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "§7.1 没有任何主题菜单入口（ThemeService 三档只在启动期读 window.json，运行中无 UI 可切）。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.theme.system"
+parent = "shell.theme"
+display_name = "「跟随系统」单选项"
+kind = "item"
+status = "active"
+style.metrics = ["font_ui"]
+a11y.name = "跟随系统"
+impl_notes = ["默认档：不写 `color-scheme`（`Default`），深浅色完全由系统 / libadwaita 决定；系统切换时 `dark` 通知重载样式表。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "窗口存在"
+result = "把偏好设回跟随系统（`AdwStyleManager::set_color_scheme(Default)`），`window.json` 的 `theme` 写 `system`，本项打勾"
+source = "src/ui.rs:5247、src/ui.rs:5188"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "86a55e7f91dc"
+evidence = "§1.5 三档之一；apply_theme_choice → theme::set_scheme"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.theme.light"
+parent = "shell.theme"
+display_name = "「浅色」单选项"
+kind = "item"
+status = "active"
+style.metrics = ["font_ui"]
+a11y.name = "浅色"
+impl_notes = ["`ForceLight`：系统是深色时也强制浅色。样式表由 `dark` 通知重载，不重建控件。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "窗口存在"
+result = "强制浅色（`ForceLight`），`window.json` 的 `theme` 写 `light`，本项打勾；日志同上"
+source = "src/ui.rs:5188、src/theme.rs:246"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "8c094e420377"
+evidence = "§1.5 三档之一；--theme light 与菜单同一落点"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "shell.theme.dark"
+parent = "shell.theme"
+display_name = "「深色」单选项"
+kind = "item"
+status = "active"
+style.metrics = ["font_ui"]
+a11y.name = "深色"
+impl_notes = ["`ForceDark`：系统是浅色时也强制深色。深色色板是浅色同一组色相的提亮版（`theme.rs` 的 `DARK_PALETTE`），不是第二套色相。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "窗口存在"
+result = "强制深色（`ForceDark`），`window.json` 的 `theme` 写 `dark`，本项打勾；日志同上"
+source = "src/ui.rs:5188、src/theme.rs:246"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "5dce1aa7558a"
+evidence = "§1.5 三档之一；--theme dark 与菜单同一落点"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
 id = "shell.density"
 parent = "shell"
 display_name = "界面密度档（紧凑 / 舒适 / 大）"
 kind = "container"
 status = "active"
-why_not_native = "GMenu 没有逐项 tooltip 与逐项禁用，所以菜单里只放一个占位项，弹出时换成 PopoverMenu 里的一组 GtkCheckButton（控件仍是原生，菜单模型自组装）。"
 style.slot = "overlay"
 style.metrics = ["font_ui", "font_status", "gap_xs"]
 a11y.name = "界面密度"
 a11y.tab = "菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择"
 impl_notes = [
-  "「视图 → 界面密度」这一项本身是 GMenu 的占位项：GMenu 没有逐项 tooltip、也不能逐项禁用，弹出时用 `PopoverMenu::add_child` 换成这一节（标题「界面密度」+ 三个 GtkCheckButton），视图子菜单只为它而存在。",
+  "位置：「视图 → 界面密度」的三级子菜单（紧接「深色模式」），三个 stateful `win.tier-*` 动作，当前档打勾。",
+  "GMenu 没有逐项 tooltip：某档在当前工作区放不下时，条目文字追加「，放不下」，完整原因（需要 W×H、当前工作区多大）进日志 `[tier] … 不可用`；该档动作同时 `enabled=false`。换文字只能重填这一节 —— GMenu 在 append 时就把条目属性复制进模型，之后再改 MenuItem 不生效。",
   "三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。",
   "不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。",
   "切档后「表格区优先保留 600」是代码常量，未进 metrics。",
@@ -760,17 +887,17 @@ precondition = "切档成功"
 result = "同一次动作里：① 四套样式表（主壳 / 数据页 / 对象树 / DDL）用同一个 provider 重载；② 窗口按新档重算并钳到工作区（日志「[monitor] 档位导致窗口放大：…」）；③ 侧栏 / 信息面板按 **compact 归一值 × 新档**换算（往返不漂移），新窗口放不下表格区下限时收到各自下限并记日志；④ 已建列的固定宽度、行高、字号与图标按钮命中区按新档重设；⑤ 档位写入 `window.json`"
 source = "src/density.rs:78、src/shell.rs:591、src/theme.rs:241"
 
-platform_notes.windows = "菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）；「表格区优先保留 600」本轮未实现——只按 `sidebar_min..max` / `inspector_min..max` 钳制，600 未进 metrics.toml（§1.6 已知边界）。"
+platform_notes.windows = "菜单行高度按档位推出、面板宽度按归一值跨档往返（§1.6）；切密度档会重建外壳，数据页不随快照恢复（§7.1 #173 已知边界）；「表格区优先保留 600」本轮未实现——只按 `sidebar_min..max` / `inspector_min..max` 钳制，600 未进 metrics.toml（§1.6 已知边界）。没有任何「视图」菜单入口（§7.1）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6d2dfd97d0ba"
-evidence = "§1.5 全部行为；density::switch 的六步与 ensure_startup_tier 的守卫"
+spec_hash = "b5db5c39c6de"
+evidence = "§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字"
 
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / tooltip 语义（档位本身见 §1.6）。"
+note = "§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / 条目文字语义（档位本身见 §1.6）。"
 
 [component.sync.macos]
 state = "none"
@@ -785,20 +912,21 @@ status = "active"
 style.metrics = ["font_ui"]
 a11y.name = "紧凑（100%）"
 impl_notes = [
-  "当前档打勾；程序化同步勾选时不触发 action（guard 标志）。",
+  "当前档打勾：勾选来自 stateful action 的 state，点击后由 `refresh_tier_actions` 写回。",
   "是 `Ctrl+0` 的目标档，也是 `Ctrl+minus` 的下界。",
+  "条目文字就是 `tier.label()`；放不下时由 `fill_density_section` 改成「紧凑（100%），放不下」并禁用。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "该档在当前显示器可用"
-result = "切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」；tooltip 原文「当前档位：紧凑（100%）」/「切换到 紧凑（100%）；窗口会按档位一起放大 / 收小」"
-source = "src/ui.rs:5167、src/ui.rs:5132、src/density.rs:104"
+result = "切到紧凑档（走 shell.density 记的同一套切档流程）；已经是当前档时不重复重排并记「[tier] 已经是 compact 档（100%），不重复重排」"
+source = "src/ui.rs:5183、src/ui.rs:5303、src/density.rs:104"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "cb21f1e8c41d"
-evidence = "§1.5 菜单入口；build_tier_menu 与 apply_tier_choice"
+spec_hash = "577694489694"
+evidence = "§1.5 菜单入口；build_main_menu 的密度子菜单与 apply_tier_choice"
 
 [component.sync.windows]
 state = "none"
@@ -817,18 +945,18 @@ kind = "item"
 status = "active"
 style.metrics = ["font_ui"]
 a11y.name = "舒适（125%）"
-impl_notes = ["与其它两档同一组单选；本档放不下时禁用（`sensitive=false`）并给缺多少的 tooltip。"]
+impl_notes = ["与其它两档同一组单选；本档放不下时动作 `enabled=false`（菜单里灰掉）、条目文字追加「，放不下」。"]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "该档在当前显示器可用"
-result = "切到「舒适（125%）」；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用），tooltip 原文「当前显示器放不下 125%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」或「切换到 舒适（125%）；窗口会按档位一起放大 / 收小」"
-source = "src/ui.rs:5096、src/ui.rs:5132、src/window_size.rs:230"
+result = "切到「舒适（125%）」（窗口按档位一起放大 / 收小）；目标档在当前显示器放不下时不切换、不写盘（该项此时也已禁用，条目文字为「舒适（125%），放不下」），完整原因记「[tier] … 不可用（需要 W×H）」"
+source = "src/ui.rs:5183、src/ui.rs:5303、src/window_size.rs:230"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f836305c0a47"
-evidence = "§1.5 菜单入口与禁用 tooltip；sync_tier_checks"
+spec_hash = "b9a7ccd078c9"
+evidence = "§1.5 菜单入口、逐项禁用与「放不下」条目文字；refresh_tier_actions 与 fill_density_section"
 
 [component.sync.windows]
 state = "none"
@@ -847,17 +975,17 @@ kind = "item"
 status = "active"
 style.metrics = ["font_ui"]
 a11y.name = "大（150%）"
-impl_notes = ["本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现。"]
+impl_notes = ["本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现（菜单里灰掉 + 文字标「放不下」）。"]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "该档在当前显示器可用"
-result = "切到「大（150%）」；放不下时禁用并给「当前显示器放不下 150%：需要 <W>×<H> 逻辑工作区（当前 <w>×<h>）」；已是本档时 tooltip 写「当前档位：大（150%）」"
-source = "src/ui.rs:5096、src/ui.rs:5132"
+result = "切到「大（150%）」（窗口按档位一起放大 / 收小）；放不下时动作禁用、条目文字为「大（150%），放不下」，完整原因进日志；已是本档时点击不重复重排"
+source = "src/ui.rs:5183、src/ui.rs:5303"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "def5dd2c2812"
+spec_hash = "3913f58e8c81"
 evidence = "§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定"
 
 [component.sync.windows]

@@ -155,6 +155,70 @@ const DARK_PALETTE: Palette = Palette {
     },
 };
 
+/// 主题偏好（主菜单「视图 → 深色模式」）。
+///
+/// 三档与 Windows 的 `window.json` 同键同值（`system` / `light` / `dark`）：
+///
+/// - `System`（默认）：不碰 `AdwStyleManager`，深浅色跟系统走（AGENTS §8.6）；
+/// - `Light` / `Dark`：应用内覆盖，映射到 `AdwStyleManager::set_color_scheme` 的
+///   `ForceLight` / `ForceDark`——用 `Force*` 而不是 `Prefer*`，因为用户在这里点的是
+///   明确选择，不该再被系统偏好改回去。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheme {
+    /// 跟随系统。
+    #[default]
+    System,
+    /// 浅色（覆盖系统）。
+    Light,
+    /// 深色（覆盖系统）。
+    Dark,
+}
+
+impl Scheme {
+    /// 菜单顺序：跟随系统 → 浅色 → 深色。
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
+    /// `window.json` / `--theme` 里的偏好 id。
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// 解析偏好 id；无法识别时返回 `None`（调用方回退到跟随系统，不静默改写文件）。
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+
+    /// 菜单条目文字。
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "跟随系统",
+            Self::Light => "浅色",
+            Self::Dark => "深色",
+        }
+    }
+
+    /// libadwaita 的颜色方案（`Default` 才是「跟随系统」）。
+    fn color_scheme(self) -> adw::ColorScheme {
+        match self {
+            Self::System => adw::ColorScheme::Default,
+            Self::Light => adw::ColorScheme::ForceLight,
+            Self::Dark => adw::ColorScheme::ForceDark,
+        }
+    }
+}
+
 // 当前深浅色 / 高对比（由 [`install`] 从 `AdwStyleManager` 写入；测试环境下没有显示服务 → 都是假）。
 //
 // 用 `Cell` 而不是 `OnceLock`：深浅色与高对比都是**可变**状态，`OnceLock::set` 在
@@ -163,6 +227,30 @@ const DARK_PALETTE: Palette = Palette {
 thread_local! {
     static DARK: Cell<bool> = const { Cell::new(false) };
     static HIGH_CONTRAST: Cell<bool> = const { Cell::new(false) };
+    /// 主题偏好（主菜单「视图 → 深色模式」）；`System` = 没有应用内覆盖。
+    static SCHEME: Cell<Scheme> = const { Cell::new(Scheme::System) };
+}
+
+/// 当前主题偏好。是本进程设过的值（默认跟随系统），与 `DARK`（实际生效的明暗）
+/// 分开：跟随系统时 `SCHEME` 仍是 `System`，而 `DARK` 随系统变化。
+#[must_use]
+pub fn scheme() -> Scheme {
+    SCHEME.with(Cell::get)
+}
+
+/// 设主题偏好。写 `AdwStyleManager::set_color_scheme` 就够了：`dark` 通知在
+/// [`install`] 里已经接到 [`apply_style_manager`]，样式表会自己按新明暗重载。
+///
+/// 必须在 `theme::install()` **之前**调用一次（启动路径）：`install` 读
+/// `AdwStyleManager::is_dark()` 生成第一份样式表，先设偏好才不会「先浅色再闪成深色」。
+pub fn set_scheme(preference: Scheme) {
+    SCHEME.with(|slot| slot.set(preference));
+    adw::StyleManager::default().set_color_scheme(preference.color_scheme());
+    eprintln!(
+        "[theme] 主题偏好：{}（{}）",
+        preference.label(),
+        preference.id()
+    );
 }
 
 fn is_dark() -> bool {
@@ -1635,5 +1723,21 @@ mod tests {
                 .contains("stylesheet_for(is_dark(), is_high_contrast(), layout::current_tier())"),
             "切档重载要带上高对比（否则切档会把高对比分支丢掉）"
         );
+    }
+
+    /// 主题偏好的 id / 文案 / 默认值：`window.json`、`--theme`、菜单三处共用同一套
+    /// 字符串，不能在某一处另写一份。
+    #[test]
+    fn scheme_ids_round_trip_and_default_to_system() {
+        assert_eq!(Scheme::default(), Scheme::System);
+        for scheme in Scheme::ALL {
+            assert_eq!(Scheme::from_id(scheme.id()), Some(scheme));
+        }
+        // 文件 / 命令行的大小写与空白不影响解析。
+        assert_eq!(Scheme::from_id(" DARK "), Some(Scheme::Dark));
+        // 认不出来的值回退跟随系统，而不是猜一个最接近的。
+        assert_eq!(Scheme::from_id("浅色"), None);
+        assert_eq!(Scheme::from_id("auto"), None);
+        assert_eq!(Scheme::ALL.map(Scheme::label), ["跟随系统", "浅色", "深色"]);
     }
 }

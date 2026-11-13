@@ -362,9 +362,12 @@ are in `docs/ui-specification/scaling-and-window-sizing.md`; the decision is
   brand mid tone on **every** platform; the OS accent color is only for what the platform itself
   draws (focus rects, system menus, system dialogs). Linux must branch on
   `AdwStyleManager::is_high_contrast()` where contrast matters.
-- Dark mode follows the system on all platforms. Do not implement a private light-only fallback;
-  Windows sets `Application.RequestedTheme` at startup only and switches at runtime through
-  element-level `FrameworkElement.RequestedTheme`, and always keeps the title bar in sync.
+- Dark mode **defaults** to following the system on all platforms; the user may override it in
+  `视图 → 深色模式` (跟随系统 / 浅色 / 深色), persisted as `theme` in `window.json`. Never implement a
+  private light-only fallback. Linux uses `AdwStyleManager::set_color_scheme` (`Default` /
+  `ForceLight` / `ForceDark`); Windows sets `Application.RequestedTheme` at startup only and
+  switches at runtime through element-level `FrameworkElement.RequestedTheme`, and always keeps the
+  title bar in sync. A platform without the menu entry keeps following the system.
 - New user-facing strings go through a per-crate string catalog, not inline literals, even while
   only Chinese ships. New interactive controls need an accessible name and a defined Tab position.
 - Any change to these numbers or rules updates `metrics.toml`, `scaling-and-window-sizing.md`,

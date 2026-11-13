@@ -105,6 +105,15 @@ fn register_qa_options(app: &adw::Application) {
         "开发/取证：起始界面密度档 compact|comfortable|large（默认按 window.json / compact）",
         Some("compact"),
     );
+    // 取证用的起始主题偏好（产品路径是「视图 → 深色模式」）。
+    app.add_main_option(
+        "theme",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "开发/取证：起始主题偏好 system|light|dark（默认按 window.json / 跟随系统）",
+        Some("system"),
+    );
     for (name, arg_description) in [
         ("screenshot", "/path/to/output.png"),
         ("screenshot-delay-ms", "milliseconds"),

@@ -84,8 +84,8 @@ struct UiState {
     connection_name: RefCell<Option<String>>,
     /// 窗口级动作（主菜单与快捷键）；`activate` 里建好后放进这里。
     actions: RefCell<Option<Rc<WindowActions>>>,
-    /// 主菜单「视图 → 界面密度」的自绘小节（占位项在菜单第一次弹出时被替换）。
-    tier_menu: RefCell<Option<Rc<TierMenu>>>,
+    /// 主菜单模型与需要逐项改文字的条目（界面密度档的「放不下」标注）。
+    menu_items: MainMenu,
     /// 主工具条（区域 02，窗口级）：握手前创建，可用性由
     /// [`crate::shell::Toolbar::set_backend_ready`] 统一控制。
     toolbar: RefCell<Option<Rc<crate::shell::Toolbar>>>,
@@ -149,6 +149,27 @@ pub fn activate(app: &adw::Application) {
         }
     );
 
+    // 主题偏好（视图 → 深色模式）：`--theme`（QA）> `window.json` 的 theme > 跟随系统。
+    // 必须先于 `theme::install()`：install 用 `AdwStyleManager::is_dark()` 生成第一份
+    // 样式表，先定偏好才不会「先浅色再闪成深色」。
+    let saved_theme = crate::window_state::saved_theme();
+    let initial_theme = crate::qa::theme()
+        .or_else(|| saved_theme.as_deref().and_then(theme::Scheme::from_id))
+        .unwrap_or_default();
+    theme::set_scheme(initial_theme);
+    eprintln!(
+        "[theme] 启动主题偏好 {}（{}；来源={}）",
+        initial_theme.label(),
+        initial_theme.id(),
+        if crate::qa::theme().is_some() {
+            "QA"
+        } else if saved_theme.is_some() {
+            "记忆"
+        } else {
+            "默认"
+        }
+    );
+
     // 紧凑密度（§11）：全局 CSS 只装一次；class 只加在主窗口上。
     theme::install();
     // 自有符号图标（v0.2.3.3）：注册成图标主题的资源搜索路径，之后建的图标按钮才取得到。
@@ -184,8 +205,9 @@ pub fn activate(app: &adw::Application) {
     let menu_button = gtk::MenuButton::new();
     menu_button.set_icon_name("open-menu-symbolic");
     menu_button.add_css_class("flat");
-    menu_button.set_tooltip_text(Some("主菜单（文件 / 表 / 帮助）"));
-    menu_button.set_menu_model(Some(&build_main_menu()));
+    menu_button.set_tooltip_text(Some("主菜单（文件 / 表 / 视图 / 帮助）"));
+    let main_menu = build_main_menu();
+    menu_button.set_menu_model(Some(&main_menu.model));
 
     header.pack_end(&menu_button);
 
@@ -245,7 +267,7 @@ pub fn activate(app: &adw::Application) {
         backend: RefCell::new(None),
         connection_name: RefCell::new(None),
         actions: RefCell::new(None),
-        tier_menu: RefCell::new(Some(build_tier_menu(&window))),
+        menu_items: main_menu,
         toolbar: RefCell::new(None),
         registry: RefCell::new(registry),
         pending_file_hint: RefCell::new(None),
@@ -287,7 +309,7 @@ pub fn activate(app: &adw::Application) {
     // 窗口级动作先于菜单可用：菜单项在打开时才解析动作名。
     let actions = install_window_actions(&window, &state);
     state.actions.replace(Some(Rc::clone(&actions)));
-    // 菜单打开时刷新档位可用性并补 tooltip（GMenu 没有 per-item tooltip）。
+    // 菜单打开时刷新档位可用性与条目文字（GMenu 没有 per-item tooltip）。
     {
         let state = Rc::clone(&state);
         let window_for_menu = window.clone();
@@ -297,7 +319,6 @@ pub fn activate(app: &adw::Application) {
                 return;
             }
             refresh_tier_actions(&window_for_menu, &state, &actions_for_menu);
-            ensure_tier_menu(button, &state);
         });
     }
 
@@ -3048,8 +3069,6 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     // 控件标成 visible，surface 没有 present），先把窗口抬到最前再 popup。
     state.window.present();
     spin_main_context(150);
-    // 主菜单里「视图 → 界面密度」的占位项在这里换成自绘的三个单选项（与用户点开时同一路径）。
-    ensure_tier_menu(&button, state);
     button.popup();
     spin_main_context(300);
     let popover = button
@@ -3070,8 +3089,8 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     let main_path = with_stem_suffix(base, "-menu");
     crate::qa::save_widget(&state.window, &popover, &main_path)?;
     let mut note = format!("主菜单弹出层：{}；菜单项：{listing}", main_path.display());
-    // 「视图 → 界面密度」是自绘小节（三个单选项）：切到该子菜单再拍一张，勾选与
-    // 禁用状态才看得见。
+    // 「视图」下是两个三级小节（深色模式 / 界面密度）：切到该子菜单再拍一张，
+    // 勾选与「放不下」文字才看得见。
     if let Ok(popover_menu) = popover.clone().downcast::<gtk::PopoverMenu>() {
         popover_menu.set_visible_submenu(Some("视图"));
         spin_main_context(300);
@@ -3085,6 +3104,33 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     }
     popover.popdown();
     spin_main_context(100);
+    // 两个三级小节各自建一个 PopoverMenu 渲染（子 Popover 的映射在无人值守窗口里不稳定，
+    // 所以按同一个 menu model 单独建，内容与用户点开时一致）。
+    if let Some(view_model) = submenu_model(&model, "视图") {
+        for (label, suffix) in [
+            ("深色模式", "-menu-view-theme"),
+            ("界面密度", "-menu-view-density"),
+        ] {
+            let Some(section) = submenu_model(&view_model, label) else {
+                note.push_str(&format!("；视图里没有「{label}」这一项"));
+                continue;
+            };
+            let popup = gtk::PopoverMenu::from_model(Some(&section));
+            popup.set_parent(&button);
+            popup.set_has_arrow(false);
+            popup.popup();
+            spin_main_context(300);
+            let path = with_stem_suffix(base, suffix);
+            match crate::qa::save_widget(&state.window, &popup, &path) {
+                Ok(()) => note.push_str(&format!("；{label}子菜单：{}", path.display())),
+                Err(error) => note.push_str(&format!("；{label}子菜单截图失败：{error}")),
+            }
+            popup.popdown();
+            popup.unparent();
+        }
+    } else {
+        note.push_str("；菜单模型里没有「视图」这一项");
+    }
     if let Some(table_model) = submenu_model(&model, "表") {
         let submenu = gtk::PopoverMenu::from_model(Some(&table_model));
         submenu.set_parent(&button);
@@ -4685,18 +4731,30 @@ fn truncate_for_log(text: &str, limit: usize) -> String {
 //
 // Linux 不设窗口内菜单行（ADR 0023）：菜单挂在 headerbar 的主菜单按钮上，
 // 动作是窗口级 `win.*`（需要当前工作区），应用级只有退出/关窗。
-// 菜单集合收缩为 文件 / 表 / 帮助：视图与查询的**全部子项**都不在菜单里，
-// 「表」只留「导出 CSV」。**动作与快捷键不受影响**——`win.*` 仍由
+// 菜单集合为 文件 / 表 / 视图 / 帮助：**查询**的全部子项不在菜单里（动作照旧），
+// 视图只剩两个三级小节（深色模式 / 界面密度），「表」只留「导出 CSV」。
+// **动作与快捷键不受影响**——`win.*` 仍由
 // [`install_window_actions`] 注册，`Ctrl+T` / `Ctrl+W` / `F5` / `Ctrl+Enter` / `Ctrl+Shift+E`
 // 等照旧能触发，只是菜单里不再列出。
 //
-// 视图 / 查询没有留空的子菜单：`gio::Menu` 的空 submenu 会弹出一个空气泡（点了像坏掉），
+// 不留空的子菜单：`gio::Menu` 的空 submenu 会弹出一个空气泡（点了像坏掉），
 // 比「顶部少一项」更难解释，所以整项不挂。
 //
 // 没有实现支撑的项**禁用并写明原因**（导出 CSV 归 #118），不摆点了没反应的动作。
 
 /// 主菜单模型（`win.*` 动作由 [`install_window_actions`] 注册）。
-fn build_main_menu() -> gio::Menu {
+///
+/// 除模型本身，还留着需要**逐项改文字**的条目：GMenu 没有逐项 tooltip，「界面密度」
+/// 的目标档在当前工作区放不下时，只能把原因压进条目文字（勾选态由 stateful action
+/// 的 state 决定，不需要额外处理）。
+struct MainMenu {
+    model: gio::Menu,
+    /// 「视图 → 界面密度」的子模型：条目文字要随工作区重填（见
+    /// [`fill_density_section`]），所以留着这节模型本身。
+    density_section: gio::Menu,
+}
+
+fn build_main_menu() -> MainMenu {
     let menu = gio::Menu::new();
 
     let file = gio::Menu::new();
@@ -4710,20 +4768,24 @@ fn build_main_menu() -> gio::Menu {
     table.append(Some("导出 CSV"), Some("win.export-csv"));
     menu.append_submenu(Some("表"), &table);
 
-    // 视图 → 界面密度（§2.4）：三个单选项，当前档打勾。GMenu 没有 per-item tooltip，
-    // 所以这一节是一个占位项（id=tier-section），菜单弹出时用 `PopoverMenu::add_child`
-    // 换成自绘的三个 `GtkCheckButton`（同一 action 表、同一可用性判断）。不可用项禁用，
-    // tooltip 写明缺多少（规范 §2.2）。
+    // 视图 → 深色模式 / 界面密度：两个三级小节，每节三个 stateful 单选项，当前值打勾。
+    // GMenu 没有逐项 tooltip，所以密度档放不下时靠**条目文字**（`refresh_tier_actions`
+    // 补「放不下」），原因同时进日志。
     let view = gio::Menu::new();
-    {
-        use gtk::gio::prelude::*;
-        let item = gio::MenuItem::new(Some("界面密度"), None);
-        // GTK 的 `gtk_popover_menu_add_child` 按 `custom` 属性匹配（不是 `id`）；
-        // 同时写 `id` 便于读模型时辨认。
-        item.set_attribute_value("custom", Some(&"tier-section".to_variant()));
-        item.set_attribute_value("id", Some(&"tier-section".to_variant()));
-        view.append_item(&item);
+
+    let theme_section = gio::Menu::new();
+    for scheme in theme::Scheme::ALL {
+        theme_section.append(
+            Some(scheme.label()),
+            Some(&format!("win.theme-{}", scheme.id())),
+        );
     }
+    view.append_submenu(Some("深色模式"), &theme_section);
+
+    let density_section = gio::Menu::new();
+    fill_density_section(&density_section, None);
+    view.append_submenu(Some("界面密度"), &density_section);
+
     menu.append_submenu(Some("视图"), &view);
 
     let help = gio::Menu::new();
@@ -4732,7 +4794,29 @@ fn build_main_menu() -> gio::Menu {
     help.append(Some("关于 Squarvo"), Some("win.about"));
     menu.append_submenu(Some("帮助"), &help);
 
-    menu
+    MainMenu {
+        model: menu,
+        density_section,
+    }
+}
+
+/// 重填「界面密度」的三档条目：目标档在当前工作区放不下时，把原因写进条目文字
+/// （GMenu 没有逐项 tooltip）。
+///
+/// `append` 时 GMenu 就把条目属性复制进模型，之后再改 `gio::MenuItem` 不生效，所以换
+/// 文字只能重建这一节。`gio::Menu` 是活模型（父菜单 link 的是同一个对象），重建后已
+/// 打开的菜单也看得到；不可用项仍由各档 action 的 `enabled` 置灰。
+fn fill_density_section(section: &gio::Menu, work: Option<crate::window_size::Rect>) {
+    section.remove_all();
+    for tier in layout::Tier::ALL {
+        let available = work.is_none_or(|work| crate::window_size::available(tier, work));
+        let label = if available {
+            tier.label().to_owned()
+        } else {
+            format!("{}，放不下", tier.label())
+        };
+        section.append(Some(&label), Some(&format!("win.tier-{}", tier.id())));
+    }
 }
 
 /// 窗口级动作句柄：菜单项与快捷键共用同一份状态。
@@ -4761,6 +4845,10 @@ struct WindowActions {
     tier_up: gio::SimpleAction,
     tier_down: gio::SimpleAction,
     tier_reset: gio::SimpleAction,
+    /// 深色模式（视图 → 深色模式）：三个 stateful 单选项，当前偏好打勾。
+    theme_system: gio::SimpleAction,
+    theme_light: gio::SimpleAction,
+    theme_dark: gio::SimpleAction,
     /// 后端是否已握手：与工具条 `Toolbar::set_backend_ready` 同一个状态。
     /// 未就绪时所有会话类动作（含「新建连接」）一律禁用。
     backend_ready: Cell<bool>,
@@ -5111,6 +5199,21 @@ fn install_window_actions(
         });
     }
 
+    // ---- 深色模式（视图 → 深色模式） --------------------------------------
+    // 三个 stateful 单选项：当前偏好打勾。生效只靠 `AdwStyleManager::set_color_scheme`
+    // —— `theme::install` 已接 `dark` 通知，样式表会自己按新明暗重载，这里不再手动 reload。
+    let theme_system = gio::SimpleAction::new_stateful("theme-system", None, &true.to_variant());
+    let theme_light = gio::SimpleAction::new_stateful("theme-light", None, &false.to_variant());
+    let theme_dark = gio::SimpleAction::new_stateful("theme-dark", None, &false.to_variant());
+    for (action, scheme) in [
+        (&theme_system, theme::Scheme::System),
+        (&theme_light, theme::Scheme::Light),
+        (&theme_dark, theme::Scheme::Dark),
+    ] {
+        let state = Rc::clone(state);
+        action.connect_activate(move |_, _| apply_theme_choice(&state, scheme));
+    }
+
     for action in [
         &new_connection,
         &new_tab,
@@ -5136,6 +5239,9 @@ fn install_window_actions(
         &tier_up,
         &tier_down,
         &tier_reset,
+        &theme_system,
+        &theme_light,
+        &theme_dark,
     ] {
         window.add_action(action);
     }
@@ -5161,17 +5267,22 @@ fn install_window_actions(
         tier_up,
         tier_down,
         tier_reset,
+        theme_system,
+        theme_light,
+        theme_dark,
         backend_ready: Cell::new(false),
     });
     actions.set_backend_ready(false);
     actions.set_workspace_ready(false);
     refresh_tier_actions(window, state, &actions);
+    refresh_theme_actions(&actions);
     actions
 }
 
-/// 按「当前工作区 + 当前档位」刷新三个单选项的勾选与可用性（§2.2）。
+/// 按「当前工作区 + 当前档位」刷新三个单选项的勾选、可用性与条目文字（§2.2）。
 ///
-/// 不可用项 `set_enabled(false)`（菜单里灰掉）；缺多少由打开菜单时的 tooltip 说明。
+/// 不可用项 `set_enabled(false)`（菜单里灰掉）。GMenu 没有逐项 tooltip，缺多少只能写进
+/// 条目文字（「大（150%），放不下」），完整原因进日志。
 fn refresh_tier_actions(
     window: &adw::ApplicationWindow,
     state: &Rc<UiState>,
@@ -5198,43 +5309,34 @@ fn refresh_tier_actions(
     actions
         .tier_reset
         .set_enabled(current != layout::Tier::Compact);
-    sync_tier_checks(window, state);
+    // 条目文字：目标档放不下时在文字里说明（勾选态由 state 决定，不在这里改）。
+    fill_density_section(&state.menu_items.density_section, work);
 }
 
-/// 把当前档位 / 可用性 / tooltip 同步到自绘的三个单选项。
-fn sync_tier_checks(window: &adw::ApplicationWindow, state: &UiState) {
-    let Some(menu) = state.tier_menu.borrow().as_ref().cloned() else {
-        return;
-    };
-    let current = layout::current_tier();
-    let work = crate::window_size::current_work(window);
-    menu.guard.set(true);
-    for (tier, check) in &menu.checks {
-        let available = work.is_none_or(|work| crate::window_size::available(*tier, work));
-        check.set_active(*tier == current);
-        check.set_sensitive(available);
-        let tooltip = match work {
-            Some(work) if !available => {
-                let metrics = layout::Metrics::for_tier(*tier);
-                format!(
-                    "当前显示器放不下 {}：需要 {}×{} 逻辑工作区（当前 {}×{}）",
-                    tier.percent(),
-                    metrics.min_window_width,
-                    metrics.min_window_height,
-                    work.width,
-                    work.height
-                )
-            }
-            _ if *tier == current => format!("当前档位：{}", tier.label()),
-            _ => format!(
-                "切换到 {}（{}）；窗口会按档位一起放大 / 收小",
-                tier.label(),
-                tier.percent()
-            ),
-        };
-        check.set_tooltip_text(Some(&tooltip));
+/// 深色模式三档的勾选：只读当前偏好，不碰窗口（与主题无关的后端状态也不参与）。
+fn refresh_theme_actions(actions: &WindowActions) {
+    let current = theme::scheme();
+    for (action, preference) in [
+        (&actions.theme_system, theme::Scheme::System),
+        (&actions.theme_light, theme::Scheme::Light),
+        (&actions.theme_dark, theme::Scheme::Dark),
+    ] {
+        action.set_state(&(preference == current).to_variant());
     }
-    menu.guard.set(false);
+}
+
+/// 深色模式动作的唯一落点：设偏好 → 落盘 → 刷新勾选。
+///
+/// 样式重载由 `AdwStyleManager` 的 `dark` 通知完成（`theme::install` 已接），这里不再
+/// 手动重载四套样式表。
+fn apply_theme_choice(state: &Rc<UiState>, target: theme::Scheme) {
+    theme::set_scheme(target);
+    if let Err(error) = crate::window_state::remember_theme(target.id()) {
+        eprintln!("[theme] 偏好未能记入 window.json：{error}");
+    }
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        refresh_theme_actions(actions);
+    }
 }
 
 /// 密度档动作的唯一落点：走 [`crate::density::switch`]，然后刷新勾选 / 可用性。
@@ -5259,91 +5361,6 @@ fn apply_tier_choice(window: &adw::ApplicationWindow, state: &Rc<UiState>, targe
         }
         Err(reason) => eprintln!("[tier] 未切换：{reason}"),
     }
-}
-
-/// 主菜单里「视图 → 界面密度」的自绘小节（三个单选项）。
-///
-/// GMenu 的项没有 per-item tooltip，也无法按项禁用，所以这一节用
-/// `PopoverMenu::add_child` 把占位项换成三个真实 `GtkCheckButton`：勾选 = 当前档，
-/// 不可用项 `sensitive=false` + tooltip 写明缺多少（规范 §2.2）。
-struct TierMenu {
-    root: gtk::Box,
-    /// 程序化同步勾选状态时不触发 action。
-    guard: Rc<Cell<bool>>,
-    checks: Vec<(layout::Tier, gtk::CheckButton)>,
-}
-
-fn build_tier_menu(window: &adw::ApplicationWindow) -> Rc<TierMenu> {
-    let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
-    root.set_margin_top(gap(Gap::Xxs));
-    root.set_margin_bottom(gap(Gap::Xs));
-    root.set_margin_start(gap(Gap::Sm));
-    root.set_margin_end(gap(Gap::Sm));
-    let title = gtk::Label::new(Some("界面密度"));
-    title.set_xalign(0.0);
-    title.add_css_class("dim-label");
-    title.set_margin_start(gap(Gap::Xs));
-    title.set_margin_bottom(gap(Gap::Xxs));
-    root.append(&title);
-    let guard = Rc::new(Cell::new(false));
-    let mut checks = Vec::new();
-    let mut first: Option<gtk::CheckButton> = None;
-    for tier in layout::Tier::ALL {
-        let check = gtk::CheckButton::with_label(tier.label());
-        if let Some(first) = first.as_ref() {
-            check.set_group(Some(first));
-        } else {
-            first = Some(check.clone());
-        }
-        check.set_margin_start(gap(Gap::Xs));
-        {
-            let window = window.clone();
-            let guard = Rc::clone(&guard);
-            check.connect_toggled(move |check| {
-                if guard.get() || !check.is_active() {
-                    return;
-                }
-                let action = match tier {
-                    layout::Tier::Compact => "win.tier-compact",
-                    layout::Tier::Comfortable => "win.tier-comfortable",
-                    layout::Tier::Large => "win.tier-large",
-                };
-                let _ = gtk::prelude::WidgetExt::activate_action(&window, action, None);
-            });
-        }
-        root.append(&check);
-        checks.push((tier, check));
-    }
-    Rc::new(TierMenu {
-        root,
-        guard,
-        checks,
-    })
-}
-
-/// 菜单弹出时把自绘小节换进占位项（只做一次），并同步勾选 / 可用性 / tooltip。
-fn ensure_tier_menu(button: &gtk::MenuButton, state: &UiState) {
-    let Some(menu) = state.tier_menu.borrow().as_ref().cloned() else {
-        return;
-    };
-    let Some(popover) = button
-        .popover()
-        .and_then(|popover| popover.downcast::<gtk::PopoverMenu>().ok())
-    else {
-        return;
-    };
-    if menu.root.parent().is_none() {
-        if popover.add_child(&menu.root, "tier-section") {
-            eprintln!(
-                "[tier] 主菜单「视图 → 界面密度」已挂载（{} 个单选项）",
-                menu.checks.len()
-            );
-        } else {
-            eprintln!("[tier] 主菜单里找不到界面密度的占位项：本节未挂载");
-            return;
-        }
-    }
-    sync_tier_checks(&state.window, state);
 }
 
 /// 后端诊断行（不含密码、凭据引用与 token）。
@@ -5662,5 +5679,82 @@ mod tests {
             objects_target(&TreeSelection::None),
             ObjectsTarget::Empty
         ));
+    }
+
+    /// 菜单模型某一层的标签序列（子菜单不展开）。
+    fn menu_labels(model: &gio::MenuModel) -> Vec<String> {
+        use gtk::gio::prelude::*;
+        (0..model.n_items())
+            .filter_map(|index| model.item_attribute_value(index, "label", None))
+            .filter_map(|value| value.str().map(str::to_owned))
+            .collect()
+    }
+
+    /// 菜单模型某一层的动作名序列。
+    fn menu_actions(model: &gio::MenuModel) -> Vec<String> {
+        use gtk::gio::prelude::*;
+        (0..model.n_items())
+            .filter_map(|index| model.item_attribute_value(index, "action", None))
+            .filter_map(|value| value.str().map(str::to_owned))
+            .collect()
+    }
+
+    /// 视图下必须是两个三级小节（深色模式 / 界面密度），各三项、动作名与注册的一致。
+    #[test]
+    fn view_menu_holds_dark_mode_and_density_as_third_level_submenus() {
+        let menu = build_main_menu();
+        let model = menu.model.clone().upcast::<gio::MenuModel>();
+        assert_eq!(
+            menu_labels(&model),
+            ["文件", "表", "视图", "帮助"].map(str::to_owned)
+        );
+
+        let view = submenu_model(&model, "视图").expect("视图子菜单");
+        assert_eq!(
+            menu_labels(&view),
+            ["深色模式", "界面密度"].map(str::to_owned)
+        );
+
+        let theme_section = submenu_model(&view, "深色模式").expect("深色模式子菜单");
+        assert_eq!(
+            menu_labels(&theme_section),
+            ["跟随系统", "浅色", "深色"].map(str::to_owned)
+        );
+        assert_eq!(
+            menu_actions(&theme_section),
+            ["win.theme-system", "win.theme-light", "win.theme-dark"].map(str::to_owned)
+        );
+
+        let density = submenu_model(&view, "界面密度").expect("界面密度子菜单");
+        assert_eq!(
+            menu_actions(&density),
+            ["win.tier-compact", "win.tier-comfortable", "win.tier-large"].map(str::to_owned)
+        );
+    }
+
+    /// 放不下的档位在条目文字里说明（GMenu 没有逐项 tooltip）；重填不累积条目。
+    #[test]
+    fn density_items_say_when_a_tier_does_not_fit() {
+        let section = gio::Menu::new();
+        let model = section.clone().upcast::<gio::MenuModel>();
+        fill_density_section(
+            &section,
+            Some(crate::window_size::Rect {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 700,
+            }),
+        );
+        assert_eq!(
+            menu_labels(&model),
+            ["紧凑（100%）", "舒适（125%），放不下", "大（150%），放不下"].map(str::to_owned)
+        );
+
+        fill_density_section(&section, None);
+        assert_eq!(
+            menu_labels(&model),
+            ["紧凑（100%）", "舒适（125%）", "大（150%）"].map(str::to_owned)
+        );
     }
 }

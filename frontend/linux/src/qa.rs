@@ -1086,6 +1086,9 @@ struct Args {
     /// 与 `--window-size` 同一次解析、同一套错误文案；只在「用户能走到」的意义上改用，
     /// 不改变产品路径（菜单 / 快捷键才是用户入口）。
     tier: Option<crate::layout::Tier>,
+    /// `--theme <system|light|dark>`：取证用的起始主题偏好（产品默认取 `window.json` /
+    /// 跟随系统；产品入口是主菜单「视图 → 深色模式」）。
+    theme: Option<crate::theme::Scheme>,
     // ---- #116 标签工作区 ----
     /// `--qa-tabs-file <path>`：标签工作区脚本（步骤见 `tabs::parse_script`）。
     tabs_script: Option<String>,
@@ -1899,6 +1902,12 @@ pub fn window_size() -> Option<(i32, i32)> {
 #[must_use]
 pub fn tier() -> Option<crate::layout::Tier> {
     ARGS.get().and_then(|args| args.tier)
+}
+
+/// `--theme <system|light|dark>`：起始主题偏好（未指定时为 `None`，按记忆 / 跟随系统走）。
+#[must_use]
+pub fn theme() -> Option<crate::theme::Scheme> {
+    ARGS.get().and_then(|args| args.theme)
 }
 
 /// 是否在截图之后做「无裁切」量化布局自检（`--qa-layout-audit`）。
@@ -2948,6 +2957,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 parsed.tier = Some(crate::layout::Tier::from_id(value).ok_or_else(|| {
                     format!("--tier 只能是 compact|comfortable|large，实际：{value}")
                 })?);
+                index += 2;
+            }
+            "--theme" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--theme 需要 system|light|dark".to_owned())?;
+                parsed.theme =
+                    Some(crate::theme::Scheme::from_id(value).ok_or_else(|| {
+                        format!("--theme 只能是 system|light|dark，实际：{value}")
+                    })?);
                 index += 2;
             }
             "--qa-password-env" => {
