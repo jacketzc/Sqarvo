@@ -130,7 +130,7 @@ impl_notes = [
   "这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。",
   "§7 把「查询标签没有可编辑表格」概括为一句话；实现按结果可编辑性给更具体的原因（只读结果、新行还空着、没有选中行各一句），见 sql_page 的行操作可用性。",
 ]
-platform_notes.windows = "六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增 / 删除本片恒禁用，理由是「新增行 / 删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。"
+platform_notes.windows = "六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增仍恒禁用（理由是「新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL」）；删除（−）已接线到 `DeleteSelectedRows`，与数据行右键菜单同一方法，可用性 = 可编辑、非 Loading/Submitting、有选中行，不可编辑时 tooltip 给 `DataStatusText.ReadOnlyReasonText`；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。"
 
 [[component.interaction]]
 trigger = "load"
@@ -153,7 +153,7 @@ evidence = "§7 行 1 行操作与可用性来源；apply_row_ops / show_no_tabl
 [component.sync.windows]
 state = "partial"
 spec_hash = "c5ac7dd10c67"
-note = "§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。"
+note = "§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增恒禁用；删除（−）已接线为标记删除，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。"
 
 [component.sync.macos]
 state = "none"
@@ -212,7 +212,7 @@ impl_notes = [
   "只标记、不发 RPC：多条选中按批量语义一次标记。",
 ]
 
-platform_notes.windows = "按钮在（`ButtonRowDelete`），本片恒禁用、无点击处理：tooltip「删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。标记删除只在数据页动作行与数据行右键菜单。"
+platform_notes.windows = "按钮在（`ButtonRowDelete`）且可点：与数据行右键菜单共用 `DeleteSelectedRows`，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 `DataStatusText.ReadOnlyReasonText` 写进 tooltip。"
 
 [[component.interaction]]
 trigger = "click"
@@ -228,8 +228,9 @@ evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "6b823444daae"
-note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。"
+spec_hash = "27fdf866d95e"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:229 状态栏「−」接线；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2114 可用性与只读原因 tooltip"
+note = "按钮（ButtonRowDelete）现在可点：与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip。能力已实现，按钮不再属于契约 §9.1 说的「能力性不可用」，因此不删按钮、不改 na。差异：§7.1 未记录状态栏删除，且当前单选、没有 Linux 的多选批量入口；故保留 partial。"
 
 [component.sync.macos]
 state = "none"

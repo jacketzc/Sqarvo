@@ -38,9 +38,9 @@
 | `data_page.grid.row_number` | 　　行号列（行号 / 脏行 / 标删 / 新行） | cell | active | done | partial | — |
 | `data_page.grid.cell` | 　　数据单元格（值 · NULL / 空串 · 脏色） | cell | active | done | partial | — |
 | `data_page.editor` | 　单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消） | container | active | done | partial | — |
-| `data_page.row_menu` | 　数据行右键菜单 | container | active | done | — | — |
-| `data_page.row_menu.delete` | 　　「删除行」 | item | active | done | — | — |
-| `data_page.row_menu.copy_insert` | 　　「复制为 ▸ 复制为 INSERT」 | item | active | done | — | — |
+| `data_page.row_menu` | 　数据行右键菜单 | container | active | done | partial | — |
+| `data_page.row_menu.delete` | 　　「删除行」 | item | active | done | partial | — |
+| `data_page.row_menu.copy_insert` | 　　「复制为 ▸ 复制为 INSERT」 | item | active | done | partial | — |
 | `data_page.detail` | 　单行「字段 · 值」展示形式 | container | active | done | — | — |
 | `data_page.filter_panel` | 　筛选与排序面板（草稿 · 应用 / 清空） | container | active | done | — | — |
 | `data_page.filter_panel.condition_composer` | 　　条件编辑组（列 · 算子 · 值 · 添加条件） | container | active | done | — | — |
@@ -369,7 +369,7 @@ kind `container` · status `active` · parent `data_page`
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「数据行菜单」
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
-- 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows none（整片未实现：数据页没有「删除行」（标记 ✕N、删除线、撤销、提交生成 DELETE 都没有），右键菜单的两个条目都无从接起；`Views/ShellView.Data.cs:2041-2043` 目前只把行删除按钮禁用并写「请用 SQL」。已记 docs/planning/windows-frontend-parity-plan.md §8.2。）；macOS none
+- 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows partial（已落地：手势挂在整行 Grid 上（单元格文字 / 列分隔处 / 行分隔线 / 末列右侧空白都落在同一行容器里），表格下方空白不属于任何行、不挂手势；右键先选中该行，菜单用 WinUI 原生 MenuFlyout / MenuFlyoutSubItem（不是 GTK 弹层），点菜单外由 WinUI 收起。差异：Windows 数据页当前是单选、没有 Ctrl/Shift 多选集，没有 Linux 的状态圆点 tooltip 末段「最近一次操作」；故记 partial，不宣称与 Linux 逐字一致。见 docs/planning/windows-frontend-parity-plan.md §8.2。）；macOS none
 - 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -383,7 +383,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「删除行」
-- 同步：Linux done（§5.8 删除行；delete_selected_row + delete_note）；Windows none（§7.1 未记录数据行右键菜单。）；macOS none
+- 同步：Linux done（§5.8 删除行；delete_selected_row + delete_note）；Windows partial（与状态栏 −（status_bar.row1.ops.delete）共用 DeleteSelectedRows：DataRow.MarkedForDeletion + Removed=true，行号 ✕N、整行删除线 + 压暗；状态行写「第 N 行已标记删除（提交前可撤销）」/「已标记删除 N 行（批量提交前可撤销）」。撤销走现有 RevertDataAsync 把 Removed 一起复位。提交对标记删除行按主键全列生成 RowDelete（值走协议已有的强类型参数化路径，不拼 SQL），与 updates 放进同一个 ApplyRowChangesRequest、同一个显式事务；后端驱动用 prepared statement 生成 DELETE FROM … WHERE …。成功后该行从页面消失、状态行写「已提交：删除 N 行」。可用性 = 可编辑且非 Loading/Submitting 且有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip；无主键表整页只读照旧；Windows 端没有新行占位行，故不在删除范围。差异：结果文案落在状态栏行 2、当前单选无多选批量入口，故记 partial。）；macOS none
 - 实现备注：与状态栏 − / RowOp::Delete 完全同一方法（delete_selected_row），可用性同一谓词（delete_available）。只标记待删除，不立刻写库；新行占位行不在删除范围。结果不占可见文案，只写状态圆点 tooltip 末段「最近一次操作：…」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -396,7 +396,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「复制为 INSERT」
-- 同步：Linux done（§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert）；Windows none（§7.1 未记录数据行右键菜单。）；macOS none
+- 同步：Linux done（§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert）；Windows partial（始终可用（只读连接也能复制数据），复用既有值格式化口径 QueryCellText.Format。Windows 端没有现成的导出 INSERT 生成器（Linux 的在 frontend/linux/src/export.rs，Rust，不可直接复用），因此在 Workspace/DataModel.cs 内按注册表写出口径实现最小生成器 DataInsertSql：把选中行当前值（含未提交编辑）合成一条多值 INSERT INTO 表 (列清单) VALUES (…),(…); 写进系统剪贴板；标识符双引号、字符串单引号（' 转义成 ''）、NULL 写 NULL、BLOB / 非有限浮点 / 截断值写 NULL 并在末尾附 sqarvo 注释。差异：标识符固定双引号、不按驱动区分 SQLite / MariaDB，剪贴板写入失败只写状态行 warning；故记 partial。）；macOS none
 - 实现备注：把选中行合成**一条多值** INSERT（目标表 + 列清单 + 多组 VALUES，行间换行）写进系统剪贴板，用选中行的**当前值**（含未提交编辑）。BLOB / 非有限浮点写 NULL，并在末尾附一行 sqarvo 注释；标识符按该连接驱动引号。只读也要能导出数据：本条目在只读连接下仍可用。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2319,8 +2319,8 @@ kind `container` · status `active` · parent `status_bar`
 kind `container` · status `active` · parent `status_bar.row1`
 
 - 样式：尺寸 `icon_button_width`、`icon_button_height`；状态 disabled=`sqarvo_status_fg`
-- 平台差异：Windows：六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增 / 删除本片恒禁用，理由是「新增行 / 删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。
-- 同步：Linux done（§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops）；Windows partial（§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增 / 删除恒禁用，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。）；macOS none
+- 平台差异：Windows：六枚按钮都在（`ButtonRowAdd` / `Delete` / `Apply` / `Revert` / `Refresh` / `Cancel`）；可用性由 `ApplyDataStatus` / `ApplyQueryStatus` 逐枚设 `IsEnabled` 并换 tooltip。新增仍恒禁用（理由是「新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL」）；删除（−）已接线到 `DeleteSelectedRows`，与数据行右键菜单同一方法，可用性 = 可编辑、非 Loading/Submitting、有选中行，不可编辑时 tooltip 给 `DataStatusText.ReadOnlyReasonText`；其余四枚的禁用原因是 per-button 短句（如「当前没有待提交的更改」），不拼 Linux 的「（当前不可用：<原因>）」。
+- 同步：Linux done（§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops）；Windows partial（§7.1 只记了「应用 / 撤销 / 取消」三枚；XAML 有六枚（新增恒禁用；删除（−）已接线为标记删除，见 `platform_notes.windows`），禁用态 tooltip 是 per-button 短句，不是 Linux 的「（当前不可用：<原因>）」。）；macOS none
 - 实现备注：六个图标按钮连成一组（linked，组内间距 0），图标盒与命中区统一走 icon_button_width / icon_button_height，不按单个字形调大小。禁用态：前景换 @sqarvo_status_fg 并叠 opacity 0.45（v0.2.5 加，为「激活 / 非激活一眼可辨」）；同时用 opacity: 1 / filter: none 压掉 Adwaita `.flat:disabled` 与 `dim-label` 自带的透明度，颜色只由这两条规则决定。组尾一条竖分隔线（1px、按行高居中）把行操作与右侧读数隔开；分隔线没有交互，不单独登记。按钮只显示图标，tooltip 同时登记为可访问名；tooltip 文案是动作本身（不带「新增行：」这类前缀），可访问名仍是构建时那句带前缀的话。这里是同一个动作的第二个入口：点击直接走数据页 / 查询页的同一套方法，状态栏不复制任何业务逻辑。§7 把「查询标签没有可编辑表格」概括为一句话；实现按结果可编辑性给更具体的原因（只读结果、新行还空着、没有选中行各一句），见 sql_page 的行操作可用性。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2350,8 +2350,8 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「删除选中行：标记为待删除（提交前可撤销）」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.delete`
-- 平台差异：Windows：按钮在（`ButtonRowDelete`），本片恒禁用、无点击处理：tooltip「删除行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。标记删除只在数据页动作行与数据行右键菜单。
-- 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏删除。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。）；macOS none
+- 平台差异：Windows：按钮在（`ButtonRowDelete`）且可点：与数据行右键菜单共用 `DeleteSelectedRows`，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 `DataStatusText.ReadOnlyReasonText` 写进 tooltip。
+- 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（按钮（ButtonRowDelete）现在可点：与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip。能力已实现，按钮不再属于契约 §9.1 说的「能力性不可用」，因此不删按钮、不改 na。差异：§7.1 未记录状态栏删除，且当前单选、没有 Linux 的多选批量入口；故保留 partial。）；macOS none
 - 实现备注：v0.2.5 起工具条上的「删除」已删，入口在这里与数据行右键菜单；两处共用同一条可用性谓词。只标记、不发 RPC：多条选中按批量语义一次标记。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
