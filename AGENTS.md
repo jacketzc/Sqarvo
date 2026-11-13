@@ -545,8 +545,41 @@ the registry. `workspace-model.md` is now only layout and regions.
 
 ## 15. Agent Workflow
 
+### 15.0 改动前的确认门（硬门）
+
+**报出组件 `id` 不等于确认。回答方案问题也不等于确认。** 只有维护者明确回复「确认 #N」，
+才算拿到开始改动的许可。
+
+任何写操作之前（包括用户可见界面、QA/取证钩子、测试、文档、生成物、脚本、配置默认值），
+必须先交一张**改动确认单**，等维护者明确确认后才允许第一次 `patch` / `write` / `git` 写操作：
+
+```text
+改动确认单 #N
+- 触发：<用户原话 / Issue>
+- 组件：<id>「<display_name>」…（非 UI 改动写「无组件：<模块>」）
+- 涉及文件：<path:line 或文件清单>
+- 改法：<每处一句话，说清改完用户看到什么>
+- 明确不动：<这次不碰的东西：别的组件 / 不重构 / 不改协议 …>
+- 验收：<命令、断言、截图或 QA 开关，能证明改完是对的>
+- Issue：<#编号，若为 0 也要写明「待建」>
+```
+
+规则：
+
+- 一张单只覆盖它列出的范围。**范围一变就要重新出单**（哪怕只多改一个文件、只多一行 UI 文案）。
+- 单里的「改法」是行为承诺，不是实现备忘：不要在单子之外顺手改无关代码（§15 step 4 同一条）。
+- 确认前允许的动作只有**只读**：读文件、检索、`git status` / `git log` / `git diff`、`gh` 只读查询，
+  以及在 `$TMPDIR`（本机 `~/.hermes/cache/scratch`）里跑一次性探针脚本。探针不得写仓库内文件。
+- 「这只是测试钩子 / 这只是文档 / 这只是格式化」不构成豁免：它们同样是一次代码改动。
+- 复现一个 bug 需要先加取证代码时，把取证代码写进确认单，而不是先加了再报。
+- 已确认、正在做时发现必须扩大范围 → 停手，出 #N+1 号单；不要「顺手一起改了」。
+- 维护者说「先做」「直接做」「不用问」时，把这句话作为确认记录写进 Issue/PR，再动手。
+
+改完的收尾按 §16 报告，并在 PR 的「改动确认」一节贴确认单原文与确认来源（评论链接）。
+
 Follow this sequence when executing a task:
 
+0. 走 §15.0：先出改动确认单并拿到「确认 #N」，再开始第一次写操作。
 1. Read this file and any other `AGENTS.md` files in the directories involved in the task.
 2. Read the relevant product requirements, architecture documents, ADRs, and existing code. Do not guess the state of the project based only on the task description.
 3. Confirm the requirements, scope of impact, module boundaries, acceptance criteria, and the associated Issue/milestone. For complex tasks, provide a brief implementation plan first. 涉及 UI 时先按 §14.3 报出对应的组件 `id` 与名称，得到维护者确认后再动手。
