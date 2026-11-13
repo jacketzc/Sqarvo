@@ -126,7 +126,7 @@ precondition = "行存在"
 result = "底色换成品牌浅档（alpha 55%），不动前景色"
 source = "src/theme.rs:312"
 
-platform_notes.windows = "树行文字由 TreeViewNode.ToString() + 默认模板的 ContentPresenter 呈现，没有可单独设字重的 TextBlock；容器级 FontWeight（DispatcherQueue 里给 TreeViewItem 设）实测只对 1 行生效：8 行里只有 information_schema 变粗，连接名与 Tables/Views/Functions/Queries 分组名仍是 400。该实现已在 08151b1 撤回，Windows 树行统一 400。字重（连接/分组/库 = heading）与行首图标要等「树行换成自带图标与字重的行模板」那一类一起做。"
+platform_notes.windows = "树行换成自带 ControlTemplate 的 TreeViewItem（Views/ShellView.xaml:51 起）：缩进走 TreeViewItemTemplateSettings.Indentation、折叠箭头用 SqarvoIconFontFamily 字形 + Size.TreeArrowBox、选中整行 SqarvoSelectionBrush + SqarvoOnSelectionTextBrush、ContentPresenter 显式 TemplateBinding FontSize/FontWeight（:180）。字重按行种类分派（Views/ShellView.xaml.cs:720 的 OnTreeRowLoaded）：连接 / 库 / 分组 = Weight.Heading，对象 / 占位 / 说明 = Weight.Ui；旧的「容器级 FontWeight 只粗 1 行、统一 400」已随之消除。展开/收起仍走 OnTreeExpanding/OnTreeCollapsed，HasUnrealizedChildren 语义不变。仍未对齐：行首图标、徽标右对齐弱色、Linux 的 4 + 14/层 缩进量（Windows 用框架 Indentation）。"
 
 [component.sync.linux]
 state = "done"
@@ -136,8 +136,9 @@ evidence = "§2.2 单击行 + theme.rs 行状态规则"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "3a55b23eabfc"
-note = "行模板与徽标文案一致；缩进量未对齐（Linux 为 4 + 14/层）。"
+spec_hash = "a8baeec0f102"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:51、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:80、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:180、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:720"
+note = "自带 ControlTemplate（ShellView.xaml:58）：缩进走 TreeViewItemTemplateSettings.Indentation、折叠箭头 SqarvoIconFontFamily + Size.TreeArrowBox、选中整行 SqarvoSelectionBrush + SqarvoOnSelectionTextBrush（:80）、内容呈现器显式 TemplateBinding FontSize/FontWeight（:180）。字重按行种类由 OnTreeRowLoaded（ShellView.xaml.cs:720）分派，每一行都吃到；带 <ItemsPresenter/> 作为模板部件（WinUI 3 扁平树里子节点由 TreeViewList 承载）。展开/收起仍走 OnTreeExpanding/OnTreeCollapsed、HasUnrealizedChildren 不变。仍未对齐：行首图标、徽标右对齐弱色、Linux 4 + 14/层 缩进量。"
 
 [component.sync.macos]
 state = "none"
@@ -153,7 +154,7 @@ a11y.name = "展开 / 收起"
 a11y.tab = "不可聚焦（不占 Tab 位）"
 style.metrics = ["tree_arrow_box"]
 impl_notes = ["扁平按钮 + 箭头图标；只在行可展开时出现，不可展开的行留同宽空白。"]
-platform_notes.windows = "TreeView 自带展开箭头，命中区由控件决定，不接受单独定制。"
+platform_notes.windows = "展开箭头落在自带 ControlTemplate 内（Views/ShellView.xaml:152）：SqarvoIconFontFamily 的 MDL2 字形（收起 E76C / 展开 E70D）+ Size.TreeArrowBox 命中区，可见性仍绑 TreeViewItemTemplateSettings 的 Collapsed/ExpandedGlyphVisibility；不再由 TreeView 默认模板独占。"
 
 [[component.interaction]]
 trigger = "click"
@@ -170,7 +171,8 @@ evidence = "§2.2 行首箭头；arrow_button 接线与 set_focusable(false)"
 [component.sync.windows]
 state = "partial"
 spec_hash = "c91da7cf96bd"
-note = "命中区与外观由 TreeView 决定，无法逐像素对齐（接受）。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:152"
+note = "折叠箭头在自带 ControlTemplate 内（ShellView.xaml:152）：SqarvoIconFontFamily 字形（收起 E76C / 展开 E70D）+ Size.TreeArrowBox 命中区，可见性随展开态由 TreeViewItemTemplateSettings 切换；单击展开/收起仍走 OnTreeExpanding/OnTreeCollapsed。命中区与外观不再由 TreeView 默认模板独占，但仍无法与 Linux 逐像素对齐（接受）。"
 
 [component.sync.macos]
 state = "none"
@@ -210,8 +212,9 @@ evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "bab8fbfd18af"
-note = "已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。"
+spec_hash = "a4dcdb39d68f"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:720、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:80"
+note = "已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。本单起连接行字重 = Weight.Heading（OnTreeRowLoaded 按 ConnectionNode 分派，ShellView.xaml.cs:720），选中整行 SqarvoSelectionBrush + SqarvoOnSelectionTextBrush（ShellView.xaml:80）；右键菜单「浏览数据」等条目与数据模型未改。行首图标与右对齐弱色徽标未做。"
 
 [component.sync.macos]
 state = "none"
@@ -247,8 +250,9 @@ evidence = "§2.1 展开库 / schema"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "3b006552e122"
-note = "展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。"
+spec_hash = "d22704420de4"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:720、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:80"
+note = "展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。本单起库行字重 = Weight.Heading（OnTreeRowLoaded 按 TreeRowKind.Catalog 分派，ShellView.xaml.cs:720），选中整行 SqarvoSelectionBrush（ShellView.xaml:80）；右键菜单未改。"
 
 [component.sync.macos]
 state = "none"
@@ -294,8 +298,9 @@ evidence = "§2.1 分组与空态文案"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "1267e871a958"
-note = "四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。"
+spec_hash = "e4b508a48b36"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:720、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:80"
+note = "四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。本单起分组行字重 = Weight.Heading（OnTreeRowLoaded 按 TreeRowKind.Group 分派，ShellView.xaml.cs:720），选中整行 SqarvoSelectionBrush（ShellView.xaml:80）；未实现分组的空/说明文案未改。"
 
 [component.sync.macos]
 state = "none"
@@ -331,8 +336,9 @@ evidence = "§2.2 双击表 / 视图"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "c0dee29ad9a6"
-note = "双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。"
+spec_hash = "ab8660f7e7db"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:55、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:80"
+note = "双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。本单起对象行字重 = Weight.Ui（Style 默认，ShellView.xaml:55），与连接 / 库 / 分组的 Heading 形成层级差；选中整行 SqarvoSelectionBrush（ShellView.xaml:80）。双击打开数据页与右键「浏览数据」路径未改。"
 
 [component.sync.macos]
 state = "none"

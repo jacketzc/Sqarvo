@@ -713,6 +713,55 @@ public sealed partial class ShellView : UserControl
         }
     }
 
+    /// <summary>
+    /// 树行模板应用时按行种类定字重：连接 / 库 / 分组 = Heading，对象 / 占位 / 说明 = Ui。
+    /// ContentPresenter 显式 TemplateBinding FontWeight，所以这里给容器设的值能传到每一行
+    /// （默认模板那条隐式 TextBlock 会让容器级字重只落到个别行，见注册表 platform_notes.windows）。
+    /// 只按 TreeViewNode.Content 的运行时类型分派，不改 Content 的形态、不动数据模型。
+    /// </summary>
+    private void OnTreeRowLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement root)
+        {
+            return;
+        }
+
+        DependencyObject? cursor = root;
+        while (cursor is not null && cursor is not TreeViewItem)
+        {
+            cursor = VisualTreeHelper.GetParent(cursor);
+        }
+
+        if (cursor is not TreeViewItem item)
+        {
+            return;
+        }
+
+        ApplyTreeRowWeight(item);
+        // 容器被 TreeViewList 复用时模板不重建、Loaded 不再触发；Content 变了要重算，否则回收来的行
+        // 会残留上一行的字重 —— 这正是「8 行里只有 1 行变粗」那类漏行的成因。
+        item.RegisterPropertyChangedCallback(ContentControl.ContentProperty,
+            (s, _) => ApplyTreeRowWeight((TreeViewItem)s));
+    }
+
+    /// <summary>按节点的 Content 类型给一个 TreeViewItem 定字重（连接 / 库 / 分组 = Heading，其余 = Ui）。</summary>
+    private void ApplyTreeRowWeight(TreeViewItem item)
+    {
+        // TreeViewItem.Content 就是 TreeViewNode.Content（TreeRow / ConnectionNode），模板应用时已就绪
+        // （ContentPresenter 正是用它显示行文字）。不依赖 NodeFromContainer 的「容器 → 节点」映射：
+        // 初次 realize / 容器回收复用时映射可能还没建好，实测会让 information_schema 这类未被
+        // 重新展开过的 Catalog 行漏成 Ui。兼容 Content 为 TreeViewNode 或 null 两种形态作兜底。
+        var content = item.Content is TreeViewNode node
+            ? node.Content
+            : item.Content ?? ObjectTree.NodeFromContainer(item)?.Content;
+        item.FontWeight = content switch
+        {
+            ConnectionNode => TypeTokens.Heading,
+            TreeRow { Kind: TreeRowKind.Catalog or TreeRowKind.Group } => TypeTokens.Heading,
+            _ => TypeTokens.Ui,
+        };
+    }
+
     private bool IsNodeLoaded(TreeViewNode node) => _loads.TryGetValue(node, out var load) && load.Loaded;
 
     private void CancelNodeLoad(TreeViewNode node)
