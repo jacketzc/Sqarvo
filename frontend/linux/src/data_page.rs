@@ -2141,9 +2141,10 @@ impl DataPage {
     /// 右键落在未选中的行上时先把它选中（与常见客户端一致）；已经多选时保留多选，
     /// 菜单里的动作因此永远作用于**当前选中集**。
     ///
-    /// 菜单用**纯控件**搭（不用 `gio::Menu` + action 名）：v0.2.5 首版用 `PopoverMenu`
-    /// 绑 `row.delete-row`，条目点下去没有任何反应——action 解析失败时 GTK 既不报错
-    /// 也不提示，界面上看不出区别。这里每个条目直接连闭包，与对象树右键菜单同一套做法。
+    /// 菜单由 [`crate::context_menu`] 用**菜单行直接连闭包**搭（不绑 action 名）：
+    /// v0.2.5 首版用 `PopoverMenu` 绑 `row.delete-row`，条目点下去没有任何反应——action
+    /// 解析失败时 GTK 既不报错也不提示；本机 GTK 4.22 上原生菜单条目根本绑不上 action
+    /// （实测 `GtkModelButton action=None`），所以整个模块改成直接连闭包。
     fn show_row_menu(self: &Rc<Self>, position: usize, anchor: &gtk::Widget, x: f64, y: f64) {
         if self.draft.borrow().is_none() {
             return;

@@ -1016,16 +1016,16 @@ native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 a11y.name = "数据行菜单"
 style.slot = "overlay"
 impl_notes = [
-  "原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。",
+  "原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；条目由 `context_menu` 用菜单行直接连闭包搭，不绑 action 名（GTK 4.22 上 action 条目绑不上，点了没反应）。",
   "手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。",
   "未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。",
-  "「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。",
+  "「复制为」不再是箭头二级菜单：新 popover 只能替换叶子条目，这条渲染成**分区标题「复制为」+ 子项「复制为 INSERT」**两行，点得到。",
 ]
 
 [[component.interaction]]
 trigger = "right_click"
 precondition = "已打开表"
-result = "按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用"
+result = "按点击位置弹出菜单：「删除行」、分区「复制为」下的「复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用"
 source = "src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71"
 
 [[component.interaction]]
@@ -1036,7 +1036,7 @@ source = "src/context_menu.rs:77"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a060853acbec"
+spec_hash = "ba5da40ec375"
 commit = ""
 evidence = "§5.8 数据行右键菜单；show_row_menu + context_menu 模块"
 
@@ -1087,7 +1087,7 @@ spec_hash = ""
 [[component]]
 id = "data_page.row_menu.copy_insert"
 parent = "data_page.row_menu"
-display_name = "「复制为 ▸ 复制为 INSERT」"
+display_name = "「复制为 INSERT」（「复制为」分区下）"
 kind = "item"
 status = "active"
 style.metrics = ["font_ui"]
@@ -1106,7 +1106,7 @@ source = "src/data_page.rs:2016、src/data_page.rs:2161"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "71912e7913bd"
+spec_hash = "0afe59c87edd"
 commit = ""
 evidence = "§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert"
 

@@ -1148,7 +1148,11 @@ impl TreePanel {
                 let slot = Rc::clone(&slot);
                 let item_weak = glib::object::ObjectExt::downgrade(item);
                 let anchor = row_box.clone();
-                gesture.connect_pressed(move |gesture, _, x, y| {
+                // 在 **release** 上弹菜单，而不是 press：press 时序列还握在行的手势里，
+                // popover 拿不到抓取权，随后的这一次 release 会被当成「点在菜单外面」，
+                // 菜单弹出来当场就收起（日志里 popup 之后紧接着 unmap，用户看到的就是
+                // 「菜单一闪 / 点了没反应」）。
+                gesture.connect_released(move |gesture, _, x, y| {
                     let Some(panel) = slot.borrow().as_ref().and_then(std::rc::Weak::upgrade)
                     else {
                         return;

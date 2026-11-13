@@ -40,7 +40,7 @@
 | `data_page.editor` | 　单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消） | container | active | done | partial | — |
 | `data_page.row_menu` | 　数据行右键菜单 | container | active | done | — | — |
 | `data_page.row_menu.delete` | 　　「删除行」 | item | active | done | — | — |
-| `data_page.row_menu.copy_insert` | 　　「复制为 ▸ 复制为 INSERT」 | item | active | done | — | — |
+| `data_page.row_menu.copy_insert` | 　　「复制为 INSERT」（「复制为」分区下） | item | active | done | — | — |
 | `data_page.detail` | 　单行「字段 · 值」展示形式 | container | active | done | — | — |
 | `data_page.filter_panel` | 　筛选与排序面板（草稿 · 应用 / 清空） | container | active | done | — | — |
 | `data_page.filter_panel.condition_composer` | 　　条件编辑组（列 · 算子 · 值 · 添加条件） | container | active | done | — | — |
@@ -369,11 +369,11 @@ kind `container` · status `active` · parent `data_page`
 - 无障碍：可访问名「数据行菜单」
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows none（整片未实现：数据页没有「删除行」（标记 ✕N、删除线、撤销、提交生成 DELETE 都没有），右键菜单的两个条目都无从接起；`Views/ShellView.Data.cs:2041-2043` 目前只把行删除按钮禁用并写「请用 SQL」。已记 docs/planning/windows-frontend-parity-plan.md §8.2。）；macOS none
-- 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。
+- 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；条目由 `context_menu` 用菜单行直接连闭包搭，不绑 action 名（GTK 4.22 上 action 条目绑不上，点了没反应）。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」不再是箭头二级菜单：新 popover 只能替换叶子条目，这条渲染成**分区标题「复制为」+ 子项「复制为 INSERT」**两行，点得到。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 已打开表 | 按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用 | `src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71` |
+| right_click | 已打开表 | 按点击位置弹出菜单：「删除行」、分区「复制为」下的「复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用 | `src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71` |
 | click | 菜单打开中 | 点菜单以外的任何地方（其它行、工具条、外面板）一律收起 | `src/context_menu.rs:77` |
 
 ### `data_page.row_menu.delete` 「删除行」
@@ -389,7 +389,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 |---|---|---|---|
 | click | 可编辑且有选中行 | 把选中行标记为待删除：行号变「✕N」、整行删除线 + 压暗；圆点注记「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」，一次「提交」才真正写库 | `src/data_page.rs:5272、src/data_page.rs:5017、src/data_page.rs:5337` |
 
-### `data_page.row_menu.copy_insert` 「复制为 ▸ 复制为 INSERT」
+### `data_page.row_menu.copy_insert` 「复制为 INSERT」（「复制为」分区下）
 
 kind `item` · status `active` · parent `data_page.row_menu`
 
@@ -1451,11 +1451,11 @@ kind `container` · status `active` · parent `object_tree`
 - 样式：槽位 `overlay`
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
 - 同步：Linux done（§2.3 右键菜单）；Windows none（对象树没有右键菜单（§7.1 未记录）。）；macOS none
-- 实现备注：贴着点击位置的 GtkPopoverMenu；点任一条目先收起菜单再执行动作；占位行不给菜单。菜单项的 action 由本模块现建（`ctx.mN`），action group 装在**锚点控件**上：GTK 从 attach widget 及其祖先解析菜单 action，装在 popover 自己身上点不动（点了没反应）。锚点固定为树视图而不是行控件：GtkListView 复用行控件，锚在行上时树一刷新菜单就消失。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
+- 实现备注：贴着点击位置的 GtkPopoverMenu；点任一条目先收起菜单再执行动作；占位行不给菜单。条目**不绑 action 名**：原生 popover 里用 `PopoverMenu::add_child()` 换成菜单行控件，`connect_clicked` 直接调闭包。本机 GTK 4.22 上 `gio::Menu` 的 action 条目根本绑不上（实测 `GtkModelButton action=None`），绑了就是「菜单照弹、点条目没反应」。锚点固定为树视图而不是行控件：GtkListView 复用行控件，锚在行上时树一刷新菜单就消失。菜单在鼠标**松开**时弹出（按下时序列还握在行的手势里，popover 拿不到抓取权，会当场被这次 release 关掉）。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3191、src/tree.rs:3400、src/context_menu.rs:88` |
+| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3191、src/tree.rs:3400、src/context_menu.rs:100` |
 
 ### `object_tree.ctx_menu.connect_saved` 「连接（使用已保存的凭据）」
 
