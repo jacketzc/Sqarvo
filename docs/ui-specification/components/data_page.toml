@@ -51,6 +51,7 @@ evidence = "v0.2.5 Linux 客户端；§5.1–§5.10 逐条对照 data_page.rs（
 [component.sync.windows]
 state = "partial"
 spec_hash = "36a17ac4ffc4"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:530-540；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:690-699"
 note = "§7.1 记录数据页（#173）已落地，但版面是「页内动作行 + 状态栏行 2」，没有页内徽标行 / 逐行错误列表 / 占位页；差异见本文件各条目的 windows note。"
 
 [component.sync.macos]
@@ -71,6 +72,7 @@ impl_notes = [
   "四个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。",
   "行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。",
   "状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。",
+  "本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。",
 ]
 
 [component.sync.linux]
@@ -82,6 +84,7 @@ evidence = "§5.1 单行工具条；data_page.rs new() 的 controls 行 + --qa-l
 [component.sync.windows]
 state = "partial"
 spec_hash = "dfb24c39e473"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:542-587"
 note = "§7.1：页内动作行是「上一页 / 下一页 / 加载更多…」+ 编辑动作，没有筛选 / 列显隐 / 导出，也没有状态簇；事务与脏行写在状态栏行 2。"
 
 [component.sync.macos]
@@ -138,6 +141,7 @@ evidence = "§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_
 [component.sync.windows]
 state = "partial"
 spec_hash = "929f45eb049c"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:211-215；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:776"
 note = "§7.1：Ctrl+S / 状态栏「应用（✓）」提交；超过 100 行时不弹对话框，改成「再按一次 Ctrl+S 确认」并带 acknowledge_risk；提交走 ApplyRowChanges（带 transaction_id），全部成功再 Commit。"
 
 [component.sync.macos]
@@ -187,6 +191,7 @@ evidence = "§5.1 开始事务 / §5.2；begin_transaction + begin_tooltip；驱
 [component.sync.windows]
 state = "partial"
 spec_hash = "516580471083"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1060-1065"
 note = "§7.1：第一次暂存才 Begin（没有改动就没有事务），没有隔离级别卡片与只读勾选；驱动不支持显式事务时如实退回自动提交。"
 
 [component.sync.macos]
@@ -229,6 +234,7 @@ evidence = "§5.1 / §5.2 事务按钮互斥与失败态；commit_transaction + 
 [component.sync.windows]
 state = "partial"
 spec_hash = "4fc4ee55abba"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1180；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1337-1343"
 note = "§7.1：Ctrl+S = ApplyRowChanges（带 transaction_id）→ 全部成功再 Commit；没有「提交事务」文字按钮，失败行保留在原处可重试。"
 
 [component.sync.macos]
@@ -265,6 +271,7 @@ evidence = "§5.1 回滚事务 / §8.2 回滚确认；rollback_transaction 的 A
 [component.sync.windows]
 state = "partial"
 spec_hash = "00a535b0c5fd"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1131-1148；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1356"
 note = "§7.1：Ctrl+Z / 状态栏「撤销（↶）」= 丢弃暂存 + Rollback，不弹确认对话框；有未提交改动时关页 / 关窗第一次只提示。"
 
 [component.sync.macos]
@@ -547,6 +554,7 @@ impl_notes = [
   "三项都进入 export_ui::begin 这同一条流程：范围 → 文件 → 确认 → 覆盖 → 进度 / 取消 → 完成，差别只在写出的格式与文件过滤器。",
   "菜单里没有第三条之外的路径（没有「复制到剪贴板」「导出全部结果」这类重复出口）。",
   "查询标签的结果区复用同一份「导出 ▾」（入口在 tabs 的查询结果区、由本区记录）：只有 CSV / INSERT 两项，**没有**「转储表」；范围固定为已加载行、没有「整张表」，不重跑 SQL；没有已加载行时提示「没有可导出的行」+「当前标签没有已加载的行：先执行查询，再导出。」。",
+  "本条为纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留。",
 ]
 
 [component.sync.linux]
@@ -771,15 +779,23 @@ precondition = "滚到本页最后一行"
 result = "不自动取下一页（offset 分页互斥），页脚不出现「加载更多」"
 source = "src/data_page.rs:4388"
 
+[[component.interaction]]
+trigger = "key"
+keys = ["F5"]
+precondition = "当前标签是表数据页（F5 在这一上下文刷当前表；查询标签 / Objects 页 / 启动态的 F5 重建对象树，归 object_tree 区）"
+result = "重新读取当前表的第一页：与状态栏 ⟳ / 表菜单「刷新当前表」同一条入口，保持当前排序与筛选、回到第 1 页；有脏行 / 标记删除 / 新行草稿时一律被脏行守卫拒绝并说明原因（先提交或「放弃更改」），不发请求；状态栏不提供第二个刷新入口"
+source = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:271-282、src/ui.rs:2519-2532"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "59900abdc23b"
+spec_hash = "e4c1f2dd4eaf"
 commit = ""
 evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "59900abdc23b"
+spec_hash = "e4c1f2dd4eaf"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:661-686；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1960-1962"
 note = "§7.1：行号列 row_number_width（行号 = offset + 下标 + 1）、单行表头、row_height_data / column_width、横向滚动一致；**每页 200 行**，翻页入口是页内「上一页 / 下一页 / 加载更多…」（offset = 已取行数续拉），页码写「第 N 页 / 共 ? 页」。"
 
 [component.sync.macos]
@@ -828,7 +844,8 @@ evidence = "§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "d833413cb81f"
+spec_hash = "eb55028d5e3c"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:635-650；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1704-1720"
 note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列宽固定 column_width，超宽走横向滚动；没有排序标记与点击查看列属性。"
 
 [component.sync.macos]
@@ -871,7 +888,8 @@ evidence = "§5.4 行号标记；build_columns 的 number_factory（●N / ✕N 
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "065e698ff671"
+spec_hash = "c09290d4c459"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1796-1804"
 note = "§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。"
 
 [component.sync.macos]
@@ -893,6 +911,7 @@ impl_notes = [
   "数值与二进制右对齐（便于比较），文本左对齐；超长文本省略号截断，全文进 tooltip。",
   "脏单元格是品牌浅档实底 + 对应深色前景（成对写，选中行里也不继承白字）；标记删除的行整行删除线 + 压暗。",
   "服务端截断的值 tooltip 追加「该值被截断：不能编辑（提交截断值会写坏数据）」，且不允许进入编辑。",
+  "Esc 清空行选中为局部键，归组件注册表。",
 ]
 
 [[component.interaction]]
@@ -922,7 +941,8 @@ evidence = "§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "694b2709c5af"
+spec_hash = "0a982d98943d"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1819-1832；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1868-1895"
 note = "§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。"
 
 [component.sync.macos]
@@ -946,7 +966,11 @@ impl_notes = [
   "值转换失败时错误就地显示、编辑框不关（可以在原处改）。",
   "写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。",
   "新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。",
+  "F2 进入编辑 / Enter 暂存 / Esc 取消均为局部键，归组件注册表（§8.1 全局快捷键清单不列）。",
 ]
+platform_notes.linux = "编辑是弹层形态（GtkPopover + 应用 / 取消），没有格内就地编辑：未绑 F2，Enter 不提交，点别处 = 取消（未应用则无改动）。"
+platform_notes.windows = "§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行时按「再按一次 Ctrl+S 确认」。"
+platform_notes.macos = "§7.1 未记录。"
 
 [[component.interaction]]
 trigger = "click"
@@ -987,19 +1011,16 @@ precondition = "编辑框已打开、点了编辑框以外的任何位置"
 result = "Linux：popover 自动收起，等同取消（没点「应用」就什么都没改）；Windows：按「暂存」处理，输入进本地草稿"
 source = "src/data_page.rs:578、src/data_page.rs:570"
 
-platform_notes.linux = "编辑是弹层形态（GtkPopover + 应用 / 取消），没有格内就地编辑：未绑 F2，Enter 不提交，点别处 = 取消（未应用则无改动）。"
-platform_notes.windows = "§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行时按「再按一次 Ctrl+S 确认」。"
-platform_notes.macos = "§7.1 未记录。"
-
 [component.sync.linux]
 state = "done"
-spec_hash = "985762f37b60"
+spec_hash = "7f5d8740e716"
 commit = ""
 evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "985762f37b60"
+spec_hash = "7f5d8740e716"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:909；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1825-1864"
 note = "§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。"
 
 [component.sync.macos]
@@ -1190,6 +1211,7 @@ impl_notes = [
   "面板里只有一种字号（12px，与对象树一致）：正文、按钮、下拉、输入框、说明字统一，层级只靠字重与颜色；列表行 24 高。",
   "底部只有一个调整区：分隔线 + 右对齐的「清空」「应用」；文案不带作用域，也不写说明段落。",
   "两个区：筛选条件（列 + 算子 + 值 → 条件行，多条按 AND）与排序（列 + 方向 → 排序键，列表顺序即优先级）。",
+  "Esc（先收起行内编辑，再关面板）为局部键，归组件注册表。",
 ]
 
 [[component.interaction]]
@@ -1306,6 +1328,7 @@ impl_notes = [
   "只读态是一行文字（列 + 符号算子 + 值）+ 行尾一个 ✗；点这一行**就地展开**为三件套编辑器，不弹二级对话框。",
   "编辑态与只读态同一套外观：同底色（不加强调色）、同行高、同字号，只把文字换成控件。",
   "已加的条件是淡底色 + 圆角的实体条（品牌浅档的 55%，悬停变成浅档实色）；行尾始终只有一个 ✗。",
+  "条件行编辑态的 Enter 提交为局部键，归组件注册表。",
 ]
 
 [[component.interaction]]
@@ -1565,7 +1588,8 @@ evidence = "§5.6 只读 / 断连；show_read_only_banner + mark_disconnected"
 [component.sync.windows]
 state = "partial"
 spec_hash = "17689e61521a"
-note = "§7.1：只读与失败原因写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页首横幅。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:94；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:602-618；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1623-1631"
+note = "§7.1：Windows 有表数据横幅（BannerText 常驻只读原因），形态与 Linux 的页首横幅不同——只读与失败原因也写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页内徽标行 / 逐行错误列表那种版式。"
 
 [component.sync.macos]
 state = "none"
@@ -1601,6 +1625,7 @@ evidence = "§5.4 提交结果；show_applied → show_failures"
 [component.sync.windows]
 state = "partial"
 spec_hash = "437c40c53168"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1265-1292"
 note = "§7.1：失败的行保留在原处可重试，主键被删的行报 table_data.row_deleted、影响行数不符报 table_data.rows_affected_mismatch；没有逐行列表控件。"
 
 [component.sync.macos]

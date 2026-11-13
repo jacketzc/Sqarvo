@@ -42,6 +42,7 @@ evidence = "dialog.rs（AdwDialog + AdwPreferencesPage）与 ui.rs show_about �
 state = "partial"
 spec_hash = "588e07793c24"
 note = "§7.1 只记录了「新建连接对话框」一行；编辑模式与关于对话框未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:14；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:18"
 
 [component.sync.macos]
 state = "none"
@@ -94,6 +95,7 @@ evidence = "§2.3 编辑连接 + dialog.rs build / apply_saved 复核"
 state = "partial"
 spec_hash = "1b573b8cebd3"
 note = "§7.1 只记录新建模式（Views/ConnectionDialog.xaml）；编辑模式、标题与宽度未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:15；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:18"
 
 [component.sync.macos]
 state = "none"
@@ -213,6 +215,7 @@ evidence = "driver_form.rs fields_for 描述表 + dialog.rs 显隐接线"
 state = "partial"
 spec_hash = "00cc1cbf684d"
 note = "§7.1 只记录 MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；文件型驱动的路径与只读未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:26；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:40"
 
 [component.sync.macos]
 state = "none"
@@ -285,8 +288,9 @@ evidence = "dialog.rs 默认值 + driver_form.rs 校验文案"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "03d0525114d9"
+spec_hash = "0332ac1f48a8"
 note = "§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:41；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:42"
 
 [component.sync.macos]
 state = "none"
@@ -323,8 +327,9 @@ evidence = "driver_form.rs 端口解析与两条文案"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "c5b82a679103"
+spec_hash = "e2745ea241c8"
 note = "§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:48；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:49"
 
 [component.sync.macos]
 state = "none"
@@ -354,8 +359,9 @@ evidence = "driver_form.rs 用户名校验"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a3c7fc5cd8ab"
+spec_hash = "e17b4b593516"
 note = "§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:56；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:57"
 
 [component.sync.macos]
 state = "none"
@@ -389,8 +395,9 @@ evidence = "dialog.rs 行标题 + driver_form.rs default_name"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "ab2214fc2f1f"
+spec_hash = "c12f15394c07"
 note = "§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:71；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:72"
 
 [component.sync.macos]
 state = "none"
@@ -432,8 +439,9 @@ evidence = "dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "40af8edf2a80"
+spec_hash = "94b3a2af8827"
 note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:63；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:64"
 
 [component.sync.macos]
 state = "none"
@@ -474,8 +482,9 @@ evidence = "dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e8fe96f3cf3d"
+spec_hash = "fa339da22914"
 note = "§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:78；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:79"
 
 [component.sync.macos]
 state = "none"
@@ -585,6 +594,7 @@ evidence = "dialog.rs credential_note 构建与显隐"
 state = "partial"
 spec_hash = "d00e93235e45"
 note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；对话框内的说明行未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:86；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:87"
 
 [component.sync.macos]
 state = "none"
@@ -640,6 +650,7 @@ evidence = "§7.1 失败三段文案口径 + dialog.rs show_status / show_failur
 state = "partial"
 spec_hash = "918d0445abcb"
 note = "§7.1 记录「测试连接」就地展示延迟与服务端版本、失败给「标题 + 后端文案 + 稳定错误码」；状态行的位置与样式未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:104；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:110"
 
 [component.sync.macos]
 state = "none"
@@ -674,6 +685,7 @@ evidence = "dialog.rs actions 布局 + set_pending 禁用清单"
 state = "partial"
 spec_hash = "99f3f0eab301"
 note = "§7.1 只记录「测试连接」一个按钮；操作条布局、另两个按钮与「进行中整体禁用」未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:19；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:20"
 
 [component.sync.macos]
 state = "none"
@@ -712,6 +724,7 @@ evidence = "dialog.rs 测试按钮接线 + Event::Tested 回填"
 state = "partial"
 spec_hash = "5f2015e247d9"
 note = "§7.1 记录「测试连接」就地展示延迟与服务端版本；按钮可用性判定未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:94；frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:95"
 
 [component.sync.macos]
 state = "none"

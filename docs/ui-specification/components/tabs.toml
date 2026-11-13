@@ -43,6 +43,7 @@ evidence = "v0.2.5 Linux 客户端；§4 十一条逐条对照 tabs.rs（标签�
 state = "partial"
 spec_hash = "aca4e74230da"
 note = "TabView 承载：固定 Objects 页（IsClosable=false、不占名额）+ 可关闭的查询 / 数据页；标签条外形与密度档 §7.1 未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:496；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:515"
 
 [component.sync.macos]
 state = "none"
@@ -62,6 +63,7 @@ impl_notes = [
   "标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。",
   "标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。",
   "固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。",
+  "纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留",
 ]
 
 [component.sync.linux]
@@ -73,6 +75,7 @@ evidence = "§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规
 state = "partial"
 spec_hash = "08a335ff11c2"
 note = "TabView 自带标签条（查询页可关闭、Objects 钉首位）；标签条上的 ＋ 按钮与拖拽重排 §7.1 未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:498；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:512"
 
 [component.sync.macos]
 state = "none"
@@ -107,15 +110,37 @@ precondition = "页面已从标签条摘掉（detach）"
 result = "释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个"
 source = "src/tabs.rs:2819、src/tabs.rs:2834、src/tabs.rs:2839"
 
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Tab"]
+precondition = "存在可切换的标签"
+result = "选中下一个标签；到最后一个时回绕到第一个（Objects 固定页也在循环里）；AdwTabView 内置的同名快捷键已摘掉，只走这一条路径"
+source = "src/ui.rs:332、src/ui.rs:4805、src/tabs.rs:2210"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Ctrl+Shift+Tab"]
+precondition = "存在可切换的标签"
+result = "选中上一个标签；到第一个时回绕到最后一个"
+source = "src/ui.rs:333、src/ui.rs:4814、src/tabs.rs:2210"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6", "Alt+7", "Alt+8", "Alt+9"]
+precondition = "存在工作区"
+result = "选中第 N 个标签（1 起，Objects 算第 1 个）；超出当前标签数时什么都不做（不弹框、不崩），只记一行「[tabs] Alt+N：只有 M 个标签，忽略」"
+source = "src/ui.rs:334-335、src/ui.rs:4826、src/tabs.rs:2230"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "6c8176f57385"
+spec_hash = "aa636e8dc3ca"
 evidence = "§4 切换标签 / 标签被摘掉两行；select_page 与 on_page_detached"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "6c8176f57385"
+spec_hash = "aa636e8dc3ca"
 note = "标签可切、可关；切换不重建会话与 detach 时释放会话的顺序 §7.1 未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:473；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1415"
 
 [component.sync.macos]
 state = "none"
@@ -161,6 +186,7 @@ evidence = "§4 表数据标签标题 / 打开表 / 复用三行；table_tab_tit
 state = "partial"
 spec_hash = "044d086043af"
 note = "标签名 `表名 @ 库`（库为空写「默认」）、同表复用、上限 8、有未提交改动带 `*` 已落地（§7.1 数据页 #173）；tooltip 的「会话 <id 前 8 位>」§7.1 未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:170；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:437"
 
 [component.sync.macos]
 state = "none"
@@ -201,6 +227,7 @@ evidence = "§4 查询标签标题；query_tab_title 递增计数器与 tooltip_
 state = "partial"
 spec_hash = "ac7f8a5083f8"
 note = "标签名 `查询 N`、`*`（编辑器内容 ≠ 执行那一刻的内容，v0.1 没有「保存查询」）、上限 8 已落地（§7.1 #172）；标签 tooltip 里的库 / 连接 / 会话三段 §7.1 未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:182；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:69"
 
 [component.sync.macos]
 state = "none"
@@ -260,8 +287,9 @@ evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_pa
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "14b415cf7ea2"
+spec_hash = "6255d75d243d"
 note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1393；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1414"
 
 [component.sync.macos]
 state = "none"
@@ -301,8 +329,8 @@ evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.n
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "ca149095cd4d"
-note = "`Ctrl+T` 新建查询页已落地；标签条上的 ＋ 按钮 §7.1 未记录（新建入口只写了 Ctrl+T 与菜单）。"
+spec_hash = "fe7ea1ebdea1"
+note = "反证锚点 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:500：main a84560f 上 `IsAddTabButtonVisible=\"False\"`，标签条上的 ＋ 入口不存在（#176 未合并）；`Ctrl+T` 与菜单新建查询页已落地。按 AGENTS §14.2 保留 partial 并写明 code-vs-doc 差异：契约 tabs.strip.new 的 click 条目要求 ＋ 新建查询标签，Windows 端尚未实现，建议按 #176 用 TabView.TabStripFooter 补齐（TabView 自身属性属 #170 崩溃边界，不可改）。"
 
 [component.sync.macos]
 state = "none"
@@ -345,6 +373,7 @@ evidence = "§4 标签上限；limit_message 与 show_limit"
 state = "partial"
 spec_hash = "f5202cef321d"
 note = "上限 8 与同一段文案已落地，但走**状态栏**提示，不弹对话框（§7.1：不弹假对话框）。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:85；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:87"
 
 [component.sync.macos]
 state = "none"
@@ -364,6 +393,7 @@ impl_notes = [
   "每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。",
   "v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。",
   "游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。",
+  "纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留",
 ]
 
 [component.sync.linux]
@@ -375,6 +405,7 @@ evidence = "§5.11 版面收敛；SqlPage::new 的组装顺序"
 state = "partial"
 spec_hash = "5e420c7f2c60"
 note = "查询页整体在代码里搭（#172，ShellView 一行未改）：动作行 / 编辑器 / 五态 / 表头 / 行区 / 加载更多；分隔线与留白 §7.1 未记录。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:266；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:30"
 
 [component.sync.macos]
 state = "none"
@@ -393,6 +424,7 @@ impl_notes = [
   "空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。",
   "动作行左端是会话信息（有真实会话信息时才占位，不再写「会话建立中…」）。",
 ]
+platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。"
 
 [[component.interaction]]
 trigger = "click"
@@ -425,17 +457,16 @@ keys = ["Esc"]
 precondition = "有查询在跑"
 result = "取消查询（同一按键在空闲时分流为「清空结果区行选中」）"
 source = "src/sql_page.rs:288、src/sql_page.rs:395"
-platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "19146e5c30b7"
+spec_hash = "1187ec7564e2"
 evidence = "§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "19146e5c30b7"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700"
+spec_hash = "1187ec7564e2"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1103；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700"
 
 [component.sync.macos]
 state = "none"
@@ -457,6 +488,7 @@ impl_notes = [
   "Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。",
   "编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。",
 ]
+platform_notes.windows = "v0.2.5 起整段执行（`Views/ShellView.Query.cs:704-705`）：不看选区、不找当前语句，与 Linux 一致；此前是「有选中就只执行选中」，属于记录在案的偏差，已按契约收紧。"
 
 [[component.interaction]]
 trigger = "load"
@@ -470,16 +502,15 @@ keys = ["Ctrl+Enter"]
 precondition = "编辑器有焦点"
 result = "执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略"
 source = "src/sql_page.rs:300、src/sql_page.rs:341"
-platform_notes.windows = "v0.2.5 起整段执行（`Views/ShellView.Query.cs:704-705`）：不看选区、不找当前语句，与 Linux 一致；此前是「有选中就只执行选中」，属于记录在案的偏差，已按契约收紧。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e0c1f76592db"
+spec_hash = "a73ab27b40f0"
 evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e0c1f76592db"
+spec_hash = "a73ab27b40f0"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:704；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1461"
 note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
 
@@ -502,6 +533,7 @@ impl_notes = [
   "Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。",
   "Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。",
 ]
+platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。"
 
 [[component.interaction]]
 trigger = "load"
@@ -514,17 +546,16 @@ trigger = "load"
 precondition = "语句没有结果集（UPDATE / INSERT / DDL）"
 result = "不假装有结果：写「影响 N 行」而不是画一张空表（Linux 写「语句 N 影响 N 行（无结果集）」）"
 source = "src/sql_page.rs:548、src/sql_page.rs:552"
-platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0252eb126c67"
+spec_hash = "9863fec61345"
 evidence = "§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "0252eb126c67"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:379"
+spec_hash = "9863fec61345"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:358"
 
 [component.sync.macos]
 state = "none"
@@ -545,6 +576,7 @@ impl_notes = [
   "表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。",
   "不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。",
   "语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。",
+  "纯布局容器，按 README 粒度规则待下沉；因 parent 层级与 id 稳定性约束暂保留",
 ]
 
 [component.sync.linux]
@@ -556,6 +588,7 @@ evidence = "§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-f
 state = "partial"
 spec_hash = "ec9afd09d462"
 note = "状态行 + 表头 + 行区 + 「加载更多」已落地；状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1067；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1149"
 
 [component.sync.macos]
 state = "none"
@@ -588,7 +621,7 @@ evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题
 
 [component.sync.windows]
 state = "done"
-spec_hash = "719abcce7626"
+spec_hash = "d8aacb5cfd03"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:68；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:402"
 
 [component.sync.macos]
@@ -610,6 +643,7 @@ impl_notes = [
   "取消 / 错误 / 断连之后不清空行区：已加载的行保留，状态行说明为什么停在这里。",
   "没有行级脏色 / 删除线之外的额外标记（查询标签的单表编辑归 §5.10，脏行数只在状态行与状态圆点）。",
 ]
+platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
 
 [[component.interaction]]
 trigger = "key"
@@ -617,16 +651,15 @@ keys = ["Esc"]
 precondition = "结果区有选中行、没有查询在跑"
 result = "清空行选中；执行中的 Esc 仍分流为「取消查询」"
 source = "src/results.rs:379、src/results.rs:382"
-platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "75589f33e315"
+spec_hash = "67b2e2dca766"
 evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "86ce86d71e39"
+spec_hash = "67b2e2dca766"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1139；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1166"
 note = "视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。"
 
@@ -647,6 +680,7 @@ impl_notes = [
   "Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。",
   "续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。",
 ]
+platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
 
 [[component.interaction]]
 trigger = "scroll"
@@ -659,16 +693,15 @@ trigger = "load"
 precondition = "服务端返回的批次读到底（has_more=false）"
 result = "不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」）"
 source = "src/results.rs:1043、src/sql_page.rs:585"
-platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "646be58b5fc1"
+spec_hash = "3c40d041bb1f"
 evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "646be58b5fc1"
+spec_hash = "3c40d041bb1f"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52"
 
 [component.sync.macos]

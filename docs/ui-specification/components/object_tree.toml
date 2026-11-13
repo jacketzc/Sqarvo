@@ -31,17 +31,17 @@ trigger = "key"
 keys = ["F5"]
 precondition = "工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态）"
 result = "整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树"
-source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1453"
+source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1527"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c9c1a528b7da"
+spec_hash = "a6599a741b54"
 commit = "7436cd5"
 evidence = "v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "c9c1a528b7da"
+spec_hash = "a6599a741b54"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:273"
 note = "F5 已接（`:273` 起的 KeyboardAccelerator：当前是表数据页就刷那张表并走脏行守卫，否则 `RebuildTree()` 并把「正在重新读取对象树…」写进状态行行 2 左格）；侧栏仍是 TreeView + SplitView，无搜索沟、无侧栏提示行。"
 
@@ -72,7 +72,7 @@ trigger = "key"
 keys = ["↑", "↓"]
 precondition = "树有焦点"
 result = "移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随）"
-source = "src/tree.rs:1970"
+source = "src/tree.rs:2002"
 
 [[component.interaction]]
 trigger = "key"
@@ -83,13 +83,14 @@ source = "src/tree.rs:2009"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "50da9f7dc0b7"
+spec_hash = "4ad4363523a2"
 commit = "7436cd5"
 evidence = "§2.5 键盘表 + tree.rs install_handlers"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "50da9f7dc0b7"
+spec_hash = "4ad4363523a2"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:453"
 note = "TreeView 承载，↑ / ↓ / Enter 同语义；无自定义按键控制器差异待核。"
 
 [component.sync.macos]
@@ -104,7 +105,7 @@ kind = "row"
 status = "active"
 a11y.name = "对象树行"
 style.slot = "sidebar"
-style.metrics = ["row_height_tree", "tree_arrow_box", "gap_xs", "font_status"]
+style.metrics = ["row_height_tree", "tree_arrow_box", "gap_xs", "font_status", "font_weight_heading"]
 style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid", "sqarvo_brand_on_mid"]
 style.states = { hover = "sqarvo_brand_soft", selected = "sqarvo_brand_mid" }
 impl_notes = [
@@ -112,13 +113,16 @@ impl_notes = [
   "缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。",
   "搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。",
   "行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。",
+  "font_weight_heading 只登记 metrics.toml:68 的真值 key 引用：Windows 侧 Theming/TypeTokens.cs:39 已用它包出 FontWeight.Heading（仅登记该引用，不代表 #179 的树行字重分派已合并；#178 新增的三个 key 在 main 上不存在，不引用）。",
 ]
+
+platform_notes.windows = "树行文字由 TreeViewNode.ToString() + 默认模板的 ContentPresenter 呈现，没有可单独设字重的 TextBlock；容器级 FontWeight（DispatcherQueue 里给 TreeViewItem 设）实测只对 1 行生效：8 行里只有 information_schema 变粗，连接名与 Tables/Views/Functions/Queries 分组名仍是 400。该实现已在 08151b1 撤回，Windows 树行统一 400。字重（连接/分组/库 = heading）与行首图标要等「树行换成自带图标与字重的行模板」那一类一起做。"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "行存在"
 result = "只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接"
-source = "src/tree.rs:1970"
+source = "src/tree.rs:2002"
 
 [[component.interaction]]
 trigger = "hover"
@@ -126,17 +130,16 @@ precondition = "行存在"
 result = "底色换成品牌浅档（alpha 55%），不动前景色"
 source = "src/theme.rs:312"
 
-platform_notes.windows = "树行文字由 TreeViewNode.ToString() + 默认模板的 ContentPresenter 呈现，没有可单独设字重的 TextBlock；容器级 FontWeight（DispatcherQueue 里给 TreeViewItem 设）实测只对 1 行生效：8 行里只有 information_schema 变粗，连接名与 Tables/Views/Functions/Queries 分组名仍是 400。该实现已在 08151b1 撤回，Windows 树行统一 400。字重（连接/分组/库 = heading）与行首图标要等「树行换成自带图标与字重的行模板」那一类一起做。"
-
 [component.sync.linux]
 state = "done"
-spec_hash = "3a55b23eabfc"
+spec_hash = "ceea5d275299"
 commit = "7436cd5"
 evidence = "§2.2 单击行 + theme.rs 行状态规则"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "3a55b23eabfc"
+spec_hash = "ceea5d275299"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:30"
 note = "行模板与徽标文案一致；缩进量未对齐（Linux 为 4 + 14/层）。"
 
 [component.sync.macos]
@@ -170,6 +173,7 @@ evidence = "§2.2 行首箭头；arrow_button 接线与 set_focusable(false)"
 [component.sync.windows]
 state = "partial"
 spec_hash = "c91da7cf96bd"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:35"
 note = "命中区与外观由 TreeView 决定，无法逐像素对齐（接受）。"
 
 [component.sync.macos]
@@ -211,7 +215,8 @@ evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "bab8fbfd18af"
+spec_hash = "a4dcdb39d68f"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:463"
 note = "已保存连接 + 徽标、双击连接与展开同语义；目录页大小 200（Linux 500）。"
 
 [component.sync.macos]
@@ -248,7 +253,8 @@ evidence = "§2.1 展开库 / schema"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "3b006552e122"
+spec_hash = "d22704420de4"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:1053"
 note = "展开库 0 次 RPC、四个分组行一致；分层与徽标文案待逐条核对。"
 
 [component.sync.macos]
@@ -295,7 +301,8 @@ evidence = "§2.1 分组与空态文案"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "1267e871a958"
+spec_hash = "e4b508a48b36"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:867"
 note = "四个分组行一致；Functions / Queries 只有入口；表下四组未实现（表节点是叶子）；分组页大小 200。"
 
 [component.sync.macos]
@@ -332,7 +339,8 @@ evidence = "§2.2 双击表 / 视图"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "c0dee29ad9a6"
+spec_hash = "ab8660f7e7db"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:879"
 note = "双击 / Enter 打开数据页、同表复用标签一致；表节点无 Fields / Indexes / FK / Triggers 子组。"
 
 [component.sync.macos]
@@ -385,13 +393,13 @@ impl_notes = ["占位行不可展开、不携带层；右键直接返回，不�
 trigger = "click"
 precondition = "「加载更多…」行且还有下一页"
 result = "选中即继续拉下一页（分页动作不要求双击）"
-source = "src/tree.rs:2962、src/tree.rs:1970"
+source = "src/tree.rs:2996、src/tree.rs:2002"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "任意占位行"
 result = "信息面板收到 None（回到空态 / 留白）；不打开任何东西"
-source = "src/tree.rs:1970"
+source = "src/tree.rs:2002"
 
 [[component.interaction]]
 trigger = "load"
@@ -407,13 +415,14 @@ source = "src/tree.rs:3191"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0df9bbc8ca0c"
+spec_hash = "b0305ef526d1"
 commit = "7436cd5"
 evidence = "§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "17fe419b72e2"
+spec_hash = "b0305ef526d1"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:266；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:271"
 note = "有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。"
 
 [component.sync.macos]
