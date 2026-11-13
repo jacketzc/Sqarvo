@@ -947,6 +947,9 @@ public sealed partial class ShellView
         tab.SelectedRow = row;
         tab.SelectedColumn = column;
         RenderDataRows(tab);
+        // 状态栏「−」（status_bar.row1.ops.delete）的可用性是在 ApplyDataStatus 里算的，
+        // 只重画行不刷新状态栏的话，选中行之后按钮仍是置灰的（实测 UIA enabled=False 永远点不动）。
+        ApplyDataStatus();
     }
 
     /// <summary>F2：从选中格进入编辑态。</summary>
@@ -2578,6 +2581,7 @@ public sealed partial class ShellView
             }
 
             RenderDataRows(tab);
+            ApplyDataStatus();
         }
 
         var canDelete = CanDeleteRows(tab, out var reason);
