@@ -368,7 +368,7 @@ kind `container` · status `active` · parent `data_page`
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「数据行菜单」
 - 原生控件：gtk:GtkPopoverMenu / winui:— / swift:—
-- 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows none（§7.1 未记录数据行右键菜单。）；macOS none
+- 同步：Linux done（§5.8 数据行右键菜单；show_row_menu + context_menu 模块）；Windows none（整片未实现：数据页没有「删除行」（标记 ✕N、删除线、撤销、提交生成 DELETE 都没有），右键菜单的两个条目都无从接起；`Views/ShellView.Data.cs:2041-2043` 目前只把行删除按钮禁用并写「请用 SQL」。已记 docs/planning/windows-frontend-parity-plan.md §8.2。）；macOS none
 - 实现备注：原生 GtkPopoverMenu（与系统右键菜单同一外观与键盘操作）；每个条目一个 gio::SimpleAction，动作组挂在**菜单自己**身上，名字一定解析得到。手势挂在**行控件**上（label → cell → row 爬两层，一行只挂一次，用 sqarvo-row-menu-host 类标记）：单元格文字、列分隔线、行分隔线、末列右侧空白都算右键位置；表格下方空白不属于任何行、不响应。未选中的行先被选中，已多选时保留多选，菜单动作永远作用于当前选中集。「复制为」的二级菜单展开在条目**右侧**（默认向下会压住下方条目）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

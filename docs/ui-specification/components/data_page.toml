@@ -1040,7 +1040,7 @@ evidence = "§5.8 数据行右键菜单；show_row_menu + context_menu 模块"
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "§7.1 未记录数据行右键菜单。"
+note = "整片未实现：数据页没有「删除行」（标记 ✕N、删除线、撤销、提交生成 DELETE 都没有），右键菜单的两个条目都无从接起；`Views/ShellView.Data.cs:2041-2043` 目前只把行删除按钮禁用并写「请用 SQL」。已记 docs/planning/windows-frontend-parity-plan.md §8.2。"
 
 [component.sync.macos]
 state = "none"
