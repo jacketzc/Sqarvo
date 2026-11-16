@@ -62,6 +62,13 @@
    自己在 SQL 里写的 `USE` 会把标签状态来回拉扯。
 9. **库名不进状态栏**：v0.2.3.3 已定「状态栏不放库名」，本 ADR 不改这条；库显示在标签 tooltip、
    查询标签动作行的库选择器（`tabs.query.database_picker`）与 `inspector.catalog`。
+10. **`ConnectionService.SetSessionContext(session_id, catalog)` 与 `Execute.catalog` 是同一能力
+    的两个入口，不是第二套语义**。两者都只落到驱动的 `use_catalog`：幂等、事务中拒绝、
+    失败不回落、不支持切库的驱动返回 `capability.unsupported`，逐条相同。差别只在入口形态——
+    `Execute.catalog` 是「切库 + 执行」一次往返完成，`SetSessionContext` 是「只切库」并返回切后
+    上下文（所以客户端不必再问一次 `GetSessionContext`）。空串在两条入口上都表示「不改变」。
+    之所以要有这条 RPC：用户在下拉框里改库时**还没打算执行 SQL**，此时不该为了一个 UI 状态去
+    编一条假语句，也不该让前端先把库记下来、等执行时才暴露失败。
 
 ## 代价与权衡
 
@@ -84,6 +91,7 @@
 | 无权限 / 不存在的库 → `permission_denied` / `unknown_database`，语句未发送 | `mariadb/tests/integration.rs` |
 | SQLite 带 `catalog` → `capability.unsupported` | `sqlite/tests/cross_catalog.rs` |
 | `GetSessionContext` 返回服务端真值；未知会话 → `session.not_found` | `rpc-server/tests/grpc_smoke.rs` |
+| `SetSessionContext` 在 SQLite 上 → `capability.unsupported`；空 `catalog` 成功并返回 `main` | `rpc-server/tests/grpc_sqlite_e2e.rs` |
 
 ## 重估条件
 

@@ -13,6 +13,9 @@ service ConnectionService {
   rpc ListSessions(sqarvo.common.v1.Empty) returns (ListSessionsResponse);
   // 会话当前落在哪个库（服务端真值）。只读；不改变会话状态（ADR 0030）。
   rpc GetSessionContext(GetSessionContextRequest) returns (GetSessionContextResponse);
+  // 把会话切到某个库（ADR 0030）。幂等；事务中拒绝；失败不回落。
+  // 返回的是切完之后的上下文，调用方不必再问一次。
+  rpc SetSessionContext(SetSessionContextRequest) returns (GetSessionContextResponse);
 }
 
 enum TlsMode {
@@ -100,6 +103,13 @@ enum CatalogKind {
 
 message GetSessionContextRequest {
   string session_id = 1;
+}
+
+// 切库请求（ADR 0030）。`catalog` 为空串表示「不改变会话当前库」，
+// 直接返回当前上下文（幂等，不报错）。
+message SetSessionContextRequest {
+  string session_id = 1;
+  string catalog = 2;
 }
 
 message GetSessionContextResponse {

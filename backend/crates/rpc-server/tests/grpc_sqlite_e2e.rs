@@ -23,7 +23,7 @@ use sqarvo_rpc_server::proto::common::v1::{Empty, column_value};
 use sqarvo_rpc_server::proto::services::v1::{
     CancelQueryRequest, CatalogKind, CloseQueryRequest, ConnectRequest, ConnectionParams,
     DisconnectRequest, ExecuteQueryRequest, ExecuteQueryResponse, FetchBatchRequest,
-    FetchBatchResponse, GetSessionContextRequest,
+    FetchBatchResponse, GetSessionContextRequest, SetSessionContextRequest,
     connection_service_client::ConnectionServiceClient, query_service_client::QueryServiceClient,
     system_service_client::SystemServiceClient,
 };
@@ -720,4 +720,71 @@ async fn session_context_is_readable_and_catalog_switch_is_explicitly_unsupporte
             .await,
     );
     assert_eq!(ok.rows.len(), 1);
+}
+
+/// ADR 0030：`ConnectionService.SetSessionContext` 是切库的**另一个入口**，不是第二套语义。
+///
+/// 三条断言：
+///
+/// 1. 非空 `catalog` 在未声明 `session_catalog_switch` 的驱动（SQLite）上必须以
+///    `UNIMPLEMENTED` + `capability.unsupported` 拒绝——与 `Execute.catalog` 同一条错误；
+/// 2. 未知会话 → `NOT_FOUND` + `session.not_found`，与 `GetSessionContext` 相同；
+/// 3. 空 `catalog` = 不改变会话当前库：成功返回当前上下文（`main`），且**不做切库能力检查**
+///    ——这条路径用不到切库能力，否则 SQLite 上「只想读上下文」也会被无端拒绝。
+#[tokio::test]
+async fn set_session_context_shares_catalog_switch_semantics() {
+    let server = E2eServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel, auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "set-ctx".to_owned(),
+            })
+            .await,
+    );
+    let session_id = connected.session_id;
+
+    // 非空 catalog：与 Execute.catalog 同一条拒绝（不支持就明说，不静默忽略）。
+    let unsupported = connections
+        .set_session_context(SetSessionContextRequest {
+            session_id: session_id.clone(),
+            catalog: "main".to_owned(),
+        })
+        .await
+        .expect_err("SQLite 不支持切库，SetSessionContext 也必须显式拒绝");
+    assert_eq!(unsupported.code(), Code::Unimplemented);
+    assert_eq!(error_code_of(&unsupported), Some("capability.unsupported"));
+
+    // 未知会话：与 GetSessionContext 同一条错误码。
+    let unknown = connections
+        .set_session_context(SetSessionContextRequest {
+            session_id: sqarvo_common::SessionId::new().to_string(),
+            catalog: "main".to_owned(),
+        })
+        .await
+        .expect_err("未知会话必须失败");
+    assert_eq!(unknown.code(), Code::NotFound);
+    assert_eq!(error_code_of(&unknown), Some("session.not_found"));
+
+    // 空 catalog：不改动，成功返回当前上下文（客户端不必再问一次 GetSessionContext）。
+    let unchanged = stage(
+        "SetSessionContext(empty)",
+        connections
+            .set_session_context(SetSessionContextRequest {
+                session_id: session_id.clone(),
+                catalog: String::new(),
+            })
+            .await,
+    );
+    assert_eq!(unchanged.session_id, session_id);
+    assert_eq!(unchanged.driver_id, "sqlite");
+    assert_eq!(unchanged.default_catalog, "main");
+    assert_eq!(unchanged.catalog_kind, CatalogKind::Database as i32);
+
+    server.stop().await;
 }

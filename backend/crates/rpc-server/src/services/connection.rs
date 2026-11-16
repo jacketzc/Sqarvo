@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sqarvo_common::{ConnectionId, Error, ErrorCode, SessionId};
-use sqarvo_connection::{RowChangeBatches, SessionManager};
+use sqarvo_connection::{RowChangeBatches, SessionHandle, SessionManager};
 use sqarvo_driver_api::{
-    ConnectionParams as DriverConnectionParams, DriverId, TlsMode as DriverTlsMode,
+    ConnectionParams as DriverConnectionParams, DriverId, SessionContext, TlsMode as DriverTlsMode,
 };
 use sqarvo_query_engine::QueryRegistry;
 use tonic::{Request, Response, Status};
@@ -15,8 +15,8 @@ use crate::error::to_status;
 use crate::proto::common::v1::{Empty, Warning};
 use crate::proto::services::v1::{
     ConnectRequest, ConnectResponse, ConnectionParams, DisconnectRequest, GetSessionContextRequest,
-    GetSessionContextResponse, ListSessionsResponse, SessionSummary, TestConnectionRequest,
-    TestConnectionResponse, connection_service_server::ConnectionService,
+    GetSessionContextResponse, ListSessionsResponse, SessionSummary, SetSessionContextRequest,
+    TestConnectionRequest, TestConnectionResponse, connection_service_server::ConnectionService,
 };
 use crate::services::mapping;
 
@@ -197,14 +197,63 @@ impl ConnectionService for ConnectionServiceImpl {
             )));
         }
         let context = handle.session_context().await.map_err(to_status)?;
-        let summary = handle.summary();
-        Ok(Response::new(GetSessionContextResponse {
-            session_id: summary.session_id.to_string(),
-            driver_id: summary.driver_id.to_string(),
-            // 空串 = 这条会话没有默认库；绝不拿连接配置顶替。
-            default_catalog: context.default_catalog.unwrap_or_default(),
-            catalog_kind: mapping::catalog_kind_to_proto(context.catalog_kind) as i32,
-        }))
+        Ok(Response::new(context_response(&handle, context)))
+    }
+
+    /// 把会话切到某个库（ADR 0030），返回切完之后的上下文。
+    ///
+    /// 与 `QueryService.Execute` 的 `catalog` 是**同一能力的两个入口**：都落到驱动的
+    /// `use_catalog`，因此幂等、事务中拒绝（`*.catalog_switch_in_transaction`）、失败不回落
+    /// 这几条语义完全一致，这里不另起一套。
+    ///
+    /// `catalog` 为空串表示「不改变会话当前库」：直接读回当前上下文并返回，不报错，也不做
+    /// 切库能力检查——不切库就用不到该能力，这条路径在 SQLite 上同样成功。
+    async fn set_session_context(
+        &self,
+        request: Request<SetSessionContextRequest>,
+    ) -> Result<Response<GetSessionContextResponse>, Status> {
+        let request = request.into_inner();
+        let session_id: SessionId = request
+            .session_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+        let handle = self
+            .sessions
+            .acquire(&session_id)
+            .await
+            .map_err(to_status)?;
+        let catalog = request.catalog.trim().to_owned();
+
+        if catalog.is_empty() {
+            let context = handle.session_context().await.map_err(to_status)?;
+            return Ok(Response::new(context_response(&handle, context)));
+        }
+        // 能力声明先于调用：驱动没声明切库就不发 `USE`，直接如实报不支持。
+        if !handle.supports_catalog_switch() {
+            return Err(to_status(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "当前驱动不支持「切换库」，请在 SQL 里写限定名",
+            )));
+        }
+        // 切库失败直接返回（未知库 / 无权限 / 事务中），不回落旧库。
+        handle.set_catalog(&catalog).await.map_err(to_status)?;
+        let context = handle.session_context().await.map_err(to_status)?;
+        Ok(Response::new(context_response(&handle, context)))
+    }
+}
+
+/// 会话句柄 + 驱动回报的上下文 → `GetSessionContextResponse`。
+///
+/// `GetSessionContext` 与 `SetSessionContext` 共用这一份映射：「空库名不得用连接配置顶替」
+/// 的规则只写一遍，两条 RPC 不可能给出互相矛盾的答案。
+fn context_response(handle: &SessionHandle, context: SessionContext) -> GetSessionContextResponse {
+    let summary = handle.summary();
+    GetSessionContextResponse {
+        session_id: summary.session_id.to_string(),
+        driver_id: summary.driver_id.to_string(),
+        // 空串 = 这条会话没有默认库；绝不拿连接配置顶替。
+        default_catalog: context.default_catalog.unwrap_or_default(),
+        catalog_kind: mapping::catalog_kind_to_proto(context.catalog_kind) as i32,
     }
 }
 

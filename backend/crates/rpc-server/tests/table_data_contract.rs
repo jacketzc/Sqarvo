@@ -343,7 +343,8 @@ fn catalog_context_contract_is_additive() {
             "Connect",
             "Disconnect",
             "ListSessions",
-            "GetSessionContext"
+            "GetSessionContext",
+            "SetSessionContext"
         ],
         "既有 RPC 顺序不得变化，新 RPC 只能追加"
     );
@@ -361,10 +362,29 @@ fn catalog_context_contract_is_additive() {
         ".sqarvo.services.v1.GetSessionContextResponse"
     );
 
+    // 切库入口与 GetSessionContext 共用同一个响应（返回切后上下文，客户端不必再问一次）。
+    let switch = service
+        .method
+        .iter()
+        .find(|method| method.name() == "SetSessionContext")
+        .expect("SetSessionContext 存在");
+    assert_eq!(
+        switch.input_type(),
+        ".sqarvo.services.v1.SetSessionContextRequest"
+    );
+    assert_eq!(
+        switch.output_type(),
+        ".sqarvo.services.v1.GetSessionContextResponse"
+    );
+
     let connection = messages("services/v1/connection.proto");
     assert_fields(
         &connection["GetSessionContextRequest"],
         &[(1, "session_id")],
+    );
+    assert_fields(
+        &connection["SetSessionContextRequest"],
+        &[(1, "session_id"), (2, "catalog")],
     );
     assert_fields(
         &connection["GetSessionContextResponse"],

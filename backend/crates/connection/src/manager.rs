@@ -220,6 +220,15 @@ impl SessionHandle {
         self.session.session_context().await
     }
 
+    /// 只切库、不执行语句（`ConnectionService.SetSessionContext`，ADR 0030）。
+    ///
+    /// 与 [`SessionHandle::execute_in_catalog`] 是同一把锁的两条入口：两者不会同时持有，
+    /// 因此这里直接调用驱动，不能转调 `execute_in_catalog`（会自重入死锁）。
+    pub async fn set_catalog(&self, catalog: &str) -> Result<()> {
+        let _guard = self.execution.lock().await;
+        self.session.use_catalog(catalog).await
+    }
+
     /// 拉取指定语句的下一批结果。
     pub async fn fetch(
         &self,

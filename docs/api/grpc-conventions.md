@@ -277,6 +277,25 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 | 驱动未声明 `session_catalog_switch` | `UNIMPLEMENTED` + `capability.unsupported`，不静默忽略 |
 | 库不存在 / 无权限 | `NOT_FOUND` / `PERMISSION_DENIED`，语句**不发送**，绝不回落旧库 |
 
+- `ConnectionService.SetSessionContext(session_id, catalog)` → `GetSessionContextResponse`：
+  **只切库、不执行语句**的入口，返回切完之后的上下文，客户端不必再调一次
+  `GetSessionContext`。
+
+| `catalog` | 行为 |
+|---|---|
+| 空串 | **不改变**会话当前库：直接返回当前上下文，不报错，也不做切库能力检查（不切库就用不到该能力） |
+| 非空 | 在该会话上切库，语义与 `ExecuteQueryRequest.catalog` **完全一致** |
+
+两处共用驱动的 `use_catalog`，因此下列语义也一致，不存在第二套切库规则：
+
+- **幂等**：已经在该库时不重复发 `USE`（驱动缓存会话当前库）；
+- **事务中拒绝**：目标库与会话当前库不同 → `FAILED_PRECONDITION` + `*.catalog_switch_in_transaction`，
+  不隐式提交；
+- **失败不回落**：库不存在 / 无权限 → `NOT_FOUND` / `PERMISSION_DENIED`，不按旧库继续；
+- **不支持就明说**：驱动未声明 `session_catalog_switch` → `UNIMPLEMENTED` + `capability.unsupported`，
+  不静默忽略；
+- 未知会话 → `NOT_FOUND` + `session.not_found`。
+
 - 这条不改「不隐式切库」的口径：请求没给出库归属时服务端仍然不替客户端选库；请求给出时
   照办，是因为那是用户的显式意图。
 - 显示与请求分离：客户端刷新 `GetSessionContext` 只更新显示，不改写标签请求用的 `catalog`。
