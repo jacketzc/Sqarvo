@@ -626,9 +626,10 @@ spec_hash = "0252eb126c67"
 evidence = "§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "0252eb126c67"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:379"
+evidence = "frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:512（StateText：五态 + 多语句失败口径 + NoResultSet/Undelivered 两占位态）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:862（MarkFailure 带失败序号）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1501（RenderQuery 统一回写）"
+note = "#190 多语句失败口径「前 N-1 条已执行，第 N 条失败：<错误>」与 Undelivered/NoResultSet 占位态已实现（文案与 Linux results.rs:1152 逐字一致）；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，运行时文案与交互待 Windows 真机。"
 
 [component.sync.macos]
 state = "none"
@@ -674,8 +675,8 @@ evidence = "§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-f
 [component.sync.windows]
 state = "partial"
 spec_hash = "6f1232564d9d"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:560（ResultsArea 容器装配，初始 Collapsed）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1172（任何 Execute 响应后显示，HasExecuteResponse 判据）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:325（HasExecuteResponse）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:543（ResetResults 关闭后回隐藏态）"
-note = "状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现（Linux 真类型探针编译验证，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:631（ResultsArea 容器装配，初始 Collapsed，五行：说明位/状态行/切换行/表头+行区/加载更多）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1279（任何 Execute 响应后显示，HasExecuteResponse 判据）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:401（HasExecuteResponse）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:938（ResetResults 关闭后回隐藏态）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:492（#190 切换行仅多语句渲染）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:512（#190 占位页）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:639（ApplyMultiFirstBatch 每语句独立网格状态）"
+note = "状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现；#190 语句切换行 + 占位页（无结果集 / 结果未返回）+ 每语句独立网格状态已实现（真类型探针编译验证红→绿，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
 
 [component.sync.macos]
 state = "none"
@@ -692,7 +693,7 @@ style.metrics = ["column_header_min_height", "font_ui", "font_weight_title"]
 impl_notes = [
   "一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。",
   "表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。",
-  "多语句脚本（#190）：Linux 的 v0.1「只显示第 1 段」限制已退役——表头随选中语句的列元数据重建，逐语句切换走 tabs.query.results.statements；Windows 仍是「结果集 K 段 / 只显示第 1 段」口径（见 platform_notes.windows）。",
+  "多语句脚本（#190）：v0.1「只显示第 1 段」限制两端都已退役——表头随选中语句的列元数据重建，逐语句切换走 tabs.query.results.statements；Windows 说明位只保留「结果集 K 段」（见 platform_notes.windows）。",
 ]
 
 [[component.interaction]]
@@ -700,17 +701,18 @@ trigger = "load"
 precondition = "首批数据到达"
 result = "按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements）"
 source = "src/results.rs:1044、src/sql_page.rs:795、src/sql_page.rs:1176"
-platform_notes.windows = "多结果集仍在表头上方补一行「结果集 K 段」，K > 1 再补「只显示第 1 段」（v0.1 口径，#190 Windows 侧待实现；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122）。"
+platform_notes.windows = "说明位保留「结果集 K 段」（「只显示第 1 段」已在 #190 退役）；表头按当前选中语句的列元数据重建（frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:526；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1557）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3ae8b7456834"
+spec_hash = "3687fa525be8"
 evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装"
 
 [component.sync.windows]
-state = "done"
-spec_hash = "719abcce7626"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:68；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:402"
+state = "partial"
+spec_hash = "3687fa525be8"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1557（RenderQueryHeader 按当前列重建）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:716（LoadSlot 换入语句列）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:526（MetaText 退役「只显示第 1 段」）"
+note = "#190 表头随选中语句重建已实现；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，列头观感待 Windows 真机人工确认。"
 
 [component.sync.macos]
 state = "none"
@@ -789,9 +791,10 @@ spec_hash = "646be58b5fc1"
 evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch"
 
 [component.sync.windows]
-state = "done"
+state = "partial"
 spec_hash = "646be58b5fc1"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1018（FetchMoreAsync 作用于当前选中语句）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1041（FetchStatementBatchAsync 带 statement_index + 槽 page_token）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1090（MaybePrefetch 滚动预取读选中槽 HasMore）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:287（StatementSlot.HasMore 独立游标）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:814（AppendBatch 多语句路由到选中槽）"
+note = "#190 逐语句续拉已实现：每条语句独立 page_token/has_more，切走再切回从各自游标继续；未首拉的结果集语句选中时以空 page_token 发第一批；整查询 Close 等 FetchBatchResponse.complete（#187 语义）。真类型探针编译验证（红→绿），未在本机构建/运行 WinUI。"
 
 [component.sync.macos]
 state = "none"
@@ -805,9 +808,10 @@ kind = "control"
 status = "active"
 a11y.name = "语句切换行"
 style.metrics = ["gap_sm", "gap_xl", "min_target"]
-native_control = "gtk:GtkBox + GtkToggleButton（set_group 互斥） / winui:— / swift:—"
+native_control = "gtk:GtkBox + GtkToggleButton（set_group 互斥） / winui:ScrollViewer + StackPanel + Button（互斥选中由代码管理） / swift:—"
 impl_notes = [
   "L0：原生 GtkBox + GtkToggleButton 组（set_group 互斥单选），无自绘；条目命中区不低于 min_target，左右缘与表格对齐（gap_xl），条目间距 gap_sm。",
+  "Windows（#190）：L1 原生 ScrollViewer + StackPanel + Button 组合（ToggleButton 在 xaml_lint 禁用表内，互斥选中由代码管理）；失败条目底色 SqarvoDangerBrush→SystemFillColorCriticalBrush、前景 SqarvoOnAccentTextBrush（系统 token，不写死颜色）；尺寸只用 gap_sm / gap_xl / min_target，无新增 metrics 键；Windows 结果行本就不可选中，切换无需清选中集。",
   "条目文案「序号 · 类型词 · 行数/影响行数/状态」：类型词取 SQL 预览第一个关键字（大写，最长 12 字符），完整预览进 tooltip；结果集语句「N 行」（还有后续批次时「N 行…」），写语句「影响 N 行」，尚未首拉「未加载」。",
   "每条语句一份独立网格状态（行模型 / 列 / 状态 / 已加载行数 / 截断计数）；切换用换入换出行模型实现，已加载行不丢；选中集属于上一条语句，换模型时清空。",
   "失败态条目用主题原生 destructive-action 警示色，不自绘；程序化选中（重建 / 同步）有防回环标志，不触发用户回调。",
@@ -835,13 +839,14 @@ source = "src/sql_page.rs:1067、src/statements.rs:104、src/statements.rs:126"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b145eebc69a7"
+spec_hash = "818cdf4f4a10"
 evidence = "src/statements.rs（切换行控件与三条纯规则，7 个单测）；src/sql_page.rs:981（start_multi）/ 1067（show_multi_failure）/ 1121（select_statement）/ 1205（sync_sql_summary 状态栏回写）；src/backend/worker.rs:1119（select_statement 命令）；隔离 QA 截图 qa190/（A/B/C/D 四脚本实测，含切换点选与失败文案）"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "#190 Windows 侧待实现（Linux 先行，Windows 由后续 agent 续做）。"
+state = "partial"
+spec_hash = "818cdf4f4a10"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:492（切换行装配，仅多语句）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1591（RenderStatementSwitcher 条目文案/选中态/destructive 底色）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1697（OnStatementEntryClicked 换入换出 + 未加载首拉）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:639（ApplyMultiFirstBatch）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:748（SelectStatement）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:773（SwitcherEntries）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:447（BeginDefaultSlotFetch 默认选中槽首拉）；frontend/windows/Sqarvo.Core/Model/StatementSwitcher.cs（三条纯规则 + 文案，Sqarvo.Core.Tests 120 passed = 基线 107 + 新增 13）"
+note = "真类型探针编译验证（红→绿，0 警告 0 错误）+ Core.Tests 120 passed；未在本机构建/运行 WinUI：三档密度切换行间距/命中区观感、失败条目 destructive 浅色主题对比度、长 SQL tooltip 可读性待人工确认。失败场景已执行条目无类型/预览（Execute 原子失败不带摘要也不保留游标，ADR 0006）——改善需后端契约变更，超出本单。"
 
 [component.sync.macos]
 state = "none"

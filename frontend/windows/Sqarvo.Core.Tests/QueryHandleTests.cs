@@ -106,6 +106,61 @@ public sealed class QueryHandleTests
         Assert.Equal(2, rpc.CloseCalls);
     }
 
+    [Fact]
+    public async Task FetchStatementBatchTargetsTheGivenStatementAndKeepsHandleCursor()
+    {
+        // #190：多语句逐语句续拉——坐标由调用方（每条语句的槽）持有，
+        // FetchStatementBatchAsync 不动句柄自身的单语句游标状态。
+        var rpc = new FakeQueryRpc();
+        var handle = new QueryHandle(rpc, new ExecuteQueryResponse
+        {
+            QueryId = "q1",
+            PageToken = "first-stmt-token",
+            HasMore = true,
+        });
+        rpc.NextResponse = new FetchBatchResponse
+        {
+            PageToken = "stmt2-token",
+            HasMore = true,
+            Rows = { new Sqarvo.Common.V1.Row() },
+        };
+
+        var batch = await handle.FetchStatementBatchAsync(statementIndex: 2, pageToken: string.Empty);
+
+        Assert.Equal(1, rpc.FetchCalls);
+        Assert.Equal("q1", rpc.LastFetchRequest!.QueryId);
+        Assert.Equal(2u, rpc.LastFetchRequest.StatementIndex);
+        Assert.Equal(string.Empty, rpc.LastFetchRequest.PageToken);
+        Assert.Single(batch.Rows);
+        Assert.Equal("stmt2-token", batch.PageToken);
+        Assert.True(batch.HasMore);
+        Assert.False(batch.Complete);
+
+        // 句柄游标仍停在第一个结果集上（单语句路径不受影响）。
+        Assert.Equal("first-stmt-token", handle.PageToken);
+        Assert.True(handle.HasMore);
+        Assert.False(handle.IsClosed);
+
+        // 续拉带上该语句自己的 token。
+        await handle.FetchStatementBatchAsync(statementIndex: 2, pageToken: "stmt2-token");
+        Assert.Equal("stmt2-token", rpc.LastFetchRequest.PageToken);
+    }
+
+    [Fact]
+    public async Task FetchStatementBatchClosesHandleWhenWholeQueryCompletes()
+    {
+        var rpc = new FakeQueryRpc();
+        var handle = new QueryHandle(rpc, new ExecuteQueryResponse { QueryId = "q1", PageToken = "t", HasMore = true });
+        rpc.NextResponse = new FetchBatchResponse { Complete = true, HasMore = false };
+
+        var batch = await handle.FetchStatementBatchAsync(statementIndex: 1, pageToken: "t");
+
+        Assert.True(batch.Complete);
+        Assert.True(handle.IsClosed);
+        await Assert.ThrowsAsync<SqarvoClientException>(
+            () => handle.FetchStatementBatchAsync(statementIndex: 1, pageToken: "t"));
+    }
+
     private sealed class FakeQueryRpc : IQueryRpc
     {
         internal int FetchCalls { get; private set; }
