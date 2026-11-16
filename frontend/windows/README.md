@@ -99,7 +99,7 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 ```
 
 ```text
-[theme] requested=System effective=Dark highContrast=False accent=#258292 titleBar=UseDefaultAppMode
+[theme] requested=System effective=Dark highContrast=False accent=#258292 titleBar=UseDefaultAppMode backdrop=Mica
 [metrics] tier=compact header=64 toolbar=44 status=48 minWindow=960x640 sidebar=237 inspector=280 rowTree=24 fontUi=12
 ```
 
@@ -236,6 +236,26 @@ dotnet run -c Debug -p:Platform=x64 -- --report-monitor --report-metrics --qa-re
 已知边界：`AccessibilitySettings.HighContrastChanged` 在未打包 WinUI 3 应用里订阅会抛
 `COMException`，高对比状态改由 `HKCU\Control Panel\Accessibility\HighContrast\Flags` 兜底读取；
 系统主题 / 强调色的跟随本身不受影响（那是 WinUI 与 `ThemeResource` 的职责）。
+
+## 窗口材质（Mica）
+
+Windows 11 上窗口挂系统材质（Mica），让标题行 / 侧栏 / 信息面板 / 状态栏的 band 层透出系统底纹；
+工作区仍是实色内容面。挂材质的代码在 `Theming/ThemeService.cs` 的 `ApplyBackdrop`，由
+`ApplyToWindow` 调用（启动期与系统外观变化都走这一个入口）。
+
+- **版本门槛**：Windows 11 22621（22H2）起用 `MicaKind.BaseAlt`（与文件资源管理器同档）；
+  22000–22621 用 `MicaKind.Base`；Windows 10 不挂材质，保持实色底。
+- **判断方式**：`OperatingSystem.IsWindowsVersionAtLeast`（不用 `MicaBackdrop.IsSupported()`）。
+- **为什么还要改根元素底色**：材质是 DWM 合成的，只在「上面没有不透明的东西盖着」的地方透得出来。
+  所以挂上材质的同时，窗口根元素（`MainWindow.xaml` 的 `RootGrid`）与外壳根 Grid 的不透明底要换成透明，
+  底色交给窗口背景层。band 层（`LayerFillColorDefaultBrush`）与内容层
+  （`CardBackgroundFillColorDefaultBrush`）两支刷子**一行都没改**——它们本来就是 Explorer 在材质之上的分层口径。
+- **回退交给平台，不自己造**：关闭「透明效果」、硬件不支持、远程桌面时 WinUI 自动把材质退成实色主题色；
+  高对比下系统直接抑制材质并改用用户的高对比底色，代码里**没有**高对比特判。
+  Windows 10 这一路直接返回，XAML 的实色底原样保留，视觉与改动前一致。
+- **怎么确认材质真的挂上了**：`--report-theme` 的 `[theme] … backdrop=Mica` 是程序化证据
+  （`Solid` = 没有材质）。`--screenshot` 的 `RenderTargetBitmap` 只渲染 XAML 像素，
+  **拍不到 DWM 合成的材质**，所以截图不能用来判断材质（ADR 0029：样式由人工确认）。
 
 ## 通信与进程层：`Sqarvo.Core`（可在 Linux 上编译与验证）
 

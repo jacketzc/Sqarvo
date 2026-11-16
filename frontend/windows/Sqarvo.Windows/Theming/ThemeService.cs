@@ -1,5 +1,6 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
 using System;
 using System.Runtime.InteropServices;
@@ -36,6 +37,9 @@ public enum AppThemePreference
 /// <item>标题栏不在 XAML 主题的作用域内，必须单独处理，否则暗色窗口顶上是白的
 /// （Linux/macOS 没有这条，最容易漏）。跟随系统时用
 /// <c>TitleBarTheme.UseDefaultAppMode</c>，让系统自己改，不依赖我们的通知。</item>
+/// <item>窗口材质（Mica）是 Windows 11 的平台原生能力，走 <c>Window.SystemBackdrop</c>，
+/// 不是 XAML 画出来的：它只在「上面没有不透明的东西」时才透出来，所以除了挂材质，
+/// 还要把窗口根元素的实色底换成透明。版本门槛与回退见 <see cref="ApplyBackdrop"/>。</item>
 /// </list>
 /// <para>
 /// 高对比与强调色：<see cref="AccessibilitySettings.HighContrast"/> 在未打包的 WinUI 3
@@ -65,6 +69,12 @@ public static class ThemeService
 
     /// <summary>系统外观事件是否订阅成功（false = 运行中标签文字不自动刷新，主题仍生效）。</summary>
     public static bool IsListening { get; private set; }
+
+    /// <summary>
+    /// 当前窗口材质名（诊断用）：<c>Mica</c> = 已挂 Windows 11 材质；
+    /// <c>Solid</c> = 实色底（Windows 10，或材质没挂上）。
+    /// </summary>
+    public static string BackdropName { get; private set; } = "Solid";
 
     /// <summary>
     /// 启动期应用主题偏好。**必须**在第一个窗口创建之前调用。
@@ -209,7 +219,68 @@ public static class ThemeService
             root.RequestedTheme = ResolveElementTheme();
         }
 
+        ApplyBackdrop(window);
+
         ApplyTitleBar(window);
+    }
+
+    /// <summary>
+    /// 给窗口挂 Windows 11 的 Mica 材质，并把窗口根元素的实色底换成透明。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 材质是平台原生能力（DWM 合成），不是 XAML 画出来的：它只在「上面没有不透明的东西盖着」
+    /// 的地方透得出来。所以这一步做两件事——挂 <see cref="MicaBackdrop"/>，再把窗口根元素
+    /// （<c>MainWindow.xaml</c> 的 RootGrid）那份不透明底去掉。根元素之外的分层（band 层用
+    /// <c>LayerFillColorDefaultBrush</c>、内容层用 <c>CardBackgroundFillColorDefaultBrush</c>）
+    /// 本来就是 Explorer 在材质之上的分层口径，一支刷子都不用改。
+    /// </para>
+    /// <para>
+    /// 版本门槛：Mica 本身要 Windows 11（build 22000+）；<c>MicaKind.BaseAlt</c>（资源管理器
+    /// 用的那一档）要 22621（22H2），22621 以下用 <c>MicaKind.Base</c>。这里用
+    /// <see cref="OperatingSystem.IsWindowsVersionAtLeast"/> 判断，不用
+    /// <c>MicaBackdrop.IsSupported()</c>。
+    /// </para>
+    /// <para>
+    /// 回退交给平台，不自己造：Windows 10、用户关掉「透明效果」、硬件不支持、远程桌面时，
+    /// WinUI 会自动把材质退成实色主题色；高对比下系统直接抑制材质并改用用户的高对比底色。
+    /// 所以 Windows 10 这一路直接返回（什么都不改，实色底原样保留），高对比也不写特判；
+    /// OS 版本运行中不会变，因此不需要任何恢复逻辑。
+    /// </para>
+    /// </remarks>
+    private static void ApplyBackdrop(Window window)
+    {
+        // Windows 10：没有 Mica，也不做任何改动，RootGrid 的实色底原样保留（与改动前一致）。
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            return;
+        }
+
+        try
+        {
+            window.SystemBackdrop = new MicaBackdrop
+            {
+                Kind = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621)
+                    ? MicaKind.BaseAlt
+                    : MicaKind.Base,
+            };
+        }
+        catch (Exception error)
+        {
+            // 挂不上就维持实色底：材质是锦上添花，不值得为它让窗口起不来。
+            Diagnostics.ConsoleBridge.WriteDiagnostic(
+                $"[theme] Mica 材质不可用（{error.GetType().Name}），维持实色底");
+            return;
+        }
+
+        // 材质要透出来，窗口根元素那份不透明底就得让位：底色改交给窗口背景层
+        //（材质本身，或平台在不支持时的实色回退）。
+        if (window.Content is FrameworkElement root)
+        {
+            root.Background = new SolidColorBrush(Windows.UI.Colors.Transparent);
+        }
+
+        BackdropName = "Mica";
     }
 
     /// <summary>

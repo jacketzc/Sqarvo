@@ -33,6 +33,8 @@ impl_notes = [
   "页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。",
 ]
 
+platform_notes.windows = "窗口级材质：Windows 11 起窗口挂 Mica 材质（`Window.SystemBackdrop` = `MicaBackdrop`），22621（22H2）用 `MicaKind.BaseAlt`（与文件资源管理器同档）、22000–22621 用 `MicaKind.Base`；Windows 10 不挂材质，保持实色底。材质是 DWM 合成的，只在「上面没有不透明的东西盖着」的地方透得出来，所以窗口根元素（MainWindow.xaml 的 RootGrid）与外壳根 Grid 的实色底在挂上材质后换成透明，band 层（LayerFillColorDefaultBrush）与内容层（CardBackgroundFillColorDefaultBrush）两支刷子不改。回退交给平台：关掉「透明效果」/ 硬件不支持 / 远程桌面时 WinUI 自动退成实色主题色，高对比下系统抑制材质并改用用户的高对比底色，代码里不写特判。材质有没有真的挂上只能程序化验证——`--report-theme` 的 `[theme] … backdrop=Mica` 是证据（`--screenshot` 的 RenderTargetBitmap 只渲染 XAML 像素，拍不到 DWM 合成的材质）。"
+
 [component.sync.linux]
 state = "done"
 spec_hash = "f398d9283e00"
@@ -41,7 +43,7 @@ evidence = "§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar �
 [component.sync.windows]
 state = "partial"
 spec_hash = "f398d9283e00"
-note = "六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。"
+note = "六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。窗口级材质：Windows 11 挂 Mica（22621+ 用 BaseAlt，否则 Base）、Windows 10 保持实色（frontend/windows/Sqarvo.Windows/Theming/ThemeService.cs:251）。"
 
 [component.sync.macos]
 state = "none"
@@ -122,7 +124,7 @@ impl_notes = [
   "没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。",
 ]
 
-platform_notes.windows = "自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。"
+platform_notes.windows = "自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。Windows 11 起自绘标题行透出窗口材质（Mica）：标题行仍是自绘控件，只是底用 band 层（`LayerFillColorDefaultBrush`，低透明度叠层），材质能透上来（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261）；Windows 10 与高对比下是实色，视觉与改动前一致。"
 
 [component.sync.linux]
 state = "done"
@@ -132,7 +134,7 @@ evidence = "§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主�
 [component.sync.windows]
 state = "partial"
 spec_hash = "fbda8f702e58"
-note = "有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。"
+note = "有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。Windows 11 起标题行透出 Mica 材质（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261），Windows 10 保持实色。"
 
 [component.sync.macos]
 state = "none"

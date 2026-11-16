@@ -212,7 +212,22 @@
         </Style>
     </UserControl.Resources>
 
-    <Grid Background="{ThemeResource SqarvoAppBackgroundBrush}">
+    <!--
+        外壳根 Grid 的底：透明。
+
+        这一层的不透明底是窗口材质的**唯一遮挡点**——Windows 11 的 Mica 由 DWM 合成，
+        只在「上面没有不透明的东西盖着」的地方透得出来，所以根层必须透明，
+        材质才能从标题行 / 侧栏 / 信息面板 / 状态栏的 band 层透出来（Explorer 在材质上
+        的分层口径：band 层是 LayerFillColorDefaultBrush 低透明度叠层，内容层是
+        CardBackgroundFillColorDefaultBrush 基本不透明）。
+
+        band 层与内容层各自用什么刷子**不在这里定**：Tokens.xaml 的两支刷子一行都没改，
+        工具条（ToolbarBand）保持实色也不动。
+
+        Windows 10 与高对比下由 MainWindow 的 RootGrid 实色底兜住，视觉与改动前一致
+        （RootGrid 的 XAML 背景保持 SqarvoAppBackgroundBrush 不动）。
+    -->
+    <Grid Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />

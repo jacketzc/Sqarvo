@@ -1801,7 +1801,8 @@ kind `control` · status `active` · parent `objects_page`
 kind `area` · status `active`
 
 - 样式：尺寸 `header_height`、`toolbar_height`、`status_height`、`min_window_width`、`min_window_height`
-- 同步：Linux done（§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序）；Windows partial（六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。）；macOS none
+- 平台差异：Windows：窗口级材质：Windows 11 起窗口挂 Mica 材质（`Window.SystemBackdrop` = `MicaBackdrop`），22621（22H2）用 `MicaKind.BaseAlt`（与文件资源管理器同档）、22000–22621 用 `MicaKind.Base`；Windows 10 不挂材质，保持实色底。材质是 DWM 合成的，只在「上面没有不透明的东西盖着」的地方透得出来，所以窗口根元素（MainWindow.xaml 的 RootGrid）与外壳根 Grid 的实色底在挂上材质后换成透明，band 层（LayerFillColorDefaultBrush）与内容层（CardBackgroundFillColorDefaultBrush）两支刷子不改。回退交给平台：关掉「透明效果」/ 硬件不支持 / 远程桌面时 WinUI 自动退成实色主题色，高对比下系统抑制材质并改用用户的高对比底色，代码里不写特判。材质有没有真的挂上只能程序化验证——`--report-theme` 的 `[theme] … backdrop=Mica` 是证据（`--screenshot` 的 RenderTargetBitmap 只渲染 XAML 像素，拍不到 DWM 合成的材质）。
+- 同步：Linux done（§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序）；Windows partial（六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。窗口级材质：Windows 11 挂 Mica（22621+ 用 BaseAlt，否则 Base）、Windows 10 保持实色（frontend/windows/Sqarvo.Windows/Theming/ThemeService.cs:251）。）；macOS none
 - 实现备注：自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 同样没有独立菜单行——菜单收进自绘标题行右侧的汉堡按钮（v0.2.5 起）。页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。
 
 ### `shell.window` 主窗口（最小尺寸 · 几何恢复 · 关闭守卫入口）
@@ -1826,8 +1827,8 @@ kind `container` · status `active` · parent `shell`
 kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `header`；尺寸 `header_height`、`font_ui`、`gap_md`；颜色 `sqarvo_separator`
-- 平台差异：Windows：自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。
-- 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）；Windows partial（有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。）；macOS none
+- 平台差异：Windows：自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。Windows 11 起自绘标题行透出窗口材质（Mica）：标题行仍是自绘控件，只是底用 band 层（`LayerFillColorDefaultBrush`，低透明度叠层），材质能透上来（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261）；Windows 10 与高对比下是实色，视觉与改动前一致。
+- 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）；Windows partial（有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。Windows 11 起标题行透出 Mica 材质（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261），Windows 10 保持实色。）；macOS none
 - 实现备注：Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。
 
 ### `shell.title` 标题与副标题

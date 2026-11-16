@@ -40,14 +40,20 @@ internal static class DiagnosticReporter
     }
 
     /// <summary>
-    /// <c>[theme]</c> 一行：请求的偏好、生效的明暗、高对比、系统强调色、标题栏实际写入值。
+    /// <c>[theme]</c> 一行：请求的偏好、生效的明暗、高对比、系统强调色、标题栏实际写入值、窗口材质。
     /// </summary>
+    /// <remarks>
+    /// <c>backdrop=</c> 是「材质有没有真的挂上」的唯一程序化证据：<c>--screenshot</c> 用
+    /// <c>RenderTargetBitmap</c> 只渲染 XAML 像素，拍不到 DWM 合成的材质（Mica / Acrylic），
+    /// 所以截图证明不了材质这件事（ADR 0029：样式由人工确认，agent 不做图像识别）。
+    /// </remarks>
     public static string ThemeLine(Window window)
     {
         var titleBar = ThemeService.ApplyTitleBar(window);
         var effective = ThemeService.IsDarkEffective(window) ? "Dark" : "Light";
         return $"[theme] requested={ThemeService.PreferenceName} effective={effective} " +
-               $"highContrast={ThemeService.HighContrast} accent={ThemeService.AccentHex} titleBar={titleBar}";
+               $"highContrast={ThemeService.HighContrast} accent={ThemeService.AccentHex} titleBar={titleBar} " +
+               $"backdrop={ThemeService.BackdropName}";
     }
 
     /// <summary>
