@@ -62,9 +62,10 @@ font_title = 13   # 13 × 1.0 = 13
 font_status = 11   # 11 × 1.0 = 11
 font_data_cell = 13   # 13 × 1.0 = 13
 font_panel = 10   # 10 × 1.0 = 10
-# ---- 字重（不随密度缩放：三端只有这四档语义，档位之间不插值） ----
+# ---- 字重（不随密度缩放：三端只有这几档语义，档位之间不插值） ----
 font_weight_ui = 400   # 正文 / 按钮 / 说明字
 font_weight_cell = 500   # 数据单元格（13px Regular 在 1x 屏横画发虚，提一档到 Medium）
+font_weight_menu = 500   # 菜单 / 弹出层条目（400 的细撇在暗底上只有 1px，读成缺笔；提一档后 2px）
 font_weight_title = 600   # 窗口标题 / 列头 / 页内标题 / 筛选面板标题
 font_weight_heading = 700   # 卡片 · 面板 · 对象树连接与分组名（原来由 Adwaita .heading 提供）
 min_target = 24   # 24 × 1.0 = 24
@@ -140,6 +141,7 @@ font_data_cell = 16   # 13 × 1.25 = 16.25
 font_panel = 13   # 10 × 1.25 = 12.5
 font_weight_ui = 400
 font_weight_cell = 500
+font_weight_menu = 500
 font_weight_title = 600
 font_weight_heading = 700
 min_target = 30   # 24 × 1.25 = 30
@@ -215,6 +217,7 @@ font_data_cell = 20   # 13 × 1.5 = 19.5
 font_panel = 15   # 10 × 1.5 = 15
 font_weight_ui = 400
 font_weight_cell = 500
+font_weight_menu = 500
 font_weight_title = 600
 font_weight_heading = 700
 min_target = 36   # 24 × 1.5 = 36

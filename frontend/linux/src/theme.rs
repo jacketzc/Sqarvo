@@ -430,6 +430,12 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
            font_weight_heading 决定，不再随 libadwaita 版本变。 */
         .sqarvo-heading {{ font-weight: {fw_heading}; }}
 
+        /* 菜单 / 弹出层条目（主菜单里「视图 → 深色模式 / 界面密度」等，以及筛选面板）：
+           字重取 font_weight_menu。400 时「色」顶上那笔短撇在 1x 屏只剩 1px 宽
+           （暗底上读成「缺一笔」），提到 500 后同一笔变 2px。字号、行高、颜色不动：
+           弹层本来就按系统 11pt 渲染，不跟窗口的 12px。 */
+        popover label, menuitem label {{ font-weight: {fw_menu}; }}
+
         /* 区域 02：主工具条 44 高（24 的按钮 + 上下各 10），按钮不小于 24 */
         .sqarvo-toolbar {{
             min-height: {toolbar}px;
@@ -926,6 +932,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         panel_font = m.font_panel,
         fw_ui = m.font_weight_ui,
         fw_cell = m.font_weight_cell,
+        fw_menu = m.font_weight_menu,
         fw_title = m.font_weight_title,
         // 高对比下不施加 heading 字重：HC 主题靠描边与色差表达层级，而原 Adwaita
         // `.heading` 在 HC 主题里的实际字重不归本仓库所有（libadwaita 的 HC 样式表
@@ -975,14 +982,24 @@ mod tests {
 
     #[test]
     fn font_weights_come_from_metrics() {
-        // 四档字重是规范值（metrics.toml 的 font_weight_*）：样式表里不许再有字面量，
+        // 五档字重是规范值（metrics.toml 的 font_weight_*）：样式表里不许再有字面量，
         // 也不许再借 Adwaita 的 `.heading`（它只设 700，但值归依赖所有）。
         let css = stylesheet();
         let m = layout::Metrics::for_tier(Tier::Compact);
         assert_eq!(m.font_weight_ui, 400, "正文字重是 400");
         assert_eq!(m.font_weight_cell, 500, "单元格字重是 500");
+        assert_eq!(m.font_weight_menu, 500, "菜单条目字重是 500");
         assert_eq!(m.font_weight_title, 600, "标题字重是 600");
         assert_eq!(m.font_weight_heading, 700, "卡片 / 面板标题字重是 700");
+
+        // 菜单条目必须比正文实一档：400 时「色」的细撇只剩 1px（改动确认单 #2）。
+        assert!(
+            css.contains(&format!(
+                "popover label, menuitem label {{ font-weight: {}; }}",
+                m.font_weight_menu
+            )),
+            "缺少菜单条目字重规则（font_weight_menu）"
+        );
 
         assert!(
             css.contains(&format!(

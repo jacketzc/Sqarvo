@@ -212,13 +212,14 @@ status = "active"
 style.icon = ["menu.open"]
 native_control = "gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—"
 style.slot = "menubar"
-style.metrics = ["min_target", "icon_box"]
+style.metrics = ["min_target", "icon_box", "font_weight_menu"]
 a11y.name = "主菜单（文件 / 表 / 视图 / 帮助）"
 a11y.tab = "可聚焦；Enter / Space 展开菜单，Esc 收起"
 impl_notes = [
   "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。",
   "「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
   "「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
+  "弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。",
 ]
 
 [[component.interaction]]
@@ -231,7 +232,7 @@ platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Bu
 
 [component.sync.linux]
 state = "done"
-spec_hash = "bf50bc8a9211"
+spec_hash = "f41955fd4df0"
 evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
 
 [component.sync.windows]
@@ -718,7 +719,7 @@ display_name = "深色模式（跟随系统 / 浅色 / 深色）"
 kind = "container"
 status = "active"
 style.slot = "overlay"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "深色模式"
 a11y.tab = "菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择"
 impl_notes = [
@@ -739,7 +740,7 @@ platform_notes.macos = "macOS 未接入，没有「视图」小菜单。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c243d0ec6348"
+spec_hash = "c5e1391d398b"
 evidence = "§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png"
 
 [component.sync.windows]
@@ -757,7 +758,7 @@ parent = "shell.theme"
 display_name = "「跟随系统」单选项"
 kind = "item"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "跟随系统"
 impl_notes = ["默认档：不写 `color-scheme`（`Default`），深浅色完全由系统 / libadwaita 决定；系统切换时 `dark` 通知重载样式表。"]
 
@@ -769,7 +770,7 @@ source = "src/ui.rs:5247、src/ui.rs:5188"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "86a55e7f91dc"
+spec_hash = "f96b3652002b"
 evidence = "§1.5 三档之一；apply_theme_choice → theme::set_scheme"
 
 [component.sync.windows]
@@ -786,7 +787,7 @@ parent = "shell.theme"
 display_name = "「浅色」单选项"
 kind = "item"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "浅色"
 impl_notes = ["`ForceLight`：系统是深色时也强制浅色。样式表由 `dark` 通知重载，不重建控件。"]
 
@@ -798,7 +799,7 @@ source = "src/ui.rs:5188、src/theme.rs:246"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8c094e420377"
+spec_hash = "e12518f16e88"
 evidence = "§1.5 三档之一；--theme light 与菜单同一落点"
 
 [component.sync.windows]
@@ -815,7 +816,7 @@ parent = "shell.theme"
 display_name = "「深色」单选项"
 kind = "item"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "深色"
 impl_notes = ["`ForceDark`：系统是浅色时也强制深色。深色色板是浅色同一组色相的提亮版（`theme.rs` 的 `DARK_PALETTE`），不是第二套色相。"]
 
@@ -827,7 +828,7 @@ source = "src/ui.rs:5188、src/theme.rs:246"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "5dce1aa7558a"
+spec_hash = "592c649bd075"
 evidence = "§1.5 三档之一；--theme dark 与菜单同一落点"
 
 [component.sync.windows]
@@ -845,7 +846,7 @@ display_name = "界面密度档（紧凑 / 舒适 / 大）"
 kind = "container"
 status = "active"
 style.slot = "overlay"
-style.metrics = ["font_ui", "font_status", "gap_xs"]
+style.metrics = ["font_ui", "font_weight_menu", "font_status", "gap_xs"]
 a11y.name = "界面密度"
 a11y.tab = "菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择"
 impl_notes = [
@@ -893,7 +894,7 @@ platform_notes.windows = "菜单行高度按档位推出、面板宽度按归一
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b5db5c39c6de"
+spec_hash = "ca07508afe8b"
 evidence = "§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字"
 
 [component.sync.windows]
@@ -911,7 +912,7 @@ parent = "shell.density"
 display_name = "「紧凑（100%）」单选项"
 kind = "item"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "紧凑（100%）"
 impl_notes = [
   "当前档打勾：勾选来自 stateful action 的 state，点击后由 `refresh_tier_actions` 写回。",
@@ -927,7 +928,7 @@ source = "src/ui.rs:5183、src/ui.rs:5303、src/density.rs:104"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "577694489694"
+spec_hash = "5d689ee09274"
 evidence = "§1.5 菜单入口；build_main_menu 的密度子菜单与 apply_tier_choice"
 
 [component.sync.windows]
@@ -945,7 +946,7 @@ parent = "shell.density"
 display_name = "「舒适（125%）」单选项"
 kind = "item"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "舒适（125%）"
 impl_notes = ["与其它两档同一组单选；本档放不下时动作 `enabled=false`（菜单里灰掉）、条目文字追加「，放不下」。"]
 
@@ -957,7 +958,7 @@ source = "src/ui.rs:5183、src/ui.rs:5303、src/window_size.rs:230"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b9a7ccd078c9"
+spec_hash = "e60a6e711ae8"
 evidence = "§1.5 菜单入口、逐项禁用与「放不下」条目文字；refresh_tier_actions 与 fill_density_section"
 
 [component.sync.windows]
@@ -975,7 +976,7 @@ parent = "shell.density"
 display_name = "「大（150%）」单选项"
 kind = "item"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_ui", "font_weight_menu"]
 a11y.name = "大（150%）"
 impl_notes = ["本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现（菜单里灰掉 + 文字标「放不下」）。"]
 
@@ -987,7 +988,7 @@ source = "src/ui.rs:5183、src/ui.rs:5303"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3913f58e8c81"
+spec_hash = "053ff105cfbb"
 evidence = "§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定"
 
 [component.sync.windows]

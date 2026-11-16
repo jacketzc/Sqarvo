@@ -45,10 +45,14 @@
 4. **菜单结构**：`视图 ▸ 深色模式 ▸ {跟随系统, 浅色, 深色}`、`视图 ▸ 界面密度 ▸ {紧凑, 舒适, 大}`。
    两项都是真子菜单（条目绑 stateful `win.*` 动作，当前值打勾，不可用项由动作 `enabled` 置灰），
    删掉「界面密度」的自绘小节与它的占位项。
-5. **GMenu 没有逐项 tooltip 的补偿**：密度档放不下时把原因写进条目文字（「大（150%），放不下」），
+5. **弹层条目字重单独一档**：菜单 / 弹出层条目的 label 取 `font_weight_menu = 500`。起因是
+   「视图 → 深色模式 / 界面密度」里的「色」看起来缺一笔：实测那一笔在 400 字重下只剩 1px 宽
+   （同一字在弹层标题里是 2px，暗底上差别就是「有」和「没有」）。字号不动——弹层按系统 11pt
+   渲染，本来就没跟窗口的 12px 走。
+6. **GMenu 没有逐项 tooltip 的补偿**：密度档放不下时把原因写进条目文字（「大（150%），放不下」），
    完整原因（需要 W×H、当前工作区多大）进日志。GMenu 在 `append` 时复制条目属性，所以换文字靠
    重填这一节（`fill_density_section`），不是改 `gio::MenuItem`。
-6. **范围只做 Linux**：Windows 的 `Theming/ThemeService.cs` 已有同一套三档与 `theme` 字段，但没有
+7. **范围只做 Linux**：Windows 的 `Theming/ThemeService.cs` 已有同一套三档与 `theme` 字段，但没有
    任何界面入口、`Preference` 也没有 setter；在注册表里记 `sync.windows = none` 并写清差异，
    菜单入口另开 Issue。macOS 未接入。
 

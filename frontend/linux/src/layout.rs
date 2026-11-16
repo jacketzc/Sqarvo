@@ -374,9 +374,13 @@ pub struct Metrics {
     pub font_status: i32,
     pub font_data_cell: i32,
     pub font_panel: i32,
-    /// 字重四档（不随密度缩放）：正文 400 / 单元格 500 / 标题 600 / 卡片与面板标题 700。
+    /// 字重五档（不随密度缩放）：正文 400 / 单元格 500 / 菜单条目 500 / 标题 600 /
+    /// 卡片与面板标题 700。
     pub font_weight_ui: i32,
     pub font_weight_cell: i32,
+    /// 菜单 / 弹出层条目（`font_weight_menu`）：400 时「色」这类细撇在暗底上只剩 1px，
+    /// 读成缺一笔；500 让同一笔回到 2px。
+    pub font_weight_menu: i32,
     pub font_weight_title: i32,
     pub font_weight_heading: i32,
     pub min_target: i32,
@@ -589,6 +593,7 @@ struct RawTier {
     font_panel: i32,
     font_weight_ui: i32,
     font_weight_cell: i32,
+    font_weight_menu: i32,
     font_weight_title: i32,
     font_weight_heading: i32,
     min_target: i32,
@@ -686,6 +691,7 @@ impl Metrics {
             font_panel: raw.font_panel,
             font_weight_ui: raw.font_weight_ui,
             font_weight_cell: raw.font_weight_cell,
+            font_weight_menu: raw.font_weight_menu,
             font_weight_title: raw.font_weight_title,
             font_weight_heading: raw.font_weight_heading,
             min_target: raw.min_target,

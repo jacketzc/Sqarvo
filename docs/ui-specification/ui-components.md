@@ -1853,12 +1853,12 @@ kind `control` · status `active` · parent `shell`
 
 kind `control` · status `active` · parent `shell`
 
-- 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`
+- 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`、`font_weight_menu`
 - 无障碍：可访问名「主菜单（文件 / 表 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
 - 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
-- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。
+- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2037,7 +2037,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 kind `container` · status `active` · parent `shell`
 
-- 样式：槽位 `overlay`；尺寸 `font_ui`
+- 样式：槽位 `overlay`；尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「深色模式」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
 - 同步：Linux done（§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png）；Windows none（§7.1 没有任何主题菜单入口（ThemeService 三档只在启动期读 window.json，运行中无 UI 可切）。）；macOS none
 - 实现备注：位置：「视图 → 深色模式」的三级子菜单（与「界面密度」同级，排在它上面），三项各绑一个 stateful `win.theme-*` 动作，当前偏好打勾。生效方式是 `AdwStyleManager::set_color_scheme`：跟随系统 = `Default`，浅色 / 深色 = `ForceLight` / `ForceDark`（用户明确点了选择，不再被系统偏好改回去）。`dark` 通知重载样式表，四套 CSS 不各自监听主题。偏好写 `window.json` 的 `theme`（`system` / `light` / `dark`，与 Windows 同键同值）；启动优先级 `--theme`（QA）→ `window.json` → 跟随系统，并在 `theme::install()` 之前设定，避免先浅色再闪成深色。不做的事：不提供「浅色 / 深色 跟随系统但覆盖强调色」这类组合；系统强调色仍归平台（Windows 的强调色只用于系统绘制的部件）。
@@ -2050,7 +2050,7 @@ kind `container` · status `active` · parent `shell`
 
 kind `item` · status `active` · parent `shell.theme`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「跟随系统」
 - 同步：Linux done（§1.5 三档之一；apply_theme_choice → theme::set_scheme）；Windows none；macOS none
 - 实现备注：默认档：不写 `color-scheme`（`Default`），深浅色完全由系统 / libadwaita 决定；系统切换时 `dark` 通知重载样式表。
@@ -2063,7 +2063,7 @@ kind `item` · status `active` · parent `shell.theme`
 
 kind `item` · status `active` · parent `shell.theme`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「浅色」
 - 同步：Linux done（§1.5 三档之一；--theme light 与菜单同一落点）；Windows none；macOS none
 - 实现备注：`ForceLight`：系统是深色时也强制浅色。样式表由 `dark` 通知重载，不重建控件。
@@ -2076,7 +2076,7 @@ kind `item` · status `active` · parent `shell.theme`
 
 kind `item` · status `active` · parent `shell.theme`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「深色」
 - 同步：Linux done（§1.5 三档之一；--theme dark 与菜单同一落点）；Windows none；macOS none
 - 实现备注：`ForceDark`：系统是浅色时也强制深色。深色色板是浅色同一组色相的提亮版（`theme.rs` 的 `DARK_PALETTE`），不是第二套色相。
@@ -2089,7 +2089,7 @@ kind `item` · status `active` · parent `shell.theme`
 
 kind `container` · status `active` · parent `shell`
 
-- 样式：槽位 `overlay`；尺寸 `font_ui`、`font_status`、`gap_xs`
+- 样式：槽位 `overlay`；尺寸 `font_ui`、`font_weight_menu`、`font_status`、`gap_xs`
 - 无障碍：可访问名「界面密度」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
 - 同步：Linux done（§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字）；Windows none（§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / 条目文字语义（档位本身见 §1.6）。）；macOS none
 - 实现备注：位置：「视图 → 界面密度」的三级子菜单（紧接「深色模式」），三个 stateful `win.tier-*` 动作，当前档打勾。GMenu 没有逐项 tooltip：某档在当前工作区放不下时，条目文字追加「，放不下」，完整原因（需要 W×H、当前工作区多大）进日志 `[tier] … 不可用`；该档动作同时 `enabled=false`。换文字只能重填这一节 —— GMenu 在 append 时就把条目属性复制进模型，之后再改 MenuItem 不生效。三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。切档后「表格区优先保留 600」是代码常量，未进 metrics。
@@ -2106,7 +2106,7 @@ kind `container` · status `active` · parent `shell`
 
 kind `item` · status `active` · parent `shell.density`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「紧凑（100%）」
 - 同步：Linux done（§1.5 菜单入口；build_main_menu 的密度子菜单与 apply_tier_choice）；Windows none（§7.1 未记录本单选项。）；macOS none
 - 实现备注：当前档打勾：勾选来自 stateful action 的 state，点击后由 `refresh_tier_actions` 写回。是 `Ctrl+0` 的目标档，也是 `Ctrl+minus` 的下界。条目文字就是 `tier.label()`；放不下时由 `fill_density_section` 改成「紧凑（100%），放不下」并禁用。
@@ -2119,7 +2119,7 @@ kind `item` · status `active` · parent `shell.density`
 
 kind `item` · status `active` · parent `shell.density`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「舒适（125%）」
 - 同步：Linux done（§1.5 菜单入口、逐项禁用与「放不下」条目文字；refresh_tier_actions 与 fill_density_section）；Windows none（§7.1 未记录本单选项。）；macOS none
 - 实现备注：与其它两档同一组单选；本档放不下时动作 `enabled=false`（菜单里灰掉）、条目文字追加「，放不下」。
@@ -2132,7 +2132,7 @@ kind `item` · status `active` · parent `shell.density`
 
 kind `item` · status `active` · parent `shell.density`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「大（150%）」
 - 同步：Linux done（§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定）；Windows none（§7.1 未记录本单选项。）；macOS none
 - 实现备注：本档的最小窗口最大，因此最容易被禁用：这是「不静默钳到 100%」的直接表现（菜单里灰掉 + 文字标「放不下」）。
