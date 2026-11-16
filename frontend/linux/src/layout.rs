@@ -1104,7 +1104,11 @@ mod tests {
             (6, 8, 9)
         );
         assert_eq!(
-            (c.query_editor_ratio, m.query_editor_ratio, l.query_editor_ratio),
+            (
+                c.query_editor_ratio,
+                m.query_editor_ratio,
+                l.query_editor_ratio
+            ),
             (0.4, 0.4, 0.4)
         );
     }

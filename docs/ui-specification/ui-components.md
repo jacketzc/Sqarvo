@@ -2611,8 +2611,8 @@ kind `control` · status `active` · parent `status_bar.row2`
 | `tabs.query.results.header` | 　　　结果表头（列名 · 原始类型） | control | active | done | done | — |
 | `tabs.query.results.grid` | 　　　结果行区（虚拟化表格） | control | active | done | partial | — |
 | `tabs.query.results.more` | 　　　续拉（滚动到末尾自动续拉 / 「加载更多」） | control | active | done | done | — |
-| `tabs.query.splitter` | 　　查询分隔把手（可拖动分隔） | control | active | done | — | — |
-| `tabs.query.results.close` | 　　　关闭结果区按钮 | control | active | done | — | — |
+| `tabs.query.splitter` | 　　查询分隔把手（可拖动分隔） | control | active | done | partial | — |
+| `tabs.query.results.close` | 　　　关闭结果区按钮 | control | active | done | partial | — |
 | `tabs.close_dialog` | 　关闭标签确认框 | control | active | done | — | — |
 | `tabs.close_dialog.discard` | 　　「放弃更改并关闭」/「回滚事务并关闭」 | item | active | done | — | — |
 | `tabs.close_dialog.save` | 　　「保存并关闭」/「保存、提交事务并关闭」 | item | active | done | — | — |
@@ -2788,7 +2788,7 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`、`query_editor_min_height`、`query_editor_ratio`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
 - 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
-- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）；#189 src/sql_page.rs:240 min_content_height 读 query_editor_min_height、去掉 220px 上限；隔离 QA 截图 189-01（新标签只见编辑器）/ 189-04（分栏占比 0.40））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
+- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）；#189 src/sql_page.rs:240 min_content_height 读 query_editor_min_height、去掉 220px 上限；隔离 QA 截图 189-01（新标签只见编辑器）/ 189-04（分栏占比 0.40））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现（Linux 真类型探针编译验证 0 警告 0 错误，未在本机构建/运行 WinUI）。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。最小高度随密度档（query_editor_min_height），没有固定上限：编辑器与结果区用可拖动 GtkPaned 分配页高（见 tabs.query.splitter）；新标签结果区隐藏时编辑器占满整页。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2816,7 +2816,7 @@ kind `control` · status `active` · parent `tabs.query`
 kind `container` · status `active` · parent `tabs.query`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_xl`、`gap_sm`、`radius_md`、`frame_border_width`、`query_results_min_height`；颜色 `sqarvo_frame`
-- 同步：Linux done（§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:1305（show_results）/ 1318（hide_results），隔离 QA 截图 189-01（隐藏）/ 189-02（执行后显示）/ 189-03（空 SQL 走 banner、结果区不显示））；Windows partial（状态行 + 表头 + 行区 + 「加载更多」已落地；状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。）；macOS none
+- 同步：Linux done（§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:1305（show_results）/ 1318（hide_results），隔离 QA 截图 189-01（隐藏）/ 189-02（执行后显示）/ 189-03（空 SQL 走 banner、结果区不显示））；Windows partial（状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现（Linux 真类型探针编译验证，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。）；macOS none
 - 实现备注：自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。显隐（#189）：新标签结果区（含分隔把手）隐藏、编辑器占满整页；任何 Execute 响应（首批 / 续批 / 取消 / 失败 / 触顶）后显示；可用「关闭结果区」按钮主动关闭（见 tabs.query.results.close），关闭后回到隐藏态。最小高度随密度档（query_results_min_height）；显示时编辑器:结果区默认 query_editor_ratio（0.4），可拖动调整（见 tabs.query.splitter）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2870,8 +2870,9 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `query_splitter_width`、`query_editor_min_height`、`query_results_min_height`、`query_editor_ratio`；颜色 `sqarvo_separator`
 - 无障碍：可访问名「（原生 GtkPaned 分栏，无独立可访问名）」
-- 原生控件：gtk:GtkPaned（vertical） / winui:— / swift:—
-- 同步：Linux done（src/sql_page.rs:259（GtkPaned 装配）/ 332（拖动回写）/ 1328（比例应用）；src/theme.rs:903（把手 CSS）；#189 隔离 QA 日志「分隔位置应用 position=239（页高 603，占比 0.40）」+ 截图 189-04 + AT-SPI 只读遍历（分栏容器 role=generic 暴露 CurrentValue=239、把手 role=separator 无名；关闭按钮名「关闭结果区」role=button））；Windows none；macOS none
+- 原生控件：gtk:GtkPaned（vertical） / winui:自绘 Panel 把手（QuerySplitGrip） / swift:—
+- 自绘：Linux 用原生 GtkPaned（vertical，L0）；WinUI 3 没有原生 splitter，Windows 自绘 Panel 把手（QuerySplitGrip，L2 复合件）：PointerPressed/Moved/Released 调 RowDefinition 高度，两端最小高度与默认比例读生成常量，同 #178 列宽拖拽口径。
+- 同步：Linux done（src/sql_page.rs:259（GtkPaned 装配）/ 332（拖动回写）/ 1328（比例应用）；src/theme.rs:903（把手 CSS）；#189 隔离 QA 日志「分隔位置应用 position=239（页高 603，占比 0.40）」+ 截图 189-04 + AT-SPI 只读遍历（分栏容器 role=generic 暴露 CurrentValue=239、把手 role=separator 无名；关闭按钮名「关闭结果区」role=button））；Windows partial（WinUI 3 无原生 splitter → 自绘 Panel 把手（同 #178 列宽拖拽口径）；两端最小高度与默认比例读生成常量（query_editor_min_height / query_results_min_height / query_editor_ratio），结果区隐藏时一并 Collapsed。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，拖动手感 / 光标观感待人工确认；无键盘调节路径（与 Linux 同为 P1）。）；macOS none
 - 实现备注：纵向 GtkPaned 替换旧固定 Separator（#189）：结果区隐藏时 GtkPaned 不测量也不绘制把手，编辑器占满整页；两端都可见时把手厚度来自主题 CSS（query_splitter_width），颜色取 @sqarvo_separator。GtkPaned 的 min/max-position 只读：两端最小高度由子控件自身最小尺寸 + shrink=false 保证（编辑器 min_content_height=query_editor_min_height，结果区 size_request=query_results_min_height）。默认比例 query_editor_ratio（0.4，三档同值）；拖动回写只进内存（split_position），不持久化，下次显示时恢复；applying_split 防止程序化应用位置被记成拖动。GTK4 的 size-allocate 是虚函数不是信号：用结果区 map 信号 + 首次分配守卫在分配就绪后应用比例；首次分配前的 position 通知是 GtkPaned 钳制，不是用户拖动，不记录。密度档切换后 reapply_metrics 重应用两端最小高度与比例；把手厚度随主题 CSS 重建自动更新。可访问性现状（隔离 QA 只读 AT-SPI 遍历实测，GTK 4.20.3）：已按 §8.1 用 update_property 给 GtkPaned 容器挂 Label「查询编辑器与结果区分栏」，但该 GTK 版本的 AT-SPI 桥不暴露此名（容器 role=generic、Name 空）；容器实现 GtkAccessibleRange，暴露 CurrentValue=分隔位置（实测 239）；原生把手 role=separator、无独立名字。P1 跟进：分栏的可访问命名与键盘调节语义。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2885,7 +2886,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 无障碍：可访问名「关闭结果区」
 - 原生控件：gtk:GtkButton（window-close-symbolic，flat） / winui:— / swift:—
-- 同步：Linux done（src/results.rs:360-365（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×））；Windows none；macOS none
+- 同步：Linux done（src/results.rs:360-365（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×））；Windows partial（位置在结果说明行右端（Windows 查询页尚无导出入口，§7.1）；关闭 = ReleaseCursorAsync（Close RPC 幂等）+ ResetResults + ApplyQueryLayout，SQL 文本保留。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，弹窗 / 置灰观感待人工确认。当前结果网格只读（QueryModel.DirtyRowCount 恒 0），丢弃确认路径已接线但不会被触发。）；macOS none
 - 实现备注：位置：结果区说明行（detail_row）右端、「导出 ▾」右侧（#189）；原生 symbolic 图标 window-close-symbolic + flat（L0），无可见文字，可访问名「关闭结果区」，tooltip「关闭结果区（释放查询资源）」。语义 = Close RPC（幂等，复用既有客户端路径）+ 清 query_id + 重置编辑态 + 重置结果区 + 隐藏并让编辑器占满整页；编辑器里的 SQL 文本保留。状态性不可用保持可见（AGENTS.md §8.1）：执行中（Loading / Streaming）置灰 + tooltip「查询执行中，请先取消」；空闲恢复可用。有脏行（dirty_rows()>0）先弹丢弃确认：「放弃未提交的更改？」正文「关闭结果区将丢弃 N 行未提交的更改。」，按钮 取消 / 放弃更改（破坏性、默认取消、关闭=取消），只接受第一次 response——与数据页 AlertDialog 同一口径；QA 自动应答复用 respond_dialog（只在 QA 参数下启用，不是产品路径的后门）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

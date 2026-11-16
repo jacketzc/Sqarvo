@@ -537,8 +537,7 @@ impl SqlPage {
             // 提示走页面 banner——写进隐藏的结果区用户看不见。此场景 banner 不带
             // 动作按钮（「重启 Sqarvo」按钮属于后端失效场景，mark_disconnected 恢复）。
             self.banner.set_button_label(None);
-            self.banner
-                .set_title("SQL 不能为空：请输入后按 Ctrl+Enter");
+            self.banner.set_title("SQL 不能为空：请输入后按 Ctrl+Enter");
             self.banner.set_revealed(true);
             return;
         }
