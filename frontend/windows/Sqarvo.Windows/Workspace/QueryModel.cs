@@ -267,6 +267,7 @@ internal static class QuerySql
 /// <item><description><see cref="AppendBatch"/>：保持 ReadOnly，只追加行；<see cref="HasMore"/> 跟着服务端走。</description></item>
 /// <item><description><see cref="MarkCancelled"/> / <see cref="MarkFailure"/>：Cancelled / Error（行保留）。</description></item>
 /// <item><description><see cref="MarkCursorReleased"/>：游标已释放（切页 / 重新执行前的说明，不改变行）。</description></item>
+/// <item><description><see cref="ResetResults"/>：关闭结果区（#189）——清网格态、回到隐藏，SQL 与脏标记保留。</description></item>
 /// </list>
 /// </remarks>
 internal sealed class QueryTabState
@@ -313,6 +314,22 @@ internal sealed class QueryTabState
 
     /// <summary>服务端还有下一批。</summary>
     public bool HasMore { get; private set; }
+
+    /// <summary>是否已收到过任何 Execute 响应（成功 / 失败 / 取消 / 无结果集，#189 结果区显隐的驱动）。</summary>
+    /// <remarks>
+    /// 新标签为 false（结果区隐藏、编辑器占满）；首批 / 失败 / 取消任一到达即 true 并保持
+    /// （幂等显示：重新执行不会把已显示的结果区再藏回去），只有 <see cref="ResetResults"/>
+    /// （关闭结果区）清回 false。与 Linux 的 show_results 由 show_started / show_batch /
+    /// mark_cancelled / show_failure / show_limited 驱动一一对应。
+    /// </remarks>
+    public bool HasExecuteResponse { get; private set; }
+
+    /// <summary>结果区里的未提交脏行数（#189 关闭前丢弃确认的判据）。</summary>
+    /// <remarks>
+    /// 本版查询结果网格只读（<see cref="QueryViewState.ReadOnly"/> 恒为只读终态，没有网格内编辑），
+    /// 因此恒为 0；判据保留以与 Linux 对齐——将来引入结果集编辑时确认弹窗自动生效。
+    /// </remarks>
+    public int DirtyRowCount => 0;
 
     /// <summary>结果集段数（`Execute` 的 <c>statements</c> 条数；v0.1 恒为 1）。</summary>
     public int StatementCount { get; private set; }
@@ -404,6 +421,7 @@ internal sealed class QueryTabState
         Code = null;
         Note = null;
         QueryId = string.Empty;
+        _resultsClosed = false;
         View = QueryViewState.Loading;
         Executing = true;
     }
@@ -449,6 +467,7 @@ internal sealed class QueryTabState
         bool hasMore)
     {
         QueryId = queryId;
+        HasExecuteResponse = true;
         StatementCount = Math.Max(1, statementCount);
         HasResultSet = hasResultSet;
         RowsAffected = rowsAffected;
@@ -489,6 +508,7 @@ internal sealed class QueryTabState
         Fetching = false;
         HasMore = false;
         Note = note;
+        HasExecuteResponse = true;
         View = QueryViewState.Cancelled;
     }
 
@@ -502,6 +522,7 @@ internal sealed class QueryTabState
         HasMore = false;
         Headline = headline;
         Code = code;
+        HasExecuteResponse = true;
         View = QueryViewState.Error;
     }
 
@@ -512,6 +533,32 @@ internal sealed class QueryTabState
         HasMore = false;
         Note = $"游标已释放（{reason}）";
     }
+
+    /// <summary>关闭结果区（#189）：清网格态并回到「隐藏」，编辑器占满整页。</summary>
+    /// <remarks>
+    /// 游标由调用方先走 CloseQuery 幂等释放（完成 / 关闭后句柄已置空，重复调用不再发 RPC）；
+    /// SQL 文本、<see cref="ExecutedSql"/> 与 <see cref="Dirty"/> 保留——关闭结果区不清编辑器，
+    /// 重新执行仍走同一会话。与 Linux 的 close_results（reset + hide）同口径。
+    /// </remarks>
+    public void ResetResults()
+    {
+        Rows.Clear();
+        Columns.Clear();
+        HasMore = false;
+        StatementCount = 0;
+        HasResultSet = false;
+        RowsAffected = 0;
+        Headline = null;
+        Code = null;
+        Note = null;
+        QueryId = string.Empty;
+        HasExecuteResponse = false;
+        _resultsClosed = true;
+        View = QueryViewState.Empty;
+    }
+
+    /// <summary>结果区是否被用户关闭过（空态文案用；重新执行即清）。</summary>
+    private bool _resultsClosed;
 
     private void AppendRows(IReadOnlyList<Row> rows)
     {
@@ -548,6 +595,12 @@ internal sealed class QueryTabState
 
     private string EmptyText()
     {
+        // 关闭结果区后的防御分支：正常路径下此时结果区已隐藏，这句不会被看到。
+        if (_resultsClosed)
+        {
+            return "结果区已关闭：执行查询后会再次显示";
+        }
+
         // 一次都没执行过：先判「尚未执行」，否则新标签会被说成「无结果集（影响 0 行）」。
         if (StatementCount == 0 && string.IsNullOrEmpty(ExecutedSql))
         {

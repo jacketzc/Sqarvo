@@ -582,9 +582,9 @@ evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+E
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e0c1f76592db"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:704；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1461"
-note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
+spec_hash = "9f9e294af468"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:360（MinHeight 读 query_editor_min_height）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1172（ApplyQueryLayout：结果区隐藏时编辑器占满整页）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1192（默认比例读 query_editor_ratio）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:802（整段执行）"
+note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现（Linux 真类型探针编译验证 0 警告 0 错误，未在本机构建/运行 WinUI）。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
 
 [component.sync.macos]
 state = "none"
@@ -671,8 +671,9 @@ evidence = "§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-f
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "ec9afd09d462"
-note = "状态行 + 表头 + 行区 + 「加载更多」已落地；状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
+spec_hash = "6f1232564d9d"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:560（ResultsArea 容器装配，初始 Collapsed）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1172（任何 Execute 响应后显示，HasExecuteResponse 判据）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:325（HasExecuteResponse）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:543（ResetResults 关闭后回隐藏态）"
+note = "状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现（Linux 真类型探针编译验证，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
 
 [component.sync.macos]
 state = "none"
@@ -798,8 +799,10 @@ parent = "tabs.query"
 display_name = "查询分隔把手（可拖动分隔）"
 kind = "control"
 status = "active"
+hand_drawn = true
+why_not_native = "Linux 用原生 GtkPaned（vertical，L0）；WinUI 3 没有原生 splitter，Windows 自绘 Panel 把手（QuerySplitGrip，L2 复合件）：PointerPressed/Moved/Released 调 RowDefinition 高度，两端最小高度与默认比例读生成常量，同 #178 列宽拖拽口径。"
 a11y.name = "（原生 GtkPaned 分栏，无独立可访问名）"
-native_control = "gtk:GtkPaned（vertical） / winui:— / swift:—"
+native_control = "gtk:GtkPaned（vertical） / winui:自绘 Panel 把手（QuerySplitGrip） / swift:—"
 style.metrics = ["query_splitter_width", "query_editor_min_height", "query_results_min_height", "query_editor_ratio"]
 style.tokens = ["sqarvo_separator"]
 impl_notes = [
@@ -825,12 +828,14 @@ source = "src/sql_page.rs:350、src/sql_page.rs:1328"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "838db5305e8d"
+spec_hash = "22b3395b5c6c"
 evidence = "src/sql_page.rs:259（GtkPaned 装配）/ 332（拖动回写）/ 1328（比例应用）；src/theme.rs:903（把手 CSS）；#189 隔离 QA 日志「分隔位置应用 position=239（页高 603，占比 0.40）」+ 截图 189-04 + AT-SPI 只读遍历（分栏容器 role=generic 暴露 CurrentValue=239、把手 role=separator 无名；关闭按钮名「关闭结果区」role=button）"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
+state = "partial"
+spec_hash = "22b3395b5c6c"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:582（把手装配：MinHeight 读 query_splitter_width、初始 Collapsed）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1219（WireQuerySplitter：PointerPressed/Moved/Released）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1310（EndQuerySplit：比例回写标签内存态）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1966（QuerySplitGrip：SizeNorthSouth 光标）"
+note = "WinUI 3 无原生 splitter → 自绘 Panel 把手（同 #178 列宽拖拽口径）；两端最小高度与默认比例读生成常量（query_editor_min_height / query_results_min_height / query_editor_ratio），结果区隐藏时一并 Collapsed。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，拖动手感 / 光标观感待人工确认；无键盘调节路径（与 Linux 同为 P1）。"
 
 [component.sync.macos]
 state = "none"
@@ -875,8 +880,10 @@ spec_hash = "3d357f190844"
 evidence = "src/results.rs:360-365（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×）"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
+state = "partial"
+spec_hash = "3d357f190844"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:528（按钮构造：SymbolIcon(Cancel) + AutomationProperties「关闭结果区」+ tooltip）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1443（执行中置灰 + tooltip「查询执行中，请先取消」）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1344（CloseResultsAreaAsync：Close RPC + ResetResults + 隐藏）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1365（脏行丢弃确认，同数据页 ContentDialog 口径）"
+note = "位置在结果说明行右端（Windows 查询页尚无导出入口，§7.1）；关闭 = ReleaseCursorAsync（Close RPC 幂等）+ ResetResults + ApplyQueryLayout，SQL 文本保留。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，弹窗 / 置灰观感待人工确认。当前结果网格只读（QueryModel.DirtyRowCount 恒 0），丢弃确认路径已接线但不会被触发。"
 
 [component.sync.macos]
 state = "none"

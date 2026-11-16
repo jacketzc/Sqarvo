@@ -1,3 +1,4 @@
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -49,6 +50,10 @@ namespace Sqarvo.Windows.Views;
 /// </remarks>
 public sealed partial class ShellView
 {
+    // #189 查询页根 Grid 行索引：0 动作行 / 1 编辑器（star）/ 2 分隔把手（Auto）/ 3 结果区（star）。
+    private const int QueryEditorRowIndex = 1;
+    private const int QueryResultsRowIndex = 3;
+
     /// <summary>Close 的独立超时：句柄释放不能把界面卡住（与 <see cref="QueryHandle"/> 的 dispose 同一取舍）。</summary>
     private static readonly TimeSpan CursorCloseTimeout = TimeSpan.FromSeconds(2);
 
@@ -253,6 +258,35 @@ public sealed partial class ShellView
 
         /// <summary>上一次写进编辑器的文本（判断 <c>*</c> 用）。</summary>
         public string LastEditorText { get; set; } = string.Empty;
+
+        // ---- #189 查询标签布局：结果区显隐 + 关闭按钮 + 可拖动分隔 ----
+
+        /// <summary>编辑器容器（行 1）：拖动分隔时改它的行高。</summary>
+        public Grid EditorArea { get; set; } = new();
+
+        /// <summary>结果区容器（行 3）：状态行 / 说明行（含关闭按钮）/ 表头 / 行区 / 加载更多，整体显隐。</summary>
+        public Grid ResultsArea { get; set; } = new();
+
+        /// <summary>编辑器与结果区之间的分隔把手（行 2，自绘 L2 复合件）。</summary>
+        public Panel Splitter { get; set; } = new QuerySplitGrip();
+
+        /// <summary>「关闭结果区」按钮（结果说明行右端；Linux 在导出▾右侧，Windows 无导出入口）。</summary>
+        public Button CloseResults { get; set; } = new();
+
+        /// <summary>
+        /// 编辑器高度占比（#189，内存态）：默认读生成常量 <c>Metrics.QueryEditorRatio</c>，
+        /// 拖动回写只进这里，不持久化；结果区再次显示时恢复。与 Linux split_position 同口径。
+        /// </summary>
+        public double EditorRatio { get; set; } = Metrics.QueryEditorRatio;
+
+        /// <summary>是否正在拖动分隔把手。</summary>
+        public bool SplitterDragging { get; set; }
+
+        /// <summary>按下时的指针 Y（相对页根，参照系不随行高变化移动）。</summary>
+        public double SplitStartY { get; set; }
+
+        /// <summary>按下时编辑器行的像素高度。</summary>
+        public double SplitStartEditorHeight { get; set; }
     }
 
     /// <summary>
@@ -271,12 +305,12 @@ public sealed partial class ShellView
         {
             Padding = new Thickness(Metrics.GridPaddingStart, 0, Metrics.GridPaddingEnd, 0),
         };
+        // #189 布局：动作行 / 编辑器（star）/ 分隔把手（Auto）/ 结果区容器（star）。
+        // 结果区隐藏时编辑器占满整页；显示时默认占比 query_editor_ratio，可拖动调整（内存态）。
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(3, GridUnitType.Star) });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         // ---- 动作行：执行 / 取消（同一个入口切换文案）+ 快捷键提示 ----
         var actions = new StackPanel
@@ -319,7 +353,12 @@ public sealed partial class ShellView
         root.Children.Add(actions);
 
         // ---- 编辑器：行号沟 + 等宽多行 TextBox ----
-        var editorArea = new Grid { Margin = new Thickness(0, Metrics.GridPaddingEnd, 0, Metrics.GridPaddingEnd) };
+        // #189 最小高度随密度档（生成常量，不硬编码第二份）。
+        var editorArea = new Grid
+        {
+            Margin = new Thickness(0, Metrics.GridPaddingEnd, 0, Metrics.GridPaddingEnd),
+            MinHeight = Metrics.QueryEditorMinHeight,
+        };
         editorArea.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Metrics.RowNumberWidth) });
         editorArea.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -374,8 +413,9 @@ public sealed partial class ShellView
         Grid.SetColumn(tab.Editor, 1);
         editorArea.Children.Add(tab.Editor);
 
-        Grid.SetRow(editorArea, 1);
+        Grid.SetRow(editorArea, QueryEditorRowIndex);
         root.Children.Add(editorArea);
+        tab.EditorArea = editorArea;
 
         // ---- 五态一行（Error / Cancelled 时行区仍保留已取到的数据） ----
         tab.StateText = new TextBlock
@@ -387,8 +427,7 @@ public sealed partial class ShellView
             Margin = new Thickness(0, 0, 0, Metrics.GridPaddingEnd),
         };
         AutomationProperties.SetName(tab.StateText, "查询状态");
-        Grid.SetRow(tab.StateText, 2);
-        root.Children.Add(tab.StateText);
+        // #189：状态行移入结果区容器（行 0），随结果区整体显隐；装配在 BuildQueryPage 末尾。
 
         tab.MetaText = new TextBlock
         {
@@ -446,8 +485,7 @@ public sealed partial class ShellView
         };
         AutomationProperties.SetName(tab.BodyScroll, "查询结果");
         tab.BodyScroll.ViewChanged += (_, _) => OnQueryBodyScrolled(captured);
-        Grid.SetRow(tab.BodyScroll, 4);
-        root.Children.Add(tab.BodyScroll);
+        // #189：行区移入结果区容器（行 2），装配在 BuildQueryPage 末尾。
 
         tab.HeaderScroll.ViewChanged += (_, _) => SyncQueryScroll(captured, fromBody: false);
 
@@ -465,8 +503,7 @@ public sealed partial class ShellView
         };
         tab.LoadMore.Click += (_, _) => _ = FetchMoreAsync(captured, reason: "加载更多");
         AutomationProperties.SetName(tab.LoadMore, "查询结果加载更多");
-        Grid.SetRow(tab.LoadMore, 5);
-        root.Children.Add(tab.LoadMore);
+        // #189：加载更多移入结果区容器（行 3），装配在 BuildQueryPage 末尾。
 
         tab.Root = root;
 
@@ -485,16 +522,80 @@ public sealed partial class ShellView
         ToolTipService.SetToolTip(item, $"{state.Title} · 查询标签（Ctrl+W 关闭）");
         tab.Item = item;
 
+        // #189 关闭结果区按钮：Linux 在「导出 ▾」右侧；Windows 查询页没有导出入口
+        // （导出菜单未实现，见 §7.1），放在结果说明行右端——items / 语义与 Linux 一致。
+        // 原生 SymbolIcon（L0），无可见文字；可访问名与 tooltip 与 Linux 逐字一致。
+        tab.CloseResults = new Button
+        {
+            Content = new SymbolIcon(Symbol.Cancel),
+            MinWidth = Metrics.SecondaryMinHeight,
+            MinHeight = Metrics.SecondaryMinHeight,
+            Padding = new Thickness(Metrics.InspectorGap, 0, Metrics.InspectorGap, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetName(tab.CloseResults, "关闭结果区");
+        ToolTipService.SetToolTip(tab.CloseResults, "关闭结果区（释放查询资源）");
+        tab.CloseResults.Click += (_, _) => _ = CloseResultsAreaAsync(captured);
+
         // 「段数 / 列数 / 查询 id」那一行与表头共用一个容器：表头与行区之间不插文字，列不会错位。
+        // #189：说明行右端加关闭按钮（说明文字 1* 收缩省略，按钮 Auto 不被挤掉）。
+        var metaRow = new Grid();
+        metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(tab.MetaText, 0);
+        Grid.SetColumn(tab.CloseResults, 1);
+        metaRow.Children.Add(tab.MetaText);
+        metaRow.Children.Add(tab.CloseResults);
+
         var resultsHeader = new Grid();
         resultsHeader.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         resultsHeader.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(tab.MetaText, 0);
-        resultsHeader.Children.Add(tab.MetaText);
+        Grid.SetRow(metaRow, 0);
+        resultsHeader.Children.Add(metaRow);
         Grid.SetRow(headerHost, 1);
         resultsHeader.Children.Add(headerHost);
-        Grid.SetRow(resultsHeader, 3);
-        root.Children.Add(resultsHeader);
+
+        // #189 结果区容器：状态行 → 说明行（含关闭按钮）→ 表头 → 行区 → 加载更多。
+        // 整体显隐：新标签隐藏（编辑器占满），任何 Execute 响应后显示；最小高度读生成常量。
+        tab.ResultsArea = new Grid
+        {
+            MinHeight = Metrics.QueryResultsMinHeight,
+            Visibility = Visibility.Collapsed,
+        };
+        tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(tab.StateText, 0);
+        Grid.SetRow(resultsHeader, 1);
+        Grid.SetRow(tab.BodyScroll, 2);
+        Grid.SetRow(tab.LoadMore, 3);
+        tab.ResultsArea.Children.Add(tab.StateText);
+        tab.ResultsArea.Children.Add(resultsHeader);
+        tab.ResultsArea.Children.Add(tab.BodyScroll);
+        tab.ResultsArea.Children.Add(tab.LoadMore);
+        Grid.SetRow(tab.ResultsArea, QueryResultsRowIndex);
+        root.Children.Add(tab.ResultsArea);
+
+        // #189 可拖动分隔：WinUI 3 无原生 splitter，自绘 L2 复合件（透明命中区 + 1px 分隔线）。
+        // 厚度取度量 query_splitter_width；随结果区一并隐藏（隐藏时不可测量、不可交互）。
+        tab.Splitter = new QuerySplitGrip
+        {
+            Height = Metrics.QuerySplitterWidth,
+            Background = ThemeBrush("SqarvoTransparentBrush"),
+            Visibility = Visibility.Collapsed,
+        };
+        tab.Splitter.Children.Add(new Rectangle
+        {
+            Height = Metrics.BorderWidthPxNeverScaled,
+            Fill = ThemeBrush("SqarvoDividerBrush"),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        });
+        AutomationProperties.SetName(tab.Splitter, "查询编辑器与结果区分栏");
+        Grid.SetRow(tab.Splitter, 2);
+        root.Children.Add(tab.Splitter);
+        WireQuerySplitter(tab, tab.Splitter);
 
         return tab;
     }
@@ -1061,6 +1162,234 @@ public sealed partial class ShellView
         }
     }
 
+    // ------------------------------------------------------------------ #189 布局：显隐 / 比例 / 拖动 / 关闭结果区
+
+    /// <summary>
+    /// #189 结果区显隐的唯一入口：新标签（还没有任何 Execute 响应）隐藏结果区与分隔把手，
+    /// 编辑器占满整页；任何 Execute 响应（成功 / 失败 / 取消 / 无结果集）后显示，并按内存态
+    /// 比例恢复两行高度。每次 <see cref="RenderQuery"/> 都过这里，状态与控件不会脱节。
+    /// </summary>
+    private void ApplyQueryLayout(QueryTab tab)
+    {
+        var show = tab.State.HasExecuteResponse;
+        tab.ResultsArea.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        tab.Splitter.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show)
+        {
+            // 编辑器行回到 1*：整页除动作行外都归编辑器（隐藏时不可测量、不可交互）。
+            tab.Root.RowDefinitions[QueryEditorRowIndex].Height = new GridLength(1, GridUnitType.Star);
+            tab.Root.RowDefinitions[QueryResultsRowIndex].Height = new GridLength(1, GridUnitType.Star);
+            return;
+        }
+
+        ApplyQuerySplitRatio(tab);
+    }
+
+    /// <summary>
+    /// 按 <see cref="QueryTab.EditorRatio"/> 分配编辑器 / 结果区两行：像素值受两端最小高度
+    /// （生成常量）约束。可用高度未测量（≤0）时退回 star 比例，布局完成后由 SizeChanged 再收敛。
+    /// </summary>
+    private void ApplyQuerySplitRatio(QueryTab tab)
+    {
+        var editorMin = (double)Metrics.QueryEditorMinHeight;
+        var resultsMin = (double)Metrics.QueryResultsMinHeight;
+        var available = tab.Root.ActualHeight
+            - tab.Root.RowDefinitions[0].ActualHeight
+            - tab.Splitter.ActualHeight;
+        if (available <= editorMin + resultsMin)
+        {
+            // 还没测量或窗口太矮：star 比例兜底（MinHeight 仍由容器保证），不写死像素。
+            tab.Root.RowDefinitions[QueryEditorRowIndex].Height =
+                new GridLength(tab.EditorRatio, GridUnitType.Star);
+            tab.Root.RowDefinitions[QueryResultsRowIndex].Height =
+                new GridLength(1 - tab.EditorRatio, GridUnitType.Star);
+            return;
+        }
+
+        var editor = Math.Clamp(tab.EditorRatio * available, editorMin, available - resultsMin);
+        tab.Root.RowDefinitions[QueryEditorRowIndex].Height = new GridLength(editor);
+        tab.Root.RowDefinitions[QueryResultsRowIndex].Height = new GridLength(available - editor);
+    }
+
+    /// <summary>
+    /// #189 分隔把手接线：按下记参照系（页根，不随行高变化移动）→ 拖动实时改两行像素高度 →
+    /// 松开把比例写回标签内存态（不持久化）。与 #178 列宽拖拽同一套指针口径：左键判定、
+    /// CapturePointer 失败即放弃、按键早松按取消处理、PointerCaptureLost 收尾。
+    /// </summary>
+    private void WireQuerySplitter(QueryTab tab, Panel grip)
+    {
+        // 页根尺寸变化（窗口缩放 / 密度档重建）时按内存态比例重新收敛；拖动中不打断。
+        tab.Root.SizeChanged += (_, _) =>
+        {
+            if (!tab.Closed && !tab.SplitterDragging && tab.State.HasExecuteResponse)
+            {
+                ApplyQuerySplitRatio(tab);
+            }
+        };
+
+        grip.PointerPressed += (_, args) =>
+        {
+            if (tab.Closed || !tab.State.HasExecuteResponse)
+            {
+                return;
+            }
+
+            var point = args.GetCurrentPoint(tab.Root);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            var editorHeight = tab.Root.RowDefinitions[QueryEditorRowIndex].ActualHeight;
+            if (editorHeight <= 0)
+            {
+                return;
+            }
+
+            tab.SplitterDragging = true;
+            tab.SplitStartY = point.Position.Y;
+            tab.SplitStartEditorHeight = editorHeight;
+            if (!grip.CapturePointer(args.Pointer))
+            {
+                tab.SplitterDragging = false;
+                return;
+            }
+
+            args.Handled = true;
+        };
+
+        grip.PointerMoved += (_, args) =>
+        {
+            if (tab.Closed || !tab.SplitterDragging)
+            {
+                return;
+            }
+
+            var point = args.GetCurrentPoint(tab.Root);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                // 按键早松了但没收到 PointerReleased（捕获丢了）：按取消处理。
+                EndQuerySplit(tab, grip, args.Pointer, commit: false);
+                return;
+            }
+
+            var editorMin = (double)Metrics.QueryEditorMinHeight;
+            var resultsMin = (double)Metrics.QueryResultsMinHeight;
+            var available = tab.Root.ActualHeight
+                - tab.Root.RowDefinitions[0].ActualHeight
+                - tab.Splitter.ActualHeight;
+            if (available <= editorMin + resultsMin)
+            {
+                return;
+            }
+
+            var editor = Math.Clamp(
+                tab.SplitStartEditorHeight + (point.Position.Y - tab.SplitStartY),
+                editorMin,
+                available - resultsMin);
+            tab.Root.RowDefinitions[QueryEditorRowIndex].Height = new GridLength(editor);
+            tab.Root.RowDefinitions[QueryResultsRowIndex].Height = new GridLength(available - editor);
+            args.Handled = true;
+        };
+
+        grip.PointerReleased += (_, args) =>
+        {
+            if (!tab.SplitterDragging)
+            {
+                return;
+            }
+
+            EndQuerySplit(tab, grip, args.Pointer, commit: true);
+            args.Handled = true;
+        };
+
+        grip.PointerCaptureLost += (_, _) => EndQuerySplit(tab, grip, null, commit: false);
+    }
+
+    /// <summary>结束拖动：commit 时把最终像素高度换算成比例写回内存态；否则只收捕获。</summary>
+    private void EndQuerySplit(QueryTab tab, Panel grip, Pointer? pointer, bool commit)
+    {
+        if (!tab.SplitterDragging)
+        {
+            return;
+        }
+
+        tab.SplitterDragging = false;
+        if (pointer is not null)
+        {
+            grip.ReleasePointerCapture(pointer);
+        }
+
+        if (!commit || tab.Closed)
+        {
+            return;
+        }
+
+        var available = tab.Root.ActualHeight
+            - tab.Root.RowDefinitions[0].ActualHeight
+            - tab.Splitter.ActualHeight;
+        var editor = tab.Root.RowDefinitions[QueryEditorRowIndex].ActualHeight;
+        if (available > 0 && editor > 0)
+        {
+            tab.EditorRatio = Math.Clamp(editor / available, 0, 1);
+            ConsoleBridge.WriteDiagnostic(
+                $"[query] {tab.State.Title} 分栏比例 position={editor:F0}/{available:F0}≈{tab.EditorRatio:F2}（内存态，不持久化）");
+        }
+    }
+
+    /// <summary>
+    /// #189 关闭结果区：Close RPC（幂等，复用既有游标释放路径）+ 清网格态 + 隐藏（编辑器占满）。
+    /// SQL 文本与执行历史保留；脏行先弹丢弃确认（当前结果网格只读，判据保留以便将来自动生效）。
+    /// </summary>
+    private async Task CloseResultsAreaAsync(QueryTab tab)
+    {
+        if (tab.Closed || tab.State.Busy || tab.RunPending || !tab.State.HasExecuteResponse)
+        {
+            return;
+        }
+
+        if (tab.State.DirtyRowCount > 0 && !await ConfirmDiscardQueryResultsAsync(tab).ConfigureAwait(true))
+        {
+            return;
+        }
+
+        // 句柄已空时不发 RPC（幂等）；Close 失败只记日志，不阻止隐藏（与关页同口径）。
+        await ReleaseCursorAsync(tab, "关闭结果区").ConfigureAwait(true);
+        tab.State.ResetResults();
+        tab.ColumnCount = 0;
+        RenderQuery(tab);
+        ConsoleBridge.WriteDiagnostic($"[query] {tab.State.Title} 结果区已关闭：游标已释放，编辑器占满整页");
+    }
+
+    /// <summary>脏行丢弃确认（复用仓库既有 ContentDialog 口径：XamlRoot + _dialogOpen 防重入）。</summary>
+    private async Task<bool> ConfirmDiscardQueryResultsAsync(QueryTab tab)
+    {
+        if (_dialogOpen)
+        {
+            return false;
+        }
+
+        _dialogOpen = true;
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                Title = "关闭结果区",
+                Content = $"结果区有 {tab.State.DirtyRowCount} 行未保存的修改，关闭后将丢弃这些修改。确定关闭吗？",
+                PrimaryButtonText = "丢弃并关闭",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = XamlRoot,
+            };
+            var result = await dialog.ShowAsync();
+            return result == ContentDialogResult.Primary;
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+    }
+
     // ------------------------------------------------------------------ 渲染（唯一入口）
 
     /// <summary>把一个查询页按状态整体重画（五态文案 + 表头 + 行区 + 加载更多）。</summary>
@@ -1072,6 +1401,7 @@ public sealed partial class ShellView
         }
 
         UpdateRunButton(tab);
+        ApplyQueryLayout(tab);
 
         tab.StateText.Text = tab.State.StateText;
         tab.StateText.Visibility = tab.State.StateText.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -1107,6 +1437,13 @@ public sealed partial class ShellView
                 ? "取消当前查询（Ctrl+.，可重复点，幂等）"
                 : "执行编辑器中的 SQL（Ctrl+Enter）；选中文本时只执行选中部分");
         AutomationProperties.SetName(tab.RunButton, busy ? "取消查询" : "执行 SQL");
+
+        // #189 关闭结果区：执行中置灰 + tooltip 改「查询执行中，请先取消」；
+        // 没有 Execute 响应（新标签 / 刚关闭）时同样不可点。
+        tab.CloseResults.IsEnabled = !busy && tab.State.HasExecuteResponse;
+        ToolTipService.SetToolTip(
+            tab.CloseResults,
+            busy ? "查询执行中，请先取消" : "关闭结果区（释放查询资源）");
     }
 
     /// <summary>结果表头：行号 + 每列「列名 · 原始类型」（每次整体重建，不指望属性变更自动重画）。</summary>
@@ -1619,4 +1956,18 @@ public sealed partial class ShellView
 
     private static string Quote(string text) =>
         text.IndexOf('|') >= 0 || text.IndexOf(' ') >= 0 ? $"\"{text}\"" : text;
+
+    /// <summary>
+    /// #189 查询页分隔把手：WinUI 3 没有原生 splitter，自绘 L2 复合件。
+    /// 与 #178 的 <c>ColumnResizeGrip</c> 同一套路：Border 是 sealed 不能派生，
+    /// <c>ProtectedCursor</c> 是 protected——派生 Panel 在构造时把指针光标设成 SizeNorthSouth。
+    /// 命中热区 = 整个把手（厚度取度量 query_splitter_width），中间一条 1px 分隔线。
+    /// </summary>
+    private sealed class QuerySplitGrip : Panel
+    {
+        public QuerySplitGrip()
+        {
+            ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeNorthSouth);
+        }
+    }
 }
