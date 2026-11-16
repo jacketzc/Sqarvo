@@ -312,6 +312,24 @@ pub fn set_session_context_request(
     }
 }
 
+/// #190：多语句脚本执行失败时，服务端随错误下发的语句位置（gRPC trailing metadata）。
+///
+/// 两个键都来自 `rpc-server/src/error.rs`：`sqarvo-failed-statement`（失败语句下标，
+/// 0 起）与 `sqarvo-completed-statements`（失败前已成功执行的语句数）。Execute 是原子的：
+/// 失败响应**不带**语句摘要与已执行语句的行，客户端只能如实展示位置，不编造内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatementPosition {
+    /// 失败语句下标（0 起）。
+    pub failed_index: u32,
+    /// 失败前已成功执行的语句数。
+    pub completed: u32,
+}
+
+/// 失败语句下标的 trailing metadata 键（与后端 `error.rs` 同一口径）。
+pub const FAILED_STATEMENT_METADATA_KEY: &str = "sqarvo-failed-statement";
+/// 已完成语句数的 trailing metadata 键（与后端 `error.rs` 同一口径）。
+pub const COMPLETED_STATEMENTS_METADATA_KEY: &str = "sqarvo-completed-statements";
+
 /// 查询类失败的结构化分类。
 ///
 /// 与 `ConnectionFailure` 分开：连接错误提示「去改连接参数」，查询错误提示「改 SQL 或
@@ -319,7 +337,12 @@ pub fn set_session_context_request(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryFailure {
     /// SQL 执行失败（语法错误、对象不存在、权限不足等），保留后端错误码与文案。
-    Execution { code: String, message: String },
+    /// `position`：多语句脚本失败时的语句位置（单语句 / 无 metadata 时为 None）。
+    Execution {
+        code: String,
+        message: String,
+        position: Option<StatementPosition>,
+    },
     /// 查询被取消（`query.cancelled` / `CANCELLED`）。
     Cancelled { message: String },
     /// 查询不存在或已结束（`query.not_found`）。
@@ -401,6 +424,15 @@ impl QueryFailure {
         matches!(self, Self::SessionLost { .. } | Self::Unavailable { .. })
     }
 
+    /// #190：多语句脚本失败时的语句位置（单语句 / 无 metadata 时为 None）。
+    #[must_use]
+    pub fn statement_position(&self) -> Option<StatementPosition> {
+        match self {
+            Self::Execution { position, .. } => *position,
+            _ => None,
+        }
+    }
+
     /// 一行可展示文案：`结论：说明 [错误码]`。
     #[must_use]
     pub fn message(&self) -> String {
@@ -418,6 +450,8 @@ pub fn failure_from_status(status: &tonic::Status) -> QueryFailure {
         .unwrap_or_default()
         .to_owned();
     let message = sanitize(status.message());
+    // #190：多语句脚本失败的位置信息（两个键都在才算数；缺一个就不猜）。
+    let position = parse_statement_position(status.metadata());
 
     match code.as_str() {
         "query.cancelled" => return QueryFailure::Cancelled { message },
@@ -431,6 +465,7 @@ pub fn failure_from_status(status: &tonic::Status) -> QueryFailure {
             return QueryFailure::Execution {
                 code: other.to_owned(),
                 message,
+                position,
             };
         }
     }
@@ -447,6 +482,7 @@ pub fn failure_from_status(status: &tonic::Status) -> QueryFailure {
         tonic::Code::InvalidArgument => QueryFailure::Execution {
             code: "invalid_argument".to_owned(),
             message,
+            position,
         },
         _ => QueryFailure::Other {
             code: status.code().to_string(),
@@ -461,6 +497,29 @@ pub fn failure_timeout(operation: &str, limit: std::time::Duration) -> QueryFail
     QueryFailure::Timeout {
         message: format!("{operation}在 {} 秒内未返回", limit.as_secs()),
     }
+}
+
+/// #190：从 trailing metadata 解析语句位置。
+///
+/// 两个键**都在**才采信（缺一个就不猜）；值必须是合法 u32。后端只在多语句脚本
+/// 执行失败时下发这两个键（`rpc-server/src/error.rs`），单语句失败没有它们。
+fn parse_statement_position(metadata: &tonic::metadata::MetadataMap) -> Option<StatementPosition> {
+    let failed_index = metadata
+        .get(FAILED_STATEMENT_METADATA_KEY)?
+        .to_str()
+        .ok()?
+        .parse::<u32>()
+        .ok()?;
+    let completed = metadata
+        .get(COMPLETED_STATEMENTS_METADATA_KEY)?
+        .to_str()
+        .ok()?
+        .parse::<u32>()
+        .ok()?;
+    Some(StatementPosition {
+        failed_index,
+        completed,
+    })
 }
 
 /// 截断并清理后端消息：只保留首行、限制长度（与连接域同一口径）。
@@ -1879,5 +1938,57 @@ mod tests {
             "shop"
         );
         assert_eq!(set_session_context_request("sess-1", "").catalog, "");
+    }
+
+    #[test]
+    fn statement_position_needs_both_metadata_keys() {
+        use tonic::metadata::MetadataMap;
+        let mut both = MetadataMap::new();
+        both.insert(FAILED_STATEMENT_METADATA_KEY, "2".parse().unwrap());
+        both.insert(COMPLETED_STATEMENTS_METADATA_KEY, "2".parse().unwrap());
+        assert_eq!(
+            parse_statement_position(&both),
+            Some(StatementPosition {
+                failed_index: 2,
+                completed: 2
+            })
+        );
+        // 缺一个键就不猜（单语句失败没有这两个键）。
+        let mut only_failed = MetadataMap::new();
+        only_failed.insert(FAILED_STATEMENT_METADATA_KEY, "0".parse().unwrap());
+        assert_eq!(parse_statement_position(&only_failed), None);
+        assert_eq!(parse_statement_position(&MetadataMap::new()), None);
+        // 非法值不采信。
+        let mut bad = MetadataMap::new();
+        bad.insert(FAILED_STATEMENT_METADATA_KEY, "x".parse().unwrap());
+        bad.insert(COMPLETED_STATEMENTS_METADATA_KEY, "1".parse().unwrap());
+        assert_eq!(parse_statement_position(&bad), None);
+    }
+
+    #[test]
+    fn only_execution_failures_carry_a_statement_position() {
+        let position = StatementPosition {
+            failed_index: 1,
+            completed: 1,
+        };
+        let execution = QueryFailure::Execution {
+            code: "sqlite.error".to_owned(),
+            message: "no such table".to_owned(),
+            position: Some(position),
+        };
+        assert_eq!(execution.statement_position(), Some(position));
+        let single = QueryFailure::Execution {
+            code: "sqlite.error".to_owned(),
+            message: "no such table".to_owned(),
+            position: None,
+        };
+        assert_eq!(single.statement_position(), None);
+        assert_eq!(
+            QueryFailure::Cancelled {
+                message: "x".to_owned()
+            }
+            .statement_position(),
+            None
+        );
     }
 }

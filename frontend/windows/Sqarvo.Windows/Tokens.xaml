@@ -67,6 +67,9 @@
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
             <!-- 拼装 DDL 的警示（exact=false）：琥珀，系统 token，不写死颜色 -->
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
+            <!-- #190 失败语句条目的警示底色：系统 critical token，不写死颜色
+                 （与 Linux 切换行的 destructive-action 同职责；配对前景用 SqarvoOnAccentTextBrush）。 -->
+            <StaticResource x:Key="SqarvoDangerBrush" ResourceKey="SystemFillColorCriticalBrush" />
 
             <!-- 禁用文字 = 说明文字（同一种灰） -->
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -123,6 +126,9 @@
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SqarvoBrandMidBrush" />
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
+            <!-- #190 失败语句条目的警示底色：系统 critical token，不写死颜色
+                 （与 Linux 切换行的 destructive-action 同职责；配对前景用 SqarvoOnAccentTextBrush）。 -->
+            <StaticResource x:Key="SqarvoDangerBrush" ResourceKey="SystemFillColorCriticalBrush" />
 
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -178,6 +184,9 @@
             <StaticResource x:Key="SqarvoSelectionBrush" ResourceKey="SqarvoBrandMidBrush" />
             <StaticResource x:Key="SqarvoOnSelectionTextBrush" ResourceKey="SqarvoOnBrandTextBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
+            <!-- #190 失败语句条目的警示底色：系统 critical token，不写死颜色
+                 （与 Linux 切换行的 destructive-action 同职责；配对前景用 SqarvoOnAccentTextBrush）。 -->
+            <StaticResource x:Key="SqarvoDangerBrush" ResourceKey="SystemFillColorCriticalBrush" />
 
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
             <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorSecondaryBrush" />
@@ -233,6 +242,9 @@
                  与 ToggleButtonBackgroundCheckedDisabled 同一 token；不能留给硬编码 #D8B7D3。 -->
             <StaticResource x:Key="SqarvoBrandSoftBrush" ResourceKey="SubtleFillColorSecondaryBrush" />
             <StaticResource x:Key="SqarvoWarningTextBrush" ResourceKey="SystemFillColorCautionBrush" />
+            <!-- #190 失败语句条目的警示底色：系统 critical token，不写死颜色
+                 （与 Linux 切换行的 destructive-action 同职责；配对前景用 SqarvoOnAccentTextBrush）。 -->
+            <StaticResource x:Key="SqarvoDangerBrush" ResourceKey="SystemFillColorCriticalBrush" />
 
             <!-- 高对比下不做「同一种灰」的收拢：禁用态必须与正文有足够对比度差，交给系统 -->
             <StaticResource x:Key="ButtonForegroundDisabled" ResourceKey="TextFillColorDisabledBrush" />

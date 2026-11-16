@@ -269,6 +269,7 @@ impl ExportSource {
                     RunState::Disconnected => Some("后端已断开，只含已接收的行"),
                     RunState::Empty | RunState::NoResultSet => Some("没有完整的结果集"),
                     RunState::Loading => Some("仍在等待数据"),
+                    RunState::Undelivered => Some("语句已执行，但结果未返回，没有可导出的行"),
                 };
                 ExportPlan {
                     titles: results.column_names(),

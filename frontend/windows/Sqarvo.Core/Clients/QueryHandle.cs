@@ -113,6 +113,57 @@ public sealed class QueryHandle : IAsyncDisposable
     }
 
     /// <summary>
+    /// Fetches the next batch of a specific statement of a multi-statement query (#190).
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="FetchBatchAsync"/>, the cursor coordinates are owned by the caller: each
+    /// statement of a multi-statement script has its own <c>page_token</c>/<c>has_more</c>, kept in the
+    /// UI's per-statement slots. This method therefore does not mutate the handle's single-statement
+    /// cursor state (<see cref="PageToken"/>/<see cref="HasMore"/> stay at the first result set's
+    /// coordinates). When the response reports <c>complete</c> the whole query has been delivered
+    /// (#187 semantics) and the handle is closed, exactly like <see cref="FetchBatchAsync"/>.
+    /// </remarks>
+    /// <param name="statementIndex">Zero-based index of the statement to fetch.</param>
+    /// <param name="pageToken">The statement's cursor; empty for its first batch.</param>
+    /// <param name="maxRows">Maximum rows for this batch; 0 means the server default.</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <returns>The batch; the caller stores its <c>PageToken</c>/<c>HasMore</c> in the statement's slot.</returns>
+    /// <exception cref="SqarvoClientException">The cursor was closed or the backend rejected the fetch.</exception>
+    public async Task<QueryBatch> FetchStatementBatchAsync(
+        uint statementIndex,
+        string pageToken,
+        uint maxRows = 0,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsClosed)
+        {
+            throw new SqarvoClientException(
+                SqarvoErrorKind.InvalidArgument,
+                "QueryService.FetchBatch",
+                "查询句柄已关闭，不能再取下一批（先 Execute 得到新的 query_id）",
+                Grpc.Core.StatusCode.FailedPrecondition);
+        }
+
+        var request = new FetchBatchRequest
+        {
+            QueryId = QueryId,
+            PageToken = pageToken,
+            MaxRows = maxRows,
+            StatementIndex = statementIndex,
+        };
+
+        var response = await _rpc.FetchBatchAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (response.Complete)
+        {
+            // The backend already released the cursor when it reports completion of the whole query.
+            Interlocked.Exchange(ref _closed, 1);
+        }
+
+        return new QueryBatch(response.Rows.ToArray(), response.PageToken, response.HasMore, response.Complete);
+    }
+
+    /// <summary>
     /// Cancels the running statement. The cursor stays open: the contract keeps cancellation and cursor
     /// release separate, so the caller still has to <see cref="CloseAsync"/> (or dispose).
     /// </summary>

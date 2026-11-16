@@ -1,5 +1,6 @@
 using Sqarvo.Common.V1;
 using Sqarvo.Core.Model;
+using Sqarvo.Services.V1;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -9,7 +10,8 @@ using System.Text;
 namespace Sqarvo.Windows.Workspace;
 
 /// <summary>
-/// 结果区的五态（`ui-behavior-contract.md` §8.3 的「查询标签」列）：加载 / 空 / 错误 / 取消 / 只读。
+/// 结果区的状态（`ui-behavior-contract.md` §8.3 的「查询标签」列）：加载 / 空 / 错误 / 取消 / 只读，
+/// 另加 #190 多语句的两个占位态：无结果集（写语句摘要）/ 结果未返回（原子失败里已执行的语句）。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -39,6 +41,12 @@ internal enum QueryViewState
 
     /// <summary>已有行并且是只读结果（查询结果网格的终态）。</summary>
     ReadOnly = 4,
+
+    /// <summary>#190 多语句：写语句执行成功但没有结果集，占位页显示影响行数摘要。</summary>
+    NoResultSet = 5,
+
+    /// <summary>#190 多语句原子失败（ADR 0006）：该语句已执行成功，但后端未保留其结果游标。</summary>
+    Undelivered = 6,
 }
 
 /// <summary>查询面里与档位无关的硬约束。</summary>
@@ -257,6 +265,74 @@ internal static class QuerySql
 }
 
 /// <summary>
+/// #190 多语句：一条语句的独立网格状态（与 Linux `StatementSlot` 同口径）。
+/// 行列表与顶层 <see cref="QueryTabState.Rows"/> 共享同一实例——切换语句只换引用，不复制行，
+/// 已加载的行在切换后原样保留。
+/// </summary>
+internal sealed class StatementSlot
+{
+    /// <summary>语句摘要（失败路径为 null：原子失败响应不带任何摘要）。</summary>
+    public StatementSummary? Summary { get; init; }
+
+    /// <summary>该语句已加载的行。</summary>
+    public List<string[]> Rows { get; } = new();
+
+    /// <summary>该语句的列（无结果集 / 未加载时为空）。</summary>
+    public List<QueryColumn> Columns { get; } = new();
+
+    /// <summary>该语句自己的续拉游标（逐语句 fetch(statement_index, page_token)）。</summary>
+    public string PageToken { get; set; } = string.Empty;
+
+    /// <summary>该语句服务端还有下一批。</summary>
+    public bool HasMore { get; set; }
+
+    /// <summary>首批是否已取回（未取回的 SELECT 选中后才拉首批）。</summary>
+    public bool Fetched { get; set; }
+
+    /// <summary>该语句的网格状态。</summary>
+    public QueryViewState State { get; set; } = QueryViewState.Empty;
+
+    /// <summary>占位页说明（无结果集摘要 / 结果未返回 / 拉取中）。</summary>
+    public string Note { get; set; } = string.Empty;
+
+    /// <summary>服务端声明该结果集只读。</summary>
+    public bool ReadOnly { get; set; }
+}
+
+/// <summary>
+/// #190 多语句执行的状态：逐语句槽位 + 选中项；失败路径只列到失败语句（ADR 0006 原子失败契约）。
+/// </summary>
+internal sealed class QueryMultiState
+{
+    public QueryMultiState(List<StatementSlot> slots, int selected, uint? failedIndex, int completed, string failureLine)
+    {
+        Slots = slots;
+        Selected = selected;
+        FailedIndex = failedIndex;
+        Completed = completed;
+        FailureLine = failureLine;
+    }
+
+    /// <summary>按脚本顺序的语句槽位（失败路径长度 = failed_index + 1）。</summary>
+    public List<StatementSlot> Slots { get; }
+
+    /// <summary>当前选中的语句（0 基；成功默认 = 最后一条 SELECT，全写 = 0，失败 = 失败条目）。</summary>
+    public int Selected { get; set; }
+
+    /// <summary>失败语句序号（null = 成功路径）。</summary>
+    public uint? FailedIndex { get; }
+
+    /// <summary>失败前已成功执行的条数。</summary>
+    public int Completed { get; }
+
+    /// <summary>失败状态行「前 N 条已执行，第 M 条失败：&lt;错误&gt;」。</summary>
+    public string FailureLine { get; }
+
+    /// <summary>是否原子失败路径。</summary>
+    public bool IsFailure => FailedIndex is not null;
+}
+
+/// <summary>
 /// 一个查询标签的状态：编辑器之外的**全部**数据都在这一个对象里（页面只是它的渲染）。
 /// </summary>
 /// <remarks>
@@ -306,11 +382,11 @@ internal sealed class QueryTabState
     /// <summary>五态。</summary>
     public QueryViewState View { get; private set; } = QueryViewState.Empty;
 
-    /// <summary>已取到的行（单元格已格式化成文字，滚动时不再重算）。</summary>
-    public List<string[]> Rows { get; } = new();
+    /// <summary>已取到的行（单元格已格式化成文字，滚动时不再重算）。多语句时指向选中槽位的行列表。</summary>
+    public List<string[]> Rows { get; private set; } = new();
 
-    /// <summary>结果集的列（空 = 没有结果集）。</summary>
-    public List<QueryColumn> Columns { get; } = new();
+    /// <summary>结果集的列（空 = 没有结果集）。多语句时指向选中槽位的列列表。</summary>
+    public List<QueryColumn> Columns { get; private set; } = new();
 
     /// <summary>服务端还有下一批。</summary>
     public bool HasMore { get; private set; }
@@ -331,8 +407,62 @@ internal sealed class QueryTabState
     /// </remarks>
     public int DirtyRowCount => 0;
 
-    /// <summary>结果集段数（`Execute` 的 <c>statements</c> 条数；v0.1 恒为 1）。</summary>
+    /// <summary>结果集段数（`Execute` 的 <c>statements</c> 条数；单语句为 1，多语句为条数，#190）。</summary>
     public int StatementCount { get; private set; }
+
+    /// <summary>#190 多语句状态（null = 单语句：不显示切换行，行为与既有版本完全一致）。</summary>
+    public QueryMultiState? Multi { get; private set; }
+
+    /// <summary>
+    /// #190 全部语句槽都无后续批次 = 整个查询交付完毕（#187 的 complete 语义）。
+    /// 多语句里首结果集读完不算完：其余 SELECT 槽还等着续拉。
+    /// </summary>
+    public bool MultiAllComplete
+    {
+        get
+        {
+            if (Multi is not { } multi)
+            {
+                return false;
+            }
+
+            foreach (var slot in multi.Slots)
+            {
+                if (slot.HasMore)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// #190 首批装配后：默认选中的 SELECT 若不是随 Execute 首批到达的那条，
+    /// 置加载态并返回 true，调用方随即发起该语句的首批 fetch（镜像 Linux
+    /// apply_selected_slot 的「选中即首拉」）。
+    /// </summary>
+    /// <returns>是否需要调用方发起首批拉取。</returns>
+    public bool BeginDefaultSlotFetch()
+    {
+        if (Multi is not { IsFailure: false } multi)
+        {
+            return false;
+        }
+
+        var slot = multi.Slots[multi.Selected];
+        if (slot.Fetched || !slot.HasMore)
+        {
+            return false;
+        }
+
+        slot.State = QueryViewState.Loading;
+        slot.Note = "正在拉取该语句的结果…";
+        View = QueryViewState.Loading;
+        Note = slot.Note;
+        return true;
+    }
 
     /// <summary>语句是否返回了结果集（false = UPDATE / DDL，只有影响行数）。</summary>
     public bool HasResultSet { get; private set; }
@@ -365,9 +495,14 @@ internal sealed class QueryTabState
     public bool Busy => Executing || Fetching;
 
     /// <summary>状态栏行 2 右格：`N 行 / 已取 M 行`（总数未知时 N 写 <c>?</c>，不编造）。</summary>
-    public string CountsText => HasMore
-        ? $"? 行 / 已取 {Rows.Count} 行（还有更多）"
-        : $"{Rows.Count} 行 / 已取 {Rows.Count} 行";
+    public string CountsText => View switch
+    {
+        QueryViewState.NoResultSet => $"影响 {RowsAffected} 行",
+        QueryViewState.Undelivered => "已执行 · 结果未返回",
+        _ => HasMore
+            ? $"? 行 / 已取 {Rows.Count} 行（还有更多）"
+            : $"{Rows.Count} 行 / 已取 {Rows.Count} 行",
+    };
 
     /// <summary>状态栏行 2 左格：`SQL: <摘要>`。</summary>
     public string SqlSummaryLine => $"SQL: {QuerySql.Summary(ExecutedSql)}";
@@ -378,10 +513,12 @@ internal sealed class QueryTabState
         ? $"正在取下一批…（已取 {Rows.Count} 行，稍后追加上去）"
         : View switch
     {
-        QueryViewState.Loading => "正在执行…（等待首批数据）",
+        QueryViewState.Loading => Executing ? "正在执行…（等待首批数据）" : "正在拉取该语句的结果…",
         QueryViewState.Empty => EmptyText(),
-        QueryViewState.Error => $"查询失败：{Headline}（{Code}）",
+        QueryViewState.Error => Multi is { IsFailure: true } multi ? multi.FailureLine : $"查询失败：{Headline}（{Code}）",
         QueryViewState.Cancelled => $"已取消：保留已取的 {Rows.Count} 行（游标已释放，可重新执行）",
+        QueryViewState.NoResultSet => "已执行 · 无结果集",
+        QueryViewState.Undelivered => "已执行 · 结果未返回",
         _ => ReadOnlyText(),
     };
 
@@ -395,9 +532,8 @@ internal sealed class QueryTabState
                 return string.Empty;
             }
 
-            var segments = StatementCount == 1
-                ? "结果集 1 段"
-                : $"结果集 {StatementCount} 段（v0.1 只显示第 1 段）";
+            // #190：多语句每段都可切换查看，退役「只显示第 1 段」的旧说明。
+            var segments = $"结果集 {StatementCount} 段";
             var columns = Columns.Count == 0 ? string.Empty : $" · {Columns.Count} 列";
             var query = string.IsNullOrEmpty(QueryId) ? string.Empty : $" · 查询 {QueryId}";
             var note = string.IsNullOrEmpty(Note) ? string.Empty : $" · {Note}";
@@ -410,8 +546,9 @@ internal sealed class QueryTabState
     public void BeginExecution(string sql)
     {
         ExecutedSql = sql;
-        Rows.Clear();
-        Columns.Clear();
+        Rows = new List<string[]>();
+        Columns = new List<QueryColumn>();
+        Multi = null;
         HasMore = false;
         StatementCount = 0;
         HasResultSet = true;
@@ -432,6 +569,12 @@ internal sealed class QueryTabState
     public void ApplyFirstBatch(Sqarvo.Core.Clients.QueryHandle handle, bool readOnly)
     {
         ArgumentNullException.ThrowIfNull(handle);
+
+        if (StatementSwitcher.IsMulti(handle.Statements))
+        {
+            ApplyMultiFirstBatch(handle);
+            return;
+        }
 
         var statement = handle.Statements.Count > 0 ? handle.Statements[0] : null;
         ApplyFirstBatchCore(
@@ -488,6 +631,184 @@ internal sealed class QueryTabState
         ResolveLoadedState();
     }
 
+    /// <summary>
+    /// #190 多语句首批：逐语句建槽位。首批行属于**第一条** SELECT（随 Execute 到达）；
+    /// 其余 SELECT 未加载、选中后才拉首批；写语句直接进「无结果集」占位态。
+    /// 默认选中 = 已成功语句中最后一条 SELECT；全写脚本选第 1 条（与 Linux default_selection 同口径）。
+    /// </summary>
+    private void ApplyMultiFirstBatch(Sqarvo.Core.Clients.QueryHandle handle)
+    {
+        QueryId = handle.QueryId;
+        HasExecuteResponse = true;
+        StatementCount = handle.Statements.Count;
+        Executing = false;
+        Headline = null;
+        Code = null;
+
+        int? firstResult = null;
+        for (var i = 0; i < handle.Statements.Count; i++)
+        {
+            if (handle.Statements[i].HasResultSet)
+            {
+                firstResult = i;
+                break;
+            }
+        }
+
+        var slots = new List<StatementSlot>(handle.Statements.Count);
+        for (var i = 0; i < handle.Statements.Count; i++)
+        {
+            var summary = handle.Statements[i];
+            var slot = new StatementSlot { Summary = summary };
+            if (!summary.HasResultSet)
+            {
+                slot.State = QueryViewState.NoResultSet;
+                slot.Fetched = true;
+                slot.Note = $"语句 {i + 1} 影响 {(long)summary.RowsAffected} 行（无结果集）";
+            }
+            else if (i == firstResult)
+            {
+                if (summary.ResultMeta is not null)
+                {
+                    foreach (var column in summary.ResultMeta.Columns)
+                    {
+                        slot.Columns.Add(QueryColumn.From(column));
+                    }
+
+                    slot.ReadOnly = summary.ResultMeta.ReadOnly;
+                }
+
+                AppendRows(slot.Rows, handle.InitialRows);
+                slot.PageToken = handle.PageToken;
+                slot.HasMore = handle.HasMore;
+                slot.Fetched = true;
+                slot.State = slot.Rows.Count == 0 && !slot.HasMore
+                    ? QueryViewState.Empty
+                    : QueryViewState.ReadOnly;
+            }
+            else
+            {
+                // 未加载的 SELECT：选中后拉首批（HasMore 先置 true 驱动那一次 fetch）。
+                slot.HasMore = true;
+            }
+
+            slots.Add(slot);
+        }
+
+        var selected = 0;
+        if (StatementSwitcher.DefaultSelection(handle.Statements) is uint wanted)
+        {
+            for (var i = 0; i < handle.Statements.Count; i++)
+            {
+                if (handle.Statements[i].StatementIndex == wanted)
+                {
+                    selected = i;
+                    break;
+                }
+            }
+        }
+
+        Multi = new QueryMultiState(slots, selected, failedIndex: null, completed: 0, failureLine: string.Empty);
+        LoadSlot(slots[selected]);
+    }
+
+    /// <summary>把选中槽位的网格状态装载到顶层（行/列共享引用，切换不复制、不丢行）。</summary>
+    private void LoadSlot(StatementSlot slot)
+    {
+        Rows = slot.Rows;
+        Columns = slot.Columns;
+        HasResultSet = slot.Summary?.HasResultSet ?? false;
+        RowsAffected = (long)(slot.Summary?.RowsAffected ?? 0);
+        ReadOnlyResult = slot.ReadOnly;
+        HasMore = slot.HasMore;
+        Note = string.IsNullOrEmpty(slot.Note) ? null : slot.Note;
+        View = slot.State;
+    }
+
+    /// <summary>把顶层网格状态写回当前选中槽位（切换 / 取消 / 释放游标前调用，与 Linux sync_selected_slot 同口径）。</summary>
+    private void SyncSelectedSlot()
+    {
+        if (Multi is not { } multi)
+        {
+            return;
+        }
+
+        var slot = multi.Slots[multi.Selected];
+        slot.State = View;
+        slot.HasMore = HasMore;
+        slot.Note = Note ?? string.Empty;
+    }
+
+    /// <summary>
+    /// #190 切换选中语句：写回旧槽位 → 装载新槽位。未加载的 SELECT 返回 true，
+    /// 调用方随即发起该语句的首批 fetch（statement_index + 空 page_token）。
+    /// </summary>
+    /// <param name="index">目标语句（0 基）。</param>
+    /// <returns>是否需要调用方发起首批拉取。</returns>
+    public bool SelectStatement(int index)
+    {
+        if (Multi is not { } multi || index < 0 || index >= multi.Slots.Count || index == multi.Selected)
+        {
+            return false;
+        }
+
+        SyncSelectedSlot();
+        multi.Selected = index;
+        var slot = multi.Slots[index];
+        LoadSlot(slot);
+
+        if (!multi.IsFailure && !slot.Fetched && slot.HasMore)
+        {
+            slot.State = QueryViewState.Loading;
+            slot.Note = "正在拉取该语句的结果…";
+            View = QueryViewState.Loading;
+            Note = slot.Note;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>#190 切换行条目（从槽位实时派生：行数 / 续拉状态随批次更新；失败路径直接用 Core 规则）。</summary>
+    public IReadOnlyList<StatementSwitcherEntry> SwitcherEntries()
+    {
+        if (Multi is not { } multi)
+        {
+            return Array.Empty<StatementSwitcherEntry>();
+        }
+
+        if (multi.IsFailure)
+        {
+            return StatementSwitcher.EntriesFromFailure(multi.FailedIndex!.Value);
+        }
+
+        var entries = new List<StatementSwitcherEntry>(multi.Slots.Count);
+        foreach (var slot in multi.Slots)
+        {
+            var summary = slot.Summary!;
+            if (!summary.HasResultSet)
+            {
+                entries.Add(new StatementSwitcherEntry(
+                    summary.StatementIndex, summary.SqlPreview, HasResultSet: false,
+                    StatementSlotState.Affected, RowsAffected: (long)summary.RowsAffected));
+            }
+            else if (!slot.Fetched)
+            {
+                entries.Add(new StatementSwitcherEntry(
+                    summary.StatementIndex, summary.SqlPreview, HasResultSet: true,
+                    StatementSlotState.Unloaded));
+            }
+            else
+            {
+                entries.Add(new StatementSwitcherEntry(
+                    summary.StatementIndex, summary.SqlPreview, HasResultSet: true,
+                    StatementSlotState.Rows, Loaded: slot.Rows.Count, HasMore: slot.HasMore));
+            }
+        }
+
+        return entries;
+    }
+
     /// <summary>后续批次到达：只追加行，并把 has_more 跟到服务端的值。</summary>
     /// <param name="batch">`FetchBatch` 的结果。</param>
     public void AppendBatch(QueryBatch batch)
@@ -498,6 +819,18 @@ internal sealed class QueryTabState
         HasMore = batch.HasMore;
         Fetching = false;
         ResolveLoadedState();
+
+        if (Multi is { IsFailure: false } multi)
+        {
+            // #190：批次写回选中槽位（行列表本就共享引用），游标逐语句独立。
+            var slot = multi.Slots[multi.Selected];
+            slot.PageToken = batch.PageToken;
+            slot.HasMore = batch.HasMore;
+            slot.Fetched = true;
+            slot.State = View;
+            slot.Note = string.Empty;
+            Note = null;
+        }
     }
 
     /// <summary>取消：行保留，状态转 Cancelled。</summary>
@@ -510,12 +843,23 @@ internal sealed class QueryTabState
         Note = note;
         HasExecuteResponse = true;
         View = QueryViewState.Cancelled;
+
+        if (Multi is { IsFailure: false } multi)
+        {
+            var slot = multi.Slots[multi.Selected];
+            slot.State = QueryViewState.Cancelled;
+            slot.HasMore = false;
+            slot.Note = note ?? string.Empty;
+        }
     }
 
     /// <summary>失败：行保留，错误码与文案都写进状态。</summary>
     /// <param name="headline">主标题。</param>
     /// <param name="code">稳定错误码。</param>
-    public void MarkFailure(string headline, string code)
+    /// <param name="failedIndex">#190 多语句脚本里失败语句的 0 基序号（trailing metadata；单语句为 null）。</param>
+    /// <param name="completed">失败前已成功执行的条数（trailing metadata；缺失时按 failedIndex 推定）。</param>
+    /// <param name="detail">错误详情（拼进失败状态行；空则用 headline）。</param>
+    public void MarkFailure(string headline, string code, int? failedIndex = null, int? completed = null, string? detail = null)
     {
         Executing = false;
         Fetching = false;
@@ -523,6 +867,50 @@ internal sealed class QueryTabState
         Headline = headline;
         Code = code;
         HasExecuteResponse = true;
+
+        if (failedIndex is int failed && failed >= 0)
+        {
+            // #190 多语句原子失败（ADR 0006）：不返回部分结果、metadata 无语句类型——
+            // 切换行只列 0..=failed_index；已执行条目「已执行 · 结果未返回」；默认选中失败条目本身；
+            // 状态行「前 N 条已执行，第 M 条失败：<错误>」。与 Linux show_multi_failure 逐条一致。
+            var done = completed ?? failed;
+            var line = StatementSwitcher.FailureStatusLine(done, (uint)failed)
+                + "：" + (string.IsNullOrEmpty(detail) ? headline : detail);
+            var slots = new List<StatementSlot>(failed + 1);
+            for (var i = 0; i <= failed; i++)
+            {
+                slots.Add(new StatementSlot
+                {
+                    State = i == failed ? QueryViewState.Error : QueryViewState.Undelivered,
+                    Fetched = true,
+                    Note = i == failed ? line : StatementSwitcher.UndeliveredNote,
+                });
+            }
+
+            Multi = new QueryMultiState(slots, failed, (uint)failed, done, line);
+            Rows = slots[failed].Rows;
+            Columns = slots[failed].Columns;
+            HasResultSet = false;
+            RowsAffected = 0;
+            ReadOnlyResult = false;
+            Note = null;
+            View = QueryViewState.Error;
+            return;
+        }
+
+        if (Multi is { IsFailure: false } existing)
+        {
+            // 多语句续拉失败：只把当前选中条目标失败，切换行与其余条目保留（Linux sync_selected_slot 同口径）。
+            var slot = existing.Slots[existing.Selected];
+            slot.State = QueryViewState.Error;
+            slot.HasMore = false;
+            slot.Fetched = true;
+            slot.Note = $"{headline}（{code}）";
+            Note = null;
+            View = QueryViewState.Error;
+            return;
+        }
+
         View = QueryViewState.Error;
     }
 
@@ -532,6 +920,13 @@ internal sealed class QueryTabState
     {
         HasMore = false;
         Note = $"游标已释放（{reason}）";
+
+        if (Multi is { } multi)
+        {
+            var slot = multi.Slots[multi.Selected];
+            slot.HasMore = false;
+            slot.Note = Note;
+        }
     }
 
     /// <summary>关闭结果区（#189）：清网格态并回到「隐藏」，编辑器占满整页。</summary>
@@ -542,8 +937,9 @@ internal sealed class QueryTabState
     /// </remarks>
     public void ResetResults()
     {
-        Rows.Clear();
-        Columns.Clear();
+        Rows = new List<string[]>();
+        Columns = new List<QueryColumn>();
+        Multi = null;
         HasMore = false;
         StatementCount = 0;
         HasResultSet = false;
@@ -560,7 +956,9 @@ internal sealed class QueryTabState
     /// <summary>结果区是否被用户关闭过（空态文案用；重新执行即清）。</summary>
     private bool _resultsClosed;
 
-    private void AppendRows(IReadOnlyList<Row> rows)
+    private void AppendRows(IReadOnlyList<Row> rows) => AppendRows(Rows, rows);
+
+    private static void AppendRows(List<string[]> target, IReadOnlyList<Row> rows)
     {
         foreach (var row in rows)
         {
@@ -570,7 +968,7 @@ internal sealed class QueryTabState
                 cells[index] = QueryCellText.Format(row.Values[index]);
             }
 
-            Rows.Add(cells);
+            target.Add(cells);
         }
     }
 

@@ -17,6 +17,12 @@ public static class RpcErrorMapper
     /// <summary>gRPC metadata key carrying the stable backend error code.</summary>
     public const string ErrorCodeMetadataKey = "sqarvo-error-code";
 
+    /// <summary>gRPC metadata key carrying the failed statement index of a multi-statement script (#190).</summary>
+    public const string FailedStatementMetadataKey = "sqarvo-failed-statement";
+
+    /// <summary>gRPC metadata key carrying the count of statements completed before the failure (#190).</summary>
+    public const string CompletedStatementsMetadataKey = "sqarvo-completed-statements";
+
     /// <summary>
     /// Maps an <see cref="RpcException"/> to a classified <see cref="SqarvoException"/>.
     /// </summary>
@@ -36,9 +42,19 @@ public static class RpcErrorMapper
         var message = $"{operation} 失败：{detail}"
             + (errorCode is null ? string.Empty : $"（错误码 {errorCode}）");
 
+        // #190: multi-statement failures carry the failure position in trailing metadata. Both keys
+        // are optional (single-statement failures and older backends send neither); a malformed value
+        // is treated as absent instead of throwing, so a newer server cannot crash an older client.
+        var failedStatementIndex = ReadNonNegativeInt(exception, FailedStatementMetadataKey);
+        var completedStatements = ReadNonNegativeInt(exception, CompletedStatementsMetadataKey);
+
         if (status.StatusCode == StatusCode.Unauthenticated)
         {
-            return new SqarvoAuthenticationException(operation, message, errorCode, exception);
+            return new SqarvoAuthenticationException(operation, message, errorCode, exception)
+            {
+                FailedStatementIndex = failedStatementIndex,
+                CompletedStatements = completedStatements,
+            };
         }
 
         return new SqarvoClientException(
@@ -47,7 +63,11 @@ public static class RpcErrorMapper
             message,
             status.StatusCode,
             errorCode,
-            exception);
+            exception)
+        {
+            FailedStatementIndex = failedStatementIndex,
+            CompletedStatements = completedStatements,
+        };
     }
 
     /// <summary>
@@ -85,5 +105,21 @@ public static class RpcErrorMapper
         // RpcException.Trailers.
         var entry = exception.Trailers.Get(ErrorCodeMetadataKey);
         return entry is null || entry.IsBinary || string.IsNullOrWhiteSpace(entry.Value) ? null : entry.Value;
+    }
+
+    private static int? ReadNonNegativeInt(RpcException exception, string key)
+    {
+        var entry = exception.Trailers.Get(key);
+        if (entry is null || entry.IsBinary)
+        {
+            return null;
+        }
+
+        // NumberStyles.None rejects signs, whitespace and thousands separators: only a plain
+        // non-negative decimal integer is a valid position; anything else counts as absent.
+        return int.TryParse(entry.Value, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var value)
+            ? value
+            : null;
     }
 }

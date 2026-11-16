@@ -21,7 +21,15 @@ namespace Sqarvo.Windows.Workspace;
 /// <param name="Detail">后端或本地提供的详细原因（已截断、单行）。</param>
 /// <param name="Code">稳定错误码：后端 <c>sqarvo-error-code</c> 原值，或本地错误分类。</param>
 /// <param name="Retryable">原样重试是否可能成功。</param>
-public sealed record SqarvoFailure(string Headline, string Detail, string Code, bool Retryable)
+/// <param name="FailedStatementIndex">#190 多语句脚本里失败语句的 0 基序号（trailing metadata；单语句为 null）。</param>
+/// <param name="CompletedStatements">失败前已成功执行的条数（trailing metadata；单语句为 null）。</param>
+public sealed record SqarvoFailure(
+    string Headline,
+    string Detail,
+    string Code,
+    bool Retryable,
+    int? FailedStatementIndex = null,
+    int? CompletedStatements = null)
 {
     /// <summary>状态栏/日志用的一行式描述。</summary>
     /// <returns><c>标题：详情 [错误码]</c>。</returns>
@@ -57,7 +65,9 @@ public sealed record SqarvoFailure(string Headline, string Detail, string Code, 
             headline ?? Describe(error.Kind).Headline,
             Sanitize(error.Message),
             code,
-            error.IsRetryable);
+            error.IsRetryable,
+            error.FailedStatementIndex,
+            error.CompletedStatements);
     }
 
     private static SqarvoFailure FromLocal(SqarvoException error)

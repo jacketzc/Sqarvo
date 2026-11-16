@@ -1,4 +1,5 @@
 using Microsoft.UI.Input;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -6,6 +7,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Sqarvo.Core.Clients;
+using Sqarvo.Core.Model;
 using Sqarvo.Services.V1;
 using Sqarvo.Windows.Diagnostics;
 using Sqarvo.Windows.Theming;
@@ -234,6 +236,21 @@ public sealed partial class ShellView
         public Grid RowsGrid { get; set; } = new();
 
         public Button LoadMore { get; set; } = new();
+
+        /// <summary>#190 语句切换行（仅多语句渲染；结果区第 2 行）。</summary>
+        public StackPanel StatementSwitcher { get; set; } = new();
+
+        /// <summary>切换行的横向滚动容器（语句多时横滚，不压缩命中区）。</summary>
+        public ScrollViewer StatementSwitcherScroll { get; set; } = new();
+
+        /// <summary>#190 占位页（仅多语句：无结果集 / 结果未返回 / 失败 / 空结果 / 未加载）。</summary>
+        public StackPanel QueryPlaceholder { get; set; } = new();
+
+        /// <summary>占位页标题。</summary>
+        public TextBlock PlaceholderTitle { get; set; } = new();
+
+        /// <summary>占位页说明。</summary>
+        public TextBlock PlaceholderText { get; set; } = new();
 
         /// <summary>当前打开的游标（<see langword="null"/> = 没有占用并发名额）。</summary>
         public QueryHandle? Handle { get; set; }
@@ -472,11 +489,65 @@ public sealed partial class ShellView
         Grid.SetRow(divider, 1);
         headerHost.Children.Add(divider);
 
+        // ---- #190 语句切换行：仅多语句渲染（单语句保持折叠，现状完全不变） ----
+        // 原生控件组合（L1）：ScrollViewer + StackPanel + Button，互斥选中由代码管理。
+        // 不用 ToggleButton：xaml_lint 禁用（#170 真机即崩）。
+        tab.StatementSwitcher = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Metrics.GapSm,
+        };
+        tab.StatementSwitcherScroll = new ScrollViewer
+        {
+            Content = tab.StatementSwitcher,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollMode = ScrollMode.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollMode = ScrollMode.Disabled,
+            Visibility = Visibility.Collapsed,
+            Padding = new Thickness(0, 0, 0, Metrics.GapSm),
+        };
+        AutomationProperties.SetName(tab.StatementSwitcherScroll, "语句切换行");
+
+        // ---- #190 占位页：标题 + 说明，居中（镜像 Linux ResultsPane 的 AdwStatusPage） ----
+        tab.PlaceholderTitle = new TextBlock
+        {
+            FontSize = Metrics.FontTitle,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = ThemeBrush("SqarvoTextPrimaryBrush"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+        };
+        tab.PlaceholderText = new TextBlock
+        {
+            FontSize = Metrics.FontUi,
+            Foreground = ThemeBrush("SqarvoTextSecondaryBrush"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+        };
+        tab.QueryPlaceholder = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = Metrics.GapSm,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
+            Padding = new Thickness(Metrics.GapXl),
+        };
+        tab.QueryPlaceholder.Children.Add(tab.PlaceholderTitle);
+        tab.QueryPlaceholder.Children.Add(tab.PlaceholderText);
+
         // ---- 结果行区：一个 ScrollViewer，内容由 RenderQueryRows 按视口重建 ----
         tab.RowsGrid = new Grid();
+        // #190 占位页与网格共用滚动区（同一时刻只显示一个；单语句永远显示网格）。
+        var bodyHost = new Grid();
+        bodyHost.Children.Add(tab.RowsGrid);
+        bodyHost.Children.Add(tab.QueryPlaceholder);
         tab.BodyScroll = new ScrollViewer
         {
-            Content = tab.RowsGrid,
+            Content = bodyHost,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollMode = ScrollMode.Enabled,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -564,14 +635,17 @@ public sealed partial class ShellView
         };
         tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         tab.ResultsArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Grid.SetRow(tab.StateText, 0);
         Grid.SetRow(resultsHeader, 1);
-        Grid.SetRow(tab.BodyScroll, 2);
-        Grid.SetRow(tab.LoadMore, 3);
+        Grid.SetRow(tab.StatementSwitcherScroll, 2);
+        Grid.SetRow(tab.BodyScroll, 3);
+        Grid.SetRow(tab.LoadMore, 4);
         tab.ResultsArea.Children.Add(tab.StateText);
         tab.ResultsArea.Children.Add(resultsHeader);
+        tab.ResultsArea.Children.Add(tab.StatementSwitcherScroll);
         tab.ResultsArea.Children.Add(tab.BodyScroll);
         tab.ResultsArea.Children.Add(tab.LoadMore);
         Grid.SetRow(tab.ResultsArea, QueryResultsRowIndex);
@@ -883,6 +957,8 @@ public sealed partial class ShellView
 
             tab.Handle = handle;
             tab.State.ApplyFirstBatch(handle, ReadOnlyOf(handle));
+            // #190：默认选中的 SELECT 若不是首批那条，装配后立即首拉（Linux apply_selected_slot 同口径）。
+            var needDefaultFetch = tab.State.BeginDefaultSlotFetch();
             UpdateColumnCount(tab);
 
             // `*` 的口径：编辑器内容与「按下执行那一刻的编辑器内容」不同（执行期间继续打字仍要标出来）。
@@ -891,7 +967,15 @@ public sealed partial class ShellView
             UpdateQueryTabHeader(tab);
             RenderQuery(tab);
 
-            if (!handle.HasMore)
+            if (needDefaultFetch)
+            {
+                _ = FetchMoreAsync(tab, reason: "默认语句首拉");
+            }
+
+            // #190：多语句里首结果集读完 ≠ 整个查询交付完毕（#187 complete 语义）；
+            // 全部语句槽都无后续批次才丢句柄（DisposeAsync 会补发幂等 Close）。
+            var delivered = tab.State.Multi is null ? !handle.HasMore : tab.State.MultiAllComplete;
+            if (delivered)
             {
                 // 首批就读完：服务端已经释放游标（complete / has_more=false），句柄随丢弃即可。
                 ConsoleBridge.WriteDiagnostic($"[query] {tab.State.Title} 首批读完（{tab.State.Rows.Count} 行），游标由服务端释放");
@@ -911,7 +995,13 @@ public sealed partial class ShellView
         catch (Exception error)
         {
             var failure = SqarvoFailure.FromException(error);
-            tab.State.MarkFailure(failure.Headline, failure.Code);
+            // #190：trailing metadata 的失败序号进模型（条目截断 / 默认选中失败条目 / 序号文案）。
+            tab.State.MarkFailure(
+                failure.Headline,
+                failure.Code,
+                failure.FailedStatementIndex,
+                failure.CompletedStatements,
+                failure.Detail);
             RenderQuery(tab);
             ConsoleBridge.WriteDiagnostic($"[query] {tab.State.Title} 执行失败：[{failure.Code}] {failure.Detail}");
         }
@@ -941,7 +1031,20 @@ public sealed partial class ShellView
         tab.Cts = cts;
         try
         {
-            var batch = await handle.FetchBatchAsync(QueryLimits.BatchSize, cts.Token).ConfigureAwait(true);
+            // #190：多语句按选中槽的语句序号 + 游标续拉；单语句走句柄自身游标（现状不变）。
+            QueryBatch batch;
+            if (tab.State.Multi is { IsFailure: false } multi)
+            {
+                var slot = multi.Slots[multi.Selected];
+                var statementIndex = slot.Summary?.StatementIndex ?? (uint)multi.Selected;
+                batch = await handle
+                    .FetchStatementBatchAsync(statementIndex, slot.PageToken, QueryLimits.BatchSize, cts.Token)
+                    .ConfigureAwait(true);
+            }
+            else
+            {
+                batch = await handle.FetchBatchAsync(QueryLimits.BatchSize, cts.Token).ConfigureAwait(true);
+            }
             tab.State.AppendBatch(batch);
             UpdateColumnCount(tab);
             ConsoleBridge.WriteDiagnostic(
@@ -966,8 +1069,10 @@ public sealed partial class ShellView
         catch (Exception error)
         {
             var failure = SqarvoFailure.FromException(error);
-            tab.State.MarkFailure(failure.Headline, failure.Code);
+            // #190：先释放游标再标失败——MarkCursorReleased 的备注不会盖掉错误备注；
+            // 多语句续拉失败只标当前槽（模型内处理，条目与其余槽的行保留）。
             await ReleaseCursorAsync(tab, "取批失败").ConfigureAwait(true);
+            tab.State.MarkFailure(failure.Headline, failure.Code, detail: failure.Detail);
             if (!tab.Closed)
             {
                 RenderQuery(tab);
@@ -1415,6 +1520,8 @@ public sealed partial class ShellView
         tab.MetaText.Text = tab.State.MetaText;
         tab.MetaText.Visibility = tab.State.MetaText.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
 
+        RenderStatementSwitcher(tab);
+        RenderQueryPlaceholder(tab);
         RenderQueryHeader(tab);
         RenderQueryRows(tab);
         tab.HeaderHost.Visibility = tab.ColumnCount == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -1474,6 +1581,132 @@ public sealed partial class ShellView
         AutomationProperties.SetName(
             grid,
             tab.ColumnCount == 0 ? "查询结果表头（无列）" : $"查询结果表头 {tab.ColumnCount} 列");
+    }
+
+    /// <summary>
+    /// #190 语句切换行：每条目「序号 · 类型/预览 · 行数或影响行数」，选中态强调填充，
+    /// 失败条目 destructive 底色（系统 critical token）。单语句整行折叠。
+    /// 每次重建条目（语句数有限，不做增量 diff）；执行中禁用点击。
+    /// </summary>
+    private void RenderStatementSwitcher(QueryTab tab)
+    {
+        var panel = tab.StatementSwitcher;
+        panel.Children.Clear();
+        var entries = tab.State.SwitcherEntries();
+        if (entries.Count == 0 || tab.State.Multi is not { } multi)
+        {
+            tab.StatementSwitcherScroll.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        tab.StatementSwitcherScroll.Visibility = Visibility.Visible;
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+            var index = i;
+            var selected = i == multi.Selected;
+            var label = StatementSwitcher.EntryLabel(entry);
+            var button = new Button
+            {
+                Content = label,
+                MinHeight = Metrics.MinTarget,
+                Padding = new Thickness(Metrics.GapSm, 0, Metrics.GapSm, 0),
+                FontSize = Metrics.FontStatus,
+                IsEnabled = !tab.State.Busy,
+            };
+            if (entry.State == StatementSlotState.Failed)
+            {
+                // 失败态：警示底色 + 反白文字（Linux destructive-action 的同职责配色）。
+                if (ThemeBrush("SqarvoDangerBrush") is { } danger)
+                {
+                    button.Background = danger;
+                }
+
+                if (ThemeBrush("SqarvoOnAccentTextBrush") is { } onDanger)
+                {
+                    button.Foreground = onDanger;
+                }
+            }
+            else if (selected)
+            {
+                if (ThemeBrush("SqarvoAccentFillBrush") is { } accent)
+                {
+                    button.Background = accent;
+                }
+
+                if (ThemeBrush("SqarvoOnAccentTextBrush") is { } onAccent)
+                {
+                    button.Foreground = onAccent;
+                }
+            }
+
+            if (selected)
+            {
+                button.FontWeight = FontWeights.SemiBold;
+            }
+
+            ToolTipService.SetToolTip(button, StatementSwitcher.EntryTooltip(entry));
+            AutomationProperties.SetName(button, label);
+            button.Click += (_, _) => OnStatementEntryClicked(tab, index);
+            panel.Children.Add(button);
+        }
+
+        AutomationProperties.SetName(
+            panel, $"语句切换行（{entries.Count} 条语句，当前第 {multi.Selected + 1} 条）");
+    }
+
+    /// <summary>
+    /// #190 占位页：多语句且选中槽无行时显示（标题 + 说明，镜像 Linux ResultsPane
+    /// 的 AdwStatusPage 分支，文案逐字一致）。单语句保持状态行 + 空网格现状，占位页永不出现。
+    /// </summary>
+    private void RenderQueryPlaceholder(QueryTab tab)
+    {
+        if (tab.State.Multi is not { } multi || tab.State.Rows.Count > 0)
+        {
+            tab.QueryPlaceholder.Visibility = Visibility.Collapsed;
+            tab.RowsGrid.Visibility = Visibility.Visible;
+            return;
+        }
+
+        var slot = multi.Slots[multi.Selected];
+        var (title, detail) = slot.State switch
+        {
+            QueryViewState.NoResultSet => ("无结果集", SlotNote(slot, "语句已执行，但没有返回结果集")),
+            QueryViewState.Undelivered => ("结果未返回", SlotNote(slot, "该语句已执行成功，但脚本失败时后端未保留其结果")),
+            QueryViewState.Error => ("查询失败", SlotNote(slot, "后端未提供错误详情")),
+            QueryViewState.Empty => ("空结果集", "语句执行成功，但没有返回任何行（与执行失败不同）"),
+            QueryViewState.Loading => ("正在执行查询", "等待首批数据…"),
+            QueryViewState.Cancelled => ("已取消", SlotNote(slot, "查询已被取消")),
+            _ => ("尚未执行查询", "在上方输入 SQL 后按 Ctrl+Enter 执行"),
+        };
+        tab.PlaceholderTitle.Text = title;
+        tab.PlaceholderText.Text = detail;
+        AutomationProperties.SetName(tab.QueryPlaceholder, $"{title}：{detail}");
+        tab.QueryPlaceholder.Visibility = Visibility.Visible;
+        tab.RowsGrid.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>槽备注（空则兜底文案；与 Linux set_state 的 note 兜底一致）。</summary>
+    private static string SlotNote(StatementSlot slot, string fallback) =>
+        string.IsNullOrWhiteSpace(slot.Note) ? fallback : slot.Note;
+
+    /// <summary>
+    /// #190 切换行条目点击：换选中槽（已加载行不丢），未加载的 SELECT 立即首拉。
+    /// 失败路径与已加载条目只换视图，不发 RPC（镜像 Linux select_statement）。
+    /// </summary>
+    private void OnStatementEntryClicked(QueryTab tab, int index)
+    {
+        if (tab.Closed || tab.State.Busy)
+        {
+            return;
+        }
+
+        var needFetch = tab.State.SelectStatement(index);
+        RenderQuery(tab);
+        if (needFetch)
+        {
+            _ = FetchMoreAsync(tab, reason: $"语句 {index + 1} 首拉");
+        }
     }
 
     /// <summary>

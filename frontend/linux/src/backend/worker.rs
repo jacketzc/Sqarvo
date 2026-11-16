@@ -243,10 +243,19 @@ pub enum Command {
         /// 结果回执。
         reply: SessionContextReply,
     },
-    /// 预取/继续拉取下一批（由界面在接近末尾时触发）。
+    /// 预取/继续拉取下一批（由界面在接近末尾时触发；目标 = 当前选中语句）。
     FetchNext {
         /// 标签 ID。
         tab_id: TabId,
+    },
+    /// #190：切换续拉目标语句（多语句脚本；界面点选语句切换行时发出）。
+    ///
+    /// 只改 worker 侧「当前语句」，不发 RPC；随后的 `FetchNext` 拉这条语句。
+    SelectStatement {
+        /// 标签 ID。
+        tab_id: TabId,
+        /// 目标语句下标（0 起，与 `Execute` 返回的摘要一致）。
+        statement_index: u32,
     },
     /// 取消当前查询（幂等：重复调用不会重复发 RPC，也不产生错误提示）。
     CancelQuery {
@@ -539,11 +548,13 @@ pub enum QueryEvent {
     },
     /// 后续批次到达。
     Batch {
+        /// #190：本批行所属语句下标（0 起；单语句恒为 0）。
+        statement_index: u32,
         /// 本批行。
         rows: Vec<RowView>,
-        /// 是否还有后续批次。
+        /// 该语句是否还有后续批次。
         has_more: bool,
-        /// 累计已加载行数。
+        /// 该语句累计已加载行数。
         loaded: u64,
     },
     /// 已取消（界面立即进入 Cancelled；`note` 说明服务端是否真的停下）。
@@ -553,9 +564,11 @@ pub enum QueryEvent {
     },
     /// 达到客户端结果集上限：保留已接收的行，停止拉取（`result.limit_reached`）。
     Limited {
+        /// #190：触顶时正在拉取的语句下标（0 起；单语句恒为 0）。
+        statement_index: u32,
         /// 最后一批里放得下的行（可能为空：首批已随 `Started` 送出）。
         rows: Vec<RowView>,
-        /// 累计已保留行数。
+        /// 该语句累计已保留行数。
         loaded: u64,
         /// 触顶记录（原因、已保留行数、生效上限）。
         stop: crate::backend::query::LimitStop,
@@ -583,18 +596,36 @@ impl QueryEvent {
 struct ActiveQuery {
     /// 服务端查询 ID；`Execute` 返回前为 `None`（协议缺口：此时无法 `Cancel`/`Close`）。
     query_id: Option<String>,
-    /// 不透明分页 token。
+    /// 不透明分页 token（当前语句的游标，与 `cursors[current]` 同步）。
     page_token: String,
-    /// 是否还有后续批次。
+    /// 当前语句是否还有后续批次。
     has_more: bool,
     /// 是否有 `Execute` / `FetchBatch` 在途（防止重复拉取）。
     loading: bool,
     /// 用户已请求取消：后续批次与结果一律丢弃。
     cancel_requested: bool,
-    /// 已加载行数（下一条的起始行号 = loaded + 1）。
+    /// 当前语句已加载行数（下一条的起始行号 = loaded + 1）。
     loaded: u64,
     /// 结果集计量（行数 + 估算字节）：到上限后停止拉取并上报 `result.limit_reached`。
+    /// 多语句脚本共享同一份预算（保护的是客户端总内存，不是单条语句）。
     meter: ResultMeter,
+    /// #190：逐语句游标（与 `Execute` 返回的语句摘要一一对应；单语句只有一项）。
+    cursors: Vec<StatementCursor>,
+    /// #190：`FetchNext` 当前目标的语句下标（0 起；单语句恒为 0）。
+    current: u32,
+}
+
+/// #190：一条语句的分页游标。写语句没有结果集，`has_more` 恒 false。
+#[derive(Debug, Clone)]
+struct StatementCursor {
+    /// 不透明分页 token；尚未首拉的语句为空串（服务端允许 delivered=0 时空 token 首拉）。
+    page_token: String,
+    /// 该语句是否还有后续批次。
+    has_more: bool,
+    /// 该语句已加载行数。
+    loaded: u64,
+    /// 是否已向服务端请求过该语句的行（第一个结果集语句的首批随 `Execute` 交付）。
+    started: bool,
 }
 
 impl ActiveQuery {
@@ -607,6 +638,57 @@ impl ActiveQuery {
             cancel_requested: false,
             loaded: 0,
             meter: ResultMeter::new(budget),
+            cursors: Vec::new(),
+            current: 0,
+        }
+    }
+
+    /// #190：`Execute` 返回后初始化逐语句游标。
+    ///
+    /// 第一个结果集语句的首批已随 `Execute` 交付（token/has_more/loaded 用当前镜像值）；
+    /// 其余结果集语句尚未首拉（空 token + has_more=true，点选后由界面触发首拉）；
+    /// 写语句没有游标可言（has_more=false，续拉判定会拦住）。
+    fn init_cursors(&mut self, statements: &[StatementView]) {
+        let first_result = statements
+            .iter()
+            .position(|statement| statement.has_result_set);
+        self.cursors = statements
+            .iter()
+            .enumerate()
+            .map(|(position, statement)| {
+                if Some(position) == first_result {
+                    StatementCursor {
+                        page_token: self.page_token.clone(),
+                        has_more: self.has_more,
+                        loaded: self.loaded,
+                        started: true,
+                    }
+                } else if statement.has_result_set {
+                    StatementCursor {
+                        page_token: String::new(),
+                        has_more: true,
+                        loaded: 0,
+                        started: false,
+                    }
+                } else {
+                    StatementCursor {
+                        page_token: String::new(),
+                        has_more: false,
+                        loaded: 0,
+                        started: true,
+                    }
+                }
+            })
+            .collect();
+        self.current = first_result.map_or(0, |position| position as u32);
+    }
+
+    /// #190：把当前语句的游标同步到镜像字段（`FetchNext` 与阻塞判定读镜像）。
+    fn sync_current(&mut self) {
+        if let Some(cursor) = self.cursors.get(self.current as usize) {
+            self.page_token = cursor.page_token.clone();
+            self.has_more = cursor.has_more;
+            self.loaded = cursor.loaded;
         }
     }
 }
@@ -1027,6 +1109,17 @@ impl WorkerHandle {
     pub fn close_query(&self, tab_id: &str) {
         let _ = self.commands.send(Command::CloseQuery {
             tab_id: tab_id.to_owned(),
+        });
+    }
+
+    /// #190：切换续拉目标语句（多语句脚本；界面点选语句切换行时调用）。
+    ///
+    /// 只改 worker 侧「当前语句」，不发 RPC；随后的 [`Self::fetch_next`] 拉这条语句。
+    /// 无活动查询或下标越界时静默忽略（与 `FetchNext` 的防重复口径一致）。
+    pub fn select_statement(&self, tab_id: &str, statement_index: u32) {
+        let _ = self.commands.send(Command::SelectStatement {
+            tab_id: tab_id.to_owned(),
+            statement_index,
         });
     }
 
@@ -1846,13 +1939,15 @@ async fn worker_loop(
                         query.loading = true;
                         let page_token = query.page_token.clone();
                         let first_number = query.loaded + 1;
+                        // #190：续拉目标 = 当前选中语句（单语句恒为 0）。
+                        let statement_index = query.current;
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
                         tokio::spawn(async move {
                             let result = client
                                 .fetch_batch(
                                     &query_id,
-                                    0,
+                                    statement_index,
                                     &page_token,
                                     MAX_ROWS_PER_BATCH,
                                     first_number,
@@ -1864,6 +1959,31 @@ async fn worker_loop(
                                 result,
                             }));
                         });
+                    }
+                    Command::SelectStatement {
+                        tab_id,
+                        statement_index,
+                    } => {
+                        let Some(tab) = tabs.get_mut(&tab_id) else {
+                            continue;
+                        };
+                        let Some(query) = tab.query.as_mut() else {
+                            continue;
+                        };
+                        if query.cursors.get(statement_index as usize).is_none() {
+                            eprintln!(
+                                "[query] 忽略标签 {tab_id} 的 SelectStatement：语句 {statement_index} 没有游标"
+                            );
+                            continue;
+                        }
+                        query.current = statement_index;
+                        query.sync_current();
+                        eprintln!(
+                            "[query] t=+{}ms 标签 {tab_id} 续拉目标切到语句 {statement_index}（has_more={}，loaded={}）",
+                            crate::qa::elapsed_ms(),
+                            query.has_more,
+                            query.loaded
+                        );
                     }
                     Command::CancelQuery { tab_id } => {
                         // 归属判定与幂等语义都在 `QuerySlots`：只动这个标签的槽位。
@@ -3339,13 +3459,25 @@ async fn handle_executed(
             };
             let loaded = u64::try_from(accepted).unwrap_or(0);
             let has_more = outcome.has_more && stop.is_none();
-            if let Some(query) = active.as_mut() {
+            // #190：多个结果集语句时，首批读完不等于整查询交付完毕——其余语句的
+            // 游标还活着，Close 必须等 `FetchBatchResponse.complete`（#187 语义）。
+            let more_result_sets = outcome
+                .statements
+                .iter()
+                .filter(|statement| statement.has_result_set)
+                .count()
+                > 1;
+            let current = if let Some(query) = active.as_mut() {
                 query.query_id = Some(outcome.query_id.clone());
                 query.page_token = outcome.page_token.clone();
                 query.has_more = has_more;
                 query.loading = false;
                 query.loaded = loaded;
-            }
+                query.init_cursors(&outcome.statements);
+                query.current
+            } else {
+                0
+            };
             let query_id = outcome.query_id.clone();
             send_tab_query(
                 events,
@@ -3374,6 +3506,7 @@ async fn handle_executed(
                     events,
                     tab_id,
                     QueryEvent::Limited {
+                        statement_index: current,
                         rows: Vec::new(),
                         loaded,
                         stop,
@@ -3382,7 +3515,7 @@ async fn handle_executed(
                 .await;
                 return None;
             }
-            if !has_more {
+            if !has_more && !more_result_sets {
                 if let Some(query) = active.as_ref() {
                     eprintln!(
                         "[query] t=+{}ms 标签 {tab_id} 结果集计量：{} 行，估算 {}（上限 {} 行 / {}）",
@@ -3431,6 +3564,8 @@ async fn handle_fetched(
     }
     match result {
         Ok(batch) => {
+            // #190：本批属于当前选中语句；行号/loaded 都是该语句口径。
+            let current = query.current;
             // 上限判定：只接收放得下的前缀，触顶后本批剩余行丢弃、游标释放。
             let mut rows = batch.rows;
             let accepted = query.meter.admit_prefix(&mut rows);
@@ -3440,6 +3575,13 @@ async fn handle_fetched(
             let loaded = query.loaded;
             let has_more = batch.has_more && stop.is_none();
             query.has_more = has_more;
+            // #190：把本批结果写回该语句的游标（切走再切回时从这里续拉）。
+            if let Some(cursor) = query.cursors.get_mut(current as usize) {
+                cursor.page_token = query.page_token.clone();
+                cursor.has_more = has_more;
+                cursor.loaded = loaded;
+                cursor.started = true;
+            }
             let query_id = query.query_id.clone();
             if let Some(stop) = stop {
                 // 触顶：不再发普通批次（否则界面会先显示「已完成」），直接上报上限。
@@ -3454,16 +3596,29 @@ async fn handle_fetched(
                 if let Some(query_id) = query_id {
                     close_in_background(client, tab_id, &query_id, commands_tx);
                 }
-                send_tab_query(events, tab_id, QueryEvent::Limited { rows, loaded, stop }).await;
+                send_tab_query(
+                    events,
+                    tab_id,
+                    QueryEvent::Limited {
+                        statement_index: current,
+                        rows,
+                        loaded,
+                        stop,
+                    },
+                )
+                .await;
                 return None;
             }
             let meter_rows = query.meter.rows();
             let meter_bytes = query.meter.bytes();
             let budget = query.meter.budget();
-            if !has_more {
+            // #190：`complete` = 整查询交付完毕（#187 语义）。多语句脚本里当前语句
+            // 读完（has_more=false）但其它语句还没拉时 complete=false：游标必须活着，
+            // 等界面切到下一条语句续拉。单语句时 complete == !has_more，行为不变。
+            if batch.complete {
                 *active = None;
             }
-            if !has_more {
+            if batch.complete {
                 // 可观测证据：估算字节与实际 RSS 的对照由基准脚本记录。
                 eprintln!(
                     "[query] t=+{}ms 标签 {tab_id} 结果集计量：{} 行，估算 {}（上限 {} 行 / {}）",
@@ -3478,13 +3633,16 @@ async fn handle_fetched(
                 events,
                 tab_id,
                 QueryEvent::Batch {
+                    statement_index: current,
                     rows,
                     has_more,
                     loaded,
                 },
             )
             .await;
-            if !has_more && let Some(query_id) = query_id {
+            if batch.complete
+                && let Some(query_id) = query_id
+            {
                 close_in_background(client, tab_id, &query_id, commands_tx);
             }
             None
@@ -4422,6 +4580,7 @@ mod tests {
         assert_eq!(QueryEvent::Cancelled { note: None }.name(), "cancelled");
         assert_eq!(
             QueryEvent::Batch {
+                statement_index: 0,
                 rows: Vec::new(),
                 has_more: false,
                 loaded: 0,
@@ -4451,6 +4610,94 @@ mod tests {
         assert_eq!(query.meter.stop().map(|stop| stop.rows), Some(3));
         assert_eq!(query.loaded, 3);
         assert!(query.meter.is_stopped());
+    }
+
+    /// #190：构造一条语句摘要（测试用）。
+    fn statement(index: u32, has_result_set: bool) -> StatementView {
+        StatementView {
+            index,
+            preview: format!("SELECT {index}"),
+            columns: Vec::new(),
+            rows_affected: if has_result_set { 0 } else { 3 },
+            has_result_set,
+        }
+    }
+
+    #[test]
+    fn cursors_track_each_statement_independently() {
+        // SELECT(0) + UPDATE(1) + SELECT(2)：首批属于语句 0，语句 2 尚未首拉。
+        let mut query = ready_query(1_000);
+        query.page_token = "token-0".to_owned();
+        query.loaded = 5;
+        query.init_cursors(&[statement(0, true), statement(1, false), statement(2, true)]);
+        assert_eq!(query.current, 0);
+        assert_eq!(query.cursors.len(), 3);
+        assert_eq!(query.cursors[0].page_token, "token-0");
+        assert!(query.cursors[0].started);
+        // 写语句没有游标可言：续拉判定会拦住。
+        assert!(!query.cursors[1].has_more);
+        // 语句 2 未首拉：空 token + has_more（服务端允许 delivered=0 时空 token 首拉）。
+        assert_eq!(query.cursors[2].page_token, "");
+        assert!(query.cursors[2].has_more);
+        assert!(!query.cursors[2].started);
+
+        // 切到语句 2：镜像字段跟着走，FetchNext 会带 statement_index=2 + 空 token。
+        query.current = 2;
+        query.sync_current();
+        assert_eq!(query.page_token, "");
+        assert!(query.has_more);
+        assert_eq!(query.loaded, 0);
+        assert_eq!(fetch_block_reason(&query), None);
+
+        // 语句 2 拉完一批：写回它自己的游标，语句 0 的进度不受影响。
+        query.page_token = "token-2".to_owned();
+        query.loaded = 7;
+        query.has_more = false;
+        if let Some(cursor) = query.cursors.get_mut(2) {
+            cursor.page_token = query.page_token.clone();
+            cursor.has_more = false;
+            cursor.loaded = 7;
+            cursor.started = true;
+        }
+        // 切回语句 0：从它自己的 token/行数续拉，不丢已加载行。
+        query.current = 0;
+        query.sync_current();
+        assert_eq!(query.page_token, "token-0");
+        assert_eq!(query.loaded, 5);
+        assert!(query.has_more);
+        // 语句 2 已读完：切回去也不允许再拉。
+        query.current = 2;
+        query.sync_current();
+        assert_eq!(fetch_block_reason(&query), Some("没有更多批次"));
+    }
+
+    #[test]
+    fn single_statement_cursor_mirrors_the_legacy_fields() {
+        // 单语句：cursors 只有一项，current 恒 0，镜像与旧字段完全一致。
+        let mut query = ready_query(1_000);
+        query.page_token = "only".to_owned();
+        query.loaded = 42;
+        query.init_cursors(&[statement(0, true)]);
+        assert_eq!(query.current, 0);
+        assert_eq!(query.cursors.len(), 1);
+        assert_eq!(query.cursors[0].page_token, "only");
+        assert_eq!(query.cursors[0].loaded, 42);
+        assert!(query.cursors[0].has_more);
+        query.sync_current();
+        assert_eq!(query.page_token, "only");
+        assert_eq!(query.loaded, 42);
+        assert!(query.has_more);
+    }
+
+    #[test]
+    fn all_write_script_has_no_result_cursor() {
+        // 全写脚本：没有结果集语句，current 回落 0，所有游标 has_more=false。
+        let mut query = ready_query(1_000);
+        query.has_more = false;
+        query.init_cursors(&[statement(0, false), statement(1, false)]);
+        assert_eq!(query.current, 0);
+        assert!(query.cursors.iter().all(|cursor| !cursor.has_more));
+        assert_eq!(fetch_block_reason(&query), Some("没有更多批次"));
     }
 
     #[test]

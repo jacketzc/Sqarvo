@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 196 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 197 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -2606,11 +2606,12 @@ kind `control` · status `active` · parent `status_bar.row2`
 | `tabs.query.connection_picker` | 　　查询标签的连接选择器 | control | active | done | — | — |
 | `tabs.query.database_picker` | 　　查询标签的库选择器 | control | active | done | — | — |
 | `tabs.query.editor` | 　　SQL 编辑器（行号沟 + 等宽文本） | control | active | done | partial | — |
-| `tabs.query.state` | 　　结果区状态行（五态） | control | active | done | done | — |
+| `tabs.query.state` | 　　结果区状态行（五态） | control | active | done | partial | — |
 | `tabs.query.results` | 　　结果区 | container | active | done | partial | — |
-| `tabs.query.results.header` | 　　　结果表头（列名 · 原始类型） | control | active | done | done | — |
+| `tabs.query.results.header` | 　　　结果表头（列名 · 原始类型） | control | active | done | partial | — |
 | `tabs.query.results.grid` | 　　　结果行区（虚拟化表格） | control | active | done | partial | — |
-| `tabs.query.results.more` | 　　　续拉（滚动到末尾自动续拉 / 「加载更多」） | control | active | done | done | — |
+| `tabs.query.results.more` | 　　　续拉（滚动到末尾自动续拉 / 「加载更多」） | control | active | done | partial | — |
+| `tabs.query.results.statements` | 　　　语句切换行（多语句脚本） | control | active | done | partial | — |
 | `tabs.query.splitter` | 　　查询分隔把手（可拖动分隔） | control | active | done | partial | — |
 | `tabs.query.results.close` | 　　　关闭结果区按钮 | control | active | done | partial | — |
 | `tabs.close_dialog` | 　关闭标签确认框 | control | active | done | — | — |
@@ -2803,8 +2804,8 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `font_status`、`gap_xl`、`spinner_px`；颜色 `warning_color`
 - 无障碍：可访问名「查询状态」
-- 同步：Linux done（§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1066；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:379）；macOS none
-- 实现备注：五态互斥且都带稳定文案：执行中带 spinner；空 / 错误 / 取消 / 只读 / 断开各一句，**没有**结果时同一句文案也做占位页的标题与说明。正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。
+- 同步：Linux done（§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档）；Windows partial（#190 多语句失败口径「前 N-1 条已执行，第 N 条失败：<错误>」与 Undelivered/NoResultSet 占位态已实现（文案与 Linux results.rs:1152 逐字一致）；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，运行时文案与交互待 Windows 真机。）；macOS none
+- 实现备注：五态互斥且都带稳定文案：执行中带 spinner；空 / 错误 / 取消 / 只读 / 断开各一句，**没有**结果时同一句文案也做占位页的标题与说明。正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。多语句脚本（#190）：失败且 trailing metadata 两键齐全时，错误说明前加「前 N-1 条已执行，第 N 条失败」口径（见 tabs.query.results.statements）；已执行但结果未返回的语句用独立占位态「已执行 · 结果未返回」（Undelivered，与「无结果集」区分：前者本有结果集但后端未保留游标）。每条语句的状态独立回写，切换语句时状态行随选中语句变。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2816,8 +2817,8 @@ kind `control` · status `active` · parent `tabs.query`
 kind `container` · status `active` · parent `tabs.query`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_xl`、`gap_sm`、`radius_md`、`frame_border_width`、`query_results_min_height`；颜色 `sqarvo_frame`
-- 同步：Linux done（§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:1305（show_results）/ 1318（hide_results），隔离 QA 截图 189-01（隐藏）/ 189-02（执行后显示）/ 189-03（空 SQL 走 banner、结果区不显示））；Windows partial（状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现（Linux 真类型探针编译验证，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。）；macOS none
-- 实现备注：自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。显隐（#189）：新标签结果区（含分隔把手）隐藏、编辑器占满整页；任何 Execute 响应（首批 / 续批 / 取消 / 失败 / 触顶）后显示；可用「关闭结果区」按钮主动关闭（见 tabs.query.results.close），关闭后回到隐藏态。最小高度随密度档（query_results_min_height）；显示时编辑器:结果区默认 query_editor_ratio（0.4），可拖动调整（见 tabs.query.splitter）。
+- 同步：Linux done（§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:1305（show_results）/ 1318（hide_results），隔离 QA 截图 189-01（隐藏）/ 189-02（执行后显示）/ 189-03（空 SQL 走 banner、结果区不显示））；Windows partial（状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现；#190 语句切换行 + 占位页（无结果集 / 结果未返回）+ 每语句独立网格状态已实现（真类型探针编译验证红→绿，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。）；macOS none
+- 实现备注：自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。显隐（#189）：新标签结果区（含分隔把手）隐藏、编辑器占满整页；任何 Execute 响应（首批 / 续批 / 取消 / 失败 / 触顶）后显示；可用「关闭结果区」按钮主动关闭（见 tabs.query.results.close），关闭后回到隐藏态。最小高度随密度档（query_results_min_height）；显示时编辑器:结果区默认 query_editor_ratio（0.4），可拖动调整（见 tabs.query.splitter）。多语句脚本（#190）：状态行下方、表格上方挂语句切换行（tabs.query.results.statements）；每条语句一份独立网格状态（行模型 / 列 / 已加载行数 / 截断计数），切换语句换入换出行模型，已加载行不丢；单语句不挂切换行，现状不变。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2830,12 +2831,12 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `column_header_min_height`、`font_ui`、`font_weight_title`
 - 无障碍：可访问名「结果列头」
-- 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:68；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:402）；macOS none
-- 实现备注：一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。多结果集在表头**上方**补一行说明（「结果集 K 段」，K > 1 时再补「只显示第 1 段」）；Linux 目前只把多语句写进日志。
+- 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows partial（#190 表头随选中语句重建已实现；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，列头观感待 Windows 真机人工确认。）；macOS none
+- 实现备注：一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。多语句脚本（#190）：v0.1「只显示第 1 段」限制两端都已退役——表头随选中语句的列元数据重建，逐语句切换走 tabs.query.results.statements；Windows 说明位只保留「结果集 K 段」（见 platform_notes.windows）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 首批数据到达 | 按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多结果集时表头上方一行「结果集 K 段」，K > 1 再补「只显示第 1 段」 | `src/results.rs:968、src/sql_page.rs:544、src/sql_page.rs:561` |
+| load | 首批数据到达 | 按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements） | `src/results.rs:1044、src/sql_page.rs:795、src/sql_page.rs:1176` |
 
 ### `tabs.query.results.grid` 结果行区（虚拟化表格）
 
@@ -2856,13 +2857,29 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「加载更多」
-- 同步：Linux done（§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52）；macOS none
-- 实现备注：每批行数由服务端分批返回；同一时刻最多一批在飞，触顶（客户端结果集上限）之后不再续拉。Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。
+- 同步：Linux done（§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch）；Windows partial（#190 逐语句续拉已实现：每条语句独立 page_token/has_more，切走再切回从各自游标继续；未首拉的结果集语句选中时以空 page_token 发第一批；整查询 Close 等 FetchBatchResponse.complete（#187 语义）。真类型探针编译验证（红→绿），未在本机构建/运行 WinUI。）；macOS none
+- 实现备注：每批行数由服务端分批返回；同一时刻最多一批在飞，触顶（客户端结果集上限）之后不再续拉。Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。多语句脚本（#190）：续拉按当前选中语句（FetchBatch 带 statement_index）；每条语句独立游标（page_token / has_more / 已加载行数），切走再切回从各自的游标继续；尚未首拉的结果集语句在选中时以空 page_token 发起第一批；整查询的 Close 等 FetchBatchResponse.complete（#187 语义：整查询交付完毕）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | scroll | 结果仍在分批读取（has_more），且滚动到接近末尾 | 自动发一次 FetchBatch 续拉下一批；同一时刻最多一批在飞，触顶后不再拉（暂停原因写日志） | `src/results.rs:1181、src/results.rs:1003` |
 | load | 服务端返回的批次读到底（has_more=false） | 不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」） | `src/results.rs:1043、src/sql_page.rs:585` |
+
+### `tabs.query.results.statements` 语句切换行（多语句脚本）
+
+kind `control` · status `active` · parent `tabs.query.results`
+
+- 样式：尺寸 `gap_sm`、`gap_xl`、`min_target`
+- 无障碍：可访问名「语句切换行」
+- 原生控件：gtk:GtkBox + GtkToggleButton（set_group 互斥） / winui:ScrollViewer + StackPanel + Button（互斥选中由代码管理） / swift:—
+- 同步：Linux done（src/statements.rs（切换行控件与三条纯规则，7 个单测）；src/sql_page.rs:981（start_multi）/ 1067（show_multi_failure）/ 1121（select_statement）/ 1205（sync_sql_summary 状态栏回写）；src/backend/worker.rs:1119（select_statement 命令）；隔离 QA 截图 qa190/（A/B/C/D 四脚本实测，含切换点选与失败文案））；Windows partial（真类型探针编译验证（红→绿，0 警告 0 错误）+ Core.Tests 120 passed；未在本机构建/运行 WinUI：三档密度切换行间距/命中区观感、失败条目 destructive 浅色主题对比度、长 SQL tooltip 可读性待人工确认。失败场景已执行条目无类型/预览（Execute 原子失败不带摘要也不保留游标，ADR 0006）——改善需后端契约变更，超出本单。）；macOS none
+- 实现备注：L0：原生 GtkBox + GtkToggleButton 组（set_group 互斥单选），无自绘；条目命中区不低于 min_target，左右缘与表格对齐（gap_xl），条目间距 gap_sm。Windows（#190）：L1 原生 ScrollViewer + StackPanel + Button 组合（ToggleButton 在 xaml_lint 禁用表内，互斥选中由代码管理）；失败条目底色 SqarvoDangerBrush→SystemFillColorCriticalBrush、前景 SqarvoOnAccentTextBrush（系统 token，不写死颜色）；尺寸只用 gap_sm / gap_xl / min_target，无新增 metrics 键；Windows 结果行本就不可选中，切换无需清选中集。条目文案「序号 · 类型词 · 行数/影响行数/状态」：类型词取 SQL 预览第一个关键字（大写，最长 12 字符），完整预览进 tooltip；结果集语句「N 行」（还有后续批次时「N 行…」），写语句「影响 N 行」，尚未首拉「未加载」。每条语句一份独立网格状态（行模型 / 列 / 状态 / 已加载行数 / 截断计数）；切换用换入换出行模型实现，已加载行不丢；选中集属于上一条语句，换模型时清空。失败态条目用主题原生 destructive-action 警示色，不自绘；程序化选中（重建 / 同步）有防回环标志，不触发用户回调。失败场景的契约限制：Execute 原子失败，响应不带语句摘要、也不保留已执行语句的游标——条目只能列到失败语句为止，已执行语句标「已执行 · 结果未返回」，默认选中失败语句本身（无从得知已执行语句中哪条是 SELECT）。单语句（statements.len() <= 1）不挂载切换行，现状完全不变；多语句脚本的结果不能当表编辑（editable_table_from_sql 在第一个 ';' 处截断，会解析错目标表）。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | Execute 返回多条语句（statements.len() > 1） | 结果区头部下方出现语句切换行：每条语句一个可点选条目；默认选中已成功语句中最后一条有结果集的语句（全写脚本落第一条，占位页说明无结果集，切换行仍列各写语句影响行数） | `src/sql_page.rs:981、src/statements.rs:57、src/statements.rs:121` |
+| click | 点选切换行里另一条语句 | 网格换入该语句的行模型与列（已加载行不丢），状态行随选中语句；尚未首拉的结果集语句立即发起第一批请求（空 page_token + statement_index）；滚动续拉按当前选中语句 | `src/sql_page.rs:1121、src/sql_page.rs:1150、src/sql_page.rs:1236、src/results.rs:950` |
+| load | 多语句脚本失败（trailing metadata sqarvo-failed-statement / sqarvo-completed-statements 两键齐全且至少一条已执行） | 状态行「前 N-1 条已执行，第 N 条失败：<错误文案>」；切换行列到失败语句为止：已执行条目标「已执行 · 结果未返回」，失败语句标失败态并默认选中；点已执行条目显示「结果未返回」占位页 | `src/sql_page.rs:1067、src/statements.rs:104、src/statements.rs:126` |
 
 ### `tabs.query.splitter` 查询分隔把手（可拖动分隔）
 

@@ -194,6 +194,9 @@ pub enum RunState {
     Empty,
     /// 语句执行成功但不产生结果集（UPDATE / INSERT / DDL），显示影响行数。
     NoResultSet,
+    /// #190 多语句失败场景：该语句已执行成功，但失败响应未返回其结果
+    /// （Execute 原子失败，后端不保留已执行语句的游标）。
+    Undelivered,
     /// 执行失败。
     Error,
     /// 达到客户端结果集上限（`result.limit_reached`）：已加载行保留，可继续新查询。
@@ -215,6 +218,7 @@ impl RunState {
             Self::Complete => "complete",
             Self::Empty => "empty",
             Self::NoResultSet => "no_result_set",
+            Self::Undelivered => "undelivered",
             Self::Error => "error",
             Self::Limited => "limited",
             Self::Cancelled => "cancelled",
@@ -229,7 +233,11 @@ pub struct ResultsView {
     stack: gtk::Stack,
     placeholder: adw::StatusPage,
     grid: gtk::ColumnView,
-    store: RowStore,
+    /// 当前网格的行模型。#190：多语句脚本每条语句一个 `RowStore`，切换语句时
+    /// 整体换入换出（`swap_store`），已加载行不丢；单语句时始终是同一个。
+    store: RefCell<RowStore>,
+    /// #190：语句切换行的挂载位（头部下方、表格上方）；单语句时为空且不可见。
+    switcher_slot: gtk::Box,
     /// 行选择（v0.2.5：单表结果可编辑，删除按选中集）。
     selection: gtk::MultiSelection,
     status: gtk::Label,
@@ -427,9 +435,14 @@ impl ResultsView {
         stack.add_named(&grid_frame, Some("grid"));
         stack.set_visible_child_name("placeholder");
 
+        // #190：语句切换行挂载位（头部下方、表格上方）。单语句时不挂控件、不可见。
+        let switcher_slot = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        switcher_slot.set_visible(false);
+
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.append(&status_row);
         root.append(&detail_row);
+        root.append(&switcher_slot);
         root.append(&stack);
 
         let view = Rc::new(Self {
@@ -437,7 +450,8 @@ impl ResultsView {
             stack,
             placeholder,
             grid: grid.clone(),
-            store,
+            store: RefCell::new(store),
+            switcher_slot,
             selection: selection.clone(),
             status,
             spinner,
@@ -560,7 +574,7 @@ impl ResultsView {
         let Some(edit) = self.edit() else {
             return;
         };
-        let total = self.store.rows_len();
+        let total = self.store.borrow().rows_len();
         let mut rows = Vec::with_capacity(total);
         for index in 0..total {
             if self.insert_row.get() == Some(index) {
@@ -570,7 +584,7 @@ impl ResultsView {
             }
         }
         if !rows.is_empty() {
-            self.store.replace_all(rows);
+            self.store.borrow().replace_all(rows);
         }
         self.grid
             .scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
@@ -579,7 +593,7 @@ impl ResultsView {
     /// 一次编辑之后的重绘入口：小结果集整表重绘 + 回到首行，大结果集只重绘这一行
     /// （整表重绘在几十万行时成本不可接受，但仍回到首行——用户要的是「回到开始位置」）。
     pub fn after_edit(&self, row: usize) {
-        if self.store.rows_len() <= RELOAD_ROW_LIMIT {
+        if self.store.borrow().rows_len() <= RELOAD_ROW_LIMIT {
             self.reload_from_draft();
         } else {
             self.refresh_row(row);
@@ -592,7 +606,7 @@ impl ResultsView {
     /// 一次批量变更（提交 / 放弃 / 多行标删）之后的重绘：小结果集整表重绘 + 回到首行，
     /// 大结果集只重绘 `touched` 里的行（仍然回到首行）。
     pub fn after_batch(&self, touched: &[usize]) {
-        if self.store.rows_len() <= RELOAD_ROW_LIMIT {
+        if self.store.borrow().rows_len() <= RELOAD_ROW_LIMIT {
             self.reload_from_draft();
         } else {
             for row in touched {
@@ -663,7 +677,7 @@ impl ResultsView {
         eprintln!(
             "[query] 结果可编辑：表 {}，{} 行，主键 {:?}",
             edit.object.name,
-            self.store.rows_len(),
+            self.store.borrow().rows_len(),
             edit.primary_key
         );
         self.edit.replace(Some(edit));
@@ -692,9 +706,9 @@ impl ResultsView {
             return Err("已经有未提交的更改：先提交或放弃，再新增行".to_owned());
         }
         edit.begin_insert()?;
-        let index = self.store.rows_len();
+        let index = self.store.borrow().rows_len();
         let row = self.placeholder_row(&edit, index);
-        let index = self.store.push(row);
+        let index = self.store.borrow().push(row);
         self.insert_row.set(Some(index));
         eprintln!("[query] 新行草稿：第 {} 行（占位）", index + 1);
         Ok(index)
@@ -709,7 +723,7 @@ impl ResultsView {
     /// 去掉新行占位行（放弃 / 提交成功后调用）。
     pub fn remove_insert_row(&self) {
         if self.insert_row.take().is_some() {
-            self.store.pop();
+            self.store.borrow().pop();
         }
     }
 
@@ -742,14 +756,14 @@ impl ResultsView {
         if self.insert_row.get() == Some(row) {
             if let Some(edit) = self.edit() {
                 let placeholder = self.placeholder_row(&edit, row);
-                self.store.replace(row, placeholder);
+                self.store.borrow().replace(row, placeholder);
             }
             return;
         }
         if let Some(edit) = self.edit()
             && let Some(view) = edit.row_view(row)
         {
-            self.store.replace(row, view);
+            self.store.borrow().replace(row, view);
         }
     }
 
@@ -887,8 +901,8 @@ impl ResultsView {
     /// 已加载的行（编辑态建立时的初始行）。
     #[must_use]
     pub fn loaded_rows(&self) -> Vec<RowView> {
-        (0..self.store.rows_len())
-            .filter_map(|index| self.store.row_at(index))
+        (0..self.store.borrow().rows_len())
+            .filter_map(|index| self.store.borrow().row_at(index))
             .map(|row| (*row).clone())
             .collect()
     }
@@ -927,12 +941,44 @@ impl ResultsView {
 
     /// 已加载的行数（`usize`，导出按下标读取）。
     pub fn rows_len(&self) -> usize {
-        self.store.rows_len()
+        self.store.borrow().rows_len()
+    }
+
+    /// #190：换入另一条语句的行模型，返回换出的旧模型（调用方持有它，行不丢）。
+    ///
+    /// 选择模型跟着换：选中集属于上一条语句，不能带到新语句的网格里。
+    pub fn swap_store(&self, store: RowStore) -> RowStore {
+        let old = self.store.replace(store);
+        self.selection.set_model(Some(&*self.store.borrow()));
+        old
+    }
+
+    /// #190：挂载 / 卸载语句切换行（`None` = 单语句或结果区重置，不显示）。
+    pub fn set_statement_switcher(&self, widget: Option<&gtk::Box>) {
+        while let Some(child) = self.switcher_slot.first_child() {
+            self.switcher_slot.remove(&child);
+        }
+        if let Some(widget) = widget {
+            self.switcher_slot.append(widget);
+            self.switcher_slot.set_visible(true);
+        } else {
+            self.switcher_slot.set_visible(false);
+        }
+    }
+
+    /// 当前是否还有后续批次（#190：同上）。
+    pub fn has_more_flag(&self) -> bool {
+        self.has_more.get()
+    }
+
+    /// 覆写截断单元格数（#190：切换语句时恢复该语句自己的计数）。
+    pub fn set_truncated_cells(&self, count: u64) {
+        self.truncated_cells.set(count);
     }
 
     /// 按位置取一行（导出按需读取；调用方只读）。
     pub fn row_at(&self, index: usize) -> Option<Rc<RowView>> {
-        self.store.row_at(index)
+        self.store.borrow().row_at(index)
     }
 
     /// 已加载行里被服务端截断的单元格数。
@@ -962,7 +1008,7 @@ impl ResultsView {
     ///
     /// 只读一行，不实例化 widget：验收断言比对的是界面真实持有的行数据。
     pub fn first_cell_text(&self) -> Option<String> {
-        let item = self.store.item(0)?;
+        let item = self.store.borrow().item(0)?;
         let boxed = item.downcast::<glib::BoxedAnyObject>().ok()?;
         let row = boxed.borrow::<Rc<RowView>>().clone();
         drop(boxed);
@@ -971,7 +1017,9 @@ impl ResultsView {
 
     /// 清空表格与状态（新查询开始前）。
     pub fn reset(&self) {
-        self.store.clear();
+        self.store.borrow().clear();
+        // #190：切换行随结果区重置卸载（多语句编排会在需要时重新挂载）。
+        self.set_statement_switcher(None);
         self.clear_columns();
         self.column_names.borrow_mut().clear();
         self.truncated_cells.set(0);
@@ -1033,7 +1081,7 @@ impl ResultsView {
             .set(self.truncated_cells.get() + count_truncated(&rows));
         let empty = rows.is_empty();
         if !empty {
-            self.store.append(rows);
+            self.store.borrow().append(rows);
         }
         self.loaded.set(loaded);
         self.has_more.set(has_more);
@@ -1059,7 +1107,7 @@ impl ResultsView {
         self.truncated_cells
             .set(self.truncated_cells.get() + count_truncated(&rows));
         if !rows.is_empty() {
-            self.store.append(rows);
+            self.store.borrow().append(rows);
         }
         self.loaded.set(loaded);
         if loaded > 0 {
@@ -1102,6 +1150,7 @@ impl ResultsView {
             RunState::Complete => format!("已完成 · 已加载 {loaded} 行 · {total}"),
             RunState::Empty => "空结果集 · 共 0 行".to_owned(),
             RunState::NoResultSet => "已执行 · 无结果集".to_owned(),
+            RunState::Undelivered => "已执行 · 结果未返回".to_owned(),
             RunState::Error => format!("错误 · 已保留 {loaded} 行"),
             RunState::Limited => format!("已达客户端上限 · 已保留 {loaded} 行"),
             RunState::Cancelled => format!("已取消 · 已保留 {loaded} 行"),
@@ -1117,6 +1166,7 @@ impl ResultsView {
                 | RunState::Limited
                 | RunState::Cancelled
                 | RunState::Disconnected
+                | RunState::Undelivered
         ));
         // 状态行的原文也写进日志：QA 断言「已取消 · 已保留 N 行」这类文案时读的是它，
         // 不必靠截图判断（ADR 0029：截图不算交互证据）。隐藏时（正常完成）不写，免得刷屏。
@@ -1163,6 +1213,11 @@ impl ResultsView {
                 RunState::NoResultSet => (
                     "无结果集",
                     note.unwrap_or("语句已执行，但没有返回结果集").to_owned(),
+                ),
+                RunState::Undelivered => (
+                    "结果未返回",
+                    note.unwrap_or("该语句已执行成功，但脚本失败时后端未保留其结果")
+                        .to_owned(),
                 ),
                 RunState::Cancelled => ("已取消", note.unwrap_or("查询已被取消").to_owned()),
                 RunState::Disconnected => {
@@ -1265,8 +1320,9 @@ impl ResultsView {
     }
 }
 
-/// 统计一批行里被服务端截断的单元格数。
-fn count_truncated(rows: &[RowView]) -> u64 {
+/// 一批行里被服务端截断的单元格数（#190：非选中语句的批次直接进它自己的行模型，
+/// 不经过 `append_rows`，截断计数由调用方按语句累计）。
+pub fn count_truncated(rows: &[RowView]) -> u64 {
     rows.iter()
         .map(|row| row.cells.iter().filter(|cell| cell.truncated).count() as u64)
         .sum()

@@ -39,4 +39,17 @@ public class SqarvoClientException : SqarvoException
     /// <c>metadata.object_not_found</c>), or <see langword="null"/> when the server did not send one.
     /// </summary>
     public string? ErrorCode { get; }
+
+    /// <summary>
+    /// Zero-based index of the failed statement of a multi-statement script (#190), taken from the
+    /// <c>sqarvo-failed-statement</c> trailer; <see langword="null"/> when the server did not send one
+    /// (single-statement failure, or an older backend).
+    /// </summary>
+    public int? FailedStatementIndex { get; init; }
+
+    /// <summary>
+    /// Number of statements executed successfully before the failure (#190), taken from the
+    /// <c>sqarvo-completed-statements</c> trailer; <see langword="null"/> when absent.
+    /// </summary>
+    public int? CompletedStatements { get; init; }
 }
