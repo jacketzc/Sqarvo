@@ -14,7 +14,13 @@
 //!
 //! v0.1 **没有语法高亮**：`GtkTextView` + 等宽字体，编辑器上方如实标注
 //! 「当前为纯文本编辑，语法高亮将在后续版本提供」，不暗示已有高亮。
-//! `Ctrl+Enter` 执行、`Escape` 取消（与工具栏按钮走同一个方法）。
+//! `Ctrl+Enter` 执行、`Escape` 取消（与状态栏行 1 的「取消」走**同一个方法**）。
+//!
+//! # 动作行左端（改动确认单 #7）
+//!
+//! 两枚原生 `GtkDropDown` 并排、**都不带可见文字**（可访问名是「当前连接」/「当前库」）：
+//! 连接选择器在前、库选择器在后。页内不再有「取消」按钮：取消在状态栏行 1 的那枚两用
+//! 按钮上（查询在途时可点，空闲时置灰并说明原因），Esc 仍是同一个入口。
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -53,6 +59,15 @@ impl PageState {
     fn is_active(self) -> bool {
         matches!(self, Self::Running | Self::Streaming)
     }
+
+    /// 状态栏行 1 的「取消」在这条页面上是否可点（改动确认单 #7）。
+    ///
+    /// 只有查询在途（`Loading` / `Streaming`）才可点：空闲时那枚按钮置灰并说明
+    /// 「当前没有执行中的查询」，不是「看起来能点」。页内的取消按钮已删，这里就是
+    /// 唯一的可用性来源。
+    fn enables_cancel(self) -> bool {
+        self.is_active()
+    }
 }
 
 /// 页面与 worker 的接线（全部是非阻塞命令）。
@@ -77,6 +92,17 @@ pub struct SqlPageCallbacks {
     pub state_changed: Rc<dyn Fn()>,
     /// 动作行左端的库选择器（ADR 0030）。
     pub catalog: SqlPageCatalog,
+    /// 动作行最左端的连接选择器（改动确认单 #7）。
+    pub connection: SqlPageConnection,
+}
+
+/// 连接选择器的接线（动作行最左端，改动确认单 #7）。
+///
+/// 选中另一条连接会把**这个标签**的会话重绑到它（顺序由 tabs 固定：取消在途查询 →
+/// 关游标 → 断开旧会话 → 用目标连接参数 `Connect`）。选择器自己不发 RPC。
+pub struct SqlPageConnection {
+    /// 用户选了一条连接（参数是连接键，不是显示名）。
+    pub select: Rc<dyn Fn(&str)>,
 }
 
 /// 库选择器的接线（动作行左端，ADR 0030）。
@@ -102,7 +128,6 @@ pub struct SqlPage {
     banner: adw::Banner,
     editor: gtk::TextView,
     execute_button: gtk::Button,
-    cancel_button: gtk::Button,
     session_label: gtk::Label,
     results: Rc<ResultsView>,
     state: Cell<PageState>,
@@ -132,6 +157,8 @@ pub struct SqlPage {
     pending_commit_note: RefCell<Option<String>>,
     /// 动作行左端的库选择器（`tabs.query.database_picker`）。
     catalog: Rc<CatalogPicker>,
+    /// 动作行最左端的连接选择器（`tabs.query.connection_picker`）。
+    connection: Rc<ConnectionPicker>,
     /// 这条标签的会话是否已经就绪（选择器可用性的一半条件）。
     session_ready: Cell<bool>,
     /// 这条会话是否有未提交事务（事务中切库会被服务端拒绝，选择器先禁用）。
@@ -160,25 +187,29 @@ impl SqlPage {
         execute_button.add_css_class("suggested-action");
         execute_button.set_tooltip_text(Some("执行编辑器中的 SQL（Ctrl+Enter）"));
 
-        let cancel_button = gtk::Button::with_label("取消");
-        cancel_button.add_css_class("destructive-action");
-        cancel_button.set_sensitive(false);
-        cancel_button.set_tooltip_text(Some("取消当前查询（Escape，可重复点击）"));
-
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         toolbar.set_margin_top(gap(Gap::Sm));
         toolbar.set_margin_bottom(gap(Gap::Sm));
         toolbar.set_margin_start(gap(Gap::Xl));
         toolbar.set_margin_end(gap(Gap::Xl));
-        // 动作行左端：库选择器（能力级不可用时整枚不渲染）→ 会话信息 → 执行 / 取消。
+        // 动作行左端（改动确认单 #7）：连接选择器 → 库选择器（能力级不可用时整枚不渲染）
+        // → 会话信息 → 执行。两枚选择器都没有可见文字，可访问名分别是「当前连接」/「当前库」。
+        let connection = ConnectionPicker::new(ConnectionPickerCallbacks {
+            select: Rc::clone(&callbacks.connection.select),
+        });
         let catalog = CatalogPicker::new(CatalogPickerCallbacks {
             select: Rc::clone(&callbacks.catalog.select),
             request: Rc::clone(&callbacks.catalog.request),
         });
+        toolbar.append(connection.widget());
         toolbar.append(catalog.widget());
         toolbar.append(&session_label);
         toolbar.append(&execute_button);
-        toolbar.append(&cancel_button);
+        // 顺序与可访问名取自同一张表（`ACTION_ROW_PICKERS`）：单测断言它，日志据此取证。
+        eprintln!(
+            "[query] 动作行左端：{}（可访问名）→ {}（可访问名），两枚都不带可见文字",
+            ACTION_ROW_PICKERS[0].0, ACTION_ROW_PICKERS[1].0
+        );
 
         let editor = gtk::TextView::new();
         editor.set_monospace(true);
@@ -222,7 +253,6 @@ impl SqlPage {
             banner,
             editor,
             execute_button,
-            cancel_button,
             session_label,
             results,
             state: Cell::new(PageState::Idle),
@@ -239,6 +269,7 @@ impl SqlPage {
             last_batch: RefCell::new(None),
             pending_commit_note: RefCell::new(None),
             catalog,
+            connection,
             session_ready: Cell::new(false),
             transaction_open: Cell::new(false),
             catalog_failure: RefCell::new(None),
@@ -249,11 +280,6 @@ impl SqlPage {
             let button = page.execute_button.clone();
             let page = Rc::clone(&page);
             button.connect_clicked(move |_| page.execute());
-        }
-        {
-            let button = page.cancel_button.clone();
-            let page = Rc::clone(&page);
-            button.connect_clicked(move |_| page.request_cancel());
         }
         {
             // 导出菜单（v0.2.5）：与表工具条同款的图标 + 下拉箭头，两项：
@@ -355,6 +381,17 @@ impl SqlPage {
     #[must_use]
     pub fn catalog_picker(&self) -> &Rc<CatalogPicker> {
         &self.catalog
+    }
+
+    /// 连接选择器（tabs 侧要写条目、绑定值与「正在切换」态）。
+    #[must_use]
+    pub fn connection_picker(&self) -> &Rc<ConnectionPicker> {
+        &self.connection
+    }
+
+    /// 正在把本标签的会话重绑到另一条连接：选择器置灰并说明在做什么（避免连点两次）。
+    pub fn set_connection_pending(&self, pending: bool) {
+        self.connection.set_pending(pending);
     }
 
     /// 会话就绪状态：未就绪时选择器可见但禁用，并说明原因。
@@ -474,7 +511,10 @@ impl SqlPage {
         self.execute_sql(sql);
     }
 
-    /// 取消按钮、Escape 与 QA 共用的入口（幂等）。
+    /// 状态栏行 1 的「取消」、Escape 与 QA 共用的入口（幂等）。
+    ///
+    /// 页内不再有「取消」按钮（改动确认单 #7）：那个入口搬到状态栏，与 Esc、QA 脚本
+    /// 仍然是同一个方法——没有「只有某条路径能用」的第二套取消。
     pub fn request_cancel(self: &Rc<Self>) {
         if !self.state.get().is_active() {
             // 已经取消/已结束：重复点击同样不报错、不发 RPC。
@@ -1014,6 +1054,9 @@ impl SqlPage {
         };
         // 刷新与编辑无关：只要有执行过的语句就能重跑（用户反馈「刷新按钮没用」）。
         ops.refresh = !self.results.statement().trim().is_empty() && !self.state.get().is_active();
+        // 状态栏行 1 的「取消」在查询页只用一档：查询在途（Loading / Streaming）时可点，
+        // 点击取消查询（与 Esc 同一个方法）。页内的「取消」按钮已删（改动确认单 #7）。
+        ops.cancel = self.state.get().enables_cancel();
         let Some(edit) = self.results.edit() else {
             ops.reason = Some(
                 self.edit_note
@@ -1132,7 +1175,12 @@ impl SqlPage {
                 eprintln!("[query] 刷新：重跑当前查询");
                 self.execute();
             }
-            RowOp::Cancel | RowOp::ToggleDetail => {
+            RowOp::Cancel => {
+                // 状态栏行 1 的两用「取消」：查询在途时点它取消查询（与 Esc / 同一方法，
+                // 重复点幂等）。页内不再有第二枚取消按钮（改动确认单 #7）。
+                self.request_cancel();
+            }
+            RowOp::ToggleDetail => {
                 eprintln!("[query] 行操作 {:?} 在查询标签里不适用（忽略）", op);
             }
         }
@@ -1143,16 +1191,14 @@ impl SqlPage {
         let active = state.is_active();
         self.execute_button
             .set_sensitive(!active && !matches!(state, PageState::Disconnected));
-        self.cancel_button.set_sensitive(active);
         if !active {
             self.cancel_sent.set(false);
         }
         // 顶栏只显示连接信息：状态备注放在结果区第二行，避免把按钮挤出窗口。
         self.session_label.set_text(&self.session_base);
-        // 按钮状态与页面状态保持一致：断开后不再显示「取消」为可点。
-        if matches!(state, PageState::Disconnected) {
-            self.cancel_button.set_sensitive(false);
-        }
+        // 状态一变（尤其是 Idle → Running）就要让状态栏重算：行 1 的「取消」按在途状态
+        // 给值，晚一拍才刷新会让用户在长查询期间看到一枚点不动的取消。
+        (self.callbacks.state_changed)();
     }
 
     /// 页面离开时释放游标（调用方随后丢弃页面）。
@@ -1183,6 +1229,13 @@ enum PickerAction {
     KeepCurrent,
 }
 
+/// 两枚选择器都**不带可见文字**（改动确认单 #7）：`None` 是唯一的取值，构造时据此
+/// 决定要不要加一行 caption——没有第二处可以偷偷把「库」/「连接」写回界面。
+const CATALOG_PICKER_CAPTION: Option<&str> = None;
+
+/// 库选择器的可访问名：没有可见文字时，读屏与自动化靠它指认这枚控件。
+const CATALOG_PICKER_A11Y: &str = "当前库";
+
 /// 查询标签动作行左端的库选择器（原生 `GtkDropDown`）。
 ///
 /// 三件事必须同时成立才是「如实显示」：
@@ -1190,9 +1243,11 @@ enum PickerAction {
 /// 1. 显示 = **服务端真值**（`GetSessionContext`），没有默认库时显示「未指定库」；
 /// 2. 驱动没声明 `session_catalog_switch` 时整枚不渲染（能力级不可用，不留灰块）；
 /// 3. 会话未就绪 / 事务打开时可见但禁用，tooltip 说明原因。
+///
+/// 可见文字不出现（`库` / `Schema` 这类层名只在 tooltip 与可访问名里），标签用可访问名
+/// [`CATALOG_PICKER_A11Y`]。
 pub struct CatalogPicker {
     root: gtk::Box,
-    caption: gtk::Label,
     dropdown: gtk::DropDown,
     /// 模型里的真实库名（不含第 0 项占位）。
     items: RefCell<Vec<String>>,
@@ -1202,6 +1257,8 @@ pub struct CatalogPicker {
     updating: Cell<bool>,
     /// 最近一次真值（回写与日志用）。
     truth: RefCell<Option<String>>,
+    /// 层名（「库」/「Schema」）：只进 tooltip，不做可见文字。
+    layer: Cell<CatalogKind>,
     /// 正在等确认的库：同一次切换在途时，重复的 `selected` 通知不再重复发 RPC
     /// （GTK 换模型与换选中会各发一次通知）。
     pending: RefCell<Option<String>>,
@@ -1211,29 +1268,31 @@ pub struct CatalogPicker {
 impl CatalogPicker {
     /// 组装（默认隐藏：渲染与否由能力位决定，见 [`CatalogPicker::set_capability`]）。
     pub fn new(callbacks: CatalogPickerCallbacks) -> Rc<Self> {
-        let caption = gtk::Label::new(Some("库"));
-        caption.add_css_class("dim-label");
-        caption.add_css_class("caption");
-
         let dropdown = gtk::DropDown::from_strings(&[UNSPECIFIED_PICKER_LABEL]);
         // 可访问名（a11y.name = 「当前库」）：读屏与自动化都靠它指认这枚控件。
-        dropdown.update_property(&[gtk::accessible::Property::Label("当前库")]);
+        dropdown.update_property(&[gtk::accessible::Property::Label(CATALOG_PICKER_A11Y)]);
         dropdown.set_tooltip_text(Some("这条会话的当前库（服务端真值）"));
 
         let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         root.set_valign(gtk::Align::Center);
         root.set_visible(false);
-        root.append(&caption);
+        // 没有可见文字（改动确认单 #7）：可见部分只有下拉框本身。
+        if let Some(text) = CATALOG_PICKER_CAPTION {
+            let caption = gtk::Label::new(Some(text));
+            caption.add_css_class("dim-label");
+            caption.add_css_class("caption");
+            root.append(&caption);
+        }
         root.append(&dropdown);
 
         let picker = Rc::new(Self {
             root,
-            caption,
             dropdown,
             items: RefCell::new(Vec::new()),
             placeholder: RefCell::new(UNSPECIFIED_PICKER_LABEL.to_owned()),
             updating: Cell::new(false),
             truth: RefCell::new(None),
+            layer: Cell::new(CatalogKind::Unknown),
             pending: RefCell::new(None),
             callbacks,
         });
@@ -1286,8 +1345,10 @@ impl CatalogPicker {
     }
 
     /// 层名（「库」/「Schema」）——由 `catalog_kind` 决定，不按驱动名硬编码。
+    ///
+    /// 只影响 tooltip 的措辞：界面上的可见文字已经没有了（改动确认单 #7）。
     pub fn set_layer(&self, kind: CatalogKind) {
-        self.caption.set_text(kind.label());
+        self.layer.set(kind);
     }
 
     /// 能力级可见性：驱动没声明 `session_catalog_switch` 时**整枚不渲染**。
@@ -1337,7 +1398,8 @@ impl CatalogPicker {
                     .borrow()
                     .clone()
                     .unwrap_or_else(|| UNSPECIFIED_PICKER_LABEL.to_owned());
-                let text = format!("当前库：{truth}（选中后这条会话会切到该库）");
+                let layer = self.layer.get().label();
+                let text = format!("当前{layer}：{truth}（选中后这条会话会切到该{layer}）");
                 self.root.set_tooltip_text(Some(&text));
                 self.dropdown.set_tooltip_text(Some(&text));
             }
@@ -1413,5 +1475,298 @@ impl CatalogPicker {
             .map_or(0, |position| u32::try_from(position + 1).unwrap_or(0));
         self.dropdown.set_selected(selected);
         self.updating.set(false);
+    }
+}
+
+/// 连接选择器的可访问名（没有可见文字时，读屏与自动化靠它指认这枚控件）。
+const CONNECTION_PICKER_A11Y: &str = "当前连接";
+
+/// 连接选择器的可见 caption 恒为 `None`（改动确认单 #7）。
+const CONNECTION_PICKER_CAPTION: Option<&str> = None;
+
+/// 动作行左端的两枚选择器：顺序即摆放顺序（**连接在前、库在后**），
+/// 每一项是 `(可访问名, 可见 caption)`。
+///
+/// 两个 caption 都是 `None`：界面上的可见部分只有下拉框本身，名字留给读屏与自动化。
+/// `SqlPage::new` 按同一顺序 append 这两枚控件；单测断言这张表（改回可见文字就会红）。
+pub const ACTION_ROW_PICKERS: [(&str, Option<&str>); 2] = [
+    (CONNECTION_PICKER_A11Y, CONNECTION_PICKER_CAPTION),
+    (CATALOG_PICKER_A11Y, CATALOG_PICKER_CAPTION),
+];
+
+/// 连接选择器的接线（选中交给 tabs 重绑会话；选择器自己不持有会话）。
+pub struct ConnectionPickerCallbacks {
+    /// 用户选了一条连接（参数是连接键，不是显示名）。
+    pub select: Rc<dyn Fn(&str)>,
+}
+
+/// 查询标签动作行**最左端**的连接选择器（原生 `GtkDropDown`）。
+///
+/// 三件事：
+///
+/// 1. 列表 = 注册表里**已保存的连接**（键 + 显示名），不编造条目；
+/// 2. 当前值 = 本标签**实际绑定**的连接（`TabKind::Query.connection_key` 上的覆盖值），
+///    由 tabs 通过 [`ConnectionPicker::set_current`] 写进来——这里不自己推断；
+/// 3. 选中同一条连接是 no-op（不重建会话），选中另一条交给 tabs 按固定顺序重绑。
+pub struct ConnectionPicker {
+    root: gtk::Box,
+    dropdown: gtk::DropDown,
+    /// `(连接键, 连接名)`：每一项都来自注册表，没有占位项。
+    items: RefCell<Vec<(String, String)>>,
+    /// 本标签实际绑定的连接键（只用于显示与「选的是不是同一条」的判断）。
+    current: RefCell<Option<String>>,
+    /// 程序改选中（重建模型 / 回写绑定）时不把变化当成用户意图。
+    updating: Cell<bool>,
+    /// 重绑在途：置灰并说明，避免连点出两轮重绑。
+    pending: Cell<bool>,
+    callbacks: ConnectionPickerCallbacks,
+}
+
+impl ConnectionPicker {
+    /// 组装（连接选择器一直渲染：查询标签总有绑定的一条连接）。
+    pub fn new(callbacks: ConnectionPickerCallbacks) -> Rc<Self> {
+        let dropdown = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
+        dropdown.update_property(&[gtk::accessible::Property::Label(CONNECTION_PICKER_A11Y)]);
+        dropdown.set_tooltip_text(Some("这条查询标签绑定的连接"));
+        // 会话未建立前也可以切：选中另一条会重绑本标签的会话。
+        dropdown.set_sensitive(true);
+
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
+        root.set_valign(gtk::Align::Center);
+        // 没有可见文字（改动确认单 #7）：可见部分只有下拉框本身。
+        if let Some(text) = CONNECTION_PICKER_CAPTION {
+            let caption = gtk::Label::new(Some(text));
+            caption.add_css_class("dim-label");
+            caption.add_css_class("caption");
+            root.append(&caption);
+        }
+        root.append(&dropdown);
+
+        let picker = Rc::new(Self {
+            root,
+            dropdown,
+            items: RefCell::new(Vec::new()),
+            current: RefCell::new(None),
+            updating: Cell::new(false),
+            pending: Cell::new(false),
+            callbacks,
+        });
+        {
+            let weak = Rc::downgrade(&picker);
+            picker.dropdown.connect_selected_notify(move |_| {
+                let Some(picker) = weak.upgrade() else {
+                    return;
+                };
+                if picker.updating.get() || picker.pending.get() {
+                    return;
+                }
+                let Some(index) = usize::try_from(picker.dropdown.selected()).ok() else {
+                    return;
+                };
+                let Some((key, name)) = picker.items.borrow().get(index).cloned() else {
+                    return;
+                };
+                if picker.current.borrow().as_deref() == Some(key.as_str()) {
+                    // 同一条连接 = no-op：不重建会话，也不发任何 RPC。
+                    eprintln!("[tabs] 连接选择器选中了同一条连接「{name}」：不重建会话");
+                    return;
+                }
+                eprintln!("[tabs] 连接选择器选中「{name}」（{key}）");
+                (picker.callbacks.select)(&key);
+            });
+        }
+        picker
+    }
+
+    /// 根控件（动作行左端、库选择器之前）。
+    pub fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    /// 当前显示的文字（日志与断言读它，不读状态变量）。
+    #[must_use]
+    pub fn display_text(&self) -> String {
+        let selected = usize::try_from(self.dropdown.selected()).unwrap_or(usize::MAX);
+        // 与 `rebuild` 用同一份条目（绑定值不在注册表里时会补一条，显示要跟着它）。
+        let (options, _) = connection_options(
+            self.items.borrow().as_slice(),
+            self.current.borrow().as_deref(),
+        );
+        options
+            .get(selected)
+            .map_or_else(String::new, |(_, name)| name.clone())
+    }
+
+    /// 换上可选的连接（注册表里已保存的那些）。
+    pub fn set_items(&self, items: &[(String, String)]) {
+        self.items.replace(items.to_vec());
+        self.rebuild();
+    }
+
+    /// 写「本标签实际绑定的连接」：显示跟着它走，不跟着用户点过什么走。
+    pub fn set_current(&self, key: &str) {
+        self.current.replace(Some(key.to_owned()));
+        self.rebuild();
+    }
+
+    /// 把显示恢复成绑定值（重绑失败回滚用）。
+    pub fn restore(&self) {
+        self.rebuild();
+    }
+
+    /// 重绑在途：置灰 + 说明在做什么（成功 / 失败后由 tabs 解除）。
+    pub fn set_pending(&self, pending: bool) {
+        self.pending.set(pending);
+        self.dropdown.set_sensitive(!pending);
+        if pending {
+            let target = self.display_text();
+            let text = format!("正在把本标签的会话切到「{target}」…");
+            self.root.set_tooltip_text(Some(&text));
+            self.dropdown.set_tooltip_text(Some(&text));
+        } else {
+            self.refresh_tooltip();
+        }
+    }
+
+    /// QA：在下拉里选中某条连接（`GtkDropDown::set_selected`，与用户点选同一条信号路径）。
+    ///
+    /// 名字与键都接受（脚本里写名字更好读）；找不到就如实返回错误，不猜。
+    pub fn qa_select(&self, connection: &str) -> Result<(), String> {
+        if !self.dropdown.get_sensitive() {
+            return Err("连接选择器当前不可用（正在切换连接）".to_owned());
+        }
+        let position = self
+            .items
+            .borrow()
+            .iter()
+            .position(|(key, name)| name == connection || key == connection)
+            .ok_or_else(|| format!("连接列表里没有「{connection}」"))?;
+        let selected = u32::try_from(position).map_err(|_| "连接列表过长".to_owned())?;
+        self.dropdown.set_selected(selected);
+        Ok(())
+    }
+
+    fn refresh_tooltip(&self) {
+        let text = if self.display_text().is_empty() {
+            "这条查询标签绑定的连接".to_owned()
+        } else {
+            format!(
+                "这条查询标签绑定的连接：{}（选中另一条会重绑本标签的会话）",
+                self.display_text()
+            )
+        };
+        self.root.set_tooltip_text(Some(&text));
+        self.dropdown.set_tooltip_text(Some(&text));
+    }
+
+    /// 用「键 + 显示名」重建模型，并把选中落到绑定值上。
+    fn rebuild(&self) {
+        let (options, selected) = connection_options(
+            self.items.borrow().as_slice(),
+            self.current.borrow().as_deref(),
+        );
+        let labels: Vec<&str> = options.iter().map(|(_, name)| name.as_str()).collect();
+        let model = gtk::StringList::new(&labels);
+        self.updating.set(true);
+        self.dropdown.set_model(Some(&model));
+        self.dropdown.set_selected(selected);
+        self.updating.set(false);
+        self.refresh_tooltip();
+    }
+}
+
+/// 下拉的条目与选中下标（纯函数，单测覆盖「当前值跟随绑定」）。
+///
+/// 绑定值不在注册表列表里（连接已被删掉 / 注册表还没加载）时补一条**真名**（就是键本身），
+/// 不编造别的条目，也不把下拉留空；没有绑定值时下标是 `GTK_INVALID_LIST_POSITION`。
+#[must_use]
+fn connection_options(
+    items: &[(String, String)],
+    current: Option<&str>,
+) -> (Vec<(String, String)>, u32) {
+    let mut options = items.to_vec();
+    let Some(current) = current.filter(|key| !key.is_empty()) else {
+        return (options, gtk::INVALID_LIST_POSITION);
+    };
+    if !options.iter().any(|(key, _)| key == current) {
+        options.push((current.to_owned(), current.to_owned()));
+    }
+    let selected = options
+        .iter()
+        .position(|(key, _)| key == current)
+        .and_then(|position| u32::try_from(position).ok())
+        .unwrap_or(gtk::INVALID_LIST_POSITION);
+    (options, selected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_row_pickers_have_no_visible_text_and_connection_comes_first() {
+        // 两枚都是原生下拉框，且都**没有可见文字**（改动确认单 #7）：界面里只剩控件本身，
+        // 名字交给可访问性（读屏 / 自动化）——把任何一枚改回可见「库」「连接」都会让这条红。
+        let [connection, catalog] = ACTION_ROW_PICKERS;
+        assert_eq!(connection.0, "当前连接", "连接选择器的可访问名");
+        assert_eq!(catalog.0, "当前库", "库选择器的可访问名");
+        assert!(
+            connection.1.is_none() && catalog.1.is_none(),
+            "两枚选择器都不许带可见文字：{connection:?} / {catalog:?}"
+        );
+        assert_ne!(
+            connection.0, catalog.0,
+            "两枚控件的可访问名必须能区分（否则自动化指认不出是哪一枚）"
+        );
+        // 顺序：连接在库前面（动作行最左端）。
+        assert_eq!(ACTION_ROW_PICKERS[0].0, "当前连接");
+        assert_eq!(ACTION_ROW_PICKERS[1].0, "当前库");
+    }
+
+    #[test]
+    fn connection_picker_selection_follows_the_binding() {
+        // 两条已保存连接：当前值 = 绑定值（不是列表第一项）。
+        let items = vec![
+            (
+                "mariadb:127.0.0.1:53306".to_owned(),
+                "本地 MariaDB".to_owned(),
+            ),
+            ("sqlite:/tmp/a.db".to_owned(), "临时 SQLite".to_owned()),
+        ];
+        let (options, selected) = connection_options(&items, Some("sqlite:/tmp/a.db"));
+        assert_eq!(options.len(), 2, "不许给注册表之外的连接编造条目");
+        assert_eq!(
+            options[selected as usize].1, "临时 SQLite",
+            "选中项必须是绑定值的显示名"
+        );
+
+        // 绑定值不在列表里（连接被删掉 / 注册表还没加载）：补一条真名，不摆假连接。
+        let (options, selected) = connection_options(&items, Some("mariadb:127.0.0.1:53307"));
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[selected as usize].0, "mariadb:127.0.0.1:53307");
+
+        // 没有绑定值：下拉没有选中项（不是悄悄选第一条）。
+        let (_, selected) = connection_options(&items, None);
+        assert_eq!(selected, gtk::INVALID_LIST_POSITION);
+    }
+
+    #[test]
+    fn status_bar_cancel_is_enabled_only_while_a_query_runs() {
+        // 查询在途（Loading / Streaming）→ 状态栏的「取消」可点。
+        assert!(PageState::Running.enables_cancel());
+        assert!(PageState::Streaming.enables_cancel());
+        // 空闲与各终态 → 置灰（tooltip 由状态栏按上下文说明原因）。
+        for state in [
+            PageState::Idle,
+            PageState::Complete,
+            PageState::Cancelled,
+            PageState::Error,
+            PageState::Disconnected,
+        ] {
+            assert!(
+                !state.enables_cancel(),
+                "{state:?} 不该让状态栏的「取消」可点"
+            );
+        }
     }
 }

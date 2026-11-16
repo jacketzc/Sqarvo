@@ -1090,6 +1090,11 @@ impl ResultsView {
                 | RunState::Cancelled
                 | RunState::Disconnected
         ));
+        // 状态行的原文也写进日志：QA 断言「已取消 · 已保留 N 行」这类文案时读的是它，
+        // 不必靠截图判断（ADR 0029：截图不算交互证据）。隐藏时（正常完成）不写，免得刷屏。
+        if self.status.get_visible() {
+            eprintln!("[query] 状态行：{text}");
+        }
         self.status.remove_css_class("error");
         self.status.remove_css_class("success");
         self.status.remove_css_class("warning");

@@ -135,18 +135,18 @@ platform_notes.windows = "六枚按钮都在（`ButtonRowAdd` / `Delete` / `Appl
 [[component.interaction]]
 trigger = "load"
 precondition = "当前标签是表标签"
-result = "六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」）"
+result = "六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点（查询页是另一档，见下一条）；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」）"
 source = "src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:4936、src/data_page.rs:4969、src/data_page.rs:5027"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "当前标签不是表标签（Objects 页 / 查询标签 / 启动态未连接）"
-result = "六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）；同时分页摘要、选中数、Last Refresh 整格隐藏"
+result = "六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）。唯一例外是「取消」（改动确认单 #7，两用）：查询标签上按**查询是否在途**给值——在途可点（点它取消查询），空闲置灰并写「当前没有执行中的查询」。同时分页摘要、选中数、Last Refresh 整格隐藏"
 source = "src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:912"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c5ac7dd10c67"
+spec_hash = "245741dfd613"
 commit = ""
 evidence = "§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops"
 
@@ -353,32 +353,46 @@ spec_hash = ""
 [[component]]
 id = "status_bar.row1.ops.cancel"
 parent = "status_bar.row1.ops"
-display_name = "「取消」图标按钮"
+display_name = "「取消」图标按钮（两用：取消查询 / 中止提交批次）"
 kind = "control"
 status = "active"
 style.icon = ["action.cancel"]
-a11y.name = "取消：中止正在执行的提交批次（已执行的行会整批回滚）"
+a11y.name = "（随当前页切换：查询页「取消当前查询（Esc）」，数据页「取消在途的提交批次」）"
 a11y.tab = "在行操作组内依次 Tab 可达"
 style.metrics = ["icon_button_width", "icon_button_height"]
 impl_notes = [
   "图标用实心方块：主题的 process-stop 在 Yaru 是八边形、在 Adwaita 是叉号，两套主题两种样子，也不是「停止」的通用形态。",
-  "只在提交批次在途时可点；重复点幂等，只写日志，不会误触发新提交。",
-  "语义是中止本批并整批回滚，不是撤销已提交的数据（ADR 0018）。",
+  "**两用，按当前页分派动作、tooltip 与可访问名**（改动确认单 #7）——只改文案不改动作会让用户点了一枚说着「取消查询」却去回滚批次的按钮。",
+  "查询页：查询在途（Loading / Streaming）时可点，点击取消查询（与 `Esc` 同一个方法），重复点幂等；空闲时置灰，tooltip「取消当前查询（Esc）（当前不可用：当前没有执行中的查询）」。查询页内**没有**取消按钮，这里是唯一入口。",
+  "数据页：只在提交批次在途时可点，语义是中止本批并整批回滚（ADR 0018），不是撤销已提交的数据；置灰时的原因沿用 `RowOpsState.reason`，口径与改动前一致。",
+  "停在 `Objects` 页 / 启动态：两个语义都不成立，置灰并说明原因。",
 ]
 
 platform_notes.windows = "行 1 这枚「取消」两用：查询页按 `busy`（执行中 / 待执行）可点，点击取消查询、重复点幂等；数据页按 `tab.Loading || submitting` 可点，点击 `CancelDataRequests` 并在行 2 左格写「已取消表数据请求（已取到的行保留在页面上）」。停在别的页时禁用，tooltip「取消：当前没有执行中的查询」。§7.1 只记了查询页那一种。"
 
 [[component.interaction]]
 trigger = "click"
+precondition = "当前页是查询标签，且查询在途（Loading / Streaming）"
+result = "取消这条查询（与 Esc、QA 脚本同一个方法）：发 Cancel 并立即进入「已取消 · 已保留 N 行」；重复点幂等（第二次起只记日志、不发 RPC）。查询结束（含取消）后按钮自行置灰"
+source = "src/sql_page.rs:1041、src/sql_page.rs:1086、src/sql_page.rs:518、src/shell.rs:1500、src/shell.rs:1566"
+
+[[component.interaction]]
+trigger = "click"
 precondition = "提交批次在途（Submitting）"
 result = "中止本批并整批回滚已执行的行；重复点幂等（只写日志），提交结束后按钮自行置灰"
-source = "src/shell.rs:1066、src/data_page.rs:4943、src/data_page.rs:5049"
+source = "src/shell.rs:1500、src/data_page.rs:4943、src/data_page.rs:5049"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "当前页切换到查询标签 / 表数据标签 / Objects 页"
+result = "按钮的语义、tooltip 与可访问名跟着换：查询页「取消当前查询（Esc）」、数据页「取消在途的提交批次」、Objects 页两者都不成立（置灰 + 原因）；可用性各自按自己的在途状态给值"
+source = "src/shell.rs:1069、src/shell.rs:1548、src/ui.rs:1931"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6c04cfc50017"
+spec_hash = "7484cd8f451a"
 commit = ""
-evidence = "§7「取消只在批次在途时可点」；RowOpsState.cancel + request_cancel_submit"
+evidence = "真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME，MariaDB 无默认库档案）：① `SELECT SLEEP(10)` 执行中 `cancel 1` → 日志「[qa] 点了状态栏的「取消」（第 1 个查询标签）」「[query] 点击取消」「[query] 状态行：已取消 · 已保留 0 行」，`expect-query 1 state=cancelled`、`rows=0` 通过；再点一次 →「[qa] 状态栏「取消」已置灰：第 2 次点击被忽略（幂等）」（置灰即幂等，不发 RPC）。② `--qa-cancel-after-ms 1200` 同一条路径：「[qa] 点状态栏的「取消」（第 1 次）」→ 同一状态行文案 → 150 ms 后第 2 次点击落到置灰按钮。③ 可用性：查询在途 `row_ops().cancel=true`、空闲与各终态 false（单测 status_bar_cancel_is_enabled_only_while_a_query_runs），查询页 tooltip / 可访问名由 `cancel_copy(Query)` 给出「取消当前查询（Esc）」+ 置灰原因「当前没有执行中的查询」（单测 cancel_button_is_two_purpose_and_says_which_one）。数据页口径未改：动作分派（`data.perform_row_op(RowOp::Cancel)`）与可用性（`RowOpsState.cancel`）一行未动，tooltip 仍按 `RowOpsState.reason` 拼装。"
 
 [component.sync.windows]
 state = "partial"

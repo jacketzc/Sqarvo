@@ -1101,8 +1101,9 @@ DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_P
 - `--qa-execute`：连接成功后触发与「执行」按钮**相同的方法**（含空 SQL 校验与状态机）；
 - `--qa-scroll-to-row <n>`：滚动到第 n 行（0 起，可重复，按顺序每隔 1 秒执行一次）。
   未加载到该行时按批预取——与用户快速拖到末尾走的是同一条滚动/预取路径，没有绕过 UI；
-- `--qa-cancel-after-ms <n>`：执行后 n 毫秒点两次「取消」（间隔 150 ms），用于验证
-  幂等与「点击 → Cancelled」耗时；日志里同时打印点击与状态时刻；
+- `--qa-cancel-after-ms <n>`：执行后 n 毫秒点两次**状态栏行 1 的「取消」**（间隔 150 ms；
+  查询页内的取消按钮已删，改动确认单 #7），用于验证幂等与「点击 → Cancelled」耗时；
+  日志里同时打印点击与状态时刻；第二次点击时按钮已置灰 → 记一行「第 2 次点击被忽略（幂等）」；
 - `--qa-exit-after-ms <n>`：启动后 n 毫秒自动关窗（走正常清理路径），基准脚本据此
   无人值守退出；
 - `--qa-second-sql-file <path>` + `--qa-execute-again-after-ms <n>`：首次执行后 n 毫秒
@@ -1416,6 +1417,9 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 | `expect-tab-title <标签> <子串>` | 断言标签页真实标题（`对象 @ 库`） | 标签存在 |
 | `catalog <标签> <库>` | 在查询标签的**库选择器**里选中某个库（`GtkDropDown::set_selected` → 与点选同一条信号路径 → `SetSessionContext`） | 查询标签已就绪、驱动声明 `session_catalog_switch`、库列表已取到 |
 | `expect-catalog <标签> <文本>` | 断言库选择器上显示的文字（读控件；按包含比对） | 同上 |
+| `cancel <标签>` | 点**状态栏行 1 的「取消」**取消该查询标签在途的查询（先切到那个标签，与用户同一条路径；页内已无取消按钮。按钮置灰时这次点击不生效，与点一枚禁用按钮一样） | 查询标签；查询在途 |
+| `connection <标签> <连接名>` | 在查询标签的**连接选择器**里选中某条连接（名字或连接键都接受；`GtkDropDown::set_selected` → 与点选同一条信号路径 → 会话重绑） | 该连接已保存；选择器没有在「正在切换」态 |
+| `expect-connection <标签> <文本>` | 断言连接选择器上显示的文字（读控件；按包含比对） | 同上 |
 | `sessions <说明>` | 写一次 `ListSessions` 日志（前后对比证据） | 有注册表 |
 | `quit` | 收起模态提示后关窗，走 `connect_shutdown` 清理 | 工作区存在 |
 

@@ -2390,6 +2390,17 @@ impl Workspace {
                     observe: Rc::new(move || inspector_for_observe.qa_observe()),
                 }))
             },
+            status_cancel: {
+                // 查询页的取消按钮已删（改动确认单 #7）：QA 的 `cancel <n>` 与
+                // `--qa-cancel-after-ms` 点的就是状态栏行 1 那枚按钮。
+                let shell_slot = Rc::clone(&shell_slot);
+                Rc::new(move || {
+                    shell_slot
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|shell| shell.status().activate_cancel())
+                })
+            },
             on_title: {
                 let state = Rc::clone(state);
                 Rc::new(move |title: &str, subtitle: &str| {
@@ -2689,13 +2700,27 @@ fn maybe_run_qa_sql(state: &Rc<UiState>) {
     }
 
     if let Some(millis) = crate::qa::cancel_after_ms() {
-        let page = Rc::clone(&page);
+        // 查询页的「取消」按钮已删（改动确认单 #7）：点的是状态栏行 1 那枚两用按钮
+        // （与用户手点完全同一条路径；置灰时点击不生效，与点一枚禁用按钮一样）。
+        let shell = Rc::clone(&workspace.shell);
         glib::timeout_add_local_once(Duration::from_millis(400 + millis), move || {
-            page.request_cancel();
+            eprintln!(
+                "[qa] t=+{}ms 点状态栏的「取消」（第 1 次）",
+                crate::qa::elapsed_ms()
+            );
+            if !shell.status().activate_cancel() {
+                eprintln!("[qa] 状态栏「取消」已置灰（没有在途查询）：第 1 次点击被忽略");
+            }
             // 第二次点击：验证幂等（不发 RPC、不弹错误）。
-            let second = Rc::clone(&page);
+            let shell = Rc::clone(&shell);
             glib::timeout_add_local_once(Duration::from_millis(150), move || {
-                second.request_cancel();
+                eprintln!(
+                    "[qa] t=+{}ms 点状态栏的「取消」（第 2 次，验证幂等）",
+                    crate::qa::elapsed_ms()
+                );
+                if !shell.status().activate_cancel() {
+                    eprintln!("[qa] 状态栏「取消」已置灰：第 2 次点击被忽略（幂等）");
+                }
             });
         });
     }

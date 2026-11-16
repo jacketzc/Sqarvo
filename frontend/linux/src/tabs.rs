@@ -45,7 +45,9 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::metadata::{MetadataHub, NodeView, catalog_layer_parent, kind_icon};
-use crate::backend::query::{CatalogKind, SessionDatabaseContext, UNSPECIFIED_CATALOG_LABEL};
+use crate::backend::query::{
+    CatalogKind, QueryFailure, SessionDatabaseContext, UNSPECIFIED_CATALOG_LABEL,
+};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
@@ -246,6 +248,91 @@ impl QueryCatalog {
     pub fn apply(&self, context: &SessionDatabaseContext) {
         self.truth.replace(context.default_catalog.clone());
         self.kind.set(context.catalog_kind);
+    }
+}
+
+/// 一次连接重绑（旧键 → 目标键）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rebind {
+    /// 重绑前的连接键（失败时回滚到它）。
+    pub from: String,
+    /// 目标连接键。
+    pub to: String,
+}
+
+/// 查询标签的连接绑定：真值（当前实际绑定的连接键）+ 一次重绑的进度。
+///
+/// `TabKind::Query.connection_key` 是**打开标签时**的连接，且不可变（它是标签身份的
+/// 稳定描述）。用户在连接选择器里换连接后，实际绑定落在这层覆盖值上——会话建立、
+/// 执行、库列表、tooltip 一律读 [`QueryBinding::bound`]，不再直接读 `TabKind`。
+///
+/// 重绑失败时绑定**回到原连接**（[`QueryBinding::finish`] 的 `false` 分支）：标签不会
+/// 卡在一条连不上的连接上。
+#[derive(Debug)]
+pub struct QueryBinding {
+    /// 当前实际绑定的连接键（初始 = `TabKind` 里那个）。
+    bound: RefCell<String>,
+    /// 进行中的重绑。
+    pending: RefCell<Option<Rebind>>,
+}
+
+impl QueryBinding {
+    /// 新建：初始绑定就是 `TabKind` 里的那个键。
+    #[must_use]
+    pub fn new(base: &str) -> Self {
+        Self {
+            bound: RefCell::new(base.to_owned()),
+            pending: RefCell::new(None),
+        }
+    }
+
+    /// 当前实际绑定的连接键。
+    #[must_use]
+    pub fn bound(&self) -> String {
+        self.bound.borrow().clone()
+    }
+
+    /// 开始一次重绑。返回 `false` = 选中的就是当前绑定的那条连接（no-op：不重建会话）。
+    ///
+    /// 已有一次重绑在途时也不再开始第二次（`false`）：连点不该出现两轮 Connect。
+    pub fn begin(&self, target: &str) -> bool {
+        if self.pending.borrow().is_some() || self.bound() == target {
+            return false;
+        }
+        self.pending.replace(Some(Rebind {
+            from: self.bound(),
+            to: target.to_owned(),
+        }));
+        true
+    }
+
+    /// 会话要连的连接键：重绑在途时是**目标**连接（Connect 必须去连它），否则是已结算的
+    /// 绑定值。
+    ///
+    /// 这一层很关键：`bound()` 只在 Connect 回来后才改（失败要能回滚），但发 Connect 的
+    /// 那一刻必须已经用目标连接的参数——否则「重绑」会拿旧连接的参数再连一次旧连接。
+    #[must_use]
+    pub fn effective(&self) -> String {
+        self.pending
+            .borrow()
+            .as_ref()
+            .map_or_else(|| self.bound(), |rebind| rebind.to.clone())
+    }
+
+    /// 进行中的重绑（没有就是 `None`）。
+    #[must_use]
+    pub fn pending(&self) -> Option<Rebind> {
+        self.pending.borrow().clone()
+    }
+
+    /// 重绑收尾：`true` = 采纳目标连接，`false` = 保留原连接。返回收尾后的绑定键。
+    pub fn finish(&self, ok: bool) -> String {
+        let Some(rebind) = self.pending.borrow_mut().take() else {
+            return self.bound();
+        };
+        let bound = if ok { rebind.to } else { rebind.from };
+        self.bound.replace(bound.clone());
+        bound
     }
 }
 
@@ -460,6 +547,10 @@ pub struct TabHandle {
     trace: RefCell<Vec<String>>,
     /// 查询标签的库上下文（请求值 / 真值 / 能力）；非查询标签保持默认。
     pub catalog: QueryCatalog,
+    /// 查询标签的连接绑定（覆盖值 + 重绑进度）；非查询标签保持默认。
+    pub binding: QueryBinding,
+    /// 该标签会话的驱动 ID（重绑后窗口副标题按它说「已连接 · <驱动>」）。
+    driver: RefCell<Option<String>>,
 }
 
 impl TabHandle {
@@ -469,8 +560,32 @@ impl TabHandle {
         self.session.borrow().clone()
     }
 
+    /// 这条标签**实际绑定**的连接键：查询标签取连接覆盖值（重绑在途时取目标连接），
+    /// 其余等于 `TabKind` 里的键。
+    ///
+    /// 会话建立、库列表缓存、tooltip、窗口标题都必须读它——读 `TabKind` 会让重绑后的
+    /// 标签继续按旧连接说话；只读 `QueryBinding::bound` 则会让重绑的 Connect 连回旧连接。
+    #[must_use]
+    pub fn bound_connection(&self) -> String {
+        match &self.kind {
+            TabKind::Query { .. } => self.binding.effective(),
+            kind => kind.connection_key().unwrap_or_default().to_owned(),
+        }
+    }
+
     fn set_session(&self, session: String) {
         self.session.replace(Some(session));
+    }
+
+    /// 记下该标签会话的驱动 ID（重绑后副标题按它说话，不借用别的连接的驱动）。
+    fn set_driver(&self, driver: &str) {
+        self.driver.replace(Some(driver.to_owned()));
+    }
+
+    /// 该标签会话的驱动 ID（会话未建立时为 `None`）。
+    #[must_use]
+    pub fn driver(&self) -> Option<String> {
+        self.driver.borrow().clone()
     }
 
     /// 记录一条已投递的事件（只记事件名，不记载荷）。
@@ -533,6 +648,11 @@ pub struct TabContext {
     pub on_title: TitleSink,
     /// #121 验收桥：树 / 信息面板的 QA 动作。`None` = 只跑标签自身的步骤。
     pub qa: Option<Rc<QaBridge>>,
+    /// 点**状态栏行 1 的「取消」**（与用户点同一枚；返回 `false` = 按钮置灰）。
+    ///
+    /// 查询页的取消按钮已删（改动确认单 #7）：QA 的 `cancel <n>` 与
+    /// `--qa-cancel-after-ms` 都走这里，和用户手点完全同一条路径。
+    pub status_cancel: Rc<dyn Fn() -> bool>,
 }
 
 /// 验收脚本里的「按名字做一件事」动作（`Err` = 还没就绪，由调度器重试）。
@@ -1965,6 +2085,8 @@ impl TabSet {
             query_timing: Cell::new(None),
             trace: RefCell::new(Vec::new()),
             catalog: QueryCatalog::new(None),
+            binding: QueryBinding::new(""),
+            driver: RefCell::new(None),
         });
         self.tabs.borrow_mut().push(handle);
         self.view.set_selected_page(&page);
@@ -2006,6 +2128,7 @@ impl TabSet {
         let seq = self.next_tab_seq.get();
         self.next_tab_seq.set(seq + 1);
         let tab_id = format!("tab-t{seq}");
+        let binding = QueryBinding::new(&connection_key);
         let kind = TabKind::Table {
             name: entry.display_name.clone(),
             catalog,
@@ -2032,6 +2155,8 @@ impl TabSet {
             query_timing: Cell::new(None),
             trace: RefCell::new(Vec::new()),
             catalog: QueryCatalog::new(None),
+            binding,
+            driver: RefCell::new(None),
         });
         page.set_tooltip(&self.tooltip_for(&handle, "标签会话"));
         self.tabs.borrow_mut().push(handle);
@@ -2062,6 +2187,7 @@ impl TabSet {
         // 不改变会话当前库。保留 `catalog_for` 作为兜底（例如没有树选中时）。见
         // [`Self::default_query_catalog`]。
         let request_catalog = self.default_query_catalog(&connection_key);
+        let binding = QueryBinding::new(&connection_key);
         let kind = TabKind::Query {
             number,
             catalog: self.catalog_for(&connection_key),
@@ -2087,6 +2213,8 @@ impl TabSet {
             query_timing: Cell::new(None),
             trace: RefCell::new(Vec::new()),
             catalog: QueryCatalog::new(request_catalog.clone()),
+            binding,
+            driver: RefCell::new(None),
         });
         // 标题里只有「查询 N」（契约 §4）：库与连接落到 tooltip，多连接时靠它区分。
         let tooltip = self.tooltip_for(&handle, "标签会话");
@@ -2097,9 +2225,41 @@ impl TabSet {
             "[tabs] 新建查询标签 {tab_id}：{title}（tooltip「{tooltip}」，请求库 {}）",
             request_catalog.as_deref().unwrap_or("（空 = 不改会话库）")
         );
+        // 连接选择器：条目 = 注册表里已保存的连接（键 + 显示名），当前值 = 本标签绑定值。
+        self.fill_connection_picker(&tab_id);
         self.request_session(&tab_id);
         sql.focus_editor();
         Ok(tab_id)
+    }
+
+    /// 连接选择器的条目：(连接键, 连接名)。取自注册表里**已保存**的连接，不编造条目。
+    fn connection_choices(&self) -> Vec<(String, String)> {
+        self.context
+            .registry
+            .as_ref()
+            .map_or_else(Vec::new, |registry| {
+                registry
+                    .snapshots()
+                    .into_iter()
+                    .map(|snapshot| (snapshot.key, snapshot.name))
+                    .filter(|(key, _)| !key.is_empty())
+                    .collect()
+            })
+    }
+
+    /// 把「条目 + 当前绑定」写进某个查询标签的连接选择器。
+    fn fill_connection_picker(&self, tab_id: &str) {
+        let Some(tab) = self.by_id(tab_id) else {
+            return;
+        };
+        let Some(sql) = tab.sql.as_ref() else {
+            return;
+        };
+        let bound = tab.bound_connection();
+        let choices = self.connection_choices();
+        sql.connection_picker().set_items(&choices);
+        sql.connection_picker().set_current(&bound);
+        sql.set_connection_pending(tab.binding.pending().is_some());
     }
 
     /// 新查询标签的默认请求库：对象树里**当前选中项所在的库**，且必须属于这条连接。
@@ -2160,17 +2320,30 @@ impl TabSet {
         }
     }
 
+    /// 一条连接的显示名（tooltip / 窗口标题 / 重绑日志用）。
+    ///
+    /// 注册表里查不到（连接已被删掉 / 没有注册表）时退回窗口自己的连接名——
+    /// 那是真实存在的名字，不是编造的占位。
+    fn connection_name_for(&self, key: &str) -> String {
+        self.context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.name_for_key(key))
+            .unwrap_or_else(|| self.context.connection_name.clone())
+    }
+
     /// 为标签请求一条会话（worker 负责 `Connect`；同参数的「保存并连接」会话会被领养）。
+    ///
+    /// 连接键取 [`TabHandle::bound_connection`]：查询标签在连接选择器里换过连接后，
+    /// 这里连的是**目标连接**（重绑的 Connect 与「新建标签」走同一条路，没有第二套）。
     fn request_session(self: &Rc<Self>, tab_id: &str) {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
-        let key = match &tab.kind {
-            TabKind::Table { connection_key, .. } | TabKind::Query { connection_key, .. } => {
-                connection_key.clone()
-            }
-            TabKind::Objects => return,
-        };
+        if !tab.kind.has_session() {
+            return;
+        }
+        let key = tab.bound_connection();
         let params = self
             .context
             .registry
@@ -2356,6 +2529,17 @@ impl TabSet {
                     })
                 },
             },
+            connection: crate::sql_page::SqlPageConnection {
+                select: {
+                    let weak = Rc::downgrade(self);
+                    let id = id.clone();
+                    Rc::new(move |key: &str| {
+                        if let Some(set) = weak.upgrade() {
+                            set.rebind_connection(&id, key);
+                        }
+                    })
+                },
+            },
         };
         let page = SqlPage::new("", callbacks);
         page.set_on_selection_changed({
@@ -2428,6 +2612,17 @@ impl TabSet {
         self.switching.set(true);
         self.view.set_selected_page(page);
         self.switching.set(false);
+        // 连接列表可能刚变过（用户又存了一条连接）：切到查询标签时顺手对齐选择器条目，
+        // 免得下拉里少了刚保存的那条。只在切标签时做，不跟着每次状态刷新跑。
+        let current = self
+            .tabs
+            .borrow()
+            .iter()
+            .find(|tab| &tab.page == page && tab.sql.is_some())
+            .cloned();
+        if let Some(tab) = current {
+            self.fill_connection_picker(&tab.id);
+        }
         self.refresh_current();
     }
 
@@ -2515,21 +2710,55 @@ impl TabSet {
     /// hover 能看出属于哪条连接。表数据标签的标题已经含 `@ 库`，这里不重复。
     fn tooltip_for(&self, tab: &TabHandle, stage: &str) -> String {
         let title = tab.kind.title();
-        let TabKind::Query { connection_key, .. } = &tab.kind else {
+        if !matches!(tab.kind, TabKind::Query { .. }) {
             return format!("{title} · {stage}");
-        };
-        let connection = self
-            .context
-            .registry
-            .as_ref()
-            .and_then(|registry| registry.name_for_key(connection_key));
+        }
+        // 连接段读**实际绑定**的那条：重绑之后 tooltip 必须跟着换，不能继续写旧连接名。
+        let connection = self.connection_name_for(&tab.bound_connection());
         query_tooltip(
             &title,
             stage,
             tab.catalog.kind(),
             tab.catalog.truth().as_deref(),
-            connection.as_deref(),
+            Some(connection.as_str()),
         )
+    }
+
+    /// 窗口标题与副标题（§5.1）。
+    ///
+    /// 查询标签重绑到**别的**连接之后：标题里的连接名换成绑定连接的名字，副标题只写这条
+    /// 会话的驱动（版本号是另一条连接的读数，不知道就不写）。表标签仍是连接级口径。
+    fn window_title_and_subtitle(&self, tab: &TabHandle) -> (String, String) {
+        match &tab.kind {
+            TabKind::Objects => (
+                format!(
+                    "{} - {}",
+                    self.context.connection_name, self.context.driver_label
+                ),
+                self.context.subtitle.clone(),
+            ),
+            TabKind::Query { .. } => {
+                let bound = tab.bound_connection();
+                let workspace_key = self
+                    .context
+                    .registry
+                    .as_ref()
+                    .and_then(|registry| registry.active_key());
+                let title = window_title_for(&tab.kind.title(), &self.connection_name_for(&bound));
+                let subtitle = if workspace_key.as_deref() == Some(bound.as_str()) {
+                    self.context.subtitle.clone()
+                } else if let Some(driver) = tab.driver() {
+                    format!("已连接 · {driver}")
+                } else {
+                    "正在切换连接…".to_owned()
+                };
+                (title, subtitle)
+            }
+            kind => (
+                window_title_for(&kind.title(), &self.context.connection_name),
+                self.context.subtitle.clone(),
+            ),
+        }
     }
 
     /// 切换标签：换窗口标题与状态栏，**不**重建会话、不改树的展开状态。
@@ -2551,14 +2780,8 @@ impl TabSet {
             }
         }
         // 标题属于当前标签（§5.1）；副标题是连接级信息，不随标签改。
-        let title = match &tab.kind {
-            TabKind::Objects => format!(
-                "{} - {}",
-                self.context.connection_name, self.context.driver_label
-            ),
-            kind => window_title_for(&kind.title(), &self.context.connection_name),
-        };
-        (self.context.on_title)(&title, &self.context.subtitle);
+        let (title, subtitle) = self.window_title_and_subtitle(&tab);
+        (self.context.on_title)(&title, &subtitle);
         let status = match (&tab.kind, tab.data.as_ref(), tab.sql.as_ref()) {
             (TabKind::Objects, _, _) => TabStatus::Objects {
                 shortcut: self.objects_shortcut(),
@@ -2801,6 +3024,27 @@ impl TabSet {
             return;
         };
         tab.set_session(opened.session_id.clone());
+        tab.set_driver(&opened.driver_id);
+        // 重绑成功（改动确认单 #7 e）：采纳目标连接、清空标签请求库、解除选择器的
+        // 「正在切换」态。必须赶在 tooltip / 标题刷新之前——它们读的是绑定值。
+        if let Some(rebind) = tab.binding.pending() {
+            let bound = tab.binding.finish(true);
+            tab.catalog.set_request(None);
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.set_connection_pending(false);
+                sql.connection_picker().set_current(&bound);
+            }
+            eprintln!(
+                "[tabs] 标签 {} 重绑成功：{}（会话 {}，驱动 {}，请求库已清空 = 不改会话库）",
+                opened.tab_id,
+                self.connection_name_for(&rebind.to),
+                short_id(&opened.session_id),
+                opened.driver_id
+            );
+            // 窗口标题 / 副标题跟着绑定连接走（QA 读这一行取证，不靠截图）。
+            let (title, subtitle) = self.window_title_and_subtitle(&tab);
+            eprintln!("[tabs] 窗口标题：{title}（副标题：{subtitle}）");
+        }
         tab.page.set_tooltip(
             &self.tooltip_for(&tab, &format!("会话 {}", short_id(&opened.session_id))),
         );
@@ -2936,9 +3180,11 @@ impl TabSet {
         let Some(sql) = tab.sql.as_ref() else {
             return;
         };
-        let Some(key) = tab.kind.connection_key().map(ToOwned::to_owned) else {
+        // 库列表按**实际绑定**的连接缓存：重绑之后取的是目标连接的库。
+        let key = tab.bound_connection();
+        if key.is_empty() {
             return;
-        };
+        }
         let (items, failure, loading) = {
             let cache = self.catalogs.borrow();
             match cache.get(&key) {
@@ -3044,7 +3290,7 @@ impl TabSet {
             (entry.items.clone(), entry.failure.clone())
         };
         for tab in self.tabs.borrow().iter() {
-            if tab.kind.connection_key() != Some(key.as_str()) {
+            if tab.bound_connection() != key {
                 continue;
             }
             let Some(sql) = tab.sql.as_ref() else {
@@ -3121,11 +3367,90 @@ impl TabSet {
         });
     }
 
+    /// 用户在连接选择器里选了一条连接：把本标签的会话重绑到它（改动确认单 #7）。
+    ///
+    /// 顺序固定，不图省事改成「先连新的、再断旧的」：
+    ///
+    /// a. 有在途查询先取消（与 Esc、状态栏「取消」同一个方法，幂等）；
+    /// b. 关游标（`SqlPage::close_query`，既有 Close 路径）；
+    /// c. 断开旧会话（worker 的 `CloseTabSession`：摘归属 → Cancel → Close → Disconnect）；
+    /// d. 用目标连接的参数 `Connect`（既有 `request_session` / `open_tab_session` 那条路）；
+    /// e / f 的收尾在 [`Self::on_session`] / [`Self::on_session_failed`] 里。
+    fn rebind_connection(self: &Rc<Self>, tab_id: &str, target: &str) {
+        let Some(tab) = self.by_id(tab_id) else {
+            return;
+        };
+        let Some(sql) = tab.sql.as_ref() else {
+            return;
+        };
+        let from = tab.bound_connection();
+        if !tab.binding.begin(target) {
+            // 同一条连接（或已有一轮重绑在途）= no-op：不重建会话，显示回写到绑定值。
+            eprintln!(
+                "[tabs] 标签 {tab_id} 的连接选择器选中「{}」= 当前绑定：不重建会话",
+                self.connection_name_for(target)
+            );
+            sql.connection_picker().restore();
+            return;
+        }
+        let from_name = self.connection_name_for(&from);
+        let target_name = self.connection_name_for(target);
+        eprintln!("[tabs] 标签 {tab_id} 重绑连接：{from_name} → {target_name}");
+        // a. 在途查询先取消（重复点幂等；没有在途查询时只记一行日志）。
+        sql.request_cancel();
+        // b. 关游标：页面只有在拿到过 query_id 时才发 Close。
+        sql.close_query();
+        // 排队等会话建立后执行的 SQL 属于旧连接：不搬到新连接上执行。
+        if tab.pending_sql.borrow_mut().take().is_some() {
+            eprintln!("[tabs] 标签 {tab_id} 的排队 SQL 随重绑丢弃（那是旧连接的请求）");
+        }
+        // c. 断开旧会话（worker 侧 CloseTabSession 会先 Cancel 再 Close 再 Disconnect）。
+        tab.session.replace(None);
+        sql.set_session_ready(false);
+        // 库选择器属于旧连接：能力位、候选列表与真值全部作废，等新会话回话。
+        tab.catalog.set_switchable(false);
+        sql.catalog_picker().set_capability(false);
+        sql.catalog_picker().set_items(&[]);
+        sql.catalog_picker().set_truth(None);
+        sql.set_connection_pending(true);
+        self.context.worker.close_tab_session(tab_id);
+        // d. 用目标连接的参数 Connect（与新建标签同一条路径，不另写一套）。
+        self.request_session(tab_id);
+    }
+
     /// 标签会话建立失败：保留标签（用户可关闭或重试），但把原因写在页面上。
     pub fn on_session_failed(self: &Rc<Self>, tab_id: &str, failure: &TableFailure) {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
+        // 重绑失败（改动确认单 #7 f）：**保留原绑定**，在结果区状态行给失败原因，
+        // 并按原连接重新建立会话（旧会话已按固定顺序断开，标签不能就此废掉）。
+        if let Some(rebind) = tab.binding.pending() {
+            let kept = tab.binding.finish(false);
+            let kept_name = self.connection_name_for(&kept);
+            let target_name = self.connection_name_for(&rebind.to);
+            eprintln!(
+                "[tabs] 标签 {tab_id} 重绑失败（保留 {kept_name}）：[{}] {}",
+                failure.code(),
+                failure.message()
+            );
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.set_connection_pending(false);
+                sql.connection_picker().set_current(&kept);
+                // 走查询页既有的失败提示路径：结果区状态行写「查询失败：…（<错误码>）」。
+                sql.show_failure(&QueryFailure::Other {
+                    code: failure.code().to_owned(),
+                    message: format!(
+                        "连接「{target_name}」没建成（已保留「{kept_name}」）：{}",
+                        failure.message()
+                    ),
+                });
+            }
+            self.refresh_current();
+            eprintln!("[tabs] 标签 {tab_id} 按原连接「{kept_name}」重新建立会话");
+            self.request_session(tab_id);
+            return;
+        }
         eprintln!(
             "[tabs] 标签 {tab_id} 会话失败：[{}] {}",
             failure.code(),
@@ -3735,11 +4060,26 @@ impl TabSet {
                 Ok(format!("第 {index} 个查询标签执行"))
             }
             QaStep::Cancel(index) => {
-                let sql = self
-                    .sql_page_at(*index)
-                    .ok_or_else(|| format!("第 {index} 个标签不是查询标签"))?;
-                sql.request_cancel();
-                Ok(format!("第 {index} 个查询标签点了取消"))
+                // 页内的「取消」按钮已删（改动确认单 #7）：取消只在状态栏行 1 的那枚
+                // 两用按钮上。状态栏只作用于**当前**标签，所以先切过去（Alt+N 同一条路径）。
+                if self.sql_page_at(*index).is_none() {
+                    return Err(format!("第 {index} 个标签不是查询标签"));
+                }
+                if !self.select_index(*index) {
+                    return Err(format!("没有第 {index} 个标签"));
+                }
+                let clicked = (self.context.status_cancel)();
+                if clicked {
+                    Ok(format!("点了状态栏的「取消」（第 {index} 个查询标签）"))
+                } else {
+                    // 按钮置灰 = 当前没有在途查询：用户点它也不会发生什么（幂等）。
+                    eprintln!(
+                        "[qa] 状态栏「取消」已置灰（第 {index} 个标签没有在途查询）：这次点击被忽略"
+                    );
+                    Ok(format!(
+                        "状态栏「取消」已置灰（第 {index} 个标签没有在途查询）：点击被忽略（幂等）"
+                    ))
+                }
             }
             QaStep::Scroll { tab, row } => {
                 if let Some(data) = self.data_page_at(*tab) {
@@ -3851,6 +4191,28 @@ impl TabSet {
                 } else {
                     Err(format!(
                         "第 {tab} 个查询标签的库选择器期望包含「{expected}」，实际「{actual}」"
+                    ))
+                }
+            }
+            QaStep::Connection { tab, connection } => {
+                let sql = self
+                    .sql_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是查询标签"))?;
+                sql.connection_picker().qa_select(connection)?;
+                Ok(format!(
+                    "第 {tab} 个查询标签的连接选择器选中「{connection}」"
+                ))
+            }
+            QaStep::ExpectConnection { tab, expected } => {
+                let sql = self
+                    .sql_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是查询标签"))?;
+                let actual = sql.connection_picker().display_text();
+                if actual.contains(expected.as_str()) {
+                    Ok(format!("第 {tab} 个查询标签的连接选择器显示「{actual}」"))
+                } else {
+                    Err(format!(
+                        "第 {tab} 个查询标签的连接选择器期望包含「{expected}」，实际「{actual}」"
                     ))
                 }
             }
@@ -4278,6 +4640,7 @@ impl QaStep {
                 | Self::ExpectRows { .. }
                 | Self::ExpectQuery { .. }
                 | Self::ExpectCatalog { .. }
+                | Self::ExpectConnection { .. }
                 | Self::ExpectFile { .. }
                 | Self::ExpectFocus(_)
                 | Self::ExpectListNodes(_)
@@ -4412,7 +4775,8 @@ pub enum QaStep {
     },
     /// 执行第 n 个查询标签里的 SQL。
     Execute(usize),
-    /// 点第 n 个查询标签的「取消」（与用户点取消同一条路径，幂等）。
+    /// `cancel <n>`：点**状态栏行 1 的「取消」**取消第 n 个查询标签的查询
+    /// （与用户同一条路径：先切到那个标签，再点那枚按钮；按钮置灰时只记一行日志）。
     Cancel(usize),
     /// 滚动到第 n 个标签的第 `row` 行（表标签触发翻页，查询标签触发分批预取）。
     Scroll {
@@ -4446,6 +4810,21 @@ pub enum QaStep {
     },
     /// `expect-catalog <tab> <文本>`：断言选择器上显示的文字（读控件，不读状态变量）。
     ExpectCatalog {
+        /// 标签序号。
+        tab: usize,
+        /// 期望出现的文字（按包含比对）。
+        expected: String,
+    },
+    /// `connection <tab> <连接名>`：在该查询标签的**连接选择器**里选中某条连接
+    /// （`GtkDropDown::set_selected` → 与点选同一条信号路径 → 会话重绑）。
+    Connection {
+        /// 标签序号。
+        tab: usize,
+        /// 目标连接（显示名或连接键）。
+        connection: String,
+    },
+    /// `expect-connection <tab> <文本>`：断言连接选择器上显示的文字（读控件）。
+    ExpectConnection {
         /// 标签序号。
         tab: usize,
         /// 期望出现的文字（按包含比对）。
@@ -4866,6 +5245,14 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     .get(2)
                     .ok_or_else(|| format!("第 {} 行缺少期望文字", number + 1))?
                     .to_string(),
+            },
+            "connection" => QaStep::Connection {
+                tab: parse_index(&parts, 1, number)?,
+                connection: rest_of(&parts, 2, number, "连接名")?,
+            },
+            "expect-connection" => QaStep::ExpectConnection {
+                tab: parse_index(&parts, 1, number)?,
+                expected: rest_of(&parts, 2, number, "期望文字")?,
             },
             "close" => QaStep::Close {
                 tab: parse_index(&parts, 1, number)?,
@@ -5700,5 +6087,52 @@ quit
         // 请求值可以被清空回「不改变会话当前库」。
         state.set_request(None);
         assert_eq!(state.request(), None);
+    }
+
+    #[test]
+    fn query_binding_keeps_the_old_connection_when_a_rebind_fails() {
+        let binding = QueryBinding::new("mariadb:127.0.0.1:53306");
+        assert_eq!(binding.bound(), "mariadb:127.0.0.1:53306");
+
+        // 选中另一条连接 → 已结算的绑定不变（连接还没建起来），但**发 Connect 的那个键**
+        // 立刻就是目标连接：否则重绑会拿旧连接的参数再连一次旧连接（真机 QA 抓到过）。
+        assert!(binding.begin("sqlite:/tmp/a.db"));
+        assert_eq!(binding.bound(), "mariadb:127.0.0.1:53306");
+        assert_eq!(binding.effective(), "sqlite:/tmp/a.db");
+        assert_eq!(
+            binding.pending(),
+            Some(Rebind {
+                from: "mariadb:127.0.0.1:53306".to_owned(),
+                to: "sqlite:/tmp/a.db".to_owned(),
+            })
+        );
+
+        // Connect 失败 → **保留原绑定**，重绑结束（不会卡在目标连接上）。
+        assert_eq!(binding.finish(false), "mariadb:127.0.0.1:53306");
+        assert_eq!(binding.bound(), "mariadb:127.0.0.1:53306");
+        assert_eq!(binding.effective(), "mariadb:127.0.0.1:53306");
+        assert_eq!(binding.pending(), None);
+
+        // 再试一次、这次成功 → 采纳目标连接。
+        assert!(binding.begin("sqlite:/tmp/a.db"));
+        assert_eq!(binding.finish(true), "sqlite:/tmp/a.db");
+        assert_eq!(binding.bound(), "sqlite:/tmp/a.db");
+    }
+
+    #[test]
+    fn query_binding_treats_the_same_connection_as_a_no_op() {
+        let binding = QueryBinding::new("mariadb:127.0.0.1:53306");
+        // 选中的就是当前绑定的那条：不开始重绑（调用方据此不重建会话）。
+        assert!(!binding.begin("mariadb:127.0.0.1:53306"));
+        assert_eq!(binding.pending(), None);
+
+        // 一轮重绑在途时连点第二下：也不开始第二轮（避免两次 Connect）。
+        assert!(binding.begin("sqlite:/tmp/a.db"));
+        assert!(!binding.begin("sqlite:/tmp/b.db"));
+        assert_eq!(
+            binding.pending().map(|rebind| rebind.to),
+            Some("sqlite:/tmp/a.db".to_owned())
+        );
+        assert_eq!(binding.finish(true), "sqlite:/tmp/a.db");
     }
 }

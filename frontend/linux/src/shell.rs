@@ -1046,6 +1046,32 @@ pub struct StatusBar {
     idle_summary: RefCell<Option<String>>,
     /// 当前是否有表标签：决定 `session` 这一格要不要出现。
     has_table: Cell<bool>,
+    /// 行 1 现在挂在哪种页上：决定「取消」这枚两用按钮的语义、tooltip 与可访问名。
+    ops_context: Cell<OpsContext>,
+}
+
+/// 行操作组当前挂在哪种页上（行 1 的「取消」是两用的：数据页中止提交批次、查询页
+/// 取消查询；停在 Objects 页时两者都不成立）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpsContext {
+    /// 表数据页。
+    Table,
+    /// 查询标签页。
+    Query,
+    /// `Objects` 页 / 启动态：没有可取消的东西。
+    None,
+}
+
+/// 行 1「取消」的文案（纯函数，单测覆盖三种上下文）：
+/// `(按钮语义, 置灰原因)`。数据页保持原有口径（原因来自 `RowOpsState.reason`），
+/// 查询页用它自己的一句「当前没有执行中的查询」。
+#[must_use]
+fn cancel_copy(context: OpsContext) -> (&'static str, Option<&'static str>) {
+    match context {
+        OpsContext::Query => ("取消当前查询（Esc）", Some("当前没有执行中的查询")),
+        OpsContext::Table => ("取消在途的提交批次", None),
+        OpsContext::None => ("取消在途的提交批次", None),
+    }
 }
 
 impl StatusBar {
@@ -1290,6 +1316,7 @@ impl StatusBar {
             connection: RefCell::new(None),
             idle_summary: RefCell::new(None),
             has_table: Cell::new(false),
+            ops_context: Cell::new(OpsContext::None),
         })
     }
 
@@ -1389,6 +1416,7 @@ impl StatusBar {
 
     /// 数据页快照：行操作可用性、记录位置、事务徽标、分页器与选中数。
     pub fn apply_snapshot(&self, snapshot: &StatusSnapshot) {
+        self.ops_context.set(OpsContext::Table);
         self.apply_row_ops(&snapshot.row_ops);
         // 分页器只在有表时出现：没有表就整格隐藏，不用「未打开表」占位。
         let pager_text = match (&snapshot.table, snapshot.state) {
@@ -1465,6 +1493,10 @@ impl StatusBar {
     }
 
     /// 行操作按钮组：可用性与页内按钮完全一致，全部禁用时用 tooltip 说明原因。
+    ///
+    /// 「取消」是唯一一枚**两用**按钮（改动确认单 #7）：查询页取消查询、数据页中止提交
+    /// 批次、停在 `Objects` 页两者都不成立。语义、tooltip 与可访问名都按当前页切换——
+    /// 只改文案不改动作会让用户点了一枚说着「取消查询」却去回滚批次的按钮。
     pub fn apply_row_ops(&self, ops: &RowOpsState) {
         for (button, enabled, base) in [
             (&self.add, ops.add, "在当前表末尾新增一行"),
@@ -1472,7 +1504,6 @@ impl StatusBar {
             (&self.apply, ops.apply, "提交所有脏行的变更"),
             (&self.discard, ops.discard, "放弃全部未提交的编辑与删除标记"),
             (&self.refresh, ops.refresh, "重新读取当前表的第一页"),
-            (&self.cancel, ops.cancel, "取消在途的提交批次"),
         ] {
             button.set_sensitive(enabled);
             let tooltip = match &ops.reason {
@@ -1480,6 +1511,24 @@ impl StatusBar {
                 _ => base.to_owned(),
             };
             button.set_tooltip_text(Some(&tooltip));
+        }
+        {
+            let context = self.ops_context.get();
+            let (base, idle_reason) = cancel_copy(context);
+            self.cancel.set_sensitive(ops.cancel);
+            let tooltip = if ops.cancel {
+                base.to_owned()
+            } else {
+                // 查询页：原因固定是「当前没有执行中的查询」（与结果区五态无关）；
+                // 数据页 / Objects 页：沿用原有的 `RowOpsState.reason`，一字不改。
+                match idle_reason.or(ops.reason.as_deref()) {
+                    Some(reason) => format!("{base}（当前不可用：{reason}）"),
+                    None => base.to_owned(),
+                }
+            };
+            self.cancel.set_tooltip_text(Some(&tooltip));
+            self.cancel
+                .update_property(&[gtk::accessible::Property::Label(tooltip.as_str())]);
         }
         // 展示形式切换：只跟「有没有选中行」走（只读连接也能看详情）。
         self.detail_toggle.set_sensitive(ops.detail);
@@ -1504,8 +1553,22 @@ impl StatusBar {
         for button in self.pager_buttons.borrow().iter() {
             button.set_sensitive(false);
         }
+        // 查询页：行 1 的「取消」是「取消查询」而不是「中止提交批次」。
+        self.ops_context.set(OpsContext::Query);
         self.apply_row_ops(ops);
         self.refresh_session();
+    }
+
+    /// 点行 1 的「取消」（与用户手点同一枚）。返回 `false` = 按钮当时是置灰的。
+    ///
+    /// QA 的 `cancel <n>` 与 `--qa-cancel-after-ms` 走这里：置灰时**什么都不做**，
+    /// 与用户点一枚禁用按钮完全一样（幂等），不绕过可用性硬门。
+    pub fn activate_cancel(&self) -> bool {
+        if !self.cancel.get_sensitive() {
+            return false;
+        }
+        self.cancel.emit_clicked();
+        true
     }
 
     pub fn show_no_table(&self, reason: &str) {
@@ -1517,6 +1580,8 @@ impl StatusBar {
         for button in self.pager_buttons.borrow().iter() {
             button.set_sensitive(false);
         }
+        // Objects 页 / 启动态：两用的「取消」在这里两个语义都不成立。
+        self.ops_context.set(OpsContext::None);
         self.apply_row_ops(&RowOpsState {
             add: false,
             delete: false,
@@ -1613,6 +1678,22 @@ mod tests {
         // 空态：只有真的有内容时才占位，不用空串撑一格。
         assert!(session_row_visible(false, false));
         assert!(!session_row_visible(false, true));
+    }
+
+    #[test]
+    fn cancel_button_is_two_purpose_and_says_which_one() {
+        // 查询页：取消查询（与 Esc 同一个方法）。
+        let (base, idle) = cancel_copy(OpsContext::Query);
+        assert_eq!(base, "取消当前查询（Esc）");
+        assert_eq!(idle, Some("当前没有执行中的查询"));
+        // 数据页：仍是中止提交批次，置灰原因沿用 RowOpsState.reason（这里不给固定理由）。
+        let (base, idle) = cancel_copy(OpsContext::Table);
+        assert_eq!(base, "取消在途的提交批次");
+        assert_eq!(idle, None);
+        // Objects 页 / 启动态：两用的两个语义都不成立，文案仍是数据页那句。
+        let (base, idle) = cancel_copy(OpsContext::None);
+        assert_eq!(base, "取消在途的提交批次");
+        assert_eq!(idle, None);
     }
 
     #[test]

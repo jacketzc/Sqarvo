@@ -361,9 +361,10 @@ style.slot = "workspace.content"
 style.metrics = ["gap_page"]
 impl_notes = [
   "页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。",
-  "标签 tooltip 的「库」段写**服务端真值**（`GetSessionContext`，ADR 0030）：没有默认库时写「未指定」，不再写死「默认」。真值只随会话就绪 / 执行成功 / 切库成功刷新，刷新不改写标签请求用的 catalog。",
+  "动作行最左端是两枚下拉框：连接选择器（`tabs.query.connection_picker`）在前、库选择器（`tabs.query.database_picker`）在后；两枚都**没有可见文字**，可访问名分别是「当前连接」「当前库」。页内**没有取消按钮**：取消在状态栏行 1 的那枚两用按钮上（`status_bar.row1.ops.cancel`），与 `Esc` 是同一个方法。",
+  "标签 tooltip 的「库」段写**服务端真值**（`GetSessionContext`，ADR 0030）：没有默认库时写「未指定」，不再写死「默认」。真值只随会话就绪 / 执行成功 / 切库成功刷新，刷新不改写标签请求用的 catalog。「连接」段写**实际绑定**的连接（连接选择器换过之后跟着换）。",
   "本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。",
-  "每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。",
+  "每个查询标签有**自己的**会话；换连接时按固定顺序重绑（取消在途查询 → 关游标 → 断开旧会话 → 用目标连接 Connect），关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。",
   "v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。",
   "游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。",
 ]
@@ -385,23 +386,23 @@ spec_hash = ""
 [[component]]
 id = "tabs.query.actions"
 parent = "tabs.query"
-display_name = "动作行（执行 / 取消）"
+display_name = "动作行（连接选择器 · 库选择器 · 执行）"
 kind = "control"
 status = "active"
 a11y.name = "查询动作"
 style.metrics = ["gap_md", "gap_sm", "min_target"]
 impl_notes = [
-  "按钮文案与可用性随状态互斥：空闲 → 「执行」可点、「取消」不可点；执行中 → 主按钮变「取消」（Linux 是并排两枚：执行置灰、取消可点）。取消可重复点击，第二次起只记日志、不发 RPC。",
+  "页内只有一枚动作按钮「执行」：可执行时可点，执行中置灰（**不再变成「取消」**，也不再有并排的取消按钮——改动确认单 #7）。取消搬到状态栏行 1 的两用「取消」上（`status_bar.row1.ops.cancel`），与 `Esc`、QA 脚本是同一个方法，可重复点击（第二次起只记日志、不发 RPC）。",
   "空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。",
-  "动作行左端承载 `tabs.query.database_picker`（库选择器），其后是会话信息（有真实会话信息时才占位，不再写「会话建立中…」），右端才是执行 / 取消：库归属在动作之前先可读、可改。",
+  "动作行左端依次是 `tabs.query.connection_picker`（连接选择器）与 `tabs.query.database_picker`（库选择器），两枚都**没有可见文字**（可访问名「当前连接」/「当前库」，Tab 位不变）；其后是会话信息（有真实会话信息时才占位），右端才是「执行」。",
   "执行时把标签的**请求** catalog 带进 `ExecuteQueryRequest.catalog`（空 = 不改变会话当前库）；执行成功后回读一次 `GetSessionContext` 刷新显示。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "没有查询在跑，编辑器里有 SQL"
-result = "执行编辑器里的 SQL；按钮在运行中变成「取消」（同一入口）；成功后结果区进入「执行中…」并等首批"
-source = "src/sql_page.rs:139、src/sql_page.rs:341、src/sql_page.rs:358、src/sql_page.rs:1052"
+result = "执行编辑器里的 SQL；执行中这枚按钮置灰（取消在状态栏行 1，不在页内）；成功后结果区进入「执行中…」并等首批"
+source = "src/sql_page.rs:186、src/sql_page.rs:282、src/sql_page.rs:461、src/sql_page.rs:478、src/sql_page.rs:1189"
 
 [[component.interaction]]
 trigger = "click"
@@ -417,28 +418,70 @@ result = "与点「执行」同一条方法（不存在「只有按钮能用」�
 source = "src/sql_page.rs:300、src/sql_page.rs:341"
 
 [[component.interaction]]
-trigger = "click"
-precondition = "有查询在跑"
-result = "发 Cancel 并立即进入「已取消」；重复点幂等（不发 RPC、不报错），已取到的行保留"
-source = "src/sql_page.rs:143、src/sql_page.rs:395"
-
-[[component.interaction]]
 trigger = "key"
 keys = ["Esc"]
 precondition = "有查询在跑"
-result = "取消查询（同一按键在空闲时分流为「清空结果区行选中」）"
-source = "src/sql_page.rs:288、src/sql_page.rs:395"
-platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；执行 / 取消是同一枚按钮换文案（Linux 并排两枚）。"
+result = "取消查询：与状态栏行 1 的「取消」同一个方法（发 Cancel、立即进入「已取消」，已取到的行保留；重复按幂等）。空闲时同一按键分流为「清空结果区行选中」"
+source = "src/sql_page.rs:518、src/sql_page.rs:68、src/results.rs:379"
+platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；Windows 是同一枚按钮换文案，Linux 页内没有取消按钮（在状态栏行 1）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "19146e5c30b7"
-evidence = "§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流。动作行左端承载库选择器：`expect-catalog 1 未指定库` 从控件读到选择器文字；`catalog 1 sqarvo_test` 后执行，日志「标签 tab-q1 执行时带库：sqarvo_test」「请求在库「sqarvo_test」里执行」，执行成功后回读「读取库上下文（GetSessionContext）」，`expect-query 1 first=sqarvo_test` 通过。"
+spec_hash = "3bffbe536591"
+evidence = "真机 QA（独立 app id `io.sqarvo.Sqarvo.QA186.*` + 隔离 XDG_CONFIG_HOME，MariaDB 127.0.0.1:53306 无默认库档案 + SQLite 临时库）：日志「[query] 动作行左端：当前连接（可访问名）→ 当前库（可访问名），两枚都不带可见文字」；`expect-connection 1 qa-mariadb` / `expect-connection 1 qa-sqlite` 从控件读到选择器文字（切换前后各一次）；页内已无取消按钮（`SqlPage` 的 `cancel_button` 字段与创建、append、可用性同步全部删除，`grep -rn cancel_button src/` 只剩一个测试名），执行中只有「执行」置灰，取消走状态栏：`SELECT SLEEP(10)` 后 `cancel 1` 读到「[qa] 点了状态栏的「取消」（第 1 个查询标签）」与「[query] 状态行：已取消 · 已保留 0 行」。单测 action_row_pickers_have_no_visible_text_and_connection_comes_first、status_bar_cancel_is_enabled_only_while_a_query_runs（cargo test --bin sqarvo-desktop：466 passed）。"
 
 [component.sync.windows]
 state = "done"
 spec_hash = "19146e5c30b7"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.connection_picker"
+parent = "tabs.query"
+display_name = "查询标签的连接选择器"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkDropDown / winui:— / swift:—"
+a11y.name = "当前连接"
+style.metrics = ["gap_xs", "min_target"]
+impl_notes = [
+  "摆放位置是 `tabs.query.actions` 那一行的**最左端**（库选择器之前、会话信息之前）：`parent` 记 `tabs.query` 与 `tabs.query.database_picker` 同一原因（id 已按 `tabs.query.connection_picker` 报备）。",
+  "**没有可见文字**（改动确认单 #7）：界面上只有下拉框本身，没有「连接」这类 caption；名字只在可访问名「当前连接」与 tooltip 里。",
+  "列表 = 注册表里**已保存的连接**（连接键 + 显示名），不摆占位项、不编造条目；当前值 = 本标签**实际绑定**的连接（`TabKind::Query.connection_key` 上的覆盖值），由标签写进来，选择器自己不推断。",
+  "选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。",
+  "重绑在途时整枚置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前标签是查询标签，且选中了**另一条**已保存的连接"
+result = "重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」"
+source = "src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3345、src/tabs.rs:2987、src/tabs.rs:555"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在）"
+result = "**保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」"
+source = "src/tabs.rs:3388、src/sql_page.rs:758、src/sql_page.rs:1634"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "选中了当前绑定的那条连接"
+result = "no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」"
+source = "src/sql_page.rs:1527、src/tabs.rs:3345"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "5d43c4530b81"
+evidence = "真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME；两条连接 qa-mariadb / qa-sqlite 已在注册表里）：① 正向重绑——`expect-connection 1 qa-mariadb` 通过，`connection 1 qa-sqlite` 走下拉同一信号路径，日志「标签 tab-q1 重绑连接：qa-mariadb → qa-sqlite」「重绑成功：qa-sqlite（会话 sess_94b…，驱动 sqlite，请求库已清空 = 不改会话库）」「窗口标题：查询 1 (qa-sqlite)（副标题：已连接 · sqlite）」，随后未限定表名的 `SELECT tag FROM probe;` → `expect-query 1 first=sqlite-probe` 通过（表只在 SQLite 里）。② 反向重绑——`connection 1 qa-mariadb` 后「重绑成功：qa-mariadb（… 驱动 mariadb …）」「库上下文：无默认库」，同一条未限定 SQL 得到 `[mariadb.no_database]`、`expect-query 1 state=error` 通过（没有静默回落）。③ 失败保留——`connection 1 qa-broken`（保存的坏端口）→「重绑失败（保留 qa-mariadb）：[session.not_found] …连接被拒绝」、选择器文字回到「qa-mariadb」、状态行「错误 · 已保留 0 行」，随后 `SELECT VERSION()` 仍得 11.4.13-MariaDB（原连接重新建立、标签可用）。④ 同一条连接——`connection 1 qa-mariadb` 后日志里「重绑连接」0 次、「建立会话」0 次，查询照常。单测 query_binding_keeps_the_old_connection_when_a_rebind_fails、query_binding_treats_the_same_connection_as_a_no_op、connection_picker_selection_follows_the_binding。"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
 
 [component.sync.macos]
 state = "none"
@@ -454,7 +497,8 @@ native_control = "gtk:GtkDropDown / winui:— / swift:—"
 a11y.name = "当前库"
 style.metrics = ["gap_xs", "min_target"]
 impl_notes = [
-  "摆放位置是 `tabs.query.actions` 那一行的**最左端**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。",
+  "摆放位置是 `tabs.query.actions` 那一行的左端、**连接选择器之后**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。",
+  "**没有可见文字**（改动确认单 #7）：原来那行「库」caption 已删，界面上只有下拉框本身；层名（库 / Schema）只出现在 tooltip 与可访问名「当前库」里。",
   "真值只有一个来源：`ConnectionService.GetSessionContext`。显示 = 服务端实际生效的库；没有默认库时显示「未指定库」，**不得**用连接配置里的 `database` 顶替（ADR 0030 §7）。会话就绪后发一次，执行成功后与切换成功后各回读一次；刷新真值只改显示，不改写标签请求用的 catalog（§8）。",
   "能力级不可用：驱动未在 `ConnectResponse.capabilities` 里声明 `session_catalog_switch` 时**整枚不渲染**（SQLite 的 main / temp / ATTACH 没有「切当前库」这个概念）——不是灰块、不是禁用，是根本没有这枚控件。",
   "会话未就绪 / 有未提交事务时**可见但禁用**，并用 tooltip 说明原因（「会话尚未建立：等标签会话就绪后才能切换库」/「事务已打开：先提交或回滚，再切换库」）。事务中切库由服务端返回 FAILED_PRECONDITION（`mariadb.catalog_switch_in_transaction`）。",
@@ -484,7 +528,7 @@ source = "src/tabs.rs:2932、src/tabs.rs:2964、src/sql_page.rs:1327、src/backe
 [component.sync.linux]
 state = "done"
 spec_hash = "6b4ee7617fae"
-evidence = "QA 脚本（独立 app id + 隔离 XDG_CONFIG_HOME，无默认库的 MariaDB 档案）：`query-tab` 后 `expect-catalog 1 未指定库` 通过（选择器显示服务端真值「无默认库」）；`catalog 1 sqarvo_test` 走下拉的同一信号路径，日志出现「请求切库：sqarvo_test」与「已切到库 sqarvo_test（服务端真值：sqarvo_test）」；`expect-catalog 1 sqarvo_test` 通过；随后执行未限定表名的 `SELECT DATABASE() AS db;`，`expect-query 1 first=sqarvo_test` 通过（执行前切库生效）。SQLite 档案（驱动未声明 `session_catalog_switch`）日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」——是整枚不渲染，不是灰块。另：对象树里选中 `sqarvo_test` 后新建查询标签，日志「请求库 sqarvo_test」，不碰选择器直接执行 `SELECT DATABASE()` 也得 sqarvo_test（新标签默认请求库 = 树当前选中项所在的库）。单测：supports_catalog_switch、query_catalog_keeps_request_and_truth_separate（cargo test --bin sqarvo-desktop，460 passed）。"
+evidence = "两枚选择器都不带可见文字（改动确认单 #7）：原来那行「库」caption 已从 `CatalogPicker` 删除（`grep -rn Label::new src/` 里没有「库」这一条），可访问名仍是「当前库」。本轮真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME）：MariaDB 无默认库标签上日志「库上下文：无默认库（选择器显示「未指定库」）」；SQLite 标签日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」（整枚不渲染，而连接选择器仍读到「qa-sqlite」）。历史证据：QA 脚本（独立 app id + 隔离 XDG_CONFIG_HOME，无默认库的 MariaDB 档案）：`query-tab` 后 `expect-catalog 1 未指定库` 通过（选择器显示服务端真值「无默认库」）；`catalog 1 sqarvo_test` 走下拉的同一信号路径，日志出现「请求切库：sqarvo_test」与「已切到库 sqarvo_test（服务端真值：sqarvo_test）」；`expect-catalog 1 sqarvo_test` 通过；随后执行未限定表名的 `SELECT DATABASE() AS db;`，`expect-query 1 first=sqarvo_test` 通过（执行前切库生效）。SQLite 档案（驱动未声明 `session_catalog_switch`）日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」——是整枚不渲染，不是灰块。另：对象树里选中 `sqarvo_test` 后新建查询标签，日志「请求库 sqarvo_test」，不碰选择器直接执行 `SELECT DATABASE()` 也得 sqarvo_test（新标签默认请求库 = 树当前选中项所在的库）。单测：supports_catalog_switch、query_catalog_keeps_request_and_truth_separate（cargo test --bin sqarvo-desktop：466 passed）。"
 
 [component.sync.windows]
 state = "none"
