@@ -153,6 +153,59 @@ fn server_errors_used_by_metadata_queries_are_classified() {
     assert_eq!(mapped.category(), ErrorCategory::PermissionDenied);
 }
 
+/// 无默认库的连接上跑未限定表名的 SQL（`select * from config_info`）时，服务端
+/// 返回 1046（`ERROR 1046 (3D000) No database selected`）。它必须归类成「缺库归属」，
+/// 而不是笼统的 `mariadb.server_error`：前者能告诉用户怎么写，后者只剩一句「执行失败」。
+#[test]
+fn missing_default_database_is_classified_as_no_database() {
+    let mapped = crate::error::map_error(
+        mysql_async::Error::Server(mysql_async::ServerError {
+            code: 1046,
+            message: "No database selected".to_owned(),
+            state: "3D000".to_owned(),
+        }),
+        "执行 MariaDB 语句失败",
+    );
+    assert_eq!(mapped.code(), crate::error::NO_DATABASE);
+    assert_eq!(mapped.category(), ErrorCategory::FailedPrecondition);
+    let message = mapped.message();
+    assert!(
+        message.contains("没有默认库") && message.contains("库.表"),
+        "文案要同时说明原因与做法，实际：{message}"
+    );
+}
+
+/// 没归类过的服务端错误至少带上数字错误码：只给一句「执行失败」时，用户既没法自查，
+/// 也没法在 Issue 里说清是哪一个服务端错误。
+#[test]
+fn unclassified_server_error_carries_the_numeric_code() {
+    let mapped = crate::error::map_error(
+        mysql_async::Error::Server(mysql_async::ServerError {
+            code: 1582,
+            message: "Incorrect parameter count in the call to native function 'x'".to_owned(),
+            state: "42000".to_owned(),
+        }),
+        "执行 MariaDB 语句失败",
+    );
+    assert_eq!(mapped.code(), crate::error::SERVER_ERROR);
+    assert_eq!(mapped.category(), ErrorCategory::Internal);
+    assert_eq!(
+        mapped.message(),
+        "执行 MariaDB 语句失败（服务端错误码 1582）"
+    );
+
+    // 已归类的错误不带数字码：它们的稳定文案本身就是诊断结论。
+    let classified = crate::error::map_error(
+        mysql_async::Error::Server(mysql_async::ServerError {
+            code: 1205,
+            message: "Lock wait timeout exceeded".to_owned(),
+            state: "HY000".to_owned(),
+        }),
+        "执行 MariaDB 语句失败",
+    );
+    assert_eq!(classified.message(), "等待锁超时");
+}
+
 // ---------------------------------------------------------------------------
 // TLS 归一化与证书错误分类（ADR 0020、#107）
 // ---------------------------------------------------------------------------

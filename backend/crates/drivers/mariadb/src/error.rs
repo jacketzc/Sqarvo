@@ -2,6 +2,13 @@
 //!
 //! 用户可见文案不拼接驱动或服务端原文：服务端 message 可能包含 SQL 片段、
 //! 库表名甚至连接信息。原始错误只作为 `source` 保留，供日志诊断。
+//!
+//! 唯一例外是**未分类**的服务端错误：文案末尾附数字错误码
+//! （`执行 MariaDB 语句失败（服务端错误码 1582）`）。数字不泄露 SQL、库表名或
+//! 连接信息，却足以让用户和 Issue 定位到服务端的具体错误；否则一句「执行失败」
+//! 既说不清原因，也无法判断是否已经归类过。
+
+use std::borrow::Cow;
 
 use sqarvo_common::{Error, ErrorCategory, ErrorCode};
 
@@ -39,7 +46,9 @@ pub const READ_ONLY_TRANSACTION: ErrorCode =
     ErrorCode::from_static("mariadb.read_only_transaction");
 /// 事务随连接断开/超时而丢失，无法确认提交结果。
 pub const TRANSACTION_LOST: ErrorCode = ErrorCode::from_static("mariadb.transaction_lost");
-/// 连接没有默认库，且请求没有给出 `catalog`：无法确定表数据/对象列表落在哪个库。
+/// 连接没有默认库，SQL / 请求里也没给出库归属（`catalog`，或未限定的表名）：
+/// 无法确定表数据、对象列表或这条语句落在哪个库。元数据、表数据与 `Execute`
+/// 三条路径共用这一个错误码。
 pub const NO_DATABASE: ErrorCode = ErrorCode::from_static("mariadb.no_database");
 
 /// 取服务端错误码（仅 `Server` 类错误）。
@@ -64,55 +73,65 @@ pub(crate) fn map_error(error: mysql_async::Error, context: &'static str) -> Err
 fn classify(
     error: &mysql_async::Error,
     context: &'static str,
-) -> (ErrorCode, ErrorCategory, &'static str) {
+) -> (ErrorCode, ErrorCategory, Cow<'static, str>) {
     match error {
         mysql_async::Error::Server(server) => map_server_code(server.code, context),
         mysql_async::Error::Io(mysql_async::IoError::Io(io)) => {
-            if let Some(classified) = classify_certificate_error(io) {
-                return classified;
+            if let Some((code, category, message)) = classify_certificate_error(io) {
+                return (code, category, Cow::Borrowed(message));
             }
             match io.kind() {
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-                    (QUERY_TIMEOUT, ErrorCategory::Timeout, "数据库连接超时")
-                }
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => (
+                    QUERY_TIMEOUT,
+                    ErrorCategory::Timeout,
+                    Cow::Borrowed("数据库连接超时"),
+                ),
                 std::io::ErrorKind::ConnectionRefused => (
                     CONNECTION_FAILED,
                     ErrorCategory::Unavailable,
-                    "无法连接数据库（连接被拒绝）",
+                    Cow::Borrowed("无法连接数据库（连接被拒绝）"),
                 ),
                 _ => (
                     CONNECTION_FAILED,
                     ErrorCategory::Unavailable,
-                    "数据库连接中断",
+                    Cow::Borrowed("数据库连接中断"),
                 ),
             }
         }
         mysql_async::Error::Io(mysql_async::IoError::Tls(_)) => (
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
-            "TLS 握手失败",
+            Cow::Borrowed("TLS 握手失败"),
         ),
         mysql_async::Error::Url(_) => (
             ErrorCode::CONFIG_INVALID,
             ErrorCategory::InvalidArgument,
-            "连接参数无法解析",
+            Cow::Borrowed("连接参数无法解析"),
         ),
         mysql_async::Error::Driver(driver) => match driver {
             mysql_async::DriverError::ConnectionClosed => (
                 CONNECTION_FAILED,
                 ErrorCategory::Unavailable,
-                "数据库连接已关闭",
+                Cow::Borrowed("数据库连接已关闭"),
             ),
             // 服务端在握手阶段声明没有 SSL 能力：`required` / `verify-*` 档位下这是
             // 「服务端不满足连接要求」（`Unavailable`），不是驱动内部错误（#107 第 3 条）。
             mysql_async::DriverError::NoClientSslFlagFromServer => (
                 CONNECTION_FAILED,
                 ErrorCategory::Unavailable,
-                "服务端不支持 TLS（连接要求 TLS）",
+                Cow::Borrowed("服务端不支持 TLS（连接要求 TLS）"),
             ),
-            _ => (CONNECTION_FAILED, ErrorCategory::Internal, context),
+            _ => (
+                CONNECTION_FAILED,
+                ErrorCategory::Internal,
+                Cow::Borrowed(context),
+            ),
         },
-        mysql_async::Error::Other(_) => (CONNECTION_FAILED, ErrorCategory::Internal, context),
+        mysql_async::Error::Other(_) => (
+            CONNECTION_FAILED,
+            ErrorCategory::Internal,
+            Cow::Borrowed(context),
+        ),
     }
 }
 
@@ -162,53 +181,74 @@ fn classify_certificate_error(
     Some(classified)
 }
 
-fn map_server_code(code: u16, context: &'static str) -> (ErrorCode, ErrorCategory, &'static str) {
+fn map_server_code(
+    code: u16,
+    context: &'static str,
+) -> (ErrorCode, ErrorCategory, Cow<'static, str>) {
+    // 已知错误码都有稳定文案：只写「是什么 + 怎么办」，不拼服务端原文。
+    let known = |code: ErrorCode, category: ErrorCategory, message: &'static str| {
+        (code, category, Cow::Borrowed(message))
+    };
     match code {
         // ER_ACCESS_DENIED_ERROR / ER_ACCESS_DENIED_NO_PASSWORD_ERROR
-        1045 | 1698 => (
+        1045 | 1698 => known(
             AUTH_FAILED,
             ErrorCategory::Unauthenticated,
             "数据库认证失败（用户名或密码错误）",
         ),
         // ER_DBACCESS_DENIED_ERROR / ER_TABLEACCESS_DENIED_ERROR / ER_COLUMNACCESS_DENIED_ERROR
-        1044 | 1142 | 1143 => (
+        1044 | 1142 | 1143 => known(
             PERMISSION_DENIED,
             ErrorCategory::PermissionDenied,
             "当前账号没有访问该对象的权限",
         ),
         // ER_BAD_DB_ERROR
-        1049 => (
+        1049 => known(
             UNKNOWN_DATABASE,
             ErrorCategory::InvalidArgument,
             "数据库不存在",
         ),
+        // ER_NO_DB_ERROR：连接没有默认库，SQL 又没有限定表名（例如 `select * from t`）。
+        // 与元数据/表数据路径同一个错误码与分类：缺的是「库归属」，不是 SQL 写错了。
+        1046 => known(
+            NO_DATABASE,
+            ErrorCategory::FailedPrecondition,
+            "当前连接没有默认库：请在 SQL 里写明库名（例如「库.表」），\
+             或在连接配置里填写默认库",
+        ),
         // ER_PARSE_ERROR
-        1064 => (SYNTAX_ERROR, ErrorCategory::InvalidArgument, "SQL 语法错误"),
+        1064 => known(SYNTAX_ERROR, ErrorCategory::InvalidArgument, "SQL 语法错误"),
         // ER_NO_SUCH_TABLE / ER_BAD_FIELD_ERROR / ER_BAD_TABLE_ERROR
-        1146 | 1054 | 1051 => (OBJECT_NOT_FOUND, ErrorCategory::NotFound, "表或列不存在"),
+        1146 | 1054 | 1051 => known(OBJECT_NOT_FOUND, ErrorCategory::NotFound, "表或列不存在"),
         // ER_QUERY_INTERRUPTED
-        1317 => (
+        1317 => known(
             ErrorCode::QUERY_CANCELLED,
             ErrorCategory::Cancelled,
             "查询已取消",
         ),
         // ER_LOCK_WAIT_TIMEOUT
-        1205 => (SERVER_ERROR, ErrorCategory::Timeout, "等待锁超时"),
+        1205 => known(SERVER_ERROR, ErrorCategory::Timeout, "等待锁超时"),
         // ER_LOCK_DEADLOCK
-        1213 => (DEADLOCK, ErrorCategory::FailedPrecondition, "检测到死锁"),
+        1213 => known(DEADLOCK, ErrorCategory::FailedPrecondition, "检测到死锁"),
         // ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION
-        1792 => (
+        1792 => known(
             READ_ONLY_TRANSACTION,
             ErrorCategory::FailedPrecondition,
             "只读事务中不允许写入",
         ),
         // ER_CONNECTION_KILLED / ER_SERVER_SHUTDOWN
-        1927 | 1053 => (
+        1927 | 1053 => known(
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
             "数据库连接已被服务端关闭",
         ),
-        _ => (SERVER_ERROR, ErrorCategory::Internal, context),
+        // 没归类过的服务端错误：至少把数字错误码给出去，否则用户只看到一句
+        // 「执行 MariaDB 语句失败」，既无法自查也无法判断有没有被归类。
+        _ => (
+            SERVER_ERROR,
+            ErrorCategory::Internal,
+            Cow::Owned(format!("{context}（服务端错误码 {code}）")),
+        ),
     }
 }
 

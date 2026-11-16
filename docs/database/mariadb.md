@@ -576,7 +576,9 @@ created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   都报 `metadata.permission_denied`——这时「是权限不是不存在」可以说清；
 - 连接没有默认库、请求也没给 `catalog` 时，列出对象与表数据都返回 `mariadb.no_database`
   （`FAILED_PRECONDITION`）；文案提示「请在连接里填写默认库，或从对象树选择具体库的表」，
-  不把 `DATABASE() IS NULL` 当成「库里没有表」；
+  不把 `DATABASE() IS NULL` 当成「库里没有表」。**SQL 路径同理**：`Execute` 里未限定的
+  表名由服务端拒绝（1046 `No database selected`），同样归为 `mariadb.no_database`，文案提示
+  「写上库名（库.表）或在连接里填默认库」——驱动不替用户隐式选库，也不发 `USE`；
 - 有未读完的结果游标时元数据请求返回 `mariadb.query_active`，避免与游标交错。
 
 ## TLS 逐档验证（#106）
@@ -886,12 +888,16 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 ## 错误映射
 
 用户可见文案不拼接服务端原文（可能含 SQL 片段、库表名），原始错误只作为 `source` 留给日志。
+唯一例外是**未归类**的服务端错误：文案末尾附数字错误码
+（`执行 MariaDB 语句失败（服务端错误码 1582）`）——数字不泄露 SQL、库表名或连接信息，
+却是用户自查与 Issue 定位唯一可靠的抓手。已归类的错误不带数字码，稳定文案本身就是结论。
 
 | 服务端错误 | 错误码 | 分类 |
 |---|---|---|
 | 1045 / 1698 | `mariadb.auth_failed` | `Unauthenticated` |
 | 1044 / 1142 / 1143 | `mariadb.permission_denied` | `PermissionDenied` |
 | 1049 | `mariadb.unknown_database` | `InvalidArgument` |
+| 1046 | `mariadb.no_database` | `FailedPrecondition` |
 | 1064 | `mariadb.syntax_error` | `InvalidArgument` |
 | 1146 / 1054 / 1051 | `mariadb.object_not_found` | `NotFound` |
 | 1317 | `query.cancelled` | `Cancelled` |
@@ -899,7 +905,7 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 | 1213 | `mariadb.deadlock` | `FailedPrecondition` |
 | 1792 | `mariadb.read_only_transaction` | `FailedPrecondition` |
 | 1927 / 1053 | `mariadb.connection_failed` | `Unavailable` |
-| 其它服务端错误 | `mariadb.server_error` | `Internal` |
+| 其它服务端错误 | `mariadb.server_error` | `Internal`（文案带数字错误码） |
 | 连接建立超时 | `mariadb.connect_timeout` | `Timeout` |
 
 驱动自己产生的错误码（不对应服务端错误）：
