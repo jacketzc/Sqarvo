@@ -347,7 +347,9 @@ impl Gap {
 /// 三档全部写死整数，代码里不做「基准 × 倍率」。原因是各语言取整规则不同（Rust / Swift
 /// half-away-from-zero、C# half-to-even），同一份 26×1.25 会算成 33 与 32，三端静默漂移。
 /// 例外是**1px 描边与 2px 表格外框线宽**：TOML 里三档同值，本来就不随密度变（§3.2）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `query_editor_ratio` 是无量纲比值（f64，三档同值），因此本结构只派生 `PartialEq`
+/// 而不派生 `Eq`（浮点没有全等关系；没有任何容器拿 `Metrics` 当键）。
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
     // ---- metrics.toml 的同名项 ----
     pub header_height: i32,
@@ -433,6 +435,17 @@ pub struct Metrics {
     pub empty_icon_px: i32,
     /// 加载 spinner 的请求边长：32 / 40 / 48。
     pub spinner_px: i32,
+
+    // ---- 查询标签布局（#189）：编辑器 / 结果区 / 分隔把手 ----
+    /// 查询编辑器的最小高度：140 / 175 / 210。
+    pub query_editor_min_height: i32,
+    /// 查询结果区的最小高度：120 / 150 / 180。
+    pub query_results_min_height: i32,
+    /// 查询分隔把手的厚度（GtkPaned separator 的 CSS min-height）：6 / 8 / 9。
+    pub query_splitter_width: i32,
+    /// 编辑器占「编辑器 + 结果区」总高度的默认比例（无量纲，三档同值 0.4 = 2:3）。
+    /// 只作首次显示结果区时的默认分割；用户拖动后按标签内存态保持，不持久化。
+    pub query_editor_ratio: f64,
 }
 
 impl Metrics {
@@ -632,6 +645,10 @@ struct RawTier {
     fs_action_min_height: i32,
     empty_icon_px: i32,
     spinner_px: i32,
+    query_editor_min_height: i32,
+    query_results_min_height: i32,
+    query_splitter_width: i32,
+    query_editor_ratio: f64,
 }
 
 /// 三档解析结果（顺序 = [`Tier::ALL`]）。
@@ -734,6 +751,11 @@ impl Metrics {
             fs_action_min_height: raw.fs_action_min_height,
             empty_icon_px: raw.empty_icon_px,
             spinner_px: raw.spinner_px,
+            // 查询标签布局（#189）：三档值直接来自 metrics.toml，代码不做 base×scale。
+            query_editor_min_height: raw.query_editor_min_height,
+            query_results_min_height: raw.query_results_min_height,
+            query_splitter_width: raw.query_splitter_width,
+            query_editor_ratio: raw.query_editor_ratio,
         }
     }
 }
@@ -988,6 +1010,23 @@ mod tests {
                 m.row_height_data > m.row_height_tree,
                 "{label}：数据行不比树行高"
             );
+            // ⑩（#189）查询分隔四键存在且自洽：两端最小高度为正、把手比两端
+            // 最小高度都薄（否则拖到底会吞掉一端）、默认比例在 (0,1) 开区间。
+            assert!(
+                m.query_editor_min_height > 0 && m.query_results_min_height > 0,
+                "{label}：查询分隔两端最小高度必须为正"
+            );
+            assert!(
+                m.query_splitter_width > 0
+                    && m.query_splitter_width < m.query_editor_min_height
+                    && m.query_splitter_width < m.query_results_min_height,
+                "{label}：把手厚度必须为正且薄于两端最小高度"
+            );
+            assert!(
+                m.query_editor_ratio > 0.0 && m.query_editor_ratio < 1.0,
+                "{label}：默认比例 {} 不在 (0,1) 内",
+                m.query_editor_ratio
+            );
         }
     }
 
@@ -1037,6 +1076,36 @@ mod tests {
         assert_eq!(
             (c.gap_px(Gap::Xxl), m.gap_px(Gap::Xxl), l.gap_px(Gap::Xxl)),
             (14, 18, 21)
+        );
+        // #189 查询分隔：最小高度 / 把手厚度随档位单调放大（钉住 TOML 取值）；
+        // 比例是布局语义不是密度尺寸，三档同值 0.4。
+        assert_eq!(
+            (
+                c.query_editor_min_height,
+                m.query_editor_min_height,
+                l.query_editor_min_height
+            ),
+            (140, 175, 210)
+        );
+        assert_eq!(
+            (
+                c.query_results_min_height,
+                m.query_results_min_height,
+                l.query_results_min_height
+            ),
+            (120, 150, 180)
+        );
+        assert_eq!(
+            (
+                c.query_splitter_width,
+                m.query_splitter_width,
+                l.query_splitter_width
+            ),
+            (6, 8, 9)
+        );
+        assert_eq!(
+            (c.query_editor_ratio, m.query_editor_ratio, l.query_editor_ratio),
+            (0.4, 0.4, 0.4)
         );
     }
 

@@ -2542,6 +2542,9 @@ impl TabSet {
             },
         };
         let page = SqlPage::new("", callbacks);
+        // QA 脚本运行时自动确认结果区丢弃对话框（与数据页同一口径，#189）：
+        // 脚本无人值守，模态框会挡住后续步骤；不是给产品路径开后门。
+        page.set_qa_auto_confirm(qa::auto_confirm_risk() || qa::tabs_requested());
         page.set_on_selection_changed({
             let weak = Rc::downgrade(self);
             Rc::new(move || {
@@ -3843,14 +3846,24 @@ impl TabSet {
             objects.reapply_tier(old, new);
         }
         let mut pages = 0;
+        let mut sql_pages = 0;
         for tab in self.tabs.borrow().iter() {
             if let Some(data) = tab.data.as_ref() {
                 data.reapply_metrics(old, new);
                 pages += 1;
             }
+            // #189：查询页也要重应用分隔两端最小高度与默认比例（档位状态已先换，
+            // metrics() 读到的就是新档）；把手厚度随主题 CSS 重建自动更新。
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.reapply_metrics();
+                sql_pages += 1;
+            }
         }
         if pages > 0 {
             eprintln!("[tier] 已重设 {pages} 个表数据页的列宽 / 行高");
+        }
+        if sql_pages > 0 {
+            eprintln!("[tier] 已重应用 {sql_pages} 个查询页的分隔最小高度 / 默认比例");
         }
     }
 

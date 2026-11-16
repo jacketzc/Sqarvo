@@ -6888,8 +6888,8 @@ impl DataRow {
 /// 以编程方式触发 `AdwAlertDialog` 的 response 信号。
 ///
 /// 无人值守验证用：仍然走对话框自己的 response 路径（与用户点击按钮同一个信号），
-/// 不是绕过确认直接提交。
-fn respond_dialog(dialog: &adw::AlertDialog, response: &str) {
+/// 不是绕过确认直接提交。查询标签关闭结果区的丢弃确认（#189）也复用这一条。
+pub(crate) fn respond_dialog(dialog: &adw::AlertDialog, response: &str) {
     let value = glib::Value::from(response);
     dialog.emit_by_name::<()>("response", &[&value]);
     // 程序化触发不一定走「点击后自动收起」的内部路径；仍可见时显式关闭，

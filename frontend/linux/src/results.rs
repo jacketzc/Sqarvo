@@ -248,6 +248,8 @@ pub struct ResultsView {
     truncated_cells: Cell<u64>,
     /// 导出菜单按钮（SQL 结果区；v0.2.5 起与表工具条同一个入口形态）。
     ex_button: gtk::MenuButton,
+    /// 「关闭结果区」按钮（#189）：可用性由 sql_page 按执行状态同步。
+    close_button: gtk::Button,
     state: Cell<RunState>,
     loaded: Cell<u64>,
     has_more: Cell<bool>,
@@ -350,6 +352,17 @@ impl ResultsView {
         ex_button.set_tooltip_text(Some(
             "导出已加载的查询结果：CSV 或 INSERT 语句（Ctrl+Shift+E 直接导出 CSV）",
         ));
+        // 关闭结果区（#189）：「导出 ▾」右侧，原生 symbolic 图标（L0）。语义 =
+        // Close RPC（幂等，复用既有客户端路径）+ 隐藏结果区 + 编辑器占满 + 清网格态；
+        // 有未提交脏行先弹丢弃确认（复用仓库既有确认口径）；执行中置灰 + tooltip
+        // 「查询执行中，请先取消」（状态级不可用保持可见，AGENTS.md §8.1）。
+        // 可用性由 sql_page 按执行状态同步（`set_state`）。
+        let close_button = gtk::Button::new();
+        close_button.set_icon_name("window-close-symbolic");
+        close_button.add_css_class("flat");
+        close_button.set_valign(gtk::Align::Center);
+        close_button.set_tooltip_text(Some("关闭结果区（释放查询资源）"));
+        close_button.update_property(&[gtk::accessible::Property::Label("关闭结果区")]);
         // 说明文字被隐藏时行会向左塌缩，把圆点与导出甩到左边；用一枚可扩展的空盒占住
         // 弹性空白，保持「右端是状态圆点 + 导出」这一版式（与表工具条同一侧）。
         let detail_spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
@@ -357,6 +370,7 @@ impl ResultsView {
         detail_row.append(&detail_spacer);
         detail_row.append(&status_dot);
         detail_row.append(&ex_button);
+        detail_row.append(&close_button);
 
         let placeholder = adw::StatusPage::builder().title("尚未执行查询").build();
         placeholder.set_vexpand(true);
@@ -435,6 +449,7 @@ impl ResultsView {
             driver: RefCell::new(None),
             truncated_cells: Cell::new(0),
             ex_button,
+            close_button,
             state: Cell::new(RunState::Idle),
             loaded: Cell::new(0),
             has_more: Cell::new(false),
@@ -928,6 +943,19 @@ impl ResultsView {
     /// 导出菜单按钮（由 `sql_page` 接线到 `export_ui`）。
     pub fn ex_button(&self) -> &gtk::MenuButton {
         &self.ex_button
+    }
+
+    /// 「关闭结果区」按钮（#189，由 `sql_page` 接线到 Close + 隐藏 + 清网格态）。
+    pub fn close_button(&self) -> &gtk::Button {
+        &self.close_button
+    }
+
+    /// 未提交变更涉及的行数（#189：关闭结果区前的丢弃确认按它判断）。
+    pub fn dirty_rows(&self) -> usize {
+        self.edit
+            .borrow()
+            .as_ref()
+            .map_or(0, |edit| edit.dirty_rows())
     }
 
     /// QA 观测：首行首列的文本（`None` = 还没有行）。
