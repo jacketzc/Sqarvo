@@ -897,6 +897,13 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             background-color: @sqarvo_brand_mid;
             color: @sqarvo_brand_on_mid;
         }}
+        /* #189 查询标签可拖动分隔：把手厚度取 metrics（query_splitter_width），
+           颜色取分隔线 token。结果区隐藏时 GtkPaned 不绘制把手（子控件隐藏即无分隔），
+           不需要额外的隐藏态规则。 */
+        paned.sqarvo-query-split > separator {{
+            min-height: {query_splitter_width}px;
+            background: @sqarvo_separator;
+        }}
         "#,
         deep = palette.deep,
         mid = palette.mid,
@@ -973,6 +980,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         gap_lg = m.gap_px(Gap::Lg),
         gap_xl = m.gap_px(Gap::Xl),
         gap_xxl = m.gap_px(Gap::Xxl),
+        query_splitter_width = m.query_splitter_width,
     )
 }
 

@@ -36,7 +36,7 @@ use crate::backend::table::TableColumn;
 use crate::backend::table::{ApplyReport, InsertReport};
 use crate::backend::worker::{QueryEditMeta, SubmitOptions, TableEvent};
 use crate::data_page::{RowOp, RowOpsState};
-use crate::layout::{Gap, gap};
+use crate::layout::{Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::qa;
 use crate::result_edit::ResultEdit;
@@ -127,6 +127,17 @@ pub struct SqlPage {
     root: gtk::Box,
     banner: adw::Banner,
     editor: gtk::TextView,
+    /// 编辑器滚动容器（最小高度随密度档，#189）。
+    editor_scroll: gtk::ScrolledWindow,
+    /// 编辑器 / 结果区的可拖动分隔（#189）：结果区隐藏时把手随之隐藏。
+    split: gtk::Paned,
+    /// 拖动回写的分隔位置（内存态，不持久化）；`None` = 用默认比例。
+    split_position: Cell<Option<i32>>,
+    /// 程序化应用分隔位置时的防回环标志。
+    applying_split: Cell<bool>,
+    /// 结果区刚显示、等首次分配完成（map）再应用比例；期间的 position 通知
+    /// 是 GtkPaned 的钳制不是用户拖动，不记录。
+    awaiting_first_allocate: Cell<bool>,
     execute_button: gtk::Button,
     session_label: gtk::Label,
     results: Rc<ResultsView>,
@@ -137,6 +148,8 @@ pub struct SqlPage {
     cancel_clicked_at: Cell<Option<std::time::Instant>>,
     /// QA 导出（`--qa-export`）每次执行只触发一次。
     qa_export_started: Cell<bool>,
+    /// QA 钩子：关闭结果区的丢弃确认自动应答（与数据页同一口径）。
+    qa_auto_confirm: Cell<bool>,
     /// QA 的滚动目标队列：按顺序逐个滚动（用户连续快速滚动的等价路径）。
     scroll_queue: RefCell<VecDeque<u32>>,
     /// 当前查询 ID（仅用于状态栏展示，不含敏感信息）。
@@ -221,9 +234,11 @@ impl SqlPage {
         editor.add_css_class("sqarvo-sql-editor");
         editor.set_accepts_tab(true);
 
+        // #189：编辑器最小高度随密度档（metrics）；去掉 220px 上限——编辑器与
+        // 结果区按可拖动分隔分配页高，编辑器不再固定封顶。
+        let m = metrics();
         let editor_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(140)
-            .max_content_height(220)
+            .min_content_height(m.query_editor_min_height)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&editor)
@@ -238,20 +253,41 @@ impl SqlPage {
             Rc::new(move || fetch())
         });
 
+        // #189：纵向 GtkPaned 替换固定分隔线；隐藏不绘把手，厚度见主题 CSS（query_splitter_width）。
+        let split = gtk::Paned::new(gtk::Orientation::Vertical);
+        split.add_css_class("sqarvo-query-split");
+        // §8.1：容器挂可访问名（GTK 4.20.3 实测 AT-SPI 未暴露此名，见注册表 impl_notes）。
+        split.update_property(&[gtk::accessible::Property::Label("查询编辑器与结果区分栏")]);
+        split.set_start_child(Some(&editor_scroll));
+        split.set_end_child(Some(results.widget()));
+        // GtkPaned 的 min/max-position 只读：两端最小高度由子控件自身最小尺寸 +
+        // shrink=false 保证（编辑器 min_content_height、结果区 size_request）。
+        split.set_shrink_start_child(false);
+        split.set_shrink_end_child(false);
+        split.set_vexpand(true);
+        results
+            .widget()
+            .set_size_request(-1, m.query_results_min_height);
+        // 新标签：结果区（含把手）隐藏，任何 Execute 响应后再显示。
+        results.widget().set_visible(false);
+
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         // 必须可扩展：否则页面按自然高度布局，结果表会溢出到窗口外（被底部状态行遮住）。
         root.set_vexpand(true);
         root.set_valign(gtk::Align::Fill);
         root.append(&banner);
         root.append(&toolbar);
-        root.append(&editor_scroll);
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        root.append(results.widget());
+        root.append(&split);
 
         let page = Rc::new(Self {
             root,
             banner,
             editor,
+            editor_scroll,
+            split,
+            split_position: Cell::new(None),
+            applying_split: Cell::new(false),
+            awaiting_first_allocate: Cell::new(false),
             execute_button,
             session_label,
             results,
@@ -259,6 +295,7 @@ impl SqlPage {
             cancel_sent: Cell::new(false),
             cancel_clicked_at: Cell::new(None),
             qa_export_started: Cell::new(false),
+            qa_auto_confirm: Cell::new(false),
             scroll_queue: RefCell::new(VecDeque::new()),
             query_id: RefCell::new(None),
             session_base: session_line.to_owned(),
@@ -280,6 +317,41 @@ impl SqlPage {
             let button = page.execute_button.clone();
             let page = Rc::clone(&page);
             button.connect_clicked(move |_| page.execute());
+        }
+        {
+            // #189：结果区关闭按钮——有脏行先问丢弃，确认后释放游标并隐藏。
+            let button = page.results.close_button().clone();
+            let page = Rc::clone(&page);
+            button.connect_clicked(move |_| page.request_close_results());
+        }
+        {
+            // #189：拖动回写内存态（不持久化）。隐藏态或程序化应用位置时不记录，
+            // 否则隐藏时的钳制值会覆盖用户拖到的位置。
+            let split = page.split.clone();
+            let page = Rc::clone(&page);
+            split.connect_position_notify(move |_| {
+                if page.applying_split.get()
+                    || page.awaiting_first_allocate.get()
+                    || !page.results.widget().is_visible()
+                {
+                    return;
+                }
+                let position = page.split.position();
+                page.split_position.set(Some(position));
+                eprintln!("[query] 分隔拖动 position={position}（内存态，不持久化）");
+            });
+        }
+        {
+            // #189：分配就绪后应用默认比例（query_editor_ratio）；有拖动回写则恢复。
+            // GTK4 的 size-allocate 是虚函数不是信号（connect_local 会 panic），
+            // 用结果区的 map 信号：隐藏→可见时分配完成后触发，此时页高已就绪。
+            let results_widget = page.results.widget().clone();
+            let page = Rc::clone(&page);
+            results_widget.connect_map(move |_| {
+                if page.awaiting_first_allocate.replace(false) {
+                    page.apply_split_position();
+                }
+            });
         }
         {
             // 导出菜单（v0.2.5）：与表工具条同款的图标 + 下拉箭头，两项：
@@ -461,9 +533,12 @@ impl SqlPage {
     pub fn execute(self: &Rc<Self>) {
         let sql = self.sql();
         if sql.trim().is_empty() {
-            // 不清空已有结果：只提示这一次点击无效。
-            self.results
-                .set_detail("SQL 不能为空：请输入后按 Ctrl+Enter");
+            // 前端校验拒绝：不产生 Execute 响应，结果区保持隐藏（#189 编排者裁定）。
+            // 提示走页面 banner——写进隐藏的结果区用户看不见。此场景 banner 不带
+            // 动作按钮（「重启 Sqarvo」按钮属于后端失效场景，mark_disconnected 恢复）。
+            self.banner.set_button_label(None);
+            self.banner.set_title("SQL 不能为空：请输入后按 Ctrl+Enter");
+            self.banner.set_revealed(true);
             return;
         }
         if self.state.get().is_active() {
@@ -633,6 +708,8 @@ impl SqlPage {
         self.query_id.replace(Some(query_id.to_owned()));
         self.qa_export_started.set(false);
         self.reset_edit();
+        // #189：Execute 响应到达 → 显示结果区（含把手）。
+        self.show_results();
         eprintln!(
             "[query] t=+{}ms 首批到达：{} 行，has_more={has_more}，query_id={query_id}",
             qa::elapsed_ms(),
@@ -706,6 +783,8 @@ impl SqlPage {
 
     /// 后续批次到达。
     pub fn show_batch(self: &Rc<Self>, rows: Vec<RowView>, has_more: bool, loaded: u64) {
+        // #189：续批也是 Execute 响应链的一部分（隐藏态下首批之前不会到这里）。
+        self.show_results();
         eprintln!(
             "[query] t=+{}ms 批次到达：{} 行，累计 {loaded}，has_more={has_more}",
             qa::elapsed_ms(),
@@ -745,6 +824,8 @@ impl SqlPage {
     }
 
     fn mark_cancelled(self: &Rc<Self>, note: Option<&str>) {
+        // #189：取消也是 Execute 响应：结果区（含已保留行）要可见。
+        self.show_results();
         let loaded = self.results.row_count();
         self.results
             .set_state(RunState::Cancelled, loaded, false, note);
@@ -762,6 +843,8 @@ impl SqlPage {
             failure.code(),
             failure.detail()
         );
+        // #189：失败也是 Execute 响应：错误说明与已保留行要可见。
+        self.show_results();
         let loaded = self.results.row_count();
         let state = if matches!(failure, QueryFailure::ResultLimit { .. }) {
             RunState::Limited
@@ -790,6 +873,8 @@ impl SqlPage {
             stop.reason.label(),
             failure.code()
         );
+        // #189：触顶也是 Execute 响应：已保留行与「已达客户端上限」要可见。
+        self.show_results();
         self.results.append_rows_only(rows, loaded);
         self.results
             .set_state(RunState::Limited, loaded, false, Some(&failure.message()));
@@ -807,6 +892,8 @@ impl SqlPage {
         self.results
             .set_state(RunState::Disconnected, loaded, false, Some(reason));
         // reason 已经说明了原因，横幅不再重复前缀。
+        // 后端失效横幅带「重启 Sqarvo」动作按钮（空 SQL 提示会去掉按钮，这里恢复）。
+        self.banner.set_button_label(Some("重启 Sqarvo"));
         self.banner.set_title(reason);
         self.banner.set_revealed(true);
         self.query_id.replace(None);
@@ -1191,6 +1278,15 @@ impl SqlPage {
         let active = state.is_active();
         self.execute_button
             .set_sensitive(!active && !matches!(state, PageState::Disconnected));
+        // #189：执行中（Loading/Streaming）结果区关闭按钮置灰——关闭会释放游标，
+        // 必须先取消；空闲时恢复可用，tooltip 说明动作。
+        let close = self.results.close_button();
+        close.set_sensitive(!active);
+        close.set_tooltip_text(Some(if active {
+            "查询执行中，请先取消"
+        } else {
+            "关闭结果区（释放查询资源）"
+        }));
         if !active {
             self.cancel_sent.set(false);
         }
@@ -1199,6 +1295,142 @@ impl SqlPage {
         // 状态一变（尤其是 Idle → Running）就要让状态栏重算：行 1 的「取消」按在途状态
         // 给值，晚一拍才刷新会让用户在长查询期间看到一枚点不动的取消。
         (self.callbacks.state_changed)();
+    }
+
+    // ---- #189：结果区显隐与关闭按钮 -------------------------------------
+
+    /// 显示结果区（含分隔把手）：任何 Execute 响应（首批 / 续批 / 取消 / 失败 /
+    /// 触顶）后调用。已可见时幂等。
+    fn show_results(&self) {
+        if self.results.widget().is_visible() {
+            return;
+        }
+        self.awaiting_first_allocate.set(true);
+        self.results.widget().set_visible(true);
+        // 比例在首次分配完成（map）时应用；这里先试一次（已分配则立即生效）。
+        self.apply_split_position();
+        eprintln!("[query] 结果区显示（分隔把手可见）");
+    }
+
+    /// 隐藏结果区（含分隔把手），编辑器占满整页。GtkPaned 在子控件隐藏时
+    /// 不绘制把手，把手也不可拖动（L0 原生行为）。
+    fn hide_results(&self) {
+        if !self.results.widget().is_visible() {
+            return;
+        }
+        self.results.widget().set_visible(false);
+        eprintln!("[query] 结果区隐藏（编辑器占满整页）");
+    }
+
+    /// 应用分隔位置：优先拖动回写（内存态），否则按默认比例 query_editor_ratio。
+    /// applying_split 标志防止 position-notify 回写回环。
+    fn apply_split_position(&self) {
+        if !self.results.widget().is_visible() {
+            return;
+        }
+        let height = self.split.height();
+        if height <= 0 {
+            return;
+        }
+        let m = metrics();
+        let position = match self.split_position.get() {
+            Some(position) => position,
+            None => {
+                let usable = (height - m.query_splitter_width).max(1);
+                (f64::from(usable) * m.query_editor_ratio).round() as i32
+            }
+        };
+        if self.split.position() == position {
+            return;
+        }
+        self.applying_split.set(true);
+        self.split.set_position(position);
+        self.applying_split.set(false);
+        eprintln!(
+            "[query] 分隔位置应用 position={position}（页高 {height}，占比 {:.2}）",
+            f64::from(position) / f64::from(height)
+        );
+    }
+
+    /// QA 钩子：关闭结果区的丢弃确认自动应答（与数据页同一口径，只在 QA
+    /// 参数下启用，不是产品路径的后门）。
+    pub fn set_qa_auto_confirm(&self, enabled: bool) {
+        self.qa_auto_confirm.set(enabled);
+    }
+
+    /// 密度档切换后重应用本页 metrics（两端最小高度 / 默认比例）；把手厚度
+    /// 随主题 CSS 重建自动更新。
+    pub fn reapply_metrics(&self) {
+        let m = metrics();
+        self.editor_scroll
+            .set_min_content_height(m.query_editor_min_height);
+        self.results
+            .widget()
+            .set_size_request(-1, m.query_results_min_height);
+        self.apply_split_position();
+    }
+
+    /// 结果区关闭按钮：执行中按钮置灰、这里也直接返回；有脏行先弹丢弃确认
+    /// （与数据页 AlertDialog 同一口径：cancel/discard + destructive + 默认
+    /// cancel + 只接受第一次 response），确认后才真正关闭。
+    fn request_close_results(self: &Rc<Self>) {
+        if self.state.get().is_active() {
+            return;
+        }
+        let dirty = self.results.dirty_rows();
+        if dirty == 0 {
+            self.do_close_results();
+            return;
+        }
+        let dialog = adw::AlertDialog::new(
+            Some("放弃未提交的更改？"),
+            Some(&format!("关闭结果区将丢弃 {dirty} 行未提交的更改。")),
+        );
+        dialog.add_response("cancel", "取消");
+        dialog.add_response("discard", "放弃更改");
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        {
+            let page = Rc::clone(self);
+            // 只接受第一次 response（与数据页 confirm_batch 同一口径）。
+            let handled = Rc::new(Cell::new(false));
+            dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
+                if handled.replace(true) {
+                    return;
+                }
+                if response == "discard" {
+                    eprintln!("[query] 关闭结果区：用户确认丢弃 {dirty} 行脏行");
+                    page.do_close_results();
+                } else {
+                    eprintln!("[query] 关闭结果区：用户取消，结果区保留");
+                }
+            });
+        }
+        if self.qa_auto_confirm.get() {
+            // 无人值守：仍然操作同一个对话框（自动点「放弃更改」），不绕过确认语义。
+            let dialog_for_qa = dialog.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                eprintln!("[qa] 自动确认结果区丢弃对话框（无人值守）");
+                crate::data_page::respond_dialog(&dialog_for_qa, "discard");
+            });
+        }
+        dialog.present(Some(&self.root));
+    }
+
+    /// 真正关闭结果区：释放游标（Close RPC）→ 清 query_id → 重置编辑态 →
+    /// 重置结果区 → 隐藏并让编辑器占满。编辑器里的 SQL 文本保留。
+    fn do_close_results(self: &Rc<Self>) {
+        self.close_query();
+        self.query_id.replace(None);
+        self.reset_edit();
+        self.results.reset();
+        self.hide_results();
+        // 断连后保持 Disconnected（不能把执行按钮误恢复成可用）。
+        if !matches!(self.state.get(), PageState::Disconnected) {
+            self.set_state(PageState::Idle, None);
+        }
+        eprintln!("[query] 结果区已关闭：游标已释放，编辑器占满整页");
     }
 
     /// 页面离开时释放游标（调用方随后丢弃页面）。

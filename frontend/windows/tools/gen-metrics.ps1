@@ -11,7 +11,8 @@
         C#    Math.Round(12.5) -> 12   （half-to-even，默认）
 
     同一次乘法在两个语言里会差 1px，而且只在特定档位出现、肉眼几乎发现不了。所以这里
-    只做「读整数、拼常量」，一行算术都不写。
+    只做「读整数、拼常量」，一行算术都不写。无量纲比值键（*_ratio，如 #189 的
+    query_editor_ratio）例外：允许小数、生成 double 常量，同样不做运行时换算。
 
     生成失败（文件缺失 / 三档键集不一致 / §3.3 不变量不成立）必须让构建变红：
     宁可构建失败，也不要静默漂移。
@@ -111,6 +112,20 @@ foreach ($tier in $tierOrder) {
     $sizes = [ordered]@{}
     foreach ($key in $table.Keys) {
         if ($key -in @('id', 'label', 'scale')) { continue }
+        if ($key.EndsWith('_ratio')) {
+            # 无量纲比值（#189 query_editor_ratio）：允许小数，必须在 (0,1) 开区间；
+            # 其余键仍只读整数真值，不做运行时换算。
+            $raw = $table[$key]
+            if ($raw -isnot [double] -and $raw -isnot [long]) {
+                Fail "[tier.$tier].$key 必须是数字（got '$raw'）"
+            }
+            $ratio = [double]$raw
+            if ($ratio -le 0 -or $ratio -ge 1) {
+                Fail "[tier.$tier].$key 必须在 (0,1) 开区间（got $ratio）"
+            }
+            $sizes[$key] = $ratio
+            continue
+        }
         if ($table[$key] -isnot [long]) {
             Fail "[tier.$tier].$key 必须是整数（三端只读整数真值，不做运行时换算）"
         }
@@ -266,7 +281,12 @@ foreach ($tier in $tierOrder) {
     Add-Line "    public const string $($tierDisplay[$tier])Label = `"$($tiers[$tier].Label)`";"
     Add-Line
     foreach ($key in $referenceKeys) {
-        Add-Line "    public const int $($tierDisplay[$tier])$(ConvertTo-PascalCase $key) = $($tiers[$tier].Sizes[$key]);"
+        if ($key.EndsWith('_ratio')) {
+            Add-Line "    public const double $($tierDisplay[$tier])$(ConvertTo-PascalCase $key) = $(Format-Number $tiers[$tier].Sizes[$key]);"
+        }
+        else {
+            Add-Line "    public const int $($tierDisplay[$tier])$(ConvertTo-PascalCase $key) = $($tiers[$tier].Sizes[$key]);"
+        }
     }
     Add-Line
 }
@@ -309,8 +329,9 @@ Add-Line
 
 foreach ($key in $referenceKeys) {
     $pascal = ConvertTo-PascalCase $key
+    $type = if ($key.EndsWith('_ratio')) { 'double' } else { 'int' }
     Add-Line "    /// <summary>metrics.toml 的 <c>$key</c>（按当前档位取值）。</summary>"
-    Add-Line "    public static int $pascal => _tier switch"
+    Add-Line "    public static $type $pascal => _tier switch"
     Add-Line '    {'
     Add-Line "        DensityTier.Comfortable => Comfortable$pascal,"
     Add-Line "        DensityTier.Large => Large$pascal,"
@@ -327,6 +348,7 @@ Add-Line '    public static void ForEachSizeToken(Action<string, double> sink)'
 Add-Line '    {'
 Add-Line '        ArgumentNullException.ThrowIfNull(sink);'
 foreach ($key in $referenceKeys) {
+    if ($key.EndsWith('_ratio')) { continue }   # 无量纲比值不是尺寸 token，不进 Size.*
     $pascal = ConvertTo-PascalCase $key
     Add-Line "        sink(`"Size.$pascal`", $pascal);"
 }

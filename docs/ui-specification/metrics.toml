@@ -110,6 +110,10 @@ fs_button_min_height = 26   # 26 × 1.0 = 26（筛选面板的条件行按钮）
 fs_action_min_height = 28   # 28 × 1.0 = 28（筛选面板「应用」按钮）
 empty_icon_px = 48   # 48 × 1.0 = 48（空态占位图标）
 spinner_px = 32   # 32 × 1.0 = 32（加载 spinner 请求边长）
+query_editor_min_height = 140   # 140 × 1.0 = 140（查询编辑器最小高度，#189）
+query_results_min_height = 120   # 120 × 1.0 = 120（查询结果区最小高度，#189）
+query_splitter_width = 6   # 6 × 1.0 = 6（查询分隔把手厚度，#189）
+query_editor_ratio = 0.4   # 无量纲比值，三档同值（编辑器:结果区 = 2:3，#189）
 
 [tier.comfortable]
 id = "comfortable"
@@ -186,6 +190,10 @@ fs_button_min_height = 33   # 26 × 1.25 = 33（筛选面板的条件行按钮�
 fs_action_min_height = 35   # 28 × 1.25 = 35（筛选面板「应用」按钮）
 empty_icon_px = 60   # 48 × 1.25 = 60（空态占位图标）
 spinner_px = 40   # 32 × 1.25 = 40（加载 spinner 请求边长）
+query_editor_min_height = 175   # 140 × 1.25 = 175（查询编辑器最小高度，#189）
+query_results_min_height = 150   # 120 × 1.25 = 150（查询结果区最小高度，#189）
+query_splitter_width = 8   # 6 × 1.25 = 8（查询分隔把手厚度，#189）
+query_editor_ratio = 0.4   # 无量纲比值，三档同值（编辑器:结果区 = 2:3，#189）
 
 [tier.large]
 id = "large"
@@ -262,4 +270,8 @@ fs_button_min_height = 39   # 26 × 1.5 = 39（筛选面板的条件行按钮）
 fs_action_min_height = 42   # 28 × 1.5 = 42（筛选面板「应用」按钮）
 empty_icon_px = 72   # 48 × 1.5 = 72（空态占位图标）
 spinner_px = 48   # 32 × 1.5 = 48（加载 spinner 请求边长）
+query_editor_min_height = 210   # 140 × 1.5 = 210（查询编辑器最小高度，#189）
+query_results_min_height = 180   # 120 × 1.5 = 180（查询结果区最小高度，#189）
+query_splitter_width = 9   # 6 × 1.5 = 9（查询分隔把手厚度，#189）
+query_editor_ratio = 0.4   # 无量纲比值，三档同值（编辑器:结果区 = 2:3，#189）
 

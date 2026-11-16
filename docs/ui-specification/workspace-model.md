@@ -86,7 +86,9 @@ tooltip 里，见 §附录 A 第 8 条），整行需求 409 ≤ 分配 417（`-
 
 ## 3. 标签模型
 
-组件与行为见 [`components/tabs.toml`](components/tabs.toml)（标签条、标签项、关闭确认框、查询标签）；
+组件与行为见 [`components/tabs.toml`](components/tabs.toml)（标签条、标签项、关闭确认框、查询标签；
+#189 新增查询分隔把手 `tabs.query.splitter` 与关闭结果区按钮 `tabs.query.results.close`：新标签结果区
+隐藏、编辑器占满，Execute 响应后显示，可拖动分栏，数值见 metrics.toml 的 `query_*` 键）；
 标签 ↔ 会话的模型见 [ADR 0021](../decisions/0021-workspace-tab-session.md)，`Objects` 固定页宽度在
 [metrics.toml](metrics.toml)（`objects_min_width`）。本节不再维护第二份行为描述。
 
