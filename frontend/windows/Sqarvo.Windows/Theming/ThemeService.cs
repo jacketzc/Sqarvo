@@ -1,5 +1,7 @@
+using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
 using System;
@@ -275,9 +277,11 @@ public static class ThemeService
 
         // 材质要透出来，窗口根元素那份不透明底就得让位：底色改交给窗口背景层
         //（材质本身，或平台在不支持时的实色回退）。
-        if (window.Content is FrameworkElement root)
+        // Background 不是 FrameworkElement 的属性（只在 Control / Panel 上），
+        // 窗口内容根是 MainWindow.xaml 的 RootGrid（Grid → Panel）。
+        if (window.Content is Panel root)
         {
-            root.Background = new SolidColorBrush(Windows.UI.Colors.Transparent);
+            root.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         }
 
         BackdropName = "Mica";
