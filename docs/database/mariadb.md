@@ -121,6 +121,8 @@ MariaDB 没有独立的 JSON 存储类型：`JSON` 列在 `information_schema.co
 - 游标不匹配 → `mariadb.cursor_invalid`（`InvalidArgument`）；查询已结束还在取 →
   `query.not_found`；游标未读完又发 `execute` → `mariadb.query_active`（`FailedPrecondition`）。
 - 语句不产生结果集（INSERT/DDL 等）时返回完整摘要与 `rows_affected`，`has_result_set = false`。
+- 多语句脚本（#188）的 `fetch` 带 `statement_index`：从对应语句的缓冲续拉，序号越界 →
+  `mariadb.statement_index_invalid`（`InvalidArgument`），详见「多语句脚本」。
 - 列可空性只按协议 `NOT_NULL_FLAG` 判断，没有该标志一律按可空处理。
 
 ## 取消语义
@@ -230,6 +232,8 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
 ```
 
 语句**不会**发到服务端，因此被拒绝后事务与其中的写入保持原样，可以继续执行或回滚。
+多语句脚本（#188）同样适用：守卫**逐条**套用，脚本里任何一条会隐式提交的语句都会让
+整段在发送前被拒绝，不是只查第一条。
 
 拒绝范围（按首个关键字识别，跳过空白、`--` / `#` 行注释与 `/* */` 块注释）：
 
@@ -340,12 +344,36 @@ MariaDB 在执行 DDL、`TRUNCATE` 和管理命令前会**先提交当前事务*
   避免大结果游标把 `close()` 拖住。
 - 控制连接只在取消时建立，`close()` 时一并释放。
 
-## 多语句限制
+## 多语句脚本（ADR 0006 修订，#188）
 
-协议族的 `CLIENT_MULTI_STATEMENTS` 在 `mysql_async` 中恒为开启，服务端会真的执行
-`SELECT 1; DROP TABLE t`。能力描述符声明 `multiple_statements = false`，驱动在**发送前**用
-引号/注释感知的扫描器拒绝多条语句，返回 `capability.unsupported`；不会「只执行第一条」再报错。
-集成测试用 `information_schema.tables` 断言第二条语句没有产生任何副作用。
+协议族的 `CLIENT_MULTI_STATEMENTS` 在 `mysql_async` 中恒为开启。能力描述符声明
+`multiple_statements = true`：**整段脚本原样直发**，由服务端切分并按序执行，驱动不自写
+切分器改写 SQL。引号/注释感知的扫描器（`sql.rs` 的 `split_statements`）只用于三件事：
+判定「是否脚本」、生成逐语句摘要、**逐条**套用隐式提交守卫——不参与执行。
+
+语义与 SQLite（#187）对齐：
+
+- **顺序缓冲**：按序消费 `QueryResult` 的每个结果集，每条语句的行全部缓冲在内存；
+  合计超过 `sqarvo_driver_api::MULTI_STATEMENT_ROW_BUDGET`（100_000 行）时以
+  `resource_exhausted`（`query.script_too_large`）失败，提示拆分脚本或加 `LIMIT`。
+  单语句流式路径不受此预算约束。
+- **全量摘要**：`statements[]` 逐条给出序号（0 起始）、SQL 预览、列、`rows_affected`、
+  `has_result_set`；写语句没有结果集，`rows_affected` 如实报告。
+- **逐语句取数**：`first_batch` 交付第一个结果集的首批；其余用
+  `fetch(statement_index, page_token)` 从缓冲续拉，序号越界报
+  `mariadb.statement_index_invalid`（`invalid_argument`）。
+- **遇错即停**：第 k 条失败时保留驱动的真实错误分类，附
+  `StatementFailure { failed_index: k, completed_statements: k }`；**不隐式回滚**，
+  前序副作用保留，已缓冲结果集丢弃，剩余语句不执行（服务端出错即中止脚本）。
+- **取消**：语句间隙与读块间隙查取消标志，当前语句走既有 `KILL QUERY` 通道，幂等；
+  中止后排空连接上未读的剩余结果集，会话可继续复用。
+- **隐式提交守卫逐条套用**：事务中脚本里任何一条会隐式提交的语句（DDL / `TRUNCATE` /
+  `SET autocommit` 等）都会让整段在**发送前**被拒绝（`mariadb.implicit_commit_rejected`），
+  不是只查第一条。
+- **参数化不支持脚本**：`COM_STMT_EXECUTE` 一次一条，`execute_parameterized` 收到多条
+  语句时显式报 `capability.unsupported`。
+
+单语句（含尾随分号 / 尾随注释）路径完全不变，保持既有流式分批。
 
 ## 元数据（v0.2.2：完整层级 + 跨库，ADR 0019 / #82）
 
@@ -849,7 +877,7 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 |---|---|---|
 | `query_cancellation` | `true` | `KILL QUERY` 路径，见上 |
 | `streaming_results` | `true` | 行流 + 驱动侧分批 |
-| `multiple_statements` | `false` | 发送前拒绝 |
+| `multiple_statements` | `true` | #188：整段直发 + 顺序缓冲 + 预算 + 遇错即停，见「多语句脚本」 |
 | `transactions` | `true` | 会话内 `START TRANSACTION` / `COMMIT` / `ROLLBACK`，见「事务」 |
 | `catalogs` | `true` | v0.2.2（#82）：`database` 映射为 catalog，目录层与跨库浏览已实现 |
 | `schemas` | `false` | MariaDB 没有独立 schema 层级 |
@@ -934,7 +962,9 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 | 错误码 | 分类 | 触发 |
 |---|---|---|
-| `mariadb.implicit_commit_rejected` | `FailedPrecondition` | 事务中执行会隐式提交的语句，发送前拒绝 |
+| `mariadb.implicit_commit_rejected` | `FailedPrecondition` | 事务中执行会隐式提交的语句，发送前拒绝（脚本逐条套用，#188） |
+| `mariadb.statement_index_invalid` | `InvalidArgument` | 脚本 `fetch` 的语句序号越界（#188） |
+| `query.script_too_large` | `ResourceExhausted` | 脚本合计缓冲行数超 `MULTI_STATEMENT_ROW_BUDGET`（#187 / #188，共享错误码） |
 | `mariadb.transaction_lost` | `Unavailable` | 连接断开导致事务丢失，无法确认是否提交 |
 | `mariadb.query_active` | `FailedPrecondition` | 有未读完的结果游标时操作事务 |
 | `transaction.already_active` | `AlreadyExists` | 同一会话已有打开的事务 |

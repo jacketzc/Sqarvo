@@ -1,24 +1,34 @@
-//! 单语句检测与会隐式提交的语句识别。
+//! 脚本切分（摘要 / 守卫用）与会隐式提交的语句识别。
 //!
 //! MySQL 协议族在连接时固定开启 `CLIENT_MULTI_STATEMENTS`（`mysql_async` 无法关闭），
-//! 服务端会真的执行 `SELECT 1; DROP TABLE t`。v0.2 的能力描述符声明
-//! `multiple_statements = false`，因此必须在**发送前**拒绝多条语句，
-//! 而不是执行完第一条再报错——那已经造成了副作用。
+//! 服务端会真的按序执行 `SELECT 1; DROP TABLE t`。#188 起驱动声明
+//! `multiple_statements = true`：整段脚本**原样直发**，切分与执行都由服务端完成，
+//! 驱动不自写 SQL 切分器去改写语句。
 //!
-//! 这里用保守的字符扫描器判断「是否存在第二条有内容的语句」：
-//! 识别单引号、双引号、反引号（含反斜杠转义与成对引号）、`--` 与 `#` 行注释、
-//! `/* */` 块注释。它不解析 SQL 语法，只关心顶层分号。
+//! 这里的保守字符扫描器只产出「顶层分号切出的语句段」，用于三件事：
+//! 判断是否多语句脚本、`statements[]` 全量摘要（序号 / SQL 预览）、
+//! 事务内**逐条**套用隐式提交守卫。识别单引号、双引号、反引号
+//! （含反斜杠转义与成对引号）、`--` 与 `#` 行注释、`/* */` 块注释，
+//! 只关心顶层分号；空段与纯注释段不计，尾随分号不产生额外段。
 //!
 //! 事务内还要识别「会隐式提交」的语句：MariaDB 遇到 DDL / `TRUNCATE` / 管理命令时
 //! 会先把当前事务提交掉再执行，`ROLLBACK` 因此什么也回滚不了（实测见
 //! `docs/database/mariadb.md`「事务」）。这类语句在事务中一律**发送前拒绝**，
 //! 绝不让服务端静默提交。
 
-/// 是否包含多条语句。
-pub(crate) fn has_multiple_statements(sql: &str) -> bool {
+use sqarvo_common::{Error, ErrorCode, StatementFailure};
+
+/// 按顶层分号把脚本切成语句段（去掉首尾空白；空段 / 纯注释段不计）。
+///
+/// **不是执行用的切分器**：整段脚本原样发给服务端，由服务端切分执行
+/// （`CLIENT_MULTI_STATEMENTS`）。返回的段只用于摘要、逐条隐式提交守卫
+/// 与「是否多语句」判定，因此口径必须与服务端一致：引号 / 注释里的分号
+/// 不算分隔符，尾随分号不算第二条。
+pub(crate) fn split_statements(sql: &str) -> Vec<&str> {
     let bytes = sql.as_bytes();
     let mut state = State::Normal;
-    let mut statements = 0usize;
+    let mut segments: Vec<&str> = Vec::new();
+    let mut start = 0usize;
     let mut current_has_content = false;
     let mut index = 0usize;
 
@@ -46,13 +56,10 @@ pub(crate) fn has_multiple_statements(sql: &str) -> bool {
                 }
                 b';' => {
                     if current_has_content {
-                        statements += 1;
-                        // 已有两条就不必继续扫描。
-                        if statements > 1 {
-                            return true;
-                        }
+                        push_segment(sql, start, index, &mut segments);
                         current_has_content = false;
                     }
+                    start = index + 1;
                 }
                 other if other.is_ascii_whitespace() => {}
                 _ => current_has_content = true,
@@ -91,9 +98,29 @@ pub(crate) fn has_multiple_statements(sql: &str) -> bool {
     }
 
     if current_has_content {
-        statements += 1;
+        push_segment(sql, start, bytes.len(), &mut segments);
     }
-    statements > 1
+    segments
+}
+
+/// 收一个语句段：去首尾空白，空段（含纯注释段）不计。
+fn push_segment<'a>(sql: &'a str, start: usize, end: usize, segments: &mut Vec<&'a str>) {
+    let segment = sql[start..end].trim();
+    if !segment.is_empty() {
+        segments.push(segment);
+    }
+}
+
+/// 脚本缓冲行数超预算（ADR 0006 修订，#188；错误码与文案口径对齐 #187）。
+pub(crate) fn script_too_large(failed_index: u32) -> Error {
+    Error::resource_exhausted(
+        ErrorCode::QUERY_SCRIPT_TOO_LARGE,
+        "多语句脚本缓冲行数超过预算，请拆分脚本或给查询加 LIMIT",
+    )
+    .with_statement_failure(StatementFailure {
+        failed_index,
+        completed_statements: failed_index,
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -174,7 +201,7 @@ pub(crate) fn implicit_commit_statement(sql: &str) -> Option<&'static str> {
 /// 必须重读 `SELECT DATABASE()` 再决定是否发 `USE`，否则会出现「缓存说 A、服务端在 B、
 /// 请求也是 A → 跳过切换 → 语句落到 B」这种落错库。
 ///
-/// 与 `has_multiple_statements` / `implicit_commit_statement` 同一口径：只按首个关键字
+/// 与 `split_statements` / `implicit_commit_statement` 同一口径：只按首个关键字
 /// 判断，不做语法解析。判断错方向的代价不对称——判成 `USE` 只多一次轻量查询，
 /// 漏判则可能用到错的库。
 pub(crate) fn starts_with_use(sql: &str) -> bool {
@@ -232,38 +259,76 @@ fn leading_words(sql: &str, limit: usize) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::has_multiple_statements;
+    use super::split_statements;
 
     #[test]
-    fn single_statements_are_accepted() {
-        assert!(!has_multiple_statements("SELECT 1"));
-        assert!(!has_multiple_statements("SELECT 1;"));
-        assert!(!has_multiple_statements("SELECT 1;  \n "));
-        assert!(!has_multiple_statements("SELECT 1;;"));
-        assert!(!has_multiple_statements("  CREATE TABLE t (v INT)  "));
-        assert!(!has_multiple_statements(""));
-        assert!(!has_multiple_statements("-- 只有注释\n"));
-        assert!(!has_multiple_statements("/* 只有注释 */"));
-        assert!(!has_multiple_statements("SELECT 1 -- 尾注释"));
+    fn single_statements_stay_single() {
+        assert_eq!(split_statements("SELECT 1"), vec!["SELECT 1"]);
+        assert_eq!(split_statements("SELECT 1;"), vec!["SELECT 1"]);
+        assert_eq!(split_statements("SELECT 1;  \n "), vec!["SELECT 1"]);
+        assert_eq!(split_statements("SELECT 1;;"), vec!["SELECT 1"]);
+        assert_eq!(
+            split_statements("  CREATE TABLE t (v INT)  "),
+            vec!["CREATE TABLE t (v INT)"]
+        );
+        assert_eq!(split_statements(""), Vec::<String>::new());
+        assert_eq!(split_statements("-- 只有注释\n"), Vec::<String>::new());
+        assert_eq!(split_statements("/* 只有注释 */"), Vec::<String>::new());
+        assert_eq!(
+            split_statements("SELECT 1 -- 尾注释"),
+            vec!["SELECT 1 -- 尾注释"]
+        );
     }
 
     #[test]
     fn semicolons_inside_literals_are_ignored() {
-        assert!(!has_multiple_statements("SELECT ';'"));
-        assert!(!has_multiple_statements("SELECT \";\""));
-        assert!(!has_multiple_statements("SELECT `a;b` FROM t"));
-        assert!(!has_multiple_statements("SELECT 'a;b', \"c;d\""));
-        assert!(!has_multiple_statements("SELECT 'it''s; fine'"));
-        assert!(!has_multiple_statements("SELECT 'esc\\'; still one'"));
-        assert!(!has_multiple_statements("SELECT 1 /* ; 注释里的分号 */"));
+        assert_eq!(split_statements("SELECT ';'"), vec!["SELECT ';'"]);
+        assert_eq!(split_statements("SELECT \";\""), vec!["SELECT \";\""]);
+        assert_eq!(
+            split_statements("SELECT `a;b` FROM t"),
+            vec!["SELECT `a;b` FROM t"]
+        );
+        assert_eq!(
+            split_statements("SELECT 'a;b', \"c;d\""),
+            vec!["SELECT 'a;b', \"c;d\""]
+        );
+        assert_eq!(
+            split_statements("SELECT 'it''s; fine'"),
+            vec!["SELECT 'it''s; fine'"]
+        );
+        assert_eq!(
+            split_statements("SELECT 'esc\\'; still one'"),
+            vec!["SELECT 'esc\\'; still one'"]
+        );
+        assert_eq!(
+            split_statements("SELECT 1 /* ; 注释里的分号 */"),
+            vec!["SELECT 1 /* ; 注释里的分号 */"]
+        );
     }
 
     #[test]
-    fn multiple_statements_are_rejected() {
-        assert!(has_multiple_statements("SELECT 1; SELECT 2"));
-        assert!(has_multiple_statements("SELECT 1; DROP TABLE t"));
-        assert!(has_multiple_statements("SELECT 1;\n-- 注释\nSELECT 2"));
-        assert!(has_multiple_statements("INSERT INTO t VALUES (1);COMMIT"));
+    fn multiple_statements_are_split_in_order() {
+        assert_eq!(
+            split_statements("SELECT 1; SELECT 2"),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        assert_eq!(
+            split_statements("SELECT 1; DROP TABLE t"),
+            vec!["SELECT 1", "DROP TABLE t"]
+        );
+        assert_eq!(
+            split_statements("SELECT 1;\n-- 注释\nSELECT 2"),
+            vec!["SELECT 1", "-- 注释\nSELECT 2"]
+        );
+        assert_eq!(
+            split_statements("INSERT INTO t VALUES (1);COMMIT"),
+            vec!["INSERT INTO t VALUES (1)", "COMMIT"]
+        );
+        // 空段 / 纯注释段不计；段保留原文（含前置注释），切分不改写 SQL。
+        assert_eq!(
+            split_statements("; ;SELECT 1;/* 段注释 */; SELECT 2;"),
+            vec!["SELECT 1", "SELECT 2"]
+        );
     }
 
     #[test]

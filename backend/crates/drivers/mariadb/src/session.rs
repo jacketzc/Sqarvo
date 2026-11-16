@@ -15,11 +15,13 @@ use std::time::Duration;
 use futures_util::{Stream, StreamExt};
 use mysql_async::prelude::*;
 use mysql_async::{Conn, Opts, Row as MyRow, Value as MyValue};
-use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
+use sqarvo_common::{
+    Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, StatementFailure, TransactionId,
+};
 use sqarvo_driver_api::{
     CatalogKind, DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel,
-    ParameterizedExecuteRequest, ResultBatch, SessionContext, StatementSummary, TransactionOptions,
-    Value, sql_preview,
+    MULTI_STATEMENT_ROW_BUDGET, ParameterizedExecuteRequest, ResultBatch, SessionContext,
+    StatementSummary, TransactionOptions, Value, sql_preview,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -27,16 +29,19 @@ use tokio::task::JoinHandle;
 use crate::config::MariaDbConfig;
 use crate::error::{
     CURSOR_INVALID, DEADLOCK, IMPLICIT_COMMIT_REJECTED, QUERY_ACTIVE, SESSION_CLOSED,
-    TRANSACTION_LOST, catalog_switch_in_transaction, connect_timeout, is_query_interrupted,
-    map_error, server_code,
+    STATEMENT_INDEX_INVALID, TRANSACTION_LOST, catalog_switch_in_transaction, connect_timeout,
+    is_query_interrupted, map_error, server_code,
 };
-use crate::sql::{has_multiple_statements, implicit_commit_statement, starts_with_use};
+use crate::sql::{implicit_commit_statement, script_too_large, split_statements, starts_with_use};
 use crate::value::{ColumnPlan, map_columns, map_row};
 
 /// 默认每批行数。
 const DEFAULT_BATCH_ROWS: u32 = 200;
 /// 单批硬上限（查询引擎上限一致，驱动侧再兜底一次）。
 const MAX_BATCH_ROWS: u32 = 5_000;
+/// 脚本急执行时每次从行流读取的块大小（#188）：块间查取消标志，
+/// 避免大结果集一次读到底、取消无法及时生效。
+const SCRIPT_READ_CHUNK: usize = 4_096;
 
 /// 会话任务命令。
 enum Command {
@@ -381,6 +386,8 @@ impl MariaDbSession {
     }
 }
 
+// 命令分发循环：每个 Command 一个分支，拆分反而割裂「会话状态机」的整体阅读。
+#[allow(clippy::too_many_lines)]
 async fn run_session(
     mut conn: Conn,
     mut receiver: mpsc::Receiver<Command>,
@@ -394,7 +401,17 @@ async fn run_session(
     while let Some(command) = receiver.recv().await {
         match command {
             Command::Execute { request, reply } => {
-                if serve_query(&mut conn, request, None, reply, &mut receiver, &state).await {
+                if serve_query(
+                    &mut conn,
+                    request,
+                    None,
+                    reply,
+                    &mut receiver,
+                    &state,
+                    &control,
+                )
+                .await
+                {
                     break;
                 }
             }
@@ -421,6 +438,7 @@ async fn run_session(
                     reply,
                     &mut receiver,
                     &state,
+                    &control,
                 )
                 .await
                 {
@@ -801,6 +819,7 @@ async fn serve_query(
     reply: oneshot::Sender<Result<ExecutionStart>>,
     receiver: &mut mpsc::Receiver<Command>,
     state: &SharedState,
+    control: &ControlPlane,
 ) -> bool {
     let query_id = request.query_id;
 
@@ -812,10 +831,16 @@ async fn serve_query(
         )));
         return false;
     }
-    if has_multiple_statements(&request.sql) {
+    // 多语句脚本（#188）：整段直发、服务端切分，走 `serve_script` 急执行 + 缓冲。
+    // 扫描器只用来判定「是否脚本」与产出语句段（摘要 / 逐条守卫），不改写 SQL。
+    let segments = split_statements(&request.sql);
+    let is_script = segments.len() > 1;
+    if is_script && params.is_some() {
+        // 二进制协议 COM_STMT_EXECUTE 一次只执行一条语句：参数化脚本显式拒绝，
+        // 保留 #188 之前对这一组合的拒绝语义。
         let _ = reply.send(Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "MariaDB 驱动当前只支持单条 SQL 语句",
+            "参数化执行不支持多条语句组成的脚本",
         )));
         return false;
     }
@@ -824,7 +849,16 @@ async fn serve_query(
     // 已经不可用的事务也不接受新语句。
     match state.transaction() {
         TransactionState::Active { .. } => {
-            if let Some(statement) = implicit_commit_statement(&request.sql) {
+            if is_script {
+                // 逐条套用：整段直发后无法在 DDL 执行前再拦截，必须在发送前
+                // 检查每一段，任何一条会隐式提交就整段拒绝（#188）。
+                for segment in &segments {
+                    if let Some(statement) = implicit_commit_statement(segment) {
+                        let _ = reply.send(Err(implicit_commit_error(statement)));
+                        return false;
+                    }
+                }
+            } else if let Some(statement) = implicit_commit_statement(&request.sql) {
                 let _ = reply.send(Err(implicit_commit_error(statement)));
                 return false;
             }
@@ -840,8 +874,18 @@ async fn serve_query(
         TransactionState::None => {}
     }
 
-    let limit = batch_limit(request.max_rows);
     state.set_active(query_id);
+
+    if is_script {
+        // 段借用着 request.sql：先拷贝出来，脚本路径整体接管 request。
+        let segments: Vec<String> = segments
+            .iter()
+            .map(|segment| (*segment).to_owned())
+            .collect();
+        return serve_script(conn, request, segments, reply, receiver, state, control).await;
+    }
+
+    let limit = batch_limit(request.max_rows);
 
     // 两种协议返回不同的 `QueryResult` 类型（文本 / 二进制），因此分别取结果，
     // 取得之后统一交给 `serve_result`：游标、分批、取消路径只有一份实现。
@@ -882,6 +926,357 @@ fn fail_query(
     note_transaction_failure(state, &error);
     let _ = reply.send(Err(error));
     state.clear_active();
+}
+
+/// 多语句脚本（#188，ADR 0006 修订）：整段直发 + 顺序急执行 + 全量内存缓冲。
+///
+/// 切分由服务端完成（`CLIENT_MULTI_STATEMENTS` 固定开启）：驱动把整段 SQL
+/// 原样 `query_iter`，再用 `QueryResult::stream()` 按序消费每个结果集
+/// （每次调用推进到下一结果集；写语句是空列流）。`segments` 只用于摘要与
+/// 逐条守卫，不参与执行。
+///
+/// 语义对齐 SQLite（#187）：
+/// - 每语句结果集全部行缓冲，合计超 `MULTI_STATEMENT_ROW_BUDGET` →
+///   `resource_exhausted` + `query.script_too_large`；
+/// - 遇错即停：保留驱动分类 + `StatementFailure`，不回滚、丢弃已缓冲结果集，
+///   剩余语句不执行（服务端出错即中止脚本）；
+/// - `first_batch` = 第一个结果集的首批；`fetch(statement_index, page_token)`
+///   从缓冲续拉，序号越界 `invalid_argument`；
+/// - 取消：语句间隙 / 读块间隙查取消标志，当前语句走既有 KILL QUERY 通道。
+///
+/// 返回 `true` 表示会话应关闭。
+#[allow(clippy::too_many_lines)]
+async fn serve_script(
+    conn: &mut Conn,
+    request: ExecuteRequest,
+    segments: Vec<String>,
+    reply: oneshot::Sender<Result<ExecutionStart>>,
+    receiver: &mut mpsc::Receiver<Command>,
+    state: &SharedState,
+    control: &ControlPlane,
+) -> bool {
+    let query_id = request.query_id;
+    let limit = batch_limit(request.max_rows);
+
+    // 整段直发：服务端切分并按序执行。首条语句的头部错误（语法错误等）
+    // 在这里直接浮出，此时还没有任何语句执行成功。
+    let mut result = match conn.query_iter(&request.sql).await {
+        Ok(result) => result,
+        Err(error) => {
+            let error = map_error(error, "执行 MariaDB 语句失败");
+            note_transaction_failure(state, &error);
+            let _ = reply.send(Err(script_error(error, 0)));
+            state.clear_active();
+            return false;
+        }
+    };
+
+    let mut summaries: Vec<StatementSummary> = Vec::with_capacity(segments.len());
+    let mut buffers: Vec<Vec<sqarvo_driver_api::Row>> = Vec::with_capacity(segments.len());
+    let mut total_rows: u64 = 0;
+    let mut first_result_index: Option<u32> = None;
+
+    for (position, segment) in segments.iter().enumerate() {
+        let index = u32::try_from(position).unwrap_or(u32::MAX);
+        // 语句间隙查取消标志：当前语句走既有 KILL QUERY 通道，
+        // 未读的剩余结果集排空后再回取消错误。
+        if state.is_cancelled() {
+            abandon_script(result, control).await;
+            let _ = reply.send(Err(cancelled_error()));
+            state.clear_active();
+            return false;
+        }
+        // 用户自己写的 `USE` 会改会话当前库：逐段失效缓存（ADR 0030 第 4 条）。
+        state.invalidate_catalog_after_statement(segment);
+
+        let mut stream = match result.stream::<MyRow>().await {
+            Ok(Some(stream)) => stream,
+            Ok(None) => {
+                // 服务端结果集数量与扫描段数不一致（口径应一致）：
+                // 显式报错，不伪造摘要。
+                let _ = reply.send(Err(Error::internal(
+                    "MariaDB 脚本的结果集数量与语句数量不一致",
+                )));
+                state.clear_active();
+                return false;
+            }
+            Err(error) => {
+                // 第 index 条的头部错误：mysql_async 把非首条的 ERR 存为
+                // pending error，在下一次 stream() 浮出，归属即当前序号。
+                let error = stream_error(error, state);
+                note_transaction_failure(state, &error);
+                let _ = reply.send(Err(script_error(error, index)));
+                state.clear_active();
+                return false;
+            }
+        };
+        let columns = stream.columns();
+        let has_result_set = !columns.is_empty();
+        let mut summary = StatementSummary {
+            index,
+            sql_preview: sql_preview(segment),
+            columns: Vec::new(),
+            rows_affected: None,
+            has_result_set,
+        };
+
+        if has_result_set {
+            let (metas, plans) = map_columns(&columns);
+            summary.columns = metas;
+            let mut buffer: Vec<sqarvo_driver_api::Row> = Vec::new();
+            let mut pending = None;
+            loop {
+                // 读块间隙查取消：大结果集不一次读到底。
+                if state.is_cancelled() {
+                    drop(stream);
+                    abandon_script(result, control).await;
+                    let _ = reply.send(Err(cancelled_error()));
+                    state.clear_active();
+                    return false;
+                }
+                match read_rows(
+                    &mut stream,
+                    &plans,
+                    SCRIPT_READ_CHUNK,
+                    pending.take(),
+                    state,
+                )
+                .await
+                {
+                    Ok((chunk, more, next_pending)) => {
+                        total_rows = total_rows
+                            .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+                        buffer.extend(chunk);
+                        pending = next_pending;
+                        if total_rows > MULTI_STATEMENT_ROW_BUDGET {
+                            drop(stream);
+                            abandon_script(result, control).await;
+                            let _ = reply.send(Err(script_too_large(index)));
+                            state.clear_active();
+                            return false;
+                        }
+                        if !more {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        // 行读取错误（含 KILL 的 1317 / 超时的 3024）：
+                        // 错误已从连接消费，无需排空；丢弃缓冲、剩余不执行。
+                        note_transaction_failure(state, &error);
+                        let _ = reply.send(Err(script_error(error, index)));
+                        state.clear_active();
+                        return false;
+                    }
+                }
+            }
+            if first_result_index.is_none() {
+                first_result_index = Some(index);
+            }
+            buffers.push(buffer);
+        } else {
+            // 写语句（INSERT/DDL 等）：空列流，只取 affected_rows。
+            // 消费空流以推进到下一结果集（末次 next 会读下一语句头部，
+            // 其 ERR 存为 pending error，归属下一序号）。
+            summary.rows_affected = Some(stream.affected_rows());
+            while let Some(item) = stream.next().await {
+                if let Err(error) = item {
+                    let error = stream_error(error, state);
+                    note_transaction_failure(state, &error);
+                    let _ = reply.send(Err(script_error(error, index)));
+                    state.clear_active();
+                    return false;
+                }
+            }
+            buffers.push(Vec::new());
+        }
+        summaries.push(summary);
+    }
+
+    // first_batch：第一个结果集的首批（批量大小沿用既有 max_rows 语义）；
+    // 全是写语句时为 None，对齐既有单语句写行为。
+    let mut delivered = vec![0usize; buffers.len()];
+    let first_batch = first_result_index.map(|statement_index| {
+        let position = usize::try_from(statement_index).unwrap_or(usize::MAX);
+        let buffer = &buffers[position];
+        let end = buffer.len().min(limit);
+        delivered[position] = end;
+        let has_more = end < buffer.len();
+        ResultBatch {
+            statement_index,
+            rows: buffer[..end].to_vec(),
+            next_cursor: has_more.then(|| end.to_string()),
+            has_more,
+        }
+    });
+    if reply
+        .send(Ok(ExecutionStart {
+            statements: summaries,
+            first_batch,
+        }))
+        .is_err()
+    {
+        state.clear_active();
+        return false;
+    }
+    if buffers
+        .iter()
+        .zip(&delivered)
+        .all(|(buffer, &read)| read >= buffer.len())
+    {
+        state.clear_active();
+        return false;
+    }
+    // 脚本已急执行完毕：连接空闲，取消不再需要 KILL（同单语句批次间隙）。
+    state.set_cursor_open();
+
+    loop {
+        let Some(command) = receiver.recv().await else {
+            state.clear_active();
+            return true;
+        };
+        match command {
+            Command::Close { reply } => {
+                let _ = reply.send(());
+                state.clear_active();
+                return true;
+            }
+            Command::CloseQuery {
+                query_id: requested,
+                reply,
+            } => {
+                if requested == query_id {
+                    let _ = reply.send(Ok(()));
+                    state.clear_active();
+                    return false;
+                }
+                let _ = reply.send(Err(query_not_found("查询不存在")));
+            }
+            Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭",
+                )));
+            }
+            Command::Begin { reply, .. }
+            | Command::Commit { reply, .. }
+            | Command::Rollback { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再操作事务",
+                )));
+            }
+            Command::Metadata { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再读取元数据",
+                )));
+            }
+            Command::TableData { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再浏览表数据",
+                )));
+            }
+            Command::SessionContext { reply } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再读取库上下文",
+                )));
+            }
+            Command::UseCatalog { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再切换库",
+                )));
+            }
+            Command::Fetch {
+                query_id: requested,
+                statement_index,
+                cursor,
+                max_rows,
+                reply,
+            } => {
+                if state.is_cancelled() {
+                    let _ = reply.send(Err(cancelled_error()));
+                    state.clear_active();
+                    return false;
+                }
+                if requested != query_id {
+                    let _ = reply.send(Err(query_not_found("查询或语句不存在")));
+                    continue;
+                }
+                let position = usize::try_from(statement_index).unwrap_or(usize::MAX);
+                let Some(buffer) = buffers.get(position) else {
+                    let _ = reply.send(Err(Error::invalid_argument(
+                        STATEMENT_INDEX_INVALID,
+                        "语句序号越界",
+                    )));
+                    continue;
+                };
+                // 游标即「已交付行数」；首批未交付时允许无游标续拉（对齐 SQLite）。
+                let expected = delivered[position];
+                let start = match cursor.as_deref() {
+                    None if expected == 0 => 0,
+                    Some(text) if text.parse::<usize>().ok() == Some(expected) => expected,
+                    _ => {
+                        let _ = reply.send(Err(Error::invalid_argument(
+                            CURSOR_INVALID,
+                            "分页游标与当前查询不匹配",
+                        )));
+                        continue;
+                    }
+                };
+                let fetch_limit = batch_limit(Some(max_rows));
+                let end = buffer.len().min(start.saturating_add(fetch_limit));
+                let has_more = end < buffer.len();
+                delivered[position] = end;
+                let _ = reply.send(Ok(ResultBatch {
+                    statement_index,
+                    rows: buffer[start..end].to_vec(),
+                    next_cursor: has_more.then(|| end.to_string()),
+                    has_more,
+                }));
+                if buffers
+                    .iter()
+                    .zip(&delivered)
+                    .all(|(buffer, &read)| read >= buffer.len())
+                {
+                    state.clear_active();
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+/// 脚本执行错误附加失败位置（#188，口径对齐 SQLite #187）。
+///
+/// 取消保留既有 `QUERY_CANCELLED` 语义（不附位置）；其它错误保留驱动分类，
+/// 只附 `StatementFailure`。遇错即停时 `completed_statements` 等于失败序号：
+/// 前 k 条已成功、第 k 条（0 起）失败。
+fn script_error(error: Error, index: u32) -> Error {
+    if error.code() == ErrorCode::QUERY_CANCELLED {
+        return error;
+    }
+    error.with_statement_failure(StatementFailure {
+        failed_index: index,
+        completed_statements: index,
+    })
+}
+
+/// 脚本中途放弃（取消 / 超预算）：先走既有 KILL QUERY 通道停服务端，
+/// 再排空连接上未读的剩余结果集，避免残留泄漏进下一条命令。
+///
+/// KILL 后服务端中止脚本：剩余只有当前语句的部分行与中断错误。
+/// 排空错误一律吞掉——调用方已经收到取消 / 预算错误。KILL 与语句切换
+/// 存在固有竞态（同单语句取消路径）：KILL 恰好落在两条语句之间时打空，
+/// 排空可能多读几条已开始的语句，这是 KILL 取消的既有语义。
+async fn abandon_script(
+    result: mysql_async::QueryResult<'_, '_, mysql_async::TextProtocol>,
+    control: &ControlPlane,
+) {
+    let _ = control.kill_query().await;
+    let _ = result.drop_result().await;
 }
 
 /// 把服务端返回的库名归一化：空串与纯空白都等于「没有默认库」。
@@ -1260,6 +1655,11 @@ impl DriverSession for MariaDbSession {
 
     /// MariaDB 驱动已实现参数绑定（#59）：值走协议的绑定参数，不拼进 SQL 文本。
     fn supports_parameterized_statements(&self) -> bool {
+        true
+    }
+
+    /// MariaDB 驱动已实现多语句脚本（#188）：整段直发 + 顺序缓冲 + 遇错即停。
+    fn supports_multiple_statements(&self) -> bool {
         true
     }
 

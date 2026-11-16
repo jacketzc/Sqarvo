@@ -53,6 +53,9 @@ pub const NO_DATABASE: ErrorCode = ErrorCode::from_static("mariadb.no_database")
 /// 事务打开时请求切库（ADR 0030）：驱动拒绝，不隐式提交。
 pub const CATALOG_SWITCH_IN_TRANSACTION: ErrorCode =
     ErrorCode::from_static("mariadb.catalog_switch_in_transaction");
+/// 多语句脚本的语句序号越界（#188）。
+pub const STATEMENT_INDEX_INVALID: ErrorCode =
+    ErrorCode::from_static("mariadb.statement_index_invalid");
 
 /// 取服务端错误码（仅 `Server` 类错误）。
 pub(crate) fn server_code(error: &mysql_async::Error) -> Option<u16> {
