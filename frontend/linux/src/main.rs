@@ -32,6 +32,7 @@ mod shell;
 mod signals;
 mod sql_page;
 mod startup;
+mod statements;
 mod submit_batch;
 mod table_data;
 mod tabs;

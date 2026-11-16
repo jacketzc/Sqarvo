@@ -604,6 +604,7 @@ impl_notes = [
   "正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。",
   "Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。",
   "Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。",
+  "多语句脚本（#190）：失败且 trailing metadata 两键齐全时，错误说明前加「前 N-1 条已执行，第 N 条失败」口径（见 tabs.query.results.statements）；已执行但结果未返回的语句用独立占位态「已执行 · 结果未返回」（Undelivered，与「无结果集」区分：前者本有结果集但后端未保留游标）。每条语句的状态独立回写，切换语句时状态行随选中语句变。",
 ]
 
 [[component.interaction]]
@@ -650,6 +651,7 @@ impl_notes = [
   "语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。",
   "显隐（#189）：新标签结果区（含分隔把手）隐藏、编辑器占满整页；任何 Execute 响应（首批 / 续批 / 取消 / 失败 / 触顶）后显示；可用「关闭结果区」按钮主动关闭（见 tabs.query.results.close），关闭后回到隐藏态。",
   "最小高度随密度档（query_results_min_height）；显示时编辑器:结果区默认 query_editor_ratio（0.4），可拖动调整（见 tabs.query.splitter）。",
+  "多语句脚本（#190）：状态行下方、表格上方挂语句切换行（tabs.query.results.statements）；每条语句一份独立网格状态（行模型 / 列 / 已加载行数 / 截断计数），切换语句换入换出行模型，已加载行不丢；单语句不挂切换行，现状不变。",
 ]
 
 [[component.interaction]]
@@ -690,18 +692,19 @@ style.metrics = ["column_header_min_height", "font_ui", "font_weight_title"]
 impl_notes = [
   "一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。",
   "表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。",
-  "多结果集在表头**上方**补一行说明（「结果集 K 段」，K > 1 时再补「只显示第 1 段」）；Linux 目前只把多语句写进日志。",
+  "多语句脚本（#190）：Linux 的 v0.1「只显示第 1 段」限制已退役——表头随选中语句的列元数据重建，逐语句切换走 tabs.query.results.statements；Windows 仍是「结果集 K 段 / 只显示第 1 段」口径（见 platform_notes.windows）。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "首批数据到达"
-result = "按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多结果集时表头上方一行「结果集 K 段」，K > 1 再补「只显示第 1 段」"
-source = "src/results.rs:968、src/sql_page.rs:544、src/sql_page.rs:561"
+result = "按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements）"
+source = "src/results.rs:1044、src/sql_page.rs:795、src/sql_page.rs:1176"
+platform_notes.windows = "多结果集仍在表头上方补一行「结果集 K 段」，K > 1 再补「只显示第 1 段」（v0.1 口径，#190 Windows 侧待实现；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1122）。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d8aacb5cfd03"
+spec_hash = "3ae8b7456834"
 evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装"
 
 [component.sync.windows]
@@ -764,6 +767,7 @@ impl_notes = [
   "每批行数由服务端分批返回；同一时刻最多一批在飞，触顶（客户端结果集上限）之后不再续拉。",
   "Linux 只有「滚动到接近末尾就自动续拉」这一条路径（没有单独的「加载更多」按钮）；§7.1 记录 Windows 另有可点按的「加载更多」入口。",
   "续拉是追加，不重跑 SQL、不换页；如果用户已经滚到底而服务端还有数据，状态行仍是「加载中 · 已加载 N 行」。",
+  "多语句脚本（#190）：续拉按当前选中语句（FetchBatch 带 statement_index）；每条语句独立游标（page_token / has_more / 已加载行数），切走再切回从各自的游标继续；尚未首拉的结果集语句在选中时以空 page_token 发起第一批；整查询的 Close 等 FetchBatchResponse.complete（#187 语义：整查询交付完毕）。",
 ]
 
 [[component.interaction]]
@@ -788,6 +792,56 @@ evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）�
 state = "done"
 spec_hash = "646be58b5fc1"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:457；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:817；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:52"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.statements"
+parent = "tabs.query.results"
+display_name = "语句切换行（多语句脚本）"
+kind = "control"
+status = "active"
+a11y.name = "语句切换行"
+style.metrics = ["gap_sm", "gap_xl", "min_target"]
+native_control = "gtk:GtkBox + GtkToggleButton（set_group 互斥） / winui:— / swift:—"
+impl_notes = [
+  "L0：原生 GtkBox + GtkToggleButton 组（set_group 互斥单选），无自绘；条目命中区不低于 min_target，左右缘与表格对齐（gap_xl），条目间距 gap_sm。",
+  "条目文案「序号 · 类型词 · 行数/影响行数/状态」：类型词取 SQL 预览第一个关键字（大写，最长 12 字符），完整预览进 tooltip；结果集语句「N 行」（还有后续批次时「N 行…」），写语句「影响 N 行」，尚未首拉「未加载」。",
+  "每条语句一份独立网格状态（行模型 / 列 / 状态 / 已加载行数 / 截断计数）；切换用换入换出行模型实现，已加载行不丢；选中集属于上一条语句，换模型时清空。",
+  "失败态条目用主题原生 destructive-action 警示色，不自绘；程序化选中（重建 / 同步）有防回环标志，不触发用户回调。",
+  "失败场景的契约限制：Execute 原子失败，响应不带语句摘要、也不保留已执行语句的游标——条目只能列到失败语句为止，已执行语句标「已执行 · 结果未返回」，默认选中失败语句本身（无从得知已执行语句中哪条是 SELECT）。",
+  "单语句（statements.len() <= 1）不挂载切换行，现状完全不变；多语句脚本的结果不能当表编辑（editable_table_from_sql 在第一个 ';' 处截断，会解析错目标表）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Execute 返回多条语句（statements.len() > 1）"
+result = "结果区头部下方出现语句切换行：每条语句一个可点选条目；默认选中已成功语句中最后一条有结果集的语句（全写脚本落第一条，占位页说明无结果集，切换行仍列各写语句影响行数）"
+source = "src/sql_page.rs:981、src/statements.rs:57、src/statements.rs:121"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "点选切换行里另一条语句"
+result = "网格换入该语句的行模型与列（已加载行不丢），状态行随选中语句；尚未首拉的结果集语句立即发起第一批请求（空 page_token + statement_index）；滚动续拉按当前选中语句"
+source = "src/sql_page.rs:1121、src/sql_page.rs:1150、src/sql_page.rs:1236、src/results.rs:950"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "多语句脚本失败（trailing metadata sqarvo-failed-statement / sqarvo-completed-statements 两键齐全且至少一条已执行）"
+result = "状态行「前 N-1 条已执行，第 N 条失败：<错误文案>」；切换行列到失败语句为止：已执行条目标「已执行 · 结果未返回」，失败语句标失败态并默认选中；点已执行条目显示「结果未返回」占位页"
+source = "src/sql_page.rs:1067、src/statements.rs:104、src/statements.rs:126"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b145eebc69a7"
+evidence = "src/statements.rs（切换行控件与三条纯规则，7 个单测）；src/sql_page.rs:981（start_multi）/ 1067（show_multi_failure）/ 1121（select_statement）/ 1205（sync_sql_summary 状态栏回写）；src/backend/worker.rs:1119（select_statement 命令）；隔离 QA 截图 qa190/（A/B/C/D 四脚本实测，含切换点选与失败文案）"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "#190 Windows 侧待实现（Linux 先行，Windows 由后续 agent 续做）。"
 
 [component.sync.macos]
 state = "none"

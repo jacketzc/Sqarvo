@@ -2474,6 +2474,25 @@ impl TabSet {
                 let id = id.clone();
                 Rc::new(move || worker.close_query(&id))
             },
+            select_statement: {
+                let worker = Rc::clone(&worker);
+                let id = id.clone();
+                Rc::new(move |index: u32| worker.select_statement(&id, index))
+            },
+            sql_summary: {
+                let weak = Rc::downgrade(self);
+                let id = id.clone();
+                Rc::new(move |text: String| {
+                    let Some(set) = weak.upgrade() else {
+                        return;
+                    };
+                    let Some(tab) = set.by_id(&id) else {
+                        return;
+                    };
+                    tab.sql_summary.replace(Some(text));
+                    set.refresh_current();
+                })
+            },
             backend_failure: Rc::clone(&self.context.backend_failure),
             edit_target: {
                 let weak = Rc::downgrade(self);
@@ -2999,12 +3018,18 @@ impl TabSet {
                 loaded,
             } => page.show_started(&query_id, &statements, rows, has_more, loaded),
             QueryEvent::Batch {
+                statement_index,
                 rows,
                 has_more,
                 loaded,
-            } => page.show_batch(rows, has_more, loaded),
+            } => page.show_batch(statement_index, rows, has_more, loaded),
             QueryEvent::Cancelled { note } => page.show_cancelled(note.as_deref()),
-            QueryEvent::Limited { rows, loaded, stop } => page.show_limited(rows, loaded, &stop),
+            QueryEvent::Limited {
+                statement_index,
+                rows,
+                loaded,
+                stop,
+            } => page.show_limited(statement_index, rows, loaded, &stop),
             QueryEvent::Failed(failure) => {
                 page.show_failure(&failure);
                 if failure.is_session_lost() {
