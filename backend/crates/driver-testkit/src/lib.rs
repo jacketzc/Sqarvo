@@ -11,7 +11,11 @@
 //!   1. [`cancel_without_active_query_is_idempotent`]：没有在途查询时取消幂等；
 //!   2. [`close_is_idempotent_and_use_after_close_is_rejected`]：`close` 幂等，
 //!      关闭后 `execute` 以 `FailedPrecondition` 拒绝；
-//!   3. [`multiple_statements_are_rejected`]：多语句以 `Unsupported` 拒绝（ADR 0006）；
+//!   3. 多语句不变量（ADR 0006 修订，#187）按能力位分支：
+//!      `multiple_statements = false` 用 [`multiple_statements_are_rejected`]
+//!      断言以 `Unsupported` 拒绝；`multiple_statements = true` 用
+//!      [`multiple_statements_execute_sequentially`] 断言顺序执行、逐语句取数、
+//!      遇错即停且不隐式回滚；
 //!   4. [`oversized_cell_is_truncated`]：超出 `DEFAULT_MAX_CELL_BYTES` 的单元格只交付
 //!      前缀并置 `Cell::truncated`（ADR 0007）；
 //!   5. [`batch_drain_has_no_loss`]：按批取完与一次性取回的行一致，不重复、不丢失（ADR 0005）。
@@ -63,7 +67,7 @@ use async_trait::async_trait;
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
     DEFAULT_MAX_CELL_BYTES, DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel,
-    ResultBatch, Row, TransactionOptions, Value,
+    ResultBatch, Row, StatementSummary, TransactionOptions, Value,
 };
 
 /// 脚本化会话：`execute` 返回预设结果，`fetch` 依次弹出预设批次。
@@ -355,11 +359,15 @@ pub async fn close_is_idempotent_and_use_after_close_is_rejected(
     }
 }
 
-/// 断言「多语句被显式拒绝」。
+/// 断言「多语句被显式拒绝」（仅适用于 `multiple_statements = false` 的驱动）。
 ///
-/// 验证的不变量（ADR 0006，v0.1 策略）：驱动声明
+/// 验证的不变量（ADR 0006 修订，#187）：驱动声明
 /// `multiple_statements = false` 时，收到多条语句必须在发送前拒绝，错误分类为
 /// [`ErrorCategory::Unsupported`]，绝不静默只执行第一条。
+///
+/// 声明 `multiple_statements = true` 的驱动必须改用
+/// [`multiple_statements_execute_sequentially`]；本检查对这类驱动直接返回
+/// `INTERNAL`，避免「能力为真却走拒绝检查」的误配被静默放过。
 ///
 /// 调用方需要提供：
 ///
@@ -372,6 +380,11 @@ pub async fn multiple_statements_are_rejected(
     session: &dyn DriverSession,
     sql: &str,
 ) -> Result<()> {
+    if session.supports_multiple_statements() {
+        return Err(Error::internal(
+            "驱动声明 multiple_statements=true，应改用 multiple_statements_execute_sequentially 检查",
+        ));
+    }
     let request = ExecuteRequest {
         query_id: QueryId::new(),
         sql: sql.to_owned(),
@@ -388,6 +401,299 @@ pub async fn multiple_statements_are_rejected(
             error.category(),
             error.code()
         ))),
+    }
+}
+
+/// 多语句顺序执行检查的方言夹具（ADR 0006 修订，#187）。
+///
+/// 所有 SQL 由调用方按本驱动方言提供；testkit 不解析 SQL，只观察行为。
+/// 夹具约定一个单行单列整数的「探针」查询来观测副作用：
+///
+/// - `script` 执行并取完后，探针值必须等于 `probe_after_script`
+///   （建议脚本里的写语句不改变探针值，例如 `UPDATE t SET x = x`）；
+/// - `failing_script` 第 `failed_index` 条必然失败：失败前第 1 条的副作用
+///   必须保留（不隐式回滚），失败后的语句不得执行，探针值必须等于
+///   `probe_after_failure`。若驱动隐式回滚或继续执行，探针值都会偏离。
+pub struct MultiStatementFixture {
+    /// 顺序执行脚本：至少两条真实语句，**首条必须有结果集**。
+    pub script: String,
+    /// `script` 的真实语句条数（空段 / 纯注释不计）。
+    pub statement_count: u32,
+    /// `script` 第一个结果集的总行数（用于逐批取数校验）。
+    pub first_result_rows: usize,
+    /// 遇错即停脚本：第 1 条成功且有可观测副作用，第 `failed_index` 条必失败，
+    /// 其后的语句若被错误执行会改变探针值。
+    pub failing_script: String,
+    /// `failing_script` 中失败语句的序号（0 起始）。
+    pub failed_index: u32,
+    /// 探针查询：单条 SELECT，返回一行一列整数。
+    pub probe_sql: String,
+    /// `script` 执行并取完后的探针值。
+    pub probe_after_script: i64,
+    /// `failing_script` 失败后的探针值。
+    pub probe_after_failure: i64,
+}
+
+/// 断言「多语句顺序执行、逐语句取数、遇错即停且不隐式回滚」。
+///
+/// 验证的不变量（ADR 0006 修订，#187，仅适用于 `multiple_statements = true`
+/// 的驱动）：
+///
+/// 1. `statements[]` 返回全量摘要：条数、序号（0 起始连续）、SQL 预览齐全；
+/// 2. `first_batch` 交付第一个结果集的首批，批大小不超过请求上限；
+/// 3. 每个结果集都能用 `fetch(statement_index, page_token)` 独立取完，
+///    行不重不漏；写语句 `rows_affected` 有值，fetch 返回空批 `has_more=false`；
+/// 4. 第 k 条失败时错误携带 `StatementFailure { failed_index: k,
+///    completed_statements: k }`，分类是驱动的真实 classify（不是能力拒绝）；
+/// 5. 失败不隐式回滚：前序副作用保留；剩余语句不执行；会话随后可继续执行。
+///
+/// 调用方需要提供：一个已连接、空闲的会话与 [`MultiStatementFixture`]。
+pub async fn multiple_statements_execute_sequentially(
+    session: &dyn DriverSession,
+    fixture: &MultiStatementFixture,
+) -> Result<()> {
+    if !session.supports_multiple_statements() {
+        return Err(Error::internal(
+            "驱动声明 multiple_statements=false，应改用 multiple_statements_are_rejected 检查",
+        ));
+    }
+
+    // ---- 顺序执行 + 逐语句取数 ----
+    let query_id = QueryId::new();
+    let start = session
+        .execute(ExecuteRequest {
+            query_id,
+            sql: fixture.script.clone(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .map_err(|error| Error::internal(format!("多语句脚本应顺序执行，实际失败：{error}")))?;
+
+    check_statement_summaries(&start, fixture)?;
+
+    // 第一个结果集：首批 + 逐批取完，行数与夹具一致。
+    let first = start
+        .first_batch
+        .ok_or_else(|| Error::internal("首条语句有结果集，first_batch 不得为 None"))?;
+    check_first_result_set(session, &query_id, first, fixture.first_result_rows).await?;
+
+    // 其余语句：结果集独立取完；写语句 rows_affected 有值、fetch 为空批。
+    check_remaining_statements(session, &query_id, &start.statements[1..]).await?;
+    let _ = session.close_query(&query_id).await;
+
+    if probe_value(session, &fixture.probe_sql).await? != fixture.probe_after_script {
+        return Err(Error::internal(format!(
+            "顺序脚本执行后探针值应为 {}",
+            fixture.probe_after_script
+        )));
+    }
+
+    // ---- 遇错即停 + 失败位置 + 不隐式回滚 ----
+    check_failure_stops_execution(session, fixture).await
+}
+
+/// 校验全量语句摘要：条数、序号 0 起始连续、SQL 预览齐全、首条有结果集。
+fn check_statement_summaries(
+    start: &ExecutionStart,
+    fixture: &MultiStatementFixture,
+) -> Result<()> {
+    let expected_count = usize::try_from(fixture.statement_count).unwrap_or(usize::MAX);
+    if start.statements.len() != expected_count {
+        return Err(Error::internal(format!(
+            "语句摘要应为 {} 条，实际 {} 条",
+            fixture.statement_count,
+            start.statements.len()
+        )));
+    }
+    for (position, statement) in start.statements.iter().enumerate() {
+        let expected_index = u32::try_from(position).unwrap_or(u32::MAX);
+        if statement.index != expected_index {
+            return Err(Error::internal(format!(
+                "语句序号必须 0 起始连续：第 {position} 条序号为 {}",
+                statement.index
+            )));
+        }
+        if statement.sql_preview.trim().is_empty() {
+            return Err(Error::internal(format!(
+                "语句 {expected_index} 缺少 SQL 预览"
+            )));
+        }
+    }
+    if !start.statements[0].has_result_set {
+        return Err(Error::internal("夹具约定首条语句必须有结果集"));
+    }
+    Ok(())
+}
+
+/// 第一个结果集：首批属于序号 0、逐批取完，总行数与夹具一致。
+async fn check_first_result_set(
+    session: &dyn DriverSession,
+    query_id: &QueryId,
+    first: ResultBatch,
+    expected_rows: usize,
+) -> Result<()> {
+    if first.statement_index != 0 {
+        return Err(Error::internal(
+            "first_batch 必须属于第一个结果集（序号 0）",
+        ));
+    }
+    if first.rows.len() > 1 {
+        return Err(Error::internal("首批行数超过请求上限 1"));
+    }
+    let mut rows = first.rows.len();
+    let mut cursor = first.next_cursor;
+    let mut more = first.has_more;
+    if more && cursor.is_none() {
+        return Err(Error::internal("has_more=true 但缺少游标"));
+    }
+    while more {
+        let token = cursor
+            .clone()
+            .ok_or_else(|| Error::internal("has_more=true 但缺少游标"))?;
+        let batch = session.fetch(query_id, 0, Some(&token), 1).await?;
+        if batch.statement_index != 0 {
+            return Err(Error::internal("批次数据与语句序号不一致"));
+        }
+        if batch.rows.len() > 1 {
+            return Err(Error::internal("批次行数超过请求上限 1"));
+        }
+        rows += batch.rows.len();
+        cursor = batch.next_cursor;
+        more = batch.has_more;
+        if more && cursor.is_none() {
+            return Err(Error::internal("has_more=true 但缺少游标"));
+        }
+    }
+    if rows != expected_rows {
+        return Err(Error::internal(format!(
+            "第一个结果集应共 {expected_rows} 行，实际取回 {rows} 行"
+        )));
+    }
+    Ok(())
+}
+
+/// 其余语句：结果集独立取完；写语句 `rows_affected` 有值、`fetch` 为空批。
+async fn check_remaining_statements(
+    session: &dyn DriverSession,
+    query_id: &QueryId,
+    statements: &[StatementSummary],
+) -> Result<()> {
+    for statement in statements {
+        if statement.has_result_set {
+            let mut cursor: Option<String> = None;
+            loop {
+                let batch = session
+                    .fetch(query_id, statement.index, cursor.as_deref(), 1)
+                    .await?;
+                if batch.statement_index != statement.index {
+                    return Err(Error::internal(format!(
+                        "语句 {} 的批次序号错为 {}",
+                        statement.index, batch.statement_index
+                    )));
+                }
+                if batch.rows.len() > 1 {
+                    return Err(Error::internal("批次行数超过请求上限 1"));
+                }
+                cursor = batch.next_cursor;
+                if !batch.has_more {
+                    break;
+                }
+                if cursor.is_none() {
+                    return Err(Error::internal("has_more=true 但缺少游标"));
+                }
+            }
+        } else {
+            if statement.rows_affected.is_none() {
+                return Err(Error::internal(format!(
+                    "写语句 {} 缺少 rows_affected",
+                    statement.index
+                )));
+            }
+            let batch = session.fetch(query_id, statement.index, None, 1).await?;
+            if batch.statement_index != statement.index
+                || !batch.rows.is_empty()
+                || batch.has_more
+                || batch.next_cursor.is_some()
+            {
+                return Err(Error::internal(format!(
+                    "写语句 {} 的 fetch 应返回空批 has_more=false",
+                    statement.index
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 遇错即停：失败携带驱动真实分类与正确位置，前序副作用保留、剩余语句不执行、
+/// 会话随后可继续执行（查询槽位已释放）。
+async fn check_failure_stops_execution(
+    session: &dyn DriverSession,
+    fixture: &MultiStatementFixture,
+) -> Result<()> {
+    let failed_query = QueryId::new();
+    let error = session
+        .execute(ExecuteRequest {
+            query_id: failed_query,
+            sql: fixture.failing_script.clone(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .err()
+        .ok_or_else(|| Error::internal("失败脚本应报错，实际执行成功"))?;
+    if error.category() == ErrorCategory::Unsupported {
+        return Err(Error::internal(
+            "多语句失败必须是驱动的真实分类，不得是能力拒绝（Unsupported）",
+        ));
+    }
+    let expected_failure = sqarvo_common::StatementFailure {
+        failed_index: fixture.failed_index,
+        completed_statements: fixture.failed_index,
+    };
+    if error.statement_failure() != Some(expected_failure) {
+        return Err(Error::internal(format!(
+            "失败位置应为 failed_index={} completed_statements={}，实际 {:?}",
+            fixture.failed_index,
+            fixture.failed_index,
+            error.statement_failure()
+        )));
+    }
+    let _ = session.close_query(&failed_query).await;
+
+    // 探针同时覆盖三件事：前序副作用保留（不隐式回滚）、剩余语句未执行、
+    // 失败后会话仍可用（查询槽位已释放）。
+    if probe_value(session, &fixture.probe_sql).await? != fixture.probe_after_failure {
+        return Err(Error::internal(format!(
+            "失败后探针值应为 {}（副作用保留、剩余语句未执行）",
+            fixture.probe_after_failure
+        )));
+    }
+    Ok(())
+}
+
+/// 执行探针查询并取出第一行第一列的整数值。
+async fn probe_value(session: &dyn DriverSession, sql: &str) -> Result<i64> {
+    let start = session
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: sql.to_owned(),
+            max_rows: Some(10),
+            timeout: None,
+        })
+        .await?;
+    let batch = start
+        .first_batch
+        .ok_or_else(|| Error::internal("探针查询应返回结果集"))?;
+    let cell = batch
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .ok_or_else(|| Error::internal("探针查询应返回一行一列"))?;
+    match &cell.value {
+        Value::Int(value) => Ok(*value),
+        other => Err(Error::internal(format!("探针应返回整数，实际 {other:?}"))),
     }
 }
 
@@ -1738,6 +2044,270 @@ mod tests {
         oversized_cell_is_truncated(&session, "SELECT payload")
             .await
             .unwrap();
+    }
+
+    // ---- 多语句顺序执行检查的自检（#187） ----
+
+    const SCRIPT: &str = "SELECT x FROM t; UPDATE t SET x = x; SELECT x FROM t";
+    const FAILING_SCRIPT: &str =
+        "UPDATE t SET x = x + 1; SELECT * FROM missing; UPDATE t SET x = x + 1";
+    const PROBE: &str = "SELECT x FROM t";
+
+    fn multi_fixture() -> MultiStatementFixture {
+        MultiStatementFixture {
+            script: SCRIPT.to_owned(),
+            statement_count: 3,
+            first_result_rows: 3,
+            failing_script: FAILING_SCRIPT.to_owned(),
+            failed_index: 1,
+            probe_sql: PROBE.to_owned(),
+            probe_after_script: 0,
+            probe_after_failure: 1,
+        }
+    }
+
+    /// 可注入的违约方式，用来验证检查本身抓得住违约。
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum MultiDeviation {
+        Conforming,
+        /// 遇错不停：失败脚本只报第一条摘要就成功返回。
+        SwallowFailure,
+        /// 失败位置错报为 0。
+        WrongPosition,
+        /// 遇错隐式回滚第一条的副作用。
+        RollbackOnError,
+        /// 失败后继续执行剩余语句。
+        ContinueAfterError,
+    }
+
+    /// 查询 → 逐语句（缓冲, 已交付行数）。
+    type QueryBuffers = std::collections::HashMap<QueryId, Vec<(Vec<Row>, usize)>>;
+
+    /// 内存脚本引擎：按夹具实现多语句语义，行为偏差可注入。
+    struct MultiStatementSession {
+        session_id: SessionId,
+        counter: AtomicI64,
+        deviation: MultiDeviation,
+        /// 查询 → 逐语句（缓冲, 已交付行数）。
+        queries: Mutex<QueryBuffers>,
+    }
+
+    impl MultiStatementSession {
+        fn new(deviation: MultiDeviation) -> Self {
+            Self {
+                session_id: SessionId::new(),
+                counter: AtomicI64::new(0),
+                deviation,
+                queries: Mutex::new(QueryBuffers::new()),
+            }
+        }
+    }
+
+    fn summary(
+        index: u32,
+        sql: &str,
+        has_result_set: bool,
+        rows_affected: Option<u64>,
+    ) -> StatementSummary {
+        StatementSummary {
+            index,
+            sql_preview: sql.to_owned(),
+            columns: if has_result_set {
+                vec![column()]
+            } else {
+                Vec::new()
+            },
+            rows_affected,
+            has_result_set,
+        }
+    }
+
+    fn slice_batch(
+        statement_index: u32,
+        buffer: &[Row],
+        offset: usize,
+        batch_rows: usize,
+    ) -> ResultBatch {
+        let end = (offset + batch_rows).min(buffer.len());
+        let has_more = end < buffer.len();
+        ResultBatch {
+            statement_index,
+            rows: buffer[offset..end].to_vec(),
+            next_cursor: has_more.then(|| end.to_string()),
+            has_more,
+        }
+    }
+
+    #[async_trait]
+    impl DriverSession for MultiStatementSession {
+        fn session_id(&self) -> SessionId {
+            self.session_id
+        }
+
+        fn supports_multiple_statements(&self) -> bool {
+            true
+        }
+
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+            let batch_rows =
+                usize::try_from(request.max_rows.unwrap_or(200).clamp(1, 5_000)).unwrap_or(200);
+            match request.sql.as_str() {
+                SCRIPT => {
+                    let mut buffers = vec![
+                        (vec![row(1), row(2), row(3)], 0),
+                        (Vec::new(), 0),
+                        (vec![row(0)], 0),
+                    ];
+                    let first_batch = slice_batch(0, &buffers[0].0, 0, batch_rows);
+                    // first_batch 已经交付的行必须计入进度，否则首个游标 fetch 会错位。
+                    buffers[0].1 = first_batch.rows.len();
+                    self.queries
+                        .lock()
+                        .unwrap()
+                        .insert(request.query_id, buffers);
+                    Ok(ExecutionStart {
+                        statements: vec![
+                            summary(0, "SELECT x FROM t", true, None),
+                            summary(1, "UPDATE t SET x = x", false, Some(1)),
+                            summary(2, "SELECT x FROM t", true, None),
+                        ],
+                        first_batch: Some(first_batch),
+                    })
+                }
+                FAILING_SCRIPT => {
+                    // 第 1 条的副作用。
+                    self.counter
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if self.deviation == MultiDeviation::SwallowFailure {
+                        return Ok(ExecutionStart::single(
+                            summary(0, "UPDATE t SET x = x + 1", false, Some(1)),
+                            None,
+                        ));
+                    }
+                    if self.deviation == MultiDeviation::RollbackOnError {
+                        self.counter
+                            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if self.deviation == MultiDeviation::ContinueAfterError {
+                        self.counter
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let failed_index = u32::from(self.deviation != MultiDeviation::WrongPosition);
+                    Err(Error::new(
+                        ErrorCode::IO,
+                        ErrorCategory::Internal,
+                        "no such table: missing",
+                    )
+                    .with_statement_failure(sqarvo_common::StatementFailure {
+                        failed_index,
+                        completed_statements: failed_index,
+                    }))
+                }
+                PROBE => {
+                    let value = self.counter.load(std::sync::atomic::Ordering::SeqCst);
+                    Ok(ExecutionStart::single(
+                        summary(0, PROBE, true, None),
+                        Some(ResultBatch {
+                            statement_index: 0,
+                            rows: vec![row(value)],
+                            next_cursor: None,
+                            has_more: false,
+                        }),
+                    ))
+                }
+                _ => Err(Error::internal("未知 SQL")),
+            }
+        }
+
+        async fn fetch(
+            &self,
+            query_id: &QueryId,
+            statement_index: u32,
+            cursor: Option<&str>,
+            max_rows: u32,
+        ) -> Result<ResultBatch> {
+            let batch_rows = usize::try_from(max_rows.clamp(1, 5_000)).unwrap_or(200);
+            let mut queries = self.queries.lock().unwrap();
+            let buffers = queries.get_mut(query_id).ok_or_else(|| {
+                Error::not_found(ErrorCode::QUERY_NOT_FOUND, "查询不存在或已结束")
+            })?;
+            let index = usize::try_from(statement_index).unwrap_or(usize::MAX);
+            let (buffer, delivered) = buffers.get_mut(index).ok_or_else(|| {
+                Error::invalid_argument(ErrorCode::QUERY_NOT_FOUND, "语句序号越界")
+            })?;
+            let offset = match cursor {
+                None => 0,
+                Some(token) => token
+                    .parse::<usize>()
+                    .map_err(|_| Error::invalid_argument(ErrorCode::QUERY_NOT_FOUND, "游标无效"))?,
+            };
+            if offset != *delivered {
+                return Err(Error::invalid_argument(
+                    ErrorCode::QUERY_NOT_FOUND,
+                    "游标与交付进度不一致",
+                ));
+            }
+            let batch = slice_batch(statement_index, buffer, offset, batch_rows);
+            *delivered = offset + batch.rows.len();
+            let all_drained = buffers.iter().all(|(rows, read)| *read >= rows.len());
+            if all_drained {
+                queries.remove(query_id);
+            }
+            Ok(batch)
+        }
+
+        async fn cancel(&self, _query_id: &QueryId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn close_query(&self, query_id: &QueryId) -> Result<()> {
+            self.queries.lock().unwrap().remove(query_id);
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_statement_check_accepts_conforming_driver() {
+        let session = MultiStatementSession::new(MultiDeviation::Conforming);
+        multiple_statements_execute_sequentially(&session, &multi_fixture())
+            .await
+            .expect("符合契约应通过");
+    }
+
+    #[tokio::test]
+    async fn multi_statement_check_rejects_each_deviation() {
+        for deviation in [
+            MultiDeviation::SwallowFailure,
+            MultiDeviation::WrongPosition,
+            MultiDeviation::RollbackOnError,
+            MultiDeviation::ContinueAfterError,
+        ] {
+            let session = MultiStatementSession::new(deviation);
+            let error = multiple_statements_execute_sequentially(&session, &multi_fixture())
+                .await
+                .expect_err("违约应被拒绝");
+            assert_eq!(error.category(), ErrorCategory::Internal);
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_statement_checks_are_guarded_by_capability() {
+        // false 能力走顺序执行检查 → 误配，INTERNAL。
+        let rejecting = ContractSession::conforming();
+        let error = multiple_statements_execute_sequentially(&rejecting, &multi_fixture())
+            .await
+            .expect_err("false 能力不得走顺序执行检查");
+        assert_eq!(error.category(), ErrorCategory::Internal);
+        // true 能力走拒绝检查 → 误配，INTERNAL。
+        let accepting = MultiStatementSession::new(MultiDeviation::Conforming);
+        let error = multiple_statements_are_rejected(&accepting, SCRIPT)
+            .await
+            .expect_err("true 能力不得走拒绝检查");
+        assert_eq!(error.category(), ErrorCategory::Internal);
     }
 
     #[tokio::test]

@@ -5,8 +5,10 @@
 //! - `rusqlite` 是同步库，不能在 Tokio worker 上直接执行；
 //! - `Statement` 借用 `Connection`，游标需要跨多次 gRPC 调用存活，
 //!   因此由专用线程在 `serve_query` 的内层循环中持有语句与 Rows；
-//! - 已实现：连接、只读模式、单语句执行、语句摘要、分批拉取、取消（`InterruptHandle`，
-//!   幂等）、关闭、显式事务（`BEGIN`/`COMMIT`/`ROLLBACK`，ADR 0017 §3）、
+//! - 已实现：连接、只读模式、单语句执行、多语句脚本（#187：引擎切分 + 顺序急执行 +
+//!   结果集缓冲，遇错即停不隐式回滚，见 `sql.rs` 与 `serve_script`）、语句摘要、
+//!   分批拉取、取消（`InterruptHandle`，幂等）、关闭、显式事务
+//!   （`BEGIN`/`COMMIT`/`ROLLBACK`，ADR 0017 §3）、
 //!   元数据（表/视图列表、列、主键、DDL；`sqlite_master` + `pragma_table_info`）。
 //!
 //! 事务语义（见 `session.rs` 的 `begin_transaction` / `commit_transaction` /
@@ -20,6 +22,7 @@ mod driver;
 mod error;
 mod metadata;
 mod session;
+mod sql;
 mod table_data;
 
 pub use driver::SqliteDriver;
@@ -190,7 +193,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_reports_rows_affected_and_rejects_multiple_statements() {
+    async fn execute_reports_rows_affected_and_executes_multiple_statements() {
         let dir = tempfile::tempdir().unwrap();
         let session = session::SqliteSession::connect(
             dir.path().join("execute.db").display().to_string(),
@@ -216,11 +219,22 @@ mod tests {
             .unwrap();
         assert_eq!(inserted.statements[0].rows_affected, Some(3));
 
-        let error = session
-            .execute(request(QueryId::new(), "SELECT 1; SELECT 2", None))
+        // #187：多语句不再拒绝——全量摘要 + 第一个结果集的首批 + 逐语句 fetch。
+        let query_id = QueryId::new();
+        let script = session
+            .execute(request(query_id, "SELECT 1; SELECT 2", None))
             .await
-            .unwrap_err();
-        assert_eq!(error.category(), ErrorCategory::Unsupported);
+            .unwrap();
+        assert_eq!(script.statements.len(), 2);
+        assert!(script.statements.iter().all(|s| s.has_result_set));
+        let first = script.first_batch.as_ref().unwrap();
+        assert_eq!(first.statement_index, 0);
+        assert_eq!(first.rows.len(), 1);
+        assert!(!first.has_more);
+        let second = session.fetch(&query_id, 1, None, 10).await.unwrap();
+        assert_eq!(second.statement_index, 1);
+        assert_eq!(second.rows.len(), 1);
+        assert!(!second.has_more);
     }
 
     #[tokio::test]
@@ -443,8 +457,9 @@ mod tests {
         assert_eq!(report.batches, 2);
     }
 
-    /// testkit 的五项不变量检查（#24）：SQLite 也必须通过，
-    /// 证明这些检查不是「只对 MariaDB 成立」。
+    /// testkit 的不变量检查（#24、#187）：SQLite 也必须通过，
+    /// 证明这些检查不是「只对 MariaDB 成立」。多语句按能力位分支：
+    /// SQLite 声明 `multiple_statements = true`，走顺序执行检查。
     #[tokio::test]
     async fn passes_driver_testkit_invariants() {
         let dir = tempfile::tempdir().unwrap();
@@ -459,9 +474,42 @@ mod tests {
             .await
             .unwrap();
 
-        sqarvo_driver_testkit::multiple_statements_are_rejected(&session, "SELECT 1; SELECT 2")
+        session
+            .execute(request(
+                QueryId::new(),
+                "CREATE TABLE probe_t(x INTEGER)",
+                None,
+            ))
             .await
             .unwrap();
+        session
+            .execute(request(
+                QueryId::new(),
+                "INSERT INTO probe_t(x) VALUES (0)",
+                None,
+            ))
+            .await
+            .unwrap();
+        sqarvo_driver_testkit::multiple_statements_execute_sequentially(
+            &session,
+            &sqarvo_driver_testkit::MultiStatementFixture {
+                script: "SELECT x FROM probe_t; UPDATE probe_t SET x = x; \
+                         SELECT x FROM probe_t"
+                    .to_owned(),
+                statement_count: 3,
+                first_result_rows: 1,
+                failing_script: "UPDATE probe_t SET x = x + 1; \
+                                 SELECT * FROM missing_table_187; \
+                                 UPDATE probe_t SET x = x + 1"
+                    .to_owned(),
+                failed_index: 1,
+                probe_sql: "SELECT x FROM probe_t".to_owned(),
+                probe_after_script: 0,
+                probe_after_failure: 1,
+            },
+        )
+        .await
+        .unwrap();
 
         sqarvo_driver_testkit::oversized_cell_is_truncated(
             &session,

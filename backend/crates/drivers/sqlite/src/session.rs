@@ -9,23 +9,29 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, InterruptHandle, OpenFlags, Rows, Statement};
-use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
+use sqarvo_common::{
+    Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, StatementFailure, TransactionId,
+};
 use sqarvo_driver_api::{
     CatalogKind, Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES,
-    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, ParameterizedExecuteRequest,
-    ResultBatch, SessionContext, StatementSummary, TransactionOptions, Value, sql_preview,
-    truncate_text,
+    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MULTI_STATEMENT_ROW_BUDGET,
+    ParameterizedExecuteRequest, ResultBatch, SessionContext, StatementSummary, TransactionOptions,
+    Value, sql_preview, truncate_text,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{
-    SESSION_CLOSED, SQLITE_CURSOR_INVALID, SQLITE_QUERY_ACTIVE, map_open_error, map_sqlite_error,
+    SESSION_CLOSED, SQLITE_CURSOR_INVALID, SQLITE_QUERY_ACTIVE, SQLITE_STATEMENT_INDEX_INVALID,
+    map_open_error, map_sqlite_error,
 };
 
 /// 默认每批行数。
 const DEFAULT_BATCH_ROWS: u32 = 200;
 /// 单批硬上限（与查询引擎的上限一致，驱动侧再兜底一次）。
 const MAX_BATCH_ROWS: u32 = 5_000;
+/// 多语句脚本缓冲读取的分块大小：块与块之间检查取消标志与行数预算，
+/// 避免一条大结果集把取消与预算检查饿死（#187）。
+const SCRIPT_READ_CHUNK: usize = 4_096;
 
 /// 会话线程命令。
 enum Command {
@@ -510,7 +516,29 @@ fn execute_statement(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.query_id);
     state.cancelled.store(false, Ordering::SeqCst);
-    let close = serve_query(connection, request, params, reply, receiver, state);
+    // 引擎切分探测（#187）：单语句走既有流式路径，行为完全不变；
+    // 多语句走顺序急执行 + 缓冲路径。参数化执行保持单语句：参数在多语句
+    // 脚本里没有明确的绑定对象，显式拒绝而不是静默只执行第一条。
+    let close = match crate::sql::probe(connection, &request.sql) {
+        Ok(crate::sql::ScriptProbe::Multiple { first }) => {
+            if params.is_empty() {
+                serve_script(connection, request, first, reply, receiver, state)
+            } else {
+                let _ = reply.send(Err(Error::unsupported(
+                    ErrorCode::CAPABILITY_UNSUPPORTED,
+                    "参数化执行仅支持单条 SQL 语句",
+                )));
+                false
+            }
+        }
+        Ok(crate::sql::ScriptProbe::Single) => {
+            serve_query(connection, request, params, reply, receiver, state)
+        }
+        Err(error) => {
+            let _ = reply.send(Err(error));
+            false
+        }
+    };
     observe_transaction(connection, transaction);
     *state
         .active
@@ -751,6 +779,314 @@ fn serve_query(
     }
 }
 
+/// 脚本执行错误的失败位置附加（#187）。
+///
+/// 取消保持既有 `QUERY_CANCELLED` 语义（不附加位置）；其余错误保留驱动
+/// classify 原样，只附加 `StatementFailure`。遇错即停时 `completed_statements`
+/// 等于失败序号：前 k 条已成功，第 k 条（0 起始）失败。
+fn script_error(error: Error, index: u32) -> Error {
+    if error.code() == ErrorCode::QUERY_CANCELLED {
+        return error;
+    }
+    error.with_statement_failure(StatementFailure {
+        failed_index: index,
+        completed_statements: index,
+    })
+}
+
+/// 多语句脚本：顺序急执行 + 全结果集内存缓冲（ADR 0006 修订，#187）。
+///
+/// 与单语句流式路径（`serve_query`）并列：每条语句立即跑完，结果集整体缓冲
+/// （复用既有行表示与截断语义），`statements[]` 返回全量摘要，`first_batch`
+/// 交付第一个结果集的首批；后续 `Fetch(statement_index, cursor)` 从缓冲续拉。
+///
+/// 切分随执行推进：第 k+1 条在第 k 条执行完之后才切分——DDL→DML 脚本
+/// （`CREATE TABLE …; INSERT …`）依赖前序语句的副作用，提前切分会误报。
+///
+/// 遇错即停、不隐式回滚：失败附 `StatementFailure`，已缓冲结果集随函数返回
+/// 丢弃，剩余语句不执行。取消在语句间隙与读块间隙查标志，语句内走既有
+/// interrupt 通道。返回 `true` 表示会话应关闭。
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+fn serve_script(
+    connection: &Connection,
+    request: ExecuteRequest,
+    first: crate::sql::Segment,
+    reply: oneshot::Sender<Result<ExecutionStart>>,
+    receiver: &mut mpsc::UnboundedReceiver<Command>,
+    state: &QueryState,
+) -> bool {
+    let query_id = request.query_id;
+    let limit = batch_limit(request.max_rows);
+
+    let mut summaries: Vec<StatementSummary> = Vec::new();
+    // buffers[i] 对应第 i 条语句的结果集；写语句为空 Vec（fetch 返回空批）。
+    let mut buffers: Vec<Vec<sqarvo_driver_api::Row>> = Vec::new();
+    let mut total_rows: u64 = 0;
+    let mut first_result_index: Option<u32> = None;
+    let mut next_offset = first.next;
+    let mut current = Some(first);
+    let mut index: u32 = 0;
+
+    loop {
+        // 语句间隙的取消检查（幂等：只看标志，不重复 interrupt）。
+        if state.cancelled.load(Ordering::SeqCst) {
+            let _ = reply.send(Err(cancelled_error()));
+            return false;
+        }
+        let segment = match current.take() {
+            Some(segment) => segment,
+            None => match crate::sql::next_segment(connection, &request.sql, next_offset) {
+                Ok(Some(segment)) => segment,
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = reply.send(Err(script_error(error, index)));
+                    return false;
+                }
+            },
+        };
+        next_offset = segment.next;
+
+        let mut statement = match connection.prepare(&segment.sql) {
+            Ok(statement) => statement,
+            Err(error) => {
+                let _ = reply.send(Err(script_error(
+                    map_sqlite_error(error, "准备 SQLite 语句失败"),
+                    index,
+                )));
+                return false;
+            }
+        };
+        let columns = column_metadata(&statement);
+        let has_result_set = statement.column_count() > 0;
+        let mut summary = StatementSummary {
+            index,
+            sql_preview: sql_preview(&segment.sql),
+            columns: columns.clone(),
+            rows_affected: None,
+            has_result_set,
+        };
+
+        if has_result_set {
+            let mut rows = match statement.query([]) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    let _ = reply.send(Err(script_error(
+                        map_sqlite_error(error, "执行 SQLite 查询失败"),
+                        index,
+                    )));
+                    return false;
+                }
+            };
+            let mut buffer: Vec<sqarvo_driver_api::Row> = Vec::new();
+            let mut pending = None;
+            loop {
+                // 读块间隙的取消检查；语句内的中断走既有 interrupt 通道，
+                // read_batch 会以 QUERY_CANCELLED 分类失败。
+                if state.cancelled.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(cancelled_error()));
+                    return false;
+                }
+                match read_batch(&mut rows, &columns, SCRIPT_READ_CHUNK, pending.take()) {
+                    Ok((chunk, more, next_pending)) => {
+                        total_rows = total_rows
+                            .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+                        buffer.extend(chunk);
+                        pending = next_pending;
+                        if total_rows > MULTI_STATEMENT_ROW_BUDGET {
+                            let _ = reply.send(Err(crate::sql::script_too_large(index)));
+                            return false;
+                        }
+                        if !more {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(script_error(error, index)));
+                        return false;
+                    }
+                }
+            }
+            if first_result_index.is_none() {
+                first_result_index = Some(index);
+            }
+            buffers.push(buffer);
+        } else {
+            match statement.execute([]) {
+                Ok(affected) => {
+                    summary.rows_affected = Some(u64::try_from(affected).unwrap_or(u64::MAX));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(script_error(
+                        map_sqlite_error(error, "执行 SQLite 语句失败"),
+                        index,
+                    )));
+                    return false;
+                }
+            }
+            buffers.push(Vec::new());
+        }
+        summaries.push(summary);
+        index += 1;
+    }
+
+    // first_batch：第一个结果集的首批（批大小沿用既有 max_rows 语义）；
+    // 全部是写语句时为 None，对齐既有单语句写语句行为。
+    let mut delivered = vec![0usize; buffers.len()];
+    let first_batch = first_result_index.map(|statement_index| {
+        let buffer = &buffers[usize::try_from(statement_index).unwrap_or(usize::MAX)];
+        let end = buffer.len().min(limit);
+        delivered[usize::try_from(statement_index).unwrap_or(usize::MAX)] = end;
+        let has_more = end < buffer.len();
+        ResultBatch {
+            statement_index,
+            rows: buffer[..end].to_vec(),
+            next_cursor: has_more.then(|| end.to_string()),
+            has_more,
+        }
+    });
+    if reply
+        .send(Ok(ExecutionStart {
+            statements: summaries,
+            first_batch,
+        }))
+        .is_err()
+    {
+        // 调用方已放弃该查询：丢弃全部缓冲。
+        return false;
+    }
+    if buffers
+        .iter()
+        .zip(&delivered)
+        .all(|(buffer, &read)| read >= buffer.len())
+    {
+        // 全部结果集已随首批交付完毕（含全部是写语句）：对齐单语句路径，
+        // 立即释放缓冲回到空闲状态，后续 Fetch 由上层以 QUERY_NOT_FOUND 拒绝。
+        return false;
+    }
+
+    // 脚本已急执行完毕：从缓冲服务 Fetch，直到全部结果集读完或查询关闭。
+    loop {
+        let Some(command) = receiver.blocking_recv() else {
+            return true;
+        };
+        match command {
+            Command::Close { reply } => {
+                let _ = reply.send(());
+                return true;
+            }
+            Command::CloseQuery {
+                query_id: requested,
+                reply,
+            } => {
+                if requested == query_id {
+                    let _ = reply.send(Ok(()));
+                    return false;
+                }
+                let _ = reply.send(Err(Error::not_found(
+                    ErrorCode::QUERY_NOT_FOUND,
+                    "查询不存在",
+                )));
+            }
+            Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭",
+                )));
+            }
+            Command::Begin { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再开始事务",
+                )));
+            }
+            Command::Commit { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再提交事务",
+                )));
+            }
+            Command::Rollback { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再回滚事务",
+                )));
+            }
+            Command::Metadata { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再读取元数据",
+                )));
+            }
+            Command::TableData { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询，请先读完或关闭后再浏览表数据",
+                )));
+            }
+            Command::Fetch {
+                query_id: requested,
+                statement_index,
+                cursor,
+                max_rows,
+                reply,
+            } => {
+                if requested != query_id {
+                    let _ = reply.send(Err(Error::not_found(
+                        ErrorCode::QUERY_NOT_FOUND,
+                        "查询或语句不存在",
+                    )));
+                    continue;
+                }
+                if state.cancelled.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(cancelled_error()));
+                    return false;
+                }
+                let Some(buffer) =
+                    buffers.get(usize::try_from(statement_index).unwrap_or(usize::MAX))
+                else {
+                    let _ = reply.send(Err(Error::invalid_argument(
+                        SQLITE_STATEMENT_INDEX_INVALID,
+                        "语句序号越界",
+                    )));
+                    continue;
+                };
+                // 游标编码与既有风格一致：已交付行数的十进制字符串。
+                // 未开始交付的语句（delivered == 0）允许无游标首批。
+                let expected = delivered[usize::try_from(statement_index).unwrap_or(usize::MAX)];
+                let start = match cursor.as_deref() {
+                    None if expected == 0 => 0,
+                    Some(text) if text.parse::<usize>().ok() == Some(expected) => expected,
+                    _ => {
+                        let _ = reply.send(Err(Error::invalid_argument(
+                            SQLITE_CURSOR_INVALID,
+                            "分页游标与当前查询不匹配",
+                        )));
+                        continue;
+                    }
+                };
+                let fetch_limit = batch_limit(Some(max_rows));
+                let end = buffer.len().min(start.saturating_add(fetch_limit));
+                let has_more = end < buffer.len();
+                delivered[usize::try_from(statement_index).unwrap_or(usize::MAX)] = end;
+                let _ = reply.send(Ok(ResultBatch {
+                    statement_index,
+                    rows: buffer[start..end].to_vec(),
+                    next_cursor: has_more.then(|| end.to_string()),
+                    has_more,
+                }));
+                if buffers
+                    .iter()
+                    .zip(&delivered)
+                    .all(|(buffer, &read)| read >= buffer.len())
+                {
+                    // 全部结果集读完：释放缓冲，回到空闲状态。
+                    return false;
+                }
+            }
+        }
+    }
+}
+
 /// 参数化执行的绑定值：`Value` → SQLite 存储值。
 ///
 /// 与行编辑的 `table_data::bind_value` 有两点不同，都是刻意的：
@@ -933,13 +1269,12 @@ fn cancelled_error() -> Error {
     )
 }
 
+/// 准备失败的分类映射。
+///
+/// 多语句拒绝映射已退役（#187）：多语句 SQL 在 `execute_statement` 里被引擎
+/// 切分探测路由到 `serve_script`，不会再走到这里；单语句 prepare 失败按
+/// SQLite 原始错误分类。
 fn prepare_error(error: rusqlite::Error) -> Error {
-    if matches!(error, rusqlite::Error::MultipleStatement) {
-        return Error::unsupported(
-            ErrorCode::CAPABILITY_UNSUPPORTED,
-            "SQLite v0.1 仅支持单条 SQL 语句",
-        );
-    }
     map_sqlite_error(error, "准备 SQLite 语句失败")
 }
 
@@ -989,6 +1324,11 @@ impl DriverSession for SqliteSession {
 
     /// SQLite 驱动已实现参数绑定（#59）：值经 `rusqlite` 绑定，不拼进 SQL 文本。
     fn supports_parameterized_statements(&self) -> bool {
+        true
+    }
+
+    /// SQLite 驱动已实现多语句脚本（#187）：引擎切分 + 顺序急执行 + 缓冲。
+    fn supports_multiple_statements(&self) -> bool {
         true
     }
 

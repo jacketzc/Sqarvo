@@ -51,8 +51,11 @@ pub trait DriverSession: Send + Sync {
 }
 ```
 
-`ExecutionStart` = 语句摘要（`StatementSummary`，含列元数据、影响行数、是否有结果集）
+`ExecutionStart` = 语句摘要（`StatementSummary`，含列元数据、影响行数、是否有结果集）+
   首个结果集的首批数据。后续批次按 `statement_index` 定位，游标由驱动持有。
+  多语句脚本（`multiple_statements = true` 的驱动，#187）的 `statements[]` 返回
+  **全量**摘要（每条语句一项，序号 0 起始），`first_batch` 只是第一个结果集的首批；
+  其余结果集经 `fetch(statement_index, …)` 逐语句取数。
 
 约定：
 
@@ -403,9 +406,14 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
    并在 `DriverDescriptor` 中如实填写版本范围与能力；
 3. 在 `DriverRegistry::with_builtin_drivers()` 注册；
 4. 使用 `sqarvo-driver-testkit` 做符合性检查：除 `smoke`（执行、分批、游标不变量）外，
-   还需通过 5 项不变量检查——取消幂等、`close` 幂等与关闭后拒绝执行、多语句拒绝、
+   还需通过 5 项不变量检查——取消幂等、`close` 幂等与关闭后拒绝执行、多语句语义、
    单元格截断、分批无丢失；声明 `capabilities.transactions` 的驱动还必须通过事务不变量
    （提交可见、回滚丢弃、重复提交/回滚幂等、一个会话最多一个事务、语句失败后仍可回滚）。
+   多语句不变量按能力位分支（#187，ADR 0006 修订）：`multiple_statements = false`
+   仍断言以 `capability.unsupported` 拒绝（`multiple_statements_are_rejected`）；
+   `true` 断言顺序执行、逐语句取数、遇错即停且不隐式回滚
+   （`multiple_statements_execute_sequentially`，SQL 与探针期望值由驱动按
+   `MultiStatementFixture` 提供）。
    testkit 提供两组互补的事务检查：`TransactionFixture`（表数据可见性组，SQLite 接入）与
    `TransactionProbe`（事务状态机组：原子性、一个会话最多一个事务、重复提交/回滚幂等、
    有打开事务时未知 ID 必须 `NotFound`，MariaDB 接入）。
