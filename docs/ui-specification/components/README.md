@@ -159,6 +159,10 @@ evidence = "--qa-layout-audit 通过"  # 证据（可空，done 时缺失只报�
 ```
 
 - `done`：样式 + 交互都按本规范实现。**必须带当前 `spec_hash`**，否则 `check` 判过期。
+- `evidence` 记**交互与功能**的证据：命令、断言、QA 开关的输出、可访问性名称 / 控件文本的读取
+  结果。截图、录屏与像素比较**不是**验收证据——样式由人工确认，agent 不做图像识别
+  （[ADR 0029](../../decisions/0029-ui-acceptance-boundary.md)）。历史条目里已引用的截图不必回改，
+  但新登记不再以截图为准。
 - `partial`：做了一部分。差异写 `platform_notes.<plat>`，别写「未同步」了事。
 - `none`：完全没做。
 - `na`：产品上就不做（如 macOS 不做界面密度三档），须给 `note`。

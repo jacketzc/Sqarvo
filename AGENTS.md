@@ -435,6 +435,7 @@ Testing should include at least:
 4. **End-to-end tests**: frontend starts the Backend, connects to a database, executes SQL, displays results, cancels tasks, and cleans up on exit.
 5. **Performance tests**: large result sets, wide tables, large fields, concurrent queries, and long-running scenarios.
 6. **Security tests**: log redaction, credential storage, IPC access control, path validation, and error-message leakage.
+7. **UI acceptance scope**: agents verify UI **interaction and functionality** only — does the control respond, does state transition correctly, is the accessible name / control text the expected one, is the expected control present in the expected place. Agents do **not** verify style and do **not** perform image recognition: no pixel comparison, no reading screenshots to judge appearance, no asserting on color, spacing, corner radius, density, or alignment. Style is confirmed by a human. See [ADR 0029](docs/decisions/0029-ui-acceptance-boundary.md).
 
 Use dedicated test databases and synthetic data. Never connect to real production databases or use users' real credentials in tests.
 
@@ -521,6 +522,10 @@ the registry. `workspace-model.md` is now only layout and regions.
 - `sync.<plat>.state = "done"` 必须带当前 `spec_hash`。改规范会让三端标记**自动失效**；
   恢复 `done` 要按新规范重新核对，再跑 `scripts/check-ui-sync.sh mark`。
   `partial` / `na` / `blocked` 必须写清差异，不接受「未同步」四个字。
+- `sync.<plat>.evidence` 只写**交互与功能**的证据：命令、断言、QA 开关的输出、可访问性名称 /
+  控件文本的读取结果。截图、录屏与像素比较**不算**验收证据——样式由人工确认，agent 不做图像
+  识别（[ADR 0029](docs/decisions/0029-ui-acceptance-boundary.md)）。历史条目里已引用的截图不必
+  回改，但新登记不再以截图为准。
 - `ui-components.md` 不许手改：CI 会跑 `gen` 并与工作树比对，有差异即失败。
 - 九个功能区已全部在册（186 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
   改行为要同时改契约本节与注册表，直到 P3 删除旧章节。
@@ -563,7 +568,7 @@ the registry. `workspace-model.md` is now only layout and regions.
 - 涉及文件：<path:line 或文件清单>
 - 改法：<每处一句话，说清改完用户看到什么>
 - 明确不动：<这次不碰的东西：别的组件 / 不重构 / 不改协议 …>
-- 验收：<命令、断言、截图或 QA 开关，能证明改完是对的>
+- 验收：<命令、断言、QA 开关或可访问性名称读取，能证明改完是对的；样式项写「人工确认」>
 - Issue：<#编号，若为 0 也要写明「待建」>
 ```
 
@@ -637,7 +642,7 @@ When completing a development task, the final report must include at least:
 
 - **Completed**: what was implemented and which modules were affected.
 - **Design notes**: important implementation choices and their rationale.
-- **Verification**: commands and tests that were run, with their results.
+- **Verification**: commands and tests that were run, with their results. UI acceptance covers interaction and functionality only; style outcomes are confirmed by a human and are not claimed by the agent.
 - **Outstanding work**: what remains unimplemented or unverified.
 - **Risks and follow-up**: compatibility, security, performance, or platform considerations.
 
