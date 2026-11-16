@@ -93,6 +93,8 @@ impl ErrorCode {
     pub const QUERY_LIMIT_REACHED: Self = Self("query.limit_reached");
     /// 该 `query_id` 已有在途批次（行变更批次的 ID 不得并发复用，ADR 0018）。
     pub const QUERY_ID_IN_USE: Self = Self("query.id_in_use");
+    /// 多语句脚本的缓冲行数合计超过预算（ADR 0006 修订，#187）。
+    pub const QUERY_SCRIPT_TOO_LARGE: Self = Self("query.script_too_large");
     /// 事务处于失败状态，只能回滚。
     pub const TRANSACTION_FAILED: Self = Self("transaction.failed");
     /// 事务不存在或已结束（例如行变更指向一个已提交/已回滚的事务）。
@@ -183,6 +185,24 @@ impl fmt::Display for ErrorCode {
     }
 }
 
+/// 多语句脚本的失败位置（ADR 0006 修订，#187）。
+///
+/// 两个计数都按「真实语句」统计（空段 / 纯注释段不计），序号从 0 起始：
+///
+/// - `failed_index`：失败语句在脚本中的序号；
+/// - `completed_statements`：失败前已成功执行的语句数。
+///
+/// 语义是「遇错即停、不隐式回滚」：已完成语句的副作用保留，剩余语句不再执行。
+/// rpc-server 把这两个字段写入 trailing metadata
+/// （`sqarvo-failed-statement` / `sqarvo-completed-statements`），错误分类保留驱动原样。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatementFailure {
+    /// 失败语句的序号（0 起始）。
+    pub failed_index: u32,
+    /// 失败前已成功执行的语句数。
+    pub completed_statements: u32,
+}
+
 /// 后端统一错误。
 #[derive(Debug)]
 pub struct Error {
@@ -190,6 +210,7 @@ pub struct Error {
     category: ErrorCategory,
     message: String,
     source: Option<Box<dyn StdError + Send + Sync>>,
+    statement_failure: Option<StatementFailure>,
 }
 
 impl Error {
@@ -201,6 +222,7 @@ impl Error {
             category,
             message: message.into(),
             source: None,
+            statement_failure: None,
         }
     }
 
@@ -208,6 +230,13 @@ impl Error {
     #[must_use]
     pub fn with_source(mut self, source: impl StdError + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
+        self
+    }
+
+    /// 附加多语句脚本的失败位置（#187）；不改变 code/category。
+    #[must_use]
+    pub fn with_statement_failure(mut self, failure: StatementFailure) -> Self {
+        self.statement_failure = Some(failure);
         self
     }
 
@@ -270,6 +299,12 @@ impl Error {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// 多语句脚本的失败位置；非脚本错误或未附加时为 `None`。
+    #[must_use]
+    pub const fn statement_failure(&self) -> Option<StatementFailure> {
+        self.statement_failure
+    }
 }
 
 impl fmt::Display for Error {
@@ -294,6 +329,7 @@ impl From<std::io::Error> for Error {
             category: ErrorCategory::Internal,
             message,
             source: Some(Box::new(source)),
+            statement_failure: None,
         }
     }
 }
@@ -451,5 +487,45 @@ mod tests {
         assert_eq!(error.code(), ErrorCode::IO);
         assert_eq!(error.category(), ErrorCategory::Internal);
         assert!(StdError::source(&error).is_some());
+    }
+
+    /// #187：脚本预算错误码文本即契约，且不得与既有码重复。
+    #[test]
+    fn script_error_code_is_stable_and_unique() {
+        assert_eq!(
+            ErrorCode::QUERY_SCRIPT_TOO_LARGE.as_str(),
+            "query.script_too_large"
+        );
+        for existing in [
+            ErrorCode::QUERY_NOT_FOUND,
+            ErrorCode::QUERY_CANCELLED,
+            ErrorCode::QUERY_LIMIT_REACHED,
+            ErrorCode::QUERY_ID_IN_USE,
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            ErrorCode::INTERNAL,
+            ErrorCode::IO,
+        ] {
+            assert_ne!(
+                ErrorCode::QUERY_SCRIPT_TOO_LARGE,
+                existing,
+                "脚本预算错误码不得与既有码重复"
+            );
+        }
+    }
+
+    /// #187：StatementFailure 只附加失败位置，不改变驱动原有的 code/category。
+    #[test]
+    fn statement_failure_builder_preserves_classification() {
+        let error = Error::internal("第 2 条语句失败");
+        assert_eq!(error.statement_failure(), None);
+
+        let failure = StatementFailure {
+            failed_index: 1,
+            completed_statements: 1,
+        };
+        let error = error.with_statement_failure(failure);
+        assert_eq!(error.statement_failure(), Some(failure));
+        assert_eq!(error.code(), ErrorCode::INTERNAL);
+        assert_eq!(error.category(), ErrorCategory::Internal);
     }
 }

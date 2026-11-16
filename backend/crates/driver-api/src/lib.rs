@@ -19,6 +19,13 @@ pub mod metadata;
 pub mod table_data;
 pub mod value;
 
+/// 多语句脚本全部结果集的缓冲行数合计预算（ADR 0006 修订，#187）。
+///
+/// 多语句路径急执行并把每个结果集整体缓冲在内存里；合计行数超过该预算时，
+/// 驱动必须以 `resource_exhausted`（`query.script_too_large`）失败，
+/// 提示用户拆分脚本或给查询加 `LIMIT`。单语句流式路径不受此预算约束。
+pub const MULTI_STATEMENT_ROW_BUDGET: u64 = 100_000;
+
 pub use capabilities::Capabilities;
 pub use credential::Secret;
 pub use driver::{

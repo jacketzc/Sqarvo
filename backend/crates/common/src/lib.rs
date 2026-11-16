@@ -13,5 +13,5 @@
 pub mod error;
 pub mod ids;
 
-pub use error::{Error, ErrorCategory, ErrorCode, Result};
+pub use error::{Error, ErrorCategory, ErrorCode, Result, StatementFailure};
 pub use ids::{ConnectionId, QueryId, SessionId, TransactionId};

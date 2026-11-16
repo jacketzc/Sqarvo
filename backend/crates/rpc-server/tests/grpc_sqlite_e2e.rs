@@ -788,3 +788,375 @@ async fn set_session_context_shares_catalog_switch_semantics() {
 
     server.stop().await;
 }
+
+/// #187：多语句脚本经 gRPC 的全链路——能力位、全量摘要、逐语句分批 fetch、
+/// `complete` 的查询级语义（某个结果集读完不等于查询结束）、读完即释放。
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 连接→脚本→逐语句取数→释放→断连是一条不可拆分的链路
+async fn multi_statement_script_over_uds() {
+    let server = E2eServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut queries = QueryServiceClient::with_interceptor(channel, auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "multi".to_owned(),
+            })
+            .await,
+    );
+    assert!(
+        connected
+            .capabilities
+            .iter()
+            .any(|name| name == "multiple_statements"),
+        "SQLite 应经 Capabilities::names() 声明多语句能力，实际 {:?}",
+        connected.capabilities
+    );
+    let session_id = connected.session_id.clone();
+
+    stage(
+        "Execute(CREATE)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: session_id.clone(),
+                sql: "CREATE TABLE t(v INTEGER)".to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+    stage(
+        "Execute(INSERT)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: session_id.clone(),
+                sql: "INSERT INTO t(v) VALUES (1),(2),(3),(4),(5)".to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+
+    // 三条脚本：SELECT / UPDATE / SELECT，每批 2 行。
+    let start = stage(
+        "Execute(script)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: session_id.clone(),
+                sql: "SELECT v FROM t ORDER BY v; UPDATE t SET v = v + 10; \
+                      SELECT v FROM t ORDER BY v"
+                    .to_owned(),
+                max_rows_per_batch: 2,
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+    assert_eq!(start.statements.len(), 3, "statements[] 应返回全量摘要");
+    for (index, statement) in start.statements.iter().enumerate() {
+        assert_eq!(statement.statement_index, u32::try_from(index).unwrap());
+        assert_ne!(statement.sql_preview.trim(), "");
+    }
+    assert!(start.statements[0].has_result_set);
+    assert!(start.statements[0].result_meta.is_some());
+    assert!(!start.statements[1].has_result_set);
+    assert_eq!(start.statements[1].rows_affected, 5);
+    assert!(start.statements[2].has_result_set);
+    assert_eq!(start.rows.len(), 2);
+    assert_eq!(int_at(&start.rows[0], 0), 1);
+    assert_eq!(int_at(&start.rows[1], 0), 2);
+    assert!(start.has_more);
+    assert_eq!(start.page_token, "2");
+    let query_id = start.query_id.clone();
+
+    // 第一个结果集续拉至读完：complete 仍为 false（还有语句未读）。
+    let batch = stage(
+        "FetchBatch(stmt0 #2)",
+        queries
+            .fetch_batch(FetchBatchRequest {
+                query_id: query_id.clone(),
+                page_token: "2".to_owned(),
+                max_rows: 2,
+                statement_index: 0,
+            })
+            .await,
+    );
+    assert_eq!(batch.rows.len(), 2);
+    assert_eq!(int_at(&batch.rows[0], 0), 3);
+    assert!(batch.has_more);
+    assert!(!batch.complete, "单语句读完不等于查询结束");
+    let batch = stage(
+        "FetchBatch(stmt0 #3)",
+        queries
+            .fetch_batch(FetchBatchRequest {
+                query_id: query_id.clone(),
+                page_token: batch.page_token,
+                max_rows: 2,
+                statement_index: 0,
+            })
+            .await,
+    );
+    assert_eq!(batch.rows.len(), 1);
+    assert_eq!(int_at(&batch.rows[0], 0), 5);
+    assert!(!batch.has_more);
+    assert!(!batch.complete, "stmt1/stmt2 尚未读取，查询未结束");
+
+    // 写语句的 fetch：空批、has_more=false、complete=false。
+    let batch = stage(
+        "FetchBatch(stmt1 write)",
+        queries
+            .fetch_batch(FetchBatchRequest {
+                query_id: query_id.clone(),
+                page_token: String::new(),
+                max_rows: 2,
+                statement_index: 1,
+            })
+            .await,
+    );
+    assert_eq!(batch.rows.len(), 0);
+    assert!(!batch.has_more);
+    assert!(!batch.complete);
+
+    // 第三个结果集：UPDATE 副作用可见（11..15），最后一批 complete=true。
+    let mut page_token = String::new();
+    let mut values = Vec::new();
+    let mut complete = false;
+    for _ in 0..5 {
+        let batch = stage(
+            "FetchBatch(stmt2)",
+            queries
+                .fetch_batch(FetchBatchRequest {
+                    query_id: query_id.clone(),
+                    page_token: page_token.clone(),
+                    max_rows: 2,
+                    statement_index: 2,
+                })
+                .await,
+        );
+        values.extend(batch.rows.iter().map(|row| int_at(row, 0)));
+        page_token = batch.page_token;
+        complete = batch.complete;
+        if !batch.has_more {
+            break;
+        }
+        assert!(!batch.complete);
+    }
+    assert_eq!(values, vec![11, 12, 13, 14, 15]);
+    assert!(complete, "全部结果集读完后 complete 必须为 true");
+
+    // 缓冲已释放：再拉取 NotFound，登记已回收。
+    let after = queries
+        .fetch_batch(FetchBatchRequest {
+            query_id: query_id.clone(),
+            page_token: String::new(),
+            max_rows: 2,
+            statement_index: 2,
+        })
+        .await
+        .expect_err("读完后查询应已释放");
+    assert_eq!(after.code(), Code::NotFound);
+    assert_eq!(
+        error_code_of(&after),
+        Some(ErrorCode::QUERY_NOT_FOUND.as_str())
+    );
+    stage(
+        "Close",
+        queries
+            .close(CloseQueryRequest {
+                query_id: query_id.clone(),
+            })
+            .await,
+    );
+
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: connected.connection_id.clone(),
+            })
+            .await,
+    );
+    assert_eq!(server.sessions.active_count().await, 0);
+    assert_eq!(server.queries.active(), 0, "查询登记未清空");
+    server.stop().await;
+}
+
+/// #187：脚本第 2 条失败经 gRPC 的 trailing metadata——
+/// `sqarvo-failed-statement=1`、`sqarvo-completed-statements=1`，
+/// 错误分类保留驱动原样；第 1 条副作用保留、第 3 条不执行；
+/// 普通单语句错误不得携带这两个键。
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 失败定位→副作用核对→恢复是一条完整验收链路
+async fn script_failure_position_metadata_over_uds() {
+    let server = E2eServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut queries = QueryServiceClient::with_interceptor(channel, auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "script-failure".to_owned(),
+            })
+            .await,
+    );
+    let session_id = connected.session_id.clone();
+    stage(
+        "Execute(CREATE+INSERT)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: session_id.clone(),
+                sql: "CREATE TABLE t(x INTEGER); INSERT INTO t(x) VALUES (0)".to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+
+    let failed = queries
+        .execute(ExecuteQueryRequest {
+            session_id: session_id.clone(),
+            sql: "UPDATE t SET x = x + 1; SELECT * FROM missing_table_187; \
+                  UPDATE t SET x = x + 100"
+                .to_owned(),
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect_err("第 2 条应失败");
+    // 分类保留驱动 classify 原样（IO → Internal），不强制改码。
+    assert_eq!(failed.code(), Code::Internal);
+    assert_eq!(error_code_of(&failed), Some(ErrorCode::IO.as_str()));
+    assert_eq!(
+        failed
+            .metadata()
+            .get("sqarvo-failed-statement")
+            .and_then(|value| value.to_str().ok()),
+        Some("1"),
+        "失败语句序号（0 起始）必须经 trailing metadata 过网"
+    );
+    assert_eq!(
+        failed
+            .metadata()
+            .get("sqarvo-completed-statements")
+            .and_then(|value| value.to_str().ok()),
+        Some("1"),
+        "已完成语句数必须经 trailing metadata 过网"
+    );
+    // 失败查询不得残留在登记表。
+    assert_eq!(server.queries.active(), 0, "失败脚本应已回收登记");
+
+    // 不隐式回滚：第 1 条 +1 保留；第 3 条 +100 未执行。
+    let probe = stage(
+        "Execute(probe)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: session_id.clone(),
+                sql: "SELECT x FROM t".to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+    assert_eq!(int_at(&probe.rows[0], 0), 1);
+    stage(
+        "Close(probe)",
+        queries
+            .close(CloseQueryRequest {
+                query_id: probe.query_id,
+            })
+            .await,
+    );
+
+    // 普通单语句错误：不得携带失败位置 metadata（旧客户端行为不变）。
+    let plain = queries
+        .execute(ExecuteQueryRequest {
+            session_id: session_id.clone(),
+            sql: "SELEC 1".to_owned(),
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect_err("语法错误应失败");
+    assert!(plain.metadata().get("sqarvo-failed-statement").is_none());
+    assert!(
+        plain
+            .metadata()
+            .get("sqarvo-completed-statements")
+            .is_none()
+    );
+
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: connected.connection_id.clone(),
+            })
+            .await,
+    );
+    assert_eq!(server.queries.active(), 0);
+    server.stop().await;
+}
+
+/// #187：脚本缓冲超预算经 gRPC——`ResourceExhausted` + `query.script_too_large` +
+/// 失败位置 metadata；文案建议拆分脚本或加 LIMIT。
+#[tokio::test]
+async fn script_row_budget_metadata_over_uds() {
+    let server = E2eServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut queries = QueryServiceClient::with_interceptor(channel, auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "script-budget".to_owned(),
+            })
+            .await,
+    );
+    let failed = queries
+        .execute(ExecuteQueryRequest {
+            session_id: connected.session_id.clone(),
+            sql: "SELECT 1; WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL \
+                  SELECT x+1 FROM c WHERE x<150000) SELECT x FROM c"
+                .to_owned(),
+            ..ExecuteQueryRequest::default()
+        })
+        .await
+        .expect_err("150001 行应超预算");
+    assert_eq!(failed.code(), Code::ResourceExhausted);
+    assert_eq!(
+        error_code_of(&failed),
+        Some(ErrorCode::QUERY_SCRIPT_TOO_LARGE.as_str())
+    );
+    assert!(failed.message().contains("LIMIT"));
+    assert_eq!(
+        failed
+            .metadata()
+            .get("sqarvo-failed-statement")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        failed
+            .metadata()
+            .get("sqarvo-completed-statements")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(server.queries.active(), 0, "超预算脚本应已回收登记");
+
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: connected.connection_id.clone(),
+            })
+            .await,
+    );
+    server.stop().await;
+}

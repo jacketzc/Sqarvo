@@ -41,8 +41,8 @@ impl SqliteDriver {
                     transactions: true,
                     query_cancellation: true,
                     streaming_results: true,
-                    // v0.1 只支持单语句。
-                    multiple_statements: false,
+                    // 多语句脚本：引擎切分 + 顺序急执行 + 结果集缓冲（ADR 0006 修订，#187）。
+                    multiple_statements: true,
                     // v0.2.2（#83）：`GetDdl` 取 `sqlite_master.sql` 原文（表/视图/索引/触发器）。
                     ddl_generation: true,
                     server_side_pagination: false,

@@ -3,13 +3,19 @@
 //! `Execute` 取得会话句柄、登记查询、调用驱动并把结果映射为 Protobuf；
 //! `FetchBatch` 按游标继续拉取；`Cancel` 直接中断驱动（幂等）；`Close`
 //! 释放游标并从登记表移除。超时由服务端计时并在触发时取消驱动查询。
+//!
+//! 多语句脚本（#187）：一个查询可能携带多个结果集，`first_batch` 只交付第一个
+//! 结果集的首批。查询登记必须等到**所有**结果集都交付完毕才释放——单条语句
+//! `has_more = false` 不代表查询结束。`FetchBatchResponse.complete` 同样表示
+//! 整个查询交付完毕，而非单条语句读完。
 
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Duration;
 
 use sqarvo_common::{Error, ErrorCode, QueryId, SessionId};
 use sqarvo_connection::SessionManager;
-use sqarvo_driver_api::ExecuteRequest;
+use sqarvo_driver_api::{ExecuteRequest, ExecutionStart, ResultBatch};
 use sqarvo_query_engine::QueryRegistry;
 use tonic::{Request, Response, Status};
 
@@ -25,13 +31,75 @@ use crate::services::mapping;
 pub struct QueryServiceImpl {
     sessions: Arc<SessionManager>,
     queries: Arc<QueryRegistry>,
+    /// 尚未交付完毕的结果集语句序号（按查询，#187）。
+    ///
+    /// 单语句查询同样经过这张表：首批即读完时不登记、立即释放，行为与
+    /// v0.3 完全一致。会话断开时 `QueryRegistry` 会清理登记，这里在下次
+    /// 登记时顺带回收悬挂条目（[`Self::track_execution`]）。
+    pending: StdMutex<HashMap<QueryId, HashSet<u32>>>,
 }
 
 impl QueryServiceImpl {
     /// 构造服务。
     #[must_use]
     pub fn new(sessions: Arc<SessionManager>, queries: Arc<QueryRegistry>) -> Self {
-        Self { sessions, queries }
+        Self {
+            sessions,
+            queries,
+            pending: StdMutex::new(HashMap::new()),
+        }
+    }
+
+    /// 登记一次执行的待交付结果集；全部交付完毕（含全部是写语句）时立即释放。
+    fn track_execution(&self, query_id: QueryId, start: &ExecutionStart) {
+        let mut pending: HashSet<u32> = start
+            .statements
+            .iter()
+            .filter(|statement| statement.has_result_set)
+            .map(|statement| statement.index)
+            .collect();
+        if let Some(batch) = &start.first_batch
+            && !batch.has_more
+        {
+            pending.remove(&batch.statement_index);
+        }
+        let mut table = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        // 会话可能已断开（registry 已清理）：顺带回收悬挂条目，避免泄漏。
+        table.retain(|id, _| self.queries.session_of(id).is_some());
+        if pending.is_empty() {
+            drop(table);
+            let _ = self.queries.complete(&query_id);
+        } else {
+            table.insert(query_id, pending);
+        }
+    }
+
+    /// 记录一批交付。返回整个查询是否已交付完毕（`has_more` 时必为 `false`）。
+    fn note_final_batch(&self, query_id: &QueryId, batch: &ResultBatch) -> bool {
+        if batch.has_more {
+            return false;
+        }
+        let mut table = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let done = match table.get_mut(query_id) {
+            Some(set) => {
+                set.remove(&batch.statement_index);
+                set.is_empty()
+            }
+            // 无登记（已释放或单语句旧路径）：最后一批即完成，保持既有行为。
+            None => true,
+        };
+        if done {
+            table.remove(query_id);
+        }
+        done
+    }
+
+    /// 移除待交付登记（查询结束/关闭时）。
+    fn forget(&self, query_id: &QueryId) {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(query_id);
     }
 }
 
@@ -116,14 +184,9 @@ impl QueryService for QueryServiceImpl {
             }
         };
 
-        // 没有后续批次时立即释放登记，避免空占并发名额。
-        if !start
-            .first_batch
-            .as_ref()
-            .is_some_and(|batch| batch.has_more)
-        {
-            let _ = self.queries.complete(&query_id);
-        }
+        // 所有结果集都交付完毕时立即释放登记，避免空占并发名额；
+        // 多语句脚本还有后续结果集时保持登记（#187）。
+        self.track_execution(query_id, &start);
 
         Ok(Response::new(response))
     }
@@ -160,14 +223,19 @@ impl QueryService for QueryServiceImpl {
             Ok(batch) => batch,
             Err(error) => {
                 if error.code() == ErrorCode::QUERY_NOT_FOUND {
+                    self.forget(&query_id);
                     let _ = self.queries.complete(&query_id);
                 }
                 return Err(to_status(error));
             }
         };
 
-        let response = mapping::fetch_response(&batch)?;
-        if !batch.has_more {
+        let mut response = mapping::fetch_response(&batch)?;
+        // `complete` 表示整个查询交付完毕：多语句脚本里单条语句读完
+        // 不代表查询结束（#187）。单语句行为不变：最后一批即 complete。
+        let query_done = self.note_final_batch(&query_id, &batch);
+        response.complete = query_done;
+        if query_done {
             let _ = self.queries.complete(&query_id);
         }
         Ok(Response::new(response))
@@ -203,6 +271,7 @@ impl QueryService for QueryServiceImpl {
             let _ = handle.close_query(&query_id).await;
         }
         // 幂等：未知或已结束的查询同样返回成功。
+        self.forget(&query_id);
         let _ = self.queries.complete(&query_id);
         Ok(Response::new(Empty {}))
     }

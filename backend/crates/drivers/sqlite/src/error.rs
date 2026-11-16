@@ -13,6 +13,9 @@ pub const SQLITE_OPEN_FAILED: ErrorCode = ErrorCode::from_static("sqlite.open_fa
 pub const SESSION_CLOSED: ErrorCode = ErrorCode::from_static("sqlite.session_closed");
 /// 游标与当前查询状态不匹配。
 pub const SQLITE_CURSOR_INVALID: ErrorCode = ErrorCode::from_static("sqlite.cursor_invalid");
+/// 多语句脚本的语句序号越界（#187）。
+pub const SQLITE_STATEMENT_INDEX_INVALID: ErrorCode =
+    ErrorCode::from_static("sqlite.statement_index_invalid");
 /// 当前会话已有在途查询。
 pub const SQLITE_QUERY_ACTIVE: ErrorCode = ErrorCode::from_static("sqlite.query_active");
 /// 元数据请求的目标表/视图不存在。

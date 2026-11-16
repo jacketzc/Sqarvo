@@ -419,6 +419,15 @@ pub trait DriverSession: Send + Sync {
         false
     }
 
+    /// 是否支持一次执行多条 SQL 语句（能力位 `multiple_statements`，ADR 0006 修订，#187）。
+    ///
+    /// 默认 `false`：驱动必须把多语句 SQL 以 `Unsupported` 拒绝。
+    /// 返回 `true` 的驱动须实现「顺序执行、遇错即停、不隐式回滚」语义，
+    /// 失败时经 [`sqarvo_common::StatementFailure`] 携带失败序号。
+    fn supports_multiple_statements(&self) -> bool {
+        false
+    }
+
     /// 以参数化方式执行 SQL 并返回语句摘要与首批结果。默认实现表示不支持。
     async fn execute_parameterized(
         &self,
