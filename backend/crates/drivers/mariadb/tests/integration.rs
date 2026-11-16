@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, TransactionId};
+use sqarvo_common::{ErrorCategory, ErrorCode, QueryId, StatementFailure, TransactionId};
 use sqarvo_driver_api::{
     Cell, ChangeOutcome, ColumnChange, ColumnDefault, ColumnMeta, ColumnType, ConnectionParams,
     DEFAULT_MAX_CELL_BYTES, DdlSource, Driver, DriverSession, ExecuteRequest, IsolationLevel,
@@ -142,10 +142,12 @@ async fn driver_passes_testkit_smoke() {
     assert_eq!(report.batches, 2);
 }
 
-/// testkit 的五项不变量检查（#24 的 testkit 全量要求）。
+/// testkit 的不变量检查（#24 的 testkit 全量要求）。
 ///
-/// 检查本身与方言无关，SQL 由这里按 MariaDB 语法提供；「多语句被拒后无副作用」
-/// 由 `multiple_statements_are_rejected_before_execution` 单独断言，testkit 只断言错误分类。
+/// 检查本身与方言无关，SQL 由这里按 MariaDB 语法提供；多语句符合性
+/// （#188，能力位 `multiple_statements = true`）走
+/// `multiple_statements_execute_sequentially`：顺序执行、逐语句取数、
+/// 遇错即停且不隐式回滚。
 #[tokio::test]
 async fn driver_passes_testkit_invariants() {
     let Some(session) = session().await else {
@@ -158,9 +160,30 @@ async fn driver_passes_testkit_invariants() {
         .await
         .expect("没有在途查询时取消必须幂等");
 
-    sqarvo_driver_testkit::multiple_statements_are_rejected(session, "SELECT 1; SELECT 2")
-        .await
-        .expect("多语句必须以 Unsupported 拒绝");
+    exec(session, "DROP TABLE IF EXISTS sqarvo_t188_probe").await;
+    exec(session, "CREATE TABLE sqarvo_t188_probe (x INT NOT NULL)").await;
+    exec(session, "INSERT INTO sqarvo_t188_probe VALUES (0)").await;
+    sqarvo_driver_testkit::multiple_statements_execute_sequentially(
+        session,
+        &sqarvo_driver_testkit::MultiStatementFixture {
+            script: "SELECT x FROM sqarvo_t188_probe; UPDATE sqarvo_t188_probe SET x = x; \
+                     SELECT x FROM sqarvo_t188_probe"
+                .to_owned(),
+            statement_count: 3,
+            first_result_rows: 1,
+            failing_script: "UPDATE sqarvo_t188_probe SET x = x + 1; \
+                             SELECT * FROM sqarvo_missing_188; \
+                             UPDATE sqarvo_t188_probe SET x = x + 1"
+                .to_owned(),
+            failed_index: 1,
+            probe_sql: "SELECT x FROM sqarvo_t188_probe".to_owned(),
+            probe_after_script: 0,
+            probe_after_failure: 1,
+        },
+    )
+    .await
+    .expect("多语句脚本必须顺序执行、遇错即停、不隐式回滚");
+    exec(session, "DROP TABLE IF EXISTS sqarvo_t188_probe").await;
 
     sqarvo_driver_testkit::oversized_cell_is_truncated(session, "SELECT REPEAT('a', 70000)")
         .await
@@ -308,31 +331,466 @@ async fn unreachable_host_fails_within_timeout() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
+// ---------------------------------------------------------------------------
+// 多语句脚本（ADR 0006 修订，#188）
+// ---------------------------------------------------------------------------
+
+/// 三条脚本 `SELECT/UPDATE/SELECT`：全量摘要、`first_batch` 归属第一个结果集、
+/// 逐语句 `fetch(statement_index, page_token)` 续拉、序号越界明确报错。
 #[tokio::test]
-async fn multiple_statements_are_rejected_before_execution() {
+async fn script_executes_sequentially_with_summaries_and_per_statement_fetch() {
     let Some(session) = session().await else {
         return;
     };
-    session
-        .execute(request("DROP TABLE IF EXISTS sqarvo_t_multi"))
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_script").await;
+    exec(
+        &*session,
+        "CREATE TABLE sqarvo_t188_script (x INT NOT NULL)",
+    )
+    .await;
+    exec(
+        &*session,
+        "INSERT INTO sqarvo_t188_script VALUES (1),(2),(3)",
+    )
+    .await;
+
+    let query_id = QueryId::new();
+    let start = session
+        .execute(ExecuteRequest {
+            query_id,
+            sql: "SELECT x FROM sqarvo_t188_script ORDER BY x; \
+                  UPDATE sqarvo_t188_script SET x = x + 10 WHERE x = 1; \
+                  SELECT x FROM sqarvo_t188_script ORDER BY x"
+                .to_owned(),
+            max_rows: Some(2),
+            timeout: None,
+        })
         .await
-        .unwrap();
-    let error = session
-        .execute(request("SELECT 1; CREATE TABLE sqarvo_t_multi (v INT)"))
+        .expect("脚本应顺序执行成功");
+
+    // 全量摘要：序号连续、预览齐全、写语句如实报告影响行数。
+    assert_eq!(start.statements.len(), 3);
+    for (index, summary) in start.statements.iter().enumerate() {
+        assert_eq!(summary.index, u32::try_from(index).unwrap());
+        assert!(!summary.sql_preview.is_empty(), "摘要必须带 SQL 预览");
+    }
+    assert!(start.statements[0].has_result_set);
+    assert_ne!(start.statements[0].columns, []);
+    assert_eq!(start.statements[0].rows_affected, None);
+    assert!(!start.statements[1].has_result_set);
+    assert_eq!(start.statements[1].rows_affected, Some(1));
+    assert!(start.statements[2].has_result_set);
+
+    // first_batch 交付第一个结果集的首批（max_rows=2）。
+    let first = start.first_batch.expect("首个结果集应有首批");
+    assert_eq!(first.statement_index, 0);
+    assert_eq!(
+        first.rows.iter().map(uint_at).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(first.has_more);
+    let cursor = first.next_cursor.expect("has_more 应带游标");
+
+    // 第一个结果集续拉取完。
+    let batch = session.fetch(&query_id, 0, Some(&cursor), 2).await.unwrap();
+    assert_eq!(batch.rows.iter().map(uint_at).collect::<Vec<_>>(), vec![3]);
+    assert!(!batch.has_more);
+
+    // 序号越界：invalid_argument，而不是静默返回空批。
+    let out_of_range = session.fetch(&query_id, 3, None, 10).await.unwrap_err();
+    assert_eq!(out_of_range.code(), error::STATEMENT_INDEX_INVALID);
+    assert_eq!(out_of_range.category(), ErrorCategory::InvalidArgument);
+
+    // 别的查询 ID：查询不存在。
+    let wrong_id = session
+        .fetch(&QueryId::new(), 0, None, 10)
         .await
         .unwrap_err();
-    assert_eq!(error.category(), ErrorCategory::Unsupported);
+    assert_eq!(wrong_id.code(), ErrorCode::QUERY_NOT_FOUND);
 
-    // 第二条语句绝不能被执行：表不应存在。
-    let check = session
+    // 写语句（序号 1）：fetch 返回空批且 has_more=false。
+    let write_batch = session.fetch(&query_id, 1, None, 10).await.unwrap();
+    assert_eq!(write_batch.rows.len(), 0);
+    assert!(!write_batch.has_more);
+
+    // 第三个结果集独立分页：UPDATE 已把 1 改成 11。
+    let batch = session.fetch(&query_id, 2, None, 2).await.unwrap();
+    assert_eq!(batch.statement_index, 2);
+    assert_eq!(
+        batch.rows.iter().map(uint_at).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(batch.has_more);
+    let cursor = batch.next_cursor.expect("has_more 应带游标");
+    let batch = session.fetch(&query_id, 2, Some(&cursor), 2).await.unwrap();
+    assert_eq!(batch.rows.iter().map(uint_at).collect::<Vec<_>>(), vec![11]);
+    assert!(!batch.has_more);
+
+    // 全部取完后查询结束：再取必须报「查询不存在」。
+    let finished = session.fetch(&query_id, 0, None, 10).await.unwrap_err();
+    assert_eq!(finished.code(), ErrorCode::QUERY_NOT_FOUND);
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_script").await;
+}
+
+/// 遇错即停：第 2 条失败 → 驱动真实分类 + StatementFailure{1,1}，
+/// 前序副作用保留（不隐式回滚）、剩余语句不执行、会话随后可复用。
+#[tokio::test]
+async fn script_stops_on_error_keeps_prior_effects_and_session_usable() {
+    let Some(session) = session().await else {
+        return;
+    };
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_stop").await;
+    exec(&*session, "CREATE TABLE sqarvo_t188_stop (x INT NOT NULL)").await;
+    exec(&*session, "INSERT INTO sqarvo_t188_stop VALUES (0)").await;
+
+    let error = session
         .execute(request(
-            "SELECT COUNT(*) FROM information_schema.tables \
-             WHERE table_schema = DATABASE() AND table_name = 'sqarvo_t_multi'",
+            "UPDATE sqarvo_t188_stop SET x = x + 1; \
+             SELECT * FROM sqarvo_missing_188; \
+             UPDATE sqarvo_t188_stop SET x = x + 1",
         ))
         .await
-        .unwrap();
-    let count = uint_at(&check.first_batch.expect("应有计数").rows[0]);
-    assert_eq!(count, 0, "多条语句被部分执行了");
+        .expect_err("第 2 条引用不存在的表，脚本必须失败");
+    // 保留驱动 classify（对象不存在），不是能力拒绝。
+    assert_eq!(error.code(), error::OBJECT_NOT_FOUND);
+    assert_eq!(error.category(), ErrorCategory::NotFound);
+    assert_eq!(
+        error.statement_failure(),
+        Some(StatementFailure {
+            failed_index: 1,
+            completed_statements: 1,
+        })
+    );
+
+    // 前序副作用保留：第 1 条 +1 已生效；第 3 条 +1 未执行。
+    let (_, rows) = select(&*session, "SELECT x FROM sqarvo_t188_stop").await;
+    assert_eq!(uint_at(&rows[0]), 1, "失败不隐式回滚，剩余语句不执行");
+
+    // 会话必须可复用（剩余结果集已排空，不泄漏进下一条命令）。
+    let start = session
+        .execute(request(
+            "UPDATE sqarvo_t188_stop SET x = x + 1; SELECT x FROM sqarvo_t188_stop",
+        ))
+        .await
+        .expect("失败后会话应可继续执行脚本");
+    assert_eq!(start.statements.len(), 2);
+    let (_, rows) = select(&*session, "SELECT x FROM sqarvo_t188_stop").await;
+    assert_eq!(uint_at(&rows[0]), 2);
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_stop").await;
+}
+
+/// 脚本取消：当前语句走既有 KILL QUERY 通道，剩余语句不执行，幂等，
+/// 取消后会话可复用。两个时机各测一次：首条执行中 / 首条已完成。
+#[tokio::test]
+async fn script_cancel_stops_remaining_statements_and_is_idempotent() {
+    let _serial = timing_guard().lock().await;
+    let Some(session) = session().await else {
+        return;
+    };
+    let session: Arc<dyn DriverSession> = Arc::from(session);
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_cancel").await;
+    exec(
+        &*session,
+        "CREATE TABLE sqarvo_t188_cancel (x INT NOT NULL)",
+    )
+    .await;
+    exec(&*session, "INSERT INTO sqarvo_t188_cancel VALUES (0)").await;
+
+    let script = "SELECT SLEEP(0.5); UPDATE sqarvo_t188_cancel SET x = x + 1; SELECT SLEEP(30)";
+
+    // 时机 A：首条 SLEEP 执行中取消 → UPDATE 绝不能执行。
+    let query_id = QueryId::new();
+    let running = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(ExecuteRequest {
+                    query_id,
+                    sql: script.to_owned(),
+                    max_rows: None,
+                    timeout: None,
+                })
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let started = Instant::now();
+    session.cancel(&query_id).await.expect("首次取消应成功");
+    session.cancel(&query_id).await.expect("重复取消应幂等");
+    let error = running
+        .await
+        .expect("任务未 panic")
+        .expect_err("脚本应被取消");
+    assert_eq!(error.code(), ErrorCode::QUERY_CANCELLED);
+    assert_eq!(error.category(), ErrorCategory::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let (_, rows) = select(&*session, "SELECT x FROM sqarvo_t188_cancel").await;
+    assert_eq!(uint_at(&rows[0]), 0, "取消后剩余语句不得执行");
+
+    // 时机 B：首条已完成、末条 SLEEP 执行中取消 → UPDATE 已生效。
+    exec(&*session, "UPDATE sqarvo_t188_cancel SET x = 0").await;
+    let query_id = QueryId::new();
+    let running = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(ExecuteRequest {
+                    query_id,
+                    sql: script.to_owned(),
+                    max_rows: None,
+                    timeout: None,
+                })
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    session.cancel(&query_id).await.expect("取消应成功");
+    let error = running
+        .await
+        .expect("任务未 panic")
+        .expect_err("脚本应被取消");
+    assert_eq!(error.code(), ErrorCode::QUERY_CANCELLED);
+    let (_, rows) = select(&*session, "SELECT x FROM sqarvo_t188_cancel").await;
+    assert_eq!(uint_at(&rows[0]), 1, "取消前已完成的语句副作用保留");
+
+    // 被中断的连接必须仍可复用。
+    let start = session
+        .execute(request("SELECT 1"))
+        .await
+        .expect("取消后会话应可继续使用");
+    assert!(start.first_batch.is_some());
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_cancel").await;
+}
+
+/// 合计缓冲行数超预算（`MULTI_STATEMENT_ROW_BUDGET` = `100_000`）：
+/// `resource_exhausted` + `query.script_too_large` + `StatementFailure`，
+/// 失败后会话可复用。用递归 CTE 造 150k 行（先放宽递归深度上限）。
+#[tokio::test]
+async fn script_over_row_budget_is_resource_exhausted() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let error = session
+        .execute(request(
+            "SET SESSION max_recursive_iterations = 200000; \
+             WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 150000) \
+             SELECT x FROM c; \
+             SELECT 1",
+        ))
+        .await
+        .expect_err("150k 行超过 100k 预算，脚本必须失败");
+    assert_eq!(error.code(), ErrorCode::QUERY_SCRIPT_TOO_LARGE);
+    assert_eq!(error.category(), ErrorCategory::ResourceExhausted);
+    assert_eq!(
+        error.statement_failure(),
+        Some(StatementFailure {
+            failed_index: 1,
+            completed_statements: 1,
+        })
+    );
+    assert!(
+        error.message().contains("拆分"),
+        "文案应提示拆分脚本，实际：{}",
+        error.message()
+    );
+
+    // 超预算中止后剩余结果集已排空：会话必须可复用。
+    let start = session
+        .execute(request("SELECT 1"))
+        .await
+        .expect("超预算后会话应可继续使用");
+    assert!(start.first_batch.is_some());
+}
+
+/// 隐式提交守卫逐条套用：脚本里第 2 / 第 3 条是 DDL 也必须在发送前拒绝，
+/// 事务保持可用；全是不隐式提交的语句则放行。
+#[tokio::test]
+async fn script_implicit_commit_guard_applies_to_every_statement() {
+    let Some(owner) = session().await else {
+        return;
+    };
+    let Some(observer) = session().await else {
+        return;
+    };
+    let owner = &*owner;
+    let observer = &*observer;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t188_guard").await;
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t188_guard2").await;
+    exec(owner, "CREATE TABLE sqarvo_t188_guard (id INT NOT NULL)").await;
+    exec(owner, "INSERT INTO sqarvo_t188_guard VALUES (1)").await;
+
+    let transaction = begin(owner).await;
+
+    // 第 2 条是 CREATE：整段在发送前拒绝，表绝不能被创建。
+    let error = owner
+        .execute(request(
+            "SELECT 1; CREATE TABLE sqarvo_t188_guard2 (id INT)",
+        ))
+        .await
+        .expect_err("脚本中的隐式提交语句必须被拒绝");
+    assert_eq!(error.code(), error::IMPLICIT_COMMIT_REJECTED);
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+    let (_, rows) = select(
+        observer,
+        "SELECT COUNT(*) FROM information_schema.tables \
+         WHERE table_schema = DATABASE() AND table_name = 'sqarvo_t188_guard2'",
+    )
+    .await;
+    assert_eq!(uint_at(&rows[0]), 0, "守卫必须在发送前拒绝，不得留下副作用");
+
+    // 第 3 条是 DROP：同样拒绝，原表仍在。
+    let error = owner
+        .execute(request("SELECT 1; SELECT 2; DROP TABLE sqarvo_t188_guard"))
+        .await
+        .expect_err("脚本末尾的隐式提交语句同样必须被拒绝");
+    assert_eq!(error.code(), error::IMPLICIT_COMMIT_REJECTED);
+    let (_, rows) = select(
+        observer,
+        "SELECT COUNT(*) FROM information_schema.tables \
+         WHERE table_schema = DATABASE() AND table_name = 'sqarvo_t188_guard'",
+    )
+    .await;
+    assert_eq!(uint_at(&rows[0]), 1);
+
+    // 拒绝之后事务仍可用，回滚不丢状态。
+    exec(owner, "INSERT INTO sqarvo_t188_guard VALUES (2)").await;
+    owner
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚应成功");
+    assert_eq!(count_rows(owner, "sqarvo_t188_guard").await, 1);
+
+    // 全是不隐式提交的语句：事务内放行。
+    let transaction = begin(owner).await;
+    let query_id = QueryId::new();
+    let start = owner
+        .execute(ExecuteRequest {
+            query_id,
+            sql: "SELECT 1; SELECT 2".to_owned(),
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect("事务内的只读脚本应放行");
+    assert_eq!(start.statements.len(), 2);
+    // 与 SQLite 一致：缓冲未取完前事务操作被 query_active 拒绝，先取完再提交。
+    let mut cursor = start.first_batch.and_then(|batch| batch.next_cursor);
+    while let Some(token) = cursor {
+        let batch = owner.fetch(&query_id, 0, Some(&token), 10).await.unwrap();
+        cursor = batch.next_cursor;
+    }
+    let batch = owner.fetch(&query_id, 1, None, 10).await.unwrap();
+    assert_eq!(batch.rows.len(), 1);
+    owner
+        .commit_transaction(&transaction)
+        .await
+        .expect("提交应成功");
+
+    exec(owner, "DROP TABLE IF EXISTS sqarvo_t188_guard").await;
+}
+
+/// 单语句路径完全不变：尾随分号 / 尾随注释仍是单语句，保持流式分批；
+/// 单条写语句仍走既有摘要语义。
+#[tokio::test]
+async fn single_statement_with_trailing_semicolon_stays_streaming() {
+    let Some(session) = session().await else {
+        return;
+    };
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_single").await;
+    exec(
+        &*session,
+        "CREATE TABLE sqarvo_t188_single (x INT NOT NULL)",
+    )
+    .await;
+    exec(
+        &*session,
+        "INSERT INTO sqarvo_t188_single VALUES (1),(2),(3),(4),(5)",
+    )
+    .await;
+
+    for sql in [
+        "SELECT x FROM sqarvo_t188_single ORDER BY x;",
+        "SELECT x FROM sqarvo_t188_single ORDER BY x -- 尾随注释",
+    ] {
+        let query_id = QueryId::new();
+        let start = session
+            .execute(ExecuteRequest {
+                query_id,
+                sql: sql.to_owned(),
+                max_rows: Some(2),
+                timeout: None,
+            })
+            .await
+            .expect("单语句应执行成功");
+        assert_eq!(start.statements.len(), 1, "尾随分号/注释不构成脚本：{sql}");
+        let first = start.first_batch.expect("应有首批");
+        assert_eq!(first.rows.len(), 2);
+        assert!(first.has_more);
+        let mut cursor = first.next_cursor.expect("has_more 应带游标");
+        let mut ids: Vec<u64> = first.rows.iter().map(uint_at).collect();
+        let mut batches = 1;
+        loop {
+            let batch = session.fetch(&query_id, 0, Some(&cursor), 2).await.unwrap();
+            ids.extend(batch.rows.iter().map(uint_at));
+            batches += 1;
+            if !batch.has_more {
+                break;
+            }
+            cursor = batch.next_cursor.expect("has_more 应带游标");
+        }
+        assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+        assert_eq!(batches, 3, "单语句必须保持流式分批：{sql}");
+    }
+
+    // 单条写语句：摘要语义与既有一致。
+    let start = session
+        .execute(request("UPDATE sqarvo_t188_single SET x = x WHERE 1 = 0;"))
+        .await
+        .expect("单条写语句应执行成功");
+    assert_eq!(start.statements.len(), 1);
+    assert!(!start.statements[0].has_result_set);
+    assert_eq!(start.statements[0].rows_affected, Some(0));
+    assert!(start.first_batch.is_none());
+
+    exec(&*session, "DROP TABLE IF EXISTS sqarvo_t188_single").await;
+}
+
+/// 参数化执行不支持脚本（`COM_STMT_EXECUTE` 一次一条）：显式 `Unsupported`，
+/// 单条参数化不受影响。
+#[tokio::test]
+async fn parameterized_script_is_rejected_as_unsupported() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let error = session
+        .execute_parameterized(ParameterizedExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "SELECT ?; SELECT ?".to_owned(),
+            params: vec![Value::Int(1), Value::Int(2)],
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect_err("参数化脚本必须被拒绝");
+    assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
+    assert_eq!(error.category(), ErrorCategory::Unsupported);
+
+    // 单条参数化不受影响。
+    let start = session
+        .execute_parameterized(ParameterizedExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "SELECT ?".to_owned(),
+            params: vec![Value::Int(42)],
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .expect("单条参数化应成功");
+    let rows = start.first_batch.expect("应有首批").rows;
+    assert_eq!(uint_at(&rows[0]), 42);
 }
 
 #[tokio::test]

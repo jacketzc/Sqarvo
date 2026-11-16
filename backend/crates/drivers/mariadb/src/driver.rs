@@ -45,8 +45,9 @@ impl MariaDbDriver {
                     transactions: true,
                     query_cancellation: true,
                     streaming_results: true,
-                    // v0.2 只支持单条语句（多语句检测见 `sql.rs`）。
-                    multiple_statements: false,
+                    // #188（ADR 0006 修订）：整段脚本直发、服务端切分，
+                    // 按序急执行 + 内存缓冲 + 行数预算（见 `session.rs` `serve_script`）。
+                    multiple_statements: true,
                     // v0.2.2（#83）：`GetDdl` 取 `SHOW CREATE TABLE/VIEW/SEQUENCE` 原文。
                     ddl_generation: true,
                     server_side_pagination: false,

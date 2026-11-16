@@ -225,6 +225,7 @@ mod tests {
             .get(&DriverId::new("mariadb").unwrap())
             .expect("MariaDB 驱动应已注册");
         assert!(mariadb.descriptor().capabilities.query_cancellation);
-        assert!(!mariadb.descriptor().capabilities.multiple_statements);
+        // #188：ADR 0006 长期策略落地，MariaDB 多语句能力位翻真。
+        assert!(mariadb.descriptor().capabilities.multiple_statements);
     }
 }
