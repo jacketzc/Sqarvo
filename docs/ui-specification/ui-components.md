@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 192 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 193 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -2601,6 +2601,7 @@ kind `control` · status `active` · parent `status_bar.row2`
 | `tabs.limit` | 　「无法新建标签」提示 | control | active | done | partial | — |
 | `tabs.query` | 　查询标签页 | container | active | done | partial | — |
 | `tabs.query.actions` | 　　动作行（执行 / 取消） | control | active | done | done | — |
+| `tabs.query.database_picker` | 　　查询标签的库选择器 | control | active | done | — | — |
 | `tabs.query.editor` | 　　SQL 编辑器（行号沟 + 等宽文本） | control | active | done | partial | — |
 | `tabs.query.state` | 　　结果区状态行（五态） | control | active | done | done | — |
 | `tabs.query.results` | 　　结果区 | container | active | done | partial | — |
@@ -2724,8 +2725,8 @@ kind `control` · status `active` · parent `tabs`
 kind `container` · status `active` · parent `tabs`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_page`
-- 同步：Linux done（§5.11 版面收敛；SqlPage::new 的组装顺序）；Windows partial（查询页整体在代码里搭（#172，ShellView 一行未改）：动作行 / 编辑器 / 五态 / 表头 / 行区 / 加载更多；分隔线与留白 §7.1 未记录。）；macOS none
-- 实现备注：页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。
+- 同步：Linux done（§5.11 版面收敛；SqlPage::new 的组装顺序。库段取服务端真值：日志「新建查询标签 tab-q1：查询 1（tooltip「查询 1 · 标签会话 · 库 未指定 · 连接 catalog-qa」…）」；SQLite 档案下真值取到后为「库 main」，切库后 MariaDB 写成「库 sqarvo_test」（同一刷新路径）。单测 tooltip_uses_the_server_truth_and_never_says_default 断言真值 / 未指定两种文案且不含「默认」。）；Windows partial（查询页整体在代码里搭（#172，ShellView 一行未改）：动作行 / 编辑器 / 五态 / 表头 / 行区 / 加载更多；分隔线与留白 §7.1 未记录。）；macOS none
+- 实现备注：页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。标签 tooltip 的「库」段写**服务端真值**（`GetSessionContext`，ADR 0030）：没有默认库时写「未指定」，不再写死「默认」。真值只随会话就绪 / 执行成功 / 切库成功刷新，刷新不改写标签请求用的 catalog。本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。每个查询标签有**自己的**会话；关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个标签上限保证并发游标不超过 8 个。
 
 ### `tabs.query.actions` 动作行（执行 / 取消）
 
@@ -2733,8 +2734,8 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`min_target`
 - 无障碍：可访问名「查询动作」
-- 同步：Linux done（§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700）；macOS none
-- 实现备注：按钮文案与可用性随状态互斥：空闲 → 「执行」可点、「取消」不可点；执行中 → 主按钮变「取消」（Linux 是并排两枚：执行置灰、取消可点）。取消可重复点击，第二次起只记日志、不发 RPC。空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。动作行左端是会话信息（有真实会话信息时才占位，不再写「会话建立中…」）。
+- 同步：Linux done（§5.11 不可用态；执行 / 取消按钮与 Ctrl+Enter、Esc 分流。动作行左端承载库选择器：`expect-catalog 1 未指定库` 从控件读到选择器文字；`catalog 1 sqarvo_test` 后执行，日志「标签 tab-q1 执行时带库：sqarvo_test」「请求在库「sqarvo_test」里执行」，执行成功后回读「读取库上下文（GetSessionContext）」，`expect-query 1 first=sqarvo_test` 通过。）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700）；macOS none
+- 实现备注：按钮文案与可用性随状态互斥：空闲 → 「执行」可点、「取消」不可点；执行中 → 主按钮变「取消」（Linux 是并排两枚：执行置灰、取消可点）。取消可重复点击，第二次起只记日志、不发 RPC。空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。动作行左端承载 `tabs.query.database_picker`（库选择器），其后是会话信息（有真实会话信息时才占位，不再写「会话建立中…」），右端才是执行 / 取消：库归属在动作之前先可读、可改。执行时把标签的**请求** catalog 带进 `ExecuteQueryRequest.catalog`（空 = 不改变会话当前库）；执行成功后回读一次 `GetSessionContext` 刷新显示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2743,6 +2744,22 @@ kind `control` · status `active` · parent `tabs.query`
 | key Ctrl+Enter | 没有查询在跑 | 与点「执行」同一条方法（不存在「只有按钮能用」的旁路） | `src/sql_page.rs:300、src/sql_page.rs:341` |
 | click | 有查询在跑 | 发 Cancel 并立即进入「已取消」；重复点幂等（不发 RPC、不报错），已取到的行保留 | `src/sql_page.rs:143、src/sql_page.rs:395` |
 | key Esc | 有查询在跑 | 取消查询（同一按键在空闲时分流为「清空结果区行选中」） | `src/sql_page.rs:288、src/sql_page.rs:395` |
+
+### `tabs.query.database_picker` 查询标签的库选择器
+
+kind `control` · status `active` · parent `tabs.query`
+
+- 样式：尺寸 `gap_xs`、`min_target`
+- 无障碍：可访问名「当前库」
+- 原生控件：gtk:GtkDropDown / winui:— / swift:—
+- 同步：Linux done（QA 脚本（独立 app id + 隔离 XDG_CONFIG_HOME，无默认库的 MariaDB 档案）：`query-tab` 后 `expect-catalog 1 未指定库` 通过（选择器显示服务端真值「无默认库」）；`catalog 1 sqarvo_test` 走下拉的同一信号路径，日志出现「请求切库：sqarvo_test」与「已切到库 sqarvo_test（服务端真值：sqarvo_test）」；`expect-catalog 1 sqarvo_test` 通过；随后执行未限定表名的 `SELECT DATABASE() AS db;`，`expect-query 1 first=sqarvo_test` 通过（执行前切库生效）。SQLite 档案（驱动未声明 `session_catalog_switch`）日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」——是整枚不渲染，不是灰块。另：对象树里选中 `sqarvo_test` 后新建查询标签，日志「请求库 sqarvo_test」，不碰选择器直接执行 `SELECT DATABASE()` 也得 sqarvo_test（新标签默认请求库 = 树当前选中项所在的库）。单测：supports_catalog_switch、query_catalog_keeps_request_and_truth_separate（cargo test --bin sqarvo-desktop，460 passed）。）；Windows none；macOS none
+- 实现备注：摆放位置是 `tabs.query.actions` 那一行的**最左端**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。真值只有一个来源：`ConnectionService.GetSessionContext`。显示 = 服务端实际生效的库；没有默认库时显示「未指定库」，**不得**用连接配置里的 `database` 顶替（ADR 0030 §7）。会话就绪后发一次，执行成功后与切换成功后各回读一次；刷新真值只改显示，不改写标签请求用的 catalog（§8）。能力级不可用：驱动未在 `ConnectResponse.capabilities` 里声明 `session_catalog_switch` 时**整枚不渲染**（SQLite 的 main / temp / ATTACH 没有「切当前库」这个概念）——不是灰块、不是禁用，是根本没有这枚控件。会话未就绪 / 有未提交事务时**可见但禁用**，并用 tooltip 说明原因（「会话尚未建立：等标签会话就绪后才能切换库」/「事务已打开：先提交或回滚，再切换库」）。事务中切库由服务端返回 FAILED_PRECONDITION（`mariadb.catalog_switch_in_transaction`）。选中后走 `SetSessionContext`，用返回的上下文回读真值并刷新选择器与标签 tooltip；失败走查询页既有的失败提示路径，并把选择器恢复原值——切库失败时语句是按旧库跑的，绝不假装切成功（§6）。列表项 = 可见库，来源于既有 `MetadataService.ListNodes`（目录层：`parent.kind = CATALOG` 且不带名字，一页 500），首次需要时取一次并**按连接键**缓存（同一条连接的多个查询标签共用一份）。取不到时浮层里只给一行说明，不编造条目。标签 tooltip 的库段同步改成真值（无真值写「未指定」），不再写死「默认」；库名不进状态栏（v0.2.3.3）。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3065、src/backend/worker.rs:1806、src/backend/client.rs:529` |
+| click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3065、src/sql_page.rs:1367、src/sql_page.rs:971` |
+| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2932、src/tabs.rs:2964、src/sql_page.rs:1327、src/backend/metadata.rs:544` |
 
 ### `tabs.query.editor` SQL 编辑器（行号沟 + 等宽文本）
 

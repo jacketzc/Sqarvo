@@ -877,6 +877,27 @@ impl ConnectionRegistry {
             .and_then(|entry| entry.hub.clone())
     }
 
+    /// 某条连接的浏览会话 ID（按连接取库列表时要把父引用填上会话）。
+    ///
+    /// 读不到（连接未展开 / 已断开）返回 `None`：调用方如实说明「取不到库列表」，
+    /// 不去猜一条会话。
+    #[must_use]
+    pub fn session_for_key(&self, key: &str) -> Option<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.session_id.clone())
+            .filter(|session_id| !session_id.is_empty())
+    }
+
+    /// 某条连接的元数据通道（库选择器按连接缓存库列表用）。
+    #[must_use]
+    pub fn hub_for_key(&self, key: &str) -> Option<Rc<MetadataHub>> {
+        let session_id = self.session_for_key(key)?;
+        self.hub_for_session(&session_id)
+    }
+
     /// 某条会话属于哪一条连接（树在打开表 / 断开时要用）。
     #[must_use]
     pub fn key_for_session(&self, session_id: &str) -> Option<String> {

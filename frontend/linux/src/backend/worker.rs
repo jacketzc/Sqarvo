@@ -59,7 +59,7 @@ use crate::backend::endpoint::{self, EndpointInfo};
 use crate::backend::error::BackendError;
 use crate::backend::query::{
     ExecuteOutcome, FetchOutcome, MAX_ROWS_PER_BATCH, QueryFailure, ResultBudget, ResultMeter,
-    RowView, StatementView,
+    RowView, SessionDatabaseContext, StatementView,
 };
 use crate::backend::routing::{CancelPlan, Delivery, QuerySlots};
 use crate::backend::supervisor::{BackendSupervisor, Stage};
@@ -141,6 +141,19 @@ impl BeginOptions {
 /// worker 的每条会话级命令与事件都要求它：主线程按标签路由，不按「最近一次请求」推断。
 pub type TabId = String;
 
+/// 会话库上下文请求的结果回执（oneshot：一次请求一次回答，不广播）。
+///
+/// 主线程用 `glib::spawn_future_local` 直接等它；worker 在自己的 tokio 任务里发出结果。
+pub type SessionContextReply =
+    tokio::sync::oneshot::Sender<Result<SessionDatabaseContext, QueryFailure>>;
+
+/// 主线程侧的等待端（配 [`SessionContextReply`]）。
+///
+/// 它不是 `Send` 之外的特殊类型：`glib::spawn_future_local(async { wait.await })` 直接就能
+/// 消费——tokio 的 oneshot 不依赖运行时，唤醒由 worker 线程触发，主线程只是重新调度这个 future。
+pub type SessionContextWait =
+    tokio::sync::oneshot::Receiver<Result<SessionDatabaseContext, QueryFailure>>;
+
 /// 标签会话建立成功后的可展示信息（不含密码 / 凭据引用）。
 #[derive(Debug, Clone)]
 pub struct TabSessionOpened {
@@ -152,6 +165,11 @@ pub struct TabSessionOpened {
     pub connection_id: String,
     /// 驱动 ID（隔离级别能力与只读判定用）。
     pub driver_id: String,
+    /// 驱动能力位名称（`ConnectResponse.capabilities`）。
+    ///
+    /// 查询标签的库选择器按 `session_catalog_switch` 决定是否渲染（ADR 0030）：
+    /// 能力位来自服务端，前端不按驱动名猜。
+    pub capabilities: Vec<String>,
     /// 从发起到拿到的毫秒数；领养时为 0。
     pub latency_millis: u64,
     /// 是否是领养「保存并连接」留下的那条会话（不额外占一条连接）。
@@ -201,6 +219,29 @@ pub enum Command {
         tab_id: TabId,
         /// SQL 文本。
         sql: String,
+        /// 用户选定的库（ADR 0030）：`None` = 不改变会话当前库。
+        catalog: Option<String>,
+    },
+    /// 读会话的库上下文真值（`ConnectionService.GetSessionContext`）。
+    ///
+    /// 结果按 oneshot 回给调用方（主线程用 `glib::spawn_future_local` 等它），不进事件泵：
+    /// 这是一次轻量往返，回答只属于发起它的那次刷新，广播出去反而要再按请求 ID 分拣。
+    FetchSessionContext {
+        /// 标签 ID（会话归属）。
+        tab_id: TabId,
+        /// 结果回执。
+        reply: SessionContextReply,
+    },
+    /// 把会话切到某个库（`ConnectionService.SetSessionContext`，ADR 0030）。
+    ///
+    /// 返回切完之后的上下文，调用方不必再问一次。
+    SetSessionContext {
+        /// 标签 ID（会话归属）。
+        tab_id: TabId,
+        /// 目标库；空串 = 不改变（服务端幂等返回当前上下文）。
+        catalog: String,
+        /// 结果回执。
+        reply: SessionContextReply,
     },
     /// 预取/继续拉取下一批（由界面在接近末尾时触发）。
     FetchNext {
@@ -930,11 +971,42 @@ impl WorkerHandle {
     }
 
     /// 请求执行 SQL，非阻塞（长语句在后台任务里跑，不占主线程）。
-    pub fn execute_sql(&self, tab_id: &str, sql: String) {
+    ///
+    /// `catalog` 是用户意图（ADR 0030）：非空 = 服务端执行前把这条会话切到该库；
+    /// `None` = 不改变会话当前库（旧行为）。
+    pub fn execute_sql(&self, tab_id: &str, sql: String, catalog: Option<String>) {
         let _ = self.commands.send(Command::ExecuteSql {
             tab_id: tab_id.to_owned(),
             sql,
+            catalog,
         });
+    }
+
+    /// 读这条标签会话的库上下文真值（`GetSessionContext`）。
+    ///
+    /// 返回 `None` 表示 worker 已经不在了（窗口正在关闭）：调用方不必再等。
+    pub fn fetch_session_context(&self, tab_id: &str) -> Option<SessionContextWait> {
+        let (reply, wait) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(Command::FetchSessionContext {
+                tab_id: tab_id.to_owned(),
+                reply,
+            })
+            .ok()?;
+        Some(wait)
+    }
+
+    /// 把会话切到某个库（`SetSessionContext`）；回答里是**切完之后的**上下文。
+    pub fn set_session_context(&self, tab_id: &str, catalog: &str) -> Option<SessionContextWait> {
+        let (reply, wait) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(Command::SetSessionContext {
+                tab_id: tab_id.to_owned(),
+                catalog: catalog.to_owned(),
+                reply,
+            })
+            .ok()?;
+        Some(wait)
     }
 
     /// 请求下一批（界面在接近末尾时调用；worker 自己防止重复请求）。
@@ -1480,6 +1552,7 @@ async fn worker_loop(
                                 session_id: adopt.session_id,
                                 connection_id: adopt.connection_id,
                                 driver_id: adopt.driver,
+                                capabilities: adopt.capabilities,
                                 latency_millis: 0,
                                 adopted: true,
                             };
@@ -1624,7 +1697,11 @@ async fn worker_loop(
                             }
                         }
                     }
-                    Command::ExecuteSql { tab_id, sql } => {
+                    Command::ExecuteSql {
+                        tab_id,
+                        sql,
+                        catalog,
+                    } => {
                         let Some(tab) = tabs.get_mut(&tab_id) else {
                             eprintln!("[query] 忽略执行请求：标签 {tab_id} 不存在（可能已关闭）");
                             continue;
@@ -1678,19 +1755,78 @@ async fn worker_loop(
                         };
                         let preview: String = sql.lines().next().unwrap_or("").chars().take(80).collect();
                         eprintln!("[query] 标签 {tab_id} 提交执行（代数 {epoch}）：{preview}");
+                        // 用户的库意图只在这一条请求里表达：空 = 不改变会话当前库（旧行为）。
+                        if let Some(catalog) = catalog
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|catalog| !catalog.is_empty())
+                        {
+                            eprintln!("[query] 标签 {tab_id} 请求在库「{catalog}」里执行");
+                        }
                         tab.query = Some(ActiveQuery::new(budget));
                         let session_id = tab.session_id.clone();
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
                         tokio::spawn(async move {
                             let result = client
-                                .execute_query(&session_id, &sql, MAX_ROWS_PER_BATCH)
+                                .execute_query(&session_id, &sql, MAX_ROWS_PER_BATCH, catalog.as_deref())
                                 .await;
                             let _ = sender.send(Command::Task(TaskUpdate::Executed {
                                 tab_id,
                                 epoch,
                                 result,
                             }));
+                        });
+                    }
+                    Command::FetchSessionContext { tab_id, reply } => {
+                        // 会话不存在时**也要回**：调用方在等 oneshot，静默丢弃会让它一直挂着。
+                        let Some(tab) = tabs.get(&tab_id) else {
+                            eprintln!(
+                                "[tabs] 读取库上下文被忽略：标签 {tab_id} 不存在（可能已关闭）"
+                            );
+                            let _ = reply.send(Err(QueryFailure::SessionLost {
+                                message: "标签已关闭：读不到会话的库上下文".to_owned(),
+                            }));
+                            continue;
+                        };
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = reply.send(Err(QueryFailure::SessionLost {
+                                message: "尚未连接数据库：读不到会话的库上下文".to_owned(),
+                            }));
+                            continue;
+                        };
+                        let session_id = tab.session_id.clone();
+                        let client = active_session.client.clone();
+                        eprintln!("[tabs] 标签 {tab_id} 读取库上下文（GetSessionContext）");
+                        tokio::spawn(async move {
+                            let result = client.session_context(&session_id).await;
+                            let _ = reply.send(result);
+                        });
+                    }
+                    Command::SetSessionContext {
+                        tab_id,
+                        catalog,
+                        reply,
+                    } => {
+                        let Some(tab) = tabs.get(&tab_id) else {
+                            eprintln!("[tabs] 切库被忽略：标签 {tab_id} 不存在（可能已关闭）");
+                            let _ = reply.send(Err(QueryFailure::SessionLost {
+                                message: "标签已关闭：无法切换库".to_owned(),
+                            }));
+                            continue;
+                        };
+                        let Some(active_session) = session.as_ref() else {
+                            let _ = reply.send(Err(QueryFailure::SessionLost {
+                                message: "尚未连接数据库：无法切换库".to_owned(),
+                            }));
+                            continue;
+                        };
+                        let session_id = tab.session_id.clone();
+                        let client = active_session.client.clone();
+                        eprintln!("[tabs] 标签 {tab_id} 执行切库（SetSessionContext）：{catalog}");
+                        tokio::spawn(async move {
+                            let result = client.set_session_context(&session_id, &catalog).await;
+                            let _ = reply.send(result);
                         });
                     }
                     Command::FetchNext { tab_id } => {
@@ -2543,6 +2679,7 @@ async fn worker_loop(
                                             session_id: connected.session_id,
                                             connection_id: connected.connection_id,
                                             driver_id: connected.driver_id,
+                                            capabilities: connected.capabilities,
                                             latency_millis: connected.latency_millis,
                                             adopted: false,
                                         }),

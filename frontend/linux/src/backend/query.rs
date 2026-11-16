@@ -183,6 +183,135 @@ pub struct FetchOutcome {
     pub complete: bool,
 }
 
+/// 「库」这一层在驱动里叫什么（`GetSessionContextResponse.catalog_kind`）。
+///
+/// 前端**不按驱动名硬编码**：PostgreSQL 的 catalog 层是 schema，MariaDB / SQLite 是
+/// database。文案只由服务端声明的 `catalog_kind` 决定（ADR 0030 §7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogKind {
+    /// database（MariaDB / SQLite）：界面上叫「库」。
+    Database,
+    /// schema（将来的 PostgreSQL）：界面上叫「Schema」。
+    Schema,
+    /// 服务端没声明（旧后端）：按「库」显示，不猜成 schema。
+    Unknown,
+}
+
+impl CatalogKind {
+    /// 从 proto 枚举值构造；无法识别的值（含 `UNSPECIFIED`）落到 [`CatalogKind::Unknown`]。
+    #[must_use]
+    pub fn from_proto(value: i32) -> Self {
+        match crate::proto::services::v1::CatalogKind::try_from(value) {
+            Ok(crate::proto::services::v1::CatalogKind::Database) => Self::Database,
+            Ok(crate::proto::services::v1::CatalogKind::Schema) => Self::Schema,
+            Ok(crate::proto::services::v1::CatalogKind::Unspecified) | Err(_) => Self::Unknown,
+        }
+    }
+
+    /// 用户可见的层名（选「库」还是「Schema」）。
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Schema => "Schema",
+            Self::Database | Self::Unknown => "库",
+        }
+    }
+}
+
+/// 会话的库归属真值（`ConnectionService.GetSessionContext` / `SetSessionContext` 的返回）。
+///
+/// **真值只有这一个来源**：连接配置里的 `database` 是「连接时请求的库」，用户可能在会话
+/// 里改过（`USE` / 选择器），界面不得用它顶替（ADR 0030 §7）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionDatabaseContext {
+    /// 会话 ID（与请求逐字一致）。
+    pub session_id: String,
+    /// 驱动 ID（日志与诊断用）。
+    pub driver_id: String,
+    /// 服务端实际生效的库；`None` = 这条会话**没有**默认库（未限定表名的 SQL 会失败）。
+    pub default_catalog: Option<String>,
+    /// 这一层叫什么（决定文案「库」/「Schema」）。
+    pub catalog_kind: CatalogKind,
+}
+
+impl SessionDatabaseContext {
+    /// 从 proto 响应构造。空串 `default_catalog` 一律转成 `None`——不留下「空库名」这种
+    /// 第三种状态，否则界面会在「未指定」与「空串库」之间分不清。
+    #[must_use]
+    pub fn from_proto(response: crate::proto::services::v1::GetSessionContextResponse) -> Self {
+        let default_catalog = trimmed(&response.default_catalog);
+        Self {
+            session_id: response.session_id,
+            driver_id: response.driver_id,
+            default_catalog,
+            catalog_kind: CatalogKind::from_proto(response.catalog_kind),
+        }
+    }
+
+    /// 日志片段：`标签 tab-q1 库上下文：shop` / `标签 tab-q1 库上下文：无默认库`。
+    #[must_use]
+    pub fn log_note(&self) -> String {
+        self.default_catalog
+            .clone()
+            .unwrap_or_else(|| "无默认库".to_owned())
+    }
+}
+
+/// 没有默认库时的文案（tooltip、选择器共用一份，避免两处漂移）。
+pub const UNSPECIFIED_CATALOG_LABEL: &str = "未指定";
+
+/// 选择器里「没有默认库」那一项的文字（比 tooltip 的「未指定」更明确一点）。
+pub const UNSPECIFIED_PICKER_LABEL: &str = "未指定库";
+
+/// 去掉首尾空白；全空白视作「没有值」。
+///
+/// `ExecuteQueryRequest.catalog` 与 `SetSessionContextRequest.catalog` 的契约都是
+/// 「空串 = 不改变会话当前库」，只含空白的串必须在客户端就归零，不能发给服务端。
+#[must_use]
+pub fn trimmed(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
+    }
+}
+
+/// 构造一次 `Execute` 请求（纯函数，便于单测「catalog 空 / 非空」的两种语义）。
+///
+/// `catalog` 是**用户意图**：`None` / 全空白 → 请求里空串（不改变会话当前库，完全等于
+/// 既有行为）；非空 → 执行前把会话切到该库（ADR 0030 §1）。
+#[must_use]
+pub fn execute_request(
+    session_id: &str,
+    sql: &str,
+    max_rows_per_batch: u32,
+    catalog: Option<&str>,
+) -> crate::proto::services::v1::ExecuteQueryRequest {
+    crate::proto::services::v1::ExecuteQueryRequest {
+        session_id: session_id.to_owned(),
+        sql: sql.to_owned(),
+        max_rows_per_batch,
+        // v0.1 无显式事务：语句自动提交（事务接线见 #29 之后的工作）。
+        auto_commit: true,
+        // 0 = 由服务端默认策略决定，不在客户端凭空加期限。
+        timeout_millis: 0,
+        catalog: catalog.and_then(trimmed).unwrap_or_default(),
+    }
+}
+
+/// 构造一次 `SetSessionContext` 请求（纯函数；`catalog` 同样 trim）。
+#[must_use]
+pub fn set_session_context_request(
+    session_id: &str,
+    catalog: &str,
+) -> crate::proto::services::v1::SetSessionContextRequest {
+    crate::proto::services::v1::SetSessionContextRequest {
+        session_id: session_id.to_owned(),
+        catalog: trimmed(catalog).unwrap_or_default(),
+    }
+}
+
 /// 查询类失败的结构化分类。
 ///
 /// 与 `ConnectionFailure` 分开：连接错误提示「去改连接参数」，查询错误提示「改 SQL 或
@@ -1684,5 +1813,71 @@ mod tests {
         ] {
             assert!(!pause.reason().is_empty());
         }
+    }
+
+    // ---- 库上下文（ADR 0030） ---------------------------------------------
+
+    fn context(default_catalog: &str, kind: CatalogKind) -> SessionDatabaseContext {
+        SessionDatabaseContext::from_proto(crate::proto::services::v1::GetSessionContextResponse {
+            session_id: "sess-1".to_owned(),
+            driver_id: "mariadb".to_owned(),
+            default_catalog: default_catalog.to_owned(),
+            catalog_kind: match kind {
+                CatalogKind::Database => crate::proto::services::v1::CatalogKind::Database as i32,
+                CatalogKind::Schema => crate::proto::services::v1::CatalogKind::Schema as i32,
+                CatalogKind::Unknown => crate::proto::services::v1::CatalogKind::Unspecified as i32,
+            },
+        })
+    }
+
+    #[test]
+    fn empty_context_catalog_is_none_and_never_reads_as_default() {
+        let empty = context("", CatalogKind::Database);
+        assert_eq!(empty.default_catalog, None);
+        // 界面文案是「未指定」（常量与 tooltip / 选择器共用同一份）。
+        assert_eq!(UNSPECIFIED_CATALOG_LABEL, "未指定");
+        // 日志用更明确的「无默认库」，不冒充配置值。
+        assert_eq!(empty.log_note(), "无默认库");
+        // 空白串同样是「没有库」：服务端不该收到一个只有空格的库名。
+        assert_eq!(context("   ", CatalogKind::Database).default_catalog, None);
+    }
+
+    #[test]
+    fn context_keeps_server_catalog_verbatim_and_labels_schema_layer() {
+        let named = context("shop", CatalogKind::Database);
+        assert_eq!(named.default_catalog.as_deref(), Some("shop"));
+        assert_eq!(named.log_note(), "shop");
+        assert_eq!(named.catalog_kind.label(), "库");
+        // 同样的层名由 catalog_kind 决定，不按驱动名硬编码。
+        assert_eq!(
+            context("public", CatalogKind::Schema).catalog_kind.label(),
+            "Schema"
+        );
+        assert_eq!(
+            context("x", CatalogKind::Unknown).catalog_kind.label(),
+            "库"
+        );
+    }
+
+    #[test]
+    fn execute_request_carries_catalog_only_when_user_chose_one() {
+        // 空 / 只有空白 = 不改变会话当前库（旧行为，ADR 0030 §1）。
+        assert_eq!(execute_request("sess-1", "SELECT 1", 500, None).catalog, "");
+        assert_eq!(
+            execute_request("sess-1", "SELECT 1", 500, Some("  ")).catalog,
+            ""
+        );
+        // 非空 = 执行前切库，且首尾空白被去掉（不在库里留空格）。
+        let request = execute_request("sess-1", "SELECT 1", 500, Some(" shop "));
+        assert_eq!(request.catalog, "shop");
+        assert_eq!(request.session_id, "sess-1");
+        assert_eq!(request.sql, "SELECT 1");
+        assert_eq!(request.max_rows_per_batch, 500);
+        assert!(request.auto_commit);
+        assert_eq!(
+            set_session_context_request("sess-1", " shop ").catalog,
+            "shop"
+        );
+        assert_eq!(set_session_context_request("sess-1", "").catalog, "");
     }
 }

@@ -2301,6 +2301,16 @@ impl Workspace {
                     })
                 })
             },
+            selected_catalog: {
+                // 新查询标签的默认请求库：树里当前选中项所在的库（ADR 0030）。
+                let tree_slot = Rc::clone(&tree_slot);
+                Rc::new(move || {
+                    tree_slot
+                        .borrow()
+                        .as_ref()
+                        .and_then(|tree| tree.selected_catalog())
+                })
+            },
             on_status: {
                 let shell_slot = Rc::clone(&shell_slot);
                 let inspector = Rc::clone(&inspector);

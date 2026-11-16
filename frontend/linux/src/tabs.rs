@@ -37,13 +37,15 @@
 //!   `[tabs]` 记录，便于用 `ListSessions` 前后对比取证。
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::backend::metadata::{MetadataHub, NodeView, kind_icon};
+use crate::backend::metadata::{MetadataHub, NodeView, catalog_layer_parent, kind_icon};
+use crate::backend::query::{CatalogKind, SessionDatabaseContext, UNSPECIFIED_CATALOG_LABEL};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
@@ -134,6 +136,117 @@ pub fn matches_table(kind: &TabKind, name: &str, catalog: &str, connection_key: 
 #[must_use]
 pub fn window_title_for(tab_title: &str, connection_name: &str) -> String {
     format!("{tab_title} ({connection_name})")
+}
+
+/// tooltip 里「库」那一段（纯函数，单测覆盖真值 / 未指定两种文案）。
+///
+/// 写**服务端真值**：没有默认库时写「未指定」，不再写死「默认」——那会让用户以为
+/// 会话已经落在连接配置里的库（ADR 0030 §7 的由来之一）。
+#[must_use]
+pub fn catalog_segment(kind: CatalogKind, truth: Option<&str>) -> String {
+    let layer = kind.label();
+    match truth.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(truth) => format!("{layer} {truth}"),
+        None => format!("{layer} {UNSPECIFIED_CATALOG_LABEL}"),
+    }
+}
+
+/// 查询标签 tooltip 的完整文案（纯函数，单测覆盖「真值 / 未指定」两种）。
+///
+/// 形状：`查询 1 · 标签会话 · 库 shop · 连接 本地`。库段永远是**真值**（或「未指定」），
+/// 不写死「默认」——那是连接配置值，不是服务端事实。
+#[must_use]
+pub fn query_tooltip(
+    title: &str,
+    stage: &str,
+    kind: CatalogKind,
+    truth: Option<&str>,
+    connection: Option<&str>,
+) -> String {
+    let mut text = format!("{title} · {stage} · {}", catalog_segment(kind, truth));
+    if let Some(connection) = connection {
+        text.push_str(&format!(" · 连接 {connection}"));
+    }
+    text
+}
+
+/// 驱动是否声明可以在会话里切库（`ConnectResponse.capabilities` 里的名字）。
+///
+/// 能力名是稳定标识（只追加不改名）；没声明就是**不支持**——SQLite 的
+/// `main` / `temp` / `ATTACH` 没有「切当前库」这个概念，选择器在该驱动上整枚不渲染。
+#[must_use]
+pub fn supports_catalog_switch(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability == "session_catalog_switch")
+}
+
+/// 查询标签的库上下文：**请求值**与**服务端真值**分开存（ADR 0030 §8）。
+///
+/// - `request` 是用户意图（选择器选过什么），执行时进 `ExecuteQueryRequest.catalog`；
+/// - `truth` 只用于显示；刷新真值绝不改写 `request`，否则用户自己写的 `USE` 会把标签
+///   状态来回拉扯。
+///
+/// 两者都在 `RefCell` / `Cell` 里：`TabKind` 不可变（它是标签身份的稳定描述）。
+#[derive(Debug)]
+pub struct QueryCatalog {
+    request: RefCell<Option<String>>,
+    truth: RefCell<Option<String>>,
+    kind: Cell<CatalogKind>,
+    switchable: Cell<bool>,
+}
+
+impl QueryCatalog {
+    /// 新建（`request` = 打开标签时算出的默认请求库）。
+    #[must_use]
+    pub fn new(request: Option<String>) -> Self {
+        Self {
+            request: RefCell::new(request),
+            truth: RefCell::new(None),
+            kind: Cell::new(CatalogKind::Unknown),
+            switchable: Cell::new(false),
+        }
+    }
+
+    /// 请求用的 catalog（`None` = 不改变会话当前库）。
+    #[must_use]
+    pub fn request(&self) -> Option<String> {
+        self.request.borrow().clone()
+    }
+
+    /// 改写请求值（选择器选中成功后才改；失败不改）。
+    pub fn set_request(&self, catalog: Option<String>) {
+        self.request.replace(catalog);
+    }
+
+    /// 最近一次读到的服务端真值。
+    #[must_use]
+    pub fn truth(&self) -> Option<String> {
+        self.truth.borrow().clone()
+    }
+
+    /// 层名（「库」/「Schema」）。
+    #[must_use]
+    pub fn kind(&self) -> CatalogKind {
+        self.kind.get()
+    }
+
+    /// 驱动是否声明可以切库（`session_catalog_switch`）。
+    #[must_use]
+    pub fn switchable(&self) -> bool {
+        self.switchable.get()
+    }
+
+    /// 记下会话能力位。
+    pub fn set_switchable(&self, switchable: bool) {
+        self.switchable.set(switchable);
+    }
+
+    /// 写入服务端真值（只改显示，不改请求值）。
+    pub fn apply(&self, context: &SessionDatabaseContext) {
+        self.truth.replace(context.default_catalog.clone());
+        self.kind.set(context.catalog_kind);
+    }
 }
 
 /// 标签种类。
@@ -345,6 +458,8 @@ pub struct TabHandle {
     query_timing: Cell<Option<u64>>,
     /// 该标签实际收到的会话级事件名（按到达顺序；QA 断言与日志证据）。
     trace: RefCell<Vec<String>>,
+    /// 查询标签的库上下文（请求值 / 真值 / 能力）；非查询标签保持默认。
+    pub catalog: QueryCatalog,
 }
 
 impl TabHandle {
@@ -408,6 +523,10 @@ pub struct TabContext {
     pub backend_failure: Rc<dyn Fn()>,
     /// 按表名解析一个对象（QA 脚本与「打开指定表」共用平铺列表的同一条路径）。
     pub resolve_table: TableResolver,
+    /// 对象树里当前选中项**所在的库**（新查询标签的默认请求库用，ADR 0030）。
+    ///
+    /// 返回连接节点或没有选中时为 `None`；调用方还要确认它属于「这条」连接。
+    pub selected_catalog: Rc<dyn Fn() -> Option<ObjectRef>>,
     /// 当前标签的状态变化（状态栏 / 工具条 / 窗口动作）。
     pub on_status: Rc<dyn Fn(TabStatus)>,
     /// 窗口标题（标题, 副标题）。
@@ -1290,13 +1409,25 @@ pub struct TabSet {
     /// 的同一个 response 回调，不是绕过确认的另一条路径。
     qa_close_answer: Cell<Option<CloseAnswer>>,
     /// 被 `close-page` 信号拦下的关闭请求（等确认框回答）。
-    ///
     /// libadwaita 的规矩：信号里返回 `Stop` 之后必须用 `close_page_finish(page, true)`
     /// 收尾。若改成再发一次 `close_page()`，页面已经在「关闭中」，这次请求会被丢掉——
     /// 标签既关不掉，后续每次关闭也都不再有任何反应（中键关脏标签就是这样卡住的）。
     pending_close: RefCell<Option<adw::TabPage>>,
     /// 正在显示的上限提示对话框。
     limit_dialog: Rc<RefCell<Option<adw::AlertDialog>>>,
+    /// 可见库列表的缓存（**按连接键**，ADR 0030）：库列表对整条连接是同一份。
+    catalogs: RefCell<HashMap<String, CatalogCache>>,
+}
+
+/// 一条连接的可见库列表缓存。
+///
+/// 三种状态互斥：`items` 有值 = 已取到；`failure` 有值 = 取不到（浮层里给一行说明，
+/// 不编造条目）；两者都空且 `loading` = 在飞。`loading` 兼做重入保护。
+#[derive(Debug, Default)]
+struct CatalogCache {
+    items: Option<Vec<String>>,
+    failure: Option<String>,
+    loading: bool,
 }
 
 impl TabSet {
@@ -1352,6 +1483,7 @@ impl TabSet {
             qa_close_answer: Cell::new(None),
             pending_close: RefCell::new(None),
             limit_dialog: Rc::new(RefCell::new(None)),
+            catalogs: RefCell::new(HashMap::new()),
         });
         set.self_ref.replace(Rc::downgrade(&set));
 
@@ -1832,6 +1964,7 @@ impl TabSet {
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
             trace: RefCell::new(Vec::new()),
+            catalog: QueryCatalog::new(None),
         });
         self.tabs.borrow_mut().push(handle);
         self.view.set_selected_page(&page);
@@ -1884,7 +2017,6 @@ impl TabSet {
 
         let page = self.view.add_page(data.widget(), None);
         page.set_title(&title);
-        page.set_tooltip(&self.tooltip_for(&kind, "标签会话"));
         let handle = Rc::new(TabHandle {
             id: tab_id.clone(),
             kind,
@@ -1899,7 +2031,9 @@ impl TabSet {
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
             trace: RefCell::new(Vec::new()),
+            catalog: QueryCatalog::new(None),
         });
+        page.set_tooltip(&self.tooltip_for(&handle, "标签会话"));
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
         eprintln!("[tabs] 新建表标签 {tab_id}：{title}");
@@ -1924,6 +2058,10 @@ impl TabSet {
             .as_ref()
             .and_then(|registry| registry.active_key())
             .unwrap_or_default();
+        // 默认请求库：对象树里当前选中项所在的库（属于这条连接时）；否则为空 =
+        // 不改变会话当前库。保留 `catalog_for` 作为兜底（例如没有树选中时）。见
+        // [`Self::default_query_catalog`]。
+        let request_catalog = self.default_query_catalog(&connection_key);
         let kind = TabKind::Query {
             number,
             catalog: self.catalog_for(&connection_key),
@@ -1934,9 +2072,6 @@ impl TabSet {
         let sql = self.build_sql_page(&tab_id);
         let page = self.view.add_page(sql.widget(), None);
         page.set_title(&title);
-        // 标题里只有「查询 N」（契约 §4）：库与连接落到 tooltip，多连接时靠它区分。
-        let tooltip = self.tooltip_for(&kind, "标签会话");
-        page.set_tooltip(&tooltip);
         let handle = Rc::new(TabHandle {
             id: tab_id.clone(),
             kind,
@@ -1951,13 +2086,51 @@ impl TabSet {
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
             trace: RefCell::new(Vec::new()),
+            catalog: QueryCatalog::new(request_catalog.clone()),
         });
+        // 标题里只有「查询 N」（契约 §4）：库与连接落到 tooltip，多连接时靠它区分。
+        let tooltip = self.tooltip_for(&handle, "标签会话");
+        page.set_tooltip(&tooltip);
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
-        eprintln!("[tabs] 新建查询标签 {tab_id}：{title}（tooltip「{tooltip}」）");
+        eprintln!(
+            "[tabs] 新建查询标签 {tab_id}：{title}（tooltip「{tooltip}」，请求库 {}）",
+            request_catalog.as_deref().unwrap_or("（空 = 不改会话库）")
+        );
         self.request_session(&tab_id);
         sql.focus_editor();
         Ok(tab_id)
+    }
+
+    /// 新查询标签的默认请求库：对象树里**当前选中项所在的库**，且必须属于这条连接。
+    ///
+    /// 属于别的连接时不借用（会切错库）；连接节点 / 没有选中时返回 `None`（空 = 不改变
+    /// 会话当前库，完全等于既有行为）。`catalog_for` 仍是兜底：调用方用它填 `TabKind`。
+    fn default_query_catalog(&self, connection_key: &str) -> Option<String> {
+        let selected = (self.context.selected_catalog)()?;
+        let name = if !selected.name.trim().is_empty() {
+            selected.name.clone()
+        } else if !selected.catalog.trim().is_empty() {
+            selected.catalog.clone()
+        } else {
+            return None;
+        };
+        if connection_key.is_empty() {
+            return None;
+        }
+        // 选中项属于哪条连接：用它的会话反查，反查不到就不借用。
+        let belongs = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.key_for_session(&selected.session_id))
+            .is_some_and(|key| key == connection_key);
+        if belongs {
+            eprintln!("[tabs] 新查询标签的默认请求库：{name}（对象树当前选中项）");
+            Some(name)
+        } else {
+            None
+        }
     }
 
     /// UI 入口：`＋` 与菜单都走这里；超限时对话框已经由 [`Self::new_query_tab`] 弹出。
@@ -2163,6 +2336,26 @@ impl TabSet {
                     );
                 })
             },
+            catalog: crate::sql_page::SqlPageCatalog {
+                select: {
+                    let weak = Rc::downgrade(self);
+                    let id = id.clone();
+                    Rc::new(move |catalog: &str| {
+                        if let Some(set) = weak.upgrade() {
+                            set.select_catalog(&id, catalog);
+                        }
+                    })
+                },
+                request: {
+                    let weak = Rc::downgrade(self);
+                    let id = id.clone();
+                    Rc::new(move || {
+                        if let Some(set) = weak.upgrade() {
+                            set.ensure_catalogs(&id);
+                        }
+                    })
+                },
+            },
         };
         let page = SqlPage::new("", callbacks);
         page.set_on_selection_changed({
@@ -2220,7 +2413,13 @@ impl TabSet {
             tab.pending_sql.replace(Some(sql));
             return;
         }
-        self.context.worker.execute_sql(tab_id, sql);
+        // 用户意图（选择器 / 打开标签时的默认库）随请求一起走；空 = 不改会话当前库。
+        let catalog = tab.catalog.request();
+        match catalog.as_deref() {
+            Some(catalog) => eprintln!("[tabs] 标签 {tab_id} 执行时带库：{catalog}"),
+            None => eprintln!("[tabs] 标签 {tab_id} 执行时不带库（不改变会话当前库）"),
+        }
+        self.context.worker.execute_sql(tab_id, sql, catalog);
     }
 
     // -- 选中 / 标题 / 状态 -------------------------------------------------
@@ -2310,34 +2509,27 @@ impl TabSet {
         line
     }
 
-    /// 标签 tooltip：`<标题> · <阶段>`，查询标签再拼上库与连接（§4）。
+    /// 标签 tooltip：`<标题> · <阶段>`，查询标签再拼上库（真值）与连接（§4）。
     ///
     /// 查询标签标题不再带 `@ 库`，库与连接就落到这里：多连接同时开着各自「查询 1」时，
     /// hover 能看出属于哪条连接。表数据标签的标题已经含 `@ 库`，这里不重复。
-    fn tooltip_for(&self, kind: &TabKind, stage: &str) -> String {
-        let mut text = format!("{} · {stage}", kind.title());
-        if let TabKind::Query {
-            catalog,
-            connection_key,
-            ..
-        } = kind
-        {
-            let catalog = if catalog.trim().is_empty() {
-                "默认"
-            } else {
-                catalog
-            };
-            text.push_str(&format!(" · 库 {catalog}"));
-            if let Some(name) = self
-                .context
-                .registry
-                .as_ref()
-                .and_then(|registry| registry.name_for_key(connection_key))
-            {
-                text.push_str(&format!(" · 连接 {name}"));
-            }
-        }
-        text
+    fn tooltip_for(&self, tab: &TabHandle, stage: &str) -> String {
+        let title = tab.kind.title();
+        let TabKind::Query { connection_key, .. } = &tab.kind else {
+            return format!("{title} · {stage}");
+        };
+        let connection = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.name_for_key(connection_key));
+        query_tooltip(
+            &title,
+            stage,
+            tab.catalog.kind(),
+            tab.catalog.truth().as_deref(),
+            connection.as_deref(),
+        )
     }
 
     /// 切换标签：换窗口标题与状态栏，**不**重建会话、不改树的展开状态。
@@ -2567,6 +2759,11 @@ impl TabSet {
         if let Some(summary) = summary {
             tab.sql_summary.replace(Some(summary));
         }
+        // 执行成功后刷新一次库上下文（轻量 RPC）：用户可能刚在 SQL 里写了 `USE`。
+        // 只更新显示，不改写标签的请求值（ADR 0030 §8）。
+        if matches!(&event, QueryEvent::Started { .. }) {
+            self.refresh_catalog_context(tab_id);
+        }
         match event {
             QueryEvent::Started {
                 query_id,
@@ -2605,7 +2802,7 @@ impl TabSet {
         };
         tab.set_session(opened.session_id.clone());
         tab.page.set_tooltip(
-            &self.tooltip_for(&tab.kind, &format!("会话 {}", short_id(&opened.session_id))),
+            &self.tooltip_for(&tab, &format!("会话 {}", short_id(&opened.session_id))),
         );
         eprintln!(
             "[tabs] 标签 {} 会话就绪：{}（连接 {}，领养={}，{} ms，驱动 {}）",
@@ -2625,6 +2822,21 @@ impl TabSet {
             ));
             // SQL 导出的引号风格按驱动选（MariaDB 反引号 / SQLite 双引号）。
             sql.set_driver(&opened.driver_id);
+            // 能力位来自服务端：没声明 `session_catalog_switch` 的驱动，选择器**整枚不渲染**。
+            let switchable = supports_catalog_switch(&opened.capabilities);
+            tab.catalog.set_switchable(switchable);
+            sql.set_session_ready(true);
+            sql.catalog_picker().set_capability(switchable);
+            if switchable {
+                self.ensure_catalogs(&opened.tab_id);
+            } else {
+                eprintln!(
+                    "[tabs] 标签 {} 的驱动 {} 未声明 session_catalog_switch：不显示库选择器",
+                    opened.tab_id, opened.driver_id
+                );
+            }
+            // 会话就绪后读一次真值（显示用；不改写请求值，ADR 0030 §8）。
+            self.refresh_catalog_context(&opened.tab_id);
         }
         if let Some(entry) = tab.pending_open.borrow_mut().take() {
             let mut reference = entry.reference.clone();
@@ -2633,9 +2845,280 @@ impl TabSet {
             self.context.worker.open_table(&opened.tab_id, reference);
         }
         if let Some(sql) = tab.pending_sql.borrow_mut().take() {
-            self.context.worker.execute_sql(&opened.tab_id, sql);
+            let catalog = tab.catalog.request();
+            self.context
+                .worker
+                .execute_sql(&opened.tab_id, sql, catalog);
         }
         self.refresh_current();
+    }
+
+    /// 读一次会话库上下文真值并写进标签（显示 + tooltip + 选择器）。
+    ///
+    /// 走 oneshot 回执而不是事件泵：回答只属于这一次刷新，不需要按请求 ID 分拣。
+    fn refresh_catalog_context(self: &Rc<Self>, tab_id: &str) {
+        let Some(tab) = self.by_id(tab_id) else {
+            return;
+        };
+        if tab.sql.is_none() {
+            return;
+        }
+        let Some(wait) = self.context.worker.fetch_session_context(tab_id) else {
+            eprintln!("[tabs] 标签 {tab_id} 读库上下文被忽略：worker 已结束");
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        let id = tab_id.to_owned();
+        glib::spawn_future_local(async move {
+            let result = wait.await;
+            let Some(set) = weak.upgrade() else {
+                return;
+            };
+            let Ok(result) = result else {
+                eprintln!("[tabs] 标签 {id} 读库上下文失败：worker 已结束");
+                return;
+            };
+            let Some(tab) = set.by_id(&id) else {
+                return;
+            };
+            match result {
+                Ok(context) => set.apply_catalog_context(&tab, &context),
+                Err(failure) => {
+                    eprintln!(
+                        "[tabs] 标签 {id} 读库上下文失败：[{}] {}",
+                        failure.code(),
+                        failure.detail()
+                    );
+                    if let Some(sql) = tab.sql.as_ref() {
+                        sql.set_catalog_failure(&format!(
+                            "读不到会话的库上下文 [{}]：先确认后端已实现 GetSessionContext",
+                            failure.code()
+                        ));
+                    }
+                }
+            }
+        });
+    }
+
+    /// 把服务端真值落到标签与选择器上（只改显示）。
+    fn apply_catalog_context(&self, tab: &Rc<TabHandle>, context: &SessionDatabaseContext) {
+        tab.catalog.apply(context);
+        // 先落到控件上，再从控件把文字读回来写日志：日志说的是「界面现在写的是什么」。
+        if let Some(sql) = tab.sql.as_ref() {
+            let picker = sql.catalog_picker();
+            picker.set_layer(context.catalog_kind);
+            picker.set_truth(context.default_catalog.as_deref());
+            sql.clear_catalog_failure();
+        }
+        let displayed = tab
+            .sql
+            .as_ref()
+            .map_or_else(String::new, |sql| sql.catalog_picker().display_text());
+        eprintln!(
+            "[tabs] 标签 {} 库上下文：{}（选择器显示「{displayed}」）",
+            tab.id,
+            context.log_note()
+        );
+        tab.page.set_tooltip(&self.tooltip_for(
+            tab,
+            &format!("会话 {}", short_id(&tab.session().unwrap_or_default())),
+        ));
+    }
+
+    /// 需要这份库列表时：有缓存就直接用，没有就按连接取一次（ADR 0030）。
+    ///
+    /// 「按连接缓存」是有意的：库列表对整条连接是同一份，同一条连接开 8 个查询标签
+    /// 不该发 8 次 `ListNodes`。
+    fn ensure_catalogs(self: &Rc<Self>, tab_id: &str) {
+        let Some(tab) = self.by_id(tab_id) else {
+            return;
+        };
+        let Some(sql) = tab.sql.as_ref() else {
+            return;
+        };
+        let Some(key) = tab.kind.connection_key().map(ToOwned::to_owned) else {
+            return;
+        };
+        let (items, failure, loading) = {
+            let cache = self.catalogs.borrow();
+            match cache.get(&key) {
+                Some(entry) => (entry.items.clone(), entry.failure.clone(), entry.loading),
+                None => (None, None, false),
+            }
+        };
+        if let Some(items) = items {
+            sql.catalog_picker().set_items(&items);
+            return;
+        }
+        if let Some(failure) = failure {
+            sql.catalog_picker().show_list_failure(&failure);
+            return;
+        }
+        if loading {
+            return;
+        }
+        self.request_catalogs(key);
+    }
+
+    /// 取一条连接的可见库列表（首次需要时；成功后广播给这条连接的每个查询标签）。
+    fn request_catalogs(self: &Rc<Self>, key: String) {
+        self.catalogs
+            .borrow_mut()
+            .entry(key.clone())
+            .or_default()
+            .loading = true;
+        let registry = self.context.registry.clone();
+        let hub = registry
+            .as_ref()
+            .and_then(|registry| registry.hub_for_key(&key));
+        let session = registry
+            .as_ref()
+            .and_then(|registry| registry.session_for_key(&key));
+        let (Some(hub), Some(session)) = (hub, session) else {
+            // 连接没有浏览会话（还没在对象树里展开 / 已断开）：如实说明，不编造条目。
+            let note = "这条连接还没有浏览会话（先在对象树里展开它）".to_owned();
+            eprintln!("[tabs] 取不到库列表（连接键 {key}）：{note}");
+            self.finish_catalogs(key, Err(note));
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        let result_key = key.clone();
+        hub.request_group(
+            catalog_layer_parent(&session),
+            &[],
+            "",
+            Rc::new(move |result| {
+                let Some(set) = weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(page) => {
+                        let mut items: Vec<String> = page
+                            .nodes
+                            .iter()
+                            .filter(|node| {
+                                matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema)
+                            })
+                            .map(|node| node.display_name.clone())
+                            .filter(|name| !name.trim().is_empty())
+                            .collect();
+                        items.sort();
+                        items.dedup();
+                        eprintln!(
+                            "[tabs] 库列表已取到（连接键 {result_key}）：{} 个{}",
+                            items.len(),
+                            if page.has_more() {
+                                "（还有更多）"
+                            } else {
+                                ""
+                            }
+                        );
+                        set.finish_catalogs(result_key.clone(), Ok(items));
+                    }
+                    Err(error) => {
+                        let note = format!("[{}] {}", error.code(), error.headline());
+                        eprintln!("[tabs] 取库列表失败（连接键 {result_key}）：{note}");
+                        set.finish_catalogs(result_key.clone(), Err(note));
+                    }
+                }
+            }),
+        );
+    }
+
+    /// 收下库列表（或失败原因）并刷新这条连接上所有查询标签的选择器。
+    fn finish_catalogs(&self, key: String, result: Result<Vec<String>, String>) {
+        let cached = {
+            let mut cache = self.catalogs.borrow_mut();
+            let entry = cache.entry(key.clone()).or_default();
+            entry.loading = false;
+            match result {
+                Ok(items) => {
+                    entry.items = Some(items);
+                    entry.failure = None;
+                }
+                Err(note) => {
+                    entry.items = None;
+                    entry.failure = Some(note);
+                }
+            }
+            (entry.items.clone(), entry.failure.clone())
+        };
+        for tab in self.tabs.borrow().iter() {
+            if tab.kind.connection_key() != Some(key.as_str()) {
+                continue;
+            }
+            let Some(sql) = tab.sql.as_ref() else {
+                continue;
+            };
+            match &cached {
+                (Some(items), _) => sql.catalog_picker().set_items(items),
+                (None, Some(failure)) => sql.catalog_picker().show_list_failure(failure),
+                (None, None) => {}
+            }
+        }
+    }
+
+    /// 用户在库选择器里选了一个库：发 `SetSessionContext`，用返回的上下文回读真值。
+    ///
+    /// 失败时走**查询页既有的失败提示路径**，并把选择器显示恢复成原值（真值）——
+    /// 绝不假装切成功了：切库失败时语句是按旧库跑的（ADR 0030 §6）。
+    fn select_catalog(self: &Rc<Self>, tab_id: &str, catalog: &str) {
+        let Some(tab) = self.by_id(tab_id) else {
+            return;
+        };
+        let Some(sql) = tab.sql.as_ref() else {
+            return;
+        };
+        if !tab.catalog.switchable() {
+            eprintln!("[tabs] 标签 {tab_id} 的驱动未声明 session_catalog_switch：忽略切库请求");
+            sql.catalog_picker().restore();
+            return;
+        }
+        let Some(wait) = self.context.worker.set_session_context(tab_id, catalog) else {
+            eprintln!("[tabs] 标签 {tab_id} 切库被忽略：worker 已结束");
+            sql.catalog_picker().restore();
+            return;
+        };
+        eprintln!("[tabs] 标签 {tab_id} 请求切库：{catalog}");
+        let weak = Rc::downgrade(self);
+        let id = tab_id.to_owned();
+        let target = catalog.to_owned();
+        glib::spawn_future_local(async move {
+            let result = wait.await;
+            let Some(set) = weak.upgrade() else {
+                return;
+            };
+            let Some(tab) = set.by_id(&id) else {
+                return;
+            };
+            let Some(sql) = tab.sql.as_ref() else {
+                return;
+            };
+            match result {
+                Ok(Ok(context)) => {
+                    // 用户意图成立后才改请求值：执行时会带上它（ADR 0030 §8 的另一半）。
+                    tab.catalog.set_request(Some(target.clone()));
+                    set.apply_catalog_context(&tab, &context);
+                    eprintln!(
+                        "[tabs] 标签 {id} 已切到库 {target}（服务端真值：{}）",
+                        context.log_note()
+                    );
+                }
+                Ok(Err(failure)) => {
+                    eprintln!(
+                        "[tabs] 标签 {id} 切库失败：[{}] {}",
+                        failure.code(),
+                        failure.detail()
+                    );
+                    sql.catalog_picker().restore();
+                    sql.show_failure(&failure);
+                }
+                Err(_) => {
+                    eprintln!("[tabs] 标签 {id} 切库失败：worker 已结束");
+                    sql.catalog_picker().restore();
+                }
+            }
+        });
     }
 
     /// 标签会话建立失败：保留标签（用户可关闭或重试），但把原因写在页面上。
@@ -3351,6 +3834,26 @@ impl TabSet {
                     ))
                 }
             }
+            QaStep::Catalog { tab, catalog } => {
+                let sql = self
+                    .sql_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是查询标签"))?;
+                sql.catalog_picker().qa_select(catalog)?;
+                Ok(format!("第 {tab} 个查询标签的库选择器选中「{catalog}」"))
+            }
+            QaStep::ExpectCatalog { tab, expected } => {
+                let sql = self
+                    .sql_page_at(*tab)
+                    .ok_or_else(|| format!("第 {tab} 个标签不是查询标签"))?;
+                let actual = sql.catalog_picker().display_text();
+                if actual.contains(expected.as_str()) {
+                    Ok(format!("第 {tab} 个查询标签的库选择器显示「{actual}」"))
+                } else {
+                    Err(format!(
+                        "第 {tab} 个查询标签的库选择器期望包含「{expected}」，实际「{actual}」"
+                    ))
+                }
+            }
             QaStep::Close { tab, answer } => {
                 if self.close_tab_at(*tab, *answer) {
                     Ok(format!("关闭第 {tab} 个标签（回答 {answer:?}）"))
@@ -3774,6 +4277,7 @@ impl QaStep {
                 | Self::ExpectTrace { .. }
                 | Self::ExpectRows { .. }
                 | Self::ExpectQuery { .. }
+                | Self::ExpectCatalog { .. }
                 | Self::ExpectFile { .. }
                 | Self::ExpectFocus(_)
                 | Self::ExpectListNodes(_)
@@ -3932,6 +4436,20 @@ pub enum QaStep {
         tab: usize,
         /// 期望行数。
         rows: u64,
+    },
+    /// `catalog <tab> <库>`：在该查询标签的库选择器里选中某个库（与点下拉同一条路径）。
+    Catalog {
+        /// 标签序号。
+        tab: usize,
+        /// 目标库名。
+        catalog: String,
+    },
+    /// `expect-catalog <tab> <文本>`：断言选择器上显示的文字（读控件，不读状态变量）。
+    ExpectCatalog {
+        /// 标签序号。
+        tab: usize,
+        /// 期望出现的文字（按包含比对）。
+        expected: String,
     },
     /// 断言第 n 个查询标签的观测值（行数 / 状态 / 首行首列 / 摘要）。
     ExpectQuery {
@@ -4334,6 +4852,21 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     expected: expected.to_owned(),
                 }
             }
+            // `catalog` / `expect-catalog`：查询标签库选择器的用户路径与显示断言。
+            "catalog" => QaStep::Catalog {
+                tab: parse_index(&parts, 1, number)?,
+                catalog: parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少库名", number + 1))?
+                    .to_string(),
+            },
+            "expect-catalog" => QaStep::ExpectCatalog {
+                tab: parse_index(&parts, 1, number)?,
+                expected: parts
+                    .get(2)
+                    .ok_or_else(|| format!("第 {} 行缺少期望文字", number + 1))?
+                    .to_string(),
+            },
             "close" => QaStep::Close {
                 tab: parse_index(&parts, 1, number)?,
                 answer: match parts.get(2).copied() {
@@ -5084,5 +5617,88 @@ quit
         }
         assert!(BrowseField::parse("bogus").is_err());
         assert!(InspectorField::parse("bogus").is_err());
+    }
+
+    // ---- 查询标签的库上下文（ADR 0030） -----------------------------------
+
+    #[test]
+    fn tooltip_uses_the_server_truth_and_never_says_default() {
+        // 真值：直接写库名。
+        let named = query_tooltip(
+            "查询 1",
+            "标签会话",
+            CatalogKind::Database,
+            Some("shop"),
+            Some("本地"),
+        );
+        assert_eq!(named, "查询 1 · 标签会话 · 库 shop · 连接 本地");
+        // 没有默认库：写「未指定」，不是「默认」。
+        let empty = query_tooltip(
+            "查询 1",
+            "标签会话",
+            CatalogKind::Database,
+            None,
+            Some("本地"),
+        );
+        assert_eq!(empty, "查询 1 · 标签会话 · 库 未指定 · 连接 本地");
+        assert!(
+            !empty.contains("默认"),
+            "tooltip 的库段不许写死「默认」：{empty}"
+        );
+        // 只有空白也算没有库（不把空白当成库名）。
+        assert_eq!(
+            catalog_segment(CatalogKind::Database, Some("  ")),
+            "库 未指定"
+        );
+        // 层名由 catalog_kind 决定（PostgreSQL 的 catalog 层是 schema）。
+        assert_eq!(
+            catalog_segment(CatalogKind::Schema, Some("public")),
+            "Schema public"
+        );
+        assert_eq!(catalog_segment(CatalogKind::Schema, None), "Schema 未指定");
+        // 没有连接名时不留一个空的「连接 」尾巴。
+        assert_eq!(
+            query_tooltip("查询 2", "标签会话", CatalogKind::Database, None, None),
+            "查询 2 · 标签会话 · 库 未指定"
+        );
+    }
+
+    #[test]
+    fn catalog_switch_capability_comes_from_the_server_list() {
+        assert!(supports_catalog_switch(&[
+            "table_browse_sort_filter_total".to_owned(),
+            "session_catalog_switch".to_owned(),
+        ]));
+        // 没声明就是不支持（SQLite 的 main/temp/ATTACH 没有「切当前库」这个概念）。
+        assert!(!supports_catalog_switch(&[
+            "table_browse_sort_filter_total".to_owned(),
+        ]));
+        assert!(!supports_catalog_switch(&[]));
+    }
+
+    #[test]
+    fn query_catalog_keeps_request_and_truth_separate() {
+        let state = QueryCatalog::new(Some("shop".to_owned()));
+        assert_eq!(state.request().as_deref(), Some("shop"));
+        assert_eq!(state.truth(), None);
+        state.set_switchable(true);
+        assert!(state.switchable());
+        // 刷新真值只改显示，不改写请求值（ADR 0030 §8）。
+        let context = SessionDatabaseContext {
+            session_id: "sess-1".to_owned(),
+            driver_id: "mariadb".to_owned(),
+            default_catalog: None,
+            catalog_kind: CatalogKind::Database,
+        };
+        state.apply(&context);
+        assert_eq!(state.truth(), None);
+        assert_eq!(state.request().as_deref(), Some("shop"));
+        // 用户在选择器里选中成功后才改写请求值。
+        state.set_request(Some("other".to_owned()));
+        assert_eq!(state.request().as_deref(), Some("other"));
+        assert_eq!(state.kind(), CatalogKind::Database);
+        // 请求值可以被清空回「不改变会话当前库」。
+        state.set_request(None);
+        assert_eq!(state.request(), None);
     }
 }

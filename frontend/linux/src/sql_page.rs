@@ -23,7 +23,9 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::backend::query::{QueryFailure, RowView, StatementView};
+use crate::backend::query::{
+    CatalogKind, QueryFailure, RowView, StatementView, UNSPECIFIED_PICKER_LABEL,
+};
 use crate::backend::table::TableColumn;
 use crate::backend::table::{ApplyReport, InsertReport};
 use crate::backend::worker::{QueryEditMeta, SubmitOptions, TableEvent};
@@ -73,6 +75,16 @@ pub struct SqlPageCallbacks {
     pub apply_changes: ApplyChanges,
     /// 页面内的可编辑状态变了（脏行 / 选中 / 是否可编辑）：让状态栏重算按钮可用性。
     pub state_changed: Rc<dyn Fn()>,
+    /// 动作行左端的库选择器（ADR 0030）。
+    pub catalog: SqlPageCatalog,
+}
+
+/// 库选择器的接线（动作行左端，ADR 0030）。
+pub struct SqlPageCatalog {
+    /// 用户选了一个库：由 tabs 发 `SetSessionContext`。
+    pub select: Rc<dyn Fn(&str)>,
+    /// 需要可见库列表（tabs 侧按连接取一次并缓存）。
+    pub request: Rc<dyn Fn()>,
 }
 
 /// 解析编辑目标的回调签名：结果表名 → 该标签会话下的对象引用。
@@ -118,6 +130,14 @@ pub struct SqlPage {
     last_batch: RefCell<Option<ChangeBatch>>,
     /// 提交后自动重跑要补在结果区的一句话（重跑会重置结果区，所以要跨过去）。
     pending_commit_note: RefCell<Option<String>>,
+    /// 动作行左端的库选择器（`tabs.query.database_picker`）。
+    catalog: Rc<CatalogPicker>,
+    /// 这条标签的会话是否已经就绪（选择器可用性的一半条件）。
+    session_ready: Cell<bool>,
+    /// 这条会话是否有未提交事务（事务中切库会被服务端拒绝，选择器先禁用）。
+    transaction_open: Cell<bool>,
+    /// 读不到库上下文的原因（`GetSessionContext` 失败）：选择器禁用并说明原因。
+    catalog_failure: RefCell<Option<String>>,
 }
 
 impl SqlPage {
@@ -150,6 +170,12 @@ impl SqlPage {
         toolbar.set_margin_bottom(gap(Gap::Sm));
         toolbar.set_margin_start(gap(Gap::Xl));
         toolbar.set_margin_end(gap(Gap::Xl));
+        // 动作行左端：库选择器（能力级不可用时整枚不渲染）→ 会话信息 → 执行 / 取消。
+        let catalog = CatalogPicker::new(CatalogPickerCallbacks {
+            select: Rc::clone(&callbacks.catalog.select),
+            request: Rc::clone(&callbacks.catalog.request),
+        });
+        toolbar.append(catalog.widget());
         toolbar.append(&session_label);
         toolbar.append(&execute_button);
         toolbar.append(&cancel_button);
@@ -212,6 +238,10 @@ impl SqlPage {
             pending_target: RefCell::new(None),
             last_batch: RefCell::new(None),
             pending_commit_note: RefCell::new(None),
+            catalog,
+            session_ready: Cell::new(false),
+            transaction_open: Cell::new(false),
+            catalog_failure: RefCell::new(None),
         });
 
         {
@@ -301,6 +331,8 @@ impl SqlPage {
         }
 
         page.set_state(PageState::Idle, None);
+        // 会话还没建立：选择器一开始就是「可见但禁用 + 说明原因」，不是灰块也不是可点。
+        page.apply_catalog_gate();
         page
     }
 
@@ -317,6 +349,57 @@ impl SqlPage {
     /// 记录本标签连接的驱动（SQL 导出的引号风格按它选）。
     pub fn set_driver(&self, driver: &str) {
         self.results.set_driver(Some(driver));
+    }
+
+    /// 库选择器（tabs 侧要写真值、可见性、可用性与列表）。
+    #[must_use]
+    pub fn catalog_picker(&self) -> &Rc<CatalogPicker> {
+        &self.catalog
+    }
+
+    /// 会话就绪状态：未就绪时选择器可见但禁用，并说明原因。
+    pub fn set_session_ready(&self, ready: bool) {
+        self.session_ready.set(ready);
+        self.apply_catalog_gate();
+    }
+
+    /// 重算选择器的可用性（会话就绪 + 没有未提交事务 + 读到过真值）。
+    fn apply_catalog_gate(&self) {
+        let failure = self.catalog_failure.borrow().clone();
+        let reason = if let Some(failure) = failure {
+            Some(failure)
+        } else if !self.session_ready.get() {
+            Some("会话尚未建立：等标签会话就绪后才能切换库".to_owned())
+        } else if self.transaction_open.get() {
+            Some("事务已打开：先提交或回滚，再切换库".to_owned())
+        } else {
+            None
+        };
+        self.catalog
+            .set_enabled(reason.is_none(), reason.as_deref());
+    }
+
+    /// 读不到库上下文（`GetSessionContext` 失败）：选择器禁用并在 tooltip 里说明原因。
+    pub fn set_catalog_failure(&self, reason: &str) {
+        self.catalog_failure.replace(Some(reason.to_owned()));
+        self.apply_catalog_gate();
+    }
+
+    /// 读到了真值：清掉上一次的失败原因。
+    pub fn clear_catalog_failure(&self) {
+        if self.catalog_failure.borrow().is_none() {
+            return;
+        }
+        self.catalog_failure.replace(None);
+        self.apply_catalog_gate();
+    }
+
+    /// 事务状态变化（`TableEvent::Transaction`）：事务中服务端会拒绝切库，选择器先禁用。
+    fn set_transaction_open(&self, open: bool) {
+        if self.transaction_open.replace(open) == open {
+            return;
+        }
+        self.apply_catalog_gate();
     }
 
     /// 把 SQL 放进编辑器缓冲区（与用户输入同一个控件；QA 也走这里）。
@@ -678,6 +761,8 @@ impl SqlPage {
     /// 断连：保留已加载行，明确标注失连并禁用执行/取消。
     pub fn mark_disconnected(self: &Rc<Self>, reason: &str) {
         eprintln!("[query] 状态=Disconnected：{reason}");
+        // 会话没了就不能切库：选择器留在原位、可见但禁用，tooltip 说明原因。
+        self.set_session_ready(false);
         let loaded = self.results.row_count();
         self.results
             .set_state(RunState::Disconnected, loaded, false, Some(reason));
@@ -793,7 +878,11 @@ impl SqlPage {
                 eprintln!("[query] 提交失败：{message}");
                 self.set_state(PageState::Complete, Some(&format!("提交失败：{message}")));
             }
-            TableEvent::Opened(_) | TableEvent::Transaction(_) => {}
+            TableEvent::Transaction(snapshot) => {
+                // 事务状态决定选择器能不能用（事务中服务端拒绝切库）：先自己算一次。
+                self.set_transaction_open(snapshot.transaction_id.is_some());
+            }
+            TableEvent::Opened(_) => {}
         }
     }
 
@@ -1071,5 +1160,258 @@ impl SqlPage {
         if self.query_id.borrow().is_some() {
             (self.callbacks.close)();
         }
+    }
+}
+
+/// 库选择器要用的接线（`tabs.query.database_picker`）。
+///
+/// 选择器自己不知道会话、也不发 RPC：选中交给 tabs 去发 `SetSessionContext`，
+/// 列表交给它按连接缓存。这样「谁拥有会话」只有一处（tabs.rs），选择器只管显示。
+pub struct CatalogPickerCallbacks {
+    /// 用户选了一个真实库名（占位项不会走到这里）。
+    pub select: Rc<dyn Fn(&str)>,
+    /// 需要可见库列表（首次需要时取一次，缓存由 tabs 侧持有）。
+    pub request: Rc<dyn Fn()>,
+}
+
+/// 用户在一次选中里表达的是什么。
+#[derive(Debug, Clone)]
+enum PickerAction {
+    /// 选中了一个具体库：交给 tabs 发 `SetSessionContext`。
+    Choose(String),
+    /// 选中了占位项（没有默认库 / 取不到库列表）：会话不动，只把显示回写真值。
+    KeepCurrent,
+}
+
+/// 查询标签动作行左端的库选择器（原生 `GtkDropDown`）。
+///
+/// 三件事必须同时成立才是「如实显示」：
+///
+/// 1. 显示 = **服务端真值**（`GetSessionContext`），没有默认库时显示「未指定库」；
+/// 2. 驱动没声明 `session_catalog_switch` 时整枚不渲染（能力级不可用，不留灰块）；
+/// 3. 会话未就绪 / 事务打开时可见但禁用，tooltip 说明原因。
+pub struct CatalogPicker {
+    root: gtk::Box,
+    caption: gtk::Label,
+    dropdown: gtk::DropDown,
+    /// 模型里的真实库名（不含第 0 项占位）。
+    items: RefCell<Vec<String>>,
+    /// 第 0 项的文字：平时是「未指定库」，取不到列表时是那一行说明。
+    placeholder: RefCell<String>,
+    /// 程序改选中（回写真值）时不把变化当成用户意图。
+    updating: Cell<bool>,
+    /// 最近一次真值（回写与日志用）。
+    truth: RefCell<Option<String>>,
+    /// 正在等确认的库：同一次切换在途时，重复的 `selected` 通知不再重复发 RPC
+    /// （GTK 换模型与换选中会各发一次通知）。
+    pending: RefCell<Option<String>>,
+    callbacks: CatalogPickerCallbacks,
+}
+
+impl CatalogPicker {
+    /// 组装（默认隐藏：渲染与否由能力位决定，见 [`CatalogPicker::set_capability`]）。
+    pub fn new(callbacks: CatalogPickerCallbacks) -> Rc<Self> {
+        let caption = gtk::Label::new(Some("库"));
+        caption.add_css_class("dim-label");
+        caption.add_css_class("caption");
+
+        let dropdown = gtk::DropDown::from_strings(&[UNSPECIFIED_PICKER_LABEL]);
+        // 可访问名（a11y.name = 「当前库」）：读屏与自动化都靠它指认这枚控件。
+        dropdown.update_property(&[gtk::accessible::Property::Label("当前库")]);
+        dropdown.set_tooltip_text(Some("这条会话的当前库（服务端真值）"));
+
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
+        root.set_valign(gtk::Align::Center);
+        root.set_visible(false);
+        root.append(&caption);
+        root.append(&dropdown);
+
+        let picker = Rc::new(Self {
+            root,
+            caption,
+            dropdown,
+            items: RefCell::new(Vec::new()),
+            placeholder: RefCell::new(UNSPECIFIED_PICKER_LABEL.to_owned()),
+            updating: Cell::new(false),
+            truth: RefCell::new(None),
+            pending: RefCell::new(None),
+            callbacks,
+        });
+        {
+            let weak = Rc::downgrade(&picker);
+            picker.dropdown.connect_selected_notify(move |_| {
+                let Some(picker) = weak.upgrade() else {
+                    return;
+                };
+                if picker.updating.get() {
+                    return;
+                }
+                match picker.take_selection() {
+                    Some(PickerAction::Choose(name)) => (picker.callbacks.select)(&name),
+                    Some(PickerAction::KeepCurrent) => {
+                        // 推迟一拍再回写真值并补一次列表请求：在 `selected` 信号里同步换
+                        // 模型会让 GTK 重入（表现为下拉框自己打开 / 断言失败）。
+                        let weak_restore = Rc::downgrade(&picker);
+                        glib::idle_add_local_once(move || {
+                            let Some(picker) = weak_restore.upgrade() else {
+                                return;
+                            };
+                            picker.restore();
+                            (picker.callbacks.request)();
+                        });
+                    }
+                    None => {}
+                }
+            });
+        }
+        picker
+    }
+
+    /// 根控件。
+    pub fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    /// 当前显示的文字（日志与断言读它，不读状态变量）。
+    #[must_use]
+    pub fn display_text(&self) -> String {
+        let selected = self.dropdown.selected();
+        if selected == 0 {
+            return self.placeholder.borrow().clone();
+        }
+        usize::try_from(selected)
+            .ok()
+            .and_then(|index| self.items.borrow().get(index - 1).cloned())
+            .unwrap_or_else(|| self.placeholder.borrow().clone())
+    }
+
+    /// 层名（「库」/「Schema」）——由 `catalog_kind` 决定，不按驱动名硬编码。
+    pub fn set_layer(&self, kind: CatalogKind) {
+        self.caption.set_text(kind.label());
+    }
+
+    /// 能力级可见性：驱动没声明 `session_catalog_switch` 时**整枚不渲染**。
+    pub fn set_capability(&self, switchable: bool) {
+        self.root.set_visible(switchable);
+    }
+
+    /// 写服务端真值并刷新显示；真值不在已取到的列表里时补进去，不编造其它条目。
+    pub fn set_truth(&self, truth: Option<&str>) {
+        // 切库的往返回来了（成功）：清掉在途标记。
+        self.pending.replace(None);
+        self.truth.replace(truth.map(ToOwned::to_owned));
+        if let Some(truth) = truth
+            && !self.items.borrow().iter().any(|item| item == truth)
+        {
+            self.items.borrow_mut().push(truth.to_owned());
+        }
+        self.rebuild();
+    }
+
+    /// 换上可见库列表（按连接缓存的那份）。列表为空时不算失败：显示「未指定库」即可。
+    pub fn set_items(&self, items: &[String]) {
+        self.items.replace(items.to_vec());
+        self.placeholder
+            .replace(UNSPECIFIED_PICKER_LABEL.to_owned());
+        self.rebuild();
+    }
+
+    /// 取不到库列表：**不编造条目**，浮层里只留一行说明，按钮文字仍是真值。
+    pub fn show_list_failure(&self, note: &str) {
+        self.items.replace(Vec::new());
+        self.placeholder.replace(format!("取不到库列表：{note}"));
+        self.rebuild();
+    }
+
+    /// 可见但禁用 + 原因（会话未就绪 / 事务打开）。
+    pub fn set_enabled(&self, enabled: bool, reason: Option<&str>) {
+        self.dropdown.set_sensitive(enabled);
+        match (enabled, reason) {
+            (false, Some(reason)) => {
+                self.root.set_tooltip_text(Some(reason));
+                self.dropdown.set_tooltip_text(Some(reason));
+            }
+            _ => {
+                let truth = self
+                    .truth
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| UNSPECIFIED_PICKER_LABEL.to_owned());
+                let text = format!("当前库：{truth}（选中后这条会话会切到该库）");
+                self.root.set_tooltip_text(Some(&text));
+                self.dropdown.set_tooltip_text(Some(&text));
+            }
+        }
+    }
+
+    /// QA：在下拉里选中某个库（走 `GtkDropDown::set_selected`，与用户点选同一条信号路径）。
+    ///
+    /// 未就绪 / 有事务时下拉是禁用的：如实返回「不可用」让脚本重试，不绕过硬门。
+    pub fn qa_select(&self, catalog: &str) -> Result<(), String> {
+        if !self.dropdown.get_sensitive() {
+            return Err("库选择器当前不可用（会话未就绪或有未提交事务）".to_owned());
+        }
+        let position = self
+            .items
+            .borrow()
+            .iter()
+            .position(|item| item == catalog)
+            .ok_or_else(|| format!("库列表里没有「{catalog}」（可能还没取到）"))?;
+        let selected =
+            u32::try_from(position + 1).map_err(|_| "库列表过长（超出下拉索引范围）".to_owned())?;
+        self.dropdown.set_selected(selected);
+        Ok(())
+    }
+
+    /// 把显示恢复成真值（失败回滚、以及占位项被选中时）。
+    pub fn restore(&self) {
+        // 切库失败 / 占位项被选中：显示回到真值，并允许重新选同一个库。
+        self.pending.replace(None);
+        self.rebuild();
+    }
+
+    /// 把「用户选中了哪一项」翻译成一个动作。
+    ///
+    /// 占位项（「未指定库」/「取不到库列表」）不是可选的目标：返回 [`PickerAction::KeepCurrent`]，
+    /// 由调用方**推迟**把显示回写成真值——在 `selected` 信号里同步换模型会让 GTK 重入。
+    fn take_selection(&self) -> Option<PickerAction> {
+        let index = self.dropdown.selected();
+        if index == 0 {
+            eprintln!(
+                "[tabs] 库选择器的占位项被选中：{}（保持会话当前库）",
+                self.placeholder.borrow()
+            );
+            return Some(PickerAction::KeepCurrent);
+        }
+        let name = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.items.borrow().get(index - 1).cloned())?;
+        // 同一个库的切换已经在途：GTK 换模型 / 换选中会各发一次通知，别发两遍 RPC。
+        if self.pending.borrow().as_deref() == Some(name.as_str()) {
+            return None;
+        }
+        self.pending.replace(Some(name.clone()));
+        Some(PickerAction::Choose(name))
+    }
+
+    /// 用「占位项 + 真实库」重建模型，并把选中落到真值上。
+    fn rebuild(&self) {
+        let placeholder = self.placeholder.borrow().clone();
+        let items = self.items.borrow().clone();
+        let truth = self.truth.borrow().clone();
+        let mut names: Vec<String> = Vec::with_capacity(items.len() + 1);
+        names.push(placeholder);
+        names.extend(items.iter().cloned());
+        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+        let model = gtk::StringList::new(&labels);
+        // 换模型会发 `selected` 通知：程序性改动期间不许当成用户意图。
+        self.updating.set(true);
+        self.dropdown.set_model(Some(&model));
+        let selected = truth
+            .as_deref()
+            .and_then(|truth| items.iter().position(|item| item == truth))
+            .map_or(0, |position| u32::try_from(position + 1).unwrap_or(0));
+        self.dropdown.set_selected(selected);
+        self.updating.set(false);
     }
 }

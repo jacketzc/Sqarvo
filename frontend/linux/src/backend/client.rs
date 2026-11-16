@@ -27,8 +27,8 @@ use crate::backend::metadata::{
     self, DdlView, MetadataError, NodePage, failure_from_status as metadata_failure_from_status,
 };
 use crate::backend::query::{
-    ExecuteOutcome, FetchOutcome, QueryFailure, failure_from_status, failure_timeout,
-    rows_from_proto, statements_from_proto,
+    self, ExecuteOutcome, FetchOutcome, QueryFailure, SessionDatabaseContext, failure_from_status,
+    failure_timeout, rows_from_proto, statements_from_proto,
 };
 use crate::backend::table::{
     ApplyReport, BrowsePage, BrowseQuery, TABLE_PAGE_SIZE, TableColumn, TableEntry, TableFailure,
@@ -50,7 +50,7 @@ use crate::proto::services::v1::{
     ObjectKind, ObjectRef, PrimaryKeyColumn, RowDelete, RowUpdate, TransactionRef,
 };
 use crate::proto::services::v1::{CancelQueryRequest, CloseQueryRequest};
-use crate::proto::services::v1::{ExecuteQueryRequest, FetchBatchRequest};
+use crate::proto::services::v1::{FetchBatchRequest, GetSessionContextRequest};
 
 /// gRPC metadata 中携带 token 的键；必须与后端认证拦截器一致。
 pub const TOKEN_METADATA_KEY: &str = "x-sqarvo-token";
@@ -413,22 +413,18 @@ impl BackendClient {
     /// **不加客户端超时**：长语句由用户通过 `Cancel` 结束，而不是本地提前放弃——
     /// 本地放弃会让界面显示「超时」而后端仍在执行，用户无法判断真实状态。
     /// 服务端在驱动层登记查询，取消语义见 [`BackendClient::cancel_query`]。
+    ///
+    /// `catalog` 是用户的库意图（ADR 0030）：`None` / 全空白 → 请求里空串，不改变会话
+    /// 当前库（完全等于既有行为）；非空 → 服务端执行前把这条会话切到该库。
     pub async fn execute_query(
         &self,
         session_id: &str,
         sql: &str,
         max_rows_per_batch: u32,
+        catalog: Option<&str>,
     ) -> Result<ExecuteOutcome, QueryFailure> {
         let mut client = self.query_service().map_err(local_failure)?;
-        let request = ExecuteQueryRequest {
-            session_id: session_id.to_owned(),
-            sql: sql.to_owned(),
-            max_rows_per_batch,
-            // v0.1 无显式事务：语句自动提交（事务接线见 #29 之后的工作）。
-            auto_commit: true,
-            // 0 = 由服务端默认策略决定，不在客户端凭空加期限。
-            timeout_millis: 0,
-        };
+        let request = query::execute_request(session_id, sql, max_rows_per_batch, catalog);
         let response = client
             .execute(request)
             .await
@@ -503,6 +499,46 @@ impl BackendClient {
             .map_err(|_| failure_timeout("关闭查询", QUERY_RPC_TIMEOUT))?
             .map_err(|status| failure_from_status(&status))?;
         Ok(())
+    }
+
+    /// 读取这条会话**服务端实际生效**的库（ADR 0030 §7）。
+    ///
+    /// 这是库归属真值的唯一来源：结果里 `default_catalog` 为空表示这条会话没有默认库，
+    /// 界面必须显示「未指定」，不得用连接配置里的 `database` 顶替。
+    pub async fn session_context(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionDatabaseContext, QueryFailure> {
+        let mut client = self.connection_service().map_err(local_failure)?;
+        let request = GetSessionContextRequest {
+            session_id: session_id.to_owned(),
+        };
+        let response = tokio::time::timeout(RPC_TIMEOUT, client.get_session_context(request))
+            .await
+            .map_err(|_| failure_timeout("读取会话库上下文", RPC_TIMEOUT))?
+            .map_err(|status| failure_from_status(&status))?
+            .into_inner();
+        Ok(SessionDatabaseContext::from_proto(response))
+    }
+
+    /// 把这条会话切到某个库（ADR 0030 §1 / §5）。
+    ///
+    /// 返回的是**切完之后的**上下文，调用方不必再问一次。空 `catalog` 表示「不改变会话
+    /// 当前库」（服务端幂等返回当前上下文）。失败不回落：事务中 / 无权限 / 库不存在都由
+    /// 服务端返回稳定错误码，语句一条都不会发出去。
+    pub async fn set_session_context(
+        &self,
+        session_id: &str,
+        catalog: &str,
+    ) -> Result<SessionDatabaseContext, QueryFailure> {
+        let mut client = self.connection_service().map_err(local_failure)?;
+        let request = query::set_session_context_request(session_id, catalog);
+        let response = tokio::time::timeout(RPC_TIMEOUT, client.set_session_context(request))
+            .await
+            .map_err(|_| failure_timeout("切换会话库", RPC_TIMEOUT))?
+            .map_err(|status| failure_from_status(&status))?
+            .into_inner();
+        Ok(SessionDatabaseContext::from_proto(response))
     }
 
     /// 列出当前会话所在数据库的表与视图（`MetadataService.ListNodes` 根节点）。

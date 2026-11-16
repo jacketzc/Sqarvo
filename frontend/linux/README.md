@@ -1414,6 +1414,8 @@ SQLite 与 MariaDB 各跑一遍，最后追加一段**无默认库跨库**用例
 | `expect-browse <标签> <字段>=<值>` | 断言页码 / 页数 / 行数 / 总数 / 位置 / 排序 / 筛选数 / 摘要 | 表标签已就绪 |
 | `expect-inspector <字段>=<值>` | 断言面板页 / 子页 / 列数 / 可见性 / 标题 / 字段行（`facts`）/ DDL 状态 | 面板已显示 |
 | `expect-tab-title <标签> <子串>` | 断言标签页真实标题（`对象 @ 库`） | 标签存在 |
+| `catalog <标签> <库>` | 在查询标签的**库选择器**里选中某个库（`GtkDropDown::set_selected` → 与点选同一条信号路径 → `SetSessionContext`） | 查询标签已就绪、驱动声明 `session_catalog_switch`、库列表已取到 |
+| `expect-catalog <标签> <文本>` | 断言库选择器上显示的文字（读控件；按包含比对） | 同上 |
 | `sessions <说明>` | 写一次 `ListSessions` 日志（前后对比证据） | 有注册表 |
 | `quit` | 收起模态提示后关窗，走 `connect_shutdown` 清理 | 工作区存在 |
 
