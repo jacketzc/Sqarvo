@@ -98,6 +98,15 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 # 若 dotnet run 找错输出目录，直接跑 bin\x64\Debug\net8.0-windows10.0.19041.0\Sqarvo.Windows.exe
 ```
 
+> **直接跑 exe 前先设 `DOTNET_ROOT`**。SDK 装在用户目录（如 `C:\Users\<你>\.dotnet`，官方
+> `dotnet-install.ps1` 的默认位置）而不在系统 PATH 上时，apphost 找不到 `hostfxr.dll`，
+> 直接双击或直接跑 exe 会报 `You must install .NET to run this application` / `Failed to resolve
+> hostfxr.dll`。`dotnet run` 自己会带运行时，不受这条影响；直接跑 exe 时先执行：
+>
+> ```powershell
+> $env:DOTNET_ROOT = "$env:USERPROFILE\.dotnet"
+> ```
+
 ```text
 [theme] requested=System effective=Dark highContrast=False accent=#258292 titleBar=UseDefaultAppMode backdrop=Mica
 [metrics] tier=compact header=64 toolbar=44 status=48 minWindow=960x640 sidebar=237 inspector=280 rowTree=24 fontUi=12
