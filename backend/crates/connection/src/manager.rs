@@ -10,8 +10,8 @@ use sqarvo_driver_api::{
     BrowseOptions, ColumnMeta, ConnectionParams, ConnectionTestReport, Ddl, DriverId,
     DriverSession, ExecuteRequest, ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel,
     MetadataProvider, ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey,
-    ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, TableDataProvider,
-    TablePage, TransactionOptions,
+    ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, SessionContext,
+    TableDataProvider, TablePage, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -161,6 +161,20 @@ impl SessionHandle {
         self.summary.capabilities.contains(&"transactions")
     }
 
+    /// 驱动是否声明库上下文能力（ADR 0030）。
+    #[must_use]
+    pub fn supports_session_context(&self) -> bool {
+        self.summary.capabilities.contains(&"session_context")
+    }
+
+    /// 驱动是否声明切库能力（ADR 0030）。
+    #[must_use]
+    pub fn supports_catalog_switch(&self) -> bool {
+        self.summary
+            .capabilities
+            .contains(&"session_catalog_switch")
+    }
+
     fn transaction_status(&self) -> Option<TransactionStatus> {
         lock_transactions(&self.transaction)
             .as_ref()
@@ -169,7 +183,25 @@ impl SessionHandle {
 
     /// 执行 SQL，返回语句摘要与首批结果。
     pub async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+        self.execute_in_catalog(request, None).await
+    }
+
+    /// 执行前把会话切到 `catalog`，再执行语句（ADR 0030）。
+    ///
+    /// 切库与执行在**同一把会话执行锁**内：中间插不进别人的语句，也不会出现
+    /// 「切了库却没执行」或「执行了却没切库」的中间态。`catalog` 为 `None` / 空串
+    /// 表示不改变会话当前库——与 v0.3 之前完全一致。
+    ///
+    /// 切库失败直接返回错误，语句**不发送**（绝不回落旧库）。
+    pub async fn execute_in_catalog(
+        &self,
+        request: ExecuteRequest,
+        catalog: Option<&str>,
+    ) -> Result<ExecutionStart> {
         let _guard = self.execution.lock().await;
+        if let Some(catalog) = catalog.map(str::trim).filter(|name| !name.is_empty()) {
+            self.session.use_catalog(catalog).await?;
+        }
         let result = self.session.execute(request).await;
         if let Err(error) = &result {
             // 驱动可能已经中止了事务（SQLite 自动回滚、MariaDB 事务丢失）：
@@ -177,6 +209,15 @@ impl SessionHandle {
             self.observe_transaction_error(error);
         }
         result
+    }
+
+    /// 会话的库上下文（ADR 0030）：与语句共用会话执行锁，不与在途查询交错。
+    ///
+    /// 只读，不改变会话状态；驱动未声明 `session_context` 能力时返回
+    /// `capability.unsupported`。
+    pub async fn session_context(&self) -> Result<SessionContext> {
+        let _guard = self.execution.lock().await;
+        self.session.session_context().await
     }
 
     /// 拉取指定语句的下一批结果。

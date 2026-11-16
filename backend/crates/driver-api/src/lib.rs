@@ -22,10 +22,10 @@ pub mod value;
 pub use capabilities::Capabilities;
 pub use credential::Secret;
 pub use driver::{
-    ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor, DriverId,
-    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS,
-    ParameterizedExecuteRequest, ResultBatch, StatementSummary, TlsMode, TransactionOptions,
-    Warning, sql_preview,
+    CatalogKind, ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor,
+    DriverId, DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS,
+    ParameterizedExecuteRequest, ResultBatch, SessionContext, StatementSummary, TlsMode,
+    TransactionOptions, Warning, sql_preview,
 };
 pub use metadata::{
     DEFAULT_PAGE_SIZE, Ddl, DdlSource, MAX_PAGE_SIZE, MetadataProvider, NameMatch, ObjectFilter,

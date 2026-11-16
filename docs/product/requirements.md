@@ -18,6 +18,8 @@
 | REQ-CONN-005 | 连接分组、收藏、最近使用 | P2 | 未实现 | — |
 | REQ-CONN-006 | 连接超时、重连与断线状态呈现 | P1 | 部分 | 断线状态可见：Linux 前端每 5 秒 `GetHealth`，失败进入 Disconnected（PR #36）；连接超时由驱动的 `mariadb.connect_timeout` / 客户端 30 秒上限呈现，但**不可配置**；自动重连未实现 |
 
+| REQ-CONN-007 | 会话库上下文（读取真值 + 显式切库） | P1 | 部分 | **后端已交付（ADR 0030）**：`ConnectionService.GetSessionContext` 报服务端生效库（MariaDB `SELECT DATABASE()`；SQLite 恒 `main`）与「库」层级类型，空串表示没有默认库，不用连接配置顶替；`ExecuteQueryRequest.catalog` 非空时在会话执行锁内先切库再执行（MariaDB `USE`，SQLite 显式 `capability.unsupported`），事务中切库拒绝（`mariadb.catalog_switch_in_transaction`）、切库失败不回落。能力位 `session_context` / `session_catalog_switch` 与实现一致，testkit 新增两条不变量。验证：MariaDB `--test cross_catalog` 6 通过（两库同名表 2/3 行，切库后未限定表名的计数随之变化；反证：只改缓存不发 `USE` 时用例变红）、`--test integration` 71 通过（含事务中切库被拒、无默认库会话上下文如实报空）、SQLite `--test cross_catalog` 5 通过、`--test grpc_sqlite_e2e` 含 `GetSessionContext` 与 `catalog` 被拒、`--test table_data_contract` 锁定字段号。**剩余**：Linux 前端的库选择器、状态栏 / tooltip / 信息面板接真值在改动确认单 #4 中实现 |
+
 ## 2. 数据库对象与元数据
 
 | ID | 需求 | 优先级 | 状态 | 验收要点 |

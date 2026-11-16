@@ -5052,3 +5052,93 @@ async fn insert_rows_reject_views_generated_columns_and_unknown_columns() {
     exec(&*session, &format!("DROP VIEW IF EXISTS {view}")).await;
     exec(&*session, &format!("DROP TABLE IF EXISTS {table}")).await;
 }
+
+// ---------------------------------------------------------------------------
+// 库上下文与切库（ADR 0030）
+// ---------------------------------------------------------------------------
+
+/// 事务打开时切库必须被拒绝（ADR 0030 第 5 条），且不改变会话当前库。
+///
+/// 拒绝理由是「半个事务落在两个库上」既难以推理、也容易被误当成隐式提交；
+/// 驱动宁可让用户先提交 / 回滚。
+#[tokio::test]
+async fn catalog_switch_inside_transaction_is_rejected() {
+    let Some(session) = session().await else {
+        return;
+    };
+    let context = session.session_context().await.expect("读取库上下文");
+    let Some(current) = context.default_catalog.clone() else {
+        eprintln!("跳过：DSN 未带默认库，无法验证「切到别的库」");
+        session.close().await.expect("关闭会话");
+        return;
+    };
+
+    let transaction = session
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Unspecified,
+            read_only: false,
+        })
+        .await
+        .expect("打开事务");
+
+    let error = session
+        .use_catalog("information_schema")
+        .await
+        .expect_err("事务中切库必须被拒绝");
+    assert_eq!(
+        error.code(),
+        error::CATALOG_SWITCH_IN_TRANSACTION,
+        "{error:?}"
+    );
+    assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
+
+    let after = session.session_context().await.expect("读取库上下文");
+    assert_eq!(
+        after.default_catalog.as_deref(),
+        Some(current.as_str()),
+        "被拒绝的切库不得改变会话当前库"
+    );
+
+    session
+        .rollback_transaction(&transaction)
+        .await
+        .expect("回滚事务");
+
+    // 事务结束后可以切，并且能切回来（证明拒绝只作用于事务期间）。
+    session
+        .use_catalog("information_schema")
+        .await
+        .expect("事务结束后切库应成功");
+    session.use_catalog(&current).await.expect("切回原库");
+    session.close().await.expect("关闭会话");
+}
+
+/// 库上下文在无默认库的会话上如实报 `None`，切库之后才变成真实库名。
+#[tokio::test]
+async fn session_context_reports_absence_before_any_switch() {
+    let Some((mut params, secret)) = connection_params() else {
+        return;
+    };
+    params.database = None;
+    let session = MariaDbDriver::new()
+        .connect(&params, Some(&secret))
+        .await
+        .expect("连接 MariaDB（无默认库）");
+
+    sqarvo_driver_testkit::session_context_is_honest(&*session, None, true)
+        .await
+        .unwrap_or_else(|error| panic!("无默认库会话的库上下文不诚实：{error:?}"));
+
+    // 切到一个真实库：上下文变成它；切回「没有库」不在协议里（没有 target = 不动），
+    // 所以这条用例只验证「从无到有」。
+    session
+        .use_catalog("information_schema")
+        .await
+        .expect("切到 information_schema");
+    let context = session.session_context().await.expect("读取库上下文");
+    assert_eq!(
+        context.default_catalog.as_deref(),
+        Some("information_schema")
+    );
+    session.close().await.expect("关闭会话");
+}

@@ -885,6 +885,28 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
   单/双向的其余档位见上文「TLS 逐档验证（#106）」）；
 - MySQL 8.x 兼容性（`caching_sha2_password`、二进制 JSON）：未实测，不声明支持。
 
+## 库上下文与切库（ADR 0030）
+
+- `SessionContext.default_catalog` 取 `SELECT DATABASE()` 的服务端真值；没有默认库时为
+  `None`（gRPC 上是空串），**不拿连接参数顶替**。`catalog_kind` 恒为 `Database`。
+- `use_catalog(db)` 发 `USE \`db\``，标识符按驱动规则引用（内部反引号成对转义）。
+- **缓存**：会话任务缓存「当前库」——连接时读一次 `DATABASE()`，自己发过 `USE` 就更新；
+  用户语句首关键字是 `use` 时把缓存置为未知，下次需要比较时先重读。缓存只用于跳过重复的
+  `USE`，任何不确定都退回重读；判成 `use` 的代价只是一次轻量查询，漏判的代价是落错库。
+- **事务中拒绝切库**：`mariadb.catalog_switch_in_transaction` / `FailedPrecondition`。
+  事务里 `USE` 本身服务端允许，但驱动不接受「协议层替你换库」——那会让半个事务落在两个库上。
+- **失败不回落**：1049 → `mariadb.unknown_database`、1044 / 1142 / 1143 →
+  `mariadb.permission_denied`；语句不发送。切到当前库是幂等的（不发 `USE`）。
+- 游标未读完时请求库上下文 / 切库，与元数据、表数据同一口径返回 `mariadb.query_active`。
+- 表数据 / 行编辑 / 元数据**不读**会话当前库做推断：库归属仍按 `ObjectRef.catalog` 逐请求
+  表达（ADR 0024）。
+
+2026-11-16 实测（`mariadb:11.4` 测试容器，`sqarvo_test` / `sqarvo_test_b` 两库同名表
+2 行 / 3 行）：切到第二库后未限定表名的 `SELECT COUNT(*)` 读到 3，切回读 2；事务中切库返回
+`mariadb.catalog_switch_in_transaction` 且上下文不变；切到不存在的库失败且上下文不变
+（受限账号只拿到 1044 → `mariadb.permission_denied`，与「库不存在」不可区分，见下文
+「已知缺口」）。
+
 ## 错误映射
 
 用户可见文案不拼接服务端原文（可能含 SQL 片段、库表名），原始错误只作为 `source` 留给日志。
@@ -918,6 +940,7 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 | `transaction.already_active` | `AlreadyExists` | 同一会话已有打开的事务 |
 | `transaction.not_found` | `NotFound` | 事务 ID 与当前会话的事务不符 |
 | `transaction.failed` | `FailedPrecondition` | 失败态（死锁后）提交或继续执行 |
+| `mariadb.catalog_switch_in_transaction` | `FailedPrecondition` | 事务打开时请求切库（ADR 0030），驱动拒绝且不隐式提交 |
 
 错误信息中绝不包含密码或完整连接串；`MariaDbConfig` 的 `Debug` 只打印 TLS 模式与超时。
 

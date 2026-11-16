@@ -168,6 +168,21 @@ pub(crate) fn implicit_commit_statement(sql: &str) -> Option<&'static str> {
     .find_map(|(keyword, label)| first.eq_ignore_ascii_case(keyword).then_some(label))
 }
 
+/// 语句的首个关键字是否为 `USE`（ADR 0030 的库上下文缓存失效判据）。
+///
+/// 用户在编辑器里自己写 `USE db` 时，会话当前库会变而驱动的缓存不知道；下次执行前
+/// 必须重读 `SELECT DATABASE()` 再决定是否发 `USE`，否则会出现「缓存说 A、服务端在 B、
+/// 请求也是 A → 跳过切换 → 语句落到 B」这种落错库。
+///
+/// 与 `has_multiple_statements` / `implicit_commit_statement` 同一口径：只按首个关键字
+/// 判断，不做语法解析。判断错方向的代价不对称——判成 `USE` 只多一次轻量查询，
+/// 漏判则可能用到错的库。
+pub(crate) fn starts_with_use(sql: &str) -> bool {
+    leading_words(sql, 1)
+        .first()
+        .is_some_and(|word| word.eq_ignore_ascii_case("use"))
+}
+
 /// 取语句开头的至多 `limit` 个字母单词，跳过空白与注释。
 ///
 /// 只用于识别第一个关键字，遇到非字母开头的字符（括号、数字、引号）即停止，
@@ -328,5 +343,23 @@ mod tests {
             None
         );
         assert_eq!(implicit_commit_statement("DROP TEMPORARY TABLE t"), None);
+    }
+
+    #[test]
+    fn use_statements_are_recognised_for_cache_invalidation() {
+        use super::starts_with_use;
+
+        assert!(starts_with_use("USE db1"));
+        assert!(starts_with_use("  use `db 1`"));
+        assert!(starts_with_use("\n\tUSE db1;"));
+        assert!(starts_with_use("/* 注释 */ USE db1"));
+        assert!(starts_with_use("-- 换库\nUSE db1"));
+
+        // 首关键字不是 use：不重读缓存（避免每条语句都多一次查询）。
+        assert!(!starts_with_use("SELECT * FROM config_info"));
+        assert!(!starts_with_use("UPDATE t SET user = 1"));
+        assert!(!starts_with_use(""));
+        // 只在字符串里出现 `use` 不算。
+        assert!(!starts_with_use("SELECT 'use db1'"));
     }
 }

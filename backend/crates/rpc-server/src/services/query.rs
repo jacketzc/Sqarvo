@@ -61,6 +61,17 @@ impl QueryService for QueryServiceImpl {
             .queries
             .limits()
             .clamp_batch_rows(Some(request.max_rows_per_batch).filter(|rows| *rows > 0));
+        // ADR 0030：空串 = 不改变会话当前库（与 v0.3 之前完全一致）。
+        let catalog = request.catalog.trim().to_owned();
+        let catalog = (!catalog.is_empty()).then_some(catalog);
+        // 能力声明先于调用：驱动没声明切库就不发 `USE`，直接告诉客户端不支持。
+        if catalog.is_some() && !handle.supports_catalog_switch() {
+            let _ = self.queries.complete(&query_id);
+            return Err(to_status(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "当前驱动不支持「切换库」，请在 SQL 里写限定名",
+            )));
+        }
         // `auto_commit` 在 v0.1 无意义：SQLite 默认自动提交，事务由 M4 接线。
         let execution = ExecuteRequest {
             query_id,
@@ -71,14 +82,21 @@ impl QueryService for QueryServiceImpl {
         };
 
         let outcome = if let Some(limit) = timeout_from_millis(request.timeout_millis) {
-            let Ok(result) = tokio::time::timeout(limit, handle.execute(execution)).await else {
+            let Ok(result) = tokio::time::timeout(
+                limit,
+                handle.execute_in_catalog(execution, catalog.as_deref()),
+            )
+            .await
+            else {
                 let _ = handle.cancel(&query_id).await;
                 let _ = self.queries.complete(&query_id);
                 return Err(Status::deadline_exceeded("查询超时，已请求取消"));
             };
             result
         } else {
-            handle.execute(execution).await
+            handle
+                .execute_in_catalog(execution, catalog.as_deref())
+                .await
         };
 
         let start = match outcome {

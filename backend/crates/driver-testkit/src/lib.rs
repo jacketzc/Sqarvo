@@ -35,6 +35,10 @@
 //! - 跨库表数据不变量（ADR 0024，[`catalog_scoping_is_session_independent`]）：同一个
 //!   对象引用（`catalog` + 表名）在「有默认库 / 无默认库」会话下结果一致；省略 `catalog`
 //!   时回落到默认库，且跨库浏览不得改变这一回落（不隐式 `USE`）。
+//! - 库上下文不变量（ADR 0030，[`session_context_is_honest`] /
+//!   [`switching_catalog_moves_unqualified_statements`]）：`session_context()` 报的是服务端
+//!   真值而不是连接配置；声明 `session_catalog_switch` 的驱动切库后，未限定表名的语句必须
+//!   落到目标库；未声明的驱动必须以 `Unsupported` 显式拒绝切库。
 //!
 //! 真实驱动接入时，在集成测试中构造会话并调用 `smoke` 与上述五项检查，再补充该驱动
 //! 特有的类型往返测试。检查失败一律返回 **`INTERNAL`** 错误（文案说明违反了哪条不变量），
@@ -1177,6 +1181,115 @@ async fn count_rows(session: &dyn DriverSession, sql: &str) -> Result<i64> {
 /// 把驱动错误包装成「违反事务不变量」的 `INTERNAL`。
 fn violated(context: &str, error: Error) -> Error {
     Error::internal(format!("{context}：{}（{}）", error, error.code())).with_source(error)
+}
+
+// ---------------------------------------------------------------------------
+// 库上下文不变量（ADR 0030）
+// ---------------------------------------------------------------------------
+
+/// 断言「库上下文诚实，且能力位与实现一致」（ADR 0030）。
+///
+/// 三条不变量：
+///
+/// 1. `session_context()` 必须成功，`default_catalog` 等于调用方给出的期望
+///    （`None` = 这条会话确实没有默认库；不允许拿连接配置顶替）；
+/// 2. `switchable == true` 时，切到「当前库」必须成功（幂等），上下文保持不变；
+/// 3. `switchable == false` 时，`use_catalog` 必须以 [`ErrorCategory::Unsupported`]
+///    拒绝任意目标，且上下文不因这次调用而改变——**不得静默忽略**。
+///
+/// 调用方需要提供：一个已连接、当前没有在途查询的会话。
+pub async fn session_context_is_honest(
+    session: &dyn DriverSession,
+    expected_default: Option<&str>,
+    switchable: bool,
+) -> Result<()> {
+    let context = session
+        .session_context()
+        .await
+        .map_err(|error| violated("session_context 失败", error))?;
+    if context.default_catalog.as_deref() != expected_default {
+        return Err(Error::internal(format!(
+            "库上下文应报 {expected_default:?}，实际 {:?}",
+            context.default_catalog
+        )));
+    }
+
+    if switchable {
+        if let Some(current) = expected_default {
+            session
+                .use_catalog(current)
+                .await
+                .map_err(|error| violated("切到当前库应成功（幂等）", error))?;
+            let again = session
+                .session_context()
+                .await
+                .map_err(|error| violated("切库后 session_context 失败", error))?;
+            if again.default_catalog.as_deref() != expected_default {
+                return Err(Error::internal(format!(
+                    "切到当前库后上下文被改变：{:?}",
+                    again.default_catalog
+                )));
+            }
+        }
+        return Ok(());
+    }
+
+    let error = session
+        .use_catalog("sqarvo_probe_not_switchable")
+        .await
+        .expect_err("未声明 session_catalog_switch 的驱动必须显式拒绝切库");
+    if error.category() != ErrorCategory::Unsupported {
+        return Err(Error::internal(format!(
+            "不支持切库的驱动必须返回 Unsupported，实际：{}（{}）",
+            error,
+            error.category()
+        )));
+    }
+    let after = session
+        .session_context()
+        .await
+        .map_err(|error| violated("拒绝切库后 session_context 失败", error))?;
+    if after.default_catalog.as_deref() != expected_default {
+        return Err(Error::internal(format!(
+            "被拒绝的切库不得改变上下文，实际 {:?}",
+            after.default_catalog
+        )));
+    }
+    Ok(())
+}
+
+/// 断言「切库之后，未限定表名的语句落到目标库」（ADR 0030 第 3 条）。
+///
+/// `count_sql` 由调用方按方言给出（同一个表名、**不带**库前缀），`expected_rows` 是
+/// 目标库里那张表的行数；两个库的行数必须不同，否则这条断言证明不了任何事。
+pub async fn switching_catalog_moves_unqualified_statements(
+    session: &dyn DriverSession,
+    target: &str,
+    count_sql: &str,
+    expected_rows: i64,
+) -> Result<()> {
+    session
+        .use_catalog(target)
+        .await
+        .map_err(|error| violated("切库失败", error))?;
+    let context = session
+        .session_context()
+        .await
+        .map_err(|error| violated("切库后 session_context 失败", error))?;
+    if context.default_catalog.as_deref() != Some(target) {
+        return Err(Error::internal(format!(
+            "切库后上下文应为 {target:?}，实际 {:?}",
+            context.default_catalog
+        )));
+    }
+    let rows = count_rows(session, count_sql).await?;
+    if rows != expected_rows {
+        return Err(Error::internal(format!(
+            "切到 {target} 后未限定表名的语句应读到 {expected_rows} 行，实际 {rows} 行\
+             （切库是否只改了缓存而没改服务端会话？）"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

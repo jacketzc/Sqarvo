@@ -17,8 +17,9 @@ use mysql_async::prelude::*;
 use mysql_async::{Conn, Opts, Row as MyRow, Value as MyValue};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, ParameterizedExecuteRequest,
-    ResultBatch, StatementSummary, TransactionOptions, Value, sql_preview,
+    CatalogKind, DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel,
+    ParameterizedExecuteRequest, ResultBatch, SessionContext, StatementSummary, TransactionOptions,
+    Value, sql_preview,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -26,9 +27,10 @@ use tokio::task::JoinHandle;
 use crate::config::MariaDbConfig;
 use crate::error::{
     CURSOR_INVALID, DEADLOCK, IMPLICIT_COMMIT_REJECTED, QUERY_ACTIVE, SESSION_CLOSED,
-    TRANSACTION_LOST, connect_timeout, is_query_interrupted, map_error, server_code,
+    TRANSACTION_LOST, catalog_switch_in_transaction, connect_timeout, is_query_interrupted,
+    map_error, server_code,
 };
-use crate::sql::{has_multiple_statements, implicit_commit_statement};
+use crate::sql::{has_multiple_statements, implicit_commit_statement, starts_with_use};
 use crate::value::{ColumnPlan, map_columns, map_row};
 
 /// 默认每批行数。
@@ -81,6 +83,15 @@ enum Command {
         request: crate::table_data::TableDataRequest,
         reply: oneshot::Sender<Result<crate::table_data::TableDataReply>>,
     },
+    /// 读取会话的库上下文（ADR 0030）：`SELECT DATABASE()` 的服务端真值。
+    SessionContext {
+        reply: oneshot::Sender<Result<SessionContext>>,
+    },
+    /// 把会话切到指定库（ADR 0030）。
+    UseCatalog {
+        catalog: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
@@ -108,6 +119,19 @@ enum TransactionState {
     Lost { id: TransactionId },
 }
 
+/// 会话当前库的缓存（ADR 0030）。
+///
+/// 只用于「跳过重复 `USE`」这一件事：任何不确定都退回 [`CatalogCache::Unknown`]，
+/// 下次需要比较时先重读服务端的 `DATABASE()`。宁可多一次往返，也不能落错库。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum CatalogCache {
+    /// 不知道服务端现在在哪个库（连接时读取失败，或用户自己执行过 `USE`）。
+    #[default]
+    Unknown,
+    /// 已知：`None` 表示这条会话没有默认库。
+    Known(Option<String>),
+}
+
 /// 会话与取消路径共享的查询状态。
 #[derive(Default)]
 struct SharedState {
@@ -115,6 +139,8 @@ struct SharedState {
     cancelled: AtomicBool,
     /// 是否有一个已开始交付、但尚未读完的结果游标（在两次 `fetch` 之间）。
     cursor_open: AtomicBool,
+    /// 会话当前库的缓存；只由会话任务读写（ADR 0030）。
+    catalog: std::sync::Mutex<CatalogCache>,
     /// 事务状态，只由会话任务写入。
     transaction: std::sync::Mutex<TransactionState>,
     /// 最近一个已结束的事务 ID。
@@ -196,6 +222,28 @@ impl SharedState {
     fn already_finished(&self, id: TransactionId) -> bool {
         self.finished() == Some(id)
     }
+
+    /// 会话当前库的缓存快照。
+    fn catalog_cache(&self) -> CatalogCache {
+        self.catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_catalog_cache(&self, value: CatalogCache) {
+        *self
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+    }
+
+    /// 用户自己执行了 `USE` 语句：缓存立即失效（ADR 0030 第 4 条）。
+    fn invalidate_catalog_after_statement(&self, sql: &str) {
+        if starts_with_use(sql) {
+            self.set_catalog_cache(CatalogCache::Unknown);
+        }
+    }
 }
 
 /// 取消用的控制连接。
@@ -267,6 +315,14 @@ impl MariaDbSession {
 
         let (sender, receiver) = mpsc::channel(8);
         let state = Arc::new(SharedState::default());
+        // 连接时读一次会话当前库，作为 `USE` 跳过判断的起点（ADR 0030 第 4 条）。
+        // 读不到就保持 Unknown：下一次带 catalog 的执行会先重读，不靠猜。
+        if let Ok(current) = conn
+            .query_first::<Option<String>, _>("SELECT DATABASE()")
+            .await
+        {
+            state.set_catalog_cache(CatalogCache::Known(normalize_catalog(current.flatten())));
+        }
         let join = tokio::spawn(run_session(
             conn,
             receiver,
@@ -414,6 +470,14 @@ async fn run_session(
                     // 与 Execute 路径一致地更新状态，绝不让后续 COMMIT 变成空提交。
                     note_transaction_failure(&state, error);
                 }
+                let _ = reply.send(result);
+            }
+            Command::SessionContext { reply } => {
+                let result = read_session_context(&mut conn, &state).await;
+                let _ = reply.send(result);
+            }
+            Command::UseCatalog { catalog, reply } => {
+                let result = switch_catalog(&mut conn, &state, &catalog).await;
                 let _ = reply.send(result);
             }
             Command::Close { reply } => {
@@ -784,7 +848,11 @@ async fn serve_query(
     match params {
         // 纯文本 SQL：语句里的值由调用方自己负责，驱动不碰。
         None => match conn.query_iter(&request.sql).await {
-            Ok(result) => serve_result(result, &request, limit, reply, receiver, state).await,
+            Ok(result) => {
+                // 用户自己写的 `USE` 会改会话当前库：缓存立即失效（ADR 0030 第 4 条）。
+                state.invalidate_catalog_after_statement(&request.sql);
+                serve_result(result, &request, limit, reply, receiver, state).await
+            }
             Err(error) => {
                 fail_query(error, reply, state);
                 false
@@ -792,7 +860,10 @@ async fn serve_query(
         },
         // 参数化：值走协议层的绑定参数，不进入 SQL 文本。
         Some(params) => match conn.exec_iter(&request.sql, params).await {
-            Ok(result) => serve_result(result, &request, limit, reply, receiver, state).await,
+            Ok(result) => {
+                state.invalidate_catalog_after_statement(&request.sql);
+                serve_result(result, &request, limit, reply, receiver, state).await
+            }
             Err(error) => {
                 fail_query(error, reply, state);
                 false
@@ -811,6 +882,65 @@ fn fail_query(
     note_transaction_failure(state, &error);
     let _ = reply.send(Err(error));
     state.clear_active();
+}
+
+/// 把服务端返回的库名归一化：空串与纯空白都等于「没有默认库」。
+fn normalize_catalog(raw: Option<String>) -> Option<String> {
+    raw.map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
+/// 读服务端的 `DATABASE()` 并刷新缓存（ADR 0030）。
+async fn read_current_catalog(conn: &mut Conn, state: &SharedState) -> Result<Option<String>> {
+    let row = conn
+        .query_first::<Option<String>, _>("SELECT DATABASE()")
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 当前库失败"))?;
+    let current = normalize_catalog(row.flatten());
+    state.set_catalog_cache(CatalogCache::Known(current.clone()));
+    Ok(current)
+}
+
+/// 读取会话的库上下文（`ConnectionService.GetSessionContext`）。
+async fn read_session_context(conn: &mut Conn, state: &SharedState) -> Result<SessionContext> {
+    let current = read_current_catalog(conn, state).await?;
+    Ok(SessionContext {
+        default_catalog: current,
+        catalog_kind: CatalogKind::Database,
+    })
+}
+
+/// 把这条会话切到 `target` 库（ADR 0030 第 3 / 4 / 5 / 6 条）。
+///
+/// 顺序有意：先看缓存能不能直接判定「已经是目标库」（幂等、也不受事务限制），
+/// 再看事务，最后才决定要不要重读与发 `USE`。
+/// 切换失败原样返回分类错误，**不回落**旧库——回落等于让语句落到用户没选的库上。
+async fn switch_catalog(conn: &mut Conn, state: &SharedState, target: &str) -> Result<()> {
+    let target = target.trim();
+    if target.is_empty() {
+        // 空串的语义是「不改变会话当前库」：调用方本不该发这条命令，按幂等处理。
+        return Ok(());
+    }
+    if matches!(state.catalog_cache(), CatalogCache::Known(Some(current)) if current == target) {
+        return Ok(());
+    }
+    // 事务打开时不切库：不静默忽略，也不隐式提交用户事务。
+    if !matches!(state.transaction(), TransactionState::None) {
+        return Err(catalog_switch_in_transaction());
+    }
+    let current = match state.catalog_cache() {
+        CatalogCache::Known(current) => current,
+        // 缓存不可信（连接时没读到，或用户执行过 `USE`）：先问服务端，不靠猜。
+        CatalogCache::Unknown => read_current_catalog(conn, state).await?,
+    };
+    if current.as_deref() == Some(target) {
+        return Ok(());
+    }
+    conn.query_drop(format!("USE {}", crate::metadata::quote_identifier(target)))
+        .await
+        .map_err(|error| map_error(error, "切换到 MariaDB 库失败"))?;
+    state.set_catalog_cache(CatalogCache::Known(Some(target.to_owned())));
+    Ok(())
 }
 
 /// 服务 `QueryResult` 的首批与后续 `Fetch`。
@@ -964,6 +1094,20 @@ where
                     "当前会话有未读完的结果集，请先读完或关闭再浏览表数据",
                 )));
             }
+            // 库上下文 / 切库都要在连接上发语句（`SELECT DATABASE()` / `USE`），
+            // 游标未读完时同样会交错（ADR 0030）。
+            Command::SessionContext { reply } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再读取库上下文",
+                )));
+            }
+            Command::UseCatalog { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "当前会话有未读完的结果集，请先读完或关闭再切换库",
+                )));
+            }
             Command::Fetch {
                 query_id: requested,
                 statement_index,
@@ -1077,6 +1221,31 @@ impl DriverSession for MariaDbSession {
 
     fn table_data(&self) -> Option<&dyn sqarvo_driver_api::TableDataProvider> {
         Some(self)
+    }
+
+    /// 会话当前库由服务端回答（`SELECT DATABASE()`），不是连接配置的回显（ADR 0030）。
+    async fn session_context(&self) -> Result<SessionContext> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::SessionContext { reply })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    /// 切库：`USE` 在会话任务里执行，与语句共用同一条连接（ADR 0030）。
+    async fn use_catalog(&self, catalog: &str) -> Result<()> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::UseCatalog {
+                catalog: catalog.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
     }
 
     async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {

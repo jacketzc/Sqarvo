@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sqarvo_common::ConnectionId;
+use sqarvo_common::{ConnectionId, Error, ErrorCode, SessionId};
 use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_driver_api::{
     ConnectionParams as DriverConnectionParams, DriverId, TlsMode as DriverTlsMode,
@@ -14,9 +14,9 @@ use tonic::{Request, Response, Status};
 use crate::error::to_status;
 use crate::proto::common::v1::{Empty, Warning};
 use crate::proto::services::v1::{
-    ConnectRequest, ConnectResponse, ConnectionParams, DisconnectRequest, ListSessionsResponse,
-    SessionSummary, TestConnectionRequest, TestConnectionResponse,
-    connection_service_server::ConnectionService,
+    ConnectRequest, ConnectResponse, ConnectionParams, DisconnectRequest, GetSessionContextRequest,
+    GetSessionContextResponse, ListSessionsResponse, SessionSummary, TestConnectionRequest,
+    TestConnectionResponse, connection_service_server::ConnectionService,
 };
 use crate::services::mapping;
 
@@ -169,6 +169,42 @@ impl ConnectionService for ConnectionServiceImpl {
             .collect();
 
         Ok(Response::new(ListSessionsResponse { sessions }))
+    }
+
+    /// 会话的库上下文（ADR 0030）：服务端真值，不是连接配置的回显。
+    ///
+    /// 只读，不改变会话状态。驱动没有声明 `session_context` 能力时按
+    /// `capability.unsupported`（`UNIMPLEMENTED`）返回，而不是伪造一个库名。
+    async fn get_session_context(
+        &self,
+        request: Request<GetSessionContextRequest>,
+    ) -> Result<Response<GetSessionContextResponse>, Status> {
+        let session_id: SessionId = request
+            .into_inner()
+            .session_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+        let handle = self
+            .sessions
+            .acquire(&session_id)
+            .await
+            .map_err(to_status)?;
+        // 能力声明先于调用：未声明就不问驱动，直接如实报不支持。
+        if !handle.supports_session_context() {
+            return Err(to_status(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "当前驱动不提供库上下文",
+            )));
+        }
+        let context = handle.session_context().await.map_err(to_status)?;
+        let summary = handle.summary();
+        Ok(Response::new(GetSessionContextResponse {
+            session_id: summary.session_id.to_string(),
+            driver_id: summary.driver_id.to_string(),
+            // 空串 = 这条会话没有默认库；绝不拿连接配置顶替。
+            default_catalog: context.default_catalog.unwrap_or_default(),
+            catalog_kind: mapping::catalog_kind_to_proto(context.catalog_kind) as i32,
+        }))
     }
 }
 

@@ -9,8 +9,8 @@
 use sqarvo_common::{Error, ErrorCode, QueryId};
 use sqarvo_connection::TransactionStatus;
 use sqarvo_driver_api::{
-    Cell, ColumnDefault, ColumnMeta, ColumnType, ExecutionStart, IsolationLevel, ResultBatch, Row,
-    StatementSummary, Value,
+    CatalogKind, Cell, ColumnDefault, ColumnMeta, ColumnType, ExecutionStart, IsolationLevel,
+    ResultBatch, Row, StatementSummary, Value,
 };
 use sqarvo_transaction::TransactionState;
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
@@ -24,9 +24,9 @@ use crate::proto::common::v1::{
     Row as ProtoRow, TimestampValue as ProtoTimestampValue, ValueKind, column_value,
 };
 use crate::proto::services::v1::{
-    ExecuteQueryResponse, FetchBatchResponse, IsolationLevel as ProtoIsolationLevel,
-    StatementSummary as ProtoStatementSummary, TransactionState as ProtoTransactionState,
-    TransactionStatus as ProtoTransactionStatus,
+    CatalogKind as ProtoCatalogKind, ExecuteQueryResponse, FetchBatchResponse,
+    IsolationLevel as ProtoIsolationLevel, StatementSummary as ProtoStatementSummary,
+    TransactionState as ProtoTransactionState, TransactionStatus as ProtoTransactionStatus,
 };
 
 /// 构造 `Execute` 响应。
@@ -534,6 +534,17 @@ pub fn transaction_status_to_proto(status: &TransactionStatus) -> ProtoTransacti
         isolation: isolation_to_proto(status.isolation) as i32,
         read_only: status.read_only,
         state: transaction_state_to_proto(status.state) as i32,
+    }
+}
+
+/// 库上下文里「这一层叫什么」（ADR 0030）→ Protobuf 枚举。
+///
+/// 契约层不按驱动名硬编码文案：MariaDB / SQLite 是 `DATABASE`，将来的 PostgreSQL
+/// 是 `SCHEMA`。驱动没声明这一层时如实返回 `UNSPECIFIED`，不猜测。
+pub fn catalog_kind_to_proto(kind: CatalogKind) -> ProtoCatalogKind {
+    match kind {
+        CatalogKind::Database => ProtoCatalogKind::Database,
+        CatalogKind::Schema => ProtoCatalogKind::Schema,
     }
 }
 

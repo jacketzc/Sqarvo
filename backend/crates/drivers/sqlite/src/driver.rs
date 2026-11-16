@@ -63,6 +63,10 @@ impl SqliteDriver {
                     // WHERE / OFFSET / COUNT(*) 下推到 SQL（见 `table_data.rs`），
                     // 与 `TableDataProvider::supports_browse_sort_filter_total` 一致。
                     table_browse_sort_filter_total: true,
+                    // 库上下文（ADR 0030）：catalog 恒为 `main`（文件型驱动只有一个主库），
+                    // 没有「切当前库」这个概念——`main` / `temp` / ATTACH 是 catalog 列表。
+                    session_context: true,
+                    session_catalog_switch: false,
                 },
             },
         }

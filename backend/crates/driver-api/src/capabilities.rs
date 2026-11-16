@@ -57,6 +57,18 @@ pub struct Capabilities {
     /// 默认 `false`：#109 只做契约增量，SQL 下推（`ORDER BY` / `WHERE` /
     /// `COUNT(*)`）在 #110 / #111 实现后才允许翻成 `true`。
     pub table_browse_sort_filter_total: bool,
+    /// 能回答「这条会话当前落在哪个库」（ADR 0030）。
+    ///
+    /// 与 [`crate::DriverSession::session_context`] 一致：为 `true` 的驱动必须实现它，
+    /// 不得返回 `capability.unsupported`。为 `false` 时客户端不得据此推断库归属。
+    pub session_context: bool,
+    /// 支持把会话切到另一个库（ADR 0030）。
+    ///
+    /// 与 [`crate::DriverSession::use_catalog`] 一致：为 `true` 时 `Execute` 的
+    /// `catalog` 非空就在执行前切库；为 `false` 时前端隐藏库选择入口，请求带了非空
+    /// `catalog` 由驱动返回 `capability.unsupported`，**不静默忽略**。
+    /// 文件型驱动（SQLite）为 `false`。
+    pub session_catalog_switch: bool,
 }
 
 impl Capabilities {
@@ -99,6 +111,12 @@ impl Capabilities {
         }
         if self.table_browse_sort_filter_total {
             names.push("table_browse_sort_filter_total");
+        }
+        if self.session_context {
+            names.push("session_context");
+        }
+        if self.session_catalog_switch {
+            names.push("session_catalog_switch");
         }
         names
     }
@@ -189,5 +207,32 @@ mod tests {
                 "table_browse_sort_filter_total"
             ]
         );
+    }
+
+    #[test]
+    fn session_context_capabilities_are_opt_in_and_appended_last() {
+        // ADR 0030：两个库上下文能力位默认 false；名字只能追加在既有项之后。
+        let minimal = Capabilities::default();
+        assert!(!minimal.session_context);
+        assert!(!minimal.session_catalog_switch);
+        assert!(!minimal.names().contains(&"session_context"));
+        assert!(!minimal.names().contains(&"session_catalog_switch"));
+
+        let capabilities = Capabilities {
+            session_context: true,
+            session_catalog_switch: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(
+            capabilities.names(),
+            ["session_context", "session_catalog_switch"]
+        );
+
+        // 只读上下文、不能切库（SQLite）：只有一个名字，前端据此隐藏选择器。
+        let read_only_context = Capabilities {
+            session_context: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(read_only_context.names(), ["session_context"]);
     }
 }

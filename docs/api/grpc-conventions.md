@@ -253,6 +253,35 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 - 已完成、已取消或不存在的查询返回成功（`OK`），避免前端重复取消变成错误提示；
 - 取消后仍可能收到最后一批已产生的数据，前端应忽略。
 
+## 库上下文与切库（ADR 0030）
+
+会话当前落在哪个库**只有一个真值来源**：服务端。
+
+- `ConnectionService.GetSessionContext(session_id)` → `GetSessionContextResponse`：
+
+| 字段 | 语义 |
+|---|---|
+| `default_catalog` | 服务端实际生效的库；**空串 = 这条会话没有默认库**。不得用连接配置里的 `database` 顶替 |
+| `catalog_kind` | 「库」这一层叫什么：`CATALOG_KIND_DATABASE`（MariaDB / SQLite）或 `CATALOG_KIND_SCHEMA`（将来的 PostgreSQL）。客户端据此决定文案，不按驱动名硬编码 |
+| `session_id` / `driver_id` | 回显，便于客户端确认回包属于哪条会话 |
+
+- 未知会话 → `NOT_FOUND` + `session.not_found`；驱动没有声明 `session_context` 能力
+  → `UNIMPLEMENTED` + `capability.unsupported`，不伪造空库名。
+- `ExecuteQueryRequest.catalog` 是**用户显式选库**，不是服务端替客户端做主：
+
+| 取值 | 行为 |
+|---|---|
+| 空串（旧客户端） | **不改变**会话当前库，行为与 v0.3 之前完全一致 |
+| 非空 | 在该会话上切到该库后再执行；切换与执行在同一把会话执行锁内 |
+| 事务打开且目标库不同 | `FAILED_PRECONDITION` + 驱动的 `*.catalog_switch_in_transaction`，不隐式提交 |
+| 驱动未声明 `session_catalog_switch` | `UNIMPLEMENTED` + `capability.unsupported`，不静默忽略 |
+| 库不存在 / 无权限 | `NOT_FOUND` / `PERMISSION_DENIED`，语句**不发送**，绝不回落旧库 |
+
+- 这条不改「不隐式切库」的口径：请求没给出库归属时服务端仍然不替客户端选库；请求给出时
+  照办，是因为那是用户的显式意图。
+- 显示与请求分离：客户端刷新 `GetSessionContext` 只更新显示，不改写标签请求用的 `catalog`。
+  否则用户自己在 SQL 里写的 `USE` 会把标签状态来回拉扯。
+
 ## 列元数据的存在性语义
 
 `common.v1.ColumnMeta` 的扩展字段（`default_value` / `character_set` / `collation`）

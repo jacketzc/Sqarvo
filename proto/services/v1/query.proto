@@ -24,6 +24,13 @@ message ExecuteQueryRequest {
   bool auto_commit = 4;
   // 执行超时（毫秒）；0 表示无显式超时，由服务端默认策略决定。
   uint32 timeout_millis = 5;
+  // 执行前把这条会话切到的库（ADR 0030）。
+  //
+  // 空串 = **不改变**会话当前库，行为与 v0.3 之前完全一致；非空 = 用户显式选择，
+  // 服务端在该会话上切库后再执行，切换失败时语句不发送（绝不回落旧库）。
+  // 事务打开时切换被拒绝（`FAILED_PRECONDITION`）。驱动的 `session_catalog_switch`
+  // 能力为 false（如 SQLite）时返回 `capability.unsupported`，不静默忽略。
+  string catalog = 6;
 }
 
 message StatementSummary {

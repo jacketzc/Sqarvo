@@ -287,3 +287,29 @@ async fn unknown_catalog_is_unsupported_on_every_table_data_path() {
         vec![10, 11, 12]
     );
 }
+
+// ---------------------------------------------------------------------------
+// 库上下文（ADR 0030）
+// ---------------------------------------------------------------------------
+
+/// 文件型驱动的库上下文恒为 `main`，且切库必须以 `Unsupported` 显式拒绝。
+///
+/// SQLite 没有「当前库」这个概念可以切换：`main` / `temp` / `ATTACH` 是 catalog 列表，
+/// 语句落哪张表靠限定名。能力位 `session_catalog_switch = false`，前端据此隐藏库选择器；
+/// 旧客户端若仍发非空 `catalog`，必须看到明确失败而不是静默按 `main` 执行。
+#[tokio::test]
+async fn sqlite_reports_main_and_rejects_catalog_switch() {
+    let (_dir, session) = session().await;
+    let context = session.session_context().await.expect("读取库上下文");
+    assert_eq!(context.default_catalog.as_deref(), Some("main"));
+    assert_eq!(
+        context.catalog_kind,
+        sqarvo_driver_api::CatalogKind::Database
+    );
+
+    sqarvo_driver_testkit::session_context_is_honest(&*session, Some("main"), false)
+        .await
+        .unwrap_or_else(|error| panic!("SQLite 库上下文不诚实：{error:?}"));
+
+    session.close().await.expect("关闭会话");
+}

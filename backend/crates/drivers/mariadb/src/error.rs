@@ -50,6 +50,9 @@ pub const TRANSACTION_LOST: ErrorCode = ErrorCode::from_static("mariadb.transact
 /// 无法确定表数据、对象列表或这条语句落在哪个库。元数据、表数据与 `Execute`
 /// 三条路径共用这一个错误码。
 pub const NO_DATABASE: ErrorCode = ErrorCode::from_static("mariadb.no_database");
+/// 事务打开时请求切库（ADR 0030）：驱动拒绝，不隐式提交。
+pub const CATALOG_SWITCH_IN_TRANSACTION: ErrorCode =
+    ErrorCode::from_static("mariadb.catalog_switch_in_transaction");
 
 /// 取服务端错误码（仅 `Server` 类错误）。
 pub(crate) fn server_code(error: &mysql_async::Error) -> Option<u16> {
@@ -255,4 +258,15 @@ fn map_server_code(
 /// 连接超时（调用方在 `tokio::time::timeout` 之外判断）。
 pub(crate) fn connect_timeout() -> Error {
     Error::new(CONNECT_TIMEOUT, ErrorCategory::Timeout, "连接数据库超时")
+}
+
+/// 事务打开时拒绝切库（ADR 0030 第 5 条）。
+///
+/// 不静默忽略、也不隐式提交用户事务：用户要么先提交 / 回滚，要么在事务里自己写
+/// `USE`（那是他的语句，不算驱动替他做主）。
+pub(crate) fn catalog_switch_in_transaction() -> Error {
+    Error::failed_precondition(
+        CATALOG_SWITCH_IN_TRANSACTION,
+        "事务已打开：先提交或回滚，再切换库",
+    )
 }

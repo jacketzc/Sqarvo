@@ -4,6 +4,10 @@
 - 相关：ADR 0021（一标签一会话）、ADR 0022（表浏览分页）、`docs/database/mariadb.md`、
   REQ-META-005、REQ-UI-001
 
+> **后续（ADR 0030）**：本 ADR 的「`catalog` 缺省回落会话默认库」不变；0030 在此之上新增
+> 「客户端可以显式设定会话当前库」（`ExecuteQueryRequest.catalog` + `GetSessionContext`）。
+> 表数据 / 行编辑 / 元数据的库归属仍按本 ADR 逐请求表达，不读会话当前库做推断。
+
 ## 背景
 
 v0.2.3 的对象树已经能跨库列对象：`ListNodes(CATALOG)` 读 `information_schema.SCHEMATA`，

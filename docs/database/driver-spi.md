@@ -43,6 +43,8 @@ pub trait DriverSession: Send + Sync {
     async fn close(&self) -> Result<()>;
 
     fn metadata(&self) -> Option<&dyn MetadataProvider> { None }
+    async fn session_context(&self) -> Result<SessionContext>;
+    async fn use_catalog(&self, catalog: &str) -> Result<()>;
     async fn begin_transaction(&self, options: TransactionOptions) -> Result<TransactionId>;
     async fn commit_transaction(&self, id: &TransactionId) -> Result<()>;
     async fn rollback_transaction(&self, id: &TransactionId) -> Result<()>;
@@ -59,6 +61,29 @@ pub trait DriverSession: Send + Sync {
 - 阻塞型驱动必须使用阻塞任务池（如 `spawn_blocking`），不得阻塞 Tokio worker；
 - 会话关闭前必须释放游标、连接与临时资源；
 - 未实现的能力使用默认实现返回 `capability.unsupported`，且能力描述符必须为 `false`。
+
+### 库上下文与切库（ADR 0030）
+
+```rust
+pub struct SessionContext {
+    /// 服务端实际生效的库；`None` = 这条会话没有默认库（不编造）。
+    pub default_catalog: Option<String>,
+    /// 「库」这一层叫什么：Database（MariaDB / SQLite）或 Schema（PostgreSQL）。
+    pub catalog_kind: CatalogKind,
+}
+```
+
+- `session_context()` 报**服务端真值**（MariaDB `SELECT DATABASE()`，SQLite 恒为 `main`），
+  不是连接参数的回显：账号自带默认库、服务端 `init_connect`、SQLite 的 `main` 都会让两者不同；
+- `use_catalog(catalog)` 切这条会话的当前库，四条硬性语义：切成功就是切成功；失败不回落
+  （库不存在 / 无权限返回分类错误，调用方不得继续发送语句）；事务打开时拒绝；目标与当前库
+  相同时幂等成功；
+- 能力位：`session_context` 与 `session_catalog_switch` 必须与实现一致。文件型驱动（SQLite）
+  只声明前者，`use_catalog` 返回 `capability.unsupported`——**不静默按 `main` 执行**；
+- 通用层保证切库与执行在同一把会话执行锁内（`SessionHandle::execute_in_catalog`），
+  驱动侧不必自己做互斥；
+- 驱动**不要**把切库实现成「改写 SQL 里的表名」：多语句、子查询、别名与函数体都会漏，
+  用户自己写的限定名还会被二次改写（ADR 0030 备选 1）。
 
 
 ## 连接参数

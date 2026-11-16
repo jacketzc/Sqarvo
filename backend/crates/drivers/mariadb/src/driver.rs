@@ -68,6 +68,10 @@ impl MariaDbDriver {
                     // 表浏览的排序/筛选/精确总数（ADR 0022）：SQL 下推在 #111 落地，
                     // 排序/筛选/offset/计数都进 SQL（见 `table_data.rs` 模块文档）。
                     table_browse_sort_filter_total: true,
+                    // 库上下文（ADR 0030）：`SELECT DATABASE()` 读服务端真值，
+                    // `use_catalog` 发 `USE` 切换（事务中拒绝）。
+                    session_context: true,
+                    session_catalog_switch: true,
                 },
             },
         }

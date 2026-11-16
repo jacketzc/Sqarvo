@@ -11,9 +11,10 @@ use rusqlite::types::ValueRef;
 use rusqlite::{Connection, InterruptHandle, OpenFlags, Rows, Statement};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result, SessionId, TransactionId};
 use sqarvo_driver_api::{
-    Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES, DriverSession,
-    ExecuteRequest, ExecutionStart, IsolationLevel, ParameterizedExecuteRequest, ResultBatch,
-    StatementSummary, TransactionOptions, Value, sql_preview, truncate_text,
+    CatalogKind, Cell, ColumnDefault, ColumnMeta, ColumnType, DEFAULT_MAX_CELL_BYTES,
+    DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, ParameterizedExecuteRequest,
+    ResultBatch, SessionContext, StatementSummary, TransactionOptions, Value, sql_preview,
+    truncate_text,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -954,6 +955,27 @@ impl DriverSession for SqliteSession {
 
     fn table_data(&self) -> Option<&dyn sqarvo_driver_api::TableDataProvider> {
         Some(self)
+    }
+
+    /// 文件型驱动的库上下文恒为 `main`（ADR 0030）：SQLite 连接的主库没有别名，
+    /// `temp` / `ATTACH` 是另外的 catalog 名字，不是「当前库」。
+    async fn session_context(&self) -> Result<SessionContext> {
+        self.ensure_open()?;
+        Ok(SessionContext {
+            default_catalog: Some(crate::metadata::MAIN_DATABASE.to_owned()),
+            catalog_kind: CatalogKind::Database,
+        })
+    }
+
+    /// SQLite 没有「切当前库」这个概念：显式拒绝，而不是静默忽略（ADR 0030 第 3 条）。
+    ///
+    /// 能力位 `session_catalog_switch` 为 `false`，前端据此隐藏库选择入口；
+    /// 万一旧客户端仍发了非空 `catalog`，这里必须让它看到明确失败。
+    async fn use_catalog(&self, _catalog: &str) -> Result<()> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "SQLite 没有「切换当前库」：main / temp / ATTACH 是 catalog 列表，请在 SQL 里写限定名",
+        ))
     }
 
     async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart> {

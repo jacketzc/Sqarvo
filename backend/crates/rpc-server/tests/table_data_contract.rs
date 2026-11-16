@@ -312,6 +312,84 @@ fn primary_key_rpc_is_additive_to_metadata_service() {
     );
 }
 
+/// ADR 0030：库上下文只能以**追加**的方式进入契约。
+///
+/// - `ConnectionService` 的既有 RPC 顺序不变，`GetSessionContext` 追加在末尾；
+/// - `GetSessionContextRequest` / `GetSessionContextResponse` 的字段号固定；
+/// - `ExecuteQueryRequest.catalog` 是新字段 6，既有 1–5 号不改——旧客户端不带它即为
+///   「不改变会话当前库」。
+#[test]
+fn catalog_context_contract_is_additive() {
+    let set = descriptor_set();
+    let file = set
+        .file
+        .iter()
+        .find(|file| file.name() == "services/v1/connection.proto")
+        .expect("描述符含 connection.proto");
+    let service = file
+        .service
+        .iter()
+        .find(|service| service.name() == "ConnectionService")
+        .expect("ConnectionService 存在");
+    let methods: Vec<&str> = service
+        .method
+        .iter()
+        .map(prost_types::MethodDescriptorProto::name)
+        .collect();
+    assert_eq!(
+        methods,
+        vec![
+            "TestConnection",
+            "Connect",
+            "Disconnect",
+            "ListSessions",
+            "GetSessionContext"
+        ],
+        "既有 RPC 顺序不得变化，新 RPC 只能追加"
+    );
+    let method = service
+        .method
+        .iter()
+        .find(|method| method.name() == "GetSessionContext")
+        .expect("GetSessionContext 存在");
+    assert_eq!(
+        method.input_type(),
+        ".sqarvo.services.v1.GetSessionContextRequest"
+    );
+    assert_eq!(
+        method.output_type(),
+        ".sqarvo.services.v1.GetSessionContextResponse"
+    );
+
+    let connection = messages("services/v1/connection.proto");
+    assert_fields(
+        &connection["GetSessionContextRequest"],
+        &[(1, "session_id")],
+    );
+    assert_fields(
+        &connection["GetSessionContextResponse"],
+        &[
+            (1, "session_id"),
+            (2, "driver_id"),
+            (3, "default_catalog"),
+            (4, "catalog_kind"),
+        ],
+    );
+
+    let query = messages("services/v1/query.proto");
+    assert_fields(
+        &query["ExecuteQueryRequest"],
+        &[
+            (1, "session_id"),
+            (2, "sql"),
+            (3, "max_rows_per_batch"),
+            (4, "auto_commit"),
+            (5, "timeout_millis"),
+            (6, "catalog"),
+        ],
+    );
+}
+
 #[test]
 fn table_data_service_methods_are_frozen() {
     let set = descriptor_set();

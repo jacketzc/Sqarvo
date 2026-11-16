@@ -430,3 +430,71 @@ async fn table_data_satisfies_shared_catalog_invariant() {
 
     fixture.drop_tables(&*with_default).await;
 }
+
+// ---------------------------------------------------------------------------
+// 库上下文（ADR 0030）
+// ---------------------------------------------------------------------------
+
+/// `session_context()` 报的是服务端真值，且切库后未限定表名的 SQL 落到目标库。
+///
+/// 两个库里同名表行数不同（主库 2 行、第二库 3 行），所以「语句落到了哪个库」
+/// 从计数就能直接看出来——这比断言 `DATABASE()` 更难被「只改缓存」的实现骗过。
+#[tokio::test]
+async fn catalog_switch_moves_unqualified_statements() {
+    let Some(dsn) = dsn() else {
+        return;
+    };
+    let session = connect(&dsn.params, &dsn.secret).await;
+    let fixture = Fixture::prepare(&*session, &dsn, "switch").await;
+
+    sqarvo_driver_testkit::session_context_is_honest(
+        &*session,
+        Some(fixture.primary.as_str()),
+        true,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("MariaDB 库上下文不诚实：{error:?}"));
+
+    let count_sql = format!("SELECT COUNT(*) FROM {}", q(&fixture.table));
+    sqarvo_driver_testkit::switching_catalog_moves_unqualified_statements(
+        &*session,
+        &fixture.secondary,
+        &count_sql,
+        3,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("切到第二库后语句没落到该库：{error:?}"));
+
+    // 切回去：同一会话、同一条未限定表名的 SQL，读到的是主库的 2 行。
+    sqarvo_driver_testkit::switching_catalog_moves_unqualified_statements(
+        &*session,
+        &fixture.primary,
+        &count_sql,
+        2,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("切回主库后语句没落到该库：{error:?}"));
+
+    // 不存在的库：分类报错，会话上下文不变（绝不回落旧库）。
+    //
+    // 受限账号下 MariaDB 对「库不存在」与「库不可见」都返回 1044，因此这里两种分类都接受：
+    // 关键是**失败**而不是静默切过去（详见 `docs/database/mariadb.md`「已知缺口」）。
+    let missing = format!("{}_missing", fixture.primary);
+    let error = session
+        .use_catalog(&missing)
+        .await
+        .expect_err("切到不存在的库必须失败");
+    assert!(
+        matches!(error.code(), code if code == error::UNKNOWN_DATABASE || code == error::PERMISSION_DENIED),
+        "切到不存在的库应报 unknown_database 或 permission_denied，实际 {error:?}"
+    );
+    let context = session.session_context().await.expect("session_context");
+    assert_eq!(
+        context.default_catalog.as_deref(),
+        Some(fixture.primary.as_str()),
+        "切库失败后上下文必须保持原库"
+    );
+
+    fixture.drop_tables(&*session).await;
+    session.close().await.expect("关闭会话");
+}

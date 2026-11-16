@@ -200,6 +200,32 @@ pub struct ConnectionTestReport {
     pub warnings: Vec<Warning>,
 }
 
+/// 「库」这一层在驱动里叫什么（ADR 0030）。
+///
+/// 客户端据此决定文案（「数据库」还是「Schema」），不按驱动名硬编码：
+/// MariaDB / SQLite 是 [`CatalogKind::Database`]，将来的 PostgreSQL 是
+/// [`CatalogKind::Schema`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogKind {
+    /// 「库」这一层是 database（MySQL 协议族、SQLite 的 `main` / `temp` / `ATTACH`）。
+    Database,
+    /// 「库」这一层是 schema（PostgreSQL 等）。
+    Schema,
+}
+
+/// 会话的库上下文（ADR 0030）。
+///
+/// 只描述**事实**：服务端实际生效的库，以及这一层叫什么。它不是连接配置的回显——
+/// 配置里的 `database` 与「服务端生效值」可能不同（账号自带默认库、服务端 `init_connect`、
+/// SQLite 的 `main`），客户端必须显示这里的值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionContext {
+    /// 服务端实际生效的库；`None` 表示这条会话没有默认库（不编造）。
+    pub default_catalog: Option<String>,
+    /// 「库」这一层叫什么。
+    pub catalog_kind: CatalogKind,
+}
+
 /// 单次执行请求。
 #[derive(Debug, Clone)]
 pub struct ExecuteRequest {
@@ -352,6 +378,28 @@ pub trait DriverSession: Send + Sync {
         None
     }
 
+    /// 会话的库上下文（ADR 0030）。默认实现表示该驱动不提供。
+    ///
+    /// 必须与 [`Capabilities::session_context`] 一致：能力位为 `true` 的驱动要实现它，
+    /// 不得「先声明再试」。
+    async fn session_context(&self) -> Result<SessionContext> {
+        Err(unsupported_session_context())
+    }
+
+    /// 把这条会话切到指定库（ADR 0030）。默认实现表示该驱动不支持切库。
+    ///
+    /// 语义要求（三个内置驱动都必须遵守）：
+    ///
+    /// - **切成功就是切成功**：返回 `Ok` 之后，同一会话上后续语句必须落在该库；
+    /// - **失败不回落**：库不存在 / 无权限时返回分类错误，调用方不得继续发送语句；
+    /// - **事务打开时拒绝**：不静默忽略，也不隐式提交用户事务；
+    /// - 幂等：目标库与会话当前库相同时直接成功（可以跳过实际切换）。
+    ///
+    /// 必须与 [`Capabilities::session_catalog_switch`] 一致。
+    async fn use_catalog(&self, _catalog: &str) -> Result<()> {
+        Err(unsupported_catalog_switch())
+    }
+
     /// 表数据浏览与行编辑能力；不支持的驱动返回 `None`（ADR 0017）。
     ///
     /// 返回 `Some` 但 [`TableDataProvider::supports_row_edits`] 为 `false` 时，
@@ -401,6 +449,14 @@ fn unsupported_transactions() -> Error {
 
 fn unsupported_parameterized_statements() -> Error {
     Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现参数化执行")
+}
+
+fn unsupported_session_context() -> Error {
+    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动不提供库上下文")
+}
+
+fn unsupported_catalog_switch() -> Error {
+    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动不支持切换库")
 }
 
 /// 数据库驱动。

@@ -52,6 +52,17 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 [mariadb.md](./mariadb.md#与-sqlite-的差异)，逐维度的两驱动对照表见
 [driver-spi.md](./driver-spi.md#事务实现现状v021)。
 
+## 库上下文（ADR 0030）
+
+- `session_context()` 恒返回 `default_catalog = "main"`、`catalog_kind = Database`：
+  文件型连接只有一个主库，`temp` 与 `ATTACH` 进来的库是 catalog 列表里的**另外几个**名字，
+  不是「当前库」。
+- **不支持切库**：`session_catalog_switch = false`，`use_catalog` 返回
+  `capability.unsupported`（文案指向「在 SQL 里写限定名」）。不静默按 `main` 执行——
+  静默降级等于把用户请求的库换成另一个库（与 ADR 0024 同一条理由）。
+- 客户端据此隐藏库选择器；`Execute.catalog` 非空时由通用层直接以
+  `capability.unsupported` 拒绝，语句不发送。
+
 ## 只读连接（`read_only`）
 
 `ConnectionParams.properties["read_only"] = "true"` 让连接以 `SQLITE_OPEN_READONLY` 打开

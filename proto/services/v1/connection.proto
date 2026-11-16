@@ -5,12 +5,14 @@ package sqarvo.services.v1;
 import "common/v1/common.proto";
 import "services/v1/transaction.proto";
 
-// 连接域：测试连接、建立会话、断开、列出会话。
+// 连接域：测试连接、建立会话、断开、列出会话、读取会话的库上下文。
 service ConnectionService {
   rpc TestConnection(TestConnectionRequest) returns (TestConnectionResponse);
   rpc Connect(ConnectRequest) returns (ConnectResponse);
   rpc Disconnect(DisconnectRequest) returns (sqarvo.common.v1.Empty);
   rpc ListSessions(sqarvo.common.v1.Empty) returns (ListSessionsResponse);
+  // 会话当前落在哪个库（服务端真值）。只读；不改变会话状态（ADR 0030）。
+  rpc GetSessionContext(GetSessionContextRequest) returns (GetSessionContextResponse);
 }
 
 enum TlsMode {
@@ -86,4 +88,24 @@ message SessionSummary {
 
 message ListSessionsResponse {
   repeated SessionSummary sessions = 1;
+}
+
+// 「库」这一层在驱动里叫什么（ADR 0030）。MariaDB / SQLite 是 database（catalog），
+// 将来的 PostgreSQL 是 schema；客户端据此决定文案，不按驱动名硬编码。
+enum CatalogKind {
+  CATALOG_KIND_UNSPECIFIED = 0;
+  CATALOG_KIND_DATABASE = 1;
+  CATALOG_KIND_SCHEMA = 2;
+}
+
+message GetSessionContextRequest {
+  string session_id = 1;
+}
+
+message GetSessionContextResponse {
+  string session_id = 1;
+  string driver_id = 2;
+  // 服务端实际生效的库；空串表示这条会话没有默认库——不得用连接配置里的值顶替。
+  string default_catalog = 3;
+  CatalogKind catalog_kind = 4;
 }
