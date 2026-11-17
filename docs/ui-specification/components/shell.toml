@@ -213,11 +213,11 @@ style.icon = ["menu.open"]
 native_control = "gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—"
 style.slot = "menubar"
 style.metrics = ["min_target", "icon_box", "font_weight_menu"]
-a11y.name = "主菜单（文件 / 表 / 视图 / 帮助）"
+a11y.name = "主菜单（文件 / 视图 / 帮助）"
 a11y.tab = "可聚焦；Enter / Space 展开菜单，Esc 收起"
 impl_notes = [
-  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。",
-  "「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
+  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。",
+  "「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
   "「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
   "弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。",
 ]
@@ -225,19 +225,20 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "窗口存在"
-result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性"
-source = "src/ui.rs:4755、src/ui.rs:314、src/ui.rs:5272"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性"
+source = "src/ui.rs:4945、src/ui.rs:321"
 
-platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，三个 MenuFlyoutSubItem（文件 / 表 / 帮助）装同一批条目，条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
+platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，两个 MenuFlyoutSubItem（文件 / 帮助）装同一批条目（「表 → 导出 CSV」已随改动确认单 #1 / #198 删除），条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f41955fd4df0"
+spec_hash = "2d0595d6a38d"
 evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "1bb20680efda"
+spec_hash = "2d0595d6a38d"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:331-365（MenuFlyout 现仅两个 MenuFlyoutSubItem：MenuFile 331 / MenuHelp 355，「表」块已随改动确认单 #1 删除）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:927（WireMenu 按名接 Click，MenuExportCsv 接线已移除）；本机仅 xaml_lint 通过，未构建运行 WinUI"
 note = "Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
 
 [component.sync.macos]
@@ -361,7 +362,9 @@ id = "shell.menu.export_csv"
 parent = "shell.menu"
 display_name = "表 → 导出 CSV"
 kind = "item"
-status = "active"
+status = "removed"
+removed_in = "v0.2.5"
+removed_reason = "主菜单暂时隐藏（改动确认单 #1 / #198）：导出入口收敛到表工具条「导出 ▾」与 Ctrl+Shift+E；条目保留，恢复时翻回 active"
 style.metrics = ["font_ui"]
 a11y.name = "导出 CSV"
 impl_notes = [
@@ -373,28 +376,29 @@ impl_notes = [
 trigger = "click"
 precondition = "后端已握手且工作区存在；当前标签有没有可导出内容由动作自己判定"
 result = "导出当前结果页 / 当前页为 CSV；当前标签没有可导出的结果页时只写日志「当前标签没有可导出的结果页」，不弹空对话框"
-source = "src/ui.rs:4601、src/ui.rs:4945"
+source = "src/ui.rs:5328（win.export-csv 动作；菜单条目已随改动确认单 #1 不挂）"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+Shift+E"]
 precondition = "同上"
 result = "直接导出 CSV（与菜单项同一个 `win.export-csv`）"
-source = "src/ui.rs:356"
+source = "src/ui.rs:377"
 
 [component.sync.linux]
-state = "done"
-spec_hash = "5c391040b1a5"
-evidence = "§1.4 表 → 导出 CSV；export-csv 动作与 workspace ready 开关"
+state = "removed"
+spec_hash = ""
+evidence = "build_main_menu 不再挂「表」子菜单（src/ui.rs:4945-4953）；菜单按钮 tooltip 已改「主菜单（文件 / 视图 / 帮助）」（src/ui.rs:208）；win.export-csv 与 Ctrl+Shift+E 保留（src/ui.rs:5328、377）"
 
 [component.sync.windows]
-state = "none"
+state = "removed"
 spec_hash = ""
-note = "§7.1 明确记录 Windows 数据页未实现导出 CSV。"
+note = "MenuTable / MenuExportCsv 的 XAML 块与 WireMenu 接线已删（ShellView.xaml / ShellView.xaml.cs）；本机 Linux 未构建运行 WinUI，仅过 xaml_lint。该条目在 Windows 上原本就是「尚未实现」占位。"
 
 [component.sync.macos]
-state = "none"
+state = "na"
 spec_hash = ""
+note = "macOS 前端未接入，本就没有这一项。"
 
 [[component]]
 id = "shell.menu.about"

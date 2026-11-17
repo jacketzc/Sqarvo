@@ -205,7 +205,7 @@ pub fn activate(app: &adw::Application) {
     let menu_button = gtk::MenuButton::new();
     menu_button.set_icon_name("open-menu-symbolic");
     menu_button.add_css_class("flat");
-    menu_button.set_tooltip_text(Some("主菜单（文件 / 表 / 视图 / 帮助）"));
+    menu_button.set_tooltip_text(Some("主菜单（文件 / 视图 / 帮助）"));
     let main_menu = build_main_menu();
     menu_button.set_menu_model(Some(&main_menu.model));
 
@@ -4915,14 +4915,18 @@ fn truncate_for_log(text: &str, limit: usize) -> String {
 //
 // Linux 不设窗口内菜单行（ADR 0023）：菜单挂在 headerbar 的主菜单按钮上，
 // 动作是窗口级 `win.*`（需要当前工作区），应用级只有退出/关窗。
-// 菜单集合为 文件 / 表 / 视图 / 帮助：**查询**的全部子项不在菜单里（动作照旧），
-// 视图只剩两个三级小节（深色模式 / 界面密度），「表」只留「导出 CSV」。
+// 菜单集合为 文件 / 视图 / 帮助：**查询**的全部子项不在菜单里（动作照旧），
+// 视图只剩两个三级小节（深色模式 / 界面密度）。
 // **动作与快捷键不受影响**——`win.*` 仍由
 // [`install_window_actions`] 注册，`Ctrl+T` / `Ctrl+W` / `F5` / `Ctrl+Enter` / `Ctrl+Shift+E`
 // 等照旧能触发，只是菜单里不再列出。
 //
 // 不留空的子菜单：`gio::Menu` 的空 submenu 会弹出一个空气泡（点了像坏掉），
 // 比「顶部少一项」更难解释，所以整项不挂。
+//
+// 「表」子菜单暂时隐藏（改动确认单 #1，#198；注册表 shell.menu.export_csv
+// 已标 removed）：它是「表」下唯一条目，整项不挂；`win.export-csv` 与
+// `Ctrl+Shift+E` 照旧，导出入口保留在表工具条「导出 ▾」与结果区菜单。
 //
 // 没有实现支撑的项**禁用并写明原因**（导出 CSV 归 #118），不摆点了没反应的动作。
 
@@ -4947,10 +4951,8 @@ fn build_main_menu() -> MainMenu {
     file.append(Some("退出"), Some("app.quit"));
     menu.append_submenu(Some("文件"), &file);
 
-    // 「表」只保留导出：事务 / 刷新 / 行列编辑都在动作行与状态栏里，菜单不再重复一份。
-    let table = gio::Menu::new();
-    table.append(Some("导出 CSV"), Some("win.export-csv"));
-    menu.append_submenu(Some("表"), &table);
+    // 「表」整项不挂（改动确认单 #1）：唯一条目「导出 CSV」暂时隐藏，
+    // 不留空子菜单；导出走工具条「导出 ▾」/ `Ctrl+Shift+E`，动作与快捷键不变。
 
     // 视图 → 深色模式 / 界面密度：两个三级小节，每节三个 stateful 单选项，当前值打勾。
     // GMenu 没有逐项 tooltip，所以密度档放不下时靠**条目文字**（`refresh_tier_actions`
@@ -5972,8 +5974,10 @@ mod tests {
         let model = menu.model.clone().upcast::<gio::MenuModel>();
         assert_eq!(
             menu_labels(&model),
-            ["文件", "表", "视图", "帮助"].map(str::to_owned)
+            ["文件", "视图", "帮助"].map(str::to_owned)
         );
+        // 「表」整项不挂：唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，
+        // 注册表 shell.menu.export_csv 标 removed）；不留空子菜单。
 
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(

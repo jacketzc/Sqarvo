@@ -250,7 +250,8 @@
 
             为什么菜单是 MenuFlyout + MenuFlyoutSubItem 而不是 MenuBar：MenuBar 自带一整行，
             而这里要的是「一个按钮里的三层菜单」。条目名（MenuFile / MenuNewConnection /
-            MenuNewQueryTab / MenuQuit / MenuExportCsv / MenuAbout）与原来一致，
+            MenuNewQueryTab / MenuQuit / MenuAbout）与原来一致，「表 → 导出 CSV」已暂时
+            隐藏（改动确认单 #1 / #198，注册表 shell.menu.export_csv 标 removed），
             WireMenu() 仍按名字接 Click / IsEnabled，事件语义没变。
             字形仍用 Segoe MDL2 Assets 的字符（TextBlock + FontFamily），不额外实例化图标控件。
         -->
@@ -348,18 +349,6 @@
                                 <MenuFlyoutItem
                                     x:Name="MenuQuit"
                                     Text="退出"
-                                    FontSize="{StaticResource Size.FontUi}"
-                                    FontWeight="{StaticResource Weight.Ui}" />
-                            </MenuFlyoutSubItem>
-                            <MenuFlyoutSubItem
-                                x:Name="MenuTable"
-                                Text="表"
-                                FontSize="{StaticResource Size.FontUi}"
-                                FontWeight="{StaticResource Weight.Ui}">
-                                <MenuFlyoutItem
-                                    x:Name="MenuExportCsv"
-                                    Text="导出 CSV…"
-                                    IsEnabled="False"
                                     FontSize="{StaticResource Size.FontUi}"
                                     FontWeight="{StaticResource Weight.Ui}" />
                             </MenuFlyoutSubItem>

@@ -931,9 +931,6 @@ public sealed partial class ShellView : UserControl
         ToolTipService.SetToolTip(
             MenuNewQueryTab,
             "新建查询标签（Ctrl+T）：一个标签一个 SQL 编辑器，执行结果在标签内分批显示");
-        ToolTipService.SetToolTip(
-            MenuExportCsv,
-            "导出 CSV 尚未实现：结果集导出在后续工作包（本片只做了查询与结果显示）");
 
         ToolTipService.SetToolTip(
             ButtonNewQuery,
@@ -979,8 +976,6 @@ public sealed partial class ShellView : UserControl
         MenuAbout.Click += OnAboutClick;
         MenuNewConnection.Click += async (_, _) => await ShowNewConnectionDialogAsync();
         MenuNewQueryTab.Click += (_, _) => CreateQueryTab();
-        MenuExportCsv.Click += (_, _) => NotifyNotImplemented(
-            "导出 CSV 尚未实现：还没有结果集可以导出");
 
         ButtonConnect.Click += async (_, _) =>
         {

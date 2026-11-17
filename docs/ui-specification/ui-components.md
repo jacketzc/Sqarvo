@@ -212,7 +212,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 - 无障碍：可访问名「导出」；Tab 工具条次要动作组内第三枚（最右）
 - 图标：`action.export`
 - 同步：Linux done（§5.1 导出 ▾ / §5.7 入口；MenuButton + 三个菜单项走 export_ui::begin）；Windows none（§7.1 未记录：Windows 数据页没有导出入口（对象树条目同样写明「数据页导出亦未实现」）。）；macOS none
-- 实现备注：图标 + 下拉箭头（always_show_arrow）：**一个入口三种出口**，不是单击即导出的图标；图标仍是 document-save-symbolic。tooltip：「导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 N 行（Ctrl+Shift+E 直接导出 CSV）」。有已加载行且没有 RPC 在途时可用；在途时禁用（避免写出半套状态）。Ctrl+Shift+E 与菜单「表 → 导出 CSV」仍是**直接导出 CSV**（不弹格式菜单），与这一格不是同一条路径。
+- 实现备注：图标 + 下拉箭头（always_show_arrow）：**一个入口三种出口**，不是单击即导出的图标；图标仍是 document-save-symbolic。tooltip：「导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 N 行（Ctrl+Shift+E 直接导出 CSV）」。有已加载行且没有 RPC 在途时可用；在途时禁用（避免写出半套状态）。Ctrl+Shift+E 仍是**直接导出 CSV**（不弹格式菜单），与这一格不是同一条路径；主菜单「表 → 导出 CSV」已暂时隐藏（改动确认单 #1 / #198，注册表 shell.menu.export_csv 标 removed）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1781,7 +1781,7 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.menu.new_connection` | 　　文件 → 新建连接 | item | active | done | partial | — |
 | `shell.menu.new_tab` | 　　文件 → 新建查询标签 | item | active | done | — | — |
 | `shell.menu.quit` | 　　文件 → 退出 | item | active | done | — | — |
-| `shell.menu.export_csv` | 　　表 → 导出 CSV | item | active | done | — | — |
+| `shell.menu.export_csv` | 　　表 → 导出 CSV | item | removed | 已清 | 已清 | na |
 | `shell.menu.about` | 　　帮助 → 关于 Squarvo | item | active | done | — | — |
 | `shell.toolbar` | 　主工具条 | container | active | done | partial | — |
 | `shell.toolbar.connect` | 　　「连接」 | control | active | done | partial | — |
@@ -1860,15 +1860,15 @@ kind `control` · status `active` · parent `shell`
 kind `control` · status `active` · parent `shell`
 
 - 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`、`font_weight_menu`
-- 无障碍：可访问名「主菜单（文件 / 表 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
+- 无障碍：可访问名「主菜单（文件 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
 - 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
-- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 表 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
+- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、表（导出 CSV）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性 | `src/ui.rs:4755、src/ui.rs:314、src/ui.rs:5272` |
+| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性 | `src/ui.rs:4945、src/ui.rs:321` |
 
 ### `shell.menu.new_connection` 文件 → 新建连接
 
@@ -1914,17 +1914,17 @@ kind `item` · status `active` · parent `shell.menu`
 
 ### `shell.menu.export_csv` 表 → 导出 CSV
 
-kind `item` · status `active` · parent `shell.menu`
+kind `item` · status `removed` · parent `shell.menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「导出 CSV」
-- 同步：Linux done（§1.4 表 → 导出 CSV；export-csv 动作与 workspace ready 开关）；Windows none（§7.1 明确记录 Windows 数据页未实现导出 CSV。）；macOS none
+- 同步：Linux removed（build_main_menu 不再挂「表」子菜单（src/ui.rs:4945-4953）；菜单按钮 tooltip 已改「主菜单（文件 / 视图 / 帮助）」（src/ui.rs:208）；win.export-csv 与 Ctrl+Shift+E 保留（src/ui.rs:5328、377））；Windows removed（MenuTable / MenuExportCsv 的 XAML 块与 WireMenu 接线已删（ShellView.xaml / ShellView.xaml.cs）；本机 Linux 未构建运行 WinUI，仅过 xaml_lint。该条目在 Windows 上原本就是「尚未实现」占位。）；macOS na（macOS 前端未接入，本就没有这一项。）
 - 实现备注：与表工具条 `导出 ▾` 菜单的「导出 CSV…」、`Ctrl+Shift+E` 同一条导出入口；固定 CSV。INSERT 语句与转储表只在表工具条 / 结果区 / 树右键菜单里，菜单不重复。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在；当前标签有没有可导出内容由动作自己判定 | 导出当前结果页 / 当前页为 CSV；当前标签没有可导出的结果页时只写日志「当前标签没有可导出的结果页」，不弹空对话框 | `src/ui.rs:4601、src/ui.rs:4945` |
-| key Ctrl+Shift+E | 同上 | 直接导出 CSV（与菜单项同一个 `win.export-csv`） | `src/ui.rs:356` |
+| click | 后端已握手且工作区存在；当前标签有没有可导出内容由动作自己判定 | 导出当前结果页 / 当前页为 CSV；当前标签没有可导出的结果页时只写日志「当前标签没有可导出的结果页」，不弹空对话框 | `src/ui.rs:5328（win.export-csv 动作；菜单条目已随改动确认单 #1 不挂）` |
+| key Ctrl+Shift+E | 同上 | 直接导出 CSV（与菜单项同一个 `win.export-csv`） | `src/ui.rs:377` |
 
 ### `shell.menu.about` 帮助 → 关于 Squarvo
 
@@ -2966,3 +2966,11 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 确认框在显示 | 标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`） | `src/tabs.rs:2779、src/tabs.rs:2788、src/tabs.rs:2702` |
+
+## 待清理（按版本）
+
+退役组件的条目**不删**：别的端要靠它知道「要去掉什么」。三端都成 `已清` 之后再归档。
+
+| 版本 | 组件 | 名称 | status | Linux | Windows | macOS | 理由 |
+|---|---|---|---|---|---|---|---|
+| v0.2.5 | `shell.menu.export_csv` | 表 → 导出 CSV | removed | 已清 | 已清 | na | 主菜单暂时隐藏（改动确认单 #1 / #198）：导出入口收敛到表工具条「导出 ▾」与 Ctrl+Shift+E；条目保留，恢复时翻回 active |

@@ -707,7 +707,8 @@ impl SqlPage {
         }
     }
 
-    /// 导出 CSV（「表」菜单 / `Ctrl+Shift+E` 同一个入口；结果区菜单里还有 INSERT）。
+    /// 导出 CSV（`Ctrl+Shift+E` 同一个入口；结果区菜单里还有 INSERT。主菜单「表」
+    /// 已暂时隐藏，见改动确认单 #1 / #198）。
     pub fn export(self: &Rc<Self>) {
         crate::export_ui::begin(
             self.root.upcast_ref::<gtk::Widget>(),

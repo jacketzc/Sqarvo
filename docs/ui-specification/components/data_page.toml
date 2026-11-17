@@ -507,7 +507,7 @@ impl_notes = [
   "图标 + 下拉箭头（always_show_arrow）：**一个入口三种出口**，不是单击即导出的图标；图标仍是 document-save-symbolic。",
   "tooltip：「导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 N 行（Ctrl+Shift+E 直接导出 CSV）」。",
   "有已加载行且没有 RPC 在途时可用；在途时禁用（避免写出半套状态）。",
-  "Ctrl+Shift+E 与菜单「表 → 导出 CSV」仍是**直接导出 CSV**（不弹格式菜单），与这一格不是同一条路径。",
+  "Ctrl+Shift+E 仍是**直接导出 CSV**（不弹格式菜单），与这一格不是同一条路径；主菜单「表 → 导出 CSV」已暂时隐藏（改动确认单 #1 / #198，注册表 shell.menu.export_csv 标 removed）。",
 ]
 
 [[component.interaction]]
