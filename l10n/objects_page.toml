@@ -1,0 +1,117 @@
+# Objects 固定页文案目录（注册表区 `objects_page.*`，ADR 0031 决策 2；迁移切片 S3/#201 Lane B）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
+# （位置参数改名为命名占位的条目在 Issue #201 汇报的白名单里逐条列出）。
+# 覆盖表面：`Objects` 固定页（tabs.rs::ObjectsPage）的三列表头、空态、状态行、
+# 「加载更多…」与行 tooltip；Functions / Queries 的「尚未实现」说明页（unavailable_copy，
+# 树分组与工具条入口共用同一份）；启动态 Objects 空态两行（startup.rs 判归本页）。
+# 不在这里登记：页内标题「Objects」与条目名「Functions / Queries」（本就是英文）、
+# 行号格 tooltip「第 N 行」（与数据页行号同一口径，#202）、日志行、QA 钩子错误串。
+
+[[entry]]
+key = "objects_page.header_row"
+zh = "行号"
+en = "Row"
+status = "done"
+
+[[entry]]
+key = "objects_page.header_name"
+zh = "表名"
+en = "Name"
+status = "done"
+
+[[entry]]
+key = "objects_page.header_type"
+zh = "类型"
+en = "Type"
+status = "done"
+
+[[entry]]
+key = "objects_page.btn_load_more"
+zh = "加载更多…"
+en = "Load more…"
+status = "done"
+
+[[entry]]
+key = "objects_page.tooltip_row"
+zh = "{name}（{kind}）· 双击打开"
+en = "{name} ({kind}) · Double-click to open"
+status = "done"
+
+[[entry]]
+key = "objects_page.status_loading"
+zh = "正在读取…"
+en = "Reading…"
+status = "done"
+
+[[entry]]
+key = "objects_page.status_no_session"
+zh = "这条连接没有浏览会话：展开连接后重试"
+en = "This connection has no browse session; expand the connection and retry"
+status = "done"
+
+[[entry]]
+key = "objects_page.status_total"
+zh = "共 {total} 个对象{more_note}"
+en = "{total} objects{more_note}"
+status = "done"
+
+[[entry]]
+key = "objects_page.status_more_note"
+zh = "（还有更多）"
+en = " (more)"
+status = "done"
+
+[[entry]]
+key = "objects_page.status_empty"
+zh = "（这个库里没有这类对象）"
+en = "(No objects of this kind in this database)"
+status = "done"
+
+[[entry]]
+key = "objects_page.status_read_failed"
+zh = "读取失败：{headline}（{code}）"
+en = "Read failed: {headline} ({code})"
+status = "done"
+
+[[entry]]
+key = "objects_page.empty_title"
+zh = "没有选中对象"
+en = "No object selected"
+status = "done"
+
+[[entry]]
+key = "objects_page.empty_body"
+zh = "在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。"
+en = "Select a database (or its Tables / Views group) in the object tree on the left; its tables or views are listed here."
+status = "done"
+
+[[entry]]
+key = "objects_page.empty_body_startup"
+zh = "从左侧选择一个连接开始：双击一条已保存的连接即可连接。"
+en = "Pick a connection on the left to begin: double-click a saved connection to connect."
+status = "done"
+
+[[entry]]
+key = "objects_page.unavailable_functions_title"
+zh = "函数列表尚未实现"
+en = "Functions listing is not implemented yet"
+status = "done"
+
+[[entry]]
+key = "objects_page.unavailable_functions_body"
+zh = "驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。"
+en = "The driver provides no Functions listing (the contract defines no fetch capability for this kind), so no fake data is shown here."
+status = "done"
+
+[[entry]]
+key = "objects_page.unavailable_queries_title"
+zh = "已保存的查询尚未实现"
+en = "Saved queries are not implemented yet"
+status = "done"
+
+[[entry]]
+key = "objects_page.unavailable_queries_body"
+zh = "本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。"
+en = "This version has no \"saved queries\" layer: queries exist only inside open query tabs."
+status = "done"

@@ -16,13 +16,23 @@
 //!   不是「字符集为空」。
 
 use crate::backend::table::TableColumn;
+use crate::l10n;
 use crate::proto::common::v1::{ColumnDefault, ColumnDefaultKind};
 
 /// 字段未提供时的展示文案（协议要求「不适用」而不是空白）。
-pub const NOT_APPLICABLE: &str = "不适用";
+///
+/// 文案在 catalog（`l10n/inspector.toml`，S3 Lane B）；这里保持函数形态，
+/// 让运行时按当前语言取值。
+#[must_use]
+pub fn not_applicable() -> &'static str {
+    l10n::t("inspector.column_not_applicable")
+}
 
 /// 「未知」：老服务端没发该字段，或元数据来自结果集。
-pub const UNKNOWN: &str = "未知（服务端未提供）";
+#[must_use]
+pub fn unknown_text() -> &'static str {
+    l10n::t("inspector.column_default_unknown")
+}
 
 /// 默认值四态之一（与 `ColumnDefaultKind` 一一对应，`UNSPECIFIED` 归入「未知」）。
 ///
@@ -80,11 +90,11 @@ impl ColumnDefaultState {
 #[must_use]
 pub fn default_label(state: &ColumnDefaultState) -> String {
     match state {
-        ColumnDefaultState::Unknown => UNKNOWN.to_owned(),
-        ColumnDefaultState::NoDefault => "无默认值".to_owned(),
-        ColumnDefaultState::Null => "默认 NULL".to_owned(),
+        ColumnDefaultState::Unknown => unknown_text().to_owned(),
+        ColumnDefaultState::NoDefault => l10n::t("inspector.column_default_none").to_owned(),
+        ColumnDefaultState::Null => l10n::t("inspector.column_default_null").to_owned(),
         ColumnDefaultState::Expression(text) if text.trim().is_empty() => {
-            "表达式（服务端未给出文本）".to_owned()
+            l10n::t("inspector.column_default_expr_missing").to_owned()
         }
         ColumnDefaultState::Expression(text) => text.clone(),
     }
@@ -94,9 +104,9 @@ pub fn default_label(state: &ColumnDefaultState) -> String {
 #[must_use]
 pub fn nullable_label(nullable: bool) -> &'static str {
     if nullable {
-        "可空"
+        l10n::t("inspector.column_label_nullable")
     } else {
-        "不可空（NOT NULL）"
+        l10n::t("inspector.column_not_nullable")
     }
 }
 
@@ -116,7 +126,7 @@ fn name_or_not_applicable(value: Option<&str>) -> String {
     value
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map_or_else(|| NOT_APPLICABLE.to_owned(), str::to_owned)
+        .map_or_else(|| not_applicable().to_owned(), str::to_owned)
 }
 
 /// 数据网格的表头标题（`名字 · 类型`）。
@@ -155,12 +165,27 @@ pub fn column_index_for_title(titles: &[String], clicked: Option<&str>) -> Optio
 #[must_use]
 pub fn column_info_rows(column: &TableColumn) -> [(&'static str, String); 6] {
     [
-        ("列名", column.name.clone()),
-        ("原始类型", column.type_label.clone()),
-        ("可空", nullable_label(column.nullable).to_owned()),
-        ("默认值", default_label(&column.default_value)),
-        ("字符集", charset_label(column.character_set.as_deref())),
-        ("排序规则", collation_label(column.collation.as_deref())),
+        (l10n::t("inspector.column_label_name"), column.name.clone()),
+        (
+            l10n::t("inspector.column_label_type"),
+            column.type_label.clone(),
+        ),
+        (
+            l10n::t("inspector.column_label_nullable"),
+            nullable_label(column.nullable).to_owned(),
+        ),
+        (
+            l10n::t("inspector.column_label_default"),
+            default_label(&column.default_value),
+        ),
+        (
+            l10n::t("inspector.column_label_charset"),
+            charset_label(column.character_set.as_deref()),
+        ),
+        (
+            l10n::t("inspector.column_label_collation"),
+            collation_label(column.collation.as_deref()),
+        ),
     ]
 }
 
@@ -201,7 +226,7 @@ mod tests {
             ColumnDefaultState::from_proto(None),
             ColumnDefaultState::Unknown
         );
-        assert_eq!(default_label(&ColumnDefaultState::Unknown), UNKNOWN);
+        assert_eq!(default_label(&ColumnDefaultState::Unknown), unknown_text());
         assert_ne!(
             default_label(&ColumnDefaultState::Unknown),
             default_label(&ColumnDefaultState::NoDefault)
@@ -288,10 +313,10 @@ mod tests {
     #[test]
     fn charset_and_collation_are_not_applicable_when_absent() {
         // SQLite：协议永远不设这两个字段，界面必须写「不适用」而不是空白。
-        assert_eq!(charset_label(None), NOT_APPLICABLE);
-        assert_eq!(collation_label(None), NOT_APPLICABLE);
-        assert_eq!(charset_label(Some("  ")), NOT_APPLICABLE);
-        assert_eq!(collation_label(Some("")), NOT_APPLICABLE);
+        assert_eq!(charset_label(None), not_applicable());
+        assert_eq!(collation_label(None), not_applicable());
+        assert_eq!(charset_label(Some("  ")), not_applicable());
+        assert_eq!(collation_label(Some("")), not_applicable());
         assert!(!charset_label(None).is_empty());
     }
 
@@ -323,8 +348,8 @@ mod tests {
         assert_eq!(rows[2].1, "可空");
         assert_eq!(rows[3].1, "无默认值");
         // SQLite：字符集/排序规则两行都是「不适用」，不是空串。
-        assert_eq!(rows[4].1, NOT_APPLICABLE);
-        assert_eq!(rows[5].1, NOT_APPLICABLE);
+        assert_eq!(rows[4].1, not_applicable());
+        assert_eq!(rows[5].1, not_applicable());
     }
 
     fn named_column(name: &str, type_label: &str) -> TableColumn {

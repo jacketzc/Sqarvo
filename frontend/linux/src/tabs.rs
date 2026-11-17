@@ -788,12 +788,12 @@ impl KindShortcut {
 pub fn unavailable_copy(shortcut: KindShortcut) -> Option<(&'static str, &'static str)> {
     match shortcut {
         KindShortcut::Functions => Some((
-            "函数列表尚未实现",
-            "驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。",
+            crate::l10n::t("objects_page.unavailable_functions_title"),
+            crate::l10n::t("objects_page.unavailable_functions_body"),
         )),
         KindShortcut::Queries => Some((
-            "已保存的查询尚未实现",
-            "本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。",
+            crate::l10n::t("objects_page.unavailable_queries_title"),
+            crate::l10n::t("objects_page.unavailable_queries_body"),
         )),
         KindShortcut::Tables | KindShortcut::Views => None,
     }
@@ -1048,10 +1048,12 @@ impl ObjectsPage {
             // 图标与对象树同一个映射（`kind_icon`）：表 view-grid、视图 view-reveal。
             icon.set_icon_name(Some(kind_icon(entry.kind)));
             name.set_text(&entry.display_name);
-            cell.set_tooltip_text(Some(&format!(
-                "{}（{}）· 双击打开",
-                entry.display_name,
-                entry.kind_label()
+            cell.set_tooltip_text(Some(&crate::l10n::tf(
+                "objects_page.tooltip_row",
+                &[
+                    ("name", entry.display_name.clone()),
+                    ("kind", entry.kind_label().to_owned()),
+                ],
             )));
         });
 
@@ -1098,20 +1100,29 @@ impl ObjectsPage {
         grid.set_single_click_activate(false);
 
         // 行号列宽度复用数据网格的常量（`data_page::ROW_NUMBER_WIDTH`），不可拖。
-        let number_column = gtk::ColumnViewColumn::new(Some("行号"), Some(number_factory));
+        let number_column = gtk::ColumnViewColumn::new(
+            Some(crate::l10n::t("objects_page.header_row")),
+            Some(number_factory),
+        );
         number_column.set_fixed_width(crate::data_page::row_number_width());
         number_column.set_resizable(false);
         grid.append_column(&number_column);
 
         // 表名列吃掉剩余宽度（初值与网格数据列同宽，可拖）。
-        let name_column = gtk::ColumnViewColumn::new(Some("表名"), Some(name_factory));
+        let name_column = gtk::ColumnViewColumn::new(
+            Some(crate::l10n::t("objects_page.header_name")),
+            Some(name_factory),
+        );
         name_column.set_expand(true);
         name_column.set_resizable(true);
         name_column.set_fixed_width(crate::data_page::column_width());
         grid.append_column(&name_column);
 
         // 类型列固定窄宽（「物化视图」四个字放得下，可拖）。
-        let kind_column = gtk::ColumnViewColumn::new(Some("类型"), Some(kind_factory));
+        let kind_column = gtk::ColumnViewColumn::new(
+            Some(crate::l10n::t("objects_page.header_type")),
+            Some(kind_factory),
+        );
         kind_column.set_resizable(true);
         kind_column.set_fixed_width(OBJECTS_KIND_COLUMN_WIDTH);
         grid.append_column(&kind_column);
@@ -1122,7 +1133,7 @@ impl ObjectsPage {
         status.add_css_class("dim-label");
         status.add_css_class("caption");
 
-        let more = gtk::Button::with_label("加载更多…");
+        let more = gtk::Button::with_label(crate::l10n::t("objects_page.btn_load_more"));
         more.add_css_class("flat");
         more.set_halign(gtk::Align::Start);
         more.set_visible(false);
@@ -1146,9 +1157,8 @@ impl ObjectsPage {
         let empty = adw::StatusPage::new();
         empty.set_vexpand(true);
         let empty_text = (
-            "没有选中对象".to_owned(),
-            "在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。"
-                .to_owned(),
+            crate::l10n::t("objects_page.empty_title").to_owned(),
+            crate::l10n::t("objects_page.empty_body").to_owned(),
         );
         empty.set_title(&empty_text.0);
         empty.set_description(Some(&empty_text.1));
@@ -1351,10 +1361,12 @@ impl ObjectsPage {
         self.more.set_visible(false);
         let Some(hub) = hub else {
             self.last_request.replace(None);
-            self.status.set_text("这条连接没有浏览会话：展开连接后重试");
+            self.status
+                .set_text(crate::l10n::t("objects_page.status_no_session"));
             return;
         };
-        self.status.set_text("正在读取…");
+        self.status
+            .set_text(crate::l10n::t("objects_page.status_loading"));
         self.request(hub, parent, kinds, String::new(), generation);
     }
 
@@ -1367,7 +1379,8 @@ impl ObjectsPage {
         let Some(hub) = self.hub() else {
             return;
         };
-        self.status.set_text("正在读取…");
+        self.status
+            .set_text(crate::l10n::t("objects_page.status_loading"));
         self.request(hub, parent, kinds, token, generation);
     }
 
@@ -1406,20 +1419,33 @@ impl ObjectsPage {
                         let has_more = nodes.has_more();
                         page.more.set_visible(has_more);
                         let total = page.store.n_items() as usize;
-                        page.status.set_text(&format!(
-                            "共 {total} 个对象{}",
-                            if has_more { "（还有更多）" } else { "" }
+                        page.status.set_text(&crate::l10n::tf(
+                            "objects_page.status_total",
+                            &[
+                                ("total", total.to_string()),
+                                (
+                                    "more_note",
+                                    if has_more {
+                                        crate::l10n::t("objects_page.status_more_note").to_owned()
+                                    } else {
+                                        String::new()
+                                    },
+                                ),
+                            ],
                         ));
                         if count == 0 && total == 0 {
-                            page.status.set_text("（这个库里没有这类对象）");
+                            page.status
+                                .set_text(crate::l10n::t("objects_page.status_empty"));
                         }
                     }
                     Err(error) => {
                         page.more.set_visible(false);
-                        page.status.set_text(&format!(
-                            "读取失败：{}（{}）",
-                            error.headline(),
-                            error.code()
+                        page.status.set_text(&crate::l10n::tf(
+                            "objects_page.status_read_failed",
+                            &[
+                                ("headline", error.headline().to_owned()),
+                                ("code", error.code().to_owned()),
+                            ],
                         ));
                     }
                 }

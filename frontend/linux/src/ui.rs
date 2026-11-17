@@ -1378,14 +1378,12 @@ fn browse_session_opened(
 /// 日志查看做成同一张卡片里的第二个出口——反馈问题时能直接拿到文件。
 fn show_backend_failure_dialog(state: &Rc<UiState>) {
     let dialog = adw::AlertDialog::new(
-        Some("Sqarvo 需要重启"),
-        Some(
-            "本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，             未提交的更改会丢失。",
-        ),
+        Some(l10n::t("shell.recovery_title")),
+        Some(l10n::t("shell.recovery_body")),
     );
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("logs", "查看日志");
-    dialog.add_response("restart", "重启 Sqarvo");
+    dialog.add_response("cancel", l10n::t("shell.recovery_btn_cancel"));
+    dialog.add_response("logs", l10n::t("shell.recovery_btn_logs"));
+    dialog.add_response("restart", l10n::t("shell.recovery_btn_restart"));
     dialog.set_response_appearance("restart", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -2003,9 +2001,9 @@ fn refresh_txn_hint(
     if titles.is_empty() {
         inspector.set_txn_hint(None);
     } else {
-        inspector.set_txn_hint(Some(format!(
-            "同一 catalog 的其它标签还有未提交事务：{}",
-            titles.join("、")
+        inspector.set_txn_hint(Some(l10n::tf(
+            "inspector.txn_hint",
+            &[("names", titles.join("、"))],
         )));
     }
 }

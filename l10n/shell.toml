@@ -314,3 +314,35 @@ key = "shell.error_disconnected_reconnect"
 zh = "重新连接"
 en = "Reconnect"
 status = "done"
+
+# ---- S3 Lane B：后端恢复对话框（ui.rs::show_backend_failure_dialog，#201）----
+
+[[entry]]
+key = "shell.recovery_title"
+zh = "Sqarvo 需要重启"
+en = "Sqarvo Needs to Restart"
+status = "done"
+
+[[entry]]
+key = "shell.recovery_body"
+zh = "本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，             未提交的更改会丢失。"
+en = "The local service has stopped working, so Sqarvo can no longer read or write the database. Restarting closes all tabs, and uncommitted changes will be lost."
+status = "done"
+
+[[entry]]
+key = "shell.recovery_btn_cancel"
+zh = "取消"
+en = "Cancel"
+status = "done"
+
+[[entry]]
+key = "shell.recovery_btn_logs"
+zh = "查看日志"
+en = "View Log"
+status = "done"
+
+[[entry]]
+key = "shell.recovery_btn_restart"
+zh = "重启 Sqarvo"
+en = "Restart Sqarvo"
+status = "done"
