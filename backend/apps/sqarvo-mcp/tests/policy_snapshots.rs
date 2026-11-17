@@ -146,7 +146,7 @@ const NEGATIVE_VIOLATION: &[&str] = &[
     "WITH c AS (SELECT SLEEP(1)) SELECT * FROM c",
     "SELECT IF(1,2,SLEEP(3))",
     "SELECT COUNT(*) FROM t1 JOIN t2 ON GET_LOCK('g',1)",
-    // —— 副作用扩展表（§8.3「其他已确认的副作用函数」+ spike 偏差项，见 ADR 0032）——
+    // —— 副作用扩展表（§8.3「其他已确认的副作用函数」+ spike 偏差项，见 ADR 0033）——
     "SELECT NEXTVAL(s)",
     "SELECT @a := 1",
     // —— 优化器 hint ——
@@ -183,7 +183,7 @@ const NEGATIVE_FAIL_CLOSED: &[&str] = &[
     "CREATE TABLE t (a INT, INDEX i (a) INVISIBLE)",
     "ALTER TABLE t ALTER INDEX i INVISIBLE",
     // 已知唯一「纯只读误杀」（spike §6 ④）：合法、只读、极罕见的 MariaDB 形态。
-    // 固化当前行为（解析失败→拒），若未来可解析需评审是否显式放行——见 ADR 0032。
+    // 固化当前行为（解析失败→拒），若未来可解析需评审是否显式放行——见 ADR 0033。
     "SELECT * FROM t PROCEDURE ANALYSE()",
 ];
 
@@ -294,7 +294,7 @@ fn explain_matrix_never_bypasses_policy() {
 #[test]
 fn deep_nesting_hits_default_recursion_limit() {
     // sqlparser 默认 recursion limit=50（spike §6：约 24 层派生表触顶）。
-    // 刻意不调高：这是 DoS 边界（ADR 0032）。触顶按 mcp.sql_parse fail-closed 拒。
+    // 刻意不调高：这是 DoS 边界（ADR 0033）。触顶按 mcp.sql_parse fail-closed 拒。
     let nested = |depth: usize| {
         let mut sql = String::from("SELECT 1");
         for _ in 0..depth {
@@ -338,7 +338,7 @@ fn fingerprint_contract() {
         .expect("指纹文本必须可再解析")
         .fingerprint;
     assert_eq!(again, a);
-    // IN 列表长度参与指纹（不折叠，ADR 0032 已知行为）。
+    // IN 列表长度参与指纹（不折叠，ADR 0033 已知行为）。
     let three = check_readonly("SELECT a FROM t WHERE x IN (1, 2, 3) ORDER BY a")
         .expect("放行")
         .fingerprint;

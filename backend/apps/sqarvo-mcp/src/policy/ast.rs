@@ -19,7 +19,7 @@ use std::ops::ControlFlow;
 /// 危险函数默认表（小写键，匹配时对 AST 中的名字 `to_lowercase`）。
 ///
 /// 前六项是 V3.1 §8.3 钉死的默认集合；`nextval` 是 §8.3「其他已确认的副作用函数」的
-/// 落地（推进序列对象 = 状态修改），风险按表说明。扩展该表属策略配置，见 ADR 0032。
+/// 落地（推进序列对象 = 状态修改），风险按表说明。扩展该表属策略配置，见 ADR 0033。
 const DANGEROUS_FUNCTIONS: &[(&str, &str)] = &[
     (
         "load_file",
@@ -39,7 +39,7 @@ const DANGEROUS_FUNCTIONS: &[(&str, &str)] = &[
 /// 解析并检查 `sql`：通过策略则返回唯一的顶层语句（供指纹复用，避免二次解析）。
 pub(crate) fn parse_readonly_statement(sql: &str) -> Result<Statement> {
     // 保持 sqlparser 默认递归保护（limit=50）：触顶返回 ParserError → mcp.sql_parse，
-    // 深度边界本身是 DoS 缓解，刻意不调高（ADR 0032）。
+    // 深度边界本身是 DoS 缓解，刻意不调高（ADR 0033）。
     let statements = Parser::parse_sql(&MySqlDialect {}, sql).map_err(|e| parse_error(&e))?;
     let statement = match statements.as_slice() {
         [single] => single,

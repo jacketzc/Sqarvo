@@ -3,7 +3,7 @@
 //! 实现：AST 级 `visit_expressions_mut` 把数据字面量原地替换为 `?` 占位符 →
 //! `Display` unparse → SHA-256 小写十六进制。审计与错误回显只出现指纹，不落原始 SQL。
 //!
-//! 已知设计点（ADR 0032）：
+//! 已知设计点（ADR 0033）：
 //! - `IN (1, 2, 3)` 的**列表长度参与指纹**（不折叠为定长形态）——不同长度的同类查询
 //!   是不同指纹，属可接受的已知行为；
 //! - unparse 会丢弃注释、归一化空白与操作符间距 → 天然形态归一；
@@ -108,7 +108,7 @@ mod tests {
         let two = fp("SELECT a FROM t WHERE x IN (7, 8) ORDER BY a");
         assert_ne!(
             three.sha256_hex, two.sha256_hex,
-            "IN 列表长度参与指纹是已锁定行为（ADR 0032）"
+            "IN 列表长度参与指纹是已锁定行为（ADR 0033）"
         );
     }
 

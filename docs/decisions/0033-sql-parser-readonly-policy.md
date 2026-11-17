@@ -1,4 +1,4 @@
-# ADR 0032：SQL Parser 只读安全策略（sqlparser-rs / MySqlDialect）
+# ADR 0033：SQL Parser 只读安全策略（sqlparser-rs / MySqlDialect）
 
 - 状态：已接受（2026-11-17，随 Issue #208 实施）
 - 日期：2026-11-17
