@@ -898,11 +898,13 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             color: @sqarvo_brand_on_mid;
         }}
         /* #189 查询标签可拖动分隔：把手厚度取 metrics（query_splitter_width），
-           颜色取分隔线 token。结果区隐藏时 GtkPaned 不绘制把手（子控件隐藏即无分隔），
-           不需要额外的隐藏态规则。 */
+           普通模式**不绘制**（透明），6/8/9px 厚度只作拖动热区——编辑器卡片底框与
+           结果区的自然连接处即拖动位置，系统 resize 光标承担可发现性。
+           高对比例外：HC 主题靠描边划区域边界，保留静态分隔线（§8.6 HC 分支）。
+           结果区隐藏时 GtkPaned 不绘制把手（子控件隐藏即无分隔），不需要额外的隐藏态规则。 */
         paned.sqarvo-query-split > separator {{
             min-height: {query_splitter_width}px;
-            background: @sqarvo_separator;
+            background: {splitter_bg};
         }}
         "#,
         deep = palette.deep,
@@ -981,6 +983,11 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         gap_xl = m.gap_px(Gap::Xl),
         gap_xxl = m.gap_px(Gap::Xxl),
         query_splitter_width = m.query_splitter_width,
+        splitter_bg = if high_contrast {
+            "@sqarvo_separator"
+        } else {
+            "transparent"
+        },
     )
 }
 
@@ -1231,6 +1238,30 @@ mod tests {
                 "行上不能加整圈边框，会和最后一列的右边界叠成双线：{rule}"
             );
         }
+    }
+
+    #[test]
+    fn query_splitter_is_invisible_except_in_high_contrast() {
+        // 确认单 #1：普通模式把手**不绘制**（透明）——query_splitter_width 厚度只作
+        // 拖动热区，编辑器卡片底框与结果区的自然连接处即拖动位置；HC 例外，保留
+        // 静态分隔线（§8.6：高对比靠描边划区域边界）。
+        let m = layout::Metrics::for_tier(Tier::Compact);
+        let hit = format!(
+            "paned.sqarvo-query-split > separator {{\n            min-height: {}px;\n            background: transparent;\n        }}",
+            m.query_splitter_width
+        );
+        assert!(
+            stylesheet().contains(&hit),
+            "普通模式把手必须透明、热区厚度不变：{hit}"
+        );
+        let hc = format!(
+            "paned.sqarvo-query-split > separator {{\n            min-height: {}px;\n            background: @sqarvo_separator;\n        }}",
+            m.query_splitter_width
+        );
+        assert!(
+            stylesheet_for(false, true, Tier::Compact).contains(&hc),
+            "高对比下必须保留静态分隔线：{hc}"
+        );
     }
 
     #[test]

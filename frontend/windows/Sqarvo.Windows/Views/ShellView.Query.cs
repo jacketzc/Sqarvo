@@ -651,8 +651,11 @@ public sealed partial class ShellView
         Grid.SetRow(tab.ResultsArea, QueryResultsRowIndex);
         root.Children.Add(tab.ResultsArea);
 
-        // #189 可拖动分隔：WinUI 3 无原生 splitter，自绘 L2 复合件（透明命中区 + 1px 分隔线）。
-        // 厚度取度量 query_splitter_width；随结果区一并隐藏（隐藏时不可测量、不可交互）。
+        // #189 可拖动分隔：WinUI 3 无原生 splitter，自绘 L2 复合件。
+        // 厚度取度量 query_splitter_width，只作命中热区；随结果区一并隐藏（隐藏时不可测量、不可交互）。
+        // 确认单 #1：普通模式不画分隔线（编辑器底框与结果区的自然连接处即拖动位置，
+        // 可发现性靠 SizeNorthSouth 光标）；高对比例外保留静态线（§8.6：HC 靠描边划边界）。
+        // HC 在运行期切换不做即时刷新（现有 SystemAppearanceChanged 链路只重设 RequestedTheme），重启生效。
         tab.Splitter = new QuerySplitGrip
         {
             Height = Metrics.QuerySplitterWidth,
@@ -665,6 +668,7 @@ public sealed partial class ShellView
             Fill = ThemeBrush("SqarvoDividerBrush"),
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Stretch,
+            Visibility = ThemeService.HighContrast ? Visibility.Visible : Visibility.Collapsed,
         });
         AutomationProperties.SetName(tab.Splitter, "查询编辑器与结果区分栏");
         Grid.SetRow(tab.Splitter, 2);
@@ -2194,7 +2198,8 @@ public sealed partial class ShellView
     /// #189 查询页分隔把手：WinUI 3 没有原生 splitter，自绘 L2 复合件。
     /// 与 #178 的 <c>ColumnResizeGrip</c> 同一套路：Border 是 sealed 不能派生，
     /// <c>ProtectedCursor</c> 是 protected——派生 Panel 在构造时把指针光标设成 SizeNorthSouth。
-    /// 命中热区 = 整个把手（厚度取度量 query_splitter_width），中间一条 1px 分隔线。
+    /// 命中热区 = 整个把手（厚度取度量 query_splitter_width）。确认单 #1：中间 1px 分隔线
+    /// 只在高对比模式显示，普通模式把手透明（可发现性靠本控件常驻的 SizeNorthSouth 光标）。
     /// </summary>
     private sealed class QuerySplitGrip : Panel
     {
