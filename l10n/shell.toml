@@ -1,0 +1,56 @@
+# 外壳区文案目录（注册表区 `shell.*`，ADR 0031 决策 2）。
+#
+# schema 见同目录 `README.md`。`zh` 是 source of truth：除 S1 新增条目外，
+# 每条 `zh` 必须与代码内原字面量逐字节相等——本批只装「视图 → 语言」小节与
+# 换语言重启确认框，其余外壳中文随 Lane B（#200 起的迁移切片）迁入，先不复制。
+#
+# 条目 key 与 ui.rs 的接线一一对应；改动这里即改动界面文案（构建期生成，
+# 生成失败 = 构建失败，决策 3）。
+
+[[entry]]
+key = "shell.menu.view_language"
+zh = "语言"
+en = "Language"
+status = "done"
+
+[[entry]]
+key = "shell.menu.lang_system"
+zh = "跟随系统"
+en = "Follow System"
+status = "done"
+
+[[entry]]
+key = "shell.menu.lang_zh"
+zh = "简体中文"
+en = "简体中文"
+status = "done"
+
+[[entry]]
+key = "shell.menu.lang_en"
+zh = "English"
+en = "English"
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_title"
+zh = "切换语言需要重启"
+en = "Switching language requires a restart"
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_body"
+zh = "重启会关闭所有标签页，未提交的更改会丢失。"
+en = "Restarting closes all tabs; uncommitted changes will be lost."
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_btn_restart"
+zh = "重启"
+en = "Restart"
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_btn_later"
+zh = "稍后"
+en = "Later"
+status = "done"
