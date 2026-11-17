@@ -166,6 +166,37 @@ impl ErrorCode {
     /// 内部错误。
     pub const INTERNAL: Self = Self("internal.error");
 
+    // ── mcp.*：外部 MCP 通道（#207/#208）的稳定子码 ──
+    //
+    // 分类沿用 `ErrorCategory`；驱动 / 凭据 / 配置等既有域的错误继续用各自的码
+    // （`capability.unsupported` / `credential.*` / `config.invalid`），`mcp.*` 只覆盖
+    // 「MCP 这一层才成立」的语义。文本即契约：审计与 Agent 侧按此表分支。
+
+    /// MCP 工具参数非法（结构合法但取值不成立）。
+    pub const MCP_INVALID_ARGUMENT: Self = Self("mcp.invalid_argument");
+    /// alias 不在 mcp.json 的授权连接档案中。
+    pub const MCP_CONNECTION_NOT_FOUND: Self = Self("mcp.connection_not_found");
+    /// alias 存在但被拒绝访问（档案禁用或越权）。
+    pub const MCP_CONNECTION_DENIED: Self = Self("mcp.connection_denied");
+    /// 工具被 `enabled_tools` 关闭。
+    pub const MCP_TOOL_DISABLED: Self = Self("mcp.tool_disabled");
+    /// SQL 未通过只读策略（非白名单语句、INTO、锁读、危险函数等）。
+    pub const MCP_READONLY_VIOLATION: Self = Self("mcp.readonly_violation");
+    /// SQL 解析失败，按 fail-closed 拒绝（不代表原语句必然非法）。
+    pub const MCP_SQL_PARSE: Self = Self("mcp.sql_parse");
+    /// 目标数据库不存在或不可见。
+    pub const MCP_DATABASE_NOT_FOUND: Self = Self("mcp.database_not_found");
+    /// 目标表不存在或不可见。
+    pub const MCP_TABLE_NOT_FOUND: Self = Self("mcp.table_not_found");
+    /// MCP 层能力缺失（与驱动的 `capability.unsupported` 区分：换了驱动也不会出现）。
+    pub const MCP_UNSUPPORTED: Self = Self("mcp.unsupported");
+    /// 查询超过 MCP 策略时限并已被取消。
+    pub const MCP_QUERY_TIMEOUT: Self = Self("mcp.query_timeout");
+    /// 结果超过行数或字节上限。
+    pub const MCP_RESULT_TOO_LARGE: Self = Self("mcp.result_too_large");
+    /// MCP 内部错误。
+    pub const MCP_INTERNAL: Self = Self("mcp.internal");
+
     /// 由静态字符串构造错误码。用于尚未固定的模块级错误。
     #[must_use]
     pub const fn from_static(code: &'static str) -> Self {
@@ -509,6 +540,62 @@ mod tests {
                 ErrorCode::QUERY_SCRIPT_TOO_LARGE,
                 existing,
                 "脚本预算错误码不得与既有码重复"
+            );
+        }
+    }
+
+    /// MCP V1（#207/#208）新增错误码：文本即契约，且不得与既有码重复。
+    #[test]
+    fn mcp_error_codes_are_stable_and_unique() {
+        let codes = [
+            ErrorCode::MCP_INVALID_ARGUMENT,
+            ErrorCode::MCP_CONNECTION_NOT_FOUND,
+            ErrorCode::MCP_CONNECTION_DENIED,
+            ErrorCode::MCP_TOOL_DISABLED,
+            ErrorCode::MCP_READONLY_VIOLATION,
+            ErrorCode::MCP_SQL_PARSE,
+            ErrorCode::MCP_DATABASE_NOT_FOUND,
+            ErrorCode::MCP_TABLE_NOT_FOUND,
+            ErrorCode::MCP_UNSUPPORTED,
+            ErrorCode::MCP_QUERY_TIMEOUT,
+            ErrorCode::MCP_RESULT_TOO_LARGE,
+            ErrorCode::MCP_INTERNAL,
+        ];
+        let texts: Vec<&str> = codes.iter().map(|code| code.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "mcp.invalid_argument",
+                "mcp.connection_not_found",
+                "mcp.connection_denied",
+                "mcp.tool_disabled",
+                "mcp.readonly_violation",
+                "mcp.sql_parse",
+                "mcp.database_not_found",
+                "mcp.table_not_found",
+                "mcp.unsupported",
+                "mcp.query_timeout",
+                "mcp.result_too_large",
+                "mcp.internal",
+            ]
+        );
+
+        let unique: std::collections::BTreeSet<&str> = texts.iter().copied().collect();
+        assert_eq!(unique.len(), texts.len(), "mcp 错误码不得重复");
+
+        // 与语义最接近的既有码不得撞车（换前缀不算区分，逐条比对文本）。
+        for existing in [
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            ErrorCode::CONFIG_INVALID,
+            ErrorCode::CREDENTIAL_UNAVAILABLE,
+            ErrorCode::CREDENTIAL_NOT_FOUND,
+            ErrorCode::TRANSPORT_FAILED,
+            ErrorCode::IO,
+            ErrorCode::INTERNAL,
+        ] {
+            assert!(
+                !texts.contains(&existing.as_str()),
+                "{existing} 与 mcp 错误码重复"
             );
         }
     }

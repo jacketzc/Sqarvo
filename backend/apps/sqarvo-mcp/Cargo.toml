@@ -1,0 +1,45 @@
+[package]
+name = "sqarvo-mcp"
+description = "Sqarvo MCP Server V1：独立 stdio 进程，对外提供受控只读的数据库能力（#207–#212）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sqarvo-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "sqarvo_mcp"
+path = "src/lib.rs"
+
+# 依赖一次在此落齐：#207 / #208 两条并行泳道都不再改 workspace manifest，
+# lockfile 只在骨架提交里动一次（改动确认单 #1 §3/§8）。
+[dependencies]
+clap.workspace = true
+rmcp.workspace = true
+rpassword.workspace = true
+schemars = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+sqlparser = { workspace = true, features = ["visitor"] }
+sqarvo-common.workspace = true
+sqarvo-connection.workspace = true
+sqarvo-driver-api.workspace = true
+sqarvo-drivers.workspace = true
+sqarvo-local-store.workspace = true
+sqarvo-query-engine.workspace = true
+time.workspace = true
+# transport-io 需要 io-std；E2E 以子进程驱动本二进制需要 process。
+tokio = { workspace = true, features = ["io-std", "process", "rt-multi-thread", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
