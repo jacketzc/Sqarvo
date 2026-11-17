@@ -20,22 +20,26 @@
 //! （立即终止）。此时既没有会话也没有在途查询，不需要清理；若要覆盖这一段，需要把
 //! `tokio-util` 加进 workspace 依赖（见 ADR 0032「已知限制」）。
 //!
-//! # 扩展点（#209 / #210）
+//! # 工具路由（#209）
 //!
-//! [`ServerContext`] 是两条后续泳道唯一需要的入口：配置、连接授权/懒会话、审计。
-//! #207 阶段 `tools/list` / `resources/list` 返回空列表但握手成功；#209 接入
-//! `#[tool_router]` 后把 [`SqarvoMcpServer`] 的 `ServerHandler` 实现换成
-//! `#[tool_handler]` 版本即可，其余装配（配置、审计、关停）都不用改。
+//! [`ServerContext`] 是各泳道唯一需要的入口：配置、连接授权/懒会话、审计。
+//! 工具实现与 `#[tool_router]` 位于 [`crate::tools`]（那里生成
+//! `SqarvoMcpServer::tool_router()`）；本文件只持有路由表并把它接到
+//! `#[tool_handler]` 上。`resources/*` 保持 #207 的空实现，归 #210。
+//!
+//! 路由表是**静态**的：`tools/list` 始终列出 V1 的 8 个工具；`enabled_tools`
+//! 在执行期拒绝未启用的工具（`mcp.tool_disabled`），见 [`crate::tools`]。
 
 use std::path::Path;
 use std::sync::Arc;
 
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
-    Implementation, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
-use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
+use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt, tool_handler};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
 use sqarvo_local_store::AppPaths;
 
@@ -132,18 +136,22 @@ impl ServerContext {
 
 /// MCP 服务处理器。
 ///
-/// #207 只保证握手成功、`tools/list` / `resources/list` 返回空列表；
-/// `tools/call` 走 SDK 默认实现，未注册的工具名会得到协议级 `-32601`。
+/// 工具路由由 [`crate::tools`] 的 `#[tool_router]` 生成；本类型持有配置、访问服务、
+/// 审计三份共享状态与静态路由表。
 #[derive(Clone)]
 pub struct SqarvoMcpServer {
     context: Arc<ServerContext>,
+    tool_router: ToolRouter<Self>,
 }
 
 impl SqarvoMcpServer {
-    /// 由共享上下文构造。
+    /// 由共享上下文构造（同时构建工具路由表）。
     #[must_use]
-    pub const fn new(context: Arc<ServerContext>) -> Self {
-        Self { context }
+    pub fn new(context: Arc<ServerContext>) -> Self {
+        Self {
+            context,
+            tool_router: Self::tool_router(),
+        }
     }
 
     /// 共享上下文（工具实现里用 `self.context.access()` 等取状态）。
@@ -153,6 +161,10 @@ impl SqarvoMcpServer {
     }
 }
 
+// `#[tool_handler]` 生成的 `list_tools` 等包装函数是 async 但内部只返回现成结果；
+// 这是宏的形状约束，不是本模块的选择。
+#[allow(clippy::unused_async_trait_impl)]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for SqarvoMcpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
@@ -163,17 +175,6 @@ impl ServerHandler for SqarvoMcpServer {
         )
         .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
         .with_instructions(SERVER_INSTRUCTIONS)
-    }
-
-    fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl std::future::Future<Output = std::result::Result<ListToolsResult, McpError>> + Send + '_
-    {
-        // #209 用 `#[tool_router]` 生成工具表后替换这里；在此之前「已声明 tools 能力
-        // 但没有任何工具」是诚实的，客户端拿到的是空列表而不是错误。
-        std::future::ready(Ok(ListToolsResult::default()))
     }
 
     fn list_resources(
@@ -278,7 +279,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn server_announces_tools_and_resources_without_any_registered_tool() {
+    async fn server_announces_all_v1_tools_and_the_resource_capability() {
         let dir = tempfile::tempdir().expect("tempdir");
         let context = ServerContext::bootstrap_with(
             Some(Path::new("/nonexistent/sqarvo-mcp/test-mcp.json")),
@@ -292,6 +293,22 @@ mod tests {
         assert!(info.capabilities.tools.is_some());
         assert!(info.capabilities.resources.is_some());
         assert!(info.instructions.is_some());
+        let mut registered: Vec<String> = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        registered.sort();
+        let mut expected: Vec<String> = crate::config::V1_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        expected.sort();
+        assert_eq!(
+            registered, expected,
+            "工具路由必须与 V1_TOOL_NAMES 一一对应"
+        );
         assert_eq!(
             server.context().config().connection_count(),
             0,

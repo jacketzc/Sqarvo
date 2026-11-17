@@ -221,10 +221,22 @@ fn initialize_initialized_tools_list_then_eof_exits_zero() {
     }));
     let tools = server.next_message();
     assert_eq!(tools["id"], 2);
+    let listed: Vec<String> = tools["result"]["tools"]
+        .as_array()
+        .expect("tools 必须是数组")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    let mut listed_sorted = listed;
+    listed_sorted.sort();
+    let mut expected: Vec<String> = sqarvo_mcp::config::V1_TOOL_NAMES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    expected.sort();
     assert_eq!(
-        tools["result"]["tools"].as_array().map(Vec::len),
-        Some(0),
-        "#207 阶段的 tools/list 必须是空列表而不是错误：{tools}"
+        listed_sorted, expected,
+        "#209 之后 tools/list 必须与 V1_TOOL_NAMES 一一对应：{tools}"
     );
 
     server.close_stdin();
