@@ -20,23 +20,26 @@
 //! （立即终止）。此时既没有会话也没有在途查询，不需要清理；若要覆盖这一段，需要把
 //! `tokio-util` 加进 workspace 依赖（见 ADR 0032「已知限制」）。
 //!
-//! # 工具路由（#209）
+//! # 工具路由（#209）与资源（#210）
 //!
 //! [`ServerContext`] 是各泳道唯一需要的入口：配置、连接授权/懒会话、审计。
 //! 工具实现与 `#[tool_router]` 位于 [`crate::tools`]（那里生成
 //! `SqarvoMcpServer::tool_router()`）；本文件只持有路由表并把它接到
-//! `#[tool_handler]` 上。`resources/*` 保持 #207 的空实现，归 #210。
+//! `#[tool_handler]` 上，另外覆写 `list_tools`（按 `enabled_tools` 过滤）与
+//! 三个 `resources/*` 处理器（实现见 [`crate::resources`]）。
 //!
-//! 路由表是**静态**的：`tools/list` 始终列出 V1 的 8 个工具；`enabled_tools`
-//! 在执行期拒绝未启用的工具（`mcp.tool_disabled`），见 [`crate::tools`]。
+//! 路由表仍是**静态**的：8 个工具都在表里，`tools/list` 只是把被禁用的名字过滤掉；
+//! 被禁用的工具即使被直接调用，也仍由执行期检查返回 `mcp.tool_disabled`
+//! （`crate::tools`）。两处不是同一份判断，但都读同一份配置（`ToolPolicy`）。
 
 use std::path::Path;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
-    Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
-    ServerCapabilities, ServerConfig,
+    CacheScope, Implementation, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    ResourceContents, ResultType, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt, tool_handler};
@@ -46,6 +49,8 @@ use sqarvo_local_store::AppPaths;
 use crate::access::AccessService;
 use crate::audit::{AuditWriter, RotationPolicy};
 use crate::config::{self, ValidatedConfig};
+use crate::error::protocol_error;
+use crate::resources;
 
 /// `serverInfo.name`。
 pub const SERVER_NAME: &str = "sqarvo-mcp";
@@ -159,6 +164,20 @@ impl SqarvoMcpServer {
     pub const fn context(&self) -> &Arc<ServerContext> {
         &self.context
     }
+
+    /// `tools/list` 的可见工具：注册表里被 `enabled_tools` 允许的那些。
+    ///
+    /// 注册表是静态的，过滤只发生在播发这一层；执行期仍由 `crate::tools` 的
+    /// `ensure_enabled` 拒绝被禁用的工具（两处都读同一份 [`crate::config::ToolPolicy`]）。
+    #[must_use]
+    pub fn visible_tools(&self) -> Vec<Tool> {
+        let policy = self.context.config().tools();
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .filter(|tool| policy.allows(tool.name.as_ref()))
+            .collect()
+    }
 }
 
 // `#[tool_handler]` 生成的 `list_tools` 等包装函数是 async 但内部只返回现成结果；
@@ -183,8 +202,11 @@ impl ServerHandler for SqarvoMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = std::result::Result<ListResourcesResult, McpError>> + Send + '_
     {
-        // #210 填充四个 database:// 资源；V1 骨架返回空列表。
-        std::future::ready(Ok(ListResourcesResult::default()))
+        // 只有静态资源；模板走 `resources/templates/list`。两者都不触网。
+        std::future::ready(Ok(ListResourcesResult {
+            resources: resources::list(),
+            ..Default::default()
+        }))
     }
 
     fn list_resource_templates(
@@ -195,7 +217,62 @@ impl ServerHandler for SqarvoMcpServer {
         Output = std::result::Result<ListResourceTemplatesResult, McpError>,
     > + Send
     + '_ {
-        std::future::ready(Ok(ListResourceTemplatesResult::default()))
+        std::future::ready(Ok(ListResourceTemplatesResult {
+            resource_templates: resources::templates(),
+            ..Default::default()
+        }))
+    }
+
+    /// `resources/read`：解析 URI（拆段 → 逐段解码一次 → 判形状）后才授权取数。
+    ///
+    /// 错误按 [`crate::resources`] 的钉死口径映射：URI 不合法 → `-32602`
+    /// （`mcp.invalid_argument`），资源不存在/未授权 → `-32002`。
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = std::result::Result<ReadResourceResponse, McpError>> + Send + '_
+    {
+        let uri = request.uri;
+        async move {
+            match resources::read(self.context.access(), &uri).await {
+                Ok(payload) => Ok(ReadResourceResult::new(vec![
+                    ResourceContents::text(payload.json, payload.uri)
+                        .with_mime_type(resources::MIME_TYPE),
+                ])
+                .into()),
+                Err(error) => {
+                    tracing::debug!(code = %error.code(), uri, "资源读取失败");
+                    Err(protocol_error(&error))
+                }
+            }
+        }
+    }
+
+    /// `tools/list`：只列出 `enabled_tools` 允许的工具。
+    ///
+    /// `#[tool_handler]` 只有在 impl 块里没有 `list_tools` 时才生成默认实现
+    /// （rmcp-macros 3.10.0 `tool_handler.rs:64`），所以这里的手写版本就是生效实现；
+    /// 其余形状（缓存字段、`resultType`）与默认实现保持一致，避免同一工具在
+    /// 新旧协议下被描述成两种东西。
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = std::result::Result<ListToolsResult, McpError>> + Send + '_
+    {
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        let tools = self.visible_tools();
+        std::future::ready(Ok(ListToolsResult {
+            result_type: Some(ResultType::COMPLETE),
+            tools,
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(CacheScope::Public),
+        }))
     }
 }
 
@@ -315,5 +392,132 @@ mod tests {
             "缺配置时不得凭空造出连接"
         );
         assert!(server.context().audit().path().starts_with(dir.path()));
+    }
+
+    /// 写一份 mcp.json（内容由调用方给），返回路径。
+    fn write_config(dir: &Path, root: &serde_json::Value) -> std::path::PathBuf {
+        let path = dir.join("mcp.json");
+        std::fs::write(&path, root.to_string()).expect("写配置");
+        path
+    }
+
+    fn sqlite_root(enabled_tools: Option<serde_json::Value>) -> serde_json::Value {
+        let mut root = serde_json::json!({
+            "connections": [{
+                "alias": "dev",
+                "driver_id": "sqlite",
+                "host": "/nonexistent/sqarvo-mcp-tools-list.db",
+                "port": 0,
+                "enabled": true
+            }]
+        });
+        if let Some(tools) = enabled_tools {
+            root["enabled_tools"] = tools;
+        }
+        root
+    }
+
+    /// `enabled_tools` 的三种状态在 `tools/list` 上的投影（V3.1 §3.1）。
+    ///
+    /// 注册表始终是 8 个；只有播发层按开关过滤。执行期的拒绝行为由
+    /// `crate::tools` 的测试覆盖，这里只钉「列表不再出现被禁用的名字」。
+    #[tokio::test]
+    async fn enabled_tools_filter_the_advertised_tool_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let all = crate::config::V1_TOOL_NAMES.len();
+
+        let context = ServerContext::bootstrap_with(
+            Some(Path::new("/nonexistent/sqarvo-mcp/test-mcp.json")),
+            dir.path(),
+        )
+        .await
+        .expect("缺配置也能起服务");
+        let server = SqarvoMcpServer::new(Arc::new(context));
+        assert_eq!(server.visible_tools().len(), all, "字段缺失 = 全部可见");
+
+        let config = write_config(
+            dir.path(),
+            &sqlite_root(Some(serde_json::json!(["list_tables", "describe_table"]))),
+        );
+        let context = ServerContext::bootstrap_with(Some(&config), dir.path())
+            .await
+            .expect("合法配置");
+        let server = SqarvoMcpServer::new(Arc::new(context));
+        let mut visible: Vec<String> = server
+            .visible_tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        visible.sort();
+        assert_eq!(visible, vec!["describe_table", "list_tables"]);
+        assert_eq!(
+            server.tool_router.list_all().len(),
+            all,
+            "路由表仍是静态的：过滤只发生在播发层"
+        );
+        // 被禁用的工具仍可被路由到（执行期由 ensure_enabled 拒绝），
+        // 这样 Agent 拿到的是 mcp.tool_disabled 而不是 -32602「工具不存在」。
+        assert!(server.tool_router.get("execute_readonly_query").is_some());
+
+        let context = ServerContext::bootstrap_with(
+            Some(&write_config(
+                dir.path(),
+                &sqlite_root(Some(serde_json::json!([]))),
+            )),
+            dir.path(),
+        )
+        .await
+        .expect("空数组不阻止启动");
+        let server = SqarvoMcpServer::new(Arc::new(context));
+        assert!(
+            server.visible_tools().is_empty(),
+            "空数组 = 一个工具都不播发"
+        );
+    }
+
+    /// 资源清单与模板：静态资源一个、模板三个，全部 `application/json`。
+    #[tokio::test]
+    async fn resources_and_templates_are_advertised_without_touching_the_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = ServerContext::bootstrap_with(
+            Some(Path::new("/nonexistent/sqarvo-mcp/test-mcp.json")),
+            dir.path(),
+        )
+        .await
+        .expect("缺配置也能起服务");
+        let server = SqarvoMcpServer::new(Arc::new(context));
+
+        let listed = crate::resources::list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].uri, crate::resources::CONNECTIONS_URI);
+        assert_eq!(listed[0].mime_type.as_deref(), Some("application/json"));
+
+        let templates = crate::resources::templates();
+        let uris: Vec<&str> = templates
+            .iter()
+            .map(|template| template.uri_template.as_str())
+            .collect();
+        assert_eq!(
+            uris,
+            vec![
+                crate::resources::OVERVIEW_TEMPLATE,
+                crate::resources::SCHEMA_TEMPLATE,
+                crate::resources::TABLE_TEMPLATE
+            ]
+        );
+        for template in &templates {
+            assert_eq!(template.mime_type.as_deref(), Some("application/json"));
+            assert!(template.description.is_some());
+        }
+        assert_eq!(
+            server
+                .context()
+                .access()
+                .session_manager()
+                .active_count()
+                .await,
+            0,
+            "列出资源/模板不得建立任何数据库连接"
+        );
     }
 }
