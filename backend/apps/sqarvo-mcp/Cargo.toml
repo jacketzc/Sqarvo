@@ -38,6 +38,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
+# 审计日志的跨进程文件锁（flock）：只有 unix 目标需要；Windows 走 best-effort
+# （见 ADR 0032「审计多实例」）。workspace 已有 libc = "0.2"。
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 
