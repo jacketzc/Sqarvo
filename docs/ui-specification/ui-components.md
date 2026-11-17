@@ -948,7 +948,7 @@ kind `control` · status `active` · parent `dialogs.about`
 
 ## 信息面板（`inspector`）
 
-右侧常驻面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容只由「选中」事件驱动。
+右侧常驻面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容按当前标签钉住：表数据标签钉这张表、查询标签钉它选择的库（没有选择库 → 空态）、Objects 固定页跟随对象树选中；树选中、Objects 行单击与数据网格列头点击仍即时驱动预览。鼠标经过不改面板。
 
 | 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |
 |---|---|---|---|---|---|---|
@@ -978,13 +978,19 @@ kind `control` · status `active` · parent `dialogs.about`
 kind `area` · status `active`
 
 - 样式：槽位 `inspector`；尺寸 `inspector_width`、`inspector_min`、`inspector_max`、`inspector_gap`
-- 同步：Linux done（§6 面板存在 / 面板内容由谁驱动；shell.rs 分栏 clamp 与 window_state.rs 窗口级记忆）；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录。）；macOS none
-- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容只由「选中」事件驱动（树、Objects 页列表、数据网格列头）；鼠标经过不改面板。
+- 同步：Linux done（QA tabs 脚本 9/9 断言 OK：切到表数据标签信息面板 page=table、table_page=info，切到查询标签 page=catalog；GetDdl 单对象全程 1 次、3 次复入走缓存；cargo test：pin_identity_keys_the_tab_target_and_survives_row_growth、pin_identity_of_the_objects_page_is_the_tree_selection）；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住与钉住缓存未实现（面板仍只由选中驱动），跟进 Issue #197。）；macOS none
+- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | drag | 面板常驻 | 拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹 | `src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235` |
-| load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2101、src/inspector.rs:630` |
+| load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2224、src/inspector.rs:688` |
+| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL） | `src/tabs.rs:1823、src/ui.rs:2328、src/inspector.rs:811` |
+| load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1834、src/ui.rs:2335、src/tree.rs:1892` |
+| load | 切换到查询标签且没有选择库（真值与请求值都为空） | 面板落空态页，不编造库信息 | `src/ui.rs:2343、src/inspector.rs:634` |
+| load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1805、src/ui.rs:2314` |
+| load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）不重渲染、不重发请求；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:2309、src/ui.rs:1477、src/ui.rs:2330` |
+| load | 刷新对象树（F5 / 右键刷新） | 钉住视图的对象缓存整体作废（结构可能已变，旧读数不再可信），下一次展示重新读取 | `src/ui.rs:2179、src/inspector.rs:883` |
 
 ### `inspector.header` 标题块（标题 · 副标题）与分隔线
 
