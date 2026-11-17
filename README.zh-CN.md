@@ -84,6 +84,42 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 
 > 目前只在 Linux 上做过构建与测试；Windows / macOS 的传输与 UI 代码未在本机验证。
 
+## MCP Server
+
+`sqarvo-mcp` 是独立的只读 MCP Server。MCP 客户端（Claude Desktop、Cherry Studio、Inspector、
+各类 Agent 运行时）把它当作子进程拉起，只用 stdio 说 JSON-RPC；它不依赖 GUI 后端，连接授权
+写在自有的 `mcp.json` 里。
+
+- **天生只读**：8 个工具（连接发现、结构发现、表数据样本、单条只读查询、`EXPLAIN`）与 4 类资源；
+  每条 SQL 都必须先通过 AST 只读策略才可能到达驱动。
+- **MariaDB 与 SQLite**：两者的结构发现与只读查询都可用；`explain_query` 仅 MariaDB
+  （SQLite 的 `EXPLAIN QUERY PLAN` 语义不同，本版不代执行）。
+- **服务端强制限额**：默认 200 行（硬上限 1000）、单次 1 MiB、10 秒超时、每进程 2 个并发调用；
+  Agent 自己写的 `LIMIT` 不能把它们放大。
+
+```bash
+cd backend && cargo build -p sqarvo-mcp --release
+./target/release/sqarvo-mcp --config /path/to/mcp.json   # stdio；日志走 stderr
+```
+
+客户端配置：
+
+```json
+{
+  "mcpServers": {
+    "sqarvo": {
+      "command": "/absolute/path/to/backend/target/release/sqarvo-mcp",
+      "args": ["--config", "/absolute/path/to/mcp.json"]
+    }
+  }
+}
+```
+
+密码不进 `mcp.json`：它只存在操作系统凭据库里，配置用 `credential_ref` 引用
+（`sqarvo-mcp credentials set` 在终端交互写入）。每次工具调用都写一条本地审计记录，只记 SQL
+指纹不记原始 SQL。细节见 [MCP 架构](docs/architecture/mcp.md) ·
+[工具与配置参考](docs/api/mcp-tools.md) · [第三方许可](docs/licenses.md)。
+
 ## 文档
 
 - 产品：[愿景](docs/product/vision.md) · [定位](docs/product/positioning.md) ·
@@ -91,7 +127,9 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 - 规划：[开发计划](docs/planning/development-plan.md) · [里程碑](docs/planning/milestones.md) ·
   [发布计划](docs/planning/release-plan.md) · [风险](docs/planning/risk-register.md)
 - 技术：[架构总览](docs/architecture/overview.md) · [本地 IPC](docs/architecture/local-ipc.md) ·
-  [gRPC 约定](docs/api/grpc-conventions.md) · [Driver SPI](docs/database/driver-spi.md)
+  [gRPC 约定](docs/api/grpc-conventions.md) · [Driver SPI](docs/database/driver-spi.md) ·
+  [MCP Server](docs/architecture/mcp.md) · [MCP 工具与配置参考](docs/api/mcp-tools.md) ·
+  [第三方许可](docs/licenses.md)
 - UI：[设计原则](docs/ui-specification/design-principles.md) ·
   [区域与版式](docs/ui-specification/workspace-model.md) ·
   [行为契约与全局规则](docs/ui-specification/ui-behavior-contract.md) ·

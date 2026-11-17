@@ -92,6 +92,44 @@ Starting the test database: [tests/integration/README.md](tests/integration/READ
 > Built and tested on Linux only. The Windows and macOS transport and UI code has not been verified
 > on this machine.
 
+## MCP Server
+
+`sqarvo-mcp` is a separate, read-only MCP server. MCP clients (Claude Desktop, Cherry Studio,
+Inspector, agent runtimes) launch it as a child process and speak JSON-RPC over stdio; it does not
+depend on the GUI backend and keeps its own connection authorization file (`mcp.json`).
+
+- **Read-only by design**: 8 tools (connection discovery, schema discovery, table sample, one
+  read-only query, `EXPLAIN`) and 4 resource shapes. Every SQL statement goes through an AST
+  read-only policy before it can reach a driver.
+- **MariaDB and SQLite**: schema discovery and read-only queries on both. `explain_query` is
+  MariaDB-only (SQLite's `EXPLAIN QUERY PLAN` has different semantics and is not substituted).
+- **Server-enforced limits**: 200 rows by default (hard cap 1000), 1 MiB per response, 10 s timeout,
+  2 concurrent calls per process. The Agent's own `LIMIT` cannot raise them.
+
+```bash
+cd backend && cargo build -p sqarvo-mcp --release
+./target/release/sqarvo-mcp --config /path/to/mcp.json   # stdio; logs go to stderr
+```
+
+Client configuration:
+
+```json
+{
+  "mcpServers": {
+    "sqarvo": {
+      "command": "/absolute/path/to/backend/target/release/sqarvo-mcp",
+      "args": ["--config", "/absolute/path/to/mcp.json"]
+    }
+  }
+}
+```
+
+Passwords never go into `mcp.json`: they live in the OS credential store and are referenced through
+`credential_ref` (`sqarvo-mcp credentials set` writes one, interactively). Every tool call is written
+to a local audit log that records a SQL fingerprint instead of the raw SQL. Details:
+[MCP architecture](docs/architecture/mcp.md) · [tools and config reference](docs/api/mcp-tools.md) ·
+[third-party licenses](docs/licenses.md).
+
 ## Documentation
 
 - Product: [vision](docs/product/vision.md) · [positioning](docs/product/positioning.md) ·
@@ -101,7 +139,9 @@ Starting the test database: [tests/integration/README.md](tests/integration/READ
   [risks](docs/planning/risk-register.md)
 - Technical: [architecture](docs/architecture/overview.md) ·
   [local IPC](docs/architecture/local-ipc.md) · [gRPC conventions](docs/api/grpc-conventions.md) ·
-  [driver SPI](docs/database/driver-spi.md)
+  [driver SPI](docs/database/driver-spi.md) · [MCP server](docs/architecture/mcp.md) ·
+  [MCP tools and config reference](docs/api/mcp-tools.md) ·
+  [third-party licenses](docs/licenses.md)
 - UI: [design principles](docs/ui-specification/design-principles.md) ·
   [areas and layout](docs/ui-specification/workspace-model.md) ·
   [behavior contract](docs/ui-specification/ui-behavior-contract.md) ·
