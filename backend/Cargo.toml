@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "apps/backend-service",
+    "apps/sqarvo-mcp",
     "crates/common",
     "crates/connection",
     "crates/driver-api",
@@ -55,9 +56,21 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 rustls = { version = "0.23", default-features = false }
 prost = "0.14"
 prost-types = "0.14"
+# MCP 官方 Rust SDK。精确锁版：上游发版极快且 3.x 内已有 API 断代（StdioTransport→stdio()），
+# 升级必须独立评估；stdio server 能力面经阶段 A spike 实测（旧握手 + 2026-07-28 无握手均通过）。
+rmcp = { version = "=3.10.0", features = ["transport-io", "server", "macros", "schemars"] }
+# sqarvo-mcp 凭据 CLI 的终端密码输入（不回显、禁 argv/env 传密）。
+rpassword = "7.5"
 rusqlite = { version = "0.41", features = ["bundled", "column_decltype"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# rmcp 的 schema 派生依赖；与 rmcp 锁定同一 1.x，避免 tool schema 双版本。
+schemars = "1"
+# 审计 SQL fingerprint 哈希；与 rmcp 内部同版本以合并依赖树。
+sha2 = "0.11"
+# 只读 SQL 的 AST 级安全检查（#208，ADR 0032）；MySqlDialect + visitor 全树遍历，
+# fail-closed 口径与已知限制见 ADR，禁止宣称 MySQL 方言等价 MariaDB。
+sqlparser = "0.64"
 tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
