@@ -1,17 +1,38 @@
 //! `sqarvo-mcp` 二进制入口（V3.1 §3.2）：
 //!
-//! - 无参数 / `serve`：stdio MCP Server 模式——stdout 只归协议所有；
+//! - 无参数：stdio MCP Server 模式——stdout 只归协议所有；
 //! - `credentials set|delete`：管理模式，不启动 server，不输出协议消息。
 //!
-//! 骨架提交只固定 CLI 形态与日志落点；两模式的实现在 #207 落地。
+//! # stdout 纯净性
+//!
+//! 阶段 A spike 实测：`tracing_subscriber` 默认 writer 是 stdout，会把
+//! `INFO serve_inner: Service initialized…` 直接插进协议流，任何严格客户端都会断连
+//! （REPORT.md §5）。因此：
+//!
+//! 1. subscriber 显式 `.with_writer(std::io::stderr)`；
+//! 2. 本文件与 `sqarvo_mcp` 全包禁用 `println!`/`print!`/`dbg!`（管理模式的结果输出
+//!    是唯一的例外，且那条路径不会启动 server）；
+//! 3. 退出错误写 stderr 并给非零退出码。
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use sqarvo_mcp::credentials_cmd::{self, CredentialsAction};
 
+/// 日志过滤环境变量；缺省 `warn,sqarvo_mcp=info`。
+const LOG_ENV: &str = "SQARVO_MCP_LOG";
+
+/// 退出时等待 Tokio 阻塞线程的上限。
+///
+/// rmcp 的 stdio transport 用 `tokio::io::stdin`，它背后是一个阻塞读线程；stdin 还
+/// 开着时这个读永远不返回。`Runtime` 默认的 drop 会**无限期**等阻塞任务结束，于是
+/// 「收到 SIGTERM → 优雅关停已完成 → 进程却挂着不走」。这里显式给一个上限：干净
+/// 路径（stdin EOF）本来就立即返回，只有信号路径会用到这个上限。
+const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Parser)]
-#[command(name = "sqarvo-mcp", about = "Sqarvo MCP Server（stdio）")]
+#[command(name = "sqarvo-mcp", version, about = "Sqarvo MCP Server（stdio）")]
 struct Cli {
     /// `mcp.json` 路径；缺省取 `AppPaths` 配置目录下的 `mcp.json`。
     #[arg(long, global = true)]
@@ -30,21 +51,48 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // stdout 只能输出 MCP 协议消息（V3.1 §13）。阶段 A spike 实测：默认 writer 会把
-    // 日志混进协议流并直接破坏 initialize——writer 必须显式钉死在 stderr。
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+fn main() -> ExitCode {
+    init_tracing();
+
+    let cli = Cli::parse();
+    // 手写 runtime（而不是 `#[tokio::main]`）是为了能调 `shutdown_timeout`：
+    // 见 [`SHUTDOWN_TIMEOUT`] 的说明。
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("sqarvo-mcp: 无法创建 Tokio 运行时：{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = runtime.block_on(async {
+        match cli.command {
+            None => sqarvo_mcp::server::run_stdio(cli.config.as_deref()).await,
+            Some(Command::Credentials { action }) => credentials_cmd::run(action).await,
+        }
+    });
+    runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            // 只写 stderr：stdout 归协议所有。错误码是稳定的（`mcp.*` / `config.invalid`…），
+            // 文案由各模块保证不含凭据。
+            eprintln!("sqarvo-mcp: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn init_tracing() {
+    // writer 必须显式钉在 stderr（见模块文档）。
+    let filter = tracing_subscriber::EnvFilter::try_from_env(LOG_ENV)
+        .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| "warn,sqarvo_mcp=info".into());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
-
-    let cli = Cli::parse();
-    match cli.command {
-        None => sqarvo_mcp::server::run_stdio(cli.config.as_deref()).await?,
-        Some(Command::Credentials { action }) => credentials_cmd::run(action).await?,
-    }
-    Ok(())
 }
