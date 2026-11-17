@@ -70,19 +70,19 @@ impl_notes = [
 trigger = "load"
 precondition = "后端已握手（未握手时工具条「连接」与菜单项禁用；动作本身也直接返回，只记日志「后端尚未连接，忽略「新建连接」」，不发任何请求）"
 result = "打开对话框：标题「新建连接」、副标题「未选择驱动」，驱动下拉默认选中 MariaDB（存在时）；已打开时只把它前置，不叠第二个"
-source = "src/ui.rs:1103、src/ui.rs:1105、src/ui.rs:1108、src/dialog.rs:130"
+source = "src/ui.rs:1109、src/ui.rs:1111、src/ui.rs:1114、src/dialog.rs:133"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "从对象树右键「编辑连接…」进入，或按保存凭据连接时发现缺密码"
 result = "用已保存连接预填非敏感字段（驱动、主机、端口、库、用户名、文件路径、只读、TLS 档位）；密码行留空，已有 credential_ref 时复用它并在状态行提示「已填入保存的连接：密码将从系统凭据库读取」，引用为空时提示「已填入保存的连接；请输入密码后连接」；不自动连接，用户仍需点「测试连接」或「保存并连接」"
-source = "src/dialog.rs:582、src/dialog.rs:611、src/dialog.rs:614、src/ui.rs:1122"
+source = "src/dialog.rs:614、src/dialog.rs:643、src/dialog.rs:646、src/ui.rs:1128"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "从对象树 / 启动态按保存的凭据连接时凭据缺失（配置里没有引用，或后端回 credential.not_found）"
 result = "打开预填对话框，并在状态行写「这条连接缺少密码，请编辑后重试（<原因>）」：原因分别是「配置里没有凭据引用」或「<stage>: <message>（credential.not_found）」；不发连接 RPC，真正的失败分类由用户重新提交后的结果给出"
-source = "src/ui.rs:490、src/ui.rs:1193、src/ui.rs:1220、src/dialog.rs:546"
+source = "src/ui.rs:490、src/ui.rs:1199、src/ui.rs:1226、src/dialog.rs:574"
 
 [component.sync.linux]
 state = "done"
@@ -118,19 +118,19 @@ impl_notes = [
 trigger = "load"
 precondition = "对话框构建或驱动切换"
 result = "副标题 = 当前驱动的显示名（后端 ListDrivers 返回的 display_name）；没有可选驱动时写「未选择驱动」"
-source = "src/dialog.rs:425、src/dialog.rs:135"
+source = "src/dialog.rs:450、src/dialog.rs:138"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "从「编辑连接…」进入"
 result = "标题改「编辑连接」；对话框标题属性与标题栏同步改"
-source = "src/dialog.rs:390、src/ui.rs:3826"
+source = "src/dialog.rs:408、src/ui.rs:3838"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "「测试连接」或「保存并连接」的请求在飞"
 result = "副标题改为「正在与数据库握手…」；回包后恢复为驱动显示名"
-source = "src/dialog.rs:485、src/dialog.rs:501"
+source = "src/dialog.rs:510、src/dialog.rs:529"
 
 [component.sync.linux]
 state = "done"
@@ -166,13 +166,13 @@ impl_notes = [
 trigger = "load"
 precondition = "对话框构建"
 result = "列出后端全部驱动并默认选中 MariaDB（不存在时选第一个）；后端没返回驱动时只显示「（后端未返回任何驱动）」，下拉与两个提交按钮一并禁用，状态行写「后端没有注册任何驱动（ListDrivers 为空）：无法新建连接」"
-source = "src/dialog.rs:141、src/dialog.rs:272、src/dialog.rs:444"
+source = "src/dialog.rs:147、src/dialog.rs:292、src/dialog.rs:469"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "切换驱动"
 result = "按驱动族重排字段可见性、按能力重建 TLS 档位标签、补回被清空的主机 / 端口默认值；前端没有该驱动表单时清空并禁用提交，状态行写「此版本前端没有驱动「<driver_id>」的连接表单：请升级前端，或换一个驱动」"
-source = "src/dialog.rs:390、src/dialog.rs:293、src/dialog.rs:436"
+source = "src/dialog.rs:408、src/dialog.rs:312、src/dialog.rs:461"
 
 [component.sync.linux]
 state = "done"
@@ -208,7 +208,7 @@ platform_notes.windows = "§7.1：MariaDB 字段为主机 / 端口 / 用户名 /
 trigger = "load"
 precondition = "驱动族确定（服务器型 / 文件型 / 前端不认识）"
 result = "按描述表显示或隐藏各行；切回服务器型驱动时空着的主机与端口补回默认值（用户没改过就不该看到空主机）"
-source = "src/dialog.rs:197、src/driver_form.rs:91、src/dialog.rs:411"
+source = "src/dialog.rs:214、src/driver_form.rs:91、src/dialog.rs:436"
 
 [component.sync.linux]
 state = "done"
@@ -240,13 +240,13 @@ impl_notes = ["新建时的初值与切回服务器型驱动时的补值是 127.
 trigger = "load"
 precondition = "切到服务器型驱动且主机为空"
 result = "主机补回 127.0.0.1（用户改过就不动）"
-source = "src/dialog.rs:160、src/dialog.rs:411"
+source = "src/dialog.rs:166、src/dialog.rs:436"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "提交时主机为空"
 result = "状态行写「请填写主机」，不发任何 RPC"
-source = "src/driver_form.rs:169、src/dialog.rs:700"
+source = "src/driver_form.rs:169、src/dialog.rs:738"
 
 [component.sync.linux]
 state = "done"
@@ -283,13 +283,13 @@ impl_notes = [
 trigger = "load"
 precondition = "打开新建 / 编辑连接对话框"
 result = "编辑时填入保存的别名；新建时留空"
-source = "src/dialog.rs:174、src/dialog.rs:600"
+source = "src/dialog.rs:180、src/dialog.rs:632"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "点「保存并连接」且校验通过"
 result = "trim 后写进 connections.json 的 alias；gRPC 请求里没有这个字段"
-source = "src/dialog.rs:700、src/backend/worker.rs:4019"
+source = "src/dialog.rs:738、src/backend/worker.rs:4019"
 
 [component.sync.linux]
 state = "done"
@@ -321,7 +321,7 @@ impl_notes = ["新建时的初值是 3306；输入框是数字用途（不是数
 trigger = "load"
 precondition = "切到服务器型驱动且端口为空"
 result = "端口补回 3306"
-source = "src/dialog.rs:164、src/dialog.rs:414"
+source = "src/dialog.rs:170、src/dialog.rs:439"
 
 [[component.interaction]]
 trigger = "click"
@@ -358,7 +358,7 @@ a11y.name = "用户名"
 trigger = "click"
 precondition = "提交时用户名为空（服务器型驱动）"
 result = "状态行写「请填写用户名」，不发任何 RPC"
-source = "src/driver_form.rs:190、src/dialog.rs:700"
+source = "src/driver_form.rs:193、src/dialog.rs:738"
 
 [component.sync.linux]
 state = "done"
@@ -393,7 +393,7 @@ impl_notes = [
 trigger = "load"
 precondition = "服务器型驱动且库名留空"
 result = "按合法值处理：会话显示名不拼斜杠（用户@主机），连上后浏览所有库"
-source = "src/dialog.rs:169、src/driver_form.rs:186、src/driver_form.rs:246"
+source = "src/dialog.rs:175、src/driver_form.rs:189、src/driver_form.rs:250"
 
 [component.sync.linux]
 state = "done"
@@ -430,13 +430,13 @@ platform_notes.windows = "§7.1：密码只进 Windows 凭据管理器，落盘�
 trigger = "load"
 precondition = "编辑模式（有已保存连接）"
 result = "密码行留空，并复用已有的 credential_ref：后端从操作系统凭据库取密码，界面不展示任何已存密码；引用为空时状态行提示「已填入保存的连接；请输入密码后连接」"
-source = "src/dialog.rs:606、src/dialog.rs:611"
+source = "src/dialog.rs:638、src/dialog.rs:643"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "提交时密码为空且没有 credential_ref"
 result = "状态行写「请输入密码」，不发任何 RPC"
-source = "src/driver_form.rs:200、src/dialog.rs:700"
+source = "src/driver_form.rs:203、src/dialog.rs:738"
 
 [component.sync.linux]
 state = "done"
@@ -472,13 +472,13 @@ impl_notes = [
 trigger = "load"
 precondition = "服务器型驱动"
 result = "按当前驱动能力重建五档标签，并把选中档位映射回新列表（换 model 会让选中失效，重建后显式选回同一档）"
-source = "src/dialog.rs:465、src/dialog.rs:737、src/backend/connection.rs:109"
+source = "src/dialog.rs:490、src/dialog.rs:775、src/backend/connection.rs:109"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "选中「校验 CA」且驱动不支持只校链"
 result = "该行副标题写「本驱动无法只校验证书链：仍会校验主机名」；切到别的档位时副标题立刻消失"
-source = "src/dialog.rs:477、src/dialog.rs:750"
+source = "src/dialog.rs:502、src/dialog.rs:788"
 
 [component.sync.linux]
 state = "done"
@@ -514,13 +514,13 @@ impl_notes = [
 trigger = "click"
 precondition = "文件型驱动"
 result = "打开系统文件选择器；选中后只把路径写进输入行，其余流程与手输完全相同（取消则什么都不改）"
-source = "src/dialog.rs:186、src/dialog.rs:763"
+source = "src/dialog.rs:197、src/dialog.rs:801"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "提交时路径为空或文件不存在"
 result = "状态行写「请填写数据库文件路径（例如 /home/me/app.db）」或「数据库文件不存在：<路径>（请选择已有文件，或先用 sqlite3 创建）」，不发任何 RPC"
-source = "src/driver_form.rs:207、src/driver_form.rs:214"
+source = "src/driver_form.rs:210、src/driver_form.rs:217"
 
 [component.sync.linux]
 state = "done"
@@ -552,7 +552,7 @@ impl_notes = ["副标题「以只读方式连接：数据库会拒绝任何写�
 trigger = "click"
 precondition = "已勾选只读且路径是 :memory:"
 result = "状态行写「内存数据库（:memory:）不支持只读模式」，不发任何 RPC（与后端同一条规则，提前在界面说清）"
-source = "src/driver_form.rs:221、src/dialog.rs:192"
+source = "src/driver_form.rs:225、src/dialog.rs:205"
 
 [component.sync.linux]
 state = "done"
@@ -587,7 +587,7 @@ impl_notes = [
 trigger = "load"
 precondition = "当前驱动需要密码"
 result = "显示两行：「密码只写入系统凭据库」与「连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存」"
-source = "src/dialog.rs:209、src/dialog.rs:405"
+source = "src/dialog.rs:228、src/dialog.rs:430"
 
 [component.sync.linux]
 state = "done"
@@ -624,25 +624,25 @@ platform_notes.windows = "§7.1：测试连接就地展示延迟与服务端版�
 trigger = "load"
 precondition = "保存前本地校验不通过"
 result = "写校验原因（例如「请填写主机」「端口必须是 1-65535 之间的数字（当前：abc）」「请输入密码」），不发任何 RPC，对话框保持打开"
-source = "src/driver_form.rs:145、src/dialog.rs:700"
+source = "src/driver_form.rs:145、src/dialog.rs:738"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "「测试连接」成功"
 result = "写「连接成功：延迟 <N> ms · 服务端版本 <version>」；后端未返回版本时写「未知（后端未返回版本）」，并把返回的凭据引用留在对话框里复用"
-source = "src/dialog.rs:509、src/ui.rs:612"
+source = "src/dialog.rs:537、src/ui.rs:612"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "测试或保存失败"
 result = "两行：分类主标题（如「认证失败：用户名或密码错误」「系统凭据库不可用（不会回退明文保存）」「连接超时」），下一行是后端文案加「[稳定错误码]」（如 mariadb.auth_failed / credential.not_found / timeout）"
-source = "src/dialog.rs:530、src/backend/connection.rs:479、src/backend/connection.rs:513"
+source = "src/dialog.rs:558、src/backend/connection.rs:479、src/backend/connection.rs:513"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "切换驱动，或上一次的错误已不适用"
 result = "状态行收起，旧驱动的错误不留在屏幕上"
-source = "src/dialog.rs:432、src/dialog.rs:570"
+source = "src/dialog.rs:457、src/dialog.rs:599"
 
 [component.sync.linux]
 state = "done"
@@ -676,7 +676,7 @@ impl_notes = [
 trigger = "load"
 precondition = "「测试连接」或「保存并连接」的请求在飞"
 result = "两个按钮、驱动下拉与全部输入行一并禁用（sensitive=false），避免重复提交；回包后按驱动与能力恢复可用性"
-source = "src/dialog.rs:485、src/dialog.rs:717"
+source = "src/dialog.rs:510、src/dialog.rs:755"
 
 [component.sync.linux]
 state = "done"
@@ -708,13 +708,13 @@ impl_notes = ["不落盘：测试成功只把凭据引用留在对话框里，�
 trigger = "click"
 precondition = "有可用驱动（ListDrivers 非空且前端认识该驱动），请求不在飞"
 result = "先做本地校验，通过后整体置为禁用、状态行写「正在测试连接…」，调 TestConnection；成功回「连接成功：延迟 … ms · 服务端版本 …」，失败回分类错误两行"
-source = "src/dialog.rs:227、src/dialog.rs:700、src/ui.rs:612"
+source = "src/dialog.rs:246、src/dialog.rs:738、src/ui.rs:612"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "没有可用驱动（后端未返回驱动，或前端没有该驱动的表单）"
 result = "按钮禁用，点不动：不发测试请求，也不退回一份写死的 MariaDB 表单"
-source = "src/dialog.rs:420、src/dialog.rs:153"
+source = "src/dialog.rs:445、src/dialog.rs:159"
 
 [component.sync.linux]
 state = "done"
@@ -752,25 +752,25 @@ impl_notes = [
 trigger = "click"
 precondition = "新建态（工具条「连接」进入）、本地校验通过、驱动可用"
 result = "整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区"
-source = "src/dialog.rs:700、src/ui.rs:1382、src/ui.rs:641"
+source = "src/dialog.rs:738、src/ui.rs:1391、src/ui.rs:641"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "编辑态（「编辑连接…」进入）、本地校验通过"
 result = "按钮文案是「保存」：写凭据 + 写 connections.json，**不发 Connect**；成功后关闭对话框、对象树那一行按新别名/新目标重绘，连接状态仍是未连接"
-source = "src/dialog.rs:390、src/ui.rs:1391、src/backend/worker.rs:3994"
+source = "src/dialog.rs:408、src/ui.rs:1400、src/backend/worker.rs:3994"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "本地校验不通过"
 result = "不提交：状态行给原因，对话框保持打开，用户改正后可再点"
-source = "src/dialog.rs:701"
+source = "src/dialog.rs:739"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "后端 worker 不可用（已退出或未握手）"
 result = "状态行写「本地后端未连接」（错误码 backend.unavailable），按钮恢复可点，不假装已保存"
-source = "src/ui.rs:1399、src/ui.rs:1401、src/backend/connection.rs:489"
+source = "src/ui.rs:1408、src/ui.rs:1410、src/backend/connection.rs:489"
 
 [component.sync.linux]
 state = "done"
@@ -802,7 +802,7 @@ impl_notes = ["在标题栏左侧，不在底部操作条里：破坏性为零�
 trigger = "click"
 precondition = "对话框已打开"
 result = "直接关闭：不写配置、不写凭据、不建会话；再次打开从默认值重新开始"
-source = "src/dialog.rs:138、src/dialog.rs:286"
+source = "src/dialog.rs:141、src/dialog.rs:305"
 
 [component.sync.linux]
 state = "done"
@@ -839,13 +839,13 @@ impl_notes = [
 trigger = "load"
 precondition = "帮助 → 关于 Squarvo（任意状态，不依赖后端）"
 result = "打开对话框；已打开时只把它前置，不叠第二个"
-source = "src/ui.rs:5289、src/ui.rs:5290、src/ui.rs:4623"
+source = "src/ui.rs:5301、src/ui.rs:5302、src/ui.rs:4635"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "内容高于可视区"
 result = "纵向滚动，横向永不滚动；长路径按字符折行，不让一个没有空格的长字符串把对话框顶宽"
-source = "src/ui.rs:5365、src/ui.rs:5351"
+source = "src/ui.rs:5377、src/ui.rs:5363"
 
 [component.sync.linux]
 state = "done"
@@ -877,7 +877,7 @@ impl_notes = ["版本号取编译期包版本，不写死文案；字号来自 A
 trigger = "load"
 precondition = "对话框打开"
 result = "三行：「Sqarvo」、「版本 <包版本>」、「轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）」"
-source = "src/ui.rs:5301、src/ui.rs:5304、src/ui.rs:5307"
+source = "src/ui.rs:5313、src/ui.rs:5316、src/ui.rs:5319"
 
 [component.sync.linux]
 state = "done"
@@ -908,13 +908,13 @@ a11y.name = "后端版本与协议"
 trigger = "load"
 precondition = "后端已握手"
 result = "写「后端版本：<service_version>（协议 <protocol_version>，<build_profile> 构建）」"
-source = "src/ui.rs:5243"
+source = "src/ui.rs:5255"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "后端未握手"
 result = "不写版本与协议行，诊断区块改写「端点文件：<路径>」与「后端：尚未握手完成」——不编造版本号"
-source = "src/ui.rs:5326"
+source = "src/ui.rs:5338"
 
 [component.sync.linux]
 state = "done"
@@ -949,13 +949,13 @@ impl_notes = [
 trigger = "load"
 precondition = "后端已握手"
 result = "逐行给：传输方式、后端进程 PID（由前端启动：是 / 否）、端点文件、版本不一致时「注意：端点记录的后端版本 … 与 GetVersion 返回的 … 不一致。」、已注册驱动「显示名（driver_id）」清单（无驱动时写「已注册驱动：（后端未返回任何驱动）」）"
-source = "src/ui.rs:5243、src/ui.rs:5261、src/ui.rs:5268"
+source = "src/ui.rs:5255、src/ui.rs:5273、src/ui.rs:5280"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "有工作区"
 result = "追加连接名、初始会话短 ID（「连接对话框建立的初始会话：…（未领养时随退出释放）」）与逐条标签会话行"
-source = "src/ui.rs:5331、src/ui.rs:5334"
+source = "src/ui.rs:5343、src/ui.rs:5346"
 
 [component.sync.linux]
 state = "done"
@@ -986,7 +986,7 @@ a11y.name = "保密说明"
 trigger = "load"
 precondition = "对话框打开"
 result = "写「本对话框只在本机显示，不含密码、凭据引用与 token。」（诊断字段里也确实没有这三样）"
-source = "src/ui.rs:5357"
+source = "src/ui.rs:5369"
 
 [component.sync.linux]
 state = "done"

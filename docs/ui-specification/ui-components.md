@@ -625,9 +625,9 @@ kind `container` · status `active` · parent `dialogs`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 后端已握手（未握手时工具条「连接」与菜单项禁用；动作本身也直接返回，只记日志「后端尚未连接，忽略「新建连接」」，不发任何请求） | 打开对话框：标题「新建连接」、副标题「未选择驱动」，驱动下拉默认选中 MariaDB（存在时）；已打开时只把它前置，不叠第二个 | `src/ui.rs:1103、src/ui.rs:1105、src/ui.rs:1108、src/dialog.rs:130` |
-| load | 从对象树右键「编辑连接…」进入，或按保存凭据连接时发现缺密码 | 用已保存连接预填非敏感字段（驱动、主机、端口、库、用户名、文件路径、只读、TLS 档位）；密码行留空，已有 credential_ref 时复用它并在状态行提示「已填入保存的连接：密码将从系统凭据库读取」，引用为空时提示「已填入保存的连接；请输入密码后连接」；不自动连接，用户仍需点「测试连接」或「保存并连接」 | `src/dialog.rs:582、src/dialog.rs:611、src/dialog.rs:614、src/ui.rs:1122` |
-| load | 从对象树 / 启动态按保存的凭据连接时凭据缺失（配置里没有引用，或后端回 credential.not_found） | 打开预填对话框，并在状态行写「这条连接缺少密码，请编辑后重试（<原因>）」：原因分别是「配置里没有凭据引用」或「<stage>: <message>（credential.not_found）」；不发连接 RPC，真正的失败分类由用户重新提交后的结果给出 | `src/ui.rs:490、src/ui.rs:1193、src/ui.rs:1220、src/dialog.rs:546` |
+| load | 后端已握手（未握手时工具条「连接」与菜单项禁用；动作本身也直接返回，只记日志「后端尚未连接，忽略「新建连接」」，不发任何请求） | 打开对话框：标题「新建连接」、副标题「未选择驱动」，驱动下拉默认选中 MariaDB（存在时）；已打开时只把它前置，不叠第二个 | `src/ui.rs:1109、src/ui.rs:1111、src/ui.rs:1114、src/dialog.rs:133` |
+| load | 从对象树右键「编辑连接…」进入，或按保存凭据连接时发现缺密码 | 用已保存连接预填非敏感字段（驱动、主机、端口、库、用户名、文件路径、只读、TLS 档位）；密码行留空，已有 credential_ref 时复用它并在状态行提示「已填入保存的连接：密码将从系统凭据库读取」，引用为空时提示「已填入保存的连接；请输入密码后连接」；不自动连接，用户仍需点「测试连接」或「保存并连接」 | `src/dialog.rs:614、src/dialog.rs:643、src/dialog.rs:646、src/ui.rs:1128` |
+| load | 从对象树 / 启动态按保存的凭据连接时凭据缺失（配置里没有引用，或后端回 credential.not_found） | 打开预填对话框，并在状态行写「这条连接缺少密码，请编辑后重试（<原因>）」：原因分别是「配置里没有凭据引用」或「<stage>: <message>（credential.not_found）」；不发连接 RPC，真正的失败分类由用户重新提交后的结果给出 | `src/ui.rs:490、src/ui.rs:1199、src/ui.rs:1226、src/dialog.rs:574` |
 
 ### `dialogs.connection.header` 标题与副标题
 
@@ -640,9 +640,9 @@ kind `control` · status `active` · parent `dialogs.connection`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 对话框构建或驱动切换 | 副标题 = 当前驱动的显示名（后端 ListDrivers 返回的 display_name）；没有可选驱动时写「未选择驱动」 | `src/dialog.rs:425、src/dialog.rs:135` |
-| load | 从「编辑连接…」进入 | 标题改「编辑连接」；对话框标题属性与标题栏同步改 | `src/dialog.rs:390、src/ui.rs:3826` |
-| load | 「测试连接」或「保存并连接」的请求在飞 | 副标题改为「正在与数据库握手…」；回包后恢复为驱动显示名 | `src/dialog.rs:485、src/dialog.rs:501` |
+| load | 对话框构建或驱动切换 | 副标题 = 当前驱动的显示名（后端 ListDrivers 返回的 display_name）；没有可选驱动时写「未选择驱动」 | `src/dialog.rs:450、src/dialog.rs:138` |
+| load | 从「编辑连接…」进入 | 标题改「编辑连接」；对话框标题属性与标题栏同步改 | `src/dialog.rs:408、src/ui.rs:3838` |
+| load | 「测试连接」或「保存并连接」的请求在飞 | 副标题改为「正在与数据库握手…」；回包后恢复为驱动显示名 | `src/dialog.rs:510、src/dialog.rs:529` |
 
 ### `dialogs.connection.driver` 驱动下拉
 
@@ -655,8 +655,8 @@ kind `control` · status `active` · parent `dialogs.connection`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 对话框构建 | 列出后端全部驱动并默认选中 MariaDB（不存在时选第一个）；后端没返回驱动时只显示「（后端未返回任何驱动）」，下拉与两个提交按钮一并禁用，状态行写「后端没有注册任何驱动（ListDrivers 为空）：无法新建连接」 | `src/dialog.rs:141、src/dialog.rs:272、src/dialog.rs:444` |
-| load | 切换驱动 | 按驱动族重排字段可见性、按能力重建 TLS 档位标签、补回被清空的主机 / 端口默认值；前端没有该驱动表单时清空并禁用提交，状态行写「此版本前端没有驱动「<driver_id>」的连接表单：请升级前端，或换一个驱动」 | `src/dialog.rs:390、src/dialog.rs:293、src/dialog.rs:436` |
+| load | 对话框构建 | 列出后端全部驱动并默认选中 MariaDB（不存在时选第一个）；后端没返回驱动时只显示「（后端未返回任何驱动）」，下拉与两个提交按钮一并禁用，状态行写「后端没有注册任何驱动（ListDrivers 为空）：无法新建连接」 | `src/dialog.rs:147、src/dialog.rs:292、src/dialog.rs:469` |
+| load | 切换驱动 | 按驱动族重排字段可见性、按能力重建 TLS 档位标签、补回被清空的主机 / 端口默认值；前端没有该驱动表单时清空并禁用提交，状态行写「此版本前端没有驱动「<driver_id>」的连接表单：请升级前端，或换一个驱动」 | `src/dialog.rs:408、src/dialog.rs:312、src/dialog.rs:461` |
 
 ### `dialogs.connection.fields` 连接参数表单（按驱动族显隐）
 
@@ -669,7 +669,7 @@ kind `container` · status `active` · parent `dialogs.connection`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 驱动族确定（服务器型 / 文件型 / 前端不认识） | 按描述表显示或隐藏各行；切回服务器型驱动时空着的主机与端口补回默认值（用户没改过就不该看到空主机） | `src/dialog.rs:197、src/driver_form.rs:91、src/dialog.rs:411` |
+| load | 驱动族确定（服务器型 / 文件型 / 前端不认识） | 按描述表显示或隐藏各行；切回服务器型驱动时空着的主机与端口补回默认值（用户没改过就不该看到空主机） | `src/dialog.rs:214、src/driver_form.rs:91、src/dialog.rs:436` |
 
 ### `dialogs.connection.fields.host` 主机
 
@@ -682,8 +682,8 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到服务器型驱动且主机为空 | 主机补回 127.0.0.1（用户改过就不动） | `src/dialog.rs:160、src/dialog.rs:411` |
-| click | 提交时主机为空 | 状态行写「请填写主机」，不发任何 RPC | `src/driver_form.rs:169、src/dialog.rs:700` |
+| load | 切到服务器型驱动且主机为空 | 主机补回 127.0.0.1（用户改过就不动） | `src/dialog.rs:166、src/dialog.rs:436` |
+| click | 提交时主机为空 | 状态行写「请填写主机」，不发任何 RPC | `src/driver_form.rs:169、src/dialog.rs:738` |
 
 ### `dialogs.connection.fields.alias` 别名（可选）
 
@@ -696,8 +696,8 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 打开新建 / 编辑连接对话框 | 编辑时填入保存的别名；新建时留空 | `src/dialog.rs:174、src/dialog.rs:600` |
-| click | 点「保存并连接」且校验通过 | trim 后写进 connections.json 的 alias；gRPC 请求里没有这个字段 | `src/dialog.rs:700、src/backend/worker.rs:4019` |
+| load | 打开新建 / 编辑连接对话框 | 编辑时填入保存的别名；新建时留空 | `src/dialog.rs:180、src/dialog.rs:632` |
+| click | 点「保存并连接」且校验通过 | trim 后写进 connections.json 的 alias；gRPC 请求里没有这个字段 | `src/dialog.rs:738、src/backend/worker.rs:4019` |
 
 ### `dialogs.connection.fields.port` 端口
 
@@ -710,7 +710,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到服务器型驱动且端口为空 | 端口补回 3306 | `src/dialog.rs:164、src/dialog.rs:414` |
+| load | 切到服务器型驱动且端口为空 | 端口补回 3306 | `src/dialog.rs:170、src/dialog.rs:439` |
 | click | 提交时端口不是数字，或不在 1-65535 之间 | 状态行写「端口必须是 1-65535 之间的数字（当前：<输入>）」（空值或 0 写不带当前值的同一句），不发任何 RPC | `src/driver_form.rs:176、src/driver_form.rs:181` |
 
 ### `dialogs.connection.fields.username` 用户名
@@ -723,7 +723,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 提交时用户名为空（服务器型驱动） | 状态行写「请填写用户名」，不发任何 RPC | `src/driver_form.rs:190、src/dialog.rs:700` |
+| click | 提交时用户名为空（服务器型驱动） | 状态行写「请填写用户名」，不发任何 RPC | `src/driver_form.rs:193、src/dialog.rs:738` |
 
 ### `dialogs.connection.fields.database` 数据库（可选）
 
@@ -736,7 +736,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 服务器型驱动且库名留空 | 按合法值处理：会话显示名不拼斜杠（用户@主机），连上后浏览所有库 | `src/dialog.rs:169、src/driver_form.rs:186、src/driver_form.rs:246` |
+| load | 服务器型驱动且库名留空 | 按合法值处理：会话显示名不拼斜杠（用户@主机），连上后浏览所有库 | `src/dialog.rs:175、src/driver_form.rs:189、src/driver_form.rs:250` |
 
 ### `dialogs.connection.fields.password` 密码
 
@@ -750,8 +750,8 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 编辑模式（有已保存连接） | 密码行留空，并复用已有的 credential_ref：后端从操作系统凭据库取密码，界面不展示任何已存密码；引用为空时状态行提示「已填入保存的连接；请输入密码后连接」 | `src/dialog.rs:606、src/dialog.rs:611` |
-| click | 提交时密码为空且没有 credential_ref | 状态行写「请输入密码」，不发任何 RPC | `src/driver_form.rs:200、src/dialog.rs:700` |
+| load | 编辑模式（有已保存连接） | 密码行留空，并复用已有的 credential_ref：后端从操作系统凭据库取密码，界面不展示任何已存密码；引用为空时状态行提示「已填入保存的连接；请输入密码后连接」 | `src/dialog.rs:638、src/dialog.rs:643` |
+| click | 提交时密码为空且没有 credential_ref | 状态行写「请输入密码」，不发任何 RPC | `src/driver_form.rs:203、src/dialog.rs:738` |
 
 ### `dialogs.connection.fields.tls` TLS 模式（五档）
 
@@ -764,8 +764,8 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 服务器型驱动 | 按当前驱动能力重建五档标签，并把选中档位映射回新列表（换 model 会让选中失效，重建后显式选回同一档） | `src/dialog.rs:465、src/dialog.rs:737、src/backend/connection.rs:109` |
-| load | 选中「校验 CA」且驱动不支持只校链 | 该行副标题写「本驱动无法只校验证书链：仍会校验主机名」；切到别的档位时副标题立刻消失 | `src/dialog.rs:477、src/dialog.rs:750` |
+| load | 服务器型驱动 | 按当前驱动能力重建五档标签，并把选中档位映射回新列表（换 model 会让选中失效，重建后显式选回同一档） | `src/dialog.rs:490、src/dialog.rs:775、src/backend/connection.rs:109` |
+| load | 选中「校验 CA」且驱动不支持只校链 | 该行副标题写「本驱动无法只校验证书链：仍会校验主机名」；切到别的档位时副标题立刻消失 | `src/dialog.rs:502、src/dialog.rs:788` |
 
 ### `dialogs.connection.fields.file_path` 数据库文件（含「浏览」）
 
@@ -778,8 +778,8 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 文件型驱动 | 打开系统文件选择器；选中后只把路径写进输入行，其余流程与手输完全相同（取消则什么都不改） | `src/dialog.rs:186、src/dialog.rs:763` |
-| click | 提交时路径为空或文件不存在 | 状态行写「请填写数据库文件路径（例如 /home/me/app.db）」或「数据库文件不存在：<路径>（请选择已有文件，或先用 sqlite3 创建）」，不发任何 RPC | `src/driver_form.rs:207、src/driver_form.rs:214` |
+| click | 文件型驱动 | 打开系统文件选择器；选中后只把路径写进输入行，其余流程与手输完全相同（取消则什么都不改） | `src/dialog.rs:197、src/dialog.rs:801` |
+| click | 提交时路径为空或文件不存在 | 状态行写「请填写数据库文件路径（例如 /home/me/app.db）」或「数据库文件不存在：<路径>（请选择已有文件，或先用 sqlite3 创建）」，不发任何 RPC | `src/driver_form.rs:210、src/driver_form.rs:217` |
 
 ### `dialogs.connection.fields.read_only` 「只读打开」
 
@@ -792,7 +792,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 已勾选只读且路径是 :memory: | 状态行写「内存数据库（:memory:）不支持只读模式」，不发任何 RPC（与后端同一条规则，提前在界面说清） | `src/driver_form.rs:221、src/dialog.rs:192` |
+| click | 已勾选只读且路径是 :memory: | 状态行写「内存数据库（:memory:）不支持只读模式」，不发任何 RPC（与后端同一条规则，提前在界面说清） | `src/driver_form.rs:225、src/dialog.rs:205` |
 
 ### `dialogs.connection.credential_note` 凭据说明行（「密码只写入系统凭据库」）
 
@@ -805,7 +805,7 @@ kind `control` · status `active` · parent `dialogs.connection`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 当前驱动需要密码 | 显示两行：「密码只写入系统凭据库」与「连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存」 | `src/dialog.rs:209、src/dialog.rs:405` |
+| load | 当前驱动需要密码 | 显示两行：「密码只写入系统凭据库」与「连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存」 | `src/dialog.rs:228、src/dialog.rs:430` |
 
 ### `dialogs.connection.status` 状态行（校验 / 测试结果 / 失败）
 
@@ -819,10 +819,10 @@ kind `control` · status `active` · parent `dialogs.connection`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 保存前本地校验不通过 | 写校验原因（例如「请填写主机」「端口必须是 1-65535 之间的数字（当前：abc）」「请输入密码」），不发任何 RPC，对话框保持打开 | `src/driver_form.rs:145、src/dialog.rs:700` |
-| load | 「测试连接」成功 | 写「连接成功：延迟 <N> ms · 服务端版本 <version>」；后端未返回版本时写「未知（后端未返回版本）」，并把返回的凭据引用留在对话框里复用 | `src/dialog.rs:509、src/ui.rs:612` |
-| load | 测试或保存失败 | 两行：分类主标题（如「认证失败：用户名或密码错误」「系统凭据库不可用（不会回退明文保存）」「连接超时」），下一行是后端文案加「[稳定错误码]」（如 mariadb.auth_failed / credential.not_found / timeout） | `src/dialog.rs:530、src/backend/connection.rs:479、src/backend/connection.rs:513` |
-| load | 切换驱动，或上一次的错误已不适用 | 状态行收起，旧驱动的错误不留在屏幕上 | `src/dialog.rs:432、src/dialog.rs:570` |
+| load | 保存前本地校验不通过 | 写校验原因（例如「请填写主机」「端口必须是 1-65535 之间的数字（当前：abc）」「请输入密码」），不发任何 RPC，对话框保持打开 | `src/driver_form.rs:145、src/dialog.rs:738` |
+| load | 「测试连接」成功 | 写「连接成功：延迟 <N> ms · 服务端版本 <version>」；后端未返回版本时写「未知（后端未返回版本）」，并把返回的凭据引用留在对话框里复用 | `src/dialog.rs:537、src/ui.rs:612` |
+| load | 测试或保存失败 | 两行：分类主标题（如「认证失败：用户名或密码错误」「系统凭据库不可用（不会回退明文保存）」「连接超时」），下一行是后端文案加「[稳定错误码]」（如 mariadb.auth_failed / credential.not_found / timeout） | `src/dialog.rs:558、src/backend/connection.rs:479、src/backend/connection.rs:513` |
+| load | 切换驱动，或上一次的错误已不适用 | 状态行收起，旧驱动的错误不留在屏幕上 | `src/dialog.rs:457、src/dialog.rs:599` |
 
 ### `dialogs.connection.actions` 底部操作条（状态行 + 两个按钮）
 
@@ -834,7 +834,7 @@ kind `container` · status `active` · parent `dialogs.connection`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 「测试连接」或「保存并连接」的请求在飞 | 两个按钮、驱动下拉与全部输入行一并禁用（sensitive=false），避免重复提交；回包后按驱动与能力恢复可用性 | `src/dialog.rs:485、src/dialog.rs:717` |
+| load | 「测试连接」或「保存并连接」的请求在飞 | 两个按钮、驱动下拉与全部输入行一并禁用（sensitive=false），避免重复提交；回包后按驱动与能力恢复可用性 | `src/dialog.rs:510、src/dialog.rs:755` |
 
 ### `dialogs.connection.actions.test` 「测试连接」
 
@@ -847,8 +847,8 @@ kind `control` · status `active` · parent `dialogs.connection.actions`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有可用驱动（ListDrivers 非空且前端认识该驱动），请求不在飞 | 先做本地校验，通过后整体置为禁用、状态行写「正在测试连接…」，调 TestConnection；成功回「连接成功：延迟 … ms · 服务端版本 …」，失败回分类错误两行 | `src/dialog.rs:227、src/dialog.rs:700、src/ui.rs:612` |
-| click | 没有可用驱动（后端未返回驱动，或前端没有该驱动的表单） | 按钮禁用，点不动：不发测试请求，也不退回一份写死的 MariaDB 表单 | `src/dialog.rs:420、src/dialog.rs:153` |
+| click | 有可用驱动（ListDrivers 非空且前端认识该驱动），请求不在飞 | 先做本地校验，通过后整体置为禁用、状态行写「正在测试连接…」，调 TestConnection；成功回「连接成功：延迟 … ms · 服务端版本 …」，失败回分类错误两行 | `src/dialog.rs:246、src/dialog.rs:738、src/ui.rs:612` |
+| click | 没有可用驱动（后端未返回驱动，或前端没有该驱动的表单） | 按钮禁用，点不动：不发测试请求，也不退回一份写死的 MariaDB 表单 | `src/dialog.rs:445、src/dialog.rs:159` |
 
 ### `dialogs.connection.actions.save` 保存动作（新建：「保存并连接」/ 编辑：「保存」）
 
@@ -861,10 +861,10 @@ kind `control` · status `active` · parent `dialogs.connection.actions`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 新建态（工具条「连接」进入）、本地校验通过、驱动可用 | 整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区 | `src/dialog.rs:700、src/ui.rs:1382、src/ui.rs:641` |
-| click | 编辑态（「编辑连接…」进入）、本地校验通过 | 按钮文案是「保存」：写凭据 + 写 connections.json，**不发 Connect**；成功后关闭对话框、对象树那一行按新别名/新目标重绘，连接状态仍是未连接 | `src/dialog.rs:390、src/ui.rs:1391、src/backend/worker.rs:3994` |
-| click | 本地校验不通过 | 不提交：状态行给原因，对话框保持打开，用户改正后可再点 | `src/dialog.rs:701` |
-| click | 后端 worker 不可用（已退出或未握手） | 状态行写「本地后端未连接」（错误码 backend.unavailable），按钮恢复可点，不假装已保存 | `src/ui.rs:1399、src/ui.rs:1401、src/backend/connection.rs:489` |
+| click | 新建态（工具条「连接」进入）、本地校验通过、驱动可用 | 整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区 | `src/dialog.rs:738、src/ui.rs:1391、src/ui.rs:641` |
+| click | 编辑态（「编辑连接…」进入）、本地校验通过 | 按钮文案是「保存」：写凭据 + 写 connections.json，**不发 Connect**；成功后关闭对话框、对象树那一行按新别名/新目标重绘，连接状态仍是未连接 | `src/dialog.rs:408、src/ui.rs:1400、src/backend/worker.rs:3994` |
+| click | 本地校验不通过 | 不提交：状态行给原因，对话框保持打开，用户改正后可再点 | `src/dialog.rs:739` |
+| click | 后端 worker 不可用（已退出或未握手） | 状态行写「本地后端未连接」（错误码 backend.unavailable），按钮恢复可点，不假装已保存 | `src/ui.rs:1408、src/ui.rs:1410、src/backend/connection.rs:489` |
 
 ### `dialogs.connection.actions.cancel` 「取消」
 
@@ -877,7 +877,7 @@ kind `control` · status `active` · parent `dialogs.connection.actions`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 对话框已打开 | 直接关闭：不写配置、不写凭据、不建会话；再次打开从默认值重新开始 | `src/dialog.rs:138、src/dialog.rs:286` |
+| click | 对话框已打开 | 直接关闭：不写配置、不写凭据、不建会话；再次打开从默认值重新开始 | `src/dialog.rs:141、src/dialog.rs:305` |
 
 ### `dialogs.about` 关于对话框
 
@@ -891,8 +891,8 @@ kind `container` · status `active` · parent `dialogs`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 帮助 → 关于 Squarvo（任意状态，不依赖后端） | 打开对话框；已打开时只把它前置，不叠第二个 | `src/ui.rs:5289、src/ui.rs:5290、src/ui.rs:4623` |
-| load | 内容高于可视区 | 纵向滚动，横向永不滚动；长路径按字符折行，不让一个没有空格的长字符串把对话框顶宽 | `src/ui.rs:5365、src/ui.rs:5351` |
+| load | 帮助 → 关于 Squarvo（任意状态，不依赖后端） | 打开对话框；已打开时只把它前置，不叠第二个 | `src/ui.rs:5301、src/ui.rs:5302、src/ui.rs:4635` |
+| load | 内容高于可视区 | 纵向滚动，横向永不滚动；长路径按字符折行，不让一个没有空格的长字符串把对话框顶宽 | `src/ui.rs:5377、src/ui.rs:5363` |
 
 ### `dialogs.about.app_info` 名称 / 版本 / 一句说明
 
@@ -905,7 +905,7 @@ kind `control` · status `active` · parent `dialogs.about`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 对话框打开 | 三行：「Sqarvo」、「版本 <包版本>」、「轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）」 | `src/ui.rs:5301、src/ui.rs:5304、src/ui.rs:5307` |
+| load | 对话框打开 | 三行：「Sqarvo」、「版本 <包版本>」、「轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）」 | `src/ui.rs:5313、src/ui.rs:5316、src/ui.rs:5319` |
 
 ### `dialogs.about.protocol` 后端版本与协议
 
@@ -917,8 +917,8 @@ kind `control` · status `active` · parent `dialogs.about`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 后端已握手 | 写「后端版本：<service_version>（协议 <protocol_version>，<build_profile> 构建）」 | `src/ui.rs:5243` |
-| load | 后端未握手 | 不写版本与协议行，诊断区块改写「端点文件：<路径>」与「后端：尚未握手完成」——不编造版本号 | `src/ui.rs:5326` |
+| load | 后端已握手 | 写「后端版本：<service_version>（协议 <protocol_version>，<build_profile> 构建）」 | `src/ui.rs:5255` |
+| load | 后端未握手 | 不写版本与协议行，诊断区块改写「端点文件：<路径>」与「后端：尚未握手完成」——不编造版本号 | `src/ui.rs:5338` |
 
 ### `dialogs.about.diagnostics` 后端诊断字段
 
@@ -931,8 +931,8 @@ kind `control` · status `active` · parent `dialogs.about`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 后端已握手 | 逐行给：传输方式、后端进程 PID（由前端启动：是 / 否）、端点文件、版本不一致时「注意：端点记录的后端版本 … 与 GetVersion 返回的 … 不一致。」、已注册驱动「显示名（driver_id）」清单（无驱动时写「已注册驱动：（后端未返回任何驱动）」） | `src/ui.rs:5243、src/ui.rs:5261、src/ui.rs:5268` |
-| load | 有工作区 | 追加连接名、初始会话短 ID（「连接对话框建立的初始会话：…（未领养时随退出释放）」）与逐条标签会话行 | `src/ui.rs:5331、src/ui.rs:5334` |
+| load | 后端已握手 | 逐行给：传输方式、后端进程 PID（由前端启动：是 / 否）、端点文件、版本不一致时「注意：端点记录的后端版本 … 与 GetVersion 返回的 … 不一致。」、已注册驱动「显示名（driver_id）」清单（无驱动时写「已注册驱动：（后端未返回任何驱动）」） | `src/ui.rs:5255、src/ui.rs:5273、src/ui.rs:5280` |
+| load | 有工作区 | 追加连接名、初始会话短 ID（「连接对话框建立的初始会话：…（未领养时随退出释放）」）与逐条标签会话行 | `src/ui.rs:5343、src/ui.rs:5346` |
 
 ### `dialogs.about.privacy_note` 保密说明行
 
@@ -944,7 +944,7 @@ kind `control` · status `active` · parent `dialogs.about`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 对话框打开 | 写「本对话框只在本机显示，不含密码、凭据引用与 token。」（诊断字段里也确实没有这三样） | `src/ui.rs:5357` |
+| load | 对话框打开 | 写「本对话框只在本机显示，不含密码、凭据引用与 token。」（诊断字段里也确实没有这三样） | `src/ui.rs:5369` |
 
 ## 信息面板（`inspector`）
 
@@ -2219,7 +2219,7 @@ kind `container` · status `active` · parent `startup`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 应用启动 / 重新握手（worker 尚未回报 Connected） | 页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条在此之前已存在但六个按钮全禁用 | `src/ui.rs:1543、src/ui.rs:275、src/ui.rs:274` |
+| load | 应用启动 / 重新握手（worker 尚未回报 Connected） | 页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条在此之前已存在但六个按钮全禁用 | `src/ui.rs:1552、src/ui.rs:275、src/ui.rs:274` |
 
 ### `startup.loading.spinner` 加载 spinner
 
@@ -2232,7 +2232,7 @@ kind `control` · status `active` · parent `startup.loading`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | Loading 页出现 | 立即开始旋转（无静止帧）；阶段推进只换说明行，spinner 一直在转（整页替换时不出现静止帧、不闪） | `src/ui.rs:1549、src/ui.rs:1552` |
+| load | Loading 页出现 | 立即开始旋转（无静止帧）；阶段推进只换说明行，spinner 一直在转（整页替换时不出现静止帧、不闪） | `src/ui.rs:1558、src/ui.rs:1561` |
 
 ### `startup.loading.stage` 握手阶段文案
 
@@ -2244,7 +2244,7 @@ kind `control` · status `active` · parent `startup.loading`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 收到 Event::Stage（握手推进） | 说明行改写为当前语言的阶段文案（zh = 六条原文之一，界面不拼接）；只有文本变化，不出现进度百分比、不加按钮、不改标题 | `src/backend/supervisor.rs:56、src/ui.rs:504、src/ui.rs:1547` |
+| load | 收到 Event::Stage（握手推进） | 说明行改写为当前语言的阶段文案（zh = 六条原文之一，界面不拼接）；只有文本变化，不出现进度百分比、不加按钮、不改标题 | `src/backend/supervisor.rs:56、src/ui.rs:504、src/ui.rs:1556` |
 
 ### `startup.workspace` 启动态工作区外壳（侧栏 + Objects + 信息面板 + 状态栏）
 
@@ -2256,10 +2256,10 @@ kind `container` · status `active` · parent `startup`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 握手成功（Event::Connected） | 外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板常驻且内容区留白、状态栏写「未连接」；连上数据库前不存在表标签 | `src/ui.rs:1561、src/ui.rs:1599、src/startup.rs:99` |
+| load | 握手成功（Event::Connected） | 外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板常驻且内容区留白、状态栏写「未连接」；连上数据库前不存在表标签 | `src/ui.rs:1570、src/ui.rs:1608、src/startup.rs:99` |
 | load | 主工具条是窗口级控件（不随外壳重建） | 握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时「新建查询」仍禁用、其余五个可用（5/6，tooltip「尚未连接数据库：先连接再新建查询标签」） | `src/startup.rs:237、src/shell.rs:862、src/shell.rs:912` |
 | load | 连接注册表为空（没有已保存的连接） | 侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么 | `src/tree.rs:1520、src/tree.rs:3179` |
-| click | 点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接 | 把固定 Objects 页摆到最前并**保持空态**：说明行仍是「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」，不列库 / 表、不换成「未实现」说明（不编造内容）；日志「[startup] 种类入口「<名称>」：尚未连接数据库，Objects 页保持空态」 | `src/startup.rs:298、src/ui.rs:1086` |
+| click | 点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接 | 把固定 Objects 页摆到最前并**保持空态**：说明行仍是「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」，不列库 / 表、不换成「未实现」说明（不编造内容）；日志「[startup] 种类入口「<名称>」：尚未连接数据库，Objects 页保持空态」 | `src/startup.rs:298、src/ui.rs:1092` |
 
 ## 状态栏（`status_bar`）
 
@@ -2653,8 +2653,8 @@ kind `row` · status `active` · parent `tabs.strip`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1361、src/tabs.rs:2173、src/tabs.rs:2289、src/tabs.rs:2302` |
-| load | 页面已从标签条摘掉（detach） | 释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个 | `src/tabs.rs:2819、src/tabs.rs:2834、src/tabs.rs:2839` |
+| click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1369、src/tabs.rs:2181、src/tabs.rs:2297、src/tabs.rs:2310` |
+| load | 页面已从标签条摘掉（detach） | 释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个 | `src/tabs.rs:2827、src/tabs.rs:2842、src/tabs.rs:2847` |
 
 ### `tabs.strip.tab.table` 表数据标签（标题与 tooltip）
 
@@ -2666,9 +2666,9 @@ kind `item` · status `active` · parent `tabs.strip.tab`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签 | `src/tabs.rs:1795、src/tabs.rs:1832、src/tabs.rs:1903、src/tabs.rs:1936` |
-| double_click | 已有对象名 + catalog + 连接键三者完全一致的表标签 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1804、src/tabs.rs:122、src/tabs.rs:1588` |
-| load | 该标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里） | `src/tabs.rs:2552、src/tabs.rs:2262` |
+| double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签 | `src/tabs.rs:1803、src/tabs.rs:1840、src/tabs.rs:1911、src/tabs.rs:1944` |
+| double_click | 已有对象名 + catalog + 连接键三者完全一致的表标签 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1812、src/tabs.rs:128、src/tabs.rs:1596` |
+| load | 该标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里） | `src/tabs.rs:2560、src/tabs.rs:2270` |
 
 ### `tabs.strip.tab.query` 查询标签（标题与 tooltip）
 
@@ -2681,8 +2681,8 @@ kind `item` · status `active` · parent `tabs.strip.tab`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 新建查询标签 | 标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」） | `src/tabs.rs:95、src/tabs.rs:1877、src/tabs.rs:1884、src/tabs.rs:2262` |
-| load | 该查询标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段 | `src/tabs.rs:2552` |
+| load | 新建查询标签 | 标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」） | `src/tabs.rs:101、src/tabs.rs:1885、src/tabs.rs:1892、src/tabs.rs:2270` |
+| load | 该查询标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段 | `src/tabs.rs:2560` |
 
 ### `tabs.strip.tab.close` 标签关闭按钮（×）
 
@@ -2696,11 +2696,11 @@ kind `control` · status `active` · parent `tabs.strip.tab`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 非 Objects 页，且没有脏行、没有未提交事务 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect） | `src/tabs.rs:2645、src/tabs.rs:2662` |
-| click | 非 Objects 页，且有脏行或有未提交事务 | 先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场 | `src/tabs.rs:2662、src/tabs.rs:2677、src/tabs.rs:2681` |
-| click | 该标签的确认框已在显示 | 忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹 | `src/tabs.rs:2674` |
-| click | 该标签是固定 `Objects` 页 | 不关闭，记一行「Objects 页固定存在，不可关闭」 | `src/tabs.rs:2657` |
-| key Ctrl+W | 存在当前标签 | 关闭当前标签：与点 × 同一条 `close-page`（有脏行 / 事务时同样先弹三选） | `src/ui.rs:328、src/tabs.rs:2856` |
+| click | 非 Objects 页，且没有脏行、没有未提交事务 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect） | `src/tabs.rs:2653、src/tabs.rs:2670` |
+| click | 非 Objects 页，且有脏行或有未提交事务 | 先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场 | `src/tabs.rs:2670、src/tabs.rs:2685、src/tabs.rs:2689` |
+| click | 该标签的确认框已在显示 | 忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹 | `src/tabs.rs:2682` |
+| click | 该标签是固定 `Objects` 页 | 不关闭，记一行「Objects 页固定存在，不可关闭」 | `src/tabs.rs:2665` |
+| key Ctrl+W | 存在当前标签 | 关闭当前标签：与点 × 同一条 `close-page`（有脏行 / 事务时同样先弹三选） | `src/ui.rs:328、src/tabs.rs:2864` |
 
 ### `tabs.strip.new` 「＋」新建查询标签
 
@@ -2714,8 +2714,8 @@ kind `control` · status `active` · parent `tabs.strip`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端就绪、工作区已建立 | 未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示 | `src/tabs.rs:1352、src/tabs.rs:1856、src/tabs.rs:1904、src/ui.rs:263、src/ui.rs:4595` |
-| key Ctrl+T | 后端就绪、工作区已建立 | 与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示 | `src/ui.rs:327、src/ui.rs:4757、src/tabs.rs:1856` |
+| click | 后端就绪、工作区已建立 | 未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示 | `src/tabs.rs:1360、src/tabs.rs:1864、src/tabs.rs:1912、src/ui.rs:263、src/ui.rs:4607` |
+| key Ctrl+T | 后端就绪、工作区已建立 | 与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示 | `src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1864` |
 
 ### `tabs.limit` 「无法新建标签」提示
 
@@ -2729,8 +2729,8 @@ kind `control` · status `active` · parent `tabs`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 同时打开的有会话标签达到 8 时请求新建（工具条 / ＋ / Ctrl+T / 菜单任一路径） | 拒绝新建并弹 AdwAlertDialog：标题「无法新建标签」，正文「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案已在显示时不重复弹 | `src/tabs.rs:2884、src/tabs.rs:72、src/tabs.rs:59` |
-| click | 提示框在显示 | 「知道了」关闭提示框；本次请求不新建任何标签 | `src/tabs.rs:2884` |
+| load | 同时打开的有会话标签达到 8 时请求新建（工具条 / ＋ / Ctrl+T / 菜单任一路径） | 拒绝新建并弹 AdwAlertDialog：标题「无法新建标签」，正文「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案已在显示时不重复弹 | `src/tabs.rs:2892、src/tabs.rs:72、src/tabs.rs:59` |
+| click | 提示框在显示 | 「知道了」关闭提示框；本次请求不新建任何标签 | `src/tabs.rs:2892` |
 
 ### `tabs.query` 查询标签页
 
@@ -2768,9 +2768,9 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前标签是查询标签，且选中了**另一条**已保存的连接 | 重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」 | `src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3345、src/tabs.rs:2987、src/tabs.rs:555` |
-| click | 同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在） | **保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」 | `src/tabs.rs:3388、src/sql_page.rs:758、src/sql_page.rs:1634` |
-| click | 选中了当前绑定的那条连接 | no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」 | `src/sql_page.rs:1527、src/tabs.rs:3345` |
+| click | 当前标签是查询标签，且选中了**另一条**已保存的连接 | 重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」 | `src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3353、src/tabs.rs:2995、src/tabs.rs:563` |
+| click | 同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在） | **保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」 | `src/tabs.rs:3396、src/sql_page.rs:758、src/sql_page.rs:1634` |
+| click | 选中了当前绑定的那条连接 | no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」 | `src/sql_page.rs:1527、src/tabs.rs:3353` |
 
 ### `tabs.query.database_picker` 查询标签的库选择器
 
@@ -2784,9 +2784,9 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3065、src/backend/worker.rs:1806、src/backend/client.rs:529` |
-| click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3065、src/sql_page.rs:1367、src/sql_page.rs:971` |
-| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2932、src/tabs.rs:2964、src/sql_page.rs:1327、src/backend/metadata.rs:544` |
+| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3073、src/backend/worker.rs:1806、src/backend/client.rs:529` |
+| click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3073、src/sql_page.rs:1367、src/sql_page.rs:971` |
+| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2940、src/tabs.rs:2972、src/sql_page.rs:1327、src/backend/metadata.rs:544` |
 
 ### `tabs.query.editor` SQL 编辑器（行号沟 + 等宽文本）
 
@@ -2800,7 +2800,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 新建查询标签成功 | 键盘焦点直接落在编辑器上，可以马上输入 SQL | `src/tabs.rs:1904、src/sql_page.rs:336` |
+| load | 新建查询标签成功 | 键盘焦点直接落在编辑器上，可以马上输入 SQL | `src/tabs.rs:1912、src/sql_page.rs:336` |
 | key Ctrl+Enter | 编辑器有焦点 | 执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略 | `src/sql_page.rs:300、src/sql_page.rs:341` |
 | load | 新建查询标签（尚无任何 Execute 响应） | 编辑器占满整个内容区：结果区与分隔把手隐藏（GtkPaned 对隐藏子节点不测量也不绘制把手） | `src/sql_page.rs:272、src/sql_page.rs:1318` |
 
@@ -2929,7 +2929,7 @@ kind `control` · status `active` · parent `tabs`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 关闭一个有脏行或有未提交事务的标签 | 标题「关闭标签？」；正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」；有脏行追加「该标签有 N 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。」；有事务追加「该标签有未提交事务（<标签>）：关闭将**回滚该标签的事务**，其它标签不受影响。」 | `src/tabs.rs:250、src/tabs.rs:2718` |
+| load | 关闭一个有脏行或有未提交事务的标签 | 标题「关闭标签？」；正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」；有脏行追加「该标签有 N 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。」；有事务追加「该标签有未提交事务（<标签>）：关闭将**回滚该标签的事务**，其它标签不受影响。」 | `src/tabs.rs:256、src/tabs.rs:2726` |
 
 ### `tabs.close_dialog.discard` 「放弃更改并关闭」/「回滚事务并关闭」
 
@@ -2941,7 +2941,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 确认框在显示 | 丢弃本地草稿与新增行（有事务时随会话断开由后端回滚），再关页面：被拦下的那次关闭用 `close_page_finish(page, true)` 收尾 | `src/tabs.rs:2779、src/tabs.rs:2791、src/tabs.rs:2795、src/tabs.rs:2702` |
+| click | 确认框在显示 | 丢弃本地草稿与新增行（有事务时随会话断开由后端回滚），再关页面：被拦下的那次关闭用 `close_page_finish(page, true)` 收尾 | `src/tabs.rs:2787、src/tabs.rs:2799、src/tabs.rs:2803、src/tabs.rs:2710` |
 
 ### `tabs.close_dialog.save` 「保存并关闭」/「保存、提交事务并关闭」
 
@@ -2953,7 +2953,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 确认框在显示且有脏行 | 先提交脏行 → 再提交标签自己的事务 → 最后摘页面；提交失败时标签保留，页内提示「保存失败：事务处于「<标签>」，标签未关闭。请处理事务后再关闭。」 | `src/tabs.rs:2797、src/tabs.rs:2348、src/tabs.rs:2390` |
+| click | 确认框在显示且有脏行 | 先提交脏行 → 再提交标签自己的事务 → 最后摘页面；提交失败时标签保留，页内提示「保存失败：事务处于「<标签>」，标签未关闭。请处理事务后再关闭。」 | `src/tabs.rs:2805、src/tabs.rs:2356、src/tabs.rs:2398` |
 
 ### `tabs.close_dialog.cancel` 「取消」
 
@@ -2965,7 +2965,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 确认框在显示 | 标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`） | `src/tabs.rs:2779、src/tabs.rs:2788、src/tabs.rs:2702` |
+| click | 确认框在显示 | 标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`） | `src/tabs.rs:2787、src/tabs.rs:2796、src/tabs.rs:2710` |
 
 ## 待清理（按版本）
 
