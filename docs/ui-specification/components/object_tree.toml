@@ -31,7 +31,7 @@ trigger = "key"
 keys = ["F5"]
 precondition = "工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态）"
 result = "整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树"
-source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1453"
+source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1462"
 
 [component.sync.linux]
 state = "done"
@@ -72,14 +72,14 @@ trigger = "key"
 keys = ["↑", "↓"]
 precondition = "树有焦点"
 result = "移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随）"
-source = "src/tree.rs:1970"
+source = "src/tree.rs:1983"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Enter"]
 precondition = "行有焦点"
 result = "等同于双击（同一回调，走 activate 信号）"
-source = "src/tree.rs:2009"
+source = "src/tree.rs:2022"
 
 [component.sync.linux]
 state = "done"
@@ -118,7 +118,7 @@ impl_notes = [
 trigger = "click"
 precondition = "行存在"
 result = "只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接"
-source = "src/tree.rs:1970"
+source = "src/tree.rs:1983"
 
 [[component.interaction]]
 trigger = "hover"
@@ -160,7 +160,7 @@ platform_notes.windows = "展开箭头落在自带 ControlTemplate 内（Views/S
 trigger = "click"
 precondition = "行可展开"
 result = "单击即展开 / 收起，不需要双击"
-source = "src/tree.rs:1245"
+source = "src/tree.rs:1254"
 
 [component.sync.linux]
 state = "done"
@@ -196,13 +196,13 @@ impl_notes = [
 trigger = "double_click"
 precondition = "连接行"
 result = "已连接 → 展开 / 收起；未连接 → 按保存的凭据连接；凭据缺失 → 明确提示并打开预填对话框；连接中 / 断开中 → 忽略并写日志"
-source = "src/tree.rs:769、src/tree.rs:1688、src/ui.rs:845"
+source = "src/tree.rs:776、src/tree.rs:1701、src/ui.rs:845"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "已连接"
 result = "首次展开发一次目录层 ListNodes 列出库，每页 500（NODE_PAGE_SIZE），带自己的分页 token"
-source = "src/tree.rs:2858"
+source = "src/tree.rs:2913"
 
 [component.sync.linux]
 state = "done"
@@ -234,13 +234,13 @@ impl_notes = ["库与 schema 不合并成一层：驱动给 schema 层就多一�
 trigger = "double_click"
 precondition = "行可展开"
 result = "展开 / 收起（展开库只出现分组行，分组仍保持收起）"
-source = "src/tree.rs:769"
+source = "src/tree.rs:776"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "展开库 / schema"
 result = "0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开"
-source = "src/tree.rs:2858"
+source = "src/tree.rs:2913"
 
 [component.sync.linux]
 state = "done"
@@ -276,19 +276,19 @@ impl_notes = [
 trigger = "double_click"
 precondition = "分组行"
 result = "展开 / 收起"
-source = "src/tree.rs:769"
+source = "src/tree.rs:776"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "展开某个分组"
 result = "发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明"
-source = "src/tree.rs:2858、src/tree.rs:376"
+source = "src/tree.rs:2913、src/tree.rs:371"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "服务端返回空"
 result = "说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」"
-source = "src/tree.rs:365、src/tree.rs:446、src/tree.rs:507"
+source = "src/tree.rs:360、src/tree.rs:441、src/tree.rs:499"
 
 [component.sync.linux]
 state = "done"
@@ -320,13 +320,13 @@ impl_notes = ["可打开优先于可展开：表虽然有四组子节点，双�
 trigger = "double_click"
 precondition = "行可打开"
 result = "打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据）"
-source = "src/tree.rs:769、src/tabs.rs:1608"
+source = "src/tree.rs:776、src/tabs.rs:1634"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "展开表节点"
 result = "0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes"
-source = "src/tree.rs:2681、src/tree.rs:2704"
+source = "src/tree.rs:2733、src/tree.rs:2756"
 
 [component.sync.linux]
 state = "done"
@@ -358,7 +358,7 @@ impl_notes = ["叶子对象：没有子层、没有菜单、不发请求。"]
 trigger = "double_click"
 precondition = "叶子对象行"
 result = "无动作（不发请求）"
-source = "src/tree.rs:769"
+source = "src/tree.rs:776"
 
 [component.sync.linux]
 state = "done"
@@ -390,25 +390,25 @@ impl_notes = ["占位行不可展开、不携带层；右键直接返回，不�
 trigger = "click"
 precondition = "「加载更多…」行且还有下一页"
 result = "选中即继续拉下一页（分页动作不要求双击）"
-source = "src/tree.rs:2962、src/tree.rs:1970"
+source = "src/tree.rs:3017、src/tree.rs:1983"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "任意占位行"
 result = "信息面板收到 None（回到空态 / 留白）；不打开任何东西"
-source = "src/tree.rs:1970"
+source = "src/tree.rs:1983"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "层在飞 / 请求失败"
 result = "占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分"
-source = "src/tree.rs:2977、src/tree.rs:3148"
+source = "src/tree.rs:3032、src/tree.rs:3221"
 
 [[component.interaction]]
 trigger = "right_click"
 precondition = "占位行"
 result = "直接返回，不弹菜单"
-source = "src/tree.rs:3191"
+source = "src/tree.rs:3266"
 
 [component.sync.linux]
 state = "done"
@@ -470,28 +470,28 @@ trigger = "key"
 keys = ["任意输入"]
 precondition = "搜索框有输入"
 result = "防抖 250 ms 后搜索；空白串不搜索并回到树页"
-source = "src/tree.rs:2185、src/tree.rs:2220"
+source = "src/tree.rs:2198、src/tree.rs:2233"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Enter"]
 precondition = "搜索框内有文本"
 result = "无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理"
-source = "src/tree.rs:2070、src/tree.rs:2168"
+source = "src/tree.rs:2083、src/tree.rs:2181"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+F"]
 precondition = "工作区存在"
 result = "把焦点交给搜索框（状态栏左边沟）"
-source = "src/ui.rs:3884、src/tree.rs:1441"
+source = "src/ui.rs:3884、src/tree.rs:1450"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Esc"]
 precondition = "搜索框有焦点"
 result = "清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉"
-source = "src/tree.rs:2467"
+source = "src/tree.rs:2488"
 
 [component.sync.linux]
 state = "done"
@@ -523,7 +523,7 @@ impl_notes = ["单行省略，全文进 tooltip。"]
 trigger = "load"
 precondition = "搜索完成"
 result = "写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图）；有失败追加「；K 条连接失败（…）」；没有已打开连接追加「；没有已打开的连接，只匹配了连接名」；无匹配写「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」；无权限写「没有权限读取对象列表：<错误>」；其它失败写「搜索失败：<错误>」"
-source = "src/tree.rs:2555、src/tree.rs:2220"
+source = "src/tree.rs:2580、src/tree.rs:2233"
 
 [component.sync.linux]
 state = "done"
@@ -557,25 +557,25 @@ impl_notes = [
 trigger = "click"
 precondition = "表 / 视图行"
 result = "打开该对象的数据标签（与树双击同一条 open）；侧栏仍停在结果页，搜索框与命中数原样保留"
-source = "src/tree.rs:2094、src/tree.rs:4501"
+source = "src/tree.rs:2107、src/tree.rs:4583"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "库行"
 result = "在树里逐层展开祖先并选中（切到树页）"
-source = "src/tree.rs:3469、src/tree.rs:2094"
+source = "src/tree.rs:3544、src/tree.rs:2107"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "连接行"
 result = "按该连接「点连接」同一条路径（未连接则连接、已连接则展开），并清空搜索框退出筛选"
-source = "src/tree.rs:2094"
+source = "src/tree.rs:2107"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "分组行"
 result = "只有行内箭头能收起 / 展开；点行本身没有可点目标、不触发打开"
-source = "src/tree.rs:2094"
+source = "src/tree.rs:2107"
 
 [component.sync.linux]
 state = "done"
@@ -611,7 +611,7 @@ impl_notes = [
 trigger = "right_click"
 precondition = "非占位行"
 result = "按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空）"
-source = "src/tree.rs:3191、src/tree.rs:3313"
+source = "src/tree.rs:3266、src/tree.rs:3388"
 
 [component.sync.linux]
 state = "done"
@@ -642,7 +642,7 @@ impl_notes = ["只读 credential_ref，不读也不写明文密码。"]
 trigger = "click"
 precondition = "连接未连接 / 失败"
 result = "与左键双击同一条 connect_saved；失败给出可读原因"
-source = "src/tree.rs:3230、src/ui.rs:845"
+source = "src/tree.rs:3305、src/ui.rs:845"
 
 [component.sync.linux]
 state = "done"
@@ -673,7 +673,7 @@ impl_notes = ["只关闭该连接的浏览会话（树 / 搜索 / DDL）；数�
 trigger = "click"
 precondition = "该连接已连接"
 result = "先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认后才断开"
-source = "src/tree.rs:3230、src/ui.rs:2954"
+source = "src/tree.rs:3305、src/ui.rs:2954"
 
 [component.sync.linux]
 state = "done"
@@ -704,7 +704,7 @@ impl_notes = ["就地清空该层 store 再发第一页，不收起子树；一�
 trigger = "click"
 precondition = "该连接已连接"
 result = "重读这条连接已经建立的层；一层都没有时侧栏底部提示行写「这条连接还没有展开过：展开时会重新读取」"
-source = "src/tree.rs:3407、src/tree.rs:3376、src/tree.rs:1936"
+source = "src/tree.rs:3482、src/tree.rs:3451、src/tree.rs:1949"
 
 [component.sync.linux]
 state = "done"
@@ -734,7 +734,7 @@ style.metrics = ["font_ui"]
 trigger = "click"
 precondition = "库 / schema 节点"
 result = "重读该库下已展开的分组与直接子对象层；分组全收起时只清缓存，提示行写「这个库的分组都收起着：展开时重新读取」"
-source = "src/tree.rs:3434、src/tree.rs:1936"
+source = "src/tree.rs:3509、src/tree.rs:1949"
 
 [component.sync.linux]
 state = "done"
@@ -765,7 +765,7 @@ impl_notes = ["静态分组行（Groups / TableGroups）没有服务端内容，
 trigger = "click"
 precondition = "分组节点"
 result = "已展开（层已建立）→ 重读该组第一页；未展开过 → 不发请求，提示行写「这个分组还没展开：展开时会重新读取」（4 秒后自行收起）并记日志"
-source = "src/tree.rs:3347、src/tree.rs:1936"
+source = "src/tree.rs:3422、src/tree.rs:1949"
 
 [component.sync.linux]
 state = "done"
@@ -836,7 +836,7 @@ impl_notes = [
 trigger = "click"
 precondition = "连接已连接"
 result = "取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
-source = "src/ui.rs:3781、src/tabs.rs:2892"
+source = "src/ui.rs:3781、src/tabs.rs:2918"
 
 [component.sync.linux]
 state = "done"
@@ -897,7 +897,7 @@ style.metrics = ["font_ui"]
 trigger = "click"
 precondition = "表 / 视图节点"
 result = "与双击同一条路径打开数据标签"
-source = "src/tree.rs:3191、src/tree.rs:3230"
+source = "src/tree.rs:3266、src/tree.rs:3305"
 
 [component.sync.linux]
 state = "done"
@@ -932,7 +932,7 @@ impl_notes = [
 trigger = "click"
 precondition = "表节点且该连接有浏览会话"
 result = "弹确认「转储表 <表名>？」→ 选文件（默认 <表名>.sql，过滤 *.sql）→ 进度 / 可取消；不需要先打开标签"
-source = "src/tree.rs:3230、src/tree.rs:731、src/export_ui.rs"
+source = "src/tree.rs:3305、src/tree.rs:738、src/export_ui.rs"
 
 [component.sync.linux]
 state = "done"
@@ -964,7 +964,7 @@ impl_notes = ["只用于「刷新这一组 / 刷新库 / 刷新连接」的跳�
 trigger = "load"
 precondition = "刷新被跳过"
 result = "写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起"
-source = "src/tree.rs:1936"
+source = "src/tree.rs:1949"
 
 [component.sync.linux]
 state = "done"
