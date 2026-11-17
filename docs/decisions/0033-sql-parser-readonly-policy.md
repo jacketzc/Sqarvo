@@ -3,8 +3,9 @@
 - 状态：已接受（2026-11-17，随 Issue #208 实施）
 - 日期：2026-11-17
 - 关联：任务书 V3.1 §6（EXPLAIN 流程）、§8（SQL AST 与只读安全）、§12（Audit / SQL Fingerprint）；
-  [ADR 0006](0006-multi-statement-policy.md)（单语句口径）、ADR 0031（SQL Parser 选型本体，
-  并行泳道落档，本 ADR 不重复选型比较，只固化**策略语义**）；
+  [ADR 0006](0006-multi-statement-policy.md)（单语句口径）、
+  [ADR 0032](0032-mcp-standalone-process.md)（MCP 独立进程与连接模型，并行泳道落档，提供依赖准入上下文；
+  sqlparser 选型比较见本 ADR「备选方案」）；
   AGENTS.md §9（安全与隐私）、§15（依赖引入确认单）
 - 上游：Issue #208；阶段 A 实测 spike（170+ 输入判定矩阵，`scratch/mcp-spike-sqlparser/report.md`）
 - 实现落点：`backend/apps/sqarvo-mcp/src/policy/{mod,ast,fingerprint}.rs`；
@@ -17,7 +18,7 @@ MCP 通道对外暴露 `execute_readonly_query` / `explain_query`，Agent 提交
 包括 DML/DDL/CALL/SET/USE/SHOW/事务控制/锁定读/一切 INTO 形态/多语句/危险函数，
 并要求「无法识别或不支持的形态采取保守策略」（fail-closed）。
 
-判定依赖 `sqlparser-rs` 0.64.0 + `MySqlDialect`（选型见 ADR 0031）。本 ADR 记录
+判定依赖 `sqlparser-rs` 0.64.0 + `MySqlDialect`（进程与依赖准入上下文见 ADR 0032）。本 ADR 记录
 策略层的语义决定、方言差异清单与已知边界——这些都是负面测试断言的一部分。
 
 ## 备选方案
