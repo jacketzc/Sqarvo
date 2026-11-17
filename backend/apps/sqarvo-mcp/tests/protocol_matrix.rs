@@ -6,8 +6,9 @@
 //! `initialize(2026-07-28)` 协商降为 `2025-11-25`。
 //!
 //! 每条流程都以子进程 + 行级 JSON-RPC 驱动真实二进制，公共骨架见
-//! `tests/common/mod.rs`。所有断言钉「当前真实行为」；行为与规范有偏差的地方
-//! 在注释里标注缺陷编号（详见任务报告，不改 src）。
+//! `tests/common/mod.rs`。行为与规范有偏差的地方曾在 #211 里「固化当前行为」；
+//! #220 修复两处 src 缺陷后，相应用例已翻转为**正向回归钉死**（握手前 EOF /
+//! 纯 discover 会话 exit 0；见文件尾部与 (a) 格），其余断言继续钉规范口径。
 
 use std::path::{Path, PathBuf};
 
@@ -217,16 +218,21 @@ fn draft_discover_with_meta_reports_supported_versions() {
     server.close_stdin();
     let outcome = server.wait();
     outcome.assert_protocol_purity();
-    // 缺陷固化（src 缺口，见 #211 报告）：discover 本身不进入 initialize 会话，
-    // EOF 后 rmcp 主循环报 `connection closed: initialize request`，进程以
-    // 非零码退出（spike REPORT §4「运维语义注记」实测一致）。
+    // #220 回归钉死（原 #211「缺陷固化」）：discover 是 bootstrap 探针，不进入
+    // initialize 会话；EOF 后 rmcp `serve()` 报 `connection closed: initialize request`
+    // 属「握手前对端关闭」，V3.1 §13 口径必须按 EOF 正常收尾（exit 0）。
+    // 修复前该会话以非零码退出；再次非零 = 回归（server.rs `run_stdio` 判据）。
     assert!(
-        !outcome.status.success(),
-        "当前实现：纯 discover 会话退出码非零（固化当前行为；src 兜住后应改断 exit 0）"
+        outcome.status.success(),
+        "纯 discover 会话 EOF 必须 exit 0（#220 修复回归）：{:?}\nstderr:\n{}",
+        outcome.status,
+        outcome.stderr
     );
     assert!(
-        outcome.stderr.contains("connection closed"),
-        "stderr 应说明握手等待失败：\n{}",
+        outcome
+            .stderr
+            .contains("客户端在握手前断开（connection closed: initialize request）"),
+        "stderr 必须记录握手前断开的收尾说明：\n{}",
         outcome.stderr
     );
 }
@@ -236,7 +242,8 @@ fn draft_discover_with_meta_reports_supported_versions() {
 /// 实测修正（相对 spike REPORT §4「运维语义注记」的笼统口径）：**多请求**的
 /// draft `_meta` 会话在 EOF 后走正常 `quit_reason=Closed` 收尾并 exit 0
 /// ——spike 的非零退出只发生在「discover/裸拒绝后仍停在 initialize 等待」的
-/// 会话（已在 (a) 与 `stdin_close_without_handshake...` 钉住）。
+/// 会话（#220 修复后与 (a)、`stdin_close_before_handshake_exits_zero_as_clean_eof`
+/// 一起按 exit 0 钉死；本格从未走过错误路径，继续正向钉死）。
 #[test]
 fn bare_requests_with_draft_meta_work_without_any_handshake() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -597,15 +604,16 @@ fn sigterm_after_initialize_exits_zero_with_shutdown_log() {
     assert_eq!(outcome.stdout.len(), 1, "只应有 initialize 响应一行");
 }
 
-/// 未建立任何会话时 stdin 关闭 → **当前实现非零退出**（缺陷固化）。
+/// 未建立任何会话时 stdin 关闭 → **exit 0**（#220 修复的正向回归钉死）。
 ///
-/// 缺陷（src 缺口，见 #211 报告）：任务书 §13 与 spike §6 的口径是「EOF → exit 0」，
-/// 但那条实测发生在 initialize 之后。握手前 EOF 时 rmcp `serve()` 以
-/// `connection closed: initialize request` 返回 Err，`run_stdio`（server.rs:294）
-/// 把它映射成 `MCP_INTERNAL` → `main` 非零码。「客户端连上却没发东西就断开」
-/// 不应算服务异常。src 兜住这条路径后，本测试应改断 exit 0 并销掉缺口。
+/// 规范口径（V3.1 §13 / spike §6）：EOF → 正常退出。修复前「握手前 EOF」会让
+/// rmcp `serve()` 以 `connection closed: initialize request` 返回 Err，
+/// `run_stdio` 把它误映射成 `MCP_INTERNAL` 并非零退出——「客户端连上却没发东西
+/// 就断开」不是服务异常。判据（类型 `ConnectionClosed` + 消息含 `initialize`）
+/// 见 `run_stdio` 文档；无握手 `_meta` 会话（矩阵 (b)）本就走 `Ok` 路径，不受影响。
+/// 若此测试再见到非零退出码或收尾日志缺失，即为回归。
 #[test]
-fn stdin_close_without_handshake_currently_exits_nonzero_pinned() {
+fn stdin_close_before_handshake_exits_zero_as_clean_eof() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
@@ -613,13 +621,16 @@ fn stdin_close_without_handshake_currently_exits_nonzero_pinned() {
     server.close_stdin();
     let outcome = server.wait();
     assert!(
-        !outcome.status.success(),
-        "当前实现：握手前 EOF 退出码非零（固化当前行为，见函数文档）。\nstderr:\n{}",
+        outcome.status.success(),
+        "握手前 EOF 必须按正常收尾 exit 0（#220 修复回归）：{:?}\nstderr:\n{}",
+        outcome.status,
         outcome.stderr
     );
     assert!(
-        outcome.stderr.contains("connection closed"),
-        "非零退出必须能看到 rmcp 的握手等待失败原因：\n{}",
+        outcome
+            .stderr
+            .contains("客户端在握手前断开（connection closed: initialize request）"),
+        "stderr 必须记录握手前断开的收尾说明：\n{}",
         outcome.stderr
     );
     assert!(
