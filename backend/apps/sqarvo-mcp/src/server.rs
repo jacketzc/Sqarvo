@@ -279,6 +279,24 @@ impl ServerHandler for SqarvoMcpServer {
 /// 加载配置并运行 stdio MCP server，直到客户端断开或收到终止信号。
 ///
 /// 返回 `Ok(())` 表示干净退出（退出码 0）：stdin EOF、SIGINT、SIGTERM 都算。
+///
+/// # 握手前 EOF 也是干净退出（V3.1 §13，#220 修复）
+///
+/// 客户端连上管道却还没完成 initialize 就关闭 stdin（或只做 `server/discover`
+/// 后断开）时，rmcp 的 `serve()` 以
+/// `ServerInitializeError::ConnectionClosed("initialize request")` 返回
+/// （Display 形态 `connection closed: initialize request`）。这是「对端在握手
+/// 完成前离开」，不是服务故障：记 info 后按 EOF 正常收尾（exit 0）。
+///
+/// 判据只认**类型 + 消息**，且只作用于 `serve()`（握手阶段）这一条路径：
+/// 类型必须是 `ConnectionClosed`（对端关闭），且消息里的等待上下文必须提到
+/// `initialize`——rmcp 3.10.0 服务端唯一构造点是 `service/server.rs:571` 等待
+/// `"initialize request"`。
+///
+/// 2026-07-28 的无握手 `_meta` 会话**不走这条错误路径**：`serve()` 对它是
+/// `Ok(RunningService)`（`service/server.rs:644-669` 的 inline-meta 分支），
+/// 之后 EOF 经 `waiting()` 得到 `Ok(Closed)`——本判据不会把它误伤
+/// （回归钉死见 `tests/protocol_matrix.rs::bare_requests_with_draft_meta_work_without_any_handshake`）。
 pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
     let context = Arc::new(ServerContext::bootstrap(config_path).await?);
     let server = SqarvoMcpServer::new(Arc::clone(&context));
@@ -288,16 +306,26 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
         "启动 stdio MCP server"
     );
 
-    let running = server
-        .serve(rmcp::transport::stdio())
-        .await
-        .map_err(|error| {
-            Error::new(
+    let running = match server.serve(rmcp::transport::stdio()).await {
+        Ok(running) => running,
+        // 握手前对端关闭 = EOF 收尾，见函数文档；其余 serve 错误照旧非零 + 诊断。
+        Err(rmcp::service::ServerInitializeError::ConnectionClosed(waiting_on))
+            if waiting_on.contains("initialize") =>
+        {
+            tracing::info!(
+                "客户端在握手前断开（connection closed: {waiting_on}），按 EOF 正常收尾（V3.1 §13，exit 0）"
+            );
+            context.shutdown().await;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(Error::new(
                 ErrorCode::MCP_INTERNAL,
                 ErrorCategory::Internal,
                 format!("MCP 会话初始化失败：{error}"),
-            )
-        })?;
+            ));
+        }
+    };
 
     // 信号 → 取消 serve 循环。`RunningService::close()` 内部就是
     // 「cancel 这个 token + 等 JoinHandle」，所以下面等价于 serve_with_ct。

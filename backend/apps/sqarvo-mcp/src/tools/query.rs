@@ -89,6 +89,7 @@ pub struct TableSampleOutput {
     /// 列元数据（名称 + 类型 kind）。
     pub columns: Vec<ColumnView>,
     /// 行数据；单元格按 `tools::value` 的契约编码，截断单元格是对象。
+    #[schemars(schema_with = "crate::tools::value::rows_schema")]
     pub rows: Vec<Vec<serde_json::Value>>,
     /// 实际返回行数。
     pub row_count: i64,
@@ -232,6 +233,7 @@ pub struct QueryResultOutput {
     /// 结果列（名称 + 类型 kind）。
     pub columns: Vec<ColumnView>,
     /// 行数据；单元格按 `tools::value` 的契约编码，截断单元格是对象。
+    #[schemars(schema_with = "crate::tools::value::rows_schema")]
     pub rows: Vec<Vec<serde_json::Value>>,
     /// 实际返回行数。
     pub row_count: i64,
@@ -615,6 +617,53 @@ mod tests {
         assert_eq!(truncation(true, false), (true, "rows"));
         assert_eq!(truncation(false, true), (true, "bytes"));
         assert_eq!(truncation(true, true), (true, "rows_and_bytes"));
+    }
+
+    /// #220 回归：outputSchema 里 `rows` 的单元格不得是布尔 schema。
+    ///
+    /// `Vec<Vec<serde_json::Value>>` 的 derive 形态（schemars 1.x 把 `Value` 映射为
+    /// `true`）会被 MCP 严格校验拒绝（Inspector `--strict` 报 invalid outputSchema）；
+    /// `rows_schema` 钉成 `{"type":"array","items":{"type":"array","items":{}}}`。
+    /// 运行时序列化不经过本测试——schema 投影与 JSON 形状解耦。
+    #[test]
+    fn rows_output_schemas_use_object_cell_schemas_not_booleans() {
+        fn schema_of<T: JsonSchema>() -> serde_json::Value {
+            let mut generator = schemars::SchemaGenerator::default();
+            serde_json::Value::from(<T as JsonSchema>::json_schema(&mut generator))
+        }
+        fn assert_no_boolean_schema(node: &serde_json::Value, path: &str) {
+            match node {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        assert!(
+                            !child.is_boolean() || key == "truncated" || key == "default",
+                            "{path}.{key} 是布尔子 schema：{child}"
+                        );
+                        assert_no_boolean_schema(child, &format!("{path}.{key}"));
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        assert_no_boolean_schema(child, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for name in ["TableSampleOutput", "QueryResultOutput"] {
+            let schema = match name {
+                "TableSampleOutput" => schema_of::<TableSampleOutput>(),
+                _ => schema_of::<QueryResultOutput>(),
+            };
+            let cell = schema
+                .pointer("/properties/rows/items/items")
+                .unwrap_or_else(|| panic!("{name} 缺 rows.items.items：{schema}"));
+            assert!(
+                cell.is_object(),
+                "{name}: rows 单元格必须是对象 schema：{cell}"
+            );
+            assert_no_boolean_schema(&schema, name);
+        }
     }
 
     #[tokio::test]
