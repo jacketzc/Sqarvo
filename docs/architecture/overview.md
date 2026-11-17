@@ -12,12 +12,22 @@
         └──────────────────────────────────────────────────►  ┌──────────────────────┐
                                                               │ 数据库驱动（内置 crate）│
                                                               └──────────────────────┘
+
+┌──────────────────────────┐   spawn 子进程 + stdio（JSON-RPC）  ┌──────────────────────────┐
+│ MCP 客户端（AI Agent 宿主）│ ───────────────────────────────► │ sqarvo-mcp（独立进程）    │
+└──────────────────────────┘ ◄── stdout 只归协议 / stderr 日志 ── └────────────┬─────────────┘
+                                                                              │ 同一套 Driver SPI
+                                                                              ▼
+                                                                      数据库（MariaDB / SQLite）
 ```
 
 - 前端负责窗口、编辑器、结果网格、平台集成与后端生命周期；
 - 后端负责连接、会话、执行、取消、元数据、事务与结果集管理；
 - 前端**不实现**任何数据库协议，也不直连数据库；
-- 后端**不包含**任何平台 UI 依赖。
+- 后端**不包含**任何平台 UI 依赖；
+- `sqarvo-mcp` 是只读 MCP 通道的独立入口：不依赖 `sqarvo-backend`、不读 GUI 的连接档案
+  （自有 `mcp.json` 授权模型），由 MCP 客户端拉起并在 stdin 关闭时退出；
+  详见 [MCP 架构](mcp.md)。
 
 ## 后端 crate 依赖方向
 
@@ -28,12 +38,17 @@ rpc-server ──► connection ──► drivers ──► driver-api ──►
      ├──► query-engine                          │
      ├──► metadata ─────────────────────────────┘
      └──► transaction ──► common
+
+apps/sqarvo-mcp ──► connection / query-engine / local-store / drivers / driver-api / common
+                └─► rmcp（stdio 传输与 tools/resources 协议面）
 ```
 
 约束：
 
 - `driver-api` 不依赖 tonic、tokio 之外的业务 crate，不泄露第三方驱动类型；
 - `rpc-server` 只做协议翻译与错误映射，业务规则在各自 crate；
+- `sqarvo-mcp` **不得**依赖 `rpc-server`，也不得把 prost/tonic 生成类型带进工具接口
+  （ADR 0032）；
 - 具体驱动以 workspace crate 形式编译进后端，暂不引入 Rust 动态库 ABI。
 
 > 现状说明：`metadata` 与 `transaction` crate 已实现可测试的通用逻辑，但尚未被
@@ -86,3 +101,9 @@ trailing metadata `sqarvo-error-code`；前端据此分支处理，而不是解�
 - Windows Named Pipe、macOS 传输方案评估。
 
 这些内容在 `docs/product/roadmap.md` 中跟踪，且不会以「可用」状态出现在 UI 中。
+
+## 相关文档
+
+- MCP 通道（独立 stdio 进程、只读工具 / 资源、协议兼容矩阵）：[mcp.md](mcp.md)、
+  [工具与配置参考](../api/mcp-tools.md)。
+- 第三方依赖的署名与许可义务（含 `sqlparser-rs` 的 NOTICE）：[licenses.md](../licenses.md)。
