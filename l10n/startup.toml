@@ -65,3 +65,23 @@ key = "startup.desc_stopping"
 zh = "正在停止后端并清理端点文件…"
 en = "Stopping the backend and cleaning up the endpoint file…"
 status = "done"
+
+# -- 连接对话框的进行中说明行（S2/#200：dialog.rs，句态同 desc_* 一族） ------
+
+[[entry]]
+key = "startup.desc_handshake"
+zh = "正在与数据库握手…"
+en = "Handshaking with the database…"
+status = "done"
+
+[[entry]]
+key = "startup.desc_testing"
+zh = "正在测试连接…"
+en = "Testing the connection…"
+status = "done"
+
+[[entry]]
+key = "startup.desc_saving"
+zh = "正在保存密码并建立会话…"
+en = "Saving the password and opening the session…"
+status = "done"

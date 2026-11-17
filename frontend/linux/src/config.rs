@@ -221,9 +221,7 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
         // XDG 规范：相对路径必须忽略。
         .filter(|path| path.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .ok_or_else(|| {
-            ConfigError::new("无法确定用户配置目录（XDG_CONFIG_HOME / HOME 均不可用）")
-        })?;
+        .ok_or_else(|| ConfigError::new(crate::l10n::t("dialogs.cfg_dir_unknown")))?;
     Ok(base.join("sqarvo").join("Sqarvo"))
 }
 
@@ -370,21 +368,34 @@ fn upsert_in(dir: &Path, connection: SavedConnection) -> Result<PathBuf, ConfigE
 /// 创建（或收紧）配置目录到 0700。
 fn ensure_dir(dir: &Path) -> Result<(), ConfigError> {
     fs::create_dir_all(dir).map_err(|error| {
-        ConfigError::new(format!("无法创建配置目录 {}：{error}", dir.display()))
+        ConfigError::new(crate::l10n::tf(
+            "dialogs.cfg_dir_create_failed",
+            &[
+                ("path", dir.display().to_string()),
+                ("error", error.to_string()),
+            ],
+        ))
     })?;
-    restrict(dir, 0o700, "配置目录")
+    restrict(dir, 0o700, "dialogs.cfg_what_dir")
 }
 
 /// 把权限收紧到指定模式（目录/文件统一入口）。
-fn restrict(path: &Path, mode: u32, what: &str) -> Result<(), ConfigError> {
+///
+/// `what` 传 l10n catalog key（`dialogs.cfg_what_*`），消息在展示文案层组装。
+fn restrict(path: &Path, mode: u32, what: &'static str) -> Result<(), ConfigError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let permissions = fs::Permissions::from_mode(mode);
         fs::set_permissions(path, permissions).map_err(|error| {
-            ConfigError::new(format!(
-                "无法把{what} {} 的权限设为 {mode:o}：{error}",
-                path.display()
+            ConfigError::new(crate::l10n::tf(
+                "dialogs.cfg_perm_failed",
+                &[
+                    ("what", crate::l10n::t(what).to_owned()),
+                    ("path", path.display().to_string()),
+                    ("mode", format!("{mode:o}")),
+                    ("error", error.to_string()),
+                ],
             ))
         })?;
     }
@@ -397,8 +408,12 @@ fn restrict(path: &Path, mode: u32, what: &str) -> Result<(), ConfigError> {
 
 /// 写入临时文件（0600）后 rename 到目标路径。
 fn write_atomic(dir: &Path, path: &Path, document: &Document) -> Result<(), ConfigError> {
-    let text = serde_json::to_string_pretty(document)
-        .map_err(|error| ConfigError::new(format!("连接配置序列化失败：{error}")))?;
+    let text = serde_json::to_string_pretty(document).map_err(|error| {
+        ConfigError::new(crate::l10n::tf(
+            "dialogs.cfg_serialize_failed",
+            &[("error", error.to_string())],
+        ))
+    })?;
     let temporary = dir.join(format!(".{FILE_NAME}.tmp"));
     {
         let mut options = fs::OpenOptions::new();
@@ -409,24 +424,39 @@ fn write_atomic(dir: &Path, path: &Path, document: &Document) -> Result<(), Conf
             options.mode(0o600);
         }
         let mut file = options.open(&temporary).map_err(|error| {
-            ConfigError::new(format!("无法写入 {}：{error}", temporary.display()))
+            ConfigError::new(crate::l10n::tf(
+                "dialogs.cfg_tmp_write_failed",
+                &[
+                    ("path", temporary.display().to_string()),
+                    ("error", error.to_string()),
+                ],
+            ))
         })?;
         file.write_all(text.as_bytes())
             .and_then(|()| file.sync_all())
             .map_err(|error| {
-                ConfigError::new(format!("写入 {} 失败：{error}", temporary.display()))
+                ConfigError::new(crate::l10n::tf(
+                    "dialogs.cfg_tmp_flush_failed",
+                    &[
+                        ("path", temporary.display().to_string()),
+                        ("error", error.to_string()),
+                    ],
+                ))
             })?;
     }
     // 显式收紧：临时文件可能已存在（上一次崩溃），create 不会改权限。
-    restrict(&temporary, 0o600, "配置文件")?;
+    restrict(&temporary, 0o600, "dialogs.cfg_what_file")?;
     fs::rename(&temporary, path).map_err(|error| {
-        ConfigError::new(format!(
-            "无法把 {} 重命名为 {}：{error}",
-            temporary.display(),
-            path.display()
+        ConfigError::new(crate::l10n::tf(
+            "dialogs.cfg_rename_failed",
+            &[
+                ("from", temporary.display().to_string()),
+                ("to", path.display().to_string()),
+                ("error", error.to_string()),
+            ],
         ))
     })?;
-    restrict(path, 0o600, "配置文件")
+    restrict(path, 0o600, "dialogs.cfg_what_file")
 }
 
 #[cfg(test)]

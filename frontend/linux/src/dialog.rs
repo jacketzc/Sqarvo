@@ -74,9 +74,12 @@ impl DriverChoice {
         let label = if driver_form::fields_for_driver(&summary.driver_id).is_some() {
             summary.label()
         } else {
-            format!(
-                "{}（{}，前端暂无表单）",
-                summary.display_name, summary.driver_id
+            crate::l10n::tf(
+                "dialogs.driver_option_unsupported",
+                &[
+                    ("display_name", summary.display_name.clone()),
+                    ("driver_id", summary.driver_id.clone()),
+                ],
             )
         };
         Self {
@@ -135,78 +138,94 @@ impl ConnectionDialog {
     /// 此时下拉如实显示「未返回任何驱动」并禁用提交，而不是退回一份写死的 MariaDB。
     pub fn build(drivers: &[DriverSummary]) -> Rc<Self> {
         let dialog = adw::Dialog::builder()
-            .title("新建连接")
+            .title(crate::l10n::t("dialogs.title_new"))
             .content_width(560)
             .build();
-        let title = adw::WindowTitle::new("新建连接", "未选择驱动");
+        let title = adw::WindowTitle::new(
+            crate::l10n::t("dialogs.title_new"),
+            crate::l10n::t("dialogs.subtitle_no_driver"),
+        );
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&title));
-        let cancel = gtk::Button::with_label("取消");
+        let cancel = gtk::Button::with_label(crate::l10n::t("dialogs.btn_cancel"));
         header.pack_start(&cancel);
 
         let choices: Vec<DriverChoice> = drivers.iter().map(DriverChoice::from_summary).collect();
         let labels: Vec<String> = if choices.is_empty() {
-            vec!["（后端未返回任何驱动）".to_owned()]
+            vec![crate::l10n::t("dialogs.option_no_drivers").to_owned()]
         } else {
             choices.iter().map(|choice| choice.label.clone()).collect()
         };
         let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let driver_model = gtk::StringList::new(&label_refs);
         let driver_row = adw::ComboRow::builder()
-            .title("驱动")
+            .title(crate::l10n::t("dialogs.row_driver"))
             .model(&driver_model)
             .build();
         driver_row.set_sensitive(!choices.is_empty());
         driver_row.set_subtitle(&if choices.is_empty() {
-            "后端 ListDrivers 没有返回驱动：无法新建连接".to_owned()
+            crate::l10n::t("dialogs.driver_list_empty_subtitle").to_owned()
         } else {
-            "字段随驱动切换".to_owned()
+            crate::l10n::t("dialogs.driver_switch_subtitle").to_owned()
         });
 
         // 别名只用于对象树上的显示：不改身份键、不进连接参数、不改会话显示名。
-        let alias_row = adw::EntryRow::builder().title("别名（可选）").build();
-        alias_row.set_tooltip_text(Some(
-            "只影响对象树连接行的显示；留空则显示 用户名@主机:端口/数据库",
-        ));
+        let alias_row = adw::EntryRow::builder()
+            .title(crate::l10n::t("dialogs.row_alias"))
+            .build();
+        alias_row.set_tooltip_text(Some(crate::l10n::t("dialogs.alias_tooltip")));
 
         let host_row = adw::EntryRow::builder()
-            .title("主机")
+            .title(crate::l10n::t("dialogs.row_host"))
             .text("127.0.0.1")
             .build();
-        let port_row = adw::EntryRow::builder().title("端口").text("3306").build();
+        let port_row = adw::EntryRow::builder()
+            .title(crate::l10n::t("dialogs.row_port"))
+            .text("3306")
+            .build();
         port_row.set_input_purpose(gtk::InputPurpose::Number);
         // `AdwEntryRow` 没有独立的 placeholder 属性：行的标题本身就充当占位文案
         // （有内容时标题仍在左侧）。因此把「留空」的语义写进标题，而不是加一句
         // 只出现在 tooltip 里的说明。
         let database_row = adw::EntryRow::builder()
-            .title("数据库（可选：留空则连接后浏览所有库）")
+            .title(crate::l10n::t("dialogs.row_database"))
             .build();
-        database_row.set_tooltip_text(Some("留空则连接后浏览所有库（不填默认库）"));
-        let username_row = adw::EntryRow::builder().title("用户名").build();
+        database_row.set_tooltip_text(Some(crate::l10n::t("dialogs.database_tooltip")));
+        let username_row = adw::EntryRow::builder()
+            .title(crate::l10n::t("dialogs.row_username"))
+            .build();
 
         // TLS 标签随驱动能力变化（`verify-ca` 是否等同 `verify-full`），
         // 因此不在这里写死：model 与初始选中档位都由 `apply_selection` →
         // `rebuild_tls_model` 按当前驱动确定（没有有效序号时回落默认档 `Preferred`）。
-        let tls_row = adw::ComboRow::builder().title("TLS 模式").build();
+        let tls_row = adw::ComboRow::builder()
+            .title(crate::l10n::t("dialogs.row_tls"))
+            .build();
 
         // AdwPasswordEntryRow 默认带「眼睛」图标（libadwaita 1.6+），不再单独设置。
-        let password_row = adw::PasswordEntryRow::builder().title("密码").build();
+        let password_row = adw::PasswordEntryRow::builder()
+            .title(crate::l10n::t("dialogs.row_password"))
+            .build();
 
         // 文件型驱动：路径可手输，也可以点「浏览」用系统文件选择器（GtkFileDialog）。
-        let path_row = adw::EntryRow::builder().title("数据库文件").build();
-        path_row.set_tooltip_text(Some("SQLite 数据库文件的绝对路径"));
+        let path_row = adw::EntryRow::builder()
+            .title(crate::l10n::t("dialogs.row_file_path"))
+            .build();
+        path_row.set_tooltip_text(Some(crate::l10n::t("dialogs.file_path_tooltip")));
         let browse = gtk::Button::from_icon_name("document-open-symbolic");
         browse.add_css_class("flat");
-        browse.set_tooltip_text(Some("选择 SQLite 数据库文件"));
+        browse.set_tooltip_text(Some(crate::l10n::t("dialogs.file_chooser_title")));
         browse.set_valign(gtk::Align::Center);
         path_row.add_suffix(&browse);
 
         let read_only_row = adw::SwitchRow::builder()
-            .title("只读打开")
-            .subtitle("以只读方式连接：数据库会拒绝任何写入（数据页会显示只读原因）")
+            .title(crate::l10n::t("dialogs.row_read_only"))
+            .subtitle(crate::l10n::t("dialogs.read_only_subtitle"))
             .build();
 
-        let group = adw::PreferencesGroup::builder().title("连接参数").build();
+        let group = adw::PreferencesGroup::builder()
+            .title(crate::l10n::t("dialogs.group_params"))
+            .build();
         group.add(&driver_row);
         group.add(&alias_row);
         group.add(&path_row);
@@ -220,8 +239,8 @@ impl ConnectionDialog {
 
         let note = adw::PreferencesGroup::new();
         let credential_note = adw::ActionRow::builder()
-            .title("密码只写入系统凭据库")
-            .subtitle("连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存")
+            .title(crate::l10n::t("dialogs.credential_note_title"))
+            .subtitle(crate::l10n::t("dialogs.credential_note_subtitle"))
             .build();
         credential_note.set_activatable(false);
         note.add(&credential_note);
@@ -237,8 +256,8 @@ impl ConnectionDialog {
         status.set_visible(false);
         status.add_css_class("caption");
 
-        let test_button = gtk::Button::with_label("测试连接");
-        let save_button = gtk::Button::with_label("保存并连接");
+        let test_button = gtk::Button::with_label(crate::l10n::t("dialogs.btn_test"));
+        let save_button = gtk::Button::with_label(crate::l10n::t("dialogs.btn_save_connect"));
         save_button.add_css_class("suggested-action");
 
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
@@ -376,19 +395,25 @@ impl ConnectionDialog {
             return;
         }
         self.editing.set(editing);
-        let (title, action) = if editing {
-            ("编辑连接", "保存")
+        let (title_key, action_key, tooltip_key) = if editing {
+            (
+                "dialogs.title_edit",
+                "dialogs.btn_save",
+                "dialogs.save_only_tooltip",
+            )
         } else {
-            ("新建连接", "保存并连接")
+            (
+                "dialogs.title_new",
+                "dialogs.btn_save_connect",
+                "dialogs.save_connect_tooltip",
+            )
         };
+        let title = crate::l10n::t(title_key);
         self.title.set_title(title);
         self.dialog.set_title(title);
-        self.save_button.set_label(action);
-        self.save_button.set_tooltip_text(Some(if editing {
-            "只保存连接配置与凭据，不会重新连接；下次连接时生效"
-        } else {
-            "保存配置并立即建立会话"
-        }));
+        self.save_button.set_label(crate::l10n::t(action_key));
+        self.save_button
+            .set_tooltip_text(Some(crate::l10n::t(tooltip_key)));
     }
 
     /// 是否是编辑态。
@@ -484,7 +509,7 @@ impl ConnectionDialog {
 
         let subtitle = match choice {
             Some(choice) => choice.display_name.clone(),
-            None => "未选择驱动".to_owned(),
+            None => crate::l10n::t("dialogs.subtitle_no_driver").to_owned(),
         };
         self.title.set_subtitle(&subtitle);
         self.subtitle.replace(subtitle);
@@ -494,16 +519,19 @@ impl ConnectionDialog {
         } else if !self.choices.is_empty() {
             // 驱动来自后端但前端没有表单：如实说明，而不是给一份填了也会被后端拒绝的表单。
             self.show_status(
-                &format!(
-                    "此版本前端没有驱动「{}」的连接表单：请升级前端，或换一个驱动",
-                    choice.map_or("", |choice| choice.id.as_str())
+                &crate::l10n::tf(
+                    "dialogs.driver_no_form_status",
+                    &[(
+                        "driver",
+                        choice.map_or("", |choice| choice.id.as_str()).to_owned(),
+                    )],
                 ),
                 StatusKind::Error,
             );
         }
         if self.choices.is_empty() {
             self.show_status(
-                "后端没有注册任何驱动（ListDrivers 为空）：无法新建连接",
+                crate::l10n::t("dialogs.no_drivers_status"),
                 StatusKind::Error,
             );
         }
@@ -558,7 +586,8 @@ impl ConnectionDialog {
         self.path_row.set_sensitive(sensitive);
         self.read_only_row.set_sensitive(sensitive);
         if pending {
-            self.title.set_subtitle("正在与数据库握手…");
+            self.title
+                .set_subtitle(crate::l10n::t("startup.desc_handshake"));
         } else {
             let subtitle = self.subtitle.borrow().clone();
             self.title.set_subtitle(&subtitle);
@@ -568,7 +597,7 @@ impl ConnectionDialog {
     /// 展示「测试连接」成功结果。
     pub fn show_test_report(&self, report: &TestReport) {
         let version = if report.server_version.trim().is_empty() {
-            "未知（后端未返回版本）".to_owned()
+            crate::l10n::t("dialogs.test_unknown_version").to_owned()
         } else {
             report.server_version.clone()
         };
@@ -578,9 +607,12 @@ impl ConnectionDialog {
                 .replace(Some(report.credential_ref.clone()));
         }
         self.show_status(
-            &format!(
-                "连接成功：延迟 {} ms · 服务端版本 {version}",
-                report.latency_millis
+            &crate::l10n::tf(
+                "dialogs.test_success",
+                &[
+                    ("latency", report.latency_millis.to_string()),
+                    ("version", version),
+                ],
             ),
             StatusKind::Success,
         );
@@ -672,9 +704,15 @@ impl ConnectionDialog {
             .replace((!saved.credential_ref.is_empty()).then(|| saved.credential_ref.clone()));
         self.name_override.replace(Some(saved.name.clone()));
         if saved.credential_ref.is_empty() {
-            self.show_status("已填入保存的连接；请输入密码后连接", StatusKind::Info);
+            self.show_status(
+                crate::l10n::t("dialogs.prefill_needs_password"),
+                StatusKind::Info,
+            );
         } else {
-            self.show_status("已填入保存的连接：密码将从系统凭据库读取", StatusKind::Info);
+            self.show_status(
+                crate::l10n::t("dialogs.prefill_from_store"),
+                StatusKind::Info,
+            );
         }
         Ok(())
     }
@@ -742,7 +780,7 @@ impl ConnectionDialog {
     fn draft(&self) -> Result<ConnectionDraft, String> {
         let driver_id = self
             .selected_driver_id()
-            .ok_or_else(|| "请选择驱动".to_owned())?;
+            .ok_or_else(|| crate::l10n::t("dialogs.pick_driver_first").to_owned())?;
         let input = FormInput {
             driver_id: driver_id.to_owned(),
             host: self.host_row.text().to_string(),
@@ -777,15 +815,18 @@ impl ConnectionDialog {
             self.test_handler.borrow().clone()
         };
         let Some(handler) = handler else {
-            self.show_status("内部错误：未注册处理函数", StatusKind::Error);
+            self.show_status(
+                crate::l10n::t("dialogs.internal_no_handler"),
+                StatusKind::Error,
+            );
             return;
         };
         self.set_pending(true);
         self.show_status(
             if save {
-                "正在保存密码并建立会话…"
+                crate::l10n::t("startup.desc_saving")
             } else {
-                "正在测试连接…"
+                crate::l10n::t("startup.desc_testing")
             },
             StatusKind::Info,
         );
@@ -815,7 +856,7 @@ fn tls_model_for(current: TlsMode, capabilities: &[String]) -> (Vec<String>, u32
 /// ID：将来支持 chain-only 的驱动不需要在前端再加分支。
 fn tls_subtitle_for(mode: TlsMode, capabilities: &[String]) -> &'static str {
     if mode == TlsMode::VerifyCa && !supports_chain_only_verify_ca(capabilities) {
-        "本驱动无法只校验证书链：仍会校验主机名"
+        crate::l10n::t("dialogs.tls_chain_note")
     } else {
         ""
     }
@@ -828,7 +869,7 @@ fn tls_subtitle_for(mode: TlsMode, capabilities: &[String]) -> &'static str {
 /// 额外的 surface 依赖。
 fn open_file_chooser(path_row: &adw::EntryRow) {
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("SQLite 数据库（*.db、*.sqlite、*.sqlite3）"));
+    filter.set_name(Some(crate::l10n::t("dialogs.file_filter_name")));
     for pattern in ["*.db", "*.sqlite", "*.sqlite3"] {
         filter.add_pattern(pattern);
     }
@@ -836,7 +877,7 @@ fn open_file_chooser(path_row: &adw::EntryRow) {
     filters.append(&filter);
 
     let dialog = gtk::FileDialog::builder()
-        .title("选择 SQLite 数据库文件")
+        .title(crate::l10n::t("dialogs.file_chooser_title"))
         .modal(true)
         .filters(&filters)
         .build();

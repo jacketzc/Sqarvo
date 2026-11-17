@@ -72,7 +72,13 @@ const OBJECTS_KIND_COLUMN_WIDTH: i32 = 120;
 /// 超限文案：必须含当前上限与关闭建议（不是静默失败）。
 #[must_use]
 pub fn limit_message(open: usize) -> String {
-    format!("标签上限 {MAX_TABS} 个（当前已开 {open} 个）：请先关闭一个标签再新建")
+    crate::l10n::tf(
+        "tabs.limit_body",
+        &[
+            ("MAX_TABS", MAX_TABS.to_string()),
+            ("open", open.to_string()),
+        ],
+    )
 }
 
 /// 标签名 `<对象名> @ <catalog>`（workspace-model §3）。
@@ -481,16 +487,22 @@ pub fn close_prompt(title: &str, snapshot: Option<&StatusSnapshot>) -> CloseProm
         .filter(|label| !label.trim().is_empty() && label != "自动提交" && label != "已断开");
     let mut lines: Vec<String> = Vec::new();
     if dirty > 0 {
-        lines.push(format!(
-            "该标签有 {dirty} 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。"
+        lines.push(crate::l10n::tf_n(
+            "tabs.close_body_dirty",
+            i64::try_from(dirty).unwrap_or(0),
+            &[("dirty", dirty.to_string())],
         ));
     }
     if let Some(label) = transaction.as_ref() {
-        lines.push(format!(
-            "该标签有未提交事务（{label}）：关闭将**回滚该标签的事务**，其它标签不受影响。"
+        lines.push(crate::l10n::tf(
+            "tabs.close_body_transaction",
+            &[("label", label.clone())],
         ));
     }
-    lines.push(format!("关闭「{title}」会同时断开它自己的数据库会话。"));
+    lines.push(crate::l10n::tf(
+        "tabs.close_body_session",
+        &[("title", title.to_owned())],
+    ));
     ClosePrompt {
         body: lines.join("\n"),
         dirty,
@@ -508,11 +520,7 @@ pub fn close_guard_body(dirty: &[crate::data_page::DirtyTabSummary]) -> String {
         .iter()
         .map(crate::data_page::DirtyTabSummary::line)
         .collect();
-    format!(
-        "以下表标签有未提交的更改，退出 Sqarvo 会丢失这些修改：\n\n{}\n\n\
-         要保留这些更改，选「取消」回到工作区，先提交或放弃它们。",
-        lines.join("\n")
-    )
+    crate::l10n::tf("dialogs.close_guard_body", &[("tables", lines.join("\n"))])
 }
 
 /// 「保存并关闭」的阶段：先提交脏行，再（如果标签有事务）提交事务，最后才摘页面。
@@ -3698,21 +3706,22 @@ impl TabSet {
         prompt: &ClosePrompt,
         forced: Option<CloseAnswer>,
     ) {
-        let dialog = adw::AlertDialog::new(Some("关闭标签？"), Some(&prompt.body));
-        dialog.add_response("cancel", "取消");
+        let dialog =
+            adw::AlertDialog::new(Some(crate::l10n::t("tabs.close_title")), Some(&prompt.body));
+        dialog.add_response("cancel", crate::l10n::t("tabs.close_btn_cancel"));
         if prompt.dirty > 0 {
-            dialog.add_response("discard", "放弃更改并关闭");
+            dialog.add_response("discard", crate::l10n::t("tabs.close_btn_discard"));
             if prompt.transaction.is_some() {
                 // 事务里「保存」必须连事务一起提交，否则断开时会被回滚。
-                dialog.add_response("save", "保存、提交事务并关闭");
+                dialog.add_response("save", crate::l10n::t("tabs.close_btn_save_commit_txn"));
             } else {
-                dialog.add_response("save", "保存并关闭");
+                dialog.add_response("save", crate::l10n::t("tabs.close_btn_save"));
             }
             dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
             dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
         } else {
             // 只有未提交事务：关闭 = 回滚，按钮文案直说，不用「放弃」吓人。
-            dialog.add_response("discard", "回滚事务并关闭");
+            dialog.add_response("discard", crate::l10n::t("tabs.close_btn_rollback"));
             dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
         }
         dialog.set_default_response(Some("cancel"));
@@ -3871,8 +3880,8 @@ impl TabSet {
         if let Some(previous) = previous {
             previous.close();
         }
-        let dialog = adw::AlertDialog::new(Some("无法新建标签"), Some(message));
-        dialog.add_response("ok", "知道了");
+        let dialog = adw::AlertDialog::new(Some(crate::l10n::t("tabs.limit_title")), Some(message));
+        dialog.add_response("ok", crate::l10n::t("tabs.limit_btn_ok"));
         dialog.set_default_response(Some("ok"));
         dialog.set_close_response("ok");
         {

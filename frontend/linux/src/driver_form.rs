@@ -144,9 +144,9 @@ pub struct FormInput {
 /// `information_schema` 或任何默认库。
 pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     let Some(family) = DriverFamily::for_id(&input.driver_id) else {
-        return Err(format!(
-            "此版本前端没有驱动「{}」的连接表单（后端已注册该驱动）",
-            input.driver_id
+        return Err(crate::l10n::tf(
+            "dialogs.form_unsupported_driver",
+            &[("driver", input.driver_id.clone())],
         ));
     };
     let fields = fields_for(family);
@@ -170,17 +170,20 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     if fields.host {
         let host = input.host.trim();
         if host.is_empty() {
-            return Err("请填写主机".to_owned());
+            return Err(crate::l10n::t("dialogs.form_host_required").to_owned());
         }
         draft.host = host.to_owned();
     }
     if fields.port {
         let port_text = input.port.trim();
-        let port: u16 = port_text
-            .parse()
-            .map_err(|_| format!("端口必须是 1-65535 之间的数字（当前：{port_text}）"))?;
+        let port: u16 = port_text.parse().map_err(|_| {
+            crate::l10n::tf(
+                "dialogs.form_port_range_current",
+                &[("port_text", port_text.to_owned())],
+            )
+        })?;
         if port == 0 {
-            return Err("端口必须是 1-65535 之间的数字".to_owned());
+            return Err(crate::l10n::t("dialogs.form_port_range").to_owned());
         }
         draft.port = port;
     }
@@ -191,7 +194,7 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     if fields.username {
         let username = input.username.trim();
         if username.is_empty() {
-            return Err("请填写用户名".to_owned());
+            return Err(crate::l10n::t("dialogs.form_username_required").to_owned());
         }
         draft.username = username.to_owned();
     }
@@ -201,20 +204,21 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     if fields.password {
         let password = input.password.clone();
         if password.is_empty() && input.credential_ref.is_none() {
-            return Err("请输入密码".to_owned());
+            return Err(crate::l10n::t("dialogs.form_password_required").to_owned());
         }
         draft.password = password;
     }
     if fields.file_path {
         let path = input.file_path.trim();
         if path.is_empty() {
-            return Err("请填写数据库文件路径（例如 /home/me/app.db）".to_owned());
+            return Err(crate::l10n::t("dialogs.form_path_required").to_owned());
         }
         // 文件不存在时前端先拦住：让后端抛「无法打开数据库」只会把真正的原因
         // （路径打错 / 目录不存在 / 权限）藏在驱动错误里。
         if path != SQLITE_MEMORY_PATH && !Path::new(path).exists() {
-            return Err(format!(
-                "数据库文件不存在：{path}（请选择已有文件，或先用 sqlite3 创建）"
+            return Err(crate::l10n::tf(
+                "dialogs.form_path_missing",
+                &[("path", path.to_owned())],
             ));
         }
         draft.file_path = path.to_owned();
@@ -223,7 +227,7 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
         draft.read_only = input.read_only;
         if draft.read_only && draft.file_path == SQLITE_MEMORY_PATH {
             // 与后端 `SqliteConfig::from_params` 同一条规则，提前在界面上说清楚。
-            return Err("内存数据库（:memory:）不支持只读模式".to_owned());
+            return Err(crate::l10n::t("dialogs.form_memory_readonly").to_owned());
         }
     }
 

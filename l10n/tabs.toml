@@ -58,3 +58,78 @@ key = "tabs.new_tooltip"
 zh = "新建查询标签（Ctrl+T）"
 en = "New Query Tab (Ctrl+T)"
 status = "done"
+
+# -- 关闭标签确认框与超限提示（S2/#200：tabs.rs 关标签确认 + 上限提示） ----
+
+[[entry]]
+key = "tabs.close_title"
+zh = "关闭标签？"
+en = "Close Tab?"
+status = "done"
+
+[[entry]]
+key = "tabs.close_body_dirty"
+zh = "该标签有 {dirty} 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。"
+en = "This tab has {dirty} rows of uncommitted changes. Closing the tab would lose them: save first, or discard."
+en_one = "This tab has {dirty} row of uncommitted changes. Closing the tab would lose it: save first, or discard."
+status = "done"
+
+[[entry]]
+key = "tabs.close_body_transaction"
+zh = "该标签有未提交事务（{label}）：关闭将**回滚该标签的事务**，其它标签不受影响。"
+en = "This tab has an open transaction ({label}): closing it **rolls back that tab's transaction**; other tabs are unaffected."
+status = "done"
+
+[[entry]]
+key = "tabs.close_body_session"
+zh = "关闭「{title}」会同时断开它自己的数据库会话。"
+en = "Closing “{title}” also disconnects its own database session."
+status = "done"
+
+[[entry]]
+key = "tabs.close_btn_cancel"
+zh = "取消"
+en = "Cancel"
+status = "done"
+
+[[entry]]
+key = "tabs.close_btn_discard"
+zh = "放弃更改并关闭"
+en = "Discard Changes and Close"
+status = "done"
+
+[[entry]]
+key = "tabs.close_btn_save"
+zh = "保存并关闭"
+en = "Save and Close"
+status = "done"
+
+[[entry]]
+key = "tabs.close_btn_save_commit_txn"
+zh = "保存、提交事务并关闭"
+en = "Save, Commit Transaction, and Close"
+status = "done"
+
+[[entry]]
+key = "tabs.close_btn_rollback"
+zh = "回滚事务并关闭"
+en = "Roll Back Transaction and Close"
+status = "done"
+
+[[entry]]
+key = "tabs.limit_title"
+zh = "无法新建标签"
+en = "Cannot Open New Tab"
+status = "done"
+
+[[entry]]
+key = "tabs.limit_body"
+zh = "标签上限 {MAX_TABS} 个（当前已开 {open} 个）：请先关闭一个标签再新建"
+en = "The tab limit is {MAX_TABS} ({open} open now): close a tab before opening a new one"
+status = "done"
+
+[[entry]]
+key = "tabs.limit_btn_ok"
+zh = "知道了"
+en = "Got It"
+status = "done"
