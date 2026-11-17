@@ -40,6 +40,7 @@ use crate::backend::connection::{ConnectionDraft, ConnectionFailure, TlsMode};
 use crate::backend::endpoint;
 use crate::backend::metadata::MetadataHub;
 use crate::config::SavedConnection;
+use crate::l10n;
 use crate::proto::services::v1::{
     ConnectionParams, DisconnectRequest, connection_service_client::ConnectionServiceClient,
 };
@@ -90,10 +91,10 @@ impl ConnectionState {
     pub fn badge(self) -> &'static str {
         match self {
             Self::Disconnected => "",
-            Self::Connecting => "连接中…",
-            Self::Connected => "已连接",
-            Self::Disconnecting => "断开中…",
-            Self::Failed => "失败",
+            Self::Connecting => l10n::t("object_tree.badge_connecting"),
+            Self::Connected => l10n::t("object_tree.badge_connected"),
+            Self::Disconnecting => l10n::t("object_tree.badge_disconnecting"),
+            Self::Failed => l10n::t("object_tree.badge_failed"),
         }
     }
 }
@@ -359,14 +360,22 @@ impl SessionWorker {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = events_tx.send_blocking(SessionEvent::Broken {
-                            message: format!("无法创建浏览会话运行时：{error}"),
+                            message: l10n::tf(
+                                "object_tree.session_worker_runtime_failed",
+                                &[("error", error.to_string())],
+                            ),
                         });
                         return;
                     }
                 };
                 runtime.block_on(session_loop(commands_rx, events_tx, endpoint_path));
             })
-            .map_err(|error| format!("无法创建浏览会话线程：{error}"))?;
+            .map_err(|error| {
+                l10n::tf(
+                    "object_tree.session_worker_thread_failed",
+                    &[("error", error.to_string())],
+                )
+            })?;
         Ok((
             Self {
                 commands: commands_tx,
@@ -416,7 +425,7 @@ async fn session_loop(
                         Err(failure) => SessionEvent::Failed {
                             request,
                             key,
-                            stage: "建立浏览会话",
+                            stage: l10n::t("object_tree.session_stage_open"),
                             message: failure.detail().to_owned(),
                             code: failure.code().to_owned(),
                         },
@@ -463,11 +472,24 @@ async fn session_loop(
 /// 读端点并建一个客户端（每次请求各自一条 Channel：任务之间互不阻塞）。
 async fn client_for(endpoint_path: &Path) -> Result<BackendClient, String> {
     let info = endpoint::read(endpoint_path)
-        .map_err(|error| format!("无法读取端点文件：{}", error.short()))?
-        .ok_or_else(|| format!("端点文件不存在：{}", endpoint_path.display()))?;
-    BackendClient::connect(&info)
-        .await
-        .map_err(|error| format!("无法连接本地后端：{}", error.short()))
+        .map_err(|error| {
+            l10n::tf(
+                "object_tree.transport_endpoint_read",
+                &[("error", error.short().to_owned())],
+            )
+        })?
+        .ok_or_else(|| {
+            l10n::tf(
+                "object_tree.transport_endpoint_missing",
+                &[("path", endpoint_path.display().to_string())],
+            )
+        })?;
+    BackendClient::connect(&info).await.map_err(|error| {
+        l10n::tf(
+            "object_tree.transport_connect",
+            &[("error", error.short().to_owned())],
+        )
+    })
 }
 
 async fn connect_once(
@@ -488,7 +510,9 @@ async fn connect_once(
         client.connect_database(params, display_name),
     )
     .await
-    .map_err(|_| ConnectionFailure::timeout("建立浏览会话", CONNECT_TIMEOUT))??;
+    .map_err(|_| {
+        ConnectionFailure::timeout(l10n::t("object_tree.session_stage_open"), CONNECT_TIMEOUT)
+    })??;
     let latency_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     eprintln!(
         "[browse] 浏览会话已建立：连接「{display_name}」驱动 {}（请求 {driver}），\
@@ -507,9 +531,12 @@ async fn connect_once(
 
 async fn disconnect_once(endpoint_path: &Path, connection_id: &str) -> Result<(), String> {
     let client = client_for(endpoint_path).await?;
-    let mut service: ConnectionServiceClient<_> = client
-        .connection_service()
-        .map_err(|error| format!("无法建立连接服务客户端：{}", error.short()))?;
+    let mut service: ConnectionServiceClient<_> = client.connection_service().map_err(|error| {
+        l10n::tf(
+            "object_tree.transport_service_client",
+            &[("error", error.short().to_owned())],
+        )
+    })?;
     tokio::time::timeout(
         DISCONNECT_TIMEOUT,
         service.disconnect(DisconnectRequest {
@@ -517,7 +544,7 @@ async fn disconnect_once(endpoint_path: &Path, connection_id: &str) -> Result<()
         }),
     )
     .await
-    .map_err(|_| "断开浏览会话超时（10 秒）".to_owned())?
+    .map_err(|_| l10n::t("object_tree.disconnect_timeout").to_owned())?
     .map_err(|status| format!("{}（{}）", status.message(), status.code()))?;
     Ok(())
 }
@@ -631,7 +658,7 @@ impl ConnectionRegistry {
                     state: ConnectionState::Disconnected,
                     connection_id: String::new(),
                     session_id: String::new(),
-                    detail: "点击连接（使用已保存的凭据）".to_owned(),
+                    detail: l10n::t("object_tree.detail_click_to_connect").to_owned(),
                     hub: None,
                 }),
             }
@@ -741,7 +768,7 @@ impl ConnectionRegistry {
         if let Some(key) = key
             && let Some(entry) = self.entries.borrow_mut().iter_mut().find(|e| e.key == key)
         {
-            entry.detail = "数据页当前绑定这条连接".to_owned();
+            entry.detail = l10n::t("object_tree.detail_active_connection").to_owned();
         }
         self.notify();
     }
@@ -817,7 +844,7 @@ impl ConnectionRegistry {
                 return;
             }
             entry.state = ConnectionState::Connecting;
-            entry.detail = "正在建立浏览会话…".to_owned();
+            entry.detail = l10n::t("object_tree.detail_connecting").to_owned();
             (params_from_saved(&entry.saved), entry.saved.name.clone())
         };
         let request = self.take_request("open");
@@ -842,7 +869,7 @@ impl ConnectionRegistry {
                 return;
             }
             entry.state = ConnectionState::Disconnecting;
-            entry.detail = "正在断开浏览会话…".to_owned();
+            entry.detail = l10n::t("object_tree.detail_disconnecting").to_owned();
             entry.connection_id.clone()
         };
         let request = self.take_request("close");
@@ -953,10 +980,10 @@ impl ConnectionRegistry {
                 } else if entry.saved.driver == "sqlite" {
                     "main".to_owned()
                 } else {
-                    "默认".to_owned()
+                    l10n::t("object_tree.catalog_default").to_owned()
                 }
             })
-            .unwrap_or_else(|| "默认".to_owned())
+            .unwrap_or_else(|| l10n::t("object_tree.catalog_default").to_owned())
     }
 
     /// 当前活动连接的浏览会话 ID（平铺表列表用它，不占标签会话）。
@@ -1016,7 +1043,10 @@ impl ConnectionRegistry {
                     entry.state = ConnectionState::Connected;
                     entry.connection_id = connection_id;
                     entry.session_id = session_id.clone();
-                    entry.detail = format!("浏览会话 · {latency_millis} ms");
+                    entry.detail = l10n::tf(
+                        "object_tree.detail_browse_session",
+                        &[("latency_millis", latency_millis.to_string())],
+                    );
                     entry.hub = hub;
                     entry.saved.name.clone()
                 };
@@ -1046,7 +1076,14 @@ impl ConnectionRegistry {
                     entry.connection_id.clear();
                     entry.session_id.clear();
                     entry.hub = None;
-                    entry.detail = format!("{stage}失败：[{code}] {message}");
+                    entry.detail = l10n::tf(
+                        "object_tree.detail_stage_failed",
+                        &[
+                            ("stage", stage.to_owned()),
+                            ("code", code.clone()),
+                            ("message", message.clone()),
+                        ],
+                    );
                     entry.saved.name.clone()
                 };
                 eprintln!("[browse] 连接「{name}」{stage}失败：[{code}] {message}");
@@ -1070,8 +1107,11 @@ impl ConnectionRegistry {
                     entry.connection_id.clear();
                     entry.state = ConnectionState::Disconnected;
                     entry.detail = match &result {
-                        Ok(()) => "浏览会话已关闭（点击可重新连接）".to_owned(),
-                        Err(error) => format!("断开失败：{error}"),
+                        Ok(()) => l10n::t("object_tree.detail_closed").to_owned(),
+                        Err(error) => l10n::tf(
+                            "object_tree.detail_disconnect_failed",
+                            &[("error", error.clone())],
+                        ),
                     };
                     entry.saved.name.clone()
                 };
