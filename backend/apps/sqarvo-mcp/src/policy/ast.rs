@@ -186,9 +186,11 @@ fn statement_kind(statement: &Statement) -> String {
 }
 
 fn readonly_violation(message: impl Into<String>) -> Error {
+    // 分类按任务书 V3.1 §11：只读违规=策略拒绝 → PermissionDenied（不是参数非法；
+    // 语句本身语法可以合法，拒绝原因是「这条通道不允许它」）。
     Error::new(
         ErrorCode::MCP_READONLY_VIOLATION,
-        ErrorCategory::InvalidArgument,
+        ErrorCategory::PermissionDenied,
         message,
     )
 }
