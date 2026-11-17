@@ -220,7 +220,7 @@ pub fn activate(app: &adw::Application) {
 
     // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
     let header = adw::HeaderBar::new();
-    let window_title = adw::WindowTitle::new("Sqarvo", "正在连接…");
+    let window_title = adw::WindowTitle::new("Sqarvo", l10n::t("shell.title_connecting"));
     header.set_title_widget(Some(&window_title));
 
     // 连接入口只有一个：主工具条左组「连接」（workspace-model §2；headerbar 只留
@@ -629,7 +629,9 @@ pub fn activate(app: &adw::Application) {
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
-                        events_state.title.set_subtitle("已断开");
+                        events_state
+                            .title
+                            .set_subtitle(l10n::t("shell.title_disconnected"));
                         events_state.title.set_title("Sqarvo");
                         events_state.connection_name.replace(None);
                         if let Some(registry) = events_state.registry.borrow().clone() {
@@ -1408,7 +1410,7 @@ fn restart_software(state: &Rc<UiState>) {
         actions.set_workspace_ready(false);
     }
     state.title.set_title("Sqarvo");
-    state.title.set_subtitle("正在重启…");
+    state.title.set_subtitle(l10n::t("shell.title_restarting"));
     show_loading(
         &state.slot,
         &state.title,
@@ -1693,7 +1695,7 @@ fn set_page(slot: &gtk::Box, page: &impl IsA<gtk::Widget>) {
 
 /// Loading：握手进行中。
 fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
-    title.set_subtitle("正在连接…");
+    title.set_subtitle(l10n::t("shell.title_connecting"));
     let page = adw::StatusPage::builder()
         .title(l10n::t("startup.loading_title"))
         .description(stage)
@@ -1749,7 +1751,9 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
     });
     state.startup.replace(Some(Rc::clone(&startup)));
     state.title.set_title("Sqarvo");
-    state.title.set_subtitle("未连接");
+    state
+        .title
+        .set_subtitle(l10n::t("shell.title_not_connected"));
     set_page(&state.slot, startup.widget());
     eprintln!(
         "[bench] t=+{}ms state=StartupWorkspace（未连接；{} 条已保存连接）",
@@ -1917,9 +1921,13 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
     state
         .title
         .set_title(&format!("{connection_name} - {driver_name}"));
-    state
-        .title
-        .set_subtitle(&format!("已连接 · {driver_label} · {version}"));
+    state.title.set_subtitle(&l10n::tf(
+        "shell.title_connected",
+        &[
+            ("driver", driver_label.clone()),
+            ("version", version.clone()),
+        ],
+    ));
 
     // 旧工作区（若有）先释放：它的标签会话属于上一次连接，不能留在新工作区里。
     if let Some(previous) = state.workspace.borrow_mut().take() {
@@ -2459,7 +2467,13 @@ impl Workspace {
             },
             connection_name: connection_name.to_owned(),
             driver_label: driver_label.to_owned(),
-            subtitle: format!("已连接 · {driver_label} · {version}"),
+            subtitle: l10n::tf(
+                "shell.title_connected",
+                &[
+                    ("driver", driver_label.to_owned()),
+                    ("version", version.to_owned()),
+                ],
+            ),
             catalog: state
                 .registry
                 .borrow()
@@ -4144,12 +4158,12 @@ fn short_id(id: &str) -> String {
 
 /// Error：可操作的错误文案 + 重试。
 fn show_error(slot: &gtk::Box, title: &adw::WindowTitle, message: &str, on_retry: &Rc<dyn Fn()>) {
-    title.set_subtitle("连接失败");
+    title.set_subtitle(l10n::t("shell.title_connect_failed"));
     let page = adw::StatusPage::builder()
-        .title("无法连接后端")
+        .title(l10n::t("shell.error_backend_title"))
         .description(message)
         .build();
-    let button = gtk::Button::with_label("重试");
+    let button = gtk::Button::with_label(l10n::t("shell.error_backend_retry"));
     button.set_halign(gtk::Align::Center);
     button.set_margin_top(gap(Gap::Page));
     button.add_css_class("suggested-action");
@@ -4167,12 +4181,12 @@ fn show_disconnected(
     reason: &str,
     on_retry: &Rc<dyn Fn()>,
 ) {
-    title.set_subtitle("已断开");
+    title.set_subtitle(l10n::t("shell.title_disconnected"));
     let page = adw::StatusPage::builder()
-        .title("已断开连接")
+        .title(l10n::t("shell.error_disconnected_title"))
         .description(reason)
         .build();
-    let button = gtk::Button::with_label("重新连接");
+    let button = gtk::Button::with_label(l10n::t("shell.error_disconnected_reconnect"));
     button.set_halign(gtk::Align::Center);
     button.set_margin_top(gap(Gap::Page));
     button.add_css_class("suggested-action");

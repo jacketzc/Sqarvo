@@ -2849,9 +2849,9 @@ impl TabSet {
                 let subtitle = if workspace_key.as_deref() == Some(bound.as_str()) {
                     self.context.subtitle.clone()
                 } else if let Some(driver) = tab.driver() {
-                    format!("已连接 · {driver}")
+                    crate::l10n::tf("shell.title_connected_driver", &[("driver", driver)])
                 } else {
-                    "正在切换连接…".to_owned()
+                    crate::l10n::t("shell.title_switching").to_owned()
                 };
                 (title, subtitle)
             }

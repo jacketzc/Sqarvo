@@ -46,6 +46,8 @@
 | 未指定 | Unspecified | 会话 / 库真值缺失的占位 |
 | 未连接 | Not connected | 状态栏与树连接态 |
 | 已断开 | Disconnected | 会话失效态 |
+| 重试 | Retry | 错误页 / 对话框按钮 |
+| 重新连接 | Reconnect | 断开错误页按钮（动词） |
 | 默认 | Default | 表标签标题的空 catalog 占位 |
 | 标签 | Tab | 标签条语境 |
 | 会话 | Session | 界面语境（区别于终端 shell） |

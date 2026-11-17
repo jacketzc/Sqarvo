@@ -5,9 +5,12 @@
 #
 # 本区覆盖：headerbar 主菜单按钮 tooltip、「文件 / 视图 / 帮助」全部条目与三级
 # 小节（深色模式 / 界面密度 / 语言）、「帮助 → 关于」入口、主工具条六个按钮与
-# 全部 tooltip、换语言重启确认框。标签条 / 状态栏 / 启动加载界面的文案各归
-# `tabs.toml` / `status_bar.toml` / `startup.toml`；对象树、对话框、数据页、
-# 查询页、信息面板与 Objects 页随 #200–#203 迁移。
+# 全部 tooltip、换语言重启确认框；窗口标题栏副标题族全部状态字（`shell.title_*`：
+# 正在连接 / 正在重启 / 连接失败 / 已断开 / 未连接 / 已连接模板 / 正在切换连接，
+# 含 tabs 经 `on_title` 回写到窗口的两条）与握手失败 / 已断开两个 Error 页表面
+# （`shell.error_*`：页面标题与重试 / 重新连接按钮）。标签条 / 状态栏 / 启动加载
+# 界面的文案各归 `tabs.toml` / `status_bar.toml` / `startup.toml`；对象树、
+# 对话框、数据页、查询页、信息面板与 Objects 页随 #200–#203 迁移。
 #
 # 条目 key 与 ui.rs / shell.rs 的接线一一对应；改动这里即改动界面文案（构建期
 # 生成，生成失败 = 构建失败，决策 3）。
@@ -234,4 +237,80 @@ status = "done"
 key = "shell.tooltip_new_query_not_connected"
 zh = "尚未连接数据库：先连接再新建查询标签"
 en = "No database connected: connect first, then open a new query tab"
+status = "done"
+
+# ---- S1 补迁：窗口标题栏副标题族（ui.rs / tabs.rs 的 title 接线，#199）----
+
+[[entry]]
+key = "shell.title_connecting"
+zh = "正在连接…"
+en = "Connecting…"
+status = "done"
+
+[[entry]]
+key = "shell.title_restarting"
+zh = "正在重启…"
+en = "Restarting…"
+status = "done"
+
+[[entry]]
+key = "shell.title_switching"
+zh = "正在切换连接…"
+en = "Switching connection…"
+status = "done"
+
+[[entry]]
+key = "shell.title_not_connected"
+zh = "未连接"
+en = "Not connected"
+status = "done"
+
+[[entry]]
+key = "shell.title_connected"
+zh = "已连接 · {driver} · {version}"
+en = "Connected · {driver} · {version}"
+status = "done"
+
+[[entry]]
+key = "shell.title_connected_driver"
+zh = "已连接 · {driver}"
+en = "Connected · {driver}"
+status = "done"
+
+[[entry]]
+key = "shell.title_connect_failed"
+zh = "连接失败"
+en = "Connection failed"
+status = "done"
+
+[[entry]]
+key = "shell.title_disconnected"
+zh = "已断开"
+en = "Disconnected"
+status = "done"
+
+# ---- S1 补迁：握手失败 / 已断开错误页（Error 与 Disconnected 表面）----
+
+[[entry]]
+key = "shell.error_backend_title"
+zh = "无法连接后端"
+en = "Unable to connect to the backend"
+status = "done"
+
+[[entry]]
+key = "shell.error_backend_retry"
+zh = "重试"
+en = "Retry"
+status = "done"
+
+[[entry]]
+key = "shell.error_disconnected_title"
+zh = "已断开连接"
+en = "Connection closed"
+status = "done"
+
+[[entry]]
+key = "shell.error_disconnected_reconnect"
+zh = "重新连接"
+en = "Reconnect"
 status = "done"
