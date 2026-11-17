@@ -158,6 +158,27 @@ fn sextet(triple: u32, shift: u32) -> usize {
     usize::try_from((triple >> shift) & 0x3f).unwrap_or(0)
 }
 
+/// `rows: Vec<Vec<serde_json::Value>>` 字段的 outputSchema 投影（#220 修复）。
+///
+/// 不能用 derive 形态：schemars 1.x 把 `serde_json::Value` 映射成**布尔 schema**
+/// `true`（`json_schema_impls/serdejson.rs`：`true.into()`），派生结果
+/// `{"items": {"items": true}}` 被 MCP 客户端的严格校验拒绝——Inspector `--strict`
+/// 对 `execute_readonly_query` / `explain_query` / `get_table_sample` 报
+/// invalid outputSchema。布尔 schema 在 JSON Schema 2020-12 里合法，但 MCP 的
+/// outputSchema 语境要求对象形态；空对象 `{}` 是「任意 JSON 值」的合法等价写法。
+///
+/// **只改 schema 播发，不碰 serde 序列化**：单元格运行时形态（上方契约表，含
+/// 截断对象 `{"truncated":true,"type":...,"value":...}`）逐字节不变。
+pub(crate) fn rows_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "items": {
+            "type": "array",
+            "items": {}
+        }
+    })
+}
+
 /// 结果行的字节预算累加器。
 ///
 /// 工具层在**序列化前**逐行计费：一行放不进剩余预算就整体拒收（不返回半行），
