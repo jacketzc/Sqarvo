@@ -99,7 +99,18 @@ ADR 0021（标签与会话）、ADR 0022（分页/排序/筛选/总数）、ADR 
 | REQ-UI-002 | 对象命名与作用域呈现 | P1 | 已实现 | 标题 `对象 @ catalog (连接名)`、标签名 `对象 @ catalog`，连接名不重复进标签；事务作用域是**标签会话**而不是表，事务状态由表格工具条表达（按钮互斥 + 状态行一次性文案，状态栏不写事务）；一个标签的未提交更改对其它标签不可见时要有提示（ADR 0021） **v0.2.3 交付**（#116/#117/PR #129、#131）：标题 `对象 @ catalog (连接名)`、标签名 `对象 @ catalog`；事务作用域=标签会话，状态由表格工具条表达（v0.2.3.3 起状态栏不再显示事务）；两标签事务互不可见有真机证据；取消/关闭路径按 `tab_id` 归属（`backend/routing.rs` 8 个单测） |
 | REQ-UI-003 | 信息面板（连接 / 库 / 表） | P1 | 已实现 | 右侧面板宽 280（可拖 240–520、宽度窗口级记忆；**v0.2.3.2 起常驻**：没有折叠按钮、没有 `Ctrl+I`、没有 `win.toggle-inspector`）；连接显示连接属性、库显示库属性、表/视图在面板内切换 `[DDL] / [表信息]`；拿不到的字段不出现，权限 / 对象不存在 / 不支持种类各有文案与错误码；DDL 从底部 revealer、列信息从页内浮层迁入 **v0.2.3 交付**（#119/PR #134）：连接/库/表/列/仅 DDL 六态，表内切换 `[DDL] / [表信息]` 并按标签记忆（v0.2.3.3：切换改为两个独立 toggle，选中态是贴着文字的小圆角块；DDL 页只留正文，与表信息同一字号、不折行、横向滚动，拼装时保留警示，复制用选中 + `Ctrl+C`）；底部 DDL 面板与列信息浮层已迁入；v0.2.3.2 起面板常驻（原「折叠省 280px」的反证只适用于 v0.2.3）；拿不到的字段不出现；**剩余**：~~宽表（7 列以上）会把面板压到 ~198px~~ → **v0.2.3.1 已修复**（#133 / PR #151）：类型条带改为 `External` 横滚策略，不再把 200×列数 上报为最小宽度；9 列宽表在 1200×800 下信息面板保持 280px，两档布局自检 0 超限 |
 
-## 9. 非功能约束（适用于全部需求）
+## 9. MCP 对外接口（V1）
+
+| ID | 需求 | 优先级 | 状态 | 验收要点 |
+|---|---|---|---|---|
+| REQ-MCP-001 | MCP Server 生命周期 | P0 | 未实现 | 独立 `sqarvo-mcp`：无参=stdio server、`credentials`=管理模式；启动加载并校验配置（默认拒绝）；旧握手（2025-11-25）与 2026-07-28 无握手双流程（rmcp 3.10.0，阶段 A spike 实测）；EOF/SIGINT/SIGTERM 优雅关停并释放全部会话；stdout 仅协议消息，日志钉 stderr（#207/#211） |
+| REQ-MCP-002 | MCP 连接管理与授权 | P0 | 未实现 | mcp.json 自有连接档案（alias 稳定标识、未配置即不可访问、enabled_tools 三态）；字段与驱动 properties 白名单按 `ConnectionParams` 映射并启动预检；凭据仅 `credential_ref` 走系统密钥环（ADR 0012，CLI 首次录入，永不明文回退）；lazy 连接状态机 `not_connected/connected/failed`；不泄漏密码/连接串（#207/#209） |
+| REQ-MCP-003 | 数据库结构发现 | P1 | 未实现 | list_databases/list_tables/describe_table/list_indexes + 四类结构 Resources；仅输出 SPI 实有信息（索引仅名称、非空 schema 显式 `capability.unsupported`）；Resource URI 按 RFC 3986 分段编解码、解码后才授权，含对抗测试；`information_schema.STATISTICS` 明细指引实测可用（#209/#210/#211） |
+| REQ-MCP-004 | 只读查询与 EXPLAIN | P0 | 未实现 | execute_readonly_query/get_table_sample/explain_query；服务端强制 200/1000 行、1MiB、10s 超时；行级截断与单元格截断（ADR 0007）双标记分离；sample 复用 TableDataProvider 不拼 SQL；EXPLAIN 仅 mariadb（MCP 拼前缀、禁 ANALYZE 系），SQLite 返回 `capability.unsupported`（#208/#209/#211） |
+| REQ-MCP-005 | 查询安全策略 | P0 | 未实现 | sqlparser(MySqlDialect) AST 检查：解析失败即拒、单语句、白名单 SELECT/只读 WITH、visitor 全树拒一切 INTO/锁定读/optimizer hint/危险函数/数据修改 CTE；并发=进程 semaphore(2)+同 alias 单在途（ADR 0008）；fail-closed 项回归测试锁死；ADR 0032（#208/#211） |
+| REQ-MCP-006 | MCP 审计 | P1 | 未实现 | audit.jsonl 记 request_id/工具/alias/库/SQL 指纹/耗时/行数/截断/成败/错误码；默认不记完整 SQL、结果与凭据；10MiB×5 轮转仅在完整记录边界；跨进程 flock 串行化、争用退化独立文件（已知限制入档）；敏感信息不落盘有断言（#207/#211） |
+
+## 10. 非功能约束（适用于全部需求）
 
 - 数据库密码不得出现在配置、日志、错误信息、崩溃报告与测试快照中；
 - 不支持的能力必须返回明确错误（`UNIMPLEMENTED` / `capability.unsupported`），
