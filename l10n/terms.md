@@ -56,3 +56,50 @@
 | 上一页 | Previous | 分页器按钮 |
 | 下一页 | Next | 分页器按钮 |
 | 末页 | Last | 分页器按钮 |
+
+## S2（对话框与连接，#200）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 新建连接 | New Connection | 与 `shell.menu.new_connection` 同译 |
+| 编辑连接 | Edit Connection | |
+| 保存 | Save | 按钮 |
+| 保存并连接 | Save & Connect | |
+| 测试连接 | Test Connection | |
+| 驱动 | Driver | |
+| 别名 | Alias | |
+| 主机 | Host | |
+| 端口 | Port | |
+| 用户名 | Username | |
+| 密码 | Password | |
+| 凭据 | Credential | 「凭据引用」credential reference |
+| 系统凭据库 | System Credential Store | |
+| 只读 | Read-Only | 「只读打开」Open Read-Only |
+| 浏览 | Browse | |
+| 数据库文件 | Database File | |
+| 连接参数 | Connection Parameters | |
+| 未选择驱动 | No Driver Selected | |
+| 知道了 | Got It | 提示对话框按钮 |
+| 取消 | Cancel | 沿用种子表 |
+| 放弃更改并关闭 | Discard Changes and Close | |
+| 放弃更改并退出 | Discard Changes and Quit | |
+| 保存并关闭 | Save and Close | |
+| 回滚事务并关闭 | Roll Back Transaction and Close | 按钮用动词短语 |
+| 关闭标签 | Close Tab | 「关闭标签？」Close Tab? |
+| 无法新建标签 | Cannot Open New Tab | 超限提示标题 |
+| 未提交的更改 | Uncommitted Changes | 关窗守卫标题同词 |
+| 握手 | Handshake | 「正在与数据库握手…」 |
+| 关于 | About | 沿用种子表；「关于 Squarvo」About Squarvo |
+| 后端 | Backend | 「后端诊断」Backend Diagnostics |
+| 端点文件 | Endpoint File | |
+| 传输方式 | Transport | |
+| 协议 | Protocol | |
+| 版本 | Version | |
+| 是 / 否 | yes / no | 句中布尔值，小写 |
+| 日志 | Log | 「Sqarvo 日志」Sqarvo Log |
+| 复制路径 | Copy Path | |
+| 已复制 | Copied | tooltip |
+| 配置目录 | Config Directory | |
+| 配置文件 | Config File | |
+| 密钥条目 | Key Entry | 系统凭据库中的条目 |
+| 标签上限 | Tab Limit | 超限提示正文 |

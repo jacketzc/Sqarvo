@@ -291,4 +291,34 @@ mod tests {
         let zh = tf_n("status_bar.selected_rows", 12, &[("n", "12".to_owned())]);
         assert!(zh.starts_with("已选中 12 行"), "{zh}");
     }
+
+    #[test]
+    fn dialogs_entries_carry_the_s2_dialog_copy() {
+        // S2/#200：对话框与连接区条目——zh 与迁移前字面量逐字节一致（比对脚本另证），
+        // 这里钉代表性条目与占位/复数行为，防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(t("dialogs.title_new"), "新建连接");
+        assert_eq!(t("dialogs.close_guard_heading"), "有未提交的更改");
+        assert_eq!(t("tabs.close_btn_discard"), "放弃更改并关闭");
+        assert_eq!(t("startup.desc_handshake"), "正在与数据库握手…");
+        assert_eq!(t("dialogs.logs_title"), "Sqarvo 日志");
+        assert_eq!(
+            tf(
+                "tabs.limit_body",
+                &[("MAX_TABS", "8".into()), ("open", "8".into())]
+            ),
+            "标签上限 8 个（当前已开 8 个）：请先关闭一个标签再新建"
+        );
+        // 复数条目：zh 恒一条；en n==1 走 en_one。
+        assert_eq!(
+            tf_n("tabs.close_body_dirty", 1, &[("dirty", "1".into())]),
+            "该标签有 1 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。"
+        );
+        set_current(Lang::En);
+        assert_eq!(t("dialogs.close_guard_heading"), "Uncommitted Changes");
+        let one = tf_n("tabs.close_body_dirty", 1, &[("dirty", "1".into())]);
+        assert!(one.contains("1 row of uncommitted changes"), "{one}");
+        let many = tf_n("tabs.close_body_dirty", 3, &[("dirty", "3".into())]);
+        assert!(many.contains("3 rows of uncommitted changes"), "{many}");
+    }
 }

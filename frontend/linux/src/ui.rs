@@ -674,14 +674,20 @@ pub fn activate(app: &adw::Application) {
                         }
                         Err(failure) => {
                             // 配置已经删掉了：这里只如实说明密钥条目还在，不静默。
-                            let message = format!(
-                                "配置已删除，密钥条目未删除（{}）：{}",
-                                failure.code(),
-                                failure.detail()
+                            let message = l10n::tf(
+                                "dialogs.cred_leftover_body",
+                                &[
+                                    ("code", failure.code().to_owned()),
+                                    ("detail", failure.detail().to_owned()),
+                                ],
                             );
                             eprintln!("[startup] {message}（{reference}）");
                             if !events_closing.get() {
-                                show_message(&events_state, "密钥条目未删除", &message);
+                                show_message(
+                                    &events_state,
+                                    l10n::t("dialogs.cred_leftover_heading"),
+                                    &message,
+                                );
                             }
                         }
                     }
@@ -1077,9 +1083,9 @@ fn confirm_close_with_dirty(
     on_discard: Rc<dyn Fn() -> glib::Propagation>,
 ) {
     let body = crate::tabs::close_guard_body(dirty);
-    let dialog = adw::AlertDialog::new(Some("有未提交的更改"), Some(&body));
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("discard", "放弃更改并退出");
+    let dialog = adw::AlertDialog::new(Some(l10n::t("dialogs.close_guard_heading")), Some(&body));
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+    dialog.add_response("discard", l10n::t("dialogs.close_guard_btn_discard_quit"));
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -1287,7 +1293,7 @@ fn connect_saved(state: &Rc<UiState>, key: &str) {
         }
         SavedClickAction::Connect => registry.open(key),
         SavedClickAction::PromptForCredentials => {
-            prompt_for_saved_credentials(state, key, "配置里没有凭据引用")
+            prompt_for_saved_credentials(state, key, l10n::t("dialogs.cred_missing_ref"))
         }
         SavedClickAction::Ignore => eprintln!(
             "[startup] 「{}」正在连接/断开（{}）：忽略这次点击",
@@ -1313,7 +1319,10 @@ fn prompt_for_saved_credentials(state: &Rc<UiState>, key: &str, reason: &str) {
     );
     open_connection_dialog_for(state, Some(key));
     if let Some(dialog) = state.dialog.borrow().as_ref() {
-        dialog.show_prompt_reason(&format!("这条连接缺少密码，请编辑后重试（{reason}）"));
+        dialog.show_prompt_reason(&l10n::tf(
+            "dialogs.cred_missing_body",
+            &[("reason", reason.to_owned())],
+        ));
     }
 }
 
@@ -1825,8 +1834,11 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
                     eprintln!("[startup] 删除连接「{name}」的配置失败：{error}");
                     show_message(
                         &state,
-                        "删除连接失败",
-                        &format!("无法写回 connections.json：{error}"),
+                        l10n::t("dialogs.delete_failed_heading"),
+                        &l10n::tf(
+                            "dialogs.delete_failed_body",
+                            &[("error", error.to_string())],
+                        ),
                     );
                     return;
                 }
@@ -1863,7 +1875,7 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
 /// 一条不可操作的提示对话框（删除失败 / 密钥条目残留）。
 fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
     let dialog = adw::AlertDialog::new(Some(heading), Some(body));
-    dialog.add_response("close", "知道了");
+    dialog.add_response("close", l10n::t("dialogs.msg_btn_ok"));
     dialog.set_default_response(Some("close"));
     dialog.set_close_response("close");
     dialog.present(Some(&state.window));
@@ -5786,39 +5798,61 @@ fn apply_tier_choice(window: &adw::ApplicationWindow, state: &Rc<UiState>, targe
 /// 纯函数：对话框与 QA 断言共用同一份文案，避免「界面改了、断言还在读旧字段」。
 fn backend_diagnostic_lines(info: &BackendInfo) -> Vec<String> {
     let mut lines = vec![
-        format!(
-            "后端版本：{}（协议 {}，{} 构建）",
-            info.service_version, info.protocol_version, info.build_profile
+        l10n::tf(
+            "dialogs.about_backend_version",
+            &[
+                ("service_version", info.service_version.clone()),
+                ("protocol_version", info.protocol_version.clone()),
+                ("build_profile", info.build_profile.clone()),
+            ],
         ),
-        format!("传输方式：{}", info.transport),
-        format!(
-            "后端进程：PID {}（由前端启动：{}）",
-            info.backend_pid,
-            if info.started_by_frontend {
-                "是"
-            } else {
-                "否"
-            }
+        l10n::tf(
+            "dialogs.about_transport",
+            &[("transport", info.transport.clone())],
         ),
-        format!("端点文件：{}", info.endpoint_path),
+        l10n::tf(
+            "dialogs.about_backend_process",
+            &[
+                ("backend_pid", info.backend_pid.to_string()),
+                (
+                    "flag",
+                    l10n::t(if info.started_by_frontend {
+                        "dialogs.about_yes"
+                    } else {
+                        "dialogs.about_no"
+                    })
+                    .to_owned(),
+                ),
+            ],
+        ),
+        l10n::tf(
+            "dialogs.about_endpoint_file",
+            &[("path", info.endpoint_path.clone())],
+        ),
     ];
     if info.version_mismatch {
         // 不一致必须展示，不能静默：可能连到了旧版本后端或读到了过期端点。
-        lines.push(format!(
-            "注意：端点记录的后端版本 {} 与 GetVersion 返回的 {} 不一致。",
-            info.endpoint_service_version, info.service_version
+        lines.push(l10n::tf(
+            "dialogs.about_version_mismatch",
+            &[
+                ("endpoint_version", info.endpoint_service_version.clone()),
+                ("service_version", info.service_version.clone()),
+            ],
         ));
     }
     if info.drivers.is_empty() {
-        lines.push("已注册驱动：（后端未返回任何驱动）".to_owned());
+        lines.push(l10n::t("dialogs.about_drivers_none").to_owned());
     } else {
-        lines.push(format!(
-            "已注册驱动：{}",
-            info.drivers
-                .iter()
-                .map(|(name, id)| format!("{name}（{id}）"))
-                .collect::<Vec<_>>()
-                .join("、")
+        lines.push(l10n::tf(
+            "dialogs.about_drivers",
+            &[(
+                "drivers",
+                info.drivers
+                    .iter()
+                    .map(|(name, id)| format!("{name}（{id}）"))
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            )],
         ));
     }
     lines
@@ -5845,19 +5879,20 @@ fn show_about(state: &Rc<UiState>) {
     let name = gtk::Label::new(Some("Sqarvo"));
     name.set_xalign(0.0);
     name.add_css_class("title-1");
-    let version = gtk::Label::new(Some(&format!("版本 {}", env!("CARGO_PKG_VERSION"))));
+    let version = gtk::Label::new(Some(&l10n::tf(
+        "dialogs.about_version",
+        &[("version", env!("CARGO_PKG_VERSION").to_owned())],
+    )));
     version.set_xalign(0.0);
     version.add_css_class("dim-label");
-    let comments = gtk::Label::new(Some(
-        "轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）",
-    ));
+    let comments = gtk::Label::new(Some(l10n::t("dialogs.about_comments")));
     comments.set_xalign(0.0);
     comments.set_wrap(true);
     content.append(&name);
     content.append(&version);
     content.append(&comments);
 
-    let heading = gtk::Label::new(Some("后端诊断"));
+    let heading = gtk::Label::new(Some(l10n::t("dialogs.about_diag_heading")));
     heading.set_xalign(0.0);
     heading.set_margin_top(gap(Gap::Lg));
     heading.add_css_class("sqarvo-heading");
@@ -5868,20 +5903,30 @@ fn show_about(state: &Rc<UiState>) {
     match state.backend.borrow().as_ref() {
         Some(info) => lines.extend(backend_diagnostic_lines(info)),
         None => {
-            lines.push(format!("端点文件：{}", state.endpoint_path.display()));
-            lines.push("后端：尚未握手完成".to_owned());
+            lines.push(l10n::tf(
+                "dialogs.about_endpoint_file",
+                &[("path", state.endpoint_path.display().to_string())],
+            ));
+            lines.push(l10n::t("dialogs.about_handshake_pending").to_owned());
         }
     }
     if let Some(connected) = state.connection_name.borrow().as_ref() {
-        lines.push(format!("连接：{connected}"));
+        lines.push(l10n::tf(
+            "dialogs.about_connection",
+            &[("connected", connected.clone())],
+        ));
     }
     if let Some(workspace) = state.workspace.borrow().as_ref() {
-        lines.push(format!(
-            "连接对话框建立的初始会话：{}（未领养时随退出释放）",
-            short_id(&workspace.session_id)
+        lines.push(l10n::tf(
+            "dialogs.about_initial_session",
+            &[("session_id", short_id(&workspace.session_id))],
         ));
         let tabs = workspace.tabs.session_lines();
-        lines.push(format!("标签会话（{} 个）：", tabs.len()));
+        lines.push(l10n::tf_n(
+            "dialogs.about_tab_sessions",
+            i64::try_from(tabs.len()).unwrap_or(0),
+            &[("n", tabs.len().to_string())],
+        ));
         for line in tabs {
             lines.push(format!("  {line}"));
         }
@@ -5898,7 +5943,7 @@ fn show_about(state: &Rc<UiState>) {
         content.append(&label);
     }
 
-    let note = gtk::Label::new(Some("本对话框只在本机显示，不含密码、凭据引用与 token。"));
+    let note = gtk::Label::new(Some(l10n::t("dialogs.about_note")));
     note.set_xalign(0.0);
     note.set_wrap(true);
     note.set_margin_top(gap(Gap::Lg));
@@ -5914,7 +5959,7 @@ fn show_about(state: &Rc<UiState>) {
         .build();
 
     let dialog = adw::Dialog::builder()
-        .title("关于 Squarvo")
+        .title(l10n::t("dialogs.about_title"))
         .content_width(620)
         .content_height(520)
         .build();

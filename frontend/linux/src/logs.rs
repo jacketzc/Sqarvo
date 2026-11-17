@@ -104,15 +104,21 @@ fn mirror(read_fd: RawFd, saved_stderr: RawFd, path: PathBuf) {
 #[must_use]
 pub fn tail(limit: u64) -> String {
     let Some(path) = log_path() else {
-        return "（找不到日志路径：XDG_STATE_HOME / HOME 都不可用）".to_owned();
+        return crate::l10n::t("dialogs.logs_tail_no_path").to_owned();
     };
     let Ok(metadata) = std::fs::metadata(&path) else {
-        return format!("（还没有日志文件：{}）", path.display());
+        return crate::l10n::tf(
+            "dialogs.logs_tail_no_file",
+            &[("path", path.display().to_string())],
+        );
     };
     let length = metadata.len();
     let offset = length.saturating_sub(limit);
     let Ok(mut file) = std::fs::File::open(&path) else {
-        return format!("（打不开日志文件：{}）", path.display());
+        return crate::l10n::tf(
+            "dialogs.logs_tail_unreadable",
+            &[("path", path.display().to_string())],
+        );
     };
     if offset > 0 {
         use std::io::{Seek, SeekFrom};
@@ -135,7 +141,7 @@ pub fn tail(limit: u64) -> String {
 /// 知道日志文件在哪；路径仍然显示在副标题里，方便反馈问题时贴出来。
 pub fn present_window(parent: Option<&gtk::Window>) {
     let window = adw::Window::new();
-    window.set_title(Some("Sqarvo 日志"));
+    window.set_title(Some(crate::l10n::t("dialogs.logs_title")));
     window.set_default_size(900, 600);
     if let Some(parent) = parent {
         window.set_transient_for(Some(parent));
@@ -143,14 +149,14 @@ pub fn present_window(parent: Option<&gtk::Window>) {
 
     let header = adw::HeaderBar::new();
     let path_text = log_path().map_or_else(
-        || "（日志路径不可用）".to_owned(),
+        || crate::l10n::t("dialogs.logs_path_unavailable").to_owned(),
         |path| path.display().to_string(),
     );
-    let subtitle = adw::WindowTitle::new("Sqarvo 日志", &path_text);
+    let subtitle = adw::WindowTitle::new(crate::l10n::t("dialogs.logs_title"), &path_text);
     header.set_title_widget(Some(&subtitle));
 
-    let copy = gtk::Button::with_label("复制路径");
-    copy.set_tooltip_text(Some("把日志文件路径复制到剪贴板"));
+    let copy = gtk::Button::with_label(crate::l10n::t("dialogs.logs_copy_btn"));
+    copy.set_tooltip_text(Some(crate::l10n::t("dialogs.logs_copy_tooltip")));
     {
         let path_text = path_text.clone();
         copy.connect_clicked(move |button| {
@@ -158,7 +164,7 @@ pub fn present_window(parent: Option<&gtk::Window>) {
                 display.clipboard().set_text(&path_text);
                 eprintln!("[logs] 已复制日志路径：{path_text}");
             }
-            button.set_tooltip_text(Some("已复制"));
+            button.set_tooltip_text(Some(crate::l10n::t("dialogs.logs_copied_tooltip")));
         });
     }
     header.pack_start(&copy);

@@ -1,0 +1,597 @@
+# 对话框区文案目录（注册表区 `dialogs.*`，ADR 0031 决策 2；迁移切片 S2/#200）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
+# （位置参数改名为命名占位的条目在 Issue #200 汇报的白名单里逐条列出）。
+# 覆盖表面：连接对话框表单与状态行（dialog.rs / driver_form.rs 校验）、连接配置
+# 读写错误（config.rs）、关窗守卫（ui.rs + tabs.rs close_guard_body）、通用提示
+# 框（ui.rs show_message）、保存凭据提示（ui.rs）、关于 Squarvo（ui.rs）、
+# 日志窗口（logs.rs）。关标签确认框与超限提示按区归 tabs.toml，握手进行中说明行
+# 按 startup.* 归 startup.toml；删除 / 断开连接确认与后端重启确认按注册表归属
+# object_tree / shell 区（#201 / S1 范围），不在这里重复登记。
+
+# -- 连接对话框：表单标签 / 提示（dialog.rs） --------------------------------
+
+[[entry]]
+key = "dialogs.title_new"
+zh = "新建连接"
+en = "New Connection"
+status = "done"
+
+[[entry]]
+key = "dialogs.title_edit"
+zh = "编辑连接"
+en = "Edit Connection"
+status = "done"
+
+[[entry]]
+key = "dialogs.subtitle_no_driver"
+zh = "未选择驱动"
+en = "No Driver Selected"
+status = "done"
+
+[[entry]]
+key = "dialogs.btn_cancel"
+zh = "取消"
+en = "Cancel"
+status = "done"
+
+[[entry]]
+key = "dialogs.btn_test"
+zh = "测试连接"
+en = "Test Connection"
+status = "done"
+
+[[entry]]
+key = "dialogs.btn_save"
+zh = "保存"
+en = "Save"
+status = "done"
+
+[[entry]]
+key = "dialogs.btn_save_connect"
+zh = "保存并连接"
+en = "Save & Connect"
+status = "done"
+
+[[entry]]
+key = "dialogs.option_no_drivers"
+zh = "（后端未返回任何驱动）"
+en = "(the backend returned no drivers)"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_driver"
+zh = "驱动"
+en = "Driver"
+status = "done"
+
+[[entry]]
+key = "dialogs.driver_list_empty_subtitle"
+zh = "后端 ListDrivers 没有返回驱动：无法新建连接"
+en = "The backend's ListDrivers returned no drivers: cannot create a connection"
+status = "done"
+
+[[entry]]
+key = "dialogs.driver_switch_subtitle"
+zh = "字段随驱动切换"
+en = "Fields change with the selected driver"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_alias"
+zh = "别名（可选）"
+en = "Alias (Optional)"
+status = "done"
+
+[[entry]]
+key = "dialogs.alias_tooltip"
+zh = "只影响对象树连接行的显示；留空则显示 用户名@主机:端口/数据库"
+en = "Only affects the connection row in the object tree; when left empty it shows username@host:port/database"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_host"
+zh = "主机"
+en = "Host"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_port"
+zh = "端口"
+en = "Port"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_database"
+zh = "数据库（可选：留空则连接后浏览所有库）"
+en = "Database (Optional: leave empty to browse all databases after connecting)"
+status = "done"
+
+[[entry]]
+key = "dialogs.database_tooltip"
+zh = "留空则连接后浏览所有库（不填默认库）"
+en = "Leave empty to browse all databases after connecting (no default database)"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_username"
+zh = "用户名"
+en = "Username"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_tls"
+zh = "TLS 模式"
+en = "TLS Mode"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_password"
+zh = "密码"
+en = "Password"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_file_path"
+zh = "数据库文件"
+en = "Database File"
+status = "done"
+
+[[entry]]
+key = "dialogs.file_path_tooltip"
+zh = "SQLite 数据库文件的绝对路径"
+en = "Absolute path of the SQLite database file"
+status = "done"
+
+[[entry]]
+key = "dialogs.file_chooser_title"
+zh = "选择 SQLite 数据库文件"
+en = "Select SQLite Database File"
+status = "done"
+
+[[entry]]
+key = "dialogs.file_filter_name"
+zh = "SQLite 数据库（*.db、*.sqlite、*.sqlite3）"
+en = "SQLite database (*.db, *.sqlite, *.sqlite3)"
+status = "done"
+
+[[entry]]
+key = "dialogs.row_read_only"
+zh = "只读打开"
+en = "Open Read-Only"
+status = "done"
+
+[[entry]]
+key = "dialogs.read_only_subtitle"
+zh = "以只读方式连接：数据库会拒绝任何写入（数据页会显示只读原因）"
+en = "Connect in read-only mode: the database refuses any writes (the data page shows the reason)"
+status = "done"
+
+[[entry]]
+key = "dialogs.group_params"
+zh = "连接参数"
+en = "Connection Parameters"
+status = "done"
+
+[[entry]]
+key = "dialogs.credential_note_title"
+zh = "密码只写入系统凭据库"
+en = "Passwords are written only to the system credential store"
+status = "done"
+
+[[entry]]
+key = "dialogs.credential_note_subtitle"
+zh = "连接配置只保存一个随机引用；系统凭据库不可用时如实报错，不会回退明文保存"
+en = "The connection configuration stores only a random reference; if the system credential store is unavailable the error is reported as-is, never falling back to plaintext"
+status = "done"
+
+[[entry]]
+key = "dialogs.save_only_tooltip"
+zh = "只保存连接配置与凭据，不会重新连接；下次连接时生效"
+en = "Saves the connection configuration and credential only, without reconnecting; takes effect on the next connect"
+status = "done"
+
+[[entry]]
+key = "dialogs.save_connect_tooltip"
+zh = "保存配置并立即建立会话"
+en = "Save the configuration and open a session immediately"
+status = "done"
+
+# -- 连接对话框：下拉项与状态行（dialog.rs） ---------------------------------
+
+[[entry]]
+key = "dialogs.driver_option_unsupported"
+zh = "{display_name}（{driver_id}，前端暂无表单）"
+en = "{display_name} ({driver_id}, no form in this frontend yet)"
+status = "done"
+
+[[entry]]
+key = "dialogs.driver_no_form_status"
+zh = "此版本前端没有驱动「{driver}」的连接表单：请升级前端，或换一个驱动"
+en = "This frontend version has no connection form for driver “{driver}”: upgrade the frontend, or choose another driver"
+status = "done"
+
+[[entry]]
+key = "dialogs.no_drivers_status"
+zh = "后端没有注册任何驱动（ListDrivers 为空）：无法新建连接"
+en = "The backend registered no drivers (ListDrivers is empty): cannot create a connection"
+status = "done"
+
+[[entry]]
+key = "dialogs.test_unknown_version"
+zh = "未知（后端未返回版本）"
+en = "unknown (the backend returned no version)"
+status = "done"
+
+[[entry]]
+key = "dialogs.test_success"
+zh = "连接成功：延迟 {latency} ms · 服务端版本 {version}"
+en = "Connected: latency {latency} ms · server version {version}"
+status = "done"
+
+[[entry]]
+key = "dialogs.tls_chain_note"
+zh = "本驱动无法只校验证书链：仍会校验主机名"
+en = "This driver cannot verify the certificate chain alone: the host name is still checked"
+status = "done"
+
+[[entry]]
+key = "dialogs.prefill_needs_password"
+zh = "已填入保存的连接；请输入密码后连接"
+en = "Saved connection filled in; enter the password, then connect"
+status = "done"
+
+[[entry]]
+key = "dialogs.prefill_from_store"
+zh = "已填入保存的连接：密码将从系统凭据库读取"
+en = "Saved connection filled in: the password will be read from the system credential store"
+status = "done"
+
+[[entry]]
+key = "dialogs.pick_driver_first"
+zh = "请选择驱动"
+en = "Choose a driver first"
+status = "done"
+
+[[entry]]
+key = "dialogs.internal_no_handler"
+zh = "内部错误：未注册处理函数"
+en = "Internal error: no handler registered"
+status = "done"
+
+# -- 表单校验（driver_form.rs） ----------------------------------------------
+
+[[entry]]
+key = "dialogs.form_unsupported_driver"
+zh = "此版本前端没有驱动「{driver}」的连接表单（后端已注册该驱动）"
+en = "This frontend version has no connection form for driver “{driver}” (the backend has registered it)"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_host_required"
+zh = "请填写主机"
+en = "Enter the host"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_port_range"
+zh = "端口必须是 1-65535 之间的数字"
+en = "The port must be a number between 1 and 65535"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_port_range_current"
+zh = "端口必须是 1-65535 之间的数字（当前：{port_text}）"
+en = "The port must be a number between 1 and 65535 (current: {port_text})"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_username_required"
+zh = "请填写用户名"
+en = "Enter the username"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_password_required"
+zh = "请输入密码"
+en = "Enter the password"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_path_required"
+zh = "请填写数据库文件路径（例如 /home/me/app.db）"
+en = "Enter the database file path (e.g. /home/me/app.db)"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_path_missing"
+zh = "数据库文件不存在：{path}（请选择已有文件，或先用 sqlite3 创建）"
+en = "The database file does not exist: {path} (pick an existing file, or create one with sqlite3 first)"
+status = "done"
+
+[[entry]]
+key = "dialogs.form_memory_readonly"
+zh = "内存数据库（:memory:）不支持只读模式"
+en = "The in-memory database (:memory:) does not support read-only mode"
+status = "done"
+
+# -- 连接配置读写错误（config.rs） -------------------------------------------
+
+[[entry]]
+key = "dialogs.cfg_dir_unknown"
+zh = "无法确定用户配置目录（XDG_CONFIG_HOME / HOME 均不可用）"
+en = "Cannot determine the user config directory (neither XDG_CONFIG_HOME nor HOME is available)"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_dir_create_failed"
+zh = "无法创建配置目录 {path}：{error}"
+en = "Cannot create the config directory {path}: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_perm_failed"
+zh = "无法把{what} {path} 的权限设为 {mode}：{error}"
+en = "Cannot set the permissions of {what} {path} to {mode}: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_what_dir"
+zh = "配置目录"
+en = "config directory"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_what_file"
+zh = "配置文件"
+en = "config file"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_serialize_failed"
+zh = "连接配置序列化失败：{error}"
+en = "Serializing the connection configuration failed: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_tmp_write_failed"
+zh = "无法写入 {path}：{error}"
+en = "Cannot write {path}: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_tmp_flush_failed"
+zh = "写入 {path} 失败：{error}"
+en = "Writing {path} failed: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.cfg_rename_failed"
+zh = "无法把 {from} 重命名为 {to}：{error}"
+en = "Cannot rename {from} to {to}: {error}"
+status = "done"
+
+# -- 关窗守卫（ui.rs confirm_close_with_dirty + tabs.rs close_guard_body） ---
+
+[[entry]]
+key = "dialogs.close_guard_heading"
+zh = "有未提交的更改"
+en = "Uncommitted Changes"
+status = "done"
+
+[[entry]]
+key = "dialogs.close_guard_btn_discard_quit"
+zh = "放弃更改并退出"
+en = "Discard Changes and Quit"
+status = "done"
+
+[[entry]]
+key = "dialogs.close_guard_body"
+zh = "以下表标签有未提交的更改，退出 Sqarvo 会丢失这些修改：\n\n{tables}\n\n要保留这些更改，选「取消」回到工作区，先提交或放弃它们。"
+en = "The following table tabs have uncommitted changes; quitting Sqarvo would lose them:\n\n{tables}\n\nTo keep these changes, choose Cancel to return to the workspace and commit or discard them first."
+status = "done"
+
+# -- 通用提示框与保存凭据提示（ui.rs show_message / prompt_for_saved_credentials） --
+
+[[entry]]
+key = "dialogs.msg_btn_ok"
+zh = "知道了"
+en = "Got It"
+status = "done"
+
+[[entry]]
+key = "dialogs.cred_leftover_heading"
+zh = "密钥条目未删除"
+en = "Key Entry Not Deleted"
+status = "done"
+
+[[entry]]
+key = "dialogs.cred_leftover_body"
+zh = "配置已删除，密钥条目未删除（{code}）：{detail}"
+en = "The configuration was deleted, but the key entry remains ({code}): {detail}"
+status = "done"
+
+[[entry]]
+key = "dialogs.delete_failed_heading"
+zh = "删除连接失败"
+en = "Delete Connection Failed"
+status = "done"
+
+[[entry]]
+key = "dialogs.delete_failed_body"
+zh = "无法写回 connections.json：{error}"
+en = "Cannot write back to connections.json: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.cred_missing_body"
+zh = "这条连接缺少密码，请编辑后重试（{reason}）"
+en = "This connection has no password; edit it and try again ({reason})"
+status = "done"
+
+[[entry]]
+key = "dialogs.cred_missing_ref"
+zh = "配置里没有凭据引用"
+en = "the configuration has no credential reference"
+status = "done"
+
+# -- 关于 Squarvo（ui.rs show_about / backend_diagnostic_lines） -------------
+
+[[entry]]
+key = "dialogs.about_title"
+zh = "关于 Squarvo"
+en = "About Squarvo"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_version"
+zh = "版本 {version}"
+en = "Version {version}"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_comments"
+zh = "轻量级原生数据库客户端（Linux 前端：GTK4 + libadwaita）"
+en = "A lightweight native database client (Linux frontend: GTK4 + libadwaita)"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_diag_heading"
+zh = "后端诊断"
+en = "Backend Diagnostics"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_backend_version"
+zh = "后端版本：{service_version}（协议 {protocol_version}，{build_profile} 构建）"
+en = "Backend version: {service_version} (protocol {protocol_version}, {build_profile} build)"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_transport"
+zh = "传输方式：{transport}"
+en = "Transport: {transport}"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_backend_process"
+zh = "后端进程：PID {backend_pid}（由前端启动：{flag}）"
+en = "Backend process: PID {backend_pid} (started by the frontend: {flag})"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_yes"
+zh = "是"
+en = "yes"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_no"
+zh = "否"
+en = "no"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_endpoint_file"
+zh = "端点文件：{path}"
+en = "Endpoint file: {path}"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_version_mismatch"
+zh = "注意：端点记录的后端版本 {endpoint_version} 与 GetVersion 返回的 {service_version} 不一致。"
+en = "Note: the backend version recorded in the endpoint ({endpoint_version}) does not match the version GetVersion returned ({service_version})."
+status = "done"
+
+[[entry]]
+key = "dialogs.about_drivers_none"
+zh = "已注册驱动：（后端未返回任何驱动）"
+en = "Registered drivers: (the backend returned none)"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_drivers"
+zh = "已注册驱动：{drivers}"
+en = "Registered drivers: {drivers}"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_handshake_pending"
+zh = "后端：尚未握手完成"
+en = "Backend: handshake not completed yet"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_connection"
+zh = "连接：{connected}"
+en = "Connection: {connected}"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_initial_session"
+zh = "连接对话框建立的初始会话：{session_id}（未领养时随退出释放）"
+en = "Initial session from the connection dialog: {session_id} (released on exit unless adopted by a tab)"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_tab_sessions"
+zh = "标签会话（{n} 个）："
+en = "{n} tab sessions:"
+en_one = "1 tab session:"
+status = "done"
+
+[[entry]]
+key = "dialogs.about_note"
+zh = "本对话框只在本机显示，不含密码、凭据引用与 token。"
+en = "This dialog is shown only on this machine and contains no passwords, credential references, or tokens."
+status = "done"
+
+# -- 日志窗口（logs.rs） ------------------------------------------------------
+
+[[entry]]
+key = "dialogs.logs_title"
+zh = "Sqarvo 日志"
+en = "Sqarvo Log"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_copy_btn"
+zh = "复制路径"
+en = "Copy Path"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_copy_tooltip"
+zh = "把日志文件路径复制到剪贴板"
+en = "Copy the log file path to the clipboard"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_copied_tooltip"
+zh = "已复制"
+en = "Copied"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_path_unavailable"
+zh = "（日志路径不可用）"
+en = "(log path unavailable)"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_tail_no_path"
+zh = "（找不到日志路径：XDG_STATE_HOME / HOME 都不可用）"
+en = "(cannot find the log path: neither XDG_STATE_HOME nor HOME is available)"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_tail_no_file"
+zh = "（还没有日志文件：{path}）"
+en = "(no log file yet: {path})"
+status = "done"
+
+[[entry]]
+key = "dialogs.logs_tail_unreadable"
+zh = "（打不开日志文件：{path}）"
+en = "(cannot open the log file: {path})"
+status = "done"
