@@ -1883,6 +1883,45 @@ impl TreePanel {
         }
     }
 
+    /// 按**库名**查已展开分组的计数（改动确认单 #1：查询标签钉住面板时只有名字）。
+    ///
+    /// 信息面板从查询标签拿到的只是 `catalog` 字符串，不是树上那个引用的形状；
+    /// 命中口径：已展开分组的父引用 `catalog` 或 `name` 等于该库名。都没展开过时
+    /// 各项为 `None`——面板按「拿不到的字段不出现」省略，而不是写 0。
+    #[must_use]
+    pub fn group_counts_by_catalog(&self, name: &str) -> GroupCounts {
+        let mut tables = None;
+        let mut views = None;
+        let mut complete = true;
+        for level in self.levels.borrow().values() {
+            let LevelSource::Group {
+                parent: level_parent,
+                group,
+                ..
+            } = &level.source
+            else {
+                continue;
+            };
+            if level_parent.catalog != name && level_parent.name != name {
+                continue;
+            }
+            let loaded = level.loaded.get();
+            let done = level.next_token.borrow().is_empty() && !level.loading.get();
+            match group {
+                RowGroup::Catalog(KindGroup::Tables) => tables = Some(loaded),
+                RowGroup::Catalog(KindGroup::Views) => views = Some(loaded),
+                RowGroup::Catalog(KindGroup::Functions | KindGroup::Queries) => continue,
+                RowGroup::Table(_) => continue,
+            }
+            complete &= done;
+        }
+        GroupCounts {
+            tables,
+            views,
+            complete: complete && (tables.is_some() || views.is_some()),
+        }
+    }
+
     /// 已加载的真实节点数（展开后的行数，不含占位行）。
     pub fn loaded_nodes(&self) -> usize {
         self.levels

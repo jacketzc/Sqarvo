@@ -30,6 +30,22 @@ use crate::proto::services::v1::ObjectRef;
 /// 按对象的会话找元数据通道（多连接下 DDL 走对象**自己**那条浏览会话）。
 pub type HubResolver = Rc<dyn Fn(&ObjectRef) -> Option<Rc<MetadataHub>>>;
 
+/// 一份**已成功取到**的 DDL（改动确认单 #1：钉住视图复入时直接渲染，不再请求）。
+///
+/// 只缓存非空原文 / 拼装结果；Empty 与错误是「这一次的判断」，不缓存，下次重新读。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DdlSnapshot {
+    /// DDL 正文。
+    pub ddl: String,
+    /// 是否数据库原文（`false` = 客户端拼装）。
+    pub exact: bool,
+    /// 拼装警示行（`exact = true` 时为 `None`）。
+    pub warning: Option<String>,
+}
+
+/// DDL 成功返回时的旁路回调（信息面板据此写缓存；按**对象引用**给键）。
+pub type DdlResolvedHook = Rc<dyn Fn(&ObjectRef, &DdlSnapshot)>;
+
 /// DDL 面板的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DdlState {
@@ -134,6 +150,8 @@ pub struct DdlPanel {
     state: Cell<DdlState>,
     /// 面板是否被用户打开着（由 ui.rs 的 revealer 状态驱动，这里只记一份）。
     visible: Cell<bool>,
+    /// 成功返回时的旁路（信息面板写 DDL 缓存；改动确认单 #1）。
+    on_resolved: RefCell<Option<DdlResolvedHook>>,
 }
 
 impl DdlPanel {
@@ -203,6 +221,7 @@ impl DdlPanel {
             current: RefCell::new(None),
             state: Cell::new(DdlState::Idle),
             visible: Cell::new(false),
+            on_resolved: RefCell::new(None),
         });
 
         install_css();
@@ -254,18 +273,49 @@ impl DdlPanel {
             return;
         };
         let weak = Rc::downgrade(self);
-        let object = node.path_label();
         hub.request_ddl(
             node.reference.clone(),
             Rc::new(move |result| {
                 if let Some(panel) = weak.upgrade() {
-                    panel.finish(&object, result);
+                    panel.finish(&node, result);
                 }
             }),
         );
     }
 
-    fn finish(self: &Rc<Self>, object: &str, result: Result<DdlView, MetadataError>) {
+    /// 接线「成功返回」旁路：信息面板据此把 DDL 写进按对象缓存的快照（#1 钉住视图）。
+    pub fn set_on_resolved(&self, hook: DdlResolvedHook) {
+        self.on_resolved.replace(Some(hook));
+    }
+
+    /// 直接渲染此前成功取到的 DDL（改动确认单 #1：钉住视图复入不再发 `GetDdl`）。
+    ///
+    /// 与 `show_for` 的区别：不进 Loading、不占请求；正文 / 拼装警示与 `finish`
+    /// 的 Ok 分支同一口径（警示行在缓存时就已定格成最终文案）。
+    pub fn show_cached(self: &Rc<Self>, node: &NodeView, snapshot: &DdlSnapshot) {
+        self.current.replace(Some(node.clone()));
+        self.buffer().set_text(&snapshot.ddl);
+        match snapshot.warning.as_deref() {
+            Some(warning) => {
+                self.warning.set_text(warning);
+                self.warning.set_visible(true);
+            }
+            None => {
+                self.warning.set_text("");
+                self.warning.set_visible(false);
+            }
+        }
+        self.stack.set_visible_child_name("text");
+        self.state.set(DdlState::Ready);
+        eprintln!(
+            "[ddl] 从缓存直接渲染：{}{}（钉住视图复入，不重发 GetDdl）",
+            kind_label(node.kind),
+            node.path_label()
+        );
+    }
+
+    fn finish(self: &Rc<Self>, node: &NodeView, result: Result<DdlView, MetadataError>) {
+        let object = node.path_label();
         match result {
             Ok(view) => {
                 if view.ddl.trim().is_empty() {
@@ -277,20 +327,38 @@ impl DdlPanel {
                     return;
                 }
                 self.buffer().set_text(&view.ddl);
-                if view.exact {
+                let warning = if view.exact {
                     // 原文：不再写「数据库原文（DDL_SOURCE_DATABASE）」这类说明行。
-                    self.warning.set_text("");
-                    self.warning.set_visible(false);
+                    None
                 } else {
                     // 拼装结果：必须带警示，且要能看出缺了什么、由哪版拼装器生成。
-                    self.warning.set_text(&format!(
+                    Some(format!(
                         "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · {}",
                         view.detail_text()
-                    ));
-                    self.warning.set_visible(true);
+                    ))
+                };
+                match warning.as_deref() {
+                    Some(warning) => {
+                        self.warning.set_text(warning);
+                        self.warning.set_visible(true);
+                    }
+                    None => {
+                        self.warning.set_text("");
+                        self.warning.set_visible(false);
+                    }
                 }
                 self.stack.set_visible_child_name("text");
                 self.state.set(DdlState::Ready);
+                if let Some(hook) = self.on_resolved.borrow().as_ref() {
+                    hook(
+                        &node.reference,
+                        &DdlSnapshot {
+                            ddl: view.ddl.clone(),
+                            exact: view.exact,
+                            warning,
+                        },
+                    );
+                }
                 eprintln!(
                     "[ddl] t=+{}ms DDL {object}：{} 行，exact={}，source_detail={}",
                     crate::qa::elapsed_ms(),

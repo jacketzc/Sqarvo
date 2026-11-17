@@ -1446,6 +1446,57 @@ fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
     }
 }
 
+/// 树选中的身份串（`Objects` 页钉住键的选中部分；改动确认单 #1）。
+///
+/// 同一选中行 → 同一串：`apply_pin` 据此决定要不要重渲染，避免同一个对象的
+/// 重复事件（例如工具条联动）发两份元数据请求。
+fn selection_identity(selection: &TreeSelection) -> String {
+    match selection {
+        TreeSelection::Connection(snapshot) => format!("connection|{}", snapshot.key),
+        TreeSelection::Object { node, parent } => format!(
+            "object|{}|{}",
+            node.path_label(),
+            parent.as_ref().map_or_else(String::new, |p| p.path_label())
+        ),
+        TreeSelection::Group { group, parent } => format!(
+            "group|{}|{}|{}|{}",
+            (*group).label(),
+            parent.catalog,
+            parent.schema,
+            parent.name
+        ),
+        TreeSelection::None => "none".to_owned(),
+    }
+}
+
+/// 面板钉住的身份键：`标签|目标`（改动确认单 #1）。
+///
+/// 同键 = 内容没变，`apply_pin` 不重渲染、不重发请求。已加载行数**不进**键：
+/// 翻页不是身份变化，复入钉住渲染时会新鲜注入（`show_table_pinned`）。
+/// `selection` 只在 `TabPin::Tree` 里参与（`Objects` 页的钉住目标 = 树选中）。
+fn pin_identity(
+    tab_id: &str,
+    pin: &crate::tabs::TabPin,
+    selection: Option<&TreeSelection>,
+) -> String {
+    use crate::tabs::TabPin;
+    match pin {
+        TabPin::None => format!("{tab_id}|none"),
+        TabPin::Tree => format!(
+            "{tab_id}|tree|{}",
+            selection.map_or_else(|| "none".to_owned(), selection_identity)
+        ),
+        TabPin::Table { entry: Some(entry) } => format!(
+            "{tab_id}|table|{}|{}",
+            crate::inspector::cache_key(&entry.reference),
+            entry.display_name
+        ),
+        TabPin::Table { entry: None } => format!("{tab_id}|table|pending"),
+        TabPin::QueryCatalog { name: Some(name) } => format!("{tab_id}|catalog|{name}"),
+        TabPin::QueryCatalog { name: None } => format!("{tab_id}|empty"),
+    }
+}
+
 /// 把草稿交给 worker；worker 不可用时立刻在对话框里报错。
 fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionDraft, save: bool) {
     let mut queued = false;
@@ -2121,10 +2172,179 @@ impl Workspace {
         let tree_slot: Rc<RefCell<Option<Rc<TreePanel>>>> = Rc::new(RefCell::new(None));
         let refresh: Rc<dyn Fn()> = {
             let tree_slot_for_cb = Rc::clone(&tree_slot);
+            let inspector_for_cache = Rc::clone(&inspector);
             Rc::new(move || {
                 eprintln!("[tree] t=+{}ms 刷新对象树", crate::qa::elapsed_ms());
+                // 结构可能已变：钉住视图的对象缓存一并作废（改动确认单 #1）。
+                inspector_for_cache.invalidate_cache();
                 if let Some(tree) = tree_slot_for_cb.borrow().as_ref() {
                     tree.reload();
+                }
+            })
+        };
+
+        // ---- 信息面板：树选中渲染 + 标签钉住接线（改动确认单 #1）--------------
+        // 面板内容跟着页面走：切到表数据标签钉这张表、切到查询标签钉它选择的库
+        // （无库空态）、切到 `Objects` 页跟随树选中。`pinned` 记当前钉住的身份键，
+        // 同键的重复事件不重渲染、不重发请求；临时预览（别的标签上看树选中）不改
+        // 钉住键，切走再回来即恢复该标签自己的内容。
+        let pinned: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let render_selection: Rc<dyn Fn(TreeSelection)> = {
+            let inspector = Rc::clone(&inspector);
+            let tree_slot = Rc::clone(&tree_slot);
+            let tabs_slot = Rc::clone(&tabs_slot);
+            let pinned = Rc::clone(&pinned);
+            let state = Rc::clone(state);
+            let server_version = version.to_owned();
+            let latency = outcome.latency_millis;
+            // 本次「保存并连接」的那条连接按名字认：活动键在注册表刷新后可能已经
+            // 换成别的条目，而版本 / 延迟属于这次 ConnectOutcome。
+            let owner = connection_name.to_owned();
+            Rc::new(move |selection: TreeSelection| {
+                let tab_id = tabs_slot
+                    .borrow()
+                    .as_ref()
+                    .and_then(|tabs| tabs.current_id())
+                    .unwrap_or_else(|| "tree".to_owned());
+                // `Objects` 页上这次渲染**就是**钉住内容：写键，后续的标签状态事件
+                // 不再重复渲染同一选中（否则一次选中会发两份请求）。
+                if tabs_slot
+                    .borrow()
+                    .as_ref()
+                    .and_then(|tabs| tabs.current_id())
+                    .as_deref()
+                    == Some(crate::tabs::OBJECTS_TAB_ID)
+                {
+                    pinned.replace(Some(pin_identity(
+                        crate::tabs::OBJECTS_TAB_ID,
+                        &crate::tabs::TabPin::Tree,
+                        Some(&selection),
+                    )));
+                }
+                match selection {
+                    TreeSelection::Connection(snapshot) => {
+                        let registry = state.registry.borrow().clone();
+                        let saved = registry
+                            .as_ref()
+                            .and_then(|registry| registry.saved(&snapshot.key));
+                        let sessions = registry
+                            .as_ref()
+                            .and_then(|registry| registry.session_count_for(&snapshot.name));
+                        // 服务端版本与延迟只有「保存并连接」那条连接有：其它连接
+                        // 拿不到就不显示这两行（不编造）。
+                        let mine = snapshot.is_active || snapshot.name == owner;
+                        let live = ConnectionLive {
+                            server_version: if mine {
+                                server_version.clone()
+                            } else {
+                                String::new()
+                            },
+                            latency_millis: mine.then_some(latency),
+                            sessions,
+                        };
+                        inspector.show_connection(saved.as_ref(), &live);
+                        inspector.set_txn_hint(None);
+                    }
+                    TreeSelection::Object { node, parent } => {
+                        let counts = tree_slot
+                            .borrow()
+                            .as_ref()
+                            .map(|tree| tree.group_counts(&node.reference));
+                        if matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
+                            let counts = counts.unwrap_or_default();
+                            inspector.show_catalog(
+                                &node.display_name,
+                                counts.tables,
+                                counts.views,
+                                counts.complete,
+                            );
+                        } else {
+                            let loaded = tabs_slot
+                                .borrow()
+                                .as_ref()
+                                .and_then(|tabs| tabs.loaded_rows_for(&node.reference));
+                            inspector.show_object(
+                                *node.clone(),
+                                parent.as_deref(),
+                                loaded,
+                                &tab_id,
+                            );
+                        }
+                        refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
+                    }
+                    TreeSelection::Group { .. } => {
+                        // 分组行没有对象信息：面板回到空态，内容由 Objects 页联动承接。
+                        inspector.show_empty();
+                        inspector.set_txn_hint(None);
+                    }
+                    TreeSelection::None => {
+                        inspector.show_empty();
+                        inspector.set_txn_hint(None);
+                    }
+                }
+            })
+        };
+        let apply_pin: Rc<dyn Fn()> = {
+            let inspector = Rc::clone(&inspector);
+            let tabs_slot = Rc::clone(&tabs_slot);
+            let tree_slot = Rc::clone(&tree_slot);
+            let pinned = Rc::clone(&pinned);
+            let render_selection = Rc::clone(&render_selection);
+            Rc::new(move || {
+                let Some(tabs) = tabs_slot.borrow().as_ref().cloned() else {
+                    return;
+                };
+                let Some(tab_id) = tabs.current_id() else {
+                    return;
+                };
+                let pin = tabs.pin_target();
+                // `Objects` 页的钉住目标就是树选中：身份串进键，同一选中的重复事件不重渲染。
+                let selection = matches!(pin, crate::tabs::TabPin::Tree).then(|| {
+                    tree_slot
+                        .borrow()
+                        .as_ref()
+                        .map_or_else(|| TreeSelection::None, |tree| tree.current_selection())
+                });
+                let key = pin_identity(&tab_id, &pin, selection.as_ref());
+                if pinned.borrow().as_deref() == Some(key.as_str()) {
+                    return;
+                }
+                pinned.replace(Some(key));
+                match &pin {
+                    crate::tabs::TabPin::Tree => {
+                        if let Some(selection) = selection {
+                            (render_selection)(selection);
+                        }
+                    }
+                    crate::tabs::TabPin::Table { entry: Some(entry) } => {
+                        let node = NodeView {
+                            reference: entry.reference.clone(),
+                            display_name: entry.display_name.clone(),
+                            kind: entry.kind,
+                            has_children: crate::backend::metadata::is_container(entry.kind),
+                            comment: String::new(),
+                        };
+                        let loaded = tabs.loaded_rows_for(&entry.reference);
+                        inspector.show_table_pinned(&tab_id, node, loaded);
+                    }
+                    crate::tabs::TabPin::Table { entry: None } => {
+                        // 表还没建立（数据页在等会话）：不换面板；快照到达后按
+                        // 「已解析」的身份键再钉一次（改动确认单 #1 第 4 条）。
+                        eprintln!("[inspector] 标签 {tab_id} 钉住的表尚未就绪：暂保留当前内容");
+                    }
+                    crate::tabs::TabPin::QueryCatalog { name: Some(name) } => {
+                        let counts = tree_slot
+                            .borrow()
+                            .as_ref()
+                            .map(|tree| tree.group_counts_by_catalog(name))
+                            .unwrap_or_default();
+                        inspector.show_catalog(name, counts.tables, counts.views, counts.complete);
+                    }
+                    crate::tabs::TabPin::QueryCatalog { name: None } => {
+                        // 没有选择库：如实空态，不编造库信息。
+                        inspector.show_empty();
+                    }
+                    crate::tabs::TabPin::None => {}
                 }
             })
         };
@@ -2141,21 +2361,13 @@ impl Workspace {
                 })
             },
             select: {
-                let inspector = Rc::clone(&inspector);
-                let tree_slot = Rc::clone(&tree_slot);
+                let render_selection = Rc::clone(&render_selection);
                 let tabs_slot = Rc::clone(&tabs_slot);
-                let state = Rc::clone(state);
-                let server_version = version.to_owned();
-                let latency = outcome.latency_millis;
-                // 本次「保存并连接」的那条连接按名字认：活动键在注册表刷新后可能已经
-                // 换成别的条目，而版本 / 延迟属于这次 ConnectOutcome。
-                let owner = connection_name.to_owned();
                 Rc::new(move |selection: TreeSelection| {
-                    let tab_id = tabs_slot
-                        .borrow()
-                        .as_ref()
-                        .and_then(|tabs| tabs.current_id())
-                        .unwrap_or_else(|| "tree".to_owned());
+                    // 先同步面板（`Objects` 页时这一步就是钉住渲染，内部已写键），
+                    // 再联动 Objects 固定页列表。顺序反过来会让固定页的状态事件
+                    // 在键写入前触发，同一次选中渲染两遍、发两份请求。
+                    (render_selection)(selection.clone());
                     // Objects 固定页与树选中联动：选中库 / Tables / Views 及其下级时
                     // 列出该库对应的表或视图；选连接或占位行时回到空态。
                     if let Some(tabs) = tabs_slot.borrow().as_ref() {
@@ -2167,68 +2379,6 @@ impl Workspace {
                                 tabs.show_objects_unavailable_for(shortcut);
                             }
                             ObjectsTarget::Empty => tabs.show_objects(None, &[]),
-                        }
-                    }
-                    match selection {
-                        TreeSelection::Connection(snapshot) => {
-                            let registry = state.registry.borrow().clone();
-                            let saved = registry
-                                .as_ref()
-                                .and_then(|registry| registry.saved(&snapshot.key));
-                            let sessions = registry
-                                .as_ref()
-                                .and_then(|registry| registry.session_count_for(&snapshot.name));
-                            // 服务端版本与延迟只有「保存并连接」那条连接有：其它连接
-                            // 拿不到就不显示这两行（不编造）。
-                            let mine = snapshot.is_active || snapshot.name == owner;
-                            let live = ConnectionLive {
-                                server_version: if mine {
-                                    server_version.clone()
-                                } else {
-                                    String::new()
-                                },
-                                latency_millis: mine.then_some(latency),
-                                sessions,
-                            };
-                            inspector.show_connection(saved.as_ref(), &live);
-                            inspector.set_txn_hint(None);
-                        }
-                        TreeSelection::Object { node, parent } => {
-                            let counts = tree_slot
-                                .borrow()
-                                .as_ref()
-                                .map(|tree| tree.group_counts(&node.reference));
-                            if matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
-                                let counts = counts.unwrap_or_default();
-                                inspector.show_catalog(
-                                    &node.display_name,
-                                    counts.tables,
-                                    counts.views,
-                                    counts.complete,
-                                );
-                            } else {
-                                let loaded = tabs_slot
-                                    .borrow()
-                                    .as_ref()
-                                    .and_then(|tabs| tabs.loaded_rows_for(&node.reference));
-                                inspector.show_object(
-                                    *node.clone(),
-                                    parent.as_deref(),
-                                    loaded,
-                                    &tab_id,
-                                );
-                            }
-                            refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
-                        }
-                        TreeSelection::Group { .. } => {
-                            // 分组行没有对象信息：面板回到空态，内容由上面的
-                            // Objects 页联动承接。
-                            inspector.show_empty();
-                            inspector.set_txn_hint(None);
-                        }
-                        TreeSelection::None => {
-                            inspector.show_empty();
-                            inspector.set_txn_hint(None);
                         }
                     }
                 })
@@ -2316,18 +2466,17 @@ impl Workspace {
                 let inspector = Rc::clone(&inspector);
                 let tree_slot = Rc::clone(&tree_slot);
                 let tabs_slot = Rc::clone(&tabs_slot);
+                let apply_pin = Rc::clone(&apply_pin);
                 let actions = state.actions.borrow().clone();
                 Rc::new(move |status: crate::tabs::TabStatus| {
                     if let Some(shell) = shell_slot.borrow().as_ref() {
                         apply_tab_status(shell, actions.as_ref(), status);
                         // 事务状态变了：跨标签提示跟着重算（#119）。
                         refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
-                        // 切标签只换「表页选择」的记忆键，不重发请求、不重建标签。
-                        if let Some(tabs) = tabs_slot.borrow().as_ref()
-                            && let Some(tab_id) = tabs.current_id()
-                        {
-                            inspector.retarget(&tab_id);
-                        }
+                        // 标签或它的钉住目标变了：面板跟着页面切换内容（改动确认单 #1）。
+                        // 身份键没变就不重渲染、不重发请求——「表页选择」的记忆键
+                        // 已并进钉住渲染（`show_table_pinned` 的 `tab_id`）。
+                        apply_pin();
                     }
                 })
             },
@@ -5612,6 +5761,88 @@ mod tests {
             has_children: true,
             comment: String::new(),
         }
+    }
+
+    #[test]
+    fn pin_identity_keys_the_tab_target_and_survives_row_growth() {
+        use crate::tabs::TabPin;
+        let entry = TableEntry {
+            reference: node("orders", ObjectKind::Table, "shop").reference,
+            display_name: "orders".to_owned(),
+            kind: ObjectKind::Table,
+        };
+        let table = pin_identity(
+            "tab-t1",
+            &TabPin::Table {
+                entry: Some(entry.clone()),
+            },
+            None,
+        );
+        assert!(table.starts_with("tab-t1|table|"), "{table}");
+        // 换标签 → 键必须不同（面板内容跟着页面走）。
+        assert_ne!(
+            table,
+            pin_identity(
+                "tab-t2",
+                &TabPin::Table {
+                    entry: Some(entry.clone())
+                },
+                None
+            )
+        );
+        // 身份未定 / 已定 → 键不同：会话快照到达后要重新钉一次并渲染。
+        assert_ne!(
+            table,
+            pin_identity("tab-t1", &TabPin::Table { entry: None }, None)
+        );
+        // 查询标签：换库 → 键变化；没选库 → 空态。
+        assert_ne!(
+            pin_identity(
+                "tab-q1",
+                &TabPin::QueryCatalog {
+                    name: Some("a".to_owned())
+                },
+                None
+            ),
+            pin_identity(
+                "tab-q1",
+                &TabPin::QueryCatalog {
+                    name: Some("b".to_owned())
+                },
+                None
+            )
+        );
+        assert!(
+            pin_identity("tab-q1", &TabPin::QueryCatalog { name: None }, None).ends_with("|empty")
+        );
+    }
+
+    #[test]
+    fn pin_identity_of_the_objects_page_is_the_tree_selection() {
+        use crate::tabs::TabPin;
+        let sel_a = TreeSelection::Object {
+            node: Box::new(node("orders", ObjectKind::Table, "shop")),
+            parent: None,
+        };
+        let sel_b = TreeSelection::Object {
+            node: Box::new(node("notes", ObjectKind::Table, "shop")),
+            parent: None,
+        };
+        let pin = TabPin::Tree;
+        // 同一选中 → 同一键：重复的标签状态事件不重渲染、不重发请求。
+        assert_eq!(
+            pin_identity(crate::tabs::OBJECTS_TAB_ID, &pin, Some(&sel_a)),
+            pin_identity(crate::tabs::OBJECTS_TAB_ID, &pin, Some(&sel_a))
+        );
+        // 选中换行 → 键变化；选中从有到无同样变化。
+        assert_ne!(
+            pin_identity(crate::tabs::OBJECTS_TAB_ID, &pin, Some(&sel_a)),
+            pin_identity(crate::tabs::OBJECTS_TAB_ID, &pin, Some(&sel_b))
+        );
+        assert_ne!(
+            pin_identity(crate::tabs::OBJECTS_TAB_ID, &pin, Some(&sel_a)),
+            pin_identity(crate::tabs::OBJECTS_TAB_ID, &pin, None)
+        );
     }
 
     #[test]

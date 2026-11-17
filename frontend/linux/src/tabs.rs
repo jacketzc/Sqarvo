@@ -779,6 +779,28 @@ pub fn unavailable_copy(shortcut: KindShortcut) -> Option<(&'static str, &'stati
     }
 }
 
+/// 信息面板按当前标签钉住的目标（改动确认单 #1）。
+///
+/// 由 [`TabSet::pin_target`] 产出，`ui.rs` 据此渲染面板：表数据标签钉表、
+/// 查询标签钉它选择的库、`Objects` 页跟随对象树选中。
+#[derive(Debug, Clone)]
+pub enum TabPin {
+    /// 没有任何标签（理论上不存在：`Objects` 固定页常在）。
+    None,
+    /// `Objects` 固定页：面板跟随对象树当前选中。
+    Tree,
+    /// 表数据标签：该标签的表。`entry = None` = 数据页尚未建立，身份未定。
+    Table {
+        /// 表身份（含完整对象引用）；`None` = 还没拿到。
+        entry: Option<TableEntry>,
+    },
+    /// 查询标签：它当前选择的库。`None` = 没有选择库（面板空态）。
+    QueryCatalog {
+        /// 库名（真值优先，其次请求值）。
+        name: Option<String>,
+    },
+}
+
 /// 当前标签推给外壳的状态。
 #[derive(Debug, Clone)]
 pub enum TabStatus {
@@ -1769,6 +1791,49 @@ impl TabSet {
     #[must_use]
     pub fn current_id(&self) -> Option<String> {
         self.current().map(|tab| tab.id.clone())
+    }
+
+    /// 信息面板按当前标签钉住的目标（改动确认单 #1：面板内容跟着页面走）。
+    ///
+    /// 只说「钉哪个对象」；渲染与缓存都在信息面板侧（`ui.rs` 接线），这里不碰控件。
+    #[must_use]
+    pub fn pin_target(&self) -> TabPin {
+        let Some(tab) = self.current() else {
+            return TabPin::None;
+        };
+        match &tab.kind {
+            TabKind::Objects => TabPin::Tree,
+            TabKind::Table { connection_key, .. } => {
+                let mut entry = tab
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.status_snapshot().table.clone());
+                // 元数据走连接的**浏览会话**（ADR 0021）：数据页的引用在打开后会带上
+                // 标签自己的会话 ID，留着它，信息面板既找不到元数据通道，缓存键也会和
+                // 树路径分裂成两份——钉住前先换回该连接的浏览会话（口径与树节点一致）。
+                if let Some(entry) = entry.as_mut()
+                    && let Some(session) = self
+                        .context
+                        .registry
+                        .as_ref()
+                        .and_then(|registry| registry.session_for_key(connection_key))
+                {
+                    entry.reference.session_id = session;
+                }
+                TabPin::Table { entry }
+            }
+            TabKind::Query { .. } => {
+                // 选择的库：服务端真值优先，其次选择器的请求值（真值还没读到时代码
+                // 已发往那个库）；两处都空 = 没有选择库，面板落到空态。
+                let name = tab
+                    .catalog
+                    .truth()
+                    .or_else(|| tab.catalog.request())
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty());
+                TabPin::QueryCatalog { name }
+            }
+        }
     }
 
     /// 某个对象在某个表标签里**已加载的行数**（#119 信息面板「表信息」）。

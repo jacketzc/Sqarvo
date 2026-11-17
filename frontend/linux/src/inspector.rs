@@ -11,12 +11,17 @@
 //! | 列 | 该列的完整属性 | `GetColumns`（父表的列清单） |
 //! | 索引 / 触发器 | 仅 DDL；不支持的驱动给稳定错误码 | `GetDdl` |
 //!
-//! 两条硬规则：
+//! 三条硬规则：
 //!
 //! 1. **拿不到的字段不出现**——不写 `—` / `N/A` / 空占位。字段为空串就是「没有这个
 //!    事实」，这一行整行不渲染（见本模块的单测）。
 //! 2. **DDL 与表信息是面板内切换**：不重建标签、不重发浏览请求；选择按标签生命周期
 //!    记忆（[`Inspector::show_object`] 的 `tab_id` 键）。
+//! 3. **钉住视图（改动确认单 #1）**：标签切换时面板内容跟着页面走——表数据标签钉住
+//!    该表的表视图（首进默认子页「表信息」），查询标签钉住它选择的库（无库则空态），
+//!    `Objects` 页跟随对象树选中。同一对象的 DDL / 列 / 主键 / 索引此前成功读到过，
+//!    再展示（切页复入或重复选中）就直接渲染缓存、不重发请求；对象树刷新或重连
+//!    （会话 ID 变化）后缓存作废，重新读取。
 //!
 //! 本模块的文案层（[`Fact`]、[`connection_facts`]、[`catalog_facts`]、
 //! [`primary_key_label`]、[`state_for_error`]）不创建 GTK 对象，可脱离显示服务器单测；
@@ -32,9 +37,9 @@ use crate::backend::metadata::{MetadataError, MetadataHub, NodeView, ddl_support
 use crate::backend::table::TableColumn;
 use crate::column_info::{column_info_rows, default_label, nullable_label};
 use crate::config::SavedConnection;
-use crate::ddl::DdlPanel;
+use crate::ddl::{DdlPanel, DdlSnapshot};
 use crate::layout::{Gap, gap};
-use crate::proto::services::v1::ObjectKind;
+use crate::proto::services::v1::{ObjectKind, ObjectRef};
 
 /// DDL 面板的通道解析器（按对象自己的浏览会话找元数据通道）。
 pub type HubResolver =
@@ -345,6 +350,8 @@ pub struct Inspector {
     object: RefCell<Option<NodeView>>,
     /// 当前标签 ID（记忆键）。
     tab_key: RefCell<String>,
+    /// 钉住视图的对象级缓存（键：[`cache_key`]；改动确认单 #1）。
+    cache: RefCell<HashMap<String, CachedObject>>,
 }
 
 /// 表信息页的数据（每一项 `None` = 还没拿到，不渲染）。
@@ -357,6 +364,43 @@ struct TableInfo {
     loaded_rows: Option<usize>,
     /// 索引 / 触发器读取失败的说明（保留错误码）。
     children_error: Option<String>,
+}
+
+/// 一个对象的已解析结果缓存（改动确认单 #1：钉住视图复入直接渲染，不重发请求）。
+///
+/// 每一项 `None` = 这一项还没有**成功**返回过；错误不缓存（下一次重新读，让失败
+/// 保持新鲜），空 DDL 也不缓存（`DdlPanel` 的 Empty 是当次判断）。
+#[derive(Debug, Clone, Default)]
+struct CachedObject {
+    ddl: Option<DdlSnapshot>,
+    columns: Option<Vec<TableColumn>>,
+    primary_key: Option<Vec<(u32, String)>>,
+    indexes: Option<Vec<String>>,
+    triggers: Option<Vec<String>>,
+}
+
+impl CachedObject {
+    /// 是否已齐（DDL + 表信息四件）：齐了才走缓存渲染，缺任何一件都重新读。
+    #[must_use]
+    fn ready(&self) -> bool {
+        self.ddl.is_some()
+            && self.columns.is_some()
+            && self.primary_key.is_some()
+            && self.indexes.is_some()
+            && self.triggers.is_some()
+    }
+}
+
+/// 钉住视图缓存的键：对象引用的四段（含浏览会话 ID）。
+///
+/// 会话 ID 入键有两个效果：不同连接的同名库互不串数据；断开重连后浏览会话 ID 变了，
+/// 旧缓存自然失效（结构与旧数据不再可信），无需额外清理事件。
+#[must_use]
+pub fn cache_key(reference: &ObjectRef) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        reference.session_id, reference.catalog, reference.schema, reference.name
+    )
 }
 
 /// 面板内容列的左边距。
@@ -541,6 +585,7 @@ impl Inspector {
             column: RefCell::new(None),
             object: RefCell::new(None),
             tab_key: RefCell::new("tree".to_owned()),
+            cache: RefCell::new(HashMap::new()),
         });
         panel.install_toggles();
         panel
@@ -566,10 +611,23 @@ impl Inspector {
     }
 
     /// 接线到「按会话找元数据通道」的解析器（DDL / 列 / 主键都要走对象自己的会话）。
-    pub fn attach_resolver(&self, resolver: HubResolver) {
+    pub fn attach_resolver(self: &Rc<Self>, resolver: HubResolver) {
         self.hub_of.replace(Some(resolver.clone()));
         self.ddl.attach_resolver(Rc::clone(&resolver));
         self.ddl_only.attach_resolver(resolver);
+        // DDL 成功返回时顺手写进对象缓存（改动确认单 #1：钉住视图复入不再请求）。
+        let weak = Rc::downgrade(self);
+        self.ddl
+            .set_on_resolved(Rc::new(move |reference, snapshot| {
+                if let Some(panel) = weak.upgrade() {
+                    panel
+                        .cache
+                        .borrow_mut()
+                        .entry(cache_key(reference))
+                        .or_default()
+                        .ddl = Some(snapshot.clone());
+                }
+            }));
     }
 
     /// 设为「没有选中对象」：保留面板头部（标题「信息面板」+ 分隔线），内容区留白。
@@ -655,19 +713,9 @@ impl Inspector {
                 self.set_page("catalog");
             }
             ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView => {
-                self.ddl.set_visible(true);
-                self.switch_bar.set_visible(true);
-                let pane = self
-                    .pane_memory
-                    .borrow()
-                    .get(tab_id)
-                    .copied()
-                    .unwrap_or(TablePage::Ddl);
-                self.apply_pane(pane, false);
-                self.set_page("table");
-                // 先推一份只有对象身份的快照；表信息（列/主键/索引）回来时
-                // `render_table_info` 会用同一份数据补上关键属性。
-                self.load_table(node, generation, loaded_rows);
+                // 与钉住渲染同一套路径：缓存齐了就直接渲染（切回 Objects 页不重复
+                // 请求；改动确认单 #1 第 4 条），树预览的默认子页仍是 DDL。
+                self.render_table(tab_id, node, loaded_rows, TablePage::Ddl, generation);
             }
             ObjectKind::Column => {
                 self.switch_bar.set_visible(false);
@@ -755,23 +803,88 @@ impl Inspector {
         Rc::clone(&self.ddl)
     }
 
-    /// 当前标签换了（切标签）：记忆键跟着换，并按新标签记住的页恢复。
+    /// 表数据标签的钉住视图（改动确认单 #1）：展示「这个标签的那张表」。
     ///
-    /// 换标签**不重发**任何请求：面板内容还是同一个对象，只是「这个标签上次看的是
-    /// 哪一页」变了（§5：表页选择在标签生命周期内记忆）。
-    pub fn retarget(&self, tab_id: &str) {
-        if self.tab_key.borrow().as_str() == tab_id {
-            return;
-        }
+    /// 与树选中的临时预览（[`Inspector::show_object`]）只有一点不同：首进的默认子页
+    /// 是「表信息」（预览是 DDL）；手动切过 `[DDL] / [表信息]` 之后都按标签记忆。
+    /// 两条路径共用 [`Self::render_table`]：缓存齐了就直接渲染、不重发请求。
+    pub fn show_table_pinned(
+        self: &Rc<Self>,
+        tab_id: &str,
+        node: NodeView,
+        loaded_rows: Option<usize>,
+    ) {
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
         self.tab_key.replace(tab_id.to_owned());
-        if self.page.borrow().as_str() == "table" {
-            let pane = self
-                .pane_memory
-                .borrow()
-                .get(tab_id)
-                .copied()
-                .unwrap_or(self.current_pane.get());
-            self.apply_pane(pane, false);
+        self.title.set_text(&node.display_name);
+        self.subtitle.set_text(kind_label(node.kind));
+        self.title.set_tooltip_text(Some(&node.path_label()));
+        self.object.replace(Some(node.clone()));
+        self.render_table(tab_id, node, loaded_rows, TablePage::Info, generation);
+    }
+
+    /// 表视图的统一渲染路径（钉住与树预览共用；改动确认单 #1 第 4 条）。
+    ///
+    /// 该对象的 DDL / 列 / 主键 / 索引此前都成功读到过时直接渲染缓存、不重发请求；
+    /// 「已加载行数」每次按当前标签新鲜注入。缺任何一件才发四路元数据请求。
+    fn render_table(
+        self: &Rc<Self>,
+        tab_id: &str,
+        node: NodeView,
+        loaded_rows: Option<usize>,
+        default_pane: TablePage,
+        generation: u64,
+    ) {
+        self.ddl.set_visible(true);
+        self.switch_bar.set_visible(true);
+        let pane = self
+            .pane_memory
+            .borrow()
+            .get(tab_id)
+            .copied()
+            .unwrap_or(default_pane);
+        self.apply_pane(pane, false);
+        self.set_page("table");
+        let cached = self
+            .cache
+            .borrow()
+            .get(&cache_key(&node.reference))
+            .filter(|entry| entry.ready())
+            .cloned();
+        match cached {
+            Some(entry) => {
+                if let Some(snapshot) = entry.ddl.as_ref() {
+                    self.ddl.show_cached(&node, snapshot);
+                }
+                *self.info.borrow_mut() = TableInfo {
+                    columns: entry.columns,
+                    primary_key: entry.primary_key,
+                    indexes: entry.indexes,
+                    triggers: entry.triggers,
+                    loaded_rows,
+                    children_error: None,
+                };
+                self.render_table_info();
+                eprintln!(
+                    "[inspector] 表视图（缓存齐，直接渲染不重发请求）：{}",
+                    node.path_label()
+                );
+            }
+            None => {
+                // 先推一份只有对象身份的快照；表信息（列/主键/索引）回来时
+                // `render_table_info` 会用同一份数据补上关键属性。
+                self.load_table(node, generation, loaded_rows);
+            }
+        }
+    }
+
+    /// 清掉对象级缓存（对象树刷新后：结构可能已变，旧读数不再可信）。
+    pub fn invalidate_cache(&self) {
+        let cleared = self.cache.borrow().len();
+        self.cache.borrow_mut().clear();
+        if cleared > 0 {
+            eprintln!("[inspector] 钉住缓存清理：{cleared} 个对象（对象树已刷新）");
         }
     }
 
@@ -857,6 +970,8 @@ impl Inspector {
 
     fn load_table(self: &Rc<Self>, node: NodeView, generation: u64, loaded_rows: Option<usize>) {
         // DDL 复用面板：原文 / 拼装 / 状态页都在那里判定，不重复一份。
+        // 成功返回时面板的旁路会把快照写进对象缓存（`attach_resolver`）。
+        let key = cache_key(&node.reference);
         self.ddl.show_for(node.clone());
         *self.info.borrow_mut() = TableInfo {
             columns: None,
@@ -878,10 +993,21 @@ impl Inspector {
             return;
         };
         let weak = Rc::downgrade(self);
+        let cache_columns = key.clone();
         hub.request_columns(
             node.reference.clone(),
             Rc::new(move |result| {
                 let Some(panel) = weak.upgrade() else { return };
+                // 先写缓存再比对 generation：用户切走了也把已到达的结果存下来，
+                // 下次复入同一对象就能走缓存路径（改动确认单 #1）。
+                if let Ok(columns) = &result {
+                    panel
+                        .cache
+                        .borrow_mut()
+                        .entry(cache_columns.clone())
+                        .or_default()
+                        .columns = Some(columns.clone());
+                }
                 if panel.generation.get() != generation {
                     return;
                 }
@@ -895,10 +1021,23 @@ impl Inspector {
             }),
         );
         let weak = Rc::downgrade(self);
+        let cache_pk = key.clone();
         hub.request_primary_key(
             node.reference.clone(),
             Rc::new(move |result| {
                 let Some(panel) = weak.upgrade() else { return };
+                if let Ok(columns) = &result {
+                    let pk: Vec<(u32, String)> = columns
+                        .iter()
+                        .map(|column| (column.position, column.name.clone()))
+                        .collect();
+                    panel
+                        .cache
+                        .borrow_mut()
+                        .entry(cache_pk.clone())
+                        .or_default()
+                        .primary_key = Some(pk);
+                }
                 if panel.generation.get() != generation {
                     return;
                 }
@@ -918,12 +1057,28 @@ impl Inspector {
         );
         // 索引与触发器是表的直接子节点（`ListNodes`，按种类过滤）。
         let weak = Rc::downgrade(self);
+        let cache_children = key;
         hub.request_group(
             node.reference.clone(),
             &[ObjectKind::Index, ObjectKind::Trigger],
             "",
             Rc::new(move |result| {
                 let Some(panel) = weak.upgrade() else { return };
+                if let Ok(page) = &result {
+                    let mut indexes = Vec::new();
+                    let mut triggers = Vec::new();
+                    for child in &page.nodes {
+                        match child.kind {
+                            ObjectKind::Index => indexes.push(child.display_name.clone()),
+                            ObjectKind::Trigger => triggers.push(child.display_name.clone()),
+                            _ => {}
+                        }
+                    }
+                    let mut cache = panel.cache.borrow_mut();
+                    let entry = cache.entry(cache_children.clone()).or_default();
+                    entry.indexes = Some(indexes);
+                    entry.triggers = Some(triggers);
+                }
                 if panel.generation.get() != generation {
                     return;
                 }
@@ -1494,5 +1649,45 @@ mod tests {
         assert_eq!(TablePage::parse("表信息"), Some(TablePage::Info));
         assert_eq!(TablePage::parse("DDL"), Some(TablePage::Ddl));
         assert_eq!(TablePage::parse("nope"), None);
+    }
+
+    fn reference(session: &str, catalog: &str, schema: &str, name: &str) -> ObjectRef {
+        ObjectRef {
+            session_id: session.to_owned(),
+            catalog: catalog.to_owned(),
+            schema: schema.to_owned(),
+            name: name.to_owned(),
+            kind: ObjectKind::Table as i32,
+        }
+    }
+
+    #[test]
+    fn cache_key_separates_sessions_and_paths() {
+        let base = cache_key(&reference("s1", "shop", "shop", "orders"));
+        assert_eq!(cache_key(&reference("s1", "shop", "shop", "orders")), base);
+        // 不同会话的同名对象不能共用缓存条目；重连换了会话 ID 即自然失效。
+        assert_ne!(cache_key(&reference("s2", "shop", "shop", "orders")), base);
+        assert_ne!(cache_key(&reference("s1", "other", "shop", "orders")), base);
+        assert_ne!(cache_key(&reference("s1", "shop", "shop", "notes")), base);
+    }
+
+    #[test]
+    fn cached_object_requires_every_part_before_cache_render() {
+        let mut entry = CachedObject::default();
+        assert!(!entry.ready());
+        entry.ddl = Some(DdlSnapshot {
+            ddl: "CREATE TABLE t (id INT);".to_owned(),
+            exact: true,
+            warning: None,
+        });
+        entry.columns = Some(vec![]);
+        entry.primary_key = Some(vec![]);
+        entry.indexes = Some(vec![]);
+        assert!(
+            !entry.ready(),
+            "缺触发器读数就不算齐：不能把半份数据当完整缓存渲染"
+        );
+        entry.triggers = Some(vec![]);
+        assert!(entry.ready());
     }
 }
