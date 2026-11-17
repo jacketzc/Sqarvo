@@ -257,9 +257,6 @@ impl SessionDatabaseContext {
     }
 }
 
-/// 没有默认库时的文案（tooltip、选择器共用一份，避免两处漂移）。
-pub const UNSPECIFIED_CATALOG_LABEL: &str = "未指定";
-
 /// 选择器里「没有默认库」那一项的文字（比 tooltip 的「未指定」更明确一点）。
 pub const UNSPECIFIED_PICKER_LABEL: &str = "未指定库";
 
@@ -1893,8 +1890,8 @@ mod tests {
     fn empty_context_catalog_is_none_and_never_reads_as_default() {
         let empty = context("", CatalogKind::Database);
         assert_eq!(empty.default_catalog, None);
-        // 界面文案是「未指定」（常量与 tooltip / 选择器共用同一份）。
-        assert_eq!(UNSPECIFIED_CATALOG_LABEL, "未指定");
+        // 界面文案「未指定」自 #199 起住进 l10n catalog（tabs.catalog_unspecified），
+        // 不再有代码内常量。
         // 日志用更明确的「无默认库」，不冒充配置值。
         assert_eq!(empty.log_note(), "无默认库");
         // 空白串同样是「没有库」：服务端不该收到一个只有空格的库名。

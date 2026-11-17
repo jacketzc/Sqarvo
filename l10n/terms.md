@@ -32,3 +32,25 @@
 | 取消 | Cancel | |
 | 深色模式 | Dark Mode | |
 | 界面密度 | Density | 菜单小节名，Windows 短标签口径 |
+| 文件 | File | 主菜单顶层 |
+| 视图 | View | 主菜单顶层 |
+| 帮助 | Help | 主菜单顶层 |
+| 主菜单 | Main Menu | headerbar 菜单按钮 tooltip |
+| 退出 | Quit | 菜单条目（应用级） |
+| 新建 | New | 「新建连接 / 新建查询」复合词 |
+| 新建查询标签 | New Query Tab | 菜单与工具条同词 |
+| 关于 | About | 「关于 Squarvo」；品牌名不译 |
+| 浅色 | Light | 深色模式条目 |
+| 深色 | Dark | 深色模式条目 |
+| 库 | Database | 客户端的 database 层；Schema 层原样写 Schema |
+| 未指定 | Unspecified | 会话 / 库真值缺失的占位 |
+| 未连接 | Not connected | 状态栏与树连接态 |
+| 已断开 | Disconnected | 会话失效态 |
+| 默认 | Default | 表标签标题的空 catalog 占位 |
+| 标签 | Tab | 标签条语境 |
+| 会话 | Session | 界面语境（区别于终端 shell） |
+| 脏行 | Dirty Row | 「提交所有脏行的变更」等 |
+| 首页 | First | 分页器按钮 |
+| 上一页 | Previous | 分页器按钮 |
+| 下一页 | Next | 分页器按钮 |
+| 末页 | Last | 分页器按钮 |

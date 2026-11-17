@@ -203,13 +203,16 @@ impl Tier {
         }
     }
 
-    /// 菜单与日志里的中文标签。
+    /// 「视图 → 界面密度」小节条目的 catalog key（`l10n/shell.toml`，#199）。
+    ///
+    /// 三档菜单文字（「紧凑（100%）」等）已整体迁入 catalog，zh 与迁移前逐字节
+    /// 相等；日志继续用 [`id`]（ASCII 稳定标识），不需要中文标签。
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub fn menu_key(self) -> &'static str {
         match self {
-            Self::Compact => "紧凑（100%）",
-            Self::Comfortable => "舒适（125%）",
-            Self::Large => "大（150%）",
+            Self::Compact => "shell.menu.tier_compact",
+            Self::Comfortable => "shell.menu.tier_comfortable",
+            Self::Large => "shell.menu.tier_large",
         }
     }
 

@@ -173,20 +173,14 @@ pub fn t(key: &'static str) -> &'static str {
 }
 
 /// 取一条带 `{name}` 命名占位符的文案并填参（决策 5；只替换给定的名字）。
-///
-/// S1 是机制层：真实调用点随 Lane B 各区迁移接线（#200 起），先由单测证明行为。
 #[must_use]
-#[allow(dead_code)]
 pub fn tf(key: &'static str, args: &[(&str, String)]) -> String {
     expand(t(key), args)
 }
 
 /// 复数条目（one/other 两态）：中文恒用 `zh`；英文 `n == 1` 且有 `en_one` 用 one
 /// 形态，否则 other 形态（缺 `en_one` = 该 key 无复数，schema 见 `l10n/README.md`）。
-///
-/// 同上：首批 catalog 没有复数条目，接线在 Lane B。
 #[must_use]
-#[allow(dead_code)]
 pub fn t_n(key: &'static str, n: i64) -> &'static str {
     if current() == Lang::Zh {
         return t(key);
@@ -197,6 +191,12 @@ pub fn t_n(key: &'static str, n: i64) -> &'static str {
         return one;
     }
     t(key)
+}
+
+/// 复数 + 命名占位：先按 [`t_n`] 选形态，再按 [`tf`] 填参（「已选中 {n} 行」类）。
+#[must_use]
+pub fn tf_n(key: &'static str, n: i64, args: &[(&str, String)]) -> String {
+    expand(t_n(key, n), args)
 }
 
 /// 命名占位替换（`tf` 的纯函数内核，单测直接打这里）。
@@ -276,5 +276,19 @@ mod tests {
         set_current(Lang::Zh);
         // 中文恒用 zh：n 不改变取值。
         assert_eq!(t_n("shell.menu.view_language", 0), "语言");
+    }
+
+    #[test]
+    fn tf_n_picks_plural_form_then_fills_placeholder() {
+        // 状态栏「已选中 N 行」：登记了 en_one 的 key 才走 one 形态（#199 首批复数条目）。
+        set_current(Lang::En);
+        let one = tf_n("status_bar.selected_rows", 1, &[("n", "1".to_owned())]);
+        assert!(one.starts_with("1 row selected"), "{one}");
+        let many = tf_n("status_bar.selected_rows", 12, &[("n", "12".to_owned())]);
+        assert!(many.starts_with("12 rows selected"), "{many}");
+        // 中文恒单式：n 只填占位，不换形态。
+        set_current(Lang::Zh);
+        let zh = tf_n("status_bar.selected_rows", 12, &[("n", "12".to_owned())]);
+        assert!(zh.starts_with("已选中 12 行"), "{zh}");
     }
 }

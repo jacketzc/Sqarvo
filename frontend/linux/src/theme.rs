@@ -199,13 +199,26 @@ impl Scheme {
         }
     }
 
-    /// 菜单条目文字。
+    /// 日志里的人话名字（菜单文案走 [`menu_key`] + `l10n::t`，日志不进 catalog）。
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::System => "跟随系统",
             Self::Light => "浅色",
             Self::Dark => "深色",
+        }
+    }
+
+    /// 「视图 → 深色模式」小节条目的 catalog key（`l10n/shell.toml`，#199）。
+    ///
+    /// 与 `l10n::Lang::menu_key` 同形态：菜单在显示边界经 `l10n::t` 取文案，
+    /// 中文条目与 [`label`] 逐字节一致；`label` 保留给日志（日志不进 catalog）。
+    #[must_use]
+    pub fn menu_key(self) -> &'static str {
+        match self {
+            Self::System => "shell.menu.theme_system",
+            Self::Light => "shell.menu.theme_light",
+            Self::Dark => "shell.menu.theme_dark",
         }
     }
 

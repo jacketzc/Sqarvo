@@ -50,20 +50,11 @@ use gtk::glib;
 
 use crate::browse_view::relative_age;
 use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
+use crate::l10n;
 use crate::layout::{self, Gap, gap};
 
-/// 分页器的提示：offset 分页，页码只读，只提供首页/上页/下页/末页。
-const PAGER_NOTE: &str =
-    "offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供";
-
-// 区域 02 的按钮 tooltip：后端就绪与否两套文案（禁用时必须说明原因）。
-const CONNECT_TOOLTIP: &str = "打开连接对话框（Ctrl+N）";
-const CONNECT_TOOLTIP_NOT_READY: &str = "后端尚未就绪：正在连接本地后端，握手完成后才能新建连接";
-const KIND_TOOLTIP_NOT_READY: &str = "后端尚未就绪：握手完成后可用";
-const KIND_TABLE_TOOLTIP: &str = "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）";
-const KIND_VIEW_TOOLTIP: &str = "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）";
-const KIND_FUNCTION_TOOLTIP: &str = "函数列表：驱动尚未提供（点开看说明）";
-const KIND_QUERY_TOOLTIP: &str = "已保存的查询：尚未实现（点开看说明）";
+// 区域 02 的按钮 tooltip：后端就绪与否两套文案（禁用时必须说明原因）都在
+// `l10n/shell.toml`（#199：文案进 catalog，`zh` 与迁移前逐字节相等）。
 
 /// 外壳需要的回调。
 pub struct ShellHandlers {
@@ -727,19 +718,19 @@ impl Toolbar {
         root.add_css_class("sqarvo-toolbar");
         root.set_valign(gtk::Align::Center);
 
-        let connect = gtk::Button::with_label("连接");
+        let connect = gtk::Button::with_label(l10n::t("shell.toolbar_connect"));
         connect.add_css_class("suggested-action");
         connect.set_valign(gtk::Align::Center);
-        connect.set_tooltip_text(Some(CONNECT_TOOLTIP));
+        connect.set_tooltip_text(Some(l10n::t("shell.tooltip_connect")));
         {
             let handler = Rc::clone(&on_connect);
             connect.connect_clicked(move |_| handler());
         }
 
-        let new_query = gtk::Button::with_label("新建查询");
+        let new_query = gtk::Button::with_label(l10n::t("shell.toolbar_new_query"));
         new_query.add_css_class("flat");
         new_query.set_valign(gtk::Align::Center);
-        new_query.set_tooltip_text(Some("新建查询标签（Ctrl+T）"));
+        new_query.set_tooltip_text(Some(l10n::t("shell.tooltip_new_query")));
         {
             let handler = Rc::clone(&on_new_query);
             new_query.connect_clicked(move |_| handler());
@@ -773,18 +764,22 @@ impl Toolbar {
         let table = kind(
             "Tables",
             crate::tabs::KindShortcut::Tables,
-            KIND_TABLE_TOOLTIP,
+            l10n::t("shell.tooltip_kind_tables"),
         );
-        let view = kind("Views", crate::tabs::KindShortcut::Views, KIND_VIEW_TOOLTIP);
+        let view = kind(
+            "Views",
+            crate::tabs::KindShortcut::Views,
+            l10n::t("shell.tooltip_kind_views"),
+        );
         let function = kind(
             "Functions",
             crate::tabs::KindShortcut::Functions,
-            KIND_FUNCTION_TOOLTIP,
+            l10n::t("shell.tooltip_kind_functions"),
         );
         let query = kind(
             "Queries",
             crate::tabs::KindShortcut::Queries,
-            KIND_QUERY_TOOLTIP,
+            l10n::t("shell.tooltip_kind_queries"),
         );
 
         let kinds = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xxs));
@@ -806,7 +801,7 @@ impl Toolbar {
         for button in [&connect, &new_query, &table, &view, &function, &query] {
             button.set_sensitive(false);
         }
-        connect.set_tooltip_text(Some(CONNECT_TOOLTIP_NOT_READY));
+        connect.set_tooltip_text(Some(l10n::t("shell.tooltip_connect_not_ready")));
 
         Rc::new(Self {
             root,
@@ -869,23 +864,23 @@ impl Toolbar {
         } else {
             self.connect.remove_css_class("suggested-action");
         }
-        self.connect.set_tooltip_text(Some(if ready {
-            CONNECT_TOOLTIP
+        self.connect.set_tooltip_text(Some(l10n::t(if ready {
+            "shell.tooltip_connect"
         } else {
-            CONNECT_TOOLTIP_NOT_READY
-        }));
+            "shell.tooltip_connect_not_ready"
+        })));
         for (button, tooltip) in [
-            (&self.table, KIND_TABLE_TOOLTIP),
-            (&self.view, KIND_VIEW_TOOLTIP),
-            (&self.function, KIND_FUNCTION_TOOLTIP),
-            (&self.query, KIND_QUERY_TOOLTIP),
+            (&self.table, "shell.tooltip_kind_tables"),
+            (&self.view, "shell.tooltip_kind_views"),
+            (&self.function, "shell.tooltip_kind_functions"),
+            (&self.query, "shell.tooltip_kind_queries"),
         ] {
             button.set_sensitive(ready);
-            button.set_tooltip_text(Some(if ready {
+            button.set_tooltip_text(Some(l10n::t(if ready {
                 tooltip
             } else {
-                KIND_TOOLTIP_NOT_READY
-            }));
+                "shell.tooltip_kind_not_ready"
+            })));
         }
         self.apply_new_query();
         self.log_availability(ready);
@@ -896,13 +891,13 @@ impl Toolbar {
         let backend_ready = self.backend_ready.get();
         let enabled = backend_ready && self.new_query_allowed.get();
         self.new_query.set_sensitive(enabled);
-        self.new_query.set_tooltip_text(Some(if enabled {
-            "新建查询标签（Ctrl+T）"
+        self.new_query.set_tooltip_text(Some(l10n::t(if enabled {
+            "shell.tooltip_new_query"
         } else if !backend_ready {
-            "后端尚未就绪：握手完成且连接数据库后才能新建查询标签"
+            "shell.tooltip_new_query_not_ready"
         } else {
-            "尚未连接数据库：先连接再新建查询标签"
-        }));
+            "shell.tooltip_new_query_not_connected"
+        })));
     }
 
     /// 「新建查询」的可用性：未连接数据库时禁用并说明原因（不摆点了没反应的按钮）。
@@ -1068,9 +1063,11 @@ enum OpsContext {
 #[must_use]
 fn cancel_copy(context: OpsContext) -> (&'static str, Option<&'static str>) {
     match context {
-        OpsContext::Query => ("取消当前查询（Esc）", Some("当前没有执行中的查询")),
-        OpsContext::Table => ("取消在途的提交批次", None),
-        OpsContext::None => ("取消在途的提交批次", None),
+        OpsContext::Query => (
+            l10n::t("status_bar.cancel_query_tip"),
+            Some(l10n::t("status_bar.cancel_query_idle")),
+        ),
+        OpsContext::Table | OpsContext::None => (l10n::t("status_bar.cancel_batch_tip"), None),
     }
 }
 
@@ -1095,34 +1092,34 @@ impl StatusBar {
         };
         let add = make_op(
             "list-add-symbolic",
-            "新增行：在当前表末尾新增一行",
+            l10n::t("status_bar.op_add_tip"),
             RowOp::Add,
         );
         let delete = make_op(
             "list-remove-symbolic",
-            "删除选中行：标记为待删除（提交前可撤销）",
+            l10n::t("status_bar.op_delete_tip"),
             RowOp::Delete,
         );
         let apply = make_op(
             "object-select-symbolic",
-            "应用：提交所有脏行的变更",
+            l10n::t("status_bar.op_apply_tip"),
             RowOp::Apply,
         );
         let discard = make_op(
             "edit-undo-symbolic",
-            "撤销：放弃全部未提交的编辑与删除标记",
+            l10n::t("status_bar.op_discard_tip"),
             RowOp::Discard,
         );
         let refresh = make_op(
             "view-refresh-symbolic",
-            "刷新：重新读取当前表的第一页",
+            l10n::t("status_bar.op_refresh_tip"),
             RowOp::Refresh,
         );
         let cancel = make_op(
             // 「取消」用实心方块（原本的 `process-stop-symbolic` 在 Yaru 是八边形、
             // 在 Adwaita 是叉号，两套主题两种样子，也不是「停止」的通用形态）。
             "media-playback-stop-symbolic",
-            "取消：中止正在执行的提交批次（已执行的行会整批回滚）",
+            l10n::t("status_bar.op_cancel_tip"),
             RowOp::Cancel,
         );
 
@@ -1133,7 +1130,7 @@ impl StatusBar {
 
         // 分页器（#118）：offset 分页 + 页码只读显示。按钮把动作交给当前数据页，
         // 由数据页决定目标 offset（并在有未提交更改时拒绝）。
-        let pager_summary = gtk::Label::new(Some("未打开表"));
+        let pager_summary = gtk::Label::new(Some(l10n::t("status_bar.pager_idle")));
         pager_summary.add_css_class("dim-label");
         // 与 `+` 那一档按钮视觉对齐：字号 12（见 theme.rs 的 `.sqarvo-pager-label`）。
         pager_summary.add_css_class("sqarvo-pager-label");
@@ -1150,14 +1147,22 @@ impl StatusBar {
             (
                 crate::icons::FIRST_PAGE,
                 PagerAction::First,
-                "首页（offset = 0）",
+                l10n::t("status_bar.pager_first"),
             ),
-            (crate::icons::PAGE_PREV, PagerAction::Previous, "上一页"),
-            (crate::icons::PAGE_NEXT, PagerAction::Next, "下一页"),
+            (
+                crate::icons::PAGE_PREV,
+                PagerAction::Previous,
+                l10n::t("status_bar.pager_previous"),
+            ),
+            (
+                crate::icons::PAGE_NEXT,
+                PagerAction::Next,
+                l10n::t("status_bar.pager_next"),
+            ),
             (
                 crate::icons::LAST_PAGE,
                 PagerAction::Last,
-                "末页（需要总数）",
+                l10n::t("status_bar.pager_last"),
             ),
         ] {
             let button = gtk::Button::from_icon_name(icon);
@@ -1173,7 +1178,7 @@ impl StatusBar {
         pager_box.set_valign(gtk::Align::Center);
         pager_box.append(&pager);
         pager_box.append(&pager_summary);
-        pager_box.set_tooltip_text(Some(PAGER_NOTE));
+        pager_box.set_tooltip_text(Some(l10n::t("status_bar.pager_note")));
 
         // 展示形式切换（v0.2.5）：分页器**前方**。默认按行浏览；有行选中时可按下去，
         // 数据网格换成「字段 | 值」两列（只讲选中的那一行）。再按一次切回。
@@ -1185,9 +1190,7 @@ impl StatusBar {
         detail_toggle.add_css_class("sqarvo-detail-toggle");
         detail_toggle.set_valign(gtk::Align::Center);
         detail_toggle.set_sensitive(false);
-        detail_toggle.set_tooltip_text(Some(
-            "字段 / 值：只看选中行的每个字段与它的值（先选中一行；再点一次切回按行浏览）",
-        ));
+        detail_toggle.set_tooltip_text(Some(l10n::t("status_bar.detail_tip")));
         {
             let handler = Rc::clone(&on_row_op);
             // 只把「用户按了这一下」交给数据页；选中态由快照回来（可在回调里被纠正）。
@@ -1225,7 +1228,10 @@ impl StatusBar {
         // ---- 行 2 ------------------------------------------------------------
         // 行 2 的左侧文案用 ASCII 冒号：全角「：」会带来中文字体的行盒高度，
         // 和右侧纯拉丁的「Last Refresh:」不在同一条基线上（实测偏高 2px）。
-        let sql_summary = gtk::Label::new(Some("SQL: 尚未执行"));
+        let sql_summary = gtk::Label::new(Some(&format!(
+            "SQL: {}",
+            l10n::t("status_bar.sql_not_executed")
+        )));
         sql_summary.set_xalign(0.0);
         sql_summary.set_hexpand(true);
         sql_summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -1421,14 +1427,25 @@ impl StatusBar {
         // 分页器只在有表时出现：没有表就整格隐藏，不用「未打开表」占位。
         let pager_text = match (&snapshot.table, snapshot.state) {
             (None, _) => None,
-            (Some(_), DataState::Loading) => Some("读取中…".to_owned()),
-            (Some(_), DataState::Error) => Some("读取失败".to_owned()),
-            (Some(_), DataState::Disconnected) => Some("已断开".to_owned()),
+            (Some(_), DataState::Loading) => Some(l10n::t("status_bar.pager_loading").to_owned()),
+            (Some(_), DataState::Error) => Some(l10n::t("status_bar.pager_error").to_owned()),
+            (Some(_), DataState::Disconnected) => {
+                Some(l10n::t("status_bar.pager_disconnected").to_owned())
+            }
             (Some(_), _) => {
                 // 页码只读显示；总数按三态（共 N / 约 N / 无）——能力位为 false 时不显示总数。
-                let mut text = format!("第 {} 页", snapshot.page_index.max(1));
+                let mut text = l10n::tf(
+                    "status_bar.pager_page",
+                    &[("page", snapshot.page_index.max(1).to_string())],
+                );
                 if let Some(count) = snapshot.page_count {
-                    text = format!("第 {} / {} 页", snapshot.page_index.max(1), count.max(1));
+                    text = l10n::tf(
+                        "status_bar.pager_page_of",
+                        &[
+                            ("page", snapshot.page_index.max(1).to_string()),
+                            ("total", count.max(1).to_string()),
+                        ],
+                    );
                 }
                 if let Some(total) = &snapshot.total_text {
                     text.push_str(&format!(" · {total}"));
@@ -1442,10 +1459,26 @@ impl StatusBar {
         // 翻页按钮：只按快照里的可用性；没有表时全部禁用。
         let pager_buttons = self.pager_buttons.borrow().clone();
         for (button, enabled, tip) in [
-            (&pager_buttons[0], snapshot.can_first, "首页（offset = 0）"),
-            (&pager_buttons[1], snapshot.can_previous, "上一页"),
-            (&pager_buttons[2], snapshot.can_next, "下一页"),
-            (&pager_buttons[3], snapshot.can_last, "末页（需要总数）"),
+            (
+                &pager_buttons[0],
+                snapshot.can_first,
+                l10n::t("status_bar.pager_first"),
+            ),
+            (
+                &pager_buttons[1],
+                snapshot.can_previous,
+                l10n::t("status_bar.pager_previous"),
+            ),
+            (
+                &pager_buttons[2],
+                snapshot.can_next,
+                l10n::t("status_bar.pager_next"),
+            ),
+            (
+                &pager_buttons[3],
+                snapshot.can_last,
+                l10n::t("status_bar.pager_last"),
+            ),
         ] {
             button.set_sensitive(enabled && snapshot.table.is_some());
             button.set_tooltip_text(Some(tip));
@@ -1457,8 +1490,10 @@ impl StatusBar {
         self.selected_label
             .set_text(&format!("{selected} selected"));
         self.selected_label.set_visible(selected > 0);
-        self.selected_label.set_tooltip_text(Some(&format!(
-            "已选中 {selected} 行：Ctrl/Shift 可多选，删除按批量语义提交"
+        self.selected_label.set_tooltip_text(Some(&l10n::tf_n(
+            "status_bar.selected_rows",
+            selected as i64,
+            &[("n", selected.to_string())],
         )));
         self.has_table.set(snapshot.table.is_some());
         self.last_refresh_at.set(snapshot.last_refresh);
@@ -1469,9 +1504,9 @@ impl StatusBar {
                 "Last Refresh: {}",
                 relative_age(instant.elapsed().as_secs())
             ));
-            self.last_refresh.set_tooltip_text(Some(&format!(
-                "上次读取时间：{}（offset 分页不保证跨页稳定，必要时点旁边的刷新）",
-                clock_time(instant)
+            self.last_refresh.set_tooltip_text(Some(&l10n::tf(
+                "status_bar.last_refresh_tip",
+                &[("time", clock_time(instant))],
             )));
         }
         // 表标签的 SQL 摘要 = 当前筛选/排序拼出的只读 `SELECT … LIMIT …`（不执行）。
@@ -1499,15 +1534,34 @@ impl StatusBar {
     /// 只改文案不改动作会让用户点了一枚说着「取消查询」却去回滚批次的按钮。
     pub fn apply_row_ops(&self, ops: &RowOpsState) {
         for (button, enabled, base) in [
-            (&self.add, ops.add, "在当前表末尾新增一行"),
-            (&self.delete, ops.delete, "标记删除选中行（提交前可撤销）"),
-            (&self.apply, ops.apply, "提交所有脏行的变更"),
-            (&self.discard, ops.discard, "放弃全部未提交的编辑与删除标记"),
-            (&self.refresh, ops.refresh, "重新读取当前表的第一页"),
+            (&self.add, ops.add, l10n::t("status_bar.row_op_add_base")),
+            (
+                &self.delete,
+                ops.delete,
+                l10n::t("status_bar.row_op_delete_base"),
+            ),
+            (
+                &self.apply,
+                ops.apply,
+                l10n::t("status_bar.row_op_apply_base"),
+            ),
+            (
+                &self.discard,
+                ops.discard,
+                l10n::t("status_bar.row_op_discard_base"),
+            ),
+            (
+                &self.refresh,
+                ops.refresh,
+                l10n::t("status_bar.row_op_refresh_base"),
+            ),
         ] {
             button.set_sensitive(enabled);
             let tooltip = match &ops.reason {
-                Some(reason) if !enabled => format!("{base}（当前不可用：{reason}）"),
+                Some(reason) if !enabled => l10n::tf(
+                    "status_bar.row_op_unavailable",
+                    &[("base", base.to_owned()), ("reason", reason.clone())],
+                ),
                 _ => base.to_owned(),
             };
             button.set_tooltip_text(Some(&tooltip));
@@ -1522,7 +1576,10 @@ impl StatusBar {
                 // 查询页：原因固定是「当前没有执行中的查询」（与结果区五态无关）；
                 // 数据页 / Objects 页：沿用原有的 `RowOpsState.reason`，一字不改。
                 match idle_reason.or(ops.reason.as_deref()) {
-                    Some(reason) => format!("{base}（当前不可用：{reason}）"),
+                    Some(reason) => l10n::tf(
+                        "status_bar.row_op_unavailable",
+                        &[("base", base.to_owned()), ("reason", reason.to_owned())],
+                    ),
                     None => base.to_owned(),
                 }
             };
@@ -1533,11 +1590,12 @@ impl StatusBar {
         // 展示形式切换：只跟「有没有选中行」走（只读连接也能看详情）。
         self.detail_toggle.set_sensitive(ops.detail);
         let toggle_tip = match &ops.reason {
-            Some(reason) if !ops.detail => {
-                format!("字段 / 值：只看选中行的每个字段与它的值（当前不可用：{reason}）")
-            }
-            _ if !ops.detail => "字段 / 值：只看选中行的每个字段与它的值（先选中一行）".to_owned(),
-            _ => "字段 / 值：只看选中行的每个字段与它的值（再点一次切回按行浏览）".to_owned(),
+            Some(reason) if !ops.detail => l10n::tf(
+                "status_bar.detail_unavailable",
+                &[("reason", reason.clone())],
+            ),
+            _ if !ops.detail => l10n::t("status_bar.detail_need_selection").to_owned(),
+            _ => l10n::t("status_bar.detail_switch_back").to_owned(),
         };
         self.detail_toggle.set_tooltip_text(Some(&toggle_tip));
     }
@@ -1662,7 +1720,10 @@ fn clock_time(instant: Instant) -> String {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let converted = unsafe { libc::localtime_r(&stamp, &mut tm) };
     if converted.is_null() {
-        return format!("{} 秒前", instant.elapsed().as_secs());
+        return l10n::tf(
+            "status_bar.seconds_ago",
+            &[("n", instant.elapsed().as_secs().to_string())],
+        );
     }
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }

@@ -64,7 +64,13 @@ pub struct StartupConfig {
 /// 纯函数：不接触 GTK，便于单测（断言启动态确实是 0 条浏览会话）。
 #[must_use]
 pub fn idle_status_text(driver_count: usize, browse_sessions: usize) -> String {
-    format!("驱动 {driver_count} · 浏览会话 {browse_sessions}")
+    crate::l10n::tf(
+        "status_bar.idle_summary",
+        &[
+            ("drivers", driver_count.to_string()),
+            ("sessions", browse_sessions.to_string()),
+        ],
+    )
 }
 
 /// 启动态外壳：对象树侧栏 + `Objects` 空态 + 信息面板 + 状态栏。
@@ -170,7 +176,7 @@ impl StartupWorkspace {
         // 与连接态的标签条同一位置、同一图标；未连接时不能新建查询，禁用而不是隐藏。
         let plus = gtk::Button::from_icon_name("tab-new-symbolic");
         plus.add_css_class("flat");
-        plus.set_tooltip_text(Some("先连接数据库再新建查询标签"));
+        plus.set_tooltip_text(Some(crate::l10n::t("tabs.new_tooltip_startup")));
         plus.set_valign(gtk::Align::Center);
         plus.set_sensitive(false);
         strip.append(&plus);
@@ -240,15 +246,19 @@ impl StartupWorkspace {
             .status()
             .mount_search(&tree.search_widget(), Some(&tree.search_status_widget()));
 
-        shell.status().set_connection(Some("未连接"));
+        shell
+            .status()
+            .set_connection(Some(crate::l10n::t("status_bar.not_connected")));
         shell.status().set_idle_summary(Some(&idle_status_text(
             config.driver_count,
             config.browse_sessions,
         )));
-        shell.status().set_sql_summary("尚未连接");
         shell
             .status()
-            .show_no_table("未连接：从左侧选择一个连接开始");
+            .set_sql_summary(crate::l10n::t("status_bar.sql_not_connected"));
+        shell
+            .status()
+            .show_no_table(crate::l10n::t("status_bar.no_table_startup"));
 
         Rc::new(Self {
             root: shell.widget().clone(),

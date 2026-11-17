@@ -45,9 +45,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::metadata::{MetadataHub, NodeView, catalog_layer_parent, kind_icon};
-use crate::backend::query::{
-    CatalogKind, QueryFailure, SessionDatabaseContext, UNSPECIFIED_CATALOG_LABEL,
-};
+use crate::backend::query::{CatalogKind, QueryFailure, SessionDatabaseContext};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
@@ -80,10 +78,11 @@ pub fn limit_message(open: usize) -> String {
 /// 标签名 `<对象名> @ <catalog>`（workspace-model §3）。
 ///
 /// `catalog` 为空时用「默认」：不编造一个库名，也不把连接名塞进标签。
+/// 「默认」经 `l10n/tabs.toml`（#199）；`@` 是分隔符不译，对象名 / catalog 是数据。
 #[must_use]
 pub fn table_tab_title(object: &str, catalog: &str) -> String {
     let catalog = if catalog.trim().is_empty() {
-        "默认"
+        crate::l10n::t("tabs.title_default_catalog")
     } else {
         catalog
     };
@@ -95,9 +94,10 @@ pub fn table_tab_title(object: &str, catalog: &str) -> String {
 /// 不带 `@ <catalog>`：查询标签的库与连接信息在 tooltip 里（见
 /// [`TabSet::tooltip_for`]）。表数据标签仍用 `对象 @ 库`，两者形状不同是有意的——
 /// 查询标签的序号已经能在同一连接里唯一区分，多连接靠 tooltip 区分。
+/// 模板在 `l10n/tabs.toml`（`tabs.title_query`，zh 与迁移前逐字节相同）。
 #[must_use]
 pub fn query_tab_title(number: u32) -> String {
-    format!("查询 {number}")
+    crate::l10n::tf("tabs.title_query", &[("n", number.to_string())])
 }
 
 /// 循环切换的目标位置（`Ctrl+Tab` = `delta 1`、`Ctrl+Shift+Tab` = `delta -1`）。
@@ -143,20 +143,28 @@ pub fn window_title_for(tab_title: &str, connection_name: &str) -> String {
 /// tooltip 里「库」那一段（纯函数，单测覆盖真值 / 未指定两种文案）。
 ///
 /// 写**服务端真值**：没有默认库时写「未指定」，不再写死「默认」——那会让用户以为
-/// 会话已经落在连接配置里的库（ADR 0030 §7 的由来之一）。
+/// 会话已经落在连接配置里的库（ADR 0030 §7 的由来之一）。层名 / 占位词经
+/// `l10n/tabs.toml`（#199）：`Schema` 层本就是英文词，保持原样（terms.md 规则 3）；
+/// 查询页库选择器（`sql_page`）的层名随 #203 迁移，仍走 `CatalogKind::label`。
 #[must_use]
 pub fn catalog_segment(kind: CatalogKind, truth: Option<&str>) -> String {
-    let layer = kind.label();
+    let layer = match kind {
+        CatalogKind::Schema => "Schema".to_owned(),
+        CatalogKind::Database | CatalogKind::Unknown => {
+            crate::l10n::t("tabs.catalog_database").to_owned()
+        }
+    };
     match truth.map(str::trim).filter(|value| !value.is_empty()) {
         Some(truth) => format!("{layer} {truth}"),
-        None => format!("{layer} {UNSPECIFIED_CATALOG_LABEL}"),
+        None => format!("{layer} {}", crate::l10n::t("tabs.catalog_unspecified")),
     }
 }
 
 /// 查询标签 tooltip 的完整文案（纯函数，单测覆盖「真值 / 未指定」两种）。
 ///
 /// 形状：`查询 1 · 标签会话 · 库 shop · 连接 本地`。库段永远是**真值**（或「未指定」），
-/// 不写死「默认」——那是连接配置值，不是服务端事实。
+/// 不写死「默认」——那是连接配置值，不是服务端事实。段词经 `l10n/tabs.toml`（#199），
+/// ` · ` 是分隔符不进 catalog。
 #[must_use]
 pub fn query_tooltip(
     title: &str,
@@ -167,7 +175,11 @@ pub fn query_tooltip(
 ) -> String {
     let mut text = format!("{title} · {stage} · {}", catalog_segment(kind, truth));
     if let Some(connection) = connection {
-        text.push_str(&format!(" · 连接 {connection}"));
+        text.push_str(" · ");
+        text.push_str(&crate::l10n::tf(
+            "tabs.tooltip_connection",
+            &[("name", connection.to_owned())],
+        ));
     }
     text
 }
@@ -1597,7 +1609,7 @@ impl TabSet {
 
         let plus = gtk::Button::from_icon_name("tab-new-symbolic");
         plus.add_css_class("flat");
-        plus.set_tooltip_text(Some("新建查询标签（Ctrl+T）"));
+        plus.set_tooltip_text(Some(crate::l10n::t("tabs.new_tooltip")));
         plus.set_valign(gtk::Align::Center);
 
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
@@ -2223,7 +2235,9 @@ impl TabSet {
             binding,
             driver: RefCell::new(None),
         });
-        page.set_tooltip(&self.tooltip_for(&handle, "标签会话"));
+        page.set_tooltip(
+            &self.tooltip_for(&handle, crate::l10n::t("tabs.tooltip_stage_tab_session")),
+        );
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
         eprintln!("[tabs] 新建表标签 {tab_id}：{title}");
@@ -2282,7 +2296,7 @@ impl TabSet {
             driver: RefCell::new(None),
         });
         // 标题里只有「查询 N」（契约 §4）：库与连接落到 tooltip，多连接时靠它区分。
-        let tooltip = self.tooltip_for(&handle, "标签会话");
+        let tooltip = self.tooltip_for(&handle, crate::l10n::t("tabs.tooltip_stage_tab_session"));
         page.set_tooltip(&tooltip);
         self.tabs.borrow_mut().push(handle);
         self.select_page(&page);
@@ -3138,9 +3152,13 @@ impl TabSet {
             let (title, subtitle) = self.window_title_and_subtitle(&tab);
             eprintln!("[tabs] 窗口标题：{title}（副标题：{subtitle}）");
         }
-        tab.page.set_tooltip(
-            &self.tooltip_for(&tab, &format!("会话 {}", short_id(&opened.session_id))),
-        );
+        tab.page.set_tooltip(&self.tooltip_for(
+            &tab,
+            &crate::l10n::tf(
+                "tabs.tooltip_session",
+                &[("id", short_id(&opened.session_id))],
+            ),
+        ));
         eprintln!(
             "[tabs] 标签 {} 会话就绪：{}（连接 {}，领养={}，{} ms，驱动 {}）",
             opened.tab_id,
@@ -3258,7 +3276,10 @@ impl TabSet {
         );
         tab.page.set_tooltip(&self.tooltip_for(
             tab,
-            &format!("会话 {}", short_id(&tab.session().unwrap_or_default())),
+            &crate::l10n::tf(
+                "tabs.tooltip_session",
+                &[("id", short_id(&tab.session().unwrap_or_default()))],
+            ),
         ));
     }
 
@@ -5684,6 +5705,25 @@ mod tests {
         assert!(!query_tab_title(3).contains('@'));
         // catalog 缺失时不编造库名，用「默认」占位。
         assert_eq!(table_tab_title("items", ""), "items @ 默认");
+    }
+
+    #[test]
+    fn tab_titles_and_tooltips_render_the_catalog_in_english() {
+        // #199：标签条文案进 catalog 后，英文档标题 / tooltip 必须是译文（zh 不受影响）。
+        crate::l10n::set_current(crate::l10n::Lang::En);
+        assert_eq!(query_tab_title(3), "Query 3");
+        assert_eq!(table_tab_title("items", ""), "items @ Default");
+        assert_eq!(
+            query_tooltip(
+                &query_tab_title(1),
+                crate::l10n::t("tabs.tooltip_stage_tab_session"),
+                CatalogKind::Database,
+                Some("shop"),
+                Some("local"),
+            ),
+            "Query 1 · Tab session · Database shop · Connection local"
+        );
+        crate::l10n::set_current(crate::l10n::Lang::Zh);
     }
 
     #[test]
