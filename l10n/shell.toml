@@ -1,0 +1,316 @@
+# 外壳区文案目录（注册表区 `shell.*`，ADR 0031 决策 2）。
+#
+# schema 见同目录 `README.md`。`zh` 是 source of truth：除「视图 → 语言」小节
+# （S1 新增条目）外，每条 `zh` 与被替换的代码内原字面量逐字节相等。
+#
+# 本区覆盖：headerbar 主菜单按钮 tooltip、「文件 / 视图 / 帮助」全部条目与三级
+# 小节（深色模式 / 界面密度 / 语言）、「帮助 → 关于」入口、主工具条六个按钮与
+# 全部 tooltip、换语言重启确认框；窗口标题栏副标题族全部状态字（`shell.title_*`：
+# 正在连接 / 正在重启 / 连接失败 / 已断开 / 未连接 / 已连接模板 / 正在切换连接，
+# 含 tabs 经 `on_title` 回写到窗口的两条）与握手失败 / 已断开两个 Error 页表面
+# （`shell.error_*`：页面标题与重试 / 重新连接按钮）。标签条 / 状态栏 / 启动加载
+# 界面的文案各归 `tabs.toml` / `status_bar.toml` / `startup.toml`；对象树、
+# 对话框、数据页、查询页、信息面板与 Objects 页随 #200–#203 迁移。
+#
+# 条目 key 与 ui.rs / shell.rs 的接线一一对应；改动这里即改动界面文案（构建期
+# 生成，生成失败 = 构建失败，决策 3）。
+
+[[entry]]
+key = "shell.menu.view_language"
+zh = "语言"
+en = "Language"
+status = "done"
+
+[[entry]]
+key = "shell.menu.lang_system"
+zh = "跟随系统"
+en = "Follow System"
+status = "done"
+
+[[entry]]
+key = "shell.menu.lang_zh"
+zh = "简体中文"
+en = "简体中文"
+status = "done"
+
+[[entry]]
+key = "shell.menu.lang_en"
+zh = "English"
+en = "English"
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_title"
+zh = "切换语言需要重启"
+en = "Switching language requires a restart"
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_body"
+zh = "重启会关闭所有标签页，未提交的更改会丢失。"
+en = "Restarting closes all tabs; uncommitted changes will be lost."
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_btn_restart"
+zh = "重启"
+en = "Restart"
+status = "done"
+
+[[entry]]
+key = "shell.dialog_lang_restart_btn_later"
+zh = "稍后"
+en = "Later"
+status = "done"
+
+# ---- S1 Lane B：主菜单与主工具条存量迁移（#199）----
+
+[[entry]]
+key = "shell.menu_button_tooltip"
+zh = "主菜单（文件 / 视图 / 帮助）"
+en = "Main Menu (File / View / Help)"
+status = "done"
+
+[[entry]]
+key = "shell.menu.file"
+zh = "文件"
+en = "File"
+status = "done"
+
+[[entry]]
+key = "shell.menu.view"
+zh = "视图"
+en = "View"
+status = "done"
+
+[[entry]]
+key = "shell.menu.help"
+zh = "帮助"
+en = "Help"
+status = "done"
+
+[[entry]]
+key = "shell.menu.new_connection"
+zh = "新建连接"
+en = "New Connection"
+status = "done"
+
+[[entry]]
+key = "shell.menu.new_tab"
+zh = "新建查询标签"
+en = "New Query Tab"
+status = "done"
+
+[[entry]]
+key = "shell.menu.quit"
+zh = "退出"
+en = "Quit"
+status = "done"
+
+[[entry]]
+key = "shell.menu.theme_section"
+zh = "深色模式"
+en = "Dark Mode"
+status = "done"
+
+[[entry]]
+key = "shell.menu.theme_system"
+zh = "跟随系统"
+en = "Follow System"
+status = "done"
+
+[[entry]]
+key = "shell.menu.theme_light"
+zh = "浅色"
+en = "Light"
+status = "done"
+
+[[entry]]
+key = "shell.menu.theme_dark"
+zh = "深色"
+en = "Dark"
+status = "done"
+
+[[entry]]
+key = "shell.menu.density_section"
+zh = "界面密度"
+en = "Density"
+status = "done"
+
+[[entry]]
+key = "shell.menu.tier_compact"
+zh = "紧凑（100%）"
+en = "Compact (100%)"
+status = "done"
+
+[[entry]]
+key = "shell.menu.tier_comfortable"
+zh = "舒适（125%）"
+en = "Comfortable (125%)"
+status = "done"
+
+[[entry]]
+key = "shell.menu.tier_large"
+zh = "大（150%）"
+en = "Large (150%)"
+status = "done"
+
+[[entry]]
+key = "shell.menu.tier_unavailable"
+zh = "{tier}，放不下"
+en = "{tier}, doesn't fit"
+status = "done"
+
+[[entry]]
+key = "shell.menu.about"
+zh = "关于 Squarvo"
+en = "About Squarvo"
+status = "done"
+
+[[entry]]
+key = "shell.toolbar_connect"
+zh = "连接"
+en = "Connect"
+status = "done"
+
+[[entry]]
+key = "shell.toolbar_new_query"
+zh = "新建查询"
+en = "New Query"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_connect"
+zh = "打开连接对话框（Ctrl+N）"
+en = "Open the connection dialog (Ctrl+N)"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_connect_not_ready"
+zh = "后端尚未就绪：正在连接本地后端，握手完成后才能新建连接"
+en = "Backend not ready: connecting to the local backend; you can create a connection once the handshake completes"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_kind_not_ready"
+zh = "后端尚未就绪：握手完成后可用"
+en = "Backend not ready: available once the handshake completes"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_kind_tables"
+zh = "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）"
+en = "List the current database's tables on the Objects page (same as selecting the Tables group in the object tree)"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_kind_views"
+zh = "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）"
+en = "List the current database's views on the Objects page (same as selecting the Views group in the object tree)"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_kind_functions"
+zh = "函数列表：驱动尚未提供（点开看说明）"
+en = "Functions list: not provided by the driver (open for the explanation)"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_kind_queries"
+zh = "已保存的查询：尚未实现（点开看说明）"
+en = "Saved queries: not implemented yet (open for the explanation)"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_new_query"
+zh = "新建查询标签（Ctrl+T）"
+en = "New Query Tab (Ctrl+T)"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_new_query_not_ready"
+zh = "后端尚未就绪：握手完成且连接数据库后才能新建查询标签"
+en = "Backend not ready: finish the handshake and connect to a database before opening a new query tab"
+status = "done"
+
+[[entry]]
+key = "shell.tooltip_new_query_not_connected"
+zh = "尚未连接数据库：先连接再新建查询标签"
+en = "No database connected: connect first, then open a new query tab"
+status = "done"
+
+# ---- S1 补迁：窗口标题栏副标题族（ui.rs / tabs.rs 的 title 接线，#199）----
+
+[[entry]]
+key = "shell.title_connecting"
+zh = "正在连接…"
+en = "Connecting…"
+status = "done"
+
+[[entry]]
+key = "shell.title_restarting"
+zh = "正在重启…"
+en = "Restarting…"
+status = "done"
+
+[[entry]]
+key = "shell.title_switching"
+zh = "正在切换连接…"
+en = "Switching connection…"
+status = "done"
+
+[[entry]]
+key = "shell.title_not_connected"
+zh = "未连接"
+en = "Not connected"
+status = "done"
+
+[[entry]]
+key = "shell.title_connected"
+zh = "已连接 · {driver} · {version}"
+en = "Connected · {driver} · {version}"
+status = "done"
+
+[[entry]]
+key = "shell.title_connected_driver"
+zh = "已连接 · {driver}"
+en = "Connected · {driver}"
+status = "done"
+
+[[entry]]
+key = "shell.title_connect_failed"
+zh = "连接失败"
+en = "Connection failed"
+status = "done"
+
+[[entry]]
+key = "shell.title_disconnected"
+zh = "已断开"
+en = "Disconnected"
+status = "done"
+
+# ---- S1 补迁：握手失败 / 已断开错误页（Error 与 Disconnected 表面）----
+
+[[entry]]
+key = "shell.error_backend_title"
+zh = "无法连接后端"
+en = "Unable to connect to the backend"
+status = "done"
+
+[[entry]]
+key = "shell.error_backend_retry"
+zh = "重试"
+en = "Retry"
+status = "done"
+
+[[entry]]
+key = "shell.error_disconnected_title"
+zh = "已断开连接"
+en = "Connection closed"
+status = "done"
+
+[[entry]]
+key = "shell.error_disconnected_reconnect"
+zh = "重新连接"
+en = "Reconnect"
+status = "done"

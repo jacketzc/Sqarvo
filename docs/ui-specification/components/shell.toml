@@ -218,28 +218,30 @@ a11y.tab = "可聚焦；Enter / Space 展开菜单，Esc 收起"
 impl_notes = [
   "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。",
   "「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
-  "「视图」下是两个三级小节（深色模式 / 界面密度），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
+  "「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
+  "「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。",
+  "外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。",
   "弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "窗口存在"
-result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选）"
 source = "src/ui.rs:4945、src/ui.rs:321"
 
 platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，两个 MenuFlyoutSubItem（文件 / 帮助）装同一批条目（「表 → 导出 CSV」已随改动确认单 #1 / #198 删除），条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "2d0595d6a38d"
-evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
+spec_hash = "b6901ab5f931"
+evidence = "build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限"
 
 [component.sync.windows]
 state = "partial"
 spec_hash = "2d0595d6a38d"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:331-365（MenuFlyout 现仅两个 MenuFlyoutSubItem：MenuFile 331 / MenuHelp 355，「表」块已随改动确认单 #1 删除）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:927（WireMenu 按名接 Click，MenuExportCsv 接线已移除）；本机仅 xaml_lint 通过，未构建运行 WinUI"
-note = "Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
+note = "Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。语言小节（#199）与 l10n 取文案尚未同步，由 S6（#204）关闭；本条 spec_hash 已随 #199 规范变更失效，release-check 记缺口属预期。"
 
 [component.sync.macos]
 state = "none"

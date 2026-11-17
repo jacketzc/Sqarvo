@@ -74,6 +74,57 @@ fn main() {
         .expect("gRPC 客户端代码生成失败");
 
     compile_icon_resources(&manifest_dir, &out_dir);
+    generate_l10n_catalog(&manifest_dir, &out_dir);
+}
+
+/// 从仓库根 `l10n/*.toml` 生成 Linux 文案 catalog（ADR 0031 决策 3）。
+///
+/// 单一真值在 `l10n/`，生成器 `tools/l10n_gen.py` 与 Windows 端共用；产物只写
+/// `OUT_DIR/l10n_catalog.rs`（由 `src/l10n.rs` include），**不得手工编辑**。
+/// 生成失败必须 panic：构建失败即门禁，不允许带缺口出厂。
+fn generate_l10n_catalog(manifest_dir: &Path, out_dir: &Path) {
+    let repo_root = manifest_dir
+        .join("../..")
+        .canonicalize()
+        .expect("仓库根不存在：frontend/linux 期望位于仓库的 frontend/linux 下");
+    let l10n_dir = repo_root.join("l10n");
+    let generator = repo_root.join("tools").join("l10n_gen.py");
+    println!("cargo:rerun-if-changed={}", generator.display());
+    println!("cargo:rerun-if-changed={}", l10n_dir.display());
+    let mut sources: Vec<PathBuf> = std::fs::read_dir(&l10n_dir)
+        .unwrap_or_else(|error| panic!("读取 l10n 目录 {} 失败: {error}", l10n_dir.display()))
+        .filter_map(|entry| {
+            let path = entry.expect("读取 l10n 目录项失败").path();
+            (path.extension().is_some_and(|ext| ext == "toml")).then_some(path)
+        })
+        .collect();
+    sources.sort();
+    assert!(
+        !sources.is_empty(),
+        "l10n/ 下没有 *.toml 文案源（至少要有 shell.toml）"
+    );
+    for source in &sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
+
+    let target = out_dir.join("l10n_catalog.rs");
+    let output = Command::new("python3")
+        .arg(&generator)
+        .arg("rust")
+        .arg("--out")
+        .arg(&target)
+        .output()
+        .expect("无法执行 python3 tools/l10n_gen.py（构建 l10n catalog 需要 python3 ≥ 3.11）");
+    // 告警透传：`[l10n] en 缺失：<key>` 要能在构建日志里看到（发版前清零是 S7 门禁）。
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        eprint!("{stderr}");
+    }
+    assert!(
+        output.status.success(),
+        "l10n catalog 生成失败：{}",
+        stderr.trim()
+    );
 }
 
 /// 把项目自有符号图标编成 `.gresource` 写进 `OUT_DIR`。

@@ -45,6 +45,7 @@ use crate::data_page::{DataState, RowOpsState};
 use crate::dialog::ConnectionDialog;
 use crate::icons;
 use crate::inspector::{ConnectionLive, Inspector};
+use crate::l10n;
 use crate::layout::{self, Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
@@ -172,6 +173,28 @@ pub fn activate(app: &adw::Application) {
 
     // 紧凑密度（§11）：全局 CSS 只装一次；class 只加在主窗口上。
     theme::install();
+    // 语言偏好（视图 → 语言，ADR 0031 决策 6/7）：`--lang`（QA）> `window.json` 的
+    // `language` > 跟随系统；优先级写法照上面主题。QA 启用且未显式 `--lang` 时强制
+    // zh——295 条断言绑定中文文案，语言可切之后取证必须钉住 locale。
+    // 必须先于建菜单：条目文字在 `build_main_menu` 构造期就经 `l10n::t` 取定。
+    let saved_language = crate::window_state::saved_language();
+    let qa_language = crate::qa::lang().or_else(|| crate::qa::enabled().then_some(l10n::Lang::Zh));
+    let initial_language = qa_language
+        .or_else(|| saved_language.as_deref().and_then(l10n::Lang::from_id))
+        .unwrap_or_default();
+    l10n::set_current(initial_language);
+    eprintln!(
+        "[l10n] 启动语言偏好 {}（{}；来源={}）",
+        initial_language.label(),
+        initial_language.id(),
+        if qa_language.is_some() {
+            "QA"
+        } else if saved_language.is_some() {
+            "记忆"
+        } else {
+            "跟随系统"
+        }
+    );
     // 自有符号图标（v0.2.3.3）：注册成图标主题的资源搜索路径，之后建的图标按钮才取得到。
     icons::install();
     // 首次 present 用产品基准 1200×800（`--window-size` 优先）：规范 §6.3 要求先按默认
@@ -197,7 +220,7 @@ pub fn activate(app: &adw::Application) {
 
     // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
     let header = adw::HeaderBar::new();
-    let window_title = adw::WindowTitle::new("Sqarvo", "正在连接…");
+    let window_title = adw::WindowTitle::new("Sqarvo", l10n::t("shell.title_connecting"));
     header.set_title_widget(Some(&window_title));
 
     // 连接入口只有一个：主工具条左组「连接」（workspace-model §2；headerbar 只留
@@ -205,7 +228,7 @@ pub fn activate(app: &adw::Application) {
     let menu_button = gtk::MenuButton::new();
     menu_button.set_icon_name("open-menu-symbolic");
     menu_button.add_css_class("flat");
-    menu_button.set_tooltip_text(Some("主菜单（文件 / 视图 / 帮助）"));
+    menu_button.set_tooltip_text(Some(l10n::t("shell.menu_button_tooltip")));
     let main_menu = build_main_menu();
     menu_button.set_menu_model(Some(&main_menu.model));
 
@@ -294,7 +317,7 @@ pub fn activate(app: &adw::Application) {
     state.toolbar.replace(Some(Rc::clone(&toolbar)));
     // 拿到 worker 之前先置 false：从这一刻起按钮全是灰的，握手成功才打开。
     toolbar.set_backend_ready(false);
-    show_loading(&slot, &window_title, "准备连接本地后端…");
+    show_loading(&slot, &window_title, l10n::t("startup.desc_preparing"));
 
     let (worker, events) = match WorkerHandle::spawn(state.endpoint_path.clone()) {
         Ok(pair) => pair,
@@ -398,7 +421,7 @@ pub fn activate(app: &adw::Application) {
                     actions.set_backend_ready(false);
                 }
             }
-            show_loading(&state.slot, &state.title, "准备连接本地后端…");
+            show_loading(&state.slot, &state.title, l10n::t("startup.desc_preparing"));
             if let Some(worker) = state.worker.borrow().as_ref() {
                 worker.connect();
             }
@@ -425,7 +448,7 @@ pub fn activate(app: &adw::Application) {
                 return glib::Propagation::Proceed;
             };
             closing.set(true);
-            show_loading(&state.slot, &state.title, "正在停止后端并清理端点文件…");
+            show_loading(&state.slot, &state.title, l10n::t("startup.desc_stopping"));
             worker.shutdown();
             // 等 worker 发来 ShutdownComplete 再销毁窗口，避免界面卡死。
             glib::Propagation::Stop
@@ -522,9 +545,10 @@ pub fn activate(app: &adw::Application) {
     glib::spawn_future_local(async move {
         while let Ok(event) = events.recv().await {
             match event {
-                Event::Stage(message) => {
+                Event::Stage(stage) => {
                     if !events_closing.get() {
-                        show_loading(&events_state.slot, &events_state.title, &message);
+                        // 阶段文案在显示边界按枚举 → catalog 取（#199；zh 与迁移前逐字相同）。
+                        show_loading(&events_state.slot, &events_state.title, stage.message());
                     }
                 }
                 Event::Connected(snapshot) => {
@@ -605,7 +629,9 @@ pub fn activate(app: &adw::Application) {
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
-                        events_state.title.set_subtitle("已断开");
+                        events_state
+                            .title
+                            .set_subtitle(l10n::t("shell.title_disconnected"));
                         events_state.title.set_title("Sqarvo");
                         events_state.connection_name.replace(None);
                         if let Some(registry) = events_state.registry.borrow().clone() {
@@ -618,7 +644,9 @@ pub fn activate(app: &adw::Application) {
                             Some(workspace) => {
                                 workspace.tabs.mark_disconnected(&reason);
                                 workspace.status().set_connection(None);
-                                workspace.status().set_sql_summary("连接已断开");
+                                workspace
+                                    .status()
+                                    .set_sql_summary(l10n::t("status_bar.sql_disconnected"));
                             }
                             None => show_disconnected(
                                 &events_state.slot,
@@ -676,9 +704,9 @@ pub fn activate(app: &adw::Application) {
                             if let Some(workspace) =
                                 events_state.workspace.borrow().as_ref().cloned()
                             {
-                                workspace.status().set_idle_summary(Some(&format!(
-                                    "已保存连接「{}」（不重连，下次连接时生效）",
-                                    outcome.saved.display_label()
+                                workspace.status().set_idle_summary(Some(&l10n::tf(
+                                    "status_bar.idle_saved",
+                                    &[("name", outcome.saved.display_label())],
                                 )));
                             }
                             eprintln!(
@@ -1382,8 +1410,12 @@ fn restart_software(state: &Rc<UiState>) {
         actions.set_workspace_ready(false);
     }
     state.title.set_title("Sqarvo");
-    state.title.set_subtitle("正在重启…");
-    show_loading(&state.slot, &state.title, "正在重启 Sqarvo…");
+    state.title.set_subtitle(l10n::t("shell.title_restarting"));
+    show_loading(
+        &state.slot,
+        &state.title,
+        l10n::t("startup.desc_restarting"),
+    );
     if let Some(worker) = state.worker.borrow().as_ref() {
         worker.disconnect();
         worker.connect();
@@ -1663,9 +1695,9 @@ fn set_page(slot: &gtk::Box, page: &impl IsA<gtk::Widget>) {
 
 /// Loading：握手进行中。
 fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
-    title.set_subtitle("正在连接…");
+    title.set_subtitle(l10n::t("shell.title_connecting"));
     let page = adw::StatusPage::builder()
-        .title("正在连接后端")
+        .title(l10n::t("startup.loading_title"))
         .description(stage)
         .build();
     let spinner = gtk::Spinner::new();
@@ -1719,7 +1751,9 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
     });
     state.startup.replace(Some(Rc::clone(&startup)));
     state.title.set_title("Sqarvo");
-    state.title.set_subtitle("未连接");
+    state
+        .title
+        .set_subtitle(l10n::t("shell.title_not_connected"));
     set_page(&state.slot, startup.widget());
     eprintln!(
         "[bench] t=+{}ms state=StartupWorkspace（未连接；{} 条已保存连接）",
@@ -1887,9 +1921,13 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
     state
         .title
         .set_title(&format!("{connection_name} - {driver_name}"));
-    state
-        .title
-        .set_subtitle(&format!("已连接 · {driver_label} · {version}"));
+    state.title.set_subtitle(&l10n::tf(
+        "shell.title_connected",
+        &[
+            ("driver", driver_label.clone()),
+            ("version", version.clone()),
+        ],
+    ));
 
     // 旧工作区（若有）先释放：它的标签会话属于上一次连接，不能留在新工作区里。
     if let Some(previous) = state.workspace.borrow_mut().take() {
@@ -1997,8 +2035,10 @@ fn apply_tab_status(
         crate::tabs::TabStatus::Objects { shortcut } => {
             shell
                 .status()
-                .show_no_table("Objects 页：在对象树里打开表或新建查询标签");
-            shell.status().set_sql_summary("尚未执行");
+                .show_no_table(l10n::t("status_bar.no_table_objects"));
+            shell
+                .status()
+                .set_sql_summary(l10n::t("status_bar.sql_not_executed"));
             // 高亮 = `Objects` 页现在列的种类（点工具条切过去时它立刻跟着变）。
             shell.toolbar().set_active(*shortcut);
             if let Some(actions) = actions {
@@ -2427,7 +2467,13 @@ impl Workspace {
             },
             connection_name: connection_name.to_owned(),
             driver_label: driver_label.to_owned(),
-            subtitle: format!("已连接 · {driver_label} · {version}"),
+            subtitle: l10n::tf(
+                "shell.title_connected",
+                &[
+                    ("driver", driver_label.to_owned()),
+                    ("version", version.to_owned()),
+                ],
+            ),
             catalog: state
                 .registry
                 .borrow()
@@ -2653,9 +2699,10 @@ impl Workspace {
         // 工作区已建立：工具条「新建查询」恢复可点（后端就绪时再打一行 6/6 的实测日志）。
         shell.toolbar().set_new_query_enabled(true);
         shell.status().set_connection(Some(connection_name));
-        shell
-            .status()
-            .set_sql_summary(&format!("已连接 · {version}"));
+        shell.status().set_sql_summary(&l10n::tf(
+            "status_bar.sql_connected",
+            &[("version", version.to_owned())],
+        ));
 
         // 接线：树与信息面板都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
         match state.registry.borrow().clone() {
@@ -3273,10 +3320,10 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     let main_path = with_stem_suffix(base, "-menu");
     crate::qa::save_widget(&state.window, &popover, &main_path)?;
     let mut note = format!("主菜单弹出层：{}；菜单项：{listing}", main_path.display());
-    // 「视图」下是两个三级小节（深色模式 / 界面密度）：切到该子菜单再拍一张，
+    // 「视图」下是三个三级小节（深色模式 / 界面密度 / 语言）：切到该子菜单再拍一张，
     // 勾选与「放不下」文字才看得见。
     if let Ok(popover_menu) = popover.clone().downcast::<gtk::PopoverMenu>() {
-        popover_menu.set_visible_submenu(Some("视图"));
+        popover_menu.set_visible_submenu(Some(l10n::t("shell.menu.view")));
         spin_main_context(300);
         let view_path = with_stem_suffix(base, "-menu-view");
         match crate::qa::save_widget(&state.window, &popover, &view_path) {
@@ -3290,10 +3337,10 @@ fn capture_menu_popups(state: &UiState, base: &std::path::Path) -> Result<String
     spin_main_context(100);
     // 两个三级小节各自建一个 PopoverMenu 渲染（子 Popover 的映射在无人值守窗口里不稳定，
     // 所以按同一个 menu model 单独建，内容与用户点开时一致）。
-    if let Some(view_model) = submenu_model(&model, "视图") {
+    if let Some(view_model) = submenu_model(&model, l10n::t("shell.menu.view")) {
         for (label, suffix) in [
-            ("深色模式", "-menu-view-theme"),
-            ("界面密度", "-menu-view-density"),
+            (l10n::t("shell.menu.theme_section"), "-menu-view-theme"),
+            (l10n::t("shell.menu.density_section"), "-menu-view-density"),
         ] {
             let Some(section) = submenu_model(&view_model, label) else {
                 note.push_str(&format!("；视图里没有「{label}」这一项"));
@@ -4111,12 +4158,12 @@ fn short_id(id: &str) -> String {
 
 /// Error：可操作的错误文案 + 重试。
 fn show_error(slot: &gtk::Box, title: &adw::WindowTitle, message: &str, on_retry: &Rc<dyn Fn()>) {
-    title.set_subtitle("连接失败");
+    title.set_subtitle(l10n::t("shell.title_connect_failed"));
     let page = adw::StatusPage::builder()
-        .title("无法连接后端")
+        .title(l10n::t("shell.error_backend_title"))
         .description(message)
         .build();
-    let button = gtk::Button::with_label("重试");
+    let button = gtk::Button::with_label(l10n::t("shell.error_backend_retry"));
     button.set_halign(gtk::Align::Center);
     button.set_margin_top(gap(Gap::Page));
     button.add_css_class("suggested-action");
@@ -4134,12 +4181,12 @@ fn show_disconnected(
     reason: &str,
     on_retry: &Rc<dyn Fn()>,
 ) {
-    title.set_subtitle("已断开");
+    title.set_subtitle(l10n::t("shell.title_disconnected"));
     let page = adw::StatusPage::builder()
-        .title("已断开连接")
+        .title(l10n::t("shell.error_disconnected_title"))
         .description(reason)
         .build();
-    let button = gtk::Button::with_label("重新连接");
+    let button = gtk::Button::with_label(l10n::t("shell.error_disconnected_reconnect"));
     button.set_halign(gtk::Align::Center);
     button.set_margin_top(gap(Gap::Page));
     button.add_css_class("suggested-action");
@@ -4916,7 +4963,8 @@ fn truncate_for_log(text: &str, limit: usize) -> String {
 // Linux 不设窗口内菜单行（ADR 0023）：菜单挂在 headerbar 的主菜单按钮上，
 // 动作是窗口级 `win.*`（需要当前工作区），应用级只有退出/关窗。
 // 菜单集合为 文件 / 视图 / 帮助：**查询**的全部子项不在菜单里（动作照旧），
-// 视图只剩两个三级小节（深色模式 / 界面密度）。
+// 视图只剩三个三级小节（深色模式 / 界面密度 / 语言）。条目文字全部经 `l10n::t`
+// 取（`l10n/shell.toml`，#199）。
 // **动作与快捷键不受影响**——`win.*` 仍由
 // [`install_window_actions`] 注册，`Ctrl+T` / `Ctrl+W` / `F5` / `Ctrl+Enter` / `Ctrl+Shift+E`
 // 等照旧能触发，只是菜单里不再列出。
@@ -4946,39 +4994,56 @@ fn build_main_menu() -> MainMenu {
     let menu = gio::Menu::new();
 
     let file = gio::Menu::new();
-    file.append(Some("新建连接"), Some("win.new-connection"));
-    file.append(Some("新建查询标签"), Some("win.new-tab"));
-    file.append(Some("退出"), Some("app.quit"));
-    menu.append_submenu(Some("文件"), &file);
+    file.append(
+        Some(l10n::t("shell.menu.new_connection")),
+        Some("win.new-connection"),
+    );
+    file.append(Some(l10n::t("shell.menu.new_tab")), Some("win.new-tab"));
+    file.append(Some(l10n::t("shell.menu.quit")), Some("app.quit"));
+    menu.append_submenu(Some(l10n::t("shell.menu.file")), &file);
 
     // 「表」整项不挂（改动确认单 #1）：唯一条目「导出 CSV」暂时隐藏，
     // 不留空子菜单；导出走工具条「导出 ▾」/ `Ctrl+Shift+E`，动作与快捷键不变。
 
-    // 视图 → 深色模式 / 界面密度：两个三级小节，每节三个 stateful 单选项，当前值打勾。
-    // GMenu 没有逐项 tooltip，所以密度档放不下时靠**条目文字**（`refresh_tier_actions`
-    // 补「放不下」），原因同时进日志。
+    // 视图 → 深色模式 / 界面密度 / 语言：三个三级小节，每节三个 stateful 单选项，
+    // 当前值打勾。GMenu 没有逐项 tooltip，所以密度档放不下时靠**条目文字**
+    // （`refresh_tier_actions` 补「放不下」），原因同时进日志。
     let view = gio::Menu::new();
 
     let theme_section = gio::Menu::new();
     for scheme in theme::Scheme::ALL {
         theme_section.append(
-            Some(scheme.label()),
+            Some(l10n::t(scheme.menu_key())),
             Some(&format!("win.theme-{}", scheme.id())),
         );
     }
-    view.append_submenu(Some("深色模式"), &theme_section);
+    view.append_submenu(Some(l10n::t("shell.menu.theme_section")), &theme_section);
 
     let density_section = gio::Menu::new();
     fill_density_section(&density_section, None);
-    view.append_submenu(Some("界面密度"), &density_section);
+    view.append_submenu(
+        Some(l10n::t("shell.menu.density_section")),
+        &density_section,
+    );
 
-    menu.append_submenu(Some("视图"), &view);
+    // 「语言」小节（S1/#199，ADR 0031 决策 6）：与深色模式同为三级小节，三个
+    // stateful 单选项。切换弹重启确认、「稍后」回滚勾选（`apply_lang_choice`）。
+    let lang_section = gio::Menu::new();
+    for lang in l10n::Lang::ALL {
+        lang_section.append(
+            Some(l10n::t(lang.menu_key())),
+            Some(&format!("win.lang-{}", lang.id())),
+        );
+    }
+    view.append_submenu(Some(l10n::t("shell.menu.view_language")), &lang_section);
+
+    menu.append_submenu(Some(l10n::t("shell.menu.view")), &view);
 
     let help = gio::Menu::new();
     // #139：后端版本 / 协议 / PID / 端点文件 / 驱动清单都在「关于 Squarvo」里，
     // 不再单独占一个「诊断信息」入口。
-    help.append(Some("关于 Squarvo"), Some("win.about"));
-    menu.append_submenu(Some("帮助"), &help);
+    help.append(Some(l10n::t("shell.menu.about")), Some("win.about"));
+    menu.append_submenu(Some(l10n::t("shell.menu.help")), &help);
 
     MainMenu {
         model: menu,
@@ -4997,9 +5062,12 @@ fn fill_density_section(section: &gio::Menu, work: Option<crate::window_size::Re
     for tier in layout::Tier::ALL {
         let available = work.is_none_or(|work| crate::window_size::available(tier, work));
         let label = if available {
-            tier.label().to_owned()
+            l10n::t(tier.menu_key()).to_owned()
         } else {
-            format!("{}，放不下", tier.label())
+            l10n::tf(
+                "shell.menu.tier_unavailable",
+                &[("tier", l10n::t(tier.menu_key()).to_owned())],
+            )
         };
         section.append(Some(&label), Some(&format!("win.tier-{}", tier.id())));
     }
@@ -5035,6 +5103,11 @@ struct WindowActions {
     theme_system: gio::SimpleAction,
     theme_light: gio::SimpleAction,
     theme_dark: gio::SimpleAction,
+    /// 语言（视图 → 语言，#199）：三个 stateful 单选项，当前偏好打勾。
+    /// 切换**重启生效**（[`apply_lang_choice`]），不像主题那样即时。
+    lang_system: gio::SimpleAction,
+    lang_zh: gio::SimpleAction,
+    lang_en: gio::SimpleAction,
     /// 后端是否已握手：与工具条 `Toolbar::set_backend_ready` 同一个状态。
     /// 未就绪时所有会话类动作（含「新建连接」）一律禁用。
     backend_ready: Cell<bool>,
@@ -5400,6 +5473,21 @@ fn install_window_actions(
         action.connect_activate(move |_, _| apply_theme_choice(&state, scheme));
     }
 
+    // ---- 语言（视图 → 语言，#199） ------------------------------------------
+    // 三个 stateful 单选项：当前偏好打勾。与主题不同，生效要**重启**（ADR 0031
+    // 决策 6，不做热切换），所以动作只弹确认框，不直接改运行时文案。
+    let lang_system = gio::SimpleAction::new_stateful("lang-system", None, &true.to_variant());
+    let lang_zh = gio::SimpleAction::new_stateful("lang-zh", None, &false.to_variant());
+    let lang_en = gio::SimpleAction::new_stateful("lang-en", None, &false.to_variant());
+    for (action, lang) in [
+        (&lang_system, l10n::Lang::System),
+        (&lang_zh, l10n::Lang::Zh),
+        (&lang_en, l10n::Lang::En),
+    ] {
+        let state = Rc::clone(state);
+        action.connect_activate(move |_, _| apply_lang_choice(&state, lang));
+    }
+
     for action in [
         &new_connection,
         &new_tab,
@@ -5428,6 +5516,9 @@ fn install_window_actions(
         &theme_system,
         &theme_light,
         &theme_dark,
+        &lang_system,
+        &lang_zh,
+        &lang_en,
     ] {
         window.add_action(action);
     }
@@ -5456,12 +5547,16 @@ fn install_window_actions(
         theme_system,
         theme_light,
         theme_dark,
+        lang_system,
+        lang_zh,
+        lang_en,
         backend_ready: Cell::new(false),
     });
     actions.set_backend_ready(false);
     actions.set_workspace_ready(false);
     refresh_tier_actions(window, state, &actions);
     refresh_theme_actions(&actions);
+    refresh_lang_actions(&actions);
     actions
 }
 
@@ -5523,6 +5618,143 @@ fn apply_theme_choice(state: &Rc<UiState>, target: theme::Scheme) {
     if let Some(actions) = state.actions.borrow().as_ref() {
         refresh_theme_actions(actions);
     }
+}
+
+/// 语言三档的勾选：只读当前偏好（三档原样，不折叠「跟随系统」）。
+fn refresh_lang_actions(actions: &WindowActions) {
+    let current = l10n::preference();
+    for (action, lang) in [
+        (&actions.lang_system, l10n::Lang::System),
+        (&actions.lang_zh, l10n::Lang::Zh),
+        (&actions.lang_en, l10n::Lang::En),
+    ] {
+        action.set_state(&(lang == current).to_variant());
+    }
+}
+
+/// 语言动作的唯一落点（ADR 0031 决策 6：**重启生效**，不做热切换）。
+///
+/// 生效语言不变时（例如「跟随系统」在中文系统上改点「简体中文」）直接更新勾选并
+/// 持久化，不打扰用户；会变时弹「切换语言需要重启」——「稍后」只回滚勾选、不落盘，
+/// 「重启」见 [`restart_in_new_process`]。
+fn apply_lang_choice(state: &Rc<UiState>, target: l10n::Lang) {
+    if target.effective() == l10n::current() {
+        l10n::set_current(target);
+        if let Err(error) = crate::window_state::remember_language(target.id()) {
+            eprintln!("[l10n] 偏好未能记入 window.json：{error}");
+        }
+        if let Some(actions) = state.actions.borrow().as_ref() {
+            refresh_lang_actions(actions);
+        }
+        return;
+    }
+    show_lang_restart_dialog(state, target);
+}
+
+/// 换语言确认框。写法与破坏性样式照 `show_backend_failure_dialog`（ui.rs 内既有
+/// 恢复对话框）：默认 / 关闭 response 是「稍后」，「重启」是破坏性档。
+fn show_lang_restart_dialog(state: &Rc<UiState>, target: l10n::Lang) {
+    let dialog = adw::AlertDialog::new(
+        Some(l10n::t("shell.dialog_lang_restart_title")),
+        Some(l10n::t("shell.dialog_lang_restart_body")),
+    );
+    dialog.add_response("later", l10n::t("shell.dialog_lang_restart_btn_later"));
+    dialog.add_response("restart", l10n::t("shell.dialog_lang_restart_btn_restart"));
+    dialog.set_response_appearance("restart", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("later"));
+    dialog.set_close_response("later");
+    let state_for_dialog = Rc::clone(state);
+    dialog.connect_response(None, move |_, response| {
+        if response == "restart" {
+            restart_in_new_process(&state_for_dialog, target);
+        } else if let Some(actions) = state_for_dialog.actions.borrow().as_ref() {
+            // 「稍后」：不持久化，把勾选回滚到当前生效偏好。
+            refresh_lang_actions(actions);
+        }
+    });
+    dialog.present(Some(&state.window));
+}
+
+/// 「重启」一键生效：先落盘新偏好 → `/proc/self/exe` 起新进程（携带当前命令行，
+/// 剔除取证开关与 `--lang`）→ 本窗口走既有 `close_request` 清理后应用退出。
+///
+/// 不复用 [`restart_software`]：那条「后端失效」路径只做会话复位 + 原地重握手，
+/// 不重建菜单等外壳 UI，换语言看不到效果。也不能直接串行「起新 → 退旧」：
+/// 单实例转发（main.rs 的 application-id 注释）会让新进程在旧实例释放 D-Bus 名字
+/// 之前注册失败、以 0 退出，所以带 `SQARVO_RESTART_WAIT_PID` 让新进程等旧进程
+/// 消失再启动（等待逻辑在 main.rs）。
+fn restart_in_new_process(state: &Rc<UiState>, target: l10n::Lang) {
+    eprintln!(
+        "[l10n] 用户确认换语言重启：{}（{}）",
+        target.label(),
+        target.id()
+    );
+    l10n::set_current(target);
+    if let Err(error) = crate::window_state::remember_language(target.id()) {
+        eprintln!("[l10n] 偏好未能记入 window.json：{error}");
+    }
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        refresh_lang_actions(actions);
+    }
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("[l10n] 无法定位自身可执行文件，放弃自动重启：{error}");
+            return;
+        }
+    };
+    let mut argv: Vec<std::ffi::OsString> = vec![exe.into_os_string()];
+    argv.extend(
+        restart_carry_args(std::env::args().skip(1))
+            .into_iter()
+            .map(std::ffi::OsString::from),
+    );
+    // `NONE` + 立即放手：spawn 返回的 `Subprocess` 句柄不保存——glib 只在应用退出
+    // 时清杀「仍被引用」的子进程，放弃句柄即弃养，新进程才能活过本进程的退出。
+    let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+    launcher.setenv(
+        "SQARVO_RESTART_WAIT_PID",
+        std::process::id().to_string(),
+        true,
+    );
+    let argv_refs: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsString::as_os_str).collect();
+    match launcher.spawn(&argv_refs) {
+        Ok(_) => {
+            // 关窗即清理（脏行守卫、worker 停后端、ShutdownComplete 后 quit）；
+            // `Ok(subprocess)` 的句柄在这里离开作用域被弃养（见上）。
+            state.window.close();
+        }
+        Err(error) => {
+            eprintln!("[l10n] 重启失败：{error}；新窗口不会打开，请手动重启 Sqarvo");
+        }
+    }
+}
+
+/// 重启要携带的命令行参数：剔除全部 `--qa*` / `--screenshot*` 取证开关与 `--lang`
+/// （重启出来的是普通产品实例，取证口径不跨重启延续；ADR 0031 决策 7 的钉选只在
+/// 当次进程有意义）。其余参数（如 `--theme` / `--tier`）按「携带当前命令行参数」
+/// 原样保留。
+///
+/// 分离式取值（`--qa-export /tmp/a.csv`）连值一起丢：约定「下一个参数不以 `-`
+/// 开头就是上一个的取值」——现有取证开关的取值没有以 `-` 开头的合法形态。
+fn restart_carry_args(args: impl Iterator<Item = String>) -> Vec<String> {
+    const DROP_PREFIXES: [&str; 3] = ["--qa", "--screenshot", "--lang"];
+    let args: Vec<String> = args.collect();
+    let mut out = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if DROP_PREFIXES.iter().any(|prefix| arg.starts_with(prefix)) {
+            index += 1;
+            if index < args.len() && !args[index].starts_with('-') {
+                index += 1;
+            }
+            continue;
+        }
+        out.push(arg.clone());
+        index += 1;
+    }
+    out
 }
 
 /// 密度档动作的唯一落点：走 [`crate::density::switch`]，然后刷新勾选 / 可用性。
@@ -5967,7 +6199,7 @@ mod tests {
             .collect()
     }
 
-    /// 视图下必须是两个三级小节（深色模式 / 界面密度），各三项、动作名与注册的一致。
+    /// 视图下必须是三个三级小节（深色模式 / 界面密度 / 语言），各三项、动作名与注册的一致。
     #[test]
     fn view_menu_holds_dark_mode_and_density_as_third_level_submenus() {
         let menu = build_main_menu();
@@ -5982,7 +6214,7 @@ mod tests {
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(
             menu_labels(&view),
-            ["深色模式", "界面密度"].map(str::to_owned)
+            ["深色模式", "界面密度", "语言"].map(str::to_owned)
         );
 
         let theme_section = submenu_model(&view, "深色模式").expect("深色模式子菜单");
@@ -5999,6 +6231,63 @@ mod tests {
         assert_eq!(
             menu_actions(&density),
             ["win.tier-compact", "win.tier-comfortable", "win.tier-large"].map(str::to_owned)
+        );
+
+        // 「语言」小节走 catalog（#199）：单测未 set_current，生效值按 zh 默认
+        // （l10n.rs：zh 是 source of truth），条目文字必须与迁移前逐字节一致。
+        let language = submenu_model(&view, "语言").expect("语言子菜单");
+        assert_eq!(
+            menu_labels(&language),
+            ["跟随系统", "简体中文", "English"].map(str::to_owned)
+        );
+        assert_eq!(
+            menu_actions(&language),
+            ["win.lang-system", "win.lang-zh", "win.lang-en"].map(str::to_owned)
+        );
+    }
+
+    /// 重启携带的命令行：剔除 `--qa*` / `--screenshot*` / `--lang`（含分离式取值），
+    /// 其余参数原样保留（ADR 0031 决策 6「一键重启」口径）。
+    #[test]
+    fn restart_args_drop_forensic_switches_and_carry_the_rest() {
+        let kept = restart_carry_args(
+            [
+                "--window-size",
+                "1200x800",
+                "--theme",
+                "dark",
+                "--screenshot",
+                "/tmp/shot.png",
+                "--screenshot-delay-ms",
+                "500",
+                "--lang",
+                "en",
+                "--qa-export",
+                "/tmp/a.csv",
+                "--qa-execute",
+                "--lang=zh",
+                "--tier",
+                "compact",
+            ]
+            .map(str::to_owned)
+            .into_iter(),
+        );
+        assert_eq!(
+            kept,
+            [
+                "--window-size".to_owned(),
+                "1200x800".to_owned(),
+                "--theme".to_owned(),
+                "dark".to_owned(),
+                "--tier".to_owned(),
+                "compact".to_owned(),
+            ]
+        );
+        // 空命令行与 `--lang` 结尾的命令行都不能 panic / 留下尾巴。
+        assert!(restart_carry_args(std::iter::empty()).is_empty());
+        assert_eq!(
+            restart_carry_args(["--lang".to_owned()].into_iter()),
+            [] as [String; 0]
         );
     }
 

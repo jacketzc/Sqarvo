@@ -888,7 +888,10 @@ impl ExportRuns {
 #[derive(Debug)]
 pub enum Event {
     /// 握手阶段进度（用于 Loading 状态文案）。
-    Stage(String),
+    ///
+    /// 只携带枚举本身：文案在 UI 线程显示边界经 `Stage::message()` → `l10n::t`
+    /// 取（#199：生效语言是主线程 thread-local，worker 侧不得预取文案）。
+    Stage(Stage),
     /// 握手完成。
     Connected(ConnectedSnapshot),
     /// 握手失败，错误文案已可直接展示。
@@ -4079,7 +4082,7 @@ async fn establish(
     cancel: &Arc<AtomicBool>,
 ) -> Result<Session, BackendError> {
     let progress = |stage: Stage| {
-        let _ = events.try_send(Event::Stage(stage.message().to_owned()));
+        let _ = events.try_send(Event::Stage(stage));
     };
 
     let info = supervisor.acquire(&progress).await?;

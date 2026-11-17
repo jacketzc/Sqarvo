@@ -51,16 +51,27 @@ pub enum Stage {
 }
 
 impl Stage {
-    /// 展示给用户的文案。
+    /// 展示给用户的文案（ADR 0031：#199 存量迁移）。
+    ///
+    /// 必须只在**显示边界**（UI 线程，`ui.rs` 的 `Event::Stage` 处理）调用：
+    /// 文案来自 `l10n/startup.toml`（`startup.stage_*`，zh 与迁移前逐字节相同），
+    /// 而生效语言是主线程的 thread-local——worker 线程上取会恒读成中文。
+    /// worker 事件只携带枚举本身（`Event::Stage(Stage)`），不再预取文案。
     #[must_use]
     pub fn message(self) -> &'static str {
+        crate::l10n::t(self.catalog_key())
+    }
+
+    /// Loading 页说明行的 catalog key（`l10n/startup.toml`）。
+    #[must_use]
+    pub fn catalog_key(self) -> &'static str {
         match self {
-            Self::ReadingEndpoint => "读取端点描述文件…",
-            Self::CheckingEndpoint => "校验协议版本与后端进程…",
-            Self::StartingBackend => "启动后端进程 sqarvo-backend…",
-            Self::WaitingEndpoint => "等待后端就绪（最多 10 秒）…",
-            Self::Connecting => "建立 gRPC 通道并附带本地会话 token…",
-            Self::VerifyingVersion => "调用 SystemService.GetVersion 核对版本…",
+            Self::ReadingEndpoint => "startup.stage_reading_endpoint",
+            Self::CheckingEndpoint => "startup.stage_checking_endpoint",
+            Self::StartingBackend => "startup.stage_starting_backend",
+            Self::WaitingEndpoint => "startup.stage_waiting_endpoint",
+            Self::Connecting => "startup.stage_connecting",
+            Self::VerifyingVersion => "startup.stage_verifying_version",
         }
     }
 }

@@ -1,0 +1,261 @@
+# 状态栏区文案目录（注册表区 `status_bar.*`，ADR 0031 决策 2）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量
+# 逐字节相等。本区覆盖状态栏两行的全部界面文字：行操作与分页器的
+# tooltip、页码与选中数、SQL 摘要与最后刷新、启动态「未连接」摘要。
+# 「N selected」「SQL:」「Last Refresh:」这类既有英文口径保持原样，
+# 不进 catalog（terms.md 规则 3）；数据页快照的 total_text 等由
+# #202 迁移。
+
+[[entry]]
+key = "status_bar.pager_note"
+zh = "offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供"
+en = "Offset paging: first / previous / next / last; the page number is read-only, and jumping to distant pages is not offered in this version"
+status = "done"
+
+[[entry]]
+key = "status_bar.op_add_tip"
+zh = "新增行：在当前表末尾新增一行"
+en = "Add row: append a row at the end of the current table"
+status = "done"
+
+[[entry]]
+key = "status_bar.op_delete_tip"
+zh = "删除选中行：标记为待删除（提交前可撤销）"
+en = "Delete selected row: mark it for deletion (reversible before commit)"
+status = "done"
+
+[[entry]]
+key = "status_bar.op_apply_tip"
+zh = "应用：提交所有脏行的变更"
+en = "Apply: commit the changes of all dirty rows"
+status = "done"
+
+[[entry]]
+key = "status_bar.op_discard_tip"
+zh = "撤销：放弃全部未提交的编辑与删除标记"
+en = "Undo: discard all uncommitted edits and delete marks"
+status = "done"
+
+[[entry]]
+key = "status_bar.op_refresh_tip"
+zh = "刷新：重新读取当前表的第一页"
+en = "Refresh: reload the first page of the current table"
+status = "done"
+
+[[entry]]
+key = "status_bar.op_cancel_tip"
+zh = "取消：中止正在执行的提交批次（已执行的行会整批回滚）"
+en = "Cancel: abort the running commit batch (executed rows roll back together)"
+status = "done"
+
+[[entry]]
+key = "status_bar.cancel_query_tip"
+zh = "取消当前查询（Esc）"
+en = "Cancel the current query (Esc)"
+status = "done"
+
+[[entry]]
+key = "status_bar.cancel_query_idle"
+zh = "当前没有执行中的查询"
+en = "No query is currently running"
+status = "done"
+
+[[entry]]
+key = "status_bar.cancel_batch_tip"
+zh = "取消在途的提交批次"
+en = "Cancel the in-flight commit batch"
+status = "done"
+
+[[entry]]
+key = "status_bar.row_op_add_base"
+zh = "在当前表末尾新增一行"
+en = "Append a row at the end of the current table"
+status = "done"
+
+[[entry]]
+key = "status_bar.row_op_delete_base"
+zh = "标记删除选中行（提交前可撤销）"
+en = "Mark the selected row for deletion (reversible before commit)"
+status = "done"
+
+[[entry]]
+key = "status_bar.row_op_apply_base"
+zh = "提交所有脏行的变更"
+en = "Commit the changes of all dirty rows"
+status = "done"
+
+[[entry]]
+key = "status_bar.row_op_discard_base"
+zh = "放弃全部未提交的编辑与删除标记"
+en = "Discard all uncommitted edits and delete marks"
+status = "done"
+
+[[entry]]
+key = "status_bar.row_op_refresh_base"
+zh = "重新读取当前表的第一页"
+en = "Reload the first page of the current table"
+status = "done"
+
+[[entry]]
+key = "status_bar.row_op_unavailable"
+zh = "{base}（当前不可用：{reason}）"
+en = "{base} (unavailable now: {reason})"
+status = "done"
+
+[[entry]]
+key = "status_bar.detail_tip"
+zh = "字段 / 值：只看选中行的每个字段与它的值（先选中一行；再点一次切回按行浏览）"
+en = "Fields / Values: show only the selected row's fields and their values (select a row first; press again to switch back to row view)"
+status = "done"
+
+[[entry]]
+key = "status_bar.detail_unavailable"
+zh = "字段 / 值：只看选中行的每个字段与它的值（当前不可用：{reason}）"
+en = "Fields / Values: show only the selected row's fields and their values (unavailable now: {reason})"
+status = "done"
+
+[[entry]]
+key = "status_bar.detail_need_selection"
+zh = "字段 / 值：只看选中行的每个字段与它的值（先选中一行）"
+en = "Fields / Values: show only the selected row's fields and their values (select a row first)"
+status = "done"
+
+[[entry]]
+key = "status_bar.detail_switch_back"
+zh = "字段 / 值：只看选中行的每个字段与它的值（再点一次切回按行浏览）"
+en = "Fields / Values: show only the selected row's fields and their values (press again to switch back to row view)"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_first"
+zh = "首页（offset = 0）"
+en = "First page (offset = 0)"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_previous"
+zh = "上一页"
+en = "Previous"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_next"
+zh = "下一页"
+en = "Next"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_last"
+zh = "末页（需要总数）"
+en = "Last page (requires a total)"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_idle"
+zh = "未打开表"
+en = "No table open"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_loading"
+zh = "读取中…"
+en = "Loading…"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_error"
+zh = "读取失败"
+en = "Read failed"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_disconnected"
+zh = "已断开"
+en = "Disconnected"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_page"
+zh = "第 {page} 页"
+en = "Page {page}"
+status = "done"
+
+[[entry]]
+key = "status_bar.pager_page_of"
+zh = "第 {page} / {total} 页"
+en = "Page {page} / {total}"
+status = "done"
+
+[[entry]]
+key = "status_bar.selected_rows"
+zh = "已选中 {n} 行：Ctrl/Shift 可多选，删除按批量语义提交"
+en = "{n} rows selected: Ctrl/Shift for multi-select; delete submits with batch semantics"
+en_one = "1 row selected: Ctrl/Shift for multi-select; delete submits with batch semantics"
+status = "done"
+
+[[entry]]
+key = "status_bar.last_refresh_tip"
+zh = "上次读取时间：{time}（offset 分页不保证跨页稳定，必要时点旁边的刷新）"
+en = "Last read at {time} (offset paging does not guarantee stability across pages; hit Refresh next to it when needed)"
+status = "done"
+
+[[entry]]
+key = "status_bar.seconds_ago"
+zh = "{n} 秒前"
+en = "{n}s ago"
+status = "done"
+
+[[entry]]
+key = "status_bar.sql_disconnected"
+zh = "连接已断开"
+en = "Connection closed"
+status = "done"
+
+[[entry]]
+key = "status_bar.idle_saved"
+zh = "已保存连接「{name}」（不重连，下次连接时生效）"
+en = 'Saved connection "{name}" (no reconnect; takes effect on the next connect)'
+status = "done"
+
+[[entry]]
+key = "status_bar.sql_not_executed"
+zh = "尚未执行"
+en = "Not executed yet"
+status = "done"
+
+[[entry]]
+key = "status_bar.sql_connected"
+zh = "已连接 · {version}"
+en = "Connected · {version}"
+status = "done"
+
+[[entry]]
+key = "status_bar.no_table_objects"
+zh = "Objects 页：在对象树里打开表或新建查询标签"
+en = "Objects page: open a table in the object tree or start a new query tab"
+status = "done"
+
+[[entry]]
+key = "status_bar.not_connected"
+zh = "未连接"
+en = "Not connected"
+status = "done"
+
+[[entry]]
+key = "status_bar.sql_not_connected"
+zh = "尚未连接"
+en = "Not connected yet"
+status = "done"
+
+[[entry]]
+key = "status_bar.no_table_startup"
+zh = "未连接：从左侧选择一个连接开始"
+en = "Not connected: pick a connection on the left to start"
+status = "done"
+
+[[entry]]
+key = "status_bar.idle_summary"
+zh = "驱动 {drivers} · 浏览会话 {sessions}"
+en = "Drivers {drivers} · Browse sessions {sessions}"
+status = "done"

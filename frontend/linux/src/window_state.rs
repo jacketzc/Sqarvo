@@ -77,6 +77,12 @@ struct Document {
     /// `theme` 兼容）。加字段不升版本——读侧按「缺 = 默认」处理，写回时原样保留。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme: Option<String>,
+    /// 语言偏好（`system` / `zh` / `en`，ADR 0031 决策 6，与 `theme` 同款兼容口径）。
+    ///
+    /// 可缺：缺字段 = 跟随系统。加字段不升版本——读侧按「缺 = 默认」处理，
+    /// 写回时原样保留（Windows 端 #204 消费同名字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
     /// 窗口级信息面板宽度（归一化值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_inspector_width: Option<i32>,
@@ -222,6 +228,20 @@ fn saved_theme_from(path: &Path) -> Option<String> {
     load_from(path).theme
 }
 
+/// 上次保存的语言偏好（`window.json` 的 `language`；缺字段 / 读不到文件时为 `None`）。
+///
+/// 与 [`saved_theme`] 同口径：只做「文件里有没有值」，不认识的值由调用方
+/// （`l10n::Lang::from_id`）判成 `None` 并回退跟随系统——这里不替用户改写文件。
+#[must_use]
+pub fn saved_language() -> Option<String> {
+    let dir = crate::config::config_dir().ok()?;
+    saved_language_from(&dir.join(FILE_NAME))
+}
+
+fn saved_language_from(path: &Path) -> Option<String> {
+    load_from(path).language
+}
+
 /// 上次记住的窗口几何；没有记录（或文件里没有尺寸）时为 `None`。
 ///
 /// 尺寸是**记录时档位**的实际像素（`WindowGeometry::tier`），调用方按当前档位换算。
@@ -357,6 +377,25 @@ fn remember_theme_in(dir: &Path, theme: &str) -> Result<PathBuf, String> {
     document.theme = Some(theme.to_owned());
     write_atomic(dir, &path, &document)?;
     eprintln!("[theme] 主题偏好 {} 已记入 {}", theme, path.display());
+    Ok(path)
+}
+
+/// 记下语言偏好（主菜单「视图 → 语言」），返回写入路径。
+///
+/// 与 [`remember_theme`] 同样的取舍：只改 `language`，不动其他字段，一次动作只
+/// 落一份「自己那一项」的状态。
+pub fn remember_language(language: &str) -> Result<PathBuf, String> {
+    let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
+    remember_language_in(&dir, language)
+}
+
+fn remember_language_in(dir: &Path, language: &str) -> Result<PathBuf, String> {
+    let path = dir.join(FILE_NAME);
+    let mut document = load_from(&path);
+    document.version = DOCUMENT_VERSION;
+    document.language = Some(language.to_owned());
+    write_atomic(dir, &path, &document)?;
+    eprintln!("[l10n] 语言偏好 {} 已记入 {}", language, path.display());
     Ok(path)
 }
 
@@ -726,6 +765,35 @@ mod tests {
         assert_eq!(saved_theme_from(&path), None);
         fs::write(&path, "{ not json").expect("写坏文件");
         assert_eq!(saved_theme_from(&path), None);
+    }
+
+    /// 语言偏好与主题 / 档位互不覆盖（照 `theme_is_persisted_without_touching_other_fields`
+    /// 的口径，ADR 0031 决策 6「完全复刻主题的读写与兼容路径」）。
+    #[test]
+    fn language_is_persisted_without_touching_other_fields() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        remember_language_in(dir.path(), "en").expect("写语言");
+        let path = dir.path().join(FILE_NAME);
+        assert_eq!(saved_language_from(&path).as_deref(), Some("en"));
+
+        remember_theme_in(dir.path(), "dark").expect("写主题");
+        remember_tier_in(dir.path(), Tier::Comfortable).expect("写档位");
+        let document = load_from(&path);
+        assert_eq!(document.language.as_deref(), Some("en"));
+        assert_eq!(document.theme.as_deref(), Some("dark"));
+        assert_eq!(document.tier.as_deref(), Some("comfortable"));
+
+        // 只改 language 不动其他字段：反方向同理。
+        remember_language_in(dir.path(), "zh").expect("改写语言");
+        let document = load_from(&path);
+        assert_eq!(document.language.as_deref(), Some("zh"));
+        assert_eq!(document.theme.as_deref(), Some("dark"));
+
+        // 缺字段 = 跟随系统；坏文件按默认值处理，不 panic。
+        fs::write(&path, "{\"version\":2}").expect("写文件");
+        assert_eq!(saved_language_from(&path), None);
+        fs::write(&path, "{ not json").expect("写坏文件");
+        assert_eq!(saved_language_from(&path), None);
     }
 
     #[test]

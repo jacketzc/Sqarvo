@@ -126,22 +126,22 @@ kind = "control"
 status = "active"
 a11y.name = "握手阶段"
 impl_notes = [
-  "阶段文案是六条固定原文，由后端 supervisor 的握手阶段枚举给（worker 以 Event::Stage 逐条推给界面），界面不拼接、不翻译。",
-  "六条原文：「读取端点描述文件…」「校验协议版本与后端进程…」「启动后端进程 sqarvo-backend…」「等待后端就绪（最多 10 秒）…」「建立 gRPC 通道并附带本地会话 token…」「调用 SystemService.GetVersion 核对版本…」。",
-  "说明行不总是阶段原文：show_loading 的说明是调用方给的字符串——首帧 / 重新握手「准备连接本地后端…」（ui.rs:275、ui.rs:380）、重启「正在重启 Sqarvo…」（ui.rs:1318）、关窗前「正在停止后端并清理端点文件…」（ui.rs:407）；标题恒为「正在连接后端」，界面只换说明行。",
+  "阶段文案是六条固定原文，由后端 supervisor 的握手阶段枚举给；worker 以 Event::Stage 只推枚举本身，界面在显示边界按「枚举 → l10n catalog key」映射取文案（#199，ADR 0031）：中文仍是逐字节不变的六条原文，界面不拼接；英文界面显示 startup.stage_* 的对应译文。",
+  "六条原文（`l10n/startup.toml` key `startup.stage_*`）：「读取端点描述文件…」「校验协议版本与后端进程…」「启动后端进程 sqarvo-backend…」「等待后端就绪（最多 10 秒）…」「建立 gRPC 通道并附带本地会话 token…」「调用 SystemService.GetVersion 核对版本…」。",
+  "说明行不总是阶段原文：show_loading 的说明还有三条调用方给的固定文案（同样进 catalog）——首帧 / 重新握手「准备连接本地后端…」（startup.desc_preparing）、重启「正在重启 Sqarvo…」（startup.desc_restarting）、关窗前「正在停止后端并清理端点文件…」（startup.desc_stopping）；标题恒为「正在连接后端」（startup.loading_title），界面只换说明行。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "收到 Event::Stage（握手推进）"
-result = "说明行改写为阶段原文（六条之一）；只有文本变化，不出现进度百分比、不加按钮、不改标题"
+result = "说明行改写为当前语言的阶段文案（zh = 六条原文之一，界面不拼接）；只有文本变化，不出现进度百分比、不加按钮、不改标题"
 source = "src/backend/supervisor.rs:56、src/ui.rs:504、src/ui.rs:1547"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6d6b3619a063"
+spec_hash = "464b9fe809d3"
 commit = "7436cd5"
-evidence = "supervisor 六阶段文案 + Event::Stage 逐条改写说明行"
+evidence = "Event::Stage 带枚举、显示边界按 `startup.stage_*` 取文案（zh 六条逐字节同迁移前）；supervisor 夹具断言照旧；cargo test 494 passed；`--lang=en --qa-layout-audit --screenshot` 960×640、1200×800 均 14 项 0 超限"
 
 [component.sync.windows]
 state = "none"

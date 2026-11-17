@@ -1,0 +1,60 @@
+# 标签条区文案目录（注册表区 `tabs.*`，ADR 0031 决策 2）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量
+# 逐字节相等。本区覆盖标签条表面：标题模板与 tooltip 措辞、「＋」按钮
+# 在两种状态下的 tooltip。标签关闭确认框、超限提示与查询标签页内部
+# 文案不在本批（确认框与提示归对话框口径 #200，查询页 #203）。
+
+[[entry]]
+key = "tabs.title_query"
+zh = "查询 {n}"
+en = "Query {n}"
+status = "done"
+
+[[entry]]
+key = "tabs.title_default_catalog"
+zh = "默认"
+en = "Default"
+status = "done"
+
+[[entry]]
+key = "tabs.tooltip_stage_tab_session"
+zh = "标签会话"
+en = "Tab session"
+status = "done"
+
+[[entry]]
+key = "tabs.tooltip_session"
+zh = "会话 {id}"
+en = "Session {id}"
+status = "done"
+
+[[entry]]
+key = "tabs.tooltip_connection"
+zh = "连接 {name}"
+en = "Connection {name}"
+status = "done"
+
+[[entry]]
+key = "tabs.catalog_database"
+zh = "库"
+en = "Database"
+status = "done"
+
+[[entry]]
+key = "tabs.catalog_unspecified"
+zh = "未指定"
+en = "Unspecified"
+status = "done"
+
+[[entry]]
+key = "tabs.new_tooltip_startup"
+zh = "先连接数据库再新建查询标签"
+en = "Connect to a database before opening a new query tab"
+status = "done"
+
+[[entry]]
+key = "tabs.new_tooltip"
+zh = "新建查询标签（Ctrl+T）"
+en = "New Query Tab (Ctrl+T)"
+status = "done"

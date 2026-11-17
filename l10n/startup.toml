@@ -1,0 +1,67 @@
+# 启动区文案目录（注册表区 `startup.*`，ADR 0031 决策 2）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量
+# 逐字节相等。本区覆盖握手 Loading 页：标题、六条阶段文案（supervisor
+# 枚举在显示边界按 startup.stage_* 映射，worker 只传枚举）与三条
+# 非阶段说明行。窗口标题栏副标题（「正在连接…」等，shell.title 组件）
+# 与启动态 Objects 页空态（objects_page 区）不在本批。
+
+[[entry]]
+key = "startup.loading_title"
+zh = "正在连接后端"
+en = "Connecting to the backend"
+status = "done"
+
+[[entry]]
+key = "startup.stage_reading_endpoint"
+zh = "读取端点描述文件…"
+en = "Reading the endpoint descriptor file…"
+status = "done"
+
+[[entry]]
+key = "startup.stage_checking_endpoint"
+zh = "校验协议版本与后端进程…"
+en = "Verifying the protocol version and backend process…"
+status = "done"
+
+[[entry]]
+key = "startup.stage_starting_backend"
+zh = "启动后端进程 sqarvo-backend…"
+en = "Starting the backend process sqarvo-backend…"
+status = "done"
+
+[[entry]]
+key = "startup.stage_waiting_endpoint"
+zh = "等待后端就绪（最多 10 秒）…"
+en = "Waiting for the backend to come up (10 seconds at most)…"
+status = "done"
+
+[[entry]]
+key = "startup.stage_connecting"
+zh = "建立 gRPC 通道并附带本地会话 token…"
+en = "Establishing the gRPC channel with the local session token…"
+status = "done"
+
+[[entry]]
+key = "startup.stage_verifying_version"
+zh = "调用 SystemService.GetVersion 核对版本…"
+en = "Calling SystemService.GetVersion to verify the version…"
+status = "done"
+
+[[entry]]
+key = "startup.desc_preparing"
+zh = "准备连接本地后端…"
+en = "Preparing to connect to the local backend…"
+status = "done"
+
+[[entry]]
+key = "startup.desc_restarting"
+zh = "正在重启 Sqarvo…"
+en = "Restarting Sqarvo…"
+status = "done"
+
+[[entry]]
+key = "startup.desc_stopping"
+zh = "正在停止后端并清理端点文件…"
+en = "Stopping the backend and cleaning up the endpoint file…"
+status = "done"
