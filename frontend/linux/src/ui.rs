@@ -182,7 +182,7 @@ pub fn activate(app: &adw::Application) {
     let initial_language = qa_language
         .or_else(|| saved_language.as_deref().and_then(l10n::Lang::from_id))
         .unwrap_or_default();
-    l10n::set_current(initial_language);
+    l10n::set_startup_language(initial_language);
     eprintln!(
         "[l10n] 启动语言偏好 {}（{}；来源={}）",
         initial_language.label(),
