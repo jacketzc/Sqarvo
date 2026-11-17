@@ -234,14 +234,14 @@ platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Bu
 
 [component.sync.linux]
 state = "done"
-spec_hash = "2d0595d6a38d"
-evidence = "§1.4 菜单栏；build_main_menu 的四组子菜单与占位项"
+spec_hash = "b6901ab5f931"
+evidence = "build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限"
 
 [component.sync.windows]
 state = "partial"
 spec_hash = "2d0595d6a38d"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:331-365（MenuFlyout 现仅两个 MenuFlyoutSubItem：MenuFile 331 / MenuHelp 355，「表」块已随改动确认单 #1 删除）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:927（WireMenu 按名接 Click，MenuExportCsv 接线已移除）；本机仅 xaml_lint 通过，未构建运行 WinUI"
-note = "Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。"
+note = "Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。语言小节（#199）与 l10n 取文案尚未同步，由 S6（#204）关闭；本条 spec_hash 已随 #199 规范变更失效，release-check 记缺口属预期。"
 
 [component.sync.macos]
 state = "none"

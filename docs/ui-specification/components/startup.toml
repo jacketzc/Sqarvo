@@ -139,9 +139,9 @@ source = "src/backend/supervisor.rs:56、src/ui.rs:504、src/ui.rs:1547"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6d6b3619a063"
+spec_hash = "464b9fe809d3"
 commit = "7436cd5"
-evidence = "supervisor 六阶段文案 + Event::Stage 逐条改写说明行"
+evidence = "Event::Stage 带枚举、显示边界按 `startup.stage_*` 取文案（zh 六条逐字节同迁移前）；supervisor 夹具断言照旧；cargo test 494 passed；`--lang=en --qa-layout-audit --screenshot` 960×640、1200×800 均 14 项 0 超限"
 
 [component.sync.windows]
 state = "none"

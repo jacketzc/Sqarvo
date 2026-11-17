@@ -1863,7 +1863,7 @@ kind `control` · status `active` · parent `shell`
 - 无障碍：可访问名「主菜单（文件 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
-- 同步：Linux done（§1.4 菜单栏；build_main_menu 的四组子菜单与占位项）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。）；macOS none
+- 同步：Linux done（build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。语言小节（#199）与 l10n 取文案尚未同步，由 S6（#204）关闭；本条 spec_hash 已随 #199 规范变更失效，release-check 记缺口属预期。）；macOS none
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2239,7 +2239,7 @@ kind `control` · status `active` · parent `startup.loading`
 kind `control` · status `active` · parent `startup.loading`
 
 - 无障碍：可访问名「握手阶段」
-- 同步：Linux done（supervisor 六阶段文案 + Event::Stage 逐条改写说明行）；Windows none（§7.1 未记录）；macOS none
+- 同步：Linux done（Event::Stage 带枚举、显示边界按 `startup.stage_*` 取文案（zh 六条逐字节同迁移前）；supervisor 夹具断言照旧；cargo test 494 passed；`--lang=en --qa-layout-audit --screenshot` 960×640、1200×800 均 14 项 0 超限）；Windows none（§7.1 未记录）；macOS none
 - 实现备注：阶段文案是六条固定原文，由后端 supervisor 的握手阶段枚举给；worker 以 Event::Stage 只推枚举本身，界面在显示边界按「枚举 → l10n catalog key」映射取文案（#199，ADR 0031）：中文仍是逐字节不变的六条原文，界面不拼接；英文界面显示 startup.stage_* 的对应译文。六条原文（`l10n/startup.toml` key `startup.stage_*`）：「读取端点描述文件…」「校验协议版本与后端进程…」「启动后端进程 sqarvo-backend…」「等待后端就绪（最多 10 秒）…」「建立 gRPC 通道并附带本地会话 token…」「调用 SystemService.GetVersion 核对版本…」。说明行不总是阶段原文：show_loading 的说明还有三条调用方给的固定文案（同样进 catalog）——首帧 / 重新握手「准备连接本地后端…」（startup.desc_preparing）、重启「正在重启 Sqarvo…」（startup.desc_restarting）、关窗前「正在停止后端并清理端点文件…」（startup.desc_stopping）；标题恒为「正在连接后端」（startup.loading_title），界面只换说明行。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
