@@ -1089,6 +1089,11 @@ struct Args {
     /// `--theme <system|light|dark>`：取证用的起始主题偏好（产品默认取 `window.json` /
     /// 跟随系统；产品入口是主菜单「视图 → 深色模式」）。
     theme: Option<crate::theme::Scheme>,
+    /// `--lang <zh|en|system>`：取证用的起始界面语言（产品入口是「视图 → 语言」）。
+    ///
+    /// QA 启用且未显式给出时按 `Lang::Zh` 强制（ADR 0031 决策 7：295 条断言绑定
+    /// 中文文案，语言可切之后 QA 必须钉住 locale）。
+    lang: Option<crate::l10n::Lang>,
     // ---- #116 标签工作区 ----
     /// `--qa-tabs-file <path>`：标签工作区脚本（步骤见 `tabs::parse_script`）。
     tabs_script: Option<String>,
@@ -1313,6 +1318,10 @@ pub fn enabled() -> bool {
             || args.tabs_script.is_some()
             || args.open_menu
             || !args.browse_steps.is_empty()
+            // `--lang` 也是 QA 参数：不把它算进来，只传语言钉选时 application-id
+            // 不会换成 `SQARVO_QA_APP_ID`，进程会转发给用户正在运行的实例后以 0
+            // 退出（`--screenshot` 同款坑，见上面的注释）。
+            || args.lang.is_some()
     })
 }
 
@@ -1908,6 +1917,13 @@ pub fn tier() -> Option<crate::layout::Tier> {
 #[must_use]
 pub fn theme() -> Option<crate::theme::Scheme> {
     ARGS.get().and_then(|args| args.theme)
+}
+
+/// `--lang <zh|en|system>`：起始界面语言（未指定时为 `None`，按记忆 / 跟随系统走；
+/// QA 语境下调用方负责在未给出时强制 zh，见 `ui::activate`）。
+#[must_use]
+pub fn lang() -> Option<crate::l10n::Lang> {
+    ARGS.get().and_then(|args| args.lang)
 }
 
 /// 是否在截图之后做「无裁切」量化布局自检（`--qa-layout-audit`）。
@@ -2969,6 +2985,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     })?);
                 index += 2;
             }
+            "--lang" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--lang 需要 zh|en|system".to_owned())?;
+                parsed.lang = Some(
+                    crate::l10n::Lang::from_id(value)
+                        .ok_or_else(|| format!("--lang 只能是 zh|en|system，实际：{value}"))?,
+                );
+                index += 2;
+            }
             "--qa-password-env" => {
                 let value = args
                     .get(index + 1)
@@ -3589,9 +3615,28 @@ mod tests {
         assert!(parse(&args(&["app", "--tier"])).is_err(), "缺值要报错");
     }
 
+    #[test]
+    fn lang_flag_pins_the_ui_language() {
+        let parsed = parse(&args(&["app", "--lang", "en"])).expect("解析 --lang");
+        assert_eq!(parsed.lang, Some(crate::l10n::Lang::En));
+        assert!(
+            enabled_with(&parsed),
+            "--lang 必须计入 enabled()：漏计会让取证实例被转发后以 0 退出"
+        );
+        let parsed = parse(&args(&["app", "--lang=zh"])).expect("解析 --lang=zh");
+        assert_eq!(parsed.lang, Some(crate::l10n::Lang::Zh));
+        // 拼错语言不静默退回中文：报错文案与 `--theme` 同一风格。
+        let error = parse(&args(&["app", "--lang", "de"])).expect_err("非法语言要报错");
+        assert!(error.contains("zh|en|system"), "{error}");
+        assert!(parse(&args(&["app", "--lang"])).is_err(), "缺值要报错");
+    }
+
     /// `parse` 之后的 QA 开关判定（`enabled()` 读全局 OnceLock，单测里直接看字段）。
     fn enabled_with(parsed: &Args) -> bool {
-        parsed.tier.is_some() || parsed.capture.is_some() || parsed.report_monitor
+        parsed.tier.is_some()
+            || parsed.lang.is_some()
+            || parsed.capture.is_some()
+            || parsed.report_monitor
     }
 
     #[test]

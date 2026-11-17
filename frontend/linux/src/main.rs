@@ -21,6 +21,7 @@ mod export;
 mod export_ui;
 mod icons;
 mod inspector;
+mod l10n;
 mod layout;
 mod layout_audit;
 mod logs;
@@ -56,6 +57,12 @@ fn main() -> adw::glib::ExitCode {
         eprintln!("[logs] 日志文件：{}", path.display());
     }
 
+    // 「切换语言需要重启」的接力（ADR 0031 决策 6）：单实例转发（见下面 app_id 的
+    // 注释）会让新进程在旧实例退出前注册不上 D-Bus 名字——被转发给垂死的旧窗口后
+    // 以 0 退出。重启发起方注入 `SQARVO_RESTART_WAIT_PID`，这里等那个 PID 消失
+    // 再建 app / 注册，产品正常启动路径不经过这一步。
+    wait_for_restart_handoff();
+
     // 验收要与用户**正在运行**的实例共存：GApplication 按 application-id 做单实例转发，
     // 同 id 的第二个进程会把激活转给用户那个窗口然后立刻以 0 退出（日志空白、无截图）。
     // `SQARVO_QA_APP_ID` 只在 QA 参数启用时生效，产品默认 id 不变。
@@ -77,6 +84,31 @@ fn main() -> adw::glib::ExitCode {
     app.set_accels_for_action("app.quit", &["<primary>q"]);
     app.connect_activate(ui::activate);
     app.run()
+}
+
+/// 语言切换重启的接力等待：`SQARVO_RESTART_WAIT_PID` 指向旧实例的 PID，
+/// 等它从 `/proc` 消失（= D-Bus 名字已释放）再继续启动；上限 15 秒防止旧实例
+/// 卡死把新实例也拖住（超时照常启动——宁可旧名字未放、转发一次，也不永远不起窗）。
+fn wait_for_restart_handoff() {
+    let Ok(raw) = std::env::var("SQARVO_RESTART_WAIT_PID") else {
+        return;
+    };
+    let Ok(pid) = raw.trim().parse::<u32>() else {
+        return;
+    };
+    let path = std::path::PathBuf::from(format!("/proc/{pid}"));
+    if !path.exists() {
+        return;
+    }
+    eprintln!("[l10n] 重启接力：等待旧实例（PID {pid}）退出…");
+    let start = std::time::Instant::now();
+    while path.exists() && start.elapsed() < std::time::Duration::from_secs(15) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!(
+        "[l10n] 重启接力：旧实例等待结束（用时 {}ms）",
+        start.elapsed().as_millis()
+    );
 }
 
 /// 把 QA 参数注册给 GApplication 的选项解析器。
@@ -114,6 +146,15 @@ fn register_qa_options(app: &adw::Application) {
         glib::OptionArg::String,
         "开发/取证：起始主题偏好 system|light|dark（默认按 window.json / 跟随系统）",
         Some("system"),
+    );
+    // 取证用的起始界面语言（产品路径是「视图 → 语言」；ADR 0031 决策 7）。
+    app.add_main_option(
+        "lang",
+        glib::Char::from(b'\0'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "开发/取证：起始界面语言 zh|en|system（QA 未指定时强制 zh）",
+        Some("zh"),
     );
     for (name, arg_description) in [
         ("screenshot", "/path/to/output.png"),

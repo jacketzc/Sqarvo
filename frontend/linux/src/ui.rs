@@ -45,6 +45,7 @@ use crate::data_page::{DataState, RowOpsState};
 use crate::dialog::ConnectionDialog;
 use crate::icons;
 use crate::inspector::{ConnectionLive, Inspector};
+use crate::l10n;
 use crate::layout::{self, Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
@@ -172,6 +173,28 @@ pub fn activate(app: &adw::Application) {
 
     // 紧凑密度（§11）：全局 CSS 只装一次；class 只加在主窗口上。
     theme::install();
+    // 语言偏好（视图 → 语言，ADR 0031 决策 6/7）：`--lang`（QA）> `window.json` 的
+    // `language` > 跟随系统；优先级写法照上面主题。QA 启用且未显式 `--lang` 时强制
+    // zh——295 条断言绑定中文文案，语言可切之后取证必须钉住 locale。
+    // 必须先于建菜单：条目文字在 `build_main_menu` 构造期就经 `l10n::t` 取定。
+    let saved_language = crate::window_state::saved_language();
+    let qa_language = crate::qa::lang().or_else(|| crate::qa::enabled().then_some(l10n::Lang::Zh));
+    let initial_language = qa_language
+        .or_else(|| saved_language.as_deref().and_then(l10n::Lang::from_id))
+        .unwrap_or_default();
+    l10n::set_current(initial_language);
+    eprintln!(
+        "[l10n] 启动语言偏好 {}（{}；来源={}）",
+        initial_language.label(),
+        initial_language.id(),
+        if qa_language.is_some() {
+            "QA"
+        } else if saved_language.is_some() {
+            "记忆"
+        } else {
+            "跟随系统"
+        }
+    );
     // 自有符号图标（v0.2.3.3）：注册成图标主题的资源搜索路径，之后建的图标按钮才取得到。
     icons::install();
     // 首次 present 用产品基准 1200×800（`--window-size` 优先）：规范 §6.3 要求先按默认
@@ -4972,6 +4995,18 @@ fn build_main_menu() -> MainMenu {
     fill_density_section(&density_section, None);
     view.append_submenu(Some("界面密度"), &density_section);
 
+    // 「语言」小节（S1/#199，ADR 0031 决策 6）：与深色模式同为三级小节，三个
+    // stateful 单选项。文字走 catalog（l10n/shell.toml 首批条目）——这是本单唯一
+    // 接 t() 的菜单，其余中文文案随 Lane B 迁移。
+    let lang_section = gio::Menu::new();
+    for lang in l10n::Lang::ALL {
+        lang_section.append(
+            Some(l10n::t(lang.menu_key())),
+            Some(&format!("win.lang-{}", lang.id())),
+        );
+    }
+    view.append_submenu(Some(l10n::t("shell.menu.view_language")), &lang_section);
+
     menu.append_submenu(Some("视图"), &view);
 
     let help = gio::Menu::new();
@@ -5035,6 +5070,11 @@ struct WindowActions {
     theme_system: gio::SimpleAction,
     theme_light: gio::SimpleAction,
     theme_dark: gio::SimpleAction,
+    /// 语言（视图 → 语言，#199）：三个 stateful 单选项，当前偏好打勾。
+    /// 切换**重启生效**（[`apply_lang_choice`]），不像主题那样即时。
+    lang_system: gio::SimpleAction,
+    lang_zh: gio::SimpleAction,
+    lang_en: gio::SimpleAction,
     /// 后端是否已握手：与工具条 `Toolbar::set_backend_ready` 同一个状态。
     /// 未就绪时所有会话类动作（含「新建连接」）一律禁用。
     backend_ready: Cell<bool>,
@@ -5400,6 +5440,21 @@ fn install_window_actions(
         action.connect_activate(move |_, _| apply_theme_choice(&state, scheme));
     }
 
+    // ---- 语言（视图 → 语言，#199） ------------------------------------------
+    // 三个 stateful 单选项：当前偏好打勾。与主题不同，生效要**重启**（ADR 0031
+    // 决策 6，不做热切换），所以动作只弹确认框，不直接改运行时文案。
+    let lang_system = gio::SimpleAction::new_stateful("lang-system", None, &true.to_variant());
+    let lang_zh = gio::SimpleAction::new_stateful("lang-zh", None, &false.to_variant());
+    let lang_en = gio::SimpleAction::new_stateful("lang-en", None, &false.to_variant());
+    for (action, lang) in [
+        (&lang_system, l10n::Lang::System),
+        (&lang_zh, l10n::Lang::Zh),
+        (&lang_en, l10n::Lang::En),
+    ] {
+        let state = Rc::clone(state);
+        action.connect_activate(move |_, _| apply_lang_choice(&state, lang));
+    }
+
     for action in [
         &new_connection,
         &new_tab,
@@ -5428,6 +5483,9 @@ fn install_window_actions(
         &theme_system,
         &theme_light,
         &theme_dark,
+        &lang_system,
+        &lang_zh,
+        &lang_en,
     ] {
         window.add_action(action);
     }
@@ -5456,12 +5514,16 @@ fn install_window_actions(
         theme_system,
         theme_light,
         theme_dark,
+        lang_system,
+        lang_zh,
+        lang_en,
         backend_ready: Cell::new(false),
     });
     actions.set_backend_ready(false);
     actions.set_workspace_ready(false);
     refresh_tier_actions(window, state, &actions);
     refresh_theme_actions(&actions);
+    refresh_lang_actions(&actions);
     actions
 }
 
@@ -5523,6 +5585,143 @@ fn apply_theme_choice(state: &Rc<UiState>, target: theme::Scheme) {
     if let Some(actions) = state.actions.borrow().as_ref() {
         refresh_theme_actions(actions);
     }
+}
+
+/// 语言三档的勾选：只读当前偏好（三档原样，不折叠「跟随系统」）。
+fn refresh_lang_actions(actions: &WindowActions) {
+    let current = l10n::preference();
+    for (action, lang) in [
+        (&actions.lang_system, l10n::Lang::System),
+        (&actions.lang_zh, l10n::Lang::Zh),
+        (&actions.lang_en, l10n::Lang::En),
+    ] {
+        action.set_state(&(lang == current).to_variant());
+    }
+}
+
+/// 语言动作的唯一落点（ADR 0031 决策 6：**重启生效**，不做热切换）。
+///
+/// 生效语言不变时（例如「跟随系统」在中文系统上改点「简体中文」）直接更新勾选并
+/// 持久化，不打扰用户；会变时弹「切换语言需要重启」——「稍后」只回滚勾选、不落盘，
+/// 「重启」见 [`restart_in_new_process`]。
+fn apply_lang_choice(state: &Rc<UiState>, target: l10n::Lang) {
+    if target.effective() == l10n::current() {
+        l10n::set_current(target);
+        if let Err(error) = crate::window_state::remember_language(target.id()) {
+            eprintln!("[l10n] 偏好未能记入 window.json：{error}");
+        }
+        if let Some(actions) = state.actions.borrow().as_ref() {
+            refresh_lang_actions(actions);
+        }
+        return;
+    }
+    show_lang_restart_dialog(state, target);
+}
+
+/// 换语言确认框。写法与破坏性样式照 `show_backend_failure_dialog`（ui.rs 内既有
+/// 恢复对话框）：默认 / 关闭 response 是「稍后」，「重启」是破坏性档。
+fn show_lang_restart_dialog(state: &Rc<UiState>, target: l10n::Lang) {
+    let dialog = adw::AlertDialog::new(
+        Some(l10n::t("shell.dialog_lang_restart_title")),
+        Some(l10n::t("shell.dialog_lang_restart_body")),
+    );
+    dialog.add_response("later", l10n::t("shell.dialog_lang_restart_btn_later"));
+    dialog.add_response("restart", l10n::t("shell.dialog_lang_restart_btn_restart"));
+    dialog.set_response_appearance("restart", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("later"));
+    dialog.set_close_response("later");
+    let state_for_dialog = Rc::clone(state);
+    dialog.connect_response(None, move |_, response| {
+        if response == "restart" {
+            restart_in_new_process(&state_for_dialog, target);
+        } else if let Some(actions) = state_for_dialog.actions.borrow().as_ref() {
+            // 「稍后」：不持久化，把勾选回滚到当前生效偏好。
+            refresh_lang_actions(actions);
+        }
+    });
+    dialog.present(Some(&state.window));
+}
+
+/// 「重启」一键生效：先落盘新偏好 → `/proc/self/exe` 起新进程（携带当前命令行，
+/// 剔除取证开关与 `--lang`）→ 本窗口走既有 `close_request` 清理后应用退出。
+///
+/// 不复用 [`restart_software`]：那条「后端失效」路径只做会话复位 + 原地重握手，
+/// 不重建菜单等外壳 UI，换语言看不到效果。也不能直接串行「起新 → 退旧」：
+/// 单实例转发（main.rs 的 application-id 注释）会让新进程在旧实例释放 D-Bus 名字
+/// 之前注册失败、以 0 退出，所以带 `SQARVO_RESTART_WAIT_PID` 让新进程等旧进程
+/// 消失再启动（等待逻辑在 main.rs）。
+fn restart_in_new_process(state: &Rc<UiState>, target: l10n::Lang) {
+    eprintln!(
+        "[l10n] 用户确认换语言重启：{}（{}）",
+        target.label(),
+        target.id()
+    );
+    l10n::set_current(target);
+    if let Err(error) = crate::window_state::remember_language(target.id()) {
+        eprintln!("[l10n] 偏好未能记入 window.json：{error}");
+    }
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        refresh_lang_actions(actions);
+    }
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("[l10n] 无法定位自身可执行文件，放弃自动重启：{error}");
+            return;
+        }
+    };
+    let mut argv: Vec<std::ffi::OsString> = vec![exe.into_os_string()];
+    argv.extend(
+        restart_carry_args(std::env::args().skip(1))
+            .into_iter()
+            .map(std::ffi::OsString::from),
+    );
+    // `NONE` + 立即放手：spawn 返回的 `Subprocess` 句柄不保存——glib 只在应用退出
+    // 时清杀「仍被引用」的子进程，放弃句柄即弃养，新进程才能活过本进程的退出。
+    let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+    launcher.setenv(
+        "SQARVO_RESTART_WAIT_PID",
+        std::process::id().to_string(),
+        true,
+    );
+    let argv_refs: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsString::as_os_str).collect();
+    match launcher.spawn(&argv_refs) {
+        Ok(_) => {
+            // 关窗即清理（脏行守卫、worker 停后端、ShutdownComplete 后 quit）；
+            // `Ok(subprocess)` 的句柄在这里离开作用域被弃养（见上）。
+            state.window.close();
+        }
+        Err(error) => {
+            eprintln!("[l10n] 重启失败：{error}；新窗口不会打开，请手动重启 Sqarvo");
+        }
+    }
+}
+
+/// 重启要携带的命令行参数：剔除全部 `--qa*` / `--screenshot*` 取证开关与 `--lang`
+/// （重启出来的是普通产品实例，取证口径不跨重启延续；ADR 0031 决策 7 的钉选只在
+/// 当次进程有意义）。其余参数（如 `--theme` / `--tier`）按「携带当前命令行参数」
+/// 原样保留。
+///
+/// 分离式取值（`--qa-export /tmp/a.csv`）连值一起丢：约定「下一个参数不以 `-`
+/// 开头就是上一个的取值」——现有取证开关的取值没有以 `-` 开头的合法形态。
+fn restart_carry_args(args: impl Iterator<Item = String>) -> Vec<String> {
+    const DROP_PREFIXES: [&str; 3] = ["--qa", "--screenshot", "--lang"];
+    let args: Vec<String> = args.collect();
+    let mut out = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if DROP_PREFIXES.iter().any(|prefix| arg.starts_with(prefix)) {
+            index += 1;
+            if index < args.len() && !args[index].starts_with('-') {
+                index += 1;
+            }
+            continue;
+        }
+        out.push(arg.clone());
+        index += 1;
+    }
+    out
 }
 
 /// 密度档动作的唯一落点：走 [`crate::density::switch`]，然后刷新勾选 / 可用性。
@@ -5967,7 +6166,7 @@ mod tests {
             .collect()
     }
 
-    /// 视图下必须是两个三级小节（深色模式 / 界面密度），各三项、动作名与注册的一致。
+    /// 视图下必须是三个三级小节（深色模式 / 界面密度 / 语言），各三项、动作名与注册的一致。
     #[test]
     fn view_menu_holds_dark_mode_and_density_as_third_level_submenus() {
         let menu = build_main_menu();
@@ -5982,7 +6181,7 @@ mod tests {
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(
             menu_labels(&view),
-            ["深色模式", "界面密度"].map(str::to_owned)
+            ["深色模式", "界面密度", "语言"].map(str::to_owned)
         );
 
         let theme_section = submenu_model(&view, "深色模式").expect("深色模式子菜单");
@@ -5999,6 +6198,63 @@ mod tests {
         assert_eq!(
             menu_actions(&density),
             ["win.tier-compact", "win.tier-comfortable", "win.tier-large"].map(str::to_owned)
+        );
+
+        // 「语言」小节走 catalog（#199）：单测未 set_current，生效值按 zh 默认
+        // （l10n.rs：zh 是 source of truth），条目文字必须与迁移前逐字节一致。
+        let language = submenu_model(&view, "语言").expect("语言子菜单");
+        assert_eq!(
+            menu_labels(&language),
+            ["跟随系统", "简体中文", "English"].map(str::to_owned)
+        );
+        assert_eq!(
+            menu_actions(&language),
+            ["win.lang-system", "win.lang-zh", "win.lang-en"].map(str::to_owned)
+        );
+    }
+
+    /// 重启携带的命令行：剔除 `--qa*` / `--screenshot*` / `--lang`（含分离式取值），
+    /// 其余参数原样保留（ADR 0031 决策 6「一键重启」口径）。
+    #[test]
+    fn restart_args_drop_forensic_switches_and_carry_the_rest() {
+        let kept = restart_carry_args(
+            [
+                "--window-size",
+                "1200x800",
+                "--theme",
+                "dark",
+                "--screenshot",
+                "/tmp/shot.png",
+                "--screenshot-delay-ms",
+                "500",
+                "--lang",
+                "en",
+                "--qa-export",
+                "/tmp/a.csv",
+                "--qa-execute",
+                "--lang=zh",
+                "--tier",
+                "compact",
+            ]
+            .map(str::to_owned)
+            .into_iter(),
+        );
+        assert_eq!(
+            kept,
+            [
+                "--window-size".to_owned(),
+                "1200x800".to_owned(),
+                "--theme".to_owned(),
+                "dark".to_owned(),
+                "--tier".to_owned(),
+                "compact".to_owned(),
+            ]
+        );
+        // 空命令行与 `--lang` 结尾的命令行都不能 panic / 留下尾巴。
+        assert!(restart_carry_args(std::iter::empty()).is_empty());
+        assert_eq!(
+            restart_carry_args(["--lang".to_owned()].into_iter()),
+            [] as [String; 0]
         );
     }
 
