@@ -256,7 +256,7 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 |---|---|---|
 | NULL | `null` | 与空字符串严格区分 |
 | bool | `true` / `false` | |
-| 整数 `Int` / `UInt` | number，或**十进制字符串** | `|v| ≤ 2^53` 用 number；超出用字符串，避免客户端按 IEEE-754 解析丢精度 |
+| 整数 `Int` / `UInt` | number，或**十进制字符串** | 绝对值 ≤ 2^53 用 number；超出用字符串，避免客户端按 IEEE-754 解析丢精度 |
 | 浮点 | number，或字符串 `"NaN"` / `"inf"` / `"-inf"` | JSON 没有这三个字面量 |
 | Decimal | 字符串 | 定点原文，不经过浮点（`123.45` / `0.005` / `1.200`——尾随零是标度的一部分，不化简） |
 | 文本 / JSON / UUID | 字符串 | `JSON` 列保留原文，不在这里求值或重排 |
