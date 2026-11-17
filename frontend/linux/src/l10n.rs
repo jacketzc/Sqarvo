@@ -11,6 +11,7 @@
 //! - 日志行（`eprintln!`）不进 catalog，保持中文（决策 1 的配套口径）。
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 include!(concat!(env!("OUT_DIR"), "/l10n_catalog.rs"));
 
@@ -101,14 +102,24 @@ impl Lang {
 
 // 偏好与生效语言（启动路径 `ui::activate` 在**建菜单之前**写入一次）。
 //
-// 与 `theme::SCHEME` 同理放 `thread_local`：GTK 对象只在主线程用，菜单文案也只在
-// 主线程取。未显式 `set_current` 时生效值按 `Zh`——zh 是 source of truth，单测里
-// 直接构造菜单也拿到与迁移前逐字节相同的中文；生产路径总在启动时 resolve，
-// 不受这个默认影响。
+// 偏好与「本线程预览生效值」与 `theme::SCHEME` 同理放 `thread_local`：只有主线程
+// 的菜单与对话框构建读它们。**进程启动时 resolve 的生效语言是原子全局**（#200
+// 遗留修复）：config.rs 保存失败等状态消息在 worker 线程构造，thread_local 会让
+// 它们永远读到默认中文。分工——
+// · `set_startup_language`：启动路径**唯一**一次写全局，先于任何线程创建
+//   （线程创建自带 happens-before），worker 之后只读这个值；
+// · `set_current`：菜单点选 / 「稍后」回滚，只写主线程的预览覆盖，**不动全局**
+//   ——与 ADR 0031 决策 6「切换重启生效」一致：不重启，worker 消息保持旧语言；
+//   重启（respawn 新进程）后新启动 resolve 接管。
+// 未显式设置时生效值按 `Zh`——zh 是 source of truth，单测里直接构造菜单也拿到
+// 与迁移前逐字节相同的中文；生产路径总在启动时 resolve，不受这个默认影响。
 thread_local! {
     static PREFERENCE: Cell<Lang> = const { Cell::new(Lang::System) };
-    static EFFECTIVE: Cell<Lang> = const { Cell::new(Lang::Zh) };
+    static PREVIEW: Cell<Option<Lang>> = const { Cell::new(None) };
 }
+
+/// 进程级生效语言（只存 `LANG_ZH` / `LANG_EN`；启动写一次后只读，`Relaxed` 足够）。
+static EFFECTIVE: AtomicU8 = AtomicU8::new(LANG_ZH);
 
 /// 当前语言偏好（菜单勾选态读这个，三档原样）。
 #[must_use]
@@ -116,18 +127,37 @@ pub fn preference() -> Lang {
     PREFERENCE.with(Cell::get)
 }
 
-/// 当前生效语言（只会是 `Zh` / `En`，文案查找读这个）。
+/// 当前生效语言（只会是 `Zh` / `En`）。主线程被菜单点选预览覆盖时用预览值，
+/// 其余线程读启动 resolve 的进程级值。
 #[must_use]
 pub fn current() -> Lang {
-    EFFECTIVE.with(Cell::get)
+    match PREVIEW.with(Cell::get) {
+        Some(preview) => preview,
+        None if EFFECTIVE.load(Ordering::Relaxed) == LANG_EN => Lang::En,
+        None => Lang::Zh,
+    }
 }
 
-/// 设语言偏好并折叠生效值。必须在构造任何缓存文案的 UI（菜单等）**之前**调用
-/// （启动路径），菜单点选时再调一次。
+/// 启动路径设置语言偏好并写进程级生效值。**只允许在 `ui::activate` 建菜单之前
+/// 调用一次**（先于任何 worker / 线程创建），单测里模拟启动同理。
+pub fn set_startup_language(preference: Lang) {
+    PREFERENCE.with(|slot| slot.set(preference));
+    let effective = preference.effective();
+    EFFECTIVE.store(effective.locale(), Ordering::Relaxed);
+    PREVIEW.with(|slot| slot.set(None));
+    log_language(preference, effective);
+}
+
+/// 菜单点选 / 回滚：更新本线程偏好与生效预览，**不改进程级生效语言**（重启才
+/// 全局接管，ADR 0031 决策 6）。
 pub fn set_current(preference: Lang) {
     PREFERENCE.with(|slot| slot.set(preference));
     let effective = preference.effective();
-    EFFECTIVE.with(|slot| slot.set(effective));
+    PREVIEW.with(|slot| slot.set(Some(effective)));
+    log_language(preference, effective);
+}
+
+fn log_language(preference: Lang, effective: Lang) {
     eprintln!(
         "[l10n] 语言偏好：{}（{}；生效={}）",
         preference.label(),
@@ -212,6 +242,39 @@ fn expand(template: &str, args: &[(&str, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 生效语言的进程级部分（#200 遗留修复）：启动写入后，spawn 的线程里
+    /// `t()` 必须返回同一语言。另证菜单 `set_current` 只覆盖本线程预览、
+    /// 不影响其他线程（重启才全局接管）。改动全局生效值，标 `#[ignore]` 单跑。
+    #[test]
+    #[ignore = "改动进程级生效语言全局，须单独运行：cargo test l10n -- --ignored"]
+    fn effective_language_is_visible_from_worker_threads() {
+        set_startup_language(Lang::En);
+        let child =
+            std::thread::spawn(|| (crate::l10n::t("shell.menu.file"), crate::l10n::current()));
+        let (from_child, child_lang) = child.join().expect("子线程不应 panic");
+        assert_eq!(
+            from_child, "File",
+            "worker 线程应读到启动语言（英文），实际 {from_child}"
+        );
+        assert_eq!(child_lang, Lang::En);
+        // 菜单点选只写本线程预览：本线程读到中文预览，另一个新线程仍读全局英文。
+        set_current(Lang::Zh);
+        let again = std::thread::spawn(|| crate::l10n::t("shell.menu.file"))
+            .join()
+            .unwrap();
+        assert_eq!(t("shell.menu.file"), "文件", "本线程预览覆盖为中文");
+        assert_eq!(
+            again, "File",
+            "set_current 不改进程级全局，其他线程仍读英文"
+        );
+        set_startup_language(Lang::Zh);
+        assert_eq!(
+            t("shell.menu.file"),
+            "文件",
+            "启动写入清掉预览后恢复默认查找"
+        );
+    }
 
     #[test]
     fn lang_ids_round_trip_with_whitespace_and_case() {

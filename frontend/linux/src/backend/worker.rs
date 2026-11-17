@@ -890,7 +890,9 @@ pub enum Event {
     /// 握手阶段进度（用于 Loading 状态文案）。
     ///
     /// 只携带枚举本身：文案在 UI 线程显示边界经 `Stage::message()` → `l10n::t`
-    /// 取（#199：生效语言是主线程 thread-local，worker 侧不得预取文案）。
+    /// 取。#200 遗留修复后生效语言是**进程级原子全局**（启动设置、只读），worker
+    /// 线程构造的状态消息也能取到正确语言的文案；但阶段文案仍统一走显示边界，
+    /// worker 不发预渲染字符串。
     Stage(Stage),
     /// 握手完成。
     Connected(ConnectedSnapshot),
