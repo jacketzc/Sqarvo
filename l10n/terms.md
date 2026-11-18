@@ -232,3 +232,21 @@
 | 时区偏移 | UTC offset | 时间戳解析错误族 |
 | 复制为 | Copy as | 行右键菜单二级标题；「复制为 INSERT」Copy as INSERT |
 | 删除行 | Delete Row | 行右键菜单条目 |
+
+## S4 Lane C（DDL 状态页与元数据错误副文本，#202）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 元数据 | Metadata | `MetadataError` 族标题与副文本 |
+| 没有读取元数据的权限 | No Permission to Read Metadata | 状态页标题；「无权限 No Permission」徽标短标签另立 |
+| 对象种类 | Object Kind | 「该对象种类不支持这个操作」；proto `ObjectKind` 的界面词 |
+| 平铺表列表 | Flat Table List | Unsupported hint 里指向的对象树视图 |
+| 翻页状态 | Pagination State | 「翻页状态已失效」；「分页 Pagination」同族 |
+| 控制字符 | Control Character | FilterInvalid hint |
+| 客户端拼装 | Synthesized by the client | DDL 警示行；`exact = false` 的界面说法 |
+| 数据库原文 | The database's original text | DDL 警示行 |
+| 信息有损失 | Information is lossy | DDL 警示行 |
+| 行内编辑 | Inline editing | `type_not_editable_reason`；网格语境与「编辑 Edit」区分 |
+| 未映射类型 | Unmapped type | 「二进制 / 数组 / 未映射类型」族 |
+| 会话已失效 | Session Is No Longer Valid | SessionLost 标题（数据库会话） |
+| 本地后端不可用 | Local Backend Unavailable | Unavailable 标题；「后端 Backend」沿用 S2 |

@@ -1,4 +1,4 @@
-# 数据网格区文案目录（注册表区 `data_page.*`，ADR 0031 决策 2；迁移切片 S4/#202 Lane A + Lane B）。
+# 数据网格区文案目录（注册表区 `data_page.*`，ADR 0031 决策 2；迁移切片 S4/#202 Lane A + Lane B + Lane C）。
 #
 # schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
 # （位置参数改名为命名占位的条目在 Issue #202 汇报的白名单里逐条列出）。
@@ -23,10 +23,17 @@
 # tabs.rs 关窗守卫消费的 DirtyTabSummary::line 逐表摘要模板。
 # 跨区复用：数据页「Sqarvo 需要重启」横幅按钮取既有 shell.recovery_btn_restart，不新建
 # 重复条目（见 Issue #202 汇报）。
+# Lane C 覆盖表面（状态页副文本收口）：DDL 面板（ddl.rs）的读取中 / 无浏览会话 /
+# 空 DDL 状态页标题与副文本、拼装警示行（{detail} 命名占位）；MetadataError 的
+# headline()/hint() 全族 20 条（#201 遗留——同一句副文本同时进对象树状态行、信息面板
+# 与 DDL 状态页）；backend/table.rs 的 type_not_editable_reason（列类型不支持行内编辑）。
 # 不在这里登记：日志行（eprintln!）、QA 钩子错误串（qa_* 助手）、backend/query.rs 的值
 # 格式化 tooltip（与查询结果网格共用，随 #203 一起收）、results.rs / statements.rs /
-# export*（#203）、ddl.rs 与 MetadataError headline/hint（Lane C）、结构连接符与分隔符
-# （列头「列名 · 类型」、parts.join(" · ")、「{txn} · {dirty}\n{note}」骨架）。
+# export*（#203）、结构连接符与分隔符（列头「列名 · 类型」、parts.join(" · ")、
+# 「{txn} · {dirty}\n{note}」骨架、错误副文本骨架「{message}（{code}）。{hint}」）、
+# DDL 空 DDL 之外仅进日志的 worker 串、backend/metadata.rs sanitize 的
+# 「（后端未提供错误消息）」与 detail_text 的来源说明族（随后续切片收）、
+# qa.rs TxnExpectation 硬编码中文标签（S7 钩子适配项）。
 
 # -- 分页器（PagerAction 与翻页消息，data_page.rs） --------------------------
 
@@ -1989,4 +1996,188 @@ status = "done"
 key = "data_page.fallback_table"
 zh = "表"
 en = "Table"
+status = "done"
+
+# ==== S4 Lane C：DDL 状态页 + MetadataError 副文本 + 类型不可编辑原因（#202 尾段） ====
+#
+# 覆盖表面：DDL 面板（ddl.rs）的 Loading / 无浏览会话 / 空 DDL 状态页标题与副文本、
+# 客户端拼装警示行；MetadataError::headline()/hint() 全族 20 条（#201 遗留：这族
+# 副文本同时进对象树状态行、信息面板状态区与 DDL 状态页）；backend/table.rs 的
+# type_not_editable_reason（列类型不支持行内编辑，进就地报错与编辑拦截提示）。
+# 留在代码：eprintln! 日志行、错误副文本结构骨架「{message}（{code}）。{hint}」、
+# sanitize 的空消息占位与 detail_text 来源说明族、qa.rs TxnExpectation 硬编码中文
+# 标签（S7 钩子适配项）。
+
+# -- DDL 面板（ddl.rs：状态页与拼装警示） --------------------------------------
+
+[[entry]]
+key = "data_page.ddl_loading_title"
+zh = "正在读取 DDL…"
+en = "Reading DDL…"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_loading_desc"
+zh = "等待 GetDdl 返回"
+en = "Waiting for GetDdl to return"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_no_session_title"
+zh = "这条连接没有浏览会话"
+en = "This Connection Has No Browsing Session"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_no_session_desc"
+zh = "对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。"
+en = "The session of the connection owning this object is gone: click that connection in the object tree, reconnect, and try again."
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_empty_title"
+zh = "服务端返回了空 DDL"
+en = "The Server Returned an Empty DDL"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_empty_desc"
+zh = "这不代表对象没有结构：契约要求不返回伪造或截断的 DDL，请换一个对象或检查服务端日志。"
+en = "This does not mean the object has no structure: the contract forbids returning fabricated or truncated DDL; try another object or check the server log."
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_synth_warning"
+zh = "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · {detail}"
+en = "⚠ This DDL was synthesized by the client, not the database's original text; information is lossy · {detail}"
+status = "done"
+
+# -- MetadataError 分类标题与处置建议（backend/metadata.rs::headline/hint，#201 遗留） --
+
+[[entry]]
+key = "data_page.err_not_found_head"
+zh = "对象已不存在"
+en = "The Object No Longer Exists"
+status = "done"
+
+[[entry]]
+key = "data_page.err_not_found_hint"
+zh = "刷新当前层；对象可能已被删除或改名。"
+en = "Refresh this level; the object may have been dropped or renamed."
+status = "done"
+
+[[entry]]
+key = "data_page.err_permission_denied_head"
+zh = "没有读取元数据的权限"
+en = "No Permission to Read Metadata"
+status = "done"
+
+[[entry]]
+key = "data_page.err_permission_denied_hint"
+zh = "当前数据库账号看不到这些对象：请让管理员授予读取权限，或以有权限的账号重新连接。"
+en = "The current database account cannot see these objects: ask an administrator to grant read permission, or reconnect with an account that has it."
+status = "done"
+
+[[entry]]
+key = "data_page.err_unsupported_head"
+zh = "该驱动未实现这一层"
+en = "The Driver Does Not Implement This Level"
+status = "done"
+
+[[entry]]
+key = "data_page.err_unsupported_hint"
+zh = "这一层由驱动决定是否实现；不代表该库没有对象，可改用「平铺表列表」查看当前库。"
+en = "Whether this level is implemented is up to the driver; it does not mean the database has no objects — you can switch to the flat table list to browse the current database."
+status = "done"
+
+[[entry]]
+key = "data_page.err_kind_unsupported_head"
+zh = "该对象种类不支持这个操作"
+en = "This Operation Is Not Supported for That Object Kind"
+status = "done"
+
+[[entry]]
+key = "data_page.err_kind_unsupported_hint"
+zh = "换一个对象（表 / 视图 / 序列）再试。"
+en = "Try another object (table / view / sequence)."
+status = "done"
+
+[[entry]]
+key = "data_page.err_filter_invalid_head"
+zh = "搜索条件不被接受"
+en = "The Search Criteria Were Not Accepted"
+status = "done"
+
+[[entry]]
+key = "data_page.err_filter_invalid_hint"
+zh = "检查是否输入了非法控制字符，或改用更短的关键词。"
+en = "Check for illegal control characters in the input, or use a shorter keyword."
+status = "done"
+
+[[entry]]
+key = "data_page.err_snapshot_changed_head"
+zh = "对象在读取过程中发生了变化"
+en = "The Object Changed While Reading"
+status = "done"
+
+[[entry]]
+key = "data_page.err_snapshot_changed_hint"
+zh = "重新输入关键词搜索（不会自动拼接旧结果）。"
+en = "Search again with the keyword (old results are never stitched in automatically)."
+status = "done"
+
+[[entry]]
+key = "data_page.err_page_token_invalid_head"
+zh = "翻页状态已失效"
+en = "Pagination State Expired"
+status = "done"
+
+[[entry]]
+key = "data_page.err_page_token_invalid_hint"
+zh = "从第一页重新读取。"
+en = "Read again from the first page."
+status = "done"
+
+[[entry]]
+key = "data_page.err_session_lost_head"
+zh = "数据库会话已失效"
+en = "The Database Session Is No Longer Valid"
+status = "done"
+
+[[entry]]
+key = "data_page.err_session_lost_hint"
+zh = "重新连接数据库。"
+en = "Reconnect to the database."
+status = "done"
+
+[[entry]]
+key = "data_page.err_unavailable_head"
+zh = "本地后端不可用"
+en = "Local Backend Unavailable"
+status = "done"
+
+[[entry]]
+key = "data_page.err_unavailable_hint"
+zh = "确认后端进程在运行，然后重试。"
+en = "Make sure the backend process is running, then retry."
+status = "done"
+
+[[entry]]
+key = "data_page.err_other_head"
+zh = "读取元数据失败"
+en = "Failed to Read Metadata"
+status = "done"
+
+[[entry]]
+key = "data_page.err_other_hint"
+zh = "查看下方错误码与后端文案。"
+en = "See the error code and the backend message below."
+status = "done"
+
+# -- 类型不可编辑原因（backend/table.rs::type_not_editable_reason） ----------------
+
+[[entry]]
+key = "data_page.type_not_editable"
+zh = "列 {column} 的类型 {type} 不支持行内编辑（二进制 / 数组 / 未映射类型）"
+en = "Column {column} of type {type} does not support inline editing (binary / array / unmapped types)"
 status = "done"

@@ -376,20 +376,21 @@ impl MetadataError {
         }
     }
 
-    /// 结论（界面主标题）。
+    /// 结论（界面主标题；文案在 `l10n/data_page.toml`，#201 遗留随 S4 Lane C 收口——
+    /// 这族标题/副文本同时进对象树状态行、信息面板与 DDL 状态页）。
     #[must_use]
     pub fn headline(&self) -> &'static str {
         match self {
-            Self::NotFound { .. } => "对象已不存在",
-            Self::PermissionDenied { .. } => "没有读取元数据的权限",
-            Self::Unsupported { .. } => "该驱动未实现这一层",
-            Self::KindUnsupported { .. } => "该对象种类不支持这个操作",
-            Self::FilterInvalid { .. } => "搜索条件不被接受",
-            Self::SnapshotChanged { .. } => "对象在读取过程中发生了变化",
-            Self::PageTokenInvalid { .. } => "翻页状态已失效",
-            Self::SessionLost { .. } => "数据库会话已失效",
-            Self::Unavailable { .. } => "本地后端不可用",
-            Self::Other { .. } => "读取元数据失败",
+            Self::NotFound { .. } => l10n::t("data_page.err_not_found_head"),
+            Self::PermissionDenied { .. } => l10n::t("data_page.err_permission_denied_head"),
+            Self::Unsupported { .. } => l10n::t("data_page.err_unsupported_head"),
+            Self::KindUnsupported { .. } => l10n::t("data_page.err_kind_unsupported_head"),
+            Self::FilterInvalid { .. } => l10n::t("data_page.err_filter_invalid_head"),
+            Self::SnapshotChanged { .. } => l10n::t("data_page.err_snapshot_changed_head"),
+            Self::PageTokenInvalid { .. } => l10n::t("data_page.err_page_token_invalid_head"),
+            Self::SessionLost { .. } => l10n::t("data_page.err_session_lost_head"),
+            Self::Unavailable { .. } => l10n::t("data_page.err_unavailable_head"),
+            Self::Other { .. } => l10n::t("data_page.err_other_head"),
         }
     }
 
@@ -397,20 +398,16 @@ impl MetadataError {
     #[must_use]
     pub fn hint(&self) -> &'static str {
         match self {
-            Self::NotFound { .. } => "刷新当前层；对象可能已被删除或改名。",
-            Self::PermissionDenied { .. } => {
-                "当前数据库账号看不到这些对象：请让管理员授予读取权限，或以有权限的账号重新连接。"
-            }
-            Self::Unsupported { .. } => {
-                "这一层由驱动决定是否实现；不代表该库没有对象，可改用「平铺表列表」查看当前库。"
-            }
-            Self::KindUnsupported { .. } => "换一个对象（表 / 视图 / 序列）再试。",
-            Self::FilterInvalid { .. } => "检查是否输入了非法控制字符，或改用更短的关键词。",
-            Self::SnapshotChanged { .. } => "重新输入关键词搜索（不会自动拼接旧结果）。",
-            Self::PageTokenInvalid { .. } => "从第一页重新读取。",
-            Self::SessionLost { .. } => "重新连接数据库。",
-            Self::Unavailable { .. } => "确认后端进程在运行，然后重试。",
-            Self::Other { .. } => "查看下方错误码与后端文案。",
+            Self::NotFound { .. } => l10n::t("data_page.err_not_found_hint"),
+            Self::PermissionDenied { .. } => l10n::t("data_page.err_permission_denied_hint"),
+            Self::Unsupported { .. } => l10n::t("data_page.err_unsupported_hint"),
+            Self::KindUnsupported { .. } => l10n::t("data_page.err_kind_unsupported_hint"),
+            Self::FilterInvalid { .. } => l10n::t("data_page.err_filter_invalid_hint"),
+            Self::SnapshotChanged { .. } => l10n::t("data_page.err_snapshot_changed_hint"),
+            Self::PageTokenInvalid { .. } => l10n::t("data_page.err_page_token_invalid_hint"),
+            Self::SessionLost { .. } => l10n::t("data_page.err_session_lost_hint"),
+            Self::Unavailable { .. } => l10n::t("data_page.err_unavailable_hint"),
+            Self::Other { .. } => l10n::t("data_page.err_other_hint"),
         }
     }
 

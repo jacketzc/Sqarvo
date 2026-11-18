@@ -16,6 +16,7 @@
 
 use crate::backend::query::{CellView, format_cell};
 use crate::column_info::ColumnDefaultState;
+use crate::l10n;
 use crate::proto::common::v1::{ColumnMeta, ColumnTypeKind, ColumnValue, Row as ProtoRow};
 use crate::proto::services::v1::{
     BeginTransactionRequest, Filter, InsertOutcome, InsertRow, InsertRowResult, InsertRowsRequest,
@@ -175,15 +176,19 @@ impl TableColumn {
         )
     }
 
-    /// 类型层面的不可编辑原因（可编辑时为 `None`）。
+    /// 类型层面的不可编辑原因（可编辑时为 `None`；文案在 `l10n/data_page.toml`，
+    /// S4 Lane C 收口——这句直接进数据网格的就地报错与编辑拦截提示）。
     #[must_use]
     pub fn type_not_editable_reason(&self) -> Option<String> {
         if self.type_editable() {
             return None;
         }
-        Some(format!(
-            "列 {} 的类型 {} 不支持行内编辑（二进制 / 数组 / 未映射类型）",
-            self.name, self.type_label
+        Some(l10n::tf(
+            "data_page.type_not_editable",
+            &[
+                ("column", self.name.clone()),
+                ("type", self.type_label.clone()),
+            ],
         ))
     }
 }
