@@ -250,3 +250,20 @@
 | 未映射类型 | Unmapped type | 「二进制 / 数组 / 未映射类型」族 |
 | 会话已失效 | Session Is No Longer Valid | SessionLost 标题（数据库会话） |
 | 本地后端不可用 | Local Backend Unavailable | Unavailable 标题；「后端 Backend」沿用 S2 |
+
+## S8 收口（确认单 #8，#202 遗留）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 翻页游标 | Paging cursor | `fail_head_cursor_invalid`；「分页 Pagination」沿用 S3 |
+| 被截断的值 | Truncated value | 「不能提交被截断的值」与编辑器禁用提示同词 |
+| 影响行数 | affected-row count | 结论标题句中写 "Affected-Row Count Mismatch"；Lane B `affected_mismatch` 同族 |
+| 批次 | Batch | 「批次已取消」；submit_batch 语境同词 |
+| 单批上限 | single-batch limit | 沿用 `clamped_banner` 的 "Single-batch limit" |
+| 续传 | resume | 「请续传」沿用 `clamped_banner` 的 "click Commit Changes again to resume" |
+| 净影响 | net effect | 「已插入 N 行 · 净影响 M 行」 |
+| 目标行 | Target row | 「目标行已不存在」；「行号 Row」沿用 S3 |
+| 未知类型 | unknown type | 类型标签兜底 token，小写（与 boolean/integer 等类型名 token 同档） |
+| 来源说明 | source description | `DdlView::detail_text`；proto `source_detail` 的界面词 |
+| 拼装依据 | synthesis basis | 「服务端未说明拼装依据」；「客户端拼装」沿用 Lane C |
+| 拼装器 | generator | 「（拼装器版本 {version}）」；GetDdl 客户端拼装器 |

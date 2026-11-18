@@ -132,7 +132,7 @@ impl TableColumn {
             }
             None => (
                 ColumnTypeKind::ColumnTypeUnspecified,
-                "未知类型".to_owned(),
+                l10n::t("data_page.type_fallback_unknown").to_owned(),
                 false,
                 false,
                 None,
@@ -193,9 +193,14 @@ impl TableColumn {
     }
 }
 
+/// 类型标签兜底：`original_type_name` 缺失时按逻辑类型给一个稳定 token。
+///
+/// 「未知类型」进 `l10n/data_page.toml`（S8 收口）；其余条目是 proto 枚举的
+/// 类型名 token（与驱动返回的原始类型名同一口径，两种界面语言下都原样显示），
+/// 留在代码。
 fn type_fallback(kind: ColumnTypeKind) -> &'static str {
     match kind {
-        ColumnTypeKind::ColumnTypeUnspecified => "未知类型",
+        ColumnTypeKind::ColumnTypeUnspecified => l10n::t("data_page.type_fallback_unknown"),
         ColumnTypeKind::ColumnTypeBoolean => "boolean",
         ColumnTypeKind::ColumnTypeInteger => "integer",
         ColumnTypeKind::ColumnTypeFloat => "float",
@@ -427,14 +432,20 @@ impl ApplyReport {
     #[must_use]
     pub fn status_line(&self, failed_rows: usize, dirty_rows: usize) -> ApplyStatus {
         if self.cancelled {
+            // 批内嵌语（「本批未及执行任何变更」/「已执行 N 条变更随后整批回滚」）
+            // 本单不迁（确认单 #8 只点名外层模板），随 S8 一起收。
             let executed = if self.executed_changes == 0 {
                 "本批未及执行任何变更".to_owned()
             } else {
                 format!("已执行 {} 条变更随后整批回滚", self.executed_changes)
             };
             return ApplyStatus {
-                text: format!(
-                    "批次已取消：{executed}，数据库未变化 · 仍有 {dirty_rows} 行待提交（可重试）"
+                text: l10n::tf(
+                    "data_page.summary_batch_cancelled",
+                    &[
+                        ("executed", executed),
+                        ("dirty_rows", dirty_rows.to_string()),
+                    ],
                 ),
                 tone: StatusTone::Warning,
             };
@@ -591,20 +602,27 @@ impl InsertReport {
         }
         if self.clamped || self.deferred_rows > 0 {
             return ApplyStatus {
-                text: format!(
-                    "已插入 {} 行（单批上限：{} 行未执行，请续传）",
-                    self.total_rows_affected, self.deferred_rows
+                text: l10n::tf(
+                    "data_page.summary_insert_clamped",
+                    &[
+                        ("rows", self.total_rows_affected.to_string()),
+                        ("deferred", self.deferred_rows.to_string()),
+                    ],
                 ),
                 tone: StatusTone::Warning,
             };
         }
-        let key = self
-            .key_label()
-            .map_or_else(String::new, |label| format!("（主键 {label}）"));
+        let key = self.key_label().map_or_else(String::new, |label| {
+            l10n::tf("data_page.key_suffix", &[("label", label)])
+        });
         ApplyStatus {
-            text: format!(
-                "已插入 {} 行{key} · 净影响 {} 行",
-                self.inserted_rows, self.total_rows_affected
+            text: l10n::tf(
+                "data_page.summary_insert_net",
+                &[
+                    ("rows", self.inserted_rows.to_string()),
+                    ("key", key),
+                    ("net", self.total_rows_affected.to_string()),
+                ],
             ),
             tone: StatusTone::Success,
         }
@@ -753,24 +771,26 @@ impl TableFailure {
         }
     }
 
-    /// 结论（界面主标题）。
+    /// 结论（界面主标题；文案在 `l10n/data_page.toml`，#202 遗留随确认单 #8 收口——
+    /// 这族标题经 [`Self::message()`] 进数据页失败横幅与状态行主标题。
+    /// `detail()` / `message()` 直出后端 message 的行为不变，归 S8）。
     #[must_use]
     pub fn headline(&self) -> &'static str {
         match self {
-            Self::NoPrimaryKey { .. } => "该表没有主键",
-            Self::ReadOnly { .. } => "目标只读",
-            Self::ConfirmationRequired { .. } => "需要确认风险",
-            Self::CursorInvalid { .. } => "翻页游标无效",
-            Self::TruncatedValue { .. } => "不能提交被截断的值",
-            Self::RowsAffectedMismatch { .. } => "影响行数与预期不符",
-            Self::RowDeleted { .. } => "目标行已不存在",
-            Self::TransactionNotFound { .. } => "事务不存在或已结束",
-            Self::TransactionFailed { .. } => "事务已失败",
-            Self::TransactionAlreadyActive { .. } => "该会话已有打开的事务",
-            Self::Unsupported { .. } => "驱动不支持该操作",
-            Self::SessionLost { .. } => "数据库会话已失效",
-            Self::Unavailable { .. } => "本地后端不可用",
-            Self::Other { .. } => "表数据操作失败",
+            Self::NoPrimaryKey { .. } => l10n::t("data_page.fail_head_no_pk"),
+            Self::ReadOnly { .. } => l10n::t("data_page.fail_head_read_only"),
+            Self::ConfirmationRequired { .. } => l10n::t("data_page.fail_head_confirm_required"),
+            Self::CursorInvalid { .. } => l10n::t("data_page.fail_head_cursor_invalid"),
+            Self::TruncatedValue { .. } => l10n::t("data_page.fail_head_truncated"),
+            Self::RowsAffectedMismatch { .. } => l10n::t("data_page.fail_head_mismatch"),
+            Self::RowDeleted { .. } => l10n::t("data_page.fail_head_row_gone"),
+            Self::TransactionNotFound { .. } => l10n::t("data_page.fail_head_txn_not_found"),
+            Self::TransactionFailed { .. } => l10n::t("data_page.fail_head_txn_failed"),
+            Self::TransactionAlreadyActive { .. } => l10n::t("data_page.fail_head_txn_active"),
+            Self::Unsupported { .. } => l10n::t("data_page.fail_head_unsupported"),
+            Self::SessionLost { .. } => l10n::t("data_page.fail_head_session_lost"),
+            Self::Unavailable { .. } => l10n::t("data_page.fail_head_unavailable"),
+            Self::Other { .. } => l10n::t("data_page.fail_head_other"),
         }
     }
 

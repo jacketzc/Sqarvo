@@ -643,4 +643,74 @@ mod tests {
         );
         set_current(Lang::Zh);
     }
+
+    #[test]
+    fn data_page_entries_carry_the_s8_failure_summary_copy() {
+        // S8 收口（确认单 #8，#202 遗留）：TableFailure 结论标题 / 类型兜底 /
+        // 批次·插入摘要 / DDL 来源说明——zh 与迁移前字面量逐字节一致（比对脚本
+        // 另证），这里钉代表性条目与命名占位行为，防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(t("data_page.fail_head_no_pk"), "该表没有主键");
+        assert_eq!(t("data_page.fail_head_txn_active"), "该会话已有打开的事务");
+        assert_eq!(t("data_page.fail_head_other"), "表数据操作失败");
+        assert_eq!(t("data_page.type_fallback_unknown"), "未知类型");
+        assert_eq!(
+            tf(
+                "data_page.summary_batch_cancelled",
+                &[
+                    ("executed", "本批未及执行任何变更".into()),
+                    ("dirty_rows", "3".into()),
+                ]
+            ),
+            "批次已取消：本批未及执行任何变更，数据库未变化 · 仍有 3 行待提交（可重试）"
+        );
+        assert_eq!(
+            tf(
+                "data_page.summary_insert_clamped",
+                &[("rows", "500".into()), ("deferred", "3".into())]
+            ),
+            "已插入 500 行（单批上限：3 行未执行，请续传）"
+        );
+        assert_eq!(
+            tf(
+                "data_page.summary_insert_net",
+                &[
+                    ("rows", "1".into()),
+                    (
+                        "key",
+                        tf("data_page.key_suffix", &[("label", "id=42".into())])
+                    ),
+                    ("net", "1".into()),
+                ]
+            ),
+            "已插入 1 行（主键 id=42） · 净影响 1 行"
+        );
+        assert_eq!(t("data_page.ddl_detail_no_source"), "服务端未提供来源说明");
+        assert_eq!(
+            t("data_page.ddl_detail_no_synth_basis"),
+            "服务端未说明拼装依据：这份 DDL 有信息损失，不可据此判断完整结构"
+        );
+        assert_eq!(
+            tf(
+                "data_page.ddl_detail_generator",
+                &[("version", "1.4.0".into())]
+            ),
+            "（拼装器版本 1.4.0）"
+        );
+        set_current(Lang::En);
+        assert_eq!(t("data_page.fail_head_txn_failed"), "Transaction Failed");
+        assert_eq!(
+            t("data_page.fail_head_unavailable"),
+            "Local Backend Unavailable"
+        );
+        assert_eq!(t("data_page.type_fallback_unknown"), "unknown type");
+        assert_eq!(
+            tf(
+                "data_page.ddl_detail_generator",
+                &[("version", "1.4.0".into())]
+            ),
+            " (generator version 1.4.0)"
+        );
+        set_current(Lang::Zh);
+    }
 }
