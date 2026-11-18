@@ -39,6 +39,7 @@ jobs:
     outputs:
       version: ${{ steps.nightly_version.outputs.version }}
       deb_name: ${{ steps.nightly_version.outputs.deb_name }}
+      asset_name: ${{ steps.sha256.outputs.asset_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -227,15 +228,21 @@ jobs:
           echo "后端已退出，端点文件与套接字均已清理（目录本身按设计保留）："
           ls -la "${ROOT}/sqarvo"
 
-      # Nightly 的 SHA-256 与包一起发布，本地先校验一遍再进产物。
+      # Nightly 的 SHA-256 与包一起发布。注意：GitHub 会把 Release 资产文件名里的
+      # `~` 转义成 `.`（deb 包内 Version 字段不受影响），校验文件必须按「下载后
+      # 用户实际拿到的文件名」生成，`sha256sum -c` 才不会因文件名不匹配而失败。
       - name: 生成 SHA-256
+        id: sha256
         run: |
           set -euo pipefail
           cd dist
           DEB="$(ls sqarvo_*_*.deb)"
-          sha256sum "${DEB}" > "${DEB}.sha256"
-          sha256sum -c "${DEB}.sha256"
-          cat "${DEB}.sha256"
+          ASSET_NAME="${DEB//\~/.}"
+          HASH="$(sha256sum "${DEB}" | awk '{print $1}')"
+          printf '%s  %s\n' "${HASH}" "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+          printf '%s  %s\n' "${HASH}" "${DEB}" | sha256sum -c -
+          echo "asset_name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
+          cat "${ASSET_NAME}.sha256"
 
       - name: 上传 Nightly .deb
         uses: actions/upload-artifact@v4
@@ -261,6 +268,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       NV: ${{ needs.deb.outputs.version }}
       DEB_NAME: ${{ needs.deb.outputs.deb_name }}
+      ASSET_NAME: ${{ needs.deb.outputs.asset_name }}
       FORCE: ${{ github.event.inputs.force_republish || 'false' }}
     steps:
       - name: 取回 Nightly 产物
@@ -286,8 +294,12 @@ jobs:
 
           echo "== 1. 产物完整性 =="
           [ -f "dist/${DEB_NAME}" ] || { echo "::error::缺少 ${DEB_NAME}"; exit 1; }
-          [ -f "dist/${DEB_NAME}.sha256" ] || { echo "::error::缺少 sha256 校验文件"; exit 1; }
-          ( cd dist && sha256sum -c "${DEB_NAME}.sha256" )
+          [ -f "dist/${ASSET_NAME}.sha256" ] || { echo "::error::缺少 ${ASSET_NAME}.sha256"; exit 1; }
+          # 校验文件按资产名（~ → .）生成，这里直接比 hash 值而不是 sha256sum -c。
+          HASH_DEB="$(sha256sum "dist/${DEB_NAME}" | awk '{print $1}')"
+          HASH_FILE="$(awk '{print $1}' "dist/${ASSET_NAME}.sha256")"
+          [ -n "${HASH_DEB}" ] && [ "${HASH_DEB}" = "${HASH_FILE}" ] \
+            || { echo "::error::SHA-256 与 .deb 不一致"; exit 1; }
 
           resolve_nightly_commit() {
             local obj typ
@@ -328,7 +340,7 @@ jobs:
           fi
 
           BUILT_UTC="$(date -u '+%Y-%m-%d %H:%M:%S')"
-          SHA256="$(awk '{print $1}' "dist/${DEB_NAME}.sha256")"
+          SHA256="${HASH_DEB}"
           cat > notes.md <<EOF
           **实验性 Nightly 构建**：每天 10:00（北京时间）自动从 \`main\` 最新提交打包，供提前试用与反馈，**请勿用于生产数据**；正式版本另行发布。
 
@@ -341,7 +353,7 @@ jobs:
           安装：
 
           \`\`\`bash
-          sudo apt install ./${DEB_NAME}
+          sudo apt install ./${ASSET_NAME}
           \`\`\`
 
           问题反馈：https://github.com/${REPO}/issues （Nightly 与正式版本的问题都提在这里）。
@@ -349,7 +361,7 @@ jobs:
 
           publish() {
             gh release create "nightly" \
-              "dist/${DEB_NAME}" "dist/${DEB_NAME}.sha256" \
+              "dist/${DEB_NAME}" "dist/${ASSET_NAME}.sha256" \
               --repo "${REPO}" --target "${SHA}" \
               --title "Sqarvo Nightly" --prerelease --notes-file notes.md >/dev/null
           }
@@ -366,7 +378,7 @@ jobs:
           gh api "repos/${REPO}/releases/tags/nightly" --jq '.prerelease' | grep -qx true \
             || { echo "::error::Nightly Release 不是 pre-release"; exit 1; }
           ASSETS="$(gh api "repos/${REPO}/releases/tags/nightly" --jq '.assets[].name' | sort)"
-          [ "${ASSETS}" = "$(printf '%s\n%s' "dist/${DEB_NAME}" "dist/${DEB_NAME}.sha256" | sed 's#^dist/##' | sort)" ] \
+          [ "${ASSETS}" = "$(printf '%s\n%s' "${ASSET_NAME}" "${ASSET_NAME}.sha256" | sort)" ] \
             || { echo "::error::Release 资产不齐或有多余：${ASSETS}"; exit 1; }
           NOW="$(resolve_nightly_commit || true)"
           [ "${NOW}" = "${SHA}" ] || { echo "::error::tag nightly 未指向本次 commit（${NOW:-<无>}）"; exit 1; }

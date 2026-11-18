@@ -109,7 +109,9 @@ workflow 复用步骤的机制，两处改动要同步）：同用 `packaging/li
    一切之前，所以 Nightly 严格低于对应正式版 `0.2.3.3`、又高于已发布的 `0.2.3.2`
    （stable 用户可直接升级到 Nightly）。发布前用 `dpkg --compare-versions` 把这五类
    排序断言逐条跑一遍，失败即不发。
-2. **SHA-256**：`.deb` 与 `.deb.sha256` 一起生成、一起发布，发布前 `sha256sum -c` 复核。
+2. **SHA-256**：`.deb` 与 `.sha256` 一起生成、一起发布。GitHub 会把 Release 资产文件名
+   里的 `~` 转义成 `.`（包内 `Version` 字段不受影响），因此校验文件按**转义后的资产名**
+   生成，用户下载后 `sha256sum -c` 可直接通过；发布前工作流先比对 hash 值。
 
 发布策略（只用内置 `GITHUB_TOKEN` + 预装的 `gh`，无第三方动作；`deb` 作业只读，
 写权限仅 `publish` 作业持有且只在 `main` 上运行）：
