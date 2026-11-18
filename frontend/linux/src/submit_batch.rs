@@ -28,6 +28,8 @@
 //! 可置位，因此不会留下悬空登记（[`SubmitRegistry::disconnect`] 之后再调一次只会
 //! 拿到 `None`，不会重复取消）。
 
+use crate::l10n;
+
 /// 批次结束的方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitOutcome {
@@ -433,12 +435,15 @@ pub fn commit_click(snapshot: Option<&SubmitSnapshot>, pending: usize) -> Commit
 #[must_use]
 pub fn commit_button_label(snapshot: Option<&SubmitSnapshot>, pending: usize) -> String {
     match snapshot.map(|snapshot| snapshot.phase) {
-        Some(SubmitPhase::Submitting) => "取消提交".to_owned(),
-        Some(SubmitPhase::Cancelling) => "正在取消…".to_owned(),
+        Some(SubmitPhase::Submitting) => l10n::t("data_page.commit_cancel_btn").to_owned(),
+        Some(SubmitPhase::Cancelling) => l10n::t("data_page.commit_cancelling_btn").to_owned(),
         Some(SubmitPhase::Idle | SubmitPhase::Done) | None => {
             // 960×640 下（信息面板常驻）表格工具条只有一行：动作按钮要和状态簇、三个图标
             // 挤在同一行，长标签会把「导出」挤出可视区。这里用短标签 + tooltip 保留完整说明。
-            format!("提交（{pending}）")
+            l10n::tf(
+                "data_page.btn_commit_count",
+                &[("pending", pending.to_string())],
+            )
         }
     }
 }
@@ -453,13 +458,17 @@ pub fn status_line(snapshot: &SubmitSnapshot) -> Option<(String, &'static str)> 
             let note = snapshot
                 .note
                 .as_deref()
-                .map(|note| format!("（{note}）"))
+                .map(|note| l10n::tf("data_page.note_suffix", &[("note", note.to_owned())]))
                 .unwrap_or_default();
             Some((
-                format!(
-                    "正在提交 {} 条变更（批次 {}）：点「取消提交」可在行边界中止{note}",
-                    snapshot.changes,
-                    snapshot.short_id()
+                l10n::tf_n(
+                    "data_page.submit_progress",
+                    i64::try_from(snapshot.changes).unwrap_or(i64::MAX),
+                    &[
+                        ("changes", snapshot.changes.to_string()),
+                        ("batch", snapshot.short_id().to_owned()),
+                        ("note", note),
+                    ],
                 ),
                 if snapshot.note.is_some() {
                     "warning"
@@ -469,24 +478,31 @@ pub fn status_line(snapshot: &SubmitSnapshot) -> Option<(String, &'static str)> 
             ))
         }
         SubmitPhase::Cancelling => Some((
-            format!(
-                "正在取消提交（批次 {}）：等驱动在行边界停下，已执行的行会整批回滚…",
-                snapshot.short_id()
+            l10n::tf(
+                "data_page.submit_cancelling",
+                &[("batch", snapshot.short_id().to_owned())],
             ),
             "normal",
         )),
         SubmitPhase::Done => match snapshot.outcome {
             Some(SubmitOutcome::Cancelled) => Some((
-                format!(
-                    "已取消提交：{} · 数据库未变化 · 脏行保留，可重试",
-                    rolled_back_phrase(snapshot.executed_changes)
+                l10n::tf(
+                    "data_page.submit_cancelled",
+                    &[("phrase", rolled_back_phrase(snapshot.executed_changes))],
                 ),
                 "warning",
             )),
             Some(SubmitOutcome::Failed) => Some((
-                format!(
-                    "提交失败：{}（批次已结束，可重试）",
-                    snapshot.note.as_deref().unwrap_or("原因见上方错误")
+                l10n::tf(
+                    "data_page.submit_failed",
+                    &[(
+                        "reason",
+                        snapshot
+                            .note
+                            .as_deref()
+                            .unwrap_or(l10n::t("data_page.submit_failed_default"))
+                            .to_owned(),
+                    )],
                 ),
                 "error",
             )),
@@ -498,9 +514,13 @@ pub fn status_line(snapshot: &SubmitSnapshot) -> Option<(String, &'static str)> 
 /// 「已执行 N 条随后整批回滚」的口径：0 条时不能说成「跑到一半」。
 fn rolled_back_phrase(executed_changes: u32) -> String {
     if executed_changes == 0 {
-        "本批未及执行任何变更（未产生写入）".to_owned()
+        l10n::t("data_page.rolled_back_none").to_owned()
     } else {
-        format!("已执行 {executed_changes} 条随后整批回滚")
+        l10n::tf_n(
+            "data_page.rolled_back_some",
+            i64::from(executed_changes),
+            &[("executed", executed_changes.to_string())],
+        )
     }
 }
 

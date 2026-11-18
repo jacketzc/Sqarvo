@@ -434,4 +434,123 @@ mod tests {
         assert_eq!(many, "Disconnected · 7 rows loaded (read-only)");
         set_current(Lang::Zh);
     }
+
+    #[test]
+    fn data_page_entries_carry_the_s4_editor_submit_copy() {
+        // S4/#202 Lane B：编辑器与提交面条目——zh 与迁移前字面量逐字节一致（比对脚本
+        // 另证），这里钉代表性条目、占位与**脏行计数两态**（1 row / N rows），
+        // 防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(
+            tf(
+                "data_page.editor_title",
+                &[
+                    ("column_name", "name".into()),
+                    ("type_label", "TEXT".into())
+                ]
+            ),
+            "编辑 name · TEXT"
+        );
+        assert_eq!(
+            tf(
+                "data_page.insert_started",
+                &[(
+                    "summary",
+                    "新行：显式 1 列 · 省略 2 列（交给数据库默认值）".into()
+                )]
+            ),
+            "新行：显式 1 列 · 省略 2 列（交给数据库默认值） · 双击单元格填值，填完点「提交更改」"
+        );
+        assert_eq!(
+            t("data_page.val_bool"),
+            "{text} 不是合法的布尔值（1/0、true/false、是/否）"
+        );
+        assert_eq!(
+            t("data_page.dot_note_active"),
+            "事务中：提交事务之前，改动只在当前会话可见"
+        );
+        // 脏行计数标签（状态圆点 tooltip 的两态，QA --qa-expect-status-dot 读的就是这句）。
+        let zh = tf_n(
+            "data_page.dirty_plain",
+            1,
+            &[
+                ("dirty", "1".into()),
+                ("pending", "1".into()),
+                ("insert_note", String::new()),
+            ],
+        );
+        assert_eq!(zh, "脏行 1 · 待提交 1 条");
+        set_current(Lang::En);
+        assert_eq!(t("data_page.btn_apply"), "Apply");
+        assert_eq!(t("data_page.txn_commit_btn"), "Commit Transaction");
+        assert_eq!(t("data_page.txn_claim_begin"), "Begin transaction");
+        assert_eq!(
+            t("data_page.iso_default"),
+            "Default (decided by the database)"
+        );
+        let one = tf_n(
+            "data_page.dirty_plain",
+            1,
+            &[
+                ("dirty", "1".into()),
+                ("pending", "1".into()),
+                ("insert_note", String::new()),
+            ],
+        );
+        assert_eq!(one, "1 dirty row · 1 to commit");
+        let many = tf_n(
+            "data_page.dirty_plain",
+            2,
+            &[
+                ("dirty", "2".into()),
+                ("pending", "3".into()),
+                ("insert_note", " · 1 new row".into()),
+            ],
+        );
+        assert_eq!(many, "2 dirty rows · 3 to commit · 1 new row");
+        let deletes = tf_n(
+            "data_page.dirty_with_deletes",
+            1,
+            &[
+                ("dirty", "1".into()),
+                ("pending", "1".into()),
+                ("deletes", "1".into()),
+                ("insert_note", String::new()),
+            ],
+        );
+        assert_eq!(deletes, "1 dirty row · 1 to commit (incl. 1 deletion)");
+        let progress = tf_n(
+            "data_page.submit_progress",
+            1,
+            &[
+                ("changes", "1".into()),
+                ("batch", "query_12".into()),
+                ("note", String::new()),
+            ],
+        );
+        assert_eq!(
+            progress,
+            "Submitting 1 change (batch query_12): click Cancel Commit to abort at a row boundary"
+        );
+        // 关窗守卫逐表摘要（DirtyTabSummary::line 的模板与两态）。
+        assert_eq!(
+            tf(
+                "data_page.dirty_summary_line",
+                &[
+                    ("table", "users".into()),
+                    ("parts", "1 row uncommitted".into())
+                ]
+            ),
+            "users: 1 row uncommitted"
+        );
+        assert_eq!(
+            t_n("data_page.dirty_summary_updates", 1),
+            "1 row uncommitted"
+        );
+        assert_eq!(
+            tf_n("data_page.deleted_marked", 2, &[("deleted", "2".into())]),
+            "2 rows marked for deletion (can be undone before the batch commit)"
+        );
+        set_current(Lang::Zh);
+    }
 }

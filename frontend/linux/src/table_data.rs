@@ -17,6 +17,7 @@
 use crate::backend::connection::DriverFamily;
 use crate::backend::table::TableColumn;
 use crate::column_info::ColumnDefaultState;
+use crate::l10n;
 use crate::proto::common::v1::{
     ColumnTypeKind, ColumnValue, DateTimeValue, DecimalValue, TimestampValue, ValueKind,
     column_value,
@@ -119,9 +120,12 @@ fn format_time_components(value: &DateTimeValue) -> String {
 /// `text` 是用户在单元格编辑态输入的原文；空串的语义见模块文档。
 pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue, String> {
     if !column.type_editable() {
-        return Err(column
-            .type_not_editable_reason()
-            .unwrap_or_else(|| format!("列 {} 不支持编辑", column.name)));
+        return Err(column.type_not_editable_reason().unwrap_or_else(|| {
+            l10n::tf(
+                "data_page.col_not_editable",
+                &[("column", column.name.clone())],
+            )
+        }));
     }
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -143,9 +147,13 @@ pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue,
                 &column.type_label,
             )),
             _ if column.nullable => Ok(null_value()),
-            _ => Err(format!(
-                "列 {} 不允许 NULL，且 {} 不是合法的 {} 值",
-                column.name, text, column.type_label
+            _ => Err(l10n::tf(
+                "data_page.val_empty_not_null",
+                &[
+                    ("column", column.name.clone()),
+                    ("text", text.to_owned()),
+                    ("type", column.type_label.clone()),
+                ],
             )),
         };
     }
@@ -159,7 +167,7 @@ pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue,
                     &column.type_label,
                 )
             })
-            .ok_or_else(|| format!("{} 不是合法的布尔值（1/0、true/false、是/否）", text)),
+            .ok_or_else(|| l10n::tf("data_page.val_bool", &[("text", text.to_owned())])),
         ColumnTypeKind::ColumnTypeInteger => {
             if column.unsigned {
                 trimmed
@@ -171,7 +179,12 @@ pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue,
                             &column.type_label,
                         )
                     })
-                    .map_err(|_| format!("{text} 不是合法的无符号整数（列 {}）", column.name))
+                    .map_err(|_| {
+                        l10n::tf(
+                            "data_page.val_uint",
+                            &[("text", text.to_owned()), ("column", column.name.clone())],
+                        )
+                    })
             } else {
                 trimmed
                     .parse::<i64>()
@@ -182,15 +195,26 @@ pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue,
                             &column.type_label,
                         )
                     })
-                    .map_err(|_| format!("{text} 不是合法的 64 位整数（列 {}）", column.name))
+                    .map_err(|_| {
+                        l10n::tf(
+                            "data_page.val_int",
+                            &[("text", text.to_owned()), ("column", column.name.clone())],
+                        )
+                    })
             }
         }
         ColumnTypeKind::ColumnTypeFloat => {
-            let value: f64 = trimmed
-                .parse()
-                .map_err(|_| format!("{text} 不是合法的浮点数（列 {}）", column.name))?;
+            let value: f64 = trimmed.parse().map_err(|_| {
+                l10n::tf(
+                    "data_page.val_float",
+                    &[("text", text.to_owned()), ("column", column.name.clone())],
+                )
+            })?;
             if !value.is_finite() {
-                return Err(format!("{text} 不是有限浮点数"));
+                return Err(l10n::tf(
+                    "data_page.val_float_infinite",
+                    &[("text", text.to_owned())],
+                ));
             }
             Ok(value_of(
                 ValueKind::Float64,
@@ -284,7 +308,7 @@ pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue,
             let unix_nanos = seconds
                 .checked_mul(1_000_000_000)
                 .and_then(|value| value.checked_add(i64::from(nanosecond)))
-                .ok_or_else(|| format!("时间戳 {text} 超出可表示范围"))?;
+                .ok_or_else(|| l10n::tf("data_page.val_ts_range", &[("text", text.to_owned())]))?;
             Ok(value_of(
                 ValueKind::Timestamp,
                 column_value::Value::TimestampValue(TimestampValue {
@@ -294,9 +318,12 @@ pub fn parse_cell_input(text: &str, column: &TableColumn) -> Result<ColumnValue,
                 &column.type_label,
             ))
         }
-        _ => Err(column
-            .type_not_editable_reason()
-            .unwrap_or_else(|| format!("列 {} 不支持编辑", column.name))),
+        _ => Err(column.type_not_editable_reason().unwrap_or_else(|| {
+            l10n::tf(
+                "data_page.col_not_editable",
+                &[("column", column.name.clone())],
+            )
+        })),
     }
 }
 
@@ -320,13 +347,20 @@ fn parse_decimal(text: &str) -> Result<(String, i32), String> {
         None => (rest, ""),
     };
     if integer.is_empty() && fraction.is_empty() {
-        return Err(format!("{text} 不是合法的 Decimal 字面量"));
+        return Err(l10n::tf(
+            "data_page.val_decimal",
+            &[("text", text.to_owned())],
+        ));
     }
     if !integer.chars().all(|c| c.is_ascii_digit()) || !fraction.chars().all(|c| c.is_ascii_digit())
     {
-        return Err(format!("{text} 不是合法的 Decimal 字面量（示例：123.450）"));
+        return Err(l10n::tf(
+            "data_page.val_decimal_digits",
+            &[("text", text.to_owned())],
+        ));
     }
-    let scale = i32::try_from(fraction.len()).map_err(|_| format!("{text} 的小数位过多"))?;
+    let scale = i32::try_from(fraction.len())
+        .map_err(|_| l10n::tf("data_page.val_decimal_scale", &[("text", text.to_owned())]))?;
     // 归一化前导零，避免把 "0001.500" 原样交给驱动。
     let integer = integer.trim_start_matches('0');
     let integer = if integer.is_empty() { "0" } else { integer };
@@ -342,19 +376,22 @@ fn parse_decimal(text: &str) -> Result<(String, i32), String> {
 fn parse_date(text: &str) -> Result<(i32, u32, u32), String> {
     let parts: Vec<&str> = text.split(['-', '/']).collect();
     if parts.len() != 3 {
-        return Err(format!("{text} 不是合法日期（示例：2026-11-05）"));
+        return Err(l10n::tf("data_page.val_date", &[("text", text.to_owned())]));
     }
     let year: i32 = parts[0]
         .parse()
-        .map_err(|_| format!("{text} 的年份不合法"))?;
+        .map_err(|_| l10n::tf("data_page.val_date_year", &[("text", text.to_owned())]))?;
     let month: u32 = parts[1]
         .parse()
-        .map_err(|_| format!("{text} 的月份不合法"))?;
+        .map_err(|_| l10n::tf("data_page.val_date_month", &[("text", text.to_owned())]))?;
     let day: u32 = parts[2]
         .parse()
-        .map_err(|_| format!("{text} 的日期不合法"))?;
+        .map_err(|_| l10n::tf("data_page.val_date_day", &[("text", text.to_owned())]))?;
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return Err(format!("{text} 的月/日超出范围"));
+        return Err(l10n::tf(
+            "data_page.val_date_range",
+            &[("text", text.to_owned())],
+        ));
     }
     Ok((year, month, day))
 }
@@ -362,20 +399,23 @@ fn parse_date(text: &str) -> Result<(i32, u32, u32), String> {
 fn parse_time(text: &str) -> Result<(u32, u32, u32, u32), String> {
     let parts: Vec<&str> = text.split(':').collect();
     if parts.len() < 2 || parts.len() > 3 {
-        return Err(format!("{text} 不是合法时间（示例：13:45:00）"));
+        return Err(l10n::tf("data_page.val_time", &[("text", text.to_owned())]));
     }
     let hour: u32 = parts[0]
         .parse()
-        .map_err(|_| format!("{text} 的小时不合法"))?;
+        .map_err(|_| l10n::tf("data_page.val_time_hour", &[("text", text.to_owned())]))?;
     let minute: u32 = parts[1]
         .parse()
-        .map_err(|_| format!("{text} 的分钟不合法"))?;
+        .map_err(|_| l10n::tf("data_page.val_time_minute", &[("text", text.to_owned())]))?;
     let (second, nanosecond) = match parts.get(2) {
         Some(second) => parse_seconds(second, text)?,
         None => (0, 0),
     };
     if hour > 23 || minute > 59 || second > 59 {
-        return Err(format!("{text} 的时分秒超出范围"));
+        return Err(l10n::tf(
+            "data_page.val_time_range",
+            &[("text", text.to_owned())],
+        ));
     }
     Ok((hour, minute, second, nanosecond))
 }
@@ -387,19 +427,22 @@ fn parse_seconds(text: &str, whole: &str) -> Result<(u32, u32), String> {
     };
     let second: u32 = second
         .parse()
-        .map_err(|_| format!("{whole} 的秒数不合法"))?;
+        .map_err(|_| l10n::tf("data_page.val_time_second", &[("text", whole.to_owned())]))?;
     let nanosecond = match fraction {
         Some(fraction) => {
             if !fraction.chars().all(|c| c.is_ascii_digit()) || fraction.len() > 9 {
-                return Err(format!("{whole} 的小数秒不合法（最多 9 位）"));
+                return Err(l10n::tf(
+                    "data_page.val_frac_seconds_len",
+                    &[("text", whole.to_owned())],
+                ));
             }
             let mut digits = fraction.to_owned();
             while digits.len() < 9 {
                 digits.push('0');
             }
-            digits
-                .parse()
-                .map_err(|_| format!("{whole} 的小数秒不合法"))?
+            digits.parse().map_err(|_| {
+                l10n::tf("data_page.val_frac_seconds", &[("text", whole.to_owned())])
+            })?
         }
         None => 0,
     };
@@ -437,15 +480,18 @@ fn split_offset(text: &str) -> Result<(String, i32), String> {
         let rest = &offset[1..];
         let (hour, minute) = rest
             .split_once(':')
-            .ok_or_else(|| format!("{text} 的时区偏移不合法（示例：+08:00）"))?;
+            .ok_or_else(|| l10n::tf("data_page.val_tz_offset", &[("text", text.to_owned())]))?;
         let hour: i32 = hour
             .parse()
-            .map_err(|_| format!("{text} 的时区偏移小时不合法"))?;
+            .map_err(|_| l10n::tf("data_page.val_tz_hour", &[("text", text.to_owned())]))?;
         let minute: i32 = minute
             .parse()
-            .map_err(|_| format!("{text} 的时区偏移分钟不合法"))?;
+            .map_err(|_| l10n::tf("data_page.val_tz_minute", &[("text", text.to_owned())]))?;
         if hour > 23 || minute > 59 {
-            return Err(format!("{text} 的时区偏移超出范围"));
+            return Err(l10n::tf(
+                "data_page.val_tz_range",
+                &[("text", text.to_owned())],
+            ));
         }
         return Ok((
             body.trim_end().to_owned(),
@@ -498,21 +544,27 @@ impl RiskAssessment {
     /// 确认对话框正文。
     #[must_use]
     pub fn summary(self) -> String {
-        let mut text = format!(
-            "本次将提交 {} 行变更（{} 行更新 · {} 行删除）。",
-            self.total(),
-            self.updates,
-            self.deletes
+        let total = self.total();
+        let mut text = l10n::tf_n(
+            "data_page.risk_summary",
+            i64::try_from(total).unwrap_or(i64::MAX),
+            &[
+                ("total", total.to_string()),
+                ("updates", self.updates.to_string()),
+                ("deletes", self.deletes.to_string()),
+            ],
         );
         if self.deletes > 0 {
-            text.push_str(&format!(
-                "\n\n警告：包含 {} 行删除，删除后无法通过本界面撤销。",
-                self.deletes
+            text.push_str(&l10n::tf_n(
+                "data_page.risk_warn_deletes",
+                i64::try_from(self.deletes).unwrap_or(i64::MAX),
+                &[("deletes", self.deletes.to_string())],
             ));
         }
         if self.exceeds_threshold() {
-            text.push_str(&format!(
-                "\n\n变更数超过 {RISK_CONFIRMATION_ROWS} 行的风险阈值，服务端将要求风险确认。"
+            text.push_str(&l10n::tf(
+                "data_page.risk_threshold",
+                &[("threshold", RISK_CONFIRMATION_ROWS.to_string())],
             ));
         }
         text
@@ -698,10 +750,12 @@ impl TableDraft {
         text: &str,
     ) -> Result<(), String> {
         let value = {
-            let spec = self
-                .columns
-                .get(column)
-                .ok_or_else(|| format!("列下标 {column} 不存在"))?;
+            let spec = self.columns.get(column).ok_or_else(|| {
+                l10n::tf(
+                    "data_page.col_index_missing",
+                    &[("index", column.to_string())],
+                )
+            })?;
             parse_cell_input(text, spec)?
         };
         self.set_cell(row, column, value)
@@ -712,10 +766,18 @@ impl TableDraft {
         let nullable = self
             .columns
             .get(column)
-            .ok_or_else(|| format!("列下标 {column} 不存在"))?
+            .ok_or_else(|| {
+                l10n::tf(
+                    "data_page.col_index_missing",
+                    &[("index", column.to_string())],
+                )
+            })?
             .nullable;
         if !nullable {
-            return Err(format!("列 {} 不允许 NULL", self.columns[column].name));
+            return Err(l10n::tf(
+                "data_page.col_not_null_short",
+                &[("column", self.columns[column].name.clone())],
+            ));
         }
         self.set_cell(row, column, null_value())
     }
@@ -731,25 +793,36 @@ impl TableDraft {
         let spec = self
             .columns
             .get(column)
-            .ok_or_else(|| format!("列下标 {column} 不存在"))?
+            .ok_or_else(|| {
+                l10n::tf(
+                    "data_page.col_index_missing",
+                    &[("index", column.to_string())],
+                )
+            })?
             .clone();
         if !self.editable() {
-            return Err(read_only.unwrap_or_else(|| "该表没有主键，无法编辑".to_owned()));
+            return Err(read_only.unwrap_or_else(|| l10n::t("data_page.no_pk_no_edit").to_owned()));
         }
         if !spec.type_editable() {
-            return Err(spec
-                .type_not_editable_reason()
-                .unwrap_or_else(|| format!("列 {} 不支持编辑", spec.name)));
+            return Err(spec.type_not_editable_reason().unwrap_or_else(|| {
+                l10n::tf(
+                    "data_page.col_not_editable",
+                    &[("column", spec.name.clone())],
+                )
+            }));
         }
         let draft_row = self
             .rows
             .get_mut(row)
-            .ok_or_else(|| format!("行下标 {row} 不存在"))?;
+            .ok_or_else(|| l10n::tf("data_page.row_index_missing", &[("row", row.to_string())]))?;
         if draft_row.deleted {
-            return Err("该行已标记删除，撤销删除后才能编辑".to_owned());
+            return Err(l10n::t("data_page.row_marked_deleted_comma").to_owned());
         }
         if ValueKind::try_from(value.kind) == Ok(ValueKind::Null) && !spec.nullable {
-            return Err(format!("列 {} 不允许 NULL", spec.name));
+            return Err(l10n::tf(
+                "data_page.col_not_null_short",
+                &[("column", spec.name.clone())],
+            ));
         }
         draft_row.current[column] = value;
         // 只比较语义值（kind + oneof）：`original_type_name` / `truncated` 是传输
@@ -764,14 +837,14 @@ impl TableDraft {
     pub fn delete_row(&mut self, row: usize) -> Result<(), String> {
         let read_only = self.read_only.clone();
         if !self.editable() {
-            return Err(read_only.unwrap_or_else(|| "该表没有主键，无法编辑".to_owned()));
+            return Err(read_only.unwrap_or_else(|| l10n::t("data_page.no_pk_no_edit").to_owned()));
         }
         let draft_row = self
             .rows
             .get_mut(row)
-            .ok_or_else(|| format!("行下标 {row} 不存在"))?;
+            .ok_or_else(|| l10n::tf("data_page.row_index_missing", &[("row", row.to_string())]))?;
         if draft_row.removed {
-            return Err("该行已删除".to_owned());
+            return Err(l10n::t("data_page.row_removed").to_owned());
         }
         draft_row.deleted = true;
         Ok(())
@@ -895,8 +968,10 @@ impl TableDraft {
                             },
                             message: if result.message.trim().is_empty() {
                                 match outcome {
-                                    ChangeOutcome::RowNotFound => "目标行已不存在".to_owned(),
-                                    _ => "影响行数与期望不符".to_owned(),
+                                    ChangeOutcome::RowNotFound => {
+                                        l10n::t("data_page.target_row_gone").to_owned()
+                                    }
+                                    _ => l10n::t("data_page.affected_mismatch").to_owned(),
                                 }
                             } else {
                                 result.message.clone()
@@ -950,10 +1025,10 @@ impl ReadOnlyCause {
     #[must_use]
     pub fn headline(self) -> &'static str {
         match self {
-            Self::NoPrimaryKey => "只读：该表没有主键",
-            Self::DriverUnsupported => "只读：驱动未声明行编辑能力",
-            Self::ConnectionReadOnly => "只读：连接以只读方式打开",
-            Self::ReadOnlyTransaction => "只读：当前是只读事务",
+            Self::NoPrimaryKey => l10n::t("data_page.ro_no_pk_head"),
+            Self::DriverUnsupported => l10n::t("data_page.ro_driver_head"),
+            Self::ConnectionReadOnly => l10n::t("data_page.ro_conn_head"),
+            Self::ReadOnlyTransaction => l10n::t("data_page.ro_txn_head"),
         }
     }
 
@@ -961,20 +1036,10 @@ impl ReadOnlyCause {
     #[must_use]
     pub fn explanation(self) -> &'static str {
         match self {
-            Self::NoPrimaryKey => {
-                "无主键表只有无稳定排序的浏览顺序，无法稳定定位行，因此不能编辑。浏览可用，\
-                 但顺序由数据库返回，不提供 rowid / ctid 之类的近似定位方式。"
-            }
-            Self::DriverUnsupported => {
-                "该数据库驱动未声明支持行编辑，浏览可用，但不能修改或删除数据。"
-            }
-            Self::ConnectionReadOnly => {
-                "该连接以只读方式打开（SQLite 的 read_only 参数），数据库会拒绝任何写入，\
-                 因此不能修改或删除数据。浏览、翻页与导出不受影响；需要编辑时请改用可写连接重连。"
-            }
-            Self::ReadOnlyTransaction => {
-                "当前事务为只读事务，提交行变更会被拒绝。回滚事务后可以重新开始读写事务。"
-            }
+            Self::NoPrimaryKey => l10n::t("data_page.ro_no_pk_expl"),
+            Self::DriverUnsupported => l10n::t("data_page.ro_driver_expl"),
+            Self::ConnectionReadOnly => l10n::t("data_page.ro_conn_expl"),
+            Self::ReadOnlyTransaction => l10n::t("data_page.ro_txn_expl"),
         }
     }
 
@@ -993,7 +1058,13 @@ impl ReadOnlyCause {
     /// 界面横幅文案。
     #[must_use]
     pub fn banner(self) -> String {
-        format!("{}：{}", self.headline(), self.explanation())
+        l10n::tf(
+            "data_page.ro_compose",
+            &[
+                ("headline", self.headline().to_owned()),
+                ("explanation", self.explanation().to_owned()),
+            ],
+        )
     }
 }
 
@@ -1062,16 +1133,16 @@ impl TransactionBadge {
     #[must_use]
     pub fn label(&self) -> String {
         match &self.status {
-            TxnStatus::AutoCommit => "自动提交".to_owned(),
+            TxnStatus::AutoCommit => l10n::t("data_page.txn_autocommit").to_owned(),
             TxnStatus::Active { read_only, .. } => {
                 if *read_only {
-                    "事务中（只读）".to_owned()
+                    l10n::t("data_page.txn_active_readonly").to_owned()
                 } else {
-                    "事务中".to_owned()
+                    l10n::t("data_page.txn_active").to_owned()
                 }
             }
-            TxnStatus::Failed { .. } => "事务失败（只能回滚）".to_owned(),
-            TxnStatus::Disconnected => "已断开".to_owned(),
+            TxnStatus::Failed { .. } => l10n::t("data_page.txn_failed_label").to_owned(),
+            TxnStatus::Disconnected => l10n::t("data_page.txn_disconnected_label").to_owned(),
         }
     }
 
@@ -1138,8 +1209,8 @@ impl TransactionBadge {
     pub fn begin(&mut self, transaction_id: &str, read_only: bool) -> Result<(), String> {
         if !self.can_begin() {
             return Err(match &self.status {
-                TxnStatus::Disconnected => "已断开：不能开始事务".to_owned(),
-                _ => "该会话已有打开的事务".to_owned(),
+                TxnStatus::Disconnected => l10n::t("data_page.txn_begin_disconnected").to_owned(),
+                _ => l10n::t("data_page.txn_already_open").to_owned(),
             });
         }
         self.status = TxnStatus::Active {
@@ -1153,9 +1224,11 @@ impl TransactionBadge {
     pub fn commit(&mut self) -> Result<(), String> {
         if !self.can_commit() {
             return Err(match &self.status {
-                TxnStatus::Failed { .. } => "事务已失败，只能回滚".to_owned(),
-                TxnStatus::Disconnected => "已断开：事务已由后端回滚".to_owned(),
-                _ => "当前没有打开的事务".to_owned(),
+                TxnStatus::Failed { .. } => l10n::t("data_page.txn_failed_comma").to_owned(),
+                TxnStatus::Disconnected => {
+                    l10n::t("data_page.txn_disconnected_rolled_back").to_owned()
+                }
+                _ => l10n::t("data_page.txn_none_open").to_owned(),
             });
         }
         self.status = TxnStatus::AutoCommit;
@@ -1166,8 +1239,10 @@ impl TransactionBadge {
     pub fn rollback(&mut self) -> Result<(), String> {
         if !self.can_rollback() {
             return Err(match &self.status {
-                TxnStatus::Disconnected => "已断开：事务已由后端回滚".to_owned(),
-                _ => "当前没有打开的事务".to_owned(),
+                TxnStatus::Disconnected => {
+                    l10n::t("data_page.txn_disconnected_rolled_back").to_owned()
+                }
+                _ => l10n::t("data_page.txn_none_open").to_owned(),
             });
         }
         self.status = TxnStatus::AutoCommit;
@@ -1306,17 +1381,22 @@ impl InsertDraft {
     /// 状态行 / 日志文案。
     #[must_use]
     pub fn summary(&self) -> String {
-        format!(
-            "新行：显式 {} 列 · 省略 {} 列（交给数据库默认值）",
-            self.provided(),
-            self.omitted()
+        l10n::tf(
+            "data_page.insert_summary",
+            &[
+                ("provided", self.provided().to_string()),
+                ("omitted", self.omitted().to_string()),
+            ],
         )
     }
 
     fn index_of(&self, index: usize) -> Result<&TableColumn, String> {
-        self.columns
-            .get(index)
-            .ok_or_else(|| format!("列下标 {index} 不存在"))
+        self.columns.get(index).ok_or_else(|| {
+            l10n::tf(
+                "data_page.col_index_missing",
+                &[("index", index.to_string())],
+            )
+        })
     }
 
     /// 用文本给某列赋值（按列类型解析；空文本在数值列表示 NULL，与单元格编辑同一口径）。
@@ -1342,7 +1422,10 @@ impl InsertDraft {
     pub fn set_null(&mut self, index: usize) -> Result<(), String> {
         let column = self.index_of(index)?;
         if !column.nullable {
-            return Err(format!("列 {} 不允许 NULL（NOT NULL）", column.name));
+            return Err(l10n::tf(
+                "data_page.col_not_null_proto",
+                &[("column", column.name.clone())],
+            ));
         }
         self.cells[index].mode = InsertMode::Null;
         Ok(())
@@ -1373,9 +1456,9 @@ impl InsertDraft {
                 continue;
             }
             if matches!(column.default_value, ColumnDefaultState::NoDefault) {
-                warnings.push(format!(
-                    "列 {} 不可空且没有默认值：省略会被服务端拒绝（`table_data.not_null_without_default`）；若它是自增列则省略是正确的",
-                    column.name
+                warnings.push(l10n::tf(
+                    "data_page.insert_warn_no_default",
+                    &[("column", column.name.clone())],
                 ));
             }
         }
@@ -1396,12 +1479,12 @@ impl InsertDraft {
         match &cell.mode {
             InsertMode::Text(text) => InsertCellView {
                 text: text.clone(),
-                tooltip: "已填写，提交时按列类型解析".to_owned(),
+                tooltip: l10n::t("data_page.insert_view_filled_tip").to_owned(),
                 hint: false,
             },
             InsertMode::Null => InsertCellView {
                 text: "NULL".to_owned(),
-                tooltip: "显式写入 SQL NULL（与「省略」不同）".to_owned(),
+                tooltip: l10n::t("data_page.insert_view_null_tip").to_owned(),
                 hint: false,
             },
             InsertMode::Omit => {
@@ -1424,12 +1507,19 @@ impl InsertDraft {
                 InsertMode::Omit => continue,
                 InsertMode::Null => {
                     if !column.nullable {
-                        return Err(format!("列 {} 不允许 NULL（NOT NULL）", column.name));
+                        return Err(l10n::tf(
+                            "data_page.col_not_null_proto",
+                            &[("column", column.name.clone())],
+                        ));
                     }
                     null_value()
                 }
-                InsertMode::Text(text) => parse_cell_input(text, column)
-                    .map_err(|error| format!("列 {}：{error}", column.name))?,
+                InsertMode::Text(text) => parse_cell_input(text, column).map_err(|error| {
+                    l10n::tf(
+                        "data_page.col_error_prefix",
+                        &[("column", column.name.clone()), ("error", error)],
+                    )
+                })?,
             };
             values.push(ColumnChange {
                 column: column.name.clone(),
@@ -1458,28 +1548,28 @@ fn default_cell(column: &TableColumn) -> InsertCell {
 fn omit_hint(column: &TableColumn) -> (String, String) {
     match &column.default_value {
         ColumnDefaultState::Expression(text) if !text.trim().is_empty() => (
-            format!("默认：{text}"),
-            format!("该列省略：由数据库默认值 {text} 填充（不写进 INSERT 语句）"),
+            l10n::tf("data_page.omit_default_expr", &[("text", text.clone())]),
+            l10n::tf("data_page.omit_default_expr_tip", &[("text", text.clone())]),
         ),
         ColumnDefaultState::Expression(_) => (
-            "默认：（服务端未给出文本）".to_owned(),
-            "该列省略：由数据库默认值填充".to_owned(),
+            l10n::t("data_page.omit_default_no_text").to_owned(),
+            l10n::t("data_page.omit_default_fill").to_owned(),
         ),
         ColumnDefaultState::Null => (
-            "默认 NULL".to_owned(),
-            "该列省略：数据库默认值为 NULL".to_owned(),
+            l10n::t("data_page.omit_default_null").to_owned(),
+            l10n::t("data_page.omit_default_null_tip").to_owned(),
         ),
         ColumnDefaultState::NoDefault if column.nullable => (
-            "省略 → NULL".to_owned(),
-            "该列省略：可空且无默认值，插入后为 NULL（与显式写 NULL 等价）".to_owned(),
+            l10n::t("data_page.omit_to_null").to_owned(),
+            l10n::t("data_page.omit_to_null_tip").to_owned(),
         ),
         ColumnDefaultState::NoDefault => (
-            "省略 → 数据库决定".to_owned(),
-            "该列不可空且没有默认值：省略后由数据库决定（自增列正是这样），否则会被拒绝（table_data.not_null_without_default）".to_owned(),
+            l10n::t("data_page.omit_db_decides").to_owned(),
+            l10n::t("data_page.omit_db_decides_tip").to_owned(),
         ),
         ColumnDefaultState::Unknown => (
-            "省略 → 数据库生成".to_owned(),
-            "服务端未提供该列的默认值信息：省略即交给数据库".to_owned(),
+            l10n::t("data_page.omit_db_generates").to_owned(),
+            l10n::t("data_page.omit_db_generates_tip").to_owned(),
         ),
     }
 }
@@ -1490,12 +1580,12 @@ fn omit_hint(column: &TableColumn) -> (String, String) {
 #[must_use]
 pub fn isolation_label(level: IsolationLevel) -> &'static str {
     match level {
-        IsolationLevel::Unspecified => "默认（由数据库决定）",
-        IsolationLevel::ReadUncommitted => "读未提交（READ UNCOMMITTED）",
-        IsolationLevel::ReadCommitted => "读已提交（READ COMMITTED）",
-        IsolationLevel::RepeatableRead => "可重复读（REPEATABLE READ）",
-        IsolationLevel::Serializable => "可序列化（SERIALIZABLE）",
-        IsolationLevel::Snapshot => "快照（SNAPSHOT）",
+        IsolationLevel::Unspecified => l10n::t("data_page.iso_default"),
+        IsolationLevel::ReadUncommitted => l10n::t("data_page.iso_read_uncommitted"),
+        IsolationLevel::ReadCommitted => l10n::t("data_page.iso_read_committed"),
+        IsolationLevel::RepeatableRead => l10n::t("data_page.iso_repeatable_read"),
+        IsolationLevel::Serializable => l10n::t("data_page.iso_serializable"),
+        IsolationLevel::Snapshot => l10n::t("data_page.iso_snapshot"),
     }
 }
 
@@ -1532,40 +1622,40 @@ pub fn isolation_options(family: Option<DriverFamily>) -> Vec<IsolationOption> {
         .map(|level| {
             let (available, note) = match (family, level) {
                 (_, IsolationLevel::Unspecified) => {
-                    (true, "不指定隔离级别：由数据库/驱动的默认值决定".to_owned())
+                    (true, l10n::t("data_page.iso_note_unspecified").to_owned())
                 }
                 // 快照隔离不在 v0.2.2 的界面清单里（Issue 只要求四档 + 默认）；
                 // 服务端枚举有该值，界面不提供，也不假装两家驱动都支持。
-                (_, IsolationLevel::Snapshot) => (
-                    false,
-                    "快照隔离不在本版界面提供：两种驱动的服务端都不接受该级别".to_owned(),
-                ),
-                (Some(DriverFamily::MariaDb), IsolationLevel::ReadUncommitted) => {
-                    (true, "脏读可见：并发最高，一致性最弱".to_owned())
+                (_, IsolationLevel::Snapshot) => {
+                    (false, l10n::t("data_page.iso_note_snapshot").to_owned())
                 }
+                (Some(DriverFamily::MariaDb), IsolationLevel::ReadUncommitted) => (
+                    true,
+                    l10n::t("data_page.iso_note_read_uncommitted").to_owned(),
+                ),
                 (Some(DriverFamily::MariaDb), IsolationLevel::ReadCommitted) => (
                     true,
-                    "只读已提交数据（Oracle/PostgreSQL 的默认级别）".to_owned(),
+                    l10n::t("data_page.iso_note_read_committed").to_owned(),
                 ),
-                (Some(DriverFamily::MariaDb), IsolationLevel::RepeatableRead) => {
-                    (true, "MariaDB/InnoDB 的默认级别".to_owned())
-                }
-                (Some(DriverFamily::MariaDb), IsolationLevel::Serializable) => {
-                    (true, "读也加共享锁：并发冲突最多".to_owned())
-                }
+                (Some(DriverFamily::MariaDb), IsolationLevel::RepeatableRead) => (
+                    true,
+                    l10n::t("data_page.iso_note_repeatable_read").to_owned(),
+                ),
+                (Some(DriverFamily::MariaDb), IsolationLevel::Serializable) => (
+                    true,
+                    l10n::t("data_page.iso_note_serializable_mariadb").to_owned(),
+                ),
                 (Some(DriverFamily::Sqlite), IsolationLevel::Serializable) => (
                     true,
-                    "SQLite 只接受 SERIALIZABLE：本选项与数据库行为一致".to_owned(),
+                    l10n::t("data_page.iso_note_serializable_sqlite").to_owned(),
                 ),
                 (Some(DriverFamily::Sqlite), _) => (
                     false,
-                    "SQLite 只接受 SERIALIZABLE（写事务天然串行）：其它级别不会被接受，因此不可选"
-                        .to_owned(),
+                    l10n::t("data_page.iso_note_sqlite_disabled").to_owned(),
                 ),
                 (None, _) => (
                     false,
-                    "当前驱动未声明支持的隔离级别：只能选「默认」，否则要到提交后才可能被拒绝"
-                        .to_owned(),
+                    l10n::t("data_page.iso_note_unknown_driver").to_owned(),
                 ),
             };
             IsolationOption {
@@ -1590,10 +1680,20 @@ pub fn supported_isolation_levels(family: Option<DriverFamily>) -> Vec<Isolation
 /// 开始事务的说明文案（对话框副标题 / 日志）。
 #[must_use]
 pub fn begin_summary(read_only: bool, level: IsolationLevel) -> String {
-    format!(
-        "开始事务：{} · {}",
-        isolation_label(level),
-        if read_only { "只读" } else { "读写" }
+    l10n::tf(
+        "data_page.txn_begin_summary",
+        &[
+            ("level", isolation_label(level).to_owned()),
+            (
+                "mode",
+                l10n::t(if read_only {
+                    "data_page.mode_read_only"
+                } else {
+                    "data_page.mode_read_write"
+                })
+                .to_owned(),
+            ),
+        ],
     )
 }
 

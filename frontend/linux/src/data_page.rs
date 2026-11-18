@@ -228,15 +228,26 @@ impl DirtyTabSummary {
     pub fn line(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.updates > 0 {
-            parts.push(format!("{} 行未提交", self.updates));
+            parts.push(l10n::tf_n(
+                "data_page.dirty_summary_updates",
+                i64::try_from(self.updates).unwrap_or(i64::MAX),
+                &[("count", self.updates.to_string())],
+            ));
         }
         if self.deletes > 0 {
-            parts.push(format!("{} 行标记删除", self.deletes));
+            parts.push(l10n::tf_n(
+                "data_page.dirty_summary_deletes",
+                i64::try_from(self.deletes).unwrap_or(i64::MAX),
+                &[("count", self.deletes.to_string())],
+            ));
         }
         if self.insert {
-            parts.push("1 行新增未提交".to_owned());
+            parts.push(l10n::t("data_page.dirty_summary_insert").to_owned());
         }
-        format!("{}：{}", self.table, parts.join(" · "))
+        l10n::tf(
+            "data_page.dirty_summary_line",
+            &[("table", self.table.clone()), ("parts", parts.join(" · "))],
+        )
     }
 
     /// 未提交的行数（日志用；标记删除与新增行各算一行）。
@@ -589,7 +600,7 @@ pub(crate) fn open_cell_editor(
     entry.set_text(initial);
     entry.set_hexpand(true);
 
-    let null_check = gtk::CheckButton::with_label("设为 NULL（SQL 空值）");
+    let null_check = gtk::CheckButton::with_label(l10n::t("data_page.editor_null_check"));
     null_check.set_active(is_null);
     entry.set_sensitive(!is_null);
     {
@@ -599,11 +610,11 @@ pub(crate) fn open_cell_editor(
         });
     }
 
-    let hint = gtk::Label::new(Some(if nullable {
-        "空文本在文本列表示空字符串 ''；要写 NULL 请勾选上方选项"
+    let hint = gtk::Label::new(Some(l10n::t(if nullable {
+        "data_page.editor_hint_nullable"
     } else {
-        "该列不允许 NULL：请输入合法值"
-    }));
+        "data_page.editor_hint_not_null"
+    })));
     hint.set_xalign(0.0);
     hint.set_wrap(true);
     hint.add_css_class("dim-label");
@@ -619,9 +630,9 @@ pub(crate) fn open_cell_editor(
     error.add_css_class("caption");
     error.set_visible(false);
 
-    let apply = gtk::Button::with_label("应用");
+    let apply = gtk::Button::with_label(l10n::t("data_page.btn_apply"));
     apply.add_css_class("suggested-action");
-    let cancel = gtk::Button::with_label("取消");
+    let cancel = gtk::Button::with_label(l10n::t("data_page.btn_cancel"));
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
     buttons.set_halign(gtk::Align::End);
@@ -735,7 +746,7 @@ fn detail_cell_factory(page: &Rc<DataPage>, index: usize) -> gtk::SignalListItem
             else {
                 return;
             };
-            label.set_tooltip_text(Some("双击编辑这个字段的值（与网格同一个编辑器）"));
+            label.set_tooltip_text(Some(l10n::t("data_page.detail_edit_tip")));
             let page = Rc::clone(&page);
             let item = item.clone();
             let anchor = label.clone();
@@ -1035,23 +1046,23 @@ impl DataPage {
 
         let banner = adw::Banner::new("");
         banner.set_revealed(false);
-        banner.set_button_label(Some("重启 Sqarvo"));
+        banner.set_button_label(Some(l10n::t("shell.recovery_btn_restart")));
 
         // 「开始事务」是本行的中性动作：不挂 flat（那会丢掉背景框），也不用
         // suggested-action / destructive-action 那种强调色——开事务不是主操作。
-        let begin = gtk::Button::with_label("开始事务");
-        begin.set_tooltip_text(Some("在当前会话开始一个显式事务"));
+        let begin = gtk::Button::with_label(l10n::t("data_page.txn_begin"));
+        begin.set_tooltip_text(Some(l10n::t("data_page.txn_begin_tip")));
 
-        let readonly_check = gtk::CheckButton::with_label("只读");
-        readonly_check.set_tooltip_text(Some("以只读事务开始（不能写入，用于只读态验证）"));
+        let readonly_check = gtk::CheckButton::with_label(l10n::t("data_page.txn_readonly_check"));
+        readonly_check.set_tooltip_text(Some(l10n::t("data_page.txn_readonly_check_tip")));
 
-        let commit_txn = gtk::Button::with_label("提交事务");
+        let commit_txn = gtk::Button::with_label(l10n::t("data_page.txn_commit_btn"));
         commit_txn.add_css_class("suggested-action");
-        commit_txn.set_tooltip_text(Some("提交当前事务（失败态只能回滚）"));
+        commit_txn.set_tooltip_text(Some(l10n::t("data_page.txn_commit_btn_tip")));
 
-        let rollback = gtk::Button::with_label("回滚事务");
+        let rollback = gtk::Button::with_label(l10n::t("data_page.txn_rollback_btn"));
         rollback.add_css_class("destructive-action");
-        rollback.set_tooltip_text(Some("回滚当前事务，未提交的更改会被丢弃"));
+        rollback.set_tooltip_text(Some(l10n::t("data_page.txn_rollback_btn_tip")));
         // 事务动作与行变更动作同一行：默认只有「开始事务」；开事务后才出现
         // 「提交事务 / 回滚事务」。事务在不在由状态圆点（灰 / 棕）+ tooltip 表达，
         // 动作行上不再写「事务状态：…」这样的文字。
@@ -1084,10 +1095,10 @@ impl DataPage {
         export.set_valign(gtk::Align::Center);
         export.set_tooltip_text(Some(l10n::t("data_page.export_tooltip")));
 
-        let commit_changes = gtk::Button::with_label("提交");
+        let commit_changes = gtk::Button::with_label(l10n::t("data_page.btn_commit"));
         commit_changes.add_css_class("suggested-action");
         commit_changes.set_sensitive(false);
-        commit_changes.set_tooltip_text(Some("提交所有脏行的变更（主键定位 + 列变更）"));
+        commit_changes.set_tooltip_text(Some(l10n::t("data_page.commit_changes_tip")));
 
         // 「新增行」（#88）不在这一行：入口是状态栏行操作组的 `+`（`RowOp::Add`）与
         // `win.add-row` 动作（只保留快捷键，菜单里不再列）。两者都落到 `DataPage::begin_insert`。
@@ -1109,14 +1120,22 @@ impl DataPage {
         // 「脏行 N · 待提交 M 条」：从 v0.2.4 起**不再可见**，只作状态圆点 tooltip 的
         // 文案来源（与 QA 断言读的同一份字符串）。仍按完整句子拼，不做省略号——
         // tooltip 没有宽度压力。
-        let dirty_label = gtk::Label::new(Some("脏行 0 · 待提交 0 条"));
+        let dirty_label = gtk::Label::new(Some(&l10n::tf_n(
+            "data_page.dirty_plain",
+            0,
+            &[
+                ("dirty", "0".to_owned()),
+                ("pending", "0".to_owned()),
+                ("insert_note", String::new()),
+            ],
+        )));
         dirty_label.set_xalign(0.0);
         dirty_label.add_css_class("dim-label");
         dirty_label.add_css_class("caption");
         dirty_label.set_valign(gtk::Align::Center);
 
         // 常驻事务徽标的文案源（四态），同样只进 tooltip。
-        let txn_label = gtk::Label::new(Some("自动提交"));
+        let txn_label = gtk::Label::new(Some(l10n::t("data_page.txn_autocommit")));
         txn_label.set_xalign(1.0);
         txn_label.add_css_class("caption");
         txn_label.set_visible(false);
@@ -1512,12 +1531,12 @@ impl DataPage {
         //
         // 做成页内浮层而不是独立 `GtkWindow`：Wayland 会话没有系统截屏权限，
         // 独立 surface 无法用 `WidgetPaintable` 自渲染取证（与 #87 列信息浮层同一处理）。
-        let txn_title = gtk::Label::new(Some("开始事务"));
+        let txn_title = gtk::Label::new(Some(l10n::t("data_page.txn_begin")));
         txn_title.add_css_class("sqarvo-heading");
         txn_title.set_xalign(0.0);
         let txn_close = gtk::Button::from_icon_name("window-close-symbolic");
         txn_close.add_css_class("flat");
-        txn_close.set_tooltip_text(Some("取消（不开始事务）"));
+        txn_close.set_tooltip_text(Some(l10n::t("data_page.txn_cancel_tip")));
         let txn_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         txn_header.append(&txn_title);
         txn_title.set_hexpand(true);
@@ -1532,9 +1551,9 @@ impl DataPage {
         let txn_options = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
         txn_options.set_margin_top(gap(Gap::Xs));
 
-        let txn_confirm = gtk::Button::with_label("开始事务");
+        let txn_confirm = gtk::Button::with_label(l10n::t("data_page.txn_begin"));
         txn_confirm.add_css_class("suggested-action");
-        let txn_cancel = gtk::Button::with_label("取消");
+        let txn_cancel = gtk::Button::with_label(l10n::t("data_page.btn_cancel"));
         let txn_buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         txn_buttons.set_halign(gtk::Align::End);
         txn_buttons.append(&txn_cancel);
@@ -2168,24 +2187,36 @@ impl DataPage {
         let copy_enabled = !self.selected_rows().is_empty();
         {
             let page = Rc::clone(self);
-            let delete = crate::context_menu::Entry::action("删除行", delete_enabled, {
-                let page = Rc::clone(&page);
-                Rc::new(move || page.delete_selected_row())
-            });
-            let copy = crate::context_menu::Entry::action("复制为 INSERT", copy_enabled, {
-                let page = Rc::clone(&page);
-                Rc::new(move || match page.copy_selected_as_insert() {
-                    Ok(rows) => page.note_action(&l10n::tf_n(
-                        "data_page.copy_copied",
-                        i64::try_from(rows).unwrap_or(i64::MAX),
-                        &[("rows", rows.to_string())],
-                    )),
-                    Err(reason) => page.set_status(&reason, "warning"),
-                })
-            });
+            let delete = crate::context_menu::Entry::action(
+                l10n::t("data_page.menu_delete_row"),
+                delete_enabled,
+                {
+                    let page = Rc::clone(&page);
+                    Rc::new(move || page.delete_selected_row())
+                },
+            );
+            let copy = crate::context_menu::Entry::action(
+                l10n::t("data_page.menu_copy_insert"),
+                copy_enabled,
+                {
+                    let page = Rc::clone(&page);
+                    Rc::new(move || match page.copy_selected_as_insert() {
+                        Ok(rows) => page.note_action(&l10n::tf_n(
+                            "data_page.copy_copied",
+                            i64::try_from(rows).unwrap_or(i64::MAX),
+                            &[("rows", rows.to_string())],
+                        )),
+                        Err(reason) => page.set_status(&reason, "warning"),
+                    })
+                },
+            );
             let entries = vec![
                 delete,
-                crate::context_menu::Entry::submenu("复制为", copy_enabled, vec![copy]),
+                crate::context_menu::Entry::submenu(
+                    l10n::t("data_page.menu_copy_as"),
+                    copy_enabled,
+                    vec![copy],
+                ),
             ];
             // 点击点换算到网格坐标系（popover 挂在网格上）。
             let point = anchor
@@ -2307,11 +2338,10 @@ impl DataPage {
             return None;
         }
         Some(DirtyTabSummary {
-            table: self
-                .table
-                .borrow()
-                .as_ref()
-                .map_or_else(|| "表".to_owned(), |table| table.display_name.clone()),
+            table: self.table.borrow().as_ref().map_or_else(
+                || l10n::t("data_page.fallback_table").to_owned(),
+                |table| table.display_name.clone(),
+            ),
             updates: risk.updates,
             deletes: risk.deletes,
             insert,
@@ -3164,13 +3194,13 @@ impl DataPage {
         if self.is_read_only() {
             let reason = self
                 .read_only_reason()
-                .unwrap_or_else(|| "只读状态：不能插入新行".to_owned());
+                .unwrap_or_else(|| l10n::t("data_page.insert_readonly").to_owned());
             self.set_status(&reason, "warning");
             return;
         }
         let columns = self.columns.borrow().clone();
         if columns.is_empty() {
-            self.set_status("尚未打开表，无法新增行", "warning");
+            self.set_status(l10n::t("data_page.insert_no_table"), "warning");
             return;
         }
         if let Some(index) = self.insert_index()
@@ -3181,7 +3211,7 @@ impl DataPage {
                 .scroll_to(index, None, gtk::ListScrollFlags::NONE, None);
         }
         if self.insert_index().is_some() {
-            self.set_status("已经有一行待插入的新行：先提交或放弃它", "warning");
+            self.set_status(l10n::t("data_page.insert_exists"), "warning");
             return;
         }
         let draft = InsertDraft::new(columns);
@@ -3219,7 +3249,7 @@ impl DataPage {
             eprintln!("[data] 新增行提示：{warning}");
         }
         self.set_status(
-            &format!("{summary} · 双击单元格填值，填完点「提交更改」"),
+            &l10n::tf("data_page.insert_started", &[("summary", summary)]),
             "normal",
         );
         self.update_dirty_label();
@@ -3275,7 +3305,7 @@ impl DataPage {
         {
             let mut guard = self.insert.borrow_mut();
             let Some(draft) = guard.as_mut() else {
-                return Err("当前没有待插入的新行".to_owned());
+                return Err(l10n::t("data_page.insert_none").to_owned());
             };
             draft.set_text(column, text)?;
         }
@@ -3289,7 +3319,7 @@ impl DataPage {
         {
             let mut guard = self.insert.borrow_mut();
             let Some(draft) = guard.as_mut() else {
-                return Err("当前没有待插入的新行".to_owned());
+                return Err(l10n::t("data_page.insert_none").to_owned());
             };
             draft.set_null(column)?;
         }
@@ -3303,7 +3333,7 @@ impl DataPage {
         {
             let mut guard = self.insert.borrow_mut();
             let Some(draft) = guard.as_mut() else {
-                return Err("当前没有待插入的新行".to_owned());
+                return Err(l10n::t("data_page.insert_none").to_owned());
             };
             draft.set_omit(column)?;
         }
@@ -3370,7 +3400,10 @@ impl DataPage {
         popover.set_autohide(true);
         popover.set_has_arrow(true);
 
-        let title = gtk::Label::new(Some(&format!("新行 · {column_name} · {type_label}")));
+        let title = gtk::Label::new(Some(&l10n::tf(
+            "data_page.insert_editor_title",
+            &[("column_name", column_name), ("type_label", type_label)],
+        )));
         title.set_xalign(0.0);
         title.add_css_class("sqarvo-heading");
 
@@ -3378,9 +3411,9 @@ impl DataPage {
         entry.set_text(&initial);
         entry.set_hexpand(true);
 
-        let omit_check = gtk::CheckButton::with_label("省略该列（交给数据库默认值 / 自增）");
+        let omit_check = gtk::CheckButton::with_label(l10n::t("data_page.insert_omit_check"));
         omit_check.set_active(is_omit);
-        let null_check = gtk::CheckButton::with_label("显式 NULL（SQL 空值）");
+        let null_check = gtk::CheckButton::with_label(l10n::t("data_page.insert_null_check"));
         null_check.set_active(is_null);
         null_check.set_sensitive(nullable);
         {
@@ -3412,9 +3445,9 @@ impl DataPage {
 
         let hint_text = if hint.is_empty() {
             if nullable {
-                "空文本在文本列表示空字符串；要写 NULL 请勾选上方选项"
+                l10n::t("data_page.editor_hint_nullable_insert")
             } else {
-                "该列不允许 NULL：请输入合法值"
+                l10n::t("data_page.editor_hint_not_null")
             }
         } else {
             hint.as_str()
@@ -3432,9 +3465,9 @@ impl DataPage {
         error.add_css_class("caption");
         error.set_visible(false);
 
-        let apply = gtk::Button::with_label("应用");
+        let apply = gtk::Button::with_label(l10n::t("data_page.btn_apply"));
         apply.add_css_class("suggested-action");
-        let cancel = gtk::Button::with_label("取消");
+        let cancel = gtk::Button::with_label(l10n::t("data_page.btn_cancel"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
@@ -3492,7 +3525,7 @@ impl DataPage {
     fn build_insert_row(&self) -> Result<crate::proto::services::v1::InsertRow, String> {
         let guard = self.insert.borrow();
         let Some(draft) = guard.as_ref() else {
-            return Err("当前没有待插入的新行".to_owned());
+            return Err(l10n::t("data_page.insert_none").to_owned());
         };
         draft.to_row()
     }
@@ -3520,7 +3553,7 @@ impl DataPage {
             .replace(if batch.is_empty() { None } else { Some(batch) });
         self.pending_batch.replace(None);
         self.set_busy(true);
-        self.set_status("正在插入新行…", "normal");
+        self.set_status(l10n::t("data_page.inserting"), "normal");
         (self.callbacks.apply)(
             Vec::new(),
             Vec::new(),
@@ -3556,13 +3589,19 @@ impl DataPage {
                     codes.join("、")
                 }
             );
-            self.show_banner(&format!(
-                "插入失败：整批已回滚，库里 0 行变化{} · 草稿行已保留，修正后可重试",
-                if codes.is_empty() {
-                    String::new()
-                } else {
-                    format!("（{}）", codes.join("、"))
-                }
+            self.show_banner(&l10n::tf(
+                "data_page.insert_failed_rolled_back",
+                &[(
+                    "codes",
+                    if codes.is_empty() {
+                        String::new()
+                    } else {
+                        l10n::tf(
+                            "data_page.codes_suffix",
+                            &[("codes", codes.join(l10n::t("data_page.list_separator")))],
+                        )
+                    },
+                )],
             ));
             self.set_status(&status.text, status.tone.css_class());
             self.update_dirty_label();
@@ -3578,7 +3617,7 @@ impl DataPage {
                 "[data] 插入未产生净变化：语句成功 {} 行，净影响 0 行",
                 report.inserted_rows
             );
-            self.show_banner("本次插入未产生净变化：没有行落库。草稿行已保留，可重试。");
+            self.show_banner(l10n::t("data_page.insert_no_net_change"));
             self.set_status(&status.text, status.tone.css_class());
             self.update_dirty_label();
             self.update_buttons();
@@ -3588,11 +3627,14 @@ impl DataPage {
         self.finish_insert_row(report.inserted_key());
         let pending = self.after_insert_batch.borrow_mut().take();
         self.set_status(&status.text, status.tone.css_class());
-        self.show_banner(&format!(
-            "已插入 1 行{}：该行已按返回的主键定位到表末尾（未整表重刷）。其余列由数据库填充，点「刷新」可回读实际值。",
-            key_label
-                .as_ref()
-                .map_or_else(String::new, |label| format!("（主键 {label}）"))
+        self.show_banner(&l10n::tf(
+            "data_page.inserted_banner",
+            &[(
+                "key",
+                key_label.as_ref().map_or_else(String::new, |label| {
+                    l10n::tf("data_page.key_suffix", &[("label", label.clone())])
+                }),
+            )],
         ));
         self.banner.set_button_label(None::<&str>);
         eprintln!(
@@ -3664,8 +3706,7 @@ impl DataPage {
                             |_| CellView {
                                 text: text.clone(),
                                 style: CellStyle::Normal,
-                                tooltip: "已提交的原文（服务端接受，但前端未能重新解析）"
-                                    .to_owned(),
+                                tooltip: l10n::t("data_page.committed_raw_tip").to_owned(),
                                 truncated: false,
                             },
                             |value| format_cell(&value),
@@ -3673,11 +3714,9 @@ impl DataPage {
                     InsertMode::Null => format_cell(&crate::table_data::null_value()),
                     // 省略的列由数据库填：界面**不猜**实际值，明确标成「数据库生成」。
                     InsertMode::Omit => CellView {
-                        text: "（数据库生成）".to_owned(),
+                        text: l10n::t("data_page.db_generated").to_owned(),
                         style: CellStyle::Null,
-                        tooltip:
-                            "该列由数据库填充（默认值 / 自增），界面未回读；点「刷新」查看实际值"
-                                .to_owned(),
+                        tooltip: l10n::t("data_page.db_generated_tip").to_owned(),
                         truncated: false,
                     },
                 },
@@ -3706,7 +3745,7 @@ impl DataPage {
     /// 隔离级别只在开始之前选。
     pub fn open_txn_chooser(self: &Rc<Self>) {
         if !self.badge.borrow().can_begin() {
-            self.set_status("该会话已有打开的事务（或已断开）", "warning");
+            self.set_status(l10n::t("data_page.txn_already_open_disc"), "warning");
             return;
         }
         self.render_isolation_options();
@@ -3731,7 +3770,10 @@ impl DataPage {
             let label = if option.available {
                 option.label.to_owned()
             } else {
-                format!("{} · 不可用", option.label)
+                l10n::tf(
+                    "data_page.iso_unavailable_suffix",
+                    &[("label", option.label.to_owned())],
+                )
             };
             let check = gtk::CheckButton::with_label(&label);
             check.set_sensitive(option.available);
@@ -3794,11 +3836,13 @@ impl DataPage {
             .filter(|option| !option.available)
             .map(|option| format!("{}（{}）", option.label, option.note))
             .collect();
-        self.txn_note.set_text(&format!(
-            "当前驱动可选 {} / {} 项：{}。不可用的级别已禁用并写明原因（不是等到提交后才报错）。",
-            available.len(),
-            options.len(),
-            available.join("、")
+        self.txn_note.set_text(&l10n::tf(
+            "data_page.iso_avail_summary",
+            &[
+                ("available", available.len().to_string()),
+                ("total", options.len().to_string()),
+                ("list", available.join(l10n::t("data_page.list_separator"))),
+            ],
         ));
         eprintln!(
             "[data] 隔离级别选项：可用 {} 项（{}）；禁用 {} 项（{}）",
@@ -3825,9 +3869,12 @@ impl DataPage {
         if !available {
             // 选到不支持的级别只可能来自程序错误：拒绝并发出一条明确的状态说明。
             self.set_status(
-                &format!(
-                    "{} 在当前驱动下不可用，请选择已启用的级别",
-                    crate::table_data::isolation_label(isolation)
+                &l10n::tf(
+                    "data_page.iso_unavailable_choice",
+                    &[(
+                        "label",
+                        crate::table_data::isolation_label(isolation).to_owned(),
+                    )],
                 ),
                 "error",
             );
@@ -4285,8 +4332,10 @@ impl DataPage {
             TxnStatus::Active {
                 read_only: true, ..
             } => Some(ReadOnlyCause::ReadOnlyTransaction.banner()),
-            TxnStatus::Failed { .. } => Some("事务已失败：只能回滚，不能继续编辑".to_owned()),
-            TxnStatus::Disconnected => Some("已断开：未提交的更改已丢弃".to_owned()),
+            TxnStatus::Failed { .. } => Some(l10n::t("data_page.txn_failed_no_edit").to_owned()),
+            TxnStatus::Disconnected => {
+                Some(l10n::t("data_page.disconnected_discarded_edit").to_owned())
+            }
             _ => None,
         }
     }
@@ -4473,7 +4522,15 @@ impl DataPage {
                 "sqarvo-badge-readonly",
                 self.read_only_cause.borrow().map_or_else(
                     || l10n::t("data_page.badge_readonly_fallback").to_owned(),
-                    |cause| format!("{}：{}", cause.headline(), cause.explanation()),
+                    |cause| {
+                        l10n::tf(
+                            "data_page.ro_compose",
+                            &[
+                                ("headline", cause.headline().to_owned()),
+                                ("explanation", cause.explanation().to_owned()),
+                            ],
+                        )
+                    },
                 ),
             ));
         }
@@ -4560,9 +4617,13 @@ impl DataPage {
             .map_or(0, TableDraft::dirty_rows);
         // 被钳制时的横幅提示保持原样；取消是正常结果，不再弹带「重新连接后端」按钮的横幅。
         if !report.cancelled && (report.clamped || report.deferred_changes > 0) {
-            self.show_banner(&format!(
-                "单批上限 500 行：本次只执行了前 {} 条，还有 {} 条未提交——请再次点「提交更改」续传。",
-                report.total_rows_affected, report.deferred_changes
+            self.show_banner(&l10n::tf_n(
+                "data_page.clamped_banner",
+                i64::from(report.deferred_changes),
+                &[
+                    ("affected", report.total_rows_affected.to_string()),
+                    ("deferred", report.deferred_changes.to_string()),
+                ],
             ));
         }
         let status = report.status_line(failures.len(), dirty);
@@ -4719,7 +4780,11 @@ impl DataPage {
         // 状态落定后它们就过期了，以前靠上面那句「事务状态：」盖掉，现在没人盖，会长期停在动作
         // 行上。口径同 `finish_load` 擦「正在读取…」——只按前缀认领这三句，错误与其它进度消息
         // 一律不动。
-        for prefix in ["开始事务", "正在提交事务", "正在回滚事务"] {
+        for prefix in [
+            l10n::t("data_page.txn_claim_begin"),
+            l10n::t("data_page.txn_claim_commit"),
+            l10n::t("data_page.txn_claim_rollback"),
+        ] {
             if self.status.text().starts_with(prefix) {
                 self.set_status("", "normal");
                 break;
@@ -4792,11 +4857,11 @@ impl DataPage {
         self.errors_scroll.set_visible(false);
         // 结果（不是「正在…」）收进状态圆点的 tooltip：放弃是立刻生效的事实，
         // 脏行计数与圆点颜色已经说明「现在没有未提交的更改」。
-        self.note_action(if had_insert {
-            "已放弃未提交的更改（含新增行）"
+        self.note_action(l10n::t(if had_insert {
+            "data_page.discard_all_with_insert"
         } else {
-            "已放弃未提交的更改"
-        });
+            "data_page.discard_all"
+        }));
         self.update_dirty_label();
         self.update_buttons();
     }
@@ -4834,7 +4899,7 @@ impl DataPage {
         let (batch, changes) = {
             let draft = self.draft.borrow();
             let Some(draft) = draft.as_ref() else {
-                self.set_status("尚未打开表", "warning");
+                self.set_status(l10n::t("data_page.st_no_table"), "warning");
                 return;
             };
             // 半个批次：与取消「在行边界生效、已执行若干条」的真实形态一致。
@@ -4842,7 +4907,7 @@ impl DataPage {
             (draft.build_batch(), changes)
         };
         if batch.is_empty() {
-            self.set_status("没有待提交的更改", "warning");
+            self.set_status(l10n::t("data_page.no_pending_changes"), "warning");
             return;
         }
         let executed_changes = u32::try_from(changes / 2).unwrap_or(0);
@@ -4851,7 +4916,7 @@ impl DataPage {
         );
         self.pending_batch.replace(Some(batch));
         self.set_busy(true);
-        self.set_status("正在提交…", "normal");
+        self.set_status(l10n::t("data_page.st_submitting"), "normal");
         self.show_applied(ApplyReport {
             results: Vec::new(),
             total_rows_affected: 0,
@@ -5106,20 +5171,20 @@ impl DataPage {
     /// 为什么行操作一个都不能点（状态栏 tooltip 用，按当前状态给具体原因）。
     fn row_ops_reason(&self) -> String {
         match self.state.get() {
-            DataState::Idle => "尚未打开表".to_owned(),
-            DataState::Loading => "正在读取数据".to_owned(),
-            DataState::Disconnected => "连接已断开".to_owned(),
+            DataState::Idle => l10n::t("data_page.st_no_table").to_owned(),
+            DataState::Loading => l10n::t("data_page.row_ops_loading").to_owned(),
+            DataState::Disconnected => l10n::t("data_page.row_ops_disconnected").to_owned(),
             DataState::Error if self.draft.borrow().is_none() => {
-                "读取失败，没有可编辑的数据".to_owned()
+                l10n::t("data_page.row_ops_read_failed").to_owned()
             }
-            _ if self.busy.get() => "上一次请求还在进行中".to_owned(),
+            _ if self.busy.get() => l10n::t("data_page.row_ops_busy").to_owned(),
             _ => {
                 if let Some(reason) = self.read_only_reason() {
                     reason
                 } else if self.draft.borrow().is_none() {
-                    "尚未打开表".to_owned()
+                    l10n::t("data_page.st_no_table").to_owned()
                 } else {
-                    "没有可提交的更改".to_owned()
+                    l10n::t("data_page.no_pending_changes").to_owned()
                 }
             }
         }
@@ -5212,7 +5277,10 @@ impl DataPage {
             snapshot.changes
         );
         self.set_status(
-            &format!("正在取消提交（批次 {}）…", snapshot.short_id()),
+            &l10n::tf(
+                "data_page.st_cancel_requested",
+                &[("batch", snapshot.short_id().to_owned())],
+            ),
             "normal",
         );
         // 取消请求已发出：按钮先禁用，等服务端结果（取消中不得重复发 RPC）。
@@ -5228,21 +5296,21 @@ impl DataPage {
         if self.is_read_only() {
             let reason = self
                 .read_only_reason()
-                .unwrap_or_else(|| "只读状态：不能提交".to_owned());
+                .unwrap_or_else(|| l10n::t("data_page.commit_readonly").to_owned());
             self.set_status(&reason, "warning");
             return;
         }
         let batch = {
             let draft = self.draft.borrow();
             let Some(draft) = draft.as_ref() else {
-                self.set_status("尚未打开表", "warning");
+                self.set_status(l10n::t("data_page.st_no_table"), "warning");
                 return;
             };
             draft.build_batch()
         };
         let has_insert = self.insert.borrow().is_some();
         if batch.is_empty() && !has_insert {
-            self.set_status("没有待提交的更改", "warning");
+            self.set_status(l10n::t("data_page.no_pending_changes"), "warning");
             return;
         }
         if has_insert {
@@ -5263,9 +5331,7 @@ impl DataPage {
         if risk.needs_confirmation() || total > crate::table_data::RISK_CONFIRMATION_ROWS {
             let mut summary = risk.summary();
             if has_insert {
-                summary.push_str(
-                    "\n\n另含 1 行新插入（InsertRows：整批原子，任一行失败则整批回滚）。",
-                );
+                summary.push_str(l10n::t("data_page.risk_insert_note"));
             }
             self.confirm_batch(batch, &summary, false);
         } else if has_insert {
@@ -5277,9 +5343,9 @@ impl DataPage {
 
     /// 风险确认对话框：> 100 行或含删除时必须经过它。
     fn confirm_batch(self: &Rc<Self>, batch: ChangeBatch, summary: &str, from_server: bool) {
-        let dialog = adw::AlertDialog::new(Some("确认提交变更？"), Some(summary));
-        dialog.add_response("cancel", "取消");
-        dialog.add_response("confirm", "确认提交");
+        let dialog = adw::AlertDialog::new(Some(l10n::t("data_page.risk_title")), Some(summary));
+        dialog.add_response("cancel", l10n::t("data_page.btn_cancel"));
+        dialog.add_response("confirm", l10n::t("data_page.risk_btn_confirm"));
         dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -5303,7 +5369,7 @@ impl DataPage {
                     }
                 } else {
                     eprintln!("[data] 风险确认：用户取消，未提交");
-                    page.set_status("已取消提交（未发送任何变更）", "warning");
+                    page.set_status(l10n::t("data_page.risk_cancelled_noop"), "warning");
                 }
             });
         }
@@ -5332,7 +5398,7 @@ impl DataPage {
         );
         self.pending_batch.replace(Some(batch));
         self.set_busy(true);
-        self.set_status("正在提交…", "normal");
+        self.set_status(l10n::t("data_page.st_submitting"), "normal");
         // QA：`--qa-data-cancel-after-ms` 的计时**从这里开始**（提交真正发出的那一刻），
         // 不是从进程启动或点击按钮算起——中间还有风险确认对话框要等。
         if let Some(millis) = crate::qa::data_cancel_after_ms() {
@@ -5353,7 +5419,7 @@ impl DataPage {
         if self.is_read_only() {
             let reason = self
                 .read_only_reason()
-                .unwrap_or_else(|| "只读状态：不能删除".to_owned());
+                .unwrap_or_else(|| l10n::t("data_page.delete_readonly").to_owned());
             self.set_status(&reason, "warning");
             return;
         }
@@ -5367,10 +5433,7 @@ impl DataPage {
             selected.retain(|index| *index != insert);
         }
         if selected.is_empty() {
-            self.set_status(
-                "新行尚未提交：用「放弃更改」撤销它，或先提交；已存在的行才可以标记删除",
-                "warning",
-            );
+            self.set_status(l10n::t("data_page.insert_row_delete_hint"), "warning");
             return;
         }
         // 从后往前删：`TableDraft` 的行下标在删除时不会重排，但从后往前更不容易错。
@@ -5380,7 +5443,7 @@ impl DataPage {
         for index in selected.iter().rev() {
             let result = match self.draft.borrow_mut().as_mut() {
                 Some(draft) => draft.delete_row(*index),
-                None => Err("尚未打开表".to_owned()),
+                None => Err(l10n::t("data_page.st_no_table").to_owned()),
             };
             match result {
                 Ok(()) => {
@@ -5398,7 +5461,11 @@ impl DataPage {
             let note = self.delete_note(selected[0]);
             self.note_action(&note);
         } else {
-            self.note_action(&format!("已标记删除 {deleted} 行（批量提交前可撤销）"));
+            self.note_action(&l10n::tf_n(
+                "data_page.deleted_marked",
+                i64::try_from(deleted).unwrap_or(i64::MAX),
+                &[("deleted", deleted.to_string())],
+            ));
         }
         eprintln!(
             "[data] t=+{}ms 标记删除：请求 {} 行，成功 {deleted} 行",
@@ -5421,7 +5488,7 @@ impl DataPage {
             .as_ref()
             .and_then(|draft| draft.rows().get(index))
             .map_or(index + 1, |row| usize::try_from(row.number).unwrap_or(0));
-        format!("第 {number} 行已标记删除（提交前可撤销）")
+        l10n::tf("data_page.delete_note", &[("number", number.to_string())])
     }
 
     /// 选中行（升序下标）；多选时状态栏显示 `N selected`。
@@ -5449,13 +5516,17 @@ impl DataPage {
         let pending = self.pending_change_count();
         if pending > 0 {
             self.set_status(
-                &format!("还有 {pending} 行未提交的更改：先提交或放弃它们再开事务"),
+                &l10n::tf_n(
+                    "data_page.begin_tip_pending",
+                    i64::try_from(pending).unwrap_or(i64::MAX),
+                    &[("pending", pending.to_string())],
+                ),
                 "warning",
             );
             return;
         }
         if !self.badge.borrow().can_begin() {
-            self.set_status("该会话已有打开的事务（或已断开）", "warning");
+            self.set_status(l10n::t("data_page.txn_already_open_disc"), "warning");
             return;
         }
         // 先选隔离级别再发 RPC：不支持的级别在这里就禁用（#88 / REQ-TXN-002）。
@@ -5466,8 +5537,8 @@ impl DataPage {
     pub fn commit_transaction(self: &Rc<Self>) {
         if !self.badge.borrow().can_commit() {
             let reason = match self.badge.borrow().status() {
-                TxnStatus::Failed { .. } => "事务已失败：只能回滚",
-                _ => "当前没有可提交的事务",
+                TxnStatus::Failed { .. } => l10n::t("data_page.txn_failed_rollback_only"),
+                _ => l10n::t("data_page.txn_none_commit"),
             };
             self.set_status(reason, "warning");
             return;
@@ -5479,20 +5550,24 @@ impl DataPage {
             .map_or(0, TableDraft::dirty_rows);
         if dirty > 0 {
             self.set_status(
-                &format!("还有 {dirty} 行更改未提交：先点「提交更改」或「放弃更改」再提交事务"),
+                &l10n::tf_n(
+                    "data_page.commit_txn_dirty",
+                    i64::try_from(dirty).unwrap_or(i64::MAX),
+                    &[("dirty", dirty.to_string())],
+                ),
                 "warning",
             );
             return;
         }
         self.set_busy(true);
-        self.set_status("正在提交事务…", "normal");
+        self.set_status(l10n::t("data_page.txn_committing"), "normal");
         (self.callbacks.commit_txn)();
     }
 
     /// 回滚事务（未提交的更改会被丢弃）。
     pub fn rollback_transaction(self: &Rc<Self>) {
         if !self.badge.borrow().can_rollback() {
-            self.set_status("当前没有可回滚的事务", "warning");
+            self.set_status(l10n::t("data_page.txn_none_rollback"), "warning");
             return;
         }
         let dirty = self
@@ -5501,13 +5576,20 @@ impl DataPage {
             .as_ref()
             .map_or(0, TableDraft::dirty_rows);
         let message = if dirty > 0 {
-            format!("回滚事务将丢弃数据库侧的变更，并放弃 {dirty} 行未提交的界面更改。")
+            l10n::tf_n(
+                "data_page.rollback_confirm_dirty",
+                i64::try_from(dirty).unwrap_or(i64::MAX),
+                &[("dirty", dirty.to_string())],
+            )
         } else {
-            "回滚当前事务？".to_owned()
+            l10n::t("data_page.rollback_confirm_fallback").to_owned()
         };
-        let dialog = adw::AlertDialog::new(Some("回滚事务？"), Some(&message));
-        dialog.add_response("cancel", "取消");
-        dialog.add_response("rollback", "回滚");
+        let dialog = adw::AlertDialog::new(
+            Some(l10n::t("data_page.rollback_dialog_title")),
+            Some(&message),
+        );
+        dialog.add_response("cancel", l10n::t("data_page.btn_cancel"));
+        dialog.add_response("rollback", l10n::t("data_page.btn_rollback"));
         dialog.set_response_appearance("rollback", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -5520,7 +5602,7 @@ impl DataPage {
                 }
                 if response == "rollback" {
                     page.set_busy(true);
-                    page.set_status("正在回滚事务…", "normal");
+                    page.set_status(l10n::t("data_page.txn_rolling_back"), "normal");
                     (page.callbacks.rollback_txn)();
                 }
             });
@@ -5591,7 +5673,10 @@ impl DataPage {
             });
         open_cell_editor(
             anchor,
-            &format!("编辑 {column_name} · {type_label}"),
+            &l10n::tf(
+                "data_page.editor_title",
+                &[("column_name", column_name), ("type_label", type_label)],
+            ),
             &initial,
             is_null,
             nullable,
@@ -5603,7 +5688,7 @@ impl DataPage {
     fn edit_block_reason(&self, row: usize, column: usize) -> Option<String> {
         let draft = self.draft.borrow();
         let Some(draft) = draft.as_ref() else {
-            return Some("尚未打开表".to_owned());
+            return Some(l10n::t("data_page.st_no_table").to_owned());
         };
         if let Some(reason) = draft.read_only_reason() {
             return Some(reason.to_owned());
@@ -5611,11 +5696,11 @@ impl DataPage {
         if !self.badge.borrow().edits_allowed() {
             return Some(
                 self.read_only_reason()
-                    .unwrap_or_else(|| "当前状态不允许编辑".to_owned()),
+                    .unwrap_or_else(|| l10n::t("data_page.state_no_edit").to_owned()),
             );
         }
         let Some(spec) = draft.columns().get(column) else {
-            return Some("列不存在".to_owned());
+            return Some(l10n::t("data_page.column_missing").to_owned());
         };
         if let Some(reason) = spec.type_not_editable_reason() {
             return Some(reason);
@@ -5625,13 +5710,13 @@ impl DataPage {
             if self.insert_index() == Some(row) {
                 return None;
             }
-            return Some("行不存在".to_owned());
+            return Some(l10n::t("data_page.row_missing").to_owned());
         };
         if draft_row.removed {
-            return Some("该行已删除".to_owned());
+            return Some(l10n::t("data_page.row_removed").to_owned());
         }
         if draft_row.deleted {
-            return Some("该行已标记删除：撤销删除后才能编辑".to_owned());
+            return Some(l10n::t("data_page.row_marked_deleted").to_owned());
         }
         // 截断列禁止编辑：提交被截断的值会写坏数据（table_data.truncated_value）。
         let truncated = self
@@ -5647,9 +5732,9 @@ impl DataPage {
             })
             .unwrap_or(false);
         if truncated {
-            return Some(format!(
-                "列 {} 的值被服务端截断（只收到前缀），禁止编辑：提交截断值会写坏数据",
-                spec.name
+            return Some(l10n::tf(
+                "data_page.truncated_no_edit",
+                &[("column", spec.name.clone())],
             ));
         }
         None
@@ -5668,7 +5753,7 @@ impl DataPage {
         }
         let mut guard = self.draft.borrow_mut();
         let Some(draft) = guard.as_mut() else {
-            return Err("尚未打开表".to_owned());
+            return Err(l10n::t("data_page.st_no_table").to_owned());
         };
         draft.set_cell_from_text(row, column, text)?;
         drop(guard);
@@ -5683,7 +5768,7 @@ impl DataPage {
         }
         let mut guard = self.draft.borrow_mut();
         let Some(draft) = guard.as_mut() else {
-            return Err("尚未打开表".to_owned());
+            return Err(l10n::t("data_page.st_no_table").to_owned());
         };
         draft.set_cell_null(row, column)?;
         drop(guard);
@@ -6649,18 +6734,32 @@ impl DataPage {
                 },
             ),
         };
+        let insert_note = if has_insert {
+            l10n::t("data_page.dirty_note_new_row")
+        } else {
+            ""
+        };
+        let count = i64::try_from(dirty).unwrap_or(i64::MAX);
         let text = if risk.deletes > 0 {
-            format!(
-                "脏行 {dirty} · 待提交 {} 条（含 {} 个删除）{insert_note}",
-                risk.total(),
-                risk.deletes,
-                insert_note = if has_insert { " · 新行 1 行" } else { "" }
+            l10n::tf_n(
+                "data_page.dirty_with_deletes",
+                count,
+                &[
+                    ("dirty", dirty.to_string()),
+                    ("pending", risk.total().to_string()),
+                    ("deletes", risk.deletes.to_string()),
+                    ("insert_note", insert_note.to_owned()),
+                ],
             )
         } else {
-            format!(
-                "脏行 {dirty} · 待提交 {} 条{}",
-                risk.total(),
-                if has_insert { " · 新行 1 行" } else { "" }
+            l10n::tf_n(
+                "data_page.dirty_plain",
+                count,
+                &[
+                    ("dirty", dirty.to_string()),
+                    ("pending", risk.total().to_string()),
+                    ("insert_note", insert_note.to_owned()),
+                ],
             )
         };
         self.dirty_label.set_text(&text);
@@ -6679,12 +6778,16 @@ impl DataPage {
     fn begin_tooltip(&self) -> String {
         let pending = self.pending_change_count();
         if pending > 0 {
-            return format!("还有 {pending} 行未提交的更改：先提交或放弃它们再开事务");
+            return l10n::tf_n(
+                "data_page.begin_tip_pending",
+                i64::try_from(pending).unwrap_or(i64::MAX),
+                &[("pending", pending.to_string())],
+            );
         }
         match self.badge.borrow().status() {
-            TxnStatus::AutoCommit => "在当前会话开始一个显式事务（可选只读）".to_owned(),
-            TxnStatus::Disconnected => "已断开：不能开始事务".to_owned(),
-            _ => "已有事务：先提交或回滚".to_owned(),
+            TxnStatus::AutoCommit => l10n::t("data_page.begin_tip_autocommit").to_owned(),
+            TxnStatus::Disconnected => l10n::t("data_page.txn_begin_disconnected").to_owned(),
+            _ => l10n::t("data_page.begin_tip_open").to_owned(),
         }
     }
 
@@ -6765,11 +6868,11 @@ impl DataPage {
         )));
         self.buttons
             .commit_changes
-            .set_tooltip_text(Some(if badge.can_commit() {
-                "提交所有脏行的变更（主键定位 + 列变更），然后在事务内生效"
+            .set_tooltip_text(Some(l10n::t(if badge.can_commit() {
+                "data_page.commit_changes_tip_txn"
             } else {
-                "提交所有脏行的变更（主键定位 + 列变更）"
-            }));
+                "data_page.commit_changes_tip"
+            })));
         // 只读原因一旦成立，编辑类按钮一律禁用（不是靠置灰暗示，状态行同时给出原因）。
         if let Some(reason) = self.read_only_reason() {
             self.buttons.commit_changes.set_sensitive(false);
@@ -6824,13 +6927,13 @@ impl DataPage {
         // 面向用户的文案不写 ADR 编号（出处见 docs/decisions/0017）；自动提交这一句
         // 原来带的「（ADR 0017）」已去掉，只保留行为本身。
         let note = match self.badge.borrow().status() {
-            TxnStatus::AutoCommit => "自动提交：每条语句自成一个事务",
+            TxnStatus::AutoCommit => l10n::t("data_page.dot_note_autocommit"),
             TxnStatus::Active {
                 read_only: true, ..
-            } => "只读事务：能查询，不能写入",
-            TxnStatus::Active { .. } => "事务中：提交事务之前，改动只在当前会话可见",
-            TxnStatus::Failed { .. } => "事务失败：只能回滚",
-            TxnStatus::Disconnected => "已断开：事务已由后端回滚",
+            } => l10n::t("data_page.dot_note_readonly_txn"),
+            TxnStatus::Active { .. } => l10n::t("data_page.dot_note_active"),
+            TxnStatus::Failed { .. } => l10n::t("data_page.dot_note_failed"),
+            TxnStatus::Disconnected => l10n::t("data_page.txn_disconnected_rolled_back"),
         };
         // 第一行 = 原来的两段常驻文案（「事务中 · 脏行 3 · 待提交 2 条」），
         // 第二行 = 事务状态说明，第三行 = 最近一次已发生的操作结果（有才写）。
@@ -6839,7 +6942,10 @@ impl DataPage {
         let tooltip = if action.trim().is_empty() {
             format!("{txn} · {dirty}\n{note}")
         } else {
-            format!("{txn} · {dirty}\n{note}\n最近一次操作：{action}")
+            format!(
+                "{txn} · {dirty}\n{note}\n{}",
+                l10n::tf("data_page.dot_last_action", &[("action", action)])
+            )
         };
         self.status_dot.set_tooltip_text(Some(&tooltip));
         self.status_dot
@@ -6898,7 +7004,8 @@ impl DataPage {
 
     fn show_banner(&self, text: &str) {
         self.banner_is_readonly.set(false);
-        self.banner.set_button_label(Some("重启 Sqarvo"));
+        self.banner
+            .set_button_label(Some(l10n::t("shell.recovery_btn_restart")));
         self.banner.set_title(text);
         self.banner.set_revealed(true);
     }
@@ -6930,9 +7037,13 @@ impl DataPage {
             return;
         }
         for failure in failures {
-            let row = gtk::Label::new(Some(&format!(
-                "第 {} 行：[{}] {}",
-                failure.number, failure.code, failure.message
+            let row = gtk::Label::new(Some(&l10n::tf(
+                "data_page.failure_line",
+                &[
+                    ("number", failure.number.to_string()),
+                    ("code", failure.code.clone()),
+                    ("message", failure.message.clone()),
+                ],
             )));
             row.set_xalign(0.0);
             row.set_wrap(true);
