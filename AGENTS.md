@@ -112,14 +112,13 @@ UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻�
   - UI 功能开发、改动、缺陷修复与功能验收：必须先读 `tests/ui/README.md` 与对应端 README；验证一律优先复用既有用例与复用操作，已有用例覆盖的行为**不得再人工反复点界面**。
   - 新增/变更 UI 行为：同一 PR 内按组件 `id` 找到既有用例更新，无覆盖则**先补用例、再改再验**；纯样式调整且交互行为不变的不强制新增功能用例（样式由人工确认，ADR 0029）。
   - 改动后执行**最小相关子集**并如实报告 **PASS / FAIL / BLOCKED** 三态（BLOCKED = 该验证在当前环境无法执行，必须写明原因，不得写成通过；与注册表 `sync = "blocked"` 状态值是两回事）。
-  - 例行 UI 功能测试不含视觉回归、样式断言、截图比对、OCR 或 AI 视觉识别；截图仅当任务验收条件明确声明时允许，且不触发自动视觉分析。
-- **验证范围按变更影响与风险选档，档位不是强制阶梯**：Level 1 已覆盖风险就不机械上跳；跨模块风险明显可直接高档；没有任何任务被要求必须全量测试。命令以仓库实际为准（`just` 目标见 `justfile`）：
+  - UI 功能验收只验**交互与功能**（响应、状态流转、可访问性名称、控件存在于预期的窗口/对话框/语义容器）：不含视觉回归、样式断言、像素比较、截图比对、OCR 或 AI 视觉分析，样式由人工确认（ADR 0029）；截图仅当任务验收条件明确声明时允许，且不触发自动视觉分析；注册表 `sync.*.evidence` 只收命令/断言/可访问性读取结果。
+- **验证范围按变更影响与风险选档，档位不是强制阶梯**：Level 1 已覆盖风险就不机械上跳；跨模块风险明显可直接高档；没有任何任务被要求必须全量测试。档位只决定一般验证的**覆盖广度**，不得用于跳过上述 UI 专项要求：UI 行为变化必须执行受影响的 UI 自动化用例（按最小相关子集选择，不强制全量），不得以 L1 已通过为由豁免，环境不可用按 BLOCKED 报告。命令以仓库实际为准（`just` 目标见 `justfile`）：
   - **L1 局部**：`cd backend && cargo fmt --all -- --check`、`cargo clippy --all-targets -D warnings`、`cargo test -p <crate>`（再以 `--test <名>` 收窄）；Linux 前端同套命令在 `frontend/linux/`（独立 cargo 工作区）；Windows：`cd frontend/windows && dotnet build Sqarvo.Windows/Sqarvo.Windows.csproj -p:Platform=x64 -c Debug`、`dotnet test Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj -c Debug`、仓库根 `python scripts/xaml_lint.py`。
   - **L2 模块**：`just test`（后端全量含 UDS gRPC 冒烟）或 `cd frontend/linux && cargo test`；驱动集成按 `tests/integration/` 编排（mariadb），SQLite 端到端 `cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e`。
   - **L3 跨模块**：Protobuf 字段或 Driver SPI 接口改动、前后端行为联动、共享组件改动 → 重新生成各端客户端 + 契约/e2e 测试 + 实际构建受影响前端；UI 注册表改动 → `scripts/check-ui-sync.sh gen` 与 `mark`。
   - **L4 全量**：重大架构调整、发布前、高风险系统性变更或明确要求 → `just check` + 各模块全量 + 门禁（`scripts/check-ui-sync.sh release-check`、`scripts/check-tracking.sh`、`python scripts/check-readme-pair.py`）。
 - 跑不了的平台按 **BLOCKED + 原因**报告该项，不声称通过（三态口径见上）；测试只用专用数据库与合成数据，禁连生产库或使用真实凭据。
-- UI 验收只验**交互与功能**（响应、状态流转、可访问性名称、控件在位），不做像素比较与图像识别，样式由人工确认（ADR 0029）；注册表 `evidence` 只收命令/断言/可访问性读取结果。
 
 ## 14. 文档与决策（全文：`docs/AGENTS.md`；本节为有约束力的摘要）
 
@@ -145,7 +144,7 @@ UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻�
 
 - 实现满足任务的明确要求，且不违反适用的 §1–§10 红线；
 - 相关接口、契约与注册表和代码保持一致（同步范围按 §14 矩阵）；
-- **代码写进文件不等于完成**：按 §13 选档实际执行验证并拿到结果后才作完成声明；无法执行的项报告为 **BLOCKED + 原因**（§13 三态）；
+- **代码写进文件不等于完成**：按 §13 选档实际执行验证并拿到结果后才作完成声明；无法执行的项报告为 **BLOCKED + 原因**（§13 三态）；UI 相关任务还必须满足 §13 的 UI 用例条款（测试先行、复用优先、禁视觉断言），此处不重述；
 - 不含无关改动（不顺手修别的，发现问题报告另开任务）；
 - 已知限制、风险与未完成项如实报告。
 
