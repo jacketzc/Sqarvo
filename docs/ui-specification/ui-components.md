@@ -2790,7 +2790,7 @@ kind `control` · status `active` · parent `tabs.query`
 |---|---|---|---|
 | click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529` |
 | click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3076、src/sql_page.rs:1367、src/sql_page.rs:971` |
-| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:541` |
+| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:545` |
 
 ### `tabs.query.editor` SQL 编辑器（行号沟 + 等宽文本）
 

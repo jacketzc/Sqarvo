@@ -282,20 +282,24 @@ impl DdlView {
 
     /// 面板上展示的来源说明（`exact = false` 时必须能看出缺了什么）。
     ///
-    /// v0.2.3.3 起界面只在拼装时显示一行警示，这条文案就是警示的正文。
+    /// v0.2.3.3 起界面只在拼装时显示一行警示，这条文案就是警示的正文；
+    /// 三条来源说明在 `l10n/data_page.toml`（#202 遗留随确认单 #8 收口）。
     #[must_use]
     pub fn detail_text(&self) -> String {
         let mut detail = if self.source_detail.trim().is_empty() {
             if self.exact {
-                "服务端未提供来源说明".to_owned()
+                l10n::t("data_page.ddl_detail_no_source").to_owned()
             } else {
-                "服务端未说明拼装依据：这份 DDL 有信息损失，不可据此判断完整结构".to_owned()
+                l10n::t("data_page.ddl_detail_no_synth_basis").to_owned()
             }
         } else {
             self.source_detail.clone()
         };
         if !self.generator_version.trim().is_empty() {
-            detail.push_str(&format!("（拼装器版本 {}）", self.generator_version));
+            detail.push_str(&l10n::tf(
+                "data_page.ddl_detail_generator",
+                &[("version", self.generator_version.clone())],
+            ));
         }
         detail
     }

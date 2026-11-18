@@ -31,8 +31,11 @@
 # 格式化 tooltip（与查询结果网格共用，随 #203 一起收）、results.rs / statements.rs /
 # export*（#203）、结构连接符与分隔符（列头「列名 · 类型」、parts.join(" · ")、
 # 「{txn} · {dirty}\n{note}」骨架、错误副文本骨架「{message}（{code}）。{hint}」）、
-# DDL 空 DDL 之外仅进日志的 worker 串、backend/metadata.rs sanitize 的
-# 「（后端未提供错误消息）」与 detail_text 的来源说明族（随后续切片收）、
+# DDL 空 DDL 之外仅进日志的 worker 串、backend/metadata.rs 与 backend/table.rs
+# sanitize 的「（后端未提供错误消息）」、TableFailure::detail()/message() 直出的
+# 后端 message、backend/table.rs 的取消批内嵌语（「本批未及执行任何变更」「已执行
+# N 条变更随后整批回滚」）与提交/插入摘要的其余分支（#77/#88 逐字钉的测试原文，
+# S8 收口）、failures() 的「服务端未提供原因」与超时消息（S8 detail 直出族）、
 # qa.rs TxnExpectation 硬编码中文标签（S7 钩子适配项）。
 
 # -- 分页器（PagerAction 与翻页消息，data_page.rs） --------------------------
@@ -2180,4 +2183,156 @@ status = "done"
 key = "data_page.type_not_editable"
 zh = "列 {column} 的类型 {type} 不支持行内编辑（二进制 / 数组 / 未映射类型）"
 en = "Column {column} of type {type} does not support inline editing (binary / array / unmapped types)"
+status = "done"
+
+# ==== S8 收口（确认单 #8，#202 遗留）：失败结论标题 / 类型兜底 / 批次·插入摘要 / DDL 来源说明 ====
+#
+# 覆盖表面：backend/table.rs 的 TableFailure::headline() 14 条结论标题（经
+# message() 进数据页失败横幅与状态行主标题；detail()/message() 直出后端 message
+# 的行为不变，归 S8）；类型标签兜底 type_fallback() 与 TableColumn::from_meta
+# 缺类型分支的「未知类型」（两处调用点共用一个条目，其余 type_fallback 条目是
+# proto 枚举的类型名 token，两种语言下原样显示，留在代码）；
+# ApplyReport::status_line 的取消摘要模板与 InsertReport::status_line 的钳制
+# 摘要 / 净影响摘要 3 条（原 {} 位置参数改命名占位；「（主键 {label}）」后缀
+# 复用 Lane B 的 data_page.key_suffix，不新建重复条目）；
+# backend/metadata.rs 的 DdlView::detail_text() 3 条来源说明（两条静态说明 +
+# 「（拼装器版本 {version}）」后缀模板，进 DDL 状态页警示行 {detail} 的正文）。
+# 留在代码：取消分支的两条内嵌语（「本批未及执行任何变更」「已执行 N 条变更随后
+# 整批回滚」——与 Lane B 的 rolled_back_none/rolled_back_some 字面不同，不能复用）、
+# ApplyReport 钳制/成功分支与 InsertReport 回滚分支的摘要（#77/#88 逐字钉）、
+# sanitize「（后端未提供错误消息）」、failures()「服务端未提供原因」、
+# 「插入新行/开始事务在 N 秒内未返回」超时消息、key_label 的「NULL」与 ", " 连接符。
+
+# -- TableFailure 结论标题（backend/table.rs::headline，14 条） ------------------
+
+[[entry]]
+key = "data_page.fail_head_no_pk"
+zh = "该表没有主键"
+en = "This Table Has No Primary Key"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_read_only"
+zh = "目标只读"
+en = "Target Is Read-Only"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_confirm_required"
+zh = "需要确认风险"
+en = "Risk Confirmation Required"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_cursor_invalid"
+zh = "翻页游标无效"
+en = "Paging Cursor Is Invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_truncated"
+zh = "不能提交被截断的值"
+en = "Cannot Commit a Truncated Value"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_mismatch"
+zh = "影响行数与预期不符"
+en = "Affected-Row Count Mismatch"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_row_gone"
+zh = "目标行已不存在"
+en = "Target Row No Longer Exists"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_txn_not_found"
+zh = "事务不存在或已结束"
+en = "Transaction Does Not Exist or Has Ended"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_txn_failed"
+zh = "事务已失败"
+en = "Transaction Failed"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_txn_active"
+zh = "该会话已有打开的事务"
+en = "This Session Already Has an Open Transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_unsupported"
+zh = "驱动不支持该操作"
+en = "Driver Does Not Support This Operation"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_session_lost"
+zh = "数据库会话已失效"
+en = "The Database Session Is No Longer Valid"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_unavailable"
+zh = "本地后端不可用"
+en = "Local Backend Unavailable"
+status = "done"
+
+[[entry]]
+key = "data_page.fail_head_other"
+zh = "表数据操作失败"
+en = "Table Data Operation Failed"
+status = "done"
+
+# -- 类型标签兜底（backend/table.rs::type_fallback 与 from_meta 缺类型分支） ------
+
+[[entry]]
+key = "data_page.type_fallback_unknown"
+zh = "未知类型"
+en = "unknown type"
+status = "done"
+
+# -- 批次 / 插入摘要模板（backend/table.rs::status_line，tf 命名占位） ------------
+
+[[entry]]
+key = "data_page.summary_batch_cancelled"
+zh = "批次已取消：{executed}，数据库未变化 · 仍有 {dirty_rows} 行待提交（可重试）"
+en = "Batch cancelled: {executed} · the database is unchanged · {dirty_rows} rows still to commit (you can retry)"
+status = "done"
+
+[[entry]]
+key = "data_page.summary_insert_clamped"
+zh = "已插入 {rows} 行（单批上限：{deferred} 行未执行，请续传）"
+en = "Inserted {rows} rows (single-batch limit: {deferred} rows not executed, please resume)"
+status = "done"
+
+[[entry]]
+key = "data_page.summary_insert_net"
+zh = "已插入 {rows} 行{key} · 净影响 {net} 行"
+en = "Inserted {rows} rows{key} · net effect {net} rows"
+status = "done"
+
+# -- DDL 来源说明（backend/metadata.rs::DdlView::detail_text，3 条） --------------
+
+[[entry]]
+key = "data_page.ddl_detail_no_source"
+zh = "服务端未提供来源说明"
+en = "The server provided no source description"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_detail_no_synth_basis"
+zh = "服务端未说明拼装依据：这份 DDL 有信息损失，不可据此判断完整结构"
+en = "The server did not explain the synthesis basis: this DDL is lossy, do not infer the full structure from it"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_detail_generator"
+zh = "（拼装器版本 {version}）"
+en = " (generator version {version})"
 status = "done"
