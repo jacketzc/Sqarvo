@@ -169,13 +169,13 @@ source = "src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770"
 trigger = "load"
 precondition = "切换标签"
 result = "标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息）"
-source = "src/tabs.rs:2289、src/tabs.rs:2307、src/tabs.rs:135"
+source = "src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "后端断开"
 result = "标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连"
-source = "src/ui.rs:587、src/tabs.rs:2629"
+source = "src/ui.rs:587、src/tabs.rs:2632"
 
 [[component.interaction]]
 trigger = "load"
@@ -299,7 +299,7 @@ impl_notes = ["与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同�
 trigger = "click"
 precondition = "后端已握手且工作区存在（`set_workspace_ready` 统一开关）"
 result = "新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应）"
-source = "src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1856"
+source = "src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859"
 
 [[component.interaction]]
 trigger = "key"
@@ -533,7 +533,7 @@ impl_notes = [
 trigger = "click"
 precondition = "后端已握手且工作区存在"
 result = "新建查询标签并聚焦编辑器；工作区不存在时只写日志「尚未连接数据库：先连接再新建查询标签」"
-source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1856"
+source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859"
 
 [component.sync.linux]
 state = "done"

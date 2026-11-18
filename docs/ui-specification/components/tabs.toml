@@ -99,13 +99,13 @@ impl_notes = [
 trigger = "click"
 precondition = "标签存在且不是当前页"
 result = "切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起"
-source = "src/tabs.rs:1369、src/tabs.rs:2181、src/tabs.rs:2297、src/tabs.rs:2310"
+source = "src/tabs.rs:1372、src/tabs.rs:2184、src/tabs.rs:2300、src/tabs.rs:2313"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "页面已从标签条摘掉（detach）"
 result = "释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个"
-source = "src/tabs.rs:2827、src/tabs.rs:2842、src/tabs.rs:2847"
+source = "src/tabs.rs:2830、src/tabs.rs:2845、src/tabs.rs:2850"
 
 [component.sync.linux]
 state = "done"
@@ -138,19 +138,19 @@ impl_notes = [
 trigger = "double_click"
 precondition = "在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限"
 result = "新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签"
-source = "src/tabs.rs:1803、src/tabs.rs:1840、src/tabs.rs:1911、src/tabs.rs:1944"
+source = "src/tabs.rs:1806、src/tabs.rs:1843、src/tabs.rs:1914、src/tabs.rs:1947"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "已有对象名 + catalog + 连接键三者完全一致的表标签"
 result = "只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去"
-source = "src/tabs.rs:1812、src/tabs.rs:128、src/tabs.rs:1596"
+source = "src/tabs.rs:1815、src/tabs.rs:128、src/tabs.rs:1599"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "该标签的会话已建立"
 result = "tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里）"
-source = "src/tabs.rs:2560、src/tabs.rs:2270"
+source = "src/tabs.rs:2563、src/tabs.rs:2273"
 
 [component.sync.linux]
 state = "done"
@@ -184,13 +184,13 @@ platform_notes.windows = "标签名后缀 `*` = 编辑器内容与「按下执�
 trigger = "load"
 precondition = "新建查询标签"
 result = "标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」）"
-source = "src/tabs.rs:101、src/tabs.rs:1885、src/tabs.rs:1892、src/tabs.rs:2270"
+source = "src/tabs.rs:101、src/tabs.rs:1888、src/tabs.rs:1895、src/tabs.rs:2273"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "该查询标签的会话已建立"
 result = "tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段"
-source = "src/tabs.rs:2560"
+source = "src/tabs.rs:2563"
 
 [component.sync.linux]
 state = "done"
@@ -226,32 +226,32 @@ impl_notes = [
 trigger = "click"
 precondition = "非 Objects 页，且没有脏行、没有未提交事务"
 result = "直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect）"
-source = "src/tabs.rs:2653、src/tabs.rs:2670"
+source = "src/tabs.rs:2656、src/tabs.rs:2673"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "非 Objects 页，且有脏行或有未提交事务"
 result = "先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场"
-source = "src/tabs.rs:2670、src/tabs.rs:2685、src/tabs.rs:2689"
+source = "src/tabs.rs:2673、src/tabs.rs:2688、src/tabs.rs:2692"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "该标签的确认框已在显示"
 result = "忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹"
-source = "src/tabs.rs:2682"
+source = "src/tabs.rs:2685"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "该标签是固定 `Objects` 页"
 result = "不关闭，记一行「Objects 页固定存在，不可关闭」"
-source = "src/tabs.rs:2665"
+source = "src/tabs.rs:2668"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+W"]
 precondition = "存在当前标签"
 result = "关闭当前标签：与点 × 同一条 `close-page`（有脏行 / 事务时同样先弹三选）"
-source = "src/ui.rs:328、src/tabs.rs:2864"
+source = "src/ui.rs:328、src/tabs.rs:2867"
 
 [component.sync.linux]
 state = "done"
@@ -285,14 +285,14 @@ impl_notes = [
 trigger = "click"
 precondition = "后端就绪、工作区已建立"
 result = "未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示"
-source = "src/tabs.rs:1360、src/tabs.rs:1864、src/tabs.rs:1912、src/ui.rs:263、src/ui.rs:4607"
+source = "src/tabs.rs:1363、src/tabs.rs:1867、src/tabs.rs:1915、src/ui.rs:263、src/ui.rs:4607"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+T"]
 precondition = "后端就绪、工作区已建立"
 result = "与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示"
-source = "src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1864"
+source = "src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1867"
 
 [component.sync.linux]
 state = "done"
@@ -329,13 +329,13 @@ platform_notes.windows = "超限提示走**状态栏**一行文字（§7.1：不
 trigger = "load"
 precondition = "同时打开的有会话标签达到 8 时请求新建（工具条 / ＋ / Ctrl+T / 菜单任一路径）"
 result = "拒绝新建并弹 AdwAlertDialog：标题「无法新建标签」，正文「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案已在显示时不重复弹"
-source = "src/tabs.rs:2892、src/tabs.rs:72、src/tabs.rs:59"
+source = "src/tabs.rs:2895、src/tabs.rs:72、src/tabs.rs:59"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "提示框在显示"
 result = "「知道了」关闭提示框；本次请求不新建任何标签"
-source = "src/tabs.rs:2892"
+source = "src/tabs.rs:2895"
 
 [component.sync.linux]
 state = "done"
@@ -460,19 +460,19 @@ impl_notes = [
 trigger = "click"
 precondition = "当前标签是查询标签，且选中了**另一条**已保存的连接"
 result = "重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」"
-source = "src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3353、src/tabs.rs:2995、src/tabs.rs:563"
+source = "src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3356、src/tabs.rs:2998、src/tabs.rs:563"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在）"
 result = "**保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」"
-source = "src/tabs.rs:3396、src/sql_page.rs:758、src/sql_page.rs:1634"
+source = "src/tabs.rs:3399、src/sql_page.rs:758、src/sql_page.rs:1634"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "选中了当前绑定的那条连接"
 result = "no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」"
-source = "src/sql_page.rs:1527、src/tabs.rs:3353"
+source = "src/sql_page.rs:1527、src/tabs.rs:3356"
 
 [component.sync.linux]
 state = "done"
@@ -511,19 +511,19 @@ impl_notes = [
 trigger = "click"
 precondition = "会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库"
 result = "发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」"
-source = "src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3073、src/backend/worker.rs:1806、src/backend/client.rs:529"
+source = "src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现）"
 result = "查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功"
-source = "src/tabs.rs:3073、src/sql_page.rs:1367、src/sql_page.rs:971"
+source = "src/tabs.rs:3076、src/sql_page.rs:1367、src/sql_page.rs:971"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存）"
 result = "按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名"
-source = "src/tabs.rs:2940、src/tabs.rs:2972、src/sql_page.rs:1327、src/backend/metadata.rs:544"
+source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:541"
 
 [component.sync.linux]
 state = "done"
@@ -559,7 +559,7 @@ impl_notes = [
 trigger = "load"
 precondition = "新建查询标签成功"
 result = "键盘焦点直接落在编辑器上，可以马上输入 SQL"
-source = "src/tabs.rs:1912、src/sql_page.rs:336"
+source = "src/tabs.rs:1915、src/sql_page.rs:336"
 
 [[component.interaction]]
 trigger = "key"
@@ -927,7 +927,7 @@ source = "src/sql_page.rs:1377、src/sql_page.rs:1424、src/sql_page.rs:1438"
 trigger = "click"
 precondition = "有脏行（dirty_rows()>0）"
 result = "先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区"
-source = "src/sql_page.rs:1377、src/results.rs:954、src/data_page.rs:5237"
+source = "src/sql_page.rs:1377、src/results.rs:954、src/data_page.rs:5345"
 
 [[component.interaction]]
 trigger = "load"
@@ -970,7 +970,7 @@ impl_notes = [
 trigger = "load"
 precondition = "关闭一个有脏行或有未提交事务的标签"
 result = "标题「关闭标签？」；正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」；有脏行追加「该标签有 N 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。」；有事务追加「该标签有未提交事务（<标签>）：关闭将**回滚该标签的事务**，其它标签不受影响。」"
-source = "src/tabs.rs:256、src/tabs.rs:2726"
+source = "src/tabs.rs:256、src/tabs.rs:2729"
 
 [component.sync.linux]
 state = "done"
@@ -1002,7 +1002,7 @@ impl_notes = [
 trigger = "click"
 precondition = "确认框在显示"
 result = "丢弃本地草稿与新增行（有事务时随会话断开由后端回滚），再关页面：被拦下的那次关闭用 `close_page_finish(page, true)` 收尾"
-source = "src/tabs.rs:2787、src/tabs.rs:2799、src/tabs.rs:2803、src/tabs.rs:2710"
+source = "src/tabs.rs:2790、src/tabs.rs:2802、src/tabs.rs:2806、src/tabs.rs:2713"
 
 [component.sync.linux]
 state = "done"
@@ -1035,7 +1035,7 @@ impl_notes = [
 trigger = "click"
 precondition = "确认框在显示且有脏行"
 result = "先提交脏行 → 再提交标签自己的事务 → 最后摘页面；提交失败时标签保留，页内提示「保存失败：事务处于「<标签>」，标签未关闭。请处理事务后再关闭。」"
-source = "src/tabs.rs:2805、src/tabs.rs:2356、src/tabs.rs:2398"
+source = "src/tabs.rs:2808、src/tabs.rs:2359、src/tabs.rs:2401"
 
 [component.sync.linux]
 state = "done"
@@ -1067,7 +1067,7 @@ impl_notes = [
 trigger = "click"
 precondition = "确认框在显示"
 result = "标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`）"
-source = "src/tabs.rs:2787、src/tabs.rs:2796、src/tabs.rs:2710"
+source = "src/tabs.rs:2790、src/tabs.rs:2799、src/tabs.rs:2713"
 
 [component.sync.linux]
 state = "done"

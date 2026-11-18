@@ -68,26 +68,26 @@ impl_notes = [
 trigger = "load"
 precondition = "工作区建立 / 启动态落地"
 result = "在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表"
-source = "src/tabs.rs:1771、src/tabs.rs:1787、src/tabs.rs:1791、src/startup.rs:178"
+source = "src/tabs.rs:1774、src/tabs.rs:1790、src/tabs.rs:1794、src/startup.rs:178"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "页签可见"
 result = "只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新"
-source = "src/tabs.rs:1373、src/tabs.rs:1378"
+source = "src/tabs.rs:1376、src/tabs.rs:1381"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+W"]
 precondition = "当前页是 Objects"
 result = "拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框"
-source = "src/tabs.rs:2671、src/tabs.rs:2683"
+source = "src/tabs.rs:2674、src/tabs.rs:2686"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "中键点页签，或任何程序化 close_page 请求（当前页是 Objects）"
 result = "与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论"
-source = "src/tabs.rs:1390、src/tabs.rs:2681"
+source = "src/tabs.rs:1393、src/tabs.rs:2684"
 
 [component.sync.linux]
 state = "done"
@@ -146,7 +146,7 @@ trigger = "key"
 keys = ["Enter"]
 precondition = "有选中行"
 result = "等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签）"
-source = "src/tabs.rs:938、src/tabs.rs:1776"
+source = "src/tabs.rs:938、src/tabs.rs:1779"
 
 [[component.interaction]]
 trigger = "load"
@@ -170,19 +170,19 @@ source = "src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984"
 trigger = "load"
 precondition = "树里选中连接行 / 占位行（没有作用域）"
 result = "回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉"
-source = "src/ui.rs:1377、src/tabs.rs:1013"
+source = "src/ui.rs:1377、src/tabs.rs:1016"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表）"
 result = "不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览）"
-source = "src/tabs.rs:1032、src/tabs.rs:1044、src/tabs.rs:1047"
+source = "src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "从别的标签切回本页"
 result = "清掉行选中；列表内容与右侧信息面板都不动，不重发请求"
-source = "src/tabs.rs:1378、src/tabs.rs:1212"
+source = "src/tabs.rs:1381、src/tabs.rs:1215"
 
 [component.sync.linux]
 state = "done"
@@ -219,13 +219,13 @@ impl_notes = [
 trigger = "click"
 precondition = "行存在"
 result = "只选中：进入选中态并同步右侧信息面板；不反写树的选中（会形成回环并跳走浏览位置），不打开、不发请求"
-source = "src/tabs.rs:917、src/tabs.rs:1008"
+source = "src/tabs.rs:917、src/tabs.rs:1011"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "行存在"
 result = "打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据）"
-source = "src/tabs.rs:938、src/tabs.rs:1821"
+source = "src/tabs.rs:938、src/tabs.rs:1824"
 
 [[component.interaction]]
 trigger = "hover"
@@ -353,31 +353,31 @@ impl_notes = [
 trigger = "load"
 precondition = "作用域已变、请求在飞"
 result = "写「正在读取…」（首次首页与「加载更多…」续页都写这一句）"
-source = "src/tabs.rs:1067、src/tabs.rs:1080"
+source = "src/tabs.rs:1070、src/tabs.rs:1083"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "首页或续页返回、有行"
 result = "写「共 N 个对象」；还有下一页时追加「（还有更多）」"
-source = "src/tabs.rs:1128"
+source = "src/tabs.rs:1131"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "请求成功但 0 条（本页与累计都是空）"
 result = "写「（这个库里没有这类对象）」"
-source = "src/tabs.rs:1132、src/tabs.rs:1133"
+source = "src/tabs.rs:1135、src/tabs.rs:1136"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "请求失败"
 result = "写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处"
-source = "src/tabs.rs:1137、src/tabs.rs:1138"
+source = "src/tabs.rs:1140、src/tabs.rs:1141"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "该连接没有浏览会话（展开连接前 / 已断开）"
 result = "写「这条连接没有浏览会话：展开连接后重试」，不发请求"
-source = "src/tabs.rs:1062、src/tabs.rs:1064"
+source = "src/tabs.rs:1065、src/tabs.rs:1067"
 
 [component.sync.linux]
 state = "done"
@@ -411,13 +411,13 @@ impl_notes = [
 trigger = "click"
 precondition = "按钮可见（还有下一页）"
 result = "按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」"
-source = "src/tabs.rs:905、src/tabs.rs:1071"
+source = "src/tabs.rs:905、src/tabs.rs:1074"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "首页或续页返回"
 result = "有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏"
-source = "src/tabs.rs:1126、src/tabs.rs:1137"
+source = "src/tabs.rs:1129、src/tabs.rs:1140"
 
 [component.sync.linux]
 state = "done"
@@ -451,7 +451,7 @@ impl_notes = [
 trigger = "load"
 precondition = "连接态、树里没有可用作用域（选中连接 / 占位行）"
 result = "标题「没有选中对象」，说明「在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。」"
-source = "src/tabs.rs:854、src/tabs.rs:1013"
+source = "src/tabs.rs:854、src/tabs.rs:1016"
 
 [[component.interaction]]
 trigger = "load"
@@ -475,7 +475,7 @@ source = "src/tabs.rs:524、src/tabs.rs:984"
 trigger = "load"
 precondition = "从空态 / 未实现说明回到空态"
 result = "恢复默认文案（上一次的临时说明不残留），并清空状态行与「加载更多…」"
-source = "src/tabs.rs:971、src/tabs.rs:1022"
+source = "src/tabs.rs:971、src/tabs.rs:1025"
 
 [component.sync.linux]
 state = "done"

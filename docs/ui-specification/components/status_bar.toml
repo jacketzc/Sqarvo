@@ -136,7 +136,7 @@ platform_notes.windows = "六枚按钮都在（`ButtonRowAdd` / `Delete` / `Appl
 trigger = "load"
 precondition = "当前标签是表标签"
 result = "六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点（查询页是另一档，见下一条）；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」）"
-source = "src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:4936、src/data_page.rs:4969、src/data_page.rs:5027"
+source = "src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:5043、src/data_page.rs:5076、src/data_page.rs:5134"
 
 [[component.interaction]]
 trigger = "load"
@@ -180,7 +180,7 @@ platform_notes.windows = "按钮在（`ButtonRowAdd`），但本片恒禁用、�
 trigger = "click"
 precondition = "可编辑的表标签，且没有在途请求、没有未提交的新行草稿"
 result = "在当前表末尾插入一行草稿（与页内新增同一条路径，不落库）：新行可逐格填值，填完要按「应用」才提交"
-source = "src/shell.rs:1066、src/data_page.rs:5049"
+source = "src/shell.rs:1066、src/data_page.rs:5156"
 
 [component.sync.linux]
 state = "done"
@@ -218,7 +218,7 @@ platform_notes.windows = "按钮在（`ButtonRowDelete`）且可点：与数据�
 trigger = "click"
 precondition = "可编辑的表标签且有选中行，无在途请求"
 result = "把选中行标记为待删除（提交前可「撤销」回来），不立即发请求"
-source = "src/shell.rs:1066、src/data_page.rs:5049"
+source = "src/shell.rs:1066、src/data_page.rs:5156"
 
 [component.sync.linux]
 state = "done"
@@ -256,7 +256,7 @@ platform_notes.windows = "Windows **有**这枚按钮（`ButtonRowApply`，可�
 trigger = "click"
 precondition = "有脏行且没有在途提交"
 result = "提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框"
-source = "src/shell.rs:1066、src/data_page.rs:5049、src/table_data.rs:489"
+source = "src/shell.rs:1066、src/data_page.rs:5156、src/table_data.rs:535"
 
 [component.sync.linux]
 state = "done"
@@ -294,7 +294,7 @@ platform_notes.windows = "`ButtonRowRevert` 与 `Ctrl+Z` 同一 `RevertDataAsync
 trigger = "click"
 precondition = "有未提交的编辑、删除标记或新行草稿，无在途请求"
 result = "放弃全部未提交的改动（含新行草稿与删除标记），已打开的空事务一并回滚；数据回到最后一次读取的状态"
-source = "src/shell.rs:1066、src/data_page.rs:5049"
+source = "src/shell.rs:1066、src/data_page.rs:5156"
 
 [component.sync.linux]
 state = "done"
@@ -333,7 +333,7 @@ platform_notes.windows = "按钮在且可点（`ButtonRowRefresh` → `RefreshDa
 trigger = "click"
 precondition = "已打开表、无 RPC 在途、无脏行与未提交新行"
 result = "重新读取当前表的第一页（保持当前排序与筛选，回到第 1 页）；有未提交更改时被守卫拦下并说明原因"
-source = "src/shell.rs:1066、src/data_page.rs:4969、src/data_page.rs:5049"
+source = "src/shell.rs:1066、src/data_page.rs:5076、src/data_page.rs:5156"
 
 [component.sync.linux]
 state = "done"
@@ -380,7 +380,7 @@ source = "src/sql_page.rs:1041、src/sql_page.rs:1086、src/sql_page.rs:518、sr
 trigger = "click"
 precondition = "提交批次在途（Submitting）"
 result = "中止本批并整批回滚已执行的行；重复点幂等（只写日志），提交结束后按钮自行置灰"
-source = "src/shell.rs:1500、src/data_page.rs:4943、src/data_page.rs:5049"
+source = "src/shell.rs:1500、src/data_page.rs:5050、src/data_page.rs:5156"
 
 [[component.interaction]]
 trigger = "load"
@@ -420,7 +420,7 @@ impl_notes = [
 trigger = "load"
 precondition = "表标签且选中行数大于 0"
 result = "显示「N selected」（选中 1 行也出现，不只多选）；tooltip「已选中 N 行：Ctrl/Shift 可多选，删除按批量语义提交」；选中集清空时整格隐藏"
-source = "src/shell.rs:1429、src/data_page.rs:4936"
+source = "src/shell.rs:1429、src/data_page.rs:5043"
 
 [component.sync.linux]
 state = "done"
@@ -458,13 +458,13 @@ impl_notes = [
 trigger = "click"
 precondition = "有表标签且选中了一行（不要求可编辑）"
 result = "数据网格在按行浏览与「字段 | 值」两列之间切换：按下后只讲选中的那一行（字段名 + 当前值，与网格同一份显示文本），再按一次切回按行浏览；不可用时置灰，tooltip 按场景给「字段 / 值：只看选中行的每个字段与它的值（先选中一行）」「…（当前不可用：<原因>）」「…（再点一次切回按行浏览）」"
-source = "src/shell.rs:1168、src/data_page.rs:2053、src/shell.rs:1486"
+source = "src/shell.rs:1168、src/data_page.rs:2074、src/shell.rs:1486"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "数据页推来新快照（切标签 / 换表 / 选中集被清空）"
 result = "选中态由快照的展示形式推回；选中集清空或换表时自动复位到按行浏览，不复位成「上次按下的样子」"
-source = "src/shell.rs:1426、src/data_page.rs:2073"
+source = "src/shell.rs:1426、src/data_page.rs:2094"
 
 [component.sync.linux]
 state = "done"
@@ -535,7 +535,7 @@ impl_notes = ["tooltip「首页（offset = 0）」；页码只读，按钮不显
 trigger = "click"
 precondition = "表标签，且不在第一页（无未提交更改）"
 result = "跳到第一页（offset 归零），排序 / 筛选保持；有未提交更改时由数据页拒绝并说明原因"
-source = "src/shell.rs:1142、src/data_page.rs:319"
+source = "src/shell.rs:1142、src/data_page.rs:331"
 
 [component.sync.linux]
 state = "done"
@@ -568,7 +568,7 @@ impl_notes = ["tooltip「上一页」；第一页时置灰，不是隐藏。"]
 trigger = "click"
 precondition = "表标签且不在第一页（无未提交更改）"
 result = "退回上一页（offset 减一页），排序 / 筛选保持"
-source = "src/shell.rs:1142、src/data_page.rs:319"
+source = "src/shell.rs:1142、src/data_page.rs:331"
 
 [component.sync.linux]
 state = "done"
@@ -601,7 +601,7 @@ impl_notes = ["tooltip「下一页」；没有下一页时置灰，不靠「点�
 trigger = "click"
 precondition = "表标签且还有下一页（无未提交更改）"
 result = "前进一页（offset 加一页），排序 / 筛选保持"
-source = "src/shell.rs:1142、src/data_page.rs:319"
+source = "src/shell.rs:1142、src/data_page.rs:331"
 
 [component.sync.linux]
 state = "done"
@@ -637,7 +637,7 @@ impl_notes = [
 trigger = "click"
 precondition = "表标签且已知总页数、不在末页（无未提交更改）"
 result = "跳到最后一页；总数未知时按钮置灰（不发请求、不编造页数）"
-source = "src/shell.rs:1142、src/data_page.rs:319"
+source = "src/shell.rs:1142、src/data_page.rs:331"
 
 [component.sync.linux]
 state = "done"
@@ -674,7 +674,7 @@ platform_notes.windows = "同一格文案 `第 N 页 / 共 ? 页`（总数已知
 trigger = "load"
 precondition = "表标签"
 result = "写「第 P 页」，已知页数时写「第 P / M 页」，有总数时追加「 · 共 N 行」式总数；读取中写「读取中…」、读取失败写「读取失败」、断连写「已断开」；没有表标签时整格隐藏"
-source = "src/shell.rs:1394、src/data_page.rs:1923"
+source = "src/shell.rs:1394、src/data_page.rs:1944"
 
 [component.sync.linux]
 state = "done"
@@ -742,7 +742,7 @@ platform_notes.windows = "这一格在 Windows 兼作一次性提示行：`_noti
 trigger = "load"
 precondition = "当前标签是表标签"
 result = "写「SQL: <摘要>」：当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（只展示、不执行，值以字面量呈现）；筛选或排序变化后跟着更新"
-source = "src/shell.rs:1537、src/shell.rs:1450、src/data_page.rs:1923、src/browse_view.rs:821"
+source = "src/shell.rs:1537、src/shell.rs:1450、src/data_page.rs:1944、src/browse_view.rs:821"
 
 [[component.interaction]]
 trigger = "load"

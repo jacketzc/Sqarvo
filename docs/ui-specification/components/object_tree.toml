@@ -320,7 +320,7 @@ impl_notes = ["可打开优先于可展开：表虽然有四组子节点，双�
 trigger = "double_click"
 precondition = "行可打开"
 result = "打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据）"
-source = "src/tree.rs:776、src/tabs.rs:1634"
+source = "src/tree.rs:776、src/tabs.rs:1637"
 
 [[component.interaction]]
 trigger = "load"
@@ -836,7 +836,7 @@ impl_notes = [
 trigger = "click"
 precondition = "连接已连接"
 result = "取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
-source = "src/ui.rs:3781、src/tabs.rs:2918"
+source = "src/ui.rs:3781、src/tabs.rs:2921"
 
 [component.sync.linux]
 state = "done"

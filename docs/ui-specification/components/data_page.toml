@@ -40,7 +40,7 @@ impl_notes = [
 trigger = "load"
 precondition = "打开表 / 换表 / 重新读取"
 result = "清空上一屏的草稿、选中、逐行错误与「最近一次操作」注记，退回按行浏览，占位页写「正在读取表数据」+「等待服务端返回第一页…」，工具条消息同步「正在读取表数据…」"
-source = "src/data_page.rs:4228、src/data_page.rs:4261"
+source = "src/data_page.rs:4304、src/data_page.rs:4339"
 
 [component.sync.linux]
 state = "done"
@@ -109,25 +109,25 @@ impl_notes = [
 trigger = "click"
 precondition = "可编辑、有待提交变更、没有 RPC 在途"
 result = "走风险判定后提交：逐行更新与删除按主键定位；按钮文案「提交（N）」，状态行「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」"
-source = "src/data_page.rs:5086、src/data_page.rs:5147、src/submit_batch.rs:434"
+source = "src/data_page.rs:5193、src/data_page.rs:5254、src/submit_batch.rs:436"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "变更超过 100 行或含删除（本地判定）"
 result = "弹「确认提交变更？」：正文给更新 / 删除行数，超过 100 行时追加「变更数超过 100 行的风险阈值…」；按钮 取消 / 确认提交（破坏性，默认取消）；取消则「已取消提交（未发送任何变更）」。服务端要求 acknowledge_risk 时再走同一个对话框"
-source = "src/table_data.rs:489、src/table_data.rs:515、src/data_page.rs:5199"
+source = "src/table_data.rs:535、src/table_data.rs:566、src/data_page.rs:5309"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "提交在途"
 result = "同一按钮变成「取消提交」且可点：请求取消后显示「正在取消…」，整批回滚、界面保留脏行与编辑文本（不采信任何部分结果），可再次点「提交」重试；取消中 / 已结束的重复点击幂等"
-source = "src/data_page.rs:5115、src/submit_batch.rs:412、src/submit_batch.rs:449"
+source = "src/data_page.rs:5222、src/submit_batch.rs:414、src/submit_batch.rs:454"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "只读 / 已断开 / RPC 在途 / 没有待提交变更"
 result = "按钮禁用（不弹错误）；只读与断连时过程消息的 tooltip 给同一句原因"
-source = "src/data_page.rs:6579、src/data_page.rs:4213"
+source = "src/data_page.rs:6743、src/data_page.rs:4289"
 
 [component.sync.linux]
 state = "done"
@@ -164,19 +164,19 @@ impl_notes = [
 trigger = "click"
 precondition = "没有打开的事务、未断开、没有未提交的更改（脏行 / 标记删除 / 新行草稿）"
 result = "打开「开始事务」卡片（隔离级别 + 只读勾选），不直接发 RPC"
-source = "src/data_page.rs:5368、src/data_page.rs:3643"
+source = "src/data_page.rs:5477、src/data_page.rs:3710"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "有待提交的更改"
 result = "按钮置灰，tooltip「还有 N 行未提交的更改：先提交或放弃它们再开事务」；点了不打开卡片，状态行同一句"
-source = "src/data_page.rs:6567、src/data_page.rs:6579"
+source = "src/data_page.rs:6725、src/data_page.rs:6743"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "驱动未声明显式事务 / 行编辑能力"
 result = "如实退回自动提交、不假装事务存在：状态圆点与 tooltip 首段仍是「自动提交」，日志与 tooltip 写明 capability.unsupported；Linux 侧同一能力位先落到只读原因上（横幅「只读：驱动未声明行编辑能力」+ 编辑类按钮禁用），事务棕只在事务真的打开时出现"
-source = "src/table_data.rs:952、src/data_page.rs:6705"
+source = "src/table_data.rs:1027、src/data_page.rs:6883"
 
 [component.sync.linux]
 state = "done"
@@ -212,13 +212,13 @@ impl_notes = [
 trigger = "click"
 precondition = "有活动事务且没有脏行"
 result = "提交事务；成功后丢弃尚未提交的界面更改并重新读取当前表，圆点从棕回到灰"
-source = "src/data_page.rs:5386、src/data_page.rs:4604"
+source = "src/data_page.rs:5495、src/data_page.rs:4694"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "有活动事务但有脏行"
 result = "拒绝并写「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」"
-source = "src/data_page.rs:5386、src/data_page.rs:6579"
+source = "src/data_page.rs:5495、src/data_page.rs:6743"
 
 [component.sync.linux]
 state = "done"
@@ -254,7 +254,7 @@ impl_notes = [
 trigger = "click"
 precondition = "有活动事务（含失败态）"
 result = "先确认「回滚事务？」（有脏行时正文写「回滚事务将丢弃数据库侧的变更，并放弃 N 行未提交的界面更改。」），按钮 取消 / 回滚（破坏性，默认取消）；确认后回滚，圆点回到灰"
-source = "src/data_page.rs:5413、src/data_page.rs:4604"
+source = "src/data_page.rs:5526、src/data_page.rs:4694"
 
 [component.sync.linux]
 state = "done"
@@ -292,13 +292,13 @@ impl_notes = [
 trigger = "load"
 precondition = "有 RPC 在途"
 result = "spinner 可见并转动，消息写「正在读取表数据…」/「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」/「正在取消提交（批次 …）：等驱动在行边界停下，已执行的行会整批回滚…」"
-source = "src/data_page.rs:6427、src/submit_batch.rs:449"
+source = "src/data_page.rs:6570、src/submit_batch.rs:454"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "读取完成"
 result = "擦掉「正在读取…」，消息位留空（不写行数 / 页码）；最近一次读取摘要只进状态栏那格的 tooltip"
-source = "src/data_page.rs:6442、src/data_page.rs:6494"
+source = "src/data_page.rs:6585、src/data_page.rs:6637"
 
 [component.sync.linux]
 state = "done"
@@ -339,13 +339,13 @@ impl_notes = [
 trigger = "hover"
 precondition = "已打开表"
 result = "tooltip 三段：第一段写事务状态 + 脏行 N · 待提交 M 条（含 K 个删除）· 新行 1 行，第二段是事务说明（「自动提交：每条语句自成一个事务」/「事务中：提交事务之前，改动只在当前会话可见」/「事务失败：只能回滚」/「已断开：事务已由后端回滚」），有已发生结果时第三段「最近一次操作：…」（如「第 2 行已标记删除（提交前可撤销）」「已放弃未提交的更改（含新增行）」）"
-source = "src/data_page.rs:6705、src/data_page.rs:6528"
+source = "src/data_page.rs:6883、src/data_page.rs:6671"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "状态变化（开始 / 提交 / 回滚 / 失败 / 标记删除 / 放弃）"
 result = "颜色随状态实时切换（有脏行即强调色，否则事务打开即棕，否则灰）；状态变化本身**不**在过程消息位写任何可见文字"
-source = "src/data_page.rs:6705、src/data_page.rs:4604"
+source = "src/data_page.rs:6883、src/data_page.rs:4694"
 
 [component.sync.linux]
 state = "done"
@@ -383,13 +383,13 @@ impl_notes = [
 trigger = "click"
 precondition = "驱动声明支持筛选且已打开表"
 result = "打开 / 收起筛选与排序面板；打开时把**已应用**的筛选与排序复制成草稿"
-source = "src/data_page.rs:2380、src/data_page.rs:2389"
+source = "src/data_page.rs:2416、src/data_page.rs:2425"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "打开表时读到能力位 filtering=false"
 result = "漏斗隐藏；排序入口随之不生效；出现「驱动不支持排序/筛选」徽标"
-source = "src/data_page.rs:4298、src/data_page.rs:4397"
+source = "src/data_page.rs:4376、src/data_page.rs:4476"
 
 [component.sync.linux]
 state = "done"
@@ -428,7 +428,7 @@ impl_notes = [
 trigger = "click"
 precondition = "当前表有列"
 result = "打开 / 收起列显隐弹层（挂在眼睛按钮上的 popover，带指示箭头，锚点在上沿 0.618 处）；再点一次收起"
-source = "src/data_page.rs:2337、src/data_page.rs:1771"
+source = "src/data_page.rs:2373、src/data_page.rs:1788"
 
 [component.sync.linux]
 state = "done"
@@ -469,13 +469,13 @@ impl_notes = [
 trigger = "click"
 precondition = "卡片已打开、该列在清单里"
 result = "勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号"
-source = "src/data_page.rs:2361、src/data_page.rs:2316"
+source = "src/data_page.rs:2397、src/data_page.rs:2352"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "弹层已打开"
 result = "点 ✕ 收起弹层，隐藏选择保持不变"
-source = "src/data_page.rs:1773"
+source = "src/data_page.rs:1790"
 
 [component.sync.linux]
 state = "done"
@@ -514,13 +514,13 @@ impl_notes = [
 trigger = "click"
 precondition = "有已加载行、没有 RPC 在途"
 result = "展开三项菜单：「导出 CSV…」「导出为 INSERT 语句…」「转储表…」；单击图标先展开菜单，范围（当前页 / 整张表）仍由紧接着的对话框显式选择"
-source = "src/data_page.rs:1075、src/data_page.rs:1698"
+source = "src/data_page.rs:1087、src/data_page.rs:1715"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "没有已加载行（或正在提交）"
 result = "按钮禁用；没有可导出内容时不弹菜单、只写一行日志"
-source = "src/data_page.rs:6579"
+source = "src/data_page.rs:6743"
 
 [component.sync.linux]
 state = "done"
@@ -703,13 +703,13 @@ impl_notes = [
 trigger = "load"
 precondition = "打开表（可叠加权限 / 统计 / 能力位结果）"
 result = "按条件逐枚追加：只读（tooltip 给具体原因）、无主键（「无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用」）、视图（「视图：数据来自查询定义，编辑受限…」）、无权限（「当前账号对该对象没有权限…」）、未统计（「精确计数超过预算，已跳过…」）、驱动不支持排序/筛选"
-source = "src/data_page.rs:4397"
+source = "src/data_page.rs:4476"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "读取 / 提交返回 permission 类错误"
 result = "置上「无权限」徽标并常驻，直到重新打开表"
-source = "src/data_page.rs:4523"
+source = "src/data_page.rs:4609"
 
 [component.sync.linux]
 state = "done"
@@ -754,25 +754,25 @@ impl_notes = [
 trigger = "click"
 precondition = "可编辑且没有待插入行（入口：状态栏行操作组 +，工具条与菜单里都没有）"
 result = "在末尾追加一行草稿并进入可编辑态：有默认值的列显示数据库默认值原文、自增 / 无默认列写「省略（交给数据库默认值）」；已有待插入行时先选中它并写「已经有一行待插入的新行：先提交或放弃它」，不再追加；每格双击填值，点「提交」才发 InsertRows"
-source = "src/data_page.rs:3099、src/data_page.rs:4988、src/data_page.rs:5049"
+source = "src/data_page.rs:3155、src/data_page.rs:5095、src/data_page.rs:5156"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "打开表 / 翻页 / 刷新（无未提交更改）"
 result = "整页替换并写「正在读取 offset N …（<动作>）」；成功后回到第一行；翻页中再翻页写「上一页仍在读取：稍候再翻页」，不发第二次请求"
-source = "src/data_page.rs:3011、src/data_page.rs:4272、src/data_page.rs:4388、src/backend/table.rs:27"
+source = "src/data_page.rs:3057、src/data_page.rs:4350、src/data_page.rs:4467、src/backend/table.rs:28"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "有脏行、标记删除或新行草稿"
 result = "翻页 / 排序 / 筛选 / 刷新一律拒绝，写「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」"
-source = "src/data_page.rs:3048、src/data_page.rs:3011"
+source = "src/data_page.rs:3098、src/data_page.rs:3057"
 
 [[component.interaction]]
 trigger = "scroll"
 precondition = "滚到本页最后一行"
 result = "不自动取下一页（offset 分页互斥），页脚不出现「加载更多」"
-source = "src/data_page.rs:4388"
+source = "src/data_page.rs:4467"
 
 [component.sync.linux]
 state = "done"
@@ -809,19 +809,19 @@ impl_notes = [
 trigger = "click"
 precondition = "该列存在（松开点不在列右缘 6px 内）"
 result = "信息面板切到该列的列页（与树上列节点同一个页面，不重发 RPC）；**不改排序**"
-source = "src/data_page.rs:4013、src/data_page.rs:4056"
+source = "src/data_page.rs:4086、src/data_page.rs:4129"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "打开表 / 排序变化 / 列显隐变化"
 result = "标题写「列名 · 原始类型」，有排序键时追加 ▲ / ▼ / ▲2（数字是优先级）；tooltip「点击查看列属性：<列名>」"
-source = "src/data_page.rs:763、src/data_page.rs:6194"
+source = "src/data_page.rs:775、src/data_page.rs:6335"
 
 [[component.interaction]]
 trigger = "drag"
 precondition = "指针落在列右缘的拖宽把手"
 result = "改列宽并记为**用户宽度**（翻页 / 刷新 / 自动列宽都不再覆写）；双击把手按内容自适应同样记为用户宽度"
-source = "src/data_page.rs:5910、src/data_page.rs:5931"
+source = "src/data_page.rs:6051、src/data_page.rs:6072"
 
 [component.sync.linux]
 state = "done"
@@ -858,13 +858,13 @@ impl_notes = [
 trigger = "load"
 precondition = "行已加载"
 result = "普通行写行号（tooltip「第 N 行」）；脏行写「●N」（「第 N 行 · 有未提交的更改」）；标删写「✕N」（「第 N 行 · 已标记删除（提交前可撤销）」）；新行写「＋」（「新行 · 尚未提交（双击单元格填值）」）；被其它会话删除的行同样写「✕N」并给删除线与压暗"
-source = "src/data_page.rs:5845、src/data_page.rs:5851、src/data_page.rs:5857、src/data_page.rs:5839"
+source = "src/data_page.rs:5972、src/data_page.rs:5978、src/data_page.rs:5984、src/data_page.rs:5966"
 
 [[component.interaction]]
 trigger = "hover"
 precondition = "行号格有标记"
 result = "tooltip 说明这一格为什么不是普通数字（有未提交的更改 / 已标记删除（提交前可撤销）/ 已删除 / 新行尚未提交）"
-source = "src/data_page.rs:5868"
+source = "src/data_page.rs:5995"
 
 [component.sync.linux]
 state = "done"
@@ -902,20 +902,20 @@ impl_notes = [
 trigger = "click"
 precondition = "行存在"
 result = "只选中行（Ctrl / Shift 多选），不改数据；状态栏选中数出现 N selected"
-source = "src/data_page.rs:1237、src/data_page.rs:6206"
+source = "src/data_page.rs:1255、src/data_page.rs:6347"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "单元格可编辑"
 result = "打开编辑（见 data_page.editor）；不可编辑时状态行给具体原因：「该行已标记删除：撤销删除后才能编辑」「列 X 的值被服务端截断…」等，不弹空编辑器"
-source = "src/data_page.rs:6231、src/data_page.rs:5460、src/data_page.rs:5523"
+source = "src/data_page.rs:6372、src/data_page.rs:5577、src/data_page.rs:5647"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Esc"]
 precondition = "网格有焦点、有选中行"
 result = "清空行选中（不影响 SQL 编辑器与对话框）"
-source = "src/data_page.rs:1248"
+source = "src/data_page.rs:1266"
 
 [component.sync.linux]
 state = "done"
@@ -955,40 +955,40 @@ impl_notes = [
 trigger = "click"
 precondition = "输入合法（或勾选了设为 NULL）"
 result = "值写进界面草稿：单元格加脏色、行号变「●N」、状态圆点转强调色；编辑框收起。写库仍要等「提交」"
-source = "src/data_page.rs:570、src/data_page.rs:5578、src/data_page.rs:5615"
+source = "src/data_page.rs:582、src/data_page.rs:5705、src/data_page.rs:5742"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "编辑框已打开"
 result = "「取消」直接收起、不改草稿（与从未打开等价）"
-source = "src/data_page.rs:570"
+source = "src/data_page.rs:582"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Esc"]
 precondition = "编辑框已打开"
 result = "收起编辑框并放弃本次输入（Linux：popover 的 Esc 收起等同取消）；不写草稿、不写库"
-source = "src/data_page.rs:570、src/data_page.rs:646"
+source = "src/data_page.rs:582、src/data_page.rs:658"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Enter"]
 precondition = "就地编辑态（Windows 口径）"
 result = "把输入提交到**本地暂存**（不落库）、单元格转脏；Linux 的编辑框是 应用 / 取消 两个按钮的形态，Enter 不提交（见 platform_notes.linux），最终草稿与提交口径一致"
-source = "src/data_page.rs:570、src/data_page.rs:5615"
+source = "src/data_page.rs:582、src/data_page.rs:5742"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["F2"]
 precondition = "网格有选中单元格"
 result = "进入编辑（与双击同一入口）；Linux 未绑 F2 —— 双击是唯一编辑入口（见 platform_notes.linux）"
-source = "src/data_page.rs:5460"
+source = "src/data_page.rs:5577"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "编辑框已打开、点了编辑框以外的任何位置"
 result = "Linux：popover 自动收起，等同取消（没点「应用」就什么都没改）；Windows：按「暂存」处理，输入进本地草稿"
-source = "src/data_page.rs:578、src/data_page.rs:570"
+source = "src/data_page.rs:590、src/data_page.rs:582"
 
 platform_notes.linux = "编辑是弹层形态（GtkPopover + 应用 / 取消），没有格内就地编辑：未绑 F2，Enter 不提交，点别处 = 取消（未应用则无改动）。"
 platform_notes.windows = "§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行时按「再按一次 Ctrl+S 确认」。"
@@ -1029,7 +1029,7 @@ impl_notes = [
 trigger = "right_click"
 precondition = "已打开表"
 result = "按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用"
-source = "src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71"
+source = "src/data_page.rs:2157、src/data_page.rs:2178、src/data_page.rs:2182、src/context_menu.rs:71"
 
 [[component.interaction]]
 trigger = "click"
@@ -1071,7 +1071,7 @@ impl_notes = [
 trigger = "click"
 precondition = "可编辑且有选中行"
 result = "把选中行标记为待删除：行号变「✕N」、整行删除线 + 压暗；圆点注记「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」，一次「提交」才真正写库"
-source = "src/data_page.rs:5272、src/data_page.rs:5017、src/data_page.rs:5337"
+source = "src/data_page.rs:5380、src/data_page.rs:5124、src/data_page.rs:5442"
 
 [component.sync.linux]
 state = "done"
@@ -1107,7 +1107,7 @@ impl_notes = [
 trigger = "click"
 precondition = "有选中行"
 result = "合成多值 INSERT 写入剪贴板；成功后圆点注记「已复制 N 行为 INSERT 语句」，失败写 warning 说明原因"
-source = "src/data_page.rs:2016、src/data_page.rs:2161"
+source = "src/data_page.rs:2031、src/data_page.rs:2182"
 
 [component.sync.linux]
 state = "done"
@@ -1145,25 +1145,25 @@ impl_notes = [
 trigger = "click"
 precondition = "有选中行、当前是按行浏览（入口：状态栏的展示形式 toggle）"
 result = "表格外框内换成「字段 | 值」两列，只讲第一个选中行；按钮呈按下态（选中态由数据页快照推回，不在按钮自己记）"
-source = "src/data_page.rs:2053、src/data_page.rs:2093、src/data_page.rs:1291"
+source = "src/data_page.rs:2074、src/data_page.rs:2114、src/data_page.rs:1309"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "已在「字段 / 值」视图"
 result = "再按一次同一按钮切回按行浏览（同一动作幂等切换），网格原样回来，选中与脏行不变"
-source = "src/data_page.rs:2053、src/data_page.rs:2073"
+source = "src/data_page.rs:2074、src/data_page.rs:2094"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "「值」列、该值可改（不是只读连接 / 只读事务 / 截断列 / 已标记删除的行）"
 result = "打开与网格同一个编辑器（行号 = 详情当前行、列号 = 字段下标）；改完立即按当前值重填整页（日志「详情第 N 行：id=2 · name=…」），提交仍走「提交」与脏行守卫"
-source = "src/data_page.rs:688、src/data_page.rs:753"
+source = "src/data_page.rs:700、src/data_page.rs:765"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "没有选中行 / 换表 / 重新读取 / 选中集清空"
 result = "没有选中行时不切视图，状态行「先选中一行，再切换到「字段 / 值」视图」；换表与选中集清空**强制**回到按行浏览并清空详情数据"
-source = "src/data_page.rs:2053、src/data_page.rs:4228"
+source = "src/data_page.rs:2074、src/data_page.rs:4304"
 
 [component.sync.linux]
 state = "done"
@@ -1202,38 +1202,38 @@ impl_notes = [
 trigger = "load"
 precondition = "打开面板"
 result = "把**已应用**的筛选与排序复制成草稿并重建列下拉；状态文案回到「已应用」；错误提示清除"
-source = "src/data_page.rs:2389、src/data_page.rs:2919"
+source = "src/data_page.rs:2425、src/data_page.rs:2960"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "草稿与已应用状态不同"
 result = "「应用」：未知列或算子缺值则面板内报错 + 状态行 error，不发请求；成功则写回唯一状态、回到第 1 页、重发浏览请求、状态行「筛选与排序已应用（N 条条件 · M 个排序键）· 回到第 1 页」；**面板不关闭**"
-source = "src/data_page.rs:2941"
+source = "src/data_page.rs:2982"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "有未提交更改"
 result = "「应用」被拒绝，状态行「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」，草稿保留"
-source = "src/data_page.rs:2941、src/data_page.rs:3048"
+source = "src/data_page.rs:2982、src/data_page.rs:3098"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "面板已打开"
 result = "「清空」只清**草稿**（条件与排序键），仍需点「应用」才生效；状态行「条件与排序已清空（点「应用筛选与排序」恢复全表）」"
-source = "src/data_page.rs:2997"
+source = "src/data_page.rs:3040"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "面板已打开"
 result = "点 ✕（或再点漏斗）关闭面板，未应用的改动丢弃"
-source = "src/data_page.rs:2411、src/data_page.rs:1773"
+source = "src/data_page.rs:2450、src/data_page.rs:1790"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Esc"]
 precondition = "面板内有行内编辑态"
 result = "先收起行内编辑；没有编辑态时才关面板（一个 Esc 不该把整张面板关掉）"
-source = "src/data_page.rs:1792"
+source = "src/data_page.rs:1809"
 
 [component.sync.linux]
 state = "done"
@@ -1269,19 +1269,19 @@ impl_notes = [
 trigger = "click"
 precondition = "有列清单、算子需要值且值非空（或算子为 IS NULL 类）"
 result = "条件追加到草稿并渲染成条件行（多条按 AND 组合）；日志「筛选条件已加入草稿：<列> <算子> <值>（尚未应用）」"
-source = "src/data_page.rs:2487、src/data_page.rs:2546"
+source = "src/data_page.rs:2526、src/data_page.rs:2585"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "算子下拉可见"
 result = "只列出符号算子；选 IS NULL / IS NOT NULL 后值输入框禁用并清空（这两条不需要值）"
-source = "src/data_page.rs:1401、src/data_page.rs:2518"
+source = "src/data_page.rs:1417、src/data_page.rs:2557"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "算子需要值但值被清空"
 result = "不加入条件，面板内红字「<算子> 需要一个值（列 X · 类型）」"
-source = "src/data_page.rs:2518、src/data_page.rs:2530"
+source = "src/data_page.rs:2557、src/data_page.rs:2569"
 
 [component.sync.linux]
 state = "done"
@@ -1318,20 +1318,20 @@ impl_notes = [
 trigger = "click"
 precondition = "该条件行不是编辑态"
 result = "就地展开为列 / 算子 / 值编辑器；回车或 ✓ 提交，✗ 或点面板空白处收起"
-source = "src/data_page.rs:2681、src/data_page.rs:2601"
+source = "src/data_page.rs:2722、src/data_page.rs:2642"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Enter"]
 precondition = "条件行处于编辑态"
 result = "提交这一行修改（只改草稿），收起编辑器；校验失败时不收起并在面板内报错"
-source = "src/data_page.rs:2725"
+source = "src/data_page.rs:2766"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "条件行存在"
 result = "点行尾 ✗ 从草稿里删掉这条条件（仍需点「应用」才影响数据）"
-source = "src/data_page.rs:2767、src/data_page.rs:2570"
+source = "src/data_page.rs:2808、src/data_page.rs:2609"
 
 [component.sync.linux]
 state = "done"
@@ -1366,13 +1366,13 @@ impl_notes = [
 trigger = "click"
 precondition = "有列清单且驱动支持排序"
 result = "列 + 方向加入草稿的排序键列表（列表顺序即优先级）；日志「排序键已加入草稿：<列> <asc|desc>（尚未应用）」"
-source = "src/data_page.rs:2780、src/data_page.rs:2810"
+source = "src/data_page.rs:2821、src/data_page.rs:2851"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "驱动排序能力位为 false"
 result = "不加入，面板内报「当前驱动不支持排序」"
-source = "src/data_page.rs:2788"
+source = "src/data_page.rs:2829"
 
 [component.sync.linux]
 state = "done"
@@ -1409,19 +1409,19 @@ impl_notes = [
 trigger = "click"
 precondition = "排序键行存在"
 result = "点列名切换 asc ↔ desc（只改草稿），列表重排并刷新标题状态"
-source = "src/data_page.rs:2875、src/data_page.rs:2837"
+source = "src/data_page.rs:2916、src/data_page.rs:2878"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "该键不是第一条 / 不是最后一条"
 result = "上移 / 下移把它在列表里挪一位，列表顺序即 SQL 的排序优先级"
-source = "src/data_page.rs:2893"
+source = "src/data_page.rs:2929"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "排序键行存在"
 result = "点 ✕ 删除这个排序键（仍需「应用」才生效）"
-source = "src/data_page.rs:2906"
+source = "src/data_page.rs:2947"
 
 [component.sync.linux]
 state = "done"
@@ -1458,19 +1458,19 @@ impl_notes = [
 trigger = "click"
 precondition = "工具条「开始事务」可用"
 result = "卡片出现：隔离级别（默认选中第一个可用项）、「只读」勾选、按钮「开始事务」/「取消」"
-source = "src/data_page.rs:3643、src/data_page.rs:3653"
+source = "src/data_page.rs:3710、src/data_page.rs:3719"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "已选可用隔离级别"
 result = "「开始事务」按所选级别（及只读勾选）发 RPC；在途提示「开始事务：<隔离级别> · 读写」，事务状态落定后清除，圆点转棕"
-source = "src/data_page.rs:3753、src/data_page.rs:1745"
+source = "src/data_page.rs:3821、src/data_page.rs:1762"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "卡片已打开"
 result = "「取消」或 ✕ 收起卡片，不开始事务、不发 RPC"
-source = "src/data_page.rs:1749"
+source = "src/data_page.rs:1766"
 
 [component.sync.linux]
 state = "done"
@@ -1505,13 +1505,13 @@ impl_notes = [
 trigger = "load"
 precondition = "打开表 / 翻页请求已发出"
 result = "「正在读取表数据」+「等待服务端返回第一页…」"
-source = "src/data_page.rs:4261、src/data_page.rs:1313"
+source = "src/data_page.rs:4339、src/data_page.rs:1331"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "第一页 0 行"
 result = "「空表」+「该表存在，但当前条件下没有任何行」/「该表存在，但目前没有任何行」（有筛选时写前者）；offset 越界时写「本页没有数据」+「offset 超出总数（服务端如实返回空行）；回首页或刷新再看」"
-source = "src/data_page.rs:4342"
+source = "src/data_page.rs:4421"
 
 [component.sync.linux]
 state = "done"
@@ -1548,19 +1548,19 @@ impl_notes = [
 trigger = "load"
 precondition = "服务端标记只读（表级 / 视图 / 无主键 / 只读事务）"
 result = "横幅常驻显示只读原因；编辑类按钮禁用；过程消息 tooltip 给同一原因（不能只靠禁用暗示）"
-source = "src/data_page.rs:6802、src/data_page.rs:4334"
+source = "src/data_page.rs:6983、src/data_page.rs:4413"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "会话丢失或后端断开"
 result = "丢弃未提交更改并写「已断开：<原因> 未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚。」；状态行「已断开 · 已加载 N 行（只读）」；已加载行保留"
-source = "src/data_page.rs:4666"
+source = "src/data_page.rs:4756"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "读取 / 提交 / 事务操作失败"
 result = "横幅写服务端给的失败文案（错误码进日志与状态行），状态行转 error，逐行失败另见 data_page.errors；**已加载的行保留**、不清屏，可重试"
-source = "src/data_page.rs:4523、src/data_page.rs:4595"
+source = "src/data_page.rs:4609、src/data_page.rs:4685"
 
 [component.sync.linux]
 state = "done"
@@ -1596,7 +1596,7 @@ impl_notes = [
 trigger = "load"
 precondition = "提交批次里有失败行"
 result = "逐行列出「第 N 行：[code] 原因」（如 table_data.row_deleted / table_data.rows_affected_mismatch）；块可见、已加载行保留；状态行与横幅同时给汇总"
-source = "src/data_page.rs:6810、src/data_page.rs:4487"
+source = "src/data_page.rs:6991、src/data_page.rs:4573"
 
 [component.sync.linux]
 state = "done"
@@ -1636,13 +1636,13 @@ impl_notes = [
 trigger = "load"
 precondition = "结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列"
 result = "装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色）"
-source = "src/sql_page.rs:708、src/result_edit.rs:45、src/results.rs:605"
+source = "src/sql_page.rs:708、src/result_edit.rs:46、src/results.rs:605"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "上述任一不成立"
 result = "行操作组整体置灰，tooltip 写明具体原因：「结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除」/「结果里没有主键列 X：定位不到要改的行，不能编辑」/「这张表没有主键：不能新增、编辑或删除」/「读取主键失败：…」——不静默灰掉"
-source = "src/sql_page.rs:715、src/sql_page.rs:740、src/result_edit.rs:78"
+source = "src/sql_page.rs:715、src/sql_page.rs:740、src/result_edit.rs:79"
 
 [[component.interaction]]
 trigger = "double_click"
@@ -1654,13 +1654,13 @@ source = "src/results.rs:742、src/sql_page.rs:731"
 trigger = "click"
 precondition = "可编辑、没有未提交改动、没有待插入行（入口：状态栏 +）"
 result = "结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」"
-source = "src/results.rs:672、src/sql_page.rs:956、src/result_edit.rs:198"
+source = "src/results.rs:672、src/sql_page.rs:956、src/result_edit.rs:199"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "可编辑且有选中行（入口：状态栏 −）"
 result = "把选中行标记待删除（不立刻写库），可 ↶ 放弃；重绘后整行删除线 + 压暗，状态行「已标记删除 N 行（提交前可以放弃）」"
-source = "src/sql_page.rs:968、src/result_edit.rs:176"
+source = "src/sql_page.rs:968、src/result_edit.rs:177"
 
 [[component.interaction]]
 trigger = "click"
