@@ -523,7 +523,7 @@ source = "src/tabs.rs:3076、src/sql_page.rs:1367、src/sql_page.rs:971"
 trigger = "click"
 precondition = "选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存）"
 result = "按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名"
-source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:541"
+source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:545"
 
 [component.sync.linux]
 state = "done"
