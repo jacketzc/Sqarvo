@@ -804,6 +804,97 @@ mod tests {
     }
 
     #[test]
+    fn dialogs_entries_carry_the_s5_export_wizard_copy() {
+        // S5 Lane B（#203 尾段）：导出向导全族条目——zh 与迁移前字面量逐字节一致
+        // （比对脚本另证），这里钉代表性条目、命名占位与行/单元格计数两态，防 key
+        // 改名或 zh 漂移；「取消」/「复制路径」/「已复制」复用 S2 既有条目。
+        set_current(Lang::Zh);
+        assert_eq!(t("dialogs.export_range_title"), "导出范围");
+        assert_eq!(t("dialogs.export_btn_export"), "导出");
+        assert_eq!(t("dialogs.export_btn_overwrite"), "覆盖");
+        assert_eq!(
+            tf(
+                "dialogs.export_scope_table_page",
+                &[
+                    ("page_index", "2".into()),
+                    ("first_row", "51".into()),
+                    ("loaded", "50".into()),
+                ]
+            ),
+            "表当前页：第 2 页（从第 51 行起）已加载的 50 行"
+        );
+        assert_eq!(
+            tf(
+                "dialogs.export_partial_query",
+                &[
+                    ("loaded", "10".into()),
+                    ("reason", t("dialogs.export_reason_limited").into()),
+                ]
+            ),
+            "文件只包含已加载的 10 行（已达客户端结果集上限），不是全部结果。"
+        );
+        assert_eq!(
+            tf(
+                "dialogs.export_range_body",
+                &[
+                    ("kind", t("dialogs.export_kind_insert").into()),
+                    ("page_rows", "50".into())
+                ]
+            )
+            .lines()
+            .next()
+            .unwrap(),
+            "选择导出范围（INSERT 语句）："
+        );
+        assert_eq!(
+            tf_n(
+                "dialogs.export_written_rows",
+                3,
+                &[("written", "3".into()), ("suffix", String::new())]
+            ),
+            "已写入 3 行"
+        );
+        assert_eq!(
+            tf("dialogs.export_file_title", &[("kind", "CSV".into())]),
+            "导出为CSV"
+        );
+        assert!(t("dialogs.export_csv_scope").contains("空字段 = SQL NULL；空字符串写为 \"\"。"));
+        assert!(t("dialogs.export_insert_scope").contains("NULL 写 NULL、空串写 ''；"));
+        set_current(Lang::En);
+        assert_eq!(
+            t("dialogs.export_overwrite_title"),
+            "Overwrite Existing File?"
+        );
+        assert_eq!(t("dialogs.export_kind_insert"), "INSERT Statements");
+        assert_eq!(t("dialogs.export_range_btn_table"), "Entire Table");
+        assert_eq!(
+            tf_n(
+                "dialogs.export_written_rows",
+                1,
+                &[("written", "1".into()), ("suffix", String::new())]
+            ),
+            "1 row written"
+        );
+        assert_eq!(
+            tf_n(
+                "dialogs.export_truncated_suffix",
+                1,
+                &[("truncated_cells", "1".into())]
+            ),
+            "(1 cell truncated)"
+        );
+        assert_eq!(
+            tf_n(
+                "dialogs.export_confirm_csv_rows",
+                2,
+                &[("rows", "2".into())]
+            ),
+            "Export the 2 loaded rows as CSV?"
+        );
+        set_current(Lang::Zh);
+    }
+
+    #[test]
     fn data_page_entries_carry_the_s5_value_tooltip_copy() {
         // S5 Lane A 移交的值格式化 tooltip 族（#202 → #203）：NULL / 空串 / 类型说明 /
         // 截断 / 二进制。zh 与 backend/query.rs 迁移前字面量逐字节一致（比对脚本另证）。

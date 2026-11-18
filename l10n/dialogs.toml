@@ -595,3 +595,535 @@ key = "dialogs.logs_tail_unreadable"
 zh = "（打不开日志文件：{path}）"
 en = "(cannot open the log file: {path})"
 status = "done"
+
+
+# -- 导出向导（export_ui.rs：种类 → 范围 → 文件选择 → 口径确认 → 覆盖确认 → 进度 → 完成；#203 S5 Lane B）--
+#
+# 「取消」复用 S2 的 `dialogs.btn_cancel`；「复制路径」/「已复制」复用日志窗口的
+# `dialogs.logs_copy_btn` / `dialogs.logs_copied_tooltip`（逐字同句）。默认文件名
+# `sqarvo-export.csv` / `sqarvo-insert.sql` 与文件末尾注释标记 `# sqarvo:` /
+# `-- sqarvo:` 是**数据**（写进文件本体），不进目录；`ExportKind::label` 的 `CSV`
+# 语言无关留代码。计数句登记 en_one（行 / 单元格两数词），`t_n` 只在英文换形态。
+
+# -- 范围 / 完成提示共用的范围说明（ExportScope::title / partial_note / table_note） --
+
+[[entry]]
+key = "dialogs.export_scope_query"
+zh = "查询结果：已加载的 {loaded} 行"
+en = "Query result: {loaded} rows loaded"
+en_one = "Query result: 1 row loaded"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_scope_table_page"
+zh = "表当前页：第 {page_index} 页（从第 {first_row} 行起）已加载的 {loaded} 行"
+en = "Table current page: {loaded} loaded rows on page {page_index} (from row {first_row})"
+en_one = "Table current page: 1 loaded row on page {page_index} (from row {first_row})"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_scope_table_all"
+zh = "整张表：共 {total} 行（按当前排序与筛选逐页读取）"
+en = "Entire table: {total} rows in total (paged read with the current sort and filter)"
+en_one = "Entire table: 1 row in total (paged read with the current sort and filter)"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_scope_table_all_unknown"
+zh = "整张表：全部行（总数未知，按当前排序与筛选逐页读取）"
+en = "Entire table: all rows (total unknown; paged read with the current sort and filter)"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_partial_query"
+zh = "文件只包含已加载的 {loaded} 行（{reason}），不是全部结果。"
+en = "The file contains only the {loaded} loaded rows ({reason}); not the full result."
+en_one = "The file contains only the 1 loaded row ({reason}); not the full result."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_partial_page"
+zh = "文件只包含当前页的行；其它页的数据不在其中（需要全部行时，导出范围选「整张表」）。"
+en = "The file contains only the rows on the current page; data on other pages is not in it (to export all rows, choose Entire Table as the range)."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_note_page_dirty"
+zh = "有 {dirty_rows} 行未提交编辑：文件写的是当前值（不是数据库里的旧值）。"
+en = "There are {dirty_rows} rows with uncommitted edits: the file writes the current values (not the old database ones)."
+en_one = "1 row has uncommitted edits: the file writes its current values (not the old database ones)."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_note_insert_draft"
+zh = "「新增行」草稿未提交，不在文件中。"
+en = "The \"new row\" draft is uncommitted and not in the file."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_note_all_dirty"
+zh = "本页有 {dirty_rows} 行未提交编辑：整表导出读取数据库里的已提交值，这些编辑不在文件中。"
+en = "This page has {dirty_rows} rows with uncommitted edits: the whole-table export reads committed values from the database; these edits are not in the file."
+en_one = "This page has 1 row with an uncommitted edit: the whole-table export reads committed values from the database; that edit is not in the file."
+status = "done"
+
+# -- 结果「不是全部」的原因（ExportSource::plan 按 RunState 取） ----------------------
+
+[[entry]]
+key = "dialogs.export_reason_limited"
+zh = "已达客户端结果集上限"
+en = "client result-set limit reached"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_streaming"
+zh = "仍在分批加载，只导出此刻已加载的行"
+en = "still loading in batches; only the rows loaded so far are exported"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_cancelled"
+zh = "查询已取消，只含已接收的行"
+en = "the query was cancelled; only already-received rows"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_error"
+zh = "查询失败前已接收的行"
+en = "the rows received before the query failed"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_disconnected"
+zh = "后端已断开，只含已接收的行"
+en = "the backend disconnected; only already-received rows"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_empty"
+zh = "没有完整的结果集"
+en = "there is no complete result set"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_loading"
+zh = "仍在等待数据"
+en = "still waiting for data"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_reason_undelivered"
+zh = "语句已执行，但结果未返回，没有可导出的行"
+en = "the statement ran, but its result was not returned; there are no rows to export"
+status = "done"
+
+# -- 种类词与「无表名」文件头注释 ----------------------------------------------------
+
+[[entry]]
+key = "dialogs.export_kind_insert"
+zh = "INSERT 语句"
+en = "INSERT Statements"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_kind_dump"
+zh = "SQL 脚本"
+en = "SQL Script"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_sql_table_comment"
+zh = "结果集不携带来源表名：目标表写成占位名 result，导入前请替换成真实表名。"
+en = "The result set carries no source table name: the target table is written as the placeholder result; replace it with the real table name before importing."
+status = "done"
+
+# -- 入口门禁提示（show_notice） -----------------------------------------------
+
+[[entry]]
+key = "dialogs.export_notice_dump_no_table_title"
+zh = "没有可转储的表"
+en = "No Table to Dump"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_notice_dump_no_table_body"
+zh = "这个标签还没有打开表：先在对象树里打开一张表，再转储。"
+en = "This tab has not opened a table yet: open a table in the object tree, then dump it."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_notice_no_rows_title"
+zh = "没有可导出的行"
+en = "No Rows to Export"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_notice_query_no_rows_body"
+zh = "当前标签没有已加载的行：先执行查询，再导出。"
+en = "The current tab has no loaded rows: run a query first, then export."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_notice_table_not_open_body"
+zh = "这个标签还没有打开表：先在对象树里打开一张表，再导出。"
+en = "This tab has not opened a table yet: open a table in the object tree, then export."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_notice_table_empty_body"
+zh = "这张表当前没有可导出的行（或这一页还没加载到数据）。"
+en = "This table currently has no rows to export (or this page has not loaded any data yet)."
+status = "done"
+
+# -- 范围选择对话框（choose_range） ---------------------------------------------
+
+[[entry]]
+key = "dialogs.export_range_title"
+zh = "导出范围"
+en = "Export Range"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_range_body"
+zh = "选择导出范围（{kind}）：\n\n当前页：只写这一页已加载的 {page_rows} 行（写的是页面上当前的值，含未提交编辑）。\n\n整张表：按当前标签的排序与筛选逐页读取，边读边写同一个文件。\n· 不设行数上限，读多少写多少；\n· 进度可见，随时可以取消；\n· 取消或失败不会留下半截文件，目标路径不会出现新文件；\n· 读的是数据库里已提交的值，本页未提交的编辑不在文件中。"
+en = "Choose the export range ({kind}):\n\nCurrent page: writes only the {page_rows} loaded rows on this page (the values currently shown on the page, including uncommitted edits).\n\nEntire table: reads page by page with this tab's sort and filter, writing to the same file as it reads.\n· No row limit; it writes whatever it reads;\n· progress is visible, and it can be cancelled at any time;\n· cancelling or failing leaves no half-written file; no new file appears at the target;\n· it reads committed values from the database; uncommitted edits on this page are not in the file."
+en_one = "Choose the export range ({kind}):\n\nCurrent page: writes only the 1 loaded row on this page (the value currently shown on the page, including uncommitted edits).\n\nEntire table: reads page by page with this tab's sort and filter, writing to the same file as it reads.\n· No row limit; it writes whatever it reads;\n· progress is visible, and it can be cancelled at any time;\n· cancelling or failing leaves no half-written file; no new file appears at the target;\n· it reads committed values from the database; uncommitted edits on this page are not in the file."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_range_btn_page"
+zh = "当前页"
+en = "Current Page"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_range_btn_table"
+zh = "整张表"
+en = "Entire Table"
+status = "done"
+
+# -- 文件对话框（pick_target：标题 / 过滤器 / 初始名） ---------------------------------
+
+[[entry]]
+key = "dialogs.export_file_title"
+zh = "导出为{kind}"
+en = "Export as {kind}"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_filter_csv"
+zh = "CSV（*.csv）"
+en = "CSV (*.csv)"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_filter_sql"
+zh = "SQL 脚本（*.sql）"
+en = "SQL Script (*.sql)"
+status = "done"
+
+# -- 口径确认对话框（confirm：标题 / 写出口径正文 / 注入防护开关） -----------------------------
+
+[[entry]]
+key = "dialogs.export_whole_table_note"
+zh = "\n\n整表导出按当前排序与筛选逐页读取，边读边写同一个文件：\n· 不设行数上限；\n· 有进度、可随时取消；\n· 取消或失败会删除临时文件，目标路径不会出现半截文件。"
+en = "\n\nThe whole-table export reads page by page with the current sort and filter, writing to the same file as it reads:\n· no row limit;\n· progress, and it can be cancelled at any time;\n· cancelling or failing deletes the temporary file; no half-written file appears at the target."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_csv_scope"
+zh = "\n\n写出口径：空字段 = SQL NULL；空字符串写为 \"\"。二进制写占位 (BLOB n bytes)，不导出原始字节；Decimal 保留原文，日期时间用 ISO 8601。"
+en = "\n\nExport rules: an empty field = SQL NULL; the empty string is written as \"\". Binary values become the placeholder (BLOB n bytes); raw bytes are not exported; Decimal keeps its original text; dates and times use ISO 8601."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_dump_content"
+zh = "\n\n文件内容：先是建表语句，之后每行一条 INSERT INTO … VALUES (…);\n数据是数据库里已提交的全部行；BLOB 写成 NULL（文件末尾注明数量），被服务端截断的文本只有前缀。"
+en = "\n\nFile contents: the CREATE TABLE statement first, then one INSERT INTO … VALUES (…) per line;\nthe data is every committed row in the database; BLOBs are written as NULL (counts noted at the file's end), and server-truncated text contains only its prefix."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_insert_scope"
+zh = "\n\n写出口径：每行一条 INSERT INTO … VALUES (…);\nNULL 写 NULL、空串写 ''；BLOB 写成 NULL（文件末尾注明数量）；Decimal 用原文，日期时间用 ISO 8601。"
+en = "\n\nExport rules: one INSERT INTO … VALUES (…) per line;\nNULL is written as NULL, the empty string as ''; BLOBs become NULL (counts noted at the file's end); Decimal keeps its original text, dates and times use ISO 8601."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_truncated_warning"
+zh = "\n\n警告：有 {truncated_cells} 个单元格被服务端截断，文件里只有前缀。"
+en = "\n\nWarning: {truncated_cells} cells were truncated by the server; the file holds only prefixes."
+en_one = "\n\nWarning: 1 cell was truncated by the server; the file holds only its prefix."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_target_line"
+zh = "\n\n目标文件：{target}"
+en = "\n\nTarget file: {target}"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_confirm_csv_all"
+zh = "导出整张表为 CSV？"
+en = "Export the Entire Table as CSV?"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_confirm_csv_rows"
+zh = "导出已加载的 {rows} 行为 CSV？"
+en = "Export the {rows} loaded rows as CSV?"
+en_one = "Export the 1 loaded row as CSV?"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_confirm_insert_all"
+zh = "导出整张表为 INSERT 语句？"
+en = "Export the Entire Table as INSERT Statements?"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_confirm_insert_rows"
+zh = "导出已加载的 {rows} 行为 INSERT 语句？"
+en = "Export the {rows} loaded rows as INSERT Statements?"
+en_one = "Export the 1 loaded row as INSERT Statements?"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_confirm_dump"
+zh = "转储表 {name}？"
+en = "Dump {name}?"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_dump_name_fallback"
+zh = "这张表"
+en = "this table"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_btn_export"
+zh = "导出"
+en = "Export"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_guard_title"
+zh = "公式注入防护"
+en = "Formula Injection Guard"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_guard_subtitle"
+zh = "文本以 = + - @、制表符或回车开头时前置单引号；数值与日期时间不受影响"
+en = "Text starting with = + - @, a tab, or a newline gets a leading apostrophe; numbers and dates/times are unaffected"
+status = "done"
+
+# -- 覆盖再确认（after_confirm）与通用错误标题 ---------------------------------------
+
+[[entry]]
+key = "dialogs.export_cannot_title"
+zh = "无法导出"
+en = "Cannot Export"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_overwrite_title"
+zh = "覆盖已有文件？"
+en = "Overwrite Existing File?"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_overwrite_body"
+zh = "目标文件已存在：{target}\n\n默认不覆盖；覆盖后原内容无法恢复。"
+en = "The target file already exists: {target}\n\nNo overwrite by default; once overwritten, the original content cannot be recovered."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_btn_overwrite"
+zh = "覆盖"
+en = "Overwrite"
+status = "done"
+
+# -- 进度（界面逐行写 / 整表后台线程）与终态 ---------------------------------------------
+
+[[entry]]
+key = "dialogs.export_insert_no_table"
+zh = "INSERT 导出缺少目标表：这张表还没有打开"
+en = "The INSERT export has no target table: this table is not open yet"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_failed_title"
+zh = "导出失败"
+en = "Export Failed"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_running_title"
+zh = "正在导出{kind}…"
+en = "Exporting {kind}…"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_written_total"
+zh = "已写入 {written} / {total} 行{suffix}"
+en = "{written} / {total} rows written{suffix}"
+en_one = "{written} / 1 row written{suffix}"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_written_rows"
+zh = "已写入 {written} 行{suffix}"
+en = "{written} rows written{suffix}"
+en_one = "1 row written{suffix}"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_cancelled_title"
+zh = "已取消导出"
+en = "Export Cancelled"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_abort_body"
+zh = "已停止在第 {rows} 行；临时文件已删除，目标路径没有产生新文件。\n若目标原来已存在文件，它的内容保持不变。"
+en = "Stopped at row {rows}; the temporary file was deleted and no new file was created at the target.\nIf a file already existed there, its content is unchanged."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_no_table_for_whole"
+zh = "这个标签没有可整表导出的表（只有表数据标签支持整表导出）。"
+en = "This tab has no table that supports the whole-table export (only table-data tabs do)."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_table_not_loaded"
+zh = "这张表还没有加载完成：等第一页出现后再导出。目标文件没有写入。"
+en = "This table has not finished loading: wait until the first page appears, then export. The target file was not written."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_backend_not_ready"
+zh = "本地后端尚未就绪：等连接建立后再导出。目标文件没有写入。"
+en = "The local backend is not ready: wait until the connection is established, then export. The target file was not written."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_backend_disconnected"
+zh = "本地后端已断开：导出未开始，目标文件没有写入。"
+en = "The local backend disconnected: the export never started; the target file was not written."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_running_csv"
+zh = "正在导出整张表为 CSV…"
+en = "Exporting the Entire Table as CSV…"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_running_insert"
+zh = "正在导出整张表为 INSERT 语句…"
+en = "Exporting the Entire Table as INSERT Statements…"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_running_dump"
+zh = "正在转储表…"
+en = "Dumping Table…"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_cancelling_status"
+zh = "正在取消…（已写入 {written} 行）"
+en = "Cancelling… ({written} rows written)"
+en_one = "Cancelling… (1 row written)"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_truncated_suffix"
+zh = "（{truncated_cells} 个单元格被截断）"
+en = "({truncated_cells} cells truncated)"
+en_one = "(1 cell truncated)"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_cancelled_written_body"
+zh = "已写入 {written} 行后取消；临时文件已删除，目标路径没有产生新文件。\n若目标原来已存在文件，它的内容保持不变。"
+en = "Cancelled after writing {written} rows; the temporary file was deleted and no new file was created at the target.\nIf a file already existed there, its content is unchanged."
+en_one = "Cancelled after writing 1 row; the temporary file was deleted and no new file was created at the target.\nIf a file already existed there, its content is unchanged."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_failed_body"
+zh = "{message}\n\n临时文件已删除，目标路径没有产生新文件。"
+en = "{message}\n\nThe temporary file was deleted; no new file was created at the target."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_interrupted_title"
+zh = "导出未完成"
+en = "Export Incomplete"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_interrupted_body"
+zh = "后台导出任务已退出，没有给出结果。目标路径没有写入新文件；如果目标目录里出现以 `.sqarvo-tmp` 结尾的隐藏文件，可以直接删除。"
+en = "The background export task exited without reporting a result. No new file was written at the target; if hidden files ending in `.sqarvo-tmp` appear in the target directory, they can be deleted."
+status = "done"
+
+# -- 完成提示（show_completion） ---------------------------------------------
+
+[[entry]]
+key = "dialogs.export_done_title"
+zh = "导出完成"
+en = "Export Complete"
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_body"
+zh = "已完成：{scope}，写出 {rows} 行（{bytes}，{kind}）。"
+en = "Done: {scope}; wrote {rows} rows ({bytes}, {kind})."
+en_one = "Done: {scope}; wrote 1 row ({bytes}, {kind})."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_csv_note"
+zh = "\n空字段 = SQL NULL；空字符串写为 \"\"。"
+en = "\nEmpty field = SQL NULL; the empty string is written as \"\"."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_dump_note"
+zh = "\n文件里先是建表语句，之后每行一条 INSERT INTO … VALUES (…);。"
+en = "\nThe file starts with the CREATE TABLE statement, then one INSERT INTO … VALUES (…) per line."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_insert_note"
+zh = "\n每行一条 INSERT INTO … VALUES (…);，可直接在 SQL 编辑器里执行。"
+en = "\nOne INSERT INTO … VALUES (…) per line; it can be run directly in the SQL editor."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_guard_on"
+zh = "\n公式注入防护已开启：以 = + - @、制表符或回车开头的文本前置了单引号（数值与日期时间未改动）。"
+en = "\nThe formula injection guard was on: text starting with = + - @, a tab, or a newline got a leading apostrophe (numbers and dates/times were untouched)."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_guard_off"
+zh = "\n公式注入防护已关闭：文本按原样写出，打开文件时不要直接启用宏或公式。"
+en = "\nThe formula injection guard was off: text was written as-is; do not enable macros or formulas when opening the file."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_done_truncated"
+zh = "\n有 {truncated_cells} 个单元格被服务端截断：文件里只有前缀，文件末尾有一行以 `{prefix}` 开头的注释列出相关列。"
+en = "\n{truncated_cells} cells were truncated by the server: the file holds only prefixes, and a comment line starting with `{prefix}` at the file's end lists the affected columns."
+en_one = "\n1 cell was truncated by the server: the file holds only its prefix, and a comment line starting with `{prefix}` at the file's end lists the affected columns."
+status = "done"
+
+[[entry]]
+key = "dialogs.export_close_btn"
+zh = "关闭"
+en = "Close"
+status = "done"

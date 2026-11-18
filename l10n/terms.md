@@ -301,3 +301,29 @@
 | 延迟加载 | deferred loading | 「完整值需要后续延迟加载能力」 |
 | 字符 | character | 「N 字符」N characters（tooltip 计数） |
 | 字节 | byte | 「共 N 字节」N bytes total |
+
+## S5 Lane B（导出向导，#203）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 导出范围 | Export Range | 对话框标题；「范围」句中小写 range |
+| 当前页 | Current Page | 范围选择按钮；句中小写 current page |
+| 整张表 | Entire Table | 范围选择按钮；句中小写 entire table |
+| 已加载的 N 行 | loaded rows | 「导出已加载的 N 行为 CSV？」the {rows} loaded rows |
+| 公式注入防护 | Formula Injection Guard | 开关行标题；完成提示句中写 formula injection guard |
+| 写出口径 | Export rules | CSV / INSERT 确认正文；「口径」此前无独立词条 |
+| 覆盖 | Overwrite | 再确认按钮与标题 |
+| 临时文件 | temporary file | 取消 / 失败 / 中断说明族 |
+| 目标文件 | Target file | 确认正文行与「没有写入」口径 |
+| 半截文件 | half-written file | 取消 / 失败不残留口径 |
+| 转储 | dump | 「转储表」Dump {name}?；动词短语见 S3「转储表 Dump Table」 |
+| 表当前页 | Table current page | 范围说明标题行 |
+| 已写入 N 行 | N rows written | 进度状态行；「N / M rows written」两数句型 |
+| 导出完成 | Export Complete | 完成提示标题 |
+| 已取消导出 | Export Cancelled | 取消终态标题（界面词；日志仍中文） |
+| 导出未完成 | Export Incomplete | 后台任务失联标题 |
+| 无法导出 | Cannot Export | 门禁 / 前置条件错误标题 |
+| 没有可导出的行 | No Rows to Export | 空态标题（查询 / 表 / 分页三处同句复用） |
+| 复制路径 | Copy Path | 沿用 S2 `dialogs.logs_copy_btn` |
+| 已复制 | Copied | 沿用 S2 `dialogs.logs_copied_tooltip`（标签态与 tooltip 同句） |
+| 关闭 | Close | 提示 / 完成对话框按钮 |

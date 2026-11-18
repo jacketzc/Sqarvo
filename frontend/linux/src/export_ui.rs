@@ -41,6 +41,7 @@ use crate::data_page::DataPage;
 use crate::export::{
     self, ExportProgress, ExportRow, ExportSink, Field, FormatOptions, TargetState,
 };
+use crate::l10n;
 use crate::layout::{Gap, gap};
 use crate::proto::common::v1::ColumnValue;
 use crate::results::{ResultsView, RunState};
@@ -96,8 +97,8 @@ impl ExportKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Csv => "CSV",
-            Self::Insert => "INSERT 语句",
-            Self::Dump => "SQL 脚本",
+            Self::Insert => l10n::t("dialogs.export_kind_insert"),
+            Self::Dump => l10n::t("dialogs.export_kind_dump"),
         }
     }
 
@@ -153,20 +154,31 @@ impl ExportScope {
     #[must_use]
     pub fn title(&self) -> String {
         match self {
-            Self::Query { loaded, .. } => format!("查询结果：已加载的 {loaded} 行"),
+            Self::Query { loaded, .. } => l10n::tf(
+                "dialogs.export_scope_query",
+                &[("loaded", loaded.to_string())],
+            ),
             Self::TablePage {
                 page_index,
                 first_row,
                 loaded,
                 ..
-            } => {
-                format!("表当前页：第 {page_index} 页（从第 {first_row} 行起）已加载的 {loaded} 行")
-            }
+            } => l10n::tf(
+                "dialogs.export_scope_table_page",
+                &[
+                    ("page_index", page_index.to_string()),
+                    ("first_row", first_row.to_string()),
+                    ("loaded", loaded.to_string()),
+                ],
+            ),
             Self::TableAll {
                 total: Some(total), ..
-            } => format!("整张表：共 {total} 行（按当前排序与筛选逐页读取）"),
+            } => l10n::tf(
+                "dialogs.export_scope_table_all",
+                &[("total", total.to_string())],
+            ),
             Self::TableAll { total: None, .. } => {
-                "整张表：全部行（总数未知，按当前排序与筛选逐页读取）".to_owned()
+                l10n::t("dialogs.export_scope_table_all_unknown").to_owned()
             }
         }
     }
@@ -178,14 +190,15 @@ impl ExportScope {
             Self::Query {
                 partial: Some(reason),
                 loaded,
-            } => Some(format!(
-                "文件只包含已加载的 {loaded} 行（{reason}），不是全部结果。"
+            } => Some(l10n::tf(
+                "dialogs.export_partial_query",
+                &[
+                    ("loaded", loaded.to_string()),
+                    ("reason", (*reason).to_owned()),
+                ],
             )),
             Self::Query { partial: None, .. } => None,
-            Self::TablePage { .. } => Some(
-                "文件只包含当前页的行；其它页的数据不在其中（需要全部行时，导出范围选「整张表」）。"
-                    .to_owned(),
-            ),
+            Self::TablePage { .. } => Some(l10n::t("dialogs.export_partial_page").to_owned()),
             // 整表导出就是全部行：没有「不是全部」的说明，但它有别的必须说明的事。
             Self::TableAll { .. } => None,
         }
@@ -202,12 +215,13 @@ impl ExportScope {
             } => {
                 let mut notes = Vec::new();
                 if *dirty_rows > 0 {
-                    notes.push(format!(
-                        "有 {dirty_rows} 行未提交编辑：文件写的是当前值（不是数据库里的旧值）。"
+                    notes.push(l10n::tf(
+                        "dialogs.export_note_page_dirty",
+                        &[("dirty_rows", dirty_rows.to_string())],
                     ));
                 }
                 if *has_insert {
-                    notes.push("「新增行」草稿未提交，不在文件中。".to_owned());
+                    notes.push(l10n::t("dialogs.export_note_insert_draft").to_owned());
                 }
                 if notes.is_empty() {
                     None
@@ -222,12 +236,13 @@ impl ExportScope {
             } => {
                 let mut notes = Vec::new();
                 if *dirty_rows > 0 {
-                    notes.push(format!(
-                        "本页有 {dirty_rows} 行未提交编辑：整表导出读取数据库里的已提交值，这些编辑不在文件中。"
+                    notes.push(l10n::tf(
+                        "dialogs.export_note_all_dirty",
+                        &[("dirty_rows", dirty_rows.to_string())],
                     ));
                 }
                 if *has_insert {
-                    notes.push("「新增行」草稿未提交，不在文件中。".to_owned());
+                    notes.push(l10n::t("dialogs.export_note_insert_draft").to_owned());
                 }
                 if notes.is_empty() {
                     None
@@ -262,14 +277,16 @@ impl ExportSource {
                 let loaded = results.rows_len() as u64;
                 let partial = match results.state() {
                     RunState::Complete | RunState::Idle => None,
-                    RunState::Limited => Some("已达客户端结果集上限"),
-                    RunState::Streaming => Some("仍在分批加载，只导出此刻已加载的行"),
-                    RunState::Cancelled => Some("查询已取消，只含已接收的行"),
-                    RunState::Error => Some("查询失败前已接收的行"),
-                    RunState::Disconnected => Some("后端已断开，只含已接收的行"),
-                    RunState::Empty | RunState::NoResultSet => Some("没有完整的结果集"),
-                    RunState::Loading => Some("仍在等待数据"),
-                    RunState::Undelivered => Some("语句已执行，但结果未返回，没有可导出的行"),
+                    RunState::Limited => Some(l10n::t("dialogs.export_reason_limited")),
+                    RunState::Streaming => Some(l10n::t("dialogs.export_reason_streaming")),
+                    RunState::Cancelled => Some(l10n::t("dialogs.export_reason_cancelled")),
+                    RunState::Error => Some(l10n::t("dialogs.export_reason_error")),
+                    RunState::Disconnected => Some(l10n::t("dialogs.export_reason_disconnected")),
+                    RunState::Empty | RunState::NoResultSet => {
+                        Some(l10n::t("dialogs.export_reason_empty"))
+                    }
+                    RunState::Loading => Some(l10n::t("dialogs.export_reason_loading")),
+                    RunState::Undelivered => Some(l10n::t("dialogs.export_reason_undelivered")),
                 };
                 ExportPlan {
                     titles: results.column_names(),
@@ -408,10 +425,9 @@ impl ExportSource {
             }),
             Self::Query(results) => {
                 let detected = crate::export::table_from_sql(&results.statement());
-                let comment = detected.is_none().then(|| {
-                    "结果集不携带来源表名：目标表写成占位名 result，导入前请替换成真实表名。"
-                        .to_owned()
-                });
+                let comment = detected
+                    .is_none()
+                    .then(|| l10n::t("dialogs.export_sql_table_comment").to_owned());
                 Some(crate::export::SqlTable {
                     name: detected.unwrap_or_else(|| "result".to_owned()),
                     dialect: results.dialect(),
@@ -442,8 +458,8 @@ pub fn begin(parent: &gtk::Widget, source: ExportSource, kind: ExportKind) {
             if source.object_reference().is_none() {
                 show_notice(
                     parent,
-                    "没有可转储的表",
-                    "这个标签还没有打开表：先在对象树里打开一张表，再转储。",
+                    l10n::t("dialogs.export_notice_dump_no_table_title"),
+                    l10n::t("dialogs.export_notice_dump_no_table_body"),
                 );
                 return;
             }
@@ -473,8 +489,8 @@ pub fn begin(parent: &gtk::Widget, source: ExportSource, kind: ExportKind) {
             if plan.row_count == 0 {
                 show_notice(
                     parent,
-                    "没有可导出的行",
-                    "当前标签没有已加载的行：先执行查询，再导出。",
+                    l10n::t("dialogs.export_notice_no_rows_title"),
+                    l10n::t("dialogs.export_notice_query_no_rows_body"),
                 );
                 return;
             }
@@ -509,27 +525,24 @@ fn choose_range(parent: &gtk::Widget, source: ExportSource, kind: ExportKind) {
     if source.object_reference().is_none() {
         show_notice(
             parent,
-            "没有可导出的行",
-            "这个标签还没有打开表：先在对象树里打开一张表，再导出。",
+            l10n::t("dialogs.export_notice_no_rows_title"),
+            l10n::t("dialogs.export_notice_table_not_open_body"),
         );
         return;
     }
     let page_plan = source.plan();
     let page_rows = page_plan.row_count;
-    let body = format!(
-        "选择导出范围（{}）：\n\n\
-         当前页：只写这一页已加载的 {page_rows} 行（写的是页面上当前的值，含未提交编辑）。\n\n\
-         整张表：按当前标签的排序与筛选逐页读取，边读边写同一个文件。\n\
-         · 不设行数上限，读多少写多少；\n\
-         · 进度可见，随时可以取消；\n\
-         · 取消或失败不会留下半截文件，目标路径不会出现新文件；\n\
-         · 读的是数据库里已提交的值，本页未提交的编辑不在文件中。",
-        kind.label()
+    let body = l10n::tf(
+        "dialogs.export_range_body",
+        &[
+            ("kind", kind.label().to_owned()),
+            ("page_rows", page_rows.to_string()),
+        ],
     );
-    let dialog = adw::AlertDialog::new(Some("导出范围"), Some(&body));
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("page", "当前页");
-    dialog.add_response("table", "整张表");
+    let dialog = adw::AlertDialog::new(Some(l10n::t("dialogs.export_range_title")), Some(&body));
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+    dialog.add_response("page", l10n::t("dialogs.export_range_btn_page"));
+    dialog.add_response("table", l10n::t("dialogs.export_range_btn_table"));
     // 默认是「当前页」：整张表必须是用户显式选择，不能一点 EX 就开跑。
     dialog.set_default_response(Some("page"));
     dialog.set_close_response("cancel");
@@ -570,8 +583,8 @@ fn choose_range(parent: &gtk::Widget, source: ExportSource, kind: ExportKind) {
             if empty {
                 show_notice(
                     &parent,
-                    "没有可导出的行",
-                    "这张表当前没有可导出的行（或这一页还没加载到数据）。",
+                    l10n::t("dialogs.export_notice_no_rows_title"),
+                    l10n::t("dialogs.export_notice_table_empty_body"),
                 );
                 return;
             }
@@ -594,10 +607,10 @@ fn pick_target(
 ) {
     let format = kind.format();
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some(&if format == export::Format::Csv {
-        "CSV（*.csv）".to_owned()
+    filter.set_name(Some(if format == export::Format::Csv {
+        l10n::t("dialogs.export_filter_csv")
     } else {
-        "SQL 脚本（*.sql）".to_owned()
+        l10n::t("dialogs.export_filter_sql")
     }));
     filter.add_pattern(&format!("*.{}", format.extension()));
     let filters = gio::ListStore::new::<gtk::FileFilter>();
@@ -611,7 +624,10 @@ fn pick_target(
         format.default_file_name().to_owned()
     };
     let dialog = gtk::FileDialog::builder()
-        .title(format!("导出为{}", kind.label()))
+        .title(l10n::tf(
+            "dialogs.export_file_title",
+            &[("kind", kind.label().to_owned())],
+        ))
         .modal(true)
         .initial_name(initial_name)
         .filters(&filters)
@@ -707,66 +723,62 @@ fn confirm(
         body.push_str(&note);
     }
     if plan.scope.is_whole_table() {
-        body.push_str(
-            "\n\n整表导出按当前排序与筛选逐页读取，边读边写同一个文件：\n\
-             · 不设行数上限；\n\
-             · 有进度、可随时取消；\n\
-             · 取消或失败会删除临时文件，目标路径不会出现半截文件。",
-        );
+        body.push_str(l10n::t("dialogs.export_whole_table_note"));
     }
     match kind.format() {
-        export::Format::Csv => body.push_str(
-            "\n\n写出口径：空字段 = SQL NULL；空字符串写为 \"\"。\
-             二进制写占位 (BLOB n bytes)，不导出原始字节；\
-             Decimal 保留原文，日期时间用 ISO 8601。",
-        ),
+        export::Format::Csv => body.push_str(l10n::t("dialogs.export_csv_scope")),
         export::Format::InsertSql => {
             if kind.with_ddl() {
-                body.push_str(
-                    "\n\n文件内容：先是建表语句，之后每行一条 INSERT INTO … VALUES (…);\
-                     \n数据是数据库里已提交的全部行；BLOB 写成 NULL（文件末尾注明数量），\
-                     被服务端截断的文本只有前缀。",
-                );
+                body.push_str(l10n::t("dialogs.export_dump_content"));
             } else {
-                body.push_str(
-                    "\n\n写出口径：每行一条 INSERT INTO … VALUES (…);\
-                     \nNULL 写 NULL、空串写 ''；BLOB 写成 NULL（文件末尾注明数量）；\
-                     Decimal 用原文，日期时间用 ISO 8601。",
-                );
+                body.push_str(l10n::t("dialogs.export_insert_scope"));
             }
         }
     }
     if plan.truncated_cells > 0 {
-        body.push_str(&format!(
-            "\n\n警告：有 {} 个单元格被服务端截断，文件里只有前缀。",
-            plan.truncated_cells
+        body.push_str(&l10n::tf_n(
+            "dialogs.export_truncated_warning",
+            plan.truncated_cells as i64,
+            &[("truncated_cells", plan.truncated_cells.to_string())],
         ));
     }
     if let Some(note) = plan.scope.table_note() {
         body.push_str("\n\n");
         body.push_str(&note);
     }
-    body.push_str(&format!("\n\n目标文件：{}", target.display()));
+    body.push_str(&l10n::tf(
+        "dialogs.export_target_line",
+        &[("target", target.display().to_string())],
+    ));
 
     let title = match kind {
-        ExportKind::Csv if plan.scope.is_whole_table() => "导出整张表为 CSV？".to_owned(),
-        ExportKind::Csv => format!("导出已加载的 {} 行为 CSV？", plan.row_count),
+        ExportKind::Csv if plan.scope.is_whole_table() => {
+            l10n::t("dialogs.export_confirm_csv_all").to_owned()
+        }
+        ExportKind::Csv => l10n::tf_n(
+            "dialogs.export_confirm_csv_rows",
+            plan.row_count as i64,
+            &[("rows", plan.row_count.to_string())],
+        ),
         ExportKind::Insert if plan.scope.is_whole_table() => {
-            "导出整张表为 INSERT 语句？".to_owned()
+            l10n::t("dialogs.export_confirm_insert_all").to_owned()
         }
-        ExportKind::Insert => {
-            format!("导出已加载的 {} 行为 INSERT 语句？", plan.row_count)
-        }
+        ExportKind::Insert => l10n::tf_n(
+            "dialogs.export_confirm_insert_rows",
+            plan.row_count as i64,
+            &[("rows", plan.row_count.to_string())],
+        ),
         ExportKind::Dump => {
-            let name = source
-                .sql_table()
-                .map_or_else(|| "这张表".to_owned(), |table| table.name);
-            format!("转储表 {name}？")
+            let name = source.sql_table().map_or_else(
+                || l10n::t("dialogs.export_dump_name_fallback").to_owned(),
+                |table| table.name,
+            );
+            l10n::tf("dialogs.export_confirm_dump", &[("name", name)])
         }
     };
     let dialog = adw::AlertDialog::new(Some(&title), Some(&body));
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("export", "导出");
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+    dialog.add_response("export", l10n::t("dialogs.export_btn_export"));
     dialog.set_response_appearance("export", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("export"));
     dialog.set_close_response("cancel");
@@ -776,8 +788,8 @@ fn confirm(
     // SQL 导出不经过表格软件，开关对它没有意义：只给 CSV 显示（但仍保留一个控件，
     // 让确认回调读同一份 options）。
     let guard = adw::SwitchRow::builder()
-        .title("公式注入防护")
-        .subtitle("文本以 = + - @、制表符或回车开头时前置单引号；数值与日期时间不受影响")
+        .title(l10n::t("dialogs.export_guard_title"))
+        .subtitle(l10n::t("dialogs.export_guard_subtitle"))
         .active(!crate::qa::export_raw_values())
         .build();
     if kind.format() == export::Format::Csv {
@@ -846,18 +858,22 @@ fn after_confirm(
     kind: ExportKind,
 ) {
     match export::inspect_target(&target) {
-        Err(error) => show_notice(parent, "无法导出", &error.message()),
+        Err(error) => show_notice(
+            parent,
+            l10n::t("dialogs.export_cannot_title"),
+            &error.message(),
+        ),
         Ok(TargetState::New) => run_export(parent, source, plan, target, false, options, kind),
         Ok(TargetState::Existing) => {
             let dialog = adw::AlertDialog::new(
-                Some("覆盖已有文件？"),
-                Some(&format!(
-                    "目标文件已存在：{}\n\n默认不覆盖；覆盖后原内容无法恢复。",
-                    target.display()
+                Some(l10n::t("dialogs.export_overwrite_title")),
+                Some(&l10n::tf(
+                    "dialogs.export_overwrite_body",
+                    &[("target", target.display().to_string())],
                 )),
             );
-            dialog.add_response("cancel", "取消");
-            dialog.add_response("overwrite", "覆盖");
+            dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+            dialog.add_response("overwrite", l10n::t("dialogs.export_btn_overwrite"));
             dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);
             dialog.set_default_response(Some("cancel"));
             dialog.set_close_response("cancel");
@@ -947,27 +963,39 @@ fn run_export(
         export::Format::InsertSql => match source.sql_table() {
             Some(table) => ExportSink::create_sql(&target, allow_overwrite, table)
                 .map_err(|error| error.message()),
-            None => Err("INSERT 导出缺少目标表：这张表还没有打开".to_owned()),
+            None => Err(l10n::t("dialogs.export_insert_no_table").to_owned()),
         },
     };
     let mut sink = match created {
         Ok(sink) => sink,
         Err(message) => {
             eprintln!("[export] 创建临时文件失败：{message}");
-            show_notice(parent, "无法导出", &message);
+            show_notice(parent, l10n::t("dialogs.export_cannot_title"), &message);
             return;
         }
     };
     if let Err(error) = sink.header(&plan.titles) {
         eprintln!("[export] 写表头失败：{}", error.message());
-        show_notice(parent, "导出失败", &error.message());
+        show_notice(
+            parent,
+            l10n::t("dialogs.export_failed_title"),
+            &error.message(),
+        );
         return;
     }
 
     let progress = gtk::ProgressBar::new();
     progress.set_show_text(true);
     progress.set_fraction(0.0);
-    let status = gtk::Label::new(Some(&format!("已写入 0 / {} 行", plan.row_count)));
+    let status = gtk::Label::new(Some(&l10n::tf_n(
+        "dialogs.export_written_total",
+        plan.row_count as i64,
+        &[
+            ("written", "0".to_owned()),
+            ("total", plan.row_count.to_string()),
+            ("suffix", String::new()),
+        ],
+    )));
     status.set_xalign(0.0);
     status.add_css_class("dim-label");
     status.add_css_class("caption");
@@ -987,8 +1015,14 @@ fn run_export(
         body.push_str("\n\n");
         body.push_str(&note);
     }
-    let dialog = adw::AlertDialog::new(Some(&format!("正在导出{}…", kind.label())), Some(&body));
-    dialog.add_response("cancel", "取消");
+    let dialog = adw::AlertDialog::new(
+        Some(&l10n::tf(
+            "dialogs.export_running_title",
+            &[("kind", kind.label().to_owned())],
+        )),
+        Some(&body),
+    );
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
     dialog.set_extra_child(Some(&content));
@@ -1078,9 +1112,15 @@ fn run_export(
             end as f64 / total as f64
         };
         job_for_tick.progress.set_fraction(fraction);
-        job_for_tick
-            .status
-            .set_text(&format!("已写入 {end} / {total} 行"));
+        job_for_tick.status.set_text(&l10n::tf_n(
+            "dialogs.export_written_total",
+            total as i64,
+            &[
+                ("written", end.to_string()),
+                ("total", total.to_string()),
+                ("suffix", String::new()),
+            ],
+        ));
 
         if cancel_after {
             job_for_tick.abort("按 QA 设定的行数取消");
@@ -1109,11 +1149,8 @@ impl ExportJob {
         );
         show_notice(
             &self.parent,
-            "已取消导出",
-            &format!(
-                "已停止在第 {rows} 行；临时文件已删除，目标路径没有产生新文件。\
-                 \n若目标原来已存在文件，它的内容保持不变。"
-            ),
+            l10n::t("dialogs.export_cancelled_title"),
+            &l10n::tf("dialogs.export_abort_body", &[("rows", rows.to_string())]),
         );
     }
 
@@ -1129,7 +1166,11 @@ impl ExportJob {
             self.index.get(),
             error.message()
         );
-        show_notice(&self.parent, "导出失败", &error.message());
+        show_notice(
+            &self.parent,
+            l10n::t("dialogs.export_failed_title"),
+            &error.message(),
+        );
     }
 
     /// 完成：flush + rename，再给「已导出 N 行」的提示与可复制路径。
@@ -1145,7 +1186,11 @@ impl ExportJob {
             Err(error) => {
                 self.dialog.force_close();
                 eprintln!("[export] 落盘失败：{}", error.message());
-                show_notice(&self.parent, "导出失败", &error.message());
+                show_notice(
+                    &self.parent,
+                    l10n::t("dialogs.export_failed_title"),
+                    &error.message(),
+                );
                 return;
             }
         };
@@ -1207,8 +1252,8 @@ fn run_whole_table_export(
     let Some(object) = source.object_reference() else {
         show_notice(
             parent,
-            "无法导出",
-            "这个标签没有可整表导出的表（只有表数据标签支持整表导出）。",
+            l10n::t("dialogs.export_cannot_title"),
+            l10n::t("dialogs.export_no_table_for_whole"),
         );
         return;
     };
@@ -1216,16 +1261,16 @@ fn run_whole_table_export(
         // 第一页还没回来时对象引用里没有会话 ID：定位不到后台会话，如实说清楚。
         show_notice(
             parent,
-            "无法导出",
-            "这张表还没有加载完成：等第一页出现后再导出。目标文件没有写入。",
+            l10n::t("dialogs.export_cannot_title"),
+            l10n::t("dialogs.export_table_not_loaded"),
         );
         return;
     }
     let Some(port) = crate::backend::worker::command_port() else {
         show_notice(
             parent,
-            "无法导出",
-            "本地后端尚未就绪：等连接建立后再导出。目标文件没有写入。",
+            l10n::t("dialogs.export_cannot_title"),
+            l10n::t("dialogs.export_backend_not_ready"),
         );
         return;
     };
@@ -1242,7 +1287,11 @@ fn run_whole_table_export(
         // 总数未知：脉冲模式，不假装有百分比。
         progress.pulse();
     }
-    let status = gtk::Label::new(Some("已写入 0 行"));
+    let status = gtk::Label::new(Some(&l10n::tf_n(
+        "dialogs.export_written_rows",
+        0,
+        &[("written", "0".to_owned()), ("suffix", String::new())],
+    )));
     status.set_xalign(0.0);
     status.add_css_class("dim-label");
     status.add_css_class("caption");
@@ -1263,14 +1312,14 @@ fn run_whole_table_export(
         body.push_str(&note);
     }
     let dialog = adw::AlertDialog::new(
-        Some(&match kind {
-            ExportKind::Csv => "正在导出整张表为 CSV…".to_owned(),
-            ExportKind::Insert => "正在导出整张表为 INSERT 语句…".to_owned(),
-            ExportKind::Dump => "正在转储表…".to_owned(),
+        Some(match kind {
+            ExportKind::Csv => l10n::t("dialogs.export_running_csv"),
+            ExportKind::Insert => l10n::t("dialogs.export_running_insert"),
+            ExportKind::Dump => l10n::t("dialogs.export_running_dump"),
         }),
         Some(&body),
     );
-    dialog.add_response("cancel", "取消");
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
     dialog.set_extra_child(Some(&content));
@@ -1306,8 +1355,8 @@ fn run_whole_table_export(
     if queued.is_err() {
         show_notice(
             parent,
-            "无法导出",
-            "本地后端已断开：导出未开始，目标文件没有写入。",
+            l10n::t("dialogs.export_cannot_title"),
+            l10n::t("dialogs.export_backend_disconnected"),
         );
         return;
     }
@@ -1371,8 +1420,12 @@ impl WholeTableJob {
             self.written.get()
         );
         self.cancel.store(true, Ordering::Relaxed);
-        self.status
-            .set_text(&format!("正在取消…（已写入 {} 行）", self.written.get()));
+        let written = self.written.get();
+        self.status.set_text(&l10n::tf_n(
+            "dialogs.export_cancelling_status",
+            written as i64,
+            &[("written", written.to_string())],
+        ));
         // 取消已经生效：按钮不再可点，避免「取消后还能再取消一次」的错觉。
         self.dialog.set_response_enabled("cancel", false);
     }
@@ -1418,7 +1471,11 @@ impl WholeTableJob {
     /// 用户不必等完成提示才知道文件里有不完整的值。
     fn show_progress(&self, written: u64, truncated_cells: u64) {
         let suffix = if truncated_cells > 0 {
-            format!("（{truncated_cells} 个单元格被截断）")
+            l10n::tf_n(
+                "dialogs.export_truncated_suffix",
+                truncated_cells as i64,
+                &[("truncated_cells", truncated_cells.to_string())],
+            )
         } else {
             String::new()
         };
@@ -1426,18 +1483,31 @@ impl WholeTableJob {
             Some(total) if total > 0 => {
                 let fraction = (written as f64 / total as f64).min(1.0);
                 self.progress.set_fraction(fraction);
-                self.status
-                    .set_text(&format!("已写入 {written} / {total} 行{suffix}"));
+                self.status.set_text(&l10n::tf_n(
+                    "dialogs.export_written_total",
+                    total as i64,
+                    &[
+                        ("written", written.to_string()),
+                        ("total", total.to_string()),
+                        ("suffix", suffix.clone()),
+                    ],
+                ));
             }
             Some(_) => {
                 self.progress.set_fraction(1.0);
-                self.status
-                    .set_text(&format!("已写入 {written} 行{suffix}"));
+                self.status.set_text(&l10n::tf_n(
+                    "dialogs.export_written_rows",
+                    written as i64,
+                    &[("written", written.to_string()), ("suffix", suffix.clone())],
+                ));
             }
             None => {
                 self.progress.pulse();
-                self.status
-                    .set_text(&format!("已写入 {written} 行{suffix}"));
+                self.status.set_text(&l10n::tf_n(
+                    "dialogs.export_written_rows",
+                    written as i64,
+                    &[("written", written.to_string()), ("suffix", suffix.clone())],
+                ));
             }
         }
     }
@@ -1478,10 +1548,11 @@ impl WholeTableJob {
         );
         show_notice(
             &self.parent,
-            "已取消导出",
-            &format!(
-                "已写入 {written} 行后取消；临时文件已删除，目标路径没有产生新文件。\n\
-                 若目标原来已存在文件，它的内容保持不变。"
+            l10n::t("dialogs.export_cancelled_title"),
+            &l10n::tf_n(
+                "dialogs.export_cancelled_written_body",
+                written as i64,
+                &[("written", written.to_string())],
             ),
         );
     }
@@ -1498,8 +1569,11 @@ impl WholeTableJob {
         );
         show_notice(
             &self.parent,
-            "导出失败",
-            &format!("{message}\n\n临时文件已删除，目标路径没有产生新文件。"),
+            l10n::t("dialogs.export_failed_title"),
+            &l10n::tf(
+                "dialogs.export_failed_body",
+                &[("message", message.to_owned())],
+            ),
         );
     }
 
@@ -1515,9 +1589,8 @@ impl WholeTableJob {
         );
         show_notice(
             &self.parent,
-            "导出未完成",
-            "后台导出任务已退出，没有给出结果。目标路径没有写入新文件；\
-             如果目标目录里出现以 `.sqarvo-tmp` 结尾的隐藏文件，可以直接删除。",
+            l10n::t("dialogs.export_interrupted_title"),
+            l10n::t("dialogs.export_interrupted_body"),
         );
     }
 }
@@ -1531,22 +1604,25 @@ fn show_completion(
     truncated_cells: u64,
     kind: ExportKind,
 ) {
-    let mut body = format!(
-        "已完成：{}，写出 {} 行（{}，{}）。",
-        plan.scope.title(),
-        report.rows,
-        human_bytes(report.bytes),
-        kind.label()
+    let mut body = l10n::tf_n(
+        "dialogs.export_done_body",
+        report.rows as i64,
+        &[
+            ("scope", plan.scope.title()),
+            ("rows", report.rows.to_string()),
+            ("bytes", human_bytes(report.bytes)),
+            ("kind", kind.label().to_owned()),
+        ],
     );
     match kind.format() {
         export::Format::Csv => {
-            body.push_str("\n空字段 = SQL NULL；空字符串写为 \"\"。");
+            body.push_str(l10n::t("dialogs.export_done_csv_note"));
         }
         export::Format::InsertSql => {
             body.push_str(if kind.with_ddl() {
-                "\n文件里先是建表语句，之后每行一条 INSERT INTO … VALUES (…);。"
+                l10n::t("dialogs.export_done_dump_note")
             } else {
-                "\n每行一条 INSERT INTO … VALUES (…);，可直接在 SQL 编辑器里执行。"
+                l10n::t("dialogs.export_done_insert_note")
             });
         }
     }
@@ -1556,11 +1632,9 @@ fn show_completion(
     }
     if kind.format() == export::Format::Csv {
         if options.guard_formulas {
-            body.push_str(
-                "\n公式注入防护已开启：以 = + - @、制表符或回车开头的文本前置了单引号（数值与日期时间未改动）。",
-            );
+            body.push_str(l10n::t("dialogs.export_done_guard_on"));
         } else {
-            body.push_str("\n公式注入防护已关闭：文本按原样写出，打开文件时不要直接启用宏或公式。");
+            body.push_str(l10n::t("dialogs.export_done_guard_off"));
         }
     }
     if truncated_cells > 0 {
@@ -1569,12 +1643,17 @@ fn show_completion(
         } else {
             "-- sqarvo:"
         };
-        body.push_str(&format!(
-            "\n有 {truncated_cells} 个单元格被服务端截断：文件里只有前缀，文件末尾有一行以 `{prefix}` 开头的注释列出相关列。"
+        body.push_str(&l10n::tf_n(
+            "dialogs.export_done_truncated",
+            truncated_cells as i64,
+            &[
+                ("truncated_cells", truncated_cells.to_string()),
+                ("prefix", prefix.to_owned()),
+            ],
         ));
     }
-    let dialog = adw::AlertDialog::new(Some("导出完成"), Some(&body));
-    dialog.add_response("close", "关闭");
+    let dialog = adw::AlertDialog::new(Some(l10n::t("dialogs.export_done_title")), Some(&body));
+    dialog.add_response("close", l10n::t("dialogs.export_close_btn"));
     dialog.set_default_response(Some("close"));
     dialog.set_close_response("close");
 
@@ -1585,7 +1664,7 @@ fn show_completion(
     path_label.set_wrap(true);
     path_label.add_css_class("monospace");
     path_label.add_css_class("caption");
-    let copy = gtk::Button::with_label("复制路径");
+    let copy = gtk::Button::with_label(l10n::t("dialogs.logs_copy_btn"));
     copy.add_css_class("flat");
     {
         let path_text = path_text.clone();
@@ -1594,7 +1673,7 @@ fn show_completion(
         button.connect_clicked(move |_| {
             if let Some(display) = gtk::gdk::Display::default() {
                 display.clipboard().set_text(&path_text);
-                target.set_label("已复制");
+                target.set_label(l10n::t("dialogs.logs_copied_tooltip"));
             }
         });
     }
@@ -1614,7 +1693,7 @@ fn show_completion(
 fn show_notice(parent: &gtk::Widget, title: &str, body: &str) {
     eprintln!("[export] {title}：{body}");
     let dialog = adw::AlertDialog::new(Some(title), Some(body));
-    dialog.add_response("close", "关闭");
+    dialog.add_response("close", l10n::t("dialogs.export_close_btn"));
     dialog.set_default_response(Some("close"));
     dialog.set_close_response("close");
     dialog.present(Some(parent));
