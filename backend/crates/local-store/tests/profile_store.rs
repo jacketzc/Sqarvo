@@ -249,7 +249,7 @@ fn shared_locks_coexist_and_exclusive_contention_has_bounded_timeout() {
         .open(lock_path)
         .unwrap();
     assert!(try_lock(&lock_file, LockMode::Shared).unwrap());
-    assert!(store.list().unwrap().is_empty());
+    assert_eq!(store.list().unwrap(), []);
     let started = Instant::now();
     let error = store.save(profile("timed out", 3306), None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::PROFILE_LOCKED);
