@@ -153,17 +153,19 @@ The following is a suggested structure. Directories may be adjusted to match the
 ├── backend/
 │   ├── Cargo.toml            # Rust workspace
 │   ├── apps/
-│   │   └── backend-service/
+│   │   ├── backend-service/
+│   │   └── sqarvo-mcp/       # Standalone stdio MCP server (V1, see docs/architecture/mcp.md)
 │   └── crates/
-│       ├── application/
 │       ├── connection/
 │       ├── query-engine/
 │       ├── metadata/
 │       ├── transaction/
 │       ├── driver-api/
-│       ├── drivers/
+│       ├── drivers/          # Workspace members drivers/sqlite and drivers/mariadb
+│       ├── driver-testkit/
 │       ├── rpc-server/
 │       ├── local-store/
+│       ├── parent-watch/
 │       └── common/
 ├── tests/
 │   ├── contract/
