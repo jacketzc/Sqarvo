@@ -402,27 +402,27 @@ impl_notes = [
 trigger = "click"
 precondition = "没有查询在跑，编辑器里有 SQL"
 result = "执行编辑器里的 SQL；执行中这枚按钮置灰（取消在状态栏行 1，不在页内）；成功后结果区进入「执行中…」并等首批"
-source = "src/sql_page.rs:186、src/sql_page.rs:282、src/sql_page.rs:461、src/sql_page.rs:478、src/sql_page.rs:1189"
+source = "src/sql_page.rs:187、src/sql_page.rs:283、src/sql_page.rs:464、src/sql_page.rs:481、src/sql_page.rs:1203"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "编辑器为空或只有空白"
 result = "只写一行「SQL 不能为空：请输入后按 Ctrl+Enter」，不清掉已有结果、不发请求"
-source = "src/sql_page.rs:343"
+source = "src/sql_page.rs:346"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+Enter"]
 precondition = "没有查询在跑"
 result = "与点「执行」同一条方法（不存在「只有按钮能用」的旁路）"
-source = "src/sql_page.rs:300、src/sql_page.rs:341"
+source = "src/sql_page.rs:301、src/sql_page.rs:344"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Esc"]
 precondition = "有查询在跑"
 result = "取消查询：与状态栏行 1 的「取消」同一个方法（发 Cancel、立即进入「已取消」，已取到的行保留；重复按幂等）。空闲时同一按键分流为「清空结果区行选中」"
-source = "src/sql_page.rs:518、src/sql_page.rs:68、src/results.rs:379"
+source = "src/sql_page.rs:521、src/sql_page.rs:69、src/results.rs:380"
 platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；Windows 是同一枚按钮换文案，Linux 页内没有取消按钮（在状态栏行 1）。"
 
 [component.sync.linux]
@@ -460,19 +460,19 @@ impl_notes = [
 trigger = "click"
 precondition = "当前标签是查询标签，且选中了**另一条**已保存的连接"
 result = "重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」"
-source = "src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3356、src/tabs.rs:2998、src/tabs.rs:563"
+source = "src/sql_page.rs:1581、src/sql_page.rs:1699、src/tabs.rs:3356、src/tabs.rs:2998、src/tabs.rs:563"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在）"
 result = "**保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」"
-source = "src/tabs.rs:3399、src/sql_page.rs:758、src/sql_page.rs:1634"
+source = "src/tabs.rs:3399、src/sql_page.rs:766、src/sql_page.rs:1699"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "选中了当前绑定的那条连接"
 result = "no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」"
-source = "src/sql_page.rs:1527、src/tabs.rs:3356"
+source = "src/sql_page.rs:1581、src/tabs.rs:3356"
 
 [component.sync.linux]
 state = "done"
@@ -511,19 +511,19 @@ impl_notes = [
 trigger = "click"
 precondition = "会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库"
 result = "发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」"
-source = "src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529"
+source = "src/sql_page.rs:1207、src/sql_page.rs:1421、src/sql_page.rs:1343、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现）"
 result = "查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功"
-source = "src/tabs.rs:3076、src/sql_page.rs:1367、src/sql_page.rs:971"
+source = "src/tabs.rs:3076、src/sql_page.rs:1411、src/sql_page.rs:982"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存）"
 result = "按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名"
-source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:545"
+source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1371、src/backend/metadata.rs:545"
 
 [component.sync.linux]
 state = "done"
@@ -559,21 +559,21 @@ impl_notes = [
 trigger = "load"
 precondition = "新建查询标签成功"
 result = "键盘焦点直接落在编辑器上，可以马上输入 SQL"
-source = "src/tabs.rs:1915、src/sql_page.rs:336"
+source = "src/tabs.rs:1915、src/sql_page.rs:339"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+Enter"]
 precondition = "编辑器有焦点"
 result = "执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略"
-source = "src/sql_page.rs:300、src/sql_page.rs:341"
+source = "src/sql_page.rs:301、src/sql_page.rs:344"
 platform_notes.windows = "v0.2.5 起整段执行（`Views/ShellView.Query.cs:704-705`）：不看选区、不找当前语句，与 Linux 一致；此前是「有选中就只执行选中」，属于记录在案的偏差，已按契约收紧。"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "新建查询标签（尚无任何 Execute 响应）"
 result = "编辑器占满整个内容区：结果区与分隔把手隐藏（GtkPaned 对隐藏子节点不测量也不绘制把手）"
-source = "src/sql_page.rs:272、src/sql_page.rs:1318"
+source = "src/sql_page.rs:273、src/sql_page.rs:1362"
 
 [component.sync.linux]
 state = "done"
@@ -611,13 +611,13 @@ impl_notes = [
 trigger = "load"
 precondition = "结果区状态变化"
 result = "写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行"
-source = "src/results.rs:1043、src/sql_page.rs:609、src/sql_page.rs:635"
+source = "src/results.rs:1074、src/sql_page.rs:617、src/sql_page.rs:643"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "语句没有结果集（UPDATE / INSERT / DDL）"
 result = "不假装有结果：写「影响 N 行」而不是画一张空表（Linux 写「语句 N 影响 N 行（无结果集）」）"
-source = "src/sql_page.rs:548、src/sql_page.rs:552"
+source = "src/sql_page.rs:551、src/sql_page.rs:555"
 platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服务端声明该结果集只读」/「查询结果网格在本版不支持编辑」）；Linux 用「已达客户端上限」与「已断开」两态覆盖另外两种情况。"
 
 [component.sync.linux]
@@ -659,13 +659,13 @@ impl_notes = [
 trigger = "load"
 precondition = "任何 Execute 响应（show_started / show_batch / mark_cancelled / show_failure / show_limited）"
 result = "结果区显示（含分隔把手），默认编辑器占比 query_editor_ratio；已可见时幂等"
-source = "src/sql_page.rs:1305、src/sql_page.rs:713、src/sql_page.rs:788、src/sql_page.rs:829、src/sql_page.rs:848、src/sql_page.rs:878"
+source = "src/sql_page.rs:1349、src/sql_page.rs:721、src/sql_page.rs:796、src/sql_page.rs:840、src/sql_page.rs:859、src/sql_page.rs:889"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "新建标签，或「关闭结果区」完成"
 result = "结果区隐藏：把手不可见也不可交互（GtkPaned 原生行为），编辑器占满整页"
-source = "src/sql_page.rs:272、src/sql_page.rs:1318、src/sql_page.rs:1424"
+source = "src/sql_page.rs:273、src/sql_page.rs:1362、src/sql_page.rs:1468"
 
 [component.sync.linux]
 state = "done"
@@ -700,7 +700,7 @@ impl_notes = [
 trigger = "load"
 precondition = "首批数据到达"
 result = "按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements）"
-source = "src/results.rs:1044、src/sql_page.rs:795、src/sql_page.rs:1176"
+source = "src/results.rs:1075、src/sql_page.rs:803、src/sql_page.rs:1190"
 platform_notes.windows = "说明位保留「结果集 K 段」（「只显示第 1 段」已在 #190 退役）；表头按当前选中语句的列元数据重建（frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:526；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1557）。"
 
 [component.sync.linux]
@@ -741,7 +741,7 @@ trigger = "key"
 keys = ["Esc"]
 precondition = "结果区有选中行、没有查询在跑"
 result = "清空行选中；执行中的 Esc 仍分流为「取消查询」"
-source = "src/results.rs:379、src/results.rs:382"
+source = "src/results.rs:380、src/results.rs:383"
 platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
 
 [component.sync.linux]
@@ -778,13 +778,13 @@ impl_notes = [
 trigger = "scroll"
 precondition = "结果仍在分批读取（has_more），且滚动到接近末尾"
 result = "自动发一次 FetchBatch 续拉下一批；同一时刻最多一批在飞，触顶后不再拉（暂停原因写日志）"
-source = "src/results.rs:1181、src/results.rs:1003"
+source = "src/results.rs:1241、src/results.rs:1034"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "服务端返回的批次读到底（has_more=false）"
 result = "不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」）"
-source = "src/results.rs:1043、src/sql_page.rs:585"
+source = "src/results.rs:1074、src/sql_page.rs:589"
 platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
 
 [component.sync.linux]
@@ -825,19 +825,19 @@ impl_notes = [
 trigger = "load"
 precondition = "Execute 返回多条语句（statements.len() > 1）"
 result = "结果区头部下方出现语句切换行：每条语句一个可点选条目；默认选中已成功语句中最后一条有结果集的语句（全写脚本落第一条，占位页说明无结果集，切换行仍列各写语句影响行数）"
-source = "src/sql_page.rs:981、src/statements.rs:57、src/statements.rs:121"
+source = "src/sql_page.rs:996、src/statements.rs:58、src/statements.rs:122"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "点选切换行里另一条语句"
 result = "网格换入该语句的行模型与列（已加载行不丢），状态行随选中语句；尚未首拉的结果集语句立即发起第一批请求（空 page_token + statement_index）；滚动续拉按当前选中语句"
-source = "src/sql_page.rs:1121、src/sql_page.rs:1150、src/sql_page.rs:1236、src/results.rs:950"
+source = "src/sql_page.rs:1135、src/sql_page.rs:1164、src/sql_page.rs:1276、src/results.rs:981"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "多语句脚本失败（trailing metadata sqarvo-failed-statement / sqarvo-completed-statements 两键齐全且至少一条已执行）"
 result = "状态行「前 N-1 条已执行，第 N 条失败：<错误文案>」；切换行列到失败语句为止：已执行条目标「已执行 · 结果未返回」，失败语句标失败态并默认选中；点已执行条目显示「结果未返回」占位页"
-source = "src/sql_page.rs:1067、src/statements.rs:104、src/statements.rs:126"
+source = "src/sql_page.rs:1081、src/statements.rs:105、src/statements.rs:127"
 
 [component.sync.linux]
 state = "done"
@@ -881,13 +881,13 @@ impl_notes = [
 trigger = "drag"
 precondition = "结果区可见（热区可命中；普通模式不可见，HC 下可见静态线）"
 result = "调整编辑器 / 结果区高度占比，回写内存态（不持久化）；两端最小高度不被突破（shrink=false）"
-source = "src/sql_page.rs:383"
+source = "src/sql_page.rs:386"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "结果区首次显示（map 信号，分配就绪）"
 result = "应用默认比例 query_editor_ratio；有拖动回写则恢复用户拖到的位置"
-source = "src/sql_page.rs:393、src/sql_page.rs:1847"
+source = "src/sql_page.rs:396、src/sql_page.rs:1916"
 
 [component.sync.linux]
 state = "done"
@@ -923,19 +923,19 @@ impl_notes = [
 trigger = "click"
 precondition = "结果区可见、非执行中、无脏行"
 result = "释放游标（Close RPC）并隐藏结果区，编辑器占满整页；日志「结果区已关闭：游标已释放，编辑器占满整页」"
-source = "src/sql_page.rs:1377、src/sql_page.rs:1424、src/sql_page.rs:1438"
+source = "src/sql_page.rs:1421、src/sql_page.rs:1468、src/sql_page.rs:1482"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "有脏行（dirty_rows()>0）"
 result = "先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区"
-source = "src/sql_page.rs:1377、src/results.rs:954、src/data_page.rs:5345"
+source = "src/sql_page.rs:1421、src/results.rs:985、src/data_page.rs:5345"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "查询执行中（Loading / Streaming）"
 result = "按钮置灰，tooltip「查询执行中，请先取消」；空闲恢复可用，tooltip 回到「关闭结果区（释放查询资源）」"
-source = "src/sql_page.rs:1277"
+source = "src/sql_page.rs:1321"
 
 [component.sync.linux]
 state = "done"

@@ -587,13 +587,13 @@ impl_notes = [
 trigger = "click"
 precondition = "有已加载行"
 result = "选范围 → 选文件 → 确认「导出已加载的 N 行为 CSV？」→ 写文件；完成提示写已写行数、截断数与防护开关状态；在文件对话框取消则不写文件、不报错"
-source = "src/export_ui.rs:437、src/export_ui.rs:506、src/export_ui.rs:695"
+source = "src/export_ui.rs:453、src/export_ui.rs:522、src/export_ui.rs:711"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "计划为空或总数为 0（明确知道 0 行）"
 result = "提示「没有可导出的行」，不进入文件选择器（转储表例外：空表也允许，只写建表语句）"
-source = "src/export_ui.rs:437"
+source = "src/export_ui.rs:453"
 
 [component.sync.linux]
 state = "done"
@@ -630,7 +630,7 @@ impl_notes = [
 trigger = "click"
 precondition = "有已加载行"
 result = "选范围 → 选文件 → 确认 → 写 SQL 脚本；不做公式注入防护（SQL 不经过表格软件）；截断单元格在文件末尾追加一行注释"
-source = "src/export_ui.rs:437、src/export_ui.rs:695、src/export.rs:348"
+source = "src/export_ui.rs:453、src/export_ui.rs:711、src/export.rs:348"
 
 [component.sync.linux]
 state = "done"
@@ -666,7 +666,7 @@ impl_notes = [
 trigger = "click"
 precondition = "已打开表（有浏览会话）"
 result = "确认「转储表 <表名>？」→ 选文件 → 进度对话框（已写行数 / 截断单元格数）+「取消」；取消或失败不留半截文件与临时文件"
-source = "src/export_ui.rs:490、src/export_ui.rs:1197、src/export_ui.rs:1418"
+source = "src/export_ui.rs:506、src/export_ui.rs:1242、src/export_ui.rs:1471"
 
 [component.sync.linux]
 state = "done"
@@ -1638,49 +1638,49 @@ impl_notes = [
 trigger = "load"
 precondition = "结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列"
 result = "装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色）"
-source = "src/sql_page.rs:708、src/result_edit.rs:46、src/results.rs:605"
+source = "src/sql_page.rs:716、src/result_edit.rs:46、src/results.rs:608"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "上述任一不成立"
 result = "行操作组整体置灰，tooltip 写明具体原因：「结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除」/「结果里没有主键列 X：定位不到要改的行，不能编辑」/「这张表没有主键：不能新增、编辑或删除」/「读取主键失败：…」——不静默灰掉"
-source = "src/sql_page.rs:715、src/sql_page.rs:740、src/result_edit.rs:79"
+source = "src/sql_page.rs:723、src/sql_page.rs:748、src/result_edit.rs:79"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "结果可编辑、单元格可改"
 result = "打开与网格同一个编辑器；确定后按当前值重绘该行（未提交前不写库），并立刻重算行操作可用性（第一次编辑后 ✓ 即可点）"
-source = "src/results.rs:742、src/sql_page.rs:731"
+source = "src/results.rs:758、src/sql_page.rs:739"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "可编辑、没有未提交改动、没有待插入行（入口：状态栏 +）"
 result = "结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」"
-source = "src/results.rs:672、src/sql_page.rs:956、src/result_edit.rs:199"
+source = "src/results.rs:688、src/sql_page.rs:967、src/result_edit.rs:199"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "可编辑且有选中行（入口：状态栏 −）"
 result = "把选中行标记待删除（不立刻写库），可 ↶ 放弃；重绘后整行删除线 + 压暗，状态行「已标记删除 N 行（提交前可以放弃）」"
-source = "src/sql_page.rs:968、src/result_edit.rs:177"
+source = "src/sql_page.rs:979、src/result_edit.rs:177"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "有脏行 / 待插入行（入口：状态栏 ✓ / Ctrl+S）"
 result = "走 ApplyRowChanges；全部成功后**自动重跑同一条语句**（results.statement()，不是编辑器里的当前文本），结果区写「已提交 N 行 · 已自动重新执行查询」/「已插入 N 行 · 已自动重新执行查询」；有失败行时**不重跑**，失败行留在草稿里"
-source = "src/sql_page.rs:801、src/sql_page.rs:841、src/sql_page.rs:380"
+source = "src/sql_page.rs:809、src/sql_page.rs:852、src/sql_page.rs:383"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "有脏行（入口：状态栏 ↶）"
 result = "全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」"
-source = "src/sql_page.rs:1020、src/results.rs:544"
+source = "src/sql_page.rs:1034、src/results.rs:547"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "有未提交的更改且点了刷新（⟳）"
 result = "拒绝并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点）"
-source = "src/sql_page.rs:954"
+source = "src/sql_page.rs:965"
 
 [component.sync.linux]
 state = "done"

@@ -142,7 +142,7 @@ source = "src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:5043、src/da
 trigger = "load"
 precondition = "当前标签不是表标签（Objects 页 / 查询标签 / 启动态未连接）"
 result = "六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）。唯一例外是「取消」（改动确认单 #7，两用）：查询标签上按**查询是否在途**给值——在途可点（点它取消查询），空闲置灰并写「当前没有执行中的查询」。同时分页摘要、选中数、Last Refresh 整格隐藏"
-source = "src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:912"
+source = "src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:923"
 
 [component.sync.linux]
 state = "done"
@@ -374,7 +374,7 @@ platform_notes.windows = "行 1 这枚「取消」两用：查询页按 `busy`�
 trigger = "click"
 precondition = "当前页是查询标签，且查询在途（Loading / Streaming）"
 result = "取消这条查询（与 Esc、QA 脚本同一个方法）：发 Cancel 并立即进入「已取消 · 已保留 N 行」；重复点幂等（第二次起只记日志、不发 RPC）。查询结束（含取消）后按钮自行置灰"
-source = "src/sql_page.rs:1041、src/sql_page.rs:1086、src/sql_page.rs:518、src/shell.rs:1500、src/shell.rs:1566"
+source = "src/sql_page.rs:1055、src/sql_page.rs:1100、src/sql_page.rs:521、src/shell.rs:1500、src/shell.rs:1566"
 
 [[component.interaction]]
 trigger = "click"
