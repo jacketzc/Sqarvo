@@ -649,3 +649,21 @@ When completing a development task, the final report must include at least:
 - **Risks and follow-up**: compatibility, security, performance, or platform considerations.
 
 Do not respond only with "Done." Do not describe planned work as if it has already been implemented.
+
+## 17. Agent Delegation Policy
+
+Optimize for token efficiency while maintaining code quality.
+
+- Default to completing tasks in the main agent.
+- Do not spawn subagents for simple or localized tasks.
+- Spawn subagents only when independent parallel work
+  provides a clear benefit.
+- Prefer at most 2 concurrent subagents.
+- Each subagent must have a narrowly defined responsibility.
+- Avoid assigning the same repository exploration task
+  to multiple agents.
+- Do not repeatedly read large files or build logs.
+- Limit unnecessary test-fix-retest loops.
+- Prefer targeted tests over full-suite runs during development.
+- When a task becomes unexpectedly expensive, report
+  progress and blockers before expanding its scope.
