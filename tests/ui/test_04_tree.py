@@ -9,6 +9,12 @@ pytestmark = pytest.mark.sql
 
 
 def test_tree_navigation(app_connected):
+    """数据库对象树导航：连接 → 库 → 种类分组 → 表，含收起往返。
+
+    注册表组件: object_tree.tree, object_tree.tree.row.conn,
+    object_tree.tree.row.expander, object_tree.tree.row.catalog,
+    object_tree.tree.row.group, object_tree.tree.row.object。
+    """
     frame = app_connected.frame()
 
     with step("expand_connection"):

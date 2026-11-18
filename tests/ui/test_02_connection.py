@@ -15,7 +15,10 @@ pytestmark = pytest.mark.sql
 
 
 def test_sqlite_connection_open(app_connected):
-    """打开后：对象树出现该连接行且徽标为「已连接」；状态栏摘要不再是未连接。"""
+    """打开后：对象树出现该连接行且徽标为「已连接」；状态栏摘要不再是未连接。
+
+    注册表组件: object_tree.tree.row.conn, status_bar。
+    """
     with step("tree_row"):
         frame = app_connected.frame()
         row = ops.find_row(frame, "uitest.db", timeout=0)

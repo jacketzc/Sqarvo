@@ -22,7 +22,10 @@ def _run_query(app, sql):
 
 
 def test_execute_sql(app_connected):
-    """执行 SELECT：结果网格按行返回，行数正确。"""
+    """执行 SELECT：结果网格按行返回，行数正确。
+
+    注册表组件: tabs.query.editor, tabs.query.actions, tabs.query.results.grid。
+    """
     frame, page = _run_query(app_connected, SQL)
     with step("verify_result"):
         rows = ops.wait_query_done(page, min_rows=3, timeout=20)
@@ -30,7 +33,10 @@ def test_execute_sql(app_connected):
 
 
 def test_query_result_values(app_connected):
-    """结果值逐格核对：id/name/qty 与建库夹具一致。"""
+    """结果值逐格核对：id/name/qty 与建库夹具一致。
+
+    注册表组件: tabs.query.results.grid。
+    """
     frame, page = _run_query(app_connected, SQL)
     with step("verify_values"):
         rows = ops.wait_query_done(page, min_rows=3, timeout=20)
@@ -42,7 +48,10 @@ def test_query_result_values(app_connected):
 
 
 def test_error_query_shows_failure_state(app_connected):
-    """错误 SQL：进入明确的失败态而不是假装成功（根 AGENTS §3 状态可见）。"""
+    """错误 SQL：进入明确的失败态而不是假装成功（根 AGENTS §3 状态可见）。
+
+    注册表组件: tabs.query.state, tabs.query.actions。
+    """
     frame, page = _run_query(app_connected, "SELECT * FROM no_such_table_xyz")
     with step("verify_error_state"):
         def probe():

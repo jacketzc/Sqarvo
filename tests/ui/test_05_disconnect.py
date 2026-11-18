@@ -18,7 +18,10 @@ pytestmark = pytest.mark.smoke
 
 
 def test_window_close_disposes_session():
-    """已连接实例经「关闭」按钮退出：清理路径完整、重启后为未连接。"""
+    """已连接实例经「关闭」按钮退出：清理路径完整、重启后为未连接。
+
+    注册表组件: shell.header, object_tree.tree.row.conn, startup。
+    """
     inst = UiInstance("disc").start(autoconnect=True)
     reopened = None
     try:
@@ -56,6 +59,8 @@ def reopened_frame_has_row(frame):
 
 def test_menu_driven_active_disconnect_unreachable():
     """已知限制：主动「断开连接」只有手势右键菜单入口，Wayland 禁合成输入。
+
+    注册表组件: object_tree.ctx_menu.disconnect。
 
     应用自身的 `--qa-startup-menu <名> --qa-startup-menu-pick 断开连接` 通道可覆盖
     （#144 验收脚本口径），但它作用于「启动态未连接行」，菜单里没有「断开连接」项，

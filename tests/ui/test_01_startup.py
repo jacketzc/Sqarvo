@@ -9,7 +9,10 @@ pytestmark = pytest.mark.smoke
 
 
 def test_startup_readiness(app_bare):
-    """应用启动：AT-SPI 可见 + 主窗口出现 + 后端握手完成的状栏摘要。"""
+    """应用启动：AT-SPI 可见 + 主窗口出现 + 后端握手完成的状栏摘要。
+
+    注册表组件: startup, status_bar。
+    """
     with step("startup_ready"):
         expect(app_bare.app is not None, "应用出现在 AT-SPI 总线", app_bare.app)
         frame = app_bare.frame()
@@ -20,7 +23,10 @@ def test_startup_readiness(app_bare):
 
 
 def test_main_window_accessibility(app_bare):
-    """主窗口可访问性：核心控件语义在位；未连接时「新建查询」按状态级不可用呈现（禁用+原因）。"""
+    """主窗口可访问性：核心控件语义在位；未连接时「新建查询」按状态级不可用呈现（禁用+原因）。
+
+    注册表组件: shell, startup, tabs.strip.new。
+    """
     with step("window_controls"):
         frame = app_bare.frame()
         btns = {A.nm(b): b for b in A.query(frame, role_in=("button",))}
@@ -42,7 +48,11 @@ def test_main_window_accessibility(app_bare):
 
 
 def test_connection_dialog_open_and_cancel(app_bare):
-    """点「连接」打开新建连接对话框：驱动默认值与按钮齐备；「取消」可关闭。"""
+    """点「连接」打开新建连接对话框：驱动默认值与按钮齐备；「取消」可关闭。
+
+    注册表组件: dialogs.connection, dialogs.connection.driver,
+    dialogs.connection.actions.cancel。
+    """
     with step("open_dialog"):
         frame = app_bare.frame()
         dlg = ops.open_connection_dialog(app_bare.app, frame)
