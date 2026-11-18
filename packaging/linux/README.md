@@ -13,8 +13,13 @@
 ```bash
 packaging/linux/build-deb.sh            # 先 cargo build --release，再打包
 BUILD=0 packaging/linux/build-deb.sh    # 复用已有 release 二进制
-VERSION=0.2.3 OUT_DIR=/tmp/out packaging/linux/build-deb.sh
+VERSION=0.2.3.3~nightly.20261118020000.abc1234 OUT_DIR=/tmp/out packaging/linux/build-deb.sh
 ```
+
+版本单一来源是仓库根 `VERSION` 文件（当前 `0.2.3.3` = 下一待发版的基线号；
+`packaging.yml` 的 push/tag 构建与本地直接调用都取它），env `VERSION` 覆盖仅用于
+Nightly 注入完整版本号；脚本内不再硬编码任何版本号（原默认 `0.2.2` 是过时发布名，
+已移除）。
 
 产物 `dist/sqarvo_<VERSION>_<ARCH>.deb`（`dist/` 已在 `.gitignore` 里）。
 依赖由 `dpkg-shlibdeps` 从二进制实际链接的库算出，再把 GTK / libadwaita 的下限
@@ -23,13 +28,13 @@ VERSION=0.2.3 OUT_DIR=/tmp/out packaging/linux/build-deb.sh
 安装：
 
 ```bash
-sudo apt install ./dist/sqarvo_0.2.2_amd64.deb   # 会一并装依赖
+sudo apt install ./dist/sqarvo_0.2.3.3_amd64.deb   # 会一并装依赖
 ```
 
 不装系统级也可以只解包到用户目录试跑（布局相同，前端会在自己所在目录找到后端）：
 
 ```bash
-dpkg-deb -x dist/sqarvo_0.2.2_amd64.deb /tmp/sqarvo-pkg
+dpkg-deb -x dist/sqarvo_0.2.3.3_amd64.deb /tmp/sqarvo-pkg
 install -m755 /tmp/sqarvo-pkg/usr/bin/sqarvo-* ~/.local/bin/
 ```
 
@@ -83,6 +88,61 @@ install -m755 /tmp/sqarvo-pkg/usr/bin/sqarvo-* ~/.local/bin/
 `xvfb-run`，无法预验这条路径是否稳定；前端是单实例 `GtkApplication` + 子进程后端，
 在无会话总线的环境里失败原因很容易被误判成「打包坏了」。GUI 启动验证目前只在真机上做
 （见下节），等 CI 里能稳定跑通再搬进来。第 10 步的后端冒烟是不依赖显示的替代证据。
+
+## Nightly（`.github/workflows/nightly.yml`）
+
+每天 10:00 北京时间（UTC 02:00，cron `0 2 * * *`）从 `main` 最新提交构建
+Linux amd64 `.deb`，通过全部验证后发布/刷新到固定的 **pre-release**
+（tag `nightly`，名称 `Sqarvo Nightly`）；也支持 `workflow_dispatch` 手动触发
+（带 `force_republish` 布尔输入）。工作流只监听 `schedule` 与 `workflow_dispatch`，
+不挂 push/PR/tags；`ci.yml`、`packaging.yml` 与正式发版互不影响。整个工作流一个
+concurrency 组串行执行（不取消在跑的构建），发布环节不会并发竞态。
+
+构建与校验步骤与上文 `packaging.yml` 的 `deb` 作业一致（GitHub Actions 没有跨
+workflow 复用步骤的机制，两处改动要同步）：同用 `packaging/linux/build-deb.sh`
+（`BUILD=0` + env `VERSION` 注入），不重复实现编译/打包；在此之上多两步——
+
+1. **版本计算**：`<VERSION 文件基线>~nightly.<main 头提交的 UTC 时间 YYYYMMDDHHMMSS>.<短SHA 7 位>`，
+   例如 `0.2.3.3~nightly.20261118020000.abcdef0`。用「提交时间 + 提交号」而不是构建时间：
+   同一 commit 重复构建得到同一版本（幂等，发布守卫可判）、同日多个 commit 按提交时间升序、
+   跨天按日期升序、同刻并列的 commit 靠短 SHA 后缀保持互不相等。Debian 语义下 `~` 排在
+   一切之前，所以 Nightly 严格低于对应正式版 `0.2.3.3`、又高于已发布的 `0.2.3.2`
+   （stable 用户可直接升级到 Nightly）。发布前用 `dpkg --compare-versions` 把这五类
+   排序断言逐条跑一遍，失败即不发。
+2. **SHA-256**：`.deb` 与 `.deb.sha256` 一起生成、一起发布，发布前 `sha256sum -c` 复核。
+
+发布策略（只用内置 `GITHUB_TOKEN` + 预装的 `gh`，无第三方动作；`deb` 作业只读，
+写权限仅 `publish` 作业持有且只在 `main` 上运行）：
+
+- 固定入口 `releases/tag/nightly` 永远指向最新通过验证的构建。
+- GitHub 的 Release 不允许改写 `target_commitish`，"tag、源码 commit、.deb 来源
+  三者一致"只能靠**删旧建新**实现：删除旧 Release/tag（删除失败则旧状态原样保留），
+  用本次 commit 创建新 Release 并上传产物，创建失败重试一次。
+- 两道守卫：`nightly` tag 已指向本次 commit → 幂等跳过（不重复发布相同 commit）；
+  已发布 Nightly 的提交时间不比本次旧 → 跳过并保留旧 Nightly（旧构建/重跑的 run
+  绝不覆盖新 Nightly）。`force_republish` 可越过两道守卫。
+- 发布后**回读断言**：Release 存在且为 pre-release、资产恰好是 `.deb` + `.sha256`
+  两个、tag `nightly` 指向本次构建的 commit；任一不符作业失败。
+- 失败恢复：本 run 的 `sqarvo-nightly-deb` artifact（14 天保留）就是完整产物。若
+  "删旧成功、建新失败"（日志有明确 `::error::` 提示），下载 artifact 后手工恢复，
+  或直接对该 commit 重跑一次 workflow_dispatch：
+
+  ```bash
+  gh release create nightly sqarvo_<version>_amd64.deb sqarvo_<version>_amd64.deb.sha256 \
+    --repo jacketzc/Sqarvo --target <commit-sha> --title "Sqarvo Nightly" \
+    --prerelease --notes-file notes.md
+  ```
+
+Release 说明由工作流自动生成：构建时间（UTC）、commit 链接、Debian 包版本、
+支持平台、SHA-256、安装命令、实验性提示与 Issue 入口；不做自动 changelog。
+
+本地自检（2026-11-18）：`nightly.yml` PyYAML 6.0.3 解析通过，触发键/作业/权限结构如预期，
+全部 `run:` 块 `bash -n` 通过；版本公式与「五类排序断言」在本机 `dpkg --compare-versions`
+全部通过；`VERSION=0.2.3.3~nightly.20261118094549.eb5c4e1 BUILD=0 packaging/linux/build-deb.sh`
+实际产出 `.deb`（元数据 `Package/Version/Architecture/Depends` 正确），`dpkg-deb -x` 解包后用
+包内 `sqarvo-backend` 跑通与 CI 同款的启动冒烟（端点 0600 / 套接字 0600 / SIGTERM 后清理），
+`sha256sum -c` 匹配；发布步骤的 `notes.md` 模板经离线渲染核对。**GitHub 发布链
+（gh api、删旧建新、回读断言）尚未经真实 run 验证**，见「已知限制」。
 
 ## 本地验证记录（2026-11-06，Ubuntu 26.04）
 
@@ -156,11 +216,16 @@ flock -w 900 /tmp/sqarvo-agent-gui.lock -c '
 - 没有 Flatpak / AppImage 清单；
 - 后端由前端以子进程方式拉起与回收（见 `frontend/linux/README.md`「启动顺序」
   与「退出清理」），包内不含 systemd 单元或 D-Bus 服务；
-- 包版本取发布名（0.2.2），而各 crate 的版本仍是 0.1.0——界面上「后端版本 0.1.0」
-  来自 crate 版本，两者不一致是仓库现状，不是打包错误；
-- **`packaging.yml` 还没有在 GitHub 上真正跑过**：工作流首次生效需要 push 到 `main`
-  或推 `v*` 标签之后；在那之前只有上节的本地自检（YAML 解析、`bash -n`、冒烟脚本实跑）
-  作为依据，不能算「CI 已通过」；
+- 包版本取仓库根 `VERSION` 文件（下一待发版基线，当前 0.2.3.3），而各 crate 的版本仍是
+  0.1.0——界面上「后端版本 0.1.0」来自 crate 版本，两者不一致是仓库现状，不是打包错误；
+- **`nightly.yml` 还没有在 GitHub 上真正跑过**：首次真实验证需要在合入 `main` 后用
+  `workflow_dispatch` 手动触发一次（发布环节还依赖 `GITHUB_TOKEN` 对 Releases 的写权限，
+  见仓库 Settings → Actions）；在那之前只有上面的本地自检作为依据，不能算「Nightly 已通过」。
+  `packaging.yml` 本身已在 `main` 的每次 push 上实际运行（guard 对纯文档提交跳过打包）；
+- Nightly 发布采用「删旧 Release → 建新 Release」：新旧交替之间存在数秒的入口空窗，且
+  若删除成功而创建失败（已重试一次仍失败），固定入口会临时缺失——产物完整保留在当次
+  run 的 Artifact 里，可按上文「失败恢复」手工重建；不存在「发布了一半」的 Release，
+  回读断言不齐即作业失败；
 - CI 覆盖范围只有 Linux / Ubuntu 26.04 的 .deb；没有 GUI 冒烟（原因见「CI」节），
   也没做从旧版本升级（`dpkg -i` 覆盖安装）与卸载后残留检查；
 - 后端退出时删除 socket 与端点文件，但保留运行时目录本身（`$XDG_RUNTIME_DIR/sqarvo/`
