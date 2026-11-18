@@ -645,38 +645,183 @@ style.slot = "workspace.content"
 style.metrics = ["gap_xl", "gap_sm", "radius_md", "frame_border_width", "query_results_min_height"]
 style.tokens = ["sqarvo_frame"]
 impl_notes = [
-  "自上而下：状态行 + 说明位（右侧是状态圆点与「导出 ▾」，两者归 data_page / status_bar 的记录）→ 结果表头 → 行区。",
-  "没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看。",
+  "自上而下（#231 三页签改造）：状态行 → 说明行（左侧＝结果区页签 tabs.query.results.views「消息 / 摘要 / 结果」；右侧＝状态圆点 + 「导出 ▾」+ 关闭结果区 ✕，顺序与行为不变——圆点与导出归 data_page / status_bar 的记录，关闭见 tabs.query.results.close）→ 语句切换控件（仅多语句脚本，tabs.query.results.statements）→ 三页内容（消息页 tabs.query.results.message、摘要页 tabs.query.results.summary、「结果」页）。",
+  "「结果」页＝改造前的结果区内容原样：没有已加载行时把表格换成占位页（标题 + 一句说明），有行时保留表格：取消 / 错误 / 断连之后已加载的行仍可查看；表头 → 行区结构不变（tabs.query.results.header / .grid）。",
+  "页签不新增一行：ViewSwitcher 插进既有说明行左端，结果区高度零增量（实测需求与分配高同基线逐字一致，见 sync.linux evidence）；三页随结果区整体显隐（#189 口径），没有独立显示路径。",
   "表格外框与表数据页、Objects 列表同一份（frame_border_width + radius_md），圆角靠 overflow=hidden 真正裁到内容；左右各让 gap_xl 与分栏线错开。",
   "不摆 `图例：NULL=…` 这类常驻说明（v0.2.5 去掉）：NULL 由单元格自己渲染（斜体 + 降透明度），不靠图例解释。",
   "语句摘要（`语句 1：… · 查询 query_xxx`）不常驻界面，改写进日志 `[query] 语句摘要：…（query_id=…）`，排障查日志。",
-  "显隐（#189）：新标签结果区（含分隔把手）隐藏、编辑器占满整页；任何 Execute 响应（首批 / 续批 / 取消 / 失败 / 触顶）后显示；可用「关闭结果区」按钮主动关闭（见 tabs.query.results.close），关闭后回到隐藏态。",
+  "显隐（#189）：新标签结果区（含分隔把手）隐藏、编辑器占满整页；任何 Execute 响应（首批 / 续批 / 取消 / 失败 / 触顶）后显示；可用「关闭结果区」按钮主动关闭（见 tabs.query.results.close），关闭后回到隐藏态。显示后按默认页规则落页（见交互），用户之后手动切页不被续批覆盖。",
   "最小高度随密度档（query_results_min_height）；显示时编辑器:结果区默认 query_editor_ratio（0.4），可拖动调整（见 tabs.query.splitter）。",
-  "多语句脚本（#190）：状态行下方、表格上方挂语句切换行（tabs.query.results.statements）；每条语句一份独立网格状态（行模型 / 列 / 已加载行数 / 截断计数），切换语句换入换出行模型，已加载行不丢；单语句不挂切换行，现状不变。",
+  "多语句脚本（#190）：说明行下方、三页内容上方挂语句切换控件（tabs.query.results.statements，#231 起为固定宽度下拉框）；每条语句一份独立网格状态（行模型 / 列 / 已加载行数 / 截断计数），切换语句换入换出行模型，已加载行不丢；单语句不挂切换控件，现状不变。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "任何 Execute 响应（show_started / show_batch / mark_cancelled / show_failure / show_limited）"
 result = "结果区显示（含分隔把手），默认编辑器占比 query_editor_ratio；已可见时幂等"
-source = "src/sql_page.rs:1349、src/sql_page.rs:721、src/sql_page.rs:796、src/sql_page.rs:840、src/sql_page.rs:859、src/sql_page.rs:889"
+source = "src/sql_page.rs:827、src/sql_page.rs:930、src/sql_page.rs:982、src/sql_page.rs:1005、src/sql_page.rs:1073、src/sql_page.rs:2149"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "新建标签，或「关闭结果区」完成"
-result = "结果区隐藏：把手不可见也不可交互（GtkPaned 原生行为），编辑器占满整页"
-source = "src/sql_page.rs:273、src/sql_page.rs:1362、src/sql_page.rs:1468"
+result = "结果区隐藏：把手不可见也不可交互（GtkPaned 原生行为），编辑器占满整页；三页签与页内容随整体隐藏"
+source = "src/sql_page.rs:372、src/sql_page.rs:2162、src/sql_page.rs:2278"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Execute 终态响应到达（首批到达 / 单语句读完 / 写语句完成 / 失败）；取消（mark_cancelled）与触顶（show_limited）只刷新内容、不抢用户当前页"
+result = "按 default_tab_for 落默认页：任意语句有结果集 → 「结果」；全写脚本 → 「消息」；执行失败 → 「消息」并写错误行；还没有任何逐语句结论（防御路径）→ 「结果」。用户之后手动切页不再被覆盖"
+source = "src/sql_page.rs:270、src/sql_page.rs:1209、src/sql_page.rs:858、src/sql_page.rs:894、src/sql_page.rs:913、src/sql_page.rs:1016、src/sql_page.rs:1050"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "结果区可见（页签在说明行左端）"
+result = "外层 ViewStack 换页（消息 / 摘要 / 结果）；只换显示内容，不触发查询、不改显隐、不动网格状态"
+source = "src/results.rs:634、src/results.rs:609、src/results.rs:1296"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "多语句脚本执行成功且没有任何结果集（全是写语句）"
+result = "默认落「消息」页：日志逐条给「影响 N 行」；「结果」页仍是「无结果集」占位页；切换控件仍列各写语句条目"
+source = "src/sql_page.rs:270、src/sql_page.rs:858、src/statements.rs:237"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6f1232564d9d"
-evidence = "§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:1305（show_results）/ 1318（hide_results），隔离 QA 截图 189-01（隐藏）/ 189-02（执行后显示）/ 189-03（空 SQL 走 banner、结果区不显示）"
+spec_hash = "8ddd438e4903"
+evidence = "§5.11 版面收敛；ResultsView::new 的装配与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:2149（show_results）/ 2162（hide_results）；#231 pytest tests/ui/linux/test_03_sql.py：新增三条全 PASS——AT-SPI 读默认页签 selected='消息'（20 条多行 INSERT）、消息日志 20 行、摘要键值「20/20/0」、执行前后窗口外框宽度 1400→1400 不变；既有三条中 test_query_result_values / test_error_query_shows_failure_state PASS，test_execute_sql FAIL（Expected 3 rows / Actual 9——ViewStack 层重复枚举同一可访问节点的缺陷所致，缺陷已另报，见 tabs.query.results.views impl_notes）；QA 只读探针 `[qa] 结果区版式：… 当前页=messages；消息行数=20`"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "6f1232564d9d"
+spec_hash = "8ddd438e4903"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:631（ResultsArea 容器装配，初始 Collapsed，五行：说明位/状态行/切换行/表头+行区/加载更多）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1279（任何 Execute 响应后显示，HasExecuteResponse 判据）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:401（HasExecuteResponse）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:938（ResetResults 关闭后回隐藏态）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:492（#190 切换行仅多语句渲染）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:512（#190 占位页）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:639（ApplyMultiFirstBatch 每语句独立网格状态）"
-note = "状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现；#190 语句切换行 + 占位页（无结果集 / 结果未返回）+ 每语句独立网格状态已实现（真类型探针编译验证红→绿，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。"
+note = "状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现；#190 语句切换行 + 占位页（无结果集 / 结果未返回）+ 每语句独立网格状态已实现（真类型探针编译验证红→绿，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。#231 三页签结构（页签行 / 消息页 / 摘要页 / 默认页规则）与下拉切换未接入，见 Issue #232。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.views"
+parent = "tabs.query.results"
+display_name = "结果区页签（消息 / 摘要 / 结果）"
+kind = "control"
+status = "active"
+a11y.name = "结果视图页签"
+native_control = "gtk:AdwViewSwitcher（Wide 策略）+ AdwViewStack / winui:— / swift:—"
+style.metrics = ["gap_xl"]
+impl_notes = [
+  "说明行（detail_row）左端三枚页签：「消息」（mail-unread-symbolic）、「摘要」（dialog-information-symbolic）、「结果」（view-grid-symbolic），图标 + 文字（Wide 策略）；图标名是 Linux 侧系统 symbolic 取值，#232 时 Windows 按文案自取字形——图标选型不属行为承诺，样式人工确认。",
+  "三页 id 为 messages / summary / results（页面 id 是 QA 断言与日志锚点，不是界面文案）；「结果」页就是既有网格 / 占位页内层 gtk::Stack，原样搬入。",
+  "页签与三页没有独立显隐路径：随结果区整体显隐（#189 口径）；默认页由容器规则决定（tabs.query.results 交互），页签本体只负责「点了换页」。",
+  "已知缺陷（2026-11-18 #231 验收实测，待裁决修复）：AdwViewStack 装配后，结果区子树里同一可访问节点（AT-SPI D-Bus path 相同）被祖先 children 重复枚举（实测网格行 3 份；基线按钮行时代 1 份），子树遍历式计数会被放大——test_execute_sql 由 3 变 9 即此因；页签本体还出现窄/宽两枚同名可访问对象。功能用例暂按去重语义编写，不掩盖缺陷。",
+]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "结果区可见（页签与说明行同显隐）"
+result = "外层 ViewStack 切到「消息 / 摘要 / 结果」；目标页内容进入可访问树、原页退出（隐藏页不在 AT-SPI 树里——实测口径，功能断言只读当前可见页）"
+source = "src/results.rs:634、src/results.rs:609、src/results.rs:1296"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Execute 响应后结果区显示"
+result = "按默认页规则落页（有任意结果集 → 「结果」；全写 / 失败 → 「消息」；取消与触顶不抢用户当前页）"
+source = "src/sql_page.rs:270、src/sql_page.rs:1209、src/results.rs:1296"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "e61f56625da7"
+evidence = "AT-SPI 只读实测：page tab list name='结果视图页签' + 三枚 page tab「消息 / 摘要 / 结果」（带 click 动作，selected 态随当前页）；tests/ui/linux/test_03_sql.py::test_results_view_tabs_exist_and_switch PASS（切「摘要」后键值 label 出现、切「消息」后日志文本节点可读）"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "#232 跟进：Windows 侧三页签未接入。按本条目做：说明区加「消息 / 摘要 / 结果」三枚页签 + 三页容器（点签换页、默认页规则同 tabs.query.results），文案取共享 l10n key tabs.results_tab_* 与 tabs.results_view_switcher_a11y。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.message"
+parent = "tabs.query.results"
+display_name = "消息页（语句日志）"
+kind = "control"
+status = "active"
+a11y.name = "语句日志"
+native_control = "gtk:GtkTextView（只读、等宽）∈ GtkScrolledWindow（横向策略 Never） / winui:— / swift:—"
+style.metrics = ["gap_sm", "gap_xl"]
+impl_notes = [
+  "每条语句一行「序号 · 类型词 · 结果」：结果集「N 行」、写语句「影响 N 行」、尚未首拉「未加载」、失败「失败」；文本由纯函数 message_log_text 组装，与语句切换控件同一份逐语句条目源（切换控件条目快照 = 多语句，run_entries = 单语句）。",
+  "失败语句下一行追加「> 错误：<可安全展示文案>」（l10n tabs.results_msg_error_line），文案与状态行 / tooltip 同源（QueryFailure::message()），可诊断但不泄露凭据与连接串（根 §9）。",
+  "日志只给结论不给全文 SQL：长语句留在切换控件的 tooltip / description，不进日志行；日志按词换行 + 横向策略 Never，宽度永不把窗口撑开。",
+  "逐语句不给耗时：协议没有该字段（#231 决策 D3 不改 proto），计时口径统一写在摘要页底部（tabs.query.results.summary）。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Execute 终态响应到达（首批 / 完成 / 失败 / 取消 / 触顶）"
+result = "整段日志一次性重写（按已到达的逐语句结论组装）；断连只刷新已到达结论，不写假终态"
+source = "src/statements.rs:237、src/sql_page.rs:1161、src/sql_page.rs:1107"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "执行失败（单语句失败，或多语句失败位置两键齐全）"
+result = "失败语句行下面追加「> 错误：…」行，且默认页落「消息」"
+source = "src/sql_page.rs:1011、src/sql_page.rs:1041、src/statements.rs:237、src/sql_page.rs:270"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "295cb1222eec"
+evidence = "tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：AT-SPI 读只读文本节点 20 行、首行「1 · INSERT · 影响 1 行」；QA 只读探针 `[qa] 结果区版式：… 消息行数=20`；纯函数 message_log_text 的单测见 Lane A（提交 8c763ac，cargo test 507 passed，编排者复核）"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "#232 跟进：消息页未接入。按本条目做：只读日志页（「序号 · 类型词 · 结果」逐条 + 「> 错误：」行），文案取 l10n tabs.results_msg_* 与 tabs.stmt_entry_* key，行为与 Linux 一致。"
+
+[component.sync.macos]
+state = "none"
+spec_hash = ""
+
+[[component]]
+id = "tabs.query.results.summary"
+parent = "tabs.query.results"
+display_name = "摘要页（执行摘要）"
+kind = "container"
+status = "active"
+a11y.name = "执行摘要"
+native_control = "gtk:键值行 Box（键 Label + 值 selectable Label）∈ GtkScrolledWindow（横向策略 Never） / winui:— / swift:—"
+style.metrics = ["gap_sm", "gap_md", "gap_xl"]
+impl_notes = [
+  "六行固定顺序键值：已执行语句 / 成功 / 失败 / 开始时间 / 结束时间 / 总耗时；键 dim-label，值 selectable（可复制）；未到结论的项显示占位「—」（l10n tabs.results_summary_pending）。",
+  "计数由纯函数 totals：已执行 = 已有逐语句结论的条数（成功脚本 = 全量条目；失败脚本 = 到失败语句为止），失败 = 失败态条数，成功 = 其余。",
+  "计时口径（决策 D3，明示限制）：客户端计时（提交 Execute → 到达终态，含 IPC 与渲染），不代表数据库服务端执行时间；协议无逐语句耗时字段，#231 不改 proto。页面底部一行写明口径（l10n tabs.results_summary_timing_note）。",
+  "时间为本地墙钟 HH:MM:SS（秒精度），总耗时为秒三位小数（l10n tabs.results_summary_duration_value）；后到的终态覆盖先到的结束时刻；断连不改结束时间。",
+]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Execute 提交（客户端计时开始）"
+result = "记录开始时间；结束时间与总耗时保持占位，直到终态到达"
+source = "src/sql_page.rs:664、src/sql_page.rs:1127"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "Execute 终态响应到达（首批 / 完成 / 失败 / 取消 / 触顶）"
+result = "六项一次性写入（计数取逐语句条目、时间取客户端钟）；断连只刷新计数与已完成项，不改结束时间"
+source = "src/sql_page.rs:1161、src/sql_page.rs:1189、src/results.rs:1289、src/statements.rs:273"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "4b50306286b7"
+evidence = "tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：AT-SPI 键值对读「已执行语句=20 · 成功=20 · 失败=0」（时间 HH:MM:SS、总耗时 0.0NN s）与底部口径行；QA 只读探针 `[qa] 摘要取值：20 · 20 · 0 · …`；纯函数 totals 的单测见 Lane A（提交 8c763ac）"
+
+[component.sync.windows]
+state = "none"
+spec_hash = ""
+note = "#232 跟进：摘要页未接入。按本条目做：六行键值 + 口径行，文案取 l10n tabs.results_summary_* key；计数可由既有 QueryModel 逐语句状态组装，计时同为客户端墙钟 + 单调钟口径。"
 
 [component.sync.macos]
 state = "none"
@@ -805,50 +950,59 @@ spec_hash = ""
 [[component]]
 id = "tabs.query.results.statements"
 parent = "tabs.query.results"
-display_name = "语句切换行（多语句脚本）"
+display_name = "语句切换控件（多语句脚本）"
 kind = "control"
 status = "active"
 a11y.name = "语句切换行"
-style.metrics = ["gap_sm", "gap_xl", "min_target"]
-native_control = "gtk:GtkBox + GtkToggleButton（set_group 互斥） / winui:ScrollViewer + StackPanel + Button（互斥选中由代码管理） / swift:—"
+style.metrics = ["gap_sm", "gap_xl", "min_target", "column_width"]
+native_control = "gtk:GtkDropDown + GtkStringList（固定宽度 column_width，超长条目内置省略号） / winui:ScrollViewer + StackPanel + Button（互斥选中由代码管理） / swift:—"
 impl_notes = [
-  "L0：原生 GtkBox + GtkToggleButton 组（set_group 互斥单选），无自绘；条目命中区不低于 min_target，左右缘与表格对齐（gap_xl），条目间距 gap_sm。",
-  "Windows（#190）：L1 原生 ScrollViewer + StackPanel + Button 组合（ToggleButton 在 xaml_lint 禁用表内，互斥选中由代码管理）；失败条目底色 SqarvoDangerBrush→SystemFillColorCriticalBrush、前景 SqarvoOnAccentTextBrush（系统 token，不写死颜色）；尺寸只用 gap_sm / gap_xl / min_target，无新增 metrics 键；Windows 结果行本就不可选中，切换无需清选中集。",
-  "条目文案「序号 · 类型词 · 行数/影响行数/状态」：类型词取 SQL 预览第一个关键字（大写，最长 12 字符），完整预览进 tooltip；结果集语句「N 行」（还有后续批次时「N 行…」），写语句「影响 N 行」，尚未首拉「未加载」。",
+  "Linux（#231）：L0 原生 GtkDropDown + GtkStringList，单选语义走 selected 通知，无自绘；控件固定宽度 column_width、高度 min_target——宽高必须在同一次 set_size_request 里给全（分开调用会把宽度请求清掉，实测翻车过）；左右缘与表格对齐（gap_xl）。原 GtkBox + GtkToggleButton 按钮行已退役：按钮行没有省略也没有横向滚动，多行语句条目把最小宽度经 GtkPaned 上抛成窗口最小宽度（#231 缺陷根因，基线实测值见 evidence）。",
+  "双端控件形态不同、行为一致（#231 有意偏差）：Linux＝固定宽度下拉框，Windows＝按钮行 + ScrollViewer（横向有界）。共享的是条目、顺序、默认选中、选中换入换出与失败态语义；Windows 三页签与下拉形态未接入，跟进 Issue #232。",
+  "Windows（#190）：L1 原生 ScrollViewer + StackPanel + Button 组合（ToggleButton 在 xaml_lint 禁用表内，互斥选中由代码管理）；失败条目底色 SqarvoDangerBrush→SystemFillColorCriticalBrush、前景 SqarvoOnAccentTextBrush（系统 token，不写死颜色）；尺寸只用 gap_sm / gap_xl / min_target。",
+  "条目文案「序号 · 类型词 · 行数/影响行数/状态」：类型词取 SQL 预览第一个关键字（大写，最长 12 字符），完整预览进 tooltip；结果集语句「N 行」（还有后续批次时「N 行…」），写语句「影响 N 行」，尚未首拉「未加载」，失败「失败」。",
+  "条目区宽度有界（规范规则，#231）：控件请求宽恒为 column_width，超长条目由 DropDown 内置省略号截断；语句数量与条目文本长度都不得改变窗口宽度——这是本缺陷的回归条款，用例 test_multi_statement_does_not_widen_window 断言执行前后窗口外框宽度不增。",
   "每条语句一份独立网格状态（行模型 / 列 / 状态 / 已加载行数 / 截断计数）；切换用换入换出行模型实现，已加载行不丢；选中集属于上一条语句，换模型时清空。",
-  "失败态条目用主题原生 destructive-action 警示色，不自绘；程序化选中（重建 / 同步）有防回环标志，不触发用户回调。",
+  "程序化选中（重建 / 同步）有防回环标志，不触发用户回调；Linux 条目为纯文本 StringList，失败态由文案「失败」表达（DropDown 条目不支持逐项着色），destructive 底色只属 Windows 形态，样式由人工确认。",
   "失败场景的契约限制：Execute 原子失败，响应不带语句摘要、也不保留已执行语句的游标——条目只能列到失败语句为止，已执行语句标「已执行 · 结果未返回」，默认选中失败语句本身（无从得知已执行语句中哪条是 SELECT）。",
-  "单语句（statements.len() <= 1）不挂载切换行，现状完全不变；多语句脚本的结果不能当表编辑（editable_table_from_sql 在第一个 ';' 处截断，会解析错目标表）。",
+  "单语句（statements.len() <= 1）不挂载切换控件，现状完全不变；多语句脚本的结果不能当表编辑（editable_table_from_sql 在第一个 ';' 处截断，会解析错目标表）。",
+  "可访问性现状（#231 AT-SPI 只读实测）：已按 l10n tabs.stmt_switcher_a11y 给 DropDown update_property 挂「语句切换行」，但该 GTK 版本把 GtkDropDown 的 AT-SPI name 解析为当前选中条目文本（实测 name='1 · INSERT · 影响 1 行'、description=完整 SQL 预览），显式标签未覆盖成功——登记待裁决，跟进见汇报（同 tabs.query.splitter 的命名暴露先例）。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "Execute 返回多条语句（statements.len() > 1）"
-result = "结果区头部下方出现语句切换行：每条语句一个可点选条目；默认选中已成功语句中最后一条有结果集的语句（全写脚本落第一条，占位页说明无结果集，切换行仍列各写语句影响行数）"
-source = "src/sql_page.rs:996、src/statements.rs:58、src/statements.rs:122"
+result = "说明行下方、三页内容上方出现语句切换控件：每条语句一个下拉条目；默认选中已成功语句中最后一条有结果集的语句（全写脚本落第一条，占位页说明无结果集，控件仍列各写语句影响行数）"
+source = "src/sql_page.rs:1242、src/statements.rs:63、src/statements.rs:127、src/statements.rs:300"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "点选切换行里另一条语句"
+precondition = "在切换控件里选另一条语句（DropDown 弹层点选或键盘选择）"
 result = "网格换入该语句的行模型与列（已加载行不丢），状态行随选中语句；尚未首拉的结果集语句立即发起第一批请求（空 page_token + statement_index）；滚动续拉按当前选中语句"
-source = "src/sql_page.rs:1135、src/sql_page.rs:1164、src/sql_page.rs:1276、src/results.rs:981"
+source = "src/statements.rs:323、src/sql_page.rs:1383、src/sql_page.rs:1453、src/backend/worker.rs:1124、src/results.rs:1188"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "多语句脚本失败（trailing metadata sqarvo-failed-statement / sqarvo-completed-statements 两键齐全且至少一条已执行）"
-result = "状态行「前 N-1 条已执行，第 N 条失败：<错误文案>」；切换行列到失败语句为止：已执行条目标「已执行 · 结果未返回」，失败语句标失败态并默认选中；点已执行条目显示「结果未返回」占位页"
-source = "src/sql_page.rs:1081、src/statements.rs:105、src/statements.rs:127"
+result = "状态行「前 N-1 条已执行，第 N 条失败：<错误文案>」；切换控件列到失败语句为止：已执行条目标「已执行 · 结果未返回」，失败语句标失败态并默认选中；点已执行条目显示「结果未返回」占位页"
+source = "src/sql_page.rs:1328、src/statements.rs:110、src/statements.rs:132"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "多语句脚本到达（含 20 条以上多行语句的溢出场景）"
+result = "切换控件横向需求有界（固定宽 column_width + 左右 gap_xl 边距），语句数量与条目长度不改变窗口宽度；超长条目由内置省略号截断，tooltip/description 给完整预览"
+source = "src/statements.rs:300、src/statements.rs:311、src/results.rs:644"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "818cdf4f4a10"
-evidence = "src/statements.rs（切换行控件与三条纯规则，7 个单测）；src/sql_page.rs:981（start_multi）/ 1067（show_multi_failure）/ 1121（select_statement）/ 1205（sync_sql_summary 状态栏回写）；src/backend/worker.rs:1119（select_statement 命令）；隔离 QA 截图 qa190/（A/B/C/D 四脚本实测，含切换点选与失败文案）"
+spec_hash = "1dc835b91b38"
+evidence = "src/statements.rs（GtkDropDown 切换控件与纯规则；message_log_text / totals / default_selection 单测见 Lane A，提交 8c763ac cargo test 507 passed，编排者复核）；src/sql_page.rs:1242（start_multi）/ 1328（show_multi_failure）/ 1383（select_statement）；src/backend/worker.rs:1124（select_statement 命令）；AT-SPI：combo box（name=选中条目文本）extents 宽=200（compact 档 column_width，Lane A 实测）；20 条多行 INSERT 执行前后窗口外框宽度 1400→1400 不变（tests/ui/linux/test_03_sql.py::test_multi_statement_does_not_widen_window PASS）；QA 只读测量（Lane A 记录）：切换控件横向需求 min/nat=224/224，基线按钮行同夹具实测 min=nat=3706"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "818cdf4f4a10"
+spec_hash = "1dc835b91b38"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:492（切换行装配，仅多语句）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1591（RenderStatementSwitcher 条目文案/选中态/destructive 底色）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1697（OnStatementEntryClicked 换入换出 + 未加载首拉）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:639（ApplyMultiFirstBatch）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:748（SelectStatement）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:773（SwitcherEntries）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:447（BeginDefaultSlotFetch 默认选中槽首拉）；frontend/windows/Sqarvo.Core/Model/StatementSwitcher.cs（三条纯规则 + 文案，Sqarvo.Core.Tests 120 passed = 基线 107 + 新增 13）"
-note = "真类型探针编译验证（红→绿，0 警告 0 错误）+ Core.Tests 120 passed；未在本机构建/运行 WinUI：三档密度切换行间距/命中区观感、失败条目 destructive 浅色主题对比度、长 SQL tooltip 可读性待人工确认。失败场景已执行条目无类型/预览（Execute 原子失败不带摘要也不保留游标，ADR 0006）——改善需后端契约变更，超出本单。"
+note = "真类型探针编译验证（红→绿，0 警告 0 错误）+ Core.Tests 120 passed；未在本机构建/运行 WinUI：三档密度切换行间距/命中区观感、失败条目 destructive 浅色主题对比度、长 SQL tooltip 可读性待人工确认。失败场景已执行条目无类型/预览（Execute 原子失败不带摘要也不保留游标，ADR 0006）——改善需后端契约变更，超出本单。#231 后双端控件形态不同（Linux 下拉框 / Windows 按钮行）、行为一致，属有意偏差；Windows 侧下拉形态与三页签未接入，见 Issue #232。"
 
 [component.sync.macos]
 state = "none"

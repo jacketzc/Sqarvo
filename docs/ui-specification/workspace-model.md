@@ -88,7 +88,13 @@ tooltip 里，见 §附录 A 第 8 条），整行需求 409 ≤ 分配 417（`-
 
 组件与行为见 [`components/tabs.toml`](components/tabs.toml)（标签条、标签项、关闭确认框、查询标签；
 #189 新增查询分隔把手 `tabs.query.splitter` 与关闭结果区按钮 `tabs.query.results.close`：新标签结果区
-隐藏、编辑器占满，Execute 响应后显示，可拖动分栏，数值见 metrics.toml 的 `query_*` 键）；
+隐藏、编辑器占满，Execute 响应后显示，可拖动分栏，数值见 metrics.toml 的 `query_*` 键）。
+查询结果区的行结构（#231，自上而下）：状态行 → 说明行（左＝`tabs.query.results.views` 三页签
+「消息 / 摘要 / 结果」，右＝状态圆点 / 导出 ▾ / 关闭 ✕）→ 语句切换控件（仅多语句，固定宽度
+`tabs.query.results.statements`）→ 三页内容（`tabs.query.results.message` /
+`tabs.query.results.summary` / 「结果」页＝原表格区）。页签插在既有说明行内、不新增行，
+结果区纵向算术不变：编辑器与结果区仍按 `query_editor_ratio` 分栏、最小高度取
+`query_editor_min_height` / `query_results_min_height`（口径见 `tabs.query.splitter`）。
 标签 ↔ 会话的模型见 [ADR 0021](../decisions/0021-workspace-tab-session.md)，`Objects` 固定页宽度在
 [metrics.toml](metrics.toml)（`objects_min_width`）。本节不再维护第二份行为描述。
 
