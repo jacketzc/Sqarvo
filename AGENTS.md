@@ -529,7 +529,7 @@ the registry. `workspace-model.md` is now only layout and regions.
   识别（[ADR 0029](docs/decisions/0029-ui-acceptance-boundary.md)）。历史条目里已引用的截图不必
   回改，但新登记不再以截图为准。
 - `ui-components.md` 不许手改：CI 会跑 `gen` 并与工作树比对，有差异即失败。
-- 九个功能区已全部在册（186 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
+- 九个功能区已全部在册（192 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
   改行为要同时改契约本节与注册表，直到 P3 删除旧章节。
 - 未实现的平台能力记 `sync = "blocked"` 并进行为契约 §9，不得只标「未同步」。
 - **「这版不要它了」用生命周期，不用「禁用」。** `status = "removed"` + `removed_in`（如 `v0.3.0`）

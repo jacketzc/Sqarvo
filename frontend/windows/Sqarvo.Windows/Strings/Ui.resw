@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <!-- WinUI 3 标准 .resw（RESX 格式）。与 UiStrings.cs 的 key → 值一一对应。
+       本 wave 不改 csproj，未把它登记为 PRIResource；helper 走纯 C# 常量，
+       本文件先作为目录源，待后续工作包接入 ResourceLoader / x:Uid。 -->
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <data name="View.Menu.Text" xml:space="preserve">
+    <value>视图</value>
+  </data>
+  <data name="View.Theme.Text" xml:space="preserve">
+    <value>深色模式</value>
+  </data>
+  <data name="View.Theme.System" xml:space="preserve">
+    <value>跟随系统</value>
+  </data>
+  <data name="View.Theme.Light" xml:space="preserve">
+    <value>浅色</value>
+  </data>
+  <data name="View.Theme.Dark" xml:space="preserve">
+    <value>深色</value>
+  </data>
+  <data name="View.Density.Text" xml:space="preserve">
+    <value>界面密度</value>
+  </data>
+  <data name="View.Density.Compact" xml:space="preserve">
+    <value>紧凑</value>
+  </data>
+  <data name="View.Density.Comfortable" xml:space="preserve">
+    <value>舒适</value>
+  </data>
+  <data name="View.Density.Large" xml:space="preserve">
+    <value>大</value>
+  </data>
+
+  <data name="Dialog.Submit.Title" xml:space="preserve">
+    <value>确认提交行变更？</value>
+  </data>
+  <data name="Dialog.Submit.Confirm" xml:space="preserve">
+    <value>确认提交</value>
+  </data>
+  <data name="Dialog.Submit.Cancelled" xml:space="preserve">
+    <value>已取消提交，未写入数据库</value>
+  </data>
+  <data name="Dialog.Delete.Title" xml:space="preserve">
+    <value>删除选中行？</value>
+  </data>
+  <data name="Dialog.Delete.Body" xml:space="preserve">
+    <value>标记选中的行会随提交生效；提交前可用 Ctrl+Z 撤销。是否标记删除？</value>
+  </data>
+  <data name="Dialog.Delete.Confirm" xml:space="preserve">
+    <value>标记删除</value>
+  </data>
+  <data name="Dialog.Delete.Cancelled" xml:space="preserve">
+    <value>已取消删除，未做任何标记</value>
+  </data>
+  <data name="Dialog.Cancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
+
+  <data name="Row.Delete.Tooltip" xml:space="preserve">
+    <value>标记删除选中行（随提交生效，提交前可撤销）</value>
+  </data>
+
+  <data name="Data.Submit.RiskRows" xml:space="preserve">
+    <value>本次提交 {0} 行{1}，超过风险阈值 100 行。请在确认对话框中复核后提交。</value>
+  </data>
+  <data name="Data.Submit.WithDeletes" xml:space="preserve">
+    <value>本次提交包含删除 {0} 行（删除不可撤销，随提交生效）。请在确认对话框中复核后提交。</value>
+  </data>
+</root>

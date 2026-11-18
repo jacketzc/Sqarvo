@@ -190,8 +190,8 @@ evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a37eae543e2f"
-note = "按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。"
+spec_hash = "e58f5984fd26"
+note = "「新增」按钮已按契约 §9.1「能力性不可用不渲染」删除（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:997 注释），代码已接入（锚点）；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。按裁决本项应转 `na`，但实机未确认前保留 `partial`（不谎报 `done`/`na`）。"
 
 [component.sync.macos]
 state = "none"
@@ -229,8 +229,8 @@ evidence = "§7 行 1 六个按钮；RowOp::Delete → delete_selected_row"
 [component.sync.windows]
 state = "partial"
 spec_hash = "27fdf866d95e"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:263 状态栏「−」接线；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2494 可用性与只读原因 tooltip"
-note = "按钮（ButtonRowDelete）现在可点：与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip。能力已实现，按钮不再属于契约 §9.1 说的「能力性不可用」，因此不删按钮、不改 na。差异：§7.1 未记录状态栏删除，且当前单选、没有 Linux 的多选批量入口；故保留 partial。"
+evidence = "代码已接入（锚点，dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:998（删除按钮保留）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:985（tooltip 改走字符串目录 UiStrings.RowDeleteTooltip）；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2579/2606（模态确认 ConfirmDestructiveAsync）；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:263（状态栏「−」接线）。"
+note = "删除按钮保留（不删、不改 na）：tooltip 改走字符串目录文案 + 提交走模态确认（ConfirmDestructiveAsync），与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销）。静态代码已接入，但dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认；差异：§7.1 未记录状态栏删除、当前单选无 Linux 多选批量入口，故保留 partial。"
 
 [component.sync.macos]
 state = "none"
@@ -250,7 +250,7 @@ impl_notes = [
   "与数据页的「提交更改」是同一个按钮状态：有脏行才亮，没有脏行时 tooltip 说明「没有可提交的更改」。",
   "危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。",
 ]
-platform_notes.windows = "Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行时**不弹对话框**，改成「再按一次 Ctrl+S 确认」并带 `acknowledge_risk`（§7.1 与 Linux 的差异）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。"
+platform_notes.windows = "Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行或含删除时弹 WinUI 原生 `ContentDialog` 模态确认（破坏性按钮默认「取消」，frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1234），确认后带 `acknowledge_risk`（dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。"
 
 [[component.interaction]]
 trigger = "click"
@@ -266,8 +266,8 @@ evidence = "§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同�
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e2c99799bd28"
-note = "§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行改「再按一次确认」；禁用态 tooltip 句式未记录。"
+spec_hash = "fd1005a8faa7"
+note = "§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行或含删除改 ContentDialog 模态确认（默认取消）；禁用态 tooltip 句式未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1001 ButtonRowApply、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:247/2521 接线与可用性、:1234 模态确认；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -304,8 +304,8 @@ evidence = "§7 行 1；RowOp::Discard → discard_changes"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "117da18a421c"
-note = "§7.1 记录状态栏「撤销（↶）」与 Ctrl+Z 同一路径；可用性判定与禁用态 tooltip 未记录。"
+spec_hash = "579c4410974b"
+note = "§7.1 记录状态栏「撤销（↶）」与 Ctrl+Z 同一路径；可用性判定与禁用态 tooltip 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1004 ButtonRowRevert、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:255/2533 接线与可用性；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -343,8 +343,8 @@ evidence = "§7 行 1「刷新单独按状态判定」；refresh_available + Row
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "5cc16d80e34b"
-note = "可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。"
+spec_hash = "a91d1de6d8cc"
+note = "可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1007 ButtonRowRefresh、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:272/2538 接线与可用性；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -396,8 +396,8 @@ evidence = "真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME，MariaDB 无默�
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "16c5340e3568"
-note = "§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。"
+spec_hash = "6c04cfc50017"
+note = "§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1010 ButtonRowCancel、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:280/2543 接线与可用性；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -771,7 +771,7 @@ evidence = "§7 行 2 左段三种来源 + 断连 / 未执行文案"
 [component.sync.windows]
 state = "partial"
 spec_hash = "3859890ae206"
-note = "§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；数据页左格写的是 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。契约 §9.1 已裁决：`SqlSummaryText` 补 `IsTextSelectionEnabled`（断连原因要可复制）；Windows 端待实现。"
+note = "代码已接入（锚点，dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）：`SqlSummaryText` 已补 `IsTextSelectionEnabled=\"True\"`（断连原因可复制），见 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1044/1047。其余差异仍在：§7.1 只有查询页的 `SQL: <摘要>` 与断连原因写行 2 左格；数据页左格写 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。故保留 partial。"
 
 [component.sync.macos]
 state = "none"

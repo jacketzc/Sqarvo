@@ -79,7 +79,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
 - 无障碍：可访问名「提交」；Tab 工具条内第一枚动作按钮
-- 同步：Linux done（§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_clicked / request_commit / confirm_batch）；Windows partial（§7.1：Ctrl+S / 状态栏「应用（✓）」提交；超过 100 行时不弹对话框，改成「再按一次 Ctrl+S 确认」并带 acknowledge_risk；提交走 ApplyRowChanges（带 transaction_id），全部成功再 Commit。）；macOS none
+- 同步：Linux done（§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_clicked / request_commit / confirm_batch）；Windows partial（代码已接入（锚点，dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）：含删除 / 超过风险阈值的提交与删除已改为 ContentDialog 模态确认（`ConfirmDestructiveAsync`，frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1234 定义、:1297 提交确认、:2606 删除确认；风险文案 frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:770/793）。Ctrl+S / 状态栏「应用（✓）」提交，提交走 ApplyRowChanges（带 transaction_id），全部成功再 Commit。静态接入完成、模态弹窗交互待实机确认，故保留 partial。）；macOS none
 - 实现备注：文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。可用性只有一个读数来源（数据页按钮的 sensitive）：状态栏「应用（✓）」直接读它，不重复判定。只读原因一旦成立，本按钮恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。提交顺序：有新行时 `InsertRows` **先行**（整批原子，任一行失败则整批回滚），成功后才提交脏行；插入失败则一条脏行都不提交——避免库里留下半套状态。单批上限 500 行：超出时只执行前 N 条，其余留待下次，横幅「单批上限 500 行：本次只执行了前 N 条，还有 M 条未提交——请再次点「提交更改」续传。」；逐行失败的行留在草稿里，可改完再提交。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -289,6 +289,7 @@ kind `container` · status `active` · parent `data_page`
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`column_header_min_height`、`row_number_width`、`column_width`、`frame_border_width`、`radius_lg`、`grid_padding_start`；颜色 `theme_bg_color`、`theme_fg_color`
 - 无障碍：可访问名「数据网格」
 - 原生控件：gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—
+- 自绘：WinUI 3 没有 GtkColumnView 的等价控件：GridView / ListView 的虚拟化不与列宽拖动、行号列、单行表头这三者组合，因此这一层用自绘虚拟化行区自己管理行号、列宽与表头（§7.1）。
 - 同步：Linux done（§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top）；Windows partial（§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1824 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2173 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2152 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2111 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。）；macOS none
 - 实现备注：结构：行号列（固定 row_number_width，行号 = offset + 行下标 + 1，**不是**主键）+ 单行表头 + 数据行。列宽默认 column_width；列右缘 column_resize_hit 命中热区（指针 SizeWestEast）可拖动改列宽，双击把手按**本页内容**自适应（表头文案与已加载值里最长文字 + 单元格内距 column_cell_padding），下限 column_min_width、上限 column_width 都取 metrics；拖过 / 自适应过的列记为用户宽度，表头与所有行共用同一份列宽状态，翻页 / 刷新 / 重读不覆写、换表重置。表头条带 26 内容 + 上下 2 内距（column_header_min_height）；底色取 theme_bg_color，文字与数据行同档。横向滚动条常驻可见（关掉 overlay 自动淡出），宽表只横向滚动、不挤压右侧信息面板；窗口最大化后横向滚动位置回到第一列。滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。页码与总数只在状态栏分页器出现一次（status_bar.row1.pager / .summary）：三态是「共 N 行」/「约 N 行」（估计值必须带「约」）/「共 ? 行」（总数未知或计数超时写问号，不编造数字；Linux 未知时只写页码，Windows 写「共 ? 行」）；计数超预算时写「未统计（超出计数预算）」并出现「未统计」徽标。每页 500 行（TABLE_PAGE_SIZE，实际 page_size 随第一页返回）；翻页 = 整页替换 + 回到顶部。刷新（状态栏 ⟳ / 表菜单）走**同一条** dirty_guard：有脏行 / 标删 / 新行时被拒绝并说明原因，按钮禁用时 tooltip 附同一句——数据页只给谓词与文案，按钮本身在 status_bar。末页需要总页数：总数未知时 can_last = false（按钮禁用），点了也不发请求，状态行写「<动作>不可用（没有对应页）」；驱动不声明 totals 与非精确计数同一写法（不显示总数）。新行占位行是**网格里的最后一行**（行号列写 ＋，行号 0 = 尚未落库）：提交成功后按返回的主键定位再赋真实行号；整批全部省略时提交即 INSERT DEFAULT VALUES（自增 / 默认值列由数据库填）。
 
@@ -320,7 +321,7 @@ kind `cell` · status `active` · parent `data_page.grid`
 
 - 样式：尺寸 `row_number_width`、`font_status`、`font_weight_ui`；颜色 `accent_bg_color`
 - 无障碍：可访问名「（行内容：行号或未提交标记）」
-- 同步：Linux done（§5.4 行号标记；build_columns 的 number_factory（●N / ✕N / ＋ 与四条 tooltip））；Windows partial（§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。）；macOS none
+- 同步：Linux done（§5.4 行号标记；build_columns 的 number_factory（●N / ✕N / ＋ 与四条 tooltip））；Windows partial（§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1857 行号列宽、:1864 行号单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：宽度固定 row_number_width、右对齐、等宽字体、色弱一档；行号不是主键，也不可拖宽。四种写法互斥，按优先级：已删除（服务端报告行已不在）写 ✕N → 新行占位写 ＋ → 已标记删除写 ✕N → 有未提交更改写 ●N → 普通行号。放弃（状态栏行操作组 ↶ / 放弃未提交的更改）后 ●N / ✕N / ＋ 都回到普通行号；一次成功提交后被删行整行消失、脏行变普通行号。●N 的颜色是系统强调色（语义色），脏单元格的浅底是品牌浅档——两者刻意不同：一个是「有未提交的更改」，一个是「改过的格子」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -334,7 +335,7 @@ kind `cell` · status `active` · parent `data_page.grid`
 
 - 样式：尺寸 `row_height_data`、`column_width`、`font_data_cell`、`font_weight_cell`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_on_soft`、`sqarvo_brand_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「（行内容：单元格值）」
-- 同步：Linux done（§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason）；Windows partial（§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。）；macOS none
+- 同步：Linux done（§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason）；Windows partial（§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:970 BeginCellEdit、:1017 CommitCellEdit、:1997 NULL 文案；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：NULL 写「NULL」（弱色斜体，tooltip「SQL NULL（与空字符串不同）」）；空串**不能**与 NULL 长得一样：Linux 写空引号串，Windows 留空（§7.1 明确「空串保持空白」）。数值与二进制右对齐（便于比较），文本左对齐；超长文本省略号截断，全文进 tooltip。脏单元格是品牌浅档实底 + 对应深色前景（成对写，选中行里也不继承白字）；标记删除的行整行删除线 + 压暗。服务端截断的值 tooltip 追加「该值被截断：不能编辑（提交截断值会写坏数据）」，且不允许进入编辑。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -677,7 +678,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「主机」
-- 同步：Linux done（dialog.rs 默认值 + driver_form.rs 校验文案）；Windows partial（§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。）；macOS none
+- 同步：Linux done（dialog.rs 默认值 + driver_form.rs 校验文案）；Windows partial（§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:41 HostBox；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：新建时的初值与切回服务器型驱动时的补值是 127.0.0.1；文件型驱动下不显示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -705,7 +706,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「端口」
-- 同步：Linux done（driver_form.rs 端口解析与两条文案）；Windows partial（§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。）；macOS none
+- 同步：Linux done（driver_form.rs 端口解析与两条文案）；Windows partial（§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:48 PortBox；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：新建时的初值是 3306；输入框是数字用途（不是数字键盘强制的自绘控件）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -719,7 +720,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「用户名」
-- 同步：Linux done（driver_form.rs 用户名校验）；Windows partial（§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。）；macOS none
+- 同步：Linux done（driver_form.rs 用户名校验）；Windows partial（§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:56 UsernameBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:295 读取值；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -731,7 +732,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「数据库」
-- 同步：Linux done（dialog.rs 行标题 + driver_form.rs default_name）；Windows partial（§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。）；macOS none
+- 同步：Linux done（dialog.rs 行标题 + driver_form.rs default_name）；Windows partial（§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:71 DatabaseBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:297 读取值；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：行标题本身就是说明：「数据库（可选：留空则连接后浏览所有库）」，不靠 tooltip 才说清可选。空库名是合法值：语义是「没有默认库」，不是缺必填项。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -745,7 +746,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「密码」
 - 平台差异：Windows：§7.1：密码只进 Windows 凭据管理器，落盘只有 credential_ref；密码行的留空与复用规则未记录。
-- 同步：Linux done（dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密码校验）；Windows partial（§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。）；macOS none
+- 同步：Linux done（dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密码校验）；Windows partial（§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:63 PasswordBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:269 PrepareCredentialAsync；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：输入框是密码专用的输入行（自带显示 / 隐藏切换），内容不进日志、不进配置。密码永不回显：没有「读出旧密码」的路径，编辑模式下这一行一定是空的。密码随草稿交给 worker 后即被对话框丢弃，本模块不保存它。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -759,7 +760,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「TLS 模式」
-- 同步：Linux done（dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for）；Windows partial（§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。）；macOS none
+- 同步：Linux done（dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for）；Windows partial（§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:78 TlsCombo、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:324-326 档位退化；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：五档固定顺序：禁用（disabled）/ 优先（preferred）/ 必需（required）/ 校验 CA（verify-ca）/ 完整校验（verify-full）；默认「优先」。标签随驱动能力重建：驱动做不到只校链时，第四档写「校验 CA（verify-ca，本驱动等同 verify-full）」并给副标题「本驱动无法只校验证书链：仍会校验主机名」。文件型驱动没有 TLS：不显示该行，落盘的 tls_mode 是 disabled，不写一个假的安全策略。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1393,7 +1394,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 - 样式：尺寸 `row_height_tree`、`font_status`
 - 无障碍：可访问名「占位行」
 - 图标：`tree.note.loading`、`tree.note.warning`、`tree.note.info`
-- 同步：Linux done（§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单）；Windows partial（有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。）；macOS none
+- 同步：Linux done（§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单）；Windows partial（有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:93 LoadingPlaceholder、frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:354 PlaceholderNode；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：占位行不可展开、不携带层；右键直接返回，不给菜单。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1408,7 +1409,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 kind `container` · status `active` · parent `object_tree`
 
 - 样式：槽位 `status_bar.left_gutter`；尺寸 `status_height`、`sidebar_width`
-- 同步：Linux done（§7 状态栏左边沟 + §2.4 搜索）；Windows none（对象树没有搜索入口（§7.1 未记录）。）；macOS none
+- 同步：Linux done（§7 状态栏左边沟 + §2.4 搜索）；Windows none（按契约 §9.1「能力性不可用不渲染」已删除状态栏左边沟的搜索入口（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:956 占位注释）；代码已接入（锚点），dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。该端不适用此组件，保持 none（非 done）。）；macOS none
 - 实现备注：v0.2.4 从树顶部搬到状态栏左边沟：宽度跟随分栏线，搜索框不把它撑宽，竖线延伸到底。
 
 ### `object_tree.search.box` 搜索输入框
@@ -1417,7 +1418,7 @@ kind `control` · status `active` · parent `object_tree.search`
 
 - 样式：槽位 `status_bar.left_gutter`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「搜索连接、库、表」；Tab Ctrl+F 聚焦；Esc 清空并回到树页
-- 同步：Linux done（§2.4 搜索；Ctrl+F / Enter / Esc 三键）；Windows none（无搜索框。）；macOS none
+- 同步：Linux done（§2.4 搜索；Ctrl+F / Enter / Esc 三键）；Windows none（搜索框随对象树搜索入口一并删除（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1015 占位注释，状态栏不再摆搜索入口）；代码已接入（锚点），dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。该端不适用此组件，保持 none。）；macOS none
 - 实现备注：placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1642,7 +1643,7 @@ kind `control` · status `active` · parent `objects_page`
 - 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
 - 图标：`tab.objects`
-- 同步：Linux done（§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支）；Windows partial（§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。）；macOS none
+- 同步：Linux done（§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支）；Windows partial（§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:742 固定页注释、:753 ObjectsTab IsClosable=False；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1658,8 +1659,9 @@ kind `container` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`row_number_width`、`column_width`、`column_header_min_height`、`frame_border_width`、`radius_md`、`font_ui`、`font_weight_title`；颜色 `sqarvo_frame`、`sqarvo_separator`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
-- 原生控件：gtk:GtkColumnView / winui:待核 / swift:—
-- 同步：Linux done（§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。）；macOS none
+- 原生控件：gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—
+- 自绘：WinUI 3 没有等价的列式表格控件：GridView 不支持「虚拟化 + 可拖列宽 + 行号列」三者组合，ItemsControl 的虚拟化不带列宽状态；这里按 Linux 同口径自绘虚拟化三列表格（§7.1）。
+- 同步：Linux done（§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:717 表头行、:747 AddObjectsRow；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1694,7 +1696,7 @@ kind `cell` · status `active` · parent `objects_page.table.row`
 
 - 样式：尺寸 `row_number_width`、`font_status`、`font_weight_ui`
 - 无障碍：可访问名「（行内容：第 N 行）」
-- 同步：Linux done（§3 行内容（行号列）；number_factory 的 bind 与 tooltip）；Windows partial（§7.1 记录行号宽 row_number_width、右对齐、等宽字体；「第 N 行」tooltip 与 11px 字号未记录。）；macOS none
+- 同步：Linux done（§3 行内容（行号列）；number_factory 的 bind 与 tooltip）；Windows partial（§7.1 记录行号宽 row_number_width、右对齐、等宽字体；「第 N 行」tooltip 与 11px 字号未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:720 行号列「行号」头、:764 行可访问名；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：行号 = 模型位置 + 1（不是主键）：右对齐、11px monospace、色弱一档（.sqarvo-row-number）；tooltip「第 N 行」。回收的行控件可能还挂着旧行：item() 为空时清空文本，不显示上一行的行号。
 
 ### `objects_page.table.row.name` 表名格（图标 + 名称）
@@ -1703,7 +1705,7 @@ kind `cell` · status `active` · parent `objects_page.table.row`
 
 - 样式：尺寸 `column_width`、`icon_box`、`gap_md`、`gap_sm`、`font_data_cell`、`font_weight_cell`
 - 无障碍：可访问名「（行内容：图标 + 对象名）」
-- 同步：Linux done（§3 行内容（表名列：图标 + 名称 + tooltip）；name_factory 的 bind）；Windows partial（§7.1 记录第二列为「名称」（宽 column_width）；表头文案写「名称」、种类图标与 tooltip 文案未记录。）；macOS none
+- 同步：Linux done（§3 行内容（表名列：图标 + 名称 + tooltip）；name_factory 的 bind）；Windows partial（§7.1 记录第二列为「名称」（宽 column_width）；表头文案写「名称」、种类图标与 tooltip 文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:721 名称列表头（代码写「表名」）、:756 名称单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：GtkBox（图标 + Label）：图标与对象树共用 kind_icon 映射（表 view-grid、视图 view-reveal），尺寸取 icon_box；名称 xalign 0、hexpand、过长省略号。单元格内距与数据网格一致（左右各 gap_sm，图标与名称间距 gap_md）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1716,7 +1718,7 @@ kind `cell` · status `active` · parent `objects_page.table.row`
 
 - 样式：尺寸 `font_data_cell`、`font_weight_cell`、`gap_sm`、`gap_md`
 - 无障碍：可访问名「（行内容：表 / 视图 / 物化视图）」
-- 同步：Linux done（§3 行内容（类型列）；kind_factory 的 setup / bind）；Windows partial（§7.1 记录「类型」列取值（表 / 视图 / 物化视图）；次要信息弱色与列宽 120 未记录。）；macOS none
+- 同步：Linux done（§3 行内容（类型列）；kind_factory 的 setup / bind）；Windows partial（§7.1 记录「类型」列取值（表 / 视图 / 物化视图）；次要信息弱色与列宽 120 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:722 类型列表头、:756 entry.KindLabel 单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：文案来自 TableEntry::kind_label，只有「表」「视图」「物化视图」三种；dim-label 次要信息色弱一档，过长省略号。「物化视图」四个汉字要放得下 —— 这也是该列固定宽度的来由（120，未进 metrics.toml）。
 
 ### `objects_page.status` 状态行
@@ -1784,7 +1786,7 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.menu.export_csv` | 　　表 → 导出 CSV | item | removed | 已清 | 已清 | na |
 | `shell.menu.about` | 　　帮助 → 关于 Squarvo | item | active | done | — | — |
 | `shell.toolbar` | 　主工具条 | container | active | done | partial | — |
-| `shell.toolbar.connect` | 　　「连接」 | control | active | done | partial | — |
+| `shell.toolbar.connect` | 　　「连接」 | control | active | done | done | — |
 | `shell.toolbar.new_query` | 　　「新建查询」 | control | active | done | — | — |
 | `shell.toolbar.tables` | 　　种类入口「Tables」 | control | active | done | partial | — |
 | `shell.toolbar.views` | 　　种类入口「Views」 | control | active | done | partial | — |
@@ -1833,6 +1835,7 @@ kind `container` · status `active` · parent `shell`
 kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `header`；尺寸 `header_height`、`font_ui`、`gap_md`；颜色 `sqarvo_separator`
+- 自绘：WinUI 3 的系统标题栏不能承载自绘内容：标题行用 ExtendsContentIntoTitleBar + SetTitleBar(拖拽区) 把自绘行注册为拖拽区（图标 / 标题 / 副标题 / 汉堡按钮），窗口控制按钮仍用系统按钮；没有等价的原生「可拖拽自绘标题行」控件（§1.1）。
 - 平台差异：Windows：自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。Windows 11 起自绘标题行透出窗口材质（Mica）：标题行仍是自绘控件，只是底用 band 层（`LayerFillColorDefaultBrush`，低透明度叠层），材质能透上来（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261）；Windows 10 与高对比下是实色，视觉与改动前一致。
 - 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）；Windows partial（有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。Windows 11 起标题行透出 Mica 材质（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261），Windows 10 保持实色。）；macOS none
 - 实现备注：Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。
@@ -1863,7 +1866,7 @@ kind `control` · status `active` · parent `shell`
 - 无障碍：可访问名「主菜单（文件 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
-- 同步：Linux done（build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。语言小节（#199）与 l10n 取文案尚未同步，由 S6（#204）关闭；本条 spec_hash 已随 #199 规范变更失效，release-check 记缺口属预期。）；macOS none
+- 同步：Linux done（build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限）；Windows partial（Windows 用标题行右侧汉堡按钮的 MenuFlyout 承载同一批条目（v0.2.5 起），不是 GTK 的菜单按钮；§7.1 只逐条记录了文件 → 新建连接…，其余条目的集合与禁用口径未记录。语言小节（#199）与 l10n 取文案尚未同步，由 S6（#204）关闭。）；macOS none
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1918,7 +1921,7 @@ kind `item` · status `removed` · parent `shell.menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「导出 CSV」
-- 同步：Linux removed（build_main_menu 不再挂「表」子菜单（src/ui.rs:4945-4953）；菜单按钮 tooltip 已改「主菜单（文件 / 视图 / 帮助）」（src/ui.rs:208）；win.export-csv 与 Ctrl+Shift+E 保留（src/ui.rs:5328、377））；Windows removed（MenuTable / MenuExportCsv 的 XAML 块与 WireMenu 接线已删（ShellView.xaml / ShellView.xaml.cs）；本机 Linux 未构建运行 WinUI，仅过 xaml_lint。该条目在 Windows 上原本就是「尚未实现」占位。）；macOS na（macOS 前端未接入，本就没有这一项。）
+- 同步：Linux removed（build_main_menu 不再挂「表」子菜单（src/ui.rs:4945-4953）；菜单按钮 tooltip 已改「主菜单（文件 / 视图 / 帮助）」（src/ui.rs:208）；win.export-csv 与 Ctrl+Shift+E 保留（src/ui.rs:5328、377））；Windows removed（按契约 §9.1「能力性不可用不渲染」+ 改动确认单 #1 / #198，「表」整项不挂：MenuTable / MenuExportCsv 的 XAML 块与 WireMenu 接线已删（ShellView.xaml / ShellView.xaml.cs）。dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。该端不适用此菜单项，保持 none。）；macOS na（macOS 前端未接入，本就没有这一项。）
 - 实现备注：与表工具条 `导出 ▾` 菜单的「导出 CSV…」、`Ctrl+Shift+E` 同一条导出入口；固定 CSV。INSERT 语句与转储表只在表工具条 / 结果区 / 树右键菜单里，菜单不重复。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1945,7 +1948,8 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `toolbar`；尺寸 `toolbar_height`、`toolbar_padding_h`、`gap_sm`、`min_target`、`font_ui`；颜色 `sqarvo_separator`
 - 无障碍：可访问名「主工具条」
-- 同步：Linux done（§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability）；Windows partial（有 CommandBar 与六个入口（§7.1）；种类入口未接线、无高亮联动，工具条高度按 Metrics 取档但对外壳的分配未核对。）；macOS none
+- 自绘：WinUI 3 的 CommandBar + AppBarButton 在真机秒级崩溃（0xc000027b，#170，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装：六个按钮都是朴素原生 Button，但它们组成的整条工具条是拼装件，不是 CommandBar，也没有原生等价的「左动作组 + 竖分隔 + 四个纯拉丁种类入口」复合控件（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:432-434）。
+- 同步：Linux done（§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability）；Windows partial（工具条已回退为 Grid + Button + Border + TextBlock 拼装（非 CommandBar，真机崩溃回退见 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:432-434），六个入口在（§7.1）；种类入口未接线、无高亮联动，工具条高度按 Metrics 取档但对外壳的分配未核对。）；macOS none
 - 实现备注：窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；启动态「新建查询」禁用时是 5/6。四个种类入口共用一条目标库解析：取树里**当前选中项所在的库**（选中的表 / 视图 / 分组也算），只有什么都没选中时才退回活动连接的默认库；多连接按「会话 ID + 库名」精确匹配，避免同名 `main` 跳到别的连接（`selected_catalog` / `catalog_row` 的 require_session 一遍）。种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1959,7 +1963,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「连接」
-- 同步：Linux done（§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂）；Windows partial（可用性读 BackendState.IsReady、未就绪禁用并逐条给 tooltip 原因（§7.1）；按钮的强调色与禁用时的强调色摘除未记录。几何 v0.2.5 修正：高取 `min_target`(24)，此前误用 `badge_min_height`(26)，比 Linux 高 2 DIP（`Views/ShellView.xaml:261-262`）。）；macOS none
+- 同步：Linux done（§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂）；Windows done（几何 v0.2.5 修正：高取 `min_target`(24)，此前误用 `badge_min_height`(26)，比 Linux 高 2 DIP（`Views/ShellView.xaml:261-262`）。）；macOS none
 - 实现备注：主工具条上唯一的强调色按钮（`suggested-action`）；禁用时**摘掉**该类 —— Adwaita 的 disabled suggested 仍是橙底，视觉上像可点。tooltip：就绪时「打开连接对话框（Ctrl+N）」；未就绪时「后端尚未就绪：正在连接本地后端，握手完成后才能新建连接」。连接入口只有这一个（标题栏不放连接按钮）；连接对话框也能从「文件 → 新建连接」/ `Ctrl+N` 打开。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1986,7 +1990,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Tables」
 - 图标：`tree.group.tables`
-- 同步：Linux done（§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮）；Windows partial（入口是 AppBarButton，本片仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。）；macOS none
+- 同步：Linux done（§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮）；Windows partial（入口已回退为朴素 Button（非 AppBarButton，CommandBar 真机崩溃回退），本片仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:552 ButtonTables、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:972 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。tooltip：就绪「在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2001,7 +2005,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Views」
 - 图标：`tree.group.views`
-- 同步：Linux done（§1.3 点 Views；KindGroup::Views 与 kinds 组合）；Windows partial（入口是 AppBarButton，本片仍未接线（§7.1），与 Tables 同一状态。）；macOS none
+- 同步：Linux done（§1.3 点 Views；KindGroup::Views 与 kinds 组合）；Windows partial（入口已回退为朴素 Button（非 AppBarButton），本片仍未接线（§7.1），与 Tables 同一状态。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:564 ButtonViews、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:975 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。tooltip：就绪「在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2016,7 +2020,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Functions」
 - 图标：`tree.group.functions`
-- 同步：Linux done（§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文）；Windows partial（入口是 AppBarButton，未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。）；macOS none
+- 同步：Linux done（§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文）；Windows partial（入口已回退为朴素 Button（非 AppBarButton），未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:576 ButtonFunctions、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:978 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：有入口、没有列表能力：点了照样联动（树里选中分组行），页面如实说明原因，不摆假数据。tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2031,7 +2035,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Queries」
 - 图标：`tree.group.queries`
-- 同步：Linux done（§1.3 点 Queries；unavailable_copy 的 Queries 原文）；Windows partial（入口是 AppBarButton，未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。）；macOS none
+- 同步：Linux done（§1.3 点 Queries；unavailable_copy 的 Queries 原文）；Windows partial（入口已回退为朴素 Button（非 AppBarButton），未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:588 ButtonQueries、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:981 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2045,7 +2049,7 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `overlay`；尺寸 `font_ui`、`font_weight_menu`
 - 无障碍：可访问名「深色模式」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
-- 同步：Linux done（§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png）；Windows none（§7.1 没有任何主题菜单入口（ThemeService 三档只在启动期读 window.json，运行中无 UI 可切）。）；macOS none
+- 同步：Linux done（§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png）；Windows none（「视图 → 深色模式」三档菜单入口 + setter + 持久化已静态接入（代码已接入锚点：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:367、frontend/windows/Sqarvo.Windows/Theming/ThemeService.cs:118、frontend/windows/Sqarvo.Windows/MainWindow.xaml.cs:577）；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。按最高诚实约束，未运行不标 done，故保留 none（待实机确认后再提状态）。）；macOS none
 - 实现备注：位置：「视图 → 深色模式」的三级子菜单（与「界面密度」同级，排在它上面），三项各绑一个 stateful `win.theme-*` 动作，当前偏好打勾。生效方式是 `AdwStyleManager::set_color_scheme`：跟随系统 = `Default`，浅色 / 深色 = `ForceLight` / `ForceDark`（用户明确点了选择，不再被系统偏好改回去）。`dark` 通知重载样式表，四套 CSS 不各自监听主题。偏好写 `window.json` 的 `theme`（`system` / `light` / `dark`，与 Windows 同键同值）；启动优先级 `--theme`（QA）→ `window.json` → 跟随系统，并在 `theme::install()` 之前设定，避免先浅色再闪成深色。不做的事：不提供「浅色 / 深色 跟随系统但覆盖强调色」这类组合；系统强调色仍归平台（Windows 的强调色只用于系统绘制的部件）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2097,7 +2101,7 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `overlay`；尺寸 `font_ui`、`font_weight_menu`、`font_status`、`gap_xs`
 - 无障碍：可访问名「界面密度」；Tab 菜单里三档为一组单选项，Tab 进入、↑ / ↓ 切换、Space 选择
-- 同步：Linux done（§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字）；Windows none（§7.1 未记录「视图 → 界面密度」菜单及其勾选 / 逐项禁用 / 条目文字语义（档位本身见 §1.6）。）；macOS none
+- 同步：Linux done（§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字）；Windows none（「视图 → 界面密度」三档菜单入口 + 切档事件已静态接入（代码已接入锚点：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:384、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:163/1059-1061、frontend/windows/Sqarvo.Windows/MainWindow.xaml.cs:568）；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。勾选 / 逐项禁用 / 条目文字语义未在实机核对；按最高诚实约束，未运行不标 done，故保留 none。）；macOS none
 - 实现备注：位置：「视图 → 界面密度」的三级子菜单（紧接「深色模式」），三个 stateful `win.tier-*` 动作，当前档打勾。GMenu 没有逐项 tooltip：某档在当前工作区放不下时，条目文字追加「，放不下」，完整原因（需要 W×H、当前工作区多大）进日志 `[tier] … 不可用`；该档动作同时 `enabled=false`。换文字只能重填这一节 —— GMenu 在 append 时就把条目属性复制进模型，之后再改 MenuItem 不生效。三档的数字唯一真值是 metrics.toml（每个尺寸 / 字号 / 行高 / 图标盒都直接取当前档的写死整数，不做「基准 × 倍率」）。不做的事：不用 `Ctrl+滚轮`（滚轮在数据网格与 SQL 编辑器里已有语义）；不提供小于 100% 的档位；切档不重建标签（未提交编辑与滚动位置保留）；系统 DPI 与系统字号不乘进档位。切档后「表格区优先保留 600」是代码常量，未进 metrics。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2343,7 +2347,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「新增行：在当前表末尾新增一行」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.add`
 - 平台差异：Windows：按钮在（`ButtonRowAdd`），但本片恒禁用、无点击处理：tooltip「新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL」。§7.1 的新增入口在数据页动作行与双击表。
-- 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert）；Windows partial（按钮画出但点击无效（能力性未实现）；§7.1 未记录状态栏新增。契约 §9.1 已裁决：能力性不可用**不渲染**，Windows 端删掉按钮后本项改 `na`。）；macOS none
+- 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert）；Windows partial（「新增」按钮已按契约 §9.1「能力性不可用不渲染」删除（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:997 注释），代码已接入（锚点）；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。按裁决本项应转 `na`，但实机未确认前保留 `partial`（不谎报 `done`/`na`）。）；macOS none
 - 实现备注：工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏 `+` 与 `win.add-row` 的唯一入口，可用性由数据页显式谓词给出。禁用时 tooltip 变成「在当前表末尾新增一行（当前不可用：<原因>）」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2358,7 +2362,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「删除选中行：标记为待删除（提交前可撤销）」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.delete`
 - 平台差异：Windows：按钮在（`ButtonRowDelete`）且可点：与数据行右键菜单共用 `DeleteSelectedRows`，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 `DataStatusText.ReadOnlyReasonText` 写进 tooltip。
-- 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（按钮（ButtonRowDelete）现在可点：与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销），不再写「请用 SQL」。可用性 = 可编辑、非 Loading/Submitting、有选中行；不可编辑时置灰并把 DataStatusText.ReadOnlyReasonText 写进 tooltip。能力已实现，按钮不再属于契约 §9.1 说的「能力性不可用」，因此不删按钮、不改 na。差异：§7.1 未记录状态栏删除，且当前单选、没有 Linux 的多选批量入口；故保留 partial。）；macOS none
+- 同步：Linux done（§7 行 1 六个按钮；RowOp::Delete → delete_selected_row）；Windows partial（删除按钮保留（不删、不改 na）：tooltip 改走字符串目录文案 + 提交走模态确认（ConfirmDestructiveAsync），与数据行右键菜单共用 DeleteSelectedRows，只标记待删除（提交前可撤销）。静态代码已接入，但dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认；差异：§7.1 未记录状态栏删除、当前单选无 Linux 多选批量入口，故保留 partial。）；macOS none
 - 实现备注：v0.2.5 起工具条上的「删除」已删，入口在这里与数据行右键菜单；两处共用同一条可用性谓词。只标记、不发 RPC：多条选中按批量语义一次标记。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2372,8 +2376,8 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「应用：提交所有脏行的变更」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.apply`
-- 平台差异：Windows：Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行时**不弹对话框**，改成「再按一次 Ctrl+S 确认」并带 `acknowledge_risk`（§7.1 与 Linux 的差异）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。
-- 同步：Linux done（§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同一状态））；Windows partial（§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行改「再按一次确认」；禁用态 tooltip 句式未记录。）；macOS none
+- 平台差异：Windows：Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行或含删除时弹 WinUI 原生 `ContentDialog` 模态确认（破坏性按钮默认「取消」，frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1234），确认后带 `acknowledge_risk`（dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。
+- 同步：Linux done（§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同一状态））；Windows partial（§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行或含删除改 ContentDialog 模态确认（默认取消）；禁用态 tooltip 句式未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1001 ButtonRowApply、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:247/2521 接线与可用性、:1234 模态确认；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：与数据页的「提交更改」是同一个按钮状态：有脏行才亮，没有脏行时 tooltip 说明「没有可提交的更改」。危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2388,7 +2392,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「撤销：放弃全部未提交的编辑与删除标记」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.discard`
 - 平台差异：Windows：`ButtonRowRevert` 与 `Ctrl+Z` 同一 `RevertDataAsync`；无未提交更改时 tooltip「当前没有未提交的更改」；改动全部改回原值时顺手回滚空事务（与 Linux 同一条规则）。
-- 同步：Linux done（§7 行 1；RowOp::Discard → discard_changes）；Windows partial（§7.1 记录状态栏「撤销（↶）」与 Ctrl+Z 同一路径；可用性判定与禁用态 tooltip 未记录。）；macOS none
+- 同步：Linux done（§7 行 1；RowOp::Discard → discard_changes）；Windows partial（§7.1 记录状态栏「撤销（↶）」与 Ctrl+Z 同一路径；可用性判定与禁用态 tooltip 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1004 ButtonRowRevert、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:255/2533 接线与可用性；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：只丢弃本地未提交的编辑与删除标记，不动已提交的数据；改动全部改回原值时顺手回滚空事务。与「取消」不是一回事：取消是中止在途批次并整批回滚（ADR 0018）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2403,7 +2407,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「刷新：重新读取当前表的第一页」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.refresh`
 - 平台差异：Windows：按钮在且可点（`ButtonRowRefresh` → `RefreshDataAsync`）：可用性 = 未加载中、未提交、无未提交更改，与 §7「刷新单独按状态判定」一致；被拦时 tooltip「刷新：有未提交的更改或请求进行中」，不是「（当前不可用：…）」。§7.1 只记了页内刷新。
-- 同步：Linux done（§7 行 1「刷新单独按状态判定」；refresh_available + RowOp::Refresh）；Windows partial（可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。）；macOS none
+- 同步：Linux done（§7 行 1「刷新单独按状态判定」；refresh_available + RowOp::Refresh）；Windows partial（可用性口径与 Linux 一致；文案是 per-button 短句，没有「（当前不可用：<原因>）」句式。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1007 ButtonRowRefresh、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:272/2538 接线与可用性；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：可用性单独判定，不读页内按钮（页内没有对应的刷新按钮）：已打开表、没有 RPC 在途、没有未提交的更改与未提交的新行。有未提交更改时不直接刷：走与翻页 / 排序 / 筛选同一条脏行守卫，先提示提交或放弃。F5 在表标签上走的是同一件事；状态栏不提供第二个刷新入口。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2418,7 +2422,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「（随当前页切换：查询页「取消当前查询（Esc）」，数据页「取消在途的提交批次」）」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.cancel`
 - 平台差异：Windows：行 1 这枚「取消」两用：查询页按 `busy`（执行中 / 待执行）可点，点击取消查询、重复点幂等；数据页按 `tab.Loading || submitting` 可点，点击 `CancelDataRequests` 并在行 2 左格写「已取消表数据请求（已取到的行保留在页面上）」。停在别的页时禁用，tooltip「取消：当前没有执行中的查询」。§7.1 只记了查询页那一种。
-- 同步：Linux done（真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME，MariaDB 无默认库档案）：① `SELECT SLEEP(10)` 执行中 `cancel 1` → 日志「[qa] 点了状态栏的「取消」（第 1 个查询标签）」「[query] 点击取消」「[query] 状态行：已取消 · 已保留 0 行」，`expect-query 1 state=cancelled`、`rows=0` 通过；再点一次 →「[qa] 状态栏「取消」已置灰：第 2 次点击被忽略（幂等）」（置灰即幂等，不发 RPC）。② `--qa-cancel-after-ms 1200` 同一条路径：「[qa] 点状态栏的「取消」（第 1 次）」→ 同一状态行文案 → 150 ms 后第 2 次点击落到置灰按钮。③ 可用性：查询在途 `row_ops().cancel=true`、空闲与各终态 false（单测 status_bar_cancel_is_enabled_only_while_a_query_runs），查询页 tooltip / 可访问名由 `cancel_copy(Query)` 给出「取消当前查询（Esc）」+ 置灰原因「当前没有执行中的查询」（单测 cancel_button_is_two_purpose_and_says_which_one）。数据页口径未改：动作分派（`data.perform_row_op(RowOp::Cancel)`）与可用性（`RowOpsState.cancel`）一行未动，tooltip 仍按 `RowOpsState.reason` 拼装。）；Windows partial（§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。）；macOS none
+- 同步：Linux done（真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME，MariaDB 无默认库档案）：① `SELECT SLEEP(10)` 执行中 `cancel 1` → 日志「[qa] 点了状态栏的「取消」（第 1 个查询标签）」「[query] 点击取消」「[query] 状态行：已取消 · 已保留 0 行」，`expect-query 1 state=cancelled`、`rows=0` 通过；再点一次 →「[qa] 状态栏「取消」已置灰：第 2 次点击被忽略（幂等）」（置灰即幂等，不发 RPC）。② `--qa-cancel-after-ms 1200` 同一条路径：「[qa] 点状态栏的「取消」（第 1 次）」→ 同一状态行文案 → 150 ms 后第 2 次点击落到置灰按钮。③ 可用性：查询在途 `row_ops().cancel=true`、空闲与各终态 false（单测 status_bar_cancel_is_enabled_only_while_a_query_runs），查询页 tooltip / 可访问名由 `cancel_copy(Query)` 给出「取消当前查询（Esc）」+ 置灰原因「当前没有执行中的查询」（单测 cancel_button_is_two_purpose_and_says_which_one）。数据页口径未改：动作分派（`data.perform_row_op(RowOp::Cancel)`）与可用性（`RowOpsState.cancel`）一行未动，tooltip 仍按 `RowOpsState.reason` 拼装。）；Windows partial（§7.1：查询页执行中「取消」可点、重复点幂等；数据页的取消可用性（`Loading || submitting`）与两者共用的工具提示见 `platform_notes.windows`。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1010 ButtonRowCancel、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:280/2543 接线与可用性；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：图标用实心方块：主题的 process-stop 在 Yaru 是八边形、在 Adwaita 是叉号，两套主题两种样子，也不是「停止」的通用形态。**两用，按当前页分派动作、tooltip 与可访问名**（改动确认单 #7）——只改文案不改动作会让用户点了一枚说着「取消查询」却去回滚批次的按钮。查询页：查询在途（Loading / Streaming）时可点，点击取消查询（与 `Esc` 同一个方法），重复点幂等；空闲时置灰，tooltip「取消当前查询（Esc）（当前不可用：当前没有执行中的查询）」。查询页内**没有**取消按钮，这里是唯一入口。数据页：只在提交批次在途时可点，语义是中止本批并整批回滚（ADR 0018），不是撤销已提交的数据；置灰时的原因沿用 `RowOpsState.reason`，口径与改动前一致。停在 `Objects` 页 / 启动态：两个语义都不成立，置灰并说明原因。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2554,7 +2558,7 @@ kind `control` · status `active` · parent `status_bar.row2`
 - 样式：尺寸 `font_status`
 - 无障碍：可访问名「当前 SQL 摘要」
 - 平台差异：Windows：这一格在 Windows 兼作一次性提示行：`_notice`（编辑被拒原因 / 提交结果 / 守卫说明 / 「新建连接失败：<文案>」/「无法新建标签：标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」）优先于摘要；断连与未就绪也写这里（`已断开：<文案>`、`SQL: 尚未执行`）；数据页没有 SQL 摘要，写 `表 <表名> · <页码> · <总数>`。
-- 同步：Linux done（§7 行 2 左段三种来源 + 断连 / 未执行文案）；Windows partial（§7.1 只有查询页的 `SQL: <摘要>`（单行、折叠空白、80 字符上限；没执行过写「尚未执行」）与断连时把原因写进行 2 左格；数据页左格写的是 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。契约 §9.1 已裁决：`SqlSummaryText` 补 `IsTextSelectionEnabled`（断连原因要可复制）；Windows 端待实现。）；macOS none
+- 同步：Linux done（§7 行 2 左段三种来源 + 断连 / 未执行文案）；Windows partial（代码已接入（锚点，dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）：`SqlSummaryText` 已补 `IsTextSelectionEnabled="True"`（断连原因可复制），见 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1044/1047。其余差异仍在：§7.1 只有查询页的 `SQL: <摘要>` 与断连原因写行 2 左格；数据页左格写 `表 <表名> · 第 N 页 / 共 ? 页 · 共 N 行`（`DataStatusText.Summary`），不是 `SQL: … LIMIT …`。故保留 partial。）；macOS none
 - 实现备注：单行省略：长语句截断成一行，全文进 tooltip。冒号是 ASCII 的 `SQL:`，不是全角「：」。当前标签是「字段 | 值」视图或正在编辑时也照旧显示这一页的摘要——摘要讲的是取数语句，不是展示形式。连接刚建立、还没有标签状态推送时，这一格会短暂显示「SQL: 已连接 · <服务端版本>」，首个标签状态到达后被覆盖。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2691,7 +2695,7 @@ kind `control` · status `active` · parent `tabs.strip.tab`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「关闭标签」
 - 图标：`action.close_tab`
-- 同步：Linux done（§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current）；Windows partial（`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。）；macOS none
+- 同步：Linux done（§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current）；Windows partial（`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/MainWindow.xaml:24 Ctrl+W 快捷键、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:240/1548 TabCloseRequested；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：× 与 `Ctrl+W` 走同一条 `close-page`：只有这一条关闭入口，没有第二套旁路。`Objects` 固定页的 × 点了也不关：on_close_page 拒绝并记一行日志（AdwTabPage 没有「不可关闭」属性）。确认框已在显示时再点 × 只记日志，不叠第二个框。菜单里已不列「关闭标签」：入口只有标签上的 × 与 `Ctrl+W`，没有第三条旁路（菜单裁剪口径见契约 §1.4）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2746,7 +2750,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`min_target`
 - 无障碍：可访问名「查询动作」
-- 同步：Linux done（真机 QA（独立 app id `io.sqarvo.Sqarvo.QA186.*` + 隔离 XDG_CONFIG_HOME，MariaDB 127.0.0.1:53306 无默认库档案 + SQLite 临时库）：日志「[query] 动作行左端：当前连接（可访问名）→ 当前库（可访问名），两枚都不带可见文字」；`expect-connection 1 qa-mariadb` / `expect-connection 1 qa-sqlite` 从控件读到选择器文字（切换前后各一次）；页内已无取消按钮（`SqlPage` 的 `cancel_button` 字段与创建、append、可用性同步全部删除，`grep -rn cancel_button src/` 只剩一个测试名），执行中只有「执行」置灰，取消走状态栏：`SELECT SLEEP(10)` 后 `cancel 1` 读到「[qa] 点了状态栏的「取消」（第 1 个查询标签）」与「[query] 状态行：已取消 · 已保留 0 行」。单测 action_row_pickers_have_no_visible_text_and_connection_comes_first、status_bar_cancel_is_enabled_only_while_a_query_runs（cargo test --bin sqarvo-desktop：466 passed）。）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700）；macOS none
+- 同步：Linux done（真机 QA（独立 app id `io.sqarvo.Sqarvo.QA186.*` + 隔离 XDG_CONFIG_HOME，MariaDB 127.0.0.1:53306 无默认库档案 + SQLite 临时库）：日志「[query] 动作行左端：当前连接（可访问名）→ 当前库（可访问名），两枚都不带可见文字」；`expect-connection 1 qa-mariadb` / `expect-connection 1 qa-sqlite` 从控件读到选择器文字（切换前后各一次）；页内已无取消按钮（`SqlPage` 的 `cancel_button` 字段与创建、append、可用性同步全部删除，`grep -rn cancel_button src/` 只剩一个测试名），执行中只有「执行」置灰，取消走状态栏：`SELECT SLEEP(10)` 后 `cancel 1` 读到「[qa] 点了状态栏的「取消」（第 1 个查询标签）」与「[query] 状态行：已取消 · 已保留 0 行」。单测 action_row_pickers_have_no_visible_text_and_connection_comes_first、status_bar_cancel_is_enabled_only_while_a_query_runs（cargo test --bin sqarvo-desktop：466 passed）。）；Windows done（执行 / 取消走同一按钮（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289/1093/700）。Wave1 新接入编辑器与窗口级 Esc 取消（ShellView.Query.cs:508 的 VirtualKey.Escape 分支、:1471 的 KeyboardAccelerator）。原 evidence 的交互证据来自前序 #172 已确认部分；Wave1 新增部分dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：页内只有一枚动作按钮「执行」：可执行时可点，执行中置灰（**不再变成「取消」**，也不再有并排的取消按钮——改动确认单 #7）。取消搬到状态栏行 1 的两用「取消」上（`status_bar.row1.ops.cancel`），与 `Esc`、QA 脚本是同一个方法，可重复点击（第二次起只记日志、不发 RPC）。空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。动作行左端依次是 `tabs.query.connection_picker`（连接选择器）与 `tabs.query.database_picker`（库选择器），两枚都**没有可见文字**（可访问名「当前连接」/「当前库」，Tab 位不变）；其后是会话信息（有真实会话信息时才占位），右端才是「执行」。执行时把标签的**请求** catalog 带进 `ExecuteQueryRequest.catalog`（空 = 不改变会话当前库）；执行成功后回读一次 `GetSessionContext` 刷新显示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2795,7 +2799,7 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`、`query_editor_min_height`、`query_editor_ratio`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
 - 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
-- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）；#189 src/sql_page.rs:240 min_content_height 读 query_editor_min_height、去掉 220px 上限；隔离 QA 截图 189-01（新标签只见编辑器）/ 189-04（分栏占比 0.40））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现（Linux 真类型探针编译验证 0 警告 0 错误，未在本机构建/运行 WinUI）。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
+- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）；#189 src/sql_page.rs:240 min_content_height 读 query_editor_min_height、去掉 220px 上限；隔离 QA 截图 189-01（新标签只见编辑器）/ 189-04（分栏占比 0.40））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现。Esc 取消（#5）已接入编辑器与窗口级（保留 Ctrl+.）。dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。最小高度随密度档（query_editor_min_height），没有固定上限：编辑器与结果区用可拖动 GtkPaned 分配页高（见 tabs.query.splitter）；新标签结果区隐藏时编辑器占满整页。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2837,7 +2841,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `column_header_min_height`、`font_ui`、`font_weight_title`
 - 无障碍：可访问名「结果列头」
-- 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows partial（#190 表头随选中语句重建已实现；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，列头观感待 Windows 真机人工确认。）；macOS none
+- 同步：Linux done（§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装）；Windows partial（#190 表头随选中语句重建已实现；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），GUI 交互与列头观感待 Windows 真机人工确认。）；macOS none
 - 实现备注：一列一个字头「列名 · 原始类型」；没有类型信息时只写列名，不编造类型。表头只作展示：点列头不改排序（排序只在表数据页的筛选面板里改，查询结果没有表头排序路径）。多语句脚本（#190）：v0.1「只显示第 1 段」限制两端都已退役——表头随选中语句的列元数据重建，逐语句切换走 tabs.query.results.statements；Windows 说明位只保留「结果集 K 段」（见 platform_notes.windows）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2850,6 +2854,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 样式：尺寸 `row_height_data`、`row_number_width`、`column_width`、`font_data_cell`、`font_weight_cell`
 - 无障碍：可访问名「查询结果」；Tab 可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）
+- 自绘：WinUI 3 的 GridView 不支持「虚拟化 + 列宽 + 行号」三者组合，ItemsControl 的虚拟化不带列宽拖动；结果区用自绘虚拟化网格，只建视口内的行、行号跨批次连续（§7.1）。
 - 同步：Linux done（§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中）；Windows partial（视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。）；macOS none
 - 实现备注：虚拟化：只建视口内的行，滚动时不把整批行都做成控件；行号列跨批次连续（1 起、右对齐），宽表靠横向滚动而不是把列压碎。行号列与数据列的实际宽度目前是代码常量（行号 72、数据列 220，未进 metrics：metrics 里是 row_number_width / column_width），P1 收敛。取消 / 错误 / 断连之后不清空行区：已加载的行保留，状态行说明为什么停在这里。没有行级脏色 / 删除线之外的额外标记（查询标签的单表编辑归 §5.10，脏行数只在状态行与状态圆点）。
 

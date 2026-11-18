@@ -9,6 +9,7 @@ using Sqarvo.Common.V1;
 using Sqarvo.Core.Clients;
 using Sqarvo.Services.V1;
 using Sqarvo.Windows.Diagnostics;
+using Sqarvo.Windows.Strings;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
 using System;
@@ -259,12 +260,12 @@ public sealed partial class ShellView
             }
         };
 
-        // 状态栏「−」与数据行右键菜单共用同一条删除方法（只标记、不写库）。
+        // 状态栏「−」与数据行右键菜单共用同一条删除方法（模态确认后只标记、不写库）。
         ButtonRowDelete.Click += (_, _) =>
         {
             if (CurrentDataTab() is { } tab)
             {
-                DeleteSelectedRows(tab);
+                _ = DeleteSelectedRowsAsync(tab);
             }
         };
 
@@ -1223,6 +1224,41 @@ public sealed partial class ShellView
 
     // ------------------------------------------------------------------ 提交 / 撤销
 
+    /// <summary>
+    /// 契约 §8.2 方案 A 的模态确认：破坏性按钮是 CloseButton（默认 / 取消），确认按钮是 PrimaryButton。
+    /// </summary>
+    /// <remarks>
+    /// <para>XamlRoot / ShowAsync 的范式沿用 ShellView.xaml.cs 的 ConnectionDialog / 关于对话框。</para>
+    /// <para>不叠第二个模态框：与连接对话框共用 <c>_dialogOpen</c> 守卫。</para>
+    /// </remarks>
+    private async Task<bool> ConfirmDestructiveAsync(string title, string content, string confirmText)
+    {
+        if (_dialogOpen)
+        {
+            return false;
+        }
+
+        _dialogOpen = true;
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                Title = title,
+                Content = content,
+                PrimaryButtonText = confirmText,
+                CloseButtonText = UiStrings.Get(UiStrings.DialogCancel),
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = XamlRoot,
+            };
+
+            return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        }
+        finally
+        {
+            _dialogOpen = false;
+        }
+    }
+
     /// <summary>`Ctrl+S` / 「应用」：先关编辑态，再走风险守卫，然后 `ApplyRowChanges` → `Commit`。</summary>
     private async Task SubmitDataAsync(DataTab tab)
     {
@@ -1248,10 +1284,31 @@ public sealed partial class ShellView
         var plan = DataSubmitPlan.Build(page, tab.RiskArmed);
         if (!plan.Allowed)
         {
-            tab.RiskArmed = plan.NeedsRiskConfirmation && !tab.RiskArmed;
-            _notice = plan.Message;
-            ApplyDataStatus();
-            return;
+            if (!plan.NeedsRiskConfirmation)
+            {
+                _notice = plan.Message;
+                ApplyDataStatus();
+                return;
+            }
+
+            // 契约 §8.2（方案 A）：超过 100 行或含删除，改为 WinUI 原生模态对话框。
+            // 正文直接用 DataSubmitPlan.Message（含行数 / 删除行数与阈值警告）；默认「取消」。
+            var message = plan.Message;
+            var confirmed = await ConfirmDestructiveAsync(
+                UiStrings.Get(UiStrings.DialogSubmitTitle),
+                message,
+                UiStrings.Get(UiStrings.DialogSubmitConfirm));
+            tab.RiskArmed = false;
+            if (!confirmed)
+            {
+                _notice = UiStrings.Get(UiStrings.DialogSubmitCancelled);
+                ApplyDataStatus();
+                return;
+            }
+
+            // 用户已在模态框里确认：复用同一套计划逻辑重算（riskArmed=true）拿到 AcknowledgeRisk，
+            // 不再要求「再按一次 Ctrl+S」。阈值与提交计划本身一律不动。
+            plan = DataSubmitPlan.Build(page, riskArmed: true);
         }
 
         var changes = DataChangePlan.Build(page);
@@ -2488,9 +2545,6 @@ public sealed partial class ShellView
             ButtonRowCancel,
             ButtonRowCancel.IsEnabled ? "取消正在进行的表数据请求（已取到的行保留）" : "取消：当前没有进行中的表数据请求");
 
-        // 新增行仍不在本片；删除行走「标记 → 提交」整片（右键菜单 / 状态栏「−」同一方法）。
-        ButtonRowAdd.IsEnabled = false;
-        ToolTipService.SetToolTip(ButtonRowAdd, "新增行不在本片（#173 只做单元格编辑与提交）：请用 SQL");
         var canDelete = CanDeleteRows(tab, out var deleteReason);
         ButtonRowDelete.IsEnabled = canDelete;
         ToolTipService.SetToolTip(ButtonRowDelete, deleteReason);
@@ -2525,12 +2579,12 @@ public sealed partial class ShellView
             return false;
         }
 
-        reason = "删除行：标记选中行为待删除（提交前可 Ctrl+Z 撤销）";
+        reason = UiStrings.Get(UiStrings.RowDeleteTooltip);
         return true;
     }
 
-    /// <summary>标记删除（右键菜单 / 状态栏「−」共用）：只改本地行状态，不写库。</summary>
-    private void DeleteSelectedRows(DataTab tab)
+    /// <summary>标记删除（右键菜单 / 状态栏「−」共用）：模态确认后只改本地行状态，不写库。</summary>
+    private async Task DeleteSelectedRowsAsync(DataTab tab)
     {
         if (!CanDeleteRows(tab, out var reason))
         {
@@ -2544,6 +2598,18 @@ public sealed partial class ShellView
         if (row.MarkedForDeletion)
         {
             _notice = $"第 {row.Number} 行已经标记删除（Ctrl+Z 可撤销）";
+            ApplyDataStatus();
+            return;
+        }
+
+        // 契约 §8.2：删除是破坏性操作，走模态对话框，默认「取消」。
+        var confirmed = await ConfirmDestructiveAsync(
+            UiStrings.Get(UiStrings.DialogDeleteTitle),
+            UiStrings.Get(UiStrings.DialogDeleteBody),
+            UiStrings.Get(UiStrings.DialogDeleteConfirm));
+        if (!confirmed)
+        {
+            _notice = UiStrings.Get(UiStrings.DialogDeleteCancelled);
             ApplyDataStatus();
             return;
         }
@@ -2599,7 +2665,10 @@ public sealed partial class ShellView
             ToolTipService.SetToolTip(delete, reason);
         }
 
-        delete.Click += (_, _) => DeleteSelectedRows(tab);
+        delete.Click += (_, _) =>
+        {
+            _ = DeleteSelectedRowsAsync(tab);
+        };
         flyout.Items.Add(delete);
 
         // 二级菜单：「复制为 ▸ 复制为 INSERT」始终可用（只读连接也能复制数据）。

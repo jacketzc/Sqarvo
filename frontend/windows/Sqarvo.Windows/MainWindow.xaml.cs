@@ -9,6 +9,7 @@ using Sqarvo.Windows.Views;
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using RectInt32 = global::Windows.Graphics.RectInt32;
 
 namespace Sqarvo.Windows;
@@ -93,6 +94,7 @@ public sealed partial class MainWindow : Window
 
             AppWindow.Changed += OnAppWindowChanged;
             ThemeService.SystemAppearanceChanged += OnSystemAppearanceChanged;
+            ThemeService.PreferenceWriter = PersistThemePreference;
             Closed += OnClosed;
         }
         catch (Exception error)
@@ -558,7 +560,49 @@ public sealed partial class MainWindow : Window
         var shell = new ShellView(_state);
         shell.QuitRequested += (_, _) => Close();
         shell.PanelWidthsChanged += OnPanelWidthsChanged;
+        shell.DensityChangeRequested += OnDensityChangeRequested;
         return shell;
+    }
+
+    /// <summary>视图菜单的密度入口：复用键盘快捷键的同一条切档路径（重建 + 重算 + 写盘）。</summary>
+    private void OnDensityChangeRequested(DensityTier tier) => SwitchTier(tier);
+
+    /// <summary>
+    /// ThemeService.PreferenceWriter 的目标：即时把主题写进 window.json。
+    /// </summary>
+    /// <remarks>
+    /// 用 Task.Run 把磁盘 IO 移出 UI 线程（同 ConnectionDialog 里 Task.Run(() => _store.Upsert(…)) 的范式）。
+    /// 写的是 UI 线程上先拷好的快照，不与切档 / 关窗那几次写盘共享可变对象。
+    /// </remarks>
+    private void PersistThemePreference(AppThemePreference preference)
+    {
+        if (_options.SuppressesGeometrySave)
+        {
+            return;
+        }
+
+        _state.Theme = preference switch
+        {
+            AppThemePreference.Dark => "dark",
+            AppThemePreference.Light => "light",
+            _ => "system",
+        };
+
+        var snapshot = new WindowState
+        {
+            Version = WindowState.CurrentVersion,
+            Tier = _state.Tier,
+            LastInspectorWidth = _state.LastInspectorWidth,
+            LastSidebarWidth = _state.LastSidebarWidth,
+            WindowWidth = _state.WindowWidth,
+            WindowHeight = _state.WindowHeight,
+            WindowX = _state.WindowX,
+            WindowY = _state.WindowY,
+            Maximized = _state.Maximized,
+            Theme = _state.Theme,
+        };
+
+        _ = Task.Run(() => WindowStateStore.Save(snapshot));
     }
 
     /// <summary>
@@ -1046,6 +1090,7 @@ public sealed partial class MainWindow : Window
     private void OnClosed(object sender, WindowEventArgs args)
     {
         ThemeService.SystemAppearanceChanged -= OnSystemAppearanceChanged;
+        ThemeService.PreferenceWriter = null;
 
         if (_xamlRootHooked)
         {

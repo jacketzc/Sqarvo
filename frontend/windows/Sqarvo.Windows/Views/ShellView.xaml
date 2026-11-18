@@ -250,8 +250,9 @@
 
             为什么菜单是 MenuFlyout + MenuFlyoutSubItem 而不是 MenuBar：MenuBar 自带一整行，
             而这里要的是「一个按钮里的三层菜单」。条目名（MenuFile / MenuNewConnection /
-            MenuNewQueryTab / MenuQuit / MenuAbout）与原来一致，「表 → 导出 CSV」已暂时
-            隐藏（改动确认单 #1 / #198，注册表 shell.menu.export_csv 标 removed），
+            MenuNewQueryTab / MenuQuit / MenuAbout）与原来一致，「表 → 导出 CSV」整项已不挂
+            （改动确认单 #1 / #198，注册表 shell.menu.export_csv 标 removed）；「视图」子菜单承载
+            深色模式与界面密度各三档（改动确认单 #3），
             WireMenu() 仍按名字接 Click / IsEnabled，事件语义没变。
             字形仍用 Segoe MDL2 Assets 的字符（TextBlock + FontFamily），不额外实例化图标控件。
         -->
@@ -352,6 +353,46 @@
                                     FontSize="{StaticResource Size.FontUi}"
                                     FontWeight="{StaticResource Weight.Ui}" />
                             </MenuFlyoutSubItem>
+                            <!-- 视图菜单：条目 Text / AutomationProperties.Name 在 WireMenu 里从字符串目录取（§8.6 new strings）。 -->
+                            <MenuFlyoutSubItem
+                                x:Name="MenuView"
+                                FontSize="{StaticResource Size.FontUi}"
+                                FontWeight="{StaticResource Weight.Ui}">
+                                <MenuFlyoutSubItem
+                                    x:Name="MenuViewTheme"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}">
+                                    <MenuFlyoutItem
+                                        x:Name="MenuThemeSystem"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                    <MenuFlyoutItem
+                                        x:Name="MenuThemeLight"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                    <MenuFlyoutItem
+                                        x:Name="MenuThemeDark"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                </MenuFlyoutSubItem>
+                                <MenuFlyoutSubItem
+                                    x:Name="MenuViewDensity"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}">
+                                    <MenuFlyoutItem
+                                        x:Name="MenuDensityCompact"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                    <MenuFlyoutItem
+                                        x:Name="MenuDensityComfortable"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                    <MenuFlyoutItem
+                                        x:Name="MenuDensityLarge"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                </MenuFlyoutSubItem>
+                            </MenuFlyoutSubItem>
                             <MenuFlyoutSubItem
                                 x:Name="MenuHelp"
                                 Text="帮助"
@@ -432,12 +473,14 @@
                                 VerticalAlignment="Center"
                                 Spacing="{StaticResource Size.GridPaddingEnd}">
                                 <TextBlock
+                                    x:Name="ConnectGlyph"
                                     FontFamily="{StaticResource SqarvoIconFontFamily}"
                                     Text="&#xE71B;"
                                     FontSize="{StaticResource Size.IconBox}"
                                     Foreground="{ThemeResource SqarvoOnAccentTextBrush}"
                                     VerticalAlignment="Center" />
                                 <TextBlock
+                                    x:Name="ConnectLabel"
                                     Text="连接"
                                     FontSize="{StaticResource Size.FontUi}"
                                     FontWeight="{StaticResource Weight.Ui}"
@@ -905,18 +948,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!-- 左边沟：对象树搜索框（与树同一列宽，底部贴树）。搜索尚未接线，禁用并给原因。 -->
-            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                <TextBox
-                    x:Name="TreeSearchBox"
-                    Height="{StaticResource Size.IconButtonHeight}"
-                    MinHeight="{StaticResource Size.IconButtonHeight}"
-                    IsEnabled="False"
-                    FontSize="{StaticResource Size.FontStatus}"
-                    FontWeight="{StaticResource Weight.Ui}"
-                    PlaceholderText="搜索连接、库、表..."
-                    AutomationProperties.Name="搜索连接、库、表" />
-            </StackPanel>
+            <!-- 左边沟保留为占位列（宽度跟随侧栏）：对象树搜索按契约 §9.1 不渲染，能力不可用。 -->
 
             <Rectangle
                 Grid.Column="1"
@@ -957,9 +989,7 @@
                             Orientation="Horizontal"
                             VerticalAlignment="Center"
                             Spacing="{StaticResource Size.GridPaddingEnd}">
-                            <Button x:Name="ButtonRowAdd" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="新增行">
-                                <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE710;" FontSize="{StaticResource Size.IconBox}" />
-                            </Button>
+                            <!-- 新增行按契约 §9.1 不渲染：能力不可用，不摆灰显占位。 -->
                             <Button x:Name="ButtonRowDelete" Style="{StaticResource SqarvoStatusIconButton}" AutomationProperties.Name="删除选中行">
                                 <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE738;" FontSize="{StaticResource Size.IconBox}" />
                             </Button>
@@ -977,14 +1007,7 @@
                             </Button>
                         </StackPanel>
 
-                        <!-- 搜索：把焦点交给左下角的对象树搜索框（搜索本身尚未接线，按同一套「禁用 + 原因」处理） -->
-                        <Button
-                            x:Name="ButtonSearch"
-                            Style="{StaticResource SqarvoStatusIconButton}"
-                            IsEnabled="False"
-                            AutomationProperties.Name="搜索对象树">
-                            <TextBlock FontFamily="{StaticResource SqarvoIconFontFamily}" Text="&#xE721;" FontSize="{StaticResource Size.IconBox}" />
-                        </Button>
+                        <!-- 对象树搜索按契约 §9.1 不渲染：能力不可用，状态栏不再摆搜索入口。 -->
 
                         <!-- 结果行数（查询页在飞时由 ApplyQueryStatus 写「N 行 / 已取 M 行」） -->
                         <TextBlock
@@ -1016,6 +1039,7 @@
                         x:Name="SqlSummaryText"
                         Grid.Column="0"
                         Text="SQL: 尚未执行"
+                        IsTextSelectionEnabled="True"
                         TextTrimming="CharacterEllipsis"
                         FontSize="{StaticResource Size.FontStatus}"
                         FontWeight="{StaticResource Weight.Ui}"

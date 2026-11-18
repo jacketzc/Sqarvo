@@ -256,8 +256,8 @@ evidence = "dialog.rs 默认值 + driver_form.rs 校验文案"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "03d0525114d9"
-note = "§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。"
+spec_hash = "0332ac1f48a8"
+note = "§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:41 HostBox；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -337,8 +337,8 @@ evidence = "driver_form.rs 端口解析与两条文案"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "c5b82a679103"
-note = "§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。"
+spec_hash = "e2745ea241c8"
+note = "§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:48 PortBox；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -368,8 +368,8 @@ evidence = "driver_form.rs 用户名校验"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a3c7fc5cd8ab"
-note = "§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。"
+spec_hash = "e17b4b593516"
+note = "§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:56 UsernameBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:295 读取值；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -403,8 +403,8 @@ evidence = "dialog.rs 行标题 + driver_form.rs default_name"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "ab2214fc2f1f"
-note = "§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。"
+spec_hash = "c12f15394c07"
+note = "§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:71 DatabaseBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:297 读取值；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -446,8 +446,8 @@ evidence = "dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "40af8edf2a80"
-note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。"
+spec_hash = "94b3a2af8827"
+note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:63 PasswordBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:269 PrepareCredentialAsync；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -488,8 +488,8 @@ evidence = "dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e8fe96f3cf3d"
-note = "§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。"
+spec_hash = "fa339da22914"
+note = "§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:78 TlsCombo、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:324-326 档位退化；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"

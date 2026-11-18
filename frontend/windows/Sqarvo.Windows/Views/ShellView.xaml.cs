@@ -10,6 +10,7 @@ using Sqarvo.Services.V1;
 using Sqarvo.Windows.Connections;
 using Sqarvo.Windows.Diagnostics;
 using Sqarvo.Windows.Layout;
+using Sqarvo.Windows.Strings;
 using Sqarvo.Windows.Storage;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
@@ -94,6 +95,12 @@ public sealed partial class ShellView : UserControl
     /// <summary>还有下一页时的续拉行。</summary>
     private const string LoadMoreText = "加载更多…";
 
+    /// <summary>「连接」就绪时 tooltip（与 Linux 的 CONNECT_TOOLTIP 同一句）。</summary>
+    private const string ConnectTooltip = "打开连接对话框（Ctrl+N）";
+
+    /// <summary>「连接」未就绪时 tooltip（与 Linux 的 CONNECT_TOOLTIP_NOT_READY 同一句）。</summary>
+    private const string ConnectTooltipNotReady = "后端尚未就绪：正在连接本地后端，握手完成后才能新建连接";
+
     private readonly ConnectionStore _store;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Dictionary<string, TreeViewNode> _nodes = new(StringComparer.Ordinal);
@@ -152,6 +159,9 @@ public sealed partial class ShellView : UserControl
     /// <summary>侧栏 / 信息面板宽度变了（拖动结束或键盘微调后触发一次）。</summary>
     public event EventHandler? PanelWidthsChanged;
 
+    /// <summary>视图菜单请求切换密度档（由 MainWindow 订阅，复用它的 SwitchTier，不引入循环引用）。</summary>
+    public event Action<DensityTier>? DensityChangeRequested;
+
     public ShellView(WindowState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -164,6 +174,7 @@ public sealed partial class ShellView : UserControl
 
         ApplyMetrics();
         WireMenu();
+        WireViewMenu();
         WireQuerySurface();
         WireDataSurface();
         SetWorkspaceState(WorkspaceState.Disconnected);
@@ -385,7 +396,6 @@ public sealed partial class ShellView : UserControl
     {
         var state = _session?.State ?? BackendState.Initial;
         var ready = state.IsReady;
-        var selected = SelectedProfile();
 
         MenuNewConnection.IsEnabled = ready;
 
@@ -404,17 +414,11 @@ public sealed partial class ShellView : UserControl
         ToolTipService.SetToolTip(MenuNewQueryTab, queryTip);
         ToolTipService.SetToolTip(TabStripNewTabButton, queryTip);
 
-        var selectedConnected = selected is not null && _session?.IsConnected(selected.Key) == true;
-        ButtonConnect.IsEnabled = ready && selected is not null && !selectedConnected;
-        ToolTipService.SetToolTip(
-            ButtonConnect,
-            ButtonConnect.IsEnabled
-                ? $"连接 {selected!.Name}（使用已保存的凭据）"
-                : !ready
-                    ? "本地后端尚未就绪：连接入口在状态栏显示「已连接」之后才能用"
-                    : selectedConnected
-                        ? $"{selected!.Name} 已经连着了：断开入口在后续工作包（浏览会话与对象树一起做）"
-                        : "先在左侧对象树里选中一条已保存的连接");
+        // 「连接」入口与 Linux 同一判定：只认后端是否握手，与对象树选中项无关。
+        // 语义是「打开连接对话框」（等价 Ctrl+N / 文件 → 新建连接），不是「连接选中的已保存连接」。
+        ButtonConnect.IsEnabled = ready;
+        ToolTipService.SetToolTip(ButtonConnect, ready ? ConnectTooltip : ConnectTooltipNotReady);
+        ApplyConnectAccent(ready);
 
         // 状态栏：行 1 的状态格 + 行 2 的会话格（**搬移**到 ShellView.Chrome.cs，只是渲染，
         // 判定仍在这里；原来这里往 LastRefreshText 写，行 1 的状态格现在是独立的一格）。
@@ -449,6 +453,29 @@ public sealed partial class ShellView : UserControl
         // 状态栏行 2 的最终口径：查询页 → 「SQL 摘要 + N 行 / 已取 M 行」；数据页 → 「表摘要 + 事务状态」。
         ApplyQueryStatus();
         ApplyDataStatus();
+    }
+
+    /// <summary>
+    /// 「连接」按钮的强调色摘挂：就绪 = 品牌填充 + 反白字；未就绪 = 中性底 + 主文字色。
+    /// </summary>
+    /// <remarks>
+    /// 强调色画在内层 Border（ConnectChip）上，Button 模板的 Disabled 视觉态只改 Button.Background，
+    /// 盖不掉内层 Border 的本地值——所以必须显式摘挂，否则禁用时仍是橙/紫底，看着像能点（Linux 侧
+    /// 对应 remove/add suggested-action 类）。取不到主题 brush 时保持 XAML 默认值，不让界面崩。
+    /// </remarks>
+    private void ApplyConnectAccent(bool ready)
+    {
+        if (ThemeBrush(ready ? "SqarvoAccentFillBrush" : "SqarvoBandBrush") is { } fill)
+        {
+            ConnectChip.Background = fill;
+        }
+
+        var textKey = ready ? "SqarvoOnAccentTextBrush" : "SqarvoTextPrimaryBrush";
+        if (ThemeBrush(textKey) is { } text)
+        {
+            ConnectGlyph.Foreground = text;
+            ConnectLabel.Foreground = text;
+        }
     }
 
     private async void OnHealthTick(object? sender, object e)
@@ -808,8 +835,15 @@ public sealed partial class ShellView : UserControl
 
     private async Task ShowNewConnectionDialogAsync()
     {
-        if (_session is null || _dialogOpen)
+        if (_session is null)
         {
+            return;
+        }
+
+        // 对话框已开着：ContentDialog 是模态的，不能再叠第二个，跳过即可（等价 Linux 的「只前置」）。
+        if (_dialogOpen)
+        {
+            ConsoleBridge.WriteDiagnostic("[toolbar] 连接对话框已打开，忽略重复的「连接」触发（不叠第二个）");
             return;
         }
 
@@ -883,7 +917,6 @@ public sealed partial class ShellView : UserControl
 
         // 状态栏左边沟与侧栏同一根轴：沟宽 = 侧栏 + 分隔条（分隔条那条竖线就是分栏线）。
         StatusGutterColumn.Width = new GridLength(sidebar + Metrics.GridPaddingEnd);
-        TreeSearchBox.Width = sidebar;
 
         InspectorSplit.OpenPaneLength = inspector;
     }
@@ -948,17 +981,12 @@ public sealed partial class ShellView : UserControl
             ButtonQueries,
             "已保存的查询：尚未实现（本版没有这一层，查询只存在于打开着的查询标签里）");
 
-        ToolTipService.SetToolTip(
-            TreeSearchBox,
-            "对象树搜索尚未实现：在后续工作包提供（服务端 filter.name.contains 已就绪）");
-
         // 状态栏行操作：动作名与 Linux（shell.rs `apply_row_ops`）逐字一致。可用性与「为什么不可用」
         // 由 ApplyDataStatus / ApplyQueryStatus 在各自的页里逐项刷新，这里的默认文案只说明动作本身。
-        // 新增行 / 删除行不在本版（#173 只做单元格编辑与提交），如实写「请用 SQL」。
+        // 新增行按契约 §9.1 不渲染；删除行已实现，文案走字符串目录（随提交生效，提交前可撤销）。
+        ToolTipService.SetToolTip(ButtonRowDelete, UiStrings.Get(UiStrings.RowDeleteTooltip));
         foreach (var (button, action, reason) in new (Button Button, string Action, string Reason)[]
                  {
-                     (ButtonRowAdd, "在当前表末尾新增一行", "本版不支持新增行，请用 SQL"),
-                     (ButtonRowDelete, "标记删除选中行（提交前可撤销）", "本版不支持删除行，请用 SQL"),
                      (ButtonRowApply, "提交所有脏行的变更", "当前没有待提交的更改"),
                      (ButtonRowRevert, "放弃全部未提交的编辑与删除标记", "当前没有未提交的更改"),
                      (ButtonRowRefresh, "重新读取当前表的第一页", "当前没有可刷新的数据页"),
@@ -969,20 +997,23 @@ public sealed partial class ShellView : UserControl
         // 「取消」在查询页执行中由 ApplyQueryStatus 逐个刷新可用性与原因；这里是启动态的默认文案。
         ToolTipService.SetToolTip(ButtonRowCancel, "取消在途的提交批次（当前不可用：没有执行中的查询）");
 
-        // 左下角对象树搜索框与状态栏上的搜索入口是同一个动作，原因只写一处。
-        ToolTipService.SetToolTip(ButtonSearch, "对象树搜索（当前不可用：搜索尚未接线，服务端 filter.name.contains 已就绪）");
-
         MenuQuit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         MenuAbout.Click += OnAboutClick;
         MenuNewConnection.Click += async (_, _) => await ShowNewConnectionDialogAsync();
         MenuNewQueryTab.Click += (_, _) => CreateQueryTab();
 
+        // 「连接」= 打开连接对话框（规范 shell.toolbar.connect / 等价 Ctrl+N）。
+        // 禁用态时不发动作，只留一条日志兜底（WinUI 的 IsEnabled=false 通常不会触发 Click，
+        // 这里仍保留判定：与 Linux 处理器同一约定，且防御通过自动化/键盘绕过的情况）。
         ButtonConnect.Click += async (_, _) =>
         {
-            if (SelectedProfile() is { } profile)
+            if (_session is null || !_session.State.IsReady)
             {
-                await ConnectProfileAsync(profile);
+                ConsoleBridge.WriteDiagnostic("[toolbar] 「连接」在后端未就绪时被触发，按规范忽略");
+                return;
             }
+
+            await ShowNewConnectionDialogAsync();
         };
 
         ButtonNewQuery.Click += (_, _) => CreateQueryTab();
@@ -996,6 +1027,59 @@ public sealed partial class ShellView : UserControl
         var newConnection = new KeyboardAccelerator { Key = VirtualKey.N, Modifiers = VirtualKeyModifiers.Control };
         newConnection.Invoked += OnNewConnectionAccelerator;
         KeyboardAccelerators.Add(newConnection);
+    }
+
+    /// <summary>
+    /// 视图菜单（#3）：文案全部从字符串目录取，主题走 ThemeService.SetPreference，
+    /// 密度通过 <see cref="DensityChangeRequested"/> 交给 MainWindow 的 SwitchTier（同一套逻辑，不复制）。
+    /// </summary>
+    /// <remarks>
+    /// 用三条普通 MenuFlyoutItem 而不是 Toggle / Radio：本机无法编译，WinUI 3 的
+    /// MenuFlyoutItem.IsToggleEnabled / IsChecked 在这套 SDK 版本上未核实，按契约允许的形式退到普通项。
+    /// 切档会整页重建，菜单项也随之外新建；主题切换不重建，当前档位 / 偏好只写进诊断日志。
+    /// </remarks>
+    private void WireViewMenu()
+    {
+        SetSubItemText(MenuView, UiStrings.Get(UiStrings.ViewMenuText));
+        SetSubItemText(MenuViewTheme, UiStrings.Get(UiStrings.ViewThemeText));
+        SetSubItemText(MenuViewDensity, UiStrings.Get(UiStrings.ViewDensityText));
+
+        SetItemText(MenuThemeSystem, UiStrings.Get(UiStrings.ViewThemeSystem));
+        SetItemText(MenuThemeLight, UiStrings.Get(UiStrings.ViewThemeLight));
+        SetItemText(MenuThemeDark, UiStrings.Get(UiStrings.ViewThemeDark));
+
+        SetItemText(MenuDensityCompact, UiStrings.Get(UiStrings.ViewDensityCompact));
+        SetItemText(MenuDensityComfortable, UiStrings.Get(UiStrings.ViewDensityComfortable));
+        SetItemText(MenuDensityLarge, UiStrings.Get(UiStrings.ViewDensityLarge));
+
+        MenuThemeSystem.Click += (_, _) => ChangeTheme(AppThemePreference.System);
+        MenuThemeLight.Click += (_, _) => ChangeTheme(AppThemePreference.Light);
+        MenuThemeDark.Click += (_, _) => ChangeTheme(AppThemePreference.Dark);
+
+        MenuDensityCompact.Click += (_, _) => DensityChangeRequested?.Invoke(DensityTier.Compact);
+        MenuDensityComfortable.Click += (_, _) => DensityChangeRequested?.Invoke(DensityTier.Comfortable);
+        MenuDensityLarge.Click += (_, _) => DensityChangeRequested?.Invoke(DensityTier.Large);
+
+        ConsoleBridge.WriteDiagnostic(
+            $"[view] 菜单就绪：主题={ThemeService.PreferenceName}，密度={Metrics.TierId}");
+    }
+
+    private void ChangeTheme(AppThemePreference preference)
+    {
+        ThemeService.SetPreference(preference);
+        ConsoleBridge.WriteDiagnostic($"[view] 主题偏好 → {ThemeService.PreferenceName}");
+    }
+
+    private static void SetItemText(MenuFlyoutItem item, string text)
+    {
+        item.Text = text;
+        AutomationProperties.SetName(item, text);
+    }
+
+    private static void SetSubItemText(MenuFlyoutSubItem item, string text)
+    {
+        item.Text = text;
+        AutomationProperties.SetName(item, text);
     }
 
     // ---- 侧栏拖动 ----------------------------------------------------------------
