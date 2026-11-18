@@ -1,8 +1,9 @@
 # frontend/AGENTS.md — 原生前端细则
 
 作用域：`frontend/windows`（WinUI 3 / C#）、`frontend/linux`（GTK4 + libadwaita / Rust）、
-`frontend/macos`（SwiftUI / Swift，尚未接入门禁）、共享文案目录 `l10n/` 与生成器
-`tools/l10n_gen.py`。根 `AGENTS.md` §1–§5、§9、§13、§15 恒定适用；本文件承载根 §4.1、§8、
+`frontend/macos`（SwiftUI / Swift，尚未接入门禁）。共享文案目录 `l10n/` 位于 `frontend/`
+之外：在 `l10n/` 内直接编辑时以 `../l10n/AGENTS.md`（指针）为入口，本文件规则不会跨目录
+自动加载；生成器在 `tools/l10n_gen.py`。根 `AGENTS.md` §1–§5、§9、§13、§15 恒定适用；本文件承载根 §4.1、§8、
 §12 完整细则与 §14.3/14.4 的前端侧执行。UI 真值文档：`docs/ui-specification/`（metrics.toml、
 scaling-and-window-sizing.md、ui-behavior-contract.md、components/ 注册表）。
 平台级规则目前较少，暂不设 `frontend/<platform>/AGENTS.md`；某平台积累出独立的长期规则后再单列。

@@ -24,9 +24,11 @@
 
 ## 验证
 
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo test`
+<!-- 按根 AGENTS.md §13 档位选做：范围外的项标「不适用 + 原因」，不强制全量；跑不了的平台明确标注。 -->
+
+- [ ] `cargo fmt --all -- --check`（backend 或 frontend/linux，按改动范围）
+- [ ] `cargo clippy --all-targets -- -D warnings`（同上）
+- [ ] `cargo test`（改动 crate 定向或 `just test` 全量，按档位）
 - [ ] 涉及驱动：通过 `driver-testkit` 符合性测试
 - [ ] 涉及前端：记录实际构建/运行平台与结果
 
