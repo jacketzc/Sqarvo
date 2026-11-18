@@ -737,7 +737,7 @@ internal sealed record DataChangePlan(
     }
 }
 
-/// <summary>提交前的守卫结论（阈值确认 = 非模态的「再按一次」）。</summary>
+/// <summary>提交前的守卫结论（需要破坏性操作时由 UI 弹模态对话框确认）。</summary>
 internal sealed record DataSubmitPlan(
     bool Allowed,
     bool NeedsRiskConfirmation,
@@ -748,7 +748,7 @@ internal sealed record DataSubmitPlan(
 {
     /// <summary>算这一批能不能发。</summary>
     /// <param name="page">数据页。</param>
-    /// <param name="riskArmed">用户已经就「超过阈值」确认过一次。</param>
+    /// <param name="riskArmed">用户已经就风险确认过一次（模态对话框确认后由 UI 传入 true）。</param>
     /// <returns>守卫结论（<see cref="Message"/> 可直接展示）。</returns>
     public static DataSubmitPlan Build(DataPage page, bool riskArmed)
     {
@@ -769,7 +769,7 @@ internal sealed record DataSubmitPlan(
 
         if (rows > DataLimits.RiskConfirmationRows && !riskArmed)
         {
-            // 一次改这么多行是不可逆的高风险动作：本版不弹对话框，改成「再按一次确认」。
+            // 一次改这么多行是不可逆的高风险动作：UI 弹模态对话框确认（方案 A），默认「取消」。
             var deletePart = deletes > 0 ? $"（其中删除 {deletes} 行）" : string.Empty;
             return new DataSubmitPlan(
                 false,
@@ -777,11 +777,11 @@ internal sealed record DataSubmitPlan(
                 false,
                 rows,
                 changes,
-                $"本次提交 {rows} 行{deletePart}，超过风险阈值 {DataLimits.RiskConfirmationRows} 行：再按一次 Ctrl+S（或再点「应用」）确认提交");
+                $"本次提交 {rows} 行{deletePart}，超过风险阈值 {DataLimits.RiskConfirmationRows} 行。请在确认对话框中复核后提交。");
         }
 
-        // ui-behavior-contract §8.2：变更里**含任何删除**都必须确认（删除单独警告）。本端没有模态对话框，
-        // 与超阈值同一套「再按一次」语义，但确认文案单列删除行数。
+        // ui-behavior-contract §8.2：变更里**含任何删除**都必须确认。本端走与超阈值同一套模态对话框，
+        // 只是正文单列删除行数（正文模板镜像在 Strings/UiStrings.cs 的 Data.Submit.WithDeletes）。
         if (deletes > 0 && !riskArmed)
         {
             return new DataSubmitPlan(
@@ -790,7 +790,7 @@ internal sealed record DataSubmitPlan(
                 false,
                 rows,
                 changes,
-                $"本次提交包含删除 {deletes} 行（删除不可撤销）：再按一次 Ctrl+S（或再点「应用」）确认提交");
+                $"本次提交包含删除 {deletes} 行（删除不可撤销，随提交生效）。请在确认对话框中复核后提交。");
         }
 
         return new DataSubmitPlan(

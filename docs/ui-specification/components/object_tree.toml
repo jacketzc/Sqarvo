@@ -418,8 +418,8 @@ evidence = "§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不�
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "17fe419b72e2"
-note = "有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。"
+spec_hash = "0df9bbc8ca0c"
+note = "有占位行「正在加载对象列表…」与「加载更多…」；读取失败行点按即重试（Linux 没有这条路径）；空态文案待逐条核对。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:93 LoadingPlaceholder、frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:354 PlaceholderNode；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -444,7 +444,7 @@ evidence = "§7 状态栏左边沟 + §2.4 搜索"
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "对象树没有搜索入口（§7.1 未记录）。"
+note = "按契约 §9.1「能力性不可用不渲染」已删除状态栏左边沟的搜索入口（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:956 占位注释）；代码已接入（锚点），dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。该端不适用此组件，保持 none（非 done）。"
 
 [component.sync.macos]
 state = "none"
@@ -502,7 +502,7 @@ evidence = "§2.4 搜索；Ctrl+F / Enter / Esc 三键"
 [component.sync.windows]
 state = "none"
 spec_hash = ""
-note = "无搜索框。"
+note = "搜索框随对象树搜索入口一并删除（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1015 占位注释，状态栏不再摆搜索入口）；代码已接入（锚点），dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。该端不适用此组件，保持 none。"
 
 [component.sync.macos]
 state = "none"

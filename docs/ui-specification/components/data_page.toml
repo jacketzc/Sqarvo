@@ -138,7 +138,7 @@ evidence = "§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_
 [component.sync.windows]
 state = "partial"
 spec_hash = "929f45eb049c"
-note = "§7.1：Ctrl+S / 状态栏「应用（✓）」提交；超过 100 行时不弹对话框，改成「再按一次 Ctrl+S 确认」并带 acknowledge_risk；提交走 ApplyRowChanges（带 transaction_id），全部成功再 Commit。"
+note = "代码已接入（锚点，dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）：含删除 / 超过风险阈值的提交与删除已改为 ContentDialog 模态确认（`ConfirmDestructiveAsync`，frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1234 定义、:1297 提交确认、:2606 删除确认；风险文案 frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:770/793）。Ctrl+S / 状态栏「应用（✓）」提交，提交走 ApplyRowChanges（带 transaction_id），全部成功再 Commit。静态接入完成、模态弹窗交互待实机确认，故保留 partial。"
 
 [component.sync.macos]
 state = "none"
@@ -732,6 +732,8 @@ parent = "data_page"
 display_name = "数据网格（表格外框 · 行号列 · 表头 · 数据行）"
 kind = "container"
 status = "active"
+hand_drawn = true
+why_not_native = "WinUI 3 没有 GtkColumnView 的等价控件：GridView / ListView 的虚拟化不与列宽拖动、行号列、单行表头这三者组合，因此这一层用自绘虚拟化行区自己管理行号、列宽与表头（§7.1）。"
 native_control = "gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—"
 a11y.name = "数据网格"
 style.slot = "workspace.content"
@@ -776,13 +778,13 @@ source = "src/data_page.rs:4388"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "59900abdc23b"
+spec_hash = "ac2a249587f8"
 commit = ""
 evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "59900abdc23b"
+spec_hash = "ac2a249587f8"
 note = "§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1824 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2173 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2152 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2111 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。"
 
 [component.sync.macos]
@@ -874,8 +876,8 @@ evidence = "§5.4 行号标记；build_columns 的 number_factory（●N / ✕N 
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "065e698ff671"
-note = "§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。"
+spec_hash = "c09290d4c459"
+note = "§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1857 行号列宽、:1864 行号单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -925,8 +927,8 @@ evidence = "§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "694b2709c5af"
-note = "§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。"
+spec_hash = "0a982d98943d"
+note = "§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:970 BeginCellEdit、:1017 CommitCellEdit、:1997 NULL 文案；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -991,18 +993,18 @@ result = "Linux：popover 自动收起，等同取消（没点「应用」就什
 source = "src/data_page.rs:578、src/data_page.rs:570"
 
 platform_notes.linux = "编辑是弹层形态（GtkPopover + 应用 / 取消），没有格内就地编辑：未绑 F2，Enter 不提交，点别处 = 取消（未应用则无改动）。"
-platform_notes.windows = "§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行时按「再按一次 Ctrl+S 确认」。"
+platform_notes.windows = "§7.1：双击单元格或 F2 进入格内就地编辑；Enter 提交到本地暂存（不落库）、Esc 取消、点到别处按暂存处理；Ctrl+S 提交、Ctrl+Z 撤销；超过 100 行或含删除时弹 ContentDialog 模态确认（破坏性按钮默认「取消」，frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1234）；本机无 dotnet 未编译 / 未运行，交互待实机确认。"
 platform_notes.macos = "§7.1 未记录。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "985762f37b60"
+spec_hash = "f420395fd8f9"
 commit = ""
 evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "985762f37b60"
+spec_hash = "f420395fd8f9"
 note = "§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。"
 
 [component.sync.macos]

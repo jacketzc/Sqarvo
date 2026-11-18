@@ -680,9 +680,17 @@ public sealed partial class ShellView
 
     // ------------------------------------------------------------------ 键盘 / 滚动
 
-    /// <summary>编辑器里的快捷键：Ctrl+Enter 执行、Ctrl+. 取消（在**捕获阶段**处理，不会被 TextBox 吃掉）。</summary>
+    /// <summary>编辑器里的快捷键：Ctrl+Enter 执行、Esc / Ctrl+. 取消（在**捕获阶段**处理，不会被 TextBox 吃掉）。</summary>
     private void OnQueryEditorKeyDown(QueryTab tab, KeyRoutedEventArgs args)
     {
+        // 契约 §8.1：Esc = 取消查询（幂等）。Esc 不带修饰键，必须放在 Ctrl 判定之前。
+        if (args.Key == VirtualKey.Escape)
+        {
+            args.Handled = true;
+            _ = CancelQueryAsync(tab);
+            return;
+        }
+
         if (!IsControlDown())
         {
             return;
@@ -1975,7 +1983,7 @@ public sealed partial class ShellView
     // ------------------------------------------------------------------ 接线（构造函数调用一次）
 
     /// <summary>
-    /// 查询面的接线：标签条的关页 / 切页事件 + 三个窗口级快捷键。
+    /// 查询面的接线：标签条的关页 / 切页事件 + 窗口级快捷键（含 Esc 取消）。
     /// </summary>
     /// <remarks>
     /// 快捷键用 <see cref="UIElement.KeyboardAccelerators"/>（与既有的 Ctrl+N 同一条路径）：不改工具条形状，
@@ -2031,6 +2039,22 @@ public sealed partial class ShellView
         };
 
         KeyboardAccelerators.Add(cancel);
+
+        // 契约 §8.1：Esc 是 Windows 上取消查询的规范键（幂等，和 Ctrl+. 进同一个方法）。
+        // 焦点不在编辑器时也能取消；Ctrl+. 保留为 Windows 附加项，不移除。
+        var escapeCancel = new KeyboardAccelerator { Key = VirtualKey.Escape };
+        escapeCancel.Invoked += (sender, args) =>
+        {
+            if (CurrentQueryTab() is not { } tab)
+            {
+                return;
+            }
+
+            args.Handled = true;
+            _ = CancelQueryAsync(tab);
+        };
+
+        KeyboardAccelerators.Add(escapeCancel);
 
         var run = new KeyboardAccelerator { Key = VirtualKey.Enter, Modifiers = VirtualKeyModifiers.Control };
         run.Invoked += (_, args) =>

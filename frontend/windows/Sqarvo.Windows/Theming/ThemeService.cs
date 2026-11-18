@@ -63,6 +63,16 @@ public static class ThemeService
     private static UISettings? _uiSettings;
     private static bool _started;
 
+    /// <summary>最近一次应用到的窗口（启动期由 App 调 ApplyToWindow 时记下，供运行期切换复用）。</summary>
+    private static Window? _window;
+
+    /// <summary>
+    /// 窗口层注册的即时落盘回调。<see cref="SetPreference"/> 只发通知，
+    /// <c>window.json</c> 的唯一写入方仍是持有 <c>WindowState</c> 的 MainWindow——
+    /// 这样切主题与切档 / 关窗写盘不会互相覆盖。
+    /// </summary>
+    public static Action<AppThemePreference>? PreferenceWriter { get; set; }
+
     /// <summary>系统主题 / 高对比 / 强调色变化（可能在非 UI 线程触发，订阅方自行回到 UI 线程）。</summary>
     public static event EventHandler? SystemAppearanceChanged;
 
@@ -95,6 +105,39 @@ public static class ThemeService
         else if (preference == AppThemePreference.Light)
         {
             application.RequestedTheme = ApplicationTheme.Light;
+        }
+    }
+
+    /// <summary>
+    /// 运行期切换主题偏好：写字段 → 即时持久化（经窗口层回调）→ 应用到窗口内容与标题栏。
+    /// </summary>
+    /// <remarks>
+    /// 不碰 <c>Application.RequestedTheme</c>（运行中设会抛 <see cref="NotSupportedException"/>）：
+    /// 元素级主题由 <see cref="ApplyToWindow"/> 处理，它内部同时同步标题栏（<see cref="ApplyTitleBar"/>）。
+    /// </remarks>
+    public static void SetPreference(AppThemePreference pref)
+    {
+        if (Preference == pref)
+        {
+            return;
+        }
+
+        Preference = pref;
+
+        try
+        {
+            PreferenceWriter?.Invoke(pref);
+        }
+        catch (Exception error)
+        {
+            // 写盘失败不该让界面切换失败；窗口状态是便利功能。
+            Diagnostics.ConsoleBridge.WriteDiagnostic(
+                $"[theme] 主题偏好落盘失败（{error.GetType().Name}）：{error.Message}");
+        }
+
+        if (_window is { } window)
+        {
+            ApplyToWindow(window);
         }
     }
 
@@ -215,6 +258,8 @@ public static class ThemeService
     public static void ApplyToWindow(Window window)
     {
         ArgumentNullException.ThrowIfNull(window);
+
+        _window = window;
 
         if (window.Content is FrameworkElement root)
         {

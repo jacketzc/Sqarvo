@@ -260,8 +260,8 @@ evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_pa
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "14b415cf7ea2"
-note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。"
+spec_hash = "6255d75d243d"
+note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/MainWindow.xaml:24 Ctrl+W 快捷键、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:240/1548 TabCloseRequested；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -433,7 +433,7 @@ evidence = "真机 QA（独立 app id `io.sqarvo.Sqarvo.QA186.*` + 隔离 XDG_CO
 [component.sync.windows]
 state = "done"
 spec_hash = "19146e5c30b7"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1093；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:700"
+evidence = "执行 / 取消走同一按钮（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289/1093/700）。Wave1 新接入编辑器与窗口级 Esc 取消（ShellView.Query.cs:508 的 VirtualKey.Escape 分支、:1471 的 KeyboardAccelerator）。原 evidence 的交互证据来自前序 #172 已确认部分；Wave1 新增部分dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -583,8 +583,8 @@ evidence = "§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+E
 [component.sync.windows]
 state = "partial"
 spec_hash = "9f9e294af468"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:360（MinHeight 读 query_editor_min_height）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1172（ApplyQueryLayout：结果区隐藏时编辑器占满整页）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1192（默认比例读 query_editor_ratio）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:802（整段执行）"
-note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现（Linux 真类型探针编译验证 0 警告 0 错误，未在本机构建/运行 WinUI）。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:360（MinHeight 读 query_editor_min_height）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1172（ApplyQueryLayout：结果区隐藏时编辑器占满整页）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1192（默认比例读 query_editor_ratio）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:802（整段执行）；Esc 取消 frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:508/1471（改动确认单 #5，保留 Ctrl+. 为 Windows 附加项）"
+note = "行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现。Esc 取消（#5）已接入编辑器与窗口级（保留 Ctrl+.）。dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。"
 
 [component.sync.macos]
 state = "none"
@@ -712,7 +712,7 @@ evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题
 state = "partial"
 spec_hash = "3687fa525be8"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1557（RenderQueryHeader 按当前列重建）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:716（LoadSlot 换入语句列）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:526（MetaText 退役「只显示第 1 段」）"
-note = "#190 表头随选中语句重建已实现；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，列头观感待 Windows 真机人工确认。"
+note = "#190 表头随选中语句重建已实现；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），GUI 交互与列头观感待 Windows 真机人工确认。"
 
 [component.sync.macos]
 state = "none"
@@ -724,6 +724,8 @@ parent = "tabs.query.results"
 display_name = "结果行区（虚拟化表格）"
 kind = "control"
 status = "active"
+hand_drawn = true
+why_not_native = "WinUI 3 的 GridView 不支持「虚拟化 + 列宽 + 行号」三者组合，ItemsControl 的虚拟化不带列宽拖动；结果区用自绘虚拟化网格，只建视口内的行、行号跨批次连续（§7.1）。"
 a11y.name = "查询结果"
 a11y.tab = "可聚焦；Esc 清空行选中（执行中的 Esc 是取消查询）"
 style.metrics = ["row_height_data", "row_number_width", "column_width", "font_data_cell", "font_weight_cell"]
@@ -744,12 +746,12 @@ platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚�
 
 [component.sync.linux]
 state = "done"
-spec_hash = "75589f33e315"
+spec_hash = "358a9e1dfa25"
 evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "86ce86d71e39"
+spec_hash = "358a9e1dfa25"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1139；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1166"
 note = "视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。"
 
