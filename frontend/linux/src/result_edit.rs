@@ -20,6 +20,7 @@ use std::cell::RefCell;
 
 use crate::backend::query::{RowView, format_cell};
 use crate::backend::table::{TableColumn, TableRow};
+use crate::l10n;
 use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::ObjectRef;
 use crate::table_data::{InsertDraft, RiskAssessment, RowFailure, TableDraft};
@@ -197,7 +198,7 @@ impl ResultEdit {
     /// 开始一笔新行草稿（所有列先按「省略，交给数据库默认值」）。
     pub fn begin_insert(&self) -> Result<(), String> {
         if self.insert.borrow().is_some() {
-            return Err("已经有一行待插入的新行：先提交或放弃它".to_owned());
+            return Err(l10n::t("data_page.insert_exists").to_owned());
         }
         self.insert
             .borrow_mut()
@@ -217,7 +218,7 @@ impl ResultEdit {
     pub fn set_insert_text(&self, column: usize, text: &str) -> Result<(), String> {
         let mut insert = self.insert.borrow_mut();
         let Some(insert) = insert.as_mut() else {
-            return Err("还没有待插入的新行".to_owned());
+            return Err(l10n::t("data_page.insert_none_re").to_owned());
         };
         insert.set_text(column, text)
     }
@@ -226,7 +227,7 @@ impl ResultEdit {
     pub fn set_insert_null(&self, column: usize) -> Result<(), String> {
         let mut insert = self.insert.borrow_mut();
         let Some(insert) = insert.as_mut() else {
-            return Err("还没有待插入的新行".to_owned());
+            return Err(l10n::t("data_page.insert_none_re").to_owned());
         };
         insert.set_null(column)
     }

@@ -1,0 +1,2183 @@
+# 数据网格区文案目录（注册表区 `data_page.*`，ADR 0031 决策 2；迁移切片 S4/#202 Lane A + Lane B + Lane C）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
+# （位置参数改名为命名占位的条目在 Issue #202 汇报的白名单里逐条列出）。
+# Lane A 覆盖表面：数据网格（data_page.rs）的表工具条（列显隐 / 筛选与排序 / 导出
+# 按钮与导出菜单条目与范围提示）、列显隐浮层、筛选与排序面板（含条件/排序键行内编辑
+# 与校验错误）、六类常驻徽标（只读 / 无主键 / 视图 / 无权限 / 未统计 / 驱动不支持排序
+# 筛选）及 tooltip 全文、网格状态行（正在读取 / 空表 / 越界空页 / 已断开 · 已加载 N
+# 行）、分页器动作名与翻页消息、行号格（行号表头与脏/删除/新行图例 tooltip）、单元格
+# 截断与脏标记 tooltip、「字段 / 值」视图表头与切换提示、复制为 INSERT 的选择提示；
+# tabs.rs Objects 页行号格 tooltip「第 N 行」（与数据页行号同一口径，S3 移交本切片）。
+# Lane B 覆盖表面（编辑器与提交面）：单元格编辑器与新增行编辑器（open_cell_editor /
+# open_insert_editor 的标题、NULL 勾选、可空/不可空提示、省略列态、应用/取消、值转换
+# 失败就地报错）、detail_cell_factory 编辑提示、编辑受限原因（edit_block_reason）、
+# 新增行草稿（begin_insert / submit_insert / show_inserted / committed_insert_cells 与
+# table_data.rs 的 InsertDraft）、table_data.rs 用户可见面（ReadOnlyCause 的 headline /
+# explanation / banner、parse_cell_input 各族值校验错误、列/行下标越界、影响行数与期望
+# 不符、提交批次摘要与风险确认文案、事务四态徽标与开始/提交/回滚原因、隔离级别卡片），
+# 提交面按钮与脏行计数标签（update_dirty_label 的 one/other 两态）、标记删除与
+# delete_note、放弃更改、事务三按钮与隔离级别卡片、begin_tooltip、sync_status_dot 事务
+# 说明、show_failures 失败摘要、数据行右键菜单条目（删除行 / 复制为 INSERT / 复制为 ▸）、
+# result_edit.rs（新增行草稿态三条）、submit_batch.rs（批次状态、失败摘要、重放/取消）、
+# tabs.rs 关窗守卫消费的 DirtyTabSummary::line 逐表摘要模板。
+# 跨区复用：数据页「Sqarvo 需要重启」横幅按钮取既有 shell.recovery_btn_restart，不新建
+# 重复条目（见 Issue #202 汇报）。
+# Lane C 覆盖表面（状态页副文本收口）：DDL 面板（ddl.rs）的读取中 / 无浏览会话 /
+# 空 DDL 状态页标题与副文本、拼装警示行（{detail} 命名占位）；MetadataError 的
+# headline()/hint() 全族 20 条（#201 遗留——同一句副文本同时进对象树状态行、信息面板
+# 与 DDL 状态页）；backend/table.rs 的 type_not_editable_reason（列类型不支持行内编辑）。
+# 不在这里登记：日志行（eprintln!）、QA 钩子错误串（qa_* 助手）、backend/query.rs 的值
+# 格式化 tooltip（与查询结果网格共用，随 #203 一起收）、results.rs / statements.rs /
+# export*（#203）、结构连接符与分隔符（列头「列名 · 类型」、parts.join(" · ")、
+# 「{txn} · {dirty}\n{note}」骨架、错误副文本骨架「{message}（{code}）。{hint}」）、
+# DDL 空 DDL 之外仅进日志的 worker 串、backend/metadata.rs sanitize 的
+# 「（后端未提供错误消息）」与 detail_text 的来源说明族（随后续切片收）、
+# qa.rs TxnExpectation 硬编码中文标签（S7 钩子适配项）。
+
+# -- 分页器（PagerAction 与翻页消息，data_page.rs） --------------------------
+
+[[entry]]
+key = "data_page.pager_first"
+zh = "首页"
+en = "First"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_previous"
+zh = "上一页"
+en = "Previous"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_next"
+zh = "下一页"
+en = "Next"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_last"
+zh = "末页"
+en = "Last"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_unavailable"
+zh = "{action}不可用（没有对应页）"
+en = "{action} unavailable (no such page)"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_reading"
+zh = "正在读取 offset {target} …（{action}）"
+en = "Reading offset {target} … ({action})"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_still_loading"
+zh = "上一页仍在读取：稍候再翻页"
+en = "The previous page is still loading: wait before paging again"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_dirty_guard"
+zh = "有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）"
+en = "Uncommitted changes: commit or Discard Changes before paging/sorting/filtering (paging replaces the whole page)"
+status = "done"
+
+# -- 表工具条：列显隐 / 筛选与排序 / 导出（data_page.rs::new） ----------------
+
+[[entry]]
+key = "data_page.cc_label"
+zh = "列显隐"
+en = "Column Visibility"
+status = "done"
+
+[[entry]]
+key = "data_page.cc_tooltip"
+zh = "列显隐：隐藏列只影响渲染，不改变查询与导出口径"
+en = "Column visibility: hiding columns only affects rendering, not the query or export scope"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_label"
+zh = "筛选与排序"
+en = "Filter & Sort"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_tooltip"
+zh = "筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"
+en = "Filter & sort: column + operator + value; multiple conditions combine with AND"
+status = "done"
+
+[[entry]]
+key = "data_page.export_tooltip"
+zh = "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表（Ctrl+Shift+E 直接导出 CSV）"
+en = "Export: CSV / INSERT statements (current page or entire table) / dump table (Ctrl+Shift+E exports CSV directly)"
+status = "done"
+
+[[entry]]
+key = "data_page.export_tooltip_rows"
+zh = "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 {export_rows} 行（Ctrl+Shift+E 直接导出 CSV）"
+en = "Export: CSV / INSERT statements (current page or entire table) / dump table; {export_rows} rows loaded on this page (Ctrl+Shift+E exports CSV directly)"
+en_one = "Export: CSV / INSERT statements (current page or entire table) / dump table; 1 row loaded on this page (Ctrl+Shift+E exports CSV directly)"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_csv"
+zh = "导出 CSV…"
+en = "Export CSV…"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_csv_desc"
+zh = "当前页或整张表；空字段 = NULL，文本按 RFC 4180 转义"
+en = "Current page or entire table; empty fields = NULL, text escaped per RFC 4180"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_insert"
+zh = "导出为 INSERT 语句…"
+en = "Export as INSERT Statements…"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_insert_desc"
+zh = "当前页或整张表；每行一条 INSERT INTO … VALUES (…);"
+en = "Current page or entire table; one INSERT INTO … VALUES (…); per row"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_dump"
+zh = "转储表…"
+en = "Dump Table…"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_dump_desc"
+zh = "建表语句 + 全部数据的 INSERT（整张表，不再问范围）"
+en = "CREATE TABLE statement + INSERTs for all data (entire table, no range prompt)"
+status = "done"
+
+# -- 初始空态与状态行（data_page.rs::new / begin_open / show_open） ----------
+
+[[entry]]
+key = "data_page.status_welcome"
+zh = "请选择左侧的表开始浏览"
+en = "Pick a table on the left to start browsing"
+status = "done"
+
+[[entry]]
+key = "data_page.placeholder_no_table"
+zh = "尚未打开表"
+en = "No Table Opened"
+status = "done"
+
+[[entry]]
+key = "data_page.placeholder_no_table_desc"
+zh = "在左侧表列表中选择一张表查看数据"
+en = "Choose a table in the list on the left to view its data"
+status = "done"
+
+[[entry]]
+key = "data_page.loading_title"
+zh = "正在读取表数据"
+en = "Reading Table Data"
+status = "done"
+
+[[entry]]
+key = "data_page.loading_desc"
+zh = "等待服务端返回第一页…"
+en = "Waiting for the server's first page…"
+status = "done"
+
+[[entry]]
+key = "data_page.loading_status"
+zh = "正在读取表数据…"
+en = "Reading table data…"
+status = "done"
+
+# 读取完成时按前缀认领状态行（`set_status_ready`）；zh/en 两侧都必须与
+# `loading_status`、`pager_reading` 的开头一致。
+[[entry]]
+key = "data_page.loading_prefix"
+zh = "正在读取"
+en = "Reading"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_page_title"
+zh = "本页没有数据"
+en = "No Data on This Page"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_table"
+zh = "空表"
+en = "Empty Table"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_offset_desc"
+zh = "offset 超出总数（服务端如实返回空行）；回首页或刷新再看"
+en = "offset exceeds the total (the server honestly returned no rows); go to the first page or refresh"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_filtered_desc"
+zh = "该表存在，但当前条件下没有任何行"
+en = "The table exists, but no rows match the current conditions"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_plain_desc"
+zh = "该表存在，但目前没有任何行"
+en = "The table exists, but has no rows yet"
+status = "done"
+
+[[entry]]
+key = "data_page.more_suffix"
+zh = " · 还有下一页"
+en = " · more"
+status = "done"
+
+[[entry]]
+key = "data_page.no_data_offset"
+zh = "本页无数据（offset {offset}）"
+en = "No data on this page (offset {offset})"
+status = "done"
+
+[[entry]]
+key = "data_page.page_rows"
+zh = "本页 {rows} 行{suffix}"
+en = "{rows} rows on this page{suffix}"
+en_one = "1 row on this page{suffix}"
+status = "done"
+
+# -- 断连状态行（mark_disconnected，数据侧；results.rs 的归 #203） ------------
+
+[[entry]]
+key = "data_page.disconnect_dropped"
+zh = "已断开：{reason} 未提交的 {discarded} 行变更已丢弃；数据库事务已由后端强制回滚。"
+en = "Disconnected: {reason} {discarded} rows of uncommitted changes were discarded; the database transaction was force-rolled back by the backend."
+en_one = "Disconnected: {reason} 1 row of uncommitted changes was discarded; the database transaction was force-rolled back by the backend."
+status = "done"
+
+[[entry]]
+key = "data_page.disconnect_plain"
+zh = "已断开：{reason} 数据库事务已由后端强制回滚。"
+en = "Disconnected: {reason} the database transaction was force-rolled back by the backend."
+status = "done"
+
+[[entry]]
+key = "data_page.disconnected_status"
+zh = "已断开 · 已加载 {rows} 行（只读）"
+en = "Disconnected · {rows} rows loaded (read-only)"
+en_one = "Disconnected · 1 row loaded (read-only)"
+status = "done"
+
+# -- 六类常驻徽标（update_badges） -------------------------------------------
+
+[[entry]]
+key = "data_page.badge_readonly"
+zh = "只读"
+en = "Read-Only"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_readonly_fallback"
+zh = "服务端标记为只读"
+en = "Marked read-only by the server"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_primary_key"
+zh = "无主键"
+en = "No Primary Key"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_primary_key_tip"
+zh = "无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用"
+en = "Table without a primary key: rows cannot be located reliably, so it is read-only; browsing, sorting, filtering and counting still work"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_view_tip"
+zh = "视图：数据来自查询定义，编辑受限；排序、筛选与计数仍可用"
+en = "View: data comes from a query definition, editing is limited; sorting, filtering and counting still work"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_permission"
+zh = "无权限"
+en = "No Permission"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_permission_tip"
+zh = "当前账号对该对象没有权限：浏览被拒绝或只返回部分数据"
+en = "The current account has no permission on this object: browsing is denied or returns partial data"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_total_skipped"
+zh = "未统计"
+en = "Not Counted"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_total_skipped_tip"
+zh = "精确计数超过预算，已跳过：本页数据完整，只是没有总数"
+en = "Exact counting exceeded the budget and was skipped: this page is complete, there is just no total"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_sort_filter"
+zh = "驱动不支持排序/筛选"
+en = "Sort/Filter Unsupported"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_sort_filter_tip"
+zh = "该驱动未声明 table_browse_sort_filter_total：只提供 offset 分页，不显示排序、筛选与总数入口"
+en = "This driver does not declare table_browse_sort_filter_total: only offset pagination is offered; the sort, filter and total entry points are hidden"
+status = "done"
+
+# -- 列显隐浮层（CC 面板） -----------------------------------------------------
+
+[[entry]]
+key = "data_page.cc_close_tooltip"
+zh = "关闭列显隐"
+en = "Close column visibility"
+status = "done"
+
+[[entry]]
+key = "data_page.cc_panel_hint"
+zh = "隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。"
+en = "Hiding columns only affects the rendering of this grid; the query, copy and forthcoming export scopes stay unchanged."
+status = "done"
+
+[[entry]]
+key = "data_page.cc_check_tooltip"
+zh = "{name}（{type}）· 取消勾选只隐藏这一列，不影响数据与导出口径"
+en = "{name} ({type}) · unchecking only hides this column; the data and export scopes are unchanged"
+status = "done"
+
+# -- 筛选与排序面板（FS 面板：控件、行内编辑与校验） --------------------------
+
+[[entry]]
+key = "data_page.fs_close_tooltip"
+zh = "关闭（未应用的改动会丢弃）"
+en = "Close (unapplied changes are discarded)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_conditions_title"
+zh = "筛选条件"
+en = "Filter Conditions"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_no_table_option"
+zh = "（未打开表）"
+en = "(no table open)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_column_tooltip"
+zh = "筛选列（来自 GetColumns 的列清单）"
+en = "Filter column (from the GetColumns column list)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_operator_tooltip"
+zh = "算子：比较 / LIKE / IS NULL"
+en = "Operator: comparison / LIKE / IS NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.value_label"
+zh = "值"
+en = "Value"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_add_condition"
+zh = "添加条件"
+en = "Add Condition"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_title"
+zh = "排序"
+en = "Sort"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_column_tooltip"
+zh = "排序列（来自 GetColumns 的列清单）"
+en = "Sort column (from the GetColumns column list)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_direction_tooltip"
+zh = "asc = 升序，desc = 降序"
+en = "asc = ascending, desc = descending"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_add_sort"
+zh = "添加排序"
+en = "Add Sort"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_apply"
+zh = "应用"
+en = "Apply"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_clear"
+zh = "清空"
+en = "Clear"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_applied"
+zh = "已应用"
+en = "Applied"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_applied_tooltip"
+zh = "面板里的筛选与排序就是表格正在用的那一套"
+en = "The filter and sort in this panel are exactly what the grid is using"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_pending"
+zh = "有未应用的更改"
+en = "Unapplied changes"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_pending_tooltip"
+zh = "点「应用筛选与排序」才会生效；关闭面板会丢弃这些改动"
+en = "They only take effect after you click Apply; closing the panel discards these changes"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_conditions_empty"
+zh = "无筛选条件"
+en = "No filter conditions"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_default"
+zh = "默认排序（主键）"
+en = "Default order (primary key)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_edit_tooltip"
+zh = "点击这一条可就地编辑（列 / 算子 / 值）"
+en = "Click this condition to edit it inline (column / operator / value)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_remove_tooltip"
+zh = "删除这条条件（仍需点「应用」才生效）"
+en = "Remove this condition (still needs Apply)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_column_tooltip"
+zh = "筛选列"
+en = "Filter column"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_save_tooltip"
+zh = "保存这条条件的修改（回车）"
+en = "Save this condition's changes (Enter)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_cancel_tooltip"
+zh = "放弃修改（Esc）"
+en = "Discard changes (Esc)"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_toggle_tooltip"
+zh = "点击切换 asc / desc"
+en = "Click to switch asc / desc"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_move_up_tooltip"
+zh = "上移（更优先）"
+en = "Move up (higher priority)"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_move_down_tooltip"
+zh = "下移（更次要）"
+en = "Move down (lower priority)"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_remove_tooltip"
+zh = "删掉这个排序键（仍需点「应用」才生效）"
+en = "Remove this sort key (still needs Apply)"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_error_no_columns"
+zh = "还没有可筛选的列：先打开一张表"
+en = "No filterable columns yet: open a table first"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_error_needs_value"
+zh = "{operator} 需要一个值（列 {column} · {type}）"
+en = "{operator} needs a value (column {column} · {type})"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_error_no_columns"
+zh = "还没有可排序的列：先打开一张表"
+en = "No sortable columns yet: open a table first"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_error_unsupported"
+zh = "当前驱动不支持排序"
+en = "The current driver does not support sorting"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_error_unknown_column"
+zh = "排序列 {column} 不在当前表的列清单里（未知列）"
+en = "Sort column {column} is not in this table's column list (unknown column)"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_condition_removed"
+zh = "筛选条件已清空（点「应用筛选与排序」恢复全表）"
+en = "Filter conditions cleared (click Apply to restore the whole table)"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_applied"
+zh = "筛选与排序已应用（{condition_count} 条条件 · {sort_count} 个排序键）· 回到第 1 页"
+en = "Filter & sort applied ({condition_count} conditions · {sort_count} sort keys) · back to page 1"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_sort_cleared"
+zh = "条件与排序已清空（点「应用筛选与排序」恢复全表）"
+en = "Conditions and sorting cleared (click Apply to restore the whole table)"
+status = "done"
+
+# -- 行号格与列头（build_columns / refresh_header_tooltips；tabs.rs 的 Objects
+#    页行号格 tooltip 与数据页同一口径，共用 `row_number_tooltip`） ------------
+
+[[entry]]
+key = "data_page.header_row_number"
+zh = "行号"
+en = "Row"
+status = "done"
+
+[[entry]]
+key = "data_page.header_tooltip"
+zh = "点击查看列属性：{title}"
+en = "Click to view column info: {title}"
+status = "done"
+
+[[entry]]
+key = "data_page.row_number_tooltip"
+zh = "第 {number} 行"
+en = "Row {number}"
+status = "done"
+
+[[entry]]
+key = "data_page.row_removed_tooltip"
+zh = "第 {number} 行 · 已删除"
+en = "Row {number} · deleted"
+status = "done"
+
+[[entry]]
+key = "data_page.row_insert_tooltip"
+zh = "新行 · 尚未提交（双击单元格填值）"
+en = "New row · not committed yet (double-click a cell to fill it)"
+status = "done"
+
+[[entry]]
+key = "data_page.row_deleted_tooltip"
+zh = "第 {number} 行 · 已标记删除（提交前可撤销）"
+en = "Row {number} · marked for deletion (can be undone before commit)"
+status = "done"
+
+[[entry]]
+key = "data_page.row_dirty_tooltip"
+zh = "第 {number} 行 · 有未提交的更改"
+en = "Row {number} · has uncommitted changes"
+status = "done"
+
+# -- 单元格 tooltip（截断与脏标记；NULL/空串的字面文本是行为契约口径，不进目录） --
+
+[[entry]]
+key = "data_page.cell_truncated_tip"
+zh = "该值被截断：不能编辑（提交截断值会写坏数据）"
+en = "This value is truncated: not editable (committing a truncated value corrupts data)"
+status = "done"
+
+[[entry]]
+key = "data_page.cell_dirty_tip"
+zh = "已修改，尚未提交"
+en = "Modified, not committed yet"
+status = "done"
+
+# -- 「字段 / 值」详情视图与行选择提示 ----------------------------------------
+
+[[entry]]
+key = "data_page.detail_col_field"
+zh = "字段"
+en = "Field"
+status = "done"
+
+[[entry]]
+key = "data_page.detail_back"
+zh = "已切回按行浏览"
+en = "Switched back to row view"
+status = "done"
+
+[[entry]]
+key = "data_page.detail_need_selection"
+zh = "先选中一行，再切换到「字段 / 值」视图"
+en = "Select a row first, then switch to the Field / Value view"
+status = "done"
+
+[[entry]]
+key = "data_page.select_row_hint"
+zh = "请先在表格中选择一行（Ctrl/Shift 可多选）"
+en = "Select a row in the grid first (Ctrl/Shift allows multiple)"
+status = "done"
+
+# -- 复制为 INSERT（行选择提示与结果，data_page.rs） --------------------------
+
+[[entry]]
+key = "data_page.copy_no_table"
+zh = "还没有打开表：先打开一张表再复制"
+en = "No table is open yet: open a table before copying"
+status = "done"
+
+[[entry]]
+key = "data_page.copy_no_selection"
+zh = "没有选中行：先选中要复制的行"
+en = "No rows selected: select the rows to copy first"
+status = "done"
+
+[[entry]]
+key = "data_page.copy_no_display"
+zh = "没有可用的显示服务，无法写入剪贴板"
+en = "No display service available; cannot write to the clipboard"
+status = "done"
+
+[[entry]]
+key = "data_page.copy_copied"
+zh = "已复制 {rows} 行为 INSERT 语句"
+en = "Copied {rows} rows as INSERT statements"
+en_one = "Copied 1 row as an INSERT statement"
+status = "done"
+
+# ==== S4 Lane B：编辑器与提交面（#202 中段） ====
+#
+# 覆盖表面：单元格编辑器与新增行编辑器（标题 / NULL 勾选 / 可空提示 / 应用 /
+# 取消 / 值转换失败就地报错）、编辑拦截原因、新增行草稿与省略态（InsertDraft /
+# omit_hint）、TableDraft 单元操作错误、只读原因全文（ReadOnlyCause）、风险确认
+# 对话框、提交/取消提交按钮与脏行计数标签（t_n 两态）、行操作不可用原因、
+# 在途批次状态行（submit_batch.rs）、失败行摘要、事务三按钮与状态徽标、状态圆
+# tooltip 事务说明、隔离级别卡片（table_data.rs）、数据行右键菜单条目、关窗守卫
+# 逐表摘要（DirtyTabSummary::line）。
+# 复用不新建：数据页「Sqarvo 需要重启」横幅按钮取 shell.recovery_btn_restart；
+# 留在代码：eprintln! 日志行（含 qa_* 错误串与 SubmitBlocked/CancelRequest/
+# CommitClick 的日志原因）、parse_bool 的输入 token（是/真/否/假，行为契约）、
+# rows_summary/log_rows 的 QA 证据行、context_menu.rs 的激活错误串、
+# backend/table.rs 的 type_not_editable_reason（文件不在本 Lane 清单）、
+# 「{name} · {type}」类结构性连接符与「 · 」分隔符、结构骨架「{txn} · {dirty}\n{note}」。
+
+# -- 单元格编辑器（open_cell_editor / open_insert_editor / open_editor 标题与提示） --
+
+[[entry]]
+key = "data_page.editor_title"
+zh = "编辑 {column_name} · {type_label}"
+en = "Edit {column_name} · {type_label}"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_editor_title"
+zh = "新行 · {column_name} · {type_label}"
+en = "New Row · {column_name} · {type_label}"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_null_check"
+zh = "设为 NULL（SQL 空值）"
+en = "Set to NULL (SQL null)"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_hint_nullable"
+zh = "空文本在文本列表示空字符串 ''；要写 NULL 请勾选上方选项"
+en = "Empty text in a text column means the empty string ''; check the option above to write NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_hint_not_null"
+zh = "该列不允许 NULL：请输入合法值"
+en = "This column does not allow NULL: enter a valid value"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_hint_nullable_insert"
+zh = "空文本在文本列表示空字符串；要写 NULL 请勾选上方选项"
+en = "Empty text in a text column means the empty string; check the option above to write NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.btn_apply"
+zh = "应用"
+en = "Apply"
+status = "done"
+
+[[entry]]
+key = "data_page.btn_cancel"
+zh = "取消"
+en = "Cancel"
+status = "done"
+
+[[entry]]
+key = "data_page.detail_edit_tip"
+zh = "双击编辑这个字段的值（与网格同一个编辑器）"
+en = "Double-click to edit this field's value (the same editor as the grid)"
+status = "done"
+
+# -- 编辑拦截原因（edit_block_reason / 状态行） -----------------------------------
+
+[[entry]]
+key = "data_page.st_no_table"
+zh = "尚未打开表"
+en = "No table is open yet"
+status = "done"
+
+[[entry]]
+key = "data_page.state_no_edit"
+zh = "当前状态不允许编辑"
+en = "The current state does not allow editing"
+status = "done"
+
+[[entry]]
+key = "data_page.column_missing"
+zh = "列不存在"
+en = "The column does not exist"
+status = "done"
+
+[[entry]]
+key = "data_page.row_missing"
+zh = "行不存在"
+en = "The row does not exist"
+status = "done"
+
+[[entry]]
+key = "data_page.row_removed"
+zh = "该行已删除"
+en = "This row was already deleted"
+status = "done"
+
+[[entry]]
+key = "data_page.row_marked_deleted"
+zh = "该行已标记删除：撤销删除后才能编辑"
+en = "This row is marked for deletion: undo the deletion before editing"
+status = "done"
+
+[[entry]]
+key = "data_page.row_marked_deleted_comma"
+zh = "该行已标记删除，撤销删除后才能编辑"
+en = "This row is marked for deletion; undo the deletion before editing"
+status = "done"
+
+[[entry]]
+key = "data_page.truncated_no_edit"
+zh = "列 {column} 的值被服务端截断（只收到前缀），禁止编辑：提交截断值会写坏数据"
+en = "The value of column {column} was truncated by the server (only a prefix arrived): editing is disabled, because committing a truncated value corrupts data"
+status = "done"
+
+# -- 新增行与插入草稿（begin_insert / submit_insert / InsertDraft） --------------
+
+[[entry]]
+key = "data_page.insert_readonly"
+zh = "只读状态：不能插入新行"
+en = "Read-only: cannot insert a new row"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_no_table"
+zh = "尚未打开表，无法新增行"
+en = "No table is open yet: cannot add a new row"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_exists"
+zh = "已经有一行待插入的新行：先提交或放弃它"
+en = "A new row is already pending insert: commit or discard it first"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_none_re"
+zh = "还没有待插入的新行"
+en = "There is no new row pending insert yet"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_started"
+zh = "{summary} · 双击单元格填值，填完点「提交更改」"
+en = "{summary} · double-click a cell to fill values, then click Commit Changes"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_none"
+zh = "当前没有待插入的新行"
+en = "There is no new row pending insert"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_summary"
+zh = "新行：显式 {provided} 列 · 省略 {omitted} 列（交给数据库默认值）"
+en = "New row: {provided} explicit columns · {omitted} omitted (left to database defaults)"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_omit_check"
+zh = "省略该列（交给数据库默认值 / 自增）"
+en = "Omit this column (left to the database default / auto-increment)"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_null_check"
+zh = "显式 NULL（SQL 空值）"
+en = "Explicit NULL (SQL null)"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_view_filled_tip"
+zh = "已填写，提交时按列类型解析"
+en = "Filled in; parsed by the column type when committing"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_view_null_tip"
+zh = "显式写入 SQL NULL（与「省略」不同）"
+en = "Writes SQL NULL explicitly (different from Omit)"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_warn_no_default"
+zh = "列 {column} 不可空且没有默认值：省略会被服务端拒绝（`table_data.not_null_without_default`）；若它是自增列则省略是正确的"
+en = "Column {column} is NOT NULL without a default: omitting it will be rejected by the server (`table_data.not_null_without_default`); if it is an auto-increment column, omitting is correct"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_default_expr"
+zh = "默认：{text}"
+en = "Default: {text}"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_default_expr_tip"
+zh = "该列省略：由数据库默认值 {text} 填充（不写进 INSERT 语句）"
+en = "This column is omitted: filled by the database default {text} (not written into the INSERT statement)"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_default_no_text"
+zh = "默认：（服务端未给出文本）"
+en = "Default: (no text from the server)"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_default_fill"
+zh = "该列省略：由数据库默认值填充"
+en = "This column is omitted: filled by the database default"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_default_null"
+zh = "默认 NULL"
+en = "Defaults to NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_default_null_tip"
+zh = "该列省略：数据库默认值为 NULL"
+en = "This column is omitted: the database default is NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_to_null"
+zh = "省略 → NULL"
+en = "Omit → NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_to_null_tip"
+zh = "该列省略：可空且无默认值，插入后为 NULL（与显式写 NULL 等价）"
+en = "This column is omitted: nullable with no default, so it becomes NULL after insert (equivalent to writing NULL explicitly)"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_db_decides"
+zh = "省略 → 数据库决定"
+en = "Omit → decided by the database"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_db_decides_tip"
+zh = "该列不可空且没有默认值：省略后由数据库决定（自增列正是这样），否则会被拒绝（table_data.not_null_without_default）"
+en = "This column is NOT NULL without a default: omitting it leaves the database to decide (that is exactly what auto-increment columns do), otherwise the insert is rejected (table_data.not_null_without_default)"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_db_generates"
+zh = "省略 → 数据库生成"
+en = "Omit → generated by the database"
+status = "done"
+
+[[entry]]
+key = "data_page.omit_db_generates_tip"
+zh = "服务端未提供该列的默认值信息：省略即交给数据库"
+en = "The server provided no default for this column: omitting leaves it to the database"
+status = "done"
+
+[[entry]]
+key = "data_page.inserting"
+zh = "正在插入新行…"
+en = "Inserting the new row…"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_failed_rolled_back"
+zh = "插入失败：整批已回滚，库里 0 行变化{codes} · 草稿行已保留，修正后可重试"
+en = "Insert failed: the whole batch was rolled back and 0 rows changed in the database{codes} · the draft row is kept; fix it and retry"
+status = "done"
+
+[[entry]]
+key = "data_page.codes_suffix"
+zh = "（{codes}）"
+en = " ({codes})"
+status = "done"
+
+[[entry]]
+key = "data_page.list_separator"
+zh = "、"
+en = ", "
+status = "done"
+
+[[entry]]
+key = "data_page.insert_no_net_change"
+zh = "本次插入未产生净变化：没有行落库。草稿行已保留，可重试。"
+en = "This insert produced no net change: no row landed in the database. The draft row is kept; you can retry."
+status = "done"
+
+[[entry]]
+key = "data_page.inserted_banner"
+zh = "已插入 1 行{key}：该行已按返回的主键定位到表末尾（未整表重刷）。其余列由数据库填充，点「刷新」可回读实际值。"
+en = "Inserted 1 row{key}: the row was placed at the end of the table via the returned primary key (the table was not reloaded). The other columns were filled by the database; click Refresh to read the actual values."
+status = "done"
+
+[[entry]]
+key = "data_page.key_suffix"
+zh = "（主键 {label}）"
+en = " (primary key {label})"
+status = "done"
+
+[[entry]]
+key = "data_page.committed_raw_tip"
+zh = "已提交的原文（服务端接受，但前端未能重新解析）"
+en = "The committed text (accepted by the server, though the client could not re-parse it)"
+status = "done"
+
+[[entry]]
+key = "data_page.db_generated"
+zh = "（数据库生成）"
+en = "(generated by the database)"
+status = "done"
+
+[[entry]]
+key = "data_page.db_generated_tip"
+zh = "该列由数据库填充（默认值 / 自增），界面未回读；点「刷新」查看实际值"
+en = "This column was filled by the database (default / auto-increment); the UI did not read it back; click Refresh to see the actual value"
+status = "done"
+
+# -- 草稿单元操作错误（TableDraft set_cell / delete_row / apply_results） --------
+
+[[entry]]
+key = "data_page.col_index_missing"
+zh = "列下标 {index} 不存在"
+en = "Column index {index} does not exist"
+status = "done"
+
+[[entry]]
+key = "data_page.row_index_missing"
+zh = "行下标 {row} 不存在"
+en = "Row index {row} does not exist"
+status = "done"
+
+[[entry]]
+key = "data_page.col_not_null_short"
+zh = "列 {column} 不允许 NULL"
+en = "Column {column} does not allow NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.col_not_null_proto"
+zh = "列 {column} 不允许 NULL（NOT NULL）"
+en = "Column {column} does not allow NULL (NOT NULL)"
+status = "done"
+
+[[entry]]
+key = "data_page.col_not_editable"
+zh = "列 {column} 不支持编辑"
+en = "Column {column} does not support editing"
+status = "done"
+
+[[entry]]
+key = "data_page.col_error_prefix"
+zh = "列 {column}：{error}"
+en = "Column {column}: {error}"
+status = "done"
+
+[[entry]]
+key = "data_page.no_pk_no_edit"
+zh = "该表没有主键，无法编辑"
+en = "This table has no primary key and cannot be edited"
+status = "done"
+
+[[entry]]
+key = "data_page.target_row_gone"
+zh = "目标行已不存在"
+en = "the target row no longer exists"
+status = "done"
+
+[[entry]]
+key = "data_page.affected_mismatch"
+zh = "影响行数与期望不符"
+en = "the affected-row count did not match expectations"
+status = "done"
+
+# -- 值转换失败就地报错（parse_cell_input） ---------------------------------------
+
+[[entry]]
+key = "data_page.val_empty_not_null"
+zh = "列 {column} 不允许 NULL，且 {text} 不是合法的 {type} 值"
+en = "Column {column} does not allow NULL, and {text} is not a valid {type} value"
+status = "done"
+
+[[entry]]
+key = "data_page.val_bool"
+zh = "{text} 不是合法的布尔值（1/0、true/false、是/否）"
+en = "{text} is not a valid boolean (1/0, true/false, 是/否)"
+status = "done"
+
+[[entry]]
+key = "data_page.val_uint"
+zh = "{text} 不是合法的无符号整数（列 {column}）"
+en = "{text} is not a valid unsigned integer (column {column})"
+status = "done"
+
+[[entry]]
+key = "data_page.val_int"
+zh = "{text} 不是合法的 64 位整数（列 {column}）"
+en = "{text} is not a valid 64-bit integer (column {column})"
+status = "done"
+
+[[entry]]
+key = "data_page.val_float"
+zh = "{text} 不是合法的浮点数（列 {column}）"
+en = "{text} is not a valid floating-point number (column {column})"
+status = "done"
+
+[[entry]]
+key = "data_page.val_float_infinite"
+zh = "{text} 不是有限浮点数"
+en = "{text} is not a finite float"
+status = "done"
+
+[[entry]]
+key = "data_page.val_ts_range"
+zh = "时间戳 {text} 超出可表示范围"
+en = "Timestamp {text} is out of the representable range"
+status = "done"
+
+[[entry]]
+key = "data_page.val_decimal"
+zh = "{text} 不是合法的 Decimal 字面量"
+en = "{text} is not a valid Decimal literal"
+status = "done"
+
+[[entry]]
+key = "data_page.val_decimal_digits"
+zh = "{text} 不是合法的 Decimal 字面量（示例：123.450）"
+en = "{text} is not a valid Decimal literal (example: 123.450)"
+status = "done"
+
+[[entry]]
+key = "data_page.val_decimal_scale"
+zh = "{text} 的小数位过多"
+en = "{text} has too many fractional digits"
+status = "done"
+
+[[entry]]
+key = "data_page.val_date"
+zh = "{text} 不是合法日期（示例：2026-11-05）"
+en = "{text} is not a valid date (example: 2026-11-05)"
+status = "done"
+
+[[entry]]
+key = "data_page.val_date_year"
+zh = "{text} 的年份不合法"
+en = "the year of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_date_month"
+zh = "{text} 的月份不合法"
+en = "the month of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_date_day"
+zh = "{text} 的日期不合法"
+en = "the day of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_date_range"
+zh = "{text} 的月/日超出范围"
+en = "the month/day of {text} is out of range"
+status = "done"
+
+[[entry]]
+key = "data_page.val_time"
+zh = "{text} 不是合法时间（示例：13:45:00）"
+en = "{text} is not a valid time (example: 13:45:00)"
+status = "done"
+
+[[entry]]
+key = "data_page.val_time_hour"
+zh = "{text} 的小时不合法"
+en = "the hour of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_time_minute"
+zh = "{text} 的分钟不合法"
+en = "the minute of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_time_range"
+zh = "{text} 的时分秒超出范围"
+en = "the hour/minute/second of {text} is out of range"
+status = "done"
+
+[[entry]]
+key = "data_page.val_time_second"
+zh = "{text} 的秒数不合法"
+en = "the second of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_frac_seconds_len"
+zh = "{text} 的小数秒不合法（最多 9 位）"
+en = "the fractional second of {text} is invalid (at most 9 digits)"
+status = "done"
+
+[[entry]]
+key = "data_page.val_frac_seconds"
+zh = "{text} 的小数秒不合法"
+en = "the fractional second of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_tz_offset"
+zh = "{text} 的时区偏移不合法（示例：+08:00）"
+en = "the UTC offset of {text} is invalid (example: +08:00)"
+status = "done"
+
+[[entry]]
+key = "data_page.val_tz_hour"
+zh = "{text} 的时区偏移小时不合法"
+en = "the UTC-offset hour of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_tz_minute"
+zh = "{text} 的时区偏移分钟不合法"
+en = "the UTC-offset minute of {text} is invalid"
+status = "done"
+
+[[entry]]
+key = "data_page.val_tz_range"
+zh = "{text} 的时区偏移超出范围"
+en = "the UTC offset of {text} is out of range"
+status = "done"
+
+# -- 只读原因（ReadOnlyCause headline / explanation / banner） ---------------
+
+[[entry]]
+key = "data_page.ro_no_pk_head"
+zh = "只读：该表没有主键"
+en = "Read-Only: this table has no primary key"
+status = "done"
+
+[[entry]]
+key = "data_page.ro_no_pk_expl"
+zh = "无主键表只有无稳定排序的浏览顺序，无法稳定定位行，因此不能编辑。浏览可用，但顺序由数据库返回，不提供 rowid / ctid 之类的近似定位方式。"
+en = "A table without a primary key only has the unordered browsing order; rows cannot be located reliably, so editing is unavailable. Browsing still works, but the order comes from the database, and no approximate rowid / ctid-style locator is offered."
+status = "done"
+
+[[entry]]
+key = "data_page.ro_driver_head"
+zh = "只读：驱动未声明行编辑能力"
+en = "Read-Only: the driver does not declare row-editing capability"
+status = "done"
+
+[[entry]]
+key = "data_page.ro_driver_expl"
+zh = "该数据库驱动未声明支持行编辑，浏览可用，但不能修改或删除数据。"
+en = "This database driver does not declare support for row editing; browsing works, but data cannot be modified or deleted."
+status = "done"
+
+[[entry]]
+key = "data_page.ro_conn_head"
+zh = "只读：连接以只读方式打开"
+en = "Read-Only: the connection was opened read-only"
+status = "done"
+
+[[entry]]
+key = "data_page.ro_conn_expl"
+zh = "该连接以只读方式打开（SQLite 的 read_only 参数），数据库会拒绝任何写入，因此不能修改或删除数据。浏览、翻页与导出不受影响；需要编辑时请改用可写连接重连。"
+en = "This connection was opened read-only (the SQLite read_only parameter); the database rejects any write, so data cannot be modified or deleted. Browsing, paging and export are unaffected; to edit, reconnect with a writable connection."
+status = "done"
+
+[[entry]]
+key = "data_page.ro_txn_head"
+zh = "只读：当前是只读事务"
+en = "Read-Only: the current transaction is read-only"
+status = "done"
+
+[[entry]]
+key = "data_page.ro_txn_expl"
+zh = "当前事务为只读事务，提交行变更会被拒绝。回滚事务后可以重新开始读写事务。"
+en = "The current transaction is read-only, so committing row changes will be rejected. Roll the transaction back to begin a read-write one."
+status = "done"
+
+[[entry]]
+key = "data_page.ro_compose"
+zh = "{headline}：{explanation}"
+en = "{headline}: {explanation}"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_failed_no_edit"
+zh = "事务已失败：只能回滚，不能继续编辑"
+en = "The transaction failed: only rollback is possible, editing is frozen"
+status = "done"
+
+[[entry]]
+key = "data_page.disconnected_discarded_edit"
+zh = "已断开：未提交的更改已丢弃"
+en = "Disconnected: uncommitted changes were discarded"
+status = "done"
+
+# -- 风险确认（RiskAssessment::summary 与确认提交对话框） ----------------------------
+
+[[entry]]
+key = "data_page.risk_summary"
+zh = "本次将提交 {total} 行变更（{updates} 行更新 · {deletes} 行删除）。"
+en = "This commit will send {total} row changes — updates: {updates} · deletions: {deletes}."
+en_one = "This commit will send 1 row change — updates: {updates} · deletions: {deletes}."
+status = "done"
+
+[[entry]]
+key = "data_page.risk_warn_deletes"
+zh = "\n\n警告：包含 {deletes} 行删除，删除后无法通过本界面撤销。"
+en = "\n\nWarning: includes {deletes} deletions; they cannot be undone from this UI."
+en_one = "\n\nWarning: includes 1 deletion; it cannot be undone from this UI."
+status = "done"
+
+[[entry]]
+key = "data_page.risk_threshold"
+zh = "\n\n变更数超过 {threshold} 行的风险阈值，服务端将要求风险确认。"
+en = "\n\nThe change count exceeds the risk threshold of {threshold} rows; the server will require a risk confirmation."
+status = "done"
+
+[[entry]]
+key = "data_page.risk_insert_note"
+zh = "\n\n另含 1 行新插入（InsertRows：整批原子，任一行失败则整批回滚）。"
+en = "\n\nIt also includes 1 new row to insert (InsertRows: atomic for the batch; if any row fails, the whole batch rolls back)."
+status = "done"
+
+[[entry]]
+key = "data_page.risk_title"
+zh = "确认提交变更？"
+en = "Commit These Changes?"
+status = "done"
+
+[[entry]]
+key = "data_page.risk_btn_confirm"
+zh = "确认提交"
+en = "Confirm Commit"
+status = "done"
+
+[[entry]]
+key = "data_page.risk_cancelled_noop"
+zh = "已取消提交（未发送任何变更）"
+en = "Commit cancelled (no changes were sent)"
+status = "done"
+
+# -- 提交按钮、取消提交与脏行计数标签（update_dirty_label / commit_button_label） --------
+
+[[entry]]
+key = "data_page.btn_commit"
+zh = "提交"
+en = "Commit"
+status = "done"
+
+[[entry]]
+key = "data_page.btn_commit_count"
+zh = "提交（{pending}）"
+en = "Commit ({pending})"
+status = "done"
+
+[[entry]]
+key = "data_page.commit_cancel_btn"
+zh = "取消提交"
+en = "Cancel Commit"
+status = "done"
+
+[[entry]]
+key = "data_page.commit_cancelling_btn"
+zh = "正在取消…"
+en = "Cancelling…"
+status = "done"
+
+[[entry]]
+key = "data_page.commit_changes_tip"
+zh = "提交所有脏行的变更（主键定位 + 列变更）"
+en = "Commit changes for all dirty rows (locate by primary key + column changes)"
+status = "done"
+
+[[entry]]
+key = "data_page.commit_changes_tip_txn"
+zh = "提交所有脏行的变更（主键定位 + 列变更），然后在事务内生效"
+en = "Commit changes for all dirty rows (locate by primary key + column changes), then apply them inside the transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.dirty_plain"
+zh = "脏行 {dirty} · 待提交 {pending} 条{insert_note}"
+en = "{dirty} dirty rows · {pending} to commit{insert_note}"
+en_one = "1 dirty row · {pending} to commit{insert_note}"
+status = "done"
+
+[[entry]]
+key = "data_page.dirty_with_deletes"
+zh = "脏行 {dirty} · 待提交 {pending} 条（含 {deletes} 个删除）{insert_note}"
+en = "{dirty} dirty rows · {pending} to commit (incl. {deletes} deletions){insert_note}"
+en_one = "1 dirty row · {pending} to commit (incl. {deletes} deletion){insert_note}"
+status = "done"
+
+[[entry]]
+key = "data_page.dirty_note_new_row"
+zh = " · 新行 1 行"
+en = " · 1 new row"
+status = "done"
+
+# -- 行操作不可用原因与操作结果（row_ops_reason / 标记删除 / 放弃更改） -----------------------
+
+[[entry]]
+key = "data_page.row_ops_loading"
+zh = "正在读取数据"
+en = "Reading data"
+status = "done"
+
+[[entry]]
+key = "data_page.row_ops_disconnected"
+zh = "连接已断开"
+en = "The connection has been dropped"
+status = "done"
+
+[[entry]]
+key = "data_page.row_ops_read_failed"
+zh = "读取失败，没有可编辑的数据"
+en = "The read failed; there is no editable data"
+status = "done"
+
+[[entry]]
+key = "data_page.row_ops_busy"
+zh = "上一次请求还在进行中"
+en = "The previous request is still in progress"
+status = "done"
+
+[[entry]]
+key = "data_page.no_pending_changes"
+zh = "没有待提交的更改"
+en = "There are no changes to commit"
+status = "done"
+
+[[entry]]
+key = "data_page.commit_readonly"
+zh = "只读状态：不能提交"
+en = "Read-only: cannot commit"
+status = "done"
+
+[[entry]]
+key = "data_page.delete_readonly"
+zh = "只读状态：不能删除"
+en = "Read-only: cannot delete"
+status = "done"
+
+[[entry]]
+key = "data_page.insert_row_delete_hint"
+zh = "新行尚未提交：用「放弃更改」撤销它，或先提交；已存在的行才可以标记删除"
+en = "The new row is not committed yet: undo it with Discard Changes, or commit first; only existing rows can be marked for deletion"
+status = "done"
+
+[[entry]]
+key = "data_page.deleted_marked"
+zh = "已标记删除 {deleted} 行（批量提交前可撤销）"
+en = "{deleted} rows marked for deletion (can be undone before the batch commit)"
+en_one = "1 row marked for deletion (can be undone before the batch commit)"
+status = "done"
+
+[[entry]]
+key = "data_page.delete_note"
+zh = "第 {number} 行已标记删除（提交前可撤销）"
+en = "Row {number} marked for deletion (can be undone before commit)"
+status = "done"
+
+[[entry]]
+key = "data_page.discard_all"
+zh = "已放弃未提交的更改"
+en = "Uncommitted changes discarded"
+status = "done"
+
+[[entry]]
+key = "data_page.discard_all_with_insert"
+zh = "已放弃未提交的更改（含新增行）"
+en = "Uncommitted changes discarded (including the new row)"
+status = "done"
+
+[[entry]]
+key = "data_page.st_submitting"
+zh = "正在提交…"
+en = "Committing…"
+status = "done"
+
+# -- 在途批次状态行（submit_batch.rs） ------------------------------------------
+
+[[entry]]
+key = "data_page.submit_progress"
+zh = "正在提交 {changes} 条变更（批次 {batch}）：点「取消提交」可在行边界中止{note}"
+en = "Submitting {changes} changes (batch {batch}): click Cancel Commit to abort at a row boundary{note}"
+en_one = "Submitting 1 change (batch {batch}): click Cancel Commit to abort at a row boundary{note}"
+status = "done"
+
+[[entry]]
+key = "data_page.note_suffix"
+zh = "（{note}）"
+en = " ({note})"
+status = "done"
+
+[[entry]]
+key = "data_page.submit_cancelling"
+zh = "正在取消提交（批次 {batch}）：等驱动在行边界停下，已执行的行会整批回滚…"
+en = "Cancelling the commit (batch {batch}): waiting for the driver to stop at a row boundary; executed rows will be rolled back as a whole batch…"
+status = "done"
+
+[[entry]]
+key = "data_page.st_cancel_requested"
+zh = "正在取消提交（批次 {batch}）…"
+en = "Cancelling the commit (batch {batch})…"
+status = "done"
+
+[[entry]]
+key = "data_page.submit_cancelled"
+zh = "已取消提交：{phrase} · 数据库未变化 · 脏行保留，可重试"
+en = "Commit cancelled: {phrase} · the database is unchanged · dirty rows are kept; you can retry"
+status = "done"
+
+[[entry]]
+key = "data_page.submit_failed"
+zh = "提交失败：{reason}（批次已结束，可重试）"
+en = "Commit failed: {reason} (the batch has ended; you can retry)"
+status = "done"
+
+[[entry]]
+key = "data_page.submit_failed_default"
+zh = "原因见上方错误"
+en = "see the error above"
+status = "done"
+
+[[entry]]
+key = "data_page.rolled_back_none"
+zh = "本批未及执行任何变更（未产生写入）"
+en = "no change was executed in this batch (nothing was written)"
+status = "done"
+
+[[entry]]
+key = "data_page.rolled_back_some"
+zh = "已执行 {executed} 条随后整批回滚"
+en = "{executed} changes ran before the whole batch was rolled back"
+en_one = "1 change ran before the whole batch was rolled back"
+status = "done"
+
+[[entry]]
+key = "data_page.clamped_banner"
+zh = "单批上限 500 行：本次只执行了前 {affected} 条，还有 {deferred} 条未提交——请再次点「提交更改」续传。"
+en = "Single-batch limit is 500 rows: only the first {affected} changes ran; {deferred} uncommitted changes remain — click Commit Changes again to resume."
+en_one = "Single-batch limit is 500 rows: only the first {affected} changes ran; 1 uncommitted change remains — click Commit Changes again to resume."
+status = "done"
+
+# -- 失败行摘要（show_failures） ----------------------------------------------
+
+[[entry]]
+key = "data_page.failure_line"
+zh = "第 {number} 行：[{code}] {message}"
+en = "Row {number}: [{code}] {message}"
+status = "done"
+
+# -- 事务按钮、状态徽标与事务错误（含前缀认领口径） -------------------------------------------
+
+[[entry]]
+key = "data_page.txn_begin"
+zh = "开始事务"
+en = "Begin Transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_begin_tip"
+zh = "在当前会话开始一个显式事务"
+en = "Begin an explicit transaction on the current session"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_readonly_check"
+zh = "只读"
+en = "Read-Only"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_readonly_check_tip"
+zh = "以只读事务开始（不能写入，用于只读态验证）"
+en = "Begin as a read-only transaction (no writes; for verifying the read-only state)"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_commit_btn"
+zh = "提交事务"
+en = "Commit Transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_commit_btn_tip"
+zh = "提交当前事务（失败态只能回滚）"
+en = "Commit the current transaction (a failed one can only be rolled back)"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_rollback_btn"
+zh = "回滚事务"
+en = "Roll Back Transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_rollback_btn_tip"
+zh = "回滚当前事务，未提交的更改会被丢弃"
+en = "Roll back the current transaction; uncommitted changes will be discarded"
+status = "done"
+
+[[entry]]
+key = "data_page.btn_rollback"
+zh = "回滚"
+en = "Roll Back"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_autocommit"
+zh = "自动提交"
+en = "Auto-Commit"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_active"
+zh = "事务中"
+en = "In Transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_active_readonly"
+zh = "事务中（只读）"
+en = "In Transaction (Read-Only)"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_failed_label"
+zh = "事务失败（只能回滚）"
+en = "Transaction Failed (Rollback Only)"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_disconnected_label"
+zh = "已断开"
+en = "Disconnected"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_cancel_tip"
+zh = "取消（不开始事务）"
+en = "Cancel (do not begin the transaction)"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_begin_summary"
+zh = "开始事务：{level} · {mode}"
+en = "Begin transaction: {level} · {mode}"
+status = "done"
+
+[[entry]]
+key = "data_page.mode_read_only"
+zh = "只读"
+en = "read-only"
+status = "done"
+
+[[entry]]
+key = "data_page.mode_read_write"
+zh = "读写"
+en = "read-write"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_claim_begin"
+zh = "开始事务"
+en = "Begin transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_claim_commit"
+zh = "正在提交事务"
+en = "Committing transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_claim_rollback"
+zh = "正在回滚事务"
+en = "Rolling back transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_committing"
+zh = "正在提交事务…"
+en = "Committing the transaction…"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_rolling_back"
+zh = "正在回滚事务…"
+en = "Rolling back the transaction…"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_already_open"
+zh = "该会话已有打开的事务"
+en = "This session already has an open transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_already_open_disc"
+zh = "该会话已有打开的事务（或已断开）"
+en = "This session already has an open transaction (or is disconnected)"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_begin_disconnected"
+zh = "已断开：不能开始事务"
+en = "Disconnected: cannot begin a transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.begin_tip_autocommit"
+zh = "在当前会话开始一个显式事务（可选只读）"
+en = "Begin an explicit transaction on the current session (optionally read-only)"
+status = "done"
+
+[[entry]]
+key = "data_page.begin_tip_open"
+zh = "已有事务：先提交或回滚"
+en = "A transaction is already open: commit or roll it back first"
+status = "done"
+
+[[entry]]
+key = "data_page.begin_tip_pending"
+zh = "还有 {pending} 行未提交的更改：先提交或放弃它们再开事务"
+en = "{pending} rows of uncommitted changes are still open: commit or discard them before beginning a transaction"
+en_one = "1 row of uncommitted changes is still open: commit or discard it before beginning a transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_none_commit"
+zh = "当前没有可提交的事务"
+en = "There is no transaction to commit"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_failed_rollback_only"
+zh = "事务已失败：只能回滚"
+en = "The transaction failed: only rollback is possible"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_failed_comma"
+zh = "事务已失败，只能回滚"
+en = "The transaction failed; only rollback is possible"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_disconnected_rolled_back"
+zh = "已断开：事务已由后端回滚"
+en = "Disconnected: the backend already rolled the transaction back"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_none_open"
+zh = "当前没有打开的事务"
+en = "No transaction is currently open"
+status = "done"
+
+[[entry]]
+key = "data_page.txn_none_rollback"
+zh = "当前没有可回滚的事务"
+en = "There is no transaction to roll back"
+status = "done"
+
+[[entry]]
+key = "data_page.commit_txn_dirty"
+zh = "还有 {dirty} 行更改未提交：先点「提交更改」或「放弃更改」再提交事务"
+en = "{dirty} rows of changes are still uncommitted: click Commit Changes or Discard Changes before committing the transaction"
+en_one = "1 row of changes is still uncommitted: click Commit Changes or Discard Changes before committing the transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.rollback_dialog_title"
+zh = "回滚事务？"
+en = "Roll Back Transaction?"
+status = "done"
+
+[[entry]]
+key = "data_page.rollback_confirm_fallback"
+zh = "回滚当前事务？"
+en = "Roll back the current transaction?"
+status = "done"
+
+[[entry]]
+key = "data_page.rollback_confirm_dirty"
+zh = "回滚事务将丢弃数据库侧的变更，并放弃 {dirty} 行未提交的界面更改。"
+en = "Rolling back the transaction discards the changes on the database side and abandons {dirty} rows of uncommitted UI changes."
+en_one = "Rolling back the transaction discards the changes on the database side and abandons 1 row of uncommitted UI changes."
+status = "done"
+
+# -- 状态圆点 tooltip（sync_status_dot 事务说明） --------------------------------
+
+[[entry]]
+key = "data_page.dot_note_autocommit"
+zh = "自动提交：每条语句自成一个事务"
+en = "Auto-commit: every statement forms its own transaction"
+status = "done"
+
+[[entry]]
+key = "data_page.dot_note_readonly_txn"
+zh = "只读事务：能查询，不能写入"
+en = "Read-only transaction: queries work, writes do not"
+status = "done"
+
+[[entry]]
+key = "data_page.dot_note_active"
+zh = "事务中：提交事务之前，改动只在当前会话可见"
+en = "In transaction: until you commit, changes are visible only in this session"
+status = "done"
+
+[[entry]]
+key = "data_page.dot_note_failed"
+zh = "事务失败：只能回滚"
+en = "Transaction failed: only rollback is possible"
+status = "done"
+
+[[entry]]
+key = "data_page.dot_last_action"
+zh = "最近一次操作：{action}"
+en = "Last action: {action}"
+status = "done"
+
+# -- 隔离级别（开始事务卡片，table_data.rs） ----------------------------------------
+
+[[entry]]
+key = "data_page.iso_default"
+zh = "默认（由数据库决定）"
+en = "Default (decided by the database)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_read_uncommitted"
+zh = "读未提交（READ UNCOMMITTED）"
+en = "Read Uncommitted (READ UNCOMMITTED)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_read_committed"
+zh = "读已提交（READ COMMITTED）"
+en = "Read Committed (READ COMMITTED)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_repeatable_read"
+zh = "可重复读（REPEATABLE READ）"
+en = "Repeatable Read (REPEATABLE READ)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_serializable"
+zh = "可序列化（SERIALIZABLE）"
+en = "Serializable (SERIALIZABLE)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_snapshot"
+zh = "快照（SNAPSHOT）"
+en = "Snapshot (SNAPSHOT)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_unavailable_suffix"
+zh = "{label} · 不可用"
+en = "{label} · unavailable"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_unspecified"
+zh = "不指定隔离级别：由数据库/驱动的默认值决定"
+en = "No isolation level specified: the database/driver default decides"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_snapshot"
+zh = "快照隔离不在本版界面提供：两种驱动的服务端都不接受该级别"
+en = "Snapshot isolation is not offered in this UI version: the servers of both drivers reject that level"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_read_uncommitted"
+zh = "脏读可见：并发最高，一致性最弱"
+en = "Dirty reads visible: highest concurrency, weakest consistency"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_read_committed"
+zh = "只读已提交数据（Oracle/PostgreSQL 的默认级别）"
+en = "Reads only committed data (the default level of Oracle/PostgreSQL)"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_repeatable_read"
+zh = "MariaDB/InnoDB 的默认级别"
+en = "The default level of MariaDB/InnoDB"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_serializable_mariadb"
+zh = "读也加共享锁：并发冲突最多"
+en = "Reads take shared locks too: the most concurrency conflicts"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_serializable_sqlite"
+zh = "SQLite 只接受 SERIALIZABLE：本选项与数据库行为一致"
+en = "SQLite only accepts SERIALIZABLE: this option matches the database's behavior"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_sqlite_disabled"
+zh = "SQLite 只接受 SERIALIZABLE（写事务天然串行）：其它级别不会被接受，因此不可选"
+en = "SQLite only accepts SERIALIZABLE (write transactions are inherently serial): other levels will not be accepted, so they are not selectable"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_note_unknown_driver"
+zh = "当前驱动未声明支持的隔离级别：只能选「默认」，否则要到提交后才可能被拒绝"
+en = "The current driver does not declare supported isolation levels: only Default can be chosen, otherwise a rejection would only surface at commit time"
+status = "done"
+
+[[entry]]
+key = "data_page.iso_avail_summary"
+zh = "当前驱动可选 {available} / {total} 项：{list}。不可用的级别已禁用并写明原因（不是等到提交后才报错）。"
+en = "The current driver offers {available} of {total} options: {list}. Unavailable levels are disabled with the reason spelled out (rather than erroring only at commit)."
+status = "done"
+
+[[entry]]
+key = "data_page.iso_unavailable_choice"
+zh = "{label} 在当前驱动下不可用，请选择已启用的级别"
+en = "{label} is unavailable on the current driver; pick an enabled level"
+status = "done"
+
+# -- 数据行右键菜单（show_row_menu） --------------------------------------------
+
+[[entry]]
+key = "data_page.menu_delete_row"
+zh = "删除行"
+en = "Delete Row"
+status = "done"
+
+[[entry]]
+key = "data_page.menu_copy_insert"
+zh = "复制为 INSERT"
+en = "Copy as INSERT"
+status = "done"
+
+[[entry]]
+key = "data_page.menu_copy_as"
+zh = "复制为"
+en = "Copy as"
+status = "done"
+
+# -- 关窗守卫逐表摘要（DirtyTabSummary::line） -----------------------------------
+
+[[entry]]
+key = "data_page.dirty_summary_updates"
+zh = "{count} 行未提交"
+en = "{count} rows uncommitted"
+en_one = "1 row uncommitted"
+status = "done"
+
+[[entry]]
+key = "data_page.dirty_summary_deletes"
+zh = "{count} 行标记删除"
+en = "{count} rows marked for deletion"
+en_one = "1 row marked for deletion"
+status = "done"
+
+[[entry]]
+key = "data_page.dirty_summary_insert"
+zh = "1 行新增未提交"
+en = "1 new row uncommitted"
+status = "done"
+
+[[entry]]
+key = "data_page.dirty_summary_line"
+zh = "{table}：{parts}"
+en = "{table}: {parts}"
+status = "done"
+
+[[entry]]
+key = "data_page.fallback_table"
+zh = "表"
+en = "Table"
+status = "done"
+
+# ==== S4 Lane C：DDL 状态页 + MetadataError 副文本 + 类型不可编辑原因（#202 尾段） ====
+#
+# 覆盖表面：DDL 面板（ddl.rs）的 Loading / 无浏览会话 / 空 DDL 状态页标题与副文本、
+# 客户端拼装警示行；MetadataError::headline()/hint() 全族 20 条（#201 遗留：这族
+# 副文本同时进对象树状态行、信息面板状态区与 DDL 状态页）；backend/table.rs 的
+# type_not_editable_reason（列类型不支持行内编辑，进就地报错与编辑拦截提示）。
+# 留在代码：eprintln! 日志行、错误副文本结构骨架「{message}（{code}）。{hint}」、
+# sanitize 的空消息占位与 detail_text 来源说明族、qa.rs TxnExpectation 硬编码中文
+# 标签（S7 钩子适配项）。
+
+# -- DDL 面板（ddl.rs：状态页与拼装警示） --------------------------------------
+
+[[entry]]
+key = "data_page.ddl_loading_title"
+zh = "正在读取 DDL…"
+en = "Reading DDL…"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_loading_desc"
+zh = "等待 GetDdl 返回"
+en = "Waiting for GetDdl to return"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_no_session_title"
+zh = "这条连接没有浏览会话"
+en = "This Connection Has No Browsing Session"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_no_session_desc"
+zh = "对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。"
+en = "The session of the connection owning this object is gone: click that connection in the object tree, reconnect, and try again."
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_empty_title"
+zh = "服务端返回了空 DDL"
+en = "The Server Returned an Empty DDL"
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_empty_desc"
+zh = "这不代表对象没有结构：契约要求不返回伪造或截断的 DDL，请换一个对象或检查服务端日志。"
+en = "This does not mean the object has no structure: the contract forbids returning fabricated or truncated DDL; try another object or check the server log."
+status = "done"
+
+[[entry]]
+key = "data_page.ddl_synth_warning"
+zh = "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · {detail}"
+en = "⚠ This DDL was synthesized by the client, not the database's original text; information is lossy · {detail}"
+status = "done"
+
+# -- MetadataError 分类标题与处置建议（backend/metadata.rs::headline/hint，#201 遗留） --
+
+[[entry]]
+key = "data_page.err_not_found_head"
+zh = "对象已不存在"
+en = "The Object No Longer Exists"
+status = "done"
+
+[[entry]]
+key = "data_page.err_not_found_hint"
+zh = "刷新当前层；对象可能已被删除或改名。"
+en = "Refresh this level; the object may have been dropped or renamed."
+status = "done"
+
+[[entry]]
+key = "data_page.err_permission_denied_head"
+zh = "没有读取元数据的权限"
+en = "No Permission to Read Metadata"
+status = "done"
+
+[[entry]]
+key = "data_page.err_permission_denied_hint"
+zh = "当前数据库账号看不到这些对象：请让管理员授予读取权限，或以有权限的账号重新连接。"
+en = "The current database account cannot see these objects: ask an administrator to grant read permission, or reconnect with an account that has it."
+status = "done"
+
+[[entry]]
+key = "data_page.err_unsupported_head"
+zh = "该驱动未实现这一层"
+en = "The Driver Does Not Implement This Level"
+status = "done"
+
+[[entry]]
+key = "data_page.err_unsupported_hint"
+zh = "这一层由驱动决定是否实现；不代表该库没有对象，可改用「平铺表列表」查看当前库。"
+en = "Whether this level is implemented is up to the driver; it does not mean the database has no objects — you can switch to the flat table list to browse the current database."
+status = "done"
+
+[[entry]]
+key = "data_page.err_kind_unsupported_head"
+zh = "该对象种类不支持这个操作"
+en = "This Operation Is Not Supported for That Object Kind"
+status = "done"
+
+[[entry]]
+key = "data_page.err_kind_unsupported_hint"
+zh = "换一个对象（表 / 视图 / 序列）再试。"
+en = "Try another object (table / view / sequence)."
+status = "done"
+
+[[entry]]
+key = "data_page.err_filter_invalid_head"
+zh = "搜索条件不被接受"
+en = "The Search Criteria Were Not Accepted"
+status = "done"
+
+[[entry]]
+key = "data_page.err_filter_invalid_hint"
+zh = "检查是否输入了非法控制字符，或改用更短的关键词。"
+en = "Check for illegal control characters in the input, or use a shorter keyword."
+status = "done"
+
+[[entry]]
+key = "data_page.err_snapshot_changed_head"
+zh = "对象在读取过程中发生了变化"
+en = "The Object Changed While Reading"
+status = "done"
+
+[[entry]]
+key = "data_page.err_snapshot_changed_hint"
+zh = "重新输入关键词搜索（不会自动拼接旧结果）。"
+en = "Search again with the keyword (old results are never stitched in automatically)."
+status = "done"
+
+[[entry]]
+key = "data_page.err_page_token_invalid_head"
+zh = "翻页状态已失效"
+en = "Pagination State Expired"
+status = "done"
+
+[[entry]]
+key = "data_page.err_page_token_invalid_hint"
+zh = "从第一页重新读取。"
+en = "Read again from the first page."
+status = "done"
+
+[[entry]]
+key = "data_page.err_session_lost_head"
+zh = "数据库会话已失效"
+en = "The Database Session Is No Longer Valid"
+status = "done"
+
+[[entry]]
+key = "data_page.err_session_lost_hint"
+zh = "重新连接数据库。"
+en = "Reconnect to the database."
+status = "done"
+
+[[entry]]
+key = "data_page.err_unavailable_head"
+zh = "本地后端不可用"
+en = "Local Backend Unavailable"
+status = "done"
+
+[[entry]]
+key = "data_page.err_unavailable_hint"
+zh = "确认后端进程在运行，然后重试。"
+en = "Make sure the backend process is running, then retry."
+status = "done"
+
+[[entry]]
+key = "data_page.err_other_head"
+zh = "读取元数据失败"
+en = "Failed to Read Metadata"
+status = "done"
+
+[[entry]]
+key = "data_page.err_other_hint"
+zh = "查看下方错误码与后端文案。"
+en = "See the error code and the backend message below."
+status = "done"
+
+# -- 类型不可编辑原因（backend/table.rs::type_not_editable_reason） ----------------
+
+[[entry]]
+key = "data_page.type_not_editable"
+zh = "列 {column} 的类型 {type} 不支持行内编辑（二进制 / 数组 / 未映射类型）"
+en = "Column {column} of type {type} does not support inline editing (binary / array / unmapped types)"
+status = "done"

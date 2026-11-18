@@ -63,7 +63,7 @@ kind `area` · status `active`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 打开表 / 换表 / 重新读取 | 清空上一屏的草稿、选中、逐行错误与「最近一次操作」注记，退回按行浏览，占位页写「正在读取表数据」+「等待服务端返回第一页…」，工具条消息同步「正在读取表数据…」 | `src/data_page.rs:4228、src/data_page.rs:4261` |
+| load | 打开表 / 换表 / 重新读取 | 清空上一屏的草稿、选中、逐行错误与「最近一次操作」注记，退回按行浏览，占位页写「正在读取表数据」+「等待服务端返回第一页…」，工具条消息同步「正在读取表数据…」 | `src/data_page.rs:4304、src/data_page.rs:4339` |
 
 ### `data_page.toolbar` 单行工具条
 
@@ -84,10 +84,10 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑、有待提交变更、没有 RPC 在途 | 走风险判定后提交：逐行更新与删除按主键定位；按钮文案「提交（N）」，状态行「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」 | `src/data_page.rs:5086、src/data_page.rs:5147、src/submit_batch.rs:434` |
-| click | 变更超过 100 行或含删除（本地判定） | 弹「确认提交变更？」：正文给更新 / 删除行数，超过 100 行时追加「变更数超过 100 行的风险阈值…」；按钮 取消 / 确认提交（破坏性，默认取消）；取消则「已取消提交（未发送任何变更）」。服务端要求 acknowledge_risk 时再走同一个对话框 | `src/table_data.rs:489、src/table_data.rs:515、src/data_page.rs:5199` |
-| click | 提交在途 | 同一按钮变成「取消提交」且可点：请求取消后显示「正在取消…」，整批回滚、界面保留脏行与编辑文本（不采信任何部分结果），可再次点「提交」重试；取消中 / 已结束的重复点击幂等 | `src/data_page.rs:5115、src/submit_batch.rs:412、src/submit_batch.rs:449` |
-| load | 只读 / 已断开 / RPC 在途 / 没有待提交变更 | 按钮禁用（不弹错误）；只读与断连时过程消息的 tooltip 给同一句原因 | `src/data_page.rs:6579、src/data_page.rs:4213` |
+| click | 可编辑、有待提交变更、没有 RPC 在途 | 走风险判定后提交：逐行更新与删除按主键定位；按钮文案「提交（N）」，状态行「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」 | `src/data_page.rs:5193、src/data_page.rs:5254、src/submit_batch.rs:436` |
+| click | 变更超过 100 行或含删除（本地判定） | 弹「确认提交变更？」：正文给更新 / 删除行数，超过 100 行时追加「变更数超过 100 行的风险阈值…」；按钮 取消 / 确认提交（破坏性，默认取消）；取消则「已取消提交（未发送任何变更）」。服务端要求 acknowledge_risk 时再走同一个对话框 | `src/table_data.rs:535、src/table_data.rs:566、src/data_page.rs:5309` |
+| click | 提交在途 | 同一按钮变成「取消提交」且可点：请求取消后显示「正在取消…」，整批回滚、界面保留脏行与编辑文本（不采信任何部分结果），可再次点「提交」重试；取消中 / 已结束的重复点击幂等 | `src/data_page.rs:5222、src/submit_batch.rs:414、src/submit_batch.rs:454` |
+| load | 只读 / 已断开 / RPC 在途 / 没有待提交变更 | 按钮禁用（不弹错误）；只读与断连时过程消息的 tooltip 给同一句原因 | `src/data_page.rs:6743、src/data_page.rs:4289` |
 
 ### `data_page.toolbar.begin_txn` 「开始事务」按钮
 
@@ -100,9 +100,9 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 没有打开的事务、未断开、没有未提交的更改（脏行 / 标记删除 / 新行草稿） | 打开「开始事务」卡片（隔离级别 + 只读勾选），不直接发 RPC | `src/data_page.rs:5368、src/data_page.rs:3643` |
-| load | 有待提交的更改 | 按钮置灰，tooltip「还有 N 行未提交的更改：先提交或放弃它们再开事务」；点了不打开卡片，状态行同一句 | `src/data_page.rs:6567、src/data_page.rs:6579` |
-| load | 驱动未声明显式事务 / 行编辑能力 | 如实退回自动提交、不假装事务存在：状态圆点与 tooltip 首段仍是「自动提交」，日志与 tooltip 写明 capability.unsupported；Linux 侧同一能力位先落到只读原因上（横幅「只读：驱动未声明行编辑能力」+ 编辑类按钮禁用），事务棕只在事务真的打开时出现 | `src/table_data.rs:952、src/data_page.rs:6705` |
+| click | 没有打开的事务、未断开、没有未提交的更改（脏行 / 标记删除 / 新行草稿） | 打开「开始事务」卡片（隔离级别 + 只读勾选），不直接发 RPC | `src/data_page.rs:5477、src/data_page.rs:3710` |
+| load | 有待提交的更改 | 按钮置灰，tooltip「还有 N 行未提交的更改：先提交或放弃它们再开事务」；点了不打开卡片，状态行同一句 | `src/data_page.rs:6725、src/data_page.rs:6743` |
+| load | 驱动未声明显式事务 / 行编辑能力 | 如实退回自动提交、不假装事务存在：状态圆点与 tooltip 首段仍是「自动提交」，日志与 tooltip 写明 capability.unsupported；Linux 侧同一能力位先落到只读原因上（横幅「只读：驱动未声明行编辑能力」+ 编辑类按钮禁用），事务棕只在事务真的打开时出现 | `src/table_data.rs:1027、src/data_page.rs:6883` |
 
 ### `data_page.toolbar.commit_txn` 「提交事务」按钮
 
@@ -115,8 +115,8 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有活动事务且没有脏行 | 提交事务；成功后丢弃尚未提交的界面更改并重新读取当前表，圆点从棕回到灰 | `src/data_page.rs:5386、src/data_page.rs:4604` |
-| click | 有活动事务但有脏行 | 拒绝并写「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」 | `src/data_page.rs:5386、src/data_page.rs:6579` |
+| click | 有活动事务且没有脏行 | 提交事务；成功后丢弃尚未提交的界面更改并重新读取当前表，圆点从棕回到灰 | `src/data_page.rs:5495、src/data_page.rs:4694` |
+| click | 有活动事务但有脏行 | 拒绝并写「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」 | `src/data_page.rs:5495、src/data_page.rs:6743` |
 
 ### `data_page.toolbar.rollback_txn` 「回滚事务」按钮
 
@@ -129,7 +129,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有活动事务（含失败态） | 先确认「回滚事务？」（有脏行时正文写「回滚事务将丢弃数据库侧的变更，并放弃 N 行未提交的界面更改。」），按钮 取消 / 回滚（破坏性，默认取消）；确认后回滚，圆点回到灰 | `src/data_page.rs:5413、src/data_page.rs:4604` |
+| click | 有活动事务（含失败态） | 先确认「回滚事务？」（有脏行时正文写「回滚事务将丢弃数据库侧的变更，并放弃 N 行未提交的界面更改。」），按钮 取消 / 回滚（破坏性，默认取消）；确认后回滚，圆点回到灰 | `src/data_page.rs:5526、src/data_page.rs:4694` |
 
 ### `data_page.toolbar.status_cluster` 工具条状态簇（spinner · 过程消息 · 状态圆点）
 
@@ -142,8 +142,8 @@ kind `container` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 有 RPC 在途 | spinner 可见并转动，消息写「正在读取表数据…」/「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」/「正在取消提交（批次 …）：等驱动在行边界停下，已执行的行会整批回滚…」 | `src/data_page.rs:6427、src/submit_batch.rs:449` |
-| load | 读取完成 | 擦掉「正在读取…」，消息位留空（不写行数 / 页码）；最近一次读取摘要只进状态栏那格的 tooltip | `src/data_page.rs:6442、src/data_page.rs:6494` |
+| load | 有 RPC 在途 | spinner 可见并转动，消息写「正在读取表数据…」/「正在提交 M 条变更（批次 …）：点「取消提交」可在行边界中止」/「正在取消提交（批次 …）：等驱动在行边界停下，已执行的行会整批回滚…」 | `src/data_page.rs:6570、src/submit_batch.rs:454` |
+| load | 读取完成 | 擦掉「正在读取…」，消息位留空（不写行数 / 页码）；最近一次读取摘要只进状态栏那格的 tooltip | `src/data_page.rs:6585、src/data_page.rs:6637` |
 
 ### `data_page.toolbar.status_dot` 状态圆点（灰 / 事务棕 / 脏行强调色）
 
@@ -157,8 +157,8 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| hover | 已打开表 | tooltip 三段：第一段写事务状态 + 脏行 N · 待提交 M 条（含 K 个删除）· 新行 1 行，第二段是事务说明（「自动提交：每条语句自成一个事务」/「事务中：提交事务之前，改动只在当前会话可见」/「事务失败：只能回滚」/「已断开：事务已由后端回滚」），有已发生结果时第三段「最近一次操作：…」（如「第 2 行已标记删除（提交前可撤销）」「已放弃未提交的更改（含新增行）」） | `src/data_page.rs:6705、src/data_page.rs:6528` |
-| load | 状态变化（开始 / 提交 / 回滚 / 失败 / 标记删除 / 放弃） | 颜色随状态实时切换（有脏行即强调色，否则事务打开即棕，否则灰）；状态变化本身**不**在过程消息位写任何可见文字 | `src/data_page.rs:6705、src/data_page.rs:4604` |
+| hover | 已打开表 | tooltip 三段：第一段写事务状态 + 脏行 N · 待提交 M 条（含 K 个删除）· 新行 1 行，第二段是事务说明（「自动提交：每条语句自成一个事务」/「事务中：提交事务之前，改动只在当前会话可见」/「事务失败：只能回滚」/「已断开：事务已由后端回滚」），有已发生结果时第三段「最近一次操作：…」（如「第 2 行已标记删除（提交前可撤销）」「已放弃未提交的更改（含新增行）」） | `src/data_page.rs:6883、src/data_page.rs:6671` |
+| load | 状态变化（开始 / 提交 / 回滚 / 失败 / 标记删除 / 放弃） | 颜色随状态实时切换（有脏行即强调色，否则事务打开即棕，否则灰）；状态变化本身**不**在过程消息位写任何可见文字 | `src/data_page.rs:6883、src/data_page.rs:4694` |
 
 ### `data_page.toolbar.filter` 「筛选」（漏斗）按钮
 
@@ -172,8 +172,8 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 驱动声明支持筛选且已打开表 | 打开 / 收起筛选与排序面板；打开时把**已应用**的筛选与排序复制成草稿 | `src/data_page.rs:2380、src/data_page.rs:2389` |
-| load | 打开表时读到能力位 filtering=false | 漏斗隐藏；排序入口随之不生效；出现「驱动不支持排序/筛选」徽标 | `src/data_page.rs:4298、src/data_page.rs:4397` |
+| click | 驱动声明支持筛选且已打开表 | 打开 / 收起筛选与排序面板；打开时把**已应用**的筛选与排序复制成草稿 | `src/data_page.rs:2416、src/data_page.rs:2425` |
+| load | 打开表时读到能力位 filtering=false | 漏斗隐藏；排序入口随之不生效；出现「驱动不支持排序/筛选」徽标 | `src/data_page.rs:4376、src/data_page.rs:4476` |
 
 ### `data_page.toolbar.columns` 「列显隐」（眼睛）按钮
 
@@ -187,7 +187,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前表有列 | 打开 / 收起列显隐弹层（挂在眼睛按钮上的 popover，带指示箭头，锚点在上沿 0.618 处）；再点一次收起 | `src/data_page.rs:2337、src/data_page.rs:1771` |
+| click | 当前表有列 | 打开 / 收起列显隐弹层（挂在眼睛按钮上的 popover，带指示箭头，锚点在上沿 0.618 处）；再点一次收起 | `src/data_page.rs:2373、src/data_page.rs:1788` |
 
 ### `data_page.toolbar.columns.card` 列显隐弹层（复选清单 + 说明）
 
@@ -201,8 +201,8 @@ kind `container` · status `active` · parent `data_page.toolbar.columns`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 卡片已打开、该列在清单里 | 勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号 | `src/data_page.rs:2361、src/data_page.rs:2316` |
-| click | 弹层已打开 | 点 ✕ 收起弹层，隐藏选择保持不变 | `src/data_page.rs:1773` |
+| click | 卡片已打开、该列在清单里 | 勾选 = 显示该列、取消勾选 = 隐藏该列；只重排表头与单元格，数据与导出口径不变；可以隐藏到只剩行号 | `src/data_page.rs:2397、src/data_page.rs:2352` |
+| click | 弹层已打开 | 点 ✕ 收起弹层，隐藏选择保持不变 | `src/data_page.rs:1790` |
 
 ### `data_page.toolbar.export` 「导出 ▾」菜单按钮
 
@@ -216,8 +216,8 @@ kind `control` · status `active` · parent `data_page.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有已加载行、没有 RPC 在途 | 展开三项菜单：「导出 CSV…」「导出为 INSERT 语句…」「转储表…」；单击图标先展开菜单，范围（当前页 / 整张表）仍由紧接着的对话框显式选择 | `src/data_page.rs:1075、src/data_page.rs:1698` |
-| load | 没有已加载行（或正在提交） | 按钮禁用；没有可导出内容时不弹菜单、只写一行日志 | `src/data_page.rs:6579` |
+| click | 有已加载行、没有 RPC 在途 | 展开三项菜单：「导出 CSV…」「导出为 INSERT 语句…」「转储表…」；单击图标先展开菜单，范围（当前页 / 整张表）仍由紧接着的对话框显式选择 | `src/data_page.rs:1087、src/data_page.rs:1715` |
+| load | 没有已加载行（或正在提交） | 按钮禁用；没有可导出内容时不弹菜单、只写一行日志 | `src/data_page.rs:6743` |
 
 ### `data_page.export_menu` 导出菜单（三项出口）
 
@@ -279,8 +279,8 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 打开表（可叠加权限 / 统计 / 能力位结果） | 按条件逐枚追加：只读（tooltip 给具体原因）、无主键（「无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用」）、视图（「视图：数据来自查询定义，编辑受限…」）、无权限（「当前账号对该对象没有权限…」）、未统计（「精确计数超过预算，已跳过…」）、驱动不支持排序/筛选 | `src/data_page.rs:4397` |
-| load | 读取 / 提交返回 permission 类错误 | 置上「无权限」徽标并常驻，直到重新打开表 | `src/data_page.rs:4523` |
+| load | 打开表（可叠加权限 / 统计 / 能力位结果） | 按条件逐枚追加：只读（tooltip 给具体原因）、无主键（「无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用」）、视图（「视图：数据来自查询定义，编辑受限…」）、无权限（「当前账号对该对象没有权限…」）、未统计（「精确计数超过预算，已跳过…」）、驱动不支持排序/筛选 | `src/data_page.rs:4476` |
+| load | 读取 / 提交返回 permission 类错误 | 置上「无权限」徽标并常驻，直到重新打开表 | `src/data_page.rs:4609` |
 
 ### `data_page.grid` 数据网格（表格外框 · 行号列 · 表头 · 数据行）
 
@@ -295,10 +295,10 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑且没有待插入行（入口：状态栏行操作组 +，工具条与菜单里都没有） | 在末尾追加一行草稿并进入可编辑态：有默认值的列显示数据库默认值原文、自增 / 无默认列写「省略（交给数据库默认值）」；已有待插入行时先选中它并写「已经有一行待插入的新行：先提交或放弃它」，不再追加；每格双击填值，点「提交」才发 InsertRows | `src/data_page.rs:3099、src/data_page.rs:4988、src/data_page.rs:5049` |
-| load | 打开表 / 翻页 / 刷新（无未提交更改） | 整页替换并写「正在读取 offset N …（<动作>）」；成功后回到第一行；翻页中再翻页写「上一页仍在读取：稍候再翻页」，不发第二次请求 | `src/data_page.rs:3011、src/data_page.rs:4272、src/data_page.rs:4388、src/backend/table.rs:27` |
-| load | 有脏行、标记删除或新行草稿 | 翻页 / 排序 / 筛选 / 刷新一律拒绝，写「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」 | `src/data_page.rs:3048、src/data_page.rs:3011` |
-| scroll | 滚到本页最后一行 | 不自动取下一页（offset 分页互斥），页脚不出现「加载更多」 | `src/data_page.rs:4388` |
+| click | 可编辑且没有待插入行（入口：状态栏行操作组 +，工具条与菜单里都没有） | 在末尾追加一行草稿并进入可编辑态：有默认值的列显示数据库默认值原文、自增 / 无默认列写「省略（交给数据库默认值）」；已有待插入行时先选中它并写「已经有一行待插入的新行：先提交或放弃它」，不再追加；每格双击填值，点「提交」才发 InsertRows | `src/data_page.rs:3155、src/data_page.rs:5095、src/data_page.rs:5156` |
+| load | 打开表 / 翻页 / 刷新（无未提交更改） | 整页替换并写「正在读取 offset N …（<动作>）」；成功后回到第一行；翻页中再翻页写「上一页仍在读取：稍候再翻页」，不发第二次请求 | `src/data_page.rs:3057、src/data_page.rs:4350、src/data_page.rs:4467、src/backend/table.rs:28` |
+| load | 有脏行、标记删除或新行草稿 | 翻页 / 排序 / 筛选 / 刷新一律拒绝，写「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」 | `src/data_page.rs:3098、src/data_page.rs:3057` |
+| scroll | 滚到本页最后一行 | 不自动取下一页（offset 分页互斥），页脚不出现「加载更多」 | `src/data_page.rs:4467` |
 
 ### `data_page.grid.header` 列头（列名 · 原始类型 · 排序标记）
 
@@ -311,9 +311,9 @@ kind `row` · status `active` · parent `data_page.grid`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该列存在（松开点不在列右缘 6px 内） | 信息面板切到该列的列页（与树上列节点同一个页面，不重发 RPC）；**不改排序** | `src/data_page.rs:4013、src/data_page.rs:4056` |
-| load | 打开表 / 排序变化 / 列显隐变化 | 标题写「列名 · 原始类型」，有排序键时追加 ▲ / ▼ / ▲2（数字是优先级）；tooltip「点击查看列属性：<列名>」 | `src/data_page.rs:763、src/data_page.rs:6194` |
-| drag | 指针落在列右缘的拖宽把手 | 改列宽并记为**用户宽度**（翻页 / 刷新 / 自动列宽都不再覆写）；双击把手按内容自适应同样记为用户宽度 | `src/data_page.rs:5910、src/data_page.rs:5931` |
+| click | 该列存在（松开点不在列右缘 6px 内） | 信息面板切到该列的列页（与树上列节点同一个页面，不重发 RPC）；**不改排序** | `src/data_page.rs:4086、src/data_page.rs:4129` |
+| load | 打开表 / 排序变化 / 列显隐变化 | 标题写「列名 · 原始类型」，有排序键时追加 ▲ / ▼ / ▲2（数字是优先级）；tooltip「点击查看列属性：<列名>」 | `src/data_page.rs:775、src/data_page.rs:6335` |
+| drag | 指针落在列右缘的拖宽把手 | 改列宽并记为**用户宽度**（翻页 / 刷新 / 自动列宽都不再覆写）；双击把手按内容自适应同样记为用户宽度 | `src/data_page.rs:6051、src/data_page.rs:6072` |
 
 ### `data_page.grid.row_number` 行号列（行号 / 脏行 / 标删 / 新行）
 
@@ -326,8 +326,8 @@ kind `cell` · status `active` · parent `data_page.grid`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 行已加载 | 普通行写行号（tooltip「第 N 行」）；脏行写「●N」（「第 N 行 · 有未提交的更改」）；标删写「✕N」（「第 N 行 · 已标记删除（提交前可撤销）」）；新行写「＋」（「新行 · 尚未提交（双击单元格填值）」）；被其它会话删除的行同样写「✕N」并给删除线与压暗 | `src/data_page.rs:5845、src/data_page.rs:5851、src/data_page.rs:5857、src/data_page.rs:5839` |
-| hover | 行号格有标记 | tooltip 说明这一格为什么不是普通数字（有未提交的更改 / 已标记删除（提交前可撤销）/ 已删除 / 新行尚未提交） | `src/data_page.rs:5868` |
+| load | 行已加载 | 普通行写行号（tooltip「第 N 行」）；脏行写「●N」（「第 N 行 · 有未提交的更改」）；标删写「✕N」（「第 N 行 · 已标记删除（提交前可撤销）」）；新行写「＋」（「新行 · 尚未提交（双击单元格填值）」）；被其它会话删除的行同样写「✕N」并给删除线与压暗 | `src/data_page.rs:5972、src/data_page.rs:5978、src/data_page.rs:5984、src/data_page.rs:5966` |
+| hover | 行号格有标记 | tooltip 说明这一格为什么不是普通数字（有未提交的更改 / 已标记删除（提交前可撤销）/ 已删除 / 新行尚未提交） | `src/data_page.rs:5995` |
 
 ### `data_page.grid.cell` 数据单元格（值 · NULL / 空串 · 脏色）
 
@@ -340,9 +340,9 @@ kind `cell` · status `active` · parent `data_page.grid`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行存在 | 只选中行（Ctrl / Shift 多选），不改数据；状态栏选中数出现 N selected | `src/data_page.rs:1237、src/data_page.rs:6206` |
-| double_click | 单元格可编辑 | 打开编辑（见 data_page.editor）；不可编辑时状态行给具体原因：「该行已标记删除：撤销删除后才能编辑」「列 X 的值被服务端截断…」等，不弹空编辑器 | `src/data_page.rs:6231、src/data_page.rs:5460、src/data_page.rs:5523` |
-| key Esc | 网格有焦点、有选中行 | 清空行选中（不影响 SQL 编辑器与对话框） | `src/data_page.rs:1248` |
+| click | 行存在 | 只选中行（Ctrl / Shift 多选），不改数据；状态栏选中数出现 N selected | `src/data_page.rs:1255、src/data_page.rs:6347` |
+| double_click | 单元格可编辑 | 打开编辑（见 data_page.editor）；不可编辑时状态行给具体原因：「该行已标记删除：撤销删除后才能编辑」「列 X 的值被服务端截断…」等，不弹空编辑器 | `src/data_page.rs:6372、src/data_page.rs:5577、src/data_page.rs:5647` |
+| key Esc | 网格有焦点、有选中行 | 清空行选中（不影响 SQL 编辑器与对话框） | `src/data_page.rs:1266` |
 
 ### `data_page.editor` 单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消）
 
@@ -356,12 +356,12 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 输入合法（或勾选了设为 NULL） | 值写进界面草稿：单元格加脏色、行号变「●N」、状态圆点转强调色；编辑框收起。写库仍要等「提交」 | `src/data_page.rs:570、src/data_page.rs:5578、src/data_page.rs:5615` |
-| click | 编辑框已打开 | 「取消」直接收起、不改草稿（与从未打开等价） | `src/data_page.rs:570` |
-| key Esc | 编辑框已打开 | 收起编辑框并放弃本次输入（Linux：popover 的 Esc 收起等同取消）；不写草稿、不写库 | `src/data_page.rs:570、src/data_page.rs:646` |
-| key Enter | 就地编辑态（Windows 口径） | 把输入提交到**本地暂存**（不落库）、单元格转脏；Linux 的编辑框是 应用 / 取消 两个按钮的形态，Enter 不提交（见 platform_notes.linux），最终草稿与提交口径一致 | `src/data_page.rs:570、src/data_page.rs:5615` |
-| key F2 | 网格有选中单元格 | 进入编辑（与双击同一入口）；Linux 未绑 F2 —— 双击是唯一编辑入口（见 platform_notes.linux） | `src/data_page.rs:5460` |
-| click | 编辑框已打开、点了编辑框以外的任何位置 | Linux：popover 自动收起，等同取消（没点「应用」就什么都没改）；Windows：按「暂存」处理，输入进本地草稿 | `src/data_page.rs:578、src/data_page.rs:570` |
+| click | 输入合法（或勾选了设为 NULL） | 值写进界面草稿：单元格加脏色、行号变「●N」、状态圆点转强调色；编辑框收起。写库仍要等「提交」 | `src/data_page.rs:582、src/data_page.rs:5705、src/data_page.rs:5742` |
+| click | 编辑框已打开 | 「取消」直接收起、不改草稿（与从未打开等价） | `src/data_page.rs:582` |
+| key Esc | 编辑框已打开 | 收起编辑框并放弃本次输入（Linux：popover 的 Esc 收起等同取消）；不写草稿、不写库 | `src/data_page.rs:582、src/data_page.rs:658` |
+| key Enter | 就地编辑态（Windows 口径） | 把输入提交到**本地暂存**（不落库）、单元格转脏；Linux 的编辑框是 应用 / 取消 两个按钮的形态，Enter 不提交（见 platform_notes.linux），最终草稿与提交口径一致 | `src/data_page.rs:582、src/data_page.rs:5742` |
+| key F2 | 网格有选中单元格 | 进入编辑（与双击同一入口）；Linux 未绑 F2 —— 双击是唯一编辑入口（见 platform_notes.linux） | `src/data_page.rs:5577` |
+| click | 编辑框已打开、点了编辑框以外的任何位置 | Linux：popover 自动收起，等同取消（没点「应用」就什么都没改）；Windows：按「暂存」处理，输入进本地草稿 | `src/data_page.rs:590、src/data_page.rs:582` |
 
 ### `data_page.row_menu` 数据行右键菜单
 
@@ -375,7 +375,7 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 已打开表 | 按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用 | `src/data_page.rs:2136、src/data_page.rs:2157、src/data_page.rs:2161、src/context_menu.rs:71` |
+| right_click | 已打开表 | 按点击位置弹出菜单：「删除行」、「复制为 ▸ 复制为 INSERT」；不可编辑时「删除行」灰掉（delete_available = false），「复制为 INSERT」仍可用 | `src/data_page.rs:2157、src/data_page.rs:2178、src/data_page.rs:2182、src/context_menu.rs:71` |
 | click | 菜单打开中 | 点菜单以外的任何地方（其它行、工具条、外面板）一律收起 | `src/context_menu.rs:77` |
 
 ### `data_page.row_menu.delete` 「删除行」
@@ -389,7 +389,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑且有选中行 | 把选中行标记为待删除：行号变「✕N」、整行删除线 + 压暗；圆点注记「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」，一次「提交」才真正写库 | `src/data_page.rs:5272、src/data_page.rs:5017、src/data_page.rs:5337` |
+| click | 可编辑且有选中行 | 把选中行标记为待删除：行号变「✕N」、整行删除线 + 压暗；圆点注记「第 N 行已标记删除（提交前可撤销）」或「已标记删除 N 行（批量提交前可撤销）」，一次「提交」才真正写库 | `src/data_page.rs:5380、src/data_page.rs:5124、src/data_page.rs:5442` |
 
 ### `data_page.row_menu.copy_insert` 「复制为 ▸ 复制为 INSERT」
 
@@ -402,7 +402,7 @@ kind `item` · status `active` · parent `data_page.row_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有选中行 | 合成多值 INSERT 写入剪贴板；成功后圆点注记「已复制 N 行为 INSERT 语句」，失败写 warning 说明原因 | `src/data_page.rs:2016、src/data_page.rs:2161` |
+| click | 有选中行 | 合成多值 INSERT 写入剪贴板；成功后圆点注记「已复制 N 行为 INSERT 语句」，失败写 warning 说明原因 | `src/data_page.rs:2031、src/data_page.rs:2182` |
 
 ### `data_page.detail` 单行「字段 · 值」展示形式
 
@@ -415,10 +415,10 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有选中行、当前是按行浏览（入口：状态栏的展示形式 toggle） | 表格外框内换成「字段 | 值」两列，只讲第一个选中行；按钮呈按下态（选中态由数据页快照推回，不在按钮自己记） | `src/data_page.rs:2053、src/data_page.rs:2093、src/data_page.rs:1291` |
-| click | 已在「字段 / 值」视图 | 再按一次同一按钮切回按行浏览（同一动作幂等切换），网格原样回来，选中与脏行不变 | `src/data_page.rs:2053、src/data_page.rs:2073` |
-| double_click | 「值」列、该值可改（不是只读连接 / 只读事务 / 截断列 / 已标记删除的行） | 打开与网格同一个编辑器（行号 = 详情当前行、列号 = 字段下标）；改完立即按当前值重填整页（日志「详情第 N 行：id=2 · name=…」），提交仍走「提交」与脏行守卫 | `src/data_page.rs:688、src/data_page.rs:753` |
-| load | 没有选中行 / 换表 / 重新读取 / 选中集清空 | 没有选中行时不切视图，状态行「先选中一行，再切换到「字段 / 值」视图」；换表与选中集清空**强制**回到按行浏览并清空详情数据 | `src/data_page.rs:2053、src/data_page.rs:4228` |
+| click | 有选中行、当前是按行浏览（入口：状态栏的展示形式 toggle） | 表格外框内换成「字段 | 值」两列，只讲第一个选中行；按钮呈按下态（选中态由数据页快照推回，不在按钮自己记） | `src/data_page.rs:2074、src/data_page.rs:2114、src/data_page.rs:1309` |
+| click | 已在「字段 / 值」视图 | 再按一次同一按钮切回按行浏览（同一动作幂等切换），网格原样回来，选中与脏行不变 | `src/data_page.rs:2074、src/data_page.rs:2094` |
+| double_click | 「值」列、该值可改（不是只读连接 / 只读事务 / 截断列 / 已标记删除的行） | 打开与网格同一个编辑器（行号 = 详情当前行、列号 = 字段下标）；改完立即按当前值重填整页（日志「详情第 N 行：id=2 · name=…」），提交仍走「提交」与脏行守卫 | `src/data_page.rs:700、src/data_page.rs:765` |
+| load | 没有选中行 / 换表 / 重新读取 / 选中集清空 | 没有选中行时不切视图，状态行「先选中一行，再切换到「字段 / 值」视图」；换表与选中集清空**强制**回到按行浏览并清空详情数据 | `src/data_page.rs:2074、src/data_page.rs:4304` |
 
 ### `data_page.filter_panel` 筛选与排序面板（草稿 · 应用 / 清空）
 
@@ -432,12 +432,12 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 打开面板 | 把**已应用**的筛选与排序复制成草稿并重建列下拉；状态文案回到「已应用」；错误提示清除 | `src/data_page.rs:2389、src/data_page.rs:2919` |
-| click | 草稿与已应用状态不同 | 「应用」：未知列或算子缺值则面板内报错 + 状态行 error，不发请求；成功则写回唯一状态、回到第 1 页、重发浏览请求、状态行「筛选与排序已应用（N 条条件 · M 个排序键）· 回到第 1 页」；**面板不关闭** | `src/data_page.rs:2941` |
-| click | 有未提交更改 | 「应用」被拒绝，状态行「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」，草稿保留 | `src/data_page.rs:2941、src/data_page.rs:3048` |
-| click | 面板已打开 | 「清空」只清**草稿**（条件与排序键），仍需点「应用」才生效；状态行「条件与排序已清空（点「应用筛选与排序」恢复全表）」 | `src/data_page.rs:2997` |
-| click | 面板已打开 | 点 ✕（或再点漏斗）关闭面板，未应用的改动丢弃 | `src/data_page.rs:2411、src/data_page.rs:1773` |
-| key Esc | 面板内有行内编辑态 | 先收起行内编辑；没有编辑态时才关面板（一个 Esc 不该把整张面板关掉） | `src/data_page.rs:1792` |
+| load | 打开面板 | 把**已应用**的筛选与排序复制成草稿并重建列下拉；状态文案回到「已应用」；错误提示清除 | `src/data_page.rs:2425、src/data_page.rs:2960` |
+| click | 草稿与已应用状态不同 | 「应用」：未知列或算子缺值则面板内报错 + 状态行 error，不发请求；成功则写回唯一状态、回到第 1 页、重发浏览请求、状态行「筛选与排序已应用（N 条条件 · M 个排序键）· 回到第 1 页」；**面板不关闭** | `src/data_page.rs:2982` |
+| click | 有未提交更改 | 「应用」被拒绝，状态行「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」，草稿保留 | `src/data_page.rs:2982、src/data_page.rs:3098` |
+| click | 面板已打开 | 「清空」只清**草稿**（条件与排序键），仍需点「应用」才生效；状态行「条件与排序已清空（点「应用筛选与排序」恢复全表）」 | `src/data_page.rs:3040` |
+| click | 面板已打开 | 点 ✕（或再点漏斗）关闭面板，未应用的改动丢弃 | `src/data_page.rs:2450、src/data_page.rs:1790` |
+| key Esc | 面板内有行内编辑态 | 先收起行内编辑；没有编辑态时才关面板（一个 Esc 不该把整张面板关掉） | `src/data_page.rs:1809` |
 
 ### `data_page.filter_panel.condition_composer` 条件编辑组（列 · 算子 · 值 · 添加条件）
 
@@ -450,9 +450,9 @@ kind `container` · status `active` · parent `data_page.filter_panel`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有列清单、算子需要值且值非空（或算子为 IS NULL 类） | 条件追加到草稿并渲染成条件行（多条按 AND 组合）；日志「筛选条件已加入草稿：<列> <算子> <值>（尚未应用）」 | `src/data_page.rs:2487、src/data_page.rs:2546` |
-| click | 算子下拉可见 | 只列出符号算子；选 IS NULL / IS NOT NULL 后值输入框禁用并清空（这两条不需要值） | `src/data_page.rs:1401、src/data_page.rs:2518` |
-| click | 算子需要值但值被清空 | 不加入条件，面板内红字「<算子> 需要一个值（列 X · 类型）」 | `src/data_page.rs:2518、src/data_page.rs:2530` |
+| click | 有列清单、算子需要值且值非空（或算子为 IS NULL 类） | 条件追加到草稿并渲染成条件行（多条按 AND 组合）；日志「筛选条件已加入草稿：<列> <算子> <值>（尚未应用）」 | `src/data_page.rs:2526、src/data_page.rs:2585` |
+| click | 算子下拉可见 | 只列出符号算子；选 IS NULL / IS NOT NULL 后值输入框禁用并清空（这两条不需要值） | `src/data_page.rs:1417、src/data_page.rs:2557` |
+| click | 算子需要值但值被清空 | 不加入条件，面板内红字「<算子> 需要一个值（列 X · 类型）」 | `src/data_page.rs:2557、src/data_page.rs:2569` |
 
 ### `data_page.filter_panel.condition_row` 条件行（列 · 算子 · 值，可就地编辑）
 
@@ -465,9 +465,9 @@ kind `row` · status `active` · parent `data_page.filter_panel`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该条件行不是编辑态 | 就地展开为列 / 算子 / 值编辑器；回车或 ✓ 提交，✗ 或点面板空白处收起 | `src/data_page.rs:2681、src/data_page.rs:2601` |
-| key Enter | 条件行处于编辑态 | 提交这一行修改（只改草稿），收起编辑器；校验失败时不收起并在面板内报错 | `src/data_page.rs:2725` |
-| click | 条件行存在 | 点行尾 ✗ 从草稿里删掉这条条件（仍需点「应用」才影响数据） | `src/data_page.rs:2767、src/data_page.rs:2570` |
+| click | 该条件行不是编辑态 | 就地展开为列 / 算子 / 值编辑器；回车或 ✓ 提交，✗ 或点面板空白处收起 | `src/data_page.rs:2722、src/data_page.rs:2642` |
+| key Enter | 条件行处于编辑态 | 提交这一行修改（只改草稿），收起编辑器；校验失败时不收起并在面板内报错 | `src/data_page.rs:2766` |
+| click | 条件行存在 | 点行尾 ✗ 从草稿里删掉这条条件（仍需点「应用」才影响数据） | `src/data_page.rs:2808、src/data_page.rs:2609` |
 
 ### `data_page.filter_panel.sort_composer` 排序编辑组（列 · 方向 · 添加排序）
 
@@ -480,8 +480,8 @@ kind `container` · status `active` · parent `data_page.filter_panel`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有列清单且驱动支持排序 | 列 + 方向加入草稿的排序键列表（列表顺序即优先级）；日志「排序键已加入草稿：<列> <asc|desc>（尚未应用）」 | `src/data_page.rs:2780、src/data_page.rs:2810` |
-| click | 驱动排序能力位为 false | 不加入，面板内报「当前驱动不支持排序」 | `src/data_page.rs:2788` |
+| click | 有列清单且驱动支持排序 | 列 + 方向加入草稿的排序键列表（列表顺序即优先级）；日志「排序键已加入草稿：<列> <asc|desc>（尚未应用）」 | `src/data_page.rs:2821、src/data_page.rs:2851` |
+| click | 驱动排序能力位为 false | 不加入，面板内报「当前驱动不支持排序」 | `src/data_page.rs:2829` |
 
 ### `data_page.filter_panel.sort_row` 排序键行（列名 · asc / desc · 上移 / 下移 / 删除）
 
@@ -494,9 +494,9 @@ kind `row` · status `active` · parent `data_page.filter_panel`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 排序键行存在 | 点列名切换 asc ↔ desc（只改草稿），列表重排并刷新标题状态 | `src/data_page.rs:2875、src/data_page.rs:2837` |
-| click | 该键不是第一条 / 不是最后一条 | 上移 / 下移把它在列表里挪一位，列表顺序即 SQL 的排序优先级 | `src/data_page.rs:2893` |
-| click | 排序键行存在 | 点 ✕ 删除这个排序键（仍需「应用」才生效） | `src/data_page.rs:2906` |
+| click | 排序键行存在 | 点列名切换 asc ↔ desc（只改草稿），列表重排并刷新标题状态 | `src/data_page.rs:2916、src/data_page.rs:2878` |
+| click | 该键不是第一条 / 不是最后一条 | 上移 / 下移把它在列表里挪一位，列表顺序即 SQL 的排序优先级 | `src/data_page.rs:2929` |
+| click | 排序键行存在 | 点 ✕ 删除这个排序键（仍需「应用」才生效） | `src/data_page.rs:2947` |
 
 ### `data_page.txn_chooser` 「开始事务」卡片（隔离级别 · 只读）
 
@@ -509,9 +509,9 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 工具条「开始事务」可用 | 卡片出现：隔离级别（默认选中第一个可用项）、「只读」勾选、按钮「开始事务」/「取消」 | `src/data_page.rs:3643、src/data_page.rs:3653` |
-| click | 已选可用隔离级别 | 「开始事务」按所选级别（及只读勾选）发 RPC；在途提示「开始事务：<隔离级别> · 读写」，事务状态落定后清除，圆点转棕 | `src/data_page.rs:3753、src/data_page.rs:1745` |
-| click | 卡片已打开 | 「取消」或 ✕ 收起卡片，不开始事务、不发 RPC | `src/data_page.rs:1749` |
+| click | 工具条「开始事务」可用 | 卡片出现：隔离级别（默认选中第一个可用项）、「只读」勾选、按钮「开始事务」/「取消」 | `src/data_page.rs:3710、src/data_page.rs:3719` |
+| click | 已选可用隔离级别 | 「开始事务」按所选级别（及只读勾选）发 RPC；在途提示「开始事务：<隔离级别> · 读写」，事务状态落定后清除，圆点转棕 | `src/data_page.rs:3821、src/data_page.rs:1762` |
+| click | 卡片已打开 | 「取消」或 ✕ 收起卡片，不开始事务、不发 RPC | `src/data_page.rs:1766` |
 
 ### `data_page.placeholder` 占位页（尚未打开 / 正在读取 / 空表 / 本页没有数据）
 
@@ -524,8 +524,8 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 打开表 / 翻页请求已发出 | 「正在读取表数据」+「等待服务端返回第一页…」 | `src/data_page.rs:4261、src/data_page.rs:1313` |
-| load | 第一页 0 行 | 「空表」+「该表存在，但当前条件下没有任何行」/「该表存在，但目前没有任何行」（有筛选时写前者）；offset 越界时写「本页没有数据」+「offset 超出总数（服务端如实返回空行）；回首页或刷新再看」 | `src/data_page.rs:4342` |
+| load | 打开表 / 翻页请求已发出 | 「正在读取表数据」+「等待服务端返回第一页…」 | `src/data_page.rs:4339、src/data_page.rs:1331` |
+| load | 第一页 0 行 | 「空表」+「该表存在，但当前条件下没有任何行」/「该表存在，但目前没有任何行」（有筛选时写前者）；offset 越界时写「本页没有数据」+「offset 超出总数（服务端如实返回空行）；回首页或刷新再看」 | `src/data_page.rs:4421` |
 
 ### `data_page.banner` 页首横幅（只读 / 断连 / 错误）
 
@@ -538,9 +538,9 @@ kind `control` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 服务端标记只读（表级 / 视图 / 无主键 / 只读事务） | 横幅常驻显示只读原因；编辑类按钮禁用；过程消息 tooltip 给同一原因（不能只靠禁用暗示） | `src/data_page.rs:6802、src/data_page.rs:4334` |
-| load | 会话丢失或后端断开 | 丢弃未提交更改并写「已断开：<原因> 未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚。」；状态行「已断开 · 已加载 N 行（只读）」；已加载行保留 | `src/data_page.rs:4666` |
-| load | 读取 / 提交 / 事务操作失败 | 横幅写服务端给的失败文案（错误码进日志与状态行），状态行转 error，逐行失败另见 data_page.errors；**已加载的行保留**、不清屏，可重试 | `src/data_page.rs:4523、src/data_page.rs:4595` |
+| load | 服务端标记只读（表级 / 视图 / 无主键 / 只读事务） | 横幅常驻显示只读原因；编辑类按钮禁用；过程消息 tooltip 给同一原因（不能只靠禁用暗示） | `src/data_page.rs:6983、src/data_page.rs:4413` |
+| load | 会话丢失或后端断开 | 丢弃未提交更改并写「已断开：<原因> 未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚。」；状态行「已断开 · 已加载 N 行（只读）」；已加载行保留 | `src/data_page.rs:4756` |
+| load | 读取 / 提交 / 事务操作失败 | 横幅写服务端给的失败文案（错误码进日志与状态行），状态行转 error，逐行失败另见 data_page.errors；**已加载的行保留**、不清屏，可重试 | `src/data_page.rs:4609、src/data_page.rs:4685` |
 
 ### `data_page.errors` 逐行提交失败列表
 
@@ -553,7 +553,7 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 提交批次里有失败行 | 逐行列出「第 N 行：[code] 原因」（如 table_data.row_deleted / table_data.rows_affected_mismatch）；块可见、已加载行保留；状态行与横幅同时给汇总 | `src/data_page.rs:6810、src/data_page.rs:4487` |
+| load | 提交批次里有失败行 | 逐行列出「第 N 行：[code] 原因」（如 table_data.row_deleted / table_data.rows_affected_mismatch）；块可见、已加载行保留；状态行与横幅同时给汇总 | `src/data_page.rs:6991、src/data_page.rs:4573` |
 
 ### `data_page.query_edit` 查询结果的单表编辑（复用同一份草稿与提交路径）
 
@@ -565,11 +565,11 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列 | 装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色） | `src/sql_page.rs:708、src/result_edit.rs:45、src/results.rs:605` |
-| load | 上述任一不成立 | 行操作组整体置灰，tooltip 写明具体原因：「结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除」/「结果里没有主键列 X：定位不到要改的行，不能编辑」/「这张表没有主键：不能新增、编辑或删除」/「读取主键失败：…」——不静默灰掉 | `src/sql_page.rs:715、src/sql_page.rs:740、src/result_edit.rs:78` |
+| load | 结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列 | 装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色） | `src/sql_page.rs:708、src/result_edit.rs:46、src/results.rs:605` |
+| load | 上述任一不成立 | 行操作组整体置灰，tooltip 写明具体原因：「结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除」/「结果里没有主键列 X：定位不到要改的行，不能编辑」/「这张表没有主键：不能新增、编辑或删除」/「读取主键失败：…」——不静默灰掉 | `src/sql_page.rs:715、src/sql_page.rs:740、src/result_edit.rs:79` |
 | double_click | 结果可编辑、单元格可改 | 打开与网格同一个编辑器；确定后按当前值重绘该行（未提交前不写库），并立刻重算行操作可用性（第一次编辑后 ✓ 即可点） | `src/results.rs:742、src/sql_page.rs:731` |
-| click | 可编辑、没有未提交改动、没有待插入行（入口：状态栏 +） | 结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」 | `src/results.rs:672、src/sql_page.rs:956、src/result_edit.rs:198` |
-| click | 可编辑且有选中行（入口：状态栏 −） | 把选中行标记待删除（不立刻写库），可 ↶ 放弃；重绘后整行删除线 + 压暗，状态行「已标记删除 N 行（提交前可以放弃）」 | `src/sql_page.rs:968、src/result_edit.rs:176` |
+| click | 可编辑、没有未提交改动、没有待插入行（入口：状态栏 +） | 结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」 | `src/results.rs:672、src/sql_page.rs:956、src/result_edit.rs:199` |
+| click | 可编辑且有选中行（入口：状态栏 −） | 把选中行标记待删除（不立刻写库），可 ↶ 放弃；重绘后整行删除线 + 压暗，状态行「已标记删除 N 行（提交前可以放弃）」 | `src/sql_page.rs:968、src/result_edit.rs:177` |
 | click | 有脏行 / 待插入行（入口：状态栏 ✓ / Ctrl+S） | 走 ApplyRowChanges；全部成功后**自动重跑同一条语句**（results.statement()，不是编辑器里的当前文本），结果区写「已提交 N 行 · 已自动重新执行查询」/「已插入 N 行 · 已自动重新执行查询」；有失败行时**不重跑**，失败行留在草稿里 | `src/sql_page.rs:801、src/sql_page.rs:841、src/sql_page.rs:380` |
 | click | 有脏行（入口：状态栏 ↶） | 全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」 | `src/sql_page.rs:1020、src/results.rs:544` |
 | load | 有未提交的更改且点了刷新（⟳） | 拒绝并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点） | `src/sql_page.rs:954` |
@@ -986,10 +986,10 @@ kind `area` · status `active`
 |---|---|---|---|
 | drag | 面板常驻 | 拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹 | `src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235` |
 | load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2224、src/inspector.rs:723` |
-| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL） | `src/tabs.rs:1849、src/ui.rs:2328、src/inspector.rs:849` |
-| load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1860、src/ui.rs:2335、src/tree.rs:1905` |
+| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL） | `src/tabs.rs:1852、src/ui.rs:2328、src/inspector.rs:849` |
+| load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1863、src/ui.rs:2335、src/tree.rs:1905` |
 | load | 切换到查询标签且没有选择库（真值与请求值都为空） | 面板落空态页，不编造库信息 | `src/ui.rs:2343、src/inspector.rs:669` |
-| load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1831、src/ui.rs:2314` |
+| load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1834、src/ui.rs:2314` |
 | load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）不重渲染、不重发请求；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:2309、src/ui.rs:1475、src/ui.rs:2330` |
 | load | 刷新对象树（F5 / 右键刷新） | 钉住视图的对象缓存整体作废（结构可能已变，旧读数不再可信），下一次展示重新读取 | `src/ui.rs:2179、src/inspector.rs:921` |
 
@@ -1159,8 +1159,8 @@ kind `container` · status `active` · parent `inspector.object`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到 DDL 页（选中表 / 视图时默认落在这一页） | 发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」 | `src/ddl.rs:231、src/ddl.rs:153、src/ddl.rs:167` |
-| load | GetDdl 失败 | 正文区换状态页：标题给错误 headline、说明行给「<文案>（<稳定错误码>）」；§7.1 的文案口径为「DDL 读取失败：<文案>（<错误码>）」，不是空面板 | `src/ddl.rs:302、src/ddl.rs:312` |
+| load | 切到 DDL 页（选中表 / 视图时默认落在这一页） | 发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」 | `src/ddl.rs:232、src/ddl.rs:154、src/ddl.rs:168` |
+| load | GetDdl 失败 | 正文区换状态页：标题给错误 headline、说明行给「<文案>（<稳定错误码>）」；§7.1 的文案口径为「DDL 读取失败：<文案>（<错误码>）」，不是空面板 | `src/ddl.rs:307、src/ddl.rs:317` |
 
 ### `inspector.object.ddl.warning` DDL 琥珀警示（exact=false）
 
@@ -1173,7 +1173,7 @@ kind `control` · status `active` · parent `inspector.object.ddl`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | GetDdl 返回 exact=false（客户端拼装） | 正文上方出现一行琥珀警示「⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · <来源说明>」 | `src/ddl.rs:284、src/ddl.rs:286、src/ddl.rs:91` |
+| load | GetDdl 返回 exact=false（客户端拼装） | 正文上方出现一行琥珀警示「⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · <来源说明>」 | `src/ddl.rs:289、src/ddl.rs:291、src/ddl.rs:92` |
 
 ### `inspector.column` 列视图（六项属性）
 
@@ -1371,7 +1371,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 行可打开 | 打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据） | `src/tree.rs:776、src/tabs.rs:1634` |
+| double_click | 行可打开 | 打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据） | `src/tree.rs:776、src/tabs.rs:1637` |
 | load | 展开表节点 | 0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes | `src/tree.rs:2733、src/tree.rs:2756` |
 
 ### `object_tree.tree.row.field` 列 / 索引 / 触发器行
@@ -1558,7 +1558,7 @@ kind `container` · status `active` · parent `object_tree.ctx_menu.edit_connect
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2918` |
+| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2921` |
 
 ### `object_tree.ctx_menu.delete_connection` 「删除连接」
 
@@ -1648,10 +1648,10 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs:1771、src/tabs.rs:1787、src/tabs.rs:1791、src/startup.rs:178` |
-| click | 页签可见 | 只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:1373、src/tabs.rs:1378` |
-| key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2671、src/tabs.rs:2683` |
-| click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1390、src/tabs.rs:2681` |
+| load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs:1774、src/tabs.rs:1790、src/tabs.rs:1794、src/startup.rs:178` |
+| click | 页签可见 | 只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:1376、src/tabs.rs:1381` |
+| key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2674、src/tabs.rs:2686` |
+| click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1393、src/tabs.rs:2684` |
 
 ### `objects_page.table` 三列表格（行号 · 表名 · 类型）
 
@@ -1667,13 +1667,13 @@ kind `container` · status `active` · parent `objects_page`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | key ↑ / ↓ | 表格有焦点且已有行 | 移动选中（SingleSelection 默认行为）；选中变化与单击同效 —— 同步右侧信息面板 | `src/tabs.rs:680、src/tabs.rs:917` |
-| key Enter | 有选中行 | 等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签） | `src/tabs.rs:938、src/tabs.rs:1776` |
+| key Enter | 有选中行 | 等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签） | `src/tabs.rs:938、src/tabs.rs:1779` |
 | load | 树里选中库 / 它下面的 Tables 分组 / 表内分组（Fields 等）/ 某张表 | 列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表 | `src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093` |
 | load | 树里选中 Views 分组 / 某个视图 | 列出该库的视图（[VIEW, MATERIALIZED_VIEW]） | `src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366` |
 | load | 树里选中 Functions / Queries 分组 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
-| load | 树里选中连接行 / 占位行（没有作用域） | 回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉 | `src/ui.rs:1377、src/tabs.rs:1013` |
-| load | 树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表） | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1032、src/tabs.rs:1044、src/tabs.rs:1047` |
-| load | 从别的标签切回本页 | 清掉行选中；列表内容与右侧信息面板都不动，不重发请求 | `src/tabs.rs:1378、src/tabs.rs:1212` |
+| load | 树里选中连接行 / 占位行（没有作用域） | 回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉 | `src/ui.rs:1377、src/tabs.rs:1016` |
+| load | 树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表） | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
+| load | 从别的标签切回本页 | 清掉行选中；列表内容与右侧信息面板都不动，不重发请求 | `src/tabs.rs:1381、src/tabs.rs:1215` |
 
 ### `objects_page.table.row` 行模板（行号 · 图标 + 名称 · 类型）
 
@@ -1686,8 +1686,8 @@ kind `row` · status `active` · parent `objects_page.table`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行存在 | 只选中：进入选中态并同步右侧信息面板；不反写树的选中（会形成回环并跳走浏览位置），不打开、不发请求 | `src/tabs.rs:917、src/tabs.rs:1008` |
-| double_click | 行存在 | 打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据） | `src/tabs.rs:938、src/tabs.rs:1821` |
+| click | 行存在 | 只选中：进入选中态并同步右侧信息面板；不反写树的选中（会形成回环并跳走浏览位置），不打开、不发请求 | `src/tabs.rs:917、src/tabs.rs:1011` |
+| double_click | 行存在 | 打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据） | `src/tabs.rs:938、src/tabs.rs:1824` |
 | hover | 行存在 | 底色换成品牌浅档（alpha 55%），前景不动；已选中的行 hover 仍是中档，不会退回系统强调色 | `src/theme.rs:314` |
 
 ### `objects_page.table.row.number` 行号格
@@ -1732,11 +1732,11 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 作用域已变、请求在飞 | 写「正在读取…」（首次首页与「加载更多…」续页都写这一句） | `src/tabs.rs:1067、src/tabs.rs:1080` |
-| load | 首页或续页返回、有行 | 写「共 N 个对象」；还有下一页时追加「（还有更多）」 | `src/tabs.rs:1128` |
-| load | 请求成功但 0 条（本页与累计都是空） | 写「（这个库里没有这类对象）」 | `src/tabs.rs:1132、src/tabs.rs:1133` |
-| load | 请求失败 | 写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处 | `src/tabs.rs:1137、src/tabs.rs:1138` |
-| load | 该连接没有浏览会话（展开连接前 / 已断开） | 写「这条连接没有浏览会话：展开连接后重试」，不发请求 | `src/tabs.rs:1062、src/tabs.rs:1064` |
+| load | 作用域已变、请求在飞 | 写「正在读取…」（首次首页与「加载更多…」续页都写这一句） | `src/tabs.rs:1070、src/tabs.rs:1083` |
+| load | 首页或续页返回、有行 | 写「共 N 个对象」；还有下一页时追加「（还有更多）」 | `src/tabs.rs:1131` |
+| load | 请求成功但 0 条（本页与累计都是空） | 写「（这个库里没有这类对象）」 | `src/tabs.rs:1135、src/tabs.rs:1136` |
+| load | 请求失败 | 写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处 | `src/tabs.rs:1140、src/tabs.rs:1141` |
+| load | 该连接没有浏览会话（展开连接前 / 已断开） | 写「这条连接没有浏览会话：展开连接后重试」，不发请求 | `src/tabs.rs:1065、src/tabs.rs:1067` |
 
 ### `objects_page.more` 「加载更多…」
 
@@ -1749,8 +1749,8 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 按钮可见（还有下一页） | 按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」 | `src/tabs.rs:905、src/tabs.rs:1071` |
-| load | 首页或续页返回 | 有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏 | `src/tabs.rs:1126、src/tabs.rs:1137` |
+| click | 按钮可见（还有下一页） | 按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」 | `src/tabs.rs:905、src/tabs.rs:1074` |
+| load | 首页或续页返回 | 有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏 | `src/tabs.rs:1129、src/tabs.rs:1140` |
 
 ### `objects_page.empty` 空态页
 
@@ -1763,11 +1763,11 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 连接态、树里没有可用作用域（选中连接 / 占位行） | 标题「没有选中对象」，说明「在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。」 | `src/tabs.rs:854、src/tabs.rs:1013` |
+| load | 连接态、树里没有可用作用域（选中连接 / 占位行） | 标题「没有选中对象」，说明「在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。」 | `src/tabs.rs:854、src/tabs.rs:1016` |
 | load | 启动态（未连接） | 标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」 | `src/startup.rs:180、src/startup.rs:182` |
 | load | 树里选中 Functions 分组 | 标题「函数列表尚未实现」，说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；列表与分页 token 一并清空 | `src/tabs.rs:520、src/tabs.rs:984` |
 | load | 树里选中 Queries 分组 | 标题「已保存的查询尚未实现」，说明「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」 | `src/tabs.rs:524、src/tabs.rs:984` |
-| load | 从空态 / 未实现说明回到空态 | 恢复默认文案（上一次的临时说明不残留），并清空状态行与「加载更多…」 | `src/tabs.rs:971、src/tabs.rs:1022` |
+| load | 从空态 / 未实现说明回到空态 | 恢复默认文案（上一次的临时说明不残留），并清空状态行与「加载更多…」 | `src/tabs.rs:971、src/tabs.rs:1025` |
 
 ## 窗口壳与主工具条（`shell`）
 
@@ -1853,8 +1853,8 @@ kind `control` · status `active` · parent `shell`
 |---|---|---|---|
 | load | 握手成功且还没有数据库连接 | 标题「Sqarvo」、副标题「未连接」 | `src/ui.rs:1561` |
 | load | 连接数据库成功 | 标题「<连接名> - <驱动显示名>」；副标题「已连接 · <显示名>（<driver_id>）· <服务端版本>」，版本缺失时写「未知（后端未返回）」 | `src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770` |
-| load | 切换标签 | 标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息） | `src/tabs.rs:2289、src/tabs.rs:2307、src/tabs.rs:135` |
-| load | 后端断开 | 标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连 | `src/ui.rs:587、src/tabs.rs:2629` |
+| load | 切换标签 | 标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息） | `src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135` |
+| load | 后端断开 | 标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连 | `src/ui.rs:587、src/tabs.rs:2632` |
 | load | 后端握手失败 | 标题回到「Sqarvo」、副标题「连接失败」 | `src/ui.rs:567、src/ui.rs:3774` |
 | load | 用户选择「重启 Sqarvo」 | 副标题「正在重启…」，标题「Sqarvo」 | `src/ui.rs:1420` |
 
@@ -1898,7 +1898,7 @@ kind `item` · status `active` · parent `shell.menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应） | `src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1856` |
+| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应） | `src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859` |
 | key Ctrl+T | 后端已握手且工作区存在 | 与菜单项同一个动作 `win.new-tab` | `src/ui.rs:327` |
 
 ### `shell.menu.quit` 文件 → 退出
@@ -1981,7 +1981,7 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在 | 新建查询标签并聚焦编辑器；工作区不存在时只写日志「尚未连接数据库：先连接再新建查询标签」 | `src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1856` |
+| click | 后端已握手且工作区存在 | 新建查询标签并聚焦编辑器；工作区不存在时只写日志「尚未连接数据库：先连接再新建查询标签」 | `src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859` |
 
 ### `shell.toolbar.tables` 种类入口「Tables」
 
@@ -2336,7 +2336,7 @@ kind `container` · status `active` · parent `status_bar.row1`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 当前标签是表标签 | 六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点（查询页是另一档，见下一条）；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」） | `src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:4936、src/data_page.rs:4969、src/data_page.rs:5027` |
+| load | 当前标签是表标签 | 六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点（查询页是另一档，见下一条）；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」） | `src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:5043、src/data_page.rs:5076、src/data_page.rs:5134` |
 | load | 当前标签不是表标签（Objects 页 / 查询标签 / 启动态未连接） | 六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）。唯一例外是「取消」（改动确认单 #7，两用）：查询标签上按**查询是否在途**给值——在途可点（点它取消查询），空闲置灰并写「当前没有执行中的查询」。同时分页摘要、选中数、Last Refresh 整格隐藏 | `src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:912` |
 
 ### `status_bar.row1.ops.add` 「新增」图标按钮
@@ -2352,7 +2352,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑的表标签，且没有在途请求、没有未提交的新行草稿 | 在当前表末尾插入一行草稿（与页内新增同一条路径，不落库）：新行可逐格填值，填完要按「应用」才提交 | `src/shell.rs:1066、src/data_page.rs:5049` |
+| click | 可编辑的表标签，且没有在途请求、没有未提交的新行草稿 | 在当前表末尾插入一行草稿（与页内新增同一条路径，不落库）：新行可逐格填值，填完要按「应用」才提交 | `src/shell.rs:1066、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.delete` 「删除」图标按钮
 
@@ -2367,7 +2367,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑的表标签且有选中行，无在途请求 | 把选中行标记为待删除（提交前可「撤销」回来），不立即发请求 | `src/shell.rs:1066、src/data_page.rs:5049` |
+| click | 可编辑的表标签且有选中行，无在途请求 | 把选中行标记为待删除（提交前可「撤销」回来），不立即发请求 | `src/shell.rs:1066、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.apply` 「应用」图标按钮
 
@@ -2382,7 +2382,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有脏行且没有在途提交 | 提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框 | `src/shell.rs:1066、src/data_page.rs:5049、src/table_data.rs:489` |
+| click | 有脏行且没有在途提交 | 提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框 | `src/shell.rs:1066、src/data_page.rs:5156、src/table_data.rs:535` |
 
 ### `status_bar.row1.ops.discard` 「撤销」图标按钮
 
@@ -2397,7 +2397,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有未提交的编辑、删除标记或新行草稿，无在途请求 | 放弃全部未提交的改动（含新行草稿与删除标记），已打开的空事务一并回滚；数据回到最后一次读取的状态 | `src/shell.rs:1066、src/data_page.rs:5049` |
+| click | 有未提交的编辑、删除标记或新行草稿，无在途请求 | 放弃全部未提交的改动（含新行草稿与删除标记），已打开的空事务一并回滚；数据回到最后一次读取的状态 | `src/shell.rs:1066、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.refresh` 「刷新」图标按钮
 
@@ -2412,7 +2412,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 已打开表、无 RPC 在途、无脏行与未提交新行 | 重新读取当前表的第一页（保持当前排序与筛选，回到第 1 页）；有未提交更改时被守卫拦下并说明原因 | `src/shell.rs:1066、src/data_page.rs:4969、src/data_page.rs:5049` |
+| click | 已打开表、无 RPC 在途、无脏行与未提交新行 | 重新读取当前表的第一页（保持当前排序与筛选，回到第 1 页）；有未提交更改时被守卫拦下并说明原因 | `src/shell.rs:1066、src/data_page.rs:5076、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.cancel` 「取消」图标按钮（两用：取消查询 / 中止提交批次）
 
@@ -2428,7 +2428,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 当前页是查询标签，且查询在途（Loading / Streaming） | 取消这条查询（与 Esc、QA 脚本同一个方法）：发 Cancel 并立即进入「已取消 · 已保留 N 行」；重复点幂等（第二次起只记日志、不发 RPC）。查询结束（含取消）后按钮自行置灰 | `src/sql_page.rs:1041、src/sql_page.rs:1086、src/sql_page.rs:518、src/shell.rs:1500、src/shell.rs:1566` |
-| click | 提交批次在途（Submitting） | 中止本批并整批回滚已执行的行；重复点幂等（只写日志），提交结束后按钮自行置灰 | `src/shell.rs:1500、src/data_page.rs:4943、src/data_page.rs:5049` |
+| click | 提交批次在途（Submitting） | 中止本批并整批回滚已执行的行；重复点幂等（只写日志），提交结束后按钮自行置灰 | `src/shell.rs:1500、src/data_page.rs:5050、src/data_page.rs:5156` |
 | load | 当前页切换到查询标签 / 表数据标签 / Objects 页 | 按钮的语义、tooltip 与可访问名跟着换：查询页「取消当前查询（Esc）」、数据页「取消在途的提交批次」、Objects 页两者都不成立（置灰 + 原因）；可用性各自按自己的在途状态给值 | `src/shell.rs:1069、src/shell.rs:1548、src/ui.rs:1931` |
 
 ### `status_bar.row1.selected` 选中行数（N selected）
@@ -2442,7 +2442,7 @@ kind `control` · status `active` · parent `status_bar.row1`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 表标签且选中行数大于 0 | 显示「N selected」（选中 1 行也出现，不只多选）；tooltip「已选中 N 行：Ctrl/Shift 可多选，删除按批量语义提交」；选中集清空时整格隐藏 | `src/shell.rs:1429、src/data_page.rs:4936` |
+| load | 表标签且选中行数大于 0 | 显示「N selected」（选中 1 行也出现，不只多选）；tooltip「已选中 N 行：Ctrl/Shift 可多选，删除按批量语义提交」；选中集清空时整格隐藏 | `src/shell.rs:1429、src/data_page.rs:5043` |
 
 ### `status_bar.row1.detail_toggle` 展示形式切换（按行浏览 / 字段 · 值）
 
@@ -2456,8 +2456,8 @@ kind `control` · status `active` · parent `status_bar.row1`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有表标签且选中了一行（不要求可编辑） | 数据网格在按行浏览与「字段 | 值」两列之间切换：按下后只讲选中的那一行（字段名 + 当前值，与网格同一份显示文本），再按一次切回按行浏览；不可用时置灰，tooltip 按场景给「字段 / 值：只看选中行的每个字段与它的值（先选中一行）」「…（当前不可用：<原因>）」「…（再点一次切回按行浏览）」 | `src/shell.rs:1168、src/data_page.rs:2053、src/shell.rs:1486` |
-| load | 数据页推来新快照（切标签 / 换表 / 选中集被清空） | 选中态由快照的展示形式推回；选中集清空或换表时自动复位到按行浏览，不复位成「上次按下的样子」 | `src/shell.rs:1426、src/data_page.rs:2073` |
+| click | 有表标签且选中了一行（不要求可编辑） | 数据网格在按行浏览与「字段 | 值」两列之间切换：按下后只讲选中的那一行（字段名 + 当前值，与网格同一份显示文本），再按一次切回按行浏览；不可用时置灰，tooltip 按场景给「字段 / 值：只看选中行的每个字段与它的值（先选中一行）」「…（当前不可用：<原因>）」「…（再点一次切回按行浏览）」 | `src/shell.rs:1168、src/data_page.rs:2074、src/shell.rs:1486` |
+| load | 数据页推来新快照（切标签 / 换表 / 选中集被清空） | 选中态由快照的展示形式推回；选中集清空或换表时自动复位到按行浏览，不复位成「上次按下的样子」 | `src/shell.rs:1426、src/data_page.rs:2094` |
 
 ### `status_bar.row1.pager` 分页器（首页 / 上页 / 下页 / 末页 + 只读页码摘要）
 
@@ -2484,7 +2484,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签，且不在第一页（无未提交更改） | 跳到第一页（offset 归零），排序 / 筛选保持；有未提交更改时由数据页拒绝并说明原因 | `src/shell.rs:1142、src/data_page.rs:319` |
+| click | 表标签，且不在第一页（无未提交更改） | 跳到第一页（offset 归零），排序 / 筛选保持；有未提交更改时由数据页拒绝并说明原因 | `src/shell.rs:1142、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.previous` 「上一页」按钮
 
@@ -2498,7 +2498,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签且不在第一页（无未提交更改） | 退回上一页（offset 减一页），排序 / 筛选保持 | `src/shell.rs:1142、src/data_page.rs:319` |
+| click | 表标签且不在第一页（无未提交更改） | 退回上一页（offset 减一页），排序 / 筛选保持 | `src/shell.rs:1142、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.next` 「下一页」按钮
 
@@ -2512,7 +2512,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签且还有下一页（无未提交更改） | 前进一页（offset 加一页），排序 / 筛选保持 | `src/shell.rs:1142、src/data_page.rs:319` |
+| click | 表标签且还有下一页（无未提交更改） | 前进一页（offset 加一页），排序 / 筛选保持 | `src/shell.rs:1142、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.last` 「末页」按钮
 
@@ -2526,7 +2526,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签且已知总页数、不在末页（无未提交更改） | 跳到最后一页；总数未知时按钮置灰（不发请求、不编造页数） | `src/shell.rs:1142、src/data_page.rs:319` |
+| click | 表标签且已知总页数、不在末页（无未提交更改） | 跳到最后一页；总数未知时按钮置灰（不发请求、不编造页数） | `src/shell.rs:1142、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.summary` 只读页码摘要（第 N 页 / 共 M 页 · 总数）
 
@@ -2540,7 +2540,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 表标签 | 写「第 P 页」，已知页数时写「第 P / M 页」，有总数时追加「 · 共 N 行」式总数；读取中写「读取中…」、读取失败写「读取失败」、断连写「已断开」；没有表标签时整格隐藏 | `src/shell.rs:1394、src/data_page.rs:1923` |
+| load | 表标签 | 写「第 P 页」，已知页数时写「第 P / M 页」，有总数时追加「 · 共 N 行」式总数；读取中写「读取中…」、读取失败写「读取失败」、断连写「已断开」；没有表标签时整格隐藏 | `src/shell.rs:1394、src/data_page.rs:1944` |
 
 ### `status_bar.row2` 行 2（SQL 摘要 · Last Refresh / 空态摘要）
 
@@ -2563,7 +2563,7 @@ kind `control` · status `active` · parent `status_bar.row2`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 当前标签是表标签 | 写「SQL: <摘要>」：当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（只展示、不执行，值以字面量呈现）；筛选或排序变化后跟着更新 | `src/shell.rs:1537、src/shell.rs:1450、src/data_page.rs:1923、src/browse_view.rs:821` |
+| load | 当前标签是表标签 | 写「SQL: <摘要>」：当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（只展示、不执行，值以字面量呈现）；筛选或排序变化后跟着更新 | `src/shell.rs:1537、src/shell.rs:1450、src/data_page.rs:1944、src/browse_view.rs:821` |
 | load | 当前标签是查询标签 | 写「SQL: <最近一次查询摘要>」：沿用查询页自己的摘要（单行），没执行过时由查询页给文案 | `src/ui.rs:1865、src/ui.rs:1866` |
 | load | 当前标签是 Objects 页 | 重置为「SQL: 尚未执行」——Objects 页没有取数语句，不用上一张表的摘要蒙着 | `src/ui.rs:1879、src/shell.rs:1202` |
 | load | 连接断开 / 启动态未连接 | 断连写「SQL: 连接已断开」；启动态写「SQL: 尚未连接」 | `src/ui.rs:600、src/startup.rs:248` |
@@ -2657,8 +2657,8 @@ kind `row` · status `active` · parent `tabs.strip`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1369、src/tabs.rs:2181、src/tabs.rs:2297、src/tabs.rs:2310` |
-| load | 页面已从标签条摘掉（detach） | 释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个 | `src/tabs.rs:2827、src/tabs.rs:2842、src/tabs.rs:2847` |
+| click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1372、src/tabs.rs:2184、src/tabs.rs:2300、src/tabs.rs:2313` |
+| load | 页面已从标签条摘掉（detach） | 释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个 | `src/tabs.rs:2830、src/tabs.rs:2845、src/tabs.rs:2850` |
 
 ### `tabs.strip.tab.table` 表数据标签（标题与 tooltip）
 
@@ -2670,9 +2670,9 @@ kind `item` · status `active` · parent `tabs.strip.tab`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签 | `src/tabs.rs:1803、src/tabs.rs:1840、src/tabs.rs:1911、src/tabs.rs:1944` |
-| double_click | 已有对象名 + catalog + 连接键三者完全一致的表标签 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1812、src/tabs.rs:128、src/tabs.rs:1596` |
-| load | 该标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里） | `src/tabs.rs:2560、src/tabs.rs:2270` |
+| double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签 | `src/tabs.rs:1806、src/tabs.rs:1843、src/tabs.rs:1914、src/tabs.rs:1947` |
+| double_click | 已有对象名 + catalog + 连接键三者完全一致的表标签 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1815、src/tabs.rs:128、src/tabs.rs:1599` |
+| load | 该标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里） | `src/tabs.rs:2563、src/tabs.rs:2273` |
 
 ### `tabs.strip.tab.query` 查询标签（标题与 tooltip）
 
@@ -2685,8 +2685,8 @@ kind `item` · status `active` · parent `tabs.strip.tab`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 新建查询标签 | 标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」） | `src/tabs.rs:101、src/tabs.rs:1885、src/tabs.rs:1892、src/tabs.rs:2270` |
-| load | 该查询标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段 | `src/tabs.rs:2560` |
+| load | 新建查询标签 | 标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」） | `src/tabs.rs:101、src/tabs.rs:1888、src/tabs.rs:1895、src/tabs.rs:2273` |
+| load | 该查询标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段 | `src/tabs.rs:2563` |
 
 ### `tabs.strip.tab.close` 标签关闭按钮（×）
 
@@ -2700,11 +2700,11 @@ kind `control` · status `active` · parent `tabs.strip.tab`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 非 Objects 页，且没有脏行、没有未提交事务 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect） | `src/tabs.rs:2653、src/tabs.rs:2670` |
-| click | 非 Objects 页，且有脏行或有未提交事务 | 先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场 | `src/tabs.rs:2670、src/tabs.rs:2685、src/tabs.rs:2689` |
-| click | 该标签的确认框已在显示 | 忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹 | `src/tabs.rs:2682` |
-| click | 该标签是固定 `Objects` 页 | 不关闭，记一行「Objects 页固定存在，不可关闭」 | `src/tabs.rs:2665` |
-| key Ctrl+W | 存在当前标签 | 关闭当前标签：与点 × 同一条 `close-page`（有脏行 / 事务时同样先弹三选） | `src/ui.rs:328、src/tabs.rs:2864` |
+| click | 非 Objects 页，且没有脏行、没有未提交事务 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect） | `src/tabs.rs:2656、src/tabs.rs:2673` |
+| click | 非 Objects 页，且有脏行或有未提交事务 | 先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场 | `src/tabs.rs:2673、src/tabs.rs:2688、src/tabs.rs:2692` |
+| click | 该标签的确认框已在显示 | 忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹 | `src/tabs.rs:2685` |
+| click | 该标签是固定 `Objects` 页 | 不关闭，记一行「Objects 页固定存在，不可关闭」 | `src/tabs.rs:2668` |
+| key Ctrl+W | 存在当前标签 | 关闭当前标签：与点 × 同一条 `close-page`（有脏行 / 事务时同样先弹三选） | `src/ui.rs:328、src/tabs.rs:2867` |
 
 ### `tabs.strip.new` 「＋」新建查询标签
 
@@ -2718,8 +2718,8 @@ kind `control` · status `active` · parent `tabs.strip`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端就绪、工作区已建立 | 未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示 | `src/tabs.rs:1360、src/tabs.rs:1864、src/tabs.rs:1912、src/ui.rs:263、src/ui.rs:4607` |
-| key Ctrl+T | 后端就绪、工作区已建立 | 与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示 | `src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1864` |
+| click | 后端就绪、工作区已建立 | 未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示 | `src/tabs.rs:1363、src/tabs.rs:1867、src/tabs.rs:1915、src/ui.rs:263、src/ui.rs:4607` |
+| key Ctrl+T | 后端就绪、工作区已建立 | 与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示 | `src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1867` |
 
 ### `tabs.limit` 「无法新建标签」提示
 
@@ -2733,8 +2733,8 @@ kind `control` · status `active` · parent `tabs`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 同时打开的有会话标签达到 8 时请求新建（工具条 / ＋ / Ctrl+T / 菜单任一路径） | 拒绝新建并弹 AdwAlertDialog：标题「无法新建标签」，正文「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案已在显示时不重复弹 | `src/tabs.rs:2892、src/tabs.rs:72、src/tabs.rs:59` |
-| click | 提示框在显示 | 「知道了」关闭提示框；本次请求不新建任何标签 | `src/tabs.rs:2892` |
+| load | 同时打开的有会话标签达到 8 时请求新建（工具条 / ＋ / Ctrl+T / 菜单任一路径） | 拒绝新建并弹 AdwAlertDialog：标题「无法新建标签」，正文「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」，按钮「知道了」；同一段文案已在显示时不重复弹 | `src/tabs.rs:2895、src/tabs.rs:72、src/tabs.rs:59` |
+| click | 提示框在显示 | 「知道了」关闭提示框；本次请求不新建任何标签 | `src/tabs.rs:2895` |
 
 ### `tabs.query` 查询标签页
 
@@ -2772,9 +2772,9 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前标签是查询标签，且选中了**另一条**已保存的连接 | 重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」 | `src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3353、src/tabs.rs:2995、src/tabs.rs:563` |
-| click | 同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在） | **保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」 | `src/tabs.rs:3396、src/sql_page.rs:758、src/sql_page.rs:1634` |
-| click | 选中了当前绑定的那条连接 | no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」 | `src/sql_page.rs:1527、src/tabs.rs:3353` |
+| click | 当前标签是查询标签，且选中了**另一条**已保存的连接 | 重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」 | `src/sql_page.rs:1527、src/sql_page.rs:1634、src/tabs.rs:3356、src/tabs.rs:2998、src/tabs.rs:563` |
+| click | 同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在） | **保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」 | `src/tabs.rs:3399、src/sql_page.rs:758、src/sql_page.rs:1634` |
+| click | 选中了当前绑定的那条连接 | no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」 | `src/sql_page.rs:1527、src/tabs.rs:3356` |
 
 ### `tabs.query.database_picker` 查询标签的库选择器
 
@@ -2788,9 +2788,9 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3073、src/backend/worker.rs:1806、src/backend/client.rs:529` |
-| click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3073、src/sql_page.rs:1367、src/sql_page.rs:971` |
-| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2940、src/tabs.rs:2972、src/sql_page.rs:1327、src/backend/metadata.rs:544` |
+| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1193、src/sql_page.rs:1377、src/sql_page.rs:1299、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529` |
+| click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3076、src/sql_page.rs:1367、src/sql_page.rs:971` |
+| click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1327、src/backend/metadata.rs:541` |
 
 ### `tabs.query.editor` SQL 编辑器（行号沟 + 等宽文本）
 
@@ -2804,7 +2804,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 新建查询标签成功 | 键盘焦点直接落在编辑器上，可以马上输入 SQL | `src/tabs.rs:1912、src/sql_page.rs:336` |
+| load | 新建查询标签成功 | 键盘焦点直接落在编辑器上，可以马上输入 SQL | `src/tabs.rs:1915、src/sql_page.rs:336` |
 | key Ctrl+Enter | 编辑器有焦点 | 执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略 | `src/sql_page.rs:300、src/sql_page.rs:341` |
 | load | 新建查询标签（尚无任何 Execute 响应） | 编辑器占满整个内容区：结果区与分隔把手隐藏（GtkPaned 对隐藏子节点不测量也不绘制把手） | `src/sql_page.rs:272、src/sql_page.rs:1318` |
 
@@ -2920,7 +2920,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 结果区可见、非执行中、无脏行 | 释放游标（Close RPC）并隐藏结果区，编辑器占满整页；日志「结果区已关闭：游标已释放，编辑器占满整页」 | `src/sql_page.rs:1377、src/sql_page.rs:1424、src/sql_page.rs:1438` |
-| click | 有脏行（dirty_rows()>0） | 先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区 | `src/sql_page.rs:1377、src/results.rs:954、src/data_page.rs:5237` |
+| click | 有脏行（dirty_rows()>0） | 先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区 | `src/sql_page.rs:1377、src/results.rs:954、src/data_page.rs:5345` |
 | load | 查询执行中（Loading / Streaming） | 按钮置灰，tooltip「查询执行中，请先取消」；空闲恢复可用，tooltip 回到「关闭结果区（释放查询资源）」 | `src/sql_page.rs:1277` |
 
 ### `tabs.close_dialog` 关闭标签确认框
@@ -2934,7 +2934,7 @@ kind `control` · status `active` · parent `tabs`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 关闭一个有脏行或有未提交事务的标签 | 标题「关闭标签？」；正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」；有脏行追加「该标签有 N 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。」；有事务追加「该标签有未提交事务（<标签>）：关闭将**回滚该标签的事务**，其它标签不受影响。」 | `src/tabs.rs:256、src/tabs.rs:2726` |
+| load | 关闭一个有脏行或有未提交事务的标签 | 标题「关闭标签？」；正文至少一行「关闭「<标题>」会同时断开它自己的数据库会话。」；有脏行追加「该标签有 N 行未提交的更改。关闭会丢失这些更改：可以选择先保存，或直接放弃。」；有事务追加「该标签有未提交事务（<标签>）：关闭将**回滚该标签的事务**，其它标签不受影响。」 | `src/tabs.rs:256、src/tabs.rs:2729` |
 
 ### `tabs.close_dialog.discard` 「放弃更改并关闭」/「回滚事务并关闭」
 
@@ -2946,7 +2946,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 确认框在显示 | 丢弃本地草稿与新增行（有事务时随会话断开由后端回滚），再关页面：被拦下的那次关闭用 `close_page_finish(page, true)` 收尾 | `src/tabs.rs:2787、src/tabs.rs:2799、src/tabs.rs:2803、src/tabs.rs:2710` |
+| click | 确认框在显示 | 丢弃本地草稿与新增行（有事务时随会话断开由后端回滚），再关页面：被拦下的那次关闭用 `close_page_finish(page, true)` 收尾 | `src/tabs.rs:2790、src/tabs.rs:2802、src/tabs.rs:2806、src/tabs.rs:2713` |
 
 ### `tabs.close_dialog.save` 「保存并关闭」/「保存、提交事务并关闭」
 
@@ -2958,7 +2958,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 确认框在显示且有脏行 | 先提交脏行 → 再提交标签自己的事务 → 最后摘页面；提交失败时标签保留，页内提示「保存失败：事务处于「<标签>」，标签未关闭。请处理事务后再关闭。」 | `src/tabs.rs:2805、src/tabs.rs:2356、src/tabs.rs:2398` |
+| click | 确认框在显示且有脏行 | 先提交脏行 → 再提交标签自己的事务 → 最后摘页面；提交失败时标签保留，页内提示「保存失败：事务处于「<标签>」，标签未关闭。请处理事务后再关闭。」 | `src/tabs.rs:2808、src/tabs.rs:2359、src/tabs.rs:2401` |
 
 ### `tabs.close_dialog.cancel` 「取消」
 
@@ -2970,7 +2970,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 确认框在显示 | 标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`） | `src/tabs.rs:2787、src/tabs.rs:2796、src/tabs.rs:2710` |
+| click | 确认框在显示 | 标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`） | `src/tabs.rs:2790、src/tabs.rs:2799、src/tabs.rs:2713` |
 
 ## 待清理（按版本）
 

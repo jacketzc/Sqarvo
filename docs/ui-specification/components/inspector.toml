@@ -47,13 +47,13 @@ source = "src/ui.rs:2224、src/inspector.rs:723"
 trigger = "load"
 precondition = "切换到表数据标签"
 result = "面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL）"
-source = "src/tabs.rs:1849、src/ui.rs:2328、src/inspector.rs:849"
+source = "src/tabs.rs:1852、src/ui.rs:2328、src/inspector.rs:849"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "切换到查询标签且它已选择库"
 result = "面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行"
-source = "src/tabs.rs:1860、src/ui.rs:2335、src/tree.rs:1905"
+source = "src/tabs.rs:1863、src/ui.rs:2335、src/tree.rs:1905"
 
 [[component.interaction]]
 trigger = "load"
@@ -65,7 +65,7 @@ source = "src/ui.rs:2343、src/inspector.rs:669"
 trigger = "load"
 precondition = "切换到 Objects 固定页"
 result = "面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义）"
-source = "src/tabs.rs:1831、src/ui.rs:2314"
+source = "src/tabs.rs:1834、src/ui.rs:2314"
 
 [[component.interaction]]
 trigger = "load"
@@ -581,13 +581,13 @@ platform_notes.linux = "Linux 侧不单独设等宽字族：§5 要求 DDL 正�
 trigger = "load"
 precondition = "切到 DDL 页（选中表 / 视图时默认落在这一页）"
 result = "发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」"
-source = "src/ddl.rs:231、src/ddl.rs:153、src/ddl.rs:167"
+source = "src/ddl.rs:232、src/ddl.rs:154、src/ddl.rs:168"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "GetDdl 失败"
 result = "正文区换状态页：标题给错误 headline、说明行给「<文案>（<稳定错误码>）」；§7.1 的文案口径为「DDL 读取失败：<文案>（<错误码>）」，不是空面板"
-source = "src/ddl.rs:302、src/ddl.rs:312"
+source = "src/ddl.rs:307、src/ddl.rs:317"
 
 [component.sync.linux]
 state = "done"
@@ -623,7 +623,7 @@ impl_notes = [
 trigger = "load"
 precondition = "GetDdl 返回 exact=false（客户端拼装）"
 result = "正文上方出现一行琥珀警示「⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · <来源说明>」"
-source = "src/ddl.rs:284、src/ddl.rs:286、src/ddl.rs:91"
+source = "src/ddl.rs:289、src/ddl.rs:291、src/ddl.rs:92"
 
 [component.sync.linux]
 state = "done"

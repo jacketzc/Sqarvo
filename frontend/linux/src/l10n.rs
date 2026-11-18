@@ -384,4 +384,263 @@ mod tests {
         let many = tf_n("tabs.close_body_dirty", 3, &[("dirty", "3".into())]);
         assert!(many.contains("3 rows of uncommitted changes"), "{many}");
     }
+
+    #[test]
+    fn data_page_entries_carry_the_s4_grid_copy() {
+        // S4/#202 Lane A：数据网格区条目——zh 与迁移前字面量逐字节一致（比对脚本另证），
+        // 这里钉代表性条目与占位/复数行为，防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(t("data_page.pager_previous"), "上一页");
+        assert_eq!(t("data_page.badge_no_sort_filter"), "驱动不支持排序/筛选");
+        assert_eq!(
+            t("data_page.row_insert_tooltip"),
+            "新行 · 尚未提交（双击单元格填值）"
+        );
+        assert_eq!(
+            t("data_page.badge_no_primary_key_tip"),
+            "无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用"
+        );
+        assert_eq!(
+            tf("data_page.row_number_tooltip", &[("number", "42".into())]),
+            "第 42 行"
+        );
+        assert_eq!(
+            tf(
+                "data_page.cc_check_tooltip",
+                &[("name", "id".into()), ("type", "INTEGER".into())]
+            ),
+            "id（INTEGER）· 取消勾选只隐藏这一列，不影响数据与导出口径"
+        );
+        // 复数条目：zh 恒一条；en n==1 走 en_one。
+        assert_eq!(
+            tf_n(
+                "data_page.page_rows",
+                1,
+                &[("rows", "1".into()), ("suffix", String::new())]
+            ),
+            "本页 1 行"
+        );
+        set_current(Lang::En);
+        assert_eq!(t("data_page.cc_label"), "Column Visibility");
+        assert_eq!(t("data_page.fs_apply"), "Apply");
+        assert_eq!(t("data_page.header_row_number"), "Row");
+        let one = tf_n(
+            "data_page.page_rows",
+            1,
+            &[("rows", "1".into()), ("suffix", " · more".into())],
+        );
+        assert_eq!(one, "1 row on this page · more");
+        let many = tf_n("data_page.disconnected_status", 7, &[("rows", "7".into())]);
+        assert_eq!(many, "Disconnected · 7 rows loaded (read-only)");
+        set_current(Lang::Zh);
+    }
+
+    #[test]
+    fn data_page_entries_carry_the_s4_editor_submit_copy() {
+        // S4/#202 Lane B：编辑器与提交面条目——zh 与迁移前字面量逐字节一致（比对脚本
+        // 另证），这里钉代表性条目、占位与**脏行计数两态**（1 row / N rows），
+        // 防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(
+            tf(
+                "data_page.editor_title",
+                &[
+                    ("column_name", "name".into()),
+                    ("type_label", "TEXT".into())
+                ]
+            ),
+            "编辑 name · TEXT"
+        );
+        assert_eq!(
+            tf(
+                "data_page.insert_started",
+                &[(
+                    "summary",
+                    "新行：显式 1 列 · 省略 2 列（交给数据库默认值）".into()
+                )]
+            ),
+            "新行：显式 1 列 · 省略 2 列（交给数据库默认值） · 双击单元格填值，填完点「提交更改」"
+        );
+        assert_eq!(
+            t("data_page.val_bool"),
+            "{text} 不是合法的布尔值（1/0、true/false、是/否）"
+        );
+        assert_eq!(
+            t("data_page.dot_note_active"),
+            "事务中：提交事务之前，改动只在当前会话可见"
+        );
+        // 脏行计数标签（状态圆点 tooltip 的两态，QA --qa-expect-status-dot 读的就是这句）。
+        let zh = tf_n(
+            "data_page.dirty_plain",
+            1,
+            &[
+                ("dirty", "1".into()),
+                ("pending", "1".into()),
+                ("insert_note", String::new()),
+            ],
+        );
+        assert_eq!(zh, "脏行 1 · 待提交 1 条");
+        set_current(Lang::En);
+        assert_eq!(t("data_page.btn_apply"), "Apply");
+        assert_eq!(t("data_page.txn_commit_btn"), "Commit Transaction");
+        assert_eq!(t("data_page.txn_claim_begin"), "Begin transaction");
+        assert_eq!(
+            t("data_page.iso_default"),
+            "Default (decided by the database)"
+        );
+        let one = tf_n(
+            "data_page.dirty_plain",
+            1,
+            &[
+                ("dirty", "1".into()),
+                ("pending", "1".into()),
+                ("insert_note", String::new()),
+            ],
+        );
+        assert_eq!(one, "1 dirty row · 1 to commit");
+        let many = tf_n(
+            "data_page.dirty_plain",
+            2,
+            &[
+                ("dirty", "2".into()),
+                ("pending", "3".into()),
+                ("insert_note", " · 1 new row".into()),
+            ],
+        );
+        assert_eq!(many, "2 dirty rows · 3 to commit · 1 new row");
+        let deletes = tf_n(
+            "data_page.dirty_with_deletes",
+            1,
+            &[
+                ("dirty", "1".into()),
+                ("pending", "1".into()),
+                ("deletes", "1".into()),
+                ("insert_note", String::new()),
+            ],
+        );
+        assert_eq!(deletes, "1 dirty row · 1 to commit (incl. 1 deletion)");
+        let progress = tf_n(
+            "data_page.submit_progress",
+            1,
+            &[
+                ("changes", "1".into()),
+                ("batch", "query_12".into()),
+                ("note", String::new()),
+            ],
+        );
+        assert_eq!(
+            progress,
+            "Submitting 1 change (batch query_12): click Cancel Commit to abort at a row boundary"
+        );
+        // 关窗守卫逐表摘要（DirtyTabSummary::line 的模板与两态）。
+        assert_eq!(
+            tf(
+                "data_page.dirty_summary_line",
+                &[
+                    ("table", "users".into()),
+                    ("parts", "1 row uncommitted".into())
+                ]
+            ),
+            "users: 1 row uncommitted"
+        );
+        assert_eq!(
+            t_n("data_page.dirty_summary_updates", 1),
+            "1 row uncommitted"
+        );
+        assert_eq!(
+            tf_n("data_page.deleted_marked", 2, &[("deleted", "2".into())]),
+            "2 rows marked for deletion (can be undone before the batch commit)"
+        );
+        set_current(Lang::Zh);
+    }
+
+    #[test]
+    fn data_page_entries_carry_the_s4_ddl_metadata_copy() {
+        // S4 Lane C：DDL 状态页 / MetadataError 副文本 / 类型不可编辑原因——zh 与
+        // 迁移前字面量逐字节一致（比对脚本另证），这里钉代表性条目与占位行为，
+        // 防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(t("data_page.ddl_loading_title"), "正在读取 DDL…");
+        assert_eq!(t("data_page.ddl_empty_title"), "服务端返回了空 DDL");
+        assert_eq!(
+            t("data_page.ddl_no_session_desc"),
+            "对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。"
+        );
+        assert_eq!(
+            tf(
+                "data_page.ddl_synth_warning",
+                &[("detail", "缺 CHECK 约束".into())]
+            ),
+            "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · 缺 CHECK 约束"
+        );
+        // MetadataError 全族 20 条：headline/hint 成对钉完，防任一臂漏接。
+        for (head, hint) in [
+            (
+                "data_page.err_not_found_head",
+                "data_page.err_not_found_hint",
+            ),
+            (
+                "data_page.err_permission_denied_head",
+                "data_page.err_permission_denied_hint",
+            ),
+            (
+                "data_page.err_unsupported_head",
+                "data_page.err_unsupported_hint",
+            ),
+            (
+                "data_page.err_kind_unsupported_head",
+                "data_page.err_kind_unsupported_hint",
+            ),
+            (
+                "data_page.err_filter_invalid_head",
+                "data_page.err_filter_invalid_hint",
+            ),
+            (
+                "data_page.err_snapshot_changed_head",
+                "data_page.err_snapshot_changed_hint",
+            ),
+            (
+                "data_page.err_page_token_invalid_head",
+                "data_page.err_page_token_invalid_hint",
+            ),
+            (
+                "data_page.err_session_lost_head",
+                "data_page.err_session_lost_hint",
+            ),
+            (
+                "data_page.err_unavailable_head",
+                "data_page.err_unavailable_hint",
+            ),
+            ("data_page.err_other_head", "data_page.err_other_hint"),
+        ] {
+            assert_ne!(t(head), head, "{head} 应有 zh 条目");
+            assert_ne!(t(hint), hint, "{hint} 应有 zh 条目");
+        }
+        assert_eq!(t("data_page.err_session_lost_head"), "数据库会话已失效");
+        assert_eq!(
+            t("data_page.err_unsupported_hint"),
+            "这一层由驱动决定是否实现；不代表该库没有对象，可改用「平铺表列表」查看当前库。"
+        );
+        assert_eq!(
+            tf(
+                "data_page.type_not_editable",
+                &[("column", "blob".into()), ("type", "binary".into())]
+            ),
+            "列 blob 的类型 binary 不支持行内编辑（二进制 / 数组 / 未映射类型）"
+        );
+        set_current(Lang::En);
+        assert_eq!(
+            t("data_page.ddl_empty_desc"),
+            "This does not mean the object has no structure: the contract forbids returning fabricated or truncated DDL; try another object or check the server log."
+        );
+        assert_eq!(
+            t("data_page.err_permission_denied_head"),
+            "No Permission to Read Metadata"
+        );
+        assert_eq!(
+            t("data_page.err_other_hint"),
+            "See the error code and the backend message below."
+        );
+        set_current(Lang::Zh);
+    }
 }

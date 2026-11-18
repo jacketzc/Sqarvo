@@ -24,6 +24,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use crate::backend::metadata::{DdlView, MetadataError, MetadataHub, NodeView, kind_label};
+use crate::l10n;
 use crate::layout::{Gap, gap};
 use crate::proto::services::v1::ObjectRef;
 
@@ -252,7 +253,11 @@ impl DdlPanel {
         self.warning.set_text("");
         self.buffer().set_text("");
         self.current.replace(Some(node.clone()));
-        self.set_state(DdlState::Loading, "正在读取 DDL…", "等待 GetDdl 返回");
+        self.set_state(
+            DdlState::Loading,
+            l10n::t("data_page.ddl_loading_title"),
+            l10n::t("data_page.ddl_loading_desc"),
+        );
         eprintln!(
             "[ddl] t=+{}ms 请求 DDL：{}{}",
             crate::qa::elapsed_ms(),
@@ -267,8 +272,8 @@ impl DdlPanel {
         let Some(hub) = hub else {
             self.set_state(
                 DdlState::Error,
-                "这条连接没有浏览会话",
-                "对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。",
+                l10n::t("data_page.ddl_no_session_title"),
+                l10n::t("data_page.ddl_no_session_desc"),
             );
             return;
         };
@@ -321,8 +326,8 @@ impl DdlPanel {
                 if view.ddl.trim().is_empty() {
                     self.set_state(
                         DdlState::Empty,
-                        "服务端返回了空 DDL",
-                        "这不代表对象没有结构：契约要求不返回伪造或截断的 DDL，请换一个对象或检查服务端日志。",
+                        l10n::t("data_page.ddl_empty_title"),
+                        l10n::t("data_page.ddl_empty_desc"),
                     );
                     return;
                 }
@@ -332,9 +337,9 @@ impl DdlPanel {
                     None
                 } else {
                     // 拼装结果：必须带警示，且要能看出缺了什么、由哪版拼装器生成。
-                    Some(format!(
-                        "⚠ 这份 DDL 由客户端拼装，不是数据库原文；信息有损失 · {}",
-                        view.detail_text()
+                    Some(l10n::tf(
+                        "data_page.ddl_synth_warning",
+                        &[("detail", view.detail_text())],
                     ))
                 };
                 match warning.as_deref() {
@@ -368,12 +373,14 @@ impl DdlPanel {
                 );
             }
             Err(error) => {
+                // `SessionLost` 走与 `headline()` 同一句 catalog 条目（「数据库会话已失效」），
+                // 不再在面板里重复中文字面量；Unsupported 只改状态页归类。
                 let (state, title) = if error.is_unsupported()
                     || matches!(error, MetadataError::KindUnsupported { .. })
                 {
                     (DdlState::Unsupported, error.headline())
                 } else if error.is_session_lost() {
-                    (DdlState::Error, "数据库会话已失效")
+                    (DdlState::Error, l10n::t("data_page.err_session_lost_head"))
                 } else {
                     (DdlState::Error, error.headline())
                 };
