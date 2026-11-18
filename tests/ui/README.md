@@ -1,95 +1,68 @@
-# UI 功能测试（Linux / GTK4，AT-SPI）
+# UI 功能测试用例库（三端）
 
-用可重复的自动化功能测试替代 agent 反复交互式点界面。只验证**交互与功能**
-（控件响应、状态流转、可访问性名称、真实数据），不做像素/样式/截图断言
-（ADR 0029、前端 AGENTS §13）。
+用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体
+（根 AGENTS §13、frontend/AGENTS §13）：改哪个端的行为，先保证该端有覆盖该行为的
+用例，缺失则先补用例、再改再验；只断言交互与功能，不做视觉断言（ADR 0029）。
 
-## 依赖与准备
-
-- 运行环境：GNOME Wayland 桌面会话（AT-SPI 总线可用，`toolkit-accessibility=true`）。
-- 被测程序：`frontend/linux/target/release/sqarvo-desktop`（缺省自动发现；
-  可用 `SQARVO_UI_BIN=<path>` 覆盖，如指向 `~/.local/bin/sqarvo-desktop`）。
-- Python：系统 `/usr/bin/python3` 的 `gi` + `Atspi 2.0`；venv 只装 pytest：
-  `just ui-test-env`（需 `uv`）。
-
-## 命令
+## 布局
 
 ```
-just ui-test-smoke   # 启动 / 主窗口可访问性 / 对话框 / 关窗断开
-just ui-test-sql     # SQLite 连接、SQL 执行、结果校验、对象树导航
-just ui-test-all     # 全部
+tests/ui/
+  README.md      ← 本文件：三端共同规范（唯一真值）
+  linux/         ← 已实现：Python + pytest + AT-SPI（GTK4 a11y），详见 linux/README.md
+  windows/       ← 待建：C#（UIA，如 FlaUI）+ 同三层结构，接入时以 linux/ 为参照
+  macos/         ← 待建：XCUITest 同构
 ```
 
-单条场景：`tests/ui/.venv/bin/python -m pytest tests/ui/test_03_sql.py::test_execute_sql -c tests/ui/pytest.ini -q`
+各端**共享的是约定，不是代码**：平台自动化栈完全不同，不建跨端测试框架抽象；
+各端目录内自足（依赖、venv/构建产物、工作区、诊断输出），互不引用。
 
-## 输出契约
+每端内部三层结构（命名可随平台语言习惯）：
 
-成功（stdout 只有摘要，无树、无日志、无截图）：
+| 层 | 职责 |
+|---|---|
+| 适配层 | 按语义（role + 可访问名/automation id）定位控件；点击/输入/状态读取；显式等待 |
+| 复用操作 | 本应用的常见流程封装（连接、执行 SQL、树导航……） |
+| 场景 | 组合操作 + 断言；用例 docstring 标注注册表组件 `id` |
 
-```
-UI TEST: PASS
-Passed: 10
-Failed: 0
-Duration: 41.2s
-```
+## 统一契约（三端都必须一致）
 
-失败（只展开失败项；完整可访问性子树落盘 `tests/ui/logs/`）：
+1. **选择器只用语义**（可访问角色 + 名称/automation id），禁止坐标点击、截图识别、
+   OCR 或视觉模型定位；名称对齐 `docs/ui-specification/components/*.toml` 的
+   `a11y.name`，不发明第二套。
+2. **输出**：正常执行只打摘要——
 
-```
-UI TEST: FAIL
-Test: test_execute_sql
-Step: verify_result
-Expected: 3 rows
-Actual: 0 rows
-Error: Query result mismatch
-Diagnostic: tests/ui/logs/test_03_sql.py_test_execute_sql.txt
-```
+   ```
+   UI TEST: PASS | FAIL
+   Passed: n
+   Failed: n
+   [Skipped: n]
+   Duration: x.xs
+   ```
 
-机器可读报告：`tests/ui/results/report.json`（每条用例 outcome/duration/step/expected/actual）。
-退出码：0 全过；1 有失败；3 环境不可行（AT-SPI 不可用 / 找不到二进制 / 残留实例）。
+   失败逐条给 `Test / Step / Expected / Actual / Error / Diagnostic`；
+   完整控件树 dump 等详细诊断**只在失败时**落盘到该端 `logs/`，不进常规输出。
+3. **机器可读报告**：该端 `results/report.json`（每条用例 outcome/duration/step/
+   expected/actual）。
+4. **退出码**：0 全过；1 有失败；3 环境不可行（缺依赖/缺二进制/残留实例）——
+   环境不可行必须如实报告，不得伪造通过（任务口径 §10）。
+5. **隔离**：每实例独立配置/数据目录（Linux `XDG_*_HOME`、Windows 临时
+   `%LOCALAPPDATA%`、macOS 临时容器目录）+ 独立测试数据库 + 进程看门狗超时 +
+   退出清理断言（无残留进程、无用户配置写入）；绝不触碰用户真实配置、凭据库、
+   生产数据库。
+6. **确定性**：显式条件等待 + 超时，无裸 sleep；用例相互独立；同一环境可重复运行。
+7. **已知限制挂账**：平台环境做不到的事（如某端禁止输入合成）写进该端 README 的
+   「已知限制」，对应用例显式 skip + 原因，不得静默绕过或弱化断言。
 
-## 分层
+## 组件覆盖反查（全局）
 
-| 层 | 文件 | 职责 |
-|---|---|---|
-| 自动化适配 | `adapter.py` | 按 role+name 语义定位、do_action 点击、EditableText 输入、状态读取、显式等待；失败诊断 dump |
-| 可复用操作 | `ops.py` | 打开连接对话框、建 SQLite 连接、执行 SQL、读结果网格、树导航、关窗；`step()`/`expect()` 结构化失败 |
-| 场景 | `test_*.py` | 组合 ops 断言用户可观察行为；夹具在 `conftest.py` |
+`grep -rl <组件id> tests/ui/` —— 任何端命中即视为该组件有功能用例；注册表
+`sync.<端>.evidence` 直接指向该端用例路径与断言。新增/变更用户可见组件的同一 PR
+必须补/改用例（frontend/AGENTS §13）。
 
-选择器命名一律对齐 `docs/ui-specification/components/*.toml` 的 `a11y.name`；不依赖
-坐标、颜色、字号、布局位置。
+## 命令命名空间（justfile）
 
-## 隔离与确定性
-
-- 每个实例独立 `XDG_CONFIG_HOME/DATA/STATE`（`tests/ui/.work/<tag>`）+ 独立 SQLite
-  测试库（夹具建表 `widgets` 三行合成数据）；测试结束删目录、杀进程组。
-- 实例经 `SQARVO_QA_APP_ID` 与用户正在运行的窗口共存；`--qa-exit-after-ms` 看门狗
-  兜底防止测试崩溃留下常驻进程。
-- 等待全部是「条件 + 超时轮询」；无裸 `sleep`。
-- 绝不触碰用户 `~/.config/sqarvo`、真实数据库与系统凭据库（SQLite 无密码路径）。
-
-## 已知限制（如实记录，不要绕过）
-
-1. **Wayland 禁止输入合成**：`Atspi.generate_keyboard_event` / `Component.click` /
-   `grab_focus` 均返回 `atspi_error`（实测）。因此无法模拟按键与坐标点击。
-   受影响场景改走等价语义通道：快捷键 → 窗口 GAction（`win.execute` 等，AT-SPI 直接
-   可触发，与快捷键落点是同一个 action）。
-2. **`adw::ComboRow` 驱动下拉无法外部切换**：列表虚拟折叠、无 Action、点不开弹窗
-   （限制 1 的后果）。SQLite 连接的创建经应用自带的 `--qa-profile` 验收通道
-   （前端 AGENTS §13：填相同控件、触发相同回调），其余对话框操作（打开/取消/
-   控件在位与可用性）全部是真实 AT-SPI 点击。
-3. **主动「断开连接」只有手势右键菜单入口**：外部无法触发（限制 1）。
-   `test_05_disconnect.py` 以「关窗 → 会话回收 → 重启未连接」覆盖可观察的断开语义，
-   菜单入口用 skip + 原因显式挂账，等应用提供非手势入口后补测。
-4. 通过功能测试 ≠ 视觉正确（任务 §9 原文）。
-
-## Agent 使用约定（任务 §9）
-
-改 UI 功能后：优先复用 ops 里已有操作 → 增/改对应场景 → 跑最小相关子集 → 只看摘要；
-失败时只读该用例的 `Diagnostic` 文件。已有测试覆盖的行为不要再手工点界面，
-不要为测试截图或做视觉分析。
-
-用例与组件的对应：每条用例在 docstring 标注对应注册表组件 `id`；改组件先按 `id`
-grep 本目录找现有用例，该端缺失覆盖时**先补用例再验收**（根 AGENTS §13、
-frontend/AGENTS §13）。本框架是三端功能用例库模式的首发实现，Windows（UIA）/
-macOS（XCUITest）建库时以本目录三层结构为参照。
+- `just ui-test-env` / `ui-test-smoke` / `ui-test-sql` / `ui-test-all`：
+  **本机分派**——在当前平台跑当前平台的用例库（Linux 已接入；Windows 接入后同义）。
+- `just ui-test-linux-all`（已实现）与未来的 `ui-test-win-*`：**显式指定端**，
+  用于 CI 矩阵或跨机调度场景。

@@ -41,7 +41,7 @@ def _bin_path() -> Path:
     env = os.environ.get("SQARVO_UI_BIN")
     if env:
         return Path(env)
-    repo = UIROOT.parents[1] / "frontend/linux/target/release/sqarvo-desktop"
+    repo = UIROOT.parents[2] / "frontend/linux/target/release/sqarvo-desktop"
     if repo.exists():
         return repo
     local = Path.home() / ".local/bin/sqarvo-desktop"

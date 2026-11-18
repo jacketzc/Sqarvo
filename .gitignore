@@ -36,8 +36,8 @@
 *.agent.log
 
 # UI 功能测试的本地工作区（隔离 XDG 目录、venv、诊断输出）
-tests/ui/.work/
-tests/ui/.venv/
-tests/ui/results/
-tests/ui/logs/
-tests/ui/__pycache__/
+tests/ui/linux/.work/
+tests/ui/linux/.venv/
+tests/ui/linux/results/
+tests/ui/linux/logs/
+tests/ui/linux/__pycache__/

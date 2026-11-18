@@ -108,7 +108,7 @@ UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻�
 ## 13. 测试与验证基线
 
 - 检查类型齐备：单元（规则/类型转换/方言/错误映射/生命周期）、驱动集成（经 `driver-testkit` 符合性）、契约（Protobuf 生成与兼容性）、端到端、性能、安全（日志脱敏、凭据、IPC、路径、泄露）。
-- 用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体：三端各维护功能用例库（Linux 现为 `tests/ui/`，入口 `just ui-test-smoke|sql|all`；Windows/macOS 首次涉及该类验收时按同一定位建立）。改哪个端的行为，先保证该端有覆盖该行为的用例——**缺失则在执行验收之前先补用例，再改再验**，不退回人工点界面或口头宣称已验证。用例只断言交互与功能（ADR 0029 口径），不做视觉断言；命令与用例库结构以各端 README/justfile 为真值，本节不写第二份。
+- 用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体：三端各维护功能用例库（Linux 现为 `tests/ui/linux/`，入口 `just ui-test-smoke|sql|all`；Windows/macOS 首次涉及该类验收时按同一定位建立）。改哪个端的行为，先保证该端有覆盖该行为的用例——**缺失则在执行验收之前先补用例，再改再验**，不退回人工点界面或口头宣称已验证。用例只断言交互与功能（ADR 0029 口径），不做视觉断言；命令与用例库结构以各端 README/justfile 为真值，本节不写第二份。
 - **验证范围按变更影响与风险选档，档位不是强制阶梯**：Level 1 已覆盖风险就不机械上跳；跨模块风险明显可直接高档；没有任何任务被要求必须全量测试。命令以仓库实际为准（`just` 目标见 `justfile`）：
   - **L1 局部**：`cd backend && cargo fmt --all -- --check`、`cargo clippy --all-targets -D warnings`、`cargo test -p <crate>`（再以 `--test <名>` 收窄）；Linux 前端同套命令在 `frontend/linux/`（独立 cargo 工作区）；Windows：`cd frontend/windows && dotnet build Sqarvo.Windows/Sqarvo.Windows.csproj -p:Platform=x64 -c Debug`、`dotnet test Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj -c Debug`、仓库根 `python scripts/xaml_lint.py`。
   - **L2 模块**：`just test`（后端全量含 UDS gRPC 冒烟）或 `cd frontend/linux && cargo test`；驱动集成按 `tests/integration/` 编排（mariadb），SQLite 端到端 `cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e`。
