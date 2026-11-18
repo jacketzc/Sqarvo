@@ -43,7 +43,7 @@ AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不�
 | `l10n/` 共享文案目录 | `l10n/AGENTS.md`（指针）→ `frontend/AGENTS.md` §8.6、`l10n/README.md` | 文案条目与生成链 |
 | `proto/` | `proto/AGENTS.md` | §7 契约设计、兼容演进、错误语义、生成管理 |
 | `docs/`（专题规范、ADR、UI 注册表、发布说明） | `docs/AGENTS.md` | §14 全文（分层、注册表细则、发版门禁、README 成对） |
-| `tests/`、`scripts/`、`packaging/` | 本文件 §13、§14 + 相关模块文件 | 契约/集成/性能/安全测试；门禁脚本 |
+| `tests/`、`scripts/`、`packaging/` | 本文件 §13、§14 + 相关模块文件（UI 功能用例先读 `tests/ui/README.md`） | 契约/集成/性能/安全测试；UI 功能用例；门禁脚本 |
 
 **作用域与阅读策略（重要）**：指令发现按「就近目录」生效——工具**不会**因为本表存在映射，
 就把其他目录的 AGENTS.md 自动应用到当前文件。本表是**人工阅读清单**：
@@ -108,13 +108,17 @@ UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻�
 ## 13. 测试与验证基线
 
 - 检查类型齐备：单元（规则/类型转换/方言/错误映射/生命周期）、驱动集成（经 `driver-testkit` 符合性）、契约（Protobuf 生成与兼容性）、端到端、性能、安全（日志脱敏、凭据、IPC、路径、泄露）。
-- 用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体：三端各维护功能用例库（Linux 现为 `tests/ui/linux/`，入口 `just ui-test-smoke|sql|all`；Windows/macOS 首次涉及该类验收时按同一定位建立）。改哪个端的行为，先保证该端有覆盖该行为的用例——**缺失则在执行验收之前先补用例，再改再验**，不退回人工点界面或口头宣称已验证。用例只断言交互与功能（ADR 0029 口径），不做视觉断言；命令与用例库结构以各端 README/justfile 为真值，本节不写第二份。
+- 用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体；三端用例库的共同契约（语义选择器、输出摘要、隔离、PASS/FAIL/BLOCKED 如实报告）以 `tests/ui/README.md` 为真值，各端命令与环境限制见各端 README 与 `justfile`（Linux 现为 `tests/ui/linux/`，入口 `just ui-test-smoke|sql|all`；Windows/macOS 首次涉及该类验收时按同一定位建立）。
+  - UI 功能开发、改动、缺陷修复与功能验收：必须先读 `tests/ui/README.md` 与对应端 README；验证一律优先复用既有用例与复用操作，已有用例覆盖的行为**不得再人工反复点界面**。
+  - 新增/变更 UI 行为：同一 PR 内按组件 `id` 找到既有用例更新，无覆盖则**先补用例、再改再验**；纯样式调整且交互行为不变的不强制新增功能用例（样式由人工确认，ADR 0029）。
+  - 改动后执行**最小相关子集**并如实报告 **PASS / FAIL / BLOCKED** 三态（BLOCKED = 该验证在当前环境无法执行，必须写明原因，不得写成通过；与注册表 `sync = "blocked"` 状态值是两回事）。
+  - 例行 UI 功能测试不含视觉回归、样式断言、截图比对、OCR 或 AI 视觉识别；截图仅当任务验收条件明确声明时允许，且不触发自动视觉分析。
 - **验证范围按变更影响与风险选档，档位不是强制阶梯**：Level 1 已覆盖风险就不机械上跳；跨模块风险明显可直接高档；没有任何任务被要求必须全量测试。命令以仓库实际为准（`just` 目标见 `justfile`）：
   - **L1 局部**：`cd backend && cargo fmt --all -- --check`、`cargo clippy --all-targets -D warnings`、`cargo test -p <crate>`（再以 `--test <名>` 收窄）；Linux 前端同套命令在 `frontend/linux/`（独立 cargo 工作区）；Windows：`cd frontend/windows && dotnet build Sqarvo.Windows/Sqarvo.Windows.csproj -p:Platform=x64 -c Debug`、`dotnet test Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj -c Debug`、仓库根 `python scripts/xaml_lint.py`。
   - **L2 模块**：`just test`（后端全量含 UDS gRPC 冒烟）或 `cd frontend/linux && cargo test`；驱动集成按 `tests/integration/` 编排（mariadb），SQLite 端到端 `cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e`。
   - **L3 跨模块**：Protobuf 字段或 Driver SPI 接口改动、前后端行为联动、共享组件改动 → 重新生成各端客户端 + 契约/e2e 测试 + 实际构建受影响前端；UI 注册表改动 → `scripts/check-ui-sync.sh gen` 与 `mark`。
   - **L4 全量**：重大架构调整、发布前、高风险系统性变更或明确要求 → `just check` + 各模块全量 + 门禁（`scripts/check-ui-sync.sh release-check`、`scripts/check-tracking.sh`、`python scripts/check-readme-pair.py`）。
-- 跑不了的平台如实标注「未验证 + 原因」，不声称通过；测试只用专用数据库与合成数据，禁连生产库或使用真实凭据。
+- 跑不了的平台按 **BLOCKED + 原因**报告该项，不声称通过（三态口径见上）；测试只用专用数据库与合成数据，禁连生产库或使用真实凭据。
 - UI 验收只验**交互与功能**（响应、状态流转、可访问性名称、控件在位），不做像素比较与图像识别，样式由人工确认（ADR 0029）；注册表 `evidence` 只收命令/断言/可访问性读取结果。
 
 ## 14. 文档与决策（全文：`docs/AGENTS.md`；本节为有约束力的摘要）
@@ -141,7 +145,7 @@ UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻�
 
 - 实现满足任务的明确要求，且不违反适用的 §1–§10 红线；
 - 相关接口、契约与注册表和代码保持一致（同步范围按 §14 矩阵）；
-- **代码写进文件不等于完成**：按 §13 选档实际执行验证并拿到结果后才作完成声明；无法执行的项说明「未验证 + 原因」；
+- **代码写进文件不等于完成**：按 §13 选档实际执行验证并拿到结果后才作完成声明；无法执行的项报告为 **BLOCKED + 原因**（§13 三态）；
 - 不含无关改动（不顺手修别的，发现问题报告另开任务）；
 - 已知限制、风险与未完成项如实报告。
 
