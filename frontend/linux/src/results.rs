@@ -304,11 +304,11 @@ pub struct ResultsView {
     root: gtk::Box,
     /// 「结果」页内部：网格 / 占位页。
     stack: gtk::Stack,
-    /// #231：三页签的外层 stack（messages / summary / results；`AdwViewSwitcher`
-    /// 在本工程绑定里只接 `AdwViewStack`）。
-    views: adw::ViewStack,
+    /// #231：三页签的外层 stack（messages / summary / results；配原生
+    /// `gtk::StackSwitcher`——不用 `adw::ViewStack`，实测它导致子树重复枚举）。
+    views: gtk::Stack,
     /// #231：页签切换器（原生控件；测量与重挂用）。
-    tab_switcher: adw::ViewSwitcher,
+    tab_switcher: gtk::StackSwitcher,
     /// #231：说明行本体（页签与右侧控件同一行）。
     detail_row: gtk::Box,
     /// #231：消息页缓冲区。
@@ -602,39 +602,49 @@ impl ResultsView {
 
         // 外层三页 stack：「结果」页就是既有网格 / 占位页 stack，原样搬进来。
         //
-        // 用 `adw::ViewStack` 而不是 `gtk::Stack`：本工程的 libadwaita 绑定
-        // （0.9 / v1_6）里 `AdwViewSwitcher::set_stack` 只接 `AdwViewStack`。
-        // 「结果」页里的内层 `gtk::Stack`（placeholder/grid 切换）保持原样，
-        // `set_state` / `append_rows` 的路径一行都没改。
-        let views = adw::ViewStack::new();
+        // 可访问性修复（#231 回归）：这里必须用原生 `gtk::Stack` +
+        // `gtk::StackSwitcher`，不能用 `adw::ViewStack` + `adw::ViewSwitcher`。
+        // 实测（AT-SPI，libadwaita 1.9）：`AdwViewStack` 给每一页生成的页容器
+        // （`AdwViewStackPage`，三枚 panel）都会把**当前可见内容**再枚举一遍，
+        // 祖先子树遍历把同一 D-Bus path 计 3 次（3 行网格读成 9 行）——屏幕
+        // 阅读器同样被污染。两层 `gtk::Stack` 嵌套经对照实验不产生重复
+        // （distinct path == children 引用数），所以「结果」页里的内层
+        // `gtk::Stack`（placeholder/grid 切换）保持原样，`set_state` /
+        // `append_rows` 的路径一行都没改。
+        let views = gtk::Stack::new();
         views.set_vexpand(true);
+        // AdwViewStack 按可见页定尺寸；gtk::Stack 默认 vhomogeneous 会按所有
+        // 页的最大高度撑——关掉，保持「结果区高度零增量」口径（决策 D1）。
+        views.set_vhomogeneous(false);
         // 图标名是启动期一次性核对过的系统 symbolic 图标（缺失时页签会画
         // missing-icon 占位）：消息=邮件样式、摘要=信息样式、结果=网格样式。
-        views.add_titled_with_icon(
-            &messages_scroll,
-            Some(ResultTab::Messages.page_id()),
-            &ResultTab::Messages.label(),
-            "mail-unread-symbolic",
-        );
-        views.add_titled_with_icon(
-            &summary_scroll,
-            Some(ResultTab::Summary.page_id()),
-            &ResultTab::Summary.label(),
-            "dialog-information-symbolic",
-        );
-        views.add_titled_with_icon(
-            &stack,
-            Some(ResultTab::Results.page_id()),
-            &ResultTab::Results.label(),
-            "view-grid-symbolic",
-        );
+        views
+            .add_titled(
+                &messages_scroll,
+                Some(ResultTab::Messages.page_id()),
+                &ResultTab::Messages.label(),
+            )
+            .set_icon_name("mail-unread-symbolic");
+        views
+            .add_titled(
+                &summary_scroll,
+                Some(ResultTab::Summary.page_id()),
+                &ResultTab::Summary.label(),
+            )
+            .set_icon_name("dialog-information-symbolic");
+        views
+            .add_titled(
+                &stack,
+                Some(ResultTab::Results.page_id()),
+                &ResultTab::Results.label(),
+            )
+            .set_icon_name("view-grid-symbolic");
         views.set_visible_child_name(ResultTab::Results.page_id());
 
-        // 页签切换器：原生 `AdwViewSwitcher`（决策 D1：放进说明行左侧）。
-        let tab_switcher = adw::ViewSwitcher::builder()
-            .stack(&views)
-            .policy(adw::ViewSwitcherPolicy::Wide)
-            .build();
+        // 页签切换器：原生 `GtkStackSwitcher`（决策 D1：放进说明行左侧）。
+        // `add_titled` 已给三页标题，切换器按可见页各出一枚 `page tab`。
+        let tab_switcher = gtk::StackSwitcher::new();
+        tab_switcher.set_stack(Some(&views));
         tab_switcher.update_property(&[gtk::accessible::Property::Label(l10n::t(
             "tabs.results_view_switcher_a11y",
         ))]);
