@@ -228,9 +228,10 @@ jobs:
           echo "后端已退出，端点文件与套接字均已清理（目录本身按设计保留）："
           ls -la "${ROOT}/sqarvo"
 
-      # Nightly 的 SHA-256 与包一起发布。注意：GitHub 会把 Release 资产文件名里的
-      # `~` 转义成 `.`（deb 包内 Version 字段不受影响），校验文件必须按「下载后
-      # 用户实际拿到的文件名」生成，`sha256sum -c` 才不会因文件名不匹配而失败。
+      # Nightly 的 SHA-256 与包一起发布。实测行为（run 44283050136）：GitHub 会把
+      # Release 资产文件名里的 `~` 改写成 `.`（deb 包内 Version 字段不受影响），
+      # 所以校验文件按「用户下载后实际拿到的文件名」生成，sha256sum -c 才不会因
+      # 文件名不匹配失败。
       - name: 生成 SHA-256
         id: sha256
         run: |
@@ -334,8 +335,10 @@ jobs:
             gh api -X DELETE "repos/${REPO}/releases/${RID}"
           fi
           # 兜底：历史上可能有「tag 在、Release 不在」的残留状态，创建时会撞上旧 tag，
-          # 导致 Release 指向旧 commit——必须把 tag ref 一并清掉。
-          if gh api "repos/${REPO}/git/ref/tags/nightly" --quiet >/dev/null 2>&1; then
+          # 导致 Release 挂到旧 commit——必须把 tag ref 一并清掉。
+          # （注意 gh api 没有 --quiet 标志——run 44283050136 就是被它短路跳过了删除，
+          #  新 Release 挂到了旧 tag 上；判定存在用默认输出丢弃即可。）
+          if gh api "repos/${REPO}/git/ref/tags/nightly" >/dev/null 2>&1; then
             gh api -X DELETE "repos/${REPO}/git/refs/tags/nightly"
           fi
 
