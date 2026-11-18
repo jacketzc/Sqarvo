@@ -1378,14 +1378,12 @@ fn browse_session_opened(
 /// 日志查看做成同一张卡片里的第二个出口——反馈问题时能直接拿到文件。
 fn show_backend_failure_dialog(state: &Rc<UiState>) {
     let dialog = adw::AlertDialog::new(
-        Some("Sqarvo 需要重启"),
-        Some(
-            "本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，             未提交的更改会丢失。",
-        ),
+        Some(l10n::t("shell.recovery_title")),
+        Some(l10n::t("shell.recovery_body")),
     );
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("logs", "查看日志");
-    dialog.add_response("restart", "重启 Sqarvo");
+    dialog.add_response("cancel", l10n::t("shell.recovery_btn_cancel"));
+    dialog.add_response("logs", l10n::t("shell.recovery_btn_logs"));
+    dialog.add_response("restart", l10n::t("shell.recovery_btn_restart"));
     dialog.set_response_appearance("restart", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -1796,16 +1794,18 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
         eprintln!("[startup] 删除：注册表里没有 {key}");
         return;
     };
-    let body = format!(
-        "将从 connections.json 删除连接「{}」（{}）。\n\
-         对象树里这条连接与其浏览会话会一并消失；其它连接不受影响。",
-        saved.name,
-        saved.target_label()
+    let body = l10n::tf(
+        "object_tree.dlg_delete_body",
+        &[
+            ("name", saved.name.clone()),
+            ("target", saved.target_label()),
+        ],
     );
-    let dialog = adw::AlertDialog::new(Some("删除连接？"), Some(&body));
+    let dialog =
+        adw::AlertDialog::new(Some(l10n::t("object_tree.dlg_delete_heading")), Some(&body));
     let saved_name = saved.name.clone();
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("delete", "删除连接");
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+    dialog.add_response("delete", l10n::t("object_tree.dlg_delete_btn"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -2001,9 +2001,9 @@ fn refresh_txn_hint(
     if titles.is_empty() {
         inspector.set_txn_hint(None);
     } else {
-        inspector.set_txn_hint(Some(format!(
-            "同一 catalog 的其它标签还有未提交事务：{}",
-            titles.join("、")
+        inspector.set_txn_hint(Some(l10n::tf(
+            "inspector.txn_hint",
+            &[("names", titles.join("、"))],
         )));
     }
 }
@@ -4057,14 +4057,18 @@ fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
     });
     // 第二句单独一行（维护者要求换行）：有脏行时说清有几个，没有时也不隐瞒这条后果。
     let dirty_line = if dirty > 0 {
-        format!("其中 {dirty} 个标签有未提交的更改，确认后一并丢弃。")
+        l10n::tf_n(
+            "object_tree.dlg_edit_dirty_line",
+            i64::try_from(dirty).unwrap_or(i64::MAX),
+            &[("dirty", dirty.to_string())],
+        )
     } else {
-        "未提交的更改会一并丢弃。".to_owned()
+        l10n::t("object_tree.dlg_edit_no_dirty_line").to_owned()
     };
-    let body = format!("编辑连接将关闭连接以及所有已打开的相关窗口。\n{dirty_line}");
-    let dialog = adw::AlertDialog::new(Some("编辑连接？"), Some(&body));
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("edit", "关闭并编辑");
+    let body = l10n::tf("object_tree.dlg_edit_body", &[("dirty_line", dirty_line)]);
+    let dialog = adw::AlertDialog::new(Some(l10n::t("object_tree.dlg_edit_heading")), Some(&body));
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+    dialog.add_response("edit", l10n::t("object_tree.dlg_edit_btn"));
     dialog.set_response_appearance("edit", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -4098,21 +4102,28 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
         return;
     };
     let body = if snapshot.is_active {
-        format!(
-            "将关闭连接「{}」的浏览会话（对象树 / 搜索 / DDL）。\n\
-             数据页用的是另一条会话（{}）：已加载的数据仍可查看，但树里这条连接会变成未连接。",
-            snapshot.name,
-            short_id(&registry.data_session().unwrap_or_default())
+        l10n::tf(
+            "object_tree.dlg_disconnect_body_active",
+            &[
+                ("name", snapshot.name.clone()),
+                (
+                    "session",
+                    short_id(&registry.data_session().unwrap_or_default()),
+                ),
+            ],
         )
     } else {
-        format!(
-            "将关闭连接「{}」的浏览会话（对象树 / 搜索 / DDL）。\n其它连接的浏览会话不受影响。",
-            snapshot.name
+        l10n::tf(
+            "object_tree.dlg_disconnect_body_other",
+            &[("name", snapshot.name.clone())],
         )
     };
-    let dialog = adw::AlertDialog::new(Some("断开连接？"), Some(&body));
-    dialog.add_response("cancel", "取消");
-    dialog.add_response("disconnect", "断开连接");
+    let dialog = adw::AlertDialog::new(
+        Some(l10n::t("object_tree.dlg_disconnect_heading")),
+        Some(&body),
+    );
+    dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+    dialog.add_response("disconnect", l10n::t("object_tree.dlg_disconnect_btn"));
     dialog.set_response_appearance("disconnect", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");

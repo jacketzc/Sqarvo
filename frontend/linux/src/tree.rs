@@ -60,18 +60,13 @@ use crate::backend::metadata::{
     kind_icon, kind_label,
 };
 use crate::browse::{ConnectionRegistry, ConnectionSnapshot, ConnectionState};
+use crate::l10n;
 use crate::layout::{Gap, gap, metrics};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
 
 /// 搜索防抖窗口。
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// 占位行文案：读取中。
-const LOADING_TEXT: &str = "读取中…";
-/// 占位行文案前缀：加载更多。
-const MORE_PREFIX: &str = "加载更多";
-/// 占位行文案前缀：读取失败。
-const ERROR_PREFIX: &str = "读取失败";
 /// 取证时「这一行可能在视口外」的行号阈值。
 ///
 /// 侧栏 636 px 高、行高约 29 px：约 21 行可见。取 10 行作阈值是保守值——
@@ -364,10 +359,10 @@ impl KindGroup {
     #[must_use]
     pub fn empty_note(self) -> &'static str {
         match self {
-            Self::Tables => "（这一组没有表）",
-            Self::Views => "（这一组没有视图）",
-            Self::Functions => "（这一组没有函数）",
-            Self::Queries => "（还没有保存的查询）",
+            Self::Tables => l10n::t("object_tree.kind_tables_empty"),
+            Self::Views => l10n::t("object_tree.kind_views_empty"),
+            Self::Functions => l10n::t("object_tree.kind_functions_empty"),
+            Self::Queries => l10n::t("object_tree.kind_queries_empty"),
         }
     }
 
@@ -375,8 +370,8 @@ impl KindGroup {
     #[must_use]
     pub fn unsupported_note(self) -> Option<&'static str> {
         match self {
-            Self::Functions => Some("函数列表尚未实现（点开看说明，不发请求）"),
-            Self::Queries => Some("已保存的查询尚未实现（点开看说明）"),
+            Self::Functions => Some(l10n::t("object_tree.kind_functions_unsupported")),
+            Self::Queries => Some(l10n::t("object_tree.kind_queries_unsupported")),
             Self::Tables | Self::Views => None,
         }
     }
@@ -445,10 +440,10 @@ impl TableGroup {
     #[must_use]
     pub fn empty_note(self) -> &'static str {
         match self {
-            Self::Fields => "（这张表没有字段）",
-            Self::Indexes => "（这张表没有索引）",
-            Self::ForeignKeys => "（驱动未提供外键列表）",
-            Self::Triggers => "（这张表没有触发器）",
+            Self::Fields => l10n::t("object_tree.table_fields_empty"),
+            Self::Indexes => l10n::t("object_tree.table_indexes_empty"),
+            Self::ForeignKeys => l10n::t("object_tree.table_foreign_keys_empty"),
+            Self::Triggers => l10n::t("object_tree.table_triggers_empty"),
         }
     }
 
@@ -456,10 +451,7 @@ impl TableGroup {
     #[must_use]
     pub fn unsupported_note(self) -> Option<&'static str> {
         match self {
-            Self::ForeignKeys => Some(
-                "驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，\
-                 这里不猜测、不拼装",
-            ),
+            Self::ForeignKeys => Some(l10n::t("object_tree.table_foreign_keys_unsupported")),
             _ => None,
         }
     }
@@ -646,10 +638,12 @@ impl Row {
         match self {
             Self::Connection(snapshot) => {
                 let state = match snapshot.state {
-                    ConnectionState::Connected => format!(
-                        "浏览会话 {}（{}）",
-                        snapshot.short_session(),
-                        snapshot.detail
+                    ConnectionState::Connected => l10n::tf(
+                        "object_tree.tooltip_browse_session",
+                        &[
+                            ("session", snapshot.short_session()),
+                            ("detail", snapshot.detail.clone()),
+                        ],
                     ),
                     ConnectionState::Disconnected | ConnectionState::Failed => {
                         snapshot.detail.clone()
@@ -663,28 +657,41 @@ impl Row {
                 let saved_name = if snapshot.alias.is_empty() {
                     String::new()
                 } else {
-                    format!("\n连接名：{}", snapshot.name)
+                    l10n::tf(
+                        "object_tree.tooltip_saved_name",
+                        &[("name", snapshot.name.clone())],
+                    )
                 };
-                format!(
-                    "{} · {}\n{}{}\n{}{}\n右键：连接 / 断开连接 / 刷新连接",
-                    snapshot.label(),
-                    snapshot.driver,
-                    snapshot.target,
-                    saved_name,
-                    state,
-                    if snapshot.is_active {
-                        "\n（当前数据页绑定的连接）"
-                    } else {
-                        ""
-                    }
+                l10n::tf(
+                    "object_tree.tooltip_connection",
+                    &[
+                        ("label", snapshot.label().to_owned()),
+                        ("driver", snapshot.driver.clone()),
+                        ("target", snapshot.target.clone()),
+                        ("saved_name", saved_name),
+                        ("state", state),
+                        (
+                            "active_note",
+                            if snapshot.is_active {
+                                l10n::t("object_tree.tooltip_active_connection").to_owned()
+                            } else {
+                                String::new()
+                            },
+                        ),
+                    ],
                 )
             }
             Self::Group(group) => match group.group {
-                RowGroup::Catalog(_) => format!(
-                    "{} · {}（按种类过滤拉取：filter.kinds={:?}）",
-                    group.group.label(),
-                    group.parent.catalog,
-                    group.group.kinds().unwrap_or_default()
+                RowGroup::Catalog(_) => l10n::tf(
+                    "object_tree.tooltip_group_kinds",
+                    &[
+                        ("group", group.group.label().to_owned()),
+                        ("catalog", group.parent.catalog.clone()),
+                        (
+                            "kinds",
+                            format!("{:?}", group.group.kinds().unwrap_or_default()),
+                        ),
+                    ],
                 ),
                 RowGroup::Table(_) => format!(
                     "{} · {}{}",
@@ -742,18 +749,18 @@ enum MenuItem {
 }
 
 impl MenuItem {
-    /// 菜单文案（中文；不另加 tooltip）。
+    /// 菜单文案（`object_tree.ctx_menu.*`；不另加 tooltip）。
     fn label(self) -> &'static str {
         match self {
-            Self::ConnectSaved => "连接（使用已保存的凭据）",
-            Self::Disconnect => "断开连接",
-            Self::RefreshConnection => "刷新连接",
-            Self::EditSaved => "编辑连接…",
-            Self::DeleteSaved => "删除连接",
-            Self::RefreshGroup => "刷新这一组",
-            Self::RefreshCatalog => "刷新库",
-            Self::Open => "打开",
-            Self::DumpTable => "转储表…",
+            Self::ConnectSaved => l10n::t("object_tree.ctx_menu_connect_saved"),
+            Self::Disconnect => l10n::t("object_tree.ctx_menu_disconnect"),
+            Self::RefreshConnection => l10n::t("object_tree.ctx_menu_refresh_connection"),
+            Self::EditSaved => l10n::t("object_tree.ctx_menu_edit_saved"),
+            Self::DeleteSaved => l10n::t("object_tree.ctx_menu_delete_saved"),
+            Self::RefreshGroup => l10n::t("object_tree.ctx_menu_refresh_group"),
+            Self::RefreshCatalog => l10n::t("object_tree.ctx_menu_refresh_catalog"),
+            Self::Open => l10n::t("object_tree.ctx_menu_open"),
+            Self::DumpTable => l10n::t("object_tree.ctx_menu_dump_table"),
         }
     }
 }
@@ -948,7 +955,9 @@ impl Level {
 /// 未展开分组上点「刷新这一组」的提示文案（状态行与单测共用一份）。
 ///
 /// 措辞只说事实与下一步：没有展开 = 没有层 = 没有可重读的内容，展开时会正常读取。
-const GROUP_NOT_EXPANDED_HINT: &str = "这个分组还没展开：展开时会重新读取";
+fn group_not_expanded_hint() -> &'static str {
+    l10n::t("object_tree.hint_group_not_expanded")
+}
 
 /// 临时提示行的存活时间（数秒后收起，回到原状）。
 const HINT_TIMEOUT: Duration = Duration::from_secs(4);
@@ -1041,7 +1050,7 @@ impl TreePanel {
         // 与树同一列宽），见 [`StatusBar::mount_search`](crate::shell::StatusBar::mount_search)。
         // 内边距也由那边给——这里只管控件本身，树的顶边就是工具条下方的第一行。
         let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some("搜索连接、库、表..."));
+        search_entry.set_placeholder_text(Some(l10n::t("object_tree.search_placeholder")));
         search_entry.set_hexpand(true);
 
         let search_list = gtk::ListBox::new();
@@ -1323,14 +1332,14 @@ impl TreePanel {
         root_label.set_margin_top(gap(Gap::Xs));
         root_label.set_margin_bottom(gap(Gap::Xxs));
         root_label.set_margin_start(gap(Gap::Lg));
-        root_label.set_tooltip_text(Some("连接注册表：来自 connections.json，与是否已连接无关"));
+        root_label.set_tooltip_text(Some(l10n::t("object_tree.tooltip_registry_root")));
 
         let tree_page = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         tree_page.set_vexpand(true);
         tree_page.append(&root_label);
         tree_page.append(&tree_scroll);
 
-        let status = gtk::Label::new(Some("尚未读取"));
+        let status = gtk::Label::new(Some(l10n::t("object_tree.status_not_read")));
         status.set_xalign(0.0);
         status.set_wrap(true);
         status.set_margin_top(gap(Gap::Xs));
@@ -1478,7 +1487,8 @@ impl TreePanel {
         }
         self.set_health(TreeHealth::Loading);
         self.refresh_connections();
-        self.status.set_text("正在重新读取对象树…");
+        self.status
+            .set_text(l10n::t("object_tree.status_reloading"));
     }
 
     /// 安排一次连接层重建（同一轮事件里的多次通知合并成一次）。
@@ -1503,7 +1513,7 @@ impl TreePanel {
     /// 重建连接层（根）。
     fn rebuild_connections(self: &Rc<Self>) {
         let Some(registry) = self.registry.borrow().clone() else {
-            self.mark_unavailable("连接注册表尚未建立");
+            self.mark_unavailable(l10n::t("object_tree.registry_missing"));
             return;
         };
         let snapshots = registry.snapshots();
@@ -1527,10 +1537,11 @@ impl TreePanel {
             self.root_store.remove_all();
             self.set_health(TreeHealth::Empty);
             self.show_state(
-                "还没有保存的连接",
-                "用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。",
+                l10n::t("object_tree.state_no_connections_title"),
+                l10n::t("object_tree.state_no_connections_body"),
             );
-            self.status.set_text("连接注册表为空");
+            self.status
+                .set_text(l10n::t("object_tree.status_registry_empty"));
             return;
         }
         if self.stack.visible_child_name().as_deref() == Some("state") {
@@ -1588,10 +1599,12 @@ impl TreePanel {
             .iter()
             .filter(|snapshot| snapshot.state.is_connected())
             .count();
-        self.status.set_text(&format!(
-            "{} 条连接（{} 条已连接）· 点连接节点展开；右键可断开",
-            snapshots.len(),
-            connected
+        self.status.set_text(&l10n::tf(
+            "object_tree.status_connection_counts",
+            &[
+                ("connections", snapshots.len().to_string()),
+                ("connected", connected.to_string()),
+            ],
         ));
         eprintln!(
             "[tree] 连接层：{} 条连接（已连接 {connected} 条）",
@@ -1786,7 +1799,7 @@ impl TreePanel {
     /// 元数据通道不可用（线程没起来）：显示明确原因，而不是空树。
     pub fn mark_unavailable(&self, message: &str) {
         self.set_health(TreeHealth::Failed);
-        self.show_state("对象树不可用", message);
+        self.show_state(l10n::t("object_tree.state_unavailable_title"), message);
     }
 
     /// 当前选中的节点（没有选中为 `None`）。
@@ -2241,9 +2254,9 @@ impl TreePanel {
             return;
         }
         self.search_state.set(SearchState::Loading);
-        self.search_status.set_text(&format!(
-            "输入后 {} ms 开始搜索…",
-            SEARCH_DEBOUNCE.as_millis()
+        self.search_status.set_text(&l10n::tf(
+            "object_tree.search_debounce_pending",
+            &[("ms", SEARCH_DEBOUNCE.as_millis().to_string())],
         ));
         self.stack.set_visible_child_name("search");
         let weak = Rc::downgrade(self);
@@ -2282,15 +2295,17 @@ impl TreePanel {
         self.stack.set_visible_child_name("search");
         let Some(registry) = self.registry() else {
             self.search_state.set(SearchState::Failed);
-            self.search_status.set_text("连接注册表尚未建立");
+            self.search_status
+                .set_text(l10n::t("object_tree.registry_missing"));
             return;
         };
         let snapshots = registry.snapshots();
         if snapshots.is_empty() {
             self.search_state.set(SearchState::Failed);
             self.search_status
-                .set_text("连接注册表为空：先添加一条连接再搜索");
-            self.status.set_text("搜索失败：连接注册表为空");
+                .set_text(l10n::t("object_tree.search_registry_empty_hint"));
+            self.status
+                .set_text(l10n::t("object_tree.status_search_failed_registry_empty"));
             return;
         }
         // 连接名对**注册表里的全部连接**匹配（未打开的也算：结果里点一下就能连）。
@@ -2333,11 +2348,17 @@ impl TreePanel {
             return;
         }
         self.search_pending.set(targets.len());
-        self.search_status.set_text(&format!(
-            "正在 {} 条已打开连接里搜索「{query}」…",
-            targets.len()
+        self.search_status.set_text(&l10n::tf(
+            "object_tree.search_running",
+            &[
+                ("connections", targets.len().to_string()),
+                ("query", query.to_owned()),
+            ],
         ));
-        self.status.set_text(&format!("搜索「{query}」…"));
+        self.status.set_text(&l10n::tf(
+            "object_tree.status_search_running",
+            &[("query", query.to_owned())],
+        ));
         eprintln!(
             "[tree] t=+{}ms 搜索「{query}」（{} 条连接各自读目录层 + 逐库搜索）",
             crate::qa::elapsed_ms(),
@@ -2548,24 +2569,37 @@ impl TreePanel {
         if rows.is_empty() {
             if errors.is_empty() {
                 self.search_state.set(SearchState::Empty);
-                self.search_status.set_text(&format!(
-                    "没有名称包含「{query}」的连接、库、表或视图。换个关键词试试。"
+                self.search_status.set_text(&l10n::tf(
+                    "object_tree.search_no_hits",
+                    &[("query", query.to_owned())],
                 ));
-                self.status.set_text(&format!("搜索「{query}」：0 个结果"));
+                self.status.set_text(&l10n::tf(
+                    "object_tree.status_search_zero",
+                    &[("query", query.to_owned())],
+                ));
             } else if errors
                 .iter()
                 .any(|error| error.contains("metadata.permission_denied"))
             {
                 self.search_state.set(SearchState::Denied);
-                self.search_status
-                    .set_text(&format!("没有权限读取对象列表：{}", errors.join("；")));
-                self.status
-                    .set_text(&format!("搜索「{query}」失败：没有权限"));
+                self.search_status.set_text(&l10n::tf(
+                    "object_tree.search_denied",
+                    &[("errors", errors.join("；"))],
+                ));
+                self.status.set_text(&l10n::tf(
+                    "object_tree.status_search_denied",
+                    &[("query", query.to_owned())],
+                ));
             } else {
                 self.search_state.set(SearchState::Failed);
-                self.search_status
-                    .set_text(&format!("搜索失败：{}", errors.join("；")));
-                self.status.set_text(&format!("搜索「{query}」失败"));
+                self.search_status.set_text(&l10n::tf(
+                    "object_tree.search_failed",
+                    &[("errors", errors.join("；"))],
+                ));
+                self.status.set_text(&l10n::tf(
+                    "object_tree.status_search_failed",
+                    &[("query", query.to_owned())],
+                ));
             }
             return;
         }
@@ -2575,18 +2609,36 @@ impl TreePanel {
         let failure_note = if errors.is_empty() {
             String::new()
         } else {
-            format!("；{} 条连接失败（{}）", errors.len(), errors.join("；"))
+            l10n::tf(
+                "object_tree.search_failure_note",
+                &[
+                    ("failed", errors.len().to_string()),
+                    ("errors", errors.join("；")),
+                ],
+            )
         };
         let opened_note = if self.search_connections.get() == 0 {
-            "；没有已打开的连接，只匹配了连接名"
+            l10n::t("object_tree.search_opened_note")
         } else {
             ""
         };
-        self.search_status.set_text(&format!(
-            "{connections} 个连接 · {objects} 个对象{opened_note}{failure_note}"
+        self.search_status.set_text(&l10n::tf(
+            "object_tree.search_status_counts",
+            &[
+                ("connections", connections.to_string()),
+                ("objects", objects.to_string()),
+                ("opened_note", opened_note.to_owned()),
+                ("failure_note", failure_note),
+            ],
         ));
-        self.status.set_text(&format!(
-            "搜索「{query}」：{connections} 个连接 · {objects} 个对象（{hits} 行命中）"
+        self.status.set_text(&l10n::tf(
+            "object_tree.status_search_counts",
+            &[
+                ("query", query.to_owned()),
+                ("connections", connections.to_string()),
+                ("objects", objects.to_string()),
+                ("hits", hits.to_string()),
+            ],
         ));
         eprintln!(
             "[tree] t=+{}ms 搜索「{query}」完成：{} 行（{connections} 个连接 · {objects} 个对象，{hits} 行命中）",
@@ -2776,7 +2828,10 @@ impl TreePanel {
             return Rc::clone(existing);
         }
         let label = match row {
-            Row::Connection(snapshot) => format!("「{}」目录层", snapshot.name),
+            Row::Connection(snapshot) => l10n::tf(
+                "object_tree.level_catalog_label",
+                &[("name", snapshot.name.clone())],
+            ),
             Row::Group(group) => match group.group {
                 RowGroup::Catalog(_) => {
                     format!("{} · {}", group.group.label(), group.parent.catalog)
@@ -2915,16 +2970,16 @@ impl TreePanel {
         }
         level.started.set(Some(Instant::now()));
         let text = if token.is_empty() {
-            LOADING_TEXT
+            l10n::t("object_tree.row_loading")
         } else {
-            "加载中…"
+            l10n::t("object_tree.row_loading_more")
         };
         level
             .store
             .append(&NodeObject::note(text, NoteKind::Loading, Some(level_id)));
         let Some(registry) = self.registry() else {
             level.loading.set(false);
-            self.fail_level(&level, "连接注册表尚未建立");
+            self.fail_level(&level, l10n::t("object_tree.registry_missing"));
             return;
         };
         // 层的键是连接键；解析成该连接当前的浏览会话（断开后为空 = 这一层读不了）。
@@ -2935,7 +2990,7 @@ impl TreePanel {
             .unwrap_or_else(|| level.key().to_owned());
         let Some(hub) = registry.hub_for_session(&session_id) else {
             level.loading.set(false);
-            self.fail_level(&level, "这条连接没有浏览会话：点连接节点重新连接");
+            self.fail_level(&level, l10n::t("object_tree.fail_no_session"));
             return;
         };
         let weak = Rc::downgrade(self);
@@ -2972,7 +3027,7 @@ impl TreePanel {
                     self.remove_trailing_notes(&level);
                     let note = group
                         .unsupported_note()
-                        .unwrap_or("该分组当前不可用（驱动未提供）：不发请求，也不显示假数据");
+                        .unwrap_or(l10n::t("object_tree.note_group_unavailable"));
                     level.store.append(&NodeObject::note(
                         note,
                         NoteKind::Unsupported,
@@ -3054,7 +3109,10 @@ impl TreePanel {
                 level.exhausted.set(!has_more);
                 if has_more {
                     level.store.append(&NodeObject::note(
-                        &format!("{MORE_PREFIX}…（已加载 {} 个）", level.loaded.get()),
+                        &l10n::tf(
+                            "object_tree.row_load_more",
+                            &[("loaded", level.loaded.get().to_string())],
+                        ),
                         NoteKind::More,
                         Some(level_id),
                     ));
@@ -3074,21 +3132,30 @@ impl TreePanel {
                     }
                 }
                 let total_note = if page.total_size > 0 {
-                    format!("，库内共 {} 个", page.total_size)
+                    l10n::tf(
+                        "object_tree.page_total_note",
+                        &[("total", page.total_size.to_string())],
+                    )
                 } else {
                     String::new()
                 };
                 // `truncated` 在「还有下一页」时也会为 true（服务端说明本页被上限截断），
                 // 只有「截断且无法继续翻页」才意味着有数据拿不到，必须说实话。
                 let truncated_note = if page.truncated && !has_more {
-                    "，结果被服务端截断（没有下一页）"
+                    l10n::t("object_tree.page_truncated_note")
                 } else {
                     ""
                 };
-                let text = format!(
-                    "{}：本页 {count} 条，累计 {} 条（耗时 {elapsed_ms} ms{total_note}{truncated_note}）",
-                    level.label,
-                    level.loaded.get()
+                let text = l10n::tf(
+                    "object_tree.status_page_loaded",
+                    &[
+                        ("level", level.label.clone()),
+                        ("count", count.to_string()),
+                        ("loaded", level.loaded.get().to_string()),
+                        ("elapsed_ms", elapsed_ms.to_string()),
+                        ("total_note", total_note),
+                        ("truncated_note", truncated_note.to_owned()),
+                    ],
                 );
                 self.status.set_text(&text);
                 self.last_level_note.replace(text);
@@ -3110,7 +3177,13 @@ impl TreePanel {
                     self.load_page(level_id, String::new());
                     return;
                 }
-                let text = format!("{ERROR_PREFIX}：{}（{}）", error.headline(), error.code());
+                let text = l10n::tf(
+                    "object_tree.row_error",
+                    &[
+                        ("headline", error.headline().to_owned()),
+                        ("code", error.code().to_owned()),
+                    ],
+                );
                 level
                     .store
                     .append(&NodeObject::note(&text, NoteKind::Error, Some(level_id)));
@@ -3144,8 +3217,8 @@ impl TreePanel {
         if level.loaded.get() == 0 {
             self.set_health(TreeHealth::Empty);
             self.show_state(
-                "这一层没有对象",
-                "服务端返回空列表：这是「确实没有对象」，不是读取失败。",
+                l10n::t("object_tree.state_level_empty_title"),
+                l10n::t("object_tree.state_level_empty_body"),
             );
         } else {
             self.set_health(TreeHealth::Ready);
@@ -3166,17 +3239,19 @@ impl TreePanel {
         if error.is_permission_denied() {
             self.set_health(TreeHealth::Failed);
             self.show_state(
-                "没有权限读取对象",
-                &format!(
-                    "当前数据库账号看不到这些对象（{}）。{}",
-                    error.code(),
-                    error.hint()
+                l10n::t("object_tree.state_no_permission_title"),
+                &l10n::tf(
+                    "object_tree.state_no_permission_body",
+                    &[
+                        ("code", error.code().to_owned()),
+                        ("hint", error.hint().to_owned()),
+                    ],
                 ),
             );
         } else if error.is_unsupported() {
             self.set_health(TreeHealth::Unsupported);
             self.show_state(
-                "该驱动未实现对象树",
+                l10n::t("object_tree.state_driver_unsupported_title"),
                 &format!("{}（{}）。{}", error.headline(), error.code(), error.hint()),
             );
         } else {
@@ -3423,7 +3498,7 @@ impl TreePanel {
             GroupRefreshPlan::Reload(level_id) => self.reload_level(level_id),
             GroupRefreshPlan::NotExpanded => {
                 eprintln!("[tree] 分组 {} 未展开，刷新跳过", group.label());
-                self.show_hint(GROUP_NOT_EXPANDED_HINT);
+                self.show_hint(group_not_expanded_hint());
             }
         }
     }
@@ -3473,7 +3548,7 @@ impl TreePanel {
             .map(|level| level.id)
             .collect();
         if ids.is_empty() {
-            self.show_hint("这条连接还没有展开过：展开时会重新读取");
+            self.show_hint(l10n::t("object_tree.hint_connection_never_expanded"));
             eprintln!("[tree] 刷新连接 {key}：还没有建立层，忽略");
             return;
         }
@@ -3481,8 +3556,10 @@ impl TreePanel {
         for id in ids {
             self.reload_level(id);
         }
-        self.status
-            .set_text(&format!("正在重新读取这条连接（{count} 层）…"));
+        self.status.set_text(&l10n::tf(
+            "object_tree.status_reloading_connection",
+            &[("count", count.to_string())],
+        ));
         eprintln!("[tree] 刷新连接 {key}：重读 {count} 层");
     }
 
@@ -3505,7 +3582,7 @@ impl TreePanel {
             let purged = self.purge_levels_where(|level| {
                 level.key() == key && level_parent(&level.source) == Some(&node.reference)
             });
-            self.show_hint("这个库的分组都收起着：展开时重新读取");
+            self.show_hint(l10n::t("object_tree.hint_catalog_collapsed"));
             eprintln!(
                 "[tree] 刷新库 {}：没有展开的层，清掉 {purged} 个缓存层",
                 node.display_name
@@ -3516,9 +3593,12 @@ impl TreePanel {
         for id in ids {
             self.reload_level(id);
         }
-        self.status.set_text(&format!(
-            "正在重新读取库「{}」（{count} 层）…",
-            node.display_name
+        self.status.set_text(&l10n::tf(
+            "object_tree.status_reloading_catalog",
+            &[
+                ("name", node.display_name.clone()),
+                ("count", count.to_string()),
+            ],
         ));
         eprintln!("[tree] 刷新库 {}：重读 {count} 层", node.display_name);
     }
@@ -3536,10 +3616,12 @@ impl TreePanel {
                 return glib::ControlFlow::Break;
             };
             if panel.reveal_step(&key, &target) {
-                panel.status.set_text(&format!(
-                    "已定位到 {}{}",
-                    kind_label(target.kind),
-                    target.path_label()
+                panel.status.set_text(&l10n::tf(
+                    "object_tree.status_revealed",
+                    &[
+                        ("kind", kind_label(target.kind).to_owned()),
+                        ("path", target.path_label()),
+                    ],
                 ));
                 eprintln!(
                     "[tree] t=+{}ms 跳转成功：{}（连接 {key}）",
@@ -3556,9 +3638,9 @@ impl TreePanel {
                     target.path_label(),
                     panel.tree_model.n_items()
                 );
-                panel.status.set_text(&format!(
-                    "没有在树里定位到 {}：它可能不在当前可见的连接/库里",
-                    target.path_label()
+                panel.status.set_text(&l10n::tf(
+                    "object_tree.status_reveal_failed",
+                    &[("path", target.path_label())],
                 ));
                 return glib::ControlFlow::Break;
             }
@@ -4761,10 +4843,10 @@ mod tests {
         assert_eq!(group_refresh_plan(Some(7)), GroupRefreshPlan::Reload(7));
         // 文案只陈述事实与下一步：没有展开，展开时会重新读取。
         assert_eq!(
-            GROUP_NOT_EXPANDED_HINT,
+            group_not_expanded_hint(),
             "这个分组还没展开：展开时会重新读取"
         );
-        assert!(GROUP_NOT_EXPANDED_HINT.contains("展开时会重新读取"));
+        assert!(group_not_expanded_hint().contains("展开时会重新读取"));
     }
 
     #[test]

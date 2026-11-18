@@ -103,3 +103,70 @@
 | 配置文件 | Config File | |
 | 密钥条目 | Key Entry | 系统凭据库中的条目 |
 | 标签上限 | Tab Limit | 超限提示正文 |
+
+## S3（对象树与浏览，#201）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 表 | Table | 对象种类；`Tables` 分组条目同词 |
+| 视图 | View | 对象种类；与主菜单「视图」同词（靠条目名区分语境） |
+| 函数 | Function | 对象种类 |
+| 存储过程 | Procedure | 对象种类 |
+| 序列 | Sequence | 对象种类 |
+| 索引 | Index | 对象种类；复数 Indexes |
+| 触发器 | Trigger | 对象种类 |
+| 字段 | Field | 表结构分组里的列条目 |
+| 列 | Column | 列清单 / 网格语境 |
+| 库 | Database | 沿用种子表；Schema 层写 Schema |
+| 模式 | Schema | 库层之下的命名空间 |
+| 外键 | Foreign Key | 表下的二级分组 |
+| 分组 | Group | 树上的分组行 |
+| 浏览会话 | Browse Session | 对象树 / 搜索 / DDL 用的那条会话 |
+| 连接注册表 | Connection Registry | `connections.json` 里的连接清单 |
+| 占位行 | Placeholder Row | 读取中 / 加载更多 / 失败 / 空 / 提示行 |
+| 转储表 | Dump Table | 右键条目（建表语句 + INSERT） |
+| 断开 | Disconnect | 沿用「连接 Connect」；名词态写 disconnection |
+| 刷新这一组 | Refresh This Group | 右键条目 |
+| 筛选 | Filter | 条件列表与面板 |
+| 排序 | Sort | 表头与面板 |
+| 分页 | Pagination | 分页器与页码口径 |
+| 总数 | Total | 精确 / 估计 / 未统计三态 |
+| 行号区间 | Row Range | 「第 501–1000 行」 |
+
+## S3 Lane B（信息面板、Objects 页与恢复对话框，#201）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 信息面板 | Info Panel | 面板标题与空态头部同词 |
+| 表信息 | Table Info | `[DDL] / [表信息]` 切换条 |
+| 地址 | Address | 连接视图字段 |
+| 用户 | User | 连接视图字段 |
+| 默认库 | Default Database | 连接视图字段；对话框的「默认库」输入同词 |
+| 服务端版本 | Server Version | 连接视图字段 |
+| 连接延迟 | Connection Latency | 连接视图字段 |
+| 会话数 | Session Count | 连接视图字段 |
+| 计数说明 | Count Basis | 库视图「已展开结果」说明行 |
+| 名称 | Name | 库视图字段与 Objects 第二列表头（Linux 原文「表名」） |
+| 类型 | Type | Objects 第三列表头 |
+| 表名 | Name | Objects 表头按列内容译；与「名称」同译 |
+| 行号 | Row | Objects / 数据网格第一列表头 |
+| 双击打开 | Double-click to open | Objects 行 tooltip 后缀 |
+| 主键 | Primary Key | 表信息分节 |
+| 主键列 | Primary Key Columns | 表信息行标签 |
+| 无主键 | No Primary Key | 主键空态值 |
+| 无索引 | No Indexes | 沿用「索引 Indexes」复数 |
+| 无触发器 | No Triggers | 沿用「触发器 Triggers」 |
+| 无默认值 | No Default | 列默认值四态之一 |
+| 已加载行数 | Loaded Rows | 表信息分节 |
+| 原始类型 | Raw Type | 列信息字段 |
+| 可空 | Nullable | 列信息字段与值同词 |
+| 默认值 | Default Value | 列信息字段 |
+| 字符集 | Charset | 列信息字段 |
+| 排序规则 | Collation | 列信息字段 |
+| 不适用 | Not Applicable | 字段缺失的稳定占位（协议口径） |
+| 读取失败 | Read Failed | 状态行 / 分节标题；句中做谓语时小写 read failed |
+| 正在读取 | Reading | 状态行进行中 |
+| 还有更多 | More | 状态行后缀 `（还有更多）` → "(more)" |
+| 尚未实现 | Not Implemented | 「函数列表尚未实现」等如实说明 |
+| 查看日志 | View Log | 恢复对话框按钮；「日志 Log」沿用种子表 |
+| 需要重启 | Needs to Restart | 「Sqarvo 需要重启」标题；品牌名不译 |

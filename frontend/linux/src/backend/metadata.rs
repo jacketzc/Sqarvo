@@ -30,6 +30,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::backend::client::BackendClient;
 use crate::backend::endpoint;
+use crate::l10n;
 use crate::proto::common::v1::PageRequest;
 use crate::proto::services::v1::{
     DdlSource, NodeFilter, ObjectKind, ObjectNameFilter, ObjectNode, ObjectRef, object_name_filter,
@@ -45,20 +46,20 @@ pub const NODE_PAGE_SIZE: u32 = 500;
 #[must_use]
 pub fn kind_label(kind: ObjectKind) -> &'static str {
     match kind {
-        ObjectKind::Catalog => "库",
-        ObjectKind::Schema => "schema",
-        ObjectKind::Table => "表",
-        ObjectKind::View => "视图",
-        ObjectKind::MaterializedView => "物化视图",
-        ObjectKind::Column => "列",
-        ObjectKind::Index => "索引",
-        ObjectKind::Sequence => "序列",
-        ObjectKind::Function => "函数",
-        ObjectKind::Procedure => "存储过程",
-        ObjectKind::Trigger => "触发器",
-        ObjectKind::Type => "类型",
-        ObjectKind::Other => "对象",
-        ObjectKind::Unspecified => "未知",
+        ObjectKind::Catalog => l10n::t("object_tree.kind_catalog"),
+        ObjectKind::Schema => l10n::t("object_tree.kind_schema"),
+        ObjectKind::Table => l10n::t("object_tree.kind_table"),
+        ObjectKind::View => l10n::t("object_tree.kind_view"),
+        ObjectKind::MaterializedView => l10n::t("object_tree.kind_materialized_view"),
+        ObjectKind::Column => l10n::t("object_tree.kind_column"),
+        ObjectKind::Index => l10n::t("object_tree.kind_index"),
+        ObjectKind::Sequence => l10n::t("object_tree.kind_sequence"),
+        ObjectKind::Function => l10n::t("object_tree.kind_function"),
+        ObjectKind::Procedure => l10n::t("object_tree.kind_procedure"),
+        ObjectKind::Trigger => l10n::t("object_tree.kind_trigger"),
+        ObjectKind::Type => l10n::t("object_tree.kind_type"),
+        ObjectKind::Other => l10n::t("object_tree.kind_other"),
+        ObjectKind::Unspecified => l10n::t("object_tree.kind_unspecified"),
     }
 }
 

@@ -38,6 +38,7 @@ use crate::backend::table::TableColumn;
 use crate::column_info::{column_info_rows, default_label, nullable_label};
 use crate::config::SavedConnection;
 use crate::ddl::{DdlPanel, DdlSnapshot};
+use crate::l10n;
 use crate::layout::{Gap, gap};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
 
@@ -135,30 +136,54 @@ pub fn endpoint_text(saved: &SavedConnection) -> Option<String> {
 /// **不含密码**：`SavedConnection` 里本来就没有密码，凭据引用是另一回事。
 #[must_use]
 pub fn connection_facts(saved: &SavedConnection, live: &ConnectionLive) -> Vec<Fact> {
-    let mut facts = vec![Fact::new("驱动", saved.driver.clone())];
+    let mut facts = vec![Fact::new(
+        l10n::t("inspector.fact_driver"),
+        saved.driver.clone(),
+    )];
     if let Some(endpoint) = endpoint_text(saved) {
-        facts.push(Fact::new("地址", endpoint));
+        facts.push(Fact::new(l10n::t("inspector.fact_address"), endpoint));
     }
     // 服务器型驱动的库名可选（ADR 0024）：没有默认库时说「未指定」，
     // 而不是把这一行整行吞掉（用户会以为界面漏了字段）。
     // 文件型驱动的 database 本来就没有意义，保持「空值不渲染」。
     if saved.database.trim().is_empty() && saved.file_target().is_none() {
-        facts.push(Fact::new("默认库", "未指定"));
+        facts.push(Fact::new(
+            l10n::t("inspector.fact_default_database"),
+            l10n::t("inspector.value_unspecified"),
+        ));
     } else {
-        facts.push(Fact::new("默认库", saved.database.clone()));
+        facts.push(Fact::new(
+            l10n::t("inspector.fact_default_database"),
+            saved.database.clone(),
+        ));
     }
-    facts.push(Fact::new("用户", saved.username.clone()));
+    facts.push(Fact::new(
+        l10n::t("inspector.fact_user"),
+        saved.username.clone(),
+    ));
     // 文件型驱动没有 TLS 这一层：不适用就该整行不出现，而不是写「disabled」。
     if saved.file_target().is_none() {
         facts.push(Fact::new("TLS", saved.tls_mode.clone()));
     }
-    facts.push(Fact::new("凭据引用", saved.credential_ref.clone()));
-    facts.push(Fact::new("服务端版本", live.server_version.clone()));
+    facts.push(Fact::new(
+        l10n::t("inspector.fact_credential_ref"),
+        saved.credential_ref.clone(),
+    ));
+    facts.push(Fact::new(
+        l10n::t("inspector.fact_server_version"),
+        live.server_version.clone(),
+    ));
     if let Some(millis) = live.latency_millis {
-        facts.push(Fact::new("连接延迟", format!("{millis} ms")));
+        facts.push(Fact::new(
+            l10n::t("inspector.fact_latency"),
+            format!("{millis} ms"),
+        ));
     }
     if let Some(count) = live.sessions {
-        facts.push(Fact::new("会话数", format!("{count} 条")));
+        facts.push(Fact::new(
+            l10n::t("inspector.fact_sessions"),
+            l10n::tf("inspector.value_sessions", &[("count", count.to_string())]),
+        ));
     }
     Fact::keep(facts)
 }
@@ -175,18 +200,24 @@ pub fn catalog_facts(
     views: Option<usize>,
     complete: bool,
 ) -> Vec<Fact> {
-    let mut facts = vec![Fact::new("名称", name)];
+    let mut facts = vec![Fact::new(l10n::t("inspector.fact_name"), name)];
     if let Some(tables) = tables {
-        facts.push(Fact::new("表", format!("{tables} 个")));
+        facts.push(Fact::new(
+            l10n::t("inspector.label_tables_count"),
+            l10n::tf("inspector.value_count", &[("n", tables.to_string())]),
+        ));
     }
     if let Some(views) = views {
-        facts.push(Fact::new("视图", format!("{views} 个")));
+        facts.push(Fact::new(
+            l10n::t("inspector.label_views_count"),
+            l10n::tf("inspector.value_count", &[("n", views.to_string())]),
+        ));
     }
     if (tables.is_some() || views.is_some()) && !complete {
         // 已加载 ≠ 全部：分页还有下一页时必须说清楚，不能把当前页当总数。
         facts.push(Fact::new(
-            "计数说明",
-            "按已展开的结果统计（该层还有下一页）",
+            l10n::t("inspector.label_count_note"),
+            l10n::t("inspector.count_note_body"),
         ));
     }
     Fact::keep(facts)
@@ -196,7 +227,7 @@ pub fn catalog_facts(
 #[must_use]
 pub fn primary_key_label(columns: &[(u32, String)]) -> String {
     if columns.is_empty() {
-        return "无主键".to_owned();
+        return l10n::t("inspector.pk_none").to_owned();
     }
     let mut sorted: Vec<&(u32, String)> = columns.iter().collect();
     sorted.sort_by_key(|(position, _)| *position);
@@ -220,7 +251,12 @@ pub fn list_fact(label: &'static str, names: &[String], empty: &str) -> Fact {
 /// 已加载行数：只有该表在当前窗口的标签里打开过才有这个事实。
 #[must_use]
 pub fn loaded_rows_fact(rows: Option<usize>) -> Option<Fact> {
-    rows.map(|rows| Fact::new("已加载行数", format!("{rows} 行")))
+    rows.map(|rows| {
+        Fact::new(
+            l10n::t("inspector.fact_loaded_rows"),
+            l10n::tf("inspector.value_rows", &[("rows", rows.to_string())]),
+        )
+    })
 }
 
 /// 面板「状态页」的文案：权限不足 / 对象不存在 / 不支持种类各有独立结论，
@@ -254,11 +290,10 @@ impl StateText {
     #[must_use]
     pub fn unsupported_kind(kind: ObjectKind) -> Self {
         Self {
-            headline: "该对象种类不支持查看 DDL",
-            detail: format!(
-                "{}没有独立的 DDL：定义在所属表的 DDL 里（metadata.object_kind_unsupported）。\
-                 换一个表 / 视图再试。",
-                kind_label(kind)
+            headline: l10n::t("inspector.state_ddl_unsupported_head"),
+            detail: l10n::tf(
+                "inspector.state_ddl_unsupported_body",
+                &[("kind", kind_label(kind).to_owned())],
             ),
             code: "metadata.object_kind_unsupported".to_owned(),
         }
@@ -419,7 +454,7 @@ impl Inspector {
     /// v0.2.3.2 起面板**常驻**：没有折叠按钮，也没有 `Ctrl+I`（`shell.set_inspector_visible`
     /// 不再是用户可达的动作）。宽度仍可拖、窗口级记忆。
     pub fn new() -> Rc<Self> {
-        let title = gtk::Label::new(Some("信息面板"));
+        let title = gtk::Label::new(Some(l10n::t("inspector.title_panel")));
         title.set_xalign(0.0);
         title.set_hexpand(true);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -464,16 +499,16 @@ impl Inspector {
         // 向左边距里探出 8px。留 10px 会让「DDL」比上方标题右缩一格，看着不对齐。
         let ddl_toggle = gtk::ToggleButton::with_label("DDL");
         ddl_toggle.add_css_class("flat");
-        ddl_toggle.set_tooltip_text(Some("显示该对象的 DDL"));
+        ddl_toggle.set_tooltip_text(Some(l10n::t("inspector.tooltip_ddl")));
         // 拉丁字母与 CJK 在同一行里光学中心差约 1.5px（「DDL」没有下缘、字身短，
         // 「表信息」字形更高，两者的行盒居中后看起来「DDL」偏高）。给拉丁标签加 2px
         // 上边距 → 标签在按钮内下移 1px，两个标签的视觉中心对齐。
         if let Some(label) = ddl_toggle.child().and_downcast::<gtk::Label>() {
             label.set_margin_top(gap(Gap::Xxs));
         }
-        let info_toggle = gtk::ToggleButton::with_label("表信息");
+        let info_toggle = gtk::ToggleButton::with_label(l10n::t("inspector.toggle_info"));
         info_toggle.add_css_class("flat");
-        info_toggle.set_tooltip_text(Some("列、主键、索引与触发器、已加载行数"));
+        info_toggle.set_tooltip_text(Some(l10n::t("inspector.tooltip_info")));
         info_toggle.set_group(Some(&ddl_toggle));
         ddl_toggle.set_active(true);
         let switch_bar = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xxs));
@@ -634,7 +669,7 @@ impl Inspector {
     pub fn show_empty(&self) {
         self.generation.set(self.generation.get() + 1);
         self.object.replace(None);
-        self.title.set_text("信息面板");
+        self.title.set_text(l10n::t("inspector.title_panel"));
         self.subtitle.set_text("");
         self.switch_bar.set_visible(false);
         self.set_page("empty");
@@ -646,12 +681,11 @@ impl Inspector {
         self.object.replace(None);
         self.switch_bar.set_visible(false);
         let Some(saved) = saved else {
-            self.title.set_text("连接");
+            self.title.set_text(l10n::t("inspector.title_connection"));
             self.subtitle.set_text("");
             self.set_state(&StateText {
-                headline: "连接已不在配置里",
-                detail: "connections.json 里已经没有这条连接（config.invalid）。刷新对象树后重试。"
-                    .to_owned(),
+                headline: l10n::t("inspector.state_missing_conn_head"),
+                detail: l10n::t("inspector.state_missing_conn_body").to_owned(),
                 code: "config.invalid".to_owned(),
             });
             return;
@@ -675,7 +709,8 @@ impl Inspector {
         self.object.replace(None);
         self.switch_bar.set_visible(false);
         self.title.set_text(name);
-        self.subtitle.set_text("库");
+        self.subtitle
+            .set_text(l10n::t("inspector.subtitle_database"));
         let facts = catalog_facts(name, tables, views, complete);
         fill_facts(&self.catalog_rows, &facts);
         self.set_page("catalog");
@@ -722,7 +757,10 @@ impl Inspector {
                 self.set_page("column");
                 fill_facts(
                     &self.column_rows,
-                    &[Fact::new("列名", node.display_name.clone())],
+                    &[Fact::new(
+                        l10n::t("inspector.column_label_name"),
+                        node.display_name.clone(),
+                    )],
                 );
                 self.column_count.set(0);
                 match parent {
@@ -734,10 +772,8 @@ impl Inspector {
                         );
                     }
                     _ => self.set_state(&StateText {
-                        headline: "列的详细属性需要知道所属的表",
-                        detail: "从对象树里表的子节点进入列，才能读到 GetColumns 的完整属性。\
-                                 （metadata.object_not_found）"
-                            .to_owned(),
+                        headline: l10n::t("inspector.state_column_needs_table_head"),
+                        detail: l10n::t("inspector.state_column_needs_table_body").to_owned(),
                         code: "metadata.object_not_found".to_owned(),
                     }),
                 }
@@ -765,8 +801,10 @@ impl Inspector {
         self.generation.set(self.generation.get() + 1);
         self.switch_bar.set_visible(false);
         self.title.set_text(&column.name);
-        self.subtitle
-            .set_text(&format!("列 · {}", column.type_label));
+        self.subtitle.set_text(&l10n::tf(
+            "inspector.subtitle_column_type",
+            &[("type", column.type_label.clone())],
+        ));
         let facts: Vec<Fact> = column_info_rows(column)
             .into_iter()
             .map(|(label, value)| Fact::new(label, value))
@@ -984,12 +1022,11 @@ impl Inspector {
         self.column_count.set(0);
         self.render_table_info();
         self.info_status.set_visible(true);
-        self.info_status.set_text("正在读取列、主键与索引…");
+        self.info_status.set_text(l10n::t("inspector.info_loading"));
         let Some(hub) = self.hub(&node) else {
             self.info_status.set_visible(true);
-            self.info_status.set_text(
-                "这条连接没有浏览会话：列属性读不到（metadata.object_not_found）。在对象树里重新连接后再试。",
-            );
+            self.info_status
+                .set_text(l10n::t("inspector.info_no_session"));
             return;
         };
         let weak = Rc::downgrade(self);
@@ -1114,8 +1151,8 @@ impl Inspector {
     fn load_columns_for_column(self: &Rc<Self>, table: NodeView, name: String, generation: u64) {
         let Some(hub) = self.hub(&table) else {
             self.set_state(&StateText {
-                headline: "这条连接没有浏览会话",
-                detail: "列属性要经对象所属连接的浏览会话读取（backend.unavailable）。".to_owned(),
+                headline: l10n::t("inspector.state_no_session_head"),
+                detail: l10n::t("inspector.state_no_session_body").to_owned(),
                 code: "backend.unavailable".to_owned(),
             });
             return;
@@ -1132,19 +1169,24 @@ impl Inspector {
                     Ok(columns) => {
                         let Some(column) = columns.iter().find(|column| column.name == name) else {
                             panel.set_state(&StateText {
-                                headline: "这一列已不存在",
-                                detail: format!(
-                                    "表 {} 的列清单里没有 {name}：对象可能在读取期间被修改\
-                                     （metadata.object_not_found）。",
-                                    table.display_name
+                                headline: l10n::t("inspector.state_column_gone_head"),
+                                detail: l10n::tf(
+                                    "inspector.state_column_gone_body",
+                                    &[
+                                        ("table", table.display_name.clone()),
+                                        ("name", name.clone()),
+                                    ],
                                 ),
                                 code: "metadata.object_not_found".to_owned(),
                             });
                             return;
                         };
-                        panel.subtitle.set_text(&format!(
-                            "列 · {} · {}",
-                            table.display_name, column.type_label
+                        panel.subtitle.set_text(&l10n::tf(
+                            "inspector.subtitle_column_table",
+                            &[
+                                ("table", table.display_name.clone()),
+                                ("type", column.type_label.clone()),
+                            ],
                         ));
                         let facts: Vec<Fact> = column_info_rows(column)
                             .into_iter()
@@ -1192,11 +1234,13 @@ impl Inspector {
         if let Some(columns) = info.columns.as_ref() {
             self.column_count.set(columns.len());
             if columns.is_empty() {
-                self.info_box
-                    .append(&section_note("列", "服务端返回了空列清单"));
+                self.info_box.append(&section_note(
+                    l10n::t("inspector.section_columns"),
+                    l10n::t("inspector.note_empty_columns"),
+                ));
                 rendered += 1;
             } else {
-                let section = section("列");
+                let section = section(l10n::t("inspector.section_columns"));
                 for column in columns {
                     let card = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Xxs));
                     card.set_hexpand(true);
@@ -1210,14 +1254,20 @@ impl Inspector {
                     heading.set_tooltip_text(Some(&column.name));
                     card.append(&heading);
                     for (label, value) in [
-                        ("可空", nullable_label(column.nullable).to_owned()),
-                        ("默认值", default_label(&column.default_value)),
                         (
-                            "字符集",
+                            l10n::t("inspector.column_label_nullable"),
+                            nullable_label(column.nullable).to_owned(),
+                        ),
+                        (
+                            l10n::t("inspector.column_label_default"),
+                            default_label(&column.default_value),
+                        ),
+                        (
+                            l10n::t("inspector.column_label_charset"),
                             crate::column_info::charset_label(column.character_set.as_deref()),
                         ),
                         (
-                            "排序规则",
+                            l10n::t("inspector.column_label_collation"),
                             crate::column_info::collation_label(column.collation.as_deref()),
                         ),
                     ] {
@@ -1230,38 +1280,51 @@ impl Inspector {
             }
         }
         if let Some(primary_key) = info.primary_key.as_ref() {
-            let section = section("主键");
-            section.append(&compact_row("主键列", &primary_key_label(primary_key)));
+            let section = section(l10n::t("inspector.section_primary_key"));
+            section.append(&compact_row(
+                l10n::t("inspector.fact_pk_columns"),
+                &primary_key_label(primary_key),
+            ));
             self.info_box.append(&section);
             rendered += 1;
         }
         if let Some(indexes) = info.indexes.as_ref() {
-            let section = section("索引");
+            let section = section(l10n::t("inspector.section_indexes"));
             section.append(&compact_row(
-                "索引",
-                &list_fact("索引", indexes, "无索引").value,
+                l10n::t("inspector.section_indexes"),
+                &list_fact(
+                    l10n::t("inspector.section_indexes"),
+                    indexes,
+                    l10n::t("inspector.value_no_indexes"),
+                )
+                .value,
             ));
             self.info_box.append(&section);
             rendered += 1;
         }
         if let Some(triggers) = info.triggers.as_ref() {
-            let section = section("触发器");
+            let section = section(l10n::t("inspector.section_triggers"));
             section.append(&compact_row(
-                "触发器",
-                &list_fact("触发器", triggers, "无触发器").value,
+                l10n::t("inspector.section_triggers"),
+                &list_fact(
+                    l10n::t("inspector.section_triggers"),
+                    triggers,
+                    l10n::t("inspector.value_no_triggers"),
+                )
+                .value,
             ));
             self.info_box.append(&section);
             rendered += 1;
         }
         if let Some(fact) = loaded_rows_fact(info.loaded_rows) {
-            let section = section("行");
+            let section = section(l10n::t("inspector.section_rows"));
             section.append(&compact_row(fact.label, &fact.value));
             self.info_box.append(&section);
             rendered += 1;
         }
         if let Some(note) = info.children_error.as_ref() {
-            let section = section("索引与触发器");
-            section.append(&section_note("读取失败", note));
+            let section = section(l10n::t("inspector.section_children"));
+            section.append(&section_note(l10n::t("inspector.note_read_failed"), note));
             self.info_box.append(&section);
             rendered += 1;
         }

@@ -187,7 +187,7 @@ source = "src/ui.rs:567、src/ui.rs:3774"
 trigger = "load"
 precondition = "用户选择「重启 Sqarvo」"
 result = "副标题「正在重启…」，标题「Sqarvo」"
-source = "src/ui.rs:1300"
+source = "src/ui.rs:1420"
 
 [component.sync.linux]
 state = "done"
@@ -1097,19 +1097,19 @@ impl_notes = [
 trigger = "click"
 precondition = "点任一标签的后端失效横幅「重启 Sqarvo」，或数据页错误横幅"
 result = "弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，未提交的更改会丢失。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消）"
-source = "src/ui.rs:1274、src/sql_page.rs:128"
+source = "src/ui.rs:1379、src/sql_page.rs:128"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "对话框里选「重启 Sqarvo」"
 result = "不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 工具条 / 菜单回未就绪 → 标题「Sqarvo」、副标题「正在重启…」→ 回到 Loading「正在重启 Sqarvo…」→ 重新握手"
-source = "src/ui.rs:1300"
+source = "src/ui.rs:1403"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "对话框里选「查看日志」"
 result = "打开日志窗口；不重启、不改会话状态"
-source = "src/ui.rs:1282"
+source = "src/ui.rs:1393"
 
 [component.sync.linux]
 state = "done"

@@ -1,0 +1,829 @@
+# 对象树区文案目录（注册表区 `object_tree.*`，ADR 0031 决策 2；迁移切片 S3/#201）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
+# （位置参数改名为命名占位的条目在 Issue #201 汇报的白名单里逐条列出）。
+# 覆盖表面：对象树侧栏（tree.rs）的占位行 / 分组说明 / 行 tooltip / 右键菜单 /
+# 状态行 / 搜索状态与结果计数；浏览会话与连接注册表（browse.rs）的树行状态副标
+# 与失败原因；浏览视图的筛选与分页文案（browse_view.rs）；对象树侧的三个确认框
+# （断开 / 删除 / 编辑连接，ui.rs 正文与按钮）。
+# 不在这里登记：日志行（eprintln!）、QA 钩子的错误串（qa.rs 与树内 qa_* 助手）、
+# Objects 页与信息面板（Lane B）、数据页 / 查询页（#202 / #203）。
+
+# -- 占位行与行标签（tree.rs） ----------------------------------------------
+
+[[entry]]
+key = "object_tree.row_loading"
+zh = "读取中…"
+en = "Loading…"
+status = "done"
+
+[[entry]]
+key = "object_tree.row_loading_more"
+zh = "加载中…"
+en = "Loading…"
+status = "done"
+
+[[entry]]
+key = "object_tree.row_load_more"
+zh = "加载更多…（已加载 {loaded} 个）"
+en = "Load more… ({loaded} loaded)"
+status = "done"
+
+[[entry]]
+key = "object_tree.row_error"
+zh = "读取失败：{headline}（{code}）"
+en = "Read failed: {headline} ({code})"
+status = "done"
+
+# -- 对象种类名（树行尾标签，backend/metadata.rs::kind_label） --------------
+
+[[entry]]
+key = "object_tree.kind_catalog"
+zh = "库"
+en = "Database"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_schema"
+zh = "schema"
+en = "Schema"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_table"
+zh = "表"
+en = "Table"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_view"
+zh = "视图"
+en = "View"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_materialized_view"
+zh = "物化视图"
+en = "Materialized View"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_column"
+zh = "列"
+en = "Column"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_index"
+zh = "索引"
+en = "Index"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_sequence"
+zh = "序列"
+en = "Sequence"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_function"
+zh = "函数"
+en = "Function"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_procedure"
+zh = "存储过程"
+en = "Procedure"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_trigger"
+zh = "触发器"
+en = "Trigger"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_type"
+zh = "类型"
+en = "Type"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_other"
+zh = "对象"
+en = "Object"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_unspecified"
+zh = "未知"
+en = "Unknown"
+status = "done"
+
+# -- 分组说明：catalog 下的种类分组（KindGroup） ----------------------------
+
+[[entry]]
+key = "object_tree.kind_tables_empty"
+zh = "（这一组没有表）"
+en = "(No tables in this group)"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_views_empty"
+zh = "（这一组没有视图）"
+en = "(No views in this group)"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_functions_empty"
+zh = "（这一组没有函数）"
+en = "(No functions in this group)"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_queries_empty"
+zh = "（还没有保存的查询）"
+en = "(No saved queries yet)"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_functions_unsupported"
+zh = "函数列表尚未实现（点开看说明，不发请求）"
+en = "Function listing is not implemented yet (open it for the explanation; no request is sent)"
+status = "done"
+
+[[entry]]
+key = "object_tree.kind_queries_unsupported"
+zh = "已保存的查询尚未实现（点开看说明）"
+en = "Saved queries are not implemented yet (open it for the explanation)"
+status = "done"
+
+# -- 分组说明：表下的二级分组（TableGroup） --------------------------------
+
+[[entry]]
+key = "object_tree.table_fields_empty"
+zh = "（这张表没有字段）"
+en = "(No fields in this table)"
+status = "done"
+
+[[entry]]
+key = "object_tree.table_indexes_empty"
+zh = "（这张表没有索引）"
+en = "(No indexes in this table)"
+status = "done"
+
+[[entry]]
+key = "object_tree.table_foreign_keys_empty"
+zh = "（驱动未提供外键列表）"
+en = "(The driver does not provide a foreign key list)"
+status = "done"
+
+[[entry]]
+key = "object_tree.table_triggers_empty"
+zh = "（这张表没有触发器）"
+en = "(No triggers in this table)"
+status = "done"
+
+[[entry]]
+key = "object_tree.table_foreign_keys_unsupported"
+zh = "驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装"
+en = "The driver does not provide a foreign key list (capability.unsupported): it appears once the backend gains foreign key support; nothing is guessed or assembled here"
+status = "done"
+
+# -- 行 tooltip（tree.rs） --------------------------------------------------
+
+[[entry]]
+key = "object_tree.tooltip_browse_session"
+zh = "浏览会话 {session}（{detail}）"
+en = "Browse session {session} ({detail})"
+status = "done"
+
+[[entry]]
+key = "object_tree.tooltip_saved_name"
+zh = "\n连接名：{name}"
+en = "\nConnection name: {name}"
+status = "done"
+
+[[entry]]
+key = "object_tree.tooltip_connection"
+zh = "{label} · {driver}\n{target}{saved_name}\n{state}{active_note}\n右键：连接 / 断开连接 / 刷新连接"
+en = "{label} · {driver}\n{target}{saved_name}\n{state}{active_note}\nRight-click: Connect / Disconnect / Refresh connection"
+status = "done"
+
+[[entry]]
+key = "object_tree.tooltip_active_connection"
+zh = "\n（当前数据页绑定的连接）"
+en = "\n(The connection the data page is bound to)"
+status = "done"
+
+[[entry]]
+key = "object_tree.tooltip_group_kinds"
+zh = "{group} · {catalog}（按种类过滤拉取：filter.kinds={kinds}）"
+en = "{group} · {catalog} (fetched per kind: filter.kinds={kinds})"
+status = "done"
+
+[[entry]]
+key = "object_tree.tooltip_registry_root"
+zh = "连接注册表：来自 connections.json，与是否已连接无关"
+en = "Connection registry: from connections.json, independent of whether a connection is open"
+status = "done"
+
+# -- 右键菜单条目（tree.rs MenuItem::label） --------------------------------
+
+[[entry]]
+key = "object_tree.ctx_menu_connect_saved"
+zh = "连接（使用已保存的凭据）"
+en = "Connect (using saved credentials)"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_disconnect"
+zh = "断开连接"
+en = "Disconnect"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_refresh_connection"
+zh = "刷新连接"
+en = "Refresh connection"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_edit_saved"
+zh = "编辑连接…"
+en = "Edit connection…"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_delete_saved"
+zh = "删除连接"
+en = "Delete connection"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_refresh_group"
+zh = "刷新这一组"
+en = "Refresh this group"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_refresh_catalog"
+zh = "刷新库"
+en = "Refresh database"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_open"
+zh = "打开"
+en = "Open"
+status = "done"
+
+[[entry]]
+key = "object_tree.ctx_menu_dump_table"
+zh = "转储表…"
+en = "Dump table…"
+status = "done"
+
+# -- 提示行与状态行（tree.rs） ----------------------------------------------
+
+[[entry]]
+key = "object_tree.hint_group_not_expanded"
+zh = "这个分组还没展开：展开时会重新读取"
+en = "This group is not expanded yet; it will be re-read when expanded"
+status = "done"
+
+[[entry]]
+key = "object_tree.hint_connection_never_expanded"
+zh = "这条连接还没有展开过：展开时会重新读取"
+en = "This connection has never been expanded; it will be re-read when expanded"
+status = "done"
+
+[[entry]]
+key = "object_tree.hint_catalog_collapsed"
+zh = "这个库的分组都收起着：展开时重新读取"
+en = "All groups in this database are collapsed; they will be re-read when expanded"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_not_read"
+zh = "尚未读取"
+en = "Not read yet"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_reloading"
+zh = "正在重新读取对象树…"
+en = "Re-reading the object tree…"
+status = "done"
+
+[[entry]]
+key = "object_tree.registry_missing"
+zh = "连接注册表尚未建立"
+en = "Connection registry not available yet"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_registry_empty"
+zh = "连接注册表为空"
+en = "Connection registry is empty"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_connection_counts"
+zh = "{connections} 条连接（{connected} 条已连接）· 点连接节点展开；右键可断开"
+en = "{connections} connections ({connected} connected) · click a connection node to expand; right-click to disconnect"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_reloading_connection"
+zh = "正在重新读取这条连接（{count} 层）…"
+en = "Re-reading this connection ({count} levels)…"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_reloading_catalog"
+zh = "正在重新读取库「{name}」（{count} 层）…"
+en = "Re-reading database \"{name}\" ({count} levels)…"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_revealed"
+zh = "已定位到 {kind}{path}"
+en = "Located {kind}{path}"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_reveal_failed"
+zh = "没有在树里定位到 {path}：它可能不在当前可见的连接/库里"
+en = "Could not locate {path} in the tree: it may not be in a visible connection or database"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_page_loaded"
+zh = "{level}：本页 {count} 条，累计 {loaded} 条（耗时 {elapsed_ms} ms{total_note}{truncated_note}）"
+en = "{level}: {count} rows on this page, {loaded} so far ({elapsed_ms} ms{total_note}{truncated_note})"
+status = "done"
+
+[[entry]]
+key = "object_tree.page_total_note"
+zh = "，库内共 {total} 个"
+en = ", {total} in the database"
+status = "done"
+
+[[entry]]
+key = "object_tree.page_truncated_note"
+zh = "，结果被服务端截断（没有下一页）"
+en = ", the server truncated the result (no next page)"
+status = "done"
+
+[[entry]]
+key = "object_tree.level_catalog_label"
+zh = "「{name}」目录层"
+en = "\"{name}\" catalog level"
+status = "done"
+
+[[entry]]
+key = "object_tree.note_group_unavailable"
+zh = "该分组当前不可用（驱动未提供）：不发请求，也不显示假数据"
+en = "This group is unavailable (the driver does not provide it): no request is sent and no fake data is shown"
+status = "done"
+
+[[entry]]
+key = "object_tree.fail_no_session"
+zh = "这条连接没有浏览会话：点连接节点重新连接"
+en = "This connection has no browse session; click the connection node to reconnect"
+status = "done"
+
+# -- 状态页（树不可用 / 空层 / 权限 / 未实现） ------------------------------
+
+[[entry]]
+key = "object_tree.state_unavailable_title"
+zh = "对象树不可用"
+en = "Object tree unavailable"
+status = "done"
+
+[[entry]]
+key = "object_tree.state_no_connections_title"
+zh = "还没有保存的连接"
+en = "No saved connections yet"
+status = "done"
+
+[[entry]]
+key = "object_tree.state_no_connections_body"
+zh = "用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。"
+en = "Save a connection with Connect in the toolbar; it then appears as a node under My Connections."
+status = "done"
+
+[[entry]]
+key = "object_tree.state_level_empty_title"
+zh = "这一层没有对象"
+en = "No objects at this level"
+status = "done"
+
+[[entry]]
+key = "object_tree.state_level_empty_body"
+zh = "服务端返回空列表：这是「确实没有对象」，不是读取失败。"
+en = "The server returned an empty list: there really are no objects; this is not a read failure."
+status = "done"
+
+[[entry]]
+key = "object_tree.state_no_permission_title"
+zh = "没有权限读取对象"
+en = "No permission to read objects"
+status = "done"
+
+[[entry]]
+key = "object_tree.state_no_permission_body"
+zh = "当前数据库账号看不到这些对象（{code}）。{hint}"
+en = "The current database account cannot see these objects ({code}). {hint}"
+status = "done"
+
+[[entry]]
+key = "object_tree.state_driver_unsupported_title"
+zh = "该驱动未实现对象树"
+en = "This driver does not implement the object tree"
+status = "done"
+
+# -- 搜索框与搜索结果（tree.rs） --------------------------------------------
+
+[[entry]]
+key = "object_tree.search_placeholder"
+zh = "搜索连接、库、表..."
+en = "Search connections, databases, tables..."
+status = "done"
+
+[[entry]]
+key = "object_tree.search_debounce_pending"
+zh = "输入后 {ms} ms 开始搜索…"
+en = "Searching starts {ms} ms after typing…"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_registry_empty_hint"
+zh = "连接注册表为空：先添加一条连接再搜索"
+en = "The connection registry is empty: add a connection before searching"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_search_failed_registry_empty"
+zh = "搜索失败：连接注册表为空"
+en = "Search failed: the connection registry is empty"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_running"
+zh = "正在 {connections} 条已打开连接里搜索「{query}」…"
+en = "Searching {connections} open connections for \"{query}\"…"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_search_running"
+zh = "搜索「{query}」…"
+en = "Searching for \"{query}\"…"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_no_hits"
+zh = "没有名称包含「{query}」的连接、库、表或视图。换个关键词试试。"
+en = "No connection, database, table, or view name contains \"{query}\". Try another keyword."
+status = "done"
+
+[[entry]]
+key = "object_tree.status_search_zero"
+zh = "搜索「{query}」：0 个结果"
+en = "Search \"{query}\": 0 results"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_denied"
+zh = "没有权限读取对象列表：{errors}"
+en = "No permission to read the object list: {errors}"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_search_denied"
+zh = "搜索「{query}」失败：没有权限"
+en = "Search \"{query}\" failed: no permission"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_failed"
+zh = "搜索失败：{errors}"
+en = "Search failed: {errors}"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_search_failed"
+zh = "搜索「{query}」失败"
+en = "Search \"{query}\" failed"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_failure_note"
+zh = "；{failed} 条连接失败（{errors}）"
+en = "; {failed} connections failed ({errors})"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_opened_note"
+zh = "；没有已打开的连接，只匹配了连接名"
+en = "; no connections were open, so only connection names were matched"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_status_counts"
+zh = "{connections} 个连接 · {objects} 个对象{opened_note}{failure_note}"
+en = "{connections} connections · {objects} objects{opened_note}{failure_note}"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_search_counts"
+zh = "搜索「{query}」：{connections} 个连接 · {objects} 个对象（{hits} 行命中）"
+en = "Search \"{query}\": {connections} connections · {objects} objects ({hits} matching rows)"
+status = "done"
+
+# -- 浏览会话与连接注册表（browse.rs） --------------------------------------
+
+[[entry]]
+key = "object_tree.badge_connecting"
+zh = "连接中…"
+en = "Connecting…"
+status = "done"
+
+[[entry]]
+key = "object_tree.badge_connected"
+zh = "已连接"
+en = "Connected"
+status = "done"
+
+[[entry]]
+key = "object_tree.badge_disconnecting"
+zh = "断开中…"
+en = "Disconnecting…"
+status = "done"
+
+[[entry]]
+key = "object_tree.badge_failed"
+zh = "失败"
+en = "Failed"
+status = "done"
+
+[[entry]]
+key = "object_tree.session_worker_runtime_failed"
+zh = "无法创建浏览会话运行时：{error}"
+en = "Cannot create the browse session runtime: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.session_worker_thread_failed"
+zh = "无法创建浏览会话线程：{error}"
+en = "Cannot create the browse session thread: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.session_stage_open"
+zh = "建立浏览会话"
+en = "Open browse session"
+status = "done"
+
+[[entry]]
+key = "object_tree.transport_endpoint_read"
+zh = "无法读取端点文件：{error}"
+en = "Cannot read the endpoint file: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.transport_endpoint_missing"
+zh = "端点文件不存在：{path}"
+en = "The endpoint file does not exist: {path}"
+status = "done"
+
+[[entry]]
+key = "object_tree.transport_connect"
+zh = "无法连接本地后端：{error}"
+en = "Cannot connect to the local backend: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.transport_service_client"
+zh = "无法建立连接服务客户端：{error}"
+en = "Cannot create the connection service client: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.disconnect_timeout"
+zh = "断开浏览会话超时（10 秒）"
+en = "Timed out disconnecting the browse session (10 s)"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_click_to_connect"
+zh = "点击连接（使用已保存的凭据）"
+en = "Click to connect (using saved credentials)"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_active_connection"
+zh = "数据页当前绑定这条连接"
+en = "The data page is bound to this connection"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_connecting"
+zh = "正在建立浏览会话…"
+en = "Opening browse session…"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_disconnecting"
+zh = "正在断开浏览会话…"
+en = "Closing browse session…"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_browse_session"
+zh = "浏览会话 · {latency_millis} ms"
+en = "Browse session · {latency_millis} ms"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_stage_failed"
+zh = "{stage}失败：[{code}] {message}"
+en = "{stage} failed: [{code}] {message}"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_closed"
+zh = "浏览会话已关闭（点击可重新连接）"
+en = "Browse session closed (click to reconnect)"
+status = "done"
+
+[[entry]]
+key = "object_tree.detail_disconnect_failed"
+zh = "断开失败：{error}"
+en = "Disconnect failed: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.catalog_default"
+zh = "默认"
+en = "Default"
+status = "done"
+
+# -- 浏览视图：筛选与分页（browse_view.rs） --------------------------------
+
+[[entry]]
+key = "object_tree.filter_changed"
+zh = "筛选条件已变化：请重新打开筛选面板"
+en = "The filter has changed; reopen the filter panel"
+status = "done"
+
+[[entry]]
+key = "object_tree.filter_duplicate"
+zh = "已经有同样的条件：{column} {operator}"
+en = "The same condition already exists: {column} {operator}"
+status = "done"
+
+[[entry]]
+key = "object_tree.filter_unknown_column"
+zh = "筛选列 {column} 不在当前表的列清单里（未知列）"
+en = "Filter column {column} is not in the current table's column list (unknown column)"
+status = "done"
+
+[[entry]]
+key = "object_tree.filter_incompatible"
+zh = "筛选值「{value}」与列 {column} 的类型 {type} 不兼容：{error}"
+en = "The filter value \"{value}\" is not compatible with column {column} of type {type}: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.total_exact"
+zh = "共 {rows} 行"
+en = "{rows} rows"
+en_one = "{rows} row"
+status = "done"
+
+[[entry]]
+key = "object_tree.total_estimate"
+zh = "约 {rows} 行"
+en = "~{rows} rows"
+en_one = "~{rows} row"
+status = "done"
+
+[[entry]]
+key = "object_tree.total_skipped"
+zh = "未统计（超出计数预算）"
+en = "Not counted (over the counting budget)"
+status = "done"
+
+[[entry]]
+key = "object_tree.page_of"
+zh = "第 {index} / {count} 页"
+en = "Page {index} of {count}"
+status = "done"
+
+[[entry]]
+key = "object_tree.page_current"
+zh = "第 {index} 页"
+en = "Page {index}"
+status = "done"
+
+[[entry]]
+key = "object_tree.page_empty_offset"
+zh = "本页无数据（offset {offset}）"
+en = "No rows on this page (offset {offset})"
+status = "done"
+
+[[entry]]
+key = "object_tree.table_empty"
+zh = "空表"
+en = "Empty table"
+status = "done"
+
+[[entry]]
+key = "object_tree.position_single"
+zh = "第 {row} 行"
+en = "Row {row}"
+status = "done"
+
+[[entry]]
+key = "object_tree.position_range"
+zh = "第 {first}–{last} 行"
+en = "Rows {first}–{last}"
+status = "done"
+
+# -- 断开 / 删除 / 编辑连接确认框（ui.rs，对象树侧右键的确认路径） ----------
+
+[[entry]]
+key = "object_tree.dlg_delete_heading"
+zh = "删除连接？"
+en = "Delete Connection?"
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_delete_body"
+zh = "将从 connections.json 删除连接「{name}」（{target}）。\n对象树里这条连接与其浏览会话会一并消失；其它连接不受影响。"
+en = "This removes the connection \"{name}\" ({target}) from connections.json.\nIts node and browse session disappear from the object tree; other connections are unaffected."
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_delete_btn"
+zh = "删除连接"
+en = "Delete Connection"
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_edit_heading"
+zh = "编辑连接？"
+en = "Edit Connection?"
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_edit_body"
+zh = "编辑连接将关闭连接以及所有已打开的相关窗口。\n{dirty_line}"
+en = "Editing the connection closes it and all related open windows.\n{dirty_line}"
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_edit_dirty_line"
+zh = "其中 {dirty} 个标签有未提交的更改，确认后一并丢弃。"
+en = "{dirty} tabs have uncommitted changes; they are discarded once you confirm."
+en_one = "{dirty} tab has uncommitted changes; it is discarded once you confirm."
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_edit_no_dirty_line"
+zh = "未提交的更改会一并丢弃。"
+en = "Uncommitted changes are discarded as well."
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_edit_btn"
+zh = "关闭并编辑"
+en = "Close and Edit"
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_disconnect_heading"
+zh = "断开连接？"
+en = "Disconnect?"
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_disconnect_body_active"
+zh = "将关闭连接「{name}」的浏览会话（对象树 / 搜索 / DDL）。\n数据页用的是另一条会话（{session}）：已加载的数据仍可查看，但树里这条连接会变成未连接。"
+en = "This closes the browse session of connection \"{name}\" (object tree / search / DDL).\nThe data page uses another session ({session}): loaded data stays visible, but the connection turns disconnected in the tree."
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_disconnect_body_other"
+zh = "将关闭连接「{name}」的浏览会话（对象树 / 搜索 / DDL）。\n其它连接的浏览会话不受影响。"
+en = "This closes the browse session of connection \"{name}\" (object tree / search / DDL).\nBrowse sessions of other connections are unaffected."
+status = "done"
+
+[[entry]]
+key = "object_tree.dlg_disconnect_btn"
+zh = "断开连接"
+en = "Disconnect"
+status = "done"

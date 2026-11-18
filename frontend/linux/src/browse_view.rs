@@ -20,6 +20,7 @@
 )]
 
 use crate::backend::table::{TableColumn, TableEntry};
+use crate::l10n;
 use crate::proto::common::v1::{ColumnValue, ValueKind, column_value};
 use crate::proto::services::v1::{
     Filter, FilterOperator as ProtoFilterOperator, SortDirection, SortKey, TotalKind,
@@ -456,7 +457,7 @@ impl FilterSet {
     /// 否则返回可读原因，让用户当场改，而不是让两条一样的条件进摘要。
     pub fn replace(&mut self, index: usize, condition: Condition) -> Result<(), String> {
         if index >= self.conditions.len() {
-            return Err("筛选条件已变化：请重新打开筛选面板".to_owned());
+            return Err(l10n::t("object_tree.filter_changed").to_owned());
         }
         let duplicate = self.conditions.iter().enumerate().any(|(other, existing)| {
             other != index
@@ -464,10 +465,12 @@ impl FilterSet {
                 && existing.operator == condition.operator
         });
         if duplicate {
-            return Err(format!(
-                "已经有同样的条件：{} {}",
-                condition.column,
-                condition.operator.label()
+            return Err(l10n::tf(
+                "object_tree.filter_duplicate",
+                &[
+                    ("column", condition.column.clone()),
+                    ("operator", condition.operator.label().to_owned()),
+                ],
             ));
         }
         self.conditions[index] = condition;
@@ -500,7 +503,10 @@ impl FilterSet {
                 .iter()
                 .find(|column| column.name == condition.column)
                 .ok_or_else(|| {
-                    format!("筛选列 {} 不在当前表的列清单里（未知列）", condition.column)
+                    l10n::tf(
+                        "object_tree.filter_unknown_column",
+                        &[("column", condition.column.clone())],
+                    )
                 })?;
             let value = if condition.operator.needs_value() {
                 Some(condition_value(
@@ -540,9 +546,14 @@ pub fn condition_value(
         });
     }
     crate::table_data::parse_cell_input(text, column).map_err(|error| {
-        format!(
-            "筛选值「{text}」与列 {} 的类型 {} 不兼容：{error}",
-            column.name, column.type_label
+        l10n::tf(
+            "object_tree.filter_incompatible",
+            &[
+                ("value", text.to_owned()),
+                ("column", column.name.clone()),
+                ("type", column.type_label.clone()),
+                ("error", error),
+            ],
         )
     })
 }
@@ -599,9 +610,19 @@ impl TotalInfo {
     #[must_use]
     pub fn text(self) -> Option<String> {
         match self.kind {
-            TotalKind::Exact => Some(format!("共 {} 行", self.rows)),
-            TotalKind::Estimate => Some(format!("约 {} 行", self.rows)),
-            TotalKind::Unknown if self.skipped => Some("未统计（超出计数预算）".to_owned()),
+            TotalKind::Exact => Some(l10n::tf_n(
+                "object_tree.total_exact",
+                i64::try_from(self.rows).unwrap_or(i64::MAX),
+                &[("rows", self.rows.to_string())],
+            )),
+            TotalKind::Estimate => Some(l10n::tf_n(
+                "object_tree.total_estimate",
+                i64::try_from(self.rows).unwrap_or(i64::MAX),
+                &[("rows", self.rows.to_string())],
+            )),
+            TotalKind::Unknown if self.skipped => {
+                Some(l10n::t("object_tree.total_skipped").to_owned())
+            }
             TotalKind::Unknown => None,
         }
     }
@@ -724,8 +745,17 @@ impl PagerState {
     #[must_use]
     pub fn page_label(self) -> String {
         match self.page_count() {
-            Some(count) => format!("第 {} / {} 页", self.page_index(), count.max(1)),
-            None => format!("第 {} 页", self.page_index()),
+            Some(count) => l10n::tf(
+                "object_tree.page_of",
+                &[
+                    ("index", self.page_index().to_string()),
+                    ("count", count.max(1).to_string()),
+                ],
+            ),
+            None => l10n::tf(
+                "object_tree.page_current",
+                &[("index", self.page_index().to_string())],
+            ),
         }
     }
 
@@ -740,16 +770,22 @@ impl PagerState {
     pub fn position_text(self) -> String {
         if self.rows == 0 {
             return if self.offset > 0 {
-                format!("本页无数据（offset {}）", self.offset)
+                l10n::tf(
+                    "object_tree.page_empty_offset",
+                    &[("offset", self.offset.to_string())],
+                )
             } else {
-                "空表".to_owned()
+                l10n::t("object_tree.table_empty").to_owned()
             };
         }
         let (first, last) = (self.first_row(), self.last_row());
         if first == last {
-            format!("第 {first} 行")
+            l10n::tf("object_tree.position_single", &[("row", first.to_string())])
         } else {
-            format!("第 {first}–{last} 行")
+            l10n::tf(
+                "object_tree.position_range",
+                &[("first", first.to_string()), ("last", last.to_string())],
+            )
         }
     }
 }

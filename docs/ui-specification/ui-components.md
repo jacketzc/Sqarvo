@@ -984,13 +984,13 @@ kind `area` · status `active`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | drag | 面板常驻 | 拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹 | `src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235` |
-| load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2224、src/inspector.rs:688` |
-| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL） | `src/tabs.rs:1823、src/ui.rs:2328、src/inspector.rs:811` |
-| load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1834、src/ui.rs:2335、src/tree.rs:1892` |
-| load | 切换到查询标签且没有选择库（真值与请求值都为空） | 面板落空态页，不编造库信息 | `src/ui.rs:2343、src/inspector.rs:634` |
-| load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1805、src/ui.rs:2314` |
-| load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）不重渲染、不重发请求；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:2309、src/ui.rs:1477、src/ui.rs:2330` |
-| load | 刷新对象树（F5 / 右键刷新） | 钉住视图的对象缓存整体作废（结构可能已变，旧读数不再可信），下一次展示重新读取 | `src/ui.rs:2179、src/inspector.rs:883` |
+| load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2224、src/inspector.rs:723` |
+| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL） | `src/tabs.rs:1849、src/ui.rs:2328、src/inspector.rs:849` |
+| load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1860、src/ui.rs:2335、src/tree.rs:1905` |
+| load | 切换到查询标签且没有选择库（真值与请求值都为空） | 面板落空态页，不编造库信息 | `src/ui.rs:2343、src/inspector.rs:669` |
+| load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1831、src/ui.rs:2314` |
+| load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）不重渲染、不重发请求；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:2309、src/ui.rs:1475、src/ui.rs:2330` |
+| load | 刷新对象树（F5 / 右键刷新） | 钉住视图的对象缓存整体作废（结构可能已变，旧读数不再可信），下一次展示重新读取 | `src/ui.rs:2179、src/inspector.rs:921` |
 
 ### `inspector.header` 标题块（标题 · 副标题）与分隔线
 
@@ -1010,7 +1010,7 @@ kind `container` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中分组行，或树里没有任何选中对象 | 保留面板外壳（标题「信息面板」+ 分隔线），副标题清空，内容区留白 | `src/inspector.rs:576、src/ui.rs:2152` |
+| load | 选中分组行，或树里没有任何选中对象 | 保留面板外壳（标题「信息面板」+ 分隔线），副标题清空，内容区留白 | `src/inspector.rs:611、src/ui.rs:2152` |
 
 ### `inspector.connection` 连接视图（标题 · 副标题 · 字段行）
 
@@ -1023,8 +1023,8 @@ kind `container` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中连接行且连接在配置里 | 标题 = 连接名、副标题 = 驱动；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现 | `src/ui.rs:2122、src/inspector.rs:586、src/inspector.rs:132` |
-| load | 选中连接行但连接已不在配置里 | 状态页「连接已不在配置里」+「connections.json 里已经没有这条连接（config.invalid）。刷新对象树后重试。」 | `src/inspector.rs:590` |
+| load | 选中连接行且连接在配置里 | 标题 = 连接名、副标题 = 驱动；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现 | `src/ui.rs:2122、src/inspector.rs:621、src/inspector.rs:133` |
+| load | 选中连接行但连接已不在配置里 | 状态页「连接已不在配置里」+「connections.json 里已经没有这条连接（config.invalid）。刷新对象树后重试。」 | `src/inspector.rs:625` |
 
 ### `inspector.field` 字段行（标签 · 值）
 
@@ -1045,7 +1045,7 @@ kind `container` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中库 / schema 行 | 标题 = 库名、副标题「库」；字段行给名称与表 / 视图计数，计数只来自已展开的分组层，没展开过的那一行不出现 | `src/ui.rs:2132、src/inspector.rs:609、src/inspector.rs:167` |
+| load | 选中库 / schema 行 | 标题 = 库名、副标题「库」；字段行给名称与表 / 视图计数，计数只来自已展开的分组层，没展开过的那一行不出现 | `src/ui.rs:2132、src/inspector.rs:644、src/inspector.rs:192` |
 | load | 选中的是分组行（Tables / Views / Functions / Queries 等） | 分组行没有对象信息：面板回到空态，标题回到「信息面板」 | `src/ui.rs:2152` |
 
 ### `inspector.object` 表 / 视图视图（标题 · 切换条 · 两页）
@@ -1058,9 +1058,9 @@ kind `container` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中表 / 视图 / 物化视图 | 标题 = 对象名、副标题 = 种类；显示 [DDL] / [表信息] 切换条，按当前标签记住的页恢复（默认 DDL） | `src/inspector.rs:630、src/inspector.rs:657` |
-| load | 切换标签（看的还是同一个对象） | 只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息；不重发 GetDdl / GetColumns，也不重建标签 | `src/inspector.rs:762、src/ui.rs:2248` |
-| load | 选中序列 / 函数 / 过程 / 类型（有 DDL 的种类） | 标题 = 对象名、副标题 = 种类（标题 tooltip 给完整路径）；只显示 DDL 正文一页，不出现 [DDL] / [表信息] 切换条，也没有表信息页 | `src/inspector.rs:640、src/inspector.rs:697、src/inspector.rs:700` |
+| load | 选中表 / 视图 / 物化视图 | 标题 = 对象名、副标题 = 种类；显示 [DDL] / [表信息] 切换条，按当前标签记住的页恢复（默认 DDL） | `src/inspector.rs:665、src/inspector.rs:691` |
+| load | 切换标签（看的还是同一个对象） | 只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息；不重发 GetDdl / GetColumns，也不重建标签 | `src/inspector.rs:798、src/ui.rs:2248` |
+| load | 选中序列 / 函数 / 过程 / 类型（有 DDL 的种类） | 标题 = 对象名、副标题 = 种类（标题 tooltip 给完整路径）；只显示 DDL 正文一页，不出现 [DDL] / [表信息] 切换条，也没有表信息页 | `src/inspector.rs:675、src/inspector.rs:732、src/inspector.rs:735` |
 
 ### `inspector.pane_switch` [DDL] / [表信息] 切换条
 
@@ -1082,7 +1082,7 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前是表 / 视图视图 | 切到 DDL 页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中 | `src/inspector.rs:549、src/inspector.rs:779` |
+| click | 当前是表 / 视图视图 | 切到 DDL 页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中 | `src/inspector.rs:584、src/inspector.rs:817` |
 
 ### `inspector.pane_switch.info` 「表信息」按钮
 
@@ -1095,7 +1095,7 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前是表 / 视图视图 | 切到表信息页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中 | `src/inspector.rs:549、src/inspector.rs:783` |
+| click | 当前是表 / 视图视图 | 切到表信息页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中 | `src/inspector.rs:584、src/inspector.rs:821` |
 
 ### `inspector.object.info` 表信息页（列 · 主键 · 索引 · 触发器 · 已加载行数）
 
@@ -1107,7 +1107,7 @@ kind `container` · status `active` · parent `inspector.object`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到表信息页且列 / 主键 / 索引 / 触发器至少一项已返回 | 按节渲染已读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码 | `src/inspector.rs:1015、src/inspector.rs:1037、src/inspector.rs:1107` |
+| load | 切到表信息页且列 / 主键 / 索引 / 触发器至少一项已返回 | 按节渲染已读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码 | `src/inspector.rs:1052、src/inspector.rs:1074、src/inspector.rs:1144` |
 
 ### `inspector.object.info.columns` 列清单（列名 · 类型 · 可空 · 主键）
 
@@ -1120,7 +1120,7 @@ kind `container` · status `active` · parent `inspector.object.info`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 列已读回（GetColumns 成功） | 按列顺序给出列名、类型、可空、主键标记；主键读不到时整列不打标记 | `src/inspector.rs:1037、src/inspector.rs:1044、src/column_info.rs:95` |
+| load | 列已读回（GetColumns 成功） | 按列顺序给出列名、类型、可空、主键标记；主键读不到时整列不打标记 | `src/inspector.rs:1074、src/inspector.rs:1081、src/column_info.rs:105` |
 
 ### `inspector.object.info.columns.row` 列行（列名 · 类型 · 可空 · 主键标记）
 
@@ -1143,8 +1143,8 @@ kind `control` · status `active` · parent `inspector.object.info`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | GetPrimaryKey 读回 | 「主键列」一行按主键内顺序给列名（复合主键按位置排、逗号分隔）；确实没有主键时写「无主键」 | `src/inspector.rs:1077、src/inspector.rs:192` |
-| load | GetPrimaryKey 失败 | 给一行说明（错误 headline + 「<文案>（<稳定错误码>）」），列清单里不画任何主键标记 | `src/inspector.rs:915、src/inspector.rs:1008` |
+| load | GetPrimaryKey 读回 | 「主键列」一行按主键内顺序给列名（复合主键按位置排、逗号分隔）；确实没有主键时写「无主键」 | `src/inspector.rs:1114、src/inspector.rs:223` |
+| load | GetPrimaryKey 失败 | 给一行说明（错误 headline + 「<文案>（<稳定错误码>）」），列清单里不画任何主键标记 | `src/inspector.rs:953、src/inspector.rs:1045` |
 
 ### `inspector.object.ddl` DDL 正文
 
@@ -1184,8 +1184,8 @@ kind `container` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中列节点且父节点是表 / 视图 | 读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则 | `src/inspector.rs:672、src/inspector.rs:959、src/column_info.rs:156` |
-| click | 点数据网格的列头（该表已打开） | 进同一个列页：用 GetColumns 已有模型，不重发 RPC | `src/inspector.rs:716、src/ui.rs:2204` |
+| load | 选中列节点且父节点是表 / 视图 | 读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则 | `src/inspector.rs:706、src/inspector.rs:997、src/column_info.rs:166` |
+| click | 点数据网格的列头（该表已打开） | 进同一个列页：用 GetColumns 已有模型，不重发 RPC | `src/inspector.rs:751、src/ui.rs:2204` |
 
 ### `inspector.state` 状态页（不支持 · 无从判断）
 
@@ -1198,8 +1198,8 @@ kind `control` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中索引 / 触发器（MariaDB 没有独立 DDL） | 状态页「该对象种类不支持查看 DDL」+「<种类>没有独立的 DDL：定义在所属表的 DDL 里（metadata.object_kind_unsupported）。换一个表 / 视图再试。」；不是空面板 | `src/inspector.rs:704、src/inspector.rs:250` |
-| load | 选中的列节点不在表 / 视图下面（拿不到父表） | 状态页「列的详细属性需要知道所属的表」+「从对象树里表的子节点进入列，才能读到 GetColumns 的完整属性。（metadata.object_not_found）」 | `src/inspector.rs:688` |
+| load | 选中索引 / 触发器（MariaDB 没有独立 DDL） | 状态页「该对象种类不支持查看 DDL」+「<种类>没有独立的 DDL：定义在所属表的 DDL 里（metadata.object_kind_unsupported）。换一个表 / 视图再试。」；不是空面板 | `src/inspector.rs:739、src/inspector.rs:286` |
+| load | 选中的列节点不在表 / 视图下面（拿不到父表） | 状态页「列的详细属性需要知道所属的表」+「从对象树里表的子节点进入列，才能读到 GetColumns 的完整属性。（metadata.object_not_found）」 | `src/inspector.rs:723` |
 
 ### `inspector.txn_hint` 跨标签事务提示行
 
@@ -1212,7 +1212,7 @@ kind `control` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 同一 catalog 的其它标签有未提交事务 | 面板顶部常驻一行「同一 catalog 的其它标签还有未提交事务：<标签名…>」；没有则整行隐藏 | `src/inspector.rs:809、src/ui.rs:1832` |
+| load | 同一 catalog 的其它标签有未提交事务 | 面板顶部常驻一行「同一 catalog 的其它标签还有未提交事务：<标签名…>」；没有则整行隐藏 | `src/inspector.rs:847、src/ui.rs:1832` |
 
 ### `inspector.object.info.status` 表信息提示行（读取中 · 读取失败）
 
@@ -1225,8 +1225,8 @@ kind `control` · status `active` · parent `inspector.object.info`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 表信息页开始读取 | 写「正在读取列、主键与索引…」；没有浏览会话时写「这条连接没有浏览会话：列属性读不到（metadata.object_not_found）。在对象树里重新连接后再试。」 | `src/inspector.rs:872、src/inspector.rs:873` |
-| load | 列 / 主键读取失败 | 提示行给错误 headline + 「<文案>（<稳定错误码>）」；§7.1 的文案口径为「列读取失败：<文案>（<错误码>）」，不是空面板 | `src/inspector.rs:1008、src/inspector.rs:893` |
+| load | 表信息页开始读取 | 写「正在读取列、主键与索引…」；没有浏览会话时写「这条连接没有浏览会话：列属性读不到（metadata.object_not_found）。在对象树里重新连接后再试。」 | `src/inspector.rs:910、src/inspector.rs:911` |
+| load | 列 / 主键读取失败 | 提示行给错误 headline + 「<文案>（<稳定错误码>）」；§7.1 的文案口径为「列读取失败：<文案>（<错误码>）」，不是空面板 | `src/inspector.rs:1045、src/inspector.rs:931` |
 
 ## 对象树（`object_tree`）
 
@@ -1271,7 +1271,7 @@ kind `area` · status `active`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key F5 | 工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态） | 整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树 | `src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1453` |
+| key F5 | 工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态） | 整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树 | `src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1462` |
 
 ### `object_tree.tree` 树本体
 
@@ -1285,8 +1285,8 @@ kind `container` · status `active` · parent `object_tree`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key ↑ / ↓ | 树有焦点 | 移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随） | `src/tree.rs:1970` |
-| key Enter | 行有焦点 | 等同于双击（同一回调，走 activate 信号） | `src/tree.rs:2009` |
+| key ↑ / ↓ | 树有焦点 | 移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随） | `src/tree.rs:1983` |
+| key Enter | 行有焦点 | 等同于双击（同一回调，走 activate 信号） | `src/tree.rs:2022` |
 
 ### `object_tree.tree.row` 行模板（箭头 · 图标 · 名称 · 行尾文字）
 
@@ -1299,7 +1299,7 @@ kind `row` · status `active` · parent `object_tree.tree`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行存在 | 只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接 | `src/tree.rs:1970` |
+| click | 行存在 | 只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接 | `src/tree.rs:1983` |
 | hover | 行存在 | 底色换成品牌浅档（alpha 55%），不动前景色 | `src/theme.rs:312` |
 
 ### `object_tree.tree.row.expander` 行首箭头
@@ -1314,7 +1314,7 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行可展开 | 单击即展开 / 收起，不需要双击 | `src/tree.rs:1245` |
+| click | 行可展开 | 单击即展开 / 收起，不需要双击 | `src/tree.rs:1254` |
 
 ### `object_tree.tree.row.conn` 连接行
 
@@ -1327,8 +1327,8 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 连接行 | 已连接 → 展开 / 收起；未连接 → 按保存的凭据连接；凭据缺失 → 明确提示并打开预填对话框；连接中 / 断开中 → 忽略并写日志 | `src/tree.rs:769、src/tree.rs:1688、src/ui.rs:845` |
-| load | 已连接 | 首次展开发一次目录层 ListNodes 列出库，每页 500（NODE_PAGE_SIZE），带自己的分页 token | `src/tree.rs:2858` |
+| double_click | 连接行 | 已连接 → 展开 / 收起；未连接 → 按保存的凭据连接；凭据缺失 → 明确提示并打开预填对话框；连接中 / 断开中 → 忽略并写日志 | `src/tree.rs:776、src/tree.rs:1701、src/ui.rs:845` |
+| load | 已连接 | 首次展开发一次目录层 ListNodes 列出库，每页 500（NODE_PAGE_SIZE），带自己的分页 token | `src/tree.rs:2913` |
 
 ### `object_tree.tree.row.catalog` 库 / schema 行
 
@@ -1341,8 +1341,8 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 行可展开 | 展开 / 收起（展开库只出现分组行，分组仍保持收起） | `src/tree.rs:769` |
-| load | 展开库 / schema | 0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开 | `src/tree.rs:2858` |
+| double_click | 行可展开 | 展开 / 收起（展开库只出现分组行，分组仍保持收起） | `src/tree.rs:776` |
+| load | 展开库 / schema | 0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开 | `src/tree.rs:2913` |
 
 ### `object_tree.tree.row.group` 分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers）
 
@@ -1355,9 +1355,9 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 分组行 | 展开 / 收起 | `src/tree.rs:769` |
-| load | 展开某个分组 | 发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明 | `src/tree.rs:2858、src/tree.rs:376` |
-| load | 服务端返回空 | 说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」 | `src/tree.rs:365、src/tree.rs:446、src/tree.rs:507` |
+| double_click | 分组行 | 展开 / 收起 | `src/tree.rs:776` |
+| load | 展开某个分组 | 发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明 | `src/tree.rs:2913、src/tree.rs:371` |
+| load | 服务端返回空 | 说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」 | `src/tree.rs:360、src/tree.rs:441、src/tree.rs:499` |
 
 ### `object_tree.tree.row.object` 表 / 视图行
 
@@ -1370,8 +1370,8 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 行可打开 | 打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据） | `src/tree.rs:769、src/tabs.rs:1608` |
-| load | 展开表节点 | 0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes | `src/tree.rs:2681、src/tree.rs:2704` |
+| double_click | 行可打开 | 打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据） | `src/tree.rs:776、src/tabs.rs:1634` |
+| load | 展开表节点 | 0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes | `src/tree.rs:2733、src/tree.rs:2756` |
 
 ### `object_tree.tree.row.field` 列 / 索引 / 触发器行
 
@@ -1384,7 +1384,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 叶子对象行 | 无动作（不发请求） | `src/tree.rs:769` |
+| double_click | 叶子对象行 | 无动作（不发请求） | `src/tree.rs:776` |
 
 ### `object_tree.tree.row.placeholder` 占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现）
 
@@ -1398,10 +1398,10 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 「加载更多…」行且还有下一页 | 选中即继续拉下一页（分页动作不要求双击） | `src/tree.rs:2962、src/tree.rs:1970` |
-| click | 任意占位行 | 信息面板收到 None（回到空态 / 留白）；不打开任何东西 | `src/tree.rs:1970` |
-| load | 层在飞 / 请求失败 | 占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分 | `src/tree.rs:2977、src/tree.rs:3148` |
-| right_click | 占位行 | 直接返回，不弹菜单 | `src/tree.rs:3191` |
+| click | 「加载更多…」行且还有下一页 | 选中即继续拉下一页（分页动作不要求双击） | `src/tree.rs:3017、src/tree.rs:1983` |
+| click | 任意占位行 | 信息面板收到 None（回到空态 / 留白）；不打开任何东西 | `src/tree.rs:1983` |
+| load | 层在飞 / 请求失败 | 占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分 | `src/tree.rs:3032、src/tree.rs:3221` |
+| right_click | 占位行 | 直接返回，不弹菜单 | `src/tree.rs:3266` |
 
 ### `object_tree.search` 对象树搜索区（状态栏左边沟）
 
@@ -1422,10 +1422,10 @@ kind `control` · status `active` · parent `object_tree.search`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key 任意输入 | 搜索框有输入 | 防抖 250 ms 后搜索；空白串不搜索并回到树页 | `src/tree.rs:2185、src/tree.rs:2220` |
-| key Enter | 搜索框内有文本 | 无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理 | `src/tree.rs:2070、src/tree.rs:2168` |
-| key Ctrl+F | 工作区存在 | 把焦点交给搜索框（状态栏左边沟） | `src/ui.rs:3884、src/tree.rs:1441` |
-| key Esc | 搜索框有焦点 | 清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉 | `src/tree.rs:2467` |
+| key 任意输入 | 搜索框有输入 | 防抖 250 ms 后搜索；空白串不搜索并回到树页 | `src/tree.rs:2198、src/tree.rs:2233` |
+| key Enter | 搜索框内有文本 | 无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理 | `src/tree.rs:2083、src/tree.rs:2181` |
+| key Ctrl+F | 工作区存在 | 把焦点交给搜索框（状态栏左边沟） | `src/ui.rs:3884、src/tree.rs:1450` |
+| key Esc | 搜索框有焦点 | 清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉 | `src/tree.rs:2488` |
 
 ### `object_tree.search.status` 搜索状态行
 
@@ -1438,7 +1438,7 @@ kind `control` · status `active` · parent `object_tree.search`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 搜索完成 | 写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图）；有失败追加「；K 条连接失败（…）」；没有已打开连接追加「；没有已打开的连接，只匹配了连接名」；无匹配写「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」；无权限写「没有权限读取对象列表：<错误>」；其它失败写「搜索失败：<错误>」 | `src/tree.rs:2555、src/tree.rs:2220` |
+| load | 搜索完成 | 写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图）；有失败追加「；K 条连接失败（…）」；没有已打开连接追加「；没有已打开的连接，只匹配了连接名」；无匹配写「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」；无权限写「没有权限读取对象列表：<错误>」；其它失败写「搜索失败：<错误>」 | `src/tree.rs:2580、src/tree.rs:2233` |
 
 ### `object_tree.search.results` 搜索结果列表
 
@@ -1450,10 +1450,10 @@ kind `container` · status `active` · parent `object_tree.search`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表 / 视图行 | 打开该对象的数据标签（与树双击同一条 open）；侧栏仍停在结果页，搜索框与命中数原样保留 | `src/tree.rs:2094、src/tree.rs:4501` |
-| click | 库行 | 在树里逐层展开祖先并选中（切到树页） | `src/tree.rs:3469、src/tree.rs:2094` |
-| click | 连接行 | 按该连接「点连接」同一条路径（未连接则连接、已连接则展开），并清空搜索框退出筛选 | `src/tree.rs:2094` |
-| click | 分组行 | 只有行内箭头能收起 / 展开；点行本身没有可点目标、不触发打开 | `src/tree.rs:2094` |
+| click | 表 / 视图行 | 打开该对象的数据标签（与树双击同一条 open）；侧栏仍停在结果页，搜索框与命中数原样保留 | `src/tree.rs:2107、src/tree.rs:4583` |
+| click | 库行 | 在树里逐层展开祖先并选中（切到树页） | `src/tree.rs:3544、src/tree.rs:2107` |
+| click | 连接行 | 按该连接「点连接」同一条路径（未连接则连接、已连接则展开），并清空搜索框退出筛选 | `src/tree.rs:2107` |
+| click | 分组行 | 只有行内箭头能收起 / 展开；点行本身没有可点目标、不触发打开 | `src/tree.rs:2107` |
 
 ### `object_tree.ctx_menu` 右键菜单
 
@@ -1466,7 +1466,7 @@ kind `container` · status `active` · parent `object_tree`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3191、src/tree.rs:3313` |
+| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3266、src/tree.rs:3388` |
 
 ### `object_tree.ctx_menu.connect_saved` 「连接（使用已保存的凭据）」
 
@@ -1479,7 +1479,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接未连接 / 失败 | 与左键双击同一条 connect_saved；失败给出可读原因 | `src/tree.rs:3230、src/ui.rs:845` |
+| click | 连接未连接 / 失败 | 与左键双击同一条 connect_saved；失败给出可读原因 | `src/tree.rs:3305、src/ui.rs:845` |
 
 ### `object_tree.ctx_menu.disconnect` 「断开连接」
 
@@ -1492,7 +1492,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该连接已连接 | 先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认后才断开 | `src/tree.rs:3230、src/ui.rs:2954` |
+| click | 该连接已连接 | 先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认后才断开 | `src/tree.rs:3305、src/ui.rs:2954` |
 
 ### `object_tree.ctx_menu.refresh_connection` 「刷新连接」
 
@@ -1505,7 +1505,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该连接已连接 | 重读这条连接已经建立的层；一层都没有时侧栏底部提示行写「这条连接还没有展开过：展开时会重新读取」 | `src/tree.rs:3407、src/tree.rs:3376、src/tree.rs:1936` |
+| click | 该连接已连接 | 重读这条连接已经建立的层；一层都没有时侧栏底部提示行写「这条连接还没有展开过：展开时会重新读取」 | `src/tree.rs:3482、src/tree.rs:3451、src/tree.rs:1949` |
 
 ### `object_tree.ctx_menu.refresh_catalog` 「刷新库」
 
@@ -1517,7 +1517,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 库 / schema 节点 | 重读该库下已展开的分组与直接子对象层；分组全收起时只清缓存，提示行写「这个库的分组都收起着：展开时重新读取」 | `src/tree.rs:3434、src/tree.rs:1936` |
+| click | 库 / schema 节点 | 重读该库下已展开的分组与直接子对象层；分组全收起时只清缓存，提示行写「这个库的分组都收起着：展开时重新读取」 | `src/tree.rs:3509、src/tree.rs:1949` |
 
 ### `object_tree.ctx_menu.refresh_group` 「刷新这一组」
 
@@ -1530,7 +1530,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 分组节点 | 已展开（层已建立）→ 重读该组第一页；未展开过 → 不发请求，提示行写「这个分组还没展开：展开时会重新读取」（4 秒后自行收起）并记日志 | `src/tree.rs:3347、src/tree.rs:1936` |
+| click | 分组节点 | 已展开（层已建立）→ 重读该组第一页；未展开过 → 不发请求，提示行写「这个分组还没展开：展开时会重新读取」（4 秒后自行收起）并记日志 | `src/tree.rs:3422、src/tree.rs:1949` |
 
 ### `object_tree.ctx_menu.edit_connection` 「编辑连接…」
 
@@ -1557,7 +1557,7 @@ kind `container` · status `active` · parent `object_tree.ctx_menu.edit_connect
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2892` |
+| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2918` |
 
 ### `object_tree.ctx_menu.delete_connection` 「删除连接」
 
@@ -1582,7 +1582,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表 / 视图节点 | 与双击同一条路径打开数据标签 | `src/tree.rs:3191、src/tree.rs:3230` |
+| click | 表 / 视图节点 | 与双击同一条路径打开数据标签 | `src/tree.rs:3266、src/tree.rs:3305` |
 
 ### `object_tree.ctx_menu.dump_table` 「转储表…」
 
@@ -1595,7 +1595,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表节点且该连接有浏览会话 | 弹确认「转储表 <表名>？」→ 选文件（默认 <表名>.sql，过滤 *.sql）→ 进度 / 可取消；不需要先打开标签 | `src/tree.rs:3230、src/tree.rs:731、src/export_ui.rs` |
+| click | 表节点且该连接有浏览会话 | 弹确认「转储表 <表名>？」→ 选文件（默认 <表名>.sql，过滤 *.sql）→ 进度 / 可取消；不需要先打开标签 | `src/tree.rs:3305、src/tree.rs:738、src/export_ui.rs` |
 
 ### `object_tree.hint` 侧栏底部临时提示行
 
@@ -1608,7 +1608,7 @@ kind `control` · status `active` · parent `object_tree`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 刷新被跳过 | 写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起 | `src/tree.rs:1936` |
+| load | 刷新被跳过 | 写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起 | `src/tree.rs:1949` |
 
 ## Objects 固定页（`objects_page`）
 
@@ -1647,10 +1647,10 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs:1745、src/tabs.rs:1761、src/tabs.rs:1765、src/startup.rs:178` |
-| click | 页签可见 | 只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:1361、src/tabs.rs:1366` |
-| key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2645、src/tabs.rs:2657` |
-| click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1377、src/tabs.rs:2655` |
+| load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs:1771、src/tabs.rs:1787、src/tabs.rs:1791、src/startup.rs:178` |
+| click | 页签可见 | 只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:1373、src/tabs.rs:1378` |
+| key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2671、src/tabs.rs:2683` |
+| click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1390、src/tabs.rs:2681` |
 
 ### `objects_page.table` 三列表格（行号 · 表名 · 类型）
 
@@ -1665,13 +1665,13 @@ kind `container` · status `active` · parent `objects_page`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | key ↑ / ↓ | 表格有焦点且已有行 | 移动选中（SingleSelection 默认行为）；选中变化与单击同效 —— 同步右侧信息面板 | `src/tabs.rs:680、src/tabs.rs:917` |
-| key Enter | 有选中行 | 等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签） | `src/tabs.rs:938、src/tabs.rs:1750` |
+| key Enter | 有选中行 | 等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签） | `src/tabs.rs:938、src/tabs.rs:1776` |
 | load | 树里选中库 / 它下面的 Tables 分组 / 表内分组（Fields 等）/ 某张表 | 列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表 | `src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093` |
 | load | 树里选中 Views 分组 / 某个视图 | 列出该库的视图（[VIEW, MATERIALIZED_VIEW]） | `src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366` |
 | load | 树里选中 Functions / Queries 分组 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
 | load | 树里选中连接行 / 占位行（没有作用域） | 回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉 | `src/ui.rs:1377、src/tabs.rs:1013` |
 | load | 树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表） | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1032、src/tabs.rs:1044、src/tabs.rs:1047` |
-| load | 从别的标签切回本页 | 清掉行选中；列表内容与右侧信息面板都不动，不重发请求 | `src/tabs.rs:1366、src/tabs.rs:1202` |
+| load | 从别的标签切回本页 | 清掉行选中；列表内容与右侧信息面板都不动，不重发请求 | `src/tabs.rs:1378、src/tabs.rs:1212` |
 
 ### `objects_page.table.row` 行模板（行号 · 图标 + 名称 · 类型）
 
@@ -1685,7 +1685,7 @@ kind `row` · status `active` · parent `objects_page.table`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 行存在 | 只选中：进入选中态并同步右侧信息面板；不反写树的选中（会形成回环并跳走浏览位置），不打开、不发请求 | `src/tabs.rs:917、src/tabs.rs:1008` |
-| double_click | 行存在 | 打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据） | `src/tabs.rs:938、src/tabs.rs:1795` |
+| double_click | 行存在 | 打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据） | `src/tabs.rs:938、src/tabs.rs:1821` |
 | hover | 行存在 | 底色换成品牌浅档（alpha 55%），前景不动；已选中的行 hover 仍是中档，不会退回系统强调色 | `src/theme.rs:314` |
 
 ### `objects_page.table.row.number` 行号格
@@ -1730,11 +1730,11 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 作用域已变、请求在飞 | 写「正在读取…」（首次首页与「加载更多…」续页都写这一句） | `src/tabs.rs:1065、src/tabs.rs:1078` |
-| load | 首页或续页返回、有行 | 写「共 N 个对象」；还有下一页时追加「（还有更多）」 | `src/tabs.rs:1117` |
-| load | 请求成功但 0 条（本页与累计都是空） | 写「（这个库里没有这类对象）」 | `src/tabs.rs:1121、src/tabs.rs:1122` |
-| load | 请求失败 | 写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处 | `src/tabs.rs:1126、src/tabs.rs:1127` |
-| load | 该连接没有浏览会话（展开连接前 / 已断开） | 写「这条连接没有浏览会话：展开连接后重试」，不发请求 | `src/tabs.rs:1060、src/tabs.rs:1062` |
+| load | 作用域已变、请求在飞 | 写「正在读取…」（首次首页与「加载更多…」续页都写这一句） | `src/tabs.rs:1067、src/tabs.rs:1080` |
+| load | 首页或续页返回、有行 | 写「共 N 个对象」；还有下一页时追加「（还有更多）」 | `src/tabs.rs:1128` |
+| load | 请求成功但 0 条（本页与累计都是空） | 写「（这个库里没有这类对象）」 | `src/tabs.rs:1132、src/tabs.rs:1133` |
+| load | 请求失败 | 写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处 | `src/tabs.rs:1137、src/tabs.rs:1138` |
+| load | 该连接没有浏览会话（展开连接前 / 已断开） | 写「这条连接没有浏览会话：展开连接后重试」，不发请求 | `src/tabs.rs:1062、src/tabs.rs:1064` |
 
 ### `objects_page.more` 「加载更多…」
 
@@ -1747,8 +1747,8 @@ kind `control` · status `active` · parent `objects_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 按钮可见（还有下一页） | 按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」 | `src/tabs.rs:905、src/tabs.rs:1069` |
-| load | 首页或续页返回 | 有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏 | `src/tabs.rs:1115、src/tabs.rs:1126` |
+| click | 按钮可见（还有下一页） | 按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」 | `src/tabs.rs:905、src/tabs.rs:1071` |
+| load | 首页或续页返回 | 有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏 | `src/tabs.rs:1126、src/tabs.rs:1137` |
 
 ### `objects_page.empty` 空态页
 
@@ -1853,7 +1853,7 @@ kind `control` · status `active` · parent `shell`
 | load | 切换标签 | 标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息） | `src/tabs.rs:2289、src/tabs.rs:2307、src/tabs.rs:135` |
 | load | 后端断开 | 标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连 | `src/ui.rs:587、src/tabs.rs:2629` |
 | load | 后端握手失败 | 标题回到「Sqarvo」、副标题「连接失败」 | `src/ui.rs:567、src/ui.rs:3774` |
-| load | 用户选择「重启 Sqarvo」 | 副标题「正在重启…」，标题「Sqarvo」 | `src/ui.rs:1300` |
+| load | 用户选择「重启 Sqarvo」 | 副标题「正在重启…」，标题「Sqarvo」 | `src/ui.rs:1420` |
 
 ### `shell.menu` 主菜单
 
@@ -2185,9 +2185,9 @@ kind `container` · status `active` · parent `shell`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 点任一标签的后端失效横幅「重启 Sqarvo」，或数据页错误横幅 | 弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，未提交的更改会丢失。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消） | `src/ui.rs:1274、src/sql_page.rs:128` |
-| click | 对话框里选「重启 Sqarvo」 | 不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 工具条 / 菜单回未就绪 → 标题「Sqarvo」、副标题「正在重启…」→ 回到 Loading「正在重启 Sqarvo…」→ 重新握手 | `src/ui.rs:1300` |
-| click | 对话框里选「查看日志」 | 打开日志窗口；不重启、不改会话状态 | `src/ui.rs:1282` |
+| click | 点任一标签的后端失效横幅「重启 Sqarvo」，或数据页错误横幅 | 弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，未提交的更改会丢失。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消） | `src/ui.rs:1379、src/sql_page.rs:128` |
+| click | 对话框里选「重启 Sqarvo」 | 不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 工具条 / 菜单回未就绪 → 标题「Sqarvo」、副标题「正在重启…」→ 回到 Loading「正在重启 Sqarvo…」→ 重新握手 | `src/ui.rs:1403` |
+| click | 对话框里选「查看日志」 | 打开日志窗口；不重启、不改会话状态 | `src/ui.rs:1393` |
 
 ## 启动态外壳（`startup`）
 

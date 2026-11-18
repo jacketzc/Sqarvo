@@ -1,0 +1,409 @@
+# 信息面板区文案目录（注册表区 `inspector.*`，ADR 0031 决策 2；迁移切片 S3/#201 Lane B）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
+# （位置参数改名为命名占位的条目在 Issue #201 汇报的白名单里逐条列出）。
+# 覆盖表面：信息面板头部与空态（inspector.rs）、连接 / 库 / 表 / 列四种视图的
+# 字段名与值说明、`[DDL] / [表信息]` 切换与 tooltip、状态页文案、跨标签事务提示
+# （ui.rs 调用点）；列信息文案层（column_info.rs，前缀 `inspector.column_*`）。
+# 不在这里登记：日志行（eprintln!）、layout_audit 目标名、`TablePage::parse`
+# 接受的取值、`ddl.rs` 面板文案（判定留码，见 Issue #201 汇报）、数据页 / 查询页。
+
+# -- 面板头部与切换条（inspector.rs::new / show_empty） ---------------------
+
+[[entry]]
+key = "inspector.title_panel"
+zh = "信息面板"
+en = "Info Panel"
+status = "done"
+
+[[entry]]
+key = "inspector.toggle_info"
+zh = "表信息"
+en = "Table Info"
+status = "done"
+
+[[entry]]
+key = "inspector.tooltip_ddl"
+zh = "显示该对象的 DDL"
+en = "Show this object's DDL"
+status = "done"
+
+[[entry]]
+key = "inspector.tooltip_info"
+zh = "列、主键、索引与触发器、已加载行数"
+en = "Columns, primary key, indexes and triggers, loaded rows"
+status = "done"
+
+# -- 标题与状态页：连接不在配置里 -------------------------------------------
+
+[[entry]]
+key = "inspector.title_connection"
+zh = "连接"
+en = "Connection"
+status = "done"
+
+[[entry]]
+key = "inspector.subtitle_database"
+zh = "库"
+en = "Database"
+status = "done"
+
+[[entry]]
+key = "inspector.state_missing_conn_head"
+zh = "连接已不在配置里"
+en = "Connection no longer in configuration"
+status = "done"
+
+[[entry]]
+key = "inspector.state_missing_conn_body"
+zh = "connections.json 里已经没有这条连接（config.invalid）。刷新对象树后重试。"
+en = "connections.json no longer contains this connection (config.invalid). Refresh the object tree and retry."
+status = "done"
+
+# -- 状态页：种类不支持 DDL / 列缺表 / 没有浏览会话 / 列已消失 ---------------
+
+[[entry]]
+key = "inspector.state_ddl_unsupported_head"
+zh = "该对象种类不支持查看 DDL"
+en = "This Object Kind Has No DDL"
+status = "done"
+
+[[entry]]
+key = "inspector.state_ddl_unsupported_body"
+zh = "{kind}没有独立的 DDL：定义在所属表的 DDL 里（metadata.object_kind_unsupported）。换一个表 / 视图再试。"
+en = "{kind} has no standalone DDL: its definition lives in the owning table's DDL (metadata.object_kind_unsupported). Try a table or view instead."
+status = "done"
+
+[[entry]]
+key = "inspector.state_column_needs_table_head"
+zh = "列的详细属性需要知道所属的表"
+en = "Column details need the owning table"
+status = "done"
+
+[[entry]]
+key = "inspector.state_column_needs_table_body"
+zh = "从对象树里表的子节点进入列，才能读到 GetColumns 的完整属性。（metadata.object_not_found）"
+en = "Open the column as a child node of its table in the object tree to read the full GetColumns attributes. (metadata.object_not_found)"
+status = "done"
+
+[[entry]]
+key = "inspector.state_no_session_head"
+zh = "这条连接没有浏览会话"
+en = "This connection has no browse session"
+status = "done"
+
+[[entry]]
+key = "inspector.state_no_session_body"
+zh = "列属性要经对象所属连接的浏览会话读取（backend.unavailable）。"
+en = "Column attributes are read through the owning connection's browse session (backend.unavailable)."
+status = "done"
+
+[[entry]]
+key = "inspector.state_column_gone_head"
+zh = "这一列已不存在"
+en = "This column no longer exists"
+status = "done"
+
+[[entry]]
+key = "inspector.state_column_gone_body"
+zh = "表 {table} 的列清单里没有 {name}：对象可能在读取期间被修改（metadata.object_not_found）。"
+en = "Column list of table {table} has no {name}: the object may have changed while being read (metadata.object_not_found)."
+status = "done"
+
+# -- 表信息页状态行（inspector.rs::load_table） ------------------------------
+
+[[entry]]
+key = "inspector.info_loading"
+zh = "正在读取列、主键与索引…"
+en = "Reading columns, primary key and indexes…"
+status = "done"
+
+[[entry]]
+key = "inspector.info_no_session"
+zh = "这条连接没有浏览会话：列属性读不到（metadata.object_not_found）。在对象树里重新连接后再试。"
+en = "This connection has no browse session: column attributes cannot be read (metadata.object_not_found). Reconnect in the object tree and retry."
+status = "done"
+
+# -- 跨标签事务提示（ui.rs 调用点 → inspector.set_txn_hint） -----------------
+
+[[entry]]
+key = "inspector.txn_hint"
+zh = "同一 catalog 的其它标签还有未提交事务：{names}"
+en = "Other tabs on the same catalog still have uncommitted transactions: {names}"
+status = "done"
+
+# -- 连接视图字段（connection_facts） ---------------------------------------
+
+[[entry]]
+key = "inspector.fact_driver"
+zh = "驱动"
+en = "Driver"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_address"
+zh = "地址"
+en = "Address"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_default_database"
+zh = "默认库"
+en = "Default Database"
+status = "done"
+
+[[entry]]
+key = "inspector.value_unspecified"
+zh = "未指定"
+en = "Unspecified"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_user"
+zh = "用户"
+en = "User"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_credential_ref"
+zh = "凭据引用"
+en = "Credential Reference"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_server_version"
+zh = "服务端版本"
+en = "Server Version"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_latency"
+zh = "连接延迟"
+en = "Connection Latency"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_sessions"
+zh = "会话数"
+en = "Session Count"
+status = "done"
+
+[[entry]]
+key = "inspector.value_sessions"
+zh = "{count} 条"
+en = "{count}"
+status = "done"
+
+# -- 库 / catalog 视图字段（catalog_facts） ----------------------------------
+
+[[entry]]
+key = "inspector.fact_name"
+zh = "名称"
+en = "Name"
+status = "done"
+
+[[entry]]
+key = "inspector.label_tables_count"
+zh = "表"
+en = "Tables"
+status = "done"
+
+[[entry]]
+key = "inspector.label_views_count"
+zh = "视图"
+en = "Views"
+status = "done"
+
+[[entry]]
+key = "inspector.value_count"
+zh = "{n} 个"
+en = "{n}"
+status = "done"
+
+[[entry]]
+key = "inspector.label_count_note"
+zh = "计数说明"
+en = "Count Basis"
+status = "done"
+
+[[entry]]
+key = "inspector.count_note_body"
+zh = "按已展开的结果统计（该层还有下一页）"
+en = "Counted from expanded layers only (this level still has a next page)"
+status = "done"
+
+# -- 主键 / 已加载行数（primary_key_label / loaded_rows_fact） ---------------
+
+[[entry]]
+key = "inspector.pk_none"
+zh = "无主键"
+en = "No Primary Key"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_loaded_rows"
+zh = "已加载行数"
+en = "Loaded Rows"
+status = "done"
+
+[[entry]]
+key = "inspector.value_rows"
+zh = "{rows} 行"
+en = "{rows}"
+status = "done"
+
+# -- 列页副标题（show_column / load_columns_for_column） ---------------------
+
+[[entry]]
+key = "inspector.subtitle_column_type"
+zh = "列 · {type}"
+en = "Column · {type}"
+status = "done"
+
+[[entry]]
+key = "inspector.subtitle_column_table"
+zh = "列 · {table} · {type}"
+en = "Column · {table} · {type}"
+status = "done"
+
+# -- 表信息页分节与行标签（render_table_info） --------------------------------
+
+[[entry]]
+key = "inspector.section_columns"
+zh = "列"
+en = "Columns"
+status = "done"
+
+[[entry]]
+key = "inspector.note_empty_columns"
+zh = "服务端返回了空列清单"
+en = "The server returned an empty column list"
+status = "done"
+
+[[entry]]
+key = "inspector.section_primary_key"
+zh = "主键"
+en = "Primary Key"
+status = "done"
+
+[[entry]]
+key = "inspector.fact_pk_columns"
+zh = "主键列"
+en = "Primary Key Columns"
+status = "done"
+
+[[entry]]
+key = "inspector.section_indexes"
+zh = "索引"
+en = "Indexes"
+status = "done"
+
+[[entry]]
+key = "inspector.value_no_indexes"
+zh = "无索引"
+en = "No Indexes"
+status = "done"
+
+[[entry]]
+key = "inspector.section_triggers"
+zh = "触发器"
+en = "Triggers"
+status = "done"
+
+[[entry]]
+key = "inspector.value_no_triggers"
+zh = "无触发器"
+en = "No Triggers"
+status = "done"
+
+[[entry]]
+key = "inspector.section_rows"
+zh = "行"
+en = "Rows"
+status = "done"
+
+[[entry]]
+key = "inspector.section_children"
+zh = "索引与触发器"
+en = "Indexes and Triggers"
+status = "done"
+
+[[entry]]
+key = "inspector.note_read_failed"
+zh = "读取失败"
+en = "Read failed"
+status = "done"
+
+# -- 列信息文案层（column_info.rs；前缀 inspector.column_*） ------------------
+
+[[entry]]
+key = "inspector.column_label_name"
+zh = "列名"
+en = "Column Name"
+status = "done"
+
+[[entry]]
+key = "inspector.column_label_type"
+zh = "原始类型"
+en = "Raw Type"
+status = "done"
+
+[[entry]]
+key = "inspector.column_label_nullable"
+zh = "可空"
+en = "Nullable"
+status = "done"
+
+[[entry]]
+key = "inspector.column_not_nullable"
+zh = "不可空（NOT NULL）"
+en = "Not nullable (NOT NULL)"
+status = "done"
+
+[[entry]]
+key = "inspector.column_label_default"
+zh = "默认值"
+en = "Default Value"
+status = "done"
+
+[[entry]]
+key = "inspector.column_default_none"
+zh = "无默认值"
+en = "No Default"
+status = "done"
+
+[[entry]]
+key = "inspector.column_default_null"
+zh = "默认 NULL"
+en = "Default NULL"
+status = "done"
+
+[[entry]]
+key = "inspector.column_default_unknown"
+zh = "未知（服务端未提供）"
+en = "Unknown (not provided by the server)"
+status = "done"
+
+[[entry]]
+key = "inspector.column_default_expr_missing"
+zh = "表达式（服务端未给出文本）"
+en = "Expression (no text provided by the server)"
+status = "done"
+
+[[entry]]
+key = "inspector.column_label_charset"
+zh = "字符集"
+en = "Charset"
+status = "done"
+
+[[entry]]
+key = "inspector.column_label_collation"
+zh = "排序规则"
+en = "Collation"
+status = "done"
+
+[[entry]]
+key = "inspector.column_not_applicable"
+zh = "不适用"
+en = "Not Applicable"
+status = "done"

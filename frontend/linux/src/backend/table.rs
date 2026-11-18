@@ -65,13 +65,16 @@ impl TableEntry {
     }
 
     /// 种类标签。
+    ///
+    /// 与对象树行尾标签同一份 kind 条目（`l10n/object_tree.toml` 的
+    /// `object_tree.kind_*`，S3/#201：Objects 页「类型」列与行 tooltip 共用）。
     #[must_use]
     pub fn kind_label(&self) -> &'static str {
         match self.kind {
-            ObjectKind::Table => "表",
-            ObjectKind::View => "视图",
-            ObjectKind::MaterializedView => "物化视图",
-            _ => "对象",
+            ObjectKind::Table => crate::l10n::t("object_tree.kind_table"),
+            ObjectKind::View => crate::l10n::t("object_tree.kind_view"),
+            ObjectKind::MaterializedView => crate::l10n::t("object_tree.kind_materialized_view"),
+            _ => crate::l10n::t("object_tree.kind_other"),
         }
     }
 }

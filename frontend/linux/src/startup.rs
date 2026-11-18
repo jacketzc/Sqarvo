@@ -184,8 +184,8 @@ impl StartupWorkspace {
         let objects = crate::tabs::ObjectsPage::new();
         objects.show_empty();
         objects.set_empty_text(
-            "没有选中对象",
-            "从左侧选择一个连接开始：双击一条已保存的连接即可连接。",
+            crate::l10n::t("objects_page.empty_title"),
+            crate::l10n::t("objects_page.empty_body_startup"),
         );
         objects.set_open(Rc::new(|_entry: crate::backend::table::TableEntry| {
             eprintln!("[startup] 尚未连接数据库，忽略打开表");
