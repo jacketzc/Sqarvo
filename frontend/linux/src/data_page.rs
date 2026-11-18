@@ -44,6 +44,7 @@ use crate::browse_view::{
     BrowseCapabilities, ColumnVisibility, Condition, Direction, FilterSet, Operator, PagerState,
     SortOrder, TotalInfo,
 };
+use crate::l10n;
 use crate::layout::{Gap, gap, metrics};
 use crate::proto::common::v1::ColumnValue;
 use crate::proto::services::v1::{
@@ -332,10 +333,10 @@ impl PagerAction {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::First => "首页",
-            Self::Previous => "上一页",
-            Self::Next => "下一页",
-            Self::Last => "末页",
+            Self::First => l10n::t("data_page.pager_first"),
+            Self::Previous => l10n::t("data_page.pager_previous"),
+            Self::Next => l10n::t("data_page.pager_next"),
+            Self::Last => l10n::t("data_page.pager_last"),
         }
     }
 }
@@ -1057,16 +1058,16 @@ impl DataPage {
         commit_txn.set_visible(false);
         rollback.set_visible(false);
         // 列显隐（CC → 眼睛图标，#118）：只影响渲染，不影响导出/复制口径。
-        let cc_button = icon_button("view-reveal-symbolic", "列显隐");
+        let cc_button = icon_button("view-reveal-symbolic", l10n::t("data_page.cc_label"));
         cc_button.set_sensitive(false);
-        cc_button.set_tooltip_text(Some("列显隐：隐藏列只影响渲染，不改变查询与导出口径"));
+        cc_button.set_tooltip_text(Some(l10n::t("data_page.cc_tooltip")));
 
         // 筛选与排序（v0.2.3.3 → 漏斗）：放大镜（`system-search-symbolic`）会被读成
         // 「搜索」。Adwaita / Yaru 都没有漏斗，因此用项目自有的
         // `sqarvo-filter-symbolic`（`resources/icons/`，编成 GResource）。
-        let fs_button = icon_button(crate::icons::FILTER, "筛选与排序");
+        let fs_button = icon_button(crate::icons::FILTER, l10n::t("data_page.fs_label"));
         fs_button.set_sensitive(false);
-        fs_button.set_tooltip_text(Some("筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"));
+        fs_button.set_tooltip_text(Some(l10n::t("data_page.fs_tooltip")));
 
         // 导出（v0.2.3.3 → 「下载成文件」）：`document-send-symbolic` 是纸飞机，
         // 在这个位置会被读成「发送 / 分享」；导出写的是本地文件，用
@@ -1081,9 +1082,7 @@ impl DataPage {
         export.set_always_show_arrow(true);
         export.set_sensitive(false);
         export.set_valign(gtk::Align::Center);
-        export.set_tooltip_text(Some(
-            "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表（Ctrl+Shift+E 直接导出 CSV）",
-        ));
+        export.set_tooltip_text(Some(l10n::t("data_page.export_tooltip")));
 
         let commit_changes = gtk::Button::with_label("提交");
         commit_changes.add_css_class("suggested-action");
@@ -1098,7 +1097,7 @@ impl DataPage {
         spinner.set_visible(false);
         spinner.set_valign(gtk::Align::Center);
 
-        let status = gtk::Label::new(Some("请选择左侧的表开始浏览"));
+        let status = gtk::Label::new(Some(l10n::t("data_page.status_welcome")));
         status.set_xalign(0.0);
         status.add_css_class("caption");
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -1314,8 +1313,8 @@ impl DataPage {
         grid_page.append(&view_stack);
 
         let placeholder = adw::StatusPage::builder()
-            .title("尚未打开表")
-            .description("在左侧表列表中选择一张表查看数据")
+            .title(l10n::t("data_page.placeholder_no_table"))
+            .description(l10n::t("data_page.placeholder_no_table_desc"))
             .build();
         let placeholder_icon = gtk::Image::from_icon_name("x-office-spreadsheet-symbolic");
         placeholder_icon.set_pixel_size(metrics().empty_icon_px);
@@ -1329,19 +1328,17 @@ impl DataPage {
 
         // 列显隐浮层（CC）：一个按钮 + 列清单。做成页内浮层而不是 Popover——与
         // 列信息卡片同一取舍（无人值守截图只能渲染窗口自己的节点树）。
-        let cc_title = gtk::Label::new(Some("列显隐"));
+        let cc_title = gtk::Label::new(Some(l10n::t("data_page.cc_label")));
         cc_title.add_css_class("sqarvo-heading");
         cc_title.set_xalign(0.0);
         let cc_close = gtk::Button::from_icon_name("window-close-symbolic");
         cc_close.add_css_class("flat");
-        cc_close.set_tooltip_text(Some("关闭列显隐"));
+        cc_close.set_tooltip_text(Some(l10n::t("data_page.cc_close_tooltip")));
         let cc_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         cc_header.append(&cc_title);
         cc_title.set_hexpand(true);
         cc_header.append(&cc_close);
-        let cc_note = gtk::Label::new(Some(
-            "隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。",
-        ));
+        let cc_note = gtk::Label::new(Some(l10n::t("data_page.cc_panel_hint")));
         cc_note.set_xalign(0.0);
         cc_note.set_wrap(true);
         cc_note.add_css_class("dim-label");
@@ -1383,14 +1380,14 @@ impl DataPage {
         //   出现「改 margin 重排 → 底层不重绘」的拖影；
         // - `autohide = false`：点应用之后不关闭，点按钮 / ✕ / Esc 才关。
         // 截图仍可做：`WidgetPaintable` 取的是控件画面（见 `qa::save_widget`）。
-        let fs_title = gtk::Label::new(Some("筛选与排序"));
+        let fs_title = gtk::Label::new(Some(l10n::t("data_page.fs_label")));
         fs_title.set_xalign(0.0);
         let fs_state = gtk::Label::new(None);
         fs_state.set_xalign(1.0);
         fs_state.add_css_class("dim-label");
         let fs_close = gtk::Button::from_icon_name("window-close-symbolic");
         fs_close.add_css_class("flat");
-        fs_close.set_tooltip_text(Some("关闭（未应用的改动会丢弃）"));
+        fs_close.set_tooltip_text(Some(l10n::t("data_page.fs_close_tooltip")));
         let fs_header = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         fs_title.add_css_class("fs-title");
         fs_title.set_hexpand(true);
@@ -1399,22 +1396,22 @@ impl DataPage {
         fs_header.append(&fs_close);
 
         // ---- 筛选条件区 ----
-        let fs_filter_title = gtk::Label::new(Some("筛选条件"));
+        let fs_filter_title = gtk::Label::new(Some(l10n::t("data_page.fs_conditions_title")));
         fs_filter_title.set_xalign(0.0);
         fs_filter_title.add_css_class("fs-section");
         fs_filter_title.add_css_class("dim-label");
         fs_filter_title.set_margin_top(gap(Gap::Xs));
-        let fs_column = gtk::DropDown::from_strings(&["（未打开表）"]);
+        let fs_column = gtk::DropDown::from_strings(&[l10n::t("data_page.fs_no_table_option")]);
         // 固定宽度：随 hexpand 拉伸会随窗口变宽变成一大条空白下拉，值输入框反而被挤小。
         fs_column.set_size_request(fs_column_width(), -1);
-        fs_column.set_tooltip_text(Some("筛选列（来自 GetColumns 的列清单）"));
+        fs_column.set_tooltip_text(Some(l10n::t("data_page.fs_column_tooltip")));
         let fs_operator = gtk::DropDown::from_strings(&Operator::ALL.map(Operator::label));
         fs_operator.add_css_class("fs-symbol");
-        fs_operator.set_tooltip_text(Some("算子：比较 / LIKE / IS NULL"));
+        fs_operator.set_tooltip_text(Some(l10n::t("data_page.fs_operator_tooltip")));
         let fs_value = gtk::Entry::new();
-        fs_value.set_placeholder_text(Some("值"));
+        fs_value.set_placeholder_text(Some(l10n::t("data_page.value_label")));
         fs_value.set_hexpand(true);
-        let fs_add = gtk::Button::with_label("添加条件");
+        let fs_add = gtk::Button::with_label(l10n::t("data_page.fs_add_condition"));
         fs_add.add_css_class("flat");
         let fs_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         fs_row.append(&fs_column);
@@ -1430,19 +1427,20 @@ impl DataPage {
         let fs_conditions_scroll = fs_conditions.clone();
 
         // ---- 排序区 ----
-        let fs_sort_title = gtk::Label::new(Some("排序"));
+        let fs_sort_title = gtk::Label::new(Some(l10n::t("data_page.fs_sort_title")));
         fs_sort_title.set_xalign(0.0);
         fs_sort_title.add_css_class("fs-section");
         fs_sort_title.add_css_class("dim-label");
         fs_sort_title.set_margin_top(gap(Gap::Md));
-        let fs_sort_column = gtk::DropDown::from_strings(&["（未打开表）"]);
+        let fs_sort_column =
+            gtk::DropDown::from_strings(&[l10n::t("data_page.fs_no_table_option")]);
         // 与筛选列同宽（左对齐的一小组控件，不铺满整行）。
         fs_sort_column.set_size_request(fs_column_width(), -1);
-        fs_sort_column.set_tooltip_text(Some("排序列（来自 GetColumns 的列清单）"));
+        fs_sort_column.set_tooltip_text(Some(l10n::t("data_page.fs_sort_column_tooltip")));
         let fs_sort_direction = gtk::DropDown::from_strings(&["asc", "desc"]);
         fs_sort_direction.add_css_class("fs-symbol");
-        fs_sort_direction.set_tooltip_text(Some("asc = 升序，desc = 降序"));
-        let fs_sort_add = gtk::Button::with_label("添加排序");
+        fs_sort_direction.set_tooltip_text(Some(l10n::t("data_page.fs_sort_direction_tooltip")));
+        let fs_sort_add = gtk::Button::with_label(l10n::t("data_page.fs_add_sort"));
         fs_sort_add.add_css_class("flat");
         let fs_sort_row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
         fs_sort_row.append(&fs_sort_column);
@@ -1467,10 +1465,10 @@ impl DataPage {
         // 本身说明（面板里只有筛选与排序），不必把对象再写进按钮。
         let fs_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
         fs_sep.set_margin_top(gap(Gap::Sm));
-        let fs_apply = gtk::Button::with_label("应用");
+        let fs_apply = gtk::Button::with_label(l10n::t("data_page.fs_apply"));
         fs_apply.add_css_class("suggested-action");
         fs_apply.add_css_class("fs-action");
-        let fs_clear = gtk::Button::with_label("清空");
+        let fs_clear = gtk::Button::with_label(l10n::t("data_page.fs_clear"));
         fs_clear.add_css_class("fs-action");
         let fs_buttons = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         fs_buttons.set_halign(gtk::Align::End);
@@ -1713,18 +1711,18 @@ impl DataPage {
             list.set_margin_end(gap(Gap::Xs));
             for (label, tooltip, kind) in [
                 (
-                    "导出 CSV…",
-                    "当前页或整张表；空字段 = NULL，文本按 RFC 4180 转义",
+                    l10n::t("data_page.export_menu_csv"),
+                    l10n::t("data_page.export_menu_csv_desc"),
                     crate::export_ui::ExportKind::Csv,
                 ),
                 (
-                    "导出为 INSERT 语句…",
-                    "当前页或整张表；每行一条 INSERT INTO … VALUES (…);",
+                    l10n::t("data_page.export_menu_insert"),
+                    l10n::t("data_page.export_menu_insert_desc"),
                     crate::export_ui::ExportKind::Insert,
                 ),
                 (
-                    "转储表…",
-                    "建表语句 + 全部数据的 INSERT（整张表，不再问范围）",
+                    l10n::t("data_page.export_menu_dump"),
+                    l10n::t("data_page.export_menu_dump_desc"),
                     crate::export_ui::ExportKind::Dump,
                 ),
             ] {
@@ -1869,13 +1867,17 @@ impl DataPage {
         // 「字段 / 值」视图的两列在这里挂：cell 工厂要捕获 `Rc<Self>`（双击编辑
         // 走的是网格同一个 `open_editor`），而 `Rc<Self>` 在构造函数末尾才存在。
         {
-            let column =
-                gtk::ColumnViewColumn::new(Some("字段"), Some(detail_cell_factory(&page, 0)));
+            let column = gtk::ColumnViewColumn::new(
+                Some(l10n::t("data_page.detail_col_field")),
+                Some(detail_cell_factory(&page, 0)),
+            );
             column.set_fixed_width(220);
             column.set_resizable(true);
             page.detail_grid.append_column(&column);
-            let column =
-                gtk::ColumnViewColumn::new(Some("值"), Some(detail_cell_factory(&page, 1)));
+            let column = gtk::ColumnViewColumn::new(
+                Some(l10n::t("data_page.value_label")),
+                Some(detail_cell_factory(&page, 1)),
+            );
             column.set_resizable(true);
             page.detail_grid.append_column(&column);
         }
@@ -2007,7 +2009,7 @@ impl DataPage {
     /// 当前表在 SQL 里的目标表描述（表名 + 方言）。
     fn sql_table(&self) -> Result<crate::export::SqlTable, String> {
         let Some(object) = self.table_reference() else {
-            return Err("还没有打开表：先打开一张表再复制".to_owned());
+            return Err(l10n::t("data_page.copy_no_table").to_owned());
         };
         Ok(crate::export::SqlTable {
             name: object.name,
@@ -2026,12 +2028,12 @@ impl DataPage {
     pub fn copy_selected_as_insert(&self) -> Result<usize, String> {
         let rows = self.selected_values();
         if rows.is_empty() {
-            return Err("没有选中行：先选中要复制的行".to_owned());
+            return Err(l10n::t("data_page.copy_no_selection").to_owned());
         }
         let table = self.sql_table()?;
         let text = crate::export::multi_row_insert(&table, &self.export_columns(), &rows);
         let display = gtk::gdk::Display::default()
-            .ok_or_else(|| "没有可用的显示服务，无法写入剪贴板".to_owned())?;
+            .ok_or_else(|| l10n::t("data_page.copy_no_display").to_owned())?;
         display.clipboard().set_text(&text);
         eprintln!(
             "[data] 复制为 INSERT：{} 行，{} 字节（目标表 {}）",
@@ -2063,11 +2065,11 @@ impl DataPage {
     pub fn toggle_detail_view(self: &Rc<Self>) {
         if self.detail_mode.get() {
             self.set_detail_mode(false);
-            self.note_action("已切回按行浏览");
+            self.note_action(l10n::t("data_page.detail_back"));
             return;
         }
         let Some(index) = self.selected_rows().first().copied() else {
-            self.set_status("先选中一行，再切换到「字段 / 值」视图", "warning");
+            self.set_status(l10n::t("data_page.detail_need_selection"), "warning");
             return;
         };
         self.fill_detail(index);
@@ -2173,7 +2175,11 @@ impl DataPage {
             let copy = crate::context_menu::Entry::action("复制为 INSERT", copy_enabled, {
                 let page = Rc::clone(&page);
                 Rc::new(move || match page.copy_selected_as_insert() {
-                    Ok(rows) => page.note_action(&format!("已复制 {rows} 行为 INSERT 语句")),
+                    Ok(rows) => page.note_action(&l10n::tf_n(
+                        "data_page.copy_copied",
+                        i64::try_from(rows).unwrap_or(i64::MAX),
+                        &[("rows", rows.to_string())],
+                    )),
                     Err(reason) => page.set_status(&reason, "warning"),
                 })
             });
@@ -2385,9 +2391,12 @@ impl DataPage {
                     page.on_column_choice_toggled(index, check.is_active());
                 });
             }
-            check.set_tooltip_text(Some(&format!(
-                "{}（{}）· 取消勾选只隐藏这一列，不影响数据与导出口径",
-                column.name, column.type_label
+            check.set_tooltip_text(Some(&l10n::tf(
+                "data_page.cc_check_tooltip",
+                &[
+                    ("name", column.name.clone()),
+                    ("type", column.type_label.clone()),
+                ],
             )));
             self.cc_list.append(&check);
             self.cc_checks.borrow_mut().push(check);
@@ -2562,15 +2571,17 @@ impl DataPage {
         let index = usize::try_from(column_dropdown.selected()).unwrap_or(0);
         let column = columns
             .get(index)
-            .ok_or_else(|| "还没有可筛选的列：先打开一张表".to_owned())?;
+            .ok_or_else(|| l10n::t("data_page.filter_error_no_columns").to_owned())?;
         let operator = Operator::from_index(operator_dropdown.selected());
         let text = value.text().to_string();
         if operator.needs_value() && text.trim().is_empty() {
-            return Err(format!(
-                "{} 需要一个值（列 {} · {}）",
-                operator.label(),
-                column.name,
-                column.type_label
+            return Err(l10n::tf(
+                "data_page.filter_error_needs_value",
+                &[
+                    ("operator", operator.label().to_owned()),
+                    ("column", column.name.clone()),
+                    ("type", column.type_label.clone()),
+                ],
             ));
         }
         Ok(Condition {
@@ -2589,7 +2600,7 @@ impl DataPage {
         let editing = self.fs_editing.get();
         let conditions = self.fs_filter_draft.borrow().clone();
         if conditions.is_empty() {
-            let hint = empty_hint("无筛选条件");
+            let hint = empty_hint(l10n::t("data_page.fs_conditions_empty"));
             hint.add_css_class("fs-row");
             self.fs_conditions.append(&hint);
             return;
@@ -2610,7 +2621,7 @@ impl DataPage {
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_tooltip_text(Some("点击这一条可就地编辑（列 / 算子 / 值）"));
+        label.set_tooltip_text(Some(l10n::t("data_page.condition_edit_tooltip")));
         label.set_cursor_from_name(Some("text"));
         {
             let page = Rc::clone(self);
@@ -2621,7 +2632,7 @@ impl DataPage {
         // 不再放铅笔图标：整行文字可点即编辑（多一个图标只增加噪音）。
         let remove = gtk::Button::from_icon_name("window-close-symbolic");
         remove.add_css_class("flat");
-        remove.set_tooltip_text(Some("删除这条条件（仍需点「应用」才生效）"));
+        remove.set_tooltip_text(Some(l10n::t("data_page.condition_remove_tooltip")));
         {
             let page = Rc::clone(self);
             remove.connect_clicked(move |_| page.remove_filter_condition(index));
@@ -2646,17 +2657,17 @@ impl DataPage {
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let column_dropdown = gtk::DropDown::from_strings(&names);
         column_dropdown.set_hexpand(true);
-        column_dropdown.set_tooltip_text(Some("筛选列"));
+        column_dropdown.set_tooltip_text(Some(l10n::t("data_page.condition_column_tooltip")));
         if let Some(position) = names.iter().position(|name| *name == condition.column) {
             column_dropdown.set_selected(u32::try_from(position).unwrap_or(0));
         }
         let operator_dropdown = gtk::DropDown::from_strings(&Operator::ALL.map(Operator::label));
         operator_dropdown.add_css_class("fs-symbol");
-        operator_dropdown.set_tooltip_text(Some("算子：比较 / LIKE / IS NULL"));
+        operator_dropdown.set_tooltip_text(Some(l10n::t("data_page.fs_operator_tooltip")));
         operator_dropdown.set_selected(condition.operator.index());
         let value = gtk::Entry::new();
         value.set_hexpand(true);
-        value.set_placeholder_text(Some("值"));
+        value.set_placeholder_text(Some(l10n::t("data_page.value_label")));
         value.set_text(condition.value.as_deref().unwrap_or(""));
         value.set_sensitive(condition.operator.needs_value());
         {
@@ -2676,10 +2687,10 @@ impl DataPage {
         // 勾 / 叉：与行尾的 × 同一套线条图标，行高不变（文字按钮会把行撑高）。
         let confirm = gtk::Button::from_icon_name("object-select-symbolic");
         confirm.add_css_class("flat");
-        confirm.set_tooltip_text(Some("保存这条条件的修改（回车）"));
+        confirm.set_tooltip_text(Some(l10n::t("data_page.condition_save_tooltip")));
         let cancel = gtk::Button::from_icon_name("window-close-symbolic");
         cancel.add_css_class("flat");
-        cancel.set_tooltip_text(Some("放弃修改（Esc）"));
+        cancel.set_tooltip_text(Some(l10n::t("data_page.condition_cancel_tooltip")));
         {
             let page = Rc::clone(self);
             let column = column_dropdown.clone();
@@ -2810,7 +2821,7 @@ impl DataPage {
         self.update_filter_state();
         // 条件删光等于「清空筛选」：下一次应用即可恢复全表。
         if self.fs_filter_draft.borrow().is_empty() {
-            self.set_status("筛选条件已清空（点「应用筛选与排序」恢复全表）", "normal");
+            self.set_status(l10n::t("data_page.filter_condition_removed"), "normal");
         }
     }
 
@@ -2819,11 +2830,11 @@ impl DataPage {
         self.ensure_filter_draft();
         let index = usize::try_from(self.fs_sort_column.selected()).unwrap_or(0);
         let Some(column) = self.columns.borrow().get(index).cloned() else {
-            self.show_filter_error("还没有可排序的列：先打开一张表");
+            self.show_filter_error(l10n::t("data_page.sort_error_no_columns"));
             return;
         };
         if !self.capabilities.get().sorting() {
-            self.show_filter_error("当前驱动不支持排序");
+            self.show_filter_error(l10n::t("data_page.sort_error_unsupported"));
             return;
         }
         let direction = if self.fs_sort_direction.selected() == 1 {
@@ -2851,7 +2862,7 @@ impl DataPage {
         }
         let keys = self.fs_sort_draft.borrow().keys().to_vec();
         if keys.is_empty() {
-            let hint = empty_hint("默认排序（主键）");
+            let hint = empty_hint(l10n::t("data_page.fs_sort_default"));
             hint.add_css_class("fs-row");
             self.fs_sort_list.append(&hint);
             return;
@@ -2867,7 +2878,7 @@ impl DataPage {
             label.set_xalign(0.0);
             label.set_hexpand(true);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.set_tooltip_text(Some("点击切换 asc / desc"));
+            label.set_tooltip_text(Some(l10n::t("data_page.sort_toggle_tooltip")));
             label.set_cursor_from_name(Some("pointer"));
             {
                 let page = Rc::clone(self);
@@ -2877,7 +2888,7 @@ impl DataPage {
             }
             let up = gtk::Button::from_icon_name("go-up-symbolic");
             up.add_css_class("flat");
-            up.set_tooltip_text(Some("上移（更优先）"));
+            up.set_tooltip_text(Some(l10n::t("data_page.sort_move_up_tooltip")));
             up.set_sensitive(index > 0);
             {
                 let page = Rc::clone(self);
@@ -2885,7 +2896,7 @@ impl DataPage {
             }
             let down = gtk::Button::from_icon_name("go-down-symbolic");
             down.add_css_class("flat");
-            down.set_tooltip_text(Some("下移（更次要）"));
+            down.set_tooltip_text(Some(l10n::t("data_page.sort_move_down_tooltip")));
             down.set_sensitive(index + 1 < keys.len());
             {
                 let page = Rc::clone(self);
@@ -2893,7 +2904,7 @@ impl DataPage {
             }
             let remove = gtk::Button::from_icon_name("window-close-symbolic");
             remove.add_css_class("flat");
-            remove.set_tooltip_text(Some("删掉这个排序键（仍需点「应用」才生效）"));
+            remove.set_tooltip_text(Some(l10n::t("data_page.sort_remove_tooltip")));
             {
                 let page = Rc::clone(self);
                 remove.connect_clicked(move |_| page.remove_sort_key(index));
@@ -2961,15 +2972,17 @@ impl DataPage {
             self.fs_state.remove_css_class(class);
         }
         if same {
-            self.fs_state.set_text("已应用");
+            self.fs_state
+                .set_text(l10n::t("data_page.fs_state_applied"));
             self.fs_state.add_css_class("dim-label");
             self.fs_state
-                .set_tooltip_text(Some("面板里的筛选与排序就是表格正在用的那一套"));
+                .set_tooltip_text(Some(l10n::t("data_page.fs_state_applied_tooltip")));
         } else {
-            self.fs_state.set_text("有未应用的更改");
+            self.fs_state
+                .set_text(l10n::t("data_page.fs_state_pending"));
             self.fs_state.add_css_class("warning");
             self.fs_state
-                .set_tooltip_text(Some("点「应用筛选与排序」才会生效；关闭面板会丢弃这些改动"));
+                .set_tooltip_text(Some(l10n::t("data_page.fs_state_pending_tooltip")));
         }
     }
 
@@ -2998,7 +3011,10 @@ impl DataPage {
             .iter()
             .find(|key| !columns.iter().any(|column| column.name == key.column))
         {
-            let error = format!("排序列 {} 不在当前表的列清单里（未知列）", unknown.column);
+            let error = l10n::tf(
+                "data_page.sort_error_unknown_column",
+                &[("column", unknown.column.clone())],
+            );
             self.show_filter_error(&error);
             self.set_status(&error, "error");
             return;
@@ -3024,8 +3040,12 @@ impl DataPage {
             crate::qa::elapsed_ms()
         );
         self.set_status(
-            &format!(
-                "筛选与排序已应用（{condition_count} 条条件 · {sort_count} 个排序键）· 回到第 1 页"
+            &l10n::tf(
+                "data_page.filter_applied",
+                &[
+                    ("condition_count", condition_count.to_string()),
+                    ("sort_count", sort_count.to_string()),
+                ],
             ),
             "normal",
         );
@@ -3042,13 +3062,13 @@ impl DataPage {
         self.render_sort_keys();
         self.fs_error.set_visible(false);
         self.update_filter_state();
-        self.set_status("条件与排序已清空（点「应用筛选与排序」恢复全表）", "normal");
+        self.set_status(l10n::t("data_page.filter_sort_cleared"), "normal");
     }
 
     /// 分页器动作（状态栏按钮 / 快捷键）。
     pub fn navigate(self: &Rc<Self>, action: PagerAction) {
         if self.loading_page.get() {
-            self.set_status("上一页仍在读取：稍候再翻页", "warning");
+            self.set_status(l10n::t("data_page.pager_still_loading"), "warning");
             return;
         }
         if self.dirty_guard() {
@@ -3064,14 +3084,23 @@ impl DataPage {
         };
         let Some(target) = target else {
             self.set_status(
-                &format!("{}不可用（没有对应页）", action.label()),
+                &l10n::tf(
+                    "data_page.pager_unavailable",
+                    &[("action", action.label().to_owned())],
+                ),
                 "warning",
             );
             return;
         };
         self.loading_page.set(true);
         self.set_status(
-            &format!("正在读取 offset {target} …（{}）", action.label()),
+            &l10n::tf(
+                "data_page.pager_reading",
+                &[
+                    ("target", target.to_string()),
+                    ("action", action.label().to_owned()),
+                ],
+            ),
             "normal",
         );
         eprintln!(
@@ -3093,10 +3122,7 @@ impl DataPage {
         if dirty == 0 && !has_insert {
             return false;
         }
-        self.set_status(
-            "有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）",
-            "warning",
-        );
+        self.set_status(l10n::t("data_page.pager_dirty_guard"), "warning");
         true
     }
 
@@ -4059,7 +4085,10 @@ impl DataPage {
                 let Some(widget) = page.header_title_widget(index) else {
                     continue;
                 };
-                widget.set_tooltip_text(Some(&format!("点击查看列属性：{title}")));
+                widget.set_tooltip_text(Some(&l10n::tf(
+                    "data_page.header_tooltip",
+                    &[("title", title.clone())],
+                )));
                 widget.add_css_class("sqarvo-merged-header");
                 let already_wired = page
                     .header_wired
@@ -4296,11 +4325,12 @@ impl DataPage {
         self.table.replace(Some(table.clone()));
         self.busy.set(false);
         self.set_state(DataState::Loading);
-        self.placeholder.set_title("正在读取表数据");
         self.placeholder
-            .set_description(Some("等待服务端返回第一页…"));
+            .set_title(l10n::t("data_page.loading_title"));
+        self.placeholder
+            .set_description(Some(l10n::t("data_page.loading_desc")));
         self.content.set_visible_child_name("placeholder");
-        self.status.set_text("正在读取表数据…");
+        self.status.set_text(l10n::t("data_page.loading_status"));
         self.update_dirty_label();
     }
 
@@ -4378,16 +4408,16 @@ impl DataPage {
         if count == 0 {
             let pager = self.pager.get();
             self.placeholder.set_title(if pager.offset > 0 {
-                "本页没有数据"
+                l10n::t("data_page.empty_page_title")
             } else {
-                "空表"
+                l10n::t("data_page.empty_table")
             });
             self.placeholder.set_description(Some(if pager.offset > 0 {
-                "offset 超出总数（服务端如实返回空行）；回首页或刷新再看"
+                l10n::t("data_page.empty_offset_desc")
             } else if total.text().is_some() {
-                "该表存在，但当前条件下没有任何行"
+                l10n::t("data_page.empty_filtered_desc")
             } else {
-                "该表存在，但目前没有任何行"
+                l10n::t("data_page.empty_plain_desc")
             }));
             self.content.set_visible_child_name("placeholder");
         } else {
@@ -4439,19 +4469,19 @@ impl DataPage {
         let mut chips: Vec<(String, &'static str, String)> = Vec::new();
         if open.read_only {
             chips.push((
-                "只读".to_owned(),
+                l10n::t("data_page.badge_readonly").to_owned(),
                 "sqarvo-badge-readonly",
                 self.read_only_cause.borrow().map_or_else(
-                    || "服务端标记为只读".to_owned(),
+                    || l10n::t("data_page.badge_readonly_fallback").to_owned(),
                     |cause| format!("{}：{}", cause.headline(), cause.explanation()),
                 ),
             ));
         }
         if open.read_only_reason == ReadOnlyReason::NoPrimaryKey {
             chips.push((
-                "无主键".to_owned(),
+                l10n::t("data_page.badge_no_primary_key").to_owned(),
                 "sqarvo-badge-nokey",
-                "无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用".to_owned(),
+                l10n::t("data_page.badge_no_primary_key_tip").to_owned(),
             ));
         }
         if matches!(
@@ -4461,29 +4491,28 @@ impl DataPage {
             chips.push((
                 open.table.kind_label().to_owned(),
                 "sqarvo-badge-view",
-                "视图：数据来自查询定义，编辑受限；排序、筛选与计数仍可用".to_owned(),
+                l10n::t("data_page.badge_view_tip").to_owned(),
             ));
         }
         if self.permission_denied.get() {
             chips.push((
-                "无权限".to_owned(),
+                l10n::t("data_page.badge_no_permission").to_owned(),
                 "sqarvo-badge-permission",
-                "当前账号对该对象没有权限：浏览被拒绝或只返回部分数据".to_owned(),
+                l10n::t("data_page.badge_no_permission_tip").to_owned(),
             ));
         }
         if total.skipped {
             chips.push((
-                "未统计".to_owned(),
+                l10n::t("data_page.badge_total_skipped").to_owned(),
                 "sqarvo-badge-total",
-                "精确计数超过预算，已跳过：本页数据完整，只是没有总数".to_owned(),
+                l10n::t("data_page.badge_total_skipped_tip").to_owned(),
             ));
         }
         if !self.capabilities.get().sort_filter_total {
             chips.push((
-                "驱动不支持排序/筛选".to_owned(),
+                l10n::t("data_page.badge_no_sort_filter").to_owned(),
                 "sqarvo-badge-limited",
-                "该驱动未声明 table_browse_sort_filter_total：只提供 offset 分页，不显示排序、筛选与总数入口"
-                    .to_owned(),
+                l10n::t("data_page.badge_no_sort_filter_tip").to_owned(),
             ));
         }
         for (text, class, tooltip) in chips {
@@ -4719,16 +4748,29 @@ impl DataPage {
         self.has_more.set(false);
         self.set_state(DataState::Disconnected);
         let text = if discarded > 0 {
-            format!(
-                "已断开：{reason} 未提交的 {discarded} 行变更已丢弃；数据库事务已由后端强制回滚。"
+            l10n::tf_n(
+                "data_page.disconnect_dropped",
+                i64::try_from(discarded).unwrap_or(i64::MAX),
+                &[
+                    ("reason", reason.to_owned()),
+                    ("discarded", discarded.to_string()),
+                ],
             )
         } else {
-            format!("已断开：{reason} 数据库事务已由后端强制回滚。")
+            l10n::tf(
+                "data_page.disconnect_plain",
+                &[("reason", reason.to_owned())],
+            )
         };
         eprintln!("[data] 断连清理：丢弃 {discarded} 行未提交变更，事务由后端回滚");
         self.show_banner(&text);
+        let loaded = self.row_count();
         self.set_status(
-            &format!("已断开 · 已加载 {} 行（只读）", self.row_count()),
+            &l10n::tf_n(
+                "data_page.disconnected_status",
+                i64::try_from(loaded).unwrap_or(i64::MAX),
+                &[("rows", loaded.to_string())],
+            ),
             "warning",
         );
         self.update_buttons();
@@ -5317,7 +5359,7 @@ impl DataPage {
         }
         let mut selected = self.selected_rows();
         if selected.is_empty() {
-            self.set_status("请先在表格中选择一行（Ctrl/Shift 可多选）", "warning");
+            self.set_status(l10n::t("data_page.select_row_hint"), "warning");
             return;
         }
         // 新行占位行不在删除范围内：它还没落库，只能「放弃更改」。
@@ -5872,32 +5914,43 @@ impl DataPage {
             let row = row.borrow();
             label.remove_css_class("sqarvo-dirty");
             label.remove_css_class("sqarvo-deleted");
+            let number = row.number.to_string();
             let (text, tooltip, class) = if row.removed {
                 (
-                    format!("✕{}", row.number),
-                    format!("第 {} 行 · 已删除", row.number),
+                    format!("✕{number}"),
+                    l10n::tf(
+                        "data_page.row_removed_tooltip",
+                        &[("number", number.clone())],
+                    ),
                     "sqarvo-deleted",
                 )
             } else if row.insert {
                 (
                     "＋".to_owned(),
-                    "新行 · 尚未提交（双击单元格填值）".to_owned(),
+                    l10n::t("data_page.row_insert_tooltip").to_owned(),
                     "sqarvo-dirty",
                 )
             } else if row.deleted {
                 (
-                    format!("✕{}", row.number),
-                    format!("第 {} 行 · 已标记删除（提交前可撤销）", row.number),
+                    format!("✕{number}"),
+                    l10n::tf(
+                        "data_page.row_deleted_tooltip",
+                        &[("number", number.clone())],
+                    ),
                     "sqarvo-deleted",
                 )
             } else if row.dirty.iter().any(|dirty| *dirty) {
                 (
-                    format!("●{}", row.number),
-                    format!("第 {} 行 · 有未提交的更改", row.number),
+                    format!("●{number}"),
+                    l10n::tf("data_page.row_dirty_tooltip", &[("number", number.clone())]),
                     "sqarvo-dirty",
                 )
             } else {
-                (row.number.to_string(), format!("第 {} 行", row.number), "")
+                (
+                    number.clone(),
+                    l10n::tf("data_page.row_number_tooltip", &[("number", number)]),
+                    "",
+                )
             };
             label.set_text(&text);
             if !class.is_empty() {
@@ -5905,7 +5958,10 @@ impl DataPage {
             }
             label.set_tooltip_text(Some(&tooltip));
         });
-        let number_column = gtk::ColumnViewColumn::new(Some("行号"), Some(number_factory));
+        let number_column = gtk::ColumnViewColumn::new(
+            Some(l10n::t("data_page.header_row_number")),
+            Some(number_factory),
+        );
         number_column.set_fixed_width(row_number_width());
         number_column.set_resizable(false);
         self.grid.append_column(&number_column);
@@ -6337,10 +6393,12 @@ impl DataPage {
             }
             let mut tooltip = cell.tooltip.clone();
             if cell.truncated {
-                tooltip.push_str("\n该值被截断：不能编辑（提交截断值会写坏数据）");
+                tooltip.push('\n');
+                tooltip.push_str(l10n::t("data_page.cell_truncated_tip"));
             }
             if row.dirty.get(column_index).copied().unwrap_or(false) {
-                tooltip.push_str("\n已修改，尚未提交");
+                tooltip.push('\n');
+                tooltip.push_str(l10n::t("data_page.cell_dirty_tip"));
             }
             if !tooltip.is_empty() {
                 label.set_tooltip_text(Some(&tooltip));
@@ -6535,19 +6593,34 @@ impl DataPage {
         self.last_refresh.set(Some(Instant::now()));
         self.loading_page.set(false);
         let rows = self.row_count();
-        let suffix = if has_more { " · 还有下一页" } else { "" };
+        let suffix = if has_more {
+            l10n::t("data_page.more_suffix")
+        } else {
+            ""
+        };
         // 行数 / 页码 / 总数只在状态栏出现一次（行 1 分页器 + 行 2 记录位置）。
         // 状态簇里只放**本次操作的临时消息**：读取完成时擦掉「正在读取…」，
         // 摘要只写进 last_load_note（状态栏 tooltip），不占可见文案。
         self.last_load_note.replace(if rows == 0 {
             match self.pager.get().offset {
-                0 => "空表".to_owned(),
-                offset => format!("本页无数据（offset {offset}）"),
+                0 => l10n::t("data_page.empty_table").to_owned(),
+                offset => l10n::tf(
+                    "data_page.no_data_offset",
+                    &[("offset", offset.to_string())],
+                ),
             }
         } else {
-            format!("本页 {rows} 行{suffix}")
+            l10n::tf_n(
+                "data_page.page_rows",
+                i64::try_from(rows).unwrap_or(i64::MAX),
+                &[("rows", rows.to_string()), ("suffix", suffix.to_owned())],
+            )
         });
-        if self.status.text().starts_with("正在读取") {
+        if self
+            .status
+            .text()
+            .starts_with(l10n::t("data_page.loading_prefix"))
+        {
             self.set_status("", "normal");
         }
     }
@@ -6685,8 +6758,10 @@ impl DataPage {
         // 导出菜单：有已加载行即可用；提交在途时避免写出半套状态。
         let export_rows = self.export_row_count();
         self.buttons.export.set_sensitive(export_rows > 0 && !busy);
-        self.buttons.export.set_tooltip_text(Some(&format!(
-            "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 {export_rows} 行（Ctrl+Shift+E 直接导出 CSV）"
+        self.buttons.export.set_tooltip_text(Some(&l10n::tf_n(
+            "data_page.export_tooltip_rows",
+            i64::try_from(export_rows).unwrap_or(i64::MAX),
+            &[("export_rows", export_rows.to_string())],
         )));
         self.buttons
             .commit_changes

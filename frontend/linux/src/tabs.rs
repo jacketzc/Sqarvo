@@ -1003,7 +1003,10 @@ impl ObjectsPage {
             }
             let number = item.position() + 1;
             label.set_text(&number.to_string());
-            label.set_tooltip_text(Some(&format!("第 {number} 行")));
+            label.set_tooltip_text(Some(&crate::l10n::tf(
+                "data_page.row_number_tooltip",
+                &[("number", number.to_string())],
+            )));
         });
 
         // 表名列：图标 + 名称（图标与对象树同一个 `kind_icon` 映射）。

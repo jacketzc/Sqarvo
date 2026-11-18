@@ -384,4 +384,54 @@ mod tests {
         let many = tf_n("tabs.close_body_dirty", 3, &[("dirty", "3".into())]);
         assert!(many.contains("3 rows of uncommitted changes"), "{many}");
     }
+
+    #[test]
+    fn data_page_entries_carry_the_s4_grid_copy() {
+        // S4/#202 Lane A：数据网格区条目——zh 与迁移前字面量逐字节一致（比对脚本另证），
+        // 这里钉代表性条目与占位/复数行为，防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(t("data_page.pager_previous"), "上一页");
+        assert_eq!(t("data_page.badge_no_sort_filter"), "驱动不支持排序/筛选");
+        assert_eq!(
+            t("data_page.row_insert_tooltip"),
+            "新行 · 尚未提交（双击单元格填值）"
+        );
+        assert_eq!(
+            t("data_page.badge_no_primary_key_tip"),
+            "无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用"
+        );
+        assert_eq!(
+            tf("data_page.row_number_tooltip", &[("number", "42".into())]),
+            "第 42 行"
+        );
+        assert_eq!(
+            tf(
+                "data_page.cc_check_tooltip",
+                &[("name", "id".into()), ("type", "INTEGER".into())]
+            ),
+            "id（INTEGER）· 取消勾选只隐藏这一列，不影响数据与导出口径"
+        );
+        // 复数条目：zh 恒一条；en n==1 走 en_one。
+        assert_eq!(
+            tf_n(
+                "data_page.page_rows",
+                1,
+                &[("rows", "1".into()), ("suffix", String::new())]
+            ),
+            "本页 1 行"
+        );
+        set_current(Lang::En);
+        assert_eq!(t("data_page.cc_label"), "Column Visibility");
+        assert_eq!(t("data_page.fs_apply"), "Apply");
+        assert_eq!(t("data_page.header_row_number"), "Row");
+        let one = tf_n(
+            "data_page.page_rows",
+            1,
+            &[("rows", "1".into()), ("suffix", " · more".into())],
+        );
+        assert_eq!(one, "1 row on this page · more");
+        let many = tf_n("data_page.disconnected_status", 7, &[("rows", "7".into())]);
+        assert_eq!(many, "Disconnected · 7 rows loaded (read-only)");
+        set_current(Lang::Zh);
+    }
 }

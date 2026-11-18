@@ -1,0 +1,677 @@
+# 数据网格区文案目录（注册表区 `data_page.*`，ADR 0031 决策 2；迁移切片 S4/#202 Lane A）。
+#
+# schema 见同目录 `README.md`；每条 `zh` 与被替换的代码内原字面量逐字节相等
+# （位置参数改名为命名占位的条目在 Issue #202 汇报的白名单里逐条列出）。
+# 覆盖表面：数据网格（data_page.rs）的表工具条（列显隐 / 筛选与排序 / 导出按钮与
+# 导出菜单条目与范围提示）、列显隐浮层、筛选与排序面板（含条件/排序键行内编辑与
+# 校验错误）、六类常驻徽标（只读 / 无主键 / 视图 / 无权限 / 未统计 / 驱动不支持
+# 排序筛选）及 tooltip 全文、网格状态行（正在读取 / 空表 / 越界空页 / 已断开 ·
+# 已加载 N 行）、分页器动作名与翻页消息、行号格（行号表头与脏/删除/新行图例
+# tooltip）、单元格截断与脏标记 tooltip、「字段 / 值」视图表头与切换提示、
+# 复制为 INSERT 的选择提示；tabs.rs Objects 页行号格 tooltip「第 N 行」
+# （与数据页行号同一口径，S3 移交本切片）。
+# 不在这里登记：日志行（eprintln!）、QA 钩子错误串（qa_* 助手）、单元格编辑器与
+# 提交面（open_cell_editor / open_insert_editor / 提交 / 事务 / 放弃 / 脏行摘要，
+# Lane B）、`ddl.rs` 与 MetadataError（Lane C）、`results.rs` / `statements.rs` /
+# `export*`（#203）、`backend/query.rs` 的值格式化层（与查询结果网格共用，判定见
+# Issue #202 汇报）、`ReadOnlyCause` 横幅（table_data.rs，编辑受限判定面）。
+
+# -- 分页器（PagerAction 与翻页消息，data_page.rs） --------------------------
+
+[[entry]]
+key = "data_page.pager_first"
+zh = "首页"
+en = "First"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_previous"
+zh = "上一页"
+en = "Previous"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_next"
+zh = "下一页"
+en = "Next"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_last"
+zh = "末页"
+en = "Last"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_unavailable"
+zh = "{action}不可用（没有对应页）"
+en = "{action} unavailable (no such page)"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_reading"
+zh = "正在读取 offset {target} …（{action}）"
+en = "Reading offset {target} … ({action})"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_still_loading"
+zh = "上一页仍在读取：稍候再翻页"
+en = "The previous page is still loading: wait before paging again"
+status = "done"
+
+[[entry]]
+key = "data_page.pager_dirty_guard"
+zh = "有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）"
+en = "Uncommitted changes: commit or Discard Changes before paging/sorting/filtering (paging replaces the whole page)"
+status = "done"
+
+# -- 表工具条：列显隐 / 筛选与排序 / 导出（data_page.rs::new） ----------------
+
+[[entry]]
+key = "data_page.cc_label"
+zh = "列显隐"
+en = "Column Visibility"
+status = "done"
+
+[[entry]]
+key = "data_page.cc_tooltip"
+zh = "列显隐：隐藏列只影响渲染，不改变查询与导出口径"
+en = "Column visibility: hiding columns only affects rendering, not the query or export scope"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_label"
+zh = "筛选与排序"
+en = "Filter & Sort"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_tooltip"
+zh = "筛选与排序：列 + 算子 + 值，多个条件按 AND 组合"
+en = "Filter & sort: column + operator + value; multiple conditions combine with AND"
+status = "done"
+
+[[entry]]
+key = "data_page.export_tooltip"
+zh = "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表（Ctrl+Shift+E 直接导出 CSV）"
+en = "Export: CSV / INSERT statements (current page or entire table) / dump table (Ctrl+Shift+E exports CSV directly)"
+status = "done"
+
+[[entry]]
+key = "data_page.export_tooltip_rows"
+zh = "导出：CSV / INSERT 语句（当前页或整张表）/ 转储表；本页已加载 {export_rows} 行（Ctrl+Shift+E 直接导出 CSV）"
+en = "Export: CSV / INSERT statements (current page or entire table) / dump table; {export_rows} rows loaded on this page (Ctrl+Shift+E exports CSV directly)"
+en_one = "Export: CSV / INSERT statements (current page or entire table) / dump table; 1 row loaded on this page (Ctrl+Shift+E exports CSV directly)"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_csv"
+zh = "导出 CSV…"
+en = "Export CSV…"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_csv_desc"
+zh = "当前页或整张表；空字段 = NULL，文本按 RFC 4180 转义"
+en = "Current page or entire table; empty fields = NULL, text escaped per RFC 4180"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_insert"
+zh = "导出为 INSERT 语句…"
+en = "Export as INSERT Statements…"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_insert_desc"
+zh = "当前页或整张表；每行一条 INSERT INTO … VALUES (…);"
+en = "Current page or entire table; one INSERT INTO … VALUES (…); per row"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_dump"
+zh = "转储表…"
+en = "Dump Table…"
+status = "done"
+
+[[entry]]
+key = "data_page.export_menu_dump_desc"
+zh = "建表语句 + 全部数据的 INSERT（整张表，不再问范围）"
+en = "CREATE TABLE statement + INSERTs for all data (entire table, no range prompt)"
+status = "done"
+
+# -- 初始空态与状态行（data_page.rs::new / begin_open / show_open） ----------
+
+[[entry]]
+key = "data_page.status_welcome"
+zh = "请选择左侧的表开始浏览"
+en = "Pick a table on the left to start browsing"
+status = "done"
+
+[[entry]]
+key = "data_page.placeholder_no_table"
+zh = "尚未打开表"
+en = "No Table Opened"
+status = "done"
+
+[[entry]]
+key = "data_page.placeholder_no_table_desc"
+zh = "在左侧表列表中选择一张表查看数据"
+en = "Choose a table in the list on the left to view its data"
+status = "done"
+
+[[entry]]
+key = "data_page.loading_title"
+zh = "正在读取表数据"
+en = "Reading Table Data"
+status = "done"
+
+[[entry]]
+key = "data_page.loading_desc"
+zh = "等待服务端返回第一页…"
+en = "Waiting for the server's first page…"
+status = "done"
+
+[[entry]]
+key = "data_page.loading_status"
+zh = "正在读取表数据…"
+en = "Reading table data…"
+status = "done"
+
+# 读取完成时按前缀认领状态行（`set_status_ready`）；zh/en 两侧都必须与
+# `loading_status`、`pager_reading` 的开头一致。
+[[entry]]
+key = "data_page.loading_prefix"
+zh = "正在读取"
+en = "Reading"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_page_title"
+zh = "本页没有数据"
+en = "No Data on This Page"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_table"
+zh = "空表"
+en = "Empty Table"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_offset_desc"
+zh = "offset 超出总数（服务端如实返回空行）；回首页或刷新再看"
+en = "offset exceeds the total (the server honestly returned no rows); go to the first page or refresh"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_filtered_desc"
+zh = "该表存在，但当前条件下没有任何行"
+en = "The table exists, but no rows match the current conditions"
+status = "done"
+
+[[entry]]
+key = "data_page.empty_plain_desc"
+zh = "该表存在，但目前没有任何行"
+en = "The table exists, but has no rows yet"
+status = "done"
+
+[[entry]]
+key = "data_page.more_suffix"
+zh = " · 还有下一页"
+en = " · more"
+status = "done"
+
+[[entry]]
+key = "data_page.no_data_offset"
+zh = "本页无数据（offset {offset}）"
+en = "No data on this page (offset {offset})"
+status = "done"
+
+[[entry]]
+key = "data_page.page_rows"
+zh = "本页 {rows} 行{suffix}"
+en = "{rows} rows on this page{suffix}"
+en_one = "1 row on this page{suffix}"
+status = "done"
+
+# -- 断连状态行（mark_disconnected，数据侧；results.rs 的归 #203） ------------
+
+[[entry]]
+key = "data_page.disconnect_dropped"
+zh = "已断开：{reason} 未提交的 {discarded} 行变更已丢弃；数据库事务已由后端强制回滚。"
+en = "Disconnected: {reason} {discarded} rows of uncommitted changes were discarded; the database transaction was force-rolled back by the backend."
+en_one = "Disconnected: {reason} 1 row of uncommitted changes was discarded; the database transaction was force-rolled back by the backend."
+status = "done"
+
+[[entry]]
+key = "data_page.disconnect_plain"
+zh = "已断开：{reason} 数据库事务已由后端强制回滚。"
+en = "Disconnected: {reason} the database transaction was force-rolled back by the backend."
+status = "done"
+
+[[entry]]
+key = "data_page.disconnected_status"
+zh = "已断开 · 已加载 {rows} 行（只读）"
+en = "Disconnected · {rows} rows loaded (read-only)"
+en_one = "Disconnected · 1 row loaded (read-only)"
+status = "done"
+
+# -- 六类常驻徽标（update_badges） -------------------------------------------
+
+[[entry]]
+key = "data_page.badge_readonly"
+zh = "只读"
+en = "Read-Only"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_readonly_fallback"
+zh = "服务端标记为只读"
+en = "Marked read-only by the server"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_primary_key"
+zh = "无主键"
+en = "No Primary Key"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_primary_key_tip"
+zh = "无主键表：不能稳定定位行，因此只读；浏览、排序、筛选与计数仍可用"
+en = "Table without a primary key: rows cannot be located reliably, so it is read-only; browsing, sorting, filtering and counting still work"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_view_tip"
+zh = "视图：数据来自查询定义，编辑受限；排序、筛选与计数仍可用"
+en = "View: data comes from a query definition, editing is limited; sorting, filtering and counting still work"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_permission"
+zh = "无权限"
+en = "No Permission"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_permission_tip"
+zh = "当前账号对该对象没有权限：浏览被拒绝或只返回部分数据"
+en = "The current account has no permission on this object: browsing is denied or returns partial data"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_total_skipped"
+zh = "未统计"
+en = "Not Counted"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_total_skipped_tip"
+zh = "精确计数超过预算，已跳过：本页数据完整，只是没有总数"
+en = "Exact counting exceeded the budget and was skipped: this page is complete, there is just no total"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_sort_filter"
+zh = "驱动不支持排序/筛选"
+en = "Sort/Filter Unsupported"
+status = "done"
+
+[[entry]]
+key = "data_page.badge_no_sort_filter_tip"
+zh = "该驱动未声明 table_browse_sort_filter_total：只提供 offset 分页，不显示排序、筛选与总数入口"
+en = "This driver does not declare table_browse_sort_filter_total: only offset pagination is offered; the sort, filter and total entry points are hidden"
+status = "done"
+
+# -- 列显隐浮层（CC 面板） -----------------------------------------------------
+
+[[entry]]
+key = "data_page.cc_close_tooltip"
+zh = "关闭列显隐"
+en = "Close column visibility"
+status = "done"
+
+[[entry]]
+key = "data_page.cc_panel_hint"
+zh = "隐藏列只影响这张表格的渲染；查询、复制与即将提供的导出口径不变。"
+en = "Hiding columns only affects the rendering of this grid; the query, copy and forthcoming export scopes stay unchanged."
+status = "done"
+
+[[entry]]
+key = "data_page.cc_check_tooltip"
+zh = "{name}（{type}）· 取消勾选只隐藏这一列，不影响数据与导出口径"
+en = "{name} ({type}) · unchecking only hides this column; the data and export scopes are unchanged"
+status = "done"
+
+# -- 筛选与排序面板（FS 面板：控件、行内编辑与校验） --------------------------
+
+[[entry]]
+key = "data_page.fs_close_tooltip"
+zh = "关闭（未应用的改动会丢弃）"
+en = "Close (unapplied changes are discarded)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_conditions_title"
+zh = "筛选条件"
+en = "Filter Conditions"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_no_table_option"
+zh = "（未打开表）"
+en = "(no table open)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_column_tooltip"
+zh = "筛选列（来自 GetColumns 的列清单）"
+en = "Filter column (from the GetColumns column list)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_operator_tooltip"
+zh = "算子：比较 / LIKE / IS NULL"
+en = "Operator: comparison / LIKE / IS NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.value_label"
+zh = "值"
+en = "Value"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_add_condition"
+zh = "添加条件"
+en = "Add Condition"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_title"
+zh = "排序"
+en = "Sort"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_column_tooltip"
+zh = "排序列（来自 GetColumns 的列清单）"
+en = "Sort column (from the GetColumns column list)"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_direction_tooltip"
+zh = "asc = 升序，desc = 降序"
+en = "asc = ascending, desc = descending"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_add_sort"
+zh = "添加排序"
+en = "Add Sort"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_apply"
+zh = "应用"
+en = "Apply"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_clear"
+zh = "清空"
+en = "Clear"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_applied"
+zh = "已应用"
+en = "Applied"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_applied_tooltip"
+zh = "面板里的筛选与排序就是表格正在用的那一套"
+en = "The filter and sort in this panel are exactly what the grid is using"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_pending"
+zh = "有未应用的更改"
+en = "Unapplied changes"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_state_pending_tooltip"
+zh = "点「应用筛选与排序」才会生效；关闭面板会丢弃这些改动"
+en = "They only take effect after you click Apply; closing the panel discards these changes"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_conditions_empty"
+zh = "无筛选条件"
+en = "No filter conditions"
+status = "done"
+
+[[entry]]
+key = "data_page.fs_sort_default"
+zh = "默认排序（主键）"
+en = "Default order (primary key)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_edit_tooltip"
+zh = "点击这一条可就地编辑（列 / 算子 / 值）"
+en = "Click this condition to edit it inline (column / operator / value)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_remove_tooltip"
+zh = "删除这条条件（仍需点「应用」才生效）"
+en = "Remove this condition (still needs Apply)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_column_tooltip"
+zh = "筛选列"
+en = "Filter column"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_save_tooltip"
+zh = "保存这条条件的修改（回车）"
+en = "Save this condition's changes (Enter)"
+status = "done"
+
+[[entry]]
+key = "data_page.condition_cancel_tooltip"
+zh = "放弃修改（Esc）"
+en = "Discard changes (Esc)"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_toggle_tooltip"
+zh = "点击切换 asc / desc"
+en = "Click to switch asc / desc"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_move_up_tooltip"
+zh = "上移（更优先）"
+en = "Move up (higher priority)"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_move_down_tooltip"
+zh = "下移（更次要）"
+en = "Move down (lower priority)"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_remove_tooltip"
+zh = "删掉这个排序键（仍需点「应用」才生效）"
+en = "Remove this sort key (still needs Apply)"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_error_no_columns"
+zh = "还没有可筛选的列：先打开一张表"
+en = "No filterable columns yet: open a table first"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_error_needs_value"
+zh = "{operator} 需要一个值（列 {column} · {type}）"
+en = "{operator} needs a value (column {column} · {type})"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_error_no_columns"
+zh = "还没有可排序的列：先打开一张表"
+en = "No sortable columns yet: open a table first"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_error_unsupported"
+zh = "当前驱动不支持排序"
+en = "The current driver does not support sorting"
+status = "done"
+
+[[entry]]
+key = "data_page.sort_error_unknown_column"
+zh = "排序列 {column} 不在当前表的列清单里（未知列）"
+en = "Sort column {column} is not in this table's column list (unknown column)"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_condition_removed"
+zh = "筛选条件已清空（点「应用筛选与排序」恢复全表）"
+en = "Filter conditions cleared (click Apply to restore the whole table)"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_applied"
+zh = "筛选与排序已应用（{condition_count} 条条件 · {sort_count} 个排序键）· 回到第 1 页"
+en = "Filter & sort applied ({condition_count} conditions · {sort_count} sort keys) · back to page 1"
+status = "done"
+
+[[entry]]
+key = "data_page.filter_sort_cleared"
+zh = "条件与排序已清空（点「应用筛选与排序」恢复全表）"
+en = "Conditions and sorting cleared (click Apply to restore the whole table)"
+status = "done"
+
+# -- 行号格与列头（build_columns / refresh_header_tooltips；tabs.rs 的 Objects
+#    页行号格 tooltip 与数据页同一口径，共用 `row_number_tooltip`） ------------
+
+[[entry]]
+key = "data_page.header_row_number"
+zh = "行号"
+en = "Row"
+status = "done"
+
+[[entry]]
+key = "data_page.header_tooltip"
+zh = "点击查看列属性：{title}"
+en = "Click to view column info: {title}"
+status = "done"
+
+[[entry]]
+key = "data_page.row_number_tooltip"
+zh = "第 {number} 行"
+en = "Row {number}"
+status = "done"
+
+[[entry]]
+key = "data_page.row_removed_tooltip"
+zh = "第 {number} 行 · 已删除"
+en = "Row {number} · deleted"
+status = "done"
+
+[[entry]]
+key = "data_page.row_insert_tooltip"
+zh = "新行 · 尚未提交（双击单元格填值）"
+en = "New row · not committed yet (double-click a cell to fill it)"
+status = "done"
+
+[[entry]]
+key = "data_page.row_deleted_tooltip"
+zh = "第 {number} 行 · 已标记删除（提交前可撤销）"
+en = "Row {number} · marked for deletion (can be undone before commit)"
+status = "done"
+
+[[entry]]
+key = "data_page.row_dirty_tooltip"
+zh = "第 {number} 行 · 有未提交的更改"
+en = "Row {number} · has uncommitted changes"
+status = "done"
+
+# -- 单元格 tooltip（截断与脏标记；NULL/空串的字面文本是行为契约口径，不进目录） --
+
+[[entry]]
+key = "data_page.cell_truncated_tip"
+zh = "该值被截断：不能编辑（提交截断值会写坏数据）"
+en = "This value is truncated: not editable (committing a truncated value corrupts data)"
+status = "done"
+
+[[entry]]
+key = "data_page.cell_dirty_tip"
+zh = "已修改，尚未提交"
+en = "Modified, not committed yet"
+status = "done"
+
+# -- 「字段 / 值」详情视图与行选择提示 ----------------------------------------
+
+[[entry]]
+key = "data_page.detail_col_field"
+zh = "字段"
+en = "Field"
+status = "done"
+
+[[entry]]
+key = "data_page.detail_back"
+zh = "已切回按行浏览"
+en = "Switched back to row view"
+status = "done"
+
+[[entry]]
+key = "data_page.detail_need_selection"
+zh = "先选中一行，再切换到「字段 / 值」视图"
+en = "Select a row first, then switch to the Field / Value view"
+status = "done"
+
+[[entry]]
+key = "data_page.select_row_hint"
+zh = "请先在表格中选择一行（Ctrl/Shift 可多选）"
+en = "Select a row in the grid first (Ctrl/Shift allows multiple)"
+status = "done"
+
+# -- 复制为 INSERT（行选择提示与结果，data_page.rs） --------------------------
+
+[[entry]]
+key = "data_page.copy_no_table"
+zh = "还没有打开表：先打开一张表再复制"
+en = "No table is open yet: open a table before copying"
+status = "done"
+
+[[entry]]
+key = "data_page.copy_no_selection"
+zh = "没有选中行：先选中要复制的行"
+en = "No rows selected: select the rows to copy first"
+status = "done"
+
+[[entry]]
+key = "data_page.copy_no_display"
+zh = "没有可用的显示服务，无法写入剪贴板"
+en = "No display service available; cannot write to the clipboard"
+status = "done"
+
+[[entry]]
+key = "data_page.copy_copied"
+zh = "已复制 {rows} 行为 INSERT 语句"
+en = "Copied {rows} rows as INSERT statements"
+en_one = "Copied 1 row as an INSERT statement"
+status = "done"

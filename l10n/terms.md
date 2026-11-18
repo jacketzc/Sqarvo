@@ -170,3 +170,24 @@
 | 尚未实现 | Not Implemented | 「函数列表尚未实现」等如实说明 |
 | 查看日志 | View Log | 恢复对话框按钮；「日志 Log」沿用种子表 |
 | 需要重启 | Needs to Restart | 「Sqarvo 需要重启」标题；品牌名不译 |
+
+## S4 Lane A（数据网格，#202）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 列显隐 | Column Visibility | 工具条按钮与浮层标题同词 |
+| 筛选与排序 | Filter & Sort | 工具条按钮与面板标题同词；「筛选 Filter」「排序 Sort」沿用 S3 |
+| 算子 | Operator | 筛选条件三件套之一 |
+| 值 | Value | 筛选值输入与「字段 / 值」列头同词 |
+| 排序键 | Sort Key | 面板条目与消息 |
+| 筛选条件 | Filter Conditions | 面板分节标题 |
+| 列清单 | Column List | 「来自 GetColumns 的列清单」等 |
+| 应用 | Apply | 面板按钮（提交面的「提交 Commit」不在此词） |
+| 清空 | Clear | 面板按钮 |
+| 已应用 | Applied | 面板状态标签 |
+| 空表 | Empty Table | 状态行与空态标题同词 |
+| 无权限 | No Permission | 徽标 |
+| 未统计 | Not Counted | 徽标；状态口径「未统计（超出计数预算）」见 `object_tree.total_skipped` |
+| 服务端 | Server | 「服务端标记为只读」等；后端进程仍译 Backend |
+| 剪贴板 | Clipboard | |
+| 驱动不支持排序/筛选 | Sort/Filter Unsupported | 徽标短标签；句中写 "does not support sorting" |
