@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId, TransactionId};
 
@@ -16,7 +17,8 @@ use crate::table_data::TableDataProvider;
 use crate::value::{ColumnMeta, Row, Value};
 
 /// 驱动标识。仅允许小写 ASCII 字母、数字、`.`、`_`、`-`。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct DriverId(String);
 
 impl DriverId {
@@ -44,6 +46,20 @@ impl DriverId {
     }
 }
 
+impl TryFrom<String> for DriverId {
+    type Error = Error;
+
+    fn try_from(id: String) -> Result<Self> {
+        Self::new(id)
+    }
+}
+
+impl From<DriverId> for String {
+    fn from(id: DriverId) -> Self {
+        id.0
+    }
+}
+
 impl fmt::Display for DriverId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -59,7 +75,8 @@ impl FromStr for DriverId {
 }
 
 /// TLS 模式。`Preferred` 允许回退到明文，必须由前端明确展示风险。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TlsMode {
     /// 未指定，由驱动选择安全默认值。
     #[default]
@@ -133,7 +150,7 @@ pub struct DriverDescriptor {
 ///
 /// 安全约束：不包含密码字段。密码只能通过 `credential_ref` 引用，
 /// 由本地凭据存储解析，禁止出现在配置、日志或错误信息中。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionParams {
     /// 目标驱动。
     pub driver_id: DriverId,
@@ -152,6 +169,7 @@ pub struct ConnectionParams {
     /// TLS 校验使用的主机名。
     pub tls_server_name: Option<String>,
     /// 驱动特有的非敏感参数。
+    #[serde(default)]
     pub properties: BTreeMap<String, String>,
 }
 
