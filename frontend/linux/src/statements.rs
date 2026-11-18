@@ -14,8 +14,13 @@
 //!    已执行语句中哪条是 SELECT，见 Issue #190 改动确认单 #5 的契约说明）。
 //! 3. 单语句（`statements.len() <= 1`）不进这条路径，现状完全不变。
 //!
-//! 控件是原生 `GtkBox` + `GtkToggleButton` 组（L0：工具包现成件组合，无自绘）。
-//! 尺寸全部来自 `metrics.toml` 既有 token（`gap_sm` / `gap_xl` / `min_target`）。
+//! #231：控件由「每条语句一枚 `GtkToggleButton` 的裸按钮行」改成**固定宽度的原生
+//! `GtkDropDown`**（L0：工具包现成件，无自绘）。按钮行没有省略也没有横向滚动，
+//! 20 条多行语句的最小宽度会经 `GtkPaned` 上抛成窗口最小宽度（实测把 1200px 窗口
+//! 撑到 3472px）。DropDown 的显示标签自带省略号（`PANGO_ELLIPSIZE_END`），最小宽度
+//! 只有图标加箭头，超长条目省略，绝不改变窗口宽度。切换语义（换入换出行模型、
+//! 已加载行不丢、未首拉的结果集语句立即首拉）保持 #190 现状不变。
+//! 尺寸全部来自 `metrics.toml` 既有 token（`column_width` / `gap_xl` / `min_target`）。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -24,7 +29,7 @@ use gtk::prelude::*;
 
 use crate::backend::query::{StatementPosition, StatementView};
 use crate::l10n;
-use crate::layout::{Gap, MIN_TARGET, gap};
+use crate::layout::{Gap, gap, metrics};
 
 /// 切换行里一条语句的当前状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,115 +227,182 @@ fn entry_tooltip(entry: &SwitcherEntry) -> String {
     }
 }
 
-/// 语句切换行：原生 `GtkBox` + `GtkToggleButton` 组（互斥单选）。
+/// 消息页日志文本（#231）：每条语句一行（口径 = [`entry_label`]），
+/// 失败语句下面追加一行「`> 错误：<可安全展示的错误文案>`」。
 ///
-/// 放在结果区头部（操作行）下方、表格上方；单语句时不挂载（不可见）。
+/// `error_note` 只挂到**失败态**语句下面；文案来源与状态行/说明行同源
+/// （`QueryFailure::message()`），不含凭据与完整连接串（根 AGENTS §9）。
+/// `gtk::TextView` 的缓冲区整段替换用；行与行之间单换行，不撑横向。
+#[must_use]
+pub fn message_log_text(entries: &[SwitcherEntry], error_note: Option<&str>) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            let line = entry_label(entry);
+            if matches!(entry.state, SlotState::Failed)
+                && let Some(note) = error_note
+            {
+                format!(
+                    "{line}\n{}",
+                    l10n::tf("tabs.results_msg_error_line", &[("error", note.to_owned())])
+                )
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 摘要页计数（#231）：已执行 / 成功 / 失败。
+///
+/// 「已执行」= 消息日志里已有结论的语句条数：成功脚本 = 全量摘要条数
+/// （Execute 已把脚本执行完，逐语句只是**取结果**的进度）；失败脚本 = 到
+/// 失败语句为止的条目数。失败 = `SlotState::Failed` 条数；成功 = 其余。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunTotals {
+    /// 已执行语句条数。
+    pub executed: usize,
+    /// 成功条数（非失败态）。
+    pub success: usize,
+    /// 失败条数。
+    pub failed: usize,
+}
+
+#[must_use]
+pub fn totals(entries: &[SwitcherEntry]) -> RunTotals {
+    let failed = entries
+        .iter()
+        .filter(|entry| matches!(entry.state, SlotState::Failed))
+        .count();
+    RunTotals {
+        executed: entries.len(),
+        success: entries.len() - failed,
+        failed,
+    }
+}
+
+/// 语句切换控件：固定宽度的原生 `GtkDropDown`（#231；#190 的按钮行会撑宽窗口）。
+///
+/// 放在结果区说明行下方、表格上方（`switcher_slot`）；单语句时不挂载（不可见）。
+/// 条目文案 = [`entry_label`]；SQL 预览与状态细节留在 tooltip 里，不进条目文本。
 pub struct StatementSwitcher {
-    root: gtk::Box,
+    dropdown: gtk::DropDown,
+    /// 条目文本模型（与 `entries` 一一对应；`GtkStringList` 是 DropDown 的原生数据源）。
+    model: gtk::StringList,
     entries: RefCell<Vec<SwitcherEntry>>,
-    buttons: RefCell<Vec<gtk::ToggleButton>>,
     on_select: Rc<dyn Fn(u32)>,
-    /// 程序化 `set_active` 的防回环标志（重建 / 同步选中时不触发回调）。
+    /// 程序化 `set_selected` 的防回环标志（重建 / 同步选中时不触发回调）。
     suppress: Cell<bool>,
 }
 
 impl StatementSwitcher {
     pub fn new(on_select: Rc<dyn Fn(u32)>) -> Rc<Self> {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
-        // 与结果区表格左右缘对齐（表格用 gap_xl 外边距）。
-        root.set_margin_start(gap(Gap::Xl));
-        root.set_margin_end(gap(Gap::Xl));
-        root.set_margin_bottom(gap(Gap::Sm));
-        root.add_css_class("sqarvo-statement-switcher");
-        root.set_visible(false);
-        root.update_property(&[gtk::accessible::Property::Label(l10n::t(
+        let model = gtk::StringList::new(&[]);
+        let dropdown = gtk::DropDown::builder().model(&model).build();
+        // 与结果区表格左右缘对齐（表格用 gap_xl 外边距）；固定宽度取既有的
+        // `column_width`（200/250/300），条目超长由省略号兜住，绝不撑宽窗口。
+        dropdown.set_margin_start(gap(Gap::Xl));
+        dropdown.set_margin_end(gap(Gap::Xl));
+        dropdown.set_margin_bottom(gap(Gap::Sm));
+        dropdown.set_halign(gtk::Align::Start);
+        // 一次调用同时给宽高：`set_size_request` 是 width+height 的**同一个**入口，
+        // 先 `set_width_request` 再传 `-1` 会把宽度请求清掉（实测翻车过）。
+        dropdown.set_size_request(metrics().column_width, crate::layout::MIN_TARGET);
+        dropdown.set_visible(false);
+        dropdown.update_property(&[gtk::accessible::Property::Label(l10n::t(
             "tabs.stmt_switcher_a11y",
         ))]);
-        Rc::new(Self {
-            root,
+        let view = Rc::new(Self {
+            dropdown,
+            model,
             entries: RefCell::new(Vec::new()),
-            buttons: RefCell::new(Vec::new()),
             on_select,
             suppress: Cell::new(false),
-        })
-    }
-
-    pub fn widget(&self) -> &gtk::Box {
-        &self.root
-    }
-
-    /// 重建条目（Execute 返回 / 失败位置确定时）。`selected` 必须是有效下标。
-    pub fn rebuild(self: &Rc<Self>, entries: &[SwitcherEntry], selected: u32) {
-        for button in self.buttons.borrow_mut().drain(..) {
-            self.root.remove(&button);
-        }
-        self.entries.replace(entries.to_vec());
-        self.suppress.set(true);
-        let mut group: Option<gtk::ToggleButton> = None;
-        for entry in entries {
-            let button = gtk::ToggleButton::with_label(&entry_label(entry));
-            // 命中区不低于 min_target（metrics.toml 三档都有值）。
-            button.set_size_request(-1, MIN_TARGET);
-            if let Some(leader) = &group {
-                button.set_group(Some(leader));
-            } else {
-                group = Some(button.clone());
-            }
-            button.set_active(entry.index == selected);
-            if matches!(entry.state, SlotState::Failed) {
-                // 原生 destructive-action：失败态用主题自带的警示色，不自绘。
-                button.add_css_class("destructive-action");
-            }
-            button.set_tooltip_text(Some(&entry_tooltip(entry)));
-            button.update_property(&[gtk::accessible::Property::Label(&entry_label(entry))]);
-            let index = entry.index;
-            let weak = Rc::downgrade(self);
-            button.connect_toggled(move |button| {
-                // 组内互斥：只响应「变为选中」的那一下。
-                if !button.is_active() {
-                    return;
-                }
+        });
+        view.dropdown.connect_selected_notify({
+            let weak = Rc::downgrade(&view);
+            move |dropdown| {
                 let Some(switcher) = weak.upgrade() else {
                     return;
                 };
                 if switcher.suppress.get() {
                     return;
                 }
+                let Some(index) = dropdown.selected().checked_sub(1) else {
+                    return;
+                };
+                switcher.sync_tooltip();
                 (switcher.on_select)(index);
-            });
-            self.root.append(&button);
-            self.buttons.borrow_mut().push(button);
+            }
+        });
+        view
+    }
+
+    pub fn widget(&self) -> &gtk::DropDown {
+        &self.dropdown
+    }
+
+    /// 重建条目（Execute 返回 / 失败位置确定时）。`selected` 必须是有效下标。
+    pub fn rebuild(self: &Rc<Self>, entries: &[SwitcherEntry], selected: u32) {
+        self.suppress.set(true);
+        let old = self.model.n_items();
+        self.model.splice(0, old, &[]);
+        for entry in entries {
+            self.model.append(&entry_label(entry));
+        }
+        self.entries.replace(entries.to_vec());
+        // 先清再设：`set_selected` 对空模型无意义，条目数 0 时保持无选中。
+        if entries.is_empty() {
+            self.dropdown.set_selected(gtk::INVALID_LIST_POSITION);
+        } else {
+            self.dropdown
+                .set_selected(selected.min(entries.len() as u32 - 1));
         }
         self.suppress.set(false);
-        self.root.set_visible(!entries.is_empty());
+        self.sync_tooltip();
+        self.dropdown.set_visible(!entries.is_empty());
     }
 
     /// 程序化选中（不触发回调）。下标越界时不动。
     pub fn select(&self, index: u32) {
-        if index as usize >= self.buttons.borrow().len() {
+        if index as usize >= self.entries.borrow().len() {
             return;
         }
         self.suppress.set(true);
-        for (position, button) in self.buttons.borrow().iter().enumerate() {
-            button.set_active(position as u32 == index);
-        }
+        self.dropdown.set_selected(index);
         self.suppress.set(false);
+        self.sync_tooltip();
     }
 
     /// 更新一条语句的状态与文案（批次到达 / 取消 / 断连后）。
     pub fn update_entry(&self, index: u32, state: SlotState) {
-        let mut entries = self.entries.borrow_mut();
-        let Some(entry) = entries.get_mut(index as usize) else {
-            return;
-        };
-        entry.state = state;
-        let label = entry_label(entry);
-        let tooltip = entry_tooltip(entry);
-        if let Some(button) = self.buttons.borrow().get(index as usize) {
-            button.set_label(&label);
-            button.set_tooltip_text(Some(&tooltip));
-            button.update_property(&[gtk::accessible::Property::Label(&label)]);
+        {
+            let mut entries = self.entries.borrow_mut();
+            let Some(entry) = entries.get_mut(index as usize) else {
+                return;
+            };
+            entry.state = state;
+            let label = entry_label(entry);
+            self.model.splice(index, 1, &[&label]);
         }
+        self.sync_tooltip();
+    }
+
+    /// 条目快照（消息页 / 摘要页取当前逐语句口径）。
+    #[must_use]
+    pub fn entries_snapshot(&self) -> Vec<SwitcherEntry> {
+        self.entries.borrow().clone()
+    }
+
+    /// tooltip = 当前选中条目的完整说明（含 SQL 预览）；无选中时清空。
+    fn sync_tooltip(&self) {
+        let tooltip = self
+            .entries
+            .borrow()
+            .get(self.dropdown.selected() as usize)
+            .map(entry_tooltip);
+        self.dropdown.set_tooltip_text(tooltip.as_deref());
     }
 }
 
@@ -440,5 +512,57 @@ mod tests {
         assert_eq!(kind_label(&entry), "结果集");
         entry.has_result_set = false;
         assert_eq!(kind_label(&entry), "写语句");
+    }
+
+    #[test]
+    fn message_log_writes_one_line_per_statement() {
+        // #231 消息页：每条一行，复用 entry_label 口径；行之间单换行。
+        let script = [statement(0, true), statement(1, false)];
+        let entries = entries_from_statements(&script, 3, false);
+        assert_eq!(
+            message_log_text(&entries, None),
+            "1 · SELECT · 3 行\n2 · UPDATE · 影响 5 行"
+        );
+    }
+
+    #[test]
+    fn message_log_appends_error_line_under_failed_statement() {
+        // 失败语句下面追加「> 错误：…」；错误文案只挂失败态条目。
+        let position = StatementPosition {
+            failed_index: 1,
+            completed: 1,
+        };
+        let mut entries = entries_from_failure(position);
+        entries[0].preview = "INSERT INTO t VALUES (1)".to_owned();
+        entries[0].state = SlotState::Affected(1);
+        let text = message_log_text(&entries, Some("no such table: t"));
+        assert_eq!(
+            text,
+            "1 · INSERT · 影响 1 行\n2 · 失败\n> 错误：no such table: t"
+        );
+    }
+
+    #[test]
+    fn totals_split_success_from_failure() {
+        let script = [statement(0, true), statement(1, false), statement(2, false)];
+        let mut entries = entries_from_statements(&script, 3, false);
+        entries[2].state = SlotState::Failed;
+        assert_eq!(
+            totals(&entries),
+            RunTotals {
+                executed: 3,
+                success: 2,
+                failed: 1,
+            }
+        );
+        // 空日志（还没到任何结论）：三项全 0，摘要页用占位符显示。
+        assert_eq!(
+            totals(&[]),
+            RunTotals {
+                executed: 0,
+                success: 0,
+                failed: 0,
+            }
+        );
     }
 }

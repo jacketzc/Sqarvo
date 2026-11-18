@@ -41,8 +41,8 @@ use crate::layout::{Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::qa;
 use crate::result_edit::ResultEdit;
-use crate::results::{ResultsView, RowStore, RunState};
-use crate::statements::{self, SlotState, StatementSwitcher};
+use crate::results::{ResultTab, ResultsView, RowStore, RunState};
+use crate::statements::{self, SlotState, StatementSwitcher, SwitcherEntry};
 use crate::table_data::ChangeBatch;
 
 /// 页面状态（与 [`RunState`] 分开：后者只管结果区，前者还管按钮可用性）。
@@ -221,6 +221,61 @@ pub struct SqlPage {
     catalog_failure: RefCell<Option<String>>,
     /// #190：多语句脚本的逐语句状态（单语句 / 未执行时为 `None`）。
     multi: RefCell<Option<MultiState>>,
+    /// #231：单语句路径本轮逐语句结论日志（多语句路径以切换行条目为准）。
+    run_entries: RefCell<Vec<SwitcherEntry>>,
+    /// #231：本轮失败语句的可安全展示错误文案（消息页挂在失败语句下面）。
+    run_failure_note: RefCell<Option<String>>,
+    /// #231：本轮脚本的客户端计时（决策 D3：提交 Execute → 终态到达）。
+    run_clock: RefCell<Option<RunClock>>,
+    /// #231 QA：本轮的版式取证是否已排程（每轮只打印一次）。
+    qa_probe_scheduled: Cell<bool>,
+}
+
+/// #231：一次脚本执行的客户端计时（决策 D3 的口径）。
+///
+/// **只含「提交 Execute → 到达终态（首批 / 完成 / 失败 / 取消 / 触顶）」的
+/// 前端墙钟与单调钟，含 IPC 与渲染，不代表数据库服务端执行时间**；协议
+/// `ExecuteQueryResponse` 没有耗时字段，本类型不伪装成后端数据，也不给逐语句耗时。
+/// 后到的终态覆盖先到的结束时刻（首批之后还有完成时，取完成）。
+struct RunClock {
+    /// 提交 Execute 的时刻（单调钟，算总耗时）。
+    started_at: std::time::Instant,
+    /// 提交 Execute 的墙钟文本（`%H:%M:%S`）。
+    started_text: String,
+    /// 最近一次终态到达的时刻。
+    finished_at: Option<std::time::Instant>,
+    /// 最近一次终态到达的墙钟文本。
+    finished_text: Option<String>,
+}
+
+/// 墙钟文本 `%H:%M:%S`（本地时区，秒精度；取不到时间时如实回落为占位符）。
+fn wall_clock_text() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
+    glib::DateTime::from_unix_local(seconds)
+        .ok()
+        .and_then(|moment| moment.format("%H:%M:%S").ok())
+        .map(|text| text.to_string())
+        .unwrap_or_else(|| l10n::t("tabs.results_summary_pending").to_owned())
+}
+
+/// #231 默认页规则（纯函数，可无显示器单测）：
+///
+/// - 执行失败 → 「消息」（并把错误行写进消息页）；
+/// - 本次结果里有任意语句带结果集 → 「结果」；
+/// - 全是写语句 → 「消息」；
+/// - 还没有任何逐语句结论（空日志，防御路径）→ 「结果」，与单语句现状一致。
+#[must_use]
+fn default_tab_for(entries: &[SwitcherEntry], failed: bool) -> ResultTab {
+    if failed {
+        ResultTab::Messages
+    } else if entries.is_empty() || entries.iter().any(|entry| entry.has_result_set) {
+        // 空日志 = 防御路径（还没有任何逐语句结论）：落「结果」，与单语句现状一致。
+        ResultTab::Results
+    } else {
+        ResultTab::Messages
+    }
 }
 
 impl SqlPage {
@@ -356,6 +411,10 @@ impl SqlPage {
             transaction_open: Cell::new(false),
             catalog_failure: RefCell::new(None),
             multi: RefCell::new(None),
+            run_entries: RefCell::new(Vec::new()),
+            run_failure_note: RefCell::new(None),
+            run_clock: RefCell::new(None),
+            qa_probe_scheduled: Cell::new(false),
         });
 
         {
@@ -599,8 +658,10 @@ impl SqlPage {
     /// 真正发出一条 SQL（执行按钮、Ctrl+Enter、提交后自动重跑共用）。
     fn execute_sql(self: &Rc<Self>, sql: String) {
         self.query_id.replace(None);
-        // #190：上一轮的逐语句状态作废（results.reset 会同时卸载切换行）。
+        // #190：上一轮的逐语句状态作废（results.reset 会同时卸载切换控件）。
         self.multi.replace(None);
+        // #231：客户端计时开始、消息/摘要数据源清空（控件本体由 results.reset 清）。
+        self.begin_run_panels();
         self.cancel_sent.set(false);
         self.cancel_clicked_at.set(None);
         self.banner.set_revealed(false);
@@ -788,11 +849,22 @@ impl SqlPage {
                 .join(" · ")
         );
 
-        // #190：多语句脚本 → 逐语句网格 + 语句切换行（单语句路径保持现状）。
+        // #190：多语句脚本 → 逐语句网格 + 语句切换控件（单语句路径保持现状）。
         if statements::is_multi(statements) {
             self.start_multi(statements, rows, has_more, loaded);
+            // #231：首批到达即终态（脚本已在服务端执行完，续拉只是取结果）。
+            self.touch_run_finish();
+            self.refresh_run_panels();
+            self.apply_default_tab(false);
             return;
         }
+
+        // #231：单语句路径的逐语句日志 = 全量摘要（这里恒 0 或 1 条）。
+        self.run_entries
+            .replace(statements::entries_from_statements(
+                statements, loaded, has_more,
+            ));
+        self.touch_run_finish();
 
         if let Some(statement) = &statement {
             eprintln!(
@@ -817,6 +889,9 @@ impl SqlPage {
                     PageState::Complete,
                     Some(l10n::t("tabs.query_no_result_set")),
                 );
+                // #231：写语句落「消息」页；摘要六项就位（客户端计时口径）。
+                self.refresh_run_panels();
+                self.apply_default_tab(false);
                 self.ensure_scroll_target();
                 return;
             }
@@ -833,6 +908,9 @@ impl SqlPage {
             },
             None,
         );
+        // #231：消息/摘要落数据；默认页（有结果集 → 「结果」，单语句 SELECT 不变）。
+        self.refresh_run_panels();
+        self.apply_default_tab(false);
         self.ensure_scroll_target();
         if !has_more {
             self.try_enable_edit();
@@ -861,6 +939,12 @@ impl SqlPage {
             return;
         }
         self.results.append_rows(rows, has_more, loaded);
+        // #231：单语句续批——条目状态跟网格同步；完成（has_more=false）是终态。
+        self.set_run_entry_state(statement_index, SlotState::Rows { loaded, has_more });
+        if !has_more {
+            self.touch_run_finish();
+        }
+        self.refresh_run_panels();
         self.set_state(
             if has_more {
                 PageState::Streaming
@@ -901,6 +985,9 @@ impl SqlPage {
             .set_state(RunState::Cancelled, loaded, false, note);
         self.sync_selected_slot(RunState::Cancelled, note.map(str::to_owned));
         self.set_state(PageState::Cancelled, note);
+        // #231：取消是终态——结束时间与逐语句结论刷新；页签不抢用户当前页。
+        self.touch_run_finish();
+        self.refresh_run_panels();
     }
 
     /// 查询失败（保留已加载行）。
@@ -921,19 +1008,46 @@ impl SqlPage {
         if let Some(position) = failure.statement_position()
             && position.completed > 0
         {
+            self.run_failure_note.replace(Some(failure.message()));
             self.show_multi_failure(failure, position);
+            // #231：失败是终态；默认页落「消息」，错误行写进失败语句下面。
+            self.touch_run_finish();
+            self.refresh_run_panels();
+            self.apply_default_tab(true);
             return;
         }
         let loaded = self.results.row_count();
-        let state = if matches!(failure, QueryFailure::ResultLimit { .. }) {
+        let is_limit = matches!(failure, QueryFailure::ResultLimit { .. });
+        let state = if is_limit {
             RunState::Limited
         } else {
             RunState::Error
         };
+        if is_limit {
+            // 触顶不是失败：条目保持「N 行」，不写错误行（口径见 show_limited）。
+            self.set_run_entry_state(
+                0,
+                SlotState::Rows {
+                    loaded,
+                    has_more: false,
+                },
+            );
+        } else {
+            self.run_entries
+                .replace(statements::entries_from_failure(StatementPosition {
+                    failed_index: 0,
+                    completed: 0,
+                }));
+            self.run_failure_note.replace(Some(failure.message()));
+        }
         self.results
             .set_state(state, loaded, false, Some(&failure.message()));
         self.sync_selected_slot(state, Some(failure.message()));
         self.set_state(PageState::Error, Some(failure.headline()));
+        // #231：失败 → 「消息」+ 错误行；触顶保持按内容选页（结果集仍在）。
+        self.touch_run_finish();
+        self.refresh_run_panels();
+        self.apply_default_tab(!is_limit);
     }
 
     /// 达到客户端结果集上限：保留已接收的行，明确显示 `result.limit_reached`。
@@ -965,6 +1079,16 @@ impl SqlPage {
         self.results
             .set_state(RunState::Limited, loaded, false, Some(&failure.message()));
         self.set_state(PageState::Error, Some(failure.headline()));
+        // #231：触顶是终态——条目按「N 行」记录（这不是失败，不写错误行）。
+        self.set_run_entry_state(
+            statement_index,
+            SlotState::Rows {
+                loaded,
+                has_more: false,
+            },
+        );
+        self.touch_run_finish();
+        self.refresh_run_panels();
         self.ensure_scroll_target();
         self.maybe_qa_export();
     }
@@ -978,6 +1102,9 @@ impl SqlPage {
         self.results
             .set_state(RunState::Disconnected, loaded, false, Some(reason));
         self.sync_selected_slot(RunState::Disconnected, Some(reason.to_owned()));
+        // #231：断连不在决策 D3 的终态清单里——不改结束时间，只把消息页刷新到
+        // 已到达的逐语句结论（sync_selected_slot 已把网格终态写回条目）。
+        self.refresh_run_panels();
         // reason 已经说明了原因，横幅不再重复前缀。
         // 后端失效横幅带「重启 Sqarvo」动作按钮（空 SQL 提示会去掉按钮，这里恢复）。
         self.banner
@@ -989,6 +1116,124 @@ impl SqlPage {
             PageState::Disconnected,
             Some(l10n::t("data_page.txn_disconnected_label")),
         );
+    }
+
+    // ---- #231：消息页 / 摘要页数据（客户端计时，决策 D3） ---------------
+
+    /// 执行入口：记录提交时刻，清空上一轮的逐语句结论与错误文案。
+    ///
+    /// 消息 / 摘要控件本体由 `ResultsView::reset` 清空（与网格同一条重置路径），
+    /// 这里只管页面侧的数据源。
+    fn begin_run_panels(&self) {
+        self.run_entries.replace(Vec::new());
+        self.run_failure_note.replace(None);
+        self.run_clock.replace(Some(RunClock {
+            started_at: std::time::Instant::now(),
+            started_text: wall_clock_text(),
+            finished_at: None,
+            finished_text: None,
+        }));
+        self.qa_probe_scheduled.set(false);
+    }
+
+    /// 到达终态（首批 / 完成 / 失败 / 取消 / 触顶）：记录结束时刻。
+    ///
+    /// 后到的终态覆盖先到的：首批之后完成到达时，结束时间取完成。
+    fn touch_run_finish(&self) {
+        let mut borrow = self.run_clock.borrow_mut();
+        if let Some(clock) = borrow.as_mut() {
+            clock.finished_at = Some(std::time::Instant::now());
+            clock.finished_text = Some(wall_clock_text());
+        }
+    }
+
+    /// 当前生效的逐语句条目：多语句路径取切换行条目（与下拉框同源），
+    /// 单语句路径取 `run_entries`。
+    fn current_run_entries(&self) -> Vec<SwitcherEntry> {
+        match self.multi.borrow().as_ref() {
+            Some(multi) => multi.switcher.entries_snapshot(),
+            None => self.run_entries.borrow().clone(),
+        }
+    }
+
+    /// 把消息日志与摘要六项写进结果区（纯读取组装，不做 IO；在事件到达后
+    /// 的 UI 线程调用）。
+    fn refresh_run_panels(self: &Rc<Self>) {
+        let entries = self.current_run_entries();
+        let note = self.run_failure_note.borrow().clone();
+        self.results
+            .set_messages_text(&statements::message_log_text(&entries, note.as_deref()));
+        let counts = statements::totals(&entries);
+        let pending = l10n::t("tabs.results_summary_pending").to_owned();
+        let (started, finished, duration) = match self.run_clock.borrow().as_ref() {
+            Some(clock) => {
+                let seconds = clock
+                    .finished_at
+                    .map(|finished| finished.duration_since(clock.started_at).as_secs_f64());
+                (
+                    clock.started_text.clone(),
+                    clock.finished_text.clone().unwrap_or(pending.clone()),
+                    seconds.map_or_else(
+                        || pending.clone(),
+                        |seconds| {
+                            l10n::tf(
+                                "tabs.results_summary_duration_value",
+                                &[("seconds", format!("{seconds:.3}"))],
+                            )
+                        },
+                    ),
+                )
+            }
+            None => (pending.clone(), pending.clone(), pending),
+        };
+        self.results.set_summary([
+            counts.executed.to_string(),
+            counts.success.to_string(),
+            counts.failed.to_string(),
+            started,
+            finished,
+            duration,
+        ]);
+        self.schedule_qa_probe();
+    }
+
+    /// 单语句路径：把本轮条目里某条语句的状态写回（防御：没有条目时不动）。
+    fn set_run_entry_state(&self, index: u32, state: SlotState) {
+        if let Some(entry) = self.run_entries.borrow_mut().get_mut(index as usize) {
+            entry.state = state;
+        }
+    }
+
+    /// 按 #231 规则落本轮默认页（只在 Execute 响应到达时调用；用户之后手动
+    /// 切页不再被覆盖）。
+    fn apply_default_tab(&self, failed: bool) {
+        let entries = self.current_run_entries();
+        let tab = default_tab_for(&entries, failed);
+        self.results.set_result_tab(tab);
+        eprintln!(
+            "[query] 页签默认落位：{}（语句 {} 条，失败={failed}）",
+            tab.page_id(),
+            entries.len()
+        );
+    }
+
+    /// #231 QA 取证：布局稳定后打印一次页签版式测量（每轮一次）。
+    ///
+    /// 只在 QA 模式（`qa::enabled()`，即带了任何 `--qa-*` 参数）下发生，
+    /// 纯只读测量，产品交互路径完全不参与。没有新增 QA 命令行开关：注册新
+    /// 开关需要动 `main.rs` 的 GLib 选项表，超出本单授权文件范围。
+    fn schedule_qa_probe(self: &Rc<Self>) {
+        if !qa::enabled() || self.qa_probe_scheduled.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            eprintln!("[qa] 结果区版式：{}", page.results.qa_view_probe());
+            eprintln!("[qa] 摘要取值：{}", page.results.qa_summary_text());
+        });
     }
 
     // ---- 多语句结果展示（#190） -------------------------------------------
@@ -1060,7 +1305,8 @@ impl SqlPage {
             })
         });
         switcher.rebuild(&entries, default);
-        self.results.set_statement_switcher(Some(switcher.widget()));
+        self.results
+            .set_statement_switcher(Some(switcher.widget().upcast_ref()));
         self.multi.replace(Some(MultiState {
             slots,
             selected: default,
@@ -1121,7 +1367,8 @@ impl SqlPage {
             })
         });
         switcher.rebuild(&entries, selected);
-        self.results.set_statement_switcher(Some(switcher.widget()));
+        self.results
+            .set_statement_switcher(Some(switcher.widget().upcast_ref()));
         self.multi.replace(Some(MultiState {
             slots,
             selected,
@@ -1356,6 +1603,11 @@ impl SqlPage {
                 slot.store.append(rows);
             }
         }
+        // #231：批次到达更新消息页；完成（has_more=false）是终态，覆盖结束时间。
+        if !has_more {
+            self.touch_run_finish();
+        }
+        self.refresh_run_panels();
     }
 
     /// 某条语句触顶：与批次同口径，状态明确为 Limited（不是「查询失败」）。
@@ -1404,6 +1656,9 @@ impl SqlPage {
                 slot.store.append(rows);
             }
         }
+        // #231：某条语句触顶是终态；条目由 update_entry 保持「N 行」口径。
+        self.touch_run_finish();
+        self.refresh_run_panels();
     }
 
     /// 网格进入终态（取消 / 断连 / 无位置信息的失败）：回写选中语句的槽。
@@ -2629,5 +2884,63 @@ mod tests {
                 "{state:?} 不该让状态栏的「取消」可点"
             );
         }
+    }
+
+    #[test]
+    fn default_tab_follows_the_231_rule() {
+        let select = SwitcherEntry {
+            index: 0,
+            preview: "SELECT 1".to_owned(),
+            has_result_set: true,
+            state: SlotState::Rows {
+                loaded: 1,
+                has_more: false,
+            },
+        };
+        let write = SwitcherEntry {
+            index: 0,
+            preview: "INSERT INTO t VALUES (1)".to_owned(),
+            has_result_set: false,
+            state: SlotState::Affected(1),
+        };
+        let failed = SwitcherEntry {
+            index: 0,
+            preview: String::new(),
+            has_result_set: false,
+            state: SlotState::Failed,
+        };
+        // 有任意结果集语句 → 「结果」（单语句 SELECT 行为不变）。
+        assert_eq!(
+            default_tab_for(std::slice::from_ref(&select), false),
+            ResultTab::Results
+        );
+        // 混合脚本只要有一条结果集 → 「结果」。
+        assert_eq!(
+            default_tab_for(&[write.clone(), select.clone()], false),
+            ResultTab::Results
+        );
+        // 全写语句 → 「消息」。
+        assert_eq!(
+            default_tab_for(std::slice::from_ref(&write), false),
+            ResultTab::Messages
+        );
+        assert_eq!(
+            default_tab_for(&[write, select.clone()], true),
+            ResultTab::Messages,
+            "执行失败永远落「消息」，哪怕脚本里有结果集语句"
+        );
+        // 空日志（防御路径：还没有任何逐语句结论）→ 「结果」，与单语句现状一致。
+        assert_eq!(default_tab_for(&[], false), ResultTab::Results);
+        // 失败场景条目不带结果集标记（响应里没有摘要）→ 同样落「消息」。
+        assert_eq!(default_tab_for(&[failed], false), ResultTab::Messages);
+    }
+
+    #[test]
+    fn result_tab_page_ids_round_trip() {
+        for tab in [ResultTab::Messages, ResultTab::Summary, ResultTab::Results] {
+            assert_eq!(ResultTab::from_page_id(tab.page_id()), tab);
+        }
+        // 未知页面 id 回落「结果」（与单语句默认一致），不 panic 也不空白。
+        assert_eq!(ResultTab::from_page_id("nope"), ResultTab::Results);
     }
 }
