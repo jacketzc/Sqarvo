@@ -231,3 +231,82 @@ def close_window(frame):
 def open_query_page_via_action(frame):
     """Ctrl+T 同一个 GAction（win.new-tab 是「新建查询标签」快捷键的动作本体）。"""
     window_action(frame, "win.new-tab")
+
+
+# ---------- 查询结果区三页签（#231，组件 tabs.query.results.views/.message/.summary） ----------
+# 选择器取自注册表 a11y.name；隐藏页不进 AT-SPI 树（实现口径见 tabs.query.results.views
+# impl_notes），读页内容前必须先切到该页。
+
+RESULTS_TABS = ("消息", "摘要", "结果")
+SUMMARY_KEYS = ("已执行语句", "成功", "失败", "开始时间", "结束时间", "总耗时")
+
+
+def results_tab_group(frame, timeout=25):
+    """页签组容器（page tab list，name='结果视图页签'）；出现即结果区可见。"""
+    return find_one(frame, role_in=("page tab list",), name="结果视图页签",
+                    timeout=timeout)
+
+
+def results_tab(page, name, timeout=25):
+    """结果区一枚页签（page tab；selected 态 = 当前页）。"""
+    return find_one(page, role_in=("page tab",), name=name, timeout=timeout)
+
+
+def switch_results_tab(page, name):
+    """点击切到指定页签，并等 selected 生效（只读可访问性状态，不做样式断言）。"""
+    click(results_tab(page, name))
+    wait_until(lambda: "selected" in states(results_tab(page, name)), 15,
+               f"results tab '{name}' selected")
+
+
+def active_results_tab(page):
+    """当前页签名（三枚都没 selected 时返回空串）。"""
+    for t in query(page, role_in=("page tab",)):
+        if "selected" in states(t):
+            return nm(t)
+    return ""
+
+
+def messages_log_text(page, timeout=20):
+    """消息页日志全文：只读多行 text 节点（编辑器带 editable，据此区分）。"""
+    def probe():
+        for a in query(page, role_in=("text",)):
+            st = states(a)
+            if "read-only" in st and "multi-line" in st and "editable" not in st:
+                value = text_value(a)
+                if value:
+                    return value
+        return None
+    return wait_until(probe, timeout, "messages page log text (read-only multi-line text)")
+
+
+def summary_pairs(page):
+    """摘要页键值对 {键: 值}（值取同一行盒里另一个 label；需先切到摘要页）。"""
+    pairs = {}
+    for a in query(page, role_in=("label",)):
+        key = nm(a)
+        if key in SUMMARY_KEYS:
+            row = a.get_parent()
+            others = [nm(x) for x in query(row, role_in=("label",)) if nm(x) != key]
+            if others:
+                pairs.setdefault(key, others[0])
+    return pairs
+
+
+def window_width(frame):
+    """窗口外框宽（AT-SPI Component.get_extents）。接口不可用 / 值无效时返回
+    None——调用方按 BLOCKED（skip + 原因）处理，不得当成通过。"""
+    try:
+        ext = Atspi.Component.get_extents(frame, Atspi.CoordType.SCREEN)
+    except Exception:
+        return None
+    return ext.width if ext.width > 0 else None
+
+
+def widget_width(acc):
+    """控件外框宽（同上，None = 拿不到）。"""
+    try:
+        ext = Atspi.Component.get_extents(acc, Atspi.CoordType.SCREEN)
+    except Exception:
+        return None
+    return ext.width if ext.width > 0 else None
