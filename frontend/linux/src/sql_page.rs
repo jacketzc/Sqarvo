@@ -36,6 +36,7 @@ use crate::backend::table::TableColumn;
 use crate::backend::table::{ApplyReport, InsertReport};
 use crate::backend::worker::{QueryEditMeta, SubmitOptions, TableEvent};
 use crate::data_page::{RowOp, RowOpsState};
+use crate::l10n;
 use crate::layout::{Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::qa;
@@ -227,7 +228,7 @@ impl SqlPage {
     pub fn new(session_line: &str, callbacks: SqlPageCallbacks) -> Rc<Self> {
         let banner = adw::Banner::new("");
         banner.set_revealed(false);
-        banner.set_button_label(Some("重启 Sqarvo"));
+        banner.set_button_label(Some(l10n::t("shell.recovery_btn_restart")));
 
         // v0.2.5：不再显示「会话建立中…」这类占位文案；有真实会话信息时才显示。
         let session_label = gtk::Label::new(Some(session_line));
@@ -238,9 +239,9 @@ impl SqlPage {
         session_label.add_css_class("dim-label");
         session_label.add_css_class("caption");
 
-        let execute_button = gtk::Button::with_label("执行");
+        let execute_button = gtk::Button::with_label(l10n::t("tabs.query_btn_execute"));
         execute_button.add_css_class("suggested-action");
-        execute_button.set_tooltip_text(Some("执行编辑器中的 SQL（Ctrl+Enter）"));
+        execute_button.set_tooltip_text(Some(l10n::t("tabs.query_btn_execute_tip")));
 
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         toolbar.set_margin_top(gap(Gap::Sm));
@@ -299,7 +300,9 @@ impl SqlPage {
         let split = gtk::Paned::new(gtk::Orientation::Vertical);
         split.add_css_class("sqarvo-query-split");
         // §8.1：容器挂可访问名（GTK 4.20.3 实测 AT-SPI 未暴露此名，见注册表 impl_notes）。
-        split.update_property(&[gtk::accessible::Property::Label("查询编辑器与结果区分栏")]);
+        split.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "tabs.query_split_a11y",
+        ))]);
         split.set_start_child(Some(&editor_scroll));
         split.set_end_child(Some(results.widget()));
         // GtkPaned 的 min/max-position 只读：两端最小高度由子控件自身最小尺寸 +
@@ -409,13 +412,13 @@ impl SqlPage {
             list.set_margin_end(gap(Gap::Xs));
             for (label, tooltip, kind) in [
                 (
-                    "导出 CSV…",
-                    "已加载的结果行；空字段 = NULL，文本按 RFC 4180 转义",
+                    l10n::t("data_page.export_menu_csv"),
+                    l10n::t("tabs.query_export_csv_tip"),
                     crate::export_ui::ExportKind::Csv,
                 ),
                 (
-                    "导出为 INSERT 语句…",
-                    "已加载的结果行；每行一条 INSERT INTO … VALUES (…);",
+                    l10n::t("data_page.export_menu_insert"),
+                    l10n::t("tabs.query_export_insert_tip"),
                     crate::export_ui::ExportKind::Insert,
                 ),
             ] {
@@ -521,9 +524,9 @@ impl SqlPage {
         let reason = if let Some(failure) = failure {
             Some(failure)
         } else if !self.session_ready.get() {
-            Some("会话尚未建立：等标签会话就绪后才能切换库".to_owned())
+            Some(l10n::t("tabs.query_gate_no_session").to_owned())
         } else if self.transaction_open.get() {
-            Some("事务已打开：先提交或回滚，再切换库".to_owned())
+            Some(l10n::t("tabs.query_gate_transaction").to_owned())
         } else {
             None
         };
@@ -580,7 +583,8 @@ impl SqlPage {
             // 提示走页面 banner——写进隐藏的结果区用户看不见。此场景 banner 不带
             // 动作按钮（「重启 Sqarvo」按钮属于后端失效场景，mark_disconnected 恢复）。
             self.banner.set_button_label(None);
-            self.banner.set_title("SQL 不能为空：请输入后按 Ctrl+Enter");
+            self.banner
+                .set_title(l10n::t("tabs.query_banner_empty_sql"));
             self.banner.set_revealed(true);
             return;
         }
@@ -603,8 +607,12 @@ impl SqlPage {
         // 「导出为 INSERT 语句」要用这条语句推断目标表名（结果集本身不带来源表）。
         self.results.set_statement(&sql);
         self.results.reset();
-        self.results
-            .set_state(RunState::Loading, 0, false, Some("正在执行…"));
+        self.results.set_state(
+            RunState::Loading,
+            0,
+            false,
+            Some(l10n::t("tabs.query_state_executing")),
+        );
         self.set_state(PageState::Running, None);
         let sql_len = sql.lines().count();
         eprintln!("[query] SQL 共 {sql_len} 行");
@@ -800,12 +808,15 @@ impl SqlPage {
                     RunState::NoResultSet,
                     0,
                     false,
-                    Some(&format!(
-                        "语句 {} 影响 {} 行（无结果集）",
-                        statement.index, statement.rows_affected
+                    Some(&statement_affected_note(
+                        statement.index,
+                        statement.rows_affected,
                     )),
                 );
-                self.set_state(PageState::Complete, Some("无结果集"));
+                self.set_state(
+                    PageState::Complete,
+                    Some(l10n::t("tabs.query_no_result_set")),
+                );
                 self.ensure_scroll_target();
                 return;
             }
@@ -969,11 +980,15 @@ impl SqlPage {
         self.sync_selected_slot(RunState::Disconnected, Some(reason.to_owned()));
         // reason 已经说明了原因，横幅不再重复前缀。
         // 后端失效横幅带「重启 Sqarvo」动作按钮（空 SQL 提示会去掉按钮，这里恢复）。
-        self.banner.set_button_label(Some("重启 Sqarvo"));
+        self.banner
+            .set_button_label(Some(l10n::t("shell.recovery_btn_restart")));
         self.banner.set_title(reason);
         self.banner.set_revealed(true);
         self.query_id.replace(None);
-        self.set_state(PageState::Disconnected, Some("已断开"));
+        self.set_state(
+            PageState::Disconnected,
+            Some(l10n::t("data_page.txn_disconnected_label")),
+        );
     }
 
     // ---- 多语句结果展示（#190） -------------------------------------------
@@ -1003,10 +1018,9 @@ impl SqlPage {
                     0,
                     false,
                     true,
-                    Some(format!(
-                        "语句 {} 影响 {} 行（无结果集）",
+                    Some(statement_affected_note(
                         summary.index + 1,
-                        summary.rows_affected
+                        summary.rows_affected,
                     )),
                 )
             } else if Some(position) == first_result {
@@ -1093,7 +1107,7 @@ impl SqlPage {
                     note: Some(if failed {
                         line.clone()
                     } else {
-                        "该语句已执行成功，但脚本失败时后端未保留其结果游标".to_owned()
+                        l10n::t("tabs.query_cursor_not_kept").to_owned()
                     }),
                 }
             })
@@ -1213,22 +1227,48 @@ impl SqlPage {
         };
         let number = multi.selected + 1;
         let text = match slot.state {
-            RunState::Error => format!(
-                "语句 {number} · 失败 [{}]",
-                multi.failure_code.as_deref().unwrap_or("error")
+            RunState::Error => l10n::tf(
+                "tabs.query_summary_failed",
+                &[
+                    ("number", number.to_string()),
+                    (
+                        "code",
+                        multi.failure_code.as_deref().unwrap_or("error").to_owned(),
+                    ),
+                ],
             ),
-            RunState::Undelivered => format!("语句 {number} · 结果未返回"),
-            RunState::NoResultSet => format!(
-                "语句 {number} · 影响 {} 行",
-                slot.summary
+            RunState::Undelivered => l10n::tf(
+                "tabs.query_summary_undelivered",
+                &[("number", number.to_string())],
+            ),
+            RunState::NoResultSet => {
+                let rows = slot
+                    .summary
                     .as_ref()
                     .map(|summary| summary.rows_affected)
-                    .unwrap_or(0)
-            ),
-            RunState::Limited => {
-                format!("语句 {number} · 达到上限 · 已返回 {} 行", slot.loaded)
+                    .unwrap_or(0);
+                l10n::tf_n(
+                    "tabs.query_summary_affected",
+                    i64::try_from(rows).unwrap_or(i64::MAX),
+                    &[("number", number.to_string()), ("rows", rows.to_string())],
+                )
             }
-            _ => format!("语句 {number} · 已返回 {} 行", slot.loaded),
+            RunState::Limited => l10n::tf_n(
+                "tabs.query_summary_limited",
+                i64::try_from(slot.loaded).unwrap_or(i64::MAX),
+                &[
+                    ("number", number.to_string()),
+                    ("rows", slot.loaded.to_string()),
+                ],
+            ),
+            _ => l10n::tf_n(
+                "tabs.query_summary_returned",
+                i64::try_from(slot.loaded).unwrap_or(i64::MAX),
+                &[
+                    ("number", number.to_string()),
+                    ("rows", slot.loaded.to_string()),
+                ],
+            ),
         };
         (self.callbacks.sql_summary)(text);
     }
@@ -1247,12 +1287,16 @@ impl SqlPage {
                 return;
             }
             slot.state = RunState::Loading;
-            slot.note = Some("正在拉取该语句的结果…".to_owned());
+            slot.note = Some(l10n::t("tabs.query_state_fetching").to_owned());
             multi.selected
         };
         if index == selected {
-            self.results
-                .set_state(RunState::Loading, 0, true, Some("正在拉取该语句的结果…"));
+            self.results.set_state(
+                RunState::Loading,
+                0,
+                true,
+                Some(l10n::t("tabs.query_state_fetching")),
+            );
         }
         eprintln!(
             "[query] t=+{}ms 语句 {} 首拉（statement_index={index}）",
@@ -1438,21 +1482,22 @@ impl SqlPage {
         // ';' 处截断 SQL，解析出的「目标表」只属于其中一条语句，编辑会写错表。
         if self.multi.borrow().is_some() {
             self.edit_note
-                .replace(Some("多语句脚本的结果不能当表编辑".to_owned()));
+                .replace(Some(l10n::t("tabs.query_edit_multi").to_owned()));
             eprintln!("[query] 结果不可编辑：多语句脚本");
             return;
         }
         let statement = self.results.statement();
         let Some(table) = crate::export::editable_table_from_sql(&statement) else {
-            self.edit_note.replace(Some(
-                "结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除".to_owned(),
-            ));
+            self.edit_note
+                .replace(Some(l10n::t("tabs.query_edit_not_single_table").to_owned()));
             eprintln!("[query] 结果不可编辑：不是单表查询");
             return;
         };
         let Some(object) = (self.callbacks.edit_target)(&table) else {
-            self.edit_note
-                .replace(Some(format!("解析不到表 {table}：不能编辑")));
+            self.edit_note.replace(Some(l10n::tf(
+                "tabs.query_edit_table_unresolved",
+                &[("table", table.to_owned())],
+            )));
             eprintln!("[query] 结果不可编辑：解析不到表 {table}");
             return;
         };
@@ -1470,7 +1515,10 @@ impl SqlPage {
                 let views = self.results.column_views();
                 let names: Vec<String> = views.iter().map(|view| view.name.clone()).collect();
                 if let Some(missing) = ResultEdit::pk_coverage_gap(&names, &meta.primary_key) {
-                    let note = format!("结果里没有主键列 {missing}：定位不到要改的行，不能编辑");
+                    let note = l10n::tf(
+                        "tabs.query_edit_pk_missing",
+                        &[("missing", missing.to_owned())],
+                    );
                     eprintln!("[query] 结果不可编辑：{note}");
                     self.edit_note.replace(Some(note));
                     return;
@@ -1503,12 +1551,15 @@ impl SqlPage {
                 (self.callbacks.state_changed)();
             }
             Ok(_) => {
-                let note = "这张表没有主键：不能新增、编辑或删除".to_owned();
+                let note = l10n::t("tabs.query_edit_no_pk").to_owned();
                 eprintln!("[query] 结果不可编辑：{note}");
                 self.edit_note.replace(Some(note));
             }
             Err(reason) => {
-                let note = format!("读取主键失败：{reason}");
+                let note = l10n::tf(
+                    "tabs.query_edit_pk_read_failed",
+                    &[("reason", reason.clone())],
+                );
                 eprintln!("[query] 结果不可编辑：{note}");
                 self.edit_note.replace(Some(note));
             }
@@ -1524,7 +1575,13 @@ impl SqlPage {
             TableEvent::Failed(failure) => {
                 let message = failure.message();
                 eprintln!("[query] 提交失败：{message}");
-                self.set_state(PageState::Complete, Some(&format!("提交失败：{message}")));
+                self.set_state(
+                    PageState::Complete,
+                    Some(&l10n::tf(
+                        "tabs.query_submit_failed",
+                        &[("message", message.clone())],
+                    )),
+                );
             }
             TableEvent::Transaction(snapshot) => {
                 // 事务状态决定选择器能不能用（事务中服务端拒绝切库）：先自己算一次。
@@ -1553,9 +1610,10 @@ impl SqlPage {
         self.results.after_batch(&touched);
         self.last_batch.replace(None);
         if failures.is_empty() {
-            let note = format!(
-                "已提交 {} 行 · 已自动重新执行查询",
-                report.total_rows_affected
+            let note = l10n::tf_n(
+                "tabs.query_applied_rerun",
+                i64::try_from(report.total_rows_affected).unwrap_or(i64::MAX),
+                &[("rows", report.total_rows_affected.to_string())],
             );
             eprintln!("[query] {note}");
             self.set_state(PageState::Complete, Some(&note));
@@ -1563,10 +1621,13 @@ impl SqlPage {
             self.rerun_after_commit(&note);
         } else {
             // 有失败行时不重跑：重跑会把「哪几行没提交」这件事从界面上抹掉。
-            let note = format!(
-                "已提交 {} 行，{} 行失败（未提交的仍在草稿里，界面不重跑）",
-                report.total_rows_affected,
-                failures.len()
+            let note = l10n::tf_n(
+                "tabs.query_applied_partial",
+                i64::try_from(report.total_rows_affected).unwrap_or(i64::MAX),
+                &[
+                    ("rows", report.total_rows_affected.to_string()),
+                    ("failed", failures.len().to_string()),
+                ],
             );
             eprintln!("[query] {note}");
             self.set_state(PageState::Complete, Some(&note));
@@ -1577,13 +1638,17 @@ impl SqlPage {
     /// 新行插入结果。
     fn on_inserted(self: &Rc<Self>, report: &InsertReport) {
         if report.rolled_back {
-            let note = "新行插入失败（整批已回滚）：草稿还在，改完可重试".to_owned();
+            let note = l10n::t("tabs.query_insert_rolled_back").to_owned();
             eprintln!("[query] {note}");
             self.set_state(PageState::Complete, Some(&note));
             return;
         }
         self.results.remove_insert_row();
-        let note = format!("已插入 {} 行 · 已自动重新执行查询", report.inserted_rows);
+        let note = l10n::tf_n(
+            "tabs.query_inserted_rerun",
+            i64::from(report.inserted_rows),
+            &[("rows", report.inserted_rows.to_string())],
+        );
         eprintln!("[query] {note}");
         self.set_state(PageState::Complete, Some(&note));
         (self.callbacks.state_changed)();
@@ -1670,7 +1735,7 @@ impl SqlPage {
                 self.edit_note
                     .borrow()
                     .clone()
-                    .unwrap_or_else(|| "结果只读：执行单表查询后才能编辑".to_owned()),
+                    .unwrap_or_else(|| l10n::t("tabs.query_row_ops_readonly").to_owned()),
             );
             return ops;
         };
@@ -1682,9 +1747,9 @@ impl SqlPage {
         ops.discard = dirty > 0;
         if !ops.any() {
             ops.reason = Some(if edit.has_insert() {
-                "新行还是空的：双击各列填值后再提交".to_owned()
+                l10n::t("tabs.query_row_ops_empty_insert").to_owned()
             } else {
-                "选中一行后可以删除；双击单元格可以改值".to_owned()
+                l10n::t("tabs.query_row_ops_select").to_owned()
             });
         }
         ops
@@ -1696,7 +1761,7 @@ impl SqlPage {
             RowOp::Add => match self.results.begin_insert_row() {
                 Ok(_) => {
                     self.results.reload_from_draft();
-                    let note = "新行：双击单元格填值；提交前可以放弃".to_owned();
+                    let note = l10n::t("tabs.query_insert_note").to_owned();
                     self.set_state(PageState::Complete, Some(&note));
                     (self.callbacks.state_changed)();
                 }
@@ -1713,7 +1778,11 @@ impl SqlPage {
                 match edit.delete(&rows) {
                     Ok(count) => {
                         self.results.reload_from_draft();
-                        let note = format!("已标记删除 {count} 行（提交前可以放弃）");
+                        let note = l10n::tf_n(
+                            "tabs.query_deleted_marked",
+                            i64::try_from(count).unwrap_or(i64::MAX),
+                            &[("count", count.to_string())],
+                        );
                         eprintln!("[query] {note}");
                         self.set_state(PageState::Complete, Some(&note));
                         (self.callbacks.state_changed)();
@@ -1765,7 +1834,7 @@ impl SqlPage {
                 edit.discard();
                 self.results.remove_insert_row();
                 self.results.after_batch(&touched);
-                self.set_state(PageState::Complete, Some("已放弃未提交的更改"));
+                self.set_state(PageState::Complete, Some(l10n::t("data_page.discard_all")));
                 (self.callbacks.state_changed)();
             }
             RowOp::Refresh => {
@@ -1775,7 +1844,7 @@ impl SqlPage {
                 if let Some(edit) = self.results.edit()
                     && edit.dirty_rows() > 0
                 {
-                    let note = "有未提交的更改：先提交或放弃，再刷新";
+                    let note = l10n::t("tabs.query_refresh_dirty");
                     eprintln!("[query] 刷新未执行：{note}");
                     self.set_state(PageState::Complete, Some(note));
                     return;
@@ -1804,9 +1873,9 @@ impl SqlPage {
         let close = self.results.close_button();
         close.set_sensitive(!active);
         close.set_tooltip_text(Some(if active {
-            "查询执行中，请先取消"
+            l10n::t("tabs.query_close_tip_running")
         } else {
-            "关闭结果区（释放查询资源）"
+            l10n::t("tabs.results_close_tip")
         }));
         if !active {
             self.cancel_sent.set(false);
@@ -1904,11 +1973,15 @@ impl SqlPage {
             return;
         }
         let dialog = adw::AlertDialog::new(
-            Some("放弃未提交的更改？"),
-            Some(&format!("关闭结果区将丢弃 {dirty} 行未提交的更改。")),
+            Some(l10n::t("tabs.query_dlg_discard_title")),
+            Some(&l10n::tf_n(
+                "tabs.query_dlg_discard_body",
+                i64::try_from(dirty).unwrap_or(i64::MAX),
+                &[("dirty", dirty.to_string())],
+            )),
         );
-        dialog.add_response("cancel", "取消");
-        dialog.add_response("discard", "放弃更改");
+        dialog.add_response("cancel", l10n::t("tabs.close_btn_cancel"));
+        dialog.add_response("discard", l10n::t("tabs.query_dlg_discard_btn"));
         dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -2024,8 +2097,10 @@ impl CatalogPicker {
     pub fn new(callbacks: CatalogPickerCallbacks) -> Rc<Self> {
         let dropdown = gtk::DropDown::from_strings(&[UNSPECIFIED_PICKER_LABEL]);
         // 可访问名（a11y.name = 「当前库」）：读屏与自动化都靠它指认这枚控件。
-        dropdown.update_property(&[gtk::accessible::Property::Label(CATALOG_PICKER_A11Y)]);
-        dropdown.set_tooltip_text(Some("这条会话的当前库（服务端真值）"));
+        dropdown.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "tabs.picker_catalog_a11y",
+        ))]);
+        dropdown.set_tooltip_text(Some(l10n::t("tabs.picker_catalog_tip")));
 
         let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         root.set_valign(gtk::Align::Center);
@@ -2134,7 +2209,10 @@ impl CatalogPicker {
     /// 取不到库列表：**不编造条目**，浮层里只留一行说明，按钮文字仍是真值。
     pub fn show_list_failure(&self, note: &str) {
         self.items.replace(Vec::new());
-        self.placeholder.replace(format!("取不到库列表：{note}"));
+        self.placeholder.replace(l10n::tf(
+            "tabs.picker_catalog_list_failed",
+            &[("note", note.to_owned())],
+        ));
         self.rebuild();
     }
 
@@ -2153,7 +2231,10 @@ impl CatalogPicker {
                     .clone()
                     .unwrap_or_else(|| UNSPECIFIED_PICKER_LABEL.to_owned());
                 let layer = self.layer.get().label();
-                let text = format!("当前{layer}：{truth}（选中后这条会话会切到该{layer}）");
+                let text = l10n::tf(
+                    "tabs.picker_catalog_truth_tip",
+                    &[("layer", layer.to_owned()), ("truth", truth.clone())],
+                );
                 self.root.set_tooltip_text(Some(&text));
                 self.dropdown.set_tooltip_text(Some(&text));
             }
@@ -2280,8 +2361,10 @@ impl ConnectionPicker {
     /// 组装（连接选择器一直渲染：查询标签总有绑定的一条连接）。
     pub fn new(callbacks: ConnectionPickerCallbacks) -> Rc<Self> {
         let dropdown = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
-        dropdown.update_property(&[gtk::accessible::Property::Label(CONNECTION_PICKER_A11Y)]);
-        dropdown.set_tooltip_text(Some("这条查询标签绑定的连接"));
+        dropdown.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "tabs.picker_connection_a11y",
+        ))]);
+        dropdown.set_tooltip_text(Some(l10n::t("tabs.picker_connection_tip")));
         // 会话未建立前也可以切：选中另一条会重绑本标签的会话。
         dropdown.set_sensitive(true);
 
@@ -2374,7 +2457,10 @@ impl ConnectionPicker {
         self.dropdown.set_sensitive(!pending);
         if pending {
             let target = self.display_text();
-            let text = format!("正在把本标签的会话切到「{target}」…");
+            let text = l10n::tf(
+                "tabs.picker_connection_pending_tip",
+                &[("target", target.clone())],
+            );
             self.root.set_tooltip_text(Some(&text));
             self.dropdown.set_tooltip_text(Some(&text));
         } else {
@@ -2402,11 +2488,11 @@ impl ConnectionPicker {
 
     fn refresh_tooltip(&self) {
         let text = if self.display_text().is_empty() {
-            "这条查询标签绑定的连接".to_owned()
+            l10n::t("tabs.picker_connection_tip").to_owned()
         } else {
-            format!(
-                "这条查询标签绑定的连接：{}（选中另一条会重绑本标签的会话）",
-                self.display_text()
+            l10n::tf(
+                "tabs.picker_connection_truth_tip",
+                &[("name", self.display_text())],
             )
         };
         self.root.set_tooltip_text(Some(&text));
@@ -2453,6 +2539,16 @@ fn connection_options(
     (options, selected)
 }
 
+/// 「语句 K 影响 N 行（无结果集）」：单语句与多语句两条路径共用同一句模板。
+#[must_use]
+fn statement_affected_note(index: u32, rows: u64) -> String {
+    l10n::tf_n(
+        "tabs.query_stmt_affected",
+        i64::try_from(rows).unwrap_or(i64::MAX),
+        &[("index", index.to_string()), ("rows", rows.to_string())],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2471,6 +2567,17 @@ mod tests {
         assert_ne!(
             connection.0, catalog.0,
             "两枚控件的可访问名必须能区分（否则自动化指认不出是哪一枚）"
+        );
+        // 界面上挂出去的可访问名必须与这张表同源：把选择器换回未登记的字符串就会红。
+        assert_eq!(
+            l10n::t("tabs.picker_connection_a11y"),
+            CONNECTION_PICKER_A11Y,
+            "连接选择器的可访问名要落进 catalog"
+        );
+        assert_eq!(
+            l10n::t("tabs.picker_catalog_a11y"),
+            CATALOG_PICKER_A11Y,
+            "库选择器的可访问名要落进 catalog"
         );
         // 顺序：连接在库前面（动作行最左端）。
         assert_eq!(ACTION_ROW_PICKERS[0].0, "当前连接");

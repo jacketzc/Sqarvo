@@ -15,6 +15,8 @@ use crate::proto::common::v1::{
     ColumnMeta, ColumnTypeKind, ColumnValue, Row as ProtoRow, ValueKind, column_value,
 };
 
+use crate::l10n;
+
 /// 每批请求的行数（服务端默认 200、上限 5000；这里取 500 以减少 10 万行场景的往返次数）。
 pub const MAX_ROWS_PER_BATCH: u32 = 500;
 
@@ -619,7 +621,7 @@ pub fn rows_from_proto(rows: &[ProtoRow], first_number: u64) -> Vec<RowView> {
 pub fn format_cell(cell: &ColumnValue) -> CellView {
     let kind = ValueKind::try_from(cell.kind).unwrap_or(ValueKind::Unspecified);
     let type_name = if cell.original_type_name.trim().is_empty() {
-        "类型名未提供".to_owned()
+        l10n::t("data_page.value_type_missing").to_owned()
     } else {
         cell.original_type_name.clone()
     };
@@ -628,7 +630,7 @@ pub fn format_cell(cell: &ColumnValue) -> CellView {
         (ValueKind::Null, _) => CellView {
             text: "NULL".to_owned(),
             style: CellStyle::Null,
-            tooltip: "SQL NULL（与空字符串不同）".to_owned(),
+            tooltip: l10n::t("data_page.value_null_tip").to_owned(),
             truncated: cell.truncated,
         },
         (ValueKind::Text, Some(column_value::Value::TextValue(text))) => {
@@ -639,64 +641,102 @@ pub fn format_cell(cell: &ColumnValue) -> CellView {
         (ValueKind::Json, Some(column_value::Value::JsonValue(text))) => CellView {
             text: display_text(text),
             style: CellStyle::Structured,
-            tooltip: format!("{type_name} · {} 字符", char_count(text)),
+            tooltip: l10n::tf(
+                "data_page.value_json_tip",
+                &[
+                    ("type_name", type_name.clone()),
+                    ("chars", char_count(text).to_string()),
+                ],
+            ),
             truncated: cell.truncated,
         },
         (ValueKind::Uuid, Some(column_value::Value::UuidValue(text))) => CellView {
             text: text.clone(),
             style: CellStyle::Structured,
-            tooltip: format!("UUID · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_uuid_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: cell.truncated,
         },
         (ValueKind::Bool, Some(column_value::Value::BoolValue(value))) => CellView {
             text: if *value { "true" } else { "false" }.to_owned(),
             style: CellStyle::Boolean,
-            tooltip: format!("布尔值 · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_bool_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: cell.truncated,
         },
         (ValueKind::Int64, Some(column_value::Value::Int64Value(value))) => CellView {
             text: value.to_string(),
             style: CellStyle::Number,
-            tooltip: format!("整数 · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_int_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: false,
         },
         (ValueKind::Uint64, Some(column_value::Value::Uint64Value(value))) => CellView {
             text: value.to_string(),
             style: CellStyle::Number,
-            tooltip: format!("无符号整数 · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_uint_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: false,
         },
         (ValueKind::Float64, Some(column_value::Value::Float64Value(value))) => CellView {
             text: format_float(*value),
             style: CellStyle::Number,
-            tooltip: format!("浮点数 · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_float_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: false,
         },
         (ValueKind::Decimal, Some(column_value::Value::DecimalValue(decimal))) => CellView {
             text: format_decimal(&decimal.unscaled_value, decimal.scale),
             style: CellStyle::Number,
-            tooltip: format!(
-                "精确十进制 · {type_name} · unscaled={} scale={}",
-                decimal.unscaled_value, decimal.scale
+            tooltip: l10n::tf(
+                "data_page.value_decimal_tip",
+                &[
+                    ("type_name", type_name.clone()),
+                    ("unscaled", decimal.unscaled_value.to_string()),
+                    ("scale", decimal.scale.to_string()),
+                ],
             ),
             truncated: false,
         },
         (ValueKind::Bytes, Some(column_value::Value::BytesValue(bytes))) => CellView {
             text: format_bytes(bytes, cell.truncated),
             style: CellStyle::Binary,
-            tooltip: format!("二进制 · {type_name} · 前缀 {} 字节", bytes.len()),
+            tooltip: l10n::tf_n(
+                "data_page.value_binary_tip",
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                &[
+                    ("type_name", type_name.clone()),
+                    ("bytes", bytes.len().to_string()),
+                ],
+            ),
             truncated: cell.truncated,
         },
         (ValueKind::Date, Some(column_value::Value::DateValue(value))) => CellView {
             text: format!("{:04}-{:02}-{:02}", value.year, value.month, value.day),
             style: CellStyle::Temporal,
-            tooltip: format!("DATE · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_date_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: false,
         },
         (ValueKind::Time, Some(column_value::Value::TimeValue(value))) => CellView {
             text: format_clock(value.hour, value.minute, value.second, value.nanosecond),
             style: CellStyle::Temporal,
-            tooltip: format!("TIME · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_time_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: false,
         },
         (ValueKind::Datetime, Some(column_value::Value::DatetimeValue(value))) => CellView {
@@ -708,15 +748,22 @@ pub fn format_cell(cell: &ColumnValue) -> CellView {
                 format_clock(value.hour, value.minute, value.second, value.nanosecond)
             ),
             style: CellStyle::Temporal,
-            tooltip: format!("DATETIME（无时区）· {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_datetime_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: false,
         },
         (ValueKind::Timestamp, Some(column_value::Value::TimestampValue(value))) => CellView {
             text: format_timestamp(value.unix_nanos, value.offset_seconds),
             style: CellStyle::Temporal,
-            tooltip: format!(
-                "TIMESTAMP · {type_name} · unix_nanos={} 偏移{:+}s",
-                value.unix_nanos, value.offset_seconds
+            tooltip: l10n::tf(
+                "data_page.value_timestamp_tip",
+                &[
+                    ("type_name", type_name.clone()),
+                    ("nanos", value.unix_nanos.to_string()),
+                    ("offset", format!("{:+}", value.offset_seconds)),
+                ],
             ),
             truncated: false,
         },
@@ -728,21 +775,43 @@ pub fn format_cell(cell: &ColumnValue) -> CellView {
             CellView {
                 text: format!("[{}]", parts.join(", ")),
                 style: CellStyle::Structured,
-                tooltip: format!("数组 · {type_name} · {} 个元素", array.elements.len()),
+                tooltip: l10n::tf_n(
+                    "data_page.value_array_tip",
+                    i64::try_from(array.elements.len()).unwrap_or(i64::MAX),
+                    &[
+                        ("type_name", type_name.clone()),
+                        ("count", array.elements.len().to_string()),
+                    ],
+                ),
                 truncated: cell.truncated,
             }
         }
         (ValueKind::Unsupported, Some(column_value::Value::UnsupportedValue(text))) => CellView {
-            text: format!("{type_name}：{text}"),
+            text: l10n::tf(
+                "data_page.value_unsupported_text",
+                &[("type_name", type_name.clone()), ("text", text.clone())],
+            ),
             style: CellStyle::Unsupported,
-            tooltip: format!("无法无损映射的类型 · 原始类型 {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_unsupported_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: cell.truncated,
         },
         // kind 与 value 不一致（契约要求二者一致）：如实显示，不猜测类型。
         (kind, value) => CellView {
-            text: format!("（值缺失：{kind:?} / {}）", value_name(value)),
+            text: l10n::tf(
+                "data_page.value_missing_text",
+                &[
+                    ("kind", format!("{kind:?}")),
+                    ("value", value_name(value).to_owned()),
+                ],
+            ),
             style: CellStyle::Unsupported,
-            tooltip: format!("kind 与 value 不一致 · {type_name}"),
+            tooltip: l10n::tf(
+                "data_page.value_kind_mismatch_tip",
+                &[("type_name", type_name.clone())],
+            ),
             truncated: cell.truncated,
         },
     };
@@ -750,24 +819,25 @@ pub fn format_cell(cell: &ColumnValue) -> CellView {
     if view.truncated {
         // 标记放在**最前面**：列宽固定且尾部省略时，追加在结尾的标记会被裁掉，
         // 用户就看不到「这不是完整值」。前缀 + 前 120 字符既保证可见，也不占满整格。
-        if !view.text.starts_with("…（已截断）") {
+        let marker = l10n::t("data_page.value_truncated_marker");
+        if !view.text.starts_with(marker) {
             let preview: String = view.text.chars().take(120).collect();
             let ellipsis = if view.text.chars().count() > 120 {
                 "…"
             } else {
                 ""
             };
-            view.text = format!("…（已截断）{preview}{ellipsis}");
+            view.text = format!("{marker}{preview}{ellipsis}");
         }
         view.tooltip
-            .push_str(" · 服务端仅返回前缀（已截断），完整值需要后续延迟加载能力");
+            .push_str(l10n::t("data_page.value_truncated_suffix"));
     }
     view
 }
 
 fn value_name(value: Option<&column_value::Value>) -> &'static str {
     match value {
-        None => "无值",
+        None => l10n::t("data_page.value_no_value"),
         Some(column_value::Value::BoolValue(_)) => "bool",
         Some(column_value::Value::Int64Value(_)) => "int64",
         Some(column_value::Value::Uint64Value(_)) => "uint64",
@@ -791,14 +861,20 @@ fn text_cell(text: &str, type_name: &str) -> CellView {
         return CellView {
             text: "''".to_owned(),
             style: CellStyle::Empty,
-            tooltip: "空字符串（长度 0），与 NULL 不同".to_owned(),
+            tooltip: l10n::t("data_page.value_empty_text_tip").to_owned(),
             truncated: false,
         };
     }
     CellView {
         text: display_text(text),
         style: CellStyle::Normal,
-        tooltip: format!("TEXT · {type_name} · {} 字符", char_count(text)),
+        tooltip: l10n::tf(
+            "data_page.value_text_tip",
+            &[
+                ("type_name", type_name.to_owned()),
+                ("chars", char_count(text).to_string()),
+            ],
+        ),
         truncated: false,
     }
 }
@@ -813,13 +889,16 @@ fn display_text(text: &str) -> String {
         return text.to_owned();
     }
     let prefix: String = text.chars().take(MAX_DISPLAY_CHARS).collect();
-    format!("{prefix}…（网格内仅显示前 {MAX_DISPLAY_CHARS} 个字符）")
+    l10n::tf(
+        "data_page.value_display_note",
+        &[("prefix", prefix), ("max", MAX_DISPLAY_CHARS.to_string())],
+    )
 }
 
 /// 二进制前缀：`0x89 50 4E 47 …（共 N 字节）`。
 fn format_bytes(bytes: &[u8], truncated: bool) -> String {
     if bytes.is_empty() {
-        return "0x（0 字节）".to_owned();
+        return l10n::t("data_page.value_bytes_zero").to_owned();
     }
     let shown = bytes
         .iter()
@@ -832,13 +911,16 @@ fn format_bytes(bytes: &[u8], truncated: bool) -> String {
     } else {
         ""
     };
+    let count = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+    let args = [
+        ("shown", shown),
+        ("ellipsis", ellipsis.to_owned()),
+        ("bytes", bytes.len().to_string()),
+    ];
     if truncated {
-        format!(
-            "0x{shown}{ellipsis}（前缀 {} 字节，完整值未传输）",
-            bytes.len()
-        )
+        l10n::tf_n("data_page.value_bytes_prefix_text", count, &args)
     } else {
-        format!("0x{shown}{ellipsis}（共 {} 字节）", bytes.len())
+        l10n::tf_n("data_page.value_bytes_total_text", count, &args)
     }
 }
 

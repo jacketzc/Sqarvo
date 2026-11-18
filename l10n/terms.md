@@ -267,3 +267,63 @@
 | 来源说明 | source description | `DdlView::detail_text`；proto `source_detail` 的界面词 |
 | 拼装依据 | synthesis basis | 「服务端未说明拼装依据」；「客户端拼装」沿用 Lane C |
 | 拼装器 | generator | 「（拼装器版本 {version}）」；GetDdl 客户端拼装器 |
+
+## S5 Lane A（查询页与结果区，#203）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 执行 | Execute | 查询页按钮与状态句；「正在执行…」Executing… |
+| 语句 | Statement | 摘要、切换行条目与 tooltip 同词 |
+| 结果集 | Result Set | 「空结果集」Empty Result Set；切换行类型词作 Result set |
+| 无结果集 | No Result Set | 占位页标题与状态行同词 |
+| 写语句 | Write statement | 切换行的类型词兜底（不硬编码 UPDATE/INSERT） |
+| 结果未返回 | Result Not Returned | 脚本失败时已执行语句的条目状态 |
+| 未加载 | Not loaded | 切换行条目；「尚未加载：…」Not loaded yet |
+| 已加载 | loaded | 「已加载 N 行」N rows loaded |
+| 已保留 | kept | 取消 / 失败 / 触顶态的「已保留 N 行」N rows kept |
+| 客户端上限 | client limit | 「已达客户端上限」Client result limit reached |
+| 切换行 | Switcher | 「语句切换行」Statement switcher |
+| 游标 | Cursor | 「未保留其结果游标」result cursor；「翻页游标」沿用 S8 |
+| 影响 N 行 | affected N rows | 「语句 K 影响 N 行」；「影响行数」沿用 S8 |
+| 结果区 | results pane | 「关闭结果区」Close Results |
+| 当前库 | Current Database | 库选择器可访问名；「库 Database」沿用种子表 |
+| 当前连接 | Current Connection | 连接选择器可访问名 |
+| 服务端真值 | server-side truth | 选择器 tooltip；「服务端 Server」沿用 S4 |
+| 放弃更改 | Discard Changes | 结果区丢弃确认按钮 |
+| 二进制 | Binary | 值 tooltip；type token 仍写 binary |
+| 布尔值 | Boolean | 值 tooltip（句中形容词小写 boolean） |
+| 整数 / 无符号整数 | Integer / Unsigned integer | 值 tooltip 族 |
+| 浮点数 | Float | 值 tooltip |
+| 精确十进制 | Exact decimal | 值 tooltip（Decimal 契约口径） |
+| 数组 | Array | 值 tooltip；「N 个元素」N elements |
+| 空字符串 | Empty string | 「与 NULL 不同」different from NULL |
+| 已截断 | truncated | 「…（已截断）」… (truncated)；「被截断的值」沿用 S8 |
+| 延迟加载 | deferred loading | 「完整值需要后续延迟加载能力」 |
+| 字符 | character | 「N 字符」N characters（tooltip 计数） |
+| 字节 | byte | 「共 N 字节」N bytes total |
+
+## S5 Lane B（导出向导，#203）新增
+
+| 中文 | English | 备注 |
+|---|---|---|
+| 导出范围 | Export Range | 对话框标题；「范围」句中小写 range |
+| 当前页 | Current Page | 范围选择按钮；句中小写 current page |
+| 整张表 | Entire Table | 范围选择按钮；句中小写 entire table |
+| 已加载的 N 行 | loaded rows | 「导出已加载的 N 行为 CSV？」the {rows} loaded rows |
+| 公式注入防护 | Formula Injection Guard | 开关行标题；完成提示句中写 formula injection guard |
+| 写出口径 | Export rules | CSV / INSERT 确认正文；「口径」此前无独立词条 |
+| 覆盖 | Overwrite | 再确认按钮与标题 |
+| 临时文件 | temporary file | 取消 / 失败 / 中断说明族 |
+| 目标文件 | Target file | 确认正文行与「没有写入」口径 |
+| 半截文件 | half-written file | 取消 / 失败不残留口径 |
+| 转储 | dump | 「转储表」Dump {name}?；动词短语见 S3「转储表 Dump Table」 |
+| 表当前页 | Table current page | 范围说明标题行 |
+| 已写入 N 行 | N rows written | 进度状态行；「N / M rows written」两数句型 |
+| 导出完成 | Export Complete | 完成提示标题 |
+| 已取消导出 | Export Cancelled | 取消终态标题（界面词；日志仍中文） |
+| 导出未完成 | Export Incomplete | 后台任务失联标题 |
+| 无法导出 | Cannot Export | 门禁 / 前置条件错误标题 |
+| 没有可导出的行 | No Rows to Export | 空态标题（查询 / 表 / 分页三处同句复用） |
+| 复制路径 | Copy Path | 沿用 S2 `dialogs.logs_copy_btn` |
+| 已复制 | Copied | 沿用 S2 `dialogs.logs_copied_tooltip`（标签态与 tooltip 同句） |
+| 关闭 | Close | 提示 / 完成对话框按钮 |

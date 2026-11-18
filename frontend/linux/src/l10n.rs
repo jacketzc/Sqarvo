@@ -713,4 +713,243 @@ mod tests {
         );
         set_current(Lang::Zh);
     }
+
+    #[test]
+    fn tabs_entries_carry_the_s5_query_page_copy() {
+        // S5 Lane A（#203 前段）：查询页 / 结果区 / 语句切换行条目——zh 与迁移前字面量
+        // 逐字节一致（比对脚本另证），这里钉代表性条目、命名占位与行数两态，
+        // 防止 key 改名或 zh 漂移。
+        set_current(Lang::Zh);
+        assert_eq!(t("tabs.query_btn_execute"), "执行");
+        assert_eq!(
+            t("tabs.query_btn_execute_tip"),
+            "执行编辑器中的 SQL（Ctrl+Enter）"
+        );
+        assert_eq!(t("tabs.results_status_idle"), "尚未执行查询");
+        assert_eq!(t("tabs.picker_catalog_a11y"), "当前库");
+        assert_eq!(
+            tf(
+                "tabs.query_stmt_affected",
+                &[("index", "1".into()), ("rows", "3".into())]
+            ),
+            "语句 1 影响 3 行（无结果集）"
+        );
+        assert_eq!(
+            tf_n("tabs.results_state_cancelled", 2, &[("rows", "2".into())]),
+            "已取消 · 已保留 2 行"
+        );
+        assert_eq!(
+            tf(
+                "tabs.picker_catalog_truth_tip",
+                &[("layer", "库".into()), ("truth", "main".into())]
+            ),
+            "当前库：main（选中后这条会话会切到该库）"
+        );
+        assert_eq!(
+            tf(
+                "tabs.stmt_entry_rows",
+                &[
+                    ("number", "1".into()),
+                    ("kind", "SELECT".into()),
+                    ("rows", "3".into())
+                ]
+            ),
+            "1 · SELECT · 3 行"
+        );
+        // 结果区圆点 tooltip 复用数据网格同一组条目（事务态 + 脏行计数 + 说明行）。
+        let dot = format!(
+            "{} · {}\n{}",
+            t("data_page.txn_autocommit"),
+            tf_n(
+                "data_page.dirty_plain",
+                1,
+                &[
+                    ("dirty", "1".into()),
+                    ("pending", "1".into()),
+                    ("insert_note", String::new()),
+                ]
+            ),
+            t("data_page.dot_note_autocommit"),
+        );
+        assert_eq!(
+            dot,
+            "自动提交 · 脏行 1 · 待提交 1 条\n自动提交：每条语句自成一个事务"
+        );
+        set_current(Lang::En);
+        assert_eq!(t("tabs.query_btn_execute"), "Execute");
+        assert_eq!(
+            t("tabs.results_ph_limited_title"),
+            "Result Set Hit the Client Limit"
+        );
+        assert_eq!(
+            tf_n("tabs.results_state_error", 1, &[("rows", "1".into())]),
+            "Error · 1 row kept"
+        );
+        assert_eq!(
+            tf_n("tabs.query_dlg_discard_body", 3, &[("dirty", "3".into())]),
+            "Closing the results pane discards 3 rows of uncommitted changes."
+        );
+        assert_eq!(
+            tf(
+                "tabs.stmt_tooltip_preview",
+                &[
+                    ("number", "2".into()),
+                    ("preview", "UPDATE t".into()),
+                    ("state", "This statement failed".into())
+                ]
+            ),
+            "Statement 2: UPDATE t\nThis statement failed"
+        );
+        set_current(Lang::Zh);
+    }
+
+    #[test]
+    fn dialogs_entries_carry_the_s5_export_wizard_copy() {
+        // S5 Lane B（#203 尾段）：导出向导全族条目——zh 与迁移前字面量逐字节一致
+        // （比对脚本另证），这里钉代表性条目、命名占位与行/单元格计数两态，防 key
+        // 改名或 zh 漂移；「取消」/「复制路径」/「已复制」复用 S2 既有条目。
+        set_current(Lang::Zh);
+        assert_eq!(t("dialogs.export_range_title"), "导出范围");
+        assert_eq!(t("dialogs.export_btn_export"), "导出");
+        assert_eq!(t("dialogs.export_btn_overwrite"), "覆盖");
+        assert_eq!(
+            tf(
+                "dialogs.export_scope_table_page",
+                &[
+                    ("page_index", "2".into()),
+                    ("first_row", "51".into()),
+                    ("loaded", "50".into()),
+                ]
+            ),
+            "表当前页：第 2 页（从第 51 行起）已加载的 50 行"
+        );
+        assert_eq!(
+            tf(
+                "dialogs.export_partial_query",
+                &[
+                    ("loaded", "10".into()),
+                    ("reason", t("dialogs.export_reason_limited").into()),
+                ]
+            ),
+            "文件只包含已加载的 10 行（已达客户端结果集上限），不是全部结果。"
+        );
+        assert_eq!(
+            tf(
+                "dialogs.export_range_body",
+                &[
+                    ("kind", t("dialogs.export_kind_insert").into()),
+                    ("page_rows", "50".into())
+                ]
+            )
+            .lines()
+            .next()
+            .unwrap(),
+            "选择导出范围（INSERT 语句）："
+        );
+        assert_eq!(
+            tf_n(
+                "dialogs.export_written_rows",
+                3,
+                &[("written", "3".into()), ("suffix", String::new())]
+            ),
+            "已写入 3 行"
+        );
+        assert_eq!(
+            tf("dialogs.export_file_title", &[("kind", "CSV".into())]),
+            "导出为CSV"
+        );
+        assert!(t("dialogs.export_csv_scope").contains("空字段 = SQL NULL；空字符串写为 \"\"。"));
+        assert!(t("dialogs.export_insert_scope").contains("NULL 写 NULL、空串写 ''；"));
+        set_current(Lang::En);
+        assert_eq!(
+            t("dialogs.export_overwrite_title"),
+            "Overwrite Existing File?"
+        );
+        assert_eq!(t("dialogs.export_kind_insert"), "INSERT Statements");
+        assert_eq!(t("dialogs.export_range_btn_table"), "Entire Table");
+        assert_eq!(
+            tf_n(
+                "dialogs.export_written_rows",
+                1,
+                &[("written", "1".into()), ("suffix", String::new())]
+            ),
+            "1 row written"
+        );
+        assert_eq!(
+            tf_n(
+                "dialogs.export_truncated_suffix",
+                1,
+                &[("truncated_cells", "1".into())]
+            ),
+            "(1 cell truncated)"
+        );
+        assert_eq!(
+            tf_n(
+                "dialogs.export_confirm_csv_rows",
+                2,
+                &[("rows", "2".into())]
+            ),
+            "Export the 2 loaded rows as CSV?"
+        );
+        set_current(Lang::Zh);
+    }
+
+    #[test]
+    fn data_page_entries_carry_the_s5_value_tooltip_copy() {
+        // S5 Lane A 移交的值格式化 tooltip 族（#202 → #203）：NULL / 空串 / 类型说明 /
+        // 截断 / 二进制。zh 与 backend/query.rs 迁移前字面量逐字节一致（比对脚本另证）。
+        set_current(Lang::Zh);
+        assert_eq!(t("data_page.value_null_tip"), "SQL NULL（与空字符串不同）");
+        assert_eq!(
+            t("data_page.value_empty_text_tip"),
+            "空字符串（长度 0），与 NULL 不同"
+        );
+        assert_eq!(t("data_page.value_truncated_marker"), "…（已截断）");
+        assert_eq!(t("data_page.value_no_value"), "无值");
+        assert_eq!(
+            tf(
+                "data_page.value_timestamp_tip",
+                &[
+                    ("type_name", "TIMESTAMP".into()),
+                    ("nanos", "1700000000".into()),
+                    ("offset", "+28800".into())
+                ]
+            ),
+            "TIMESTAMP · TIMESTAMP · unix_nanos=1700000000 偏移+28800s"
+        );
+        assert_eq!(
+            tf(
+                "data_page.value_missing_text",
+                &[("kind", "Text".into()), ("value", "无值".into())]
+            ),
+            "（值缺失：Text / 无值）"
+        );
+        set_current(Lang::En);
+        assert_eq!(
+            t("data_page.value_null_tip"),
+            "SQL NULL (different from the empty string)"
+        );
+        assert_eq!(t("data_page.value_no_value"), "no value");
+        assert_eq!(
+            tf_n(
+                "data_page.value_bytes_total_text",
+                1,
+                &[
+                    ("shown", "89 50".into()),
+                    ("ellipsis", "".into()),
+                    ("bytes", "1".into())
+                ]
+            ),
+            "0x89 50 (1 byte total)"
+        );
+        assert_eq!(
+            tf_n(
+                "data_page.value_text_tip",
+                2,
+                &[("type_name", "TEXT".into()), ("chars", "2".into())]
+            ),
+            "TEXT · TEXT · 2 characters"
+        );
+        set_current(Lang::Zh);
+    }
 }

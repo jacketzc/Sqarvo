@@ -26,6 +26,7 @@ use crate::backend::query::{
     CellStyle, CellView, ColumnView, PrefetchDecision, PrefetchInput, PrefetchPause, RowView,
     prefetch_decision,
 };
+use crate::l10n;
 use crate::layout::{Gap, gap, metrics};
 
 mod row_store {
@@ -294,7 +295,7 @@ impl ResultsView {
     pub fn new(on_fetch: Rc<dyn Fn()>) -> Rc<Self> {
         install_css();
 
-        let status = gtk::Label::new(Some("尚未执行查询"));
+        let status = gtk::Label::new(Some(l10n::t("tabs.results_status_idle")));
         status.set_xalign(0.0);
         status.add_css_class("sqarvo-heading");
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -348,7 +349,7 @@ impl ResultsView {
         status_dot.set_focus_on_click(false);
         // 常驻（用户要求）：没有脏行时是灰点，有脏行时换成强调色——不是「有事才出现」。
         status_dot.set_visible(true);
-        status_dot.set_tooltip_text(Some("没有未提交的更改"));
+        status_dot.set_tooltip_text(Some(l10n::t("tabs.results_dot_clean_tip")));
         status_dot.set_margin_end(gap(Gap::Xs));
 
         let ex_button = gtk::MenuButton::new();
@@ -357,9 +358,7 @@ impl ResultsView {
         ex_button.set_always_show_arrow(true);
         ex_button.set_sensitive(false);
         ex_button.set_valign(gtk::Align::Center);
-        ex_button.set_tooltip_text(Some(
-            "导出已加载的查询结果：CSV 或 INSERT 语句（Ctrl+Shift+E 直接导出 CSV）",
-        ));
+        ex_button.set_tooltip_text(Some(l10n::t("tabs.results_export_tip")));
         // 关闭结果区（#189）：「导出 ▾」右侧，原生 symbolic 图标（L0）。语义 =
         // Close RPC（幂等，复用既有客户端路径）+ 隐藏结果区 + 编辑器占满 + 清网格态；
         // 有未提交脏行先弹丢弃确认（复用仓库既有确认口径）；执行中置灰 + tooltip
@@ -369,8 +368,10 @@ impl ResultsView {
         close_button.set_icon_name("window-close-symbolic");
         close_button.add_css_class("flat");
         close_button.set_valign(gtk::Align::Center);
-        close_button.set_tooltip_text(Some("关闭结果区（释放查询资源）"));
-        close_button.update_property(&[gtk::accessible::Property::Label("关闭结果区")]);
+        close_button.set_tooltip_text(Some(l10n::t("tabs.results_close_tip")));
+        close_button.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "tabs.results_close_a11y",
+        ))]);
         // 说明文字被隐藏时行会向左塌缩，把圆点与导出甩到左边；用一枚可扩展的空盒占住
         // 弹性空白，保持「右端是状态圆点 + 导出」这一版式（与表工具条同一侧）。
         let detail_spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
@@ -380,7 +381,9 @@ impl ResultsView {
         detail_row.append(&ex_button);
         detail_row.append(&close_button);
 
-        let placeholder = adw::StatusPage::builder().title("尚未执行查询").build();
+        let placeholder = adw::StatusPage::builder()
+            .title(l10n::t("tabs.results_status_idle"))
+            .build();
         placeholder.set_vexpand(true);
         let placeholder_icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
         placeholder_icon.set_pixel_size(metrics().empty_icon_px);
@@ -646,8 +649,20 @@ impl ResultsView {
             );
         }
         if on {
+            // 与表数据页同一份措辞：事务态 + 脏行计数（两态）+ 第二行说明。
             let tooltip = format!(
-                "自动提交 · 脏行 {dirty} · 待提交 {pending} 条\n自动提交：每条语句自成一个事务"
+                "{} · {}\n{}",
+                l10n::t("data_page.txn_autocommit"),
+                l10n::tf_n(
+                    "data_page.dirty_plain",
+                    i64::try_from(dirty).unwrap_or(i64::MAX),
+                    &[
+                        ("dirty", dirty.to_string()),
+                        ("pending", pending.to_string()),
+                        ("insert_note", String::new()),
+                    ],
+                ),
+                l10n::t("data_page.dot_note_autocommit"),
             );
             self.status_dot.set_tooltip_text(Some(&tooltip));
             self.status_dot
@@ -659,7 +674,8 @@ impl ResultsView {
         } else {
             self.status_dot_core
                 .remove_css_class(crate::theme::STATUS_DOT_DIRTY_CLASS);
-            self.status_dot.set_tooltip_text(Some("没有未提交的更改"));
+            self.status_dot
+                .set_tooltip_text(Some(l10n::t("tabs.results_dot_clean_tip")));
         }
     }
 
@@ -700,10 +716,10 @@ impl ResultsView {
     /// 追加「新行」占位行（`+` 的入口；返回占位行下标）。
     pub fn begin_insert_row(&self) -> Result<usize, String> {
         let Some(edit) = self.edit() else {
-            return Err("结果不是单表查询：不能新增行".to_owned());
+            return Err(l10n::t("tabs.results_insert_not_single").to_owned());
         };
         if !edit.can_insert() {
-            return Err("已经有未提交的更改：先提交或放弃，再新增行".to_owned());
+            return Err(l10n::t("tabs.results_insert_dirty_exists").to_owned());
         }
         edit.begin_insert()?;
         let index = self.store.borrow().rows_len();
@@ -773,12 +789,12 @@ impl ResultsView {
             return;
         };
         let is_insert = self.insert_row.get() == Some(row);
-        let (title, initial, is_null) = if is_insert {
+        let (is_insert_draft, initial, is_null) = if is_insert {
             let Some(view) = edit.insert_cell_view(column) else {
                 return;
             };
             (
-                "新行".to_owned(),
+                true,
                 if view.hint { String::new() } else { view.text },
                 false,
             )
@@ -791,16 +807,31 @@ impl ResultsView {
             };
             let null = crate::proto::common::v1::ValueKind::try_from(value.kind)
                 == Ok(crate::proto::common::v1::ValueKind::Null);
-            ("编辑".to_owned(), crate::table_data::edit_text(value), null)
+            (false, crate::table_data::edit_text(value), null)
         };
         let Some(column_meta) = edit.columns.get(column) else {
             return;
         };
         let nullable = column_meta.nullable;
-        let title = format!(
-            "{} {} · {}",
-            title, column_meta.name, column_meta.type_label
-        );
+        // 标题模板：编辑态与数据网格同一句（复用 data_page.editor_title），
+        // 新行草稿态是结果区自己的句式（「新行 列名 · 类型」，无前置间隔点）。
+        let title = if is_insert_draft {
+            l10n::tf(
+                "tabs.results_editor_insert_title",
+                &[
+                    ("column_name", column_meta.name.clone()),
+                    ("type_label", column_meta.type_label.clone()),
+                ],
+            )
+        } else {
+            l10n::tf(
+                "data_page.editor_title",
+                &[
+                    ("column_name", column_meta.name.clone()),
+                    ("type_label", column_meta.type_label.clone()),
+                ],
+            )
+        };
         let page = Rc::clone(self);
         let on_apply: Rc<dyn Fn(Option<String>) -> Result<(), String>> =
             Rc::new(move |value: Option<String>| {
@@ -1126,8 +1157,10 @@ impl ResultsView {
         }
         self.spinner.set_visible(matches!(state, RunState::Loading));
         self.ex_button.set_sensitive(loaded > 0);
-        self.ex_button.set_tooltip_text(Some(&format!(
-            "导出已加载的 {loaded} 行（只含内存中已有的行）：CSV 或 INSERT 语句；Ctrl+Shift+E 直接导出 CSV"
+        self.ex_button.set_tooltip_text(Some(&l10n::tf_n(
+            "tabs.results_export_rows_tip",
+            i64::try_from(loaded).unwrap_or(i64::MAX),
+            &[("loaded", loaded.to_string())],
         )));
         if matches!(state, RunState::Loading) {
             self.spinner.start();
@@ -1136,25 +1169,52 @@ impl ResultsView {
         }
 
         let total = if has_more {
-            "总数未知（服务端分批返回）".to_owned()
-        } else if loaded == 0 && matches!(state, RunState::Complete | RunState::Empty) {
-            "共 0 行".to_owned()
+            l10n::t("tabs.results_total_unknown").to_owned()
         } else {
-            format!("共 {loaded} 行")
+            // 「共 N 行」与对象树的精确计数逐字同句，直接复用同一条目。
+            l10n::tf_n(
+                "object_tree.total_exact",
+                i64::try_from(loaded).unwrap_or(i64::MAX),
+                &[("rows", loaded.to_string())],
+            )
         };
 
+        let plural = i64::try_from(loaded).unwrap_or(i64::MAX);
+        let rows = loaded.to_string();
         let text = match state {
-            RunState::Idle => "尚未执行查询".to_owned(),
-            RunState::Loading => "执行中…".to_owned(),
-            RunState::Streaming => format!("加载中 · 已加载 {loaded} 行 · {total}"),
-            RunState::Complete => format!("已完成 · 已加载 {loaded} 行 · {total}"),
-            RunState::Empty => "空结果集 · 共 0 行".to_owned(),
-            RunState::NoResultSet => "已执行 · 无结果集".to_owned(),
-            RunState::Undelivered => "已执行 · 结果未返回".to_owned(),
-            RunState::Error => format!("错误 · 已保留 {loaded} 行"),
-            RunState::Limited => format!("已达客户端上限 · 已保留 {loaded} 行"),
-            RunState::Cancelled => format!("已取消 · 已保留 {loaded} 行"),
-            RunState::Disconnected => format!("已断开 · 已保留 {loaded} 行"),
+            RunState::Idle => l10n::t("tabs.results_status_idle").to_owned(),
+            RunState::Loading => l10n::t("tabs.results_state_running").to_owned(),
+            RunState::Streaming => l10n::tf_n(
+                "tabs.results_state_streaming",
+                plural,
+                &[("rows", rows.clone()), ("total", total.clone())],
+            ),
+            RunState::Complete => l10n::tf_n(
+                "tabs.results_state_complete",
+                plural,
+                &[("rows", rows.clone()), ("total", total.clone())],
+            ),
+            RunState::Empty => l10n::t("tabs.results_state_empty").to_owned(),
+            RunState::NoResultSet => l10n::t("tabs.results_state_executed_no_result").to_owned(),
+            RunState::Undelivered => l10n::t("tabs.results_state_executed_undelivered").to_owned(),
+            RunState::Error => l10n::tf_n(
+                "tabs.results_state_error",
+                plural,
+                &[("rows", rows.clone())],
+            ),
+            RunState::Limited => l10n::tf_n(
+                "tabs.results_state_limited",
+                plural,
+                &[("rows", rows.clone())],
+            ),
+            RunState::Cancelled => l10n::tf_n(
+                "tabs.results_state_cancelled",
+                plural,
+                &[("rows", rows.clone())],
+            ),
+            RunState::Disconnected => {
+                l10n::tf_n("tabs.results_state_disconnected", plural, &[("rows", rows)])
+            }
         };
         self.status.set_text(&text);
         // v0.2.5：正常路径不再常驻说明文案（「已完成 · 已加载 N 行 · 共 N 行」这类）。
@@ -1196,34 +1256,50 @@ impl ResultsView {
             self.stack.set_visible_child_name("placeholder");
             let (title, description) = match state {
                 RunState::Idle => (
-                    "尚未执行查询",
-                    "在上方输入 SQL 后按 Ctrl+Enter 执行".to_owned(),
+                    l10n::t("tabs.results_status_idle"),
+                    l10n::t("tabs.results_ph_idle_desc").to_owned(),
                 ),
-                RunState::Loading => ("正在执行查询", "等待首批数据…".to_owned()),
+                RunState::Loading => (
+                    l10n::t("tabs.results_ph_running_title"),
+                    l10n::t("tabs.results_ph_running_desc").to_owned(),
+                ),
                 RunState::Empty => (
-                    "空结果集",
-                    "语句执行成功，但没有返回任何行（与执行失败不同）".to_owned(),
+                    l10n::t("tabs.results_ph_empty_title"),
+                    l10n::t("tabs.results_ph_empty_desc").to_owned(),
                 ),
-                RunState::Error => ("查询失败", note.unwrap_or("后端未提供错误详情").to_owned()),
+                RunState::Error => (
+                    l10n::t("tabs.results_ph_error_title"),
+                    note.unwrap_or(l10n::t("tabs.results_ph_error_desc"))
+                        .to_owned(),
+                ),
                 RunState::Limited => (
-                    "结果集达到客户端上限",
-                    note.unwrap_or("已停止拉取，已加载的数据仍可查看")
+                    l10n::t("tabs.results_ph_limited_title"),
+                    note.unwrap_or(l10n::t("tabs.results_ph_limited_desc"))
                         .to_owned(),
                 ),
                 RunState::NoResultSet => (
-                    "无结果集",
-                    note.unwrap_or("语句已执行，但没有返回结果集").to_owned(),
-                ),
-                RunState::Undelivered => (
-                    "结果未返回",
-                    note.unwrap_or("该语句已执行成功，但脚本失败时后端未保留其结果")
+                    l10n::t("tabs.query_no_result_set"),
+                    note.unwrap_or(l10n::t("tabs.results_ph_no_result_desc"))
                         .to_owned(),
                 ),
-                RunState::Cancelled => ("已取消", note.unwrap_or("查询已被取消").to_owned()),
-                RunState::Disconnected => {
-                    ("已断开", note.unwrap_or("与后端的连接已断开").to_owned())
+                RunState::Undelivered => (
+                    l10n::t("tabs.results_ph_undelivered_title"),
+                    note.unwrap_or(l10n::t("tabs.results_ph_undelivered_desc"))
+                        .to_owned(),
+                ),
+                RunState::Cancelled => (
+                    l10n::t("tabs.results_ph_cancelled_title"),
+                    note.unwrap_or(l10n::t("tabs.results_ph_cancelled_desc"))
+                        .to_owned(),
+                ),
+                RunState::Disconnected => (
+                    l10n::t("data_page.txn_disconnected_label"),
+                    note.unwrap_or(l10n::t("tabs.results_ph_disconnected_desc"))
+                        .to_owned(),
+                ),
+                RunState::Streaming | RunState::Complete => {
+                    (l10n::t("tabs.results_ph_empty_title"), String::new())
                 }
-                RunState::Streaming | RunState::Complete => ("空结果集", String::new()),
             };
             self.placeholder.set_title(title);
             self.placeholder.set_description(Some(&description));
