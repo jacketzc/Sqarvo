@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Sqarvo.Windows.Diagnostics;
 using Sqarvo.Windows.Layout;
+using Sqarvo.Windows.Localization;
 using Sqarvo.Windows.Storage;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Views;
@@ -561,7 +562,30 @@ public sealed partial class MainWindow : Window
         shell.QuitRequested += (_, _) => Close();
         shell.PanelWidthsChanged += OnPanelWidthsChanged;
         shell.DensityChangeRequested += OnDensityChangeRequested;
+        shell.LanguageChangeRequested = ChangeLanguageAsync;
         return shell;
+    }
+
+    private async Task ChangeLanguageAsync(string preference, bool restart)
+    {
+        if (_options.PinsQaLanguage || _options.Language is not null)
+        {
+            return;
+        }
+
+        var previous = _state.Language;
+        _state.Language = preference;
+        if (!await WindowStateStore.SaveAsync(_state))
+        {
+            _state.Language = previous;
+            return;
+        }
+
+        LanguageService.SetPreference(preference);
+        if (restart && Application.Current is App app)
+        {
+            await app.RestartForLanguageAsync();
+        }
     }
 
     /// <summary>视图菜单的密度入口：复用键盘快捷键的同一条切档路径（重建 + 重算 + 写盘）。</summary>
@@ -588,21 +612,7 @@ public sealed partial class MainWindow : Window
             _ => "system",
         };
 
-        var snapshot = new WindowState
-        {
-            Version = WindowState.CurrentVersion,
-            Tier = _state.Tier,
-            LastInspectorWidth = _state.LastInspectorWidth,
-            LastSidebarWidth = _state.LastSidebarWidth,
-            WindowWidth = _state.WindowWidth,
-            WindowHeight = _state.WindowHeight,
-            WindowX = _state.WindowX,
-            WindowY = _state.WindowY,
-            Maximized = _state.Maximized,
-            Theme = _state.Theme,
-        };
-
-        _ = Task.Run(() => WindowStateStore.Save(snapshot));
+        _ = WindowStateStore.SaveAsync(_state);
     }
 
     /// <summary>

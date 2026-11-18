@@ -9,7 +9,7 @@ using Sqarvo.Common.V1;
 using Sqarvo.Core.Clients;
 using Sqarvo.Services.V1;
 using Sqarvo.Windows.Diagnostics;
-using Sqarvo.Windows.Strings;
+using Sqarvo.Windows.L10n;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
 using System;
@@ -1231,7 +1231,7 @@ public sealed partial class ShellView
     /// <para>XamlRoot / ShowAsync 的范式沿用 ShellView.xaml.cs 的 ConnectionDialog / 关于对话框。</para>
     /// <para>不叠第二个模态框：与连接对话框共用 <c>_dialogOpen</c> 守卫。</para>
     /// </remarks>
-    private async Task<bool> ConfirmDestructiveAsync(string title, string content, string confirmText)
+    private async Task<bool> ConfirmDestructiveAsync(string title, string content, string confirmText, string? cancelText = null)
     {
         if (_dialogOpen)
         {
@@ -1246,7 +1246,7 @@ public sealed partial class ShellView
                 Title = title,
                 Content = content,
                 PrimaryButtonText = confirmText,
-                CloseButtonText = UiStrings.Get(UiStrings.DialogCancel),
+                CloseButtonText = cancelText ?? Strings.T("dialogs.btn_cancel"),
                 DefaultButton = ContentDialogButton.Close,
                 XamlRoot = XamlRoot,
             };
@@ -1292,16 +1292,23 @@ public sealed partial class ShellView
             }
 
             // 契约 §8.2（方案 A）：超过 100 行或含删除，改为 WinUI 原生模态对话框。
-            // 正文直接用 DataSubmitPlan.Message（含行数 / 删除行数与阈值警告）；默认「取消」。
-            var message = plan.Message;
+            var message = plan.Risk == DataSubmitRisk.RowLimit
+                ? Strings.Tf(
+                    "dialogs.windows_submit_risk_rows",
+                    ("rows", plan.RowCount),
+                    ("delete_note", plan.DeleteCount > 0
+                        ? Strings.Tf("dialogs.windows_submit_delete_note", ("deletes", plan.DeleteCount))
+                        : string.Empty),
+                    ("threshold", DataLimits.RiskConfirmationRows))
+                : Strings.Tf("dialogs.windows_submit_with_deletes", ("deletes", plan.DeleteCount));
             var confirmed = await ConfirmDestructiveAsync(
-                UiStrings.Get(UiStrings.DialogSubmitTitle),
+                Strings.T("dialogs.windows_submit_title"),
                 message,
-                UiStrings.Get(UiStrings.DialogSubmitConfirm));
+                Strings.T("data_page.risk_btn_confirm"));
             tab.RiskArmed = false;
             if (!confirmed)
             {
-                _notice = UiStrings.Get(UiStrings.DialogSubmitCancelled);
+                _notice = Strings.T("dialogs.windows_submit_cancelled");
                 ApplyDataStatus();
                 return;
             }
@@ -1687,7 +1694,7 @@ public sealed partial class ShellView
     /// 第二次请求放行：先回滚所有事务再让窗口关（否则用户会被自己的改动锁死在窗口里，
     /// 而「再点一次关闭」已经是明确的放弃意图）。
     /// </remarks>
-    public bool TryBlockWindowClose()
+    public bool TryBlockWindowClose(bool discardConfirmed = false)
     {
         // 只按「真的有未提交改动」判定：已回滚/已提交的事务（Phase=RolledBack 但还没被用户看见）
         // 曾经把关窗拦下来过一次——界面写「还有 0 行未提交」却关不掉，是自相矛盾的提示。
@@ -1711,19 +1718,21 @@ public sealed partial class ShellView
             return false;
         }
 
-        if (_closeGuardArmed)
+        if (_closeGuardArmed || discardConfirmed)
         {
+            var reason = discardConfirmed ? "已确认放弃更改" : "第二次请求，放弃更改";
             foreach (var tab in pending)
             {
                 var transactionId = tab.TransactionId;
                 tab.TransactionId = string.Empty;
                 if (transactionId.Length > 0)
                 {
-                    _ = RollbackQuietAsync(transactionId, "关窗（第二次请求，放弃更改）");
+                    _ = RollbackQuietAsync(transactionId, $"关窗（{reason}）");
                 }
             }
 
-            ConsoleBridge.WriteDiagnostic($"[data] 关窗：第二次请求，放弃 {pending.Count} 个数据页的改动并回滚事务");
+            var confirmation = discardConfirmed ? "重启确认" : "第二次请求";
+            ConsoleBridge.WriteDiagnostic($"[data] 关窗：{confirmation}，放弃 {pending.Count} 个数据页的改动并回滚事务");
             return false;
         }
 
@@ -2579,7 +2588,7 @@ public sealed partial class ShellView
             return false;
         }
 
-        reason = UiStrings.Get(UiStrings.RowDeleteTooltip);
+        reason = Strings.T("dialogs.windows_row_delete_tooltip");
         return true;
     }
 
@@ -2604,12 +2613,12 @@ public sealed partial class ShellView
 
         // 契约 §8.2：删除是破坏性操作，走模态对话框，默认「取消」。
         var confirmed = await ConfirmDestructiveAsync(
-            UiStrings.Get(UiStrings.DialogDeleteTitle),
-            UiStrings.Get(UiStrings.DialogDeleteBody),
-            UiStrings.Get(UiStrings.DialogDeleteConfirm));
+            Strings.T("dialogs.windows_delete_title"),
+            Strings.T("dialogs.windows_delete_body"),
+            Strings.T("dialogs.windows_delete_confirm"));
         if (!confirmed)
         {
-            _notice = UiStrings.Get(UiStrings.DialogDeleteCancelled);
+            _notice = Strings.T("dialogs.windows_delete_cancelled");
             ApplyDataStatus();
             return;
         }

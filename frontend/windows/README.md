@@ -112,6 +112,18 @@ dotnet run -c Debug -p:Platform=x64 -- --report-theme --report-metrics
 [metrics] tier=compact header=64 toolbar=44 status=48 minWindow=960x640 sidebar=237 inspector=280 rowTree=24 fontUi=12
 ```
 
+### 界面语言
+
+「视图 → 语言」提供「跟随系统 / 简体中文 / English」。跟随系统时，`zh*` 使用简体中文，其余语言使用英文。
+生效语言变化时选择「重启」以应用，选择「稍后」会恢复原勾选。偏好写入
+`%LOCALAPPDATA%\Sqarvo\window.json` 的 `language` 字段，默认 `system`，另有 `zh` 和 `en`。
+该字段只存界面偏好。当前 Windows 英文覆盖「视图」菜单及已迁移的行操作确认文案。
+
+WinUI 构建需要 PATH 上的 Python 3.11 或更新版本（`python`）。构建从仓库根的 `l10n/`
+在 `obj/` 生成字符串资源与访问器。运行 `--lang=en --report-language` 或
+`--lang=zh --report-language` 可验证「视图 → 语言」的可访问性名称和选定的提示文案。
+诊断开关默认使用中文，`--lang` 只覆盖当前进程。
+
 窗口层与外壳（#163 / #164）另有四个开关：
 
 ```text

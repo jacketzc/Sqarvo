@@ -1127,3 +1127,65 @@ key = "dialogs.export_close_btn"
 zh = "关闭"
 en = "Close"
 status = "done"
+
+# Windows 行操作确认与风险提示（S6-a / #204）
+
+[[entry]]
+key = "dialogs.windows_submit_title"
+zh = "确认提交行变更？"
+en = "Commit These Row Changes?"
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_submit_cancelled"
+zh = "已取消提交，未写入数据库"
+en = "Commit cancelled. No changes were written to the database."
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_delete_title"
+zh = "删除选中行？"
+en = "Delete Selected Rows?"
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_delete_body"
+zh = "标记选中的行会随提交生效；提交前可用 Ctrl+Z 撤销。是否标记删除？"
+en = "The selected rows will be deleted when you commit. Press Ctrl+Z to undo the marks before committing. Mark these rows for deletion?"
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_delete_confirm"
+zh = "标记删除"
+en = "Mark for Deletion"
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_delete_cancelled"
+zh = "已取消删除，未做任何标记"
+en = "Deletion cancelled. No rows were marked."
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_row_delete_tooltip"
+zh = "标记删除选中行（随提交生效，提交前可撤销）"
+en = "Mark selected rows for deletion (takes effect on commit and can be undone before committing)"
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_submit_risk_rows"
+zh = "本次提交 {rows} 行{delete_note}，超过风险阈值 {threshold} 行。请在确认对话框中复核后提交。"
+en = "This commit affects {rows} rows{delete_note} and exceeds the risk threshold of {threshold} rows. Review the changes in the confirmation dialog before committing."
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_submit_with_deletes"
+zh = "本次提交包含删除 {deletes} 行（删除不可撤销，随提交生效）。请在确认对话框中复核后提交。"
+en = "Rows marked for deletion: {deletes}. Deletions take effect on commit and cannot be undone. Review the changes in the confirmation dialog before committing."
+status = "done"
+
+[[entry]]
+key = "dialogs.windows_submit_delete_note"
+zh = "（其中删除 {deletes} 行）"
+en = " (including {deletes} to delete)"
+status = "done"

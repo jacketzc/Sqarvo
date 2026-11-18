@@ -6,6 +6,7 @@ using Sqarvo.Core.Process;
 using Sqarvo.Core.Protocol;
 using Sqarvo.Windows.Connections;
 using Sqarvo.Windows.Diagnostics;
+using Sqarvo.Windows.Localization;
 using Sqarvo.Windows.Storage;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
@@ -106,6 +107,7 @@ public partial class App : Application
         }
 
         _state = WindowStateStore.Load();
+        LanguageService.Initialize(_state.Language, _options.Language, _options.PinsQaLanguage);
 
         // 自检是纯函数：不需要窗口，也不需要显示器。
         if (_options.SelfTestWindow)
@@ -303,6 +305,7 @@ public partial class App : Application
     {
         if (_shutdownStarted)
         {
+            args.Cancel = true;
             return;
         }
 
@@ -314,15 +317,41 @@ public partial class App : Application
         }
 
         args.Cancel = true;
-        _shutdownStarted = true;
+        await ShutdownAndCloseAsync();
+    }
 
-        var backend = Backend;
-        if (backend is null)
+    // 重启确认已经授权放弃未提交的改动，仍走同一条后端停机路径。
+    internal Task RestartForLanguageAsync() => ShutdownAndCloseAsync(restart: true);
+
+    private async Task ShutdownAndCloseAsync(bool restart = false)
+    {
+        if (_shutdownStarted || _window is not { } window)
         {
-            _window?.Close();
             return;
         }
 
+        _shutdownStarted = true;
+
+        if (restart && window is MainWindow guarded)
+        {
+            guarded.Shell.TryBlockWindowClose(discardConfirmed: true);
+        }
+
+        if (Backend is { } backend)
+        {
+            await StopBackendAsync(backend);
+        }
+
+        window.AppWindow.Closing -= OnWindowClosing;
+        window.Close();
+        if (restart)
+        {
+            StartReplacementProcess();
+        }
+    }
+
+    private static async Task StopBackendAsync(BackendSession backend)
+    {
         var stopwatch = Stopwatch.StartNew();
         var shutdown = backend.ShutdownAsync();
         var finished = await Task.WhenAny(shutdown, Task.Delay(ShutdownTimeout));
@@ -344,8 +373,30 @@ public partial class App : Application
                 ConsoleBridge.WriteDiagnostic($"[shutdown] 后端停机失败：{error.GetType().Name}: {error.Message}");
             }
         }
+    }
 
-        _window?.Close();
+    private static void StartReplacementProcess()
+    {
+        if (Environment.ProcessPath is not { } executable)
+        {
+            ConsoleBridge.WriteDiagnostic("[language] restart failed: executable path unavailable");
+            return;
+        }
+
+        var start = new ProcessStartInfo(executable);
+        if (string.Equals(System.IO.Path.GetFileName(executable), "dotnet.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            start.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
+        }
+
+        try
+        {
+            using var process = Process.Start(start);
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            CrashLog.Write("language restart", error);
+        }
     }
 
     /// <summary>

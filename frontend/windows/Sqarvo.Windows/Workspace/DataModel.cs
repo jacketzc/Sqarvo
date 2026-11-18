@@ -737,15 +737,25 @@ internal sealed record DataChangePlan(
     }
 }
 
+internal enum DataSubmitRisk
+{
+    None,
+    RowLimit,
+    Deletes,
+}
+
 /// <summary>提交前的守卫结论（需要破坏性操作时由 UI 弹模态对话框确认）。</summary>
 internal sealed record DataSubmitPlan(
     bool Allowed,
-    bool NeedsRiskConfirmation,
+    DataSubmitRisk Risk,
     bool AcknowledgeRisk,
     int RowCount,
     int ChangeCount,
     string Message)
 {
+    public bool NeedsRiskConfirmation => Risk != DataSubmitRisk.None;
+    public int DeleteCount { get; init; }
+
     /// <summary>算这一批能不能发。</summary>
     /// <param name="page">数据页。</param>
     /// <param name="riskArmed">用户已经就风险确认过一次（模态对话框确认后由 UI 传入 true）。</param>
@@ -756,7 +766,7 @@ internal sealed record DataSubmitPlan(
 
         if (page.ReadOnly)
         {
-            return new DataSubmitPlan(false, false, false, 0, 0, DataStatusText.ReadOnlyReasonText(page.ReadOnlyReason));
+            return new DataSubmitPlan(false, DataSubmitRisk.None, false, 0, 0, DataStatusText.ReadOnlyReasonText(page.ReadOnlyReason));
         }
 
         var rows = page.DirtyRowCount;
@@ -764,38 +774,31 @@ internal sealed record DataSubmitPlan(
         var changes = page.ChangeCount + deletes;
         if (changes == 0)
         {
-            return new DataSubmitPlan(false, false, false, 0, 0, "没有待提交的更改：双击单元格或按 F2 修改后按 Enter 暂存，或右键标记删除，再按 Ctrl+S 提交");
+            return new DataSubmitPlan(false, DataSubmitRisk.None, false, 0, 0, "没有待提交的更改：双击单元格或按 F2 修改后按 Enter 暂存，或右键标记删除，再按 Ctrl+S 提交");
         }
 
         if (rows > DataLimits.RiskConfirmationRows && !riskArmed)
         {
             // 一次改这么多行是不可逆的高风险动作：UI 弹模态对话框确认（方案 A），默认「取消」。
-            var deletePart = deletes > 0 ? $"（其中删除 {deletes} 行）" : string.Empty;
-            return new DataSubmitPlan(
-                false,
-                true,
-                false,
-                rows,
-                changes,
-                $"本次提交 {rows} 行{deletePart}，超过风险阈值 {DataLimits.RiskConfirmationRows} 行。请在确认对话框中复核后提交。");
+            return new DataSubmitPlan(false, DataSubmitRisk.RowLimit, false, rows, changes, string.Empty)
+            {
+                DeleteCount = deletes,
+            };
         }
 
         // ui-behavior-contract §8.2：变更里**含任何删除**都必须确认。本端走与超阈值同一套模态对话框，
-        // 只是正文单列删除行数（正文模板镜像在 Strings/UiStrings.cs 的 Data.Submit.WithDeletes）。
+        // 只是正文单列删除行数。
         if (deletes > 0 && !riskArmed)
         {
-            return new DataSubmitPlan(
-                false,
-                true,
-                false,
-                rows,
-                changes,
-                $"本次提交包含删除 {deletes} 行（删除不可撤销，随提交生效）。请在确认对话框中复核后提交。");
+            return new DataSubmitPlan(false, DataSubmitRisk.Deletes, false, rows, changes, string.Empty)
+            {
+                DeleteCount = deletes,
+            };
         }
 
         return new DataSubmitPlan(
             true,
-            false,
+            DataSubmitRisk.None,
             rows > DataLimits.RiskConfirmationRows,
             rows,
             changes,

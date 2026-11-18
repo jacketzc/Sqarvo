@@ -261,7 +261,7 @@ evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_pa
 [component.sync.windows]
 state = "partial"
 spec_hash = "6255d75d243d"
-note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/MainWindow.xaml:24 Ctrl+W 快捷键、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:240/1548 TabCloseRequested；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
+note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/MainWindow.xaml:24 Ctrl+W 快捷键、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:240/1555 TabCloseRequested；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"
@@ -302,7 +302,7 @@ evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.n
 [component.sync.windows]
 state = "partial"
 spec_hash = "fe7ea1ebdea1"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:512（TabView.TabStripFooter 的 ＋ 按钮）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:391（IsEnabled=canQuery，与 MenuNewQueryTab 同一谓词）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:921（Click → CreateQueryTab）"
+evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:532（TabView.TabStripFooter 的 ＋ 按钮）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:394（IsEnabled=canQuery，与 MenuNewQueryTab 同一谓词）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:924（Click → CreateQueryTab）"
 note = "四个入口（工具条「新建查询」/ 标签条 ＋ / Ctrl+T / 菜单「文件 → 新建查询标签」）全部走 CreateQueryTab、同一 canQuery 谓词已落地；＋ 放在 TabView.TabStripFooter，不碰 IsAddTabButtonVisible / TabWidthMode / CanReorderTabs（#170 崩溃边界）。剩余差异：新建后焦点不自动落编辑器（见 tabs.query.editor）、超限提示走状态栏而非对话框（见 tabs.limit）。"
 
 [component.sync.macos]

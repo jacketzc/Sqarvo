@@ -1,5 +1,7 @@
 using Microsoft.UI.Xaml;
 using Sqarvo.Windows.Layout;
+using Sqarvo.Windows.L10n;
+using Sqarvo.Windows.Localization;
 using Sqarvo.Windows.Storage;
 using Sqarvo.Windows.Theming;
 using System;
@@ -36,6 +38,25 @@ internal static class DiagnosticReporter
         if (options.ReportMonitor && layout is not null)
         {
             ConsoleBridge.WriteLine(MonitorLine(layout));
+        }
+
+        if (options.ReportLanguage && window is MainWindow main)
+        {
+            var (view, language) = main.Shell.LanguageMenuNames;
+            var chinese = LanguageService.Effective == "zh";
+            var title = Strings.T("shell.dialog_lang_restart_title");
+            var status = Strings.T("dialogs.windows_submit_cancelled");
+            var ok = view == (chinese ? "视图" : "View")
+                && language == (chinese ? "语言" : "Language")
+                && title == (chinese ? "切换语言需要重启" : "Switching language requires a restart")
+                && status == (chinese ? "已取消提交，未写入数据库" : "Commit cancelled. No changes were written to the database.")
+                && Strings.T("shell.nonexistent_qa_key") == "shell.nonexistent_qa_key";
+            ConsoleBridge.WriteLine($"[language] requested={LanguageService.Preference} effective={LanguageService.Effective} " +
+                $"view={view} language={language} title={title} status={status} ok={ok}");
+            if (!ok)
+            {
+                Environment.ExitCode = 1;
+            }
         }
     }
 

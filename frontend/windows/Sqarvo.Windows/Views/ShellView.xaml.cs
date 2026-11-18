@@ -10,7 +10,8 @@ using Sqarvo.Services.V1;
 using Sqarvo.Windows.Connections;
 using Sqarvo.Windows.Diagnostics;
 using Sqarvo.Windows.Layout;
-using Sqarvo.Windows.Strings;
+using Sqarvo.Windows.L10n;
+using Sqarvo.Windows.Localization;
 using Sqarvo.Windows.Storage;
 using Sqarvo.Windows.Theming;
 using Sqarvo.Windows.Workspace;
@@ -127,6 +128,7 @@ public sealed partial class ShellView : UserControl
     private string? _notice;
     private bool _loaded;
     private bool _dialogOpen;
+    private bool _changingLanguage;
     private bool _connecting;
     private bool _healthInFlight;
 
@@ -155,6 +157,7 @@ public sealed partial class ShellView : UserControl
 
     /// <summary>用户点了「文件 → 退出」。</summary>
     public event EventHandler? QuitRequested;
+    internal Func<string, bool, Task>? LanguageChangeRequested { get; set; }
 
     /// <summary>侧栏 / 信息面板宽度变了（拖动结束或键盘微调后触发一次）。</summary>
     public event EventHandler? PanelWidthsChanged;
@@ -984,7 +987,7 @@ public sealed partial class ShellView : UserControl
         // 状态栏行操作：动作名与 Linux（shell.rs `apply_row_ops`）逐字一致。可用性与「为什么不可用」
         // 由 ApplyDataStatus / ApplyQueryStatus 在各自的页里逐项刷新，这里的默认文案只说明动作本身。
         // 新增行按契约 §9.1 不渲染；删除行已实现，文案走字符串目录（随提交生效，提交前可撤销）。
-        ToolTipService.SetToolTip(ButtonRowDelete, UiStrings.Get(UiStrings.RowDeleteTooltip));
+        ToolTipService.SetToolTip(ButtonRowDelete, Strings.T("dialogs.windows_row_delete_tooltip"));
         foreach (var (button, action, reason) in new (Button Button, string Action, string Reason)[]
                  {
                      (ButtonRowApply, "提交所有脏行的变更", "当前没有待提交的更改"),
@@ -1040,17 +1043,26 @@ public sealed partial class ShellView : UserControl
     /// </remarks>
     private void WireViewMenu()
     {
-        SetSubItemText(MenuView, UiStrings.Get(UiStrings.ViewMenuText));
-        SetSubItemText(MenuViewTheme, UiStrings.Get(UiStrings.ViewThemeText));
-        SetSubItemText(MenuViewDensity, UiStrings.Get(UiStrings.ViewDensityText));
+        SetSubItemText(MenuView, Strings.T("shell.menu.view"));
+        SetSubItemText(MenuViewTheme, Strings.T("shell.menu.theme_section"));
+        SetSubItemText(MenuViewDensity, Strings.T("shell.menu.density_section"));
+        SetSubItemText(MenuViewLanguage, Strings.T("shell.menu.view_language"));
 
-        SetItemText(MenuThemeSystem, UiStrings.Get(UiStrings.ViewThemeSystem));
-        SetItemText(MenuThemeLight, UiStrings.Get(UiStrings.ViewThemeLight));
-        SetItemText(MenuThemeDark, UiStrings.Get(UiStrings.ViewThemeDark));
+        SetItemText(MenuThemeSystem, Strings.T("shell.menu.theme_system"));
+        SetItemText(MenuThemeLight, Strings.T("shell.menu.theme_light"));
+        SetItemText(MenuThemeDark, Strings.T("shell.menu.theme_dark"));
 
-        SetItemText(MenuDensityCompact, UiStrings.Get(UiStrings.ViewDensityCompact));
-        SetItemText(MenuDensityComfortable, UiStrings.Get(UiStrings.ViewDensityComfortable));
-        SetItemText(MenuDensityLarge, UiStrings.Get(UiStrings.ViewDensityLarge));
+        SetItemText(MenuDensityCompact, Strings.T("shell.menu.tier_compact"));
+        SetItemText(MenuDensityComfortable, Strings.T("shell.menu.tier_comfortable"));
+        SetItemText(MenuDensityLarge, Strings.T("shell.menu.tier_large"));
+
+        SetItemText(MenuLanguageSystem, Strings.T("shell.menu.lang_system"));
+        SetItemText(MenuLanguageChinese, Strings.T("shell.menu.lang_zh"));
+        SetItemText(MenuLanguageEnglish, Strings.T("shell.menu.lang_en"));
+        MenuLanguageSystem.Click += async (_, _) => await ChangeLanguageAsync("system");
+        MenuLanguageChinese.Click += async (_, _) => await ChangeLanguageAsync("zh");
+        MenuLanguageEnglish.Click += async (_, _) => await ChangeLanguageAsync("en");
+        UpdateLanguageSelection();
 
         MenuThemeSystem.Click += (_, _) => ChangeTheme(AppThemePreference.System);
         MenuThemeLight.Click += (_, _) => ChangeTheme(AppThemePreference.Light);
@@ -1069,6 +1081,45 @@ public sealed partial class ShellView : UserControl
         ThemeService.SetPreference(preference);
         ConsoleBridge.WriteDiagnostic($"[view] 主题偏好 → {ThemeService.PreferenceName}");
     }
+
+    private void UpdateLanguageSelection()
+    {
+        MenuLanguageSystem.IsChecked = LanguageService.Preference == "system";
+        MenuLanguageChinese.IsChecked = LanguageService.Preference == "zh";
+        MenuLanguageEnglish.IsChecked = LanguageService.Preference == "en";
+    }
+
+    private async Task ChangeLanguageAsync(string preference)
+    {
+        UpdateLanguageSelection();
+        if (_changingLanguage || _dialogOpen || LanguageChangeRequested is not { } change
+            || preference == LanguageService.Preference)
+        {
+            return;
+        }
+
+        _changingLanguage = true;
+        try
+        {
+            var restart = LanguageService.Resolve(preference) != LanguageService.Effective;
+            if (!restart || await ConfirmDestructiveAsync(
+                Strings.T("shell.dialog_lang_restart_title"),
+                Strings.T("shell.dialog_lang_restart_body"),
+                Strings.T("shell.dialog_lang_restart_btn_restart"),
+                Strings.T("shell.dialog_lang_restart_btn_later")))
+            {
+                await change(preference, restart);
+            }
+        }
+        finally
+        {
+            _changingLanguage = false;
+            UpdateLanguageSelection();
+        }
+    }
+
+    internal (string View, string Language) LanguageMenuNames =>
+        (AutomationProperties.GetName(MenuView), AutomationProperties.GetName(MenuViewLanguage));
 
     private static void SetItemText(MenuFlyoutItem item, string text)
     {

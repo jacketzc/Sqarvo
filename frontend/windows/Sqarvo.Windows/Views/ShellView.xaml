@@ -392,6 +392,26 @@
                                         FontSize="{StaticResource Size.FontUi}"
                                         FontWeight="{StaticResource Weight.Ui}" />
                                 </MenuFlyoutSubItem>
+                                <MenuFlyoutSubItem
+                                    x:Name="MenuViewLanguage"
+                                    FontSize="{StaticResource Size.FontUi}"
+                                    FontWeight="{StaticResource Weight.Ui}">
+                                    <RadioMenuFlyoutItem
+                                        x:Name="MenuLanguageSystem"
+                                        GroupName="AppLanguage"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                    <RadioMenuFlyoutItem
+                                        x:Name="MenuLanguageChinese"
+                                        GroupName="AppLanguage"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                    <RadioMenuFlyoutItem
+                                        x:Name="MenuLanguageEnglish"
+                                        GroupName="AppLanguage"
+                                        FontSize="{StaticResource Size.FontUi}"
+                                        FontWeight="{StaticResource Weight.Ui}" />
+                                </MenuFlyoutSubItem>
                             </MenuFlyoutSubItem>
                             <MenuFlyoutSubItem
                                 x:Name="MenuHelp"

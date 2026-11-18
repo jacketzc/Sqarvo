@@ -41,7 +41,7 @@ evidence = "dialog.rs（AdwDialog + AdwPreferencesPage）与 ui.rs show_about �
 [component.sync.windows]
 state = "partial"
 spec_hash = "588e07793c24"
-note = "§7.1 只记录了「新建连接对话框」一行；编辑模式与关于对话框未记录。"
+note = "本区的连接与关于对话框仍待 Windows 存量迁移。S6-a 共享目录包含提交和删除确认文案，交互状态登记在数据页及状态栏触发组件。"
 
 [component.sync.macos]
 state = "none"

@@ -74,6 +74,11 @@ public sealed class WindowState
     /// <summary>主题偏好（<c>system</c> / <c>light</c> / <c>dark</c>，Windows 扩展字段）。</summary>
     public string Theme { get; set; } = "system";
 
+    /// <summary>界面语言偏好（<c>system</c> / <c>zh</c> / <c>en</c>）。</summary>
+    public string Language { get; set; } = "system";
+
+    internal WindowState Snapshot() => (WindowState)MemberwiseClone();
+
     /// <summary>是否有可用的窗口几何记忆。</summary>
     public bool HasGeometry => WindowWidth is > 0 && WindowHeight is > 0;
 

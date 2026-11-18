@@ -37,6 +37,8 @@ public sealed class AppOptions
         bool reportMonitor,
         bool reportShell,
         bool selfTestWindow,
+        string? language,
+        bool reportLanguage,
         string? qaTier,
         string? qaConnect,
         string? qaMetadata,
@@ -57,6 +59,8 @@ public sealed class AppOptions
         ReportMonitor = reportMonitor;
         ReportShell = reportShell;
         SelfTestWindow = selfTestWindow;
+        Language = language;
+        ReportLanguage = reportLanguage;
         QaTier = qaTier;
         QaConnect = qaConnect;
         QaMetadata = qaMetadata;
@@ -84,6 +88,9 @@ public sealed class AppOptions
 
     /// <summary>打印整棵控件树（UI Automation 的 ControlType + Name，缩进两格）。</summary>
     public bool ReportShell { get; }
+
+    public string? Language { get; }
+    public bool ReportLanguage { get; }
 
     /// <summary>QA 专用：启动时切到指定档位（<c>compact</c> / <c>comfortable</c> / <c>large</c>）。</summary>
     public string? QaTier { get; }
@@ -184,16 +191,20 @@ public sealed class AppOptions
     public bool SelfTestWindow { get; }
 
     /// <summary>是否有任何「打印后退出」的开关。</summary>
-    public bool HasReports => ReportTheme || ReportMetrics || ReportMonitor || ReportShell || SelfTestWindow;
+    public bool HasReports => ReportTheme || ReportMetrics || ReportMonitor || ReportShell || ReportLanguage || SelfTestWindow;
 
     /// <summary>是否需要窗口（自检是纯函数，不需要）。</summary>
-    public bool NeedsWindow => ReportTheme || ReportMetrics || ReportMonitor || ReportShell;
+    public bool NeedsWindow => ReportTheme || ReportMetrics || ReportMonitor || ReportShell || ReportLanguage;
 
     /// <summary>
     /// 关窗时是否跳过写 <c>window.json</c>：诊断开关不该改用户记忆的窗口几何
     /// （<c>--report-*</c> 一直如此；新加的截图 / 布局审计开关同样只读）。
     /// </summary>
-    public bool SuppressesGeometrySave => HasReports || ScreenshotPath is not null || LayoutAudit;
+    public bool SuppressesGeometrySave => HasReports || ScreenshotPath is not null || LayoutAudit || Language is not null;
+
+    public bool PinsQaLanguage => HasReports || HasWindowDiagnostics || NoBackend
+        || QaTier is not null || QaConnect is not null || QaMetadata is not null
+        || QaSignIn is not null || QaQuery is not null || QaData is not null;
 
     /// <summary>是否有任何「窗口起来之后才有话可说」的诊断开关（截图 / 布局审计）。</summary>
     public bool HasWindowDiagnostics => ScreenshotPath is not null || LayoutAudit;
@@ -215,6 +226,8 @@ public sealed class AppOptions
             reportMonitor: flags.Contains("report-monitor"),
             reportShell: flags.Contains("report-shell"),
             selfTestWindow: flags.Contains("self-test-window"),
+            language: Value(commandLine, "--lang=")?.ToLowerInvariant(),
+            reportLanguage: flags.Contains("report-language"),
             qaConnect: Value(commandLine, "--qa-connect="),
             qaMetadata: Value(commandLine, "--qa-metadata="),
             qaCatalog: Value(commandLine, "--qa-catalog="),
@@ -338,6 +351,8 @@ public sealed class AppOptions
         "--report-metrics",
         "--report-monitor（别名 --qa-report-monitor）",
         "--report-shell",
+        "--lang=<zh|en>",
+        "--report-language",
         "--self-test-window",
         "--qa-tier=<compact|comfortable|large>",
         "--qa-connect=<连接名称|@first>（配合环境变量 SQARVO_QA_PASSWORD）",

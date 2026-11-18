@@ -97,7 +97,7 @@ evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page
 [component.sync.windows]
 state = "partial"
 spec_hash = "e641a40a25b4"
-note = "§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:742 固定页注释、:753 ObjectsTab IsClosable=False；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
+note = "§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:762 固定页注释、:753 ObjectsTab IsClosable=False；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
 
 [component.sync.macos]
 state = "none"

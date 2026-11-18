@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Sqarvo.Windows.Storage;
 
@@ -19,6 +21,10 @@ namespace Sqarvo.Windows.Storage;
 /// </remarks>
 public static class WindowStateStore
 {
+    private static readonly object SaveLock = new();
+    private static long _nextSave;
+    private static long _lastSaved;
+
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -71,7 +77,37 @@ public static class WindowStateStore
     public static void Save(WindowState state)
     {
         ArgumentNullException.ThrowIfNull(state);
+        SaveSnapshot(state.Snapshot(), Interlocked.Increment(ref _nextSave));
+    }
 
+    /// <summary>在后台写入调用时的快照，避免较旧的偏好覆盖稍后写入的窗口状态。</summary>
+    public static Task<bool> SaveAsync(WindowState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var snapshot = state.Snapshot();
+        var sequence = Interlocked.Increment(ref _nextSave);
+        return Task.Run(() => SaveSnapshot(snapshot, sequence));
+    }
+
+    private static bool SaveSnapshot(WindowState snapshot, long sequence)
+    {
+        lock (SaveLock)
+        {
+            if (sequence <= _lastSaved)
+            {
+                return true;
+            }
+            if (!Write(snapshot))
+            {
+                return false;
+            }
+            _lastSaved = sequence;
+            return true;
+        }
+    }
+
+    private static bool Write(WindowState state)
+    {
         var path = FilePath;
         var directory = Path.GetDirectoryName(path);
         string? temporary = null;
@@ -88,10 +124,12 @@ public static class WindowStateStore
             File.WriteAllText(temporary, text);
             File.Move(temporary, path, overwrite: true);
             temporary = null;
+            return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException)
         {
             Diagnostics.ConsoleBridge.WriteDiagnostic($"[state] 写入 {path} 失败（{error.GetType().Name}）");
+            return false;
         }
         finally
         {
