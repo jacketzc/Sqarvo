@@ -1,669 +1,128 @@
 # AGENTS.md
 
-This document defines the AI agent development guidelines for the repository root. It applies to code-generation agents, review agents, and automated development tools working in this repository. These guidelines apply to the entire repository unless a subdirectory contains a more specific `AGENTS.md`. Subdirectory guidelines must not violate the product goals, security boundaries, or architectural constraints defined here.
+本文件是 Agent 工作入口，只保留**对所有任务都适用**的全局约束。模块细则在各目录的
+AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不要假定任何 Markdown 被自动加载——
+读过才算存在）。模块文件**镜像本文件章节号**（如 `backend/AGENTS.md` §6 即根 §6 的细则），
+外部文档按根章节号引用。设计细节的权威在 `docs/`，本文件不复制细则。
 
-## 1. Project Positioning
+## 1. 项目定位
 
-This project is an **open-source, lightweight, cross-platform, native desktop database management client**. Its goal is to provide developers with everyday database management capabilities comparable to mature commercial database clients, while maintaining low resource usage, fast startup, and a high-quality native desktop experience.
+- 开源、轻量、跨平台的原生桌面数据库管理客户端：Windows WinUI 3/C#，Linux GTK4 + libadwaita/Rust，macOS SwiftUI/Swift。
+- 数据库能力集中在独立 Rust 后端伴生进程；前后端 gRPC + Protobuf；驱动经 Driver SPI 接入。
+- **任何平台都不使用 Electron / Chromium / CEF / WebView2 作为 UI runtime**，不以 HTML/CSS/JS 仿原生界面。产品定位红线，无例外。
+- 可参考 Navicat 等成熟客户端的用户流程，但必须独立设计：不复制专有代码、素材、图标、文案或未公开实现细节，不宣称与其有关联。
 
-Core positioning:
+## 2. 技术栈与部署
 
-- Open source, community-friendly, and engineer-led.
-- Cross-platform support for Windows, Linux, and macOS.
-- Use the corresponding native desktop UI technology on each platform.
-- Do not use Electron, Chromium, CEF, or WebView as the application UI runtime.
-- Centralize database business capabilities in an independent Rust backend process.
-- Use gRPC + Protocol Buffers for frontend/backend communication.
-- Integrate different databases through an extensible Driver SPI.
-- Lightweight does not mean feature-reduced. Performance, feature completeness, and maintainability must be considered together.
+- 后端：Rust + Tokio，独立伴生进程；换运行时须 ADR 说明理由与边界。gRPC + Protobuf 契约见 §7。
+- 本地通信默认同机前后端两进程。访问控制（硬要求）：Linux/macOS 优先 Unix Domain Socket + 严格文件权限；Windows 优先命名管道 + ACL，若当前 gRPC 栈不能可靠支持，可临时用仅绑 `127.0.0.1` 的 TCP + 随机会话令牌。
+- **绝不**默认监听 `0.0.0.0` / 公网 / 局域网地址；**绝不**暴露无认证管理接口。传输藏在抽象之后，业务层不依赖具体 socket/pipe/port 实现。
+- 远程后端、团队协作、TLS 与身份校验是后续扩展；第一阶段不为未规划的远程形态过度设计。CI 与门禁见 `.github/workflows/`（ci、ui-contract、tracking、readme、packaging）。
 
-The project may refer to publicly documented features and user workflows of mature database clients such as Navicat. However, it must be designed and implemented independently. Do not copy proprietary code, UI assets, trademarks, icons, text, resource files, or non-public implementation details. Do not imply that this project is officially affiliated with Navicat.
+## 3. 产品与体验红线
 
-## 2. Established Technology Stack
+- 长列表与大结果集必须虚拟化 / 分页 / 增量拉取，不默认全量加载；前端主线程不做数据库请求与大文件处理。
+- UI 必须能明确表达：加载中、空数据、错误、取消、只读、事务状态、断开。
+- 可能破坏数据或不可逆的操作按风险给出相称的影响范围提示；不给普通查询加无意义确认弹窗。
+- 不清除需求、测试、错误处理就不实现占位功能；未实现能力必须明确标注不可用（呈现规则见 §8.1）。
+- 每个发布版本的范围由 `docs/product/` 的需求与路线图决定；能力开发顺序见 §5 文档索引。
 
-### 2.1 Desktop Frontends
+## 4. 架构边界（细则见各模块 AGENTS.md §4；冲突时以本节红线为准并按缺陷修正）
 
-| Platform | UI Technology | Primary Language | Constraints |
-|---|---|---|---|
-| Windows | WinUI 3 / Windows App SDK | C# | Use native Windows desktop application technology. Do not introduce WebView2 or Chromium. |
-| Linux (Ubuntu / GNOME as the primary desktop target) | GTK4 + libadwaita | Rust (gtk-rs) | Follow GNOME HIG. Do not assume that every Linux desktop environment is GNOME. |
-| macOS | SwiftUI, with AppKit when necessary | Swift | Prefer native system controls, menus, keyboard shortcuts, and system services. |
+- 前端不得：实现数据库网络协议或直连用户数据库、跨端复制驱动/连接池/SQL 逻辑、绕过 gRPC 访问后端内部、在 UI 线程做 IO、把密码写入配置/日志/崩溃报告/遥测。
+- 后端不得：包含平台 UI 逻辑，依赖 WinUI/GTK/SwiftUI/AppKit。
+- Protobuf 是通信契约唯一真值；生成代码不手改。前端可预校验输入，后端必须再校验权限、参数范围、资源状态与操作合法性。
+- 不把 Rust 内部结构、Trait 对象或第三方驱动类型直接暴露进跨进程协议；数据库访问一律经 Driver SPI（§6）。
 
-Frontend implementations must follow each platform's design conventions. The three platforms should maintain **consistent functionality and core interaction semantics**. Pixel-level consistency is not required, nor is forced sharing of UI code.
+## 5. 模块规范地图
 
-### 2.2 Unified Backend
+| 工作范围 | 必读入口 | 承载细则 |
+|---|---|---|
+| `backend/`（apps/backend-service、apps/sqarvo-mcp、crates/*） | `backend/AGENTS.md` | §6 Driver SPI、§7.3/7.4 实现侧、§10、§11、驱动测试 |
+| `frontend/`（windows、linux、macos）与 `l10n/` 文案目录 | `frontend/AGENTS.md` | §8 全部、§12、UI 验收与注册表前端侧 |
+| `proto/` | `proto/AGENTS.md` | §7 契约设计、兼容演进、错误语义、生成管理 |
+| `docs/`（专题规范、ADR、UI 注册表、发布说明） | `docs/AGENTS.md` | §14 全文（分层、注册表细则、发版门禁、README 成对） |
+| `tests/`、`scripts/`、`packaging/` | 本文件 §13、§14 + 相关模块文件 | 契约/集成/性能/安全测试；门禁脚本 |
 
-- Language: Rust.
-- Runtime model: an independent companion process for the desktop application (Backend Service).
-- Async runtime: prefer Tokio. If another runtime is introduced, explain why it is necessary and define its boundaries relative to the existing async model.
-- Frontend/backend communication: gRPC.
-- API contract: Protocol Buffers (Protobuf).
-- Database access: abstract through the project's own Driver SPI. Evaluate concrete driver libraries database by database. Do not leak a particular driver framework into public business interfaces.
+- 跨模块任务（如新增字段 → 改 proto + 后端 + UI）必须读完所有涉及的模块 AGENTS.md。
+- 目录布局以仓库实际为准，不在文档维护第二棵树。`dist/` 为发布产物；`tools/`、`scripts/` 为构建与门禁代码，随其服务的模块规范走。
 
-### 2.3 Communication and Deployment
+## 6. Driver SPI 红线（全文：`backend/AGENTS.md` §6；设计真值：`docs/database/driver-spi.md`）
 
-The default operating mode for the first phase is **a local frontend and backend running as separate processes**. Remote backends, team collaboration, remote agents, and similar capabilities are future extensions. Unless explicitly required by a product requirement, do not over-engineer the first release for remote operation that is not yet planned.
+- 项目自有稳定 SPI，与具体驱动库解耦；驱动为 `backend/crates/drivers/<db>/` workspace crate，不引入动态库插件 ABI，不设第二处驱动目录。
+- 不假设所有数据库等价：Database/Catalog/Schema 等概念不折叠；元数据保留原类型名、限定名与精度/长度/符号/时区/字符集/排序规则/默认值。
+- 值不得全退化为 String（§6.3 细则）；不支持的能力显式返回 unsupported，绝不伪装成功。
+- 方言与 DDL 归对应驱动，不在通用业务逻辑散落数据库名分支；阻塞驱动用 blocking pool，不占 Tokio worker。
 
-Local communication must restrict access:
+## 7. gRPC / Protobuf 红线（全文：`proto/AGENTS.md`；命名真值：`docs/api/grpc-conventions.md`）
 
-- Linux/macOS: evaluate Unix Domain Sockets first and set strict file permissions.
-- Windows: evaluate Named Pipes with ACLs first. If the current gRPC client/server combination cannot support them reliably, a temporary alternative is TCP bound only to `127.0.0.1`, protected with authentication measures such as a random session token.
-- Never listen on `0.0.0.0`, a public address, or a LAN address by default.
-- Never expose backend management interfaces without authentication.
-- Hide transport-specific implementation behind a Transport abstraction. Business layers must not depend on the concrete Socket, Pipe, or port implementation.
-
-## 3. Product and Experience Principles
-
-### 3.1 Product Experience
-
-- Startup should be fast and idle resource usage should be low. Performance optimizations must be based on measurements; do not sacrifice maintainability based on intuition alone.
-- Common operations should be keyboard-accessible. Shortcuts should follow platform conventions, while product specifications may define consistent cross-platform action semantics.
-- Support multiple connections, database object browsing, and multiple SQL workspaces.
-- SQL editing, query results, and table data browsing are core workflows. Do not treat them as ordinary form pages.
-- Long lists and large result sets must use virtualization, pagination, or batched retrieval. Do not load all data at once by default.
-- The UI must clearly communicate loading, empty data, errors, cancellation, read-only state, transaction state, and disconnection.
-- Operations that may modify data or have irreversible effects should receive warnings proportionate to their risk. Do not add meaningless confirmation dialogs to every ordinary query.
-
-### 3.2 Feature Scope
-
-The scope of each release is governed by requirements and the roadmap under `docs/product/`. Capabilities may generally be developed in the following order:
-
-1. Connection configuration, connection testing, connect/disconnect, and session management.
-2. Database object tree and metadata browsing.
-3. SQL editor, syntax highlighting, execution, cancellation, and query history.
-4. Query result display, pagination/batched retrieval, and export.
-5. Table data browsing, editing, and safe change submission.
-6. Table structure inspection, DDL operations, and database-specific capability display.
-7. Advanced capabilities such as import/export, schema comparison, data migration, and backup/restore.
-
-Do not implement placeholder features without clear requirements, tests, or error handling merely to increase the feature count. Unimplemented capabilities must be clearly labeled and must never be presented as supported.
-
-## 4. Architecture Boundaries
-
-### 4.1 Frontend Responsibilities
-
-The frontend is responsible for:
-
-- Native windows, navigation, menus, workspaces, dialogs, and user interaction.
-- Rendering the SQL editor, result tables, and database object tree.
-- Basic validation of user input and interaction feedback.
-- Calling gRPC APIs and handling cancellation, progress, pagination, and backend lifecycle.
-- Platform integration: system credential stores, file pickers, notifications, system tray, keyboard shortcuts, and installer integration.
-
-The frontend must not:
-
-- Implement database network protocols or connect directly to user databases.
-- Duplicate database drivers, connection pools, or SQL execution logic across platforms.
-- Bypass gRPC to access internal backend database modules directly.
-- Perform database I/O, large-scale file processing, or other long-running work on the UI thread.
-- Write database passwords to ordinary configuration files, logs, crash reports, or telemetry data.
-
-### 4.2 Rust Backend Responsibilities
-
-The backend is responsible for:
-
-- Database connections and session lifecycle.
-- SQL execution, query cancellation, and result-set management.
-- Transaction management and database capability detection.
-- Database metadata, schemas, and object information.
-- Data import/export and future migration capabilities.
-- Driver SPI, database dialects, and database-specific adaptations.
-- Configuration loading, logging, service health status, and resource cleanup.
-
-The backend must not contain platform UI logic or depend on WinUI, GTK, SwiftUI, or AppKit.
-
-### 4.3 Shared Contracts
-
-- Protobuf is the single source of truth for frontend/backend communication contracts.
-- Protobuf/gRPC code for each language must be generated from the contracts. Generated files must not be edited manually.
-- The frontend may perform immediate input validation, but the backend must validate permissions, parameter ranges, resource states, and operation validity again.
-- Do not expose Rust internal structs, Trait objects, or third-party driver types directly through inter-process protocols.
-- API changes must account for compatibility, error semantics, cancellation behavior, and behavior observed by older client versions.
-
-## 5. Recommended Repository Structure
-
-The following is a suggested structure. Directories may be adjusted to match the actual implementation, but responsibility boundaries must remain clear. Significant structural changes should be reflected in the architecture documentation first.
-
-```text
-.
-├── AGENTS.md
-├── README.md
-├── LICENSE
-├── CONTRIBUTING.md
-├── SECURITY.md
-├── .github/
-│   ├── workflows/            # CI
-│   ├── ISSUE_TEMPLATE/       # Task / bug issue templates
-│   └── pull_request_template.md
-├── docs/
-│   ├── product/              # Vision, positioning, requirements, roadmap
-│   ├── planning/             # Development plan, milestones, release plan, risks
-│   ├── architecture/         # Overall architecture, process model, data flow
-│   ├── api/                  # gRPC / Protobuf design notes
-│   ├── database/             # Driver SPI, dialects, and database differences
-│   ├── ui-specification/     # Interaction specifications, UI flows, design principles
-│   └── decisions/            # ADRs: key technical decisions and rationale
-├── proto/
-│   ├── common/v1/
-│   └── services/v1/
-├── frontend/
-│   ├── windows/              # WinUI 3 + C#
-│   ├── linux/                # GTK4 + libadwaita + Rust
-│   └── macos/                # SwiftUI + AppKit + Swift
-├── backend/
-│   ├── Cargo.toml            # Rust workspace
-│   ├── apps/
-│   │   ├── backend-service/
-│   │   └── sqarvo-mcp/       # Standalone stdio MCP server (V1, see docs/architecture/mcp.md)
-│   └── crates/
-│       ├── connection/
-│       ├── query-engine/
-│       ├── metadata/
-│       ├── transaction/
-│       ├── driver-api/
-│       ├── drivers/          # Workspace members drivers/sqlite and drivers/mariadb
-│       ├── driver-testkit/
-│       ├── rpc-server/
-│       ├── local-store/
-│       ├── parent-watch/
-│       └── common/
-├── tests/
-│   ├── contract/
-│   ├── integration/
-│   └── fixtures/
-└── packaging/
-    ├── windows/
-    ├── linux/
-    └── macos/
-```
-
-Database drivers are workspace crates under `backend/crates/drivers/<database>/`. Do not create a
-separate top-level `database-drivers/` tree: the Rust workspace is the build, test, and dependency
-unit, and a second location would split driver ownership across two build systems.
-
-## 6. Database Driver SPI Guidelines
-
-### 6.1 Core Principles
-
-- Use a project-owned, stable Driver SPI that is as independent as possible from concrete driver libraries.
-- Initially, prefer compiling built-in drivers into the Backend as Rust workspace crates.
-- Do not introduce a Rust dynamic-library plugin ABI at the beginning. Rust does not provide a stable cross-version ABI that can be relied upon directly. Out-of-process plugins are a future design option.
-- Keep each database's connection, metadata, SQL dialect, transaction, and specialized capabilities within clearly defined implementation boundaries.
-- The shared interface should express only capabilities that are genuinely reusable across databases. Database-specific capabilities should be exposed through capability descriptors or typed extensions.
-
-### 6.2 Do Not Assume All Databases Are Equivalent
-
-Concepts and behaviors differ across databases. For example, Database, Catalog, Schema, Namespace, Owner, Sequence, and Package cannot be collapsed into one ambiguous field.
-
-When designing shared metadata models:
-
-- Preserve object types, original type names, fully qualified names, and necessary database-specific information.
-- Do not lose field precision, length, signedness, time-zone information, character set, collation, default values, or other relevant metadata.
-- Explicitly return an unsupported status or capability state for unsupported features. Never silently simulate success.
-- SQL dialects and DDL must be handled by the corresponding driver. Do not scatter database-name conditionals throughout generic business logic.
-
-### 6.3 Data Types and Result Sets
-
-- Do not represent every database value as a `String`.
-- Support NULL, booleans, signed/unsigned integers, floating-point values, Decimal, text, binary data, dates, times, timestamps with time zones, JSON, arrays, and database-specific values.
-- Precision-sensitive types such as Decimal must not be converted to floating-point values unconditionally.
-- Design deferred or chunked retrieval for binary large objects and very large text values.
-- When a value cannot be represented losslessly, preserve its original type information and use an explicit display/export policy.
-
-### 6.4 Driver Lifecycle
-
-Each driver must define at least:
-
-- Connect, disconnect, connection testing, and error classification.
-- Session ownership and rules for concurrent use.
-- Query execution, query cancellation, result-set closure, and resource cleanup.
-- Transaction support and isolation-level capabilities.
-- Metadata retrieval and pagination strategy.
-- Driver version, supported database version range, and capability declarations.
-
-Do not assume every driver supports identical asynchronous behavior. Blocking drivers must use an appropriate blocking task pool and must not block critical Tokio runtime worker threads.
-
-## 7. gRPC / Protobuf Guidelines
-
-### 7.1 API Design
-
-Split services by business domain. Avoid putting every operation into one ever-growing universal service. Suggested domains include:
-
-- ConnectionService
-- MetadataService
-- QueryService
-- TransactionService
-- DataTransferService
-- SystemService
-
-The actual service and RPC names are governed by the official definitions under `proto/`. Before adding a service, determine whether the existing domain service can be extended.
-
-### 7.2 Protobuf Compatibility
-
-- Use explicit package and version names, for example `product.query.v1`.
-- Never reuse a field number after it has been published. Mark deleted fields as `reserved`.
-- Avoid unnecessary breaking changes to field types.
-- Define sensible default semantics for newly added fields.
-- Error responses must use stable error codes/categories and include safe information suitable for display to users. Never return database passwords, secrets in connection strings, or internal stack traces to the UI.
-- Define progress, cancellation, and terminal-state semantics for long-running operations.
-- After modifying Protobuf definitions, regenerate all affected client code and run contract tests.
-
-### 7.3 Query Result Transport
-
-Never serialize and return an entire large result set to the frontend in one response by default.
-
-Distinguish between two access patterns:
-
-1. **SQL query results**: support Query IDs, result-set metadata, batched retrieval or streaming, cancellation, resource closure, and backpressure.
-2. **Table browsing**: prefer pagination/cursor-based retrieval; declare sorting and filtering capabilities, and define pagination stability and ordering rules.
-
-Also consider:
-
-- Multiple statements, multiple result sets, and update counts.
-- Column types, precision, nullability, and display hints.
-- Deferred retrieval of very large fields.
-- Task cleanup after client disconnection.
-- Cleanup of unreleased Sessions, Cursors, and temporary files when the service exits.
-- Reasonable limits for message sizes, concurrent queries, and buffers.
-
-Do not solve large-result-set problems by simply increasing the gRPC message-size limit without bounds.
-
-### 7.4 Cancellation and Errors
-
-- User cancellation of a query must be propagated to the database driver as far as possible.
-- Cancellation must be idempotent. Repeated cancellation must not crash the process.
-- Distinguish connection loss, query failure, timeout, cancellation, insufficient permissions, and unsupported capabilities.
-- Error messages must be diagnosable without leaking credentials, full sensitive connection strings, or private local paths.
-
-## 8. Native Frontend Guidelines
-
-### 8.1 General Requirements
-
-- Do not use Electron, Chromium, CEF, WebView2, WKWebView, WebKitGTK, or any other embedded web runtime as the UI implementation.
-- Do not imitate a native interface using HTML/CSS/JavaScript pages.
-- Implement business interactions with native components. Reuse of pure algorithm libraries or generated protocol code is acceptable when necessary, but Web UI must not replace desktop UI.
-- Do not break platform interaction conventions in pursuit of pixel-level consistency across the three platforms.
-- Core operation semantics, states, error messages, and data content must remain consistent.
-- **Prefer the platform's own controls.** Every new surface starts from a native control (menus, popovers, dialogs, tables, tabs, pagination, toggles). Four levels: **L0** native control with default styling; **L1** native control styled with theme tokens (its own cells and rows included); **L2** a self-drawn visual, or native controls hand-assembled into a composite the toolkit does not ship — allowed, but it must be registered in the component registry with `hand_drawn` / `why_not_native` (registration is enough, no ADR); **L3** hand-implementing what the toolkit already provides (own menu, own dialog, own table, own tab strip) — forbidden, an ADR is required before implementing.
-- **An unavailable item is not a greyed placeholder.** Capability-level unavailability (this connection, this driver or this platform does not support it at all) must not appear: the item is not listed, the button is not rendered. State-level unavailability (nothing selected, no dirty rows, read-only, RPC in flight) stays visible and disabled with the reason in a tooltip / status line, because the user can make it available in one step. The one existing exception is the object tree's "not implemented" group rows (behavior contract §2.1 keeps them visible on purpose).
-- Cross-platform consistency is **behavior**, not appearance: items, order, availability, shortcuts and copy must match. Sizes — including type sizes **and font weights** — spacing and colors always come from `metrics.toml` / theme tokens, on every platform. Only the **font family** may differ (record it in `platform_notes.*`, e.g. 「Windows 用 Segoe UI」). Do not take a size or weight from a toolkit's own stylesheet and call it "native convention": if the product uses that value, it belongs in `metrics.toml`.
-
-### 8.2 Windows
-
-- Use WinUI 3 and Windows App SDK.
-- Write UI code in C# and communicate with the Backend through generated gRPC clients.
-- Follow Windows conventions for windows, menus, keyboard input, themes, DPI, file selection, and accessibility.
-- Do not introduce WebView2 by default merely to implement a complex control.
-
-### 8.3 Linux
-
-- Use GTK4, libadwaita, and gtk-rs.
-- GTK UI updates must run on the GTK main thread.
-- Database requests, file processing, and other long-running tasks must run in the background, with results safely dispatched to the main thread.
-- Do not block the GTK main loop.
-- libadwaita components should follow GNOME HIG. Provide reasonable behavior in non-GNOME desktop environments; do not assume users always run GNOME Shell.
-- Implement file, credential, theme, and desktop integration through a Linux platform-adaptation layer.
-
-### 8.4 macOS
-
-- Use SwiftUI as the primary UI framework. Use AppKit for complex desktop controls when there is a clear reason.
-- Follow macOS conventions for menus, keyboard shortcuts, windows, toolbars, file dialogs, and system credential management.
-- Use Swift Concurrency or an appropriate asynchronous mechanism. Do not perform blocking database operations on the main thread.
-- Isolate generated gRPC code behind a communication layer so the UI does not directly depend on low-level transport details.
-
-### 8.5 SQL Editor and Data Grid
-
-These controls are core product components. Do not substitute a simple multiline text field or ordinary list for production functionality.
-
-The SQL editor should progressively support:
-
-- Large text input and efficient updates.
-- SQL syntax highlighting and multiple dialects.
-- Line numbers, current line, selection, and indentation.
-- Find/replace.
-- Multi-statement execution and execution of the current statement.
-- Autocompletion and metadata hints, introduced progressively.
-- Responsiveness with large files and long text.
-
-The data grid should progressively support:
-
-- Virtualization or on-demand rendering.
-- Pagination/batched retrieval; do not load all data into memory by default.
-- Column resizing, sorting, filtering, and copying.
-- Correct display of NULL, binary data, dates, Decimal, JSON, and other types.
-- Editing state, dirty-data indicators, commit, and rollback.
-- Expansion/deferred loading of large fields.
-- Explicit read-only and editable states.
-
-Before adopting a specific control library or editor component, verify its license, cross-platform support, accessibility, maintenance status, and performance with large data volumes. Do not introduce dependencies based solely on popularity.
-
-### 8.6 Sizing, Density Scaling, Theme and Localization (binding, all three platforms)
-
-The single source of truth for every size number is `docs/ui-specification/metrics.toml`; the rules
-are in `docs/ui-specification/scaling-and-window-sizing.md`; the decision is
-[ADR 0026](docs/decisions/0026-ui-scaling-window-sizing.md).
-
-- Never hardcode a second copy of a size. Platform code reads `metrics.toml` (Linux parses it at
-  runtime; Windows/macOS generate constants at build time) and must fail the build when generation
-  fails. Do not compute `base × scale` in code: Rust, C# and Swift round differently and drift by 1px.
-- Exactly three density tiers exist: `compact` 100% (default), `comfortable` 125%, `large` 150%.
-  Do not add a tier without extending `metrics.toml` and its invariant tests. Tiers below 100% are
-  rejected by design (they break the 24px minimum target and the CJK 13px font floor).
-- The OS DPI / scale factor is never multiplied into application metrics. GTK logical pixels and
-  XAML DIPs are already density-independent; convert to physical pixels only when talking to
-  `AppWindow` / `DisplayArea` / `GdkMonitor::geometry`.
-- Window size is chosen from the **logical work area**, never from the screen resolution, and the
-  minimum window is `min(960·T, work_area − 32) × min(640·T, work_area − 48)`. A window must never
-  exceed the work area, including on 1080p@200% (logical 960×540).
-- Colors come from theme tokens only (`@define-color` / `ThemeResource`). A `#RRGGBB` literal in
-  interface CSS or XAML is a defect; the only allowed hex values are the **brand palette**: the Linux
-  `LIGHT_PALETTE` / `DARK_PALETTE` constants in `frontend/linux/src/theme.rs` and the matching
-  `SqarvoBrand*` brushes in `frontend/windows/Sqarvo.Windows/Tokens.xaml`. The two copies must stay
-  value-identical (same three tones per theme), and high contrast uses system colors on both ends.
-  Brand surfaces — primary-action fill, current-kind highlight, accent text/markers — must use the
-  brand mid tone on **every** platform; the OS accent color is only for what the platform itself
-  draws (focus rects, system menus, system dialogs). Linux must branch on
-  `AdwStyleManager::is_high_contrast()` where contrast matters.
-- Dark mode **defaults** to following the system on all platforms; the user may override it in
-  `视图 → 深色模式` (跟随系统 / 浅色 / 深色), persisted as `theme` in `window.json`. Never implement a
-  private light-only fallback. Linux uses `AdwStyleManager::set_color_scheme` (`Default` /
-  `ForceLight` / `ForceDark`); Windows sets `Application.RequestedTheme` at startup only and
-  switches at runtime through element-level `FrameworkElement.RequestedTheme`, and always keeps the
-  title bar in sync. A platform without the menu entry keeps following the system.
-- New user-facing strings go through a per-crate string catalog, not inline literals, even while
-  only Chinese ships. New interactive controls need an accessible name and a defined Tab position.
-- Any change to these numbers or rules updates `metrics.toml`, `scaling-and-window-sizing.md`,
-  and (for behavior) `docs/ui-specification/ui-behavior-contract.md` in the same PR.
-
-## 9. Security and Privacy
-
-Database clients frequently handle highly sensitive credentials and production data. Security is a foundational capability, not an optional enhancement.
-
-- Prefer operating-system credential stores for passwords, tokens, private keys, and other secrets: Windows Credential Manager, macOS Keychain, Linux Secret Service, and equivalent facilities.
-- Store only credential references or non-sensitive settings in ordinary configuration storage. Never store database passwords in plaintext.
-- Keep credentials in memory only as long as necessary. Never write them to logs, telemetry, crash reports, or test snapshots.
-- Never write full connection strings that may contain passwords to error logs.
-- Validate paths and permissions for all import/export operations to prevent path traversal and accidental overwrites.
-- Preserve the database's existing permission semantics during SQL execution. Do not default to connecting with privileged accounts.
-- Clearly communicate the impact scope of high-risk operations such as deletion, overwrite, and bulk updates.
-- Local IPC must enforce access control. Never expose it to the network without authentication.
-- If remote connections are added in the future, they must use TLS and properly verify server identity.
-- Do not upload SQL, database schemas, data samples, or connection information to third-party services by default.
-- Any future telemetry must follow explicit user consent, data minimization, and opt-out requirements.
-- When upgrading dependencies, review security advisories, licenses, and supply-chain risks.
-
-## 10. Performance and Resource Management
-
-- Establish reproducible benchmarks before optimizing performance.
-- Set memory limits for query results, import/export, object trees, and large-file operations.
-- Use streaming/batched processing to avoid unnecessary data copies and serialization.
-- Every query, task, connection, cursor, and temporary file must have a defined lifecycle and cleanup path.
-- Set concurrency limits, timeout policies, and cancellation mechanisms for background tasks.
-- Do not use unbounded channels, unlimited task creation, or unbounded caches to create the appearance of responsiveness.
-- The frontend main thread should perform only necessary UI updates.
-- Do not claim "zero overhead," "extreme performance," or similar metrics without supporting measurements.
-
-## 11. Rust Development Guidelines
-
-- Follow `rustfmt` formatting and Clippy recommendations. If a lint must be ignored, suppress it locally and explain why.
-- Public types, Traits, modules, and complex algorithms should have clear documentation comments.
-- Error types should provide context and support classification. Avoid converting every error to an uninformative string.
-- Avoid unnecessary `unwrap()`, `expect()`, and panics. Use them only where an invariant has been established, and explain the reasoning.
-- Do not hold locks across `.await` in async tasks unless necessary and justified.
-- Prefer clear ownership models for shared state. Do not introduce complex `Arc<Mutex<...>>` structures prematurely.
-- Validate external input, SQL, file paths, Protobuf fields, and database metadata.
-- Use `unsafe` code sparingly. Document its safety invariants and add targeted tests.
-- Before adding a dependency, check its maintenance status, license, build footprint, platform support, and security history.
-
-## 12. C# / Swift / GTK Development Guidelines
-
-- Follow the official formatters and static-analysis tools for each language and framework.
-- Organize UI, state management, gRPC clients, and platform-service adapters into separate layers.
-- Do not put database business logic in Views or Widgets.
-- All asynchronous operations must handle cancellation, exceptions, and callbacks that arrive after a component has been destroyed.
-- UI state must be able to represent Loading, Empty, Success, Error, Cancelled, and Disconnected states.
-- Do not perform synchronous network, disk, or database operations on the UI thread.
-- Before adding third-party controls, verify their native integration, license, accessibility, keyboard support, and high-DPI/scaling behavior.
-
-## 13. Testing Requirements
-
-Before submitting code, run the checks relevant to the scope of the changes. If the environment lacks required tools or platforms, do not claim that tests passed. Clearly record which checks were not run and why.
-
-Testing should include at least:
-
-1. **Unit tests**: business rules, data-type conversion, SQL dialects, error mapping, and lifecycle behavior.
-2. **Driver integration tests**: connections, metadata, transactions, execution, cancellation, result sets, and type mapping.
-3. **Contract tests**: Protobuf generation, field compatibility, error semantics, and client/server interactions.
-4. **End-to-end tests**: frontend starts the Backend, connects to a database, executes SQL, displays results, cancels tasks, and cleans up on exit.
-5. **Performance tests**: large result sets, wide tables, large fields, concurrent queries, and long-running scenarios.
-6. **Security tests**: log redaction, credential storage, IPC access control, path validation, and error-message leakage.
-7. **UI acceptance scope**: agents verify UI **interaction and functionality** only — does the control respond, does state transition correctly, is the accessible name / control text the expected one, is the expected control present in the expected place. Agents do **not** verify style and do **not** perform image recognition: no pixel comparison, no reading screenshots to judge appearance, no asserting on color, spacing, corner radius, density, or alignment. Style is confirmed by a human. See [ADR 0029](docs/decisions/0029-ui-acceptance-boundary.md).
-
-Use dedicated test databases and synthetic data. Never connect to real production databases or use users' real credentials in tests.
-
-If a platform cannot currently run tests, test shared protocols/business logic on available platforms and clearly mark that the affected platform has not yet been validated.
-
-## 14. Documentation and Decision Records
-
-Update documentation whenever any of the following changes:
-
-- Architecture boundaries, process model, or module responsibilities.
-- Addition/removal of a database driver or changes to supported database scope.
-- gRPC / Protobuf APIs.
-- Credential storage, IPC, or security policies.
-- Platform minimum OS versions, packaging methods, or dependencies.
-- Features and interactions that affect user workflows.
-
-Record significant technical decisions as ADRs under `docs/decisions/`. Each ADR should describe at least: context, considered alternatives, decision, rationale, trade-offs, and conditions for reevaluation.
-
-Add user documentation for user-visible features. Document every new configuration option, including its default value, persistence location, and security implications.
-
-### 14.1 Documentation Layers and Single Source of Truth
-
-| Layer | Location | Owner | Change rate |
-|---|---|---|---|
-| Product planning (vision, positioning, requirements, roadmap) | `docs/product/` | product owner | low |
-| Development planning (plan, milestones, release, risks) | `docs/planning/` | project-management role | medium |
-| Technical facts (architecture, API, driver SPI, UI) | `docs/architecture/`, `docs/api/`, `docs/database/`, `docs/ui-specification/` | architecture / module owners | with code |
-| UI component registry (existence, style refs, per-platform sync) | `docs/ui-specification/components/` | UI owner | 每次改组件 |
-| Decisions | `docs/decisions/` | decision author | append-only |
-| Tasks, status, dependencies | GitHub Issues / Projects | development agents | high |
-
-Rules:
-
-- Stable planning lives in the repository; dynamic execution state lives in GitHub Issues/Projects.
-- Do not maintain a second task list inside the repository, and do not duplicate planning documents in external tools (Notion, wikis). One plan, one place.
-- Every task Issue must reference its module, milestone, priority, requirement ID, dependencies, and acceptance criteria; every PR must reference its Issue and milestone.
-- `scripts/check-tracking.sh` (also run by `.github/workflows/tracking.yml`) enforces the milestone and Project-membership part of that rule; missing priority or module labels are reported as warnings.
-- Development agents update Issues and PRs. They do not rewrite product requirements, milestones, or the development plan unless explicitly assigned that role.
-- A milestone is only marked complete with recorded verification evidence (commands and results), not with a summary claim.
-- `README.md` (English, rendered on the repository home page) and `README.zh-CN.md` (Chinese) are **one
-  deliverable** and must change in the same commit. Keep the same structure (section order, bullet count,
-  link set) and the language-switcher line at the top of both; wording is localised per language, but
-  facts — commands, platform support, measured numbers, links — must never diverge. Touching one side only
-  is an incomplete change, and neither file may drop the other's switcher link.
-  `scripts/check-readme-pair.py` (also run by `.github/workflows/readme.yml`) enforces the switcher
-  links, the relative-link set, and the structure counts (二级标题 / 代码块 / 图片); wording and facts
-  still need human review.
-
-### 14.2 UI behavior: one source (binding)
-
-Per-component behavior — actions, availability conditions, result copy, shortcuts, source references —
-lives in the component registry (`docs/ui-specification/components/*.toml`, see §14.3).
-`ui-behavior-contract.md` is now only **global rules** (§8: shortcuts, destructive-action confirmation,
-the five states, error-copy constraints) plus **known deviations** (§9); its §1–§7 are pointers into
-the registry. `workspace-model.md` is now only layout and regions.
-
-- Changing one component's behavior → edit that component and `mark` (§14.3). The contract needs no
-  matching edit.
-- Changing a global rule (shortcut, destructive confirmation, state semantics, error copy) → edit
-  contract §8 and update every component it touches.
-- Code and registry disagree → record it in contract §9.1 "pending decisions" (code does / doc says /
-  recommendation). Do not leave it silent, and do not let an implementer settle product semantics alone.
-- `ui-components.md` is generated; never hand-edit it.
-- Visual specification (sizes, spacing, colors) stays in `metrics.toml` / `workspace-model.md` /
-  `design-principles.md`, and must reference tokens instead of restating numbers.
-
-### 14.3 UI 组件注册表（绑定）
-
-`docs/ui-specification/components/*.toml` 是界面组成的唯一真值（决策见
-[ADR 0027](docs/decisions/0027-ui-component-registry.md)，字段与粒度见
-`components/README.md`）。`docs/ui-specification/ui-components.md` 是它的生成物。
-
-- **改 UI 之前先报组件名，并让维护者确认。** 拿到任何「改一下这个界面」的需求，先说清这次改动
-  对应哪个 / 哪些组件（`id` + `display_name`，例如 `object_tree.tree.row.conn`「连接行」、
-  `object_tree.ctx_menu.refresh_group`「刷新这一组」），请维护者确认范围后再动手。这不是形式：
-  `id` 是 PR、Issue、QA 断言与三端同步标记共用的键，维护者只有反复看到同一个名字才能形成记忆；
-  省掉这一步，同一个东西迟早会在三处叫三个名。
-- 若改动落在还没登记的功能区（P0–P1 迁移期），先说明「这个区还没进注册表」并指出它将来归哪个区、
-  哪一级，再动手；不要临时自造 id。
-- 新增或改动用户可见的组件，必须在同一 PR 里改注册表。组件 `id` 发布后不改名；
-  `display_name` 可以随文案演进。
-- 样式只写 `metrics.toml` 的 key 名与主题 token 名。组件里出现 `px` 数字或 `#RRGGBB`
-  一律算缺陷（与 §8.6 同一条规则）。
-- `sync.<plat>.state = "done"` 必须带当前 `spec_hash`。改规范会让三端标记**自动失效**；
-  恢复 `done` 要按新规范重新核对，再跑 `scripts/check-ui-sync.sh mark`。
-  `partial` / `na` / `blocked` 必须写清差异，不接受「未同步」四个字。
-- `sync.<plat>.evidence` 只写**交互与功能**的证据：命令、断言、QA 开关的输出、可访问性名称 /
-  控件文本的读取结果。截图、录屏与像素比较**不算**验收证据——样式由人工确认，agent 不做图像
-  识别（[ADR 0029](docs/decisions/0029-ui-acceptance-boundary.md)）。历史条目里已引用的截图不必
-  回改，但新登记不再以截图为准。
-- `ui-components.md` 不许手改：CI 会跑 `gen` 并与工作树比对，有差异即失败。
-- 九个功能区已全部在册（192 个组件）。旧契约的功能章节尚未退役，行为叙述仍以它为准；
-  改行为要同时改契约本节与注册表，直到 P3 删除旧章节。
-- 未实现的平台能力记 `sync = "blocked"` 并进行为契约 §9，不得只标「未同步」。
-- **「这版不要它了」用生命周期，不用「禁用」。** `status = "removed"` + `removed_in`（如 `v0.3.0`）
-  + `removed_reason`；还在用但下版会被取代 / 移除用 `deprecated`。**不许直接删条目** —— 别的端要靠它
-  知道「要去掉什么」；三端都清干净后才归档到 `components/_archived.toml`。退役组件的 `sync` 只写
-  `removed`（该端已清：代码删了或界面隐藏了）/ `present`（还留着）/ `na`，且不记 `spec_hash`。
-  单端不做记 `sync.<plat> = "na"`，那不算全局退役。查询用 `scripts/check-ui-sync.sh pending`。
-
-### 14.4 发版门禁：已支持平台的 UI 行为必须同步（绑定）
-
-每次在 GitHub 发布 Release（含预发布）前，注册表里**所有 `active` / `deprecated` 组件**在当前
-支持平台上的 `sync` 必须是 `done`，或 `na` / `blocked`（并有说明）。
-
-- **当前支持平台：Linux、Windows。** macOS 尚未接入，`sync.macos` 不参与门禁。
-- 门禁命令：`scripts/check-ui-sync.sh release-check [--release v0.3.0]`。有缺口返回非 0，并逐条列出
-  「哪个组件、哪个平台、什么状态」；带 `--release` 时还会检查该版本要删的组件是否已清干净。
-- 算缺口：`partial` / `none` / `present` / 标记过期（规范改了没重新核对）。不算缺口：`na`（该平台
-  不做）、`blocked`（平台能力做不到，且已在行为契约 §9 记录）。
-- 确实要带已知差异发版：在发布说明（`docs/releases/<version>.md`）里单列一节「未同步的 UI 行为」，
-  写明组件 `id`、平台、原因、计划版本，并在对应 Issue 里取得维护者明确批准；不允许静默发布。
-- 与 §14.3 的分工：§14.3 管日常（改了规范就要重新核对），本节管发版（发版前不允许留缺口）。
-- 新增支持平台（如 macOS 接入）时，把它加进 `SUPPORTED_PLATFORMS` 并同步本节与 §14.1 的分层表。
-
-## 15. Agent Workflow
-
-### 15.0 改动前的确认门（硬门）
-
-**报出组件 `id` 不等于确认。回答方案问题也不等于确认。** 只有维护者明确回复「确认 #N」，
-才算拿到开始改动的许可。
-
-任何写操作之前（包括用户可见界面、QA/取证钩子、测试、文档、生成物、脚本、配置默认值），
-必须先交一张**改动确认单**，等维护者明确确认后才允许第一次 `patch` / `write` / `git` 写操作：
-
-```text
-改动确认单 #N
-- 触发：<用户原话 / Issue>
-- 组件：<id>「<display_name>」…（非 UI 改动写「无组件：<模块>」）
-- 涉及文件：<path:line 或文件清单>
-- 改法：<每处一句话，说清改完用户看到什么>
-- 明确不动：<这次不碰的东西：别的组件 / 不重构 / 不改协议 …>
-- 验收：<命令、断言、QA 开关或可访问性名称读取，能证明改完是对的；样式项写「人工确认」>
-- Issue：<#编号，若为 0 也要写明「待建」>
-```
-
-规则：
-
-- 一张单只覆盖它列出的范围。**范围一变就要重新出单**（哪怕只多改一个文件、只多一行 UI 文案）。
-- 单里的「改法」是行为承诺，不是实现备忘：不要在单子之外顺手改无关代码（§15 step 4 同一条）。
-- 确认前允许的动作只有**只读**：读文件、检索、`git status` / `git log` / `git diff`、`gh` 只读查询，
-  以及在 `$TMPDIR`（本机 `~/.hermes/cache/scratch`）里跑一次性探针脚本。探针不得写仓库内文件。
-- 「这只是测试钩子 / 这只是文档 / 这只是格式化」不构成豁免：它们同样是一次代码改动。
-- 复现一个 bug 需要先加取证代码时，把取证代码写进确认单，而不是先加了再报。
-- 已确认、正在做时发现必须扩大范围 → 停手，出 #N+1 号单；不要「顺手一起改了」。
-- 维护者说「先做」「直接做」「不用问」时，把这句话作为确认记录写进 Issue/PR，再动手。
-
-改完的收尾按 §16 报告，并在 PR 的「改动确认」一节贴确认单原文与确认来源（评论链接）。
-
-Follow this sequence when executing a task:
-
-0. 走 §15.0：先出改动确认单并拿到「确认 #N」，再开始第一次写操作。
-1. Read this file and any other `AGENTS.md` files in the directories involved in the task.
-2. Read the relevant product requirements, architecture documents, ADRs, and existing code. Do not guess the state of the project based only on the task description.
-3. Confirm the requirements, scope of impact, module boundaries, acceptance criteria, and the associated Issue/milestone. For complex tasks, provide a brief implementation plan first. 涉及 UI 时先按 §14.3 报出对应的组件 `id` 与名称，得到维护者确认后再动手。
-4. Prefer the smallest complete and verifiable change. Do not opportunistically rewrite unrelated modules.
-5. Before changing APIs or public types, inspect all callers and compatibility implications.
-6. Add or update tests, documentation, and examples.
-7. Run relevant formatters, static checks, unit tests, and integration tests.
-7a. Update the component registry (`docs/ui-specification/components/*.toml`) for any UI behavior or
-    component change, and `mark` the platforms you verified (see §14.2/§14.3); a UI change whose
-    registry entry is stale is an incomplete change.
-8. Review `git diff` to ensure it contains no secrets, personal data, generated artifacts, temporary files, or unrelated formatting changes.
-9. Report completed work, key design decisions, test results, unfinished items, and known risks; update the Issue status and link the PR.
-
-### 15.1 Commit Messages and Attribution
-
-- Follow the repository commit convention: a Chinese `<module>: <description>` subject line
-  (e.g. `前端：…`, `文档：…`, `契约：…`), describing the change rather than the process.
-- Do not add `Co-authored-by:`, `Signed-off-by:`, or any other attribution trailer naming a third
-  party unless that person actually authored part of the change and agreed to be credited.
-- Never credit a generic tool or agent identity (for example
-  `Co-authored-by: Hermes Agent <hermes@nousresearch.com>`). GitHub attributes a commit to a
-  GitHub account whenever a trailer's email matches a verified email of that account, so a generic
-  address silently credits an unrelated account: it appears under Insights → Contributors for this
-  repository even though it has no write access, no pushes, and no PRs. Verify the mapping with
-  `gh api graphql` querying `Commit.authors { email user { login } }` before assuming a stranger
-  contributed code.
-- Because published commits cannot be re-attributed without rewriting history (and that requires
-  temporarily disabling branch protection on `main`), a mistaken trailer is effectively permanent.
-  Do not rewrite `main` to remove one without explicit approval from the maintainer.
-
-### Agent Prohibitions
-
-- Never fabricate command output, test results, database connection results, or API behavior.
-- Do not rebuild existing modules without first reading the existing code and documentation.
-- Do not modify user data, production databases, system services, network configuration, or credentials without authorization.
-- Do not delete unknown files, overwrite user work, or perform destructive database operations.
-- Never commit real passwords, tokens, private keys, certificates, or sensitive connection strings.
-- Never add attribution trailers (`Co-authored-by:`, `Signed-off-by:`, …) that credit a third party
-  or a generic agent identity; see §15.1.
-- Never edit generated Protobuf/gRPC files manually.
-- Never bypass the Driver SPI by hardcoding a database implementation in the frontend or generic business layer.
-- Never introduce Electron, Chromium, or WebView to achieve superficial cross-platform support.
-- Never describe unimplemented, untested, or UI-placeholder functionality as completed.
-- Do not introduce a new runtime, framework, or large dependency without a clear requirement.
-- Do not create competing copies of plans or task lists outside their designated locations
-  (`docs/product/`, `docs/planning/`, GitHub Issues/Projects).
-- Do not mark a milestone or requirement complete without recorded verification evidence.
-
-## 16. Task Handoff Template
-
-When completing a development task, the final report must include at least:
-
-- **Completed**: what was implemented and which modules were affected.
-- **Design notes**: important implementation choices and their rationale.
-- **Verification**: commands and tests that were run, with their results. UI acceptance covers interaction and functionality only; style outcomes are confirmed by a human and are not claimed by the agent.
-- **Outstanding work**: what remains unimplemented or unverified.
-- **Risks and follow-up**: compatibility, security, performance, or platform considerations.
-
-Do not respond only with "Done." Do not describe planned work as if it has already been implemented.
-
-## 17. Agent Delegation Policy
-
-Optimize for token efficiency while maintaining code quality.
-
-- Default to completing tasks in the main agent.
-- Do not spawn subagents for simple or localized tasks.
-- Spawn subagents only when independent parallel work
-  provides a clear benefit.
-- Prefer at most 2 concurrent subagents.
-- Each subagent must have a narrowly defined responsibility.
-- Avoid assigning the same repository exploration task
-  to multiple agents.
-- Do not repeatedly read large files or build logs.
-- Limit unnecessary test-fix-retest loops.
-- Prefer targeted tests over full-suite runs during development.
-- When a task becomes unexpectedly expensive, report
-  progress and blockers before expanding its scope.
+- 服务按业务域划分，新增前先确认现有域能否扩展；包名带显式版本（如 `product.query.v1`）。
+- 已发布字段号永不复用，删除用 `reserved`；新字段给合理默认语义；不兼容变更 = §15.2 先确认项。
+- 大结果集默认禁止整包序列化返回：查询走 Query ID + 批量/流式 + 取消 + 背压；表浏览走游标分页并定义排序稳定性。
+- 错误用稳定错误码 + 可安全展示信息，绝不回传密码、完整连接串、内部堆栈；取消传播到驱动且幂等。
+- 改契约后重新生成全部受影响客户端并跑契约测试；不得靠无限放大 gRPC 消息上限解决大结果问题。
+
+## 8. 原生前端红线（全文：`frontend/AGENTS.md` §8）
+
+- 优先平台原生控件，四档 L0–L3：平台已有的不自造（L3 禁止，先 ADR 再实现）；自绘组件须登记注册表（`hand_drawn`/`why_not_native`）。
+- 「未实现」不是灰化占位：能力级不可用不出现在界面；状态级不可用可见 + 禁用 + 原因（唯一例外：对象树占位分组行）。
+- 跨端一致的是**行为**（条目、顺序、可用性、快捷键、文案）；尺寸/字重/间距/颜色一律来自 `docs/ui-specification/metrics.toml` 与主题 token，禁止代码算 `base × scale`；仅字体族按平台差异并记 `platform_notes.*`。
+- 颜色只用 token，唯一例外是品牌色板（Linux/Windows 两份取值必须一致，见 frontend §8.6）；深色模式默认跟随系统。
+- SQL 编辑器与数据网格是核心组件，不得用普通文本框/列表凑数；变更尺寸/规则须同 PR 更新 metrics、缩放文档与（涉行为时）行为契约。
+
+## 9. 安全与隐私红线（任何任务不得弱化；本节改动属 §15.2）
+
+- 密码、token、私钥只进系统凭据库（Windows Credential Manager / macOS Keychain / Linux Secret Service）；普通配置只存引用或非敏感设置；**绝不明文存储数据库密码**。
+- 凭据只在必要期间驻留内存；日志、遥测、崩溃报告、测试快照、错误响应中绝不出现密码、完整连接串或含密信息；错误文案可诊断但不泄露凭据、完整连接串、私有本机路径。
+- 导入/导出校验路径与权限，防目录穿越与意外覆盖；执行 SQL 保持数据库既有权限语义，不默认用高权限账号；高危操作说明影响范围。
+- 本地 IPC 强制访问控制（§2）；未来远程连接必须 TLS 并验证服务端身份；默认不上传用户 SQL、schema、数据样本、连接信息；未来遥测须显式同意、最小化、可退出。
+- 升级依赖时评审安全公告、许可证与供应链风险；仓库绝不提交真实密码、token、私钥、证书或真实连接串。漏洞报告流程见 `SECURITY.md`。
+
+## 10. 性能与资源红线（全文：`backend/AGENTS.md` §10）
+
+- 优化以可复现基准为前提；无测量不宣称「零开销」「极致性能」。
+- 查询结果、导入导出、对象树、大文件设内存上限；后台任务设并发上限、超时与取消；不用无界 channel/任务/缓存制造流畅假象。
+- 每个查询、连接、cursor、临时文件有明确生命周期与清理路径；客户端断开后未释放的 Session/Cursor/临时文件必须可回收。
+
+## 11. Rust 编码红线（全文：`backend/AGENTS.md` §11）
+
+- rustfmt + clippy 必须过；豁免 lint 要局部抑制并写明原因。错误类型带上下文、可分类，不一律转 String。
+- `unwrap()/expect()/panic` 仅用于已确立不变式处；不跨 `.await` 持锁；`unsafe` 写明安全不变式并加针对性测试；公开类型与复杂算法有文档注释。
+
+## 12. C# / Swift / GTK 准则（全文：`frontend/AGENTS.md` §12）
+
+UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻辑；UI 线程不做同步网络/磁盘/数据库；每条异步路径处理取消、异常与销毁后回调；UI 状态机可表达 Loading/Empty/Success/Error/Cancelled/Disconnected。
+
+## 13. 测试与验证基线
+
+- 合入前跑与改动范围相关的检查：单元（规则/类型转换/方言/错误映射/生命周期）、驱动集成（经 `driver-testkit` 符合性）、契约（Protobuf 生成与兼容性）、端到端、性能、安全（日志脱敏、凭据、IPC、路径、泄露）。
+- 开发期优先跑相关用例，全套留到提交前；不为「凑全套证据」加无关测试轮次（§17）。
+- 跑不了的平台如实标注「未验证」，不声称通过；测试只用专用数据库与合成数据，禁连生产库或使用真实凭据。
+- UI 验收只验**交互与功能**（响应、状态流转、可访问性名称、控件在位），不做像素比较与图像识别，样式由人工确认（ADR 0029）；注册表 `evidence` 只收命令/断言/可访问性读取结果。
+
+## 14. 文档与决策（全文：`docs/AGENTS.md`；本节为有约束力的摘要）
+
+- **14.1 唯一真值**：产品规划 `docs/product/`、开发规划 `docs/planning/`、技术真值 `docs/architecture|api|database|ui-specification/`、UI 组件注册表 `docs/ui-specification/components/*.toml`（`ui-components.md` 是生成物禁止手改）、ADR `docs/decisions/`（追加式）、任务状态 GitHub Issues/Projects（`scripts/check-tracking.sh` 校验）。可多处摘要，不得重复维护细则；里程碑无验证证据不得标完成；不在仓库外复制计划、不在仓库内建第二任务清单。
+- **影响范围驱动同步**：架构变→架构文档/ADR；API 变→契约+生成+契约测试+`docs/api/`；UI 行为变→注册表+mark（全局规则→契约 §8）；功能行为变→对应文档；纯内部实现不碰无关文档。`README.md` 与 `README.zh-CN.md` 是一个交付物，同一提交共改（`scripts/check-readme-pair.py`）。
+- **14.2/14.3 注册表（绑定）**：逐组件行为唯一真值=注册表（契约只留全局规则与已知偏差）。改/增用户可见组件必须同 PR 改注册表并报组件 `id`（授权任务已点名组件时视为已确认范围）；`id` 发布不改名；条目出现 `px`/`#RRGGBB` 即缺陷；规范改动使三端 mark 失效，重核后 `scripts/check-ui-sync.sh mark`；退役走 `status=removed` 生命周期，不许删条目。
+- **14.4 发版门禁（不得绕过）**：发布前 `scripts/check-ui-sync.sh release-check` 必须通过——支持平台（当前 Linux、Windows；macOS 未接入不计）所有 active/deprecated 组件 `sync` 为 done/na/blocked（有说明）。带缺口发版须在 `docs/releases/<版本>.md` 单列「未同步的 UI 行为」并取得维护者批准，不允许静默发布。
+
+## 15. Agent 执行策略（风险分级；取代原 §15.0 逐次确认单机制）
+
+- **15.1 已授权任务范围 = 允许自主执行**：修改相关实现与测试、修订直接关联文档、修复本次变更引发的编译/格式/自检失败、服务目标的局部重构——无需逐文件逐次申请。执行中查 `git status`，不覆盖他人未提交改动。
+- **15.2 必须停下先问维护者**：超出授权范围的大改（发现要做不下时报告再授权，不「顺手扩大范围」）；重大架构调整；公共 API / Protobuf 不兼容变更；生产环境或真实用户数据；删除/覆盖重要数据与不可逆操作；修改安全策略或降低保护水平；引入新 runtime 或大型依赖。
+- **15.3 Git**：不 force push、不 `reset --hard`、不重写已发布历史（处置事故须维护者明确批准）；不擅自提交/推送，除非任务明确要求或本条仓库约定生效——本仓库惯例：直推 `main`，提交主题中文 `<模块>：<描述>`；维护者说「先做/直接做」时把该话作为授权记入 Issue/PR。
+- **15.4 归因禁令**：不加 `Co-authored-by:` / `Signed-off-by:` 等第三方或泛用 agent  trailer——GitHub 按邮箱归属到陌生账号且已发布提交不可追回。
+- **15.5 禁止事项**：不伪造命令输出/测试结果/连接结果；不手改生成 Protobuf/gRPC 代码；不绕过 Driver SPI 硬编码数据库；不以 Web runtime 冒充跨平台原生；不把未实现/未测试/占位功能描述成已完成；无验证证据不标里程碑完成。
+
+## 16. 交接报告
+
+任务收尾至少报告：**完成内容**（改了什么、影响模块）/ **设计取舍** / **验证**（跑过的命令与真实结果；UI 只述交互与功能，样式人工确认）/ **未完成** / **风险与后续**。不要只回「Done」，不要把计划中的工作描述成已实现。
+
+## 17. 子 Agent 委派
+
+- 简单或局部任务默认主 Agent 直接完成；不为用而委派，不为了用子 Agent 刻意拆分任务。
+- 适合委派：可独立并行的工作线、高上下文探索/审计、测试审查。是否委派由复杂度、上下文成本、并行收益与冲突风险综合判断，不设固定数量配额。
+- 每个子 Agent 职责单一而窄；同一文件不允许多个 Agent 同时修改；同一探索任务不重复委派。
+- 主 Agent 对最终代码质量、集成结果与测试负责：子 Agent 汇报是自称，涉及外部副作用（上传、远端写、发布）必须回读实际 URL/路径/状态后才可转述「完成」。
+- 成本控制：不反复读大文件与构建日志；开发期优先定向测试；任务意外变贵时，先报告进度与阻塞点，再决定是否扩大范围。
