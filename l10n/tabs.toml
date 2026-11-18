@@ -133,3 +133,638 @@ key = "tabs.limit_btn_ok"
 zh = "知道了"
 en = "Got It"
 status = "done"
+
+
+# ==== S5 Lane A：查询页与结果区（#203 前段，ADR 0031 S5） ====
+#
+# 覆盖表面：sql_page.rs 的执行按钮与工具条、库 / 连接选择器 tooltip 与可访问名、
+# 单表编辑入口提示、执行 / 取消 / 断连状态措辞、关闭结果区丢弃确认框；
+# results.rs 的结果区五态状态行、总数与保留行计数、续拉 / 触顶提示、占位页标题与
+# 说明、状态圆点空态 tooltip；statements.rs 的语句切换行条目与 tooltip。
+# 逐字相同的句子不在这里重复建：「重启 Sqarvo」= shell.recovery_btn_restart、
+# 「导出 CSV… / 导出为 INSERT 语句…」= data_page.export_menu_*、「取消」=
+# tabs.close_btn_cancel、「已放弃未提交的更改」= data_page.discard_all、
+# 「已断开」= data_page.txn_disconnected_label、「无结果集」= tabs.query_no_result_set、
+# 「编辑 {column_name} · {type_label}」= data_page.editor_title、「共 N 行」=
+# object_tree.total_exact、圆点脏行计数 = data_page.dirty_plain / txn_autocommit /
+# dot_note_autocommit。
+# 不迁入本区：日志行（eprintln!）、qa.rs 与 QA 内部报错、后端直出文案
+# （QueryFailure::message/detail、sanitize、超时句 —— S8/#206）、export_ui.rs（Lane B）。
+
+
+[[entry]]
+key = "tabs.query_btn_execute"
+zh = "执行"
+en = "Execute"
+status = "done"
+
+[[entry]]
+key = "tabs.query_btn_execute_tip"
+zh = "执行编辑器中的 SQL（Ctrl+Enter）"
+en = "Execute the SQL in the editor (Ctrl+Enter)"
+status = "done"
+
+[[entry]]
+key = "tabs.query_split_a11y"
+zh = "查询编辑器与结果区分栏"
+en = "Query editor and results splitter"
+status = "done"
+
+[[entry]]
+key = "tabs.query_export_csv_tip"
+zh = "已加载的结果行；空字段 = NULL，文本按 RFC 4180 转义"
+en = "The rows already loaded in this result; empty fields = NULL, text escaped per RFC 4180"
+status = "done"
+
+[[entry]]
+key = "tabs.query_export_insert_tip"
+zh = "已加载的结果行；每行一条 INSERT INTO … VALUES (…);"
+en = "The rows already loaded in this result; one INSERT INTO … VALUES (…) per row;"
+status = "done"
+
+[[entry]]
+key = "tabs.query_gate_no_session"
+zh = "会话尚未建立：等标签会话就绪后才能切换库"
+en = "No session yet: wait until this tab's session is ready before switching database"
+status = "done"
+
+[[entry]]
+key = "tabs.query_gate_transaction"
+zh = "事务已打开：先提交或回滚，再切换库"
+en = "A transaction is open: commit or roll it back before switching database"
+status = "done"
+
+[[entry]]
+key = "tabs.query_banner_empty_sql"
+zh = "SQL 不能为空：请输入后按 Ctrl+Enter"
+en = "SQL is empty: type a statement, then press Ctrl+Enter"
+status = "done"
+
+[[entry]]
+key = "tabs.query_state_executing"
+zh = "正在执行…"
+en = "Executing…"
+status = "done"
+
+[[entry]]
+key = "tabs.query_no_result_set"
+zh = "无结果集"
+en = "No Result Set"
+status = "done"
+
+[[entry]]
+key = "tabs.query_stmt_affected"
+zh = "语句 {index} 影响 {rows} 行（无结果集）"
+en = "Statement {index} affected {rows} rows (no result set)"
+en_one = "Statement {index} affected 1 row (no result set)"
+status = "done"
+
+[[entry]]
+key = "tabs.query_cursor_not_kept"
+zh = "该语句已执行成功，但脚本失败时后端未保留其结果游标"
+en = "The statement ran successfully, but the backend did not keep its result cursor when the script failed"
+status = "done"
+
+[[entry]]
+key = "tabs.query_summary_failed"
+zh = "语句 {number} · 失败 [{code}]"
+en = "Statement {number} · failed [{code}]"
+status = "done"
+
+[[entry]]
+key = "tabs.query_summary_undelivered"
+zh = "语句 {number} · 结果未返回"
+en = "Statement {number} · result not returned"
+status = "done"
+
+[[entry]]
+key = "tabs.query_summary_affected"
+zh = "语句 {number} · 影响 {rows} 行"
+en = "Statement {number} · affected {rows} rows"
+en_one = "Statement {number} · affected 1 row"
+status = "done"
+
+[[entry]]
+key = "tabs.query_summary_limited"
+zh = "语句 {number} · 达到上限 · 已返回 {rows} 行"
+en = "Statement {number} · client limit reached · {rows} rows returned"
+en_one = "Statement {number} · client limit reached · 1 row returned"
+status = "done"
+
+[[entry]]
+key = "tabs.query_summary_returned"
+zh = "语句 {number} · 已返回 {rows} 行"
+en = "Statement {number} · {rows} rows returned"
+en_one = "Statement {number} · 1 row returned"
+status = "done"
+
+[[entry]]
+key = "tabs.query_state_fetching"
+zh = "正在拉取该语句的结果…"
+en = "Fetching this statement's results…"
+status = "done"
+
+[[entry]]
+key = "tabs.query_edit_multi"
+zh = "多语句脚本的结果不能当表编辑"
+en = "Results of a multi-statement script cannot be edited as a table"
+status = "done"
+
+[[entry]]
+key = "tabs.query_edit_not_single_table"
+zh = "结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除"
+en = "The result is not a single-table query (JOIN / aggregate / subquery): you cannot add, edit or delete rows"
+status = "done"
+
+[[entry]]
+key = "tabs.query_edit_table_unresolved"
+zh = "解析不到表 {table}：不能编辑"
+en = "Cannot resolve table {table}: editing is unavailable"
+status = "done"
+
+[[entry]]
+key = "tabs.query_edit_pk_missing"
+zh = "结果里没有主键列 {missing}：定位不到要改的行，不能编辑"
+en = "The result has no primary key column {missing}: rows cannot be located, so editing is unavailable"
+status = "done"
+
+[[entry]]
+key = "tabs.query_edit_no_pk"
+zh = "这张表没有主键：不能新增、编辑或删除"
+en = "This table has no primary key: you cannot add, edit or delete rows"
+status = "done"
+
+[[entry]]
+key = "tabs.query_edit_pk_read_failed"
+zh = "读取主键失败：{reason}"
+en = "Reading the primary key failed: {reason}"
+status = "done"
+
+[[entry]]
+key = "tabs.query_submit_failed"
+zh = "提交失败：{message}"
+en = "Commit failed: {message}"
+status = "done"
+
+[[entry]]
+key = "tabs.query_applied_rerun"
+zh = "已提交 {rows} 行 · 已自动重新执行查询"
+en = "{rows} rows committed · the query was re-run automatically"
+en_one = "1 row committed · the query was re-run automatically"
+status = "done"
+
+[[entry]]
+key = "tabs.query_applied_partial"
+zh = "已提交 {rows} 行，{failed} 行失败（未提交的仍在草稿里，界面不重跑）"
+en = "{rows} rows committed, {failed} rows failed (uncommitted ones stay in the draft; the view does not re-run)"
+en_one = "1 row committed, {failed} rows failed (uncommitted ones stay in the draft; the view does not re-run)"
+status = "done"
+
+[[entry]]
+key = "tabs.query_insert_rolled_back"
+zh = "新行插入失败（整批已回滚）：草稿还在，改完可重试"
+en = "The new row failed to insert (the whole batch was rolled back): the draft is kept; fix it and retry"
+status = "done"
+
+[[entry]]
+key = "tabs.query_inserted_rerun"
+zh = "已插入 {rows} 行 · 已自动重新执行查询"
+en = "{rows} rows inserted · the query was re-run automatically"
+en_one = "1 row inserted · the query was re-run automatically"
+status = "done"
+
+[[entry]]
+key = "tabs.query_row_ops_readonly"
+zh = "结果只读：执行单表查询后才能编辑"
+en = "The result is read-only: run a single-table query before editing"
+status = "done"
+
+[[entry]]
+key = "tabs.query_row_ops_empty_insert"
+zh = "新行还是空的：双击各列填值后再提交"
+en = "The new row is still empty: double-click the columns to fill it in, then commit"
+status = "done"
+
+[[entry]]
+key = "tabs.query_row_ops_select"
+zh = "选中一行后可以删除；双击单元格可以改值"
+en = "Select a row to delete it; double-click a cell to change its value"
+status = "done"
+
+[[entry]]
+key = "tabs.query_insert_note"
+zh = "新行：双击单元格填值；提交前可以放弃"
+en = "New row: double-click a cell to fill it in; you can discard before committing"
+status = "done"
+
+[[entry]]
+key = "tabs.query_deleted_marked"
+zh = "已标记删除 {count} 行（提交前可以放弃）"
+en = "{count} rows marked for deletion (you can discard before committing)"
+en_one = "1 row marked for deletion (you can discard before committing)"
+status = "done"
+
+[[entry]]
+key = "tabs.query_refresh_dirty"
+zh = "有未提交的更改：先提交或放弃，再刷新"
+en = "There are uncommitted changes: commit or discard them before refreshing"
+status = "done"
+
+[[entry]]
+key = "tabs.query_close_tip_running"
+zh = "查询执行中，请先取消"
+en = "A query is running: cancel it first"
+status = "done"
+
+[[entry]]
+key = "tabs.query_dlg_discard_title"
+zh = "放弃未提交的更改？"
+en = "Discard Uncommitted Changes?"
+status = "done"
+
+[[entry]]
+key = "tabs.query_dlg_discard_body"
+zh = "关闭结果区将丢弃 {dirty} 行未提交的更改。"
+en = "Closing the results pane discards {dirty} rows of uncommitted changes."
+en_one = "Closing the results pane discards 1 row of uncommitted changes."
+status = "done"
+
+[[entry]]
+key = "tabs.query_dlg_discard_btn"
+zh = "放弃更改"
+en = "Discard Changes"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_catalog_a11y"
+zh = "当前库"
+en = "Current Database"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_catalog_tip"
+zh = "这条会话的当前库（服务端真值）"
+en = "This session's current database (server-side truth)"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_catalog_list_failed"
+zh = "取不到库列表：{note}"
+en = "Cannot fetch the database list: {note}"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_catalog_truth_tip"
+zh = "当前{layer}：{truth}（选中后这条会话会切到该{layer}）"
+en = "Current {layer}: {truth} (selecting one switches this session to that {layer})"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_connection_a11y"
+zh = "当前连接"
+en = "Current Connection"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_connection_tip"
+zh = "这条查询标签绑定的连接"
+en = "The connection bound to this query tab"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_connection_pending_tip"
+zh = "正在把本标签的会话切到「{target}」…"
+en = "Switching this tab's session to “{target}”…"
+status = "done"
+
+[[entry]]
+key = "tabs.picker_connection_truth_tip"
+zh = "这条查询标签绑定的连接：{name}（选中另一条会重绑本标签的会话）"
+en = "The connection bound to this query tab: {name} (choosing another one rebinds this tab's session)"
+status = "done"
+
+[[entry]]
+key = "tabs.results_status_idle"
+zh = "尚未执行查询"
+en = "No query has run yet"
+status = "done"
+
+[[entry]]
+key = "tabs.results_dot_clean_tip"
+zh = "没有未提交的更改"
+en = "No uncommitted changes"
+status = "done"
+
+[[entry]]
+key = "tabs.results_close_tip"
+zh = "关闭结果区（释放查询资源）"
+en = "Close the results pane (release query resources)"
+status = "done"
+
+[[entry]]
+key = "tabs.results_close_a11y"
+zh = "关闭结果区"
+en = "Close Results"
+status = "done"
+
+[[entry]]
+key = "tabs.results_export_tip"
+zh = "导出已加载的查询结果：CSV 或 INSERT 语句（Ctrl+Shift+E 直接导出 CSV）"
+en = "Export the loaded query results: CSV or INSERT statements (Ctrl+Shift+E exports CSV directly)"
+status = "done"
+
+[[entry]]
+key = "tabs.results_export_rows_tip"
+zh = "导出已加载的 {loaded} 行（只含内存中已有的行）：CSV 或 INSERT 语句；Ctrl+Shift+E 直接导出 CSV"
+en = "Export the {loaded} loaded rows (only rows already in memory): CSV or INSERT statements; Ctrl+Shift+E exports CSV directly"
+en_one = "Export the 1 loaded row (only rows already in memory): CSV or INSERT statements; Ctrl+Shift+E exports CSV directly"
+status = "done"
+
+[[entry]]
+key = "tabs.results_total_unknown"
+zh = "总数未知（服务端分批返回）"
+en = "total unknown (the server returns batches)"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_running"
+zh = "执行中…"
+en = "Executing…"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_streaming"
+zh = "加载中 · 已加载 {rows} 行 · {total}"
+en = "Loading · {rows} rows loaded · {total}"
+en_one = "Loading · 1 row loaded · {total}"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_complete"
+zh = "已完成 · 已加载 {rows} 行 · {total}"
+en = "Completed · {rows} rows loaded · {total}"
+en_one = "Completed · 1 row loaded · {total}"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_empty"
+zh = "空结果集 · 共 0 行"
+en = "Empty result set · 0 rows in total"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_executed_no_result"
+zh = "已执行 · 无结果集"
+en = "Executed · no result set"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_executed_undelivered"
+zh = "已执行 · 结果未返回"
+en = "Executed · result not returned"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_error"
+zh = "错误 · 已保留 {rows} 行"
+en = "Error · {rows} rows kept"
+en_one = "Error · 1 row kept"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_limited"
+zh = "已达客户端上限 · 已保留 {rows} 行"
+en = "Client result limit reached · {rows} rows kept"
+en_one = "Client result limit reached · 1 row kept"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_cancelled"
+zh = "已取消 · 已保留 {rows} 行"
+en = "Cancelled · {rows} rows kept"
+en_one = "Cancelled · 1 row kept"
+status = "done"
+
+[[entry]]
+key = "tabs.results_state_disconnected"
+zh = "已断开 · 已保留 {rows} 行"
+en = "Disconnected · {rows} rows kept"
+en_one = "Disconnected · 1 row kept"
+status = "done"
+
+[[entry]]
+key = "tabs.results_insert_not_single"
+zh = "结果不是单表查询：不能新增行"
+en = "The result is not a single-table query: rows cannot be added"
+status = "done"
+
+[[entry]]
+key = "tabs.results_insert_dirty_exists"
+zh = "已经有未提交的更改：先提交或放弃，再新增行"
+en = "There are already uncommitted changes: commit or discard them before adding a row"
+status = "done"
+
+[[entry]]
+key = "tabs.results_editor_insert_title"
+zh = "新行 {column_name} · {type_label}"
+en = "New row {column_name} · {type_label}"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_idle_desc"
+zh = "在上方输入 SQL 后按 Ctrl+Enter 执行"
+en = "Type SQL above, then press Ctrl+Enter to execute"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_running_title"
+zh = "正在执行查询"
+en = "Running Query"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_running_desc"
+zh = "等待首批数据…"
+en = "Waiting for the first batch…"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_empty_title"
+zh = "空结果集"
+en = "Empty Result Set"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_empty_desc"
+zh = "语句执行成功，但没有返回任何行（与执行失败不同）"
+en = "The statement ran successfully but returned no rows (this is not the same as a failure)"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_error_title"
+zh = "查询失败"
+en = "Query Failed"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_error_desc"
+zh = "后端未提供错误详情"
+en = "The backend provided no error details"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_limited_title"
+zh = "结果集达到客户端上限"
+en = "Result Set Hit the Client Limit"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_limited_desc"
+zh = "已停止拉取，已加载的数据仍可查看"
+en = "Fetching stopped; the loaded data is still viewable"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_no_result_desc"
+zh = "语句已执行，但没有返回结果集"
+en = "The statement ran, but it returned no result set"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_undelivered_title"
+zh = "结果未返回"
+en = "Result Not Returned"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_undelivered_desc"
+zh = "该语句已执行成功，但脚本失败时后端未保留其结果"
+en = "The statement ran successfully, but the backend did not keep its result when the script failed"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_cancelled_title"
+zh = "已取消"
+en = "Cancelled"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_cancelled_desc"
+zh = "查询已被取消"
+en = "The query was cancelled"
+status = "done"
+
+[[entry]]
+key = "tabs.results_ph_disconnected_desc"
+zh = "与后端的连接已断开"
+en = "The connection to the backend was dropped"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_switcher_a11y"
+zh = "语句切换行"
+en = "Statement Switcher"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_failure_line"
+zh = "前 {completed} 条已执行，第 {failed} 条失败"
+en = "{completed} statements executed, statement {failed} failed"
+en_one = "1 statement executed, statement {failed} failed"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_kind_result_set"
+zh = "结果集"
+en = "Result set"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_kind_write"
+zh = "写语句"
+en = "Write statement"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_entry_rows_more"
+zh = "{number} · {kind} · {rows} 行…"
+en = "{number} · {kind} · {rows} rows…"
+en_one = "{number} · {kind} · 1 row…"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_entry_rows"
+zh = "{number} · {kind} · {rows} 行"
+en = "{number} · {kind} · {rows} rows"
+en_one = "{number} · {kind} · 1 row"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_entry_unloaded"
+zh = "{number} · {kind} · 未加载"
+en = "{number} · {kind} · not loaded"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_entry_affected"
+zh = "{number} · {kind} · 影响 {rows} 行"
+en = "{number} · {kind} · affected {rows} rows"
+en_one = "{number} · {kind} · affected 1 row"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_entry_undelivered"
+zh = "{number} · 已执行 · 结果未返回"
+en = "{number} · executed · result not returned"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_entry_failed"
+zh = "{number} · 失败"
+en = "{number} · failed"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tip_rows_more"
+zh = "已加载 {rows} 行，还有后续批次（选中后滚动续拉）"
+en = "{rows} rows loaded, more batches remain (select it and scroll to fetch more)"
+en_one = "1 row loaded, more batches remain (select it and scroll to fetch more)"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tip_rows"
+zh = "已加载 {rows} 行"
+en = "{rows} rows loaded"
+en_one = "1 row loaded"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tip_unloaded"
+zh = "尚未加载：选中后拉取该语句的结果"
+en = "Not loaded yet: select it to fetch this statement's results"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tip_affected"
+zh = "无结果集，影响 {rows} 行"
+en = "No result set, {rows} rows affected"
+en_one = "No result set, 1 row affected"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tip_failed"
+zh = "该语句执行失败"
+en = "This statement failed"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tooltip"
+zh = "语句 {number}：{state}"
+en = "Statement {number}: {state}"
+status = "done"
+
+[[entry]]
+key = "tabs.stmt_tooltip_preview"
+zh = "语句 {number}：{preview}\n{state}"
+en = "Statement {number}: {preview}\n{state}"
+status = "done"

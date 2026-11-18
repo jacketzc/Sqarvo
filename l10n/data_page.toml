@@ -2336,3 +2336,186 @@ key = "data_page.ddl_detail_generator"
 zh = "（拼装器版本 {version}）"
 en = " (generator version {version})"
 status = "done"
+
+
+# ==== S5 Lane A：值格式化 tooltip 族（#203 移交自 #202，编排者裁定） ====
+#
+# backend/query.rs 的 `format_cell` / `text_cell` / `display_text` / `format_bytes`
+# 是**网格与查询结果区共用**的显示面，所以条目落本区（前缀 data_page.value_*）：
+# NULL / 空串、类型说明、截断标记与二进制大值提示。NULL 与空串在格内的**显示文本**
+# （`NULL` / `''`）仍是行为契约口径，不进目录；`" …"` 这类语言无关的分隔省略号也不进。
+
+
+[[entry]]
+key = "data_page.value_type_missing"
+zh = "类型名未提供"
+en = "No type name provided"
+status = "done"
+
+[[entry]]
+key = "data_page.value_null_tip"
+zh = "SQL NULL（与空字符串不同）"
+en = "SQL NULL (different from the empty string)"
+status = "done"
+
+[[entry]]
+key = "data_page.value_empty_text_tip"
+zh = "空字符串（长度 0），与 NULL 不同"
+en = "Empty string (length 0), different from NULL"
+status = "done"
+
+[[entry]]
+key = "data_page.value_text_tip"
+zh = "TEXT · {type_name} · {chars} 字符"
+en = "TEXT · {type_name} · {chars} characters"
+en_one = "TEXT · {type_name} · 1 character"
+status = "done"
+
+[[entry]]
+key = "data_page.value_json_tip"
+zh = "{type_name} · {chars} 字符"
+en = "{type_name} · {chars} characters"
+en_one = "{type_name} · 1 character"
+status = "done"
+
+[[entry]]
+key = "data_page.value_uuid_tip"
+zh = "UUID · {type_name}"
+en = "UUID · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_bool_tip"
+zh = "布尔值 · {type_name}"
+en = "Boolean · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_int_tip"
+zh = "整数 · {type_name}"
+en = "Integer · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_uint_tip"
+zh = "无符号整数 · {type_name}"
+en = "Unsigned integer · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_float_tip"
+zh = "浮点数 · {type_name}"
+en = "Float · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_decimal_tip"
+zh = "精确十进制 · {type_name} · unscaled={unscaled} scale={scale}"
+en = "Exact decimal · {type_name} · unscaled={unscaled} scale={scale}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_binary_tip"
+zh = "二进制 · {type_name} · 前缀 {bytes} 字节"
+en = "Binary · {type_name} · {bytes} byte prefix"
+en_one = "Binary · {type_name} · 1 byte prefix"
+status = "done"
+
+[[entry]]
+key = "data_page.value_date_tip"
+zh = "DATE · {type_name}"
+en = "DATE · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_time_tip"
+zh = "TIME · {type_name}"
+en = "TIME · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_datetime_tip"
+zh = "DATETIME（无时区）· {type_name}"
+en = "DATETIME (no time zone) · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_timestamp_tip"
+zh = "TIMESTAMP · {type_name} · unix_nanos={nanos} 偏移{offset}s"
+en = "TIMESTAMP · {type_name} · unix_nanos={nanos} offset {offset}s"
+status = "done"
+
+[[entry]]
+key = "data_page.value_array_tip"
+zh = "数组 · {type_name} · {count} 个元素"
+en = "Array · {type_name} · {count} elements"
+en_one = "Array · {type_name} · 1 element"
+status = "done"
+
+[[entry]]
+key = "data_page.value_unsupported_text"
+zh = "{type_name}：{text}"
+en = "{type_name}: {text}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_unsupported_tip"
+zh = "无法无损映射的类型 · 原始类型 {type_name}"
+en = "Type that cannot be mapped losslessly · raw type {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_missing_text"
+zh = "（值缺失：{kind} / {value}）"
+en = "(value missing: {kind} / {value})"
+status = "done"
+
+[[entry]]
+key = "data_page.value_kind_mismatch_tip"
+zh = "kind 与 value 不一致 · {type_name}"
+en = "kind and value disagree · {type_name}"
+status = "done"
+
+[[entry]]
+key = "data_page.value_no_value"
+zh = "无值"
+en = "no value"
+status = "done"
+
+[[entry]]
+key = "data_page.value_truncated_marker"
+zh = "…（已截断）"
+en = "… (truncated)"
+status = "done"
+
+[[entry]]
+key = "data_page.value_truncated_suffix"
+zh = " · 服务端仅返回前缀（已截断），完整值需要后续延迟加载能力"
+en = " · the server returned only a prefix (truncated); the full value needs deferred loading support"
+status = "done"
+
+[[entry]]
+key = "data_page.value_display_note"
+zh = "{prefix}…（网格内仅显示前 {max} 个字符）"
+en = "{prefix}… (the grid shows only the first {max} characters)"
+status = "done"
+
+[[entry]]
+key = "data_page.value_bytes_zero"
+zh = "0x（0 字节）"
+en = "0x (0 bytes)"
+status = "done"
+
+[[entry]]
+key = "data_page.value_bytes_prefix_text"
+zh = "0x{shown}{ellipsis}（前缀 {bytes} 字节，完整值未传输）"
+en = "0x{shown}{ellipsis} ({bytes} byte prefix, the full value was not transferred)"
+en_one = "0x{shown}{ellipsis} (1 byte prefix, the full value was not transferred)"
+status = "done"
+
+[[entry]]
+key = "data_page.value_bytes_total_text"
+zh = "0x{shown}{ellipsis}（共 {bytes} 字节）"
+en = "0x{shown}{ellipsis} ({bytes} bytes total)"
+en_one = "0x{shown}{ellipsis} (1 byte total)"
+status = "done"

@@ -23,6 +23,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 
 use crate::backend::query::{StatementPosition, StatementView};
+use crate::l10n;
 use crate::layout::{Gap, MIN_TARGET, gap};
 
 /// 切换行里一条语句的当前状态。
@@ -124,10 +125,13 @@ pub fn is_multi(statements: &[StatementView]) -> bool {
 
 /// 失败位置的状态行文案：「前 N-1 条已执行，第 N 条失败」（1 起，给人看）。
 pub fn failure_status_line(position: StatementPosition) -> String {
-    format!(
-        "前 {} 条已执行，第 {} 条失败",
-        position.completed,
-        position.failed_index + 1
+    l10n::tf_n(
+        "tabs.stmt_failure_line",
+        i64::from(position.completed),
+        &[
+            ("completed", position.completed.to_string()),
+            ("failed", (position.failed_index + 1).to_string()),
+        ],
     )
 }
 
@@ -135,55 +139,86 @@ pub fn failure_status_line(position: StatementPosition) -> String {
 pub fn kind_label(entry: &SwitcherEntry) -> String {
     let keyword = entry.preview.split_whitespace().next().unwrap_or("");
     if keyword.is_empty() {
-        return if entry.has_result_set {
-            "结果集".to_owned()
+        return l10n::t(if entry.has_result_set {
+            "tabs.stmt_kind_result_set"
         } else {
-            "写语句".to_owned()
-        };
+            "tabs.stmt_kind_write"
+        })
+        .to_owned();
     }
     keyword.chars().take(12).collect::<String>().to_uppercase()
 }
 
 /// 条目文案：「1 · SELECT · 3 行」「2 · UPDATE · 影响 5 行」「3 · 失败」。
 pub fn entry_label(entry: &SwitcherEntry) -> String {
-    let number = entry.index + 1;
+    let number = (entry.index + 1).to_string();
+    let plural = |rows: u64| i64::try_from(rows).unwrap_or(i64::MAX);
     match entry.state {
         SlotState::Rows { loaded, has_more } => {
-            let kind = kind_label(entry);
+            let args = [
+                ("number", number),
+                ("kind", kind_label(entry)),
+                ("rows", loaded.to_string()),
+            ];
             if has_more {
-                format!("{number} · {kind} · {loaded} 行…")
+                l10n::tf_n("tabs.stmt_entry_rows_more", plural(loaded), &args)
             } else {
-                format!("{number} · {kind} · {loaded} 行")
+                l10n::tf_n("tabs.stmt_entry_rows", plural(loaded), &args)
             }
         }
-        SlotState::Unloaded => format!("{number} · {} · 未加载", kind_label(entry)),
-        SlotState::Affected(rows) => {
-            format!("{number} · {} · 影响 {rows} 行", kind_label(entry))
-        }
-        SlotState::Undelivered => format!("{number} · 已执行 · 结果未返回"),
-        SlotState::Failed => format!("{number} · 失败"),
+        SlotState::Unloaded => l10n::tf(
+            "tabs.stmt_entry_unloaded",
+            &[("number", number), ("kind", kind_label(entry))],
+        ),
+        SlotState::Affected(rows) => l10n::tf_n(
+            "tabs.stmt_entry_affected",
+            plural(rows),
+            &[
+                ("number", number),
+                ("kind", kind_label(entry)),
+                ("rows", rows.to_string()),
+            ],
+        ),
+        SlotState::Undelivered => l10n::tf("tabs.stmt_entry_undelivered", &[("number", number)]),
+        SlotState::Failed => l10n::tf("tabs.stmt_entry_failed", &[("number", number)]),
     }
 }
 
 /// 条目的 tooltip：完整预览（列表里只显示类型词）+ 状态说明。
 fn entry_tooltip(entry: &SwitcherEntry) -> String {
+    let plural = |rows: u64| i64::try_from(rows).unwrap_or(i64::MAX);
+    let rows = |loaded: u64| ("rows", loaded.to_string());
     let state = match entry.state {
         SlotState::Rows { loaded, has_more } => {
+            let args = [rows(loaded)];
             if has_more {
-                format!("已加载 {loaded} 行，还有后续批次（选中后滚动续拉）")
+                l10n::tf_n("tabs.stmt_tip_rows_more", plural(loaded), &args)
             } else {
-                format!("已加载 {loaded} 行")
+                l10n::tf_n("tabs.stmt_tip_rows", plural(loaded), &args)
             }
         }
-        SlotState::Unloaded => "尚未加载：选中后拉取该语句的结果".to_owned(),
-        SlotState::Affected(rows) => format!("无结果集，影响 {rows} 行"),
-        SlotState::Undelivered => "该语句已执行成功，但脚本失败时后端未保留其结果游标".to_owned(),
-        SlotState::Failed => "该语句执行失败".to_owned(),
+        SlotState::Unloaded => l10n::t("tabs.stmt_tip_unloaded").to_owned(),
+        SlotState::Affected(affected) => l10n::tf_n(
+            "tabs.stmt_tip_affected",
+            plural(affected),
+            &[rows(affected)],
+        ),
+        // 「游标未保留」这一句与查询页多语句失败态逐字相同，复用同一条目。
+        SlotState::Undelivered => l10n::t("tabs.query_cursor_not_kept").to_owned(),
+        SlotState::Failed => l10n::t("tabs.stmt_tip_failed").to_owned(),
     };
+    let number = (entry.index + 1).to_string();
     if entry.preview.is_empty() {
-        format!("语句 {}：{state}", entry.index + 1)
+        l10n::tf("tabs.stmt_tooltip", &[("number", number), ("state", state)])
     } else {
-        format!("语句 {}：{}\n{state}", entry.index + 1, entry.preview)
+        l10n::tf(
+            "tabs.stmt_tooltip_preview",
+            &[
+                ("number", number),
+                ("preview", entry.preview.clone()),
+                ("state", state),
+            ],
+        )
     }
 }
 
@@ -208,7 +243,9 @@ impl StatementSwitcher {
         root.set_margin_bottom(gap(Gap::Sm));
         root.add_css_class("sqarvo-statement-switcher");
         root.set_visible(false);
-        root.update_property(&[gtk::accessible::Property::Label("语句切换行")]);
+        root.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "tabs.stmt_switcher_a11y",
+        ))]);
         Rc::new(Self {
             root,
             entries: RefCell::new(Vec::new()),
