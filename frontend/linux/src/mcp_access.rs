@@ -40,11 +40,11 @@ impl Toggle {
 
 pub fn append_menu(view: &gio::Menu) {
     view.append(
-        Some(l10n::t("mcp_access.menu_access")),
+        Some(l10n::t("workspace.mcp_access.menu_access")),
         Some("win.mcp-access"),
     );
     view.append(
-        Some(l10n::t("mcp_access.menu_read_only")),
+        Some(l10n::t("workspace.mcp_access.menu_read_only")),
         Some("win.mcp-read-only"),
     );
 }
@@ -128,8 +128,11 @@ impl McpAccess {
         let this = Rc::clone(self);
         glib::spawn_future_local(async move {
             let policy = this.read().await;
-            if this.finish(generation, policy, "mcp_access.status_unavailable")
-                && !this.qa_ran.replace(true)
+            if this.finish(
+                generation,
+                policy,
+                "workspace.mcp_access.status_unavailable",
+            ) && !this.qa_ran.replace(true)
             {
                 this.run_qa().await;
             }
@@ -155,7 +158,11 @@ impl McpAccess {
         let this = Rc::clone(self);
         glib::spawn_future_local(async move {
             let policy = this.apply(generation, toggle, desired).await;
-            this.finish(generation, policy, "mcp_access.status_update_error");
+            this.finish(
+                generation,
+                policy,
+                "workspace.mcp_access.status_update_error",
+            );
         });
     }
 
@@ -229,20 +236,20 @@ impl McpAccess {
         };
         let (title, body, confirm) = match toggle {
             Toggle::Access => (
-                "mcp_access.enable_title",
-                "mcp_access.enable_body",
-                "mcp_access.enable_confirm",
+                "dialog.mcp_access.enable_title",
+                "dialog.mcp_access.enable_body",
+                "dialog.mcp_access.enable_confirm",
             ),
             Toggle::ReadOnly => (
-                "mcp_access.write_title",
-                "mcp_access.write_body",
-                "mcp_access.write_confirm",
+                "dialog.mcp_access.write_title",
+                "dialog.mcp_access.write_body",
+                "dialog.mcp_access.write_confirm",
             ),
         };
         let body = l10n::tf(body, &[("n", count.to_string())]);
         let dialog = adw::AlertDialog::new(Some(l10n::t(title)), Some(&body));
         dialog.add_responses(&[
-            (CANCEL, l10n::t("mcp_access.cancel")),
+            (CANCEL, l10n::t("dialogs.btn_cancel")),
             (CONFIRM, l10n::t(confirm)),
         ]);
         dialog.set_close_response(CANCEL);
@@ -282,23 +289,27 @@ impl McpAccess {
             return;
         };
         let key = match policy {
-            _ if self.busy.get() => "mcp_access.status_loading",
+            _ if self.busy.get() => "workspace.mcp_access.status_loading",
             _ if self.failure.get().is_some() => self.failure.get().unwrap_or_default(),
-            Some(p) if !p.enabled => "mcp_access.status_disabled",
-            Some(p) if p.read_only => "mcp_access.status_read_only",
-            Some(_) => "mcp_access.status_write_warning",
-            None => "mcp_access.status_disconnected",
+            Some(p) if !p.enabled => "workspace.mcp_access.status_disabled",
+            Some(p) if p.read_only => "workspace.mcp_access.status_read_only",
+            Some(_) => "workspace.mcp_access.status_write_warning",
+            None => "workspace.mcp_access.status_disconnected",
         };
         let message = l10n::t(key);
         indicator.set_text(message);
         let detail = match key {
-            "mcp_access.status_write_warning" => l10n::t("mcp_access.no_write_tools"),
-            "mcp_access.status_disabled" => l10n::t("mcp_access.read_only_unavailable"),
+            "workspace.mcp_access.status_write_warning" => {
+                l10n::t("workspace.mcp_access.no_write_tools")
+            }
+            "workspace.mcp_access.status_disabled" => {
+                l10n::t("workspace.mcp_access.read_only_unavailable")
+            }
             _ => message,
         };
         indicator.set_tooltip_text(Some(detail));
         indicator.update_property(&[gtk::accessible::Property::Label(message)]);
-        if key == "mcp_access.status_write_warning" {
+        if key == "workspace.mcp_access.status_write_warning" {
             indicator.add_css_class("warning");
         } else {
             indicator.remove_css_class("warning");
@@ -344,10 +355,10 @@ impl McpAccess {
 
         if let Some(expected) = qa::mcp_indicator() {
             let key = match expected {
-                qa::McpIndicator::Disabled => "mcp_access.status_disabled",
-                qa::McpIndicator::ReadOnly => "mcp_access.status_read_only",
-                qa::McpIndicator::Writable => "mcp_access.status_write_warning",
-                qa::McpIndicator::Unavailable => "mcp_access.status_unavailable",
+                qa::McpIndicator::Disabled => "workspace.mcp_access.status_disabled",
+                qa::McpIndicator::ReadOnly => "workspace.mcp_access.status_read_only",
+                qa::McpIndicator::Writable => "workspace.mcp_access.status_write_warning",
+                qa::McpIndicator::Unavailable => "workspace.mcp_access.status_unavailable",
             };
             qa_check(
                 self.indicator.upgrade().is_some_and(|label| {

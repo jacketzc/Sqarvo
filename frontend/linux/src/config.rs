@@ -147,12 +147,10 @@ impl SavedConnection {
     /// 对象树名称。
     pub fn display_label(&self) -> String {
         let alias = self.alias.trim();
-        if !alias.is_empty() {
-            alias.to_owned()
-        } else if self.name.is_empty() {
+        if alias.is_empty() {
             self.target_label()
         } else {
-            self.name.clone()
+            alias.to_owned()
         }
     }
 

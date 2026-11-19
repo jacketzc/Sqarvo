@@ -1,0 +1,37 @@
+# MCP 策略确认对话框。
+
+[[entry]]
+key = "dialog.mcp_access.enable_title"
+zh = "启用 MCP 数据访问？"
+en = "Enable MCP data access?"
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.enable_body"
+zh = "允许通过 MCP 访问当前 {n} 个连接档案，以及今后新增的连接档案。MCP 客户端将能读取数据库结构和数据。"
+en = "This grants MCP access to all {n} current connection profiles and any profiles added later. MCP clients will be able to read database schemas and data."
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.enable_confirm"
+zh = "启用 MCP 数据访问"
+en = "Enable MCP data access"
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.write_title"
+zh = "关闭 MCP 只读？"
+en = "Turn off MCP read-only?"
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.write_body"
+zh = "此设置适用于当前 {n} 个连接档案，以及今后新增的连接档案。将来支持的 MCP 写入操作可能修改数据库中的数据。当前 MCP 版本尚未提供数据库写入工具。"
+en = "This setting applies to all {n} current connection profiles and any profiles added later. Future MCP write operations may modify database data. This MCP version does not provide database write tools."
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.write_confirm"
+zh = "关闭 MCP 只读"
+en = "Turn off MCP read-only"
+status = "done"
