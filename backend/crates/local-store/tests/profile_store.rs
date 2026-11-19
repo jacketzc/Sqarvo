@@ -271,6 +271,30 @@ fn subprocess_writer() {
     let root = Path::new(&root);
     let role = std::env::var(CHILD_ROLE).unwrap();
     let store = store_at(root);
+    if role == "lock-holder" {
+        store.snapshot().unwrap();
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(document_path(root).with_extension("json.lock"))
+            .unwrap();
+        assert!(try_lock(&lock, LockMode::Exclusive).unwrap());
+        fs::write(root.join(&role), b"locked").unwrap();
+        wait_for_files(root, &["go"]);
+        drop(lock);
+        return;
+    }
+    if role == "policy" {
+        fs::write(root.join(&role), b"ready").unwrap();
+        wait_for_files(root, &["go"]);
+        store
+            .set_mcp_access(McpAccessPolicy {
+                enabled: true,
+                read_only: false,
+            })
+            .unwrap();
+        return;
+    }
     let mut connection = profile(&role, if role == "first" { 3306 } else { 3307 });
     let mut expected = None;
     if let Ok(id) = std::env::var(CHILD_ID) {
@@ -354,4 +378,62 @@ fn one_of_two_processes_editing_the_same_revision_gets_conflict() {
     assert_eq!(doc.revision, 2);
     assert_eq!(doc.profiles[0].revision, 2);
     assert_eq!(doc.profiles.len(), 1);
+}
+
+#[test]
+fn two_threads_preserve_distinct_profile_updates() {
+    let root = TempDir::new().unwrap();
+    let store = store_at(root.path());
+    let ready = std::sync::Barrier::new(2);
+    thread::scope(|scope| {
+        for (name, port) in [("first", 3306), ("second", 3307)] {
+            let store = &store;
+            let ready = &ready;
+            scope.spawn(move || {
+                ready.wait();
+                store.save(profile(name, port), None).unwrap();
+            });
+        }
+    });
+    let doc = store.snapshot().unwrap();
+    assert_eq!(doc.revision, 2);
+    assert_eq!(doc.profiles.len(), 2);
+}
+
+#[test]
+fn profile_and_policy_updates_in_separate_processes_do_not_overwrite_each_other() {
+    let root = TempDir::new().unwrap();
+    let mut profile = spawn_writer(root.path(), "first", None);
+    let mut policy = spawn_writer(root.path(), "policy", None);
+    wait_for_files(root.path(), &["first", "policy"]);
+    fs::write(root.path().join("go"), b"write").unwrap();
+    assert!(profile.wait().unwrap().success());
+    assert!(policy.wait().unwrap().success());
+    let doc = store_at(root.path()).snapshot().unwrap();
+    assert_eq!(doc.revision, 2);
+    assert_eq!(doc.profiles.len(), 1);
+    assert_eq!(doc.profiles[0].name, "first");
+    assert_eq!(
+        doc.mcp,
+        McpAccessPolicy {
+            enabled: true,
+            read_only: false
+        }
+    );
+}
+
+#[test]
+fn killed_lock_holder_releases_the_lock_without_replacing_the_document() {
+    let root = TempDir::new().unwrap();
+    let store = store_at(root.path());
+    let saved = store.save(profile("original", 3306), None).unwrap();
+    let mut holder = spawn_writer(root.path(), "lock-holder", None);
+    wait_for_files(root.path(), &["lock-holder"]);
+    holder.kill().unwrap();
+    assert!(!holder.wait().unwrap().success());
+    assert_eq!(store.get(saved.profile_id).unwrap(), saved);
+    store
+        .save(profile("after forced exit", 3307), None)
+        .unwrap();
+    assert_eq!(store.snapshot().unwrap().revision, 2);
 }

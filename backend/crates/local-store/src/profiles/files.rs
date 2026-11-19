@@ -208,3 +208,27 @@ pub(super) fn safe_io_error(error: io::Error) -> Error {
     }
     .with_source(error)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_replacement_preserves_target_and_removes_its_temporary_file() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("connections.json");
+        fs::create_dir(&target).unwrap();
+        let original = target.join("original");
+        fs::write(&original, b"original").unwrap();
+
+        assert!(atomic_write(&target, b"new").is_err());
+
+        assert_eq!(fs::read(original).unwrap(), b"original");
+        let entries = fs::read_dir(root.path())
+            .unwrap()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path(), target);
+    }
+}
