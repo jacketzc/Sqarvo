@@ -235,6 +235,7 @@ impl DriverSession for GateSession {
                 columns: Vec::new(),
                 rows_affected: Some(0),
                 has_result_set: false,
+                elapsed: None,
             },
             None,
         ))

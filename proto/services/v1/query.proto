@@ -40,6 +40,18 @@ message StatementSummary {
   sqarvo.common.v1.ResultSetMeta result_meta = 3;
   uint64 rows_affected = 4;
   bool has_result_set = 5;
+  // 该语句**在数据库连接上执行**所耗的毫秒数（#238）。
+  //
+  // 计量范围：从语句下发到该语句终态（有结果集时为首批可读，写语句为 update count
+  // 已知）；逐条分别计时，不含同一脚本里其它语句的执行与等待，也不含 IPC、序列化
+  // 与前端渲染。数据库端的排队/锁等待发生在该语句的执行窗口内，计入本条。
+  //
+  // 未知/未测量为 0（老服务端、未计时的驱动）：0 **不是**「0 秒」的真值，客户端
+  // 必须按「不显示」处理，不得渲染成 0 秒。反向约束：真实测量值恒 >= 1，因此
+  // 「有值」与「未测量」永远可区分。
+  //
+  // 纯新增字段，号 6 发布后不得复用。
+  uint64 elapsed_millis = 6;
 }
 
 message ExecuteQueryResponse {

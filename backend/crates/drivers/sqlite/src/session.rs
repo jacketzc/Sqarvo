@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, InterruptHandle, OpenFlags, Rows, Statement};
@@ -590,15 +591,19 @@ fn serve_query(
 
     let columns = column_metadata(&statement);
     let has_result_set = statement.column_count() > 0;
-    let summary = StatementSummary {
+    let mut summary = StatementSummary {
         index: 0,
         sql_preview: sql_preview(&request.sql),
         columns: columns.clone(),
         rows_affected: None,
         has_result_set,
+        elapsed: None,
     };
 
     if !has_result_set {
+        // 逐语句计时（#238）：起点在语句真正下发之前，终点是 update count 已知。
+        // 准备语句、参数绑定在这之前完成，因此不计入本条语句的执行时间。
+        let started = Instant::now();
         let affected = match statement.execute(rusqlite::params_from_iter(bound.iter())) {
             Ok(affected) => affected,
             Err(error) => {
@@ -608,12 +613,15 @@ fn serve_query(
         };
         let summary = StatementSummary {
             rows_affected: Some(u64::try_from(affected).unwrap_or(u64::MAX)),
+            elapsed: Some(started.elapsed()),
             ..summary
         };
         let _ = reply.send(Ok(ExecutionStart::single(summary, None)));
         return false;
     }
 
+    // 有结果集：起点同样在 `sqlite3_step` 之前，终点取「首批可读」。
+    let started = Instant::now();
     let mut rows = match statement.query(rusqlite::params_from_iter(bound.iter())) {
         Ok(rows) => rows,
         Err(error) => {
@@ -629,6 +637,8 @@ fn serve_query(
             return false;
         }
     };
+    // 首批已可读 = 该语句终态已确立；后续取批属于结果集消费，不再累加。
+    summary.elapsed = Some(started.elapsed());
 
     let first_len = first_rows.len();
     let next_cursor = if has_more {
@@ -864,9 +874,13 @@ fn serve_script(
             columns: columns.clone(),
             rows_affected: None,
             has_result_set,
+            elapsed: None,
         };
 
         if has_result_set {
+            // 逐语句计时（#238）：每条语句各起一次时钟。上一条语句的执行与取批
+            // 都在循环上一轮完成，因此这里不会把等待或前一条的耗时算进来。
+            let started = Instant::now();
             let mut rows = match statement.query([]) {
                 Ok(rows) => rows,
                 Err(error) => {
@@ -888,6 +902,10 @@ fn serve_script(
                 }
                 match read_batch(&mut rows, &columns, SCRIPT_READ_CHUNK, pending.take()) {
                     Ok((chunk, more, next_pending)) => {
+                        // 首批已可读即该语句终态：固定耗时，后续读块是结果集消费。
+                        if summary.elapsed.is_none() {
+                            summary.elapsed = Some(started.elapsed());
+                        }
                         total_rows = total_rows
                             .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
                         buffer.extend(chunk);
@@ -911,9 +929,12 @@ fn serve_script(
             }
             buffers.push(buffer);
         } else {
+            // 写语句：时钟从下发到 update count 已知（`execute` 返回）。
+            let started = Instant::now();
             match statement.execute([]) {
                 Ok(affected) => {
                     summary.rows_affected = Some(u64::try_from(affected).unwrap_or(u64::MAX));
+                    summary.elapsed = Some(started.elapsed());
                 }
                 Err(error) => {
                     let _ = reply.send(Err(script_error(
