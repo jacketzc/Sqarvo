@@ -31,6 +31,20 @@ Linux 端已可端到端使用（SQLite 与 MariaDB）；Windows / macOS 仍是�
 - 能力清单与支持矩阵以 [产品需求](docs/product/requirements.md)、
   [发布计划](docs/planning/release-plan.md) 为准；版本说明见 [`docs/releases/`](docs/releases/)。
 
+## 下载
+
+- **Nightly（Linux amd64）**——每天 10:00（北京时间）用 `main` 最新提交自动打包 `.deb`，
+  发布到固定的 [Sqarvo Nightly Release](https://github.com/jacketzc/Sqarvo/releases/tag/nightly)
+  （pre-release）。实验性构建，仅供提前试用与反馈，请勿用于生产数据。
+
+  ```bash
+  sudo apt install ./sqarvo_<version>_amd64.deb   # 需 GTK ≥ 4.16 / libadwaita ≥ 1.6（Ubuntu 26.04 或同等库版本）
+  ```
+
+  每个 Nightly 条目都带对应 commit SHA、Debian 包版本与 SHA-256；版本与发布机制细节见
+  [packaging/linux/README.md](packaging/linux/README.md)。
+- **正式版本**——按 `v*` 标签发版后才提供；在此之前 Nightly 是 GitHub 上唯一可安装的构建。
+
 ## 目录结构
 
 ```text
