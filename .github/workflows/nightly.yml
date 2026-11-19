@@ -1,0 +1,391 @@
+name: Nightly（Linux .deb）
+
+# 每天 10:00 北京时间（UTC 02:00）从 main 最新提交构建 Linux amd64 .deb，
+# 通过 packaging.yml `deb` 作业同款验证后，发布/刷新到固定的预发布 Release
+# （tag `nightly`，名称 `Sqarvo Nightly`）。构建与校验步骤刻意与 packaging.yml
+# 保持一致：GitHub Actions 没有跨 workflow 复用作业步骤的机制（workflow_call 会
+# 把 VERSION 计算、guard 语义搅进发布路径），改动一处时务必同步另一处。
+#
+# 只监听 schedule 与 workflow_dispatch：不挂 push/PR/tags，ci.yml、packaging.yml
+# 与正式发版（v* 标签）的触发行为完全不受影响；发布只操作 `nightly` 这一个
+# tag/Release，绝不触碰 `v*`。
+on:
+  schedule:
+    # GitHub 计划任务队列高峰时可延迟几分钟到几十分钟，是尽力而为的时刻，不是 SLA。
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_republish:
+        description: '跳过「相同 commit 已发布 / 已有更新 commit 的 Nightly」两道守卫，强制重新发布'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# 整个工作流串行（含发布作业），杜绝两个 run 竞态改写 `nightly`；在跑的构建
+# 不取消——发布环节必须走完校验与回读。
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  deb:
+    name: Nightly .deb 构建与校验
+    # 与 packaging.yml `deb` 作业同因：crate 构建期要求 GTK ≥ 4.16 / libadwaita ≥ 1.6，
+    # ubuntu-24.04 的 4.14.2 / 1.5.0 连 pkg-config 都过不了。
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    outputs:
+      version: ${{ steps.nightly_version.outputs.version }}
+      deb_name: ${{ steps.nightly_version.outputs.deb_name }}
+      asset_name: ${{ steps.sha256.outputs.asset_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与 packaging.yml 一致：刻意用普通 apt-get 而不是缓存动作（发布路径要可解释的
+      # 日志；冷缓存下第三方 apt 缓存动作曾卡 11 分钟，见 packaging.yml 注释）。
+      - name: 安装构建依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev build-essential pkg-config dpkg-dev
+
+      - name: 校验 GTK 版本
+        run: |
+          set -euo pipefail
+          GTK="$(pkg-config --modversion gtk4)"
+          ADW="$(pkg-config --modversion libadwaita-1)"
+          echo "GTK ${GTK} / libadwaita ${ADW}"
+          dpkg --compare-versions "${GTK}" ge 4.16 \
+            || { echo "::error::GTK ${GTK} < 4.16，前端无法构建"; exit 1; }
+          dpkg --compare-versions "${ADW}" ge 1.6 \
+            || { echo "::error::libadwaita ${ADW} < 1.6，前端无法构建"; exit 1; }
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            backend
+            frontend/linux
+
+      - name: 构建后端（release）
+        working-directory: backend
+        run: cargo build --release -p sqarvo-backend-service
+
+      - name: 构建前端（release）
+        working-directory: frontend/linux
+        run: cargo build --release
+
+      # Nightly 版本 = <仓库根 VERSION>~nightly.<main 头提交的 UTC 时间>.<短SHA 7 位>。
+      # 用「提交时间 + 提交号」而不是「构建时间」：同一 commit 重复构建得到同一版本
+      # （幂等、发布守卫可判），同一天多个 commit 靠提交时间保持升序，跨天靠日期保持
+      # 升序；`~nightly.` 前缀让 Nightly 严格低于对应正式版（Debian 里 `~` 排一切之前）。
+      - name: 计算 Nightly 版本
+        id: nightly_version
+        run: |
+          set -euo pipefail
+          BASE="$(tr -d '[:space:]' < VERSION)"
+          [ -n "$BASE" ] || { echo "::error::仓库根 VERSION 为空"; exit 1; }
+          STAMP="$(TZ=UTC git log -1 --date=format-local:%Y%m%d%H%M%S --format=%cd)"
+          SHA7="$(git rev-parse --short=7 HEAD)"
+          VERSION_NIGHTLY="${BASE}~nightly.${STAMP}.${SHA7}"
+          echo "Nightly 版本：${VERSION_NIGHTLY}（commit $(git rev-parse HEAD)）"
+          echo "version=${VERSION_NIGHTLY}" >> "$GITHUB_OUTPUT"
+          echo "deb_name=sqarvo_${VERSION_NIGHTLY}_amd64.deb" >> "$GITHUB_OUTPUT"
+
+      # Debian 排序语义门禁：不满足就停下来，不把版本排序有歧义的包发出去。
+      - name: 校验 Debian 版本排序语义
+        env:
+          NV: ${{ steps.nightly_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BASE="$(tr -d '[:space:]' < VERSION)"
+          cmp_or_die() {
+            if ! dpkg --compare-versions "$1" "$2" "$3"; then
+              echo "::error::版本排序断言失败：'$1' $2 '$3'"
+              exit 1
+            fi
+          }
+          # 语法先于语义：非法字符会让 dpkg --compare-versions 直接报错退出。
+          [[ "$NV" =~ ^[0-9][0-9A-Za-z.+-]*~nightly\.[0-9]{14}\.[0-9a-f]{7,}$ ]] \
+            || { echo "::error::Nightly 版本格式异常：$NV"; exit 1; }
+          # 1) Nightly 低于对应正式版（~ 排在一切之后内容之前，含空）。
+          cmp_or_die "$NV" lt "$BASE"
+          # 2) 跨天：日期段是数值段，升序。
+          cmp_or_die "${BASE}~nightly.20261117020000.aaaaaaa" lt "${BASE}~nightly.20261118020000.bbbbbbb"
+          # 3) 同一天多个 commit：按提交时间（零填充 6 位时分秒，数值段）升序。
+          cmp_or_die "${BASE}~nightly.20261118015959.zzzzzzz" lt "${BASE}~nightly.20261118020000.aaaaaaa"
+          # 4) 同一秒的并列提交靠短 SHA 后缀保持版本互不相等。
+          cmp_or_die "${BASE}~nightly.20261118020000.abcdef0" ne "${BASE}~nightly.20261118020000.1234567"
+          # 5) 旧 Nightly 低于新 Nightly（本版本必然高于它自己之前的所有已发布 Nightly
+          #    的日期）：只验证生成版本 > 昨天同一时刻。
+          STAMP_TODAY="${NV#*~nightly.}"; STAMP_TODAY="${STAMP_TODAY%%.*}"
+          YESTERDAY="$(TZ=UTC date -d "${STAMP_TODAY:0:8} -1 day" +%Y%m%d)${STAMP_TODAY:8}"
+          cmp_or_die "${BASE}~nightly.${YESTERDAY}.zzzzzzz" lt "$NV"
+          echo "Debian 排序语义断言全部通过"
+
+      # BUILD=0：复用上面两个 release 二进制，脚本只做暂存与 dpkg-deb 打包。
+      # VERSION 显式传入，仓库根 VERSION 只作为基线——脚本里没有第二处硬编码。
+      - name: 打包 .deb
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.nightly_version.outputs.version }}" \
+            BUILD=0 packaging/linux/build-deb.sh
+
+      - name: 检查包元数据与文件清单
+        env:
+          NV: ${{ steps.nightly_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -l dist/
+          [ "$(ls dist/*.deb | wc -l)" -eq 1 ] \
+            || { echo "::error::dist/ 下 .deb 不唯一"; exit 1; }
+          DEB="$(ls dist/sqarvo_*_*.deb)"
+          echo "== dpkg-deb -I ${DEB} =="
+          dpkg-deb -I "${DEB}"
+          echo "== dpkg-deb -c ${DEB} =="
+          dpkg-deb -c "${DEB}"
+          # 包名、版本号与 Release 展示必须一致：文件名和 control 都核对。
+          [ "$(basename "${DEB}")" = "${{ steps.nightly_version.outputs.deb_name }}" ] \
+            || { echo "::error::deb 文件名与 Nightly 版本不一致"; exit 1; }
+          [ "$(dpkg-deb -f "${DEB}" Version)" = "${NV}" ] \
+            || { echo "::error::包内 Version 字段与 Nightly 版本不一致"; exit 1; }
+
+      # 真实安装一次：依赖解析、文件落位、包状态都由 dpkg 说话（与 packaging.yml 同断言）。
+      - name: 安装 .deb 并校验安装结果
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./dist/sqarvo_*_*.deb
+
+          echo "== dpkg -s sqarvo =="
+          dpkg -s sqarvo
+          dpkg -s sqarvo | grep -qx 'Status: install ok installed' \
+            || { echo "::error::sqarvo 未处于 install ok installed 状态"; exit 1; }
+
+          echo "== dpkg -L sqarvo =="
+          dpkg -L sqarvo
+
+          for bin in /usr/bin/sqarvo-desktop /usr/bin/sqarvo-backend; do
+            [ -x "${bin}" ] || { echo "::error::缺少可执行文件 ${bin}"; exit 1; }
+            echo "已安装：${bin}"
+          done
+          [ -f /usr/share/applications/io.sqarvo.Sqarvo.desktop ] \
+            || { echo "::error::缺少桌面入口文件"; exit 1; }
+          grep -q '^Exec=sqarvo-desktop' /usr/share/applications/io.sqarvo.Sqarvo.desktop \
+            || { echo "::error::桌面入口的 Exec 与安装的二进制不一致"; exit 1; }
+
+      # 与 packaging.yml 相同的口径：runner 无 Wayland/X 会话，GUI 启动验证不在 CI 里做
+      # （理由见 packaging/linux/README.md「CI」节）；这里退一步做不依赖显示的后端冒烟，
+      # 断言端点文件/套接字创建、权限与 SIGTERM 后的清理（临时资源清理即本步的断言）。
+      - name: 启动冒烟（后端 + 端点文件）
+        run: |
+          set -euo pipefail
+          ROOT="$(mktemp -d)"
+          ENDPOINT="${ROOT}/sqarvo/backend-endpoint.json"
+          SOCKET="${ROOT}/sqarvo/backend.sock"
+          XDG_RUNTIME_DIR="${ROOT}" XDG_CONFIG_HOME="${ROOT}/cfg" \
+            /usr/bin/sqarvo-backend >"${ROOT}/backend.log" 2>&1 &
+          PID=$!
+          # 任何失败分支都不能在 runner 上留下孤儿进程。
+          trap 'kill -KILL "${PID}" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 100); do
+            [ -s "${ENDPOINT}" ] && break
+            sleep 0.1
+          done
+          if [ ! -s "${ENDPOINT}" ]; then
+            echo "::error::后端 10 秒内未写出端点文件"
+            cat "${ROOT}/backend.log" || true
+            exit 1
+          fi
+
+          echo "运行时目录：$(stat -c '%a %n' "${ROOT}/sqarvo")"
+          echo "端点文件：$(stat -c '%a %U:%G %n' "${ENDPOINT}")"
+          echo "套接字：$(stat -c '%a %F %n' "${SOCKET}")"
+          MODE="$(stat -c '%a' "${ENDPOINT}")"
+          [ "${MODE}" = "600" ] || { echo "::error::端点文件权限 ${MODE}，期望 0600"; exit 1; }
+          [ -S "${SOCKET}" ] || { echo "::error::未创建 Unix 域套接字 ${SOCKET}"; exit 1; }
+          # 只打印结构，token 一律打码：CI 日志是共享的，端点 token 仍属凭据。
+          sed -E 's/("token"[[:space:]]*:[[:space:]]*")[^"]*"/\1<redacted>"/' "${ENDPOINT}"; echo
+
+          kill -TERM "${PID}"
+          for _ in $(seq 1 50); do
+            kill -0 "${PID}" 2>/dev/null || break
+            sleep 0.1
+          done
+          if kill -0 "${PID}" 2>/dev/null; then
+            echo "::error::后端在 SIGTERM 后 5 秒内未退出"
+            exit 1
+          fi
+          trap - EXIT
+          [ ! -e "${ENDPOINT}" ] || { echo "::error::退出后端点文件仍存在"; exit 1; }
+          [ ! -e "${SOCKET}" ] || { echo "::error::退出后套接字文件仍存在"; exit 1; }
+          echo "后端已退出，端点文件与套接字均已清理（目录本身按设计保留）："
+          ls -la "${ROOT}/sqarvo"
+
+      # Nightly 的 SHA-256 与包一起发布。实测行为（run 44283050136）：GitHub 会把
+      # Release 资产文件名里的 `~` 改写成 `.`（deb 包内 Version 字段不受影响），
+      # 所以校验文件按「用户下载后实际拿到的文件名」生成，sha256sum -c 才不会因
+      # 文件名不匹配失败。
+      - name: 生成 SHA-256
+        id: sha256
+        run: |
+          set -euo pipefail
+          cd dist
+          DEB="$(ls sqarvo_*_*.deb)"
+          ASSET_NAME="${DEB//\~/.}"
+          HASH="$(sha256sum "${DEB}" | awk '{print $1}')"
+          printf '%s  %s\n' "${HASH}" "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+          printf '%s  %s\n' "${HASH}" "${DEB}" | sha256sum -c -
+          echo "asset_name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
+          cat "${ASSET_NAME}.sha256"
+
+      - name: 上传 Nightly .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqarvo-nightly-deb
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: 发布 Nightly Release（仅 nightly 标签）
+    needs: deb
+    # 只在 main 上发布：从其他分支手动 dispatch 时构建照跑（验证脚本改动用），
+    # 但绝不把非 main 的产物挂到 Nightly 入口。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # 最小权限：整个工作流默认 contents: read，只有这一步需要写 Releases；
+    # 使用内置 GITHUB_TOKEN，不引入第三方发布动作与额外 secret。
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NV: ${{ needs.deb.outputs.version }}
+      DEB_NAME: ${{ needs.deb.outputs.deb_name }}
+      ASSET_NAME: ${{ needs.deb.outputs.asset_name }}
+      FORCE: ${{ github.event.inputs.force_republish || 'false' }}
+    steps:
+      - name: 取回 Nightly 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: sqarvo-nightly-deb
+          path: dist
+
+      # 发布流程（全部 gh + REST，无第三方动作）：
+      #   1) 校验产物齐全、SHA-256 匹配；
+      #   2) 守卫：同一 commit 已发布 → 幂等跳过；已发布 Nightly 的提交不比本次旧 →
+      #      跳过，旧构建绝不覆盖新 Nightly（force_republish 可越过两道守卫）；
+      #   3) GitHub 不允许改写已发布 Release 的 tag 指向（target_commitish 不可变），
+      #      固定入口只能「删旧建新」：删除失败则旧状态原样保留；创建失败重试一次，
+      #      再失败时本 run 的 Artifact 仍完整保留可手工恢复（见 README）；
+      #   4) 回读断言：Release 存在且为 pre-release、两个资产齐、tag `nightly` 指向
+      #      本次构建的 commit —— 三者一致才算发布成功，否则作业失败。
+      - name: 发布
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          SHA="$GITHUB_SHA"
+
+          echo "== 1. 产物完整性 =="
+          [ -f "dist/${DEB_NAME}" ] || { echo "::error::缺少 ${DEB_NAME}"; exit 1; }
+          [ -f "dist/${ASSET_NAME}.sha256" ] || { echo "::error::缺少 ${ASSET_NAME}.sha256"; exit 1; }
+          # 校验文件按资产名（~ → .）生成，这里直接比 hash 值而不是 sha256sum -c。
+          HASH_DEB="$(sha256sum "dist/${DEB_NAME}" | awk '{print $1}')"
+          HASH_FILE="$(awk '{print $1}' "dist/${ASSET_NAME}.sha256")"
+          [ -n "${HASH_DEB}" ] && [ "${HASH_DEB}" = "${HASH_FILE}" ] \
+            || { echo "::error::SHA-256 与 .deb 不一致"; exit 1; }
+
+          resolve_nightly_commit() {
+            local obj typ
+            obj="$(gh api "repos/${REPO}/git/ref/tags/nightly" --jq '.object.sha' 2>/dev/null)" || return 1
+            typ="$(gh api "repos/${REPO}/git/ref/tags/nightly" --jq '.object.type' 2>/dev/null || echo commit)"
+            if [ "${typ}" = "tag" ]; then
+              gh api "repos/${REPO}/git/tags/${obj}" --jq '.object.sha'
+            else
+              echo "${obj}"
+            fi
+          }
+
+          echo "== 2. 发布守卫 =="
+          PREV="$(resolve_nightly_commit || true)"
+          if [ "${FORCE}" != "true" ] && [ -n "${PREV}" ]; then
+            if [ "${PREV}" = "${SHA}" ]; then
+              echo "本次 commit（${SHA:0:7}）已经是当前 Nightly，幂等跳过发布。"
+              exit 0
+            fi
+            PREV_DATE="$(gh api "repos/${REPO}/git/commits/${PREV}" --jq '.committer.date' || true)"
+            CUR_DATE="$(gh api "repos/${REPO}/git/commits/${SHA}" --jq '.committer.date' || true)"
+            # GitHub 返回的提交时间带各自时区偏移，不能按字符串比，先化成 epoch 秒。
+            if [ -n "${PREV_DATE}" ] && [ -n "${CUR_DATE}" ] &&
+               [ "$(date -d "${CUR_DATE}" +%s)" -le "$(date -d "${PREV_DATE}" +%s)" ]; then
+              echo "::warning::已发布 Nightly 指向更新（或同刻）的 commit ${PREV:0:7}@${PREV_DATE} ≥ 本次 ${SHA:0:7}@${CUR_DATE}，跳过发布，旧 Nightly 保留。"
+              exit 0
+            fi
+          fi
+
+          echo "== 3. 删旧 Release/tag，创建新 Release =="
+          if RID="$(gh api "repos/${REPO}/releases/tags/nightly" --jq '.id' 2>/dev/null)"; then
+            gh api -X DELETE "repos/${REPO}/releases/${RID}"
+          fi
+          # 兜底：历史上可能有「tag 在、Release 不在」的残留状态，创建时会撞上旧 tag，
+          # 导致 Release 挂到旧 commit——必须把 tag ref 一并清掉。
+          # （注意 gh api 没有 --quiet 标志——run 44283050136 就是被它短路跳过了删除，
+          #  新 Release 挂到了旧 tag 上；判定存在用默认输出丢弃即可。）
+          if gh api "repos/${REPO}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${REPO}/git/refs/tags/nightly"
+          fi
+
+          BUILT_UTC="$(date -u '+%Y-%m-%d %H:%M:%S')"
+          SHA256="${HASH_DEB}"
+          cat > notes.md <<EOF
+          **实验性 Nightly 构建**：每天 10:00（北京时间）自动从 \`main\` 最新提交打包，供提前试用与反馈，**请勿用于生产数据**；正式版本另行发布。
+
+          - 构建时间（UTC）：${BUILT_UTC}
+          - 对应 commit：[\`${SHA:0:7}\`](https://github.com/${REPO}/tree/${SHA})（\`main\` 分支）
+          - Debian 包版本：\`${NV}\`
+          - 支持平台：Ubuntu 26.04 amd64（GTK ≥ 4.16 / libadwaita ≥ 1.6；Debian/Ubuntu 需同等库版本）
+          - SHA-256：\`${SHA256}\`
+
+          安装：
+
+          \`\`\`bash
+          sudo apt install ./${ASSET_NAME}
+          \`\`\`
+
+          问题反馈：https://github.com/${REPO}/issues （Nightly 与正式版本的问题都提在这里）。
+          EOF
+
+          publish() {
+            gh release create "nightly" \
+              "dist/${DEB_NAME}" "dist/${ASSET_NAME}.sha256" \
+              --repo "${REPO}" --target "${SHA}" \
+              --title "Sqarvo Nightly" --prerelease --notes-file notes.md >/dev/null
+          }
+          if ! publish; then
+            echo '::warning::首次创建失败，5 秒后重试一次'
+            sleep 5
+            publish || {
+              echo "::error::Nightly 发布失败。旧 Release 已被删除但本次产物仍完整保留在本 run 的 Artifact（sqarvo-nightly-deb）；恢复方式：重跑本工作流（workflow_dispatch），或在 Actions 下载产物后按 packaging/linux/README.md 的命令手工创建 Release。"
+              exit 1
+            }
+          fi
+
+          echo "== 4. 回读一致性断言 =="
+          gh api "repos/${REPO}/releases/tags/nightly" --jq '.prerelease' | grep -qx true \
+            || { echo "::error::Nightly Release 不是 pre-release"; exit 1; }
+          ASSETS="$(gh api "repos/${REPO}/releases/tags/nightly" --jq '.assets[].name' | sort)"
+          [ "${ASSETS}" = "$(printf '%s\n%s' "${ASSET_NAME}" "${ASSET_NAME}.sha256" | sort)" ] \
+            || { echo "::error::Release 资产不齐或有多余：${ASSETS}"; exit 1; }
+          NOW="$(resolve_nightly_commit || true)"
+          [ "${NOW}" = "${SHA}" ] || { echo "::error::tag nightly 未指向本次 commit（${NOW:-<无>}）"; exit 1; }
+
+          URL="$(gh api "repos/${REPO}/releases/tags/nightly" --jq '.html_url')"
+          echo "Nightly 已发布：${URL}"
+          echo "::notice::Nightly 已更新到 ${SHA:0:7}（${NV}）：${URL}"

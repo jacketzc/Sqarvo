@@ -1,0 +1,2 @@
+# 唯一第三方依赖。gi/Atspi 来自系统 python（venv 以 --system-site-packages 创建）。
+pytest>=8
