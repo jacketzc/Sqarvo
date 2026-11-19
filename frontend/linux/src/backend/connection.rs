@@ -152,7 +152,7 @@ impl TlsMode {
             .unwrap_or(Self::Preferred)
     }
 
-    fn to_proto(self) -> ProtoTlsMode {
+    pub(crate) fn to_proto(self) -> ProtoTlsMode {
         match self {
             Self::Disabled => ProtoTlsMode::Disabled,
             Self::Preferred => ProtoTlsMode::Preferred,
@@ -202,6 +202,8 @@ impl DriverFamily {
 /// 此时密码留空即复用旧凭据（`StoreCredential` 不会被调用）。
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConnectionDraft {
+    /// 打开编辑对话框时读到的共享档案及其修订。
+    pub existing_profile: Option<crate::config::SavedConnection>,
     /// 会话显示名（从用户、主机、库名派生；文件型驱动从文件名派生）。
     pub name: String,
     /// 用户给的连接别名（可空）。
@@ -271,7 +273,7 @@ impl ConnectionDraft {
     /// 只读开关走 `properties`。绝不把主机/端口塞给 SQLite。
     #[must_use]
     pub fn params(&self, credential_ref: &str) -> ConnectionParams {
-        match self.family() {
+        let mut params = match self.family() {
             Some(DriverFamily::Sqlite) => ConnectionParams {
                 driver_id: self.driver_id.clone(),
                 host: self.file_path.clone(),
@@ -296,7 +298,24 @@ impl ConnectionDraft {
                 tls_mode: self.tls_mode.to_proto() as i32,
                 ..ConnectionParams::default()
             },
+        };
+        if let Some(previous) = self
+            .existing_profile
+            .as_ref()
+            .filter(|saved| saved.driver == self.driver_id)
+        {
+            for (key, value) in &previous.properties {
+                params
+                    .properties
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+            params.tls_server_name.clone_from(&previous.tls_server_name);
+            if previous.tls_mode == "unspecified" && self.tls_mode == TlsMode::default() {
+                params.tls_mode = ProtoTlsMode::Unspecified as i32;
+            }
         }
+        params
     }
 
     /// 是否有本次需要保存的新密码。
@@ -380,8 +399,8 @@ pub struct ConnectOutcome {
     pub sessions: Vec<SessionView>,
     /// 驱动能力位名称（`table_browse_sort_filter_total` 等）。
     pub capabilities: Vec<String>,
-    /// 配置文件写入结果：成功时是路径；失败时是可直接展示的原因（连接仍然成功）。
-    pub config: Result<String, String>,
+    /// 新保存的共享档案。使用已保存档案直接连接时为空。
+    pub saved_profile: Option<crate::config::SavedConnection>,
 }
 
 /// 连接类操作的结构化错误。
@@ -440,6 +459,15 @@ impl ConnectionFailure {
             "capability.unsupported" => Self::CapabilityUnsupported { message },
             "config.invalid" => Self::InvalidInput { message },
             "transport.timeout" | "mariadb.connect_timeout" => Self::Timeout { message },
+            "profile.revision_conflict" => Self::Other {
+                code,
+                message: crate::l10n::t("dialogs.profile_revision_conflict").to_owned(),
+            },
+            "profile.ambiguous_name" => Self::Other {
+                code,
+                message: crate::l10n::t("dialogs.profile_name_ambiguous").to_owned(),
+            },
+            _ if code.starts_with("profile.") => Self::Other { code, message },
             _ => match status.code() {
                 // 没有稳定错误码时按状态码兜底；仍未识别的一律进 Other，
                 // 界面会显示状态码 + 后端文案，而不是伪造一个具体原因。
@@ -788,6 +816,7 @@ mod tests {
     #[test]
     fn draft_debug_redacts_password() {
         let draft = ConnectionDraft {
+            existing_profile: None,
             name: "root@127.0.0.1/sqarvo".to_owned(),
             alias: String::new(),
             driver_id: "mariadb".to_owned(),
@@ -863,6 +892,7 @@ mod tests {
     #[test]
     fn params_carry_reference_and_no_password() {
         let draft = ConnectionDraft {
+            existing_profile: None,
             name: "n".to_owned(),
             alias: String::new(),
             driver_id: "mariadb".to_owned(),
@@ -890,6 +920,7 @@ mod tests {
 
     fn sqlite_draft(read_only: bool) -> ConnectionDraft {
         ConnectionDraft {
+            existing_profile: None,
             name: "demo.db（SQLite）".to_owned(),
             alias: String::new(),
             driver_id: "sqlite".to_owned(),
@@ -946,6 +977,7 @@ mod tests {
         assert!(sqlite_draft(false).has_password(), "明文仍在草稿里");
         // 不认识的驱动按「需要密码」处理：宁可多要一次密码，也不静默免密连接。
         let unknown = ConnectionDraft {
+            existing_profile: None,
             driver_id: "postgresql".to_owned(),
             ..sqlite_draft(false)
         };

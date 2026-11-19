@@ -274,9 +274,9 @@ style.slot = "dialogs"
 a11y.name = "别名（可选）"
 a11y.tab = "驱动下拉之后、主机之前"
 impl_notes = [
-  "只影响对象树连接行的显示：留空则显示 用户名@主机:端口/库（文件型驱动是文件路径）。",
-  "别名不参与 SavedConnection::key()、不进连接参数、不改会话显示名：同一条连接改别名不会变成两条。",
-  "旧 connections.json 没有 alias 字段时按空串读（serde(default)），不需要迁移。",
+  "用作对象树连接行显示名及共享档案的名称；留空使用派生名称。",
+  "编辑保留档案 UUID，修改名称不会创建新档案。",
+  "迁移时旧档案有别名则沿用，缺失则使用原有名称。",
 ]
 
 [[component.interaction]]
@@ -288,23 +288,22 @@ source = "src/dialog.rs:180、src/dialog.rs:632"
 [[component.interaction]]
 trigger = "click"
 precondition = "点「保存并连接」且校验通过"
-result = "trim 后写进 connections.json 的 alias；gRPC 请求里没有这个字段"
-source = "src/dialog.rs:738、src/backend/worker.rs:4019"
+result = "trim 后作为 SaveProfile 的档案名称和可选显示名。"
+source = "src/config.rs:222"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "02a4f9f0ab2d"
+spec_hash = "34da2c5d7e0d"
 commit = ""
-evidence = "别名行 + apply_saved 预填 + 写盘时进 config"
+evidence = "config 单测验证 SaveProfile 保留 UUID、修订、显示名及连接属性。"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：Windows 连接对话框没有别名字段。"
+state = "blocked"
+note = "本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。"
 
 [component.sync.macos]
-state = "none"
-spec_hash = ""
+state = "na"
+note = "macOS 已保存连接前端未接入。"
 
 [[component]]
 id = "dialogs.connection.fields.port"
@@ -744,7 +743,7 @@ a11y.name = "保存并连接（新建）/ 保存（编辑）"
 impl_notes = [
   "建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。",
   "两种入口两种语义：新建 = 保存并立即连接；编辑 = **只保存**（写配置与凭据，不建会话、不重连），下次连接时生效。",
-  "落盘只有两件事：connections.json 里的连接条目（含 credential_ref）与系统凭据库里的密码条目；别名只进配置。",
+  "档案由 SaveProfile 写入，密码保存在系统凭据库；档案仅保存凭据引用。",
   "新建保存成功即建立会话并关闭对话框，落到工作区；编辑保存成功只关闭对话框并刷新树上那一行；保存失败则对话框留着、状态行给原因。",
 ]
 
@@ -757,8 +756,8 @@ source = "src/dialog.rs:738、src/ui.rs:1391、src/ui.rs:641"
 [[component.interaction]]
 trigger = "click"
 precondition = "编辑态（「编辑连接…」进入）、本地校验通过"
-result = "按钮文案是「保存」：写凭据 + 写 connections.json，**不发 Connect**；成功后关闭对话框、对象树那一行按新别名/新目标重绘，连接状态仍是未连接"
-source = "src/dialog.rs:408、src/ui.rs:1400、src/backend/worker.rs:3994"
+result = "按钮文案是「保存」：按 UUID 与 revision 写共享档案。成功后关闭对话框，连接行按新名称或目标重绘。编辑保存不建立会话。"
+source = "src/config.rs:204、src/backend/worker.rs:4284"
 
 [[component.interaction]]
 trigger = "click"
@@ -774,18 +773,17 @@ source = "src/ui.rs:1408、src/ui.rs:1410、src/backend/connection.rs:489"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0b83b375deba"
+spec_hash = "98c6cad015aa"
 commit = "7436cd5"
-evidence = "dialog.rs request + ui.rs submit / Event::ConnectResult 路径"
+evidence = "隔离 GTK --qa-profile --qa-action save 进入 Workspace，并通过共享文件断言 UUID 和 revision。"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
+state = "blocked"
+note = "本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。"
 
 [component.sync.macos]
-state = "none"
-spec_hash = ""
+state = "na"
+note = "macOS 已保存连接前端未接入。"
 
 [[component]]
 id = "dialogs.connection.actions.cancel"

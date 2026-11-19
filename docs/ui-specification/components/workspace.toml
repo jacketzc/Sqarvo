@@ -1,0 +1,115 @@
+# 供 MCP 策略组件保留已确认的 ID。命名根只用于注册表组织。
+[area]
+id = "workspace"
+display_name = "工作区 MCP 策略"
+summary = "主菜单视图子菜单中的两个 MCP 策略开关，以及启动态和已连接工作区状态栏指示。"
+
+[[component]]
+id = "workspace"
+parent = ""
+display_name = "工作区 MCP 策略"
+kind = "area"
+status = "active"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "033325b9bc4d"
+evidence = "GTK QA：--qa-mcp-access / --qa-mcp-readonly / --qa-mcp-indicator，共 33 条交互断言。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"
+
+[[component]]
+id = "workspace.manage.menu.mcp_access"
+parent = "workspace"
+display_name = "MCP 数据访问"
+kind = "item"
+status = "active"
+style.slot = "menubar"
+native_control = "gtk:GMenu + GSimpleAction / winui:— / swift:—"
+a11y.name = "MCP 数据访问"
+a11y.tab = "视图子菜单中，语言之后"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端已连接，策略读取成功，当前没有策略操作在途"
+result = "启用时先显示档案数与授权范围，须确认。关闭时恢复安全默认值。勾选态以 gRPC 回读为准。取消不写入。"
+source = "src/mcp_access.rs:41、src/mcp_access.rs:192"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c2a4d58442e8"
+evidence = "GTK QA：--qa-mcp-access cancel/on/off，断言菜单状态、取消时 revision 不变、关闭恢复安全默认值。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"
+
+[[component]]
+id = "workspace.manage.menu.mcp_readonly"
+parent = "workspace"
+display_name = "MCP 只读"
+kind = "item"
+status = "active"
+style.slot = "menubar"
+native_control = "gtk:GMenu + GSimpleAction / winui:— / swift:—"
+a11y.name = "MCP 只读"
+a11y.tab = "视图子菜单中，MCP 数据访问之后"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "数据访问已启用，策略读取成功，当前没有策略操作在途"
+result = "关闭只读时先显示档案数与风险，须确认。恢复只读直接提交。勾选态以 gRPC 回读为准。访问关闭时保留禁用项，原因见状态提示。"
+source = "src/mcp_access.rs:41、src/mcp_access.rs:271"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6004de3b1d17"
+evidence = "GTK QA：--qa-mcp-readonly cancel/off/on，断言确认、取消、回读状态。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"
+
+[[component]]
+id = "workspace.status.mcp_indicator"
+parent = "workspace"
+display_name = "MCP 访问状态"
+kind = "control"
+status = "active"
+style.slot = "status_bar.row2"
+native_control = "gtk:GtkLabel / winui:— / swift:—"
+a11y.name = "根据策略读取结果显示的状态文本"
+a11y.tab = "状态文本不进入 Tab 顺序"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "启动态或已连接工作区"
+result = "常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。"
+source = "src/shell.rs:1271、src/mcp_access.rs:271"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "1f895fe959f2"
+evidence = "GTK QA：--qa-mcp-indicator disabled/readonly/writable，读取可访问名称与文案。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"

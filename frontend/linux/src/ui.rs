@@ -87,13 +87,12 @@ struct UiState {
     actions: RefCell<Option<Rc<WindowActions>>>,
     /// 主菜单模型与需要逐项改文字的条目（界面密度档的「放不下」标注）。
     menu_items: MainMenu,
+    mcp_access: Rc<crate::mcp_access::McpAccess>,
     /// 主工具条（区域 02，窗口级）：握手前创建，可用性由
     /// [`crate::shell::Toolbar::set_backend_ready`] 统一控制。
     toolbar: RefCell<Option<Rc<crate::shell::Toolbar>>>,
     /// 连接注册表（`connections.json` 的全部连接 + 每连接一条浏览会话，#114）。
     registry: RefCell<Option<Rc<ConnectionRegistry>>>,
-    /// 本次「保存并连接」的文件路径（把结果对回注册表条目用；SQLite 没有凭据可对）。
-    pending_file_hint: RefCell<Option<String>>,
     /// 成功的 `Connect` 次数（浏览会话建立事件计数；QA 断言「只连一次」用）。
     connect_count: Cell<usize>,
 }
@@ -263,8 +262,7 @@ pub fn activate(app: &adw::Application) {
         }
     };
 
-    // 连接注册表（#114）：连接列表来自 `connections.json`，与后端是否握手无关；
-    // 每条连接的浏览会话在真正展开/点击时才建立。
+    // 后端握手后异步加载档案，浏览会话在实际点击时建立。
     let (registry, session_events) = match ConnectionRegistry::load(endpoint_path.clone()) {
         Ok((registry, events)) => (Some(registry), Some(events)),
         Err(error) => {
@@ -291,9 +289,9 @@ pub fn activate(app: &adw::Application) {
         connection_name: RefCell::new(None),
         actions: RefCell::new(None),
         menu_items: main_menu,
+        mcp_access: crate::mcp_access::McpAccess::new(&window),
         toolbar: RefCell::new(None),
         registry: RefCell::new(registry),
-        pending_file_hint: RefCell::new(None),
         connect_count: Cell::new(0),
     });
 
@@ -342,6 +340,7 @@ pub fn activate(app: &adw::Application) {
                 return;
             }
             refresh_tier_actions(&window_for_menu, &state, &actions_for_menu);
+            state.mcp_access.refresh();
         });
     }
 
@@ -448,6 +447,7 @@ pub fn activate(app: &adw::Application) {
                 return glib::Propagation::Proceed;
             };
             closing.set(true);
+            state.mcp_access.disconnect();
             show_loading(&state.slot, &state.title, l10n::t("startup.desc_stopping"));
             worker.shutdown();
             // 等 worker 发来 ShutdownComplete 再销毁窗口，避免界面卡死。
@@ -591,12 +591,9 @@ pub fn activate(app: &adw::Application) {
                     }
                     // #139：握手成功即落地工作区外壳，不再停在 v0.1 诊断页。
                     show_startup_workspace(&events_state, &snapshot);
-                    // #144：启动态点击已保存连接（走行自己的 activated 信号）。
-                    maybe_run_qa_startup_click(&events_state);
-                    // #144：右键菜单（编辑 / 断开 / 删除）与删除连接的自动确认。
-                    maybe_run_qa_startup_menu(&events_state);
-                    maybe_run_qa_delete_connection(&events_state);
-                    maybe_run_qa_profile(&events_state);
+                    if let Some(worker) = events_state.worker.borrow().as_ref() {
+                        events_state.mcp_access.connect(worker);
+                    }
                     if crate::qa::open_about() {
                         let state = Rc::clone(&events_state);
                         glib::timeout_add_local_once(Duration::from_millis(600), move || {
@@ -606,6 +603,7 @@ pub fn activate(app: &adw::Application) {
                 }
                 Event::Error(message) => {
                     if !events_closing.get() {
+                        events_state.mcp_access.disconnect();
                         events_state.backend_ready.set(false);
                         events_state.toolbar().set_backend_ready(false);
                         events_state.startup.borrow_mut().take();
@@ -623,6 +621,7 @@ pub fn activate(app: &adw::Application) {
                 }
                 Event::Disconnected(reason) => {
                     if !events_closing.get() {
+                        events_state.mcp_access.disconnect();
                         events_state.backend_ready.set(false);
                         events_state.toolbar().set_backend_ready(false);
                         events_state.startup.borrow_mut().take();
@@ -667,29 +666,59 @@ pub fn activate(app: &adw::Application) {
                         }
                     }
                 }
-                Event::CredentialDeleted { reference, result } => {
+                Event::ProfilesLoaded { startup, result } => {
+                    if events_closing.get() {
+                        continue;
+                    }
                     match result {
-                        Ok(()) => {
-                            eprintln!("[startup] 已删除凭据条目 {reference}（删除连接的后继清理）")
-                        }
-                        Err(failure) => {
-                            // 配置已经删掉了：这里只如实说明密钥条目还在，不静默。
-                            let message = l10n::tf(
-                                "dialogs.cred_leftover_body",
-                                &[
-                                    ("code", failure.code().to_owned()),
-                                    ("detail", failure.detail().to_owned()),
-                                ],
-                            );
-                            eprintln!("[startup] {message}（{reference}）");
-                            if !events_closing.get() {
-                                show_message(
-                                    &events_state,
-                                    l10n::t("dialogs.cred_leftover_heading"),
-                                    &message,
-                                );
+                        Ok(profiles) => {
+                            if let Some(registry) = events_state.registry.borrow().clone() {
+                                registry.replace_profiles(profiles);
+                            }
+                            if startup {
+                                maybe_run_qa_startup_click(&events_state);
+                                maybe_run_qa_startup_menu(&events_state);
+                                maybe_run_qa_delete_connection(&events_state);
+                                maybe_run_qa_profile(&events_state);
                             }
                         }
+                        Err(failure) => {
+                            if let Some(registry) = events_state.registry.borrow().clone() {
+                                registry.replace_profiles(Vec::new());
+                            }
+                            let message = l10n::tf(
+                                "dialogs.profile_load_failed",
+                                &[("error", failure.detail().to_owned())],
+                            );
+                            if let Some(startup) = events_state.startup.borrow().as_ref() {
+                                startup.shell().status().set_idle_summary(Some(&message));
+                            } else if let Some(workspace) = events_state.workspace.borrow().as_ref()
+                            {
+                                workspace.status().set_idle_summary(Some(&message));
+                            }
+                            eprintln!("[connections] {message} [{}]", failure.code());
+                        }
+                    }
+                }
+                Event::ProfileDeleted { profile_id, result } => {
+                    if events_closing.get() {
+                        continue;
+                    }
+                    match result {
+                        Ok(()) => {
+                            if let Some(registry) = events_state.registry.borrow().clone() {
+                                registry.remove_profile(&profile_id);
+                            }
+                            eprintln!("[connections] 已删除连接档案 {profile_id}");
+                        }
+                        Err(failure) => show_message(
+                            &events_state,
+                            l10n::t("dialogs.delete_failed_heading"),
+                            &l10n::tf(
+                                "dialogs.delete_failed_body",
+                                &[("error", failure.detail().to_owned())],
+                            ),
+                        ),
                     }
                 }
                 Event::Saved(result) => {
@@ -702,24 +731,17 @@ pub fn activate(app: &adw::Application) {
                             if let Some(dialog) = dialog.as_ref() {
                                 dialog.close();
                             }
-                            // 只保存不连接：配置已经落盘，重读注册表让树上那一行按
-                            // 新别名 / 新目标重绘；连接状态保持原样（仍是未连接）。
+                            let name = outcome.display_label();
                             if let Some(registry) = events_state.registry.borrow().clone() {
-                                registry.refresh_from_config();
+                                registry.upsert_profile(outcome);
                             }
-                            if let Some(workspace) =
-                                events_state.workspace.borrow().as_ref().cloned()
-                            {
-                                workspace.status().set_idle_summary(Some(&l10n::tf(
-                                    "status_bar.idle_saved",
-                                    &[("name", outcome.saved.display_label())],
-                                )));
+                            let message = l10n::tf("status_bar.idle_saved", &[("name", name)]);
+                            if let Some(workspace) = events_state.workspace.borrow().as_ref() {
+                                workspace.status().set_idle_summary(Some(&message));
+                            } else if let Some(startup) = events_state.startup.borrow().as_ref() {
+                                startup.shell().status().set_idle_summary(Some(&message));
                             }
-                            eprintln!(
-                                "[connections] 已保存连接「{}」→ {}（不重连）",
-                                outcome.saved.display_label(),
-                                outcome.path
-                            );
+                            eprintln!("[connections] {message}");
                         }
                         Err(failure) => match dialog.as_ref() {
                             Some(dialog) => dialog.show_failure(&failure),
@@ -741,26 +763,13 @@ pub fn activate(app: &adw::Application) {
                             if let Some(dialog) = dialog.as_ref() {
                                 dialog.close();
                             }
-                            // 连接注册表跟着配置走：先把新条目读进来，再把这条会话挂到
-                            // 对应的连接上，最后为它建立**独立的**浏览会话（ADR 0021）。
-                            let file_hint = events_state.pending_file_hint.borrow().clone();
-                            if let Some(registry) = events_state.registry.borrow().clone() {
-                                registry.refresh_from_config();
-                                match registry.key_for_outcome(
-                                    &outcome.credential_ref,
-                                    &outcome.driver_id,
-                                    file_hint.as_deref(),
-                                ) {
-                                    Some(key) => {
-                                        registry.set_active(Some(&key), Some(&outcome.session_id));
-                                        registry.log_sessions("保存并连接后");
-                                        registry.open(&key);
-                                    }
-                                    None => eprintln!(
-                                        "[browse] 保存并连接成功，但在连接注册表里找不到对应条目（会话 {}）",
-                                        short_id(&outcome.session_id)
-                                    ),
-                                }
+                            if let Some(registry) = events_state.registry.borrow().clone()
+                                && let Some(saved) = outcome.saved_profile.clone()
+                            {
+                                let key = registry.upsert_profile(saved);
+                                registry.set_active(Some(&key), Some(&outcome.session_id));
+                                registry.log_sessions("保存并连接后");
+                                registry.open(&key);
                             }
                             // 已连上数据库：启动态外壳由连接后的工作区整体替换
                             // （当前宽度由 show_workspace 读走后再释放启动态）。
@@ -1356,8 +1365,7 @@ fn browse_session_opened(
         // 会话列表由 `dispatch` 里的 `ListSessions` 回报；这里不伪造一份。
         sessions: Vec::new(),
         capabilities: session.capabilities.clone(),
-        // 本次没有写配置（只用了已有条目）：不是失败，只是没有路径可展示。
-        config: Ok(String::new()),
+        saved_profile: None,
     };
     eprintln!(
         "[startup] 已按保存的凭据连上「{}」（驱动 {}，会话 {}）：落到工作区并展开连接",
@@ -1547,10 +1555,6 @@ fn submit(state: &Rc<UiState>, dialog: &Rc<ConnectionDialog>, draft: ConnectionD
             // 会话显示名是标题规则（§5.1）里的「连接名」：只在这里临时记住，
             // 不参与连接参数，也不进日志。
             state.connection_name.replace(Some(draft.name.clone()));
-            // SQLite 没有凭据引用可对：把文件路径留给注册表，把结果对回正确的条目。
-            state
-                .pending_file_hint
-                .replace(Some(draft.file_path.clone()).filter(|path| !path.is_empty()));
             worker.save_and_connect(draft);
         } else {
             worker.test_connection(draft);
@@ -1756,6 +1760,9 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
             },
         },
     });
+    state
+        .mcp_access
+        .attach_indicator(startup.shell().status().mcp_indicator());
     state.startup.replace(Some(Rc::clone(&startup)));
     state.title.set_title("Sqarvo");
     state
@@ -1785,7 +1792,7 @@ fn disconnect_saved(state: &Rc<UiState>, key: &str) {
     confirm_disconnect(state, snapshot);
 }
 
-/// 删除一条已保存连接（侧栏右键「删除连接」）：二次确认 → 删配置 → 尽力删密钥。
+/// 删除一条已保存连接（侧栏右键「删除连接」）：二次确认 → 按修订删除共享档案。
 fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
     let Some(registry) = state.registry.borrow().clone() else {
         return;
@@ -1811,48 +1818,23 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
     dialog.set_close_response("cancel");
     {
         let state = Rc::clone(state);
-        let registry = Rc::clone(&registry);
-        let key = key.to_owned();
-        let name = saved.name.clone();
-        let reference = saved.credential_ref.clone();
         let handled = Rc::new(Cell::new(false));
         dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
             if handled.replace(true) || response != "delete" {
                 return;
             }
-            eprintln!("[startup] 用户确认删除连接「{name}」（连接键 {key}）");
-            // 浏览会话先关掉：删掉条目之后它就成了没人认领的会话。
-            registry.disconnect(&key);
-            match crate::config::remove_by_key(&key) {
-                Ok(true) => eprintln!("[startup] 已从 connections.json 删除连接「{name}」"),
-                Ok(false) => {
-                    eprintln!(
-                        "[startup] connections.json 里没有连接「{name}」（{key}），未改动文件"
-                    );
-                }
-                Err(error) => {
-                    eprintln!("[startup] 删除连接「{name}」的配置失败：{error}");
-                    show_message(
-                        &state,
-                        l10n::t("dialogs.delete_failed_heading"),
-                        &l10n::tf(
-                            "dialogs.delete_failed_body",
-                            &[("error", error.to_string())],
-                        ),
-                    );
-                    return;
-                }
-            }
-            registry.refresh_from_config();
-            // 对象树的注册表监听会自己刷新连接层；不在这里重建外壳。
-            // 密钥条目尽力删除：删不掉不冒充成功，界面会写明「配置已删除，密钥条目未删除」。
-            if reference.is_empty() {
-                eprintln!("[startup] 连接「{name}」没有凭据引用（无需清理密钥条目）");
-                return;
-            }
-            match state.worker.borrow().as_ref() {
-                Some(worker) => worker.delete_credential(&reference),
-                None => eprintln!("[startup] worker 不可用：跳过密钥条目清理（{reference}）"),
+            if let Some(worker) = state.worker.borrow().as_ref() {
+                worker.delete_profile(saved.profile_id.clone(), saved.revision);
+            } else {
+                let failure = ConnectionFailure::backend_unavailable();
+                show_message(
+                    &state,
+                    l10n::t("dialogs.delete_failed_heading"),
+                    &l10n::tf(
+                        "dialogs.delete_failed_body",
+                        &[("error", failure.detail().to_owned())],
+                    ),
+                );
             }
         });
     }
@@ -1872,7 +1854,7 @@ fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
     }
 }
 
-/// 一条不可操作的提示对话框（删除失败 / 密钥条目残留）。
+/// 一条不可操作的提示对话框。
 fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
     let dialog = adw::AlertDialog::new(Some(heading), Some(body));
     dialog.add_response("close", l10n::t("dialogs.msg_btn_ok"));
@@ -1955,6 +1937,9 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
         startup_width,
         startup_sidebar,
     );
+    state
+        .mcp_access
+        .attach_indicator(workspace.status().mcp_indicator());
     state.workspace.replace(Some(Rc::clone(&workspace)));
     set_page(&state.slot, workspace.widget());
     if let Some(actions) = state.actions.borrow().as_ref() {
@@ -5060,6 +5045,7 @@ fn build_main_menu() -> MainMenu {
     }
     view.append_submenu(Some(l10n::t("shell.menu.view_language")), &lang_section);
 
+    crate::mcp_access::append_menu(&view);
     menu.append_submenu(Some(l10n::t("shell.menu.view")), &view);
 
     let help = gio::Menu::new();
@@ -6255,9 +6241,9 @@ mod tests {
             .collect()
     }
 
-    /// 视图下必须是三个三级小节（深色模式 / 界面密度 / 语言），各三项、动作名与注册的一致。
+    /// 视图下的三个三级小节及两个 MCP 开关按顺序注册。
     #[test]
-    fn view_menu_holds_dark_mode_and_density_as_third_level_submenus() {
+    fn view_menu_lists_preferences_then_mcp_policy_actions() {
         let menu = build_main_menu();
         let model = menu.model.clone().upcast::<gio::MenuModel>();
         assert_eq!(
@@ -6270,7 +6256,11 @@ mod tests {
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(
             menu_labels(&view),
-            ["深色模式", "界面密度", "语言"].map(str::to_owned)
+            ["深色模式", "界面密度", "语言", "MCP 数据访问", "MCP 只读"].map(str::to_owned)
+        );
+        assert_eq!(
+            menu_actions(&view),
+            ["win.mcp-access", "win.mcp-read-only"].map(str::to_owned)
         );
 
         let theme_section = submenu_model(&view, "深色模式").expect("深色模式子菜单");

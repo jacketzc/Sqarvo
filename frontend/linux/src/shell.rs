@@ -1034,6 +1034,7 @@ pub struct StatusBar {
     row_two_right: gtk::Box,
     sql_summary: gtk::Label,
     last_refresh: gtk::Label,
+    mcp_indicator: gtk::Label,
     /// 连接名 / 启动态摘要：**只在没有表标签时**出现（有表时这一行只留 SQL + Last Refresh）。
     session: gtk::Label,
     connection: RefCell<Option<String>>,
@@ -1267,6 +1268,11 @@ impl StatusBar {
         row_two_right.append(&last_refresh);
         row_two_right.append(&session);
 
+        let mcp_indicator = gtk::Label::new(None);
+        mcp_indicator.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        mcp_indicator.set_valign(gtk::Align::Center);
+        row_two_right.append(&mcp_indicator);
+
         let row_two = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xl));
         row_two.add_css_class("sqarvo-status-row");
         row_two.append(&row_two_left);
@@ -1318,6 +1324,7 @@ impl StatusBar {
             row_two_right,
             sql_summary,
             last_refresh,
+            mcp_indicator,
             session,
             connection: RefCell::new(None),
             idle_summary: RefCell::new(None),
@@ -1660,6 +1667,11 @@ impl StatusBar {
     pub fn set_sql_summary(&self, text: &str) {
         self.sql_summary.set_text(&format!("SQL: {text}"));
         self.sql_summary.set_tooltip_text(Some(text));
+    }
+
+    /// MCP 策略在启动态和已连接工作区的常驻状态指示。
+    pub fn mcp_indicator(&self) -> &gtk::Label {
+        &self.mcp_indicator
     }
 
     /// 当前连接名（连接建立后设置；断连时清空）。

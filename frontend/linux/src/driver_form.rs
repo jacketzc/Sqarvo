@@ -151,6 +151,7 @@ pub fn build_draft(input: &FormInput) -> Result<ConnectionDraft, String> {
     };
     let fields = fields_for(family);
     let mut draft = ConnectionDraft {
+        existing_profile: None,
         alias: String::new(),
         name: String::new(),
         driver_id: input.driver_id.clone(),

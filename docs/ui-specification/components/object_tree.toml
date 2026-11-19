@@ -63,7 +63,7 @@ a11y.tab = "可聚焦；Tab 进入后 ↑ / ↓ 移动选中"
 impl_notes = [
   "GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。",
   "折叠后重新展开复用已读内容、不发请求。",
-  "层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（来自 connections.json，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。",
+  "层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（后端握手后由 ListProfiles 异步填充，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。",
   "树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。",
 ]
 
@@ -81,20 +81,25 @@ precondition = "行有焦点"
 result = "等同于双击（同一回调，走 activate 信号）"
 source = "src/tree.rs:2022"
 
+[[component.interaction]]
+trigger = "load"
+precondition = "本地后端握手完成"
+result = "异步加载共享连接档案；失败时连接树保持空并在状态栏提示档案加载失败"
+source = "src/ui.rs:669"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "50da9f7dc0b7"
+spec_hash = "9e309bdc79d0"
 commit = "7436cd5"
-evidence = "§2.5 键盘表 + tree.rs install_handlers"
+evidence = "隔离 GTK --qa-startup-workspace 加载迁移后的 2 个档案。"
 
 [component.sync.windows]
-state = "partial"
-spec_hash = "50da9f7dc0b7"
-note = "TreeView 承载，↑ / ↓ / Enter 同语义；无自定义按键控制器差异待核。"
+state = "blocked"
+note = "本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。"
 
 [component.sync.macos]
-state = "none"
-spec_hash = ""
+state = "na"
+note = "macOS 已保存连接前端未接入。"
 
 [[component]]
 id = "object_tree.tree.row"
@@ -861,28 +866,27 @@ kind = "item"
 a11y.name = "删除连接"
 status = "active"
 style.metrics = ["font_ui"]
-impl_notes = ["配置删除与密钥删除分开报告：配置删除失败提示「删除连接失败」；配置已删而密钥没删提示「配置已删除，密钥条目未删除（<code>）：<detail>」。"]
+impl_notes = ["档案删除失败提示「删除连接失败」；系统凭据引用可以被其他档案共用，删除档案时保留凭据。"]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "连接存在于配置里"
-result = "二次确认「删除连接？」（写明从 connections.json 删除、树节点与浏览会话一并消失、其它连接不受影响）；确认后关会话 → 删配置 → 尽量删密钥条目"
-source = "src/ui.rs:1310、src/ui.rs:454"
+result = "二次确认「删除连接？」后按 UUID 与 revision 删除共享档案，移除树节点并清理该连接的浏览会话。保留凭据。"
+source = "src/ui.rs:1796、src/ui.rs:701"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "fef4619b3e67"
+spec_hash = "5317d49edc99"
 commit = "7436cd5"
-evidence = "§2.3 删除连接"
+evidence = "隔离 GTK --qa-delete-connection 走真实确认，仅删除指定 UUID，剩余档案和备份保留。"
 
 [component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "无树右键菜单。"
+state = "blocked"
+note = "本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。"
 
 [component.sync.macos]
-state = "none"
-spec_hash = ""
+state = "na"
+note = "macOS 已保存连接前端未接入。"
 
 [[component]]
 id = "object_tree.ctx_menu.open"

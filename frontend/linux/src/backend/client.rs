@@ -37,6 +37,7 @@ use crate::backend::table::{
 };
 use crate::proto::common::v1::Empty;
 use crate::proto::common::v1::PageRequest;
+use crate::proto::services::v1::connection_profile_service_client::ConnectionProfileServiceClient;
 use crate::proto::services::v1::connection_service_client::ConnectionServiceClient;
 use crate::proto::services::v1::credential_service_client::CredentialServiceClient;
 use crate::proto::services::v1::metadata_service_client::MetadataServiceClient;
@@ -273,6 +274,20 @@ impl BackendClient {
     {
         let interceptor = TokenInterceptor::new(&self.token)?;
         Ok(ConnectionServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor,
+        ))
+    }
+
+    /// 带 token 认证的共享档案客户端。
+    pub fn profile_service(
+        &self,
+    ) -> Result<
+        ConnectionProfileServiceClient<InterceptedService<Channel, TokenInterceptor>>,
+        BackendError,
+    > {
+        let interceptor = TokenInterceptor::new(&self.token)?;
+        Ok(ConnectionProfileServiceClient::with_interceptor(
             self.channel.clone(),
             interceptor,
         ))

@@ -1,0 +1,109 @@
+# MCP 策略菜单、确认和状态指示。
+
+[[entry]]
+key = "mcp_access.menu_access"
+zh = "MCP 数据访问"
+en = "MCP data access"
+status = "done"
+
+[[entry]]
+key = "mcp_access.menu_read_only"
+zh = "MCP 只读"
+en = "MCP read-only"
+status = "done"
+
+[[entry]]
+key = "mcp_access.enable_title"
+zh = "启用 MCP 数据访问？"
+en = "Enable MCP data access?"
+status = "done"
+
+[[entry]]
+key = "mcp_access.enable_body"
+zh = "允许通过 MCP 访问当前 {n} 个连接档案，以及今后新增的连接档案。MCP 客户端将能读取数据库结构和数据。"
+en = "This grants MCP access to all {n} current connection profiles and any profiles added later. MCP clients will be able to read database schemas and data."
+status = "done"
+
+[[entry]]
+key = "mcp_access.enable_confirm"
+zh = "启用 MCP 数据访问"
+en = "Enable MCP data access"
+status = "done"
+
+[[entry]]
+key = "mcp_access.write_title"
+zh = "关闭 MCP 只读？"
+en = "Turn off MCP read-only?"
+status = "done"
+
+[[entry]]
+key = "mcp_access.write_body"
+zh = "此设置适用于当前 {n} 个连接档案，以及今后新增的连接档案。将来支持的 MCP 写入操作可能修改数据库中的数据。当前 MCP 版本尚未提供数据库写入工具。"
+en = "This setting applies to all {n} current connection profiles and any profiles added later. Future MCP write operations may modify database data. This MCP version does not provide database write tools."
+status = "done"
+
+[[entry]]
+key = "mcp_access.write_confirm"
+zh = "关闭 MCP 只读"
+en = "Turn off MCP read-only"
+status = "done"
+
+[[entry]]
+key = "mcp_access.cancel"
+zh = "取消"
+en = "Cancel"
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_loading"
+zh = "MCP：正在读取状态"
+en = "MCP: reading status"
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_disabled"
+zh = "MCP：访问关闭"
+en = "MCP: access off"
+status = "done"
+
+[[entry]]
+key = "mcp_access.read_only_unavailable"
+zh = "MCP 数据访问关闭后会恢复只读。启用数据访问后可更改只读设置。"
+en = "Turning off MCP data access restores read-only mode. Enable data access to change the read-only setting."
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_read_only"
+zh = "MCP：仅允许读取"
+en = "MCP: read-only access"
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_write_warning"
+zh = "MCP：只读已关闭。当前 MCP 版本尚未提供数据库写入工具。"
+en = "MCP: read-only is off. This MCP version does not provide database write tools."
+status = "done"
+
+[[entry]]
+key = "mcp_access.no_write_tools"
+zh = "警告：MCP 只读已关闭。当前 MCP 版本尚未提供数据库写入工具。"
+en = "Warning: MCP read-only is off. This MCP version does not provide database write tools."
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_disconnected"
+zh = "MCP：后端未连接"
+en = "MCP: backend disconnected"
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_unavailable"
+zh = "MCP：无法读取状态"
+en = "MCP: status unavailable"
+status = "done"
+
+[[entry]]
+key = "mcp_access.status_update_error"
+zh = "MCP：无法确认设置结果"
+en = "MCP: setting could not be verified"
+status = "done"

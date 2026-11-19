@@ -1,0 +1,85 @@
+# 供 MCP 策略组件保留已确认的 ID。命名根只用于注册表组织。
+[area]
+id = "dialog"
+display_name = "MCP 策略确认"
+summary = "两个风险确认框，由主菜单中的策略开关触发。"
+
+[[component]]
+id = "dialog"
+parent = ""
+display_name = "MCP 策略确认"
+kind = "area"
+status = "active"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "2e0ea2453e57"
+evidence = "GTK QA：访问启用与关闭只读的确认框分别验证标题、档案数、取消及确认。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"
+
+[[component]]
+id = "dialog.mcp_enable_confirm"
+parent = "dialog"
+display_name = "启用 MCP 数据访问确认"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+native_control = "gtk:AdwAlertDialog / winui:— / swift:—"
+a11y.name = "启用 MCP 数据访问？"
+a11y.tab = "默认落在取消，确认按钮紧随其后"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "在主菜单启用 MCP 数据访问"
+result = "显示当前档案数和授权范围（现有及将来新增的档案），确认后写入策略并回读，取消不写入。"
+source = "src/mcp_access.rs:226"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "7f4f049c0500"
+evidence = "GTK QA：--qa-mcp-access cancel/on，断言标题与当前档案数及取消零写入。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"
+
+[[component]]
+id = "dialog.mcp_readonly_disable_confirm"
+parent = "dialog"
+display_name = "关闭 MCP 只读确认"
+kind = "control"
+status = "active"
+style.slot = "dialogs"
+native_control = "gtk:AdwAlertDialog / winui:— / swift:—"
+a11y.name = "关闭 MCP 只读？"
+a11y.tab = "默认落在取消，确认按钮紧随其后"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "数据访问已启用，并在主菜单关闭 MCP 只读"
+result = "显示当前档案数及未来潜在的数据库写入风险，说明当前 MCP 版本尚未提供数据库写入工具。确认后写入策略并回读，取消不写入。"
+source = "src/mcp_access.rs:226"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "d98c9a2768a6"
+evidence = "GTK QA：--qa-mcp-readonly cancel/off，断言标题与当前档案数及取消零写入。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入共享档案及 MCP 策略。"

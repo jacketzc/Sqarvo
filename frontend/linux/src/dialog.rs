@@ -121,6 +121,8 @@ pub struct ConnectionDialog {
     subtitle: RefCell<String>,
     /// 已经保存成功的凭据引用；测试成功后回填，避免重复写同一个密码。
     credential_ref: RefCell<Option<String>>,
+    /// 档案修订以打开对话框时的读取结果为准。
+    existing_profile: RefCell<Option<crate::config::SavedConnection>>,
     /// QA 档案指定的会话显示名（正常路径由驱动族派生）。
     name_override: RefCell<Option<String>>,
     /// 对话框当前是否开着（`AdwDialog` 没有可读的 visible 属性，靠 `present` / `closed` 记）。
@@ -296,6 +298,7 @@ impl ConnectionDialog {
             supported: Cell::new(false),
             subtitle: RefCell::new(String::new()),
             credential_ref: RefCell::new(None),
+            existing_profile: RefCell::new(None),
             name_override: RefCell::new(None),
             open: Rc::new(Cell::new(false)),
             editing: Cell::new(false),
@@ -702,7 +705,9 @@ impl ConnectionDialog {
         self.password_row.set_text("");
         self.credential_ref
             .replace((!saved.credential_ref.is_empty()).then(|| saved.credential_ref.clone()));
-        self.name_override.replace(Some(saved.name.clone()));
+        self.name_override
+            .replace(saved.alias.is_empty().then(|| saved.name.clone()));
+        self.existing_profile.replace(Some(saved.clone()));
         if saved.credential_ref.is_empty() {
             self.show_status(
                 crate::l10n::t("dialogs.prefill_needs_password"),
@@ -797,6 +802,7 @@ impl ConnectionDialog {
         let mut draft = driver_form::build_draft(&input)?;
         // 别名是纯客户端字段（不进 gRPC 参数）：在这里补，`driver_form` 不管它。
         draft.alias = self.alias_row.text().trim().to_owned();
+        draft.existing_profile = self.existing_profile.borrow().clone();
         Ok(draft)
     }
 
