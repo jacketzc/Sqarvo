@@ -19,6 +19,9 @@
 //! （示例 SQL 经 `execute_readonly_query` 实跑）、`explain_query` 正向与负面、
 //! 危险函数/SLEEP 拒绝、超时配置传达。表名带 `sqarvo_mcp209_` 前缀并在用例结束时清理。
 
+#[path = "support/profile_access.rs"]
+mod profile_access;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,7 +90,7 @@ fn parse_dsn(url: &str) -> Target {
 }
 
 /// 构造只含 `maria` 连接的访问服务；凭据走内存实现（不碰系统密钥环）。
-fn access(target: &Target, timeout_ms: Option<u64>) -> AccessService {
+fn access(target: &Target, timeout_ms: Option<u64>) -> profile_access::TestAccess {
     let reference = format!("sqarvo:conn/{}", uuid::Uuid::new_v4());
     let mut root = serde_json::json!({
         "connections": [{
@@ -119,7 +122,7 @@ fn access(target: &Target, timeout_ms: Option<u64>) -> AccessService {
         )
         .expect("写入内存凭据");
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
-    AccessService::with_session_manager(Arc::new(config), sessions)
+    profile_access::service(config, sessions)
 }
 
 /// 直接经驱动执行语句（布置数据/清理，不经过只读策略）。

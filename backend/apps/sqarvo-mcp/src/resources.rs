@@ -447,7 +447,9 @@ pub struct ResourcePayload {
 pub async fn read(access: &AccessService, uri: &str) -> Result<ResourcePayload> {
     let request = parse(uri)?;
     let json = match &request {
-        ResourceRequest::Connections => to_json(&connections(access))?,
+        ResourceRequest::Connections => {
+            to_json(&connections(access).await.map_err(authorization_error)?)?
+        }
         ResourceRequest::Overview { alias, database } => {
             to_json(&overview(access, alias, database).await?)?
         }
@@ -488,10 +490,10 @@ fn to_json<T: Serialize>(payload: &T) -> Result<String> {
 }
 
 /// `database://connections`：只读配置与懒连接状态，不触网。
-#[must_use]
-pub fn connections(access: &AccessService) -> ConnectionsPayload {
+pub async fn connections(access: &AccessService) -> Result<ConnectionsPayload> {
     let connections: Vec<ConnectionEntry> = access
         .statuses()
+        .await?
         .into_iter()
         .map(|status| ConnectionEntry {
             alias: status.alias,
@@ -500,7 +502,7 @@ pub fn connections(access: &AccessService) -> ConnectionsPayload {
         })
         .collect();
     let count = i64::try_from(connections.len()).unwrap_or(i64::MAX);
-    ConnectionsPayload { connections, count }
+    Ok(ConnectionsPayload { connections, count })
 }
 
 /// `…/overview`：库级摘要。
@@ -727,12 +729,11 @@ fn primary_key_columns(primary_key: &PrimaryKey) -> Vec<PrimaryKeyColumnView> {
 
 /// 把授权失败归一化成「资源不存在」。
 ///
-/// `enabled: false` 的连接在工具面报 `mcp.connection_denied`，但资源面用统一文案，
-/// 避免 Agent 通过错误码差异探测「某个 alias 是否存在于配置里」。原始子码进日志，
-/// 供运维定位。
+/// 未授权和不存在继续使用资源的 -32002 通道。全局拒绝在查找连接前发生，
+/// 可以保留原始原因，同时避免披露连接是否存在。
 fn authorization_error(error: Error) -> Error {
     match error.code() {
-        ErrorCode::MCP_CONNECTION_NOT_FOUND | ErrorCode::MCP_CONNECTION_DENIED => {
+        ErrorCode::MCP_CONNECTION_NOT_FOUND => {
             tracing::warn!(
                 code = %error.code(),
                 "资源请求被拒绝：连接未授权（原始子码见本行，不回传给 Agent）"

@@ -10,6 +10,9 @@
 //!
 //! 这里的字段清单就是 #212 文档要写进「Resource 内容契约」的那张表，改字段先改测试。
 
+#[path = "support/profile_access.rs"]
+mod profile_access;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,8 +29,8 @@ use sqarvo_mcp::resources::{self, ResourceRequest};
 // 夹具
 // ---------------------------------------------------------------------------
 
-/// 构造含 `dev`（可用）与 `off`（enabled: false）两个 SQLite 连接的访问服务。
-fn access(db: &Path, enabled_tools: Option<serde_json::Value>) -> AccessService {
+/// 构造含 `dev` SQLite 连接的访问服务。
+fn access(db: &Path, enabled_tools: Option<serde_json::Value>) -> profile_access::TestAccess {
     let mut root = serde_json::json!({
         "connections": [
             {
@@ -36,14 +39,6 @@ fn access(db: &Path, enabled_tools: Option<serde_json::Value>) -> AccessService 
                 "host": db.display().to_string(),
                 "port": 0,
                 "enabled": true,
-                "properties": { "read_only": "false" }
-            },
-            {
-                "alias": "off",
-                "driver_id": "sqlite",
-                "host": db.display().to_string(),
-                "port": 0,
-                "enabled": false,
                 "properties": { "read_only": "false" }
             }
         ]
@@ -58,7 +53,7 @@ fn access(db: &Path, enabled_tools: Option<serde_json::Value>) -> AccessService 
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
-    AccessService::with_session_manager(Arc::new(config), sessions)
+    profile_access::service(config, sessions)
 }
 
 /// 经驱动执行一条语句（只用于布置夹具，不经过只读策略）。
@@ -651,7 +646,7 @@ fn parse_dsn(url: &str) -> Target {
 }
 
 /// MariaDB 访问服务：凭据走内存实现，不碰系统密钥环。
-fn mariadb_access(target: &Target) -> AccessService {
+fn mariadb_access(target: &Target) -> profile_access::TestAccess {
     let reference = format!("sqarvo:conn/{}", uuid::Uuid::new_v4());
     let root = serde_json::json!({
         "connections": [{
@@ -679,7 +674,7 @@ fn mariadb_access(target: &Target) -> AccessService {
     )
     .expect("写入内存凭据");
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
-    AccessService::with_session_manager(Arc::new(config), sessions)
+    profile_access::service(config, sessions)
 }
 
 /// MariaDB 上四类资源的关键行为：计数、目录、列定义。

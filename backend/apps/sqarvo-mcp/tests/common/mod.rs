@@ -72,6 +72,31 @@ pub struct Server {
     stderr_reader: JoinHandle<String>,
 }
 
+/// Run local management in the test server's isolated profile directory.
+pub fn manage_access(config: &Path, home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .arg("--config")
+        .arg(config)
+        .arg("access")
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_RUNTIME_DIR", home.join("run"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("启动 access 管理子进程")
+}
+
+pub fn enable_access(config: &Path, home: &Path) {
+    let enabled = manage_access(config, home, &["on", "--yes"]);
+    assert!(
+        enabled.status.success(),
+        "启用夹具 MCP 访问：{}",
+        String::from_utf8_lossy(&enabled.stderr)
+    );
+}
+
 impl Server {
     /// 以 `--config` + 隔离 XDG 环境启动。
     pub fn spawn(config: &Path, home: &Path) -> Self {

@@ -36,21 +36,24 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::{IntoCallToolResult, ToolCallContext};
 use rmcp::model::{
-    CacheScope, Implementation, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    ResourceContents, ResultType, ServerCapabilities, ServerConfig, Tool,
+    CacheScope, CallToolRequestParams, CallToolResponse, Implementation,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
+    ResultType, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt, tool_handler};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
-use sqarvo_local_store::AppPaths;
+use sqarvo_local_store::{AppPaths, ProfileStore, profiles::migration};
 
-use crate::access::AccessService;
+use crate::access::{AccessService, OperationType};
 use crate::audit::{AuditWriter, RotationPolicy};
 use crate::config::{self, ValidatedConfig};
 use crate::error::protocol_error;
 use crate::resources;
+use crate::tools::ToolCall;
 
 /// `serverInfo.name`。
 pub const SERVER_NAME: &str = "sqarvo-mcp";
@@ -60,7 +63,7 @@ pub const SERVER_NAME: &str = "sqarvo-mcp";
 /// 只写**事实**：V1 是只读的、同一连接串行、默认并发 2。工具级细节归 #209 的
 /// tool description，这里不重复。
 const SERVER_INSTRUCTIONS: &str = "\
-Sqarvo MCP Server 通过 mcp.json 中已授权的连接别名访问数据库，V1 只提供只读的\
+Sqarvo MCP Server 在全局数据访问启用时通过共享连接档案访问数据库，V1 只提供只读的\
 结构与查询能力。同一个数据库连接上的查询会串行执行（单会话单在途语句），不同连接\
 可在进程级并发上限内并行；排队不是故障。未在 enabled_tools 中启用的工具会被拒绝。\
 所有调用记入本地审计日志（只记录 SQL 指纹，不记录原始 SQL 与结果）。";
@@ -78,13 +81,42 @@ impl ServerContext {
     /// 配置缺失 → 空连接列表 + stderr 警告（默认拒绝）；配置非法 → 直接返回错误，
     /// 由 `main` 以非零码退出（V3.1 §3.1、§13）。
     pub async fn bootstrap(config_path: Option<&Path>) -> Result<Self> {
-        let data_dir = AppPaths::discover()?.data_dir().to_path_buf();
-        Self::bootstrap_with(config_path, &data_dir).await
+        let paths = AppPaths::discover()?;
+        Self::bootstrap_at(config_path, paths).await
     }
 
-    /// 同 [`ServerContext::bootstrap`]，但显式指定数据目录（测试与打包场景）。
-    pub async fn bootstrap_with(config_path: Option<&Path>, data_dir: &Path) -> Result<Self> {
-        let outcome = config::load(config_path)?;
+    #[cfg(test)]
+    pub(crate) async fn bootstrap_with(
+        config_path: Option<&Path>,
+        data_dir: &Path,
+    ) -> Result<Self> {
+        let paths = AppPaths::from_roots(
+            data_dir.join("config"),
+            data_dir.to_owned(),
+            data_dir.join("run"),
+        );
+        Self::bootstrap_at(config_path, paths).await
+    }
+
+    async fn bootstrap_at(config_path: Option<&Path>, paths: AppPaths) -> Result<Self> {
+        let store = ProfileStore::new(&paths);
+        let setup_store = store.clone();
+        let config_path = config_path
+            .unwrap_or(&paths.config_dir().join(config::CONFIG_FILE_NAME))
+            .to_owned();
+        let outcome = tokio::task::spawn_blocking(move || {
+            migration::run_once_with_mcp(&setup_store, &config_path)?;
+            let outcome = config::load(Some(&config_path))?;
+            if !outcome.config.connections.is_empty() {
+                return Err(Error::invalid_argument(
+                    ErrorCode::CONFIG_INVALID,
+                    "mcp.json 仍包含旧版连接档案",
+                ));
+            }
+            Ok(outcome)
+        })
+        .await
+        .map_err(|_| Error::internal("MCP 配置装配任务异常"))??;
         for warning in &outcome.warnings {
             tracing::warn!("{warning}");
         }
@@ -98,15 +130,14 @@ impl ServerContext {
         let config = Arc::new(validated);
         tracing::info!(
             path = %outcome.path.display(),
-            connections = config.connection_count(),
             tools = config.tools().enabled_names().len(),
             max_concurrency = config.limits().max_concurrency,
             query_timeout_ms = config.limits().query_timeout.as_millis(),
             "MCP 配置已生效"
         );
 
-        let access = AccessService::assemble(Arc::clone(&config)).await?;
-        let audit = AuditWriter::open(data_dir, RotationPolicy::default())?;
+        let access = AccessService::assemble(Arc::clone(&config), store).await?;
+        let audit = AuditWriter::open(paths.data_dir(), RotationPolicy::default())?;
         tracing::info!(audit = %audit.path().display(), "审计日志已就绪");
         Ok(Self {
             config,
@@ -196,6 +227,37 @@ impl ServerHandler for SqarvoMcpServer {
         .with_instructions(SERVER_INSTRUCTIONS)
     }
 
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResponse, McpError> {
+        if let Some(tool) = config::V1_TOOL_NAMES
+            .iter()
+            .find(|name| **name == request.name)
+            && let Err(error) = self
+                .context
+                .access()
+                .guard()
+                .authorize_request(OperationType::Read, None)
+                .await
+        {
+            let mut call = ToolCall::from_request(&self.context, &context, tool);
+            if let Some(args) = &request.arguments
+                && let Some(alias) = args
+                    .get("connection_alias")
+                    .and_then(serde_json::Value::as_str)
+            {
+                let database = args.get("database").and_then(serde_json::Value::as_str);
+                call = call.with_target(alias, database);
+            }
+            return call.failed(error).await.into_call_tool_result();
+        }
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+
     fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -230,7 +292,7 @@ impl ServerHandler for SqarvoMcpServer {
     fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = std::result::Result<ReadResourceResponse, McpError>> + Send + '_
     {
         let uri = request.uri;
@@ -242,8 +304,19 @@ impl ServerHandler for SqarvoMcpServer {
                 ])
                 .into()),
                 Err(error) => {
-                    tracing::debug!(code = %error.code(), uri, "资源读取失败");
-                    Err(protocol_error(&error))
+                    tracing::debug!(code = %error.code(), "资源读取失败");
+                    let response = protocol_error(&error);
+                    if matches!(
+                        error.code(),
+                        ErrorCode::MCP_CONNECTION_DENIED
+                            | ErrorCode::PROFILE_RESTART_REQUIRED
+                            | ErrorCode::PROFILE_AMBIGUOUS_NAME
+                    ) {
+                        ToolCall::from_request(&self.context, &context, "resources/read")
+                            .failed(error)
+                            .await;
+                    }
+                    Err(response)
                 }
             }
         }
