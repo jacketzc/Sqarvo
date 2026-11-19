@@ -140,6 +140,10 @@ token 来自端点描述文件（0600），详见 [本地 IPC](../architecture/l
 - 后续批次通过 `FetchBatch(query_id, statement_index, page_token)` 拉取，token 不透明；
 - `ExecuteQueryRequest.timeout_millis` 为执行超时，0 表示由服务端默认策略决定；
 - `FetchBatchRequest.statement_index` 标识结果集所属语句，v0.1 恒为 0（单语句）；
+- `StatementSummary.elapsed_millis`（6 号，#238）是该语句**在数据库连接上执行**的毫秒数：
+  从语句下发到该语句终态（结果集首批可读 / update count 已知），逐条分别计时，不含
+  IPC、序列化与前端渲染；未知/未测量为 `0`，客户端按「不显示」处理（不得当 0 秒）。
+  服务端对真实测量值下限取 1ms（向下取整后非零），因此 `0` 只可能表示未测量；
 - 元数据浏览使用 `PageRequest`/`PageInfo`，单页默认 100、上限 500；
 - 表数据浏览（`TableDataService.BrowseTable`）默认按主键升序，v0.2.3 起使用 **offset 分页**
   （`offset` / `sort` / `filter` / `include_total`，ADR 0022）；不透明 `page_token` 只保留

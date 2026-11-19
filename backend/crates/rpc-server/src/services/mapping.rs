@@ -6,6 +6,8 @@
 //! 事务相关的枚举与快照映射也在本模块（#44）：它们跨越驱动 SPI 与契约两层，
 //! 集中在一处可以避免 `ConnectionService` 与 `TransactionService` 各写一份。
 
+use std::time::Duration;
+
 use sqarvo_common::{Error, ErrorCode, QueryId};
 use sqarvo_connection::TransactionStatus;
 use sqarvo_driver_api::{
@@ -83,7 +85,24 @@ fn statement_to_proto(summary: &StatementSummary) -> ProtoStatementSummary {
         // proto3 无 optional：未知影响行数只能表示为 0，调用方以 has_result_set 区分。
         rows_affected: summary.rows_affected.unwrap_or(0),
         has_result_set: summary.has_result_set,
+        elapsed_millis: elapsed_to_millis(summary.elapsed),
     }
+}
+
+/// 逐语句耗时 → 协议毫秒（#238）。
+///
+/// 取舍：向下取整（亚毫秒部分丢弃，不四舍五入——四舍五入会让 1.6ms 报成 2ms，
+/// 全是量化噪声，不如稳定地截断），但**真实测量恒 >= 1**：
+/// 协议里 `0` 的语义是「未测量」，若把 0.4ms 的语句截断成 0，客户端就会按
+/// 「不显示」处理，等于丢掉一条真实数据、并与「驱动未计时」不可区分。
+/// 因此非零测量最小报 1ms，误差不超过 1ms 且方向固定为低估。
+fn elapsed_to_millis(elapsed: Option<Duration>) -> u64 {
+    let Some(elapsed) = elapsed else {
+        // 驱动未测量：如实报 0，绝不估算成任何正数。
+        return 0;
+    };
+    let millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    millis.max(1)
 }
 
 pub(crate) fn rows_to_proto(rows: &[Row]) -> Result<Vec<ProtoRow>, Status> {
@@ -681,5 +700,27 @@ mod tests {
             original_type_name: String::new(),
         };
         assert!(value_from_proto(&bad_date).is_err());
+    }
+
+    /// #238：未测量是 0，真实测量恒 >= 1，亚毫秒按 1 报（不四舍五入成 2）。
+    #[test]
+    fn elapsed_millis_keeps_unmeasured_and_measured_distinguishable() {
+        assert_eq!(elapsed_to_millis(None), 0, "未测量必须是 0，不能估算成正数");
+        assert_eq!(
+            elapsed_to_millis(Some(Duration::ZERO)),
+            1,
+            "真实测量值不得落到 0：0 只表示「未测量」"
+        );
+        assert_eq!(
+            elapsed_to_millis(Some(Duration::from_micros(400))),
+            1,
+            "亚毫秒向下取整后为 0，因此下限取 1"
+        );
+        assert_eq!(elapsed_to_millis(Some(Duration::from_millis(42))), 42);
+        assert_eq!(
+            elapsed_to_millis(Some(Duration::from_micros(42_900))),
+            42,
+            "非整毫秒按向下取整，不四舍五入"
+        );
     }
 }

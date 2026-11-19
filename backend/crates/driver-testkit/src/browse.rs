@@ -1401,6 +1401,7 @@ mod tests {
                         columns: vec![Self::columns()[0].clone()],
                         rows_affected: None,
                         has_result_set: true,
+                        elapsed: None,
                     },
                     Some(ResultBatch {
                         statement_index: 0,
@@ -1417,6 +1418,7 @@ mod tests {
                     columns: Vec::new(),
                     rows_affected: Some(0),
                     has_result_set: false,
+                    elapsed: None,
                 },
                 None,
             ))

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{Stream, StreamExt};
 use mysql_async::prelude::*;
@@ -891,28 +891,36 @@ async fn serve_query(
     // 取得之后统一交给 `serve_result`：游标、分批、取消路径只有一份实现。
     match params {
         // 纯文本 SQL：语句里的值由调用方自己负责，驱动不碰。
-        None => match conn.query_iter(&request.sql).await {
-            Ok(result) => {
-                // 用户自己写的 `USE` 会改会话当前库：缓存立即失效（ADR 0030 第 4 条）。
-                state.invalidate_catalog_after_statement(&request.sql);
-                serve_result(result, &request, limit, reply, receiver, state).await
+        // 逐语句计时（#238）：时钟在语句下发前起，随 QueryResult 交给 `serve_result`
+        // 算到该语句终态；传输与序列化都在之后，不计入。
+        None => {
+            let started = Instant::now();
+            match conn.query_iter(&request.sql).await {
+                Ok(result) => {
+                    // 用户自己写的 `USE` 会改会话当前库：缓存立即失效（ADR 0030 第 4 条）。
+                    state.invalidate_catalog_after_statement(&request.sql);
+                    serve_result(result, &request, limit, started, reply, receiver, state).await
+                }
+                Err(error) => {
+                    fail_query(error, reply, state);
+                    false
+                }
             }
-            Err(error) => {
-                fail_query(error, reply, state);
-                false
-            }
-        },
+        }
         // 参数化：值走协议层的绑定参数，不进入 SQL 文本。
-        Some(params) => match conn.exec_iter(&request.sql, params).await {
-            Ok(result) => {
-                state.invalidate_catalog_after_statement(&request.sql);
-                serve_result(result, &request, limit, reply, receiver, state).await
+        Some(params) => {
+            let started = Instant::now();
+            match conn.exec_iter(&request.sql, params).await {
+                Ok(result) => {
+                    state.invalidate_catalog_after_statement(&request.sql);
+                    serve_result(result, &request, limit, started, reply, receiver, state).await
+                }
+                Err(error) => {
+                    fail_query(error, reply, state);
+                    false
+                }
             }
-            Err(error) => {
-                fail_query(error, reply, state);
-                false
-            }
-        },
+        }
     }
 }
 
@@ -989,6 +997,13 @@ async fn serve_script(
         // 用户自己写的 `USE` 会改会话当前库：逐段失效缓存（ADR 0030 第 4 条）。
         state.invalidate_catalog_after_statement(segment);
 
+        // 逐语句计时（#238）：每条语句在这里各起一次时钟，上一条的结果集已在上
+        // 一轮排空/读完，所以本条不会把「等待上一条」算进自己的耗时。
+        // 边界说明：整段是一次直发，服务端可能在上一条排空时就把本条的结果头推进
+        // 了客户端缓冲，此时 `stream()` 立即返回、耗时偏小——偏差方向只有低估，
+        // 不会把别的语句的时间记到本条。
+        let started = Instant::now();
+
         let mut stream = match result.stream::<MyRow>().await {
             Ok(Some(stream)) => stream,
             Ok(None) => {
@@ -1018,6 +1033,7 @@ async fn serve_script(
             columns: Vec::new(),
             rows_affected: None,
             has_result_set,
+            elapsed: None,
         };
 
         if has_result_set {
@@ -1044,6 +1060,10 @@ async fn serve_script(
                 .await
                 {
                     Ok((chunk, more, next_pending)) => {
+                        // 首批已可读即该语句终态：固定耗时，后续读块是结果集消费。
+                        if summary.elapsed.is_none() {
+                            summary.elapsed = Some(started.elapsed());
+                        }
                         total_rows = total_rows
                             .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
                         buffer.extend(chunk);
@@ -1078,6 +1098,9 @@ async fn serve_script(
             // 消费空流以推进到下一结果集（末次 next 会读下一语句头部，
             // 其 ERR 存为 pending error，归属下一序号）。
             summary.rows_affected = Some(stream.affected_rows());
+            // update count 已知即终态（#238）：排空空流之前固定耗时，
+            // 免得把「读下一条语句头部」的等待算进本条。
+            summary.elapsed = Some(started.elapsed());
             while let Some(item) = stream.next().await {
                 if let Err(error) = item {
                     let error = stream_error(error, state);
@@ -1341,11 +1364,14 @@ async fn switch_catalog(conn: &mut Conn, state: &SharedState, target: &str) -> R
 /// 服务 `QueryResult` 的首批与后续 `Fetch`。
 ///
 /// 泛型只为让文本协议与参数化（二进制协议）共用同一条游标与取消路径。
+/// `started` 是语句下发前起的单调时钟（#238）：有结果集时耗时算到首批可读，
+/// 写语句算到 update count 已知。
 #[allow(clippy::too_many_lines)]
 async fn serve_result<'a, 't: 'a, P>(
     mut result: mysql_async::QueryResult<'a, 't, P>,
     request: &ExecuteRequest,
     limit: usize,
+    started: Instant,
     reply: oneshot::Sender<Result<ExecutionStart>>,
     receiver: &mut mpsc::Receiver<Command>,
     state: &SharedState,
@@ -1366,6 +1392,7 @@ where
             columns: Vec::new(),
             rows_affected: Some(affected),
             has_result_set: false,
+            elapsed: Some(started.elapsed()),
         };
         let _ = reply.send(Ok(ExecutionStart::single(summary, None)));
         state.clear_active();
@@ -1373,17 +1400,20 @@ where
     };
 
     let (metas, plans) = map_columns(&columns);
-    let summary = StatementSummary {
+    let mut summary = StatementSummary {
         index: 0,
         sql_preview: sql_preview(&request.sql),
         columns: metas.clone(),
         rows_affected: None,
         has_result_set: true,
+        elapsed: None,
     };
 
     let mut stream = match result.stream::<MyRow>().await {
         Ok(Some(stream)) => stream,
         Ok(None) => {
+            // 没有行流：终态同样已确立，耗时照实上报而不留空。
+            summary.elapsed = Some(started.elapsed());
             let _ = reply.send(Ok(ExecutionStart::single(summary, None)));
             state.clear_active();
             return false;
@@ -1407,6 +1437,8 @@ where
                 return false;
             }
         };
+    // 首批已可读 = 该语句终态已确立；后续取批属于结果集消费，不再累加。
+    summary.elapsed = Some(started.elapsed());
     // 取消可能在首批发完前到达而 KILL 恰好落空（查询尚未在服务端注册）；
     // 此时以已记录的取消状态为准，不把结果当成成功交付。
     if state.is_cancelled() {
