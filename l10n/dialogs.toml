@@ -1189,3 +1189,33 @@ key = "dialogs.windows_submit_delete_note"
 zh = "（其中删除 {deletes} 行）"
 en = " (including {deletes} to delete)"
 status = "done"
+
+[[entry]]
+key = "dialogs.profile_invalid_response"
+zh = "共享连接档案响应无效"
+en = "Invalid shared connection profile response"
+status = "done"
+
+[[entry]]
+key = "dialogs.profile_load_failed"
+zh = "无法加载共享连接档案：{error}"
+en = "Could not load shared connection profiles: {error}"
+status = "done"
+
+[[entry]]
+key = "dialogs.profile_revision_conflict"
+zh = "连接档案已变更。请关闭对话框，重新打开最新档案后再保存。"
+en = "The connection profile changed. Close the dialog, reopen the latest profile, and save again."
+status = "done"
+
+[[entry]]
+key = "dialogs.profile_name_ambiguous"
+zh = "有多个档案指向同一个连接目标。请从对象树打开要编辑的档案。"
+en = "Several profiles use this connection target. Open the profile to edit from the object tree."
+status = "done"
+
+[[entry]]
+key = "dialogs.profile_password_required"
+zh = "请输入密码（或复用已保存的凭据）"
+en = "Enter a password or use the saved credential."
+status = "done"

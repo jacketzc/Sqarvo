@@ -12,6 +12,7 @@ pub mod connection;
 pub mod credential;
 pub mod mapping;
 pub mod metadata;
+pub mod profile;
 pub mod query;
 pub mod system;
 pub mod table_data;
@@ -21,12 +22,13 @@ use std::sync::Arc;
 
 use sqarvo_connection::{RowChangeBatches, SessionManager};
 use sqarvo_drivers::DriverRegistry;
-use sqarvo_local_store::CredentialStore;
+use sqarvo_local_store::{CredentialStore, ProfileStore};
 use sqarvo_query_engine::QueryRegistry;
 
 pub use connection::ConnectionServiceImpl;
 pub use credential::CredentialServiceImpl;
 pub use metadata::MetadataServiceImpl;
+pub use profile::ConnectionProfileServiceImpl;
 pub use query::QueryServiceImpl;
 pub use system::SystemServiceImpl;
 pub use table_data::TableDataServiceImpl;
@@ -40,6 +42,8 @@ pub struct Services {
     pub connection: ConnectionServiceImpl,
     /// 凭据域。
     pub credential: CredentialServiceImpl,
+    /// 共享连接档案与 MCP 访问策略。
+    pub profile: ConnectionProfileServiceImpl,
     /// 元数据域。
     pub metadata: MetadataServiceImpl,
     /// 查询域。
@@ -73,6 +77,7 @@ impl Services {
                 Arc::clone(&batches),
             ),
             credential: CredentialServiceImpl::new(credentials),
+            profile: ConnectionProfileServiceImpl::default(),
             metadata: MetadataServiceImpl::new(Arc::clone(&sessions)),
             // 事务服务与会话管理共享同一份登记表：`Begin` 绑定的会话必须是
             // `Disconnect` / 断连清理看到的那一个（#44）。
@@ -85,5 +90,12 @@ impl Services {
             ),
             query: QueryServiceImpl::new(sessions, queries),
         }
+    }
+
+    /// 显式注入档案存储，使后端、测试与调用者可指定同一个配置根。
+    #[must_use]
+    pub fn with_profile_store(mut self, profiles: ProfileStore) -> Self {
+        self.profile = ConnectionProfileServiceImpl::new(profiles);
+        self
     }
 }

@@ -15,7 +15,11 @@
 //! 子进程，见 #211 报告「未实测」节）；审计行同时钉「不含原始 SQL」与
 //! 「不含密码字面量」两条脱敏不变量。
 
-#![cfg(unix)]
+// The binary tests rely on XDG isolation for the real shared profile store.
+#![cfg(target_os = "linux")]
+
+#[path = "support/profile_access.rs"]
+mod profile_access;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::io::AsRawFd;
@@ -27,7 +31,6 @@ use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::ExecuteRequest;
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::MemoryCredentialStore;
-use sqarvo_mcp::access::AccessService;
 use sqarvo_mcp::audit::{AuditRecord, AuditWriter, DATA_SUBDIR, RotationPolicy};
 
 mod common;
@@ -62,7 +65,7 @@ fn seed_sqlite_db(db: &Path) {
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
-    let access = AccessService::with_session_manager(Arc::new(config), sessions);
+    let access = profile_access::service(config, sessions);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -270,6 +273,7 @@ fn two_server_processes_merge_into_whole_jsonl_records() {
     seed_sqlite_db(&db);
     let config = shared_config(home.path(), &db);
 
+    common::enable_access(&config, home.path());
     let mut a = common::Server::spawn(&config, home.path());
     let mut b = common::Server::spawn(&config, home.path());
     drive_one_process(&mut a, 100);
@@ -430,6 +434,7 @@ fn held_flock_forces_pid_sidecar_for_server_process() {
     let dir = audit_dir(home.path());
 
     let held = hold_audit_lock(&dir);
+    common::enable_access(&config, home.path());
     let mut server = common::Server::spawn(&config, home.path());
     let pid = server.pid();
     drive_one_process(&mut server, 300);
@@ -613,6 +618,7 @@ fn draft_meta_bare_call_is_audited_with_request_id_and_client_meta() {
     seed_sqlite_db(&db);
     let config = shared_config(home.path(), &db);
 
+    common::enable_access(&config, home.path());
     let mut server = common::Server::spawn(&config, home.path());
     // 完全不握手，只发带 2026 _meta 的裸调用（协议面见 protocol_matrix.rs）。
     let meta = draft_meta(DRAFT_VERSION);

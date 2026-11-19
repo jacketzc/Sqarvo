@@ -403,7 +403,7 @@ pub fn load(explicit: Option<&Path>) -> Result<LoadOutcome> {
                 path: path.clone(),
                 found: false,
                 warnings: vec![format!(
-                    "未找到 mcp.json（{}）：{source}；以空连接列表启动，所有连接请求都会被拒绝",
+                    "未找到 mcp.json（{}）：{source}；使用默认工具配置与查询限额",
                     path.display()
                 )],
             });
@@ -796,7 +796,7 @@ mod tests {
         assert!(!outcome.found);
         assert!(outcome.config.connections.is_empty());
         assert_eq!(outcome.warnings.len(), 1);
-        assert!(outcome.warnings[0].contains("以空连接列表启动"));
+        assert!(outcome.warnings[0].contains("使用默认工具配置与查询限额"));
         let validated = outcome.config.validate().expect("空配置合法（默认拒绝）");
         assert_eq!(validated.connection_count(), 0);
     }

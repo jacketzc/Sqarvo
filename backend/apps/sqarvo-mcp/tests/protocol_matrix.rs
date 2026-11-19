@@ -10,6 +10,9 @@
 //! #220 修复两处 src 缺陷后，相应用例已翻转为**正向回归钉死**（握手前 EOF /
 //! 纯 discover 会话 exit 0；见文件尾部与 (a) 格），其余断言继续钉规范口径。
 
+// The binary tests rely on XDG isolation for the real shared profile store.
+#![cfg(target_os = "linux")]
+
 use std::path::{Path, PathBuf};
 
 mod common;
@@ -47,6 +50,7 @@ fn matrix_config(dir: &Path) -> PathBuf {
 fn run_legacy_matrix_session(protocol_version: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
 
     // 1) initialize：请求哪个已知版本就回显哪个（spike §3 协商口径）。
@@ -192,6 +196,7 @@ fn legacy_handshake_2025_11_25_full_matrix() {
 fn draft_discover_with_meta_reports_supported_versions() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
 
     let discover = server.request(
@@ -248,6 +253,7 @@ fn draft_discover_with_meta_reports_supported_versions() {
 fn bare_requests_with_draft_meta_work_without_any_handshake() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
     let meta = draft_meta(DRAFT_VERSION);
 
@@ -312,6 +318,7 @@ fn bare_requests_with_draft_meta_work_without_any_handshake() {
 fn bare_request_without_meta_is_rejected_with_missing_key_names() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
 
     // 完全没有 _meta：两个必需键都要被点名（rmcp handler/server.rs:125 口径）。
@@ -352,6 +359,7 @@ fn bare_request_without_meta_is_rejected_with_missing_key_names() {
 fn bare_request_with_unsupported_draft_version_returns_32022_with_supported_list() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
 
     let message = server.request(
@@ -381,6 +389,7 @@ fn bare_request_with_unsupported_draft_version_returns_32022_with_supported_list
 fn initialize_draft_version_negotiates_down_to_2025_11_25() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
 
     // SDK 有意设计：会答 initialize 的服务器不能自称 LATEST（spike §4 表第一行）。
@@ -430,6 +439,7 @@ fn initialize_draft_version_negotiates_down_to_2025_11_25() {
 fn initialize_unknown_version_falls_back_to_latest_with_initialize() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
     // LATEST_WITH_INITIALIZE = 2025-11-25（rmcp 常量口径）。
     handshake(&mut server, "2099-01-01", "2025-11-25", 9);
@@ -450,6 +460,7 @@ fn initialize_unknown_version_falls_back_to_latest_with_initialize() {
 fn unknown_tool_and_resource_keep_pinned_protocol_semantics() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
     handshake(&mut server, "2025-11-25", "2025-11-25", 1);
 
@@ -516,6 +527,7 @@ fn enabled_tools_filter_advertises_one_and_disabled_call_is_tool_error() {
             "enabled_tools": ["list_connections"]
         }),
     );
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
     handshake(&mut server, "2025-11-25", "2025-11-25", 1);
 
@@ -583,6 +595,7 @@ fn enabled_tools_filter_advertises_one_and_disabled_call_is_tool_error() {
 fn sigterm_after_initialize_exits_zero_with_shutdown_log() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
     handshake(&mut server, "2025-11-25", "2025-11-25", 1);
 
@@ -616,6 +629,7 @@ fn sigterm_after_initialize_exits_zero_with_shutdown_log() {
 fn stdin_close_before_handshake_exits_zero_as_clean_eof() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
 
     server.close_stdin();
@@ -646,6 +660,7 @@ fn stdin_close_before_handshake_exits_zero_as_clean_eof() {
 fn server_stays_alive_after_initialize_until_stdin_closes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = matrix_config(dir.path());
+    common::enable_access(&config, dir.path());
     let mut server = common::Server::spawn(&config, dir.path());
     server.send(&initialize_request(1, "2025-11-25"));
     let response = server.next_message();

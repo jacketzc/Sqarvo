@@ -213,7 +213,7 @@ fn request_cancel_factory(
 #[tool_router(router = tool_router, vis = "pub(crate)")]
 impl SqarvoMcpServer {
     #[tool]
-    /// 列出 mcp.json 中已授权（enabled: true）的连接档案及懒连接状态。
+    /// 列出共享连接档案及懒连接状态（需要启用 MCP 全局数据访问）。
     /// 不会主动连接数据库；返回 `alias`、`driver_id`、`database`、
     /// `connection_status` 与上次失败子码，不含用户名、连接串、密码或
     /// `credential_ref`。
@@ -223,7 +223,7 @@ impl SqarvoMcpServer {
         request: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<connection::ListConnectionsOutput>, ToolFailure> {
         let call = ToolCall::from_request(self.context(), &request, connection::TOOL_NAME);
-        match connection::list_connections(self.context().access()) {
+        match connection::list_connections(self.context().access()).await {
             Ok(output) => {
                 call.succeeded(None, None).await?;
                 Ok(Json(output))
@@ -436,13 +436,13 @@ pub(crate) mod test_support {
     use sqarvo_drivers::DriverRegistry;
     use sqarvo_local_store::MemoryCredentialStore;
 
-    use crate::access::AccessService;
+    use crate::profile_access::{self, TestAccess};
 
     /// 构造一个只含 `dev` SQLite 连接的访问服务。
     ///
     /// `enabled_tools = Some(vec![])` 表示全部禁用；`None` 表示字段缺失（全部启用）。
     /// 数据库文件不必存在：所有测试都在授权/参数/策略路径上提前返回，或自行建库。
-    pub(crate) fn service(db_path: &Path, enabled_tools: Option<Vec<&str>>) -> AccessService {
+    pub(crate) fn service(db_path: &Path, enabled_tools: Option<Vec<&str>>) -> TestAccess {
         let mut root = serde_json::json!({
             "connections": [{
                 "alias": "dev",
@@ -463,7 +463,7 @@ pub(crate) mod test_support {
         let registry = Arc::new(DriverRegistry::with_builtin_drivers());
         let credentials = Arc::new(MemoryCredentialStore::new());
         let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
-        AccessService::with_session_manager(Arc::new(config), sessions)
+        profile_access::service(config, sessions)
     }
 }
 

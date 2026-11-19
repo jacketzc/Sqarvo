@@ -30,7 +30,7 @@ use sqarvo_driver_api::{
 };
 use sqarvo_query_engine::QueryRegistry;
 
-use crate::access::AccessService;
+use crate::access::{AccessService, OperationType};
 use crate::policy;
 use crate::tools::value::RowBudget;
 use crate::tools::{effective_row_limit, ensure_enabled, require_non_empty};
@@ -281,7 +281,10 @@ where
     let alias = require_non_empty(&params.connection_alias, "connection_alias")?;
     let sql = require_non_empty(&params.sql, "sql")?;
     // 授权先于解析：未授权的 alias 不该消耗解析与策略检查。
-    access.authorize(alias)?;
+    access
+        .guard()
+        .authorize_request(OperationType::Read, Some(alias.to_owned()))
+        .await?;
     let checked = policy::check_readonly(sql)?;
     let fingerprint = checked.fingerprint.sha256_hex.clone();
     let sql = checked.sql;

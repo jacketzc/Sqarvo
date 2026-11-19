@@ -27,7 +27,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use sqarvo_common::{Error, ErrorCode, Result};
 
-use crate::access::AccessService;
+use crate::access::{AccessService, OperationType};
 use crate::policy;
 use crate::tools::query::{ExecuteOutcome, SqlRunRequest, run_sql};
 use crate::tools::{ensure_enabled, require_non_empty};
@@ -84,14 +84,19 @@ where
     ensure_enabled(access, EXPLAIN_QUERY_TOOL_NAME)?;
     let alias = require_non_empty(&params.connection_alias, "connection_alias")?;
     let sql = require_non_empty(&params.sql, "sql")?;
-    let profile = access.authorize(alias)?;
-    if !supports_explain(&profile.driver_id) {
+    let profile = access
+        .guard()
+        .authorize_request(OperationType::Read, Some(alias.to_owned()))
+        .await?
+        .profile
+        .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
+    let driver_id = profile.params.driver_id.as_str();
+    if !supports_explain(driver_id) {
         return Err(Error::unsupported(
             ErrorCode::MCP_UNSUPPORTED,
             format!(
-                "explain_query 当前仅支持 MariaDB（普通 EXPLAIN）；驱动 {} 未声明 Explain 能力。\
-                 SQLite 的等价物是 EXPLAIN QUERY PLAN，语义不同，本版本不代执行。",
-                profile.driver_id
+                "explain_query 当前仅支持 MariaDB（普通 EXPLAIN）；驱动 {driver_id} 未声明 Explain 能力。\
+                 SQLite 的等价物是 EXPLAIN QUERY PLAN，语义不同，本版本不代执行。"
             ),
         ));
     }

@@ -45,8 +45,8 @@ use sqarvo_common::{Error, ErrorCode, Result};
 use sqarvo_connection::SessionManager;
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{
-    AppPaths, AuthToken, EndpointInfo, UnavailableCredentialStore, open_default_credential_store,
-    write_endpoint_file,
+    AppPaths, AuthToken, EndpointInfo, ProfileStore, UnavailableCredentialStore,
+    open_default_credential_store, write_endpoint_file,
 };
 use sqarvo_query_engine::{QueryLimits, QueryRegistry};
 use sqarvo_rpc_server::{LocalListener, PROTOCOL_VERSION, Services, serve};
@@ -168,7 +168,11 @@ async fn run(cli: Cli) -> Result<()> {
         Arc::clone(&registry),
         queries,
         credentials,
-    );
+    )
+    .with_profile_store(ProfileStore::new(&paths));
+    if let Err(status) = services.profile.initialize().await {
+        tracing::warn!(code = ?status.code(), "共享连接档案迁移失败，档案服务将返回错误或在重试后恢复");
+    }
 
     let listener = match (cli.listen, cli.socket) {
         (Some(addr), _) => LocalListener::bind_tcp(addr)?,

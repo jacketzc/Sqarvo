@@ -258,7 +258,7 @@ fn context_response(handle: &SessionHandle, context: SessionContext) -> GetSessi
 }
 
 /// Protobuf 连接参数 → 领域连接参数。
-fn to_domain_params(params: ConnectionParams) -> Result<DriverConnectionParams, Status> {
+pub(super) fn to_domain_params(params: ConnectionParams) -> Result<DriverConnectionParams, Status> {
     let driver_id = DriverId::new(params.driver_id).map_err(to_status)?;
     let port = u16::try_from(params.port)
         .map_err(|_| Status::invalid_argument("端口必须在 0..=65535 之间"))?;

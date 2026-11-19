@@ -26,7 +26,7 @@
 //! 靠的是后端自己数出来的会话列表，而不是界面状态的自述。
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::thread::JoinHandle;
@@ -36,7 +36,7 @@ use async_channel::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::backend::client::BackendClient;
-use crate::backend::connection::{ConnectionDraft, ConnectionFailure, TlsMode};
+use crate::backend::connection::ConnectionFailure;
 use crate::backend::endpoint;
 use crate::backend::metadata::MetadataHub;
 use crate::config::SavedConnection;
@@ -155,9 +155,9 @@ pub fn saved_click_action(state: ConnectionState, saved: &SavedConnection) -> Sa
 pub struct ConnectionSnapshot {
     /// 节点键（[`SavedConnection::key`]，断开/连接都靠它定位）。
     pub key: String,
-    /// 保存的连接名（`user@host:port/db` 或文件名，派生值）。
+    /// 共享档案名称。
     pub name: String,
-    /// 界面上显示的名字：别名优先，空则回落 `target`（规则只在
+    /// 界面上显示的名字：可选 GUI 别名优先（规则只在
     /// [`SavedConnection::display_label`] 里写一次）。
     pub label: String,
     /// 用户给的别名（已 trim；空表示没起别名）。
@@ -177,7 +177,7 @@ pub struct ConnectionSnapshot {
 }
 
 impl ConnectionSnapshot {
-    /// 树 / 搜索结果里显示的连接名：**别名优先**，空则回落目标（`user@host:port/db` 或文件路径）。
+    /// 树 / 搜索结果里显示的连接名称。
     ///
     /// 别名不参与身份键，因此这里只影响显示，不影响连接、会话或配置匹配。
     #[must_use]
@@ -216,33 +216,10 @@ pub fn connection_key(saved: &SavedConnection) -> String {
     saved.key()
 }
 
-/// 由保存的连接造一份连接草稿：**只带凭据引用，不带密码**。
-///
-/// 这条路径用于「点树上未连接的节点」：密码已经在系统凭据库里（ADR 0012），
-/// 后端按引用取用；这里不会、也无法读到明文密码。
-#[must_use]
-pub fn draft_from_saved(saved: &SavedConnection) -> ConnectionDraft {
-    ConnectionDraft {
-        alias: saved.alias.clone(),
-        name: saved.name.clone(),
-        driver_id: saved.driver.clone(),
-        host: saved.host.clone(),
-        port: saved.port,
-        database: saved.database.clone(),
-        username: saved.username.clone(),
-        tls_mode: TlsMode::from_config_value(&saved.tls_mode).unwrap_or_default(),
-        file_path: saved.file_path.clone(),
-        read_only: saved.read_only,
-        credential_ref: (!saved.credential_ref.is_empty()).then(|| saved.credential_ref.clone()),
-        password: String::new(),
-    }
-}
-
-/// 保存的连接 → 连接参数（与连接对话框走同一个 `ConnectionDraft::params`）。
+/// 使用共享档案中的连接参数。
 #[must_use]
 pub fn params_from_saved(saved: &SavedConnection) -> ConnectionParams {
-    let draft = draft_from_saved(saved);
-    draft.params(&saved.credential_ref)
+    saved.params()
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +553,7 @@ async fn list_sessions_once(endpoint_path: &Path) -> Result<Vec<(String, String)
 
 /// 连接注册表（一个窗口一份，活在 [`crate::ui::UiState`] 里）。
 ///
-/// 连接列表来自 `connections.json`；会话状态与元数据通道由本结构持有。工作区重建
+/// 连接列表由共享档案 RPC 提供；会话状态与元数据通道由本结构持有。工作区重建
 /// （例如用户又连了一条连接）不会丢掉已建立的浏览会话：树再挂上来时直接复用。
 pub struct ConnectionRegistry {
     endpoint_path: PathBuf,
@@ -599,7 +576,7 @@ pub struct ConnectionRegistry {
 }
 
 impl ConnectionRegistry {
-    /// 读配置并启动 worker；第二个返回值是事件接收端（UI 主线程消费）。
+    /// 创建空注册表并启动会话 worker；第二个返回值是事件接收端（UI 主线程消费）。
     pub fn load(endpoint_path: PathBuf) -> Result<(Rc<Self>, Receiver<SessionEvent>), String> {
         let (worker, events) = SessionWorker::spawn(endpoint_path.clone())?;
         let registry = Rc::new(Self {
@@ -613,7 +590,6 @@ impl ConnectionRegistry {
             pending: RefCell::new(HashMap::new()),
             sessions: RefCell::new(None),
         });
-        registry.refresh_from_config();
         Ok((registry, events))
     }
 
@@ -635,45 +611,77 @@ impl ConnectionRegistry {
         id
     }
 
-    /// 按 `connections.json` 重新对齐连接列表：已建立的会话与状态保留。
-    ///
-    /// 「保存并连接」会往配置里写一条新连接，随后这里把它加进注册表；
-    /// 以前连上的条目不会因为重新读文件而丢掉会话。
-    pub fn refresh_from_config(&self) {
-        let saved = crate::config::saved_connections();
+    /// 接收服务端列表，已有档案仍按 UUID 保持会话。
+    pub fn replace_profiles(self: &Rc<Self>, saved: Vec<SavedConnection>) {
+        let ids: HashSet<_> = saved
+            .iter()
+            .map(|connection| connection.profile_id.as_str())
+            .collect();
+        let removed: Vec<_> = self
+            .entries
+            .borrow()
+            .iter()
+            .filter(|entry| !ids.contains(entry.key.as_str()))
+            .map(|entry| entry.key.clone())
+            .collect();
+        for key in removed {
+            self.disconnect(&key);
+        }
+
         let mut entries = self.entries.borrow_mut();
-        let mut next: Vec<Entry> = Vec::with_capacity(saved.len());
+        let mut old: HashMap<_, _> = entries
+            .drain(..)
+            .map(|entry| (entry.key.clone(), entry))
+            .collect();
         for connection in saved {
             let key = connection_key(&connection);
-            match entries.iter().position(|entry| entry.key == key) {
-                Some(index) => {
-                    let mut existing = entries.remove(index);
-                    // 名称/目标可能刚被用户改过：用最新的配置，但保留会话。
-                    existing.saved = connection;
-                    next.push(existing);
+            let entry = match old.remove(&key) {
+                Some(mut entry) => {
+                    entry.saved = connection;
+                    entry
                 }
-                None => next.push(Entry {
-                    saved: connection,
-                    key,
-                    state: ConnectionState::Disconnected,
-                    connection_id: String::new(),
-                    session_id: String::new(),
-                    detail: l10n::t("object_tree.detail_click_to_connect").to_owned(),
-                    hub: None,
-                }),
-            }
+                None => Self::new_entry(connection),
+            };
+            entries.push(entry);
         }
-        *entries = next;
-        eprintln!(
-            "[browse] 连接注册表：{} 条连接（已连接 {} 条）",
-            entries.len(),
-            entries
-                .iter()
-                .filter(|entry| entry.state.is_connected())
-                .count()
-        );
+        eprintln!("[browse] 连接注册表：{} 条连接", entries.len());
         drop(entries);
         self.notify();
+    }
+
+    /// 把 SaveProfile 回读的档案更新到连接树。
+    pub fn upsert_profile(&self, saved: SavedConnection) -> String {
+        let key = connection_key(&saved);
+        let mut entries = self.entries.borrow_mut();
+        if let Some(entry) = entries.iter_mut().find(|entry| entry.key == key) {
+            entry.saved = saved;
+        } else {
+            entries.push(Self::new_entry(saved));
+        }
+        drop(entries);
+        self.notify();
+        key
+    }
+
+    /// 删除经服务端确认的档案及其浏览会话。
+    pub fn remove_profile(self: &Rc<Self>, profile_id: &str) {
+        self.disconnect(profile_id);
+        self.entries
+            .borrow_mut()
+            .retain(|entry| entry.key != profile_id);
+        self.notify();
+    }
+
+    fn new_entry(saved: SavedConnection) -> Entry {
+        Entry {
+            key: connection_key(&saved),
+            saved,
+            state: ConnectionState::Disconnected,
+            connection_id: String::new(),
+            session_id: String::new(),
+            detail: l10n::t("object_tree.detail_click_to_connect").to_owned(),
+            hub: None,
+        }
     }
 
     /// 连接列表的只读快照。
@@ -771,37 +779,6 @@ impl ConnectionRegistry {
             entry.detail = l10n::t("object_tree.detail_active_connection").to_owned();
         }
         self.notify();
-    }
-
-    /// 「保存并连接」成功后，把新会话对回注册表里的哪一条连接。
-    ///
-    /// 匹配顺序：凭据引用（服务器型驱动）→ 驱动 + 文件路径（SQLite，没有凭据可对）。
-    /// 对不上时返回 `None`：界面会记一行日志，而不是把会话挂到随便一条连接上。
-    #[must_use]
-    pub fn key_for_outcome(
-        &self,
-        credential_ref: &str,
-        driver: &str,
-        file_hint: Option<&str>,
-    ) -> Option<String> {
-        let entries = self.entries.borrow();
-        if !credential_ref.is_empty()
-            && let Some(entry) = entries
-                .iter()
-                .find(|entry| entry.saved.credential_ref == credential_ref)
-        {
-            return Some(entry.key.clone());
-        }
-        entries
-            .iter()
-            .find(|entry| {
-                entry.saved.driver == driver
-                    && match file_hint {
-                        Some(path) if !path.is_empty() => entry.saved.file_path == path,
-                        _ => true,
-                    }
-            })
-            .map(|entry| entry.key.clone())
     }
 
     /// 后端断开 / 重新握手：所有会话都不再有效（会话不跨后端进程）。
@@ -1019,6 +996,15 @@ impl ConnectionRegistry {
                     latency_millis,
                     ..
                 } = session;
+                if !self.entries.borrow().iter().any(|entry| entry.key == key) {
+                    let request = self.take_request("close");
+                    self.worker.send(SessionCommand::Close {
+                        request,
+                        key,
+                        connection_id,
+                    });
+                    return;
+                }
                 let hub = match MetadataHub::spawn(self.endpoint_path.clone(), session_id.clone()) {
                     Ok((hub, events)) => {
                         let pump = Rc::clone(&hub);
@@ -1190,6 +1176,8 @@ mod tests {
             read_only: false,
             tls_mode: "disabled".to_owned(),
             credential_ref: String::new(),
+            profile_id: path.to_owned(),
+            ..SavedConnection::default()
         }
     }
 
@@ -1206,6 +1194,8 @@ mod tests {
             read_only: false,
             tls_mode: "preferred".to_owned(),
             credential_ref: "sqarvo:conn/11111111-1111-4111-8111-111111111111".to_owned(),
+            profile_id: "shared-mariadb-id".to_owned(),
+            ..SavedConnection::default()
         }
     }
 
@@ -1245,11 +1235,11 @@ mod tests {
         let first = sqlite("a", "/tmp/a.sqlite");
         let second = sqlite("b", "/tmp/b.sqlite");
         assert_ne!(connection_key(&first), connection_key(&second));
-        // #145：身份是「目标」而不是凭据引用。同一目标换一次密码、换一个引用，
-        // 仍然是同一条连接；不同名字/不同 TLS 也不改变身份。
+        // 编辑目标或换密码不改变 UUID。
         let mut renamed = mariadb("另一个名字");
         renamed.credential_ref = "sqarvo:conn/22222222-2222-4222-8222-222222222222".to_owned();
         renamed.tls_mode = "required".to_owned();
+        renamed.host = "192.0.2.5".to_owned();
         assert_eq!(connection_key(&mariadb("x")), connection_key(&renamed));
         assert_ne!(connection_key(&mariadb("x")), mariadb("x").credential_ref);
     }

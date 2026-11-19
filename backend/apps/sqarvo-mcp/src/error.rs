@@ -117,6 +117,9 @@ pub fn protocol_error(error: &Error) -> ErrorData {
         ErrorCategory::InvalidArgument | ErrorCategory::FailedPrecondition => {
             ErrorData::invalid_params(agent_message(error), Some(structured_payload(error)))
         }
+        ErrorCategory::PermissionDenied if error.code() == ErrorCode::MCP_CONNECTION_DENIED => {
+            ErrorData::resource_not_found(agent_message(error), Some(structured_payload(error)))
+        }
         ErrorCategory::NotFound => {
             ErrorData::resource_not_found(agent_message(error), Some(structured_payload(error)))
         }

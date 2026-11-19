@@ -884,8 +884,65 @@ impl IsolationChoice {
     }
 }
 
+/// 响应 MCP 策略菜单的自动化步骤。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpAction {
+    On,
+    Off,
+    Cancel,
+}
+
+impl McpAction {
+    fn parse(value: Option<&String>) -> Result<Self, String> {
+        match value.map(String::as_str) {
+            Some("on") => Ok(Self::On),
+            Some("off") => Ok(Self::Off),
+            Some("cancel") => Ok(Self::Cancel),
+            _ => Err("MCP QA 操作必须为 on、off 或 cancel".to_owned()),
+        }
+    }
+}
+
+/// 要从状态指示控件读到的 MCP 策略。
+#[derive(Clone, Copy, Debug)]
+pub enum McpIndicator {
+    Disabled,
+    ReadOnly,
+    Writable,
+    Unavailable,
+}
+
+impl McpIndicator {
+    fn parse(value: Option<&String>) -> Result<Self, String> {
+        match value.map(String::as_str) {
+            Some("disabled") => Ok(Self::Disabled),
+            Some("readonly") => Ok(Self::ReadOnly),
+            Some("writable") => Ok(Self::Writable),
+            Some("unavailable") => Ok(Self::Unavailable),
+            _ => Err(
+                "--qa-mcp-indicator 需要 disabled、readonly、writable 或 unavailable".to_owned(),
+            ),
+        }
+    }
+}
+
+pub fn mcp_access() -> Option<McpAction> {
+    ARGS.get().and_then(|args| args.mcp_access)
+}
+
+pub fn mcp_read_only() -> Option<McpAction> {
+    ARGS.get().and_then(|args| args.mcp_read_only)
+}
+
+pub fn mcp_indicator() -> Option<McpIndicator> {
+    ARGS.get().and_then(|args| args.mcp_indicator)
+}
+
 #[derive(Debug, Default)]
 struct Args {
+    mcp_access: Option<McpAction>,
+    mcp_read_only: Option<McpAction>,
+    mcp_indicator: Option<McpIndicator>,
     capture: Option<Capture>,
     profile: Option<QaProfile>,
     password_env: Option<String>,
@@ -1277,7 +1334,10 @@ pub fn enabled() -> bool {
     ARGS.get().is_some_and(|args| {
         // `--screenshot` 也是 QA 参数：不把它算进来，只传截图时 application-id 不会换成
         // `SQARVO_QA_APP_ID`，进程会转发给用户正在运行的实例后以 0 退出、不产图。
-        args.capture.is_some()
+        args.mcp_access.is_some()
+            || args.mcp_read_only.is_some()
+            || args.mcp_indicator.is_some()
+            || args.capture.is_some()
             || args.report_monitor
             || args.sql.is_some()
             || args.execute
@@ -2601,6 +2661,18 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err("--qa-expect-dialog 的文案子串不能为空".to_owned());
                 }
                 parsed.expect_dialog.push(value.clone());
+                index += 2;
+            }
+            "--qa-mcp-access" => {
+                parsed.mcp_access = Some(McpAction::parse(args.get(index + 1))?);
+                index += 2;
+            }
+            "--qa-mcp-readonly" => {
+                parsed.mcp_read_only = Some(McpAction::parse(args.get(index + 1))?);
+                index += 2;
+            }
+            "--qa-mcp-indicator" => {
+                parsed.mcp_indicator = Some(McpIndicator::parse(args.get(index + 1))?);
                 index += 2;
             }
             "--qa-open-about" => {

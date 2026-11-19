@@ -21,6 +21,11 @@
 （写入的密码能连接、错误密码得到 `mariadb.auth_failed`、未知引用得到
 `credential.not_found`）读取 `SQARVO_MARIADB_URL`，未设置时打印跳过原因。
 
+`backend/crates/rpc-server/tests/profile_contract.rs` 锁定 `ConnectionProfileService` 的六个
+RPC、请求与响应类型、字段编号及可选字段语义。`grpc_profiles.rs` 通过真实回环 gRPC、
+会话 token 和隔离配置目录验证两个客户端之间的档案与策略一致性、保存和删除的版本冲突、
+缺失档案、损坏文档失败关闭和密码脱敏。用例无需数据库或系统凭据库。
+
 `backend/crates/rpc-server/tests/table_data_contract.rs` 覆盖表数据浏览与行编辑契约（ADR 0017，
 #41）。它不依赖服务实现（`TableDataService` 尚未接线），三类断言：
 
@@ -44,6 +49,7 @@
 cd backend
 cargo test -p sqarvo-rpc-server --test grpc_smoke
 cargo test -p sqarvo-rpc-server --test table_data_contract
+cargo test -p sqarvo-rpc-server --test profile_contract --test grpc_profiles
 SQARVO_MARIADB_URL='mysql://user:***@127.0.0.1:53306/sqarvo_test' \
   cargo test -p sqarvo-rpc-server --test grpc_credential
 ```

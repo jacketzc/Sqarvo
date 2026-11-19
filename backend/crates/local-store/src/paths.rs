@@ -12,6 +12,8 @@ pub struct AppPaths {
     config: PathBuf,
     data: PathBuf,
     runtime: PathBuf,
+    #[cfg(windows)]
+    windows_legacy_dir: Option<PathBuf>,
 }
 
 impl AppPaths {
@@ -29,6 +31,9 @@ impl AppPaths {
             .map_or_else(|| data.join("run"), Path::to_path_buf);
         Ok(Self {
             config: dirs.config_dir().to_path_buf(),
+            #[cfg(windows)]
+            windows_legacy_dir: directories::BaseDirs::new()
+                .map(|base| base.data_local_dir().join("Sqarvo")),
             data,
             runtime,
         })
@@ -45,6 +50,8 @@ impl AppPaths {
             config: config.into(),
             data: data.into(),
             runtime: runtime.into(),
+            #[cfg(windows)]
+            windows_legacy_dir: None,
         }
     }
 
@@ -61,6 +68,11 @@ impl AppPaths {
     #[must_use]
     pub fn config_dir(&self) -> &Path {
         &self.config
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn windows_legacy_dir(&self) -> Option<&Path> {
+        self.windows_legacy_dir.as_deref()
     }
 
     /// 数据目录。

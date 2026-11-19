@@ -13,7 +13,9 @@
 
 pub mod credentials;
 pub mod endpoint;
+pub mod file_lock;
 pub mod paths;
+pub mod profiles;
 pub mod token;
 
 /// Windows 访问控制的纯逻辑：SDDL 构造与 Win32 错误分类。
@@ -34,4 +36,5 @@ pub use credentials::{
 pub use endpoint::{EndpointInfo, TransportKind, read_endpoint_file, write_endpoint_file};
 pub use paths::AppPaths;
 pub use paths::restrict_to_owner;
+pub use profiles::{ConnectionProfile, McpAccessPolicy, ProfileDocument, ProfileStore};
 pub use token::AuthToken;

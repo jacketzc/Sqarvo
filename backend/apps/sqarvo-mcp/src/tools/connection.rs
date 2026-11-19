@@ -1,6 +1,6 @@
 //! `list_connections`：连接发现（V3.1 §5.1）。
 //!
-//! 只读 `mcp.json` 的授权结果与懒连接状态，**不发起任何数据库连接**（#207 的
+//! 只读 共享档案的授权结果与懒连接状态，**不发起任何数据库连接**（#207 的
 //! [`AccessService::statuses`] 保证这一点）。输出刻意不含用户名、连接串与
 //! `credential_ref`：这些信息对 Agent 没有用途，泄漏只会扩大攻击面。
 
@@ -42,11 +42,12 @@ pub struct ListConnectionsOutput {
     pub count: i64,
 }
 
-/// 实现。失败只可能来自 `enabled_tools` 禁用（状态读取本身不触网、不报错）。
-pub fn list_connections(access: &AccessService) -> Result<ListConnectionsOutput> {
+/// 查询全局授权后的连接状态，读取过程不连接数据库。
+pub async fn list_connections(access: &AccessService) -> Result<ListConnectionsOutput> {
     ensure_enabled(access, TOOL_NAME)?;
     let connections: Vec<ConnectionView> = access
         .statuses()
+        .await?
         .into_iter()
         .map(|status| ConnectionView {
             alias: status.alias,
@@ -66,40 +67,27 @@ mod tests {
     use crate::tools::test_support;
     use sqarvo_common::ErrorCode;
     use std::path::Path;
-    use std::sync::Arc;
 
-    #[test]
-    fn disabled_tool_is_rejected_without_reading_any_connection() {
+    #[tokio::test]
+    async fn disabled_tool_is_rejected_without_reading_any_connection() {
         let access = test_support::service(
             Path::new("/nonexistent/sqarvo-mcp-connections-test.db"),
             Some(Vec::new()),
         );
-        let error = list_connections(&access).expect_err("工具未启用必须拒绝");
+        let error = list_connections(&access)
+            .await
+            .expect_err("工具未启用必须拒绝");
         assert_eq!(error.code(), ErrorCode::MCP_TOOL_DISABLED);
     }
 
-    #[test]
-    fn unauthorized_aliases_never_appear_in_the_list() {
-        let json = serde_json::json!({
-            "connections": [{
-                "alias": "off",
-                "driver_id": "sqlite",
-                "host": "/nonexistent/sqarvo-mcp-off.db",
-                "port": 0,
-                "enabled": false
-            }]
-        });
-        let config = crate::config::parse(&json.to_string())
-            .expect("解析")
-            .validate()
-            .expect("校验");
-        let registry = Arc::new(sqarvo_drivers::DriverRegistry::with_builtin_drivers());
-        let sessions = Arc::new(sqarvo_connection::SessionManager::with_credential_store(
-            registry,
-            Arc::new(sqarvo_local_store::MemoryCredentialStore::new()),
-        ));
-        let access = AccessService::with_session_manager(Arc::new(config), sessions);
-        let output = list_connections(&access).expect("读取状态不触网");
-        assert_eq!(output.count, 0, "enabled: false 的连接不得暴露给 Agent");
+    #[tokio::test]
+    async fn globally_disabled_access_never_reveals_profiles() {
+        let access = test_support::service(Path::new("/nonexistent/sqarvo-mcp-off.db"), None);
+        access
+            .store
+            .set_mcp_access(sqarvo_local_store::McpAccessPolicy::default())
+            .expect("关闭全局访问");
+        let error = list_connections(&access).await.expect_err("全局关闭");
+        assert_eq!(error.code(), ErrorCode::MCP_CONNECTION_DENIED);
     }
 }

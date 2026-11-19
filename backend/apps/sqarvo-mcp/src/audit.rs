@@ -321,33 +321,11 @@ fn open_locked(path: &Path) -> Result<LockOutcome> {
     }
 }
 
-/// 非阻塞独占锁：`true` = 拿到，`false` = 被其它进程占用。
-///
-/// Unix 用 `flock(2)` 的 `LOCK_EX | LOCK_NB`（V3.1 §12 多实例口径）；fd 来自
-/// `File`，函数内只加锁、不关闭、不转移所有权，锁在 `File` 关闭时随之释放。
-/// 其它平台（含 Windows）没有等价的、不加依赖的可移植实现，直接放行：
-/// 多实例并行写同一目录退化为 best-effort，写进 ADR 0032「已知限制」。
-#[cfg(unix)]
-#[allow(unsafe_code)] // 理由见上方文档：单次 flock，不碰内存、不转移文件所有权。
+/// 非阻塞独占锁，随文件关闭释放。
 fn exclusive_lock(file: &File) -> Result<bool> {
-    use std::os::unix::io::AsRawFd;
+    use sqarvo_local_store::file_lock::{LockMode, try_lock};
 
-    // SAFETY: `file` 在本函数调用期间存活，`as_raw_fd()` 返回的 fd 有效且只读；
-    // `flock` 只修改该 fd 关联 inode 的锁状态，没有其它可观察副作用。
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        return Ok(true);
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-        return Ok(false);
-    }
-    Err(Error::from(error))
-}
-
-#[cfg(not(unix))]
-fn exclusive_lock(_file: &File) -> Result<bool> {
-    Ok(true)
+    try_lock(file, LockMode::Exclusive).map_err(Error::from)
 }
 
 /// 以 0600（Unix）打开追加文件。

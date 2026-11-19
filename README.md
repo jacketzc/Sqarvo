@@ -110,8 +110,8 @@ Starting the test database: [tests/integration/README.md](tests/integration/READ
 ## MCP Server
 
 `sqarvo-mcp` is a separate, read-only MCP server. MCP clients (Claude Desktop, Cherry Studio,
-Inspector, agent runtimes) launch it as a child process and speak JSON-RPC over stdio; it does not
-depend on the GUI backend and keeps its own connection authorization file (`mcp.json`).
+Inspector, agent runtimes) launch it as a child process and communicate over stdio. MCP runs
+independently of the GUI backend and uses the same local connection profiles as the GTK app.
 
 - **Read-only by design**: 8 tools (connection discovery, schema discovery, table sample, one
   read-only query, `EXPLAIN`) and 4 resource shapes. Every SQL statement goes through an AST
@@ -123,7 +123,9 @@ depend on the GUI backend and keeps its own connection authorization file (`mcp.
 
 ```bash
 cd backend && cargo build -p sqarvo-mcp --release
-./target/release/sqarvo-mcp --config /path/to/mcp.json   # stdio; logs go to stderr
+./target/release/sqarvo-mcp access status
+./target/release/sqarvo-mcp access on                  # prompts before granting access
+./target/release/sqarvo-mcp                           # stdio server
 ```
 
 Client configuration:
@@ -132,16 +134,20 @@ Client configuration:
 {
   "mcpServers": {
     "sqarvo": {
-      "command": "/absolute/path/to/backend/target/release/sqarvo-mcp",
-      "args": ["--config", "/absolute/path/to/mcp.json"]
+      "command": "/absolute/path/to/backend/target/release/sqarvo-mcp"
     }
   }
 }
 ```
 
-Passwords never go into `mcp.json`: they live in the OS credential store and are referenced through
-`credential_ref` (`sqarvo-mcp credentials set` writes one, interactively). Every tool call is written
-to a local audit log that records a SQL fingerprint instead of the raw SQL. Details:
+Access is off and read-only protection is on by default. Save your profiles and enable **MCP
+data access** from GTK or run `sqarvo-mcp access on`. This grants access to all current and future
+profiles. Restart MCP to use added or edited profiles. Run `sqarvo-mcp access off` to revoke access
+for subsequent requests without restarting. Turning off read-only protection leaves all V1 tools read-only.
+
+The OS credential store holds passwords. Shared profiles hold credential references.
+`mcp.json` holds optional tool and limit settings. The local audit log records tool calls and
+SQL fingerprints. [Shared profiles and migration](docs/api/connection-profiles.md) ·
 [MCP architecture](docs/architecture/mcp.md) · [tools and config reference](docs/api/mcp-tools.md) ·
 [third-party licenses](docs/licenses.md).
 

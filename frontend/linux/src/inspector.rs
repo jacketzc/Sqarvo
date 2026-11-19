@@ -1521,6 +1521,7 @@ mod tests {
             read_only: false,
             tls_mode: "preferred".to_owned(),
             credential_ref: "sqarvo:conn/abc".to_owned(),
+            ..SavedConnection::default()
         }
     }
 
@@ -1537,6 +1538,7 @@ mod tests {
             read_only: true,
             tls_mode: "disabled".to_owned(),
             credential_ref: String::new(),
+            ..SavedConnection::default()
         }
     }
 

@@ -1,0 +1,37 @@
+# MCP 策略确认对话框。
+
+[[entry]]
+key = "dialog.mcp_access.enable_title"
+zh = "启用 MCP 数据访问？"
+en = "Enable MCP data access?"
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.enable_body"
+zh = "启用后，外部 AI Agent 可以通过 MCP 访问 Sqarvo 中所有已保存的数据库连接。\n\n当前已有连接和之后新增的连接都会自动纳入 MCP 访问范围。\n\n当前默认启用只读模式，不允许数据库写入。\n\n数据库查询结果可能包含敏感数据，请确保连接的 AI Agent 和模型服务可信。\n\n当前 {n} 个连接档案。"
+en = "External AI agents will be able to access all saved Sqarvo database connections through MCP.\n\nAccess includes existing connections and any added later.\n\nRead-only mode is on by default and prohibits database writes.\n\nQuery results may contain sensitive data. Use only AI agents and model services that you trust.\n\nCurrent connection profiles: {n}."
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.enable_confirm"
+zh = "启用 MCP 数据访问"
+en = "Enable MCP data access"
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.write_title"
+zh = "关闭 MCP 只读模式？"
+en = "Turn off MCP read-only mode?"
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.write_body"
+zh = "关闭后，外部 AI Agent 可以使用已经实现并开放的 MCP 写操作工具，修改数据库中的数据和结构。\n\n该权限适用于所有已保存及后续新增的连接。\n\n请确认你信任连接的 AI Agent。\n\n当前 MCP 版本尚未提供数据库写入工具。\n关闭只读模式不会自动增加写入能力。\n\n当前 {n} 个连接档案。"
+en = "External AI agents can use implemented and enabled MCP write tools to modify database data and structure.\n\nThis permission applies to all saved connections and any added later.\n\nMake sure that you trust the connected AI agent.\n\nThis MCP version does not provide database write tools.\nTurning off read-only mode does not add write capabilities.\n\nCurrent connection profiles: {n}."
+status = "done"
+
+[[entry]]
+key = "dialog.mcp_access.write_confirm"
+zh = "关闭 MCP 只读"
+en = "Turn off MCP read-only"
+status = "done"

@@ -1,7 +1,7 @@
 //! `sqarvo-mcp` 二进制入口（V3.1 §3.2）：
 //!
 //! - 无参数：stdio MCP Server 模式——stdout 只归协议所有；
-//! - `credentials set|delete`：管理模式，不启动 server，不输出协议消息。
+//! - `credentials` / `access`：本地管理模式，不启动 server。
 //!
 //! # stdout 纯净性
 //!
@@ -14,9 +14,12 @@
 //!    是唯一的例外，且那条路径不会启动 server）；
 //! 3. 退出错误写 stderr 并给非零退出码。
 
+mod access_cmd;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use access_cmd::AccessAction;
 use clap::{Parser, Subcommand};
 use sqarvo_mcp::credentials_cmd::{self, CredentialsAction};
 
@@ -44,6 +47,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// 管理 MCP 全局数据访问策略。
+    Access {
+        #[command(subcommand)]
+        action: AccessAction,
+    },
     /// 管理 MCP 引用的系统密钥环凭据。
     Credentials {
         #[command(subcommand)]
@@ -70,7 +78,14 @@ fn main() -> ExitCode {
     let result = runtime.block_on(async {
         match cli.command {
             None => sqarvo_mcp::server::run_stdio(cli.config.as_deref()).await,
-            Some(Command::Credentials { action }) => credentials_cmd::run(action).await,
+            Some(Command::Credentials { action }) => {
+                access_cmd::management_store(cli.config.as_deref())?;
+                credentials_cmd::run(action).await
+            }
+            Some(Command::Access { action }) => {
+                let store = access_cmd::management_store(cli.config.as_deref())?;
+                access_cmd::run(&store, &action)
+            }
         }
     });
     runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);

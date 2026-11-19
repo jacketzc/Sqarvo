@@ -21,3 +21,10 @@ pub mod policy;
 pub mod resources;
 pub mod server;
 pub mod tools;
+
+#[cfg(test)]
+extern crate self as sqarvo_mcp;
+
+#[cfg(test)]
+#[path = "../tests/support/profile_access.rs"]
+mod profile_access;

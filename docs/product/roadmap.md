@@ -13,6 +13,7 @@
 | v0.2.4 | 三端/三驱动可用版本 | 三平台、SQLite/MariaDB/PostgreSQL、性能与安全验收、打包 | 未开始 |
 | v0.2.5 | 导入导出与结构管理 | CSV/JSON/SQL 导入导出、结构对比与迁移脚本 | 未开始 |
 | v0.3 | MCP 对外接口 V1 | 独立 `sqarvo-mcp` stdio 进程：MCP 配置与连接授权、SQL 只读安全策略、结构发现与只读查询工具、Resources、审计 | 进行中（M9，#207–#212） |
+| v0.4 | 共享连接档案与 MCP 全局访问 | 共享档案、GTK 服务接入、全局访问与只读策略、旧档案迁移 | 进行中（[M10](https://github.com/jacketzc/Sqarvo/milestone/11)） |
 
 ## 当前状态
 
