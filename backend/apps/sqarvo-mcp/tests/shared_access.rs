@@ -132,6 +132,72 @@ fn external_revocation_denies_new_requests_and_closes_physical_connection() {
     assert_resource_denials_audited(home);
 }
 
+#[test]
+fn disabled_read_only_keeps_ast_policy_and_store_errors_revoke_access() {
+    use std::fs::{self, OpenOptions};
+
+    use sqarvo_local_store::file_lock::{LockMode, try_lock};
+
+    let directory = tempfile::tempdir().expect("isolated XDG directory");
+    let home = directory.path();
+    let config = common::write_config(
+        home,
+        &json!({"connections":[{
+            "alias": "dev", "driver_id": "sqlite", "host": home.join("test.db"),
+            "port": 0, "enabled": true, "properties": {"read_only": "false"}
+        }]}),
+    );
+    common::enable_access(&config, home);
+    let mode = common::manage_access(&config, home, &["read-only", "off", "--yes"]);
+    assert!(mode.status.success(), "{mode:?}");
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+
+    let disallowed = common::call_tool(
+        &mut server,
+        2,
+        "execute_readonly_query",
+        json!({"connection_alias":"dev","database":"","sql":"CREATE TABLE t (id INTEGER)"}),
+        None,
+    );
+    let result = common::assert_call_result(&disallowed, true);
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "mcp.readonly_violation"
+    );
+
+    let document = home.join("config/sqarvo/connections.json");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(document.with_extension("json.lock"))
+        .unwrap();
+    assert!(try_lock(&lock, LockMode::Exclusive).unwrap());
+    assert_denied(&common::call_tool(
+        &mut server,
+        3,
+        "list_connections",
+        json!({}),
+        None,
+    ));
+    drop(lock);
+
+    fs::write(&document, b"{broken document").unwrap();
+    assert_denied(&common::call_tool(
+        &mut server,
+        4,
+        "list_connections",
+        json!({}),
+        None,
+    ));
+    assert_eq!(fs::read(document).unwrap(), b"{broken document");
+
+    server.close_stdin();
+    let outcome = server.wait();
+    assert!(outcome.status.success(), "{}", outcome.stderr);
+    outcome.assert_protocol_purity();
+}
+
 fn assert_resource_denials_audited(home: &Path) {
     let denied_resources = common::audit_files(&common::audit_dir(home))
         .iter()

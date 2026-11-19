@@ -41,7 +41,9 @@ use sqarvo_local_store::{
     open_default_credential_store,
 };
 use sqarvo_query_engine::QueryRegistry;
-use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{
+    Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedSemaphorePermit, RwLock, Semaphore,
+};
 
 use uuid::Uuid;
 
@@ -117,10 +119,16 @@ pub struct ConnectionStatusView {
 ///
 /// 只记标识，不缓存 `SessionHandle`：句柄是 `Arc` 克隆，缓存它会让「会话已经
 /// 被 disconnect」这件事对缓存不可见；每次取句柄都回查 `SessionManager`。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CachedSession {
     connection_id: ConnectionId,
     session_id: SessionId,
+    activity: Arc<RwLock<()>>,
+}
+
+struct LeasedSession {
+    handle: SessionHandle,
+    _activity: OwnedRwLockReadGuard<()>,
 }
 
 #[derive(Default)]
@@ -157,7 +165,7 @@ impl Slot {
     }
 
     fn cache(&self) -> Option<CachedSession> {
-        self.lock().session
+        self.lock().session.clone()
     }
 
     fn mark_connected(&self, session: CachedSession) {
@@ -289,12 +297,27 @@ impl AccessGuard {
     async fn disconnect(&self, slot: &Slot) {
         let cached = slot.take_session();
         slot.clear();
-        if let Some(cached) = cached {
-            self.queries.remove_session(&cached.session_id);
-            if let Err(error) = self.sessions.disconnect(&cached.connection_id).await {
-                tracing::debug!(code = %error.code(), "丢弃 MCP 会话时断开失败");
-            }
+        let Some(cached) = cached else { return };
+        let activity = Arc::clone(&cached.activity);
+        if let Ok(_idle) = Arc::clone(&activity).try_write_owned() {
+            close_session(&self.sessions, &self.queries, &cached).await;
+        } else {
+            // 此会话已从缓存移除。只为这条被撤销的会话排一次清理，
+            // 让已开始的请求完成，再关闭游标和物理连接。
+            let sessions = Arc::clone(&self.sessions);
+            let queries = Arc::clone(&self.queries);
+            tokio::spawn(async move {
+                let _idle = activity.write_owned().await;
+                close_session(&sessions, &queries, &cached).await;
+            });
         }
+    }
+}
+
+async fn close_session(sessions: &SessionManager, queries: &QueryRegistry, cached: &CachedSession) {
+    queries.remove_session(&cached.session_id);
+    if let Err(error) = sessions.disconnect(&cached.connection_id).await {
+        tracing::debug!(code = %error.code(), "丢弃 MCP 会话时断开失败");
     }
 }
 
@@ -441,8 +464,14 @@ impl AccessService {
         Ok(statuses)
     }
 
-    /// 取得（必要时建立）某个连接的会话句柄。
-    pub async fn session(&self, alias: &str) -> Result<SessionHandle> {
+    #[cfg(test)]
+    async fn session(&self, alias: &str) -> Result<SessionHandle> {
+        self.lease_session(alias)
+            .await
+            .map(|session| session.handle)
+    }
+
+    async fn lease_session(&self, alias: &str) -> Result<LeasedSession> {
         let context = self
             .guard
             .authorize_request(OperationType::Read, Some(alias.to_owned()))
@@ -463,16 +492,22 @@ impl AccessService {
         match self.sessions.connect(alias.to_owned(), params).await {
             Ok(summary) => {
                 let handle = self.sessions.acquire(&summary.session_id).await?;
+                let activity = Arc::new(RwLock::new(()));
+                let lease = LeasedSession {
+                    handle,
+                    _activity: Arc::clone(&activity).read_owned().await,
+                };
                 slot.mark_connected(CachedSession {
                     connection_id: summary.connection_id,
                     session_id: summary.session_id,
+                    activity,
                 });
                 tracing::info!(alias, driver = %summary.driver_id, "已建立数据库连接（懒连接）");
                 drop(connect_guard);
                 self.guard
                     .authorize_request(OperationType::Read, Some(alias.to_owned()))
                     .await?;
-                Ok(handle)
+                Ok(lease)
             }
             Err(error) => {
                 slot.mark_failed(&error);
@@ -498,15 +533,25 @@ impl AccessService {
         Fut: std::future::Future<Output = Result<T>>,
     {
         let _permit = self.acquire_permit().await?;
-        match operation(self.session(alias).await?).await {
+        let lease = self.lease_session(alias).await?;
+        match Self::run_leased(lease, &operation).await {
             Ok(value) => Ok(value),
             Err(error) if is_stale_session_error(&error) => {
                 tracing::warn!(alias, code = %error.code(), "会话已失效，重连后重试一次");
                 self.invalidate(alias).await;
-                operation(self.session(alias).await?).await
+                Self::run_leased(self.lease_session(alias).await?, &operation).await
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn run_leased<T, F, Fut>(lease: LeasedSession, operation: &F) -> Result<T>
+    where
+        F: Fn(SessionHandle) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let LeasedSession { handle, _activity } = lease;
+        operation(handle).await
     }
 
     /// 丢弃某个 alias 的缓存会话（断连、会话失效、切换配置后调用）。
@@ -553,11 +598,14 @@ impl AccessService {
         tracing::info!("MCP 会话已全部关闭");
     }
 
-    async fn cached_handle(&self, slot: &Slot) -> Option<SessionHandle> {
-        // 会话被 `disconnect` 之后旧句柄仍持 `Arc`，必须回查管理器，不能只看缓存。
-        let session_id = slot.cache()?.session_id;
-        if let Ok(handle) = self.sessions.acquire(&session_id).await {
-            Some(handle)
+    async fn cached_handle(&self, slot: &Slot) -> Option<LeasedSession> {
+        // 连接槽的锁保证只有仍在缓存中的会话能拿到新租约。
+        let cached = slot.cache()?;
+        if let Ok(handle) = self.sessions.acquire(&cached.session_id).await {
+            Some(LeasedSession {
+                handle,
+                _activity: cached.activity.read_owned().await,
+            })
         } else {
             slot.clear();
             None
@@ -793,6 +841,55 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn revocation_denies_new_requests_while_an_authorized_operation_finishes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = sqlite_config(&dir.path().join("test.db"));
+        let service = service(config, Arc::new(MemoryCredentialStore::new()));
+        let entered = tokio::sync::Notify::new();
+        let resume = tokio::sync::Notify::new();
+        let operation = service.run("dev", |handle| {
+            let entered = &entered;
+            let resume = &resume;
+            async move {
+                entered.notify_one();
+                resume.notified().await;
+                handle
+                    .execute(ExecuteRequest {
+                        query_id: QueryId::new(),
+                        sql: "SELECT 42".to_owned(),
+                        max_rows: Some(1),
+                        timeout: None,
+                    })
+                    .await
+            }
+        });
+        let revoke = async {
+            entered.notified().await;
+            service
+                .store
+                .set_mcp_access(sqarvo_local_store::McpAccessPolicy::default())
+                .expect("撤销全局访问");
+            let error = service.statuses().await.expect_err("后续请求立即拒绝");
+            assert_eq!(error.code(), ErrorCode::MCP_CONNECTION_DENIED);
+            assert_eq!(service.session_manager().active_count().await, 1);
+            resume.notify_one();
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(operation, revoke)
+        })
+        .await
+        .expect("撤销不等待在途请求");
+        result.expect("已获授权的在途请求可继续使用其物理连接");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while service.session_manager().active_count().await != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("在途请求结束后关闭会话");
     }
 
     #[tokio::test]
