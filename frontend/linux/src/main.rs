@@ -25,6 +25,7 @@ mod l10n;
 mod layout;
 mod layout_audit;
 mod logs;
+mod mcp_access;
 mod proto;
 mod qa;
 mod result_edit;
@@ -160,6 +161,9 @@ fn register_qa_options(app: &adw::Application) {
         ("screenshot", "/path/to/output.png"),
         ("screenshot-delay-ms", "milliseconds"),
         ("qa-profile", "/path/to/profile.json"),
+        ("qa-mcp-access", "on|off|cancel"),
+        ("qa-mcp-readonly", "on|off|cancel"),
+        ("qa-mcp-indicator", "disabled|readonly|writable|unavailable"),
         ("qa-password-env", "ENV_VAR_NAME"),
         ("qa-action", "test|save"),
         ("qa-sql-file", "/path/to/query.sql"),

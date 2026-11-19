@@ -41,7 +41,7 @@ pub struct StartupActions {
     pub edit: Rc<dyn Fn(String)>,
     /// 右键「断开」：关闭这条连接的浏览会话。
     pub disconnect: Rc<dyn Fn(String)>,
-    /// 右键「删除连接」：二次确认后删除配置与凭据条目。
+    /// 右键「删除连接」：二次确认后删除共享档案，保留凭据条目。
     pub delete: Rc<dyn Fn(String)>,
 }
 

@@ -153,7 +153,7 @@ else
 fi
 
 # ---- 3. 空 connections.json：同一个空态 -----------------------------------
-rm -f "$TMP/config/sqarvo/Sqarvo/connections.json"
+rm -f "$TMP/config/sqarvo/connections.json" "$TMP/config/sqarvo/Sqarvo/connections.json"
 run_app startup-empty \
     --screenshot "$OUT/03-startup-empty.png" \
     --qa-startup-workspace

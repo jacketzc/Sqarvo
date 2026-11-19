@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 197 个组件 / 9 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 204 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -574,6 +574,48 @@ kind `container` · status `active` · parent `data_page`
 | click | 有脏行（入口：状态栏 ↶） | 全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」 | `src/sql_page.rs:1034、src/results.rs:547` |
 | load | 有未提交的更改且点了刷新（⟳） | 拒绝并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点） | `src/sql_page.rs:965` |
 
+## MCP 策略确认（`dialog`）
+
+两个风险确认框，由主菜单中的策略开关触发。
+
+| 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |
+|---|---|---|---|---|---|---|
+| `dialog` | MCP 策略确认 | area | active | done | blocked | na |
+| `dialog.mcp_enable_confirm` | 　启用 MCP 数据访问确认 | control | active | done | blocked | na |
+| `dialog.mcp_readonly_disable_confirm` | 　关闭 MCP 只读确认 | control | active | done | blocked | na |
+
+### `dialog` MCP 策略确认
+
+kind `area` · status `active`
+
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py：两个真实确认框的标题、档案数、取消及确认。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+### `dialog.mcp_enable_confirm` 启用 MCP 数据访问确认
+
+kind `control` · status `active` · parent `dialog`
+
+- 样式：槽位 `dialogs`
+- 无障碍：可访问名「启用 MCP 数据访问？」；Tab 默认落在取消，确认按钮紧随其后
+- 原生控件：gtk:AdwAlertDialog / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认和取消。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 在主菜单启用 MCP 数据访问 | 显示当前档案数和授权范围（现有及将来新增的档案），确认后写入策略并回读，取消不写入。 | `src/mcp_access.rs:226` |
+
+### `dialog.mcp_readonly_disable_confirm` 关闭 MCP 只读确认
+
+kind `control` · status `active` · parent `dialog`
+
+- 样式：槽位 `dialogs`
+- 无障碍：可访问名「关闭 MCP 只读模式？」；Tab 默认落在取消，确认按钮紧随其后
+- 原生控件：gtk:AdwAlertDialog / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证风险提示和取消。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 数据访问已启用，并在主菜单关闭 MCP 只读 | 显示当前档案数及未来潜在的数据库写入风险，说明当前 MCP 版本尚未提供数据库写入工具。确认后写入策略并回读，取消不写入。 | `src/mcp_access.rs:226` |
+
 ## 对话框（`dialogs`）
 
 连接对话框（新建 / 编辑两种模式共用一张表面）与关于对话框。连接对话框是唯一配置连接参数、测试连接、把密码交给系统凭据库的入口；关于对话框只陈述版本、协议与后端诊断，不依赖后端可用。
@@ -586,7 +628,7 @@ kind `container` · status `active` · parent `data_page`
 | `dialogs.connection.driver` | 　　驱动下拉 | control | active | done | — | — |
 | `dialogs.connection.fields` | 　　连接参数表单（按驱动族显隐） | container | active | done | partial | — |
 | `dialogs.connection.fields.host` | 　　　主机 | control | active | done | partial | — |
-| `dialogs.connection.fields.alias` | 　　　别名（可选） | control | active | done | — | — |
+| `dialogs.connection.fields.alias` | 　　　别名（可选） | control | active | done | blocked | na |
 | `dialogs.connection.fields.port` | 　　　端口 | control | active | done | partial | — |
 | `dialogs.connection.fields.username` | 　　　用户名 | control | active | done | partial | — |
 | `dialogs.connection.fields.database` | 　　　数据库（可选） | control | active | done | partial | — |
@@ -598,7 +640,7 @@ kind `container` · status `active` · parent `data_page`
 | `dialogs.connection.status` | 　　状态行（校验 / 测试结果 / 失败） | control | active | done | partial | — |
 | `dialogs.connection.actions` | 　　底部操作条（状态行 + 两个按钮） | container | active | done | partial | — |
 | `dialogs.connection.actions.test` | 　　　「测试连接」 | control | active | done | partial | — |
-| `dialogs.connection.actions.save` | 　　　保存动作（新建：「保存并连接」/ 编辑：「保存」） | control | active | done | — | — |
+| `dialogs.connection.actions.save` | 　　　保存动作（新建：「保存并连接」/ 编辑：「保存」） | control | active | done | blocked | na |
 | `dialogs.connection.actions.cancel` | 　　　「取消」 | control | active | done | — | — |
 | `dialogs.about` | 　关于对话框 | container | active | done | — | — |
 | `dialogs.about.app_info` | 　　名称 / 版本 / 一句说明 | control | active | done | — | — |
@@ -692,13 +734,13 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「别名（可选）」；Tab 驱动下拉之后、主机之前
-- 同步：Linux done（别名行 + apply_saved 预填 + 写盘时进 config）；Windows none（§7.1 未记录：Windows 连接对话框没有别名字段。）；macOS none
-- 实现备注：只影响对象树连接行的显示：留空则显示 用户名@主机:端口/库（文件型驱动是文件路径）。别名不参与 SavedConnection::key()、不进连接参数、不改会话显示名：同一条连接改别名不会变成两条。旧 connections.json 没有 alias 字段时按空串读（serde(default)），不需要迁移。
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证编辑别名与档案修订。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 实现备注：用作对象树连接行显示名及共享档案的名称；留空时对象树显示连接目标。编辑保留档案 UUID，修改名称不会创建新档案。迁移时旧档案有别名则沿用，缺失则使用原有名称。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 打开新建 / 编辑连接对话框 | 编辑时填入保存的别名；新建时留空 | `src/dialog.rs:180、src/dialog.rs:632` |
-| click | 点「保存并连接」且校验通过 | trim 后写进 connections.json 的 alias；gRPC 请求里没有这个字段 | `src/dialog.rs:738、src/backend/worker.rs:4019` |
+| click | 点「保存并连接」且校验通过 | trim 后作为 SaveProfile 的档案名称和可选显示名。 | `src/config.rs:222` |
 
 ### `dialogs.connection.fields.port` 端口
 
@@ -857,13 +899,13 @@ kind `control` · status `active` · parent `dialogs.connection.actions`
 
 - 样式：槽位 `dialogs`；尺寸 `fs_action_min_height`、`min_target`；颜色 `sqarvo_brand_deep`、`sqarvo_brand_on_deep`
 - 无障碍：可访问名「保存并连接（新建）/ 保存（编辑）」
-- 同步：Linux done（dialog.rs request + ui.rs submit / Event::ConnectResult 路径）；Windows none（§7.1 未记录）；macOS none
-- 实现备注：建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。两种入口两种语义：新建 = 保存并立即连接；编辑 = **只保存**（写配置与凭据，不建会话、不重连），下次连接时生效。落盘只有两件事：connections.json 里的连接条目（含 credential_ref）与系统凭据库里的密码条目；别名只进配置。新建保存成功即建立会话并关闭对话框，落到工作区；编辑保存成功只关闭对话框并刷新树上那一行；保存失败则对话框留着、状态行给原因。
+- 同步：Linux done（GTK --qa-profile --qa-action save 验证新建；tests/ui/linux/test_06_mcp_access.py 验证编辑、UUID 与 revision。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 实现备注：建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。两种入口两种语义：新建 = 保存并立即连接；编辑 = **只保存**（写配置与凭据，不建会话、不重连），下次连接时生效。档案由 SaveProfile 写入，密码保存在系统凭据库；档案仅保存凭据引用。新建保存成功即建立会话并关闭对话框，落到工作区；编辑保存成功只关闭对话框并刷新树上那一行；保存失败则对话框留着、状态行给原因。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 新建态（工具条「连接」进入）、本地校验通过、驱动可用 | 整体置为禁用、状态行写「正在保存密码并建立会话…」→ 密码写入系统凭据库 → 配置只落 credential_ref → 连接成功后关闭对话框并落入工作区 | `src/dialog.rs:738、src/ui.rs:1391、src/ui.rs:641` |
-| click | 编辑态（「编辑连接…」进入）、本地校验通过 | 按钮文案是「保存」：写凭据 + 写 connections.json，**不发 Connect**；成功后关闭对话框、对象树那一行按新别名/新目标重绘，连接状态仍是未连接 | `src/dialog.rs:408、src/ui.rs:1400、src/backend/worker.rs:3994` |
+| click | 编辑态（「编辑连接…」进入）、本地校验通过 | 按钮文案是「保存」：按 UUID 与 revision 写共享档案。成功后关闭对话框，连接行按新名称或目标重绘。编辑保存不建立会话。 | `src/config.rs:204、src/backend/worker.rs:4284` |
 | click | 本地校验不通过 | 不提交：状态行给原因，对话框保持打开，用户改正后可再点 | `src/dialog.rs:739` |
 | click | 后端 worker 不可用（已退出或未握手） | 状态行写「本地后端未连接」（错误码 backend.unavailable），按钮恢复可点，不假装已保存 | `src/ui.rs:1408、src/ui.rs:1410、src/backend/connection.rs:489` |
 
@@ -1236,7 +1278,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 | 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |
 |---|---|---|---|---|---|---|
 | `object_tree` | 对象树侧栏 | area | active | done | partial | — |
-| `object_tree.tree` | 　树本体 | container | active | done | partial | — |
+| `object_tree.tree` | 　树本体 | container | active | done | blocked | na |
 | `object_tree.tree.row` | 　　行模板（箭头 · 图标 · 名称 · 行尾文字） | row | active | done | partial | — |
 | `object_tree.tree.row.expander` | 　　　行首箭头 | control | active | done | partial | — |
 | `object_tree.tree.row.conn` | 　　　连接行 | row | active | done | partial | — |
@@ -1257,7 +1299,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 | `object_tree.ctx_menu.refresh_group` | 　　「刷新这一组」 | item | active | done | — | — |
 | `object_tree.ctx_menu.edit_connection` | 　　「编辑连接…」 | item | active | done | — | — |
 | `object_tree.ctx_menu.edit_connection.confirm` | 　　　编辑连接前的关闭确认框 | container | active | done | — | — |
-| `object_tree.ctx_menu.delete_connection` | 　　「删除连接」 | item | active | done | — | — |
+| `object_tree.ctx_menu.delete_connection` | 　　「删除连接」 | item | active | done | blocked | na |
 | `object_tree.ctx_menu.open` | 　　「打开」 | item | active | done | — | — |
 | `object_tree.ctx_menu.dump_table` | 　　「转储表…」 | item | active | done | — | — |
 | `object_tree.hint` | 　侧栏底部临时提示行 | control | active | done | — | — |
@@ -1281,13 +1323,14 @@ kind `container` · status `active` · parent `object_tree`
 - 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`badge_min_height`
 - 无障碍：可访问名「对象树」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkListView / winui:TreeView / swift:—
-- 同步：Linux done（§2.5 键盘表 + tree.rs install_handlers）；Windows partial（TreeView 承载，↑ / ↓ / Enter 同语义；无自定义按键控制器差异待核。）；macOS none
-- 实现备注：GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。折叠后重新展开复用已读内容、不发请求。层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（来自 connections.json，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。
+- 同步：Linux done（GTK --qa-startup-workspace 加载 2 个迁移档案；tests/ui/linux/test_06_mcp_access.py 验证损坏时空树和错误态。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 实现备注：GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。折叠后重新展开复用已读内容、不发请求。层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（后端握手后由 ListProfiles 异步填充，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | key ↑ / ↓ | 树有焦点 | 移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随） | `src/tree.rs:1983` |
 | key Enter | 行有焦点 | 等同于双击（同一回调，走 activate 信号） | `src/tree.rs:2022` |
+| load | 本地后端握手完成 | 异步加载共享连接档案；失败时连接树保持空并在状态栏提示档案加载失败 | `src/ui.rs:669` |
 
 ### `object_tree.tree.row` 行模板（箭头 · 图标 · 名称 · 行尾文字）
 
@@ -1566,12 +1609,12 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「删除连接」
-- 同步：Linux done（§2.3 删除连接）；Windows none（无树右键菜单。）；macOS none
-- 实现备注：配置删除与密钥删除分开报告：配置删除失败提示「删除连接失败」；配置已删而密钥没删提示「配置已删除，密钥条目未删除（<code>）：<detail>」。
+- 同步：Linux done（隔离 GTK --qa-delete-connection 走真实确认，仅删除指定 UUID，剩余档案和备份保留。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 实现备注：档案删除失败提示「删除连接失败」；系统凭据引用可以被其他档案共用，删除档案时保留凭据。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接存在于配置里 | 二次确认「删除连接？」（写明从 connections.json 删除、树节点与浏览会话一并消失、其它连接不受影响）；确认后关会话 → 删配置 → 尽量删密钥条目 | `src/ui.rs:1310、src/ui.rs:454` |
+| click | 连接存在于配置里 | 二次确认「删除连接？」后按 UUID 与 revision 删除共享档案，移除树节点并清理该连接的浏览会话。保留凭据。 | `src/ui.rs:1796、src/ui.rs:701` |
 
 ### `object_tree.ctx_menu.open` 「打开」
 
@@ -2971,6 +3014,62 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 确认框在显示 | 标签与会话都保留，脏行与事务原样；这次被拦下的关闭请求收尾为「不关」（`close_page_finish(page, false)`） | `src/tabs.rs:2790、src/tabs.rs:2799、src/tabs.rs:2713` |
+
+## 工作区 MCP 策略（`workspace`）
+
+主菜单视图子菜单中的两个 MCP 策略开关，以及启动态和已连接工作区状态栏指示。
+
+| 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |
+|---|---|---|---|---|---|---|
+| `workspace` | 工作区 MCP 策略 | area | active | done | blocked | na |
+| `workspace.manage.menu.mcp_access` | 　　　MCP 数据访问 | item | active | done | blocked | na |
+| `workspace.manage.menu.mcp_readonly` | 　　　MCP 只读 | item | active | done | blocked | na |
+| `workspace.status.mcp_indicator` | 　　MCP 访问状态 | control | active | done | blocked | na |
+
+### `workspace` 工作区 MCP 策略
+
+kind `area` · status `active`
+
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py 和 GTK --qa-mcp-* 验证真实交互。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+### `workspace.manage.menu.mcp_access` MCP 数据访问
+
+kind `item` · status `active` · parent `workspace`
+
+- 样式：槽位 `menubar`
+- 无障碍：可访问名「MCP 数据访问」；Tab 视图子菜单中，语言之后
+- 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证菜单动作、revision 与安全默认值。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 后端已连接，策略读取成功，当前没有策略操作在途 | 启用时先显示档案数与授权范围，须确认。关闭时恢复安全默认值。勾选态以 gRPC 回读为准。取消不写入。 | `src/mcp_access.rs:41、src/mcp_access.rs:192` |
+
+### `workspace.manage.menu.mcp_readonly` MCP 只读
+
+kind `item` · status `active` · parent `workspace`
+
+- 样式：槽位 `menubar`
+- 无障碍：可访问名「MCP 只读」；Tab 视图子菜单中，MCP 数据访问之后
+- 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 数据访问已启用，策略读取成功，当前没有策略操作在途 | 关闭只读时先显示档案数与风险，须确认。恢复只读直接提交。勾选态以 gRPC 回读为准。访问关闭时保留禁用项，原因见状态提示。 | `src/mcp_access.rs:41、src/mcp_access.rs:271` |
+
+### `workspace.status.mcp_indicator` MCP 访问状态
+
+kind `control` · status `active` · parent `workspace`
+
+- 样式：槽位 `status_bar.row2`
+- 无障碍：可访问名「根据策略读取结果显示的状态文本」；Tab 状态文本不进入 Tab 顺序
+- 原生控件：gtk:GtkLabel / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py 验证四种状态指示的可访问名称。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | 启动态或已连接工作区 | 常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。 | `src/shell.rs:1271、src/mcp_access.rs:271` |
 
 ## 待清理（按版本）
 

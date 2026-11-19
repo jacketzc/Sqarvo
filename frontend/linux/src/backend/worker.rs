@@ -182,6 +182,11 @@ pub struct TabSessionOpened {
 /// 处理完即丢弃，不会被存进任何长期结构。
 #[derive(Debug)]
 pub enum Command {
+    /// 读取共享 MCP 策略、统计档案或持久化用户已确认的策略变更。
+    McpPolicy {
+        request: super::mcp_access::PolicyRequest,
+        reply: Sender<Option<super::mcp_access::PolicyReply>>,
+    },
     /// 发起握手（已在连接中时忽略）。
     Connect,
     /// 主动断开：终止自己启动的后端并进入断开状态。
@@ -190,11 +195,8 @@ pub enum Command {
     Shutdown,
     /// 测试连接：写凭据 → `TestConnection`。
     TestConnection(Box<ConnectionDraft>),
-    /// 删除一条凭据（#144：删除连接时尽力清理密钥环条目）。
-    DeleteCredential {
-        /// 要删除的凭据引用（`sqarvo:conn/<uuid>`）。
-        reference: String,
-    },
+    /// 删除指定版本的连接档案，保留其凭据。
+    DeleteProfile { profile_id: String, revision: u64 },
     /// 保存并连接：写凭据 → `TestConnection` → `Connect` → `ListSessions` → 写配置。
     SaveAndConnect(Box<ConnectionDraft>),
     /// 只保存（编辑已有连接）：写凭据 → 写配置，**不**建会话、不连库。
@@ -904,13 +906,16 @@ pub enum Event {
     Tested(Result<TestReport, ConnectionFailure>),
     /// 「保存并连接」结果。
     ConnectResult(Result<ConnectOutcome, ConnectionFailure>),
-    /// 「保存」（编辑态，只写配置与凭据）结果：成功带回保存后的条目与配置文件路径。
-    Saved(Result<SaveOutcome, ConnectionFailure>),
-    /// 删除凭据条目的结果（#144）。
-    CredentialDeleted {
-        /// 被删除的凭据引用。
-        reference: String,
-        /// 结果：成功或可展示的原因（配置已删除时界面会提示「密钥条目未删除」）。
+    /// 「保存」（编辑态）的结果。
+    Saved(Result<SavedConnection, ConnectionFailure>),
+    /// 启动或修订冲突后从服务端获取的档案列表。
+    ProfilesLoaded {
+        startup: bool,
+        result: Result<Vec<SavedConnection>, ConnectionFailure>,
+    },
+    /// 删除档案的结果。
+    ProfileDeleted {
+        profile_id: String,
         result: Result<(), ConnectionFailure>,
     },
     /// 标签会话已建立（或失败）。
@@ -1009,6 +1014,16 @@ impl WorkerHandle {
         ))
     }
 
+    /// 在 worker 执行 MCP 策略 RPC，返回主线程可异步等待的一次性结果。
+    pub fn mcp_policy(
+        &self,
+        request: super::mcp_access::PolicyRequest,
+    ) -> Receiver<Option<super::mcp_access::PolicyReply>> {
+        let (reply, response) = async_channel::bounded(1);
+        let _ = self.commands.send(Command::McpPolicy { request, reply });
+        response
+    }
+
     /// 请求握手。
     pub fn connect(&self) {
         let _ = self.commands.send(Command::Connect);
@@ -1034,10 +1049,11 @@ impl WorkerHandle {
         let _ = self.commands.send(Command::SaveOnly(Box::new(draft)));
     }
 
-    /// 删除一条凭据条目（幂等；失败由 [`Event::CredentialDeleted`] 回报）。
-    pub fn delete_credential(&self, reference: &str) {
-        let _ = self.commands.send(Command::DeleteCredential {
-            reference: reference.to_owned(),
+    /// 删除用户确认时的档案版本。
+    pub fn delete_profile(&self, profile_id: String, revision: u64) {
+        let _ = self.commands.send(Command::DeleteProfile {
+            profile_id,
+            revision,
         });
     }
 
@@ -1520,17 +1536,18 @@ async fn worker_loop(
                         };
                         let _ = events.send(Event::Tested(outcome)).await;
                     }
-                    Command::DeleteCredential { reference } => {
-                        // 尽力而为：配置已经删掉，密钥条目删不掉时如实回报原因。
+                    Command::DeleteProfile { profile_id, revision } => {
                         let result = match session.as_ref() {
                             Some(active_session) => {
-                                active_session.client.delete_credential(&reference).await
+                                config::delete_profile(&active_session.client, profile_id.clone(), revision).await
                             }
                             None => Err(ConnectionFailure::backend_unavailable()),
                         };
-                        let _ = events
-                            .send(Event::CredentialDeleted { reference, result })
-                            .await;
+                        let refresh = refresh_after_conflict(&result);
+                        let _ = events.send(Event::ProfileDeleted { profile_id, result }).await;
+                        if refresh && let Some(active_session) = session.as_ref() {
+                            send_profiles(&events, &active_session.client, false).await;
+                        }
                     }
                     Command::SaveAndConnect(draft) => {
                         let outcome = match session.as_ref() {
@@ -1595,7 +1612,11 @@ async fn worker_loop(
                                 outcome.driver_id
                             );
                         }
+                        let refresh = refresh_after_conflict(&outcome);
                         let _ = events.send(Event::ConnectResult(outcome)).await;
+                        if refresh && let Some(active_session) = session.as_ref() {
+                            send_profiles(&events, &active_session.client, false).await;
+                        }
                     }
                     Command::SaveOnly(draft) => {
                         let outcome = match session.as_ref() {
@@ -1607,10 +1628,14 @@ async fn worker_loop(
                         if let Ok(saved) = &outcome {
                             eprintln!(
                                 "[connections] 已保存连接「{}」（不重连，下次连接时生效）",
-                                saved.saved.display_label()
+                                saved.display_label()
                             );
                         }
+                        let refresh = refresh_after_conflict(&outcome);
                         let _ = events.send(Event::Saved(outcome)).await;
+                        if refresh && let Some(active_session) = session.as_ref() {
+                            send_profiles(&events, &active_session.client, false).await;
+                        }
                     }
                     Command::OpenTabSession {
                         tab_id,
@@ -3340,6 +3365,17 @@ async fn worker_loop(
                             }
                         }
                     },
+                    Command::McpPolicy { request, reply } => {
+                        let Some(active) = session.as_ref() else {
+                            let _ = reply.send(None).await;
+                            continue;
+                        };
+                        let client = active.client.clone();
+                        tokio::spawn(async move {
+                            let result = super::mcp_access::request(&client, request).await;
+                            let _ = reply.send(result).await;
+                        });
+                    }
                     Command::Connect => {
                         if session.is_some() {
                             continue;
@@ -3349,6 +3385,9 @@ async fn worker_loop(
                                 let snapshot = snapshot(&supervisor, &new_session);
                                 session = Some(new_session);
                                 let _ = events.send(Event::Connected(snapshot)).await;
+                                if let Some(active_session) = session.as_ref() {
+                                    send_profiles(&events, &active_session.client, true).await;
+                                }
                             }
                             Err(BackendError::Cancelled) => {}
                             Err(error) => {
@@ -4156,41 +4195,10 @@ struct PreparedCredential {
     created: bool,
 }
 
-/// 把草稿映射成配置条目的形状，**只用于按连接身份查找已有条目**（不写盘）。
-///
-/// 身份键不看 `name` / `tls_mode` / `credential_ref`，这里填真实值是为了日志与后续
-/// 比较时行为可预期；引用留空，避免误以为草稿已经绑定凭据。
-fn identity_candidate(draft: &ConnectionDraft) -> SavedConnection {
-    SavedConnection {
-        name: draft.name.clone(),
-        alias: draft.alias.clone(),
-        driver: draft.driver_id.clone(),
-        host: draft.host.clone(),
-        port: draft.port,
-        database: draft.database.clone(),
-        username: draft.username.clone(),
-        file_path: draft.file_path.clone(),
-        read_only: draft.read_only,
-        tls_mode: draft.tls_mode.config_value().to_owned(),
-        credential_ref: String::new(),
-    }
-}
-
-/// 解析本次要用的凭据引用（#145）。
-///
-/// 顺序（服务器型驱动）：
-/// 1. 同一身份已有配置条目 → 复用它的 `credential_ref`；有密码时**覆盖**该引用指向的
-///    密钥，而不是让后端生成新引用（否则密钥环里同一条连接会堆多份密码）；
-/// 2. 否则用对话框里已有的引用（「测试连接」刚返回的那条）；
-/// 3. 都没有才让后端生成新引用，并标记 `created` 以便失败时清理。
-///
-/// `reuse_existing` 在「测试连接」时为 `false`：测试只改内存里的密码，不能悄悄覆盖
-/// 已保存的密码——用户可能只是试一下旧密码能不能用。
+/// 输入新密码时使用未发布的引用，避免覆盖其他共享档案仍使用的凭据。
 async fn prepare_reference(
     client: &BackendClient,
     draft: &ConnectionDraft,
-    existing: Option<&SavedConnection>,
-    reuse_existing: bool,
 ) -> Result<PreparedCredential, ConnectionFailure> {
     if !draft.needs_credential() {
         return Ok(PreparedCredential {
@@ -4198,31 +4206,24 @@ async fn prepare_reference(
             created: false,
         });
     }
-    let existing_ref = existing
-        .map(|saved| saved.credential_ref.as_str())
-        .filter(|reference| !reference.is_empty())
-        .map(str::to_owned);
-    let reuse = if reuse_existing || !draft.has_password() {
-        existing_ref.or_else(|| draft.credential_ref.clone())
-    } else {
-        draft.credential_ref.clone()
-    };
+    let current = draft
+        .credential_ref
+        .as_deref()
+        .filter(|value| !value.is_empty());
     if draft.has_password() {
-        let reference = client
-            .store_credential(reuse.as_deref(), &draft.password)
-            .await?;
+        let reference = client.store_credential(None, &draft.password).await?;
         return Ok(PreparedCredential {
             reference,
-            created: reuse.is_none(),
+            created: true,
         });
     }
-    reuse
+    current
         .map(|reference| PreparedCredential {
-            reference,
+            reference: reference.to_owned(),
             created: false,
         })
         .ok_or_else(|| ConnectionFailure::InvalidInput {
-            message: "请输入密码（或复用已保存的凭据）".to_owned(),
+            message: crate::l10n::t("dialogs.profile_password_required").to_owned(),
         })
 }
 
@@ -4243,20 +4244,22 @@ async fn discard_credential(client: &BackendClient, reference: &str) {
     }
 }
 
-/// 删除不再被任何已保存连接引用的凭据。
-///
-/// 「先测试连接、再保存」会留下一条测试生成的引用：保存时密码已经覆盖到已有条目的
-/// 引用上，这条临时引用就成了密钥环里的垃圾。删除前先确认没有配置条目引用它。
-async fn discard_reference_if_unreferenced(client: &BackendClient, reference: &str) {
-    if reference.is_empty() {
-        return;
-    }
-    let in_use = config::saved_connections()
-        .iter()
-        .any(|saved| saved.credential_ref == reference);
-    if !in_use {
-        discard_credential(client, reference).await;
-    }
+fn refresh_after_conflict<T>(result: &Result<T, ConnectionFailure>) -> bool {
+    result.as_ref().is_err_and(|failure| {
+        matches!(
+            failure.code(),
+            "profile.revision_conflict" | "profile.ambiguous_name" | "profile.not_found"
+        )
+    })
+}
+
+async fn send_profiles(
+    events: &async_channel::Sender<Event>,
+    client: &BackendClient,
+    startup: bool,
+) {
+    let result = config::list_profiles(client).await;
+    let _ = events.send(Event::ProfilesLoaded { startup, result }).await;
 }
 
 /// 「测试连接」：写凭据 → `TestConnection`。
@@ -4264,95 +4267,46 @@ async fn run_test(
     client: &BackendClient,
     draft: &ConnectionDraft,
 ) -> Result<TestReport, ConnectionFailure> {
-    // 只读查找，不写配置；测试阶段不覆盖已有密码（见 `prepare_reference`）。
-    let existing = config::find_by_identity(&identity_candidate(draft));
-    let prepared = prepare_reference(client, draft, existing.as_ref(), false).await?;
-    match client
+    let prepared = prepare_reference(client, draft).await?;
+    let mut result = client
         .test_connection(draft.params(&prepared.reference), &prepared.reference)
-        .await
-    {
-        Ok(report) => Ok(report),
-        Err(failure) => {
-            // 新生成的引用没有配置指向它：留着就是密钥环里的垃圾条目。
-            if prepared.created {
-                discard_credential(client, &prepared.reference).await;
-            }
-            Err(failure)
+        .await;
+    if prepared.created {
+        discard_credential(client, &prepared.reference).await;
+        if let Ok(report) = &mut result {
+            report.credential_ref.clear();
         }
     }
+    result
 }
 
-/// 「保存并连接」：按身份复用凭据 → `TestConnection` → `Connect` → `ListSessions` → 写配置。
-///
-/// 先测试再建会话：用户能立刻看到服务端版本与延迟，而且认证失败时不会留下半死会话。
-/// 同一目标（[`SavedConnection::key`]）再次保存时更新原条目、复用原 `credential_ref`，
-/// 不在 `connections.json` 追加、也不在密钥环里新增（#145）。
-/// 草稿 → 配置条目（`connections.json` 的唯一映射点）。
-///
-/// 「保存并连接」与「保存」共用它：两条路径落盘的字段必须一致，否则同一条连接
-/// 走不同入口会得到不同配置。别名只进配置，不进连接参数。
-fn saved_from_draft(draft: &ConnectionDraft, credential_ref: &str) -> SavedConnection {
-    SavedConnection {
-        name: draft.name.clone(),
-        alias: draft.alias.clone(),
-        driver: draft.driver_id.clone(),
-        host: draft.host.clone(),
-        port: draft.port,
-        database: draft.database.clone(),
-        username: draft.username.clone(),
-        file_path: draft.file_path.clone(),
-        read_only: draft.read_only,
-        tls_mode: draft.tls_mode.config_value().to_owned(),
-        credential_ref: credential_ref.to_owned(),
-    }
-}
-
-/// 「保存」的结果（编辑态保存，不建会话）。
-#[derive(Debug, Clone)]
-pub struct SaveOutcome {
-    /// 写回配置后的条目（界面用它刷新树上的那一行）。
-    pub saved: SavedConnection,
-    /// 配置文件路径（状态行文案用；失败时为空）。
-    pub path: String,
-}
-
-/// 「保存」：写凭据 → 写配置。**不发** `Connect`，也不建会话。
-///
-/// 与 [`run_save_and_connect`] 共用凭据准备逻辑（同一身份命中时覆盖原有引用），
-/// 区别只在于不连接、不测试、不读会话列表：编辑连接时用户的意图是「改配置」，
-/// 不该顺手连一次库（尤其是确定要断开的连接）。
+/// 「保存」更新共享档案，无需建立数据库会话。
 async fn run_save_only(
     client: &BackendClient,
     draft: &ConnectionDraft,
-) -> Result<SaveOutcome, ConnectionFailure> {
-    let existing = config::find_by_identity(&identity_candidate(draft));
-    let prepared = prepare_reference(client, draft, existing.as_ref(), true).await?;
+) -> Result<SavedConnection, ConnectionFailure> {
+    let prepared = prepare_reference(client, draft).await?;
+    save_prepared_profile(client, draft, &prepared).await
+}
 
-    let saved = saved_from_draft(draft, &prepared.reference);
-    match config::upsert(saved.clone()) {
-        Ok(path) => Ok(SaveOutcome {
-            saved,
-            path: path.display().to_string(),
-        }),
-        Err(error) => {
-            // 配置没写成功：刚创建的凭据没有配置引用它，留着就是密钥环垃圾。
-            if prepared.created {
-                discard_credential(client, &prepared.reference).await;
-            }
-            Err(ConnectionFailure::InvalidInput {
-                message: format!("写入连接配置失败：{error}"),
-            })
-        }
+async fn save_prepared_profile(
+    client: &BackendClient,
+    draft: &ConnectionDraft,
+    prepared: &PreparedCredential,
+) -> Result<SavedConnection, ConnectionFailure> {
+    let result = config::save_profile(client, draft, &prepared.reference).await;
+    // 只有服务端明确拒绝时，刚生成的引用才肯定没有发布。超时可能发生在提交之后。
+    if prepared.created && refresh_after_conflict(&result) {
+        discard_credential(client, &prepared.reference).await;
     }
+    result
 }
 
 async fn run_save_and_connect(
     client: &BackendClient,
     draft: &ConnectionDraft,
 ) -> Result<ConnectOutcome, ConnectionFailure> {
-    // 必须在写凭据之前查找：命中身份时密码要覆盖已有引用指向的密钥。
-    let existing = config::find_by_identity(&identity_candidate(draft));
-    let prepared = prepare_reference(client, draft, existing.as_ref(), true).await?;
+    let prepared = prepare_reference(client, draft).await?;
     let reference = prepared.reference.clone();
 
     let report = match client
@@ -4387,6 +4341,16 @@ async fn run_save_and_connect(
         opened.capabilities,
     );
 
+    let saved_profile = match save_prepared_profile(client, draft, &prepared).await {
+        Ok(saved) => saved,
+        Err(error) => {
+            if let Err(cleanup_error) = disconnect_session(client, &connection_id).await {
+                eprintln!("[connections] 关闭未保存档案的会话失败：{cleanup_error}");
+            }
+            return Err(error);
+        }
+    };
+
     let sessions = client.list_sessions().await.unwrap_or_else(|error| {
         // 连接已经成功，列表读取失败不该把结论改成「连接失败」。
         eprintln!(
@@ -4397,20 +4361,6 @@ async fn run_save_and_connect(
         Vec::new()
     });
 
-    // 配置只保存引用与「怎么连」；密码已经在凭据库里（SQLite 没有密码）。
-    let config = config::upsert(saved_from_draft(draft, &reference))
-        .map(|path| path.display().to_string())
-        .map_err(|error| error.to_string());
-
-    // 「先测试连接、再保存」会留下测试生成的引用：本次密码已经覆盖到复用引用上，
-    // 那条临时引用若不再被任何配置条目引用，就是密钥环里的垃圾，尽力清掉。
-    if draft.has_password()
-        && let Some(temporary) = draft.credential_ref.as_deref()
-        && temporary != reference
-    {
-        discard_reference_if_unreferenced(client, temporary).await;
-    }
-
     Ok(ConnectOutcome {
         credential_ref: reference,
         connection_id,
@@ -4420,7 +4370,7 @@ async fn run_save_and_connect(
         latency_millis: report.latency_millis,
         sessions,
         capabilities,
-        config,
+        saved_profile: Some(saved_profile),
     })
 }
 
@@ -4703,76 +4653,5 @@ mod tests {
         assert_eq!(query.current, 0);
         assert!(query.cursors.iter().all(|cursor| !cursor.has_more));
         assert_eq!(fetch_block_reason(&query), Some("没有更多批次"));
-    }
-
-    #[test]
-    fn saved_from_draft_carries_alias_but_not_identity() {
-        use crate::backend::connection::TlsMode;
-
-        let draft = ConnectionDraft {
-            alias: "KDEV 开发库".to_owned(),
-            name: "kdev@127.0.0.1:3308/kdev".to_owned(),
-            driver_id: "mariadb".to_owned(),
-            host: "127.0.0.1".to_owned(),
-            port: 3308,
-            database: "kdev".to_owned(),
-            username: "kdev".to_owned(),
-            tls_mode: TlsMode::Preferred,
-            file_path: String::new(),
-            read_only: false,
-            credential_ref: None,
-            password: String::new(),
-        };
-        let saved = saved_from_draft(&draft, "sqarvo:conn/abc");
-        assert_eq!(saved.alias, "KDEV 开发库");
-        assert_eq!(saved.credential_ref, "sqarvo:conn/abc");
-        assert_eq!(saved.display_label(), "KDEV 开发库");
-        // 别名不进身份键：同一条草稿换个别名仍是同一条连接。
-        let mut renamed = draft;
-        renamed.alias = "另一个名字".to_owned();
-        assert_eq!(
-            saved_from_draft(&renamed, "sqarvo:conn/abc").key(),
-            saved.key()
-        );
-    }
-
-    #[test]
-    fn identity_candidate_matches_saved_connection_identity() {
-        // 草稿 → 身份键的映射必须与 config 的身份规则一致：否则「保存并连接」
-        // 查不到已有条目，又退回追加（#145 的原始缺陷）。
-        use crate::backend::connection::TlsMode;
-
-        let draft = ConnectionDraft {
-            alias: String::new(),
-            name: "显示名不参与身份".to_owned(),
-            driver_id: "mariadb".to_owned(),
-            host: "127.0.0.1".to_owned(),
-            port: 53306,
-            database: "sqarvo_test_121".to_owned(),
-            username: "sqarvo_test".to_owned(),
-            tls_mode: TlsMode::Preferred,
-            file_path: String::new(),
-            read_only: false,
-            credential_ref: Some("sqarvo:conn/ignored".to_owned()),
-            password: String::new(),
-        };
-        let saved = SavedConnection {
-            name: "另一个名字".to_owned(),
-            alias: String::new(),
-            driver: "mariadb".to_owned(),
-            host: "127.0.0.1".to_owned(),
-            port: 53306,
-            database: "sqarvo_test_121".to_owned(),
-            username: "sqarvo_test".to_owned(),
-            file_path: String::new(),
-            read_only: false,
-            tls_mode: "required".to_owned(),
-            credential_ref: "sqarvo:conn/existing".to_owned(),
-        };
-        assert_eq!(identity_candidate(&draft).key(), saved.key());
-
-        let mut other_port = draft;
-        other_port.port = 3306;
-        assert_ne!(identity_candidate(&other_port).key(), saved.key());
     }
 }
