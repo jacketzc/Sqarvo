@@ -51,12 +51,12 @@ pub fn management_store(config: Option<&Path>) -> Result<ProfileStore> {
     Ok(store)
 }
 
-pub fn run(store: &ProfileStore, action: AccessAction) -> Result<()> {
+pub fn run(store: &ProfileStore, action: &AccessAction) -> Result<()> {
     match action {
         AccessAction::On { yes } => {
             let count = store.snapshot()?.profiles.len();
             let message = format!("启用后，MCP 可访问当前 {count} 个连接档案及此后新增的档案。");
-            if !confirm(&message, yes)? {
+            if !confirm(&message, *yes)? {
                 return Ok(());
             }
             store.update_mcp_access(|mut current| {
@@ -87,7 +87,7 @@ pub fn run(store: &ProfileStore, action: AccessAction) -> Result<()> {
             let message = format!(
                 "关闭只读保护将影响当前 {count} 个连接档案及此后新增的档案。此操作风险较高。当前 MCP 版本尚未提供数据库写入工具。"
             );
-            if !confirm(&message, yes)? {
+            if !confirm(&message, *yes)? {
                 return Ok(());
             }
             store.update_mcp_access(|mut current| {

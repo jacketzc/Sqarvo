@@ -5,6 +5,9 @@ package sqarvo.services.v1;
 import "common/v1/common.proto";
 import "services/v1/connection.proto";
 
+// Keep the generated type distinct from the existing Windows connection model.
+option csharp_namespace = "Sqarvo.Services.V1.Profiles";
+
 // 本地共享连接档案与 MCP 全局访问策略。所有调用均需本地会话 token。
 service ConnectionProfileService {
   rpc ListProfiles(sqarvo.common.v1.Empty) returns (ListProfilesResponse);
