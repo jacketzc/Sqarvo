@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "connections": [
+    {
+      "name": "demo@db.example.test:3306/inventory",
+      "driver": "mariadb",
+      "host": "db.example.test",
+      "port": 3306,
+      "database": "inventory",
+      "username": "demo",
+      "file_path": "",
+      "read_only": false,
+      "tls_mode": "verify-full",
+      "credential_ref": "sqarvo:conn/58acd9da-8a78-4d19-8d5e-2a33dd0c7c06"
+    },
+    {
+      "name": "inventory.sqlite",
+      "driver": "sqlite",
+      "host": "",
+      "port": 0,
+      "database": "",
+      "username": "",
+      "file_path": "inventory.sqlite",
+      "read_only": true,
+      "tls_mode": "disabled",
+      "credential_ref": ""
+    }
+  ]
+}

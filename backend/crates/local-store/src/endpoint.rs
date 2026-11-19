@@ -107,12 +107,12 @@ pub fn read_endpoint_file(path: &Path) -> Result<EndpointInfo> {
     })
 }
 
-/// 把端点描述文件的访问权限收紧到当前用户。
+/// 把本地存储文件的访问权限收紧到当前用户。
 ///
 /// - Unix：`0600`；
 /// - Windows：显式 DACL（仅当前用户 SID 完全控制、断开继承）。失败返回可分类
 ///   错误（`PermissionDenied` / `NotFound` / `Internal`），不会静默跳过。
-fn restrict_file_to_owner(path: &Path) -> Result<()> {
+pub(crate) fn restrict_file_to_owner(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

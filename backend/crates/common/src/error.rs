@@ -159,6 +159,18 @@ impl ErrorCode {
     pub const CREDENTIAL_UNAVAILABLE: Self = Self("credential.unavailable");
     /// 凭据引用不存在（连接配置还在，但系统凭据库中的条目已被删除）。
     pub const CREDENTIAL_NOT_FOUND: Self = Self("credential.not_found");
+    /// 连接档案不存在。
+    pub const PROFILE_NOT_FOUND: Self = Self("profile.not_found");
+    /// 连接档案、访问策略或共享文档非法。
+    pub const PROFILE_INVALID: Self = Self("profile.invalid");
+    /// 等待共享档案锁超时。
+    pub const PROFILE_LOCKED: Self = Self("profile.locked");
+    /// 连接档案修订已变化。
+    pub const PROFILE_REVISION_CONFLICT: Self = Self("profile.revision_conflict");
+    /// 名称或连接目标匹配多个连接档案。
+    pub const PROFILE_AMBIGUOUS_NAME: Self = Self("profile.ambiguous_name");
+    /// 连接档案已变化，会话需要重新启动。
+    pub const PROFILE_RESTART_REQUIRED: Self = Self("profile.restart_required");
     /// 本地传输失败。
     pub const TRANSPORT_FAILED: Self = Self("transport.failed");
     /// 本地 I/O 失败。
