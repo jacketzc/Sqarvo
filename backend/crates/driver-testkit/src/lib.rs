@@ -1641,6 +1641,7 @@ mod tests {
                 columns: vec![column()],
                 rows_affected: None,
                 has_result_set: true,
+                elapsed: None,
             },
             Some(batch),
         )
@@ -1695,6 +1696,7 @@ mod tests {
             columns: vec![column()],
             rows_affected: None,
             has_result_set: true,
+            elapsed: None,
         };
         let second = StatementSummary {
             index: 1,
@@ -1702,6 +1704,7 @@ mod tests {
             columns: vec![column()],
             rows_affected: None,
             has_result_set: true,
+            elapsed: None,
         };
         let start = ExecutionStart {
             statements: vec![first, second],
@@ -1898,6 +1901,7 @@ mod tests {
                     columns: vec![column()],
                     rows_affected: None,
                     has_result_set: true,
+                    elapsed: None,
                 },
                 Some(ResultBatch {
                     statement_index: 0,
@@ -1951,6 +1955,7 @@ mod tests {
                 columns: vec![column()],
                 rows_affected: None,
                 has_result_set: true,
+                elapsed: None,
             },
             Some(ResultBatch {
                 statement_index: 0,
@@ -2119,6 +2124,8 @@ mod tests {
             },
             rows_affected,
             has_result_set,
+            // 这些假会话不测时间：`None` = 未测量，映射层会变成 0。
+            elapsed: None,
         }
     }
 
@@ -2445,6 +2452,7 @@ mod tests {
                 columns: Vec::new(),
                 rows_affected: Some(0),
                 has_result_set: false,
+                elapsed: None,
             },
             None,
         )
@@ -2458,6 +2466,7 @@ mod tests {
                 columns: vec![column()],
                 rows_affected: None,
                 has_result_set: true,
+                elapsed: None,
             },
             Some(ResultBatch {
                 statement_index: 0,
@@ -2736,6 +2745,7 @@ mod tests {
                 columns: vec![column()],
                 rows_affected: None,
                 has_result_set: true,
+                elapsed: None,
             };
             let rows = vec![vec![Cell::new(Value::Int(self.count()))]];
             ExecutionStart::single(
@@ -2757,6 +2767,7 @@ mod tests {
                     columns: Vec::new(),
                     rows_affected: Some(1),
                     has_result_set: false,
+                    elapsed: None,
                 },
                 None,
             )
