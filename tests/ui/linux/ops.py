@@ -310,3 +310,124 @@ def widget_width(acc):
     except Exception:
         return None
     return ext.width if ext.width > 0 else None
+
+
+# ---------- #231 定稿版式：结果集下拉 / 摘要两列（组件 tabs.query.results.result_picker、
+# tabs.query.results.summary） ----------
+#
+# GTK 4.22 的 GtkDropDown 在 AT-SPI 里是 1 枚 combo box，**name = 当前选中条目文本**
+# （实测「结果 1」；显式 update_property(Label) 不上 name），展开后的弹层是
+# list box → list → list item（条目文本在子 label 上）。条目本身没有 click 动作，
+# 本环境又不允许合成按键（编辑器里发字符无效，见契约 §9.1 快捷键验收口径），
+# 所以「换一个结果集」走可访问性激活路径：选中弹层条目（Selection.select_child）
+# 后对弹层容器发 default.activate——这与屏幕阅读器用户的选择路径一致，不用坐标。
+
+RESULT_PICKER_PREFIX = "结果 "
+
+
+def result_picker(page, timeout=15):
+    """结果集下拉（combo box，条目文案「结果 {number}」；N < 2 时不出现）。"""
+    def probe():
+        for a in query(page, role_in=("combo box",)):
+            if nm(a).startswith(RESULT_PICKER_PREFIX):
+                return a
+        return None
+    return wait_until(probe, timeout, "result set picker (combo box '结果 N')")
+
+
+def result_picker_labels(page, timeout=15):
+    """读下拉的全部条目文案（展开 → 读 list item 文本 → 原样收起）。"""
+    picker = result_picker(page, timeout=timeout)
+    toggle = find_one(picker, role_in=("toggle button",))
+    opened = "expanded" not in states(picker)
+    if opened:
+        click(toggle)
+        wait_until(lambda: "expanded" in states(picker), 10, "结果集下拉展开")
+    try:
+        items = [i for i in query(_popup_root(page), role_in=("list item",))
+                 if query(i, role_in=("label",), max_depth=3)]
+        labels = []
+        for item in items:
+            texts = [nm(l).strip() for l in query(item, role_in=("label",), max_depth=3)
+                     if nm(l).strip()]
+            # 只收本下拉的条目（「结果 {number}」）：同窗口里还有连接 / 库下拉的条目。
+            if texts and texts[0].startswith(RESULT_PICKER_PREFIX):
+                labels.append(texts[0])
+        return labels
+    finally:
+        if opened and "expanded" in states(picker):
+            click(toggle)
+            wait_until(lambda: "expanded" not in states(picker), 10, "结果集下拉收起")
+
+
+def pick_result(page, label, timeout=15):
+    """在下拉里选 `label`（如「结果 2」）并等选中生效。"""
+    picker = result_picker(page, timeout=timeout)
+    if nm(picker).strip() == label:
+        return nm(picker)
+    toggle = find_one(picker, role_in=("toggle button",))
+    if "expanded" not in states(picker):
+        click(toggle)
+        wait_until(lambda: "expanded" in states(picker), 10, "结果集下拉展开")
+    root = _popup_root(page)
+    target = None
+    for item in query(root, role_in=("list item",)):
+        if any(nm(l).strip() == label for l in query(item, role_in=("label",), max_depth=3)):
+            target = item
+            break
+    if target is None:
+        expect(False, f"下拉里有条目「{label}」",
+               [nm(l).strip() for l in query(root, role_in=("label",))][:12])
+        raise UIError(f"结果集下拉里没有条目「{label}」")
+    lst = target.get_parent()
+    index = Atspi.Accessible.get_index_in_parent(target)
+    expect(bool(Atspi.Selection.select_child(lst, index)),
+           f"选中弹层条目「{label}」", index)
+    node = lst.get_parent()
+    for _ in range(4):
+        if node is None:
+            break
+        if "default.activate" in action_names(node):
+            Atspi.Action.do_action(node, 0)
+            break
+        node = node.get_parent()
+    return wait_until(lambda: nm(result_picker(page)).strip() == label, timeout,
+                      f"结果集下拉切到「{label}」")
+
+
+def _popup_root(page):
+    """弹层不在页面的静态子树里也有可能在窗口层：从 page 向上找到 frame。"""
+    node = page
+    while node is not None and role(node) != "frame":
+        node = node.get_parent()
+    return node if node is not None else page
+
+
+def summary_columns(page):
+    """摘要页两列结构：{键: 列容器 path}（键 → 该键所在行的父容器）。
+
+    用于断言「两列三行」的结构事实（左 计数 / 右 时间），不做样式断言。
+    """
+    out = {}
+    for a in query(page, role_in=("label",)):
+        key = nm(a)
+        if key not in SUMMARY_KEYS:
+            continue
+        row = a.get_parent()
+        column = row.get_parent() if row is not None else None
+        if column is None:
+            continue
+        try:
+            out.setdefault(key, tuple(column.path))
+        except Exception:
+            out.setdefault(key, None)
+    return out
+
+
+def close_current_query_tab(frame, timeout=15):
+    """关当前查询标签（`win.close-tab`，与 Ctrl+W 同一动作）：用例用完关页，
+    避免模块内累计到「有会话标签」上限 8。"""
+    before = query_tab_names(frame)
+    window_action(frame, "win.close-tab")
+    wait_until(lambda: len(query_tab_names(frame)) < len(before), timeout,
+               "当前查询标签关闭")
