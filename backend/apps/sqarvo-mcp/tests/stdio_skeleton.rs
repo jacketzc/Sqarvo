@@ -10,7 +10,8 @@
 //!
 //! 子进程的 `HOME`/`XDG_*` 全部指向临时目录，避免测试污染用户的真实配置/审计目录。
 
-#![cfg(test)]
+// The binary tests rely on XDG isolation for the real shared profile store.
+#![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -300,7 +301,7 @@ fn missing_config_starts_with_zero_connections_and_warns() {
     );
     outcome.assert_protocol_purity();
     assert!(
-        outcome.stderr.contains("空连接列表启动"),
+        outcome.stderr.contains("使用默认工具配置与查询限额"),
         "缺失配置必须在 stderr 告警：\n{}",
         outcome.stderr
     );

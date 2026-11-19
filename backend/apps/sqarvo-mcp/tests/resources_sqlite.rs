@@ -13,6 +13,9 @@
 //!
 //! 子进程的 `HOME`/`XDG_*` 全部指向临时目录，不污染用户真实的配置与审计目录。
 
+// The binary tests rely on XDG isolation for the real shared profile store.
+#![cfg(target_os = "linux")]
+
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -24,6 +27,8 @@ use sqarvo_common::QueryId;
 use sqarvo_connection::SessionManager;
 use sqarvo_driver_api::{ConnectionParams, DriverId, ExecuteRequest, TlsMode};
 use sqarvo_drivers::DriverRegistry;
+
+mod common;
 
 /// 单条协议消息等待上限。
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -269,6 +274,7 @@ async fn resources_are_listed_advertised_and_read_over_stdio() {
     let db = dir.path().join("resources.db");
     create_fixture(&db).await;
     let config = write_config(dir.path(), &sqlite_root(&db));
+    common::enable_access(&config, dir.path());
     let mut server = Server::spawn(&config, dir.path());
     server.initialize();
 
@@ -368,6 +374,7 @@ async fn tools_list_only_advertises_enabled_tools() {
     root["enabled_tools"] = serde_json::json!(["list_tables", "describe_table"]);
     let config = write_config(dir.path(), &root);
 
+    common::enable_access(&config, dir.path());
     let mut server = Server::spawn(&config, dir.path());
     server.initialize();
     let listed = server.request("tools/list", &serde_json::json!({}));

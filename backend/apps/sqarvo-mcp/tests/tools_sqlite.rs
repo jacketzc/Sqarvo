@@ -9,6 +9,9 @@
 //! - `explain_query` 在 SQLite 上明确返回 `mcp.unsupported`；
 //! - 非空 `schema` 参数返回驱动的 `capability.unsupported`（不静默忽略）。
 
+#[path = "support/profile_access.rs"]
+mod profile_access;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -21,7 +24,7 @@ use sqarvo_mcp::access::AccessService;
 use sqarvo_mcp::tools::{connection, explain, query, schema};
 
 /// 构造只含 `dev` SQLite 连接的访问服务。
-fn access(db: &Path, enabled_tools: Option<&[&str]>) -> AccessService {
+fn access(db: &Path, enabled_tools: Option<&[&str]>) -> profile_access::TestAccess {
     let mut root = serde_json::json!({
         "connections": [{
             "alias": "dev",
@@ -42,7 +45,7 @@ fn access(db: &Path, enabled_tools: Option<&[&str]>) -> AccessService {
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
-    AccessService::with_session_manager(Arc::new(config), sessions)
+    profile_access::service(config, sessions)
 }
 
 /// 直接经驱动执行一条语句（测试布置数据用，不经过只读策略）。
@@ -87,7 +90,9 @@ fn execute_params(sql: &str) -> query::ExecuteReadonlyQueryParams {
 async fn list_connections_does_not_open_a_connection() {
     let dir = tempfile::tempdir().expect("tempdir");
     let access = access(&dir.path().join("discovery.db"), None);
-    let output = connection::list_connections(&access).expect("列出连接");
+    let output = connection::list_connections(&access)
+        .await
+        .expect("列出连接");
     assert_eq!(output.count, 1);
     assert_eq!(output.connections[0].alias, "dev");
     assert_eq!(output.connections[0].driver_id, "sqlite");
