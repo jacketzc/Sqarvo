@@ -1638,7 +1638,7 @@ impl_notes = [
 trigger = "load"
 precondition = "结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列"
 result = "装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色）"
-source = "src/sql_page.rs:716、src/result_edit.rs:46、src/results.rs:608"
+source = "src/sql_page.rs:716、src/result_edit.rs:46、src/results.rs:854"
 
 [[component.interaction]]
 trigger = "load"
@@ -1650,13 +1650,13 @@ source = "src/sql_page.rs:723、src/sql_page.rs:748、src/result_edit.rs:79"
 trigger = "double_click"
 precondition = "结果可编辑、单元格可改"
 result = "打开与网格同一个编辑器；确定后按当前值重绘该行（未提交前不写库），并立刻重算行操作可用性（第一次编辑后 ✓ 即可点）"
-source = "src/results.rs:758、src/sql_page.rs:739"
+source = "src/results.rs:975、src/sql_page.rs:739"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "可编辑、没有未提交改动、没有待插入行（入口：状态栏 +）"
 result = "结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」"
-source = "src/results.rs:688、src/sql_page.rs:967、src/result_edit.rs:199"
+source = "src/results.rs:905、src/sql_page.rs:967、src/result_edit.rs:199"
 
 [[component.interaction]]
 trigger = "click"
@@ -1674,7 +1674,7 @@ source = "src/sql_page.rs:809、src/sql_page.rs:852、src/sql_page.rs:383"
 trigger = "click"
 precondition = "有脏行（入口：状态栏 ↶）"
 result = "全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」"
-source = "src/sql_page.rs:1034、src/results.rs:547"
+source = "src/sql_page.rs:1034、src/results.rs:768"
 
 [[component.interaction]]
 trigger = "load"

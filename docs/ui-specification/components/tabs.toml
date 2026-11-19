@@ -422,7 +422,7 @@ trigger = "key"
 keys = ["Esc"]
 precondition = "有查询在跑"
 result = "取消查询：与状态栏行 1 的「取消」同一个方法（发 Cancel、立即进入「已取消」，已取到的行保留；重复按幂等）。空闲时同一按键分流为「清空结果区行选中」"
-source = "src/sql_page.rs:521、src/sql_page.rs:69、src/results.rs:380"
+source = "src/sql_page.rs:521、src/sql_page.rs:69、src/results.rs:463"
 platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；Windows 是同一枚按钮换文案，Linux 页内没有取消按钮（在状态栏行 1）。"
 
 [component.sync.linux]
@@ -611,7 +611,7 @@ impl_notes = [
 trigger = "load"
 precondition = "结果区状态变化"
 result = "写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行"
-source = "src/results.rs:1074、src/sql_page.rs:617、src/sql_page.rs:643"
+source = "src/results.rs:1370、src/sql_page.rs:617、src/sql_page.rs:643"
 
 [[component.interaction]]
 trigger = "load"
@@ -845,7 +845,7 @@ impl_notes = [
 trigger = "load"
 precondition = "首批数据到达"
 result = "按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements）"
-source = "src/results.rs:1075、src/sql_page.rs:803、src/sql_page.rs:1190"
+source = "src/results.rs:1371、src/sql_page.rs:803、src/sql_page.rs:1190"
 platform_notes.windows = "说明位保留「结果集 K 段」（「只显示第 1 段」已在 #190 退役）；表头按当前选中语句的列元数据重建（frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:526；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1557）。"
 
 [component.sync.linux]
@@ -886,7 +886,7 @@ trigger = "key"
 keys = ["Esc"]
 precondition = "结果区有选中行、没有查询在跑"
 result = "清空行选中；执行中的 Esc 仍分流为「取消查询」"
-source = "src/results.rs:380、src/results.rs:383"
+source = "src/results.rs:463、src/results.rs:465"
 platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚动；Linux 的列同样固定宽、可拖动。"
 
 [component.sync.linux]
@@ -923,13 +923,13 @@ impl_notes = [
 trigger = "scroll"
 precondition = "结果仍在分批读取（has_more），且滚动到接近末尾"
 result = "自动发一次 FetchBatch 续拉下一批；同一时刻最多一批在飞，触顶后不再拉（暂停原因写日志）"
-source = "src/results.rs:1241、src/results.rs:1034"
+source = "src/results.rs:1537、src/results.rs:1253"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "服务端返回的批次读到底（has_more=false）"
 result = "不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」）"
-source = "src/results.rs:1074、src/sql_page.rs:589"
+source = "src/results.rs:1370、src/sql_page.rs:589"
 platform_notes.windows = "另有可点按的「加载更多」按钮（Linux 没有）；每批 200 行。"
 
 [component.sync.linux]
@@ -1083,7 +1083,7 @@ source = "src/sql_page.rs:1421、src/sql_page.rs:1468、src/sql_page.rs:1482"
 trigger = "click"
 precondition = "有脏行（dirty_rows()>0）"
 result = "先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区"
-source = "src/sql_page.rs:1421、src/results.rs:985、src/data_page.rs:5345"
+source = "src/sql_page.rs:1421、src/results.rs:1202、src/data_page.rs:5345"
 
 [[component.interaction]]
 trigger = "load"
@@ -1094,7 +1094,7 @@ source = "src/sql_page.rs:1321"
 [component.sync.linux]
 state = "done"
 spec_hash = "3d357f190844"
-evidence = "src/results.rs:360-365（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×）"
+evidence = "src/results.rs:450-457（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×）"
 
 [component.sync.windows]
 state = "partial"

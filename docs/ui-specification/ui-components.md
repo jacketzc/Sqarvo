@@ -565,13 +565,13 @@ kind `container` · status `active` · parent `data_page`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列 | 装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色） | `src/sql_page.rs:716、src/result_edit.rs:46、src/results.rs:608` |
+| load | 结果终态、唯一顶层 FROM 的简单 SELECT、覆盖全部主键列 | 装上编辑态：行操作组可用，日志「[query] 结果可编辑：表 users，3 行，主键 [id]」；状态圆点常驻（灰 = 没有未提交的更改，有脏行转强调色） | `src/sql_page.rs:716、src/result_edit.rs:46、src/results.rs:854` |
 | load | 上述任一不成立 | 行操作组整体置灰，tooltip 写明具体原因：「结果不是单表查询（JOIN / 聚合 / 子查询）：不能新增、编辑或删除」/「结果里没有主键列 X：定位不到要改的行，不能编辑」/「这张表没有主键：不能新增、编辑或删除」/「读取主键失败：…」——不静默灰掉 | `src/sql_page.rs:723、src/sql_page.rs:748、src/result_edit.rs:79` |
-| double_click | 结果可编辑、单元格可改 | 打开与网格同一个编辑器；确定后按当前值重绘该行（未提交前不写库），并立刻重算行操作可用性（第一次编辑后 ✓ 即可点） | `src/results.rs:758、src/sql_page.rs:739` |
-| click | 可编辑、没有未提交改动、没有待插入行（入口：状态栏 +） | 结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」 | `src/results.rs:688、src/sql_page.rs:967、src/result_edit.rs:199` |
+| double_click | 结果可编辑、单元格可改 | 打开与网格同一个编辑器；确定后按当前值重绘该行（未提交前不写库），并立刻重算行操作可用性（第一次编辑后 ✓ 即可点） | `src/results.rs:975、src/sql_page.rs:739` |
+| click | 可编辑、没有未提交改动、没有待插入行（入口：状态栏 +） | 结果末尾追加一行占位，各列写「（默认）」；双击各列填值，提交时按「省略未填列、交给数据库默认值」生成单行 INSERT（日志「[query] 新行草稿：第 N 行（占位）」）；已有未提交改动时提示「已经有未提交的更改：先提交或放弃，再新增行」，有占位行时提示「已经有一行待插入的新行：先提交或放弃它」 | `src/results.rs:905、src/sql_page.rs:967、src/result_edit.rs:199` |
 | click | 可编辑且有选中行（入口：状态栏 −） | 把选中行标记待删除（不立刻写库），可 ↶ 放弃；重绘后整行删除线 + 压暗，状态行「已标记删除 N 行（提交前可以放弃）」 | `src/sql_page.rs:979、src/result_edit.rs:177` |
 | click | 有脏行 / 待插入行（入口：状态栏 ✓ / Ctrl+S） | 走 ApplyRowChanges；全部成功后**自动重跑同一条语句**（results.statement()，不是编辑器里的当前文本），结果区写「已提交 N 行 · 已自动重新执行查询」/「已插入 N 行 · 已自动重新执行查询」；有失败行时**不重跑**，失败行留在草稿里 | `src/sql_page.rs:809、src/sql_page.rs:852、src/sql_page.rs:383` |
-| click | 有脏行（入口：状态栏 ↶） | 全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」 | `src/sql_page.rs:1034、src/results.rs:547` |
+| click | 有脏行（入口：状态栏 ↶） | 全部编辑、删除标记与新行草稿一起清掉，按草稿重绘并回到首行首列，状态行「已放弃未提交的更改」 | `src/sql_page.rs:1034、src/results.rs:768` |
 | load | 有未提交的更改且点了刷新（⟳） | 拒绝并写「有未提交的更改：先提交或放弃，再刷新」（重跑会换掉整个结果集，草稿没有落点） | `src/sql_page.rs:965` |
 
 ## 对话框（`dialogs`）
@@ -2761,7 +2761,7 @@ kind `control` · status `active` · parent `tabs.query`
 | click | 没有查询在跑，编辑器里有 SQL | 执行编辑器里的 SQL；执行中这枚按钮置灰（取消在状态栏行 1，不在页内）；成功后结果区进入「执行中…」并等首批 | `src/sql_page.rs:187、src/sql_page.rs:283、src/sql_page.rs:464、src/sql_page.rs:481、src/sql_page.rs:1203` |
 | click | 编辑器为空或只有空白 | 只写一行「SQL 不能为空：请输入后按 Ctrl+Enter」，不清掉已有结果、不发请求 | `src/sql_page.rs:346` |
 | key Ctrl+Enter | 没有查询在跑 | 与点「执行」同一条方法（不存在「只有按钮能用」的旁路） | `src/sql_page.rs:301、src/sql_page.rs:344` |
-| key Esc | 有查询在跑 | 取消查询：与状态栏行 1 的「取消」同一个方法（发 Cancel、立即进入「已取消」，已取到的行保留；重复按幂等）。空闲时同一按键分流为「清空结果区行选中」 | `src/sql_page.rs:521、src/sql_page.rs:69、src/results.rs:380` |
+| key Esc | 有查询在跑 | 取消查询：与状态栏行 1 的「取消」同一个方法（发 Cancel、立即进入「已取消」，已取到的行保留；重复按幂等）。空闲时同一按键分流为「清空结果区行选中」 | `src/sql_page.rs:521、src/sql_page.rs:69、src/results.rs:463` |
 
 ### `tabs.query.connection_picker` 查询标签的连接选择器
 
@@ -2822,7 +2822,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 结果区状态变化 | 写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行 | `src/results.rs:1074、src/sql_page.rs:617、src/sql_page.rs:643` |
+| load | 结果区状态变化 | 写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行 | `src/results.rs:1370、src/sql_page.rs:617、src/sql_page.rs:643` |
 | load | 语句没有结果集（UPDATE / INSERT / DDL） | 不假装有结果：写「影响 N 行」而不是画一张空表（Linux 写「语句 N 影响 N 行（无结果集）」） | `src/sql_page.rs:551、src/sql_page.rs:555` |
 
 ### `tabs.query.results` 结果区
@@ -2897,7 +2897,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 首批数据到达 | 按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements） | `src/results.rs:1075、src/sql_page.rs:803、src/sql_page.rs:1190` |
+| load | 首批数据到达 | 按列元数据重建列：每列一个表头「列名 · 原始类型」（无类型信息时只写列名）；多语句脚本按当前选中语句的列重建（Linux 见 tabs.query.results.statements） | `src/results.rs:1371、src/sql_page.rs:803、src/sql_page.rs:1190` |
 
 ### `tabs.query.results.grid` 结果行区（虚拟化表格）
 
@@ -2911,7 +2911,7 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key Esc | 结果区有选中行、没有查询在跑 | 清空行选中；执行中的 Esc 仍分流为「取消查询」 | `src/results.rs:380、src/results.rs:383` |
+| key Esc | 结果区有选中行、没有查询在跑 | 清空行选中；执行中的 Esc 仍分流为「取消查询」 | `src/results.rs:463、src/results.rs:465` |
 
 ### `tabs.query.results.more` 续拉（滚动到末尾自动续拉 / 「加载更多」）
 
@@ -2924,8 +2924,8 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| scroll | 结果仍在分批读取（has_more），且滚动到接近末尾 | 自动发一次 FetchBatch 续拉下一批；同一时刻最多一批在飞，触顶后不再拉（暂停原因写日志） | `src/results.rs:1241、src/results.rs:1034` |
-| load | 服务端返回的批次读到底（has_more=false） | 不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」） | `src/results.rs:1074、src/sql_page.rs:589` |
+| scroll | 结果仍在分批读取（has_more），且滚动到接近末尾 | 自动发一次 FetchBatch 续拉下一批；同一时刻最多一批在飞，触顶后不再拉（暂停原因写日志） | `src/results.rs:1537、src/results.rs:1253` |
+| load | 服务端返回的批次读到底（has_more=false） | 不再续拉：行区留在「已完成」，状态行回到正常态（不再常驻「已加载 N 行」） | `src/results.rs:1370、src/sql_page.rs:589` |
 
 ### `tabs.query.results.statements` 语句切换控件（多语句脚本）
 
@@ -2966,13 +2966,13 @@ kind `control` · status `active` · parent `tabs.query.results`
 
 - 无障碍：可访问名「关闭结果区」
 - 原生控件：gtk:GtkButton（window-close-symbolic，flat） / winui:— / swift:—
-- 同步：Linux done（src/results.rs:360-365（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×））；Windows partial（位置在结果说明行右端（Windows 查询页尚无导出入口，§7.1）；关闭 = ReleaseCursorAsync（Close RPC 幂等）+ ResetResults + ApplyQueryLayout，SQL 文本保留。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，弹窗 / 置灰观感待人工确认。当前结果网格只读（QueryModel.DirtyRowCount 恒 0），丢弃确认路径已接线但不会被触发。）；macOS none
+- 同步：Linux done（src/results.rs:450-457（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×））；Windows partial（位置在结果说明行右端（Windows 查询页尚无导出入口，§7.1）；关闭 = ReleaseCursorAsync（Close RPC 幂等）+ ResetResults + ApplyQueryLayout，SQL 文本保留。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，弹窗 / 置灰观感待人工确认。当前结果网格只读（QueryModel.DirtyRowCount 恒 0），丢弃确认路径已接线但不会被触发。）；macOS none
 - 实现备注：位置：结果区说明行（detail_row）右端、「导出 ▾」右侧（#189）；原生 symbolic 图标 window-close-symbolic + flat（L0），无可见文字，可访问名「关闭结果区」，tooltip「关闭结果区（释放查询资源）」。语义 = Close RPC（幂等，复用既有客户端路径）+ 清 query_id + 重置编辑态 + 重置结果区 + 隐藏并让编辑器占满整页；编辑器里的 SQL 文本保留。状态性不可用保持可见（AGENTS.md §8.1）：执行中（Loading / Streaming）置灰 + tooltip「查询执行中，请先取消」；空闲恢复可用。有脏行（dirty_rows()>0）先弹丢弃确认：「放弃未提交的更改？」正文「关闭结果区将丢弃 N 行未提交的更改。」，按钮 取消 / 放弃更改（破坏性、默认取消、关闭=取消），只接受第一次 response——与数据页 AlertDialog 同一口径；QA 自动应答复用 respond_dialog（只在 QA 参数下启用，不是产品路径的后门）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 结果区可见、非执行中、无脏行 | 释放游标（Close RPC）并隐藏结果区，编辑器占满整页；日志「结果区已关闭：游标已释放，编辑器占满整页」 | `src/sql_page.rs:1421、src/sql_page.rs:1468、src/sql_page.rs:1482` |
-| click | 有脏行（dirty_rows()>0） | 先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区 | `src/sql_page.rs:1421、src/results.rs:985、src/data_page.rs:5345` |
+| click | 有脏行（dirty_rows()>0） | 先弹「放弃未提交的更改？」（取消 / 放弃更改，破坏性、默认取消）；确认放弃才关闭，取消则保留结果区 | `src/sql_page.rs:1421、src/results.rs:1202、src/data_page.rs:5345` |
 | load | 查询执行中（Loading / Streaming） | 按钮置灰，tooltip「查询执行中，请先取消」；空闲恢复可用，tooltip 回到「关闭结果区（释放查询资源）」 | `src/sql_page.rs:1321` |
 
 ### `tabs.close_dialog` 关闭标签确认框
