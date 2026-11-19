@@ -18,6 +18,13 @@ fn profile_descriptor() -> FileDescriptorProto {
 fn profile_rpc_names_and_types_are_frozen() {
     let file = profile_descriptor();
     assert_eq!(file.package(), "sqarvo.services.v1");
+    assert_eq!(
+        file.options
+            .as_ref()
+            .expect("契约语言选项")
+            .csharp_namespace(),
+        "Sqarvo.Services.V1.Profiles"
+    );
     let [service] = file.service.as_slice() else {
         panic!("档案契约只有一个服务");
     };
