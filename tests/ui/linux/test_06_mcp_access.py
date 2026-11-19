@@ -1,6 +1,9 @@
 """MCP 策略菜单、风险确认与持久状态的 AT-SPI 功能覆盖。"""
 
 import json
+import os
+from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -124,6 +127,39 @@ def test_mcp_read_only_confirmation(app_with_profile):
                "恢复只读时访问继续启用", snapshot(inst))
 
 
+@pytest.mark.parametrize("direction,before,after", [
+    ("on", DISABLED, READABLE),
+    ("off", READABLE, DISABLED),
+])
+def test_external_mcp_policy_refresh_on_menu_open(app_with_profile, direction, before, after):
+    """注册表组件: workspace.status.mcp_indicator, workspace.manage.menu.mcp_access。"""
+    backend = os.environ.get("SQARVO_BACKEND_BIN")
+    configured = os.environ.get("SQARVO_MCP_BIN")
+    cli = (Path(configured) if configured else
+           Path(backend).with_name("sqarvo-mcp") if backend else None)
+    if cli is None or not cli.is_file():
+        pytest.skip("需要 sqarvo-mcp 测试二进制，请设置 SQARVO_MCP_BIN")
+    inst = app_with_profile
+    frame = inst.frame()
+    if direction == "off":
+        status(frame, DISABLED)
+        A.window_action(frame, "win.mcp-access")
+        respond(A.wait_dialog(inst.app, "启用 MCP 数据访问？"), "启用 MCP 数据访问")
+    status(frame, before)
+
+    command = [str(cli), "access", direction]
+    if direction == "on":
+        command.append("--yes")
+    result = subprocess.run(command, env=inst.env, check=True, capture_output=True, text=True,
+                            timeout=10)
+    expect(f"enabled={str(direction == 'on').lower()}" in result.stdout, "CLI 提交策略",
+           result.stdout)
+    status(frame, before)
+    menu = A.find_one(frame, role_in=("toggle button",), name="主菜单（文件 / 视图 / 帮助）")
+    A.click(menu)
+    status(frame, after)
+
+
 def test_malformed_profile_store_shows_error_without_reset():
     """注册表组件: object_tree.tree, workspace.status.mcp_indicator。"""
     inst = UiInstance("broken_profiles")
@@ -160,7 +196,14 @@ def test_edit_profile_preserves_id_and_increments_revision():
         frame = inst.frame()
         store = legacy.parent.parent / "connections.json"
         with step("edit_and_save_profile"):
-            dialog = A.wait_dialog(inst.app, "编辑连接")
+            try:
+                dialog = A.wait_dialog(inst.app, "编辑连接")
+            except A.UIError as error:
+                desktop_log = inst.home / "state/sqarvo/desktop.log"
+                if desktop_log.is_file():
+                    lines = desktop_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                    raise A.UIError(f"{error}\n" + "\n".join(lines[-30:])) from error
+                raise
             previous = json.loads(store.read_text(encoding="utf-8"))["profiles"][0]
             alias = A.find_one(dialog, role_in=("text", "entry"), name="别名（可选）", timeout=10)
             A.set_text(alias, "After")

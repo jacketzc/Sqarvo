@@ -144,6 +144,8 @@ Access is off and read-only protection is on by default. Save your profiles and 
 data access** from GTK or run `sqarvo-mcp access on`. This grants access to all current and future
 profiles. Restart MCP to use added or edited profiles. Run `sqarvo-mcp access off` to revoke access
 for subsequent requests without restarting. Turning off read-only protection leaves all V1 tools read-only.
+Query results can contain sensitive data. Use trusted AI clients and a dedicated read-only database
+account, or open SQLite files in read-only mode.
 
 The OS credential store holds passwords. Shared profiles hold credential references.
 `mcp.json` holds optional tool and limit settings. The local audit log records tool calls and

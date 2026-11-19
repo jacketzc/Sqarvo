@@ -1582,7 +1582,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「编辑连接…」
-- 同步：Linux done（§2.3 编辑连接）；Windows none（无树右键菜单。）；macOS none
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证启动菜单打开编辑对话框，保存保留 UUID 并推进 revision。）；Windows none（无树右键菜单。）；macOS none
 - 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。按 saved_key 重建对话框：对已关闭的 AdwDialog 调 present() 是空操作，复用旧实例会让这个条目「点了没反应」（#175）。编辑期间不留旧会话：配置改动只在下次连接时生效，留着旧标签会让人误以为已经生效。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1609,7 +1609,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「删除连接」
-- 同步：Linux done（隔离 GTK --qa-delete-connection 走真实确认，仅删除指定 UUID，剩余档案和备份保留。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 同步：Linux done（tests/integration/gtk_mcp_access.py 验证 GTK 删除档案后同一 MCP 子进程拒绝查询并释放 SQLite 文件描述符。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
 - 实现备注：档案删除失败提示「删除连接失败」；系统凭据引用可以被其他档案共用，删除档案时保留凭据。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -3130,11 +3130,12 @@ kind `control` · status `active` · parent `workspace`
 - 样式：槽位 `status_bar.row2`
 - 无障碍：可访问名「根据策略读取结果显示的状态文本」；Tab 状态文本不进入 Tab 顺序
 - 原生控件：gtk:GtkLabel / winui:— / swift:—
-- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py 验证四种状态指示的可访问名称。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py 验证状态的可访问名称，以及 CLI 开关变更后打开主菜单刷新状态。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 启动态或已连接工作区 | 常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。 | `src/shell.rs:1271、src/mcp_access.rs:271` |
+| click | GTK 窗口已连接后端，用户打开主菜单 | 从 gRPC 重新读取访问和只读策略，更新菜单及状态；反映外部 CLI 已提交的变更。 | `src/ui.rs:338、src/mcp_access.rs:123` |
 
 ## 待清理（按版本）
 

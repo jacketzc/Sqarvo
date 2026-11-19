@@ -101,10 +101,16 @@ precondition = "启动态或已连接工作区"
 result = "常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。"
 source = "src/shell.rs:1271、src/mcp_access.rs:271"
 
+[[component.interaction]]
+trigger = "click"
+precondition = "GTK 窗口已连接后端，用户打开主菜单"
+result = "从 gRPC 重新读取访问和只读策略，更新菜单及状态；反映外部 CLI 已提交的变更。"
+source = "src/ui.rs:338、src/mcp_access.rs:123"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "1f895fe959f2"
-evidence = "tests/ui/linux/test_06_mcp_access.py 验证四种状态指示的可访问名称。"
+spec_hash = "d872272a84d4"
+evidence = "tests/ui/linux/test_06_mcp_access.py 验证状态的可访问名称，以及 CLI 开关变更后打开主菜单刷新状态。"
 
 [component.sync.windows]
 state = "blocked"

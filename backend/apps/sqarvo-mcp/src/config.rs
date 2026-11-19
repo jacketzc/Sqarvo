@@ -428,25 +428,21 @@ pub fn load(explicit: Option<&Path>) -> Result<LoadOutcome> {
 
 /// 从 JSON 文本解析配置（不做语义校验，供测试与 [`load`] 复用）。
 ///
-/// serde 的错误文案可能回显字段值，所以转成项目错误时统一截断成单行短文本，
-/// 避免把用户误填的长内容（可能含敏感信息）整段写进日志。
+/// 诊断仅报告错误类型与位置，避免 serde 的文案回显配置内容。
 pub fn parse(text: &str) -> Result<McpConfig> {
     serde_json::from_str(text).map_err(|error| {
+        let reason = match error.classify() {
+            serde_json::error::Category::Io => "读取失败",
+            serde_json::error::Category::Syntax => "JSON 语法无效",
+            serde_json::error::Category::Data => "字段不符合配置格式",
+            serde_json::error::Category::Eof => "JSON 意外结束",
+        };
         config_error(format!(
-            "mcp.json 解析失败：{}",
-            sanitize_message(&error.to_string())
+            "mcp.json 解析失败：{reason}（第 {} 行，第 {} 列）",
+            error.line(),
+            error.column()
         ))
     })
-}
-
-fn sanitize_message(message: &str) -> String {
-    const MAX_CHARS: usize = 200;
-    let single_line = message.replace(['\n', '\r'], " ");
-    if single_line.chars().count() <= MAX_CHARS {
-        return single_line;
-    }
-    let truncated: String = single_line.chars().take(MAX_CHARS).collect();
-    format!("{truncated}…")
 }
 
 impl McpConfig {
@@ -490,20 +486,14 @@ fn tool_policy(
         return Ok(ToolPolicy::All);
     };
     let mut selected = BTreeSet::new();
-    let mut unknown = Vec::new();
     for name in names {
-        if V1_TOOL_NAMES.contains(&name.as_str()) {
-            selected.insert(name);
-        } else {
-            unknown.push(name);
+        if !V1_TOOL_NAMES.contains(&name.as_str()) {
+            return Err(config_error(format!(
+                "enabled_tools 含未知工具名；本版本支持：{}",
+                V1_TOOL_NAMES.join("、")
+            )));
         }
-    }
-    if !unknown.is_empty() {
-        return Err(config_error(format!(
-            "enabled_tools 含未知工具名：{}；本版本支持：{}",
-            unknown.join("、"),
-            V1_TOOL_NAMES.join("、")
-        )));
+        selected.insert(name);
     }
     if selected.is_empty() {
         warnings.push(
@@ -826,7 +816,8 @@ mod tests {
         let value = serde_json::json!({ "connections": [], "enable_tools": ["list_tables"] });
         let error = parse(&value.to_string()).expect_err("顶层未知字段必须拒绝");
         assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
-        assert!(error.message().contains("enable_tools"));
+        assert!(error.message().contains("字段不符合配置格式"));
+        assert!(!error.message().contains("enable_tools"));
     }
 
     #[test]
@@ -834,7 +825,7 @@ mod tests {
         let mut value = sqlite_profile("dev");
         value.as_object_mut().expect("object").remove("enabled");
         let error = validate_json(&value).expect_err("缺少 enabled 必须拒绝");
-        assert!(error.message().contains("enabled"));
+        assert!(error.message().contains("字段不符合配置格式"));
     }
 
     #[test]
@@ -996,7 +987,8 @@ mod tests {
             "enabled_tools": ["list_tables", "drop_database"]
         });
         let error = validate_json(&value).expect_err("未知工具名必须拒绝启动");
-        assert!(error.message().contains("drop_database"));
+        assert!(error.message().contains("enabled_tools"));
+        assert!(!error.message().contains("drop_database"));
     }
 
     #[test]

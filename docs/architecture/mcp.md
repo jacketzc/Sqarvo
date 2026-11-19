@@ -189,9 +189,12 @@ Agent 提交的 SQL
    │      解析失败 → mcp.sql_parse（fail-closed）
    │      语句数 ≠ 1、非 Query 顶层、INTO、锁读、hint、危险函数、:= 赋值 → mcp.readonly_violation
    ├─ ③ 服务端限额：200 行默认 / 1000 硬上限、1 MiB、10 s（超时即取消）
-   ├─ ④ 驱动层：标识符引用、参数化、只读事务与会话语义
+   ├─ ④ 驱动层：标识符引用、参数化、SQLite 连接的只读模式
    └─ ⑤ 数据库账号：只给 SELECT 的专用账号（运维侧，见 mcp-tools.md 的 SQL 模板）
 ```
+
+MCP V1 查询沿用驱动的会话语义。MariaDB 的只读事务由显式事务调用开启，
+MCP 查询依靠 AST 策略和数据库账号的最小权限。[只读账号配置](../api/mcp-tools.md#8-mariadb-只读账号模板)
 
 判定要点（完整矩阵与理由见 [ADR 0033](../decisions/0033-sql-parser-readonly-policy.md)）：
 

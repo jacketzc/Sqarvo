@@ -811,7 +811,7 @@ source = "src/ui.rs:3781、src/ui.rs:3826"
 state = "done"
 spec_hash = "b97f99439c9e"
 commit = "7436cd5"
-evidence = "§2.3 编辑连接"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证启动菜单打开编辑对话框，保存保留 UUID 并推进 revision。"
 
 [component.sync.windows]
 state = "none"
@@ -878,7 +878,7 @@ source = "src/ui.rs:1796、src/ui.rs:701"
 state = "done"
 spec_hash = "5317d49edc99"
 commit = "7436cd5"
-evidence = "隔离 GTK --qa-delete-connection 走真实确认，仅删除指定 UUID，剩余档案和备份保留。"
+evidence = "tests/integration/gtk_mcp_access.py 验证 GTK 删除档案后同一 MCP 子进程拒绝查询并释放 SQLite 文件描述符。"
 
 [component.sync.windows]
 state = "blocked"

@@ -54,8 +54,9 @@ python3 tests/integration/gtk_mcp_access.py \
 
 需要 Python 3、`dbus-run-session`、X11 显示和 Linux `/proc`。无桌面环境时，
 可将最后一条命令放在 `xvfb-run -a` 下运行。测试使用独立 D-Bus 会话、应用 ID、HOME 与 XDG 目录。
-GTK 的启用与关闭操作经真实后端请求，前后与同一 MCP 子进程通信。测试核对旧档案合流、
-旧授权不继承、SQLite 查询结果、撤销后工具和资源拒绝，以及 SQLite 文件描述符释放。
+两个场景分别从旧档案合流和 GTK 新建档案开始。GTK 经真实后端请求更新策略，场景内始终
+使用同一个 MCP 子进程。测试核对旧授权不继承、SQLite 查询结果、只读切换后仍拒绝写 SQL、
+关停后工具和资源拒绝及审计、删除档案即时撤销与 SQLite 文件描述符释放。
 
 ## 启动测试数据库
 

@@ -72,7 +72,10 @@ impl SavedConnection {
         if profile.profile_id.is_empty() || profile.revision == 0 {
             return Err(invalid_response());
         }
-        let file_path = if profile.file_path.is_empty() && params.driver_id == SQLITE_DRIVER_ID {
+        let file_path = if params.driver_id == SQLITE_DRIVER_ID {
+            if !profile.file_path.is_empty() && profile.file_path != params.host {
+                return Err(invalid_response());
+            }
             params.host.clone()
         } else {
             profile.file_path

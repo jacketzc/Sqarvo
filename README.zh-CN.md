@@ -134,6 +134,8 @@ cd backend && cargo build -p sqarvo-mcp --release
 或运行 `sqarvo-mcp access on`，授权当前和以后新增的全部档案。新增或编辑档案后需要重启
 MCP 才能使用。运行 `sqarvo-mcp access off` 即可撤销后续请求的访问权限。关闭只读保护后，
 V1 工具仍只提供只读功能。
+查询结果可能包含敏感数据。请使用可信的 AI 客户端和专用只读数据库账号，或以只读模式
+打开 SQLite 文件。
 
 操作系统凭据库保存密码，共享档案保存凭据引用。`mcp.json` 存放可选的工具和限额设置。
 本地审计记录工具调用和 SQL 指纹。[共享档案与迁移](docs/api/connection-profiles.md) ·

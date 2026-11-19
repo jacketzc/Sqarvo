@@ -138,6 +138,32 @@ fn write_json(path: &Path, doc: &Value) {
     fs::write(path, serde_json::to_vec(doc).unwrap()).unwrap();
 }
 
+#[test]
+fn sqlite_legacy_path_is_completed_and_conflicting_documents_fail_closed() {
+    let root = TempDir::new().unwrap();
+    let store = store_at(root.path());
+    let mut sqlite = profile("sqlite fixture", 0);
+    sqlite.params.driver_id = DriverId::new("sqlite").unwrap();
+    sqlite.params.host = "/tmp/case-sensitive.sqlite".to_owned();
+    let saved = store.save(sqlite, None).unwrap();
+    let file = document_path(root.path());
+
+    let valid: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    for field in ["file_path", "host"] {
+        let mut legacy = valid.clone();
+        legacy["profiles"][0][field] = json!("");
+        write_json(&file, &legacy);
+        let before = fs::read(&file).unwrap();
+        assert_eq!(store.get(saved.profile_id).unwrap(), saved);
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+
+    let mut invalid = valid;
+    invalid["profiles"][0]["file_path"] = json!("/tmp/private-input");
+    write_json(&file, &invalid);
+    assert_failed_closed(&store, &file);
+}
+
 fn assert_failed_closed(store: &ProfileStore, path: &Path) {
     let before = fs::read(path).unwrap();
     let error = store.snapshot().unwrap_err();
@@ -280,7 +306,7 @@ fn subprocess_writer() {
             .unwrap();
         assert!(try_lock(&lock, LockMode::Exclusive).unwrap());
         fs::write(root.join(&role), b"locked").unwrap();
-        wait_for_files(root, &["go"]);
+        wait_for_files(root, &["release-lock"]);
         drop(lock);
         return;
     }
@@ -329,6 +355,11 @@ fn wait_for_files(root: &Path, files: &[&str]) {
 
 fn spawn_writer(root: &Path, role: &str, id: Option<Uuid>) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
+    configure_writer(&mut command, root, role, id);
+    command.spawn().unwrap()
+}
+
+fn configure_writer(command: &mut Command, root: &Path, role: &str, id: Option<Uuid>) {
     command
         .args(["--exact", "subprocess_writer"])
         .env(CHILD_ROOT, root)
@@ -338,7 +369,6 @@ fn spawn_writer(root: &Path, role: &str, id: Option<Uuid>) -> Child {
     if let Some(id) = id {
         command.env(CHILD_ID, id.to_string());
     }
-    command.spawn().unwrap()
 }
 
 fn run_writers(root: &Path, id: Option<Uuid>) -> [String; 2] {
@@ -364,6 +394,26 @@ fn two_processes_create_distinct_profiles_without_losing_updates() {
     assert_eq!(doc.profiles.len(), 2);
     assert!(doc.profiles.iter().any(|profile| profile.name == "first"));
     assert!(doc.profiles.iter().any(|profile| profile.name == "second"));
+}
+
+#[test]
+fn two_processes_edit_different_profiles_without_losing_updates() {
+    let root = TempDir::new().unwrap();
+    let store = store_at(root.path());
+    let first = store.save(profile("before A", 3306), None).unwrap();
+    let second = store.save(profile("before B", 3307), None).unwrap();
+    let mut first_writer = spawn_writer(root.path(), "first", Some(first.profile_id));
+    let mut second_writer = spawn_writer(root.path(), "second", Some(second.profile_id));
+    wait_for_files(root.path(), &["first", "second"]);
+    fs::write(root.path().join("go"), b"write").unwrap();
+    assert!(first_writer.wait().unwrap().success());
+    assert!(second_writer.wait().unwrap().success());
+    for (role, saved) in [("first", first), ("second", second)] {
+        let updated = store.get(saved.profile_id).unwrap();
+        assert_eq!(updated.name, role);
+        assert_eq!(updated.revision, saved.revision + 1);
+    }
+    assert_eq!(store.snapshot().unwrap().revision, 4);
 }
 
 #[test]
@@ -426,14 +476,63 @@ fn profile_and_policy_updates_in_separate_processes_do_not_overwrite_each_other(
 fn killed_lock_holder_releases_the_lock_without_replacing_the_document() {
     let root = TempDir::new().unwrap();
     let store = store_at(root.path());
-    let saved = store.save(profile("original", 3306), None).unwrap();
+    let saved = store.save(profile("original", 3307), None).unwrap();
     let mut holder = spawn_writer(root.path(), "lock-holder", None);
     wait_for_files(root.path(), &["lock-holder"]);
+    let mut writer = spawn_writer(root.path(), "first", None);
+    wait_for_files(root.path(), &["first"]);
+    fs::write(root.path().join("go"), b"write").unwrap();
+    let original = fs::read(document_path(root.path())).unwrap();
+    thread::sleep(Duration::from_millis(200));
+    let waited = writer.try_wait().unwrap().is_none();
+    let unchanged = fs::read(document_path(root.path())).unwrap() == original;
     holder.kill().unwrap();
     assert!(!holder.wait().unwrap().success());
+    assert!(writer.wait().unwrap().success());
+    assert!(waited);
+    assert!(unchanged);
     assert_eq!(store.get(saved.profile_id).unwrap(), saved);
-    store
-        .save(profile("after forced exit", 3307), None)
-        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.path().join("first-result")).unwrap(),
+        "ok"
+    );
     assert_eq!(store.snapshot().unwrap().revision, 2);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn write_interruption_preserves_previous_document_and_leaves_recoverable_temp() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let root = TempDir::new().unwrap();
+    let store = store_at(root.path());
+    let saved = store.save(profile(&"x".repeat(4096), 3307), None).unwrap();
+    let original = fs::read(document_path(root.path())).unwrap();
+    let mut command = Command::new("sh");
+    // POSIX ulimit units vary by shell. A single block is smaller than the existing
+    // document, so an unrelated profile save hits the limit before rename.
+    command.args(["-c", "ulimit -f 1 && exec \"$@\"", "profile-write"]);
+    command.arg(std::env::current_exe().unwrap());
+    configure_writer(&mut command, root.path(), "first", None);
+    let mut writer = command.spawn().unwrap();
+    wait_for_files(root.path(), &["first"]);
+    fs::write(root.path().join("go"), b"write").unwrap();
+    assert_eq!(writer.wait().unwrap().signal(), Some(libc::SIGXFSZ));
+    assert_eq!(fs::read(document_path(root.path())).unwrap(), original);
+    let abandoned = || {
+        fs::read_dir(root.path().join("config"))
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("connections.json.tmp-")
+            })
+            .count()
+    };
+    assert_eq!(abandoned(), 1);
+    store.run_once_migration().unwrap();
+    assert_eq!(abandoned(), 0);
+    assert_eq!(store.get(saved.profile_id).unwrap(), saved);
 }

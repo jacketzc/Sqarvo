@@ -51,7 +51,7 @@ pub struct ConnectionProfile {
     /// 驱动参数，展平为档案 JSON 的字段。
     #[serde(flatten)]
     pub params: ConnectionParams,
-    /// 文件型驱动的路径，服务器连接留空。
+    /// SQLite 的兼容字段，读取和写入时与驱动的 host 路径统一。
     #[serde(default)]
     pub file_path: String,
     /// GUI 使用的可选显示名称。
@@ -65,6 +65,23 @@ pub struct ConnectionProfile {
 impl ConnectionProfile {
     fn valid_id(id: Uuid) -> bool {
         id.get_version() == Some(Version::Random) && id.get_variant() == uuid::Variant::RFC4122
+    }
+
+    fn normalize_sqlite_path(&mut self) -> Result<()> {
+        if self.params.driver_id.as_str() != "sqlite" {
+            return Ok(());
+        }
+        // host 是驱动使用的路径。旧文档只填写一处时，用已填写的值补齐。
+        if self.params.host.is_empty() {
+            self.params.host.clone_from(&self.file_path);
+        }
+        if self.file_path.is_empty() {
+            self.file_path.clone_from(&self.params.host);
+        }
+        if self.params.host != self.file_path {
+            return Err(invalid("SQLite 档案的 file_path 与 host 路径不一致"));
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<()> {
@@ -96,6 +113,10 @@ impl ConnectionProfile {
         let other_params = &other.params;
         if params.driver_id != other_params.driver_id {
             return false;
+        }
+        if cfg!(target_os = "linux") && params.driver_id.as_str() == "sqlite" {
+            // 保留路径大小写及原始拼写。折叠 .. 或解析符号链接可能改变实际目标。
+            return params.host == other_params.host;
         }
         if !self.file_path.is_empty() || !other.file_path.is_empty() {
             return !self.file_path.is_empty()
@@ -172,6 +193,12 @@ impl Default for ProfileDocument {
 }
 
 impl ProfileDocument {
+    fn normalize_paths(&mut self) -> Result<()> {
+        self.profiles
+            .iter_mut()
+            .try_for_each(ConnectionProfile::normalize_sqlite_path)
+    }
+
     fn validate(&self) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(invalid("不支持该共享连接档案格式版本"));
@@ -284,6 +311,7 @@ impl ProfileStore {
         mut profile: ConnectionProfile,
         expected_revision: Option<u64>,
     ) -> Result<ConnectionProfile> {
+        profile.normalize_sqlite_path()?;
         self.update(|doc| {
             let existing = if profile.profile_id.is_nil() {
                 unique_match(
@@ -391,12 +419,13 @@ impl ProfileStore {
 
     fn load(&self) -> Result<ProfileDocument> {
         let path = self.config_dir.join(FILE_NAME);
-        let doc = match files::read(&path) {
+        let mut doc = match files::read(&path) {
             Ok(payload) => serde_json::from_slice::<ProfileDocument>(&payload)
                 .map_err(|_| invalid("共享连接档案 JSON 格式非法"))?,
             Err(err) if err.kind() == ErrorKind::NotFound => ProfileDocument::default(),
             Err(err) => return Err(files::safe_io_error(err)),
         };
+        doc.normalize_paths()?;
         doc.validate()?;
         Ok(doc)
     }
@@ -410,6 +439,7 @@ impl ProfileStore {
     }
 
     fn commit(&self, doc: &mut ProfileDocument) -> Result<()> {
+        doc.normalize_paths()?;
         doc.validate()?;
         doc.revision = next_revision(doc.revision)?;
         let payload = serde_json::to_vec_pretty(doc)

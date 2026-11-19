@@ -195,8 +195,16 @@ fn parse_source(path: PathBuf, kind: SourceKind, bytes: &[u8]) -> Result<Option<
         let mut profiles: Vec<ConnectionProfile> = Vec::with_capacity(legacy.connections.len());
         for entry in legacy.connections {
             let profile = entry.into_profile()?;
-            // 两种旧 GUI 保留同一目标的最后一条记录。
-            if let Some(index) = profiles.iter().position(|old| old.same_target(&profile)) {
+            // Linux SQLite 同一文件也可以有不同的名称或只读模式，迁移时保留这些条目。
+            let same_entry = |old: &ConnectionProfile| {
+                old.same_target(&profile)
+                    && (!matches!(kind, SourceKind::Gtk)
+                        || profile.params.driver_id.as_str() != "sqlite"
+                        || (old.name == profile.name
+                            && old.display_name == profile.display_name
+                            && old.params == profile.params))
+            };
+            if let Some(index) = profiles.iter().position(same_entry) {
                 profiles.remove(index);
             }
             profiles.push(profile);
@@ -632,6 +640,50 @@ mod tests {
             serde_json::from_slice(&fs::read(store.config_dir.join(PROFILE_FILE_NAME)).unwrap())
                 .unwrap();
         assert_eq!(after, document);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn gtk_migration_preserves_distinct_sqlite_paths_with_the_same_name() {
+        let root = tempfile::tempdir().unwrap();
+        let store = isolated_store(root.path());
+        let gtk = store.config_dir.join("Sqarvo/connections.json");
+        let files = [
+            root.path().join("Sample.sqlite"),
+            root.path().join("sample.sqlite"),
+        ];
+        fs::write(&files[0], b"first fixture").unwrap();
+        fs::write(&files[1], b"second fixture").unwrap();
+        let mut entries = files
+            .map(|file_path| {
+                json!({
+                    "name": "same name", "driver": "sqlite", "host": "", "port": 0,
+                    "database": "", "username": "", "file_path": file_path, "read_only": true,
+                    "tls_mode": "disabled", "credential_ref": ""
+                })
+            })
+            .to_vec();
+        let mut editable = entries[0].clone();
+        editable["read_only"] = json!(false);
+        entries.push(editable);
+        entries.push(entries[0].clone());
+        let original = write_json(&gtk, &json!({"version": 1, "connections": entries}));
+
+        store.run_once_migration().unwrap();
+        let document = store.snapshot().unwrap();
+        assert_eq!(document.profiles.len(), 3);
+        for (profile, entry) in document.profiles.iter().zip(&entries[1..]) {
+            assert_eq!(profile.name, "same name");
+            assert_eq!(entry["file_path"], profile.file_path);
+            assert_eq!(profile.params.host, profile.file_path);
+            assert_eq!(
+                profile.params.properties["read_only"],
+                entry["read_only"].to_string()
+            );
+        }
+        assert_eq!(fs::read(backup_path(&gtk, ".bak")).unwrap(), original);
+        store.run_once_migration().unwrap();
+        assert_eq!(store.snapshot().unwrap(), document);
     }
 
     #[test]

@@ -580,7 +580,7 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | `mcp.result_too_large` | `resource_exhausted` | **是** | 资源 JSON 超 `max_result_bytes` | 改用粒度更细的工具分批读 |
 | `query.cancelled` | `cancelled` | 是 | 客户端断开或 `notifications/cancelled`，已取消驱动查询 | 需要就重发 |
 | `mcp.internal` | `internal` | 否 | 内部缺陷；**也包括审计写入失败**（成功路径的审计写不进 → 结果不交付） | 报障，附 `request_id` |
-| `config.invalid` | `invalid_argument` | 否 | `mcp.json` 非法 → **拒绝启动**（不是运行时错误） | 看 stderr 那一行原因 |
+| `config.invalid` | `invalid_argument` | 否 | `mcp.json` 非法 → **拒绝启动**（不是运行时错误） | 看 stderr 中的字段提示或错误位置。诊断省略无效的用户输入值 |
 | `credential.not_found` / `credential.unavailable` | `not_found` / `unavailable` | 否 / 是 | 密钥环里没有该引用 / 密钥环不可用 | `credentials set` 补写 / 修 Secret Service |
 | `session.not_found` / `transport.failed` | — | — | 会话消失 → 触发一次「重连 + 重试」 | 无需处理，重试对用户透明 |
 

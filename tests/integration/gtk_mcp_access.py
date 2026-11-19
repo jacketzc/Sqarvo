@@ -20,11 +20,16 @@ def check(condition, message):
         raise AssertionError(message)
 
 
-def seed_profiles(root, config_root):
-    database = root / "gtk.sqlite"
+DEFAULT_POLICY = {"enabled": False, "read_only": True}
+
+
+def seed_database(database):
     with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("CREATE TABLE access_probe (value INTEGER)")
         connection.execute("INSERT INTO access_probe VALUES (42)")
+
+
+def seed_profiles(database, config_root):
     desktop_file = config_root / "Sqarvo" / "connections.json"
     desktop_file.parent.mkdir(parents=True)
     desktop_file.write_text(
@@ -51,15 +56,13 @@ def seed_profiles(root, config_root):
             "connections": [{
                 "alias": "legacy-mcp-qa",
                 "driver_id": "sqlite",
-                "host": str(root / "legacy.sqlite"),
+                "host": str(database.with_name("legacy.sqlite")),
                 "properties": {"read_only": "true"},
                 "enabled": True,
             }],
         }),
         encoding="utf-8",
     )
-    return database
-
 
 class McpClient:
     def __init__(self, child):
@@ -96,10 +99,10 @@ class McpClient:
         return reply["result"]
 
 
-def run_gtk(desktop, environment, action, indicator):
+def run_gtk_qa(desktop, environment, *args):
     command = [
         "dbus-run-session", "--", desktop, "--qa-exit-after-ms", "6000",
-        "--qa-mcp-access", action, "--qa-mcp-indicator", indicator,
+        *args,
     ]
     with subprocess.Popen(
         command,
@@ -115,9 +118,15 @@ def run_gtk(desktop, environment, action, indicator):
         except subprocess.TimeoutExpired:
             os.killpg(child.pid, signal.SIGKILL)
             output, _ = child.communicate()
-            raise AssertionError(f"GTK {action} timed out\n{output}") from None
+            raise AssertionError(f"GTK {args} timed out\n{output}") from None
         check(child.returncode == 0, output)
+    check("[qa] 断言失败" not in output, output)
+    return output
 
+
+def run_gtk(desktop, environment, action, indicator):
+    output = run_gtk_qa(desktop, environment, "--qa-mcp-access", action,
+                        "--qa-mcp-indicator", indicator)
     observations = [
         "MCP 菜单动作可用",
         "MCP 动作方向",
@@ -129,7 +138,6 @@ def run_gtk(desktop, environment, action, indicator):
     for observation in observations:
         marker = f"[qa] 断言通过：{observation}"
         check(marker in output, f"Missing {marker}\n{output}")
-    check("[qa] 断言失败" not in output, output)
     print(f"GTK {action}: " + "; ".join(observations))
 
 
@@ -149,7 +157,16 @@ def open_database(pid, database):
     return False
 
 
-def exercise(args, root):
+def snapshot(profile_path):
+    return json.loads(profile_path.read_text(encoding="utf-8"))
+
+
+def assert_read(client, query):
+    result = client.call("execute_readonly_query", query)
+    check(not result.get("isError") and result["structuredContent"]["rows"] == [[42]], result)
+
+
+def exercise(args, root, *, migrated_profiles):
     fake_home = root / "home"
     fake_home.mkdir()
     environment = os.environ.copy()
@@ -168,7 +185,19 @@ def exercise(args, root):
     environment["GDK_BACKEND"] = "x11"
 
     config = Path(environment["XDG_CONFIG_HOME"]) / "sqarvo"
-    database = seed_profiles(root, config)
+    profile_path = config / "connections.json"
+    database = root / "gtk.sqlite"
+    seed_database(database)
+    if migrated_profiles:
+        seed_profiles(database, config)
+    else:
+        qa_profile = root / "profile.json"
+        qa_profile.write_text(json.dumps({
+            "driver": "sqlite", "name": "gtk-qa", "path": str(database), "read_only": True,
+        }), encoding="utf-8")
+        run_gtk_qa(args.desktop, environment, "--qa-profile", str(qa_profile))
+        saved, = snapshot(profile_path)["profiles"]
+        check(saved["revision"] == 1 and saved["file_path"] == str(database), saved)
     with tempfile.TemporaryFile(mode="w+b") as diagnostics:
         child = subprocess.Popen(
             [args.mcp], env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -185,30 +214,47 @@ def exercise(args, root):
             client.send("notifications/initialized", {}, notify=True)
 
             assert_denied(client.call("list_connections", {}))
-            check((config / "Sqarvo" / "connections.json.bak").is_file(), "missing GTK backup")
-            check((config / "mcp.json.bak").is_file(), "missing MCP backup")
-            check(json.loads((config / "mcp.json").read_text(encoding="utf-8")) == {},
-                  "MCP legacy profiles survived in service config")
-            profile_path = config / "connections.json"
-            migrated = json.loads(profile_path.read_text(encoding="utf-8"))
-            default_policy = {"enabled": False, "read_only": True}
-            check(migrated["mcp"] == default_policy, migrated["mcp"])
-            check(len(migrated["profiles"]) == 2 and len(migrated["migration_state"]) == 2,
-                  "expected exactly one import from each source")
-            print("GTK and MCP legacy files migrated; legacy enabled=true grants no access")
+            initial = snapshot(profile_path)
+            check(initial["mcp"] == DEFAULT_POLICY, initial["mcp"])
+            if migrated_profiles:
+                check((config / "Sqarvo" / "connections.json.bak").is_file(), "missing GTK backup")
+                check((config / "mcp.json.bak").is_file(), "missing MCP backup")
+                check(snapshot(config / "mcp.json") == {}, "legacy MCP profiles survived in service config")
+                check(len(initial["profiles"]) == 2 and len(initial["migration_state"]) == 2,
+                      "expected exactly one import from each source")
+                print("GTK and MCP legacy files migrated; legacy enabled=true grants no access")
 
             run_gtk(args.desktop, environment, "on", "readonly")
             listing = client.call("list_connections", {})
             check(not listing.get("isError"), listing)
             aliases = {item["alias"] for item in listing["structuredContent"]["connections"]}
-            check(aliases == {"gtk-qa", "legacy-mcp-qa"}, aliases)
+            if migrated_profiles:
+                check(aliases == {"gtk-qa", "legacy-mcp-qa"}, aliases)
+            else:
+                check(len(aliases) == 1, aliases)
             query = {
-                "connection_alias": "gtk-qa", "database": "", "sql": "SELECT value FROM access_probe",
+                "connection_alias": "gtk-qa" if migrated_profiles else saved["profile_id"],
+                "database": "", "sql": "SELECT value FROM access_probe",
             }
-            result = client.call("execute_readonly_query", query)
-            check(not result.get("isError") and result["structuredContent"]["rows"] == [[42]], result)
+            assert_read(client, query)
             check(open_database(child.pid, database), "MCP did not hold a SQLite file descriptor")
-            print(f"MCP PID {child.pid} sees both profiles and queried [[42]]; SQLite FD open")
+            print(f"MCP PID {child.pid} sees {len(aliases)} profile(s) and queried [[42]]; SQLite FD open")
+
+            expected_writes = 2
+            if not migrated_profiles:
+                run_gtk_qa(args.desktop, environment, "--qa-mcp-readonly", "off",
+                           "--qa-mcp-indicator", "writable")
+                check(snapshot(profile_path)["mcp"] == {"enabled": True, "read_only": False},
+                      "GTK did not disable read-only")
+                rejected = client.call("execute_readonly_query", {**query, "sql": "DELETE FROM access_probe"})
+                check(rejected.get("isError") and rejected["structuredContent"]["error"]["code"]
+                      == "mcp.readonly_violation", rejected)
+                run_gtk_qa(args.desktop, environment, "--qa-mcp-readonly", "on",
+                           "--qa-mcp-indicator", "readonly")
+                check(snapshot(profile_path)["mcp"] == {"enabled": True, "read_only": True},
+                      "GTK did not restore read-only")
+                expected_writes += 2
+                print("GTK read-only toggles preserved the V1 SQL policy")
 
             run_gtk(args.desktop, environment, "off", "disabled")
             assert_denied(client.call("execute_readonly_query", query))
@@ -220,12 +266,29 @@ def exercise(args, root):
             check(resource["error"]["data"]["error"]["code"] == "mcp.connection_denied", resource)
             print(f"Same MCP PID {child.pid} denied query, discovery and resource read; SQLite FD closed")
 
-            revoked = json.loads(profile_path.read_text(encoding="utf-8"))
-            check(revoked["mcp"] == default_policy, revoked["mcp"])
-            check(revoked["revision"] == migrated["revision"] + 2, "expected exactly two policy writes")
-            check(revoked["profiles"] == migrated["profiles"], "a GTK restart changed the migrated profiles")
-            check(revoked["migration_state"] == migrated["migration_state"], "migration was not idempotent")
-            print("Two GTK restarts preserved migrated profiles and source fingerprints")
+            revoked = snapshot(profile_path)
+            check(revoked["mcp"] == DEFAULT_POLICY, revoked["mcp"])
+            check(revoked["revision"] == initial["revision"] + expected_writes, "unexpected policy writes")
+            check(revoked["profiles"] == initial["profiles"], "a GTK restart changed the profiles")
+            check(revoked["migration_state"] == initial["migration_state"], "migration was not idempotent")
+            if not migrated_profiles:
+                audit_path = Path(environment["XDG_DATA_HOME"]) / "sqarvo/mcp/audit.jsonl"
+                records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+                check(any(record["tool_name"] == "execute_readonly_query" and
+                          record["error_subcode"] == "mcp.connection_denied" for record in records),
+                      "missing query denial audit record")
+
+                run_gtk(args.desktop, environment, "on", "readonly")
+                assert_read(client, query)
+                check(open_database(child.pid, database), "expected an existing SQLite connection")
+                run_gtk_qa(args.desktop, environment, "--qa-delete-connection", saved["name"])
+                check(snapshot(profile_path)["profiles"] == [], "GTK did not delete the saved profile")
+                deleted = client.call("execute_readonly_query", query)
+                check(deleted.get("isError") and deleted["structuredContent"]["error"]["code"]
+                      == "mcp.connection_not_found", deleted)
+                check(child.poll() is None and not open_database(child.pid, database),
+                      "MCP exited or kept the deleted profile's SQLite FD")
+                print(f"Same MCP PID {child.pid} denied the profile deleted through GTK")
 
             child.stdin.close()
             check(child.wait(timeout=10) == 0, "MCP did not shut down successfully at EOF")
@@ -251,8 +314,9 @@ def main():
     for path in vars(args).values():
         if not path.is_file() or not os.access(path, os.X_OK):
             parser.error(f"not an executable file: {path}")
-    with tempfile.TemporaryDirectory(prefix="sqarvo-m10-", dir="/tmp") as temp:
-        exercise(args, Path(temp))
+    for migrated in (True, False):
+        with tempfile.TemporaryDirectory(prefix="sqarvo-m10-") as temp:
+            exercise(args, Path(temp), migrated_profiles=migrated)
 
 
 if __name__ == "__main__":

@@ -311,11 +311,11 @@ fn missing_config_starts_with_zero_connections_and_warns() {
 fn invalid_config_refuses_to_start_with_a_clean_stdout() {
     let dir = tempfile::tempdir().expect("tempdir");
     // 未知工具名 = 配置错误，必须拒绝启动（V3.1 §3.1）。
+    let synthetic_value = "synthetic-do-not-echo-config-value";
     let config = write_config(
         dir.path(),
         &serde_json::json!({
-            "connections": [],
-            "enabled_tools": ["drop_database"]
+            "enabled_tools": [synthetic_value]
         })
         .to_string(),
     );
@@ -331,10 +331,11 @@ fn invalid_config_refuses_to_start_with_a_clean_stdout() {
         outcome.stdout
     );
     assert!(
-        outcome.stderr.contains("drop_database"),
-        "错误必须点名非法配置项：\n{}",
-        outcome.stderr
+        outcome.stderr.contains("enabled_tools"),
+        "错误必须点名配置字段：\n{}",
+        outcome.stderr,
     );
+    assert!(!outcome.stderr.contains(synthetic_value));
 }
 
 #[cfg(unix)]

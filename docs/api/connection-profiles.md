@@ -42,7 +42,10 @@
   `profile_id` 由存储生成，更新保持 ID 稳定。
 - `driver_id` 至 `properties` 是 Driver SPI 的连接参数。密码保存在系统凭据库，
   文档只含 `credential_ref`。`name` 用于显示和 MCP 别名解析。`display_name` 可省略。
-  `file_path` 描述文件型连接，服务器型留空。`last_used` 无值时为 `null`，有值时用 RFC 3339。
+  SQLite 使用 `host` 作为驱动路径，`file_path` 是兼容字段。保存和读取时只有一处填写路径则补齐
+  另一处。两处均填写时必须完全相同，否则返回 `profile.invalid`，原文件保留。Linux 按实际路径
+  拼写比较，保留大小写、符号链接及 `..` 的路径语义。请使用绝对路径，确保独立进程打开同一文件。
+  服务器型连接的 `file_path` 留空。`last_used` 无值时为 `null`，有值时用 RFC 3339。
 - `mcp` 整段缺失或部分缺失时，按字段采用 `enabled: false`、`read_only: true`。
   关闭访问原子恢复这组默认值。关闭只读要求先开启访问。V1 无数据库写入工具。
 - `migration_state` 的键为规范化的旧文件路径，值含 SHA-256 十六进制 `sha256` 与 RFC 3339
@@ -65,6 +68,9 @@
 指纹都相同的来源重复运行时只补做未完成的备份或替换。已有不同内容的 `.bak` 时，额外备份以
 `.bak-<sha256>` 保留。迁移保留凭据引用，同一引用可供多个档案使用。
 旧 `connections[].enabled` 不参与全局授权，迁移对新文档使用关闭访问、开启只读的安全默认值。
+Linux GTK 的旧 SQLite 档案保留大小写不同的路径，也保留同一路径下名称或只读设置不同的档案。
+如果早期版本漏导入了大小写不同的路径，可从 `Sqarvo/connections.json.bak` 查看原档案，
+然后在 GTK 里只重新保存缺失的连接。保留备份和现有共享文档。
 
 Windows v1 使用 `{"version":1,"connections":[...]}`，条目含 `driver`、`name`、
 `host`、`port`、`database`、`username`、`file_path`、`read_only`、`tls_mode` 和
@@ -88,7 +94,7 @@ Windows 前端接入冻结。合成示例见 [Windows v1 fixture](../../tests/fi
 | `SetMcpAccessPolicy` | 指定一个或两个字段，在锁内应用到当前策略，返回提交值和文档 revision。显式关闭访问时恢复只读 |
 
 重复新建遇到同一连接目标时，服务端返回冲突或歧义。客户端应重新读取档案并用当前 ID、revision
-处理更新。连接目标以驱动及服务器连接身份，或驱动及规范化文件路径判断。
+处理更新。连接目标以驱动及服务器连接身份，或驱动及文件路径判断。Linux SQLite 文件路径按原始拼写比较。
 
 | 子码 | gRPC 状态 | 语义 |
 |---|---|---|

@@ -98,13 +98,16 @@ fn external_revocation_denies_new_requests_and_closes_physical_connection() {
             "{reply}"
         );
     }
-    assert_denied(&common::call_tool(
-        &mut server,
-        15,
-        "list_connections",
-        json!({}),
-        None,
-    ));
+    for (index, tool) in V1_TOOL_NAMES.iter().enumerate() {
+        // 全局关闭时，统一守卫应先于参数解析拒绝每一个数据库工具。
+        assert_denied(&common::call_tool(
+            &mut server,
+            30 + index as u64,
+            tool,
+            json!({}),
+            None,
+        ));
+    }
 
     let static_list = server.request(16, "tools/list", json!({}));
     assert_eq!(

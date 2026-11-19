@@ -1603,22 +1603,19 @@ fn maybe_run_qa_startup_menu(state: &Rc<UiState>) {
         std::process::exit(4);
     };
     let pick = crate::qa::startup_menu_pick();
-    glib::timeout_add_local_once(Duration::from_millis(400), move || {
+    glib::idle_add_local_once(move || {
         if let Err(reason) = startup.open_menu_named(&name) {
             eprintln!("[qa] 打开右键菜单失败：{reason}");
             std::process::exit(4);
         }
-        let Some(pick) = pick else {
-            return;
-        };
-        eprintln!("[qa] 右键菜单已打开，准备点「{pick}」");
-        let startup_for_pick = startup.clone();
-        glib::timeout_add_local_once(Duration::from_millis(250), move || {
-            if let Err(reason) = startup_for_pick.pick_menu_item(&pick) {
-                eprintln!("[qa] 点右键菜单条目失败：{reason}");
-                std::process::exit(4);
-            }
-        });
+        // 原生弹出菜单会在窗口失去焦点时收起并清空槽位。在同一轮主循环
+        // 按真实菜单动作选中条目，避免在打开与激活之间处理无关的焦点事件。
+        if let Some(pick) = pick
+            && let Err(reason) = startup.pick_menu_item(&pick)
+        {
+            eprintln!("[qa] 点右键菜单条目失败：{reason}");
+            std::process::exit(4);
+        }
     });
 }
 

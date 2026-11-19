@@ -244,6 +244,59 @@ async fn profile_create_update_delete_and_revision_conflicts() {
 }
 
 #[tokio::test]
+async fn sqlite_profile_uses_one_path_and_rejects_conflicting_fields() {
+    let server = TestServer::start();
+    let mut client = server.client().await;
+    let mut sqlite = profile();
+    let params = sqlite.params.as_mut().unwrap();
+    params.driver_id = "sqlite".to_owned();
+    params.host = "/tmp/Sample.sqlite".to_owned();
+    params.port = 0;
+    params.username.clear();
+    params.database.clear();
+    sqlite.file_path = "/tmp/sample.sqlite".to_owned();
+
+    let status = client
+        .save_profile(SaveProfileRequest {
+            profile: Some(sqlite.clone()),
+            expected_revision: None,
+        })
+        .await
+        .expect_err("a profile must not point to two files");
+    assert_error(&status, Code::InvalidArgument, "profile.invalid");
+    let listed = client.list_profiles(Empty {}).await.unwrap().into_inner();
+    assert_eq!(listed.revision, 0);
+    assert_eq!(listed.profiles, []);
+
+    sqlite.file_path.clear();
+    let stored = client
+        .save_profile(SaveProfileRequest {
+            profile: Some(sqlite),
+            expected_revision: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(stored.file_path, "/tmp/Sample.sqlite");
+    assert_eq!(stored.params.as_ref().unwrap().host, stored.file_path);
+
+    let mut path_only = stored;
+    path_only.params.as_mut().unwrap().host.clear();
+    let revision = path_only.revision;
+    let updated = client
+        .save_profile(SaveProfileRequest {
+            profile: Some(path_only),
+            expected_revision: Some(revision),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(updated.params.unwrap().host, updated.file_path);
+    assert_eq!(updated.revision, revision + 1);
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn policy_updates_apply_to_latest_state() {
     let server = TestServer::start();
     let mut first = server.client().await;
@@ -412,6 +465,17 @@ async fn tokens_and_passwords_are_not_returned_or_persisted_in_profiles() {
         );
         assert!(!disk.contains(secret));
     }
+    client
+        .delete_profile(DeleteProfileRequest {
+            profile_id: saved.profile_id,
+            expected_revision: saved.revision,
+        })
+        .await
+        .expect("删除共享档案");
+    assert_eq!(
+        server.credentials.get(&reference).unwrap().expose(),
+        PASSWORD
+    );
     server.stop().await;
 }
 

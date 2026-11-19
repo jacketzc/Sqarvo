@@ -24,6 +24,9 @@ just ui-test-all     # 全部
 
 单条场景：`tests/ui/linux/.venv/bin/python -m pytest tests/ui/linux/test_03_sql.py::test_execute_sql -c tests/ui/linux/pytest.ini -q`
 
+`test_06_mcp_access.py` 的外部刷新用例需要 `SQARVO_MCP_BIN`，或与
+`SQARVO_BACKEND_BIN` 位于同一目录的 `sqarvo-mcp`。
+
 ## 输出契约
 
 成功（stdout 只有摘要，无树、无日志、无截图）：
