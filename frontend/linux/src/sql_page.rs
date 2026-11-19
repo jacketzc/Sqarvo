@@ -42,7 +42,7 @@ use crate::proto::services::v1::ObjectRef;
 use crate::qa;
 use crate::result_edit::ResultEdit;
 use crate::results::{ResultTab, ResultsView, RowStore, RunState};
-use crate::statements::{self, SlotState, StatementSwitcher, SwitcherEntry};
+use crate::statements::{self, SlotState, StatementEntry};
 use crate::table_data::ChangeBatch;
 
 /// 页面状态（与 [`RunState`] 分开：后者只管结果区，前者还管按钮可用性）。
@@ -134,12 +134,14 @@ pub type ApplyChanges = Rc<dyn Fn(ObjectRef, ChangeBatch, SubmitOptions)>;
 /// 选中语句的 store 就是结果区当前持有的那个（`ResultsView::swap_store`），
 /// 所以批次到达时直接 append 即可，无需二次搬运。
 struct MultiState {
-    /// 逐语句状态（与切换行条目一一对应，下标 = 语句 index）。
+    /// 逐语句条目（消息页 / 摘要页读它；下标 = 语句 index）。
+    entries: Vec<StatementEntry>,
+    /// 逐语句网格状态（下标 = 语句 index）。
     slots: Vec<StatementSlot>,
-    /// 当前选中的语句下标（0 起）。
+    /// 有结果集的语句下标（按脚本顺序）：结果页下拉的编号顺序就是它。
+    result_sets: Vec<u32>,
+    /// 当前呈现的语句下标（0 起）。
     selected: u32,
-    /// 切换行控件。
-    switcher: Rc<StatementSwitcher>,
     /// 失败场景的位置信息（条目来自 trailing metadata，没有语句摘要）。
     failure: Option<StatementPosition>,
     /// 失败错误码（状态栏「语句 K · 失败 [code]」用；成功脚本为 None）。
@@ -221,8 +223,8 @@ pub struct SqlPage {
     catalog_failure: RefCell<Option<String>>,
     /// #190：多语句脚本的逐语句状态（单语句 / 未执行时为 `None`）。
     multi: RefCell<Option<MultiState>>,
-    /// #231：单语句路径本轮逐语句结论日志（多语句路径以切换行条目为准）。
-    run_entries: RefCell<Vec<SwitcherEntry>>,
+    /// #231：单语句路径本轮逐语句条目（多语句路径以 `MultiState.entries` 为准）。
+    run_entries: RefCell<Vec<StatementEntry>>,
     /// #231：本轮失败语句的可安全展示错误文案（消息页挂在失败语句下面）。
     run_failure_note: RefCell<Option<String>>,
     /// #231：本轮脚本的客户端计时（决策 D3：提交 Execute → 终态到达）。
@@ -231,11 +233,11 @@ pub struct SqlPage {
     qa_probe_scheduled: Cell<bool>,
 }
 
-/// #231：一次脚本执行的客户端计时（决策 D3 的口径）。
+/// #231：一次脚本执行的客户端计时（总耗时口径）。
 ///
 /// **只含「提交 Execute → 到达终态（首批 / 完成 / 失败 / 取消 / 触顶）」的
-/// 前端墙钟与单调钟，含 IPC 与渲染，不代表数据库服务端执行时间**；协议
-/// `ExecuteQueryResponse` 没有耗时字段，本类型不伪装成后端数据，也不给逐语句耗时。
+/// 前端墙钟与单调钟，含 IPC 与渲染，不代表数据库服务端执行时间**；逐语句的
+/// 数据库侧耗时另有真值（消息页的 `Query Time`，协议 `StatementSummary.elapsed_millis`）。
 /// 后到的终态覆盖先到的结束时刻（首批之后还有完成时，取完成）。
 struct RunClock {
     /// 提交 Execute 的时刻（单调钟，算总耗时）。
@@ -266,8 +268,10 @@ fn wall_clock_text() -> String {
 /// - 本次结果里有任意语句带结果集 → 「结果」；
 /// - 全是写语句 → 「消息」；
 /// - 还没有任何逐语句结论（空日志，防御路径）→ 「结果」，与单语句现状一致。
+///
+/// 取消 / 触顶 / 断连**不调用**本函数（不抢用户当前页，规则见 Issue #231）。
 #[must_use]
-fn default_tab_for(entries: &[SwitcherEntry], failed: bool) -> ResultTab {
+fn default_tab_for(entries: &[StatementEntry], failed: bool) -> ResultTab {
     if failed {
         ResultTab::Messages
     } else if entries.is_empty() || entries.iter().any(|entry| entry.has_result_set) {
@@ -422,6 +426,15 @@ impl SqlPage {
             let button = page.execute_button.clone();
             let page = Rc::clone(&page);
             button.connect_clicked(move |_| page.execute());
+        }
+        {
+            // #231：结果集下拉的选中变化 → 换网格与列（与用户点选同一个入口）。
+            let weak = Rc::downgrade(&page);
+            page.results.set_on_pick_result(Rc::new(move |ordinal| {
+                if let Some(page) = weak.upgrade() {
+                    page.select_result_set(ordinal);
+                }
+            }));
         }
         {
             // #189：结果区关闭按钮——有脏行先问丢弃，确认后释放游标并隐藏。
@@ -658,7 +671,7 @@ impl SqlPage {
     /// 真正发出一条 SQL（执行按钮、Ctrl+Enter、提交后自动重跑共用）。
     fn execute_sql(self: &Rc<Self>, sql: String) {
         self.query_id.replace(None);
-        // #190：上一轮的逐语句状态作废（results.reset 会同时卸载切换控件）。
+        // #190：上一轮的逐语句状态作废（results.reset 会同时清掉逐语句条目与结果集下拉）。
         self.multi.replace(None);
         // #231：客户端计时开始、消息/摘要数据源清空（控件本体由 results.reset 清）。
         self.begin_run_panels();
@@ -849,7 +862,7 @@ impl SqlPage {
                 .join(" · ")
         );
 
-        // #190：多语句脚本 → 逐语句网格 + 语句切换控件（单语句路径保持现状）。
+        // #190：多语句脚本 → 逐语句网格 + 结果集下拉（单语句路径保持现状）。
         if statements::is_multi(statements) {
             self.start_multi(statements, rows, has_more, loaded);
             // #231：首批到达即终态（脚本已在服务端执行完，续拉只是取结果）。
@@ -859,11 +872,18 @@ impl SqlPage {
             return;
         }
 
-        // #231：单语句路径的逐语句日志 = 全量摘要（这里恒 0 或 1 条）。
+        // #231：单语句路径的逐语句日志 = 全量摘要（这里恒 0 或 1 条）；
+        // 语句文本用编辑器脚本的完整 SQL（切分不一致时退回后端预览）。
         self.run_entries
             .replace(statements::entries_from_statements(
-                statements, loaded, has_more,
+                statements,
+                &self.results.statement(),
+                loaded,
+                has_more,
             ));
+        // #231：没有结果集的脚本不出现「结果」页签。
+        self.results
+            .set_results_tab_visible(statements.iter().any(|item| item.has_result_set));
         self.touch_run_finish();
 
         if let Some(statement) = &statement {
@@ -1033,11 +1053,13 @@ impl SqlPage {
                 },
             );
         } else {
-            self.run_entries
-                .replace(statements::entries_from_failure(StatementPosition {
+            self.run_entries.replace(statements::entries_from_failure(
+                StatementPosition {
                     failed_index: 0,
                     completed: 0,
-                }));
+                },
+                &self.results.statement(),
+            ));
             self.run_failure_note.replace(Some(failure.message()));
         }
         self.results
@@ -1147,11 +1169,11 @@ impl SqlPage {
         }
     }
 
-    /// 当前生效的逐语句条目：多语句路径取切换行条目（与下拉框同源），
+    /// 当前生效的逐语句条目：多语句路径取 `MultiState.entries`（消息页/摘要页同源），
     /// 单语句路径取 `run_entries`。
-    fn current_run_entries(&self) -> Vec<SwitcherEntry> {
+    fn current_run_entries(&self) -> Vec<StatementEntry> {
         match self.multi.borrow().as_ref() {
-            Some(multi) => multi.switcher.entries_snapshot(),
+            Some(multi) => multi.entries.clone(),
             None => self.run_entries.borrow().clone(),
         }
     }
@@ -1199,7 +1221,17 @@ impl SqlPage {
 
     /// 单语句路径：把本轮条目里某条语句的状态写回（防御：没有条目时不动）。
     fn set_run_entry_state(&self, index: u32, state: SlotState) {
+        self.note_entry_state(index, state);
+    }
+
+    /// 把某条语句的状态写回条目（消息页据此写结论行；多语句与单语句同一路径）。
+    fn note_entry_state(&self, index: u32, state: SlotState) {
         if let Some(entry) = self.run_entries.borrow_mut().get_mut(index as usize) {
+            entry.state = state;
+        }
+        if let Some(multi) = self.multi.borrow_mut().as_mut()
+            && let Some(entry) = multi.entries.get_mut(index as usize)
+        {
             entry.state = state;
         }
     }
@@ -1208,7 +1240,12 @@ impl SqlPage {
     /// 切页不再被覆盖）。
     fn apply_default_tab(&self, failed: bool) {
         let entries = self.current_run_entries();
-        let tab = default_tab_for(&entries, failed);
+        let mut tab = default_tab_for(&entries, failed);
+        // 「结果」页在没有结果集时整页隐藏（页签都不出现）：默认页规则不能把
+        // 用户送到一个不可达的页。
+        if tab == ResultTab::Results && !entries.iter().any(|entry| entry.has_result_set) {
+            tab = ResultTab::Messages;
+        }
         self.results.set_result_tab(tab);
         eprintln!(
             "[query] 页签默认落位：{}（语句 {} 条，失败={failed}）",
@@ -1233,12 +1270,60 @@ impl SqlPage {
             };
             eprintln!("[qa] 结果区版式：{}", page.results.qa_view_probe());
             eprintln!("[qa] 摘要取值：{}", page.results.qa_summary_text());
+            // 消息页全文是验收证据（逐语句 `> Query Time:` 的真实数值），只在 QA
+            // 模式打印；产品路径不写日志、不读缓冲区。
+            eprintln!("[qa] 消息页全文：\n{}", page.results.qa_messages_text());
+            page.qa_pick_result_set_once();
+        });
+    }
+
+    /// QA（环境变量 `SQARVO_QA_PICK_RESULT_SET=<1 起的结果集序号>`）：走与用户
+    /// 点选下拉**同一条路径**切一次结果集，并打印切换前后的网格行数。
+    ///
+    /// 只读取证 + 一次真实交互，不新增命令行开关（注册开关要动 `main.rs`）；
+    /// 不设该环境变量时什么都不做。切换后第一次续拉是异步的，所以行数在
+    /// 1.2 秒后再读一次。
+    fn qa_pick_result_set_once(self: &Rc<Self>) {
+        let Some(one_based) = qa::pick_result_set() else {
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            let ordinal = one_based.saturating_sub(1);
+            let before = page.results.row_count();
+            page.select_result_set(ordinal);
+            eprintln!(
+                "[qa] 结果集切换：请求 结果 {one_based}（序号 {ordinal}），切换前网格 {} 行；下拉 {} 项 {:?} 选中 {:?}",
+                before,
+                page.results.result_set_count(),
+                page.results.result_picker_items(),
+                page.results.result_picker_selected(),
+            );
+            let weak = Rc::downgrade(&page);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
+                let Some(page) = weak.upgrade() else {
+                    return;
+                };
+                eprintln!(
+                    "[qa] 结果集切换后：网格 {} 行，当前页={}，下拉选中 {:?}",
+                    page.results.row_count(),
+                    page.results.result_tab().page_id(),
+                    page.results.result_picker_selected(),
+                );
+                eprintln!(
+                    "[qa] 结果区版式（切换后）：{}",
+                    page.results.qa_view_probe()
+                );
+            });
         });
     }
 
     // ---- 多语句结果展示（#190） -------------------------------------------
 
-    /// Execute 返回多条语句：建逐语句网格状态 + 切换行，默认选最后一条结果集语句。
+    /// Execute 返回多条语句：建逐语句网格状态 + 结果集下拉，默认选第一个结果集。
     fn start_multi(
         self: &Rc<Self>,
         statements: &[StatementView],
@@ -1246,15 +1331,21 @@ impl SqlPage {
         has_more: bool,
         loaded: u64,
     ) {
-        let entries = statements::entries_from_statements(statements, loaded, has_more);
-        // 默认选中 = 最后一条有结果集的语句；全写脚本落第一条（占位页说明无结果集）。
-        let default = statements::default_selection(statements).unwrap_or(0);
-        let first_result = statements
-            .iter()
-            .position(|statement| statement.has_result_set);
+        let entries = statements::entries_from_statements(
+            statements,
+            &self.results.statement(),
+            loaded,
+            has_more,
+        );
+        // 结果集语句（按脚本顺序）：下拉的「结果 1 / 结果 2 …」就是它们的编号。
+        let result_sets = statements::result_set_indices(statements);
+        // 默认呈现第一个结果集（编号 1）；一个结果集都没有时落语句 0 的占位页，
+        // 且「结果」页签不出现（见 `set_results_tab_visible`）。
+        let selected = result_sets.first().copied().unwrap_or(0);
+        let first_result = result_sets.first().copied();
         let mut rows = rows;
         let mut slots = Vec::with_capacity(statements.len());
-        for (position, summary) in statements.iter().enumerate() {
+        for summary in statements {
             let store = RowStore::default();
             let mut truncated = 0;
             let (state, slot_loaded, slot_has_more, fetched, note) = if !summary.has_result_set {
@@ -1268,7 +1359,7 @@ impl SqlPage {
                         summary.rows_affected,
                     )),
                 )
-            } else if Some(position) == first_result {
+            } else if Some(summary.index) == first_result {
                 // 第一个结果集语句的首批行随 Execute 到达，直接进它自己的行模型。
                 let batch = std::mem::take(&mut rows);
                 truncated = crate::results::count_truncated(&batch);
@@ -1296,35 +1387,28 @@ impl SqlPage {
                 note,
             });
         }
-        let switcher = StatementSwitcher::new({
-            let weak = Rc::downgrade(self);
-            Rc::new(move |index| {
-                if let Some(page) = weak.upgrade() {
-                    page.select_statement(index);
-                }
-            })
-        });
-        switcher.rebuild(&entries, default);
         self.results
-            .set_statement_switcher(Some(switcher.widget().upcast_ref()));
+            .set_results_tab_visible(!result_sets.is_empty());
+        self.results.set_result_sets(result_sets.len(), 0);
         self.multi.replace(Some(MultiState {
+            entries,
             slots,
-            selected: default,
-            switcher,
+            result_sets: result_sets.clone(),
+            selected,
             failure: None,
             failure_code: None,
         }));
         eprintln!(
-            "[query] 多语句：{} 条语句，默认选中语句 {}（最后一条结果集语句）",
+            "[query] 多语句：{} 条语句，{} 个结果集，默认呈现结果 1",
             statements.len(),
-            default + 1
+            result_sets.len()
         );
         self.apply_selected_slot();
     }
 
     /// 多语句脚本失败：条目只能列到失败语句为止（失败响应不带摘要，也不保留
-    /// 已执行语句的游标）。默认选中失败语句本身——响应里无从得知已执行语句中
-    /// 哪条是 SELECT（契约说明见 `statements.rs` 模块文档）。
+    /// 已执行语句的游标）。定稿版式下「结果」页签直接不出现——没有结果集可取，
+    /// 消息页写错误行，摘要页给出「前 N 条已执行，第 M 条失败」。
     fn show_multi_failure(self: &Rc<Self>, failure: &QueryFailure, position: StatementPosition) {
         let line = format!(
             "{}：{}",
@@ -1332,8 +1416,7 @@ impl SqlPage {
             failure.message()
         );
         eprintln!("[query] 多语句脚本失败：{line}");
-        let entries = statements::entries_from_failure(position);
-        let selected = position.failed_index;
+        let entries = statements::entries_from_failure(position, &self.results.statement());
         let slots = entries
             .iter()
             .map(|entry| {
@@ -1358,35 +1441,47 @@ impl SqlPage {
                 }
             })
             .collect();
-        let switcher = StatementSwitcher::new({
-            let weak = Rc::downgrade(self);
-            Rc::new(move |index| {
-                if let Some(page) = weak.upgrade() {
-                    page.select_statement(index);
-                }
-            })
-        });
-        switcher.rebuild(&entries, selected);
-        self.results
-            .set_statement_switcher(Some(switcher.widget().upcast_ref()));
+        self.results.set_results_tab_visible(false);
+        self.results.set_result_sets(0, 0);
         self.multi.replace(Some(MultiState {
+            entries,
             slots,
-            selected,
-            switcher,
+            result_sets: Vec::new(),
+            selected: position.failed_index,
             failure: Some(position),
             failure_code: Some(failure.code().to_owned()),
         }));
         self.apply_selected_slot();
     }
 
-    /// 用户点选切换行：把网格当前状态存回旧语句槽，再换入新语句的行模型。
+    /// 用户在下拉里选了一个结果集（`ordinal` = 0 起的结果集序号）：
+    /// 映射到语句下标后走同一条换入换出路径。
+    fn select_result_set(self: &Rc<Self>, ordinal: usize) {
+        let index = {
+            let borrow = self.multi.borrow();
+            let Some(multi) = borrow.as_ref() else {
+                return;
+            };
+            let Some(index) = multi.result_sets.get(ordinal).copied() else {
+                return;
+            };
+            index
+        };
+        self.select_statement(index);
+    }
+
+    /// 切换呈现的语句：把网格当前状态存回旧语句槽，再换入新语句的行模型。
     fn select_statement(self: &Rc<Self>, index: u32) {
         {
             let mut borrow = self.multi.borrow_mut();
             let Some(multi) = borrow.as_mut() else {
                 return;
             };
-            if index == multi.selected || index as usize >= multi.slots.len() {
+            if index as usize >= multi.slots.len() {
+                return;
+            }
+            if index == multi.selected {
+                // 同一个结果集：下拉保持选中，不重复换模型。
                 return;
             }
             // 行数据已在共享的行模型里；这里只回写状态 / 计数 / 截断数。
@@ -1398,10 +1493,9 @@ impl SqlPage {
                 slot.truncated = self.results.truncated_cells();
             }
             multi.selected = index;
-            multi.switcher.select(index);
         }
         eprintln!(
-            "[query] t=+{}ms 语句切换行：选中语句 {}",
+            "[query] t=+{}ms 结果集切换：呈现语句 {}",
             qa::elapsed_ms(),
             index + 1
         );
@@ -1437,6 +1531,15 @@ impl SqlPage {
         let _old = self.results.swap_store(store);
         self.results.set_columns(&columns);
         self.results.set_truncated_cells(truncated);
+        // #231：下拉选中跟当前呈现的结果集同步（结果集序号，不是语句下标）。
+        if let Some(ordinal) = self
+            .multi
+            .borrow()
+            .as_ref()
+            .and_then(|multi| multi.result_sets.iter().position(|item| *item == index))
+        {
+            self.results.set_result_picker_selected(ordinal);
+        }
         self.results
             .set_state(state, loaded, has_more, note.as_deref());
         // set_state 只在 note=Some 时写说明行；无备注的槽要显式清掉上一条语句
@@ -1553,7 +1656,7 @@ impl SqlPage {
         (self.callbacks.fetch)();
     }
 
-    /// 某条语句的批次到达：更新它的槽与切换行文案；选中语句的行直接进网格。
+    /// 某条语句的批次到达：更新它的槽与逐语句条目；选中语句的行直接进网格。
     fn multi_batch(self: &Rc<Self>, index: u32, rows: Vec<RowView>, has_more: bool, loaded: u64) {
         let state = if loaded == 0 {
             RunState::Empty
@@ -1562,7 +1665,7 @@ impl SqlPage {
         } else {
             RunState::Complete
         };
-        let (selected, switcher) = {
+        let selected = {
             let mut borrow = self.multi.borrow_mut();
             let Some(multi) = borrow.as_mut() else {
                 return;
@@ -1574,9 +1677,9 @@ impl SqlPage {
                 slot.fetched = true;
                 slot.note = None;
             }
-            (multi.selected, Rc::clone(&multi.switcher))
+            multi.selected
         };
-        switcher.update_entry(index, SlotState::Rows { loaded, has_more });
+        self.note_entry_state(index, SlotState::Rows { loaded, has_more });
         if index == selected {
             // 选中语句的行模型就是网格当前持有的那个：直接 append。
             self.results.append_rows(rows, has_more, loaded);
@@ -1618,7 +1721,7 @@ impl SqlPage {
         loaded: u64,
         failure: &QueryFailure,
     ) {
-        let (selected, switcher) = {
+        let selected = {
             let mut borrow = self.multi.borrow_mut();
             let Some(multi) = borrow.as_mut() else {
                 return;
@@ -1630,9 +1733,9 @@ impl SqlPage {
                 slot.fetched = true;
                 slot.note = Some(failure.message());
             }
-            (multi.selected, Rc::clone(&multi.switcher))
+            multi.selected
         };
-        switcher.update_entry(
+        self.note_entry_state(
             index,
             SlotState::Rows {
                 loaded,
@@ -1666,7 +1769,7 @@ impl SqlPage {
     /// 失败场景的条目（Undelivered / Failed）与写语句条目不改文案：它们的状态
     /// 不由网格终态决定。
     fn sync_selected_slot(&self, state: RunState, note: Option<String>) {
-        let (switcher, selected) = {
+        let selected = {
             let mut borrow = self.multi.borrow_mut();
             let Some(multi) = borrow.as_mut() else {
                 return;
@@ -1690,9 +1793,9 @@ impl SqlPage {
             slot.loaded = self.results.row_count();
             slot.has_more = false;
             slot.note = note;
-            (Rc::clone(&multi.switcher), selected)
+            selected
         };
-        switcher.update_entry(
+        self.note_entry_state(
             selected,
             SlotState::Rows {
                 loaded: self.results.row_count(),
@@ -2888,26 +2991,32 @@ mod tests {
 
     #[test]
     fn default_tab_follows_the_231_rule() {
-        let select = SwitcherEntry {
+        let select = StatementEntry {
             index: 0,
-            preview: "SELECT 1".to_owned(),
+            sql: "SELECT 1".to_owned(),
+            previewed: false,
             has_result_set: true,
             state: SlotState::Rows {
                 loaded: 1,
                 has_more: false,
             },
+            elapsed_millis: 1,
         };
-        let write = SwitcherEntry {
+        let write = StatementEntry {
             index: 0,
-            preview: "INSERT INTO t VALUES (1)".to_owned(),
+            sql: "INSERT INTO t VALUES (1)".to_owned(),
+            previewed: false,
             has_result_set: false,
             state: SlotState::Affected(1),
+            elapsed_millis: 1,
         };
-        let failed = SwitcherEntry {
+        let failed = StatementEntry {
             index: 0,
-            preview: String::new(),
+            sql: String::new(),
+            previewed: true,
             has_result_set: false,
             state: SlotState::Failed,
+            elapsed_millis: 0,
         };
         // 有任意结果集语句 → 「结果」（单语句 SELECT 行为不变）。
         assert_eq!(

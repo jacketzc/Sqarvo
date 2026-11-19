@@ -857,12 +857,50 @@ status = "done"
 
 [[entry]]
 key = "tabs.results_summary_timing_note"
-zh = "耗时为客户端计时（提交 Execute → 到达终态），含 IPC 与渲染，不代表数据库服务端执行时间。"
-en = "Durations are measured on the client (Execute submitted → terminal state reached), including IPC and rendering; they do not represent database server-side execution time."
+zh = "总耗时为客户端计时（提交 Execute → 到达终态），含 IPC 与渲染；消息页的 Query Time 是数据库连接上的逐语句执行耗时。"
+en = "The total duration is measured on the client (Execute submitted → terminal state reached), including IPC and rendering; the Query Time on the Messages tab is the per-statement execution time on the database connection."
 status = "done"
 
 [[entry]]
 key = "tabs.results_msg_error_line"
-zh = "> 错误：{error}"
+zh = "> Error: {error}"
 en = "> Error: {error}"
+status = "done"
+
+# ---- #231 定稿版式：消息页逐语句日志 + 结果集下拉 ----
+
+[[entry]]
+key = "tabs.results_msg_ok"
+zh = "> OK"
+en = "> OK"
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_affected"
+zh = "> Affected rows: {rows}"
+en = "> Affected rows: {rows}"
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_query_time"
+zh = "> Query Time: {seconds} seconds"
+en = "> Query Time: {seconds} seconds"
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_preview_prefix"
+zh = "（预览）"
+en = "(preview) "
+status = "done"
+
+[[entry]]
+key = "tabs.results_result_picker_a11y"
+zh = "结果集"
+en = "Result set"
+status = "done"
+
+[[entry]]
+key = "tabs.results_result_picker_item"
+zh = "结果 {number}"
+en = "Result {number}"
 status = "done"

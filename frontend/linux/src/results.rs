@@ -2,8 +2,10 @@
 //!
 //! #231：结果区改为「消息 / 摘要 / 结果」三页签——页签切换器放进说明行
 //! （`detail_row`）左侧（不新增行），三页装在一个外层 `gtk::Stack`：
-//! 消息页 = 只读 `GtkTextView` 日志（横向 `Never`，永不撑宽），摘要页 =
-//! 键值行（客户端计时口径），结果页 = 既有网格 / 占位页 stack 原样。
+//! 消息页 = 只读 `GtkTextView` 日志（逐语句完整 SQL + 结论行 + 耗时；横向
+//! `Never`，永不撑宽），摘要页 = 两列三行（计数 | 起止时间/总耗时），
+//! 结果页 = 既有网格 / 占位页 stack + **结果集下拉**（多个结果集折叠成
+//! 「结果 1 / 结果 2 …」；没有结果集时整页隐藏，页签条上不出现空页签）。
 //!
 //! # 为什么自定义 ListModel
 //!
@@ -299,6 +301,9 @@ pub fn summary_pending_values() -> SummaryValues {
     ]
 }
 
+/// 结果集下拉的选中回调：参数是 0 起的结果集序号。
+pub type PickResult = Rc<dyn Fn(usize)>;
+
 /// 结果区：状态栏 + 三页签（消息 / 摘要 / 结果）+ 虚拟化表格 + 占位页。
 pub struct ResultsView {
     root: gtk::Box,
@@ -307,6 +312,9 @@ pub struct ResultsView {
     /// #231：三页签的外层 stack（messages / summary / results；配原生
     /// `gtk::StackSwitcher`——不用 `adw::ViewStack`，实测它导致子树重复枚举）。
     views: gtk::Stack,
+    /// #231：「结果」页在 `views` 里的页对象。**没有结果集时整页 `set_visible(false)`**，
+    /// 页签条上就不会出现空页签（定稿版式：全写脚本只有 消息 / 摘要 两枚）。
+    results_page: gtk::StackPage,
     /// #231：页签切换器（原生控件；测量与重挂用）。
     tab_switcher: gtk::StackSwitcher,
     /// #231：说明行本体（页签与右侧控件同一行）。
@@ -315,13 +323,21 @@ pub struct ResultsView {
     messages: gtk::TextBuffer,
     /// #231：摘要页六项的值标签（顺序 = [`SummaryValues`]）。
     summary_values: [gtk::Label; 6],
+    /// #231：结果集下拉（多结果集折叠；`< 2` 个结果集时不出现）。
+    result_picker: gtk::DropDown,
+    /// 结果集下拉的条目模型（`GtkStringList`：原生 DropDown 数据源）。
+    result_picker_model: gtk::StringList,
+    /// 用户在下拉里选了一个结果集（参数是 0 起的**结果集序号**，不是语句下标）。
+    on_pick_result: RefCell<Option<PickResult>>,
+    /// 程序化 `set_selected` 的防回环标志。
+    picker_suppress: Cell<bool>,
+    /// 当前结果集个数（QA 取证与下拉显隐）。
+    result_sets: Cell<usize>,
     placeholder: adw::StatusPage,
     grid: gtk::ColumnView,
     /// 当前网格的行模型。#190：多语句脚本每条语句一个 `RowStore`，切换语句时
     /// 整体换入换出（`swap_store`），已加载行不丢；单语句时始终是同一个。
     store: RefCell<RowStore>,
-    /// #190：语句切换行的挂载位（头部下方、表格上方）；单语句时为空且不可见。
-    switcher_slot: gtk::Box,
     /// 行选择（v0.2.5：单表结果可编辑，删除按选中集）。
     selection: gtk::MultiSelection,
     status: gtk::Label,
@@ -546,28 +562,30 @@ impl ResultsView {
             "tabs.results_messages_a11y",
         ))]);
 
-        // 摘要页：键值行（左标签右值，值可选中复制）。
+        // 摘要页（#231 定稿版式）：**两列三行**——左列 已执行语句 / 成功 / 失败，
+        // 右列 开始时间 / 结束时间 / 总耗时。值可选中复制。
         //
-        // **客户端计时口径**：开始/结束/总耗时由前端在提交 Execute 与到达终态
+        // **计时口径**：开始/结束/总耗时由前端在提交 Execute 与到达终态
         // （首批 / 完成 / 失败 / 取消 / 触顶）时记录（`sql_page::RunClock`），
-        // 含 IPC 与渲染，**不代表数据库服务端执行时间**；协议
-        // `ExecuteQueryResponse` 没有耗时字段，逐语句耗时本单不提供（决策 D3）。
+        // 含 IPC 与渲染，**不代表数据库服务端执行时间**；逐语句的数据库侧耗时是
+        // 消息页的 `Query Time`（协议 `StatementSummary.elapsed_millis`，#238）。
         // 界面底部同句写明口径（`tabs.results_summary_timing_note`）。
-        let summary_keys = [
+        let summary_keys_left = [
             "tabs.results_summary_executed",
             "tabs.results_summary_success",
             "tabs.results_summary_failed",
+        ];
+        let summary_keys_right = [
             "tabs.results_summary_started",
             "tabs.results_summary_ended",
             "tabs.results_summary_duration",
         ];
-        let summary_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
-        summary_box.set_margin_start(gap(Gap::Xl));
-        summary_box.set_margin_end(gap(Gap::Xl));
-        summary_box.set_margin_top(gap(Gap::Sm));
-        summary_box.set_margin_bottom(gap(Gap::Sm));
-        summary_box.set_valign(gtk::Align::Start);
-        let summary_values: [gtk::Label; 6] = summary_keys.map(|key| {
+        let summary_columns = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xl));
+        summary_columns.set_valign(gtk::Align::Start);
+        // 两列等宽：左列计数、右列时间/耗时各自对齐，不会互相挤成锯齿。
+        summary_columns.set_homogeneous(true);
+        // 一行「左标签右值」；值可选中复制（用户要能取走开始/结束时间）。
+        let value_row = |key: &'static str| -> (gtk::Box, gtk::Label) {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
             let label = gtk::Label::new(Some(l10n::t(key)));
             label.set_xalign(0.0);
@@ -579,9 +597,45 @@ impl ResultsView {
             value.set_text(l10n::t("tabs.results_summary_pending"));
             row.append(&label);
             row.append(&value);
-            summary_box.append(&row);
-            value
-        });
+            (row, value)
+        };
+        let left_column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
+        left_column.set_hexpand(true);
+        let right_column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
+        right_column.set_hexpand(true);
+        let mut left_values = Vec::with_capacity(3);
+        let mut right_values = Vec::with_capacity(3);
+        for (column, values, keys) in [
+            (&left_column, &mut left_values, &summary_keys_left),
+            (&right_column, &mut right_values, &summary_keys_right),
+        ] {
+            for key in keys {
+                let (row, value) = value_row(key);
+                column.append(&row);
+                values.push(value);
+            }
+            summary_columns.append(column);
+        }
+        // 六项固定、顺序固定（[`SummaryValues`]）：左三 + 右三，缺一不可。
+        let (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) = (
+            left_values.first().cloned(),
+            left_values.get(1).cloned(),
+            left_values.get(2).cloned(),
+            right_values.first().cloned(),
+            right_values.get(1).cloned(),
+            right_values.get(2).cloned(),
+        ) else {
+            unreachable!("摘要页固定六项");
+        };
+        let summary_values: [gtk::Label; 6] = [a, b, c, d, e, f];
+
+        let summary_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Md));
+        summary_box.set_margin_start(gap(Gap::Xl));
+        summary_box.set_margin_end(gap(Gap::Xl));
+        summary_box.set_margin_top(gap(Gap::Sm));
+        summary_box.set_margin_bottom(gap(Gap::Sm));
+        summary_box.set_valign(gtk::Align::Start);
+        summary_box.append(&summary_columns);
 
         let timing_note = gtk::Label::new(Some(l10n::t("tabs.results_summary_timing_note")));
         timing_note.set_xalign(0.0);
@@ -600,7 +654,29 @@ impl ResultsView {
             "tabs.results_summary_a11y",
         ))]);
 
-        // 外层三页 stack：「结果」页就是既有网格 / 占位页 stack，原样搬进来。
+        // ---- #231：结果页（网格 + 结果集下拉）--------------------------------
+        //
+        // 定稿版式：**「结果」页签恒为 1**（不是每个结果集一枚页签），多个结果集
+        // 用页内一枚原生下拉折叠（`结果 1 / 结果 2 …`）。没有结果集时整页隐藏，
+        // 页签条上只剩 消息 / 摘要。
+        let result_picker_model = gtk::StringList::new(&[]);
+        let result_picker = gtk::DropDown::builder().model(&result_picker_model).build();
+        result_picker.set_halign(gtk::Align::Start);
+        result_picker.set_margin_start(gap(Gap::Xl));
+        result_picker.set_margin_end(gap(Gap::Xl));
+        result_picker.set_margin_top(gap(Gap::Sm));
+        result_picker.set_margin_bottom(gap(Gap::Sm));
+        result_picker.set_visible(false);
+        result_picker.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "tabs.results_result_picker_a11y",
+        ))]);
+
+        let results_page_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        results_page_box.set_vexpand(true);
+        results_page_box.append(&result_picker);
+        results_page_box.append(&stack);
+
+        // 外层三页 stack：「结果」页 = 网格 / 占位页 stack + 结果集下拉。
         //
         // 可访问性修复（#231 回归）：这里必须用原生 `gtk::Stack` +
         // `gtk::StackSwitcher`，不能用 `adw::ViewStack` + `adw::ViewSwitcher`。
@@ -632,14 +708,15 @@ impl ResultsView {
                 &ResultTab::Summary.label(),
             )
             .set_icon_name("dialog-information-symbolic");
-        views
-            .add_titled(
-                &stack,
-                Some(ResultTab::Results.page_id()),
-                &ResultTab::Results.label(),
-            )
-            .set_icon_name("view-grid-symbolic");
-        views.set_visible_child_name(ResultTab::Results.page_id());
+        let results_page = views.add_titled(
+            &results_page_box,
+            Some(ResultTab::Results.page_id()),
+            &ResultTab::Results.label(),
+        );
+        results_page.set_icon_name("view-grid-symbolic");
+        // 初始（还没有任何 Execute 响应）：结果页不可见 → 页签只有 消息 / 摘要。
+        results_page.set_visible(false);
+        views.set_visible_child_name(ResultTab::Messages.page_id());
 
         // 页签切换器：原生 `GtkStackSwitcher`（决策 D1：放进说明行左侧）。
         // `add_titled` 已给三页标题，切换器按可见页各出一枚 `page tab`。
@@ -650,28 +727,28 @@ impl ResultsView {
         ))]);
         detail_row.insert_child_after(&tab_switcher, None::<&gtk::Widget>);
 
-        // #190：语句切换行挂载位（头部下方、表格上方）。单语句时不挂控件、不可见。
-        let switcher_slot = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
-        switcher_slot.set_visible(false);
-
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.append(&status_row);
         root.append(&detail_row);
-        root.append(&switcher_slot);
         root.append(&views);
 
         let view = Rc::new(Self {
             root,
             stack,
             views,
+            results_page,
             tab_switcher,
             detail_row,
             messages: messages_buffer,
             summary_values,
+            result_picker,
+            result_picker_model,
+            on_pick_result: RefCell::new(None),
+            picker_suppress: Cell::new(false),
+            result_sets: Cell::new(0),
             placeholder,
             grid: grid.clone(),
             store: RefCell::new(store),
-            switcher_slot,
             selection: selection.clone(),
             status,
             spinner,
@@ -709,6 +786,30 @@ impl ResultsView {
                     && let Some(callback) = view.on_selection_changed.borrow().as_ref()
                 {
                     callback();
+                }
+            }
+        });
+
+        // #231：结果集下拉的选中变化 → 交给 `sql_page` 换网格与列（同一套
+        // `RowStore` 换入换出：已加载行、列、游标各自保留）。
+        // 程序化 `set_selected` 期间由 `picker_suppress` 挡住，不会自触发。
+        view.result_picker.connect_selected_notify({
+            let weak = Rc::downgrade(&view);
+            move |dropdown| {
+                let Some(view) = weak.upgrade() else {
+                    return;
+                };
+                if view.picker_suppress.get() {
+                    return;
+                }
+                let selected = dropdown.selected();
+                if selected == gtk::INVALID_LIST_POSITION {
+                    return;
+                }
+                let ordinal = selected as usize;
+                eprintln!("[query] 结果集下拉：选中结果 {}", ordinal + 1);
+                if let Some(callback) = view.on_pick_result.borrow().as_ref() {
+                    callback(ordinal);
                 }
             }
         });
@@ -1201,19 +1302,99 @@ impl ResultsView {
         old
     }
 
-    /// #190：挂载 / 卸载语句切换控件（`None` = 单语句或结果区重置，不显示）。
+    /// #231：接线「用户在下拉里选了另一个结果集」（参数是 0 起的结果集序号）。
+    pub fn set_on_pick_result(&self, callback: PickResult) {
+        self.on_pick_result.replace(Some(callback));
+    }
+
+    /// #231：重建结果集下拉的条目（`结果 1 / 结果 2 …` 按结果集顺序编号）。
     ///
-    /// #231：控件由按钮行改为固定宽度 `GtkDropDown`，因此收 `gtk::Widget`。
-    pub fn set_statement_switcher(&self, widget: Option<&gtk::Widget>) {
-        while let Some(child) = self.switcher_slot.first_child() {
-            self.switcher_slot.remove(&child);
+    /// `count < 2` 时下拉不出现（一个结果集无需选择）；`selected` 是程序化选中
+    /// 的结果集序号（越界时收敛到末项），不会触发 `on_pick_result`。
+    pub fn set_result_sets(&self, count: usize, selected: usize) {
+        self.picker_suppress.set(true);
+        self.result_picker_model
+            .splice(0, self.result_picker_model.n_items(), &[]);
+        for number in 1..=count {
+            self.result_picker_model.append(&l10n::tf(
+                "tabs.results_result_picker_item",
+                &[("number", number.to_string())],
+            ));
         }
-        if let Some(widget) = widget {
-            self.switcher_slot.append(widget);
-            self.switcher_slot.set_visible(true);
+        if count == 0 {
+            self.result_picker.set_selected(gtk::INVALID_LIST_POSITION);
         } else {
-            self.switcher_slot.set_visible(false);
+            self.result_picker
+                .set_selected(u32::try_from(selected.min(count - 1)).unwrap_or(0));
         }
+        self.picker_suppress.set(false);
+        self.result_sets.set(count);
+        self.result_picker.set_visible(count > 1);
+    }
+
+    /// #231：程序化同步下拉选中（换语句 / 用户点选后回写；不触发回调）。
+    pub fn set_result_picker_selected(&self, ordinal: usize) {
+        if self.result_sets.get() == 0 {
+            return;
+        }
+        self.picker_suppress.set(true);
+        self.result_picker
+            .set_selected(u32::try_from(ordinal).unwrap_or(0));
+        self.picker_suppress.set(false);
+    }
+
+    /// #231：当前结果集个数（QA 取证用）。
+    #[must_use]
+    pub fn result_set_count(&self) -> usize {
+        self.result_sets.get()
+    }
+
+    /// #231：结果集下拉当前选中的序号（没有结果集时 `None`）。
+    #[must_use]
+    pub fn result_picker_selected(&self) -> Option<usize> {
+        let selected = self.result_picker.selected();
+        if selected == gtk::INVALID_LIST_POSITION {
+            None
+        } else {
+            usize::try_from(selected).ok()
+        }
+    }
+
+    /// #231：结果集下拉当前的条目文本（QA 断言「结果 1 / 结果 2」用）。
+    #[must_use]
+    pub fn result_picker_items(&self) -> Vec<String> {
+        (0..self.result_picker_model.n_items())
+            .filter_map(|index| self.result_picker_model.string(index))
+            .map(|item| item.to_string())
+            .collect()
+    }
+
+    /// #231：显示 / 隐藏「结果」页签。
+    ///
+    /// 没有结果集（全写语句、失败）时连同页签一起隐藏——`GtkStackPage::visible`
+    /// 为 false 时 `GtkStackSwitcher` 不会为它出页签，页签条只剩 消息 / 摘要。
+    /// 隐藏时当前正停在该页则先把用户放到「消息」（不留下不可达的当前页）。
+    pub fn set_results_tab_visible(&self, visible: bool) {
+        if !visible && self.result_tab() == ResultTab::Results {
+            self.views
+                .set_visible_child_name(ResultTab::Messages.page_id());
+        }
+        self.results_page.set_visible(visible);
+    }
+
+    /// #231：当前可见的页签名（按 stack 里的顺序；QA 断言「全写脚本只有两枚」用）。
+    #[must_use]
+    pub fn visible_tab_ids(&self) -> Vec<&'static str> {
+        let mut ids = Vec::new();
+        for tab in [ResultTab::Messages, ResultTab::Summary, ResultTab::Results] {
+            let Some(child) = self.views.child_by_name(tab.page_id()) else {
+                continue;
+            };
+            if self.views.page(&child).is_visible() {
+                ids.push(tab.page_id());
+            }
+        }
+        ids
     }
 
     /// 当前是否还有后续批次（#190：同上）。
@@ -1268,8 +1449,6 @@ impl ResultsView {
     /// 清空表格与状态（新查询开始前）。
     pub fn reset(&self) {
         self.store.borrow().clear();
-        // #190：切换行随结果区重置卸载（多语句编排会在需要时重新挂载）。
-        self.set_statement_switcher(None);
         self.clear_columns();
         self.column_names.borrow_mut().clear();
         self.truncated_cells.set(0);
@@ -1281,11 +1460,15 @@ impl ResultsView {
         self.last_fetch_loaded.set(0);
         self.last_pause.set(None);
         self.stack.set_visible_child_name("placeholder");
-        // #231：三页签随结果区重置回默认页（「结果」）；消息与摘要清空为占位，
-        // 等本轮 Execute 响应再填。页签显隐时机不变（#189，由 sql_page 控制）。
+        // #231：三页签随结果区重置回「消息」；结果集下拉清空、结果页隐藏
+        // （响应到达后由 `set_results_tab_visible` + 默认页规则重新决定）。
+        // 消息与摘要清空为占位，等本轮 Execute 响应再填。页签显隐时机不变
+        // （#189，由 sql_page 控制整个结果区）。
         self.messages.set_text("");
         self.set_summary(summary_pending_values());
-        self.set_result_tab(ResultTab::Results);
+        self.set_result_sets(0, 0);
+        self.set_results_tab_visible(false);
+        self.set_result_tab(ResultTab::Messages);
         self.set_state(RunState::Idle, 0, false, None);
     }
 
@@ -1328,36 +1511,63 @@ impl ResultsView {
             .join(" · ")
     }
 
-    /// #231 QA 取证（只读）：说明行/页签控件/切换控件的高度与横向需求 +
-    /// 当前页签 + 消息行数。
+    /// #231 QA 取证（只读）：消息页全文（逐语句日志的原始文本）。
+    #[must_use]
+    pub fn qa_messages_text(&self) -> String {
+        self.messages
+            .text(
+                &self.messages.start_iter(),
+                &self.messages.end_iter(),
+                false,
+            )
+            .to_string()
+    }
+
+    /// #231 QA 取证（只读）：说明行/页签控件的高度 + 可见页签 + 结果集下拉 +
+    /// 当前页 + 消息页语句段数/行数。
     ///
-    /// 用于两条硬证据：①「不新增一行、结果区高度零增量」（说明行 min/nat 高
-    /// 与基线逐字对比）；②「多语句不再撑宽」（切换行横向需求：基线的按钮行
-    /// 实测 min=nat=3706px，改成下拉框后应远小于窗口宽）。不参与产品路径。
+    /// 用于三条硬证据：①「不新增一行、结果区高度零增量」；②「多语句不再撑宽」
+    /// （独立一行的切换控件已删除，说明行是唯一承载页签的行）；③「全写脚本只有
+    /// 消息/摘要两枚页签、多结果集时结果页只有一枚页签且下拉可切换」。不参与
+    /// 产品路径。
     #[must_use]
     pub fn qa_view_probe(&self) -> String {
         let (row_min, row_nat, _, _) = self.detail_row.measure(gtk::Orientation::Vertical, -1);
         let (tab_min, tab_nat, _, _) = self.tab_switcher.measure(gtk::Orientation::Vertical, -1);
-        let (slot_w_min, slot_w_nat, _, _) =
-            self.switcher_slot.measure(gtk::Orientation::Horizontal, -1);
         let lines = if self.messages.char_count() == 0 {
             0
         } else {
             self.messages.line_count().max(0)
         };
+        // 每条语句恰好一行结论行（`> OK` / `> Affected rows: N` / `> Error: …`），
+        // `> Query Time:` 不算：消息段数据此可数（多行 SQL 里的空行不干扰）。
+        let statements = self
+            .messages
+            .text(
+                &self.messages.start_iter(),
+                &self.messages.end_iter(),
+                false,
+            )
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                line.starts_with("> ") && !line.starts_with("> Query Time")
+            })
+            .count();
         format!(
-            "说明行 高={} 需求(min/nat)={}/{}；页签控件 高={} 需求(min/nat)={}/{}；切换控件 宽需求(min/nat)={}/{} 分配宽={}；当前页={}；消息行数={}",
+            "说明行 高={} 需求(min/nat)={}/{}；页签控件 高={} 需求(min/nat)={}/{}；可见页签={:?}；结果集下拉={}（{} 项，选中 {:?}）；当前页={}；消息语句数={statements}；消息行数={lines}；网格已加载={}",
             self.detail_row.height(),
             row_min,
             row_nat,
             self.tab_switcher.height(),
             tab_min,
             tab_nat,
-            slot_w_min,
-            slot_w_nat,
-            self.switcher_slot.width(),
+            self.visible_tab_ids(),
+            self.result_picker.is_visible(),
+            self.result_picker_items().len(),
+            self.result_picker_selected(),
             self.result_tab().page_id(),
-            lines,
+            self.loaded.get(),
         )
     }
 

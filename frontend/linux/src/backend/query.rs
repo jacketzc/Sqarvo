@@ -131,6 +131,11 @@ pub struct StatementView {
     pub rows_affected: u64,
     /// 是否产生结果集。
     pub has_result_set: bool,
+    /// 该语句在数据库连接上执行的毫秒数（#238 契约字段 `elapsed_millis`）。
+    ///
+    /// **`0` = 未测量**（老服务端 / 未计时的驱动），不是「0 秒」的真值：界面必须
+    /// 按「不显示」处理。真实测量值恒 >= 1（契约注释），两者永远可区分。
+    pub elapsed_millis: u64,
 }
 
 impl StatementView {
@@ -553,6 +558,7 @@ pub fn statements_from_proto(
                 columns,
                 rows_affected: statement.rows_affected,
                 has_result_set: statement.has_result_set,
+                elapsed_millis: statement.elapsed_millis,
             }
         })
         .collect()
@@ -1666,6 +1672,7 @@ mod tests {
             columns: Vec::new(),
             rows_affected: 3,
             has_result_set: false,
+            elapsed_millis: 7,
         };
         let line = update.summary_line();
         assert!(line.starts_with("语句 1：影响 3 行"), "{line}");
@@ -1676,6 +1683,7 @@ mod tests {
             columns: Vec::new(),
             rows_affected: 0,
             has_result_set: true,
+            elapsed_millis: 0,
         };
         assert!(select.summary_line().starts_with("语句 1：0 列"));
     }
