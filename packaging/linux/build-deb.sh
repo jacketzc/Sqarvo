@@ -4,7 +4,10 @@
 # 用法：
 #   packaging/linux/build-deb.sh              # 先 cargo build --release，再打包
 #   BUILD=0 packaging/linux/build-deb.sh      # 复用已有 release 二进制，只打包
-#   VERSION=0.2.3 OUT_DIR=/tmp/out packaging/linux/build-deb.sh
+#   VERSION=0.2.3~nightly.20261118020000.abc1234 OUT_DIR=/tmp/out packaging/linux/build-deb.sh
+#
+# 版本单一来源：仓库根 VERSION 文件（下一待发版的基线号）。env VERSION 可覆盖，
+# Nightly 工作流用它注入 `<基线>~nightly.<UTC时间>.<短SHA>`。
 #
 # 产物：dist/sqarvo_<VERSION>_<ARCH>.deb
 #
@@ -15,7 +18,6 @@
 #   /usr/share/icons/hicolor/scalable/apps/io.sqarvo.Sqarvo.svg
 set -euo pipefail
 
-VERSION="${VERSION:-0.2.2}"
 ARCH="${ARCH:-amd64}"
 BUILD="${BUILD:-1}"
 
@@ -28,6 +30,14 @@ BACKEND_BIN="$REPO_ROOT/backend/target/release/sqarvo-backend"
 
 step() { printf '\n== %s ==\n' "$*"; }
 die() { printf 'build-deb: %s\n' "$*" >&2; exit 1; }
+
+if [ -z "${VERSION:-}" ]; then
+  VERSION_FILE="$REPO_ROOT/VERSION"
+  [ -r "$VERSION_FILE" ] || die "缺少版本：既没有 env VERSION，也读不到 $VERSION_FILE"
+  # 取第一个非空、非注释行并去尾注释/空白；空结果由下一行的 [ -n ] 兜住。
+  VERSION="$(awk 'NF && $0 !~ /^[[:space:]]*#/ { sub(/[[:space:]]*#.*$/,""); sub(/[[:space:]]+$/,""); print; exit }' "$VERSION_FILE")"
+fi
+[ -n "$VERSION" ] || die "解析出的版本为空：$VERSION_FILE"
 
 command -v dpkg-deb >/dev/null || die "缺少 dpkg-deb（apt install dpkg）"
 command -v dpkg-shlibdeps >/dev/null || die "缺少 dpkg-shlibdeps（apt install dpkg-dev）"
