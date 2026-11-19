@@ -3486,6 +3486,18 @@ fn find_tree_search(widget: &gtk::Widget) -> Option<gtk::SearchEntry> {
     None
 }
 
+/// `SQARVO_QA_PICK_RESULT_SET=<1 起的结果集序号>`：#231 验收用的一次下拉切换。
+///
+/// 用一个**环境变量**而不是命令行开关：注册 GLib 开关要改 `main.rs`（本单授权
+/// 文件不含它），而这里只是「验收时点一下结果集下拉」的等价入口。未设置或不是
+/// 正整数时返回 `None`，产品路径完全不受影响。
+#[must_use]
+pub fn pick_result_set() -> Option<usize> {
+    let value = std::env::var("SQARVO_QA_PICK_RESULT_SET").ok()?;
+    let ordinal = value.trim().parse::<usize>().ok()?;
+    (ordinal >= 1).then_some(ordinal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

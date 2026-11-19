@@ -768,3 +768,139 @@ key = "tabs.stmt_tooltip_preview"
 zh = "语句 {number}：{preview}\n{state}"
 en = "Statement {number}: {preview}\n{state}"
 status = "done"
+
+# ---- #231：结果区三页签（消息 / 摘要 / 结果）----
+
+[[entry]]
+key = "tabs.results_tab_messages"
+zh = "消息"
+en = "Messages"
+status = "done"
+
+[[entry]]
+key = "tabs.results_tab_summary"
+zh = "摘要"
+en = "Summary"
+status = "done"
+
+[[entry]]
+key = "tabs.results_tab_results"
+zh = "结果"
+en = "Results"
+status = "done"
+
+[[entry]]
+key = "tabs.results_view_switcher_a11y"
+zh = "结果视图页签"
+en = "Results view tabs"
+status = "done"
+
+[[entry]]
+key = "tabs.results_messages_a11y"
+zh = "语句日志"
+en = "Statement log"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_a11y"
+zh = "执行摘要"
+en = "Execution summary"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_executed"
+zh = "已执行语句"
+en = "Statements executed"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_success"
+zh = "成功"
+en = "Success"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_failed"
+zh = "失败"
+en = "Failed"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_started"
+zh = "开始时间"
+en = "Start time"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_ended"
+zh = "结束时间"
+en = "End time"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_duration"
+zh = "总耗时"
+en = "Total duration"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_duration_value"
+zh = "{seconds} s"
+en = "{seconds} s"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_pending"
+zh = "—"
+en = "—"
+status = "done"
+
+[[entry]]
+key = "tabs.results_summary_timing_note"
+zh = "总耗时为客户端计时（提交 Execute → 到达终态），含 IPC 与渲染；消息页的 Query Time 是数据库连接上的逐语句执行耗时。"
+en = "The total duration is measured on the client (Execute submitted → terminal state reached), including IPC and rendering; the Query Time on the Messages tab is the per-statement execution time on the database connection."
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_error_line"
+zh = "> Error: {error}"
+en = "> Error: {error}"
+status = "done"
+
+# ---- #231 定稿版式：消息页逐语句日志 + 结果集下拉 ----
+
+[[entry]]
+key = "tabs.results_msg_ok"
+zh = "> OK"
+en = "> OK"
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_affected"
+zh = "> Affected rows: {rows}"
+en = "> Affected rows: {rows}"
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_query_time"
+zh = "> Query Time: {seconds} seconds"
+en = "> Query Time: {seconds} seconds"
+status = "done"
+
+[[entry]]
+key = "tabs.results_msg_preview_prefix"
+zh = "（预览）"
+en = "(preview) "
+status = "done"
+
+[[entry]]
+key = "tabs.results_result_picker_a11y"
+zh = "结果集"
+en = "Result set"
+status = "done"
+
+[[entry]]
+key = "tabs.results_result_picker_item"
+zh = "结果 {number}"
+en = "Result {number}"
+status = "done"

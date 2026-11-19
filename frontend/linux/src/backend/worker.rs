@@ -4575,6 +4575,7 @@ mod tests {
             columns: Vec::new(),
             rows_affected: if has_result_set { 0 } else { 3 },
             has_result_set,
+            elapsed_millis: 5,
         }
     }
 
