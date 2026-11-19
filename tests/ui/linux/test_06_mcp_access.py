@@ -66,7 +66,9 @@ def test_mcp_access_menu_and_live_status(app_with_profile):
         A.find_one(frame, role_in=("toggle button",), name="主菜单（文件 / 视图 / MCP / 帮助）")
         A.window_action(frame, "win.mcp-management")
         panel = A.wait_dialog(inst.app, "MCP 管理")
-        A.find_one(panel, role_in=("button",), name="复制 Agent 配置提示词", timeout=10)
+        A.find_one(panel, role_in=("button",), name="复制提示词（http方式）", timeout=10)
+        A.find_one(panel, role_in=("button",), name="复制提示词（stdio方式）", timeout=10)
+        expect(not A.query(panel, name="复制 Codex 客户端配置"), "旧 Codex 配置入口已移除")
         respond(panel, "关闭")
         # GTK exposes unnamed AT-SPI menu items. The window action is the same
         # action bound to the native menu, whose labels are checked by Rust tests.

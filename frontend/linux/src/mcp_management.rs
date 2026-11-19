@@ -35,11 +35,11 @@ struct Panel {
     stop: gtk::Button,
     save: gtk::Button,
     copy_url: gtk::Button,
-    copy_config: gtk::Button,
     copy_prompt: gtk::Button,
     copy_stdio: gtk::Button,
-    rotate: gtk::Button,
-    revoke: gtk::Button,
+    stdio_row: adw::ActionRow,
+    token: gtk::Button,
+    toasts: adw::ToastOverlay,
     pending: Cell<bool>,
     closed: Cell<bool>,
     snapshot: RefCell<Option<Snapshot>>,
@@ -53,10 +53,32 @@ fn label() -> gtk::Label {
     label
 }
 
-fn row(group: &adw::PreferencesGroup, key: &'static str) -> gtk::Button {
-    let row = gtk::Button::with_label(l10n::t(key));
+fn setting_row(group: &adw::PreferencesGroup, key: &'static str, icon: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(l10n::t(key)).build();
+    row.add_prefix(&gtk::Image::from_icon_name(icon));
     group.add(&row);
     row
+}
+
+fn row_button(row: &adw::ActionRow, key: &'static str, icon: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(icon);
+    button.set_valign(gtk::Align::Center);
+    button.set_tooltip_text(Some(l10n::t(key)));
+    button.update_property(&[gtk::accessible::Property::Label(l10n::t(key))]);
+    row.add_suffix(&button);
+    row.set_activatable_widget(Some(&button));
+    row.set_activatable(true);
+    button
+}
+
+fn permission_row(group: &adw::PreferencesGroup, key: &'static str, icon: &str) -> gtk::Switch {
+    let row = setting_row(group, key, icon);
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.update_property(&[gtk::accessible::Property::Label(l10n::t(key))]);
+    row.add_suffix(&switch);
+    row.set_activatable_widget(Some(&switch));
+    switch
 }
 
 fn group(page: &adw::PreferencesPage, key: &'static str) -> adw::PreferencesGroup {
@@ -68,6 +90,7 @@ fn group(page: &adw::PreferencesPage, key: &'static str) -> adw::PreferencesGrou
 fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
     let dialog = adw::Dialog::builder()
         .title(l10n::t("workspace.mcp.title"))
+        .content_width(crate::layout::mcp_dialog_width())
         .build();
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -81,48 +104,90 @@ fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
     header.pack_end(&close);
     view.add_top_bar(&header);
     let page = adw::PreferencesPage::new();
-    view.set_content(Some(&page));
+    let toasts = adw::ToastOverlay::new();
+    toasts.set_child(Some(&page));
+    view.set_content(Some(&toasts));
     dialog.set_child(Some(&view));
 
     let service = group(&page, "workspace.mcp.service");
+    service.set_description(Some(l10n::t("workspace.mcp.service_description")));
+    let result = label();
+    let service_status = adw::ActionRow::new();
+    service_status.add_prefix(&gtk::Image::from_icon_name("network-server-symbolic"));
     let status = label();
     let endpoint = label();
-    let result = label();
-    service.add(&status);
-    service.add(&endpoint);
-    service.add(&result);
-    let port_caption = label();
-    port_caption.set_label(l10n::t("workspace.mcp.port"));
-    service.add(&port_caption);
+    let summary = gtk::Box::new(gtk::Orientation::Vertical, crate::layout::metrics().gap_xxs);
+    summary.append(&status);
+    summary.append(&endpoint);
+    service_status.add_suffix(&summary);
+    summary.set_hexpand(true);
+    service.add(&service_status);
+    let port_row = adw::ActionRow::builder()
+        .title(l10n::t("workspace.mcp.port"))
+        .build();
     let port = gtk::Entry::builder()
         .input_purpose(gtk::InputPurpose::Digits)
         .max_length(5)
+        .width_chars(5)
+        .valign(gtk::Align::Center)
         .build();
     port.update_property(&[gtk::accessible::Property::Label(l10n::t(
         "workspace.mcp.port",
     ))]);
-    service.add(&port);
-    let save = row(&service, "workspace.mcp.save");
-    let start = row(&service, "workspace.mcp.start");
-    let stop = row(&service, "workspace.mcp.stop");
+    port_row.add_suffix(&port);
+    let copy_url = gtk::Button::with_label(l10n::t("workspace.mcp.copy_url"));
+    copy_url.set_valign(gtk::Align::Center);
+    port_row.add_suffix(&copy_url);
+    service.add(&port_row);
+    service.add(&result);
+    let actions = gtk::Box::new(
+        gtk::Orientation::Horizontal,
+        crate::layout::metrics().gap_sm,
+    );
+    actions.set_halign(gtk::Align::End);
+    let save = gtk::Button::with_label(l10n::t("workspace.mcp.save"));
+    let start = gtk::Button::with_label(l10n::t("workspace.mcp.start"));
+    let stop = gtk::Button::with_label(l10n::t("workspace.mcp.stop"));
+    start.add_css_class("suggested-action");
+    stop.add_css_class("suggested-action");
+    for button in [&save, &start, &stop] {
+        actions.append(button);
+    }
+    service.add(&actions);
 
     let policy = group(&page, "workspace.mcp.permissions");
+    policy.set_description(Some(l10n::t("workspace.mcp.permissions_description")));
+    let database_access = permission_row(
+        &policy,
+        "workspace.mcp_access.menu_access",
+        "drive-harddisk-symbolic",
+    );
+    let read_only = permission_row(
+        &policy,
+        "workspace.mcp_access.menu_read_only",
+        "document-properties-symbolic",
+    );
+    let note = label();
+    note.set_label(l10n::t("workspace.mcp.write_tools_note"));
+    note.add_css_class("dim-label");
+    policy.add(&note);
     let policy_status = label();
+    policy_status.add_css_class("dim-label");
     policy.add(&policy_status);
-    let database_access =
-        gtk::ToggleButton::with_label(l10n::t("workspace.mcp_access.menu_access"));
-    let read_only = gtk::ToggleButton::with_label(l10n::t("workspace.mcp_access.menu_read_only"));
-    policy.add(&database_access);
-    policy.add(&read_only);
     access.attach_management(&policy_status, &database_access, &read_only);
 
     let agent = group(&page, "workspace.mcp.agent");
-    let copy_url = row(&agent, "workspace.mcp.copy_url");
-    let copy_config = row(&agent, "workspace.mcp.copy_config");
-    let copy_prompt = row(&agent, "workspace.mcp.copy_prompt");
-    let copy_stdio = row(&agent, "workspace.mcp.copy_stdio");
-    let rotate = row(&agent, "workspace.mcp.rotate");
-    let revoke = row(&agent, "workspace.mcp.revoke");
+    agent.set_description(Some(l10n::t("workspace.mcp.agent_description")));
+    let http_row = setting_row(&agent, "workspace.mcp.copy_prompt", "edit-copy-symbolic");
+    let copy_prompt = row_button(&http_row, "workspace.mcp.copy_prompt", "edit-copy-symbolic");
+    let stdio_row = setting_row(&agent, "workspace.mcp.copy_stdio", "edit-copy-symbolic");
+    let copy_stdio = row_button(&stdio_row, "workspace.mcp.copy_stdio", "edit-copy-symbolic");
+
+    let tokens = adw::PreferencesGroup::new();
+    page.add(&tokens);
+    let token_row = setting_row(&tokens, "workspace.mcp.token", "dialog-password-symbolic");
+    token_row.set_subtitle(l10n::t("workspace.mcp.token_description"));
+    let token = row_button(&token_row, "workspace.mcp.token", "go-next-symbolic");
 
     let panel = Rc::new(Panel {
         access: Rc::downgrade(access),
@@ -134,21 +199,16 @@ fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
         stop,
         save,
         copy_url,
-        copy_config,
         copy_prompt,
         copy_stdio,
-        rotate,
-        revoke,
+        stdio_row,
+        token,
+        toasts,
         pending: Cell::new(false),
         closed: Cell::new(false),
         snapshot: RefCell::new(None),
     });
-    for (button, action) in [
-        (&panel.start, Action::Start),
-        (&panel.stop, Action::Stop),
-        (&panel.rotate, Action::Rotate),
-        (&panel.revoke, Action::Revoke),
-    ] {
+    for (button, action) in [(&panel.start, Action::Start), (&panel.stop, Action::Stop)] {
         let weak = Rc::downgrade(&panel);
         button.connect_clicked(move |_| {
             if let Some(panel) = weak.upgrade() {
@@ -172,7 +232,6 @@ fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
     });
     for (button, kind) in [
         (&panel.copy_url, CopyKind::Url),
-        (&panel.copy_config, CopyKind::Config),
         (&panel.copy_prompt, CopyKind::Prompt),
         (&panel.copy_stdio, CopyKind::Stdio),
     ] {
@@ -183,6 +242,19 @@ fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
             }
         });
     }
+    let weak_panel = Rc::downgrade(&panel);
+    let dialog_ref = dialog.downgrade();
+    panel.token.connect_clicked(move |_| {
+        if let (Some(panel), Some(dialog)) = (weak_panel.upgrade(), dialog_ref.upgrade()) {
+            choose_token_action(&dialog, &panel);
+        }
+    });
+    let weak_panel = Rc::downgrade(&panel);
+    panel.port.connect_changed(move |_| {
+        if let Some(panel) = weak_panel.upgrade() {
+            panel.render();
+        }
+    });
     let on_close = Rc::clone(&panel);
     dialog.connect_closed(move |_| on_close.closed.set(true));
     panel.render();
@@ -198,10 +270,50 @@ fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
     dialog.present(Some(window));
 }
 
+fn choose_token_action(parent: &adw::Dialog, panel: &Rc<Panel>) {
+    let chooser = adw::AlertDialog::new(Some(l10n::t("workspace.mcp.token")), None);
+    chooser.add_responses(&[
+        ("cancel", l10n::t("dialogs.btn_cancel")),
+        ("rotate", l10n::t("workspace.mcp.rotate")),
+        ("revoke", l10n::t("workspace.mcp.revoke")),
+    ]);
+    chooser.set_close_response("cancel");
+    let parent = parent.clone();
+    let panel = Rc::clone(panel);
+    glib::spawn_future_local(async move {
+        let choice = chooser.choose_future(Some(&parent)).await;
+        let (action, title, description, label) = match choice.as_str() {
+            "rotate" => (
+                Action::Rotate,
+                "workspace.mcp.confirm_rotate",
+                "workspace.mcp.confirm_rotate_body",
+                "workspace.mcp.rotate",
+            ),
+            "revoke" => (
+                Action::Revoke,
+                "workspace.mcp.confirm_revoke",
+                "workspace.mcp.confirm_revoke_body",
+                "workspace.mcp.revoke",
+            ),
+            _ => return,
+        };
+        let confirmation = adw::AlertDialog::new(Some(l10n::t(title)), Some(l10n::t(description)));
+        confirmation.add_responses(&[
+            ("cancel", l10n::t("dialogs.btn_cancel")),
+            ("confirm", l10n::t(label)),
+        ]);
+        confirmation.set_close_response("cancel");
+        confirmation.set_default_response(Some("cancel"));
+        confirmation.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+        if confirmation.choose_future(Some(&parent)).await == "confirm" {
+            panel.request(action);
+        }
+    });
+}
+
 #[derive(Clone, Copy)]
 enum CopyKind {
     Url,
-    Config,
     Prompt,
     Stdio,
 }
@@ -277,20 +389,30 @@ impl Panel {
             self.status.set_label(status_caption(&snapshot.status));
         }
         self.port.set_sensitive(ready && stopped);
-        self.save.set_sensitive(ready && stopped);
+        let changed = snapshot.as_ref().is_some_and(|s| {
+            self.port
+                .text()
+                .parse::<u16>()
+                .is_ok_and(|port| port != 0 && u32::from(port) != s.config.port)
+        });
+        self.save.set_sensitive(ready && stopped && changed);
+        self.start
+            .set_visible(!matches!(state, State::Running | State::Stopping));
+        self.stop
+            .set_visible(matches!(state, State::Running | State::Stopping));
         self.start.set_sensitive(ready && stopped);
         self.stop
             .set_sensitive(ready && matches!(state, State::Starting | State::Running));
-        self.copy_url.set_sensitive(!endpoint.is_empty());
-        self.copy_config.set_sensitive(!endpoint.is_empty());
-        self.copy_prompt.set_sensitive(!endpoint.is_empty());
-        self.copy_stdio.set_visible(
+        let listening =
+            state == State::Running && snapshot.as_ref().is_some_and(|s| !s.status.url.is_empty());
+        self.copy_url.set_sensitive(listening);
+        self.copy_prompt.set_sensitive(listening);
+        self.stdio_row.set_visible(
             snapshot
                 .as_ref()
                 .is_some_and(|s| !s.config.stdio_command.is_empty()),
         );
-        self.rotate.set_sensitive(ready);
-        self.revoke.set_sensitive(ready);
+        self.token.set_sensitive(ready);
     }
 
     fn copy(&self, kind: CopyKind) {
@@ -306,7 +428,7 @@ impl Panel {
         } else {
             "workspace.mcp.copy_failed"
         };
-        self.result.set_label(l10n::t(key));
+        self.toasts.add_toast(adw::Toast::new(l10n::t(key)));
     }
 }
 
@@ -314,7 +436,6 @@ impl CopyKind {
     const fn feedback(self) -> &'static str {
         match self {
             Self::Url => "workspace.mcp.copied_url",
-            Self::Config => "workspace.mcp.copied_config",
             Self::Prompt => "workspace.mcp.copied_prompt",
             Self::Stdio => "workspace.mcp.copied_stdio",
         }
@@ -324,10 +445,7 @@ impl CopyKind {
 fn copy_text(snapshot: &Snapshot, kind: CopyKind) -> String {
     let url = endpoint(snapshot);
     match kind {
-        CopyKind::Url => url,
-        CopyKind::Config => format!(
-            "[mcp_servers.sqarvo]\nurl = \"{url}\"\nbearer_token_env_var = \"SQARVO_MCP_HTTP_TOKEN\"\n"
-        ),
+        CopyKind::Url => snapshot.status.url.clone(),
         CopyKind::Prompt => {
             let port = url
                 .strip_prefix("http://")
@@ -409,10 +527,6 @@ mod tests {
         };
         let url = "http://127.0.0.1:18766/mcp";
         assert_eq!(copy_text(&snapshot, CopyKind::Url), url);
-        assert_eq!(
-            copy_text(&snapshot, CopyKind::Config),
-            "[mcp_servers.sqarvo]\nurl = \"http://127.0.0.1:18766/mcp\"\nbearer_token_env_var = \"SQARVO_MCP_HTTP_TOKEN\"\n"
-        );
         let prompt = copy_text(&snapshot, CopyKind::Prompt);
         assert!(prompt.contains(url));
         assert!(prompt.contains("tools/list"));

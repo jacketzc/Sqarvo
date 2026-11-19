@@ -86,8 +86,8 @@ status = "done"
 
 [[entry]]
 key = "workspace.mcp.service"
-zh = "服务管理"
-en = "Service"
+zh = "HTTP 服务"
+en = "HTTP service"
 status = "done"
 
 [[entry]]
@@ -132,22 +132,17 @@ zh = "复制 MCP 地址"
 en = "Copy MCP URL"
 status = "done"
 
-[[entry]]
-key = "workspace.mcp.copy_config"
-zh = "复制 Codex 客户端配置"
-en = "Copy Codex client configuration"
-status = "done"
 
 [[entry]]
 key = "workspace.mcp.copy_prompt"
-zh = "复制 Agent 配置提示词"
-en = "Copy Agent setup prompt"
+zh = "复制提示词（http方式）"
+en = "Copy prompt (HTTP)"
 status = "done"
 
 [[entry]]
 key = "workspace.mcp.copy_stdio"
-zh = "复制 stdio 配置提示词"
-en = "Copy stdio setup prompt"
+zh = "复制提示词（stdio方式）"
+en = "Copy prompt (stdio)"
 status = "done"
 
 [[entry]]
@@ -240,11 +235,6 @@ zh = "已复制 MCP 地址"
 en = "MCP URL copied"
 status = "done"
 
-[[entry]]
-key = "workspace.mcp.copied_config"
-zh = "已复制 Codex 客户端配置"
-en = "Codex client configuration copied"
-status = "done"
 
 [[entry]]
 key = "workspace.mcp.copied_prompt"
@@ -268,4 +258,70 @@ status = "done"
 key = "workspace.mcp.invalid_port"
 zh = "HTTP 端口须在 1–65535 范围内"
 en = "Enter an HTTP port from 1 to 65535"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.service_description"
+zh = "管理 MCP 的 HTTP 服务及访问地址"
+en = "Manage the MCP HTTP service and its address"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.permissions_description"
+zh = "控制 MCP 对数据的访问权限"
+en = "Control MCP access to your data"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.write_tools_note"
+zh = "当前 MCP 版本尚未提供数据库写入工具。"
+en = "This MCP version does not provide database write tools."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.agent_description"
+zh = "将提示词复制给支持 MCP 的 Agent 以自动完成配置"
+en = "Copy a prompt to an MCP-capable agent to configure it"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.token"
+zh = "访问令牌管理"
+en = "Access token management"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.token_description"
+zh = "重新生成 / 撤销"
+en = "Regenerate / Revoke"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.confirm_rotate"
+zh = "重新生成访问令牌？"
+en = "Regenerate the access token?"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.confirm_rotate_body"
+zh = "现有令牌将失效，已配置的客户端需要重新启动以使用新令牌。"
+en = "The current token will expire. Restart configured clients to use the new token."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.confirm_revoke"
+zh = "撤销访问令牌？"
+en = "Revoke the access token?"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.confirm_revoke_body"
+zh = "使用现有令牌的客户端将无法继续通过 HTTP 认证。"
+en = "Clients using the current token will lose HTTP authentication."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.policy_writable"
+zh = "MCP：只读已关闭"
+en = "MCP: read-only is off"
 status = "done"

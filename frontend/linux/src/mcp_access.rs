@@ -43,8 +43,8 @@ pub struct McpAccess {
     worker: RefCell<Weak<WorkerHandle>>,
     indicator: glib::WeakRef<gtk::Label>,
     panel_indicator: glib::WeakRef<gtk::Label>,
-    panel_access: glib::WeakRef<gtk::ToggleButton>,
-    panel_read_only: glib::WeakRef<gtk::ToggleButton>,
+    panel_access: glib::WeakRef<gtk::Switch>,
+    panel_read_only: glib::WeakRef<gtk::Switch>,
     syncing_switches: Cell<bool>,
     dialog: glib::WeakRef<adw::AlertDialog>,
     access: gio::SimpleAction,
@@ -107,22 +107,23 @@ impl McpAccess {
     pub fn attach_management(
         self: &Rc<Self>,
         indicator: &gtk::Label,
-        access: &gtk::ToggleButton,
-        read_only: &gtk::ToggleButton,
+        access: &gtk::Switch,
+        read_only: &gtk::Switch,
     ) {
         self.panel_indicator.set(Some(indicator));
         self.panel_access.set(Some(access));
         self.panel_read_only.set(Some(read_only));
         for (row, toggle) in [(access, Toggle::Access), (read_only, Toggle::ReadOnly)] {
             let weak = Rc::downgrade(self);
-            row.connect_clicked(move |_| {
+            row.connect_state_set(move |_, _| {
                 if let Some(controller) = weak.upgrade()
                     && !controller.syncing_switches.get()
                 {
-                    // Restore the confirmed setting while the dialog or RPC is pending.
                     controller.render();
                     controller.toggle(toggle);
+                    return glib::Propagation::Stop;
                 }
+                glib::Propagation::Proceed
             });
         }
         self.render();
@@ -342,10 +343,16 @@ impl McpAccess {
             .into_iter()
             .filter_map(glib::WeakRef::upgrade)
         {
+            let main_indicator = self.indicator.upgrade().as_ref() == Some(&indicator);
+            let message = if !main_indicator && key == "workspace.mcp_access.status_write_warning" {
+                l10n::t("workspace.mcp.policy_writable")
+            } else {
+                message
+            };
             indicator.set_text(message);
             indicator.set_tooltip_text(Some(detail));
             indicator.update_property(&[gtk::accessible::Property::Label(message)]);
-            if key == "workspace.mcp_access.status_write_warning" {
+            if key == "workspace.mcp_access.status_write_warning" && main_indicator {
                 indicator.add_css_class("warning");
             } else {
                 indicator.remove_css_class("warning");

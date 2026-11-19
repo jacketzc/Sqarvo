@@ -29,6 +29,7 @@
 version = 1
 
 [meta]
+mcp_dialog_width = 620 # Preferred logical width; the native dialog adapts to the parent window.
 layout_reference_window = [1200, 800]   # 规范参考窗口（原型 / 截图基线），不是默认窗口
 default_tier = "compact"
 available_tiers = ["compact", "comfortable", "large"]

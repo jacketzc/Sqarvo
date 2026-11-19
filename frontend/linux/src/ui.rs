@@ -914,24 +914,33 @@ pub fn activate(app: &adw::Application) {
             // 那里要 `borrow_mut()` 清空状态，外层还持着借用就会 panic。
             let dialog = capture_state.dialog.borrow().as_ref().cloned();
             let about = capture_state.about.borrow().as_ref().cloned();
+            let mcp = capture_state
+                .window
+                .visible_dialog()
+                .filter(|dialog| dialog.title().as_str() == l10n::t("workspace.mcp.title"));
             eprintln!(
                 "[qa] 截图目标：{}",
                 if dialog.is_some() {
                     "连接对话框"
                 } else if about.is_some() {
                     "关于 Squarvo"
+                } else if mcp.is_some() {
+                    "MCP 管理"
                 } else {
                     "主窗口"
                 }
             );
-            let result = match (dialog.as_ref(), about.as_ref()) {
-                (Some(dialog), _) => {
+            let result = match (dialog.as_ref(), about.as_ref(), mcp.as_ref()) {
+                (Some(dialog), _, _) => {
                     crate::qa::save_widget(&capture_state.window, &dialog.widget(), &capture.path)
                 }
-                (None, Some(about)) => {
+                (None, Some(about), _) => {
                     crate::qa::save_widget(&capture_state.window, about, &capture.path)
                 }
-                (None, None) => crate::qa::save_window(&capture_state.window, &capture.path),
+                (None, None, Some(mcp)) => {
+                    crate::qa::save_widget(&capture_state.window, mcp, &capture.path)
+                }
+                (None, None, None) => crate::qa::save_window(&capture_state.window, &capture.path),
             };
             match result {
                 Ok(()) => {
@@ -1053,6 +1062,9 @@ pub fn activate(app: &adw::Application) {
                     }
                     if let Some(about) = about.as_ref() {
                         about.force_close();
+                    }
+                    if let Some(mcp) = mcp.as_ref() {
+                        mcp.force_close();
                     }
                     // 截图时刻可能正处在某个定时器里：关窗放进下一次主循环迭代，
                     // 让当前事件先结束再走 close-request 的同一条清理路径。

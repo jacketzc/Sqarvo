@@ -722,7 +722,7 @@ sqarvo-mcp serve --transport http --host 127.0.0.1 --port 8765
 
 ### 配置 Codex
 
-从管理页复制地址、Codex 配置片段或 Agent 提示词。按实际本地端口添加 `[mcp_servers.sqarvo]`，配置 `url` 和 `bearer_token_env_var = "SQARVO_MCP_HTTP_TOKEN"`。启动端点后，从可信终端运行：
+在 HTTP 服务区复制正在监听的 MCP 地址，或在 Agent 接入区复制 HTTP 提示词。按实际本地端口添加 `[mcp_servers.sqarvo]`，配置 `url` 和 `bearer_token_env_var = "SQARVO_MCP_HTTP_TOKEN"`。启动端点后，从可信终端运行：
 
 ```bash
 sqarvo-mcp http-auth launch codex --port 8765

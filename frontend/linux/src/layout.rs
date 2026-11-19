@@ -571,6 +571,7 @@ struct CatalogFile {
 struct MetaRaw {
     #[serde(default)]
     default_tier: String,
+    mcp_dialog_width: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -655,9 +656,18 @@ struct RawTier {
 }
 
 /// 三档解析结果（顺序 = [`Tier::ALL`]）。
-static CATALOG: OnceLock<[Metrics; 3]> = OnceLock::new();
+static CATALOG: OnceLock<([Metrics; 3], i32)> = OnceLock::new();
+
+/// Preferred logical width of the native MCP dialog.
+pub fn mcp_dialog_width() -> i32 {
+    parsed_catalog().1
+}
 
 fn catalog() -> &'static [Metrics; 3] {
+    &parsed_catalog().0
+}
+
+fn parsed_catalog() -> &'static ([Metrics; 3], i32) {
     CATALOG.get_or_init(|| {
         let file: CatalogFile = toml::from_str(METRICS_TOML).unwrap_or_else(|error| {
             panic!("metrics.toml 无法解析（编进二进制的唯一真值）：{error}")
@@ -675,7 +685,7 @@ fn catalog() -> &'static [Metrics; 3] {
                 .unwrap_or_else(|| panic!("metrics.toml 缺少 [tier.{}]（三档缺一档）", tier.id()));
             Metrics::from_raw(raw)
         };
-        Tier::ALL.map(build)
+        (Tier::ALL.map(build), file.meta.mcp_dialog_width)
     })
 }
 

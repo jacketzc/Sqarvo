@@ -179,6 +179,10 @@ def test_managed_mcp_http():
         with step("start_managed_http"):
             panel = open_panel()
             A.find_one(panel, role_in=("label",), name="HTTP 服务已停止", timeout=10)
+            save = A.find_one(panel, role_in=("button",), name="保存端口", timeout=10)
+            copy_url = A.find_one(panel, role_in=("button",), name="复制 MCP 地址", timeout=10)
+            expect("sensitive" not in A.states(save), "未修改端口时禁止保存")
+            expect("sensitive" not in A.states(copy_url), "停止时禁止复制实际监听地址")
             entry = A.find_one(panel, role_in=("text", "entry"), name="HTTP 端口", timeout=10)
             A.set_text(entry, str(port))
             press(panel, "保存端口")
@@ -218,8 +222,8 @@ def test_managed_mcp_http():
         with step("copy_agent_configuration"):
             for name, confirmation in [
                 ("复制 MCP 地址", "已复制 MCP 地址"),
-                ("复制 Codex 客户端配置", "已复制 Codex 客户端配置"),
-                ("复制 Agent 配置提示词", "已复制 Agent 配置提示词"),
+                ("复制提示词（http方式）", "已复制 Agent 配置提示词"),
+                ("复制提示词（stdio方式）", "已复制 stdio 配置提示词"),
             ]:
                 press(panel, name)
                 A.find_one(panel, role_in=("label",), name=confirmation, timeout=10)
@@ -227,14 +231,14 @@ def test_managed_mcp_http():
         with step("live_database_authorization"):
             def policy_toggle():
                 return next(
-                    (node for node in A.query(panel, role_in=("toggle button",), name="MCP 数据访问") if A.action_names(node)),
+                    (node for node in A.query(panel, role_in=("toggle button", "switch"), name="MCP 数据访问") if A.action_names(node)),
                     None,
                 )
 
             A.click(A.wait_until(policy_toggle, 10, "管理页的 MCP 数据访问开关"))
             press(A.wait_dialog(inst.app, "启用 MCP 数据访问？"), "启用 MCP 数据访问")
             A.find_one(panel, role_in=("label",), name="MCP：仅允许读取", timeout=10)
-            readonly = A.find_one(panel, role_in=("toggle button",), name="MCP 只读", timeout=10)
+            readonly = A.find_one(panel, role_in=("toggle button", "switch"), name="MCP 只读", timeout=10)
             A.click(readonly)
             press(A.wait_dialog(inst.app, "关闭 MCP 只读模式？"), "取消")
             A.find_one(panel, role_in=("label",), name="MCP：仅允许读取", timeout=10)
@@ -259,12 +263,20 @@ def test_managed_mcp_http():
             expect(result["structuredContent"]["error"]["code"] == "mcp.connection_denied", "无需重启即撤销访问")
 
         with step("rotate_revoke_and_stop"):
-            press(panel, "重新生成访问令牌")
+            press(panel, "访问令牌管理")
+            press(A.wait_dialog(inst.app, "访问令牌管理"), "重新生成访问令牌")
+            press(A.wait_dialog(inst.app, "重新生成访问令牌？"), "取消")
+            expect(client.request("tools/list")[0] == 200, "取消后原令牌仍有效")
+            press(panel, "访问令牌管理")
+            press(A.wait_dialog(inst.app, "访问令牌管理"), "重新生成访问令牌")
+            press(A.wait_dialog(inst.app, "重新生成访问令牌？"), "重新生成访问令牌")
             A.find_one(panel, role_in=("label",), name="认证凭据已更新。请重新启动已配置的客户端。", timeout=10)
             expect(client.request("tools/list")[0] == 401, "旧令牌立即被拒绝")
             replacement = HttpClient(port, read_token())
             replacement.initialize()
-            press(panel, "撤销访问令牌")
+            press(panel, "访问令牌管理")
+            press(A.wait_dialog(inst.app, "访问令牌管理"), "撤销访问令牌")
+            press(A.wait_dialog(inst.app, "撤销访问令牌？"), "撤销访问令牌")
             A.wait_until(lambda: replacement.request("tools/list")[0] == 401, 10, "撤销后拒绝认证")
             stop = A.find_one(panel, role_in=("button",), name="停止 HTTP 服务", timeout=10)
             A.wait_enabled(stop, 10)

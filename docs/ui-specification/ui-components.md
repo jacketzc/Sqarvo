@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 212 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 213 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -3105,8 +3105,9 @@ MCP 管理页的服务器、策略和 Agent 接入，以及启动态和已连接
 | `workspace.manage.menu.mcp_readonly` | 　　　MCP 只读 | item | active | done | blocked | na |
 | `workspace.status.mcp_indicator` | 　　MCP 访问状态 | control | active | done | blocked | na |
 | `workspace.mcp_management` | 　MCP 管理 | container | active | done | blocked | na |
-| `workspace.mcp_management.service` | 　　服务管理 | control | active | done | blocked | na |
+| `workspace.mcp_management.service` | 　　HTTP 服务 | control | active | done | blocked | na |
 | `workspace.mcp_management.agent` | 　　Agent 接入 | control | active | done | blocked | na |
+| `workspace.mcp_management.token` | 　　访问令牌管理 | item | active | done | blocked | na |
 
 ### `workspace` 工作区 MCP 策略
 
@@ -3119,7 +3120,7 @@ kind `area` · status `active`
 kind `item` · status `active` · parent `workspace`
 
 - 无障碍：可访问名「MCP 数据访问」；Tab MCP 管理页的权限管理组首项
-- 原生控件：gtk:ToggleButton / winui:— / swift:—
+- 原生控件：gtk:AdwActionRow + GtkSwitch / winui:— / swift:—
 - 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认、revision 与安全默认值；test_07_mcp_http.py 通过管理页按钮启用与撤销。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -3131,7 +3132,7 @@ kind `item` · status `active` · parent `workspace`
 kind `item` · status `active` · parent `workspace`
 
 - 无障碍：可访问名「MCP 只读」；Tab MCP 管理页的 MCP 数据访问之后
-- 原生控件：gtk:ToggleButton / winui:— / swift:—
+- 原生控件：gtk:AdwActionRow + GtkSwitch / winui:— / swift:—
 - 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读；test_07_mcp_http.py 验证管理页只读按钮唤起确认框。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -3156,37 +3157,49 @@ kind `control` · status `active` · parent `workspace`
 
 kind `container` · status `active` · parent `workspace`
 
-- 无障碍：可访问名「MCP 管理」；Tab 打开后依次浏览服务管理、权限管理、Agent 接入
+- 无障碍：可访问名「MCP 管理」；Tab 打开后依次浏览 HTTP 服务、权限管理、Agent 接入、访问令牌管理
 - 原生控件：gtk:AdwDialog + AdwPreferencesPage / winui:— / swift:—
-- 同步：Linux done（AT-SPI test_06_mcp_access.py 打开管理页；test_07_mcp_http.py 回读状态与权限。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+- 同步：Linux done（AT-SPI test_06_mcp_access.py 打开管理页；test_07_mcp_http.py 验证新控件、状态和权限。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 从 MCP 一级入口打开 | 回读管理配置、服务状态与数据库权限。后端断开时展示状态不可用。 | `frontend/linux/src/mcp_management.rs` |
 
-### `workspace.mcp_management.service` 服务管理
+### `workspace.mcp_management.service` HTTP 服务
 
 kind `control` · status `active` · parent `workspace.mcp_management`
 
-- 无障碍：可访问名「HTTP 端口 / 保存端口 / 启动 HTTP 服务 / 停止 HTTP 服务」；Tab 管理页第一组
-- 原生控件：gtk:Entry + Button + Label / winui:— / swift:—
-- 同步：Linux done（AT-SPI test_06_mcp_access.py 验证端口冲突和保留外部监听；test_07_mcp_http.py 验证端口配置、启停、真实状态与退出清理。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+- 无障碍：可访问名「HTTP 端口 / 复制 MCP 地址 / 保存端口 / 启动 HTTP 服务 / 停止 HTTP 服务」；Tab 管理页第一组，端口和地址复制同一设置行
+- 原生控件：gtk:AdwActionRow + GtkEntry + GtkButton + GtkLabel / winui:— / swift:—
+- 同步：Linux done（AT-SPI test_06_mcp_access.py 验证端口冲突；test_07_mcp_http.py 验证端口保存、启停和停服时禁用地址复制。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端连接已就绪。保存端口需要已停止。 | 服务按后端确认展示启动中、运行、停止中、已停止或失败，并展示回环地址和端口冲突原因。重复启动不分配第二个子进程。 | `frontend/linux/src/mcp_management.rs` |
+| click | 后端连接已就绪。保存端口需要已停止。 | 服务按后端确认展示启动中、运行、停止中、已停止或失败，并展示回环地址和端口冲突原因。启停只显示当前对应操作，操作在途时不可重复提交。端口有效且变化才可保存。地址复制仅在后端返回实际监听 URL 时可用。 | `frontend/linux/src/mcp_management.rs` |
 
 ### `workspace.mcp_management.agent` Agent 接入
 
 kind `control` · status `active` · parent `workspace.mcp_management`
 
-- 无障碍：可访问名「复制 MCP 地址 / 复制 Codex 客户端配置 / 复制 Agent 配置提示词 / 复制 stdio 配置提示词」；Tab 管理页第三组
-- 原生控件：gtk:Button + Label / winui:— / swift:—
-- 同步：Linux done（AT-SPI test_07_mcp_http.py 验证复制反馈与凭据操作，GTK 单测 clipboard_output_uses_actual_listener_and_secret_reference 断言载荷，真实 Codex 列出 8 个工具。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+- 无障碍：可访问名「复制提示词（http方式） / 复制提示词（stdio方式）」；Tab 管理页第三组
+- 原生控件：gtk:AdwActionRow + GtkButton + AdwToastOverlay / winui:— / swift:—
+- 同步：Linux done（AT-SPI test_06_mcp_access.py 验证旧入口移除；test_07_mcp_http.py 验证两种提示词与复制 Toast。GTK 单测 clipboard_output_uses_actual_listener_and_secret_reference 断言载荷。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 已回读后端状态和配置 | 复制当前 URL、带凭据引用的 Codex 示例或动态 Agent 提示词。stdio 使用验证过的命令。轮换与撤销通过后端执行。剪贴板不含凭据。 | `frontend/linux/src/mcp_management.rs` |
+| click | 已回读后端状态和配置 | 复制 HTTP 或 stdio 提示词并展示 Toast。HTTP 使用实际监听 URL，stdio 使用验证过的命令。剪贴板不含凭据。 | `frontend/linux/src/mcp_management.rs` |
+
+### `workspace.mcp_management.token` 访问令牌管理
+
+kind `item` · status `active` · parent `workspace.mcp_management`
+
+- 无障碍：可访问名「访问令牌管理」；Tab 管理页第四组
+- 原生控件：gtk:AdwActionRow + AdwAlertDialog / winui:— / swift:—
+- 同步：Linux done（test_07_mcp_http.py 验证管理入口、取消保留旧令牌、确认后重新生成和撤销。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 后端已就绪 | 选择重新生成或撤销，再在独立确认框中确认。取消不发送操作。界面不展示或复制令牌。 | `frontend/linux/src/mcp_management.rs` |
 
 ## 待清理（按版本）
 
