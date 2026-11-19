@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package sqarvo.services.v1;
+
+import "common/v1/common.proto";
+import "services/v1/connection.proto";
+
+// Keep the generated type distinct from the existing Windows connection model.
+option csharp_namespace = "Sqarvo.Services.V1.Profiles";
+
+// 本地共享连接档案与 MCP 全局访问策略。所有调用均需本地会话 token。
+service ConnectionProfileService {
+  rpc ListProfiles(sqarvo.common.v1.Empty) returns (ListProfilesResponse);
+  rpc GetProfile(GetProfileRequest) returns (ConnectionProfile);
+  rpc SaveProfile(SaveProfileRequest) returns (ConnectionProfile);
+  rpc DeleteProfile(DeleteProfileRequest) returns (sqarvo.common.v1.Empty);
+  rpc GetMcpAccessPolicy(sqarvo.common.v1.Empty) returns (McpAccessPolicyResponse);
+  rpc SetMcpAccessPolicy(SetMcpAccessPolicyRequest) returns (McpAccessPolicyResponse);
+}
+
+// 单条连接档案。连接参数只含凭据引用，密码仍由 CredentialService 管理。
+message ConnectionProfile {
+  // 保存新档案时留空，由服务端生成 UUID v4；更新档案时使用已有 UUID。
+  string profile_id = 1;
+  // 该档案的当前 revision。保存请求的并发条件见 expected_revision。
+  uint64 revision = 2;
+  string name = 3;
+  ConnectionParams params = 4;
+  // 文件型驱动的路径；服务器型驱动留空。
+  string file_path = 5;
+  // 可选 GUI 显示名称。
+  optional string display_name = 6;
+  // 可选 RFC 3339 时间戳。
+  optional string last_used = 7;
+}
+
+message ListProfilesResponse {
+  repeated ConnectionProfile profiles = 1;
+  // 档案列表所在的共享文档 revision。
+  uint64 revision = 2;
+}
+
+message GetProfileRequest {
+  string profile_id = 1;
+}
+
+message SaveProfileRequest {
+  ConnectionProfile profile = 1;
+  // 创建时省略；更新时须提交所读取的档案 revision。
+  // 值过期或创建命中已有连接身份时，返回 FAILED_PRECONDITION +
+  // profile.revision_conflict。命中已有身份时，使用该档案的 UUID 更新。
+  optional uint64 expected_revision = 2;
+}
+
+message DeleteProfileRequest {
+  string profile_id = 1;
+  // 必须是客户端所读取的非零档案 revision。
+  uint64 expected_revision = 2;
+}
+
+message McpAccessPolicyResponse {
+  bool enabled = 1;
+  bool read_only = 2;
+  // 读取或写入策略所在的共享文档 revision。
+  uint64 revision = 3;
+}
+
+message SetMcpAccessPolicyRequest {
+  // 至少传一个字段。未设置的字段保留锁内读到的当前值。
+  // 显式关闭访问将策略重置为 { enabled: false, read_only: true }。
+  optional bool enabled = 1;
+  // read_only=false 只允许在访问启用时设置。
+  optional bool read_only = 2;
+}
