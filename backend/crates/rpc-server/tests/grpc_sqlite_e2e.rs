@@ -1160,3 +1160,116 @@ async fn script_row_budget_metadata_over_uds() {
     );
     server.stop().await;
 }
+
+/// #238：多语句脚本的逐语句耗时（前端「消息」页 `Query Time` 的真值来源）。
+///
+/// 断言不是「有个非零数」就算过。脚本里刻意放了两种量级的语句——20k 行写入与
+/// 20k 行聚合 vs 1 行写入与 `SELECT 1`——若耗时是常量、整段均摊或按语句数平均，
+/// 「重的必须明显慢于轻的」这一条就不可能满足；再叠上「逐条之和不超过整次
+/// Execute 的墙钟」，把每条语句各自独立计时这条要求钉死。
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 连接→脚本→逐条耗时→释放→断连是一条验收链路
+async fn statement_elapsed_millis_is_measured_per_statement() {
+    let server = E2eServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut queries = QueryServiceClient::with_interceptor(channel, auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "statement-timing".to_owned(),
+            })
+            .await,
+    );
+    stage(
+        "Execute(CREATE)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: connected.session_id.clone(),
+                sql: "CREATE TABLE t(v INTEGER)".to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+
+    // 2×INSERT（20k 行 / 1 行）+ 2×SELECT（20k 行聚合 / 常量）。
+    let script = "WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM seq WHERE x < 20000) \
+                  INSERT INTO t(v) SELECT x FROM seq; \
+                  INSERT INTO t(v) VALUES (0); \
+                  SELECT count(*), sum(v) FROM t; \
+                  SELECT 1";
+
+    let wall_started = Instant::now();
+    let start = stage(
+        "Execute(script)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: connected.session_id.clone(),
+                sql: script.to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+    let wall = wall_started.elapsed();
+
+    assert_eq!(start.statements.len(), 4, "statements[] 应返回全量摘要");
+    let elapsed: Vec<u64> = start
+        .statements
+        .iter()
+        .map(|statement| statement.elapsed_millis)
+        .collect();
+    println!(
+        "逐语句 elapsed_millis = {elapsed:?}，整次 Execute 墙钟 = {} ms",
+        wall.as_millis()
+    );
+
+    for (index, millis) in elapsed.iter().enumerate() {
+        assert!(
+            *millis > 0,
+            "第 {index} 条语句应有真实测量值（0 只表示「未测量」），实际 {elapsed:?}"
+        );
+    }
+
+    // 逐条分别计时：20k 行写入与 20k 行聚合必须明显慢于 1 行写入与 SELECT 1。
+    let heavy = elapsed[0].max(elapsed[2]);
+    let light = elapsed[1].max(elapsed[3]);
+    assert!(
+        heavy > light,
+        "重语句（{heavy} ms）必须慢于轻语句（{light} ms）：相等即意味着耗时是常量或均摊，\
+         不是分别测量的。实际 {elapsed:?}"
+    );
+
+    // 逐条之和不超过整次 Execute 的墙钟（2ms 容差留给每条的 >=1ms 下限取整与调度抖动）。
+    let total: u64 = elapsed.iter().sum();
+    let wall_millis = u64::try_from(wall.as_millis()).unwrap_or(u64::MAX);
+    assert!(
+        total <= wall_millis + 2,
+        "逐条之和 {total} ms 不应超过整次 Execute 的墙钟 {wall_millis} ms（{elapsed:?}）"
+    );
+
+    // 只验耗时，不消费结果集：直接 Close 释放查询登记。
+    let query_id = start.query_id.clone();
+    stage(
+        "Close",
+        queries
+            .close(CloseQueryRequest {
+                query_id: query_id.clone(),
+            })
+            .await,
+    );
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: connected.connection_id.clone(),
+            })
+            .await,
+    );
+    assert_eq!(server.sessions.active_count().await, 0);
+    assert_eq!(server.queries.active(), 0, "查询登记未清空");
+    server.stop().await;
+}

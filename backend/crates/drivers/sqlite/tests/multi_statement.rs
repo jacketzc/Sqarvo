@@ -137,6 +137,16 @@ async fn three_statement_script_summaries_and_per_statement_fetch() {
     assert_eq!(start.statements[1].rows_affected, Some(5));
     assert_eq!(start.statements[1].columns.len(), 0);
     assert!(start.statements[2].has_result_set);
+    // #238：逐语句耗时由驱动自己测（SPI 的 `Some` 表示已测量），三条各自不为零。
+    for (index, statement) in start.statements.iter().enumerate() {
+        let elapsed = statement
+            .elapsed
+            .unwrap_or_else(|| panic!("第 {index} 条语句应带驱动测量的耗时"));
+        assert!(
+            elapsed > std::time::Duration::ZERO,
+            "第 {index} 条语句的耗时不能是 0，实际 {elapsed:?}"
+        );
+    }
 
     // first_batch = 第一个结果集的首批（批大小沿用 max_rows）。
     let first = start.first_batch.expect("首条有结果集应有首批");
