@@ -234,3 +234,7 @@ flock -w 900 /tmp/sqarvo-agent-gui.lock -c '
   为空目录 0700）——实测行为，不是打包问题。
 
 打包产物必须在目标发行版上实际安装并启动验证后才能标记为可用。
+
+M11 起，包内同目录交付 `sqarvo-desktop`、`sqarvo-backend` 和 `sqarvo-mcp`。
+`BUILD=0` 打包前，用 `cargo build --release -p sqarvo-backend-service -p sqarvo-mcp`
+生成两个后端二进制。Linux 的 MCP HTTP 认证使用桌面会话中已解锁的 Secret Service。

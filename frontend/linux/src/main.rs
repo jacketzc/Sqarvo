@@ -26,6 +26,7 @@ mod layout;
 mod layout_audit;
 mod logs;
 mod mcp_access;
+mod mcp_management;
 mod proto;
 mod qa;
 mod result_edit;

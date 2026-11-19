@@ -707,3 +707,29 @@ printf '%s\n%s\n%s\n' \
 - [产品需求 §9 MCP 对外接口（V1）](../product/requirements.md)
 - [MariaDB 驱动行为](../database/mariadb.md)、[SQLite 驱动行为](../database/sqlite.md)
 - [gRPC 约定](grpc-conventions.md)——GUI 通道（与本文的 MCP 通道并列，互不依赖）
+
+## 本地 Streamable HTTP（Linux）
+
+在 GTK 中打开主菜单「MCP」。服务区可以保存监听端口、启动或停止服务，并显示后端确认的状态。首版仅支持 `127.0.0.1`，默认端口 `8765`，路径 `/mcp`。默认不随应用启动。停止或退出 GTK 时回收其伴生后端所启动的 MCP 进程。
+
+独立运行示例：
+
+```bash
+sqarvo-mcp serve --transport http --host 127.0.0.1 --port 8765
+```
+
+无参数 `sqarvo-mcp` 继续提供 stdio。HTTP 所有请求需要 Bearer，必须使用实际地址和端口，Origin 缺省或与该端点同源。首启在 Secret Service 中生成凭据，解锁失败会报告凭据库不可用。可在管理页或通过 `sqarvo-mcp http-auth rotate` / `revoke` 替换或撤销。旧凭据不能继续认证。关闭数据库数据访问会拒绝下一次数据库操作，HTTP 服务本身仍运行。
+
+### 配置 Codex
+
+从管理页复制地址、Codex 配置片段或 Agent 提示词。按实际本地端口添加 `[mcp_servers.sqarvo]`，配置 `url` 和 `bearer_token_env_var = "SQARVO_MCP_HTTP_TOKEN"`。启动端点后，从可信终端运行：
+
+```bash
+sqarvo-mcp http-auth launch codex --port 8765
+```
+
+替换示例端口为正在运行的端口。启动器从系统凭据库读取令牌，将其注入这一 Codex 进程的环境。启动器为本次运行固定该端点的配置。请仅在受信任的本机模型客户端和工作环境内使用。轮换后重新启动客户端。客户端若只能把明文 Header 保存到文件，选择管理页的 stdio 配置提示词。
+
+### 本地管理 gRPC
+
+`SystemService` 增加 `GetMcpServerStatus`、`GetMcpServerConfig`、`UpdateMcpServerConfig`、`StartMcpServer`、`StopMcpServer`、`RotateMcpServerToken` 和 `RevokeMcpServerToken`。启停返回当前状态，终态通过状态 RPC 回读。失败状态携带稳定错误码，例如 `mcp.http.port_in_use`。配置更新仅在停止或失败状态接受，范围为 1–65535。现有 `ConnectionProfileService` 的权限 RPC 继续独立使用，所有管理 RPC 沿用本地 gRPC 认证。

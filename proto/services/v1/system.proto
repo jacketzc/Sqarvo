@@ -10,6 +10,13 @@ service SystemService {
   rpc GetVersion(sqarvo.common.v1.Empty) returns (VersionResponse);
   rpc GetHealth(sqarvo.common.v1.Empty) returns (HealthResponse);
   rpc ListDrivers(sqarvo.common.v1.Empty) returns (ListDriversResponse);
+  rpc GetMcpServerStatus(sqarvo.common.v1.Empty) returns (McpServerStatus);
+  rpc GetMcpServerConfig(sqarvo.common.v1.Empty) returns (McpServerConfig);
+  rpc UpdateMcpServerConfig(UpdateMcpServerConfigRequest) returns (McpServerConfig);
+  rpc StartMcpServer(sqarvo.common.v1.Empty) returns (McpServerStatus);
+  rpc StopMcpServer(sqarvo.common.v1.Empty) returns (McpServerStatus);
+  rpc RotateMcpServerToken(sqarvo.common.v1.Empty) returns (sqarvo.common.v1.Empty);
+  rpc RevokeMcpServerToken(sqarvo.common.v1.Empty) returns (sqarvo.common.v1.Empty);
 }
 
 message VersionResponse {
@@ -54,4 +61,35 @@ message DriverInfo {
 
 message ListDriversResponse {
   repeated DriverInfo drivers = 1;
+}
+
+// Loopback configuration for the next managed launch. Never carries credentials.
+message McpServerConfig {
+  uint32 port = 1;
+  string host = 2;
+  string path = 3;
+  bool authentication_required = 4;
+  // Verified executable for local stdio configuration. Empty when unavailable.
+  string stdio_command = 5;
+}
+
+message UpdateMcpServerConfigRequest {
+  // One through 65535. Updates require a stopped service.
+  uint32 port = 1;
+}
+
+message McpServerStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_STOPPED = 1;
+    STATE_STARTING = 2;
+    STATE_RUNNING = 3;
+    STATE_STOPPING = 4;
+    STATE_FAILED = 5;
+  }
+  State state = 1;
+  // Populated only for a confirmed listener owned by this backend.
+  string url = 2;
+  // Stable failure code, safe to display or localize.
+  string error_code = 3;
 }

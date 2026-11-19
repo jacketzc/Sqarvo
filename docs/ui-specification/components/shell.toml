@@ -215,10 +215,10 @@ style.icon = ["menu.open"]
 native_control = "gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—"
 style.slot = "menubar"
 style.metrics = ["min_target", "icon_box", "font_weight_menu"]
-a11y.name = "主菜单（文件 / 视图 / 帮助）"
+a11y.name = "主菜单（文件 / 视图 / MCP / 帮助）"
 a11y.tab = "可聚焦；Enter / Space 展开菜单，Esc 收起"
 impl_notes = [
-  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。",
+  "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / MCP / 帮助）」。",
   "「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
   "「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
   "「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。",
@@ -229,15 +229,15 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "窗口存在"
-result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选）"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选）"
 source = "src/ui.rs:4945、src/ui.rs:321"
 
 platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，两个 MenuFlyoutSubItem（文件 / 帮助）装同一批条目（「表 → 导出 CSV」已随改动确认单 #1 / #198 删除），条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b6901ab5f931"
-evidence = "build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限"
+spec_hash = "266fdcc0d784"
+evidence = "GTK 单测 mcp_management_has_a_top_level_menu_item 检查菜单模型，AT-SPI test_06_mcp_access.py 验证菜单、权限动作与回读。"
 
 [component.sync.windows]
 state = "partial"
@@ -1128,3 +1128,33 @@ note = "§7.1：断开后回「未连接」并在状态栏给原因与错误码�
 [component.sync.macos]
 state = "none"
 spec_hash = ""
+
+[[component]]
+id = "shell.menu.mcp"
+parent = "shell.menu"
+display_name = "MCP"
+kind = "item"
+status = "active"
+style.slot = "menubar"
+native_control = "gtk:GMenu + GSimpleAction / winui:— / swift:—"
+a11y.name = "MCP"
+a11y.tab = "与视图、帮助同级，位于两者之间"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "主菜单可用"
+result = "打开 MCP 管理页"
+source = "frontend/linux/src/ui.rs、frontend/linux/src/mcp_management.rs"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "3484efb6342d"
+evidence = "GTK 单测 mcp_management_has_a_top_level_menu_item 核对一级菜单模型；AT-SPI test_06_mcp_access.py 打开 MCP 管理页。"
+
+[component.sync.windows]
+state = "blocked"
+note = "本次仅交付 Linux GTK 管理入口，Windows 接入范围见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入 MCP。"

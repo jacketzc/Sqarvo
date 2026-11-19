@@ -264,7 +264,13 @@ impl AuditWriter {
         })?;
         let _guard = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
         let line = format!("{line}\n");
-        let (mut file, target) = self.lock_target()?;
+        // The stable lock remains held when the active log is renamed and reopened.
+        // Keep the active-file lock as well for older stdio binaries and log readers.
+        let rotation_lock = open_locked(&self.dir.join("audit.lock"))?;
+        let (mut file, target) = match &rotation_lock {
+            LockOutcome::Locked(_lock) => self.lock_target()?,
+            LockOutcome::Contended => self.sidecar()?,
+        };
         let size = file.metadata().map_err(Error::from)?.len();
         let needs_rotation = size > 0
             && self.policy.keep_files > 0
@@ -287,19 +293,16 @@ impl AuditWriter {
     fn lock_target(&self) -> Result<(File, PathBuf)> {
         match open_locked(&self.current)? {
             LockOutcome::Locked(file) => Ok((file, self.current.clone())),
-            LockOutcome::Contended => {
-                let sidecar = self.dir.join(format!("audit.{}.jsonl", std::process::id()));
-                tracing::warn!(
-                    path = %self.current.display(),
-                    fallback = %sidecar.display(),
-                    "审计文件被其它进程占用，本进程改写到独立文件（多实例已知限制）"
-                );
-                // 退化文件拿不到锁也照写：宁可牺牲「多实例严格串行」，也不丢审计记录。
-                let file = open_append(&sidecar)?;
-                let _ = exclusive_lock(&file)?;
-                Ok((file, sidecar))
-            }
+            LockOutcome::Contended => self.sidecar(),
         }
+    }
+
+    fn sidecar(&self) -> Result<(File, PathBuf)> {
+        let sidecar = self.dir.join(format!("audit.{}.jsonl", std::process::id()));
+        tracing::warn!("审计文件被其它进程占用，本进程改写到独立文件");
+        let file = open_append(&sidecar)?;
+        let _ = exclusive_lock(&file)?;
+        Ok((file, sidecar))
     }
 }
 
@@ -534,6 +537,11 @@ mod tests {
             .expect("列目录")
             .filter_map(std::result::Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+            })
             .collect();
         assert_eq!(entries, vec!["audit.jsonl".to_owned()]);
     }

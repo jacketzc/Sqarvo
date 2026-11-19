@@ -13,6 +13,7 @@
 #
 # 安装布局（与 packaging/linux/README.md 一致）：
 #   /usr/bin/sqarvo-desktop
+#   /usr/bin/sqarvo-mcp                  （可由后端监督启动，也支持独立 stdio）
 #   /usr/bin/sqarvo-backend              （前端在同目录找到它，无需 SQARVO_BACKEND_BIN）
 #   /usr/share/applications/io.sqarvo.Sqarvo.desktop
 #   /usr/share/icons/hicolor/scalable/apps/io.sqarvo.Sqarvo.svg
@@ -27,6 +28,7 @@ OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist}"
 
 FRONTEND_BIN="$REPO_ROOT/frontend/linux/target/release/sqarvo-desktop"
 BACKEND_BIN="$REPO_ROOT/backend/target/release/sqarvo-backend"
+MCP_BIN="$REPO_ROOT/backend/target/release/sqarvo-mcp"
 
 step() { printf '\n== %s ==\n' "$*"; }
 die() { printf 'build-deb: %s\n' "$*" >&2; exit 1; }
@@ -44,7 +46,7 @@ command -v dpkg-shlibdeps >/dev/null || die "缺少 dpkg-shlibdeps（apt install
 
 if [ "$BUILD" = "1" ]; then
   step "构建后端（release）"
-  ( cd "$REPO_ROOT/backend" && cargo build --release -p sqarvo-backend-service )
+  ( cd "$REPO_ROOT/backend" && cargo build --release -p sqarvo-backend-service -p sqarvo-mcp )
   step "构建前端（release）"
   ( cd "$REPO_ROOT/frontend/linux" && cargo build --release )
 else
@@ -53,6 +55,7 @@ fi
 
 [ -x "$FRONTEND_BIN" ] || die "找不到前端二进制：$FRONTEND_BIN"
 [ -x "$BACKEND_BIN" ] || die "找不到后端二进制：$BACKEND_BIN"
+[ -x "$MCP_BIN" ] || die "找不到 MCP 二进制：$MCP_BIN"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sqarvo-deb.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -66,6 +69,7 @@ mkdir -p "$PKG/DEBIAN" \
 step "安装文件到暂存目录"
 install -Dm755 "$FRONTEND_BIN" "$PKG/usr/bin/sqarvo-desktop"
 install -Dm755 "$BACKEND_BIN"  "$PKG/usr/bin/sqarvo-backend"
+install -Dm755 "$MCP_BIN" "$PKG/usr/bin/sqarvo-mcp"
 install -Dm644 "$SCRIPT_DIR/io.sqarvo.Sqarvo.desktop" \
   "$PKG/usr/share/applications/io.sqarvo.Sqarvo.desktop"
 install -Dm644 "$SCRIPT_DIR/../../docs/assets/brand/sqarvo-logo.svg" \
@@ -98,7 +102,7 @@ step "计算运行时依赖（dpkg-shlibdeps）"
 mkdir -p "$WORK/shlibs/debian"
 printf 'Source: sqarvo\n\nPackage: sqarvo\nArchitecture: any\n' > "$WORK/shlibs/debian/control"
 SHLIBS=$( cd "$WORK/shlibs" && dpkg-shlibdeps -O \
-  "$PKG/usr/bin/sqarvo-desktop" "$PKG/usr/bin/sqarvo-backend" 2>/dev/null \
+  "$PKG/usr/bin/sqarvo-desktop" "$PKG/usr/bin/sqarvo-backend" "$PKG/usr/bin/sqarvo-mcp" 2>/dev/null \
   | sed -n 's/^shlibs:Depends=//p' )
 
 [ -n "$SHLIBS" ] || die "dpkg-shlibdeps 未给出依赖"

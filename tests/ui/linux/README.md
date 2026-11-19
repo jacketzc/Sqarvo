@@ -98,3 +98,9 @@ Diagnostic: tests/ui/linux/logs/test_03_sql.py_test_execute_sql.txt
 grep 本目录找现有用例，该端缺失覆盖时**先补用例再验收**（根 AGENTS §13、
 frontend/AGENTS §13）。本框架是三端功能用例库模式的首发实现，Windows（UIA）/
 macOS（XCUITest）建库时以本目录三层结构为参照。
+
+HTTP E2E 需要 GTK、Codex CLI、GNOME Keyring 和系统 Python 的 Secret typelib。
+构建前端及两个后端后，从 GNOME Wayland 会话运行
+`bash tests/integration/run_gtk_mcp_http.sh`。脚本使用隔离的会话总线、可访问性注册表、
+Secret Service 和 SQLite 数据。使用 `SQARVO_UI_BIN`、`SQARVO_BACKEND_BIN`、
+`SQARVO_MCP_BIN` 可指定被测二进制。复制用例验收 GDK 接受内容后的界面反馈，复制文本另由 GTK 单测断言。

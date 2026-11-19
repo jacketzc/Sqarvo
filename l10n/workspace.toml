@@ -65,3 +65,207 @@ key = "workspace.mcp_access.status_update_error"
 zh = "MCP：无法确认设置结果"
 en = "MCP: setting could not be verified"
 status = "done"
+
+[[entry]]
+key = "workspace.mcp.menu"
+zh = "MCP"
+en = "MCP"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.title"
+zh = "MCP 管理"
+en = "MCP Management"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.close"
+zh = "关闭"
+en = "Close"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.service"
+zh = "服务管理"
+en = "Service"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.permissions"
+zh = "权限管理"
+en = "Permissions"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.agent"
+zh = "Agent 接入"
+en = "Agent setup"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.port"
+zh = "HTTP 端口"
+en = "HTTP port"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.save"
+zh = "保存端口"
+en = "Save port"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.start"
+zh = "启动 HTTP 服务"
+en = "Start HTTP server"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.stop"
+zh = "停止 HTTP 服务"
+en = "Stop HTTP server"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copy_url"
+zh = "复制 MCP 地址"
+en = "Copy MCP URL"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copy_config"
+zh = "复制 Codex 客户端配置"
+en = "Copy Codex client configuration"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copy_prompt"
+zh = "复制 Agent 配置提示词"
+en = "Copy Agent setup prompt"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copy_stdio"
+zh = "复制 stdio 配置提示词"
+en = "Copy stdio setup prompt"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.rotate"
+zh = "重新生成访问令牌"
+en = "Rotate access token"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.revoke"
+zh = "撤销访问令牌"
+en = "Revoke access token"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.credential_changed"
+zh = "认证凭据已更新。请重新启动已配置的客户端。"
+en = "Authentication credential updated. Restart configured clients."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.stopped"
+zh = "HTTP 服务已停止"
+en = "HTTP server stopped"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.starting"
+zh = "HTTP 服务正在启动"
+en = "HTTP server starting"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.running"
+zh = "HTTP 服务正在运行"
+en = "HTTP server running"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.stopping"
+zh = "HTTP 服务正在停止"
+en = "HTTP server stopping"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.disconnected"
+zh = "HTTP 服务状态不可用，后端未连接"
+en = "HTTP server status unavailable. Backend disconnected."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.port_busy"
+zh = "HTTP 端口已被占用"
+en = "HTTP port is already in use"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.credential"
+zh = "系统凭据库不可用，请解锁后重试"
+en = "Unlock the system keyring and try again"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.binary"
+zh = "找不到已安装的 sqarvo-mcp"
+en = "Installed sqarvo-mcp executable is missing"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.failed"
+zh = "MCP HTTP 操作失败"
+en = "MCP HTTP operation failed"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.prompt"
+zh = "请在当前本地 MCP 客户端中配置名为 sqarvo 的 Streamable HTTP 服务。地址：{url}。当前状态：{state}。认证：Bearer，需由用户安全提供。识别客户端的配置方式，只添加或更新 sqarvo，并保留其他服务器。Codex 使用 bearer_token_env_var 引用 SQARVO_MCP_HTTP_TOKEN，请用户从终端运行 sqarvo-mcp http-auth launch codex --port {port}。其他客户端优先使用其安全凭据引用，无法安全引用时请用户手动选择 stdio。服务运行后验证连接及 tools/list，报告结果和重启要求。请勿在聊天索要、输出或保存令牌。请勿修改连接档案、数据库、MCP 数据访问或只读策略，或运行与客户端配置无关的操作。"
+en = "Configure the local Streamable HTTP MCP server named sqarvo in this client. URL: {url}. Current state: {state}. Authentication: user-supplied Bearer credential. Detect the client configuration format and add or update only sqarvo. For Codex reference SQARVO_MCP_HTTP_TOKEN using bearer_token_env_var and ask the user to run sqarvo-mcp http-auth launch codex --port {port} in a terminal. Use a secure credential reference for other clients or ask the user to select stdio. Once the server is running, verify the connection and tools/list and report whether a restart is needed. Keep credentials out of chat, files, and logs. Do not change connection profiles, databases, MCP permissions or read-only policy, or run actions unrelated to client setup."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.stdio"
+zh = "请在当前本地 MCP 客户端中配置名为 sqarvo 的 stdio 服务。可执行文件：{command}。无参数。由客户端启动，不使用 HTTP 令牌。仅编辑 sqarvo 的客户端配置，验证 tools/list，报告结果与是否需重启。请勿更改数据库、档案或 MCP 授权策略。"
+en = "Configure a local stdio MCP server named sqarvo. Executable: {command}. Use no arguments. The client starts the server with no HTTP credential. Edit only the sqarvo client entry, verify tools/list, and report the result and restart requirements. Keep databases, profiles and MCP permissions unchanged."
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copied_url"
+zh = "已复制 MCP 地址"
+en = "MCP URL copied"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copied_config"
+zh = "已复制 Codex 客户端配置"
+en = "Codex client configuration copied"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copied_prompt"
+zh = "已复制 Agent 配置提示词"
+en = "Agent setup prompt copied"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copied_stdio"
+zh = "已复制 stdio 配置提示词"
+en = "stdio setup prompt copied"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.copy_failed"
+zh = "无法写入剪贴板"
+en = "Could not write to the clipboard"
+status = "done"
+
+[[entry]]
+key = "workspace.mcp.invalid_port"
+zh = "HTTP 端口须在 1–65535 范围内"
+en = "Enter an HTTP port from 1 to 65535"
+status = "done"

@@ -163,13 +163,15 @@ async fn run(cli: Cli) -> Result<()> {
     let queries = Arc::new(QueryRegistry::new(QueryLimits::default()));
     // 同一份凭据存储同时注入会话管理与 CredentialService：写入的密码必须能被
     // 连接路径读到（ADR 0015 / 0016）。
-    let services = Services::new(
+    let mut services = Services::new(
         Arc::clone(&sessions),
         Arc::clone(&registry),
         queries,
         credentials,
     )
     .with_profile_store(ProfileStore::new(&paths));
+    let mcp = sqarvo_rpc_server::services::mcp_server::McpServerManager::new(paths.config_dir());
+    services.system.set_mcp_manager(Arc::clone(&mcp));
     if let Err(status) = services.profile.initialize().await {
         tracing::warn!(code = ?status.code(), "共享连接档案迁移失败，档案服务将返回错误或在重试后恢复");
     }
@@ -198,6 +200,7 @@ async fn run(cli: Cli) -> Result<()> {
     .await;
 
     // 唯一的清理路径：三种退出触发都从这里过。
+    mcp.shutdown().await;
     sessions.close_all().await;
     cleanup(socket_path.as_deref(), &endpoint_path);
     result

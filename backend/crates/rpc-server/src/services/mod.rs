@@ -11,6 +11,7 @@
 pub mod connection;
 pub mod credential;
 pub mod mapping;
+pub mod mcp_server;
 pub mod metadata;
 pub mod profile;
 pub mod query;

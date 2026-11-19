@@ -38,21 +38,14 @@ impl Toggle {
     }
 }
 
-pub fn append_menu(view: &gio::Menu) {
-    view.append(
-        Some(l10n::t("workspace.mcp_access.menu_access")),
-        Some("win.mcp-access"),
-    );
-    view.append(
-        Some(l10n::t("workspace.mcp_access.menu_read_only")),
-        Some("win.mcp-read-only"),
-    );
-}
-
 pub struct McpAccess {
     window: glib::WeakRef<adw::ApplicationWindow>,
     worker: RefCell<Weak<WorkerHandle>>,
     indicator: glib::WeakRef<gtk::Label>,
+    panel_indicator: glib::WeakRef<gtk::Label>,
+    panel_access: glib::WeakRef<gtk::ToggleButton>,
+    panel_read_only: glib::WeakRef<gtk::ToggleButton>,
+    syncing_switches: Cell<bool>,
     dialog: glib::WeakRef<adw::AlertDialog>,
     access: gio::SimpleAction,
     read_only: gio::SimpleAction,
@@ -70,6 +63,10 @@ impl McpAccess {
             window: window.downgrade(),
             worker: RefCell::new(Weak::new()),
             indicator: glib::WeakRef::new(),
+            panel_indicator: glib::WeakRef::new(),
+            panel_access: glib::WeakRef::new(),
+            panel_read_only: glib::WeakRef::new(),
+            syncing_switches: Cell::new(false),
             dialog: glib::WeakRef::new(),
             access: gio::SimpleAction::new_stateful(ACCESS, None, &false.to_variant()),
             read_only: gio::SimpleAction::new_stateful(READ_ONLY, None, &true.to_variant()),
@@ -98,8 +95,36 @@ impl McpAccess {
         controller
     }
 
+    pub fn worker(&self) -> Option<Rc<WorkerHandle>> {
+        self.worker.borrow().upgrade()
+    }
+
     pub fn attach_indicator(&self, label: &gtk::Label) {
         self.indicator.set(Some(label));
+        self.render();
+    }
+
+    pub fn attach_management(
+        self: &Rc<Self>,
+        indicator: &gtk::Label,
+        access: &gtk::ToggleButton,
+        read_only: &gtk::ToggleButton,
+    ) {
+        self.panel_indicator.set(Some(indicator));
+        self.panel_access.set(Some(access));
+        self.panel_read_only.set(Some(read_only));
+        for (row, toggle) in [(access, Toggle::Access), (read_only, Toggle::ReadOnly)] {
+            let weak = Rc::downgrade(self);
+            row.connect_clicked(move |_| {
+                if let Some(controller) = weak.upgrade()
+                    && !controller.syncing_switches.get()
+                {
+                    // Restore the confirmed setting while the dialog or RPC is pending.
+                    controller.render();
+                    controller.toggle(toggle);
+                }
+            });
+        }
         self.render();
     }
 
@@ -285,9 +310,16 @@ impl McpAccess {
             .set_state(&policy.is_some_and(|p| p.enabled).to_variant());
         self.read_only
             .set_state(&policy.is_none_or(|p| p.read_only).to_variant());
-        let Some(indicator) = self.indicator.upgrade() else {
-            return;
-        };
+        self.syncing_switches.set(true);
+        if let Some(row) = self.panel_access.upgrade() {
+            row.set_sensitive(available);
+            row.set_active(policy.is_some_and(|p| p.enabled));
+        }
+        if let Some(row) = self.panel_read_only.upgrade() {
+            row.set_sensitive(available && policy.is_some_and(|p| p.enabled));
+            row.set_active(policy.is_none_or(|p| p.read_only));
+        }
+        self.syncing_switches.set(false);
         let key = match policy {
             _ if self.busy.get() => "workspace.mcp_access.status_loading",
             _ if self.failure.get().is_some() => self.failure.get().unwrap_or_default(),
@@ -297,7 +329,6 @@ impl McpAccess {
             None => "workspace.mcp_access.status_disconnected",
         };
         let message = l10n::t(key);
-        indicator.set_text(message);
         let detail = match key {
             "workspace.mcp_access.status_write_warning" => {
                 l10n::t("workspace.mcp_access.no_write_tools")
@@ -307,12 +338,18 @@ impl McpAccess {
             }
             _ => message,
         };
-        indicator.set_tooltip_text(Some(detail));
-        indicator.update_property(&[gtk::accessible::Property::Label(message)]);
-        if key == "workspace.mcp_access.status_write_warning" {
-            indicator.add_css_class("warning");
-        } else {
-            indicator.remove_css_class("warning");
+        for indicator in [&self.indicator, &self.panel_indicator]
+            .into_iter()
+            .filter_map(glib::WeakRef::upgrade)
+        {
+            indicator.set_text(message);
+            indicator.set_tooltip_text(Some(detail));
+            indicator.update_property(&[gtk::accessible::Property::Label(message)]);
+            if key == "workspace.mcp_access.status_write_warning" {
+                indicator.add_css_class("warning");
+            } else {
+                indicator.remove_css_class("warning");
+            }
         }
     }
 

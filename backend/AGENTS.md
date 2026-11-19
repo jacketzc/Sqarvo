@@ -78,8 +78,8 @@
 - 契约与安全：见根 §13；安全测试覆盖日志脱敏、凭据存储、IPC 访问控制、路径校验、错误信息不泄露。
 - 环境跑不了的检查按 **BLOCKED + 原因**记录（根 §13 三态），不声称通过。
 
-## sqarvo-mcp（stdio MCP Server）
+## sqarvo-mcp（本地 MCP Server）
 
-- 独立 stdio 进程；流程模型见 `docs/architecture/mcp.md`（ADR 0032），工具面契约见 `docs/api/mcp-tools.md`，SQL 只读策略见 ADR 0033。
+- 独立 MCP 进程，支持无参数 stdio 与 Linux 回环 Streamable HTTP。流程见 `docs/architecture/mcp.md`（ADR 0032/0036），工具面见 `docs/api/mcp-tools.md`，SQL 只读策略见 ADR 0033。HTTP 管理归伴生后端 SystemService，数据库权限继续由 MCP 处理器执行。
 - 与 backend-service 共用 Driver SPI 与根 §9 凭据红线；直连数据库仅经驱动，不绕过 SPI。
 - MCP 是独立交付物：不引入 UI 逻辑；stdio 输入按不可信外部输入校验（同 §11）。

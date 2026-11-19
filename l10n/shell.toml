@@ -3,7 +3,7 @@
 # schema 见同目录 `README.md`。`zh` 是 source of truth：除「视图 → 语言」小节
 # （S1 新增条目）外，每条 `zh` 与被替换的代码内原字面量逐字节相等。
 #
-# 本区覆盖：headerbar 主菜单按钮 tooltip、「文件 / 视图 / 帮助」全部条目与三级
+# 本区覆盖：headerbar 主菜单按钮 tooltip、「文件 / 视图 / MCP / 帮助」全部条目与三级
 # 小节（深色模式 / 界面密度 / 语言）、「帮助 → 关于」入口、主工具条六个按钮与
 # 全部 tooltip、换语言重启确认框；窗口标题栏副标题族全部状态字（`shell.title_*`：
 # 正在连接 / 正在重启 / 连接失败 / 已断开 / 未连接 / 已连接模板 / 正在切换连接，
@@ -67,8 +67,8 @@ status = "done"
 
 [[entry]]
 key = "shell.menu_button_tooltip"
-zh = "主菜单（文件 / 视图 / 帮助）"
-en = "Main Menu (File / View / Help)"
+zh = "主菜单（文件 / 视图 / MCP / 帮助）"
+en = "Main Menu (File / View / MCP / Help)"
 status = "done"
 
 [[entry]]

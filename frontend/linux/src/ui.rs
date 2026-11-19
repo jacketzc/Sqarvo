@@ -295,6 +295,8 @@ pub fn activate(app: &adw::Application) {
         connect_count: Cell::new(0),
     });
 
+    crate::mcp_management::install(&window, &state.mcp_access);
+
     // ---- 区域 02：主工具条（窗口级，不随工作区重建） --------------------------
     let toolbar = Toolbar::new(
         {
@@ -4967,7 +4969,7 @@ fn truncate_for_log(text: &str, limit: usize) -> String {
 //
 // Linux 不设窗口内菜单行（ADR 0023）：菜单挂在 headerbar 的主菜单按钮上，
 // 动作是窗口级 `win.*`（需要当前工作区），应用级只有退出/关窗。
-// 菜单集合为 文件 / 视图 / 帮助：**查询**的全部子项不在菜单里（动作照旧），
+// 菜单集合为 文件 / 视图 / MCP / 帮助：**查询**的全部子项不在菜单里（动作照旧），
 // 视图只剩三个三级小节（深色模式 / 界面密度 / 语言）。条目文字全部经 `l10n::t`
 // 取（`l10n/shell.toml`，#199）。
 // **动作与快捷键不受影响**——`win.*` 仍由
@@ -5042,8 +5044,12 @@ fn build_main_menu() -> MainMenu {
     }
     view.append_submenu(Some(l10n::t("shell.menu.view_language")), &lang_section);
 
-    crate::mcp_access::append_menu(&view);
     menu.append_submenu(Some(l10n::t("shell.menu.view")), &view);
+
+    menu.append(
+        Some(l10n::t("workspace.mcp.menu")),
+        Some("win.mcp-management"),
+    );
 
     let help = gio::Menu::new();
     // #139：后端版本 / 协议 / PID / 端点文件 / 驱动清单都在「关于 Squarvo」里，
@@ -6238,14 +6244,14 @@ mod tests {
             .collect()
     }
 
-    /// 视图下的三个三级小节及两个 MCP 开关按顺序注册。
+    /// MCP 入口与文件、视图和帮助同级。
     #[test]
-    fn view_menu_lists_preferences_then_mcp_policy_actions() {
+    fn mcp_management_has_a_top_level_menu_item() {
         let menu = build_main_menu();
         let model = menu.model.clone().upcast::<gio::MenuModel>();
         assert_eq!(
             menu_labels(&model),
-            ["文件", "视图", "帮助"].map(str::to_owned)
+            ["文件", "视图", "MCP", "帮助"].map(str::to_owned)
         );
         // 「表」整项不挂：唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，
         // 注册表 shell.menu.export_csv 标 removed）；不留空子菜单。
@@ -6253,11 +6259,11 @@ mod tests {
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(
             menu_labels(&view),
-            ["深色模式", "界面密度", "语言", "MCP 数据访问", "MCP 只读"].map(str::to_owned)
+            ["深色模式", "界面密度", "语言"].map(str::to_owned)
         );
         assert_eq!(
-            menu_actions(&view),
-            ["win.mcp-access", "win.mcp-read-only"].map(str::to_owned)
+            menu_actions(&model),
+            ["win.mcp-management"].map(str::to_owned)
         );
 
         let theme_section = submenu_model(&view, "深色模式").expect("深色模式子菜单");

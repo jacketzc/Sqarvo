@@ -130,7 +130,7 @@ cd backend && cargo build -p sqarvo-mcp --release
 }
 ```
 
-默认关闭访问、开启只读保护。保存连接档案后，可以在 GTK 菜单选择 **MCP 数据访问**，
+默认关闭访问、开启只读保护。保存连接档案后，可以在 GTK 的 MCP 管理页启用 **MCP 数据访问**，
 或运行 `sqarvo-mcp access on`，授权当前和以后新增的全部档案。新增或编辑档案后需要重启
 MCP 才能使用。运行 `sqarvo-mcp access off` 即可撤销后续请求的访问权限。关闭只读保护后，
 V1 工具仍只提供只读功能。
@@ -141,6 +141,8 @@ V1 工具仍只提供只读功能。
 本地审计记录工具调用和 SQL 指纹。[共享档案与迁移](docs/api/connection-profiles.md) ·
 [MCP 架构](docs/architecture/mcp.md) · [工具与配置参考](docs/api/mcp-tools.md) ·
 [第三方许可](docs/licenses.md)。
+
+在 Linux 上，打开主菜单的 **MCP** 启动本地 Streamable HTTP 服务、管理授权并复制 Agent 配置提示词。服务默认地址为 `http://127.0.0.1:8765/mcp`，认证令牌由系统密钥环提供。现有 stdio 配置继续有效。
 
 ## 文档
 

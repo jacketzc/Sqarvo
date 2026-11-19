@@ -420,7 +420,7 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
 }
 
 /// 等第一个退出信号：Ctrl-C（全平台）或 SIGTERM（仅 Unix）。
-async fn wait_for_shutdown_signal() {
+pub(crate) async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};

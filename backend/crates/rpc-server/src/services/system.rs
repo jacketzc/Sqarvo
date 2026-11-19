@@ -7,10 +7,13 @@ use sqarvo_connection::SessionManager;
 use sqarvo_drivers::DriverRegistry;
 use tonic::{Request, Response, Status};
 
+use super::mcp_server::McpServerManager;
+
 use crate::proto::common::v1::Empty;
 use crate::proto::services::v1::{
-    DatabaseFlavor, DriverInfo, HealthResponse, ListDriversResponse, VersionResponse,
-    health_response, system_service_server::SystemService,
+    DatabaseFlavor, DriverInfo, HealthResponse, ListDriversResponse, McpServerConfig,
+    McpServerStatus, UpdateMcpServerConfigRequest, VersionResponse, health_response,
+    system_service_server::SystemService,
 };
 
 /// 当前 gRPC 契约主版本。
@@ -24,6 +27,7 @@ pub struct SystemServiceImpl {
     started_at: Instant,
     sessions: Arc<SessionManager>,
     drivers: Arc<DriverRegistry>,
+    mcp: Option<Arc<McpServerManager>>,
 }
 
 impl SystemServiceImpl {
@@ -34,7 +38,18 @@ impl SystemServiceImpl {
             started_at: Instant::now(),
             sessions,
             drivers,
+            mcp: None,
         }
+    }
+    /// Attach the managed loopback MCP service.
+    pub fn set_mcp_manager(&mut self, manager: Arc<McpServerManager>) {
+        self.mcp = Some(manager);
+    }
+
+    fn mcp(&self) -> Result<&McpServerManager, Status> {
+        self.mcp
+            .as_deref()
+            .ok_or_else(|| Status::unimplemented("MCP HTTP management unavailable"))
     }
 }
 
@@ -110,5 +125,53 @@ impl SystemService for SystemServiceImpl {
             .collect();
 
         Ok(Response::new(ListDriversResponse { drivers }))
+    }
+
+    async fn get_mcp_server_status(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<McpServerStatus>, Status> {
+        Ok(Response::new(self.mcp()?.status()))
+    }
+
+    async fn get_mcp_server_config(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<McpServerConfig>, Status> {
+        self.mcp()?.config().await.map(Response::new)
+    }
+
+    async fn update_mcp_server_config(
+        &self,
+        request: Request<UpdateMcpServerConfigRequest>,
+    ) -> Result<Response<McpServerConfig>, Status> {
+        self.mcp()?
+            .update(request.into_inner().port)
+            .await
+            .map(Response::new)
+    }
+
+    async fn start_mcp_server(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<McpServerStatus>, Status> {
+        self.mcp()?.start().await.map(Response::new)
+    }
+
+    async fn stop_mcp_server(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<McpServerStatus>, Status> {
+        self.mcp()?.stop().await.map(Response::new)
+    }
+
+    async fn rotate_mcp_server_token(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
+        self.mcp()?.auth(true).await?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn revoke_mcp_server_token(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
+        self.mcp()?.auth(false).await?;
+        Ok(Response::new(Empty {}))
     }
 }

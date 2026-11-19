@@ -5,7 +5,7 @@
 > 字段与规则见 [`components/README.md`](components/README.md)、
 > [ADR 0027](../decisions/0027-ui-component-registry.md)。
 
-共 208 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 212 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。
@@ -1846,6 +1846,7 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.error` | 　错误页（握手失败 / 无工作区断开） | container | active | done | — | — |
 | `shell.error.retry` | 　　「重试」/「重新连接」 | control | active | done | — | — |
 | `shell.backend_failure` | 　后端失效恢复（「重启 Sqarvo」对话框与重启流程） | container | active | done | — | — |
+| `shell.menu.mcp` | 　　MCP | item | active | done | blocked | na |
 
 ### `shell` 窗口外壳
 
@@ -1906,15 +1907,15 @@ kind `control` · status `active` · parent `shell`
 kind `control` · status `active` · parent `shell`
 
 - 样式：槽位 `menubar`；尺寸 `min_target`、`icon_box`、`font_weight_menu`
-- 无障碍：可访问名「主菜单（文件 / 视图 / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
+- 无障碍：可访问名「主菜单（文件 / 视图 / MCP / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu) / winui:Button(Flyout: MenuFlyout + MenuFlyoutSubItem) / swift:—
-- 同步：Linux done（build_main_menu 三节（深色模式 / 界面密度 / 语言）+ `win.lang-*` stateful 动作；QA 菜单模型读取 en 档为 File / View / Language（含 Follow System / 简体中文 / English）；单测 view_menu_holds_dark_mode_and_density_as_third_level_submenus 断言视图三节；`--qa-layout-audit --screenshot` zh/en × 960×640、1200×800 均 14 项 0 超限）；Windows partial（S6-a 已接入视图菜单的共享文案和原生语言单选（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:396，frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:1044、:1092）；密度标签按确认 #10 A 使用与 Linux 相同的百分比文案。Windows 构建、菜单交互和重启未验收；其他主菜单文案仍待迁移。）；macOS none
-- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
+- 同步：Linux done（GTK 单测 mcp_management_has_a_top_level_menu_item 检查菜单模型，AT-SPI test_06_mcp_access.py 验证菜单、权限动作与回读。）；Windows partial（S6-a 已接入视图菜单的共享文案和原生语言单选（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:396，frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:1044、:1092）；密度标签按确认 #10 A 使用与 Linux 相同的百分比文案。Windows 构建、菜单交互和重启未验收；其他主菜单文案仍待迁移。）；macOS none
+- 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / MCP / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选） | `src/ui.rs:4945、src/ui.rs:321` |
+| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选） | `src/ui.rs:4945、src/ui.rs:321` |
 
 ### `shell.menu.new_connection` 文件 → 新建连接
 
@@ -2235,6 +2236,19 @@ kind `container` · status `active` · parent `shell`
 | click | 点任一标签的后端失效横幅「重启 Sqarvo」，或数据页错误横幅 | 弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，未提交的更改会丢失。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消） | `src/ui.rs:1379、src/sql_page.rs:128` |
 | click | 对话框里选「重启 Sqarvo」 | 不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 工具条 / 菜单回未就绪 → 标题「Sqarvo」、副标题「正在重启…」→ 回到 Loading「正在重启 Sqarvo…」→ 重新握手 | `src/ui.rs:1403` |
 | click | 对话框里选「查看日志」 | 打开日志窗口；不重启、不改会话状态 | `src/ui.rs:1393` |
+
+### `shell.menu.mcp` MCP
+
+kind `item` · status `active` · parent `shell.menu`
+
+- 样式：槽位 `menubar`
+- 无障碍：可访问名「MCP」；Tab 与视图、帮助同级，位于两者之间
+- 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
+- 同步：Linux done（GTK 单测 mcp_management_has_a_top_level_menu_item 核对一级菜单模型；AT-SPI test_06_mcp_access.py 打开 MCP 管理页。）；Windows blocked（本次仅交付 Linux GTK 管理入口，Windows 接入范围见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 主菜单可用 | 打开 MCP 管理页 | `frontend/linux/src/ui.rs、frontend/linux/src/mcp_management.rs` |
 
 ## 启动态外壳（`startup`）
 
@@ -3082,7 +3096,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 ## 工作区 MCP 策略（`workspace`）
 
-主菜单视图子菜单中的两个 MCP 策略开关，以及启动态和已连接工作区状态栏指示。
+MCP 管理页的服务器、策略和 Agent 接入，以及启动态和已连接工作区状态栏指示。
 
 | 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |
 |---|---|---|---|---|---|---|
@@ -3090,6 +3104,9 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 | `workspace.manage.menu.mcp_access` | 　　　MCP 数据访问 | item | active | done | blocked | na |
 | `workspace.manage.menu.mcp_readonly` | 　　　MCP 只读 | item | active | done | blocked | na |
 | `workspace.status.mcp_indicator` | 　　MCP 访问状态 | control | active | done | blocked | na |
+| `workspace.mcp_management` | 　MCP 管理 | container | active | done | blocked | na |
+| `workspace.mcp_management.service` | 　　服务管理 | control | active | done | blocked | na |
+| `workspace.mcp_management.agent` | 　　Agent 接入 | control | active | done | blocked | na |
 
 ### `workspace` 工作区 MCP 策略
 
@@ -3101,27 +3118,25 @@ kind `area` · status `active`
 
 kind `item` · status `active` · parent `workspace`
 
-- 样式：槽位 `menubar`
-- 无障碍：可访问名「MCP 数据访问」；Tab 视图子菜单中，语言之后
-- 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
-- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证菜单动作、revision 与安全默认值。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 无障碍：可访问名「MCP 数据访问」；Tab MCP 管理页的权限管理组首项
+- 原生控件：gtk:ToggleButton / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认、revision 与安全默认值；test_07_mcp_http.py 通过管理页按钮启用与撤销。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已连接，策略读取成功，当前没有策略操作在途 | 启用时先显示档案数与授权范围，须确认。关闭时恢复安全默认值。勾选态以 gRPC 回读为准。取消不写入。 | `src/mcp_access.rs:41、src/mcp_access.rs:192` |
+| click | 后端已连接，策略读取成功，当前没有策略操作在途 | 启用时先显示档案数与授权范围，须确认。关闭时恢复安全默认值。勾选态以 gRPC 回读为准。取消不写入。 | `src/mcp_management.rs、src/mcp_access.rs` |
 
 ### `workspace.manage.menu.mcp_readonly` MCP 只读
 
 kind `item` · status `active` · parent `workspace`
 
-- 样式：槽位 `menubar`
-- 无障碍：可访问名「MCP 只读」；Tab 视图子菜单中，MCP 数据访问之后
-- 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
-- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 无障碍：可访问名「MCP 只读」；Tab MCP 管理页的 MCP 数据访问之后
+- 原生控件：gtk:ToggleButton / winui:— / swift:—
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读；test_07_mcp_http.py 验证管理页只读按钮唤起确认框。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 数据访问已启用，策略读取成功，当前没有策略操作在途 | 关闭只读时先显示档案数与风险，须确认。恢复只读直接提交。勾选态以 gRPC 回读为准。访问关闭时保留禁用项，原因见状态提示。 | `src/mcp_access.rs:41、src/mcp_access.rs:271` |
+| click | 数据访问已启用，策略读取成功，当前没有策略操作在途 | 关闭只读时先显示档案数与风险，须确认。恢复只读直接提交。勾选态以 gRPC 回读为准。访问关闭时保留禁用项，原因见状态提示。 | `src/mcp_management.rs、src/mcp_access.rs` |
 
 ### `workspace.status.mcp_indicator` MCP 访问状态
 
@@ -3136,6 +3151,42 @@ kind `control` · status `active` · parent `workspace`
 |---|---|---|---|
 | load | 启动态或已连接工作区 | 常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。 | `src/shell.rs:1271、src/mcp_access.rs:271` |
 | click | GTK 窗口已连接后端，用户打开主菜单 | 从 gRPC 重新读取访问和只读策略，更新菜单及状态；反映外部 CLI 已提交的变更。 | `src/ui.rs:338、src/mcp_access.rs:123` |
+
+### `workspace.mcp_management` MCP 管理
+
+kind `container` · status `active` · parent `workspace`
+
+- 无障碍：可访问名「MCP 管理」；Tab 打开后依次浏览服务管理、权限管理、Agent 接入
+- 原生控件：gtk:AdwDialog + AdwPreferencesPage / winui:— / swift:—
+- 同步：Linux done（AT-SPI test_06_mcp_access.py 打开管理页；test_07_mcp_http.py 回读状态与权限。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | 从 MCP 一级入口打开 | 回读管理配置、服务状态与数据库权限。后端断开时展示状态不可用。 | `frontend/linux/src/mcp_management.rs` |
+
+### `workspace.mcp_management.service` 服务管理
+
+kind `control` · status `active` · parent `workspace.mcp_management`
+
+- 无障碍：可访问名「HTTP 端口 / 保存端口 / 启动 HTTP 服务 / 停止 HTTP 服务」；Tab 管理页第一组
+- 原生控件：gtk:Entry + Button + Label / winui:— / swift:—
+- 同步：Linux done（AT-SPI test_06_mcp_access.py 验证端口冲突和保留外部监听；test_07_mcp_http.py 验证端口配置、启停、真实状态与退出清理。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 后端连接已就绪。保存端口需要已停止。 | 服务按后端确认展示启动中、运行、停止中、已停止或失败，并展示回环地址和端口冲突原因。重复启动不分配第二个子进程。 | `frontend/linux/src/mcp_management.rs` |
+
+### `workspace.mcp_management.agent` Agent 接入
+
+kind `control` · status `active` · parent `workspace.mcp_management`
+
+- 无障碍：可访问名「复制 MCP 地址 / 复制 Codex 客户端配置 / 复制 Agent 配置提示词 / 复制 stdio 配置提示词」；Tab 管理页第三组
+- 原生控件：gtk:Button + Label / winui:— / swift:—
+- 同步：Linux done（AT-SPI test_07_mcp_http.py 验证复制反馈与凭据操作，GTK 单测 clipboard_output_uses_actual_listener_and_secret_reference 断言载荷，真实 Codex 列出 8 个工具。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 已回读后端状态和配置 | 复制当前 URL、带凭据引用的 Codex 示例或动态 Agent 提示词。stdio 使用验证过的命令。轮换与撤销通过后端执行。剪贴板不含凭据。 | `frontend/linux/src/mcp_management.rs` |
 
 ## 待清理（按版本）
 

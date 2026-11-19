@@ -1,6 +1,6 @@
 # MCP Server 架构（`sqarvo-mcp`）
 
-适用范围：`backend/apps/sqarvo-mcp`（V1）。事实来源是代码与测试，本文不引入代码里没有的行为；
+适用范围：`backend/apps/sqarvo-mcp`。正文以 stdio V1 为基础，本地 Streamable HTTP 的增量见末节。事实来源是代码与测试，本文不引入代码里没有的行为；
 口径与代码冲突时以代码为准，并把它记在 §10「与代码不符项」。
 
 - 决策记录：[ADR 0032](../decisions/0032-mcp-standalone-process.md)（独立进程与连接模型）、
@@ -271,9 +271,8 @@ MCP 查询依靠 AST 策略和数据库账号的最小权限。[只读账号配�
 
 ### 10.1 刻意的设计代价
 
-1. **审计多实例不是强一致**：非阻塞独占文件锁只串行化「追加一行」，不保护跨进程轮转。
-   同用户跑两个实例时，第二个退化写 `audit.<pid>.jsonl`（不阻塞、不丢记录），但轮转窗口内两个
-   实例仍可能互相覆盖。V1 **不宣称**多实例安全。
+1. **审计争用使用分进程文件**。非阻塞独占锁争用时退化到 `audit.<pid>.jsonl`。ADR 0036
+   增加稳定的跨进程轮转锁，同版本进程覆盖整个轮转窗口。和只加文件锁的旧版混跑时仍有轮转竞争。
 2. **审计只到指纹级**：事后复盘看不到 Agent 具体查了哪一行，换来审计文件本身不是敏感数据副本。
 3. **轮转参数不可配**：10 MiB × 5 是代码常量，测试靠构造器注入小阈值。开放配置需同时补配置文档与钳制规则。
 4. **资源读取审计范围有限**。全局策略拒绝、名称歧义和需要重启记入审计。普通资源读取沿用 V1 行为。
@@ -328,3 +327,11 @@ MCP 查询依靠 AST 策略和数据库账号的最小权限。[只读账号配�
   [ADR 0012](../decisions/0012-credential-reference.md)。
 - [架构总览](overview.md)、[本地 IPC](local-ipc.md)、
   [第三方依赖许可声明](../licenses.md)。
+
+## 追加传输：本地 Streamable HTTP
+
+[ADR 0036](../decisions/0036-local-mcp-http.md) 为本页 stdio 流程增加回环路径。无参数启动仍走 stdio。HTTP 子命令启动同一个 `SqarvoMcpServer` 并共享其进程内上下文，SDK 处理 HTTP JSON-RPC、版本协商、会话与 SSE。HTTP 新请求先验证回环 authority、Origin 和 Bearer，数据库工具和资源随后进入既有授权层。令牌轮换与数据库授权撤销分别生效。
+
+GTK 主菜单的 MCP 管理页经本地认证 gRPC 调用 SystemService。Windows 前端保持现状。Linux 伴生后端从自身所在目录定位 `sqarvo-mcp`，监督启动、就绪、停止与回收。实际运行地址来自已绑定的子进程。端口冲突进入 Failed 状态，外部同端口监听保持其自身生命周期。手动启动的 MCP HTTP 进程只响应自己的关闭信号。
+
+管理端口配置位于 `AppPaths::config_dir()/mcp-http-port`，缺省 8765，内容为单个十进制端口。地址固定 `127.0.0.1`，路径固定 `/mcp`，启动默认关闭。HTTP 凭据位于 Linux Secret Service 的独立 profile。新版本 stdio 与 HTTP 通过独立审计锁覆盖轮转，旧版本并行使用仍受历史轮转限制。

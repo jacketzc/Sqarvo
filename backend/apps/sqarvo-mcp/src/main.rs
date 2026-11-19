@@ -47,6 +47,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// 启动回环 MCP HTTP 服务。
+    Serve {
+        #[arg(long, default_value = "http", value_parser = ["http"])]
+        transport: String,
+        #[arg(long, default_value = "127.0.0.1", value_parser = ["127.0.0.1"])]
+        host: String,
+        #[arg(long, default_value_t = 8765, value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+        #[arg(long, hide = true)]
+        managed: bool,
+    },
+    /// 管理本机 MCP HTTP 认证。
+    HttpAuth {
+        #[command(subcommand)]
+        action: HttpAuthAction,
+    },
     /// 管理 MCP 全局数据访问策略。
     Access {
         #[command(subcommand)]
@@ -56,6 +72,24 @@ enum Command {
     Credentials {
         #[command(subcommand)]
         action: CredentialsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HttpAuthAction {
+    /// 轮换 Bearer 凭据。
+    Rotate,
+    /// 撤销 Bearer 凭据。
+    Revoke,
+    /// 从系统凭据库向指定的本地 Codex 客户端提供认证。
+    Launch {
+        #[arg(value_parser = ["codex"])]
+        client: String,
+        /// 启动 Codex App Server 的 stdio 接口。
+        #[arg(long)]
+        app_server: bool,
+        #[arg(long, default_value_t = 8765, value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
     },
 }
 
@@ -78,6 +112,20 @@ fn main() -> ExitCode {
     let result = runtime.block_on(async {
         match cli.command {
             None => sqarvo_mcp::server::run_stdio(cli.config.as_deref()).await,
+            Some(Command::Serve { port, managed, .. }) => {
+                let result = sqarvo_mcp::http::run(cli.config.as_deref(), port, managed).await;
+                if managed && let Err(error) = &result {
+                    println!("error {}", error.code());
+                }
+                result
+            }
+            Some(Command::HttpAuth { action }) => match action {
+                HttpAuthAction::Rotate => sqarvo_mcp::http::rotate_token(),
+                HttpAuthAction::Revoke => sqarvo_mcp::http::revoke_token(),
+                HttpAuthAction::Launch {
+                    port, app_server, ..
+                } => sqarvo_mcp::http::launch_codex(port, app_server),
+            },
             Some(Command::Credentials { action }) => {
                 access_cmd::management_store(cli.config.as_deref())?;
                 credentials_cmd::run(action).await

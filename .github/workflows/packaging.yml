@@ -104,13 +104,13 @@ jobs:
 
       - name: 构建后端（release）
         working-directory: backend
-        run: cargo build --release -p sqarvo-backend-service
+        run: cargo build --release -p sqarvo-backend-service -p sqarvo-mcp
 
       - name: 构建前端（release）
         working-directory: frontend/linux
         run: cargo build --release
 
-      # BUILD=0：复用上面两个 release 二进制，脚本只做暂存与 dpkg-deb 打包。
+      # BUILD=0：复用上面的 release 二进制，脚本只做暂存与 dpkg-deb 打包。
       # 脚本自身会打印 dpkg-deb -f 的 Package/Version/Architecture/Depends。
       - name: 打包 .deb
         run: BUILD=0 packaging/linux/build-deb.sh
@@ -139,7 +139,7 @@ jobs:
           echo "== dpkg -L sqarvo =="
           dpkg -L sqarvo
 
-          for bin in /usr/bin/sqarvo-desktop /usr/bin/sqarvo-backend; do
+          for bin in /usr/bin/sqarvo-desktop /usr/bin/sqarvo-backend /usr/bin/sqarvo-mcp; do
             [ -x "${bin}" ] || { echo "::error::缺少可执行文件 ${bin}"; exit 1; }
             echo "已安装：${bin}"
           done

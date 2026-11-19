@@ -141,7 +141,7 @@ Client configuration:
 ```
 
 Access is off and read-only protection is on by default. Save your profiles and enable **MCP
-data access** from GTK or run `sqarvo-mcp access on`. This grants access to all current and future
+data access** in the GTK MCP management dialog or run `sqarvo-mcp access on`. This grants access to all current and future
 profiles. Restart MCP to use added or edited profiles. Run `sqarvo-mcp access off` to revoke access
 for subsequent requests without restarting. Turning off read-only protection leaves all V1 tools read-only.
 Query results can contain sensitive data. Use trusted AI clients and a dedicated read-only database
@@ -152,6 +152,8 @@ The OS credential store holds passwords. Shared profiles hold credential referen
 SQL fingerprints. [Shared profiles and migration](docs/api/connection-profiles.md) ·
 [MCP architecture](docs/architecture/mcp.md) · [tools and config reference](docs/api/mcp-tools.md) ·
 [third-party licenses](docs/licenses.md).
+
+On Linux, open **MCP** from the main menu to start the local Streamable HTTP service, manage access and copy agent setup instructions. The service defaults to `http://127.0.0.1:8765/mcp` and requires a bearer credential from the system keyring. Existing stdio setup continues to work.
 
 ## Documentation
 

@@ -18,6 +18,7 @@ pub mod connection;
 pub mod endpoint;
 pub mod error;
 pub mod mcp_access;
+pub mod mcp_server;
 pub mod metadata;
 pub mod query;
 pub mod routing;

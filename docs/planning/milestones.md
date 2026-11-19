@@ -16,6 +16,7 @@
 | M8 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.2.5 | 未开始 |
 | M9 MCP Server V1 | S9 | 独立 `sqarvo-mcp` stdio 进程：配置与连接授权、SQL 只读策略、工具、资源、协议 E2E、文档 | v0.3 | 代码与文档已交付（2026-11-18：#207–#212 + #220 合入链 `31e13d8`…`313d5be`，Linux 实测；遗留：#218 Windows Rust CI 验证、Cherry Studio 人工验收——里程碑保持 open 至销项） |
 | M10 共享连接档案与 MCP 全局访问 | S10 | 共享存储与迁移、GTK 档案服务、MCP 实时全局策略、CLI、跨组件验收 | v0.4 | 进行中（[#225–#230](https://github.com/jacketzc/Sqarvo/milestone/11)，Windows 前端接入冻结） |
+| M11 本地 MCP HTTP 与管理中心 | 待排 | 回环 Streamable HTTP、Linux GTK 管理与安全 Agent 接入 | 待发布计划确认 | 执行见 [M11](https://github.com/jacketzc/Sqarvo/milestone/12) |
 
 > 阶段编号按引入顺序分配（S8 为 2026-11-07 新增），**不代表交付顺序**：
 > S8（工作区 UI 重构）先于 S7（导入导出）交付，执行顺序见

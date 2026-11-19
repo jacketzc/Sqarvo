@@ -183,6 +183,10 @@ pub struct TabSessionOpened {
 #[derive(Debug)]
 pub enum Command {
     /// 读取共享 MCP 策略、统计档案或持久化用户已确认的策略变更。
+    McpServer {
+        request: super::mcp_server::Action,
+        reply: Sender<Result<super::mcp_server::Snapshot, &'static str>>,
+    },
     McpPolicy {
         request: super::mcp_access::PolicyRequest,
         reply: Sender<Option<super::mcp_access::PolicyReply>>,
@@ -1012,6 +1016,15 @@ impl WorkerHandle {
             }),
             events_rx,
         ))
+    }
+
+    pub fn mcp_server(
+        &self,
+        request: super::mcp_server::Action,
+    ) -> Receiver<Result<super::mcp_server::Snapshot, &'static str>> {
+        let (reply, response) = async_channel::bounded(1);
+        let _ = self.commands.send(Command::McpServer { request, reply });
+        response
     }
 
     /// 在 worker 执行 MCP 策略 RPC，返回主线程可异步等待的一次性结果。
@@ -3365,6 +3378,17 @@ async fn worker_loop(
                             }
                         }
                     },
+                    Command::McpServer { request, reply } => {
+                        let Some(active) = session.as_ref() else {
+                            let _ = reply.send(Err("disconnected")).await;
+                            continue;
+                        };
+                        let client = active.client.clone();
+                        tokio::spawn(async move {
+                            let result = super::mcp_server::request(&client, request).await;
+                            let _ = reply.send(result).await;
+                        });
+                    }
                     Command::McpPolicy { request, reply } => {
                         let Some(active) = session.as_ref() else {
                             let _ = reply.send(None).await;

@@ -2,7 +2,7 @@
 [area]
 id = "workspace"
 display_name = "工作区 MCP 策略"
-summary = "主菜单视图子菜单中的两个 MCP 策略开关，以及启动态和已连接工作区状态栏指示。"
+summary = "MCP 管理页的服务器、策略和 Agent 接入，以及启动态和已连接工作区状态栏指示。"
 
 [[component]]
 id = "workspace"
@@ -30,21 +30,20 @@ parent = "workspace"
 display_name = "MCP 数据访问"
 kind = "item"
 status = "active"
-style.slot = "menubar"
-native_control = "gtk:GMenu + GSimpleAction / winui:— / swift:—"
+native_control = "gtk:ToggleButton / winui:— / swift:—"
 a11y.name = "MCP 数据访问"
-a11y.tab = "视图子菜单中，语言之后"
+a11y.tab = "MCP 管理页的权限管理组首项"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已连接，策略读取成功，当前没有策略操作在途"
 result = "启用时先显示档案数与授权范围，须确认。关闭时恢复安全默认值。勾选态以 gRPC 回读为准。取消不写入。"
-source = "src/mcp_access.rs:41、src/mcp_access.rs:192"
+source = "src/mcp_management.rs、src/mcp_access.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c2a4d58442e8"
-evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证菜单动作、revision 与安全默认值。"
+spec_hash = "1989163edb5b"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认、revision 与安全默认值；test_07_mcp_http.py 通过管理页按钮启用与撤销。"
 
 [component.sync.windows]
 state = "blocked"
@@ -60,21 +59,20 @@ parent = "workspace"
 display_name = "MCP 只读"
 kind = "item"
 status = "active"
-style.slot = "menubar"
-native_control = "gtk:GMenu + GSimpleAction / winui:— / swift:—"
+native_control = "gtk:ToggleButton / winui:— / swift:—"
 a11y.name = "MCP 只读"
-a11y.tab = "视图子菜单中，MCP 数据访问之后"
+a11y.tab = "MCP 管理页的 MCP 数据访问之后"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "数据访问已启用，策略读取成功，当前没有策略操作在途"
 result = "关闭只读时先显示档案数与风险，须确认。恢复只读直接提交。勾选态以 gRPC 回读为准。访问关闭时保留禁用项，原因见状态提示。"
-source = "src/mcp_access.rs:41、src/mcp_access.rs:271"
+source = "src/mcp_management.rs、src/mcp_access.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6004de3b1d17"
-evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读。"
+spec_hash = "1c6f8476cc7a"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读；test_07_mcp_http.py 验证管理页只读按钮唤起确认框。"
 
 [component.sync.windows]
 state = "blocked"
@@ -119,3 +117,90 @@ note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC �
 [component.sync.macos]
 state = "na"
 note = "macOS 前端尚未接入共享档案及 MCP 策略。"
+
+[[component]]
+id = "workspace.mcp_management"
+parent = "workspace"
+display_name = "MCP 管理"
+kind = "container"
+status = "active"
+native_control = "gtk:AdwDialog + AdwPreferencesPage / winui:— / swift:—"
+a11y.name = "MCP 管理"
+a11y.tab = "打开后依次浏览服务管理、权限管理、Agent 接入"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "从 MCP 一级入口打开"
+result = "回读管理配置、服务状态与数据库权限。后端断开时展示状态不可用。"
+source = "frontend/linux/src/mcp_management.rs"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b29097f3b466"
+evidence = "AT-SPI test_06_mcp_access.py 打开管理页；test_07_mcp_http.py 回读状态与权限。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入 MCP。"
+
+[[component]]
+id = "workspace.mcp_management.service"
+parent = "workspace.mcp_management"
+display_name = "服务管理"
+kind = "control"
+status = "active"
+native_control = "gtk:Entry + Button + Label / winui:— / swift:—"
+a11y.name = "HTTP 端口 / 保存端口 / 启动 HTTP 服务 / 停止 HTTP 服务"
+a11y.tab = "管理页第一组"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "后端连接已就绪。保存端口需要已停止。"
+result = "服务按后端确认展示启动中、运行、停止中、已停止或失败，并展示回环地址和端口冲突原因。重复启动不分配第二个子进程。"
+source = "frontend/linux/src/mcp_management.rs"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "92c8d518f19f"
+evidence = "AT-SPI test_06_mcp_access.py 验证端口冲突和保留外部监听；test_07_mcp_http.py 验证端口配置、启停、真实状态与退出清理。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入 MCP。"
+
+[[component]]
+id = "workspace.mcp_management.agent"
+parent = "workspace.mcp_management"
+display_name = "Agent 接入"
+kind = "control"
+status = "active"
+native_control = "gtk:Button + Label / winui:— / swift:—"
+a11y.name = "复制 MCP 地址 / 复制 Codex 客户端配置 / 复制 Agent 配置提示词 / 复制 stdio 配置提示词"
+a11y.tab = "管理页第三组"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已回读后端状态和配置"
+result = "复制当前 URL、带凭据引用的 Codex 示例或动态 Agent 提示词。stdio 使用验证过的命令。轮换与撤销通过后端执行。剪贴板不含凭据。"
+source = "frontend/linux/src/mcp_management.rs"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "2fd40b4fbf93"
+evidence = "AT-SPI test_07_mcp_http.py 验证复制反馈与凭据操作，GTK 单测 clipboard_output_uses_actual_listener_and_secret_reference 断言载荷，真实 Codex 列出 8 个工具。"
+
+[component.sync.windows]
+state = "blocked"
+note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
+
+[component.sync.macos]
+state = "na"
+note = "macOS 前端尚未接入 MCP。"

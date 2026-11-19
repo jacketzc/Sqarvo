@@ -63,7 +63,11 @@ def test_mcp_access_menu_and_live_status(app_with_profile):
     frame = inst.frame()
     with step("access_menu"):
         status(frame, DISABLED)
-        A.find_one(frame, role_in=("toggle button",), name="主菜单（文件 / 视图 / 帮助）")
+        A.find_one(frame, role_in=("toggle button",), name="主菜单（文件 / 视图 / MCP / 帮助）")
+        A.window_action(frame, "win.mcp-management")
+        panel = A.wait_dialog(inst.app, "MCP 管理")
+        A.find_one(panel, role_in=("button",), name="复制 Agent 配置提示词", timeout=10)
+        respond(panel, "关闭")
         # GTK exposes unnamed AT-SPI menu items. The window action is the same
         # action bound to the native menu, whose labels are checked by Rust tests.
         actions = A.action_names(frame)
@@ -155,7 +159,7 @@ def test_external_mcp_policy_refresh_on_menu_open(app_with_profile, direction, b
     expect(f"enabled={str(direction == 'on').lower()}" in result.stdout, "CLI 提交策略",
            result.stdout)
     status(frame, before)
-    menu = A.find_one(frame, role_in=("toggle button",), name="主菜单（文件 / 视图 / 帮助）")
+    menu = A.find_one(frame, role_in=("toggle button",), name="主菜单（文件 / 视图 / MCP / 帮助）")
     A.click(menu)
     status(frame, after)
 
@@ -220,3 +224,25 @@ def test_edit_profile_preserves_id_and_increments_revision():
                    "修改推进档案 revision", updated["revision"])
     finally:
         inst.dispose()
+
+
+def test_mcp_management_reports_port_conflict(app_with_profile):
+    """注册表组件: shell.menu.mcp, workspace.mcp_management.service。"""
+    import socket
+
+    inst = app_with_profile
+    frame = inst.frame()
+    with socket.socket() as listener, step("port_conflict"):
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        config = inst.home / "config" / "sqarvo" / "mcp-http-port"
+        config.write_text(f"{port}\n", encoding="ascii")
+        A.window_action(frame, "win.mcp-management")
+        panel = A.wait_dialog(inst.app, "MCP 管理")
+        status(panel, f"http://127.0.0.1:{port}/mcp")
+        respond(panel, "启动 HTTP 服务")
+        status(panel, "HTTP 端口已被占用")
+        with socket.create_connection(("127.0.0.1", port), timeout=3):
+            pass
+        respond(panel, "关闭")
