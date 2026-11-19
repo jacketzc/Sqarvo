@@ -5,8 +5,8 @@
 [ADR 0032](../decisions/0032-mcp-standalone-process.md) /
 [ADR 0033](../decisions/0033-sql-parser-readonly-policy.md)。
 
-本文的每一条 schema、默认值、错误子码都取自 `backend/apps/sqarvo-mcp/src/` 的实际实现与
-`tools/list` 的真实返回（Linux 实测），不是设计意图。文中出现的密码一律是占位符。
+连接档案、迁移与本地管理 RPC 见 [共享连接档案](connection-profiles.md)。
+共享策略的决策记录见 [ADR 0035](../decisions/0035-shared-connection-profiles.md)。
 
 目录：
 
@@ -31,21 +31,14 @@
 cd backend && cargo build -p sqarvo-mcp --release
 # 产物：backend/target/release/sqarvo-mcp
 
-# 2. 写入数据库密码到系统密钥环（必须交互式终端；不接受参数/环境变量传密）
-./target/release/sqarvo-mcp credentials set
-#   数据库密码（不回显）：
-#   再次输入确认：
-#   已写入凭据：sqarvo:conn/0b7f4b6e-1c2d-4e5f-8a9b-0c1d2e3f4a5b
-#   把该引用填进 mcp.json 的 credential_ref 字段。凭据实现：<后端标识>
+# 2. 在 GTK 保存需要的连接档案，或使用已有档案
+./target/release/sqarvo-mcp access status
 
-# 3. 建配置（默认路径 = AppPaths::config_dir()/mcp.json，Linux 实测 ~/.config/sqarvo/mcp.json；
-#    也可以不建默认文件，改用 --config 指定，见 §6）
+# 3. 确认当前及未来所有连接档案均可授权后开启访问
+./target/release/sqarvo-mcp access on
 
-# 4. 手工试跑（stdio：stdin 送 JSON-RPC 行，stdout 只出协议消息）
-printf '' | ./target/release/sqarvo-mcp --config /path/to/mcp.json; echo "exit=$?"   # exit=0
-
-# 5. 日志（stderr，不污染协议流）
-SQARVO_MCP_LOG=debug ./target/release/sqarvo-mcp --config /path/to/mcp.json 2>/tmp/mcp.log
+# 4. 启动 MCP 服务。stdio 由客户端使用，日志走 stderr
+./target/release/sqarvo-mcp
 ```
 
 ## 2. 能力面总览
@@ -60,21 +53,17 @@ SQARVO_MCP_LOG=debug ./target/release/sqarvo-mcp --config /path/to/mcp.json 2>/t
 | 工具 | 8 个，全部只读；`tools/list` 只播 `enabled_tools` 允许的（下表按注册顺序） |
 | 资源 | 1 个静态 + 3 个模板（`resources/list` / `resources/templates/list`） |
 | 写操作 | **没有**。`INSERT/UPDATE/DELETE/DDL/GRANT/USE/SET/SHOW/CALL`、事务控制、多语句一律拒 |
-| 审计 | 每次 `tools/call` 落 `audit.jsonl`，只记 SQL 指纹不记原文（V1 资源读取不写审计） |
+| 审计 | 每次 `tools/call` 落 `audit.jsonl`，只记 SQL 指纹。资源的全局策略拒绝、名称歧义和需要重启也会记录 |
 
-`initialize` 返回的 `instructions` 原文（Agent 会读到，据此建立预期）：
-
-> Sqarvo MCP Server 通过 mcp.json 中已授权的连接别名访问数据库，V1 只提供只读的结构与查询能力。
-> 同一个数据库连接上的查询会串行执行（单会话单在途语句），不同连接可在进程级并发上限内并行；
-> 排队不是故障。未在 enabled_tools 中启用的工具会被拒绝。所有调用记入本地审计日志（只记录 SQL
-> 指纹，不记录原始 SQL 与结果）。
+`tools/list` 与资源发现提供静态描述。工具调用和资源读取会检查共享档案的全局访问策略。
+SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 
 ## 3. 八个工具
 
 每个工具的小节格式：**参数表 → 返回（outputSchema 摘要）→ 限额与截断 → 错误子码 → 描述要点**。
 `description` 由代码里的文档注释逐字生成，客户端看到的就是它。
 
-所有工具共同的前置顺序：**① `enabled_tools` 检查 → ② alias 授权 → ③（SQL 类）策略检查 →
+所有工具共同的前置顺序：**① `enabled_tools` 检查 → ② 请求级授权（全局开关、档案解析和 revision、操作类型） → ③（SQL 类）策略检查 →
 ④ 取并发许可 + 懒连接 → ⑤ 执行 → ⑥ 写审计**。未授权的 alias 不会消耗解析与策略检查，也不会
 建立任何数据库连接。
 
@@ -99,9 +88,10 @@ SQARVO_MCP_LOG=debug ./target/release/sqarvo-mcp --config /path/to/mcp.json 2>/t
 - `connection_status`：`not_connected` / `connected` / `failed`。**调用它不会触发连接**。
 - `last_error_code` 只在 `failed` 时非空，是稳定子码（例：`credential.not_found`），不是驱动
   原始文案。
-- 不出现的字段：用户名、host/port、连接串、`credential_ref`、密码。`enabled: false` 的连接
-  根本不进列表（不是「列出来再标记禁用」）。
-- 错误：`mcp.tool_disabled`（被禁用时）、`mcp.internal`（审计写失败 → 结果不交付）。
+- `alias` 用于传入后续工具和资源调用。服务按精确档案 UUID 或唯一名称定位档案。
+  名称有歧义时使用 UUID。结果省略用户名、host/port、连接串、凭据引用和密码。
+- 全局关闭或共享文档不可读时返回 `mcp.connection_denied`。新增或修改的档案可列出，
+  重启前对它建连会返回 `profile.restart_required`。
 - 审计：记 `tool_name` 与耗时，`returned_rows` 留空（状态读取没有行）。
 
 ### 3.2 `list_databases`
@@ -310,7 +300,7 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 - `tables/{table}` 的列定义与 `describe_table` **逐字段一致**（同一份取数、同一套输出类型，
   等价性由测试钉死）。
 - **资源不受 `enabled_tools` 管辖**：那是工具面的开关，资源是另一条协议面。所以
-  `enabled_tools: []` 时工具全禁、资源仍可访问（`tools/list` 空、`resources/list` 照旧）。
+  `enabled_tools: []` 时工具全禁，资源读取仍单独检查全局策略（`tools/list` 空，资源发现照常）。
 
 ### 5.1 URI 编码契约（安全契约，不是风格建议）
 
@@ -331,73 +321,39 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
                      database://demo/main/tables/bad%zz               ❌ 非法 % 序列 → -32602
 ```
 
-### 5.2 资源读取的错误语义（二选一，已钉死）
+### 5.2 资源读取的错误语义
 
 | 情形 | 子码 | JSON-RPC |
 |---|---|---|
 | URI 自身不合法：scheme 不是 `database://`、段数不对、空段、非法 `%`、非法 UTF-8、双重编码 | `mcp.invalid_argument` | `-32602` |
 | 资源不存在或未授权：alias 未知、库/表不存在、驱动报错 | `mcp.connection_not_found` / `metadata.object_not_found` 等 | `-32002` |
 
-`enabled: false` 的连接在资源面被**归一化成 `-32002`「资源不存在或未授权」**（工具面才是
-`mcp.connection_denied`）——不让 Agent 用错误码差异探测「某个 alias 是否存在于配置里」；原始
-子码只进 stderr 日志。
+全局关闭或无法读取策略时，资源读取返回 `-32002`，详情含 `mcp.connection_denied`。
+资源读取因全局策略、名称歧义或档案需要重启而拒绝时，稳定子码以 `resources/read` 写入现有
+JSONL 审计。普通资源读取沿用 V1 行为。
 
 整体 JSON 超过生效的 `max_result_bytes`（默认 1 MiB）→ `mcp.result_too_large`（`-32603`），
 **不交付半截 JSON**；文案里会指路改用粒度更细的工具。
 
 ## 6. `mcp.json` 逐字段
 
-默认路径：`AppPaths::config_dir()/mcp.json`。Linux 实测
-`$XDG_CONFIG_HOME/sqarvo/mcp.json`（本机 `~/.config/sqarvo/mcp.json`）；macOS
-`~/Library/Application Support/io.sqarvo.Sqarvo/mcp.json`（未在实机确认）；Windows
-`%APPDATA%\sqarvo\Sqarvo\config\mcp.json`（未确认）。**以 `--config` 与进程日志里的实际路径为准**
-——`AppPaths` 的模块注释与 `directories` 6.x 的实际拼法有出入，`crates/local-store` 的注释漂移
-已记在 [ADR 0032](../decisions/0032-mcp-standalone-process.md) 已知限制 2。
+默认路径为 `AppPaths::config_dir()/mcp.json`。Linux 对应
+`${XDG_CONFIG_HOME:-$HOME/.config}/sqarvo/mcp.json`。可用 `--config` 指定另一个文件。
+该参数选择 MCP 服务设置，档案与策略始终使用共享配置路径。默认文件缺失时采用默认服务设置。
+文件存在但 JSON 非法、字段未知或超过 1 MiB 时拒绝启动。
 
-加载策略（默认拒绝）：
+### 6.1 服务级字段
 
-| 情况 | 行为 |
-|---|---|
-| 文件不存在 | 空连接列表启动 + stderr 警告；任何工具都连不上库（不是错误退出） |
-| 文件存在但 JSON 非法 / 字段非法 | **拒绝启动**，stderr 一行原因，exit 1，stdout 保持空 |
-| 未知顶层字段 / 未知连接字段（含 `password`） | 拒绝启动（`deny_unknown_fields`：拼错与塞密码都是显式错误） |
-| 未知工具名、未知 `driver_id`、非法 alias / 引用格式、非法驱动参数组合 | 拒绝启动 |
-| 超过 1 MiB（`MAX_CONFIG_BYTES`） | 拒绝启动 |
-| 限额越界、`enabled_tools: []`、MariaDB 缺 `credential_ref` | **告警但照常启动**（可继续运行的偏差不该让人起不来） |
+| 字段 | 类型 | 默认 | 处理 |
+|---|---|---|---|
+| `enabled_tools` | array&lt;string&gt; | 8 个全启用 | 未知名拒绝启动，`[]` 关闭全部工具 |
+| `query_limits` | object | 见 §6.3 | 未知字段拒绝启动，数值越界按上限钳制 |
 
-### 6.1 顶层
+### 6.2 共享档案与旧配置
 
-| 字段 | 类型 | 必填 | 默认 | 安全含义 | 非法处理 |
-|---|---|---|---|---|---|
-| `connections` | array | 否 | `[]` | 授权白名单：不在这里的 alias 一律不可访问 | 元素非法 → 拒启 |
-| `enabled_tools` | array&lt;string&gt; \| 缺失 | 否 | 缺失 = 8 个全启用 | 收窄 Agent 能力面 | 含未知名 → **拒启**；`[]` → 全禁用 + 告警（服务仍起，所有工具调用被拒） |
-| `query_limits` | object | 否 | 见 6.3 | 服务端强制限额，不信任 Agent 输入 | 未知字段 → 拒启；越界 → 钳制 + 告警 |
-
-### 6.2 `connections[]`（每条连接）
-
-| 字段 | 类型 | 必填 | 默认 | 适用驱动 | 安全含义 | 非法处理 |
-|---|---|---|---|---|---|---|
-| `alias` | string | 是 | — | 全部 | Agent 侧唯一可见标识，进工具参数、资源 URI 与审计 | `[a-z0-9_-]{1,64}` 之外 → 拒启；重复 → 拒启 |
-| `driver_id` | string | 是 | — | 全部 | 决定参数白名单与只读门控 | 非 `sqlite`/`mariadb` → 拒启（fail-closed） |
-| `host` | string | 是 | — | 全部 | MariaDB=主机；**SQLite=数据库文件路径**（进程有权打开该文件） | 空 → 拒启 |
-| `port` | u16 | MariaDB 必填 | `0` | 全部 | SQLite 必须 `0`（本地文件没有端口） | MariaDB `0` → 拒启；SQLite `≠0` → 拒启 |
-| `database` | string \| null | 否 | `null` | MariaDB | 默认库；SQLite 不允许该字段 | SQLite 给了 → 拒启 |
-| `username` | string \| null | MariaDB 必填 | `null` | MariaDB | 建议用只读专用账号（§8）；SQLite 出现即可疑 | SQLite 给了 / MariaDB 空白 → 拒启 |
-| `credential_ref` | string \| null | 否 | `null` | MariaDB | **只有引用**，密码在系统密钥环（ADR 0012）；SQLite 不允许 | 格式非 `sqarvo:conn/<uuid v4>` → 拒启（文案不回显原文）；SQLite 给了 → 拒启；MariaDB 缺 → 告警并以空密码连接 |
-| `tls` | string | 否 | `"unspecified"` | 全部 | 六档：`unspecified` / `disabled` / `preferred` / `required` / `verify_ca` / `verify_full`（snake_case 精确匹配，大小写变体算写错） | SQLite 给非 `unspecified`/`disabled` → 拒启；`disabled` + 证书参数 → 拒启；未知值 → 拒启 |
-| `tls_server_name` | string \| null | 否 | `null` | MariaDB | 显式 SNI/主机名校验目标 | SQLite 给了 → 拒启；`tls=disabled` 时给了 → 拒启 |
-| `properties` | map&lt;string,string&gt; | 否 | `{}` | 按驱动 | 只放非敏感驱动参数；**键名含 `password`/`passwd`/`secret`/`token` 一律拒**（跨驱动兜底，将来新驱动也适用） | 白名单外键 → 拒启（错误文案点名该键） |
-| `enabled` | bool | **是** | 无默认 | 全部 | 授权总开关：`false` = Agent 看不见也调不动 | **缺字段即非法** → 拒启（默认拒绝，不给「漏写字段=默认放开」的机会） |
-
-`properties` 白名单（启动期预检，镜像各自驱动的 `from_params`）：
-
-| 驱动 | 允许的键 | 取值约束 |
-|---|---|---|
-| `sqlite` | `read_only` | `true`/`false`/`1`/`0`；`read_only` + `:memory:` 组合被拒（内存库无此语义） |
-| `mariadb` | `ssl_ca`、`ssl_cert`、`ssl_key`、`connect_timeout_ms` | 证书与私钥必须**同时**给；`connect_timeout_ms` ∈ `[100, 300000]` 整数；`tls=disabled` 时不得带证书参数 |
-
-预检的边界要说清：它只做**提前拒绝**，不做提前接受——驱动仍是连接期的唯一权威，握手逻辑不在
-这里复制一份。它的价值是把拼错的键暴露在启动时，而不是等到第一次工具调用才在懒连接里失败。
+旧 `connections[]` 由启动迁移读入，备份为 `.bak`，原位置只保留服务级字段。
+旧 `alias` 进入档案名称，旧 `enabled` 不继承。全局访问需通过 GTK 或本地 CLI 启用。
+[共享档案格式与迁移](connection-profiles.md)。
 
 ### 6.3 `query_limits`（钳制后的生效值才起作用）
 
@@ -412,49 +368,16 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 Agent 输入」与服务端可保证上界的唯一来源。每个被钳制的字段都会在启动日志里点名（旧文案是中文，
 形如「`query_limits.max_rows = 50000` 超出硬上限，已钳制为 1000」）。
 
-### 6.4 完整示例（全部占位符）
+### 6.4 服务配置示例
 
-```jsonc
+```json
 {
-  "connections": [
-    {
-      "alias": "prod_mariadb_readonly",
-      "driver_id": "mariadb",
-      "host": "db.internal.example",
-      "port": 3306,
-      "database": "app_db",
-      "username": "sqarvo_mcp_ro",
-      "credential_ref": "sqarvo:conn/0b7f4b6e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
-      "tls": "verify_full",
-      "properties": { "ssl_ca": "/etc/ssl/certs/internal-ca.pem", "connect_timeout_ms": "3000" },
-      "enabled": true
-    },
-    {
-      "alias": "local_sqlite",
-      "driver_id": "sqlite",
-      "host": "/srv/data/analytics.sqlite",
-      "port": 0,
-      "properties": { "read_only": "true" },
-      "enabled": true
-    },
-    {
-      "alias": "staging_off",              // 关掉授权：Agent 完全看不见这条
-      "driver_id": "mariadb",
-      "host": "staging.internal.example",
-      "port": 3306,
-      "username": "sqarvo_mcp_ro",
-      "credential_ref": "sqarvo:conn/11111111-2222-4333-8444-555555555555",
-      "enabled": false
-    }
-  ],
   "enabled_tools": ["list_databases", "list_tables", "describe_table", "execute_readonly_query"],
   "query_limits": { "max_rows": 100, "timeout_ms": 5000 }
 }
 ```
 
-这个例子同时是「最小权限」的形状：只读账号 + `verify_full` + 只放 4 个工具 + 把行数和超时收紧。
-想验证「写不进去」，把 `sql` 参数换成 `UPDATE …` 看它报 `mcp.readonly_violation` 即可，不必真
-给账号写权限。
+该示例只启用四个工具并收紧行数与超时。数据库侧仍应使用只读账号，见 §8。
 
 ## 7. 凭据 CLI
 
@@ -471,7 +394,7 @@ sqarvo-mcp credentials delete REFERENCE    # 删除；不存在视为成功（�
    重定向、CI 里跑不通是有意的：那里的「读密码」要么回显进日志，要么在无人值守时永远阻塞。
 3. **按提示输入两遍密码**（不回显）。两次不一致 → 不写入任何东西；空密码 → 拒绝（不需要密码的
    账号就不要配 `credential_ref`）。
-4. **记下打印出来的引用**（`sqarvo:conn/<uuid v4>`），填进 `mcp.json` 的 `credential_ref`。
+4. **记下打印出来的引用**（`sqarvo:conn/<uuid v4>`），由管理客户端关联到共享档案的 `credential_ref`。
    引用也可以自己指定：`credentials set sqarvo:conn/<你自己的 uuid v4>`，格式非法会**先**报错、
    不会让你先输两遍密码。
 5. **验证**：起进程后调 `list_connections`——`connection_status` 应为 `connected`（第一次真正
@@ -487,6 +410,22 @@ sqarvo-mcp credentials delete REFERENCE    # 删除；不存在视为成功（�
   取引用。
 - 删除引用后配置仍指向它 → 该连接下次建连失败并转 `failed`，`last_error_code` =
   `credential.not_found`；重新 `set` 同一个引用即恢复（不需要改配置）。
+
+### 7.2 全局访问管理
+
+```bash
+sqarvo-mcp access status
+sqarvo-mcp access on
+sqarvo-mcp access off
+sqarvo-mcp access read-only status
+sqarvo-mcp access read-only on
+sqarvo-mcp access read-only off
+```
+
+`access on` 和 `access read-only off` 显示当前档案数量及影响范围并要求确认。
+非交互终端必须显式传入 `--yes`。只有全局访问开启时才可关闭只读，其变更不会开启 V1 写工具。
+`access off` 撤销后续访问并恢复只读。已获授权且开始执行的操作可以完成，随后释放相应会话。状态显示两个开关、档案数量和文档 revision。
+这些命令由本地用户运行。GUI 和 CLI 的开关变更不进入 MCP 工具审计。
 
 ## 8. MariaDB 只读账号模板
 
@@ -531,8 +470,8 @@ SHOW GRANTS FOR 'sqarvo_mcp_ro'@'%';
   会话级能力，MCP 不显式开事务，所以别指望它替你兜住。
 - 只给 `SELECT` 时，「库不存在」与「库不可读」都可能只拿到 `1044`，MCP 会如实报
   `metadata.permission_denied` 并在文案里说明这个歧义——这是受限账号的固有现象，不是 bug。
-- 用 `verify_full` + `ssl_ca`（§6.2）而不是 `disabled`；`tls` 六档的语义与逐档验证记录见
-  [`docs/database/mariadb.md`](../database/mariadb.md)。
+- 使用 `verify-full` 和 `properties.ssl_ca` 校验证书链与主机名。
+  [档案字段](connection-profiles.md) · [MariaDB TLS 验证记录](../database/mariadb.md)。
 - SQLite 没有账号概念，「只读」靠 `properties.read_only = "true"` + 文件系统权限（给进程一个
   只读挂载点或只读文件）。
 
@@ -627,8 +566,10 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | 子码 | 分类 | retryable | 触发点 | Agent 该怎么办 |
 |---|---|---|---|---|
 | `mcp.invalid_argument` | `invalid_argument` | 否 | 必填参数为空、`limit` 为负、资源 URI 形状/编码非法 | 修参数；URI 检查是否双重编码 |
-| `mcp.connection_not_found` | `not_found` | 否 | alias 不在 `mcp.json` 里 | 用 `list_connections` 取真名，别猜 |
-| `mcp.connection_denied` | `permission_denied` | 否 | alias 存在但 `enabled: false`（**仅工具面**；资源面归一化成 not_found） | 这是授权决定，不要重试 |
+| `mcp.connection_not_found` | `not_found` | 否 | 共享档案中找不到指定 UUID 或名称 | 用 `list_connections` 取真名，别猜 |
+| `mcp.connection_denied` | `permission_denied` | 否 | 全局访问关闭或读策略失败。资源面保留协议级拒绝口径 | 这是授权决定，不要重试 |
+| `profile.ambiguous_name` | `failed_precondition` | 否 | 名称匹配多个档案 | 改用档案 UUID |
+| `profile.restart_required` | `failed_precondition` | 否 | 档案在 MCP 启动后新增或修改 | 由本地用户重启 MCP |
 | `mcp.tool_disabled` | `permission_denied` | 否 | 工具不在 `enabled_tools` | 换已启用的工具；资源面不受该开关管辖 |
 | `mcp.readonly_violation` | `permission_denied` | 否 | 白名单外语句、多语句、INTO、锁读、hint、危险函数、`:=` | 改成单条 `SELECT`；文案里逐条列出了全部违规原因 |
 | `mcp.sql_parse` | `invalid_argument` | 否 | sqlparser(MySqlDialect) 解析失败（含递归深度触顶）；**不代表原语句非法** | 换写法（去 MariaDB 特有语法、降嵌套深度） |
@@ -655,10 +596,8 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | `explain_query 当前仅支持 MariaDB（普通 EXPLAIN）；驱动 sqlite 未声明 Explain 能力。SQLite 的等价物是 EXPLAIN QUERY PLAN...` | 驱动门控 | SQLite 侧别用该工具 |
 | `查询超过 10000 毫秒上限，已请求取消` | 超时（`retryable=true`） | 缩查询 |
 | `URI 路径段疑似双重编码（解码后仍含 %XX 序列）；每个路径段只允许编码一次` | 资源 URI 编了两次 | 只编一次 |
-| `资源不存在或该连接未授权；请用 resources/list 与 list_connections 核对别名` | alias 未知或 `enabled:false`（资源面归一化） | 核对别名与授权 |
+| `资源不存在或该连接未授权；请用 resources/list 与 list_connections 核对别名` | 档案未知或全局访问关闭（资源面归一化） | 核对别名与授权 |
 | `资源内容 1234567 字节，超过单次上限 1048576 字节；请改用粒度更细的工具…` | 资源超 1 MiB | 分批读 |
-| stderr：`未找到 mcp.json（...）：默认路径不存在，请按文档创建；以空连接列表启动，所有连接请求都会被拒绝` | 默认路径没配置且没传 `--config` | 建配置或传 `--config` |
-| stderr：`连接 prod 的 properties 不允许携带凭据类参数：db_password；密码只能写入系统凭据库，由 credential_ref 引用` | 想从配置塞密码 | 用 `credentials set`（§7） |
 | 启动即 exit 1，stdout 空 | 配置非法（未知字段/未知名/非法组合/超 1 MiB） | 按 stderr 那行改配置 |
 
 ## 11. 限额一览
@@ -671,7 +610,7 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | 查询超时 | 10 s | 10 s | 只能调小 | 外层 `timeout` + `SessionHandle::cancel`（驱动级超时未实现，见 §12 限制 3） |
 | 元数据列表单页 | 500 | 500 | 否 | `MAX_PAGE_SIZE`；4 个列表工具与 `schema` 资源 |
 | 进程级并发 | 2 | 4 | `query_limits.max_concurrency` | 信号量与 `QueryRegistry` 同源 |
-| 同 alias 在途语句 | 1 | 1 | 否 | 会话执行锁（ADR 0008） |
+| 同一档案在途语句 | 1 | 1 | 否 | 会话执行锁（ADR 0008） |
 | SQL 解析递归深度 | 50（sqlparser 默认） | 50 | 否（刻意不调高） | 触顶 → `mcp.sql_parse` |
 | `mcp.json` 大小 | — | 1 MiB | 否 | 超限拒绝启动 |
 | 审计单文件 / 份数 | 10 MiB / 5 | 同左 | 否（代码常量） | 只在完整记录边界轮转 |
@@ -682,15 +621,15 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 
 **已知限制（行为口径，不是 bug）**
 
-1. **V1 资源读取不写审计**：只有 `tools/call` 进 `audit.jsonl`。资源与工具能读到同一份结构，
+1. **普通资源读取沿用 V1 审计范围**。审计记录工具调用及 §5.2 所列的资源授权拒绝。资源与工具都能读取结构，
    审计覆盖不对称。
 2. **`server_version` 恒为 `null`**（overview 资源）：不为它多发起一次握手。
 3. **驱动级单次执行超时未实现**：超时由外层计时 + 取消实现，语义等价但不是服务端 `timeout`；
    `ExecuteRequest.timeout` 非 `None` 时 MariaDB 直接 `capability.unsupported`。
 4. **计数超过 500 就放弃精确值**：`table_count`/`view_count` 给 `null` + `counts_truncated=true`，
    不返回「≥500」这种半截信息。
-5. **同 alias 串行**：并发只在不同 alias 之间生效；要并发就配多条 alias。
-6. **审计多实例 best-effort**：`flock` 只串行化「追加一行」，两个实例轮转同一目录仍可能互相
+5. **同一档案串行**。不同档案可在进程级并发上限内并行。
+6. **审计多实例 best-effort**：文件锁只串行化「追加一行」，两个实例轮转同一目录仍可能互相
    覆盖；争用时第二个实例退化写 `audit.<pid>.jsonl`。V1 **不宣称**多实例安全。
 7. **轮转参数（10 MiB × 5）不可配**。
 8. **`PROCEDURE ANALYSE()` 是唯一真正的只读误杀**（合法、只读、极罕见），接受，不做例外放行。
@@ -705,11 +644,13 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 **未验证清单（本机环境限制，不是「已确认没问题」）**
 
 14. **Windows / macOS 未实机验证**：Windows Rust CI 作业由 #218 跟踪；macOS 未接入。
-    Windows 审计跨进程锁是刻意跳过（best-effort）。
+    Windows 共享档案与审计使用 `LockFileEx`，未实机验证。
 15. **Cherry Studio GUI 协商 = 人工验收项**：步骤与预期见 §9.1（6 条断言）。
 16. **真实 OS 密钥环的失败路径 E2E 本机不可用**：没有可用的 Secret Service 会话，改用双断言
     替代（§13）。
-17. **默认配置路径在 macOS/Windows 上的具体拼法未确认**：只确认了 Linux 实测值（§6）。
+17. **默认配置路径在 macOS/Windows 上的具体拼法未确认**。Linux 路径见 §6。
+18. 新增或编辑档案后需要重启 MCP 才可建连。全局开关和档案删除在后续访问请求生效。
+19. GUI 与 CLI 的开关变更不写入 MCP 工具审计。
 
 ## 13. 构建、运行与验收命令
 

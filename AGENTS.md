@@ -38,7 +38,7 @@ AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不�
 
 | 工作范围 | 必读入口 | 承载细则 |
 |---|---|---|
-| `backend/`（apps/backend-service、apps/sqarvo-mcp、crates/*） | `backend/AGENTS.md` | §6 Driver SPI、§7.3/7.4 实现侧、§10、§11、驱动测试 |
+| `backend/`（apps/backend-service、apps/sqarvo-mcp、crates/local-store、其他 crates/*） | `backend/AGENTS.md` | §6 Driver SPI、§7.3/7.4 实现侧、§10、§11、驱动测试 |
 | `frontend/`（windows、linux、macos） | `frontend/AGENTS.md` | §8 全部、§12、UI 验收与注册表前端侧 |
 | `l10n/` 共享文案目录 | `l10n/AGENTS.md`（指针）→ `frontend/AGENTS.md` §8.6、`l10n/README.md` | 文案条目与生成链 |
 | `proto/` | `proto/AGENTS.md` | §7 契约设计、兼容演进、错误语义、生成管理 |
