@@ -37,7 +37,7 @@ fn management_processes_share_policy_and_require_confirmation() {
     let no_confirmation = access(home, &["on"]);
     assert!(!no_confirmation.status.success());
     assert!(String::from_utf8_lossy(&no_confirmation.stderr).contains("--yes"));
-    assert!(no_confirmation.stdout.is_empty());
+    assert_eq!(no_confirmation.stdout, [] as [u8; 0]);
     assert_eq!(status(access(home, &["status"])), initial);
 
     let disabled = access(home, &["read-only", "off", "--yes"]);

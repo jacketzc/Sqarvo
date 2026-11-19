@@ -185,24 +185,23 @@ fn fingerprint(bytes: &[u8]) -> String {
 
 fn parse_source(path: PathBuf, kind: SourceKind, bytes: &[u8]) -> Result<Option<Import>> {
     let invalid_json = |_| invalid("旧连接档案格式无效");
-    let (profiles, replacement) = match kind {
-        SourceKind::Mcp => parse_mcp(bytes)?,
-        _ => {
-            let legacy: LegacyDesktop = serde_json::from_slice(bytes).map_err(invalid_json)?;
-            if legacy.version != 1 && !(matches!(kind, SourceKind::Gtk) && legacy.version == 0) {
-                return Err(invalid("不支持旧桌面连接档案版本"));
-            }
-            let mut profiles: Vec<ConnectionProfile> = Vec::with_capacity(legacy.connections.len());
-            for entry in legacy.connections {
-                let profile = entry.into_profile()?;
-                // 两种旧 GUI 保留同一目标的最后一条记录。
-                if let Some(index) = profiles.iter().position(|old| old.same_target(&profile)) {
-                    profiles.remove(index);
-                }
-                profiles.push(profile);
-            }
-            (profiles, None)
+    let (profiles, replacement) = if matches!(kind, SourceKind::Mcp) {
+        parse_mcp(bytes)?
+    } else {
+        let legacy: LegacyDesktop = serde_json::from_slice(bytes).map_err(invalid_json)?;
+        if legacy.version != 1 && !(matches!(kind, SourceKind::Gtk) && legacy.version == 0) {
+            return Err(invalid("不支持旧桌面连接档案版本"));
         }
+        let mut profiles: Vec<ConnectionProfile> = Vec::with_capacity(legacy.connections.len());
+        for entry in legacy.connections {
+            let profile = entry.into_profile()?;
+            // 两种旧 GUI 保留同一目标的最后一条记录。
+            if let Some(index) = profiles.iter().position(|old| old.same_target(&profile)) {
+                profiles.remove(index);
+            }
+            profiles.push(profile);
+        }
+        (profiles, None)
     };
     if matches!(kind, SourceKind::Mcp) && replacement.is_none() {
         return Ok(None);
@@ -570,20 +569,17 @@ mod tests {
             }),
         );
         let sources = || {
-            vec![
-                Source {
-                    path: gtk.clone(),
-                    kind: SourceKind::Gtk,
-                },
-                Source {
-                    path: windows.clone(),
-                    kind: SourceKind::Windows,
-                },
-                Source {
-                    path: mcp.clone(),
-                    kind: SourceKind::Mcp,
-                },
+            [
+                (&gtk, SourceKind::Gtk),
+                (&windows, SourceKind::Windows),
+                (&mcp, SourceKind::Mcp),
             ]
+            .into_iter()
+            .map(|(path, kind)| Source {
+                path: path.clone(),
+                kind,
+            })
+            .collect()
         };
 
         run_sources(&store, sources()).unwrap();

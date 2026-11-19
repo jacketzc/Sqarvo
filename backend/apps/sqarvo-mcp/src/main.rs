@@ -84,7 +84,7 @@ fn main() -> ExitCode {
             }
             Some(Command::Access { action }) => {
                 let store = access_cmd::management_store(cli.config.as_deref())?;
-                access_cmd::run(&store, action)
+                access_cmd::run(&store, &action)
             }
         }
     });
