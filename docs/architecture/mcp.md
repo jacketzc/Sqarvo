@@ -4,16 +4,17 @@
 口径与代码冲突时以代码为准，并把它记在 §10「与代码不符项」。
 
 - 决策记录：[ADR 0032](../decisions/0032-mcp-standalone-process.md)（独立进程与连接模型）、
-  [ADR 0033](../decisions/0033-sql-parser-readonly-policy.md)（SQL 只读策略）。
+  [ADR 0033](../decisions/0033-sql-parser-readonly-policy.md)（SQL 只读策略）、
+  [ADR 0035](../decisions/0035-shared-connection-profiles.md)（共享档案与全局访问）。
 - 对外契约（工具、资源、`mcp.json` 每个字段、错误子码）：
   [docs/api/mcp-tools.md](../api/mcp-tools.md)。
-- 需求条目：`REQ-MCP-001 … 006`，见 [产品需求](../product/requirements.md) §9。
+- 需求条目：`REQ-MCP-001 … 009`，见 [产品需求](../product/requirements.md) §9。
 
 ## 1. 定位与不变式
 
 MCP Server 是**给外部 AI Agent 用的第二个入口**，不是第二套数据库系统。它复用与 GUI 后端
 完全相同的连接、驱动、会话与查询生命周期代码，只在外面换了一层协议（stdio JSON-RPC）、一层
-授权模型（`mcp.json` 自有的连接档案）和一层安全策略（SQL AST 只读判定）。
+授权模型（共享档案中的全局策略）和一层安全策略（SQL AST 只读判定）。
 
 四条不许动摇的不变式：
 
@@ -35,7 +36,7 @@ MCP Server 是**给外部 AI Agent 用的第二个入口**，不是第二套数�
 ┌────────────────────────────┐        spawn + stdio pipes        ┌────────────────────────────┐
 │ MCP 客户端（Agent 宿主）    │  ───────────────────────────────► │ 子进程 sqarvo-mcp           │
 │ Cherry Studio / Inspector /│  ◄── stdout：JSON-RPC（仅协议） ── │ Rust + Tokio + rmcp 3.10.0  │
-│ 各类 Agent 运行时           │  ◄── stderr：tracing 日志 ─────── │ mcp.json 自有连接档案        │
+│ 各类 Agent 运行时           │  ◄── stderr：tracing 日志 ─────── │ ProfileStore 共享档案        │
 └────────────────────────────┘                                   └──────┬────────────┬────────┘
                                                                         │            │
                                                      SessionManager ────┘            └──── AuditWriter
@@ -47,22 +48,20 @@ MCP Server 是**给外部 AI Agent 用的第二个入口**，不是第二套数�
 
 要点：
 
-- **与 GUI 完全独立**：不读 GUI 的连接档案，不借用 GUI 后端的 `SessionManager`，GUI 没开也能
-  跑；反过来 MCP 进程崩了不影响 GUI。客户端自己拉起子进程、自己关（stdin 关闭即退出）。
-- **传输只有 stdio**：没有网络监听端口，不新增 IPC 通道，因此本地 IPC 的访问控制模型
-  （[ADR 0002](../decisions/0002-local-ipc-transport.md)、
-  [local-ipc.md](local-ipc.md)）不适用于它——它的访问边界就是「谁能启动这个进程 + `mcp.json`
-  里授权了什么」。
-- **两种运行形态**（同一个二进制）：无参数 = stdio server；`credentials set|delete` = 管理模式，
-  不启动 server、不发协议消息，只跟系统密钥环打交道。
+- **会话由 MCP 进程持有**。GTK 经本地 gRPC 和 MCP 经 `ProfileStore` 访问同一份共享档案。
+  两者各自建立物理连接。MCP 客户端管理 stdio 子进程，在 stdin 关闭时触发退出。
+- **传输使用 stdio**。客户端流量的访问由共享档案的全局策略控制。GTK 调用管理 RPC 继续使用
+  本地 token 鉴权。[本地 IPC](local-ipc.md)。
+- 同一二进制支持 stdio 服务和本地命令 `credentials set|delete`、`access`。管理命令单独退出，
+  stdout 为终端结果，stdio 服务的 stdout 专用于协议。
 
 ### 2.1 启动与退出
 
 | 阶段 | 行为 | 失败时 |
 |---|---|---|
 | 1. 装配日志 | subscriber writer 钉死 stderr；过滤级别默认 `warn,sqarvo_mcp=info`，可用 `SQARVO_MCP_LOG` 覆盖 | — |
-| 2. 读配置 | `--config <path>` 优先，否则默认路径（§4） | 文件不存在 = 空连接列表启动 + stderr 警告；文件存在但非法 = **拒绝启动** |
-| 3. 语义校验 | alias、凭据引用格式、驱动白名单、`enabled_tools`、限额钳制 | 拒绝启动，stderr 一行原因，**exit 1**，stdout 保持空 |
+| 2. 迁移并读配置 | 迁移旧档案，读取共享档案及服务设置。可用 `--config <path>` 指定服务设置或旧 MCP 文件 | 迁移、共享档案或显式指定配置无效时退出。默认服务文件缺失时采用默认设置 |
+| 3. 语义校验 | 共享档案校验，`enabled_tools` 和限额钳制 | 拒绝启动，stderr 一行原因，**exit 1**，stdout 保持空 |
 | 4. 装配运行时 | `SessionManager` + `QueryRegistry` + 进程信号量 + 审计写入器 | 拒绝启动（同上） |
 | 5. serve | `rmcp` 走 stdio，等 `initialize` 或 2026-07-28 的无握手 `_meta` 请求 | 握手前对端关闭 = 按 EOF 正常收尾，**exit 0**（#220） |
 | 6. 退出 | stdin EOF / `SIGINT` / `SIGTERM` → `close_all()`（清查询登记 + 关全部会话）→ **exit 0** | 主循环异常仍走 exit 0 收尾路径，异常只进日志 |
@@ -78,7 +77,7 @@ apps/sqarvo-mcp ──► rmcp（stdio + tools/resources 协议面）
       │
       ├──► connection ──► drivers ──► driver-api ──► common
       ├──► query-engine（QueryRegistry / QueryLimits）
-      ├──► local-store（AppPaths、credential_ref 校验、系统凭据库）
+      ├──► local-store（ProfileStore、AppPaths、凭据引用与系统凭据库）
       └──► common（Error / ErrorCategory / ErrorCode 稳定子码）
 
 禁止：apps/sqarvo-mcp ──► rpc-server、apps/sqarvo-mcp ──► proto/tonic/prost 生成类型
@@ -90,7 +89,8 @@ apps/sqarvo-mcp ──► rmcp（stdio + tools/resources 协议面）
 |---|---|---|
 | `main.rs` | #207 | CLI 形态、runtime 装配、stderr 日志、退出码 |
 | `config.rs` | #207 | `mcp.json` 模型、启动期校验、限额钳制、工具开关 |
-| `access.rs` | #207 | alias 授权、懒连接状态机、并发许可、会话失效重试 |
+| `access.rs` | #207、#227 | 请求级授权、懒连接状态机、并发许可、会话撤销与失效重试 |
+| `access_cmd.rs` | #225 | 终端管理 MCP 全局开关、确认和状态 |
 | `credentials_cmd.rs` | #207 | 密钥环 `set` / `delete`（交互终端独占） |
 | `server.rs` | #207 + #209/#210 | `ServerContext` 装配、stdio 生命周期、`tools/list` 过滤、`resources/*` 路由 |
 | `error.rs` | #207 | `Error` → 工具级 `isError` / 协议级 JSON-RPC error 两通道映射 |
@@ -103,34 +103,31 @@ apps/sqarvo-mcp ──► rmcp（stdio + tools/resources 协议面）
 
 ## 4. 配置与凭据的三层分离
 
-秘密 ≠ 引用 ≠ 授权。三层各自独立存放、独立撤销：
+| 层 | 载体 | 管理入口 |
+|---|---|---|
+| 密码 | 操作系统凭据库 | GTK 凭据流程或交互命令 `sqarvo-mcp credentials set` |
+| 档案与引用 | `AppPaths::config_dir()/connections.json` 的 `profiles` | GTK 通过档案服务读写，MCP 直接读取 `ProfileStore` |
+| 访问与只读 | 同一文件的 `mcp.enabled` 和 `mcp.read_only` | GTK 菜单或本地 `sqarvo-mcp access` |
+| 工具开关与限额 | `mcp.json` 的 `enabled_tools` 和 `query_limits` | 用户可选配置，`--config` 可覆盖其路径 |
 
-| 层 | 载体 | 内容 | 谁写 |
-|---|---|---|---|
-| 秘密 | 操作系统凭据库（Linux Secret Service / Windows Credential Manager） | 数据库密码本体 | `sqarvo-mcp credentials set`（终端交互，不回显，两次确认） |
-| 引用 | `mcp.json` 的 `connections[].credential_ref` | `sqarvo:conn/<uuid v4>`（ADR 0012 格式） | 用户手工粘贴 |
-| 授权 | `mcp.json` 的 `enabled` + `enabled_tools` + `query_limits` | 哪个连接可用、哪些工具可用、限额多严 | 用户 |
+缺省策略为 `{ "enabled": false, "read_only": true }`。升级迁移旧档案时保留引用，旧连接白名单
+不影响全局授权。密钥环不可用将影响建连，错误为 `credential.unavailable`。
+[共享存储与迁移](../api/connection-profiles.md) · [MCP 服务配置](../api/mcp-tools.md#6-mcpjson-逐字段)。
 
-配置文件 `mcp.json` 的**默认路径以 `AppPaths::config_dir()` 实测返回值为准**（Linux 本机实测：
-`~/.config/sqarvo/mcp.json`；数据目录实测 `~/.local/share/sqarvo/`，审计在其下 `mcp/`）。
-注意 `crates/local-store/src/paths.rs` 的模块注释写的是 `ProjectDirs::from("io","sqarvo","Sqarvo")`
-语义（macOS 才是 `io.sqarvo.Sqarvo`），Linux 上 `directories` 6.0.0 会把项目路径**小写化并丢掉
-qualifier/organization**，实测目录名是 `sqarvo`——注释与实现有出入（ADR 0032 已知限制 2），
-文档与排障一律以实际返回值为准。`--config` 可指向任意路径（推荐 Agent 客户端就这么配）。
+### 4.1 请求级授权与撤销
 
-三层各自的失效行为：
-
-- 密钥环不可用（没装 Secret Service、会话被锁）→ `credential.unavailable`，**绝不回退明文、
-  绝不回退到内存或磁盘缓存**；服务照常启动，只是该连接连不上。
-- 引用格式非法 → 启动期拒绝，错误文案**不回显引用原文**。
-- 授权撤销 → 把 `enabled` 改成 `false` 重启进程即可，Agent 侧立刻从 `list_connections` 里看不
-  到这条连接，调用返回 `mcp.connection_denied`。
-
-字段逐项含义、类型、默认值、非法处理见 [docs/api/mcp-tools.md §6](../api/mcp-tools.md)。
+1. 工具调用和 `resources/read` 读取共享档案与策略的同一快照。无权访问、文件损坏、锁等待超时或
+   全局访问关闭时失败关闭。静态 `tools/list`、`resources/list` 和资源模板发现维持静态行为。
+2. 指定连接时，依次以精确 UUID、唯一名称解析。名称歧义时使用 UUID。每个档案的会话槽位绑定
+   MCP 启动时读取的档案 revision。
+3. 全局访问关闭或文件无法读取时，请求级检查会撤销缓存会话。档案删除或 revision 变化时同样
+   停止授权旧会话。空闲连接当场关闭，已授权且开始执行的操作可以完成，此后释放其物理连接。
+   新增或修改的档案需要重启才可建连，相关调用返回 `profile.restart_required`。
+4. 只读策略按操作类型检查。V1 只有读操作，始终使用 SQL AST 只读安全策略。
 
 ## 5. Lazy 连接状态机
 
-启动一个数据库都不连。每个 alias 一个槽位，状态迁移：
+启动一个数据库都不连。每个档案 UUID 一个槽位，状态迁移：
 
 ```text
                 首次工具调用（授权通过后）
@@ -149,8 +146,8 @@ qualifier/organization**，实测目录名是 `sqarvo`——注释与实现有�
   `Arc<SessionHandle>` 会让「已被 disconnect」对缓存不可见。
 - `failed`：只存**稳定子码 + 分类**（如 `credential.not_found` / `unavailable`），不存驱动原始
   文案（可能含主机与用户名），也不是终态：下次调用照旧重试。
-- 同一 alias 至多一条会话：建连过程在 per-alias `tokio::sync::Mutex` 里并二次检查，否则两个
-  并发首调会各建一条真实连接、留下无人引用的会话。锁粒度只在单个 alias 内，跨 alias 不互相
+- 同一档案至多一条会话。建连过程在该档案的 `tokio::sync::Mutex` 里并二次检查，否则两个
+  并发首调会各建一条真实连接、留下无人引用的会话。锁粒度只在单个档案内，跨档案不互相
   阻塞（AGENTS §11「不跨 await 持锁」的定点例外，理由即此）。
 - 断连**只重试一次**，且只认明确信号：`session.not_found`、`transport.failed`、分类
   `Unavailable`、驱动自定义的 `*.session_closed`。语法错误、权限拒绝一律原样返回——把语法
@@ -162,7 +159,7 @@ qualifier/organization**，实测目录名是 `sqarvo`——注释与实现有�
 |---|---|---|---|
 | 1. 进程级信号量 | `AccessService` 的 `tokio::sync::Semaphore` | 2 / 4 | **排队等待**，不是报错 |
 | 2. 查询登记表 | `sqarvo-query-engine::QueryRegistry`（`max_concurrent` 与信号量**同源**） | 同上 | 登记失败即返回错误 |
-| 3. 会话执行锁 | `SessionHandle` 内部 `Arc<tokio::Mutex>`（[ADR 0008](../decisions/0008-session-concurrency.md)） | 每 alias 同时 1 条在途语句 | 后来的调用排队 |
+| 3. 会话执行锁 | `SessionHandle` 内部 `Arc<tokio::Mutex>`（[ADR 0008](../decisions/0008-session-concurrency.md)） | 每个档案同时 1 条在途语句 | 后来的调用排队 |
 
 两层数值必须同源（`EffectiveLimits::query_limits()` 一份算出两处），否则登记表先放行、信号量
 后阻塞，等于把并发上限抬到 `max_concurrent` 之外。
@@ -228,7 +225,7 @@ Agent 提交的 SQL
 | 路径 | `AppPaths::data_dir()/mcp/audit.jsonl`（Linux 实测 `~/.local/share/sqarvo/mcp/audit.jsonl`） |
 | 权限 | 文件 0600、目录 0700（已存在的宽权限文件会被收紧，收紧失败直接报错而不是继续写） |
 | 轮转 | 10 MiB × 5，**只在完整记录边界**轮转（绝不出现半行），超限丢弃最旧一份 |
-| 记录范围 | 每次 `tools/call`，成功与失败都记；**V1 资源读取（`resources/*`）不写审计** |
+| 记录范围 | 每次 `tools/call`。资源读取因全局策略、档案歧义或需要重启而被拒绝时也记录子码。GUI/CLI 策略变更不写 MCP 审计 |
 | 字段 | `timestamp` / `request_id` / `client_info` / `tool_name` / `connection_alias` / `database` / `sql_fingerprint` / `execution_time_ms` / `returned_rows` / `truncated` / `success` / `error_code`（分类） / `error_subcode`（稳定子码） |
 | 默认不记 | 完整 SQL、查询结果、密码、Token、`credential_ref` 指向的秘密、错误文案 |
 
@@ -271,16 +268,14 @@ Agent 提交的 SQL
 
 ### 10.1 刻意的设计代价
 
-1. **审计多实例不是强一致**：`flock(LOCK_EX|LOCK_NB)` 只串行化「追加一行」，不保护跨进程轮转。
+1. **审计多实例不是强一致**：非阻塞独占文件锁只串行化「追加一行」，不保护跨进程轮转。
    同用户跑两个实例时，第二个退化写 `audit.<pid>.jsonl`（不阻塞、不丢记录），但轮转窗口内两个
    实例仍可能互相覆盖。V1 **不宣称**多实例安全。
 2. **审计只到指纹级**：事后复盘看不到 Agent 具体查了哪一行，换来审计文件本身不是敏感数据副本。
 3. **轮转参数不可配**：10 MiB × 5 是代码常量，测试靠构造器注入小阈值。开放配置需同时补配置文档与钳制规则。
-4. **V1 资源读取不写审计**：只有 `tools/call` 记审计。资源面同样能读结构，因此这是已知缺口，
-   不是「资源不需要审计」。
+4. **资源读取审计范围有限**。全局策略拒绝、名称歧义和需要重启记入审计。普通资源读取沿用 V1 行为。
 5. **懒连接的代价**：首个工具调用要付一次握手延迟（可能还要等用户解锁密钥环）。
-6. **同一连接串行**：并行度受 ADR 0008 约束，Agent 侧表现为排队；要并发就配多条 alias（各自
-   独立会话），而不是指望单连接并发。
+6. **同一连接串行**：并行度受 ADR 0008 约束，Agent 侧表现为排队；并发发生在不同档案的独立会话之间，而不是指望单连接并发。
 7. **`explain_query` 仅 MariaDB**：Driver SPI 没有 Explain 方法，V1 不扩 SPI，在 MCP 层按
    驱动白名单（`EXPLAIN_DRIVERS = ["mariadb"]`，**V1 已知例外**）生成普通 `EXPLAIN`；SQLite
    返回 `mcp.unsupported`（`EXPLAIN QUERY PLAN` 语义不同，本版不代执行）。后续应以驱动能力位取代。
@@ -299,7 +294,7 @@ Agent 提交的 SQL
     确认单只能用 workspace 既有依赖，故改用 `serve()` + `RunningService::cancellation_token()`
     + `waiting()` 这条等价路径），把 `tokio-util` 纳入 workspace 依赖才能修。
 12. **Windows 没有可捕获的 SIGTERM**：只有 Ctrl-C（与 ADR 0002 附记同口径）。
-13. **Windows 审计跨进程锁跳过**：`flock` 只在 unix 目标启用，Windows 侧不加锁直接写（best-effort）。
+13. **Windows 审计跨进程锁未实机验证**。共用文件锁在 Unix 使用 `flock`，Windows 使用 `LockFileEx`。
 14. **`psm`/`stacker` 含汇编产物**：`sqlparser` 的递归保护依赖它，Windows 构建风险由 #218
     跟踪的 Windows Rust CI 作业负责暴露；失败回退方案（去掉 recursive-protection 特性 + 自设
     输入规模边界）需要新 ADR，因为那会把 fail-closed 语义从「递归上限」换成「输入规模上限」。
@@ -321,6 +316,7 @@ Agent 提交的 SQL
 
 - [docs/api/mcp-tools.md](../api/mcp-tools.md)——8 个工具、4 类资源、`mcp.json` 逐字段、
   凭据 CLI、只读账号 SQL 模板、客户端配置、错误对照表、构建运行命令。
+- [共享连接档案接口](../api/connection-profiles.md) · [ADR 0035](../decisions/0035-shared-connection-profiles.md)。
 - [ADR 0032](../decisions/0032-mcp-standalone-process.md)——独立进程与连接模型的备选方案与取舍。
 - [ADR 0033](../decisions/0033-sql-parser-readonly-policy.md)——SQL 只读策略的十条决策与代价。
 - [ADR 0008](../decisions/0008-session-concurrency.md)、

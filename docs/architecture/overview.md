@@ -25,9 +25,9 @@
 - 后端负责连接、会话、执行、取消、元数据、事务与结果集管理；
 - 前端**不实现**任何数据库协议，也不直连数据库；
 - 后端**不包含**任何平台 UI 依赖；
-- `sqarvo-mcp` 是只读 MCP 通道的独立入口：不依赖 `sqarvo-backend`、不读 GUI 的连接档案
-  （自有 `mcp.json` 授权模型），由 MCP 客户端拉起并在 stdin 关闭时退出；
-  详见 [MCP 架构](mcp.md)。
+- MCP 客户端启动独立的 `sqarvo-mcp` 进程。该进程自行持有数据库会话，stdin 关闭时释放会话并退出。
+  GTK 经 `ConnectionProfileService`，MCP 与管理 CLI 直接经 `ProfileStore`，访问同一份共享档案文档。
+  [MCP 架构](mcp.md) · [共享档案与接口](../api/connection-profiles.md)。
 
 ## 后端 crate 依赖方向
 
@@ -35,6 +35,7 @@
 rpc-server ──► connection ──► drivers ──► driver-api ──► common
      │              │                          ▲
      │              └──► local-store           │
+     ├──► local-store（档案/策略、凭据写入）
      ├──► query-engine                          │
      ├──► metadata ─────────────────────────────┘
      └──► transaction ──► common

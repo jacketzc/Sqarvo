@@ -39,6 +39,24 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
   cargo test -p sqarvo-driver-mariadb --test cross_catalog -- --nocapture
 ```
 
+## GTK 与 MCP 策略端到端（Linux）
+
+构建 GTK 前端及后端二进制。以下命令使用仓库内的构建产物：
+
+```bash
+(cd backend && cargo build -p sqarvo-backend-service -p sqarvo-mcp)
+(cd frontend/linux && cargo build)
+python3 tests/integration/gtk_mcp_access.py \
+  --desktop frontend/linux/target/debug/sqarvo-desktop \
+  --backend backend/target/debug/sqarvo-backend \
+  --mcp backend/target/debug/sqarvo-mcp
+```
+
+需要 Python 3、`dbus-run-session`、X11 显示和 Linux `/proc`。无桌面环境时，
+可将最后一条命令放在 `xvfb-run -a` 下运行。测试使用独立 D-Bus 会话、应用 ID、HOME 与 XDG 目录。
+GTK 的启用与关闭操作经真实后端请求，前后与同一 MCP 子进程通信。测试核对旧档案合流、
+旧授权不继承、SQLite 查询结果、撤销后工具和资源拒绝，以及 SQLite 文件描述符释放。
+
 ## 启动测试数据库
 
 ```bash

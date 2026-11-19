@@ -90,6 +90,10 @@ Windows 没有 `XDG_RUNTIME_DIR`，前端必须显式传 `--endpoint-file`，否
 `CRED_TYPE_GENERIC`、target name 为引用原文、`UserName` 固定 `Sqarvo`、blob 为密码
 的 UTF-8 字节、`CRED_PERSIST_LOCAL_MACHINE`，单条上限 2560 字节。
 
+`ConnectionProfileService` 的档案读写与 MCP 策略管理沿用同一套本地传输和逐请求 token 校验。
+MCP Agent 的 stdio 接口提供工具与资源，策略管理由本地 GUI 或 CLI 发起。
+[共享连接档案接口](../api/connection-profiles.md)。
+
 ## 威胁模型
 
 | 威胁 | 缓解 |

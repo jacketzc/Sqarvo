@@ -15,6 +15,7 @@
 | M7 工作区 UI 重构 | S8 | 六区域外壳、多连接对象树、标签工作区（一标签一会话）、表格浏览分页/排序/筛选、对象信息面板 | v0.2.3 | 已完成（2026-11-07，13 条 Issue / 13 个 PR） |
 | M8 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.2.5 | 未开始 |
 | M9 MCP Server V1 | S9 | 独立 `sqarvo-mcp` stdio 进程：配置与连接授权、SQL 只读策略、工具、资源、协议 E2E、文档 | v0.3 | 代码与文档已交付（2026-11-18：#207–#212 + #220 合入链 `31e13d8`…`313d5be`，Linux 实测；遗留：#218 Windows Rust CI 验证、Cherry Studio 人工验收——里程碑保持 open 至销项） |
+| M10 共享连接档案与 MCP 全局访问 | S10 | 共享存储与迁移、GTK 档案服务、MCP 实时全局策略、CLI、跨组件验收 | v0.4 | 进行中（[#225–#230](https://github.com/jacketzc/Sqarvo/milestone/11)，Windows 前端接入冻结） |
 
 > 阶段编号按引入顺序分配（S8 为 2026-11-07 新增），**不代表交付顺序**：
 > S8（工作区 UI 重构）先于 S7（导入导出）交付，执行顺序见
@@ -334,6 +335,14 @@ frontend `cargo test` **311 passed / 0 failed / 1 ignored**，
 - 路径穿越、覆盖已有文件、超限输入三类情况均被明确拒绝；
 - 结构对比只生成脚本，任何路径都不自动执行 DDL；
 - 参数化执行在 SPI 与 proto 中冻结，不支持的驱动返回 `capability.unsupported`。
+
+### M10 共享连接档案与 MCP 全局访问
+
+- 共享档案并发写入、revision 冲突与失败关闭有测试证据。旧档案迁移保留备份，安全默认值保持关闭访问和开启只读。
+- GTK 经本地 gRPC 读写档案和策略，CLI 管理同一策略。运行中 MCP 在后续请求执行撤销并释放失效会话。
+- 保留 V1 工具、资源与 SQL 只读策略。Windows v1 fixture 由 Rust 迁移测试覆盖，Windows 前端冻结，
+  Windows/macOS 实机未验证。
+- 各工作包及验收证据见 [M10](https://github.com/jacketzc/Sqarvo/milestone/11)。
 
 ## 范围调整记录
 

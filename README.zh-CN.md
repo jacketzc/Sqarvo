@@ -101,8 +101,8 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 ## MCP Server
 
 `sqarvo-mcp` 是独立的只读 MCP Server。MCP 客户端（Claude Desktop、Cherry Studio、Inspector、
-各类 Agent 运行时）把它当作子进程拉起，只用 stdio 说 JSON-RPC；它不依赖 GUI 后端，连接授权
-写在自有的 `mcp.json` 里。
+各类 Agent 运行时）将其作为子进程启动，通过 stdio 通信。MCP 独立于 GUI 后端运行，
+与 GTK 应用使用同一份本地连接档案。
 
 - **天生只读**：8 个工具（连接发现、结构发现、表数据样本、单条只读查询、`EXPLAIN`）与 4 类资源；
   每条 SQL 都必须先通过 AST 只读策略才可能到达驱动。
@@ -113,7 +113,9 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 
 ```bash
 cd backend && cargo build -p sqarvo-mcp --release
-./target/release/sqarvo-mcp --config /path/to/mcp.json   # stdio；日志走 stderr
+./target/release/sqarvo-mcp access status
+./target/release/sqarvo-mcp access on                  # 授权前确认
+./target/release/sqarvo-mcp                           # stdio 服务
 ```
 
 客户端配置：
@@ -122,17 +124,21 @@ cd backend && cargo build -p sqarvo-mcp --release
 {
   "mcpServers": {
     "sqarvo": {
-      "command": "/absolute/path/to/backend/target/release/sqarvo-mcp",
-      "args": ["--config", "/absolute/path/to/mcp.json"]
+      "command": "/absolute/path/to/backend/target/release/sqarvo-mcp"
     }
   }
 }
 ```
 
-密码不进 `mcp.json`：它只存在操作系统凭据库里，配置用 `credential_ref` 引用
-（`sqarvo-mcp credentials set` 在终端交互写入）。每次工具调用都写一条本地审计记录，只记 SQL
-指纹不记原始 SQL。细节见 [MCP 架构](docs/architecture/mcp.md) ·
-[工具与配置参考](docs/api/mcp-tools.md) · [第三方许可](docs/licenses.md)。
+默认关闭访问、开启只读保护。保存连接档案后，可以在 GTK 菜单选择 **MCP 数据访问**，
+或运行 `sqarvo-mcp access on`，授权当前和以后新增的全部档案。新增或编辑档案后需要重启
+MCP 才能使用。运行 `sqarvo-mcp access off` 即可撤销后续请求的访问权限。关闭只读保护后，
+V1 工具仍只提供只读功能。
+
+操作系统凭据库保存密码，共享档案保存凭据引用。`mcp.json` 存放可选的工具和限额设置。
+本地审计记录工具调用和 SQL 指纹。[共享档案与迁移](docs/api/connection-profiles.md) ·
+[MCP 架构](docs/architecture/mcp.md) · [工具与配置参考](docs/api/mcp-tools.md) ·
+[第三方许可](docs/licenses.md)。
 
 ## 文档
 
