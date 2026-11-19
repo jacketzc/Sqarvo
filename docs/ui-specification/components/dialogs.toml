@@ -295,7 +295,7 @@ source = "src/config.rs:222"
 state = "done"
 spec_hash = "34da2c5d7e0d"
 commit = ""
-evidence = "config 单测验证 SaveProfile 保留 UUID、修订、显示名及连接属性。"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证编辑别名与档案修订。"
 
 [component.sync.windows]
 state = "blocked"
@@ -775,7 +775,7 @@ source = "src/ui.rs:1408、src/ui.rs:1410、src/backend/connection.rs:489"
 state = "done"
 spec_hash = "98c6cad015aa"
 commit = "7436cd5"
-evidence = "隔离 GTK --qa-profile --qa-action save 进入 Workspace，并通过共享文件断言 UUID 和 revision。"
+evidence = "GTK --qa-profile --qa-action save 验证新建；tests/ui/linux/test_06_mcp_access.py 验证编辑、UUID 与 revision。"
 
 [component.sync.windows]
 state = "blocked"

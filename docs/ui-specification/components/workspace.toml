@@ -14,7 +14,7 @@ status = "active"
 [component.sync.linux]
 state = "done"
 spec_hash = "033325b9bc4d"
-evidence = "GTK QA：--qa-mcp-access / --qa-mcp-readonly / --qa-mcp-indicator，共 33 条交互断言。"
+evidence = "tests/ui/linux/test_06_mcp_access.py 和 GTK --qa-mcp-* 验证真实交互。"
 
 [component.sync.windows]
 state = "blocked"
@@ -44,7 +44,7 @@ source = "src/mcp_access.rs:41、src/mcp_access.rs:192"
 [component.sync.linux]
 state = "done"
 spec_hash = "c2a4d58442e8"
-evidence = "GTK QA：--qa-mcp-access cancel/on/off，断言菜单状态、取消时 revision 不变、关闭恢复安全默认值。"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证菜单动作、revision 与安全默认值。"
 
 [component.sync.windows]
 state = "blocked"
@@ -74,7 +74,7 @@ source = "src/mcp_access.rs:41、src/mcp_access.rs:271"
 [component.sync.linux]
 state = "done"
 spec_hash = "6004de3b1d17"
-evidence = "GTK QA：--qa-mcp-readonly cancel/off/on，断言确认、取消、回读状态。"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读。"
 
 [component.sync.windows]
 state = "blocked"
@@ -104,7 +104,7 @@ source = "src/shell.rs:1271、src/mcp_access.rs:271"
 [component.sync.linux]
 state = "done"
 spec_hash = "1f895fe959f2"
-evidence = "GTK QA：--qa-mcp-indicator disabled/readonly/writable，读取可访问名称与文案。"
+evidence = "tests/ui/linux/test_06_mcp_access.py 验证四种状态指示的可访问名称。"
 
 [component.sync.windows]
 state = "blocked"

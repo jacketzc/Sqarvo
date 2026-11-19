@@ -91,7 +91,7 @@ source = "src/ui.rs:669"
 state = "done"
 spec_hash = "9e309bdc79d0"
 commit = "7436cd5"
-evidence = "隔离 GTK --qa-startup-workspace 加载迁移后的 2 个档案。"
+evidence = "GTK --qa-startup-workspace 加载 2 个迁移档案；tests/ui/linux/test_06_mcp_access.py 验证损坏时空树和错误态。"
 
 [component.sync.windows]
 state = "blocked"

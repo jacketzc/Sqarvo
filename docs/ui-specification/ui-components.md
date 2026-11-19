@@ -588,7 +588,7 @@ kind `container` · status `active` · parent `data_page`
 
 kind `area` · status `active`
 
-- 同步：Linux done（GTK QA：访问启用与关闭只读的确认框分别验证标题、档案数、取消及确认。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py：两个真实确认框的标题、档案数、取消及确认。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 ### `dialog.mcp_enable_confirm` 启用 MCP 数据访问确认
 
@@ -597,7 +597,7 @@ kind `control` · status `active` · parent `dialog`
 - 样式：槽位 `dialogs`
 - 无障碍：可访问名「启用 MCP 数据访问？」；Tab 默认落在取消，确认按钮紧随其后
 - 原生控件：gtk:AdwAlertDialog / winui:— / swift:—
-- 同步：Linux done（GTK QA：--qa-mcp-access cancel/on，断言标题与当前档案数及取消零写入。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认和取消。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -608,9 +608,9 @@ kind `control` · status `active` · parent `dialog`
 kind `control` · status `active` · parent `dialog`
 
 - 样式：槽位 `dialogs`
-- 无障碍：可访问名「关闭 MCP 只读？」；Tab 默认落在取消，确认按钮紧随其后
+- 无障碍：可访问名「关闭 MCP 只读模式？」；Tab 默认落在取消，确认按钮紧随其后
 - 原生控件：gtk:AdwAlertDialog / winui:— / swift:—
-- 同步：Linux done（GTK QA：--qa-mcp-readonly cancel/off，断言标题与当前档案数及取消零写入。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证风险提示和取消。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -734,7 +734,7 @@ kind `control` · status `active` · parent `dialogs.connection.fields`
 
 - 样式：槽位 `dialogs`；尺寸 `font_ui`、`secondary_min_height`
 - 无障碍：可访问名「别名（可选）」；Tab 驱动下拉之后、主机之前
-- 同步：Linux done（config 单测验证 SaveProfile 保留 UUID、修订、显示名及连接属性。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证编辑别名与档案修订。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
 - 实现备注：用作对象树连接行显示名及共享档案的名称；留空时对象树显示连接目标。编辑保留档案 UUID，修改名称不会创建新档案。迁移时旧档案有别名则沿用，缺失则使用原有名称。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -899,7 +899,7 @@ kind `control` · status `active` · parent `dialogs.connection.actions`
 
 - 样式：槽位 `dialogs`；尺寸 `fs_action_min_height`、`min_target`；颜色 `sqarvo_brand_deep`、`sqarvo_brand_on_deep`
 - 无障碍：可访问名「保存并连接（新建）/ 保存（编辑）」
-- 同步：Linux done（隔离 GTK --qa-profile --qa-action save 进入 Workspace，并通过共享文件断言 UUID 和 revision。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 同步：Linux done（GTK --qa-profile --qa-action save 验证新建；tests/ui/linux/test_06_mcp_access.py 验证编辑、UUID 与 revision。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
 - 实现备注：建议动作：实底用品牌深档 + 深档前景（与工具条「连接」同一条 token），hover / active 只叠半透明，不退回系统强调色。两种入口两种语义：新建 = 保存并立即连接；编辑 = **只保存**（写配置与凭据，不建会话、不重连），下次连接时生效。档案由 SaveProfile 写入，密码保存在系统凭据库；档案仅保存凭据引用。新建保存成功即建立会话并关闭对话框，落到工作区；编辑保存成功只关闭对话框并刷新树上那一行；保存失败则对话框留着、状态行给原因。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1323,7 +1323,7 @@ kind `container` · status `active` · parent `object_tree`
 - 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`badge_min_height`
 - 无障碍：可访问名「对象树」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkListView / winui:TreeView / swift:—
-- 同步：Linux done（隔离 GTK --qa-startup-workspace 加载迁移后的 2 个档案。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
+- 同步：Linux done（GTK --qa-startup-workspace 加载 2 个迁移档案；tests/ui/linux/test_06_mcp_access.py 验证损坏时空树和错误态。）；Windows blocked（本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。）；macOS na（macOS 已保存连接前端未接入。）
 - 实现备注：GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。折叠后重新展开复用已读内容、不发请求。层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（后端握手后由 ListProfiles 异步填充，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -3030,7 +3030,7 @@ kind `item` · status `active` · parent `tabs.close_dialog`
 
 kind `area` · status `active`
 
-- 同步：Linux done（GTK QA：--qa-mcp-access / --qa-mcp-readonly / --qa-mcp-indicator，共 33 条交互断言。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py 和 GTK --qa-mcp-* 验证真实交互。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 ### `workspace.manage.menu.mcp_access` MCP 数据访问
 
@@ -3039,7 +3039,7 @@ kind `item` · status `active` · parent `workspace`
 - 样式：槽位 `menubar`
 - 无障碍：可访问名「MCP 数据访问」；Tab 视图子菜单中，语言之后
 - 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
-- 同步：Linux done（GTK QA：--qa-mcp-access cancel/on/off，断言菜单状态、取消时 revision 不变、关闭恢复安全默认值。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证菜单动作、revision 与安全默认值。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -3052,7 +3052,7 @@ kind `item` · status `active` · parent `workspace`
 - 样式：槽位 `menubar`
 - 无障碍：可访问名「MCP 只读」；Tab 视图子菜单中，MCP 数据访问之后
 - 原生控件：gtk:GMenu + GSimpleAction / winui:— / swift:—
-- 同步：Linux done（GTK QA：--qa-mcp-readonly cancel/off/on，断言确认、取消、回读状态。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -3065,7 +3065,7 @@ kind `control` · status `active` · parent `workspace`
 - 样式：槽位 `status_bar.row2`
 - 无障碍：可访问名「根据策略读取结果显示的状态文本」；Tab 状态文本不进入 Tab 顺序
 - 原生控件：gtk:GtkLabel / winui:— / swift:—
-- 同步：Linux done（GTK QA：--qa-mcp-indicator disabled/readonly/writable，读取可访问名称与文案。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
+- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py 验证四种状态指示的可访问名称。）；Windows blocked（Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。）；macOS na（macOS 前端尚未接入共享档案及 MCP 策略。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|

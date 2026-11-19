@@ -103,8 +103,8 @@ class UiInstance:
         self.proc = None
         self.app = None
 
-    def start(self, autoconnect=False):
-        args = [str(BIN)]
+    def start(self, autoconnect=False, *, extra_args=()):
+        args = [str(BIN), *extra_args]
         if autoconnect:
             self.profile = self.home / "profile.json"
             self.profile.write_text(json.dumps(

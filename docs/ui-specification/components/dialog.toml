@@ -14,7 +14,7 @@ status = "active"
 [component.sync.linux]
 state = "done"
 spec_hash = "2e0ea2453e57"
-evidence = "GTK QA：访问启用与关闭只读的确认框分别验证标题、档案数、取消及确认。"
+evidence = "tests/ui/linux/test_06_mcp_access.py：两个真实确认框的标题、档案数、取消及确认。"
 
 [component.sync.windows]
 state = "blocked"
@@ -44,7 +44,7 @@ source = "src/mcp_access.rs:226"
 [component.sync.linux]
 state = "done"
 spec_hash = "7f4f049c0500"
-evidence = "GTK QA：--qa-mcp-access cancel/on，断言标题与当前档案数及取消零写入。"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认和取消。"
 
 [component.sync.windows]
 state = "blocked"
@@ -62,7 +62,7 @@ kind = "control"
 status = "active"
 style.slot = "dialogs"
 native_control = "gtk:AdwAlertDialog / winui:— / swift:—"
-a11y.name = "关闭 MCP 只读？"
+a11y.name = "关闭 MCP 只读模式？"
 a11y.tab = "默认落在取消，确认按钮紧随其后"
 
 [[component.interaction]]
@@ -73,8 +73,8 @@ source = "src/mcp_access.rs:226"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d98c9a2768a6"
-evidence = "GTK QA：--qa-mcp-readonly cancel/off，断言标题与当前档案数及取消零写入。"
+spec_hash = "546402a5c974"
+evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证风险提示和取消。"
 
 [component.sync.windows]
 state = "blocked"
