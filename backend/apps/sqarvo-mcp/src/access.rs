@@ -44,6 +44,7 @@ use sqarvo_query_engine::QueryRegistry;
 use tokio::sync::{
     Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedSemaphorePermit, RwLock, Semaphore,
 };
+use tokio_util::sync::CancellationToken;
 
 use uuid::Uuid;
 
@@ -354,6 +355,14 @@ pub struct AccessService {
     write_lifecycle: Arc<RwLock<()>>,
 }
 
+fn write_cancelled() -> Error {
+    Error::new(
+        ErrorCode::QUERY_CANCELLED,
+        ErrorCategory::Cancelled,
+        "客户端取消了写入请求",
+    )
+}
+
 impl AccessService {
     /// 生产装配：内置驱动注册表 + 操作系统凭据存储。
     ///
@@ -575,6 +584,23 @@ impl AccessService {
         F: FnOnce(SessionHandle) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T>> + Send + 'static,
     {
+        self.run_write_cancellable(alias, operation, &CancellationToken::new(), execute)
+            .await
+    }
+
+    /// Run a write or preview with cancellable, time-bounded connection initialization.
+    pub async fn run_write_cancellable<T, F, Fut>(
+        &self,
+        alias: &str,
+        operation: OperationType,
+        cancelled: &CancellationToken,
+        execute: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(SessionHandle) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
         if operation == OperationType::Read {
             return Err(Error::internal("写入会话需要 DML 操作类型"));
         }
@@ -596,8 +622,16 @@ impl AccessService {
             ));
         }
         let profile_id = profile.profile_id.to_string();
-        let lifecycle = self.write_lifecycle.clone().read_owned().await;
-        let permit = self.acquire_permit().await?;
+        let (lifecycle, permit) = tokio::select! {
+            biased;
+            () = cancelled.cancelled() => return Err(write_cancelled()),
+            permits = async {
+                let lifecycle = self.write_lifecycle.clone().read_owned().await;
+                Ok::<_, Error>((lifecycle, self.acquire_permit().await?))
+            } => permits?,
+        };
+        let cancelled = cancelled.clone();
+        let timeout = self.limits().query_timeout;
         let guard = Arc::clone(&self.guard);
         let sessions = Arc::clone(&self.sessions);
         tokio::spawn(async move {
@@ -608,7 +642,17 @@ impl AccessService {
                 .await?
                 .profile
                 .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
-            let summary = sessions.connect(profile_id.clone(), profile.params).await?;
+            let summary = tokio::select! {
+                biased;
+                () = cancelled.cancelled() => return Err(write_cancelled()),
+                result = tokio::time::timeout(timeout, sessions.connect(profile_id.clone(), profile.params)) => {
+                    result.map_err(|_| Error::new(
+                        ErrorCode::MCP_QUERY_TIMEOUT,
+                        ErrorCategory::Timeout,
+                        "写入会话初始化超时",
+                    ))??
+                }
+            };
             let handle = sessions.acquire(&summary.session_id).await;
             let result = match &handle {
                 Ok(handle) => match guard.authorize_request(operation, Some(profile_id)).await {

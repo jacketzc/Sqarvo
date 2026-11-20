@@ -772,3 +772,122 @@ async fn terminal_response_loss_evicts_disposable_write_session() {
         assert_eq!(service.queries().active(), 0);
     }
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One ordered fixture verifies timeout, cancellation, and reuse of its only permit.
+async fn startup_stall_or_cancellation_releases_disposable_write_session() {
+    use serde_json::json;
+    use sqarvo_local_store::McpAccessPolicy;
+    use sqarvo_mcp::policy::write::WritePlan;
+    use sqarvo_mcp::tools::write_transaction::{TransactionOutcome, execute};
+    use tokio_util::sync::CancellationToken;
+
+    let Ok(url) = std::env::var("SQARVO_MCP_MARIADB_STARTUP_FIXTURE") else {
+        return;
+    };
+    let log = std::env::var("SQARVO_MCP_MARIADB_STARTUP_LOG").expect("proxy log path");
+    let target = parse_dsn(&url);
+    assert_eq!(target.host, "127.0.0.1");
+    assert_eq!(target.database, "sqarvo_mcp_write_fixture");
+    let fixture = access(&target, None);
+    let profile = fixture.store.list().unwrap().pop().unwrap();
+    let config = sqarvo_mcp::config::parse(
+        &json!({
+            "mariadb_write_profiles": {profile.profile_id.to_string(): profile.revision},
+            "query_limits": {"timeout_ms": 750, "max_concurrency": 1}
+        })
+        .to_string(),
+    )
+    .unwrap()
+    .validate()
+    .unwrap();
+    let service = AccessService::with_session_manager(
+        Arc::new(config),
+        Arc::clone(fixture.session_manager()),
+        fixture.store.clone(),
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+
+    for (case, action) in [(1, "INIT"), (2, "BEGIN"), (3, "BEGIN")] {
+        let plan = WritePlan::decode(json!({
+            "operation":"insert", "connection_alias":"maria", "database":"sqarvo_mcp_write_fixture",
+            "table":"orders", "rows":[{"id":9970 + case}]
+        }), None).unwrap();
+        let queries = Arc::clone(service.queries());
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let timeout = service.limits().query_timeout;
+        let request = service.run_write_cancellable(
+            "maria",
+            plan.action.operation(),
+            &token,
+            move |handle| async move {
+                match execute(
+                    &handle,
+                    &queries,
+                    &plan,
+                    timeout,
+                    worker_token.cancelled(),
+                    async |_, _, _| {
+                        panic!("DML preflight must not run without BEGIN acknowledgment")
+                    },
+                    async |_| panic!("commit preparation must not run"),
+                )
+                .await
+                {
+                    TransactionOutcome::NotStarted(error) => Err::<(), _>(error),
+                    _ => panic!("DML must not start"),
+                }
+            },
+        );
+        let stop_after_forwarding = async {
+            if case == 3 {
+                let marker = format!("case {case}: withheld {action} reply packet");
+                while !std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains(&marker)
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                token.cancel();
+            }
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(request, stop_after_forwarding)
+        })
+        .await
+        .expect("initialization or BEGIN must be bounded");
+        let code = if case == 3 {
+            ErrorCode::QUERY_CANCELLED
+        } else {
+            ErrorCode::MCP_QUERY_TIMEOUT
+        };
+        assert_eq!(result.unwrap_err().code(), code);
+        assert_eq!(service.session_manager().active_count().await, 0);
+        assert_eq!(service.queries().active(), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), service.acquire_permit())
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        let marker = format!("case {case}: closed socket after {action}");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains(&marker)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("physical connection must close");
+    }
+}

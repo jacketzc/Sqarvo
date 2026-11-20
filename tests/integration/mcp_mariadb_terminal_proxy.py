@@ -6,6 +6,7 @@ Only the terminal command names and connection closure are logged.
 
 import asyncio
 import contextlib
+import sys
 
 async def packet(reader):
     header = await reader.readexactly(4)
@@ -13,9 +14,14 @@ async def packet(reader):
     return header, payload
 
 rollback_count = 0
+connection_count = 0
+startup_mode = sys.argv[1:] == ["--startup"]
 
 
 async def relay(incoming, client):
+    global connection_count
+    connection_count += 1
+    case = connection_count
     downstream, upstream = await asyncio.open_connection('127.0.0.1', 53387)
     held = None
 
@@ -23,7 +29,13 @@ async def relay(incoming, client):
         nonlocal held
         while True:
             header, payload = await packet(incoming)
-            if payload in (b'\x03COMMIT', b'\x03ROLLBACK'):
+            if startup_mode:
+                command = (b'\x03SELECT @@transaction_isolation' if case == 1
+                           else b'\x03START TRANSACTION')
+                if payload == command:
+                    held = 'INIT' if case == 1 else 'BEGIN'
+                    print(f'case {case}: forwarded {held}', flush=True)
+            elif payload in (b'\x03COMMIT', b'\x03ROLLBACK'):
                 held = payload[1:].decode()
                 print(f'forwarded {held}', flush=True)
             upstream.write(header + payload)
@@ -37,6 +49,9 @@ async def relay(incoming, client):
                 client.write(header + payload)
                 await client.drain()
             else:
+                if startup_mode:
+                    print(f'case {case}: withheld {held} reply packet', flush=True)
+                    continue
                 assert payload[0] == 0, f'{held} did not receive server OK'
                 print(f'withheld {held} server OK', flush=True)
                 if held == 'ROLLBACK':
@@ -56,7 +71,8 @@ async def relay(incoming, client):
         with contextlib.suppress(asyncio.IncompleteReadError, ConnectionResetError):
             job.result()
     if held:
-        print(f'closed socket after {held}', flush=True)
+        prefix = f'case {case}: ' if startup_mode else ''
+        print(f'{prefix}closed socket after {held}', flush=True)
     upstream.close()
     client.close()
 

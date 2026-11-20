@@ -4,7 +4,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result};
-use sqarvo_connection::SessionHandle;
+use sqarvo_connection::{SessionHandle, TransactionStatus};
 use sqarvo_driver_api::{IsolationLevel, ParameterizedExecuteRequest, TransactionOptions};
 use sqarvo_query_engine::QueryRegistry;
 use tokio::time::Instant;
@@ -16,7 +16,7 @@ pub(crate) const TERMINAL_BUDGET: Duration = Duration::from_secs(5);
 
 /// Outcome retained for write audit and response handling.
 pub enum TransactionOutcome {
-    /// The transaction never started.
+    /// DML was never dispatched, even if BEGIN was sent.
     NotStarted(Error),
     /// The database acknowledged commit; the value is the direct DML count.
     Committed(u64),
@@ -60,16 +60,7 @@ pub async fn execute(
         Err(error) => return TransactionOutcome::NotStarted(error),
     };
     tokio::pin!(cancelled);
-    if Instant::now() >= deadline {
-        return TransactionOutcome::NotStarted(timeout_error());
-    }
-    let transaction = match handle
-        .begin_transaction(TransactionOptions {
-            isolation: IsolationLevel::Serializable,
-            read_only: false,
-        })
-        .await
-    {
+    let transaction = match begin(handle, false, deadline, &mut cancelled).await {
         Ok(transaction) => transaction.transaction_id,
         Err(error) => return TransactionOutcome::NotStarted(error),
     };
@@ -174,6 +165,26 @@ pub async fn execute(
             }
         }
     }
+}
+
+/// Begin a transaction without letting an unacknowledged BEGIN proceed to DML.
+pub(super) async fn begin(
+    handle: &SessionHandle,
+    read_only: bool,
+    deadline: Instant,
+    cancelled: impl Future<Output = ()>,
+) -> Result<TransactionStatus> {
+    let error = tokio::select! {
+        biased;
+        () = cancelled => cancelled_error(),
+        () = tokio::time::sleep_until(deadline) => timeout_error(),
+        result = handle.begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Serializable,
+            read_only,
+        }) => return result,
+    };
+    handle.abort_isolated().await;
+    Err(error)
 }
 
 // Dropping the response future does not stop a driver actor that received the command.

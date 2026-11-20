@@ -1,6 +1,6 @@
 //! MCP protocol adapter for bounded writes and read-only preview.
 
-use std::future::{Future, pending};
+use std::future::pending;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,7 +11,7 @@ use rmcp::service::RequestContext;
 use serde_json::{Map, Value, json};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result};
 use sqarvo_connection::SessionHandle;
-use sqarvo_driver_api::{IsolationLevel, TransactionOptions};
+use tokio_util::sync::CancellationToken;
 
 use crate::access::{AccessService, OperationType};
 use crate::audit::{AuditRecord, AuditWriter, WriteAudit, WritePhase};
@@ -135,6 +135,7 @@ pub(crate) async fn call(
     };
     record = record.with_target(Some(&alias), Some(&plan.database));
     let token = context.ct.child_token();
+    let cancellation = token.clone();
     let _cancel_on_drop = token.clone().drop_guard();
     let http_lifetime = context
         .extensions
@@ -159,10 +160,27 @@ pub(crate) async fn call(
         request_id,
         started,
     };
-    if expected.is_none() {
-        preview(access, plan, call, !profile_access.read_only(), cancelled).await
-    } else {
-        execute_write(access, plan, call, cancelled).await
+    let response = async {
+        if expected.is_none() {
+            preview(
+                access,
+                plan,
+                call,
+                !profile_access.read_only(),
+                &cancellation,
+            )
+            .await
+        } else {
+            execute_write(access, plan, call, &cancellation).await
+        }
+    };
+    tokio::pin!(response);
+    tokio::select! {
+        result = &mut response => result,
+        () = cancelled => {
+            cancellation.cancel();
+            response.await
+        }
     }
 }
 
@@ -180,7 +198,7 @@ async fn preview(
     plan: WritePlan,
     call: WriteCall,
     authorized: bool,
-    cancelled: impl Future<Output = ()> + Send + 'static,
+    cancelled: &CancellationToken,
 ) -> Response {
     let WriteCall {
         audit,
@@ -196,21 +214,19 @@ async fn preview(
     let summary = preview_summary(&plan.action);
     let row_limit = plan.action.max_rows();
     let inspection = if authorized {
+        let token = cancelled.clone();
         access
-            .run_write(&alias, op, move |handle| async move {
-                let tx = handle
-                    .begin_transaction(TransactionOptions {
-                        isolation: IsolationLevel::Serializable,
-                        read_only: true,
-                    })
-                    .await?;
+            .run_write_cancellable(&alias, op, cancelled, move |handle| async move {
+                let deadline = tokio::time::Instant::now() + timeout;
+                let tx =
+                    write_transaction::begin(&handle, true, deadline, token.cancelled()).await?;
                 let query_id = QueryId::new();
                 let result = tokio::select! {
                     biased;
-                    () = cancelled => Err(Error::new(
+                    () = token.cancelled() => Err(Error::new(
                         ErrorCode::QUERY_CANCELLED, ErrorCategory::Cancelled, "客户端取消了预览",
                     )),
-                    () = tokio::time::sleep(timeout) => Err(Error::new(
+                    () = tokio::time::sleep_until(deadline) => Err(Error::new(
                         ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "写入预览超时",
                     )),
                     result = inspect(&handle, &plan, query_id) => result,
@@ -318,7 +334,7 @@ async fn execute_write(
     access: &AccessService,
     plan: WritePlan,
     call: WriteCall,
-    cancelled: impl Future<Output = ()> + Send + 'static,
+    cancelled: &CancellationToken,
 ) -> Response {
     let WriteCall {
         audit,
@@ -349,14 +365,15 @@ async fn execute_write(
     let owner_audit = audit.clone();
     let owner_record = record.clone();
     let owner_table = table.clone();
+    let token = cancelled.clone();
     let result = access
-        .run_write(&alias, op, move |handle| async move {
+        .run_write_cancellable(&alias, op, cancelled, move |handle| async move {
             let outcome = write_transaction::execute(
                 &handle,
                 &queries,
                 &plan,
                 timeout,
-                cancelled,
+                token.cancelled(),
                 async |handle, plan, query_id| {
                     inspect(handle, plan, query_id)
                         .await?

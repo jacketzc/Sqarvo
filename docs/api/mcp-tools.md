@@ -768,7 +768,9 @@ sqarvo-mcp http-auth launch codex --port 8765
 支持 null、布尔值、64 位整数、有限浮点数和文本。绑定失败会返回错误。拒绝整表
 UPDATE / DELETE、DDL、TRUNCATE、任意 SQL、原始 WHERE、函数表达式及不能验证
 副作用范围的表。参数上限 128 KiB，HTTP 的整个请求也受同样大小的外层限制。
-DML、预检和提交前审计共用最长 10 秒的执行预算。事务终结和连接清理各有 5 秒的等待预算。单次调用使用
+一次性连接初始化有独立的最长 10 秒等待预算。BEGIN、预检、DML 和提交前审计
+共用另一个最长 10 秒的执行预算。初始化及 BEGIN 均响应请求取消。BEGIN 未获确认
+时停止后续 DML，并清理一次性连接。事务终结和连接清理各有 5 秒的等待预算。单次调用使用
 独立事务。MariaDB 终结应答超时会终止一次性物理连接。SQLite 锁等待受驱动的
 5 秒 busy timeout 约束，底层文件 I/O 的阻塞可能延迟物理关闭。
 
@@ -847,3 +849,9 @@ FROM sqarvo_guard.approved_target AS a;
 代理应显示 COMMIT 和两次 ROLLBACK 收到 OK。前两次扣留应答直到客户端关闭连接，
 最后一次在转发应答前断开连接。直接查夹具，
 应仅看到已提交的 9901。重复测试前清除该合成记录。
+
+初始化与 BEGIN 的故障注入使用同一代理的 `--startup` 模式。将代理 stdout 重定向
+到隔离日志，并把路径设为 `SQARVO_MCP_MARIADB_STARTUP_LOG`。设置
+`SQARVO_MCP_MARIADB_STARTUP_FIXTURE` 指向代理后，执行
+`cargo test --locked -p sqarvo-mcp --test tools_mariadb startup_stall_or_cancellation_releases_disposable_write_session`。
+该用例验证初始化应答停滞、BEGIN 应答停滞及 BEGIN 等待中取消。
