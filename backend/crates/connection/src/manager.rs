@@ -114,7 +114,7 @@ impl Session {
             .is_some_and(|open| open.id() == *transaction_id)
     }
 
-    fn handle(self: &Arc<Self>) -> SessionHandle {
+    fn handle(&self) -> SessionHandle {
         SessionHandle {
             summary: self.summary.clone(),
             session: Arc::clone(&self.driver),
@@ -859,8 +859,36 @@ impl SessionManager {
         display_name: impl Into<String>,
         params: ConnectionParams,
     ) -> Result<SessionSummary> {
+        let entry = Arc::new(self.open_session(display_name.into(), params).await?);
+        let summary = entry.summary.clone();
+        self.sessions
+            .write()
+            .await
+            .insert(summary.connection_id, entry);
+        Ok(summary)
+    }
+
+    /// Open a dedicated connection owned exclusively by the caller.
+    ///
+    /// The handle is not available through the shared session table. The owner must close
+    /// it and resolve its transactions, including during shutdown.
+    pub async fn connect_isolated(
+        &self,
+        display_name: impl Into<String>,
+        params: ConnectionParams,
+    ) -> Result<SessionHandle> {
+        Ok(self
+            .open_session(display_name.into(), params)
+            .await?
+            .handle())
+    }
+
+    async fn open_session(
+        &self,
+        display_name: String,
+        params: ConnectionParams,
+    ) -> Result<Session> {
         params.validate()?;
-        let display_name = display_name.into();
         if display_name.trim().is_empty() {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
@@ -884,17 +912,12 @@ impl SessionManager {
             transaction: None,
         };
 
-        let entry = Arc::new(Session {
-            summary: summary.clone(),
+        Ok(Session {
+            summary,
             driver: Arc::from(session),
             execution: Arc::new(Mutex::new(())),
             transaction: Arc::new(StdMutex::new(None)),
-        });
-        self.sessions
-            .write()
-            .await
-            .insert(summary.connection_id, entry);
-        Ok(summary)
+        })
     }
 
     /// 断开并释放会话，返回被关闭会话的摘要。
@@ -925,7 +948,7 @@ impl SessionManager {
         sessions
             .values()
             .find(|session| session.summary.session_id == *session_id)
-            .map(Session::handle)
+            .map(|session| session.handle())
             .ok_or_else(|| {
                 Error::not_found(
                     ErrorCode::SESSION_NOT_FOUND,
@@ -1061,7 +1084,7 @@ impl SessionManager {
         sessions
             .values()
             .find(|session| session.holds_transaction(transaction_id))
-            .map(Session::handle)
+            .map(|session| session.handle())
     }
 
     /// 解析 `credential_ref` 为 [`Secret`]（ADR 0012 / 0015）。

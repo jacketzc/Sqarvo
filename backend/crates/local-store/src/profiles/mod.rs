@@ -285,8 +285,14 @@ impl ProfileStore {
 
     /// 在共享锁下读取并校验完整文档。
     pub fn snapshot(&self) -> Result<ProfileDocument> {
-        let _lock = files::lock(&self.config_dir, LockMode::Shared)?;
-        self.load()
+        self.locked_snapshot().map(|(document, _lock)| document)
+    }
+
+    /// Read the document and retain the shared lock until the returned guard is dropped.
+    /// Use for bounded operations that must be ordered with cross-process policy edits.
+    pub fn locked_snapshot(&self) -> Result<(ProfileDocument, impl Send + use<>)> {
+        let lock = files::lock(&self.config_dir, LockMode::Shared)?;
+        Ok((self.load()?, lock))
     }
 
     /// 列出当前档案。

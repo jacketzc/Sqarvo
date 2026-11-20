@@ -216,6 +216,10 @@ pub struct AuthorizedContext {
 }
 
 impl AuthorizedContext {
+    pub(crate) const fn document(&self) -> &ProfileDocument {
+        &self.document
+    }
+
     pub(crate) const fn read_only(&self) -> bool {
         self.document.mcp.read_only
     }
@@ -291,6 +295,28 @@ impl AccessGuard {
             ));
         }
         Ok(AuthorizedContext { document, profile })
+    }
+
+    pub(crate) async fn transaction_profile(
+        &self,
+        alias: String,
+    ) -> Result<(ConnectionProfile, u64)> {
+        let authorized = self
+            .authorize_request(OperationType::Insert, Some(alias))
+            .await?;
+        let profile = authorized
+            .profile
+            .ok_or_else(|| Error::internal("缺少写入档案"))?;
+        Ok((profile, authorized.document.revision))
+    }
+
+    pub(crate) async fn transaction_snapshot(
+        &self,
+    ) -> Result<(ProfileDocument, impl Send + use<>)> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.locked_snapshot())
+            .await
+            .map_err(|_| Error::internal("MCP 策略读取任务失败"))?
     }
 
     async fn revoke_stale(&self, document: Option<&ProfileDocument>) {
@@ -588,6 +614,24 @@ impl AccessService {
             .await
     }
 
+    pub(crate) fn require_write_profile(&self, profile: &ConnectionProfile) -> Result<()> {
+        if profile.params.driver_id.as_str() == "mariadb"
+            && !self
+                .config
+                .allows_mariadb_write(profile.profile_id, profile.revision)
+        {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该 MariaDB 档案未配置 DBA 写入资格",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sessions(&self) -> &Arc<SessionManager> {
+        &self.sessions
+    }
+
     /// Run a write or preview with cancellable, time-bounded connection initialization.
     pub async fn run_write_cancellable<T, F, Fut>(
         &self,
@@ -611,16 +655,7 @@ impl AccessService {
         let profile = authorized
             .profile
             .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
-        if profile.params.driver_id.as_str() == "mariadb"
-            && !self
-                .config
-                .allows_mariadb_write(profile.profile_id, profile.revision)
-        {
-            return Err(Error::unsupported(
-                ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该 MariaDB 档案未配置 DBA 写入资格",
-            ));
-        }
+        self.require_write_profile(&profile)?;
         let profile_id = profile.profile_id.to_string();
         let (lifecycle, permit) = tokio::select! {
             biased;

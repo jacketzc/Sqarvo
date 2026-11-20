@@ -67,67 +67,17 @@ pub async fn execute(
 
     let mut affected = None;
     let result = async {
-        let query_id = queries.register(handle.summary().session_id)?;
-        let expected = tokio::select! {
-            biased;
-            () = &mut cancelled => Err(cancelled_error()),
-            () = tokio::time::sleep_until(deadline) => Err(timeout_error()),
-            result = preflight(handle, plan, query_id) => result,
-        };
-        let _ = queries.complete(&query_id);
-        let expected = match expected {
-            Ok(expected) => expected,
-            Err(error) => {
-                finish(handle, handle.cancel(&query_id), TERMINAL_BUDGET).await;
-                return Err(error);
-            }
-        };
-        let query_id = queries.register(handle.summary().session_id)?;
-        let exec = handle.execute_parameterized(ParameterizedExecuteRequest {
-            query_id,
-            sql,
-            params,
-            max_rows: None,
-            timeout: None,
-        });
-        tokio::pin!(exec);
-        let result = tokio::select! {
-            biased;
-            () = &mut cancelled => Err(cancelled_error()),
-            () = tokio::time::sleep_until(deadline) => Err(timeout_error()),
-            result = &mut exec => Ok(result),
-        };
-        let _ = queries.complete(&query_id);
-        let start = match result {
-            Ok(result) => result?,
-            Err(error) => {
-                finish(handle, handle.cancel(&query_id), TERMINAL_BUDGET).await;
-                return Err(error);
-            }
-        };
-        let [statement] = start.statements.as_slice() else {
-            return Err(Error::internal("驱动没有返回单条写入摘要"));
-        };
-        if statement.has_result_set {
-            let _ = handle.close_query(&query_id).await;
-            return Err(Error::internal("写入意外返回了结果集"));
-        }
-        let count = statement
-            .rows_affected
-            .ok_or_else(|| Error::internal("驱动没有返回受影响行数"))?;
-        affected = Some(count);
-        if count > plan.action.max_rows() as u64 {
-            return Err(Error::resource_exhausted(
-                ErrorCode::MCP_INVALID_ARGUMENT,
-                "实际影响行数超出写入限额",
-            ));
-        }
-        if expected.is_some_and(|expected| expected != count) {
-            return Err(Error::failed_precondition(
-                ErrorCode::MCP_INVALID_ARGUMENT,
-                "实际影响行数与事务内核对的范围不一致",
-            ));
-        }
+        let count = execute_statement(
+            handle,
+            queries,
+            plan,
+            (sql, params),
+            deadline,
+            cancelled.as_mut(),
+            preflight,
+            &mut affected,
+        )
+        .await?;
         tokio::select! {
             biased;
             () = &mut cancelled => Err(cancelled_error()),
@@ -167,6 +117,84 @@ pub async fn execute(
     }
 }
 
+/// Execute one checked statement inside an already open, exclusively owned transaction.
+#[allow(clippy::too_many_arguments)] // Keep the statement budget and driver context explicit.
+pub(super) async fn execute_statement(
+    handle: &SessionHandle,
+    queries: &QueryRegistry,
+    plan: &WritePlan,
+    statement: PreparedStatement,
+    deadline: Instant,
+    mut cancelled: std::pin::Pin<&mut impl Future<Output = ()>>,
+    preflight: impl AsyncFnOnce(&SessionHandle, &WritePlan, QueryId) -> Result<Option<u64>>,
+    affected: &mut Option<u64>,
+) -> Result<u64> {
+    let query_id = queries.register(handle.summary().session_id)?;
+    let expected = tokio::select! {
+        biased;
+        () = cancelled.as_mut() => Err(cancelled_error()),
+        () = tokio::time::sleep_until(deadline) => Err(timeout_error()),
+        result = preflight(handle, plan, query_id) => result,
+    };
+    let _ = queries.complete(&query_id);
+    let expected = match expected {
+        Ok(expected) => expected,
+        Err(error) => {
+            finish(handle, handle.cancel(&query_id), TERMINAL_BUDGET).await;
+            return Err(error);
+        }
+    };
+    let query_id = queries.register(handle.summary().session_id)?;
+    let exec = handle.execute_parameterized(ParameterizedExecuteRequest {
+        query_id,
+        sql: statement.0,
+        params: statement.1,
+        max_rows: None,
+        timeout: None,
+    });
+    tokio::pin!(exec);
+    let result = tokio::select! {
+        biased;
+        () = cancelled.as_mut() => Err(cancelled_error()),
+        () = tokio::time::sleep_until(deadline) => Err(timeout_error()),
+        result = &mut exec => Ok(result),
+    };
+    let _ = queries.complete(&query_id);
+    let start = match result {
+        Ok(result) => result?,
+        Err(error) => {
+            finish(handle, handle.cancel(&query_id), TERMINAL_BUDGET).await;
+            return Err(error);
+        }
+    };
+    let [statement] = start.statements.as_slice() else {
+        return Err(Error::internal("驱动没有返回单条写入摘要"));
+    };
+    if statement.has_result_set {
+        let _ = handle.close_query(&query_id).await;
+        return Err(Error::internal("写入意外返回了结果集"));
+    }
+    let count = statement
+        .rows_affected
+        .ok_or_else(|| Error::internal("驱动没有返回受影响行数"))?;
+    *affected = Some(count);
+    if count > plan.action.max_rows() as u64 {
+        return Err(Error::resource_exhausted(
+            ErrorCode::MCP_INVALID_ARGUMENT,
+            "实际影响行数超出写入限额",
+        ));
+    }
+    if expected.is_some_and(|expected| expected != count) {
+        return Err(Error::failed_precondition(
+            ErrorCode::MCP_INVALID_ARGUMENT,
+            "实际影响行数与事务内核对的范围不一致",
+        ));
+    }
+    Ok(count)
+}
+
+type PreparedStatement = (String, Vec<sqarvo_driver_api::Value>);
+
 /// Begin a transaction without letting an unacknowledged BEGIN proceed to DML.
 pub(super) async fn begin(
     handle: &SessionHandle,
@@ -202,10 +230,7 @@ pub(super) async fn finish(
     }
 }
 
-fn prepare(
-    handle: &SessionHandle,
-    plan: &WritePlan,
-) -> Result<(String, Vec<sqarvo_driver_api::Value>)> {
+pub(super) fn prepare(handle: &SessionHandle, plan: &WritePlan) -> Result<PreparedStatement> {
     let unsupported =
         || Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "驱动不支持受控写入");
     let dialect = match handle.summary().driver_id.as_str() {

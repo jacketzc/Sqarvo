@@ -416,6 +416,8 @@ struct LegacyMcp {
     _enabled_tools: Option<Vec<String>>,
     #[serde(rename = "query_limits")]
     _query_limits: Option<LegacyQueryLimits>,
+    #[serde(default, rename = "mariadb_write_profiles")]
+    _mariadb_write_profiles: BTreeMap<Uuid, u64>,
 }
 
 // V1 接受缺失或数组；显式 null 是格式错误。

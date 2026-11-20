@@ -427,3 +427,815 @@ async fn stdio_preview_connection_failure_is_audited_as_an_error() {
             && record["error_subcode"] == error_code
     }));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // One real stdio client drives each transaction through its terminal result.
+async fn explicit_transactions_over_stdio() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let config = common::write_config(home, &write_fixture(home).await);
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let mut id = 1;
+    let mut call = |tool: &str, args: Value, error: bool| {
+        id += 1;
+        let response = common::call_tool(&mut server, id, tool, args, None);
+        common::assert_call_result(&response, error)["structuredContent"].clone()
+    };
+    let begin = json!({"connection_alias": "dev", "database": "main"});
+    assert_eq!(
+        call("begin_transaction", begin.clone(), true)["error"]["code"],
+        "mcp.connection_denied"
+    );
+    common::enable_access(&config, home);
+    assert_eq!(
+        call("begin_transaction", begin.clone(), true)["error"]["code"],
+        "mcp.connection_denied"
+    );
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        call(
+            "begin_transaction",
+            json!({"connection_alias":"dev","database":"other"}),
+            true
+        )["error"]["code"],
+        "mcp.invalid_argument"
+    );
+
+    let tx = call("begin_transaction", begin.clone(), false)["transaction_id"].clone();
+    let target = json!({"transaction_id": tx});
+    let insert = |id| {
+        json!({
+            "transaction_id": tx, "operation_id": format!("insert-{id}"), "operation": "insert",
+            "table": "orders", "rows": [{"id": id, "note": "explicit private fixture"}],
+        })
+    };
+    let query = json!({
+        "connection_alias":"dev", "database":"", "sql":"SELECT id FROM orders ORDER BY id"
+    });
+    assert_eq!(
+        call("execute_in_transaction", insert(3), false)["affected_rows"],
+        1
+    );
+    call("execute_in_transaction", insert(3), true);
+    let mut foreign_database = insert(4);
+    foreign_database["database"] = json!("other");
+    call("execute_in_transaction", foreign_database, true);
+    assert_eq!(
+        call("execute_readonly_query", query.clone(), false)["rows"],
+        json!([[1], [2]])
+    );
+    let update = json!({
+        "transaction_id": tx, "operation_id": "update-3", "operation": "update",
+        "table": "orders", "changes": {"id": 4},
+        "conditions": [{"column":"id", "operator": "eq", "value": 3}]
+    });
+    assert_eq!(
+        call("execute_in_transaction", update, false)["accumulated_affected_rows"],
+        2
+    );
+    let delete = json!({
+        "transaction_id": tx, "operation_id": "delete-2", "operation": "delete",
+        "table": "orders", "conditions": [{"column":"id", "operator": "eq", "value": 2}]
+    });
+    assert_eq!(
+        call("execute_in_transaction", delete, false)["accumulated_affected_rows"],
+        3
+    );
+    assert_eq!(
+        call("commit_transaction", target.clone(), false)["state"],
+        "committed"
+    );
+    assert_eq!(
+        call("commit_transaction", target, true)["state"],
+        "committed"
+    );
+    assert_eq!(
+        call("execute_readonly_query", query.clone(), false)["rows"],
+        json!([[1], [4]])
+    );
+
+    let tx = call("begin_transaction", begin.clone(), false)["transaction_id"].clone();
+    let insert = |id| {
+        json!({
+            "transaction_id": tx, "operation_id": format!("insert-{id}"), "operation": "insert",
+            "table": "orders", "rows": [{"id": id, "note": "rolled back private fixture"}],
+        })
+    };
+    call("execute_in_transaction", insert(5), false);
+    call("execute_in_transaction", insert(6), false);
+    let failed = call(
+        "execute_in_transaction",
+        json!({
+            "transaction_id": tx, "operation_id": "duplicate-key", "operation": "insert",
+            "table": "orders", "rows": [{"id": 1, "note": "duplicate"}],
+        }),
+        true,
+    );
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(
+        call("commit_transaction", json!({"transaction_id": tx}), true)["state"],
+        "failed"
+    );
+    assert_eq!(
+        call("rollback_transaction", json!({"transaction_id": tx}), false)["state"],
+        "rolled_back"
+    );
+    assert_eq!(
+        call("execute_readonly_query", query.clone(), false)["rows"],
+        json!([[1], [4]])
+    );
+
+    let tx = call("begin_transaction", begin.clone(), false)["transaction_id"].clone();
+    assert!(
+        common::manage_access(&config, home, &["read-only", "on"])
+            .status
+            .success()
+    );
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        call("commit_transaction", json!({"transaction_id": tx}), true)["state"],
+        "rolled_back"
+    );
+
+    let mut expires = begin.clone();
+    expires["timeout_seconds"] = json!(1);
+    let tx = call("begin_transaction", expires, false)["transaction_id"].clone();
+    tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+    assert_eq!(
+        call("commit_transaction", json!({"transaction_id": tx}), true)["state"],
+        "rolled_back"
+    );
+
+    let tx = call("begin_transaction", begin, false)["transaction_id"].clone();
+    call(
+        "execute_in_transaction",
+        json!({
+            "transaction_id": tx, "operation_id": "eof", "operation": "insert",
+            "table": "orders", "rows": [{"id": 7, "note": "eof"}],
+        }),
+        false,
+    );
+    server.close_stdin();
+    let outcome = server.wait();
+    assert!(outcome.status.success());
+
+    let mut observer = common::Server::spawn(&config, home);
+    common::handshake(&mut observer, "2025-11-25", "2025-11-25", 1);
+    let reply = common::call_tool(&mut observer, 2, "execute_readonly_query", query, None);
+    assert_eq!(
+        common::assert_call_result(&reply, false)["structuredContent"]["rows"],
+        json!([[1], [4]])
+    );
+
+    let records = common::read_audit_records(&common::audit_dir(home));
+    for event in [
+        "transaction_begin",
+        "transaction_execute",
+        "transaction_commit",
+        "transaction_rollback",
+        "transaction_expired",
+        "transaction_cancelled",
+    ] {
+        assert!(
+            records.iter().any(|(_, record)| record["event"] == event),
+            "{event}"
+        );
+    }
+    assert!(
+        records
+            .iter()
+            .all(|(_, record)| !record.to_string().contains("private fixture"))
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[allow(clippy::too_many_lines)] // Verify real data and audit across all three proxied terminal cases.
+fn explicit_mariadb_transactions_and_lost_acknowledgements() {
+    use sqarvo_local_store::{AppPaths, ConnectionProfile, McpAccessPolicy, ProfileStore};
+    use std::time::Duration;
+
+    if std::env::var("SQARVO_MCP_V21_MARIADB_FIXTURE").as_deref() != Ok("1") {
+        eprintln!(
+            "requires an isolated MariaDB fixture on loopback 53387 and its terminal proxy on 53388"
+        );
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let paths = AppPaths::from_roots(
+        home.join("config/sqarvo"),
+        home.join("data/sqarvo"),
+        home.join("run"),
+    );
+    let store = ProfileStore::new(&paths);
+    let mut profiles = serde_json::Map::new();
+    for (name, port) in [("direct", 53387), ("proxy", 53388)] {
+        let profile: ConnectionProfile = serde_json::from_value(json!({
+            "profile_id":uuid::Uuid::nil(), "revision":0, "name":name, "driver_id":"mariadb",
+            "host":"127.0.0.1", "port":port, "database":"sqarvo_mcp_write_fixture",
+            "username":"mcp_v21_fixture", "tls":"disabled",
+        }))
+        .unwrap();
+        let saved = store.save(profile, None).unwrap();
+        profiles.insert(saved.profile_id.to_string(), json!(saved.revision));
+    }
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    let config = common::write_config(home, &json!({"mariadb_write_profiles":profiles}));
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let proxy_log = std::env::var_os("SQARVO_MCP_V21_MARIADB_PROXY_LOG")
+        .expect("set the log path of the running terminal proxy");
+    let forwarded = || {
+        std::fs::read_to_string(&proxy_log)
+            .unwrap()
+            .matches("forwarded COMMIT")
+            .count()
+    };
+    let mut id = 1;
+    let mut call = |server: &mut common::Server, tool: &str, args: Value, error: bool| {
+        id += 1;
+        let response = common::call_tool(server, id, tool, args, None);
+        common::assert_call_result(&response, error)["structuredContent"].clone()
+    };
+    for (alias, row, terminal, state) in [
+        ("direct", 9891, "commit_transaction", "committed"),
+        ("direct", 9892, "rollback_transaction", "rolled_back"),
+        ("proxy", 9901, "commit_transaction", "commit_unknown"),
+        (
+            "proxy",
+            9902,
+            "rollback_transaction",
+            "rollback_unconfirmed",
+        ),
+        (
+            "proxy",
+            9903,
+            "rollback_transaction",
+            "rollback_unconfirmed",
+        ),
+    ] {
+        let open = call(
+            &mut server,
+            "begin_transaction",
+            json!({
+                "connection_alias":alias,"database":"sqarvo_mcp_write_fixture",
+            }),
+            false,
+        );
+        let tx = open["transaction_id"].clone();
+        for (operation, args) in [
+            ("insert", json!({"rows":[{"id":row,"note":"v21-probe"}]})),
+            (
+                "update",
+                json!({"changes":{"note":"v21-final"},
+                "conditions":[{"column":"id","operator":"eq","value":row}]}),
+            ),
+        ] {
+            let mut args = args.as_object().unwrap().clone();
+            args.extend([
+                ("transaction_id".into(), tx.clone()),
+                ("operation_id".into(), json!(operation)),
+                ("operation".into(), json!(operation)),
+                ("table".into(), json!("orders")),
+            ]);
+            assert_eq!(
+                call(
+                    &mut server,
+                    "execute_in_transaction",
+                    Value::Object(args),
+                    false
+                )["affected_rows"],
+                1
+            );
+        }
+        let args = json!({"transaction_id":tx});
+        let ended = if row == 9901 {
+            let previous = forwarded();
+            server.send(&json!({
+                "jsonrpc":"2.0","id":700,"method":"tools/call",
+                "params":{"name":terminal,"arguments":args},
+            }));
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            while forwarded() == previous {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "proxy must receive COMMIT"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let revoke = store
+                .set_mcp_access(McpAccessPolicy {
+                    enabled: true,
+                    read_only: true,
+                })
+                .unwrap_err();
+            assert_eq!(revoke.code(), sqarvo_common::ErrorCode::PROFILE_LOCKED);
+            let reply = server.next_message();
+            assert_eq!(reply["id"], 700);
+            common::assert_call_result(&reply, true)["structuredContent"].clone()
+        } else {
+            call(&mut server, terminal, args.clone(), alias == "proxy")
+        };
+        assert_eq!(ended["state"], state);
+        let repeat = call(&mut server, terminal, args, true);
+        assert_eq!(repeat["state"], state);
+        assert_eq!(repeat["error"]["retryable"], false);
+    }
+    let state = call(
+        &mut server,
+        "execute_readonly_query",
+        json!({
+            "connection_alias":"direct","database":"sqarvo_mcp_write_fixture",
+            "sql":"SELECT id, note FROM orders WHERE id BETWEEN 9891 AND 9903 ORDER BY id"
+        }),
+        false,
+    );
+    assert_eq!(
+        state["rows"],
+        json!([[9891, "v21-final"], [9901, "v21-final"]])
+    );
+    server.close_stdin();
+    let outcome = server.wait();
+    assert!(outcome.status.success(), "{}", outcome.stderr);
+    let records = common::read_audit_records(&common::audit_dir(home));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(_, value)| value["event"] == "transaction_commit_unknown")
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(_, value)| value["event"] == "transaction_rollback_unconfirmed")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // Exercise limits and observable cleanup using one real SQLite fixture.
+async fn explicit_sqlite_limits_busy_and_audit_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let config = common::write_config(home, &write_fixture(home).await);
+    common::enable_access(&config, home);
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    let mut primary = common::Server::spawn(&config, home);
+    let mut observer = common::Server::spawn(&config, home);
+    common::handshake(&mut primary, "2025-11-25", "2025-11-25", 1);
+    common::handshake(&mut observer, "2025-11-25", "2025-11-25", 1);
+    let mut id = 1;
+    let mut call = |tool: &str, args: Value, error: bool| {
+        id += 1;
+        let response = common::call_tool(&mut primary, id, tool, args, None);
+        common::assert_call_result(&response, error)["structuredContent"].clone()
+    };
+    let begin = json!({"connection_alias":"dev","database":"main"});
+    let tx = call("begin_transaction", begin.clone(), false)["transaction_id"].clone();
+    let busy = common::call_tool(&mut observer, 2, "begin_transaction", begin.clone(), None);
+    assert_eq!(
+        common::assert_call_result(&busy, true)["structuredContent"]["error"]["code"],
+        "sqlite.busy"
+    );
+    for (start, end, rejected) in [(10, 110, false), (110, 210, false), (210, 211, true)] {
+        let rows = (start..end)
+            .map(|id| json!({"id":id,"note":"aggregate"}))
+            .collect::<Vec<_>>();
+        let response = call(
+            "execute_in_transaction",
+            json!({
+                "transaction_id":tx,"operation_id":format!("batch-{start}"),"operation":"insert","table":"orders","rows":rows
+            }),
+            rejected,
+        );
+        assert_eq!(
+            response["state"],
+            if rejected { "rolled_back" } else { "open" }
+        );
+    }
+    assert_eq!(
+        call("commit_transaction", json!({"transaction_id":tx}), true)["state"],
+        "rolled_back"
+    );
+
+    let tx = call("begin_transaction", begin.clone(), false)["transaction_id"].clone();
+    for row in 10..=30 {
+        let rejected = row == 30;
+        let response = call(
+            "execute_in_transaction",
+            json!({
+                "transaction_id":tx,"operation_id":format!("one-{row}"),"operation":"insert","table":"orders",
+                "rows":[{"id":row, "note":"operation quota"}]
+            }),
+            rejected,
+        );
+        assert_eq!(response["state"], "open");
+        if rejected {
+            assert_eq!(response["error"]["category"], "resource_exhausted");
+        }
+    }
+    assert_eq!(
+        call("rollback_transaction", json!({"transaction_id":tx}), false)["state"],
+        "rolled_back"
+    );
+
+    let tx = call("begin_transaction", begin, false)["transaction_id"].clone();
+    call(
+        "execute_in_transaction",
+        json!({
+            "transaction_id":tx,"operation_id":"audit-blocked","operation":"insert","table":"orders","rows":[{"id":31}]
+        }),
+        false,
+    );
+    let lock = common::audit_dir(home).join("audit.lock");
+    let saved = lock.with_extension("saved");
+    std::fs::rename(&lock, &saved).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    let response = call("commit_transaction", json!({"transaction_id":tx}), true);
+    assert_eq!(response["state"], "rolled_back");
+    assert_eq!(response["audit_warning"], true);
+    std::fs::remove_dir(&lock).unwrap();
+    std::fs::rename(&saved, &lock).unwrap();
+
+    let read = common::call_tool(
+        &mut observer,
+        3,
+        "execute_readonly_query",
+        json!({
+            "connection_alias":"dev","database":"","sql":"SELECT id FROM orders ORDER BY id"
+        }),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&read, false)["structuredContent"]["rows"],
+        json!([[1], [2]])
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // Validate expiry, edit, and deletion against the same persisted profile.
+async fn explicit_transaction_profile_edit_and_idle_expiry() {
+    use sqarvo_local_store::{AppPaths, ProfileStore};
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let config = common::write_config(home, &write_fixture(home).await);
+    common::enable_access(&config, home);
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    let paths = AppPaths::from_roots(
+        home.join("config/sqarvo"),
+        home.join("data/sqarvo"),
+        home.join("run"),
+    );
+    let store = ProfileStore::new(&paths);
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let begin = json!({"connection_alias":"dev","database":"main"});
+    let opened = common::call_tool(&mut server, 2, "begin_transaction", begin.clone(), None);
+    let tx =
+        common::assert_call_result(&opened, false)["structuredContent"]["transaction_id"].clone();
+    tokio::time::timeout(Duration::from_secs(35), async {
+        loop {
+            if common::read_audit_records(&common::audit_dir(home))
+                .iter()
+                .any(|(_, record)| {
+                    record["transaction_id"] == tx && record["event"] == "transaction_expired"
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("idle expiry is audited without another request");
+    let ended = common::call_tool(
+        &mut server,
+        3,
+        "commit_transaction",
+        json!({"transaction_id":tx}),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&ended, true)["structuredContent"]["state"],
+        "rolled_back"
+    );
+
+    let tx = {
+        let mut id = 4;
+        loop {
+            let opened =
+                common::call_tool(&mut server, id, "begin_transaction", begin.clone(), None);
+            if opened["result"]["structuredContent"]["state"] == "open" {
+                break opened["result"]["structuredContent"]["transaction_id"].clone();
+            }
+            assert!(id < 10, "expired transaction must free its reservation");
+            assert_eq!(
+                opened["result"]["structuredContent"]["error"]["code"],
+                "transaction.already_active"
+            );
+            id += 1;
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    };
+    let mut profile = store.snapshot().unwrap().resolve("dev").unwrap().clone();
+    let revision = profile.revision;
+    profile.name = "renamed".into();
+    store.save(profile, Some(revision)).unwrap();
+    let write = common::call_tool(
+        &mut server,
+        11,
+        "execute_in_transaction",
+        json!({
+            "transaction_id":tx,"operation_id":"after-profile-edit","operation":"insert","table":"orders",
+            "rows":[{"id":3}]
+        }),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&write, true)["structuredContent"]["state"],
+        "rolled_back"
+    );
+    server.close_stdin();
+    assert!(server.wait().status.success());
+    let mut restarted = common::Server::spawn(&config, home);
+    common::handshake(&mut restarted, "2025-11-25", "2025-11-25", 1);
+    let opened = common::call_tool(
+        &mut restarted,
+        2,
+        "begin_transaction",
+        json!({
+            "connection_alias":"renamed","database":"main"
+        }),
+        None,
+    );
+    let tx =
+        common::assert_call_result(&opened, false)["structuredContent"]["transaction_id"].clone();
+    let profile = store
+        .snapshot()
+        .unwrap()
+        .resolve("renamed")
+        .unwrap()
+        .clone();
+    store.delete(profile.profile_id, profile.revision).unwrap();
+    let reply = common::call_tool(
+        &mut restarted,
+        3,
+        "commit_transaction",
+        json!({"transaction_id":tx}),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&reply, true)["structuredContent"]["state"],
+        "rolled_back"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_explicit_begin_releases_its_reservation() {
+    use std::time::Duration;
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let config = common::write_config(home, &write_fixture(home).await);
+    common::enable_access(&config, home);
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    let mut holder = common::Server::spawn(&config, home);
+    let mut client = common::Server::spawn(&config, home);
+    for server in [&mut holder, &mut client] {
+        common::handshake(server, "2025-11-25", "2025-11-25", 1);
+    }
+    let begin = json!({"connection_alias":"dev","database":"main"});
+    let open = common::call_tool(&mut holder, 2, "begin_transaction", begin.clone(), None);
+    let holder_id =
+        common::assert_call_result(&open, false)["structuredContent"]["transaction_id"].clone();
+    client.send(&json!({
+        "jsonrpc":"2.0","id":71,"method":"tools/call",
+        "params":{"name":"begin_transaction","arguments":begin},
+    }));
+    let audit = common::audit_dir(home);
+    let cancelled_tx = async {
+        loop {
+            if let Some((_, record)) =
+                common::read_audit_records(&audit)
+                    .into_iter()
+                    .find(|(_, record)| {
+                        record["event"] == "transaction_begin"
+                            && record["phase"] == "intent"
+                            && record["transaction_id"] != holder_id
+                    })
+            {
+                break record["transaction_id"].clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let cancelled_tx = tokio::time::timeout(Duration::from_secs(3), cancelled_tx)
+        .await
+        .unwrap();
+    client.notify(
+        "notifications/cancelled",
+        json!({"requestId":71,"reason":"test cancelled BEGIN"}),
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if common::read_audit_records(&audit)
+                .iter()
+                .any(|(_, record)| {
+                    record["transaction_id"] == cancelled_tx
+                        && record["transaction_state"] == "not_started"
+                        && record["error_subcode"] == "query.cancelled"
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled BEGIN is audited even though rmcp discards its reply");
+
+    let end = common::call_tool(
+        &mut holder,
+        3,
+        "rollback_transaction",
+        json!({"transaction_id":holder_id}),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&end, false)["structuredContent"]["state"],
+        "rolled_back"
+    );
+    let recovered = async {
+        for id in 72..112 {
+            let reply =
+                common::call_tool(&mut client, id, "begin_transaction", begin.clone(), None);
+            let tool_result = &reply["result"];
+            if tool_result["structuredContent"]["state"] == "open" {
+                return;
+            }
+            assert_eq!(
+                tool_result["structuredContent"]["error"]["code"],
+                "transaction.already_active"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("cancelled BEGIN did not release its reservation");
+    };
+    recovered.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // Hold SQLite's reader lock until the durable commit intent is visible.
+async fn explicit_commit_survives_terminal_audit_failure() {
+    use sqarvo_common::QueryId;
+    use sqarvo_connection::SessionManager;
+    use sqarvo_driver_api::{ExecuteRequest, IsolationLevel, TransactionOptions};
+    use sqarvo_drivers::DriverRegistry;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let root = write_fixture(home).await;
+    let params = sqarvo_mcp::config::parse(&root.to_string())
+        .unwrap()
+        .validate()
+        .unwrap()
+        .connection("dev")
+        .unwrap()
+        .to_connection_params()
+        .unwrap();
+    let config = common::write_config(home, &root);
+    common::enable_access(&config, home);
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let begin = common::call_tool(
+        &mut server,
+        2,
+        "begin_transaction",
+        json!({
+            "connection_alias":"dev","database":"main"
+        }),
+        None,
+    );
+    let tx =
+        common::assert_call_result(&begin, false)["structuredContent"]["transaction_id"].clone();
+    let inserted = common::call_tool(
+        &mut server,
+        3,
+        "execute_in_transaction",
+        json!({
+            "transaction_id":tx,"operation_id":"audit_failure","operation":"insert","table":"orders","rows":[{"id":3}]
+        }),
+        None,
+    );
+    common::assert_call_result(&inserted, false);
+
+    let manager = SessionManager::new(Arc::new(DriverRegistry::with_builtin_drivers()));
+    let session = manager.connect("fixture reader", params).await.unwrap();
+    let reader = manager.acquire(&session.session_id).await.unwrap();
+    let read = reader
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Serializable,
+            read_only: true,
+        })
+        .await
+        .unwrap();
+    let result = reader
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "SELECT count(*) FROM orders".into(),
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .unwrap();
+    assert!(result.first_batch.is_some());
+    server.send(&json!({
+        "jsonrpc":"2.0","id":4,"method":"tools/call",
+        "params":{"name":"commit_transaction","arguments":{"transaction_id":tx}},
+    }));
+    let audit = common::audit_dir(home);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if common::read_audit_records(&audit)
+                .iter()
+                .any(|(_, record)| {
+                    record["event"] == "transaction_commit" && record["phase"] == "intent"
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("commit intention is written while SQLite waits on the reader");
+
+    let lock = audit.join("audit.lock");
+    let saved = lock.with_extension("saved");
+    std::fs::rename(&lock, &saved).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    reader
+        .rollback_transaction(&read.transaction_id)
+        .await
+        .unwrap();
+    let reply = server.next_message();
+    assert_eq!(reply["id"], 4);
+    let committed = common::assert_call_result(&reply, false);
+    assert_eq!(committed["structuredContent"]["state"], "committed");
+    assert_eq!(committed["structuredContent"]["audit_warning"], true);
+    std::fs::remove_dir(&lock).unwrap();
+    std::fs::rename(&saved, &lock).unwrap();
+    manager.disconnect(&session.connection_id).await.unwrap();
+
+    let readback = common::call_tool(
+        &mut server,
+        5,
+        "execute_readonly_query",
+        json!({
+            "connection_alias":"dev","database":"","sql":"SELECT id FROM orders ORDER BY id"
+        }),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&readback, false)["structuredContent"]["rows"],
+        json!([[1], [2], [3]])
+    );
+}

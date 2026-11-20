@@ -147,7 +147,7 @@ pub(crate) async fn call(
             () = token.cancelled() => {}
             () = async {
                 if let Some(lifetime) = http_lifetime {
-                    lifetime.0.cancelled().await;
+                    lifetime.0.lifetime.cancelled().await;
                 } else {
                     pending::<()>().await;
                 }
@@ -456,7 +456,7 @@ fn outcome_fields(outcome: TransactionOutcome) -> (WritePhase, Option<u64>, Opti
     }
 }
 
-async fn inspect(
+pub(super) async fn inspect(
     handle: &SessionHandle,
     plan: &WritePlan,
     query_id: QueryId,
@@ -532,7 +532,7 @@ fn operation(tool: &str) -> Option<OperationType> {
     }
 }
 
-const fn label(op: OperationType) -> &'static str {
+pub(super) const fn label(op: OperationType) -> &'static str {
     match op {
         OperationType::Read => "preview",
         OperationType::Insert => "insert",
@@ -550,7 +550,7 @@ const fn risk(op: OperationType) -> &'static str {
     }
 }
 
-fn safe_error(error: Error) -> Error {
+pub(super) fn safe_error(error: Error) -> Error {
     if error.code() == ErrorCode::MCP_COMMIT_UNKNOWN {
         return error;
     }
@@ -573,7 +573,7 @@ fn invalid(message: &'static str) -> Error {
     Error::invalid_argument(ErrorCode::MCP_INVALID_ARGUMENT, message)
 }
 
-fn audit_unavailable() -> Error {
+pub(super) fn audit_unavailable() -> Error {
     Error::new(
         ErrorCode::MCP_INTERNAL,
         ErrorCategory::Internal,

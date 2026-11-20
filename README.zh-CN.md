@@ -144,6 +144,11 @@ V1 工具仍只提供只读功能。
 
 在 Linux 上，打开主菜单的 **MCP** 启动本地 Streamable HTTP 服务、管理授权并复制 Agent 配置提示词。服务默认地址为 `http://127.0.0.1:8765/mcp`，认证令牌由系统密钥环提供。现有 stdio 配置继续有效。
 
+需要在同一连接上执行多次结构化写入时，使用 `begin_transaction`、
+`execute_in_transaction` 和 `commit_transaction`，或用 `rollback_transaction` 撤销。
+stdio 和认证 Streamable HTTP 均支持显式事务。原有写入工具仍按调用独立提交。
+见[显式事务指南](docs/api/mcp-tools.md#v21-explicit-transactions)。
+
 ## 文档
 
 - 产品：[愿景](docs/product/vision.md) · [定位](docs/product/positioning.md) ·

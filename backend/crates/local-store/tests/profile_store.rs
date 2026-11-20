@@ -536,3 +536,36 @@ fn write_interruption_preserves_previous_document_and_leaves_recoverable_temp() 
     assert_eq!(abandoned(), 0);
     assert_eq!(store.get(saved.profile_id).unwrap(), saved);
 }
+
+#[test]
+fn locked_snapshot_orders_revoke_with_the_guard_scope() {
+    let root = TempDir::new().unwrap();
+    let store = store_at(root.path());
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    let (authorized, guard) = store.locked_snapshot().unwrap();
+    assert!(authorized.mcp.enabled);
+    assert!(!authorized.mcp.read_only);
+
+    let lock_path = document_path(root.path()).with_extension("json.lock");
+    let writer = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .unwrap();
+    assert!(!try_lock(&writer, LockMode::Exclusive).unwrap());
+    drop(guard);
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: true,
+        })
+        .unwrap();
+    let (revoked, _guard) = store.locked_snapshot().unwrap();
+    assert!(revoked.mcp.read_only);
+    assert!(revoked.revision > authorized.revision);
+}

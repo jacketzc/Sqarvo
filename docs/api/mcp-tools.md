@@ -50,7 +50,7 @@ cd backend && cargo build -p sqarvo-mcp --release
 | capabilities | `tools` + `resources`（无 prompts、无 completion、无 logging 通道） |
 | `serverInfo.name` | `sqarvo-mcp` |
 | 协议版本 | 支持 `2024-11-05` / `2025-03-26` / `2025-11-25` 旧握手，以及 `2026-07-28` 的无握手 `_meta` 通道（详见架构文档 §9） |
-| 工具 | 8 个，全部只读；`tools/list` 只播 `enabled_tools` 允许的（下表按注册顺序） |
+| 工具 | 8 个只读工具、4 个 V2 工具、4 个 V2.1 事务工具。`tools/list` 按 `enabled_tools` 筛选 |
 | 资源 | 1 个静态 + 3 个模板（`resources/list` / `resources/templates/list`） |
 | 写操作 | **没有**。`INSERT/UPDATE/DELETE/DDL/GRANT/USE/SET/SHOW/CALL`、事务控制、多语句一律拒 |
 | 审计 | 每次 `tools/call` 落 `audit.jsonl`，只记 SQL 指纹。资源的全局策略拒绝、名称歧义和需要重启也会记录 |
@@ -58,7 +58,7 @@ cd backend && cargo build -p sqarvo-mcp --release
 `tools/list` 与资源发现提供静态描述。工具调用和资源读取会检查共享档案的全局访问策略。
 SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 
-## 3. 八个工具
+## 3. 八个只读工具
 
 每个工具的小节格式：**参数表 → 返回（outputSchema 摘要）→ 限额与截断 → 错误子码 → 描述要点**。
 `description` 由代码里的文档注释逐字生成，客户端看到的就是它。
@@ -346,7 +346,7 @@ JSONL 审计。普通资源读取沿用 V1 行为。
 
 | 字段 | 类型 | 默认 | 处理 |
 |---|---|---|---|
-| `enabled_tools` | array&lt;string&gt; | 8 个全启用 | 未知名拒绝启动，`[]` 关闭全部工具 |
+| `enabled_tools` | array&lt;string&gt; | 16 个工具均可发现 | 未知名拒绝启动，`[]` 关闭全部工具 |
 | `query_limits` | object | 见 §6.3 | 未知字段拒绝启动，数值越界按上限钳制 |
 
 ### 6.2 共享档案与旧配置
@@ -509,7 +509,7 @@ SHOW GRANTS FOR 'sqarvo_mcp_ro'@'%';
 预期结果与验收步骤（**人工验收项，本机未确认**）：
 
 1. 服务器条目变绿/「已连接」，展开后能看到工具列表；
-2. 工具数量 = `8`，或等于 `enabled_tools` 里列出的个数（若配了 `enabled_tools: []` 则是 0）；
+2. 默认发现 `16` 个工具，显式列表配置下等于 `enabled_tools` 里列出的个数（若配了 `enabled_tools: []` 则是 0）；
 3. 资源标签页出现 `database://connections`（静态资源）——**不展开不发起连接**；
 4. 调 `list_connections`：返回 `alias` / `driver_id` / `database` / `connection_status` /
    `last_error_code`，**没有任何用户名字段**；
@@ -855,3 +855,43 @@ FROM sqarvo_guard.approved_target AS a;
 `SQARVO_MCP_MARIADB_STARTUP_FIXTURE` 指向代理后，执行
 `cargo test --locked -p sqarvo-mcp --test tools_mariadb startup_stall_or_cancellation_releases_disposable_write_session`。
 该用例验证初始化应答停滞、BEGIN 应答停滞及 BEGIN 等待中取消。
+
+## V2.1 Explicit transactions
+
+在同一 stdio 进程或同一已认证的 HTTP MCP Session 内，可以将多次结构化 DML 放入一条物理数据库事务。保持全局 MCP 数据访问开启、只读关闭。MariaDB 沿用 V2 DBA 部署资格。如果配置了显式 `enabled_tools`，加入需要使用的四个事务工具名。
+
+| 工具 | 参数 | 成功结果 |
+|---|---|---|
+| `begin_transaction` | `connection_alias`、`database`。可选 `isolation_level`，当前仅支持 `serializable`。可选 `timeout_seconds`，整数 1–120，默认 120 | `transaction_id`、固定目标、隔离级别、`expires_at`、`idle_expires_at`、`state=open` |
+| `execute_in_transaction` | `transaction_id`、`operation_id`、`operation`、`table`。INSERT 使用 `rows`，UPDATE 使用 `changes` 和 `conditions`，DELETE 使用 `conditions` | 单次行数及 `count_kind`、累计行数和操作数、`idle_expires_at`、`state=open` |
+| `commit_transaction` | `transaction_id` | `state=committed`、累计行数和操作数、`audit_warning`、`cleanup_warning` |
+| `rollback_transaction` | `transaction_id` | `state=rolled_back`、`audit_warning`、`cleanup_warning` |
+
+例如，先用 `{"connection_alias":"test","database":"main"}` 开启 SQLite 事务。把返回的 ID 代入一次写入，再用新的操作 ID 执行后续写入。
+
+```json
+{
+  "transaction_id": "<BEGIN 返回的 ID>",
+  "operation_id": "close-order-17",
+  "operation": "update",
+  "table": "orders",
+  "changes": {"status": "closed"},
+  "conditions": [{"column": "id", "operator": "eq", "value": 17}]
+}
+```
+
+传入 `{"transaction_id":"<BEGIN 返回的 ID>"}` 提交或回滚。提交前，单独的连接看不到该事务的未提交变更。普通只读工具、预览和 V2 单次写入各自使用现有会话路径。显式事务只接收结构化 INSERT、UPDATE、DELETE，不支持任意 SQL、DDL、嵌套或跨数据库事务。
+
+- 每个所有者最多 1 个事务，每个 MCP 进程最多 4 个。同一事务内操作串行。服务端限制空闲 30 秒、总时长最多 120 秒、最多 20 次 DML、累计 200 行。UPDATE 使用匹配行计数。累计超限自动回滚。
+- `operation_id` 是 1–64 字节的客户端操作标识。重复提交同一个逻辑 DML 时沿用该 ID，服务端拒绝重复派发。实际 DML 出错会使事务进入 `failed`，调用 `rollback_transaction` 清理。收到 `retryable=false` 时停止自动重试。
+- HTTP Session DELETE、会话失效或服务停止会清理事务。单次 SSE/HTTP 连接断开后若会话仍有效，可以在同一会话继续。stdio EOF 清理此进程的事务。其他 Session 不能使用原事务 ID。
+- 关闭访问、开启只读、修改或删除档案会终止已打开的事务。共享档案文档的修订变化会使现存显式事务保守回滚。撤权和提交通过共享档案锁排序。并发撤权返回 `profile.locked` 时，设置尚未写入，可在提交终结后重试更改设置。
+- 收到 `commit_unknown` 或 `rollback_unconfirmed` 时，先核对数据库状态和审计。重复终结请求返回错误及仍保留的终态摘要，从不重新发送终结命令。终态摘要在内存中有限保留，不跨进程恢复。终态审计落盘失败时，`audit_warning` 表示需核查审计，数据库应答语义保持原样。
+- SQLite 可写事务从 BEGIN 起可能占写锁。5 秒 busy timeout 约束锁等待，底层文件 I/O 可能延迟物理关闭，关闭中的会话继续占用配额。MariaDB 使用专用连接，终结应答超时后隔离并尝试终止该连接。
+
+事务工具错误的 `error.retryable` 固定为 `false`。常见状态码包括 `transaction.not_found`、
+`transaction.failed`、`mcp.transaction_expired`、`mcp.transaction_ended`、
+`mcp.transaction_busy`、`mcp.operation_already_used`、`mcp.commit_unknown`
+和 `mcp.rollback_unconfirmed`。
+
+定向验收使用 `cargo test -p sqarvo-mcp --test shared_access explicit_transactions_over_stdio` 和 `cargo test -p sqarvo-mcp --lib authenticated_http_transaction_isolation_and_delete`。MariaDB 终态用例复用前文的回环 53387 和 53388 代理，只用于隔离测试实例。创建专用合成账号 `mcp_v21_fixture`，仅允许回环访问且仅授予 `orders` DML/SELECT 及资格视图 SELECT。该夹具使用空凭据，库表初始无 9891、9892 和 9901–9903。设置 `SQARVO_MCP_V21_MARIADB_PROXY_LOG` 指向代理输出。以 `SQARVO_MCP_V21_MARIADB_FIXTURE=1 cargo test -p sqarvo-mcp --test shared_access explicit_mariadb_transactions_and_lost_acknowledgements` 启用真实库用例。

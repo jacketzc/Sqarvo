@@ -18,6 +18,7 @@
 | M10 共享连接档案与 MCP 全局访问 | S10 | 共享存储与迁移、GTK 档案服务、MCP 实时全局策略、CLI、跨组件验收 | v0.4 | 进行中（[#225–#230](https://github.com/jacketzc/Sqarvo/milestone/11)，Windows 前端接入冻结） |
 | M11 本地 MCP HTTP 与管理中心 | 待排 | 回环 Streamable HTTP、Linux GTK 管理与安全 Agent 接入 | 待发布计划确认 | 执行见 [M11](https://github.com/jacketzc/Sqarvo/milestone/12) |
 | M12 MCP V2 受控写入 | 待排 | 结构化 DML、预览、事务限额和审计，SQLite 与 DBA 管理的 MariaDB | 待发布计划确认 | 执行见 [M12](https://github.com/jacketzc/Sqarvo/milestone/13)，依赖 M11 |
+| M13 MCP V2.1 显式事务 | 待排 | 结构化多次写入、事务所有权、撤权排序、清理与双传输验收 | 待发布计划确认 | 执行见 [M13](https://github.com/jacketzc/Sqarvo/milestone/14)，依赖 M12 |
 
 > 阶段编号按引入顺序分配（S8 为 2026-11-07 新增），**不代表交付顺序**：
 > S8（工作区 UI 重构）先于 S7（导入导出）交付，执行顺序见

@@ -454,7 +454,7 @@ fn filter(conditions: Vec<Condition>) -> Result<Filter> {
     Ok(Filter::new(conditions))
 }
 
-fn identifier(value: &str) -> bool {
+pub(crate) fn identifier(value: &str) -> bool {
     !value.trim().is_empty()
         && value.len() <= MAX_IDENTIFIER_BYTES
         && !value.chars().any(char::is_control)

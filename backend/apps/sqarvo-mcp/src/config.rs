@@ -67,9 +67,20 @@ pub const V1_TOOL_NAMES: [&str; 8] = [
 /// V2 structured write tools.
 pub const V2_TOOL_NAMES: [&str; 4] = ["insert_rows", "update_rows", "delete_rows", "preview_write"];
 
+/// V2.1 explicit transaction tools.
+pub const TRANSACTION_TOOL_NAMES: [&str; 4] = [
+    "begin_transaction",
+    "execute_in_transaction",
+    "commit_transaction",
+    "rollback_transaction",
+];
+
 /// Names recognized by the shared tool policy.
 pub fn tool_names() -> impl Iterator<Item = &'static str> {
-    V1_TOOL_NAMES.into_iter().chain(V2_TOOL_NAMES)
+    V1_TOOL_NAMES
+        .into_iter()
+        .chain(V2_TOOL_NAMES)
+        .chain(TRANSACTION_TOOL_NAMES)
 }
 
 /// 工具未指定 `limit` 时的返回行数（V3.1 §10）。

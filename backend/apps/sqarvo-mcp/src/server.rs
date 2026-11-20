@@ -73,6 +73,7 @@ pub struct ServerContext {
     config: Arc<ValidatedConfig>,
     access: AccessService,
     audit: AuditWriter,
+    pub(crate) transactions: crate::transactions::TransactionRegistry,
 }
 
 impl ServerContext {
@@ -143,6 +144,7 @@ impl ServerContext {
             config,
             access,
             audit,
+            transactions: crate::transactions::TransactionRegistry::default(),
         })
     }
 
@@ -166,6 +168,7 @@ impl ServerContext {
 
     /// 关闭全部资源（进程退出路径）。
     pub async fn shutdown(&self) {
+        self.transactions.shutdown().await;
         self.access.close_all().await;
     }
 }
@@ -178,6 +181,7 @@ impl ServerContext {
 pub struct SqarvoMcpServer {
     context: Arc<ServerContext>,
     tool_router: ToolRouter<Self>,
+    stdio_owner: Option<crate::transactions::Owner>,
 }
 
 impl SqarvoMcpServer {
@@ -187,6 +191,17 @@ impl SqarvoMcpServer {
         Self {
             context,
             tool_router: Self::tool_router(),
+            stdio_owner: Some(crate::transactions::Owner::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
+        }
+    }
+
+    pub(crate) fn new_http(context: Arc<ServerContext>) -> Self {
+        Self {
+            context,
+            tool_router: Self::tool_router(),
+            stdio_owner: None,
         }
     }
 
@@ -207,6 +222,7 @@ impl SqarvoMcpServer {
             .list_all()
             .into_iter()
             .chain(crate::tools::write::descriptions())
+            .chain(crate::tools::transaction::descriptions())
             .filter(|tool| policy.allows(tool.name.as_ref()))
             .collect()
     }
@@ -233,6 +249,20 @@ impl ServerHandler for SqarvoMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, McpError> {
+        if let Some(tool) = config::TRANSACTION_TOOL_NAMES
+            .into_iter()
+            .find(|tool| *tool == request.name)
+        {
+            let owner = match context.extensions.get::<axum::http::request::Parts>() {
+                Some(parts) => parts
+                    .extensions
+                    .get::<crate::http::HttpSessionLifetime>()
+                    .map(|lifetime| lifetime.0.clone()),
+                None => self.stdio_owner.clone(),
+            };
+            return crate::tools::transaction::call(&self.context, owner, tool, request, context)
+                .await;
+        }
         if let Some(tool) = config::V2_TOOL_NAMES
             .into_iter()
             .find(|tool| *tool == request.name)

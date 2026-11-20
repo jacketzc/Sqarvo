@@ -166,7 +166,7 @@ pub async fn mariadb(
     }
 }
 
-fn mariadb_target_segment(name: &str) -> bool {
+pub(crate) fn mariadb_target_segment(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name

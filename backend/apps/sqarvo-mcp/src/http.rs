@@ -172,46 +172,67 @@ async fn close_sessions(sessions: &LocalSessionManager) {
 
 /// Cancellation signal scoped to an authenticated Streamable HTTP session.
 #[derive(Clone)]
-pub(crate) struct HttpSessionLifetime(pub(crate) CancellationToken);
+pub(crate) struct HttpSessionLifetime(pub(crate) crate::transactions::Owner);
 
-#[derive(Default)]
-struct WriteSessions(Mutex<HashMap<String, CancellationToken>>);
+type CredentialGeneration = [u8; 32];
+
+struct WriteSessionState {
+    generation: Option<CredentialGeneration>,
+    owners: HashMap<String, crate::transactions::Owner>,
+}
+
+struct WriteSessions(Mutex<WriteSessionState>);
 
 impl WriteSessions {
+    fn new(generation: Option<CredentialGeneration>) -> Self {
+        Self(Mutex::new(WriteSessionState {
+            generation,
+            owners: HashMap::new(),
+        }))
+    }
+
+    fn set_generation(&self, generation: Option<CredentialGeneration>) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.generation = generation;
+        for (_, owner) in state.owners.drain() {
+            owner.lifetime.cancel();
+        }
+    }
+
     async fn attach(
         &self,
         sessions: &LocalSessionManager,
         request: &mut Request,
         shutdown: &CancellationToken,
-    ) -> Option<String> {
+        generation: CredentialGeneration,
+    ) -> Result<Option<String>, StatusCode> {
         let id = request
             .headers()
-            .get("mcp-session-id")?
-            .to_str()
-            .ok()?
-            .to_owned();
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let sessions = sessions.sessions.read().await;
         let mut writes = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        writes.retain(|id, token| {
-            let alive = sessions.contains_key(id.as_str());
-            if !alive {
-                token.cancel();
-            }
-            alive
-        });
-        if !sessions.contains_key(id.as_str()) {
-            return None;
+        if writes.generation != Some(generation) {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
+        let Some(id) = id.filter(|id| sessions.contains_key(id.as_str())) else {
+            return Ok(None);
+        };
         let token = writes
+            .owners
             .entry(id.clone())
-            .or_insert_with(|| shutdown.child_token());
+            .or_insert_with(|| crate::transactions::Owner::new(shutdown.child_token()));
         request
             .extensions_mut()
             .insert(HttpSessionLifetime(token.clone()));
-        Some(id)
+        Ok(Some(id))
     }
 
     fn cancel(&self, id: &str) {
@@ -219,28 +240,33 @@ impl WriteSessions {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .owners
             .remove(id)
         {
-            token.cancel();
+            token.lifetime.cancel();
         }
     }
 
-    fn cancel_all(&self) {
-        for (_, token) in self
-            .0
+    async fn prune(&self, sessions: &LocalSessionManager) {
+        let sessions = sessions.sessions.read().await;
+        self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain()
-        {
-            token.cancel();
-        }
+            .owners
+            .retain(|id, owner| {
+                let alive = sessions.contains_key(id.as_str());
+                if !alive {
+                    owner.lifetime.cancel();
+                }
+                alive
+            });
     }
 }
 
 async fn observe_credentials(
     store: Arc<dyn CredentialStore>,
     sessions: Arc<LocalSessionManager>,
-    mut generation: Option<[u8; 32]>,
+    mut generation: Option<CredentialGeneration>,
     writes: Arc<WriteSessions>,
     shutdown: CancellationToken,
 ) {
@@ -249,6 +275,7 @@ async fn observe_credentials(
             () = shutdown.cancelled() => break,
             () = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
+        writes.prune(&sessions).await;
         let store = Arc::clone(&store);
         let current = tokio::task::spawn_blocking(move || {
             store
@@ -260,9 +287,10 @@ async fn observe_credentials(
         .ok()
         .flatten();
         if current != generation {
-            generation = current;
-            writes.cancel_all();
+            writes.set_generation(None);
             close_sessions(&sessions).await;
+            generation = current;
+            writes.set_generation(current);
         }
     }
 }
@@ -334,14 +362,14 @@ async fn authenticate(State(auth): State<HttpAuth>, mut request: Request, next: 
     };
     let store = Arc::clone(&auth.store);
     let verified = tokio::task::spawn_blocking(move || {
-        store.get(AUTH_REFERENCE).is_ok_and(|stored| {
-            bool::from(stored.expose().as_bytes().ct_eq(token.expose().as_bytes()))
-        })
+        let stored = store.get(AUTH_REFERENCE).ok()?;
+        bool::from(stored.expose().as_bytes().ct_eq(token.expose().as_bytes()))
+            .then(|| Sha256::digest(stored.expose().as_bytes()).into())
     })
     .await;
-    if !matches!(verified, Ok(true)) {
+    let Ok(Some(generation)) = verified else {
         return unauthorized();
-    }
+    };
     let _initializing = if request.method() == axum::http::Method::POST
         && !request.headers().contains_key("mcp-session-id")
     {
@@ -355,14 +383,23 @@ async fn authenticate(State(auth): State<HttpAuth>, mut request: Request, next: 
     } else {
         None
     };
-    dispatch_authenticated(&auth, request, next).await
+    dispatch_authenticated(&auth, request, next, generation).await
 }
 
-async fn dispatch_authenticated(auth: &HttpAuth, mut request: Request, next: Next) -> Response {
-    let id = auth
+async fn dispatch_authenticated(
+    auth: &HttpAuth,
+    mut request: Request,
+    next: Next,
+    generation: CredentialGeneration,
+) -> Response {
+    let id = match auth
         .writes
-        .attach(&auth.sessions, &mut request, &auth.shutdown)
-        .await;
+        .attach(&auth.sessions, &mut request, &auth.shutdown, generation)
+        .await
+    {
+        Ok(id) => id,
+        Err(status) => return status.into_response(),
+    };
     let closing = request.method() == axum::http::Method::DELETE;
     let response = next.run(request).await;
     if closing
@@ -372,6 +409,21 @@ async fn dispatch_authenticated(auth: &HttpAuth, mut request: Request, next: Nex
         auth.writes.cancel(&id);
     }
     response
+}
+
+fn router(
+    server: SqarvoMcpServer,
+    config: StreamableHttpServerConfig,
+    auth: HttpAuth,
+) -> axum::Router {
+    let service = StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::clone(&auth.sessions),
+        config,
+    );
+    axum::Router::new()
+        .route_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(auth, authenticate))
 }
 
 /// Serve the existing MCP handler over an authenticated IPv4 loopback listener.
@@ -396,7 +448,7 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
 
     let context = Arc::new(ServerContext::bootstrap(config_path).await?);
     let _listener_lease = claim_listener(port).await?;
-    let server = SqarvoMcpServer::new(Arc::clone(&context));
+    let server = SqarvoMcpServer::new_http(Arc::clone(&context));
     let shutdown = CancellationToken::new();
     let authority = format!("127.0.0.1:{port}");
     let origin = format!("http://{authority}");
@@ -408,7 +460,7 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
     let mut sessions = LocalSessionManager::default();
     sessions.session_config.init_timeout = Some(Duration::from_secs(10));
     let sessions = Arc::new(sessions);
-    let writes = Arc::new(WriteSessions::default());
+    let writes = Arc::new(WriteSessions::new(generation));
     let mut watcher = tokio::spawn(observe_credentials(
         Arc::clone(&store),
         Arc::clone(&sessions),
@@ -416,24 +468,20 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
         Arc::clone(&writes),
         shutdown.clone(),
     ));
-    let service =
-        StreamableHttpService::new(move || Ok(server.clone()), Arc::clone(&sessions), cfg);
-    let router =
-        axum::Router::new()
-            .route_service("/mcp", service)
-            .layer(middleware::from_fn_with_state(
-                HttpAuth {
-                    authority,
-                    origin,
-                    store,
-                    active: Arc::new(Semaphore::new(16)),
-                    initializing: Arc::new(Semaphore::new(1)),
-                    sessions: Arc::clone(&sessions),
-                    writes,
-                    shutdown: shutdown.clone(),
-                },
-                authenticate,
-            ));
+    let router = router(
+        server,
+        cfg,
+        HttpAuth {
+            authority,
+            origin,
+            store,
+            active: Arc::new(Semaphore::new(16)),
+            initializing: Arc::new(Semaphore::new(1)),
+            sessions: Arc::clone(&sessions),
+            writes,
+            shutdown: shutdown.clone(),
+        },
+    );
     if managed {
         println!("ready");
     }
@@ -473,3 +521,6 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
     context.shutdown().await;
     result.map_err(|_| Error::failed_precondition(HTTP_FAILED, "MCP HTTP 服务异常退出"))
 }
+
+#[cfg(test)]
+mod tests;

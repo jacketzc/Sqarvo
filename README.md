@@ -155,6 +155,11 @@ SQL fingerprints. [Shared profiles and migration](docs/api/connection-profiles.m
 
 On Linux, open **MCP** from the main menu to start the local Streamable HTTP service, manage access and copy agent setup instructions. The service defaults to `http://127.0.0.1:8765/mcp` and requires a bearer credential from the system keyring. Existing stdio setup continues to work.
 
+Use `begin_transaction`, `execute_in_transaction` and `commit_transaction` to group structured
+writes on one connection. Use `rollback_transaction` to discard them. Both stdio and authenticated
+Streamable HTTP support explicit transactions. The existing write tools still commit each call
+independently. See the [explicit transaction guide](docs/api/mcp-tools.md#v21-explicit-transactions).
+
 ## Documentation
 
 - Product: [vision](docs/product/vision.md) · [positioning](docs/product/positioning.md) ·
