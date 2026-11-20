@@ -694,3 +694,62 @@ async fn sqlite_write_preflight_rejects_schema_side_effects_and_full_table_predi
             .contains("original")
     );
 }
+
+#[tokio::test]
+async fn sqlite_noop_update_preserves_matched_row_count() {
+    use std::{future::pending, time::Duration};
+
+    use sqarvo_local_store::McpAccessPolicy;
+    use sqarvo_mcp::policy::write::WritePlan;
+    use sqarvo_mcp::tools::{write_preflight, write_transaction};
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = access(&directory.path().join("matched.db"), None);
+    exec(
+        &service,
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)",
+    )
+    .await;
+    exec(&service, "INSERT INTO items VALUES (1,'kept'), (2,'other')").await;
+    service
+        .store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    let plan = WritePlan::decode(
+        serde_json::json!({
+            "operation":"update", "connection_alias":"dev", "database":"main", "table":"items",
+            "changes":{"value":"kept"}, "conditions":[{"column":"id","operator":"eq","value":1}]
+        }),
+        None,
+    )
+    .unwrap();
+    let queries = Arc::clone(service.queries());
+    let result = service
+        .run_write("dev", plan.action.operation(), move |handle| async move {
+            Ok(write_transaction::execute(
+                &handle,
+                &queries,
+                &plan,
+                Duration::from_secs(3),
+                pending(),
+                async |handle, plan, query_id| {
+                    let expected = write_preflight::sqlite(handle, plan, query_id)
+                        .await?
+                        .allowed_rows()?;
+                    assert_eq!(expected, 1);
+                    Ok(Some(expected))
+                },
+                async |_| Ok(()),
+            )
+            .await)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        write_transaction::TransactionOutcome::Committed(1)
+    ));
+}

@@ -529,6 +529,22 @@ impl SessionHandle {
     /// 驱动回滚失败时透传错误；登记按失败态保留（`Commit` 随后会被拒绝），
     /// 会话关闭时由强制回滚兜底。
     pub async fn rollback_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+        self.rollback_transaction_inner(transaction_id, false).await
+    }
+
+    /// Roll back a disposable transaction and preserve an unconfirmed server result.
+    pub async fn rollback_isolated_transaction(
+        &self,
+        transaction_id: &TransactionId,
+    ) -> Result<()> {
+        self.rollback_transaction_inner(transaction_id, true).await
+    }
+
+    async fn rollback_transaction_inner(
+        &self,
+        transaction_id: &TransactionId,
+        isolated: bool,
+    ) -> Result<()> {
         let _guard = self.execution.lock().await;
 
         let Some(mut open) = self.take_transaction(transaction_id) else {
@@ -539,7 +555,14 @@ impl SessionHandle {
             return Ok(());
         };
 
-        match self.session.rollback_transaction(transaction_id).await {
+        let result = if isolated {
+            self.session
+                .rollback_isolated_transaction(transaction_id)
+                .await
+        } else {
+            self.session.rollback_transaction(transaction_id).await
+        };
+        match result {
             Ok(()) => {
                 let _ = open.rollback();
                 tracing::debug!(transaction = %transaction_id, "事务已回滚");
@@ -701,6 +724,11 @@ impl SessionHandle {
             )),
             _ => Ok(()),
         }
+    }
+
+    /// Abort this disposable session if the driver supports physical abort.
+    pub async fn abort_isolated(&self) -> bool {
+        self.session.abort_isolated().await
     }
 
     /// 关闭会话。

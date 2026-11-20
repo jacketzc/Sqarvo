@@ -768,12 +768,19 @@ sqarvo-mcp http-auth launch codex --port 8765
 支持 null、布尔值、64 位整数、有限浮点数和文本。绑定失败会返回错误。拒绝整表
 UPDATE / DELETE、DDL、TRUNCATE、任意 SQL、原始 WHERE、函数表达式及不能验证
 副作用范围的表。参数上限 128 KiB，HTTP 的整个请求也受同样大小的外层限制。
-写入执行时限最长 10 秒，取消后要等待事务清理。单次调用独立提交或回滚。
-收到 `mcp.commit_unknown` 时先核查数据库与审计，避免重复执行。
+DML、预检和提交前审计共用最长 10 秒的执行预算。事务终结和连接清理各有 5 秒的等待预算。单次调用使用
+独立事务。MariaDB 终结应答超时会终止一次性物理连接。SQLite 锁等待受驱动的
+5 秒 busy timeout 约束，底层文件 I/O 的阻塞可能延迟物理关闭。
 
-预览只读取范围，返回估计、超限下界、整表命中或未知标记，以及风险、当前授权与执行资格，没有授权令牌。
-执行时总是重新检查。写入审计记录阶段、事务结果和直接影响行数，省略原始 SQL
-和绑定值。提交后的审计失败通过 `audit_warning` 返回，数据库结果仍按实际状态反馈。
+收到 `mcp.commit_unknown` 或 `transaction_state=rollback_unconfirmed` 时，先核查
+数据库和审计，再决定后续操作。两种结果均返回 `retryable=false`。
+
+预览只读取范围，返回估计、超限下界、整表命中或未知标记，以及风险、当前授权与执行资格。
+范围无法确认时可返回 `scope=unknown`、`can_execute=false` 和 `scope_reason`。
+断连、超时和数据库权限不足返回保留稳定错误码的脱敏工具错误。
+预览仅用于辅助判断，无需先执行预览。执行时总是重新检查。
+
+写入审计记录阶段、事务结果和直接影响行数，省略原始 SQL 和绑定值。提交后的审计失败通过 `audit_warning` 返回，数据库结果仍按实际状态反馈。
 
 ### MariaDB DBA 部署资格
 
@@ -831,3 +838,12 @@ FROM sqarvo_guard.approved_target AS a;
 包含 `id INT PRIMARY KEY`、`note VARCHAR(100)` 和初始记录 ID 1 与 2。
 配置同名资格视图且授权测试账号后，执行
 `cargo test --locked -p sqarvo-mcp --test tools_mariadb bounded_write_on_dba_provisioned_fixture`。
+
+事务终态故障注入复用同一隔离库。仅对关闭 TLS 的合成夹具，在真实 MariaDB
+监听回环 53387 时运行 `python3 tests/integration/mcp_mariadb_terminal_proxy.py`。
+将 `SQARVO_MCP_MARIADB_TERMINAL_FIXTURE` 指向代理回环 53388，夹具初始应无 ID
+9901、9902 和 9903，然后运行
+`cargo test --locked -p sqarvo-mcp --test tools_mariadb terminal_response_loss_evicts_disposable_write_session`。
+代理应显示 COMMIT 和两次 ROLLBACK 收到 OK。前两次扣留应答直到客户端关闭连接，
+最后一次在转发应答前断开连接。直接查夹具，
+应仅看到已提交的 9901。重复测试前清除该合成记录。

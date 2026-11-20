@@ -76,6 +76,7 @@ enum Command {
     },
     Rollback {
         id: TransactionId,
+        require_ack: bool,
         reply: oneshot::Sender<Result<()>>,
     },
     /// 元数据读取（#45）：在会话连接上执行，避免另开连接看不到事务内未提交的 DDL。
@@ -461,8 +462,12 @@ async fn run_session(
                 let result = commit_transaction(&mut conn, id, &state).await;
                 let _ = reply.send(result);
             }
-            Command::Rollback { id, reply } => {
-                let result = rollback_transaction(&mut conn, id, &state).await;
+            Command::Rollback {
+                id,
+                require_ack,
+                reply,
+            } => {
+                let result = rollback_transaction(&mut conn, id, &state, require_ack).await;
                 let _ = reply.send(result);
             }
             Command::Metadata { request, reply } => {
@@ -675,6 +680,7 @@ async fn rollback_transaction(
     conn: &mut Conn,
     id: TransactionId,
     state: &SharedState,
+    require_ack: bool,
 ) -> Result<()> {
     match state.transaction() {
         TransactionState::None => Ok(()),
@@ -689,7 +695,7 @@ async fn rollback_transaction(
                     if mapped.category() == ErrorCategory::Unavailable {
                         // 连接断了，服务端会随连接关闭回滚，本地不必再报错。
                         state.finish_transaction(id);
-                        Ok(())
+                        if require_ack { Err(mapped) } else { Ok(()) }
                     } else {
                         state.set_transaction(TransactionState::Failed { id });
                         Err(mapped)
@@ -699,13 +705,21 @@ async fn rollback_transaction(
         }
         TransactionState::Failed { id: current } if current == id => {
             // 服务端已经回滚过（死锁），再发一次 ROLLBACK 只是空操作。
-            let _ = conn.query_drop("ROLLBACK").await;
+            let result = conn.query_drop("ROLLBACK").await;
             state.finish_transaction(id);
-            Ok(())
+            if require_ack {
+                result.map_err(|error| map_error(error, "回滚事务失败"))
+            } else {
+                Ok(())
+            }
         }
         TransactionState::Lost { id: current } if current == id => {
             state.finish_transaction(id);
-            Ok(())
+            if require_ack {
+                Err(transaction_lost_error())
+            } else {
+                Ok(())
+            }
         }
         _ if state.already_finished(id) => Ok(()),
         _ => Err(transaction_not_found(id)),
@@ -1792,16 +1806,22 @@ impl DriverSession for MariaDbSession {
     }
 
     async fn rollback_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
-        self.ensure_open()?;
-        let (reply, wait) = oneshot::channel();
-        self.sender
-            .send(Command::Rollback {
-                id: *transaction_id,
-                reply,
-            })
-            .await
-            .map_err(|_| Self::closed_error())?;
-        wait.await.map_err(|_| Self::closed_error())?
+        self.send_rollback(transaction_id, false).await
+    }
+
+    async fn rollback_isolated_transaction(&self, transaction_id: &TransactionId) -> Result<()> {
+        self.send_rollback(transaction_id, true).await
+    }
+
+    async fn abort_isolated(&self) -> bool {
+        self.closed.store(true, Ordering::SeqCst);
+        let join = self.join.lock().await.take();
+        if let Some(worker) = join {
+            worker.abort();
+            let _ = worker.await;
+        }
+        self.control.conn.lock().await.take();
+        true
     }
 
     async fn close(&self) -> Result<()> {
@@ -1817,11 +1837,12 @@ impl DriverSession for MariaDbSession {
             let _ = wait.await;
         }
         let mut guard = self.join.lock().await;
-        if let Some(handle) = guard.take() {
+        if let Some(handle) = guard.as_mut() {
             handle.await.map_err(|error| {
                 Error::internal("等待 MariaDB 会话任务退出失败").with_source(error)
             })?;
         }
+        guard.take();
         drop(guard);
 
         // 控制连接只在取消时建立，会话关闭时必须一并释放，否则会留下空闲服务端连接。
@@ -1830,6 +1851,22 @@ impl DriverSession for MariaDbSession {
             let _ = conn.disconnect().await;
         }
         Ok(())
+    }
+}
+
+impl MariaDbSession {
+    async fn send_rollback(&self, transaction_id: &TransactionId, require_ack: bool) -> Result<()> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Rollback {
+                id: *transaction_id,
+                require_ack,
+                reply,
+            })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
     }
 }
 

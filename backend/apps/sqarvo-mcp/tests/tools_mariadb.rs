@@ -673,3 +673,102 @@ async fn bounded_write_on_dba_provisioned_fixture() {
         TransactionOutcome::RolledBack { error, .. } if error.code() == ErrorCode::MCP_QUERY_TIMEOUT
     ));
 }
+
+#[tokio::test]
+async fn terminal_response_loss_evicts_disposable_write_session() {
+    use std::future::pending;
+
+    use serde_json::json;
+    use sqarvo_local_store::McpAccessPolicy;
+    use sqarvo_mcp::policy::write::WritePlan;
+    use sqarvo_mcp::tools::write_preflight;
+    use sqarvo_mcp::tools::write_transaction::{TransactionOutcome, execute};
+
+    let Ok(url) = std::env::var("SQARVO_MCP_MARIADB_TERMINAL_FIXTURE") else {
+        return;
+    };
+    let target = parse_dsn(&url);
+    assert_eq!(target.host, "127.0.0.1");
+    assert_eq!(target.database, "sqarvo_mcp_write_fixture");
+    let fixture = access(&target, None);
+    let profile = fixture.store.list().unwrap().pop().unwrap();
+    let config = sqarvo_mcp::config::parse(
+        &json!({"mariadb_write_profiles": {profile.profile_id.to_string(): profile.revision}})
+            .to_string(),
+    )
+    .unwrap()
+    .validate()
+    .unwrap();
+    let service = AccessService::with_session_manager(
+        Arc::new(config),
+        Arc::clone(fixture.session_manager()),
+        fixture.store.clone(),
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+
+    for (id, should_rollback) in [(9901, false), (9902, true), (9903, true)] {
+        let plan = WritePlan::decode(json!({
+            "operation":"insert", "connection_alias":"maria", "database":"sqarvo_mcp_write_fixture",
+            "table":"orders", "rows":[{"id":id}]
+        }), None).unwrap();
+        let queries = Arc::clone(service.queries());
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            service.run_write("maria", plan.action.operation(), move |handle| async move {
+                Ok(execute(
+                    &handle,
+                    &queries,
+                    &plan,
+                    Duration::from_secs(3),
+                    pending(),
+                    async |handle, plan, query_id| {
+                        write_preflight::mariadb(handle, plan, query_id)
+                            .await?
+                            .allowed_rows()
+                            .map(Some)
+                    },
+                    async |_| {
+                        if should_rollback {
+                            Err(sqarvo_common::Error::internal(
+                                "injected pre-commit failure",
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )
+                .await)
+            }),
+        )
+        .await
+        .expect("terminal budget and cleanup")
+        .unwrap();
+        if id != 9903 {
+            assert!(
+                started.elapsed() >= Duration::from_secs(4),
+                "proxy must withhold the reply through the deadline"
+            );
+        }
+        if should_rollback {
+            assert!(matches!(
+                result,
+                TransactionOutcome::RollbackUnconfirmed {
+                    affected: Some(1),
+                    ..
+                }
+            ));
+        } else {
+            assert!(matches!(result, TransactionOutcome::CommitUnknown));
+        }
+        assert_eq!(service.session_manager().active_count().await, 0);
+        assert_eq!(service.queries().active(), 0);
+    }
+}

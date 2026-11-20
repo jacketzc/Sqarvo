@@ -389,3 +389,41 @@ async fn stdio_writes_preview_and_audit_use_the_shared_profile_policy() {
         !text.contains("private fixture string") && !text.contains("updated confidential value")
     }));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdio_preview_connection_failure_is_audited_as_an_error() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let root = write_fixture(home).await;
+    std::fs::write(home.join("writes.db"), b"not a valid SQLite database").unwrap();
+    let config = common::write_config(home, &root);
+    common::enable_access(&config, home);
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let reply = common::call_tool(
+        &mut server,
+        2,
+        "preview_write",
+        json!({
+            "operation":"insert","connection_alias":"dev","database":"main","table":"orders",
+            "rows":[{"id":3, "note":"synthetic private value"}]
+        }),
+        None,
+    );
+    let result = common::assert_call_result(&reply, true);
+    let error_code = result["structuredContent"]["error"]["code"]
+        .as_str()
+        .unwrap();
+    assert!(!result.to_string().contains("synthetic private value"));
+    let records = common::read_audit_records(&common::audit_dir(home));
+    assert!(records.iter().any(|(_, record)| {
+        record["tool_name"] == "preview_write"
+            && record["success"] == false
+            && record["error_subcode"] == error_code
+    }));
+}

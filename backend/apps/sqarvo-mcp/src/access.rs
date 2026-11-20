@@ -214,6 +214,12 @@ pub struct AuthorizedContext {
     pub profile: Option<ConnectionProfile>,
 }
 
+impl AuthorizedContext {
+    pub(crate) const fn read_only(&self) -> bool {
+        self.document.mcp.read_only
+    }
+}
+
 /// 每次请求读取共享档案，不持有进程内授权快照。
 pub struct AccessGuard {
     store: ProfileStore,
@@ -603,15 +609,28 @@ impl AccessService {
                 .profile
                 .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
             let summary = sessions.connect(profile_id.clone(), profile.params).await?;
-            let result = async {
-                let handle = sessions.acquire(&summary.session_id).await?;
-                guard.authorize_request(operation, Some(profile_id)).await?;
-                execute(handle).await
-            }
-            .await;
-
-            if let Err(error) = sessions.disconnect(&summary.connection_id).await {
-                tracing::warn!(code = %error.code(), "MCP 写入会话清理返回错误");
+            let handle = sessions.acquire(&summary.session_id).await;
+            let result = match &handle {
+                Ok(handle) => match guard.authorize_request(operation, Some(profile_id)).await {
+                    Ok(_) => execute(handle.clone()).await,
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(Error::new(error.code(), error.category(), "写入会话不可用")),
+            };
+            match tokio::time::timeout(
+                crate::tools::write_transaction::TERMINAL_BUDGET,
+                sessions.disconnect(&summary.connection_id),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => tracing::warn!(code = %error.code(), "MCP 写入会话清理返回错误"),
+                Err(_) => {
+                    if let Ok(handle) = handle {
+                        handle.abort_isolated().await;
+                    }
+                    tracing::warn!("MCP 写入会话已从管理器移除，清理超时");
+                }
             }
             result
         })

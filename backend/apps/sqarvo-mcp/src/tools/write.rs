@@ -125,13 +125,14 @@ pub(crate) async fn call(
     };
     let op = plan.action.operation();
     let alias = plan.connection_alias.clone();
-    if let Err(error) = access
+    let profile_access = match access
         .guard()
         .authorize_request(OperationType::Read, Some(alias.clone()))
         .await
     {
-        return reject(&audit, record, op, started, error).await;
-    }
+        Ok(access) => access,
+        Err(error) => return reject(&audit, record, op, started, error).await,
+    };
     record = record.with_target(Some(&alias), Some(&plan.database));
     let token = context.ct.child_token();
     let _cancel_on_drop = token.clone().drop_guard();
@@ -159,7 +160,7 @@ pub(crate) async fn call(
         started,
     };
     if expected.is_none() {
-        preview(access, plan, call, cancelled).await
+        preview(access, plan, call, !profile_access.read_only(), cancelled).await
     } else {
         execute_write(access, plan, call, cancelled).await
     }
@@ -178,6 +179,7 @@ async fn preview(
     access: &AccessService,
     plan: WritePlan,
     call: WriteCall,
+    authorized: bool,
     cancelled: impl Future<Output = ()> + Send + 'static,
 ) -> Response {
     let WriteCall {
@@ -190,11 +192,6 @@ async fn preview(
     let op = plan.action.operation();
     let table = plan.table.clone();
     let timeout = access.limits().query_timeout;
-    let authorized = access
-        .guard()
-        .authorize_request(op, Some(alias.clone()))
-        .await
-        .is_ok();
     let database = plan.database.clone();
     let summary = preview_summary(&plan.action);
     let row_limit = plan.action.max_rows();
@@ -219,15 +216,35 @@ async fn preview(
                     result = inspect(&handle, &plan, query_id) => result,
                 };
                 if result.is_err() {
-                    let _ = handle.cancel(&query_id).await;
+                    write_transaction::finish(
+                        &handle,
+                        handle.cancel(&query_id),
+                        write_transaction::TERMINAL_BUDGET,
+                    )
+                    .await;
                 }
-                handle.rollback_transaction(&tx.transaction_id).await?;
+                if !write_transaction::finish(
+                    &handle,
+                    handle.rollback_isolated_transaction(&tx.transaction_id),
+                    write_transaction::TERMINAL_BUDGET,
+                )
+                .await
+                {
+                    return Err(Error::failed_precondition(
+                        ErrorCode::MCP_INTERNAL,
+                        "写入预览未能确认只读事务已结束",
+                    ));
+                }
                 result
             })
             .await
-            .ok()
+            .map(Some)
     } else {
-        None
+        Ok(None)
+    };
+    let (inspection, scope_reason) = match preview_scope(inspection) {
+        Ok(value) => value,
+        Err(error) => return reject(&audit, record, op, started, error).await,
     };
     let (estimate, scope, can_execute) = match inspection {
         Some(WriteScope::Bounded(count)) => (Some(count), "estimate", true),
@@ -252,11 +269,23 @@ async fn preview(
     }
     Ok(CallToolResult::structured(json!({
         "request_id": request_id, "operation": label(op), "database": database, "table": table,
-        "summary": summary, "estimated_rows": estimate, "scope": scope,
+        "summary": summary, "estimated_rows": estimate, "scope": scope, "scope_reason": scope_reason,
         "risk_level": risk(op), "row_limit": row_limit, "authorized": authorized,
         "can_execute": authorized && can_execute,
     }))
     .into())
+}
+
+fn preview_scope(
+    inspection: Result<Option<WriteScope>>,
+) -> Result<(Option<WriteScope>, Option<&'static str>)> {
+    match inspection {
+        Ok(scope) => Ok((scope, None)),
+        Err(error) if error.code() == ErrorCode::CAPABILITY_UNSUPPORTED => {
+            Ok((None, Some(ErrorCode::CAPABILITY_UNSUPPORTED.as_str())))
+        }
+        Err(error) => Err(safe_error(error)),
+    }
 }
 
 fn preview_summary(action: &WriteAction) -> Value {
@@ -533,4 +562,84 @@ fn audit_unavailable() -> Error {
         ErrorCategory::Internal,
         "无法持久化写入审计记录",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_preserves_timeout_and_redacts_database_permission_and_transport_errors() {
+        let timeout = Error::new(
+            ErrorCode::MCP_QUERY_TIMEOUT,
+            ErrorCategory::Timeout,
+            "写入预览超时",
+        );
+        let Err(timeout) = preview_scope(Err(timeout)) else {
+            panic!("timeout must be reported")
+        };
+        assert_eq!(timeout.code(), ErrorCode::MCP_QUERY_TIMEOUT);
+        assert_eq!(timeout.category(), ErrorCategory::Timeout);
+
+        for (code, category) in [
+            (
+                ErrorCode::from_static("mariadb.permission_denied"),
+                ErrorCategory::PermissionDenied,
+            ),
+            (ErrorCode::TRANSPORT_FAILED, ErrorCategory::Unavailable),
+        ] {
+            let Err(error) = preview_scope(Err(Error::new(
+                code,
+                category,
+                "synthetic sensitive database detail",
+            ))) else {
+                panic!("infrastructure failure must be reported")
+            };
+            assert_eq!(error.code(), code);
+            assert_eq!(error.category(), category);
+            assert!(!error.message().contains("synthetic sensitive"));
+        }
+
+        let unsupported = Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "fixture");
+        assert!(matches!(
+            preview_scope(Err(unsupported)),
+            Ok((None, Some("capability.unsupported")))
+        ));
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_transaction_states_are_preserved_in_audit() {
+        let directory = tempfile::tempdir().unwrap();
+        let writer =
+            AuditWriter::open(directory.path(), crate::audit::RotationPolicy::default()).unwrap();
+        for outcome in [
+            TransactionOutcome::CommitUnknown,
+            TransactionOutcome::RollbackUnconfirmed {
+                affected: Some(1),
+                error: Error::internal("synthetic sensitive detail"),
+            },
+        ] {
+            let (phase, rows, error) = outcome_fields(outcome);
+            persist(
+                &writer,
+                AuditRecord::new("audit-fixture", "insert_rows"),
+                OperationType::Insert,
+                Some("fixture"),
+                phase,
+                rows,
+                Instant::now(),
+                error.as_ref(),
+            )
+            .await
+            .unwrap();
+        }
+        let log = std::fs::read_to_string(writer.path()).unwrap();
+        for phase in ["commit_unknown", "rollback_unconfirmed"] {
+            assert!(log.lines().any(|line| {
+                let value: Value = serde_json::from_str(line).unwrap();
+                value["transaction_state"] == phase && value["success"] == false
+            }));
+        }
+        assert!(!log.contains("synthetic sensitive"));
+    }
 }

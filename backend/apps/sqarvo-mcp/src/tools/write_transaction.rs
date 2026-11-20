@@ -11,6 +11,9 @@ use tokio::time::Instant;
 
 use crate::policy::write::{WriteDialect, WritePlan, check_generated_sql, prepare_sql};
 
+/// Separate budget for resolving a transaction after DML has stopped.
+pub(crate) const TERMINAL_BUDGET: Duration = Duration::from_secs(5);
+
 /// Outcome retained for write audit and response handling.
 pub enum TransactionOutcome {
     /// The transaction never started.
@@ -84,7 +87,7 @@ pub async fn execute(
         let expected = match expected {
             Ok(expected) => expected,
             Err(error) => {
-                let _ = handle.cancel(&query_id).await;
+                finish(handle, handle.cancel(&query_id), TERMINAL_BUDGET).await;
                 return Err(error);
             }
         };
@@ -107,7 +110,7 @@ pub async fn execute(
         let start = match result {
             Ok(result) => result?,
             Err(error) => {
-                let _ = handle.cancel(&query_id).await;
+                finish(handle, handle.cancel(&query_id), TERMINAL_BUDGET).await;
                 return Err(error);
             }
         };
@@ -144,14 +147,47 @@ pub async fn execute(
     .await;
 
     match result {
-        Ok(count) => match handle.commit_transaction(&transaction).await {
-            Ok(()) => TransactionOutcome::Committed(count),
-            Err(_) => TransactionOutcome::CommitUnknown,
-        },
-        Err(error) => match handle.rollback_transaction(&transaction).await {
-            Ok(()) => TransactionOutcome::RolledBack { affected, error },
-            Err(_) => TransactionOutcome::RollbackUnconfirmed { affected, error },
-        },
+        Ok(count) => {
+            if finish(
+                handle,
+                handle.commit_transaction(&transaction),
+                TERMINAL_BUDGET,
+            )
+            .await
+            {
+                TransactionOutcome::Committed(count)
+            } else {
+                TransactionOutcome::CommitUnknown
+            }
+        }
+        Err(error) => {
+            if finish(
+                handle,
+                handle.rollback_isolated_transaction(&transaction),
+                TERMINAL_BUDGET,
+            )
+            .await
+            {
+                TransactionOutcome::RolledBack { affected, error }
+            } else {
+                TransactionOutcome::RollbackUnconfirmed { affected, error }
+            }
+        }
+    }
+}
+
+// Dropping the response future does not stop a driver actor that received the command.
+// Physically abort a disposable actor when its response misses the deadline.
+pub(super) async fn finish(
+    handle: &SessionHandle,
+    command: impl Future<Output = Result<()>>,
+    budget: Duration,
+) -> bool {
+    if let Ok(result) = tokio::time::timeout(budget, command).await {
+        result.is_ok()
+    } else {
+        handle.abort_isolated().await;
+        false
     }
 }
 
