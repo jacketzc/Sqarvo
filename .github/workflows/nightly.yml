@@ -75,7 +75,7 @@ jobs:
 
       - name: 构建后端（release）
         working-directory: backend
-        run: cargo build --release -p sqarvo-backend-service
+        run: cargo build --release -p sqarvo-backend-service -p sqarvo-mcp
 
       - name: 构建前端（release）
         working-directory: frontend/linux
