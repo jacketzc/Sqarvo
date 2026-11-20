@@ -19,6 +19,21 @@
 
 ![Sqarvo main window: object tree, table data grid and inspector DDL (Linux / GTK4)](docs/assets/screenshots/linux-main-window.png)
 
+## Download
+
+- **Nightly (Linux amd64)** — a `.deb` built daily at 10:00 Beijing time from the latest `main`
+  commit, published to the fixed [Sqarvo Nightly release](https://github.com/jacketzc/Sqarvo/releases/tag/nightly)
+  (pre-release). Experimental builds for early testing; do not point them at production data.
+
+  ```bash
+  sudo apt install ./sqarvo_<version>_amd64.deb   # needs GTK >= 4.16 / libadwaita >= 1.6 (Ubuntu 26.04 or equivalent)
+  ```
+
+  Each Nightly entry carries its commit SHA, Debian version and SHA-256; versioning and publishing
+  details: [packaging/linux/README.md](packaging/linux/README.md).
+- **Stable** — tagged `v*` releases appear as versions are cut; until then Nightly is the only
+  installable build on GitHub.
+
 ## Status
 
 The Linux client works end to end (SQLite and MariaDB); Windows and macOS are window shells that do
@@ -35,21 +50,6 @@ not talk to the backend yet.
   [requirements](docs/product/requirements.md) and the
   [release plan](docs/planning/release-plan.md); per-version notes are in
   [`docs/releases/`](docs/releases/).
-
-## Download
-
-- **Nightly (Linux amd64)** — a `.deb` built daily at 10:00 Beijing time from the latest `main`
-  commit, published to the fixed [Sqarvo Nightly release](https://github.com/jacketzc/Sqarvo/releases/tag/nightly)
-  (pre-release). Experimental builds for early testing; do not point them at production data.
-
-  ```bash
-  sudo apt install ./sqarvo_<version>_amd64.deb   # needs GTK >= 4.16 / libadwaita >= 1.6 (Ubuntu 26.04 or equivalent)
-  ```
-
-  Each Nightly entry carries its commit SHA, Debian version and SHA-256; versioning and publishing
-  details: [packaging/linux/README.md](packaging/linux/README.md).
-- **Stable** — tagged `v*` releases appear as versions are cut; until then Nightly is the only
-  installable build on GitHub.
 
 ## Repository layout
 

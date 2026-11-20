@@ -19,18 +19,6 @@
 
 ![Sqarvo 主窗口：对象树、表数据网格与信息面板 DDL（Linux / GTK4）](docs/assets/screenshots/linux-main-window.png)
 
-## 当前状态
-
-Linux 端已可端到端使用（SQLite 与 MariaDB）；Windows / macOS 仍是窗口骨架，尚未接后端。
-
-- **已有**：连接与测试连接、密码只写系统凭据库、对象树与元数据（逐层懒加载、按名搜索）、
-  SQL 编辑器与分批结果、表数据浏览 / 编辑 / 插入 / 显式事务、导出 CSV / INSERT / 转储表、
-  DDL 只读查看。
-- **未做**：PostgreSQL 驱动、多语句执行、DDL 修改、导入、结构对比与 ER 图、Windows / macOS
-  接入、远程 TLS。未实现的能力返回明确的 `UNIMPLEMENTED` / `capability.unsupported`，不伪造成功。
-- 能力清单与支持矩阵以 [产品需求](docs/product/requirements.md)、
-  [发布计划](docs/planning/release-plan.md) 为准；版本说明见 [`docs/releases/`](docs/releases/)。
-
 ## 下载
 
 - **Nightly（Linux amd64）**——每天 10:00（北京时间）用 `main` 最新提交自动打包 `.deb`，
@@ -44,6 +32,18 @@ Linux 端已可端到端使用（SQLite 与 MariaDB）；Windows / macOS 仍是�
   每个 Nightly 条目都带对应 commit SHA、Debian 包版本与 SHA-256；版本与发布机制细节见
   [packaging/linux/README.md](packaging/linux/README.md)。
 - **正式版本**——按 `v*` 标签发版后才提供；在此之前 Nightly 是 GitHub 上唯一可安装的构建。
+
+## 当前状态
+
+Linux 端已可端到端使用（SQLite 与 MariaDB）；Windows / macOS 仍是窗口骨架，尚未接后端。
+
+- **已有**：连接与测试连接、密码只写系统凭据库、对象树与元数据（逐层懒加载、按名搜索）、
+  SQL 编辑器与分批结果、表数据浏览 / 编辑 / 插入 / 显式事务、导出 CSV / INSERT / 转储表、
+  DDL 只读查看。
+- **未做**：PostgreSQL 驱动、多语句执行、DDL 修改、导入、结构对比与 ER 图、Windows / macOS
+  接入、远程 TLS。未实现的能力返回明确的 `UNIMPLEMENTED` / `capability.unsupported`，不伪造成功。
+- 能力清单与支持矩阵以 [产品需求](docs/product/requirements.md)、
+  [发布计划](docs/planning/release-plan.md) 为准；版本说明见 [`docs/releases/`](docs/releases/)。
 
 ## 目录结构
 
