@@ -423,7 +423,7 @@ sqarvo-mcp access read-only off
 ```
 
 `access on` 和 `access read-only off` 显示当前档案数量及影响范围并要求确认。
-非交互终端必须显式传入 `--yes`。只有全局访问开启时才可关闭只读，其变更不会开启 V1 写工具。
+非交互终端必须显式传入 `--yes`。只有全局访问开启时才可关闭只读，关闭只读后，授权 Agent 可以使用本页的 V2 写入工具。V1 查询工具继续执行只读规则。
 `access off` 撤销后续访问并恢复只读。已获授权且开始执行的操作可以完成，随后释放相应会话。状态显示两个开关、档案数量和文档 revision。
 这些命令由本地用户运行。GUI 和 CLI 的开关变更不进入 MCP 工具审计。
 
@@ -733,3 +733,101 @@ sqarvo-mcp http-auth launch codex --port 8765
 ### 本地管理 gRPC
 
 `SystemService` 增加 `GetMcpServerStatus`、`GetMcpServerConfig`、`UpdateMcpServerConfig`、`StartMcpServer`、`StopMcpServer`、`RotateMcpServerToken` 和 `RevokeMcpServerToken`。启停返回当前状态，终态通过状态 RPC 回读。失败状态携带稳定错误码，例如 `mcp.http.port_in_use`。配置更新仅在停止或失败状态接受，范围为 1–65535。现有 `ConnectionProfileService` 的权限 RPC 继续独立使用，所有管理 RPC 沿用本地 gRPC 认证。
+
+
+## V2 结构化写入
+
+在 GTK 的 **MCP → 数据权限**关闭 **只读**，或者由本机用户执行
+`sqarvo-mcp access read-only off` 并确认。保留 **MCP 数据访问**开启。
+建议日常查询使用专用只读数据库账号，写入使用独立的最小权限档案。
+重新开启只读或关闭数据访问后，新写入请求立即拒绝。Agent 无权改这些开关。
+使用显式 `enabled_tools` 列表时，需要添加要启用的 V2 工具名。
+
+| 工具 | 公共字段以外的参数 | 直接行数上限 |
+|---|---|---:|
+| `insert_rows` | `rows`，同批各行使用相同列集合 | 100 |
+| `update_rows` | `changes` 列值对象、`conditions` 数组 | 50 个匹配行 |
+| `delete_rows` | `conditions` 数组 | 20 |
+| `preview_write` | `operation` 为 `insert`、`update` 或 `delete`，并带对应参数 | 采用对应操作上限 |
+
+四个工具都需要 `connection_alias`、`database`、`table`。SQLite 的
+`database` 为 `main`。条件以 AND 组合，每项为 `column`、`operator` 和
+`value`。`eq`、`lt`、`lte`、`gt`、`gte` 需要非空值。`is_null` 与
+`is_not_null` 省略值。例如：
+
+```json
+{
+  "connection_alias": "test",
+  "database": "main",
+  "table": "orders",
+  "changes": {"status": "closed"},
+  "conditions": [{"column": "id", "operator": "eq", "value": 17}]
+}
+```
+
+支持 null、布尔值、64 位整数、有限浮点数和文本。绑定失败会返回错误。拒绝整表
+UPDATE / DELETE、DDL、TRUNCATE、任意 SQL、原始 WHERE、函数表达式及不能验证
+副作用范围的表。参数上限 128 KiB，HTTP 的整个请求也受同样大小的外层限制。
+写入执行时限最长 10 秒，取消后要等待事务清理。单次调用独立提交或回滚。
+收到 `mcp.commit_unknown` 时先核查数据库与审计，避免重复执行。
+
+预览只读取范围，返回估计、超限下界、整表命中或未知标记，以及风险、当前授权与执行资格，没有授权令牌。
+执行时总是重新检查。写入审计记录阶段、事务结果和直接影响行数，省略原始 SQL
+和绑定值。提交后的审计失败通过 `audit_warning` 返回，数据库结果仍按实际状态反馈。
+
+### MariaDB DBA 部署资格
+
+仅为 DBA 管理了 DDL 权限隔离的实例启用写入。设置期间，普通业务账号及其角色
+不能更改目标或在其他数据库创建相关外键。管理员先关闭 MCP 写入并排空会话，再运行
+迁移。为写入账号仅授予目标表所需 DML 和资格视图的 SELECT。
+
+DBA 创建 `sqarvo_guard.write_eligibility`，为每个已审查目标只返回一行
+`schema_name`、`table_name`、`eligible`。只有 InnoDB 基础表、且不存在触发器、
+入站或出站外键及其他不可回滚副作用时返回 `eligible=1`。视图应使用锁定的
+`SQL SECURITY DEFINER` 账号，由 DBA 审查目标的列默认值和生成表达式。该账号需要能
+看到全部相关触发器及 `information_schema.INNODB_SYS_FOREIGN`，包括跨库引用。
+普通写入账号无需全局 `PROCESS` 或 `RELOAD`。目标库表使用小写 ASCII 字母、数字和下划线。
+
+将档案的 UUID 和**当前档案 revision**加入服务级 `mcp.json` 后重启 MCP。键缺省时，
+MariaDB 写入关闭。档案修订变化后需要 DBA 重新确认。部署责任见
+[ADR 0037](../decisions/0037-mcp-bounded-writes.md)。
+
+```json
+{
+  "mariadb_write_profiles": {
+    "22222222-2222-4222-8222-222222222222": 7
+  }
+}
+```
+
+DBA 可从以下视图模板开始。先在 `sqarvo_guard.approved_target` 建立
+`(schema_name, table_name)` 联合主键。该表只保存 DBA 已审查且受 DDL 隔离的目标。
+给已锁定、不能登录的 `sqarvo_guard_definer` 授予白名单表的 SELECT、批准目标的
+触发器元数据访问权限，以及读取 InnoDB 入站外键字典所需的 PROCESS。不给写入账号
+授予白名单表、维护视图或视图定义者的权限。
+
+```sql
+CREATE DEFINER='sqarvo_guard_definer'@'localhost' SQL SECURITY DEFINER
+VIEW sqarvo_guard.write_eligibility AS
+SELECT a.schema_name, a.table_name,
+       NOT EXISTS (
+          SELECT 1 FROM information_schema.TRIGGERS AS t
+          WHERE BINARY t.EVENT_OBJECT_SCHEMA = BINARY a.schema_name
+            AND BINARY t.EVENT_OBJECT_TABLE = BINARY a.table_name
+       ) AND NOT EXISTS (
+          SELECT 1 FROM information_schema.INNODB_SYS_FOREIGN AS f
+          WHERE BINARY f.REF_NAME = BINARY CONCAT(a.schema_name, '/', a.table_name)
+             OR BINARY f.FOR_NAME = BINARY CONCAT(a.schema_name, '/', a.table_name)
+       ) AS eligible
+FROM sqarvo_guard.approved_target AS a;
+```
+
+配置完成后应从专用写入账号验证批准对象返回一行。视图负责补充该账号看不见的
+触发器和外键，MCP 另查表引擎和引用字段。审查 `approved_target` 前，应确认
+定义者确实能看到目标触发器和跨库外键。数据库迁移后，重新审查目标并检查视图结果。
+
+隔离 MariaDB 写入测试使用 `SQARVO_MCP_MARIADB_WRITE_FIXTURE`，要求连接到
+回环实例的 `sqarvo_mcp_write_fixture` 测试库。目标 `orders` 使用 InnoDB，
+包含 `id INT PRIMARY KEY`、`note VARCHAR(100)` 和初始记录 ID 1 与 2。
+配置同名资格视图且授权测试账号后，执行
+`cargo test --locked -p sqarvo-mcp --test tools_mariadb bounded_write_on_dba_provisioned_fixture`。

@@ -66,9 +66,8 @@ fn run_legacy_matrix_session(protocol_version: &str) {
         .collect();
     let mut sorted = names.clone();
     sorted.sort();
-    let mut expected: Vec<String> = sqarvo_mcp::config::V1_TOOL_NAMES
-        .iter()
-        .map(|name| (*name).to_owned())
+    let mut expected: Vec<String> = sqarvo_mcp::config::tool_names()
+        .map(str::to_owned)
         .collect();
     expected.sort();
     assert_eq!(
@@ -265,7 +264,7 @@ fn bare_requests_with_draft_meta_work_without_any_handshake() {
     let listed = tools["result"]["tools"].as_array().expect("tools 数组");
     assert_eq!(
         listed.len(),
-        sqarvo_mcp::config::V1_TOOL_NAMES.len(),
+        sqarvo_mcp::config::tool_names().count(),
         "裸请求也必须拿到全部 8 工具：{tools}"
     );
     // spike §4：2026 会话响应带缓存字段（server.rs 按协议版本条件填）。
@@ -398,7 +397,7 @@ fn initialize_draft_version_negotiates_down_to_2025_11_25() {
     let tools = server.request(2, "tools/list", serde_json::json!({}));
     assert_eq!(
         tools["result"]["tools"].as_array().expect("tools").len(),
-        sqarvo_mcp::config::V1_TOOL_NAMES.len(),
+        sqarvo_mcp::config::tool_names().count(),
         "降级会话仍应拿到全部 8 工具：{tools}"
     );
     // 降级后不是 2026 会话：不应播缓存字段（server.rs 的版本门控）。
@@ -673,7 +672,7 @@ fn server_stays_alive_after_initialize_until_stdin_closes() {
     let tools = server.request(2, "tools/list", serde_json::json!({}));
     assert_eq!(
         tools["result"]["tools"].as_array().expect("tools").len(),
-        sqarvo_mcp::config::V1_TOOL_NAMES.len(),
+        sqarvo_mcp::config::tool_names().count(),
         "静置后 tools/list 必须仍可服务：{tools}"
     );
 

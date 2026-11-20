@@ -64,6 +64,14 @@ pub const V1_TOOL_NAMES: [&str; 8] = [
     "explain_query",
 ];
 
+/// V2 structured write tools.
+pub const V2_TOOL_NAMES: [&str; 4] = ["insert_rows", "update_rows", "delete_rows", "preview_write"];
+
+/// Names recognized by the shared tool policy.
+pub fn tool_names() -> impl Iterator<Item = &'static str> {
+    V1_TOOL_NAMES.into_iter().chain(V2_TOOL_NAMES)
+}
+
 /// 工具未指定 `limit` 时的返回行数（V3.1 §10）。
 pub const DEFAULT_MAX_ROWS: u32 = 200;
 /// 硬性最大返回行数：Agent 显式 `limit` 也越不过去。
@@ -99,6 +107,9 @@ pub struct McpConfig {
     pub enabled_tools: Option<Vec<String>>,
     /// 查询限额覆盖；逐字段钳制到硬上限。
     pub query_limits: Option<QueryLimitsOverride>,
+    /// DBA-approved MariaDB profile UUIDs and their exact revisions.
+    #[serde(default)]
+    pub mariadb_write_profiles: BTreeMap<uuid::Uuid, u64>,
 }
 
 /// 单个连接档案。
@@ -281,7 +292,7 @@ impl ToolPolicy {
     #[must_use]
     pub fn allows(&self, name: &str) -> bool {
         match self {
-            Self::All => V1_TOOL_NAMES.contains(&name),
+            Self::All => tool_names().any(|known| known == name),
             Self::Only(names) => names.contains(name),
         }
     }
@@ -302,7 +313,7 @@ impl ToolPolicy {
     #[must_use]
     pub fn enabled_names(&self) -> Vec<&str> {
         match self {
-            Self::All => V1_TOOL_NAMES.to_vec(),
+            Self::All => tool_names().collect(),
             Self::Only(names) => names.iter().map(String::as_str).collect(),
         }
     }
@@ -314,6 +325,7 @@ pub struct ValidatedConfig {
     connections: BTreeMap<String, ConnectionProfile>,
     tools: ToolPolicy,
     limits: EffectiveLimits,
+    mariadb_write_profiles: BTreeMap<uuid::Uuid, u64>,
     warnings: Vec<String>,
 }
 
@@ -346,6 +358,11 @@ impl ValidatedConfig {
     #[must_use]
     pub const fn limits(&self) -> &EffectiveLimits {
         &self.limits
+    }
+
+    /// Whether the exact profile revision was opted into the DBA deployment contract.
+    pub fn allows_mariadb_write(&self, id: uuid::Uuid, revision: u64) -> bool {
+        self.mariadb_write_profiles.get(&id) == Some(&revision)
     }
 
     /// 校验期产生的告警（非致命）。
@@ -457,6 +474,7 @@ impl McpConfig {
             connections: profiles,
             enabled_tools,
             query_limits,
+            mariadb_write_profiles,
         } = self;
         for profile in profiles {
             validate_profile(&profile, &mut warnings)?;
@@ -473,6 +491,7 @@ impl McpConfig {
             connections,
             tools,
             limits,
+            mariadb_write_profiles,
             warnings,
         })
     }
@@ -487,10 +506,10 @@ fn tool_policy(
     };
     let mut selected = BTreeSet::new();
     for name in names {
-        if !V1_TOOL_NAMES.contains(&name.as_str()) {
+        if !tool_names().any(|known| known == name) {
             return Err(config_error(format!(
                 "enabled_tools 含未知工具名；本版本支持：{}",
-                V1_TOOL_NAMES.join("、")
+                tool_names().collect::<Vec<_>>().join("、")
             )));
         }
         selected.insert(name);
@@ -952,7 +971,10 @@ mod tests {
         let validated = validate_json(&value).expect("合法配置");
         assert_eq!(validated.tools(), &ToolPolicy::All);
         assert!(validated.tools().allows("execute_readonly_query"));
-        assert_eq!(validated.tools().enabled_names().len(), V1_TOOL_NAMES.len());
+        assert_eq!(
+            validated.tools().enabled_names().len(),
+            tool_names().count()
+        );
 
         // 显式列表 = 只启用这些
         let value = serde_json::json!({

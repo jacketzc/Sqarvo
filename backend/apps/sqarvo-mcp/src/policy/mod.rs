@@ -15,6 +15,7 @@
 
 mod ast;
 mod fingerprint;
+pub mod write;
 
 use sqarvo_common::Result;
 

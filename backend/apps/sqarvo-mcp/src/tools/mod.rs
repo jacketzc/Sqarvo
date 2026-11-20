@@ -34,6 +34,9 @@ pub mod explain;
 pub mod query;
 pub mod schema;
 pub mod value;
+pub(crate) mod write;
+pub mod write_preflight;
+pub mod write_transaction;
 
 use std::time::Instant;
 

@@ -38,14 +38,14 @@ status = "done"
 
 [[entry]]
 key = "workspace.mcp_access.status_write_warning"
-zh = "MCP：只读已关闭。当前 MCP 版本尚未提供数据库写入工具。"
-en = "MCP: read-only is off. This MCP version does not provide database write tools."
+zh = "MCP：只读已关闭。已授权的 Agent 可执行受控写入。"
+en = "MCP: read-only is off. Authorized agents can perform bounded writes."
 status = "done"
 
 [[entry]]
 key = "workspace.mcp_access.no_write_tools"
-zh = "警告：MCP 只读已关闭。当前 MCP 版本尚未提供数据库写入工具。"
-en = "Warning: MCP read-only is off. This MCP version does not provide database write tools."
+zh = "警告：MCP 只读已关闭。已授权的 Agent 可执行受控写入。"
+en = "Warning: MCP read-only is off. Authorized agents can perform bounded writes."
 status = "done"
 
 [[entry]]
@@ -274,8 +274,8 @@ status = "done"
 
 [[entry]]
 key = "workspace.mcp.write_tools_note"
-zh = "当前 MCP 版本尚未提供数据库写入工具。"
-en = "This MCP version does not provide database write tools."
+zh = "已授权的 Agent 可执行受控写入。"
+en = "Authorized agents can perform bounded writes."
 status = "done"
 
 [[entry]]

@@ -204,6 +204,8 @@ impl ErrorCode {
     pub const MCP_UNSUPPORTED: Self = Self("mcp.unsupported");
     /// 查询超过 MCP 策略时限并已被取消。
     pub const MCP_QUERY_TIMEOUT: Self = Self("mcp.query_timeout");
+    /// The database did not establish a commit outcome. The request must not be replayed.
+    pub const MCP_COMMIT_UNKNOWN: Self = Self("mcp.commit_unknown");
     /// 结果超过行数或字节上限。
     pub const MCP_RESULT_TOO_LARGE: Self = Self("mcp.result_too_large");
     /// MCP 内部错误。
@@ -570,6 +572,7 @@ mod tests {
             ErrorCode::MCP_TABLE_NOT_FOUND,
             ErrorCode::MCP_UNSUPPORTED,
             ErrorCode::MCP_QUERY_TIMEOUT,
+            ErrorCode::MCP_COMMIT_UNKNOWN,
             ErrorCode::MCP_RESULT_TOO_LARGE,
             ErrorCode::MCP_INTERNAL,
         ];
@@ -587,6 +590,7 @@ mod tests {
                 "mcp.table_not_found",
                 "mcp.unsupported",
                 "mcp.query_timeout",
+                "mcp.commit_unknown",
                 "mcp.result_too_large",
                 "mcp.internal",
             ]

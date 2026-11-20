@@ -1345,7 +1345,7 @@ fn unsupported_pk(kind: &str) -> Error {
 /// 方言安全的标识符引用：反引号包裹，内部反引号翻倍。
 ///
 /// 只有对象名与列名走这里；任何**值**都不进入 SQL 文本，一律参数绑定。
-fn quote_identifier(name: &str) -> String {
+pub(crate) fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 

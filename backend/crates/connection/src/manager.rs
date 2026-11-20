@@ -9,9 +9,9 @@ use sqarvo_common::{ConnectionId, Error, ErrorCode, QueryId, Result, SessionId, 
 use sqarvo_driver_api::{
     BrowseOptions, ColumnMeta, ConnectionParams, ConnectionTestReport, Ddl, DriverId,
     DriverSession, ExecuteRequest, ExecutionStart, InsertReport, InsertRowsRequest, IsolationLevel,
-    MetadataProvider, ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey,
-    ResultBatch, RowChangeCancel, RowChangeReport, RowChangeRequest, Secret, SessionContext,
-    TableDataProvider, TablePage, TransactionOptions,
+    MetadataProvider, ObjectFilter, ObjectNode, ObjectRef, Page, PageRequest,
+    ParameterizedExecuteRequest, PrimaryKey, ResultBatch, RowChangeCancel, RowChangeReport,
+    RowChangeRequest, Secret, SessionContext, TableDataProvider, TablePage, TransactionOptions,
 };
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, UnavailableCredentialStore};
@@ -206,6 +206,24 @@ impl SessionHandle {
         if let Err(error) = &result {
             // 驱动可能已经中止了事务（SQLite 自动回滚、MariaDB 事务丢失）：
             // 立刻把登记切到失败态，后续 Commit 不得再问驱动。
+            self.observe_transaction_error(error);
+        }
+        result
+    }
+
+    /// Quote a single identifier through the current driver.
+    pub fn quote_identifier(&self, name: &str) -> Option<String> {
+        self.session.quote_identifier(name)
+    }
+
+    /// Execute a parameterized statement within the session execution lock.
+    pub async fn execute_parameterized(
+        &self,
+        request: ParameterizedExecuteRequest,
+    ) -> Result<ExecutionStart> {
+        let _guard = self.execution.lock().await;
+        let result = self.session.execute_parameterized(request).await;
+        if let Err(error) = &result {
             self.observe_transaction_error(error);
         }
         result

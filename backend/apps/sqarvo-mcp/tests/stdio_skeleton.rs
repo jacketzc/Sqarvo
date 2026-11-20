@@ -230,9 +230,8 @@ fn initialize_initialized_tools_list_then_eof_exits_zero() {
         .collect();
     let mut listed_sorted = listed;
     listed_sorted.sort();
-    let mut expected: Vec<String> = sqarvo_mcp::config::V1_TOOL_NAMES
-        .iter()
-        .map(|name| (*name).to_owned())
+    let mut expected: Vec<String> = sqarvo_mcp::config::tool_names()
+        .map(str::to_owned)
         .collect();
     expected.sort();
     assert_eq!(

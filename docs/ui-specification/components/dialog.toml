@@ -68,12 +68,12 @@ a11y.tab = "默认落在取消，确认按钮紧随其后"
 [[component.interaction]]
 trigger = "click"
 precondition = "数据访问已启用，并在主菜单关闭 MCP 只读"
-result = "显示当前档案数及未来潜在的数据库写入风险，说明当前 MCP 版本尚未提供数据库写入工具。确认后写入策略并回读，取消不写入。"
+result = "显示当前档案数，说明授权 Agent 可执行受控插入、更新和删除，仍受数据库权限和写入限额约束。确认后写入策略并回读，取消不写入。"
 source = "src/mcp_access.rs:226"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "546402a5c974"
+spec_hash = "3ffb6dc05461"
 evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证风险提示和取消。"
 
 [component.sync.windows]

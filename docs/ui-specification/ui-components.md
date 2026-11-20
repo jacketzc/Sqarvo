@@ -614,7 +614,7 @@ kind `control` · status `active` · parent `dialog`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 数据访问已启用，并在主菜单关闭 MCP 只读 | 显示当前档案数及未来潜在的数据库写入风险，说明当前 MCP 版本尚未提供数据库写入工具。确认后写入策略并回读，取消不写入。 | `src/mcp_access.rs:226` |
+| click | 数据访问已启用，并在主菜单关闭 MCP 只读 | 显示当前档案数，说明授权 Agent 可执行受控插入、更新和删除，仍受数据库权限和写入限额约束。确认后写入策略并回读，取消不写入。 | `src/mcp_access.rs:226` |
 
 ## 对话框（`dialogs`）
 
@@ -3150,7 +3150,7 @@ kind `control` · status `active` · parent `workspace`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 启动态或已连接工作区 | 常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。 | `src/shell.rs:1271、src/mcp_access.rs:271` |
+| load | 启动态或已连接工作区 | 常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示已授权的 Agent 可执行受控写入。 | `src/shell.rs:1271、src/mcp_access.rs:271` |
 | click | GTK 窗口已连接后端，用户打开主菜单 | 从 gRPC 重新读取访问和只读策略，更新菜单及状态；反映外部 CLI 已提交的变更。 | `src/ui.rs:338、src/mcp_access.rs:123` |
 
 ### `workspace.mcp_management` MCP 管理

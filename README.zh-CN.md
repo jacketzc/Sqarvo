@@ -100,12 +100,12 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 
 ## MCP Server
 
-`sqarvo-mcp` 是独立的只读 MCP Server。MCP 客户端（Claude Desktop、Cherry Studio、Inspector、
+`sqarvo-mcp` 是独立的 MCP Server，默认启用只读保护。MCP 客户端（Claude Desktop、Cherry Studio、Inspector、
 各类 Agent 运行时）将其作为子进程启动，通过 stdio 通信。MCP 独立于 GUI 后端运行，
 与 GTK 应用使用同一份本地连接档案。
 
-- **天生只读**：8 个工具（连接发现、结构发现、表数据样本、单条只读查询、`EXPLAIN`）与 4 类资源；
-  每条 SQL 都必须先通过 AST 只读策略才可能到达驱动。
+- **只读工具与结构化写入**。8 个只读工具及 4 类资源沿用既有策略。关闭只读保护后，已授权的
+  Agent 可以预览并执行受控插入、更新和删除。MariaDB 写入需要 DBA 配置。
 - **MariaDB 与 SQLite**：两者的结构发现与只读查询都可用；`explain_query` 仅 MariaDB
   （SQLite 的 `EXPLAIN QUERY PLAN` 语义不同，本版不代执行）。
 - **服务端强制限额**：默认 200 行（硬上限 1000）、单次 1 MiB、10 秒超时、每进程 2 个并发调用；

@@ -96,7 +96,7 @@ a11y.tab = "状态文本不进入 Tab 顺序"
 [[component.interaction]]
 trigger = "load"
 precondition = "启动态或已连接工作区"
-result = "常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示当前 MCP 版本尚未提供数据库写入工具。"
+result = "常驻显示访问关闭、仅允许读取或只读已关闭，并反映加载、策略错误和断开状态。只读关闭时明确提示已授权的 Agent 可执行受控写入。"
 source = "src/shell.rs:1271、src/mcp_access.rs:271"
 
 [[component.interaction]]
@@ -107,7 +107,7 @@ source = "src/ui.rs:338、src/mcp_access.rs:123"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d872272a84d4"
+spec_hash = "5c1cd658371c"
 evidence = "tests/ui/linux/test_06_mcp_access.py 验证状态的可访问名称，以及 CLI 开关变更后打开主菜单刷新状态。"
 
 [component.sync.windows]

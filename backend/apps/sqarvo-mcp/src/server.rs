@@ -63,8 +63,8 @@ pub const SERVER_NAME: &str = "sqarvo-mcp";
 /// 只写**事实**：V1 是只读的、同一连接串行、默认并发 2。工具级细节归 #209 的
 /// tool description，这里不重复。
 const SERVER_INSTRUCTIONS: &str = "\
-Sqarvo MCP Server 在全局数据访问启用时通过共享连接档案访问数据库，V1 只提供只读的\
-结构与查询能力。同一个数据库连接上的查询会串行执行（单会话单在途语句），不同连接\
+Sqarvo MCP Server 在全局数据访问启用时通过共享连接档案访问数据库。查询工具始终只读。\
+关闭只读保护后可使用受控写入工具，预览不授予执行资格。同一个数据库连接上的查询会串行执行（单会话单在途语句），不同连接\
 可在进程级并发上限内并行；排队不是故障。未在 enabled_tools 中启用的工具会被拒绝。\
 所有调用记入本地审计日志（只记录 SQL 指纹，不记录原始 SQL 与结果）。";
 
@@ -206,6 +206,7 @@ impl SqarvoMcpServer {
         self.tool_router
             .list_all()
             .into_iter()
+            .chain(crate::tools::write::descriptions())
             .filter(|tool| policy.allows(tool.name.as_ref()))
             .collect()
     }
@@ -232,6 +233,12 @@ impl ServerHandler for SqarvoMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, McpError> {
+        if let Some(tool) = config::V2_TOOL_NAMES
+            .into_iter()
+            .find(|tool| *tool == request.name)
+        {
+            return crate::tools::write::call(&self.context, tool, request, context).await;
+        }
         if let Some(tool) = config::V1_TOOL_NAMES
             .iter()
             .find(|name| **name == request.name)
@@ -457,7 +464,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn server_announces_all_v1_tools_and_the_resource_capability() {
+    async fn server_announces_all_tools_and_the_resource_capability() {
         let dir = tempfile::tempdir().expect("tempdir");
         let context = ServerContext::bootstrap_with(
             Some(Path::new("/nonexistent/sqarvo-mcp/test-mcp.json")),
@@ -472,21 +479,14 @@ mod tests {
         assert!(info.capabilities.resources.is_some());
         assert!(info.instructions.is_some());
         let mut registered: Vec<String> = server
-            .tool_router
-            .list_all()
+            .visible_tools()
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect();
         registered.sort();
-        let mut expected: Vec<String> = crate::config::V1_TOOL_NAMES
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect();
+        let mut expected: Vec<String> = crate::config::tool_names().map(str::to_owned).collect();
         expected.sort();
-        assert_eq!(
-            registered, expected,
-            "工具路由必须与 V1_TOOL_NAMES 一一对应"
-        );
+        assert_eq!(registered, expected, "工具发现必须与配置工具名单一一对应");
         assert_eq!(
             server.context().config().connection_count(),
             0,
@@ -525,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn enabled_tools_filter_the_advertised_tool_list() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let all = crate::config::V1_TOOL_NAMES.len();
+        let all = crate::config::tool_names().count();
 
         let context = ServerContext::bootstrap_with(
             Some(Path::new("/nonexistent/sqarvo-mcp/test-mcp.json")),
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(visible, vec!["describe_table", "list_tables"]);
         assert_eq!(
             server.tool_router.list_all().len(),
-            all,
+            crate::config::V1_TOOL_NAMES.len(),
             "路由表仍是静态的：过滤只发生在播发层"
         );
         // 被禁用的工具仍可被路由到（执行期由 ensure_enabled 拒绝），

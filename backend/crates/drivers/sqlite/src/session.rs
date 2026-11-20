@@ -1353,6 +1353,10 @@ impl DriverSession for SqliteSession {
         true
     }
 
+    fn quote_identifier(&self, name: &str) -> Option<String> {
+        Some(crate::table_data::quote_identifier(name))
+    }
+
     async fn execute_parameterized(
         &self,
         request: ParameterizedExecuteRequest,

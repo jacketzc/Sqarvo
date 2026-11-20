@@ -199,8 +199,12 @@ impl Slot {
 pub enum OperationType {
     /// 只读操作。
     Read,
-    /// 预留的写操作分类。
-    Write,
+    /// 插入新行。
+    Insert,
+    /// 更新现有行。
+    Update,
+    /// 删除现有行。
+    Delete,
 }
 
 /// 一次请求在同一文档修订上作出的授权判定。
@@ -275,7 +279,9 @@ impl AccessGuard {
             })
             .transpose()?;
         if document.mcp.read_only && operation != OperationType::Read {
-            return Err(access_denied("MCP 全局只读策略拒绝写操作"));
+            return Err(access_denied(
+                "当前 Sqarvo MCP 处于只读模式。若需要执行数据库写入，请用户在 Sqarvo 的 MCP 管理页面关闭「只读」开关。",
+            ));
         }
         Ok(AuthorizedContext { document, profile })
     }
@@ -338,7 +344,8 @@ pub struct AccessService {
     sessions: Arc<SessionManager>,
     queries: Arc<QueryRegistry>,
     semaphore: Arc<Semaphore>,
-    guard: AccessGuard,
+    guard: Arc<AccessGuard>,
+    write_lifecycle: Arc<RwLock<()>>,
 }
 
 impl AccessService {
@@ -387,7 +394,8 @@ impl AccessService {
             semaphore: Arc::new(Semaphore::new(limits.max_concurrency)),
             config,
             sessions,
-            guard,
+            guard: Arc::new(guard),
+            write_lifecycle: Arc::new(RwLock::new(())),
         })
     }
 
@@ -416,7 +424,7 @@ impl AccessService {
     }
 
     /// 获取当前有效的授权守卫。
-    pub const fn guard(&self) -> &AccessGuard {
+    pub fn guard(&self) -> &AccessGuard {
         &self.guard
     }
 
@@ -485,8 +493,8 @@ impl AccessService {
             .get(&profile.profile_id)
             .ok_or_else(|| Error::internal("已授权请求缺少会话槽位"))?;
         let connect_guard = slot.connect.lock().await;
-        if let Some(handle) = self.cached_handle(slot).await {
-            return Ok(handle);
+        if let Some(lease) = self.cached_handle(slot).await {
+            return Ok(lease);
         }
         let params = profile.params;
         match self.sessions.connect(alias.to_owned(), params).await {
@@ -545,6 +553,72 @@ impl AccessService {
         }
     }
 
+    /// Run one authorized operation on a disposable physical session, without replay.
+    ///
+    /// The spawned owner disconnects the session before releasing the concurrency permit,
+    /// even when the protocol handler stops waiting. The operation must observe cancellation
+    /// before issuing commit and must retain its actual commit outcome.
+    pub async fn run_write<T, F, Fut>(
+        &self,
+        alias: &str,
+        operation: OperationType,
+        execute: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(SessionHandle) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
+        if operation == OperationType::Read {
+            return Err(Error::internal("写入会话需要 DML 操作类型"));
+        }
+        let authorized = self
+            .guard
+            .authorize_request(operation, Some(alias.to_owned()))
+            .await?;
+        let profile = authorized
+            .profile
+            .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
+        if profile.params.driver_id.as_str() == "mariadb"
+            && !self
+                .config
+                .allows_mariadb_write(profile.profile_id, profile.revision)
+        {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "该 MariaDB 档案未配置 DBA 写入资格",
+            ));
+        }
+        let profile_id = profile.profile_id.to_string();
+        let lifecycle = self.write_lifecycle.clone().read_owned().await;
+        let permit = self.acquire_permit().await?;
+        let guard = Arc::clone(&self.guard);
+        let sessions = Arc::clone(&self.sessions);
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _lifecycle = lifecycle;
+            let profile = guard
+                .authorize_request(operation, Some(profile_id.clone()))
+                .await?
+                .profile
+                .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
+            let summary = sessions.connect(profile_id.clone(), profile.params).await?;
+            let result = async {
+                let handle = sessions.acquire(&summary.session_id).await?;
+                guard.authorize_request(operation, Some(profile_id)).await?;
+                execute(handle).await
+            }
+            .await;
+
+            if let Err(error) = sessions.disconnect(&summary.connection_id).await {
+                tracing::warn!(code = %error.code(), "MCP 写入会话清理返回错误");
+            }
+            result
+        })
+        .await
+        .map_err(|_| Error::internal("MCP 写入会话任务异常"))?
+    }
+
     async fn run_leased<T, F, Fut>(lease: LeasedSession, operation: &F) -> Result<T>
     where
         F: Fn(SessionHandle) -> Fut,
@@ -591,6 +665,8 @@ impl AccessService {
 
     /// 关闭全部会话并清理查询登记，供进程退出（EOF / SIGINT / SIGTERM）调用。
     pub async fn close_all(&self) {
+        self.semaphore.close();
+        let _drained = self.write_lifecycle.write().await;
         for slot in self.guard.slots.values() {
             self.guard.disconnect(slot).await;
         }
@@ -820,27 +896,40 @@ mod tests {
             .expect_err("新增档案");
         assert_eq!(error.code(), ErrorCode::PROFILE_RESTART_REQUIRED);
 
-        assert!(
-            service
-                .guard()
-                .authorize_request(OperationType::Write, None)
-                .await
-                .is_err()
-        );
-        service
+        let invalid_policy = service
             .store
             .set_mcp_access(sqarvo_local_store::McpAccessPolicy {
-                enabled: true,
+                enabled: false,
                 read_only: false,
-            })
-            .expect("切换全局只读");
-        assert!(
+            });
+        assert!(invalid_policy.is_err(), "关闭总开关时不得关闭只读");
+
+        for (enabled, read_only) in [(false, true), (true, true), (true, false)] {
             service
-                .guard()
-                .authorize_request(OperationType::Write, None)
-                .await
-                .is_ok()
-        );
+                .store
+                .set_mcp_access(sqarvo_local_store::McpAccessPolicy { enabled, read_only })
+                .expect("切换全局策略");
+            for operation in [
+                OperationType::Read,
+                OperationType::Insert,
+                OperationType::Update,
+                OperationType::Delete,
+            ] {
+                let result = service.guard().authorize_request(operation, None).await;
+                let allowed = enabled && (!read_only || operation == OperationType::Read);
+                assert_eq!(
+                    result.is_ok(),
+                    allowed,
+                    "enabled={enabled}, read_only={read_only}, {operation:?}"
+                );
+                if let Err(error) = result
+                    && enabled
+                    && read_only
+                {
+                    assert!(error.to_string().contains("关闭「只读」开关"));
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -968,6 +1057,46 @@ mod tests {
         let fresh = service.session("dev").await.expect("复用新会话");
         assert_ne!(fresh.summary().session_id, stale_id, "必须是重连后的新会话");
         assert_eq!(service.session_manager().active_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn write_lease_rejects_read_only_and_propagates_disconnect_without_replay() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = sqlite_config(&dir.path().join("test.db"));
+        let service = service(config, Arc::new(MemoryCredentialStore::new()));
+
+        let denied = service
+            .run_write("dev", OperationType::Insert, |_| async {
+                unreachable!("read-only requests cannot obtain a write lease")
+            })
+            .await;
+        let denied: Result<()> = denied;
+        assert!(denied.is_err());
+        assert_eq!(service.session_manager().active_count().await, 0);
+
+        service
+            .store
+            .set_mcp_access(sqarvo_local_store::McpAccessPolicy {
+                enabled: true,
+                read_only: false,
+            })
+            .expect("开启写入");
+        let error = service
+            .run_write("dev", OperationType::Insert, |handle| async move {
+                handle.close().await.expect("关闭驱动会话");
+                handle
+                    .execute(ExecuteRequest {
+                        query_id: QueryId::new(),
+                        sql: "SELECT 1".into(),
+                        max_rows: Some(1),
+                        timeout: None,
+                    })
+                    .await
+            })
+            .await
+            .expect_err("断连应直接传给写入执行者");
+        assert!(is_stale_session_error(&error));
+        assert_eq!(service.session_manager().active_count().await, 0);
     }
 
     #[tokio::test]

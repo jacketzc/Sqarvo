@@ -85,7 +85,7 @@ pub fn run(store: &ProfileStore, action: &AccessAction) -> Result<()> {
             require_enabled(snapshot.mcp)?;
             let count = snapshot.profiles.len();
             let message = format!(
-                "关闭只读保护将影响当前 {count} 个连接档案及此后新增的档案。此操作风险较高。当前 MCP 版本尚未提供数据库写入工具。"
+                "关闭只读保护将影响当前 {count} 个连接档案及此后新增的档案。已授权的 Agent 可执行受控插入、更新和删除，仍受数据库权限和写入限额约束。"
             );
             if !confirm(&message, *yes)? {
                 return Ok(());

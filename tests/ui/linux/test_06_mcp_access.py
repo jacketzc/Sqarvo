@@ -16,8 +16,8 @@ pytestmark = pytest.mark.smoke
 
 DISABLED = "MCP：访问关闭"
 READABLE = "MCP：仅允许读取"
-WRITABLE = "MCP：只读已关闭。当前 MCP 版本尚未提供数据库写入工具。"
-NO_WRITE_TOOLS = "当前 MCP 版本尚未提供数据库写入工具。"
+WRITABLE = "MCP：只读已关闭。已授权的 Agent 可执行受控写入。"
+WRITE_SCOPE = "受控插入、更新和删除"
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def confirm_scope(dialog, *, write):
     expect(any("当前 1 个连接档案" in caption for caption in captions),
            "确认框说明当前 1 个连接档案", captions)
     if write:
-        expect(any(NO_WRITE_TOOLS in caption and "关闭只读模式不会自动增加写入能力。" in caption
+        expect(any(WRITE_SCOPE in caption and "仍受数据库权限和写入限额约束" in caption
                    for caption in captions),
                "确认框说明当前版本的写入能力范围", captions)
 

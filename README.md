@@ -109,13 +109,13 @@ Starting the test database: [tests/integration/README.md](tests/integration/READ
 
 ## MCP Server
 
-`sqarvo-mcp` is a separate, read-only MCP server. MCP clients (Claude Desktop, Cherry Studio,
+`sqarvo-mcp` is a separate MCP server with read-only access by default. MCP clients (Claude Desktop, Cherry Studio,
 Inspector, agent runtimes) launch it as a child process and communicate over stdio. MCP runs
 independently of the GUI backend and uses the same local connection profiles as the GTK app.
 
-- **Read-only by design**: 8 tools (connection discovery, schema discovery, table sample, one
-  read-only query, `EXPLAIN`) and 4 resource shapes. Every SQL statement goes through an AST
-  read-only policy before it can reach a driver.
+- **Read-only tools and structured writes**. Eight read-only tools and four resource shapes
+  retain their existing policy. With read-only protection disabled, authorized agents can
+  preview and execute bounded inserts, updates, and deletes. MariaDB writes require DBA setup.
 - **MariaDB and SQLite**: schema discovery and read-only queries on both. `explain_query` is
   MariaDB-only (SQLite's `EXPLAIN QUERY PLAN` has different semantics and is not substituted).
 - **Server-enforced limits**: 200 rows by default (hard cap 1000), 1 MiB per response, 10 s timeout,

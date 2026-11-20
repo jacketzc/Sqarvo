@@ -78,6 +78,45 @@ impl RotationPolicy {
     }
 }
 
+/// Write lifecycle events written without bound values or SQL.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WritePhase {
+    /// Durable intent required before opening the transaction.
+    Intent,
+    /// The checked row count immediately before attempting commit.
+    Prepared,
+    /// The operation was rejected before its transaction started.
+    NotStarted,
+    /// The transaction was rolled back.
+    RolledBack,
+    /// The database acknowledged commit.
+    Committed,
+    /// The commit response did not establish an outcome.
+    CommitUnknown,
+    /// Rollback could not be confirmed.
+    RollbackUnconfirmed,
+    /// The tool calculated a preview without executing DML.
+    Preview,
+}
+
+/// Additional JSONL fields for a write request.
+#[derive(Debug, Clone, Serialize)]
+pub struct WriteAudit {
+    /// Validated target name, when available for the request.
+    pub table: Option<String>,
+    /// Static operation label.
+    pub operation_type: &'static str,
+    /// Direct DML row count, when the driver reported it.
+    pub affected_rows: Option<u64>,
+    /// Indicates whether UPDATE reports matched rows.
+    pub counts_matched_rows: bool,
+    /// Transaction state or audit lifecycle phase.
+    pub transaction_state: WritePhase,
+    /// Server-classified risk.
+    pub risk_level: &'static str,
+}
+
 /// 一条审计记录。
 ///
 /// 字段与 V3.1 §12 的清单一一对应；`error_code` 放**分类**
@@ -110,6 +149,9 @@ pub struct AuditRecord {
     pub success: bool,
     /// 错误分类（失败时）。
     pub error_code: Option<String>,
+    /// Write-specific fields. Read audit records retain their existing format.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub write: Option<WriteAudit>,
     /// 稳定错误子码（失败时）。
     pub error_subcode: Option<String>,
 }
@@ -132,7 +174,16 @@ impl AuditRecord {
             success: true,
             error_code: None,
             error_subcode: None,
+            write: None,
         }
+    }
+
+    /// Attach write-only audit fields with a timestamp for the current event.
+    #[must_use]
+    pub fn with_write(mut self, write: WriteAudit) -> Self {
+        self.timestamp = now_rfc3339();
+        self.write = Some(write);
+        self
     }
 
     /// 客户端信息（只在协议给出且可验证时填）。
@@ -286,7 +337,15 @@ impl AuditWriter {
             let _ = exclusive_lock(&file)?;
         }
         file.write_all(line.as_bytes()).map_err(Error::from)?;
-        file.flush().map_err(Error::from)
+        file.flush().map_err(Error::from)?;
+        if record.write.is_some() {
+            file.sync_all().map_err(Error::from)?;
+            #[cfg(unix)]
+            File::open(&self.dir)
+                .and_then(|dir| dir.sync_all())
+                .map_err(Error::from)?;
+        }
+        Ok(())
     }
 
     /// 取「可写且已加锁」的文件；跨进程争用时退化到带 pid 的独立文件。
@@ -460,6 +519,32 @@ mod tests {
         // 审计不存错误文案：文案可能含调用参数。
         assert!(!line.contains(PASSWORD));
         assert!(!line.contains("示意文案"));
+    }
+
+    #[tokio::test]
+    async fn write_audit_adds_transaction_metadata_without_sql_or_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = AuditWriter::open(dir.path(), RotationPolicy::default()).unwrap();
+        let entry = AuditRecord::new("write-1", "update_rows")
+            .with_target(Some("fixture"), Some("main"))
+            .with_write(WriteAudit {
+                table: Some("items".into()),
+                operation_type: "update",
+                affected_rows: Some(4),
+                counts_matched_rows: true,
+                transaction_state: WritePhase::RolledBack,
+                risk_level: "medium",
+            });
+        writer.write(&entry).await.unwrap();
+        let lines = read_lines(writer.path());
+        assert_eq!(lines.len(), 1);
+        let result: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(result["request_id"], "write-1");
+        assert_eq!(result["transaction_state"], "rolled_back");
+        assert_eq!(result["affected_rows"], 4);
+        assert_eq!(result["table"], "items");
+        assert!(result["sql_fingerprint"].is_null());
+        assert!(result.get("params").is_none());
     }
 
     #[tokio::test]

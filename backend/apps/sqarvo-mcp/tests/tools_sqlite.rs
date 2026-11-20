@@ -471,3 +471,226 @@ async fn disabled_tool_is_rejected_even_when_called_directly() {
         .expect_err("工具未启用");
     assert_eq!(error.code(), ErrorCode::MCP_TOOL_DISABLED);
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // The cases share a fixture to verify session and row state after rollback.
+async fn checked_write_transaction_commits_and_rolls_back_on_direct_row_limit() {
+    use std::future::pending;
+    use std::time::Duration;
+
+    use serde_json::json;
+    use sqarvo_local_store::McpAccessPolicy;
+    use sqarvo_mcp::access::OperationType;
+    use sqarvo_mcp::policy::write::WritePlan;
+    use sqarvo_mcp::tools::write_transaction::{TransactionOutcome, execute};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let access = access(&dir.path().join("write.db"), None);
+    exec(&access, "CREATE TABLE orders (id INTEGER PRIMARY KEY)").await;
+    exec(
+        &access,
+        "WITH RECURSIVE ids(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM ids WHERE id<22)
+         INSERT INTO orders SELECT id FROM ids",
+    )
+    .await;
+    access
+        .store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+
+    let insert = WritePlan::decode(
+        json!({
+            "operation": "insert", "connection_alias": "dev", "database": "main",
+            "table": "orders", "rows": [{"id": 23}]
+        }),
+        Some(OperationType::Insert),
+    )
+    .unwrap();
+    let delete = WritePlan::decode(
+        json!({
+            "operation": "delete", "connection_alias": "dev", "database": "main",
+            "table": "orders",
+            "conditions": [{"column": "id", "operator": "lt", "value": 22}]
+        }),
+        Some(OperationType::Delete),
+    )
+    .unwrap();
+
+    for plan in [insert, delete] {
+        let operation = plan.action.operation();
+        let queries = Arc::clone(access.queries());
+        let outcome = access
+            .run_write("dev", operation, move |handle| async move {
+                Ok(execute(
+                    &handle,
+                    &queries,
+                    &plan,
+                    Duration::from_secs(3),
+                    pending(),
+                    async |handle, plan, query_id| {
+                        if operation == OperationType::Insert {
+                            sqarvo_mcp::tools::write_preflight::sqlite(handle, plan, query_id)
+                                .await?
+                                .allowed_rows()
+                                .map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    },
+                    async |_| Ok(()),
+                )
+                .await)
+            })
+            .await
+            .unwrap();
+
+        match operation {
+            OperationType::Insert => assert!(matches!(outcome, TransactionOutcome::Committed(1))),
+            OperationType::Delete => assert!(matches!(
+                outcome,
+                TransactionOutcome::RolledBack {
+                    affected: Some(21),
+                    ..
+                }
+            )),
+            _ => unreachable!("test uses insert and delete"),
+        }
+    }
+
+    let cancelled = WritePlan::decode(
+        json!({
+            "operation": "insert", "connection_alias": "dev", "database": "main",
+            "table": "orders", "rows": [{"id": 24}]
+        }),
+        Some(OperationType::Insert),
+    )
+    .unwrap();
+    let queries = Arc::clone(access.queries());
+    let outcome = access
+        .run_write("dev", OperationType::Insert, move |handle| async move {
+            let (wrote, reached_commit) = tokio::sync::oneshot::channel::<()>();
+            Ok(execute(
+                &handle,
+                &queries,
+                &cancelled,
+                Duration::from_secs(3),
+                async {
+                    let _ = reached_commit.await;
+                },
+                async |handle, plan, query_id| {
+                    sqarvo_mcp::tools::write_preflight::sqlite(handle, plan, query_id)
+                        .await?
+                        .allowed_rows()
+                        .map(Some)
+                },
+                async |_| {
+                    let _ = wrote.send(());
+                    pending().await
+                },
+            )
+            .await)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        TransactionOutcome::RolledBack { affected: Some(1), error }
+            if error.code() == ErrorCode::QUERY_CANCELLED
+    ));
+
+    let result = query::execute_readonly_query(
+        &access,
+        &execute_params("SELECT id FROM orders ORDER BY id"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.output.rows.len(), 23);
+    assert_eq!(access.session_manager().active_count().await, 1);
+}
+
+#[tokio::test]
+async fn sqlite_write_preflight_rejects_schema_side_effects_and_full_table_predicates() {
+    use std::future::pending;
+    use std::time::Duration;
+
+    use serde_json::json;
+    use sqarvo_local_store::McpAccessPolicy;
+    use sqarvo_mcp::policy::write::WritePlan;
+    use sqarvo_mcp::tools::write_preflight;
+    use sqarvo_mcp::tools::write_transaction::{TransactionOutcome, execute};
+
+    let dir = tempfile::tempdir().unwrap();
+    let access = access(&dir.path().join("write-scope.db"), None);
+    for sql in [
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE child (parent_id INTEGER REFERENCES parent(id) ON DELETE CASCADE)",
+        "CREATE TABLE singleton (id INTEGER PRIMARY KEY)",
+        "INSERT INTO singleton VALUES (1)",
+        "CREATE TABLE events (id INTEGER PRIMARY KEY)",
+        "CREATE TRIGGER events_insert AFTER INSERT ON events BEGIN INSERT INTO singleton VALUES (2); END",
+        "CREATE TABLE conflict (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, note TEXT)",
+        "INSERT INTO conflict VALUES (1, 'original')",
+    ] {
+        exec(&access, sql).await;
+    }
+    access
+        .store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+
+    for mut arguments in [
+        json!({"operation":"insert", "table":"parent", "rows":[{"id":1}]}),
+        json!({"operation":"insert", "table":"events", "rows":[{"id":1}]}),
+        json!({"operation":"insert", "table":"conflict", "rows":[{"id":1, "note":"replacement"}]}),
+        json!({"operation":"delete", "table":"singleton",
+               "conditions":[{"column":"id", "operator":"gt", "value":0}]}),
+        json!({"operation":"delete", "table":"singleton",
+               "conditions":[{"column":"missing", "operator":"is_not_null"}]}),
+    ] {
+        arguments["connection_alias"] = json!("dev");
+        arguments["database"] = json!("main");
+        let plan = WritePlan::decode(arguments, None).unwrap();
+        let queries = Arc::clone(access.queries());
+        let outcome = access
+            .run_write("dev", plan.action.operation(), move |handle| async move {
+                Ok(execute(
+                    &handle,
+                    &queries,
+                    &plan,
+                    Duration::from_secs(3),
+                    pending(),
+                    async |handle, plan, query_id| {
+                        write_preflight::sqlite(handle, plan, query_id)
+                            .await?
+                            .allowed_rows()
+                            .map(Some)
+                    },
+                    async |_| Ok(()),
+                )
+                .await)
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            TransactionOutcome::RolledBack { affected: None, .. }
+        ));
+    }
+    let result = query::execute_readonly_query(
+        &access,
+        &execute_params("SELECT note FROM conflict WHERE id = 1"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        serde_json::to_string(&result.output.rows)
+            .unwrap()
+            .contains("original")
+    );
+}

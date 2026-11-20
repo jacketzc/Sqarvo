@@ -461,6 +461,12 @@ pub trait DriverSession: Send + Sync {
         false
     }
 
+    /// Quote a single identifier segment for driver-owned parameterized statements.
+    /// Unsupported drivers return `None`.
+    fn quote_identifier(&self, _name: &str) -> Option<String> {
+        None
+    }
+
     /// 以参数化方式执行 SQL 并返回语句摘要与首批结果。默认实现表示不支持。
     async fn execute_parameterized(
         &self,

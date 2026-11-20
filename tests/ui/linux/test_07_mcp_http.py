@@ -9,6 +9,7 @@ from queue import Empty, SimpleQueue
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 from threading import Thread
 
@@ -212,7 +213,7 @@ def test_managed_mcp_http():
             expect(other.request("tools/list")[0] == 404, "已关闭的会话不可复用")
             expect(client.exchange("GET")[0] == 200, "GET SSE 建立并断开")
             tools = client.request("tools/list")[2]["result"]["tools"]
-            expect(len(tools) == 8, "八个现有工具")
+            expect(len(tools) == 12, "八个只读工具及四个 V2 工具")
             expect(codex_mcp(mcp, port, inst.env)[0] == {tool["name"] for tool in tools},
                    "真实 Codex 经本机凭据启动器读取同一工具清单")
             resources = client.request("resources/list")[2]["result"]["resources"]
@@ -256,6 +257,70 @@ def test_managed_mcp_http():
             request["arguments"]["sql"] = "DELETE FROM widgets"
             result = client.request("tools/call", request)[2]["result"]
             expect(result["structuredContent"]["error"]["code"] == "mcp.readonly_violation", "HTTP 延用只读策略")
+            target = {"connection_alias": request["arguments"]["connection_alias"],
+                      "database": "main", "table": "widgets"}
+
+            def write(name, **arguments):
+                return client.request("tools/call", {
+                    "name": name, "arguments": {**target, **arguments},
+                })[2]["result"]["structuredContent"]
+
+            rows = [{"id": 41, "name": "http_fixture", "qty": 1}]
+            expect(write("insert_rows", rows=rows)["error"]["code"] == "mcp.connection_denied",
+                   "HTTP 只读模式拒绝结构化写入")
+            A.click(readonly)
+            press(A.wait_dialog(inst.app, "关闭 MCP 只读模式？"), "关闭 MCP 只读")
+            A.find_one(panel, role_in=("label",), name="MCP：只读已关闭", timeout=10)
+            preview = write("preview_write", operation="insert", rows=rows)
+            expect(preview["estimated_rows"] == 1 and preview["can_execute"], "HTTP 支持插入预览", preview)
+            request["arguments"]["sql"] = "SELECT count(*) FROM widgets WHERE id=41"
+            result = client.request("tools/call", request)[2]["result"]
+            expect(result["structuredContent"]["rows"] == [[0]], "HTTP 预览没有修改数据")
+            expect(write("insert_rows", rows=rows)["transaction_state"] == "committed",
+                   "HTTP 提交插入")
+            conditions = [{"column": "id", "operator": "eq", "value": 41}]
+            expect(write("update_rows", changes={"qty": 3}, conditions=conditions)["affected_rows"] == 1,
+                   "HTTP 提交更新")
+            expect(write("delete_rows", conditions=conditions)["affected_rows"] == 1, "HTTP 提交删除")
+            abandoned = HttpClient(port, token)
+            abandoned.initialize()
+            abandoned.sequence = 1000
+            audit_path = inst.home / "data" / "sqarvo" / "mcp" / "audit.jsonl"
+
+            def abandoned_phases():
+                try:
+                    records = [json.loads(line) for line in audit_path.read_text().splitlines()]
+                except (FileNotFoundError, json.JSONDecodeError):
+                    return set()
+                return {row.get("transaction_state") for row in records
+                        if row["request_id"] == "1001" and row["tool_name"] == "insert_rows"}
+
+            with closing(sqlite3.connect(inst.db, timeout=3)) as locker:
+                locker.execute("BEGIN IMMEDIATE")
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(abandoned.request, "tools/call", {
+                        "name": "insert_rows", "arguments": {**target, "rows": rows},
+                    })
+                    try:
+                        A.wait_until(lambda: "intent" in abandoned_phases(), 5,
+                                     "写请求到达服务器且写锁仍由夹具持有")
+                        expect(abandoned.exchange("DELETE")[0] == 202, "关闭在途写入的 HTTP 会话")
+                    finally:
+                        locker.rollback()
+                    try:
+                        pending.result(timeout=10)
+                    except (OSError, http.client.HTTPException):
+                        pass
+            A.wait_until(lambda: abandoned_phases() & {"rolled_back", "not_started"}, 5,
+                         "断开的写事务已清理")
+            request["arguments"]["sql"] = "SELECT count(*) FROM widgets WHERE id=41"
+            result = client.request("tools/call", request)[2]["result"]
+            expect(result["structuredContent"]["rows"] == [[0]], "HTTP 断开后没有残留写入")
+
+            A.click(readonly)
+            A.find_one(panel, role_in=("label",), name="MCP：仅允许读取", timeout=10)
+            expect(write("insert_rows", rows=rows)["error"]["code"] == "mcp.connection_denied",
+                   "恢复只读后 HTTP 立即拒绝写入")
             request["arguments"]["sql"] = "SELECT 42"
             A.click(A.wait_until(policy_toggle, 10, "管理页的 MCP 数据访问开关"))
             A.find_one(panel, role_in=("label",), name="MCP：访问关闭", timeout=10)

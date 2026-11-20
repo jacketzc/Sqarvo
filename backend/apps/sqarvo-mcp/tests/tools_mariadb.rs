@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use sqarvo_common::{ErrorCode, QueryId};
 use sqarvo_connection::SessionManager;
-use sqarvo_driver_api::ExecuteRequest;
+use sqarvo_driver_api::{ExecuteRequest, IsolationLevel, TransactionOptions};
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{CredentialStore, MemoryCredentialStore};
 use sqarvo_mcp::access::AccessService;
@@ -490,4 +490,186 @@ async fn non_empty_schema_is_reported_as_unsupported() {
 
     exec(&access, &format!("DROP TABLE IF EXISTS {table}")).await;
     access.close_all().await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One fixture verifies the sequence of committed and reverted changes.
+async fn bounded_write_on_dba_provisioned_fixture() {
+    use std::future::pending;
+
+    use serde_json::json;
+    use sqarvo_local_store::McpAccessPolicy;
+    use sqarvo_mcp::policy::write::WritePlan;
+    use sqarvo_mcp::tools::write_preflight;
+    use sqarvo_mcp::tools::write_transaction::{TransactionOutcome, execute};
+
+    // This case requires a DBA-provisioned disposable instance with the V2 guard view.
+    let Ok(url) = std::env::var("SQARVO_MCP_MARIADB_WRITE_FIXTURE") else {
+        return;
+    };
+    let target = parse_dsn(&url);
+    assert_eq!(target.database, "sqarvo_mcp_write_fixture");
+    assert_eq!(target.host, "127.0.0.1");
+    let fixture = access(&target, None);
+    let profile = fixture.store.list().unwrap().pop().unwrap();
+    let config = sqarvo_mcp::config::parse(
+        &json!({"mariadb_write_profiles": {
+            profile.profile_id.to_string(): profile.revision
+        }})
+        .to_string(),
+    )
+    .unwrap()
+    .validate()
+    .unwrap();
+    let access = AccessService::with_session_manager(
+        Arc::new(config),
+        Arc::clone(fixture.session_manager()),
+        fixture.store.clone(),
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    for (mut input, count, fail_audit) in [
+        (
+            json!({"operation":"insert","rows":[{"id":9001,"note":"bind: 'quoted'"}]}),
+            1,
+            false,
+        ),
+        (
+            json!({"operation":"update","changes":{"note":"bind: 'quoted'"},
+                "conditions":[{"column":"id","operator":"eq","value":9001}]}),
+            1,
+            false,
+        ),
+        (
+            json!({"operation":"delete",
+                "conditions":[{"column":"id","operator":"eq","value":9001}]}),
+            1,
+            true,
+        ),
+        (
+            json!({"operation":"delete",
+                "conditions":[{"column":"id","operator":"eq","value":9001}]}),
+            1,
+            false,
+        ),
+    ] {
+        input["connection_alias"] = json!("maria");
+        input["database"] = json!("sqarvo_mcp_write_fixture");
+        input["table"] = json!("orders");
+        let plan = WritePlan::decode(input, None).unwrap();
+        let queries = Arc::clone(access.queries());
+        let outcome = access
+            .run_write("maria", plan.action.operation(), move |handle| async move {
+                Ok(execute(
+                    &handle,
+                    &queries,
+                    &plan,
+                    Duration::from_secs(3),
+                    pending(),
+                    async |handle, plan, query_id| {
+                        write_preflight::mariadb(handle, plan, query_id)
+                            .await?
+                            .allowed_rows()
+                            .map(Some)
+                    },
+                    async |_| {
+                        if fail_audit {
+                            return Err(sqarvo_common::Error::internal("synthetic audit failure"));
+                        }
+                        Ok(())
+                    },
+                )
+                .await)
+            })
+            .await
+            .unwrap();
+        match outcome {
+            TransactionOutcome::Committed(actual) if !fail_audit => assert_eq!(actual, count),
+            TransactionOutcome::RolledBack { affected, .. } if fail_audit => {
+                assert_eq!(affected, Some(count));
+            }
+            TransactionOutcome::RolledBack { error, .. }
+            | TransactionOutcome::NotStarted(error)
+            | TransactionOutcome::RollbackUnconfirmed { error, .. } => {
+                panic!("unexpected DML outcome: {}", error.code())
+            }
+            _ => panic!("unexpected DML transaction state"),
+        }
+    }
+    assert_eq!(access.session_manager().active_count().await, 0);
+
+    let manager = access.session_manager();
+    let holder = manager
+        .connect("lock holder", profile.params)
+        .await
+        .unwrap();
+    let locker = manager.acquire(&holder.session_id).await.unwrap();
+    let tx = locker
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Serializable,
+            read_only: false,
+        })
+        .await
+        .unwrap();
+    locker
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "UPDATE orders SET note = 'held' WHERE id=1".into(),
+            max_rows: None,
+            timeout: None,
+        })
+        .await
+        .unwrap();
+
+    let delayed_update = WritePlan::decode(
+        json!({
+            "operation":"update","connection_alias":"maria","database":"sqarvo_mcp_write_fixture",
+            "table":"orders","changes":{"note":"timed out"},
+            "conditions":[{"column":"id","operator":"eq","value":1}]
+        }),
+        None,
+    )
+    .unwrap();
+    let queries = Arc::clone(access.queries());
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(3),
+        access.run_write(
+            "maria",
+            delayed_update.action.operation(),
+            move |handle| async move {
+                Ok(execute(
+                    &handle,
+                    &queries,
+                    &delayed_update,
+                    Duration::from_millis(150),
+                    pending(),
+                    async |handle, plan, query_id| {
+                        write_preflight::mariadb(handle, plan, query_id)
+                            .await?
+                            .allowed_rows()
+                            .map(Some)
+                    },
+                    async |_| Ok(()),
+                )
+                .await)
+            },
+        ),
+    )
+    .await;
+
+    locker
+        .rollback_transaction(&tx.transaction_id)
+        .await
+        .unwrap();
+    manager.disconnect(&holder.connection_id).await.unwrap();
+    assert!(matches!(
+        outcome.unwrap().unwrap(),
+        TransactionOutcome::RolledBack { error, .. } if error.code() == ErrorCode::MCP_QUERY_TIMEOUT
+    ));
 }
