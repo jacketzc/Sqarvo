@@ -160,6 +160,9 @@ writes on one connection. Use `rollback_transaction` to discard them. Both stdio
 Streamable HTTP support explicit transactions. The existing write tools still commit each call
 independently. See the [explicit transaction guide](docs/api/mcp-tools.md#v21-explicit-transactions).
 
+With global write access enabled, agents can preview and apply structured table, column and index
+changes on SQLite or a managed MariaDB deployment. See the [controlled DDL guide](docs/api/mcp-tools.md#v22-controlled-ddl).
+
 ## Documentation
 
 - Product: [vision](docs/product/vision.md) · [positioning](docs/product/positioning.md) ·

@@ -118,6 +118,7 @@ ADR 0021（标签与会话）、ADR 0022（分页/排序/筛选/总数）、ADR 
 | REQ-MCP-011 | GTK MCP 管理中心 | P0 | 已实现 | 一级 MCP 入口、真实服务状态、端口管理、启停和现有权限。见 #240、#241 |
 | REQ-MCP-012 | 安全 Agent 接入 | P1 | 已实现 | 动态地址、客户端配置与提示词，HTTP 凭据由本机密钥环提供。见 #242 |
 | REQ-MCP-013 | MCP V2 结构化写入和预览 | P0 | 已实现 | 用户关闭 MCP 只读后，工具可按数据库权限执行受控插入、更新和删除。提交前核对范围，失败回滚，审计记录事务终态。MariaDB 需 DBA 部署资格与 DDL 权限隔离。隔离 SQLite、MariaDB 11.8.6、stdio 与托管 HTTP 定向验收通过。执行跟踪见 [M12](https://github.com/jacketzc/Sqarvo/milestone/13)。见 [ADR 0037](../decisions/0037-mcp-bounded-writes.md)。 |
+| REQ-MCP-014 | MCP V2.2 受控 DDL | P0 | 实施中 | 使用全局数据权限与数据库权限，提供表、列和索引的结构化变更及预览。SQLite 与受管 MariaDB 分开处理 Schema 事务、终态、撤权和审计。跟踪见 [#250](https://github.com/jacketzc/Sqarvo/issues/250) 与 [ADR 0039](../decisions/0039-mcp-controlled-ddl.md)。 |
 
 REQ-MCP-013 的显式事务扩展由 [M13](https://github.com/jacketzc/Sqarvo/milestone/14) 和 [#249](https://github.com/jacketzc/Sqarvo/issues/249) 跟踪，验收见 [MCP 工具参考](../api/mcp-tools.md#v21-explicit-transactions)。
 

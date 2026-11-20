@@ -30,6 +30,7 @@
 //! `#[tool_router]` 里的方法只做参数解包、审计与错误通道映射。
 
 pub mod connection;
+pub(crate) mod ddl;
 pub mod explain;
 pub mod query;
 pub mod schema;

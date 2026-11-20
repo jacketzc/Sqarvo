@@ -895,3 +895,107 @@ FROM sqarvo_guard.approved_target AS a;
 和 `mcp.rollback_unconfirmed`。
 
 定向验收使用 `cargo test -p sqarvo-mcp --test shared_access explicit_transactions_over_stdio` 和 `cargo test -p sqarvo-mcp --lib authenticated_http_transaction_isolation_and_delete`。MariaDB 终态用例复用前文的回环 53387 和 53388 代理，只用于隔离测试实例。创建专用合成账号 `mcp_v21_fixture`，仅允许回环访问且仅授予 `orders` DML/SELECT 及资格视图 SELECT。该夹具使用空凭据，库表初始无 9891、9892 和 9901–9903。设置 `SQARVO_MCP_V21_MARIADB_PROXY_LOG` 指向代理输出。以 `SQARVO_MCP_V21_MARIADB_FIXTURE=1 cargo test -p sqarvo-mcp --test shared_access explicit_mariadb_transactions_and_lost_acknowledgements` 启用真实库用例。
+
+## V2.2 Controlled DDL
+
+SQLite `main` 的已有普通文件及按下文受管的 MariaDB 11.8.6 支持结构化表、列和索引变更。
+stdio 与认证 Streamable HTTP 使用相同输入。启用全局 MCP 数据访问并关闭只读后，数据库
+账号拥有对应权限时可以调用。现有 `enabled_tools` 显式列表配置也适用于新工具。
+DDL 从不加入 `begin_transaction` 返回的事务。执行需要系统凭据库可用，以保护用于本地去重的密钥。
+
+### 参数
+
+五个执行工具均必填 `connection_alias`、`database`、`table`、`operation_id`。
+MariaDB 目标库须匹配档案默认库和会话所在库。DDL 名称使用
+`[a-z_][a-z0-9_]{0,63}`，保留系统名称由 Policy 拒绝。标识符按驱动引用。
+
+| 工具 | 专属参数 |
+|---|---|
+| `create_table` | 必填 `columns`。可选 `primary_key`（有序列名数组）、`unique_constraints`（列名数组的数组）、`if_not_exists`（默认 false）。仅接受空或省略的 `foreign_keys`。 |
+| `alter_table` | 必填 `action`。 `add_column` 带 `column`，只允许可空、无默认和约束的普通列。 `drop_column` 带 `column_name`。 `rename_column` 带 `column_name`、`new_name`。 `rename_table` 带 `new_table`，只能同库。 |
+| `drop_table` | 可选 `if_exists`（默认 false）。对象必须为普通表。删表及删列可能永久丢失数据。 |
+| `create_index` | 必填 `index`、有序 `columns`，可选 `unique`（默认 false）。 |
+| `drop_index` | 必填 `index`。校验与指定表关联且为独立普通非唯一索引。 |
+| `preview_schema_change` | 必填 `operation`（任一上列执行工具名）和其 `arguments` 对象，省略 `operation_id`。全局只读时仍可读取预览。 |
+
+列定义必填 `name`、`type`。可以使用 `integer`、`bigint`、`varchar`、`text`、
+`decimal`、`boolean`、`date`、`datetime`、`timestamp` 和 `blob`。
+`varchar` 要求 `length`（1–4096）。`decimal` 要求 `precision`（1–38）与
+`scale`（0–precision）。`nullable` 默认 true，主键列必须不可空。
+可选 `primary_key`、`unique`、`auto_increment`（也可写 `identity`）默认 false。
+主键可用一个列级布尔或一个表级有序数组。自动编号只用于单列整数主键，SQLite 要求
+`integer` 并沿用 rowid 的原生编号语义，MariaDB 使用 `AUTO_INCREMENT`。
+
+`default` 仅接收与类型匹配的 JSON null、布尔、安全整数、文本、
+`{"integer":"9223372036854775807"}` 或 `{"decimal":"12.34"}`。
+SQLite 遵守声明类型与列亲和性规则。MariaDB 在专用连接上固定 SQL 模式；
+日期、时间戳和 blob 的显式默认值仅支持允许的 NULL。SQL 表达式、用户 DDL 原文、
+批量操作、CASCADE、外键、虚拟表、生成列、部分或表达式索引及任意修改列定义均不支持。
+
+### 预览与结果
+
+例如只读检查一项变更：
+
+```json
+{
+  "operation": "alter_table",
+  "arguments": {
+    "connection_alias": "dev",
+    "database": "main",
+    "table": "orders",
+    "action": "add_column",
+    "column": {"name": "note", "type": "text"}
+  }
+}
+```
+
+预览返回 `current_schema`、`proposed_schema`、展示用 `generated_sql`、
+`generated_sql_redacted`、`risk_level`、`transactional_ddl`、`implicit_commit`、
+`reversible`、`warnings`、`can_execute` 和 `blockers`。默认值从摘要或 SQL 展示文本中
+省略或替代。预览不创建 SQLite 文件；只读开关开启时，`read_only` 会成为 blocker。
+预览结果基于检查时的快照，执行前再次读取。风险提示涵盖数据丢失、锁等待及可能的
+数据重写。耗时、影响行数、锁范围和数据恢复无保证。
+
+实际执行调用工具名 `alter_table`，直接传递上述 `arguments` 内容及新的 UUIDv7
+`operation_id`。操作返回 ID、动作、目标、风险、告警、`state`、`effect`、
+`audit_warning`、`cleanup_warning`、`state_storage_warning` 和 `replayed`。
+业务错误在 MCP 工具结果中带稳定 `error.code`，`retryable=false`。
+`not_started` 表示当前调用未派发。 `completed` 携带 `applied`、`already_exists`
+或 `already_absent`。 `if_not_exists` 不核对已有结构等价。
+`failed` 表示引擎明确拒绝，或 SQLite 写事务已确认回滚。
+`outcome_unknown` 意味着结果待核查，数据库可能已经更改。
+并发占用返回 `mcp.ddl_busy`，数据库结果另由持有执行槽的调用报告。
+任何最新授权变化都会阻止尚未通过最终派发闸口的执行。已经交给驱动的命令可能继续。
+
+复用操作 ID 仅用于取得原结果。重复 ID 和不同规范化请求返回冲突。操作 ID 提交窗口
+24 小时，时钟超前容差 60 秒。未确认的记录不会过期；本机同一用户数据目录的执行槽
+持续阻止新 DDL。记录位于 `AppPaths::data_dir()/mcp/ddl-state.sqlite3`，
+审计使用原 JSONL 日志，可按 ID 核对。先核查引擎已结束、数据库结构及审计，再由本机
+操作者运行下面的命令记录核查并解除屏障。记录保留原结果，不会重新发送 SQL。
+
+```sh
+sqarvo-mcp ddl-reconcile OPERATION_ID --verified-stopped
+```
+
+### MariaDB 受管实例
+
+需要专用实例和 DBA 安装的 `sqarvo_guard.ddl_eligibility`、
+`sqarvo_guard.ddl_objects` 完整元数据视图。视图由可信、锁定的独立定义者维护，
+该身份能看到所有可能的入站及出站外键、视图、触发器、例程和事件。调用身份仅有
+视图 SELECT 及目标库所需数据库权限，不能修改 guard、创建临时表或通过角色和代理
+绕过边界。视图定义见[隔离测试夹具](../../tests/integration/mcp-ddl-mariadb-fixture.sql)。
+夹具账户与授权只用于合成测试。
+
+受管实例不得同时承载依赖 ADR 0037 的 MariaDB MCP DML 部署。管理员禁止会改写目标
+或新增依赖的并发外部身份和入口；正常业务 DML 可在数据库权限下继续。先停用 DDL
+并排空在途操作、核查未知终态，再运行 DBA 维护。一个受管实例的 MCP DDL 需使用一个
+共享持久状态目录。实例命名锁串行化符合协议的 DDL，数据库自身控制元数据锁。
+现有 ProfileStore 无 DDL 档案授权字段。详见 [ADR 0039](../decisions/0039-mcp-controlled-ddl.md)。
+
+### V2.2 限额
+
+执行每个应用数据目录最多 1 个，预览每进程最多 2 个。32 KiB 参数、16 KiB 生成 SQL、
+64 列、16 个唯一约束，主键或索引每个 16 列，文本默认值 1 KiB。
+连接 5 秒，预检/预览 8 秒，派发闸口 250 毫秒，数据库锁等待约 5 秒，执行应答 30 秒，
+终结与清理各 5 秒。达到应答预算时数据库可能仍在处理。运行超限或会话不可回收时保守
+拒绝继续执行。持久记录最多 4096 项，窗口内满额拒绝新操作。

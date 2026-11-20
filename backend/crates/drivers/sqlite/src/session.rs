@@ -61,6 +61,7 @@ enum Command {
         reply: oneshot::Sender<Result<TransactionId>>,
     },
     Commit {
+        strict: bool,
         transaction_id: TransactionId,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -77,6 +78,10 @@ enum Command {
     TableData {
         request: crate::table_data::TableDataRequest,
         reply: oneshot::Sender<Result<crate::table_data::TableDataReply>>,
+    },
+    InspectDdl {
+        change: sqarvo_driver_api::ddl::Change,
+        reply: oneshot::Sender<Result<sqarvo_driver_api::ddl::Inspection>>,
     },
     Close {
         reply: oneshot::Sender<()>,
@@ -132,6 +137,14 @@ pub struct SqliteSession {
 
 impl SqliteSession {
     pub(crate) async fn connect(path: String, read_only: bool) -> Result<Self> {
+        Self::connect_with_mode(path, read_only, false).await
+    }
+
+    pub(crate) async fn connect_existing(path: String, read_only: bool) -> Result<Self> {
+        Self::connect_with_mode(path, read_only, true).await
+    }
+
+    async fn connect_with_mode(path: String, read_only: bool, existing: bool) -> Result<Self> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (ready_sender, ready_receiver) = oneshot::channel();
         let state = Arc::new(QueryState::default());
@@ -140,7 +153,19 @@ impl SqliteSession {
         let join = std::thread::Builder::new()
             .name("sqarvo-sqlite".to_owned())
             .spawn(move || {
-                let connection = match open_connection(&path, read_only) {
+                let connection = if existing {
+                    let flags = if read_only {
+                        OpenFlags::SQLITE_OPEN_READ_ONLY
+                    } else {
+                        OpenFlags::SQLITE_OPEN_READ_WRITE
+                    };
+                    Connection::open_with_flags(&path, flags)
+                        .map_err(map_open_error)
+                        .and_then(configure_busy_timeout)
+                } else {
+                    open_connection(&path, read_only)
+                };
+                let connection = match connection {
                     Ok(connection) => connection,
                     Err(error) => {
                         let _ = ready_sender.send(Err(error));
@@ -239,14 +264,17 @@ fn run_connection(
                 let _ = reply.send(begin_transaction(&connection, &mut transaction, options));
             }
             Command::Commit {
+                strict,
                 transaction_id,
                 reply,
             } => {
-                let _ = reply.send(commit_transaction(
-                    &connection,
-                    &mut transaction,
-                    &transaction_id,
-                ));
+                let result =
+                    if strict && !ddl_commit_ready(&connection, transaction, transaction_id) {
+                        Err(transaction_aborted())
+                    } else {
+                        commit_transaction(&connection, &mut transaction, &transaction_id)
+                    };
+                let _ = reply.send(result);
             }
             Command::Rollback {
                 transaction_id,
@@ -257,6 +285,9 @@ fn run_connection(
                     &mut transaction,
                     &transaction_id,
                 ));
+            }
+            Command::InspectDdl { change, reply } => {
+                let _ = reply.send(crate::ddl::inspect(&connection, &change));
             }
             Command::Metadata { request, reply } => {
                 // 元数据只是读取：不改变事务簿记，也不依赖 `query_only` 开关。
@@ -395,6 +426,15 @@ fn begin_transaction(
         read_only: options.read_only,
     });
     Ok(id)
+}
+
+fn ddl_commit_ready(
+    connection: &Connection,
+    transaction: Option<OpenTransaction>,
+    id: TransactionId,
+) -> bool {
+    !connection.is_autocommit()
+        && transaction.is_some_and(|open| open.id == id && open.is_active() && !open.read_only)
 }
 
 /// `COMMIT`。对已结束、从未存在或不属于当前事务的 ID 保持幂等成功。
@@ -716,6 +756,12 @@ fn serve_query(
             }
             // 元数据读取要在游标释放后进行：语句与 Rows 正借用连接，
             // 此时再准备新语句会与游标交错。调用方先读完或 close_query。
+            Command::InspectDdl { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询",
+                )));
+            }
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
@@ -1030,6 +1076,12 @@ fn serve_script(
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
                     "当前会话已有在途查询，请先读完或关闭后再回滚事务",
+                )));
+            }
+            Command::InspectDdl { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    SQLITE_QUERY_ACTIVE,
+                    "当前会话已有在途查询",
                 )));
             }
             Command::Metadata { reply, .. } => {
@@ -1353,6 +1405,61 @@ impl DriverSession for SqliteSession {
         true
     }
 
+    fn dispatch_ddl(&self, request: ExecuteRequest) -> Result<sqarvo_driver_api::ddl::Dispatch> {
+        use sqarvo_driver_api::ddl::Acknowledgment;
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Execute { request, reply })
+            .map_err(|_| Self::closed_error())?;
+        Ok(Box::pin(async move {
+            match wait.await {
+                Ok(Ok(_)) => Acknowledgment::Confirmed,
+                Ok(Err(error)) => Acknowledgment::Rejected(error),
+                Err(_) => Acknowledgment::Unconfirmed(Self::closed_error()),
+            }
+        }))
+    }
+
+    fn dispatch_ddl_commit(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<sqarvo_driver_api::ddl::Dispatch> {
+        use sqarvo_driver_api::ddl::Acknowledgment;
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Commit {
+                strict: true,
+                transaction_id,
+                reply,
+            })
+            .map_err(|_| Self::closed_error())?;
+        Ok(Box::pin(async move {
+            match wait.await {
+                Ok(Ok(())) => Acknowledgment::Confirmed,
+                Ok(Err(error)) => Acknowledgment::Rejected(error),
+                Err(_) => Acknowledgment::Unconfirmed(Self::closed_error()),
+            }
+        }))
+    }
+
+    async fn inspect_ddl(
+        &self,
+        change: sqarvo_driver_api::ddl::Change,
+    ) -> Result<sqarvo_driver_api::ddl::Inspection> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::InspectDdl { change, reply })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    fn ddl_syntax(&self) -> Option<sqarvo_driver_api::ddl::Syntax> {
+        Some(crate::ddl::syntax())
+    }
+
     fn quote_identifier(&self, name: &str) -> Option<String> {
         Some(crate::table_data::quote_identifier(name))
     }
@@ -1440,6 +1547,7 @@ impl DriverSession for SqliteSession {
         let (reply, wait) = oneshot::channel();
         self.sender
             .send(Command::Commit {
+                strict: false,
                 transaction_id: *transaction_id,
                 reply,
             })
@@ -1527,6 +1635,10 @@ pub(crate) fn open_connection(path: &str, read_only: bool) -> Result<Connection>
         };
         Connection::open_with_flags(path, flags).map_err(map_open_error)?
     };
+    configure_busy_timeout(connection)
+}
+
+fn configure_busy_timeout(connection: Connection) -> Result<Connection> {
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(|error| map_sqlite_error(error, "设置 SQLite 忙等待超时失败"))?;

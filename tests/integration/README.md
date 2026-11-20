@@ -123,3 +123,25 @@ mysql://sqarvo_test:sqarvo_test_only@127.0.0.1:3306/sqarvo_test
 - 测试账号只拥有测试库权限；
 - 连接参数通过环境变量传入，禁止硬编码密码；
 - 清理：测试结束后关闭连接池、删除临时表；容器可保留供反复运行。
+
+## MCP V2.2 受控 DDL 定向验收
+
+在隔离 MariaDB 11.8.6 实例上加载 `mcp-ddl-mariadb-fixture.sql`，仅绑定回环
+53429。使用 `python3 tests/integration/mcp_mariadb_terminal_proxy.py --ddl` 启动
+回环 53431 的合成应答丢失和取消代理，将 stdout 写入 `SQARVO_MCP_DDL_PROXY_LOG`。
+在 Linux 隔离、解锁的测试 Secret Service 会话中设置
+`SQARVO_MCP_DDL_MARIADB_FIXTURE=1`、`SQARVO_MCP_DDL_PROXY_FIXTURE=1`、
+`SQARVO_MCP_DDL_KEYRING_FIXTURE=1`，从 `backend/` 运行：
+
+```sh
+cargo test --locked -p sqarvo-mcp --test shared_access ddl_stdio -- --nocapture --test-threads=1
+cargo test --locked -p sqarvo-mcp --lib ddl
+cargo test --locked -p sqarvo-mcp --lib authenticated_http_transaction_isolation_and_delete
+cargo test --locked -p sqarvo-driver-sqlite --lib ddl
+```
+
+隐藏外键场景单独执行。在合成 MariaDB 实例中用 DBA 创建
+`sqarvo_mcp_ddl_other.hidden_child`，令其外键引用 `sqarvo_mcp_ddl_fixture.locked_table(id)`。
+在同样的隔离密钥环环境置 `SQARVO_MCP_DDL_GUARD_REJECTION_FIXTURE=1`，运行
+`cargo test --locked -p sqarvo-mcp --test shared_access ddl_mariadb_hidden_dependency`。
+测试结束丢弃夹具。MCP 工具测试中的合成数据库账户与权限仅用于该回环实例。

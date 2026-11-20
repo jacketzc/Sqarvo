@@ -20,6 +20,7 @@
 #![warn(missing_docs)]
 
 mod config;
+mod ddl;
 mod driver;
 pub mod error;
 mod metadata;

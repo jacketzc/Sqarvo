@@ -16,6 +16,7 @@ pub mod access;
 pub mod audit;
 pub mod config;
 pub mod credentials_cmd;
+pub(crate) mod ddl;
 pub mod error;
 pub mod policy;
 pub mod resources;
@@ -33,3 +34,6 @@ mod profile_access;
 pub mod http;
 
 mod transactions;
+
+/// Local maintenance entry point for a reconciled DDL operation.
+pub use ddl::reconcile as reconcile_ddl;

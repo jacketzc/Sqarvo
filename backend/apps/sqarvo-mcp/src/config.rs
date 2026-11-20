@@ -75,12 +75,23 @@ pub const TRANSACTION_TOOL_NAMES: [&str; 4] = [
     "rollback_transaction",
 ];
 
+/// V2.2 structured schema tools.
+pub const DDL_TOOL_NAMES: [&str; 6] = [
+    "create_table",
+    "alter_table",
+    "drop_table",
+    "create_index",
+    "drop_index",
+    "preview_schema_change",
+];
+
 /// Names recognized by the shared tool policy.
 pub fn tool_names() -> impl Iterator<Item = &'static str> {
     V1_TOOL_NAMES
         .into_iter()
         .chain(V2_TOOL_NAMES)
         .chain(TRANSACTION_TOOL_NAMES)
+        .chain(DDL_TOOL_NAMES)
 }
 
 /// 工具未指定 `limit` 时的返回行数（V3.1 §10）。

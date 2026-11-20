@@ -375,3 +375,22 @@ HTTP 请求/应答流可重连，独立的空闲和绝对期限约束仍存活 S
 等待数据库确认或超时隔离。档案写入取互斥锁。终结事件独立落盘，未知应答由事务任务保留，
 随后由所有者关闭专用会话。SQLite 阻塞 I/O 期间保持资源配额，驱动终结应答与连接关闭分别报告。
 详见 [显式事务的所有权与撤权顺序](../decisions/0038-mcp-explicit-transactions.md)。
+
+## V2.2 受控 DDL
+
+六个结构工具共用 MCP 工具注册、AccessGuard、HTTP Session 生命周期和 JSONL 审计。
+DDL Policy 解析封闭请求，通过 Driver SPI 取得方言规则和完整性受限的对象元数据，
+编译一条语句并验证其 AST。预览只读取同样的策略输入和 Schema，返回脱敏 SQL、
+已观测与拟议结构。实际执行在专用会话上重新检查。
+
+SQLite 用已有文件的专用连接。执行在 BEGIN IMMEDIATE 与 COMMIT 之间读取依赖、
+派发原生 DDL。预览用只读连接及读快照。MariaDB 使用专用无用户事务的连接，
+受管实例元数据证明、命名锁、数据库权限及元数据锁共同约束执行。与 ADR 0037
+的 MCP DML 部署隔离。两种方言均拒绝无法验证的对象和依赖。
+
+派发意图持久化后，持 ProfileStore 共享锁核对授权及修订，并把命令交给专用 driver worker。
+SQLite 在 COMMIT 前再校验一次。共享锁不覆盖引擎应答等待。
+审计、结果持久化及会话关闭分别有界处理。数据库未应答时保留本地执行屏障，避免换 ID
+或进程重启后自动重复；应答已成功、审计故障时仍返回成功与警告。
+主机范围和故障核查见 [ADR 0039](../decisions/0039-mcp-controlled-ddl.md)
+与 [V2.2 工具参考](../api/mcp-tools.md#v22-controlled-ddl)。

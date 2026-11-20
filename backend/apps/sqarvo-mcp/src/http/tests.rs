@@ -195,6 +195,7 @@ async fn authenticated_http_transaction_isolation_and_delete() {
             "{name}"
         );
     }
+    assert_ddl_http(&client, &first).await;
     let begin = json!({"connection_alias":"fixture","database":"main"});
     let open = client
         .tool(&first, "begin_transaction", begin.clone())
@@ -248,6 +249,18 @@ async fn authenticated_http_transaction_isolation_and_delete() {
         rollback["structuredContent"]["state"]
     );
     let open = client.tool(&first, "begin_transaction", begin).await;
+    let blocked = client.tool(&second, "alter_table", json!({
+        "connection_alias":"fixture","database":"main","table":"items",
+        "operation_id":ddl_test_id(),"action":"add_column","column":{"name":"busy_probe","type":"text"},
+    })).await;
+    assert_eq!(
+        blocked["structuredContent"]["state"], "not_started",
+        "{blocked}"
+    );
+    assert_eq!(
+        blocked["structuredContent"]["error"]["code"], "sqlite.busy",
+        "{blocked}"
+    );
     let tx = &open["structuredContent"]["transaction_id"];
     let reply = client
         .tool(&first, "execute_in_transaction", insert(tx, 3))
@@ -291,4 +304,58 @@ async fn authenticated_http_transaction_isolation_and_delete() {
     close_sessions(&sessions).await;
     context.shutdown().await;
     service.await.unwrap();
+}
+
+fn ddl_test_id() -> uuid::Uuid {
+    let millis = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+        .expect("Unix milliseconds");
+    let mut bytes = *uuid::Uuid::new_v4().as_bytes();
+    bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+    bytes[6] = (bytes[6] & 15) | 0x70;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+async fn assert_ddl_http(client: &HttpClient, session: &str) {
+    let mut args = json!({
+        "connection_alias":"fixture", "database":"main", "table":"http_ddl",
+        "columns":[{"name":"id","type":"integer","primary_key":true}],
+    });
+    let preview = client
+        .tool(
+            session,
+            "preview_schema_change",
+            json!({
+                "operation":"create_table", "arguments":args,
+            }),
+        )
+        .await;
+    assert_eq!(
+        preview["structuredContent"]["can_execute"], true,
+        "{preview}"
+    );
+    assert!(preview["structuredContent"]["current_schema"].is_null());
+    args["operation_id"] = json!(ddl_test_id());
+    let unauthorized = HttpClient {
+        addr: client.addr,
+        credential: new_token().unwrap(),
+        next_request: AtomicU64::new(1),
+    };
+    let rejected = unauthorized
+        .request(
+            "POST",
+            Some(session),
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"create_table","arguments":args},
+            }),
+        )
+        .await;
+    assert!(rejected.starts_with("HTTP/1.1 401"), "{rejected}");
+    let result = client.tool(session, "create_table", args.clone()).await;
+    assert_eq!(
+        result["structuredContent"]["state"], "completed",
+        "{result}"
+    );
+    let result = client.tool(session, "create_table", args).await;
+    assert_eq!(result["structuredContent"]["replayed"], true, "{result}");
 }

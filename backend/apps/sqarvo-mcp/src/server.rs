@@ -74,6 +74,7 @@ pub struct ServerContext {
     access: AccessService,
     audit: AuditWriter,
     pub(crate) transactions: crate::transactions::TransactionRegistry,
+    pub(crate) ddl: crate::ddl::Service,
 }
 
 impl ServerContext {
@@ -96,7 +97,11 @@ impl ServerContext {
             data_dir.to_owned(),
             data_dir.join("run"),
         );
-        Self::bootstrap_at(config_path, paths).await
+        let mut context = Self::bootstrap_at(config_path, paths).await?;
+        context
+            .ddl
+            .use_test_credentials(Arc::new(sqarvo_local_store::MemoryCredentialStore::new()));
+        Ok(context)
     }
 
     async fn bootstrap_at(config_path: Option<&Path>, paths: AppPaths) -> Result<Self> {
@@ -145,6 +150,7 @@ impl ServerContext {
             access,
             audit,
             transactions: crate::transactions::TransactionRegistry::default(),
+            ddl: crate::ddl::Service::default(),
         })
     }
 
@@ -168,7 +174,7 @@ impl ServerContext {
 
     /// 关闭全部资源（进程退出路径）。
     pub async fn shutdown(&self) {
-        self.transactions.shutdown().await;
+        tokio::join!(self.transactions.shutdown(), self.ddl.shutdown());
         self.access.close_all().await;
     }
 }
@@ -223,6 +229,7 @@ impl SqarvoMcpServer {
             .into_iter()
             .chain(crate::tools::write::descriptions())
             .chain(crate::tools::transaction::descriptions())
+            .chain(crate::tools::ddl::descriptions())
             .filter(|tool| policy.allows(tool.name.as_ref()))
             .collect()
     }
@@ -249,6 +256,19 @@ impl ServerHandler for SqarvoMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, McpError> {
+        if let Some(tool) = config::DDL_TOOL_NAMES
+            .into_iter()
+            .find(|tool| *tool == request.name)
+        {
+            let owner = match context.extensions.get::<axum::http::request::Parts>() {
+                Some(parts) => parts
+                    .extensions
+                    .get::<crate::http::HttpSessionLifetime>()
+                    .map(|lifetime| lifetime.0.clone()),
+                None => self.stdio_owner.clone(),
+            };
+            return crate::tools::ddl::call(&self.context, owner, tool, request, context).await;
+        }
         if let Some(tool) = config::TRANSACTION_TOOL_NAMES
             .into_iter()
             .find(|tool| *tool == request.name)
@@ -416,7 +436,7 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
         "启动 stdio MCP server"
     );
 
-    let running = match server.serve(rmcp::transport::stdio()).await {
+    let running = match Box::pin(server.serve(rmcp::transport::stdio())).await {
         Ok(running) => running,
         // 握手前对端关闭 = EOF 收尾，见函数文档；其余 serve 错误照旧非零 + 诊断。
         Err(rmcp::service::ServerInitializeError::ConnectionClosed(waiting_on))

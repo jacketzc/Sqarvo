@@ -80,6 +80,7 @@ struct CleanupCounters {
 struct Session {
     summary: SessionSummary,
     driver: Arc<dyn DriverSession>,
+    ddl: bool,
     /// 会话级执行锁：同一会话只允许一条在途语句（ADR 0008）。
     execution: Arc<Mutex<()>>,
     /// 会话内唯一打开的事务（ADR 0017 §3）。
@@ -118,6 +119,7 @@ impl Session {
         SessionHandle {
             summary: self.summary.clone(),
             session: Arc::clone(&self.driver),
+            ddl: self.ddl,
             execution: Arc::clone(&self.execution),
             transaction: Arc::clone(&self.transaction),
         }
@@ -133,6 +135,7 @@ impl Session {
 pub struct SessionHandle {
     summary: SessionSummary,
     session: Arc<dyn DriverSession>,
+    ddl: bool,
     execution: Arc<Mutex<()>>,
     transaction: Arc<StdMutex<Option<Transaction>>>,
 }
@@ -209,6 +212,51 @@ impl SessionHandle {
             self.observe_transaction_error(error);
         }
         result
+    }
+
+    /// Dispatch a checked statement on an exclusively owned DDL session.
+    pub fn dispatch_ddl(
+        &self,
+        request: ExecuteRequest,
+    ) -> Result<sqarvo_driver_api::ddl::Dispatch> {
+        if !self.ddl {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "DDL 需要独立的结构管理会话",
+            ));
+        }
+        self.session.dispatch_ddl(request)
+    }
+
+    /// Dispatch a transactional DDL commit on an exclusively owned session.
+    ///
+    /// The owner must close this session after the reply. It cannot return
+    /// to the regular transaction or query paths.
+    pub fn dispatch_ddl_commit(
+        &self,
+        id: TransactionId,
+    ) -> Result<sqarvo_driver_api::ddl::Dispatch> {
+        if !self.ddl {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "DDL 需要独立的结构管理会话",
+            ));
+        }
+        self.session.dispatch_ddl_commit(id)
+    }
+
+    /// Inspect schema dependencies using the same exclusive connection as execution.
+    pub async fn inspect_ddl(
+        &self,
+        change: sqarvo_driver_api::ddl::Change,
+    ) -> Result<sqarvo_driver_api::ddl::Inspection> {
+        let _guard = self.execution.lock().await;
+        self.session.inspect_ddl(change).await
+    }
+
+    /// Driver-selected grammar for structured DDL.
+    pub fn ddl_syntax(&self) -> Option<sqarvo_driver_api::ddl::Syntax> {
+        self.session.ddl_syntax()
     }
 
     /// Quote a single identifier through the current driver.
@@ -859,7 +907,7 @@ impl SessionManager {
         display_name: impl Into<String>,
         params: ConnectionParams,
     ) -> Result<SessionSummary> {
-        let entry = Arc::new(self.open_session(display_name.into(), params).await?);
+        let entry = Arc::new(self.open_session(display_name.into(), params, None).await?);
         let summary = entry.summary.clone();
         self.sessions
             .write()
@@ -878,7 +926,20 @@ impl SessionManager {
         params: ConnectionParams,
     ) -> Result<SessionHandle> {
         Ok(self
-            .open_session(display_name.into(), params)
+            .open_session(display_name.into(), params, None)
+            .await?
+            .handle())
+    }
+
+    /// Open an exclusive, disposable schema-management session.
+    pub async fn connect_ddl(
+        &self,
+        display_name: impl Into<String>,
+        params: ConnectionParams,
+        preview: bool,
+    ) -> Result<SessionHandle> {
+        Ok(self
+            .open_session(display_name.into(), params, Some(preview))
             .await?
             .handle())
     }
@@ -887,6 +948,7 @@ impl SessionManager {
         &self,
         display_name: String,
         params: ConnectionParams,
+        ddl_preview: Option<bool>,
     ) -> Result<Session> {
         params.validate()?;
         if display_name.trim().is_empty() {
@@ -900,7 +962,14 @@ impl SessionManager {
         // 明文只在这个块里存活：握手一结束就丢弃，不会进入会话摘要或后续状态。
         let session = {
             let secret = self.resolve_secret(&params).await?;
-            driver.connect(&params, secret.as_ref()).await?
+            match ddl_preview {
+                Some(preview) => {
+                    driver
+                        .connect_ddl(&params, secret.as_ref(), preview)
+                        .await?
+                }
+                None => driver.connect(&params, secret.as_ref()).await?,
+            }
         };
         let summary = SessionSummary {
             connection_id: ConnectionId::new(),
@@ -915,6 +984,7 @@ impl SessionManager {
         Ok(Session {
             summary,
             driver: Arc::from(session),
+            ddl: ddl_preview.is_some(),
             execution: Arc::new(Mutex::new(())),
             transaction: Arc::new(StdMutex::new(None)),
         })
@@ -1482,6 +1552,7 @@ mod tests {
         let handle = SessionHandle {
             summary,
             session: Arc::clone(&counting) as Arc<dyn DriverSession>,
+            ddl: false,
             execution: Arc::new(Mutex::new(())),
             transaction: Arc::new(StdMutex::new(None)),
         };

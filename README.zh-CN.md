@@ -149,6 +149,9 @@ V1 工具仍只提供只读功能。
 stdio 和认证 Streamable HTTP 均支持显式事务。原有写入工具仍按调用独立提交。
 见[显式事务指南](docs/api/mcp-tools.md#v21-explicit-transactions)。
 
+开启全局写入后，Agent 可在 SQLite 或受管 MariaDB 部署上预览和执行结构化表、字段及
+索引变更。见[受控 DDL 指南](docs/api/mcp-tools.md#v22-controlled-ddl)。
+
 ## 文档
 
 - 产品：[愿景](docs/product/vision.md) · [定位](docs/product/positioning.md) ·

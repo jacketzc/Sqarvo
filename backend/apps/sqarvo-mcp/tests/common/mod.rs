@@ -389,3 +389,13 @@ pub fn read_audit_records(dir: &Path) -> Vec<(std::path::PathBuf, serde_json::Va
     }
     records
 }
+
+/// Fresh input ID for DDL protocol fixtures.
+pub fn ddl_operation_id() -> String {
+    let millis = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+        .expect("Unix milliseconds");
+    let mut bytes = *uuid::Uuid::new_v4().as_bytes();
+    bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+    bytes[6] = (bytes[6] & 15) | 0x70;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}

@@ -24,6 +24,8 @@ rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 subtle = "2"
 tokio-util = "0.7"
 rpassword.workspace = true
+ring = "0.17"
+rusqlite.workspace = true
 schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

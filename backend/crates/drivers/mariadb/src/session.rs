@@ -98,6 +98,14 @@ enum Command {
         catalog: String,
         reply: oneshot::Sender<Result<()>>,
     },
+    InspectDdl {
+        change: sqarvo_driver_api::ddl::Change,
+        reply: oneshot::Sender<Result<sqarvo_driver_api::ddl::Inspection>>,
+    },
+    ExecuteDdl {
+        request: ExecuteRequest,
+        reply: oneshot::Sender<sqarvo_driver_api::ddl::Acknowledgment>,
+    },
     Close {
         reply: oneshot::Sender<()>,
     },
@@ -299,9 +307,20 @@ pub(crate) struct MariaDbSession {
 
 impl MariaDbSession {
     pub(crate) async fn connect(config: MariaDbConfig) -> Result<Self> {
+        Self::connect_with_mode(config, None).await
+    }
+
+    pub(crate) async fn connect_ddl(config: MariaDbConfig, preview: bool) -> Result<Self> {
+        Self::connect_with_mode(config, Some(preview)).await
+    }
+
+    async fn connect_with_mode(config: MariaDbConfig, ddl_preview: Option<bool>) -> Result<Self> {
         let (mut conn, warnings) = crate::driver::connect_conn(&config).await?;
         for warning in warnings {
             tracing::warn!(code = %warning.code, message = %warning.message, "MariaDB 连接降级");
+        }
+        if ddl_preview.is_some() {
+            crate::ddl::configure(&mut conn).await?;
         }
         let connection_id = conn.id();
         // 记住会话默认隔离级别：`IsolationLevel::Unspecified` 要恢复到这个值。
@@ -335,6 +354,7 @@ impl MariaDbSession {
             Arc::clone(&state),
             default_isolation,
             Arc::clone(&control),
+            ddl_preview,
         ));
 
         Ok(Self {
@@ -395,6 +415,7 @@ async fn run_session(
     state: Arc<SharedState>,
     default_isolation: Option<String>,
     control: Arc<ControlPlane>,
+    ddl_preview: Option<bool>,
 ) {
     let default_isolation = default_isolation
         .as_deref()
@@ -468,6 +489,26 @@ async fn run_session(
                 reply,
             } => {
                 let result = rollback_transaction(&mut conn, id, &state, require_ack).await;
+                let _ = reply.send(result);
+            }
+            Command::InspectDdl { change, reply } => {
+                let result = match ddl_preview {
+                    Some(preview) => crate::ddl::inspect(&mut conn, &change, preview).await,
+                    None => Err(crate::ddl::unsupported()),
+                };
+                let _ = reply.send(result);
+            }
+            Command::ExecuteDdl { request, reply } => {
+                let result = if ddl_preview == Some(false)
+                    && state.transaction() == TransactionState::None
+                {
+                    state.set_active(request.query_id);
+                    let result = crate::ddl::execute(&mut conn, &request.sql).await;
+                    state.clear_active();
+                    result
+                } else {
+                    sqarvo_driver_api::ddl::Acknowledgment::Rejected(crate::ddl::unsupported())
+                };
                 let _ = reply.send(result);
             }
             Command::Metadata { request, reply } => {
@@ -1202,6 +1243,14 @@ async fn serve_script(
                     "当前会话有未读完的结果集，请先读完或关闭再操作事务",
                 )));
             }
+            Command::InspectDdl { reply, .. } => {
+                let _ = reply.send(Err(crate::ddl::unsupported()));
+            }
+            Command::ExecuteDdl { reply, .. } => {
+                let _ = reply.send(sqarvo_driver_api::ddl::Acknowledgment::Rejected(
+                    crate::ddl::unsupported(),
+                ));
+            }
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
@@ -1522,6 +1571,14 @@ where
                 )));
             }
             // 未读完的结果集仍在连接上，此时发元数据查询会与游标交错。
+            Command::InspectDdl { reply, .. } => {
+                let _ = reply.send(Err(crate::ddl::unsupported()));
+            }
+            Command::ExecuteDdl { reply, .. } => {
+                let _ = reply.send(sqarvo_driver_api::ddl::Acknowledgment::Rejected(
+                    crate::ddl::unsupported(),
+                ));
+            }
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
@@ -1707,6 +1764,36 @@ impl DriverSession for MariaDbSession {
     /// MariaDB 驱动已实现多语句脚本（#188）：整段直发 + 顺序缓冲 + 遇错即停。
     fn supports_multiple_statements(&self) -> bool {
         true
+    }
+
+    fn dispatch_ddl(&self, request: ExecuteRequest) -> Result<sqarvo_driver_api::ddl::Dispatch> {
+        use sqarvo_driver_api::ddl::Acknowledgment;
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .try_send(Command::ExecuteDdl { request, reply })
+            .map_err(|_| Self::closed_error())?;
+        Ok(Box::pin(async move {
+            wait.await
+                .unwrap_or_else(|_| Acknowledgment::Unconfirmed(Self::closed_error()))
+        }))
+    }
+
+    async fn inspect_ddl(
+        &self,
+        change: sqarvo_driver_api::ddl::Change,
+    ) -> Result<sqarvo_driver_api::ddl::Inspection> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::InspectDdl { change, reply })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    fn ddl_syntax(&self) -> Option<sqarvo_driver_api::ddl::Syntax> {
+        Some(crate::ddl::syntax())
     }
 
     fn quote_identifier(&self, name: &str) -> Option<String> {

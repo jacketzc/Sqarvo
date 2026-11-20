@@ -1239,3 +1239,449 @@ async fn explicit_commit_survives_terminal_audit_failure() {
         json!([[1], [2], [3]])
     );
 }
+
+#[cfg(target_os = "linux")]
+fn ddl_mariadb_profiles(home: &Path, profiles: &[(&str, &str, u16)]) {
+    use sqarvo_local_store::{AppPaths, ConnectionProfile, McpAccessPolicy, ProfileStore};
+
+    let store = ProfileStore::new(&AppPaths::from_roots(
+        home.join("config/sqarvo"),
+        home.join("data/sqarvo"),
+        home.join("run"),
+    ));
+    for &(alias, username, port) in profiles {
+        let profile: ConnectionProfile = serde_json::from_value(json!({
+            "profile_id":uuid::Uuid::nil(), "revision":0, "name":alias, "driver_id":"mariadb",
+            "host":"127.0.0.1", "port":port, "database":"sqarvo_mcp_ddl_fixture",
+            "username":username, "tls":"disabled",
+        }))
+        .unwrap();
+        store.save(profile, None).unwrap();
+    }
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ddl_stdio_mariadb_managed_schema() {
+    if std::env::var("SQARVO_MCP_DDL_MARIADB_FIXTURE").as_deref() != Ok("1") {
+        eprintln!("requires disposable MariaDB 11.8.6 on loopback 53429 and a test keyring");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    ddl_mariadb_profiles(
+        home,
+        &[
+            ("ddl", "mcp_ddl_fixture", 53429),
+            ("read", "mcp_ddl_read_fixture", 53429),
+        ],
+    );
+    let config = common::write_config(home, &json!({}));
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let mut sequence = 1;
+    let mut rpc = |tool: &str, args: Value, error: bool| {
+        sequence += 1;
+        let response = common::call_tool(&mut server, sequence, tool, args, None);
+        common::assert_call_result(&response, error)["structuredContent"].clone()
+    };
+    let arguments = |extra: Value| {
+        let mut root = json!({
+            "connection_alias":"ddl", "database":"sqarvo_mcp_ddl_fixture", "table":"mcp_items",
+        });
+        root.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        root
+    };
+    let mut create = arguments(json!({
+        "columns":[{"name":"id","type":"bigint","primary_key":true,"identity":true},
+                   {"name":"note","type":"text","default":"private ' \\ ; default"}]
+    }));
+    let preview = rpc(
+        "preview_schema_change",
+        json!({"operation":"create_table","arguments":create}),
+        false,
+    );
+    assert_eq!(preview["can_execute"], true, "{preview}");
+    assert_eq!(preview["implicit_commit"], true);
+    assert!(
+        !preview["generated_sql"]
+            .as_str()
+            .unwrap()
+            .contains("private")
+    );
+    create["operation_id"] = json!(common::ddl_operation_id());
+    let mut denied = create.clone();
+    denied["connection_alias"] = json!("read");
+    denied["operation_id"] = json!(common::ddl_operation_id());
+    assert_eq!(rpc("create_table", denied, true)["state"], "failed");
+    let created = rpc("create_table", create.clone(), false);
+    assert_eq!(created["effect"], "applied", "{created}");
+    let replay = rpc("create_table", create, false);
+    assert_eq!(replay["replayed"], true);
+    let steps = [
+        (
+            "alter_table",
+            json!({"action":"add_column","column":{"name":"extra","type":"integer"}}),
+        ),
+        (
+            "alter_table",
+            json!({"action":"rename_column","column_name":"extra","new_name":"renamed_col"}),
+        ),
+        (
+            "create_index",
+            json!({"index":"named_idx","columns":["renamed_col","id"]}),
+        ),
+        ("drop_index", json!({"index":"named_idx"})),
+        (
+            "alter_table",
+            json!({"action":"drop_column","column_name":"renamed_col"}),
+        ),
+        (
+            "alter_table",
+            json!({"action":"rename_table","new_table":"mcp_renamed"}),
+        ),
+        ("drop_table", json!({"table":"mcp_renamed"})),
+    ];
+    for (tool, params) in steps {
+        let mut args = arguments(params);
+        args["operation_id"] = json!(common::ddl_operation_id());
+        let result = rpc(tool, args, false);
+        assert_eq!(result["effect"], "applied", "{tool}: {result}");
+    }
+    let found = rpc(
+        "execute_readonly_query",
+        json!({
+            "connection_alias":"ddl", "database":"sqarvo_mcp_ddl_fixture",
+            "sql":"SELECT COUNT(*) AS present FROM information_schema.TABLES WHERE TABLE_SCHEMA='sqarvo_mcp_ddl_fixture' AND TABLE_NAME IN ('mcp_items','mcp_renamed')"
+        }),
+        false,
+    );
+    assert_eq!(found["rows"][0][0], 0, "{found}");
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ddl_stdio_sqlite_on_production_keyring() {
+    if std::env::var("SQARVO_MCP_DDL_KEYRING_FIXTURE").as_deref() != Ok("1") {
+        eprintln!("requires an isolated Secret Service session");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let config = common::write_config(home, &write_fixture(home).await);
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let args = json!({
+        "operation_id":common::ddl_operation_id(), "connection_alias":"dev",
+        "database":"main","table":"operators","columns":[{"name":"id","type":"integer"}],
+    });
+    let call = |server: &mut common::Server, id, error| {
+        let result = common::call_tool(server, id, "create_table", args.clone(), None);
+        common::assert_call_result(&result, error)["structuredContent"].clone()
+    };
+    assert_eq!(
+        call(&mut server, 2, true)["error"]["code"],
+        "mcp.connection_denied"
+    );
+    common::enable_access(&config, home);
+    assert_eq!(
+        call(&mut server, 3, true)["error"]["code"],
+        "mcp.connection_denied"
+    );
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+    let created = call(&mut server, 4, false);
+    assert_eq!(created["state"], "completed", "{created}");
+    server.close_stdin();
+    assert!(server.wait().status.success());
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    assert_eq!(call(&mut server, 2, false)["replayed"], true);
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ddl_stdio_mariadb_unknown_and_reconciliation() {
+    if std::env::var("SQARVO_MCP_DDL_PROXY_FIXTURE").as_deref() != Ok("1") {
+        eprintln!("requires MariaDB 11.8.6 and DDL acknowledgment proxy on 53429/53431");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    ddl_mariadb_profiles(
+        home,
+        &[
+            ("direct", "mcp_ddl_fixture", 53429),
+            ("proxy", "mcp_ddl_fixture", 53431),
+        ],
+    );
+    let config = common::write_config(home, &json!({}));
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let operation_id = common::ddl_operation_id();
+    let args = json!({
+        "connection_alias":"proxy", "database":"sqarvo_mcp_ddl_fixture", "table":"ddl_ack_unknown",
+        "operation_id":operation_id, "columns":[{"name":"id","type":"integer"}],
+    });
+    let call = |server: &mut common::Server, id, tool, args, error| {
+        let result = common::call_tool(server, id, tool, args, None);
+        common::assert_call_result(&result, error)["structuredContent"].clone()
+    };
+    let result = call(&mut server, 2, "create_table", args.clone(), true);
+    assert_eq!(result["state"], "outcome_unknown", "{result}");
+    assert_eq!(result["operation_id"], operation_id);
+    assert_eq!(result["error"]["retryable"], false);
+    let read = call(
+        &mut server,
+        3,
+        "execute_readonly_query",
+        json!({
+           "connection_alias":"direct", "database":"sqarvo_mcp_ddl_fixture",
+           "sql":"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='sqarvo_mcp_ddl_fixture' AND TABLE_NAME='ddl_ack_unknown'"
+        }),
+        false,
+    );
+    assert_eq!(read["rows"][0][0], 1, "{read}");
+    server.close_stdin();
+    assert!(server.wait().status.success());
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let replay = call(&mut server, 2, "create_table", args, true);
+    assert_eq!(replay["replayed"], true, "{replay}");
+    assert_eq!(replay["state"], "outcome_unknown");
+    let drop = json!({
+        "connection_alias":"direct", "database":"sqarvo_mcp_ddl_fixture",
+        "table":"ddl_ack_unknown", "operation_id":common::ddl_operation_id(),
+    });
+    let blocked = call(&mut server, 3, "drop_table", drop.clone(), true);
+    assert_eq!(blocked["error"]["code"], "mcp.ddl_unresolved", "{blocked}");
+    let reconciled = std::process::Command::new(common::binary())
+        .args(["ddl-reconcile", &operation_id, "--verified-stopped"])
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_RUNTIME_DIR", home.join("run"))
+        .output()
+        .unwrap();
+    assert!(
+        reconciled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reconciled.stderr)
+    );
+    let result = call(&mut server, 4, "drop_table", drop, false);
+    assert_eq!(result["effect"], "applied", "{result}");
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ddl_stdio_mariadb_metadata_lock_is_bounded() {
+    use sqarvo_common::QueryId;
+    use sqarvo_connection::SessionManager;
+    use sqarvo_driver_api::{ExecuteRequest, IsolationLevel, TransactionOptions};
+    use sqarvo_drivers::DriverRegistry;
+    use std::sync::Arc;
+
+    if std::env::var("SQARVO_MCP_DDL_MARIADB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    ddl_mariadb_profiles(home, &[("ddl", "mcp_ddl_fixture", 53429)]);
+    let config = common::write_config(home, &json!({}));
+    let params = sqarvo_mcp::config::parse(&json!({
+        "connections":[{"alias":"ddl","enabled":true,"driver_id":"mariadb","host":"127.0.0.1",
+            "port":53429,"database":"sqarvo_mcp_ddl_fixture","username":"mcp_ddl_fixture","tls":"disabled"}]
+    }).to_string()).unwrap().validate().unwrap().connection("ddl").unwrap()
+        .to_connection_params().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (handle, transaction) = runtime.block_on(async {
+        let manager = SessionManager::new(Arc::new(DriverRegistry::with_builtin_drivers()));
+        let handle = manager
+            .connect_isolated("hold metadata lock", params)
+            .await
+            .unwrap();
+        let active = handle
+            .begin_transaction(TransactionOptions {
+                isolation: IsolationLevel::Serializable,
+                read_only: true,
+            })
+            .await
+            .unwrap();
+        handle
+            .execute(ExecuteRequest {
+                query_id: QueryId::new(),
+                sql: "SELECT id FROM locked_table".into(),
+                max_rows: Some(2),
+                timeout: None,
+            })
+            .await
+            .unwrap();
+        (handle, active.transaction_id)
+    });
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let args = json!({
+        "connection_alias":"ddl","database":"sqarvo_mcp_ddl_fixture","table":"locked_table",
+        "operation_id":common::ddl_operation_id(),"action":"add_column",
+        "column":{"name":"locked_probe","type":"integer"},
+    });
+    let response = common::call_tool(&mut server, 2, "alter_table", args, None);
+    let response = &common::assert_call_result(&response, true)["structuredContent"];
+    assert_eq!(response["state"], "failed", "{response}");
+    assert_eq!(response["error"]["retryable"], false, "{response}");
+    runtime.block_on(async {
+        handle.rollback_transaction(&transaction).await.unwrap();
+        handle.close().await.unwrap();
+    });
+    let response = common::call_tool(
+        &mut server,
+        3,
+        "execute_readonly_query",
+        json!({
+            "connection_alias":"ddl","database":"sqarvo_mcp_ddl_fixture",
+            "sql":"SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='sqarvo_mcp_ddl_fixture' AND TABLE_NAME='locked_table' AND COLUMN_NAME='locked_probe'"
+        }),
+        None,
+    );
+    let response = &common::assert_call_result(&response, false)["structuredContent"];
+    assert_eq!(response["rows"][0][0], 0, "{response}");
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ddl_mariadb_hidden_dependency_refuses_mutation() {
+    if std::env::var("SQARVO_MCP_DDL_GUARD_REJECTION_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    ddl_mariadb_profiles(home, &[("ddl", "mcp_ddl_fixture", 53429)]);
+    let config = common::write_config(home, &json!({}));
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let query = |sql| {
+        json!({
+            "connection_alias":"ddl","database":"sqarvo_mcp_ddl_fixture","sql":sql,
+        })
+    };
+    let read = common::call_tool(
+        &mut server,
+        2,
+        "execute_readonly_query",
+        query(
+            "SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA='sqarvo_mcp_ddl_other' AND REFERENCED_TABLE_NAME='locked_table'",
+        ),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&read, false)["structuredContent"]["rows"][0][0],
+        0
+    );
+    let response = common::call_tool(
+        &mut server,
+        3,
+        "drop_table",
+        json!({
+            "connection_alias":"ddl", "database":"sqarvo_mcp_ddl_fixture", "table":"locked_table",
+            "operation_id":common::ddl_operation_id(),
+        }),
+        None,
+    );
+    let response = &common::assert_call_result(&response, true)["structuredContent"];
+    assert_eq!(
+        response["error"]["code"], "capability.unsupported",
+        "{response}"
+    );
+    assert_eq!(response["state"], "not_started");
+    let read = common::call_tool(
+        &mut server,
+        4,
+        "execute_readonly_query",
+        query("SELECT id FROM locked_table"),
+        None,
+    );
+    assert_eq!(
+        common::assert_call_result(&read, false)["structuredContent"]["rows"][0][0],
+        1
+    );
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ddl_stdio_mariadb_request_cancel_keeps_unknown_outcome() {
+    use std::time::{Duration, Instant};
+
+    if std::env::var("SQARVO_MCP_DDL_PROXY_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let proxy_log = std::env::var_os("SQARVO_MCP_DDL_PROXY_LOG").expect("set DDL fault proxy log");
+    let observed = || {
+        std::fs::read_to_string(&proxy_log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == "withheld DDL_CANCEL server OK")
+            .count()
+    };
+    let baseline = observed();
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    ddl_mariadb_profiles(home, &[("proxy", "mcp_ddl_fixture", 53431)]);
+    let config = common::write_config(home, &json!({}));
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let id = common::ddl_operation_id();
+    server.send(&json!({
+        "jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"create_table","arguments":{
+            "connection_alias":"proxy","database":"sqarvo_mcp_ddl_fixture","table":"ddl_cancel_inflight",
+            "operation_id":id,"columns":[{"name":"id","type":"integer"}]
+        }},
+    }));
+    let wait_for = |ready: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready() {
+            assert!(
+                Instant::now() < deadline,
+                "DDL fixture checkpoint timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait_for(&|| observed() > baseline);
+    server.notify(
+        "notifications/cancelled",
+        json!({"requestId":2,"reason":"fixture cancel"}),
+    );
+    wait_for(&|| {
+        common::read_audit_records(&common::audit_dir(home))
+            .iter()
+            .any(|(_, record)| {
+                record["operation_id"] == id && record["ddl_state"] == "outcome_unknown"
+            })
+    });
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}

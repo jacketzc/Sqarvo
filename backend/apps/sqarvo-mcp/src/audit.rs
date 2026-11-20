@@ -127,6 +127,18 @@ pub(crate) struct TransactionAudit {
     pub transaction_state: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DdlAudit {
+    pub operation_id: Option<uuid::Uuid>,
+    pub target_object: String,
+    pub index: Option<String>,
+    pub new_table: Option<String>,
+    pub ddl_operation: &'static str,
+    pub risk_level: &'static str,
+    pub execution_phase: &'static str,
+    pub ddl_state: &'static str,
+}
+
 /// 一条审计记录。
 ///
 /// 字段与 V3.1 §12 的清单一一对应；`error_code` 放**分类**
@@ -164,6 +176,8 @@ pub struct AuditRecord {
     pub write: Option<WriteAudit>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub(crate) transaction: Option<TransactionAudit>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub(crate) ddl: Option<DdlAudit>,
     /// 稳定错误子码（失败时）。
     pub error_subcode: Option<String>,
 }
@@ -188,6 +202,7 @@ impl AuditRecord {
             error_subcode: None,
             write: None,
             transaction: None,
+            ddl: None,
         }
     }
 
@@ -351,7 +366,7 @@ impl AuditWriter {
         }
         file.write_all(line.as_bytes()).map_err(Error::from)?;
         file.flush().map_err(Error::from)?;
-        if record.write.is_some() || record.transaction.is_some() {
+        if record.write.is_some() || record.transaction.is_some() || record.ddl.is_some() {
             file.sync_all().map_err(Error::from)?;
             #[cfg(unix)]
             File::open(&self.dir)

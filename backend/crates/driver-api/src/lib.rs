@@ -14,6 +14,7 @@
 
 pub mod capabilities;
 pub mod credential;
+pub mod ddl;
 pub mod driver;
 pub mod metadata;
 pub mod table_data;

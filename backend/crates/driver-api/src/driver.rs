@@ -380,6 +380,35 @@ pub struct ResultBatch {
 /// - 不支持的能力使用默认实现返回 `capability.unsupported`，驱动必须按能力描述符如实声明。
 #[async_trait]
 pub trait DriverSession: Send + Sync {
+    /// Hand a checked single DDL statement to an isolated session's worker.
+    fn dispatch_ddl(&self, _request: ExecuteRequest) -> Result<crate::ddl::Dispatch> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "不支持结构变更派发",
+        ))
+    }
+
+    /// Hand a transactional DDL commit to an isolated session's worker.
+    fn dispatch_ddl_commit(&self, _transaction_id: TransactionId) -> Result<crate::ddl::Dispatch> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "不支持事务式结构变更提交",
+        ))
+    }
+
+    /// Inspect the target and dependencies on the dedicated DDL connection.
+    async fn inspect_ddl(&self, _change: crate::ddl::Change) -> Result<crate::ddl::Inspection> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "驱动不支持结构变更预检",
+        ))
+    }
+
+    /// Structured DDL grammar, when implemented by this driver.
+    fn ddl_syntax(&self) -> Option<crate::ddl::Syntax> {
+        None
+    }
+
     /// 会话 ID。
     fn session_id(&self) -> SessionId;
 
@@ -544,6 +573,19 @@ pub trait Driver: Send + Sync {
         params: &ConnectionParams,
         secret: Option<&Secret>,
     ) -> Result<Box<dyn DriverSession>>;
+
+    /// Open a dedicated schema-management session with no database-creation side effect.
+    async fn connect_ddl(
+        &self,
+        _params: &ConnectionParams,
+        _secret: Option<&Secret>,
+        _preview: bool,
+    ) -> Result<Box<dyn DriverSession>> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "驱动不支持独立 DDL 会话",
+        ))
+    }
 }
 
 impl fmt::Debug for dyn Driver {

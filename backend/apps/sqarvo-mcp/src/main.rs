@@ -68,6 +68,13 @@ enum Command {
         #[command(subcommand)]
         action: AccessAction,
     },
+    /// 核查已停止的结构变更并解除本机执行屏障。
+    DdlReconcile {
+        operation_id: uuid::Uuid,
+        /// 已核实引擎停止原命令，并核对了数据库状态以及审计。
+        #[arg(long, required = true)]
+        verified_stopped: bool,
+    },
     /// 管理 MCP 引用的系统密钥环凭据。
     Credentials {
         #[command(subcommand)]
@@ -126,6 +133,9 @@ fn main() -> ExitCode {
                     port, app_server, ..
                 } => sqarvo_mcp::http::launch_codex(port, app_server),
             },
+            Some(Command::DdlReconcile { operation_id, .. }) => {
+                sqarvo_mcp::reconcile_ddl(operation_id).await
+            }
             Some(Command::Credentials { action }) => {
                 access_cmd::management_store(cli.config.as_deref())?;
                 credentials_cmd::run(action).await

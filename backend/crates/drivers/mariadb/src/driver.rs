@@ -122,6 +122,20 @@ impl Driver for MariaDbDriver {
         let session = MariaDbSession::connect(config).await?;
         Ok(Box::new(session))
     }
+
+    async fn connect_ddl(
+        &self,
+        params: &ConnectionParams,
+        secret: Option<&Secret>,
+        preview: bool,
+    ) -> Result<Box<dyn DriverSession>> {
+        if params.database.as_deref().is_none_or(str::is_empty) {
+            return Err(crate::ddl::unsupported());
+        }
+        let config = MariaDbConfig::from_params(params, secret)?;
+        let session = MariaDbSession::connect_ddl(config, preview).await?;
+        Ok(Box::new(session))
+    }
 }
 
 /// 建立连接，`Preferred` 模式下 TLS 握手失败时回退明文并返回告警。

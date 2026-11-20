@@ -122,6 +122,35 @@ impl Driver for SqliteDriver {
         let session = SqliteSession::connect(config.path, config.read_only).await?;
         Ok(Box::new(session))
     }
+
+    async fn connect_ddl(
+        &self,
+        params: &ConnectionParams,
+        _secret: Option<&Secret>,
+        preview: bool,
+    ) -> Result<Box<dyn DriverSession>> {
+        if rusqlite::version_number() < 3_037_000 {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "受控 DDL 要求 SQLite 3.37 或更新版本",
+            ));
+        }
+        let config = SqliteConfig::from_params(params)?;
+        if config.path == ":memory:" || config.path.starts_with("file:") {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "DDL 只支持已有的 SQLite 普通文件",
+            ));
+        }
+        if config.read_only && !preview {
+            return Err(Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "DDL 不能在只读 SQLite 档案上执行",
+            ));
+        }
+        let session = SqliteSession::connect_existing(config.path, preview).await?;
+        Ok(Box::new(session))
+    }
 }
 
 /// 归一化后的 SQLite 连接参数。

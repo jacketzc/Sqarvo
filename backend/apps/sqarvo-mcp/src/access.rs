@@ -206,6 +206,8 @@ pub enum OperationType {
     Update,
     /// 删除现有行。
     Delete,
+    /// Structured schema change.
+    Ddl,
 }
 
 /// 一次请求在同一文档修订上作出的授权判定。

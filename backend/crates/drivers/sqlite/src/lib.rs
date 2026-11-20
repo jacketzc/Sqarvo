@@ -18,6 +18,7 @@
 
 #![warn(missing_docs)]
 
+mod ddl;
 mod driver;
 mod error;
 mod metadata;

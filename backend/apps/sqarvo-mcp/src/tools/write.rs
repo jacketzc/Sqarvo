@@ -538,6 +538,7 @@ pub(super) const fn label(op: OperationType) -> &'static str {
         OperationType::Insert => "insert",
         OperationType::Update => "update",
         OperationType::Delete => "delete",
+        OperationType::Ddl => "ddl",
     }
 }
 
@@ -546,7 +547,7 @@ const fn risk(op: OperationType) -> &'static str {
         OperationType::Read => "none",
         OperationType::Insert => "low",
         OperationType::Update => "medium",
-        OperationType::Delete => "high",
+        OperationType::Delete | OperationType::Ddl => "high",
     }
 }
 

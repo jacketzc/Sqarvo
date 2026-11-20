@@ -157,6 +157,17 @@ impl ErrorCode {
     pub const CONFIG_INVALID: Self = Self("config.invalid");
     /// 凭据不可用（未集成系统凭据存储、服务不可用或用户拒绝授权）。
     pub const CREDENTIAL_UNAVAILABLE: Self = Self("credential.unavailable");
+    /// A schema change already owns the durable execution slot.
+    pub const MCP_DDL_BUSY: Self = Self("mcp.ddl_busy");
+    /// A DDL operation ID was reused with different arguments.
+    pub const MCP_DDL_OPERATION_CONFLICT: Self = Self("mcp.ddl_operation_conflict");
+    /// An earlier schema change must be reconciled before executing another.
+    pub const MCP_DDL_UNRESOLVED: Self = Self("mcp.ddl_unresolved");
+    /// The current DDL outcome could not be confirmed.
+    pub const MCP_DDL_OUTCOME_UNKNOWN: Self = Self("mcp.ddl_outcome_unknown");
+    /// The durable operation window is at capacity.
+    pub const MCP_DDL_LEDGER_FULL: Self = Self("mcp.ddl_ledger_full");
+
     /// 凭据引用不存在（连接配置还在，但系统凭据库中的条目已被删除）。
     pub const CREDENTIAL_NOT_FOUND: Self = Self("credential.not_found");
     /// 连接档案不存在。

@@ -14,6 +14,7 @@
 //! （V3.1 §8.4）。
 
 mod ast;
+pub(crate) mod ddl;
 mod fingerprint;
 pub mod write;
 

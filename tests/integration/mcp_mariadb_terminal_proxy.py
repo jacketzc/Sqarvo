@@ -2,6 +2,9 @@
 
 The test instance listens on loopback port 53387. Point the test DSN at port 53388.
 Only the terminal command names and connection closure are logged.
+
+With --ddl, forward from loopback 53431 to 53429 and close the socket
+after the server acknowledges the synthetic ddl_ack_unknown CREATE TABLE.
 """
 
 import asyncio
@@ -16,13 +19,14 @@ async def packet(reader):
 rollback_count = 0
 connection_count = 0
 startup_mode = sys.argv[1:] == ["--startup"]
+ddl_mode = sys.argv[1:] == ["--ddl"]
 
 
 async def relay(incoming, client):
     global connection_count
     connection_count += 1
     case = connection_count
-    downstream, upstream = await asyncio.open_connection('127.0.0.1', 53387)
+    downstream, upstream = await asyncio.open_connection('127.0.0.1', 53429 if ddl_mode else 53387)
     held = None
 
     async def commands():
@@ -35,6 +39,14 @@ async def relay(incoming, client):
                 if payload == command:
                     held = 'INIT' if case == 1 else 'BEGIN'
                     print(f'case {case}: forwarded {held}', flush=True)
+            elif ddl_mode:
+                if payload.startswith(b'\x03CREATE TABLE '):
+                    if b'`ddl_ack_unknown`' in payload:
+                        held = 'DDL'
+                        print('forwarded DDL', flush=True)
+                    elif b'`ddl_cancel_inflight`' in payload:
+                        held = 'DDL_CANCEL'
+                        print('forwarded cancellable DDL', flush=True)
             elif payload in (b'\x03COMMIT', b'\x03ROLLBACK'):
                 held = payload[1:].decode()
                 print(f'forwarded {held}', flush=True)
@@ -54,6 +66,10 @@ async def relay(incoming, client):
                     continue
                 assert payload[0] == 0, f'{held} did not receive server OK'
                 print(f'withheld {held} server OK', flush=True)
+                if held == 'DDL':
+                    client.close()
+                    await client.wait_closed()
+                    return
                 if held == 'ROLLBACK':
                     rollback_count += 1
                     if rollback_count == 2:
@@ -77,7 +93,7 @@ async def relay(incoming, client):
     client.close()
 
 async def main():
-    server = await asyncio.start_server(relay, '127.0.0.1', 53388)
+    server = await asyncio.start_server(relay, '127.0.0.1', 53431 if ddl_mode else 53388)
     async with server:
         await server.serve_forever()
 
