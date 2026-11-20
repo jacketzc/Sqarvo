@@ -15,7 +15,7 @@
 - **平台原生** — WinUI 3· GTK4 · SwiftUI，各平台用系统自己的
   控件与交互；没有 Chromium / WebView，没有 JavaScript。
 - **低占用** — 空载常驻约 70 MB
-- **简洁** — 只留日常要用的：连接数据库、写 SQL、看数据。
+- **简洁** — 只留日常要用的：连接数据库、写 SQL、看数据、MCP 控制。
 
 ![Sqarvo 主窗口：对象树、表数据网格与信息面板 DDL（Linux / GTK4）](docs/assets/screenshots/linux-main-window.png)
 

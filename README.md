@@ -15,7 +15,7 @@
 - **Natively built** — WinUI 3 · GTK4 · SwiftUI, each platform using its own controls and interaction
   conventions; no Chromium / WebView, no JavaScript.
 - **Low footprint** — about 70 MB idle.
-- **Minimal UI** — only what daily work needs: connect, write SQL, browse data.
+- **Minimal UI** — only what daily work needs: connect, write SQL, browse data, MCP control.
 
 ![Sqarvo main window: object tree, table data grid and inspector DDL (Linux / GTK4)](docs/assets/screenshots/linux-main-window.png)
 
