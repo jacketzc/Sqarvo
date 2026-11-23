@@ -47,11 +47,8 @@
 //! # 与工具的关系
 //!
 //! 资源**不受** `enabled_tools` 管辖：那是 V3.1 §3.1 为「工具」定义的开关，
-//! 资源是另一条协议面。表资源与 `describe_table` 共用同一份取数（`SessionHandle`
-//! 的 `columns` / `primary_key`）与同一套输出类型（[`ColumnDetail`] /
-//! [`PrimaryKeyColumnView`]），字段形状由等价性测试锁定；`column_detail` 的映射
-//! 函数在 #209 的 `tools/schema.rs` 里是私有的，本 Issue 不可改那个文件，因此这里
-//! 有一份逐字段等价的拷贝（见报告「禁区缺口」）。
+//! 表资源与 `describe_table` 共用列元数据读取、映射与序列化类型
+//! （[`ColumnDetail`] / [`PrimaryKeyColumnView`]），字段形状由等价性测试锁定。
 
 use std::collections::BTreeMap;
 
@@ -60,12 +57,14 @@ use serde::Serialize;
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
 use sqarvo_connection::SessionHandle;
 use sqarvo_driver_api::{
-    ColumnDefault, ColumnMeta, MAX_PAGE_SIZE, ObjectFilter, ObjectKind, ObjectRef, PageRequest,
-    PrimaryKey, QualifiedName,
+    MAX_PAGE_SIZE, ObjectFilter, ObjectKind, ObjectRef, PageRequest, QualifiedName,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::access::AccessService;
-use crate::tools::schema::{ColumnDetail, PrimaryKeyColumnView};
+use crate::tools::schema::{
+    ColumnDetail, PrimaryKeyColumnView, primary_key_columns, read_table_columns,
+};
 
 /// 资源 URI 的 scheme 前缀。
 const SCHEME_PREFIX: &str = "database://";
@@ -640,19 +639,16 @@ async fn table_payload(
     let database_name = database.to_owned();
     let table_name = table.to_owned();
     let (columns, primary_key) = access
-        .run(&alias, |handle| {
+        .run_metadata(&alias, &CancellationToken::new(), {
             let database = database_name.clone();
             let table = table_name.clone();
-            async move {
+            move |handle, read| {
                 let object = table_ref(&handle, &database, &table);
-                let columns = handle.columns(&object).await?;
-                let primary_key = handle.primary_key(&object).await?;
-                Ok((columns, primary_key))
+                read_table_columns(handle, object, read)
             }
         })
         .await
         .map_err(authorization_error)?;
-    let columns: Vec<ColumnDetail> = columns.iter().map(column_detail).collect();
     let primary_key = primary_key_columns(&primary_key);
     Ok(TablePayload {
         connection_alias: alias,
@@ -689,47 +685,6 @@ fn first_page() -> PageRequest {
         page_size: MAX_PAGE_SIZE,
         page_token: None,
     }
-}
-
-/// Project the V1 column fields for the stable Resource payload.
-fn column_detail(column: &ColumnMeta) -> ColumnDetail {
-    let (default_kind, default_value) = default_of(&column.default_value);
-    ColumnDetail {
-        name: column.name.clone(),
-        ordinal: i64::from(column.ordinal),
-        kind: column.column_type.kind_name().to_owned(),
-        native_type: column.original_type_name.clone().unwrap_or_default(),
-        nullable: column.nullable,
-        default_kind: default_kind.to_owned(),
-        default_value,
-        character_set: column.character_set.clone().unwrap_or_default(),
-        collation: column.collation.clone().unwrap_or_default(),
-        identity: None,
-        comment: None,
-        generated: None,
-        generation_expression: None,
-        primary_key_position: None,
-    }
-}
-
-fn default_of(default: &ColumnDefault) -> (&'static str, String) {
-    match default {
-        ColumnDefault::Unspecified => ("unspecified", String::new()),
-        ColumnDefault::NoDefault => ("no_default", String::new()),
-        ColumnDefault::Expression(text) => ("expression", text.clone()),
-        ColumnDefault::Null => ("null", String::new()),
-    }
-}
-
-fn primary_key_columns(primary_key: &PrimaryKey) -> Vec<PrimaryKeyColumnView> {
-    primary_key
-        .columns
-        .iter()
-        .map(|column| PrimaryKeyColumnView {
-            name: column.name.clone(),
-            position: i64::from(column.position),
-        })
-        .collect()
 }
 
 /// 把授权失败归一化成「资源不存在」。

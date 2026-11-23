@@ -420,27 +420,37 @@ async fn table_resource_reuses_describe_table_serialization() {
     assert_eq!(value["table"], "users");
     assert_eq!(value["column_count"], 2);
     assert_eq!(value["has_primary_key"], true);
-    let column = &value["columns"][0];
-    assert_keys(
-        column,
-        &[
-            "name",
-            "ordinal",
-            "type",
-            "native_type",
-            "nullable",
-            "default_kind",
-            "default_value",
-            "character_set",
-            "collation",
-        ],
-    );
-    assert_eq!(column["name"], "id");
-    assert_eq!(column["type"], "integer");
+    let common_column_keys = [
+        "name",
+        "ordinal",
+        "type",
+        "native_type",
+        "nullable",
+        "default_kind",
+        "default_value",
+        "character_set",
+        "collation",
+        "generated",
+    ];
+    let id = &value["columns"][0];
+    let mut id_keys = common_column_keys.to_vec();
+    id_keys.extend(["identity", "primary_key_position"]);
+    assert_keys(id, &id_keys);
+    assert_eq!(id["name"], "id");
+    assert_eq!(id["type"], "integer");
+    assert_eq!(id["generated"], false);
+    assert_eq!(id["identity"], "rowid_alias");
+    assert_eq!(id["primary_key_position"], 1);
+
+    // 普通列的 generated 已知为 false，其余可选属性应省略。
+    let name = &value["columns"][1];
+    assert_keys(name, &common_column_keys);
+    assert_eq!(name["name"], "name");
+    assert_eq!(name["generated"], false);
     assert_eq!(value["primary_key"][0]["name"], "id");
     assert_eq!(value["primary_key"][0]["position"], 1);
 
-    // 与 describe_table 的输出逐字节等价（同一取数、同一序列化契约）。
+    // 与 describe_table 的 JSON 字段和值一致。
     let described = sqarvo_mcp::tools::schema::describe_table(
         &access,
         &sqarvo_mcp::tools::schema::DescribeTableParams {

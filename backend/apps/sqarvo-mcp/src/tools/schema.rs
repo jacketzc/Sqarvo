@@ -12,6 +12,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqarvo_common::{Result, SessionId};
+use sqarvo_connection::SessionHandle;
 use sqarvo_driver_api::metadata::MetadataRead;
 use sqarvo_driver_api::{
     ColumnDefault, ColumnMeta, MAX_PAGE_SIZE, ObjectKind, ObjectRef, PageRequest, PrimaryKey,
@@ -299,11 +300,7 @@ pub(crate) async fn describe_table_with_cancel(
         DESCRIBE_TABLE_TOOL_NAME,
         params,
         cancellation,
-        |handle, object, read| async move {
-            let columns = handle.describe_columns(&object, &read).await?;
-            let primary_key = handle.primary_key_for_read(&object, &read).await?;
-            Ok((columns, primary_key))
-        },
+        read_table_columns,
     )
     .await?;
     let alias = params.connection_alias.trim();
@@ -316,23 +313,35 @@ pub(crate) async fn describe_table_with_cancel(
             connection_alias: alias.to_owned(),
             database: database.to_owned(),
             table: table.to_owned(),
-            columns: columns
-                .into_iter()
-                .map(|column| {
-                    let mut detail = described_column_view(column);
-                    detail.primary_key_position = primary_key
-                        .columns
-                        .iter()
-                        .find(|key| key.name == detail.name)
-                        .map(|key| i64::from(key.position));
-                    detail
-                })
-                .collect(),
+            columns,
             primary_key: primary_key_columns(&primary_key),
             has_primary_key: !primary_key.is_empty(),
         },
         count,
     )
+}
+
+/// Read and project the same column metadata for the tool and table resource.
+pub(crate) async fn read_table_columns(
+    handle: SessionHandle,
+    object: ObjectRef,
+    read: MetadataRead,
+) -> Result<(Vec<ColumnDetail>, PrimaryKey)> {
+    let columns = handle.describe_columns(&object, &read).await?;
+    let primary_key = handle.primary_key_for_read(&object, &read).await?;
+    let columns = columns
+        .into_iter()
+        .map(|column| {
+            let mut detail = described_column_view(column);
+            detail.primary_key_position = primary_key
+                .columns
+                .iter()
+                .find(|key| key.name == detail.name)
+                .map(|key| i64::from(key.position));
+            detail
+        })
+        .collect();
+    Ok((columns, primary_key))
 }
 
 fn table_ref(
@@ -387,7 +396,8 @@ fn default_of(default: &ColumnDefault) -> (&'static str, String) {
     }
 }
 
-fn primary_key_columns(primary_key: &PrimaryKey) -> Vec<PrimaryKeyColumnView> {
+/// Project the declared primary key for MCP output.
+pub(crate) fn primary_key_columns(primary_key: &PrimaryKey) -> Vec<PrimaryKeyColumnView> {
     primary_key
         .columns
         .iter()
