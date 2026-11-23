@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::write;
+use crate::access::OperationType;
 use crate::config::TRANSACTION_TOOL_NAMES;
 use crate::policy::write::{MAX_ARGUMENT_BYTES, WriteArguments};
 use crate::server::ServerContext;
@@ -127,6 +128,12 @@ async fn dispatch(
     cancellation: CancellationToken,
 ) -> Result<Value, Failure> {
     server.config().tools().require(tool)?;
+    // Check global access here. The transaction task rechecks write permissions.
+    server
+        .access()
+        .guard()
+        .authorize_request(OperationType::Read, None)
+        .await?;
     if serde_json::to_vec(&arguments).map_or(true, |value| value.len() > MAX_ARGUMENT_BYTES) {
         return Err(invalid("事务工具参数超出大小限制").into());
     }

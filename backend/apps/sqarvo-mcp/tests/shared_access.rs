@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use sqarvo_mcp::config::tool_names;
+use sqarvo_mcp::config::{TRANSACTION_TOOL_NAMES, tool_names};
 
 fn database_open(pid: u32, database: &Path) -> bool {
     std::fs::read_dir(format!("/proc/{pid}/fd"))
@@ -436,6 +436,8 @@ async fn explicit_transactions_over_stdio() {
     let config = common::write_config(home, &write_fixture(home).await);
     let mut server = common::Server::spawn(&config, home);
     common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let pid = server.pid();
+    let database = home.join("writes.db");
     let mut id = 1;
     let mut call = |tool: &str, args: Value, error: bool| {
         id += 1;
@@ -447,7 +449,25 @@ async fn explicit_transactions_over_stdio() {
         call("begin_transaction", begin.clone(), true)["error"]["code"],
         "mcp.connection_denied"
     );
+    for tool in &TRANSACTION_TOOL_NAMES[1..] {
+        assert_eq!(
+            call(tool, json!({"transaction_id":"not-a-uuid"}), true)["error"]["code"],
+            "mcp.connection_denied",
+            "{tool}"
+        );
+    }
     common::enable_access(&config, home);
+    assert_eq!(
+        call("begin_transaction", json!({}), true)["error"]["code"],
+        "mcp.invalid_argument"
+    );
+    for tool in &TRANSACTION_TOOL_NAMES[1..] {
+        assert_eq!(
+            call(tool, json!({"transaction_id":"not-a-uuid"}), true)["error"]["code"],
+            "mcp.invalid_argument",
+            "{tool}"
+        );
+    }
     assert_eq!(
         call("begin_transaction", begin.clone(), true)["error"]["code"],
         "mcp.connection_denied"
@@ -566,6 +586,47 @@ async fn explicit_transactions_over_stdio() {
         "rolled_back"
     );
 
+    let revoked_tx = call("begin_transaction", begin.clone(), false)["transaction_id"].clone();
+    call(
+        "execute_in_transaction",
+        json!({
+            "transaction_id":revoked_tx, "operation_id":"revoked", "operation":"insert",
+            "table":"orders", "rows":[{"id":8,"note":"revoked"}],
+        }),
+        false,
+    );
+    assert!(database_open(pid, &database));
+    assert!(
+        common::manage_access(&config, home, &["off"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        call(
+            "commit_transaction",
+            json!({"transaction_id":revoked_tx}),
+            true
+        )["error"]["code"],
+        "mcp.connection_denied"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while database_open(pid, &database) {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("revocation closes the physical transaction connection");
+    common::enable_access(&config, home);
+    assert_eq!(
+        call("execute_readonly_query", query.clone(), false)["rows"],
+        json!([[1], [4]])
+    );
+    assert!(
+        common::manage_access(&config, home, &["read-only", "off", "--yes"])
+            .status
+            .success()
+    );
+
     let mut expires = begin.clone();
     expires["timeout_seconds"] = json!(1);
     let tx = call("begin_transaction", expires, false)["transaction_id"].clone();
@@ -597,6 +658,12 @@ async fn explicit_transactions_over_stdio() {
     );
 
     let records = common::read_audit_records(&common::audit_dir(home));
+    assert!(records.iter().any(|(_, record)| {
+        record["transaction_id"] == revoked_tx
+            && record["event"] == "transaction_rollback"
+            && record["transaction_state"] == "rolled_back"
+            && record["error_subcode"] == "mcp.connection_denied"
+    }));
     for event in [
         "transaction_begin",
         "transaction_execute",
