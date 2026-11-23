@@ -12,7 +12,7 @@
 
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result};
 use sqlparser::ast::{BinaryOperator, Expr, ObjectName, Query, Select, Statement, Visit, Visitor};
-use sqlparser::dialect::MySqlDialect;
+use sqlparser::dialect::{Dialect, MySqlDialect};
 use sqlparser::parser::{Parser, ParserError};
 use std::ops::ControlFlow;
 
@@ -40,7 +40,21 @@ const DANGEROUS_FUNCTIONS: &[(&str, &str)] = &[
 pub(crate) fn parse_readonly_statement(sql: &str) -> Result<Statement> {
     // 保持 sqlparser 默认递归保护（limit=50）：触顶返回 ParserError → mcp.sql_parse，
     // 深度边界本身是 DoS 缓解，刻意不调高（ADR 0033）。
-    let statements = Parser::parse_sql(&MySqlDialect {}, sql).map_err(|e| parse_error(&e))?;
+    parse_readonly_statement_with_dialect(sql, &MySqlDialect {}, false)
+}
+
+pub(super) fn parse_readonly_statement_with_dialect(
+    sql: &str,
+    dialect: &dyn Dialect,
+    sqlite_plan: bool,
+) -> Result<Statement> {
+    let statements = Parser::parse_sql(dialect, sql).map_err(|error| {
+        if sqlite_plan {
+            Error::invalid_argument(ErrorCode::MCP_SQL_PARSE, "SQLite 查询计划 SQL 解析失败")
+        } else {
+            parse_error(&error)
+        }
+    })?;
     let statement = match statements.as_slice() {
         [single] => single,
         [] => {
@@ -70,6 +84,14 @@ pub(crate) fn parse_readonly_statement(sql: &str) -> Result<Statement> {
     };
     // 一次全树遍历覆盖所有嵌套深度（手写「顶层+CTE」递归实测会漏 FROM 派生表）。
     let _: ControlFlow<()> = query.visit(&mut scanner);
+    if sqlite_plan {
+        let mut sqlite = SqlitePlanScanner;
+        if let ControlFlow::Break(()) = query.visit(&mut sqlite) {
+            return Err(readonly_violation(
+                "SQLite 查询计划禁止加载扩展或调用文件操作函数",
+            ));
+        }
+    }
     if !scanner.violations.is_empty() {
         return Err(readonly_violation(format!(
             "只读策略拒绝：{}",
@@ -77,6 +99,24 @@ pub(crate) fn parse_readonly_statement(sql: &str) -> Result<Statement> {
         )));
     }
     Ok(statement.clone())
+}
+
+struct SqlitePlanScanner;
+
+impl Visitor for SqlitePlanScanner {
+    type Break = ();
+
+    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+        if let Expr::Function(function) = expr
+            && let Some(name) = function.name.0.last().and_then(|part| part.as_ident())
+            && ["load_extension", "writefile", "readfile", "edit"]
+                .iter()
+                .any(|denied| name.value.eq_ignore_ascii_case(denied))
+        {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 /// visitor 全树扫描器：只记录违规，不在中途 `Break`——一次遍历给出全部拒绝理由，

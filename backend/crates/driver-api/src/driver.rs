@@ -370,6 +370,15 @@ pub struct ResultBatch {
     pub has_more: bool,
 }
 
+/// Database-native read-only query plan format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplainFormat {
+    /// MariaDB's regular EXPLAIN.
+    Standard,
+    /// SQLite's EXPLAIN QUERY PLAN.
+    SqliteQueryPlan,
+}
+
 /// 一个数据库会话。
 ///
 /// 约定：
@@ -415,6 +424,11 @@ pub trait DriverSession: Send + Sync {
     /// 执行 SQL 并返回语句摘要与首批结果。
     async fn execute(&self, request: ExecuteRequest) -> Result<ExecutionStart>;
 
+    /// Execute the server-generated plan statement using the driver's plan safeguards.
+    async fn execute_explain(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+        self.execute(request).await
+    }
+
     /// 拉取指定语句的下一批结果。
     async fn fetch(
         &self,
@@ -439,6 +453,11 @@ pub trait DriverSession: Send + Sync {
     /// 释放指定查询的游标与资源。无状态驱动可直接返回 `Ok(())`。
     async fn close_query(&self, _query_id: &QueryId) -> Result<()> {
         Ok(())
+    }
+
+    /// Native read-only plan format, when supported.
+    fn explain_format(&self) -> Option<ExplainFormat> {
+        None
     }
 
     /// 元数据能力；不支持的驱动返回 `None`。

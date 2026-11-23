@@ -65,6 +65,36 @@ pub(crate) fn probe(connection: &Connection, sql: &str) -> Result<ScriptProbe> {
     }
 }
 
+/// Verify the native statement boundary without preparing any trailing text.
+pub(crate) fn validate_plan(connection: &Connection, sql: &str) -> Result<()> {
+    use sqlparser::dialect::SQLiteDialect;
+    use sqlparser::tokenizer::{Token, Tokenizer};
+
+    let rejected = || {
+        Error::new(
+            ErrorCode::MCP_READONLY_VIOLATION,
+            sqarvo_common::ErrorCategory::PermissionDenied,
+            "SQLite 只允许单条只读查询计划",
+        )
+    };
+    if !sql.starts_with("EXPLAIN QUERY PLAN ") || sql.contains('\0') {
+        return Err(rejected());
+    }
+    let (present, consumed) = split_first(connection, sql, true)?;
+    let tail = sql.get(consumed..).ok_or_else(rejected)?;
+    let tokens = Tokenizer::new(&SQLiteDialect {}, tail)
+        .tokenize()
+        .map_err(|_| rejected())?;
+    if !present
+        || !tokens
+            .iter()
+            .all(|token| matches!(token, Token::Whitespace(_) | Token::SemiColon))
+    {
+        return Err(rejected());
+    }
+    Ok(())
+}
+
 /// 从 `start` 偏移起切出下一条真实语句；剩余全是空段 / 注释时返回 `None`。
 pub(crate) fn next_segment(
     connection: &Connection,
@@ -76,7 +106,7 @@ pub(crate) fn next_segment(
         let remainder = sql
             .get(cursor..)
             .ok_or_else(|| Error::internal("SQL 语句边界落在非字符边界"))?;
-        let (has_statement, consumed) = split_first(connection, remainder)?;
+        let (has_statement, consumed) = split_first(connection, remainder, false)?;
         // 引擎必须前进：空段也返回非零 tail，否则视为内部错误而不是死循环。
         if consumed == 0 {
             return Err(Error::internal("SQLite 语句切分未前进"));
@@ -100,7 +130,7 @@ pub(crate) fn next_segment(
 ///
 /// 空段 / 纯注释段：`sqlite3_prepare_v2` 返回 `SQLITE_OK` 且 `ppStmt` 为 NULL，
 /// `pzTail` 仍指向剩余文本——据此跳过。语句 prepare 失败时按既有分类映射错误。
-fn split_first(connection: &Connection, sql: &str) -> Result<(bool, usize)> {
+fn split_first(connection: &Connection, sql: &str, require_plan: bool) -> Result<(bool, usize)> {
     let c_sql = CString::new(sql).map_err(|_| Error::internal("SQL 含 NUL 字节"))?;
     let mut statement: *mut ffi::sqlite3_stmt = std::ptr::null_mut();
     let mut tail: *const std::ffi::c_char = std::ptr::null();
@@ -109,7 +139,7 @@ fn split_first(connection: &Connection, sql: &str) -> Result<(bool, usize)> {
     // 连接存活期间句柄有效，且本函数在会话线程内独占使用连接）；`c_sql` 是合法
     // NUL 终止字符串；`statement` / `tail` 是栈上输出参数，用 `&raw mut` 直接
     // 取址得到有效的原始指针（不经过中间借用）。
-    // `sqlite3_prepare_v2` 只编译不执行，不产生副作用。
+    // 调用不 step；部分 PRAGMA 可在 prepare 阶段生效，因此计划路径不 prepare 尾部。
     let rc = unsafe {
         ffi::sqlite3_prepare_v2(
             connection.handle(),
@@ -132,12 +162,25 @@ fn split_first(connection: &Connection, sql: &str) -> Result<(bool, usize)> {
 
     let has_statement = !statement.is_null();
     if has_statement {
+        // SAFETY: statement is a live prepared statement until finalize below.
+        let valid_plan = !require_plan
+            || unsafe {
+                ffi::sqlite3_stmt_readonly(statement) != 0
+                    && ffi::sqlite3_stmt_isexplain(statement) == 2
+            };
         // SAFETY: statement 非空且来自上面成功的 prepare，finalize 恰好一次。
         let rc = unsafe { ffi::sqlite3_finalize(statement) };
         if rc != ffi::SQLITE_OK {
             // prepare 成功而 finalize 失败极罕见（如内存不足）；仍按既有分类上报。
             let error = rusqlite::Error::SqliteFailure(ffi::Error::new(rc), None);
             return Err(map_sqlite_error(error, "释放 SQLite 语句失败"));
+        }
+        if !valid_plan {
+            return Err(Error::new(
+                ErrorCode::MCP_READONLY_VIOLATION,
+                sqarvo_common::ErrorCategory::PermissionDenied,
+                "SQLite 引擎未确认该语句是只读查询计划",
+            ));
         }
     }
 

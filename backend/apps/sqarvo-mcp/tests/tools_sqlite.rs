@@ -6,7 +6,7 @@
 //! - 连接发现 / Schema Discovery / 样本读取 / 只读查询的正向路径；
 //! - DML 与多语句被 `policy` 拒绝；
 //! - 行数上限与字节上限分别触发 `truncated`，且与单元格级截断互不混淆；
-//! - `explain_query` 在 SQLite 上明确返回 `mcp.unsupported`；
+//! - `explain_query` 返回 SQLite 原生查询计划；
 //! - 非空 `schema` 参数返回驱动的 `capability.unsupported`（不静默忽略）。
 
 #[path = "support/profile_access.rs"]
@@ -25,6 +25,14 @@ use sqarvo_mcp::tools::{connection, explain, query, schema};
 
 /// 构造只含 `dev` SQLite 连接的访问服务。
 fn access(db: &Path, enabled_tools: Option<&[&str]>) -> profile_access::TestAccess {
+    access_with_limits(db, enabled_tools, serde_json::json!({}))
+}
+
+fn access_with_limits(
+    db: &Path,
+    enabled_tools: Option<&[&str]>,
+    query_limits: serde_json::Value,
+) -> profile_access::TestAccess {
     let mut root = serde_json::json!({
         "connections": [{
             "alias": "dev",
@@ -35,6 +43,7 @@ fn access(db: &Path, enabled_tools: Option<&[&str]>) -> profile_access::TestAcce
             "properties": { "read_only": "false" }
         }]
     });
+    root["query_limits"] = query_limits;
     if let Some(tools) = enabled_tools {
         root["enabled_tools"] = serde_json::json!(tools);
     }
@@ -340,21 +349,368 @@ async fn cell_level_truncation_is_independent_from_result_truncation() {
 }
 
 #[tokio::test]
-async fn explain_query_is_explicitly_unsupported_on_sqlite() {
+async fn sqlite_query_plan_preserves_native_columns() {
     let dir = tempfile::tempdir().expect("tempdir");
     let access = access(&dir.path().join("explain.db"), None);
-    let error = explain::explain_query(
+    exec(&access, "CREATE TABLE users (id INTEGER, email TEXT)").await;
+    exec(&access, "CREATE INDEX users_email ON users(email)").await;
+    for (sql, feature) in [
+        ("SELECT * FROM users", "SCAN"),
+        (
+            "SELECT * FROM users WHERE email = 'test@example.invalid'",
+            "users_email",
+        ),
+        (
+            "SELECT * FROM users a JOIN users b ON a.email = b.email",
+            "users_email",
+        ),
+        ("WITH c AS (SELECT * FROM users) SELECT * FROM c", "SCAN"),
+    ] {
+        let plan = explain::explain_query(
+            &access,
+            &explain::ExplainQueryParams {
+                connection_alias: "dev".into(),
+                database: "main".into(),
+                sql: sql.into(),
+            },
+        )
+        .await
+        .expect("native SQLite plan");
+        let names = plan
+            .output
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["id", "parent", "notused", "detail"]);
+        assert!(plan.output.rows.iter().any(|row| {
+            row[3]
+                .as_str()
+                .is_some_and(|detail| detail.contains(feature))
+        }));
+    }
+    for sql in [
+        "EXPLAIN SELECT 1",
+        "ANALYZE",
+        "DELETE FROM users",
+        "DROP TABLE users",
+        "SELECT 1; SELECT 2",
+        "SELECT load_extension('example')",
+        "SELECT * FROM",
+    ] {
+        let error = explain::explain_query(
+            &access,
+            &explain::ExplainQueryParams {
+                connection_alias: "dev".into(),
+                database: String::new(),
+                sql: sql.into(),
+            },
+        )
+        .await
+        .expect_err("plan policy must refuse this statement");
+        assert!(matches!(
+            error.code(),
+            ErrorCode::MCP_SQL_PARSE | ErrorCode::MCP_READONLY_VIOLATION
+        ));
+    }
+}
+
+#[tokio::test]
+async fn sqlite_query_plan_honors_row_byte_and_cancellation_limits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("plan-budget.db");
+    let setup = access(&db, None);
+    let table = format!("long_{}", "a".repeat(380));
+    exec(&setup, &format!("CREATE TABLE {table}(id INTEGER)")).await;
+    let params = explain::ExplainQueryParams {
+        connection_alias: "dev".into(),
+        database: "main".into(),
+        sql: format!(
+            "SELECT * FROM {table} a JOIN {table} b ON a.id = b.id JOIN {table} c ON b.id = c.id"
+        ),
+    };
+    let row_access = access_with_limits(&db, None, serde_json::json!({"max_rows":1}));
+    let output = explain::explain_query(&row_access, &params)
+        .await
+        .expect("row budget")
+        .output;
+    assert_eq!(output.row_count, 1);
+    assert_eq!(output.truncated_reason, "rows");
+    let byte_access = access_with_limits(&db, None, serde_json::json!({"max_result_bytes":1024}));
+    let params = explain::ExplainQueryParams {
+        sql: format!(
+            "SELECT id FROM {table} UNION ALL SELECT id FROM {table} UNION ALL SELECT id FROM {table}"
+        ),
+        ..params
+    };
+    let output = explain::explain_query(&byte_access, &params)
+        .await
+        .expect("byte budget")
+        .output;
+    assert_eq!(output.truncated_reason, "bytes");
+    assert!(serde_json::to_vec(&output).unwrap().len() <= 1024);
+    let error =
+        explain::explain_query_with_cancel(&byte_access, &params, &|| std::future::ready(()))
+            .await
+            .expect_err("client cancelled plan");
+    assert_eq!(error.code(), ErrorCode::QUERY_CANCELLED);
+    assert_eq!(byte_access.queries().active(), 0);
+}
+
+#[tokio::test]
+async fn sqlite_schema_budget_keeps_cursor_progress_and_omits_whole_ddl() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let access = access_with_limits(
+        &dir.path().join("schema-budget.db"),
+        None,
+        serde_json::json!({"max_result_bytes":1024}),
+    );
+    let definition = format!("CREATE TABLE a(value TEXT DEFAULT '{}')", "x".repeat(1300));
+    exec(&access, &definition).await;
+    exec(&access, "CREATE TABLE b(value INTEGER)").await;
+    let mut params = schema::DatabaseSchemaParams {
+        connection_alias: "dev".into(),
+        database: "main".into(),
+        schema: String::new(),
+        tables: vec![],
+        include_columns: true,
+        include_indexes: false,
+        include_foreign_keys: false,
+        page_size: 1,
+        page_token: None,
+    };
+    let first = schema::get_database_schema(&access, &params)
+        .await
+        .expect("first page");
+    assert_eq!(first.objects[0].name, "a");
+    assert_eq!(first.truncated_reason, "bytes");
+    assert!(first.objects[0].columns.is_none());
+    assert!(serde_json::to_vec(&first).unwrap().len() <= 1024);
+    params.page_token = first.next_page_token;
+    let second = schema::get_database_schema(&access, &params)
+        .await
+        .expect("second page");
+    assert_eq!(second.objects[0].name, "b");
+    assert!(second.next_page_token.is_none());
+    let ddl = schema::get_table_ddl(
         &access,
-        &explain::ExplainQueryParams {
-            connection_alias: "dev".to_owned(),
-            database: String::new(),
-            sql: "SELECT 1".to_owned(),
+        &schema::DescribeTableParams {
+            connection_alias: "dev".into(),
+            database: "main".into(),
+            table: "a".into(),
+            schema: String::new(),
         },
     )
     .await
-    .expect_err("SQLite 不支持 explain_query");
-    assert_eq!(error.code(), ErrorCode::MCP_UNSUPPORTED);
-    assert!(error.message().contains("EXPLAIN QUERY PLAN"));
+    .expect("bounded DDL");
+    assert!(ddl.ddl.is_none());
+    assert!(!ddl.complete);
+    assert!(ddl.warnings.contains(&"ddl_exceeds_response_budget"));
+}
+
+#[tokio::test]
+async fn sqlite_foreign_keys_preserve_composite_pairs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let access = access(&dir.path().join("foreign-keys.db"), None);
+    exec(
+        &access,
+        "CREATE TABLE parent (a INTEGER, b INTEGER, PRIMARY KEY (b, a))",
+    )
+    .await;
+    exec(&access, "CREATE TABLE child (x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES parent (b, a) ON DELETE CASCADE ON UPDATE SET NULL)").await;
+    let mut params = schema::DescribeTableParams {
+        connection_alias: "dev".into(),
+        database: "main".into(),
+        table: "child".into(),
+        schema: String::new(),
+    };
+    let result = schema::list_foreign_keys(&access, &params)
+        .await
+        .expect("foreign keys");
+    assert_eq!(result.foreign_keys.len(), 1);
+    let key = &result.foreign_keys[0];
+    assert_eq!(key.name, None);
+    assert_eq!(key.target.table, "parent");
+    assert_eq!(key.on_delete, "CASCADE");
+    assert_eq!(key.on_update, "SET NULL");
+    assert_eq!(
+        key.columns
+            .iter()
+            .map(|pair| (pair.column.as_str(), pair.referenced_column.as_deref()))
+            .collect::<Vec<_>>(),
+        [("x", Some("b")), ("y", Some("a"))]
+    );
+    params.table = "parent".into();
+    assert!(
+        schema::list_foreign_keys(&access, &params)
+            .await
+            .expect("parent")
+            .foreign_keys
+            .is_empty()
+    );
+    params.table = "missing".into();
+    assert_eq!(
+        schema::list_foreign_keys(&access, &params)
+            .await
+            .expect_err("missing")
+            .code(),
+        ErrorCode::METADATA_OBJECT_NOT_FOUND
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One schema verifies that each tool agrees with the same objects.
+async fn sqlite_schema_intelligence_reads_native_metadata_and_pages() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let access = access(&dir.path().join("intelligence.db"), None);
+    exec(&access, "CREATE TABLE parent (id INTEGER PRIMARY KEY AUTOINCREMENT, a INTEGER, b INTEGER, c INTEGER GENERATED ALWAYS AS (a + b) STORED, UNIQUE (a, b), CONSTRAINT positive CHECK (a > 0))").await;
+    exec(
+        &access,
+        "CREATE TABLE child (x INTEGER REFERENCES parent, value INTEGER CHECK (value >= 0))",
+    )
+    .await;
+    exec(
+        &access,
+        "CREATE INDEX child_order ON child (x DESC, value ASC, abs(value))",
+    )
+    .await;
+    exec(
+        &access,
+        "CREATE UNIQUE INDEX child_explicit ON child (value)",
+    )
+    .await;
+    exec(&access, "CREATE VIEW child_view AS SELECT x FROM child").await;
+    let mut params = schema::DescribeTableParams {
+        connection_alias: "dev".into(),
+        database: "main".into(),
+        table: "parent".into(),
+        schema: String::new(),
+    };
+    let description = schema::describe_table(&access, &params)
+        .await
+        .expect("columns");
+    assert_eq!(description.columns[0].identity, Some("autoincrement"));
+    assert_eq!(description.columns[3].generated, Some(true));
+    assert_eq!(
+        description.columns[3].generation_expression.as_deref(),
+        Some("a + b")
+    );
+    let constraints = schema::list_constraints(&access, &params)
+        .await
+        .expect("parent constraints");
+    assert!(
+        constraints
+            .constraints
+            .iter()
+            .any(|item| item.kind == "unique"
+                && item.columns.as_deref() == Some(&["a".into(), "b".into()]))
+    );
+    let check = constraints
+        .constraints
+        .iter()
+        .find(|item| item.kind == "check")
+        .expect("check");
+    assert_eq!(check.name.as_deref(), Some("positive"));
+    assert_eq!(check.check_expression.as_deref(), Some("a > 0"));
+    let unknown = schema::get_table_statistics(&access, &params)
+        .await
+        .expect("unknown stats");
+    assert_eq!(unknown.row_count_kind, "unknown");
+    assert_eq!(unknown.row_count, None);
+    assert_eq!(
+        (unknown.data_bytes, unknown.index_bytes, unknown.total_bytes),
+        (None, None, None)
+    );
+    exec(&access, "INSERT INTO parent(a,b) VALUES(1,2),(3,4)").await;
+    // Fixture setup only. The tool must only read an existing statistic.
+    exec(&access, "ANALYZE parent").await;
+    let estimate = schema::get_table_statistics(&access, &params)
+        .await
+        .expect("existing stats");
+    assert_eq!(
+        (estimate.row_count, estimate.row_count_kind),
+        (Some(2), "estimate")
+    );
+    params.table = "child".into();
+    let constraints = schema::list_constraints(&access, &params)
+        .await
+        .expect("child constraints");
+    assert!(
+        !constraints
+            .constraints
+            .iter()
+            .any(|item| item.kind == "unique")
+    );
+    let key = constraints
+        .constraints
+        .iter()
+        .find_map(|item| item.foreign_key.as_ref())
+        .expect("foreign key");
+    assert_eq!(key.columns[0].referenced_column.as_deref(), Some("id"));
+    params.table = "child_view".into();
+    let ddl = schema::get_table_ddl(&access, &params)
+        .await
+        .expect("view definition");
+    assert_eq!(
+        (ddl.object_type, ddl.source, ddl.complete),
+        ("view", "database_native", true)
+    );
+    assert!(ddl.ddl.unwrap().starts_with("CREATE VIEW child_view"));
+    exec(&access, "CREATE VIRTUAL TABLE search USING fts5(body)").await;
+    params.table = "search".into();
+    let virtual_ddl = schema::get_table_ddl(&access, &params)
+        .await
+        .expect("virtual table DDL");
+    assert_eq!(virtual_ddl.object_type, "virtual_table");
+    assert!(virtual_ddl.ddl.unwrap().starts_with("CREATE VIRTUAL TABLE"));
+    params.table = "search_data".into();
+    assert_eq!(
+        schema::get_table_ddl(&access, &params)
+            .await
+            .expect_err("shadow table")
+            .code(),
+        ErrorCode::CAPABILITY_UNSUPPORTED
+    );
+    let mut page_params = schema::DatabaseSchemaParams {
+        connection_alias: "dev".into(),
+        database: "main".into(),
+        schema: String::new(),
+        tables: vec![],
+        include_columns: true,
+        include_indexes: true,
+        include_foreign_keys: true,
+        page_size: 1,
+        page_token: None,
+    };
+    let first = schema::get_database_schema(&access, &page_params)
+        .await
+        .expect("first page");
+    assert_eq!(first.objects[0].name, "child");
+    let indexes = first.objects[0].indexes.as_ref().unwrap();
+    let parts = indexes
+        .iter()
+        .find(|index| index.name == "child_order")
+        .unwrap()
+        .columns
+        .as_ref()
+        .unwrap();
+    assert_eq!(parts[0].sort_order, Some("desc"));
+    assert_eq!(parts[1].name.as_deref(), Some("value"));
+    assert_eq!(parts[2].kind, "expression");
+    page_params.page_token = first.next_page_token;
+    assert!(page_params.page_token.is_some());
+    let second = schema::get_database_schema(&access, &page_params)
+        .await
+        .expect("second page");
+    assert_eq!(second.objects[0].name, "child_view");
+    page_params.include_columns = false;
+    assert_eq!(
+        schema::get_database_schema(&access, &page_params)
+            .await
+            .expect_err("cursor scope must match")
+            .code(),
+        ErrorCode::MCP_INVALID_ARGUMENT
+    );
 }
 
 #[tokio::test]
@@ -403,7 +759,7 @@ async fn non_empty_schema_is_not_silently_ignored() {
 }
 
 #[tokio::test]
-async fn index_names_are_reported_without_inventing_details() {
+async fn index_names_and_native_details_are_reported() {
     let dir = tempfile::tempdir().expect("tempdir");
     let access = access(&dir.path().join("index.db"), None);
     exec(
@@ -431,12 +787,17 @@ async fn index_names_are_reported_without_inventing_details() {
         "应列出显式索引：{:?}",
         output.indexes
     );
-    // 结构化字段只有名称：details 不在输出里（由描述指向 information_schema）。
-    let encoded = serde_json::to_value(&output).expect("序列化");
-    let first = &encoded["indexes"][0];
-    assert!(first.get("name").is_some());
-    assert!(first.get("columns").is_none());
-    assert!(first.get("unique").is_none());
+    assert_eq!(output.count, 1);
+    let index = &output.indexes[0];
+    assert_eq!(index.name, "idx_email");
+    assert_eq!(index.unique, Some(false));
+    assert_eq!(
+        index.columns.as_ref().unwrap()[0].name.as_deref(),
+        Some("email")
+    );
+    assert_eq!(output.implicit_indexes.len(), 1);
+    assert_eq!(output.implicit_indexes[0].origin.as_deref(), Some("u"));
+    assert_eq!(output.implicit_indexes[0].unique, Some(true));
 }
 
 #[tokio::test]

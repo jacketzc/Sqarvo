@@ -104,10 +104,9 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 各类 Agent 运行时）将其作为子进程启动，通过 stdio 通信。MCP 独立于 GUI 后端运行，
 与 GTK 应用使用同一份本地连接档案。
 
-- **只读工具与结构化写入**。8 个只读工具及 4 类资源沿用既有策略。关闭只读保护后，已授权的
+- **只读工具与结构化写入**。只读工具及 4 类资源沿用既有策略。关闭只读保护后，已授权的
   Agent 可以预览并执行受控插入、更新和删除。MariaDB 写入需要 DBA 配置。
-- **MariaDB 与 SQLite**：两者的结构发现与只读查询都可用；`explain_query` 仅 MariaDB
-  （SQLite 的 `EXPLAIN QUERY PLAN` 语义不同，本版不代执行）。
+- **MariaDB 与 SQLite**：两者均支持结构发现、只读查询和原生查询计划。
 - **服务端强制限额**：默认 200 行（硬上限 1000）、单次 1 MiB、10 秒超时、每进程 2 个并发调用；
   Agent 自己写的 `LIMIT` 不能把它们放大。
 
@@ -151,6 +150,9 @@ stdio 和认证 Streamable HTTP 均支持显式事务。原有写入工具仍按
 
 开启全局写入后，Agent 可在 SQLite 或受管 MariaDB 部署上预览和执行结构化表、字段及
 索引变更。见[受控 DDL 指南](docs/api/mcp-tools.md#v22-controlled-ddl)。
+
+通过 [Schema Intelligence 工具](docs/api/mcp-tools.md#v23-schema-intelligence) 分页读取结构、
+约束、索引、原生 DDL 和引擎统计。
 
 ## 文档
 

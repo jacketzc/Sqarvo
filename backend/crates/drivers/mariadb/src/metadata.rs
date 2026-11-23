@@ -50,6 +50,8 @@
 //! 是 `v2:<offset>:<指纹>:<过滤标签>`，换条件即 `config.invalid`。大小写与重音跟着列的
 //! 排序规则（`utf8mb3_general_ci` 下 `LIKE` 折叠大小写与重音），驱动不加 `LOWER()`。
 
+use std::fmt::Write as _;
+
 use async_trait::async_trait;
 use mysql_async::prelude::*;
 use mysql_async::{Conn, Params, Row as MyRow, Value as MyValue};
@@ -64,6 +66,11 @@ use sqarvo_metadata::{mariadb_name_condition, paginate_children_filtered};
 use crate::error::{NO_DATABASE, map_error, server_code};
 use crate::session::MariaDbSession;
 
+use sqarvo_driver_api::metadata::{
+    Constraint, ConstraintKind, DescribedColumn, ForeignKey, ForeignKeyColumn, IndexDetail,
+    IndexPart, MetadataRead, NativeTableDdl, SchemaObjectPage, TableConstraints, TableStatistics,
+};
+
 /// 元数据请求。由 [`MetadataProvider`] 构造，交给会话任务执行。
 pub(crate) enum MetadataRequest {
     /// 列出子节点；`None` 表示根。`filter` 为空等价于不过滤。
@@ -76,6 +83,13 @@ pub(crate) enum MetadataRequest {
     Columns(ObjectRef),
     /// 读取主键定义。
     PrimaryKey(ObjectRef),
+    ForeignKeys(ObjectRef),
+    SchemaObjects(ObjectRef, SchemaObjectPage),
+    TableConstraints(ObjectRef),
+    DescribeColumns(ObjectRef),
+    NativeTableDdl(ObjectRef),
+    TableStatistics(ObjectRef),
+    IndexDetails(ObjectRef),
     /// 读取建对象原文（`SHOW CREATE ...`）。
     Ddl(ObjectRef),
 }
@@ -85,6 +99,13 @@ pub(crate) enum MetadataReply {
     Nodes(Page<ObjectNode>),
     Columns(Vec<ColumnMeta>),
     PrimaryKey(PrimaryKey),
+    ForeignKeys(Vec<ForeignKey>),
+    SchemaObjects(Vec<ObjectNode>),
+    TableConstraints(TableConstraints),
+    DescribeColumns(Vec<DescribedColumn>),
+    NativeTableDdl(NativeTableDdl),
+    TableStatistics(TableStatistics),
+    IndexDetails(Vec<IndexDetail>),
     Ddl(Ddl),
 }
 
@@ -105,6 +126,27 @@ pub(crate) async fn handle(conn: &mut Conn, request: MetadataRequest) -> Result<
         MetadataRequest::PrimaryKey(object) => {
             Ok(MetadataReply::PrimaryKey(primary_key(conn, &object).await?))
         }
+        MetadataRequest::ForeignKeys(object) => Ok(MetadataReply::ForeignKeys(
+            foreign_keys(conn, &object).await?,
+        )),
+        MetadataRequest::IndexDetails(object) => Ok(MetadataReply::IndexDetails(
+            index_details(conn, &object).await?,
+        )),
+        MetadataRequest::TableStatistics(object) => Ok(MetadataReply::TableStatistics(
+            table_statistics(conn, &object).await?,
+        )),
+        MetadataRequest::NativeTableDdl(object) => Ok(MetadataReply::NativeTableDdl(
+            native_table_ddl(conn, &object).await?,
+        )),
+        MetadataRequest::DescribeColumns(object) => Ok(MetadataReply::DescribeColumns(
+            describe_columns(conn, &object).await?,
+        )),
+        MetadataRequest::TableConstraints(object) => Ok(MetadataReply::TableConstraints(
+            table_constraints(conn, &object).await?,
+        )),
+        MetadataRequest::SchemaObjects(object, page) => Ok(MetadataReply::SchemaObjects(
+            schema_objects(conn, &object, &page).await?,
+        )),
         MetadataRequest::Ddl(object) => Ok(MetadataReply::Ddl(ddl(conn, &object).await?)),
     }
 }
@@ -166,6 +208,152 @@ impl MetadataProvider for MariaDbSession {
             .await?
         {
             MetadataReply::Ddl(ddl) => Ok(ddl),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn schema_objects(
+        &self,
+        catalog: &ObjectRef,
+        page: &SchemaObjectPage,
+        read: &MetadataRead,
+    ) -> Result<Vec<ObjectNode>> {
+        validate_session(self.session_id(), catalog)?;
+        page.validate()?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::SchemaObjects(catalog.clone(), page.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::SchemaObjects(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn foreign_keys(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<ForeignKey>> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::ForeignKeys(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::ForeignKeys(keys) => Ok(keys),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn index_details(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<IndexDetail>> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::IndexDetails(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::IndexDetails(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn table_statistics(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<TableStatistics> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::TableStatistics(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::TableStatistics(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn native_table_ddl(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<NativeTableDdl> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::NativeTableDdl(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::NativeTableDdl(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn describe_columns(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<DescribedColumn>> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::DescribeColumns(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::DescribeColumns(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn table_constraints(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<TableConstraints> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::TableConstraints(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::TableConstraints(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn primary_key_for_read(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<PrimaryKey> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::PrimaryKey(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::PrimaryKey(value) => Ok(value),
             _ => Err(mismatched_reply()),
         }
     }
@@ -835,6 +1023,472 @@ fn check_column_kind(kind: &ObjectKind) -> Result<()> {
         )),
         other => Err(kind_not_applicable(other, "读取列信息")),
     }
+}
+
+async fn schema_objects(
+    conn: &mut Conn,
+    catalog: &ObjectRef,
+    page: &SchemaObjectPage,
+) -> Result<Vec<ObjectNode>> {
+    if catalog.qualified_name.schema.is_some() {
+        return Err(unsupported_level("MariaDB 没有独立的 schema 层级"));
+    }
+    let database = catalog_target(catalog)?.ok_or_else(|| {
+        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "Schema 分页必须指定数据库")
+    })?;
+    let database = resolve_database(conn, &database).await?;
+    let mut sql = String::from(
+        "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND BINARY TABLE_SCHEMA = BINARY ? AND TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'SYSTEM VIEW')
+           AND BINARY TABLE_NAME > BINARY ?",
+    );
+    let mut params = vec![
+        MyValue::Bytes(database.as_bytes().to_vec()),
+        MyValue::Bytes(database.as_bytes().to_vec()),
+        MyValue::Bytes(page.after.clone().unwrap_or_default().into_bytes()),
+    ];
+    if !page.tables.is_empty() {
+        let placeholders = vec!["BINARY ?"; page.tables.len()].join(", ");
+        let _ = write!(sql, " AND BINARY TABLE_NAME IN ({placeholders})");
+        params.extend(
+            page.tables
+                .iter()
+                .map(|name| MyValue::Bytes(name.as_bytes().to_vec())),
+        );
+    }
+    sql.push_str(" ORDER BY BINARY TABLE_NAME LIMIT ?");
+    params.push(MyValue::UInt(u64::from(page.limit)));
+    let rows: Vec<MyRow> = conn
+        .exec(sql, Params::Positional(params))
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB Schema 页失败"))?;
+    rows.iter()
+        .map(|row| {
+            let name = required_text(row, 0, "TABLE_NAME")?;
+            Ok(ObjectNode {
+                qualified_name: QualifiedName::new(Some(database.clone()), None, name.clone()),
+                kind: table_kind(&required_text(row, 1, "TABLE_TYPE")?),
+                display_name: name,
+                has_children: true,
+                comment: None,
+            })
+        })
+        .collect()
+}
+
+async fn schema_target(conn: &mut Conn, object: &ObjectRef) -> Result<(String, FoundTable)> {
+    check_column_kind(&object.kind)?;
+    let (database, name) = resolve_object(conn, object).await?;
+    let Some(table) = find_table_entry(conn, &database, &name).await? else {
+        return Err(metadata_not_found(&database, &name));
+    };
+    if !matches!(table.kind, ObjectKind::Table | ObjectKind::View) {
+        return Err(kind_not_applicable(&table.kind, "读取表结构"));
+    }
+    Ok((database, table))
+}
+
+async fn index_details(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<IndexDetail>> {
+    let (database, table) = schema_target(conn, object).await?;
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT INDEX_NAME, NON_UNIQUE, INDEX_TYPE, COLUMN_NAME, COLLATION, SUB_PART
+         FROM information_schema.STATISTICS
+         WHERE BINARY TABLE_SCHEMA = BINARY ? AND BINARY TABLE_NAME = BINARY ?
+         ORDER BY BINARY INDEX_NAME, SEQ_IN_INDEX LIMIT 1001",
+            (database, table.name),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 索引明细失败"))?;
+    if rows.len() > 1000 {
+        return Err(schema_limit());
+    }
+    let mut indexes: Vec<IndexDetail> = Vec::new();
+    for row in &rows {
+        let name = required_text(row, 0, "INDEX_NAME")?;
+        if indexes.last().is_none_or(|index| index.name != name) {
+            indexes.push(IndexDetail {
+                primary: name == "PRIMARY",
+                name,
+                unique: required_u64(row, 1, "NON_UNIQUE")? == 0,
+                index_type: optional_text(row, 2),
+                origin: None,
+                parts: Vec::new(),
+            });
+        }
+        if let Some(index) = indexes.last_mut() {
+            let name = optional_text(row, 3);
+            index.parts.push(IndexPart {
+                kind: if name.is_some() { "column" } else { "unknown" },
+                name,
+                sort_order: match optional_text(row, 4).as_deref() {
+                    Some("A") => Some("asc"),
+                    Some("D") => Some("desc"),
+                    _ => None,
+                },
+                prefix_length: optional_u64(row, 5),
+            });
+        }
+    }
+    Ok(indexes)
+}
+
+fn schema_limit() -> Error {
+    Error::new(
+        ErrorCode::MCP_RESULT_TOO_LARGE,
+        ErrorCategory::ResourceExhausted,
+        "MariaDB 元数据超过单次读取上限",
+    )
+}
+
+async fn describe_columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<DescribedColumn>> {
+    let (database, table) = schema_target(conn, object).await?;
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT COLUMN_NAME, EXTRA, COLUMN_COMMENT, IS_GENERATED, GENERATION_EXPRESSION
+         FROM information_schema.COLUMNS
+         WHERE BINARY TABLE_SCHEMA = BINARY ? AND BINARY TABLE_NAME = BINARY ?
+         ORDER BY ORDINAL_POSITION LIMIT 1001",
+            (&database, &table.name),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 列属性失败"))?;
+    if rows.len() > 1000 {
+        return Err(schema_limit());
+    }
+    let mut attributes = std::collections::HashMap::with_capacity(rows.len());
+    for row in &rows {
+        let name = required_text(row, 0, "COLUMN_NAME")?;
+        let identity = optional_text(row, 1)
+            .is_some_and(|extra| {
+                extra
+                    .split_ascii_whitespace()
+                    .any(|flag| flag.eq_ignore_ascii_case("auto_increment"))
+            })
+            .then_some("auto_increment");
+        let comment = optional_text(row, 2).filter(|comment| !comment.is_empty());
+        let generated = match optional_text(row, 3).as_deref() {
+            Some("ALWAYS") => Some(true),
+            Some("NEVER") => Some(false),
+            _ => None,
+        };
+        let generation_expression = optional_text(row, 4).filter(|value| !value.is_empty());
+        attributes.insert(name, (identity, comment, generated, generation_expression));
+    }
+    let resolved = ObjectRef {
+        session_id: object.session_id,
+        qualified_name: QualifiedName::new(Some(database), None, table.name),
+        kind: table.kind,
+    };
+    columns(conn, &resolved)
+        .await?
+        .into_iter()
+        .map(|column| {
+            let Some((identity, comment, generated, generation_expression)) =
+                attributes.remove(&column.name)
+            else {
+                return Err(Error::internal("读取期间 MariaDB 列目录发生变化"));
+            };
+            Ok(DescribedColumn {
+                column,
+                identity,
+                comment,
+                generated,
+                generation_expression,
+            })
+        })
+        .collect()
+}
+
+async fn table_constraints(conn: &mut Conn, object: &ObjectRef) -> Result<TableConstraints> {
+    let (database, table) = schema_target(conn, object).await?;
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT c.CONSTRAINT_NAME, c.CONSTRAINT_TYPE, k.COLUMN_NAME
+         FROM information_schema.TABLE_CONSTRAINTS AS c
+         LEFT JOIN information_schema.KEY_COLUMN_USAGE AS k
+           ON BINARY k.TABLE_SCHEMA = BINARY c.TABLE_SCHEMA
+          AND BINARY k.TABLE_NAME = BINARY c.TABLE_NAME
+          AND BINARY k.CONSTRAINT_NAME = BINARY c.CONSTRAINT_NAME
+          AND c.CONSTRAINT_TYPE IN ('PRIMARY KEY', 'UNIQUE')
+         WHERE BINARY c.TABLE_SCHEMA = BINARY ? AND BINARY c.TABLE_NAME = BINARY ?
+           AND c.CONSTRAINT_TYPE <> 'FOREIGN KEY'
+         ORDER BY BINARY c.CONSTRAINT_TYPE, BINARY c.CONSTRAINT_NAME, k.ORDINAL_POSITION
+         LIMIT 1001",
+            (&database, &table.name),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 约束失败"))?;
+    if rows.len() > 1000 {
+        return Err(schema_limit());
+    }
+    let mut constraints: Vec<Constraint> = Vec::new();
+    for row in &rows {
+        let name = required_text(row, 0, "CONSTRAINT_NAME")?;
+        let kind = match required_text(row, 1, "CONSTRAINT_TYPE")?.as_str() {
+            "PRIMARY KEY" => ConstraintKind::PrimaryKey,
+            "UNIQUE" => ConstraintKind::Unique,
+            "CHECK" => ConstraintKind::Check,
+            name => ConstraintKind::Other(name.to_owned()),
+        };
+        if constraints.last().is_none_or(|constraint| {
+            constraint.name.as_deref() != Some(&name) || constraint.kind != kind
+        }) {
+            constraints.push(Constraint {
+                name: Some(name),
+                kind,
+                columns: None,
+                check_expression: None,
+            });
+        }
+        if let Some(column) = optional_text(row, 2)
+            && let Some(constraint) = constraints.last_mut()
+        {
+            constraint.columns.get_or_insert_with(Vec::new).push(column);
+        }
+    }
+    let mut warnings = Vec::new();
+    if constraints
+        .iter()
+        .any(|constraint| constraint.kind == ConstraintKind::Check)
+    {
+        fill_check_expressions(
+            conn,
+            &database,
+            &table.name,
+            &mut constraints,
+            &mut warnings,
+        )
+        .await?;
+    }
+    Ok(TableConstraints {
+        constraints,
+        foreign_keys: foreign_keys(conn, object).await?,
+        warnings,
+    })
+}
+
+async fn fill_check_expressions(
+    conn: &mut Conn,
+    database: &str,
+    table: &str,
+    constraints: &mut [Constraint],
+    warnings: &mut Vec<&'static str>,
+) -> Result<()> {
+    let result: std::result::Result<Vec<MyRow>, _> = conn
+        .exec(
+            "SELECT CONSTRAINT_NAME, CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS
+         WHERE BINARY CONSTRAINT_SCHEMA = BINARY ? AND BINARY TABLE_NAME = BINARY ? LIMIT 1001",
+            (database, table),
+        )
+        .await;
+    match result {
+        Ok(rows) if rows.len() <= 1000 => {
+            for row in &rows {
+                let name = required_text(row, 0, "CONSTRAINT_NAME")?;
+                if let Some(check) = constraints.iter_mut().find(|check| {
+                    check.kind == ConstraintKind::Check && check.name.as_deref() == Some(&name)
+                }) {
+                    check.check_expression = optional_text(row, 1);
+                }
+            }
+        }
+        Ok(_) => return Err(schema_limit()),
+        Err(error) if matches!(server_code(&error), Some(1054 | 1109 | 1146)) => {}
+        Err(error) => return Err(map_error(error, "读取 MariaDB CHECK 表达式失败")),
+    }
+    if constraints
+        .iter()
+        .any(|check| check.kind == ConstraintKind::Check && check.check_expression.is_none())
+    {
+        warnings.push("mariadb_check_expression_unavailable");
+    }
+    Ok(())
+}
+
+async fn native_table_ddl(conn: &mut Conn, object: &ObjectRef) -> Result<NativeTableDdl> {
+    let (database, table) = schema_target(conn, object).await?;
+    let kind = if table.kind == ObjectKind::View {
+        "view"
+    } else {
+        "table"
+    };
+    let mode: Option<String> = conn
+        .query_first("SELECT @@SESSION.sql_mode")
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB SQL 模式失败"))?;
+    let complete = mode.is_some_and(|mode| {
+        !mode.split(',').any(|flag| {
+            matches!(
+                flag,
+                "NO_TABLE_OPTIONS"
+                    | "NO_FIELD_OPTIONS"
+                    | "NO_KEY_OPTIONS"
+                    | "ANSI"
+                    | "DB2"
+                    | "POSTGRESQL"
+                    | "MSSQL"
+                    | "MAXDB"
+                    | "ORACLE"
+            )
+        })
+    });
+    let ddl = show_create(
+        conn,
+        if kind == "view" { "VIEW" } else { "TABLE" },
+        &database,
+        &table.name,
+    )
+    .await?;
+    if ddl.text.len() > sqarvo_driver_api::metadata::NATIVE_TABLE_DDL_LIMIT as usize {
+        return Ok(NativeTableDdl {
+            kind,
+            dialect: "mariadb",
+            ddl: None,
+            complete: false,
+        });
+    }
+    if kind == "table" && !is_local_table_definition(&ddl.text) {
+        return Err(unsupported_level(
+            "原生定义未确认使用本地存储引擎，或包含连接选项",
+        ));
+    }
+    Ok(NativeTableDdl {
+        kind,
+        dialect: "mariadb",
+        ddl: Some(ddl),
+        complete,
+    })
+}
+
+/// Verify the actual SHOW CREATE response. Checking TABLES.ENGINE first would
+/// allow concurrent DDL to replace the table between the check and the read.
+fn is_local_table_definition(sql: &str) -> bool {
+    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let Ok(tokens) = Tokenizer::new(&MySqlDialect {}, sql).tokenize() else {
+        return false;
+    };
+    let mut tokens = tokens
+        .iter()
+        .filter(|token| !matches!(token, Token::Whitespace(_)));
+    let mut depth = 0usize;
+    let mut definition_closed = false;
+    let mut local = false;
+    while let Some(token) = tokens.next() {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth = depth.saturating_sub(1);
+                definition_closed |= depth == 0;
+            }
+            Token::Word(word) if definition_closed && depth == 0 && word.quote_style.is_none() => {
+                if word.value.eq_ignore_ascii_case("CONNECTION") {
+                    return false;
+                }
+                if word.value.eq_ignore_ascii_case("ENGINE") {
+                    if tokens.next() != Some(&Token::Eq) {
+                        return false;
+                    }
+                    let Some(Token::Word(engine)) = tokens.next() else {
+                        return false;
+                    };
+                    local = ["InnoDB", "Aria", "MyISAM", "MEMORY"]
+                        .iter()
+                        .any(|allowed| engine.value.eq_ignore_ascii_case(allowed));
+                    if !local {
+                        return false;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    local
+}
+
+async fn table_statistics(conn: &mut Conn, object: &ObjectRef) -> Result<TableStatistics> {
+    let refresh: Option<u64> = conn
+        .query_first("SELECT @@GLOBAL.innodb_stats_on_metadata")
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 元数据统计设置失败"))?;
+    if refresh != Some(0) {
+        return Err(unsupported_level(
+            "该 MariaDB 配置可能在读取元数据时刷新统计",
+        ));
+    }
+    let (database, table) = schema_target(conn, object).await?;
+    let row: Option<MyRow> = conn
+        .exec_first(
+            "SELECT TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, ENGINE FROM information_schema.TABLES
+         WHERE BINARY TABLE_SCHEMA = BINARY ? AND BINARY TABLE_NAME = BINARY ?",
+            (&database, &table.name),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 表统计失败"))?;
+    let row = row.ok_or_else(|| metadata_not_found(&database, &table.name))?;
+    Ok(TableStatistics {
+        row_count: optional_u64(&row, 0),
+        row_count_exact: optional_text(&row, 3).is_some_and(|engine| engine == "MyISAM"),
+        data_bytes: optional_u64(&row, 1),
+        index_bytes: optional_u64(&row, 2),
+        source: "information_schema.TABLES",
+    })
+}
+
+async fn foreign_keys(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
+    check_column_kind(&object.kind)?;
+    let (database, name) = resolve_object(conn, object).await?;
+    let Some(table) = find_table_entry(conn, &database, &name).await? else {
+        return Err(metadata_not_found(&database, &name));
+    };
+    let rows: Vec<MyRow> = conn
+        .exec(
+            "SELECT k.CONSTRAINT_NAME, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME,
+                    k.COLUMN_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE
+             FROM information_schema.KEY_COLUMN_USAGE k
+             JOIN information_schema.REFERENTIAL_CONSTRAINTS r
+               ON BINARY r.CONSTRAINT_SCHEMA = BINARY k.CONSTRAINT_SCHEMA
+              AND BINARY r.TABLE_NAME = BINARY k.TABLE_NAME
+              AND BINARY r.CONSTRAINT_NAME = BINARY k.CONSTRAINT_NAME
+             WHERE BINARY k.TABLE_SCHEMA = BINARY ? AND BINARY k.TABLE_NAME = BINARY ?
+               AND k.REFERENCED_TABLE_NAME IS NOT NULL
+             ORDER BY BINARY k.CONSTRAINT_NAME, k.ORDINAL_POSITION LIMIT 1001",
+            (database, table.name),
+        )
+        .await
+        .map_err(|error| map_error(error, "读取 MariaDB 外键失败"))?;
+    if rows.len() > 1000 {
+        return Err(Error::new(
+            ErrorCode::MCP_RESULT_TOO_LARGE,
+            ErrorCategory::ResourceExhausted,
+            "外键列数超过元数据读取上限",
+        ));
+    }
+    let mut keys: Vec<ForeignKey> = Vec::new();
+    for row in &rows {
+        let name = required_text(row, 0, "CONSTRAINT_NAME")?;
+        if keys.last().and_then(|key| key.name.as_deref()) != Some(name.as_str()) {
+            keys.push(ForeignKey {
+                name: Some(name),
+                target: QualifiedName::new(
+                    Some(required_text(row, 1, "REFERENCED_TABLE_SCHEMA")?),
+                    None,
+                    required_text(row, 2, "REFERENCED_TABLE_NAME")?,
+                ),
+                columns: Vec::new(),
+                on_update: required_text(row, 5, "UPDATE_RULE")?,
+                on_delete: required_text(row, 6, "DELETE_RULE")?,
+            });
+        }
+        if let Some(key) = keys.last_mut() {
+            key.columns.push(ForeignKeyColumn {
+                local: required_text(row, 3, "COLUMN_NAME")?,
+                referenced: Some(required_text(row, 4, "REFERENCED_COLUMN_NAME")?),
+            });
+        }
+    }
+    Ok(keys)
 }
 
 pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<PrimaryKey> {

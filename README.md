@@ -113,11 +113,10 @@ Starting the test database: [tests/integration/README.md](tests/integration/READ
 Inspector, agent runtimes) launch it as a child process and communicate over stdio. MCP runs
 independently of the GUI backend and uses the same local connection profiles as the GTK app.
 
-- **Read-only tools and structured writes**. Eight read-only tools and four resource shapes
+- **Read-only tools and structured writes**. Read-only tools and four resource shapes
   retain their existing policy. With read-only protection disabled, authorized agents can
   preview and execute bounded inserts, updates, and deletes. MariaDB writes require DBA setup.
-- **MariaDB and SQLite**: schema discovery and read-only queries on both. `explain_query` is
-  MariaDB-only (SQLite's `EXPLAIN QUERY PLAN` has different semantics and is not substituted).
+- **MariaDB and SQLite**: both support schema discovery, read-only queries, and their native query plans.
 - **Server-enforced limits**: 200 rows by default (hard cap 1000), 1 MiB per response, 10 s timeout,
   2 concurrent calls per process. The Agent's own `LIMIT` cannot raise them.
 
@@ -162,6 +161,9 @@ independently. See the [explicit transaction guide](docs/api/mcp-tools.md#v21-ex
 
 With global write access enabled, agents can preview and apply structured table, column and index
 changes on SQLite or a managed MariaDB deployment. See the [controlled DDL guide](docs/api/mcp-tools.md#v22-controlled-ddl).
+
+Read paginated schemas, constraints, indexes, native DDL, and engine statistics through the
+[Schema Intelligence tools](docs/api/mcp-tools.md#v23-schema-intelligence).
 
 ## Documentation
 

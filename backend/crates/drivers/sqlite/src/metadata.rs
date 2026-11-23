@@ -43,9 +43,16 @@
 //! 所有查询都在会话的专用线程上执行：`Connection` 归它独占，元数据请求与查询走同一条
 //! 命令通道。存在在途结果游标时元数据请求会被拒绝（`sqlite.query_active`），不会与游标交错。
 
+use std::fmt::Write as _;
+
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension};
-use sqarvo_common::{Error, ErrorCode, Result, SessionId};
+use sqlparser::ast::{ColumnOption, CreateTable, Expr, Spanned, Statement, TableConstraint};
+use sqlparser::dialect::SQLiteDialect;
+use sqlparser::parser::Parser;
+use sqlparser::tokenizer::{Location, Token};
+
+use sqarvo_common::{Error, ErrorCategory, ErrorCode, Result, SessionId};
 use sqarvo_driver_api::{
     ColumnDefault, ColumnMeta, ColumnType, Ddl, DriverSession, MetadataProvider, ObjectFilter,
     ObjectKind, ObjectNode, ObjectRef, Page, PageRequest, PrimaryKey, PrimaryKeyColumn,
@@ -64,6 +71,11 @@ pub(crate) const MAIN_DATABASE: &str = "main";
 /// 因此目录层永远能列出它。
 pub(crate) const TEMP_DATABASE: &str = "temp";
 
+use sqarvo_driver_api::metadata::{
+    Constraint, ConstraintKind, DescribedColumn, ForeignKey, ForeignKeyColumn, IndexDetail,
+    IndexPart, MetadataRead, NativeTableDdl, SchemaObjectPage, TableConstraints, TableStatistics,
+};
+
 /// 元数据请求。由 [`MetadataProvider`] 构造，交给会话线程执行。
 pub(crate) enum MetadataRequest {
     /// 列出子节点；`None` 表示根。`filter` 为空等价于不过滤。
@@ -76,6 +88,13 @@ pub(crate) enum MetadataRequest {
     Columns(ObjectRef),
     /// 读取主键定义。
     PrimaryKey(ObjectRef),
+    ForeignKeys(ObjectRef),
+    SchemaObjects(ObjectRef, SchemaObjectPage),
+    TableConstraints(ObjectRef),
+    DescribeColumns(ObjectRef),
+    NativeTableDdl(ObjectRef),
+    TableStatistics(ObjectRef),
+    IndexDetails(ObjectRef),
     /// 读取建对象原文（`sqlite_master.sql`）。
     Ddl(ObjectRef),
 }
@@ -85,6 +104,13 @@ pub(crate) enum MetadataReply {
     Nodes(Page<ObjectNode>),
     Columns(Vec<ColumnMeta>),
     PrimaryKey(PrimaryKey),
+    ForeignKeys(Vec<ForeignKey>),
+    SchemaObjects(Vec<ObjectNode>),
+    TableConstraints(TableConstraints),
+    DescribeColumns(Vec<DescribedColumn>),
+    NativeTableDdl(NativeTableDdl),
+    TableStatistics(TableStatistics),
+    IndexDetails(Vec<IndexDetail>),
     Ddl(Ddl),
 }
 
@@ -107,6 +133,27 @@ pub(crate) fn handle(connection: &Connection, request: MetadataRequest) -> Resul
         MetadataRequest::PrimaryKey(object) => {
             Ok(MetadataReply::PrimaryKey(primary_key(connection, &object)?))
         }
+        MetadataRequest::ForeignKeys(object) => Ok(MetadataReply::ForeignKeys(foreign_keys(
+            connection, &object,
+        )?)),
+        MetadataRequest::IndexDetails(object) => Ok(MetadataReply::IndexDetails(index_details(
+            connection, &object,
+        )?)),
+        MetadataRequest::TableStatistics(object) => Ok(MetadataReply::TableStatistics(
+            table_statistics(connection, &object)?,
+        )),
+        MetadataRequest::NativeTableDdl(object) => Ok(MetadataReply::NativeTableDdl(
+            native_table_ddl(connection, &object)?,
+        )),
+        MetadataRequest::DescribeColumns(object) => Ok(MetadataReply::DescribeColumns(
+            describe_columns(connection, &object)?,
+        )),
+        MetadataRequest::TableConstraints(object) => Ok(MetadataReply::TableConstraints(
+            table_constraints(connection, &object)?,
+        )),
+        MetadataRequest::SchemaObjects(object, page) => Ok(MetadataReply::SchemaObjects(
+            schema_objects(connection, &object, &page)?,
+        )),
         MetadataRequest::Ddl(object) => Ok(MetadataReply::Ddl(ddl(connection, &object)?)),
     }
 }
@@ -168,6 +215,152 @@ impl MetadataProvider for SqliteSession {
             .await?
         {
             MetadataReply::Ddl(ddl) => Ok(ddl),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn schema_objects(
+        &self,
+        catalog: &ObjectRef,
+        page: &SchemaObjectPage,
+        read: &MetadataRead,
+    ) -> Result<Vec<ObjectNode>> {
+        validate_session(self.session_id(), catalog)?;
+        page.validate()?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::SchemaObjects(catalog.clone(), page.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::SchemaObjects(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn foreign_keys(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<ForeignKey>> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::ForeignKeys(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::ForeignKeys(keys) => Ok(keys),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn index_details(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<IndexDetail>> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::IndexDetails(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::IndexDetails(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn table_statistics(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<TableStatistics> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::TableStatistics(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::TableStatistics(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn native_table_ddl(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<NativeTableDdl> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::NativeTableDdl(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::NativeTableDdl(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn describe_columns(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<DescribedColumn>> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::DescribeColumns(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::DescribeColumns(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn table_constraints(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<TableConstraints> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::TableConstraints(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::TableConstraints(value) => Ok(value),
+            _ => Err(mismatched_reply()),
+        }
+    }
+
+    async fn primary_key_for_read(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<PrimaryKey> {
+        validate_session(self.session_id(), object)?;
+        match self
+            .metadata_call_tracked(
+                MetadataRequest::PrimaryKey(object.clone()),
+                Some(read.clone()),
+            )
+            .await?
+        {
+            MetadataReply::PrimaryKey(value) => Ok(value),
             _ => Err(mismatched_reply()),
         }
     }
@@ -791,6 +984,517 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
     Ok(columns)
 }
 
+fn schema_objects(
+    connection: &Connection,
+    catalog: &ObjectRef,
+    page: &SchemaObjectPage,
+) -> Result<Vec<ObjectNode>> {
+    if catalog.qualified_name.schema.is_some() {
+        return Err(unsupported_level("SQLite 没有独立的 schema 层级"));
+    }
+    let database = catalog_target(catalog)?.ok_or_else(|| {
+        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "Schema 分页必须指定数据库")
+    })?;
+    let database = canonical_database(connection, &database)?;
+    let mut sql = String::from(
+        "SELECT name, type FROM pragma_table_list
+         WHERE schema = ? AND type IN ('table', 'view', 'virtual')
+           AND name NOT GLOB 'sqlite_*' AND name COLLATE BINARY > ?",
+    );
+    let mut params = vec![database.clone(), page.after.clone().unwrap_or_default()];
+    if !page.tables.is_empty() {
+        let placeholders = vec!["?"; page.tables.len()].join(", ");
+        let _ = write!(sql, " AND name COLLATE BINARY IN ({placeholders})");
+        params.extend(page.tables.iter().cloned());
+    }
+    sql.push_str(" ORDER BY name COLLATE BINARY LIMIT ?");
+    params.push(page.limit.to_string());
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite Schema 分页失败"))?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            let name = row.get::<_, String>(0)?;
+            let kind = match row.get::<_, String>(1)?.as_str() {
+                "virtual" => ObjectKind::Other("virtual_table".to_owned()),
+                raw => object_kind(raw),
+            };
+            Ok(ObjectNode {
+                qualified_name: QualifiedName::new(Some(database.clone()), None, name.clone()),
+                kind,
+                display_name: name,
+                has_children: true,
+                comment: None,
+            })
+        })
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite Schema 页失败"))?;
+    rows.collect::<rusqlite::Result<_>>()
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite Schema 页行失败"))
+}
+
+fn index_details(connection: &Connection, object: &ObjectRef) -> Result<Vec<IndexDetail>> {
+    let (database, name) = table_target(connection, object)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT i.name, i.\"unique\", i.origin, x.cid, x.name, x.desc
+             FROM pragma_index_list(?1, ?2) AS i
+             CROSS JOIN pragma_index_xinfo(i.name, ?2) AS x
+             WHERE x.key = 1 ORDER BY i.name COLLATE BINARY, x.seqno LIMIT 1001",
+        )
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 索引查询失败"))?;
+    let rows = statement
+        .query_map([name, database], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
+            ))
+        })
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 索引失败"))?;
+    let mut indexes: Vec<IndexDetail> = Vec::new();
+    for (position, row) in rows.enumerate() {
+        if position == 1000 {
+            return Err(schema_limit());
+        }
+        let (name, unique, origin, cid, column, descending) =
+            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 索引项失败"))?;
+        if indexes.last().is_none_or(|index| index.name != name) {
+            indexes.push(IndexDetail {
+                name,
+                unique,
+                primary: origin == "pk",
+                index_type: None,
+                origin: Some(origin),
+                parts: Vec::new(),
+            });
+        }
+        if let Some(index) = indexes.last_mut() {
+            index.parts.push(IndexPart {
+                name: column,
+                kind: match cid {
+                    -2 => "expression",
+                    -1 => "rowid",
+                    _ => "column",
+                },
+                sort_order: Some(if descending { "desc" } else { "asc" }),
+                prefix_length: None,
+            });
+        }
+    }
+    Ok(indexes)
+}
+
+fn schema_limit() -> Error {
+    Error::new(
+        ErrorCode::MCP_RESULT_TOO_LARGE,
+        ErrorCategory::ResourceExhausted,
+        "SQLite 元数据超过单次读取上限",
+    )
+}
+
+fn describe_columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<DescribedColumn>> {
+    let (database, name) = table_target(connection, object)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT cid, name, type, \"notnull\", dflt_value, hidden, pk
+             FROM pragma_table_xinfo(?1, ?2) WHERE hidden IN (0, 2, 3)
+             ORDER BY cid LIMIT 1001",
+        )
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 列属性查询失败"))?;
+    let rows = statement
+        .query_map([&name, &database], |row| {
+            let declared = row.get::<_, String>(2)?;
+            let default = row.get::<_, Option<String>>(4)?;
+            Ok((
+                row.get::<_, u32>(6)?,
+                DescribedColumn {
+                    column: ColumnMeta {
+                        name: row.get(1)?,
+                        ordinal: row.get(0)?,
+                        column_type: declared_type(declared.trim()),
+                        nullable: !row.get::<_, bool>(3)?,
+                        original_type_name: (!declared.trim().is_empty())
+                            .then(|| declared.trim().to_owned()),
+                        default_value: column_default(default.as_deref()),
+                        character_set: None,
+                        collation: None,
+                    },
+                    identity: None,
+                    comment: None,
+                    generated: Some(matches!(row.get::<_, i64>(5)?, 2 | 3)),
+                    generation_expression: None,
+                },
+            ))
+        })
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列属性失败"))?;
+    let mut columns = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列属性行失败"))?;
+    if columns.len() > 1000 {
+        return Err(schema_limit());
+    }
+    if columns.is_empty() {
+        return Err(object_not_found(&database, &name));
+    }
+    enrich_column_properties(connection, &database, &name, &mut columns)?;
+    Ok(columns.into_iter().map(|(_, column)| column).collect())
+}
+
+fn enrich_column_properties(
+    connection: &Connection,
+    database: &str,
+    name: &str,
+    columns: &mut [(u32, DescribedColumn)],
+) -> Result<()> {
+    if let Some((ddl, definition)) = parse_table_definition(connection, database, name)? {
+        let is_rowid_table = connection
+            .query_row(
+                "SELECT wr = 0 AND type = 'table' FROM pragma_table_list
+             WHERE schema = ?1 AND name = ?2 COLLATE NOCASE",
+                [database, name],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, "读取 SQLite rowid 属性失败"))?
+            == Some(true);
+        let single_primary = columns.iter().filter(|(position, _)| *position > 0).count() == 1;
+        let indexed_primary = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_index_list(?1, ?2) WHERE origin = 'pk')",
+                [name, database],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键索引属性失败"))?;
+        for (position, column) in columns {
+            let Some(definition) = definition
+                .columns
+                .iter()
+                .find(|item| item.name.value.eq_ignore_ascii_case(&column.column.name))
+            else {
+                continue;
+            };
+            if is_rowid_table
+                && single_primary
+                && !indexed_primary
+                && *position == 1
+                && column
+                    .column
+                    .original_type_name
+                    .as_deref()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("INTEGER"))
+            {
+                let auto_increment = definition.options.iter().any(|option| {
+                    matches!(&option.option, ColumnOption::DialectSpecific(tokens) if tokens.as_slice() == [Token::make_keyword("AUTOINCREMENT")])
+                });
+                column.identity = Some(if auto_increment {
+                    "autoincrement"
+                } else {
+                    "rowid_alias"
+                });
+            }
+            column.generation_expression = definition.options.iter().find_map(|option| {
+                if let ColumnOption::Generated {
+                    generation_expr: Some(expr),
+                    ..
+                } = &option.option
+                {
+                    native_expression(&ddl, expr)
+                } else {
+                    None
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+fn parse_table_definition(
+    connection: &Connection,
+    database: &str,
+    name: &str,
+) -> Result<Option<(String, CreateTable)>> {
+    let sql = format!(
+        "SELECT sql FROM {} WHERE name = ?1 COLLATE NOCASE AND type = 'table'
+         AND length(CAST(sql AS BLOB)) <= 262144",
+        master_table(database),
+    );
+    let ddl: Option<Option<String>> = connection
+        .query_row(&sql, [name], |row| row.get(0))
+        .optional()
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 声明定义失败"))?;
+    let Some(ddl) = ddl.flatten() else {
+        return Ok(None);
+    };
+    let Ok(mut statements) = Parser::parse_sql(&SQLiteDialect {}, &ddl) else {
+        return Ok(None);
+    };
+    if statements.len() == 1
+        && let Some(Statement::CreateTable(table)) = statements.pop()
+    {
+        return Ok(Some((ddl, table)));
+    }
+    Ok(None)
+}
+
+fn sql_offset(sql: &str, location: Location) -> Option<usize> {
+    let line = usize::try_from(location.line.checked_sub(1)?).ok()?;
+    let column = usize::try_from(location.column.checked_sub(1)?).ok()?;
+    let mut offset = 0;
+    let mut lines = sql.split_inclusive('\n');
+    for text in lines.by_ref().take(line) {
+        offset += text.len();
+    }
+    let text = lines.next()?;
+    if column == text.chars().count() {
+        return Some(offset + text.len());
+    }
+    text.char_indices()
+        .nth(column)
+        .map(|(start, _)| offset + start)
+}
+
+fn native_expression(sql: &str, expr: &Expr) -> Option<String> {
+    let span = expr.span();
+    let text = sql.get(sql_offset(sql, span.start)?..sql_offset(sql, span.end)?)?;
+    let mut parser = Parser::new(&SQLiteDialect {}).try_with_sql(text).ok()?;
+    let parsed = parser.parse_expr().ok()?;
+    (parser.peek_token().token == Token::EOF && parsed.to_string() == expr.to_string())
+        .then(|| text.to_owned())
+}
+
+fn sqlite_checks(ddl: &str, definition: &CreateTable) -> Vec<Constraint> {
+    let checks = definition.constraints.iter().filter_map(|constraint| {
+        let TableConstraint::Check(check) = constraint else {
+            return None;
+        };
+        Some(Constraint {
+            name: check.name.as_ref().map(|name| name.value.clone()),
+            kind: ConstraintKind::Check,
+            columns: None,
+            check_expression: native_expression(ddl, &check.expr),
+        })
+    });
+    let inline_checks = definition.columns.iter().flat_map(|column| {
+        column.options.iter().filter_map(|option| {
+            let ColumnOption::Check(check) = &option.option else {
+                return None;
+            };
+            Some(Constraint {
+                name: option
+                    .name
+                    .as_ref()
+                    .or(check.name.as_ref())
+                    .map(|name| name.value.clone()),
+                kind: ConstraintKind::Check,
+                columns: Some(vec![column.name.value.clone()]),
+                check_expression: native_expression(ddl, &check.expr),
+            })
+        })
+    });
+    checks.chain(inline_checks).collect()
+}
+
+fn table_constraints(connection: &Connection, object: &ObjectRef) -> Result<TableConstraints> {
+    let primary = primary_key(connection, object)?;
+    let mut constraints = Vec::new();
+    if !primary.is_empty() {
+        constraints.push(Constraint {
+            name: None,
+            kind: ConstraintKind::PrimaryKey,
+            columns: Some(
+                primary
+                    .columns
+                    .into_iter()
+                    .map(|column| column.name)
+                    .collect(),
+            ),
+            check_expression: None,
+        });
+    }
+    constraints.extend(
+        index_details(connection, object)?
+            .into_iter()
+            .filter(|index| index.origin.as_deref() == Some("u"))
+            .map(|index| Constraint {
+                name: None,
+                kind: ConstraintKind::Unique,
+                columns: index.parts.into_iter().map(|part| part.name).collect(),
+                check_expression: None,
+            }),
+    );
+    let (database, name) = table_target(connection, object)?;
+    let mut warnings = Vec::new();
+    if let Some((ddl, definition)) = parse_table_definition(connection, &database, &name)? {
+        let checks = sqlite_checks(&ddl, &definition);
+        if checks.iter().any(|check| check.check_expression.is_none()) {
+            warnings.push("sqlite_check_expression_unavailable");
+        }
+        constraints.extend(checks);
+    } else if table_object_kind(connection, &database, &name)? == "table" {
+        warnings.push("sqlite_check_coverage_unavailable");
+    }
+    Ok(TableConstraints {
+        constraints,
+        foreign_keys: foreign_keys(connection, object)?,
+        warnings,
+    })
+}
+
+fn table_object_kind(connection: &Connection, database: &str, name: &str) -> Result<String> {
+    connection
+        .query_row(
+            "SELECT type FROM pragma_table_list WHERE schema = ?1 AND name = ?2 COLLATE NOCASE",
+            [database, name],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 表种类失败"))
+}
+
+fn native_table_ddl(connection: &Connection, object: &ObjectRef) -> Result<NativeTableDdl> {
+    let (database, name) = table_target(connection, object)?;
+    let kind = table_object_kind(connection, &database, &name)?;
+    let (object_type, ddl_kind) = match kind.as_str() {
+        "table" if !name.to_ascii_lowercase().starts_with("sqlite_") => {
+            ("table", ObjectKind::Table)
+        }
+        "virtual" => ("virtual_table", ObjectKind::Table),
+        "view" => ("view", ObjectKind::View),
+        _ => return Err(unsupported_level("SQLite 内部对象不提供 MCP 建表定义")),
+    };
+    let resolved = ObjectRef {
+        session_id: object.session_id,
+        qualified_name: QualifiedName::new(Some(database), None, name),
+        kind: ddl_kind,
+    };
+    let ddl = read_ddl(
+        connection,
+        &resolved,
+        Some(sqarvo_driver_api::metadata::NATIVE_TABLE_DDL_LIMIT),
+    )?;
+    Ok(NativeTableDdl {
+        kind: object_type,
+        dialect: "sqlite",
+        complete: ddl.is_some(),
+        ddl,
+    })
+}
+
+fn table_statistics(connection: &Connection, object: &ObjectRef) -> Result<TableStatistics> {
+    let (database, name) = table_target(connection, object)?;
+    let mut result = TableStatistics {
+        row_count: None,
+        row_count_exact: false,
+        data_bytes: None,
+        index_bytes: None,
+        source: "sqlite_stat1",
+    };
+    if table_object_kind(connection, &database, &name)? != "table"
+        || lookup_object(connection, &database, "sqlite_stat1")?
+            .is_none_or(|(_, kind)| kind != "table")
+    {
+        return Ok(result);
+    }
+    let sql = format!(
+        "SELECT s.stat FROM {}.sqlite_stat1 AS s
+         WHERE s.tbl = ?1 COLLATE NOCASE AND (
+             s.idx IS NULL OR s.idx = s.tbl OR EXISTS (
+                 SELECT 1 FROM pragma_index_list(?1, ?2) AS i
+                 WHERE i.name = s.idx AND i.partial = 0))
+         ORDER BY (s.idx IS NOT NULL), (s.idx IS NOT s.tbl), s.idx LIMIT 1",
+        quote_identifier(&database),
+    );
+    let stat: Option<String> = connection
+        .query_row(&sql, [&name, &database], |row| row.get(0))
+        .optional()
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 已存统计失败"))?;
+    result.row_count = stat
+        .as_deref()
+        .and_then(|value| value.split_ascii_whitespace().next())
+        .and_then(|value| value.parse().ok());
+    Ok(result)
+}
+
+fn foreign_keys(connection: &Connection, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
+    let (database, name) = table_target(connection, object)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, \"table\", \"from\", \"to\", on_update, on_delete
+             FROM pragma_foreign_key_list(?1, ?2) ORDER BY id, seq LIMIT 1001",
+        )
+        .map_err(|error| map_sqlite_error(error, "准备 SQLite 外键查询失败"))?;
+    let rows = statement
+        .query_map([name.as_str(), database.as_str()], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|error| map_sqlite_error(error, "读取 SQLite 外键失败"))?;
+    let mut keys: Vec<ForeignKey> = Vec::new();
+    let mut previous_id = None;
+    for (offset, row) in rows.enumerate() {
+        if offset == 1000 {
+            return Err(Error::new(
+                ErrorCode::MCP_RESULT_TOO_LARGE,
+                ErrorCategory::ResourceExhausted,
+                "外键列数超过元数据读取上限",
+            ));
+        }
+        let (id, target, local, referenced, on_update, on_delete) =
+            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 外键行失败"))?;
+        if previous_id != Some(id) {
+            keys.push(ForeignKey {
+                name: None,
+                target: QualifiedName::new(Some(database.clone()), None, target),
+                columns: Vec::new(),
+                on_update,
+                on_delete,
+            });
+            previous_id = Some(id);
+        }
+        if let Some(key) = keys.last_mut() {
+            key.columns.push(ForeignKeyColumn { local, referenced });
+        }
+    }
+    let mut parent_keys = std::collections::HashMap::new();
+    for key in keys
+        .iter_mut()
+        .filter(|key| key.columns.iter().all(|pair| pair.referenced.is_none()))
+    {
+        let parents = match parent_keys.entry(key.target.name.as_str()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let target = ObjectRef {
+                    session_id: object.session_id,
+                    qualified_name: key.target.clone(),
+                    kind: ObjectKind::Table,
+                };
+                let primary = match primary_key(connection, &target) {
+                    Ok(primary) => primary.columns,
+                    Err(error) if error.code() == ErrorCode::METADATA_OBJECT_NOT_FOUND => {
+                        Vec::new()
+                    }
+                    Err(error) => return Err(error),
+                };
+                entry.insert(primary)
+            }
+        };
+        if parents.len() == key.columns.len() {
+            for (pair, parent) in key.columns.iter_mut().zip(parents) {
+                pair.referenced = Some(parent.name.clone());
+            }
+        }
+    }
+    Ok(keys)
+}
+
 pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result<PrimaryKey> {
     let (database, name) = table_target(connection, object)?;
 
@@ -835,9 +1539,20 @@ pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result
 /// 拼装文本——`sqlite_autoindex_*` 的名字是保留的，拼出来的 `CREATE INDEX` 在
 /// 别的库里根本执行不了。`sqlite_sequence` / `sqlite_stat1` 等系统表有原文，照常返回。
 pub(crate) fn ddl(connection: &Connection, object: &ObjectRef) -> Result<Ddl> {
+    read_ddl(connection, object, None)?
+        .ok_or_else(|| Error::internal("未设置上限的 SQLite DDL 读取意外省略"))
+}
+
+fn read_ddl(
+    connection: &Connection,
+    object: &ObjectRef,
+    max_bytes: Option<u32>,
+) -> Result<Option<Ddl>> {
     let expected = ddl_master_type(&object.kind)?;
     let (database, name) = resolve_object(connection, object)?;
-    let Some((stored, master_type, text)) = lookup_ddl_source(connection, &database, &name)? else {
+    let Some((stored, master_type, text, over_limit)) =
+        lookup_ddl_source(connection, &database, &name, max_bytes)?
+    else {
         return Err(object_not_found(&database, &name));
     };
     if master_type != expected {
@@ -845,6 +1560,9 @@ pub(crate) fn ddl(connection: &Connection, object: &ObjectRef) -> Result<Ddl> {
             &object.kind,
             &format!("读取 DDL（{database}.{stored} 是 {master_type}）"),
         ));
+    }
+    if over_limit {
+        return Ok(None);
     }
     let Some(text) = text else {
         return Err(Error::unsupported(
@@ -861,10 +1579,10 @@ pub(crate) fn ddl(connection: &Connection, object: &ObjectRef) -> Result<Ddl> {
             "SQLite 对象 {database}.{stored} 的 sqlite_master.sql 是空白文本，拒绝返回空 DDL"
         )));
     }
-    Ok(Ddl::from_database(
+    Ok(Some(Ddl::from_database(
         text,
         format!("sqlite_master.sql（数据库 {database}，对象种类 {master_type}）"),
-    ))
+    )))
 }
 
 /// `GetDdl` 支持的对象种类 → `sqlite_master.type`。
@@ -884,6 +1602,8 @@ fn ddl_master_type(kind: &ObjectKind) -> Result<&'static str> {
     }
 }
 
+type DdlSourceRow = (String, String, Option<String>, bool);
+
 /// 在 `<库>.sqlite_master` 里按名字取「库里的规范名 + master 类型 + 原文」。
 ///
 /// 名字按 SQLite 的标识符语义大小写不敏感（`COLLATE NOCASE`）；一个 database 内
@@ -893,18 +1613,18 @@ fn lookup_ddl_source(
     connection: &Connection,
     database: &str,
     name: &str,
-) -> Result<Option<(String, String, Option<String>)>> {
+    max_bytes: Option<u32>,
+) -> Result<Option<DdlSourceRow>> {
     let sql = format!(
-        "SELECT name, type, sql FROM {} WHERE name = ?1 COLLATE NOCASE LIMIT 1",
+        "SELECT name, type,
+            CASE WHEN ?2 IS NULL OR length(CAST(sql AS BLOB)) <= ?2 THEN sql END,
+            COALESCE(length(CAST(sql AS BLOB)) > ?2, 0)
+         FROM {} WHERE name = ?1 COLLATE NOCASE LIMIT 1",
         master_table(database)
     );
     connection
-        .query_row(&sql, [name], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
+        .query_row(&sql, rusqlite::params![name, max_bytes], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .optional()
         .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象 DDL 失败"))

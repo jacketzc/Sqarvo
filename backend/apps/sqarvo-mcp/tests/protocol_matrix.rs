@@ -172,6 +172,72 @@ fn run_legacy_matrix_session(protocol_version: &str) {
 }
 
 #[test]
+fn schema_intelligence_stdio_uses_the_shared_read_policy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = matrix_config(dir.path());
+    let db = rusqlite::Connection::open(dir.path().join("matrix.db")).expect("fixture");
+    db.execute_batch("CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(pid INTEGER REFERENCES parent(id));").expect("fixture schema");
+    common::enable_access(&config, dir.path());
+    let mut server = common::Server::spawn(&config, dir.path());
+    handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let listed = server.request(2, "tools/list", serde_json::json!({}));
+    for name in sqarvo_mcp::config::SCHEMA_TOOL_NAMES {
+        assert!(
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == name && tool["annotations"]["readOnlyHint"] == true),
+            "{name}"
+        );
+    }
+    let response = call_tool(
+        &mut server,
+        3,
+        "list_foreign_keys",
+        serde_json::json!({"connection_alias":"dev","database":"main","table":"child"}),
+        None,
+    );
+    let result = assert_call_result(&response, false);
+    assert_eq!(
+        result["structuredContent"]["foreign_keys"][0]["target"]["table"],
+        "parent"
+    );
+    let response = call_tool(
+        &mut server,
+        4,
+        "get_table_ddl",
+        serde_json::json!({"connection_alias":"dev","database":"main","table":"bad; synthetic_marker"}),
+        None,
+    );
+    let result = assert_call_result(&response, true);
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "metadata.object_not_found"
+    );
+    assert!(!response.to_string().contains("synthetic_marker"));
+    assert!(
+        common::manage_access(&config, dir.path(), &["off"])
+            .status
+            .success()
+    );
+    let response = call_tool(
+        &mut server,
+        5,
+        "get_database_schema",
+        serde_json::json!({"connection_alias":"dev","database":"main"}),
+        None,
+    );
+    let result = assert_call_result(&response, true);
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "mcp.connection_denied"
+    );
+    server.close_stdin();
+    assert!(server.wait().status.success());
+}
+
+#[test]
 fn legacy_handshake_2024_11_05_full_matrix() {
     run_legacy_matrix_session("2024-11-05");
 }

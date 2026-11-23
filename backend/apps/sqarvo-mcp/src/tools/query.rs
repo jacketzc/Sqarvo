@@ -301,6 +301,7 @@ where
                     queries,
                     handle,
                     SqlRunRequest {
+                        explain: false,
                         sql,
                         database,
                         max_rows: limits.max_rows,
@@ -325,6 +326,8 @@ where
 
 /// 一次只读 SQL 执行的参数。
 pub(crate) struct SqlRunRequest {
+    /// Whether the statement is a driver-native plan.
+    pub(crate) explain: bool,
     /// 已通过策略检查的 SQL。
     pub(crate) sql: String,
     /// 目标库；空串 = 不切换。
@@ -399,6 +402,7 @@ where
     C: Future<Output = ()> + Send,
 {
     let SqlRunRequest {
+        explain,
         sql,
         database,
         max_rows,
@@ -415,18 +419,27 @@ where
     let query_id = queries.register(session_id)?;
     let started = Instant::now();
     let max_rows = max_rows.max(1);
-    let execution = handle.execute_in_catalog(
-        execute_request(query_id, sql, max_rows),
-        (!database.is_empty()).then_some(database.as_str()),
-    );
+    let execution = async {
+        let request = execute_request(query_id, sql, max_rows);
+        let catalog = (!database.is_empty()).then_some(database.as_str());
+        if explain {
+            handle.execute_explain_in_catalog(request, catalog).await
+        } else {
+            handle.execute_in_catalog(request, catalog).await
+        }
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
     tokio::pin!(execution);
     tokio::pin!(cancelled);
     let start = tokio::select! {
-        outcome = tokio::time::timeout(timeout, execution) => {
+        outcome = tokio::time::timeout_at(deadline, execution) => {
             if let Ok(result) = outcome {
                 result
             } else {
                 let _ = handle.cancel(&query_id).await;
+                if explain {
+                    let _ = handle.close_query(&query_id).await;
+                }
                 let _ = queries.complete(&query_id);
                 return Err(Error::new(
                     ErrorCode::MCP_QUERY_TIMEOUT,
@@ -435,8 +448,11 @@ where
                 ));
             }
         },
-        () = cancelled => {
+        () = &mut cancelled => {
             let _ = handle.cancel(&query_id).await;
+                if explain {
+                    let _ = handle.close_query(&query_id).await;
+                }
             let _ = queries.complete(&query_id);
             return Err(Error::new(
                 ErrorCode::QUERY_CANCELLED,
@@ -452,7 +468,25 @@ where
             return Err(error);
         }
     };
-    let collected = collect(&handle, &query_id, &start, max_rows, max_bytes).await;
+    let collected = if explain {
+        tokio::select! {
+            biased;
+            () = &mut cancelled => {
+                let _ = handle.cancel(&query_id).await;
+                Err(Error::new(ErrorCode::QUERY_CANCELLED, ErrorCategory::Cancelled, "客户端已取消查询计划"))
+            }
+            result = tokio::time::timeout_at(deadline, collect(&handle, &query_id, &start, max_rows, max_bytes, true)) => {
+                if let Ok(result) = result {
+                    result
+                } else {
+                    let _ = handle.cancel(&query_id).await;
+                    Err(Error::new(ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "查询计划超时"))
+                }
+            }
+        }
+    } else {
+        collect(&handle, &query_id, &start, max_rows, max_bytes, false).await
+    };
     // 无论收集成功与否都释放游标与并发名额。
     let _ = handle.close_query(&query_id).await;
     let _ = queries.complete(&query_id);
@@ -482,6 +516,7 @@ async fn collect(
     start: &ExecutionStart,
     max_rows: u32,
     max_bytes: u64,
+    budget_envelope: bool,
 ) -> Result<Collected> {
     let statement = start.statements.first().ok_or_else(|| {
         Error::new(
@@ -491,6 +526,11 @@ async fn collect(
         )
     })?;
     let columns: Vec<ColumnView> = statement.columns.iter().map(ColumnView::from).collect();
+    let max_bytes = if budget_envelope {
+        available_plan_row_bytes(&columns, max_bytes)?
+    } else {
+        max_bytes
+    };
     let cap = row_cap(max_rows);
     let mut budget = RowBudget::new(max_bytes);
     let mut rows_cut = false;
@@ -546,6 +586,25 @@ async fn collect(
         rows: budget.into_rows(),
         truncated,
         truncated_reason,
+    })
+}
+
+fn available_plan_row_bytes(columns: &[ColumnView], max_bytes: u64) -> Result<u64> {
+    // Reserve the JSON envelope using the widest possible scalar fields.
+    let envelope = QueryResultOutput {
+        columns: columns.to_vec(),
+        rows: Vec::new(),
+        row_count: i64::MAX,
+        truncated: false,
+        truncated_reason: "rows_and_bytes".to_owned(),
+        execution_time_ms: i64::MAX,
+    };
+    let bytes = serde_json::to_vec(&envelope).map_err(|_| Error::internal("无法编码查询计划"))?;
+    max_bytes.checked_sub(bytes.len() as u64).ok_or_else(|| {
+        Error::resource_exhausted(
+            ErrorCode::MCP_RESULT_TOO_LARGE,
+            "查询计划元数据超过输出限额",
+        )
     })
 }
 

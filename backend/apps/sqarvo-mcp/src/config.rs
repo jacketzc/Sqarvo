@@ -85,6 +85,15 @@ pub const DDL_TOOL_NAMES: [&str; 6] = [
     "preview_schema_change",
 ];
 
+/// Schema Intelligence read-only tools.
+pub const SCHEMA_TOOL_NAMES: [&str; 5] = [
+    "list_foreign_keys",
+    "list_constraints",
+    "get_table_ddl",
+    "get_table_statistics",
+    "get_database_schema",
+];
+
 /// Names recognized by the shared tool policy.
 pub fn tool_names() -> impl Iterator<Item = &'static str> {
     V1_TOOL_NAMES
@@ -92,6 +101,7 @@ pub fn tool_names() -> impl Iterator<Item = &'static str> {
         .chain(V2_TOOL_NAMES)
         .chain(TRANSACTION_TOOL_NAMES)
         .chain(DDL_TOOL_NAMES)
+        .chain(SCHEMA_TOOL_NAMES)
 }
 
 /// 工具未指定 `limit` 时的返回行数（V3.1 §10）。

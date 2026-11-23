@@ -38,6 +38,7 @@ const SCRIPT_READ_CHUNK: usize = 4_096;
 enum Command {
     Execute {
         request: ExecuteRequest,
+        explain: bool,
         reply: oneshot::Sender<Result<ExecutionStart>>,
     },
     /// 参数化执行（#59）：与 `Execute` 走同一条语句/游标路径，只是值由驱动绑定。
@@ -72,6 +73,7 @@ enum Command {
     /// 元数据读取（#45）：与会话查询共用线程，避免第二个连接看不到 `:memory:` 库。
     Metadata {
         request: crate::metadata::MetadataRequest,
+        read: Option<sqarvo_driver_api::metadata::MetadataRead>,
         reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
     },
     /// 表数据浏览（#46）：与元数据一样在会话连接上执行，读的是同一个快照。
@@ -206,10 +208,22 @@ impl SqliteSession {
         &self,
         request: crate::metadata::MetadataRequest,
     ) -> Result<crate::metadata::MetadataReply> {
+        self.metadata_call_tracked(request, None).await
+    }
+
+    pub(crate) async fn metadata_call_tracked(
+        &self,
+        request: crate::metadata::MetadataRequest,
+        read: Option<sqarvo_driver_api::metadata::MetadataRead>,
+    ) -> Result<crate::metadata::MetadataReply> {
         self.ensure_open()?;
         let (reply, wait) = oneshot::channel();
         self.sender
-            .send(Command::Metadata { request, reply })
+            .send(Command::Metadata {
+                request,
+                read,
+                reply,
+            })
             .map_err(|_| Self::closed_error())?;
         wait.await.map_err(|_| Self::closed_error())?
     }
@@ -232,7 +246,8 @@ impl SqliteSession {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+// Keep the actor commands in one dispatch loop so session ownership stays visible.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn run_connection(
     connection: Connection,
     mut receiver: mpsc::UnboundedReceiver<Command>,
@@ -289,9 +304,12 @@ fn run_connection(
             Command::InspectDdl { change, reply } => {
                 let _ = reply.send(crate::ddl::inspect(&connection, &change));
             }
-            Command::Metadata { request, reply } => {
-                // 元数据只是读取：不改变事务簿记，也不依赖 `query_only` 开关。
-                let _ = reply.send(crate::metadata::handle(&connection, request));
+            Command::Metadata {
+                request,
+                read,
+                reply,
+            } => {
+                serve_metadata(&connection, &state, request, read.as_ref(), reply);
             }
             Command::TableData { request, reply } => {
                 // 浏览只读、不改事务簿记；行编辑需要知道当前事务的真实阶段与只读性质，
@@ -306,11 +324,18 @@ fn run_connection(
                 };
                 let _ = reply.send(crate::table_data::handle(&connection, context, request));
             }
-            Command::Execute { request, reply } => {
+            Command::Execute {
+                request,
+                explain,
+                reply,
+            } => {
+                if explain && reply.is_closed() {
+                    continue;
+                }
                 if execute_statement(
                     &connection,
                     request,
-                    &[],
+                    (&[], explain),
                     reply,
                     &mut receiver,
                     &mut transaction,
@@ -331,7 +356,7 @@ fn run_connection(
                 if execute_statement(
                     &connection,
                     prepared,
-                    &request.params,
+                    (&request.params, false),
                     reply,
                     &mut receiver,
                     &mut transaction,
@@ -343,6 +368,38 @@ fn run_connection(
             }
         }
     }
+}
+
+fn serve_metadata(
+    connection: &Connection,
+    state: &QueryState,
+    request: crate::metadata::MetadataRequest,
+    read: Option<&sqarvo_driver_api::metadata::MetadataRead>,
+    reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
+) {
+    if reply.is_closed() {
+        return;
+    }
+    if let Some(read) = read {
+        state.cancelled.store(false, Ordering::SeqCst);
+        *state
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(read.id());
+    }
+    let result = if read.is_some_and(sqarvo_driver_api::metadata::MetadataRead::is_cancelled) {
+        Err(cancelled_error())
+    } else {
+        crate::metadata::handle(connection, request)
+    };
+    if read.is_some() {
+        *state
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        state.cancelled.store(false, Ordering::SeqCst);
+    }
+    let _ = reply.send(result);
 }
 
 /// 事务因 SQLite 自动回滚而不可用。
@@ -540,7 +597,7 @@ fn reset_query_only(connection: &Connection) {
 fn execute_statement(
     connection: &Connection,
     request: ExecuteRequest,
-    params: &[Value],
+    (params, explain): (&[Value], bool),
     reply: oneshot::Sender<Result<ExecutionStart>>,
     receiver: &mut mpsc::UnboundedReceiver<Command>,
     transaction: &mut Option<OpenTransaction>,
@@ -560,7 +617,13 @@ fn execute_statement(
     // 引擎切分探测（#187）：单语句走既有流式路径，行为完全不变；
     // 多语句走顺序急执行 + 缓冲路径。参数化执行保持单语句：参数在多语句
     // 脚本里没有明确的绑定对象，显式拒绝而不是静默只执行第一条。
-    let close = match crate::sql::probe(connection, &request.sql) {
+    let probe = if explain {
+        crate::sql::validate_plan(connection, &request.sql)
+            .map(|()| crate::sql::ScriptProbe::Single)
+    } else {
+        crate::sql::probe(connection, &request.sql)
+    };
+    let close = match probe {
         Ok(crate::sql::ScriptProbe::Multiple { first }) => {
             if params.is_empty() {
                 serve_script(connection, request, first, reply, receiver, state)
@@ -1357,6 +1420,10 @@ impl DriverSession for SqliteSession {
         self.session_id
     }
 
+    fn explain_format(&self) -> Option<sqarvo_driver_api::driver::ExplainFormat> {
+        Some(sqarvo_driver_api::driver::ExplainFormat::SqliteQueryPlan)
+    }
+
     fn metadata(&self) -> Option<&dyn sqarvo_driver_api::MetadataProvider> {
         Some(self)
     }
@@ -1390,7 +1457,24 @@ impl DriverSession for SqliteSession {
         self.ensure_open()?;
         let (reply, wait) = oneshot::channel();
         self.sender
-            .send(Command::Execute { request, reply })
+            .send(Command::Execute {
+                request,
+                explain: false,
+                reply,
+            })
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    async fn execute_explain(&self, request: ExecuteRequest) -> Result<ExecutionStart> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::Execute {
+                request,
+                explain: true,
+                reply,
+            })
             .map_err(|_| Self::closed_error())?;
         wait.await.map_err(|_| Self::closed_error())?
     }
@@ -1410,7 +1494,11 @@ impl DriverSession for SqliteSession {
         self.ensure_open()?;
         let (reply, wait) = oneshot::channel();
         self.sender
-            .send(Command::Execute { request, reply })
+            .send(Command::Execute {
+                request,
+                explain: false,
+                reply,
+            })
             .map_err(|_| Self::closed_error())?;
         Ok(Box::pin(async move {
             match wait.await {

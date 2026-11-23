@@ -19,6 +19,10 @@ use sqarvo_transaction::{Transaction, TransactionState};
 use time::OffsetDateTime;
 use tokio::sync::{Mutex, RwLock};
 
+use sqarvo_driver_api::metadata::{
+    DescribedColumn, IndexDetail, MetadataRead, NativeTableDdl, TableConstraints, TableStatistics,
+};
+
 /// 会话当前事务的快照。
 ///
 /// 供 `ConnectionService.ListSessions` 展示事务徽标（ADR 0017）：前端需要看到
@@ -201,11 +205,35 @@ impl SessionHandle {
         request: ExecuteRequest,
         catalog: Option<&str>,
     ) -> Result<ExecutionStart> {
+        self.execute_checked_in_catalog(request, catalog, false)
+            .await
+    }
+
+    /// Execute a generated plan, enforcing the physical driver's plan safeguards.
+    pub async fn execute_explain_in_catalog(
+        &self,
+        request: ExecuteRequest,
+        catalog: Option<&str>,
+    ) -> Result<ExecutionStart> {
+        self.execute_checked_in_catalog(request, catalog, true)
+            .await
+    }
+
+    async fn execute_checked_in_catalog(
+        &self,
+        request: ExecuteRequest,
+        catalog: Option<&str>,
+        explain: bool,
+    ) -> Result<ExecutionStart> {
         let _guard = self.execution.lock().await;
         if let Some(catalog) = catalog.map(str::trim).filter(|name| !name.is_empty()) {
             self.session.use_catalog(catalog).await?;
         }
-        let result = self.session.execute(request).await;
+        let result = if explain {
+            self.session.execute_explain(request).await
+        } else {
+            self.session.execute(request).await
+        };
         if let Err(error) = &result {
             // 驱动可能已经中止了事务（SQLite 自动回滚、MariaDB 事务丢失）：
             // 立刻把登记切到失败态，后续 Commit 不得再问驱动。
@@ -432,6 +460,105 @@ impl SessionHandle {
     pub async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
         let _guard = self.execution.lock().await;
         self.metadata_provider()?.ddl(object).await
+    }
+
+    /// Return the physical session's read-only plan format.
+    #[must_use]
+    pub fn explain_format(&self) -> Option<sqarvo_driver_api::driver::ExplainFormat> {
+        self.session.explain_format()
+    }
+
+    /// Read a bounded table catalog page.
+    pub async fn schema_objects(
+        &self,
+        catalog: &ObjectRef,
+        page: &sqarvo_driver_api::metadata::SchemaObjectPage,
+        read: &MetadataRead,
+    ) -> Result<Vec<ObjectNode>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .schema_objects(catalog, page, read)
+            .await
+    }
+
+    /// Read ordered index key parts.
+    pub async fn index_details(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<IndexDetail>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?.index_details(object, read).await
+    }
+
+    /// Read existing engine statistics without collecting new statistics.
+    pub async fn table_statistics(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<TableStatistics> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .table_statistics(object, read)
+            .await
+    }
+
+    /// Read database-native DDL for a table-like object.
+    pub async fn native_table_ddl(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<NativeTableDdl> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .native_table_ddl(object, read)
+            .await
+    }
+
+    /// Read columns and optional table-definition attributes.
+    pub async fn describe_columns(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<DescribedColumn>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .describe_columns(object, read)
+            .await
+    }
+
+    /// Read declared constraints and describe any coverage gaps.
+    pub async fn table_constraints(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<TableConstraints> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .table_constraints(object, read)
+            .await
+    }
+
+    /// Read a primary key under the registered metadata query ID.
+    pub async fn primary_key_for_read(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<PrimaryKey> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?
+            .primary_key_for_read(object, read)
+            .await
+    }
+
+    /// Read declared foreign keys under the session execution lock.
+    pub async fn foreign_keys(
+        &self,
+        object: &ObjectRef,
+        read: &MetadataRead,
+    ) -> Result<Vec<sqarvo_driver_api::metadata::ForeignKey>> {
+        let _guard = self.execution.lock().await;
+        self.metadata_provider()?.foreign_keys(object, read).await
     }
 
     /// 在会话执行锁内读取主键定义（`GetPrimaryKey`，#69）。

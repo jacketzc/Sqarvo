@@ -691,7 +691,7 @@ fn first_page() -> PageRequest {
     }
 }
 
-/// [`ColumnMeta`] → [`ColumnDetail`]：与 `describe_table` 逐字段等价。
+/// Project the V1 column fields for the stable Resource payload.
 fn column_detail(column: &ColumnMeta) -> ColumnDetail {
     let (default_kind, default_value) = default_of(&column.default_value);
     ColumnDetail {
@@ -704,6 +704,11 @@ fn column_detail(column: &ColumnMeta) -> ColumnDetail {
         default_value,
         character_set: column.character_set.clone().unwrap_or_default(),
         collation: column.collation.clone().unwrap_or_default(),
+        identity: None,
+        comment: None,
+        generated: None,
+        generation_expression: None,
+        primary_key_position: None,
     }
 }
 

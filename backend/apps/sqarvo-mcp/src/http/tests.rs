@@ -195,6 +195,7 @@ async fn authenticated_http_transaction_isolation_and_delete() {
             "{name}"
         );
     }
+    assert_schema_http(&client, &first).await;
     assert_ddl_http(&client, &first).await;
     let begin = json!({"connection_alias":"fixture","database":"main"});
     let open = client
@@ -313,6 +314,36 @@ fn ddl_test_id() -> uuid::Uuid {
     bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
     bytes[6] = (bytes[6] & 15) | 0x70;
     uuid::Uuid::from_bytes(bytes)
+}
+
+async fn assert_schema_http(client: &HttpClient, session: &str) {
+    let target = json!({"connection_alias":"fixture","database":"main","table":"items"});
+    let result = client
+        .tool(session, "list_foreign_keys", target.clone())
+        .await;
+    assert_eq!(
+        result["structuredContent"]["foreign_keys"],
+        json!([]),
+        "{result}"
+    );
+    let result = client.tool(session, "get_table_ddl", target).await;
+    assert_eq!(
+        result["structuredContent"]["source"], "database_native",
+        "{result}"
+    );
+    let result = client
+        .tool(
+            session,
+            "get_database_schema",
+            json!({
+                "connection_alias":"fixture","database":"main","page_size":1
+            }),
+        )
+        .await;
+    assert_eq!(
+        result["structuredContent"]["objects"][0]["name"], "items",
+        "{result}"
+    );
 }
 
 async fn assert_ddl_http(client: &HttpClient, session: &str) {

@@ -11,6 +11,7 @@ async-trait.workspace = true
 futures-util.workspace = true
 mysql_async.workspace = true
 rustls.workspace = true
+sqlparser.workspace = true
 sqarvo-common.workspace = true
 sqarvo-driver-api.workspace = true
 sqarvo-metadata.workspace = true

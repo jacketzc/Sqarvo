@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde::Serialize;
 use sqarvo_common::{ConnectionId, Error, ErrorCategory, ErrorCode, Result, SessionId};
 use sqarvo_connection::{SessionHandle, SessionManager};
+use sqarvo_driver_api::metadata::MetadataRead;
 use sqarvo_drivers::DriverRegistry;
 use sqarvo_local_store::{
     ConnectionProfile, ProfileDocument, ProfileStore, UnavailableCredentialStore,
@@ -49,6 +50,61 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::config::{EffectiveLimits, ValidatedConfig, validate_alias};
+
+struct MetadataRegistration {
+    read: MetadataRead,
+    registry: Arc<QueryRegistry>,
+}
+
+impl Drop for MetadataRegistration {
+    fn drop(&mut self) {
+        self.read.cancel();
+        let _ = self.registry.complete(&self.read.id());
+    }
+}
+
+fn metadata_cancelled() -> Error {
+    Error::new(
+        ErrorCode::QUERY_CANCELLED,
+        ErrorCategory::Cancelled,
+        "元数据请求已取消",
+    )
+}
+
+fn sanitize_metadata_error(error: &Error) -> Error {
+    let message = match error.category() {
+        ErrorCategory::NotFound => "数据库对象不存在或对当前账号不可见",
+        ErrorCategory::PermissionDenied => "当前连接无权读取元数据",
+        ErrorCategory::Unsupported => "当前驱动或对象不支持该元数据读取",
+        ErrorCategory::ResourceExhausted => "元数据读取超过服务端限额",
+        _ => "数据库元数据读取失败",
+    };
+    Error::new(error.code(), error.category(), message)
+}
+
+fn plan_cancelled() -> Error {
+    Error::new(
+        ErrorCode::QUERY_CANCELLED,
+        ErrorCategory::Cancelled,
+        "查询计划请求已取消",
+    )
+}
+
+fn plan_timeout() -> Error {
+    Error::new(
+        ErrorCode::MCP_QUERY_TIMEOUT,
+        ErrorCategory::Timeout,
+        "查询计划请求超时",
+    )
+}
+
+fn metadata_timeout() -> Error {
+    Error::new(
+        ErrorCode::MCP_QUERY_TIMEOUT,
+        ErrorCategory::Timeout,
+        "元数据请求超时",
+    )
+}
 
 /// 连接状态机（V3.1 §3.3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -632,6 +688,105 @@ impl AccessService {
 
     pub(crate) fn sessions(&self) -> &Arc<SessionManager> {
         &self.sessions
+    }
+
+    /// Run a plan with cancellation during queueing and one request deadline.
+    pub(crate) async fn run_plan<T, F, Fut, C, Cancelled>(
+        &self,
+        alias: &str,
+        cancel: &C,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn(SessionHandle, std::time::Duration) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+        C: Fn() -> Cancelled + Sync,
+        Cancelled: std::future::Future<Output = ()> + Send,
+    {
+        let deadline = tokio::time::Instant::now() + self.limits().query_timeout;
+        let (_permit, lease) = tokio::select! {
+            biased;
+            () = cancel() => return Err(plan_cancelled()),
+            result = tokio::time::timeout_at(deadline, async {
+                let permit = self.acquire_permit().await?;
+                let lease = self.lease_session(alias).await?;
+                Ok::<_, Error>((permit, lease))
+            }) => result.map_err(|_| plan_timeout())??,
+        };
+        let execute = |handle| {
+            operation(
+                handle,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )
+        };
+        match Self::run_leased(lease, &execute).await {
+            Err(error) if is_stale_session_error(&error) => {
+                self.invalidate(alias).await;
+                let lease = tokio::select! {
+                    biased;
+                    () = cancel() => return Err(plan_cancelled()),
+                    lease = tokio::time::timeout_at(deadline, self.lease_session(alias)) =>
+                        lease.map_err(|_| plan_timeout())??,
+                };
+                Self::run_leased(lease, &execute).await
+            }
+            result => result,
+        }
+    }
+
+    /// Run a read-only metadata request under one deadline and query registration.
+    pub(crate) async fn run_metadata<T, F, Fut>(
+        &self,
+        alias: &str,
+        cancellation: &CancellationToken,
+        operation: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(SessionHandle, MetadataRead) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
+        let deadline = tokio::time::Instant::now() + self.limits().query_timeout;
+        let (permit, lease) = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(metadata_cancelled()),
+            result = tokio::time::timeout_at(deadline, async {
+                let permit = self.acquire_permit().await?;
+                let lease = self.lease_session(alias).await?;
+                Ok::<_, Error>((permit, lease))
+            }) => result.map_err(|_| metadata_timeout())?.map_err(|error| sanitize_metadata_error(&error))?,
+        };
+        let track = MetadataRegistration {
+            read: MetadataRead::new(self.queries.register(lease.handle.summary().session_id)?),
+            registry: Arc::clone(&self.queries),
+        };
+        let worker_cancellation = cancellation.child_token();
+        let _cancel_on_drop = worker_cancellation.clone().drop_guard();
+        let worker = tokio::spawn(async move {
+            let _permit = permit;
+            let future = operation(lease.handle.clone(), track.read.clone());
+            tokio::pin!(future);
+            let error = tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(deadline) => metadata_timeout(),
+                () = worker_cancellation.cancelled() => metadata_cancelled(),
+                result = &mut future => return result.map_err(|error| sanitize_metadata_error(&error)),
+            };
+
+            // Keep the driver's operation pinned until the worker acknowledges completion.
+            // Dropping an MCP request must not release its concurrency slot early.
+            track.read.cancel();
+            let _ = track.registry.cancel(&track.read.id());
+            let _ = lease.handle.cancel(&track.read.id()).await;
+            let _ = future.await;
+            Err(error)
+        });
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(metadata_cancelled()),
+            () = tokio::time::sleep_until(deadline) => Err(metadata_timeout()),
+            result = worker => result.map_err(|_| Error::internal("元数据请求任务异常"))?,
+        }
     }
 
     /// Run a write or preview with cancellable, time-bounded connection initialization.

@@ -66,7 +66,7 @@ fn is_data_literal(value: &Value) -> bool {
     )
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(64);
     for byte in &Sha256::digest(bytes) {
         // write! 到 String 不会失败（无 IO），忽略 Result 只用于格式化。

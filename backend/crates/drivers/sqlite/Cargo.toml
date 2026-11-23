@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 rusqlite.workspace = true
+sqlparser.workspace = true
 sqarvo-common.workspace = true
 sqarvo-driver-api.workspace = true
 sqarvo-metadata.workspace = true

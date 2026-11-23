@@ -303,6 +303,146 @@ async fn schema_keys_and_index_names_are_reported() {
 }
 
 #[tokio::test]
+async fn schema_metadata_queue_deadline_leaves_mariadb_session_reusable() {
+    let Some(url) = dsn() else { return };
+    let target = parse_dsn(&url);
+    let reader = access(&target, Some(120));
+    let table = format!("{PREFIX}metadata_wait");
+    let params = describe_params(&target.database, &table, "");
+    exec(
+        &reader,
+        &format!("CREATE TABLE `{table}` (id INT) ENGINE=InnoDB"),
+    )
+    .await;
+    schema::get_table_ddl(&reader, &params)
+        .await
+        .expect("warm session");
+    let first = reader.acquire_permit().await.expect("first permit");
+    let second = reader.acquire_permit().await.expect("second permit");
+    let error = schema::get_table_ddl(&reader, &params)
+        .await
+        .expect_err("queue must time out");
+    assert_eq!(error.code(), ErrorCode::MCP_QUERY_TIMEOUT);
+    assert_eq!(reader.queries().active(), 0);
+    drop((first, second));
+    schema::get_table_ddl(&reader, &params)
+        .await
+        .expect("session reusable");
+    exec(&reader, &format!("DROP TABLE `{table}`")).await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // Shared parent and child exercise all correlated catalog facts.
+async fn schema_intelligence_reads_mariadb_native_metadata() {
+    let Some(url) = dsn() else { return };
+    let target = parse_dsn(&url);
+    let access = access(&target, None);
+    let parent = format!("{PREFIX}intel_parent");
+    let child = format!("{PREFIX}intel_child");
+    exec(&access, &format!("DROP TABLE IF EXISTS `{child}`")).await;
+    exec(&access, &format!("DROP TABLE IF EXISTS `{parent}`")).await;
+    exec(&access, &format!("CREATE TABLE `{parent}` (id INT NOT NULL AUTO_INCREMENT COMMENT 'fixture id', a INT NOT NULL, b INT AS (a * 2) STORED, PRIMARY KEY(id, a), CONSTRAINT positive CHECK (a > 0)) ENGINE=InnoDB")).await;
+    exec(&access, &format!("CREATE TABLE `{child}` (x INT, y INT, label VARCHAR(64), INDEX label_prefix (label(12), y DESC), CONSTRAINT intel_fk FOREIGN KEY (x, y) REFERENCES `{parent}` (id, a) ON DELETE CASCADE ON UPDATE SET NULL) ENGINE=InnoDB")).await;
+    let params = describe_params(&target.database, &parent, "");
+    let columns = schema::describe_table(&access, &params)
+        .await
+        .expect("columns")
+        .columns;
+    assert_eq!(columns[0].identity, Some("auto_increment"));
+    assert_eq!(columns[0].comment.as_deref(), Some("fixture id"));
+    assert_eq!(columns[2].generated, Some(true));
+    assert!(columns[2].generation_expression.is_some());
+    let checks = schema::list_constraints(&access, &params)
+        .await
+        .expect("constraints");
+    let check = checks
+        .constraints
+        .iter()
+        .find(|item| item.kind == "check")
+        .expect("check");
+    assert_eq!(check.name.as_deref(), Some("positive"));
+    assert!(check.check_expression.is_some());
+    let ddl = schema::get_table_ddl(&access, &params)
+        .await
+        .expect("native DDL");
+    assert!(ddl.complete);
+    assert!(ddl.ddl.unwrap().contains("AUTO_INCREMENT"));
+    exec(&access, "SET SESSION sql_mode = 'NO_KEY_OPTIONS'").await;
+    let limited = schema::get_table_ddl(&access, &params)
+        .await
+        .expect("mode-limited DDL");
+    assert!(!limited.complete);
+    assert!(
+        limited
+            .warnings
+            .contains(&"native_definition_may_omit_options")
+    );
+    exec(&access, "SET SESSION sql_mode = DEFAULT").await;
+    let stats = schema::get_table_statistics(&access, &params)
+        .await
+        .expect("statistics");
+    assert_eq!(stats.row_count_kind, "estimate");
+    assert!(stats.total_bytes.is_some());
+    let result = schema::list_foreign_keys(&access, &describe_params(&target.database, &child, ""))
+        .await
+        .expect("foreign keys");
+    let key = &result.foreign_keys[0];
+    assert_eq!(key.name.as_deref(), Some("intel_fk"));
+    assert_eq!(
+        (key.on_delete.as_str(), key.on_update.as_str()),
+        ("CASCADE", "SET NULL")
+    );
+    assert_eq!(
+        key.columns
+            .iter()
+            .map(|pair| (pair.column.as_str(), pair.referenced_column.as_deref()))
+            .collect::<Vec<_>>(),
+        [("x", Some("id")), ("y", Some("a"))]
+    );
+    let page = schema::get_database_schema(
+        &access,
+        &schema::DatabaseSchemaParams {
+            connection_alias: "maria".into(),
+            database: target.database.clone(),
+            schema: String::new(),
+            tables: vec![parent.clone(), child.clone()],
+            include_columns: false,
+            include_indexes: true,
+            include_foreign_keys: true,
+            page_size: 1,
+            page_token: None,
+        },
+    )
+    .await
+    .expect("filtered page");
+    assert_eq!(page.objects[0].name, child);
+    let indexes = page.objects[0].indexes.as_ref().unwrap();
+    let parts = indexes
+        .iter()
+        .find(|index| index.name == "label_prefix")
+        .unwrap()
+        .columns
+        .as_ref()
+        .unwrap();
+    assert_eq!(parts[0].prefix_length, Some(12));
+    assert_eq!(parts[1].name.as_deref(), Some("y"));
+    assert!(page.next_page_token.is_some());
+    if let Ok(hidden_db) = std::env::var("SQARVO_MCP_SCHEMA_HIDDEN_DB") {
+        let error =
+            schema::get_table_ddl(&access, &describe_params(&hidden_db, "private_table", ""))
+                .await
+                .expect_err("server account cannot read the private database");
+        assert!(matches!(
+            error.code(),
+            ErrorCode::METADATA_PERMISSION_DENIED | ErrorCode::METADATA_OBJECT_NOT_FOUND
+        ));
+        assert!(!error.message().contains(&hidden_db));
+    }
+    exec(&access, &format!("DROP TABLE `{child}`")).await;
+    exec(&access, &format!("DROP TABLE `{parent}`")).await;
+}
+
+#[tokio::test]
 async fn statistics_detail_sql_runs_through_execute_readonly_query() {
     let Some(url) = dsn() else { return };
     let target = parse_dsn(&url);

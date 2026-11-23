@@ -50,15 +50,15 @@ cd backend && cargo build -p sqarvo-mcp --release
 | capabilities | `tools` + `resources`（无 prompts、无 completion、无 logging 通道） |
 | `serverInfo.name` | `sqarvo-mcp` |
 | 协议版本 | 支持 `2024-11-05` / `2025-03-26` / `2025-11-25` 旧握手，以及 `2026-07-28` 的无握手 `_meta` 通道（详见架构文档 §9） |
-| 工具 | 8 个只读工具、4 个 V2 工具、4 个 V2.1 事务工具。`tools/list` 按 `enabled_tools` 筛选 |
+| 工具 | 13 个只读工具、4 个 V2 工具、4 个 V2.1 事务工具、6 个 V2.2 工具。`tools/list` 按 `enabled_tools` 筛选 |
 | 资源 | 1 个静态 + 3 个模板（`resources/list` / `resources/templates/list`） |
-| 写操作 | **没有**。`INSERT/UPDATE/DELETE/DDL/GRANT/USE/SET/SHOW/CALL`、事务控制、多语句一律拒 |
+| 写操作 | 通过独立的 V2、V2.1、V2.2 结构化入口，受全局访问策略和数据库权限约束 |
 | 审计 | 每次 `tools/call` 落 `audit.jsonl`，只记 SQL 指纹。资源的全局策略拒绝、名称歧义和需要重启也会记录 |
 
 `tools/list` 与资源发现提供静态描述。工具调用和资源读取会检查共享档案的全局访问策略。
 SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 
-## 3. 八个只读工具
+## 3. V1 只读工具
 
 每个工具的小节格式：**参数表 → 返回（outputSchema 摘要）→ 限额与截断 → 错误子码 → 描述要点**。
 `description` 由代码里的文档注释逐字生成，客户端看到的就是它。
@@ -149,9 +149,10 @@ SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 | `default_value` | string | 仅 `expression` 时非空，是表达式**原文**，不代求值 |
 | `character_set` / `collation` | string | 不适用或未知时是空串 |
 
-- **不输出的字段**：自增属性、列注释——本版本 Driver SPI 没有这两项，宁可不给也不伪造。
-- 限额：列数没有单独上限（元数据规模由驱动决定），`truncated` 恒为 `false`；审计里 `returned_rows`
-  记的是**列数**。
+- V2.3 可选字段为 `identity`、`comment`、`generated`、`generation_expression`、`primary_key_position`。省略表示
+  方言不适用或无法可靠读取。SQLite 区分 `rowid_alias` 和显式 `autoincrement`，MariaDB
+  使用 `auto_increment`。生成表达式作为元数据文本返回。
+- 列数或序列化结果超过预算时返回 `mcp.result_too_large`。审计记录返回列数。
 - 错误：`mcp.invalid_argument`（三个必填任一为空）、`mcp.connection_not_found` / `_denied`、
   `capability.unsupported`（非空 `schema`）、`metadata.object_not_found`（库/表不存在）、
   `metadata.permission_denied`。
@@ -163,21 +164,12 @@ SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 | `connection_alias` / `database` / `table` | string | 是 | — | |
 | `schema` | string | 否 | `""` | 非空 → `capability.unsupported` |
 
-返回：`connection_alias`、`database`、`table`、`indexes: [{name}]`、`count`、`truncated`。
-
-- **只有名字**。索引列组成、唯一性、索引类型、排序方式都不在 SPI 能力范围内，因此不返回；
-  MariaDB 上主键索引名叫 `PRIMARY`。
-- 工具描述里直接给了取明细的正确姿势（这段 SQL 由单测保证能通过自家只读策略，且实测在真库跑通）：
-
-```sql
-SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, INDEX_TYPE
-FROM information_schema.STATISTICS
-WHERE TABLE_SCHEMA = 'app_db' AND TABLE_NAME = 'users'
-ORDER BY INDEX_NAME, SEQ_IN_INDEX
-```
-
-  用 `execute_readonly_query` 提交；结果受该连接的账号权限约束。
-- 限额：单页最多 **500**。
+返回保留 `connection_alias`、`database`、`table`、`indexes[].name`、`count`、`truncated`。
+索引条目增加 `unique`、`primary`、`index_type`、`origin` 和有序 `columns`。
+键项提供 `name`、`kind`、可空的 `sort_order` 和 `prefix_length`。SQLite 表达式键项为
+`kind: "expression"`，列名为 `null`。SQLite 来源 `c`、`u`、`pk` 分别对应显式创建、
+UNIQUE 约束和主键。隐式索引单列在可选的 `implicit_indexes`，`count` 仍统计原 `indexes`
+数组。MariaDB 主键索引名仍为 `PRIMARY`。输出受服务端行数和字节预算约束。
 
 ### 3.6 `get_table_sample`
 
@@ -229,13 +221,10 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 
 返回结构与 `execute_readonly_query` 完全相同（计划行就是一张结果表）。
 
-- **驱动范围：仅 MariaDB**。SQLite 返回 `mcp.unsupported`，文案直接给出替代方案：
-  「SQLite 的等价物是 EXPLAIN QUERY PLAN，语义不同，本版本不代执行」。这个门控发生在**建连之前**
-  （不碰数据库）。
-- 只生成普通 `EXPLAIN`，**绝不**生成 `EXPLAIN ANALYZE` / `ANALYZE FORMAT=JSON SELECT`
-  （后者会真实执行查询）。
-- 限额与取消链与 3.7 同一条代码路径。
-- 审计指纹按**原 SQL** 计算（不把 `EXPLAIN ` 前缀归因进去）。
+- MariaDB 使用普通 `EXPLAIN`。SQLite 使用 `EXPLAIN QUERY PLAN`，返回原生
+  `id`、`parent`、`notused`、`detail`。SQLite 计划接受省略 `database` 或显式 `main`。
+  `detail` 是数据库版本相关的文本。
+- 服务端先验证单条 SELECT 或只读 WITH。限额和取消使用只读查询执行路径，指纹基于原 SQL。
 
 ## 4. 值的 JSON 序列化契约
 
@@ -346,7 +335,7 @@ JSONL 审计。普通资源读取沿用 V1 行为。
 
 | 字段 | 类型 | 默认 | 处理 |
 |---|---|---|---|
-| `enabled_tools` | array&lt;string&gt; | 16 个工具均可发现 | 未知名拒绝启动，`[]` 关闭全部工具 |
+| `enabled_tools` | array&lt;string&gt; | 27 个工具均可发现 | 未知名拒绝启动，`[]` 关闭全部工具 |
 | `query_limits` | object | 见 §6.3 | 未知字段拒绝启动，数值越界按上限钳制 |
 
 ### 6.2 共享档案与旧配置
@@ -509,7 +498,7 @@ SHOW GRANTS FOR 'sqarvo_mcp_ro'@'%';
 预期结果与验收步骤（**人工验收项，本机未确认**）：
 
 1. 服务器条目变绿/「已连接」，展开后能看到工具列表；
-2. 默认发现 `16` 个工具，显式列表配置下等于 `enabled_tools` 里列出的个数（若配了 `enabled_tools: []` 则是 0）；
+2. 默认发现 `27` 个工具，显式列表配置下等于 `enabled_tools` 里列出的个数（若配了 `enabled_tools: []` 则是 0）；
 3. 资源标签页出现 `database://connections`（静态资源）——**不展开不发起连接**；
 4. 调 `list_connections`：返回 `alias` / `driver_id` / `database` / `connection_status` /
    `last_error_code`，**没有任何用户名字段**；
@@ -574,7 +563,7 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | `mcp.readonly_violation` | `permission_denied` | 否 | 白名单外语句、多语句、INTO、锁读、hint、危险函数、`:=` | 改成单条 `SELECT`；文案里逐条列出了全部违规原因 |
 | `mcp.sql_parse` | `invalid_argument` | 否 | sqlparser(MySqlDialect) 解析失败（含递归深度触顶）；**不代表原语句非法** | 换写法（去 MariaDB 特有语法、降嵌套深度） |
 | `mcp.database_not_found` / `mcp.table_not_found` | `not_found` | 否 | 预留（当前由驱动的 `metadata.object_not_found` 承担） | 回查 `list_databases` / `list_tables` |
-| `mcp.unsupported` | `unsupported` | 否 | MCP 层能力缺失（目前只有 `explain_query` 打非 MariaDB 驱动） | 按文案给的替代方案走 |
+| `mcp.unsupported` | `unsupported` | 否 | MCP 层能力缺失（例如驱动未声明查询计划能力） | 按文案给的替代方案走 |
 | `capability.unsupported` | `unsupported` | 否 | 驱动层不支持：非空 `schema`、SQLite 切库等 | 省略该参数 |
 | `mcp.query_timeout` | `timeout` | **是** | 超过 `query_timeout`（≤10 s），已请求取消数据库查询 | 缩范围、加过滤、减列 |
 | `mcp.result_too_large` | `resource_exhausted` | **是** | 资源 JSON 超 `max_result_bytes` | 改用粒度更细的工具分批读 |
@@ -593,7 +582,6 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | `禁止锁定读：FOR UPDATE ...` | 锁读 | 去掉锁子句 |
 | `禁止危险函数：SLEEP——人为延长查询，占用连接与超时预算。` | 危险函数表 | 换普通表达式 |
 | `解析失败：... 已按 fail-closed 原则拒绝（...MariaDB 特有语法请改写后重试）` | MySqlDialect 解析不了 | 常见于 `LOCK IN SHARE MODE` / `INTO OUTFILE` / `ANALYZE SELECT` / `PROCEDURE ANALYSE()` |
-| `explain_query 当前仅支持 MariaDB（普通 EXPLAIN）；驱动 sqlite 未声明 Explain 能力。SQLite 的等价物是 EXPLAIN QUERY PLAN...` | 驱动门控 | SQLite 侧别用该工具 |
 | `查询超过 10000 毫秒上限，已请求取消` | 超时（`retryable=true`） | 缩查询 |
 | `URI 路径段疑似双重编码（解码后仍含 %XX 序列）；每个路径段只允许编码一次` | 资源 URI 编了两次 | 只编一次 |
 | `资源不存在或该连接未授权；请用 resources/list 与 list_connections 核对别名` | 档案未知或全局访问关闭（资源面归一化） | 核对别名与授权 |
@@ -633,8 +621,8 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
    覆盖；争用时第二个实例退化写 `audit.<pid>.jsonl`。V1 **不宣称**多实例安全。
 7. **轮转参数（10 MiB × 5）不可配**。
 8. **`PROCEDURE ANALYSE()` 是唯一真正的只读误杀**（合法、只读、极罕见），接受，不做例外放行。
-9. **`explain_query` 仅 MariaDB**；SQLite 的 `EXPLAIN QUERY PLAN` 语义不同，不代执行。
-10. **索引明细不在 `list_indexes` 里**：只有名字，列组成/唯一性/类型要查 `information_schema`。
+9. **SQLite 计划文本随数据库版本变化**，请按原生列读取。
+10. **索引细节随方言可用性变化**，未知的来源、表达式原文或前缀长度可以为空。
 11. **没有 `prompts` / `completion` 能力**；`tools/list` 只在 ≥`2026-07-28` 的会话里带缓存字段。
 12. **握手前 `SIGTERM` 走系统默认处置**（rmcp 限制，见架构文档 §10.2）。此时无会话无在途查询，
     不需要清理，但不是优雅关停。
@@ -999,3 +987,30 @@ sqarvo-mcp ddl-reconcile OPERATION_ID --verified-stopped
 连接 5 秒，预检/预览 8 秒，派发闸口 250 毫秒，数据库锁等待约 5 秒，执行应答 30 秒，
 终结与清理各 5 秒。达到应答预算时数据库可能仍在处理。运行超限或会话不可回收时保守
 拒绝继续执行。持久记录最多 4096 项，窗口内满额拒绝新操作。
+
+
+## V2.3 Schema Intelligence
+
+全局 MCP 数据访问开启后，可以在 stdio 和认证 Streamable HTTP 使用以下只读工具。
+显式配置 `enabled_tools` 时加入需要的工具名。单对象工具都需要 `connection_alias`、
+`database` 和 `table`，可选 `schema` 按现有对象层级校验。
+
+| 新工具 | 响应及含义 |
+|---|---|
+| `list_foreign_keys` | `foreign_keys` 按真实列顺序返回 `columns[{column, referenced_column}]`、`target{database,schema,table}`、`name`、`on_update` 和 `on_delete`。SQLite 的约束名或无法解析的隐式引用列为 `null`。 |
+| `list_constraints` | `constraints` 含主键、唯一、外键、CHECK 和引擎报告的其他种类。外键与 `list_foreign_keys` 共用数据。SQLite 以隐式索引来源识别 UNIQUE 约束，仅在能验证原生声明时返回 CHECK 原文。可用的 CHECK 文本只作为元数据。未知约束名、列列表及执行状态为 `null`，覆盖缺口写入 `warnings`。 |
+| `get_table_ddl` | `object_type` 区分 `table`、`view` 和 SQLite `virtual_table`。`source: "database_native"` 表示数据库返回的定义。MariaDB 定义可能受 SQL mode 裁剪，SQLite 内部对象或缺少原文的对象返回能力错误。超过响应预算时 `ddl: null`、`complete: false`。 |
+| `get_table_statistics` | `row_count_kind` 为 `exact`、`estimate` 或 `unknown`。MariaDB 来自 `information_schema.TABLES`，InnoDB 行数是估算，占用字节按引擎口径作为估算交付（`size_kind`）。SQLite 读取已有 `sqlite_stat1` 的可靠记录，行数为估算，缺失时为 `null`。SQLite 的单表大小和两端的 `last_analyzed_at` 目前为 `null`。 |
+| `get_database_schema` | 按二进制对象名顺序返回 `objects`、`count`、`next_page_token`、`truncated`、`truncated_reason`。省略详情开关时返回对象目录。 |
+
+建议先以 `get_database_schema` 发现对象，再按需要请求三个可独立设置的详情开关
+`include_columns`、`include_indexes`、`include_foreign_keys`，或通过 `tables`
+限定至最多 64 个精确名称。页大小默认 16，目录页上限 64，详情页上限 8，服务端行数
+配置可进一步降低上限。续页保持目录、过滤和详情选项并传回 `next_page_token`。
+分页期间外部 DDL 可能造成目录漂移。若对象详情超预算，响应可保留对象摘要并标明
+缺失部分。旧 Schema Resource 和单表 Resource 仍可按原 URI 读取。
+
+MariaDB 的原生 DDL 读取受数据库权限和元数据锁约束。可能含远程连接配置的存储引擎
+当前不开放定义。SQL mode 隐藏引擎时也返回能力错误。元数据正文可能含业务敏感信息，审计记录只保留调用状态、必要计数和
+SQL 指纹。统计可能陈旧，读取过程不会执行 `COUNT(*)` 或 `ANALYZE`。无数据、无法读取
+及能力不支持分别用空集合、工具错误及能力错误表达。

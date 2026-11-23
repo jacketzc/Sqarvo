@@ -142,6 +142,13 @@ pub trait MetadataProvider: Send + Sync {
 - `primary_key` 与 `TableDataProvider::primary_key` 读同一份主键定义，两者必须一致；
   无主键返回空 `PrimaryKey`，不得返回 rowid / ctid 之类的近似主键。
 
+### 结构感知投影
+
+MCP V2.3 新增有界对象目录页、字段属性、索引键项、外键、约束、原生对象定义和表统计。
+这些读取使用 `MetadataRead` 将同一逻辑请求的 Query ID 和取消状态传到会话 worker。
+缺少相应能力的驱动默认返回 `capability.unsupported`。旧 `ColumnMeta`、`ddl` 和
+`list_children` 仍服务 gRPC 及结果集。见 [ADR 0040](../decisions/0040-mcp-schema-intelligence.md)。
+
 ### 对象过滤（v0.2.2，ADR 0019）
 
 `ListNodesRequest.filter` 的 SPI 形态是 `ObjectFilter`（名称条件 + 种类集合，交集语义）。
@@ -438,6 +445,6 @@ pub struct InsertReport { pub results: Vec<InsertRowResult>, pub deferred: usize
 - 参数化执行的 gRPC RPC：SPI（`execute_parameterized`）两驱动已实现，查询侧的参数化 RPC
   留给 S7；
 - MariaDB 驱动的单次执行超时（请求时明确返回 `capability.unsupported`）；
-- 服务端元数据分页（目前把当前库对象名一次读入内存后切页）；
+- 旧 gRPC 元数据列表的服务端分页（旧路径在内存切页）；
 - 会话租约与断线重连。
 

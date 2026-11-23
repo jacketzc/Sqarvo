@@ -1,24 +1,4 @@
-//! `explain_query`（V3.1 §6）。
-//!
-//! # V1 的驱动范围
-//!
-//! Driver SPI 没有 Explain 方法，V1 也不扩展 SPI：本工具在 MCP 层为**MariaDB**
-//! 构造普通 `EXPLAIN`，SQLite 明确返回 `mcp.unsupported`。
-//!
-//! 驱动白名单只在本文件维护（[`EXPLAIN_DRIVERS`]）：
-//!
-//! - **V1 已知例外**：ADR 0032 记录了「MCP 层按数据库类型生成 EXPLAIN」这一临时
-//!   设计，后续以驱动能力位取代；
-//! - 不在其他模块散落 `driver_id == "mariadb"` 判断；
-//! - 不把普通 `EXPLAIN` 与 SQLite 的 `EXPLAIN QUERY PLAN` 混为一谈——语义不同，
-//!   本版本不代执行。
-//!
-//! # 安全顺序
-//!
-//! 用户 SQL → [`crate::policy::check_explain`]（与 `check_readonly` 完全相同的策略）
-//! → 由策略层拼 `EXPLAIN ` 前缀 → 现有 `SessionHandle::execute`。用户自己提交的
-//! `EXPLAIN` / `ANALYZE` 形态在策略层就被拒绝，本工具没有第二条绕过路径，也绝不
-//! 构造 `EXPLAIN ANALYZE`（MariaDB 的 `ANALYZE SELECT` 会真实执行查询）。
+//! Database-native plans for a validated read-only query.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -27,25 +7,14 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use sqarvo_common::{Error, ErrorCode, Result};
 
-use crate::access::{AccessService, OperationType};
+use crate::access::AccessService;
 use crate::policy;
 use crate::tools::query::{ExecuteOutcome, SqlRunRequest, run_sql};
 use crate::tools::{ensure_enabled, require_non_empty};
+use sqarvo_driver_api::driver::ExplainFormat;
 
 /// 工具名。
 pub const EXPLAIN_QUERY_TOOL_NAME: &str = "explain_query";
-
-/// V1 支持 Explain 的驱动白名单。
-///
-/// **V1 已知例外**（ADR 0032）：SPI 尚无 Explain 能力位时在 MCP 层单点映射；
-/// 新增支持必须同时补测试与 ADR，不得只加一个字符串。
-const EXPLAIN_DRIVERS: [&str; 1] = ["mariadb"];
-
-/// 该驱动是否支持 V1 的 `explain_query`。
-#[must_use]
-pub fn supports_explain(driver_id: &str) -> bool {
-    EXPLAIN_DRIVERS.contains(&driver_id)
-}
 
 /// `explain_query` 参数。
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,54 +53,51 @@ where
     ensure_enabled(access, EXPLAIN_QUERY_TOOL_NAME)?;
     let alias = require_non_empty(&params.connection_alias, "connection_alias")?;
     let sql = require_non_empty(&params.sql, "sql")?;
-    let profile = access
-        .guard()
-        .authorize_request(OperationType::Read, Some(alias.to_owned()))
-        .await?
-        .profile
-        .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
-    let driver_id = profile.params.driver_id.as_str();
-    if !supports_explain(driver_id) {
-        return Err(Error::unsupported(
-            ErrorCode::MCP_UNSUPPORTED,
-            format!(
-                "explain_query 当前仅支持 MariaDB（普通 EXPLAIN）；驱动 {driver_id} 未声明 Explain 能力。\
-                 SQLite 的等价物是 EXPLAIN QUERY PLAN，语义不同，本版本不代执行。"
-            ),
-        ));
-    }
-    let checked = policy::check_explain(sql)?;
-    let fingerprint = checked.fingerprint.sha256_hex.clone();
-    let sql = checked.sql;
-    let database = params.database.trim().to_owned();
+    let database = params.database.trim();
     let limits = *access.limits();
     let queries = Arc::clone(access.queries());
-    let data = access
-        .run(alias, |handle| {
-            let sql = sql.clone();
-            let database = database.clone();
+    access
+        .run_plan(alias, cancel, |handle, timeout| {
             let queries = Arc::clone(&queries);
             async move {
-                run_sql(
+                let (checked, database) = match handle.explain_format() {
+                    Some(ExplainFormat::Standard) => (policy::check_explain(sql)?, database),
+                    Some(ExplainFormat::SqliteQueryPlan) => (
+                        policy::check_sqlite_plan(sql)?,
+                        if database.eq_ignore_ascii_case("main") {
+                            ""
+                        } else {
+                            database
+                        },
+                    ),
+                    None => {
+                        return Err(Error::unsupported(
+                            ErrorCode::MCP_UNSUPPORTED,
+                            "当前驱动未提供只读查询计划",
+                        ));
+                    }
+                };
+                let data = run_sql(
                     queries,
                     handle,
                     SqlRunRequest {
-                        sql,
-                        database,
+                        explain: true,
+                        sql: checked.sql,
+                        database: database.to_owned(),
                         max_rows: limits.max_rows,
-                        timeout: limits.query_timeout,
+                        timeout,
                         max_bytes: limits.max_result_bytes,
                     },
                     cancel(),
                 )
-                .await
+                .await?;
+                Ok(ExecuteOutcome {
+                    output: data.into_output(),
+                    fingerprint: checked.fingerprint.sha256_hex,
+                })
             }
         })
-        .await?;
-    Ok(ExecuteOutcome {
-        output: data.into_output(),
-        fingerprint,
-    })
+        .await
 }
 
 #[cfg(test)]
@@ -141,32 +107,6 @@ mod tests {
 
     fn db() -> std::path::PathBuf {
         std::path::Path::new("/nonexistent/sqarvo-mcp-explain-test.db").to_path_buf()
-    }
-
-    #[test]
-    fn driver_mapping_is_single_point_and_truthful() {
-        assert!(supports_explain("mariadb"));
-        assert!(!supports_explain("sqlite"));
-        assert!(!supports_explain("postgresql"));
-    }
-
-    #[tokio::test]
-    async fn sqlite_reports_unsupported_with_an_actionable_message() {
-        let access = test_support::service(db().as_path(), None);
-        let error = explain_query(
-            &access,
-            &ExplainQueryParams {
-                connection_alias: "dev".to_owned(),
-                database: String::new(),
-                sql: "SELECT 1".to_owned(),
-            },
-        )
-        .await
-        .expect_err("SQLite 不支持 explain_query");
-        assert_eq!(error.code(), ErrorCode::MCP_UNSUPPORTED);
-        assert!(error.message().contains("EXPLAIN QUERY PLAN"));
-        // 不碰数据库：驱动门控发生在会话建立之前。
-        assert_eq!(access.session_manager().active_count().await, 0);
     }
 
     #[tokio::test]

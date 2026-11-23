@@ -18,6 +18,7 @@ pub(crate) mod ddl;
 mod fingerprint;
 pub mod write;
 
+pub(crate) use fingerprint::sha256_hex;
 use sqarvo_common::Result;
 
 /// 规范化 SQL 指纹：审计与错误回显里唯一允许出现的 SQL 形态。
@@ -55,8 +56,7 @@ pub fn check_readonly(sql: &str) -> Result<CheckedSql> {
 /// 形态在策略层就应被拒，不存在第二条路。返回的 [`CheckedSql::sql`] 是已拼好前缀、
 /// 可直接交给 `SessionHandle::execute` 的文本。
 ///
-/// 仅对支持 EXPLAIN 语义的驱动调用（V1 = mariadb）；SQLite 由工具层先行返回
-/// `capability.unsupported`，不得走到这里。
+/// 适用于普通 EXPLAIN（MariaDB）。
 pub fn check_explain(sql: &str) -> Result<CheckedSql> {
     // 指纹按**原 SQL** 计算（审计不归因 EXPLAIN 前缀）；任何策略错误原样透出，
     // 不存在「先拼 EXPLAIN 再检查」的旁路。
@@ -64,6 +64,19 @@ pub fn check_explain(sql: &str) -> Result<CheckedSql> {
     Ok(CheckedSql {
         sql: format!("EXPLAIN {}", checked.sql),
         fingerprint: checked.fingerprint,
+    })
+}
+
+/// Validate a SQLite plan query using the same read-only AST traversal.
+pub(crate) fn check_sqlite_plan(sql: &str) -> Result<CheckedSql> {
+    let statement = ast::parse_readonly_statement_with_dialect(
+        sql,
+        &sqlparser::dialect::SQLiteDialect {},
+        true,
+    )?;
+    Ok(CheckedSql {
+        sql: format!("EXPLAIN QUERY PLAN {sql}"),
+        fingerprint: fingerprint::fingerprint_of(&statement),
     })
 }
 

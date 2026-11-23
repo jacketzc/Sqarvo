@@ -283,9 +283,133 @@ impl SqarvoMcpServer {
     }
 
     #[tool]
+    /// 读取表上声明的外键。复合外键按声明顺序返回列配对及引用动作。
+    async fn list_foreign_keys(
+        &self,
+        params: Parameters<schema::DescribeTableParams>,
+        request: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<schema::ForeignKeysOutput>, ToolFailure> {
+        let params = params.0;
+        let call = ToolCall::from_request(
+            self.context(),
+            &request,
+            schema::LIST_FOREIGN_KEYS_TOOL_NAME,
+        )
+        .with_target(&params.connection_alias, optional_trimmed(&params.database));
+        match schema::list_foreign_keys_with_cancel(self.context().access(), &params, &request.ct)
+            .await
+        {
+            Ok(output) => {
+                let count = i64::try_from(output.foreign_keys.len()).unwrap_or(i64::MAX);
+                call.succeeded(Some(count), Some(false)).await?;
+                Ok(Json(output))
+            }
+            Err(error) => Err(call.failed(error).await),
+        }
+    }
+
+    #[tool]
+    /// 读取已有表统计，标明估算和未知值。
+    async fn get_table_statistics(
+        &self,
+        params: Parameters<schema::DescribeTableParams>,
+        request: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<schema::TableStatisticsOutput>, ToolFailure> {
+        let params = params.0;
+        let call = ToolCall::from_request(
+            self.context(),
+            &request,
+            schema::GET_TABLE_STATISTICS_TOOL_NAME,
+        )
+        .with_target(&params.connection_alias, optional_trimmed(&params.database));
+        match schema::get_table_statistics_with_cancel(
+            self.context().access(),
+            &params,
+            &request.ct,
+        )
+        .await
+        {
+            Ok(output) => {
+                call.succeeded(None, None).await?;
+                Ok(Json(output))
+            }
+            Err(error) => Err(call.failed(error).await),
+        }
+    }
+
+    #[tool]
+    /// 读取数据库提供的原生对象定义、来源及完整性。
+    async fn get_table_ddl(
+        &self,
+        params: Parameters<schema::DescribeTableParams>,
+        request: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<schema::TableDdlOutput>, ToolFailure> {
+        let params = params.0;
+        let call =
+            ToolCall::from_request(self.context(), &request, schema::GET_TABLE_DDL_TOOL_NAME)
+                .with_target(&params.connection_alias, optional_trimmed(&params.database));
+        match schema::get_table_ddl_with_cancel(self.context().access(), &params, &request.ct).await
+        {
+            Ok(output) => {
+                call.succeeded(None, None).await?;
+                Ok(Json(output))
+            }
+            Err(error) => Err(call.failed(error).await),
+        }
+    }
+
+    #[tool]
+    /// 读取数据库声明的主键、唯一、外键、CHECK 等约束及覆盖说明。
+    async fn list_constraints(
+        &self,
+        params: Parameters<schema::DescribeTableParams>,
+        request: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<schema::ConstraintsOutput>, ToolFailure> {
+        let params = params.0;
+        let call =
+            ToolCall::from_request(self.context(), &request, schema::LIST_CONSTRAINTS_TOOL_NAME)
+                .with_target(&params.connection_alias, optional_trimmed(&params.database));
+        match schema::list_constraints_with_cancel(self.context().access(), &params, &request.ct)
+            .await
+        {
+            Ok(output) => {
+                call.succeeded(None, None).await?;
+                Ok(Json(output))
+            }
+            Err(error) => Err(call.failed(error).await),
+        }
+    }
+
+    #[tool]
+    /// 分页读取指定数据库的结构目录，可选附加列、索引与外键。
+    async fn get_database_schema(
+        &self,
+        params: Parameters<schema::DatabaseSchemaParams>,
+        request: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<schema::DatabaseSchemaOutput>, ToolFailure> {
+        let params = params.0;
+        let call = ToolCall::from_request(
+            self.context(),
+            &request,
+            schema::GET_DATABASE_SCHEMA_TOOL_NAME,
+        )
+        .with_target(&params.connection_alias, optional_trimmed(&params.database));
+        match schema::get_database_schema_with_cancel(self.context().access(), &params, &request.ct)
+            .await
+        {
+            Ok(output) => {
+                call.succeeded(i64::try_from(output.count).ok(), Some(output.truncated))
+                    .await?;
+                Ok(Json(output))
+            }
+            Err(error) => Err(call.failed(error).await),
+        }
+    }
+
+    #[tool]
     /// 读取表/视图的列定义与主键。返回列名、序号、逻辑类型、原始类型名、NULL 属性、
     /// 默认值状态与表达式原文、字符集/排序规则，以及按主键顺序排列的主键列。
-    /// 本版本 Driver SPI 不提供自增属性与列注释，因此不输出这两项（不伪造）。
+    /// 附加属性在驱动能可靠读取时返回。
     /// schema 非空时返回 capability.unsupported。
     async fn describe_table(
         &self,
@@ -296,7 +420,9 @@ impl SqarvoMcpServer {
         let call =
             ToolCall::from_request(self.context(), &request, schema::DESCRIBE_TABLE_TOOL_NAME)
                 .with_target(&params.connection_alias, optional_trimmed(&params.database));
-        match schema::describe_table(self.context().access(), &params).await {
+        match schema::describe_table_with_cancel(self.context().access(), &params, &request.ct)
+            .await
+        {
             Ok(output) => {
                 let column_count = i64::try_from(output.columns.len()).unwrap_or(i64::MAX);
                 call.succeeded(Some(column_count), Some(false)).await?;
@@ -307,18 +433,8 @@ impl SqarvoMcpServer {
     }
 
     #[tool]
-    /// 只返回表上的索引名称（主键索引名为 `PRIMARY`）。本版本 Driver SPI 不提供索引列组成、
-    /// 唯一性、索引类型与排序方式，因此这些字段不会被虚构。需要明细时用
-    /// `execute_readonly_query` 查询 `information_schema.STATISTICS`，例如：
-    ///
-    /// ```sql
-    /// SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, INDEX_TYPE
-    /// FROM information_schema.STATISTICS
-    /// WHERE TABLE_SCHEMA = 'app_db' AND TABLE_NAME = 'users'
-    /// ORDER BY INDEX_NAME, SEQ_IN_INDEX
-    /// ```
-    ///
-    /// 该查询受数据库账号权限约束。`schema` 非空时返回 `capability.unsupported`。
+    /// 读取表上的索引、唯一性、主键属性和有序索引键项。
+    /// schema 非空时返回 capability.unsupported。
     async fn list_indexes(
         &self,
         params: Parameters<schema::ListIndexesParams>,
@@ -327,7 +443,8 @@ impl SqarvoMcpServer {
         let params = params.0;
         let call = ToolCall::from_request(self.context(), &request, schema::LIST_INDEXES_TOOL_NAME)
             .with_target(&params.connection_alias, optional_trimmed(&params.database));
-        match schema::list_indexes(self.context().access(), &params).await {
+        match schema::list_indexes_with_cancel(self.context().access(), &params, &request.ct).await
+        {
             Ok(output) => {
                 call.succeeded(Some(output.count), Some(output.truncated))
                     .await?;
@@ -401,8 +518,7 @@ impl SqarvoMcpServer {
 
     #[tool]
     /// 对一条只读 SELECT / 只读 WITH 生成并执行 EXPLAIN，不执行原始查询。
-    /// V1 仅支持 MariaDB（普通 EXPLAIN，绝不使用 EXPLAIN ANALYZE）；SQLite 返回
-    /// `mcp.unsupported`（其等价物 EXPLAIN QUERY PLAN 语义不同，本版本不代执行）。
+    /// MariaDB 使用普通 EXPLAIN，SQLite 使用 EXPLAIN QUERY PLAN。
     /// SQL 与 `execute_readonly_query` 走同一只读策略；用户自带 EXPLAIN/ANALYZE 前缀
     /// 会被拒绝。限额与 `execute_readonly_query` 相同。同一连接串行执行。
     async fn explain_query(

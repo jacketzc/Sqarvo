@@ -20,6 +20,7 @@
 | M12 MCP V2 受控写入 | 待排 | 结构化 DML、预览、事务限额和审计，SQLite 与 DBA 管理的 MariaDB | 待发布计划确认 | 执行见 [M12](https://github.com/jacketzc/Sqarvo/milestone/13)，依赖 M11 |
 | M13 MCP V2.1 显式事务 | 待排 | 结构化多次写入、事务所有权、撤权排序、清理与双传输验收 | 待发布计划确认 | 执行见 [M13](https://github.com/jacketzc/Sqarvo/milestone/14)，依赖 M12 |
 | M14 MCP V2.2 受控 DDL | 待排 | 独立 Schema 执行、方言安全校验、预览、持久终态与双传输验收 | 待发布计划确认 | 执行见 [M14](https://github.com/jacketzc/Sqarvo/milestone/15)，依赖 M13 |
+| M15 MCP V2.3 Schema Intelligence | 待排 | 双驱动只读元数据、结构分页、原生 DDL 与计划、双传输验证 | 待发布计划确认 | 执行见 [M15](https://github.com/jacketzc/Sqarvo/milestone/16)，依赖 M14 |
 
 > 阶段编号按引入顺序分配（S8 为 2026-11-07 新增），**不代表交付顺序**：
 > S8（工作区 UI 重构）先于 S7（导入导出）交付，执行顺序见

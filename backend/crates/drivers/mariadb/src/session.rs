@@ -82,6 +82,7 @@ enum Command {
     /// 元数据读取（#45）：在会话连接上执行，避免另开连接看不到事务内未提交的 DDL。
     Metadata {
         request: crate::metadata::MetadataRequest,
+        read: Option<sqarvo_driver_api::metadata::MetadataRead>,
         reply: oneshot::Sender<Result<crate::metadata::MetadataReply>>,
     },
     /// 表数据浏览（#46）：与元数据一样在会话连接上执行，读的是同一个事务视图。
@@ -379,10 +380,22 @@ impl MariaDbSession {
         &self,
         request: crate::metadata::MetadataRequest,
     ) -> Result<crate::metadata::MetadataReply> {
+        self.metadata_call_tracked(request, None).await
+    }
+
+    pub(crate) async fn metadata_call_tracked(
+        &self,
+        request: crate::metadata::MetadataRequest,
+        read: Option<sqarvo_driver_api::metadata::MetadataRead>,
+    ) -> Result<crate::metadata::MetadataReply> {
         self.ensure_open()?;
         let (reply, wait) = oneshot::channel();
         self.sender
-            .send(Command::Metadata { request, reply })
+            .send(Command::Metadata {
+                request,
+                read,
+                reply,
+            })
             .await
             .map_err(|_| Self::closed_error())?;
         wait.await.map_err(|_| Self::closed_error())?
@@ -511,10 +524,28 @@ async fn run_session(
                 };
                 let _ = reply.send(result);
             }
-            Command::Metadata { request, reply } => {
-                // 元数据只读，不改变事务状态；失败也不升级事务状态
-                // （information_schema 查询失败不会让服务端回滚用户事务）。
-                let result = crate::metadata::handle(&mut conn, request).await;
+            Command::Metadata {
+                request,
+                read,
+                reply,
+            } => {
+                if reply.is_closed() {
+                    continue;
+                }
+                if let Some(read) = &read {
+                    state.set_active(read.id());
+                }
+                let result = if read
+                    .as_ref()
+                    .is_some_and(sqarvo_driver_api::metadata::MetadataRead::is_cancelled)
+                {
+                    Err(cancelled_error())
+                } else {
+                    crate::metadata::handle(&mut conn, request).await
+                };
+                if read.is_some() {
+                    state.clear_active();
+                }
                 let _ = reply.send(result);
             }
             Command::TableData { request, reply } => {
@@ -1711,6 +1742,10 @@ fn batch_limit(requested: Option<u32>) -> usize {
 impl DriverSession for MariaDbSession {
     fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    fn explain_format(&self) -> Option<sqarvo_driver_api::driver::ExplainFormat> {
+        Some(sqarvo_driver_api::driver::ExplainFormat::Standard)
     }
 
     fn metadata(&self) -> Option<&dyn sqarvo_driver_api::MetadataProvider> {

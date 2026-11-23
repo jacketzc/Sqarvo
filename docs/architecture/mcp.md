@@ -217,9 +217,9 @@ MCP 查询依靠 AST 策略和数据库账号的最小权限。[只读账号配�
 - fail-closed 边界是跟进合同：上述靠解析失败拒的形态在测试里逐条断言 `mcp.sql_parse`，上游
   一旦能解析它们测试就变红，届时**必须**在 `ast.rs` 补显式拒绝、不许顺手放行。
 
-`explain_query` 只有一条路：先过与 `execute_readonly_query` **完全相同**的策略，再由策略层拼
-`EXPLAIN ` 前缀。用户自带 `EXPLAIN` / `ANALYZE` 在顶层白名单就被拒，`ANALYZE SELECT`（MariaDB
-会真实执行）靠解析失败兜底拒。绝不构造 `EXPLAIN ANALYZE`。
+查询计划复用只读 AST 遍历、查询登记和执行限额。MariaDB 使用普通 EXPLAIN，
+SQLite 按自身方言解析并在驱动核对引擎语句边界。配置与方言取舍见
+[ADR 0040](../decisions/0040-mcp-schema-intelligence.md)。
 
 ## 8. 审计
 
@@ -278,11 +278,8 @@ MCP 查询依靠 AST 策略和数据库账号的最小权限。[只读账号配�
 4. **资源读取审计范围有限**。全局策略拒绝、名称歧义和需要重启记入审计。普通资源读取沿用 V1 行为。
 5. **懒连接的代价**：首个工具调用要付一次握手延迟（可能还要等用户解锁密钥环）。
 6. **同一连接串行**：并行度受 ADR 0008 约束，Agent 侧表现为排队；并发发生在不同档案的独立会话之间，而不是指望单连接并发。
-7. **`explain_query` 仅 MariaDB**：Driver SPI 没有 Explain 方法，V1 不扩 SPI，在 MCP 层按
-   驱动白名单（`EXPLAIN_DRIVERS = ["mariadb"]`，**V1 已知例外**）生成普通 `EXPLAIN`；SQLite
-   返回 `mcp.unsupported`（`EXPLAIN QUERY PLAN` 语义不同，本版不代执行）。后续应以驱动能力位取代。
-8. **`enabled_tools` 的未知名判定依赖 `config::V1_TOOL_NAMES`**：注册表与校验用同一份常量，
-   漂移会让合法配置被拒或多出无法发现的死名字。
+7. **查询计划保留方言输出**。SQLite 计划文本随引擎版本变化。
+8. **`enabled_tools` 的已知名称由 `config::tool_names` 汇总**，独立工具路由遵循同一配置。
 9. **`outputSchema` 里单元格是空对象 schema**：`rows` 的单元格写成 `{"items":{"items":{}}}`
    而不是 derive 形态的布尔 `true`——JSON Schema 2020-12 里布尔合法，但 MCP 的 outputSchema
    语境要求对象形态（Inspector `--strict` 会判 invalid）。运行时序列化不受影响。
@@ -394,3 +391,15 @@ SQLite 在 COMMIT 前再校验一次。共享锁不覆盖引擎应答等待。
 或进程重启后自动重复；应答已成功、审计故障时仍返回成功与警告。
 主机范围和故障核查见 [ADR 0039](../decisions/0039-mcp-controlled-ddl.md)
 与 [V2.2 工具参考](../api/mcp-tools.md#v22-controlled-ddl)。
+
+
+## V2.3 Schema Intelligence
+
+MCP 通过新增的类型化 Driver SPI 读取两端的元数据。新读取在原会话执行锁内运行，
+使用同一 `QueryRegistry`、并发许可和请求截止时间。取消时，未开始的驱动指令停止派发，
+已派发的指令经驱动取消，服务端在清理结束后释放许可。全局授权同时覆盖旧工具和
+V2.3 工具。新工具使用和原工具相同的 stdio 与 HTTP 路由。
+
+`get_database_schema` 使用数据库侧目录分页，每页只读取有界数量对象的可选详情。
+旧 gRPC 的 `MetadataService`、资源 URI 和已有写入状态机继续按原契约运行。
+工具语义和方言限制见 [V2.3 工具参考](../api/mcp-tools.md#v23-schema-intelligence)。

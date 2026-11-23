@@ -4,10 +4,12 @@
 //! 模糊的字段。这里保留各自的层级，由驱动决定哪些字段有值。
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
-use sqarvo_common::{Error, ErrorCode, Result, SessionId};
+use sqarvo_common::{Error, ErrorCode, QueryId, Result, SessionId};
 
 use crate::table_data::PrimaryKey;
 use crate::value::ColumnMeta;
@@ -415,11 +417,105 @@ pub trait MetadataProvider: Send + Sync {
         page: &PageRequest,
     ) -> Result<Page<ObjectNode>>;
 
+    /// Read a database-side bounded table catalog page in binary name order.
+    async fn schema_objects(
+        &self,
+        _catalog: &ObjectRef,
+        _page: &SchemaObjectPage,
+        _read: &MetadataRead,
+    ) -> Result<Vec<ObjectNode>> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供 Schema 目录分页",
+        ))
+    }
+
+    /// Read declared foreign keys. An empty result means the object has none.
+    async fn foreign_keys(
+        &self,
+        _object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<Vec<ForeignKey>> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供外键查询",
+        ))
+    }
+
+    /// Read ordered index key parts.
+    async fn index_details(
+        &self,
+        _object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<Vec<IndexDetail>> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供此元数据能力",
+        ))
+    }
+
+    /// Read existing engine statistics without collecting new statistics.
+    async fn table_statistics(
+        &self,
+        _object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<TableStatistics> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供此元数据能力",
+        ))
+    }
+
+    /// Read database-native DDL for a table-like object.
+    async fn native_table_ddl(
+        &self,
+        _object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<NativeTableDdl> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供此元数据能力",
+        ))
+    }
+
+    /// Read columns and optional table-definition attributes.
+    async fn describe_columns(
+        &self,
+        _object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<Vec<DescribedColumn>> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供此元数据能力",
+        ))
+    }
+
+    /// Read declared constraints and describe any coverage gaps.
+    async fn table_constraints(
+        &self,
+        _object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<TableConstraints> {
+        Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "该驱动未提供此元数据能力",
+        ))
+    }
+
     /// 列出列信息。
     async fn columns(&self, object: &ObjectRef) -> Result<Vec<ColumnMeta>>;
 
     /// 获取 DDL；数据库不提供时返回 `capability.unsupported`。
     async fn ddl(&self, object: &ObjectRef) -> Result<Ddl>;
+
+    /// Read a primary key as part of a cancellable metadata request.
+    async fn primary_key_for_read(
+        &self,
+        object: &ObjectRef,
+        _read: &MetadataRead,
+    ) -> Result<PrimaryKey> {
+        self.primary_key(object).await
+    }
 
     /// 读取主键定义（ADR 0017 的 `GetPrimaryKey`）。
     ///
@@ -460,6 +556,30 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<Page<ObjectNode>> {
         Err(unsupported_metadata_filtering())
     }
+}
+
+/// A database-declared relationship with column pairs in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignKey {
+    /// Constraint name when exposed by the engine.
+    pub name: Option<String>,
+    /// Referenced object.
+    pub target: QualifiedName,
+    /// Column pairs in declaration order.
+    pub columns: Vec<ForeignKeyColumn>,
+    /// Database-declared update action.
+    pub on_update: String,
+    /// Database-declared delete action.
+    pub on_delete: String,
+}
+
+/// One position in a foreign key. An implicit target column may be unresolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignKeyColumn {
+    /// Referencing column.
+    pub local: String,
+    /// Referenced column, when directly known or resolved.
+    pub referenced: Option<String>,
 }
 
 /// 元数据过滤不支持的统一错误。
@@ -545,5 +665,188 @@ mod tests {
             .effective_page_size(),
             MAX_PAGE_SIZE
         );
+    }
+}
+
+/// Database-native index metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexDetail {
+    /// Database index name.
+    pub name: String,
+    /// Whether index keys are unique.
+    pub unique: bool,
+    /// Whether the index implements a primary key.
+    pub primary: bool,
+    /// Native index type, when reported.
+    pub index_type: Option<String>,
+    /// Native index origin, when reported.
+    pub origin: Option<String>,
+    /// Key parts in index order.
+    pub parts: Vec<IndexPart>,
+}
+
+/// One ordered index key part. A missing column can be an expression or rowid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexPart {
+    /// Column name when the key part is a named column.
+    pub name: Option<String>,
+    /// Key part kind.
+    pub kind: &'static str,
+    /// Sort direction, when reported.
+    pub sort_order: Option<&'static str>,
+    /// Indexed prefix length, when reported.
+    pub prefix_length: Option<u64>,
+}
+
+/// A column and its optional table-definition attributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedColumn {
+    /// Existing column metadata.
+    pub column: ColumnMeta,
+    /// Native identity mechanism.
+    pub identity: Option<&'static str>,
+    /// Column comment.
+    pub comment: Option<String>,
+    /// Generated column state, when known.
+    pub generated: Option<bool>,
+    /// Native generation expression.
+    pub generation_expression: Option<String>,
+}
+
+/// A constraint identified by the database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constraint {
+    /// Constraint name when independently known.
+    pub name: Option<String>,
+    /// Native declaration kind.
+    pub kind: ConstraintKind,
+    /// Ordered columns, if reported for this constraint.
+    pub columns: Option<Vec<String>>,
+    /// Expression for a CHECK constraint, if available.
+    pub check_expression: Option<String>,
+}
+
+/// Constraint kinds common to the built-in drivers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstraintKind {
+    /// PRIMARY KEY.
+    PrimaryKey,
+    /// UNIQUE.
+    Unique,
+    /// CHECK.
+    Check,
+    /// Another engine-reported constraint kind.
+    Other(String),
+}
+
+/// Declared constraints. Foreign keys use the same representation as foreign-key discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableConstraints {
+    /// Primary, unique, check and other constraints.
+    pub constraints: Vec<Constraint>,
+    /// Foreign keys.
+    pub foreign_keys: Vec<ForeignKey>,
+    /// Static warnings for incomplete coverage.
+    pub warnings: Vec<&'static str>,
+}
+
+/// Upper bound for a native definition delivered to a schema caller.
+pub const NATIVE_TABLE_DDL_LIMIT: u32 = 1024 * 1024;
+
+/// Database-native definition and known completeness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeTableDdl {
+    /// Engine-specific table-like kind.
+    pub kind: &'static str,
+    /// Database dialect.
+    pub dialect: &'static str,
+    /// Native DDL, omitted if it exceeds the driver response cap.
+    pub ddl: Option<Ddl>,
+    /// Whether the native source is known to be complete.
+    pub complete: bool,
+}
+
+/// Existing per-table engine statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableStatistics {
+    /// Available row count.
+    pub row_count: Option<u64>,
+    /// Whether an available count is exact.
+    pub row_count_exact: bool,
+    /// Engine-provided data allocation in bytes.
+    pub data_bytes: Option<u64>,
+    /// Engine-provided index allocation in bytes.
+    pub index_bytes: Option<u64>,
+    /// Catalog source.
+    pub source: &'static str,
+}
+
+/// Bounded database-side catalog request.
+#[derive(Debug, Clone)]
+pub struct SchemaObjectPage {
+    /// Exact table name filter, with at most 64 entries.
+    pub tables: Vec<String>,
+    /// Last delivered table name, exclusive.
+    pub after: Option<String>,
+    /// Requested row limit, including any continuation probe row.
+    pub limit: u32,
+}
+
+impl SchemaObjectPage {
+    /// Validate hard bounds even for callers outside MCP.
+    pub fn validate(&self) -> Result<()> {
+        if (1..=65).contains(&self.limit)
+            && self.tables.len() <= 64
+            && self
+                .tables
+                .iter()
+                .all(|name| !name.is_empty() && name.len() <= 1024)
+            && self
+                .after
+                .as_ref()
+                .is_none_or(|name| !name.is_empty() && name.len() <= 1024 * 1024)
+        {
+            Ok(())
+        } else {
+            Err(Error::invalid_argument(
+                ErrorCode::CONFIG_INVALID,
+                "Schema 分页参数超出范围",
+            ))
+        }
+    }
+}
+
+/// Identity and cancellation state of a read-only metadata operation.
+#[derive(Debug, Clone)]
+pub struct MetadataRead {
+    id: QueryId,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl MetadataRead {
+    /// Track work under an already registered query ID.
+    #[must_use]
+    pub fn new(id: QueryId) -> Self {
+        Self {
+            id,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Query identity used by the driver cancellation channel.
+    #[must_use]
+    pub const fn id(&self) -> QueryId {
+        self.id
+    }
+
+    /// Prevent a queued driver command from starting.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether this operation has been cancelled.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
     }
 }

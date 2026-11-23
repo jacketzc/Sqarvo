@@ -231,6 +231,13 @@ impl SqarvoMcpServer {
             .chain(crate::tools::transaction::descriptions())
             .chain(crate::tools::ddl::descriptions())
             .filter(|tool| policy.allows(tool.name.as_ref()))
+            .map(|tool| {
+                if config::SCHEMA_TOOL_NAMES.contains(&tool.name.as_ref()) {
+                    tool.with_annotations(rmcp::model::ToolAnnotations::new().read_only(true))
+                } else {
+                    tool
+                }
+            })
             .collect()
     }
 }
@@ -291,6 +298,7 @@ impl ServerHandler for SqarvoMcpServer {
         }
         if let Some(tool) = config::V1_TOOL_NAMES
             .iter()
+            .chain(&config::SCHEMA_TOOL_NAMES)
             .find(|name| **name == request.name)
             && let Err(error) = self
                 .context
@@ -603,7 +611,7 @@ mod tests {
         assert_eq!(visible, vec!["describe_table", "list_tables"]);
         assert_eq!(
             server.tool_router.list_all().len(),
-            crate::config::V1_TOOL_NAMES.len(),
+            crate::config::V1_TOOL_NAMES.len() + crate::config::SCHEMA_TOOL_NAMES.len(),
             "路由表仍是静态的：过滤只发生在播发层"
         );
         // 被禁用的工具仍可被路由到（执行期由 ensure_enabled 拒绝），
