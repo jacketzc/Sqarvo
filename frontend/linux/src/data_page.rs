@@ -2841,7 +2841,7 @@ impl DataPage {
         self.update_filter_state();
         // 条件删光等于「清空筛选」：下一次应用即可恢复全表。
         if self.fs_filter_draft.borrow().is_empty() {
-            self.set_status(l10n::t("data_page.filter_condition_removed"), "normal");
+            self.note_action(l10n::t("data_page.filter_condition_removed"));
         }
     }
 
@@ -3059,16 +3059,13 @@ impl DataPage {
             "[data] t=+{}ms 应用筛选与排序：{condition_count} 条条件（AND）· {sort_count} 个排序键 · 已回到第 1 页",
             crate::qa::elapsed_ms()
         );
-        self.set_status(
-            &l10n::tf(
-                "data_page.filter_applied",
-                &[
-                    ("condition_count", condition_count.to_string()),
-                    ("sort_count", sort_count.to_string()),
-                ],
-            ),
-            "normal",
-        );
+        self.note_action(&l10n::tf(
+            "data_page.filter_applied",
+            &[
+                ("condition_count", condition_count.to_string()),
+                ("sort_count", sort_count.to_string()),
+            ],
+        ));
     }
 
     /// 「清空条件与排序」：只清草稿，仍需点「应用」才生效（避免一按就改掉正在看的数据）。
@@ -3082,7 +3079,7 @@ impl DataPage {
         self.render_sort_keys();
         self.fs_error.set_visible(false);
         self.update_filter_state();
-        self.set_status(l10n::t("data_page.filter_sort_cleared"), "normal");
+        self.note_action(l10n::t("data_page.filter_sort_cleared"));
     }
 
     /// 分页器动作（状态栏按钮 / 快捷键）。
@@ -3238,10 +3235,10 @@ impl DataPage {
         for warning in &warnings {
             eprintln!("[data] 新增行提示：{warning}");
         }
-        self.set_status(
-            &l10n::tf("data_page.insert_started", &[("summary", summary)]),
-            "normal",
-        );
+        self.note_action(&l10n::tf(
+            "data_page.insert_started",
+            &[("summary", summary)],
+        ));
         self.update_dirty_label();
         self.update_buttons();
         self.qa_fill_insert();
@@ -3350,7 +3347,7 @@ impl DataPage {
             summary
         );
         self.errors_scroll.set_visible(false);
-        self.set_status(&summary, "normal");
+        self.note_action(&summary);
         self.update_dirty_label();
         self.update_buttons();
     }
@@ -3875,7 +3872,7 @@ impl DataPage {
         let options = BeginOptions::new(read_only, isolation);
         eprintln!("[data] {}", begin_summary(read_only, isolation));
         self.set_busy(true);
-        self.set_status(&begin_summary(read_only, isolation), "normal");
+        self.note_action(&begin_summary(read_only, isolation));
         (self.callbacks.begin)(options);
     }
 
@@ -6668,8 +6665,10 @@ impl DataPage {
     /// 可见过程消息保持为空。
     ///
     /// 判断口径（判断依据写在这里，改口径先改这一处）：
-    /// - **收进圆点**：事实已经发生的操作结果——「第 N 行已标记删除（提交前可撤销）」
-    ///   「已放弃未提交的更改（含新增行）」。它们回答「刚才那一下做了什么」，用户想复核
+    /// - **收进圆点**：事实已经发生、且用户不需要当场行动的操作结果——「第 N 行已标记删除
+    ///   （提交前可撤销）」「已放弃未提交的更改（含新增行）」，以及普通提示（筛选应用 /
+    ///   清空「筛选与排序已应用…」「条件与排序已清空…」、新增行开始「新行：…」、新行单元格
+    ///   改动摘要、开始事务「开始事务：…」）。它们回答「刚才那一下做了什么」，用户想复核
     ///   时悬停圆点即可；留在动作行上只是占位，还把 960 宽下有限的过程消息位挤掉。
     /// - **保持可见**：「正在提交…」这类进行中消息（价值在时效，说完就该消失），
     ///   以及 warning / error（用户必须立刻看到原因）——它们不走这个入口，照旧
