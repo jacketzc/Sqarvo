@@ -1402,6 +1402,16 @@ fn map_declared_type(declared: Option<&str>) -> ColumnType {
             bits: 8,
             unsigned: false,
         }
+    } else if matches!(
+        upper
+            .split_once('(')
+            .map_or(upper.as_str(), |(base, _)| base.trim()),
+        "DATE" | "DATETIME" | "TIMESTAMP"
+    ) {
+        // 与 metadata.rs::declared_type 同一口径：ADR 0009 规定日期类以 TEXT 存储时
+        // 返回 Text + 原始类型名，不猜测解析。声明类型报 Text（而非 Unsupported），
+        // 结果集里的这一列才不会被判成不可编辑；与 map_value 的 Value::Text 一致。
+        ColumnType::Text { length: None }
     } else if upper.contains("INT") {
         ColumnType::Integer {
             bits: 64,
@@ -1790,5 +1800,17 @@ mod type_mapping_tests {
                 type_name: String::new(),
             }
         );
+    }
+
+    #[test]
+    fn declared_datetime_maps_to_text_in_result_sets() {
+        // 与 metadata.rs::declared_type 同一口径：ADR 0009 规定日期类以 TEXT 存储时
+        // 按 Text 返回，不猜测解析。声明类型报 Text 而非 Unsupported，结果集里的
+        // create_time/update_time 才不会被判成不可编辑。
+        let expected = ColumnType::Text { length: None };
+        assert_eq!(map_declared_type(Some("DATE")), expected);
+        assert_eq!(map_declared_type(Some("DATETIME")), expected);
+        assert_eq!(map_declared_type(Some("TIMESTAMP")), expected);
+        assert_eq!(map_declared_type(Some("datetime(6)")), expected);
     }
 }

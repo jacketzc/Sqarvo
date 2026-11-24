@@ -20,8 +20,12 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 | TEXT | `Text(String)`（非法 UTF-8 时退回 `Bytes`，不用 `U+FFFD` 静默替换） |
 | BLOB | `Bytes` |
 
-声明类型写入 `ColumnMeta.original_type_name`。`NUMERIC` / `DECIMAL` / 日期类**不伪造**具体类型：
-它们可能以 INTEGER/REAL/TEXT 存储，统一按 `ColumnType::Unsupported` 返回并保留声明原文（ADR 0009）。
+声明类型写入 `ColumnMeta.original_type_name`。`NUMERIC` / `DECIMAL` **不伪造** `Decimal`：
+它们可能以 INTEGER/REAL/TEXT 存储，按 `ColumnType::Unsupported` 返回并保留声明原文（ADR 0009）。
+日期类声明（`DATE` / `DATETIME` / `TIMESTAMP`）按 `ColumnType::Text` 返回并保留声明原文：
+ADR 0009 规定日期值以 TEXT 存储时按 `Text` 返回、不猜测解析，声明类型取同一口径，与
+`map_value` 实际返回的 `Value::Text` 一致；若按 `Unsupported` 返回，前端会把该列判成
+「类型不可编辑」，双击 / 新增行都不弹编辑框（用户实测 `local_component.create_time`）。
 超过 64 KiB 的文本/二进制按 ADR 0007 截断并置 `Cell::truncated`。
 
 声明为 `BOOL` / `BOOLEAN` 的列按 `ColumnType::Integer { bits: 8 }` 返回（与 MariaDB 的

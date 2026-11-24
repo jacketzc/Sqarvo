@@ -1775,6 +1775,11 @@ fn declared_type(declared: &str) -> ColumnType {
             bits: 8,
             unsigned: false,
         }
+    } else if matches!(upper.as_str(), "DATE" | "DATETIME" | "TIMESTAMP") {
+        // ADR 0009：日期类以 TEXT 存储时返回 Text + 原始类型名，不猜测解析。
+        // 声明类型按同一口径报 Text（而非 Unsupported），前端才能把它当可编辑文本：
+        // report Text 与 `map_value` 实际返回的 `Value::Text` 一致，不会误导编辑器。
+        ColumnType::Text { length: None }
     } else if upper.contains("INT") {
         ColumnType::Integer {
             bits: 64,
@@ -1878,6 +1883,18 @@ mod tests {
         assert_eq!(declared_type("BOOLEAN"), expected);
         assert_eq!(declared_type("bool"), expected);
         assert_eq!(declared_type("BOOLEAN(1)"), expected);
+    }
+
+    #[test]
+    fn declared_datetime_is_text_so_it_stays_editable() {
+        // 回归：create_time/update_time 声明为 DATETIME 时曾落到 Unsupported，前端
+        // `type_editable()` 判 false，双击单元格不弹编辑框。ADR 0009 规定日期类以 TEXT
+        // 存储时按 Text + 原始类型名返回，这里声明类型取同一口径，既诚实又可编辑。
+        let expected = ColumnType::Text { length: None };
+        assert_eq!(declared_type("DATE"), expected);
+        assert_eq!(declared_type("DATETIME"), expected);
+        assert_eq!(declared_type("TIMESTAMP"), expected);
+        assert_eq!(declared_type("datetime(6)"), expected);
     }
 
     #[test]

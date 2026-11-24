@@ -232,20 +232,23 @@ async fn date_like_columns_return_text_with_original_type_name() {
         .await;
 
     let (summary, rows) = session.query("SELECT d, ts, flag FROM t").await;
-    // 声明类型原样保留，且不猜测解析成日期/时间戳。
+    // 声明类型原样保留，且不猜测解析成日期/时间戳；声明类型报 Text 与值的 Value::Text
+    // 一致（ADR 0009），也让前端把该列判为可编辑（否则 create_time 双击不弹编辑框）。
     assert_eq!(
         summary.columns[0].original_type_name.as_deref(),
         Some("DATE")
     );
     assert_eq!(
         summary.columns[0].column_type,
-        ColumnType::Unsupported {
-            type_name: "DATE".to_owned()
-        }
+        ColumnType::Text { length: None }
     );
     assert_eq!(
         summary.columns[1].original_type_name.as_deref(),
         Some("DATETIME")
+    );
+    assert_eq!(
+        summary.columns[1].column_type,
+        ColumnType::Text { length: None }
     );
     assert_eq!(text_at(&rows[0], 0), "2026-11-04");
     assert_eq!(text_at(&rows[0], 1), "2026-11-04 12:34:56");
