@@ -354,8 +354,8 @@ JSONL 审计。普通资源读取沿用 V1 行为。
 | `max_concurrency` | usize | `2` | `[1, 4]` | 同上 |
 
 `hard_max_rows=1000`、`1 MiB`、`10 s`、并发 `4` 都是代码常量，**配置无法放宽**——这是「不信任
-Agent 输入」与服务端可保证上界的唯一来源。每个被钳制的字段都会在启动日志里点名（旧文案是中文，
-形如「`query_limits.max_rows = 50000` 超出硬上限，已钳制为 1000」）。
+Agent 输入」与服务端可保证上界的唯一来源。每个被钳制的字段都会在启动日志里点名，例如
+`query_limits.max_rows = 50000 exceeds the hard limit and was clamped to 1000`。
 
 ### 6.4 服务配置示例
 

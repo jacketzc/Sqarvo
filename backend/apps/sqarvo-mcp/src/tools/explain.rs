@@ -73,7 +73,7 @@ where
                     None => {
                         return Err(Error::unsupported(
                             ErrorCode::MCP_UNSUPPORTED,
-                            "当前驱动未提供只读查询计划",
+                            "The current driver does not provide read-only query plans",
                         ));
                     }
                 };

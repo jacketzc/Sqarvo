@@ -160,7 +160,10 @@ async fn list_rejects_unknown_levels_tokens_and_oversized_pages_are_clamped() {
         )
         .await
         .expect_err("越界偏移量必须失败");
-    assert!(error.message().contains("超出数据范围"), "{error}");
+    assert!(
+        error.message().contains("outside the data range"),
+        "{error}"
+    );
 
     // 页大小超上限被钳制，而不是报错或照单返回。
     let page = provider
@@ -219,7 +222,7 @@ async fn columns_preserve_declared_type_and_nullability() {
     let columns = provider
         .columns(&object_ref(&*session, "items", ObjectKind::Table))
         .await
-        .expect("读取列信息");
+        .expect("Read column information");
 
     assert_eq!(columns.len(), 5);
     assert_eq!(columns[0].name, "id");
@@ -274,7 +277,7 @@ async fn columns_expose_default_value_and_only_what_sqlite_knows() {
     let columns = provider
         .columns(&object_ref(&*session, "defaults", ObjectKind::Table))
         .await
-        .expect("读取列信息");
+        .expect("Read column information");
     assert_eq!(columns.len(), 7);
 
     let by_name = |name: &str| {
@@ -564,7 +567,8 @@ async fn ddl_reports_internal_objects_without_stored_text() {
     assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
     assert_eq!(error.category(), ErrorCategory::Unsupported);
     assert!(
-        error.message().contains("内部对象") && error.message().contains("sqlite_master.sql"),
+        error.message().contains("internal object")
+            && error.message().contains("sqlite_master.sql"),
         "文案必须说清是内部对象没有原文：{error}"
     );
 }

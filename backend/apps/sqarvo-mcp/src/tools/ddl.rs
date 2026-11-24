@@ -143,7 +143,7 @@ pub(crate) async fn call(
             Error::new(
                 ErrorCode::MCP_CONNECTION_DENIED,
                 ErrorCategory::PermissionDenied,
-                "缺少已认证的 MCP 会话",
+                "An authenticated MCP session is required",
             )
         })?;
         tokio::time::timeout(
@@ -158,7 +158,7 @@ pub(crate) async fn call(
             Error::new(
                 ErrorCode::MCP_QUERY_TIMEOUT,
                 ErrorCategory::Timeout,
-                "读取 DDL 授权超时",
+                "Reading DDL authorization timed out",
             )
         })??;
         server.config().tools().require(tool)?;

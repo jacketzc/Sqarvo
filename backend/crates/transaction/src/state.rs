@@ -90,7 +90,7 @@ impl Transaction {
             TransactionState::Active => Ok(()),
             TransactionState::Failed => Err(Error::failed_precondition(
                 ErrorCode::TRANSACTION_FAILED,
-                "事务已失败，只能回滚",
+                "The transaction failed and can only be rolled back",
             )),
         }
     }

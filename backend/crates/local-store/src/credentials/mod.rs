@@ -172,7 +172,7 @@ pub fn validate_reference(reference: &str) -> Result<()> {
 fn invalid_reference() -> Error {
     Error::invalid_argument(
         ErrorCode::CONFIG_INVALID,
-        "凭据引用不合法：必须形如 sqarvo:conn/<uuid-v4>",
+        "Invalid credential reference. Expected sqarvo:conn/<uuid-v4>",
     )
 }
 
@@ -180,7 +180,7 @@ fn invalid_reference() -> Error {
 pub(crate) fn not_found_error() -> Error {
     Error::not_found(
         ErrorCode::CREDENTIAL_NOT_FOUND,
-        "系统凭据库中不存在该凭据引用（密码可能已被用户删除）",
+        "The credential reference was not found in the system credential store. The password may have been deleted",
     )
 }
 
@@ -200,7 +200,7 @@ pub(crate) fn validate_profile(profile: &str) -> Result<()> {
     } else {
         Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "用户档案名不合法：不能为空、不能超过 64 字节、不能包含控制字符",
+            "Invalid profile name. Use 1 to 64 bytes with no control characters",
         ))
     }
 }
@@ -214,15 +214,21 @@ pub struct UnavailableCredentialStore;
 
 impl CredentialStore for UnavailableCredentialStore {
     fn get(&self, _reference: &str) -> Result<Secret> {
-        Err(unavailable_store_error("无法读取数据库凭据"))
+        Err(unavailable_store_error(
+            "Failed to read the database credential",
+        ))
     }
 
     fn set(&self, _reference: &str, _secret: &Secret) -> Result<()> {
-        Err(unavailable_store_error("无法保存数据库凭据"))
+        Err(unavailable_store_error(
+            "Failed to save the database credential",
+        ))
     }
 
     fn delete(&self, _reference: &str) -> Result<()> {
-        Err(unavailable_store_error("无法删除数据库凭据"))
+        Err(unavailable_store_error(
+            "Failed to delete the database credential",
+        ))
     }
 
     fn implementation(&self) -> &'static str {
@@ -234,7 +240,7 @@ fn unavailable_store_error(action: &str) -> Error {
     Error::new(
         ErrorCode::CREDENTIAL_UNAVAILABLE,
         ErrorCategory::Unavailable,
-        format!("当前环境没有可用的系统凭据存储，{action}"),
+        format!("No system credential store is available in the current environment. {action}"),
     )
 }
 
@@ -257,7 +263,7 @@ pub fn open_credential_store(profile: &str) -> Arc<dyn CredentialStore> {
         Err(error) => tracing::warn!(
             code = %error.code(),
             category = %error.category(),
-            "系统凭据存储不可用，凭据操作将如实报错：{error}"
+            "The system credential store is unavailable. Credential operations will fail: {error}"
         ),
     }
 
@@ -270,14 +276,16 @@ pub fn open_credential_store(profile: &str) -> Arc<dyn CredentialStore> {
         Err(error) => tracing::warn!(
             code = %error.code(),
             category = %error.category(),
-            "Windows 凭据管理器不可用，凭据操作将如实报错：{error}"
+            "Windows Credential Manager is unavailable. Credential operations will fail: {error}"
         ),
     }
 
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = profile;
-        tracing::warn!("当前平台尚未实现系统凭据存储，凭据操作将如实报错");
+        tracing::warn!(
+            "System credential storage is not implemented on this platform. Credential operations will fail"
+        );
     }
 
     Arc::new(UnavailableCredentialStore)
@@ -349,7 +357,7 @@ mod tests {
             // 用户名甚至密码。
             assert_eq!(
                 error.to_string(),
-                "凭据引用不合法：必须形如 sqarvo:conn/<uuid-v4> [config.invalid]"
+                "Invalid credential reference. Expected sqarvo:conn/<uuid-v4> [config.invalid]"
             );
         }
     }

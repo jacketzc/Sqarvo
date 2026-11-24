@@ -198,13 +198,13 @@ fn scalar(connection: &Connection, sql: &str, params: impl Params) -> Result<boo
 }
 
 fn metadata_error(error: rusqlite::Error) -> Error {
-    crate::error::map_sqlite_error(error, "SQLite DDL 元数据检查失败")
+    crate::error::map_sqlite_error(error, "SQLite DDL metadata check failed")
 }
 
 fn unsupported() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        "无法验证 SQLite 对象结构或依赖",
+        "Could not verify the SQLite object schema or dependencies",
     )
 }
 

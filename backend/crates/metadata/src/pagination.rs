@@ -13,20 +13,23 @@ pub use sqarvo_driver_api::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page, PageRequest}
 /// 解析失败一律视为 `invalid_argument`，而不是默默返回第一页。
 pub fn paginate<T>(items: Vec<T>, request: &PageRequest) -> Result<Page<T>> {
     let page_size = usize::try_from(request.effective_page_size()).map_err(|_| {
-        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "分页大小超出可表示范围")
+        Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "The page size is outside the representable range",
+        )
     })?;
 
     let offset = match request.page_token.as_deref() {
         None | Some("") => 0,
-        Some(token) => token
-            .parse::<usize>()
-            .map_err(|_| Error::invalid_argument(ErrorCode::CONFIG_INVALID, "分页 token 非法"))?,
+        Some(token) => token.parse::<usize>().map_err(|_| {
+            Error::invalid_argument(ErrorCode::CONFIG_INVALID, "Invalid pagination token")
+        })?,
     };
 
     if offset > items.len() {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "分页 token 超出数据范围",
+            "The pagination token is outside the data range",
         ));
     }
 
@@ -120,7 +123,10 @@ where
     F: Fn(&T) -> &str,
 {
     let page_size = usize::try_from(request.effective_page_size()).map_err(|_| {
-        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "分页大小超出可表示范围")
+        Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "The page size is outside the representable range",
+        )
     })?;
     let fingerprint = fingerprint(items.iter().map(key));
 
@@ -167,36 +173,38 @@ fn parse_snapshot_token(
         None => (SNAPSHOT_TOKEN_PREFIX, 3),
     };
     if parts.len() != expected_parts {
-        return Err(invalid_token("分页 token 格式非法"));
+        return Err(invalid_token("Invalid pagination token format"));
     }
     let (prefix, offset, snapshot) = (parts[0], parts[1], parts[2]);
     if prefix != expected_prefix {
-        return Err(invalid_token("分页 token 版本不受支持"));
+        return Err(invalid_token("Unsupported pagination token version"));
     }
     if let Some(expected_tag) = tag {
         let token_tag = u64::from_str_radix(parts[3], 16)
-            .map_err(|_| invalid_token("分页 token 的过滤条件标签非法"))?;
+            .map_err(|_| invalid_token("Invalid pagination token filter tag"))?;
         let expected_tag = u64::from_str_radix(expected_tag, 16)
-            .map_err(|_| invalid_token("分页 token 的过滤条件标签非法"))?;
+            .map_err(|_| invalid_token("Invalid pagination token filter tag"))?;
         if token_tag != expected_tag {
             return Err(invalid_token(
-                "分页 token 与本次过滤条件不一致，请从第一页重新搜索",
+                "The pagination token does not match the current filter. Restart the search from the first page",
             ));
         }
     }
     let offset = offset
         .parse::<usize>()
-        .map_err(|_| invalid_token("分页 token 偏移量非法"))?;
-    let snapshot =
-        u64::from_str_radix(snapshot, 16).map_err(|_| invalid_token("分页 token 快照指纹非法"))?;
+        .map_err(|_| invalid_token("Invalid pagination token offset"))?;
+    let snapshot = u64::from_str_radix(snapshot, 16)
+        .map_err(|_| invalid_token("Invalid pagination token snapshot fingerprint"))?;
     if offset > len {
-        return Err(invalid_token("分页 token 超出数据范围"));
+        return Err(invalid_token(
+            "The pagination token is outside the data range",
+        ));
     }
     if snapshot != fingerprint {
         return Err(Error::new(
             ErrorCode::from_static("metadata.snapshot_changed"),
             sqarvo_common::ErrorCategory::FailedPrecondition,
-            "对象列表在翻页期间发生变化，请从第一页重新读取",
+            "The object list changed during pagination. Restart from the first page",
         ));
     }
     Ok(offset)

@@ -96,18 +96,18 @@ struct Preview {
 
 pub(crate) fn decode(tool: &str, arguments: Map<String, Value>) -> Result<Request> {
     if serde_json::to_vec(&arguments).map_or(true, |json| json.len() > MAX_INPUT) {
-        return Err(invalid("DDL 参数超过大小限制"));
+        return Err(invalid("DDL arguments exceed the size limit"));
     }
     let (tool, mut arguments, preview) = if tool == "preview_schema_change" {
         let input: Preview = serde_json::from_value(Value::Object(arguments))
-            .map_err(|_| invalid("DDL 预览参数无效"))?;
+            .map_err(|_| invalid("Invalid DDL preview arguments"))?;
         (input.operation, input.arguments, true)
     } else {
         (tool.to_owned(), arguments, false)
     };
     let id = if preview {
         if arguments.contains_key("operation_id") {
-            return Err(invalid("预览不接受 operation_id"));
+            return Err(invalid("A preview does not accept operation_id"));
         }
         None
     } else {
@@ -118,17 +118,19 @@ pub(crate) fn decode(tool: &str, arguments: Map<String, Value>) -> Result<Reques
                 .filter(|id| {
                     id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122
                 })
-                .ok_or_else(|| invalid("operation_id 必须是 UUIDv7"))?,
+                .ok_or_else(|| invalid("operation_id must be a UUIDv7"))?,
         )
     };
     let alias = take_string(&mut arguments, "connection_alias")?;
     if alias.trim() != alias || alias.len() > 256 || alias.chars().any(char::is_control) {
-        return Err(invalid("connection_alias 无效"));
+        return Err(invalid("Invalid connection_alias"));
     }
     let database = take_string(&mut arguments, "database")?;
     let table = take_string(&mut arguments, "table")?;
     if arguments.get("new_table").and_then(Value::as_str) == Some(table.as_str()) {
-        return Err(invalid("DDL 重命名要求新名称不同"));
+        return Err(invalid(
+            "The new DDL object name must differ from the current name",
+        ));
     }
     name(&database)?;
     name(&table)?;
@@ -139,7 +141,7 @@ pub(crate) fn decode(tool: &str, arguments: Map<String, Value>) -> Result<Reques
                 action,
                 Some("add_column" | "drop_column" | "rename_column" | "rename_table")
             ) {
-                return Err(unsupported("不支持该 ALTER TABLE 动作"));
+                return Err(unsupported("This ALTER TABLE action is not supported"));
             }
         }
         "create_table" | "drop_table" | "create_index" | "drop_index" => {
@@ -147,13 +149,13 @@ pub(crate) fn decode(tool: &str, arguments: Map<String, Value>) -> Result<Reques
                 .insert("action".into(), Value::String(tool))
                 .is_some()
             {
-                return Err(invalid("DDL 参数含多余的 action 字段"));
+                return Err(invalid("DDL arguments contain an unexpected action field"));
             }
         }
-        _ => return Err(unsupported("不支持该 DDL 工具")),
+        _ => return Err(unsupported("This DDL tool is not supported")),
     }
     let input = serde_json::from_value(Value::Object(arguments))
-        .map_err(|_| invalid("DDL 参数不符合结构化契约"))?;
+        .map_err(|_| invalid("DDL arguments do not match the structured contract"))?;
     Ok(Request {
         alias,
         id,
@@ -189,7 +191,9 @@ fn normalize(input: Input) -> Result<Action> {
                 || column.default.is_some()
                 || column.nullable == Some(false)
             {
-                return Err(unsupported("仅可添加可空且无默认值的普通列"));
+                return Err(unsupported(
+                    "Only ordinary nullable columns without a default value can be added",
+                ));
             }
             Action::AddColumn {
                 column: column.normalize(false)?,
@@ -242,15 +246,15 @@ fn normalize_create(
     if_not_exists: bool,
 ) -> Result<Action> {
     if !foreign_keys.is_empty() {
-        return Err(unsupported("DDL 暂不支持创建外键"));
+        return Err(unsupported("Creating foreign keys is not supported yet"));
     }
     if columns.is_empty() || columns.len() > MAX_COLUMNS {
-        return Err(invalid("DDL 列数超出范围"));
+        return Err(invalid("DDL column count is out of range"));
     }
     let inline: Vec<_> = columns.iter().filter(|column| column.primary_key).collect();
     if !inline.is_empty() {
         if inline.len() != 1 || !primary_key.is_empty() {
-            return Err(invalid("主键声明冲突"));
+            return Err(invalid("Conflicting primary key declarations"));
         }
         primary_key.push(inline[0].name.clone());
     }
@@ -261,11 +265,11 @@ fn normalize_create(
             .map(|column| vec![column.name.clone()]),
     );
     if unique_constraints.len() > MAX_KEYS {
-        return Err(invalid("唯一约束数量超限"));
+        return Err(invalid("Too many unique constraints"));
     }
     let names: HashSet<_> = columns.iter().map(|column| column.name.as_str()).collect();
     if names.len() != columns.len() {
-        return Err(invalid("列名重复"));
+        return Err(invalid("Duplicate column name"));
     }
     let mut constraints = HashSet::new();
     if !primary_key.is_empty() {
@@ -275,7 +279,7 @@ fn normalize_create(
     for key in &unique_constraints {
         check_key(key, Some(&names))?;
         if !constraints.insert(key_members(key)) {
-            return Err(invalid("主键或唯一约束重复"));
+            return Err(invalid("Duplicate primary key or unique constraint"));
         }
     }
     let columns = columns
@@ -283,7 +287,9 @@ fn normalize_create(
         .map(|column| {
             let primary = primary_key.contains(&column.name);
             if column.auto_increment && (!primary || primary_key.len() != 1) {
-                return Err(invalid("自动编号要求单列整数主键"));
+                return Err(invalid(
+                    "Auto-increment requires a single integer primary key column",
+                ));
             }
             column.normalize(primary)
         })
@@ -312,16 +318,18 @@ impl ColumnInput {
             ("datetime", None, None, None) => ColumnType::Datetime,
             ("timestamp", None, None, None) => ColumnType::Timestamp,
             ("blob", None, None, None) => ColumnType::Blob,
-            _ => return Err(invalid("DDL 字段类型或尺寸无效")),
+            _ => return Err(invalid("Invalid DDL column type or size")),
         };
         if primary && self.nullable == Some(true) {
-            return Err(invalid("主键列不可声明为可空"));
+            return Err(invalid("A primary key column cannot be nullable"));
         }
         let nullable = !primary && self.nullable.unwrap_or(true);
         if self.auto_increment
             && (!matches!(kind, ColumnType::Integer | ColumnType::Bigint) || self.default.is_some())
         {
-            return Err(invalid("自动编号要求没有默认值的整数列"));
+            return Err(invalid(
+                "Auto-increment requires an integer column without a default value",
+            ));
         }
         let default = self
             .default
@@ -390,7 +398,9 @@ fn normalize_default(kind: &ColumnType, nullable: bool, value: &Value) -> Result
         }
         _ => {}
     }
-    Err(invalid("DDL 默认值必须是与列类型相符的常量"))
+    Err(invalid(
+        "The DDL default value must be a constant matching the column type",
+    ))
 }
 
 fn decimal_fits(text: &str, precision: u8, scale: u8) -> bool {
@@ -412,13 +422,15 @@ fn key_members(key: &[String]) -> Vec<&str> {
 
 fn check_key(key: &[String], columns: Option<&HashSet<&str>>) -> Result<()> {
     if key.is_empty() || key.len() > MAX_KEYS {
-        return Err(invalid("键的列数超出范围"));
+        return Err(invalid("The number of key columns is out of range"));
     }
     let mut seen = HashSet::new();
     for column in key {
         name(column)?;
         if !seen.insert(column) || columns.is_some_and(|names| !names.contains(column.as_str())) {
-            return Err(invalid("键引用了重复或不存在的列"));
+            return Err(invalid(
+                "The key references duplicate or nonexistent columns",
+            ));
         }
     }
     Ok(())
@@ -427,7 +439,7 @@ fn check_key(key: &[String], columns: Option<&HashSet<&str>>) -> Result<()> {
 fn take_string(arguments: &mut Map<String, Value>, field: &'static str) -> Result<String> {
     match arguments.remove(field) {
         Some(Value::String(value)) if !value.is_empty() => Ok(value),
-        _ => Err(invalid("DDL 缺少必填字符串参数")),
+        _ => Err(invalid("A required DDL string argument is missing")),
     }
 }
 
@@ -435,7 +447,9 @@ fn rename(old: &str, new: &str) -> Result<()> {
     name(old)?;
     name(new)?;
     if old == new {
-        return Err(invalid("DDL 重命名要求新名称不同"));
+        return Err(invalid(
+            "The new DDL object name must differ from the current name",
+        ));
     }
     Ok(())
 }
@@ -447,7 +461,7 @@ fn name(value: &str) -> Result<()> {
         || !bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
         || value.starts_with("sqlite_")
     {
-        return Err(invalid("DDL 标识符无效或保留"));
+        return Err(invalid("The DDL identifier is invalid or reserved"));
     }
     Ok(())
 }
@@ -550,7 +564,11 @@ pub(crate) fn compile(
         {
             (&sqlparser::dialect::MySqlDialect {}, true)
         }
-        _ => return Err(unsupported("DDL 目标库或驱动不受支持")),
+        _ => {
+            return Err(unsupported(
+                "The DDL target database or driver is not supported",
+            ));
+        }
     };
     let sql = render(change, syntax, &syntax.quote, backslash, false)?;
 
@@ -570,12 +588,14 @@ pub(crate) fn compile(
     )?;
     let parse = |sql: &str| {
         sqlparser::parser::Parser::parse_sql(dialect, sql)
-            .map_err(|_| unsupported("DDL 生成语句无法通过方言 AST 验证"))
+            .map_err(|_| unsupported("The generated DDL failed dialect AST validation"))
     };
     let actual = parse(&sql)?;
     let expected = parse(&reference)?;
     if actual.len() != 1 || actual != expected || !expected_statement(change, &actual[0]) {
-        return Err(unsupported("DDL 生成语句超出操作白名单"));
+        return Err(unsupported(
+            "The generated DDL is outside the operation allowlist",
+        ));
     }
     Ok(Compiled {
         sql,
@@ -750,10 +770,9 @@ fn render(
             result.push_str(" NOT NULL");
         }
         if column.identity {
-            result.push_str(
-                (syntax.identity)(&column.kind)
-                    .ok_or_else(|| unsupported("驱动不支持该字段的自动编号"))?,
-            );
+            result.push_str((syntax.identity)(&column.kind).ok_or_else(|| {
+                unsupported("The driver does not support auto-increment for this column")
+            })?);
         }
         if let Some(default) = &column.default {
             result.push_str(" DEFAULT ");
@@ -825,7 +844,7 @@ fn render(
         }
     };
     if sql.len() > 16 * 1024 {
-        return Err(invalid("DDL 生成语句超过大小限制"));
+        return Err(invalid("The generated DDL exceeds the size limit"));
     }
     Ok(sql)
 }
@@ -864,10 +883,19 @@ pub(crate) fn check_inspection(
     syntax: &sqarvo_driver_api::ddl::Syntax,
 ) -> Result<Effect> {
     use sqarvo_driver_api::ddl::Table;
-    let unverified = || unsupported("无法确认 DDL 目标的结构或依赖");
-    let missing = || Error::not_found(ErrorCode::MCP_INVALID_ARGUMENT, "DDL 目标对象不存在");
-    let occupied =
-        || Error::failed_precondition(ErrorCode::MCP_INVALID_ARGUMENT, "DDL 目标名称已被占用");
+    let unverified = || unsupported("Could not verify the DDL target schema or dependencies");
+    let missing = || {
+        Error::not_found(
+            ErrorCode::MCP_INVALID_ARGUMENT,
+            "The DDL target object does not exist",
+        )
+    };
+    let occupied = || {
+        Error::failed_precondition(
+            ErrorCode::MCP_INVALID_ARGUMENT,
+            "The requested DDL object name is already in use",
+        )
+    };
     let table: &Table = match (&change.action, inspection.table.as_ref()) {
         (
             Action::CreateTable {

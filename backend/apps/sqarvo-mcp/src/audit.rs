@@ -328,7 +328,7 @@ impl AuditWriter {
                 Error::new(
                     ErrorCode::MCP_INTERNAL,
                     ErrorCategory::Internal,
-                    format!("审计写入任务异常终止：{error}"),
+                    format!("The audit write task ended unexpectedly: {error}"),
                 )
             })?
     }
@@ -338,7 +338,7 @@ impl AuditWriter {
             Error::new(
                 ErrorCode::MCP_INTERNAL,
                 ErrorCategory::Internal,
-                format!("审计记录序列化失败：{error}"),
+                format!("Failed to serialize the audit record: {error}"),
             )
         })?;
         let _guard = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
@@ -386,7 +386,9 @@ impl AuditWriter {
 
     fn sidecar(&self) -> Result<(File, PathBuf)> {
         let sidecar = self.dir.join(format!("audit.{}.jsonl", std::process::id()));
-        tracing::warn!("审计文件被其它进程占用，本进程改写到独立文件");
+        tracing::warn!(
+            "Another process is using the audit file. This process will use a separate file"
+        );
         let file = open_append(&sidecar)?;
         let _ = exclusive_lock(&file)?;
         Ok((file, sidecar))
@@ -697,7 +699,7 @@ mod tests {
             .write(&AuditRecord::new("req-secret", "list_tables").failed(&error))
             .await
             .expect("写入");
-        let text = std::fs::read_to_string(writer.path()).expect("读取");
+        let text = std::fs::read_to_string(writer.path()).expect("Read");
         assert!(!text.contains(PASSWORD), "审计行不得包含密码：{text}");
     }
 

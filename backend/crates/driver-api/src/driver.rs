@@ -34,7 +34,7 @@ impl DriverId {
         } else {
             Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "驱动标识只允许小写字母、数字以及 . _ -",
+                "Driver identifiers may contain only lowercase letters, digits, periods, underscores, and hyphens",
             ))
         }
     }
@@ -179,7 +179,7 @@ impl ConnectionParams {
         if self.host.trim().is_empty() {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "主机不能为空",
+                "Host cannot be empty",
             ));
         }
         if self
@@ -189,7 +189,7 @@ impl ConnectionParams {
         {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "凭据引用不能为空字符串",
+                "The credential reference must not be empty",
             ));
         }
         Ok(())
@@ -393,7 +393,7 @@ pub trait DriverSession: Send + Sync {
     fn dispatch_ddl(&self, _request: ExecuteRequest) -> Result<crate::ddl::Dispatch> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "不支持结构变更派发",
+            "Dispatching schema changes is not supported",
         ))
     }
 
@@ -401,7 +401,7 @@ pub trait DriverSession: Send + Sync {
     fn dispatch_ddl_commit(&self, _transaction_id: TransactionId) -> Result<crate::ddl::Dispatch> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "不支持事务式结构变更提交",
+            "Committing a transactional schema change is not supported",
         ))
     }
 
@@ -409,7 +409,7 @@ pub trait DriverSession: Send + Sync {
     async fn inspect_ddl(&self, _change: crate::ddl::Change) -> Result<crate::ddl::Inspection> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "驱动不支持结构变更预检",
+            "The driver does not support schema change preflight checks",
         ))
     }
 
@@ -551,19 +551,31 @@ pub trait DriverSession: Send + Sync {
 }
 
 fn unsupported_transactions() -> Error {
-    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现显式事务")
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "The driver does not implement explicit transactions",
+    )
 }
 
 fn unsupported_parameterized_statements() -> Error {
-    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现参数化执行")
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "The driver does not implement parameterized execution",
+    )
 }
 
 fn unsupported_session_context() -> Error {
-    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动不提供库上下文")
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "The driver does not provide a database context",
+    )
 }
 
 fn unsupported_catalog_switch() -> Error {
-    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动不支持切换库")
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "The driver does not support switching databases",
+    )
 }
 
 /// 数据库驱动。
@@ -602,7 +614,7 @@ pub trait Driver: Send + Sync {
     ) -> Result<Box<dyn DriverSession>> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "驱动不支持独立 DDL 会话",
+            "Driver does not support independent DDL sessions",
         ))
     }
 }

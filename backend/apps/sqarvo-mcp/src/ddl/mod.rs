@@ -105,7 +105,7 @@ impl Outcome {
             "outcome_unknown",
             Error::failed_precondition(
                 ErrorCode::MCP_DDL_OUTCOME_UNKNOWN,
-                "结构变更结果待核查，不要重复执行",
+                "The schema change outcome is pending verification. Do not run the operation again",
             ),
         )
     }
@@ -115,7 +115,10 @@ pub(crate) fn worker_failure(call: &Call) -> Value {
     let outcome = if call.request.id.is_some() {
         Outcome::unknown()
     } else {
-        Outcome::rejected("not_started", Error::internal("DDL 预览执行任务中断"))
+        Outcome::rejected(
+            "not_started",
+            Error::internal("The DDL preview task was interrupted"),
+        )
     };
     let mut result = payload(call, &outcome);
     result["audit_warning"] = json!(true);
@@ -135,7 +138,7 @@ pub(crate) async fn run(server: Arc<ServerContext>, call: Call) -> Value {
             if server.ddl.preview_cleanup_failed.load(Ordering::Acquire) {
                 Err(Error::failed_precondition(
                     ErrorCode::MCP_DDL_BUSY,
-                    "先前的预览会话尚未确认关闭",
+                    "The previous preview session has not been confirmed closed",
                 ))
             } else {
                 preview_schema(&server, &call).await
@@ -144,7 +147,7 @@ pub(crate) async fn run(server: Arc<ServerContext>, call: Call) -> Value {
         Ok(_permit) => mutate(&server, &call).await,
         Err(_) => Err(Error::failed_precondition(
             ErrorCode::MCP_DDL_BUSY,
-            "DDL 并发额度已满",
+            "The DDL concurrency limit has been reached",
         )),
     };
     match result {
@@ -179,14 +182,14 @@ async fn mutate(server: &ServerContext, call: &Call) -> Result<Value> {
     let profile = auth
         .profile
         .as_ref()
-        .ok_or_else(|| Error::internal("DDL 缺少档案"))?;
+        .ok_or_else(|| Error::internal("The DDL connection profile is missing"))?;
     let id = call
         .request
         .id
-        .ok_or_else(|| Error::internal("DDL 缺少操作 ID"))?;
+        .ok_or_else(|| Error::internal("The DDL operation ID is missing"))?;
     let canonical =
         serde_json::to_vec(&(profile.profile_id, profile.revision, &call.request.change))
-            .map_err(|_| Error::internal("无法规范化 DDL 参数"))?;
+            .map_err(|_| Error::internal("Failed to normalize DDL arguments"))?;
     let directory = server.audit().dir().to_owned();
     let target = target(call);
     let credentials = server.ddl.credentials.clone();
@@ -200,7 +203,7 @@ async fn mutate(server: &ServerContext, call: &Call) -> Result<Value> {
             Ok((slot, reservation))
         })
         .await
-        .map_err(|_| Error::internal("DDL 持久化任务中断"))?
+        .map_err(|_| Error::internal("The DDL persistence task was interrupted"))?
     })
     .await?;
     if let ledger::Reservation::Existing(mut response) = reservation {
@@ -257,7 +260,7 @@ async fn open(
     let profile = auth
         .profile
         .as_ref()
-        .ok_or_else(|| Error::internal("DDL 缺少档案"))?;
+        .ok_or_else(|| Error::internal("The DDL connection profile is missing"))?;
     stop_before(
         server,
         call,
@@ -347,7 +350,10 @@ async fn execute_checked(
         error: None,
     };
     if !audit(server, call, "intent", &intent).await {
-        return Outcome::rejected("not_started", Error::internal("DDL 意图审计未持久化"));
+        return Outcome::rejected(
+            "not_started",
+            Error::internal("The DDL intent audit record was not persisted"),
+        );
     }
     let query = request.query_id;
     let dispatch = match gate(server, call, auth, || handle.dispatch_ddl(request)).await {
@@ -421,7 +427,7 @@ async fn gate(
         let profile = auth
             .profile
             .as_ref()
-            .ok_or_else(|| Error::internal("DDL 缺少档案"))?;
+            .ok_or_else(|| Error::internal("The DDL connection profile is missing"))?;
         if !current.mcp.enabled
             || current.mcp.read_only
             || current.revision != auth.document().revision
@@ -632,13 +638,19 @@ fn proposed_schema(call: &Call, current: &Value) -> Value {
 pub(crate) fn error_payload(error: &Error) -> Value {
     let message = match error.code() {
         ErrorCode::MCP_DDL_OUTCOME_UNKNOWN => {
-            "数据库可能已经完成结构变更，请核查目标和审计，勿重试"
+            "The database may have applied the schema change. Verify the target and audit log before proceeding. Do not retry"
         }
-        ErrorCode::MCP_DDL_UNRESOLVED => "有待核查的结构变更，本机暂停派发后续 DDL",
-        ErrorCode::MCP_DDL_BUSY => "结构变更并发额度已占用",
-        ErrorCode::MCP_DDL_OPERATION_CONFLICT => "该操作 ID 已用于另一项结构变更",
-        ErrorCode::MCP_CONNECTION_DENIED => "当前 MCP 策略或连接授权拒绝该请求",
-        _ => "结构变更请求未获成功确认，请核对错误码和目标",
+        ErrorCode::MCP_DDL_UNRESOLVED => {
+            "A schema change is pending verification. Further DDL dispatch is paused on this machine"
+        }
+        ErrorCode::MCP_DDL_BUSY => "The schema change concurrency limit has been reached",
+        ErrorCode::MCP_DDL_OPERATION_CONFLICT => {
+            "This operation ID has already been used for another schema change"
+        }
+        ErrorCode::MCP_CONNECTION_DENIED => {
+            "The current MCP policy or connection authorization denies this request"
+        }
+        _ => "The schema change was not confirmed successful. Check the error code and target",
     };
     json!({
         "error": {
@@ -767,7 +779,7 @@ async fn stop_before<T>(
         biased;
         () = stopped(server, call) => Err(cancelled()),
         result = timeout(budget, work) => result.map_err(|_| Error::new(
-            ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "DDL 等待超出预算",
+            ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "The DDL wait timed out",
         ))?,
     }
 }
@@ -795,7 +807,7 @@ fn revoked() -> Error {
     Error::new(
         ErrorCode::MCP_CONNECTION_DENIED,
         ErrorCategory::PermissionDenied,
-        "DDL 授权或档案已变更",
+        "DDL authorization or the connection profile changed",
     )
 }
 
@@ -803,12 +815,15 @@ fn cancelled() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "结构变更请求已取消",
+        "The schema change request was canceled",
     )
 }
 
 fn unsupported() -> Error {
-    Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "连接不支持结构管理")
+    Error::unsupported(
+        ErrorCode::CAPABILITY_UNSUPPORTED,
+        "The connection does not support schema management",
+    )
 }
 
 /// Acknowledge local reconciliation of an already stopped DDL operation.
@@ -826,7 +841,7 @@ pub async fn reconcile(id: uuid::Uuid) -> Result<()> {
         Ok::<_, Error>((slot, target, response))
     })
     .await
-    .map_err(|_| Error::internal("DDL 核查任务中断"))??;
+    .map_err(|_| Error::internal("The DDL verification task was interrupted"))??;
     let mut record = AuditRecord::new(id.to_string(), "local_ddl_reconcile").with_target(
         target["connection_alias"].as_str(),
         target["database"].as_str(),
@@ -844,7 +859,7 @@ pub async fn reconcile(id: uuid::Uuid) -> Result<()> {
     audit.write(&record).await?;
     tokio::task::spawn_blocking(move || slot.finish(id, &response, false))
         .await
-        .map_err(|_| Error::internal("DDL 核查任务中断"))?
+        .map_err(|_| Error::internal("The DDL verification task was interrupted"))?
 }
 
 #[cfg(test)]

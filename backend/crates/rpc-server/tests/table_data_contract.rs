@@ -640,7 +640,7 @@ fn unsupported_capabilities_never_look_like_success() {
     // 未实现的驱动：能力声明为 false，调用返回 capability.unsupported。
     let status = to_status(Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        "该驱动未实现表数据行编辑",
+        "The driver does not implement row editing",
     ));
     assert_eq!(status.code(), Code::Unimplemented);
     assert_eq!(

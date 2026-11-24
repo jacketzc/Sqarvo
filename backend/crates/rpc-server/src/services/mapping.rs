@@ -221,21 +221,23 @@ pub fn value_from_proto(cell: &ColumnValue) -> Result<Value, Status> {
     if cell.truncated {
         return Err(invalid_value(
             ErrorCode::TABLE_DATA_TRUNCATED_VALUE,
-            "提交的值是被截断的前缀，不能作为完整值写回；请刷新该行后重试",
+            "The submitted value is truncated and cannot be written back as a complete value. Refresh the row and retry",
         ));
     }
     let kind = ValueKind::try_from(cell.kind)
-        .map_err(|_| Status::invalid_argument("未知的值类型枚举值"))?;
-    let mismatch = || Status::invalid_argument("值的类型标记与取值不一致");
+        .map_err(|_| Status::invalid_argument("Unknown value type enum value"))?;
+    let mismatch = || Status::invalid_argument("The value does not match its declared type");
     let value = match kind {
         ValueKind::Unspecified => {
             return Err(Status::invalid_argument(
-                "值的类型未指定（VALUE_KIND_UNSPECIFIED）",
+                "The value type is unspecified (VALUE_KIND_UNSPECIFIED)",
             ));
         }
         ValueKind::Null => {
             if cell.value.is_some() {
-                return Err(Status::invalid_argument("NULL 值不能同时携带取值"));
+                return Err(Status::invalid_argument(
+                    "A NULL value cannot carry a payload",
+                ));
             }
             Value::Null
         }
@@ -258,7 +260,7 @@ pub fn value_from_proto(cell: &ColumnValue) -> Result<Value, Status> {
         ValueKind::Decimal => match &cell.value {
             Some(column_value::Value::DecimalValue(decimal)) => Value::Decimal(
                 sqarvo_driver_api::Decimal::new(decimal.unscaled_value.clone(), decimal.scale)
-                    .map_err(|_| Status::invalid_argument("十进制值的表示非法"))?,
+                    .map_err(|_| Status::invalid_argument("Invalid decimal representation"))?,
             ),
             _ => return Err(mismatch()),
         },
@@ -298,7 +300,7 @@ pub fn value_from_proto(cell: &ColumnValue) -> Result<Value, Status> {
             Some(column_value::Value::UuidValue(value)) => Value::Uuid(
                 value
                     .parse()
-                    .map_err(|_| Status::invalid_argument("UUID 文本非法"))?,
+                    .map_err(|_| Status::invalid_argument("Invalid UUID string"))?,
             ),
             _ => return Err(mismatch()),
         },
@@ -316,7 +318,7 @@ pub fn value_from_proto(cell: &ColumnValue) -> Result<Value, Status> {
         ValueKind::Unsupported => {
             return Err(to_status(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该列类型未被无损建模，不能作为行变更写回",
+                "The column type cannot be represented without loss and cannot be written back as a row change",
             )));
         }
     };
@@ -327,27 +329,31 @@ fn date_from_parts(parts: &ProtoDateTimeValue) -> Result<Date, Status> {
     let month = u8::try_from(parts.month)
         .ok()
         .and_then(|month| time::Month::try_from(month).ok())
-        .ok_or_else(|| Status::invalid_argument("日期的月份非法"))?;
-    let day = u8::try_from(parts.day).map_err(|_| Status::invalid_argument("日期的日非法"))?;
+        .ok_or_else(|| Status::invalid_argument("Invalid month"))?;
+    let day =
+        u8::try_from(parts.day).map_err(|_| Status::invalid_argument("Invalid day of month"))?;
     Date::from_calendar_date(parts.year, month, day)
-        .map_err(|_| Status::invalid_argument("日期非法"))
+        .map_err(|_| Status::invalid_argument("Invalid date"))
 }
 
 fn time_from_parts(parts: &ProtoDateTimeValue) -> Result<Time, Status> {
-    let hour = u8::try_from(parts.hour).map_err(|_| Status::invalid_argument("时间的小时非法"))?;
+    let hour = u8::try_from(parts.hour).map_err(|_| Status::invalid_argument("Invalid hour"))?;
     let minute =
-        u8::try_from(parts.minute).map_err(|_| Status::invalid_argument("时间的分钟非法"))?;
+        u8::try_from(parts.minute).map_err(|_| Status::invalid_argument("Invalid minute"))?;
     let second =
-        u8::try_from(parts.second).map_err(|_| Status::invalid_argument("时间的秒非法"))?;
-    Time::from_hms_nano(hour, minute, second, parts.nanosecond)
-        .map_err(|_| Status::invalid_argument("时间非法（小时/分钟/秒/纳秒越界）"))
+        u8::try_from(parts.second).map_err(|_| Status::invalid_argument("Invalid second"))?;
+    Time::from_hms_nano(hour, minute, second, parts.nanosecond).map_err(|_| {
+        Status::invalid_argument("Invalid time (hour, minute, second, or nanosecond out of range)")
+    })
 }
 
 fn timestamp_from_parts(stamp: &ProtoTimestampValue) -> Result<OffsetDateTime, Status> {
-    let instant = OffsetDateTime::from_unix_timestamp_nanos(i128::from(stamp.unix_nanos))
-        .map_err(|_| Status::invalid_argument("时间戳超出可表示范围"))?;
+    let instant =
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(stamp.unix_nanos)).map_err(|_| {
+            Status::invalid_argument("The timestamp is outside the representable range")
+        })?;
     let offset = time::UtcOffset::from_whole_seconds(stamp.offset_seconds)
-        .map_err(|_| Status::invalid_argument("时间戳的时区偏移非法"))?;
+        .map_err(|_| Status::invalid_argument("Invalid timestamp time zone offset"))?;
     Ok(instant.to_offset(offset))
 }
 
@@ -391,7 +397,7 @@ fn datetime_parts(value: PrimitiveDateTime) -> ProtoDateTimeValue {
 
 fn timestamp_parts(value: OffsetDateTime) -> Result<ProtoTimestampValue, Status> {
     let unix_nanos = i64::try_from(value.unix_timestamp_nanos())
-        .map_err(|_| Status::internal("时间戳超出可传输范围"))?;
+        .map_err(|_| Status::internal("The timestamp is outside the supported wire range"))?;
     Ok(ProtoTimestampValue {
         unix_nanos,
         offset_seconds: value.offset().whole_seconds(),
@@ -519,7 +525,9 @@ pub fn isolation_from_proto(value: i32) -> Result<IsolationLevel, Status> {
         Ok(ProtoIsolationLevel::RepeatableRead) => Ok(IsolationLevel::RepeatableRead),
         Ok(ProtoIsolationLevel::Serializable) => Ok(IsolationLevel::Serializable),
         Ok(ProtoIsolationLevel::Snapshot) => Ok(IsolationLevel::Snapshot),
-        Err(_) => Err(Status::invalid_argument("未知的事务隔离级别")),
+        Err(_) => Err(Status::invalid_argument(
+            "Unknown transaction isolation level",
+        )),
     }
 }
 

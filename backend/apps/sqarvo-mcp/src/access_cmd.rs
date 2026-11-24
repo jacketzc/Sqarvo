@@ -9,17 +9,17 @@ use sqarvo_local_store::{AppPaths, McpAccessPolicy, ProfileStore, profiles::migr
 
 #[derive(Subcommand)]
 pub enum AccessAction {
-    /// 允许 MCP 访问共享连接档案。
+    /// Allow MCP to access shared connection profiles.
     On {
-        /// 确认授权，允许在非交互终端运行。
+        /// Confirm authorization when running without an interactive terminal.
         #[arg(long)]
         yes: bool,
     },
-    /// 撤销 MCP 访问并恢复只读策略。
+    /// Revoke MCP access and restore read-only mode.
     Off,
-    /// 显示两个开关、档案数与文档修订。
+    /// Show both policy flags, the profile count, and the document revision.
     Status,
-    /// 管理 MCP 全局只读策略。
+    /// Manage the global MCP read-only policy.
     ReadOnly {
         #[command(subcommand)]
         action: ReadOnlyAction,
@@ -28,15 +28,15 @@ pub enum AccessAction {
 
 #[derive(Subcommand)]
 pub enum ReadOnlyAction {
-    /// 启用只读策略。
+    /// Turn on read-only mode.
     On,
-    /// 关闭只读策略。
+    /// Turn off read-only mode.
     Off {
-        /// 确认关闭只读策略，允许在非交互终端运行。
+        /// Confirm turning off read-only mode without an interactive terminal.
         #[arg(long)]
         yes: bool,
     },
-    /// 显示当前授权状态。
+    /// Show the current authorization state.
     Status,
 }
 
@@ -55,7 +55,9 @@ pub fn run(store: &ProfileStore, action: &AccessAction) -> Result<()> {
     match action {
         AccessAction::On { yes } => {
             let count = store.snapshot()?.profiles.len();
-            let message = format!("启用后，MCP 可访问当前 {count} 个连接档案及此后新增的档案。");
+            let message = format!(
+                "Enabling MCP grants access to the current {count} connection profiles and any profiles added later."
+            );
             if !confirm(&message, *yes)? {
                 return Ok(());
             }
@@ -85,7 +87,7 @@ pub fn run(store: &ProfileStore, action: &AccessAction) -> Result<()> {
             require_enabled(snapshot.mcp)?;
             let count = snapshot.profiles.len();
             let message = format!(
-                "关闭只读保护将影响当前 {count} 个连接档案及此后新增的档案。已授权的 Agent 可执行受控插入、更新和删除，仍受数据库权限和写入限额约束。"
+                "Turning off read-only protection affects the current {count} connection profiles and any profiles added later. Authorized agents can perform controlled inserts, updates, and deletes within database permissions and write limits."
             );
             if !confirm(&message, *yes)? {
                 return Ok(());
@@ -120,7 +122,7 @@ fn require_enabled(policy: McpAccessPolicy) -> Result<()> {
     }
     Err(Error::failed_precondition(
         ErrorCode::MCP_CONNECTION_DENIED,
-        "MCP 数据访问全局未开启",
+        "Global MCP data access is disabled",
     ))
 }
 
@@ -133,11 +135,11 @@ fn confirm(message: &str, yes: bool) -> Result<bool> {
     if !io::stdin().is_terminal() {
         return Err(Error::invalid_argument(
             ErrorCode::PROFILE_INVALID,
-            "非交互终端必须通过 --yes 确认",
+            "Use --yes to confirm when running without an interactive terminal",
         ));
     }
 
-    write!(stderr, "继续？[y/N] ").map_err(Error::from)?;
+    write!(stderr, "Continue? [y/N] ").map_err(Error::from)?;
     stderr.flush().map_err(Error::from)?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer).map_err(Error::from)?;

@@ -38,37 +38,37 @@ fn classify(code: SqliteCode, context: &'static str) -> (ErrorCode, ErrorCategor
         SqliteCode::CannotOpen | SqliteCode::NotADatabase => (
             SQLITE_OPEN_FAILED,
             ErrorCategory::InvalidArgument,
-            "无法打开 SQLite 数据库（路径错误或文件不是数据库）",
+            "Failed to open the SQLite database. The path may be invalid or the file may not be a database",
         ),
         SqliteCode::PermissionDenied => (
             ErrorCode::IO,
             ErrorCategory::PermissionDenied,
-            "没有访问数据库文件所需的权限",
+            "Permission denied for the database file",
         ),
         SqliteCode::ReadOnly => (
             SQLITE_READ_ONLY,
             ErrorCategory::FailedPrecondition,
-            "数据库以只读方式打开，无法执行写操作",
+            "Database opened on read-only, unable to execute writing",
         ),
         SqliteCode::DatabaseBusy | SqliteCode::DatabaseLocked => (
             SQLITE_BUSY,
             ErrorCategory::Unavailable,
-            "数据库忙或被其他连接锁定",
+            "Database busy or locked by other connections",
         ),
         SqliteCode::OperationInterrupted => (
             ErrorCode::QUERY_CANCELLED,
             ErrorCategory::Cancelled,
-            "查询已取消",
+            "Query canceled",
         ),
         SqliteCode::SystemIoFailure => (
             ErrorCode::IO,
             ErrorCategory::Unavailable,
-            "读取或写入数据库文件失败",
+            "Failed to read or write database files",
         ),
         SqliteCode::DiskFull => (
             ErrorCode::IO,
             ErrorCategory::ResourceExhausted,
-            "磁盘空间不足",
+            "Disk space is insufficient",
         ),
         _ => (ErrorCode::IO, ErrorCategory::Internal, context),
     }
@@ -76,5 +76,5 @@ fn classify(code: SqliteCode, context: &'static str) -> (ErrorCode, ErrorCategor
 
 /// 打开数据库失败的专用映射。
 pub(crate) fn map_open_error(error: rusqlite::Error) -> Error {
-    map_sqlite_error(error, "打开 SQLite 数据库失败")
+    map_sqlite_error(error, "Failed to open SQLite database")
 }

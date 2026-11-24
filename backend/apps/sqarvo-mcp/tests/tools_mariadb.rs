@@ -110,9 +110,9 @@ fn access(target: &Target, timeout_ms: Option<u64>) -> profile_access::TestAcces
         root["query_limits"] = serde_json::json!({ "timeout_ms": timeout_ms });
     }
     let config = sqarvo_mcp::config::parse(&root.to_string())
-        .expect("解析测试配置")
+        .expect("Parse test configuration")
         .validate()
-        .expect("校验测试配置");
+        .expect("Validate test configuration");
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     credentials

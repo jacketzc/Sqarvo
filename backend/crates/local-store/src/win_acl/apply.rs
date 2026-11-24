@@ -294,7 +294,10 @@ fn read_dacl_sddl(path: &Path) -> String {
             &raw mut descriptor,
         )
     };
-    assert_eq!(code, 0, "GetNamedSecurityInfoW 失败：Win32 错误码 {code}");
+    assert_eq!(
+        code, 0,
+        "GetNamedSecurityInfoW failed with Win32 error code {code}"
+    );
     let _guard = SecurityDescriptor(descriptor);
 
     let mut out: *mut u16 = null_mut();
@@ -313,10 +316,10 @@ fn read_dacl_sddl(path: &Path) -> String {
     assert_ne!(
         ok,
         0,
-        "ConvertSecurityDescriptorToStringSecurityDescriptorW 失败：Win32 错误码 {}",
+        "ConvertSecurityDescriptorToStringSecurityDescriptorW failed with Win32 error code {}",
         last_error()
     );
-    assert!(!out.is_null(), "SDDL 输出指针不应为空");
+    assert!(!out.is_null(), "The SDDL output pointer must not be null");
     // SAFETY: 上一步成功即返回 NUL 结尾的 UTF-16 字符串。
     let text = unsafe { wide_ptr_to_string(out) };
     // SAFETY: 该指针由系统的 `LocalAlloc` 分配，`LocalFree` 是唯一正确释放方式。
@@ -342,7 +345,7 @@ mod tests {
 
         let dir = root.path().join("run");
         std::fs::create_dir(&dir).unwrap();
-        restrict_path(&dir, AclTarget::Directory).expect("收紧目录 DACL");
+        restrict_path(&dir, AclTarget::Directory).expect("Tighten Directory DACL");
         let dir_sddl = read_dacl_sddl(&dir);
         assert!(dir_sddl.starts_with("D:P"), "目录 DACL: {dir_sddl}");
         assert!(dir_sddl.contains(";OICI;FA;;;"), "目录 DACL: {dir_sddl}");
@@ -350,7 +353,7 @@ mod tests {
 
         let file = dir.join("backend-endpoint.json");
         std::fs::write(&file, br#"{"token":"redacted"}"#).unwrap();
-        restrict_path(&file, AclTarget::File).expect("收紧文件 DACL");
+        restrict_path(&file, AclTarget::File).expect("Tighten File DACL");
         let file_sddl = read_dacl_sddl(&file);
         assert!(file_sddl.starts_with("D:P"), "文件 DACL: {file_sddl}");
         assert!(file_sddl.contains(";;FA;;;"), "文件 DACL: {file_sddl}");

@@ -30,7 +30,7 @@ impl AuthToken {
         } else {
             Err(Error::invalid_argument(
                 ErrorCode::TRANSPORT_FAILED,
-                "会话 token 必须是 64 位十六进制字符串",
+                "The session token must contain 64 hexadecimal characters",
             ))
         }
     }

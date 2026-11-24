@@ -148,7 +148,7 @@ async fn version_health_and_auth_roundtrip() {
         .into_inner();
     assert_eq!(health.state, 1); // STATE_SERVING
     assert_eq!(health.registered_drivers, 0);
-    assert!(health.detail.contains("没有注册"));
+    assert!(health.detail.contains("No database drivers are registered"));
 
     let drivers = client
         .list_drivers(Empty {})

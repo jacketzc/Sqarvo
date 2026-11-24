@@ -114,7 +114,7 @@ fn run_sources(store: &ProfileStore, sources: Vec<Source>) -> Result<()> {
             let key = import
                 .path
                 .to_str()
-                .ok_or_else(|| invalid("旧连接档案路径不是有效 UTF-8"))?;
+                .ok_or_else(|| invalid("The legacy connection profile path is not valid UTF-8"))?;
             if doc
                 .migration_state
                 .get(key)
@@ -151,7 +151,9 @@ fn resolve_source(path: &Path) -> Result<Option<PathBuf>> {
         Err(error) => return Err(error.into()),
     };
     if !metadata.is_file() {
-        return Err(invalid("旧连接档案必须是普通文件"));
+        return Err(invalid(
+            "The legacy connection profile must be a regular file",
+        ));
     }
     path.canonicalize().map(Some).map_err(Error::from)
 }
@@ -167,7 +169,9 @@ fn read_source(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>> {
         .read_to_end(&mut bytes)
         .map_err(Error::from)?;
     if bytes.len() as u64 > max_bytes {
-        return Err(invalid("旧连接档案超过大小上限"));
+        return Err(invalid(
+            "The legacy connection profile exceeds the size limit",
+        ));
     }
     Ok(Some(bytes))
 }
@@ -184,13 +188,15 @@ fn fingerprint(bytes: &[u8]) -> String {
 }
 
 fn parse_source(path: PathBuf, kind: SourceKind, bytes: &[u8]) -> Result<Option<Import>> {
-    let invalid_json = |_| invalid("旧连接档案格式无效");
+    let invalid_json = |_| invalid("Invalid legacy connection profile format");
     let (profiles, replacement) = if matches!(kind, SourceKind::Mcp) {
         parse_mcp(bytes)?
     } else {
         let legacy: LegacyDesktop = serde_json::from_slice(bytes).map_err(invalid_json)?;
         if legacy.version != 1 && !(matches!(kind, SourceKind::Gtk) && legacy.version == 0) {
-            return Err(invalid("不支持旧桌面连接档案版本"));
+            return Err(invalid(
+                "The legacy desktop connection profile version is not supported",
+            ));
         }
         let mut profiles: Vec<ConnectionProfile> = Vec::with_capacity(legacy.connections.len());
         for entry in legacy.connections {
@@ -224,8 +230,8 @@ fn parse_source(path: PathBuf, kind: SourceKind, bytes: &[u8]) -> Result<Option<
 }
 
 fn parse_mcp(bytes: &[u8]) -> Result<(Vec<ConnectionProfile>, Option<Vec<u8>>)> {
-    let legacy: LegacyMcp =
-        serde_json::from_slice(bytes).map_err(|_| invalid("旧 MCP 配置格式无效"))?;
+    let legacy: LegacyMcp = serde_json::from_slice(bytes)
+        .map_err(|_| invalid("Invalid legacy MCP configuration format"))?;
     let Some(connections) = legacy.connections else {
         return Ok((Vec::new(), None));
     };
@@ -233,15 +239,15 @@ fn parse_mcp(bytes: &[u8]) -> Result<(Vec<ConnectionProfile>, Option<Vec<u8>>)> 
     let mut profiles = Vec::with_capacity(connections.len());
     for entry in connections {
         if !aliases.insert(entry.alias.clone()) {
-            return Err(invalid("旧 MCP 连接名称重复"));
+            return Err(invalid("Duplicate legacy MCP connection name"));
         }
         profiles.push(entry.into_profile()?);
     }
-    let mut settings: Map<String, Value> =
-        serde_json::from_slice(bytes).map_err(|_| invalid("旧 MCP 配置格式无效"))?;
+    let mut settings: Map<String, Value> = serde_json::from_slice(bytes)
+        .map_err(|_| invalid("Invalid legacy MCP configuration format"))?;
     settings.remove("connections");
     let replacement = serde_json::to_vec_pretty(&settings)
-        .map_err(|_| Error::internal("无法序列化 MCP 服务配置"))?;
+        .map_err(|_| Error::internal("Failed to serialize the MCP server configuration"))?;
     Ok((profiles, Some(replacement)))
 }
 
@@ -256,7 +262,9 @@ fn finish(import: Import) -> Result<()> {
             import.max_bytes,
         )?
     {
-        return Err(invalid("旧连接档案备份已存在，无法安全保留"));
+        return Err(invalid(
+            "A backup of the legacy connection profile already exists. The profile could not be backed up safely",
+        ));
     }
     ensure_fingerprint(&import.path, &import.sha256, import.max_bytes)?;
 
@@ -329,7 +337,7 @@ fn invalid(message: &'static str) -> Error {
 fn source_changed() -> Error {
     Error::failed_precondition(
         ErrorCode::PROFILE_INVALID,
-        "旧连接档案在迁移期间发生变化，请重试",
+        "The legacy connection profile changed during migration. Retry the operation",
     )
 }
 
@@ -369,7 +377,7 @@ impl LegacyDesktopProfile {
             "required" => TlsMode::Required,
             "verify-ca" => TlsMode::VerifyCa,
             "verify-full" => TlsMode::VerifyFull,
-            _ => return Err(invalid("旧桌面连接档案的 TLS 模式无效")),
+            _ => return Err(invalid("Invalid TLS mode in the legacy desktop profile")),
         };
         let mut properties = BTreeMap::new();
         let host = if self.driver == "sqlite" {
@@ -475,7 +483,9 @@ where
         "required" => Ok(TlsMode::Required),
         "verify_ca" => Ok(TlsMode::VerifyCa),
         "verify_full" => Ok(TlsMode::VerifyFull),
-        _ => Err(serde::de::Error::custom("旧 MCP 配置的 TLS 模式无效")),
+        _ => Err(serde::de::Error::custom(
+            "Invalid TLS mode in the legacy MCP configuration",
+        )),
     }
 }
 
@@ -486,7 +496,7 @@ impl LegacyMcpProfile {
                 byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
             });
         if !alias_is_valid {
-            return Err(invalid("旧 MCP 连接名称无效"));
+            return Err(invalid("Invalid legacy MCP connection name"));
         }
         let file_path = if self.driver_id == "sqlite" {
             self.host.clone()

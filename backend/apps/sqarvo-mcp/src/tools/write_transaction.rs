@@ -168,26 +168,30 @@ pub(super) async fn execute_statement(
         }
     };
     let [statement] = start.statements.as_slice() else {
-        return Err(Error::internal("驱动没有返回单条写入摘要"));
+        return Err(Error::internal(
+            "The driver did not return a single write summary",
+        ));
     };
     if statement.has_result_set {
         let _ = handle.close_query(&query_id).await;
-        return Err(Error::internal("写入意外返回了结果集"));
+        return Err(Error::internal(
+            "The write unexpectedly returned a result set",
+        ));
     }
     let count = statement
         .rows_affected
-        .ok_or_else(|| Error::internal("驱动没有返回受影响行数"))?;
+        .ok_or_else(|| Error::internal("The driver did not return the affected row count"))?;
     *affected = Some(count);
     if count > plan.action.max_rows() as u64 {
         return Err(Error::resource_exhausted(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            "实际影响行数超出写入限额",
+            "The affected row count exceeds the write limit",
         ));
     }
     if expected.is_some_and(|expected| expected != count) {
         return Err(Error::failed_precondition(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            "实际影响行数与事务内核对的范围不一致",
+            "The affected row count differs from the count verified within the transaction",
         ));
     }
     Ok(count)
@@ -231,8 +235,12 @@ pub(super) async fn finish(
 }
 
 pub(super) fn prepare(handle: &SessionHandle, plan: &WritePlan) -> Result<PreparedStatement> {
-    let unsupported =
-        || Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "驱动不支持受控写入");
+    let unsupported = || {
+        Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "The driver does not support controlled writes",
+        )
+    };
     let dialect = match handle.summary().driver_id.as_str() {
         "sqlite" => WriteDialect::Sqlite,
         "mariadb" => WriteDialect::MariaDb,
@@ -252,7 +260,7 @@ fn timeout_error() -> Error {
     Error::new(
         ErrorCode::MCP_QUERY_TIMEOUT,
         ErrorCategory::Timeout,
-        "写入超过执行时限",
+        "The write exceeded its execution deadline",
     )
 }
 
@@ -260,6 +268,6 @@ fn cancelled_error() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "客户端取消了写入",
+        "The client canceled the write",
     )
 }

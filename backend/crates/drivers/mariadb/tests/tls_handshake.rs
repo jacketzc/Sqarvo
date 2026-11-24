@@ -117,7 +117,10 @@ async fn verify_full_rejects_hostname_mismatch() {
         .expect_err("证书里没有 127.0.0.1，verify-full 必须拒绝");
     assert_eq!(failure.code(), error::CONNECTION_FAILED);
     assert_eq!(failure.category(), ErrorCategory::Unavailable);
-    assert_eq!(failure.message(), "服务端证书与主机名不匹配");
+    assert_eq!(
+        failure.message(),
+        "The server certificate does not match the hostname"
+    );
     println!(
         "verify-full（主机名不匹配）：code={} category={:?} message={}",
         failure.code(),
@@ -151,7 +154,10 @@ async fn verify_ca_is_normalized_to_verify_full() {
         .expect_err("verify-ca 已归一化为 verify-full，无 SAN 证书必须被拒");
     assert_eq!(failure.code(), error::CONNECTION_FAILED);
     assert_eq!(failure.category(), ErrorCategory::Unavailable);
-    assert_eq!(failure.message(), "服务端证书与主机名不匹配");
+    assert_eq!(
+        failure.message(),
+        "The server certificate does not match the hostname"
+    );
     println!(
         "verify-ca（主机名不匹配，归一化为 verify-full）：code={} category={:?} message={}",
         failure.code(),
@@ -251,7 +257,10 @@ async fn required_fails_on_server_without_tls() {
     // #107 第 3 条）。
     assert_eq!(failure.code(), error::CONNECTION_FAILED);
     assert_eq!(failure.category(), ErrorCategory::Unavailable);
-    assert_eq!(failure.message(), "服务端不支持 TLS（连接要求 TLS）");
+    assert_eq!(
+        failure.message(),
+        "The server does not support TLS, which this connection requires"
+    );
 }
 
 // ---------------------------------------------------------------------------

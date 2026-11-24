@@ -35,9 +35,9 @@ const LOG_ENV: &str = "SQARVO_MCP_LOG";
 const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Parser)]
-#[command(name = "sqarvo-mcp", version, about = "Sqarvo MCP Server（stdio）")]
+#[command(name = "sqarvo-mcp", version, about = "Sqarvo MCP Server (stdio)")]
 struct Cli {
-    /// `mcp.json` 路径；缺省取 `AppPaths` 配置目录下的 `mcp.json`。
+    /// Path to mcp.json. Defaults to mcp.json in the application configuration directory.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
@@ -47,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 启动回环 MCP HTTP 服务。
+    /// Start the MCP HTTP server on loopback.
     Serve {
         #[arg(long, default_value = "http", value_parser = ["http"])]
         transport: String,
@@ -58,24 +58,24 @@ enum Command {
         #[arg(long, hide = true)]
         managed: bool,
     },
-    /// 管理本机 MCP HTTP 认证。
+    /// Manage local MCP HTTP authentication.
     HttpAuth {
         #[command(subcommand)]
         action: HttpAuthAction,
     },
-    /// 管理 MCP 全局数据访问策略。
+    /// Manage the global MCP data access policy.
     Access {
         #[command(subcommand)]
         action: AccessAction,
     },
-    /// 核查已停止的结构变更并解除本机执行屏障。
+    /// Reconcile a stopped schema change and unblock local schema changes.
     DdlReconcile {
         operation_id: uuid::Uuid,
-        /// 已核实引擎停止原命令，并核对了数据库状态以及审计。
+        /// Confirm that the engine has stopped the original command and that the database state and audit log were checked.
         #[arg(long, required = true)]
         verified_stopped: bool,
     },
-    /// 管理 MCP 引用的系统密钥环凭据。
+    /// Manage system keyring credentials referenced by MCP.
     Credentials {
         #[command(subcommand)]
         action: CredentialsAction,
@@ -84,15 +84,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum HttpAuthAction {
-    /// 轮换 Bearer 凭据。
+    /// Rotate the bearer credential.
     Rotate,
-    /// 撤销 Bearer 凭据。
+    /// Revoke the bearer credential.
     Revoke,
-    /// 从系统凭据库向指定的本地 Codex 客户端提供认证。
+    /// Supply authentication from the system credential store to the specified local Codex client.
     Launch {
         #[arg(value_parser = ["codex"])]
         client: String,
-        /// 启动 Codex App Server 的 stdio 接口。
+        /// Start the Codex App Server stdio interface.
         #[arg(long)]
         app_server: bool,
         #[arg(long, default_value_t = 8765, value_parser = clap::value_parser!(u16).range(1..))]
@@ -112,7 +112,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("sqarvo-mcp: 无法创建 Tokio 运行时：{error}");
+            eprintln!("sqarvo-mcp: Failed to create the Tokio runtime: {error}");
             return ExitCode::FAILURE;
         }
     };

@@ -166,13 +166,13 @@ fn missing_default_database_is_classified_as_no_database() {
             message: "No database selected".to_owned(),
             state: "3D000".to_owned(),
         }),
-        "执行 MariaDB 语句失败",
+        "Failed to execute MariaDB statement",
     );
     assert_eq!(mapped.code(), crate::error::NO_DATABASE);
     assert_eq!(mapped.category(), ErrorCategory::FailedPrecondition);
     let message = mapped.message();
     assert!(
-        message.contains("没有默认库") && message.contains("库.表"),
+        message.contains("No default database") && message.contains("database.table"),
         "文案要同时说明原因与做法，实际：{message}"
     );
 }
@@ -187,13 +187,13 @@ fn unclassified_server_error_carries_the_numeric_code() {
             message: "Incorrect parameter count in the call to native function 'x'".to_owned(),
             state: "42000".to_owned(),
         }),
-        "执行 MariaDB 语句失败",
+        "Failed to execute MariaDB statement",
     );
     assert_eq!(mapped.code(), crate::error::SERVER_ERROR);
     assert_eq!(mapped.category(), ErrorCategory::Internal);
     assert_eq!(
         mapped.message(),
-        "执行 MariaDB 语句失败（服务端错误码 1582）"
+        "Failed to execute MariaDB statement (server error code 1582)"
     );
 
     // 已归类的错误不带数字码：它们的稳定文案本身就是诊断结论。
@@ -203,9 +203,9 @@ fn unclassified_server_error_carries_the_numeric_code() {
             message: "Lock wait timeout exceeded".to_owned(),
             state: "HY000".to_owned(),
         }),
-        "执行 MariaDB 语句失败",
+        "Failed to execute MariaDB statement",
     );
-    assert_eq!(classified.message(), "等待锁超时");
+    assert_eq!(classified.message(), "Timed out waiting for a lock");
 }
 
 // ---------------------------------------------------------------------------
@@ -255,11 +255,14 @@ fn hostname_mismatch_is_reported_as_certificate_problem() {
         io_error_with(rustls::Error::InvalidCertificate(
             rustls::CertificateError::NotValidForName,
         )),
-        "连接 MariaDB 失败",
+        "Failed to connect to MariaDB",
     );
     assert_eq!(mapped.code(), crate::error::CONNECTION_FAILED);
     assert_eq!(mapped.category(), ErrorCategory::Unavailable);
-    assert_eq!(mapped.message(), "服务端证书与主机名不匹配");
+    assert_eq!(
+        mapped.message(),
+        "The server certificate does not match the hostname"
+    );
 }
 
 #[test]
@@ -272,11 +275,14 @@ fn untrusted_certificate_is_reported_as_certificate_problem() {
     ] {
         let mapped = crate::error::map_error(
             io_error_with(rustls::Error::InvalidCertificate(certificate)),
-            "连接 MariaDB 失败",
+            "Failed to connect to MariaDB",
         );
         assert_eq!(mapped.code(), crate::error::CONNECTION_FAILED);
         assert_eq!(mapped.category(), ErrorCategory::Unavailable);
-        assert_eq!(mapped.message(), "服务端证书未被信任或已失效");
+        assert_eq!(
+            mapped.message(),
+            "The server certificate is untrusted or expired"
+        );
     }
 }
 
@@ -285,19 +291,22 @@ fn non_certificate_io_failure_keeps_generic_message() {
     // 不是证书问题的 `InvalidData`（例如对端在握手阶段乱发字节）不能被说成证书错误。
     let mapped = crate::error::map_error(
         io_error_with(std::io::Error::other("garbage")),
-        "连接 MariaDB 失败",
+        "Failed to connect to MariaDB",
     );
     assert_eq!(mapped.category(), ErrorCategory::Unavailable);
-    assert_eq!(mapped.message(), "数据库连接中断");
+    assert_eq!(mapped.message(), "Database Connection Interrupted");
 }
 
 #[test]
 fn server_without_tls_capability_is_unavailable() {
     let mapped = crate::error::map_error(
         mysql_async::Error::Driver(mysql_async::DriverError::NoClientSslFlagFromServer),
-        "连接 MariaDB 失败",
+        "Failed to connect to MariaDB",
     );
     assert_eq!(mapped.code(), crate::error::CONNECTION_FAILED);
     assert_eq!(mapped.category(), ErrorCategory::Unavailable);
-    assert_eq!(mapped.message(), "服务端不支持 TLS（连接要求 TLS）");
+    assert_eq!(
+        mapped.message(),
+        "The server does not support TLS, which this connection requires"
+    );
 }

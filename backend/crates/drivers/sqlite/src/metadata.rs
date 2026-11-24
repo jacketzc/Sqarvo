@@ -378,14 +378,14 @@ impl MetadataProvider for SqliteSession {
 }
 
 fn mismatched_reply() -> Error {
-    Error::internal("元数据回复与请求不匹配")
+    Error::internal("Metadata reply does not match the request")
 }
 
 pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
     if object.session_id != session_id {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "对象引用不属于当前会话",
+            "Object Reference does not belong to the current session",
         ));
     }
     Ok(())
@@ -408,7 +408,7 @@ fn kind_not_applicable(kind: &ObjectKind, operation: &str) -> Error {
 fn object_not_found(database: &str, name: &str) -> Error {
     Error::not_found(
         ErrorCode::METADATA_OBJECT_NOT_FOUND,
-        format!("SQLite 对象 {database}.{name} 不存在"),
+        format!("SQLite object {database}.{name} does not exist"),
     )
 }
 
@@ -417,7 +417,7 @@ fn database_not_found(requested: &str, available: &[String]) -> Error {
     Error::not_found(
         ErrorCode::METADATA_OBJECT_NOT_FOUND,
         format!(
-            "SQLite 数据库 {requested} 不存在；本连接可见的数据库：{}",
+            "SQLite database {requested} does not exist. Databases visible to this connection: {}",
             available.join("、")
         ),
     )
@@ -440,14 +440,18 @@ pub(crate) fn quote_identifier(name: &str) -> String {
 fn database_names(connection: &Connection) -> Result<Vec<String>> {
     let mut statement = connection
         .prepare("PRAGMA database_list")
-        .map_err(|error| map_sqlite_error(error, "准备读取 SQLite 数据库列表失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(error, "Failed to prepare the SQLite database list query")
+        })?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库列表失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite database list"))?;
 
     let mut names = Vec::new();
     for row in rows {
-        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库名失败"))?);
+        names.push(
+            row.map_err(|error| map_sqlite_error(error, "Failed to read SQLite database name"))?,
+        );
     }
     for required in [MAIN_DATABASE, TEMP_DATABASE] {
         if !names.iter().any(|name| name.eq_ignore_ascii_case(required)) {
@@ -518,18 +522,20 @@ fn filtered_database_names(connection: &Connection, filter: &ObjectFilter) -> Re
          ) SELECT name FROM available{where_clause} ORDER BY name"
     );
     let params: Vec<String> = binding.into_iter().collect();
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备读取 SQLite 数据库列表失败"))?;
+    let mut statement = connection.prepare(&sql).map_err(|error| {
+        map_sqlite_error(error, "Failed to prepare the SQLite database list query")
+    })?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             row.get::<_, String>(0)
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库列表失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite database list"))?;
 
     let mut names = Vec::new();
     for row in rows {
-        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 数据库名失败"))?);
+        names.push(
+            row.map_err(|error| map_sqlite_error(error, "Failed to read SQLite database name"))?,
+        );
     }
     Ok(names)
 }
@@ -563,17 +569,17 @@ fn list_database_objects(
     let params: Vec<String> = binding.into_iter().collect();
     let mut statement = connection
         .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 对象列表查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite object list query"))?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 对象列表失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite object list"))?;
 
     let mut nodes = Vec::new();
     for row in rows {
         let (name, raw_kind) =
-            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 对象行失败"))?;
+            row.map_err(|error| map_sqlite_error(error, "Failed to read a SQLite object row"))?;
         nodes.push(ObjectNode {
             qualified_name: QualifiedName::new(Some(database.to_owned()), None, name.clone()),
             kind: object_kind(&raw_kind),
@@ -680,18 +686,22 @@ fn column_names(
     let sql = format!("SELECT name FROM pragma_table_info(?, ?){suffix}");
     let mut params: Vec<String> = vec![table.to_owned(), database.to_owned()];
     params.extend(binding);
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 列名查询失败"))?;
+    let mut statement = connection.prepare(&sql).map_err(|error| {
+        map_sqlite_error(error, "Failed to prepare the SQLite column name query")
+    })?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             row.get::<_, String>(0)
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列名失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read the SQLite column names"))?;
 
     let mut names = Vec::new();
     for row in rows {
-        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 列名行失败"))?);
+        names.push(
+            row.map_err(|error| {
+                map_sqlite_error(error, "Failed to read a SQLite column name row")
+            })?,
+        );
     }
     Ok(names)
 }
@@ -738,16 +748,18 @@ fn master_names(
     params.extend(binding);
     let mut statement = connection
         .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 子对象查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite child object query"))?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             row.get::<_, String>(0)
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 子对象失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite child object"))?;
 
     let mut names = Vec::new();
     for row in rows {
-        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 子对象行失败"))?);
+        names.push(row.map_err(|error| {
+            map_sqlite_error(error, "Failed to read a SQLite child object row")
+        })?);
     }
     Ok(names)
 }
@@ -783,7 +795,7 @@ fn list_children(
         ObjectKind::Catalog => {
             if parent.qualified_name.schema.is_some() {
                 return Err(unsupported_level(
-                    "SQLite 没有 schema 层级：目录引用不能带 schema 字段",
+                    "SQLite has no separate schema level. Catalog references cannot specify schema",
                 ));
             }
             let Some(requested) = catalog_target(parent)? else {
@@ -810,7 +822,7 @@ fn list_children(
             if master_type != expected {
                 return Err(kind_not_applicable(
                     &parent.kind,
-                    &format!("展开子节点（{database}.{stored} 是 {master_type}）"),
+                    &format!("Expand child nodes ({database}.{stored} is {master_type})"),
                 ));
             }
             list_table_children(
@@ -823,20 +835,20 @@ fn list_children(
             )
         }
         ObjectKind::Schema => Err(unsupported_level(
-            "SQLite 没有 schema 层级：不伪造空 schema 层，请直接从 CATALOG 展开到表/视图",
+            "SQLite has no separate schema level. Expand tables and views directly from CATALOG",
         )),
         ObjectKind::Sequence => Err(unsupported_level(
-            "SQLite 没有序列（SEQUENCE）对象：该层级不存在，不返回空列表",
+            "SQLite does not support listing SEQUENCE objects",
         )),
         ObjectKind::MaterializedView
         | ObjectKind::Function
         | ObjectKind::Procedure
         | ObjectKind::Type => Err(unsupported_level(format!(
-            "SQLite 没有 {} 对象：该层级不存在，不返回空列表",
+            "SQLite does not support {} objects",
             parent.kind.as_str()
         ))),
         ObjectKind::Column | ObjectKind::Index | ObjectKind::Trigger | ObjectKind::Other(_) => {
-            Err(kind_not_applicable(&parent.kind, "展开子节点"))
+            Err(kind_not_applicable(&parent.kind, "Expand child nodes"))
         }
     }
 }
@@ -855,7 +867,7 @@ fn catalog_target(parent: &ObjectRef) -> Result<Option<String>> {
         (Some(catalog), name) if catalog.eq_ignore_ascii_case(name) => Ok(Some(catalog.to_owned())),
         (Some(catalog), name) => Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            format!("目录引用自相矛盾：catalog={catalog}、name={name}"),
+            format!("Inconsistent catalog reference: catalog={catalog}, name={name}"),
         )),
     }
 }
@@ -864,7 +876,7 @@ fn catalog_target(parent: &ObjectRef) -> Result<Option<String>> {
 fn resolve_object(connection: &Connection, object: &ObjectRef) -> Result<(String, String)> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
-            "SQLite 没有 schema 层级：对象引用不能带 schema 字段",
+            "SQLite has no separate schema level. Object references cannot specify schema",
         ));
     }
     let database = match object.qualified_name.catalog.as_deref() {
@@ -875,7 +887,7 @@ fn resolve_object(connection: &Connection, object: &ObjectRef) -> Result<(String
     if name.is_empty() {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "对象名不能为空",
+            "Object name cannot be empty",
         ));
     }
     Ok((database, name.to_owned()))
@@ -902,7 +914,7 @@ fn lookup_object(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .optional()
-        .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to query SQLite object"))?;
     Ok(row)
 }
 
@@ -910,18 +922,21 @@ fn lookup_object(
 fn table_target(connection: &Connection, object: &ObjectRef) -> Result<(String, String)> {
     match &object.kind {
         ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_) => {}
-        ObjectKind::Catalog => return Err(kind_not_applicable(&ObjectKind::Catalog, "读取列信息")),
-        ObjectKind::Schema => {
-            return Err(unsupported_level(
-                "SQLite 没有 schema 层级：不伪造空 schema 层",
+        ObjectKind::Catalog => {
+            return Err(kind_not_applicable(
+                &ObjectKind::Catalog,
+                "Read column information",
             ));
+        }
+        ObjectKind::Schema => {
+            return Err(unsupported_level("SQLite has no separate schema level"));
         }
         ObjectKind::Sequence => {
             return Err(unsupported_level(
-                "SQLite 没有序列（SEQUENCE）对象：该层级不存在",
+                "SQLite does not support SEQUENCE objects",
             ));
         }
-        kind => return Err(kind_not_applicable(kind, "读取列信息")),
+        kind => return Err(kind_not_applicable(kind, "Read column information")),
     }
     let (database, name) = resolve_object(connection, object)?;
     let Some((stored, master_type)) = lookup_object(connection, &database, &name)? else {
@@ -930,7 +945,7 @@ fn table_target(connection: &Connection, object: &ObjectRef) -> Result<(String, 
     if !matches!(master_type.as_str(), "table" | "view") {
         return Err(kind_not_applicable(
             &object.kind,
-            &format!("读取列信息（{database}.{stored} 是 {master_type}）"),
+            &format!("Read column information ({database}.{stored} is {master_type})"),
         ));
     }
     Ok((database, stored))
@@ -944,7 +959,7 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
             "SELECT cid, name, type, \"notnull\", dflt_value \
              FROM pragma_table_info(?1, ?2) ORDER BY cid",
         )
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 列查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite column query"))?;
     let rows = statement
         .query_map([name.as_str(), database.as_str()], |row| {
             Ok((
@@ -955,12 +970,13 @@ pub(crate) fn columns(connection: &Connection, object: &ObjectRef) -> Result<Vec
                 row.get::<_, Option<String>>(4)?,
             ))
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列信息失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite column information"))?;
 
     let mut columns = Vec::new();
     for row in rows {
-        let (cid, column_name, declared, not_null, dflt_value) =
-            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 列行失败"))?;
+        let (cid, column_name, declared, not_null, dflt_value) = row.map_err(|error| {
+            map_sqlite_error(error, "Failed to read a SQLite column metadata row")
+        })?;
         let declared = declared.trim();
         columns.push(ColumnMeta {
             name: column_name,
@@ -990,10 +1006,15 @@ fn schema_objects(
     page: &SchemaObjectPage,
 ) -> Result<Vec<ObjectNode>> {
     if catalog.qualified_name.schema.is_some() {
-        return Err(unsupported_level("SQLite 没有独立的 schema 层级"));
+        return Err(unsupported_level(
+            "SQLite does not have a separate schema level",
+        ));
     }
     let database = catalog_target(catalog)?.ok_or_else(|| {
-        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "Schema 分页必须指定数据库")
+        Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "Schema pagination requires a database",
+        )
     })?;
     let database = canonical_database(connection, &database)?;
     let mut sql = String::from(
@@ -1009,9 +1030,9 @@ fn schema_objects(
     }
     sql.push_str(" ORDER BY name COLLATE BINARY LIMIT ?");
     params.push(page.limit.to_string());
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite Schema 分页失败"))?;
+    let mut statement = connection.prepare(&sql).map_err(|error| {
+        map_sqlite_error(error, "Failed to prepare the SQLite schema page query")
+    })?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             let name = row.get::<_, String>(0)?;
@@ -1027,9 +1048,9 @@ fn schema_objects(
                 comment: None,
             })
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite Schema 页失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite schema page"))?;
     rows.collect::<rusqlite::Result<_>>()
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite Schema 页行失败"))
+        .map_err(|error| map_sqlite_error(error, "Failed to read a SQLite schema page row"))
 }
 
 fn index_details(connection: &Connection, object: &ObjectRef) -> Result<Vec<IndexDetail>> {
@@ -1041,7 +1062,7 @@ fn index_details(connection: &Connection, object: &ObjectRef) -> Result<Vec<Inde
              CROSS JOIN pragma_index_xinfo(i.name, ?2) AS x
              WHERE x.key = 1 ORDER BY i.name COLLATE BINARY, x.seqno LIMIT 1001",
         )
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 索引查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite index query"))?;
     let rows = statement
         .query_map([name, database], |row| {
             Ok((
@@ -1053,14 +1074,14 @@ fn index_details(connection: &Connection, object: &ObjectRef) -> Result<Vec<Inde
                 row.get::<_, bool>(5)?,
             ))
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 索引失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite index"))?;
     let mut indexes: Vec<IndexDetail> = Vec::new();
     for (position, row) in rows.enumerate() {
         if position == 1000 {
             return Err(schema_limit());
         }
         let (name, unique, origin, cid, column, descending) =
-            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 索引项失败"))?;
+            row.map_err(|error| map_sqlite_error(error, "Failed to read SQLite index entry"))?;
         if indexes.last().is_none_or(|index| index.name != name) {
             indexes.push(IndexDetail {
                 name,
@@ -1091,7 +1112,7 @@ fn schema_limit() -> Error {
     Error::new(
         ErrorCode::MCP_RESULT_TOO_LARGE,
         ErrorCategory::ResourceExhausted,
-        "SQLite 元数据超过单次读取上限",
+        "SQLite metadata exceeds the per-request limit",
     )
 }
 
@@ -1103,7 +1124,9 @@ fn describe_columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<D
              FROM pragma_table_xinfo(?1, ?2) WHERE hidden IN (0, 2, 3)
              ORDER BY cid LIMIT 1001",
         )
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 列属性查询失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(error, "Failed to prepare SQLite column attribute query")
+        })?;
     let rows = statement
         .query_map([&name, &database], |row| {
             let declared = row.get::<_, String>(2)?;
@@ -1129,10 +1152,10 @@ fn describe_columns(connection: &Connection, object: &ObjectRef) -> Result<Vec<D
                 },
             ))
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列属性失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite column properties"))?;
     let mut columns = rows
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 列属性行失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite column property rows"))?;
     if columns.len() > 1000 {
         return Err(schema_limit());
     }
@@ -1158,7 +1181,9 @@ fn enrich_column_properties(
                 |row| row.get::<_, bool>(0),
             )
             .optional()
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite rowid 属性失败"))?
+            .map_err(|error| {
+                map_sqlite_error(error, "Failed to read the SQLite rowid properties")
+            })?
             == Some(true);
         let single_primary = columns.iter().filter(|(position, _)| *position > 0).count() == 1;
         let indexed_primary = connection
@@ -1167,7 +1192,12 @@ fn enrich_column_properties(
                 [name, database],
                 |row| row.get::<_, bool>(0),
             )
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键索引属性失败"))?;
+            .map_err(|error| {
+                map_sqlite_error(
+                    error,
+                    "Failed to read the SQLite primary key index properties",
+                )
+            })?;
         for (position, column) in columns {
             let Some(definition) = definition
                 .columns
@@ -1224,7 +1254,9 @@ fn parse_table_definition(
     let ddl: Option<Option<String>> = connection
         .query_row(&sql, [name], |row| row.get(0))
         .optional()
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 声明定义失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(error, "Failed to read the SQLite declared definition")
+        })?;
     let Some(ddl) = ddl.flatten() else {
         return Ok(None);
     };
@@ -1350,7 +1382,7 @@ fn table_object_kind(connection: &Connection, database: &str, name: &str) -> Res
             [database, name],
             |row| row.get(0),
         )
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 表种类失败"))
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite Table Type"))
 }
 
 fn native_table_ddl(connection: &Connection, object: &ObjectRef) -> Result<NativeTableDdl> {
@@ -1362,7 +1394,11 @@ fn native_table_ddl(connection: &Connection, object: &ObjectRef) -> Result<Nativ
         }
         "virtual" => ("virtual_table", ObjectKind::Table),
         "view" => ("view", ObjectKind::View),
-        _ => return Err(unsupported_level("SQLite 内部对象不提供 MCP 建表定义")),
+        _ => {
+            return Err(unsupported_level(
+                "SQLite internal objects do not expose an MCP table definition",
+            ));
+        }
     };
     let resolved = ObjectRef {
         session_id: object.session_id,
@@ -1409,7 +1445,7 @@ fn table_statistics(connection: &Connection, object: &ObjectRef) -> Result<Table
     let stat: Option<String> = connection
         .query_row(&sql, [&name, &database], |row| row.get(0))
         .optional()
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 已存统计失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite stored statistics"))?;
     result.row_count = stat
         .as_deref()
         .and_then(|value| value.split_ascii_whitespace().next())
@@ -1424,7 +1460,7 @@ fn foreign_keys(connection: &Connection, object: &ObjectRef) -> Result<Vec<Forei
             "SELECT id, \"table\", \"from\", \"to\", on_update, on_delete
              FROM pragma_foreign_key_list(?1, ?2) ORDER BY id, seq LIMIT 1001",
         )
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 外键查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite foreign key query"))?;
     let rows = statement
         .query_map([name.as_str(), database.as_str()], |row| {
             Ok((
@@ -1436,7 +1472,7 @@ fn foreign_keys(connection: &Connection, object: &ObjectRef) -> Result<Vec<Forei
                 row.get::<_, String>(5)?,
             ))
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 外键失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite foreign keys"))?;
     let mut keys: Vec<ForeignKey> = Vec::new();
     let mut previous_id = None;
     for (offset, row) in rows.enumerate() {
@@ -1444,11 +1480,11 @@ fn foreign_keys(connection: &Connection, object: &ObjectRef) -> Result<Vec<Forei
             return Err(Error::new(
                 ErrorCode::MCP_RESULT_TOO_LARGE,
                 ErrorCategory::ResourceExhausted,
-                "外键列数超过元数据读取上限",
+                "The number of extra-key columns exceeds the metadata reading limit",
             ));
         }
-        let (id, target, local, referenced, on_update, on_delete) =
-            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 外键行失败"))?;
+        let (id, target, local, referenced, on_update, on_delete) = row
+            .map_err(|error| map_sqlite_error(error, "Failed to read a SQLite foreign key row"))?;
         if previous_id != Some(id) {
             keys.push(ForeignKey {
                 name: None,
@@ -1500,17 +1536,17 @@ pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result
 
     let mut statement = connection
         .prepare("SELECT name, pk FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk")
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite primary key query"))?;
     let rows = statement
         .query_map([name.as_str(), database.as_str()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read SQLite primary key"))?;
 
     let mut columns = Vec::new();
     for row in rows {
-        let (column_name, position) =
-            row.map_err(|error| map_sqlite_error(error, "读取 SQLite 主键行失败"))?;
+        let (column_name, position) = row
+            .map_err(|error| map_sqlite_error(error, "Failed to read a SQLite primary key row"))?;
         columns.push(PrimaryKeyColumn {
             name: column_name,
             // `pragma_table_info.pk` 就是主键内顺序，1 开始。
@@ -1540,7 +1576,7 @@ pub(crate) fn primary_key(connection: &Connection, object: &ObjectRef) -> Result
 /// 别的库里根本执行不了。`sqlite_sequence` / `sqlite_stat1` 等系统表有原文，照常返回。
 pub(crate) fn ddl(connection: &Connection, object: &ObjectRef) -> Result<Ddl> {
     read_ddl(connection, object, None)?
-        .ok_or_else(|| Error::internal("未设置上限的 SQLite DDL 读取意外省略"))
+        .ok_or_else(|| Error::internal("A SQLite DDL read with no limit was unexpectedly omitted"))
 }
 
 fn read_ddl(
@@ -1558,7 +1594,7 @@ fn read_ddl(
     if master_type != expected {
         return Err(kind_not_applicable(
             &object.kind,
-            &format!("读取 DDL（{database}.{stored} 是 {master_type}）"),
+            &format!("Read DDL ({database}.{stored} is {master_type})"),
         ));
     }
     if over_limit {
@@ -1568,20 +1604,19 @@ fn read_ddl(
         return Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
             format!(
-                "SQLite 内部对象 {database}.{stored} 没有保存的 DDL 原文\
-                 （sqlite_master.sql 为 NULL）：它由主键/UNIQUE 约束隐式创建，不能单独重建"
+                "SQLite internal object {database}.{stored} has no stored DDL (sqlite_master.sql is NULL). A primary key or UNIQUE constraint created it implicitly, so it cannot be recreated independently"
             ),
         ));
     };
     if text.trim().is_empty() {
         // 已确认 sql 非 NULL 却取到空白：这是引擎数据异常，不能当成空 DDL 返回。
         return Err(Error::internal(format!(
-            "SQLite 对象 {database}.{stored} 的 sqlite_master.sql 是空白文本，拒绝返回空 DDL"
+            "SQLite object {database}.{stored} has blank sqlite_master.sql and cannot return DDL"
         )));
     }
     Ok(Some(Ddl::from_database(
         text,
-        format!("sqlite_master.sql（数据库 {database}，对象种类 {master_type}）"),
+        format!("sqlite_master.sql (database {database}, object type {master_type})"),
     )))
 }
 
@@ -1593,12 +1628,12 @@ fn ddl_master_type(kind: &ObjectKind) -> Result<&'static str> {
         ObjectKind::Index => Ok("index"),
         ObjectKind::Trigger => Ok("trigger"),
         ObjectKind::Schema => Err(unsupported_level(
-            "SQLite 没有 schema 层级：没有 schema 的 DDL 可读",
+            "SQLite has no separate schema level and does not provide schema DDL",
         )),
         ObjectKind::Sequence => Err(unsupported_level(
-            "SQLite 没有序列（SEQUENCE）对象：没有序列的 DDL 可读",
+            "SQLite does not support SEQUENCE objects or sequence DDL",
         )),
-        other => Err(kind_not_applicable(other, "读取 DDL")),
+        other => Err(kind_not_applicable(other, "Read DDL")),
     }
 }
 
@@ -1627,7 +1662,7 @@ fn lookup_ddl_source(
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .optional()
-        .map_err(|error| map_sqlite_error(error, "查询 SQLite 对象 DDL 失败"))
+        .map_err(|error| map_sqlite_error(error, "Failed to query SQLite object DDL"))
 }
 
 /// 表数据路径（`BrowseTable` / 行编辑 / 插入）的目标：库名 + 对象名（ADR 0024）。
@@ -1640,14 +1675,14 @@ fn lookup_ddl_source(
 pub(crate) fn table_data_target(object: &ObjectRef) -> Result<(String, String)> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
-            "SQLite 没有 schema 层级：对象引用不能带 schema 字段",
+            "SQLite has no separate schema level. Object references cannot specify schema",
         ));
     }
     if !matches!(
         object.kind,
         ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_)
     ) {
-        return Err(kind_not_applicable(&object.kind, "表数据浏览"));
+        return Err(kind_not_applicable(&object.kind, "Browse table data"));
     }
     let database = match object.qualified_name.catalog.as_deref().map(str::trim) {
         None | Some("") => MAIN_DATABASE.to_owned(),
@@ -1657,8 +1692,7 @@ pub(crate) fn table_data_target(object: &ObjectRef) -> Result<(String, String)> 
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
                 format!(
-                    "SQLite 表数据只支持 main / temp 两个库，不支持数据库 {catalog}；\
-                     跨 ATTACH 库的表数据本版未实现"
+                    "SQLite table data browsing supports main and temp only. Browsing attached database {catalog} is not implemented"
                 ),
             ));
         }
@@ -1667,7 +1701,7 @@ pub(crate) fn table_data_target(object: &ObjectRef) -> Result<(String, String)> 
     if name.is_empty() {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "对象名不能为空",
+            "Object name cannot be empty",
         ));
     }
     Ok((database, name.to_owned()))

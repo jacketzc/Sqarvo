@@ -48,9 +48,9 @@ fn access_with_limits(
         root["enabled_tools"] = serde_json::json!(tools);
     }
     let config = sqarvo_mcp::config::parse(&root.to_string())
-        .expect("解析测试配置")
+        .expect("Parse test configuration")
         .validate()
-        .expect("校验测试配置");
+        .expect("Validate test configuration");
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));

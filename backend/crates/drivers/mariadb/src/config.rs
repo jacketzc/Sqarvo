@@ -50,16 +50,18 @@ impl MariaDbConfig {
     pub(crate) fn from_params(params: &ConnectionParams, secret: Option<&Secret>) -> Result<Self> {
         params.validate()?;
         if params.driver_id.as_str() != DRIVER_ID {
-            return Err(config_error("该驱动只能处理 mariadb 连接参数"));
+            return Err(config_error(
+                "This driver accepts only mariadb connection parameters",
+            ));
         }
         if params.port == 0 {
-            return Err(config_error("MariaDB 连接必须提供端口"));
+            return Err(config_error("A MariaDB connection requires a port"));
         }
         let Some(username) = params.username.as_deref().map(str::trim) else {
-            return Err(config_error("MariaDB 连接必须提供用户名"));
+            return Err(config_error("A MariaDB connection requires a username"));
         };
         if username.is_empty() {
-            return Err(config_error("MariaDB 用户名不能为空"));
+            return Err(config_error("MariaDB username cannot be empty"));
         }
         let database = params
             .database
@@ -80,18 +82,26 @@ impl MariaDbConfig {
                     connect_timeout = parse_timeout(value)?;
                 }
                 other => {
-                    return Err(config_error(format!("MariaDB 不支持的连接参数：{other}")));
+                    return Err(config_error(format!(
+                        "Unsupported MariaDB connection parameter: {other}"
+                    )));
                 }
             }
         }
         if ssl_cert.is_some() != ssl_key.is_some() {
-            return Err(config_error("客户端证书与私钥必须同时提供"));
+            return Err(config_error(
+                "Client certificate and private key must be provided simultaneously",
+            ));
         }
         if params.tls == TlsMode::Disabled && (ssl_ca.is_some() || ssl_cert.is_some()) {
-            return Err(config_error("TLS 已禁用时不能提供证书参数"));
+            return Err(config_error(
+                "Certificate parameters cannot be supplied when TLS is disabled",
+            ));
         }
         if params.tls_server_name.is_some() && params.tls == TlsMode::Disabled {
-            return Err(config_error("TLS 已禁用时不能指定 TLS 主机名"));
+            return Err(config_error(
+                "TLS hostname cannot be specified when TLS is disabled",
+            ));
         }
 
         let ssl_opts = build_ssl_opts(params, ssl_ca.as_ref(), ssl_cert, ssl_key);
@@ -166,20 +176,21 @@ fn build_ssl_opts(
 fn require_existing_path(value: &str, key: &str) -> Result<PathBuf> {
     let path = PathBuf::from(value.trim());
     if !path.is_file() {
-        return Err(config_error(format!("{key} 指向的文件不存在")));
+        return Err(config_error(format!(
+            "The file specified by {key} does not exist"
+        )));
     }
     Ok(path)
 }
 
 fn parse_timeout(value: &str) -> Result<Duration> {
-    let millis: u64 = value
-        .trim()
-        .parse()
-        .map_err(|_| config_error("connect_timeout_ms 必须是整数毫秒"))?;
+    let millis: u64 = value.trim().parse().map_err(|_| {
+        config_error("connect_timeout_ms must be an integer number of milliseconds")
+    })?;
     let timeout = Duration::from_millis(millis);
     if !(MIN_CONNECT_TIMEOUT..=MAX_CONNECT_TIMEOUT).contains(&timeout) {
         return Err(config_error(
-            "connect_timeout_ms 超出允许范围（100–300000）",
+            "connect_timeout_ms must be between 100 and 300000 milliseconds",
         ));
     }
     Ok(timeout)

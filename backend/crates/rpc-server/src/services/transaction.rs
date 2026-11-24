@@ -49,7 +49,7 @@ impl TransactionService for TransactionServiceImpl {
         let session_id: SessionId = request
             .session_id
             .parse()
-            .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+            .map_err(|_| Status::invalid_argument("Invalid session ID format"))?;
         let isolation = mapping::isolation_from_proto(request.isolation)?;
 
         // 会话不存在 → session.not_found；能力与重复打开由连接层判定并给出稳定错误码。
@@ -99,10 +99,12 @@ impl TransactionService for TransactionServiceImpl {
 /// 格式合法但未知的 ID 才是幂等路径（由连接层返回成功）。
 fn parse_transaction_id(raw: &str) -> Result<TransactionId, Status> {
     if raw.trim().is_empty() {
-        return Err(Status::invalid_argument("事务 ID 不能为空"));
+        return Err(Status::invalid_argument(
+            "The transaction ID must not be empty",
+        ));
     }
     raw.parse()
-        .map_err(|_| Status::invalid_argument("事务 ID 格式非法"))
+        .map_err(|_| Status::invalid_argument("Invalid transaction ID format"))
 }
 
 #[cfg(test)]

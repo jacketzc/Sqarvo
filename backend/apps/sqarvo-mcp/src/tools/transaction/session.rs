@@ -47,7 +47,9 @@ impl Target {
                 profile.profile_id == self.profile && profile.revision == self.profile_revision
             })
         {
-            return Err(denied("事务授权或档案已变更"));
+            return Err(denied(
+                "Transaction authorization or the connection profile changed",
+            ));
         }
         Ok(())
     }
@@ -83,7 +85,7 @@ impl Target {
         if let Ok(Ok(())) = timeout(BUDGET, server.audit().write(&record)).await {
             true
         } else {
-            tracing::error!(transaction_id = %self.id, event = event.name, "MCP 事务审计失败");
+            tracing::error!(transaction_id = %self.id, event = event.name, "MCP transaction auditing failed");
             false
         }
     }
@@ -234,7 +236,7 @@ async fn initialize(
         || !crate::policy::write::identifier(&connection_alias)
         || !crate::policy::write::identifier(&database)
     {
-        return Err(invalid("事务目标或超时时间非法"));
+        return Err(invalid("Invalid transaction target or timeout"));
     }
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let access = server.access();
@@ -251,7 +253,7 @@ async fn initialize(
                 "mariadb" if write_preflight::mariadb_target_segment(&database) => {
                     profile.params.database = Some(database.clone());
                 }
-                _ => return Err(invalid("该驱动不支持指定的事务数据库")),
+                _ => return Err(invalid("The driver does not support the specified transaction database")),
             }
             Ok::<_, Error>((Target {
                 id, alias: connection_alias, database, profile: profile.profile_id,
@@ -295,7 +297,7 @@ async fn initialize(
     let handle = session
         .handle
         .as_ref()
-        .ok_or_else(|| Error::internal("事务连接未初始化"))?;
+        .ok_or_else(|| Error::internal("The transaction connection has not been initialized"))?;
     let result = start(server, &target, handle.clone(), deadline, stop).await;
     let open = match result {
         Ok(open) => open,
@@ -376,11 +378,13 @@ impl Disposable {
         match timeout(BUDGET, self.start_close()).await {
             Ok(Ok(closed)) => closed,
             Ok(Err(error)) => {
-                tracing::error!(%error, "MCP 事务连接关闭任务异常");
+                tracing::error!(%error, "The MCP transaction connection cleanup task failed");
                 false
             }
             Err(_) => {
-                tracing::warn!("MCP 事务连接关闭超时，继续隔离并保留资源配额");
+                tracing::warn!(
+                    "Closing the MCP transaction connection timed out. The connection remains isolated and retains its resource quota"
+                );
                 false
             }
         }
@@ -400,7 +404,7 @@ async fn close_connection(
     abort: impl Future<Output = bool>,
 ) -> bool {
     if let Err(error) = close.await {
-        tracing::error!(code = %error.code(), "MCP 事务连接关闭失败");
+        tracing::error!(code = %error.code(), "Failed to close the MCP transaction connection");
         abort.await;
         return false;
     }
@@ -419,7 +423,9 @@ impl Stop {
         match self {
             Self::Expired => expired(),
             Self::Cancelled => cancelled(),
-            Self::Revoked => denied("事务授权或档案已撤销"),
+            Self::Revoked => {
+                denied("Transaction authorization or the connection profile was revoked")
+            }
         }
     }
 }
@@ -511,7 +517,7 @@ async fn manage(
         let result = if open.failed {
             Err(Error::failed_precondition(
                 ErrorCode::TRANSACTION_FAILED,
-                "事务已失败，需要回滚",
+                "The transaction failed and must be rolled back",
             ))
         } else {
             execute(server, owner, target, open, &command).await
@@ -567,9 +573,11 @@ async fn execute(
         .filter(|value| {
             !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
         })
-        .ok_or_else(|| invalid("operation_id 非法"))?;
+        .ok_or_else(|| invalid("Invalid operation_id"))?;
     if arguments.contains_key("connection_alias") || arguments.contains_key("database") {
-        return Err(invalid("事务写入使用 BEGIN 固定的连接和数据库"));
+        return Err(invalid(
+            "Transaction writes use the connection and database selected at BEGIN",
+        ));
     }
     arguments.insert("connection_alias".into(), json!(target.alias));
     arguments.insert("database".into(), json!(target.database));
@@ -630,13 +638,13 @@ async fn execute_checked(
     if open.operations.contains(operation_id) {
         return Err(Error::already_exists(
             ErrorCode::from_static("mcp.operation_already_used"),
-            "operation_id 已使用",
+            "operation_id has already been used",
         ));
     }
     if open.operations.len() >= MAX_OPERATIONS {
         return Err(Error::resource_exhausted(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            "事务 DML 次数已达上限",
+            "The transaction has reached its DML operation limit",
         ));
     }
     let statement = write_transaction::prepare(&open.handle, plan)?;
@@ -664,7 +672,7 @@ async fn execute_checked(
             target.reauthorize(server, plan.action.operation()).await?;
             Ok::<_, Error>(permit)
         }) => result.map_err(|_| Error::new(
-            ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "写入超过执行时限"
+            ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "The write exceeded its execution deadline"
         ))??,
     };
     open.operations.insert(operation_id.to_owned());
@@ -699,7 +707,7 @@ async fn execute_checked(
             if open.rows > MAX_ROWS {
                 Err(Error::resource_exhausted(
                     ErrorCode::MCP_INVALID_ARGUMENT,
-                    "事务累计影响行数超出上限",
+                    "The transaction exceeds the cumulative affected row limit",
                 ))
             } else {
                 Ok(rows)
@@ -807,7 +815,7 @@ async fn commit(
                 return Err(write::audit_unavailable());
             }
             let (document, lock) = server.access().guard().transaction_snapshot().await
-                .map_err(|_| denied("无法确认事务提交授权"))?;
+                .map_err(|_| denied("Could not verify authorization to commit the transaction"))?;
             target.check(&document)?;
             Ok::<_, Error>((lock, permit))
         }) => result.map_err(|_| expired())??,
@@ -880,7 +888,7 @@ fn expired() -> Error {
     Error::new(
         ErrorCode::from_static("mcp.transaction_expired"),
         ErrorCategory::Timeout,
-        "事务或操作期限已到",
+        "The transaction or operation deadline expired",
     )
 }
 

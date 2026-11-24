@@ -30,10 +30,10 @@ impl DriverRegistry {
         let mut registry = Self::new();
         registry
             .register(Arc::new(sqarvo_driver_sqlite::SqliteDriver::new()))
-            .expect("内置 SQLite 驱动注册失败");
+            .expect("Failed to register the built-in SQLite driver");
         registry
             .register(Arc::new(sqarvo_driver_mariadb::MariaDbDriver::new()))
-            .expect("内置 MariaDB 驱动注册失败");
+            .expect("Failed to register the built-in MariaDB driver");
         registry
     }
 
@@ -43,7 +43,7 @@ impl DriverRegistry {
         if self.drivers.contains_key(&id) {
             return Err(Error::already_exists(
                 ErrorCode::CONFIG_INVALID,
-                format!("驱动 {id} 已经注册"),
+                format!("Driver {id} is already registered"),
             ));
         }
         self.drivers.insert(id, driver);

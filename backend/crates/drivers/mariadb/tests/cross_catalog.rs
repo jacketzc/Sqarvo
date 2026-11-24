@@ -315,7 +315,7 @@ async fn session_without_default_database_can_browse_explicit_catalog() {
     assert_eq!(error.code(), error::NO_DATABASE);
     assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
     assert!(
-        error.to_string().contains("默认库"),
+        error.to_string().contains("default database"),
         "文案必须告诉用户怎么补库名：{error}"
     );
 

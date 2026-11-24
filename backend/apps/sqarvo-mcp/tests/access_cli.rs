@@ -42,7 +42,9 @@ fn management_processes_share_policy_and_require_confirmation() {
 
     let disabled = access(home, &["read-only", "off", "--yes"]);
     assert!(!disabled.status.success());
-    assert!(String::from_utf8_lossy(&disabled.stderr).contains("全局未开启"));
+    assert!(
+        String::from_utf8_lossy(&disabled.stderr).contains("Global MCP data access is disabled")
+    );
     assert_eq!(status(access(home, &["read-only", "status"])), initial);
 
     let enabled = status(access(home, &["on", "--yes"]));

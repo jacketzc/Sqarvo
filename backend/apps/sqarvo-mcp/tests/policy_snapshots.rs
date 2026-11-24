@@ -241,15 +241,18 @@ fn fail_closed_matrix_denied_as_parse_error() {
 
 #[test]
 fn rejection_messages_are_agent_facing_and_classified() {
-    // 错误消息规范：中文 + 拒绝原因分类可定位。
+    // Error messages use English and identify the reason for rejection.
     let cases: &[(&str, &str)] = &[
-        ("SELECT 1 INTO @x", "INTO 子句"),
-        ("SELECT * FROM t FOR UPDATE", "锁定读"),
-        ("SELECT GET_LOCK('l', 1)", "危险函数"),
-        ("INSERT INTO t VALUES (1)", "只读白名单"),
-        ("SELECT 1; SELECT 2", "单条 SQL 语句"),
-        ("SELECT /*+ MAX_EXECUTION_TIME(1000) */ 1", "优化器 hint"),
-        ("SELECT @a := 1", "会话变量赋值"),
+        ("SELECT 1 INTO @x", "INTO clause"),
+        ("SELECT * FROM t FOR UPDATE", "Locking reads"),
+        ("SELECT GET_LOCK('l', 1)", "Disallowed function"),
+        ("INSERT INTO t VALUES (1)", "read-only allowlist"),
+        ("SELECT 1; SELECT 2", "one SQL statement"),
+        (
+            "SELECT /*+ MAX_EXECUTION_TIME(1000) */ 1",
+            "Optimizer hints",
+        ),
+        ("SELECT @a := 1", "Session variable assignment"),
     ];
     for (sql, keyword) in cases {
         let message = check_readonly(sql)
@@ -265,7 +268,10 @@ fn rejection_messages_are_agent_facing_and_classified() {
         .expect_err("必须拒绝")
         .message()
         .to_string();
-    assert!(parse_message.contains("解析失败"), "{parse_message}");
+    assert!(
+        parse_message.contains("Failed to parse SQL"),
+        "{parse_message}"
+    );
 }
 
 #[test]

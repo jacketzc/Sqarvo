@@ -154,7 +154,8 @@ impl CredentialStore for WindowsCredentialManagerStore {
         // 长度上限在这里检查：超过 2560 字节时 `CredWriteW` 只会返回
         // `ERROR_INVALID_PARAMETER`，用户看不懂；必须提前给出明确原因。
         let mut blob = encode_blob(secret)?;
-        let blob_size = u32::try_from(blob.len()).expect("encode_blob 已保证长度不超过 2560 字节");
+        let blob_size = u32::try_from(blob.len())
+            .expect("encode_blob guarantees a maximum length of 2560 bytes");
         let mut target_wide = wide(target);
         let mut username_wide = wide(CREDENTIAL_USERNAME);
 

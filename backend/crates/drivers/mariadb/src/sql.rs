@@ -115,7 +115,7 @@ fn push_segment<'a>(sql: &'a str, start: usize, end: usize, segments: &mut Vec<&
 pub(crate) fn script_too_large(failed_index: u32) -> Error {
     Error::resource_exhausted(
         ErrorCode::QUERY_SCRIPT_TOO_LARGE,
-        "多语句脚本缓冲行数超过预算，请拆分脚本或给查询加 LIMIT",
+        "The buffered row count exceeds the budget for a multi-statement script. Split the script or add LIMIT to the query",
     )
     .with_statement_failure(StatementFailure {
         failed_index,

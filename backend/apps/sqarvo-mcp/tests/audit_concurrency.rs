@@ -448,7 +448,9 @@ fn held_flock_forces_pid_sidecar_for_server_process() {
     );
     // 退化路径必须可见（audit.rs lock_target 的 warn）。
     assert!(
-        outcome.stderr.contains("改写到独立文件") || outcome.stderr.contains("独立文件"),
+        outcome
+            .stderr
+            .contains("This process will use a separate file"),
         "stderr 必须说明退化到独立文件：\n{}",
         outcome.stderr
     );

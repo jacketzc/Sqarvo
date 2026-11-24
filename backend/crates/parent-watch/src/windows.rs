@@ -47,7 +47,7 @@ impl Watch {
         let result = self.gone.await;
         if let Err(error) = result {
             // 等待线程异常结束（发送端被丢弃）：按父进程已消失处理，避免后端留下孤儿。
-            tracing::warn!(%error, "父进程等待线程提前结束，按父进程已消失处理");
+            tracing::warn!(%error, "The parent process wait thread ended early. Treating the parent as exited");
         }
         self.parent_pid
     }
@@ -58,7 +58,10 @@ pub(crate) fn monitor(parent_pid: u32) -> Result<Watch, Absent> {
     let Some(handle) = ParentHandle::open(parent_pid) else {
         // fail-safe：打不开句柄就当作父进程已消失。这里只判一次——失败后不重试、
         // 不进入任何轮询循环，因此不会反复空转。
-        tracing::warn!(parent_pid, "无法打开父进程句柄，按父进程已消失处理");
+        tracing::warn!(
+            parent_pid,
+            "Could not open the parent process handle. Treating the parent as exited"
+        );
         return Err(Absent);
     };
 
@@ -71,7 +74,7 @@ pub(crate) fn monitor(parent_pid: u32) -> Result<Watch, Absent> {
     if decide(Some(parent_pid), std::process::id(), observation) == Decision::Gone {
         tracing::warn!(
             parent_pid,
-            "父进程 pid 已被其他进程复用（创建时间晚于本进程），按父进程已消失处理"
+            "The parent PID was reused by a process created after the backend. Treating the parent as exited"
         );
         return Err(Absent);
     }
@@ -81,11 +84,11 @@ pub(crate) fn monitor(parent_pid: u32) -> Result<Watch, Absent> {
         .name("sqarvo-parent-watch".to_owned())
         .spawn(move || {
             match handle.wait() {
-                WaitOutcome::Signalled => tracing::info!(parent_pid, "父进程已退出"),
+                WaitOutcome::Signalled => tracing::info!(parent_pid, "Parent process exited"),
                 WaitOutcome::Failed(code) => tracing::warn!(
                     parent_pid,
                     wait_result = code,
-                    "等待父进程句柄失败，按父进程已消失处理"
+                    "Waiting on the parent process handle failed. Treating the parent as exited"
                 ),
             }
             // 句柄随闭包结束由 `ParentHandle::drop` 关闭。
@@ -101,7 +104,7 @@ pub(crate) fn monitor(parent_pid: u32) -> Result<Watch, Absent> {
             tracing::error!(
                 %error,
                 parent_pid,
-                "无法启动父进程等待线程，父进程监视失效（后端仍可通过 Ctrl-C 退出）"
+                "Failed to start the parent process wait thread. Parent monitoring is unavailable, but the backend can still exit on Ctrl-C"
             );
             // 线程没起来：换一条永不发送的通道，`gone()` 因此一直等待，而不是把
             // 「监视没装上」误读成「父进程已消失」。
@@ -165,7 +168,9 @@ impl ParentHandle {
     /// 真正打不开句柄的情况在 [`ParentHandle::open`] 里已经按消失处理。
     fn looks_reused(&self) -> bool {
         let (Some(parent), Some(own)) = (self.created, creation_time(own_handle())) else {
-            tracing::debug!("读不到进程创建时间，跳过 pid 复用校验");
+            tracing::debug!(
+                "Could not read the process creation time. Skipping the PID reuse check"
+            );
             return false;
         };
         parent > own

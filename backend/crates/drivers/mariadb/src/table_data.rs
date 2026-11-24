@@ -202,7 +202,9 @@ impl TableDataProvider for MariaDbSession {
             .await?
         {
             TableDataReply::Page(page) => Ok(page),
-            _ => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal(
+                "The table data response type does not match the request",
+            )),
         }
     }
 
@@ -232,7 +234,9 @@ impl TableDataProvider for MariaDbSession {
                 report.deferred = deferred;
                 Ok(report)
             }
-            _ => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal(
+                "The table data response type does not match the request",
+            )),
         }
     }
 
@@ -258,7 +262,9 @@ impl TableDataProvider for MariaDbSession {
                 report.deferred = deferred;
                 Ok(report)
             }
-            _ => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal(
+                "The table data response type does not match the request",
+            )),
         }
     }
 }
@@ -343,9 +349,9 @@ async fn browse(
     // offset 分页由调用方自己推进偏移量；再回一个键集游标会把两种分页方式混在一起，
     // 客户端无法判断该用哪个（ADR 0022：必须显式选一种）。
     let next_page_token = if has_more && offset == 0 {
-        let last = collected
-            .last()
-            .ok_or_else(|| Error::internal("表数据游标缺少上一页最后一行"))?;
+        let last = collected.last().ok_or_else(|| {
+            Error::internal("The table data cursor is missing the last row of the previous page")
+        })?;
         Some(encode_table_cursor(
             object,
             &primary_key_values(last, &columns, &primary_key)?,
@@ -396,17 +402,17 @@ fn check_pagination(
 ) -> Result<()> {
     if token.is_some() && offset > 0 {
         return Err(invalid_change(
-            "offset 与 page_token 互斥：页码跳转用 offset，连续翻页用 page_token",
+            "Specify either offset to jump to a page or page_token to continue pagination",
         ));
     }
     if token.is_some() && has_sort {
         return Err(invalid_change(
-            "游标只对应主键升序：按请求排序翻页请改用 offset 分页",
+            "The cursor tracks ascending primary key order only. Use offset to paginate in the requested sort order",
         ));
     }
     if token.is_some() && primary_key.is_empty() {
         return Err(invalid_change(
-            "无主键表没有稳定顺序，不签发翻页游标，也不接受 page_token",
+            "A table without a primary key has no stable ordering and cannot use page_token pagination",
         ));
     }
     Ok(())
@@ -514,23 +520,25 @@ async fn run_query(
     let mut result = conn
         .exec_iter(sql, Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "执行 MariaDB 表数据查询失败"))?;
+        .map_err(|error| map_error(error, "Failed to execute the MariaDB table data query"))?;
     let protocol_columns = result.columns();
     let Some(protocol_columns) = protocol_columns.filter(|columns| !columns.is_empty()) else {
-        return Err(Error::internal("MariaDB 表数据查询没有返回结果集"));
+        return Err(Error::internal(
+            "The MariaDB table query returned no result set",
+        ));
     };
     let (_, plans) = map_columns(&protocol_columns);
     if plans.len() != expected_columns {
         return Err(Error::internal(
-            "MariaDB 表数据结果集的列数与列元数据不一致",
+            "The MariaDB table result column count does not match the column metadata",
         ));
     }
 
     let mut stream = result
         .stream::<mysql_async::Row>()
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 表数据结果集失败"))?
-        .ok_or_else(|| Error::internal("MariaDB 表数据查询没有返回行流"))?;
+        .map_err(|error| map_error(error, "Failed to read the MariaDB table data result set"))?
+        .ok_or_else(|| Error::internal("The MariaDB table query returned no row stream"))?;
 
     let mut collected: Vec<Row> = Vec::with_capacity(collect_limit);
     while collected.len() < collect_limit {
@@ -538,7 +546,7 @@ async fn run_query(
             .next()
             .await
             .transpose()
-            .map_err(|error| map_error(error, "读取 MariaDB 表数据行失败"))?
+            .map_err(|error| map_error(error, "Failed to read the MariaDB table data row"))?
         else {
             break;
         };
@@ -550,7 +558,7 @@ async fn run_query(
         .next()
         .await
         .transpose()
-        .map_err(|error| map_error(error, "清空 MariaDB 表数据结果集失败"))?
+        .map_err(|error| map_error(error, "Failed to clear the MariaDB table data result set"))?
         .is_some()
     {}
 
@@ -605,7 +613,7 @@ fn compile_order(
     for key in sort {
         let column = resolve_column(columns, &key.column).ok_or_else(|| {
             invalid_change(format!(
-                "排序列 {} 不存在（列名必须来自 GetColumns）",
+                "Sort column {} does not exist. Use a column name returned by GetColumns",
                 key.column.trim()
             ))
         })?;
@@ -638,7 +646,7 @@ fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<Com
     for condition in &filter.conditions {
         let column = resolve_column(columns, &condition.column).ok_or_else(|| {
             invalid_change(format!(
-                "筛选列 {} 不存在（列名必须来自 GetColumns）",
+                "Filter column {} does not exist. Use a column name returned by GetColumns",
                 condition.column.trim()
             ))
         })?;
@@ -647,13 +655,14 @@ fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<Com
             FilterOperator::IsNull => format!("{quoted} IS NULL"),
             FilterOperator::IsNotNull => format!("{quoted} IS NOT NULL"),
             other => {
-                let value = condition
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| invalid_change(format!("列 {column} 的筛选条件缺少比较值")))?;
+                let value = condition.value.as_ref().ok_or_else(|| {
+                    invalid_change(format!(
+                        "The filter for column {column} is missing a comparison value"
+                    ))
+                })?;
                 if matches!(value, Value::Null) {
                     return Err(invalid_change(format!(
-                        "列 {column} 的比较值不能为 NULL：空值请用 IS NULL / IS NOT NULL"
+                        "The comparison value for column {column} cannot be NULL. Use IS NULL or IS NOT NULL"
                     )));
                 }
                 let operator = match other {
@@ -666,7 +675,7 @@ fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<Com
                     FilterOperator::Like => "LIKE",
                     // 上面两支已单独处理。
                     FilterOperator::IsNull | FilterOperator::IsNotNull => {
-                        unreachable!("空值算子不参与值比较")
+                        unreachable!("NULL predicates do not perform value comparisons")
                     }
                 };
                 // 参数化绑定：LIKE 的 `%` / `_` 按 MariaDB 语义解释（字面量用 `\%` /
@@ -747,13 +756,13 @@ async fn count_rows(
         Box::pin(conn.exec_first::<u64, _, _>(&sql, Params::Positional(filter.params.clone())));
     match tokio::time::timeout(timeout, query.as_mut()).await {
         Ok(Ok(Some(count))) => Ok((Some(count), TotalKind::Exact, false)),
-        Ok(Ok(None)) => Err(Error::internal("COUNT(*) 没有返回结果")),
-        Ok(Err(error)) => Err(map_error(error, "统计 MariaDB 表行数失败")),
+        Ok(Ok(None)) => Err(Error::internal("COUNT(*) returned no result")),
+        Ok(Err(error)) => Err(map_error(error, "Failed to count MariaDB table rows")),
         Err(_elapsed) => {
             if let Err(error) = control.kill_query().await {
                 tracing::warn!(
                     %error,
-                    "MariaDB 精确计数超时后 KILL QUERY 失败，等计数自行结束（本次仍按未统计返回）"
+                    "KILL QUERY failed after the MariaDB exact row count timed out. The count will finish on its own, and no count will be returned for this request"
                 );
             }
             // 读掉被中断语句的结果：正常是 1317（查询被中断）。KILL 落空时这里会等到
@@ -762,13 +771,13 @@ async fn count_rows(
                 Ok(_) => {}
                 Err(error) => {
                     if !is_query_interrupted(&error) {
-                        tracing::warn!(%error, "MariaDB 计数超时收尾时收到非中断错误");
+                        tracing::warn!(%error, "MariaDB returned an error other than query interruption during count timeout cleanup");
                     }
                 }
             }
             tracing::warn!(
                 ?timeout,
-                "MariaDB 精确计数超时，按未统计降级（本页数据不受影响）"
+                "MariaDB exact row count timed out. Returning the page without a count"
             );
             Ok((None, TotalKind::Unknown, true))
         }
@@ -784,7 +793,7 @@ async fn table_row_estimate(conn: &mut Conn, database: &str, table: &str) -> Res
             (database, table),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 表行数估计失败"))?;
+        .map_err(|error| map_error(error, "Failed to read the MariaDB table row count estimate"))?;
     let Some(row) = rows.first() else {
         return Ok(None);
     };
@@ -801,7 +810,9 @@ fn keyset_condition(
     key: &[Value],
 ) -> Result<String> {
     if key.len() != primary_key.len() || key.is_empty() {
-        return Err(Error::internal("主键值与主键定义不匹配"));
+        return Err(Error::internal(
+            "Primary key value does not match primary key definition",
+        ));
     }
     let names = primary_key.column_names();
     let mut terms = Vec::with_capacity(names.len());
@@ -885,7 +896,9 @@ async fn apply(
         EditTransaction::Active { read_only: false } => {
             conn.query_drop("SAVEPOINT sqarvo_row_changes")
                 .await
-                .map_err(|error| map_error(error, "创建 MariaDB 行变更保存点失败"))?;
+                .map_err(|error| {
+                    map_error(error, "Failed to create the MariaDB row change savepoint")
+                })?;
             match execute_plan(conn, &plan, cancel).await {
                 Ok(execution) if execution.cancelled => {
                     // 取消：回到本批 savepoint，外层事务原样保留（ADR 0018）。
@@ -895,7 +908,9 @@ async fn apply(
                 Ok(execution) => {
                     conn.query_drop("RELEASE SAVEPOINT sqarvo_row_changes")
                         .await
-                        .map_err(|error| map_error(error, "释放 MariaDB 行变更保存点失败"))?;
+                        .map_err(|error| {
+                            map_error(error, "Failed to release the MariaDB row change savepoint")
+                        })?;
                     Ok(execution.into_report())
                 }
                 Err(error) => {
@@ -907,7 +922,9 @@ async fn apply(
         EditTransaction::None => {
             conn.query_drop("START TRANSACTION")
                 .await
-                .map_err(|error| map_error(error, "开始 MariaDB 行变更事务失败"))?;
+                .map_err(|error| {
+                    map_error(error, "Failed to start the MariaDB row change transaction")
+                })?;
             match execute_plan(conn, &plan, cancel).await {
                 Ok(execution) if execution.cancelled => {
                     // 自动提交模式下取消 = 整批回滚：绝不留半批（ADR 0018）。
@@ -917,7 +934,7 @@ async fn apply(
                 Ok(execution) => {
                     if let Err(error) = conn.query_drop("COMMIT").await {
                         let _ = conn.query_drop("ROLLBACK").await;
-                        return Err(map_error(error, "提交 MariaDB 行变更失败"));
+                        return Err(map_error(error, "Failed to commit the MariaDB row changes"));
                     }
                     Ok(execution.into_report())
                 }
@@ -937,13 +954,13 @@ async fn rollback_savepoint(conn: &mut Conn) {
         .query_drop("ROLLBACK TO SAVEPOINT sqarvo_row_changes")
         .await
     {
-        tracing::warn!(%error, "回滚 MariaDB 行变更保存点失败");
+        tracing::warn!(%error, "Failed to roll back to the MariaDB row change savepoint");
     }
     if let Err(error) = conn
         .query_drop("RELEASE SAVEPOINT sqarvo_row_changes")
         .await
     {
-        tracing::warn!(%error, "释放 MariaDB 行变更保存点失败");
+        tracing::warn!(%error, "Failed to release the MariaDB row change savepoint");
     }
 }
 
@@ -1036,10 +1053,9 @@ async fn execute_plan(
     let mut results = Vec::with_capacity(total);
     for group in &plan.groups {
         // 命中同一 SQL 骨架的连续变更复用同一个 prepared statement（二进制协议绑定）。
-        let statement = conn
-            .prep(&group.sql)
-            .await
-            .map_err(|error| map_error(error, "准备 MariaDB 行变更语句失败"))?;
+        let statement = conn.prep(&group.sql).await.map_err(|error| {
+            map_error(error, "Failed to prepare the MariaDB row change statement")
+        })?;
         for row in &group.rows {
             // 每条**之前**检查一次取消令牌（ADR 0018）：置位后不再执行后续变更，
             // 已执行的行由调用方整批回滚——取消只在行边界生效。
@@ -1052,7 +1068,9 @@ async fn execute_plan(
             let result = conn
                 .exec_iter(&statement, Params::Positional(row.params.clone()))
                 .await
-                .map_err(|error| map_read_only(map_error(error, "执行 MariaDB 行变更失败")))?;
+                .map_err(|error| {
+                    map_read_only(map_error(error, "Failed to apply MariaDB row changes"))
+                })?;
             let affected = result.affected_rows();
             drop(result);
             results.push(RowChangeResult {
@@ -1081,12 +1099,12 @@ fn compile(
     let key = change.key();
     if !key.matches(primary_key) {
         return Err(invalid_change(format!(
-            "第 {position} 条变更的主键值个数与主键定义不一致"
+            "The primary key value count for change {position} does not match the primary key definition"
         )));
     }
     if key.values.iter().any(Value::is_null) {
         return Err(invalid_change(format!(
-            "第 {position} 条变更的主键值不能为 NULL"
+            "Change {position} cannot use a NULL primary key value"
         )));
     }
 
@@ -1095,7 +1113,7 @@ fn compile(
         RowChange::Update { key, changes, .. } => {
             if changes.is_empty() {
                 return Err(invalid_change(format!(
-                    "第 {position} 条更新没有任何列变更"
+                    "Update {position} does not change any columns"
                 )));
             }
             let mut assignments = Vec::with_capacity(changes.len());
@@ -1103,13 +1121,13 @@ fn compile(
             for change in changes {
                 let column = resolve_column(columns, &change.column).ok_or_else(|| {
                     invalid_change(format!(
-                        "第 {position} 条变更引用了不存在的列 {}",
+                        "Change {position} references a nonexistent column: {}",
                         change.column
                     ))
                 })?;
                 if seen.iter().any(|name| name.eq_ignore_ascii_case(column)) {
                     return Err(invalid_change(format!(
-                        "第 {position} 条变更重复修改了列 {column}"
+                        "Change {position} modifies column {column} more than once"
                     )));
                 }
                 seen.push(column);
@@ -1166,14 +1184,17 @@ fn resolve_column_meta<'a>(columns: &'a [ColumnMeta], requested: &str) -> Option
 }
 
 fn transaction_failed() -> Error {
-    Error::failed_precondition(ErrorCode::TRANSACTION_FAILED, "事务已失败，只能回滚")
+    Error::failed_precondition(
+        ErrorCode::TRANSACTION_FAILED,
+        "The transaction failed and can only be rolled back",
+    )
 }
 
 fn transaction_lost() -> Error {
     Error::new(
         ErrorCode::from_static("mariadb.transaction_lost"),
         sqarvo_common::ErrorCategory::Unavailable,
-        "事务已随连接断开而丢失，无法确认是否已提交；请重新连接",
+        "The transaction was lost when the connection closed. The commit outcome is unknown. Reconnect to continue",
     )
 }
 
@@ -1240,7 +1261,10 @@ fn bind_cell(value: &Value) -> Result<MyValue> {
         Value::Array(_) | Value::Unsupported { .. } => {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                format!("MariaDB 本版不支持写入 {} 类型的值", value.kind_name()),
+                format!(
+                    "This MariaDB driver version does not support writing {} values",
+                    value.kind_name()
+                ),
             ));
         }
     };
@@ -1249,7 +1273,10 @@ fn bind_cell(value: &Value) -> Result<MyValue> {
 
 fn mysql_year(year: i32) -> Result<u16> {
     u16::try_from(year).map_err(|_| {
-        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "日期年份超出 MariaDB 支持范围")
+        Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "The year is outside the MariaDB date range",
+        )
     })
 }
 
@@ -1264,14 +1291,16 @@ fn primary_key_values(
         let index = columns
             .iter()
             .position(|column| column.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| Error::internal("主键列不在浏览结果的列集合中"))?;
-        let cell: &Cell = row
-            .get(index)
-            .ok_or_else(|| Error::internal("浏览结果缺少主键列"))?;
+            .ok_or_else(|| {
+                Error::internal("A primary key column is missing from the browse result")
+            })?;
+        let cell: &Cell = row.get(index).ok_or_else(|| {
+            Error::internal("A primary key column is missing from the browse result")
+        })?;
         if cell.truncated {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "主键值超过单元格上限，无法生成翻页游标；请缩小该列或改用代理主键",
+                "The primary key value exceeds the cell size limit. Reduce the column value size or use a surrogate primary key to generate pagination cursors",
             ));
         }
         values.push(cell.value.clone());
@@ -1285,7 +1314,7 @@ fn primary_key_values(
 /// 不经过浮点，也不拼进 SQL 文本。
 fn bind_value(value: &Value) -> Result<MyValue> {
     let bound = match value {
-        Value::Null => return Err(Error::internal("主键值不能为 NULL")),
+        Value::Null => return Err(Error::internal("Primary key value cannot be NULL")),
         Value::Bool(value) => MyValue::Int(i64::from(u8::from(*value))),
         Value::Int(value) => MyValue::Int(*value),
         Value::UInt(value) => MyValue::UInt(*value),
@@ -1338,7 +1367,7 @@ fn bind_value(value: &Value) -> Result<MyValue> {
 fn unsupported_pk(kind: &str) -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        format!("MariaDB 本版不支持以 {kind} 类型的主键翻页"),
+        format!("This MariaDB driver version does not support pagination with {kind} primary keys"),
     )
 }
 
@@ -1480,7 +1509,10 @@ impl InsertPlan {
                         results.push(rejection.into_result(index));
                         continue;
                     }
-                    return Err(map_read_only(map_error(error, "执行 MariaDB 插入失败")));
+                    return Err(map_read_only(map_error(
+                        error,
+                        "Failed to execute MariaDB insertion",
+                    )));
                 }
             };
             let affected = executed.affected_rows();
@@ -1490,7 +1522,7 @@ impl InsertPlan {
                 results.push(
                     RowRejection::new(
                         ErrorCode::INTERNAL,
-                        format!("插入语句影响了 {affected} 行，预期 1 行"),
+                        format!("The insert affected {affected} rows. Expected 1"),
                     )
                     .into_result(index),
                 );
@@ -1520,8 +1552,10 @@ async fn resolve_key(conn: &mut Conn, plan: &KeyPlan) -> Result<Option<RowKey>> 
             let generated: u64 = conn
                 .query_first("SELECT LAST_INSERT_ID()")
                 .await
-                .map_err(|error| map_error(error, "读取 MariaDB 自增值失败"))?
-                .ok_or_else(|| Error::internal("LAST_INSERT_ID() 没有返回值"))?;
+                .map_err(|error| {
+                    map_error(error, "Failed to read the MariaDB auto-increment value")
+                })?
+                .ok_or_else(|| Error::internal("LAST_INSERT_ID() returned no value"))?;
             let mut values = Vec::with_capacity(slots.len());
             for slot in slots {
                 match slot {
@@ -1530,7 +1564,7 @@ async fn resolve_key(conn: &mut Conn, plan: &KeyPlan) -> Result<Option<RowKey>> 
                         Value::UInt(generated)
                     } else {
                         Value::Int(i64::try_from(generated).map_err(|_| {
-                            Error::internal("自增值超出 i64 范围，无法按有符号列回传")
+                            Error::internal("The auto-increment value exceeds the i64 range and cannot be returned as a signed value")
                         })?)
                     }),
                 }
@@ -1568,18 +1602,20 @@ fn compile_row(
         {
             return Ok(CompiledInsert::Rejected(RowRejection::new(
                 ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
-                format!("列 {requested} 由数据库生成，不能显式插入"),
+                format!(
+                    "Column {requested} is generated by the database and cannot be inserted explicitly"
+                ),
             )));
         }
         let Some(column) = resolve_column_meta(columns, requested) else {
             return Err(invalid_change(format!(
-                "第 {position} 行引用了不存在的列 {requested}"
+                "Row {position} references a nonexistent column: {requested}"
             )));
         };
         if !column.nullable && matches!(change.value, Value::Null) {
             return Ok(CompiledInsert::Rejected(RowRejection::new(
                 ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
-                format!("列 {} 不允许 NULL，请给一个值", column.name),
+                format!("Column {} does not allow NULL. Supply a value", column.name),
             )));
         }
         match bind_cell(&change.value) {
@@ -1620,7 +1656,7 @@ fn compile_row(
         return Ok(CompiledInsert::Rejected(RowRejection::new(
             ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
             format!(
-                "列 {} 必填：既未给值，数据库也没有默认值可兜底",
+                "Column {} requires a value and the database has no default",
                 column.name
             ),
         )));
@@ -1680,7 +1716,7 @@ fn compile_key(
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
                 format!(
-                    "主键列 {name} 被省略且不是自增列，无法回传插入后的完整主键；请显式给出该列"
+                    "Primary key column {name} was omitted and is not auto-incrementing. Supply the column explicitly so the complete inserted primary key can be returned"
                 ),
             ));
         }
@@ -1726,12 +1762,12 @@ async fn column_flags(
             (database, table),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 列属性失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB column properties"))?;
     let mut flags = Vec::with_capacity(rows.len());
     for row in &rows {
         let name = row
             .get::<String, _>(0)
-            .ok_or_else(|| Error::internal("列属性缺少 COLUMN_NAME"))?;
+            .ok_or_else(|| Error::internal("Column attributes are missing COLUMN_NAME"))?;
         let extra = row
             .get::<Option<String>, _>(1)
             .flatten()
@@ -1759,38 +1795,42 @@ fn classify_insert_error(error: &mysql_async::Error, index: usize) -> Option<Row
     let mysql_async::Error::Server(server) = error else {
         return None;
     };
-    let message = format!("第 {} 行插入失败", index.saturating_add(1));
+    let message = format!("Failed to insert row {}", index.saturating_add(1));
     let rejection =
         |code, detail: &str| Some(RowRejection::new(code, format!("{message}：{detail}")));
     match server.code {
         // ER_DUP_ENTRY / ER_DUP_ENTRY_WITH_KEY_NAME
         1062 | 1586 => rejection(
             ErrorCode::TABLE_DATA_UNIQUE_VIOLATION,
-            "主键或唯一约束冲突，该值已存在",
+            "The value already exists and violates a primary key or unique constraint",
         ),
         // ER_BAD_NULL_ERROR
-        1048 => rejection(ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION, "有列不允许 NULL"),
+        1048 => rejection(
+            ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
+            "A column does not allow NULL",
+        ),
         // ER_NO_DEFAULT_FOR_FIELD
         1364 => rejection(
             ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
-            "有 NOT NULL 列既未给值也没有默认值",
+            "A NOT NULL column has no supplied value or default",
         ),
         // 长度 / 取值越界 / 类型不匹配：ER_DATA_TOO_LONG、ER_WARN_DATA_OUT_OF_RANGE、
         // ER_WARN_DATA_TRUNCATED、ER_TRUNCATED_WRONG_VALUE_FOR_FIELD、
         // ER_TRUNCATED_WRONG_VALUE、ER_DATA_OUT_OF_RANGE
-        1406 | 1264 | 1265 | 1366 | 1292 | 1690 => {
-            rejection(ErrorCode::CONFIG_INVALID, "值超出列的类型或长度范围")
-        }
+        1406 | 1264 | 1265 | 1366 | 1292 | 1690 => rejection(
+            ErrorCode::CONFIG_INVALID,
+            "The value exceeds the column type or length limit",
+        ),
         // ER_NO_REFERENCED_ROW_2 / ER_ROW_IS_REFERENCED_2 / ER_CHECK_CONSTRAINT_VIOLATED /
         // ER_CONSTRAINT_FAILED
         1452 | 1451 | 3819 | 4025 => rejection(
             ErrorCode::CONFIG_INVALID,
-            "值不满足列定义（外键/CHECK 约束）",
+            "The value violates the column definition (foreign key or CHECK constraint)",
         ),
         // ER_NON_DEFAULT_VALUE_FOR_GENERATED_COLUMN：生成列被显式写值
         1906 => rejection(
             ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
-            "有生成列被显式写入",
+            "A generated column was written explicitly",
         ),
         _ => None,
     }
@@ -1836,12 +1876,16 @@ async fn insert(
         EditTransaction::Active { read_only: false } => {
             conn.query_drop("SAVEPOINT sqarvo_row_insert")
                 .await
-                .map_err(|error| map_error(error, "创建 MariaDB 插入保存点失败"))?;
+                .map_err(|error| {
+                    map_error(error, "Failed to create the MariaDB insert savepoint")
+                })?;
             match plan.execute(conn).await {
                 Ok(results) if !has_failures(&results) => {
                     conn.query_drop("RELEASE SAVEPOINT sqarvo_row_insert")
                         .await
-                        .map_err(|error| map_error(error, "释放 MariaDB 插入保存点失败"))?;
+                        .map_err(|error| {
+                            map_error(error, "Failed to release MariaDB insert savepoint")
+                        })?;
                     Ok(report(results, false))
                 }
                 Ok(results) => {
@@ -1858,12 +1902,14 @@ async fn insert(
         EditTransaction::None => {
             conn.query_drop("START TRANSACTION")
                 .await
-                .map_err(|error| map_error(error, "开始 MariaDB 插入事务失败"))?;
+                .map_err(|error| {
+                    map_error(error, "Failed to start the MariaDB insert transaction")
+                })?;
             match plan.execute(conn).await {
                 Ok(results) if !has_failures(&results) => {
                     if let Err(error) = conn.query_drop("COMMIT").await {
                         let _ = conn.query_drop("ROLLBACK").await;
-                        return Err(map_error(error, "提交 MariaDB 插入失败"));
+                        return Err(map_error(error, "Failed to commit the MariaDB insert"));
                     }
                     Ok(report(results, false))
                 }
@@ -1887,10 +1933,10 @@ async fn rollback_insert_savepoint(conn: &mut Conn) {
         .query_drop("ROLLBACK TO SAVEPOINT sqarvo_row_insert")
         .await
     {
-        tracing::warn!(%error, "回滚 MariaDB 插入保存点失败");
+        tracing::warn!(%error, "Failed to roll back to the MariaDB insert savepoint");
     }
     if let Err(error) = conn.query_drop("RELEASE SAVEPOINT sqarvo_row_insert").await {
-        tracing::warn!(%error, "释放 MariaDB 插入保存点失败");
+        tracing::warn!(%error, "Failed to release MariaDB insert savepoint");
     }
 }
 

@@ -47,9 +47,9 @@ fn access(db: &Path, enabled_tools: Option<serde_json::Value>) -> profile_access
         root["enabled_tools"] = tools;
     }
     let config = sqarvo_mcp::config::parse(&root.to_string())
-        .expect("解析测试配置")
+        .expect("Parse test configuration")
         .validate()
-        .expect("校验测试配置");
+        .expect("Validate test configuration");
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
@@ -198,7 +198,7 @@ fn parse_recognizes_the_four_resource_shapes() {
         }
     );
     assert_eq!(
-        resources::parse("database://dev/main/schema").expect("目录"),
+        resources::parse("database://dev/main/schema").expect("directory"),
         ResourceRequest::Schema {
             alias: "dev".to_owned(),
             database: "main".to_owned()
@@ -672,9 +672,9 @@ fn mariadb_access(target: &Target) -> profile_access::TestAccess {
         }]
     });
     let config = sqarvo_mcp::config::parse(&root.to_string())
-        .expect("解析测试配置")
+        .expect("Parse test configuration")
         .validate()
-        .expect("校验测试配置");
+        .expect("Validate test configuration");
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     let credentials = Arc::new(MemoryCredentialStore::new());
     sqarvo_local_store::CredentialStore::set(

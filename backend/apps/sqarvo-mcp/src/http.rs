@@ -44,17 +44,19 @@ fn open_store() -> Result<Arc<dyn CredentialStore>> {
         let _ = AUTH_PROFILE;
         Err(Error::unsupported(
             HTTP_FAILED,
-            "此平台尚未接入 MCP HTTP 凭据",
+            "MCP HTTP credentials are unavailable on this platform",
         ))
     }
 }
 
 fn new_token() -> Result<Secret> {
     let mut bytes = [0; 32];
-    getrandom::fill(&mut bytes).map_err(|_| Error::internal("无法生成 MCP HTTP 凭据"))?;
+    getrandom::fill(&mut bytes)
+        .map_err(|_| Error::internal("Failed to generate MCP HTTP credentials"))?;
     let mut token = String::with_capacity(64);
     for byte in bytes {
-        write!(token, "{byte:02x}").map_err(|_| Error::internal("无法编码 MCP HTTP 凭据"))?;
+        write!(token, "{byte:02x}")
+            .map_err(|_| Error::internal("Failed to encode MCP HTTP credentials"))?;
     }
     Ok(Secret::new(token))
 }
@@ -93,7 +95,12 @@ fn listener_lease(port: u16, create: bool) -> Result<File> {
         .create(create)
         .truncate(false)
         .open(path)
-        .map_err(|_| Error::failed_precondition(HTTP_FAILED, "无法确认 MCP HTTP 监听归属"))
+        .map_err(|_| {
+            Error::failed_precondition(
+                HTTP_FAILED,
+                "Could not verify ownership of the MCP HTTP listener",
+            )
+        })
 }
 
 async fn claim_listener(port: u16) -> Result<File> {
@@ -102,13 +109,13 @@ async fn claim_listener(port: u16) -> Result<File> {
         if !try_lock(&lease, LockMode::Exclusive).map_err(Error::from)? {
             return Err(Error::failed_precondition(
                 HTTP_FAILED,
-                "MCP HTTP 监听已被另一个实例管理",
+                "Another instance manages the MCP HTTP listener",
             ));
         }
         Ok(lease)
     })
     .await
-    .map_err(|_| Error::internal("MCP HTTP 监听归属登记任务失败"))?
+    .map_err(|_| Error::internal("The MCP HTTP listener ownership registration task failed"))?
 }
 
 /// Launch Codex with a keyring credential restricted to the designated loopback configuration.
@@ -117,7 +124,7 @@ pub fn launch_codex(port: u16, app_server: bool) -> Result<()> {
     if try_lock(&lease, LockMode::Shared).map_err(Error::from)? {
         return Err(Error::failed_precondition(
             HTTP_FAILED,
-            "指定端口没有正在运行的 Sqarvo MCP HTTP 服务",
+            "No Sqarvo MCP HTTP server is running on the specified port",
         ));
     }
     drop(lease);
@@ -146,13 +153,13 @@ pub fn launch_codex(port: u16, app_server: bool) -> Result<()> {
     }
     let status = command
         .status()
-        .map_err(|_| Error::failed_precondition(HTTP_FAILED, "无法启动 Codex 客户端"))?;
+        .map_err(|_| Error::failed_precondition(HTTP_FAILED, "Failed to start the Codex client"))?;
     if status.success() {
         Ok(())
     } else {
         Err(Error::failed_precondition(
             HTTP_FAILED,
-            "Codex 客户端退出失败",
+            "The Codex client exited unsuccessfully",
         ))
     }
 }
@@ -432,9 +439,9 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
         .await
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::AddrInUse {
-                Error::already_exists(PORT_BUSY, "MCP HTTP 端口已被占用")
+                Error::already_exists(PORT_BUSY, "The MCP HTTP port is already in use")
             } else {
-                Error::failed_precondition(HTTP_FAILED, "无法绑定 MCP HTTP 回环端口")
+                Error::failed_precondition(HTTP_FAILED, "Failed to bind the MCP HTTP loopback port")
             }
         })?;
     let (store, generation) = tokio::task::spawn_blocking(|| {
@@ -444,7 +451,7 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
         Ok::<_, Error>((store, generation))
     })
     .await
-    .map_err(|_| Error::internal("MCP HTTP 凭据任务失败"))??;
+    .map_err(|_| Error::internal("The MCP HTTP credential task failed"))??;
 
     let context = Arc::new(ServerContext::bootstrap(config_path).await?);
     let _listener_lease = claim_listener(port).await?;
@@ -519,7 +526,9 @@ pub async fn run(config_path: Option<&Path>, port: u16, managed: bool) -> Result
     }
     close_sessions(&sessions).await;
     context.shutdown().await;
-    result.map_err(|_| Error::failed_precondition(HTTP_FAILED, "MCP HTTP 服务异常退出"))
+    result.map_err(|_| {
+        Error::failed_precondition(HTTP_FAILED, "The MCP HTTP server exited unexpectedly")
+    })
 }
 
 #[cfg(test)]

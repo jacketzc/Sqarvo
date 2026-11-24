@@ -115,7 +115,7 @@ pub(crate) async fn call(
             record,
             op,
             started,
-            invalid("执行工具的操作类型由工具名确定"),
+            invalid("The execution tool determines the operation type from its name"),
         )
         .await;
     }
@@ -224,10 +224,10 @@ async fn preview(
                 let result = tokio::select! {
                     biased;
                     () = token.cancelled() => Err(Error::new(
-                        ErrorCode::QUERY_CANCELLED, ErrorCategory::Cancelled, "客户端取消了预览",
+                        ErrorCode::QUERY_CANCELLED, ErrorCategory::Cancelled, "The client canceled the preview",
                     )),
                     () = tokio::time::sleep_until(deadline) => Err(Error::new(
-                        ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "写入预览超时",
+                        ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "The write preview timed out",
                     )),
                     result = inspect(&handle, &plan, query_id) => result,
                 };
@@ -248,7 +248,7 @@ async fn preview(
                 {
                     return Err(Error::failed_precondition(
                         ErrorCode::MCP_INTERNAL,
-                        "写入预览未能确认只读事务已结束",
+                        "The write preview could not confirm that the read-only transaction ended",
                     ));
                 }
                 result
@@ -443,7 +443,7 @@ fn outcome_fields(outcome: TransactionOutcome) -> (WritePhase, Option<u64>, Opti
             Some(Error::new(
                 ErrorCode::MCP_COMMIT_UNKNOWN,
                 ErrorCategory::FailedPrecondition,
-                "数据库提交结果未知，请核查数据和审计后再决定是否重试",
+                "The database commit outcome is unknown. Check the data and audit log before deciding whether to retry",
             )),
         ),
         TransactionOutcome::NotStarted(error) => (WritePhase::NotStarted, None, Some(error)),
@@ -466,7 +466,7 @@ pub(super) async fn inspect(
         "mariadb" => write_preflight::mariadb(handle, plan, query_id).await,
         _ => Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "驱动不支持受控写入",
+            "The driver does not support controlled writes",
         )),
     }
 }
@@ -497,7 +497,7 @@ async fn persist(
         });
     let result = writer.write(&record).await;
     if let Err(error) = &result {
-        tracing::error!(code = %error.code(), "MCP 写入审计失败");
+        tracing::error!(code = %error.code(), "MCP write auditing failed");
     }
     result
 }
@@ -565,7 +565,7 @@ pub(super) fn safe_error(error: Error) -> Error {
         _ => Error::new(
             error.code(),
             error.category(),
-            "数据库拒绝或未能完成本次受控写入",
+            "The database rejected the controlled write or could not complete it",
         ),
     }
 }
@@ -578,7 +578,7 @@ pub(super) fn audit_unavailable() -> Error {
     Error::new(
         ErrorCode::MCP_INTERNAL,
         ErrorCategory::Internal,
-        "无法持久化写入审计记录",
+        "Failed to persist the write audit record",
     )
 }
 
@@ -591,7 +591,7 @@ mod tests {
         let timeout = Error::new(
             ErrorCode::MCP_QUERY_TIMEOUT,
             ErrorCategory::Timeout,
-            "写入预览超时",
+            "The write preview timed out",
         );
         let Err(timeout) = preview_scope(Err(timeout)) else {
             panic!("timeout must be reported")

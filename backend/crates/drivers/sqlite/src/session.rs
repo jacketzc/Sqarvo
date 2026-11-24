@@ -180,11 +180,13 @@ impl SqliteSession {
                 }
                 run_connection(connection, receiver, thread_state);
             })
-            .map_err(|error| Error::internal("无法启动 SQLite 会话线程").with_source(error))?;
+            .map_err(|error| {
+                Error::internal("Could not start SQLite session thread").with_source(error)
+            })?;
 
-        let interrupt = ready_receiver
-            .await
-            .map_err(|_| Error::internal("SQLite 会话线程在连接完成前退出"))??;
+        let interrupt = ready_receiver.await.map_err(|_| {
+            Error::internal("SQLite session thread exits before connection completes")
+        })??;
 
         Ok(Self {
             session_id: SessionId::new(),
@@ -198,7 +200,7 @@ impl SqliteSession {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(Error::failed_precondition(SESSION_CLOSED, "会话已关闭"));
+            return Err(Error::failed_precondition(SESSION_CLOSED, "Session closed"));
         }
         Ok(())
     }
@@ -242,7 +244,7 @@ impl SqliteSession {
     }
 
     fn closed_error() -> Error {
-        Error::failed_precondition(SESSION_CLOSED, "会话已关闭")
+        Error::failed_precondition(SESSION_CLOSED, "Session closed")
     }
 }
 
@@ -272,7 +274,7 @@ fn run_connection(
             Command::Fetch { reply, .. } => {
                 let _ = reply.send(Err(Error::not_found(
                     ErrorCode::QUERY_NOT_FOUND,
-                    "当前会话没有在途查询",
+                    "The current session has no in-flight query",
                 )));
             }
             Command::Begin { options, reply } => {
@@ -406,7 +408,7 @@ fn serve_metadata(
 fn transaction_aborted() -> Error {
     Error::failed_precondition(
         ErrorCode::TRANSACTION_FAILED,
-        "事务已被数据库回滚，只能回滚",
+        "The database rolled back the transaction. Only rollback is allowed",
     )
 }
 
@@ -446,7 +448,7 @@ fn begin_transaction(
         // 后者覆盖「用户用原始 SQL 打开了事务」的情况：SQLite 侧确实有事务在跑。
         return Err(Error::already_exists(
             ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-            "该会话已有打开的事务，请先提交或回滚",
+            "This session already has an open transaction. Specify transaction_id when applying row changes. Autocommit fallback is disabled",
         ));
     }
     match options.isolation {
@@ -454,7 +456,9 @@ fn begin_transaction(
         other => {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                format!("SQLite 只提供可串行化隔离，不支持 {other:?}"),
+                format!(
+                    "SQLite supports only serializable isolation and does not support {other:?}"
+                ),
             ));
         }
     }
@@ -464,7 +468,7 @@ fn begin_transaction(
     if options.read_only {
         connection
             .execute_batch("PRAGMA query_only = ON")
-            .map_err(|error| map_sqlite_error(error, "开启 SQLite 只读模式失败"))?;
+            .map_err(|error| map_sqlite_error(error, "Failed to enable SQLite read-only mode"))?;
     }
     let begin_sql = if options.read_only {
         "BEGIN DEFERRED"
@@ -473,7 +477,10 @@ fn begin_transaction(
     };
     if let Err(error) = connection.execute_batch(begin_sql) {
         reset_query_only(connection);
-        return Err(map_sqlite_error(error, "开始 SQLite 事务失败"));
+        return Err(map_sqlite_error(
+            error,
+            "Failed to start the SQLite transaction",
+        ));
     }
 
     let id = TransactionId::new();
@@ -526,7 +533,10 @@ fn commit_transaction(
                 // 事务仍在：保留状态，允许调用方重试提交或改为回滚。
                 *transaction = Some(open);
             }
-            Err(map_sqlite_error(error, "提交 SQLite 事务失败"))
+            Err(map_sqlite_error(
+                error,
+                "Failed to commit the SQLite transaction",
+            ))
         }
     }
 }
@@ -561,7 +571,10 @@ fn rollback_transaction(
             } else {
                 *transaction = Some(open);
             }
-            Err(map_sqlite_error(error, "回滚 SQLite 事务失败"))
+            Err(map_sqlite_error(
+                error,
+                "Failed to roll back the SQLite transaction",
+            ))
         }
     }
 }
@@ -577,9 +590,12 @@ fn rollback_if_open(
     let result = if connection.is_autocommit() {
         Ok(())
     } else {
-        connection
-            .execute_batch("ROLLBACK")
-            .map_err(|error| map_sqlite_error(error, "关闭会话时回滚事务失败"))
+        connection.execute_batch("ROLLBACK").map_err(|error| {
+            map_sqlite_error(
+                error,
+                "Failed to roll back the transaction while closing the session",
+            )
+        })
     };
     reset_query_only(connection);
     result
@@ -630,7 +646,7 @@ fn execute_statement(
             } else {
                 let _ = reply.send(Err(Error::unsupported(
                     ErrorCode::CAPABILITY_UNSUPPORTED,
-                    "参数化执行仅支持单条 SQL 语句",
+                    "Parameterized execution supports only one SQL statement",
                 )));
                 false
             }
@@ -710,7 +726,10 @@ fn serve_query(
         let affected = match statement.execute(rusqlite::params_from_iter(bound.iter())) {
             Ok(affected) => affected,
             Err(error) => {
-                let _ = reply.send(Err(map_sqlite_error(error, "执行 SQLite 语句失败")));
+                let _ = reply.send(Err(map_sqlite_error(
+                    error,
+                    "Failed to execute SQLite statement",
+                )));
                 return false;
             }
         };
@@ -728,7 +747,10 @@ fn serve_query(
     let mut rows = match statement.query(rusqlite::params_from_iter(bound.iter())) {
         Ok(rows) => rows,
         Err(error) => {
-            let _ = reply.send(Err(map_sqlite_error(error, "执行 SQLite 查询失败")));
+            let _ = reply.send(Err(map_sqlite_error(
+                error,
+                "Failed to execute SQLite query",
+            )));
             return false;
         }
     };
@@ -788,13 +810,13 @@ fn serve_query(
                 }
                 let _ = reply.send(Err(Error::not_found(
                     ErrorCode::QUERY_NOT_FOUND,
-                    "查询不存在",
+                    "The query does not exist",
                 )));
             }
             Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭",
+                    "The current session already has an in-flight query. Finish reading or close it first",
                 )));
             }
             // 事务命令在游标未读完时不执行：语句已经准备好并绑定在连接上，
@@ -802,19 +824,19 @@ fn serve_query(
             Command::Begin { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再开始事务",
+                    "Finish reading or close the in-flight query before starting a transaction",
                 )));
             }
             Command::Commit { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再提交事务",
+                    "Finish reading or close the in-flight query before committing the transaction",
                 )));
             }
             Command::Rollback { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再回滚事务",
+                    "Finish reading or close the in-flight query before rolling back the transaction",
                 )));
             }
             // 元数据读取要在游标释放后进行：语句与 Rows 正借用连接，
@@ -822,13 +844,13 @@ fn serve_query(
             Command::InspectDdl { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询",
+                    "The current session already has an in-flight query",
                 )));
             }
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再读取元数据",
+                    "Finish reading or close the in-flight query before reading metadata",
                 )));
             }
             // 浏览要准备并执行自己的语句，同样必须等游标释放，否则会与在途
@@ -836,7 +858,7 @@ fn serve_query(
             Command::TableData { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再浏览表数据",
+                    "Finish reading or close the in-flight query before browsing table data",
                 )));
             }
             Command::Fetch {
@@ -849,7 +871,7 @@ fn serve_query(
                 if requested != query_id || statement_index != 0 {
                     let _ = reply.send(Err(Error::not_found(
                         ErrorCode::QUERY_NOT_FOUND,
-                        "查询或语句不存在",
+                        "Query or statement does not exist",
                     )));
                     continue;
                 }
@@ -861,7 +883,7 @@ fn serve_query(
                 if cursor.as_deref() != Some(expected.as_str()) {
                     let _ = reply.send(Err(Error::invalid_argument(
                         SQLITE_CURSOR_INVALID,
-                        "分页游标与当前查询不匹配",
+                        "The pagination cursor does not match the current query",
                     )));
                     continue;
                 }
@@ -969,7 +991,7 @@ fn serve_script(
             Ok(statement) => statement,
             Err(error) => {
                 let _ = reply.send(Err(script_error(
-                    map_sqlite_error(error, "准备 SQLite 语句失败"),
+                    map_sqlite_error(error, "Failed to prepare SQLite statement"),
                     index,
                 )));
                 return false;
@@ -994,7 +1016,7 @@ fn serve_script(
                 Ok(rows) => rows,
                 Err(error) => {
                     let _ = reply.send(Err(script_error(
-                        map_sqlite_error(error, "执行 SQLite 查询失败"),
+                        map_sqlite_error(error, "Failed to execute SQLite query"),
                         index,
                     )));
                     return false;
@@ -1047,7 +1069,7 @@ fn serve_script(
                 }
                 Err(error) => {
                     let _ = reply.send(Err(script_error(
-                        map_sqlite_error(error, "执行 SQLite 语句失败"),
+                        map_sqlite_error(error, "Failed to execute SQLite statement"),
                         index,
                     )));
                     return false;
@@ -1114,49 +1136,49 @@ fn serve_script(
                 }
                 let _ = reply.send(Err(Error::not_found(
                     ErrorCode::QUERY_NOT_FOUND,
-                    "查询不存在",
+                    "The query does not exist",
                 )));
             }
             Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭",
+                    "The current session already has an in-flight query. Finish reading or close it first",
                 )));
             }
             Command::Begin { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再开始事务",
+                    "Finish reading or close the in-flight query before starting a transaction",
                 )));
             }
             Command::Commit { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再提交事务",
+                    "Finish reading or close the in-flight query before committing the transaction",
                 )));
             }
             Command::Rollback { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再回滚事务",
+                    "Finish reading or close the in-flight query before rolling back the transaction",
                 )));
             }
             Command::InspectDdl { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询",
+                    "The current session already has an in-flight query",
                 )));
             }
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再读取元数据",
+                    "Finish reading or close the in-flight query before reading metadata",
                 )));
             }
             Command::TableData { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     SQLITE_QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭后再浏览表数据",
+                    "Finish reading or close the in-flight query before browsing table data",
                 )));
             }
             Command::Fetch {
@@ -1169,7 +1191,7 @@ fn serve_script(
                 if requested != query_id {
                     let _ = reply.send(Err(Error::not_found(
                         ErrorCode::QUERY_NOT_FOUND,
-                        "查询或语句不存在",
+                        "Query or statement does not exist",
                     )));
                     continue;
                 }
@@ -1182,7 +1204,7 @@ fn serve_script(
                 else {
                     let _ = reply.send(Err(Error::invalid_argument(
                         SQLITE_STATEMENT_INDEX_INVALID,
-                        "语句序号越界",
+                        "Statement index is out of range",
                     )));
                     continue;
                 };
@@ -1195,7 +1217,7 @@ fn serve_script(
                     _ => {
                         let _ = reply.send(Err(Error::invalid_argument(
                             SQLITE_CURSOR_INVALID,
-                            "分页游标与当前查询不匹配",
+                            "The pagination cursor does not match the current query",
                         )));
                         continue;
                     }
@@ -1262,7 +1284,7 @@ fn bind_parameter(value: &Value) -> Result<rusqlite::types::Value> {
 fn unsupported_parameter_value(kind: &str) -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        format!("SQLite 驱动无法把 {kind} 类型的值绑定为参数"),
+        format!("The SQLite driver cannot bind values of type {kind} as parameters"),
     )
 }
 
@@ -1284,13 +1306,13 @@ fn read_batch(
     while batch.len() <= limit {
         match rows
             .next()
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite 结果行失败"))?
+            .map_err(|error| map_sqlite_error(error, "Failed to read a SQLite result row"))?
         {
             Some(row) => batch.push(map_row(row, columns)?),
             None => return Ok((batch, false, None)),
         }
     }
-    let extra = batch.pop().expect("已读取 limit+1 行");
+    let extra = batch.pop().expect("Read limit+1 rows");
     Ok((batch, true, Some(extra)))
 }
 
@@ -1302,7 +1324,7 @@ pub(crate) fn map_row(
     for index in 0..columns.len() {
         let value = row
             .get_ref(index)
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite 列值失败"))?;
+            .map_err(|error| map_sqlite_error(error, "Failed to read SQLite column values"))?;
         cells.push(map_value(value));
     }
     Ok(cells)
@@ -1401,7 +1423,7 @@ fn cancelled_error() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "查询已取消",
+        "Query canceled",
     )
 }
 
@@ -1411,7 +1433,7 @@ fn cancelled_error() -> Error {
 /// 切分探测路由到 `serve_script`，不会再走到这里；单语句 prepare 失败按
 /// SQLite 原始错误分类。
 fn prepare_error(error: rusqlite::Error) -> Error {
-    map_sqlite_error(error, "准备 SQLite 语句失败")
+    map_sqlite_error(error, "Failed to prepare SQLite statement")
 }
 
 #[async_trait::async_trait]
@@ -1449,7 +1471,7 @@ impl DriverSession for SqliteSession {
     async fn use_catalog(&self, _catalog: &str) -> Result<()> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "SQLite 没有「切换当前库」：main / temp / ATTACH 是 catalog 列表，请在 SQL 里写限定名",
+            "SQLite does not switch the current database. Use qualified names in SQL for main, temp, and attached databases",
         ))
     }
 
@@ -1602,7 +1624,7 @@ impl DriverSession for SqliteSession {
             }
             Some(_) => Err(Error::not_found(
                 ErrorCode::QUERY_NOT_FOUND,
-                "该查询未在运行",
+                "This query is not running",
             )),
             // 查询已结束：取消是幂等的。
             None => Ok(()),
@@ -1675,7 +1697,10 @@ impl DriverSession for SqliteSession {
                 let _ = handle.join();
             })
             .await
-            .map_err(|error| Error::internal("等待 SQLite 会话线程退出失败").with_source(error))?;
+            .map_err(|error| {
+                Error::internal("The SQLite session thread did not shut down successfully")
+                    .with_source(error)
+            })?;
         }
         Ok(())
     }
@@ -1709,7 +1734,7 @@ pub(crate) fn open_connection(path: &str, read_only: bool) -> Result<Connection>
         if read_only {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "内存数据库不支持只读模式",
+                "Memory database does not support read-only mode",
             ));
         }
         Connection::open_in_memory().map_err(map_open_error)?
@@ -1729,6 +1754,6 @@ pub(crate) fn open_connection(path: &str, read_only: bool) -> Result<Connection>
 fn configure_busy_timeout(connection: Connection) -> Result<Connection> {
     connection
         .busy_timeout(BUSY_TIMEOUT)
-        .map_err(|error| map_sqlite_error(error, "设置 SQLite 忙等待超时失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to set the SQLite busy timeout"))?;
     Ok(connection)
 }

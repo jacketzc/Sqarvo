@@ -135,13 +135,13 @@ async fn dispatch(
         .authorize_request(OperationType::Read, None)
         .await?;
     if serde_json::to_vec(&arguments).map_or(true, |value| value.len() > MAX_ARGUMENT_BYTES) {
-        return Err(invalid("事务工具参数超出大小限制").into());
+        return Err(invalid("Transaction tool arguments exceed the size limit").into());
     }
-    let owner = owner.ok_or_else(|| denied("缺少已认证的 MCP 会话"))?;
+    let owner = owner.ok_or_else(|| denied("An authenticated MCP session is required"))?;
     let (reply, response) = oneshot::channel();
     if tool == "begin_transaction" {
         let args: Begin = serde_json::from_value(Value::Object(arguments))
-            .map_err(|_| invalid("事务起始参数非法"))?;
+            .map_err(|_| invalid("Invalid transaction start arguments"))?;
         let (id, commands) = server.transactions.reserve(&owner)?;
         let server = Arc::clone(server);
         tokio::spawn(async move {
@@ -161,9 +161,9 @@ async fn dispatch(
         let id = arguments
             .remove("transaction_id")
             .and_then(|value| value.as_str().and_then(|value| Uuid::parse_str(value).ok()))
-            .ok_or_else(|| invalid("transaction_id 非法"))?;
+            .ok_or_else(|| invalid("Invalid transaction_id"))?;
         if tool != "execute_in_transaction" && !arguments.is_empty() {
-            return Err(invalid("事务终结参数非法").into());
+            return Err(invalid("Invalid transaction completion arguments").into());
         }
         server.transactions.submit(
             &owner,
@@ -179,7 +179,7 @@ async fn dispatch(
     }
     response
         .await
-        .map_err(|_| Error::internal("事务处理任务异常"))?
+        .map_err(|_| Error::internal("The transaction processing task failed"))?
 }
 
 fn invalid(message: &'static str) -> Error {

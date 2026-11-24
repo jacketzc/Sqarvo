@@ -83,12 +83,14 @@ fn enable_pdeathsig() {
         };
         if result != 0 {
             let error = std::io::Error::last_os_error();
-            tracing::warn!(%error, "设置 PR_SET_PDEATHSIG 失败，退回父进程轮询");
+            tracing::warn!(%error, "Setting PR_SET_PDEATHSIG failed. Falling back to parent process polling");
         }
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        tracing::debug!("此平台没有 PR_SET_PDEATHSIG，只靠父进程轮询兜底");
+        tracing::debug!(
+            "PR_SET_PDEATHSIG is unavailable on this platform. Falling back to parent process polling"
+        );
     }
 }
 

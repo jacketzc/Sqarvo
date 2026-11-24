@@ -79,7 +79,11 @@ async fn run_blocking<T: Send + 'static>(
 ) -> Result<T, Status> {
     tokio::task::spawn_blocking(operation)
         .await
-        .map_err(|_| to_status(Error::internal("连接档案任务异常结束")))?
+        .map_err(|_| {
+            to_status(Error::internal(
+                "The connection profile task ended unexpectedly",
+            ))
+        })?
         .map_err(to_status)
 }
 
@@ -117,7 +121,7 @@ impl ConnectionProfileService for ConnectionProfileServiceImpl {
         let request = request.into_inner();
         let profile = request
             .profile
-            .ok_or_else(|| profile_invalid("缺少连接档案"))?;
+            .ok_or_else(|| profile_invalid("Missing connection profile"))?;
         let profile = to_stored_profile(profile)?;
         let stored = self
             .call(move |store| store.save(profile, request.expected_revision))
@@ -132,7 +136,9 @@ impl ConnectionProfileService for ConnectionProfileServiceImpl {
         let request = request.into_inner();
         let profile_id = parse_id(&request.profile_id)?;
         if request.expected_revision == 0 {
-            return Err(profile_invalid("删除连接档案需要非零 revision"));
+            return Err(profile_invalid(
+                "Deleting a connection profile requires a nonzero revision",
+            ));
         }
         self.call(move |store| store.delete(profile_id, request.expected_revision))
             .await?;
@@ -156,7 +162,7 @@ impl ConnectionProfileService for ConnectionProfileServiceImpl {
     ) -> Result<Response<McpAccessPolicyResponse>, Status> {
         let request = request.into_inner();
         if request.enabled.is_none() && request.read_only.is_none() {
-            return Err(profile_invalid("至少提供一个 MCP 策略字段"));
+            return Err(profile_invalid("Provide at least one MCP policy field"));
         }
         let (policy, revision) = self
             .call(move |store| store.update_mcp_access(|current| apply_policy(current, request)))
@@ -177,7 +183,7 @@ fn apply_policy(
     if !enabled && !read_only {
         return Err(Error::failed_precondition(
             ErrorCode::PROFILE_INVALID,
-            "请先启用 MCP 数据访问再关闭 MCP 只读",
+            "Enable MCP data access before turning off MCP read-only mode",
         ));
     }
     Ok(McpAccessPolicy { enabled, read_only })
@@ -196,9 +202,9 @@ fn profile_invalid(message: impl Into<String>) -> Status {
 }
 
 fn parse_id(raw: &str) -> Result<Uuid, Status> {
-    let id = Uuid::parse_str(raw).map_err(|_| profile_invalid("档案 UUID 无效"))?;
+    let id = Uuid::parse_str(raw).map_err(|_| profile_invalid("Invalid profile UUID"))?;
     if id.get_version() != Some(Version::Random) || id.get_variant() != uuid::Variant::RFC4122 {
-        return Err(profile_invalid("档案 UUID 必须是 v4"));
+        return Err(profile_invalid("The profile UUID must be version 4"));
     }
     Ok(id)
 }
@@ -211,15 +217,16 @@ fn to_stored_profile(profile: ConnectionProfile) -> Result<StoredProfile, Status
     };
     let params = profile
         .params
-        .ok_or_else(|| profile_invalid("缺少档案的连接参数"))
+        .ok_or_else(|| profile_invalid("The profile is missing connection parameters"))
         .and_then(|params| {
             to_domain_params(params).map_err(|status| profile_invalid(status.message()))
         })?;
     let last_used = profile
         .last_used
         .map(|value| {
-            OffsetDateTime::parse(&value, &Rfc3339)
-                .map_err(|_| profile_invalid("档案最后使用时间必须是 RFC 3339 时间戳"))
+            OffsetDateTime::parse(&value, &Rfc3339).map_err(|_| {
+                profile_invalid("The profile's last-used timestamp must be in RFC 3339 format")
+            })
         })
         .transpose()?;
 
@@ -247,9 +254,11 @@ fn to_proto_profile(profile: StoredProfile) -> Result<ConnectionProfile, Status>
     let last_used = profile
         .last_used
         .map(|value| {
-            value
-                .format(&Rfc3339)
-                .map_err(|_| to_status(Error::internal("无法编码档案最后使用时间")))
+            value.format(&Rfc3339).map_err(|_| {
+                to_status(Error::internal(
+                    "Failed to encode the profile's last-used timestamp",
+                ))
+            })
         })
         .transpose()?;
 

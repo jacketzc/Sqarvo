@@ -62,14 +62,18 @@ pub struct EndpointInfo {
 /// Unix 下文件以 0600 创建；Windows 下临时文件在**写入 token 之前**就先收紧
 /// DACL，因此不存在「内容已落盘、权限还是继承来的」窗口期。
 pub fn write_endpoint_file(path: &Path, info: &EndpointInfo) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| Error::invalid_argument(ErrorCode::CONFIG_INVALID, "端点文件缺少父目录"))?;
+    let parent = path.parent().ok_or_else(|| {
+        Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "Endpoint file missing parent directory",
+        )
+    })?;
     fs::create_dir_all(parent).map_err(Error::from)?;
     restrict_to_owner(parent)?;
 
-    let payload = serde_json::to_vec_pretty(info)
-        .map_err(|error| Error::internal("序列化端点描述失败").with_source(error))?;
+    let payload = serde_json::to_vec_pretty(info).map_err(|error| {
+        Error::internal("Failed to serialize the endpoint descriptor").with_source(error)
+    })?;
 
     let temporary = path.with_extension(format!("json.tmp-{}", std::process::id()));
     {
@@ -101,7 +105,7 @@ pub fn read_endpoint_file(path: &Path) -> Result<EndpointInfo> {
         Error::new(
             ErrorCode::CONFIG_INVALID,
             sqarvo_common::ErrorCategory::InvalidArgument,
-            "端点描述文件格式非法",
+            "Invalid endpoint descriptor file format",
         )
         .with_source(error)
     })

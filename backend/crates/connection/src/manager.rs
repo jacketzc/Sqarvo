@@ -250,7 +250,7 @@ impl SessionHandle {
         if !self.ddl {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "DDL 需要独立的结构管理会话",
+                "DDL requires a dedicated schema management session",
             ));
         }
         self.session.dispatch_ddl(request)
@@ -267,7 +267,7 @@ impl SessionHandle {
         if !self.ddl {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "DDL 需要独立的结构管理会话",
+                "DDL requires a dedicated schema management session",
             ));
         }
         self.session.dispatch_ddl_commit(id)
@@ -590,14 +590,20 @@ impl SessionHandle {
     /// 取元数据能力；未实现时返回 `capability.unsupported`（不伪装成空列表）。
     fn metadata_provider(&self) -> Result<&dyn MetadataProvider> {
         self.session.metadata().ok_or_else(|| {
-            Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现元数据浏览")
+            Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "The driver does not implement metadata browsing",
+            )
         })
     }
 
     /// 取表数据能力；未实现时返回 `capability.unsupported`（不伪装成空页）。
     fn table_data_provider(&self) -> Result<&dyn TableDataProvider> {
         self.session.table_data().ok_or_else(|| {
-            Error::unsupported(ErrorCode::CAPABILITY_UNSUPPORTED, "该驱动未实现表数据浏览")
+            Error::unsupported(
+                ErrorCode::CAPABILITY_UNSUPPORTED,
+                "The driver does not implement table data browsing",
+            )
         })
     }
 
@@ -618,7 +624,7 @@ impl SessionHandle {
         if !self.supports_transactions() {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "驱动未声明事务能力，不能开始显式事务（不会降级为自动提交）",
+                "The driver does not declare transaction support. Explicit transactions are unavailable and will not fall back to autocommit",
             ));
         }
 
@@ -631,7 +637,10 @@ impl SessionHandle {
             if let Some(open) = slot.as_ref() {
                 return Err(Error::already_exists(
                     ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-                    format!("该会话已有打开的事务 {}，请先提交或回滚", open.id()),
+                    format!(
+                        "This session already has open transaction {}. Commit or roll it back first",
+                        open.id()
+                    ),
                 ));
             }
         }
@@ -644,7 +653,7 @@ impl SessionHandle {
             transaction = %id,
             isolation = ?options.isolation,
             read_only = options.read_only,
-            "显式事务已开始"
+            "Explicit transaction started"
         );
         Ok(status)
     }
@@ -665,7 +674,7 @@ impl SessionHandle {
         let Some(mut open) = self.take_transaction(transaction_id) else {
             tracing::debug!(
                 transaction = %transaction_id,
-                "事务不存在或已结束，提交按幂等返回成功"
+                "The transaction does not exist or has ended. Returning success for idempotent commit"
             );
             return Ok(());
         };
@@ -680,7 +689,7 @@ impl SessionHandle {
             Ok(()) => {
                 // 执行锁在手，状态机在 Active 下必然接受；登记已移除，不再恢复。
                 let _ = open.commit();
-                tracing::debug!(transaction = %transaction_id, "事务已提交");
+                tracing::debug!(transaction = %transaction_id, "Transaction committed");
                 Ok(())
             }
             Err(error) => {
@@ -725,7 +734,7 @@ impl SessionHandle {
         let Some(mut open) = self.take_transaction(transaction_id) else {
             tracing::debug!(
                 transaction = %transaction_id,
-                "事务不存在或已结束，回滚按幂等返回成功"
+                "The transaction does not exist or has ended. Returning success for idempotent rollback"
             );
             return Ok(());
         };
@@ -740,7 +749,7 @@ impl SessionHandle {
         match result {
             Ok(()) => {
                 let _ = open.rollback();
-                tracing::debug!(transaction = %transaction_id, "事务已回滚");
+                tracing::debug!(transaction = %transaction_id, "Transaction rolled back");
                 Ok(())
             }
             Err(error) => {
@@ -804,13 +813,13 @@ impl SessionHandle {
         let provider = self.session.table_data().ok_or_else(|| {
             Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该驱动未实现表数据行编辑",
+                "The driver does not implement row editing",
             )
         })?;
         if !provider.supports_row_edits() {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该驱动未实现表数据行编辑",
+                "The driver does not implement row editing",
             ));
         }
 
@@ -849,13 +858,13 @@ impl SessionHandle {
         let provider = self.session.table_data().ok_or_else(|| {
             Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该驱动未实现表数据行编辑",
+                "The driver does not implement row editing",
             )
         })?;
         if !provider.supports_row_insertion() {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该驱动未实现插入新行（需要参数化 INSERT 与主键回传）",
+                "The driver does not implement row insertion, which requires parameterized INSERT and a returned primary key",
             ));
         }
 
@@ -879,23 +888,26 @@ impl SessionHandle {
             (Some(requested), Some(open)) if open.transaction_id != *requested => {
                 Err(Error::not_found(
                     ErrorCode::TRANSACTION_NOT_FOUND,
-                    "事务不存在或已结束（不会退化为自动提交）",
+                    "The transaction does not exist or has ended. Autocommit fallback is disabled",
                 ))
             }
             (Some(_), None) => Err(Error::not_found(
                 ErrorCode::TRANSACTION_NOT_FOUND,
-                "事务不存在或已结束（不会退化为自动提交）",
+                "The transaction does not exist or has ended. Autocommit fallback is disabled",
             )),
-            (Some(_), Some(open)) if open.state != TransactionState::Active => Err(
-                Error::failed_precondition(ErrorCode::TRANSACTION_FAILED, "事务已失败，只能回滚"),
-            ),
+            (Some(_), Some(open)) if open.state != TransactionState::Active => {
+                Err(Error::failed_precondition(
+                    ErrorCode::TRANSACTION_FAILED,
+                    "The transaction failed and can only be rolled back",
+                ))
+            }
             (Some(_), Some(open)) if open.read_only => Err(Error::failed_precondition(
                 ErrorCode::TABLE_DATA_READ_ONLY,
-                "当前会话处于只读事务，不能提交行变更；请先回滚事务",
+                "The current session has a read-only transaction and cannot apply row changes. Roll back the transaction first",
             )),
             (None, Some(_)) => Err(Error::already_exists(
                 ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-                "该会话已有打开的事务：提交行变更时必须指定 transaction_id，不会自动提交",
+                "This session has an open transaction. Specify transaction_id when applying row changes. Autocommit fallback is disabled",
             )),
             _ => Ok(()),
         }
@@ -930,7 +942,7 @@ impl SessionHandle {
         if slot.is_some() {
             tracing::warn!(
                 transaction = %transaction.id(),
-                "事务登记槽位非空，放弃写回原登记"
+                "The transaction registry slot is occupied. Skipping restoration of the previous registration"
             );
             return;
         }
@@ -951,7 +963,7 @@ impl SessionHandle {
             tracing::warn!(
                 transaction = %open.id(),
                 code = %error.code(),
-                "事务已被数据库中止，进入失败态（只能回滚）"
+                "The database aborted the transaction. Only rollback is allowed in the failed state"
             );
         }
     }
@@ -1081,7 +1093,7 @@ impl SessionManager {
         if display_name.trim().is_empty() {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "会话名称不能为空",
+                "Session name cannot be empty",
             ));
         }
 
@@ -1127,12 +1139,12 @@ impl SessionManager {
         let Some(session) = session else {
             return Err(Error::not_found(
                 ErrorCode::SESSION_NOT_FOUND,
-                format!("连接 {connection_id} 不存在或已断开"),
+                format!("Connection {connection_id} does not exist or is disconnected"),
             ));
         };
         // 摘要先取：调用方需要知道「断开时关闭了什么事务」。
         let summary = session.snapshot();
-        release_session(&session, &self.cleanup, "断开连接").await;
+        release_session(&session, &self.cleanup, "Disconnect").await;
         session.driver.close().await?;
         Ok(summary)
     }
@@ -1149,7 +1161,7 @@ impl SessionManager {
             .ok_or_else(|| {
                 Error::not_found(
                     ErrorCode::SESSION_NOT_FOUND,
-                    format!("会话 {session_id} 不存在或已断开"),
+                    format!("Session {session_id} does not exist or is disconnected"),
                 )
             })
     }
@@ -1187,7 +1199,7 @@ impl SessionManager {
         } else {
             tracing::debug!(
                 transaction = %transaction_id,
-                "没有会话持有该事务，提交按幂等返回成功"
+                "No session owns this transaction. Returning success for idempotent commit"
             );
             Ok(())
         }
@@ -1204,7 +1216,7 @@ impl SessionManager {
         } else {
             tracing::debug!(
                 transaction = %transaction_id,
-                "没有会话持有该事务，回滚按幂等返回成功"
+                "No session owns this transaction. Returning success for idempotent rollback"
             );
             Ok(())
         }
@@ -1259,16 +1271,16 @@ impl SessionManager {
         for session in sessions {
             let cleanup = Arc::clone(&self.cleanup);
             tasks.push(tokio::spawn(async move {
-                release_session(&session, &cleanup, "后端退出").await;
+                release_session(&session, &cleanup, "Backend exiting").await;
                 if let Err(error) = session.driver.close().await {
-                    tracing::warn!(session = %session.summary.session_id, %error, "关闭会话失败");
+                    tracing::warn!(session = %session.summary.session_id, %error, "Failed to close the session");
                 }
             }));
         }
         for task in tasks {
             if let Err(join_error) = task.await {
                 // 清理任务 panic 不能吞掉：这会留下未回滚的事务。
-                tracing::error!(%join_error, "会话清理任务异常结束");
+                tracing::error!(%join_error, "The session cleanup task ended unexpectedly");
             }
         }
     }
@@ -1303,7 +1315,9 @@ impl SessionManager {
             .map_err(|join_error| {
                 // JoinError 只带任务号与「panic / cancelled」，不含凭据内容；
                 // 归到内部错误，避免上层把实现故障误判成认证失败。
-                Error::internal(format!("凭据解析任务异常结束：{join_error}"))
+                Error::internal(format!(
+                    "The credential resolution task ended unexpectedly: {join_error}"
+                ))
             })??;
         Ok(Some(secret))
     }
@@ -1312,7 +1326,7 @@ impl SessionManager {
         self.registry.get(id).ok_or_else(|| {
             Error::not_found(
                 ErrorCode::DRIVER_NOT_FOUND,
-                format!("驱动 {id} 尚未注册，无法建立连接"),
+                format!("Driver {id} is not registered and cannot establish a connection"),
             )
         })
     }
@@ -1343,7 +1357,7 @@ async fn release_session(session: &Session, cleanup: &CleanupCounters, reason: &
                 transaction = %id,
                 session = %session.summary.session_id,
                 reason,
-                "会话清理已强制回滚打开的事务"
+                "Session cleanup forced rollback of an open transaction"
             );
         }
         Err(error) => {
@@ -1354,7 +1368,7 @@ async fn release_session(session: &Session, cleanup: &CleanupCounters, reason: &
                 reason,
                 code = %error.code(),
                 %error,
-                "会话清理强制回滚失败：事务可能未被回滚"
+                "Session cleanup could not roll back the open transaction. The transaction may still be open"
             );
         }
     }
@@ -1918,7 +1932,7 @@ mod tests {
                 // 与真实驱动一致：事务被数据库中止后，执行语句直接报 transaction.failed。
                 return Err(Error::failed_precondition(
                     ErrorCode::TRANSACTION_FAILED,
-                    "事务已失败，只能回滚",
+                    "The transaction failed and can only be rolled back",
                 ));
             }
             Err(Error::unsupported(

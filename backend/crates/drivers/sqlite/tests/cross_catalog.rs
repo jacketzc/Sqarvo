@@ -272,7 +272,7 @@ async fn unknown_catalog_is_unsupported_on_every_table_data_path() {
         );
         assert_eq!(error.category(), ErrorCategory::Unsupported);
         assert!(
-            error.to_string().contains("main / temp"),
+            error.to_string().contains("supports main and temp only"),
             "错误文案必须说明只支持 main / temp：{error}"
         );
     }

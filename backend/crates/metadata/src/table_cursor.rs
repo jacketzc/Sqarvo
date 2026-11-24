@@ -64,7 +64,9 @@ pub fn fingerprint(object: &ObjectRef) -> u64 {
 /// - 主键值含 NULL 或驱动无法无损编码的类型：`capability.unsupported`。
 pub fn encode(object: &ObjectRef, key: &[Value]) -> Result<String> {
     if key.is_empty() {
-        return Err(Error::internal("无主键的对象不能生成翻页游标"));
+        return Err(Error::internal(
+            "An object without a primary key cannot generate a pagination cursor",
+        ));
     }
     let mut payload = format!("{VERSION}:{:016x}:{}", fingerprint(object), key.len());
     for value in key {
@@ -88,32 +90,38 @@ pub fn decode(token: &str, object: &ObjectRef, key_len: usize) -> Result<Vec<Val
     let parts: Vec<&str> = token.split(':').collect();
     // v1 + 指纹 + 列数 + 至少一列 + 校验和
     if parts.len() < 5 {
-        return Err(invalid("翻页游标格式非法"));
+        return Err(invalid("Invalid pagination cursor format"));
     }
     let Some(checksum_text) = parts.last() else {
-        return Err(invalid("翻页游标格式非法"));
+        return Err(invalid("Invalid pagination cursor format"));
     };
     let payload = &token[..token.len() - checksum_text.len() - 1];
     let Ok(expected_checksum) = u64::from_str_radix(checksum_text, 16) else {
-        return Err(invalid("翻页游标校验和非法"));
+        return Err(invalid("Invalid pagination cursor checksum"));
     };
     if checksum(payload) != expected_checksum {
-        return Err(invalid("翻页游标校验失败（内容被篡改或损坏）"));
+        return Err(invalid(
+            "Pagination cursor validation failed. The cursor was modified or corrupted",
+        ));
     }
     if parts[0] != VERSION {
-        return Err(invalid("翻页游标版本不受支持"));
+        return Err(invalid("Unsupported pagination cursor version"));
     }
     let Ok(expected_fingerprint) = u64::from_str_radix(parts[1], 16) else {
-        return Err(invalid("翻页游标表标识非法"));
+        return Err(invalid("Invalid pagination cursor table identifier"));
     };
     if expected_fingerprint != fingerprint(object) {
-        return Err(invalid("翻页游标不属于该表"));
+        return Err(invalid(
+            "The pagination cursor does not belong to this table",
+        ));
     }
     let Ok(count) = parts[2].parse::<usize>() else {
-        return Err(invalid("翻页游标列数非法"));
+        return Err(invalid("Invalid cursor column count"));
     };
     if count == 0 || count != key_len || parts.len() != count + 4 {
-        return Err(invalid("翻页游标的主键列数与目标表不一致"));
+        return Err(invalid(
+            "The cursor's primary key column count does not match the target table",
+        ));
     }
 
     let mut values = Vec::with_capacity(count);
@@ -148,7 +156,9 @@ fn checksum(text: &str) -> u64 {
 fn encode_value(value: &Value) -> Result<String> {
     let encoded = match value {
         Value::Null => {
-            return Err(Error::internal("主键值不能为 NULL，无法生成翻页游标"));
+            return Err(Error::internal(
+                "A NULL primary key value cannot be used to generate a pagination cursor",
+            ));
         }
         Value::Bool(value) => tagged('b', if *value { "01" } else { "00" }),
         Value::Int(value) => tagged_text('i', &value.to_string()),
@@ -204,7 +214,7 @@ fn encode_value(value: &Value) -> Result<String> {
         Value::Array(_) | Value::Unsupported { .. } => {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该主键类型无法编码为翻页游标，本版只支持标量主键",
+                "Only scalar primary keys can be encoded in a pagination cursor",
             ));
         }
     };
@@ -222,50 +232,54 @@ fn tagged_text(tag: char, text: &str) -> String {
 fn decode_value(item: &str) -> Result<Value> {
     let mut chars = item.chars();
     let Some(tag) = chars.next() else {
-        return Err(invalid("翻页游标中的主键值非法"));
+        return Err(invalid("Invalid cursor primary key value"));
     };
     let payload = chars.as_str();
     let value = match tag {
         'b' => match payload {
             "01" => Value::Bool(true),
             "00" => Value::Bool(false),
-            _ => return Err(invalid("翻页游标中的布尔主键值非法")),
+            _ => {
+                return Err(invalid("Invalid cursor boolean primary key value"));
+            }
         },
         'i' => Value::Int(parse_number(payload)?),
         'u' => {
             let text = decode_text(payload)?;
             Value::UInt(
                 text.parse()
-                    .map_err(|_| invalid("翻页游标中的无符号整数非法"))?,
+                    .map_err(|_| invalid("Invalid cursor unsigned integer"))?,
             )
         }
         'f' => {
             let bits = u64::from_str_radix(payload, 16)
-                .map_err(|_| invalid("翻页游标中的浮点主键值非法"))?;
+                .map_err(|_| invalid("Invalid cursor floating-point primary key value"))?;
             Value::Float(f64::from_bits(bits))
         }
         'd' => {
             let text = decode_text(payload)?;
             let Some((scale, unscaled)) = text.split_once(':') else {
-                return Err(invalid("翻页游标中的 Decimal 主键值非法"));
+                return Err(invalid("Invalid cursor decimal primary key value"));
             };
             let scale = scale
                 .parse::<i32>()
-                .map_err(|_| invalid("翻页游标中的 Decimal 标度非法"))?;
+                .map_err(|_| invalid("Invalid cursor decimal scale"))?;
             Value::Decimal(
                 Decimal::new(unscaled.to_owned(), scale)
-                    .map_err(|_| invalid("翻页游标中的 Decimal 主键值非法"))?,
+                    .map_err(|_| invalid("Invalid cursor decimal primary key value"))?,
             )
         }
         's' => Value::Text(decode_text(payload)?),
         'x' => Value::Bytes(
-            hex_decode(payload).ok_or_else(|| invalid("翻页游标中的二进制主键值非法"))?,
+            hex_decode(payload)
+                .ok_or_else(|| invalid("Invalid cursor binary primary key value"))?,
         ),
         'j' => Value::Json(decode_text(payload)?),
         'V' => {
             let text = decode_text(payload)?;
             Value::Uuid(
-                Uuid::parse_str(&text).map_err(|_| invalid("翻页游标中的 UUID 主键值非法"))?,
+                Uuid::parse_str(&text)
+                    .map_err(|_| invalid("Invalid cursor UUID primary key value"))?,
             )
         }
         'D' => {
@@ -282,7 +296,7 @@ fn decode_value(item: &str) -> Result<Value> {
         'M' => {
             let text = decode_text(payload)?;
             let Some((date, time)) = text.split_once(' ') else {
-                return Err(invalid("翻页游标中的时间戳主键值非法"));
+                return Err(invalid("Invalid cursor timestamp primary key value"));
             };
             let date = split_numbers::<3>(date)?;
             let time = split_numbers::<4>(time)?;
@@ -293,21 +307,23 @@ fn decode_value(item: &str) -> Result<Value> {
         'Z' => {
             let text = decode_text(payload)?;
             let Some((nanos, offset)) = text.split_once(':') else {
-                return Err(invalid("翻页游标中的带时区时间戳非法"));
+                return Err(invalid("Invalid cursor timestamp with time zone"));
             };
             let nanos = nanos
                 .parse::<i128>()
-                .map_err(|_| invalid("翻页游标中的时间戳数值非法"))?;
+                .map_err(|_| invalid("Invalid cursor timestamp value"))?;
             let offset = offset
                 .parse::<i32>()
-                .map_err(|_| invalid("翻页游标中的时区偏移非法"))?;
+                .map_err(|_| invalid("Invalid cursor time zone offset"))?;
             let value = OffsetDateTime::from_unix_timestamp_nanos(nanos)
-                .map_err(|_| invalid("翻页游标中的时间戳超出可表示范围"))?;
+                .map_err(|_| invalid("Cursor timestamp is out of range"))?;
             let offset = UtcOffset::from_whole_seconds(offset)
-                .map_err(|_| invalid("翻页游标中的时区偏移超出范围"))?;
+                .map_err(|_| invalid("Cursor time zone offset is out of range"))?;
             Value::Timestamp(value.to_offset(offset))
         }
-        _ => return Err(invalid("翻页游标中的主键值类型未知")),
+        _ => {
+            return Err(invalid("Unknown cursor primary key type"));
+        }
     };
     Ok(value)
 }
@@ -315,7 +331,7 @@ fn decode_value(item: &str) -> Result<Value> {
 fn parse_number(payload: &str) -> Result<i64> {
     decode_text(payload)?
         .parse()
-        .map_err(|_| invalid("翻页游标中的整数主键值非法"))
+        .map_err(|_| invalid("Invalid cursor integer primary key value"))
 }
 
 /// 把 `a:b:c:d` 拆成固定个数的无符号整数。解析失败一律视为游标非法。
@@ -324,38 +340,46 @@ fn split_numbers<const N: usize>(text: &str) -> Result<[u64; N]> {
     let mut parts = text.split(':');
     for slot in &mut out {
         let Some(part) = parts.next() else {
-            return Err(invalid("翻页游标中的日期时间分量缺失"));
+            return Err(invalid(
+                "Missing date or time component in the pagination cursor",
+            ));
         };
         *slot = part
             .parse()
-            .map_err(|_| invalid("翻页游标中的日期时间分量非法"))?;
+            .map_err(|_| invalid("Invalid cursor date or time component"))?;
     }
     if parts.next().is_some() {
-        return Err(invalid("翻页游标中的日期时间分量过多"));
+        return Err(invalid(
+            "Too many date or time components in the pagination cursor",
+        ));
     }
     Ok(out)
 }
 
 fn build_date(year: u64, month: u64, day: u64) -> Result<Date> {
-    let year = i32::try_from(year).map_err(|_| invalid("翻页游标中的年份超出范围"))?;
-    let month = u8::try_from(month).map_err(|_| invalid("翻页游标中的月份非法"))?;
-    let month = Month::try_from(month).map_err(|_| invalid("翻页游标中的月份非法"))?;
-    let day = u8::try_from(day).map_err(|_| invalid("翻页游标中的日期非法"))?;
-    Date::from_calendar_date(year, month, day).map_err(|_| invalid("翻页游标中的日期非法"))
+    let year = i32::try_from(year)
+        .map_err(|_| invalid("The year in the pagination cursor is out of range"))?;
+    let month = u8::try_from(month).map_err(|_| invalid("Invalid cursor month"))?;
+    let month = Month::try_from(month).map_err(|_| invalid("Invalid cursor month"))?;
+    let day = u8::try_from(day).map_err(|_| invalid("Invalid cursor date"))?;
+    Date::from_calendar_date(year, month, day).map_err(|_| invalid("Invalid cursor date"))
 }
 
 fn build_time(hour: u64, minute: u64, second: u64, nanosecond: u64) -> Result<Time> {
-    let hour = u8::try_from(hour).map_err(|_| invalid("翻页游标中的小时非法"))?;
-    let minute = u8::try_from(minute).map_err(|_| invalid("翻页游标中的分钟非法"))?;
-    let second = u8::try_from(second).map_err(|_| invalid("翻页游标中的秒非法"))?;
-    let nanosecond = u32::try_from(nanosecond).map_err(|_| invalid("翻页游标中的纳秒非法"))?;
+    let hour = u8::try_from(hour).map_err(|_| invalid("Invalid cursor hour"))?;
+    let minute = u8::try_from(minute).map_err(|_| invalid("Invalid cursor minute"))?;
+    let second = u8::try_from(second).map_err(|_| invalid("Invalid cursor second"))?;
+    let nanosecond = u32::try_from(nanosecond).map_err(|_| invalid("Invalid cursor nanosecond"))?;
     Time::from_hms_nano(hour, minute, second, nanosecond)
-        .map_err(|_| invalid("翻页游标中的时间非法"))
+        .map_err(|_| invalid("Invalid cursor time"))
 }
 
 fn decode_text(payload: &str) -> Result<String> {
-    let bytes = hex_decode(payload).ok_or_else(|| invalid("翻页游标中的主键值不是合法十六进制"))?;
-    String::from_utf8(bytes).map_err(|_| invalid("翻页游标中的主键值不是合法 UTF-8"))
+    let bytes = hex_decode(payload).ok_or_else(|| {
+        invalid("The primary key value in the pagination cursor is not valid hexadecimal")
+    })?;
+    String::from_utf8(bytes)
+        .map_err(|_| invalid("The primary key value in the pagination cursor is not valid UTF-8"))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

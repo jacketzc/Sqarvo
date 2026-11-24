@@ -67,17 +67,23 @@ fn metadata_cancelled() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "元数据请求已取消",
+        "The metadata request was canceled",
     )
 }
 
 fn sanitize_metadata_error(error: &Error) -> Error {
     let message = match error.category() {
-        ErrorCategory::NotFound => "数据库对象不存在或对当前账号不可见",
-        ErrorCategory::PermissionDenied => "当前连接无权读取元数据",
-        ErrorCategory::Unsupported => "当前驱动或对象不支持该元数据读取",
-        ErrorCategory::ResourceExhausted => "元数据读取超过服务端限额",
-        _ => "数据库元数据读取失败",
+        ErrorCategory::NotFound => {
+            "The database object does not exist or is not visible to the current account"
+        }
+        ErrorCategory::PermissionDenied => {
+            "The current connection does not have permission to read metadata"
+        }
+        ErrorCategory::Unsupported => {
+            "The current driver or object does not support this metadata read"
+        }
+        ErrorCategory::ResourceExhausted => "The metadata read exceeds the server limit",
+        _ => "Failed to read database metadata",
     };
     Error::new(error.code(), error.category(), message)
 }
@@ -86,7 +92,7 @@ fn plan_cancelled() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "查询计划请求已取消",
+        "The query plan request was canceled",
     )
 }
 
@@ -94,7 +100,7 @@ fn plan_timeout() -> Error {
     Error::new(
         ErrorCode::MCP_QUERY_TIMEOUT,
         ErrorCategory::Timeout,
-        "查询计划请求超时",
+        "The query plan request timed out",
     )
 }
 
@@ -102,7 +108,7 @@ fn metadata_timeout() -> Error {
     Error::new(
         ErrorCode::MCP_QUERY_TIMEOUT,
         ErrorCategory::Timeout,
-        "元数据请求超时",
+        "The metadata request timed out",
     )
 }
 
@@ -309,18 +315,18 @@ impl AccessGuard {
             Ok(Ok(document)) => document,
             Ok(Err(error)) => {
                 self.revoke_stale(None).await;
-                tracing::warn!(code = %error.code(), "无法读取 MCP 数据访问策略");
-                return Err(access_denied("无法读取 MCP 数据访问策略"));
+                tracing::warn!(code = %error.code(), "Failed to read the MCP data access policy");
+                return Err(access_denied("Failed to read the MCP data access policy"));
             }
             Err(error) => {
                 self.revoke_stale(None).await;
-                tracing::warn!(%error, "MCP 数据访问策略读取任务异常");
-                return Err(access_denied("无法读取 MCP 数据访问策略"));
+                tracing::warn!(%error, "The MCP data access policy read task failed");
+                return Err(access_denied("Failed to read the MCP data access policy"));
             }
         };
         if !document.mcp.enabled {
             self.revoke_stale(None).await;
-            return Err(access_denied("MCP 数据访问全局未开启"));
+            return Err(access_denied("Global MCP data access is disabled"));
         }
         self.revoke_stale(Some(&document)).await;
         let profile = alias
@@ -328,7 +334,10 @@ impl AccessGuard {
             .map(|alias| {
                 let profile = document.resolve(alias).map_err(|error| {
                     if error.code() == ErrorCode::PROFILE_NOT_FOUND {
-                        Error::not_found(ErrorCode::MCP_CONNECTION_NOT_FOUND, "找不到该连接档案")
+                        Error::not_found(
+                            ErrorCode::MCP_CONNECTION_NOT_FOUND,
+                            "The connection profile was not found",
+                        )
                     } else {
                         error
                     }
@@ -341,7 +350,7 @@ impl AccessGuard {
                 {
                     return Err(Error::failed_precondition(
                         ErrorCode::PROFILE_RESTART_REQUIRED,
-                        "连接档案已新增或修改，请重启 MCP 后重试",
+                        "The connection profile was added or changed. Restart MCP and retry",
                     ));
                 }
                 Ok(profile.clone())
@@ -349,7 +358,7 @@ impl AccessGuard {
             .transpose()?;
         if document.mcp.read_only && operation != OperationType::Read {
             return Err(access_denied(
-                "当前 Sqarvo MCP 处于只读模式。若需要执行数据库写入，请用户在 Sqarvo 的 MCP 管理页面关闭「只读」开关。",
+                "Sqarvo MCP is in read-only mode. To write to the database, ask the user to turn off Read-only in Sqarvo's MCP settings.",
             ));
         }
         Ok(AuthorizedContext { document, profile })
@@ -364,7 +373,7 @@ impl AccessGuard {
             .await?;
         let profile = authorized
             .profile
-            .ok_or_else(|| Error::internal("缺少写入档案"))?;
+            .ok_or_else(|| Error::internal("The write connection profile is missing"))?;
         Ok((profile, authorized.document.revision))
     }
 
@@ -374,7 +383,7 @@ impl AccessGuard {
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || store.locked_snapshot())
             .await
-            .map_err(|_| Error::internal("MCP 策略读取任务失败"))?
+            .map_err(|_| Error::internal("The MCP policy read task failed"))?
     }
 
     async fn revoke_stale(&self, document: Option<&ProfileDocument>) {
@@ -414,7 +423,7 @@ impl AccessGuard {
 async fn close_session(sessions: &SessionManager, queries: &QueryRegistry, cached: &CachedSession) {
     queries.remove_session(&cached.session_id);
     if let Err(error) = sessions.disconnect(&cached.connection_id).await {
-        tracing::debug!(code = %error.code(), "丢弃 MCP 会话时断开失败");
+        tracing::debug!(code = %error.code(), "Failed to disconnect while dropping the MCP session");
     }
 }
 
@@ -443,7 +452,7 @@ fn write_cancelled() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "客户端取消了写入请求",
+        "The client canceled the write request",
     )
 }
 
@@ -458,14 +467,14 @@ impl AccessService {
         let credentials = match tokio::task::spawn_blocking(open_default_credential_store).await {
             Ok(store) => store,
             Err(error) => {
-                tracing::warn!(%error, "凭据存储装配任务异常，退回不可用实现");
+                tracing::warn!(%error, "The credential store initialization task failed. Falling back to an unavailable credential store");
                 Arc::new(UnavailableCredentialStore)
             }
         };
         let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));
         tokio::task::spawn_blocking(move || Self::with_session_manager(config, sessions, store))
             .await
-            .map_err(|_| Error::internal("MCP 连接档案装配任务异常"))?
+            .map_err(|_| Error::internal("The MCP connection profile initialization task failed"))?
     }
 
     /// 用外部构造的 `SessionManager` 装配（测试注入 `MemoryCredentialStore`）。
@@ -583,14 +592,13 @@ impl AccessService {
             .guard
             .authorize_request(OperationType::Read, Some(alias.to_owned()))
             .await?;
-        let profile = context
-            .profile
-            .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
-        let slot = self
-            .guard
-            .slots
-            .get(&profile.profile_id)
-            .ok_or_else(|| Error::internal("已授权请求缺少会话槽位"))?;
+        let profile = context.profile.ok_or_else(|| {
+            Error::internal("The authorized request is missing a connection profile")
+        })?;
+        let slot =
+            self.guard.slots.get(&profile.profile_id).ok_or_else(|| {
+                Error::internal("The authorized request is missing a session slot")
+            })?;
         let connect_guard = slot.connect.lock().await;
         if let Some(lease) = self.cached_handle(slot).await {
             return Ok(lease);
@@ -609,7 +617,7 @@ impl AccessService {
                     session_id: summary.session_id,
                     activity,
                 });
-                tracing::info!(alias, driver = %summary.driver_id, "已建立数据库连接（懒连接）");
+                tracing::info!(alias, driver = %summary.driver_id, "Established a database connection on demand");
                 drop(connect_guard);
                 self.guard
                     .authorize_request(OperationType::Read, Some(alias.to_owned()))
@@ -623,7 +631,7 @@ impl AccessService {
                     alias,
                     code = %error.code(),
                     category = %error.category(),
-                    "建立数据库连接失败"
+                    "Failed to establish the database connection"
                 );
                 Err(error)
             }
@@ -644,7 +652,7 @@ impl AccessService {
         match Self::run_leased(lease, &operation).await {
             Ok(value) => Ok(value),
             Err(error) if is_stale_session_error(&error) => {
-                tracing::warn!(alias, code = %error.code(), "会话已失效，重连后重试一次");
+                tracing::warn!(alias, code = %error.code(), "The session is no longer valid. Reconnecting and retrying once");
                 self.invalidate(alias).await;
                 Self::run_leased(self.lease_session(alias).await?, &operation).await
             }
@@ -680,7 +688,7 @@ impl AccessService {
         {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该 MariaDB 档案未配置 DBA 写入资格",
+                "This MariaDB profile is not configured for DBA writes",
             ));
         }
         Ok(())
@@ -785,7 +793,7 @@ impl AccessService {
             biased;
             () = cancellation.cancelled() => Err(metadata_cancelled()),
             () = tokio::time::sleep_until(deadline) => Err(metadata_timeout()),
-            result = worker => result.map_err(|_| Error::internal("元数据请求任务异常"))?,
+            result = worker => result.map_err(|_| Error::internal("The metadata request task failed"))?,
         }
     }
 
@@ -803,15 +811,17 @@ impl AccessService {
         Fut: std::future::Future<Output = Result<T>> + Send + 'static,
     {
         if operation == OperationType::Read {
-            return Err(Error::internal("写入会话需要 DML 操作类型"));
+            return Err(Error::internal(
+                "A write session requires a DML operation type",
+            ));
         }
         let authorized = self
             .guard
             .authorize_request(operation, Some(alias.to_owned()))
             .await?;
-        let profile = authorized
-            .profile
-            .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
+        let profile = authorized.profile.ok_or_else(|| {
+            Error::internal("The authorized request is missing a connection profile")
+        })?;
         self.require_write_profile(&profile)?;
         let profile_id = profile.profile_id.to_string();
         let (lifecycle, permit) = tokio::select! {
@@ -833,7 +843,7 @@ impl AccessService {
                 .authorize_request(operation, Some(profile_id.clone()))
                 .await?
                 .profile
-                .ok_or_else(|| Error::internal("已授权请求缺少连接档案"))?;
+                .ok_or_else(|| Error::internal("The authorized request is missing a connection profile"))?;
             let summary = tokio::select! {
                 biased;
                 () = cancelled.cancelled() => return Err(write_cancelled()),
@@ -841,7 +851,7 @@ impl AccessService {
                     result.map_err(|_| Error::new(
                         ErrorCode::MCP_QUERY_TIMEOUT,
                         ErrorCategory::Timeout,
-                        "写入会话初始化超时",
+                        "Write session initialization timed out",
                     ))??
                 }
             };
@@ -851,7 +861,7 @@ impl AccessService {
                     Ok(_) => execute(handle.clone()).await,
                     Err(error) => Err(error),
                 },
-                Err(error) => Err(Error::new(error.code(), error.category(), "写入会话不可用")),
+                Err(error) => Err(Error::new(error.code(), error.category(), "The write session is unavailable")),
             };
             match tokio::time::timeout(
                 crate::tools::write_transaction::TERMINAL_BUDGET,
@@ -860,18 +870,18 @@ impl AccessService {
             .await
             {
                 Ok(Ok(_)) => {}
-                Ok(Err(error)) => tracing::warn!(code = %error.code(), "MCP 写入会话清理返回错误"),
+                Ok(Err(error)) => tracing::warn!(code = %error.code(), "MCP write session cleanup returned an error"),
                 Err(_) => {
                     if let Ok(handle) = handle {
                         handle.abort_isolated().await;
                     }
-                    tracing::warn!("MCP 写入会话已从管理器移除，清理超时");
+                    tracing::warn!("The MCP write session was removed from the manager, but cleanup timed out");
                 }
             }
             result
         })
         .await
-        .map_err(|_| Error::internal("MCP 写入会话任务异常"))?
+        .map_err(|_| Error::internal("The MCP write session task failed"))?
     }
 
     async fn run_leased<T, F, Fut>(lease: LeasedSession, operation: &F) -> Result<T>
@@ -913,7 +923,7 @@ impl AccessService {
                 Error::new(
                     ErrorCode::MCP_INTERNAL,
                     ErrorCategory::Internal,
-                    "并发信号量已关闭",
+                    "The concurrency semaphore is closed",
                 )
             })
     }
@@ -926,7 +936,7 @@ impl AccessService {
             self.guard.disconnect(slot).await;
         }
         self.sessions.close_all().await;
-        tracing::info!("MCP 会话已全部关闭");
+        tracing::info!("All MCP sessions have been closed");
     }
 
     async fn cached_handle(&self, slot: &Slot) -> Option<LeasedSession> {
@@ -1181,7 +1191,7 @@ mod tests {
                     && enabled
                     && read_only
                 {
-                    assert!(error.to_string().contains("关闭「只读」开关"));
+                    assert!(error.to_string().contains("turn off Read-only"));
                 }
             }
         }
@@ -1427,7 +1437,7 @@ mod tests {
         assert!(is_stale_session_error(&transport));
         let closed = Error::failed_precondition(
             ErrorCode::from_static("sqlite.session_closed"),
-            "会话已关闭",
+            "Session closed",
         );
         assert!(is_stale_session_error(&closed));
         let syntax = Error::invalid_argument(ErrorCode::MCP_SQL_PARSE, "语法错误");

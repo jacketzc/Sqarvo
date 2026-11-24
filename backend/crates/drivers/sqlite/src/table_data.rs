@@ -214,7 +214,9 @@ impl TableDataProvider for SqliteSession {
             .await?
         {
             TableDataReply::Page(page) => Ok(page),
-            _ => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal(
+                "The table data response type does not match the request",
+            )),
         }
     }
 
@@ -246,7 +248,9 @@ impl TableDataProvider for SqliteSession {
                 report.deferred = deferred;
                 Ok(report)
             }
-            _ => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal(
+                "The table data response type does not match the request",
+            )),
         }
     }
 
@@ -274,7 +278,9 @@ impl TableDataProvider for SqliteSession {
                 report.deferred = deferred;
                 Ok(report)
             }
-            _ => Err(Error::internal("表数据回复类型不匹配")),
+            _ => Err(Error::internal(
+                "The table data response type does not match the request",
+            )),
         }
     }
 }
@@ -303,14 +309,14 @@ fn browse(
     // （测试、未来内嵌使用）不能把两种分页方式混在一起。
     if page_token.is_some() && offset > 0 {
         return Err(invalid_browse(
-            "offset 与 page_token 互斥：页码跳转用 offset、连续翻页用 page_token，二者只能给一个",
+            "Specify either offset to jump to a page or page_token to continue pagination",
         ));
     }
     // 游标编码的是「主键升序上的位置」。带排序时它不是下一页的起点，继续用会静默
     // 返回错位甚至重复的行，因此在发送 SQL 前拒绝，要求改用 offset。
     if page_token.is_some() && options.has_requested_sort() {
         return Err(invalid_browse(
-            "带排序的翻页请用 offset：page_token 只表示主键升序上的位置",
+            "Use offset for sorted pagination. page_token tracks ascending primary key order only",
         ));
     }
 
@@ -357,17 +363,17 @@ fn browse(
 
     let mut statement = connection
         .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 表数据查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite table data query"))?;
     let mut rows = statement
         .query(params_from_iter(params))
-        .map_err(|error| map_sqlite_error(error, "执行 SQLite 表数据查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to execute SQLite table data query"))?;
 
     // 只多读一行用于判断 `has_more`：不在服务端预取下一页，也不用 COUNT。
     let mut collected: Vec<Row> = Vec::with_capacity(page_size.saturating_add(1));
     while collected.len() <= page_size {
         match rows
             .next()
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite 表数据行失败"))?
+            .map_err(|error| map_sqlite_error(error, "Failed to read a SQLite table data row"))?
         {
             Some(row) => collected.push(crate::session::map_row(row, &columns)?),
             None => break,
@@ -381,9 +387,11 @@ fn browse(
     // `Some(0)` 也算显式 offset 分页（SPI 层保留 Option 就是为了区分它）。
     let next_page_token =
         if has_more && sort.is_empty() && options.offset.is_none() && !primary_key.is_empty() {
-            let last = collected
-                .last()
-                .ok_or_else(|| Error::internal("表数据游标缺少上一页最后一行"))?;
+            let last = collected.last().ok_or_else(|| {
+                Error::internal(
+                    "The table data cursor is missing the last row of the previous page",
+                )
+            })?;
             Some(encode_table_cursor(
                 object,
                 &primary_key_values(last, &columns, &primary_key)?,
@@ -438,10 +446,13 @@ fn resolve_browse_sort(columns: &[ColumnMeta], sort: &[SortKey]) -> Result<Vec<S
     for key in sort {
         let requested = key.column.trim();
         if requested.is_empty() {
-            return Err(invalid_browse("排序键的列名不能为空"));
+            return Err(invalid_browse("The sort column name must not be empty"));
         }
-        let column = resolve_column_meta(columns, requested)
-            .ok_or_else(|| invalid_browse(format!("排序引用了不存在的列 {requested}")))?;
+        let column = resolve_column_meta(columns, requested).ok_or_else(|| {
+            invalid_browse(format!(
+                "The sort references a nonexistent column: {requested}"
+            ))
+        })?;
         terms.push(SortTerm {
             column: column.name.clone(),
             direction: key.direction,
@@ -484,7 +495,7 @@ fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<Fil
                     Value::Text(text) | Value::Json(text) => text,
                     other => {
                         return Err(invalid_browse(format!(
-                            "列 {} 的 LIKE 需要文本值，实际是 {}",
+                            "LIKE requires a text value for column {}, but received {}",
                             column.name,
                             other.kind_name()
                         )));
@@ -500,15 +511,15 @@ fn compile_filter(columns: &[ColumnMeta], filter: Option<&Filter>) -> Result<Fil
                 let value = required_value(condition)?;
                 if value.is_null() {
                     return Err(invalid_browse(format!(
-                        "列 {} 的比较值不能为 NULL：判空请用 IS NULL / IS NOT NULL",
+                        "The comparison value for column {} cannot be NULL. Use IS NULL or IS NOT NULL",
                         column.name
                     )));
                 }
                 let sql_operator = comparison_sql(operator)
-                    .ok_or_else(|| Error::internal("筛选算子缺少 SQL 映射"))?;
+                    .ok_or_else(|| Error::internal("The filter operator has no SQL mapping"))?;
                 let bound = bind_cell(value).map_err(|_| {
                     invalid_browse(format!(
-                        "列 {} 的筛选值类型 {} 不能用于 SQLite 比较",
+                        "The filter for column {} has value type {}, which SQLite cannot compare",
                         column.name,
                         value.kind_name()
                     ))
@@ -530,17 +541,17 @@ fn filter_column<'a>(
 ) -> Result<&'a ColumnMeta> {
     let requested = condition.column.trim();
     if requested.is_empty() {
-        return Err(invalid_browse("筛选条件的列名不能为空"));
+        return Err(invalid_browse("The filter column name must not be empty"));
     }
     resolve_column_meta(columns, requested)
-        .ok_or_else(|| invalid_browse(format!("筛选引用了不存在的列 {requested}")))
+        .ok_or_else(|| invalid_browse(format!("Filter refers to nonexistent columns {requested}")))
 }
 
 /// 需要比较值的算子缺值 → `config.invalid`。
 fn required_value(condition: &FilterCondition) -> Result<&Value> {
     condition.value.as_ref().ok_or_else(|| {
         invalid_browse(format!(
-            "筛选用算子 {} 时必须给比较值",
+            "Filter operator {} requires a comparison value",
             condition.operator.as_str()
         ))
     })
@@ -637,7 +648,7 @@ impl BrowsePlan<'_> {
         let _ = write!(sql, " LIMIT ?{}", params.len());
         if offset > 0 {
             let offset = i64::try_from(offset)
-                .map_err(|_| invalid_browse("offset 超出 SQLite 可表示范围"))?;
+                .map_err(|_| invalid_browse("offset is outside the range SQLite can represent"))?;
             params.push(SqlValue::Integer(offset));
             let _ = write!(sql, " OFFSET ?{}", params.len());
         }
@@ -724,7 +735,7 @@ fn count_total(
             Err(error) => {
                 // 线程起不来是环境故障（线程/内存耗尽）：这次计数没有截止手段，
                 // 记 warning 后如实继续，不假装「超时已生效」。
-                tracing::warn!(%error, "无法启动 SQLite 计数超时看门线程，本次计数没有上界");
+                tracing::warn!(%error, "Failed to start the SQLite count timeout watchdog. This count will run without a timeout");
                 None
             }
         }
@@ -753,10 +764,10 @@ fn count_total(
             if skipped {
                 tracing::warn!(
                     ?deadline,
-                    "SQLite 精确计数超时，按未统计降级（本页数据不受影响）"
+                    "SQLite exact row count timed out. Returning the page without a count"
                 );
             } else {
-                tracing::warn!(%error, "SQLite 精确计数失败，按 UNKNOWN 降级");
+                tracing::warn!(%error, "SQLite exact row count failed. The count is UNKNOWN");
             }
             (None, TotalKind::Unknown, skipped)
         }
@@ -789,9 +800,12 @@ fn invalid_browse(message: impl Into<String>) -> Error {
 /// 属于会话级临时状态，由事务徽标与写入拒绝负责表达，不能混进「连接只读」这个原因，
 /// 否则事务结束后界面还会继续显示只读。
 fn connection_read_only(connection: &Connection) -> Result<bool> {
-    connection
-        .is_readonly("main")
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 连接只读状态失败"))
+    connection.is_readonly("main").map_err(|error| {
+        map_sqlite_error(
+            error,
+            "Failed to read the SQLite connection's read-only state",
+        )
+    })
 }
 
 /// 无主键：只给一页扫描顺序的预览，明确不提供继续语义。
@@ -818,16 +832,16 @@ fn browse_without_primary_key(
     let sql = format!("SELECT {select} FROM {table} LIMIT ?1");
     let mut statement = connection
         .prepare(&sql)
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 表数据查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to prepare SQLite table data query"))?;
     let mut rows = statement
         .query([page_limit(page_size)])
-        .map_err(|error| map_sqlite_error(error, "执行 SQLite 表数据查询失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to execute SQLite table data query"))?;
 
     let mut collected: Vec<Row> = Vec::with_capacity(page_size);
     while collected.len() < page_size {
         match rows
             .next()
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite 表数据行失败"))?
+            .map_err(|error| map_sqlite_error(error, "Failed to read a SQLite table data row"))?
         {
             Some(row) => collected.push(crate::session::map_row(row, &columns)?),
             None => break,
@@ -914,13 +928,15 @@ fn apply(
     match transaction {
         EditTransaction::Aborted => Err(Error::failed_precondition(
             ErrorCode::TRANSACTION_FAILED,
-            "事务已被数据库回滚，只能回滚",
+            "The database rolled back the transaction. Only rollback is allowed",
         )),
         EditTransaction::Active { read_only: true } => Err(read_only_transaction()),
         EditTransaction::Active { read_only: false } => {
             connection
                 .execute_batch("SAVEPOINT sqarvo_row_changes")
-                .map_err(|error| map_sqlite_error(error, "创建 SQLite 行变更保存点失败"))?;
+                .map_err(|error| {
+                    map_sqlite_error(error, "Failed to create SQLite line change savepoint")
+                })?;
             match plan.execute(connection, cancel) {
                 Ok(execution) if execution.cancelled => {
                     // 取消：回到本批 savepoint，外层事务原样保留（ADR 0018）。
@@ -930,7 +946,12 @@ fn apply(
                 Ok(execution) => {
                     connection
                         .execute_batch("RELEASE sqarvo_row_changes")
-                        .map_err(|error| map_sqlite_error(error, "释放 SQLite 行变更保存点失败"))?;
+                        .map_err(|error| {
+                            map_sqlite_error(
+                                error,
+                                "Failed to release the SQLite row change savepoint",
+                            )
+                        })?;
                     Ok(execution.into_report())
                 }
                 Err(error) => {
@@ -945,12 +966,14 @@ fn apply(
                 // 明确报「已有事务」而不是把底层错误透给用户。
                 return Err(Error::already_exists(
                     ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-                    "该会话已有打开的 SQL 事务，请先提交或回滚",
+                    "This session already has an open SQL transaction. Commit or roll it back first",
                 ));
             }
             connection
                 .execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| map_sqlite_error(error, "开始 SQLite 行变更事务失败"))?;
+                .map_err(|error| {
+                    map_sqlite_error(error, "Failed to start the SQLite row change transaction")
+                })?;
             match plan.execute(connection, cancel) {
                 Ok(execution) if execution.cancelled => {
                     // 自动提交模式下取消 = 整批回滚：绝不留半批（ADR 0018）。
@@ -960,7 +983,10 @@ fn apply(
                 Ok(execution) => {
                     if let Err(error) = connection.execute_batch("COMMIT") {
                         let _ = connection.execute_batch("ROLLBACK");
-                        return Err(map_sqlite_error(error, "提交 SQLite 行变更失败"));
+                        return Err(map_sqlite_error(
+                            error,
+                            "Failed to commit the SQLite row changes",
+                        ));
                     }
                     Ok(execution.into_report())
                 }
@@ -980,10 +1006,10 @@ fn apply(
 /// 让「取消后事务仍可用」的说法失去依据，因此这里显式记录。
 fn rollback_savepoint(connection: &Connection) {
     if let Err(error) = connection.execute_batch("ROLLBACK TO sqarvo_row_changes") {
-        tracing::warn!(%error, "回滚 SQLite 行变更保存点失败");
+        tracing::warn!(%error, "Failed to roll back to the SQLite row change savepoint");
     }
     if let Err(error) = connection.execute_batch("RELEASE sqarvo_row_changes") {
-        tracing::warn!(%error, "释放 SQLite 行变更保存点失败");
+        tracing::warn!(%error, "Failed to release the SQLite row change savepoint");
     }
 }
 
@@ -1059,12 +1085,12 @@ impl EditPlan {
                     cancelled: true,
                 });
             }
-            let mut statement = connection
-                .prepare_cached(&step.sql)
-                .map_err(|error| map_sqlite_error(error, "准备 SQLite 行变更语句失败"))?;
+            let mut statement = connection.prepare_cached(&step.sql).map_err(|error| {
+                map_sqlite_error(error, "Failed to prepare SQLite line change statement")
+            })?;
             let affected = statement
                 .execute(params_from_iter(step.params.iter()))
-                .map_err(|error| map_sqlite_error(error, "执行 SQLite 行变更失败"))?;
+                .map_err(|error| map_sqlite_error(error, "Failed to apply SQLite row changes"))?;
             // 0 行 = 目标行已不存在；>1 行 = 主键不唯一。两者都不是成功，
             // 但真实行数必须留在 `outcome` 里：`RowChangeResult::rows_affected()`
             // 会把它透传到 proto，调用方才知道到底动了几行。
@@ -1096,12 +1122,12 @@ impl EditStep {
         let key = change.key();
         if !key.matches(primary_key) {
             return Err(invalid_change(format!(
-                "第 {position} 条变更的主键值个数与主键定义不一致"
+                "The primary key value count for change {position} does not match the primary key definition"
             )));
         }
         if key.values.iter().any(Value::is_null) {
             return Err(invalid_change(format!(
-                "第 {position} 条变更的主键值不能为 NULL"
+                "Change {position} cannot use a NULL primary key value"
             )));
         }
 
@@ -1110,7 +1136,7 @@ impl EditStep {
             RowChange::Update { key, changes, .. } => {
                 if changes.is_empty() {
                     return Err(invalid_change(format!(
-                        "第 {position} 条更新没有任何列变更"
+                        "Update {position} does not change any columns"
                     )));
                 }
                 let mut assignments = Vec::with_capacity(changes.len());
@@ -1118,13 +1144,13 @@ impl EditStep {
                 for change in changes {
                     let column = resolve_column(columns, &change.column).ok_or_else(|| {
                         invalid_change(format!(
-                            "第 {position} 条变更引用了不存在的列 {}",
+                            "Change {position} references a nonexistent column: {}",
                             change.column
                         ))
                     })?;
                     if seen.iter().any(|name| name.eq_ignore_ascii_case(column)) {
                         return Err(invalid_change(format!(
-                            "第 {position} 条变更重复修改了列 {column}"
+                            "Change {position} modifies column {column} more than once"
                         )));
                     }
                     seen.push(column);
@@ -1207,7 +1233,7 @@ fn bind_cell(value: &Value) -> Result<SqlValue> {
             let Ok(value) = i64::try_from(*value) else {
                 return Err(Error::unsupported(
                     ErrorCode::CAPABILITY_UNSUPPORTED,
-                    "SQLite 无法表示超过 i64 范围的无符号整数",
+                    "SQLite cannot represent an unsigned integer beyond the i64 range",
                 ));
             };
             SqlValue::Integer(value)
@@ -1224,7 +1250,10 @@ fn bind_cell(value: &Value) -> Result<SqlValue> {
         Value::Array(_) | Value::Unsupported { .. } => {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                format!("SQLite 本版不支持写入 {} 类型的值", value.kind_name()),
+                format!(
+                    "This SQLite driver version does not support writing {} values",
+                    value.kind_name()
+                ),
             ));
         }
     };
@@ -1292,14 +1321,16 @@ fn primary_key_values(
         let index = columns
             .iter()
             .position(|column| column.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| Error::internal("主键列不在浏览结果的列集合中"))?;
-        let cell: &Cell = row
-            .get(index)
-            .ok_or_else(|| Error::internal("浏览结果缺少主键列"))?;
+            .ok_or_else(|| {
+                Error::internal("A primary key column is missing from the browse result")
+            })?;
+        let cell: &Cell = row.get(index).ok_or_else(|| {
+            Error::internal("A primary key column is missing from the browse result")
+        })?;
         if cell.truncated {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "主键值超过单元格上限，无法生成翻页游标；请缩小该列或改用代理主键",
+                "The primary key value exceeds the cell size limit. Reduce the column value size or use a surrogate primary key to generate pagination cursors",
             ));
         }
         values.push(cell.value.clone());
@@ -1311,7 +1342,7 @@ fn primary_key_values(
 fn bind_value(value: &Value) -> Result<SqlValue> {
     let bound = match value {
         Value::Null => {
-            return Err(Error::internal("主键值不能为 NULL"));
+            return Err(Error::internal("Primary key value cannot be NULL"));
         }
         Value::Bool(value) => SqlValue::Integer(i64::from(*value)),
         Value::Int(value) => SqlValue::Integer(*value),
@@ -1319,7 +1350,7 @@ fn bind_value(value: &Value) -> Result<SqlValue> {
             let Ok(value) = i64::try_from(*value) else {
                 return Err(Error::unsupported(
                     ErrorCode::CAPABILITY_UNSUPPORTED,
-                    "SQLite 无法表示超过 i64 范围的无符号主键值",
+                    "SQLite cannot represent an unsigned primary key beyond the i64 range",
                 ));
             };
             SqlValue::Integer(value)
@@ -1331,7 +1362,10 @@ fn bind_value(value: &Value) -> Result<SqlValue> {
         other => {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                format!("SQLite 本版不支持以 {} 类型的主键翻页", other.kind_name()),
+                format!(
+                    "This SQLite driver version does not support pagination with {} primary keys",
+                    other.kind_name()
+                ),
             ));
         }
     };
@@ -1461,7 +1495,7 @@ impl InsertPlan {
         {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该表（WITHOUT ROWID）省略了主键列，无法回传插入后的完整主键；请显式提供主键值",
+                "Supply the primary key values explicitly when inserting into this WITHOUT ROWID table so the complete key can be returned",
             ));
         }
 
@@ -1484,9 +1518,9 @@ impl InsertPlan {
                 }
                 CompiledInsert::Ready(statement) => statement,
             };
-            let mut prepared = connection
-                .prepare_cached(&statement.sql)
-                .map_err(|error| map_sqlite_error(error, "准备 SQLite 插入语句失败"))?;
+            let mut prepared = connection.prepare_cached(&statement.sql).map_err(|error| {
+                map_sqlite_error(error, "Failed to prepare SQLite insertion statement")
+            })?;
             let affected = match prepared.execute(params_from_iter(statement.params.iter())) {
                 Ok(affected) => affected,
                 Err(error) => {
@@ -1494,7 +1528,10 @@ impl InsertPlan {
                         results.push(rejection.into_result(index));
                         continue;
                     }
-                    return Err(map_sqlite_error(error, "执行 SQLite 插入失败"));
+                    return Err(map_sqlite_error(
+                        error,
+                        "Failed to execute SQLite insertion",
+                    ));
                 }
             };
             // INSERT 的影响行数恒为 1；不是 1 说明语句被改写（如 `OR IGNORE`），
@@ -1503,7 +1540,7 @@ impl InsertPlan {
                 results.push(
                     RowRejection::new(
                         ErrorCode::INTERNAL,
-                        format!("插入语句影响了 {affected} 行，预期 1 行"),
+                        format!("The insert affected {affected} rows. Expected 1"),
                     )
                     .into_result(index),
                 );
@@ -1541,31 +1578,37 @@ impl InsertPlan {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!("SELECT {select} FROM {} WHERE rowid = ?1", self.table);
-        let mut statement = connection
-            .prepare_cached(&sql)
-            .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键回读语句失败"))?;
-        let mut rows = statement
-            .query([rowid])
-            .map_err(|error| map_sqlite_error(error, "执行 SQLite 主键回读失败"))?;
-        let Some(row) = rows
-            .next()
-            .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键回读结果失败"))?
+        let mut statement = connection.prepare_cached(&sql).map_err(|error| {
+            map_sqlite_error(
+                error,
+                "Failed to prepare the SQLite primary key readback statement",
+            )
+        })?;
+        let mut rows = statement.query([rowid]).map_err(|error| {
+            map_sqlite_error(error, "Failed to execute SQLite primary key readback")
+        })?;
+        let Some(row) = rows.next().map_err(|error| {
+            map_sqlite_error(
+                error,
+                "Failed to read the SQLite primary key readback result",
+            )
+        })?
         else {
             return Err(Error::internal(
-                "插入成功但按 rowid 回读不到新行（主键回传失败）",
+                "The insert succeeded, but reading the new row by rowid failed. The primary key could not be returned",
             ));
         };
 
         let mut values = Vec::with_capacity(self.key_columns.len());
         for index in 0..self.key_columns.len() {
-            let reference = row
-                .get_ref(index)
-                .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键值失败"))?;
+            let reference = row.get_ref(index).map_err(|error| {
+                map_sqlite_error(error, "Failed to read SQLite primary key value")
+            })?;
             let cell = crate::session::map_value(reference);
             if cell.truncated {
                 return Err(Error::unsupported(
                     ErrorCode::CAPABILITY_UNSUPPORTED,
-                    "主键值超过单元格上限，无法回传插入后的完整主键",
+                    "The primary key value exceeds the cell size limit. The complete inserted primary key cannot be returned",
                 ));
             }
             values.push(cell.value);
@@ -1606,11 +1649,13 @@ fn compile_row(
             {
                 return Ok(CompiledInsert::Rejected(RowRejection::new(
                     ErrorCode::TABLE_DATA_COLUMN_NOT_INSERTABLE,
-                    format!("列 {requested} 由数据库生成，不能显式插入"),
+                    format!(
+                        "Column {requested} is generated by the database and cannot be inserted explicitly"
+                    ),
                 )));
             }
             return Err(invalid_change(format!(
-                "第 {position} 行引用了不存在的列 {requested}"
+                "Row {position} references a nonexistent column: {requested}"
             )));
         };
         if !column.nullable && matches!(change.value, Value::Null) {
@@ -1618,7 +1663,7 @@ fn compile_row(
             // 与「省略且无默认值」区分开（两套错误码，两种提示）。
             return Ok(CompiledInsert::Rejected(RowRejection::new(
                 ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
-                format!("列 {} 不允许 NULL，请给一个值", column.name),
+                format!("Column {} does not allow NULL. Supply a value", column.name),
             )));
         }
         match bind_cell(&change.value) {
@@ -1652,7 +1697,7 @@ fn compile_row(
         return Ok(CompiledInsert::Rejected(RowRejection::new(
             ErrorCode::TABLE_DATA_NOT_NULL_WITHOUT_DEFAULT,
             format!(
-                "列 {} 必填：既未给值，数据库也没有默认值可兜底",
+                "Column {} requires a value and the database has no default",
                 column.name
             ),
         )));
@@ -1702,13 +1747,19 @@ fn compile_row(
 fn generated_columns(connection: &Connection, database: &str, table: &str) -> Result<Vec<String>> {
     let mut statement = connection
         .prepare("SELECT name FROM pragma_table_xinfo(?1, ?2) WHERE hidden IN (2, 3)")
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 生成列查询失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(error, "Failed to prepare the SQLite generated column query")
+        })?;
     let rows = statement
         .query_map([table, database], |row| row.get::<_, String>(0))
-        .map_err(|error| map_sqlite_error(error, "执行 SQLite 生成列查询失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(error, "Failed to execute the SQLite generated column query")
+        })?;
     let mut names = Vec::new();
     for row in rows {
-        names.push(row.map_err(|error| map_sqlite_error(error, "读取 SQLite 生成列名失败"))?);
+        names.push(row.map_err(|error| {
+            map_sqlite_error(error, "Failed to read the SQLite generated column names")
+        })?);
     }
     Ok(names)
 }
@@ -1725,14 +1776,26 @@ fn rowid_alias_column(
 ) -> Result<Option<String>> {
     let mut statement = connection
         .prepare("SELECT name, type FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk")
-        .map_err(|error| map_sqlite_error(error, "准备 SQLite 主键列查询失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(
+                error,
+                "Failed to prepare the SQLite primary key column query",
+            )
+        })?;
     let columns = statement
         .query_map([table, database], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|error| map_sqlite_error(error, "执行 SQLite 主键列查询失败"))?
+        .map_err(|error| {
+            map_sqlite_error(
+                error,
+                "Failed to execute the SQLite primary key column query",
+            )
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 主键列失败"))?;
+        .map_err(|error| {
+            map_sqlite_error(error, "Failed to read the SQLite primary key columns")
+        })?;
     match columns.as_slice() {
         [(name, declared)] if declared.trim().eq_ignore_ascii_case("INTEGER") => {
             Ok(Some(name.clone()))
@@ -1753,7 +1816,7 @@ fn is_rowid_table(connection: &Connection, database: &str, table: &str) -> Resul
             |row| row.get(0),
         )
         .optional()
-        .map_err(|error| map_sqlite_error(error, "读取 SQLite 表形态失败"))?;
+        .map_err(|error| map_sqlite_error(error, "Failed to read the SQLite table shape"))?;
     Ok(without_rowid.unwrap_or(0) == 0)
 }
 
@@ -1766,22 +1829,26 @@ fn classify_insert_error(error: &rusqlite::Error, index: usize) -> Option<RowRej
     let rusqlite::Error::SqliteFailure(failure, _) = error else {
         return None;
     };
-    let message = format!("第 {} 行插入失败", index.saturating_add(1));
+    let message = format!("Failed to insert row {}", index.saturating_add(1));
     match failure.extended_code {
         // SQLITE_CONSTRAINT_UNIQUE / SQLITE_CONSTRAINT_PRIMARYKEY
         2067 | 1555 => Some(RowRejection::new(
             ErrorCode::TABLE_DATA_UNIQUE_VIOLATION,
-            format!("{message}：主键或唯一约束冲突，该值已存在"),
+            format!(
+                "{message}: the value already exists and violates a primary key or unique constraint"
+            ),
         )),
         // SQLITE_CONSTRAINT_NOTNULL
         1299 => Some(RowRejection::new(
             ErrorCode::TABLE_DATA_NOT_NULL_VIOLATION,
-            format!("{message}：有列不允许 NULL"),
+            format!("{message}: a column does not allow NULL"),
         )),
         // SQLITE_CONSTRAINT_CHECK / TRIGGER / FOREIGNKEY / STRICT 类型不匹配
         275 | 1811 | 787 | 3091 => Some(RowRejection::new(
             ErrorCode::CONFIG_INVALID,
-            format!("{message}：值不满足列定义（CHECK/外键/类型约束）"),
+            format!(
+                "{message}: the value violates the column definition (CHECK, foreign key, or type constraint)"
+            ),
         )),
         _ => None,
     }
@@ -1819,18 +1886,22 @@ fn insert(
     match transaction {
         EditTransaction::Aborted => Err(Error::failed_precondition(
             ErrorCode::TRANSACTION_FAILED,
-            "事务已被数据库回滚，只能回滚",
+            "The database rolled back the transaction. Only rollback is allowed",
         )),
         EditTransaction::Active { read_only: true } => Err(read_only_transaction()),
         EditTransaction::Active { read_only: false } => {
             connection
                 .execute_batch("SAVEPOINT sqarvo_row_insert")
-                .map_err(|error| map_sqlite_error(error, "创建 SQLite 插入保存点失败"))?;
+                .map_err(|error| {
+                    map_sqlite_error(error, "Failed to create SQLite insert savepoint")
+                })?;
             match plan.execute(connection) {
                 Ok(results) if !has_failures(&results) => {
                     connection
                         .execute_batch("RELEASE sqarvo_row_insert")
-                        .map_err(|error| map_sqlite_error(error, "释放 SQLite 插入保存点失败"))?;
+                        .map_err(|error| {
+                            map_sqlite_error(error, "Failed to release SQLite insert savepoint")
+                        })?;
                     Ok(report(results, false))
                 }
                 Ok(results) => {
@@ -1848,17 +1919,22 @@ fn insert(
             if !connection.is_autocommit() {
                 return Err(Error::already_exists(
                     ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-                    "该会话已有打开的 SQL 事务，请先提交或回滚",
+                    "This session already has an open SQL transaction. Commit or roll it back first",
                 ));
             }
             connection
                 .execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| map_sqlite_error(error, "开始 SQLite 插入事务失败"))?;
+                .map_err(|error| {
+                    map_sqlite_error(error, "Failed to start the SQLite insert transaction")
+                })?;
             match plan.execute(connection) {
                 Ok(results) if !has_failures(&results) => {
                     if let Err(error) = connection.execute_batch("COMMIT") {
                         let _ = connection.execute_batch("ROLLBACK");
-                        return Err(map_sqlite_error(error, "提交 SQLite 插入失败"));
+                        return Err(map_sqlite_error(
+                            error,
+                            "Failed to commit the SQLite insert",
+                        ));
                     }
                     Ok(report(results, false))
                 }
@@ -1879,10 +1955,10 @@ fn insert(
 /// 回滚到插入批次的 savepoint 并释放它；失败只记日志，不掩盖原始错误。
 fn rollback_insert_savepoint(connection: &Connection) {
     if let Err(error) = connection.execute_batch("ROLLBACK TO sqarvo_row_insert") {
-        tracing::warn!(%error, "回滚 SQLite 插入保存点失败");
+        tracing::warn!(%error, "Failed to roll back to the SQLite insert savepoint");
     }
     if let Err(error) = connection.execute_batch("RELEASE sqarvo_row_insert") {
-        tracing::warn!(%error, "释放 SQLite 插入保存点失败");
+        tracing::warn!(%error, "Failed to release SQLite insert savepoint");
     }
 }
 

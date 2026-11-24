@@ -27,7 +27,7 @@ impl SqliteDriver {
     pub fn new() -> Self {
         Self {
             descriptor: DriverDescriptor {
-                id: DriverId::new(DRIVER_ID).expect("sqlite 是合法的驱动标识"),
+                id: DriverId::new(DRIVER_ID).expect("sqlite is a valid driver identifier"),
                 display_name: "SQLite".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 supported_databases: vec![DatabaseFlavor {
@@ -99,11 +99,11 @@ impl Driver for SqliteDriver {
             let connection = open_connection(&path, read_only)?;
             let version: String = connection
                 .query_row("SELECT sqlite_version()", [], |row| row.get(0))
-                .map_err(|error| map_sqlite_error(error, "读取 SQLite 版本失败"))?;
+                .map_err(|error| map_sqlite_error(error, "Failed to read SQLite version"))?;
             Ok::<_, Error>(version)
         })
         .await
-        .map_err(|error| Error::internal("连接测试任务失败").with_source(error))??;
+        .map_err(|error| Error::internal("The connection test task failed").with_source(error))??;
 
         Ok(ConnectionTestReport {
             reachable: true,
@@ -132,20 +132,20 @@ impl Driver for SqliteDriver {
         if rusqlite::version_number() < 3_037_000 {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "受控 DDL 要求 SQLite 3.37 或更新版本",
+                "Controlled DDL requires SQLite 3.37 or an updated version",
             ));
         }
         let config = SqliteConfig::from_params(params)?;
         if config.path == ":memory:" || config.path.starts_with("file:") {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "DDL 只支持已有的 SQLite 普通文件",
+                "DDL is supported only on existing regular SQLite files",
             ));
         }
         if config.read_only && !preview {
             return Err(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "DDL 不能在只读 SQLite 档案上执行",
+                "DDL cannot be executed on a read-only SQLite file",
             ));
         }
         let session = SqliteSession::connect_existing(config.path, preview).await?;
@@ -166,25 +166,25 @@ impl SqliteConfig {
         if params.driver_id.as_str() != DRIVER_ID {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "该驱动只能处理 sqlite 连接参数",
+                "This driver accepts only sqlite connection parameters",
             ));
         }
         if params.port != 0 {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "SQLite 使用本地文件，不支持端口",
+                "SQLite uses local files and does not support ports",
             ));
         }
         if params.database.is_some() {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "SQLite 使用 host 作为数据库文件路径，不支持 database 字段",
+                "SQLite uses host as a database file path and database field is not supported",
             ));
         }
         if params.username.is_some() || params.credential_ref.is_some() {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "SQLite 不支持用户名或密码",
+                "SQLite does not support a username or password",
             ));
         }
         if !matches!(params.tls, TlsMode::Unspecified | TlsMode::Disabled)
@@ -192,7 +192,7 @@ impl SqliteConfig {
         {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "SQLite 是本地文件数据库，不支持 TLS",
+                "SQLite is a local file database that does not support TLS",
             ));
         }
 
@@ -203,7 +203,7 @@ impl SqliteConfig {
                 other => {
                     return Err(Error::invalid_argument(
                         ErrorCode::CONFIG_INVALID,
-                        format!("SQLite 不支持的连接参数：{other}"),
+                        format!("Connection parameters not supported by SQLite: {other}"),
                     ));
                 }
             }
@@ -213,7 +213,7 @@ impl SqliteConfig {
         if read_only && path == ":memory:" {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "内存数据库不支持只读模式",
+                "Memory database does not support read-only mode",
             ));
         }
 
@@ -227,7 +227,7 @@ fn parse_bool(value: &str) -> Result<bool> {
         "false" | "0" => Ok(false),
         _ => Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "read_only 只接受 true/false 或 1/0",
+            "read_only must be true, false, 1, or 0",
         )),
     }
 }

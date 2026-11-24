@@ -65,7 +65,7 @@ impl CredentialService for CredentialServiceImpl {
         if request.secret.is_empty() {
             return Err(to_status(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "密码不能为空：如需沿用已保存的凭据，请复用原引用而不是提交空密码",
+                "The password must not be empty. Reuse the existing reference to keep a saved credential",
             )));
         }
 
@@ -77,11 +77,13 @@ impl CredentialService for CredentialServiceImpl {
             .await
             .map_err(|join_error| {
                 // JoinError 只带任务号与「panic / cancelled」，不含密码内容。
-                Status::internal(format!("凭据写入任务异常结束：{join_error}"))
+                Status::internal(format!(
+                    "The credential write task ended unexpectedly: {join_error}"
+                ))
             })?
             .map_err(to_status)?;
 
-        tracing::debug!(reference = %reference, "数据库凭据已写入系统凭据库");
+        tracing::debug!(reference = %reference, "The database credential was saved to the system credential store");
         Ok(Response::new(StoreCredentialResponse {
             credential_ref: reference,
         }))
@@ -97,7 +99,11 @@ impl CredentialService for CredentialServiceImpl {
         let store = Arc::clone(&self.credentials);
         tokio::task::spawn_blocking(move || store.delete(&reference))
             .await
-            .map_err(|join_error| Status::internal(format!("凭据删除任务异常结束：{join_error}")))?
+            .map_err(|join_error| {
+                Status::internal(format!(
+                    "The credential deletion task ended unexpectedly: {join_error}"
+                ))
+            })?
             .map_err(to_status)?;
 
         Ok(Response::new(Empty {}))

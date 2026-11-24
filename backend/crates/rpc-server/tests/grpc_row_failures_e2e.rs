@@ -400,7 +400,7 @@ async fn row_deleted_by_other_session_is_reported_and_not_overwritten() {
     );
     assert_eq!(stale.total_rows_affected, 0);
     assert!(
-        stale.results[0].message.contains("不存在"),
+        stale.results[0].message.contains("no longer exists"),
         "文案要说明行已不存在：{}",
         stale.results[0].message
     );

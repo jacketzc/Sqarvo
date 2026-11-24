@@ -97,13 +97,13 @@ impl TransactionRegistry {
         if entries.active.values().any(|entry| entry.owner == owner.id) {
             return Err(Error::already_exists(
                 ErrorCode::TRANSACTION_ALREADY_ACTIVE,
-                "该客户端已有事务或事务正在清理",
+                "This client already has a transaction or a transaction is being cleaned up",
             ));
         }
         if entries.active.len() >= MAX_TRANSACTIONS {
             return Err(Error::resource_exhausted(
                 ErrorCode::MCP_INVALID_ARGUMENT,
-                "显式事务数量已达上限",
+                "The explicit transaction limit has been reached",
             ));
         }
         let id = Uuid::new_v4();
@@ -143,7 +143,7 @@ impl TransactionRegistry {
         sender.try_send(command).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => Failure::from(Error::resource_exhausted(
                 ErrorCode::from_static("mcp.transaction_busy"),
-                "事务正在处理其他请求",
+                "The transaction is processing another request",
             )),
             mpsc::error::TrySendError::Closed(_) => not_found().into(),
         })
@@ -189,29 +189,33 @@ impl TransactionRegistry {
 }
 
 pub(crate) fn not_found() -> Error {
-    Error::not_found(ErrorCode::TRANSACTION_NOT_FOUND, "事务不存在或不可用")
+    Error::not_found(
+        ErrorCode::TRANSACTION_NOT_FOUND,
+        "The transaction does not exist or is unavailable",
+    )
 }
 
 pub(crate) fn cancelled() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         sqarvo_common::ErrorCategory::Cancelled,
-        "事务请求已取消",
+        "The transaction request was canceled",
     )
 }
 
 pub(crate) fn terminal_error(state: &str) -> Error {
     match state {
-        "commit_unknown" => {
-            Error::failed_precondition(ErrorCode::MCP_COMMIT_UNKNOWN, "数据库提交结果未知")
-        }
+        "commit_unknown" => Error::failed_precondition(
+            ErrorCode::MCP_COMMIT_UNKNOWN,
+            "The database commit outcome is unknown",
+        ),
         "rollback_unconfirmed" => Error::failed_precondition(
             ErrorCode::from_static("mcp.rollback_unconfirmed"),
-            "数据库回滚未确认",
+            "The database rollback was not confirmed",
         ),
         _ => Error::failed_precondition(
             ErrorCode::from_static("mcp.transaction_ended"),
-            "事务已结束",
+            "The transaction has ended",
         ),
     }
 }

@@ -160,7 +160,10 @@ mod tests {
     /// 非脚本错误不得携带失败位置 metadata（旧客户端行为不变）。
     #[test]
     fn plain_error_has_no_position_metadata() {
-        let status = to_status(Error::not_found(ErrorCode::QUERY_NOT_FOUND, "查询不存在"));
+        let status = to_status(Error::not_found(
+            ErrorCode::QUERY_NOT_FOUND,
+            "The query does not exist",
+        ));
         assert!(
             status
                 .metadata()

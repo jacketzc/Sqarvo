@@ -79,23 +79,26 @@ impl ConnectionProfile {
             self.file_path.clone_from(&self.params.host);
         }
         if self.params.host != self.file_path {
-            return Err(invalid("SQLite 档案的 file_path 与 host 路径不一致"));
+            return Err(invalid(
+                "The SQLite profile file_path does not match its host path",
+            ));
         }
         Ok(())
     }
 
     fn validate(&self) -> Result<()> {
         if !Self::valid_id(self.profile_id) || self.revision == 0 {
-            return Err(invalid("连接档案的标识或修订非法"));
+            return Err(invalid("Invalid connection profile identifier or revision"));
         }
         if self.name.trim().is_empty() || self.name.chars().any(char::is_control) {
-            return Err(invalid("连接档案的名称非法"));
+            return Err(invalid("Invalid connection profile name"));
         }
         self.params
             .validate()
-            .map_err(|_| invalid("连接档案的连接参数非法"))?;
+            .map_err(|_| invalid("Invalid connection parameters in the profile"))?;
         if let Some(reference) = self.params.credential_ref.as_deref() {
-            crate::validate_reference(reference).map_err(|_| invalid("连接档案的凭据引用非法"))?;
+            crate::validate_reference(reference)
+                .map_err(|_| invalid("Invalid credential reference in the connection profile"))?;
         }
         if self.params.properties.keys().any(|key| {
             let key = key.to_ascii_lowercase();
@@ -103,7 +106,9 @@ impl ConnectionProfile {
                 .iter()
                 .any(|part| key.contains(part))
         }) {
-            return Err(invalid("连接档案的扩展参数不得携带凭据"));
+            return Err(invalid(
+                "Connection profile extension parameters cannot contain credentials",
+            ));
         }
         Ok(())
     }
@@ -201,16 +206,22 @@ impl ProfileDocument {
 
     fn validate(&self) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
-            return Err(invalid("不支持该共享连接档案格式版本"));
+            return Err(invalid(
+                "Unsupported shared connection profile format version",
+            ));
         }
         if !self.mcp.enabled && !self.mcp.read_only {
-            return Err(invalid("仅在 MCP 数据访问开启时才可关闭只读"));
+            return Err(invalid(
+                "Read-only mode can be turned off only when MCP data access is enabled",
+            ));
         }
         let mut ids = HashSet::with_capacity(self.profiles.len());
         for profile in &self.profiles {
             profile.validate()?;
             if !ids.insert(profile.profile_id) {
-                return Err(invalid("共享连接档案包含重复标识"));
+                return Err(invalid(
+                    "The shared connection profiles contain duplicate identifiers",
+                ));
             }
         }
         if self.migration_state.iter().any(|(path, entry)| {
@@ -218,7 +229,9 @@ impl ProfileDocument {
                 || entry.sha256.len() != 64
                 || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
         }) {
-            return Err(invalid("共享连接档案的迁移记录非法"));
+            return Err(invalid(
+                "Invalid shared connection profile migration record",
+            ));
         }
         Ok(())
     }
@@ -243,7 +256,7 @@ fn unique_match<T>(mut matches: impl Iterator<Item = T>) -> Result<Option<T>> {
     if matches.next().is_some() {
         return Err(Error::failed_precondition(
             ErrorCode::PROFILE_AMBIGUOUS_NAME,
-            "匹配到多个连接档案，请指定档案标识",
+            "Multiple connection profiles match. Specify a profile identifier",
         ));
     }
     Ok(first)
@@ -254,13 +267,16 @@ fn invalid(message: &str) -> Error {
 }
 
 fn not_found() -> Error {
-    Error::not_found(ErrorCode::PROFILE_NOT_FOUND, "连接档案不存在")
+    Error::not_found(
+        ErrorCode::PROFILE_NOT_FOUND,
+        "The connection profile does not exist",
+    )
 }
 
 fn revision_conflict() -> Error {
     Error::failed_precondition(
         ErrorCode::PROFILE_REVISION_CONFLICT,
-        "连接档案已变化，请重新读取后重试",
+        "The connection profile changed. Read it again and retry",
     )
 }
 
@@ -328,7 +344,7 @@ impl ProfileStore {
                 )?
             } else {
                 if !ConnectionProfile::valid_id(profile.profile_id) {
-                    return Err(invalid("连接档案的标识非法"));
+                    return Err(invalid("Invalid connection profile identifier"));
                 }
                 Some(
                     doc.profiles
@@ -348,7 +364,7 @@ impl ProfileStore {
                 {
                     return Err(Error::already_exists(
                         ErrorCode::PROFILE_INVALID,
-                        "连接目标已有保存的档案",
+                        "A saved profile already exists for the connection target",
                     ));
                 }
                 profile.profile_id = saved.profile_id;
@@ -427,7 +443,7 @@ impl ProfileStore {
         let path = self.config_dir.join(FILE_NAME);
         let mut doc = match files::read(&path) {
             Ok(payload) => serde_json::from_slice::<ProfileDocument>(&payload)
-                .map_err(|_| invalid("共享连接档案 JSON 格式非法"))?,
+                .map_err(|_| invalid("Invalid JSON in the shared connection profiles"))?,
             Err(err) if err.kind() == ErrorKind::NotFound => ProfileDocument::default(),
             Err(err) => return Err(files::safe_io_error(err)),
         };
@@ -449,7 +465,7 @@ impl ProfileStore {
         doc.validate()?;
         doc.revision = next_revision(doc.revision)?;
         let payload = serde_json::to_vec_pretty(doc)
-            .map_err(|_| Error::internal("共享连接档案序列化失败"))?;
+            .map_err(|_| Error::internal("Failed to serialize the shared connection profiles"))?;
         atomic_write(&self.config_dir.join(FILE_NAME), &payload)
     }
 }
@@ -457,7 +473,7 @@ impl ProfileStore {
 fn next_revision(revision: u64) -> Result<u64> {
     revision
         .checked_add(1)
-        .ok_or_else(|| invalid("共享连接档案的修订已达到上限"))
+        .ok_or_else(|| invalid("The shared connection profile revision limit has been reached"))
 }
 
 use files::atomic_write;

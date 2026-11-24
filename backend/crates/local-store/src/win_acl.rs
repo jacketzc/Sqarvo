@@ -39,8 +39,8 @@ impl AclTarget {
     /// 错误文案里的名词。必须是固定串：会进日志，不允许拼接路径以外的内容。
     const fn noun(self) -> &'static str {
         match self {
-            Self::File => "文件",
-            Self::Directory => "目录",
+            Self::File => "file",
+            Self::Directory => "directory",
         }
     }
 
@@ -84,7 +84,7 @@ const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 pub(crate) fn owner_only_sddl(sid: &str, target: AclTarget) -> Result<String> {
     if !is_sid_string(sid) {
         return Err(Error::internal(
-            "无法构造仅当前用户可访问的 DACL：系统返回的 SID 文本不合法",
+            "Could not construct a DACL limited to the current user. The system returned invalid SID text",
         ));
     }
     Ok(format!("D:P({};;;{sid})", target.ace_flags()))
@@ -117,22 +117,22 @@ pub(crate) fn classify_acl_error(target: AclTarget, path: &Path, code: u32) -> E
     let (category, hint) = match code {
         ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => (
             ErrorCategory::PermissionDenied,
-            "当前账户没有修改该对象访问控制的权限",
+            "The current account does not have permission to modify access controls for the object",
         ),
         ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => (
             ErrorCategory::NotFound,
-            "目标对象已不存在（可能被并发删除）",
+            "Target object no longer exists (possibly deleted simultaneously)",
         ),
         _ => (
             ErrorCategory::Internal,
-            "这是系统 API 返回的未预期失败，重试不会改变结果",
+            "The system API returned an unexpected error. Retrying will not change the outcome",
         ),
     };
     Error::new(
         ErrorCode::IO,
         category,
         format!(
-            "无法把{}的访问控制收紧到当前用户：{}（Win32 错误码 {code}；{hint}）",
+            "Failed to restrict access to the {} to the current user: {} (Win32 error code {code}. {hint})",
             target.noun(),
             path.display()
         ),
@@ -151,7 +151,9 @@ pub(crate) fn classify_sid_error(code: u32) -> Error {
     Error::new(
         ErrorCode::IO,
         category,
-        format!("无法读取当前进程的用户 SID（收紧 Windows 访问控制需要它；Win32 错误码 {code}）"),
+        format!(
+            "Failed to read the current process user SID required for Windows access control (Win32 error code {code})"
+        ),
     )
 }
 
@@ -250,6 +252,6 @@ mod tests {
         let rendered = format!("{error} {error:?}");
         assert!(!rendered.contains(&token));
         assert!(!rendered.contains("token"));
-        assert!(rendered.contains("Win32 错误码 5"));
+        assert!(rendered.contains("Win32 error code 5"));
     }
 }

@@ -100,7 +100,7 @@ pub(crate) async fn inspect(conn: &mut Conn, change: &Change, preview: bool) -> 
         if locked.flatten() != Some(1) {
             return Err(Error::failed_precondition(
                 ErrorCode::MCP_DDL_BUSY,
-                "该 MariaDB 实例已有结构变更在途",
+                "This MariaDB instance already has a schema change in progress",
             ));
         }
     }
@@ -277,19 +277,22 @@ pub(crate) async fn execute(conn: &mut Conn, sql: &str) -> Acknowledgment {
         Err(error @ mysql_async::Error::Server(_))
             if !crate::error::is_query_interrupted(&error) =>
         {
-            Acknowledgment::Rejected(map_error(error, "MariaDB 拒绝结构变更"))
+            Acknowledgment::Rejected(map_error(error, "MariaDB rejected the schema change"))
         }
-        Err(error) => Acknowledgment::Unconfirmed(map_error(error, "MariaDB 结构变更应答缺失")),
+        Err(error) => Acknowledgment::Unconfirmed(map_error(
+            error,
+            "MariaDB did not return a schema change response",
+        )),
     }
 }
 
 fn metadata_error(error: mysql_async::Error) -> Error {
-    map_error(error, "MariaDB DDL 元数据检查失败")
+    map_error(error, "MariaDB DDL metadata check failed")
 }
 
 pub(crate) fn unsupported() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        "无法确认 MariaDB DDL 部署、对象或依赖",
+        "Could not verify the MariaDB DDL deployment, object, or dependencies",
     )
 }

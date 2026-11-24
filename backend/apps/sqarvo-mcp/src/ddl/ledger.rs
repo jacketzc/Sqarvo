@@ -51,7 +51,7 @@ impl Slot {
         if !try_lock(&lock, LockMode::Exclusive).map_err(|_| storage())? {
             return Err(Error::failed_precondition(
                 ErrorCode::MCP_DDL_BUSY,
-                "已有结构变更正在执行",
+                "A schema change is already running",
             ));
         }
         Ok(Self {
@@ -114,7 +114,7 @@ impl Slot {
         if now < last || stamp < now - TTL || stamp > now + FUTURE_SKEW {
             return Err(Error::invalid_argument(
                 ErrorCode::MCP_INVALID_ARGUMENT,
-                "operation_id 已过期、时间超前或系统时钟回拨",
+                "operation_id expired, is dated in the future, or the system clock moved backward",
             ));
         }
         let count: u32 = tx
@@ -150,7 +150,7 @@ impl Slot {
             if hmac::verify(&key, canonical, &old_digest).is_err() {
                 return Err(Error::failed_precondition(
                     ErrorCode::MCP_DDL_OPERATION_CONFLICT,
-                    "operation_id 已用于其他结构变更",
+                    "operation_id has already been used for another schema change",
                 ));
             }
             return Ok(Reservation::Existing(match response {
@@ -169,7 +169,7 @@ impl Slot {
         if unresolved.is_some() {
             return Err(Error::failed_precondition(
                 ErrorCode::MCP_DDL_UNRESOLVED,
-                "存在待核查的结构变更，执行已暂停",
+                "Execution is paused pending verification of a schema change",
             ));
         }
         tx.execute("UPDATE clock SET last_seen = ?", [now])
@@ -185,7 +185,7 @@ impl Slot {
         if retained >= MAX_RECORDS {
             return Err(Error::resource_exhausted(
                 ErrorCode::MCP_DDL_LEDGER_FULL,
-                "结构变更记录已满",
+                "The schema change log is full",
             ));
         }
         tx.execute(
@@ -209,7 +209,10 @@ impl Slot {
             .optional()
             .map_err(|_| storage())?
             .ok_or_else(|| {
-                Error::not_found(ErrorCode::MCP_DDL_UNRESOLVED, "该操作没有待处理的屏障")
+                Error::not_found(
+                    ErrorCode::MCP_DDL_UNRESOLVED,
+                    "This operation has no pending barrier",
+                )
             })?;
         let target = serde_json::from_str(&target).map_err(|_| storage())?;
         let response = response.map_or_else(
@@ -237,7 +240,7 @@ fn unknown(id: &str, target: &Value) -> Value {
         "operation_id": id, "target": target, "state": "outcome_unknown", "effect": "unknown",
         "error": {
             "code": "mcp.ddl_outcome_unknown", "category": "failed_precondition",
-            "message": "结构变更没有持久化的终态，请核查数据库和审计", "retryable": false
+            "message": "The schema change operation has no persisted final state. Check the database and audit log", "retryable": false
         }
     })
 }
@@ -261,7 +264,7 @@ fn private_file(path: &Path) -> Result<File> {
 }
 
 fn storage() -> Error {
-    Error::internal("无法确认持久化 DDL 执行状态")
+    Error::internal("Could not verify the persisted DDL execution state")
 }
 
 #[cfg(test)]

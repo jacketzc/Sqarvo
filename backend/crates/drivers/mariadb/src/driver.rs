@@ -30,7 +30,7 @@ impl MariaDbDriver {
     pub fn new() -> Self {
         Self {
             descriptor: DriverDescriptor {
-                id: DriverId::new(DRIVER_ID).expect("mariadb 是合法的驱动标识"),
+                id: DriverId::new(DRIVER_ID).expect("mariadb is a valid driver identifier"),
                 display_name: "MariaDB".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 supported_databases: vec![DatabaseFlavor {
@@ -102,7 +102,7 @@ impl Driver for MariaDbDriver {
         let version: Option<String> = conn
             .query_first("SELECT VERSION()")
             .await
-            .map_err(|error| map_error(error, "读取 MariaDB 版本失败"))?;
+            .map_err(|error| map_error(error, "Failed to read MariaDB version"))?;
         let _ = conn.disconnect().await;
 
         Ok(ConnectionTestReport {
@@ -145,11 +145,11 @@ pub(crate) async fn connect_conn(config: &MariaDbConfig) -> Result<(Conn, Vec<Wa
         Ok(Ok(conn)) => Ok((conn, Vec::new())),
         Ok(Err(error)) => {
             if !config.tls_fallback_allowed || config.opts.ssl_opts().is_none() {
-                return Err(map_error(error, "连接 MariaDB 失败"));
+                return Err(map_error(error, "Failed to connect to MariaDB"));
             }
             tracing::warn!(
                 error = %error,
-                "TLS 握手失败，按 preferred 语义回退明文连接"
+                "The TLS handshake failed. The preferred TLS mode fell back to an unencrypted connection"
             );
             let plaintext: Opts = OptsBuilder::from_opts(config.opts.clone())
                 .ssl_opts(None)
@@ -160,10 +160,10 @@ pub(crate) async fn connect_conn(config: &MariaDbConfig) -> Result<(Conn, Vec<Wa
                     conn,
                     vec![Warning {
                         code: "mariadb.tls_fallback".to_owned(),
-                        message: "TLS 不可用，已按「优先 TLS」模式回退为明文连接".to_owned(),
+                        message: "TLS is unavailable. The preferred TLS mode fell back to an unencrypted connection".to_owned(),
                     }],
                 )),
-                Ok(Err(fallback_error)) => Err(map_error(fallback_error, "连接 MariaDB 失败")),
+                Ok(Err(fallback_error)) => Err(map_error(fallback_error, "Failed to connect to MariaDB")),
             }
         }
     }

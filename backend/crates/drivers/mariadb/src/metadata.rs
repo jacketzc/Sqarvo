@@ -371,14 +371,14 @@ impl MetadataProvider for MariaDbSession {
 }
 
 fn mismatched_reply() -> Error {
-    Error::internal("元数据回复与请求不匹配")
+    Error::internal("Metadata reply does not match the request")
 }
 
 pub(crate) fn validate_session(session_id: SessionId, object: &ObjectRef) -> Result<()> {
     if object.session_id != session_id {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "对象引用不属于当前会话",
+            "Object Reference does not belong to the current session",
         ));
     }
     Ok(())
@@ -399,7 +399,7 @@ fn metadata_not_found(database: &str, name: &str) -> Error {
     Error::not_found(
         ErrorCode::METADATA_OBJECT_NOT_FOUND,
         format!(
-            "MariaDB 对象 {database}.{name} 不存在（或当前账号在 information_schema 里看不到它）"
+            "MariaDB object {database}.{name} does not exist or is not visible to the current account in information_schema"
         ),
     )
 }
@@ -408,7 +408,7 @@ fn metadata_not_found(database: &str, name: &str) -> Error {
 fn database_not_found(name: &str) -> Error {
     Error::not_found(
         ErrorCode::METADATA_OBJECT_NOT_FOUND,
-        format!("MariaDB 数据库 {name} 不存在"),
+        format!("MariaDB database {name} does not exist"),
     )
 }
 
@@ -421,8 +421,7 @@ fn database_permission_denied(name: &str) -> Error {
         ErrorCode::METADATA_PERMISSION_DENIED,
         sqarvo_common::ErrorCategory::PermissionDenied,
         format!(
-            "当前连接无权读取数据库 {name} 的元数据（MariaDB 对不可见库统一返回 1044，\
-             无法与「库不存在」区分）"
+            "The current connection cannot read metadata for database {name}. MariaDB error 1044 does not distinguish an inaccessible database from a missing one"
         ),
     )
 }
@@ -443,7 +442,7 @@ pub(crate) async fn current_database(conn: &mut Conn) -> Result<String> {
     let rows: Vec<MyRow> = conn
         .exec("SELECT DATABASE()", ())
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 当前数据库失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB current database"))?;
     let database = rows
         .first()
         .and_then(|row| row.get::<Option<String>, _>(0))
@@ -453,8 +452,7 @@ pub(crate) async fn current_database(conn: &mut Conn) -> Result<String> {
         .ok_or_else(|| {
             Error::failed_precondition(
                 NO_DATABASE,
-                "当前连接没有默认库，请求也未指定库；请在连接里填写默认库，\
-                 或从对象树选择具体库的表",
+                "No default database is configured and the request did not specify one. Set a default database or select a table from a specific database in the object tree",
             )
         })
 }
@@ -470,7 +468,7 @@ pub(crate) async fn current_database(conn: &mut Conn) -> Result<String> {
 pub(crate) async fn table_data_database(conn: &mut Conn, object: &ObjectRef) -> Result<String> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
-            "MariaDB 没有独立的 schema 层级，该对象引用不属于本驱动",
+            "MariaDB has no separate schema level. This object reference does not belong to the MariaDB driver",
         ));
     }
     match object.qualified_name.catalog.as_deref().map(str::trim) {
@@ -486,20 +484,20 @@ pub(crate) async fn table_data_database(conn: &mut Conn, object: &ObjectRef) -> 
 pub(crate) fn object_parts(object: &ObjectRef) -> Result<&str> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
-            "MariaDB 没有独立的 schema 层级，该对象引用不属于本驱动",
+            "MariaDB has no separate schema level. This object reference does not belong to the MariaDB driver",
         ));
     }
     if !matches!(
         object.kind,
         ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_)
     ) {
-        return Err(kind_not_applicable(&object.kind, "表数据浏览"));
+        return Err(kind_not_applicable(&object.kind, "Browse table data"));
     }
     let name = object.qualified_name.name.trim();
     if name.is_empty() {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "对象名不能为空",
+            "Object name cannot be empty",
         ));
     }
     Ok(name)
@@ -511,7 +509,7 @@ pub(crate) fn object_parts(object: &ObjectRef) -> Result<&str> {
 async fn resolve_object(conn: &mut Conn, object: &ObjectRef) -> Result<(String, String)> {
     if object.qualified_name.schema.is_some() {
         return Err(unsupported_level(
-            "MariaDB 没有独立的 schema 层级：对象引用不能带 schema 字段",
+            "MariaDB has no separate schema level. Object references cannot specify schema",
         ));
     }
     let database = match object.qualified_name.catalog.as_deref() {
@@ -522,7 +520,7 @@ async fn resolve_object(conn: &mut Conn, object: &ObjectRef) -> Result<(String, 
     if name.is_empty() {
         return Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "对象名不能为空",
+            "Object name cannot be empty",
         ));
     }
     Ok((database, name.to_owned()))
@@ -539,7 +537,7 @@ async fn resolve_database(conn: &mut Conn, requested: &str) -> Result<String> {
             (requested,),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 数据库列表失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB database list"))?;
     if let Some(name) = visible {
         return Ok(name);
     }
@@ -554,7 +552,10 @@ async fn probe_database(conn: &mut Conn, name: &str) -> Result<String> {
         Ok(()) => Ok(name.to_owned()),
         Err(error) => match probe_error(server_code(&error), name) {
             Some(error) => Err(error),
-            None => Err(map_error(error, "读取 MariaDB 数据库信息失败")),
+            None => Err(map_error(
+                error,
+                "Failed to read MariaDB database information",
+            )),
         },
     }
 }
@@ -595,7 +596,7 @@ async fn catalog_nodes(conn: &mut Conn, filter: &ObjectFilter) -> Result<Vec<Obj
     let rows: Vec<MyRow> = conn
         .exec(sql.as_str(), Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 数据库列表失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB database list"))?;
 
     let mut nodes = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -643,7 +644,7 @@ async fn list_database_objects(
     let rows: Vec<MyRow> = conn
         .exec(sql.as_str(), Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 表列表失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB table list"))?;
 
     let mut nodes = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -767,7 +768,7 @@ async fn column_names(
     let rows: Vec<MyRow> = conn
         .exec(sql.as_str(), Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 列名失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB column names"))?;
     rows.iter()
         .map(|row| required_text(row, 0, "COLUMN_NAME"))
         .collect()
@@ -801,7 +802,7 @@ async fn index_names(
     let rows: Vec<MyRow> = conn
         .exec(sql.as_str(), Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 索引列表失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB index list"))?;
     rows.iter()
         .map(|row| required_text(row, 0, "INDEX_NAME"))
         .collect()
@@ -835,7 +836,7 @@ async fn trigger_names(
     let rows: Vec<MyRow> = conn
         .exec(sql.as_str(), Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 触发器列表失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB trigger list"))?;
     rows.iter()
         .map(|row| required_text(row, 0, "TRIGGER_NAME"))
         .collect()
@@ -870,7 +871,7 @@ async fn list_children(
         ObjectKind::Catalog => {
             if parent.qualified_name.schema.is_some() {
                 return Err(unsupported_level(
-                    "MariaDB 没有独立的 schema 层级：目录引用不能带 schema 字段",
+                    "MariaDB has no separate schema level. Catalog references cannot specify schema",
                 ));
             }
             let Some(requested) = catalog_target(parent)? else {
@@ -898,7 +899,7 @@ async fn list_children(
                 return Err(kind_not_applicable(
                     &parent.kind,
                     &format!(
-                        "展开子节点（{database}.{} 是 {}）",
+                        "Expand child nodes ({database}.{} is {})",
                         found.name,
                         found.kind.as_str()
                     ),
@@ -915,20 +916,20 @@ async fn list_children(
             .await
         }
         ObjectKind::Schema => Err(unsupported_level(
-            "MariaDB 没有独立的 schema 层级：database 即 catalog，不伪造空 schema 层",
+            "MariaDB exposes databases as catalogs and has no separate schema level",
         )),
         ObjectKind::MaterializedView
         | ObjectKind::Function
         | ObjectKind::Procedure
         | ObjectKind::Type => Err(unsupported_level(format!(
-            "MariaDB 的元数据本版不提供 {} 的对象列表：该层级不返回空列表冒充「没有对象」",
+            "The MariaDB driver does not support listing {} objects at this level",
             parent.kind.as_str()
         ))),
         ObjectKind::Column
         | ObjectKind::Index
         | ObjectKind::Trigger
         | ObjectKind::Sequence
-        | ObjectKind::Other(_) => Err(kind_not_applicable(&parent.kind, "展开子节点")),
+        | ObjectKind::Other(_) => Err(kind_not_applicable(&parent.kind, "Expand child nodes")),
     }
 }
 
@@ -946,7 +947,7 @@ fn catalog_target(parent: &ObjectRef) -> Result<Option<String>> {
         (Some(catalog), name) if catalog.eq_ignore_ascii_case(name) => Ok(Some(catalog.to_owned())),
         (Some(catalog), name) => Err(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            format!("目录引用自相矛盾：catalog={catalog}、name={name}"),
+            format!("Inconsistent catalog reference: catalog={catalog}, name={name}"),
         )),
     }
 }
@@ -961,7 +962,10 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
         // 引用里写的是 Table、实际是序列：种类用错了，不是「不存在」。
         return Err(kind_not_applicable(
             &object.kind,
-            &format!("读取列信息（{database}.{} 是 sequence）", table.name),
+            &format!(
+                "Read column information ({database}.{} is a sequence)",
+                table.name
+            ),
         ));
     }
 
@@ -976,7 +980,7 @@ pub(crate) async fn columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<C
             (database.clone(), table.name.clone()),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 列信息失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB column information"))?;
 
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -1017,11 +1021,9 @@ fn check_column_kind(kind: &ObjectKind) -> Result<()> {
     match kind {
         ObjectKind::Table | ObjectKind::View | ObjectKind::Other(_) => Ok(()),
         // 序列是叶子，没有列；把「种类用错了」和「这一层不存在」分开报。
-        ObjectKind::Sequence => Err(kind_not_applicable(kind, "读取列信息")),
-        ObjectKind::Schema => Err(unsupported_level(
-            "MariaDB 没有独立的 schema 层级：不伪造空 schema 层",
-        )),
-        other => Err(kind_not_applicable(other, "读取列信息")),
+        ObjectKind::Sequence => Err(kind_not_applicable(kind, "Read column information")),
+        ObjectKind::Schema => Err(unsupported_level("MariaDB has no separate schema level")),
+        other => Err(kind_not_applicable(other, "Read column information")),
     }
 }
 
@@ -1031,10 +1033,15 @@ async fn schema_objects(
     page: &SchemaObjectPage,
 ) -> Result<Vec<ObjectNode>> {
     if catalog.qualified_name.schema.is_some() {
-        return Err(unsupported_level("MariaDB 没有独立的 schema 层级"));
+        return Err(unsupported_level(
+            "MariaDB does not have a separate schema level",
+        ));
     }
     let database = catalog_target(catalog)?.ok_or_else(|| {
-        Error::invalid_argument(ErrorCode::CONFIG_INVALID, "Schema 分页必须指定数据库")
+        Error::invalid_argument(
+            ErrorCode::CONFIG_INVALID,
+            "Schema pagination requires a database",
+        )
     })?;
     let database = resolve_database(conn, &database).await?;
     let mut sql = String::from(
@@ -1061,7 +1068,7 @@ async fn schema_objects(
     let rows: Vec<MyRow> = conn
         .exec(sql, Params::Positional(params))
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB Schema 页失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB schema page"))?;
     rows.iter()
         .map(|row| {
             let name = required_text(row, 0, "TABLE_NAME")?;
@@ -1083,7 +1090,7 @@ async fn schema_target(conn: &mut Conn, object: &ObjectRef) -> Result<(String, F
         return Err(metadata_not_found(&database, &name));
     };
     if !matches!(table.kind, ObjectKind::Table | ObjectKind::View) {
-        return Err(kind_not_applicable(&table.kind, "读取表结构"));
+        return Err(kind_not_applicable(&table.kind, "Read Table Structure"));
     }
     Ok((database, table))
 }
@@ -1099,7 +1106,7 @@ async fn index_details(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<IndexD
             (database, table.name),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 索引明细失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB Index Details"))?;
     if rows.len() > 1000 {
         return Err(schema_limit());
     }
@@ -1137,7 +1144,7 @@ fn schema_limit() -> Error {
     Error::new(
         ErrorCode::MCP_RESULT_TOO_LARGE,
         ErrorCategory::ResourceExhausted,
-        "MariaDB 元数据超过单次读取上限",
+        "MariaDB metadata exceeds the per-request limit",
     )
 }
 
@@ -1152,7 +1159,7 @@ async fn describe_columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<Des
             (&database, &table.name),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 列属性失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB column properties"))?;
     if rows.len() > 1000 {
         return Err(schema_limit());
     }
@@ -1187,7 +1194,9 @@ async fn describe_columns(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<Des
             let Some((identity, comment, generated, generation_expression)) =
                 attributes.remove(&column.name)
             else {
-                return Err(Error::internal("读取期间 MariaDB 列目录发生变化"));
+                return Err(Error::internal(
+                    "The MariaDB column catalog changed during the read",
+                ));
             };
             Ok(DescribedColumn {
                 column,
@@ -1218,7 +1227,7 @@ async fn table_constraints(conn: &mut Conn, object: &ObjectRef) -> Result<TableC
             (&database, &table.name),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 约束失败"))?;
+        .map_err(|error| map_error(error, "Reading MariaDB constraints failed"))?;
     if rows.len() > 1000 {
         return Err(schema_limit());
     }
@@ -1295,7 +1304,7 @@ async fn fill_check_expressions(
         }
         Ok(_) => return Err(schema_limit()),
         Err(error) if matches!(server_code(&error), Some(1054 | 1109 | 1146)) => {}
-        Err(error) => return Err(map_error(error, "读取 MariaDB CHECK 表达式失败")),
+        Err(error) => return Err(map_error(error, "Failed to read MariaDB CHECK expression")),
     }
     if constraints
         .iter()
@@ -1316,7 +1325,7 @@ async fn native_table_ddl(conn: &mut Conn, object: &ObjectRef) -> Result<NativeT
     let mode: Option<String> = conn
         .query_first("SELECT @@SESSION.sql_mode")
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB SQL 模式失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB SQL mode"))?;
     let complete = mode.is_some_and(|mode| {
         !mode.split(',').any(|flag| {
             matches!(
@@ -1350,7 +1359,7 @@ async fn native_table_ddl(conn: &mut Conn, object: &ObjectRef) -> Result<NativeT
     }
     if kind == "table" && !is_local_table_definition(&ddl.text) {
         return Err(unsupported_level(
-            "原生定义未确认使用本地存储引擎，或包含连接选项",
+            "The native definition uses connection options or does not confirm a local storage engine",
         ));
     }
     Ok(NativeTableDdl {
@@ -1411,10 +1420,10 @@ async fn table_statistics(conn: &mut Conn, object: &ObjectRef) -> Result<TableSt
     let refresh: Option<u64> = conn
         .query_first("SELECT @@GLOBAL.innodb_stats_on_metadata")
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 元数据统计设置失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB metadata statistics settings"))?;
     if refresh != Some(0) {
         return Err(unsupported_level(
-            "该 MariaDB 配置可能在读取元数据时刷新统计",
+            "The MariaDB configuration may update statistics when reading metadata",
         ));
     }
     let (database, table) = schema_target(conn, object).await?;
@@ -1425,7 +1434,7 @@ async fn table_statistics(conn: &mut Conn, object: &ObjectRef) -> Result<TableSt
             (&database, &table.name),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 表统计失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB table statistics"))?;
     let row = row.ok_or_else(|| metadata_not_found(&database, &table.name))?;
     Ok(TableStatistics {
         row_count: optional_u64(&row, 0),
@@ -1457,12 +1466,12 @@ async fn foreign_keys(conn: &mut Conn, object: &ObjectRef) -> Result<Vec<Foreign
             (database, table.name),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 外键失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB foreign keys"))?;
     if rows.len() > 1000 {
         return Err(Error::new(
             ErrorCode::MCP_RESULT_TOO_LARGE,
             ErrorCategory::ResourceExhausted,
-            "外键列数超过元数据读取上限",
+            "The number of extra-key columns exceeds the metadata reading limit",
         ));
     }
     let mut keys: Vec<ForeignKey> = Vec::new();
@@ -1506,7 +1515,7 @@ pub(crate) async fn primary_key(conn: &mut Conn, object: &ObjectRef) -> Result<P
             (database, table.name),
         )
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 主键失败"))?;
+        .map_err(|error| map_error(error, "Failed to read MariaDB primary key"))?;
 
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -1550,7 +1559,7 @@ pub(crate) async fn ddl(conn: &mut Conn, object: &ObjectRef) -> Result<Ddl> {
         return Err(kind_not_applicable(
             &object.kind,
             &format!(
-                "读取 DDL（{database}.{} 是 {}）",
+                "Read DDL ({database}.{} is {})",
                 table.name,
                 table.kind.as_str()
             ),
@@ -1560,7 +1569,7 @@ pub(crate) async fn ddl(conn: &mut Conn, object: &ObjectRef) -> Result<Ddl> {
         ObjectKind::Table => "TABLE",
         ObjectKind::View => "VIEW",
         ObjectKind::Sequence => "SEQUENCE",
-        other => return Err(kind_not_applicable(&other, "读取 DDL")),
+        other => return Err(kind_not_applicable(&other, "Read DDL")),
     };
     show_create(conn, statement, &database, &table.name).await
 }
@@ -1571,13 +1580,12 @@ fn check_ddl_kind(kind: &ObjectKind) -> Result<()> {
         ObjectKind::Table | ObjectKind::View | ObjectKind::Sequence => Ok(()),
         ObjectKind::Index => Err(Error::invalid_argument(
             ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED,
-            "MariaDB 不为索引保存独立 DDL（索引定义在所属表的 CREATE TABLE 里），\
-             且对象引用不携带所属表，无法定位到唯一索引；请读取该表的 DDL",
+            "MariaDB defines indexes in the owning table's CREATE TABLE statement. The object reference lacks the table name, so the index cannot be identified uniquely. Read the table DDL instead",
         )),
         ObjectKind::Schema => Err(unsupported_level(
-            "MariaDB 没有独立的 schema 层级：没有 schema 的 DDL 可读",
+            "MariaDB has no separate schema level and does not provide schema DDL",
         )),
-        other => Err(kind_not_applicable(other, "读取 DDL")),
+        other => Err(kind_not_applicable(other, "Read DDL")),
     }
 }
 
@@ -1601,13 +1609,13 @@ async fn show_create(
     };
     let row = rows.first().ok_or_else(|| {
         Error::internal(format!(
-            "MariaDB `SHOW CREATE {statement}` 对 {database}.{name} 没有返回任何行"
+            "MariaDB `SHOW CREATE {statement}` returned no rows for {database}.{name}"
         ))
     })?;
     let text = required_text(row, 1, "Create")?;
     if text.trim().is_empty() {
         return Err(Error::internal(format!(
-            "MariaDB `SHOW CREATE {statement}` 对 {database}.{name} 返回空白 DDL，拒绝当成空 DDL 交付"
+            "MariaDB `SHOW CREATE {statement}` returned blank DDL for {database}.{name}"
         )));
     }
     // 列错位的防线：第二列必须是 `CREATE ... <KIND> ...`。
@@ -1619,8 +1627,7 @@ async fn show_create(
         .to_ascii_uppercase();
     if !head.starts_with("CREATE ") || !head.contains(&format!(" {statement} ")) {
         return Err(Error::internal(format!(
-            "MariaDB `SHOW CREATE {statement}` 对 {database}.{name} 的第 2 列不是预期语句，\
-             拒绝把非 DDL 列当原文返回"
+            "The second column returned by MariaDB `SHOW CREATE {statement}` for {database}.{name} does not contain the expected DDL statement"
         )));
     }
     Ok(Ddl::from_database(
@@ -1640,11 +1647,11 @@ fn ddl_error(error: mysql_async::Error, database: &str, name: &str) -> Error {
         Some(1142 | 1143 | 1044) => Error::new(
             ErrorCode::METADATA_PERMISSION_DENIED,
             ErrorCategory::PermissionDenied,
-            format!("当前连接无权读取 {database}.{name} 的 DDL（服务端拒绝读取元数据）"),
+            format!("The current connection cannot read DDL for {database}.{name}. The server denied metadata access"),
         )
         .with_source(error),
         Some(1146 | 1051 | 1049) => metadata_not_found(database, name).with_source(error),
-        _ => map_error(error, "读取 MariaDB DDL 失败"),
+        _ => map_error(error, "Failed to read MariaDB DDL"),
     }
 }
 
@@ -1683,7 +1690,7 @@ async fn find_table_entry(
             (database, name),
         )
         .await
-        .map_err(|error| map_error(error, "查询 MariaDB 对象是否存在失败"))?;
+        .map_err(|error| map_error(error, "Failed to check whether the MariaDB object exists"))?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -1700,14 +1707,18 @@ async fn find_table_entry(
 pub(crate) fn object_not_found(name: &str) -> Error {
     Error::not_found(
         crate::error::OBJECT_NOT_FOUND,
-        format!("表或视图 {name} 不存在"),
+        format!("Table or View {name} does not exist"),
     )
 }
 
 fn required_text(row: &MyRow, index: usize, column: &'static str) -> Result<String> {
     row.get_opt::<String, _>(index)
         .ok_or_else(|| missing_column(column))?
-        .map_err(|_| Error::internal(format!("MariaDB 元数据列 {column} 不是预期的文本类型")))
+        .map_err(|_| {
+            Error::internal(format!(
+                "MariaDB metadata column {column} is not the expected text type"
+            ))
+        })
 }
 
 fn optional_text(row: &MyRow, index: usize) -> Option<String> {
@@ -1730,7 +1741,7 @@ fn optional_i64(row: &MyRow, index: usize) -> Option<i64> {
 
 /// `information_schema` 的列必须存在；缺列说明查询与服务端版本不匹配。
 fn missing_column(column: &'static str) -> Error {
-    Error::internal(format!("MariaDB 元数据结果缺少列 {column}"))
+    Error::internal(format!("MariaDB metadata is missing column {column}"))
 }
 
 /// 把 `information_schema.COLUMNS.COLUMN_DEFAULT` 映射为默认值。

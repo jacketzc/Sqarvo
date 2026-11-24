@@ -17,18 +17,22 @@ use prost::Message;
 use prost_types::FileDescriptorSet;
 
 fn main() {
-    let manifest_dir =
-        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR 未设置"));
+    let manifest_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"),
+    );
     let proto_root = manifest_dir
         .join("../../../proto")
         .canonicalize()
-        .expect("proto 目录不存在");
-    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR 未设置"));
+        .expect("The proto directory does not exist");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
 
     let mut protos = Vec::new();
     collect_protos(&proto_root, &mut protos);
     protos.sort();
-    assert!(!protos.is_empty(), "proto 目录中没有 .proto 文件");
+    assert!(
+        !protos.is_empty(),
+        "The proto directory contains no .proto files"
+    );
 
     // 目录级监听：只监听「本次见到的文件」会漏掉新增的 .proto —— Cargo 的
     // 重建判断来自上一次构建脚本声明的路径，新增文件不在其中，生成代码就会
@@ -39,7 +43,8 @@ fn main() {
     }
 
     let descriptor_path = out_dir.join("sqarvo-descriptor.bin");
-    let protoc_path = protoc_bin_vendored::protoc_bin_path().expect("无法定位内置 protoc");
+    let protoc_path =
+        protoc_bin_vendored::protoc_bin_path().expect("Could not locate the bundled protoc");
     let mut command = Command::new(protoc_path);
     command
         .current_dir(&proto_root)
@@ -50,19 +55,19 @@ fn main() {
     for proto in &protos {
         let relative = proto
             .strip_prefix(&proto_root)
-            .expect("proto 路径不在 proto 根目录内");
+            .expect("The proto path is outside the proto root directory");
         command.arg(relative);
     }
-    let output = command.output().expect("无法执行 protoc");
+    let output = command.output().expect("Failed to run protoc");
     assert!(
         output.status.success(),
-        "protoc 失败: {}",
+        "protoc failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let bytes = std::fs::read(&descriptor_path).expect("无法读取描述符文件");
+    let bytes = std::fs::read(&descriptor_path).expect("Failed to read the descriptor file");
     let file_descriptor_set =
-        FileDescriptorSet::decode(bytes.as_slice()).expect("无法解析 FileDescriptorSet");
+        FileDescriptorSet::decode(bytes.as_slice()).expect("Failed to parse FileDescriptorSet");
 
     tonic_prost_build::configure()
         .build_client(true)
@@ -72,15 +77,15 @@ fn main() {
         // 连接器（Unix socket / 回环 TCP）构造 Channel。
         .build_transport(false)
         .compile_fds(file_descriptor_set)
-        .expect("gRPC 代码生成失败");
+        .expect("Failed to generate gRPC code");
 }
 
 /// 递归收集 `.proto` 文件，排序在调用处完成。
 fn collect_protos(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("读取目录 {} 失败: {error}", dir.display()));
+        .unwrap_or_else(|error| panic!("Failed to read directory {}: {error}", dir.display()));
     for entry in entries {
-        let entry = entry.expect("读取 proto 目录项失败");
+        let entry = entry.expect("Failed to read an entry in the proto directory");
         let path = entry.path();
         if path.is_dir() {
             collect_protos(&path, out);

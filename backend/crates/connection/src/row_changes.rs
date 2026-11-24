@@ -86,14 +86,14 @@ impl RowChangeBatches {
         if entries.contains_key(&id) {
             return Err(Error::already_exists(
                 ErrorCode::QUERY_ID_IN_USE,
-                "该 query_id 已有在途的行变更批次，请换一个 ID",
+                "This query_id already has an in-flight row change batch. Use a different ID",
             ));
         }
         if entries.len() >= self.max_concurrent {
             return Err(Error::resource_exhausted(
                 ErrorCode::QUERY_LIMIT_REACHED,
                 format!(
-                    "在途行变更批次已达上限（{}），请等待已有批次结束后重试",
+                    "The limit of {} in-flight row change batches has been reached. Wait for an existing batch to finish and retry",
                     self.max_concurrent
                 ),
             ));
@@ -122,7 +122,7 @@ impl RowChangeBatches {
             let entry = entries.get(id).ok_or_else(|| {
                 Error::not_found(
                     ErrorCode::QUERY_NOT_FOUND,
-                    format!("行变更批次 {id} 不存在或已结束"),
+                    format!("Row change batch {id} does not exist or has ended"),
                 )
             })?;
             entry.cancel.clone()

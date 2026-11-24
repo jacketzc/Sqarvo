@@ -111,12 +111,12 @@ impl QueryService for QueryServiceImpl {
     ) -> Result<Response<ExecuteQueryResponse>, Status> {
         let request = request.into_inner();
         if request.sql.trim().is_empty() {
-            return Err(Status::invalid_argument("SQL 不能为空"));
+            return Err(Status::invalid_argument("SQL must not be empty"));
         }
         let session_id: SessionId = request
             .session_id
             .parse()
-            .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+            .map_err(|_| Status::invalid_argument("Invalid session ID format"))?;
 
         let handle = self
             .sessions
@@ -137,7 +137,7 @@ impl QueryService for QueryServiceImpl {
             let _ = self.queries.complete(&query_id);
             return Err(to_status(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "当前驱动不支持「切换库」，请在 SQL 里写限定名",
+                "The current driver cannot switch databases. Use qualified names in SQL",
             )));
         }
         // `auto_commit` 在 v0.1 无意义：SQLite 默认自动提交，事务由 M4 接线。
@@ -158,7 +158,9 @@ impl QueryService for QueryServiceImpl {
             else {
                 let _ = handle.cancel(&query_id).await;
                 let _ = self.queries.complete(&query_id);
-                return Err(Status::deadline_exceeded("查询超时，已请求取消"));
+                return Err(Status::deadline_exceeded(
+                    "The query timed out. Cancellation was requested",
+                ));
             };
             result
         } else {
@@ -201,7 +203,7 @@ impl QueryService for QueryServiceImpl {
             // 与其他路径一致：错误必须带稳定错误码，客户端才能分支处理。
             to_status(Error::not_found(
                 ErrorCode::QUERY_NOT_FOUND,
-                "查询不存在或已结束",
+                "The query does not exist or has ended",
             ))
         })?;
         let handle = self
@@ -283,5 +285,5 @@ fn timeout_from_millis(millis: u32) -> Option<Duration> {
 
 fn parse_query_id(raw: &str) -> Result<QueryId, Status> {
     raw.parse()
-        .map_err(|_| Status::invalid_argument("查询 ID 格式非法"))
+        .map_err(|_| Status::invalid_argument("Invalid query ID format"))
 }

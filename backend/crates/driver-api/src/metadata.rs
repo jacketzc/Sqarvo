@@ -236,17 +236,19 @@ impl ObjectFilter {
         for kind in &self.kinds {
             let name = kind.as_str();
             if name.trim().is_empty() {
-                return Err(filter_invalid("过滤器里的对象种类为空"));
+                return Err(filter_invalid("The object type in the filter is empty"));
             }
             if !seen.insert(name) {
-                return Err(filter_invalid(format!("过滤器里重复的对象种类：{name}")));
+                return Err(filter_invalid(format!(
+                    "Repeated object type in filter: {name}"
+                )));
             }
         }
         if let Some(name) = &self.name
             && name.value().is_empty()
         {
             return Err(filter_invalid(
-                "名称过滤条件不能为空串；不过滤请留空 name 字段",
+                "The name filter must not be empty. Omit name to disable filtering",
             ));
         }
         Ok(())
@@ -426,7 +428,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<Vec<ObjectNode>> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供 Schema 目录分页",
+            "The driver does not provide schema catalog pagination",
         ))
     }
 
@@ -438,7 +440,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<Vec<ForeignKey>> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供外键查询",
+            "The driver does not provide foreign key lookup",
         ))
     }
 
@@ -450,7 +452,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<Vec<IndexDetail>> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供此元数据能力",
+            "This driver does not provide this metadata capability",
         ))
     }
 
@@ -462,7 +464,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<TableStatistics> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供此元数据能力",
+            "This driver does not provide this metadata capability",
         ))
     }
 
@@ -474,7 +476,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<NativeTableDdl> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供此元数据能力",
+            "This driver does not provide this metadata capability",
         ))
     }
 
@@ -486,7 +488,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<Vec<DescribedColumn>> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供此元数据能力",
+            "This driver does not provide this metadata capability",
         ))
     }
 
@@ -498,7 +500,7 @@ pub trait MetadataProvider: Send + Sync {
     ) -> Result<TableConstraints> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供此元数据能力",
+            "This driver does not provide this metadata capability",
         ))
     }
 
@@ -529,7 +531,7 @@ pub trait MetadataProvider: Send + Sync {
     async fn primary_key(&self, _object: &ObjectRef) -> Result<PrimaryKey> {
         Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "该驱动未提供主键查询",
+            "This driver does not provide primary key query",
         ))
     }
 
@@ -590,7 +592,7 @@ pub struct ForeignKeyColumn {
 pub fn unsupported_metadata_filtering() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        "该驱动未实现元数据名称/种类过滤（需要下推到数据库）",
+        "The driver does not implement metadata name or kind filtering, which must be pushed down to the database",
     )
 }
 
@@ -600,7 +602,7 @@ pub fn object_not_found(name: impl Into<String>) -> Error {
     let name = name.into();
     Error::not_found(
         ErrorCode::METADATA_OBJECT_NOT_FOUND,
-        format!("对象不存在：{name}"),
+        format!("Object does not exist: {name}"),
     )
 }
 
@@ -612,7 +614,10 @@ pub fn object_not_found(name: impl Into<String>) -> Error {
 pub fn object_kind_unsupported(kind: &ObjectKind, operation: &str) -> Error {
     Error::invalid_argument(
         ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED,
-        format!("对象种类 {} 不能用于 {operation}", kind.as_str()),
+        format!(
+            "Object type {} cannot be used for {operation}",
+            kind.as_str()
+        ),
     )
 }
 
@@ -623,7 +628,9 @@ pub fn metadata_permission_denied(object: impl Into<String>) -> Error {
     Error::new(
         ErrorCode::METADATA_PERMISSION_DENIED,
         sqarvo_common::ErrorCategory::PermissionDenied,
-        format!("当前连接无权读取对象 {object} 的元数据"),
+        format!(
+            "The current connection does not have the right to read the metadata of the object {object}"
+        ),
     )
 }
 
@@ -810,7 +817,7 @@ impl SchemaObjectPage {
         } else {
             Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "Schema 分页参数超出范围",
+                "Schema pagination parameters are out of range",
             ))
         }
     }

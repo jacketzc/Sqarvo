@@ -116,7 +116,7 @@ async fn null_is_a_valid_bound_value() {
     let start = session
         .execute_parameterized(parameterized("SELECT v FROM t ORDER BY id", Vec::new()))
         .await
-        .expect("读取");
+        .expect("Read");
     let rows = start.first_batch.expect("首批行").rows;
     assert!(rows[0][0].is_null(), "NULL 必须保持 NULL");
     assert_eq!(

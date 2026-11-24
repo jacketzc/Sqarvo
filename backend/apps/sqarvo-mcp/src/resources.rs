@@ -85,8 +85,7 @@ pub const TABLE_TEMPLATE: &str = "database://{connection_alias}/{database}/table
 pub const MIME_TYPE: &str = "application/json";
 
 /// 超过单页上限时的分页指引（V3.1 §7.2「对大型结构控制响应大小」）。
-const PAGINATION_GUIDANCE: &str =
-    "对象数量超过单页上限（500），本资源只列出当前页；完整清单请用 list_tables 工具按页读取";
+const PAGINATION_GUIDANCE: &str = "The object count exceeds the page limit (500). This resource lists only the current page. Use list_tables with pagination for the full list";
 
 // ---------------------------------------------------------------------------
 // URI 编解码
@@ -127,7 +126,7 @@ pub fn decode_segment(raw: &str) -> Result<String> {
             let low = bytes.get(index + 2).copied().and_then(hex_value);
             let (Some(high), Some(low)) = (high, low) else {
                 return Err(uri_error(
-                    "URI 路径段的百分号编码不合法：% 后必须是两位十六进制数字",
+                    "Invalid percent encoding in the URI path segment: % must be followed by two hexadecimal digits",
                 ));
             };
             decoded.push(high * 16 + low);
@@ -137,11 +136,11 @@ pub fn decode_segment(raw: &str) -> Result<String> {
         decoded.push(bytes[index]);
         index += 1;
     }
-    let decoded =
-        String::from_utf8(decoded).map_err(|_| uri_error("URI 路径段解码后不是合法 UTF-8"))?;
+    let decoded = String::from_utf8(decoded)
+        .map_err(|_| uri_error("The decoded URI path segment is not valid UTF-8"))?;
     if contains_percent_triplet(&decoded) {
         return Err(uri_error(
-            "URI 路径段疑似双重编码（解码后仍含 %XX 序列）；每个路径段只允许编码一次",
+            "The URI path segment appears to be double-encoded (it still contains %XX after decoding). Encode each segment only once",
         ));
     }
     Ok(decoded)
@@ -224,18 +223,18 @@ pub enum ResourceRequest {
 pub fn parse(uri: &str) -> Result<ResourceRequest> {
     let Some(rest) = uri.strip_prefix(SCHEME_PREFIX) else {
         return Err(uri_error(
-            "资源 URI 必须以 database:// 开头（例如 database://connections）",
+            "The resource URI must start with database:// (for example, database://connections)",
         ));
     };
     let raw_segments: Vec<&str> = rest.split('/').collect();
     if raw_segments.iter().any(|segment| segment.is_empty()) {
         return Err(uri_error(
-            "资源 URI 含空路径段（多余或缺失的 /）：路径段必须非空",
+            "The resource URI contains an empty path segment (extra or missing /). All path segments must be nonempty",
         ));
     }
     if raw_segments.len() > 4 {
         return Err(uri_error(
-            "资源 URI 路径段过多：最长形态是 database://{alias}/{database}/tables/{table}",
+            "The resource URI has too many path segments. The longest form is database://{alias}/{database}/tables/{table}",
         ));
     }
     let mut segments = Vec::with_capacity(raw_segments.len());
@@ -258,9 +257,7 @@ pub fn parse(uri: &str) -> Result<ResourceRequest> {
             table: table.clone(),
         }),
         _ => Err(uri_error(
-            "无法识别的资源 URI：只支持 database://connections、\
-             database://{connection_alias}/{database}/overview、…/schema、\
-             database://{connection_alias}/{database}/tables/{table}",
+            "Unrecognized resource URI. Supported forms: database://connections,\n             database://{connection_alias}/{database}/overview, …/schema, and\n             database://{connection_alias}/{database}/tables/{table}",
         )),
     }
 }
@@ -277,10 +274,9 @@ pub fn parse(uri: &str) -> Result<ResourceRequest> {
 pub fn list() -> Vec<Resource> {
     vec![
         Resource::new(CONNECTIONS_URI, "database-connections")
-            .with_title("已授权连接概览")
+            .with_title("Authorized connections overview")
             .with_description(
-                "mcp.json 中已启用的连接：alias、driver_id、connection_status。不含凭据、\
-                 用户名与连接串，也不会主动连接数据库。",
+                "Enabled connections in mcp.json: alias, driver_id, and connection_status. Credentials,\n                 usernames, and connection strings are omitted. Reading this resource does not connect to a database.",
             )
             .with_mime_type(MIME_TYPE),
     ]
@@ -295,25 +291,21 @@ pub fn list() -> Vec<Resource> {
 pub fn templates() -> Vec<ResourceTemplate> {
     vec![
         ResourceTemplate::new(OVERVIEW_TEMPLATE, "database-overview")
-            .with_title("数据库概览")
+            .with_title("Database overview")
             .with_description(
-                "库级摘要：connection_alias、driver_id、database_name、server_version、\
-                 schema_support、table_count、view_count。不含表结构明细。\
-                 三个变量各自做 RFC 3986 路径段编码。",
+                "Database overview: connection_alias, driver_id, database_name, server_version,\n                 schema_support, table_count, and view_count. Table schema details are omitted.\n                 Encode each of the three variables as an RFC 3986 path segment.",
             )
             .with_mime_type(MIME_TYPE),
         ResourceTemplate::new(SCHEMA_TEMPLATE, "database-schema")
-            .with_title("数据库对象目录")
+            .with_title("Database object catalog")
             .with_description(
-                "对象目录：database_name、object_count、by_kind、objects（表/视图名 + 种类 + \
-                 注释）。不含逐表字段明细。超过 500 个对象时 truncated=true。",
+                "Object catalog: database_name, object_count, by_kind, and objects (table or view name, kind, and\n                 comment). Per-table column details are omitted. More than 500 objects sets truncated=true.",
             )
             .with_mime_type(MIME_TYPE),
         ResourceTemplate::new(TABLE_TEMPLATE, "database-table")
-            .with_title("表结构")
+            .with_title("Table schema")
             .with_description(
-                "单表结构：列定义（名称、序号、类型、NULL 属性、默认值、字符集/排序规则）与\
-                 主键列。`{table}` 段必须 percent-encode（空格、`/`、`%`、中文都要编码）。",
+                "Table schema: column definitions (name, ordinal, type, nullability, default, character set, and collation) and\n                 primary key columns. Percent-encode the `{table}` segment, including spaces, `/`, `%`, and non-ASCII characters.",
             )
             .with_mime_type(MIME_TYPE),
     ]
@@ -468,8 +460,7 @@ pub async fn read(access: &AccessService, uri: &str) -> Result<ResourcePayload> 
             ErrorCode::MCP_RESULT_TOO_LARGE,
             ErrorCategory::ResourceExhausted,
             format!(
-                "资源内容 {size} 字节，超过单次上限 {limit} 字节；请改用粒度更细的工具\
-                 （list_tables / describe_table / execute_readonly_query）分批读取"
+                "The resource is {size} bytes and exceeds the {limit}-byte limit. Read it in batches with a more specific tool\n                 (list_tables, describe_table, or execute_readonly_query)"
             ),
         ));
     }
@@ -485,7 +476,7 @@ pub async fn read(access: &AccessService, uri: &str) -> Result<ResourcePayload> 
 /// 而不是 panic（协议层不该因为一个不可能的失败把整个 session 打掉）。
 fn to_json<T: Serialize>(payload: &T) -> Result<String> {
     serde_json::to_string(payload)
-        .map_err(|error| Error::internal(format!("资源序列化失败：{error}")))
+        .map_err(|error| Error::internal(format!("Failed to serialize the resource: {error}")))
 }
 
 /// `database://connections`：只读配置与懒连接状态，不触网。
@@ -696,11 +687,11 @@ fn authorization_error(error: Error) -> Error {
         ErrorCode::MCP_CONNECTION_NOT_FOUND => {
             tracing::warn!(
                 code = %error.code(),
-                "资源请求被拒绝：连接未授权（原始子码见本行，不回传给 Agent）"
+                "Resource request denied: the connection is not authorized. The original subcode is logged here and withheld from the agent"
             );
             Error::not_found(
                 ErrorCode::MCP_CONNECTION_NOT_FOUND,
-                "资源不存在或该连接未授权；请用 resources/list 与 list_connections 核对别名",
+                "The resource does not exist or the connection is not authorized. Check the alias with resources/list and list_connections",
             )
         }
         _ => error,

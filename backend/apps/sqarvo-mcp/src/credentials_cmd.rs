@@ -32,14 +32,14 @@ use uuid::Uuid;
 /// `credentials` 子命令的动作。CLI 类型放包里，供 lib 与 bin 共用。
 #[derive(Subcommand)]
 pub enum CredentialsAction {
-    /// 写入密钥环凭据；不传 reference 时自动生成并打印。
+    /// Save a keyring credential. Generate and print a reference if omitted.
     Set {
-        /// 凭据引用；必须形如 `sqarvo:conn/<uuid v4>`，缺省自动生成。
+        /// Credential reference in the form sqarvo:conn/<uuid-v4>. Generated if omitted.
         reference: Option<String>,
     },
-    /// 删除密钥环凭据（不存在视为成功，幂等）。
+    /// Delete a keyring credential if present.
     Delete {
-        /// 待删除的凭据引用原文。
+        /// Reference of the credential to delete.
         reference: String,
     },
 }
@@ -80,7 +80,7 @@ impl PasswordPrompt for TerminalPrompt {
             Error::new(
                 ErrorCode::MCP_INVALID_ARGUMENT,
                 ErrorCategory::FailedPrecondition,
-                format!("无法从终端读取密码：{error}"),
+                format!("Failed to read the password from the terminal: {error}"),
             )
         })?;
         eprintln!();
@@ -98,8 +98,7 @@ pub fn ensure_interactive(stdin_is_tty: bool) -> Result<()> {
     Err(Error::new(
         ErrorCode::MCP_INVALID_ARGUMENT,
         ErrorCategory::FailedPrecondition,
-        "凭据输入需要交互式终端（stdin 不是 TTY）：请在终端里运行 `sqarvo-mcp credentials set`；\
-         不接受命令行参数或环境变量传密码",
+        "Credential entry requires an interactive terminal (stdin is not a TTY). Run `sqarvo-mcp credentials set` in a terminal.\n         Passwords are not accepted through command-line arguments or environment variables",
     ))
 }
 
@@ -112,7 +111,7 @@ pub fn generate_reference() -> String {
     let reference = format!("{REFERENCE_PREFIX}{}", Uuid::new_v4());
     debug_assert!(
         validate_reference(&reference).is_ok(),
-        "自动生成的引用必须通过 validate_reference"
+        "The generated reference must pass validate_reference"
     );
     reference
 }
@@ -128,19 +127,19 @@ pub fn set_credential(
     let reference = reference.unwrap_or_else(generate_reference);
     // 先校验引用：格式不对时不要先让用户输两遍密码。
     validate_reference(&reference)?;
-    let password = prompt.read("数据库密码（输入不回显）：")?;
-    let confirmed = prompt.read("再次输入确认：")?;
+    let password = prompt.read("Database password (input hidden):")?;
+    let confirmed = prompt.read("Re-enter to confirm:")?;
     if password != confirmed {
         // 文案不回显输入内容。
         return Err(Error::invalid_argument(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            "两次输入的密码不一致，未写入任何内容",
+            "The passwords do not match. Nothing was saved",
         ));
     }
     if password.is_empty() {
         return Err(Error::invalid_argument(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            "密码为空：不需要密码的账号请不要配置 credential_ref",
+            "The password is empty. Omit credential_ref for accounts that do not require a password",
         ));
     }
     store.set(&reference, &Secret::new(password))?;
@@ -172,8 +171,10 @@ pub async fn run(action: CredentialsAction) -> Result<()> {
             })
             .await
             .map_err(|error| join_error(&error))??;
-            println!("已写入凭据：{reference}");
-            println!("把该引用填进 mcp.json 的 credential_ref 字段。凭据实现：{implementation}");
+            println!("Credential saved: {reference}");
+            println!(
+                "Set credential_ref in mcp.json to this reference. Credential store: {implementation}"
+            );
             Ok(())
         }
         CredentialsAction::Delete { reference } => {
@@ -183,7 +184,7 @@ pub async fn run(action: CredentialsAction) -> Result<()> {
             tokio::task::spawn_blocking(move || delete_credential(&store_clone, &reference_clone))
                 .await
                 .map_err(|error| join_error(&error))??;
-            println!("已删除凭据（若原本不存在则视为成功）：{reference}");
+            println!("Credential removed if present: {reference}");
             Ok(())
         }
     }
@@ -193,7 +194,7 @@ async fn open_store() -> Arc<dyn CredentialStore> {
     match tokio::task::spawn_blocking(open_default_credential_store).await {
         Ok(store) => store,
         Err(error) => {
-            tracing::warn!(%error, "凭据存储装配任务异常，退回不可用实现");
+            tracing::warn!(%error, "The credential store initialization task failed. Falling back to an unavailable credential store");
             Arc::new(sqarvo_local_store::UnavailableCredentialStore)
         }
     }
@@ -203,7 +204,7 @@ fn join_error(error: &tokio::task::JoinError) -> Error {
     Error::new(
         ErrorCode::MCP_INTERNAL,
         ErrorCategory::Internal,
-        format!("凭据操作任务异常终止：{error}"),
+        format!("The credential operation task ended unexpectedly: {error}"),
     )
 }
 
@@ -295,7 +296,7 @@ mod tests {
         let store = store();
         let mut prompt = ScriptedPrompt::new(&["", ""]);
         let error = set_credential(&store, None, &mut prompt).expect_err("空密码必须拒绝");
-        assert!(error.message().contains("密码为空"));
+        assert!(error.message().contains("password is empty"));
     }
 
     #[test]
@@ -314,7 +315,7 @@ mod tests {
     fn non_interactive_stdin_is_rejected() {
         let error = ensure_interactive(false).expect_err("非 TTY 必须拒绝");
         assert_eq!(error.category(), ErrorCategory::FailedPrecondition);
-        assert!(error.message().contains("交互式终端"));
+        assert!(error.message().contains("interactive terminal"));
         ensure_interactive(true).expect("TTY 允许继续");
     }
 }

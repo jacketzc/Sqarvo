@@ -37,8 +37,8 @@ impl Interceptor for TokenInterceptor {
             .and_then(|value| value.to_str().ok());
         match provided {
             Some(candidate) if self.token.verify(candidate) => Ok(request),
-            Some(_) => Err(Status::unauthenticated("本地会话 token 无效")),
-            None => Err(Status::unauthenticated("缺少本地会话 token")),
+            Some(_) => Err(Status::unauthenticated("Invalid local session token")),
+            None => Err(Status::unauthenticated("Missing local session token")),
         }
     }
 }

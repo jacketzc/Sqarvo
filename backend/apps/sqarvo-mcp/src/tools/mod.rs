@@ -64,7 +64,7 @@ pub(crate) fn require_non_empty<'a>(value: &'a str, field: &str) -> Result<&'a s
     if trimmed.is_empty() {
         return Err(Error::invalid_argument(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            format!("参数 {field} 不能为空"),
+            format!("The {field} argument must not be empty"),
         ));
     }
     Ok(trimmed)
@@ -84,7 +84,7 @@ pub(crate) fn effective_row_limit(requested: i64, limits: &EffectiveLimits) -> R
     if requested < 0 {
         return Err(Error::invalid_argument(
             ErrorCode::MCP_INVALID_ARGUMENT,
-            "参数 limit 不能为负数；省略或填 0 表示使用服务端默认值",
+            "limit must be nonnegative. Omit it or use 0 to select the server default",
         ));
     }
     if requested == 0 {
@@ -175,7 +175,10 @@ impl<'a> ToolCall<'a> {
             return Err(ToolFailure::new(Error::new(
                 ErrorCode::MCP_INTERNAL,
                 ErrorCategory::Internal,
-                format!("审计写入失败，结果未交付：{}", error.message()),
+                format!(
+                    "The result was withheld because the audit write failed: {}",
+                    error.message()
+                ),
             )));
         }
         Ok(())
@@ -188,7 +191,7 @@ impl<'a> ToolCall<'a> {
             tracing::error!(
                 code = %audit_error.code(),
                 tool = self.tool,
-                "失败调用的审计写入失败"
+                "Failed to audit an unsuccessful call"
             );
         }
         ToolFailure::new(error)
@@ -577,9 +580,9 @@ pub(crate) mod test_support {
             root["enabled_tools"] = serde_json::json!(tools);
         }
         let config = crate::config::parse(&root.to_string())
-            .expect("解析测试配置")
+            .expect("Parse test configuration")
             .validate()
-            .expect("校验测试配置");
+            .expect("Validate test configuration");
         let registry = Arc::new(DriverRegistry::with_builtin_drivers());
         let credentials = Arc::new(MemoryCredentialStore::new());
         let sessions = Arc::new(SessionManager::with_credential_store(registry, credentials));

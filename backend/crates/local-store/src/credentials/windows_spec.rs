@@ -50,12 +50,12 @@ pub(crate) enum CredentialAction {
 }
 
 impl CredentialAction {
-    /// 面向用户的中文动词。
+    /// Verb used in user-facing messages.
     const fn verb(self) -> &'static str {
         match self {
-            Self::Read => "读取",
-            Self::Write => "保存",
-            Self::Delete => "删除",
+            Self::Read => "read credentials from",
+            Self::Write => "save credentials to",
+            Self::Delete => "delete credentials from",
         }
     }
 
@@ -94,7 +94,7 @@ pub(crate) fn encode_blob(secret: &Secret) -> Result<Vec<u8>> {
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::FailedPrecondition,
             format!(
-                "Windows 凭据管理器单条凭据上限为 {MAX_SECRET_BYTES} 字节，该密码无法保存（未保存任何内容）"
+                "Windows Credential Manager limits a credential to {MAX_SECRET_BYTES} bytes. The password was not saved"
             ),
         ));
     }
@@ -111,7 +111,7 @@ pub(crate) fn decode_blob(bytes: &[u8]) -> Result<Secret> {
         Err(_) => Err(Error::new(
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::FailedPrecondition,
-            "Windows 凭据管理器中的凭据内容不是合法的 UTF-8 文本，请在应用内重新保存该连接的密码",
+            "The credential in Windows Credential Manager is not valid UTF-8. Save the connection password again in the app",
         )),
     }
 }
@@ -125,7 +125,7 @@ pub(crate) fn wrong_type_error() -> Error {
     Error::new(
         ErrorCode::CREDENTIAL_UNAVAILABLE,
         ErrorCategory::FailedPrecondition,
-        "同名的系统凭据条目不是本应用写入的通用凭据，请在应用内重新保存该连接的密码",
+        "The matching system credential entry is not a generic credential saved by this app. Save the connection password again in the app",
     )
 }
 
@@ -149,7 +149,7 @@ pub(crate) fn classify_credential_error(action: CredentialAction, code: u32) -> 
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::PermissionDenied,
             format!(
-                "没有{} Windows 凭据管理器的权限：请检查当前账户的凭据管理器策略",
+                "Permission denied to {} Windows Credential Manager. Check the current account's Credential Manager policy",
                 action.verb()
             ),
         )
@@ -157,13 +157,13 @@ pub(crate) fn classify_credential_error(action: CredentialAction, code: u32) -> 
         ERROR_NO_SUCH_LOGON_SESSION => Error::new(
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::Unavailable,
-            "Windows 凭据管理器不可用：当前进程没有可用的登录会话（例如以服务账户运行）",
+            "Windows Credential Manager is unavailable because the current process has no usable logon session, as can happen with a service account",
         )
         .with_source(fault),
         _ => Error::new(
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::Internal,
-            format!("Windows 凭据管理器返回了未预期的错误（Win32 错误码 {code}）"),
+            format!("Windows Credential Manager returned an unexpected error (Win32 error code {code})"),
         )
         .with_source(fault),
     }

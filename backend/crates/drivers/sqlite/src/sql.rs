@@ -74,7 +74,7 @@ pub(crate) fn validate_plan(connection: &Connection, sql: &str) -> Result<()> {
         Error::new(
             ErrorCode::MCP_READONLY_VIOLATION,
             sqarvo_common::ErrorCategory::PermissionDenied,
-            "SQLite 只允许单条只读查询计划",
+            "SQLite allows only a single read-only query plan statement",
         )
     };
     if !sql.starts_with("EXPLAIN QUERY PLAN ") || sql.contains('\0') {
@@ -103,19 +103,21 @@ pub(crate) fn next_segment(
 ) -> Result<Option<Segment>> {
     let mut cursor = start;
     while cursor < sql.len() {
-        let remainder = sql
-            .get(cursor..)
-            .ok_or_else(|| Error::internal("SQL 语句边界落在非字符边界"))?;
+        let remainder = sql.get(cursor..).ok_or_else(|| {
+            Error::internal("SQL statement boundary does not fall on a character boundary")
+        })?;
         let (has_statement, consumed) = split_first(connection, remainder, false)?;
         // 引擎必须前进：空段也返回非零 tail，否则视为内部错误而不是死循环。
         if consumed == 0 {
-            return Err(Error::internal("SQLite 语句切分未前进"));
+            return Err(Error::internal(
+                "SQLite statement splitting made no progress",
+            ));
         }
         let next = cursor + consumed;
         if has_statement {
-            let text = sql
-                .get(cursor..next)
-                .ok_or_else(|| Error::internal("SQL 语句边界落在非字符边界"))?;
+            let text = sql.get(cursor..next).ok_or_else(|| {
+                Error::internal("SQL statement boundary does not fall on a character boundary")
+            })?;
             return Ok(Some(Segment {
                 sql: text.to_owned(),
                 next,
@@ -131,7 +133,7 @@ pub(crate) fn next_segment(
 /// 空段 / 纯注释段：`sqlite3_prepare_v2` 返回 `SQLITE_OK` 且 `ppStmt` 为 NULL，
 /// `pzTail` 仍指向剩余文本——据此跳过。语句 prepare 失败时按既有分类映射错误。
 fn split_first(connection: &Connection, sql: &str, require_plan: bool) -> Result<(bool, usize)> {
-    let c_sql = CString::new(sql).map_err(|_| Error::internal("SQL 含 NUL 字节"))?;
+    let c_sql = CString::new(sql).map_err(|_| Error::internal("SQL contains a NUL byte"))?;
     let mut statement: *mut ffi::sqlite3_stmt = std::ptr::null_mut();
     let mut tail: *const std::ffi::c_char = std::ptr::null();
 
@@ -157,7 +159,10 @@ fn split_first(connection: &Connection, sql: &str, require_plan: bool) -> Result
             .to_string_lossy()
             .into_owned();
         let error = rusqlite::Error::SqliteFailure(ffi::Error::new(rc), Some(message));
-        return Err(map_sqlite_error(error, "准备 SQLite 语句失败"));
+        return Err(map_sqlite_error(
+            error,
+            "Failed to prepare SQLite statement",
+        ));
     }
 
     let has_statement = !statement.is_null();
@@ -173,13 +178,16 @@ fn split_first(connection: &Connection, sql: &str, require_plan: bool) -> Result
         if rc != ffi::SQLITE_OK {
             // prepare 成功而 finalize 失败极罕见（如内存不足）；仍按既有分类上报。
             let error = rusqlite::Error::SqliteFailure(ffi::Error::new(rc), None);
-            return Err(map_sqlite_error(error, "释放 SQLite 语句失败"));
+            return Err(map_sqlite_error(
+                error,
+                "Failed to release SQLite statement",
+            ));
         }
         if !valid_plan {
             return Err(Error::new(
                 ErrorCode::MCP_READONLY_VIOLATION,
                 sqarvo_common::ErrorCategory::PermissionDenied,
-                "SQLite 引擎未确认该语句是只读查询计划",
+                "The SQLite engine could not verify that the statement is a read-only query plan",
             ));
         }
     }
@@ -187,8 +195,8 @@ fn split_first(connection: &Connection, sql: &str, require_plan: bool) -> Result
     // SAFETY: prepare 成功时 pzTail 指向 c_sql 缓冲区内部（或末尾的 NUL），
     // 与 as_ptr() 同源；指针差即消费的字节数，不会越过缓冲区。
     let consumed = unsafe { tail.offset_from(c_sql.as_ptr()) };
-    let consumed =
-        usize::try_from(consumed).map_err(|_| Error::internal("SQL 语句切分偏移非法"))?;
+    let consumed = usize::try_from(consumed)
+        .map_err(|_| Error::internal("Invalid SQL statement split offset"))?;
     Ok((has_statement, consumed))
 }
 
@@ -196,7 +204,7 @@ fn split_first(connection: &Connection, sql: &str, require_plan: bool) -> Result
 pub(crate) fn script_too_large(failed_index: u32) -> Error {
     Error::resource_exhausted(
         ErrorCode::QUERY_SCRIPT_TOO_LARGE,
-        "多语句脚本缓冲行数超过预算，请拆分脚本或给查询加 LIMIT",
+        "The buffered row count exceeds the budget for a multi-statement script. Split the script or add LIMIT to the query",
     )
     .with_statement_failure(sqarvo_common::StatementFailure {
         failed_index,

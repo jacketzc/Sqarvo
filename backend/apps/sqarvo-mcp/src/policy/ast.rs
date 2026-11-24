@@ -23,17 +23,29 @@ use std::ops::ControlFlow;
 const DANGEROUS_FUNCTIONS: &[(&str, &str)] = &[
     (
         "load_file",
-        "读取数据库服务器侧文件（需 FILE 权限，越出查询边界）",
+        "Reads a file on the database server, which requires FILE permission and goes beyond query access",
     ),
-    ("sleep", "人为延长查询，占用连接与超时预算"),
-    ("benchmark", "CPU 循环基准，资源耗尽型副作用"),
-    ("get_lock", "获取会话级咨询锁，影响其他会话"),
-    ("release_lock", "释放会话级咨询锁，改变锁状态"),
+    (
+        "sleep",
+        "Extends query execution and consumes connection and timeout capacity",
+    ),
+    ("benchmark", "CPU loop benchmark that can exhaust resources"),
+    (
+        "get_lock",
+        "Acquires a session-level advisory lock and affects other sessions",
+    ),
+    (
+        "release_lock",
+        "Releases a session-level advisory lock and changes lock state",
+    ),
     (
         "release_all_locks",
-        "释放当前会话持有的全部咨询锁，改变锁状态",
+        "Releases all advisory locks held by the current session and changes lock state",
     ),
-    ("nextval", "推进序列对象取值，属于状态修改而非只读访问"),
+    (
+        "nextval",
+        "Advances a sequence value and changes database state",
+    ),
 ];
 
 /// 解析并检查 `sql`：通过策略则返回唯一的顶层语句（供指纹复用，避免二次解析）。
@@ -50,7 +62,10 @@ pub(super) fn parse_readonly_statement_with_dialect(
 ) -> Result<Statement> {
     let statements = Parser::parse_sql(dialect, sql).map_err(|error| {
         if sqlite_plan {
-            Error::invalid_argument(ErrorCode::MCP_SQL_PARSE, "SQLite 查询计划 SQL 解析失败")
+            Error::invalid_argument(
+                ErrorCode::MCP_SQL_PARSE,
+                "Failed to parse SQLite query plan SQL",
+            )
         } else {
             parse_error(&error)
         }
@@ -59,12 +74,12 @@ pub(super) fn parse_readonly_statement_with_dialect(
         [single] => single,
         [] => {
             return Err(readonly_violation(
-                "没有可执行的 SQL 语句：策略要求输入解析为单条只读查询。",
+                "No executable SQL statement was found. The policy requires a single read-only query.",
             ));
         }
         many => {
             return Err(readonly_violation(format!(
-                "仅允许单条 SQL 语句：本次输入解析出 {} 条语句（多语句一律拒绝，请拆分后逐条提交）。",
+                "Only one SQL statement is allowed. The input contained {} statements. Submit each statement separately.",
                 many.len()
             )));
         }
@@ -74,7 +89,7 @@ pub(super) fn parse_readonly_statement_with_dialect(
         Statement::Query(query) => query,
         other => {
             return Err(readonly_violation(format!(
-                "只读白名单仅允许单条 SELECT / 只读 WITH 查询，本次输入是语句类型 {}。",
+                "The read-only allowlist permits one SELECT or read-only WITH query. Received statement type {}.",
                 statement_kind(other)
             )));
         }
@@ -88,13 +103,13 @@ pub(super) fn parse_readonly_statement_with_dialect(
         let mut sqlite = SqlitePlanScanner;
         if let ControlFlow::Break(()) = query.visit(&mut sqlite) {
             return Err(readonly_violation(
-                "SQLite 查询计划禁止加载扩展或调用文件操作函数",
+                "SQLite query plans cannot load extensions or call file operation functions",
             ));
         }
     }
     if !scanner.violations.is_empty() {
         return Err(readonly_violation(format!(
-            "只读策略拒绝：{}",
+            "Rejected by the read-only policy: {}",
             scanner.violations.join("；")
         )));
     }
@@ -135,13 +150,13 @@ impl ReadOnlyScanner {
     fn check_function_name(&mut self, name: &ObjectName) {
         let Some(last) = name.0.last() else {
             self.deny(format!(
-                "禁止无法静态判定函数名的调用：{name}（空函数名，按保守策略拒绝）。"
+                "Function call rejected because its name cannot be determined statically: {name} (empty function name)."
             ));
             return;
         };
         let Some(ident) = last.as_ident() else {
             self.deny(format!(
-                "禁止动态函数名：{name}（函数名由运行期表达式产生，无法静态审计，按保守策略拒绝）。"
+                "Dynamic function names are disallowed: {name}. Names derived from runtime expressions cannot be audited statically."
             ));
             return;
         };
@@ -150,7 +165,7 @@ impl ReadOnlyScanner {
             .iter()
             .find(|(denied, _)| *denied == lowered)
         {
-            self.deny(format!("禁止危险函数：{name}——{risk}。"));
+            self.deny(format!("Disallowed function {name}: {risk}."));
         }
     }
 }
@@ -163,7 +178,7 @@ impl Visitor for ReadOnlyScanner {
         // （`SetExpr::Insert/Update/Delete`）一类，任何非 Query 形态都拒绝。
         if !matches!(statement, Statement::Query(_)) {
             self.deny(format!(
-                "查询内部嵌套了非 SELECT 语句（类型 {}，如数据修改 CTE），只读场景不允许。",
+                "The query contains a nested non-SELECT statement (type {}, such as a data-modifying CTE), which is disallowed for read-only queries.",
                 statement_kind(statement)
             ));
         }
@@ -173,7 +188,7 @@ impl Visitor for ReadOnlyScanner {
     fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
         for lock in &query.locks {
             self.deny(format!(
-                "禁止锁定读：{lock}（FOR UPDATE / FOR SHARE / NOWAIT / SKIP LOCKED / OF 列表一律拒绝）。"
+                "Locking reads are disallowed: {lock}. FOR UPDATE, FOR SHARE, NOWAIT, SKIP LOCKED, and OF lists are rejected."
             ));
         }
         ControlFlow::Continue(())
@@ -183,7 +198,7 @@ impl Visitor for ReadOnlyScanner {
         if let Some(into) = &select.into {
             let targets: Vec<String> = into.targets.iter().map(ToString::to_string).collect();
             self.deny(format!(
-                "禁止 INTO 子句：V1 一律拒绝任何形式的 SELECT ... INTO（会话变量 / 列清单 / 表 / OUTFILE / DUMPFILE），目标：{}。",
+                "The INTO clause is disallowed. V1 rejects all forms of SELECT ... INTO (session variables, column lists, tables, OUTFILE, and DUMPFILE). Target: {}.",
                 targets.join(", ")
             ));
         }
@@ -194,7 +209,7 @@ impl Visitor for ReadOnlyScanner {
                 .map(ToString::to_string)
                 .collect();
             self.deny(format!(
-                "禁止优化器 hint：{}（hint 是不可静态验证的任意执行计划指令，V1 一律拒绝）。",
+                "Optimizer hints are disallowed: {}. V1 rejects arbitrary execution plan directives because they cannot be verified statically.",
                 hints.join(" ")
             ));
         }
@@ -209,7 +224,9 @@ impl Visitor for ReadOnlyScanner {
             Expr::BinaryOp {
                 op: BinaryOperator::Assignment,
                 ..
-            } => self.deny("禁止会话变量赋值（:=）：该写法修改会话状态，不是只读查询。"),
+            } => self.deny(
+                "Session variable assignment (:=) is disallowed because it changes session state.",
+            ),
             _ => {}
         }
         ControlFlow::Continue(())
@@ -246,7 +263,7 @@ fn parse_error(error: &ParserError) -> Error {
         ErrorCode::MCP_SQL_PARSE,
         ErrorCategory::InvalidArgument,
         format!(
-            "解析失败：{detail}。已按 fail-closed 原则拒绝（原语句未必非法，但当前策略只接受 sqlparser MySqlDialect 可解析的单条只读查询，MariaDB 特有语法请改写后重试）。"
+            "Failed to parse SQL: {detail}. The policy rejects statements it cannot verify. Submit a single read-only query that sqlparser MySqlDialect can parse. Rewrite MariaDB-specific syntax if needed and retry."
         ),
     )
 }
@@ -283,7 +300,7 @@ mod tests {
         };
         scanner.check_function_name(&name);
         assert_eq!(scanner.violations.len(), 1, "动态函数名必须保守拒绝");
-        assert!(scanner.violations[0].contains("动态函数名"));
+        assert!(scanner.violations[0].contains("Dynamic function names"));
     }
 
     #[test]

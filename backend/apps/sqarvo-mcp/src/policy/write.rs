@@ -90,7 +90,7 @@ impl Scalar {
             Self::Float(value) if value.is_finite() => Ok(Value::Float(value)),
             Self::Text(value) if value.len() <= MAX_TEXT_BYTES => Ok(Value::Text(value)),
             Self::Null => Ok(Value::Null),
-            _ => Err(invalid("写入值超出支持范围")),
+            _ => Err(invalid("The write value is out of the supported range")),
         }
     }
 }
@@ -181,14 +181,14 @@ impl WritePlan {
     /// Decode a bounded argument object and reject operation mismatches or unsafe input shapes.
     pub fn decode(arguments: serde_json::Value, expected: Option<OperationType>) -> Result<Self> {
         if serde_json::to_vec(&arguments)
-            .map_err(|_| invalid("无法编码写入参数"))?
+            .map_err(|_| invalid("Failed to encode write arguments"))?
             .len()
             > MAX_ARGUMENT_BYTES
         {
-            return Err(invalid("写入参数超过允许大小"));
+            return Err(invalid("Write arguments exceed the size limit"));
         }
         let input = serde_json::from_value::<WriteArguments>(arguments)
-            .map_err(|_| invalid("写入参数格式无效"))?;
+            .map_err(|_| invalid("Invalid write argument format"))?;
         let (connection_alias, database, table, action) = match input {
             WriteArguments::Insert {
                 connection_alias,
@@ -197,14 +197,14 @@ impl WritePlan {
                 rows,
             } => {
                 if rows.is_empty() || rows.len() > 100 {
-                    return Err(invalid("插入行数须在 1 到 100 之间"));
+                    return Err(invalid("The insert must contain 1 to 100 rows"));
                 }
                 let columns = rows[0].keys().collect::<Vec<_>>();
                 if rows
                     .iter()
                     .any(|row| row.keys().ne(columns.iter().copied()))
                 {
-                    return Err(invalid("同一次插入的记录必须使用相同列"));
+                    return Err(invalid("All rows in one insert must use the same columns"));
                 }
                 let rows = rows
                     .into_iter()
@@ -240,10 +240,10 @@ impl WritePlan {
             ),
         };
         if expected.is_some_and(|expected| expected != action.operation()) {
-            return Err(invalid("写入类型与工具不匹配"));
+            return Err(invalid("The write type does not match the tool"));
         }
         if !identifier(&connection_alias) || !identifier(&database) || !identifier(&table) {
-            return Err(invalid("连接或目标名称无效"));
+            return Err(invalid("Invalid connection or target name"));
         }
         Ok(Self {
             connection_alias,
@@ -278,7 +278,7 @@ pub fn check_generated_sql(
         WriteDialect::Sqlite => (&SQLiteDialect {}, '"'),
         WriteDialect::MariaDb => (&MySqlDialect {}, '`'),
     };
-    let failure = || invalid("生成的 SQL 与受控写入计划不一致");
+    let failure = || invalid("The generated SQL does not match the controlled write plan");
     let quoted = |name: &str| Ident::with_quote(quote, name).to_string();
     let (expected, values) = render(plan, dialect, &quoted)?;
     if !values.into_iter().eq(bindings) {
@@ -335,10 +335,10 @@ fn render<'a>(
             let first = rows
                 .first()
                 .filter(|row| !row.values.is_empty())
-                .ok_or_else(|| invalid("插入需要至少一行和一列"))?;
+                .ok_or_else(|| invalid("An insert requires at least one row and one column"))?;
             let columns = first.columns();
             if rows.iter().any(|row| row.columns() != columns) {
-                return Err(invalid("写入计划的列集合无效"));
+                return Err(invalid("The write plan has an invalid set of columns"));
             }
             let names = columns
                 .iter()
@@ -355,7 +355,7 @@ fn render<'a>(
         }
         WriteAction::Update { changes, filter } => {
             if changes.is_empty() {
-                return Err(invalid("写入计划的列集合无效"));
+                return Err(invalid("The write plan has an invalid set of columns"));
             }
             let assignments = changes
                 .iter()
@@ -382,7 +382,9 @@ pub(crate) fn reference_predicate<'a>(
     values: &mut Vec<&'a Value>,
 ) -> Result<String> {
     if filter.conditions.is_empty() {
-        return Err(invalid("生成的写入语句缺少有效条件"));
+        return Err(invalid(
+            "The generated write statement lacks a valid condition",
+        ));
     }
     filter
         .conditions
@@ -398,12 +400,20 @@ pub(crate) fn reference_predicate<'a>(
                         FilterOperator::Le => "<= ?",
                         FilterOperator::Gt => "> ?",
                         FilterOperator::Ge => ">= ?",
-                        _ => return Err(invalid("生成的写入语句含不支持的条件")),
+                        _ => {
+                            return Err(invalid(
+                                "The generated write statement contains an unsupported condition",
+                            ));
+                        }
                     };
                     values.push(value);
                     comparison
                 }
-                _ => return Err(invalid("生成的写入语句含无效的条件值")),
+                _ => {
+                    return Err(invalid(
+                        "The generated write statement contains an invalid condition value",
+                    ));
+                }
             };
             Ok(format!("{} {operation}", quoted(&condition.column)))
         })
@@ -413,13 +423,13 @@ pub(crate) fn reference_predicate<'a>(
 
 fn changes(record: Record) -> Result<Vec<ColumnChange>> {
     if record.is_empty() || record.len() > MAX_COLUMNS {
-        return Err(invalid("写入列数量超出允许范围"));
+        return Err(invalid("The number of write columns is out of range"));
     }
     record
         .into_iter()
         .map(|(column, value)| {
             if !identifier(&column) {
-                return Err(invalid("列名无效"));
+                return Err(invalid("Invalid column name"));
             }
             Ok(ColumnChange {
                 column,
@@ -431,7 +441,9 @@ fn changes(record: Record) -> Result<Vec<ColumnChange>> {
 
 fn filter(conditions: Vec<Condition>) -> Result<Filter> {
     if conditions.is_empty() || conditions.len() > MAX_CONDITIONS {
-        return Err(invalid("写入需要非空且有界的条件列表"));
+        return Err(invalid(
+            "A write requires a nonempty, bounded list of conditions",
+        ));
     }
     let conditions = conditions
         .into_iter()
@@ -442,7 +454,7 @@ fn filter(conditions: Vec<Condition>) -> Result<Filter> {
                 || operator.requires_value() != value.is_some()
                 || value == Some(Value::Null)
             {
-                return Err(invalid("写入条件无效"));
+                return Err(invalid("Invalid write conditions"));
             }
             Ok(FilterCondition {
                 column: condition.column,

@@ -53,7 +53,7 @@ impl ConnectionService for ConnectionServiceImpl {
         let params = request
             .into_inner()
             .params
-            .ok_or_else(|| Status::invalid_argument("缺少连接参数"))?;
+            .ok_or_else(|| Status::invalid_argument("Missing connection parameters"))?;
         let params = to_domain_params(params)?;
 
         // 凭据解析由 SessionManager 负责（ADR 0015）：params.credential_ref 在这里
@@ -86,7 +86,7 @@ impl ConnectionService for ConnectionServiceImpl {
         let request = request.into_inner();
         let params = request
             .params
-            .ok_or_else(|| Status::invalid_argument("缺少连接参数"))?;
+            .ok_or_else(|| Status::invalid_argument("Missing connection parameters"))?;
         let params = to_domain_params(params)?;
         let display_name = if request.display_name.trim().is_empty() {
             params.host.clone()
@@ -123,7 +123,7 @@ impl ConnectionService for ConnectionServiceImpl {
             .into_inner()
             .connection_id
             .parse()
-            .map_err(|_| Status::invalid_argument("连接 ID 格式非法"))?;
+            .map_err(|_| Status::invalid_argument("Invalid connection ID format"))?;
         let summary = self
             .sessions
             .disconnect(&connection_id)
@@ -183,7 +183,7 @@ impl ConnectionService for ConnectionServiceImpl {
             .into_inner()
             .session_id
             .parse()
-            .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+            .map_err(|_| Status::invalid_argument("Invalid session ID format"))?;
         let handle = self
             .sessions
             .acquire(&session_id)
@@ -193,7 +193,7 @@ impl ConnectionService for ConnectionServiceImpl {
         if !handle.supports_session_context() {
             return Err(to_status(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "当前驱动不提供库上下文",
+                "The current driver does not provide a database context",
             )));
         }
         let context = handle.session_context().await.map_err(to_status)?;
@@ -216,7 +216,7 @@ impl ConnectionService for ConnectionServiceImpl {
         let session_id: SessionId = request
             .session_id
             .parse()
-            .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+            .map_err(|_| Status::invalid_argument("Invalid session ID format"))?;
         let handle = self
             .sessions
             .acquire(&session_id)
@@ -232,7 +232,7 @@ impl ConnectionService for ConnectionServiceImpl {
         if !handle.supports_catalog_switch() {
             return Err(to_status(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "当前驱动不支持「切换库」，请在 SQL 里写限定名",
+                "The current driver cannot switch databases. Use qualified names in SQL",
             )));
         }
         // 切库失败直接返回（未知库 / 无权限 / 事务中），不回落旧库。
@@ -261,7 +261,7 @@ fn context_response(handle: &SessionHandle, context: SessionContext) -> GetSessi
 pub(super) fn to_domain_params(params: ConnectionParams) -> Result<DriverConnectionParams, Status> {
     let driver_id = DriverId::new(params.driver_id).map_err(to_status)?;
     let port = u16::try_from(params.port)
-        .map_err(|_| Status::invalid_argument("端口必须在 0..=65535 之间"))?;
+        .map_err(|_| Status::invalid_argument("The port must be between 0 and 65535"))?;
     let tls = to_domain_tls_mode(params.tls_mode)?;
 
     Ok(DriverConnectionParams {
@@ -295,7 +295,7 @@ fn to_domain_tls_mode(value: i32) -> Result<DriverTlsMode, Status> {
         Ok(ProtoTlsMode::Required) => Ok(DriverTlsMode::Required),
         Ok(ProtoTlsMode::VerifyCa) => Ok(DriverTlsMode::VerifyCa),
         Ok(ProtoTlsMode::VerifyFull) => Ok(DriverTlsMode::VerifyFull),
-        Err(_) => Err(Status::invalid_argument("未知的 TLS 模式")),
+        Err(_) => Err(Status::invalid_argument("Unknown TLS mode")),
     }
 }
 

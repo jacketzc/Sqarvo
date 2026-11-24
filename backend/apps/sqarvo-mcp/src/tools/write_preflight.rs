@@ -26,11 +26,11 @@ impl WriteScope {
             Self::Bounded(count) => Ok(count),
             Self::OverLimit(_) => Err(Error::resource_exhausted(
                 ErrorCode::MCP_INVALID_ARGUMENT,
-                "写入条件匹配的行数超出限额",
+                "The write conditions match more rows than allowed",
             )),
             Self::EntireTable(_) => Err(Error::failed_precondition(
                 ErrorCode::MCP_INVALID_ARGUMENT,
-                "写入条件覆盖整个目标表",
+                "The write conditions match the entire target table",
             )),
         }
     }
@@ -83,7 +83,7 @@ pub async fn sqlite(
         if exists != 1 {
             return Err(Error::invalid_argument(
                 ErrorCode::MCP_INVALID_ARGUMENT,
-                "目标表没有可用的指定列",
+                "The specified columns are unavailable in the target table",
             ));
         }
     }
@@ -154,7 +154,7 @@ pub async fn mariadb(
         {
             return Err(Error::invalid_argument(
                 ErrorCode::MCP_INVALID_ARGUMENT,
-                "目标表没有可用的指定列",
+                "The specified columns are unavailable in the target table",
             ));
         }
     }
@@ -276,6 +276,6 @@ async fn scalar(
 fn ineligible() -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        "无法确认目标表符合受控写入要求",
+        "Could not verify that the target table meets controlled write requirements",
     )
 }

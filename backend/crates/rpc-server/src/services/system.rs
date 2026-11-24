@@ -80,9 +80,9 @@ impl SystemService for SystemServiceImpl {
         // 没有注册驱动仍然可以正常提供协议服务，但必须在诊断信息中如实说明，
         // 避免前端误以为可以连接数据库。
         let detail = if self.drivers.is_empty() {
-            "后端可用；当前没有注册任何数据库驱动"
+            "Backend is available. No database drivers are registered"
         } else {
-            "后端可用"
+            "Backend is available"
         };
 
         Ok(Response::new(HealthResponse {

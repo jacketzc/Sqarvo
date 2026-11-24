@@ -90,42 +90,42 @@ fn classify(
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => (
                     QUERY_TIMEOUT,
                     ErrorCategory::Timeout,
-                    Cow::Borrowed("数据库连接超时"),
+                    Cow::Borrowed("Database connection timed out"),
                 ),
                 std::io::ErrorKind::ConnectionRefused => (
                     CONNECTION_FAILED,
                     ErrorCategory::Unavailable,
-                    Cow::Borrowed("无法连接数据库（连接被拒绝）"),
+                    Cow::Borrowed("Cannot connect database (connection denied)"),
                 ),
                 _ => (
                     CONNECTION_FAILED,
                     ErrorCategory::Unavailable,
-                    Cow::Borrowed("数据库连接中断"),
+                    Cow::Borrowed("Database Connection Interrupted"),
                 ),
             }
         }
         mysql_async::Error::Io(mysql_async::IoError::Tls(_)) => (
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
-            Cow::Borrowed("TLS 握手失败"),
+            Cow::Borrowed("TLS handshake failed"),
         ),
         mysql_async::Error::Url(_) => (
             ErrorCode::CONFIG_INVALID,
             ErrorCategory::InvalidArgument,
-            Cow::Borrowed("连接参数无法解析"),
+            Cow::Borrowed("Connection parameters could not be parsed"),
         ),
         mysql_async::Error::Driver(driver) => match driver {
             mysql_async::DriverError::ConnectionClosed => (
                 CONNECTION_FAILED,
                 ErrorCategory::Unavailable,
-                Cow::Borrowed("数据库连接已关闭"),
+                Cow::Borrowed("Database connection closed"),
             ),
             // 服务端在握手阶段声明没有 SSL 能力：`required` / `verify-*` 档位下这是
             // 「服务端不满足连接要求」（`Unavailable`），不是驱动内部错误（#107 第 3 条）。
             mysql_async::DriverError::NoClientSslFlagFromServer => (
                 CONNECTION_FAILED,
                 ErrorCategory::Unavailable,
-                Cow::Borrowed("服务端不支持 TLS（连接要求 TLS）"),
+                Cow::Borrowed("The server does not support TLS, which this connection requires"),
             ),
             _ => (
                 CONNECTION_FAILED,
@@ -162,7 +162,7 @@ fn classify_certificate_error(
         | rustls::CertificateError::NotValidForNameContext { .. } => (
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
-            "服务端证书与主机名不匹配",
+            "The server certificate does not match the hostname",
         ),
         rustls::CertificateError::UnknownIssuer
         | rustls::CertificateError::Expired
@@ -175,13 +175,13 @@ fn classify_certificate_error(
         | rustls::CertificateError::BadSignature => (
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
-            "服务端证书未被信任或已失效",
+            "The server certificate is untrusted or expired",
         ),
         // 其余证书错误（编码、扩展、OCSP 响应等）同样是握手失败，不再细分文案。
         _ => (
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
-            "TLS 握手失败",
+            "TLS handshake failed",
         ),
     };
     Some(classified)
@@ -200,67 +200,86 @@ fn map_server_code(
         1045 | 1698 => known(
             AUTH_FAILED,
             ErrorCategory::Unauthenticated,
-            "数据库认证失败（用户名或密码错误）",
+            "Database authentication failed (user name or password error)",
         ),
         // ER_DBACCESS_DENIED_ERROR / ER_TABLEACCESS_DENIED_ERROR / ER_COLUMNACCESS_DENIED_ERROR
         1044 | 1142 | 1143 => known(
             PERMISSION_DENIED,
             ErrorCategory::PermissionDenied,
-            "当前账号没有访问该对象的权限",
+            "Current account does not have access to the object",
         ),
         // ER_BAD_DB_ERROR
         1049 => known(
             UNKNOWN_DATABASE,
             ErrorCategory::InvalidArgument,
-            "数据库不存在",
+            "Database does not exist",
         ),
         // ER_NO_DB_ERROR：连接没有默认库，SQL 又没有限定表名（例如 `select * from t`）。
         // 与元数据/表数据路径同一个错误码与分类：缺的是「库归属」，不是 SQL 写错了。
         1046 => known(
             NO_DATABASE,
             ErrorCategory::FailedPrecondition,
-            "当前连接没有默认库：请在 SQL 里写明库名（例如「库.表」），\
-             或在连接配置里填写默认库",
+            "No default database is configured. Qualify the table name in SQL (for example, database.table) or set a default database in the connection settings",
         ),
         // ER_PARSE_ERROR
-        1064 => known(SYNTAX_ERROR, ErrorCategory::InvalidArgument, "SQL 语法错误"),
+        1064 => known(
+            SYNTAX_ERROR,
+            ErrorCategory::InvalidArgument,
+            "SQL syntax error",
+        ),
         // ER_NO_SUCH_TABLE / ER_BAD_FIELD_ERROR / ER_BAD_TABLE_ERROR
-        1146 | 1054 | 1051 => known(OBJECT_NOT_FOUND, ErrorCategory::NotFound, "表或列不存在"),
+        1146 | 1054 | 1051 => known(
+            OBJECT_NOT_FOUND,
+            ErrorCategory::NotFound,
+            "The table or column does not exist",
+        ),
         // ER_QUERY_INTERRUPTED
         1317 => known(
             ErrorCode::QUERY_CANCELLED,
             ErrorCategory::Cancelled,
-            "查询已取消",
+            "Query canceled",
         ),
         // ER_LOCK_WAIT_TIMEOUT
-        1205 => known(SERVER_ERROR, ErrorCategory::Timeout, "等待锁超时"),
+        1205 => known(
+            SERVER_ERROR,
+            ErrorCategory::Timeout,
+            "Timed out waiting for a lock",
+        ),
         // ER_LOCK_DEADLOCK
-        1213 => known(DEADLOCK, ErrorCategory::FailedPrecondition, "检测到死锁"),
+        1213 => known(
+            DEADLOCK,
+            ErrorCategory::FailedPrecondition,
+            "Deadlock detected",
+        ),
         // ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION
         1792 => known(
             READ_ONLY_TRANSACTION,
             ErrorCategory::FailedPrecondition,
-            "只读事务中不允许写入",
+            "Writes are not allowed in a read-only transaction",
         ),
         // ER_CONNECTION_KILLED / ER_SERVER_SHUTDOWN
         1927 | 1053 => known(
             CONNECTION_FAILED,
             ErrorCategory::Unavailable,
-            "数据库连接已被服务端关闭",
+            "Database connection has been closed by the service",
         ),
         // 没归类过的服务端错误：至少把数字错误码给出去，否则用户只看到一句
         // 「执行 MariaDB 语句失败」，既无法自查也无法判断有没有被归类。
         _ => (
             SERVER_ERROR,
             ErrorCategory::Internal,
-            Cow::Owned(format!("{context}（服务端错误码 {code}）")),
+            Cow::Owned(format!("{context} (server error code {code})")),
         ),
     }
 }
 
 /// 连接超时（调用方在 `tokio::time::timeout` 之外判断）。
 pub(crate) fn connect_timeout() -> Error {
-    Error::new(CONNECT_TIMEOUT, ErrorCategory::Timeout, "连接数据库超时")
+    Error::new(
+        CONNECT_TIMEOUT,
+        ErrorCategory::Timeout,
+        "Connecting to the database timed out",
+    )
 }
 
 /// 事务打开时拒绝切库（ADR 0030 第 5 条）。
@@ -270,6 +289,6 @@ pub(crate) fn connect_timeout() -> Error {
 pub(crate) fn catalog_switch_in_transaction() -> Error {
     Error::failed_precondition(
         CATALOG_SWITCH_IN_TRANSACTION,
-        "事务已打开：先提交或回滚，再切换库",
+        "A transaction is open. Commit or roll it back before switching databases",
     )
 }

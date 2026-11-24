@@ -21,7 +21,9 @@ impl Watch {
 
     /// 永不返回：此平台无法判定父进程是否还在。
     pub async fn gone(self) -> u32 {
-        tracing::debug!("此平台缺少父进程判活手段，父进程监视不会触发");
+        tracing::debug!(
+            "This platform cannot check whether the parent process is alive. Parent monitoring will not trigger"
+        );
         std::future::pending().await
     }
 }

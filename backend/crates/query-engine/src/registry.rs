@@ -96,7 +96,10 @@ impl QueryRegistry {
         if entries.len() >= self.limits.max_concurrent {
             return Err(Error::resource_exhausted(
                 ErrorCode::QUERY_LIMIT_REACHED,
-                format!("并发查询已达上限（{}）", self.limits.max_concurrent),
+                format!(
+                    "The concurrent query limit ({}) has been reached",
+                    self.limits.max_concurrent
+                ),
             ));
         }
         let id = QueryId::new();
@@ -120,7 +123,7 @@ impl QueryRegistry {
         let entry = entries.get_mut(id).ok_or_else(|| {
             Error::not_found(
                 ErrorCode::QUERY_NOT_FOUND,
-                format!("查询 {id} 不存在或已结束"),
+                format!("Query {id} does not exist or is closed"),
             )
         })?;
         match entry.state {
@@ -141,7 +144,7 @@ impl QueryRegistry {
         entries.remove(id).map(|_| ()).ok_or_else(|| {
             Error::not_found(
                 ErrorCode::QUERY_NOT_FOUND,
-                format!("查询 {id} 不存在或已结束"),
+                format!("Query {id} does not exist or is closed"),
             )
         })
     }

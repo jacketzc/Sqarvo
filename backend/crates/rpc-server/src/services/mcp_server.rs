@@ -78,7 +78,7 @@ impl McpServerManager {
         let path = self.config_file.clone();
         let port = tokio::task::spawn_blocking(move || read_port(&path))
             .await
-            .map_err(|_| Status::internal("MCP HTTP 配置读取任务失败"))??;
+            .map_err(|_| Status::internal("The MCP HTTP configuration read task failed"))??;
         Ok(McpServerConfig {
             port: u32::from(port),
             host: HOST.into(),
@@ -95,16 +95,20 @@ impl McpServerManager {
         let port = u16::try_from(port)
             .ok()
             .filter(|port| *port != 0)
-            .ok_or_else(|| Status::invalid_argument("MCP HTTP 端口须在 1–65535 范围内"))?;
+            .ok_or_else(|| {
+                Status::invalid_argument("The MCP HTTP port must be between 1 and 65535")
+            })?;
         let operation = self.operations.lock().await;
         if operation.shutdown || in_progress(self.status().state()) {
-            return Err(Status::failed_precondition("请先停止 MCP HTTP 服务"));
+            return Err(Status::failed_precondition(
+                "Stop the MCP HTTP server first",
+            ));
         }
         let file = self.config_file.clone();
         tokio::task::spawn_blocking(move || write_port(&file, port))
             .await
-            .map_err(|_| Status::internal("MCP HTTP 配置写入任务失败"))?
-            .map_err(|_| Status::internal("无法保存 MCP HTTP 端口"))?;
+            .map_err(|_| Status::internal("The MCP HTTP configuration write task failed"))?
+            .map_err(|_| Status::internal("Failed to save the MCP HTTP port"))?;
         self.config().await
     }
 
@@ -112,7 +116,7 @@ impl McpServerManager {
     pub async fn start(&self) -> Result<McpServerStatus, Status> {
         let mut operation = self.operations.lock().await;
         if operation.shutdown {
-            return Err(Status::failed_precondition("后端正在关闭"));
+            return Err(Status::failed_precondition("Backend is shutting down"));
         }
         let current = self.status();
         if in_progress(current.state()) {
@@ -136,7 +140,7 @@ impl McpServerManager {
             .spawn()
             .map_err(|_| {
                 self.status.send_replace(failed(FAILED));
-                mcp_error(FAILED, "无法启动 MCP 伴生程序")
+                mcp_error(FAILED, "Failed to start the MCP companion process")
             })?;
         let (stop, stop_request) = oneshot::channel();
         operation.stop = Some(stop);
@@ -173,7 +177,7 @@ impl McpServerManager {
             }
             State::Failed if current.error_code == PORT_IN_USE => Err(mcp_error(
                 "mcp.http.external_listener",
-                "当前端口由外部进程使用，不能由此后端停止",
+                "An external process is using this port and cannot be stopped by this backend",
             )),
             _ => Ok(current),
         }
@@ -189,13 +193,13 @@ impl McpServerManager {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|_| mcp_error(FAILED, "无法启动 MCP 伴生程序"))?;
+            .map_err(|_| mcp_error(FAILED, "Failed to start the MCP companion process"))?;
         let result = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await;
         match result {
             Ok(Ok(output)) if output.status.success() => Ok(()),
             _ => Err(mcp_error(
                 "credential.unavailable",
-                "无法更新 HTTP 凭据，请检查系统密钥环",
+                "Failed to update the HTTP credential. Check the system keyring",
             )),
         }
     }
@@ -213,9 +217,12 @@ impl McpServerManager {
     }
 
     fn executable(&self) -> Result<&Path, Status> {
-        self.executable
-            .as_deref()
-            .ok_or_else(|| mcp_error("mcp.http.binary_unavailable", "找不到可执行的 sqarvo-mcp"))
+        self.executable.as_deref().ok_or_else(|| {
+            mcp_error(
+                "mcp.http.binary_unavailable",
+                "The sqarvo-mcp executable was not found",
+            )
+        })
     }
 }
 
@@ -322,17 +329,17 @@ fn read_port(path: &Path) -> Result<u16, Status> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(DEFAULT_PORT),
-        Err(_) => return Err(Status::internal("无法读取 MCP HTTP 端口")),
+        Err(_) => return Err(Status::internal("Failed to read the MCP HTTP port")),
     };
     let mut text = String::new();
     file.take(16)
         .read_to_string(&mut text)
-        .map_err(|_| Status::internal("无法读取 MCP HTTP 端口"))?;
+        .map_err(|_| Status::internal("Failed to read the MCP HTTP port"))?;
     text.trim()
         .parse::<u16>()
         .ok()
         .filter(|port| *port != 0)
-        .ok_or_else(|| Status::failed_precondition("MCP HTTP 端口配置无效"))
+        .ok_or_else(|| Status::failed_precondition("Invalid MCP HTTP port configuration"))
 }
 
 fn write_port(path: &Path, port: u16) -> std::io::Result<()> {

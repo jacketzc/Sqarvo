@@ -299,9 +299,9 @@ fn draft_discover_with_meta_reports_supported_versions() {
         outcome.stderr
     );
     assert!(
-        outcome
-            .stderr
-            .contains("客户端在握手前断开（connection closed: initialize request）"),
+        outcome.stderr.contains(
+            "The client disconnected before the handshake (connection closed: initialize request)"
+        ),
         "stderr 必须记录握手前断开的收尾说明：\n{}",
         outcome.stderr
     );
@@ -372,7 +372,8 @@ fn bare_requests_with_draft_meta_work_without_any_handshake() {
         outcome.stderr
     );
     assert!(
-        outcome.stderr.contains("MCP 会话已全部关闭") || outcome.stderr.contains("会话结束"),
+        outcome.stderr.contains("All MCP sessions have been closed")
+            || outcome.stderr.contains("MCP session ended"),
         "应有正常收尾日志：\n{}",
         outcome.stderr
     );
@@ -674,7 +675,9 @@ fn sigterm_after_initialize_exits_zero_with_shutdown_log() {
         outcome.stderr
     );
     assert!(
-        outcome.stderr.contains("收到退出信号，开始优雅关停"),
+        outcome
+            .stderr
+            .contains("Received a shutdown signal. Starting graceful shutdown"),
         "stderr 必须有收尾日志（server.rs:307）：\n{}",
         outcome.stderr
     );
@@ -706,9 +709,9 @@ fn stdin_close_before_handshake_exits_zero_as_clean_eof() {
         outcome.stderr
     );
     assert!(
-        outcome
-            .stderr
-            .contains("客户端在握手前断开（connection closed: initialize request）"),
+        outcome.stderr.contains(
+            "The client disconnected before the handshake (connection closed: initialize request)"
+        ),
         "stderr 必须记录握手前断开的收尾说明：\n{}",
         outcome.stderr
     );

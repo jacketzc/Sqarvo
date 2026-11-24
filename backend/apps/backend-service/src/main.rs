@@ -63,25 +63,24 @@ const ENDPOINT_FILE_ENV: &str = "SQARVO_ENDPOINT_FILE";
 #[command(
     name = "sqarvo-backend",
     version,
-    about = "Sqarvo 数据库客户端后端服务（本地 IPC）"
+    about = "Sqarvo database client backend service (local IPC)"
 )]
 struct Cli {
-    /// Unix 域套接字路径；默认使用用户运行时目录。
+    /// Unix domain socket path. Defaults to the user runtime directory.
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
 
-    /// 端点描述文件路径；优先于 `SQARVO_ENDPOINT_FILE` 与默认运行时目录。
+    /// Endpoint descriptor path. Takes precedence over `SQARVO_ENDPOINT_FILE` and the default runtime directory.
     ///
-    /// 前端（尤其 Windows）应当显式传入绝对路径：Windows 没有 `XDG_RUNTIME_DIR`，
-    /// 靠环境变量推导会让「后端写哪儿」和「前端读哪儿」依赖两套不同的约定。
+    /// Pass an absolute path from the frontend, especially on Windows, where `XDG_RUNTIME_DIR` is unavailable.
     #[arg(long, value_name = "PATH")]
     endpoint_file: Option<PathBuf>,
 
-    /// 仅用于开发调试：监听回环 TCP 地址，例如 127.0.0.1:0。
+    /// Development only. Listen on a loopback TCP address such as 127.0.0.1:0.
     #[arg(long, value_name = "ADDR")]
     listen: Option<SocketAddr>,
 
-    /// 日志过滤规则，例如 `info,sqarvo_rpc_server=debug`。
+    /// Log filter, for example `info,sqarvo_rpc_server=debug`.
     #[arg(
         long,
         env = "SQARVO_LOG",
@@ -107,7 +106,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Display 只包含安全文案与稳定错误码，不含凭据与堆栈。
-            tracing::error!(code = %error.code(), %error, "后端退出");
+            tracing::error!(code = %error.code(), %error, "Backend exiting");
             ExitCode::FAILURE
         }
     }
@@ -123,7 +122,7 @@ async fn run(cli: Cli) -> Result<()> {
     })?;
     if let sqarvo_parent_watch::Installed::ParentGone(pid) = parent {
         // 还没有创建目录、绑定 socket 或写端点文件：直接退出即可。
-        tracing::warn!(parent_pid = pid, "父进程已不存在，退出");
+        tracing::warn!(parent_pid = pid, "The parent process is gone. Exiting");
         return Ok(());
     }
 
@@ -137,7 +136,9 @@ async fn run(cli: Cli) -> Result<()> {
 
     let registry = Arc::new(DriverRegistry::with_builtin_drivers());
     if registry.is_empty() {
-        tracing::warn!("当前版本没有内置数据库驱动：连接请求将返回 driver.not_found，这是预期行为");
+        tracing::warn!(
+            "This version has no built-in database drivers. Connection requests will return driver.not_found"
+        );
     }
     // 凭据存储：Linux 上是 Secret Service（D-Bus），Windows 上是 Credential Manager
     // （advapi32 的 CredWrite/CredRead/CredDelete）。装配过程可能连接会话总线、读取
@@ -147,13 +148,13 @@ async fn run(cli: Cli) -> Result<()> {
     let credentials = match tokio::task::spawn_blocking(open_default_credential_store).await {
         Ok(store) => store,
         Err(join_error) => {
-            tracing::error!(%join_error, "凭据存储装配任务异常结束，退回不可用实现");
+            tracing::error!(%join_error, "The credential store initialization task ended unexpectedly. Falling back to an unavailable credential store");
             Arc::new(UnavailableCredentialStore)
         }
     };
     tracing::info!(
         implementation = credentials.implementation(),
-        "凭据存储已装配（不可用时凭据操作会如实报错，不回退明文）"
+        "Credential storage initialized. Credential operations report errors if the store is unavailable, with no plaintext fallback"
     );
 
     let sessions = Arc::new(SessionManager::with_credential_store(
@@ -173,7 +174,7 @@ async fn run(cli: Cli) -> Result<()> {
     let mcp = sqarvo_rpc_server::services::mcp_server::McpServerManager::new(paths.config_dir());
     services.system.set_mcp_manager(Arc::clone(&mcp));
     if let Err(status) = services.profile.initialize().await {
-        tracing::warn!(code = ?status.code(), "共享连接档案迁移失败，档案服务将返回错误或在重试后恢复");
+        tracing::warn!(code = ?status.code(), "Shared connection profile migration failed. The profile service will return an error until a retry succeeds");
     }
 
     let listener = match (cli.listen, cli.socket) {
@@ -191,7 +192,7 @@ async fn run(cli: Cli) -> Result<()> {
         endpoint = %endpoint_path.display(),
         transport = ?endpoint.transport,
         pid = std::process::id(),
-        "后端已启动"
+        "Backend started"
     );
 
     let result = serve(listener, token, services, async move {
@@ -260,7 +261,7 @@ fn bind_socket(path: &Path) -> Result<LocalListener> {
         let _ = path;
         Err(sqarvo_common::Error::unsupported(
             sqarvo_common::ErrorCode::TRANSPORT_FAILED,
-            "此平台使用回环 TCP 传输，不支持 --socket",
+            "This platform uses loopback TCP and does not support --socket",
         ))
     }
 }
@@ -273,22 +274,22 @@ fn cleanup(socket_path: Option<&Path>, endpoint_path: &Path) {
         && let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        tracing::warn!(path = %path.display(), %error, "清理 socket 文件失败");
+        tracing::warn!(path = %path.display(), %error, "Failed to clean up the socket file");
     }
     if let Err(error) = std::fs::remove_file(endpoint_path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        tracing::warn!(path = %endpoint_path.display(), %error, "清理端点文件失败");
+        tracing::warn!(path = %endpoint_path.display(), %error, "Failed to clean up the endpoint file");
     }
 }
 
 fn init_tracing(filter: &str) {
     let filter = EnvFilter::try_new(filter).unwrap_or_else(|error| {
-        eprintln!("非法日志过滤规则（{error}），回退为 info");
+        eprintln!("Invalid log filter ({error}). Falling back to info");
         EnvFilter::new("info")
     });
     if let Err(error) = tracing_subscriber::fmt().with_env_filter(filter).try_init() {
-        eprintln!("初始化日志失败: {error}");
+        eprintln!("Failed to initialize logging: {error}");
     }
 }
 
@@ -307,7 +308,7 @@ impl Signals {
                 match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
                     Ok(signal) => Some(signal),
                     Err(error) => {
-                        tracing::warn!(%error, "无法监听 SIGTERM 信号");
+                        tracing::warn!(%error, "Failed to listen for SIGTERM");
                         None
                     }
                 };
@@ -336,10 +337,13 @@ impl ShutdownReason {
     /// 记录触发原因；不参与清理逻辑本身。
     fn log(self) {
         match self {
-            Self::Interrupt => tracing::info!("收到 Ctrl-C，正在退出"),
-            Self::Terminate => tracing::info!("收到 SIGTERM，正在退出"),
+            Self::Interrupt => tracing::info!("Received Ctrl-C. Exiting"),
+            Self::Terminate => tracing::info!("Received SIGTERM. Exiting"),
             Self::ParentGone(pid) => {
-                tracing::warn!(parent_pid = pid, "父进程已消失，开始清理退出");
+                tracing::warn!(
+                    parent_pid = pid,
+                    "The parent process is gone. Cleaning up before exit"
+                );
             }
         }
     }
@@ -352,7 +356,7 @@ async fn shutdown_signal(
 ) -> ShutdownReason {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::warn!(%error, "无法监听 Ctrl-C 信号");
+            tracing::warn!(%error, "Failed to listen for Ctrl-C");
         }
     };
 

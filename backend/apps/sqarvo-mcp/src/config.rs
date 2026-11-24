@@ -260,7 +260,7 @@ impl EffectiveLimits {
             let clamped = max_rows.clamp(1, HARD_MAX_ROWS);
             if clamped != max_rows {
                 warnings.push(format!(
-                    "query_limits.max_rows = {max_rows} 超出硬上限，已钳制为 {clamped}"
+                    "query_limits.max_rows = {max_rows} exceeds the hard limit and was clamped to {clamped}"
                 ));
             }
             limits.max_rows = clamped;
@@ -270,7 +270,7 @@ impl EffectiveLimits {
             let clamped = timeout_ms.clamp(1, hard);
             if clamped != timeout_ms {
                 warnings.push(format!(
-                    "query_limits.timeout_ms = {timeout_ms} 超出硬上限，已钳制为 {clamped}"
+                    "query_limits.timeout_ms = {timeout_ms} exceeds the hard limit and was clamped to {clamped}"
                 ));
             }
             limits.query_timeout = Duration::from_millis(clamped);
@@ -279,7 +279,7 @@ impl EffectiveLimits {
             let clamped = max_result_bytes.clamp(1024, HARD_MAX_RESULT_BYTES);
             if clamped != max_result_bytes {
                 warnings.push(format!(
-                    "query_limits.max_result_bytes = {max_result_bytes} 超出允许区间，已钳制为 {clamped}"
+                    "query_limits.max_result_bytes = {max_result_bytes} is out of range and was clamped to {clamped}"
                 ));
             }
             limits.max_result_bytes = clamped;
@@ -288,7 +288,7 @@ impl EffectiveLimits {
             let clamped = max_concurrency.clamp(1, HARD_MAX_CONCURRENCY);
             if clamped != max_concurrency {
                 warnings.push(format!(
-                    "query_limits.max_concurrency = {max_concurrency} 超出硬上限（{HARD_MAX_CONCURRENCY}），已钳制为 {clamped}"
+                    "query_limits.max_concurrency = {max_concurrency} exceeds the hard limit ({HARD_MAX_CONCURRENCY}) and was clamped to {clamped}"
                 ));
             }
             limits.max_concurrency = clamped;
@@ -337,7 +337,7 @@ impl ToolPolicy {
         Err(Error::new(
             ErrorCode::MCP_TOOL_DISABLED,
             sqarvo_common::ErrorCategory::PermissionDenied,
-            format!("工具 {name} 未在 mcp.json 的 enabled_tools 中启用"),
+            format!("Tool {name} is not enabled in mcp.json under enabled_tools"),
         ))
     }
 
@@ -443,16 +443,16 @@ pub fn load(explicit: Option<&Path>) -> Result<LoadOutcome> {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let source = if explicit.is_some() {
-                "--config 指定的路径不存在"
+                "The path specified by --config does not exist"
             } else {
-                "默认路径不存在，请按文档创建"
+                "The default path does not exist. Create it as described in the documentation"
             };
             return Ok(LoadOutcome {
                 config: McpConfig::default(),
                 path: path.clone(),
                 found: false,
                 warnings: vec![format!(
-                    "未找到 mcp.json（{}）：{source}；使用默认工具配置与查询限额",
+                    "mcp.json not found ({}): {source}. Using the default tool configuration and query limits",
                     path.display()
                 )],
             });
@@ -461,7 +461,7 @@ pub fn load(explicit: Option<&Path>) -> Result<LoadOutcome> {
     };
     if metadata.len() > MAX_CONFIG_BYTES {
         return Err(config_error(format!(
-            "mcp.json 超过 {MAX_CONFIG_BYTES} 字节上限（{} 字节）",
+            "mcp.json exceeds the {MAX_CONFIG_BYTES}-byte limit ({} bytes)",
             metadata.len()
         )));
     }
@@ -481,13 +481,13 @@ pub fn load(explicit: Option<&Path>) -> Result<LoadOutcome> {
 pub fn parse(text: &str) -> Result<McpConfig> {
     serde_json::from_str(text).map_err(|error| {
         let reason = match error.classify() {
-            serde_json::error::Category::Io => "读取失败",
-            serde_json::error::Category::Syntax => "JSON 语法无效",
-            serde_json::error::Category::Data => "字段不符合配置格式",
-            serde_json::error::Category::Eof => "JSON 意外结束",
+            serde_json::error::Category::Io => "Read failed",
+            serde_json::error::Category::Syntax => "Invalid JSON syntax",
+            serde_json::error::Category::Data => "A field does not match the configuration format",
+            serde_json::error::Category::Eof => "Unexpected end of JSON",
         };
         config_error(format!(
-            "mcp.json 解析失败：{reason}（第 {} 行，第 {} 列）",
+            "Failed to parse mcp.json: {reason} (line {}, column {})",
             error.line(),
             error.column()
         ))
@@ -513,7 +513,7 @@ impl McpConfig {
             let alias = profile.alias.clone();
             if connections.insert(alias.clone(), profile).is_some() {
                 return Err(config_error(format!(
-                    "连接 alias 重复：{alias}（alias 必须全局唯一）"
+                    "Duplicate connection alias: {alias}. Aliases must be globally unique"
                 )));
             }
         }
@@ -540,7 +540,7 @@ fn tool_policy(
     for name in names {
         if !tool_names().any(|known| known == name) {
             return Err(config_error(format!(
-                "enabled_tools 含未知工具名；本版本支持：{}",
+                "enabled_tools contains an unknown tool name. Supported tools: {}",
                 tool_names().collect::<Vec<_>>().join("、")
             )));
         }
@@ -548,7 +548,7 @@ fn tool_policy(
     }
     if selected.is_empty() {
         warnings.push(
-            "enabled_tools 是空数组：全部工具都被禁用（服务仍会启动，但任何工具调用都会被拒绝）"
+            "enabled_tools is empty. The server will start with all tools disabled and reject every tool call"
                 .to_owned(),
         );
     }
@@ -591,7 +591,7 @@ pub fn validate_alias(alias: &str) -> Result<()> {
         return Ok(());
     }
     Err(config_error(format!(
-        "连接 alias 不合法：{alias:?}；只允许小写字母、数字、下划线与连字符，长度 1-{ALIAS_MAX_LEN}"
+        "Invalid connection alias {alias:?}. Use 1 to {ALIAS_MAX_LEN} lowercase letters, digits, underscores, or hyphens"
     )))
 }
 
@@ -606,7 +606,7 @@ fn validate_profile(profile: &ConnectionProfile, warnings: &mut Vec<String>) -> 
         "sqlite" => validate_sqlite(profile),
         "mariadb" => validate_mariadb(profile, warnings),
         other => Err(config_error(format!(
-            "连接 {} 的 driver_id 不受支持：{other}；本版本内置：{}",
+            "Unsupported driver_id for connection {}: {other}. Built-in drivers in this version: {}",
             profile.alias,
             KNOWN_DRIVER_IDS.join("、")
         ))),
@@ -625,7 +625,7 @@ fn reject_secret_like_properties(profile: &ConnectionProfile) -> Result<()> {
             .any(|needle| lower.contains(needle));
         if secret_like {
             return Err(config_error(format!(
-                "连接 {} 的 properties 不允许携带凭据类参数：{key}；密码只能写入系统凭据库，由 credential_ref 引用",
+                "Connection {} does not allow credential parameter {key} in properties. Store the password in the system credential store and reference it with credential_ref",
                 profile.alias
             )));
         }
@@ -638,22 +638,22 @@ fn validate_sqlite(profile: &ConnectionProfile) -> Result<()> {
     let alias = &profile.alias;
     if profile.host.trim().is_empty() {
         return Err(config_error(format!(
-            "连接 {alias} 的 host 必须填写 SQLite 数据库文件路径"
+            "host for connection {alias} must specify the SQLite database file path"
         )));
     }
     if profile.port != 0 {
         return Err(config_error(format!(
-            "连接 {alias} 是 SQLite（本地文件），port 必须为 0"
+            "Local SQLite connection {alias} requires port 0"
         )));
     }
     if profile.database.is_some() {
         return Err(config_error(format!(
-            "连接 {alias} 是 SQLite：host 即数据库文件路径，不允许 database 字段"
+            "SQLite connection {alias} uses host for the database file path and does not accept the database field"
         )));
     }
     if profile.username.is_some() || profile.credential_ref.is_some() {
         return Err(config_error(format!(
-            "连接 {alias} 是 SQLite：不支持 username 或 credential_ref"
+            "SQLite connection {alias} does not support username or credential_ref"
         )));
     }
     if !matches!(
@@ -662,7 +662,7 @@ fn validate_sqlite(profile: &ConnectionProfile) -> Result<()> {
     ) || profile.tls_server_name.is_some()
     {
         return Err(config_error(format!(
-            "连接 {alias} 是 SQLite（本地文件）：不支持 TLS"
+            "Local SQLite connection {alias} does not support TLS"
         )));
     }
     let mut read_only = false;
@@ -671,20 +671,20 @@ fn validate_sqlite(profile: &ConnectionProfile) -> Result<()> {
             "read_only" => {
                 read_only = parse_bool(value).ok_or_else(|| {
                     config_error(format!(
-                        "连接 {alias} 的 read_only 只接受 true/false/1/0，实际是 {value:?}"
+                        "read_only for connection {alias} must be true, false, 1, or 0. Received {value:?}"
                     ))
                 })?;
             }
             other => {
                 return Err(config_error(format!(
-                    "连接 {alias} 是 SQLite：不支持连接参数 {other}"
+                    "SQLite connection {alias} does not support parameter {other}"
                 )));
             }
         }
     }
     if read_only && profile.host.trim() == ":memory:" {
         return Err(config_error(format!(
-            "连接 {alias} 是 SQLite 内存数据库，不能同时要求 read_only"
+            "In-memory SQLite connection {alias} cannot be read-only"
         )));
     }
     Ok(())
@@ -694,21 +694,23 @@ fn validate_sqlite(profile: &ConnectionProfile) -> Result<()> {
 fn validate_mariadb(profile: &ConnectionProfile, warnings: &mut Vec<String>) -> Result<()> {
     let alias = &profile.alias;
     if profile.host.trim().is_empty() {
-        return Err(config_error(format!("连接 {alias} 的 host 不能为空")));
+        return Err(config_error(format!(
+            "host for connection {alias} must not be empty"
+        )));
     }
     if profile.port == 0 {
         return Err(config_error(format!(
-            "连接 {alias} 是 MariaDB：必须提供 port"
+            "MariaDB connection {alias} requires a port"
         )));
     }
     let Some(username) = profile.username.as_deref().map(str::trim) else {
         return Err(config_error(format!(
-            "连接 {alias} 是 MariaDB：必须提供 username"
+            "MariaDB connection {alias} requires a username"
         )));
     };
     if username.is_empty() {
         return Err(config_error(format!(
-            "连接 {alias} 是 MariaDB：username 不能为空"
+            "MariaDB connection {alias} requires a nonempty username"
         )));
     }
     let mut has_ca = false;
@@ -722,40 +724,40 @@ fn validate_mariadb(profile: &ConnectionProfile, warnings: &mut Vec<String>) -> 
             "connect_timeout_ms" => {
                 let parsed = value.trim().parse::<u64>().map_err(|_| {
                     config_error(format!(
-                        "连接 {alias} 的 connect_timeout_ms 必须是整数毫秒数"
+                        "connect_timeout_ms for connection {alias} must be an integer number of milliseconds"
                     ))
                 })?;
                 if !(100..=300_000).contains(&parsed) {
                     return Err(config_error(format!(
-                        "连接 {alias} 的 connect_timeout_ms 必须在 100-300000 毫秒之间"
+                        "connect_timeout_ms for connection {alias} must be between 100 and 300000 milliseconds"
                     )));
                 }
             }
             other => {
                 return Err(config_error(format!(
-                    "连接 {alias} 是 MariaDB：不支持连接参数 {other}（允许 ssl_ca/ssl_cert/ssl_key/connect_timeout_ms）"
+                    "MariaDB connection {alias} does not support parameter {other}. Allowed: ssl_ca, ssl_cert, ssl_key, and connect_timeout_ms"
                 )));
             }
         }
     }
     if has_cert != has_key {
         return Err(config_error(format!(
-            "连接 {alias} 的客户端证书与私钥必须同时提供"
+            "Connection {alias} requires both the client certificate and its private key"
         )));
     }
     if profile.tls == TlsModeSpec::Disabled && (has_ca || has_cert) {
         return Err(config_error(format!(
-            "连接 {alias} 已禁用 TLS，不能同时提供证书参数"
+            "Connection {alias} has TLS disabled and cannot specify certificate parameters"
         )));
     }
     if profile.tls == TlsModeSpec::Disabled && profile.tls_server_name.is_some() {
         return Err(config_error(format!(
-            "连接 {alias} 已禁用 TLS，不能指定 tls_server_name"
+            "Connection {alias} has TLS disabled and cannot specify tls_server_name"
         )));
     }
     if profile.credential_ref.is_none() {
         warnings.push(format!(
-            "连接 {alias} 未配置 credential_ref：将以空密码尝试连接（用 `sqarvo-mcp credentials set` 写入凭据后填回引用）"
+            "Connection {alias} has no credential_ref. It will try an empty password. To use a credential, save it with `sqarvo-mcp credentials set` and supply the reference"
         ));
     }
     Ok(())
@@ -837,7 +839,7 @@ mod tests {
         assert!(!outcome.found);
         assert!(outcome.config.connections.is_empty());
         assert_eq!(outcome.warnings.len(), 1);
-        assert!(outcome.warnings[0].contains("使用默认工具配置与查询限额"));
+        assert!(outcome.warnings[0].contains("default tool configuration and query limits"));
         let validated = outcome.config.validate().expect("空配置合法（默认拒绝）");
         assert_eq!(validated.connection_count(), 0);
     }
@@ -867,7 +869,11 @@ mod tests {
         let value = serde_json::json!({ "connections": [], "enable_tools": ["list_tables"] });
         let error = parse(&value.to_string()).expect_err("顶层未知字段必须拒绝");
         assert_eq!(error.code(), ErrorCode::CONFIG_INVALID);
-        assert!(error.message().contains("字段不符合配置格式"));
+        assert!(
+            error
+                .message()
+                .contains("A field does not match the configuration format")
+        );
         assert!(!error.message().contains("enable_tools"));
     }
 
@@ -876,7 +882,11 @@ mod tests {
         let mut value = sqlite_profile("dev");
         value.as_object_mut().expect("object").remove("enabled");
         let error = validate_json(&value).expect_err("缺少 enabled 必须拒绝");
-        assert!(error.message().contains("字段不符合配置格式"));
+        assert!(
+            error
+                .message()
+                .contains("A field does not match the configuration format")
+        );
     }
 
     #[test]
@@ -891,7 +901,7 @@ mod tests {
             "connections": [sqlite_profile("dev"), sqlite_profile("dev")]
         });
         let error = validate_json(&value).expect_err("alias 重复必须拒绝");
-        assert!(error.message().contains("重复"));
+        assert!(error.message().contains("Duplicate"));
     }
 
     #[test]
@@ -968,7 +978,7 @@ mod tests {
         let mut value = mariadb_profile("dev");
         value["driver_id"] = serde_json::json!("postgresql");
         let error = validate_json(&value).expect_err("未知驱动必须拒绝");
-        assert!(error.message().contains("不受支持"));
+        assert!(error.message().contains("Unsupported"));
     }
 
     #[test]
@@ -1032,7 +1042,7 @@ mod tests {
             validated
                 .warnings()
                 .iter()
-                .any(|warning| warning.contains("全部工具都被禁用"))
+                .any(|warning| warning.contains("all tools disabled"))
         );
 
         // 未知名 = 拒绝启动
@@ -1129,6 +1139,6 @@ mod tests {
         text.push_str("\"}");
         std::fs::write(&path, text).expect("write");
         let error = load(Some(&path)).expect_err("超大配置必须拒绝");
-        assert!(error.message().contains("上限"));
+        assert!(error.message().contains("byte limit"));
     }
 }

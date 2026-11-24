@@ -70,7 +70,7 @@ impl MetadataService for MetadataServiceImpl {
         // 根节点没有独立的 session_id 字段：协议只给了 `ObjectRef`，
         // 因此调用方必须至少提供一个只带 session_id 的空引用。
         let parent = request.parent.ok_or_else(|| {
-            Status::invalid_argument("ListNodes 必须提供 parent，且至少包含 session_id")
+            Status::invalid_argument("ListNodes requires parent with at least session_id")
         })?;
         // 过滤字段（#81，接线于 #82）：下推由驱动实现 `list_children_filtered`。
         // 服务端**不得**静默忽略非空过滤——驱动没实现下推就原样返回
@@ -125,7 +125,7 @@ impl MetadataService for MetadataServiceImpl {
         let request = request.into_inner();
         let object = request
             .object
-            .ok_or_else(|| Status::invalid_argument("GetColumns 必须提供 object"))?;
+            .ok_or_else(|| Status::invalid_argument("GetColumns requires object"))?;
         let object = object_ref_from_proto(&object)?;
         let handle = self
             .sessions
@@ -146,7 +146,7 @@ impl MetadataService for MetadataServiceImpl {
         let request = request.into_inner();
         let object = request
             .object
-            .ok_or_else(|| Status::invalid_argument("GetDdl 必须提供 object"))?;
+            .ok_or_else(|| Status::invalid_argument("GetDdl requires object"))?;
         let object = object_ref_from_proto(&object)?;
         let handle = self
             .sessions
@@ -160,7 +160,7 @@ impl MetadataService for MetadataServiceImpl {
         // 交不出「看得出是拼装的」结果就报内部错误，不当原文返回。
         if !ddl.is_consistent() {
             return Err(to_status(sqarvo_common::Error::internal(
-                "驱动返回的 DDL 缺少自洽的来源说明，拒绝返回无法自证的 DDL",
+                "The driver returned DDL without consistent provenance. The DDL cannot be returned",
             )));
         }
         Ok(Response::new(GetDdlResponse {
@@ -179,7 +179,7 @@ impl MetadataService for MetadataServiceImpl {
         let request = request.into_inner();
         let object = request
             .object
-            .ok_or_else(|| Status::invalid_argument("GetPrimaryKey 必须提供 object"))?;
+            .ok_or_else(|| Status::invalid_argument("GetPrimaryKey requires object"))?;
         let object = object_ref_from_proto(&object)?;
         let handle = self
             .sessions
@@ -203,10 +203,10 @@ impl MetadataService for MetadataServiceImpl {
 
 pub(crate) fn parse_session_id(raw: &str) -> Result<sqarvo_common::SessionId, Status> {
     if raw.trim().is_empty() {
-        return Err(Status::invalid_argument("会话 ID 不能为空"));
+        return Err(Status::invalid_argument("The session ID must not be empty"));
     }
     raw.parse()
-        .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))
+        .map_err(|_| Status::invalid_argument("Invalid session ID format"))
 }
 
 fn page_request(page: Option<ProtoPageRequest>) -> sqarvo_driver_api::PageRequest {
@@ -275,12 +275,12 @@ fn object_filter_from_proto(filter: &ProtoNodeFilter) -> Result<ObjectFilter, St
 fn filter_kind_from_proto(value: i32) -> Result<ObjectKind, Status> {
     if ProtoObjectKind::try_from(value) == Ok(ProtoObjectKind::Unspecified) {
         return Err(to_status(sqarvo_driver_api::filter_invalid(
-            "种类过滤不能包含 OBJECT_KIND_UNSPECIFIED；不过滤请留空 kinds",
+            "The kind filter cannot include OBJECT_KIND_UNSPECIFIED. Leave kinds empty to disable filtering",
         )));
     }
     kind_from_proto(value).map_err(|_| {
         to_status(sqarvo_driver_api::filter_invalid(format!(
-            "种类过滤里有未知的枚举值 {value}"
+            "The kind filter contains unknown enum value {value}"
         )))
     })
 }
@@ -291,7 +291,7 @@ fn filter_kind_from_proto(value: i32) -> Result<ObjectKind, Status> {
 fn kind_from_proto(value: i32) -> Result<ObjectKind, Status> {
     match ProtoObjectKind::try_from(value) {
         Ok(ProtoObjectKind::Unspecified) => Err(Status::invalid_argument(
-            "对象种类未指定（OBJECT_KIND_UNSPECIFIED）",
+            "The object kind is unspecified (OBJECT_KIND_UNSPECIFIED)",
         )),
         Ok(ProtoObjectKind::Catalog) => Ok(ObjectKind::Catalog),
         Ok(ProtoObjectKind::Schema) => Ok(ObjectKind::Schema),
@@ -306,7 +306,7 @@ fn kind_from_proto(value: i32) -> Result<ObjectKind, Status> {
         Ok(ProtoObjectKind::Trigger) => Ok(ObjectKind::Trigger),
         Ok(ProtoObjectKind::Type) => Ok(ObjectKind::Type),
         Ok(ProtoObjectKind::Other) => Ok(ObjectKind::Other("other".to_owned())),
-        Err(_) => Err(Status::invalid_argument("未知的对象种类枚举值")),
+        Err(_) => Err(Status::invalid_argument("Unknown object kind enum value")),
     }
 }
 

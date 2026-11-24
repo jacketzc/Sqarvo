@@ -138,7 +138,7 @@ impl SecretServiceCredentialStore {
             reply.body().deserialize().map_err(|_| protocol_error())?;
         if is_none_path(&path) {
             return Err(precondition_error(
-                "系统凭据服务未能建立会话（返回了提示对象），请先在桌面会话中解锁密钥环",
+                "The system credential service returned a prompt instead of opening a session. Unlock the keyring in the desktop session",
             ));
         }
         *guard = Some(path.clone());
@@ -152,7 +152,7 @@ impl SecretServiceCredentialStore {
             reply.body().deserialize().map_err(|_| protocol_error())?;
         if is_none_path(&path) {
             return Err(unavailable_error(
-                "系统凭据服务没有默认集合（default alias），请先创建并解锁密钥环",
+                "The system credential service has no default collection (default alias). Create and unlock a keyring first",
             ));
         }
         Ok(path)
@@ -212,7 +212,7 @@ impl SecretServiceCredentialStore {
             Ok(())
         } else {
             Err(unavailable_error(
-                "系统中没有运行系统凭据服务（org.freedesktop.secrets），请安装并启动密钥环",
+                "The system credential service (org.freedesktop.secrets) is not running. Install and start a keyring",
             ))
         }
     }
@@ -233,7 +233,7 @@ impl CredentialStore for SecretServiceCredentialStore {
             Err(not_found_error())
         } else {
             Err(precondition_error(
-                "系统凭据库中的条目已锁定：请先在桌面会话中解锁密钥环后重试",
+                "This credential is locked. Unlock the keyring in the desktop session and retry",
             ))
         }
     }
@@ -244,7 +244,7 @@ impl CredentialStore for SecretServiceCredentialStore {
         let collection = self.collection()?;
         if self.collection_locked(&collection)? {
             return Err(precondition_error(
-                "系统凭据库已锁定：请先在桌面会话中解锁密钥环后重试，本次密码未保存",
+                "The system credential store is locked and the password was not saved. Unlock the keyring in the desktop session and retry",
             ));
         }
 
@@ -271,7 +271,7 @@ impl CredentialStore for SecretServiceCredentialStore {
             reply.body().deserialize().map_err(|_| protocol_error())?;
         if is_none_path(&item) || !is_none_path(&prompt) {
             return Err(precondition_error(
-                "系统凭据服务要求用户在桌面会话中确认本次写入，密码未保存；请解锁密钥环后重试",
+                "The system credential service requires desktop confirmation. The password was not saved. Unlock the keyring and retry",
             ));
         }
         Ok(())
@@ -287,14 +287,14 @@ impl CredentialStore for SecretServiceCredentialStore {
             let collection = self.collection()?;
             if self.collection_locked(&collection)? {
                 return Err(precondition_error(
-                    "系统凭据库已锁定：无法确认该引用是否已删除，请先解锁后重试",
+                    "The system credential store is locked, so credential deletion could not be verified. Unlock it and retry",
                 ));
             }
             return Ok(());
         }
         if !locked.is_empty() {
             return Err(precondition_error(
-                "系统凭据库中的条目已锁定：请先在桌面会话中解锁密钥环后重试",
+                "This credential is locked. Unlock the keyring in the desktop session and retry",
             ));
         }
         for item in &unlocked {
@@ -303,7 +303,7 @@ impl CredentialStore for SecretServiceCredentialStore {
                 reply.body().deserialize().map_err(|_| protocol_error())?;
             if !is_none_path(&prompt) {
                 return Err(precondition_error(
-                    "删除凭据需要用户在桌面会话中确认，凭据未删除",
+                    "The credential was not deleted because confirmation is required in the desktop session",
                 ));
             }
         }
@@ -336,7 +336,7 @@ fn decode_secret(bytes: &[u8]) -> Result<Secret> {
     match std::str::from_utf8(bytes) {
         Ok(value) => Ok(Secret::new(value)),
         Err(_) => Err(precondition_error(
-            "系统凭据库中的凭据内容不是合法的 UTF-8 文本，请在应用内重新保存该连接的密码",
+            "The system credential is not valid UTF-8. Save the connection password again in the app",
         )),
     }
 }
@@ -369,7 +369,7 @@ fn protocol_error() -> Error {
     Error::new(
         ErrorCode::CREDENTIAL_UNAVAILABLE,
         ErrorCategory::Internal,
-        "系统凭据服务返回了无法解析的响应",
+        "The system credential service returned an unreadable response",
     )
     .with_source(SecretServiceFault {
         kind: "protocol",
@@ -381,7 +381,7 @@ fn classify_zbus_error(error: &zbus::Error) -> Error {
     if let zbus::Error::MethodError(name, detail, _reply) = error {
         return classify_method_error(name.as_str(), detail.as_deref());
     }
-    unavailable_error("无法与系统凭据服务通信（会话总线不可用或服务未运行）")
+    unavailable_error("Could not contact the system credential service. The session bus is unavailable or the service is not running")
         .with_source(SecretServiceFault::from_transport(error))
 }
 
@@ -401,7 +401,7 @@ fn classify_method_error(name: &str, _detail: Option<&str>) -> Error {
         | "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired" => Error::new(
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::PermissionDenied,
-            "没有访问系统凭据库的权限：请检查当前会话对密钥环的访问策略",
+            "Permission denied for the system credential store. Check the current session's keyring access policy",
         )
         .with_source(fault("permission_denied")),
         "org.freedesktop.DBus.Error.ServiceUnknown"
@@ -412,24 +412,24 @@ fn classify_method_error(name: &str, _detail: Option<&str>) -> Error {
         | "org.freedesktop.DBus.Error.NoServer"
         | "org.freedesktop.DBus.Error.Spawn.Failed"
         | "org.freedesktop.DBus.Error.Spawn.ChildExited" => {
-            unavailable_error("系统凭据服务不可用（连接已断开或服务未运行）")
+            unavailable_error("The system credential service is unavailable. It disconnected or is not running")
                 .with_source(fault("transport"))
         }
         _ if name.ends_with(".IsLocked") => {
-            unavailable_error("系统凭据库已锁定：请先在桌面会话中解锁密钥环后重试")
+            unavailable_error("The system credential store is locked. Unlock the keyring in the desktop session and retry")
                 .with_source(fault("locked"))
         }
         _ if name.ends_with(".NoSuchObject") || name.ends_with(".NoSuchItem") => {
             not_found_error().with_source(fault("no_such_object"))
         }
         _ if name.ends_with(".NoSession") => {
-            unavailable_error("系统凭据服务会话已失效：请重试（后端会重新建立会话）")
+            unavailable_error("The system credential service session expired. Retry to let the backend establish a new session")
                 .with_source(fault("no_session"))
         }
         _ => Error::new(
             ErrorCode::CREDENTIAL_UNAVAILABLE,
             ErrorCategory::Internal,
-            "系统凭据服务返回了未预期的错误",
+            "The system credential service returned an unexpected error",
         )
         .with_source(fault("method_error")),
     }
@@ -571,7 +571,7 @@ mod tests {
         assert!(!format!("{error} {error:?}").contains("hunter2"));
         assert_eq!(
             error.to_string(),
-            "系统凭据服务返回了未预期的错误 [credential.unavailable]"
+            "The system credential service returned an unexpected error [credential.unavailable]"
         );
     }
 

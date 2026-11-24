@@ -21,7 +21,9 @@ const TEMPORARY_PREFIX: &str = "connections.json.tmp-";
 pub(super) fn lock(dir: &Path, mode: LockMode) -> Result<File> {
     fs::create_dir_all(dir).map_err(safe_io_error)?;
     if !fs::symlink_metadata(dir).map_err(safe_io_error)?.is_dir() {
-        return Err(super::invalid("共享连接档案目录非法"));
+        return Err(super::invalid(
+            "Invalid shared connection profile directory",
+        ));
     }
     restrict_to_owner(dir)?;
     let path = dir.join("connections.json.lock");
@@ -43,7 +45,7 @@ pub(super) fn lock(dir: &Path, mode: LockMode) -> Result<File> {
             return Err(Error::new(
                 ErrorCode::PROFILE_LOCKED,
                 ErrorCategory::Timeout,
-                "等待共享连接档案锁超时，请重试",
+                "Timed out waiting for the shared connection profile lock. Retry the operation",
             ));
         }
         thread::sleep(remaining.min(LOCK_POLL_INTERVAL));
@@ -116,11 +118,13 @@ pub(super) fn clear_temporary_files(dir: &Path) -> Result<()> {
 
 pub(super) fn atomic_write(path: &Path, payload: &[u8]) -> Result<()> {
     if payload.len() > MAX_DOCUMENT_BYTES {
-        return Err(super::invalid("共享连接档案超过文件大小上限"));
+        return Err(super::invalid(
+            "The shared connection profile file exceeds the size limit",
+        ));
     }
     let name = path
         .file_name()
-        .ok_or_else(|| super::invalid("共享连接档案路径非法"))?;
+        .ok_or_else(|| super::invalid("Invalid shared connection profile path"))?;
     let mut temporary_name = name.to_os_string();
     temporary_name.push(format!(".tmp-{}", Uuid::new_v4()));
     let temporary = path.with_file_name(temporary_name);
@@ -193,17 +197,17 @@ fn replace(temporary: &Path, target: &Path) -> io::Result<()> {
 pub(super) fn safe_io_error(error: io::Error) -> Error {
     match error.kind() {
         io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput => {
-            super::invalid("共享连接档案文件类型、格式或大小非法")
+            super::invalid("Invalid shared connection profile file type, format, or size")
         }
         io::ErrorKind::PermissionDenied => Error::new(
             ErrorCode::IO,
             ErrorCategory::PermissionDenied,
-            "无权访问共享连接档案文件",
+            "Permission denied for the shared connection profile file",
         ),
         _ => Error::new(
             ErrorCode::IO,
             ErrorCategory::Internal,
-            "共享连接档案文件操作失败",
+            "Shared connection profile file operation failed",
         ),
     }
     .with_source(error)

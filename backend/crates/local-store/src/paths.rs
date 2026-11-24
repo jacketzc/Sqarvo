@@ -24,7 +24,7 @@ impl AppPaths {
     /// - 运行时目录优先使用 `XDG_RUNTIME_DIR`，不可用时退化为数据目录下的 `run`。
     pub fn discover() -> Result<Self> {
         let dirs = ProjectDirs::from("io", "sqarvo", "Sqarvo")
-            .ok_or_else(|| Error::internal("无法确定用户目录：缺少 HOME / APPDATA 等环境变量"))?;
+            .ok_or_else(|| Error::internal("Cannot determine user directory: Environment variables such as HOME / APPDATA are missing"))?;
         let data = dirs.data_dir().to_path_buf();
         let runtime = dirs
             .runtime_dir()

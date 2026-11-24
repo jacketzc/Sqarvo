@@ -62,11 +62,7 @@ pub const SERVER_NAME: &str = "sqarvo-mcp";
 ///
 /// 只写**事实**：V1 是只读的、同一连接串行、默认并发 2。工具级细节归 #209 的
 /// tool description，这里不重复。
-const SERVER_INSTRUCTIONS: &str = "\
-Sqarvo MCP Server 在全局数据访问启用时通过共享连接档案访问数据库。查询工具始终只读。\
-关闭只读保护后可使用受控写入工具，预览不授予执行资格。同一个数据库连接上的查询会串行执行（单会话单在途语句），不同连接\
-可在进程级并发上限内并行；排队不是故障。未在 enabled_tools 中启用的工具会被拒绝。\
-所有调用记入本地审计日志（只记录 SQL 指纹，不记录原始 SQL 与结果）。";
+const SERVER_INSTRUCTIONS: &str = "\nSqarvo MCP Server uses shared connection profiles when global data access is enabled. Query tools are always read-only.\nTurn off read-only protection to use controlled write tools. Previewing an operation does not authorize execution. Queries on the same connection run sequentially, with one in-flight statement per session.\nDifferent connections can run concurrently within the process-wide limit. Waiting in the queue is normal. Tools absent from enabled_tools are rejected.\nAll calls are recorded in the local audit log, which stores SQL fingerprints and omits raw SQL and results.";
 
 /// #209 / #210 的扩展点：一次装配、三份共享状态。
 pub struct ServerContext {
@@ -116,18 +112,18 @@ impl ServerContext {
             if !outcome.config.connections.is_empty() {
                 return Err(Error::invalid_argument(
                     ErrorCode::CONFIG_INVALID,
-                    "mcp.json 仍包含旧版连接档案",
+                    "mcp.json still contains legacy connection profiles",
                 ));
             }
             Ok(outcome)
         })
         .await
-        .map_err(|_| Error::internal("MCP 配置装配任务异常"))??;
+        .map_err(|_| Error::internal("The MCP configuration initialization task failed"))??;
         for warning in &outcome.warnings {
             tracing::warn!("{warning}");
         }
         if outcome.found {
-            tracing::info!(path = %outcome.path.display(), "已加载 mcp.json");
+            tracing::info!(path = %outcome.path.display(), "Loaded mcp.json");
         }
         let validated = outcome.config.validate()?;
         for warning in validated.warnings() {
@@ -139,12 +135,12 @@ impl ServerContext {
             tools = config.tools().enabled_names().len(),
             max_concurrency = config.limits().max_concurrency,
             query_timeout_ms = config.limits().query_timeout.as_millis(),
-            "MCP 配置已生效"
+            "MCP configuration is active"
         );
 
         let access = AccessService::assemble(Arc::clone(&config), store).await?;
         let audit = AuditWriter::open(paths.data_dir(), RotationPolicy::default())?;
-        tracing::info!(audit = %audit.path().display(), "审计日志已就绪");
+        tracing::info!(audit = %audit.path().display(), "The audit log is ready");
         Ok(Self {
             config,
             access,
@@ -369,7 +365,7 @@ impl ServerHandler for SqarvoMcpServer {
                 ])
                 .into()),
                 Err(error) => {
-                    tracing::debug!(code = %error.code(), "资源读取失败");
+                    tracing::debug!(code = %error.code(), "Failed to read the resource");
                     let response = protocol_error(&error);
                     if matches!(
                         error.code(),
@@ -441,7 +437,7 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         latest_protocol = %rmcp::model::ProtocolVersion::LATEST,
-        "启动 stdio MCP server"
+        "Starting the stdio MCP server"
     );
 
     let running = match Box::pin(server.serve(rmcp::transport::stdio())).await {
@@ -451,7 +447,7 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
             if waiting_on.contains("initialize") =>
         {
             tracing::info!(
-                "客户端在握手前断开（connection closed: {waiting_on}），按 EOF 正常收尾（V3.1 §13，exit 0）"
+                "The client disconnected before the handshake (connection closed: {waiting_on}). Treating this as normal EOF (V3.1 §13, exit 0)"
             );
             context.shutdown().await;
             return Ok(());
@@ -460,7 +456,7 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
             return Err(Error::new(
                 ErrorCode::MCP_INTERNAL,
                 ErrorCategory::Internal,
-                format!("MCP 会话初始化失败：{error}"),
+                format!("Failed to initialize the MCP session: {error}"),
             ));
         }
     };
@@ -470,14 +466,14 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
     let shutdown = running.cancellation_token();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
-        tracing::info!("收到退出信号，开始优雅关停");
+        tracing::info!("Received a shutdown signal. Starting graceful shutdown");
         shutdown.cancel();
     });
 
     let quit = running.waiting().await;
     match quit {
-        Ok(reason) => tracing::info!(reason = ?reason, "MCP 会话结束"),
-        Err(error) => tracing::warn!(%error, "MCP 主循环异常结束"),
+        Ok(reason) => tracing::info!(reason = ?reason, "MCP session ended"),
+        Err(error) => tracing::warn!(%error, "The MCP main loop exited unexpectedly"),
     }
 
     context.shutdown().await;
@@ -493,7 +489,7 @@ pub(crate) async fn wait_for_shutdown_signal() {
             Ok(signal) => signal,
             Err(error) => {
                 // 注册失败不致命：至少保留 Ctrl-C。
-                tracing::warn!(%error, "无法注册 SIGTERM 处理器，仅响应 Ctrl-C");
+                tracing::warn!(%error, "Failed to register the SIGTERM handler. Only Ctrl-C will be handled");
                 let _ = tokio::signal::ctrl_c().await;
                 return;
             }
@@ -501,7 +497,7 @@ pub(crate) async fn wait_for_shutdown_signal() {
         tokio::select! {
             result = tokio::signal::ctrl_c() => {
                 if let Err(error) = result {
-                    tracing::warn!(%error, "等待 Ctrl-C 失败");
+                    tracing::warn!(%error, "Failed to wait for Ctrl-C");
                 }
             }
             _ = terminate.recv() => {}
@@ -512,7 +508,7 @@ pub(crate) async fn wait_for_shutdown_signal() {
         // Windows 没有可被普通进程捕获的 SIGTERM；Ctrl-C 与控制台关闭事件由
         // `ctrl_c()` 覆盖（见 ADR 0002 附记的同类口径）。
         if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::warn!(%error, "等待 Ctrl-C 失败");
+            tracing::warn!(%error, "Failed to wait for Ctrl-C");
         }
     }
 }

@@ -276,11 +276,16 @@ impl ControlPlane {
             let conn = tokio::time::timeout(self.connect_timeout, Conn::new(self.opts.clone()))
                 .await
                 .map_err(|_| connect_timeout())?
-                .map_err(|error| map_error(error, "取消查询时无法建立控制连接"))?;
+                .map_err(|error| {
+                    map_error(
+                        error,
+                        "Could not create control connection when canceling query",
+                    )
+                })?;
             *guard = Some(conn);
         }
         let Some(conn) = guard.as_mut() else {
-            return Err(Error::internal("控制连接不可用"));
+            return Err(Error::internal("Control connection not available"));
         };
         match conn
             .query_drop(format!("KILL QUERY {}", self.connection_id))
@@ -290,7 +295,7 @@ impl ControlPlane {
             // 1094（连接已不存在）/ 1317（查询刚好结束）：取消是幂等的，视为成功。
             Err(error) => match server_code(&error) {
                 Some(1094 | 1317) => Ok(()),
-                _ => Err(map_error(error, "取消查询失败")),
+                _ => Err(map_error(error, "Failed to cancel query")),
             },
         }
     }
@@ -318,7 +323,7 @@ impl MariaDbSession {
     async fn connect_with_mode(config: MariaDbConfig, ddl_preview: Option<bool>) -> Result<Self> {
         let (mut conn, warnings) = crate::driver::connect_conn(&config).await?;
         for warning in warnings {
-            tracing::warn!(code = %warning.code, message = %warning.message, "MariaDB 连接降级");
+            tracing::warn!(code = %warning.code, message = %warning.message, "MariaDB connection downgraded");
         }
         if ddl_preview.is_some() {
             crate::ddl::configure(&mut conn).await?;
@@ -370,7 +375,7 @@ impl MariaDbSession {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(Error::failed_precondition(SESSION_CLOSED, "会话已关闭"));
+            return Err(Error::failed_precondition(SESSION_CLOSED, "Session closed"));
         }
         Ok(())
     }
@@ -416,7 +421,7 @@ impl MariaDbSession {
     }
 
     fn closed_error() -> Error {
-        Error::failed_precondition(SESSION_CLOSED, "会话已关闭")
+        Error::failed_precondition(SESSION_CLOSED, "Session closed")
     }
 }
 
@@ -481,7 +486,9 @@ async fn run_session(
                 }
             }
             Command::Fetch { reply, .. } => {
-                let _ = reply.send(Err(query_not_found("当前会话没有在途查询")));
+                let _ = reply.send(Err(query_not_found(
+                    "The current session has no in-flight query",
+                )));
             }
             Command::CloseQuery { reply, .. } => {
                 // 空闲时没有游标可释放，保持幂等。
@@ -621,18 +628,21 @@ fn transaction_already_active() -> Error {
     Error::new(
         ErrorCode::TRANSACTION_ALREADY_ACTIVE,
         ErrorCategory::AlreadyExists,
-        "该会话已有一个打开的事务，请先提交或回滚",
+        "This session already has an open transaction. Commit or roll it back first",
     )
 }
 
 fn transaction_failed_error() -> Error {
-    Error::failed_precondition(ErrorCode::TRANSACTION_FAILED, "事务已失败，只能回滚")
+    Error::failed_precondition(
+        ErrorCode::TRANSACTION_FAILED,
+        "The transaction failed and can only be rolled back",
+    )
 }
 
 fn transaction_not_found(id: TransactionId) -> Error {
     Error::not_found(
         ErrorCode::TRANSACTION_NOT_FOUND,
-        format!("事务 {id} 不存在或已结束"),
+        format!("Transaction {id} does not exist or has ended"),
     )
 }
 
@@ -640,7 +650,7 @@ fn transaction_lost_error() -> Error {
     Error::new(
         TRANSACTION_LOST,
         ErrorCategory::Unavailable,
-        "事务已随连接断开而丢失，无法确认是否已提交；请重新连接",
+        "The transaction was lost when the connection closed. The commit outcome is unknown. Reconnect to continue",
     )
 }
 
@@ -648,8 +658,7 @@ fn implicit_commit_error(statement: &'static str) -> Error {
     Error::failed_precondition(
         IMPLICIT_COMMIT_REJECTED,
         format!(
-            "事务中不允许执行会隐式提交的语句（{statement}）：\
-             服务端会先提交当前事务再执行，已写入的数据将无法回滚。请先提交或回滚事务"
+            "Statement {statement} cannot run in a transaction because it implicitly commits on the server, preventing rollback of prior writes. Commit or roll back the transaction first"
         ),
     )
 }
@@ -680,7 +689,7 @@ async fn open_transaction(
         // 会让并发行为与预期不同（AGENTS.md §6.2）。
         return Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "MariaDB/InnoDB 没有 SNAPSHOT 隔离级别",
+            "MariaDB/InnoDB does not support SNAPSHOT isolation",
         ));
     }
     let isolation = match options.isolation {
@@ -690,7 +699,7 @@ async fn open_transaction(
     if let Some(level) = isolation {
         conn.query_drop(format!("SET SESSION TRANSACTION ISOLATION LEVEL {level}"))
             .await
-            .map_err(|error| map_error(error, "设置事务隔离级别失败"))?;
+            .map_err(|error| map_error(error, "Failed to set the transaction isolation level"))?;
     }
 
     let statement = if options.read_only {
@@ -700,7 +709,7 @@ async fn open_transaction(
     };
     conn.query_drop(statement)
         .await
-        .map_err(|error| map_error(error, "开启事务失败"))?;
+        .map_err(|error| map_error(error, "Failed to start the transaction"))?;
     state.set_transaction(TransactionState::Active {
         id,
         read_only: options.read_only,
@@ -719,7 +728,7 @@ async fn commit_transaction(conn: &mut Conn, id: TransactionId, state: &SharedSt
                     Ok(())
                 }
                 Err(error) => {
-                    let mapped = map_error(error, "提交事务失败");
+                    let mapped = map_error(error, "Failed to commit the transaction");
                     // 提交结果未知时绝不假装成功，也绝不允许继续往这个事务里写：
                     // 连接断了记为 Lost（无法确认是否已提交），其它错误记为 Failed
                     // （只能回滚）。对外统一报「事务已丢失」，原始连接错误留在 source。
@@ -763,7 +772,7 @@ async fn rollback_transaction(
                     Ok(())
                 }
                 Err(error) => {
-                    let mapped = map_error(error, "回滚事务失败");
+                    let mapped = map_error(error, "Failed to roll back the transaction");
                     if mapped.category() == ErrorCategory::Unavailable {
                         // 连接断了，服务端会随连接关闭回滚，本地不必再报错。
                         state.finish_transaction(id);
@@ -780,7 +789,7 @@ async fn rollback_transaction(
             let result = conn.query_drop("ROLLBACK").await;
             state.finish_transaction(id);
             if require_ack {
-                result.map_err(|error| map_error(error, "回滚事务失败"))
+                result.map_err(|error| map_error(error, "Failed to roll back the transaction"))
             } else {
                 Ok(())
             }
@@ -819,7 +828,7 @@ fn cancelled_error() -> Error {
     Error::new(
         ErrorCode::QUERY_CANCELLED,
         ErrorCategory::Cancelled,
-        "查询已取消",
+        "Query canceled",
     )
 }
 
@@ -892,7 +901,7 @@ fn bind_parameter(value: &Value) -> Result<MyValue> {
 fn unsupported_parameter(kind: &str) -> Error {
     Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        format!("MariaDB 驱动无法把 {kind} 类型的值绑定为参数"),
+        format!("The MariaDB driver cannot bind values of type {kind} as parameters"),
     )
 }
 
@@ -913,7 +922,7 @@ async fn serve_query(
         // 单次执行超时尚未实现：显式拒绝，而不是静默忽略（AGENTS.md §6.2）。
         let _ = reply.send(Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "MariaDB 驱动尚未实现单次执行超时",
+            "The MariaDB driver does not implement a per-execution timeout",
         )));
         return false;
     }
@@ -926,7 +935,7 @@ async fn serve_query(
         // 保留 #188 之前对这一组合的拒绝语义。
         let _ = reply.send(Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "参数化执行不支持多条语句组成的脚本",
+            "Parameterized execution does not support scripts containing multiple statements",
         )));
         return false;
     }
@@ -1016,7 +1025,7 @@ fn fail_query(
     reply: oneshot::Sender<Result<ExecutionStart>>,
     state: &SharedState,
 ) {
-    let error = map_error(error, "执行 MariaDB 语句失败");
+    let error = map_error(error, "Failed to execute MariaDB statement");
     note_transaction_failure(state, &error);
     let _ = reply.send(Err(error));
     state.clear_active();
@@ -1057,7 +1066,7 @@ async fn serve_script(
     let mut result = match conn.query_iter(&request.sql).await {
         Ok(result) => result,
         Err(error) => {
-            let error = map_error(error, "执行 MariaDB 语句失败");
+            let error = map_error(error, "Failed to execute MariaDB statement");
             note_transaction_failure(state, &error);
             let _ = reply.send(Err(script_error(error, 0)));
             state.clear_active();
@@ -1096,7 +1105,7 @@ async fn serve_script(
                 // 服务端结果集数量与扫描段数不一致（口径应一致）：
                 // 显式报错，不伪造摘要。
                 let _ = reply.send(Err(Error::internal(
-                    "MariaDB 脚本的结果集数量与语句数量不一致",
+                    "The number of MariaDB script result sets does not match the number of statements",
                 )));
                 state.clear_active();
                 return false;
@@ -1258,12 +1267,12 @@ async fn serve_script(
                     state.clear_active();
                     return false;
                 }
-                let _ = reply.send(Err(query_not_found("查询不存在")));
+                let _ = reply.send(Err(query_not_found("The query does not exist")));
             }
             Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭",
+                    "The current session already has an in-flight query. Finish reading or close it first",
                 )));
             }
             Command::Begin { reply, .. }
@@ -1271,7 +1280,7 @@ async fn serve_script(
             | Command::Rollback { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再操作事务",
+                    "Finish reading or close the current result set before performing a transaction operation",
                 )));
             }
             Command::InspectDdl { reply, .. } => {
@@ -1285,25 +1294,25 @@ async fn serve_script(
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再读取元数据",
+                    "Finish reading or close the current result set before reading metadata",
                 )));
             }
             Command::TableData { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再浏览表数据",
+                    "Finish reading or close the current result set before browsing table data",
                 )));
             }
             Command::SessionContext { reply } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再读取库上下文",
+                    "Finish reading or close the current result set before reading the database context",
                 )));
             }
             Command::UseCatalog { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再切换库",
+                    "Finish reading or close the current result set before switching databases",
                 )));
             }
             Command::Fetch {
@@ -1319,14 +1328,14 @@ async fn serve_script(
                     return false;
                 }
                 if requested != query_id {
-                    let _ = reply.send(Err(query_not_found("查询或语句不存在")));
+                    let _ = reply.send(Err(query_not_found("Query or statement does not exist")));
                     continue;
                 }
                 let position = usize::try_from(statement_index).unwrap_or(usize::MAX);
                 let Some(buffer) = buffers.get(position) else {
                     let _ = reply.send(Err(Error::invalid_argument(
                         STATEMENT_INDEX_INVALID,
-                        "语句序号越界",
+                        "Statement index is out of range",
                     )));
                     continue;
                 };
@@ -1338,7 +1347,7 @@ async fn serve_script(
                     _ => {
                         let _ = reply.send(Err(Error::invalid_argument(
                             CURSOR_INVALID,
-                            "分页游标与当前查询不匹配",
+                            "The pagination cursor does not match the current query",
                         )));
                         continue;
                     }
@@ -1407,7 +1416,7 @@ async fn read_current_catalog(conn: &mut Conn, state: &SharedState) -> Result<Op
     let row = conn
         .query_first::<Option<String>, _>("SELECT DATABASE()")
         .await
-        .map_err(|error| map_error(error, "读取 MariaDB 当前库失败"))?;
+        .map_err(|error| map_error(error, "Failed to read the current MariaDB database"))?;
     let current = normalize_catalog(row.flatten());
     state.set_catalog_cache(CatalogCache::Known(current.clone()));
     Ok(current)
@@ -1450,7 +1459,7 @@ async fn switch_catalog(conn: &mut Conn, state: &SharedState, target: &str) -> R
     }
     conn.query_drop(format!("USE {}", crate::metadata::quote_identifier(target)))
         .await
-        .map_err(|error| map_error(error, "切换到 MariaDB 库失败"))?;
+        .map_err(|error| map_error(error, "Failed to switch MariaDB databases"))?;
     state.set_catalog_cache(CatalogCache::Known(Some(target.to_owned())));
     Ok(())
 }
@@ -1513,7 +1522,7 @@ where
             return false;
         }
         Err(error) => {
-            let error = map_error(error, "读取 MariaDB 结果集失败");
+            let error = map_error(error, "Failed to read the MariaDB result set");
             note_transaction_failure(state, &error);
             let _ = reply.send(Err(error));
             state.clear_active();
@@ -1583,12 +1592,12 @@ where
                     state.clear_active();
                     return false;
                 }
-                let _ = reply.send(Err(query_not_found("查询不存在")));
+                let _ = reply.send(Err(query_not_found("The query does not exist")));
             }
             Command::Execute { reply, .. } | Command::ExecuteParameterized { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话已有在途查询，请先读完或关闭",
+                    "The current session already has an in-flight query. Finish reading or close it first",
                 )));
             }
             // 未读完的结果集仍在连接上，此时切换事务会与游标交错；
@@ -1598,7 +1607,7 @@ where
             | Command::Rollback { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再操作事务",
+                    "Finish reading or close the current result set before performing a transaction operation",
                 )));
             }
             // 未读完的结果集仍在连接上，此时发元数据查询会与游标交错。
@@ -1613,14 +1622,14 @@ where
             Command::Metadata { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再读取元数据",
+                    "Finish reading or close the current result set before reading metadata",
                 )));
             }
             // 浏览要发自己的 SELECT，同样必须等游标读完。
             Command::TableData { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再浏览表数据",
+                    "Finish reading or close the current result set before browsing table data",
                 )));
             }
             // 库上下文 / 切库都要在连接上发语句（`SELECT DATABASE()` / `USE`），
@@ -1628,13 +1637,13 @@ where
             Command::SessionContext { reply } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再读取库上下文",
+                    "Finish reading or close the current result set before reading the database context",
                 )));
             }
             Command::UseCatalog { reply, .. } => {
                 let _ = reply.send(Err(Error::failed_precondition(
                     QUERY_ACTIVE,
-                    "当前会话有未读完的结果集，请先读完或关闭再切换库",
+                    "Finish reading or close the current result set before switching databases",
                 )));
             }
             Command::Fetch {
@@ -1652,14 +1661,14 @@ where
                     return false;
                 }
                 if requested != query_id || statement_index != 0 {
-                    let _ = reply.send(Err(query_not_found("查询或语句不存在")));
+                    let _ = reply.send(Err(query_not_found("Query or statement does not exist")));
                     continue;
                 }
                 let expected = rows_read.to_string();
                 if cursor.as_deref() != Some(expected.as_str()) {
                     let _ = reply.send(Err(Error::invalid_argument(
                         CURSOR_INVALID,
-                        "分页游标与当前查询不匹配",
+                        "The pagination cursor does not match the current query",
                     )));
                     continue;
                 }
@@ -1720,7 +1729,7 @@ where
             None => return Ok((batch, false, None)),
         }
     }
-    let extra = batch.pop().expect("已读取 limit+1 行");
+    let extra = batch.pop().expect("Read limit+1 rows");
     Ok((batch, true, Some(extra)))
 }
 
@@ -1728,7 +1737,7 @@ fn stream_error(error: mysql_async::Error, state: &SharedState) -> Error {
     if state.is_cancelled() || is_query_interrupted(&error) {
         return cancelled_error().with_source(error);
     }
-    map_error(error, "读取 MariaDB 结果行失败")
+    map_error(error, "Failed to read the MariaDB result row")
 }
 
 fn batch_limit(requested: Option<u32>) -> usize {
@@ -1875,7 +1884,9 @@ impl DriverSession for MariaDbSession {
         match self.state.active() {
             // 没有在途查询（从未执行或已结束）：取消幂等。
             None => Ok(()),
-            Some(current) if current != *query_id => Err(query_not_found("该查询未在运行")),
+            Some(current) if current != *query_id => {
+                Err(query_not_found("This query is not running"))
+            }
             Some(_) => {
                 self.state.cancelled.store(true, Ordering::SeqCst);
                 // 批次之间服务端没有正在执行的语句，`KILL QUERY` 只会空转；
@@ -1961,7 +1972,8 @@ impl DriverSession for MariaDbSession {
         let mut guard = self.join.lock().await;
         if let Some(handle) = guard.as_mut() {
             handle.await.map_err(|error| {
-                Error::internal("等待 MariaDB 会话任务退出失败").with_source(error)
+                Error::internal("The MariaDB session task did not shut down successfully")
+                    .with_source(error)
             })?;
         }
         guard.take();

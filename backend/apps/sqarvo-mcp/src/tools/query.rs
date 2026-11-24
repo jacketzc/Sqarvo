@@ -412,7 +412,7 @@ where
     if !database.is_empty() && !handle.supports_catalog_switch() {
         return Err(Error::unsupported(
             ErrorCode::CAPABILITY_UNSUPPORTED,
-            "当前驱动不支持切换库：请省略 database 参数（SQLite 默认 main），或在 SQL 里使用限定名",
+            "The current driver cannot switch databases. Omit the database argument (SQLite defaults to main) or use qualified names in SQL",
         ));
     }
     let session_id = handle.summary().session_id;
@@ -444,7 +444,7 @@ where
                 return Err(Error::new(
                     ErrorCode::MCP_QUERY_TIMEOUT,
                     ErrorCategory::Timeout,
-                    format!("查询超过 {} 毫秒上限，已请求取消", timeout.as_millis()),
+                    format!("The query exceeded the {} ms limit. Cancellation was requested", timeout.as_millis()),
                 ));
             }
         },
@@ -457,7 +457,7 @@ where
             return Err(Error::new(
                 ErrorCode::QUERY_CANCELLED,
                 ErrorCategory::Cancelled,
-                "客户端已取消该调用，查询已请求取消",
+                "The client canceled this call. Query cancellation was requested",
             ));
         }
     };
@@ -473,14 +473,14 @@ where
             biased;
             () = &mut cancelled => {
                 let _ = handle.cancel(&query_id).await;
-                Err(Error::new(ErrorCode::QUERY_CANCELLED, ErrorCategory::Cancelled, "客户端已取消查询计划"))
+                Err(Error::new(ErrorCode::QUERY_CANCELLED, ErrorCategory::Cancelled, "The client canceled the query plan"))
             }
             result = tokio::time::timeout_at(deadline, collect(&handle, &query_id, &start, max_rows, max_bytes, true)) => {
                 if let Ok(result) = result {
                     result
                 } else {
                     let _ = handle.cancel(&query_id).await;
-                    Err(Error::new(ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "查询计划超时"))
+                    Err(Error::new(ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "The query plan timed out"))
                 }
             }
         }
@@ -522,7 +522,7 @@ async fn collect(
         Error::new(
             ErrorCode::MCP_INTERNAL,
             ErrorCategory::Internal,
-            "驱动没有返回语句摘要",
+            "The driver did not return a statement summary",
         )
     })?;
     let columns: Vec<ColumnView> = statement.columns.iter().map(ColumnView::from).collect();
@@ -599,11 +599,12 @@ fn available_plan_row_bytes(columns: &[ColumnView], max_bytes: u64) -> Result<u6
         truncated_reason: "rows_and_bytes".to_owned(),
         execution_time_ms: i64::MAX,
     };
-    let bytes = serde_json::to_vec(&envelope).map_err(|_| Error::internal("无法编码查询计划"))?;
+    let bytes = serde_json::to_vec(&envelope)
+        .map_err(|_| Error::internal("Failed to encode the query plan"))?;
     max_bytes.checked_sub(bytes.len() as u64).ok_or_else(|| {
         Error::resource_exhausted(
             ErrorCode::MCP_RESULT_TOO_LARGE,
-            "查询计划元数据超过输出限额",
+            "Query plan metadata exceeds the output limit",
         )
     })
 }

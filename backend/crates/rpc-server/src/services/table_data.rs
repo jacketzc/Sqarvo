@@ -173,7 +173,7 @@ impl Drop for BatchRegistration {
 fn table_data_unsupported() -> Status {
     to_status(Error::unsupported(
         ErrorCode::CAPABILITY_UNSUPPORTED,
-        "该驱动未实现表数据浏览",
+        "The driver does not implement table data browsing",
     ))
 }
 
@@ -187,7 +187,7 @@ impl TableDataService for TableDataServiceImpl {
         let object = request
             .object
             .as_ref()
-            .ok_or_else(|| Status::invalid_argument("BrowseTable 必须提供 object"))?;
+            .ok_or_else(|| Status::invalid_argument("BrowseTable requires object"))?;
         let object = object_ref_from_proto(object)?;
 
         // offset / 排序 / 筛选 / 总数（ADR 0022）：结构校验在发 SQL 之前完成，
@@ -240,7 +240,7 @@ impl TableDataService for TableDataServiceImpl {
         let object_proto = request
             .object
             .as_ref()
-            .ok_or_else(|| Status::invalid_argument("ApplyRowChanges 必须提供 object"))?;
+            .ok_or_else(|| Status::invalid_argument("ApplyRowChanges requires object"))?;
         let object = object_ref_from_proto(object_proto)?;
         validate_session_id(&request.session_id, &object.session_id)?;
 
@@ -248,14 +248,14 @@ impl TableDataService for TableDataServiceImpl {
         if request.updates.is_empty() && request.deletes.is_empty() {
             return Err(to_status(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "行变更不能为空：updates 与 deletes 至少提供一项",
+                "Row changes must not be empty. Provide at least one entry in updates or deletes",
             )));
         }
         if object.kind != ObjectKind::Table {
             // 视图/物化视图没有可写基底：明确只读，不尝试写入。
             return Err(to_status(Error::failed_precondition(
                 ErrorCode::TABLE_DATA_READ_ONLY,
-                "该对象只读，不能提交行变更",
+                "The object is read-only and cannot accept row changes",
             )));
         }
 
@@ -268,7 +268,7 @@ impl TableDataService for TableDataServiceImpl {
         if !provider.supports_row_edits() {
             return Err(to_status(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该驱动未实现表数据行编辑",
+                "The driver does not implement row editing",
             )));
         }
 
@@ -298,7 +298,7 @@ impl TableDataService for TableDataServiceImpl {
         if primary_key.is_empty() {
             return Err(to_status(Error::failed_precondition(
                 ErrorCode::TABLE_DATA_NO_PRIMARY_KEY,
-                "该表没有主键，无法稳定定位行，不能按行编辑",
+                "The table has no primary key to identify rows reliably for editing",
             )));
         }
         // 批次上限：只把前 500 条转成领域变更，超出部分只计数——不为不会执行的
@@ -382,7 +382,7 @@ impl TableDataService for TableDataServiceImpl {
         let query_id: QueryId = raw
             .trim()
             .parse()
-            .map_err(|_| Status::invalid_argument("查询 ID 格式非法"))?;
+            .map_err(|_| Status::invalid_argument("Invalid query ID format"))?;
 
         match self.batches.cancel(&query_id) {
             Ok(_outcome) => Ok(Response::new(Empty {})),
@@ -417,7 +417,7 @@ impl TableDataService for TableDataServiceImpl {
         let object_proto = request
             .object
             .as_ref()
-            .ok_or_else(|| Status::invalid_argument("InsertRows 必须提供 object"))?;
+            .ok_or_else(|| Status::invalid_argument("InsertRows requires object"))?;
         let object = object_ref_from_proto(object_proto)?;
         validate_session_id(&request.session_id, &object.session_id)?;
 
@@ -425,14 +425,14 @@ impl TableDataService for TableDataServiceImpl {
         if request.rows.is_empty() {
             return Err(to_status(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "插入批次不能为空：rows 至少提供一行",
+                "The insert batch must not be empty. Provide at least one row in rows",
             )));
         }
         if object.kind != ObjectKind::Table {
             // 视图没有可写基底：明确只读，不尝试写入。
             return Err(to_status(Error::failed_precondition(
                 ErrorCode::TABLE_DATA_READ_ONLY,
-                "该对象只读，不能插入新行",
+                "The object is read-only and cannot accept new rows",
             )));
         }
 
@@ -445,7 +445,7 @@ impl TableDataService for TableDataServiceImpl {
         if !provider.supports_row_insertion() {
             return Err(to_status(Error::unsupported(
                 ErrorCode::CAPABILITY_UNSUPPORTED,
-                "该驱动未实现插入新行（需要参数化 INSERT 与完整主键回传）",
+                "The driver does not implement row insertion, which requires parameterized INSERT and a complete returned primary key",
             )));
         }
 
@@ -547,14 +547,17 @@ fn insert_rows_from_proto(
             let cell: &ProtoColumnValue = change.value.as_ref().ok_or_else(|| {
                 to_status(Error::invalid_argument(
                     ErrorCode::CONFIG_INVALID,
-                    format!("列 {} 缺少值：插入的列必须给出 ColumnValue", change.column),
+                    format!(
+                        "Column {} has no value. Each inserted column requires a ColumnValue",
+                        change.column
+                    ),
                 ))
             })?;
             if cell.kind == ValueKind::Unspecified as i32 {
                 return Err(to_status(Error::invalid_argument(
                     ErrorCode::CONFIG_INVALID,
                     format!(
-                        "列 {} 的值未指定类型（VALUE_KIND_UNSPECIFIED）；写 NULL 请显式给 VALUE_KIND_NULL",
+                        "The value for column {} has no type (VALUE_KIND_UNSPECIFIED). Use VALUE_KIND_NULL explicitly to write NULL",
                         change.column
                     ),
                 )));
@@ -584,7 +587,7 @@ fn batch_query_id(raw: &str) -> Result<QueryId, Status> {
     }
     raw.trim()
         .parse()
-        .map_err(|_| Status::invalid_argument("查询 ID 格式非法"))
+        .map_err(|_| Status::invalid_argument("Invalid query ID format"))
 }
 
 /// 风险阈值：预计影响行数超过服务端阈值且未显式确认时拒绝。
@@ -594,8 +597,7 @@ fn ensure_risk_acknowledged(proposed_changes: usize, acknowledged: bool) -> Resu
         return Err(to_status(Error::failed_precondition(
             ErrorCode::TABLE_DATA_CONFIRMATION_REQUIRED,
             format!(
-                "本批预计影响 {proposed} 行，超过 {DEFAULT_RISK_CONFIRMATION_ROWS} 行的确认阈值；\
-                 请确认后带 acknowledge_risk 重试"
+                "This batch is expected to affect {proposed} rows, exceeding the confirmation threshold of {DEFAULT_RISK_CONFIRMATION_ROWS}. Confirm the operation and retry with acknowledge_risk"
             ),
         )));
     }
@@ -609,10 +611,10 @@ fn validate_session_id(raw: &str, expected: &SessionId) -> Result<(), Status> {
     }
     let declared: SessionId = raw
         .parse()
-        .map_err(|_| Status::invalid_argument("会话 ID 格式非法"))?;
+        .map_err(|_| Status::invalid_argument("Invalid session ID format"))?;
     if declared != *expected {
         return Err(Status::invalid_argument(
-            "session_id 与 object.session_id 不一致",
+            "session_id does not match object.session_id",
         ));
     }
     Ok(())
@@ -625,7 +627,7 @@ fn requested_transaction(raw: &str) -> Result<Option<TransactionId>, Status> {
     }
     raw.parse()
         .map(Some)
-        .map_err(|_| Status::invalid_argument("事务 ID 格式非法"))
+        .map_err(|_| Status::invalid_argument("Invalid transaction ID format"))
 }
 
 /// Protobuf 的 updates + deletes → 驱动变更列表（顺序即 `change_index`）。
@@ -674,12 +676,12 @@ fn row_key_from_proto(
     let position = index.saturating_add(1);
     let Some(key) = change.key() else {
         return Err(Status::invalid_argument(format!(
-            "第 {position} 条变更缺少主键值"
+            "Change {position} is missing a primary key value"
         )));
     };
     if key.values.len() != primary_key.len() {
         return Err(Status::invalid_argument(format!(
-            "第 {position} 条变更必须给出完整主键（{} 列）",
+            "Change {position} requires a complete primary key ({} columns)",
             primary_key.len()
         )));
     }
@@ -687,13 +689,13 @@ fn row_key_from_proto(
     for (entry, expected) in key.values.iter().zip(primary_key.columns.iter()) {
         if !entry.column.eq_ignore_ascii_case(&expected.name) {
             return Err(Status::invalid_argument(format!(
-                "第 {position} 条变更的主键列顺序与主键定义不一致：期望 {}，收到 {}",
+                "The primary key column order for change {position} does not match the primary key definition: expected {}, received {}",
                 expected.name, entry.column
             )));
         }
         let raw = entry.value.as_ref().ok_or_else(|| {
             Status::invalid_argument(format!(
-                "第 {position} 条变更的主键列 {} 缺少值",
+                "Change {position} is missing a value for primary key column {}",
                 expected.name
             ))
         })?;
@@ -701,7 +703,7 @@ fn row_key_from_proto(
         if value.is_null() {
             // 主键不允许 NULL：NULL 参与比较会得到 NULL，定位必然落空。
             return Err(Status::invalid_argument(format!(
-                "第 {position} 条变更的主键值不能为 NULL"
+                "Change {position} cannot use a NULL primary key value"
             )));
         }
         values.push(value);
@@ -717,7 +719,7 @@ fn column_changes_from_proto(
     if changes.is_empty() {
         // 空列变更既不能表达「改成什么」，也不能当成删除；按参数错误拒绝。
         return Err(Status::invalid_argument(format!(
-            "第 {position} 条更新没有任何列变更"
+            "Update {position} does not change any columns"
         )));
     }
     changes
@@ -725,12 +727,12 @@ fn column_changes_from_proto(
         .map(|change| {
             if change.column.trim().is_empty() {
                 return Err(Status::invalid_argument(format!(
-                    "第 {position} 条变更的列名不能为空"
+                    "The column name for change {position} must not be empty"
                 )));
             }
             let value = change.value.as_ref().ok_or_else(|| {
                 Status::invalid_argument(format!(
-                    "第 {position} 条变更缺少列 {} 的值（NULL 必须显式给 VALUE_KIND_NULL）",
+                    "Change {position} is missing a value for column {}. Use VALUE_KIND_NULL explicitly for NULL",
                     change.column
                 ))
             })?;
@@ -777,9 +779,9 @@ fn outcome_to_proto(outcome: &ChangeOutcome) -> ProtoChangeOutcome {
 fn outcome_message(outcome: &ChangeOutcome) -> String {
     match outcome {
         ChangeOutcome::Applied { .. } => String::new(),
-        ChangeOutcome::RowNotFound => "该行已不存在（可能已被其它会话删除或主键已变更）".to_owned(),
+        ChangeOutcome::RowNotFound => "The row no longer exists. Another session may have deleted it or changed its primary key".to_owned(),
         ChangeOutcome::Conflict { expected, actual } => {
-            format!("实际影响 {actual} 行，与期望的 {expected} 行不符，请刷新后重试")
+            format!("The operation affected {actual} rows but expected {expected}. Refresh and retry")
         }
     }
 }
@@ -807,7 +809,7 @@ fn browse_options_from_proto(request: &BrowseTableRequest) -> Result<BrowseOptio
     if offset.is_some() && !request.page_token.is_empty() {
         return Err(to_status(Error::invalid_argument(
             ErrorCode::CONFIG_INVALID,
-            "offset 与 page_token 互斥：页码跳转用 offset、连续翻页用 page_token，二者只能给一个",
+            "Specify either offset to jump to a page or page_token to continue pagination",
         )));
     }
 
@@ -838,17 +840,19 @@ fn count_timeout_from_millis(millis: u32) -> Option<std::time::Duration> {
 
 fn sort_key_from_proto(key: &ProtoSortKey) -> Result<SortKey, Status> {
     if key.column.trim().is_empty() {
-        return Err(invalid_browse_argument("排序键的列名不能为空"));
+        return Err(invalid_browse_argument(
+            "The sort column name must not be empty",
+        ));
     }
     let direction = ProtoSortDirection::try_from(key.direction)
-        .map_err(|_| invalid_browse_argument("排序方向是未知枚举值"))?;
+        .map_err(|_| invalid_browse_argument("The sort direction is an unknown enum value"))?;
     let direction = match direction {
         ProtoSortDirection::Asc => SortDirection::Asc,
         ProtoSortDirection::Desc => SortDirection::Desc,
         // 不猜默认方向：猜成升序会让用户以为排序生效了，实际不是他要的方向。
         ProtoSortDirection::Unspecified => {
             return Err(invalid_browse_argument(
-                "排序方向未指定：必须显式给 SORT_DIRECTION_ASC 或 SORT_DIRECTION_DESC",
+                "The sort direction is unspecified. Set SORT_DIRECTION_ASC or SORT_DIRECTION_DESC explicitly",
             ));
         }
     };
@@ -877,10 +881,12 @@ fn filter_condition_from_proto(
     condition: &crate::proto::services::v1::filter::Condition,
 ) -> Result<FilterCondition, Status> {
     if condition.column.trim().is_empty() {
-        return Err(invalid_browse_argument("筛选条件的列名不能为空"));
+        return Err(invalid_browse_argument(
+            "The filter column name must not be empty",
+        ));
     }
     let operator = ProtoFilterOperator::try_from(condition.operator)
-        .map_err(|_| invalid_browse_argument("筛选算子是未知枚举值"))?;
+        .map_err(|_| invalid_browse_argument("The filter operator is an unknown enum value"))?;
     let operator = match operator {
         ProtoFilterOperator::Eq => FilterOperator::Eq,
         ProtoFilterOperator::Ne => FilterOperator::Ne,
@@ -893,7 +899,7 @@ fn filter_condition_from_proto(
         ProtoFilterOperator::IsNotNull => FilterOperator::IsNotNull,
         ProtoFilterOperator::Unspecified => {
             return Err(invalid_browse_argument(
-                "筛选算子未指定：必须显式给出算子（等值、比较、LIKE 或 IS NULL）",
+                "The filter operator is unspecified. Set an equality, comparison, LIKE, or IS NULL operator explicitly",
             ));
         }
     };
@@ -902,13 +908,13 @@ fn filter_condition_from_proto(
     let value = if operator.requires_value() {
         let raw = condition.value.as_ref().ok_or_else(|| {
             invalid_browse_argument(format!(
-                "列 {} 的筛选条件缺少比较值（IS NULL 请用对应算子）",
+                "The filter on column {} lacks a comparison value. Use the IS NULL operator to match NULL",
                 condition.column
             ))
         })?;
         if raw.kind == ValueKind::Unspecified as i32 {
             return Err(invalid_browse_argument(format!(
-                "列 {} 的筛选值未指定类型（VALUE_KIND_UNSPECIFIED）",
+                "The filter value for column {} has no type (VALUE_KIND_UNSPECIFIED)",
                 condition.column
             )));
         }
@@ -1053,7 +1059,7 @@ mod tests {
             }),
             changes: vec![ProtoColumnChange {
                 column: "v".to_owned(),
-                value: Some(text("x")),
+                value: Some(text("sensitive_test_value")),
             }],
             expected_rows_affected: 0,
         }
@@ -1068,7 +1074,10 @@ mod tests {
         let error = row_changes_from_proto(&request, &primary_key())
             .expect_err("主键列顺序不符必须拒绝，否则会定位到别的行");
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
-        assert!(!error.message().contains('x'), "错误文案不得回显变更值");
+        assert!(
+            !error.message().contains("sensitive_test_value"),
+            "错误文案不得回显变更值"
+        );
 
         let request = ApplyRowChangesRequest {
             updates: vec![update_with_key(["tenant", "id"])],
@@ -1171,7 +1180,7 @@ mod tests {
         let status = browse_options_from_proto(&request).expect_err("互斥必须报错");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_eq!(error_code_of(&status), "config.invalid");
-        assert!(status.message().contains("互斥"));
+        assert!(status.message().contains("either offset"));
         // 文案面向用户：不回显游标内容。
         assert!(!status.message().contains("sqtoken"));
 

@@ -276,7 +276,7 @@ fn empty_enabled_tools_still_starts_and_serves_the_handshake() {
     assert!(outcome.status.success(), "stderr:\n{}", outcome.stderr);
     outcome.assert_protocol_purity();
     assert!(
-        outcome.stderr.contains("全部工具都被禁用"),
+        outcome.stderr.contains("all tools disabled"),
         "空数组必须在 stderr 给出配置告警：\n{}",
         outcome.stderr
     );
@@ -300,7 +300,9 @@ fn missing_config_starts_with_zero_connections_and_warns() {
     );
     outcome.assert_protocol_purity();
     assert!(
-        outcome.stderr.contains("使用默认工具配置与查询限额"),
+        outcome
+            .stderr
+            .contains("default tool configuration and query limits"),
         "缺失配置必须在 stderr 告警：\n{}",
         outcome.stderr
     );
@@ -398,7 +400,7 @@ fn credentials_set_requires_an_interactive_terminal() {
     assert!(!status.success(), "非 TTY 必须失败退出");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("交互式终端"),
+        stderr.contains("interactive terminal"),
         "必须给出可操作的错误提示：\n{stderr}"
     );
     assert!(

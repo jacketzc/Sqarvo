@@ -122,7 +122,7 @@ async fn default_insert_rows_reports_unsupported_instead_of_empty_success() {
     assert_eq!(error.code(), ErrorCode::CAPABILITY_UNSUPPORTED);
     assert_eq!(error.category(), ErrorCategory::Unsupported);
     // 文案要能指导用户：说清「驱动没实现」，而不是「插入失败」。
-    assert!(error.message().contains("未实现"));
+    assert!(error.message().contains("does not implement"));
 }
 
 /// 非空过滤同理：默认实现必须报错，不能静默退化成「不过滤」。

@@ -151,7 +151,7 @@ impl LocalListener {
         if path.as_os_str().len() >= 104 {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "Unix socket 路径过长（上限约 104 字节）",
+                "The Unix socket path is too long (limit: approximately 104 bytes)",
             ));
         }
         if let Some(parent) = path.parent() {
@@ -166,7 +166,7 @@ impl LocalListener {
             Ok(_) => {
                 return Err(Error::invalid_argument(
                     ErrorCode::CONFIG_INVALID,
-                    "socket 路径已被非 socket 文件占用",
+                    "The socket path is occupied by a non-socket file",
                 ));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -184,7 +184,7 @@ impl LocalListener {
         if !addr.ip().is_loopback() {
             return Err(Error::invalid_argument(
                 ErrorCode::CONFIG_INVALID,
-                "后端只允许监听回环地址（127.0.0.1 / ::1）",
+                "The backend can only listen on a loopback address (127.0.0.1 or ::1)",
             ));
         }
         let listener = std::net::TcpListener::bind(addr).map_err(Error::from)?;
@@ -303,7 +303,7 @@ where
             Error::new(
                 ErrorCode::TRANSPORT_FAILED,
                 ErrorCategory::Internal,
-                "gRPC 服务异常退出",
+                "The gRPC server exited unexpectedly",
             )
             .with_source(error)
         })

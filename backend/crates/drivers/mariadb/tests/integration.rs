@@ -602,7 +602,7 @@ async fn script_over_row_budget_is_resource_exhausted() {
         })
     );
     assert!(
-        error.message().contains("拆分"),
+        error.message().contains("Split the script"),
         "文案应提示拆分脚本，实际：{}",
         error.message()
     );
@@ -2230,7 +2230,7 @@ async fn metadata_lists_tables_and_views_with_stable_pagination() {
             Err(error) if error.code() == ErrorCode::from_static("metadata.snapshot_changed") => {}
             Err(error)
                 if error.code() == ErrorCode::CONFIG_INVALID
-                    && error.message().contains("超出数据范围") => {}
+                    && error.message().contains("outside the data range") => {}
             Err(error) => panic!("列出根节点失败：{error:?}"),
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -2310,7 +2310,7 @@ async fn metadata_columns_keep_original_types_and_nullability() {
             ObjectKind::Table,
         ))
         .await
-        .expect("读取列信息");
+        .expect("Read column information");
     assert_eq!(columns.len(), 5);
 
     assert_eq!(columns[0].name, "id");
@@ -2801,7 +2801,9 @@ async fn metadata_ddl_reports_unsupported_kinds_and_missing_objects() {
     assert_eq!(index.code(), ErrorCode::METADATA_OBJECT_KIND_UNSUPPORTED);
     assert_eq!(index.category(), ErrorCategory::InvalidArgument);
     assert!(
-        index.message().contains("索引") && index.message().contains("索引定义在"),
+        index
+            .message()
+            .contains("defines indexes in the owning table"),
         "文案必须解释为什么不支持：{index}"
     );
 
@@ -4093,7 +4095,7 @@ async fn metadata_columns_expose_default_charset_and_collation() {
     let columns = provider
         .columns(&md_object(&*session, "sqarvo_t_colmeta", ObjectKind::Table))
         .await
-        .expect("读取列信息");
+        .expect("Read column information");
     assert_eq!(columns.len(), 7);
 
     let by_name = |name: &str| {

@@ -17,7 +17,7 @@ pub struct IdParseError {
 
 impl fmt::Display for IdParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "非法的标识符: {}", self.input)
+        write!(f, "Invalid identifier: {}", self.input)
     }
 }
 

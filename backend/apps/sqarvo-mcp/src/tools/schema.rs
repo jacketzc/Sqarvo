@@ -759,8 +759,8 @@ where
 }
 
 fn fits_budget<T: Serialize>(limits: &EffectiveLimits, output: &T) -> Result<bool> {
-    let bytes =
-        serde_json::to_vec(output).map_err(|_| sqarvo_common::Error::internal("无法编码元数据"))?;
+    let bytes = serde_json::to_vec(output)
+        .map_err(|_| sqarvo_common::Error::internal("Failed to encode metadata"))?;
     Ok(bytes.len() as u64 <= limits.max_result_bytes)
 }
 
@@ -768,7 +768,7 @@ fn result_too_large() -> sqarvo_common::Error {
     sqarvo_common::Error::new(
         sqarvo_common::ErrorCode::MCP_RESULT_TOO_LARGE,
         sqarvo_common::ErrorCategory::ResourceExhausted,
-        "元数据结果超过单次读取上限",
+        "The metadata result exceeds the per-request limit",
     )
 }
 
@@ -892,7 +892,7 @@ pub(crate) async fn get_table_ddl_with_cancel(
         !ddl.is_consistent() || ddl.source != sqarvo_driver_api::DdlSource::Database
     }) {
         return Err(sqarvo_common::Error::internal(
-            "驱动未返回可验证来源的原生 DDL",
+            "The driver did not return native DDL with a verifiable source",
         ));
     }
     let warnings = match (&result.ddl, result.complete) {
@@ -1057,7 +1057,7 @@ impl DatabaseSchemaParams {
 fn schema_cursor_error() -> sqarvo_common::Error {
     sqarvo_common::Error::invalid_argument(
         sqarvo_common::ErrorCode::MCP_INVALID_ARGUMENT,
-        "Schema 分页游标或名称筛选参数非法",
+        "Invalid schema pagination cursor or name filter",
     )
 }
 
@@ -1072,7 +1072,7 @@ fn schema_cursor_scope(params: &DatabaseSchemaParams, tables: &[String]) -> Resu
         params.include_indexes,
         params.include_foreign_keys,
     ))
-    .map_err(|_| sqarvo_common::Error::internal("无法编码 Schema 分页范围"))?;
+    .map_err(|_| sqarvo_common::Error::internal("Failed to encode the schema pagination scope"))?;
     Ok(crate::policy::sha256_hex(&scope))
 }
 

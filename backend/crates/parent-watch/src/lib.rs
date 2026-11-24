@@ -109,7 +109,7 @@ impl fmt::Display for InvalidPid {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "--parent-pid {} 无效：必须是启动本进程的父进程 pid",
+            "Invalid --parent-pid {}: expected the PID of the parent process that started this backend",
             self.pid
         )
     }
@@ -139,7 +139,9 @@ pub(crate) struct Absent;
 /// 看出来，不会漏。
 pub fn install(expected: Option<u32>) -> Result<Installed, InvalidPid> {
     let Some(parent_pid) = expected else {
-        tracing::debug!("未指定 --parent-pid：不监视父进程（手工启动或共用后端）");
+        tracing::debug!(
+            "--parent-pid is unset. Parent process monitoring is disabled for this manual or shared backend"
+        );
         return Ok(Installed::Standalone);
     };
 
@@ -152,11 +154,14 @@ pub fn install(expected: Option<u32>) -> Result<Installed, InvalidPid> {
         tracing::info!(
             parent_pid,
             mechanism = mechanism(),
-            "已监视前端父进程：父进程消失时后端自行清理退出"
+            "Monitoring the frontend parent process. The backend will clean up and exit when it disappears"
         );
         Ok(Installed::Managed(watch))
     } else {
-        tracing::warn!(parent_pid, "父进程在监视生效前已退出，不再启动服务");
+        tracing::warn!(
+            parent_pid,
+            "The parent process exited before monitoring started. The service will not start"
+        );
         Ok(Installed::ParentGone(parent_pid))
     }
 }
@@ -175,11 +180,11 @@ pub async fn wait_until_gone(installed: Installed) -> u32 {
 fn mechanism() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        "PR_SET_PDEATHSIG + 500ms getppid 轮询"
+        "PR_SET_PDEATHSIG with getppid polling every 500 ms"
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        "500ms getppid 轮询"
+        "getppid polling every 500 ms"
     }
     #[cfg(windows)]
     {
@@ -187,7 +192,7 @@ fn mechanism() -> &'static str {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        "无（此平台缺少父进程判活手段）"
+        "None (parent process monitoring is unavailable on this platform)"
     }
 }
 
