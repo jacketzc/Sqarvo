@@ -958,6 +958,7 @@ impl_notes = [
   "值转换失败时错误就地显示、编辑框不关（可以在原处改）。",
   "写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。",
   "新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。",
+  "新行编辑器打开时「省略该列」**默认不勾**（双击意在填值），输入框可用；从省略态进入但没输入任何值就点应用时仍维持省略，不悄悄写成空串 / NULL。提示行固定用可空 / 不可空那一条，不取省略态的长说明——后者换行会把弹层撑高，勾选前后大小不一致；长说明仍在网格单元格 tooltip 里。",
 ]
 
 [[component.interaction]]
@@ -1005,7 +1006,7 @@ platform_notes.macos = "§7.1 未记录。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f420395fd8f9"
+spec_hash = "0e17a5aeead2"
 commit = ""
 evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
 

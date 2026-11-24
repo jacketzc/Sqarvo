@@ -3354,7 +3354,7 @@ impl DataPage {
 
     /// 打开新行某列的编辑态（与已有行的编辑器分开：多了「省略」这一态）。
     fn open_insert_editor(self: &Rc<Self>, column: usize, anchor: &gtk::Widget) {
-        let (initial, column_name, type_label, nullable, hint, is_null, is_omit) = {
+        let (initial, column_name, type_label, nullable, is_null, is_omit, keep_omit_on_empty) = {
             let guard = self.insert.borrow();
             let Some(draft) = guard.as_ref() else {
                 return;
@@ -3365,20 +3365,18 @@ impl DataPage {
             let Some(cell) = draft.cells().get(column) else {
                 return;
             };
-            let view = draft.view(column);
-            let (initial, is_null, is_omit) = match &cell.mode {
-                InsertMode::Omit => (String::new(), false, true),
-                InsertMode::Null => (String::new(), true, false),
-                InsertMode::Text(text) => (text.clone(), false, false),
-            };
+            // 双击意在填值：省略态进入时「省略该列」也不勾、输入框可用。
+            // 提示行不取 draft.view(column).tooltip —— 省略态那句长说明会换行把弹层撑高，
+            // 勾选前后大小不一致；提示行固定用 editor_hint_*，长说明仍在网格单元格 tooltip 里。
+            let editor_initial = cell.editor_initial();
             (
-                initial,
+                editor_initial.text,
                 spec.name.clone(),
                 spec.type_label.clone(),
                 spec.nullable,
-                view.tooltip,
-                is_null,
-                is_omit,
+                editor_initial.is_null,
+                editor_initial.is_omit,
+                editor_initial.keep_omit_on_empty,
             )
         };
 
@@ -3430,14 +3428,11 @@ impl DataPage {
         }
         entry.set_sensitive(!is_null && !is_omit);
 
-        let hint_text = if hint.is_empty() {
-            if nullable {
-                l10n::t("data_page.editor_hint_nullable_insert")
-            } else {
-                l10n::t("data_page.editor_hint_not_null")
-            }
+        // 固定的一行提示：与三态无关，勾选「省略」前后弹层高度一致。
+        let hint_text = if nullable {
+            l10n::t("data_page.editor_hint_nullable_insert")
         } else {
-            hint.as_str()
+            l10n::t("data_page.editor_hint_not_null")
         };
         let hint_label = gtk::Label::new(Some(hint_text));
         hint_label.set_xalign(0.0);
@@ -3487,12 +3482,16 @@ impl DataPage {
             let null_check = null_check.clone();
             let error = error.clone();
             apply.connect_clicked(move |_| {
+                let text = entry.text();
                 let result = if omit_check.is_active() {
                     page.apply_insert_omit(column)
                 } else if null_check.is_active() {
                     page.apply_insert_null(column)
+                } else if keep_omit_on_empty && text.is_empty() {
+                    // 从省略态进入、没填任何值：维持省略，不悄悄写成空串 / NULL。
+                    page.apply_insert_omit(column)
                 } else {
-                    page.apply_insert_text(column, &entry.text())
+                    page.apply_insert_text(column, &text)
                 };
                 match result {
                     Ok(()) => popover_for_apply.popdown(),

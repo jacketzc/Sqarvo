@@ -1308,11 +1308,52 @@ pub struct InsertCell {
     pub default_hint: Option<String>,
 }
 
+/// 打开新行编辑器时的初始三态。
+///
+/// 双击单元格的意图是「填值」，所以从「省略」态进入时也把「省略该列」显示为**不勾**、输入框可用；
+/// 但用户若什么都没输入就点应用，仍维持省略（与打开前的草稿一致），不会悄悄写成空串 / NULL。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertEditorInitial {
+    /// 输入框初始值。
+    pub text: String,
+    /// 「显式 NULL」勾选。
+    pub is_null: bool,
+    /// 「省略该列」勾选（进入编辑器时恒为 false）。
+    pub is_omit: bool,
+    /// 从省略态进入、且用户没有输入任何文本时，应用仍维持省略。
+    pub keep_omit_on_empty: bool,
+}
+
 impl InsertCell {
     /// 是否处于「交给数据库」的省略态（空行刚建出来时就是这个态）。
     #[must_use]
     pub fn is_omitted(&self) -> bool {
         matches!(self.mode, InsertMode::Omit)
+    }
+
+    /// 新行编辑器打开时的三态：省略默认不勾，双击即可开始输入。
+    #[must_use]
+    pub fn editor_initial(&self) -> InsertEditorInitial {
+        match &self.mode {
+            InsertMode::Omit => InsertEditorInitial {
+                text: String::new(),
+                is_null: false,
+                is_omit: false,
+                keep_omit_on_empty: true,
+            },
+            InsertMode::Null => InsertEditorInitial {
+                text: String::new(),
+                is_null: true,
+                is_omit: false,
+                keep_omit_on_empty: false,
+            },
+            InsertMode::Text(text) => InsertEditorInitial {
+                text: text.clone(),
+                is_null: false,
+                is_omit: false,
+                keep_omit_on_empty: false,
+            },
+        }
     }
 }
 
@@ -1700,6 +1741,44 @@ pub fn begin_summary(read_only: bool, level: IsolationLevel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insert_editor_opens_with_omit_unchecked_from_every_mode() {
+        // 双击意在填值：三种草稿态打开编辑器时「省略该列」都不能默认勾上。
+        let cases = [
+            (InsertMode::Omit, true),
+            (InsertMode::Null, false),
+            (InsertMode::Text("7".to_owned()), false),
+        ];
+        for (mode, keep_omit) in cases {
+            let cell = InsertCell {
+                mode,
+                default_hint: None,
+            };
+            let initial = cell.editor_initial();
+            assert!(!initial.is_omit, "省略框必须默认不勾：{cell:?}");
+            assert_eq!(initial.keep_omit_on_empty, keep_omit, "{cell:?}");
+        }
+    }
+
+    #[test]
+    fn insert_editor_initial_text_and_null_reflect_draft() {
+        let null_cell = InsertCell {
+            mode: InsertMode::Null,
+            default_hint: None,
+        };
+        let initial = null_cell.editor_initial();
+        assert!(initial.is_null);
+        assert!(initial.text.is_empty());
+
+        let text_cell = InsertCell {
+            mode: InsertMode::Text("abc".to_owned()),
+            default_hint: None,
+        };
+        let initial = text_cell.editor_initial();
+        assert_eq!(initial.text, "abc");
+        assert!(!initial.is_null);
+    }
 
     fn column(name: &str, kind: ColumnTypeKind, label: &str, nullable: bool) -> TableColumn {
         TableColumn {
