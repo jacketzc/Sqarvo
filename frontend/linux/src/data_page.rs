@@ -3575,21 +3575,37 @@ impl DataPage {
                     codes.join("、")
                 }
             );
-            self.show_banner(&l10n::tf(
-                "data_page.insert_failed_rolled_back",
-                &[(
-                    "codes",
-                    if codes.is_empty() {
-                        String::new()
-                    } else {
-                        l10n::tf(
-                            "data_page.codes_suffix",
-                            &[("codes", codes.join(l10n::t("data_page.list_separator")))],
-                        )
-                    },
-                )],
-            ));
-            self.set_status(&status.text, status.tone.css_class());
+            // 过程消息承载完整信息；24 字上限只做视觉省略，悬停同一处文本给全文
+            // （set_status → sync_status_tooltip）。不在工具条与编辑器之间新增横幅 / 逐行
+            // 错误列表等元素；也不提供「重启 Sqarvo」（普通校验失败不是后端失效）。
+            let codes_text = if codes.is_empty() {
+                String::new()
+            } else {
+                l10n::tf(
+                    "data_page.codes_suffix",
+                    &[("codes", codes.join(l10n::t("data_page.list_separator")))],
+                )
+            };
+            let full = report.not_null_column().map_or_else(
+                || {
+                    l10n::tf(
+                        "data_page.insert_failed_rolled_back",
+                        &[("codes", codes_text.clone())],
+                    )
+                },
+                |column| {
+                    l10n::tf(
+                        "data_page.insert_failed_with_column",
+                        &[("column", column), ("codes", codes_text.clone())],
+                    )
+                },
+            );
+            // show_failures 先前按通用规则填了逐行列表；插入失败不在这里占位。
+            while let Some(child) = self.errors.first_child() {
+                self.errors.remove(&child);
+            }
+            self.errors_scroll.set_visible(false);
+            self.set_status(&full, "error");
             self.update_dirty_label();
             self.update_buttons();
             return;
@@ -3603,7 +3619,7 @@ impl DataPage {
                 "[data] 插入未产生净变化：语句成功 {} 行，净影响 0 行",
                 report.inserted_rows
             );
-            self.show_banner(l10n::t("data_page.insert_no_net_change"));
+            self.show_notice(l10n::t("data_page.insert_no_net_change"));
             self.set_status(&status.text, status.tone.css_class());
             self.update_dirty_label();
             self.update_buttons();
@@ -3613,7 +3629,7 @@ impl DataPage {
         self.finish_insert_row(report.inserted_key());
         let pending = self.after_insert_batch.borrow_mut().take();
         self.set_status(&status.text, status.tone.css_class());
-        self.show_banner(&l10n::tf(
+        self.show_notice(&l10n::tf(
             "data_page.inserted_banner",
             &[(
                 "key",
@@ -3622,7 +3638,6 @@ impl DataPage {
                 }),
             )],
         ));
-        self.banner.set_button_label(None::<&str>);
         eprintln!(
             "[data] t=+{}ms 新行已插入{}：净影响 {} 行（未整表重刷）",
             crate::qa::elapsed_ms(),
@@ -4592,9 +4607,9 @@ impl DataPage {
             .borrow()
             .as_ref()
             .map_or(0, TableDraft::dirty_rows);
-        // 被钳制时的横幅提示保持原样；取消是正常结果，不再弹带「重新连接后端」按钮的横幅。
+        // 钳制只是本次提交被限流，不是后端失效；与取消一样不弹带「重启 Sqarvo」按钮的横幅。
         if !report.cancelled && (report.clamped || report.deferred_changes > 0) {
-            self.show_banner(&l10n::tf_n(
+            self.show_notice(&l10n::tf_n(
                 "data_page.clamped_banner",
                 i64::from(report.deferred_changes),
                 &[
@@ -4697,7 +4712,13 @@ impl DataPage {
         } else if matches!(failure, TableFailure::CursorInvalid { .. }) {
             self.has_more.set(false);
         }
-        self.show_banner(&failure.message());
+        // 只有会话失效/后端不可用才提供「重启 Sqarvo」；无主键、只读、行已删除等
+        // 普通失败给一次性说明即可，重启后端并不能解决这些失败。
+        if failure.is_session_lost() {
+            self.show_recovery_banner(&failure.message());
+        } else {
+            self.show_notice(&failure.message());
+        }
         self.set_status(&failure.message(), "error");
         if !matches!(self.state.get(), DataState::Disconnected) {
             self.set_state(DataState::Error);
@@ -4805,7 +4826,7 @@ impl DataPage {
             )
         };
         eprintln!("[data] 断连清理：丢弃 {discarded} 行未提交变更，事务由后端回滚");
-        self.show_banner(&text);
+        self.show_recovery_banner(&text);
         let loaded = self.row_count();
         self.set_status(
             &l10n::tf_n(
@@ -6647,8 +6668,20 @@ impl DataPage {
             "success" => self.status.add_css_class("success"),
             _ => {}
         }
+        // 过程消息受 24 字上限省略；悬停给全文。只读原因优先（解释为什么禁用）。
+        self.sync_status_tooltip();
         // 状态行也是状态栏要展示的内容：文案一变就推送一次快照。
         self.notify_status();
+    }
+
+    /// 过程消息的悬浮全文：正常显示当前文案（被省略时也有全文），
+    /// 只读态则改为解释原因；两者都取 `status` 的完整文本，不依赖可见的省略形式。
+    fn sync_status_tooltip(&self) {
+        let tooltip = self
+            .read_only_reason()
+            .unwrap_or_else(|| self.status.text().to_string());
+        self.status
+            .set_tooltip_text((!tooltip.is_empty()).then_some(tooltip.as_str()));
     }
 
     /// 一次**已经发生**的操作结果（不是「正在…」）：收进状态圆点的 tooltip，
@@ -6848,12 +6881,8 @@ impl DataPage {
             &[("export_rows", export_rows.to_string())],
         )));
         // 只读原因一旦成立，状态行 tooltip 给出具体原因（不是靠置灰暗示）；
-        // 提交按钮的禁用已由 `commit_available()` 里的 `read_only_reason()` 覆盖。
-        if let Some(reason) = self.read_only_reason() {
-            self.status.set_tooltip_text(Some(&reason));
-        } else {
-            self.status.set_tooltip_text(None);
-        }
+        // 否则悬浮过程消息本身看全文（被 24 字上限省略时）。同一份口径见 sync_status_tooltip。
+        self.sync_status_tooltip();
         // 按钮可用性由显式谓词给出，统一推给状态栏行操作组与窗口动作。
         self.notify_status();
     }
@@ -6976,7 +7005,10 @@ impl DataPage {
         self.sync_txn_label();
     }
 
-    fn show_banner(&self, text: &str) {
+    /// 恢复横幅：仅用于后端失效 / 断连这类「重启后端才能恢复」的场景。
+    /// 按钮会触发 `backend_failure` 回调（重启并重新连接后端），普通行操作失败
+    /// 一律走 [`Self::show_notice`]，不要在这里加按钮，否则会误导用户重启。
+    fn show_recovery_banner(&self, text: &str) {
         self.banner_is_readonly.set(false);
         self.banner
             .set_button_label(Some(l10n::t("shell.recovery_btn_restart")));

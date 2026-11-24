@@ -979,6 +979,12 @@ en = "Insert failed: the whole batch was rolled back and 0 rows changed in the d
 status = "done"
 
 [[entry]]
+key = "data_page.insert_failed_with_column"
+zh = "插入失败：列 {column} 不能为空；整批已回滚，库里 0 行变化{codes} · 草稿保留可重试"
+en = "Insert failed: column {column} cannot be empty; whole batch rolled back, 0 rows changed{codes} · draft kept for retry"
+status = "done"
+
+[[entry]]
 key = "data_page.codes_suffix"
 zh = "（{codes}）"
 en = " ({codes})"

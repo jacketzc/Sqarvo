@@ -565,6 +565,33 @@ impl InsertReport {
             .collect()
     }
 
+    /// 插入失败里能点名的 NOT NULL 字段，供可见过程消息给出「列 X 不能为空」。
+    ///
+    /// 服务端文案把列名写在固定前缀后第一段：英文 `Column {name} …`、
+    /// 中文 `列 {name} 必填…`（backend 按界面语言本地化）。只取这一段，不解析
+    /// 后半句；取不到就返回 `None`，由调用方退回简短通用提示。详细原因仍在
+    /// 逐行错误列表与状态圆点 tooltip。
+    #[must_use]
+    pub fn not_null_column(&self) -> Option<String> {
+        self.results.iter().find_map(|result| {
+            if InsertOutcome::try_from(result.outcome) != Ok(InsertOutcome::Failed)
+                || !matches!(
+                    result.error_code.as_str(),
+                    "table_data.not_null_violation" | "table_data.not_null_without_default"
+                )
+            {
+                return None;
+            }
+            result
+                .message
+                .strip_prefix("Column ")
+                .or_else(|| result.message.strip_prefix("列 "))
+                .and_then(|rest| rest.split_whitespace().next())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        })
+    }
+
     /// 主键的展示文本（`id=42` / `a=1, b=2`）。
     #[must_use]
     pub fn key_label(&self) -> Option<String> {
@@ -1311,6 +1338,66 @@ mod tests {
         assert!(status.text.contains("库里 0 行变化"), "{}", status.text);
         // 关键反例：绝不能出现「已插入 1 行」这种把语句层成功当落库的说法。
         assert!(!status.text.contains("已插入"), "{}", status.text);
+    }
+
+    #[test]
+    fn not_null_column_names_the_offending_field_for_short_status() {
+        // 服务端按界面语言本地化 NOT NULL 文案，但都把列名写在固定前缀后第一段；
+        // 短过程消息只取列名，长原因留在 tooltip。
+        for (code, message, expected) in [
+            (
+                "table_data.not_null_violation",
+                "Column name does not allow NULL. Supply a value",
+                "name",
+            ),
+            (
+                "table_data.not_null_without_default",
+                "Column qty requires a value and the database has no default",
+                "qty",
+            ),
+            (
+                "table_data.not_null_without_default",
+                "列 name 必填：既未给值，数据库也没有默认值可兜底",
+                "name",
+            ),
+        ] {
+            let report = InsertReport {
+                results: vec![InsertRowResult {
+                    outcome: InsertOutcome::Failed as i32,
+                    error_code: code.to_owned(),
+                    message: message.to_owned(),
+                    ..insert_result(InsertOutcome::Failed, None)
+                }],
+                total_rows_affected: 0,
+                clamped: false,
+                deferred_rows: 0,
+                rolled_back: true,
+                inserted_rows: 0,
+            };
+            assert_eq!(
+                report.not_null_column().as_deref(),
+                Some(expected),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn not_null_column_ignores_other_failures() {
+        let report = InsertReport {
+            results: vec![InsertRowResult {
+                outcome: InsertOutcome::Failed as i32,
+                error_code: "table_data.unique_violation".to_owned(),
+                message: "Column email already exists".to_owned(),
+                ..insert_result(InsertOutcome::Failed, None)
+            }],
+            total_rows_affected: 0,
+            clamped: false,
+            deferred_rows: 0,
+            rolled_back: true,
+            inserted_rows: 0,
+        };
+        assert_eq!(report.not_null_column(), None);
     }
 
     #[test]

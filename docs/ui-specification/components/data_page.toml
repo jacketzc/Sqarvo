@@ -285,6 +285,7 @@ impl_notes = [
   "过程消息只留两类：①「正在…」进行中（正在提交… / 正在取消提交（批次 …）… / 正在读取表数据…，读取完成后擦掉）；② warning / error（权限不足、类型不可编辑、行已标记删除、提交逐行失败…）。",
   "已经发生的操作结果不占可见文案，只写进圆点 tooltip 末段「最近一次操作：…」：第 N 行已标记删除（提交前可撤销）、已放弃未提交的更改（含新增行），以及普通提示——「筛选与排序已应用（N 条条件 · M 个排序键）· 回到第 1 页」「条件与排序已清空」「筛选条件已清空」、新增行「新行：… · 双击单元格填值，填完点状态栏「应用」」与新行单元格改动摘要、「开始事务：<级别> · <模式>」。",
   "上述普通提示走 note_action（写圆点 tooltip 并清空可见过程消息位）；只有「正在…」进行中与 warning / error 才走 set_status 占可见文案。",
+  "error 级提示的全文（含点名字段、整批回滚、草稿保留、错误码）都写进过程消息，不另造元素：这一行最多 24 个 CJK 字，窄时由 GtkLabel 省略号缩略，悬停同一处文本给全文（tooltip 取 status 完整文本，只读原因优先）。新增行因 NOT NULL 留空失败时不再弹页首横幅或逐行错误列表——工具条与编辑器之间不新增元素。",
   "这一处**不重复**行数 / 页码 / 总数：那些只在状态栏分页器显示一次。",
   "撤销（放弃未提交的更改，状态栏行操作组 ↶ / RowOp::Discard）与删除（−）的结果同样不占可见文案：前者把 ●N / ✕N / ＋ 清回普通行号，后者把行标删；两句都只写进圆点 tooltip 的「最近一次操作：…」。",
 ]
@@ -307,9 +308,15 @@ precondition = "普通操作完成（筛选应用 / 清空、新增行开始、�
 result = "提示写进圆点 tooltip 末段「最近一次操作：…」，可见过程消息位保持为空（note_action 先清空）；只有「正在…」进行中与 warning / error 才占可见文案"
 source = "src/data_page.rs:6663、src/data_page.rs:2844、src/data_page.rs:3241"
 
+[[component.interaction]]
+trigger = "load"
+precondition = "新增行提交失败（NOT NULL 字段留空，整批回滚）"
+result = "过程消息写全文「插入失败：列 X 不能为空；整批已回滚，库里 0 行变化（错误码）· 草稿保留可重试」（error 色调），窄时省略号缩略、悬停该文本给全文；不在工具条与编辑器之间新增横幅 / 逐行错误列表，不给「重启 Sqarvo」"
+source = "src/data_page.rs:3558、src/backend/table.rs:568"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "ca0792cd6241"
+spec_hash = "d58ad0f374b3"
 commit = ""
 evidence = "§5.1 工具条状态簇与「操作结果收进圆点」；set_state / set_status / note_action"
 
@@ -1551,7 +1558,7 @@ style.tokens = ["warning_color", "sqarvo_brand_soft", "sqarvo_brand_on_soft"]
 impl_notes = [
   "只读横幅常驻（直到刷新事务状态）：正文是「<标题>：<解释>」，例如「只读：该表没有主键：无主键表只有无稳定排序的浏览顺序，无法稳定定位行，因此不能编辑…」。",
   "断连横幅写明「未提交的 N 行变更已丢弃；数据库事务已由后端强制回滚」（无脏行时省略中间一句），已加载数据**保留**为只读。",
-  "后端失效时的横幅带一枚「重启 Sqarvo」按钮（重启确认属 shell 区）。",
+  "仅后端失效 / 断连横幅带一枚「重启 Sqarvo」按钮（重启确认属 shell 区）；插入回滚、单批钳制、只读、行已删除等普通失败只给一次性说明，不提供重启按钮——重启后端并不能解决这些失败。",
   "横幅不替代徽标行与状态行：三者同时在，各自说明不同的层级（原因 / 能力 / 这一刻的动作结果）。",
 ]
 
@@ -1570,18 +1577,24 @@ source = "src/data_page.rs:4756"
 [[component.interaction]]
 trigger = "load"
 precondition = "读取 / 提交 / 事务操作失败"
-result = "横幅写服务端给的失败文案（错误码进日志与状态行），状态行转 error，逐行失败另见 data_page.errors；**已加载的行保留**、不清屏，可重试"
-source = "src/data_page.rs:4609、src/data_page.rs:4685"
+result = "横幅写服务端给的失败文案（错误码进日志与状态行），状态行转 error，逐行失败另见 data_page.errors；**已加载的行保留**、不清屏，可重试；普通失败不提供「重启 Sqarvo」按钮，仅会话丢失 / 后端不可用才提供"
+source = "src/data_page.rs:4609、src/data_page.rs:4703"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "新增行提交失败（如 NOT NULL 字段留空导致整批回滚，或净影响为 0）"
+result = "不再弹页首横幅：全文提示进 data_page.toolbar.status_cluster 的可见过程消息（点名字段 + 整批回滚 + 草稿保留 + 错误码，窄时省略、悬停给全文），不另弹逐行错误列表；草稿行保留，修正后可再次提交；不提供「重启 Sqarvo」按钮"
+source = "src/data_page.rs:3558、src/data_page.rs:3607"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "17689e61521a"
+spec_hash = "d321694fce31"
 commit = ""
 evidence = "§5.6 只读 / 断连；show_read_only_banner + mark_disconnected"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "17689e61521a"
+spec_hash = "d321694fce31"
 note = "§7.1：只读与失败原因写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页首横幅。"
 
 [component.sync.macos]
