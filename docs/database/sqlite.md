@@ -24,6 +24,10 @@ SQLite 只有 5 种存储类，列上的声明类型只是「亲和性提示」�
 它们可能以 INTEGER/REAL/TEXT 存储，统一按 `ColumnType::Unsupported` 返回并保留声明原文（ADR 0009）。
 超过 64 KiB 的文本/二进制按 ADR 0007 截断并置 `Cell::truncated`。
 
+声明为 `BOOL` / `BOOLEAN` 的列按 `ColumnType::Integer { bits: 8 }` 返回（与 MariaDB 的
+`tinyint(1)` / `BOOLEAN` 同口径，不伪造 `Value::Bool`）：SQLite 把它以 INTEGER 0/1 存储，
+若按 `Unsupported` 返回会让前端把该列判成「类型不可编辑」，双击 / 新增行都不弹编辑框。
+
 ## 行变更批次取消（#70）
 
 `ApplyRowChanges` 的取消**不走** `sqlite3_interrupt`：中断会把 DML 撕在半路，SQLite 随即隐式

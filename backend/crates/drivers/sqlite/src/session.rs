@@ -1394,7 +1394,15 @@ fn map_declared_type(declared: Option<&str>) -> ColumnType {
         };
     };
     let upper = raw.trim().to_ascii_uppercase();
-    if upper.contains("INT") {
+    if upper == "BOOL" || upper == "BOOLEAN" {
+        // 与 metadata.rs::declared_type 同一口径：SQLite 的 BOOLEAN 以 INTEGER 0/1
+        // 存储，按小整数返回（与 MariaDB tinyint(1) 一致），不伪造成布尔也不落到
+        // Unsupported（否则结果集里这一列也被判成不可编辑）。
+        ColumnType::Integer {
+            bits: 8,
+            unsigned: false,
+        }
+    } else if upper.contains("INT") {
         ColumnType::Integer {
             bits: 64,
             unsigned: false,
@@ -1760,4 +1768,27 @@ fn configure_busy_timeout(connection: Connection) -> Result<Connection> {
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(|error| map_sqlite_error(error, "Failed to set the SQLite busy timeout"))?;
     Ok(connection)
+}
+
+#[cfg(test)]
+mod type_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn declared_boolean_maps_to_integer_in_result_sets() {
+        // 与 metadata.rs::declared_type 同一口径：BOOLEAN 以 INTEGER 0/1 存储，
+        // 按小整数返回而不是 Unsupported，结果集里的这一列才不会被判成不可编辑。
+        let expected = ColumnType::Integer {
+            bits: 8,
+            unsigned: false,
+        };
+        assert_eq!(map_declared_type(Some("BOOLEAN")), expected);
+        assert_eq!(map_declared_type(Some("bool")), expected);
+        assert_eq!(
+            map_declared_type(None),
+            ColumnType::Unsupported {
+                type_name: String::new(),
+            }
+        );
+    }
 }

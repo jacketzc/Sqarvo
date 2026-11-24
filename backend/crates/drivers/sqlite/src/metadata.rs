@@ -1767,7 +1767,15 @@ fn declared_type(declared: &str) -> ColumnType {
     }
     let (base, arguments) = split_declared_type(declared);
     let upper = base.to_ascii_uppercase();
-    if upper.contains("INT") {
+    if upper == "BOOL" || upper == "BOOLEAN" {
+        // SQLite 没有独立布尔存储类：BOOLEAN 以 INTEGER 0/1 存储（NUMERIC 亲和）。
+        // 按 MariaDB 对 tinyint(1) 的同一口径当小整数返回，既不伪造成 bool，也不让
+        // 前端把这一列判成「类型不可编辑」（Unsupported 会挡住新增行/单元格编辑弹窗）。
+        ColumnType::Integer {
+            bits: 8,
+            unsigned: false,
+        }
+    } else if upper.contains("INT") {
         ColumnType::Integer {
             bits: 64,
             unsigned: false,
@@ -1856,6 +1864,20 @@ mod tests {
             }
         );
         assert_eq!(declared_type(""), ColumnType::Binary { length: None });
+    }
+
+    #[test]
+    fn declared_boolean_is_an_integer_so_it_stays_editable() {
+        // 回归：BOOLEAN 曾落到 Unsupported，前端据此把该列判成「类型不可编辑」，
+        // 新增行/单元格双击都不弹编辑框。SQLite 实际以 INTEGER 0/1 存储，按小整数
+        // 返回（与 MariaDB tinyint(1) 同口径），既诚实又可编辑。
+        let expected = ColumnType::Integer {
+            bits: 8,
+            unsigned: false,
+        };
+        assert_eq!(declared_type("BOOLEAN"), expected);
+        assert_eq!(declared_type("bool"), expected);
+        assert_eq!(declared_type("BOOLEAN(1)"), expected);
     }
 
     #[test]

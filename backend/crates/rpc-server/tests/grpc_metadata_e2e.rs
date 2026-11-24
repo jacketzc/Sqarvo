@@ -619,3 +619,78 @@ async fn metadata_rpcs_are_wired_and_not_unimplemented() {
     );
     server.stop().await;
 }
+
+/// 回归：SQLite 声明为 BOOLEAN 的列必须报 INTEGER（可按整数编辑），不能落到
+/// UNSUPPORTED —— 后者会让前端 `type_editable()` 判 false，双击 / 新增行都不弹编辑框
+/// （用户实测 `local_component.force_upgrade`）。这里覆盖真实 UDS + gRPC 的整条契约链。
+#[tokio::test]
+async fn sqlite_declared_boolean_columns_are_reported_as_editable_integer() {
+    let server = MetadataServer::start();
+    let channel = server.channel().await;
+    let mut connections =
+        ConnectionServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut queries =
+        QueryServiceClient::with_interceptor(channel.clone(), auth(server.token.clone()));
+    let mut metadata = MetadataServiceClient::with_interceptor(channel, auth(server.token.clone()));
+
+    let connected = stage(
+        "Connect",
+        connections
+            .connect(ConnectRequest {
+                params: Some(server.params()),
+                display_name: "boolean-column".to_owned(),
+            })
+            .await,
+    );
+    let session_id = connected.session_id.clone();
+    stage(
+        "Execute(DDL)",
+        queries
+            .execute(ExecuteQueryRequest {
+                session_id: session_id.clone(),
+                sql: "CREATE TABLE flags(id INTEGER PRIMARY KEY, enabled BOOLEAN NOT NULL)"
+                    .to_owned(),
+                ..ExecuteQueryRequest::default()
+            })
+            .await,
+    );
+
+    let reference = ObjectRef {
+        session_id: session_id.clone(),
+        name: "flags".to_owned(),
+        kind: ObjectKind::Table as i32,
+        ..ObjectRef::default()
+    };
+    let columns = stage(
+        "GetColumns(flags)",
+        metadata
+            .get_columns(GetColumnsRequest {
+                object: Some(reference),
+            })
+            .await,
+    );
+    let enabled = columns
+        .columns
+        .iter()
+        .find(|column| column.name == "enabled")
+        .expect("enabled 列");
+    let column_type = enabled.r#type.as_ref().expect("列类型");
+    assert_eq!(
+        column_type.kind,
+        ColumnTypeKind::ColumnTypeInteger as i32,
+        "BOOLEAN 必须报 INTEGER 才能被前端判为可编辑，实际 {:?}",
+        column_type.kind
+    );
+    assert_eq!(column_type.original_type_name, "BOOLEAN");
+    assert!(!enabled.nullable, "NOT NULL 必须透传");
+
+    stage(
+        "Disconnect",
+        connections
+            .disconnect(DisconnectRequest {
+                connection_id: connected.connection_id.clone(),
+            })
+            .await,
+    );
+    server.stop().await;
+}
