@@ -79,12 +79,6 @@ en = "MCP Management"
 status = "done"
 
 [[entry]]
-key = "workspace.mcp.close"
-zh = "关闭"
-en = "Close"
-status = "done"
-
-[[entry]]
 key = "workspace.mcp.service"
 zh = "HTTP 服务"
 en = "HTTP service"

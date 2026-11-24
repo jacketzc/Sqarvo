@@ -94,14 +94,6 @@ fn show(window: &adw::ApplicationWindow, access: &Rc<McpAccess>) {
         .build();
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
-    let close = gtk::Button::with_label(l10n::t("workspace.mcp.close"));
-    let dialog_ref = dialog.downgrade();
-    close.connect_clicked(move |_| {
-        if let Some(dialog) = dialog_ref.upgrade() {
-            dialog.close();
-        }
-    });
-    header.pack_end(&close);
     view.add_top_bar(&header);
     let page = adw::PreferencesPage::new();
     let toasts = adw::ToastOverlay::new();

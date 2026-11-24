@@ -154,7 +154,7 @@ def codex_mcp(binary, port, env, tool_call=None):
 
 @pytest.mark.smoke
 def test_managed_mcp_http():
-    """注册表组件: shell.menu.mcp, workspace.mcp_management.service/agent。"""
+    """注册表组件: shell.menu.mcp, workspace.mcp_management, workspace.mcp_management.service/agent。"""
     if os.environ.get("SQARVO_UI_PRIVATE_MCP_KEYRING") != "1":
         pytest.skip("requires an isolated, unlocked Secret Service test session")
     mcp = os.environ.get("SQARVO_MCP_BIN")
@@ -377,8 +377,7 @@ def test_managed_mcp_http():
                     })
                     stream = active.getresponse()
                     expect(stream.status == 200, "退出前保持一个活动 SSE 流")
-                    press(panel, "关闭")
-                    A.wait_gone(lambda: A.find_dialog(inst.app, "MCP 管理"), 10, "管理页关闭")
+                    ops.close_mcp_management(inst.app, panel)
                     inst.proc.terminate()
                     expect(inst.proc.wait(timeout=20) == 0, "GTK 正常退出")
                     # A blocked shutdown would leave the SSE stream open until the socket timeout.

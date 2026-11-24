@@ -134,10 +134,17 @@ precondition = "从 MCP 一级入口打开"
 result = "回读管理配置、服务状态与数据库权限。后端断开时展示状态不可用。"
 source = "frontend/linux/src/mcp_management.rs"
 
+[[component.interaction]]
+trigger = "click"
+precondition = "MCP 管理页已打开，点击标题栏原生关闭按钮"
+result = "关闭 MCP 管理页。标题栏仅提供一个关闭按钮。"
+source = "frontend/linux/src/mcp_management.rs"
+
 [component.sync.linux]
-state = "done"
-spec_hash = "b353e68cc611"
-evidence = "AT-SPI test_06_mcp_access.py 打开管理页；test_07_mcp_http.py 验证新控件、状态和权限。"
+state = "partial"
+note = "已接入原生关闭按钮，待在 GNOME Wayland 会话中完成 AT-SPI 验收。"
+spec_hash = "64ec7ae0d6a6"
+evidence = "AT-SPI 用例 test_06_mcp_access.py 和 test_07_mcp_http.py 断言关闭按钮唯一且可关闭管理页。"
 
 [component.sync.windows]
 state = "blocked"

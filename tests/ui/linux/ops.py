@@ -12,6 +12,7 @@ from adapter import (
     UIError,
     action_names,
     click,
+    find_dialog,
     find_one,
     query,
     states,
@@ -431,3 +432,15 @@ def close_current_query_tab(frame, timeout=15):
     window_action(frame, "win.close-tab")
     wait_until(lambda: len(query_tab_names(frame)) < len(before), timeout,
                "当前查询标签关闭")
+
+
+def close_mcp_management(app, panel):
+    """Dismiss MCP Management through its single native close button."""
+    close_buttons = [
+        button
+        for name in ("关闭", "Close")
+        for button in query(panel, role_in=("button",), name=name)
+    ]
+    expect(len(close_buttons) == 1, "MCP 管理页只有一个关闭按钮", len(close_buttons))
+    click(close_buttons[0])
+    wait_gone(lambda: find_dialog(app, "MCP 管理"), 10, "管理页关闭")

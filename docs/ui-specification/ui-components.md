@@ -3104,7 +3104,7 @@ MCP 管理页的服务器、策略和 Agent 接入，以及启动态和已连接
 | `workspace.manage.menu.mcp_access` | 　　　MCP 数据访问 | item | active | done | blocked | na |
 | `workspace.manage.menu.mcp_readonly` | 　　　MCP 只读 | item | active | done | blocked | na |
 | `workspace.status.mcp_indicator` | 　　MCP 访问状态 | control | active | done | blocked | na |
-| `workspace.mcp_management` | 　MCP 管理 | container | active | done | blocked | na |
+| `workspace.mcp_management` | 　MCP 管理 | container | active | partial | blocked | na |
 | `workspace.mcp_management.service` | 　　HTTP 服务 | control | active | done | blocked | na |
 | `workspace.mcp_management.agent` | 　　Agent 接入 | control | active | done | blocked | na |
 | `workspace.mcp_management.token` | 　　访问令牌管理 | item | active | done | blocked | na |
@@ -3159,11 +3159,12 @@ kind `container` · status `active` · parent `workspace`
 
 - 无障碍：可访问名「MCP 管理」；Tab 打开后依次浏览 HTTP 服务、权限管理、Agent 接入、访问令牌管理
 - 原生控件：gtk:AdwDialog + AdwPreferencesPage / winui:— / swift:—
-- 同步：Linux done（AT-SPI test_06_mcp_access.py 打开管理页；test_07_mcp_http.py 验证新控件、状态和权限。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
+- 同步：Linux partial（已接入原生关闭按钮，待在 GNOME Wayland 会话中完成 AT-SPI 验收。）；Windows blocked（Windows 前端未接入 MCP 管理，见行为契约 §9。）；macOS na（macOS 前端尚未接入 MCP。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 从 MCP 一级入口打开 | 回读管理配置、服务状态与数据库权限。后端断开时展示状态不可用。 | `frontend/linux/src/mcp_management.rs` |
+| click | MCP 管理页已打开，点击标题栏原生关闭按钮 | 关闭 MCP 管理页。标题栏仅提供一个关闭按钮。 | `frontend/linux/src/mcp_management.rs` |
 
 ### `workspace.mcp_management.service` HTTP 服务
 

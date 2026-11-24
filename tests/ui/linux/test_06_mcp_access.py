@@ -57,7 +57,7 @@ def confirm_scope(dialog, *, write):
 
 def test_mcp_access_menu_and_live_status(app_with_profile):
     """注册表组件: shell.menu, workspace.manage.menu.mcp_access,
-    workspace.status.mcp_indicator, dialog.mcp_enable_confirm。
+    workspace.status.mcp_indicator, dialog.mcp_enable_confirm, workspace.mcp_management。
     """
     inst = app_with_profile
     frame = inst.frame()
@@ -69,7 +69,7 @@ def test_mcp_access_menu_and_live_status(app_with_profile):
         A.find_one(panel, role_in=("button",), name="复制提示词（http方式）", timeout=10)
         A.find_one(panel, role_in=("button",), name="复制提示词（stdio方式）", timeout=10)
         expect(not A.query(panel, name="复制 Codex 客户端配置"), "旧 Codex 配置入口已移除")
-        respond(panel, "关闭")
+        ops.close_mcp_management(inst.app, panel)
         # GTK exposes unnamed AT-SPI menu items. The window action is the same
         # action bound to the native menu, whose labels are checked by Rust tests.
         actions = A.action_names(frame)
@@ -247,4 +247,4 @@ def test_mcp_management_reports_port_conflict(app_with_profile):
         status(panel, "HTTP 端口已被占用")
         with socket.create_connection(("127.0.0.1", port), timeout=3):
             pass
-        respond(panel, "关闭")
+        ops.close_mcp_management(inst.app, panel)
