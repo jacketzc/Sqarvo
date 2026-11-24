@@ -254,14 +254,7 @@ impl WritePlan {
     }
 }
 
-/// SQL dialect supported by the write policy.
-#[derive(Clone, Copy)]
-pub enum WriteDialect {
-    /// SQLite identifier quoting and parser rules.
-    Sqlite,
-    /// MariaDB identifier quoting and parser rules.
-    MariaDb,
-}
+pub use sqarvo_driver_api::WriteDialect;
 
 /// Verify that the driver statement and ordered bindings exactly represent the write plan.
 ///

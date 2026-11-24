@@ -1,4 +1,5 @@
 # ADR 0039 · MCP 受控 DDL 的专用会话与持久终态
+- [ADR 0042](0042-mcp-native-mariadb-writes.md) 更新普通 MariaDB 实例的操作范围。
 
 状态：已接受（维护者确认 #5）。关联 REQ-MCP-014、#250、ADR 0037 和 ADR 0038。
 

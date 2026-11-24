@@ -221,9 +221,9 @@ fn request_cancel_factory(
 impl SqarvoMcpServer {
     #[tool]
     /// 列出共享连接档案及懒连接状态（需要启用 MCP 全局数据访问）。
-    /// 不会主动连接数据库；返回 `alias`、`driver_id`、`database`、
-    /// `connection_status` 与上次失败子码，不含用户名、连接串、密码或
-    /// `credential_ref`。
+    /// Identify a connection by its `display_name`, then pass `connection_id` as
+    /// `connection_alias` to other tools. The list includes the legacy alias and
+    /// connection status. Listing opens no database connection.
     async fn list_connections(
         &self,
         _params: Parameters<connection::ListConnectionsParams>,

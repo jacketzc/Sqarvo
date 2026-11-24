@@ -11,6 +11,7 @@ use rmcp::service::RequestContext;
 use serde_json::{Map, Value, json};
 use sqarvo_common::{Error, ErrorCategory, ErrorCode, QueryId, Result};
 use sqarvo_connection::SessionHandle;
+use sqarvo_local_store::ConnectionProfile;
 use tokio_util::sync::CancellationToken;
 
 use crate::access::{AccessService, OperationType};
@@ -133,6 +134,11 @@ pub(crate) async fn call(
         Ok(access) => access,
         Err(error) => return reject(&audit, record, op, started, error).await,
     };
+    let authorized = !profile_access.read_only();
+    let Some(profile) = profile_access.profile else {
+        let error = Error::internal("The authorized request is missing a connection profile");
+        return reject(&audit, record, op, started, error).await;
+    };
     record = record.with_target(Some(&alias), Some(&plan.database));
     let token = context.ct.child_token();
     let cancellation = token.clone();
@@ -162,16 +168,9 @@ pub(crate) async fn call(
     };
     let response = async {
         if expected.is_none() {
-            preview(
-                access,
-                plan,
-                call,
-                !profile_access.read_only(),
-                &cancellation,
-            )
-            .await
+            preview(access, profile, plan, call, authorized, &cancellation).await
         } else {
-            execute_write(access, plan, call, &cancellation).await
+            execute_write(access, profile, plan, call, &cancellation).await
         }
     };
     tokio::pin!(response);
@@ -195,6 +194,7 @@ struct WriteCall {
 
 async fn preview(
     access: &AccessService,
+    profile: ConnectionProfile,
     plan: WritePlan,
     call: WriteCall,
     authorized: bool,
@@ -206,7 +206,6 @@ async fn preview(
         request_id,
         started,
     } = call;
-    let alias = plan.connection_alias.clone();
     let op = plan.action.operation();
     let table = plan.table.clone();
     let timeout = access.limits().query_timeout;
@@ -216,7 +215,7 @@ async fn preview(
     let inspection = if authorized {
         let token = cancelled.clone();
         access
-            .run_write_cancellable(&alias, op, cancelled, move |handle| async move {
+            .run_write_on_profile(profile, op, cancelled, move |handle| async move {
                 let deadline = tokio::time::Instant::now() + timeout;
                 let tx =
                     write_transaction::begin(&handle, true, deadline, token.cancelled()).await?;
@@ -229,7 +228,7 @@ async fn preview(
                     () = tokio::time::sleep_until(deadline) => Err(Error::new(
                         ErrorCode::MCP_QUERY_TIMEOUT, ErrorCategory::Timeout, "The write preview timed out",
                     )),
-                    result = inspect(&handle, &plan, query_id) => result,
+                    result = inspect_standalone(&handle, &plan, query_id, true) => result,
                 };
                 if result.is_err() {
                     write_transaction::finish(
@@ -332,6 +331,7 @@ fn preview_summary(action: &WriteAction) -> Value {
 
 async fn execute_write(
     access: &AccessService,
+    profile: ConnectionProfile,
     plan: WritePlan,
     call: WriteCall,
     cancelled: &CancellationToken,
@@ -342,7 +342,6 @@ async fn execute_write(
         request_id,
         started,
     } = call;
-    let alias = plan.connection_alias.clone();
     let op = plan.action.operation();
     let table = plan.table.clone();
     let timeout = access.limits().query_timeout;
@@ -366,8 +365,10 @@ async fn execute_write(
     let owner_record = record.clone();
     let owner_table = table.clone();
     let token = cancelled.clone();
+    let guard = access.shared_guard();
+    let authorized_profile = profile.clone();
     let result = access
-        .run_write_cancellable(&alias, op, cancelled, move |handle| async move {
+        .run_write_on_profile(profile, op, cancelled, move |handle| async move {
             let outcome = write_transaction::execute(
                 &handle,
                 &queries,
@@ -375,10 +376,13 @@ async fn execute_write(
                 timeout,
                 token.cancelled(),
                 async |handle, plan, query_id| {
-                    inspect(handle, plan, query_id)
+                    let rows = inspect_standalone(handle, plan, query_id, false)
                         .await?
-                        .allowed_rows()
-                        .map(Some)
+                        .allowed_rows()?;
+                    if op == OperationType::Insert {
+                        guard.reauthorize_profile(op, &authorized_profile).await?;
+                    }
+                    Ok(Some(rows))
                 },
                 async |affected| {
                     persist(
@@ -392,7 +396,11 @@ async fn execute_write(
                         None,
                     )
                     .await
-                    .map_err(|_| audit_unavailable())
+                    .map_err(|_| audit_unavailable())?;
+                    if op == OperationType::Insert {
+                        guard.reauthorize_profile(op, &authorized_profile).await?;
+                    }
+                    Ok(())
                 },
             )
             .await;
@@ -414,23 +422,54 @@ async fn execute_write(
         .await;
 
     match result {
-        Ok((phase, rows, None, audit_warning)) => Ok(CallToolResult::structured(json!({
+        Ok((phase, rows, error, audit_warning)) => Ok(write_response(
+            &request_id,
+            &table,
+            op,
+            phase,
+            rows,
+            error,
+            audit_warning,
+        )),
+        Err(error) => reject(&audit, record, op, started, safe_error(error)).await,
+    }
+}
+
+fn write_response(
+    request_id: &str,
+    table: &str,
+    op: OperationType,
+    phase: WritePhase,
+    rows: Option<u64>,
+    error: Option<Error>,
+    audit_warning: bool,
+) -> CallToolResponse {
+    match error {
+        None => CallToolResult::structured(json!({
             "request_id": request_id, "operation": label(op), "table": table, "affected_rows": rows,
             "count_kind": if op == OperationType::Update { "matched" } else { "direct" },
             "transaction_state": phase, "audit_warning": audit_warning,
         }))
-        .into()),
-        Ok((phase, rows, Some(error), audit_warning)) => {
+        .into(),
+        Some(error) => {
             let error = safe_error(error);
             let mut payload = crate::error::structured_payload(&error);
             payload["request_id"] = json!(request_id);
             payload["transaction_state"] = json!(phase);
             payload["affected_rows"] = json!(rows);
+            if op == OperationType::Insert {
+                payload["count_kind"] = json!("direct");
+                if matches!(
+                    phase,
+                    WritePhase::RolledBack | WritePhase::RollbackUnconfirmed
+                ) {
+                    payload["rollback_scope"] = json!("transactional_changes");
+                }
+            }
             payload["audit_warning"] = json!(audit_warning);
             payload["error"]["retryable"] = json!(false);
-            Ok(CallToolResult::structured_error(payload).into())
+            CallToolResult::structured_error(payload).into()
         }
-        Err(error) => reject(&audit, record, op, started, safe_error(error)).await,
     }
 }
 
@@ -454,6 +493,36 @@ fn outcome_fields(outcome: TransactionOutcome) -> (WritePhase, Option<u64>, Opti
             (WritePhase::RollbackUnconfirmed, affected, Some(error))
         }
     }
+}
+
+async fn inspect_standalone(
+    handle: &SessionHandle,
+    plan: &WritePlan,
+    query_id: QueryId,
+    preview: bool,
+) -> Result<WriteScope> {
+    if let WriteAction::Insert(rows) = &plan.action {
+        let columns = rows
+            .first()
+            .ok_or_else(|| Error::internal("An insert has no rows"))?
+            .values
+            .iter()
+            .map(|value| value.column.clone())
+            .collect();
+        if handle
+            .check_native_insert(sqarvo_driver_api::InsertTarget {
+                query_id,
+                database: plan.database.clone(),
+                table: plan.table.clone(),
+                columns,
+                preview,
+            })
+            .await?
+        {
+            return Ok(WriteScope::Bounded(rows.len() as u64));
+        }
+    }
+    inspect(handle, plan, query_id).await
 }
 
 pub(super) async fn inspect(
@@ -561,7 +630,18 @@ pub(super) fn safe_error(error: Error) -> Error {
         | ErrorCode::QUERY_CANCELLED
         | ErrorCode::MCP_INTERNAL
         | ErrorCode::MCP_CONNECTION_DENIED
+        | ErrorCode::PROFILE_REVISION_CONFLICT
         | ErrorCode::CAPABILITY_UNSUPPORTED => error,
+        code if code.as_str() == "sqlite.read_only" => Error::new(
+            error.code(),
+            error.category(),
+            "The SQLite connection is read-only",
+        ),
+        _ if error.category() == ErrorCategory::PermissionDenied => Error::new(
+            error.code(),
+            error.category(),
+            "The current database account does not have permission for this write",
+        ),
         _ => Error::new(
             error.code(),
             error.category(),

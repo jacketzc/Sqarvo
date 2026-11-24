@@ -370,7 +370,7 @@ impl ServerHandler for SqarvoMcpServer {
                     if matches!(
                         error.code(),
                         ErrorCode::MCP_CONNECTION_DENIED
-                            | ErrorCode::PROFILE_RESTART_REQUIRED
+                            | ErrorCode::PROFILE_REVISION_CONFLICT
                             | ErrorCode::PROFILE_AMBIGUOUS_NAME
                     ) {
                         ToolCall::from_request(&self.context, &context, "resources/read")

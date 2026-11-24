@@ -5,6 +5,7 @@ use sqarvo_driver_api::ddl::{ColumnType, IndexScope, Syntax};
 pub(crate) fn syntax() -> Syntax {
     Syntax {
         delimiter: '`',
+        transactional: false,
         index_scope: IndexScope::Table,
         table_suffix: " ENGINE=InnoDB",
         inline_identity: false,
@@ -49,7 +50,7 @@ pub(crate) async fn configure(conn: &mut Conn) -> Result<()> {
         .await
         .map_err(metadata_error)?;
     if !server.is_some_and(|(version, init, transaction)| {
-        version.starts_with("11.8.6-MariaDB") && init.is_empty() && transaction == 0
+        version.contains("MariaDB") && init.is_empty() && transaction == 0
     }) {
         return Err(unsupported());
     }
@@ -77,7 +78,10 @@ pub(crate) async fn configure(conn: &mut Conn) -> Result<()> {
             && SQL_MODE
                 .split(',')
                 .all(|setting| mode.split(',').any(|value| value == setting))
-            && (timestamp, keys, case, autocommit) == (1, 1, 0, 1)
+            && timestamp == 1
+            && keys == 1
+            && case <= 2
+            && autocommit == 1
     }) {
         return Err(unsupported());
     }
@@ -85,13 +89,6 @@ pub(crate) async fn configure(conn: &mut Conn) -> Result<()> {
 }
 
 pub(crate) async fn inspect(conn: &mut Conn, change: &Change, preview: bool) -> Result<Inspection> {
-    let current: Option<Option<String>> = conn
-        .query_first("SELECT DATABASE()")
-        .await
-        .map_err(metadata_error)?;
-    if current.flatten().as_deref() != Some(change.database.as_str()) {
-        return Err(unsupported());
-    }
     if !preview {
         let locked: Option<Option<u8>> = conn
             .exec_first("SELECT GET_LOCK(?, 0)", (LOCK,))
@@ -103,6 +100,24 @@ pub(crate) async fn inspect(conn: &mut Conn, change: &Change, preview: bool) -> 
                 "This MariaDB instance already has a schema change in progress",
             ));
         }
+    }
+
+    if matches!(
+        change.action,
+        Action::CreateTable { .. } | Action::AddColumn { .. }
+    ) {
+        return inspect_additive(conn, change).await;
+    }
+    let current: Option<(Option<String>, String, u8)> = conn
+        .query_first("SELECT DATABASE(), VERSION(), @@lower_case_table_names")
+        .await
+        .map_err(metadata_error)?;
+    if !current.is_some_and(|(database, version, case)| {
+        database.as_deref() == Some(change.database.as_str())
+            && version.starts_with("11.8.6-MariaDB")
+            && case == 0
+    }) {
+        return Err(unsupported());
     }
 
     // Both views are installed by the DBA. The eligibility view checks the
@@ -140,9 +155,78 @@ pub(crate) async fn inspect(conn: &mut Conn, change: &Change, preview: bool) -> 
         None => None,
     };
     Ok(Inspection {
+        native_additive: false,
         table,
         destination_exists,
         dependencies_known: true,
+    })
+}
+
+async fn inspect_additive(conn: &mut Conn, change: &Change) -> Result<Inspection> {
+    if matches!(
+        change.database.as_str(),
+        "information_schema" | "mysql" | "performance_schema" | "sys" | "sqarvo_guard"
+    ) {
+        return Err(unsupported());
+    }
+    let kind: Option<String> = conn
+        .exec_first(
+            "SELECT TABLE_TYPE FROM information_schema.TABLES
+         WHERE (BINARY TABLE_SCHEMA = ? AND BINARY TABLE_NAME = ?
+            OR @@lower_case_table_names <> 0
+            AND BINARY LOWER(TABLE_SCHEMA) = BINARY LOWER(?)
+            AND BINARY LOWER(TABLE_NAME) = BINARY LOWER(?))",
+            (
+                &change.database,
+                &change.table,
+                &change.database,
+                &change.table,
+            ),
+        )
+        .await
+        .map_err(metadata_error)?;
+    if kind.as_deref().is_some_and(|kind| kind != "BASE TABLE") {
+        return Err(unsupported());
+    }
+    let table = if matches!(change.action, Action::AddColumn { .. }) && kind.is_some() {
+        let columns: Vec<(String, String, String)> = conn
+            .exec(
+                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS
+             WHERE (BINARY TABLE_SCHEMA = ? AND BINARY TABLE_NAME = ?
+                OR @@lower_case_table_names <> 0
+                AND BINARY LOWER(TABLE_SCHEMA) = BINARY LOWER(?)
+                AND BINARY LOWER(TABLE_NAME) = BINARY LOWER(?))
+             ORDER BY ORDINAL_POSITION LIMIT 65",
+                (
+                    &change.database,
+                    &change.table,
+                    &change.database,
+                    &change.table,
+                ),
+            )
+            .await
+            .map_err(metadata_error)?;
+        Some(Table {
+            definition: String::new(),
+            indexes: Vec::new(),
+            columns: columns
+                .into_iter()
+                .map(|(name, kind, nullable)| TableColumn {
+                    name,
+                    kind,
+                    nullable: nullable == "YES",
+                    primary_key: 0,
+                })
+                .collect(),
+        })
+    } else {
+        None
+    };
+    Ok(Inspection {
+        table,
+        destination_exists: kind.is_some(),
+        dependencies_known: false,
+        native_additive: true,
     })
 }
 

@@ -1,6 +1,6 @@
 # ADR 0035 共享连接档案与 MCP 全局访问
 
-- 状态：已接受（2026-11-18，改动确认单 #2）
+- 状态：已接受（2026-11-18，改动确认单 #2）。会话热更新规则由 [ADR 0041](0041-mcp-live-connection-profiles.md) 更新。
 - 关联：REQ-CONN-009/010、REQ-MCP-007/008/009，[M10](https://github.com/jacketzc/Sqarvo/milestone/11)。
 - 上游：[ADR 0008](0008-session-concurrency.md)、[ADR 0012](0012-credential-reference.md)、
   [ADR 0016](0016-credential-write-rpc.md)、[ADR 0032](0032-mcp-standalone-process.md)、

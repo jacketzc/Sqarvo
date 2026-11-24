@@ -136,6 +136,113 @@ fn external_revocation_denies_new_requests_and_closes_physical_connection() {
 }
 
 #[test]
+fn profiles_added_renamed_retargeted_and_deleted_over_stdio() {
+    use sqarvo_local_store::{AppPaths, ConnectionProfile, ProfileStore};
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let config = common::write_config(home, &json!({}));
+    common::enable_access(&config, home);
+    let mut server = common::Server::spawn(&config, home);
+    common::handshake(&mut server, "2025-11-25", "2025-11-25", 1);
+    let first = home.join("first.db");
+    let second = home.join("second.db");
+    for (database, sql) in [
+        (&first, "CREATE TABLE items (first_column INTEGER)"),
+        (&second, "CREATE TABLE items (second_column TEXT)"),
+    ] {
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
+    }
+
+    let paths = AppPaths::from_roots(
+        home.join("config/sqarvo"),
+        home.join("data/sqarvo"),
+        home.join("run"),
+    );
+    let store = ProfileStore::new(&paths);
+    let legacy = json!({"connections":[{
+        "alias":"fixture", "driver_id":"sqlite", "host":first, "enabled":true
+    }]});
+    let validated = sqarvo_mcp::config::parse(&legacy.to_string())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let params = validated
+        .connection("fixture")
+        .unwrap()
+        .to_connection_params()
+        .unwrap();
+    let mut profile = store
+        .save(
+            ConnectionProfile {
+                profile_id: uuid::Uuid::nil(),
+                revision: 0,
+                name: "开发库 SQLite".into(),
+                params,
+                file_path: String::new(),
+                display_name: None,
+                last_used: None,
+            },
+            None,
+        )
+        .unwrap();
+    let id = profile.profile_id.to_string();
+    let list = common::call_tool(&mut server, 2, "list_connections", json!({}), None);
+    let entry = &common::assert_call_result(&list, false)["structuredContent"]["connections"][0];
+    assert_eq!(entry["connection_id"], id);
+    assert_eq!(entry["display_name"], "开发库 SQLite");
+    assert_eq!(entry["alias"], id);
+    assert_eq!(entry["connection_status"], "not_connected");
+    assert!(!database_open(server.pid(), &first));
+
+    let args = json!({"connection_alias":id,"database":"main","table":"items"});
+    let describe = common::call_tool(&mut server, 3, "describe_table", args.clone(), None);
+    assert_eq!(
+        common::assert_call_result(&describe, false)["structuredContent"]["columns"][0]["name"],
+        "first_column"
+    );
+
+    let revision = profile.revision;
+    profile.name = "开发库 已改名".into();
+    let mut profile = store.save(profile, Some(revision)).unwrap();
+    let resource = server.request(4, "resources/read", json!({"uri":"database://connections"}));
+    let payload: Value =
+        serde_json::from_str(resource["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["connections"][0]["display_name"], "开发库 已改名");
+    assert_eq!(payload["connections"][0]["connection_id"], id);
+    let describe = common::call_tool(&mut server, 5, "describe_table", args.clone(), None);
+    common::assert_call_result(&describe, false);
+    let uri = format!("database://{id}/main/tables/items");
+    let table = server.request(6, "resources/read", json!({"uri":uri}));
+    assert!(
+        table["result"]["contents"][0]["text"].is_string(),
+        "{table}"
+    );
+
+    let revision = profile.revision;
+    profile.params.host = second.display().to_string();
+    profile.file_path = profile.params.host.clone();
+    let profile = store.save(profile, Some(revision)).unwrap();
+    let describe = common::call_tool(&mut server, 7, "describe_table", args.clone(), None);
+    assert_eq!(
+        common::assert_call_result(&describe, false)["structuredContent"]["columns"][0]["name"],
+        "second_column"
+    );
+    assert!(!database_open(server.pid(), &first));
+
+    store.delete(profile.profile_id, profile.revision).unwrap();
+    let describe = common::call_tool(&mut server, 8, "describe_table", args, None);
+    assert_eq!(
+        common::assert_call_result(&describe, true)["structuredContent"]["error"]["code"],
+        "mcp.connection_not_found"
+    );
+    assert!(!database_open(server.pid(), &second));
+}
+
+#[test]
 fn disabled_read_only_keeps_ast_policy_and_store_errors_revoke_access() {
     use std::fs::{self, OpenOptions};
 

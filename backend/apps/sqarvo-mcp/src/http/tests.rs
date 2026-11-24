@@ -96,6 +96,60 @@ impl HttpClient {
     }
 }
 
+async fn start_http(
+    context: Arc<ServerContext>,
+) -> (
+    HttpClient,
+    CancellationToken,
+    Arc<LocalSessionManager>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let authority = addr.to_string();
+    let origin = format!("http://{authority}");
+    let client = HttpClient {
+        addr,
+        credential: new_token().unwrap(),
+        next_request: AtomicU64::new(2),
+    };
+    let secret = Arc::new(MemoryCredentialStore::new());
+    secret.set(AUTH_REFERENCE, &client.credential).unwrap();
+    let shutdown = CancellationToken::new();
+    let sessions = Arc::new(LocalSessionManager::default());
+    let writes = Arc::new(WriteSessions::new(Some(
+        Sha256::digest(client.credential.expose().as_bytes()).into(),
+    )));
+    let config = StreamableHttpServerConfig::default()
+        .with_cancellation_token(shutdown.clone())
+        .with_allowed_hosts([authority.clone()])
+        .with_allowed_origins([origin.clone()]);
+    let router = router(
+        SqarvoMcpServer::new_http(context),
+        config,
+        HttpAuth {
+            authority,
+            origin,
+            store: secret,
+            active: Arc::new(Semaphore::new(16)),
+            initializing: Arc::new(Semaphore::new(1)),
+            sessions: Arc::clone(&sessions),
+            writes,
+            shutdown: shutdown.clone(),
+        },
+    );
+    let cancellation = shutdown.clone();
+    let service = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(cancellation.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    (client, shutdown, sessions, service)
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // Drive the production router and session middleware over loopback.
 async fn authenticated_http_transaction_isolation_and_delete() {
@@ -138,52 +192,11 @@ async fn authenticated_http_transaction_isolation_and_delete() {
         .await
         .unwrap();
 
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let authority = addr.to_string();
-    let origin = format!("http://{authority}");
-    let client = HttpClient {
-        addr,
-        credential: new_token().unwrap(),
-        next_request: AtomicU64::new(2),
-    };
-    let secret = Arc::new(MemoryCredentialStore::new());
-    secret.set(AUTH_REFERENCE, &client.credential).unwrap();
-    let shutdown = CancellationToken::new();
-    let sessions = Arc::new(LocalSessionManager::default());
-    let writes = Arc::new(WriteSessions::new(Some(
-        Sha256::digest(client.credential.expose().as_bytes()).into(),
-    )));
-    let config = StreamableHttpServerConfig::default()
-        .with_cancellation_token(shutdown.clone())
-        .with_allowed_hosts([authority.clone()])
-        .with_allowed_origins([origin.clone()]);
-    let router = router(
-        SqarvoMcpServer::new_http(Arc::clone(&context)),
-        config,
-        HttpAuth {
-            authority,
-            origin,
-            store: secret,
-            active: Arc::new(Semaphore::new(16)),
-            initializing: Arc::new(Semaphore::new(1)),
-            sessions: Arc::clone(&sessions),
-            writes,
-            shutdown: shutdown.clone(),
-        },
-    );
-    let cancellation = shutdown.clone();
-    let service = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(cancellation.cancelled_owned())
-            .await
-            .unwrap();
-    });
+    let (client, shutdown, sessions, service) = start_http(Arc::clone(&context)).await;
     let first = client.initialize().await;
     let second = client.initialize().await;
     assert_ne!(first, second);
+    assert_live_profiles_http(&client, &first, &ProfileStore::new(&paths), base).await;
     let list = client.rpc(&first, "tools/list", json!({})).await;
     for name in crate::config::tool_names() {
         assert!(
@@ -316,6 +329,89 @@ fn ddl_test_id() -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+async fn assert_live_profiles_http(
+    client: &HttpClient,
+    session: &str,
+    store: &ProfileStore,
+    base: &Path,
+) {
+    let a = base.join("profile-a.db");
+    let b = base.join("profile-b.db");
+    for (path, sql) in [
+        (&a, "CREATE TABLE items (column_a INTEGER)"),
+        (&b, "CREATE TABLE items (column_b INTEGER)"),
+    ] {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
+    }
+    let mut draft = store
+        .snapshot()
+        .unwrap()
+        .resolve("fixture")
+        .unwrap()
+        .clone();
+    draft.profile_id = uuid::Uuid::nil();
+    draft.revision = 0;
+    draft.name = "HTTP 开发库".into();
+    draft.params.host = a.display().to_string();
+    draft.file_path.clone_from(&draft.params.host);
+    let mut profile = store.save(draft, None).unwrap();
+    let id = profile.profile_id.to_string();
+    let list = client.tool(session, "list_connections", json!({})).await;
+    assert!(
+        list["structuredContent"]["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["connection_id"] == id && entry["display_name"] == "HTTP 开发库"),
+        "{list}"
+    );
+    let args = json!({"connection_alias":id,"database":"main","table":"items"});
+    let first = client.tool(session, "describe_table", args.clone()).await;
+    assert_eq!(
+        first["structuredContent"]["columns"][0]["name"], "column_a",
+        "{first}"
+    );
+
+    let revision = profile.revision;
+    profile.name = "HTTP 已改名".into();
+    profile.display_name = Some("HTTP 已改名".into());
+    profile.params.host = b.display().to_string();
+    profile.file_path.clone_from(&profile.params.host);
+    let profile = store.save(profile, Some(revision)).unwrap();
+    let resource = client
+        .rpc(
+            session,
+            "resources/read",
+            json!({"uri":"database://connections"}),
+        )
+        .await;
+    let connections: Value =
+        serde_json::from_str(resource["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        connections["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["connection_id"] == id && entry["display_name"] == "HTTP 已改名"),
+        "{resource}"
+    );
+    let second = client.tool(session, "describe_table", args.clone()).await;
+    assert_eq!(
+        second["structuredContent"]["columns"][0]["name"], "column_b",
+        "{second}"
+    );
+
+    store.delete(profile.profile_id, profile.revision).unwrap();
+    let missing = client.tool(session, "describe_table", args).await;
+    assert_eq!(
+        missing["structuredContent"]["error"]["code"], "mcp.connection_not_found",
+        "{missing}"
+    );
+}
+
 async fn assert_schema_http(client: &HttpClient, session: &str) {
     let target = json!({"connection_alias":"fixture","database":"main","table":"items"});
     let result = client
@@ -389,4 +485,380 @@ async fn assert_ddl_http(client: &HttpClient, session: &str) {
     );
     let result = client.tool(session, "create_table", args).await;
     assert_eq!(result["structuredContent"]["replayed"], true, "{result}");
+}
+
+#[tokio::test]
+async fn native_mariadb_writes_over_http_and_stdio() {
+    let Ok(port) = std::env::var("SQARVO_NATIVE_MARIADB_PORT") else {
+        eprintln!("requires disposable MariaDB and mcp-native-mariadb-fixture.sql");
+        return;
+    };
+    let port: u16 = port.parse().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path();
+    let config = base.join("fixture.json");
+    let profile = |name, username, database| {
+        json!({
+            "alias": name, "driver_id":"mariadb", "host":"127.0.0.1", "port":port,
+            "username":username, "database":database, "enabled":true, "tls":"disabled",
+        })
+    };
+    let mut profiles = vec![
+        profile("writer", "native_writer", Some("native_a")),
+        profile("insert_only", "native_insert", None),
+        profile("reader", "native_read", None),
+    ];
+    let proxy_port = std::env::var("SQARVO_NATIVE_MARIADB_ACK_PROXY_PORT").ok();
+    if let Some(proxy_port) = &proxy_port {
+        let mut proxy = profile("proxy", "native_writer", Some("native_a"));
+        proxy["port"] = json!(proxy_port.parse::<u16>().unwrap());
+        profiles.push(proxy);
+    }
+    std::fs::write(&config, json!({"connections":profiles}).to_string()).unwrap();
+
+    let paths = AppPaths::from_roots(base.join("config"), base.to_owned(), base.join("run"));
+    let store = ProfileStore::new(&paths);
+    let context = Arc::new(
+        ServerContext::bootstrap_with(Some(&config), base)
+            .await
+            .unwrap(),
+    );
+    let (client, shutdown, sessions, service) = start_http(Arc::clone(&context)).await;
+    let http = client.initialize().await;
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    let row = u32::from_be_bytes(bytes[..4].try_into().unwrap()) % 1_000_000_000 + 1;
+    assert_native_writes(
+        async |tool, args| client.tool(&http, tool, args).await,
+        &store,
+        row,
+    )
+    .await;
+    assert_native_ddl_lock_timeout(&client, &http, &store, &context).await;
+    shutdown.cancel();
+    close_sessions(&sessions).await;
+    service.await.unwrap();
+
+    assert_native_stdio(&context, &store, row + 10, proxy_port.is_some()).await;
+    context.shutdown().await;
+}
+
+async fn assert_native_stdio(
+    context: &Arc<ServerContext>,
+    store: &ProfileStore,
+    row: u32,
+    simulate_reply_loss: bool,
+) {
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let (server_pipe, client_pipe) = tokio::io::duplex(32 * 1024);
+    let stdio_server = SqarvoMcpServer::new(Arc::clone(context));
+    let (server_read, server_write) = tokio::io::split(server_pipe);
+    let server = tokio::spawn(async move {
+        Box::pin(stdio_server.serve((server_read, server_write)))
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let (read, mut write) = tokio::io::split(client_pipe);
+    let mut read = BufReader::new(read);
+    let mut rpc = async |method: &str, params: Value, id: Option<u64>| {
+        let mut request = json!({"jsonrpc":"2.0","method":method,"params":params});
+        if let Some(id) = id {
+            request["id"] = json!(id);
+        }
+        write
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        if id.is_none() {
+            return Value::Null;
+        }
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(15), read.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()["result"].clone()
+    };
+    let initialize = rpc("initialize", json!({
+        "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
+    }), Some(1)).await;
+    assert_eq!(initialize["protocolVersion"], "2025-11-25");
+    rpc("notifications/initialized", json!({}), None).await;
+    let mut id = 1;
+    assert_native_writes(
+        async |tool, args| {
+            id += 1;
+            rpc(
+                "tools/call",
+                json!({"name":tool,"arguments":args}),
+                Some(id),
+            )
+            .await
+        },
+        store,
+        row,
+    )
+    .await;
+    if simulate_reply_loss {
+        assert_native_unknown_reply(
+            async |tool, args| {
+                id += 1;
+                rpc(
+                    "tools/call",
+                    json!({"name":tool,"arguments":args}),
+                    Some(id),
+                )
+                .await
+            },
+            store,
+        )
+        .await;
+    }
+    write.shutdown().await.unwrap();
+    server.await.unwrap();
+}
+
+async fn assert_native_ddl_lock_timeout(
+    client: &HttpClient,
+    session: &str,
+    store: &ProfileStore,
+    context: &ServerContext,
+) {
+    use sqarvo_driver_api::{IsolationLevel, TransactionOptions};
+
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    let params = store
+        .snapshot()
+        .unwrap()
+        .resolve("writer")
+        .unwrap()
+        .params
+        .clone();
+    let blocker = context
+        .access()
+        .session_manager()
+        .connect_isolated("lock fixture", params)
+        .await
+        .unwrap();
+    let transaction = blocker
+        .begin_transaction(TransactionOptions {
+            isolation: IsolationLevel::Serializable,
+            read_only: true,
+        })
+        .await
+        .unwrap();
+    blocker
+        .execute(ExecuteRequest {
+            query_id: QueryId::new(),
+            sql: "SELECT id FROM native_b.items LIMIT 1".into(),
+            max_rows: Some(1),
+            timeout: None,
+        })
+        .await
+        .unwrap();
+    let response = client
+        .tool(
+            session,
+            "alter_table",
+            json!({
+                "connection_alias":"writer","database":"native_b","table":"items",
+                "action":"add_column","column":{"name":"lock_probe","type":"integer"},
+                "operation_id":ddl_test_id(),
+            }),
+        )
+        .await;
+    assert_eq!(
+        response["structuredContent"]["state"], "failed",
+        "{response}"
+    );
+    assert_eq!(
+        response["structuredContent"]["error"]["category"], "timeout",
+        "{response}"
+    );
+    blocker
+        .rollback_isolated_transaction(&transaction.transaction_id)
+        .await
+        .unwrap();
+    blocker.close().await.unwrap();
+}
+
+async fn assert_native_unknown_reply(
+    mut call: impl AsyncFnMut(&str, Value) -> Value,
+    store: &ProfileStore,
+) {
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    let arguments = json!({
+        "connection_alias":"proxy","database":"native_b","table":"ddl_ack_unknown",
+        "columns":[{"name":"id","type":"integer"}], "operation_id":ddl_test_id(),
+    });
+    let response = call("create_table", arguments.clone()).await;
+    assert_eq!(
+        response["structuredContent"]["state"], "outcome_unknown",
+        "{response}"
+    );
+    let replay = call("create_table", arguments).await;
+    assert_eq!(
+        replay["structuredContent"]["state"], "outcome_unknown",
+        "{replay}"
+    );
+    assert_eq!(replay["structuredContent"]["replayed"], true, "{replay}");
+    let read = call(
+        "describe_table",
+        json!({
+            "connection_alias":"writer","database":"native_b","table":"ddl_ack_unknown"
+        }),
+    )
+    .await;
+    assert_eq!(
+        read["structuredContent"]["columns"][0]["name"], "id",
+        "{read}"
+    );
+}
+
+#[allow(clippy::too_many_lines)] // The two protocol fixtures share one ordered set of assertions.
+async fn assert_native_writes(
+    mut call: impl AsyncFnMut(&str, Value) -> Value,
+    store: &ProfileStore,
+    row: u32,
+) {
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: false,
+        })
+        .unwrap();
+    let table = format!("fixture_{}", uuid::Uuid::new_v4().simple());
+    let create = json!({
+        "connection_alias":"writer","database":"native_b","table":table,
+        "columns":[{"name":"id","type":"integer","primary_key":true}], "operation_id":ddl_test_id()
+    });
+    let add = json!({
+        "connection_alias":"writer","database":"native_b","table":table,"action":"add_column",
+        "column":{"name":"value","type":"text"}, "operation_id":ddl_test_id()
+    });
+    for (tool, args) in [("create_table", &create), ("alter_table", &add)] {
+        let applied = call(tool, args.clone()).await;
+        assert_eq!(
+            applied["structuredContent"]["effect"], "applied",
+            "{applied}"
+        );
+        let replay = call(tool, args.clone()).await;
+        assert_eq!(replay["structuredContent"]["replayed"], true, "{replay}");
+    }
+    let description = call(
+        "describe_table",
+        json!({
+            "connection_alias":"writer","database":"native_b","table":table
+        }),
+    )
+    .await;
+    assert_eq!(
+        description["structuredContent"]["columns"][1]["name"], "value",
+        "{description}"
+    );
+    let insert = json!({
+        "connection_alias":"insert_only","database":"native_b","table":"items",
+        "rows":[{"id":row,"parent":1}]
+    });
+    let mut candidate = insert.clone();
+    candidate["operation"] = json!("insert");
+    let preview = call("preview_write", candidate).await;
+    assert_eq!(
+        preview["structuredContent"]["estimated_rows"], 1,
+        "{preview}"
+    );
+    let reply = call("insert_rows", insert.clone()).await;
+    assert_eq!(
+        reply["structuredContent"]["transaction_state"], "committed",
+        "{reply}"
+    );
+    assert_eq!(reply["structuredContent"]["affected_rows"], 1, "{reply}");
+    assert_eq!(
+        reply["structuredContent"]["count_kind"], "direct",
+        "{reply}"
+    );
+    let mut invalid = insert.clone();
+    invalid["rows"] = json!([{"id":row + 1,"parent":-1}]);
+    let failure = call("insert_rows", invalid).await;
+    assert_eq!(
+        failure["structuredContent"]["transaction_state"], "rolled_back",
+        "{failure}"
+    );
+    for table in ["items", "audit"] {
+        let read = call(
+            "execute_readonly_query",
+            json!({
+                "connection_alias":"writer","database":"native_b",
+                "sql":format!("SELECT id FROM {table} WHERE id IN ({row}, {}) ORDER BY id", row + 1)
+            }),
+        )
+        .await;
+        assert_eq!(read["structuredContent"]["rows"], json!([[row]]), "{read}");
+    }
+    for (tool, mut args) in [
+        ("insert_rows", insert.clone()),
+        ("create_table", create.clone()),
+        ("alter_table", add.clone()),
+    ] {
+        args["connection_alias"] = json!("reader");
+        if tool != "insert_rows" {
+            args["operation_id"] = json!(ddl_test_id());
+            args["table"] = if tool == "alter_table" {
+                json!("items")
+            } else {
+                json!(format!("{table}_denied"))
+            };
+        }
+        let rejected = call(tool, args).await;
+        assert_eq!(
+            rejected["structuredContent"]["error"]["code"], "mariadb.permission_denied",
+            "{rejected}"
+        );
+    }
+    let mut nontransactional = insert.clone();
+    nontransactional["table"] = json!("nontransactional");
+    nontransactional["rows"] = json!([{"id":row}]);
+    let rejected = call("insert_rows", nontransactional).await;
+    assert_eq!(
+        rejected["structuredContent"]["error"]["code"], "capability.unsupported",
+        "{rejected}"
+    );
+
+    store
+        .set_mcp_access(McpAccessPolicy {
+            enabled: true,
+            read_only: true,
+        })
+        .unwrap();
+    for (tool, args) in [
+        ("insert_rows", insert),
+        ("create_table", create),
+        ("alter_table", add),
+    ] {
+        let rejected = call(tool, args).await;
+        assert_eq!(
+            rejected["structuredContent"]["error"]["category"], "permission_denied",
+            "{rejected}"
+        );
+    }
+    store.set_mcp_access(McpAccessPolicy::default()).unwrap();
+    let rejected = call("list_connections", json!({})).await;
+    assert_eq!(
+        rejected["structuredContent"]["error"]["code"], "mcp.connection_denied",
+        "{rejected}"
+    );
 }

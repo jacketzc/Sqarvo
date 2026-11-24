@@ -298,7 +298,18 @@ async fn connections_resource_exposes_only_the_contract_fields() {
     assert_keys(&value, &["connections", "count"]);
     assert_eq!(value["count"], 1, "enabled: false 的连接不得出现");
     let entry = &value["connections"][0];
-    assert_keys(entry, &["alias", "driver_id", "connection_status"]);
+    assert_keys(
+        entry,
+        &[
+            "alias",
+            "connection_id",
+            "display_name",
+            "driver_id",
+            "connection_status",
+        ],
+    );
+    assert!(uuid::Uuid::parse_str(entry["connection_id"].as_str().unwrap()).is_ok());
+    assert_eq!(entry["display_name"], "dev");
     assert_eq!(entry["alias"], "dev");
     assert_eq!(entry["driver_id"], "sqlite");
     assert_eq!(entry["connection_status"], "not_connected");

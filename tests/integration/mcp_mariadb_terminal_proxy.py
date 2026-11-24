@@ -7,9 +7,9 @@ With --ddl, forward from loopback 53431 to 53429 and close the socket
 after the server acknowledges the synthetic ddl_ack_unknown CREATE TABLE.
 """
 
+import argparse
 import asyncio
 import contextlib
-import sys
 
 async def packet(reader):
     header = await reader.readexactly(4)
@@ -18,15 +18,24 @@ async def packet(reader):
 
 rollback_count = 0
 connection_count = 0
-startup_mode = sys.argv[1:] == ["--startup"]
-ddl_mode = sys.argv[1:] == ["--ddl"]
+parser = argparse.ArgumentParser(description=__doc__)
+mode = parser.add_mutually_exclusive_group()
+mode.add_argument("--startup", action="store_true")
+mode.add_argument("--ddl", action="store_true")
+parser.add_argument("--upstream-port", type=int)
+parser.add_argument("--listen-port", type=int)
+arguments = parser.parse_args()
+startup_mode = arguments.startup
+ddl_mode = arguments.ddl
+upstream_port = arguments.upstream_port or (53429 if ddl_mode else 53387)
+listen_port = arguments.listen_port or (53431 if ddl_mode else 53388)
 
 
 async def relay(incoming, client):
     global connection_count
     connection_count += 1
     case = connection_count
-    downstream, upstream = await asyncio.open_connection('127.0.0.1', 53429 if ddl_mode else 53387)
+    downstream, upstream = await asyncio.open_connection('127.0.0.1', upstream_port)
     held = None
 
     async def commands():
@@ -93,7 +102,7 @@ async def relay(incoming, client):
     client.close()
 
 async def main():
-    server = await asyncio.start_server(relay, '127.0.0.1', 53431 if ddl_mode else 53388)
+    server = await asyncio.start_server(relay, '127.0.0.1', listen_port)
     async with server:
         await server.serve_forever()
 

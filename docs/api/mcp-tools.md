@@ -53,7 +53,7 @@ cd backend && cargo build -p sqarvo-mcp --release
 | 工具 | 13 个只读工具、4 个 V2 工具、4 个 V2.1 事务工具、6 个 V2.2 工具。`tools/list` 按 `enabled_tools` 筛选 |
 | 资源 | 1 个静态 + 3 个模板（`resources/list` / `resources/templates/list`） |
 | 写操作 | 通过独立的 V2、V2.1、V2.2 结构化入口，受全局访问策略和数据库权限约束 |
-| 审计 | 每次 `tools/call` 落 `audit.jsonl`，只记 SQL 指纹。资源的全局策略拒绝、名称歧义和需要重启也会记录 |
+| 审计 | 每次 `tools/call` 落 `audit.jsonl`，只记 SQL 指纹。资源的全局策略拒绝、名称歧义和版本冲突也会记录 |
 
 `tools/list` 与资源发现提供静态描述。工具调用和资源读取会检查共享档案的全局访问策略。
 SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
@@ -78,8 +78,15 @@ SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 ```jsonc
 {
   "connections": [
-    { "alias": "demo", "driver_id": "sqlite", "database": "",          // SQLite 没有库名 → 空串
-      "connection_status": "not_connected", "last_error_code": "" }    // 正常时为空串
+    {
+      "connection_id": "22222222-2222-4222-8222-222222222222",
+      "display_name": "开发库 SQLite",
+      "alias": "22222222-2222-4222-8222-222222222222",
+      "driver_id": "sqlite",
+      "database": "",
+      "connection_status": "not_connected",
+      "last_error_code": ""
+    }
   ],
   "count": 1
 }
@@ -88,10 +95,15 @@ SQL 查询按档案串行执行，跨档案的并发受进程级上限约束。
 - `connection_status`：`not_connected` / `connected` / `failed`。**调用它不会触发连接**。
 - `last_error_code` 只在 `failed` 时非空，是稳定子码（例：`credential.not_found`），不是驱动
   原始文案。
-- `alias` 用于传入后续工具和资源调用。服务按精确档案 UUID 或唯一名称定位档案。
-  名称有歧义时使用 UUID。结果省略用户名、host/port、连接串、凭据引用和密码。
-- 全局关闭或共享文档不可读时返回 `mcp.connection_denied`。新增或修改的档案可列出，
-  重启前对它建连会返回 `profile.restart_required`。
+- 用 `display_name` 识别连接，将 `connection_id` 原样传给后续工具的 `connection_alias`
+  参数或资源模板的同名变量。UUID 在改名后保持有效。服务也接受唯一的档案 `name`，
+  同名时返回 `profile.ambiguous_name`。可选的 GUI 显示名用于列表展示。
+- 兼容字段 `alias` 保持原规则，优先使用符合旧别名格式的唯一档案名，否则返回 UUID。
+  GUI 没有显式显示名且档案名看起来是自动生成的连接目标或路径时，返回 `Unnamed connection`。
+  结果省略用户名、host/port、连接串、凭据引用和密码字段。
+- stdio 和 Streamable HTTP 都在下一次请求读取已保存的档案。创建后可直接调用工具，
+  修改后按最新版本懒建连，删除后 UUID 无法使用。全局关闭或共享文档不可读时返回
+  `mcp.connection_denied`。
 - 审计：记 `tool_name` 与耗时，`returned_rows` 留空（状态读取没有行）。
 
 ### 3.2 `list_databases`
@@ -272,7 +284,7 @@ UNIQUE 约束和主键。隐式索引单列在可选的 `implicit_indexes`，`co
 
 | URI | 内容（字段互不重复） | 触发连接？ |
 |---|---|---|
-| `database://connections` | `connections: [{alias, driver_id, connection_status}]`、`count` | 否 |
+| `database://connections` | `connections: [{connection_id, display_name, alias, driver_id, connection_status}]`、`count` | 否 |
 | `database://{connection_alias}/{database}/overview` | `connection_alias`、`driver_id`、`database_name`、`server_version`、`schema_support{has_schema_level, capabilities[]}`、`table_count`、`view_count`、`counts_truncated` | 是 |
 | `database://{connection_alias}/{database}/schema` | `database_name`、`object_count`、`by_kind{}`、`objects: [{name, kind, comment}]`、`truncated`、`guidance?` | 是 |
 | `database://{connection_alias}/{database}/tables/{table}` | `database`、`table`、`columns: [ColumnDetail]`、`column_count`、`primary_key[]`、`has_primary_key` | 是 |
@@ -318,7 +330,7 @@ UNIQUE 约束和主键。隐式索引单列在可选的 `implicit_indexes`，`co
 | 资源不存在或未授权：alias 未知、库/表不存在、驱动报错 | `mcp.connection_not_found` / `metadata.object_not_found` 等 | `-32002` |
 
 全局关闭或无法读取策略时，资源读取返回 `-32002`，详情含 `mcp.connection_denied`。
-资源读取因全局策略、名称歧义或档案需要重启而拒绝时，稳定子码以 `resources/read` 写入现有
+资源读取因全局策略、名称歧义或档案版本冲突而拒绝时，稳定子码以 `resources/read` 写入现有
 JSONL 审计。普通资源读取沿用 V1 行为。
 
 整体 JSON 超过生效的 `max_result_bytes`（默认 1 MiB）→ `mcp.result_too_large`（`-32603`），
@@ -500,7 +512,7 @@ SHOW GRANTS FOR 'sqarvo_mcp_ro'@'%';
 1. 服务器条目变绿/「已连接」，展开后能看到工具列表；
 2. 默认发现 `27` 个工具，显式列表配置下等于 `enabled_tools` 里列出的个数（若配了 `enabled_tools: []` 则是 0）；
 3. 资源标签页出现 `database://connections`（静态资源）——**不展开不发起连接**；
-4. 调 `list_connections`：返回 `alias` / `driver_id` / `database` / `connection_status` /
+4. 调 `list_connections`：返回 `connection_id` / `display_name` / `alias` / `driver_id` / `database` / `connection_status` /
    `last_error_code`，**没有任何用户名字段**；
 5. 调一次 `execute_readonly_query`，`SELECT 1` 返回 `structuredContent.columns/rows`；
 6. 关掉该 MCP 服务器/退出客户端 → `ps` 里 `sqarvo-mcp` 进程消失（关窗即退出，不残留）。
@@ -558,7 +570,7 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 | `mcp.connection_not_found` | `not_found` | 否 | 共享档案中找不到指定 UUID 或名称 | 用 `list_connections` 取真名，别猜 |
 | `mcp.connection_denied` | `permission_denied` | 否 | 全局访问关闭或读策略失败。资源面保留协议级拒绝口径 | 这是授权决定，不要重试 |
 | `profile.ambiguous_name` | `failed_precondition` | 否 | 名称匹配多个档案 | 改用档案 UUID |
-| `profile.restart_required` | `failed_precondition` | 否 | 档案在 MCP 启动后新增或修改 | 由本地用户重启 MCP |
+| `profile.revision_conflict` | `failed_precondition` | 否 | 请求等待或建连期间，档案版本或会话槽位已变更 | 重新读取档案并确认目标后发起新请求 |
 | `mcp.tool_disabled` | `permission_denied` | 否 | 工具不在 `enabled_tools` | 换已启用的工具；资源面不受该开关管辖 |
 | `mcp.readonly_violation` | `permission_denied` | 否 | 白名单外语句、多语句、INTO、锁读、hint、危险函数、`:=` | 改成单条 `SELECT`；文案里逐条列出了全部违规原因 |
 | `mcp.sql_parse` | `invalid_argument` | 否 | sqlparser(MySqlDialect) 解析失败（含递归深度触顶）；**不代表原语句非法** | 换写法（去 MariaDB 特有语法、降嵌套深度） |
@@ -637,7 +649,7 @@ SELECT」这种可执行信息了。协议级错误的分类映射沿用通用�
 16. **真实 OS 密钥环的失败路径 E2E 本机不可用**：没有可用的 Secret Service 会话，改用双断言
     替代（§13）。
 17. **默认配置路径在 macOS/Windows 上的具体拼法未确认**。Linux 路径见 §6。
-18. 新增或编辑档案后需要重启 MCP 才可建连。全局开关和档案删除在后续访问请求生效。
+18. 共享档案和数据访问开关支持热更新。服务配置文件的工具和限额配置仍在启动时加载。
 19. GUI 与 CLI 的开关变更不写入 MCP 工具审计。
 
 ## 13. 构建、运行与验收命令
@@ -754,8 +766,8 @@ sqarvo-mcp http-auth launch codex --port 8765
 ```
 
 支持 null、布尔值、64 位整数、有限浮点数和文本。绑定失败会返回错误。拒绝整表
-UPDATE / DELETE、DDL、TRUNCATE、任意 SQL、原始 WHERE、函数表达式及不能验证
-副作用范围的表。参数上限 128 KiB，HTTP 的整个请求也受同样大小的外层限制。
+UPDATE / DELETE、DDL、TRUNCATE、任意 SQL、原始 WHERE 和函数表达式。
+SQLite 和受管写入继续检查表的副作用范围。参数上限 128 KiB，HTTP 的整个请求也受同样大小的外层限制。
 一次性连接初始化有独立的最长 10 秒等待预算。BEGIN、预检、DML 和提交前审计
 共用另一个最长 10 秒的执行预算。初始化及 BEGIN 均响应请求取消。BEGIN 未获确认
 时停止后续 DML，并清理一次性连接。事务终结和连接清理各有 5 秒的等待预算。单次调用使用
@@ -772,7 +784,19 @@ UPDATE / DELETE、DDL、TRUNCATE、任意 SQL、原始 WHERE、函数表达式�
 
 写入审计记录阶段、事务结果和直接影响行数，省略原始 SQL 和绑定值。提交后的审计失败通过 `audit_warning` 返回，数据库结果仍按实际状态反馈。
 
-### MariaDB DBA 部署资格
+### MariaDB 普通实例的独立插入
+
+`insert_rows` 使用档案账号。开启 MCP 数据访问并关闭只读后，账号拥有目标表或列的
+`INSERT` 权限即可操作 InnoDB 普通表。可以显式指定档案默认库之外的业务库。普通插入无需
+`mariadb_write_profiles`、`sqarvo_guard` 或额外 `SELECT` 授权。保留系统库限制。
+预览只读，可估计直接插入行数，数据库在执行时验证权限和约束。
+
+外键、触发器、默认值由 MariaDB 执行。100 行上限和 `affected_rows` 统计直接插入，
+触发器产生的间接影响不计入。失败响应中的 `rollback_scope=transactional_changes`
+表示事务回滚仅覆盖引擎可回滚的变更。遇到提交结果未知时，
+用独立连接和审计核对结果，避免再次执行同一插入。
+
+### MariaDB 受管更新、删除和显式事务
 
 仅为 DBA 管理了 DDL 权限隔离的实例启用写入。设置期间，普通业务账号及其角色
 不能更改目标或在其他数据库创建相关外键。管理员先关闭 MCP 写入并排空会话，再运行
@@ -886,7 +910,8 @@ FROM sqarvo_guard.approved_target AS a;
 
 ## V2.2 Controlled DDL
 
-SQLite `main` 的已有普通文件及按下文受管的 MariaDB 11.8.6 支持结构化表、列和索引变更。
+普通 MariaDB 实例支持 `create_table` 和 `alter_table` 的 `add_column`，可显式指定业务库。
+SQLite `main` 的已有普通文件支持下表中的结构变更。MariaDB 的其他结构变更要求 11.8.6 受管实例。
 stdio 与认证 Streamable HTTP 使用相同输入。启用全局 MCP 数据访问并关闭只读后，数据库
 账号拥有对应权限时可以调用。现有 `enabled_tools` 显式列表配置也适用于新工具。
 DDL 从不加入 `begin_transaction` 返回的事务。执行需要系统凭据库可用，以保护用于本地去重的密钥。
@@ -894,7 +919,9 @@ DDL 从不加入 `begin_transaction` 返回的事务。执行需要系统凭据�
 ### 参数
 
 五个执行工具均必填 `connection_alias`、`database`、`table`、`operation_id`。
-MariaDB 目标库须匹配档案默认库和会话所在库。DDL 名称使用
+MariaDB 受管操作要求目标库匹配档案默认库和会话所在库。普通建表和加列由数据库校验权限，
+预览只使用账号可见的元数据。专用 MariaDB DDL 会话要求服务端的 `init_connect` 为空。
+DDL 名称使用
 `[a-z_][a-z0-9_]{0,63}`，保留系统名称由 Policy 拒绝。标识符按驱动引用。
 
 | 工具 | 专属参数 |
@@ -967,18 +994,27 @@ sqarvo-mcp ddl-reconcile OPERATION_ID --verified-stopped
 
 ### MariaDB 受管实例
 
-需要专用实例和 DBA 安装的 `sqarvo_guard.ddl_eligibility`、
+删表、删列、重命名和索引变更需要专用实例和 DBA 安装的 `sqarvo_guard.ddl_eligibility`、
 `sqarvo_guard.ddl_objects` 完整元数据视图。视图由可信、锁定的独立定义者维护，
 该身份能看到所有可能的入站及出站外键、视图、触发器、例程和事件。调用身份仅有
 视图 SELECT 及目标库所需数据库权限，不能修改 guard、创建临时表或通过角色和代理
 绕过边界。视图定义见[隔离测试夹具](../../tests/integration/mcp-ddl-mariadb-fixture.sql)。
 夹具账户与授权只用于合成测试。
 
-受管实例不得同时承载依赖 ADR 0037 的 MariaDB MCP DML 部署。管理员禁止会改写目标
+受管实例不得同时承载依赖 ADR 0037 的 MariaDB MCP DML 部署。
+普通实例的独立插入、建表和加列可以在同一业务库使用。管理员禁止会改写目标
 或新增依赖的并发外部身份和入口；正常业务 DML 可在数据库权限下继续。先停用 DDL
 并排空在途操作、核查未知终态，再运行 DBA 维护。一个受管实例的 MCP DDL 需使用一个
 共享持久状态目录。实例命名锁串行化符合协议的 DDL，数据库自身控制元数据锁。
 现有 ProfileStore 无 DDL 档案授权字段。详见 [ADR 0039](../decisions/0039-mcp-controlled-ddl.md)。
+
+普通 MariaDB 集成测试使用隔离实例，导入
+[普通写入夹具](../../tests/integration/mcp-native-mariadb-fixture.sql)，再以
+`SQARVO_NATIVE_MARIADB_PORT=<端口> cargo test -p sqarvo-mcp --lib native_mariadb_writes_over_http_and_stdio`
+执行。测试使用 JSON-RPC 字节流和认证回环 HTTP，DDL 去重密钥使用进程内测试凭据库。
+如需验证应答丢失，用 `--ddl --upstream-port <MariaDB 端口> --listen-port <代理端口>`
+运行 [测试代理](../../tests/integration/mcp_mariadb_terminal_proxy.py)，
+并为同一命令增加 `SQARVO_NATIVE_MARIADB_ACK_PROXY_PORT=<代理端口>`。
 
 ### V2.2 限额
 

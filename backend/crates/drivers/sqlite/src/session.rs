@@ -1570,6 +1570,10 @@ impl DriverSession for SqliteSession {
         Some(crate::ddl::syntax())
     }
 
+    fn write_dialect(&self) -> Option<sqarvo_driver_api::WriteDialect> {
+        Some(sqarvo_driver_api::WriteDialect::Sqlite)
+    }
+
     fn quote_identifier(&self, name: &str) -> Option<String> {
         Some(crate::table_data::quote_identifier(name))
     }

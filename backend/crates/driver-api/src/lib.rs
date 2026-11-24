@@ -31,9 +31,9 @@ pub use capabilities::Capabilities;
 pub use credential::Secret;
 pub use driver::{
     CatalogKind, ConnectionParams, ConnectionTestReport, DatabaseFlavor, Driver, DriverDescriptor,
-    DriverId, DriverSession, ExecuteRequest, ExecutionStart, IsolationLevel, MAX_SQL_PREVIEW_CHARS,
-    ParameterizedExecuteRequest, ResultBatch, SessionContext, StatementSummary, TlsMode,
-    TransactionOptions, Warning, sql_preview,
+    DriverId, DriverSession, ExecuteRequest, ExecutionStart, InsertTarget, IsolationLevel,
+    MAX_SQL_PREVIEW_CHARS, ParameterizedExecuteRequest, ResultBatch, SessionContext,
+    StatementSummary, TlsMode, TransactionOptions, Warning, WriteDialect, sql_preview,
 };
 pub use metadata::{
     DEFAULT_PAGE_SIZE, Ddl, DdlSource, MAX_PAGE_SIZE, MetadataProvider, NameMatch, ObjectFilter,

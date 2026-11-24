@@ -1,12 +1,12 @@
 //! 连接授权与 lazy 会话生命周期（#207 实现；V3.1 §3.3/§9）。
 //!
 //! 契约要点：
-//! - 每个 alias 至多一个 `SessionHandle`，首次工具调用才 `SessionManager::connect`；
+//! - 每个档案修订至多一个 `SessionHandle`，首次工具调用才 `SessionManager::connect`；
 //!   `list_connections` 只读状态、不触发网络；
 //! - 状态机 `not_connected → connected / failed`；失败记录错误分类（不含凭据），
 //!   下次调用可重试；断连允许一次「重连 + 重试」；
 //! - 进程级 `tokio::sync::Semaphore(≤4, 默认 2)` + `QueryRegistry`
-//!   （`QueryLimits.max_concurrent` 同步设置）；同 alias 由会话执行锁天然串行
+//!   （`QueryLimits.max_concurrent` 同步设置）；同一会话由执行锁天然串行
 //!   （ADR 0008），这一点对工具描述如实声明；
 //! - 退出清理：`sessions.close_all()` + `queries.remove_session`，仿
 //!   backend-service main.rs:130-171/:197 的装配顺序。
@@ -20,16 +20,17 @@
 //! 2. **`QueryRegistry`**：查询登记、幂等取消与「同时活跃查询数」上限；
 //!    `max_concurrent` 与信号量同源，避免两层各算一套。
 //! 3. **会话执行锁**：`SessionHandle` 内部那把 `tokio::Mutex`（ADR 0008）保证同一
-//!    alias 同一时间最多一条在途语句。本模块**不**创建额外会话或连接池去绕开它。
+//!    会话同一时间最多一条在途语句。本模块**不**创建额外会话或连接池去绕开它。
 //!
-//! # 懒连接为什么需要 per-alias 异步锁
+//! # 懒连接为什么需要 per-profile 异步锁
 //!
 //! 两个并发的首次工具调用若同时看到 `not_connected`，会各自 `connect`，在驱动侧留下
-//! 一条无人引用的真实连接。因此建连过程放在 per-alias 的 `tokio::sync::Mutex` 里，
-//! 拿到锁后**二次检查**状态。锁的粒度是单个 alias，跨 alias 不互相阻塞；这是
+//! 一条无人引用的真实连接。因此建连过程放在 per-profile 的 `tokio::sync::Mutex` 里，
+//! 拿到锁后**二次检查**状态。锁的粒度是单个档案修订，不阻塞其他档案；这是
 //! AGENTS §11「不跨 await 持锁」的定点例外，理由即此。
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Serialize;
@@ -72,6 +73,9 @@ fn metadata_cancelled() -> Error {
 }
 
 fn sanitize_metadata_error(error: &Error) -> Error {
+    if error.code() == ErrorCode::PROFILE_REVISION_CONFLICT {
+        return profile_changed();
+    }
     let message = match error.category() {
         ErrorCategory::NotFound => {
             "The database object does not exist or is not visible to the current account"
@@ -161,12 +165,16 @@ impl ConnectionState {
 
 /// 单个连接的对外状态（`list_connections` / `database://connections` 的数据源）。
 ///
-/// 只含协议允许暴露的字段：alias、驱动、database、状态（+ 失败子码）。
+/// 只含协议允许暴露的连接标识、名称、驱动、数据库及状态。
 /// 没有连接串、用户名、凭据引用的影子。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConnectionStatusView {
     /// 连接 alias。
     pub alias: String,
+    /// Stable identifier from the shared connection profile.
+    pub connection_id: Uuid,
+    /// Connection name as shown in the desktop client.
+    pub display_name: String,
     /// 驱动标识。
     pub driver_id: String,
     /// 档案里的 database 字段（SQLite 为 `None`）。
@@ -200,9 +208,9 @@ struct SlotState {
     session: Option<CachedSession>,
 }
 
-/// 单个别名的懒连接槽位。
+/// 单个档案修订的懒连接槽位。
 struct Slot {
-    /// 建连过程的互斥（只在这个 alias 内生效）。
+    /// 建连过程的互斥（只在这个档案修订内生效）。
     connect: AsyncMutex<()>,
     revision: u64,
     /// 状态 + 会话缓存。
@@ -244,10 +252,6 @@ impl Slot {
             category: error.category().as_str(),
         };
         guard.session = None;
-    }
-
-    fn take_session(&self) -> Option<CachedSession> {
-        self.lock().session.take()
     }
 
     fn clear(&self) {
@@ -293,46 +297,56 @@ impl AuthorizedContext {
 pub struct AccessGuard {
     store: ProfileStore,
     profile_reads: AsyncMutex<()>,
-    slots: BTreeMap<Uuid, Slot>,
+    slots: Mutex<BTreeMap<Uuid, Arc<Slot>>>,
+    closed: AtomicBool,
     sessions: Arc<SessionManager>,
     queries: Arc<QueryRegistry>,
 }
 
 impl AccessGuard {
-    /// 按全局策略、档案存在性、启动时修订、操作分类授权。
+    /// Authorize against the latest shared profile document.
     pub async fn authorize_request(
         &self,
         operation: OperationType,
         alias: Option<String>,
     ) -> Result<AuthorizedContext> {
-        // 先排队再读磁盘，以免请求突发同时解析许多份完整档案文档。
-        let result = {
+        let (document, cleanup) = {
+            // Keep snapshot reads and slot reconciliation in the same order.
+            // The lock is released before any database connection or cleanup.
             let _read = self.profile_reads.lock().await;
+            if self.closed.load(Ordering::Relaxed) {
+                return Err(access_denied("The MCP service is shutting down"));
+            }
             let store = self.store.clone();
-            tokio::task::spawn_blocking(move || store.snapshot()).await
+            let document = match tokio::task::spawn_blocking(move || store.snapshot()).await {
+                Ok(Ok(document)) => Ok(document),
+                Ok(Err(error)) => {
+                    tracing::warn!(code = %error.code(), "Failed to read the MCP data access policy");
+                    Err(access_denied("Failed to read the MCP data access policy"))
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "The MCP data access policy read task failed");
+                    Err(access_denied("Failed to read the MCP data access policy"))
+                }
+            };
+            let current = document
+                .as_ref()
+                .ok()
+                .filter(|document| document.mcp.enabled);
+            let cleanup = self.sync_slots(current);
+            (document, cleanup)
         };
-        let document = match result {
-            Ok(Ok(document)) => document,
-            Ok(Err(error)) => {
-                self.revoke_stale(None).await;
-                tracing::warn!(code = %error.code(), "Failed to read the MCP data access policy");
-                return Err(access_denied("Failed to read the MCP data access policy"));
-            }
-            Err(error) => {
-                self.revoke_stale(None).await;
-                tracing::warn!(%error, "The MCP data access policy read task failed");
-                return Err(access_denied("Failed to read the MCP data access policy"));
-            }
-        };
+        for task in cleanup {
+            let _ = task.await;
+        }
+        let document = document?;
         if !document.mcp.enabled {
-            self.revoke_stale(None).await;
             return Err(access_denied("Global MCP data access is disabled"));
         }
-        self.revoke_stale(Some(&document)).await;
         let profile = alias
             .as_deref()
             .map(|alias| {
-                let profile = document.resolve(alias).map_err(|error| {
+                document.resolve(alias).cloned().map_err(|error| {
                     if error.code() == ErrorCode::PROFILE_NOT_FOUND {
                         Error::not_found(
                             ErrorCode::MCP_CONNECTION_NOT_FOUND,
@@ -341,19 +355,7 @@ impl AccessGuard {
                     } else {
                         error
                     }
-                })?;
-                if self
-                    .slots
-                    .get(&profile.profile_id)
-                    .map(|slot| slot.revision)
-                    != Some(profile.revision)
-                {
-                    return Err(Error::failed_precondition(
-                        ErrorCode::PROFILE_RESTART_REQUIRED,
-                        "The connection profile was added or changed. Restart MCP and retry",
-                    ));
-                }
-                Ok(profile.clone())
+                })
             })
             .transpose()?;
         if document.mcp.read_only && operation != OperationType::Read {
@@ -362,6 +364,33 @@ impl AccessGuard {
             ));
         }
         Ok(AuthorizedContext { document, profile })
+    }
+
+    pub(crate) async fn authorize_profile(
+        &self,
+        operation: OperationType,
+        alias: &str,
+    ) -> Result<ConnectionProfile> {
+        self.authorize_request(operation, Some(alias.to_owned()))
+            .await?
+            .profile
+            .ok_or_else(|| {
+                Error::internal("The authorized request is missing a connection profile")
+            })
+    }
+
+    pub(crate) async fn reauthorize_profile(
+        &self,
+        operation: OperationType,
+        profile: &ConnectionProfile,
+    ) -> Result<()> {
+        let current = self
+            .authorize_profile(operation, &profile.profile_id.to_string())
+            .await?;
+        if current.revision != profile.revision {
+            return Err(profile_changed());
+        }
+        Ok(())
     }
 
     pub(crate) async fn transaction_profile(
@@ -386,37 +415,63 @@ impl AccessGuard {
             .map_err(|_| Error::internal("The MCP policy read task failed"))?
     }
 
-    async fn revoke_stale(&self, document: Option<&ProfileDocument>) {
+    fn slots(&self) -> std::sync::MutexGuard<'_, BTreeMap<Uuid, Arc<Slot>>> {
+        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn slot(&self, profile: &ConnectionProfile) -> Option<Arc<Slot>> {
+        self.slots()
+            .get(&profile.profile_id)
+            .filter(|slot| slot.revision == profile.revision)
+            .cloned()
+    }
+
+    fn sync_slots(&self, document: Option<&ProfileDocument>) -> Vec<tokio::task::JoinHandle<()>> {
         let current: BTreeMap<_, _> = document
             .into_iter()
             .flat_map(|doc| &doc.profiles)
             .map(|profile| (profile.profile_id, profile.revision))
             .collect();
-        for (id, slot) in &self.slots {
-            if current.get(id) != Some(&slot.revision) && slot.cache().is_some() {
-                let _connect = slot.connect.lock().await;
-                self.disconnect(slot).await;
+        let mut cleanup = Vec::new();
+        let mut slots = self.slots();
+        slots.retain(|id, slot| {
+            if current.get(id) == Some(&slot.revision) {
+                return true;
             }
+            cleanup.extend(self.disconnect(slot));
+            false
+        });
+        for (id, revision) in current {
+            slots
+                .entry(id)
+                .or_insert_with(|| Arc::new(Slot::new(revision)));
         }
+        cleanup
     }
 
-    async fn disconnect(&self, slot: &Slot) {
-        let cached = slot.take_session();
-        slot.clear();
-        let Some(cached) = cached else { return };
+    fn disconnect(&self, slot: &Slot) -> Option<tokio::task::JoinHandle<()>> {
+        let cached = {
+            let mut state = slot.lock();
+            std::mem::take(&mut *state).session
+        };
+        self.retire_session(cached?)
+    }
+
+    fn retire_session(&self, cached: CachedSession) -> Option<tokio::task::JoinHandle<()>> {
         let activity = Arc::clone(&cached.activity);
-        if let Ok(_idle) = Arc::clone(&activity).try_write_owned() {
-            close_session(&self.sessions, &self.queries, &cached).await;
-        } else {
-            // 此会话已从缓存移除。只为这条被撤销的会话排一次清理，
-            // 让已开始的请求完成，再关闭游标和物理连接。
-            let sessions = Arc::clone(&self.sessions);
-            let queries = Arc::clone(&self.queries);
-            tokio::spawn(async move {
-                let _idle = activity.write_owned().await;
-                close_session(&sessions, &queries, &cached).await;
-            });
-        }
+        let idle = Arc::clone(&activity).try_write_owned().ok();
+        let was_idle = idle.is_some();
+        let sessions = Arc::clone(&self.sessions);
+        let queries = Arc::clone(&self.queries);
+        // Cleanup continues even if the request observing the change is canceled.
+        let task = tokio::spawn(async move {
+            let _idle = match idle {
+                Some(guard) => guard,
+                None => activity.write_owned().await,
+            };
+            close_session(&sessions, &queries, &cached).await;
+        });
+        was_idle.then_some(task)
     }
 }
 
@@ -425,6 +480,29 @@ async fn close_session(sessions: &SessionManager, queries: &QueryRegistry, cache
     if let Err(error) = sessions.disconnect(&cached.connection_id).await {
         tracing::debug!(code = %error.code(), "Failed to disconnect while dropping the MCP session");
     }
+}
+
+fn profile_display_name(profile: &ConnectionProfile) -> String {
+    if let Some(name) = profile
+        .display_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        return name.to_owned();
+    }
+    // Some desktop profiles use a connection target as their default name.
+    // Keep generated usernames, endpoints and full paths out of discovery.
+    if profile.name.contains(['@', '/', '\\']) || profile.name == profile.params.host {
+        return "Unnamed connection".to_owned();
+    }
+    profile.name.clone()
+}
+
+fn profile_changed() -> Error {
+    Error::failed_precondition(
+        ErrorCode::PROFILE_REVISION_CONFLICT,
+        "The connection profile changed during the request. Retry the operation",
+    )
 }
 
 fn access_denied(message: &str) -> Error {
@@ -484,16 +562,13 @@ impl AccessService {
         store: ProfileStore,
     ) -> Result<Self> {
         let limits = *config.limits();
-        let slots = store
-            .list()?
-            .iter()
-            .map(|profile| (profile.profile_id, Slot::new(profile.revision)))
-            .collect();
+        store.list()?;
         let queries = Arc::new(QueryRegistry::new(limits.query_limits()));
         let guard = AccessGuard {
             store,
             profile_reads: AsyncMutex::new(()),
-            slots,
+            slots: Mutex::default(),
+            closed: AtomicBool::new(false),
             sessions: Arc::clone(&sessions),
             queries: Arc::clone(&queries),
         };
@@ -536,6 +611,10 @@ impl AccessService {
         &self.guard
     }
 
+    pub(crate) fn shared_guard(&self) -> Arc<AccessGuard> {
+        Arc::clone(&self.guard)
+    }
+
     /// 所有已授权连接的状态快照，不建立数据库连接。
     pub async fn statuses(&self) -> Result<Vec<ConnectionStatusView>> {
         let context = self
@@ -554,10 +633,8 @@ impl AccessService {
             .map(|profile| {
                 let state = self
                     .guard
-                    .slots
-                    .get(&profile.profile_id)
-                    .filter(|slot| slot.revision == profile.revision)
-                    .map_or(ConnectionState::NotConnected, Slot::state);
+                    .slot(profile)
+                    .map_or(ConnectionState::NotConnected, |slot| slot.state());
                 let id = profile.profile_id.to_string();
                 let alias = if validate_alias(&profile.name).is_ok()
                     && name_counts.get(profile.name.as_str()) == Some(&1)
@@ -569,6 +646,8 @@ impl AccessService {
                 };
                 ConnectionStatusView {
                     alias,
+                    connection_id: profile.profile_id,
+                    display_name: profile_display_name(profile),
                     driver_id: profile.params.driver_id.to_string(),
                     database: profile.params.database.clone(),
                     connection_status: state.as_str(),
@@ -582,60 +661,81 @@ impl AccessService {
 
     #[cfg(test)]
     async fn session(&self, alias: &str) -> Result<SessionHandle> {
-        self.lease_session(alias)
+        let profile = self
+            .guard
+            .authorize_profile(OperationType::Read, alias)
+            .await?;
+        self.lease_session(&profile)
             .await
             .map(|session| session.handle)
     }
 
-    async fn lease_session(&self, alias: &str) -> Result<LeasedSession> {
-        let context = self
-            .guard
-            .authorize_request(OperationType::Read, Some(alias.to_owned()))
+    async fn lease_session(&self, profile: &ConnectionProfile) -> Result<LeasedSession> {
+        let slot = self.guard.slot(profile).ok_or_else(profile_changed)?;
+        let _connect = slot.connect.lock().await;
+        self.guard
+            .reauthorize_profile(OperationType::Read, profile)
             .await?;
-        let profile = context.profile.ok_or_else(|| {
-            Error::internal("The authorized request is missing a connection profile")
-        })?;
-        let slot =
-            self.guard.slots.get(&profile.profile_id).ok_or_else(|| {
-                Error::internal("The authorized request is missing a session slot")
-            })?;
-        let connect_guard = slot.connect.lock().await;
-        if let Some(lease) = self.cached_handle(slot).await {
-            return Ok(lease);
-        }
-        let params = profile.params;
-        match self.sessions.connect(alias.to_owned(), params).await {
-            Ok(summary) => {
-                let handle = self.sessions.acquire(&summary.session_id).await?;
-                let activity = Arc::new(RwLock::new(()));
-                let lease = LeasedSession {
-                    handle,
-                    _activity: Arc::clone(&activity).read_owned().await,
-                };
-                slot.mark_connected(CachedSession {
-                    connection_id: summary.connection_id,
-                    session_id: summary.session_id,
-                    activity,
-                });
-                tracing::info!(alias, driver = %summary.driver_id, "Established a database connection on demand");
-                drop(connect_guard);
-                self.guard
-                    .authorize_request(OperationType::Read, Some(alias.to_owned()))
-                    .await?;
-                Ok(lease)
-            }
+        self.require_current_slot(profile, &slot)?;
+        let lease = if let Some(lease) = self.cached_handle(&slot).await {
+            lease
+        } else {
+            self.connect_profile(profile, &slot).await?
+        };
+        self.guard
+            .reauthorize_profile(OperationType::Read, profile)
+            .await?;
+        self.require_current_slot(profile, &slot)?;
+        Ok(lease)
+    }
+
+    fn require_current_slot(&self, profile: &ConnectionProfile, slot: &Arc<Slot>) -> Result<()> {
+        self.guard
+            .slot(profile)
+            .filter(|current| Arc::ptr_eq(current, slot))
+            .map(|_| ())
+            .ok_or_else(profile_changed)
+    }
+
+    async fn connect_profile(
+        &self,
+        profile: &ConnectionProfile,
+        slot: &Arc<Slot>,
+    ) -> Result<LeasedSession> {
+        let profile_id = profile.profile_id;
+        let summary = match self
+            .sessions
+            .connect(profile_id.to_string(), profile.params.clone())
+            .await
+        {
+            Ok(summary) => summary,
             Err(error) => {
                 slot.mark_failed(&error);
-                // 只记子码与分类：驱动的原始文案可能带上主机/用户名，没必要进日志。
-                tracing::warn!(
-                    alias,
-                    code = %error.code(),
-                    category = %error.category(),
-                    "Failed to establish the database connection"
-                );
-                Err(error)
+                tracing::warn!(%profile_id, code = %error.code(), category = %error.category(),
+                    "Failed to establish the database connection");
+                return Err(error);
+            }
+        };
+        let cached = CachedSession {
+            connection_id: summary.connection_id,
+            session_id: summary.session_id,
+            activity: Arc::new(RwLock::new(())),
+        };
+        {
+            // Publish only while this slot belongs to the active registry.
+            let slots = self.guard.slots();
+            if slots
+                .get(&profile_id)
+                .is_some_and(|current| Arc::ptr_eq(current, slot))
+            {
+                slot.mark_connected(cached);
+            } else {
+                self.guard.retire_session(cached);
+                return Err(profile_changed());
             }
         }
+        tracing::info!(%profile_id, driver = %summary.driver_id, "Established a database connection on demand");
+        self.cached_handle(slot).await.ok_or_else(profile_changed)
     }
 
     /// 在同一 alias 上执行一次工具操作：全局并发许可 + 懒会话 + **一次**断连重试。
@@ -647,14 +747,32 @@ impl AccessService {
         F: Fn(SessionHandle) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
+        let profile = self
+            .guard
+            .authorize_profile(OperationType::Read, alias)
+            .await?;
+        self.run_on_profile(&profile, operation).await
+    }
+
+    pub(crate) async fn run_on_profile<T, F, Fut>(
+        &self,
+        profile: &ConnectionProfile,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn(SessionHandle) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
         let _permit = self.acquire_permit().await?;
-        let lease = self.lease_session(alias).await?;
+        let lease = self.lease_session(profile).await?;
+        let session_id = lease.handle.summary().session_id;
         match Self::run_leased(lease, &operation).await {
             Ok(value) => Ok(value),
             Err(error) if is_stale_session_error(&error) => {
-                tracing::warn!(alias, code = %error.code(), "The session is no longer valid. Reconnecting and retrying once");
-                self.invalidate(alias).await;
-                Self::run_leased(self.lease_session(alias).await?, &operation).await
+                tracing::warn!(profile_id = %profile.profile_id, code = %error.code(),
+                    "The session is no longer valid. Reconnecting and retrying once");
+                self.invalidate_session(profile, &session_id).await;
+                Self::run_leased(self.lease_session(profile).await?, &operation).await
             }
             Err(error) => Err(error),
         }
@@ -712,13 +830,14 @@ impl AccessService {
         Cancelled: std::future::Future<Output = ()> + Send,
     {
         let deadline = tokio::time::Instant::now() + self.limits().query_timeout;
-        let (_permit, lease) = tokio::select! {
+        let (_permit, profile, lease) = tokio::select! {
             biased;
             () = cancel() => return Err(plan_cancelled()),
             result = tokio::time::timeout_at(deadline, async {
+                let profile = self.guard.authorize_profile(OperationType::Read, alias).await?;
                 let permit = self.acquire_permit().await?;
-                let lease = self.lease_session(alias).await?;
-                Ok::<_, Error>((permit, lease))
+                let lease = self.lease_session(&profile).await?;
+                Ok::<_, Error>((permit, profile, lease))
             }) => result.map_err(|_| plan_timeout())??,
         };
         let execute = |handle| {
@@ -727,13 +846,14 @@ impl AccessService {
                 deadline.saturating_duration_since(tokio::time::Instant::now()),
             )
         };
+        let session_id = lease.handle.summary().session_id;
         match Self::run_leased(lease, &execute).await {
             Err(error) if is_stale_session_error(&error) => {
-                self.invalidate(alias).await;
+                self.invalidate_session(&profile, &session_id).await;
                 let lease = tokio::select! {
                     biased;
                     () = cancel() => return Err(plan_cancelled()),
-                    lease = tokio::time::timeout_at(deadline, self.lease_session(alias)) =>
+                    lease = tokio::time::timeout_at(deadline, self.lease_session(&profile)) =>
                         lease.map_err(|_| plan_timeout())??,
                 };
                 Self::run_leased(lease, &execute).await
@@ -759,8 +879,9 @@ impl AccessService {
             biased;
             () = cancellation.cancelled() => return Err(metadata_cancelled()),
             result = tokio::time::timeout_at(deadline, async {
+                let profile = self.guard.authorize_profile(OperationType::Read, alias).await?;
                 let permit = self.acquire_permit().await?;
-                let lease = self.lease_session(alias).await?;
+                let lease = self.lease_session(&profile).await?;
                 Ok::<_, Error>((permit, lease))
             }) => result.map_err(|_| metadata_timeout())?.map_err(|error| sanitize_metadata_error(&error))?,
         };
@@ -772,7 +893,8 @@ impl AccessService {
         let _cancel_on_drop = worker_cancellation.clone().drop_guard();
         let worker = tokio::spawn(async move {
             let _permit = permit;
-            let future = operation(lease.handle.clone(), track.read.clone());
+            let LeasedSession { handle, _activity } = lease;
+            let future = operation(handle.clone(), track.read.clone());
             tokio::pin!(future);
             let error = tokio::select! {
                 biased;
@@ -785,7 +907,7 @@ impl AccessService {
             // Dropping an MCP request must not release its concurrency slot early.
             track.read.cancel();
             let _ = track.registry.cancel(&track.read.id());
-            let _ = lease.handle.cancel(&track.read.id()).await;
+            let _ = handle.cancel(&track.read.id()).await;
             let _ = future.await;
             Err(error)
         });
@@ -810,20 +932,32 @@ impl AccessService {
         F: FnOnce(SessionHandle) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T>> + Send + 'static,
     {
+        let profile = self.guard.authorize_profile(operation, alias).await?;
+        self.run_write_on_profile(profile, operation, cancelled, execute)
+            .await
+    }
+
+    pub(crate) async fn run_write_on_profile<T, F, Fut>(
+        &self,
+        profile: ConnectionProfile,
+        operation: OperationType,
+        cancelled: &CancellationToken,
+        execute: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(SessionHandle) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
         if operation == OperationType::Read {
             return Err(Error::internal(
                 "A write session requires a DML operation type",
             ));
         }
-        let authorized = self
-            .guard
-            .authorize_request(operation, Some(alias.to_owned()))
-            .await?;
-        let profile = authorized.profile.ok_or_else(|| {
-            Error::internal("The authorized request is missing a connection profile")
-        })?;
-        self.require_write_profile(&profile)?;
-        let profile_id = profile.profile_id.to_string();
+        self.guard.reauthorize_profile(operation, &profile).await?;
+        if operation != OperationType::Insert {
+            self.require_write_profile(&profile)?;
+        }
         let (lifecycle, permit) = tokio::select! {
             biased;
             () = cancelled.cancelled() => return Err(write_cancelled()),
@@ -839,15 +973,11 @@ impl AccessService {
         tokio::spawn(async move {
             let _permit = permit;
             let _lifecycle = lifecycle;
-            let profile = guard
-                .authorize_request(operation, Some(profile_id.clone()))
-                .await?
-                .profile
-                .ok_or_else(|| Error::internal("The authorized request is missing a connection profile"))?;
+            guard.reauthorize_profile(operation, &profile).await?;
             let summary = tokio::select! {
                 biased;
                 () = cancelled.cancelled() => return Err(write_cancelled()),
-                result = tokio::time::timeout(timeout, sessions.connect(profile_id.clone(), profile.params)) => {
+                result = tokio::time::timeout(timeout, sessions.connect(profile.profile_id.to_string(), profile.params.clone())) => {
                     result.map_err(|_| Error::new(
                         ErrorCode::MCP_QUERY_TIMEOUT,
                         ErrorCategory::Timeout,
@@ -857,8 +987,8 @@ impl AccessService {
             };
             let handle = sessions.acquire(&summary.session_id).await;
             let result = match &handle {
-                Ok(handle) => match guard.authorize_request(operation, Some(profile_id)).await {
-                    Ok(_) => execute(handle.clone()).await,
+                Ok(handle) => match guard.reauthorize_profile(operation, &profile).await {
+                    Ok(()) => execute(handle.clone()).await,
                     Err(error) => Err(error),
                 },
                 Err(error) => Err(Error::new(error.code(), error.category(), "The write session is unavailable")),
@@ -893,24 +1023,16 @@ impl AccessService {
         operation(handle).await
     }
 
-    /// 丢弃某个 alias 的缓存会话（断连、会话失效、切换配置后调用）。
-    ///
-    /// 会尽力把驱动侧会话也关掉：`disconnect` 失败只记日志，因为目标就是「不留半死
-    /// 会话」，而它可能本来就不在了。
-    pub async fn invalidate(&self, alias: &str) {
-        let Ok(context) = self
-            .guard
-            .authorize_request(OperationType::Read, Some(alias.to_owned()))
-            .await
-        else {
-            return;
-        };
-        if let Some(slot) = context
-            .profile
-            .and_then(|profile| self.guard.slots.get(&profile.profile_id))
-        {
+    async fn invalidate_session(&self, profile: &ConnectionProfile, session_id: &SessionId) {
+        if let Some(slot) = self.guard.slot(profile) {
             let _connect = slot.connect.lock().await;
-            self.guard.disconnect(slot).await;
+            if slot
+                .cache()
+                .is_some_and(|cache| cache.session_id == *session_id)
+                && let Some(task) = self.guard.disconnect(&slot)
+            {
+                let _ = task.await;
+            }
         }
     }
 
@@ -932,8 +1054,13 @@ impl AccessService {
     pub async fn close_all(&self) {
         self.semaphore.close();
         let _drained = self.write_lifecycle.write().await;
-        for slot in self.guard.slots.values() {
-            self.guard.disconnect(slot).await;
+        let cleanup = {
+            let _read = self.guard.profile_reads.lock().await;
+            self.guard.closed.store(true, Ordering::Relaxed);
+            self.guard.sync_slots(None)
+        };
+        for task in cleanup {
+            let _ = task.await;
         }
         self.sessions.close_all().await;
         tracing::info!("All MCP sessions have been closed");
@@ -942,10 +1069,11 @@ impl AccessService {
     async fn cached_handle(&self, slot: &Slot) -> Option<LeasedSession> {
         // 连接槽的锁保证只有仍在缓存中的会话能拿到新租约。
         let cached = slot.cache()?;
+        let activity = cached.activity.try_read_owned().ok()?;
         if let Ok(handle) = self.sessions.acquire(&cached.session_id).await {
             Some(LeasedSession {
                 handle,
-                _activity: cached.activity.read_owned().await,
+                _activity: activity,
             })
         } else {
             slot.clear();
@@ -1067,10 +1195,7 @@ mod tests {
         );
 
         service.close_all().await;
-        assert_eq!(
-            service.statuses().await.expect("查询连接状态")[0].connection_status,
-            "not_connected"
-        );
+        assert!(service.guard.slots().is_empty());
         assert_eq!(service.session_manager().active_count().await, 0);
     }
 
@@ -1118,27 +1243,22 @@ mod tests {
         profile.name = "renamed".to_owned();
         let revision = profile.revision;
         let updated = service.store.save(profile, Some(revision)).expect("改名");
-        let error = service
-            .session(&id.to_string())
-            .await
-            .expect_err("修订不同");
-        assert_eq!(error.code(), ErrorCode::PROFILE_RESTART_REQUIRED);
-        assert_eq!(service.session_manager().active_count().await, 0);
-
-        let restart = AccessService::with_session_manager(
-            Arc::clone(service.config()),
-            Arc::clone(service.session_manager()),
-            service.store.clone(),
-        )
-        .expect("重启 MCP");
-        restart.session("renamed").await.expect("连接新修订");
+        let old_name = service.session("dev").await.expect_err("旧名称已失效");
+        assert_eq!(old_name.code(), ErrorCode::MCP_CONNECTION_NOT_FOUND);
+        let new_session = service.session(&id.to_string()).await.expect("连接新修订");
+        let renamed = service.session("renamed").await.expect("使用新名称");
+        assert_eq!(
+            new_session.summary().session_id,
+            renamed.summary().session_id
+        );
+        assert_eq!(service.session_manager().active_count().await, 1);
         service
             .store
             .delete(id, updated.revision)
             .expect("删除档案");
-        let error = restart.session(&id.to_string()).await.expect_err("已删除");
+        let error = service.session(&id.to_string()).await.expect_err("已删除");
         assert_eq!(error.code(), ErrorCode::MCP_CONNECTION_NOT_FOUND);
-        assert_eq!(restart.session_manager().active_count().await, 0);
+        assert_eq!(service.session_manager().active_count().await, 0);
     }
 
     #[tokio::test]
@@ -1155,11 +1275,10 @@ mod tests {
         assert_eq!(service.statuses().await.expect("显示新增档案").len(), 2);
         let error = service.session("dev").await.expect_err("名称歧义");
         assert_eq!(error.code(), ErrorCode::PROFILE_AMBIGUOUS_NAME);
-        let error = service
+        service
             .session(&saved.profile_id.to_string())
             .await
-            .expect_err("新增档案");
-        assert_eq!(error.code(), ErrorCode::PROFILE_RESTART_REQUIRED);
+            .expect("新增档案可按 UUID 建连");
 
         let invalid_policy = service
             .store
@@ -1195,6 +1314,150 @@ mod tests {
                 }
             }
         }
+    }
+
+    struct DelayedDriver {
+        sqlite: Arc<dyn sqarvo_driver_api::Driver>,
+        entered: tokio::sync::Notify,
+        resume: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl sqarvo_driver_api::Driver for DelayedDriver {
+        fn descriptor(&self) -> &sqarvo_driver_api::DriverDescriptor {
+            self.sqlite.descriptor()
+        }
+
+        async fn test_connection(
+            &self,
+            params: &sqarvo_driver_api::ConnectionParams,
+            secret: Option<&sqarvo_driver_api::Secret>,
+        ) -> Result<sqarvo_driver_api::ConnectionTestReport> {
+            self.sqlite.test_connection(params, secret).await
+        }
+
+        async fn connect(
+            &self,
+            params: &sqarvo_driver_api::ConnectionParams,
+            secret: Option<&sqarvo_driver_api::Secret>,
+        ) -> Result<Box<dyn sqarvo_driver_api::DriverSession>> {
+            self.entered.notify_one();
+            self.resume.notified().await;
+            self.sqlite.connect(params, secret).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connection_finishing_after_its_profile_is_deleted_is_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = sqlite_config(&dir.path().join("test.db"));
+        let sqlite_id = sqarvo_driver_api::DriverId::new("sqlite").unwrap();
+        let driver = Arc::new(DelayedDriver {
+            sqlite: DriverRegistry::with_builtin_drivers()
+                .get(&sqlite_id)
+                .unwrap(),
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        let mut registry = DriverRegistry::new();
+        registry.register(driver.clone()).unwrap();
+        let sessions = Arc::new(SessionManager::with_credential_store(
+            Arc::new(registry),
+            Arc::new(MemoryCredentialStore::new()),
+        ));
+        let service = crate::profile_access::service(config, sessions);
+        let profile = service
+            .store
+            .snapshot()
+            .unwrap()
+            .resolve("dev")
+            .unwrap()
+            .clone();
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (result, ()) = tokio::join!(service.session("dev"), async {
+                driver.entered.notified().await;
+                service
+                    .store
+                    .delete(profile.profile_id, profile.revision)
+                    .unwrap();
+                assert_eq!(service.statuses().await.unwrap(), []);
+                driver.resume.notify_one();
+            });
+            let error = result.expect_err("the retired connection must not be leased");
+            while service.session_manager().active_count().await != 0 {
+                tokio::task::yield_now().await;
+            }
+            error
+        })
+        .await
+        .unwrap();
+        assert_eq!(error.code(), ErrorCode::PROFILE_REVISION_CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn read_retry_never_follows_a_reused_name_to_another_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = sqlite_config(&dir.path().join("first.db"));
+        let service = service(config, Arc::new(MemoryCredentialStore::new()));
+        let original = service
+            .store
+            .snapshot()
+            .unwrap()
+            .resolve("dev")
+            .unwrap()
+            .clone();
+        let calls = std::cell::Cell::new(0);
+        let result = service
+            .run("dev", |_| async {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    let mut renamed = original.clone();
+                    renamed.name = "renamed".into();
+                    service
+                        .store
+                        .save(renamed, Some(original.revision))
+                        .unwrap();
+                    let mut another = original.clone();
+                    another.profile_id = Uuid::nil();
+                    another.revision = 0;
+                    another.params.host = dir.path().join("second.db").display().to_string();
+                    another.file_path.clone_from(&another.params.host);
+                    service.store.save(another, None).unwrap();
+                }
+                Err::<(), _>(Error::not_found(
+                    ErrorCode::SESSION_NOT_FOUND,
+                    "test disconnect",
+                ))
+            })
+            .await;
+        assert_eq!(
+            result.unwrap_err().code(),
+            ErrorCode::PROFILE_REVISION_CONFLICT
+        );
+        assert_eq!(calls.get(), 1);
+        assert!(!dir.path().join("second.db").exists());
+    }
+
+    #[tokio::test]
+    async fn generated_target_names_are_not_exposed_as_display_names() {
+        let (config, _) = mariadb_config(closed_port());
+        let service = service(config, Arc::new(MemoryCredentialStore::new()));
+        let mut profile = service
+            .store
+            .snapshot()
+            .unwrap()
+            .resolve("prod")
+            .unwrap()
+            .clone();
+        profile.name = "app_user@127.0.0.1".into();
+        let profile = service
+            .store
+            .save(profile.clone(), Some(profile.revision))
+            .unwrap();
+        let entries = service.statuses().await.unwrap();
+        assert_eq!(entries[0].display_name, "Unnamed connection");
+        assert_eq!(entries[0].alias, profile.profile_id.to_string());
     }
 
     #[tokio::test]
@@ -1414,10 +1677,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = sqlite_config(&dir.path().join("test.db"));
         let service = service(config, Arc::new(MemoryCredentialStore::new()));
-        let _ = service.session("dev").await.expect("建立会话");
-        service.invalidate("dev").await;
-        service.invalidate("dev").await;
-        service.invalidate("never-connected").await;
+        let handle = service.session("dev").await.expect("建立会话");
+        let profile = service
+            .guard
+            .authorize_profile(OperationType::Read, "dev")
+            .await
+            .unwrap();
+        service
+            .invalidate_session(&profile, &handle.summary().session_id)
+            .await;
+        service
+            .invalidate_session(&profile, &handle.summary().session_id)
+            .await;
         assert_eq!(
             service.statuses().await.expect("查询连接状态")[0].connection_status,
             "not_connected"

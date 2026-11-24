@@ -276,7 +276,7 @@ pub fn list() -> Vec<Resource> {
         Resource::new(CONNECTIONS_URI, "database-connections")
             .with_title("Authorized connections overview")
             .with_description(
-                "Enabled connections in mcp.json: alias, driver_id, and connection_status. Credentials,\n                 usernames, and connection strings are omitted. Reading this resource does not connect to a database.",
+                "Shared connection profiles: connection_id, display_name, alias, driver_id, and connection_status. Credentials,\n                 usernames, and connection strings are omitted. Reading this resource does not connect to a database.",
             )
             .with_mime_type(MIME_TYPE),
     ]
@@ -320,6 +320,10 @@ pub fn templates() -> Vec<ResourceTemplate> {
 pub struct ConnectionEntry {
     /// 连接 alias。
     pub alias: String,
+    /// Stable shared profile UUID, accepted by `connection_alias` parameters.
+    pub connection_id: String,
+    /// Connection name as shown in the desktop client.
+    pub display_name: String,
     /// 驱动标识（`sqlite` / `mariadb`）。
     pub driver_id: String,
     /// `not_connected` / `connected` / `failed`。
@@ -487,6 +491,8 @@ pub async fn connections(access: &AccessService) -> Result<ConnectionsPayload> {
         .into_iter()
         .map(|status| ConnectionEntry {
             alias: status.alias,
+            connection_id: status.connection_id.to_string(),
+            display_name: status.display_name,
             driver_id: status.driver_id,
             connection_status: status.connection_status.to_owned(),
         })

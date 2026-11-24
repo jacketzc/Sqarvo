@@ -287,6 +287,20 @@ impl SessionHandle {
         self.session.ddl_syntax()
     }
 
+    /// Grammar for structured writes, when supported by the driver.
+    pub fn write_dialect(&self) -> Option<sqarvo_driver_api::WriteDialect> {
+        self.session.write_dialect()
+    }
+
+    /// Check a native insert inside the current session.
+    pub async fn check_native_insert(
+        &self,
+        target: sqarvo_driver_api::InsertTarget,
+    ) -> Result<bool> {
+        let _guard = self.execution.lock().await;
+        self.session.check_native_insert(target).await
+    }
+
     /// Quote a single identifier through the current driver.
     pub fn quote_identifier(&self, name: &str) -> Option<String> {
         self.session.quote_identifier(name)

@@ -5,6 +5,7 @@ use sqarvo_driver_api::ddl::{ColumnType, IndexScope, Syntax};
 pub(crate) fn syntax() -> Syntax {
     Syntax {
         delimiter: '"',
+        transactional: true,
         index_scope: IndexScope::Catalog,
         table_suffix: "",
         inline_identity: true,
@@ -87,6 +88,7 @@ pub(crate) fn inspect(connection: &Connection, change: &Change) -> Result<Inspec
         (table_change, table, name),
     )?;
     Ok(Inspection {
+        native_additive: false,
         table: target,
         destination_exists,
         dependencies_known,

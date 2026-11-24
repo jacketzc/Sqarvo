@@ -9,7 +9,7 @@ use sqarvo_driver_api::{IsolationLevel, ParameterizedExecuteRequest, Transaction
 use sqarvo_query_engine::QueryRegistry;
 use tokio::time::Instant;
 
-use crate::policy::write::{WriteDialect, WritePlan, check_generated_sql, prepare_sql};
+use crate::policy::write::{WritePlan, check_generated_sql, prepare_sql};
 
 /// Separate budget for resolving a transaction after DML has stopped.
 pub(crate) const TERMINAL_BUDGET: Duration = Duration::from_secs(5);
@@ -241,11 +241,7 @@ pub(super) fn prepare(handle: &SessionHandle, plan: &WritePlan) -> Result<Prepar
             "The driver does not support controlled writes",
         )
     };
-    let dialect = match handle.summary().driver_id.as_str() {
-        "sqlite" => WriteDialect::Sqlite,
-        "mariadb" => WriteDialect::MariaDb,
-        _ => return Err(unsupported()),
-    };
+    let dialect = handle.write_dialect().ok_or_else(unsupported)?;
     if handle.quote_identifier(&plan.table).is_none() {
         return Err(unsupported());
     }

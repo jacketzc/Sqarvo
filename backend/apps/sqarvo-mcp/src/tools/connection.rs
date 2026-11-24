@@ -21,8 +21,12 @@ pub struct ListConnectionsParams {}
 /// 单个连接的可见信息。
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConnectionView {
-    /// 稳定连接标识（工具参数里用它选连接）。
+    /// 与旧客户端兼容的连接别名。
     pub alias: String,
+    /// Stable shared profile UUID, accepted by `connection_alias` parameters.
+    pub connection_id: String,
+    /// Connection name as shown in the desktop client.
+    pub display_name: String,
     /// 驱动标识（`sqlite` / `mariadb`）。
     pub driver_id: String,
     /// 档案里的数据库名；SQLite 没有该项，输出空字符串。
@@ -51,6 +55,8 @@ pub async fn list_connections(access: &AccessService) -> Result<ListConnectionsO
         .into_iter()
         .map(|status| ConnectionView {
             alias: status.alias,
+            connection_id: status.connection_id.to_string(),
+            display_name: status.display_name,
             driver_id: status.driver_id,
             database: status.database.unwrap_or_default(),
             connection_status: status.connection_status.to_owned(),

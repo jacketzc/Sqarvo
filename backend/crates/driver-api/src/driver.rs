@@ -515,6 +515,17 @@ pub trait DriverSession: Send + Sync {
         false
     }
 
+    /// SQL grammar for structured writes, if supported.
+    fn write_dialect(&self) -> Option<WriteDialect> {
+        None
+    }
+
+    /// Check a native standalone insert target. Return false to use existing
+    /// driver-specific bounded-write checks. Execution runs within a write transaction.
+    async fn check_native_insert(&self, _target: InsertTarget) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Quote a single identifier segment for driver-owned parameterized statements.
     /// Unsupported drivers return `None`.
     fn quote_identifier(&self, _name: &str) -> Option<String> {
@@ -576,6 +587,29 @@ fn unsupported_catalog_switch() -> Error {
         ErrorCode::CAPABILITY_UNSUPPORTED,
         "The driver does not support switching databases",
     )
+}
+
+/// SQL grammar used by structured row mutations.
+#[derive(Clone, Copy)]
+pub enum WriteDialect {
+    /// SQLite grammar.
+    Sqlite,
+    /// MariaDB grammar.
+    MariaDb,
+}
+
+/// Target of a standalone, parameterized insert.
+pub struct InsertTarget {
+    /// Query registration used for cancellation during preflight.
+    pub query_id: QueryId,
+    /// Database named by the caller.
+    pub database: String,
+    /// Table named by the caller.
+    pub table: String,
+    /// Columns included in the insert.
+    pub columns: Vec<String>,
+    /// A preview only reads metadata. Execution also reserves the target.
+    pub preview: bool,
 }
 
 /// 数据库驱动。

@@ -99,6 +99,10 @@ enum Command {
         catalog: String,
         reply: oneshot::Sender<Result<()>>,
     },
+    CheckInsert {
+        target: sqarvo_driver_api::InsertTarget,
+        reply: oneshot::Sender<Result<bool>>,
+    },
     InspectDdl {
         change: sqarvo_driver_api::ddl::Change,
         reply: oneshot::Sender<Result<sqarvo_driver_api::ddl::Inspection>>,
@@ -425,6 +429,78 @@ impl MariaDbSession {
     }
 }
 
+async fn check_insert(
+    conn: &mut Conn,
+    target: sqarvo_driver_api::InsertTarget,
+    state: &SharedState,
+) -> Result<bool> {
+    use crate::table_data::quote_identifier;
+    if matches!(
+        target.database.trim().to_ascii_lowercase().as_str(),
+        "information_schema" | "mysql" | "performance_schema" | "sys" | "sqarvo_guard"
+    ) {
+        return Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "The insert target schema is reserved",
+        ));
+    }
+    if !target.preview {
+        if !matches!(
+            state.transaction(),
+            TransactionState::Active {
+                read_only: false,
+                ..
+            }
+        ) || target.columns.is_empty()
+        {
+            return Err(Error::internal(
+                "Insert preflight requires an active transaction and explicit columns",
+            ));
+        }
+        // A zero-row INSERT acquires the target metadata lock using INSERT grants.
+        // It fires no row triggers. The lock protects the engine check until the real insert finishes.
+        let names = target
+            .columns
+            .iter()
+            .map(|column| quote_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let values = vec!["NULL"; target.columns.len()].join(", ");
+        let sql = format!(
+            "INSERT INTO {}.{} ({names}) SELECT {values} WHERE FALSE",
+            quote_identifier(&target.database),
+            quote_identifier(&target.table),
+        );
+        conn.query_drop(sql)
+            .await
+            .map_err(|error| map_error(error, "MariaDB rejected the insert target"))?;
+    }
+    let engine: Option<Option<String>> = conn
+        .exec_first(
+            "SELECT ENGINE FROM information_schema.TABLES
+         WHERE (BINARY TABLE_SCHEMA = ? AND BINARY TABLE_NAME = ?
+            OR @@lower_case_table_names <> 0
+            AND BINARY LOWER(TABLE_SCHEMA) = BINARY LOWER(?)
+            AND BINARY LOWER(TABLE_NAME) = BINARY LOWER(?))
+         AND TABLE_TYPE = 'BASE TABLE'",
+            (
+                &target.database,
+                &target.table,
+                &target.database,
+                &target.table,
+            ),
+        )
+        .await
+        .map_err(|error| map_error(error, "Failed to inspect the MariaDB insert target"))?;
+    if engine.flatten().as_deref() != Some("InnoDB") {
+        return Err(Error::unsupported(
+            ErrorCode::CAPABILITY_UNSUPPORTED,
+            "Standalone inserts require an InnoDB base table",
+        ));
+    }
+    Ok(true)
+}
+
 // 命令分发循环：每个 Command 一个分支，拆分反而割裂「会话状态机」的整体阅读。
 #[allow(clippy::too_many_lines)]
 async fn run_session(
@@ -509,6 +585,12 @@ async fn run_session(
                 reply,
             } => {
                 let result = rollback_transaction(&mut conn, id, &state, require_ack).await;
+                let _ = reply.send(result);
+            }
+            Command::CheckInsert { target, reply } => {
+                state.set_active(target.query_id);
+                let result = check_insert(&mut conn, target, &state).await;
+                state.clear_active();
                 let _ = reply.send(result);
             }
             Command::InspectDdl { change, reply } => {
@@ -1283,6 +1365,12 @@ async fn serve_script(
                     "Finish reading or close the current result set before performing a transaction operation",
                 )));
             }
+            Command::CheckInsert { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "Finish reading or close the current result set before checking an insert target",
+                )));
+            }
             Command::InspectDdl { reply, .. } => {
                 let _ = reply.send(Err(crate::ddl::unsupported()));
             }
@@ -1611,6 +1699,12 @@ where
                 )));
             }
             // 未读完的结果集仍在连接上，此时发元数据查询会与游标交错。
+            Command::CheckInsert { reply, .. } => {
+                let _ = reply.send(Err(Error::failed_precondition(
+                    QUERY_ACTIVE,
+                    "Finish reading or close the current result set before checking an insert target",
+                )));
+            }
             Command::InspectDdl { reply, .. } => {
                 let _ = reply.send(Err(crate::ddl::unsupported()));
             }
@@ -1838,6 +1932,20 @@ impl DriverSession for MariaDbSession {
 
     fn ddl_syntax(&self) -> Option<sqarvo_driver_api::ddl::Syntax> {
         Some(crate::ddl::syntax())
+    }
+
+    async fn check_native_insert(&self, target: sqarvo_driver_api::InsertTarget) -> Result<bool> {
+        self.ensure_open()?;
+        let (reply, wait) = oneshot::channel();
+        self.sender
+            .send(Command::CheckInsert { target, reply })
+            .await
+            .map_err(|_| Self::closed_error())?;
+        wait.await.map_err(|_| Self::closed_error())?
+    }
+
+    fn write_dialect(&self) -> Option<sqarvo_driver_api::WriteDialect> {
+        Some(sqarvo_driver_api::WriteDialect::MariaDb)
     }
 
     fn quote_identifier(&self, name: &str) -> Option<String> {

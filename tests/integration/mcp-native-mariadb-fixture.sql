@@ -1,0 +1,16 @@
+CREATE DATABASE IF NOT EXISTS native_a;
+CREATE DATABASE IF NOT EXISTS native_b;
+CREATE TABLE IF NOT EXISTS native_b.parents (id INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT IGNORE INTO native_b.parents VALUES (1);
+CREATE TABLE IF NOT EXISTS native_b.items (id INT PRIMARY KEY, parent INT NOT NULL, CONSTRAINT items_parent FOREIGN KEY (parent) REFERENCES parents(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS native_b.audit (id INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TRIGGER IF NOT EXISTS native_b.items_audit AFTER INSERT ON native_b.items FOR EACH ROW INSERT INTO native_b.audit VALUES (NEW.id);
+CREATE TABLE IF NOT EXISTS native_b.nontransactional (id INT PRIMARY KEY) ENGINE=MyISAM;
+CREATE USER IF NOT EXISTS native_writer@'127.0.0.1';
+CREATE USER IF NOT EXISTS native_insert@'127.0.0.1';
+CREATE USER IF NOT EXISTS native_read@'127.0.0.1';
+GRANT SELECT ON native_a.* TO native_writer@'127.0.0.1';
+GRANT SELECT, INSERT, CREATE, ALTER ON native_b.* TO native_writer@'127.0.0.1';
+GRANT INSERT ON native_b.items TO native_insert@'127.0.0.1';
+GRANT INSERT ON native_b.nontransactional TO native_insert@'127.0.0.1';
+GRANT SELECT ON native_b.* TO native_read@'127.0.0.1';

@@ -284,7 +284,7 @@ async fn execute(
         let current = authorize(server, call).await?;
         same_authorization(auth, &current)?;
         let syntax = handle.ddl_syntax().ok_or_else(unsupported)?;
-        let transactional = syntax.delimiter == '"';
+        let transactional = syntax.transactional;
         let transaction = if transactional {
             Some(
                 handle
@@ -452,7 +452,7 @@ async fn preview_schema(server: &ServerContext, call: &Call) -> Result<Value> {
         let current = authorize(server, call).await?;
         same_authorization(&auth, &current)?;
         let syntax = handle.ddl_syntax().ok_or_else(unsupported)?;
-        let transactional = syntax.delimiter == '"';
+        let transactional = syntax.transactional;
         if transactional {
             handle.begin_transaction(options(true)).await?;
         }
@@ -500,14 +500,20 @@ async fn preview_schema(server: &ServerContext, call: &Call) -> Result<Value> {
             }
             None
         };
+        let native_additive = snapshot.as_ref().is_some_and(|inspection| inspection.native_additive);
         let current_schema = snapshot.as_ref().and_then(|snapshot| snapshot.table.as_ref())
-            .map_or(Value::Null, schema);
-        let proposed = if matches!(effect, Ok(Effect::Apply)) && compiled.is_some() {
+            .map_or(Value::Null, |table| schema(table, !native_additive));
+        let proposed = if matches!(effect, Ok(Effect::Apply)) && compiled.is_some()
+            && (current_schema.is_object() || matches!(call.request.change.action, Action::CreateTable { .. }))
+        {
             proposed_schema(call, &current_schema)
         } else {
             current_schema.clone()
         };
         let mut warnings = warnings(call, transactional);
+        if native_additive {
+            warnings.push("database_validates_ddl_on_execution");
+        }
         if matches!(effect, Ok(Effect::AlreadyExists)) {
             warnings.push("existing_table_definition_not_compared");
         } else if matches!(effect, Ok(Effect::AlreadyAbsent)) {
@@ -536,16 +542,32 @@ async fn preview_schema(server: &ServerContext, call: &Call) -> Result<Value> {
     Ok(result)
 }
 
-fn schema(table: &Table) -> Value {
-    json!({
-        "type": "table",
-        "columns": table.columns.iter().map(|column| json!({
-            "name": column.name, "type": column.kind, "nullable": column.nullable, "primary_key_position": column.primary_key,
-        })).collect::<Vec<_>>(),
-        "indexes": table.indexes.iter().map(|index| json!({
-            "name": index.name, "columns": index.columns, "unique": index.unique,
-        })).collect::<Vec<_>>(),
-    })
+fn schema(table: &Table, complete: bool) -> Value {
+    let columns = table
+        .columns
+        .iter()
+        .map(|column| {
+            let mut value =
+                json!({"name": column.name, "type": column.kind, "nullable": column.nullable});
+            if complete {
+                value["primary_key_position"] = json!(column.primary_key);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+    let mut schema = json!({"type": "table", "columns": columns});
+    if complete {
+        schema["indexes"] = json!(
+            table
+                .indexes
+                .iter()
+                .map(|index| json!({
+                    "name": index.name, "columns": index.columns, "unique": index.unique,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    schema
 }
 
 fn proposed_schema(call: &Call, current: &Value) -> Value {

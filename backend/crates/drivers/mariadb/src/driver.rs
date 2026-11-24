@@ -129,9 +129,6 @@ impl Driver for MariaDbDriver {
         secret: Option<&Secret>,
         preview: bool,
     ) -> Result<Box<dyn DriverSession>> {
-        if params.database.as_deref().is_none_or(str::is_empty) {
-            return Err(crate::ddl::unsupported());
-        }
         let config = MariaDbConfig::from_params(params, secret)?;
         let session = MariaDbSession::connect_ddl(config, preview).await?;
         Ok(Box::new(session))

@@ -113,6 +113,8 @@ pub enum IndexScope {
 pub struct Syntax {
     /// Identifier delimiter, used by the compiler to verify quoting.
     pub delimiter: char,
+    /// Whether DDL executes and commits in an explicit transaction.
+    pub transactional: bool,
     /// Whether index names share a catalog or a table namespace.
     pub index_scope: IndexScope,
     /// Table suffix chosen by the driver.
@@ -148,6 +150,9 @@ pub struct Inspection {
     pub destination_exists: bool,
     /// Whether the driver can establish the dependency boundary.
     pub dependencies_known: bool,
+    /// The driver delegates additive schema changes to native database policy.
+    /// Only CREATE TABLE and ordinary ADD COLUMN may use this inspection.
+    pub native_additive: bool,
 }
 
 /// Metadata used by the DDL policy. Definition text is for internal vetting only.

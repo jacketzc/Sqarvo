@@ -104,5 +104,6 @@ Windows 前端接入冻结。合成示例见 [Windows v1 fixture](../../tests/fi
 | `profile.locked` | `DEADLINE_EXCEEDED` | 等待共享档案锁超时 |
 | `profile.invalid` | 依错误分类 | 例如非法请求、损坏文档或当前状态不允许的策略更新 |
 
-稳定子码通过 `sqarvo-error-code` 元数据返回。MCP 还会使用 `profile.restart_required` 标识
-某个已授权档案在启动后新增或修改。命令、别名和资源错误见 [MCP 接口参考](mcp-tools.md)。
+稳定子码通过 `sqarvo-error-code` 元数据返回。MCP 请求在等待或建连期间遇到档案版本变化时，
+同样使用 `profile.revision_conflict`。后续请求可直接使用最新档案。连接标识和资源错误见
+[MCP 接口参考](mcp-tools.md)。

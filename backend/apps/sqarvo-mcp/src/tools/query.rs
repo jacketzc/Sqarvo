@@ -281,9 +281,9 @@ where
     let alias = require_non_empty(&params.connection_alias, "connection_alias")?;
     let sql = require_non_empty(&params.sql, "sql")?;
     // 授权先于解析：未授权的 alias 不该消耗解析与策略检查。
-    access
+    let profile = access
         .guard()
-        .authorize_request(OperationType::Read, Some(alias.to_owned()))
+        .authorize_profile(OperationType::Read, alias)
         .await?;
     let checked = policy::check_readonly(sql)?;
     let fingerprint = checked.fingerprint.sha256_hex.clone();
@@ -292,7 +292,7 @@ where
     let limits = *access.limits();
     let queries = Arc::clone(access.queries());
     let data = access
-        .run(alias, |handle| {
+        .run_on_profile(&profile, |handle| {
             let sql = sql.clone();
             let database = database.clone();
             let queries = Arc::clone(&queries);

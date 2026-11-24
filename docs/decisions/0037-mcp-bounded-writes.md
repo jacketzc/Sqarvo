@@ -1,4 +1,5 @@
 # ADR 0037：MCP 结构化写入与 MariaDB 部署边界
+- [ADR 0042](0042-mcp-native-mariadb-writes.md) 更新普通 MariaDB 实例的操作范围。
 
 - 状态：已接受（确认单 #2，MariaDB 部署边界经维护者后续确认）
 - 关联：[ADR 0008](0008-session-concurrency.md)、[ADR 0017](0017-table-data-and-row-edit.md)、[ADR 0033](0033-sql-parser-readonly-policy.md)、[ADR 0035](0035-shared-connection-profiles.md)

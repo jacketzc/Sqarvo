@@ -877,6 +877,38 @@ pub(crate) enum Effect {
     AlreadyAbsent,
 }
 
+fn occupied() -> Error {
+    Error::failed_precondition(
+        ErrorCode::MCP_INVALID_ARGUMENT,
+        "The requested DDL object name is already in use",
+    )
+}
+
+fn check_additive_inspection(
+    change: &Change,
+    inspection: &sqarvo_driver_api::ddl::Inspection,
+) -> Result<Effect> {
+    match &change.action {
+        Action::CreateTable {
+            if_not_exists: true,
+            ..
+        } if inspection.destination_exists => Ok(Effect::AlreadyExists),
+        Action::CreateTable { .. } if inspection.destination_exists => Err(occupied()),
+        Action::AddColumn { column }
+            if inspection.table.as_ref().is_some_and(|table| {
+                table
+                    .columns
+                    .iter()
+                    .any(|existing| existing.name.eq_ignore_ascii_case(&column.name))
+            }) =>
+        {
+            Err(occupied())
+        }
+        Action::CreateTable { .. } | Action::AddColumn { .. } => Ok(Effect::Apply),
+        _ => Err(unsupported("The driver did not verify this schema change")),
+    }
+}
+
 pub(crate) fn check_inspection(
     change: &Change,
     inspection: &sqarvo_driver_api::ddl::Inspection,
@@ -890,12 +922,9 @@ pub(crate) fn check_inspection(
             "The DDL target object does not exist",
         )
     };
-    let occupied = || {
-        Error::failed_precondition(
-            ErrorCode::MCP_INVALID_ARGUMENT,
-            "The requested DDL object name is already in use",
-        )
-    };
+    if inspection.native_additive {
+        return check_additive_inspection(change, inspection);
+    }
     let table: &Table = match (&change.action, inspection.table.as_ref()) {
         (
             Action::CreateTable {
