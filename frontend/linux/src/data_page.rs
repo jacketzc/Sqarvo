@@ -1031,11 +1031,11 @@ struct DataButtons {
     begin: gtk::Button,
     commit_txn: gtk::Button,
     rollback: gtk::Button,
-    commit_changes: gtk::Button,
     /// 导出菜单（v0.2.5：CSV / INSERT 语句 / 转储表三项）。
     ///
     /// 「撤销」「删除」两个文字按钮已从这一行删掉：两个动作仍在状态栏行操作组
-    /// （`↶` / `−`），删除另有数据行右键菜单「删除行」，这一行只留提交 + 事务。
+    /// （`↶` / `−`），删除另有数据行右键菜单「删除行」。「提交更改」也已移除，
+    /// 提交统一由状态栏行操作组「应用（✓）」承担，这一行只留事务动作。
     export: gtk::MenuButton,
 }
 
@@ -1095,11 +1095,10 @@ impl DataPage {
         export.set_valign(gtk::Align::Center);
         export.set_tooltip_text(Some(l10n::t("data_page.export_tooltip")));
 
-        let commit_changes = gtk::Button::with_label(l10n::t("data_page.btn_commit"));
-        commit_changes.add_css_class("suggested-action");
-        commit_changes.set_sensitive(false);
-        commit_changes.set_tooltip_text(Some(l10n::t("data_page.commit_changes_tip")));
-
+        // 「提交更改」不在这一行：入口是状态栏行操作组的「应用（✓）」（`RowOp::Apply`），
+        // 与 `Ctrl+S` 走同一条路径。在途时取消提交也由状态栏的「取消」承担，按钮文案
+        // （提交（N）/ 取消提交 / 正在取消…）只作为 QA 观测量由纯函数计算，不再对应控件。
+        //
         // 「新增行」（#88）不在这一行：入口是状态栏行操作组的 `+`（`RowOp::Add`）与
         // `win.add-row` 动作（只保留快捷键，菜单里不再列）。两者都落到 `DataPage::begin_insert`。
         // 工具条上再放一个同样的按钮只是第三个入口，还要和这一行的宽度预算抢像素。
@@ -1198,9 +1197,8 @@ impl DataPage {
         // 状态簇整体与图标按钮同一垂直中线：标签 / spinner 各自 valign=CENTER，
         // 容器本身也居中，行高由按钮决定时不会出现「字比图标低一行」。
         controls.set_valign(gtk::Align::Center);
-        controls.append(&commit_changes);
-        // 事务动作紧跟行变更动作：「开始事务」常驻；开事务后原位换成
-        // 「提交事务 / 回滚事务」（互斥由 `sync_badge` 统一处理）。
+        // 行变更提交不在这一行（统一由状态栏「应用」承担）；这一行以事务动作起头：
+        // 「开始事务」常驻，开事务后原位换成「提交事务 / 回滚事务」（互斥由 `sync_badge` 统一处理）。
         controls.append(&begin);
         controls.append(&commit_txn);
         controls.append(&rollback);
@@ -1611,7 +1609,6 @@ impl DataPage {
                 begin,
                 commit_txn,
                 rollback,
-                commit_changes,
                 export,
             },
 
@@ -1710,13 +1707,6 @@ impl DataPage {
                 .rollback
                 .clone()
                 .connect_clicked(move |_| page.rollback_transaction());
-        }
-        {
-            let page = Rc::clone(&page);
-            page.buttons
-                .commit_changes
-                .clone()
-                .connect_clicked(move |_| page.on_commit_clicked());
         }
         {
             // 导出菜单（v0.2.5）：一个入口三种出口。每一项都走 `export_ui::begin`
@@ -4977,12 +4967,12 @@ impl DataPage {
             } else {
                 None
             },
-            commit_button_label: self
-                .buttons
-                .commit_changes
-                .label()
-                .map(|label| label.to_string())
-                .unwrap_or_default(),
+            // QA 观测量：工具条「提交」按钮已移除，文案改由纯函数按同一口径计算
+            // （`--qa-expect-submit button=` 仍可断言在途文案，不依赖控件是否渲染）。
+            commit_button_label: commit_button_label(
+                self.submit.borrow().as_ref(),
+                self.pending_change_count(),
+            ),
             status_text: self.status_or_load_note(),
             submit_phase: self
                 .submit
@@ -5072,17 +5062,40 @@ impl DataPage {
         }
     }
 
-    /// 行操作可用性：页内按钮直接读自身 `sensitive`，不重复一遍判定条件。
+    /// 提交（状态栏行操作组「应用」）当前是否可用。
     ///
-    /// 例外（页内没有按钮的动作一律走显式谓词）：①「新增行」；②「重新读取」；
-    /// ③「撤销」「删除」——v0.2.5 起它们的工具条按钮已删，入口在状态栏行操作组与
-    /// 数据行右键菜单（[`Self::discard_available`] / [`Self::delete_available`]）。
+    /// 工具条「提交更改」按钮移除后，这里是唯一读数来源。判定逐条复刻原先按钮的
+    /// `sensitive`：在途提交可点（点了即取消）、取消中不可点，其余按「可编辑 +
+    /// 有待提交变更 + 不忙」；只读 / 失败 / 断连等原因最后再覆盖一次（与原按钮一致）。
+    #[must_use]
+    fn commit_available(&self) -> bool {
+        let submit_phase = self.submit.borrow().as_ref().map(|snapshot| snapshot.phase);
+        let base = match submit_phase {
+            Some(SubmitPhase::Submitting) => true,
+            Some(SubmitPhase::Cancelling) => false,
+            Some(SubmitPhase::Idle | SubmitPhase::Done) | None => {
+                let editing_enabled = !self.is_read_only()
+                    && matches!(
+                        self.state.get(),
+                        DataState::Ready | DataState::Empty | DataState::Error
+                    );
+                editing_enabled && self.pending_change_count() > 0 && !self.busy.get()
+            }
+        };
+        base && self.read_only_reason().is_none()
+    }
+
+    /// 行操作可用性：页内仍有按钮的动作读自身 `sensitive`，没有按钮的动作走显式谓词。
+    ///
+    /// 显式谓词：①「新增行」；②「重新读取」；③「撤销」「删除」（v0.2.5 起工具条按钮
+    /// 已删）；④「应用 / 提交」（工具条「提交更改」亦已删，统一由状态栏承担，
+    /// 见 [`Self::commit_available`]）。
     #[must_use]
     pub fn row_ops_state(&self) -> RowOpsState {
         let state = RowOpsState {
             add: self.add_row_available(),
             delete: self.delete_available(),
-            apply: self.buttons.commit_changes.is_sensitive(),
+            apply: self.commit_available(),
             discard: self.discard_available(),
             refresh: self.refresh_available(),
             cancel: self
@@ -5283,8 +5296,12 @@ impl DataPage {
             ),
             "normal",
         );
-        // 取消请求已发出：按钮先禁用，等服务端结果（取消中不得重复发 RPC）。
-        self.buttons.commit_changes.set_sensitive(false);
+        // 取消请求已发出：本地先把批次翻到 Cancelling，这样状态栏「应用」立即置灰、
+        // 第二次点击也因 can_cancel() 为 false 而幂等，不必等服务端回推阶段。
+        if let Some(snapshot) = self.submit.borrow_mut().as_mut() {
+            snapshot.phase = SubmitPhase::Cancelling;
+        }
+        self.notify_status();
         (self.callbacks.cancel_submit)();
     }
 
@@ -5880,9 +5897,10 @@ impl DataPage {
         self.request_commit();
     }
 
-    /// QA：点「提交更改 / 取消提交」按钮（同一个 `clicked` 信号，与用户点击同一条路径）。
+    /// QA：中止在途提交（工具条「提交」按钮已移除，没有可 emit 的 `clicked` 信号；
+    /// 直接走状态栏「取消」的同一条取消路径）。
     pub fn qa_cancel_submit(self: &Rc<Self>) {
-        self.buttons.commit_changes.emit_clicked();
+        self.request_cancel_submit();
     }
 
     /// QA：点「开始事务」（先打开卡片再确认，与用户点击走同一条路径）。
@@ -6766,11 +6784,7 @@ impl DataPage {
         self.dirty_label.set_tooltip_text(Some(&text));
         // 常驻事务徽标与脏行计数同一行：换表 / 首次打开时也要立刻出现（不等状态变化）。
         self.sync_txn_label();
-        // 在途时同一个按钮就是「取消提交」：文案由批次状态决定，不在这里拼。
-        self.buttons.commit_changes.set_label(&commit_button_label(
-            self.submit.borrow().as_ref(),
-            risk.total() + usize::from(has_insert),
-        ));
+        // 提交 / 取消文案由 QA 观测量按批次状态计算（见 status_snapshot），不在这里拼给按钮。
     }
 
     /// 「开始事务」的 tooltip：有一种不可用原因就说清哪一种（有未提交更改优先，
@@ -6793,11 +6807,6 @@ impl DataPage {
 
     fn update_buttons(&self) {
         let busy = self.busy.get();
-        let editing_enabled = !self.is_read_only()
-            && matches!(
-                self.state.get(),
-                DataState::Ready | DataState::Empty | DataState::Error
-            );
         let (dirty, changes) = match self.draft.borrow().as_ref() {
             Some(draft) => (draft.dirty_rows(), draft.risk().total()),
             None => (0, 0),
@@ -6835,26 +6844,9 @@ impl DataPage {
             "destructive-action",
             badge.can_rollback() && !busy,
         );
-        // 「提交更改」在在途时变成「取消提交」：必须可点；取消中（已在等结果）
-        // 与普通状态都按原规则（有脏行且不在忙）。
-        let submit_phase = self.submit.borrow().as_ref().map(|snapshot| snapshot.phase);
-        let commit_sensitive = match submit_phase {
-            Some(SubmitPhase::Submitting) => true,
-            Some(SubmitPhase::Cancelling) => false,
-            Some(SubmitPhase::Idle | SubmitPhase::Done) | None => {
-                editing_enabled && pending > 0 && !busy
-            }
-        };
-        self.buttons.commit_changes.set_sensitive(commit_sensitive);
-        if commit_sensitive {
-            self.buttons
-                .commit_changes
-                .add_css_class("suggested-action");
-        } else {
-            self.buttons
-                .commit_changes
-                .remove_css_class("suggested-action");
-        }
+        // 提交入口只剩状态栏行操作组「应用（✓）」：其可用性由 [`Self::commit_available`]
+        // 给出（在途可点即取消、取消中不可点、其余按可编辑 + 有待提交变更 + 不忙），
+        // 末尾 `notify_status()` 推给状态栏。这里不再维护页内提交按钮的状态。
         // v0.2.5：「撤销」「删除」两个按钮已从这一行删掉（动作仍在状态栏行操作组，
         // 删除另有数据行右键菜单）。它们的可用性由 [`Self::discard_available`] /
         // [`Self::delete_available`] 这两个谓词表达，状态栏与菜单读同一份判定。
@@ -6866,21 +6858,14 @@ impl DataPage {
             i64::try_from(export_rows).unwrap_or(i64::MAX),
             &[("export_rows", export_rows.to_string())],
         )));
-        self.buttons
-            .commit_changes
-            .set_tooltip_text(Some(l10n::t(if badge.can_commit() {
-                "data_page.commit_changes_tip_txn"
-            } else {
-                "data_page.commit_changes_tip"
-            })));
-        // 只读原因一旦成立，编辑类按钮一律禁用（不是靠置灰暗示，状态行同时给出原因）。
+        // 只读原因一旦成立，状态行 tooltip 给出具体原因（不是靠置灰暗示）；
+        // 提交按钮的禁用已由 `commit_available()` 里的 `read_only_reason()` 覆盖。
         if let Some(reason) = self.read_only_reason() {
-            self.buttons.commit_changes.set_sensitive(false);
             self.status.set_tooltip_text(Some(&reason));
         } else {
             self.status.set_tooltip_text(None);
         }
-        // 按钮可用性是状态栏行操作组与窗口动作的唯一读数来源。
+        // 按钮可用性由显式谓词给出，统一推给状态栏行操作组与窗口动作。
         self.notify_status();
     }
 

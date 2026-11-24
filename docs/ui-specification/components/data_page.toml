@@ -66,9 +66,9 @@ status = "active"
 style.slot = "workspace.content"
 style.metrics = ["table_actions_height", "row_height_data"]
 impl_notes = [
-  "只有一行：提交 / 开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。",
-  "这一行**没有**「撤销」「删除」「新增」「刷新」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳。",
-  "四个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。",
+  "只有一行：开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。",
+  "这一行**没有**「撤销」「删除」「新增」「刷新」「提交更改」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳，提交只有状态栏 ✓（status_bar.row1.ops.apply，与 Ctrl+S 同一路径）；在途取消提交也只有状态栏「取消」。",
+  "三个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。",
   "行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。",
   "状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。",
 ]
@@ -90,19 +90,22 @@ spec_hash = ""
 [[component]]
 id = "data_page.toolbar.commit"
 parent = "data_page.toolbar"
-display_name = "「提交」按钮（待提交 N 条；在途变「取消提交」）"
+display_name = "「提交」按钮（已移除；提交由状态栏「应用」承担）"
 kind = "control"
-status = "active"
+status = "removed"
+removed_in = "v0.2.3.4"
+removed_reason = "提交入口收敛到状态栏行 1「应用（✓）」（status_bar.row1.ops.apply，与 Ctrl+S 同一路径），工具条不再放第二个提交按钮；在途取消也由状态栏「取消」承担。条目保留到三端清理完成。"
+superseded_by = "status_bar.row1.ops.apply"
 a11y.name = "提交"
-a11y.tab = "工具条内第一枚动作按钮"
+a11y.tab = "（已移除）原为工具条内第一枚动作按钮"
 style.slot = "workspace.content"
 style.metrics = ["row_height_data"]
 impl_notes = [
-  "文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。",
-  "可用性只有一个读数来源（数据页按钮的 sensitive）：状态栏「应用（✓）」直接读它，不重复判定。",
-  "只读原因一旦成立，本按钮恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。",
+  "本条目已退役，下面记录的是移除前的行为真值：文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。现在这套文案只作为 QA 观测量由纯函数 `submit_batch::commit_button_label` 计算，不再对应可见控件。",
+  "可用性现在由数据页显式谓词 `data_page::commit_available()` 给出，状态栏「应用（✓）」读同一谓词（不再读页内按钮的 sensitive）；在途可点即取消、取消中不可点，只读 / 失败 / 断连原因最后覆盖。",
+  "只读原因一旦成立，提交入口恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。",
   "提交顺序：有新行时 `InsertRows` **先行**（整批原子，任一行失败则整批回滚），成功后才提交脏行；插入失败则一条脏行都不提交——避免库里留下半套状态。",
-  "单批上限 500 行：超出时只执行前 N 条，其余留待下次，横幅「单批上限 500 行：本次只执行了前 N 条，还有 M 条未提交——请再次点「提交更改」续传。」；逐行失败的行留在草稿里，可改完再提交。",
+  "单批上限 500 行：超出时只执行前 N 条，其余留待下次，横幅「单批上限 500 行：本次只执行了前 N 条，还有 M 条未提交——请点状态栏「应用」续传。」；逐行失败的行留在草稿里，可改完再提交。",
 ]
 
 [[component.interaction]]
@@ -130,19 +133,16 @@ result = "按钮禁用（不弹错误）；只读与断连时过程消息的 too
 source = "src/data_page.rs:6743、src/data_page.rs:4289"
 
 [component.sync.linux]
-state = "done"
-spec_hash = "929f45eb049c"
-commit = ""
-evidence = "§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_clicked / request_commit / confirm_batch"
+state = "removed"
+note = "工具条提交按钮已从 data_page.rs 删除；提交走 status_bar.row1.ops.apply（RowOp::Apply → on_commit_clicked），在途取消走 status_bar.row1.ops.cancel。"
 
 [component.sync.windows]
-state = "partial"
-spec_hash = "929f45eb049c"
-note = "S6-a 提交确认、风险正文及取消状态接入共享文案（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1295、:1304，frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:763）。Ctrl+S 和状态栏应用共用提交路径。Windows 构建及模态确认未验收。"
+state = "na"
+note = "Windows 从来没有工具条提交按钮：提交走状态栏「应用（✓）」与 Ctrl+S 的同一条 SubmitDataAsync 路径，无需清理。"
 
 [component.sync.macos]
-state = "none"
-spec_hash = ""
+state = "na"
+note = "macOS 前端未接入，本来就没有该按钮。"
 
 [[component]]
 id = "data_page.toolbar.begin_txn"
@@ -151,7 +151,7 @@ display_name = "「开始事务」按钮"
 kind = "control"
 status = "active"
 a11y.name = "开始事务"
-a11y.tab = "工具条内、紧跟「提交」"
+a11y.tab = "工具条内第一枚动作按钮（「提交」移除后）"
 style.slot = "workspace.content"
 style.metrics = ["row_height_data"]
 impl_notes = [
@@ -180,13 +180,13 @@ source = "src/table_data.rs:1027、src/data_page.rs:6883"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "516580471083"
+spec_hash = "befede8178a5"
 commit = ""
 evidence = "§5.1 开始事务 / §5.2；begin_transaction + begin_tooltip；驱动不支持时落只读原因 capability.unsupported"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "516580471083"
+spec_hash = "befede8178a5"
 note = "§7.1：第一次暂存才 Begin（没有改动就没有事务），没有隔离级别卡片与只读勾选；驱动不支持显式事务时如实退回自动提交。"
 
 [component.sync.macos]
@@ -205,7 +205,7 @@ style.slot = "workspace.content"
 style.metrics = ["row_height_data"]
 impl_notes = [
   "只在有活动事务时可见（与「开始事务」原位互斥）；失败态**不可提交**，只剩回滚。",
-  "有脏行时拒绝：先「提交」或「放弃更改」，与工具条按钮同一套谓词。",
+  "有脏行时拒绝：先点状态栏「应用」提交或「放弃更改」，与提交入口同一套谓词（`commit_available()`）。",
 ]
 
 [[component.interaction]]
@@ -217,7 +217,7 @@ source = "src/data_page.rs:5495、src/data_page.rs:4694"
 [[component.interaction]]
 trigger = "click"
 precondition = "有活动事务但有脏行"
-result = "拒绝并写「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」"
+result = "拒绝并写「还有 N 行更改未提交：先点状态栏「应用」或「放弃更改」再提交事务」"
 source = "src/data_page.rs:5495、src/data_page.rs:6743"
 
 [component.sync.linux]

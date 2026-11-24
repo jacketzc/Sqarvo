@@ -848,8 +848,8 @@ status = "done"
 
 [[entry]]
 key = "data_page.insert_started"
-zh = "{summary} · 双击单元格填值，填完点「提交更改」"
-en = "{summary} · double-click a cell to fill values, then click Commit Changes"
+zh = "{summary} · 双击单元格填值，填完点状态栏「应用」"
+en = "{summary} · double-click a cell to fill values, then click Apply in the status bar"
 status = "done"
 
 [[entry]]
@@ -1354,13 +1354,7 @@ zh = "已取消提交（未发送任何变更）"
 en = "Commit cancelled (no changes were sent)"
 status = "done"
 
-# -- 提交按钮、取消提交与脏行计数标签（update_dirty_label / commit_button_label） --------
-
-[[entry]]
-key = "data_page.btn_commit"
-zh = "提交"
-en = "Commit"
-status = "done"
+# -- 在途提交/取消文案与脏行计数标签（纯函数 commit_button_label / QA 观测量；工具条提交按钮已移除） --------
 
 [[entry]]
 key = "data_page.btn_commit_count"
@@ -1378,18 +1372,6 @@ status = "done"
 key = "data_page.commit_cancelling_btn"
 zh = "正在取消…"
 en = "Cancelling…"
-status = "done"
-
-[[entry]]
-key = "data_page.commit_changes_tip"
-zh = "提交所有脏行的变更（主键定位 + 列变更）"
-en = "Commit changes for all dirty rows (locate by primary key + column changes)"
-status = "done"
-
-[[entry]]
-key = "data_page.commit_changes_tip_txn"
-zh = "提交所有脏行的变更（主键定位 + 列变更），然后在事务内生效"
-en = "Commit changes for all dirty rows (locate by primary key + column changes), then apply them inside the transaction"
 status = "done"
 
 [[entry]]
@@ -1553,9 +1535,9 @@ status = "done"
 
 [[entry]]
 key = "data_page.clamped_banner"
-zh = "单批上限 500 行：本次只执行了前 {affected} 条，还有 {deferred} 条未提交——请再次点「提交更改」续传。"
-en = "Single-batch limit is 500 rows: only the first {affected} changes ran; {deferred} uncommitted changes remain — click Commit Changes again to resume."
-en_one = "Single-batch limit is 500 rows: only the first {affected} changes ran; 1 uncommitted change remains — click Commit Changes again to resume."
+zh = "单批上限 500 行：本次只执行了前 {affected} 条，还有 {deferred} 条未提交——请点状态栏「应用」续传。"
+en = "Single-batch limit is 500 rows: only the first {affected} changes ran; {deferred} uncommitted changes remain — click Apply in the status bar to resume."
+en_one = "Single-batch limit is 500 rows: only the first {affected} changes ran; 1 uncommitted change remains — click Apply in the status bar to resume."
 status = "done"
 
 # -- 失败行摘要（show_failures） ----------------------------------------------
@@ -1781,9 +1763,9 @@ status = "done"
 
 [[entry]]
 key = "data_page.commit_txn_dirty"
-zh = "还有 {dirty} 行更改未提交：先点「提交更改」或「放弃更改」再提交事务"
-en = "{dirty} rows of changes are still uncommitted: click Commit Changes or Discard Changes before committing the transaction"
-en_one = "1 row of changes is still uncommitted: click Commit Changes or Discard Changes before committing the transaction"
+zh = "还有 {dirty} 行更改未提交：先点状态栏「应用」或「放弃更改」再提交事务"
+en = "{dirty} rows of changes are still uncommitted: click Apply in the status bar or Discard Changes before committing the transaction"
+en_one = "1 row of changes is still uncommitted: click Apply in the status bar or Discard Changes before committing the transaction"
 status = "done"
 
 [[entry]]

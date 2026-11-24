@@ -230,3 +230,14 @@ rows.commit | 工具条第 2 行「提交」 | dirty > 0 且非只读；超过�
 - 同条提到的「表格工具条第 2 行 `提交`」与 §附「`rows.commit` 入口＝工具条第 2 行」：现在
   表数据工具条只有一行按钮（第二行是状态行），入口描述应改为「按钮行」。
 - 其余结论不变。行为口径以 `docs/ui-specification/ui-behavior-contract.md` 为准。
+
+## 修订（v0.2.3.4）
+
+- 上面「入口描述应改为『按钮行』」的 `rows.commit` 再次收敛：工具条「提交更改 / 取消提交」
+  按钮移除，行变更提交现在**只有**状态栏行操作组「应用（✓）」（`status_bar.row1.ops.apply`，
+  与 `Ctrl+S` 同一路径）一个入口；在途取消归状态栏「取消」。可用性由数据页显式谓词
+  `data_page::commit_available()` 给出，不再读页内按钮的 `sensitive`。
+- 组件层面的退役与替代关系见 `docs/ui-specification/components/data_page.toml` 的
+  `data_page.toolbar.commit`（`status = "removed"` / `superseded_by`）；行为细则的唯一真值是
+  `docs/ui-specification/components/status_bar.toml` 的 `status_bar.row1.ops.apply`。
+- 其余结论不变。

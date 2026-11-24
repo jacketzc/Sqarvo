@@ -18,7 +18,7 @@
 |---|---|---|---|---|---|---|
 | `data_page` | 表数据页（整页） | area | active | done | partial | — |
 | `data_page.toolbar` | 　单行工具条 | container | active | done | partial | — |
-| `data_page.toolbar.commit` | 　　「提交」按钮（待提交 N 条；在途变「取消提交」） | control | active | done | partial | — |
+| `data_page.toolbar.commit` | 　　「提交」按钮（已移除；提交由状态栏「应用」承担） | control | removed | 已清 | na | na |
 | `data_page.toolbar.begin_txn` | 　　「开始事务」按钮 | control | active | done | partial | — |
 | `data_page.toolbar.commit_txn` | 　　「提交事务」按钮 | control | active | done | partial | — |
 | `data_page.toolbar.rollback_txn` | 　　「回滚事务」按钮 | control | active | done | partial | — |
@@ -71,16 +71,16 @@ kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `table_actions_height`、`row_height_data`
 - 同步：Linux done（§5.1 单行工具条；data_page.rs new() 的 controls 行 + --qa-layout-audit「表格工具条 / 状态簇」两项）；Windows partial（§7.1：页内动作行是「上一页 / 下一页 / 加载更多…」+ 编辑动作，没有筛选 / 列显隐 / 导出，也没有状态簇；事务与脏行写在状态栏行 2。）；macOS none
-- 实现备注：只有一行：提交 / 开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。这一行**没有**「撤销」「删除」「新增」「刷新」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳。四个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。
+- 实现备注：只有一行：开始事务（开事务后原位换成 提交事务 回滚事务）──弹性空白── [spinner · 过程消息 · 状态圆点] 筛选 列显隐 导出 ▾。这一行**没有**「撤销」「删除」「新增」「刷新」「提交更改」：撤销与删除在状态栏行操作组（↶ / −），删除另有行右键菜单，新增只有状态栏 +，刷新只有状态栏 ⟳，提交只有状态栏 ✓（status_bar.row1.ops.apply，与 Ctrl+S 同一路径）；在途取消提交也只有状态栏「取消」。三个动作按钮共用一套内距（按钮盒 36 宽 × 32 高）；「开始事务」是中性动作：不挂 flat，也不用 suggested-action / destructive-action。行内容高度钉在 row_height_data，上 8 / 下 6 留白；spinner、消息与圆点全部 valign=Center，与图标按钮同一垂直中线。状态簇紧贴漏斗左侧；960 宽下只有过程消息按省略号收缩，行本身不溢出。
 
-### `data_page.toolbar.commit` 「提交」按钮（待提交 N 条；在途变「取消提交」）
+### `data_page.toolbar.commit` 「提交」按钮（已移除；提交由状态栏「应用」承担）
 
-kind `control` · status `active` · parent `data_page.toolbar`
+kind `control` · status `removed` · parent `data_page.toolbar` · → `status_bar.row1.ops.apply`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
-- 无障碍：可访问名「提交」；Tab 工具条内第一枚动作按钮
-- 同步：Linux done（§5.1 提交；§8.2 提交行变更确认；data_page.rs on_commit_clicked / request_commit / confirm_batch）；Windows partial（S6-a 提交确认、风险正文及取消状态接入共享文案（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1295、:1304，frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:763）。Ctrl+S 和状态栏应用共用提交路径。Windows 构建及模态确认未验收。）；macOS none
-- 实现备注：文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。可用性只有一个读数来源（数据页按钮的 sensitive）：状态栏「应用（✓）」直接读它，不重复判定。只读原因一旦成立，本按钮恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。提交顺序：有新行时 `InsertRows` **先行**（整批原子，任一行失败则整批回滚），成功后才提交脏行；插入失败则一条脏行都不提交——避免库里留下半套状态。单批上限 500 行：超出时只执行前 N 条，其余留待下次，横幅「单批上限 500 行：本次只执行了前 N 条，还有 M 条未提交——请再次点「提交更改」续传。」；逐行失败的行留在草稿里，可改完再提交。
+- 无障碍：可访问名「提交」；Tab （已移除）原为工具条内第一枚动作按钮
+- 同步：Linux removed（工具条提交按钮已从 data_page.rs 删除；提交走 status_bar.row1.ops.apply（RowOp::Apply → on_commit_clicked），在途取消走 status_bar.row1.ops.cancel。）；Windows na（Windows 从来没有工具条提交按钮：提交走状态栏「应用（✓）」与 Ctrl+S 的同一条 SubmitDataAsync 路径，无需清理。）；macOS na（macOS 前端未接入，本来就没有该按钮。）
+- 实现备注：本条目已退役，下面记录的是移除前的行为真值：文案随待提交条数变化（提交（N），N = 脏行 + 新行草稿 + 标记删除）；在途时同一按钮变「取消提交」，取消中变「正在取消…」——文案由批次状态决定，不在视图层拼。现在这套文案只作为 QA 观测量由纯函数 `submit_batch::commit_button_label` 计算，不再对应可见控件。可用性现在由数据页显式谓词 `data_page::commit_available()` 给出，状态栏「应用（✓）」读同一谓词（不再读页内按钮的 sensitive）；在途可点即取消、取消中不可点，只读 / 失败 / 断连原因最后覆盖。只读原因一旦成立，提交入口恒禁用，并把原因写进过程消息的 tooltip（不能只靠置灰暗示）。提交顺序：有新行时 `InsertRows` **先行**（整批原子，任一行失败则整批回滚），成功后才提交脏行；插入失败则一条脏行都不提交——避免库里留下半套状态。单批上限 500 行：超出时只执行前 N 条，其余留待下次，横幅「单批上限 500 行：本次只执行了前 N 条，还有 M 条未提交——请点状态栏「应用」续传。」；逐行失败的行留在草稿里，可改完再提交。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -94,7 +94,7 @@ kind `control` · status `active` · parent `data_page.toolbar`
 kind `control` · status `active` · parent `data_page.toolbar`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
-- 无障碍：可访问名「开始事务」；Tab 工具条内、紧跟「提交」
+- 无障碍：可访问名「开始事务」；Tab 工具条内第一枚动作按钮（「提交」移除后）
 - 同步：Linux done（§5.1 开始事务 / §5.2；begin_transaction + begin_tooltip；驱动不支持时落只读原因 capability.unsupported）；Windows partial（§7.1：第一次暂存才 Begin（没有改动就没有事务），没有隔离级别卡片与只读勾选；驱动不支持显式事务时如实退回自动提交。）；macOS none
 - 实现备注：打开事务后**隐藏**（不是置灰）：同一位置换成「提交事务 / 回滚事务」。有未提交的更改时置灰，tooltip 给原因「还有 N 行未提交的更改：先提交或放弃它们再开事务」——最容易踩到的那一条优先。页内按钮、win.begin-txn 动作与 QA 都落到 begin_transaction 这同一条命令，被挡住时状态行写同一句话、不打开卡片。
 
@@ -111,12 +111,12 @@ kind `control` · status `active` · parent `data_page.toolbar`
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`
 - 无障碍：可访问名「提交事务」；Tab 有事务时出现在工具条动作区
 - 同步：Linux done（§5.1 / §5.2 事务按钮互斥与失败态；commit_transaction + sync_badge）；Windows partial（§7.1：Ctrl+S = ApplyRowChanges（带 transaction_id）→ 全部成功再 Commit；没有「提交事务」文字按钮，失败行保留在原处可重试。）；macOS none
-- 实现备注：只在有活动事务时可见（与「开始事务」原位互斥）；失败态**不可提交**，只剩回滚。有脏行时拒绝：先「提交」或「放弃更改」，与工具条按钮同一套谓词。
+- 实现备注：只在有活动事务时可见（与「开始事务」原位互斥）；失败态**不可提交**，只剩回滚。有脏行时拒绝：先点状态栏「应用」提交或「放弃更改」，与提交入口同一套谓词（`commit_available()`）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 有活动事务且没有脏行 | 提交事务；成功后丢弃尚未提交的界面更改并重新读取当前表，圆点从棕回到灰 | `src/data_page.rs:5495、src/data_page.rs:4694` |
-| click | 有活动事务但有脏行 | 拒绝并写「还有 N 行更改未提交：先点「提交更改」或「放弃更改」再提交事务」 | `src/data_page.rs:5495、src/data_page.rs:6743` |
+| click | 有活动事务但有脏行 | 拒绝并写「还有 N 行更改未提交：先点状态栏「应用」或「放弃更改」再提交事务」 | `src/data_page.rs:5495、src/data_page.rs:6743` |
 
 ### `data_page.toolbar.rollback_txn` 「回滚事务」按钮
 
@@ -2434,12 +2434,12 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 无障碍：可访问名「应用：提交所有脏行的变更」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.apply`
 - 平台差异：Windows：Windows **有**这枚按钮（`ButtonRowApply`，可访问名「提交变更」），与 `Ctrl+S` 同一条 `SubmitDataAsync`；>100 行或含删除时弹 WinUI 原生 `ContentDialog` 模态确认（破坏性按钮默认「取消」，frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1234），确认后带 `acknowledge_risk`（dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认）；无脏行时 tooltip 是「当前没有待提交的更改」，不加「（当前不可用：…）」后缀。
-- 同步：Linux done（§7 行 1；RowOp::Apply → on_commit_clicked（与页内按钮同一状态））；Windows partial（§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行或含删除改 ContentDialog 模态确认（默认取消）；禁用态 tooltip 句式未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1021 ButtonRowApply、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:247/2530 接线与可用性、:1234 模态确认；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
-- 实现备注：与数据页的「提交更改」是同一个按钮状态：有脏行才亮，没有脏行时 tooltip 说明「没有可提交的更改」。危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。
+- 同步：Linux done（§7 行 1；唯一提交入口；RowOp::Apply → on_commit_clicked，可用性来自 data_page.rs 的 commit_available()；在途文案由 submit_batch::commit_button_label 计算（--qa-expect-submit button= 观测量，不依赖可见按钮））；Windows partial（§7.1 记录状态栏「应用（✓）」与 Ctrl+S 同一路径、>100 行或含删除改 ContentDialog 模态确认（默认取消）；禁用态 tooltip 句式未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:1021 ButtonRowApply、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:247/2530 接线与可用性、:1234 模态确认；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
+- 实现备注：这是表数据页 / 单表查询结果**唯一**的提交入口：工具条「提交更改」已移除（data_page.toolbar.commit，removed_in v0.2.3.4），在途取消由同组「取消」承担。可用性由数据页显式谓词 `commit_available()` 给出（在途提交时点它即取消、取消中禁用，其余按可编辑 + 有待提交变更 + 不忙，只读 / 失败 / 断连最后覆盖），状态栏不重复判定，也不再读页内按钮的 sensitive。危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有脏行且没有在途提交 | 提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框 | `src/shell.rs:1066、src/data_page.rs:5156、src/table_data.rs:535` |
+| click | 有脏行且没有在途提交（提交在途时点它就取消本批，取消中禁用） | 提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框 | `src/shell.rs:1107、src/data_page.rs:5198（RowOp::Apply → on_commit_clicked）、src/data_page.rs:commit_available、src/table_data.rs:535` |
 
 ### `status_bar.row1.ops.discard` 「撤销」图标按钮
 
@@ -3208,5 +3208,6 @@ kind `item` · status `active` · parent `workspace.mcp_management`
 
 | 版本 | 组件 | 名称 | status | Linux | Windows | macOS | 理由 |
 |---|---|---|---|---|---|---|---|
+| v0.2.3.4 | `data_page.toolbar.commit` | 「提交」按钮（已移除；提交由状态栏「应用」承担） | removed | 已清 | na | na | 提交入口收敛到状态栏行 1「应用（✓）」（status_bar.row1.ops.apply，与 Ctrl+S 同一路径），工具条不再放第二个提交按钮；在途取消也由状态栏「取消」承担。条目保留到三端清理完成。 |
 | v0.2.3.4 | `tabs.query.results.statements` | 语句切换控件（多语句脚本） | removed | 已清 | 待清 | na | 整体并入消息页：逐条语句的完整 SQL + 结论行 + 耗时行写在「消息」页，结果集切换改由结果页内的下拉承担，独立控件行随之删除，避免额外一行与横向撑宽风险（维护者范围修订「确认 #2」，Issue #231） |
 | v0.2.5 | `shell.menu.export_csv` | 表 → 导出 CSV | removed | 已清 | 已清 | na | 主菜单暂时隐藏（改动确认单 #1 / #198）：导出入口收敛到表工具条「导出 ▾」与 Ctrl+Shift+E；条目保留，恢复时翻回 active |
