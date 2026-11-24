@@ -48,7 +48,7 @@
 | `data_page.filter_panel.sort_composer` | 　　排序编辑组（列 · 方向 · 添加排序） | container | active | done | — | — |
 | `data_page.filter_panel.sort_row` | 　　排序键行（列名 · asc / desc · 上移 / 下移 / 删除） | row | active | done | — | — |
 | `data_page.txn_chooser` | 　「开始事务」卡片（隔离级别 · 只读） | container | active | done | — | — |
-| `data_page.placeholder` | 　占位页（尚未打开 / 正在读取 / 空表 / 本页没有数据） | container | active | done | — | — |
+| `data_page.placeholder` | 　占位页（尚未打开 / 正在读取） | container | active | done | — | — |
 | `data_page.banner` | 　页首横幅（只读 / 断连 / 错误） | control | active | done | partial | — |
 | `data_page.errors` | 　逐行提交失败列表 | container | active | done | partial | — |
 | `data_page.query_edit` | 　查询结果的单表编辑（复用同一份草稿与提交路径） | container | active | done | — | — |
@@ -292,10 +292,11 @@ kind `container` · status `active` · parent `data_page`
 - 原生控件：gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—
 - 自绘：WinUI 3 没有 GtkColumnView 的等价控件：GridView / ListView 的虚拟化不与列宽拖动、行号列、单行表头这三者组合，因此这一层用自绘虚拟化行区自己管理行号、列宽与表头（§7.1）。
 - 同步：Linux done（§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top）；Windows partial（§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1833 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2182 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2161 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2120 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。）；macOS none
-- 实现备注：结构：行号列（固定 row_number_width，行号 = offset + 行下标 + 1，**不是**主键）+ 单行表头 + 数据行。列宽默认 column_width；列右缘 column_resize_hit 命中热区（指针 SizeWestEast）可拖动改列宽，双击把手按**本页内容**自适应（表头文案与已加载值里最长文字 + 单元格内距 column_cell_padding），下限 column_min_width、上限 column_width 都取 metrics；拖过 / 自适应过的列记为用户宽度，表头与所有行共用同一份列宽状态，翻页 / 刷新 / 重读不覆写、换表重置。表头条带 26 内容 + 上下 2 内距（column_header_min_height）；底色取 theme_bg_color，文字与数据行同档。横向滚动条常驻可见（关掉 overlay 自动淡出），宽表只横向滚动、不挤压右侧信息面板；窗口最大化后横向滚动位置回到第一列。滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。页码与总数只在状态栏分页器出现一次（status_bar.row1.pager / .summary）：三态是「共 N 行」/「约 N 行」（估计值必须带「约」）/「共 ? 行」（总数未知或计数超时写问号，不编造数字；Linux 未知时只写页码，Windows 写「共 ? 行」）；计数超预算时写「未统计（超出计数预算）」并出现「未统计」徽标。每页 500 行（TABLE_PAGE_SIZE，实际 page_size 随第一页返回）；翻页 = 整页替换 + 回到顶部。刷新（状态栏 ⟳ / 表菜单）走**同一条** dirty_guard：有脏行 / 标删 / 新行时被拒绝并说明原因，按钮禁用时 tooltip 附同一句——数据页只给谓词与文案，按钮本身在 status_bar。末页需要总页数：总数未知时 can_last = false（按钮禁用），点了也不发请求，状态行写「<动作>不可用（没有对应页）」；驱动不声明 totals 与非精确计数同一写法（不显示总数）。新行占位行是**网格里的最后一行**（行号列写 ＋，行号 0 = 尚未落库）：提交成功后按返回的主键定位再赋真实行号；整批全部省略时提交即 INSERT DEFAULT VALUES（自增 / 默认值列由数据库填）。
+- 实现备注：结构：行号列（固定 row_number_width，行号 = offset + 行下标 + 1，**不是**主键）+ 单行表头 + 数据行。列宽默认 column_width；列右缘 column_resize_hit 命中热区（指针 SizeWestEast）可拖动改列宽，双击把手按**本页内容**自适应（表头文案与已加载值里最长文字 + 单元格内距 column_cell_padding），下限 column_min_width、上限 column_width 都取 metrics；拖过 / 自适应过的列记为用户宽度，表头与所有行共用同一份列宽状态，翻页 / 刷新 / 重读不覆写、换表重置。表头条带 26 内容 + 上下 2 内距（column_header_min_height）；底色取 theme_bg_color，文字与数据行同档。横向滚动条常驻可见（关掉 overlay 自动淡出），宽表只横向滚动、不挤压右侧信息面板；窗口最大化后横向滚动位置回到第一列。滚动到底**不**自动取下一页（与 offset 分页互斥），翻页只由状态栏分页器驱动。页码与总数只在状态栏分页器出现一次（status_bar.row1.pager / .summary）：三态是「共 N 行」/「约 N 行」（估计值必须带「约」）/「共 ? 行」（总数未知或计数超时写问号，不编造数字；Linux 未知时只写页码，Windows 写「共 ? 行」）；计数超预算时写「未统计（超出计数预算）」并出现「未统计」徽标。每页 500 行（TABLE_PAGE_SIZE，实际 page_size 随第一页返回）；翻页 = 整页替换 + 回到顶部。刷新（状态栏 ⟳ / 表菜单）走**同一条** dirty_guard：有脏行 / 标删 / 新行时被拒绝并说明原因，按钮禁用时 tooltip 附同一句——数据页只给谓词与文案，按钮本身在 status_bar。末页需要总页数：总数未知时 can_last = false（按钮禁用），点了也不发请求，状态行写「<动作>不可用（没有对应页）」；驱动不声明 totals 与非精确计数同一写法（不显示总数）。新行占位行是**网格里的最后一行**（行号列写 ＋，行号 0 = 尚未落库）：提交成功后按返回的主键定位再赋真实行号；整批全部省略时提交即 INSERT DEFAULT VALUES（自增 / 默认值列由数据库填）。空表 / 筛选无结果 / offset 越界这类 0 行结果照常绘制表头与网格、只是没有数据行；不进占位页（否则新增行的草稿行被挡住）。0 行时「回到顶部」只归零滚动位置，不调用 GtkColumnView::scroll_to(0)，避免 `pos < n_items` 断言。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
+| load | 第一页 0 行（空表 / 筛选无结果 / offset 越界） | 照常绘制列名表头与网格、只是没有数据行；新增行仍可用，点状态栏「新增行」出现 ＋ 草稿行 | `src/data_page.rs:4443` |
 | click | 可编辑且没有待插入行（入口：状态栏行操作组 +，工具条与菜单里都没有） | 在末尾追加一行草稿并进入可编辑态：有默认值的列显示数据库默认值原文、自增 / 无默认列写「省略（交给数据库默认值）」；已有待插入行时先选中它并写「已经有一行待插入的新行：先提交或放弃它」，不再追加；每格双击填值，点「提交」才发 InsertRows | `src/data_page.rs:3155、src/data_page.rs:5095、src/data_page.rs:5156` |
 | load | 打开表 / 翻页 / 刷新（无未提交更改） | 整页替换并写「正在读取 offset N …（<动作>）」；成功后回到第一行；翻页中再翻页写「上一页仍在读取：稍候再翻页」，不发第二次请求 | `src/data_page.rs:3057、src/data_page.rs:4350、src/data_page.rs:4467、src/backend/table.rs:28` |
 | load | 有脏行、标记删除或新行草稿 | 翻页 / 排序 / 筛选 / 刷新一律拒绝，写「有未提交的更改：先提交或「放弃更改」再翻页/排序/筛选（翻页会替换整页数据）」 | `src/data_page.rs:3098、src/data_page.rs:3057` |
@@ -514,19 +515,18 @@ kind `container` · status `active` · parent `data_page`
 | click | 已选可用隔离级别 | 「开始事务」按所选级别（及只读勾选）发 RPC；在途提示「开始事务：<隔离级别> · 读写」，事务状态落定后清除，圆点转棕 | `src/data_page.rs:3821、src/data_page.rs:1762` |
 | click | 卡片已打开 | 「取消」或 ✕ 收起卡片，不开始事务、不发 RPC | `src/data_page.rs:1766` |
 
-### `data_page.placeholder` 占位页（尚未打开 / 正在读取 / 空表 / 本页没有数据）
+### `data_page.placeholder` 占位页（尚未打开 / 正在读取）
 
 kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `workspace.content`
 - 无障碍：可访问名「数据页占位」
-- 同步：Linux done（§5.6 打开表（加载中）/ 空表；begin_open + show_open 的占位页分支）；Windows none（§7.1 未记录数据页占位页文案（只记录总数三态与页码写法）。）；macOS none
-- 实现备注：四段文案互斥：尚未打开表 / 正在读取表数据 / 空表 / 本页没有数据；「空」与「错」严格区分（错误走横幅 + 逐行错误列表，不占这一页）。空态与越界页必须给**原因**，不能只写「没有数据」。图标与说明只用 dim 文字，不放大色块。
+- 同步：Linux done（§5.6 打开表（加载中）；begin_open 的占位页分支）；Windows none（§7.1 未记录数据页占位页文案（只记录总数三态与页码写法）。）；macOS none
+- 实现备注：两段文案互斥：尚未打开表 / 正在读取表数据；表一旦打开（含 0 行）就走 data_page.grid，空表不再占这一页。「空」与「错」严格区分：0 行照常画表头、只是没有数据行；错误走横幅 + 逐行错误列表，不占这一页。图标与说明只用 dim 文字，不放大色块。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 打开表 / 翻页请求已发出 | 「正在读取表数据」+「等待服务端返回第一页…」 | `src/data_page.rs:4339、src/data_page.rs:1331` |
-| load | 第一页 0 行 | 「空表」+「该表存在，但当前条件下没有任何行」/「该表存在，但目前没有任何行」（有筛选时写前者）；offset 越界时写「本页没有数据」+「offset 超出总数（服务端如实返回空行）；回首页或刷新再看」 | `src/data_page.rs:4421` |
 
 ### `data_page.banner` 页首横幅（只读 / 断连 / 错误）
 

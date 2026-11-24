@@ -4440,24 +4440,11 @@ impl DataPage {
                 eprintln!("[data] 只读原因：{text}");
             }
         }
-        if count == 0 {
-            let pager = self.pager.get();
-            self.placeholder.set_title(if pager.offset > 0 {
-                l10n::t("data_page.empty_page_title")
-            } else {
-                l10n::t("data_page.empty_table")
-            });
-            self.placeholder.set_description(Some(if pager.offset > 0 {
-                l10n::t("data_page.empty_offset_desc")
-            } else if total.text().is_some() {
-                l10n::t("data_page.empty_filtered_desc")
-            } else {
-                l10n::t("data_page.empty_plain_desc")
-            }));
-            self.content.set_visible_child_name("placeholder");
-        } else {
-            self.content.set_visible_child_name("grid");
-        }
+        // 表一旦打开就一律走网格：0 行时表头照常绘制，只是没有数据行。
+        // 空表若改走占位页，GtkColumnView 不被 realize，新增行的草稿行会被挡住看不见
+        // （用户实测空表 group_info1）；「回到顶部」的 scroll_to 另在 scroll_to_top 按
+        // 0 行守卫，避免 gtk_column_view_scroll_to 的 `pos < n_items` 断言。
+        self.content.set_visible_child_name("grid");
         self.set_state(if count == 0 {
             DataState::Empty
         } else {
@@ -4492,8 +4479,12 @@ impl DataPage {
         if let Some(adjustment) = self.grid.vadjustment() {
             adjustment.set_value(adjustment.lower());
         }
-        self.grid
-            .scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
+        // 空表 0 行时 GtkColumnView 没有位置 0 可滚，scroll_to(0) 会触发
+        // `pos < n_items` 断言；位置归零由上面的 vadjustment 已经完成。
+        if self.store.n_items() > 0 {
+            self.grid
+                .scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
+        }
     }
 
     /// 表头上方的常驻徽标：只读 / 无主键 / 视图 / 无权限 / 未统计 / 驱动不支持排序。

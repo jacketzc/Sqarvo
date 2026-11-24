@@ -167,6 +167,8 @@ def _make_sqlite_db(path: Path):
     con.execute("CREATE TABLE widgets(id INTEGER PRIMARY KEY, name TEXT NOT NULL, qty INTEGER NOT NULL)")
     con.executemany("INSERT INTO widgets(name, qty) VALUES(?,?)",
                     [("bolt", 10), ("nut", 20), ("gear", 5)])
+    # 空表：数据页必须照常绘制表头，且能直接新增行（不进占位页）。
+    con.execute("CREATE TABLE widgets_empty(id INTEGER PRIMARY KEY, name TEXT NOT NULL, qty INTEGER NOT NULL)")
     con.commit()
     con.close()
 

@@ -757,7 +757,14 @@ impl_notes = [
   "刷新（状态栏 ⟳ / 表菜单）走**同一条** dirty_guard：有脏行 / 标删 / 新行时被拒绝并说明原因，按钮禁用时 tooltip 附同一句——数据页只给谓词与文案，按钮本身在 status_bar。",
   "末页需要总页数：总数未知时 can_last = false（按钮禁用），点了也不发请求，状态行写「<动作>不可用（没有对应页）」；驱动不声明 totals 与非精确计数同一写法（不显示总数）。",
   "新行占位行是**网格里的最后一行**（行号列写 ＋，行号 0 = 尚未落库）：提交成功后按返回的主键定位再赋真实行号；整批全部省略时提交即 INSERT DEFAULT VALUES（自增 / 默认值列由数据库填）。",
+  "空表 / 筛选无结果 / offset 越界这类 0 行结果照常绘制表头与网格、只是没有数据行；不进占位页（否则新增行的草稿行被挡住）。0 行时「回到顶部」只归零滚动位置，不调用 GtkColumnView::scroll_to(0)，避免 `pos < n_items` 断言。",
 ]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "第一页 0 行（空表 / 筛选无结果 / offset 越界）"
+result = "照常绘制列名表头与网格、只是没有数据行；新增行仍可用，点状态栏「新增行」出现 ＋ 草稿行"
+source = "src/data_page.rs:4443"
 
 [[component.interaction]]
 trigger = "click"
@@ -785,7 +792,7 @@ source = "src/data_page.rs:4467"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ac2a249587f8"
+spec_hash = "887ee82ba6d8"
 commit = ""
 evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
 
@@ -1500,14 +1507,14 @@ spec_hash = ""
 [[component]]
 id = "data_page.placeholder"
 parent = "data_page"
-display_name = "占位页（尚未打开 / 正在读取 / 空表 / 本页没有数据）"
+display_name = "占位页（尚未打开 / 正在读取）"
 kind = "container"
 status = "active"
 a11y.name = "数据页占位"
 style.slot = "workspace.content"
 impl_notes = [
-  "四段文案互斥：尚未打开表 / 正在读取表数据 / 空表 / 本页没有数据；「空」与「错」严格区分（错误走横幅 + 逐行错误列表，不占这一页）。",
-  "空态与越界页必须给**原因**，不能只写「没有数据」。",
+  "两段文案互斥：尚未打开表 / 正在读取表数据；表一旦打开（含 0 行）就走 data_page.grid，空表不再占这一页。",
+  "「空」与「错」严格区分：0 行照常画表头、只是没有数据行；错误走横幅 + 逐行错误列表，不占这一页。",
   "图标与说明只用 dim 文字，不放大色块。",
 ]
 
@@ -1517,17 +1524,11 @@ precondition = "打开表 / 翻页请求已发出"
 result = "「正在读取表数据」+「等待服务端返回第一页…」"
 source = "src/data_page.rs:4339、src/data_page.rs:1331"
 
-[[component.interaction]]
-trigger = "load"
-precondition = "第一页 0 行"
-result = "「空表」+「该表存在，但当前条件下没有任何行」/「该表存在，但目前没有任何行」（有筛选时写前者）；offset 越界时写「本页没有数据」+「offset 超出总数（服务端如实返回空行）；回首页或刷新再看」"
-source = "src/data_page.rs:4421"
-
 [component.sync.linux]
 state = "done"
-spec_hash = "24ac51154c68"
+spec_hash = "834f3414fa98"
 commit = ""
-evidence = "§5.6 打开表（加载中）/ 空表；begin_open + show_open 的占位页分支"
+evidence = "§5.6 打开表（加载中）；begin_open 的占位页分支"
 
 [component.sync.windows]
 state = "none"
