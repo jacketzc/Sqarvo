@@ -871,6 +871,78 @@ en = "Omit this column (left to the database default / auto-increment)"
 status = "done"
 
 [[entry]]
+key = "data_page.editor_picker_button_tip"
+zh = "打开日期时间选择器"
+en = "Open the date/time picker"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_placeholder"
+zh = "YYYY-MM-DD HH:MM:SS"
+en = "YYYY-MM-DD HH:MM:SS"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_now"
+zh = "现在"
+en = "Now"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_apply"
+zh = "应用"
+en = "Apply"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_caption_hour"
+zh = "Hour"
+en = "Hour"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_caption_minute"
+zh = "Minute"
+en = "Minute"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_caption_second"
+zh = "Second"
+en = "Second"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_unparseable"
+zh = "原值「{value}」无法解析为日期时间，已填入当前时间；点「应用」将覆盖原值"
+en = "Original value \"{value}\" could not be parsed as a date/time; the current time was filled in — pressing Apply will overwrite it"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_a11y_calendar"
+zh = "选择日期"
+en = "Pick date"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_a11y_hour"
+zh = "小时"
+en = "Hour"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_a11y_minute"
+zh = "分钟"
+en = "Minute"
+status = "done"
+
+[[entry]]
+key = "data_page.editor_picker_a11y_second"
+zh = "秒"
+en = "Second"
+status = "done"
+
+[[entry]]
 key = "data_page.insert_null_check"
 zh = "显式 NULL（SQL 空值）"
 en = "Explicit NULL (SQL null)"
@@ -1094,6 +1166,12 @@ status = "done"
 key = "data_page.val_empty_not_null"
 zh = "列 {column} 不允许 NULL，且 {text} 不是合法的 {type} 值"
 en = "Column {column} does not allow NULL, and {text} is not a valid {type} value"
+status = "done"
+
+[[entry]]
+key = "data_page.val_picker_empty"
+zh = "空文本不能作为日期时间选择器的初值"
+en = "Empty text cannot initialize the date/time picker"
 status = "done"
 
 [[entry]]

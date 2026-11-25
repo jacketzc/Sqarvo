@@ -585,6 +585,7 @@ pub(crate) fn open_cell_editor(
     initial: &str,
     is_null: bool,
     nullable: bool,
+    field: Option<crate::table_data::DateTimeField>,
     on_apply: Rc<dyn Fn(Option<String>) -> Result<(), String>>,
 ) {
     let popover = gtk::Popover::new();
@@ -600,15 +601,17 @@ pub(crate) fn open_cell_editor(
     entry.set_text(initial);
     entry.set_hexpand(true);
 
+    // 原值无法解析为日期时间时点名原值的提示（不是校验错误，Apply 仍可用）。
+    let picker_warning = gtk::Label::new(None);
+    picker_warning.set_xalign(0.0);
+    picker_warning.set_wrap(true);
+    picker_warning.add_css_class("dim-label");
+    picker_warning.add_css_class("caption");
+    picker_warning.set_visible(false);
+
     let null_check = gtk::CheckButton::with_label(l10n::t("data_page.editor_null_check"));
     null_check.set_active(is_null);
     entry.set_sensitive(!is_null);
-    {
-        let entry = entry.clone();
-        null_check.connect_toggled(move |check| {
-            entry.set_sensitive(!check.is_active());
-        });
-    }
 
     let hint = gtk::Label::new(Some(l10n::t(if nullable {
         "data_page.editor_hint_nullable"
@@ -646,12 +649,35 @@ pub(crate) fn open_cell_editor(
     content.set_margin_end(gap(Gap::Md));
     content.set_size_request(320, -1);
     content.append(&title);
-    content.append(&entry);
+    let picker_root =
+        field.map(|field| crate::datetime_picker::attach(field, &entry, &picker_warning));
+    match &picker_root {
+        Some(root) => content.append(root),
+        None => content.append(&entry),
+    }
+    content.append(&picker_warning);
     content.append(&null_check);
     content.append(&hint);
     content.append(&error);
     content.append(&buttons);
     popover.set_child(Some(&content));
+
+    {
+        let entry = entry.clone();
+        match picker_root {
+            Some(picker_root) => {
+                null_check.connect_toggled(move |check| {
+                    entry.set_sensitive(!check.is_active());
+                    picker_root.set_sensitive(!check.is_active());
+                });
+            }
+            None => {
+                null_check.connect_toggled(move |check| {
+                    entry.set_sensitive(!check.is_active());
+                });
+            }
+        }
+    }
 
     {
         let popover_for_cancel = popover.clone();
@@ -3354,7 +3380,16 @@ impl DataPage {
 
     /// 打开新行某列的编辑态（与已有行的编辑器分开：多了「省略」这一态）。
     fn open_insert_editor(self: &Rc<Self>, column: usize, anchor: &gtk::Widget) {
-        let (initial, column_name, type_label, nullable, is_null, is_omit, keep_omit_on_empty) = {
+        let (
+            initial,
+            column_name,
+            type_label,
+            nullable,
+            is_null,
+            is_omit,
+            keep_omit_on_empty,
+            field,
+        ) = {
             let guard = self.insert.borrow();
             let Some(draft) = guard.as_ref() else {
                 return;
@@ -3377,6 +3412,7 @@ impl DataPage {
                 editor_initial.is_null,
                 editor_initial.is_omit,
                 editor_initial.keep_omit_on_empty,
+                crate::table_data::DateTimeField::for_column(spec),
             )
         };
 
@@ -3396,36 +3432,18 @@ impl DataPage {
         entry.set_text(&initial);
         entry.set_hexpand(true);
 
+        let picker_warning = gtk::Label::new(None);
+        picker_warning.set_xalign(0.0);
+        picker_warning.set_wrap(true);
+        picker_warning.add_css_class("dim-label");
+        picker_warning.add_css_class("caption");
+        picker_warning.set_visible(false);
+
         let omit_check = gtk::CheckButton::with_label(l10n::t("data_page.insert_omit_check"));
         omit_check.set_active(is_omit);
         let null_check = gtk::CheckButton::with_label(l10n::t("data_page.insert_null_check"));
         null_check.set_active(is_null);
         null_check.set_sensitive(nullable);
-        {
-            // 三态互斥：勾「省略」就清 NULL，勾 NULL 就清「省略」，都不勾 = 文本。
-            let null_check = null_check.clone();
-            let entry = entry.clone();
-            omit_check.connect_toggled(move |check| {
-                if check.is_active() {
-                    null_check.set_active(false);
-                    entry.set_sensitive(false);
-                } else {
-                    entry.set_sensitive(!null_check.is_active());
-                }
-            });
-        }
-        {
-            let omit_check = omit_check.clone();
-            let entry = entry.clone();
-            null_check.connect_toggled(move |check| {
-                if check.is_active() {
-                    omit_check.set_active(false);
-                    entry.set_sensitive(false);
-                } else {
-                    entry.set_sensitive(!omit_check.is_active());
-                }
-            });
-        }
         entry.set_sensitive(!is_null && !is_omit);
 
         // 固定的一行提示：与三态无关，勾选「省略」前后弹层高度一致。
@@ -3462,13 +3480,57 @@ impl DataPage {
         content.set_margin_end(gap(Gap::Md));
         content.set_size_request(340, -1);
         content.append(&title);
-        content.append(&entry);
+        let picker_root =
+            field.map(|field| crate::datetime_picker::attach(field, &entry, &picker_warning));
+        match &picker_root {
+            Some(root) => content.append(root),
+            None => content.append(&entry),
+        }
+        content.append(&picker_warning);
         content.append(&omit_check);
         content.append(&null_check);
         content.append(&hint_label);
         content.append(&error);
         content.append(&buttons);
         popover.set_child(Some(&content));
+
+        {
+            // 三态互斥：勾「省略」就清 NULL，勾 NULL 就清「省略」，都不勾 = 文本。
+            // 选择器与输入框同步禁用（它只是文本框的另一入口）。
+            let null_check = null_check.clone();
+            let entry = entry.clone();
+            let picker_root = picker_root.clone();
+            omit_check.connect_toggled(move |check| {
+                if check.is_active() {
+                    null_check.set_active(false);
+                    entry.set_sensitive(false);
+                } else {
+                    entry.set_sensitive(!null_check.is_active());
+                }
+                if let Some(panel) = &picker_root {
+                    panel.set_sensitive(!check.is_active());
+                }
+            });
+        }
+        {
+            let omit_check = omit_check.clone();
+            let entry = entry.clone();
+            let picker_root = picker_root.clone();
+            null_check.connect_toggled(move |check| {
+                if check.is_active() {
+                    omit_check.set_active(false);
+                    entry.set_sensitive(false);
+                } else {
+                    entry.set_sensitive(!omit_check.is_active());
+                }
+                if let Some(panel) = &picker_root {
+                    panel.set_sensitive(!check.is_active());
+                }
+            });
+        }
+        if let Some(panel) = &picker_root {
+            panel.set_sensitive(!is_null && !is_omit);
+        }
 
         {
             let popover_for_cancel = popover.clone();
@@ -3956,6 +4018,18 @@ impl DataPage {
                     crate::export_ui::ExportSource::Table(Rc::clone(&page)),
                     target,
                 );
+            });
+        }
+        // 单元格编辑器：走双击同一入口打开，供日期时间选择器的功能用例验收入口。
+        if let Some((row, column)) = crate::qa::open_editor() {
+            let page = Rc::clone(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
+                eprintln!(
+                    "[qa] t=+{}ms 打开第 {row} 行第 {column} 列的编辑器（--qa-open-editor）",
+                    crate::qa::elapsed_ms()
+                );
+                let anchor: gtk::Widget = page.grid.clone().upcast();
+                page.open_editor(row, column, &anchor);
             });
         }
         // 行右键菜单：先开菜单，再（可选）点其中一个条目——两步都用用户同一个信号。
@@ -5654,7 +5728,7 @@ impl DataPage {
             self.open_insert_editor(column, anchor);
             return;
         }
-        let (initial, column_name, type_label, nullable) = {
+        let (initial, column_name, type_label, nullable, field) = {
             let draft = self.draft.borrow();
             let Some(draft) = draft.as_ref() else {
                 return;
@@ -5674,6 +5748,7 @@ impl DataPage {
                 spec.name.clone(),
                 spec.type_label.clone(),
                 spec.nullable,
+                crate::table_data::DateTimeField::for_column(spec),
             )
         };
         let is_null = {
@@ -5705,6 +5780,7 @@ impl DataPage {
             &initial,
             is_null,
             nullable,
+            field,
             on_apply,
         );
     }

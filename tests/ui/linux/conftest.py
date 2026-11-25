@@ -169,6 +169,10 @@ def _make_sqlite_db(path: Path):
                     [("bolt", 10), ("nut", 20), ("gear", 5)])
     # 空表：数据页必须照常绘制表头，且能直接新增行（不进占位页）。
     con.execute("CREATE TABLE widgets_empty(id INTEGER PRIMARY KEY, name TEXT NOT NULL, qty INTEGER NOT NULL)")
+    # 日期时间选择器：合法 DATETIME 与无法解析的原值各一行（列序 id=0, when_ts=1）。
+    con.execute("CREATE TABLE events(id INTEGER PRIMARY KEY, when_ts DATETIME NOT NULL)")
+    con.executemany("INSERT INTO events(when_ts) VALUES(?)",
+                    [("2026-11-05 10:30:00",), ("not-a-date",)])
     con.commit()
     con.close()
 

@@ -450,7 +450,7 @@ fn parse_seconds(text: &str, whole: &str) -> Result<(u32, u32), String> {
 }
 
 /// 日期时间分量：年、月、日、时、分、秒、纳秒。
-type DateTimeParts = (i32, u32, u32, u32, u32, u32, u32);
+pub(crate) type DateTimeParts = (i32, u32, u32, u32, u32, u32, u32);
 
 fn parse_datetime(text: &str) -> Result<DateTimeParts, String> {
     let (date_part, time_part) = match text.split_once(['T', ' ']) {
@@ -463,6 +463,136 @@ fn parse_datetime(text: &str) -> Result<DateTimeParts, String> {
         None => (0, 0, 0, 0),
     };
     Ok((year, month, day, hour, minute, second, nanosecond))
+}
+
+/// 日期时间选择器适用的字段种类。
+///
+/// 与 [`TableColumn::kind`] 不是一一对应：SQLite 按 ADR 0009 把声明为日期时间的列映射成
+/// `Text` + 原始类型名，这里靠原始类型名认出它们；MariaDB 等驱动给出强类型 kind。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DateTimeField {
+    Date,
+    Time,
+    Datetime,
+    Timestamp,
+}
+
+impl DateTimeField {
+    /// 该字段是否由 [`crate::table_data::date_time_field`] 判定为日期时间列。
+    #[must_use]
+    pub(crate) fn for_column(column: &TableColumn) -> Option<Self> {
+        match column.kind {
+            ColumnTypeKind::ColumnTypeDate => return Some(Self::Date),
+            ColumnTypeKind::ColumnTypeTime => return Some(Self::Time),
+            ColumnTypeKind::ColumnTypeDatetime => return Some(Self::Datetime),
+            ColumnTypeKind::ColumnTypeTimestamp => return Some(Self::Timestamp),
+            _ => {}
+        }
+        // SQLite：声明类型是 affinity 提示，值以 Text 返回，但原始类型名保留（ADR 0009）。
+        if column.kind == ColumnTypeKind::ColumnTypeText {
+            let name = column
+                .type_label
+                .split_once('(')
+                .map_or(column.type_label.as_str(), |(base, _)| base)
+                .trim()
+                .to_ascii_uppercase();
+            return match name.as_str() {
+                "DATE" => Some(Self::Date),
+                "TIME" => Some(Self::Time),
+                "DATETIME" => Some(Self::Datetime),
+                "TIMESTAMP" => Some(Self::Timestamp),
+                _ => None,
+            };
+        }
+        None
+    }
+
+    /// 写入文本必须按这个字段的解析口径投影：`parse_cell_input` 对强类型 Date / Time
+    /// 分别走 `parse_date` / `parse_time`，整串日期时间会被拒绝。
+    #[must_use]
+    pub(crate) fn format(self, parts: DateTimeParts, offset_seconds: Option<i32>) -> String {
+        let (year, month, day, hour, minute, second, _) = parts;
+        match self {
+            Self::Date => format!("{year:04}-{month:02}-{day:02}"),
+            Self::Time => format!("{hour:02}:{minute:02}:{second:02}"),
+            Self::Datetime => {
+                format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+            }
+            Self::Timestamp => {
+                let base =
+                    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
+                match offset_seconds {
+                    Some(offset) => {
+                        let sign = if offset < 0 { '-' } else { '+' };
+                        let offset = offset.unsigned_abs();
+                        format!(
+                            "{base}{sign}{:02}:{:02}",
+                            offset / 3600,
+                            (offset % 3600) / 60
+                        )
+                    }
+                    None => base,
+                }
+            }
+        }
+    }
+}
+
+/// `DateTimeField::format` 的自由函数形态，供界面侧复用，口径完全一致。
+pub(crate) fn format_date_time(
+    field: DateTimeField,
+    parts: DateTimeParts,
+    offset_seconds: Option<i32>,
+) -> String {
+    field.format(parts, offset_seconds)
+}
+
+/// 选择器从原值解出的初值：日期时间分量 + 时间戳偏移（若有）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PickerValue {
+    pub parts: DateTimeParts,
+    /// `TIMESTAMP` 原值显式带了 `+08:00` / `Z` 时为 `Some`，否则 `None`（按 UTC）。
+    pub offset_seconds: Option<i32>,
+}
+
+/// 把单元格现有文本解析成选择器初值。小数秒被丢弃（选择器精度到秒）；
+/// 需要保留小数秒或显式时区时仍可直接编辑文本输入框。
+pub(crate) fn parse_picker_initial(
+    field: DateTimeField,
+    text: &str,
+) -> Result<PickerValue, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(l10n::t("data_page.val_picker_empty").to_owned());
+    }
+    let parts = match field {
+        DateTimeField::Date => {
+            let (year, month, day) = parse_date(text)?;
+            (year, month, day, 0, 0, 0, 0)
+        }
+        DateTimeField::Time => {
+            let (hour, minute, second, _) = parse_time(text)?;
+            (0, 0, 0, hour, minute, second, 0)
+        }
+        DateTimeField::Datetime => parse_datetime(text)?,
+        DateTimeField::Timestamp => {
+            let (date, offset) = split_offset(text)?;
+            let (year, month, day, hour, minute, second, nanosecond) = parse_datetime(&date)?;
+            return Ok(PickerValue {
+                parts: (year, month, day, hour, minute, second, nanosecond),
+                offset_seconds: has_explicit_offset(text).then_some(offset),
+            });
+        }
+    };
+    Ok(PickerValue {
+        parts,
+        offset_seconds: None,
+    })
+}
+
+/// 原值是否显式写了时区（`split_offset` 缺省按 UTC，但界面不该凭空补一个后缀）。
+fn has_explicit_offset(text: &str) -> bool {
+    text.trim_end().ends_with(['Z', 'z']) || text.rfind(['+', '-']).is_some_and(|index| index > 10)
 }
 
 /// 拆出时间戳的偏移后缀（`+08:00` / `-05:30` / `Z`）；缺省按 UTC。
@@ -1947,6 +2077,117 @@ mod tests {
             }
             other => panic!("期望 Timestamp：{other:?}"),
         }
+    }
+
+    #[test]
+    fn date_time_field_recognizes_strong_kinds_and_sqlite_labels() {
+        let strong = [
+            (ColumnTypeKind::ColumnTypeDate, DateTimeField::Date),
+            (ColumnTypeKind::ColumnTypeTime, DateTimeField::Time),
+            (ColumnTypeKind::ColumnTypeDatetime, DateTimeField::Datetime),
+            (
+                ColumnTypeKind::ColumnTypeTimestamp,
+                DateTimeField::Timestamp,
+            ),
+        ];
+        for (kind, expected) in strong {
+            let col = column("c", kind, "native", true);
+            assert_eq!(DateTimeField::for_column(&col), Some(expected));
+        }
+        // SQLite 按 ADR 0009 映射成 Text + 原始类型名。
+        for (label, expected) in [
+            ("DATE", DateTimeField::Date),
+            ("time", DateTimeField::Time),
+            ("DATETIME", DateTimeField::Datetime),
+            ("DATETIME(6)", DateTimeField::Datetime),
+            ("timestamp", DateTimeField::Timestamp),
+        ] {
+            let col = column("c", ColumnTypeKind::ColumnTypeText, label, true);
+            assert_eq!(DateTimeField::for_column(&col), Some(expected), "{label}");
+        }
+        let plain = column("c", ColumnTypeKind::ColumnTypeText, "varchar(64)", true);
+        assert_eq!(DateTimeField::for_column(&plain), None);
+        let decimal = column(
+            "c",
+            ColumnTypeKind::ColumnTypeDecimal,
+            "decimal(10,2)",
+            true,
+        );
+        assert_eq!(DateTimeField::for_column(&decimal), None);
+    }
+
+    #[test]
+    fn picker_initial_and_format_round_trip_per_field() {
+        let date = parse_picker_initial(DateTimeField::Date, "2026-11-05").unwrap();
+        assert_eq!(DateTimeField::Date.format(date.parts, None), "2026-11-05");
+
+        let time = parse_picker_initial(DateTimeField::Time, "10:30:00.5").unwrap();
+        assert_eq!(DateTimeField::Time.format(time.parts, None), "10:30:00");
+
+        let datetime =
+            parse_picker_initial(DateTimeField::Datetime, "2026-11-05 10:30:00.9").unwrap();
+        assert_eq!(
+            DateTimeField::Datetime.format(datetime.parts, None),
+            "2026-11-05 10:30:00"
+        );
+
+        let timestamp =
+            parse_picker_initial(DateTimeField::Timestamp, "1970-01-01 08:00:00+08:00").unwrap();
+        assert_eq!(timestamp.offset_seconds, Some(8 * 3600));
+        assert_eq!(
+            DateTimeField::Timestamp.format(timestamp.parts, timestamp.offset_seconds),
+            "1970-01-01 08:00:00+08:00"
+        );
+        let utc = parse_picker_initial(DateTimeField::Timestamp, "1970-01-01 00:00:00Z").unwrap();
+        assert_eq!(utc.offset_seconds, Some(0));
+        let no_tz = parse_picker_initial(DateTimeField::Timestamp, "1970-01-01 00:00:00").unwrap();
+        assert_eq!(no_tz.offset_seconds, None);
+        assert_eq!(
+            DateTimeField::Timestamp.format(no_tz.parts, no_tz.offset_seconds),
+            "1970-01-01 00:00:00"
+        );
+        assert!(parse_picker_initial(DateTimeField::Datetime, "   ").is_err());
+    }
+
+    #[test]
+    fn picker_output_is_accepted_by_parse_cell_input() {
+        // 选择器写出的文本必须能被每一种字段自己的解析口径接受（Date/Time 不能塞整串）。
+        let cases = [
+            (
+                ColumnTypeKind::ColumnTypeDate,
+                "2026-11-05",
+                DateTimeField::Date,
+            ),
+            (
+                ColumnTypeKind::ColumnTypeTime,
+                "10:30:00",
+                DateTimeField::Time,
+            ),
+            (
+                ColumnTypeKind::ColumnTypeDatetime,
+                "2026-11-05 10:30:00",
+                DateTimeField::Datetime,
+            ),
+            (
+                ColumnTypeKind::ColumnTypeTimestamp,
+                "1970-01-01 08:00:00+08:00",
+                DateTimeField::Timestamp,
+            ),
+        ];
+        for (kind, text, field) in cases {
+            let col = column("c", kind, "native", true);
+            parse_cell_input(text, &col)
+                .unwrap_or_else(|error| panic!("{field:?} 的输出 {text} 必须可解析：{error}"));
+        }
+        // SQLite 的 Text 列不解析，原文照写。
+        let sqlite = column("c", ColumnTypeKind::ColumnTypeText, "DATETIME", true);
+        assert_eq!(
+            DateTimeField::for_column(&sqlite),
+            Some(DateTimeField::Datetime)
+        );
+        let parsed = parse_cell_input("2026-11-05 10:30:00", &sqlite).unwrap();
+        assert_eq!(parsed.original_type_name, "DATETIME");
+        assert_eq!(edit_text(&parsed), "2026-11-05 10:30:00");
     }
 
     #[test]

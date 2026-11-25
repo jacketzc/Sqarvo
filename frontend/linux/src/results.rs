@@ -1131,6 +1131,8 @@ impl ResultsView {
             return;
         };
         let nullable = column_meta.nullable;
+        // 在 edit 被闭包移动之前取出选择器字段类型（Copy，不借用 edit）。
+        let field = crate::table_data::DateTimeField::for_column(column_meta);
         // 标题模板：编辑态与数据网格同一句（复用 data_page.editor_title），
         // 新行草稿态是结果区自己的句式（「新行 列名 · 类型」，无前置间隔点）。
         let title = if is_insert_draft {
@@ -1169,7 +1171,9 @@ impl ResultsView {
                 page.notify_state_changed();
                 Ok(())
             });
-        crate::data_page::open_cell_editor(anchor, &title, &initial, is_null, nullable, on_apply);
+        crate::data_page::open_cell_editor(
+            anchor, &title, &initial, is_null, nullable, field, on_apply,
+        );
     }
 
     /// 结果区单元格工厂：绑定文本 + 脏行样式 + 双击进入编辑（只读结果里双击不做事）。

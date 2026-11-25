@@ -1176,6 +1176,8 @@ struct Args {
     row_menu_pick: Option<String>,
     /// `--qa-detail-view <行号>`：选中该行并切到「字段 / 值」视图。
     detail_view: Option<usize>,
+    /// `--qa-open-editor <行>:<列>`：走双击同一个入口打开单元格编辑器（供日期时间选择器验收）。
+    open_editor: Option<(usize, usize)>,
 }
 
 /// `--qa-export-format` 的取值：CSV / 一行一条 INSERT / 转储表。
@@ -1488,6 +1490,11 @@ pub fn row_menu() -> Option<usize> {
 /// `--qa-row-menu-pick <文案>`：点菜单里的条目。
 pub fn row_menu_pick() -> Option<String> {
     ARGS.get().and_then(|args| args.row_menu_pick.clone())
+}
+
+/// `--qa-open-editor <行>:<列>`：打开该单元格的编辑器（双击同一个入口）。
+pub fn open_editor() -> Option<(usize, usize)> {
+    ARGS.get().and_then(|args| args.open_editor)
 }
 
 /// `--qa-export-format`：导出格式（默认 CSV）。
@@ -2760,6 +2767,22 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .get(index + 1)
                     .ok_or_else(|| "--qa-row-menu-pick 需要条目文案".to_owned())?;
                 parsed.row_menu_pick = Some(value.clone());
+                index += 2;
+            }
+            "--qa-open-editor" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--qa-open-editor 需要 行:列".to_owned())?;
+                let (row, column) = value
+                    .split_once(':')
+                    .ok_or_else(|| format!("--qa-open-editor 需要 行:列，实际：{value}"))?;
+                let row: usize = row
+                    .parse()
+                    .map_err(|_| format!("--qa-open-editor 的行号不合法：{row:?}"))?;
+                let column: usize = column
+                    .parse()
+                    .map_err(|_| format!("--qa-open-editor 的列号不合法：{column:?}"))?;
+                parsed.open_editor = Some((row, column));
                 index += 2;
             }
             "--qa-export-scope" => {

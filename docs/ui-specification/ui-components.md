@@ -37,7 +37,7 @@
 | `data_page.grid.header` | 　　列头（列名 · 原始类型 · 排序标记） | row | active | done | partial | — |
 | `data_page.grid.row_number` | 　　行号列（行号 / 脏行 / 标删 / 新行） | cell | active | done | partial | — |
 | `data_page.grid.cell` | 　　数据单元格（值 · NULL / 空串 · 脏色） | cell | active | done | partial | — |
-| `data_page.editor` | 　单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消） | container | active | done | partial | — |
+| `data_page.editor` | 　单元格编辑器（标题 · 输入框 / 日期时间选择器 · 设为 NULL · 应用 / 取消） | container | active | done | partial | — |
 | `data_page.row_menu` | 　数据行右键菜单 | container | active | done | partial | — |
 | `data_page.row_menu.delete` | 　　「删除行」 | item | active | done | partial | — |
 | `data_page.row_menu.copy_insert` | 　　「复制为 ▸ 复制为 INSERT」 | item | active | done | partial | — |
@@ -347,15 +347,16 @@ kind `cell` · status `active` · parent `data_page.grid`
 | double_click | 单元格可编辑 | 打开编辑（见 data_page.editor）；不可编辑时状态行给具体原因：「该行已标记删除：撤销删除后才能编辑」「列 X 的值被服务端截断…」等，不弹空编辑器 | `src/data_page.rs:6372、src/data_page.rs:5577、src/data_page.rs:5647` |
 | key Esc | 网格有焦点、有选中行 | 清空行选中（不影响 SQL 编辑器与对话框） | `src/data_page.rs:1266` |
 
-### `data_page.editor` 单元格编辑器（标题 · 输入框 · 设为 NULL · 应用 / 取消）
+### `data_page.editor` 单元格编辑器（标题 · 输入框 / 日期时间选择器 · 设为 NULL · 应用 / 取消）
 
 kind `container` · status `active` · parent `data_page`
 
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「编辑单元格」
-- 原生控件：gtk:GtkPopover / winui:就地 TextBox（§7.1） / swift:—
+- 原生控件：gtk:GtkPopover（编辑器）+ GtkEntry + GtkMenuButton + GtkPopover（选择面板）+ GtkCalendar + 3×GtkSpinButton / winui:就地 TextBox（§7.1） / swift:—
+- 自绘：GTK4 0.11 / libadwaita 0.9 没有时间选择器，也没有 AdwDateRow / AdwTimeRow / 日期选择对话框；日期用原生 GtkCalendar、时间用三个原生 GtkSpinButton 拼成复合件（L2，登记即可无需 ADR）。
 - 同步：Linux done（§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor）；Windows partial（§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。）；macOS none
-- 实现备注：同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。值转换失败时错误就地显示、编辑框不关（可以在原处改）。写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。新行编辑器打开时「省略该列」**默认不勾**（双击意在填值），输入框可用；从省略态进入但没输入任何值就点应用时仍维持省略，不悄悄写成空串 / NULL。提示行固定用可空 / 不可空那一条，不取省略态的长说明——后者换行会把弹层撑高，勾选前后大小不一致；长说明仍在网格单元格 tooltip 里。
+- 实现备注：同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。值转换失败时错误就地显示、编辑框不关（可以在原处改）。写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。新行编辑器打开时「省略该列」**默认不勾**（双击意在填值），输入框可用；从省略态进入但没输入任何值就点应用时仍维持省略，不悄悄写成空串 / NULL。提示行固定用可空 / 不可空那一条，不取省略态的长说明——后者换行会把弹层撑高，勾选前后大小不一致；长说明仍在网格单元格 tooltip 里。日期时间字段（强类型 Date/Time/Datetime/Timestamp，以及 SQLite 声明为这些类型、实际以 Text 返回的列）用 `GtkEntry` + `GtkMenuButton`（`linked` 组合）：点日历按钮弹出独立 `GtkPopover`，面板里 `GtkCalendar` 选年月日、分隔线下三个带 Hour / Minute / Second 标题的 `GtkSpinButton` 选时分秒、底部「现在 / 应用」。面板打开时按输入框文本同步控件；旋钮显示两位、范围 0–23/0–59；手动输入格式不合法时输入框就地标红（空文本例外，保留新行省略语义）。它只是文本框的另一入口，写回文本按字段投影 Date=YYYY-MM-DD / Time=HH:MM:SS / Datetime·Timestamp=YYYY-MM-DD HH:MM:SS，NULL / 省略 / 提交路径完全不变。面板没有额外说明文字；日历保持自然宽度并居中，时间行旋钮等宽，两者左右对齐。选择器精度到秒：原值带小数秒或时区时仍可直接编辑文本框保留；无法解析为日期时间的原值（SQLite 列里存了任意文本）会以当前时间初始化，并显示点名原值的警告说明应用会覆盖；新行空初值只初始化选择器、不写文本框，「省略该列」的默认语义不变。勾选「设为 NULL」/「省略该列」时选择器与文本框同步禁用。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -365,6 +366,8 @@ kind `container` · status `active` · parent `data_page`
 | key Enter | 就地编辑态（Windows 口径） | 把输入提交到**本地暂存**（不落库）、单元格转脏；Linux 的编辑框是 应用 / 取消 两个按钮的形态，Enter 不提交（见 platform_notes.linux），最终草稿与提交口径一致 | `src/data_page.rs:582、src/data_page.rs:5742` |
 | key F2 | 网格有选中单元格 | 进入编辑（与双击同一入口）；Linux 未绑 F2 —— 双击是唯一编辑入口（见 platform_notes.linux） | `src/data_page.rs:5577` |
 | click | 编辑框已打开、点了编辑框以外的任何位置 | Linux：popover 自动收起，等同取消（没点「应用」就什么都没改）；Windows：按「暂存」处理，输入进本地草稿 | `src/data_page.rs:590、src/data_page.rs:582` |
+| load | 日期时间字段的编辑器打开（含新行） | 点 GtkMenuButton 日历图标弹出选择面板：GtkCalendar 选日期、三个 GtkSpinButton 选时分秒（Hour / Minute / Second），底部「现在」填当前时间、「应用」写回文本框并收起；面板打开时按当前输入同步控件，手动输入格式错误就地标红；勾「设为 NULL」/「省略该列」时同步禁用 | `src/data_page.rs:590、src/data_page.rs:3587` |
+| load | 原值无法解析为日期时间 | 选择器填当前时间，文本框同步写规范文本；另显示点名原值的警告「原值「X」无法解析为日期时间，已填入当前时间；点「应用」将覆盖原值」，不静默覆盖 | `src/data_page.rs:627、l10n/data_page.toml:editor_picker_unparseable` |
 
 ### `data_page.row_menu` 数据行右键菜单
 

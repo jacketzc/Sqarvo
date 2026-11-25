@@ -13,6 +13,7 @@ mod column_info;
 mod config;
 mod context_menu;
 mod data_page;
+mod datetime_picker;
 mod ddl;
 mod density;
 mod dialog;
@@ -215,6 +216,7 @@ fn register_qa_options(app: &adw::Application) {
         ("qa-detail-view", "row-number"),
         ("qa-row-menu", "row-number"),
         ("qa-row-menu-pick", "item-label"),
+        ("qa-open-editor", "row:column"),
         ("qa-query-edit", "row:column:value"),
         ("qa-query-delete", "row"),
         ("qa-query-insert", "column:value"),
