@@ -19,6 +19,7 @@ parent = ""
 display_name = "信息面板"
 kind = "area"
 status = "active"
+a11y.name = "信息面板"
 style.slot = "inspector"
 style.metrics = ["inspector_width", "inspector_min", "inspector_max", "inspector_gap"]
 impl_notes = [
@@ -30,7 +31,7 @@ impl_notes = [
   "钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。",
   "临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。",
   "Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。",
-  "已加载行数是 TableInfo 中按对象归属的展示状态，不另设副本：行数更新携带完整 ObjectRef，身份不符不写入；非数据标签不会清除其它对象的有效行数。连接归属只认当前展示目标登记的浏览会话，不从历史 parent 推断。",
+  "按当前展示目标的会话处理断连。所属会话断开时清理展示及在途请求，其它连接断开时保留当前展示。",
 ]
 
 [[component.interaction]]
@@ -89,12 +90,12 @@ source = "src/inspector.rs:958、src/ui.rs:4180"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6c3bbce83072"
-evidence = "请求计数改在 MetadataHub 真实提交边界（[qa.metadata] submit）；test_14 5/5、test_15 6/6 通过（行数不串表、Objects 重入/F5 重列、同作用域选中不重复请求）；cargo test 503 通过（含 LoadEpoch 过期令牌与子页请求集合）"
+spec_hash = "6c8452924d4a"
+evidence = "test_14_inspector_no_cache.py 按 MetadataHub 提交计数核对按需查询；test_15_refresh_regressions.py 核对真实 GTK 标签切换、行数与连接归属"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "6c3bbce83072"
+spec_hash = "6c8452924d4a"
 note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。"
 
 [component.sync.macos]
@@ -247,7 +248,7 @@ style.slot = "inspector"
 style.metrics = ["gap_sm", "gap_md", "gap_lg"]
 impl_notes = [
   "字段：名称、表计数、视图计数；计数只来自树里已经展开过的分组层，打开一个库不顺带扫整库。",
-  "某个分组还没展开过时那一行不出现（不主动全量统计，也不写 0 冒充空库）。",
+  "统计按连接的浏览会话与库或 Schema 身份匹配。无法唯一定位或未成功读取的分组省略该字段。",
   "该层还有下一页时补一行「计数说明：按已展开的结果统计（该层还有下一页）」，不把当前页当总数。",
 ]
 
@@ -259,20 +260,26 @@ source = "src/ui.rs:2132、src/inspector.rs:644、src/inspector.rs:192"
 
 [[component.interaction]]
 trigger = "load"
+precondition = "当前 SQL 标签已确定库上下文，或用户在 SQL 标签里切换连接"
+result = "库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属，成功后按新会话的库上下文更新，同名库也重新匹配统计"
+source = "src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.rs::TreePanel::group_counts_by_catalog"
+
+[[component.interaction]]
+trigger = "load"
 precondition = "选中的是分组行（Tables / Views / Functions / Queries 等）"
 result = "分组行没有对象信息：面板回到空态，标题回到「信息面板」"
 source = "src/ui.rs:2152"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a4e8cfb1bd4a"
-evidence = "§6 选中库 / catalog；inspector.rs::catalog_facts 与 tree.group_counts 接线"
+spec_hash = "e877108d8794"
+evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect；GTK catalog_counts_require_the_same_browse_session_and_catalog_identity"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "a4e8cfb1bd4a"
+spec_hash = "e877108d8794"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:974；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:981"
-note = "标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。"
+note = "标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。SQL 标签按绑定连接展示库视图尚未实现。"
 
 [component.sync.macos]
 state = "none"
@@ -435,6 +442,7 @@ style.slot = "inspector"
 style.metrics = ["font_panel", "gap_lg", "gap_sm"]
 impl_notes = [
   "分节渲染：列、主键、索引、触发器、行；没有数据的节整节不出现。",
+  "按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。",
   "正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。",
   "索引 / 触发器读取失败时那一节换成「读取失败」+「<文案>（<稳定错误码>）」，已读回的列仍然显示。",
   "内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。",
@@ -449,7 +457,7 @@ source = "src/inspector.rs:1070、src/inspector.rs:1250"
 [component.sync.linux]
 state = "done"
 spec_hash = "212c8eec52b1"
-evidence = "§6 表信息页；inspector.rs::render_table_info 的五节"
+evidence = "test_15_refresh_regressions.py 验证后台标签关闭与 A 分页时预览 B，计数更新不提交元数据请求"
 
 [component.sync.windows]
 state = "partial"
@@ -660,6 +668,7 @@ impl_notes = [
   "默认值四态分开写：「未知（服务端未提供）」/「无默认值」/「默认 NULL」/ 表达式原文（原文为空写「表达式（服务端未给出文本）」）。",
   "字符集 / 排序规则缺失写「不适用」；这两种缺失是数据库没有这一层，不是面板没读到。",
   "从树上的列节点进来时副标题补所属表名（「列 · 表名 · 类型」），从网格列头进来只有类型。",
+  "重读时清除原列字段与错误状态。只接受当前加载周期的响应，成功时同步更新列模型和字段，列已删除或读取失败时显示对应错误。",
 ]
 
 [[component.interaction]]
@@ -677,7 +686,7 @@ source = "src/inspector.rs:751、src/ui.rs:2204"
 [component.sync.linux]
 state = "done"
 spec_hash = "a11628afdfbb"
-evidence = "§6 选中列（树 / 网格列头）；inspector.rs::show_column 与 load_columns_for_column"
+evidence = "test_15_refresh_regressions.py::test_column_info_f5_reloads_that_column_not_another_object；GTK column_reload_updates_model_and_discards_stale_responses"
 
 [component.sync.windows]
 state = "none"

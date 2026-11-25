@@ -28,8 +28,8 @@ KINDS = ("ddl", "columns", "primary_key", "inspector.nodes")
 EXPAND_ARGS = ("--qa-tree-expand", "main", "--qa-tree-expand", "Tables")
 
 
-def _start(tag: str, *extra: str) -> UiInstance:
-    inst = UiInstance(tag).start(autoconnect=True, extra_args=(*EXPAND_ARGS, *extra))
+def _start(ui_instance, tag: str, *extra: str) -> UiInstance:
+    inst = ui_instance(tag).start(autoconnect=True, extra_args=(*EXPAND_ARGS, *extra))
     ops.wait_connected(inst.frame(), "uitest.db", timeout=40)
     return inst
 
@@ -49,159 +49,155 @@ def _wait_counts(inst: UiInstance, **minimum: int) -> dict[str, int]:
 def _select_tree_row(inst: UiInstance, name: str) -> None:
     """走对象树的单选模型（与用户点击行同一语义）。"""
     frame = inst.frame()
-    lists = A.query(frame, role_in=("list",))
-    expect(bool(lists), "对象树列表存在", len(lists))
-    rows = A.children(lists[0])
-    for index, row in enumerate(rows):
-        labels = [A.nm(x) for x in A.query(row, role_in=("label",), max_depth=6)]
-        if any(name in label for label in labels):
-            expect(Atspi.Selection.select_child(lists[0], index),
-                   f"选中树行 {name}", False)
-            return
-    raise AssertionError(f"树里找不到行 {name}：{ops.tree_rows(frame)}")
+    def target():
+        for row in A.query(frame, role_in=("list item",)):
+            if A.query(row, role_in=("label",), name=name, max_depth=6):
+                return row
+        return None
+
+    row = A.wait_until(target, 15, f"树行 {name}")
+    expect(Atspi.Selection.select_child(row.get_parent(), row.get_index_in_parent()),
+           f"选中树行 {name}", False)
+
+
+def _inspector(frame):
+    return A.find_one(frame, role_in=("grouping",), name="信息面板", timeout=15)
 
 
 def _pane_button(frame, name: str):
-    buttons = A.query(frame, role_in=("toggle button",), name=name)
+    buttons = A.query(_inspector(frame), role_in=("toggle button",), name=name)
     expect(bool(buttons), f"面板切换按钮 {name} 存在", len(buttons))
     return buttons[0]
 
 
 def _labels(frame) -> list[str]:
-    return [A.nm(x) for x in A.query(frame, role_in=("label",)) if A.nm(x)]
+    return [A.nm(x) for x in A.query(_inspector(frame), role_in=("label",)) if A.nm(x)]
 
 
-def test_first_visit_is_on_demand_and_pane_switches_requery():
+def test_first_visit_is_on_demand_and_pane_switches_requery(ui_instance):
     """首次选中只查 DDL；切到表信息与切回 DDL 各查一次目标子页。"""
-    inst = _start("insp_demand", "--qa-tree-select", "widgets")
-    try:
-        with step("first_visit_only_ddl"):
-            counts = _wait_counts(inst, ddl=1)
-            expect(counts == {"ddl": 1, "columns": 0, "primary_key": 0, "inspector.nodes": 0},
-                   "首次选中 widgets 只请求 GetDdl", counts)
+    inst = _start(ui_instance, "insp_demand", "--qa-tree-select", "widgets")
+    with step("first_visit_only_ddl"):
+        counts = _wait_counts(inst, ddl=1)
+        expect(counts == {"ddl": 1, "columns": 0, "primary_key": 0, "inspector.nodes": 0},
+               "首次选中 widgets 只请求 GetDdl", counts)
 
-        with step("switch_to_info"):
-            A.click(_pane_button(inst.frame(), "表信息"))
-            counts = _wait_counts(inst, **{"columns": 1, "primary_key": 1, "inspector.nodes": 1})
-            expect(counts == {"ddl": 1, "columns": 1, "primary_key": 1, "inspector.nodes": 1},
-                   "切到表信息只补查列 / 主键 / 索引", counts)
+    with step("switch_to_info"):
+        A.click(_pane_button(inst.frame(), "表信息"))
+        counts = _wait_counts(inst, **{"columns": 1, "primary_key": 1, "inspector.nodes": 1})
+        expect(counts == {"ddl": 1, "columns": 1, "primary_key": 1, "inspector.nodes": 1},
+               "切到表信息只补查列 / 主键 / 索引", counts)
 
-        with step("switch_back_to_ddl"):
-            A.click(_pane_button(inst.frame(), "DDL"))
-            counts = _wait_counts(inst, ddl=2)
-            expect(counts == {"ddl": 2, "columns": 1, "primary_key": 1, "inspector.nodes": 1},
-                   "切回 DDL 重新发 GetDdl，不重发表信息请求", counts)
+    with step("switch_back_to_ddl"):
+        A.click(_pane_button(inst.frame(), "DDL"))
+        counts = _wait_counts(inst, ddl=2)
+        expect(counts == {"ddl": 2, "columns": 1, "primary_key": 1, "inspector.nodes": 1},
+               "切回 DDL 重新发 GetDdl，不重发表信息请求", counts)
 
-        with step("duplicate_click_on_active_pane"):
-            before = _counts(inst)
-            A.click(_pane_button(inst.frame(), "DDL"))
-            time.sleep(0.6)
-            expect(_counts(inst) == before, "重复点已选中的子页不重复请求",
-                   (before, _counts(inst)))
-    finally:
-        inst.dispose()
+    with step("duplicate_click_on_active_pane"):
+        A.wait_until(lambda: "CREATE TABLE widgets" in _ddl_text(inst.frame()), 15, "DDL 已加载")
+        before = _counts(inst)
+        A.click(_pane_button(inst.frame(), "DDL"))
+        expect(_counts(inst) == before, "重复点已选中的子页不重复请求",
+               (before, _counts(inst)))
+
+    with step("reenter_info"):
+        A.click(_pane_button(inst.frame(), "表信息"))
+        A.wait_until(lambda: "qty · INTEGER" in _labels(inst.frame()), 15, "重新进入表信息页显示 qty")
+        counts = _counts(inst)
+        expect(counts == {"ddl": 2, "columns": 2, "primary_key": 2, "inspector.nodes": 2},
+               "重新进入表信息只提交各一个元数据请求", counts)
 
 
-def test_revisit_refresh_and_idle_do_not_reuse_history():
+def test_revisit_refresh_and_idle_do_not_reuse_history(ui_instance):
     """A → B → A 每次重查；主动刷新即使对象不变也重查；闲置不产生轮询。"""
-    inst = _start("insp_revisit", "--qa-tree-select", "widgets")
-    try:
-        _wait_counts(inst, ddl=1)
+    inst = _start(ui_instance, "insp_revisit", "--qa-tree-select", "widgets")
+    _wait_counts(inst, ddl=1)
 
-        with step("a_to_b_to_a"):
-            _select_tree_row(inst, "widgets_empty")
-            counts = _wait_counts(inst, ddl=2)
-            expect(counts["ddl"] == 2, "切到 B 重新查一次", counts)
-            _select_tree_row(inst, "widgets")
-            counts = _wait_counts(inst, ddl=3)
-            expect(counts["ddl"] == 3, "回到 A 再查一次（不复用历史结果）", counts)
+    with step("a_to_b_to_a"):
+        _select_tree_row(inst, "widgets_empty")
+        counts = _wait_counts(inst, ddl=2)
+        expect(counts["ddl"] == 2, "切到 B 重新查一次", counts)
+        _select_tree_row(inst, "widgets")
+        counts = _wait_counts(inst, ddl=3)
+        expect(counts["ddl"] == 3, "回到 A 再查一次（不复用历史结果）", counts)
 
-        with step("explicit_refresh"):
-            A.window_action(inst.frame(), "win.refresh")
-            counts = _wait_counts(inst, ddl=4)
-            expect(counts["ddl"] == 4, "F5 主动刷新重查当前对象", counts)
+    with step("explicit_refresh"):
+        A.window_action(inst.frame(), "win.refresh")
+        counts = _wait_counts(inst, ddl=4)
+        expect(counts["ddl"] == 4, "F5 主动刷新重查当前对象", counts)
 
-        with step("idle_has_no_background_requests"):
-            before = _counts(inst)
-            time.sleep(2.5)
-            expect(_counts(inst) == before, "没有用户操作时不应有元数据查询",
-                   (before, _counts(inst)))
-    finally:
-        inst.dispose()
+    with step("idle_has_no_background_requests"):
+        before = _counts(inst)
+        time.sleep(2.5)
+        expect(_counts(inst) == before, "没有用户操作时不应有元数据查询",
+               (before, _counts(inst)))
 
 
 def _ddl_text(frame) -> str:
-    for acc in A.walk(frame, max_depth=40):
+    for acc in A.walk(_inspector(frame), max_depth=40):
         text = A.text_value(acc)
         if "CREATE TABLE" in text:
             return text
     return ""
 
 
-def test_fast_a_b_a_switch_keeps_the_last_request():
+def test_fast_a_b_a_switch_keeps_the_last_request(ui_instance):
     """快速 A → B → A 后，只有最后一次 A 的正文留在面板上。"""
-    inst = _start("insp_fast", "--qa-tree-select", "widgets")
-    try:
-        A.wait_until(lambda: "CREATE TABLE" in _ddl_text(inst.frame()), 15, "初始 DDL 正文")
-        with step("fast_switch"):
-            _select_tree_row(inst, "widgets_empty")
-            _select_tree_row(inst, "widgets")
-            counts = _wait_counts(inst, ddl=3)
-            expect(counts["ddl"] == 3, "A → B → A 共三次 GetDdl", counts)
-            A.wait_until(
-                lambda: "CREATE TABLE widgets" in _ddl_text(inst.frame())
-                and "widgets_empty" not in _ddl_text(inst.frame()),
-                15, "最后展示的是最后一次 A 的 DDL")
-    finally:
-        inst.dispose()
+    inst = _start(ui_instance, "insp_fast", "--qa-tree-select", "widgets")
+    A.wait_until(lambda: "CREATE TABLE" in _ddl_text(inst.frame()), 15, "初始 DDL 正文")
+    with step("fast_switch"):
+        _select_tree_row(inst, "widgets_empty")
+        _select_tree_row(inst, "widgets")
+        counts = _wait_counts(inst, ddl=3)
+        expect(counts["ddl"] == 3, "A → B → A 共三次 GetDdl", counts)
+        A.wait_until(
+            lambda: "CREATE TABLE widgets" in _ddl_text(inst.frame())
+            and "widgets_empty" not in _ddl_text(inst.frame()),
+            15, "最后展示的是最后一次 A 的 DDL")
 
 
-def test_disconnect_clears_display_and_invalidates_requests():
+def test_disconnect_clears_display_and_invalidates_requests(ui_instance):
     """断开浏览会话后，旧对象的正文不再展示，在途响应也不会回填。"""
-    inst = _start("insp_disc", "--qa-tree-select", "widgets",
+    inst = _start(ui_instance, "insp_disc", "--qa-tree-select", "widgets",
                   "--qa-tree-disconnect", "UITestDB")
-    try:
-        with step("disconnect"):
-            A.wait_until(lambda: "浏览会话已断开" in inst.log_text(), 20,
-                         "浏览会话已断开")
-            expect("CREATE TABLE" not in _ddl_text(inst.frame()),
-                   "断连后 DDL 正文已清空", _ddl_text(inst.frame())[:80])
+    with step("disconnect"):
+        A.wait_until(lambda: "浏览会话已断开" in inst.log_text(), 20,
+                     "浏览会话已断开")
+        expect("CREATE TABLE" not in _ddl_text(inst.frame()),
+               "断连后 DDL 正文已清空", _ddl_text(inst.frame())[:80])
 
-        with step("no_requests_after_disconnect"):
-            before = _counts(inst)
-            time.sleep(1.5)
-            expect(_counts(inst) == before, "断连后不应继续发起元数据请求",
-                   (before, _counts(inst)))
-    finally:
-        inst.dispose()
+    with step("no_requests_after_disconnect"):
+        before = _counts(inst)
+        time.sleep(1.5)
+        expect(_counts(inst) == before, "断连后不应继续发起元数据请求",
+               (before, _counts(inst)))
 
 
-def test_external_ddl_change_is_visible_on_next_visit():
+def test_external_ddl_change_is_visible_on_next_visit(ui_instance):
     """外部 ALTER TABLE 加列后，主动刷新按新会话状态重新查列并展示。"""
-    inst = _start("insp_ddl_change", "--qa-tree-select", "widgets")
-    try:
-        with step("load_columns"):
-            _wait_counts(inst, ddl=1)
-            A.click(_pane_button(inst.frame(), "表信息"))
-            _wait_counts(inst, columns=1)
-            A.wait_until(lambda: any("qty" in label for label in _labels(inst.frame())),
-                         15, "表信息页出现原有列 qty")
-            before = _counts(inst)
+    inst = _start(ui_instance, "insp_ddl_change", "--qa-tree-select", "widgets")
+    with step("load_columns"):
+        _wait_counts(inst, ddl=1)
+        A.click(_pane_button(inst.frame(), "表信息"))
+        _wait_counts(inst, columns=1)
+        A.wait_until(lambda: "qty · INTEGER" in _labels(inst.frame()),
+                     15, "表信息页出现原有列 qty")
+        before = _counts(inst)
 
-        with step("alter_table_externally"):
-            con = sqlite3.connect(inst.db)
-            try:
-                con.execute("ALTER TABLE widgets ADD COLUMN new_marker TEXT")
-                con.commit()
-            finally:
-                con.close()
+    with step("alter_table_externally"):
+        con = sqlite3.connect(inst.db)
+        try:
+            con.execute("ALTER TABLE widgets ADD COLUMN new_marker TEXT")
+            con.commit()
+        finally:
+            con.close()
 
-        with step("refresh_and_read_new_column"):
-            A.window_action(inst.frame(), "win.refresh")
-            _wait_counts(inst, columns=before["columns"] + 1)
-            A.wait_until(lambda: any("new_marker" in label for label in _labels(inst.frame())),
-                         15, "表信息页出现新增列 new_marker")
-            expect(any("qty" in label for label in _labels(inst.frame())),
-                   "原有列仍在展示", _labels(inst.frame())[:12])
-    finally:
-        inst.dispose()
+    with step("refresh_and_read_new_column"):
+        A.window_action(inst.frame(), "win.refresh")
+        _wait_counts(inst, columns=before["columns"] + 1)
+        A.wait_until(lambda: "new_marker · TEXT" in _labels(inst.frame()),
+                     15, "表信息页出现新增列 new_marker")
+        expect("qty · INTEGER" in _labels(inst.frame()), "原有列仍在展示", _labels(inst.frame()))
+        expected = {kind: count + (kind != "ddl") for kind, count in before.items()}
+        expect(_counts(inst) == expected, "F5 各提交一个表信息请求", _counts(inst))

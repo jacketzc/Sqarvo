@@ -1027,8 +1027,9 @@ kind `control` · status `active` · parent `dialogs.about`
 kind `area` · status `active`
 
 - 样式：槽位 `inspector`；尺寸 `inspector_width`、`inspector_min`、`inspector_max`、`inspector_gap`
-- 同步：Linux done（请求计数改在 MetadataHub 真实提交边界（[qa.metadata] submit）；test_14 5/5、test_15 6/6 通过（行数不串表、Objects 重入/F5 重列、同作用域选中不重复请求）；cargo test 503 通过（含 LoadEpoch 过期令牌与子页请求集合））；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。）；macOS none
-- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。已加载行数是 TableInfo 中按对象归属的展示状态，不另设副本：行数更新携带完整 ObjectRef，身份不符不写入；非数据标签不会清除其它对象的有效行数。连接归属只认当前展示目标登记的浏览会话，不从历史 parent 推断。
+- 无障碍：可访问名「信息面板」
+- 同步：Linux done（test_14_inspector_no_cache.py 按 MetadataHub 提交计数核对按需查询；test_15_refresh_regressions.py 核对真实 GTK 标签切换、行数与连接归属）；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。）；macOS none
+- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。按当前展示目标的会话处理断连。所属会话断开时清理展示及在途请求，其它连接断开时保留当前展示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1090,12 +1091,13 @@ kind `row` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_md`、`gap_lg`
-- 同步：Linux done（§6 选中库 / catalog；inspector.rs::catalog_facts 与 tree.group_counts 接线）；Windows partial（标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。）；macOS none
-- 实现备注：字段：名称、表计数、视图计数；计数只来自树里已经展开过的分组层，打开一个库不顺带扫整库。某个分组还没展开过时那一行不出现（不主动全量统计，也不写 0 冒充空库）。该层还有下一页时补一行「计数说明：按已展开的结果统计（该层还有下一页）」，不把当前页当总数。
+- 同步：Linux done（test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect；GTK catalog_counts_require_the_same_browse_session_and_catalog_identity）；Windows partial（标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。SQL 标签按绑定连接展示库视图尚未实现。）；macOS none
+- 实现备注：字段：名称、表计数、视图计数；计数只来自树里已经展开过的分组层，打开一个库不顺带扫整库。统计按连接的浏览会话与库或 Schema 身份匹配。无法唯一定位或未成功读取的分组省略该字段。该层还有下一页时补一行「计数说明：按已展开的结果统计（该层还有下一页）」，不把当前页当总数。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 选中库 / schema 行 | 标题 = 库名、副标题「库」；字段行给名称与表 / 视图计数，计数只来自已展开的分组层，没展开过的那一行不出现 | `src/ui.rs:2132、src/inspector.rs:644、src/inspector.rs:192` |
+| load | 当前 SQL 标签已确定库上下文，或用户在 SQL 标签里切换连接 | 库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属，成功后按新会话的库上下文更新，同名库也重新匹配统计 | `src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.rs::TreePanel::group_counts_by_catalog` |
 | load | 选中的是分组行（Tables / Views / Functions / Queries 等） | 分组行没有对象信息：面板回到空态，标题回到「信息面板」 | `src/ui.rs:2152` |
 
 ### `inspector.object` 表 / 视图视图（标题 · 切换条 · 两页）
@@ -1152,8 +1154,8 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 kind `container` · status `active` · parent `inspector.object`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_lg`、`gap_sm`
-- 同步：Linux done（§6 表信息页；inspector.rs::render_table_info 的五节）；Windows partial（§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。）；macOS none
-- 实现备注：分节渲染：列、主键、索引、触发器、行；没有数据的节整节不出现。正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。索引 / 触发器读取失败时那一节换成「读取失败」+「<文案>（<稳定错误码>）」，已读回的列仍然显示。内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。
+- 同步：Linux done（test_15_refresh_regressions.py 验证后台标签关闭与 A 分页时预览 B，计数更新不提交元数据请求）；Windows partial（§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。）；macOS none
+- 实现备注：分节渲染：列、主键、索引、触发器、行；没有数据的节整节不出现。按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。索引 / 触发器读取失败时那一节换成「读取失败」+「<文案>（<稳定错误码>）」，已读回的列仍然显示。内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1229,8 +1231,8 @@ kind `control` · status `active` · parent `inspector.object.ddl`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_sm`、`gap_md`、`gap_lg`
-- 同步：Linux done（§6 选中列（树 / 网格列头）；inspector.rs::show_column 与 load_columns_for_column）；Windows none（§7.1 未记录）；macOS none
-- 实现备注：字段顺序固定：列名、原始类型、可空、默认值、字符集、排序规则。默认值四态分开写：「未知（服务端未提供）」/「无默认值」/「默认 NULL」/ 表达式原文（原文为空写「表达式（服务端未给出文本）」）。字符集 / 排序规则缺失写「不适用」；这两种缺失是数据库没有这一层，不是面板没读到。从树上的列节点进来时副标题补所属表名（「列 · 表名 · 类型」），从网格列头进来只有类型。
+- 同步：Linux done（test_15_refresh_regressions.py::test_column_info_f5_reloads_that_column_not_another_object；GTK column_reload_updates_model_and_discards_stale_responses）；Windows none（§7.1 未记录）；macOS none
+- 实现备注：字段顺序固定：列名、原始类型、可空、默认值、字符集、排序规则。默认值四态分开写：「未知（服务端未提供）」/「无默认值」/「默认 NULL」/ 表达式原文（原文为空写「表达式（服务端未给出文本）」）。字符集 / 排序规则缺失写「不适用」；这两种缺失是数据库没有这一层，不是面板没读到。从树上的列节点进来时副标题补所属表名（「列 · 表名 · 类型」），从网格列头进来只有类型。重读时清除原列字段与错误状态。只接受当前加载周期的响应，成功时同步更新列模型和字段，列已删除或读取失败时显示对应错误。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1683,6 +1685,7 @@ kind `control` · status `active` · parent `object_tree`
 kind `area` · status `active`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_xl`、`gap_md`
+- 无障碍：可访问名「Objects」
 - 同步：Linux done（§3 页面结构逐条对照 tabs.rs（ObjectsPage::new 的 root 只有 title + stack））；Windows partial（§7.1 记录「固定 Objects 页 + 三列表格 + 状态行 + 加载更多…」的存在；页内标题、无作用域说明行的版面与页内距未逐条记录。）；macOS none
 - 实现备注：页内自上而下只有四件东西：标题「Objects」、三列表格、状态行、「加载更多…」；标题是静态标签（13 semibold，无交互），v0.2.3.3 起页面没有作用域说明行 —— 作用域只由列表内容表达。页面没有自己的数据库会话：列表读这条连接的浏览会话（MetadataHub），与标签会话无关；关掉标签也不会动它。启动态（未连接）用同一个 ObjectsPage 实现，只换空态文案（见 objects_page.empty）。页内距 12 / 元素间距 8（gap_xl / gap_md），与数据页不同：这里没有工具条。
 
@@ -1711,7 +1714,7 @@ kind `container` · status `active` · parent `objects_page`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—
 - 自绘：WinUI 3 没有等价的列式表格控件：GridView 不支持「虚拟化 + 可拖列宽 + 行号列」三者组合，ItemsControl 的虚拟化不带列宽状态；这里按 Linux 同口径自绘虚拟化三列表格（§7.1）。
-- 同步：Linux done（tests/ui/linux/test_15_refresh_regressions.py 6/6 通过（外部 DDL 后重入见最新列表与 DROP 最终加载、真实空态不恢复、不支持页保持、F5、语义行选中、Objects 独立请求计数）（CREATE/RENAME/DROP 后切回本页均见最新列表、F5 强制重列、同作用域选中行不重复请求）；test_14 5/5 通过；cargo test 503 通过）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:717 表头行、:747 AddObjectsRow；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
+- 同步：Linux done（test_15_refresh_regressions.py 经 SQL 编辑器提交 CREATE、ALTER RENAME、DROP 后重入，另测外部 DDL、主动刷新、单选与空态；按 Objects 和对象树独立请求计数核对）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:717 表头行、:747 AddObjectsRow；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1778,7 +1781,7 @@ kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `font_status`、`gap_sm`
 - 无障碍：可访问名「对象列表状态」
-- 同步：Linux done（§3 读取中 / 读取成功 / 空结果 / 读取失败 / 没有浏览会话五条）；Windows partial（§7.1 记录四种文案，但措辞不同：有结果写「已加载 N 个对象（还有更多）」（Linux「共 N 个对象（还有更多）」）；「这条连接没有浏览会话…」未记录。）；macOS none
+- 同步：Linux done（GTK objects_pagination_preserves_retry_and_discards_stale_responses 分别验证首页与续页错误）；Windows partial（§7.1 记录四种文案，但措辞不同：有结果写「已加载 N 个对象（还有更多）」（Linux「共 N 个对象（还有更多）」）；「这条连接没有浏览会话…」未记录。）；macOS none
 - 实现备注：单行 Label，可换行（set_wrap(true)），dim-label + caption，左对齐；v0.2.4 起在「加载更多…」下方。「共 N 个对象」的 N 是**已加载行数**，不是服务端 total_size —— 协议只给「还有更多」，页面不编造总数。五种状态互斥且都有文案：读取中 / 有结果 / 空结果 / 读取失败 / 没有浏览会话；状态行与空态页也不共存（空态时状态行清空）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1786,7 +1789,7 @@ kind `control` · status `active` · parent `objects_page`
 | load | 作用域已变、请求在飞 | 写「正在读取…」（首次首页与「加载更多…」续页都写这一句） | `src/tabs.rs:1070、src/tabs.rs:1083` |
 | load | 首页或续页返回、有行 | 写「共 N 个对象」；还有下一页时追加「（还有更多）」 | `src/tabs.rs:1131` |
 | load | 请求成功但 0 条（本页与累计都是空） | 写「（这个库里没有这类对象）」 | `src/tabs.rs:1135、src/tabs.rs:1136` |
-| load | 请求失败 | 写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处 | `src/tabs.rs:1140、src/tabs.rs:1141` |
+| load | 请求失败 | 写「读取失败：<headline>（<code>）」。首页失败可刷新或重入恢复。续页失败保留已加载的行与分页 token，恢复「加载更多…」供手动重试 | `src/tabs.rs::ObjectsPage::finish_page` |
 | load | 该连接没有浏览会话（展开连接前 / 已断开） | 写「这条连接没有浏览会话：展开连接后重试」，不发请求 | `src/tabs.rs:1065、src/tabs.rs:1067` |
 
 ### `objects_page.more` 「加载更多…」
@@ -1795,13 +1798,13 @@ kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `min_target`、`font_ui`、`gap_sm`
 - 无障碍：可访问名「加载更多」
-- 同步：Linux done（§3「加载更多…」；connect_clicked 与 has_more 驱动 set_visible）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:673；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:882）；macOS none
+- 同步：Linux done（GTK objects_pagination_preserves_retry_and_discards_stale_responses 断言在途只提交一次、失败后重试及迟到响应隔离）；Windows done（frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:673；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:882）；macOS none
 - 实现备注：扁平按钮、左对齐、无图标；默认隐藏，只有服务端给了下一页 token 才出现。分页是「接着取」而不是翻页：新行接在现有行后面，不跳页、不清已加载行、不改变滚动位置以外的状态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 按钮可见（还有下一页） | 按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」 | `src/tabs.rs:905、src/tabs.rs:1074` |
-| load | 首页或续页返回 | 有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏 | `src/tabs.rs:1129、src/tabs.rs:1140` |
+| click | 按钮可见（还有下一页） | 按当前作用域及分页 token 继续拉下一页，成功后追加到列表。在途时显示「正在读取…」，同一 token 只提交一次 | `src/tabs.rs::ObjectsPage::load` |
+| load | 首页或续页返回 | 有下一页时显示「加载更多…」。续页失败保留按钮与 token。首页失败、空结果和空态隐藏此按钮 | `src/tabs.rs::ObjectsPage::finish_page` |
 
 ### `objects_page.empty` 空态页
 

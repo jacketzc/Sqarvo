@@ -5105,6 +5105,20 @@ impl DataPage {
         }
     }
 
+    /// 已成功载入且尚有效的当前表与行数。
+    #[must_use]
+    pub fn loaded_table_rows(&self) -> Option<(TableEntry, usize)> {
+        // 完成装载后才有草稿模型（空表和只读表也有）；重新打开时会先清除它。
+        if self.state.get() == DataState::Disconnected || self.draft.borrow().is_none() {
+            return None;
+        }
+        let table = self.table.borrow().clone()?;
+        Some((
+            table,
+            usize::try_from(self.row_count()).unwrap_or(usize::MAX),
+        ))
+    }
+
     /// 当前数据页摘要（状态栏与菜单的读数）。
     #[must_use]
     pub fn status_snapshot(&self) -> StatusSnapshot {

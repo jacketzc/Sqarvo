@@ -22,6 +22,7 @@ parent = ""
 display_name = "Objects 固定页"
 kind = "area"
 status = "active"
+a11y.name = "Objects"
 style.slot = "workspace.content"
 style.metrics = ["gap_xl", "gap_md"]
 impl_notes = [
@@ -33,12 +34,12 @@ impl_notes = [
 
 [component.sync.linux]
 state = "done"
-spec_hash = "87ee78c3f00a"
+spec_hash = "2a572b7612b9"
 evidence = "§3 页面结构逐条对照 tabs.rs（ObjectsPage::new 的 root 只有 title + stack）"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "87ee78c3f00a"
+spec_hash = "2a572b7612b9"
 note = "§7.1 记录「固定 Objects 页 + 三列表格 + 状态行 + 加载更多…」的存在；页内标题、无作用域说明行的版面与页内距未逐条记录。"
 
 [component.sync.macos]
@@ -197,7 +198,7 @@ source = "src/ui.rs:2846、src/tabs.rs:2099"
 [component.sync.linux]
 state = "done"
 spec_hash = "074178bf4b32"
-evidence = "tests/ui/linux/test_15_refresh_regressions.py 6/6 通过（外部 DDL 后重入见最新列表与 DROP 最终加载、真实空态不恢复、不支持页保持、F5、语义行选中、Objects 独立请求计数）（CREATE/RENAME/DROP 后切回本页均见最新列表、F5 强制重列、同作用域选中行不重复请求）；test_14 5/5 通过；cargo test 503 通过"
+evidence = "test_15_refresh_regressions.py 经 SQL 编辑器提交 CREATE、ALTER RENAME、DROP 后重入，另测外部 DDL、主动刷新、单选与空态；按 Objects 和对象树独立请求计数核对"
 
 [component.sync.windows]
 state = "partial"
@@ -380,8 +381,8 @@ source = "src/tabs.rs:1135、src/tabs.rs:1136"
 [[component.interaction]]
 trigger = "load"
 precondition = "请求失败"
-result = "写「读取失败：<headline>（<code>）」；同时隐藏「加载更多…」，已取到的行保留在原处"
-source = "src/tabs.rs:1140、src/tabs.rs:1141"
+result = "写「读取失败：<headline>（<code>）」。首页失败可刷新或重入恢复。续页失败保留已加载的行与分页 token，恢复「加载更多…」供手动重试"
+source = "src/tabs.rs::ObjectsPage::finish_page"
 
 [[component.interaction]]
 trigger = "load"
@@ -391,12 +392,12 @@ source = "src/tabs.rs:1065、src/tabs.rs:1067"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e0bbbe2299f6"
-evidence = "§3 读取中 / 读取成功 / 空结果 / 读取失败 / 没有浏览会话五条"
+spec_hash = "d7e7b0914b0a"
+evidence = "GTK objects_pagination_preserves_retry_and_discards_stale_responses 分别验证首页与续页错误"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e0bbbe2299f6"
+spec_hash = "d7e7b0914b0a"
 note = "§7.1 记录四种文案，但措辞不同：有结果写「已加载 N 个对象（还有更多）」（Linux「共 N 个对象（还有更多）」）；「这条连接没有浏览会话…」未记录。"
 
 [component.sync.macos]
@@ -420,23 +421,23 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "按钮可见（还有下一页）"
-result = "按上次作用域 + 分页 token 继续拉下一页，新行追加在后面；请求期间状态行写「正在读取…」"
-source = "src/tabs.rs:905、src/tabs.rs:1074"
+result = "按当前作用域及分页 token 继续拉下一页，成功后追加到列表。在途时显示「正在读取…」，同一 token 只提交一次"
+source = "src/tabs.rs::ObjectsPage::load"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "首页或续页返回"
-result = "有下一页才显示「加载更多…」；没有下一页、空结果、读取失败、空态（无作用域）一律隐藏"
-source = "src/tabs.rs:1129、src/tabs.rs:1140"
+result = "有下一页时显示「加载更多…」。续页失败保留按钮与 token。首页失败、空结果和空态隐藏此按钮"
+source = "src/tabs.rs::ObjectsPage::finish_page"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "4d4b91b4f4f7"
-evidence = "§3「加载更多…」；connect_clicked 与 has_more 驱动 set_visible"
+spec_hash = "4a2fe11869a5"
+evidence = "GTK objects_pagination_preserves_retry_and_discards_stale_responses 断言在途只提交一次、失败后重试及迟到响应隔离"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "4d4b91b4f4f7"
+spec_hash = "4a2fe11869a5"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:673；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:882"
 
 [component.sync.macos]

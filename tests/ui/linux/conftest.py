@@ -16,6 +16,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -94,7 +95,7 @@ class UiInstance:
         self.home = UIROOT / ".work" / tag
         if fresh:
             shutil.rmtree(self.home, ignore_errors=True)
-        for sub in ("config", "data", "state"):
+        for sub in ("config", "data", "state", "cache"):
             (self.home / sub).mkdir(parents=True, exist_ok=True)
         self.db = self.home / "data" / "uitest.db"
         if db:
@@ -105,6 +106,7 @@ class UiInstance:
         self.profile = None
         self.proc = None
         self.app = None
+        self.runtime = None
 
     def start(self, autoconnect=False, *, extra_args=()):
         args = [str(BIN), *extra_args]
@@ -115,12 +117,17 @@ class UiInstance:
                 encoding="utf-8")
             args += ["--qa-profile", str(self.profile)]
         args += ["--qa-exit-after-ms", str(WATCHDOG_MS)]
+        # Keep the backend socket private and short enough for AF_UNIX.
+        self.runtime = tempfile.TemporaryDirectory(prefix="sq-ui-", dir="/tmp")
+        endpoint = Path(self.runtime.name) / "sqarvo" / "backend-endpoint.json"
         env = dict(os.environ)
         env.update({
             "XDG_CONFIG_HOME": str(self.home / "config"),
             "XDG_DATA_HOME": str(self.home / "data"),
             "XDG_STATE_HOME": str(self.home / "state"),
-            "SQARVO_QA_APP_ID": f"io.sqarvo.Sqarvo.UITest.{os.getpid()}.{self.tag}",
+            "XDG_CACHE_HOME": str(self.home / "cache"),
+            "SQARVO_ENDPOINT_FILE": str(endpoint),
+            "SQARVO_QA_APP_ID": f"io.sqarvo.Sqarvo.UITest.P{os.getpid()}.{self.tag}",
         })
         self.env = env
         _INSTANCES.append(self)
@@ -132,7 +139,7 @@ class UiInstance:
         return self
 
     def log_text(self):
-        """应用 stderr 快照（请求计数断言只数稳定的 `[inspector] 请求 …` 行）。"""
+        """应用 stderr 快照（请求计数断言只数稳定的 `[qa.metadata] submit …` 行）。"""
         if not self.log_path.exists():
             return ""
         return self.log_path.read_text(encoding="utf-8", errors="replace")
@@ -144,13 +151,11 @@ class UiInstance:
         return self.proc is not None and self.proc.poll() is None
 
     def stop(self, grace=10.0):
-        if self.proc is None:
-            return
-        if self.proc.poll() is None:
+        if self.proc is not None and self.proc.poll() is None:
             try:
                 os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
             except ProcessLookupError:
-                return
+                pass
             try:
                 self.proc.wait(timeout=grace)
             except subprocess.TimeoutExpired:
@@ -159,15 +164,15 @@ class UiInstance:
         if self._log_handle is not None:
             self._log_handle.close()
             self._log_handle = None
-        # 后端由桌面进程 PDEATHSIG 清理；这里只确认没有孤儿。
-        time.sleep(0.3)
-        for i in range(Atspi.get_desktop(0).get_child_count()):
-            c = Atspi.get_desktop(0).get_child_at_index(i)
-            if c is not None and "sqarvo-desktop" in (c.get_name() or ""):
-                raise RuntimeError(f"实例 {self.tag} 退出后 AT-SPI 根仍在（残留进程）")
+        # 后端由桌面进程 PDEATHSIG 清理；等待本实例从可访问性总线注销。
+        if self.app is not None:
+            A.wait_gone(lambda: A.find_app("sqarvo-desktop"), 5,
+                        f"实例 {self.tag} 的 AT-SPI 根退出")
 
     def dispose(self):
         self.stop()
+        if self.runtime is not None:
+            self.runtime.cleanup()
         if self in _INSTANCES:
             _INSTANCES.remove(self)
         shutil.rmtree(self.home, ignore_errors=True)
@@ -188,6 +193,18 @@ def _make_sqlite_db(path: Path):
                     [("2026-11-05 10:30:00",), ("not-a-date",)])
     con.commit()
     con.close()
+
+
+@pytest.fixture
+def ui_instance(request):
+    """保留运行中的失败实例，等报告器采集语义树后再清理。"""
+    ops.CURRENT["step"] = None
+
+    def create(tag):
+        inst = UiInstance(tag)
+        request.addfinalizer(inst.dispose)
+        return inst
+    return create
 
 
 @pytest.fixture(scope="module")

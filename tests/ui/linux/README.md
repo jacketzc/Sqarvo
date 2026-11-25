@@ -24,6 +24,12 @@ just ui-test-all     # 全部
 
 单条场景：`tests/ui/linux/.venv/bin/python -m pytest tests/ui/linux/test_03_sql.py::test_execute_sql -c tests/ui/linux/pytest.ini -q`
 
+`test_14_inspector_no_cache.py` 与 `test_15_refresh_regressions.py` 可一起执行。后者通过
+SQL 编辑器执行并验证 CREATE、RENAME、DROP，使用独立 SQLite 连接只读确认提交，
+再检查重入 Objects 的列表与请求次数。SQLite 不支持显式切换请求库，测试先从连接行
+建立 SQL 标签，再选回 Tables 作用域。确定性的分页错误、列响应与同名库统计测试
+在 GTK 会话里用 `cargo test --manifest-path frontend/linux/Cargo.toml -- --ignored --test-threads=1` 执行。
+
 `test_06_mcp_access.py` 的外部刷新用例需要 `SQARVO_MCP_BIN`，或与
 `SQARVO_BACKEND_BIN` 位于同一目录的 `sqarvo-mcp`。
 
@@ -67,7 +73,7 @@ Diagnostic: tests/ui/linux/logs/test_03_sql.py_test_execute_sql.txt
 ## 隔离与确定性
 
 - 每个实例独立 `XDG_CONFIG_HOME/DATA/STATE`（`tests/ui/linux/.work/<tag>`）+ 独立 SQLite
-  测试库（夹具建表 `widgets` 三行合成数据）；测试结束删目录、杀进程组。
+  测试库（夹具建表 `widgets` 三行合成数据）；后端使用独立临时套接字目录。测试结束删目录、清理进程组。
 - 实例经 `SQARVO_QA_APP_ID` 与用户正在运行的窗口共存；`--qa-exit-after-ms` 看门狗
   兜底防止测试崩溃留下常驻进程。
 - 等待全部是「条件 + 超时轮询」；无裸 `sleep`。

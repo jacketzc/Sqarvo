@@ -371,7 +371,7 @@ pub struct Inspector {
     hub_of: RefCell<Option<HubResolver>>,
     /// 加载周期：任何有效的新加载都让此前全部在途响应失效（含 A → B → A）。
     epoch: Rc<LoadEpoch>,
-    /// 当前展示目标的连接归属（浏览会话 ID）：断连判断只认这一份，不从历史 parent 推断。
+    /// 当前展示目标的会话归属，用于影响范围明确的断连清理。
     owner_session: RefCell<Option<String>>,
     /// 列节点的父表（主动刷新列页时要用它重发 `GetColumns`）。
     parent: RefCell<Option<NodeView>>,
@@ -387,7 +387,7 @@ pub struct Inspector {
     info: RefCell<TableInfo>,
     /// 列页当前展示的列（QA 从控件与这份数据读回六项文案）。
     column: RefCell<Option<TableColumn>>,
-    /// 正在看的对象（当前展示状态，不是跨访问结果缓存）。
+    /// 当前展示对象。
     object: RefCell<Option<NodeView>>,
     /// 当前标签 ID（记忆键）。
     tab_key: RefCell<String>,
@@ -407,7 +407,7 @@ struct TableInfo {
     children_note: Option<String>,
 }
 
-/// 请求种类（验收日志用的稳定标记；不是缓存键）。
+/// 请求种类（验收日志用的稳定标记）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MetadataRequest {
     Ddl,
@@ -588,8 +588,14 @@ impl Inspector {
         stack.add_named(&empty_page, Some("empty"));
         stack.set_visible_child_name("empty");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
         root.add_css_class("sqarvo-inspector");
+        root.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "inspector.title_panel",
+        ))]);
         root.append(&header);
         root.append(&txn_hint);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -672,7 +678,7 @@ impl Inspector {
                 .is_some_and(|current| current.reference == node.reference)
     }
 
-    /// 当前展示目标所属的浏览会话（连接归属判断用，不从历史 parent 推断）。
+    /// 当前展示目标所属的会话（连接归属判断用）。
     #[must_use]
     pub fn session_id(&self) -> Option<String> {
         self.owner_session.borrow().clone()
@@ -885,14 +891,7 @@ impl Inspector {
             has_children: false,
             comment: String::new(),
         }));
-        let facts: Vec<Fact> = column_info_rows(column)
-            .into_iter()
-            .map(|(label, value)| Fact::new(label, value))
-            .collect();
-        fill_facts(&self.column_rows, &facts);
-        self.column.replace(Some(column.clone()));
-        self.column_count.set(1);
-        self.set_page("column");
+        self.render_column(column);
         eprintln!(
             "[inspector] 列页：{} · {}（来自表头点击，父表 {}）",
             column.name,
@@ -1249,7 +1248,7 @@ impl Inspector {
         column: NodeView,
         token: LoadToken,
     ) {
-        let name = column.display_name.clone();
+        self.clear_column_display();
         let Some(hub) = self.hub(&table) else {
             self.set_state(&StateText {
                 headline: l10n::t("inspector.state_no_session_head"),
@@ -1262,51 +1261,70 @@ impl Inspector {
         hub.request_columns(
             table.reference.clone(),
             Rc::new(move |result| {
-                let Some(panel) = weak.upgrade() else { return };
-                if !panel.epoch.is_current(token)
-                    || panel
-                        .object
-                        .borrow()
-                        .as_ref()
-                        .is_none_or(|current| current.reference != column.reference)
-                {
-                    return;
-                }
-                match result {
-                    Ok(columns) => {
-                        let Some(column) = columns.iter().find(|column| column.name == name) else {
-                            panel.set_state(&StateText {
-                                headline: l10n::t("inspector.state_column_gone_head"),
-                                detail: l10n::tf(
-                                    "inspector.state_column_gone_body",
-                                    &[
-                                        ("table", table.display_name.clone()),
-                                        ("name", name.clone()),
-                                    ],
-                                ),
-                                code: "metadata.object_not_found".to_owned(),
-                            });
-                            return;
-                        };
-                        panel.subtitle.set_text(&l10n::tf(
-                            "inspector.subtitle_column_table",
-                            &[
-                                ("table", table.display_name.clone()),
-                                ("type", column.type_label.clone()),
-                            ],
-                        ));
-                        let facts: Vec<Fact> = column_info_rows(column)
-                            .into_iter()
-                            .map(|(label, value)| Fact::new(label, value))
-                            .collect();
-                        fill_facts(&panel.column_rows, &facts);
-                        panel.column_count.set(1);
-                        panel.set_page("column");
-                    }
-                    Err(error) => panel.show_state_error(&error),
+                if let Some(panel) = weak.upgrade() {
+                    panel.finish_column_load(&table, &column, token, result);
                 }
             }),
         );
+    }
+
+    fn clear_column_display(&self) {
+        self.column.replace(None);
+        self.column_count.set(0);
+        self.subtitle.set_text("");
+        fill_facts(&self.column_rows, &[]);
+        self.set_page("column");
+    }
+
+    fn finish_column_load(
+        &self,
+        table: &NodeView,
+        column: &NodeView,
+        token: LoadToken,
+        result: Result<Vec<TableColumn>, MetadataError>,
+    ) {
+        if !self.accepts(token, column) {
+            return;
+        }
+        match result {
+            Ok(columns) => {
+                let name = &column.display_name;
+                let Some(column) = columns.iter().find(|column| column.name == *name) else {
+                    self.set_state(&StateText {
+                        headline: l10n::t("inspector.state_column_gone_head"),
+                        detail: l10n::tf(
+                            "inspector.state_column_gone_body",
+                            &[
+                                ("table", table.display_name.clone()),
+                                ("name", name.clone()),
+                            ],
+                        ),
+                        code: "metadata.object_not_found".to_owned(),
+                    });
+                    return;
+                };
+                self.subtitle.set_text(&l10n::tf(
+                    "inspector.subtitle_column_table",
+                    &[
+                        ("table", table.display_name.clone()),
+                        ("type", column.type_label.clone()),
+                    ],
+                ));
+                self.render_column(column);
+            }
+            Err(error) => self.show_state_error(&error),
+        }
+    }
+
+    fn render_column(&self, column: &TableColumn) {
+        let facts: Vec<Fact> = column_info_rows(column)
+            .into_iter()
+            .map(|(label, value)| Fact::new(label, value))
+            .collect();
+        fill_facts(&self.column_rows, &facts);
+        self.column.replace(Some(column.clone()));
+        self.column_count.set(1);
+        self.set_page("column");
     }
 
     fn info_note(&self, text: &StateText) {
@@ -1652,6 +1670,67 @@ mod tests {
             credential_ref: String::new(),
             ..SavedConnection::default()
         }
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn column_reload_updates_model_and_discards_stale_responses() {
+        gtk::test_synced(|| {
+            adw::init().unwrap();
+            let panel = Inspector::new();
+            let entry = TableEntry {
+                reference: ObjectRef {
+                    session_id: "browse".to_owned(),
+                    name: "widgets".to_owned(),
+                    kind: ObjectKind::Table as i32,
+                    ..Default::default()
+                },
+                display_name: "widgets".to_owned(),
+                kind: ObjectKind::Table,
+            };
+            let mut old = TableColumn::from_meta(&crate::proto::common::v1::ColumnMeta {
+                name: "marker".to_owned(),
+                ..Default::default()
+            });
+            old.type_label = "TEXT".to_owned();
+            panel.show_column(&old, Some(&entry), Some("browse"));
+            let node = panel.object.borrow().clone().unwrap();
+            let table = panel.parent.borrow().clone().unwrap();
+
+            let stale = panel.begin_load();
+            let current = panel.begin_load();
+            panel.clear_column_display();
+            assert!(panel.qa_observe_column().is_none());
+            let mut new = old.clone();
+            new.type_label = "INTEGER".to_owned();
+            panel.finish_column_load(&table, &node, current, Ok(vec![new]));
+            assert_eq!(panel.qa_observe_column().unwrap().type_label, "INTEGER");
+            assert!(
+                panel
+                    .qa_observe()
+                    .facts
+                    .iter()
+                    .any(|fact| fact.ends_with("=INTEGER"))
+            );
+
+            let error = MetadataError::NotFound {
+                message: "gone".to_owned(),
+            };
+            panel.finish_column_load(&table, &node, stale, Ok(vec![old]));
+            panel.finish_column_load(&table, &node, stale, Err(error.clone()));
+            assert_eq!(panel.qa_observe_column().unwrap().type_label, "INTEGER");
+
+            let current = panel.begin_load();
+            panel.clear_column_display();
+            panel.finish_column_load(&table, &node, current, Err(error));
+            assert!(panel.qa_observe_column().is_none());
+            assert_eq!(panel.qa_observe().page, "state");
+            let current = panel.begin_load();
+            panel.clear_column_display();
+            panel.finish_column_load(&table, &node, current, Ok(vec![]));
+            assert!(panel.qa_observe_column().is_none());
+            assert_eq!(panel.qa_observe().page, "state");
+        });
     }
 
     #[test]

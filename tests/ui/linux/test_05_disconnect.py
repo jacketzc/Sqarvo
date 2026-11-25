@@ -28,7 +28,11 @@ def test_window_close_disposes_session():
         frame = inst.frame()
         ops.wait_connected(frame, "uitest.db", timeout=40)
         with step("close_window"):
-            close_btn = A.find_one(frame, role_in=("button",), name="关闭")
+            # 此按钮来自 GTK 原生窗口装饰，采用桌面会话的语言。
+            close_btn = A.wait_until(
+                lambda: next((button for button in A.query(frame, role_in=("button",))
+                              if A.nm(button) in {"Close", "关闭"}), None),
+                15, "原生窗口关闭按钮")
             A.click(close_btn)
         with step("clean_exit"):
             rc = inst.proc.wait(timeout=20)
@@ -49,8 +53,7 @@ def test_window_close_disposes_session():
     finally:
         if reopened is not None:
             reopened.dispose()
-        else:
-            inst.dispose()
+        inst.dispose()
 
 
 def reopened_frame_has_row(frame):

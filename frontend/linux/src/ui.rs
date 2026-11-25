@@ -61,7 +61,7 @@ struct UiState {
     worker: RefCell<Option<Rc<WorkerHandle>>>,
     /// 当前打开的连接对话框（未打开为 `None`）。
     dialog: RefCell<Option<Rc<ConnectionDialog>>>,
-    /// Inspector 钉住去重键（工作区与断连清理共用，避免旧键拦截新渲染）。
+    /// Inspector 当前钉住的身份键，用于合并同一次操作的重复事件。
     inspector_pin: Rc<RefCell<Option<String>>>,
     /// `SystemService.ListDrivers` 的结果（连接对话框下拉的数据源）。
     drivers: RefCell<Vec<crate::backend::client::DriverSummary>>,
@@ -1536,7 +1536,7 @@ fn selection_identity(selection: &TreeSelection) -> String {
     }
 }
 
-/// 对象身份串（只用于重复 UI 事件去重，不是元数据缓存键）。
+/// 对象身份串，用于合并同一次操作的重复 UI 事件。
 fn object_identity(reference: &crate::proto::services::v1::ObjectRef) -> String {
     format!(
         "{}|{}|{}|{}",
@@ -1568,8 +1568,14 @@ fn pin_identity(
             entry.display_name
         ),
         TabPin::Table { entry: None } => format!("{tab_id}|table|pending"),
-        TabPin::QueryCatalog { name: Some(name) } => format!("{tab_id}|catalog|{name}"),
-        TabPin::QueryCatalog { name: None } => format!("{tab_id}|empty"),
+        TabPin::QueryCatalog {
+            connection_key,
+            query_session,
+            kind,
+            name,
+        } => {
+            format!("{tab_id}|catalog|{connection_key:?}|{query_session:?}|{kind:?}|{name:?}")
+        }
     }
 }
 
@@ -1815,7 +1821,7 @@ fn disconnect_saved(state: &Rc<UiState>, key: &str) {
         eprintln!("[startup] 断开：连接「{}」当前未连接，忽略", snapshot.name);
         return;
     }
-    confirm_disconnect(state, snapshot);
+    confirm_disconnect(state, snapshot, false);
 }
 
 /// 删除一条已保存连接（侧栏右键「删除连接」）：二次确认 → 按修订删除共享档案。
@@ -2401,27 +2407,45 @@ impl Workspace {
                         inspector.show_empty();
                         eprintln!("[inspector] 标签 {tab_id} 钉住的表尚未就绪：清空旧内容");
                     }
-                    crate::tabs::TabPin::QueryCatalog { name: Some(name) } => {
-                        let counts = tree_slot
-                            .borrow()
-                            .as_ref()
-                            .map(|tree| tree.group_counts_by_catalog(name))
+                    crate::tabs::TabPin::QueryCatalog {
+                        connection_key,
+                        query_session,
+                        kind,
+                        name: Some(name),
+                    } => {
+                        let browse_session =
+                            state.registry.borrow().as_ref().and_then(|registry| {
+                                registry
+                                    .snapshot(connection_key)
+                                    .filter(|snapshot| snapshot.state.is_connected())
+                                    .map(|snapshot| snapshot.session_id)
+                            });
+                        let counts = browse_session
+                            .as_deref()
+                            .and_then(|session| {
+                                let object_kind = match kind {
+                                    crate::backend::query::CatalogKind::Database => {
+                                        ObjectKind::Catalog
+                                    }
+                                    crate::backend::query::CatalogKind::Schema => {
+                                        ObjectKind::Schema
+                                    }
+                                    crate::backend::query::CatalogKind::Unknown => return None,
+                                };
+                                tree_slot.borrow().as_ref().map(|tree| {
+                                    tree.group_counts_by_catalog(session, object_kind, name)
+                                })
+                            })
                             .unwrap_or_default();
-                        let session = state.registry.borrow().as_ref().and_then(|registry| {
-                            registry
-                                .active_key()
-                                .and_then(|key| registry.session_for_key(&key))
-                        });
                         inspector.show_catalog(
                             name,
                             counts.tables,
                             counts.views,
                             counts.complete,
-                            session.as_deref(),
+                            browse_session.as_deref().or(query_session.as_deref()),
                         );
                     }
-                    crate::tabs::TabPin::QueryCatalog { name: None } => {
-                        // 没有选择库：如实空态，不编造库信息。
+                    crate::tabs::TabPin::QueryCatalog { name: None, .. } => {
                         inspector.show_empty();
                     }
                     crate::tabs::TabPin::None => {}
@@ -2471,7 +2495,9 @@ impl Workspace {
             disconnect: {
                 let state = Rc::clone(state);
                 Rc::new(move |snapshot: ConnectionSnapshot| {
-                    confirm_disconnect(&state, snapshot);
+                    let auto_confirm =
+                        crate::qa::tree_disconnect().as_deref() == Some(snapshot.name.as_str());
+                    confirm_disconnect(&state, snapshot, auto_confirm);
                 })
             },
             connect_saved: {
@@ -2599,6 +2625,7 @@ impl Workspace {
                 let tree_for_select = Rc::clone(&tree_slot);
                 let tree_for_open_in = Rc::clone(&tree_slot);
                 let tree_for_connection = Rc::clone(&tree_slot);
+                let state_for_disconnect = Rc::clone(state);
                 let inspector_for_pane = Rc::clone(&inspector);
                 let inspector_for_observe = Rc::clone(&inspector);
                 Some(Rc::new(crate::tabs::QaBridge {
@@ -2634,6 +2661,21 @@ impl Workspace {
                             .ok_or_else(|| "对象树尚未创建".to_owned())?
                             .qa_select_connection(name)
                             .map(|()| format!("选中连接「{name}」（信息面板：连接）"))
+                    }),
+                    disconnect: Rc::new(move |name| {
+                        let snapshot = state_for_disconnect
+                            .registry
+                            .borrow()
+                            .as_ref()
+                            .and_then(|registry| {
+                                registry
+                                    .snapshots()
+                                    .into_iter()
+                                    .find(|entry| entry.name == name && entry.state.is_connected())
+                            })
+                            .ok_or_else(|| format!("连接「{name}」尚未就绪"))?;
+                        confirm_disconnect(&state_for_disconnect, snapshot, true);
+                        Ok(format!("确认断开连接「{name}」"))
                     }),
                     inspect: Rc::new(move |mode: &str| {
                         // 面板常驻（v0.2.3.2）：`hide` / 折叠不再是可达状态。
@@ -2672,6 +2714,36 @@ impl Workspace {
             },
         });
         tabs_slot.replace(Some(Rc::clone(&tabs)));
+
+        if let Some(registry) = state.registry.borrow().as_ref() {
+            let registry_ref = Rc::downgrade(registry);
+            let inspector = Rc::downgrade(&inspector);
+            let tabs = Rc::downgrade(&tabs);
+            registry.on_change(Rc::new(move || {
+                let (Some(registry), Some(inspector), Some(tabs)) =
+                    (registry_ref.upgrade(), inspector.upgrade(), tabs.upgrade())
+                else {
+                    return;
+                };
+                let owner = inspector.session_id();
+                for connection in registry
+                    .snapshots()
+                    .into_iter()
+                    .filter(|connection| connection.state == ConnectionState::Disconnecting)
+                {
+                    let owns_query_session = matches!(tabs.pin_target(),
+                        crate::tabs::TabPin::QueryCatalog {
+                            connection_key,
+                            query_session: Some(session),
+                            ..
+                        } if connection_key == connection.key && owner.as_deref() == Some(&session));
+                    if owner.as_deref() == Some(connection.session_id.as_str()) || owns_query_session {
+                        inspector.mark_disconnected();
+                    }
+                    tabs.clear_objects_for_session(&connection.session_id);
+                }
+            }));
+        }
 
         // `Objects` 页单击选中 → 信息面板（与树选中同一条语义）。
         // 不反向改树的选中：树选中会驱动 `Objects` 页换作用域，形成「列表选中 → 树选中
@@ -4158,7 +4230,7 @@ fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
 ///
 /// 数据页用的是**另一条**会话（ADR 0021 §2）：断开浏览会话不会让表格里的数据消失。
 /// 因此这里不阻止对「当前数据页绑定连接」的断开，而是把这件事说清楚。
-fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
+fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot, auto_confirm: bool) {
     let Some(registry) = state.registry.borrow().clone() else {
         return;
     };
@@ -4190,7 +4262,6 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
     dialog.set_close_response("cancel");
     {
         let registry = Rc::clone(&registry);
-        let state_for_clear = Rc::clone(state);
         let key = snapshot.key.clone();
         let name = snapshot.name.clone();
         let handled = Rc::new(Cell::new(false));
@@ -4199,22 +4270,8 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
                 return;
             }
             eprintln!("[browse] 用户确认断开「{name}」（连接键 {key}）");
-            let session = registry.session_for_key(&key);
             registry.log_sessions("断开前");
             registry.disconnect(&key);
-            // 只清当前展示正属于这条连接的会话：别的连接仍可正常查看。
-            let inspector = state_for_clear
-                .workspace
-                .borrow()
-                .as_ref()
-                .map(|workspace| Rc::clone(&workspace.inspector));
-            if let (Some(inspector), Some(session)) = (inspector, session.as_ref())
-                && inspector.session_id().as_deref() == Some(session.as_str())
-            {
-                inspector.mark_disconnected();
-                state_for_clear.inspector_pin.replace(None);
-                eprintln!("[inspector] 当前展示属于连接「{name}」：展示与钉住键已清理");
-            }
             // 断开是异步的：稍后再数一次，前后两次会话数就是验收证据。
             let registry = Rc::clone(&registry);
             glib::timeout_add_local_once(Duration::from_millis(1_500), move || {
@@ -4224,7 +4281,7 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
     }
     // 无人值守验证（`--qa-tree-disconnect`）：仍然走对话框自己的 response 信号，
     // 与用户点「断开连接」同一个入口，不是绕过确认直接断开。
-    if crate::qa::tree_disconnect().as_deref() == Some(snapshot.name.as_str()) {
+    if auto_confirm {
         let dialog_for_qa = dialog.clone();
         glib::timeout_add_local_once(Duration::from_millis(200), move || {
             let value = glib::Value::from("disconnect");
@@ -6166,26 +6223,23 @@ mod tests {
             table,
             pin_identity("tab-t1", &TabPin::Table { entry: None }, None)
         );
-        // 查询标签：换库 → 键变化；没选库 → 空态。
-        assert_ne!(
+        let query_pin = |connection: &str, session: &str, name: Option<&str>| {
             pin_identity(
                 "tab-q1",
                 &TabPin::QueryCatalog {
-                    name: Some("a".to_owned())
+                    connection_key: connection.to_owned(),
+                    query_session: Some(session.to_owned()),
+                    kind: crate::backend::query::CatalogKind::Database,
+                    name: name.map(str::to_owned),
                 },
-                None
-            ),
-            pin_identity(
-                "tab-q1",
-                &TabPin::QueryCatalog {
-                    name: Some("b".to_owned())
-                },
-                None
+                None,
             )
-        );
-        assert!(
-            pin_identity("tab-q1", &TabPin::QueryCatalog { name: None }, None).ends_with("|empty")
-        );
+        };
+        let main = query_pin("a", "session", Some("main"));
+        assert_ne!(main, query_pin("b", "session", Some("main")));
+        assert_ne!(main, query_pin("a", "new-session", Some("main")));
+        assert_ne!(main, query_pin("a", "session", Some("temp")));
+        assert_ne!(main, query_pin("a", "session", None));
     }
 
     #[test]

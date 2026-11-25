@@ -877,7 +877,7 @@ impl ConnectionRegistry {
         self.entries
             .borrow()
             .iter()
-            .find(|entry| entry.session_id == session_id)
+            .find(|entry| entry.session_id == session_id && entry.state.is_connected())
             .and_then(|entry| entry.hub.clone())
     }
 

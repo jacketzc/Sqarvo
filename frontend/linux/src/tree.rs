@@ -286,7 +286,7 @@ pub struct GroupCounts {
     pub tables: Option<usize>,
     /// 已加载的视图数；`None` = `Views` 分组还没展开过。
     pub views: Option<usize>,
-    /// 两组都读到了最后一页（计数可以当作总数）。
+    /// 已展示计数的分组都读到了最后一页。
     pub complete: bool,
 }
 
@@ -1534,7 +1534,9 @@ impl TreePanel {
         }
 
         if snapshots.is_empty() {
+            self.rebuilding.set(true);
             self.root_store.remove_all();
+            self.rebuilding.set(false);
             self.set_health(TreeHealth::Empty);
             self.show_state(
                 l10n::t("object_tree.state_no_connections_title"),
@@ -1565,6 +1567,7 @@ impl TreePanel {
                     })
             })
             .collect();
+        self.rebuilding.set(true);
         if current == keys {
             for (index, snapshot) in snapshots.iter().enumerate() {
                 let Some(object) = self
@@ -1587,14 +1590,13 @@ impl TreePanel {
                     .items_changed(u32::try_from(index).unwrap_or(0), 1, 1);
             }
         } else {
-            self.rebuilding.set(true);
             self.root_store.remove_all();
             for snapshot in &snapshots {
                 self.root_store
                     .append(&NodeObject::new(Row::Connection(Rc::new(snapshot.clone()))));
             }
-            self.rebuilding.set(false);
         }
+        self.rebuilding.set(false);
         let connected = snapshots
             .iter()
             .filter(|snapshot| snapshot.state.is_connected())
@@ -1859,7 +1861,7 @@ impl TreePanel {
     /// 某个 catalog 下**已经加载**的表 / 视图条数（分组层各自的分页状态）。
     ///
     /// 只读已展开的结果：信息面板不会为了显示计数去全量扫库（§4 的懒加载契约）。
-    /// `complete` 表示两组都已读到最后一页——为 `false` 时界面必须说明「按已展开统计」。
+    /// `complete` 为 `false` 时界面说明「按已展开统计」。
     pub fn group_counts(&self, parent: &ObjectRef) -> GroupCounts {
         let mut tables = None;
         let mut views = None;
@@ -1873,14 +1875,14 @@ impl TreePanel {
             else {
                 continue;
             };
-            if level_parent.catalog != parent.catalog
-                || level_parent.schema != parent.schema
-                || level_parent.name != parent.name
-            {
+            if level_parent != parent {
                 continue;
             }
             let loaded = level.loaded.get();
-            let done = level.next_token.borrow().is_empty() && !level.loading.get();
+            let done = level.exhausted.get() && !level.loading.get();
+            if loaded == 0 && !done {
+                continue;
+            }
             match group {
                 RowGroup::Catalog(KindGroup::Tables) => tables = Some(loaded),
                 RowGroup::Catalog(KindGroup::Views) => views = Some(loaded),
@@ -1896,43 +1898,37 @@ impl TreePanel {
         }
     }
 
-    /// 按**库名**查已展开分组的计数（改动确认单 #1：查询标签钉住面板时只有名字）。
+    /// 按查询标签所属的浏览会话及库层级匹配已展开的分组。
     ///
-    /// 信息面板从查询标签拿到的只是 `catalog` 字符串，不是树上那个引用的形状；
-    /// 命中口径：已展开分组的父引用 `catalog` 或 `name` 等于该库名。都没展开过时
-    /// 各项为 `None`——面板按「拿不到的字段不出现」省略，而不是写 0。
+    /// 会话库上下文只给这一层的名称；同名 Schema 无法唯一定位时省略统计。
     #[must_use]
-    pub fn group_counts_by_catalog(&self, name: &str) -> GroupCounts {
-        let mut tables = None;
-        let mut views = None;
-        let mut complete = true;
-        for level in self.levels.borrow().values() {
-            let LevelSource::Group {
-                parent: level_parent,
-                group,
+    pub fn group_counts_by_catalog(
+        &self,
+        session: &str,
+        kind: ObjectKind,
+        name: &str,
+    ) -> GroupCounts {
+        let levels = self.levels.borrow();
+        let mut parents = levels.values().filter_map(|level| match &level.source {
+            LevelSource::Group {
+                parent,
+                group: RowGroup::Catalog(_),
                 ..
-            } = &level.source
-            else {
-                continue;
-            };
-            if level_parent.catalog != name && level_parent.name != name {
-                continue;
+            } if parent.session_id == session
+                && parent.kind == kind as i32
+                && parent.name == name =>
+            {
+                Some(parent)
             }
-            let loaded = level.loaded.get();
-            let done = level.next_token.borrow().is_empty() && !level.loading.get();
-            match group {
-                RowGroup::Catalog(KindGroup::Tables) => tables = Some(loaded),
-                RowGroup::Catalog(KindGroup::Views) => views = Some(loaded),
-                RowGroup::Catalog(KindGroup::Functions | KindGroup::Queries) => continue,
-                RowGroup::Table(_) => continue,
-            }
-            complete &= done;
+            _ => None,
+        });
+        let Some(parent) = parents.next() else {
+            return GroupCounts::default();
+        };
+        if parents.any(|candidate| candidate != parent) {
+            return GroupCounts::default();
         }
-        GroupCounts {
-            tables,
-            views,
-            complete: complete && (tables.is_some() || views.is_some()),
-        }
+        self.group_counts(parent)
     }
 
     /// 已加载的真实节点数（展开后的行数，不含占位行）。
@@ -2050,6 +2046,11 @@ impl TreePanel {
                     return;
                 }
                 let selection = panel.current_selection();
+                // 连接行替换会自动取消其子行选中。断连由会话归属处理，不把这次
+                // 模型通知当成用户选择，避免清掉其它连接的 Inspector 或 Objects。
+                if panel.rebuilding.get() && matches!(selection, TreeSelection::None) {
+                    return;
+                }
                 match &selection {
                     TreeSelection::Connection(snapshot) => {
                         eprintln!("[tree] 选中连接：{}", snapshot.name);
@@ -4466,7 +4467,7 @@ impl TreePanel {
     /// 断开一条连接（与右键菜单「断开连接」同一条路径：确认框由回调负责）。
     pub fn qa_disconnect(self: &Rc<Self>, name: &str) -> Result<ConnectionSnapshot, String> {
         // 同名连接可能有多条（例如同一目标被保存了两次）：优先断开**已连接**的那条。
-        let mut found: Option<(u32, ConnectionSnapshot)> = None;
+        let mut found = None;
         let mut states: Vec<&'static str> = Vec::new();
         for position in 0..self.tree_model.n_items() {
             let Some(row) = self.tree_row(position) else {
@@ -4480,13 +4481,12 @@ impl TreePanel {
             }
             states.push(snapshot.state.name());
             if snapshot.state.is_connected() {
-                found = Some((position, (*snapshot).clone()));
+                found = Some((*snapshot).clone());
                 break;
             }
         }
         match found {
-            Some((position, snapshot)) => {
-                self.select_position(position);
+            Some(snapshot) => {
                 (self.callbacks.disconnect)(snapshot.clone());
                 Ok(snapshot)
             }
@@ -4832,6 +4832,77 @@ mod tests {
             parent: view(table, ObjectKind::Table, catalog, "").reference,
             group: RowGroup::Table(group),
         })
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn catalog_counts_require_the_same_browse_session_and_catalog_identity() {
+        gtk::test_synced(|| {
+            adw::init().unwrap();
+            let panel = TreePanel::new(TreeCallbacks {
+                open: Rc::new(|_| {}),
+                select: Rc::new(|_| {}),
+                health: Rc::new(|_| {}),
+                disconnect: Rc::new(|_| {}),
+                connect_saved: Rc::new(|_| {}),
+                edit_saved: Rc::new(|_| {}),
+                delete_saved: Rc::new(|_| {}),
+            });
+            let add_level = |parent: ObjectRef, group, count, exhausted| {
+                let id = panel.new_level(
+                    LevelSource::Group {
+                        key: parent.session_id.clone(),
+                        parent,
+                        group: RowGroup::Catalog(group),
+                    },
+                    group.label(),
+                    gio::ListStore::new::<NodeObject>(),
+                );
+                let levels = panel.levels.borrow();
+                let level = &levels[&id];
+                level.loaded.set(count);
+                level.exhausted.set(exhausted);
+            };
+            let parent_a = view("main", ObjectKind::Catalog, "main", "").reference;
+            let parent_b = ObjectRef {
+                session_id: "other".to_owned(),
+                ..parent_a.clone()
+            };
+            add_level(parent_a.clone(), KindGroup::Tables, 12, true);
+            add_level(parent_b.clone(), KindGroup::Tables, 2, true);
+            add_level(parent_b.clone(), KindGroup::Views, 0, false);
+            assert_eq!(panel.group_counts(&parent_a).tables, Some(12));
+            let counts = panel.group_counts_by_catalog("other", ObjectKind::Catalog, "main");
+            assert_eq!(counts.tables, Some(2));
+            assert_eq!(counts.views, None);
+            assert_eq!(
+                panel
+                    .group_counts_by_catalog("missing", ObjectKind::Catalog, "main")
+                    .tables,
+                None
+            );
+            assert_eq!(
+                panel
+                    .group_counts_by_catalog("other", ObjectKind::Schema, "main")
+                    .tables,
+                None
+            );
+
+            for catalog in ["first", "second"] {
+                add_level(
+                    view("public", ObjectKind::Schema, catalog, "public").reference,
+                    KindGroup::Tables,
+                    1,
+                    true,
+                );
+            }
+            assert_eq!(
+                panel
+                    .group_counts_by_catalog("s", ObjectKind::Schema, "public")
+                    .tables,
+                None
+            );
+        });
     }
 
     #[test]

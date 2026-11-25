@@ -44,7 +44,9 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::backend::metadata::{MetadataHub, NodeView, catalog_layer_parent, kind_icon};
+use crate::backend::metadata::{
+    MetadataError, MetadataHub, NodePage, NodeView, catalog_layer_parent, kind_icon,
+};
 use crate::backend::query::{CatalogKind, QueryFailure, SessionDatabaseContext};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
 use crate::backend::table::{TableEntry, TableFailure};
@@ -243,6 +245,12 @@ impl QueryCatalog {
     #[must_use]
     pub fn truth(&self) -> Option<String> {
         self.truth.borrow().clone()
+    }
+
+    /// 清掉已结束会话的库上下文。
+    fn clear_truth(&self) {
+        self.truth.replace(None);
+        self.kind.set(CatalogKind::Unknown);
     }
 
     /// 层名（「库」/「Schema」）。
@@ -643,7 +651,7 @@ pub struct TabContext {
     pub worker: Rc<WorkerHandle>,
     /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
     pub on_column: Rc<dyn Fn(crate::backend::table::TableColumn, Option<TableEntry>, String)>,
-    /// 当前数据标签的行数变化（分页 / 刷新）→ 信息面板只更新展示，不发元数据 RPC。
+    /// 任一数据标签的有效行数变化（分页 / 刷新 / 关闭）→ 信息面板只更新展示，不发元数据 RPC。
     pub on_rows: Rc<dyn Fn(ObjectRef, Option<usize>)>,
     /// 连接名（窗口标题用）。
     pub connection_name: String,
@@ -695,6 +703,8 @@ pub struct QaBridge {
     pub select: QaAction,
     /// 选中**连接**节点（信息面板切到「连接」态）。
     pub select_connection: QaAction,
+    /// 打开断开连接的确认框（与对象树右键动作相同）。
+    pub disconnect: QaAction,
     /// 在指定库里打开表（`open-node <catalog> <name>`）：两个参数，单列一个字段。
     ///
     /// 同名表可以同时存在于两个库，按名字打开会命中错的那个；跨库验收必须
@@ -818,6 +828,12 @@ pub enum TabPin {
     },
     /// 查询标签：它当前选择的库。`None` = 没有选择库（面板空态）。
     QueryCatalog {
+        /// 已结算的连接绑定，重绑在途时仍是原连接。
+        connection_key: String,
+        /// 标签自己的会话；没有浏览会话时仍可标记真实归属。
+        query_session: Option<String>,
+        /// 库所在的元数据层。
+        kind: CatalogKind,
         /// 库名（真值优先，其次请求值）。
         name: Option<String>,
     },
@@ -1184,11 +1200,16 @@ impl ObjectsPage {
         stack.add_named(&content, Some("list"));
         stack.set_visible_child_name("empty");
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Md));
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(gap(Gap::Md))
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
         root.set_vexpand(true);
         root.set_margin_top(gap(Gap::Xl));
         root.set_margin_start(gap(Gap::Xl));
         root.set_margin_end(gap(Gap::Xl));
+        root.update_property(&[gtk::accessible::Property::Label("Objects")]);
         root.append(&title);
         root.append(&stack);
 
@@ -1451,6 +1472,8 @@ impl ObjectsPage {
         *self.scope.borrow_mut() = Some((parent.clone(), kinds.clone()));
         self.hub_slot.replace(Some(Rc::clone(&hub)));
         self.loading.set(true);
+        self.more.set_sensitive(false);
+        let is_continuation = !token.is_empty();
         let weak = Rc::downgrade(self);
         hub.request_group_as(
             "objects.nodes",
@@ -1458,57 +1481,66 @@ impl ObjectsPage {
             &kinds,
             &token,
             Rc::new(move |result| {
-                let Some(page) = weak.upgrade() else {
-                    return;
-                };
-                if generation != page.generation.get() {
-                    eprintln!("[objects] 丢弃过期响应（页已换作用域或已重新加载）");
-                    return;
-                }
-                page.loading.set(false);
-                match result {
-                    Ok(nodes) => {
-                        let count = nodes.nodes.len();
-                        for node in &nodes.nodes {
-                            page.push_row(node);
-                        }
-                        page.token.replace(nodes.next_page_token.clone());
-                        page.loaded.set(true);
-                        let has_more = nodes.has_more();
-                        page.more.set_visible(has_more);
-                        let total = page.store.n_items() as usize;
-                        page.status.set_text(&crate::l10n::tf(
-                            "objects_page.status_total",
-                            &[
-                                ("total", total.to_string()),
-                                (
-                                    "more_note",
-                                    if has_more {
-                                        crate::l10n::t("objects_page.status_more_note").to_owned()
-                                    } else {
-                                        String::new()
-                                    },
-                                ),
-                            ],
-                        ));
-                        if count == 0 && total == 0 {
-                            page.status
-                                .set_text(crate::l10n::t("objects_page.status_empty"));
-                        }
-                    }
-                    Err(error) => {
-                        page.more.set_visible(false);
-                        page.status.set_text(&crate::l10n::tf(
-                            "objects_page.status_read_failed",
-                            &[
-                                ("headline", error.headline().to_owned()),
-                                ("code", error.code().to_owned()),
-                            ],
-                        ));
-                    }
+                if let Some(page) = weak.upgrade() {
+                    page.finish_page(generation, is_continuation, result);
                 }
             }),
         );
+    }
+
+    fn finish_page(
+        &self,
+        generation: u64,
+        is_continuation: bool,
+        result: Result<NodePage, MetadataError>,
+    ) {
+        if generation != self.generation.get() {
+            eprintln!("[objects] 丢弃过期响应（页已换作用域或已重新加载）");
+            return;
+        }
+        self.loading.set(false);
+        self.more.set_sensitive(true);
+        match result {
+            Ok(nodes) => {
+                let count = nodes.nodes.len();
+                for node in &nodes.nodes {
+                    self.push_row(node);
+                }
+                self.token.replace(nodes.next_page_token.clone());
+                self.loaded.set(true);
+                let has_more = nodes.has_more();
+                self.more.set_visible(has_more);
+                let total = self.store.n_items() as usize;
+                self.status.set_text(&crate::l10n::tf(
+                    "objects_page.status_total",
+                    &[
+                        ("total", total.to_string()),
+                        (
+                            "more_note",
+                            if has_more {
+                                crate::l10n::t("objects_page.status_more_note").to_owned()
+                            } else {
+                                String::new()
+                            },
+                        ),
+                    ],
+                ));
+                if count == 0 && total == 0 {
+                    self.status
+                        .set_text(crate::l10n::t("objects_page.status_empty"));
+                }
+            }
+            Err(error) => {
+                self.more.set_visible(is_continuation);
+                self.status.set_text(&crate::l10n::tf(
+                    "objects_page.status_read_failed",
+                    &[
+                        ("headline", error.headline().to_owned()),
+                        ("code", error.code().to_owned()),
+                    ],
+                ));
+            }
+        }
     }
 
     fn push_row(&self, node: &NodeView) {
@@ -1899,7 +1931,7 @@ impl TabSet {
 
     /// 信息面板按当前标签钉住的目标（改动确认单 #1：面板内容跟着页面走）。
     ///
-    /// 只说「钉哪个对象」；渲染与缓存都在信息面板侧（`ui.rs` 接线），这里不碰控件。
+    /// 只说「钉哪个对象」；渲染在信息面板侧（`ui.rs` 接线），这里不碰控件。
     #[must_use]
     pub fn pin_target(&self) -> TabPin {
         let Some(tab) = self.current() else {
@@ -1913,8 +1945,7 @@ impl TabSet {
                     .as_ref()
                     .and_then(|data| data.status_snapshot().table.clone());
                 // 元数据走连接的**浏览会话**（ADR 0021）：数据页的引用在打开后会带上
-                // 标签自己的会话 ID，留着它，信息面板既找不到元数据通道，缓存键也会和
-                // 树路径分裂成两份——钉住前先换回该连接的浏览会话（口径与树节点一致）。
+                // 标签自己的会话 ID。改用浏览会话，才能与树路径使用同一对象身份和元数据通道。
                 if let Some(entry) = entry.as_mut()
                     && let Some(session) = self
                         .context
@@ -1932,10 +1963,14 @@ impl TabSet {
                 let name = tab
                     .catalog
                     .truth()
-                    .or_else(|| tab.catalog.request())
-                    .map(|name| name.trim().to_owned())
+                    .or_else(|| tab.session().and_then(|_| tab.catalog.request()))
                     .filter(|name| !name.is_empty());
-                TabPin::QueryCatalog { name }
+                TabPin::QueryCatalog {
+                    connection_key: tab.binding.bound(),
+                    query_session: tab.session(),
+                    kind: tab.catalog.kind(),
+                    name,
+                }
             }
         }
     }
@@ -1949,38 +1984,10 @@ impl TabSet {
         &self,
         reference: &crate::proto::services::v1::ObjectRef,
     ) -> Option<usize> {
-        for tab in self.tabs.borrow().iter() {
-            let TabKind::Table { connection_key, .. } = &tab.kind else {
-                continue;
-            };
-            // 数据标签用标签自己的会话，树 / 面板用浏览会话：通过连接键对齐连接归属，
-            // 不用两个 Session ID 直接相等来判定（同名库 / 同名表分属不同连接时不能串）。
-            let belongs = self
-                .context
-                .registry
-                .as_ref()
-                .and_then(|registry| registry.session_for_key(connection_key))
-                .as_deref()
-                == Some(reference.session_id.as_str());
-            if !belongs {
-                continue;
-            }
-            let Some(data) = tab.data.as_ref() else {
-                continue;
-            };
-            let snapshot = data.status_snapshot();
-            let Some(table) = snapshot.table.as_ref() else {
-                continue;
-            };
-            if table.reference.catalog != reference.catalog
-                || table.reference.schema != reference.schema
-                || table.reference.name != reference.name
-            {
-                continue;
-            }
-            return Some(usize::try_from(snapshot.rows).unwrap_or(usize::MAX));
-        }
-        None
+        self.tabs.borrow().iter().find_map(|tab| {
+            let (table, rows) = tab.data.as_ref()?.loaded_table_rows()?;
+            (self.rows_reference(tab, &table).as_ref() == Some(reference)).then_some(rows)
+        })
     }
 
     /// 同一 catalog 里**其它标签**还有未提交事务的标题（#119 面板顶部提示）。
@@ -2043,6 +2050,18 @@ impl TabSet {
             .iter()
             .find(|tab| matches_table(&tab.kind, name, catalog, connection_key))
             .cloned()
+    }
+
+    /// 连接断开时作废该作用域和在途页。
+    pub fn clear_objects_for_session(&self, session: &str) {
+        if let Some(objects) = self.objects.borrow().clone()
+            && objects
+                .saved_scope()
+                .is_some_and(|(parent, _)| parent.session_id == session)
+        {
+            objects.show_empty();
+            self.sync_objects_status();
+        }
     }
 
     /// 固定 `Objects` 页跟随树选中：显示该库的表 / 视图列表。
@@ -2566,7 +2585,17 @@ impl TabSet {
         let Some(params) = params else {
             let message = "找不到该标签所属的连接参数：无法建立会话";
             eprintln!("[tabs] 标签 {tab_id} {message}");
-            self.show_tab_failure(&tab, message);
+            if tab.binding.pending().is_some() {
+                self.on_session_failed(
+                    tab_id,
+                    &TableFailure::Other {
+                        code: "tab.session_failed".to_owned(),
+                        message: message.to_owned(),
+                    },
+                );
+            } else {
+                self.show_tab_failure(&tab, message);
+            }
             return;
         };
         let display_name = self
@@ -2588,6 +2617,7 @@ impl TabSet {
                 message: message.to_owned(),
             });
         } else if let Some(sql) = tab.sql.as_ref() {
+            tab.catalog.clear_truth();
             sql.mark_disconnected(message);
         }
         if tab.id == self.current_id().unwrap_or_default() {
@@ -3011,35 +3041,29 @@ impl TabSet {
     ///
     /// 数据标签用标签自己的会话；元数据走连接的浏览会话，按连接键转换后再上报，
     /// 这样 A 表的分页事件不会写成 B 表的行数。
-    fn rows_from(
-        &self,
-        tab: &Rc<TabHandle>,
-        snapshot: &StatusSnapshot,
-    ) -> Option<(ObjectRef, Option<usize>)> {
+    fn rows_reference(&self, tab: &TabHandle, table: &TableEntry) -> Option<ObjectRef> {
         let TabKind::Table { connection_key, .. } = &tab.kind else {
             return None;
         };
-        let table = snapshot.table.as_ref()?;
         let mut reference = table.reference.clone();
         reference.kind = table.kind as i32;
-        if let Some(session) = self
+        reference.session_id = self
             .context
             .registry
-            .as_ref()
-            .and_then(|registry| registry.session_for_key(connection_key))
-        {
-            reference.session_id = session;
-        }
-        Some((
-            reference,
-            Some(usize::try_from(snapshot.rows).unwrap_or(usize::MAX)),
-        ))
+            .as_ref()?
+            .session_for_key(connection_key)?;
+        Some(reference)
     }
 
-    fn current_rows(&self, tab: &Rc<TabHandle>) -> Option<(ObjectRef, Option<usize>)> {
-        let data = tab.data.as_ref()?;
-        let snapshot = data.status_snapshot();
-        self.rows_from(tab, &snapshot)
+    fn publish_rows(&self, tab: &TabHandle, snapshot: &StatusSnapshot) {
+        if let Some(reference) = snapshot
+            .table
+            .as_ref()
+            .and_then(|table| self.rows_reference(tab, table))
+        {
+            let rows = self.loaded_rows_for(&reference);
+            (self.context.on_rows)(reference, rows);
+        }
     }
 
     /// 切换标签：换窗口标题与状态栏，**不**重建会话、不改树的展开状态。
@@ -3076,9 +3100,6 @@ impl TabSet {
             _ => TabStatus::Objects { shortcut: None },
         };
         (self.context.on_status)(status);
-        if let Some((reference, rows)) = self.current_rows(&tab) {
-            (self.context.on_rows)(reference, rows);
-        }
         eprintln!(
             "[tabs] 当前标签：{}（{}，{} / 共 {} 个标签）",
             tab.kind.title(),
@@ -3089,18 +3110,14 @@ impl TabSet {
     }
 
     fn on_tab_snapshot(self: &Rc<Self>, tab_id: &str, snapshot: StatusSnapshot) {
-        let is_current = self.current_id().as_deref() == Some(tab_id);
-        if let Some(tab) = self.by_id(tab_id) {
-            self.advance_close(&tab, &snapshot);
-        }
-        if is_current {
+        let Some(tab) = self.by_id(tab_id) else {
+            return;
+        };
+        self.advance_close(&tab, &snapshot);
+        if self.current_id().as_deref() == Some(tab_id) {
             (self.context.on_status)(TabStatus::Table(Box::new(snapshot.clone())));
-            if let Some(tab) = self.by_id(tab_id)
-                && let Some((reference, rows)) = self.rows_from(&tab, &snapshot)
-            {
-                (self.context.on_rows)(reference, rows);
-            }
         }
+        self.publish_rows(&tab, &snapshot);
     }
 
     /// 推进「保存并关闭」：脏行 → 标签事务 → 摘页面。
@@ -3325,6 +3342,7 @@ impl TabSet {
         if let Some(rebind) = tab.binding.pending() {
             let bound = tab.binding.finish(true);
             tab.catalog.set_request(None);
+            tab.catalog.clear_truth();
             if let Some(sql) = tab.sql.as_ref() {
                 sql.set_connection_pending(false);
                 sql.connection_picker().set_current(&bound);
@@ -3403,9 +3421,9 @@ impl TabSet {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
-        if tab.sql.is_none() {
+        let Some(session) = tab.session().filter(|_| tab.sql.is_some()) else {
             return;
-        }
+        };
         let Some(wait) = self.context.worker.fetch_session_context(tab_id) else {
             eprintln!("[tabs] 标签 {tab_id} 读库上下文被忽略：worker 已结束");
             return;
@@ -3424,6 +3442,9 @@ impl TabSet {
             let Some(tab) = set.by_id(&id) else {
                 return;
             };
+            if tab.session().as_deref() != Some(session.as_str()) {
+                return;
+            }
             match result {
                 Ok(context) => set.apply_catalog_context(&tab, &context),
                 Err(failure) => {
@@ -3469,6 +3490,9 @@ impl TabSet {
                 &[("id", short_id(&tab.session().unwrap_or_default()))],
             ),
         ));
+        if self.current_id().as_deref() == Some(tab.id.as_str()) {
+            self.refresh_current();
+        }
     }
 
     /// 需要这份库列表时：有缓存就直接用，没有就按连接取一次（ADR 0030）。
@@ -3622,6 +3646,10 @@ impl TabSet {
             sql.catalog_picker().restore();
             return;
         }
+        let Some(session) = tab.session() else {
+            sql.catalog_picker().restore();
+            return;
+        };
         let Some(wait) = self.context.worker.set_session_context(tab_id, catalog) else {
             eprintln!("[tabs] 标签 {tab_id} 切库被忽略：worker 已结束");
             sql.catalog_picker().restore();
@@ -3639,6 +3667,9 @@ impl TabSet {
             let Some(tab) = set.by_id(&id) else {
                 return;
             };
+            if tab.session().as_deref() != Some(session.as_str()) {
+                return;
+            }
             let Some(sql) = tab.sql.as_ref() else {
                 return;
             };
@@ -3761,6 +3792,7 @@ impl TabSet {
         if let Some(data) = tab.data.as_ref() {
             data.show_failure(failure);
         } else if let Some(sql) = tab.sql.as_ref() {
+            tab.catalog.clear_truth();
             sql.mark_disconnected(&failure.message());
         }
         self.refresh_current();
@@ -3780,6 +3812,7 @@ impl TabSet {
             return;
         };
         tab.session.replace(None);
+        tab.catalog.clear_truth();
         eprintln!("[tabs] 标签 {tab_id} 的会话失效：{reason}");
         if let Some(data) = tab.data.as_ref() {
             data.mark_disconnected(reason);
@@ -3792,8 +3825,12 @@ impl TabSet {
 
     /// 后端断开：所有标签进入 Disconnected，保留已加载行（ADR 0021 §6）。
     pub fn mark_disconnected(self: &Rc<Self>, reason: &str) {
+        if let Some(objects) = self.objects.borrow().as_ref() {
+            objects.show_empty();
+        }
         for tab in self.tabs.borrow().iter() {
             tab.session.replace(None);
+            tab.catalog.clear_truth();
             if let Some(data) = tab.data.as_ref() {
                 data.mark_disconnected(reason);
             }
@@ -3998,6 +4035,7 @@ impl TabSet {
         // 不会立刻析构，不显式隐藏就留一扇空窗在屏幕上）。
         if let Some(data) = removed.data.as_ref() {
             data.hide_filter_panel();
+            self.publish_rows(&removed, &data.status_snapshot());
         }
         // 关闭标签即释放它自己的会话：worker 的 `CloseTabSession` 先 Cancel 在途查询、
         // 再 Close 游标，最后 Disconnect。这里**不**单独发 `CloseQuery`——那会把游标
@@ -4569,6 +4607,14 @@ impl TabSet {
                 (bridge.select)(name)
             }
             QaStep::ObjectsSelect(name) => self.qa_objects_select(name),
+            QaStep::Disconnect(name) => {
+                let bridge = self
+                    .context
+                    .qa
+                    .as_ref()
+                    .ok_or_else(|| "验收桥未接线".to_owned())?;
+                (bridge.disconnect)(name)
+            }
             QaStep::SelectConnection(name) => {
                 let bridge = self
                     .context
@@ -5182,6 +5228,8 @@ pub enum QaStep {
     ObjectsSelect(String),
     /// `select-connection <名字>`：选中连接节点（信息面板切到「连接」态）。
     SelectConnection(String),
+    /// `disconnect <名字>`：通过对象树动作打开确认框。
+    Disconnect(String),
     /// `inspector <ddl|info|show|hide>`：信息面板的页 / 显隐。
     Inspector(String),
     /// `filter <标签> <列> <算子> <值>`：应用一条筛选条件。
@@ -5585,6 +5633,7 @@ pub fn parse_script(text: &str) -> Result<Vec<QaStep>, String> {
                     })?),
                 },
             },
+            "disconnect" => QaStep::Disconnect(rest_of(&parts, 1, number, "连接名")?),
             "expand" => QaStep::Expand(rest_of(&parts, 1, number, "节点名")?),
             "select-node" => QaStep::SelectNode(rest_of(&parts, 1, number, "节点名")?),
             "objects-select" => QaStep::ObjectsSelect(rest_of(&parts, 1, number, "对象名")?),
@@ -5869,6 +5918,88 @@ mod tests {
             sort_filter_total: true,
             detail_mode: false,
         }
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn objects_pagination_preserves_retry_and_discards_stale_responses() {
+        gtk::test_synced(|| {
+            adw::init().unwrap();
+            let page = ObjectsPage::new();
+            let nodes = |name: &str, next: &str| NodePage {
+                nodes: vec![NodeView {
+                    reference: ObjectRef {
+                        name: name.to_owned(),
+                        kind: ObjectKind::Table as i32,
+                        ..Default::default()
+                    },
+                    display_name: name.to_owned(),
+                    kind: ObjectKind::Table,
+                    has_children: true,
+                    comment: String::new(),
+                }],
+                next_page_token: next.to_owned(),
+                total_size: 2,
+                truncated: false,
+            };
+            let error = MetadataError::Unavailable {
+                message: "test timeout".to_owned(),
+            };
+            use crate::backend::metadata::MetadataEvent;
+            let runtime = tempfile::tempdir().unwrap();
+            let (hub, _events) = MetadataHub::spawn(
+                runtime.path().join("backend-endpoint.json"),
+                "browse".to_owned(),
+            )
+            .unwrap();
+            // Drive the real submit/dispatch path; the worker receiver is held without
+            // consuming it so the order and result of each response are deterministic.
+            let respond = |id, result| hub.dispatch(MetadataEvent::Children { id, result });
+            let parent = ObjectRef {
+                session_id: "browse".to_owned(),
+                name: "main".to_owned(),
+                kind: ObjectKind::Catalog as i32,
+                ..Default::default()
+            };
+            page.show(Some(Rc::clone(&hub)), parent, vec![ObjectKind::Table]);
+            respond(1, Err(error.clone()));
+            assert!(!page.more.is_visible());
+            assert!(!page.loaded.get());
+            assert_eq!(page.store.n_items(), 0);
+
+            page.reload(Some(Rc::clone(&hub)));
+            respond(2, Ok(nodes("first", "next")));
+            page.load("next".to_owned());
+            page.load("next".to_owned());
+            respond(4, Ok(nodes("duplicate", "")));
+            assert!(page.loading.get());
+            assert_eq!(page.store.n_items(), 1);
+
+            respond(3, Err(error.clone()));
+            assert_eq!(page.store.n_items(), 1);
+            assert_eq!(page.token.borrow().as_str(), "next");
+            assert!(page.more.is_visible() && page.more.is_sensitive());
+            assert!(page.status.text().contains(error.code()));
+
+            let token = page.token.borrow().clone();
+            page.load(token);
+            respond(4, Ok(nodes("second", "last")));
+            assert_eq!(page.store.n_items(), 2);
+            assert_eq!(page.entry_at(0).unwrap().display_name, "first");
+            assert_eq!(page.entry_at(1).unwrap().display_name, "second");
+
+            page.load("last".to_owned());
+            page.reload(Some(Rc::clone(&hub)));
+            respond(5, Ok(nodes("late", "next")));
+            assert_eq!(page.store.n_items(), 0);
+            assert!(page.loading.get());
+            page.show_empty();
+            respond(6, Err(error));
+            assert_eq!(page.store.n_items(), 0);
+            assert!(page.token.borrow().is_empty());
+            assert!(page.status.text().is_empty());
+            assert!(!page.more.is_visible());
+        });
     }
 
     #[test]
