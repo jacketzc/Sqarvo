@@ -129,7 +129,11 @@ impl StartupWorkspace {
                             sessions,
                             ..Default::default()
                         };
-                        inspector.show_connection(saved.as_ref(), &live);
+                        inspector.show_connection(
+                            saved.as_ref(),
+                            &live,
+                            Some(&snapshot.session_id),
+                        );
                         inspector.set_txn_hint(None);
                     }
                     TreeSelection::Object { .. }

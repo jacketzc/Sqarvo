@@ -2304,7 +2304,11 @@ impl Workspace {
                             latency_millis: mine.then_some(latency),
                             sessions,
                         };
-                        inspector.show_connection(saved.as_ref(), &live);
+                        inspector.show_connection(
+                            saved.as_ref(),
+                            &live,
+                            Some(&snapshot.session_id),
+                        );
                         inspector.set_txn_hint(None);
                     }
                     TreeSelection::Object { node, parent } => {
@@ -2319,6 +2323,7 @@ impl Workspace {
                                 counts.tables,
                                 counts.views,
                                 counts.complete,
+                                Some(&node.reference.session_id),
                             );
                         } else {
                             let loaded = tabs_slot
@@ -2352,6 +2357,7 @@ impl Workspace {
             let tree_slot = Rc::clone(&tree_slot);
             let pinned = Rc::clone(&pinned);
             let render_selection = Rc::clone(&render_selection);
+            let state = Rc::clone(state);
             Rc::new(move || {
                 let Some(tabs) = tabs_slot.borrow().as_ref().cloned() else {
                     return;
@@ -2390,9 +2396,10 @@ impl Workspace {
                         inspector.show_table_pinned(&tab_id, node, loaded);
                     }
                     crate::tabs::TabPin::Table { entry: None } => {
-                        // 表还没建立（数据页在等会话）：不换面板；快照到达后按
-                        // 「已解析」的身份键再钉一次（改动确认单 #1 第 4 条）。
-                        eprintln!("[inspector] 标签 {tab_id} 钉住的表尚未就绪：暂保留当前内容");
+                        // 表还没建立（数据页在等会话）：先清掉上一个标签的对象，别把
+                        // 无关内容当作这张表；快照到达后按新身份键再钉一次。
+                        inspector.show_empty();
+                        eprintln!("[inspector] 标签 {tab_id} 钉住的表尚未就绪：清空旧内容");
                     }
                     crate::tabs::TabPin::QueryCatalog { name: Some(name) } => {
                         let counts = tree_slot
@@ -2400,7 +2407,18 @@ impl Workspace {
                             .as_ref()
                             .map(|tree| tree.group_counts_by_catalog(name))
                             .unwrap_or_default();
-                        inspector.show_catalog(name, counts.tables, counts.views, counts.complete);
+                        let session = state.registry.borrow().as_ref().and_then(|registry| {
+                            registry
+                                .active_key()
+                                .and_then(|key| registry.session_for_key(&key))
+                        });
+                        inspector.show_catalog(
+                            name,
+                            counts.tables,
+                            counts.views,
+                            counts.complete,
+                            session.as_deref(),
+                        );
                     }
                     crate::tabs::TabPin::QueryCatalog { name: None } => {
                         // 没有选择库：如实空态，不编造库信息。
@@ -2500,13 +2518,18 @@ impl Workspace {
                             }
                             entry
                         });
-                        inspector.show_column(&column, parent.as_ref());
+                        let session = state
+                            .registry
+                            .borrow()
+                            .as_ref()
+                            .and_then(|registry| registry.session_for_key(&connection_key));
+                        inspector.show_column(&column, parent.as_ref(), session.as_deref());
                     },
                 )
             },
             on_rows: {
                 let inspector = Rc::clone(&inspector);
-                Rc::new(move |rows: Option<usize>| inspector.set_loaded_rows(rows))
+                Rc::new(move |reference, rows| inspector.set_loaded_rows(&reference, rows))
             },
             connection_name: connection_name.to_owned(),
             driver_label: driver_label.to_owned(),

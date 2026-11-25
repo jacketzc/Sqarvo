@@ -30,7 +30,7 @@ impl_notes = [
   "钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。",
   "临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。",
   "Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。",
-  "已加载行数是当前对象 / 标签的独立展示状态，不是表信息 RPC 结果：切对象即更新，DDL 与表信息互切不继承别的对象；数据标签分页 / 刷新只更新展示，不发元数据请求。",
+  "已加载行数是 TableInfo 中按对象归属的展示状态，不另设副本：行数更新携带完整 ObjectRef，身份不符不写入；非数据标签不会清除其它对象的有效行数。连接归属只认当前展示目标登记的浏览会话，不从历史 parent 推断。",
 ]
 
 [[component.interaction]]
@@ -90,7 +90,7 @@ source = "src/inspector.rs:958、src/ui.rs:4180"
 [component.sync.linux]
 state = "done"
 spec_hash = "6c3bbce83072"
-evidence = "请求计数改在 MetadataHub 真实提交边界（[qa.metadata] submit）；test_14 5/5、test_15 4/4 通过（行数不串表、Objects 重入/F5 重列、同作用域选中不重复请求）；cargo test 503 通过（含 LoadEpoch 过期令牌与子页请求集合）"
+evidence = "请求计数改在 MetadataHub 真实提交边界（[qa.metadata] submit）；test_14 5/5、test_15 6/6 通过（行数不串表、Objects 重入/F5 重列、同作用域选中不重复请求）；cargo test 503 通过（含 LoadEpoch 过期令牌与子页请求集合）"
 
 [component.sync.windows]
 state = "partial"

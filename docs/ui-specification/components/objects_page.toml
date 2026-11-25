@@ -62,7 +62,7 @@ impl_notes = [
   "不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。",
   "启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。",
   "页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。",
-  "重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；最近一次有效作用域单独保存，临时空态不擦掉它。同一作用域已有在飞请求时，树选中等重复事件不叠加请求。",
+  "重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；唯一权威作用域同时服务分页与刷新，真实空态 / 不支持页会清空它，不恢复历史列表。同一作用域已有在飞请求时，树选中与重复「加载更多」都不叠加请求。",
 ]
 
 [[component.interaction]]
@@ -197,7 +197,7 @@ source = "src/ui.rs:2846、src/tabs.rs:2099"
 [component.sync.linux]
 state = "done"
 spec_hash = "074178bf4b32"
-evidence = "tests/ui/linux/test_15_refresh_regressions.py 4/4 通过（CREATE/RENAME/DROP 后切回本页均见最新列表、F5 强制重列、同作用域选中行不重复请求）；test_14 5/5 通过；cargo test 503 通过"
+evidence = "tests/ui/linux/test_15_refresh_regressions.py 6/6 通过（外部 DDL 后重入见最新列表与 DROP 最终加载、真实空态不恢复、不支持页保持、F5、语义行选中、Objects 独立请求计数）（CREATE/RENAME/DROP 后切回本页均见最新列表、F5 强制重列、同作用域选中行不重复请求）；test_14 5/5 通过；cargo test 503 通过"
 
 [component.sync.windows]
 state = "partial"

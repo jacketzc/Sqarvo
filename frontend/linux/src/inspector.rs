@@ -371,6 +371,8 @@ pub struct Inspector {
     hub_of: RefCell<Option<HubResolver>>,
     /// 加载周期：任何有效的新加载都让此前全部在途响应失效（含 A → B → A）。
     epoch: Rc<LoadEpoch>,
+    /// 当前展示目标的连接归属（浏览会话 ID）：断连判断只认这一份，不从历史 parent 推断。
+    owner_session: RefCell<Option<String>>,
     /// 列节点的父表（主动刷新列页时要用它重发 `GetColumns`）。
     parent: RefCell<Option<NodeView>>,
     /// 表 / 视图页内选择的记忆（键：标签 ID，或 `tree` 表示还没有标签）。
@@ -383,8 +385,6 @@ pub struct Inspector {
     column_count: Cell<usize>,
     /// 最近一次表信息的数据（重建时用）。
     info: RefCell<TableInfo>,
-    /// 当前对象在表标签里已加载的行数：独立展示状态，不属于任何表信息 RPC 结果。
-    loaded_rows: Cell<Option<usize>>,
     /// 列页当前展示的列（QA 从控件与这份数据读回六项文案）。
     column: RefCell<Option<TableColumn>>,
     /// 正在看的对象（当前展示状态，不是跨访问结果缓存）。
@@ -616,13 +616,13 @@ impl Inspector {
             state_page,
             hub_of: RefCell::new(None),
             epoch,
+            owner_session: RefCell::new(None),
             parent: RefCell::new(None),
             pane_memory: RefCell::new(HashMap::new()),
             page: RefCell::new("empty".to_owned()),
             current_pane: Cell::new(TablePage::Ddl),
             column_count: Cell::new(0),
             info: RefCell::new(TableInfo::default()),
-            loaded_rows: Cell::new(None),
             column: RefCell::new(None),
             object: RefCell::new(None),
             tab_key: RefCell::new("tree".to_owned()),
@@ -672,34 +672,42 @@ impl Inspector {
                 .is_some_and(|current| current.reference == node.reference)
     }
 
-    /// 当前展示目标所属的浏览会话（连接归属判断用，不是数据标签自己的会话）。
+    /// 当前展示目标所属的浏览会话（连接归属判断用，不从历史 parent 推断）。
     #[must_use]
     pub fn session_id(&self) -> Option<String> {
-        let object = self.object.borrow();
-        let parent = self.parent.borrow();
-        object
-            .as_ref()
-            .or(parent.as_ref())
-            .map(|node| node.reference.session_id.clone())
-            .filter(|session| !session.is_empty())
+        self.owner_session.borrow().clone()
     }
 
-    /// 数据标签的行数变化：只更新当前展示，不发任何元数据请求。
-    pub fn set_loaded_rows(&self, rows: Option<usize>) {
-        if self.loaded_rows.get() == rows {
+    /// 切换展示目标时清掉只属于上一次目标的状态。
+    fn clear_target(&self, session: Option<&str>) {
+        self.owner_session
+            .replace(session.filter(|id| !id.is_empty()).map(str::to_owned));
+        self.object.replace(None);
+        self.parent.replace(None);
+        self.column.replace(None);
+        self.column_count.set(0);
+        *self.info.borrow_mut() = TableInfo::default();
+        self.title.set_tooltip_text(None);
+    }
+
+    /// 数据标签的行数变化：只在对象身份与当前展示一致时更新，不发元数据请求。
+    pub fn set_loaded_rows(&self, reference: &ObjectRef, rows: Option<usize>) {
+        if !self
+            .object
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current.reference == *reference)
+        {
             return;
         }
-        self.loaded_rows.set(rows);
-        let is_table_page = self.page.borrow().as_str() == "table"
-            && self.current_pane.get() == TablePage::Info
-            && self.object.borrow().as_ref().is_some_and(|node| {
-                matches!(
-                    node.kind,
-                    ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView
-                )
-            });
-        if is_table_page {
-            self.info.borrow_mut().loaded_rows = rows;
+        {
+            let mut info = self.info.borrow_mut();
+            if info.loaded_rows == rows {
+                return;
+            }
+            info.loaded_rows = rows;
+        }
+        if self.page.borrow().as_str() == "table" && self.current_pane.get() == TablePage::Info {
             self.render_table_info();
         }
     }
@@ -707,8 +715,7 @@ impl Inspector {
     /// 设为「没有选中对象」：保留面板头部（标题「信息面板」+ 分隔线），内容区留白。
     pub fn show_empty(&self) {
         self.begin_load();
-        self.object.replace(None);
-        self.loaded_rows.set(None);
+        self.clear_target(None);
         self.title.set_text(l10n::t("inspector.title_panel"));
         self.subtitle.set_text("");
         self.switch_bar.set_visible(false);
@@ -716,10 +723,14 @@ impl Inspector {
     }
 
     /// 选中一条连接。
-    pub fn show_connection(&self, saved: Option<&SavedConnection>, live: &ConnectionLive) {
+    pub fn show_connection(
+        &self,
+        saved: Option<&SavedConnection>,
+        live: &ConnectionLive,
+        session: Option<&str>,
+    ) {
         self.begin_load();
-        self.object.replace(None);
-        self.loaded_rows.set(None);
+        self.clear_target(session);
         self.switch_bar.set_visible(false);
         let Some(saved) = saved else {
             self.title.set_text(l10n::t("inspector.title_connection"));
@@ -745,10 +756,10 @@ impl Inspector {
         tables: Option<usize>,
         views: Option<usize>,
         complete: bool,
+        session: Option<&str>,
     ) {
         self.begin_load();
-        self.object.replace(None);
-        self.loaded_rows.set(None);
+        self.clear_target(session);
         self.switch_bar.set_visible(false);
         self.title.set_text(name);
         self.subtitle
@@ -770,14 +781,14 @@ impl Inspector {
         tab_id: &str,
     ) {
         let token = self.begin_load();
+        self.clear_target(Some(&node.reference.session_id));
         self.tab_key.replace(tab_id.to_owned());
         self.title.set_text(&node.display_name);
         self.subtitle.set_text(kind_label(node.kind));
         self.title.set_tooltip_text(Some(&node.path_label()));
         self.object.replace(Some(node.clone()));
         self.parent.replace(parent.cloned());
-        self.column.replace(None);
-        self.loaded_rows.set(loaded_rows);
+        self.info.borrow_mut().loaded_rows = loaded_rows;
 
         match node.kind {
             ObjectKind::Catalog | ObjectKind::Schema => {
@@ -838,16 +849,21 @@ impl Inspector {
     /// 用的就是 `GetColumns` 已经拿到的列模型：展示本身不重发 RPC。能确定父表时同时
     /// 记下可被主动刷新重查的列身份；结果集列（表达式 / 别名）没有父表，保持结果集
     /// 元数据语义，F5 不会去刷新别的对象。
-    pub fn show_column(&self, column: &TableColumn, parent: Option<&TableEntry>) {
+    pub fn show_column(
+        &self,
+        column: &TableColumn,
+        parent: Option<&TableEntry>,
+        session: Option<&str>,
+    ) {
         self.begin_load();
+        self.clear_target(session);
         self.switch_bar.set_visible(false);
         self.title.set_text(&column.name);
         self.subtitle.set_text(&l10n::tf(
             "inspector.subtitle_column_type",
             &[("type", column.type_label.clone())],
         ));
-        // 先清掉上一目标的行数、父表与错误状态，再写本次展示内容。
-        self.loaded_rows.set(None);
+        // 上一次目标的父表 / 行数 / 错误状态已由 clear_target 清掉。
         let parent_node = parent.map(|table| NodeView {
             reference: table.reference.clone(),
             display_name: table.display_name.clone(),
@@ -919,14 +935,13 @@ impl Inspector {
         loaded_rows: Option<usize>,
     ) {
         let token = self.begin_load();
+        self.clear_target(Some(&node.reference.session_id));
         self.tab_key.replace(tab_id.to_owned());
         self.title.set_text(&node.display_name);
         self.subtitle.set_text(kind_label(node.kind));
         self.title.set_tooltip_text(Some(&node.path_label()));
         self.object.replace(Some(node.clone()));
-        self.parent.replace(None);
-        self.column.replace(None);
-        self.loaded_rows.set(loaded_rows);
+        self.info.borrow_mut().loaded_rows = loaded_rows;
         self.render_table(tab_id, node, TablePage::Info, token);
     }
 
@@ -1006,12 +1021,7 @@ impl Inspector {
     /// 会话断开：清掉当前展示与错误状态，并让全部在途响应失效。
     pub fn mark_disconnected(&self) {
         self.begin_load();
-        self.object.replace(None);
-        self.parent.replace(None);
-        self.column.replace(None);
-        self.loaded_rows.set(None);
-        self.column_count.set(0);
-        *self.info.borrow_mut() = TableInfo::default();
+        self.clear_target(None);
         self.info_status.set_visible(false);
         self.title.set_text(l10n::t("inspector.title_panel"));
         self.subtitle.set_text("");
@@ -1125,12 +1135,13 @@ impl Inspector {
 
     /// 表信息子页：列 / 主键 / 索引与触发器三项，彼此独立展示失败。
     fn load_info(self: &Rc<Self>, node: NodeView, token: LoadToken) {
+        let loaded_rows = self.info.borrow().loaded_rows;
         *self.info.borrow_mut() = TableInfo {
             columns: None,
             primary_key: None,
             indexes: None,
             triggers: None,
-            loaded_rows: self.loaded_rows.get(),
+            loaded_rows,
             children_error: None,
             children_note: None,
         };

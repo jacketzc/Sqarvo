@@ -644,7 +644,7 @@ pub struct TabContext {
     /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
     pub on_column: Rc<dyn Fn(crate::backend::table::TableColumn, Option<TableEntry>, String)>,
     /// 当前数据标签的行数变化（分页 / 刷新）→ 信息面板只更新展示，不发元数据 RPC。
-    pub on_rows: Rc<dyn Fn(Option<usize>)>,
+    pub on_rows: Rc<dyn Fn(ObjectRef, Option<usize>)>,
     /// 连接名（窗口标题用）。
     pub connection_name: String,
     /// 驱动显示名（`Objects` 页标题用）。
@@ -933,10 +933,10 @@ pub struct ObjectsPage {
     loading: Cell<bool>,
     open: RefCell<Option<OpenEntry>>,
     select: RefCell<Option<SelectEntry>>,
-    /// 最近一次请求的作用域（分页按它继续）。
-    last_request: RefCell<Option<ObjectsRequest>>,
-    /// 最近一次实际请求过的有效作用域：临时空态不擦掉它，重新进入 / F5 按它重查。
-    reload_scope: RefCell<Option<ObjectsRequest>>,
+    /// 当前有效浏览作用域：分页、重新进入与 F5 都只读这一份权威状态。
+    ///
+    /// 真实空态（选中连接 / 无选中）与不支持的种类会清空它，历史列表不会被恢复。
+    scope: RefCell<Option<ObjectsRequest>>,
     /// 最近一次请求用的元数据通道（同一条浏览会话）。
     hub_slot: RefCell<Option<Rc<MetadataHub>>>,
 }
@@ -1209,8 +1209,7 @@ impl ObjectsPage {
             loading: Cell::new(false),
             open: RefCell::new(None),
             select: RefCell::new(None),
-            last_request: RefCell::new(None),
-            reload_scope: RefCell::new(None),
+            scope: RefCell::new(None),
             hub_slot: RefCell::new(None),
         });
         {
@@ -1299,7 +1298,7 @@ impl ObjectsPage {
         self.loaded.set(false);
         self.loading.set(false);
         self.token.replace(String::new());
-        self.last_request.replace(None);
+        self.scope.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
         self.status.set_text("");
@@ -1329,7 +1328,7 @@ impl ObjectsPage {
         self.loaded.set(false);
         self.loading.set(false);
         self.token.replace(String::new());
-        self.last_request.replace(None);
+        self.scope.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
         self.status.set_text("");
@@ -1359,7 +1358,7 @@ impl ObjectsPage {
             eprintln!("[objects] 树选中变化：清掉行高亮（列表内容保留）");
             self.selection.set_selected(u32::MAX);
         }
-        let same_scope = self.last_request.borrow().as_ref() == Some(&key);
+        let same_scope = self.scope.borrow().as_ref() == Some(&key);
         if self.loading.get() && same_scope {
             eprintln!(
                 "[objects] 作用域 {} 的请求已在飞，重复事件不叠加请求",
@@ -1382,7 +1381,7 @@ impl ObjectsPage {
     /// 不受 `loaded` 与在飞标记拦截：这是用户明确发起的刷新；随后到来的同作用域树事件
     /// 会被 `loading` 标记挡住，不会发第二份请求。
     pub fn reload(self: &Rc<Self>, hub: Option<Rc<MetadataHub>>) {
-        let Some((parent, kinds)) = self.reload_scope.borrow().clone() else {
+        let Some((parent, kinds)) = self.scope.borrow().clone() else {
             return;
         };
         self.stack.set_visible_child_name("list");
@@ -1395,7 +1394,7 @@ impl ObjectsPage {
     /// 当前作用域（分页与刷新都按它继续）。
     #[must_use]
     pub(crate) fn saved_scope(&self) -> Option<ObjectsRequest> {
-        self.reload_scope.borrow().clone()
+        self.scope.borrow().clone()
     }
 
     fn start_first_page(
@@ -1412,7 +1411,7 @@ impl ObjectsPage {
         self.more.set_visible(false);
         let Some(hub) = hub else {
             self.loading.set(false);
-            self.last_request.replace(None);
+            self.scope.replace(None);
             self.status
                 .set_text(crate::l10n::t("objects_page.status_no_session"));
             return;
@@ -1423,6 +1422,10 @@ impl ObjectsPage {
     }
 
     fn load(self: &Rc<Self>, token: String) {
+        if self.loading.get() {
+            eprintln!("[objects] 分页请求在飞，重复「加载更多」被忽略");
+            return;
+        }
         let Some((parent, kinds)) = self.saved_request() else {
             return;
         };
@@ -1445,12 +1448,12 @@ impl ObjectsPage {
         generation: u64,
     ) {
         // 记住这次请求的作用域：分页与「加载更多」按它继续。
-        *self.last_request.borrow_mut() = Some((parent.clone(), kinds.clone()));
-        *self.reload_scope.borrow_mut() = Some((parent.clone(), kinds.clone()));
+        *self.scope.borrow_mut() = Some((parent.clone(), kinds.clone()));
         self.hub_slot.replace(Some(Rc::clone(&hub)));
         self.loading.set(true);
         let weak = Rc::downgrade(self);
-        hub.request_group(
+        hub.request_group_as(
+            "objects.nodes",
             parent,
             &kinds,
             &token,
@@ -1544,7 +1547,7 @@ impl ObjectsPage {
     }
 
     fn saved_request(&self) -> Option<ObjectsRequest> {
-        self.last_request.borrow().clone()
+        self.scope.borrow().clone()
     }
 
     fn hub(&self) -> Option<Rc<MetadataHub>> {
@@ -2095,7 +2098,7 @@ impl TabSet {
 
     /// 强制重新加载当前 `Objects` 作用域（F5 与重新进入页面都走这里）。
     ///
-    /// `last_request` 仍是当前作用域与分页依据；这里只读它、不因相同而跳过。
+    /// `scope` 仍是当前作用域与分页依据；这里只读它、不因相同而跳过。
     pub fn reload_objects(&self) {
         let Some(objects) = self.objects.borrow().clone() else {
             return;
@@ -2341,10 +2344,10 @@ impl TabSet {
         let kind = TabKind::Table {
             name: entry.display_name.clone(),
             catalog,
-            connection_key,
+            connection_key: connection_key.clone(),
         };
         let title = kind.title();
-        let data = self.build_data_page(&tab_id);
+        let data = self.build_data_page(&tab_id, &connection_key);
         data.begin_open(entry.clone());
 
         let page = self.view.add_page(data.widget(), None);
@@ -2592,16 +2595,10 @@ impl TabSet {
         }
     }
 
-    fn build_data_page(self: &Rc<Self>, tab_id: &str) -> Rc<DataPage> {
+    fn build_data_page(self: &Rc<Self>, tab_id: &str, connection_key: &str) -> Rc<DataPage> {
         let worker = Rc::clone(&self.context.worker);
         let id = tab_id.to_owned();
-        let connection_key = self
-            .by_id(tab_id)
-            .and_then(|tab| match &tab.kind {
-                TabKind::Table { connection_key, .. } => Some(connection_key.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let connection_key = connection_key.to_owned();
         let callbacks = DataCallbacks {
             browse_to: {
                 let worker = Rc::clone(&worker);
@@ -3010,6 +3007,41 @@ impl TabSet {
         }
     }
 
+    /// 表标签的行数连同**完整对象身份**交给信息面板。
+    ///
+    /// 数据标签用标签自己的会话；元数据走连接的浏览会话，按连接键转换后再上报，
+    /// 这样 A 表的分页事件不会写成 B 表的行数。
+    fn rows_from(
+        &self,
+        tab: &Rc<TabHandle>,
+        snapshot: &StatusSnapshot,
+    ) -> Option<(ObjectRef, Option<usize>)> {
+        let TabKind::Table { connection_key, .. } = &tab.kind else {
+            return None;
+        };
+        let table = snapshot.table.as_ref()?;
+        let mut reference = table.reference.clone();
+        reference.kind = table.kind as i32;
+        if let Some(session) = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.session_for_key(connection_key))
+        {
+            reference.session_id = session;
+        }
+        Some((
+            reference,
+            Some(usize::try_from(snapshot.rows).unwrap_or(usize::MAX)),
+        ))
+    }
+
+    fn current_rows(&self, tab: &Rc<TabHandle>) -> Option<(ObjectRef, Option<usize>)> {
+        let data = tab.data.as_ref()?;
+        let snapshot = data.status_snapshot();
+        self.rows_from(tab, &snapshot)
+    }
+
     /// 切换标签：换窗口标题与状态栏，**不**重建会话、不改树的展开状态。
     pub fn refresh_current(&self) {
         let Some(tab) = self.current() else {
@@ -3044,17 +3076,9 @@ impl TabSet {
             _ => TabStatus::Objects { shortcut: None },
         };
         (self.context.on_status)(status);
-        let rows = match (&tab.kind, tab.data.as_ref()) {
-            (TabKind::Table { .. }, Some(data)) => {
-                let snapshot = data.status_snapshot();
-                snapshot
-                    .table
-                    .as_ref()
-                    .map(|_| usize::try_from(snapshot.rows).unwrap_or(usize::MAX))
-            }
-            _ => None,
-        };
-        (self.context.on_rows)(rows);
+        if let Some((reference, rows)) = self.current_rows(&tab) {
+            (self.context.on_rows)(reference, rows);
+        }
         eprintln!(
             "[tabs] 当前标签：{}（{}，{} / 共 {} 个标签）",
             tab.kind.title(),
@@ -3071,11 +3095,11 @@ impl TabSet {
         }
         if is_current {
             (self.context.on_status)(TabStatus::Table(Box::new(snapshot.clone())));
-            let rows = snapshot
-                .table
-                .as_ref()
-                .map(|_| usize::try_from(snapshot.rows).unwrap_or(usize::MAX));
-            (self.context.on_rows)(rows);
+            if let Some(tab) = self.by_id(tab_id)
+                && let Some((reference, rows)) = self.rows_from(&tab, &snapshot)
+            {
+                (self.context.on_rows)(reference, rows);
+            }
         }
     }
 
