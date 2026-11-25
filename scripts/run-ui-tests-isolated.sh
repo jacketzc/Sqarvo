@@ -9,6 +9,11 @@ blocked() {
     exit 3
 }
 
+missing_dependency() {
+    printf 'Install on Ubuntu/Debian: sudo apt-get install --no-install-recommends %s\n' "$2" >&2
+    blocked "$1 (see tests/ui/linux/README.md)"
+}
+
 read_cgroup() {
     local hierarchy
     IFS= read -r hierarchy < /proc/self/cgroup
@@ -50,12 +55,34 @@ run_session() {
     "$@"
 }
 
+verify_io_weight() {
+    local cg=$1 mode=$2
+    [[ "$mode" != off ]] || return 0
+    local available requested=$mode
+    available=$(cat "$cg/cgroup.controllers") || blocked "cannot read cgroup controllers"
+    if [[ "$requested" == auto ]]; then requested=20; fi
+    if [[ " $available " != *" io "* ]]; then
+        available=$(cat "${cg%/*}/cgroup.controllers") || blocked "cannot read slice cgroup controllers"
+        [[ " $available " != *" io "* ]] || blocked "cgroup I/O controller available to the slice but inactive in the scope"
+        [[ "$mode" == auto ]] || blocked "cgroup I/O controller unavailable for explicit IOWeight=$requested"
+        local warning='Warning: cgroup I/O controller unavailable; IOWeight=auto continues without an I/O weight'
+        printf '%s\n' "$warning"
+        printf '%s\n' "$warning" >&2
+        return
+    fi
+    local label weight
+    read -r label weight < "$cg/io.weight" &&
+        [[ "$label" == default && "$weight" == "$requested" ]] ||
+        blocked "requested IOWeight=$requested is not active"
+    printf 'io.weight=default %s\n' "$weight" >&2
+}
+
 run_display() {
     local cg
     cg=$(read_cgroup)
-    [[ "${cg##*/}" == "$SQARVO_UI_SCOPE" && -f "$cg/cgroup.events" ]] ||
+    [[ "$cg" == "$SQARVO_UI_CGROUP" && -f "$cg/cgroup.events" ]] ||
         blocked "worker outside its systemd scope"
-    printf '%s\n' "$cg" > "$SQARVO_UI_RUN_DIR/cgroup"
+    [[ ! -e "$SQARVO_UI_RUN_DIR/canceled" ]] || blocked "runner canceled during scope startup"
     local controller
     for controller in cpu.max cpu.weight memory.high memory.max; do
         [[ -r "$cg/$controller" ]] || blocked "cgroup controller unavailable: $controller"
@@ -69,14 +96,7 @@ run_display() {
         $(cat "$cg/memory.high") == "$(numfmt --from=iec "$SQARVO_UI_MEMORY_HIGH")" &&
         $(cat "$cg/memory.max") == "$(numfmt --from=iec "$SQARVO_UI_MEMORY_MAX")" ]] ||
         blocked "requested CPU or memory limits are not active"
-    if [[ "$SQARVO_UI_IO_WEIGHT" != off ]]; then
-        [[ -r "$cg/io.weight" ]] || blocked "cgroup controller unavailable: io.weight"
-        local label weight
-        read -r label weight < "$cg/io.weight"
-        [[ "$label" == default && "$weight" == "$SQARVO_UI_IO_WEIGHT" ]] ||
-            blocked "requested IOWeight is not active"
-        printf 'io.weight=default %s\n' "$weight" >&2
-    fi
+    verify_io_weight "$cg" "$SQARVO_UI_IO_WEIGHT"
 
     local run=$SQARVO_UI_RUN_DIR
     export HOME="$run/home" TMPDIR="$run/tmp"
@@ -113,7 +133,7 @@ run_display() {
 
     # Restrict activation to the distro's AT-SPI launcher, without its systemd
     # activation stanza. The keyring is started explicitly on the new bus.
-    awk '/^\[D-BUS Service\]$|^Name=org\.a11y\.Bus$|^Exec=/' "$SQARVO_UI_ATSPI_SERVICE" \
+    grep -E '^\[D-BUS Service\]$|^Name=org\.a11y\.Bus$|^Exec=' "$SQARVO_UI_ATSPI_SERVICE" \
         > "$run/services/org.a11y.Bus.service"
     cat > "$run/session.conf" <<BUS
 <busconfig>
@@ -134,6 +154,7 @@ BUS
 }
 
 # Only the outer invocation has access to the host's user systemd bus.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 case "${1:-}" in
     --display-worker) shift; run_display "$@"; exit ;;
     --session-worker)
@@ -153,17 +174,24 @@ esac
 umask 077
 cd "$root"
 [[ -f /sys/fs/cgroup/cgroup.controllers ]] || blocked "cgroup v2 unavailable"
-for tool in systemctl systemd-run Xvfb xauth xdpyinfo openbox xprop dbus-run-session gdbus gnome-keyring-daemon; do
-    command -v "$tool" >/dev/null || blocked "missing executable: $tool"
+for entry in systemctl:systemd systemd-run:systemd Xvfb:xvfb openbox:openbox xauth:xauth \
+    xdpyinfo:x11-utils xprop:x11-utils dbus-run-session:dbus-daemon gdbus:libglib2.0-bin \
+    gnome-keyring-daemon:gnome-keyring flock:util-linux grep:grep; do
+    tool=${entry%%:*}
+    command -v "$tool" >/dev/null || missing_dependency "missing executable: $tool" "${entry#*:}"
 done
-systemctl --user show -p ControlGroup user.slice >/dev/null ||
-    blocked "systemd user manager unavailable"
+[[ -x /usr/bin/python3 ]] || missing_dependency "missing executable: /usr/bin/python3" python3
+manager_group=$(systemctl --user show -p ControlGroup --value -- -.slice) ||
+    blocked "systemd user manager unavailable; check systemctl --user status (see tests/ui/linux/README.md)"
+[[ "$manager_group" == /* && -d "/sys/fs/cgroup$manager_group" ]] ||
+    blocked "cannot verify systemd user manager cgroup"
+scope_parent="/sys/fs/cgroup${manager_group%/}/app.slice"
 atspi_service=
 for directory in /usr/local/share /usr/share; do
     candidate="$directory/dbus-1/services/org.a11y.Bus.service"
     if [[ -r "$candidate" ]]; then atspi_service=$candidate; break; fi
 done
-[[ -n "$atspi_service" ]] || blocked "missing org.a11y.Bus service"
+[[ -n "$atspi_service" ]] || missing_dependency "missing org.a11y.Bus service" at-spi2-core
 
 seconds=${SQARVO_UI_TIMEOUT:-900}
 [[ "$seconds" =~ ^[1-9][0-9]{0,7}$ ]] || blocked "SQARVO_UI_TIMEOUT must be positive seconds"
@@ -171,21 +199,22 @@ cpu_quota=${SQARVO_UI_CPU_QUOTA:-200%}
 cpu_weight=${SQARVO_UI_CPU_WEIGHT:-20}
 memory_high=${SQARVO_UI_MEMORY_HIGH:-3G}
 memory_max=${SQARVO_UI_MEMORY_MAX:-5G}
-io_weight=${SQARVO_UI_IO_WEIGHT:-20}
+io_weight=${SQARVO_UI_IO_WEIGHT-auto}
 [[ "$cpu_quota" =~ ^[1-9][0-9]*%$ && "$memory_high" =~ ^[1-9][0-9]*[KMGT]?$ &&
     "$memory_max" =~ ^[1-9][0-9]*[KMGT]?$ ]] || blocked "invalid CPU or memory limits"
-io_property=()
-if [[ "$io_weight" == off ]]; then
-    printf 'Resource limit disabled explicitly: IOWeight=off\n' >&2
-    weights=("$cpu_weight")
-else
-    io_property=(-p "IOWeight=$io_weight")
-    weights=("$cpu_weight" "$io_weight")
-fi
-for weight in "${weights[@]}"; do
+valid_weight() {
+    local weight=$1
     [[ "$weight" =~ ^[1-9][0-9]{0,4}$ ]] && (( weight <= 10000 )) ||
         blocked "CPU and IO weights must be between 1 and 10000"
-done
+}
+valid_weight "$cpu_weight"
+case "$io_weight" in
+    auto) io_property=(-p IOWeight=20) ;;
+    off)
+        printf 'Resource limit disabled explicitly: IOWeight=off\n' >&2
+        io_property=() ;;
+    *) valid_weight "$io_weight"; io_property=(-p "IOWeight=$io_weight") ;;
+esac
 
 binary() {
     local candidate
@@ -206,8 +235,9 @@ if [[ "${1:-}" == --gtk-tests ]]; then
 else
     python="$ui/.venv/bin/python"
     [[ -x "$python" ]] || blocked "pytest environment missing; run just ui-test-env"
-    "$python" -I -c 'import gi, pytest; gi.require_version("Atspi", "2.0"); gi.require_version("Secret", "1")' ||
-        blocked "pytest, AT-SPI or Secret typelib unavailable"
+    "$python" -I -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("Secret", "1")' ||
+        missing_dependency "Python GI, AT-SPI or Secret typelib unavailable" "python3-gi gir1.2-atspi-2.0 gir1.2-secret-1"
+    "$python" -I -c 'import pytest' || blocked "pytest unavailable; run just ui-test-env"
     desktop=$(binary "${SQARVO_UI_BIN:-$root/frontend/linux/target/release/sqarvo-desktop}" \
         "${SQARVO_UI_BIN:-$root/frontend/linux/target/debug/sqarvo-desktop}" \
         "${SQARVO_UI_BIN:-$HOME/.local/bin/sqarvo-desktop}") || blocked "sqarvo-desktop unavailable"
@@ -229,28 +259,42 @@ else
     command=("$python" -m pytest -c "$ui/pytest.ini" "${selectors[@]}")
 fi
 
+scavenger="$root/scripts/cleanup-ui-runs.py"
+/usr/bin/python3 -I "$scavenger" "$scope_parent" ||
+    printf 'Warning: could not inspect stale UI run directories\n' >&2
 mkdir -p "$ui/results"
 artifacts=$(mktemp -d "$ui/results/run.XXXXXXXX")
 run=$(mktemp -d /tmp/sqarvo-ui.XXXXXXXX)
 scope="${run##*/}.scope"
+exec {lease}<"$run"
+flock -x "$lease"
+printf '%s\n' "$scope" "$scope_parent" > "$run/.sqarvo-ui-lease"
 runner=
 scope_requested=0
 cleanup() {
     local status=$?
     trap '' INT TERM HUP
-    if [[ -n "$runner" ]]; then
-        # Stop the launch client first so a late launch cannot outlive cleanup.
-        kill -TERM "$runner" 2>/dev/null || true
-        wait "$runner" 2>/dev/null || true
-    fi
     if (( scope_requested )); then
-        timeout 15s systemctl --user stop "$scope" 2>>"$artifacts/runner.log" || true
-        local cg
-        cg=$(cat "$run/cgroup" 2>/dev/null || true)
-        if [[ -n "$cg" && -r "$cg/cgroup.events" ]] && ! grep -qx 'populated 0' "$cg/cgroup.events"; then
-            printf 'UI TEST: FAIL\nError: test scope still populated: %s\n' "$scope" >&2
-            status=1
+        # A signal can arrive between the background launch and runner=$!.
+        runner=${runner:-${!:-}}
+        if [[ -n "$runner" ]] && jobs -p | grep -qx "$runner"; then
+            # A just-registered worker checks this before creating any services.
+            touch "$run/canceled"
+        else
+            runner=
         fi
+        timeout 15s systemctl --user stop "$scope" 2>>"$artifacts/runner.log" || true
+    fi
+    if [[ -n "$runner" ]]; then
+        # Give the launch client time to finish while it still holds its lease.
+        for _ in {1..20}; do
+            if ! jobs -p | grep -qx "$runner"; then
+                wait "$runner" 2>/dev/null || true
+                runner=
+                break
+            fi
+            sleep .1
+        done
     fi
     if (( status != 0 )); then
         for log in "$run"/work/*/app.log; do
@@ -260,7 +304,11 @@ cleanup() {
         done
         printf 'Diagnostic: %s/runner.log\n' "$artifacts" >&2
     fi
-    rm -rf -- "$run"
+    if [[ -n "$runner" ]]; then
+        printf 'Warning: retaining %s: scope launcher still running\n' "$run" >&2
+    elif ! /usr/bin/python3 -I "$scavenger" "$scope_parent" "${run##*/}" "$lease" && (( status == 0 )); then
+        status=1
+    fi
     exit "$status"
 }
 trap cleanup EXIT
@@ -269,20 +317,27 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 
 scope_requested=1
-systemd-run --user --scope --quiet --expand-environment=no --unit="$scope" \
-    -p "CPUQuota=$cpu_quota" -p "CPUWeight=$cpu_weight" \
-    -p "MemoryHigh=$memory_high" -p "MemoryMax=$memory_max" "${io_property[@]}" \
-    -p "RuntimeMaxSec=$((seconds + 15))s" -p TimeoutStopSec=5s \
-    /usr/bin/env -i "PATH=$PATH" "LANG=${LANG:-C.UTF-8}" "LC_ALL=${LC_ALL:-}" \
-    "SQARVO_UI_RUN_DIR=$run" "SQARVO_UI_ARTIFACTS=$artifacts" "SQARVO_UI_SCOPE=$scope" \
-    "SQARVO_UI_ATSPI_SERVICE=$atspi_service" \
-    "SQARVO_UI_CPU_WEIGHT=$cpu_weight" "SQARVO_UI_IO_WEIGHT=$io_weight" \
-    "SQARVO_UI_CPU_QUOTA=$cpu_quota" "SQARVO_UI_MEMORY_HIGH=$memory_high" "SQARVO_UI_MEMORY_MAX=$memory_max" \
-    "SQARVO_UI_WATCHDOG_MS=${SQARVO_UI_WATCHDOG_MS:-420000}" \
-    "SQARVO_UI_READY_TIMEOUT=${SQARVO_UI_READY_TIMEOUT:-40}" \
-    "${extra_env[@]}" timeout --kill-after=5s "${seconds}s" \
-    "$root/scripts/run-ui-tests-isolated.sh" --display-worker "${command[@]}" \
-    2>"$artifacts/runner.log" </dev/null &
+# Keep a copy of the lease in the launch shell until systemd-run returns,
+# even if the outer shell is killed during scope registration.
+(
+    status=0
+    systemd-run --user --scope --quiet --expand-environment=no --slice=app.slice --unit="$scope" \
+        -p "CPUQuota=$cpu_quota" -p "CPUWeight=$cpu_weight" \
+        -p "MemoryHigh=$memory_high" -p "MemoryMax=$memory_max" "${io_property[@]}" \
+        -p "RuntimeMaxSec=$((seconds + 15))s" -p TimeoutStopSec=5s \
+        /usr/bin/env -i "PATH=$PATH" "LANG=${LANG:-C.UTF-8}" "LC_ALL=${LC_ALL:-}" \
+        "SQARVO_UI_RUN_DIR=$run" "SQARVO_UI_ARTIFACTS=$artifacts" "SQARVO_UI_SCOPE=$scope" \
+        "SQARVO_UI_CGROUP=$scope_parent/$scope" \
+        "SQARVO_UI_ATSPI_SERVICE=$atspi_service" \
+        "SQARVO_UI_CPU_WEIGHT=$cpu_weight" "SQARVO_UI_IO_WEIGHT=$io_weight" \
+        "SQARVO_UI_CPU_QUOTA=$cpu_quota" "SQARVO_UI_MEMORY_HIGH=$memory_high" "SQARVO_UI_MEMORY_MAX=$memory_max" \
+        "SQARVO_UI_WATCHDOG_MS=${SQARVO_UI_WATCHDOG_MS:-420000}" \
+        "SQARVO_UI_READY_TIMEOUT=${SQARVO_UI_READY_TIMEOUT:-40}" \
+        "${extra_env[@]}" timeout --kill-after=5s "${seconds}s" \
+        "$root/scripts/run-ui-tests-isolated.sh" --display-worker "${command[@]}" \
+        || status=$?
+    exit "$status"
+) 2>"$artifacts/runner.log" </dev/null &
 runner=$!
 status=0
 wait "$runner" || status=$?

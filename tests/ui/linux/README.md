@@ -8,14 +8,38 @@
 
 ## 依赖与准备
 
-- Linux 需有可访问的 systemd 254+ 用户管理器、cgroup v2 和已下放的 CPU、内存与 I/O
-  controller。支持使用无宿主图形会话的用户级 runner。
-- 图形与会话依赖为 Xvfb、Openbox、xauth、xdpyinfo、xprop、D-Bus、AT-SPI 和 GNOME
-  Keyring。Ubuntu/Debian 对应包为 `xvfb openbox xauth x11-utils dbus-daemon libglib2.0-bin
-  at-spi2-core gnome-keyring python3-gi gir1.2-atspi-2.0 gir1.2-secret-1`。先确认本机缺哪些包，再安装。
+- Linux 需有可访问的 systemd 254+ 用户管理器、cgroup v2 以及已下放的 CPU 和内存
+  controller。默认允许用户级 runner 缺少 I/O controller。
+- Ubuntu 26.04 的系统依赖见下方清单。现有开发机只缺 `xvfb`、`openbox` 时，
+  由维护者执行 `sudo apt-get update && sudo apt-get install --no-install-recommends xvfb openbox`。
+- 在已有 systemd 用户会话的 Ubuntu 主机上，可按同一清单检查全部系统依赖，
+  并按需安装缺失的包：
+
+```sh
+dpkg -l bash coreutils grep util-linux systemd dbus-user-session dbus-daemon \
+  xvfb openbox xauth x11-utils libglib2.0-bin at-spi2-core gnome-keyring \
+  python3 python3-gi gir1.2-atspi-2.0 gir1.2-secret-1 libgtk-4-1 libadwaita-1-0
+command -v Xvfb openbox xauth xdpyinfo xprop dbus-run-session gdbus gnome-keyring-daemon flock
+systemctl --user show -p ControlGroup -- -.slice
+/usr/bin/python3 -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("Secret", "1")'
+```
+
+  `dpkg -l` 的 `ii` 表示已安装。`systemctl --user` 应返回用户管理器的 cgroup 路径。
+  需要一次安装整套系统依赖时，用以下命令；`apt` 会解析传递依赖。
+
+```sh
+sudo apt-get update
+sudo apt-get install --no-install-recommends bash coreutils grep util-linux systemd \
+  dbus-user-session dbus-daemon xvfb openbox xauth x11-utils libglib2.0-bin \
+  at-spi2-core gnome-keyring python3 python3-gi gir1.2-atspi-2.0 gir1.2-secret-1 \
+  libgtk-4-1 libadwaita-1-0
+```
+
 - 在 scope 外构建前端和后端、执行 `just ui-test-env`（需 `uv`）。入口依次查找仓库
   release/debug 产物及已安装前端，可用 `SQARVO_UI_BIN`、`SQARVO_BACKEND_BIN`、
   `SQARVO_MCP_BIN` 明确选择。HTTP E2E 还需 PATH 上的 Codex CLI 和 MCP 二进制。
+  安装系统包后，现有开发环境使用普通用户的 PATH 即可运行，无需添加临时工具目录。
+  缺少必要依赖时，入口报告 BLOCKED 及安装指引。
 
 ## 命令
 
@@ -53,13 +77,13 @@ scripts/run-ui-tests-isolated.sh --gtk-tests /绝对路径/测试二进制 --ign
 | `SQARVO_UI_CPU_WEIGHT` | `20` | CPU 相对权重 |
 | `SQARVO_UI_MEMORY_HIGH` | `3G` | 内存回收与节流阈值 |
 | `SQARVO_UI_MEMORY_MAX` | `5G` | 内存硬上限 |
-| `SQARVO_UI_IO_WEIGHT` | `20` | I/O 相对权重 |
+| `SQARVO_UI_IO_WEIGHT` | `auto` | 有 I/O controller 时应用并读回权重 `20`；缺少 controller 时警告并继续。 |
 | `SQARVO_UI_TIMEOUT` | `900` | 单次执行时限（秒，包含隔离启动） |
 
-作用域内会从 cgroup v2 读回并检查配置。缺失或不匹配时返回 BLOCKED。若用户级 cgroup
-没有 I/O controller，可显式设置 `SQARVO_UI_IO_WEIGHT=off`，入口会报告该限制已关闭；
-CPU、内存与会话隔离依然是必需项。无 systemd 用户管理器或缺少所需 controller 的 CI
-runner 会明确报告 BLOCKED。测试入口不修改宿主 systemd 配置。
+作用域内会从 cgroup v2 读回并检查配置。`SQARVO_UI_IO_WEIGHT=off` 显式关闭 I/O
+权重。设置 `1`–`10000` 启用严格模式，controller 不可用或读回不符均返回 BLOCKED。
+`auto` 只在 I/O controller 未下放时继续，已下放但无法应用权重时仍返回 BLOCKED。
+用户管理器、CPU、内存和会话隔离始终是必需项。测试入口使用用户级 scope 配置。
 
 ## 输出契约
 
@@ -109,9 +133,13 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
   专用 Secret Service。只启动所需的 AT-SPI 和凭据服务，凭据来自合成测试数据。
 - 每个应用实例另有独立 XDG 配置层、合成 SQLite 库、显式 Unix Socket 端点和 QA 应用
   ID。连接档案随实例保存，后端由前端启动，MCP HTTP 用例在本地回环动态选择端口。
-- 正常退出、失败、超时和信号中断均按本次 scope 停止进程并清除临时目录。应用看门狗与
-  scope 运行时限提供兜底。外层入口被 SIGKILL 时，scope 到期会回收进程，临时目录
-  可能仍需清理。测试通过语义 API 操作控件，无 `/dev/uinput` 依赖。
+- 正常退出、失败、超时和信号中断均按本次 scope 停止进程并清除临时目录。外层入口
+  被 SIGKILL 时，scope 有运行时限。后续启动会检查当前用户的旧运行目录，仅在取得
+  实例锁、确认 scope 已结束且 cgroup 不存在后删除。无法确认的目录会保留并提示，
+  包括旧版入口遗留、没有本版标记的目录。测试通过语义 API 操作控件，无 `/dev/uinput` 依赖。
+
+入口回归测试可用 `/usr/bin/python3 tests/ui/linux/runner_regression.py` 独立执行。
+在依赖安装完成、systemd 用户会话可用的主机上，可加 `--host` 实测并行与 SIGKILL 回收。
 
 ## 现有用例限制
 
