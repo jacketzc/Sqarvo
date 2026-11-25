@@ -954,7 +954,8 @@ pub type PrimaryKeySink =
     std::rc::Rc<dyn Fn(Result<Vec<crate::proto::services::v1::PrimaryKeyColumn>, MetadataError>)>;
 
 enum Route {
-    Page(PageSink),
+    /// 页面请求；标记只用于验收时区分 Inspector 与树 / Objects 的 `ListNodes`。
+    Page(PageSink, &'static str),
     Ddl(DdlSink),
     Columns(ColumnsSink),
     PrimaryKey(PrimaryKeySink),
@@ -994,13 +995,22 @@ impl MetadataHub {
     fn take_id(&self, route: Route) -> u64 {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
+        // 真实提交边界（已分配请求 ID、回调已登记）：功能测试按这行计数，而不是
+        // 统计调用方预先打印的调试日志。
+        let label = match &route {
+            Route::Page(_, label) => *label,
+            Route::Ddl(_) => "ddl",
+            Route::Columns(_) => "columns",
+            Route::PrimaryKey(_) => "primary_key",
+        };
+        eprintln!("[qa.metadata] submit {label} id={id}");
         self.routes.borrow_mut().insert(id, route);
         id
     }
 
     /// 请求一层子节点（`parent = None` 表示根）。
     pub fn request_children(&self, parent: Option<ObjectRef>, page_token: &str, sink: PageSink) {
-        let id = self.take_id(Route::Page(sink));
+        let id = self.take_id(Route::Page(sink, "nodes"));
         self.worker.list_children(id, parent, page_token);
     }
 
@@ -1015,7 +1025,19 @@ impl MetadataHub {
         page_token: &str,
         sink: PageSink,
     ) {
-        let id = self.take_id(Route::Page(sink));
+        self.request_group_as("nodes", parent, kinds, page_token, sink);
+    }
+
+    /// 与 [`Self::request_group`] 相同，但用独立的验收标记（Inspector 的索引 / 触发器）。
+    pub fn request_group_as(
+        &self,
+        label: &'static str,
+        parent: ObjectRef,
+        kinds: &[ObjectKind],
+        page_token: &str,
+        sink: PageSink,
+    ) {
+        let id = self.take_id(Route::Page(sink, label));
         self.worker.list_group(id, Some(parent), page_token, kinds);
     }
 
@@ -1027,7 +1049,7 @@ impl MetadataHub {
         page_token: &str,
         sink: PageSink,
     ) {
-        let id = self.take_id(Route::Page(sink));
+        let id = self.take_id(Route::Page(sink, "search"));
         self.worker.search(id, Some(parent), query, page_token);
     }
 
@@ -1055,7 +1077,7 @@ impl MetadataHub {
             MetadataEvent::Children { id, result } => {
                 let route = self.routes.borrow_mut().remove(&id);
                 match route {
-                    Some(Route::Page(sink)) => sink(result),
+                    Some(Route::Page(sink, _)) => sink(result),
                     Some(_) => {
                         eprintln!("[tree] 请求 {id} 的回调类型不匹配（children），丢弃");
                     }

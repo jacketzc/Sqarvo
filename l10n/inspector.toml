@@ -407,3 +407,9 @@ key = "inspector.column_not_applicable"
 zh = "不适用"
 en = "Not Applicable"
 status = "done"
+
+[[entry]]
+key = "inspector.note_children_partial"
+zh = "只显示了已读到的索引与触发器（还有后续页或结果被截断，不是完整列表）"
+en = "Only the indexes and triggers read so far are shown (more pages or truncated; not a complete list)"
+status = "done"

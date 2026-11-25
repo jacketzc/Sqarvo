@@ -642,7 +642,9 @@ pub struct TabContext {
     /// worker 句柄（命令全部带 `tab_id`）。
     pub worker: Rc<WorkerHandle>,
     /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
-    pub on_column: Rc<dyn Fn(crate::backend::table::TableColumn)>,
+    pub on_column: Rc<dyn Fn(crate::backend::table::TableColumn, Option<TableEntry>, String)>,
+    /// 当前数据标签的行数变化（分页 / 刷新）→ 信息面板只更新展示，不发元数据 RPC。
+    pub on_rows: Rc<dyn Fn(Option<usize>)>,
     /// 连接名（窗口标题用）。
     pub connection_name: String,
     /// 驱动显示名（`Objects` 页标题用）。
@@ -927,10 +929,14 @@ pub struct ObjectsPage {
     generation: Cell<u64>,
     /// 当前作用域的第一页是否已经成功返回（作用域没变时不重发、保留行与选中）。
     loaded: Cell<bool>,
+    /// 当前作用域的请求在飞：同一作用域的重复事件不叠加请求；显式 reload 不受它拦截。
+    loading: Cell<bool>,
     open: RefCell<Option<OpenEntry>>,
     select: RefCell<Option<SelectEntry>>,
     /// 最近一次请求的作用域（分页按它继续）。
     last_request: RefCell<Option<ObjectsRequest>>,
+    /// 最近一次实际请求过的有效作用域：临时空态不擦掉它，重新进入 / F5 按它重查。
+    reload_scope: RefCell<Option<ObjectsRequest>>,
     /// 最近一次请求用的元数据通道（同一条浏览会话）。
     hub_slot: RefCell<Option<Rc<MetadataHub>>>,
 }
@@ -1200,9 +1206,11 @@ impl ObjectsPage {
             token: RefCell::new(String::new()),
             generation: Cell::new(0),
             loaded: Cell::new(false),
+            loading: Cell::new(false),
             open: RefCell::new(None),
             select: RefCell::new(None),
             last_request: RefCell::new(None),
+            reload_scope: RefCell::new(None),
             hub_slot: RefCell::new(None),
         });
         {
@@ -1289,6 +1297,7 @@ impl ObjectsPage {
     pub fn show_unavailable(&self, shortcut: KindShortcut, title: &str, description: &str) {
         self.generation.set(self.generation.get() + 1);
         self.loaded.set(false);
+        self.loading.set(false);
         self.token.replace(String::new());
         self.last_request.replace(None);
         self.hub_slot.replace(None);
@@ -1318,6 +1327,7 @@ impl ObjectsPage {
     pub fn show_empty(&self) {
         self.generation.set(self.generation.get() + 1);
         self.loaded.set(false);
+        self.loading.set(false);
         self.token.replace(String::new());
         self.last_request.replace(None);
         self.hub_slot.replace(None);
@@ -1343,19 +1353,57 @@ impl ObjectsPage {
         let key: ObjectsRequest = (parent.clone(), kinds.clone());
         self.kind.replace(KindShortcut::of_kinds(&kinds));
         self.stack.set_visible_child_name("list");
-        // 树里换了选中：行高亮属于上一次浏览，先清掉。列表内容保留、不重发请求——
-        // 否则会出现「右侧面板已经是新对象，列表还高亮着上一个」的错位。
+        // 同一页内的树选中变化（作用域未变）：清行高亮、保留列表，不重发请求——
+        // 重新进入标签 / F5 走 enter_objects / reload_objects，不受这里保留列表的影响。
         if self.selection.selected() != u32::MAX {
             eprintln!("[objects] 树选中变化：清掉行高亮（列表内容保留）");
             self.selection.set_selected(u32::MAX);
         }
-        if self.loaded.get() && self.last_request.borrow().as_ref() == Some(&key) {
+        let same_scope = self.last_request.borrow().as_ref() == Some(&key);
+        if self.loading.get() && same_scope {
+            eprintln!(
+                "[objects] 作用域 {} 的请求已在飞，重复事件不叠加请求",
+                scope_name(&parent)
+            );
+            return;
+        }
+        if self.loaded.get() && same_scope {
             eprintln!(
                 "[objects] 作用域未变（{}），保留现有列表（不重发）",
                 scope_name(&parent)
             );
             return;
         }
+        self.start_first_page(hub, parent, kinds);
+    }
+
+    /// 显式重新加载当前作用域（重新进入标签 / F5）：从第一页重查，不沿用旧列表。
+    ///
+    /// 不受 `loaded` 与在飞标记拦截：这是用户明确发起的刷新；随后到来的同作用域树事件
+    /// 会被 `loading` 标记挡住，不会发第二份请求。
+    pub fn reload(self: &Rc<Self>, hub: Option<Rc<MetadataHub>>) {
+        let Some((parent, kinds)) = self.reload_scope.borrow().clone() else {
+            return;
+        };
+        self.stack.set_visible_child_name("list");
+        if self.selection.selected() != u32::MAX {
+            self.selection.set_selected(u32::MAX);
+        }
+        self.start_first_page(hub, parent, kinds);
+    }
+
+    /// 当前作用域（分页与刷新都按它继续）。
+    #[must_use]
+    pub(crate) fn saved_scope(&self) -> Option<ObjectsRequest> {
+        self.reload_scope.borrow().clone()
+    }
+
+    fn start_first_page(
+        self: &Rc<Self>,
+        hub: Option<Rc<MetadataHub>>,
+        parent: ObjectRef,
+        kinds: Vec<ObjectKind>,
+    ) {
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.loaded.set(false);
@@ -1363,6 +1411,7 @@ impl ObjectsPage {
         self.clear_rows();
         self.more.set_visible(false);
         let Some(hub) = hub else {
+            self.loading.set(false);
             self.last_request.replace(None);
             self.status
                 .set_text(crate::l10n::t("objects_page.status_no_session"));
@@ -1397,7 +1446,9 @@ impl ObjectsPage {
     ) {
         // 记住这次请求的作用域：分页与「加载更多」按它继续。
         *self.last_request.borrow_mut() = Some((parent.clone(), kinds.clone()));
+        *self.reload_scope.borrow_mut() = Some((parent.clone(), kinds.clone()));
         self.hub_slot.replace(Some(Rc::clone(&hub)));
+        self.loading.set(true);
         let weak = Rc::downgrade(self);
         hub.request_group(
             parent,
@@ -1408,9 +1459,10 @@ impl ObjectsPage {
                     return;
                 };
                 if generation != page.generation.get() {
-                    eprintln!("[objects] 丢弃过期响应（页已换作用域）");
+                    eprintln!("[objects] 丢弃过期响应（页已换作用域或已重新加载）");
                     return;
                 }
+                page.loading.set(false);
                 match result {
                     Ok(nodes) => {
                         let count = nodes.nodes.len();
@@ -1695,9 +1747,9 @@ impl TabSet {
             set.view.connect_selected_page_notify(move |_| {
                 if let Some(set) = weak.upgrade() {
                     // 重新进入 `Objects` 页时不带上次的行高亮（切换标签是「重新进入」的
-                    // 唯一入口；列表内容与信息面板都不动）。
-                    if set.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
-                        set.clear_objects_selection();
+                    // 唯一入口；作用域未变的页内选中不刷新列表）。
+                    if !set.switching.get() && set.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
+                        set.enter_objects();
                     }
                     if !set.switching.get() {
                         set.refresh_current();
@@ -1895,6 +1947,21 @@ impl TabSet {
         reference: &crate::proto::services::v1::ObjectRef,
     ) -> Option<usize> {
         for tab in self.tabs.borrow().iter() {
+            let TabKind::Table { connection_key, .. } = &tab.kind else {
+                continue;
+            };
+            // 数据标签用标签自己的会话，树 / 面板用浏览会话：通过连接键对齐连接归属，
+            // 不用两个 Session ID 直接相等来判定（同名库 / 同名表分属不同连接时不能串）。
+            let belongs = self
+                .context
+                .registry
+                .as_ref()
+                .and_then(|registry| registry.session_for_key(connection_key))
+                .as_deref()
+                == Some(reference.session_id.as_str());
+            if !belongs {
+                continue;
+            }
             let Some(data) = tab.data.as_ref() else {
                 continue;
             };
@@ -2017,6 +2084,34 @@ impl TabSet {
         if let Some(objects) = self.objects.borrow().clone() {
             objects.clear_selection();
         }
+    }
+
+    /// 重新进入 `Objects` 页（鼠标 / 键盘 / 程序化切页共用）：清行高亮并从第一页重查。
+    pub fn enter_objects(&self) {
+        eprintln!("[objects] 重新进入 Objects 页：清行高亮并重新查询");
+        self.clear_objects_selection();
+        self.reload_objects();
+    }
+
+    /// 强制重新加载当前 `Objects` 作用域（F5 与重新进入页面都走这里）。
+    ///
+    /// `last_request` 仍是当前作用域与分页依据；这里只读它、不因相同而跳过。
+    pub fn reload_objects(&self) {
+        let Some(objects) = self.objects.borrow().clone() else {
+            return;
+        };
+        let Some((parent, _)) = objects.saved_scope() else {
+            eprintln!("[objects] 主动重新加载：没有可用作用域，跳过");
+            return;
+        };
+        eprintln!("[objects] 主动重新加载第一页：{}", scope_name(&parent));
+        let hub = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.hub_for_session(&parent.session_id));
+        objects.reload(hub);
+        self.sync_objects_status();
     }
 
     /// 切到固定的 `Objects` 页（主工具条的种类入口点了以后走这里）。
@@ -2500,6 +2595,13 @@ impl TabSet {
     fn build_data_page(self: &Rc<Self>, tab_id: &str) -> Rc<DataPage> {
         let worker = Rc::clone(&self.context.worker);
         let id = tab_id.to_owned();
+        let connection_key = self
+            .by_id(tab_id)
+            .and_then(|tab| match &tab.kind {
+                TabKind::Table { connection_key, .. } => Some(connection_key.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
         let callbacks = DataCallbacks {
             browse_to: {
                 let worker = Rc::clone(&worker);
@@ -2544,7 +2646,11 @@ impl TabSet {
                 Rc::new(move || worker.reload_table(&id))
             },
             backend_failure: Rc::clone(&self.context.backend_failure),
-            on_column: Rc::clone(&self.context.on_column),
+            on_column: {
+                let on_column = Rc::clone(&self.context.on_column);
+                let key = connection_key.clone();
+                Rc::new(move |column, parent| on_column(column, parent, key.clone()))
+            },
         };
         let page = DataPage::new(callbacks);
         // QA 脚本运行时自动确认回滚/风险对话框：脚本无人值守，模态框会挡住后续步骤
@@ -2747,9 +2853,14 @@ impl TabSet {
     // -- 选中 / 标题 / 状态 -------------------------------------------------
 
     fn select_page(&self, page: &adw::TabPage) {
+        let was_objects = self.current_id().as_deref() == Some(OBJECTS_TAB_ID);
         self.switching.set(true);
         self.view.set_selected_page(page);
         self.switching.set(false);
+        // 程序化切换时 selected_page_notify 被 switching 挡住，这里补一次重新进入。
+        if !was_objects && self.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
+            self.enter_objects();
+        }
         // 连接列表可能刚变过（用户又存了一条连接）：切到查询标签时顺手对齐选择器条目，
         // 免得下拉里少了刚保存的那条。只在切标签时做，不跟着每次状态刷新跑。
         let current = self
@@ -2933,6 +3044,17 @@ impl TabSet {
             _ => TabStatus::Objects { shortcut: None },
         };
         (self.context.on_status)(status);
+        let rows = match (&tab.kind, tab.data.as_ref()) {
+            (TabKind::Table { .. }, Some(data)) => {
+                let snapshot = data.status_snapshot();
+                snapshot
+                    .table
+                    .as_ref()
+                    .map(|_| usize::try_from(snapshot.rows).unwrap_or(usize::MAX))
+            }
+            _ => None,
+        };
+        (self.context.on_rows)(rows);
         eprintln!(
             "[tabs] 当前标签：{}（{}，{} / 共 {} 个标签）",
             tab.kind.title(),
@@ -2948,7 +3070,12 @@ impl TabSet {
             self.advance_close(&tab, &snapshot);
         }
         if is_current {
-            (self.context.on_status)(TabStatus::Table(Box::new(snapshot)));
+            (self.context.on_status)(TabStatus::Table(Box::new(snapshot.clone())));
+            let rows = snapshot
+                .table
+                .as_ref()
+                .map(|_| usize::try_from(snapshot.rows).unwrap_or(usize::MAX));
+            (self.context.on_rows)(rows);
         }
     }
 

@@ -62,6 +62,7 @@ impl_notes = [
   "不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。",
   "启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。",
   "页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。",
+  "重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；最近一次有效作用域单独保存，临时空态不擦掉它。同一作用域已有在飞请求时，树选中等重复事件不叠加请求。",
 ]
 
 [[component.interaction]]
@@ -73,8 +74,8 @@ source = "src/tabs.rs:1774、src/tabs.rs:1790、src/tabs.rs:1794、src/startup.r
 [[component.interaction]]
 trigger = "click"
 precondition = "页签可见"
-result = "只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新"
-source = "src/tabs.rs:1376、src/tabs.rs:1381"
+result = "切到本页：清掉行选中，并按当前有效作用域从第一页重新查询 ListNodes（重新进入即刷新）；保持原库与原对象种类，窗口标题 / 状态栏 / 工具条高亮按当前种类刷新"
+source = "src/tabs.rs:2090、src/tabs.rs:2099"
 
 [[component.interaction]]
 trigger = "key"
@@ -183,13 +184,20 @@ source = "src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050"
 [[component.interaction]]
 trigger = "load"
 precondition = "从别的标签切回本页"
-result = "清掉行选中；列表内容与右侧信息面板都不动，不重发请求"
-source = "src/tabs.rs:1381、src/tabs.rs:1215"
+result = "清掉行选中，并按当前有效作用域从第一页重新查询列表；右侧信息面板按当前标签目标更新，不复用上一次进入时的列表"
+source = "src/tabs.rs:2090、src/tabs.rs:2099"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["F5"]
+precondition = "当前页是 Objects"
+result = "强制重新查询当前作用域第一页；保留对象树刷新职责，旧分页响应按 generation 丢弃，树事件不会因同作用域在飞请求再发一份"
+source = "src/ui.rs:2846、src/tabs.rs:2099"
 
 [component.sync.linux]
 state = "done"
 spec_hash = "074178bf4b32"
-evidence = "§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照"
+evidence = "tests/ui/linux/test_15_refresh_regressions.py 4/4 通过（CREATE/RENAME/DROP 后切回本页均见最新列表、F5 强制重列、同作用域选中行不重复请求）；test_14 5/5 通过；cargo test 503 通过"
 
 [component.sync.windows]
 state = "partial"

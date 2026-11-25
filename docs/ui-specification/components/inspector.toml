@@ -30,6 +30,7 @@ impl_notes = [
   "钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。",
   "临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。",
   "Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。",
+  "已加载行数是当前对象 / 标签的独立展示状态，不是表信息 RPC 结果：切对象即更新，DDL 与表信息互切不继承别的对象；数据标签分页 / 刷新只更新展示，不发元数据请求。",
 ]
 
 [[component.interaction]]
@@ -83,17 +84,17 @@ source = "src/ui.rs:2805、src/inspector.rs:924"
 [[component.interaction]]
 trigger = "load"
 precondition = "数据库连接断开（浏览会话失效）"
-result = "清理当前展示与错误状态，使在途元数据响应失效；重连后按新会话重新查询，不展示旧会话的元数据"
-source = "src/inspector.rs:957、src/ui.rs:4152"
+result = "只清理属于该连接的当前展示：标题 / 副标题 / 提示 / 子页按钮与旧错误一并复位，使该连接在途响应失效；其它连接仍正常展示，钉住键同步清掉；后端整体失效时清全部"
+source = "src/inspector.rs:958、src/ui.rs:4180"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "62ccd0426dd0"
-evidence = "tests/ui/linux/test_14_inspector_no_cache.py 5/5 通过（真实请求计数）：首访仅 GetDdl、DDL→表信息→DDL 各查目标子页、A→B→A 与 F5 均重查、外部 ALTER TABLE 后刷新见新列、快速 A→B→A 与断连清理；cargo test 503 通过（含 each_pane_requests_only_its_own_metadata、LoadEpoch 过期令牌）"
+spec_hash = "6c3bbce83072"
+evidence = "请求计数改在 MetadataHub 真实提交边界（[qa.metadata] submit）；test_14 5/5、test_15 4/4 通过（行数不串表、Objects 重入/F5 重列、同作用域选中不重复请求）；cargo test 503 通过（含 LoadEpoch 过期令牌与子页请求集合）"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "62ccd0426dd0"
+spec_hash = "6c3bbce83072"
 note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。"
 
 [component.sync.macos]
@@ -442,17 +443,17 @@ impl_notes = [
 [[component.interaction]]
 trigger = "load"
 precondition = "切到表信息页（每次都重新查询列 / 主键 / 索引与触发器）"
-result = "按节渲染本次读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据"
+result = "按节渲染本次读回的内容：列、主键、索引与触发器、当前对象的已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据；只读到第一页时如实写「不完整列表」，不冒充完整"
 source = "src/inspector.rs:1070、src/inspector.rs:1250"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "179de5ff755e"
+spec_hash = "212c8eec52b1"
 evidence = "§6 表信息页；inspector.rs::render_table_info 的五节"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "179de5ff755e"
+spec_hash = "212c8eec52b1"
 note = "§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。"
 
 [component.sync.macos]
@@ -664,18 +665,18 @@ impl_notes = [
 [[component.interaction]]
 trigger = "load"
 precondition = "选中列节点且父节点是表 / 视图"
-result = "读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则"
+result = "读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则；能确定父表与列身份时 F5 会重查这一列"
 source = "src/inspector.rs:706、src/inspector.rs:997、src/column_info.rs:166"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "点数据网格的列头（该表已打开）"
-result = "进同一个列页：用 GetColumns 已有模型，不重发 RPC"
+result = "进同一个列页：用 GetColumns 已有模型，不重发 RPC；同时记下父表与列身份供 F5 精确重查；结果集表达式 / 别名列没有父表，不猜测来源"
 source = "src/inspector.rs:751、src/ui.rs:2204"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8e0b0c44ef8f"
+spec_hash = "a11628afdfbb"
 evidence = "§6 选中列（树 / 网格列头）；inspector.rs::show_column 与 load_columns_for_column"
 
 [component.sync.windows]

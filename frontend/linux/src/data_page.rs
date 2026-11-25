@@ -426,7 +426,7 @@ pub struct DataCallbacks {
     /// 后端失效横幅：「重启 Sqarvo / 查看日志」对话框（v0.2.3.2）。
     pub backend_failure: Rc<dyn Fn()>,
     /// 表头（类型行）点击的列 → 右侧信息面板（#119）。
-    pub on_column: Rc<dyn Fn(TableColumn)>,
+    pub on_column: Rc<dyn Fn(TableColumn, Option<TableEntry>)>,
 }
 
 /// 一行在网格里的可编辑数据。
@@ -4251,7 +4251,9 @@ impl DataPage {
             column.name,
             index + 1
         );
-        (self.callbacks.on_column)(column);
+        // 父表随列一起交给信息面板：主动刷新要知道重新查哪张表，结果集列则没有父表。
+        let parent = self.table.borrow().clone();
+        (self.callbacks.on_column)(column, parent);
     }
 
     // ---- QA：筛选 / 翻页 / 多选 / 列显隐（--qa-browse，#118） ----

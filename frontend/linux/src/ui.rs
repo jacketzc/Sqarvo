@@ -61,6 +61,8 @@ struct UiState {
     worker: RefCell<Option<Rc<WorkerHandle>>>,
     /// 当前打开的连接对话框（未打开为 `None`）。
     dialog: RefCell<Option<Rc<ConnectionDialog>>>,
+    /// Inspector 钉住去重键（工作区与断连清理共用，避免旧键拦截新渲染）。
+    inspector_pin: Rc<RefCell<Option<String>>>,
     /// `SystemService.ListDrivers` 的结果（连接对话框下拉的数据源）。
     drivers: RefCell<Vec<crate::backend::client::DriverSummary>>,
     /// 后端 gRPC 是否已握手成功：未成功时窗口级「新建连接」动作不可用（此时只会得到
@@ -277,6 +279,7 @@ pub fn activate(app: &adw::Application) {
         title: window_title.clone(),
         worker: RefCell::new(None),
         dialog: RefCell::new(None),
+        inspector_pin: Rc::new(RefCell::new(None)),
         drivers: RefCell::new(Vec::new()),
         backend_ready: Cell::new(false),
         header: header.clone(),
@@ -646,6 +649,7 @@ pub fn activate(app: &adw::Application) {
                                 workspace.tabs.mark_disconnected(&reason);
                                 // 旧会话的展示状态与在途响应一并作废，重连后按新会话重查。
                                 workspace.inspector.mark_disconnected();
+                                events_state.inspector_pin.replace(None);
                                 workspace.status().set_connection(None);
                                 workspace
                                     .status()
@@ -2245,7 +2249,8 @@ impl Workspace {
         // 同键只拦截同一次操作的重复状态事件；用户重新进入 / 主动刷新仍会重查。
         // 临时预览（别的标签上看树选中）不改
         // 钉住键，切走再回来即恢复该标签自己的内容。
-        let pinned: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let pinned: Rc<RefCell<Option<String>>> = Rc::clone(&state.inspector_pin);
+        pinned.replace(None);
         let render_selection: Rc<dyn Fn(TreeSelection)> = {
             let inspector = Rc::clone(&inspector);
             let tree_slot = Rc::clone(&tree_slot);
@@ -2478,9 +2483,30 @@ impl Workspace {
             worker: Rc::clone(&worker),
             on_column: {
                 let inspector = Rc::clone(&inspector);
-                Rc::new(move |column: crate::backend::table::TableColumn| {
-                    inspector.show_column(&column);
-                })
+                let state = Rc::clone(state);
+                Rc::new(
+                    move |column: crate::backend::table::TableColumn,
+                          parent: Option<TableEntry>,
+                          connection_key: String| {
+                        // 数据标签的表引用带标签自己的会话；元数据必须走该连接的浏览会话。
+                        let parent = parent.map(|mut entry| {
+                            if let Some(session) = state
+                                .registry
+                                .borrow()
+                                .as_ref()
+                                .and_then(|registry| registry.session_for_key(&connection_key))
+                            {
+                                entry.reference.session_id = session;
+                            }
+                            entry
+                        });
+                        inspector.show_column(&column, parent.as_ref());
+                    },
+                )
+            },
+            on_rows: {
+                let inspector = Rc::clone(&inspector);
+                Rc::new(move |rows: Option<usize>| inspector.set_loaded_rows(rows))
             },
             connection_name: connection_name.to_owned(),
             driver_label: driver_label.to_owned(),
@@ -2815,6 +2841,10 @@ impl Workspace {
     fn refresh(&self) {
         // 主动刷新不能被钉住身份去重拦截：对象没变也重新查当前子页。
         self.inspector.force_reload();
+        if self.tabs.current_id().as_deref() == Some(crate::tabs::OBJECTS_TAB_ID) {
+            // Objects 页的 F5 明确重列当前作用域；树刷新仍在下面照常进行。
+            self.tabs.reload_objects();
+        }
         match self.refresh_target() {
             RefreshTarget::Table(name) => {
                 eprintln!(
@@ -4146,16 +4176,21 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
                 return;
             }
             eprintln!("[browse] 用户确认断开「{name}」（连接键 {key}）");
+            let session = registry.session_for_key(&key);
             registry.log_sessions("断开前");
             registry.disconnect(&key);
-            // 断开后不再信任面板上的任何元数据展示，统一清理（保守且简单）。
-            if let Some(inspector) = state_for_clear
+            // 只清当前展示正属于这条连接的会话：别的连接仍可正常查看。
+            let inspector = state_for_clear
                 .workspace
                 .borrow()
                 .as_ref()
-                .map(|workspace| Rc::clone(&workspace.inspector))
+                .map(|workspace| Rc::clone(&workspace.inspector));
+            if let (Some(inspector), Some(session)) = (inspector, session.as_ref())
+                && inspector.session_id().as_deref() == Some(session.as_str())
             {
                 inspector.mark_disconnected();
+                state_for_clear.inspector_pin.replace(None);
+                eprintln!("[inspector] 当前展示属于连接「{name}」：展示与钉住键已清理");
             }
             // 断开是异步的：稍后再数一次，前后两次会话数就是验收证据。
             let registry = Rc::clone(&registry);

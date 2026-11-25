@@ -3,7 +3,7 @@
 注册表组件: inspector, inspector.object, inspector.pane_switch,
 inspector.pane_switch.ddl, inspector.pane_switch.info, inspector.object.info。
 
-验证真实请求而不是缓存命中信息：统计应用日志里稳定的 `[inspector] 请求 <kind>：` 行，
+验证真实请求而不是缓存命中信息：统计 MetadataHub 在真实提交边界打印的 `[qa.metadata] submit <kind> id=` 行，
 并用 AT-SPI 读取面板上的列文案。每个实例独立配置 / 数据库 / 日志。
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.sql
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
-KINDS = ("ddl", "columns", "primary_key", "nodes")
+KINDS = ("ddl", "columns", "primary_key", "inspector.nodes")
 EXPAND_ARGS = ("--qa-tree-expand", "main", "--qa-tree-expand", "Tables")
 
 
@@ -36,7 +36,7 @@ def _start(tag: str, *extra: str) -> UiInstance:
 
 def _counts(inst: UiInstance) -> dict[str, int]:
     text = inst.log_text()
-    return {kind: text.count(f" 请求 {kind}：") for kind in KINDS}
+    return {kind: text.count(f"[qa.metadata] submit {kind} id=") for kind in KINDS}
 
 
 def _wait_counts(inst: UiInstance, **minimum: int) -> dict[str, int]:
@@ -77,19 +77,19 @@ def test_first_visit_is_on_demand_and_pane_switches_requery():
     try:
         with step("first_visit_only_ddl"):
             counts = _wait_counts(inst, ddl=1)
-            expect(counts == {"ddl": 1, "columns": 0, "primary_key": 0, "nodes": 0},
+            expect(counts == {"ddl": 1, "columns": 0, "primary_key": 0, "inspector.nodes": 0},
                    "首次选中 widgets 只请求 GetDdl", counts)
 
         with step("switch_to_info"):
             A.click(_pane_button(inst.frame(), "表信息"))
-            counts = _wait_counts(inst, columns=1, primary_key=1, nodes=1)
-            expect(counts == {"ddl": 1, "columns": 1, "primary_key": 1, "nodes": 1},
+            counts = _wait_counts(inst, **{"columns": 1, "primary_key": 1, "inspector.nodes": 1})
+            expect(counts == {"ddl": 1, "columns": 1, "primary_key": 1, "inspector.nodes": 1},
                    "切到表信息只补查列 / 主键 / 索引", counts)
 
         with step("switch_back_to_ddl"):
             A.click(_pane_button(inst.frame(), "DDL"))
             counts = _wait_counts(inst, ddl=2)
-            expect(counts == {"ddl": 2, "columns": 1, "primary_key": 1, "nodes": 1},
+            expect(counts == {"ddl": 2, "columns": 1, "primary_key": 1, "inspector.nodes": 1},
                    "切回 DDL 重新发 GetDdl，不重发表信息请求", counts)
 
         with step("duplicate_click_on_active_pane"):
@@ -162,8 +162,8 @@ def test_disconnect_clears_display_and_invalidates_requests():
                   "--qa-tree-disconnect", "UITestDB")
     try:
         with step("disconnect"):
-            A.wait_until(lambda: "[inspector] 会话断开" in inst.log_text(), 20,
-                         "Inspector 收到断连清理")
+            A.wait_until(lambda: "浏览会话已断开" in inst.log_text(), 20,
+                         "浏览会话已断开")
             expect("CREATE TABLE" not in _ddl_text(inst.frame()),
                    "断连后 DDL 正文已清空", _ddl_text(inst.frame())[:80])
 

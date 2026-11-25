@@ -1027,8 +1027,8 @@ kind `control` · status `active` · parent `dialogs.about`
 kind `area` · status `active`
 
 - 样式：槽位 `inspector`；尺寸 `inspector_width`、`inspector_min`、`inspector_max`、`inspector_gap`
-- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py 5/5 通过（真实请求计数）：首访仅 GetDdl、DDL→表信息→DDL 各查目标子页、A→B→A 与 F5 均重查、外部 ALTER TABLE 后刷新见新列、快速 A→B→A 与断连清理；cargo test 503 通过（含 each_pane_requests_only_its_own_metadata、LoadEpoch 过期令牌））；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。）；macOS none
-- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。
+- 同步：Linux done（请求计数改在 MetadataHub 真实提交边界（[qa.metadata] submit）；test_14 5/5、test_15 4/4 通过（行数不串表、Objects 重入/F5 重列、同作用域选中不重复请求）；cargo test 503 通过（含 LoadEpoch 过期令牌与子页请求集合））；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。）；macOS none
+- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。已加载行数是当前对象 / 标签的独立展示状态，不是表信息 RPC 结果：切对象即更新，DDL 与表信息互切不继承别的对象；数据标签分页 / 刷新只更新展示，不发元数据请求。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1040,7 +1040,7 @@ kind `area` · status `active`
 | load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1834、src/ui.rs:2314` |
 | load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）只拦截同一次操作的重复状态事件，不重复渲染、不重复发请求；用户重新进入同一对象或按 F5 主动刷新不受去重拦截，仍重新查库；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:1549、src/ui.rs:2366` |
 | load | 刷新对象树（F5 / 右键刷新） | 不沿用历史读数，下一次展示重新查库；F5 主动刷新即使对象身份没变也强制重查当前 Inspector | `src/ui.rs:2805、src/inspector.rs:924` |
-| load | 数据库连接断开（浏览会话失效） | 清理当前展示与错误状态，使在途元数据响应失效；重连后按新会话重新查询，不展示旧会话的元数据 | `src/inspector.rs:957、src/ui.rs:4152` |
+| load | 数据库连接断开（浏览会话失效） | 只清理属于该连接的当前展示：标题 / 副标题 / 提示 / 子页按钮与旧错误一并复位，使该连接在途响应失效；其它连接仍正常展示，钉住键同步清掉；后端整体失效时清全部 | `src/inspector.rs:958、src/ui.rs:4180` |
 
 ### `inspector.header` 标题块（标题 · 副标题）与分隔线
 
@@ -1157,7 +1157,7 @@ kind `container` · status `active` · parent `inspector.object`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到表信息页（每次都重新查询列 / 主键 / 索引与触发器） | 按节渲染本次读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据 | `src/inspector.rs:1070、src/inspector.rs:1250` |
+| load | 切到表信息页（每次都重新查询列 / 主键 / 索引与触发器） | 按节渲染本次读回的内容：列、主键、索引与触发器、当前对象的已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据；只读到第一页时如实写「不完整列表」，不冒充完整 | `src/inspector.rs:1070、src/inspector.rs:1250` |
 
 ### `inspector.object.info.columns` 列清单（列名 · 类型 · 可空 · 主键）
 
@@ -1234,8 +1234,8 @@ kind `container` · status `active` · parent `inspector`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中列节点且父节点是表 / 视图 | 读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则 | `src/inspector.rs:706、src/inspector.rs:997、src/column_info.rs:166` |
-| click | 点数据网格的列头（该表已打开） | 进同一个列页：用 GetColumns 已有模型，不重发 RPC | `src/inspector.rs:751、src/ui.rs:2204` |
+| load | 选中列节点且父节点是表 / 视图 | 读父表的 GetColumns 再挑出这一列：标题 = 列名、副标题「列 · <表名> · <类型>」，字段行给 列名、原始类型、可空、默认值、字符集、排序规则；能确定父表与列身份时 F5 会重查这一列 | `src/inspector.rs:706、src/inspector.rs:997、src/column_info.rs:166` |
+| click | 点数据网格的列头（该表已打开） | 进同一个列页：用 GetColumns 已有模型，不重发 RPC；同时记下父表与列身份供 F5 精确重查；结果集表达式 / 别名列没有父表，不猜测来源 | `src/inspector.rs:751、src/ui.rs:2204` |
 
 ### `inspector.state` 状态页（不支持 · 无从判断）
 
@@ -1694,12 +1694,12 @@ kind `control` · status `active` · parent `objects_page`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
 - 图标：`tab.objects`
 - 同步：Linux done（§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支）；Windows partial（§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:762 固定页注释、:753 ObjectsTab IsClosable=False；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
-- 实现备注：AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。
+- 实现备注：AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；最近一次有效作用域单独保存，临时空态不擦掉它。同一作用域已有在飞请求时，树选中等重复事件不叠加请求。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs:1774、src/tabs.rs:1790、src/tabs.rs:1794、src/startup.rs:178` |
-| click | 页签可见 | 只切到本页（select_index(0)）：不重发请求、不换作用域；随后清掉行选中（列表内容与信息面板都不动），窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:1376、src/tabs.rs:1381` |
+| click | 页签可见 | 切到本页：清掉行选中，并按当前有效作用域从第一页重新查询 ListNodes（重新进入即刷新）；保持原库与原对象种类，窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:2090、src/tabs.rs:2099` |
 | key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2674、src/tabs.rs:2686` |
 | click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1393、src/tabs.rs:2684` |
 
@@ -1711,7 +1711,7 @@ kind `container` · status `active` · parent `objects_page`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkColumnView / winui:自绘虚拟化行区（§7.1） / swift:—
 - 自绘：WinUI 3 没有等价的列式表格控件：GridView 不支持「虚拟化 + 可拖列宽 + 行号列」三者组合，ItemsControl 的虚拟化不带列宽状态；这里按 Linux 同口径自绘虚拟化三列表格（§7.1）。
-- 同步：Linux done（§3 页面结构 / 列宽列序 / 作用域五种来源 / 作用域未变；grid 与 selection 接线逐条对照）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:717 表头行、:747 AddObjectsRow；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
+- 同步：Linux done（tests/ui/linux/test_15_refresh_regressions.py 4/4 通过（CREATE/RENAME/DROP 后切回本页均见最新列表、F5 强制重列、同作用域选中行不重复请求）；test_14 5/5 通过；cargo test 503 通过）；Windows partial（§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:717 表头行、:747 AddObjectsRow；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
 - 实现备注：GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1723,7 +1723,8 @@ kind `container` · status `active` · parent `objects_page`
 | load | 树里选中 Functions / Queries 分组 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
 | load | 树里选中连接行 / 占位行（没有作用域） | 回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉 | `src/ui.rs:1377、src/tabs.rs:1016` |
 | load | 树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表） | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
-| load | 从别的标签切回本页 | 清掉行选中；列表内容与右侧信息面板都不动，不重发请求 | `src/tabs.rs:1381、src/tabs.rs:1215` |
+| load | 从别的标签切回本页 | 清掉行选中，并按当前有效作用域从第一页重新查询列表；右侧信息面板按当前标签目标更新，不复用上一次进入时的列表 | `src/tabs.rs:2090、src/tabs.rs:2099` |
+| key F5 | 当前页是 Objects | 强制重新查询当前作用域第一页；保留对象树刷新职责，旧分页响应按 generation 丢弃，树事件不会因同作用域在飞请求再发一份 | `src/ui.rs:2846、src/tabs.rs:2099` |
 
 ### `objects_page.table.row` 行模板（行号 · 图标 + 名称 · 类型）
 
