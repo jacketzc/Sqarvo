@@ -71,16 +71,19 @@ class HttpClient:
         finally:
             connection.close()
 
-    def initialize(self):
+    def initialize(self, *, wait_for_credentials=False):
         status, headers, body = self.exchange("POST", {
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": {"protocolVersion": "2025-11-25", "capabilities": {},
                        "clientInfo": {"name": "sqarvo-http-test", "version": "1"}},
         })
+        if wait_for_credentials and status == 503:
+            return False
         assert status == 200 and body["result"]["protocolVersion"] == "2025-11-25"
         self.session = headers["Mcp-Session-Id"]
         assert self.session
         assert self.exchange("POST", {"jsonrpc": "2.0", "method": "notifications/initialized"})[0] == 202
+        return True
 
     def request(self, method, params=None):
         self.sequence += 1
@@ -97,7 +100,7 @@ def codex_mcp(binary, port, env, tool_call=None):
     env = dict(env, CODEX_HOME=str(codex_home))
     with subprocess.Popen(
         [binary, "http-auth", "launch", "codex", "--app-server", "--port", str(port)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         text=True, env=env, cwd=env["XDG_DATA_HOME"],
     ) as process:
         messages = SimpleQueue()
@@ -213,8 +216,11 @@ def test_managed_mcp_http():
             expect(other.request("tools/list")[0] == 404, "已关闭的会话不可复用")
             expect(client.exchange("GET")[0] == 200, "GET SSE 建立并断开")
             tools = client.request("tools/list")[2]["result"]["tools"]
-            expect(len(tools) == 12, "八个只读工具及四个 V2 工具")
-            expect(codex_mcp(mcp, port, inst.env)[0] == {tool["name"] for tool in tools},
+            tool_names = {tool["name"] for tool in tools}
+            expect(len(tools) == len(tool_names) == 27,
+                   "8 个查询、4 个写入、4 个事务、6 个 DDL 与 5 个结构感知工具",
+                   sorted(tool_names))
+            expect(codex_mcp(mcp, port, inst.env)[0] == tool_names,
                    "真实 Codex 经本机凭据启动器读取同一工具清单")
             resources = client.request("resources/list")[2]["result"]["resources"]
             templates = client.request("resources/templates/list")[2]["result"]["resourceTemplates"]
@@ -338,7 +344,8 @@ def test_managed_mcp_http():
             A.find_one(panel, role_in=("label",), name="认证凭据已更新。请重新启动已配置的客户端。", timeout=10)
             expect(client.request("tools/list")[0] == 401, "旧令牌立即被拒绝")
             replacement = HttpClient(port, read_token())
-            replacement.initialize()
+            A.wait_until(lambda: replacement.initialize(wait_for_credentials=True), 10,
+                         "新凭据的会话可初始化")
             press(panel, "访问令牌管理")
             press(A.wait_dialog(inst.app, "访问令牌管理"), "撤销访问令牌")
             press(A.wait_dialog(inst.app, "撤销访问令牌？"), "撤销访问令牌")

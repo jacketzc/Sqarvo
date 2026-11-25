@@ -1,11 +1,7 @@
 """pytest 夹具 + 结构化报告器（UI 功能测试专用）。
 
-- 每个实例一套隔离的 XDG 目录（config/data/state）+ 独立 SQLite 文件，绝不触碰
-  用户 `~/.config/sqarvo` 或真实数据库。
-- 实例经 `SQARVO_QA_APP_ID` 与用户正在运行的窗口共存（前端 AGENTS §13 验收通道）。
-- `--qa-exit-after-ms` 看门狗兜底：即使本进程被 Ctrl-C 掐死，应用也会自杀退出。
-- 输出契约（根 AGENTS §13 / 任务 §7）：成功只打摘要；失败打步骤级诊断并落盘
-  完整可访问性子树到 tests/ui/logs/，常规输出不含树、日志、截图。
+- 统一入口先建立显示、D-Bus 与 scope 隔离，夹具再为各应用实例分配独立数据和端点。
+- 失败时将语义树和应用文本日志写入本次运行的诊断目录。
 """
 from __future__ import annotations
 
@@ -15,17 +11,17 @@ import shutil
 import signal
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
-HERE = Path(__file__).parent
-UIROOT = HERE
-RESULTS_DIR = UIROOT / "results"
-LOGS_DIR = UIROOT / "logs"
+scope = os.environ.get("SQARVO_UI_SCOPE", "")
+run_dir = os.environ.get("SQARVO_UI_RUN_DIR", "")
+WORK_DIR = Path(run_dir) / "work"
+RESULTS_DIR = Path(os.environ.get("SQARVO_UI_ARTIFACTS", ""))
+LOGS_DIR = RESULTS_DIR / "logs"
 
 import gi
 gi.require_version("Atspi", "2.0")
@@ -38,23 +34,6 @@ WATCHDOG_MS = int(os.environ.get("SQARVO_UI_WATCHDOG_MS", "420000"))
 READY_TIMEOUT = float(os.environ.get("SQARVO_UI_READY_TIMEOUT", "40"))
 
 
-def _bin_path() -> Path:
-    env = os.environ.get("SQARVO_UI_BIN")
-    if env:
-        return Path(env)
-    repo = UIROOT.parents[2] / "frontend/linux/target/release/sqarvo-desktop"
-    if repo.exists():
-        return repo
-    local = Path.home() / ".local/bin/sqarvo-desktop"
-    if local.exists():
-        return local
-    pytest.exit("UI TEST: FAIL\nError: 找不到 sqarvo-desktop（构建它或设 SQARVO_UI_BIN）",
-                returncode=3)
-    raise SystemExit(3)  # pytest.exit 正常会抛异常，这行只是类型完备
-
-
-BIN = _bin_path()
-
 # ---------- 环境可行性门 ----------
 
 def _atspi_usable():
@@ -66,19 +45,27 @@ def _atspi_usable():
         return f"{e!r}"
 
 
-USABLE = _atspi_usable()
-
-
 def pytest_configure(config):
-    if USABLE is not True:
-        pytest.exit(f"UI TEST: FAIL\nError: AT-SPI 不可用（{USABLE}）：需要运行中的 GNOME/Wayland 会话",
+    if not (
+        scope and run_dir
+        and Path("/proc/self/cgroup").read_text().strip().endswith(f"/{scope}")
+        and os.environ.get("DBUS_SESSION_BUS_ADDRESS", "").startswith(f"unix:path={run_dir}/session,")
+        and os.environ.get("XAUTHORITY") == f"{run_dir}/Xauthority"
+        and os.environ.get("GDK_BACKEND") == "x11"
+        and "WAYLAND_DISPLAY" not in os.environ
+    ):
+        pytest.exit("UI TEST: BLOCKED\nError: 请通过 scripts/run-ui-tests-isolated.sh 运行",
+                    returncode=3)
+    usable = _atspi_usable()
+    if usable is not True:
+        pytest.exit(f"UI TEST: BLOCKED\nError: 隔离 AT-SPI 不可用（{usable}）",
                     returncode=3)
     # 防呆：总线的 sqarvo 应用根唯一（残留进程会干扰定位）。
     stale = [c for i in range(Atspi.get_desktop(0).get_child_count())
              if (c := Atspi.get_desktop(0).get_child_at_index(i)) is not None
              and "sqarvo" in (c.get_name() or "").lower()]
     if stale:
-        pytest.exit("UI TEST: FAIL\nError: AT-SPI 上有残留 sqarvo 实例，请先退出它",
+        pytest.exit("UI TEST: BLOCKED\nError: 本次隔离 AT-SPI 会话已有 Sqarvo 实例",
                     returncode=3)
 
 
@@ -92,7 +79,7 @@ class UiInstance:
 
     def __init__(self, tag: str, fresh: bool = True, db: bool = True):
         self.tag = tag
-        self.home = UIROOT / ".work" / tag
+        self.home = WORK_DIR / tag
         if fresh:
             shutil.rmtree(self.home, ignore_errors=True)
         for sub in ("config", "data", "state", "cache"):
@@ -109,7 +96,7 @@ class UiInstance:
         self.runtime = None
 
     def start(self, autoconnect=False, *, extra_args=()):
-        args = [str(BIN), *extra_args]
+        args = [os.environ["SQARVO_UI_BIN"], *extra_args]
         if autoconnect:
             self.profile = self.home / "profile.json"
             self.profile.write_text(json.dumps(
@@ -118,7 +105,7 @@ class UiInstance:
             args += ["--qa-profile", str(self.profile)]
         args += ["--qa-exit-after-ms", str(WATCHDOG_MS)]
         # Keep the backend socket private and short enough for AF_UNIX.
-        self.runtime = tempfile.TemporaryDirectory(prefix="sq-ui-", dir="/tmp")
+        self.runtime = tempfile.TemporaryDirectory(prefix="ipc-", dir=run_dir)
         endpoint = Path(self.runtime.name) / "sqarvo" / "backend-endpoint.json"
         env = dict(os.environ)
         env.update({
@@ -126,13 +113,16 @@ class UiInstance:
             "XDG_DATA_HOME": str(self.home / "data"),
             "XDG_STATE_HOME": str(self.home / "state"),
             "XDG_CACHE_HOME": str(self.home / "cache"),
+            # Share the runtime with the companion and MCP CLI. The companion
+            # supervisor derives this same directory from SQARVO_ENDPOINT_FILE.
+            "XDG_RUNTIME_DIR": self.runtime.name,
             "SQARVO_ENDPOINT_FILE": str(endpoint),
             "SQARVO_QA_APP_ID": f"io.sqarvo.Sqarvo.UITest.P{os.getpid()}.{self.tag}",
         })
         self.env = env
         _INSTANCES.append(self)
         self._log_handle = self.log_path.open("wb")
-        self.proc = subprocess.Popen(args, env=env, start_new_session=True,
+        self.proc = subprocess.Popen(args, cwd=self.home, env=env, start_new_session=True,
                                      stdout=subprocess.DEVNULL,
                                      stderr=self._log_handle)
         self.app = A.wait_app("sqarvo-desktop", timeout=READY_TIMEOUT)
@@ -234,7 +224,7 @@ _DURATIONS = {}
 
 def pytest_runtest_logreport(report):
     _DURATIONS[report.nodeid] = _DURATIONS.get(report.nodeid, 0.0) + report.duration
-    if report.when == "call" or (report.when == "setup" and report.outcome != "passed"):
+    if report.when == "call" or report.failed or (report.when == "setup" and report.skipped):
         entry = {
             "test": report.nodeid.split("::")[-1],
             "outcome": report.outcome,
@@ -258,10 +248,13 @@ def pytest_exception_interact(node, call, report):
         inst = next((i for i in reversed(_INSTANCES) if i.app_alive()), None)
         if inst is None:
             return
+        LOGS_DIR.mkdir(exist_ok=True)
+        name = report.nodeid.replace("::", "_")
+        if inst.log_path.is_file():
+            shutil.copyfile(inst.log_path, LOGS_DIR / f"{name}.log")
         frame = inst.frame()
         dump = A.dump_tree(frame)
-        LOGS_DIR.mkdir(exist_ok=True)
-        path = LOGS_DIR / f"{report.nodeid.replace('::', '_')}.txt"
+        path = LOGS_DIR / f"{name}.txt"
         path.write_text(
             f"step={ops.CURRENT.get('step')}\n--- accessible tree ---\n{dump}\n",
             encoding="utf-8")
@@ -270,14 +263,14 @@ def pytest_exception_interact(node, call, report):
         print(f"[diagnostics] 采集失败：{e}")
 
 
-def pytest_terminal_summary(terminalreporter, *args, **kwargs):
+def pytest_terminal_summary(terminalreporter, exitstatus):
     tests = _REPORT["tests"]
     passed = sum(1 for t in tests if t["outcome"] == "passed")
     failed = sum(1 for t in tests if t["outcome"] == "failed")
     skipped = terminalreporter.stats.get("skipped", [])
     dur = time.time() - _REPORT["started"]
     lines = []
-    verdict = "PASS" if failed == 0 else "FAIL"
+    verdict = "PASS" if exitstatus == 0 else "FAIL"
     lines.append(f"UI TEST: {verdict}")
     lines.append(f"Passed: {passed}")
     lines.append(f"Failed: {failed}")

@@ -10,6 +10,7 @@ import select
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -100,10 +101,7 @@ class McpClient:
 
 
 def run_gtk_qa(desktop, environment, *args):
-    command = [
-        "dbus-run-session", "--", desktop, "--qa-exit-after-ms", "6000",
-        *args,
-    ]
+    command = [desktop, "--qa-exit-after-ms", "6000", *args]
     with subprocess.Popen(
         command,
         env=environment,
@@ -309,8 +307,18 @@ def main():
     for binary in ("desktop", "backend", "mcp"):
         parser.add_argument(f"--{binary}", required=True, type=lambda path: Path(path).resolve())
     args = parser.parse_args()
-    if not os.environ.get("DISPLAY"):
-        parser.error("an X11 display is required; run with xvfb-run -a on a headless host")
+    scope = os.environ.get("SQARVO_UI_SCOPE", "")
+    run = os.environ.get("SQARVO_UI_RUN_DIR", "")
+    if not (
+        scope and run
+        and Path("/proc/self/cgroup").read_text().strip().endswith(f"/{scope}")
+        and os.environ.get("DBUS_SESSION_BUS_ADDRESS", "").startswith(f"unix:path={run}/session,")
+        and os.environ.get("XAUTHORITY") == f"{run}/Xauthority"
+        and os.environ.get("GDK_BACKEND") == "x11"
+        and "WAYLAND_DISPLAY" not in os.environ
+    ):
+        print("UI TEST: BLOCKED\nError: run via scripts/run-ui-tests-isolated.sh --gtk-tests", file=sys.stderr)
+        return 3
     for path in vars(args).values():
         if not path.is_file() or not os.access(path, os.X_OK):
             parser.error(f"not an executable file: {path}")
@@ -320,4 +328,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

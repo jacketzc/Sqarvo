@@ -138,6 +138,19 @@ def expand_tree_row(row):
     return click(btn)
 
 
+def open_table_for_qa(inst, name):
+    """走与双击 / 回车同一个 GtkListView::activate 信号准备表数据页。"""
+    inst.start(autoconnect=True, extra_args=(
+        "--qa-tree-expand", "UITestDB",
+        "--qa-tree-expand", "main",
+        "--qa-tree-expand", "main",
+        "--qa-tree-activate", name,
+    ))
+    frame = inst.frame()
+    find_one(frame, role_in=("button",), name="开始事务", timeout=15)
+    return frame
+
+
 # ---------- SQL 页 ----------
 
 def query_tab_names(frame):

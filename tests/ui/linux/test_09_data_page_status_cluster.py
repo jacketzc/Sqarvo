@@ -9,35 +9,14 @@ from ops import expect, step
 pytestmark = pytest.mark.sql
 
 
-def _open_widgets_table(frame):
-    """与 test_08 相同路径打开 widgets 表，等待工具条出现。"""
-    conn_row = ops.find_row(frame, "uitest.db")
-    expect(conn_row is not None, "连接行存在", ops.tree_rows(frame)[:4])
-    if ops.find_row(frame, "main") is None:
-        ops.expand_tree_row(conn_row)
-    main = A.wait_until(lambda: ops.find_row(frame, "main"), 10, "main 库行出现")
-    if ops.find_row(frame, "Tables") is None:
-        ops.expand_tree_row(main)
-    tables = A.wait_until(lambda: ops.find_row(frame, "Tables"), 10, "Tables 分组出现")
-    ops.expand_tree_row(tables)
-    widgets = A.wait_until(lambda: ops.find_row(frame, "widgets"), 15, "widgets 表行出现")
-    actions = A.action_names(widgets)
-    A.click(widgets, actions.index("activate") if "activate" in actions else 0)
-    A.wait_until(
-        lambda: A.query(frame, role_in=("button",), name="开始事务"),
-        15, "表数据页工具条出现（「开始事务」在场）")
-
-
-def test_insert_hint_goes_into_status_cluster_tooltip(app_connected):
+def test_insert_hint_goes_into_status_cluster_tooltip(ui_instance):
     """新增行的普通提示不占可见过程消息位，只写进状态圆点的 tooltip。
 
     注册表组件: data_page.toolbar.status_cluster（note_action 收进圆点「最近一次操作」）。
     只断言交互、可访问性名称与文案是否存在，不做样式/截图断言（ADR 0029）。
     """
-    frame = app_connected.frame()
-
     with step("open_table"):
-        _open_widgets_table(frame)
+        frame = ops.open_table_for_qa(ui_instance("insert_status_tip"), "widgets")
 
     with step("add_row_via_status_bar"):
         adds = A.query(frame, role_in=("button",), name="新增行：在当前表末尾新增一行")

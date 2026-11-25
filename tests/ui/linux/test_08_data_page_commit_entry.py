@@ -8,31 +8,14 @@ from ops import expect, step
 pytestmark = pytest.mark.sql
 
 
-def test_commit_entry_is_status_bar_apply_only(app_connected):
+def test_commit_entry_is_status_bar_apply_only(ui_instance):
     """打开表后工具条没有「提交」按钮，状态栏「应用」在场且无脏行时禁用。
 
     注册表组件: data_page.toolbar.commit（removed）、status_bar.row1.ops.apply、
     data_page.toolbar.begin_txn。只断言交互与可访问性名称 / 状态，不做样式或截图断言。
     """
-    frame = app_connected.frame()
-
     with step("open_table"):
-        conn_row = ops.find_row(frame, "uitest.db")
-        expect(conn_row is not None, "连接行存在", ops.tree_rows(frame)[:4])
-        if ops.find_row(frame, "main") is None:
-            ops.expand_tree_row(conn_row)
-        main = A.wait_until(lambda: ops.find_row(frame, "main"), 10, "main 库行出现")
-        if ops.find_row(frame, "Tables") is None:
-            ops.expand_tree_row(main)
-        tables = A.wait_until(lambda: ops.find_row(frame, "Tables"), 10, "Tables 分组出现")
-        ops.expand_tree_row(tables)
-        widgets = A.wait_until(lambda: ops.find_row(frame, "widgets"), 15, "widgets 表行出现")
-        # 与用户双击 / 回车同一条 GtkListView::activate。
-        actions = A.action_names(widgets)
-        A.click(widgets, actions.index("activate") if "activate" in actions else 0)
-        A.wait_until(
-            lambda: A.query(frame, role_in=("button",), name="开始事务"),
-            15, "表数据页工具条出现（「开始事务」在场）")
+        frame = ops.open_table_for_qa(ui_instance("commit_entry"), "widgets")
 
     with step("no_toolbar_commit_button"):
         commits = A.query(frame, role_in=("button",), name="提交")

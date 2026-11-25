@@ -46,14 +46,14 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 ```bash
 (cd backend && cargo build -p sqarvo-backend-service -p sqarvo-mcp)
 (cd frontend/linux && cargo build)
-python3 tests/integration/gtk_mcp_access.py \
-  --desktop frontend/linux/target/debug/sqarvo-desktop \
-  --backend backend/target/debug/sqarvo-backend \
-  --mcp backend/target/debug/sqarvo-mcp
+scripts/run-ui-tests-isolated.sh --gtk-tests /usr/bin/python3 "$PWD/tests/integration/gtk_mcp_access.py" \
+  --desktop "$PWD/frontend/linux/target/debug/sqarvo-desktop" \
+  --backend "$PWD/backend/target/debug/sqarvo-backend" \
+  --mcp "$PWD/backend/target/debug/sqarvo-mcp"
 ```
 
-需要 Python 3、`dbus-run-session`、X11 显示和 Linux `/proc`。无桌面环境时，
-可将最后一条命令放在 `xvfb-run -a` 下运行。测试使用独立 D-Bus 会话、应用 ID、HOME 与 XDG 目录。
+环境要求见 [Linux UI 测试说明](../ui/linux/README.md)。测试在隔离 scope 内使用
+独立显示、D-Bus 会话、应用 ID、HOME 与 XDG 目录。
 两个场景分别从旧档案合流和 GTK 新建档案开始。GTK 经真实后端请求更新策略，场景内始终
 使用同一个 MCP 子进程。测试核对旧授权不继承、SQLite 查询结果、只读切换后仍拒绝写 SQL、
 关停后工具和资源拒绝及审计、删除档案即时撤销与 SQLite 文件描述符释放。

@@ -41,6 +41,9 @@ ui-test-env:
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{justfile_directory()}}"
+    mkdir -p tests/ui/linux/results
+    exec 9>tests/ui/linux/results/venv.lock
+    flock 9
     if [ ! -x tests/ui/linux/.venv/bin/python ]; then
         uv venv tests/ui/linux/.venv --python /usr/bin/python3 --system-site-packages
     fi
@@ -51,21 +54,21 @@ ui-test-smoke: ui-test-env
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{justfile_directory()}}"
-    tests/ui/linux/.venv/bin/python -m pytest tests/ui/linux -c tests/ui/linux/pytest.ini -m smoke
+    scripts/run-ui-tests-isolated.sh -m smoke
 
 # SQL：SQLite 连接、执行、结果校验、对象树导航
 ui-test-sql: ui-test-env
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{justfile_directory()}}"
-    tests/ui/linux/.venv/bin/python -m pytest tests/ui/linux -c tests/ui/linux/pytest.ini -m sql
+    scripts/run-ui-tests-isolated.sh -m sql
 
 # 全部 UI 功能测试
 ui-test-all: ui-test-env
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{justfile_directory()}}"
-    tests/ui/linux/.venv/bin/python -m pytest tests/ui/linux -c tests/ui/linux/pytest.ini
+    scripts/run-ui-tests-isolated.sh
 
 # 显式指定 Linux 端（Windows 端接入后 ui-test-win-* 同构；跨机时在本机调用对应 runner）
 ui-test-linux-all: ui-test-all

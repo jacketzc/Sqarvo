@@ -8,30 +8,58 @@
 
 ## 依赖与准备
 
-- 运行环境：GNOME Wayland 桌面会话（AT-SPI 总线可用，`toolkit-accessibility=true`）。
-- 被测程序：`frontend/linux/target/release/sqarvo-desktop`（缺省自动发现；
-  可用 `SQARVO_UI_BIN=<path>` 覆盖，如指向 `~/.local/bin/sqarvo-desktop`）。
-- Python：系统 `/usr/bin/python3` 的 `gi` + `Atspi 2.0`；venv 只装 pytest：
-  `just ui-test-env`（需 `uv`）。
+- Linux 需有可访问的 systemd 254+ 用户管理器、cgroup v2 和已下放的 CPU、内存与 I/O
+  controller。支持使用无宿主图形会话的用户级 runner。
+- 图形与会话依赖为 Xvfb、Openbox、xauth、xdpyinfo、xprop、D-Bus、AT-SPI 和 GNOME
+  Keyring。Ubuntu/Debian 对应包为 `xvfb openbox xauth x11-utils dbus-daemon libglib2.0-bin
+  at-spi2-core gnome-keyring python3-gi gir1.2-atspi-2.0 gir1.2-secret-1`。先确认本机缺哪些包，再安装。
+- 在 scope 外构建前端和后端、执行 `just ui-test-env`（需 `uv`）。入口依次查找仓库
+  release/debug 产物及已安装前端，可用 `SQARVO_UI_BIN`、`SQARVO_BACKEND_BIN`、
+  `SQARVO_MCP_BIN` 明确选择。HTTP E2E 还需 PATH 上的 Codex CLI 和 MCP 二进制。
 
 ## 命令
 
+```sh
+just ui-test-smoke
+just ui-test-sql
+just ui-test-all
+scripts/run-ui-tests-isolated.sh tests/ui/linux/test_03_sql.py::test_execute_sql -q
+scripts/run-ui-tests-isolated.sh -k 'inspector or refresh'
+bash tests/integration/run_gtk_mcp_http.sh
 ```
-just ui-test-smoke   # 启动 / 主窗口可访问性 / 对话框 / 关窗断开
-just ui-test-sql     # SQLite 连接、SQL 执行、结果校验、对象树导航
-just ui-test-all     # 全部
+
+入口把额外参数交给 pytest，无场景参数时按 `pytest.ini` 发现全量用例。可从仓库根传
+`tests/ui/linux/…` 或传绝对路径。每个入口调用独立运行，支持并行，单次运行内按 pytest
+默认顺序执行（夹具与 AT-SPI 选择器按单 worker 设计）。
+
+可一起运行 `test_14_inspector_no_cache.py` 与 `test_15_refresh_regressions.py`。
+后者通过 SQL 编辑器执行 CREATE、RENAME、DROP，用独立 SQLite 连接只读确认提交，
+再检查重入 Objects 的列表与请求次数。SQLite 场景从连接行建立 SQL 标签，再选回
+Tables 作用域。
+
+需要显示的 Rust 忽略测试也走同一入口。先在 scope 外构建并读取 Cargo 输出的测试二进制
+绝对路径，再在 scope 内执行测试：
+
+```sh
+cargo test --manifest-path frontend/linux/Cargo.toml --bin sqarvo-desktop --no-run
+scripts/run-ui-tests-isolated.sh --gtk-tests /绝对路径/测试二进制 --ignored --test-threads=1
 ```
 
-单条场景：`tests/ui/linux/.venv/bin/python -m pytest tests/ui/linux/test_03_sql.py::test_execute_sql -c tests/ui/linux/pytest.ini -q`
+### Scope 配置
 
-`test_14_inspector_no_cache.py` 与 `test_15_refresh_regressions.py` 可一起执行。后者通过
-SQL 编辑器执行并验证 CREATE、RENAME、DROP，使用独立 SQLite 连接只读确认提交，
-再检查重入 Objects 的列表与请求次数。SQLite 不支持显式切换请求库，测试先从连接行
-建立 SQL 标签，再选回 Tables 作用域。确定性的分页错误、列响应与同名库统计测试
-在 GTK 会话里用 `cargo test --manifest-path frontend/linux/Cargo.toml -- --ignored --test-threads=1` 执行。
+| 环境变量 | 默认值 | 作用 |
+|---|---:|---|
+| `SQARVO_UI_CPU_QUOTA` | `200%` | CPU 时间上限 |
+| `SQARVO_UI_CPU_WEIGHT` | `20` | CPU 相对权重 |
+| `SQARVO_UI_MEMORY_HIGH` | `3G` | 内存回收与节流阈值 |
+| `SQARVO_UI_MEMORY_MAX` | `5G` | 内存硬上限 |
+| `SQARVO_UI_IO_WEIGHT` | `20` | I/O 相对权重 |
+| `SQARVO_UI_TIMEOUT` | `900` | 单次执行时限（秒，包含隔离启动） |
 
-`test_06_mcp_access.py` 的外部刷新用例需要 `SQARVO_MCP_BIN`，或与
-`SQARVO_BACKEND_BIN` 位于同一目录的 `sqarvo-mcp`。
+作用域内会从 cgroup v2 读回并检查配置。缺失或不匹配时返回 BLOCKED。若用户级 cgroup
+没有 I/O controller，可显式设置 `SQARVO_UI_IO_WEIGHT=off`，入口会报告该限制已关闭；
+CPU、内存与会话隔离依然是必需项。无 systemd 用户管理器或缺少所需 controller 的 CI
+runner 会明确报告 BLOCKED。测试入口不修改宿主 systemd 配置。
 
 ## 输出契约
 
@@ -44,7 +72,7 @@ Failed: 0
 Duration: 41.2s
 ```
 
-失败（只展开失败项；完整可访问性子树落盘 `tests/ui/linux/logs/`）：
+失败（只展开失败项；可访问性子树与应用文本日志落盘到本次运行的 `logs/`）：
 
 ```
 UI TEST: FAIL
@@ -53,11 +81,13 @@ Step: verify_result
 Expected: 3 rows
 Actual: 0 rows
 Error: Query result mismatch
-Diagnostic: tests/ui/linux/logs/test_03_sql.py_test_execute_sql.txt
+Diagnostic: tests/ui/linux/results/run.…/logs/test_03_sql.py_test_execute_sql.txt
 ```
 
-机器可读报告：`tests/ui/linux/results/report.json`（每条用例 outcome/duration/step/expected/actual）。
-退出码：0 全过；1 有失败；3 环境不可行（AT-SPI 不可用 / 找不到二进制 / 残留实例）。
+入口打印独立的 `tests/ui/linux/results/run.*/` 路径，其中 `report.json` 记录用例
+outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务文本诊断。
+启动失败或中断时可能只有诊断日志。退出码 0 为通过，1 为用例失败，3 为环境 BLOCKED，
+124 为超时，130/143 分别为 SIGINT/SIGTERM。其余 pytest 退出码原样传递。
 
 ## 分层
 
@@ -72,27 +102,26 @@ Diagnostic: tests/ui/linux/logs/test_03_sql.py_test_execute_sql.txt
 
 ## 隔离与确定性
 
-- 每个实例独立 `XDG_CONFIG_HOME/DATA/STATE`（`tests/ui/linux/.work/<tag>`）+ 独立 SQLite
-  测试库（夹具建表 `widgets` 三行合成数据）；后端使用独立临时套接字目录。测试结束删目录、清理进程组。
-- 实例经 `SQARVO_QA_APP_ID` 与用户正在运行的窗口共存；`--qa-exit-after-ms` 看门狗
-  兜底防止测试崩溃留下常驻进程。
-- 等待全部是「条件 + 超时轮询」；无裸 `sleep`。
-- 绝不触碰用户 `~/.config/sqarvo`、真实数据库与系统凭据库（SQLite 无密码路径）。
+- 每次运行自动分配 Xvfb DISPLAY，禁止监听 X11 TCP，使用运行专属 Xauthority。
+  Openbox、GTK 和 AT-SPI 共用该 X11 显示，GTK 使用 Cairo，宿主 Wayland 与 D-Bus
+  地址不进入测试环境。
+- 每次运行使用临时 HOME、XDG config/data/cache/state/runtime、私有会话 D-Bus 与
+  专用 Secret Service。只启动所需的 AT-SPI 和凭据服务，凭据来自合成测试数据。
+- 每个应用实例另有独立 XDG 配置层、合成 SQLite 库、显式 Unix Socket 端点和 QA 应用
+  ID。连接档案随实例保存，后端由前端启动，MCP HTTP 用例在本地回环动态选择端口。
+- 正常退出、失败、超时和信号中断均按本次 scope 停止进程并清除临时目录。应用看门狗与
+  scope 运行时限提供兜底。外层入口被 SIGKILL 时，scope 到期会回收进程，临时目录
+  可能仍需清理。测试通过语义 API 操作控件，无 `/dev/uinput` 依赖。
 
-## 已知限制（如实记录，不要绕过）
+## 现有用例限制
 
-1. **Wayland 禁止输入合成**：`Atspi.generate_keyboard_event` / `Component.click` /
-   `grab_focus` 均返回 `atspi_error`（实测）。因此无法模拟按键与坐标点击。
-   受影响场景改走等价语义通道：快捷键 → 窗口 GAction（`win.execute` 等，AT-SPI 直接
-   可触发，与快捷键落点是同一个 action）。
-2. **`adw::ComboRow` 驱动下拉无法外部切换**：列表虚拟折叠、无 Action、点不开弹窗
-   （限制 1 的后果）。SQLite 连接的创建经应用自带的 `--qa-profile` 验收通道
-   （前端 AGENTS §13：填相同控件、触发相同回调），其余对话框操作（打开/取消/
-   控件在位与可用性）全部是真实 AT-SPI 点击。
-3. **主动「断开连接」只有手势右键菜单入口**：外部无法触发（限制 1）。
-   `test_05_disconnect.py` 以「关窗 → 会话回收 → 重启未连接」覆盖可观察的断开语义，
-   菜单入口用 skip + 原因显式挂账，等应用提供非手势入口后补测。
-4. 通过功能测试 ≠ 视觉正确（任务 §9 原文）。
+- 测试沿用 AT-SPI Action、EditableText 和 GAction。建 SQLite 档案走 `--qa-profile`，
+  由同一控件回调处理。鼠标手势入口仍未纳入现有覆盖，主动断开菜单保留显式 skip，
+  关窗、后端会话回收及重启未连接仍由现有用例验证。
+- 新行编辑器双击入口保留原有 skip，初始状态规则由 Linux Rust 单测覆盖。
+- 功能验收范围为交互、状态及可访问性语义。
+- MCP HTTP 用例的端口由内核临时分配，释放后再交给应用绑定。并行时若被其他本机进程
+  抢占，相关用例会报告失败。
 
 ## Agent 使用约定（任务 §9）
 
@@ -105,8 +134,4 @@ grep 本目录找现有用例，该端缺失覆盖时**先补用例再验收**�
 frontend/AGENTS §13）。本框架是三端功能用例库模式的首发实现，Windows（UIA）/
 macOS（XCUITest）建库时以本目录三层结构为参照。
 
-HTTP E2E 需要 GTK、Codex CLI、GNOME Keyring 和系统 Python 的 Secret typelib。
-构建前端及两个后端后，从 GNOME Wayland 会话运行
-`bash tests/integration/run_gtk_mcp_http.sh`。脚本使用隔离的会话总线、可访问性注册表、
-Secret Service 和 SQLite 数据。使用 `SQARVO_UI_BIN`、`SQARVO_BACKEND_BIN`、
-`SQARVO_MCP_BIN` 可指定被测二进制。复制用例验收 GDK 接受内容后的界面反馈，复制文本另由 GTK 单测断言。
+HTTP E2E 中，复制场景验收 GDK 接受内容后的界面反馈；实际复制文本另由 GTK 单测断言。

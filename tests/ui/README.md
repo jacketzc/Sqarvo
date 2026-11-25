@@ -42,8 +42,8 @@ tests/ui/
 
    失败逐条给 `Test / Step / Expected / Actual / Error / Diagnostic`；
    完整控件树 dump 等详细诊断**只在失败时**落盘到该端 `logs/`，不进常规输出。
-3. **机器可读报告**：该端 `results/report.json`（每条用例 outcome/duration/step/
-   expected/actual）。
+3. **机器可读报告**：该端结果目录中的 `report.json`（每条用例 outcome/duration/step/
+   expected/actual）。支持并行的入口为每次运行分配独立结果目录。
 4. **退出码**：0 全过；1 有失败；3 环境不可行（缺依赖/缺二进制/残留实例）——
    环境不可行按根 §13 三态报告为 **BLOCKED + 原因**，不得伪造通过。
 5. **隔离**：每实例独立配置/数据目录（Linux `XDG_*_HOME`、Windows 临时
@@ -71,3 +71,6 @@ tests/ui/
   **本机分派**——在当前平台跑当前平台的用例库（Linux 已接入；Windows 接入后同义）。
 - `just ui-test-linux-all`（已实现）与未来的 `ui-test-win-*`：**显式指定端**，
   用于 CI 矩阵或跨机调度场景。
+
+Linux 的 `just` 目标与 GTK 集成测试入口均转发到 `scripts/run-ui-tests-isolated.sh`。
+指定场景、环境要求和诊断路径见 [Linux 测试说明](linux/README.md)。
