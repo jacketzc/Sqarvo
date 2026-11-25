@@ -29,6 +29,7 @@ impl_notes = [
   "面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。",
   "钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。",
   "临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。",
+  "Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。",
 ]
 
 [[component.interaction]]
@@ -46,8 +47,8 @@ source = "src/ui.rs:2224、src/inspector.rs:723"
 [[component.interaction]]
 trigger = "load"
 precondition = "切换到表数据标签"
-result = "面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL）"
-source = "src/tabs.rs:1852、src/ui.rs:2328、src/inspector.rs:849"
+result = "面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL）；每次进入按目标子页重新查库"
+source = "src/inspector.rs:857、src/inspector.rs:878"
 
 [[component.interaction]]
 trigger = "load"
@@ -70,24 +71,30 @@ source = "src/tabs.rs:1834、src/ui.rs:2314"
 [[component.interaction]]
 trigger = "load"
 precondition = "标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页）"
-result = "同键（pin_identity = 标签|目标）不重渲染、不重发请求；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次"
-source = "src/ui.rs:2309、src/ui.rs:1475、src/ui.rs:2330"
+result = "同键（pin_identity = 标签|目标）只拦截同一次操作的重复状态事件，不重复渲染、不重复发请求；用户重新进入同一对象或按 F5 主动刷新不受去重拦截，仍重新查库；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次"
+source = "src/ui.rs:1549、src/ui.rs:2366"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "刷新对象树（F5 / 右键刷新）"
-result = "钉住视图的对象缓存整体作废（结构可能已变，旧读数不再可信），下一次展示重新读取"
-source = "src/ui.rs:2179、src/inspector.rs:921"
+result = "不沿用历史读数，下一次展示重新查库；F5 主动刷新即使对象身份没变也强制重查当前 Inspector"
+source = "src/ui.rs:2805、src/inspector.rs:924"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "数据库连接断开（浏览会话失效）"
+result = "清理当前展示与错误状态，使在途元数据响应失效；重连后按新会话重新查询，不展示旧会话的元数据"
+source = "src/inspector.rs:957、src/ui.rs:4152"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c5d3b565bdcc"
-evidence = "QA tabs 脚本 9/9 断言 OK：切到表数据标签信息面板 page=table、table_page=info，切到查询标签 page=catalog；GetDdl 单对象全程 1 次、3 次复入走缓存；cargo test：pin_identity_keys_the_tab_target_and_survives_row_growth、pin_identity_of_the_objects_page_is_the_tree_selection"
+spec_hash = "62ccd0426dd0"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py 5/5 通过（真实请求计数）：首访仅 GetDdl、DDL→表信息→DDL 各查目标子页、A→B→A 与 F5 均重查、外部 ALTER TABLE 后刷新见新列、快速 A→B→A 与断连清理；cargo test 503 通过（含 each_pane_requests_only_its_own_metadata、LoadEpoch 过期令牌）"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "e51804ae710f"
-note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住与钉住缓存未实现（面板仍只由选中驱动），跟进 Issue #197。"
+spec_hash = "62ccd0426dd0"
+note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。"
 
 [component.sync.macos]
 state = "none"
@@ -295,8 +302,8 @@ source = "src/inspector.rs:665、src/inspector.rs:691"
 [[component.interaction]]
 trigger = "load"
 precondition = "切换标签（看的还是同一个对象）"
-result = "只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息；不重发 GetDdl / GetColumns，也不重建标签"
-source = "src/inspector.rs:798、src/ui.rs:2248"
+result = "只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息并按该页重新查库；不重建标签"
+source = "src/inspector.rs:878、src/inspector.rs:924"
 
 [[component.interaction]]
 trigger = "load"
@@ -306,12 +313,12 @@ source = "src/inspector.rs:675、src/inspector.rs:732、src/inspector.rs:735"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f893ab606b91"
+spec_hash = "8419e9c1a27d"
 evidence = "§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "f893ab606b91"
+spec_hash = "8419e9c1a27d"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1048；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1066"
 note = "表 / 视图的标题、两个独立按钮与两页切换都实现了；但序列 / 函数 / 过程 / 类型照样出现切换条并会去读列（规范要求这类对象只显示 DDL 页、切换条隐藏），标题也没有完整路径 tooltip。"
 
@@ -368,17 +375,17 @@ impl_notes = ["文字标签「DDL」，tooltip 同时登记为可访问名。", 
 [[component.interaction]]
 trigger = "click"
 precondition = "当前是表 / 视图视图"
-result = "切到 DDL 页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中"
-source = "src/inspector.rs:584、src/inspector.rs:817"
+result = "切到 DDL 页；选择记到当前标签（标签生命周期内有效），重发 GetDdl 查询目标子页；不改变标签与树的选中"
+source = "src/inspector.rs:972、src/inspector.rs:1064"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "bf0e4238b118"
+spec_hash = "1fab492e67c3"
 evidence = "§6 切换表页；inspector.rs::install_toggles / set_pane"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "bf0e4238b118"
+spec_hash = "1fab492e67c3"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1053"
 
 [component.sync.macos]
@@ -400,17 +407,17 @@ impl_notes = ["文字标签「表信息」，tooltip 同时登记为可访问名
 [[component.interaction]]
 trigger = "click"
 precondition = "当前是表 / 视图视图"
-result = "切到表信息页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中"
-source = "src/inspector.rs:584、src/inspector.rs:821"
+result = "切到表信息页；选择记到当前标签（标签生命周期内有效），只重查 GetColumns / GetPrimaryKey / ListNodes；不改变标签与树的选中"
+source = "src/inspector.rs:972、src/inspector.rs:1070"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e4ba94b9a39a"
+spec_hash = "84101618c781"
 evidence = "§6 切换表页；inspector.rs::install_toggles / apply_pane"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "e4ba94b9a39a"
+spec_hash = "84101618c781"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1058"
 
 [component.sync.macos]
@@ -434,18 +441,18 @@ impl_notes = [
 
 [[component.interaction]]
 trigger = "load"
-precondition = "切到表信息页且列 / 主键 / 索引 / 触发器至少一项已返回"
-result = "按节渲染已读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码"
-source = "src/inspector.rs:1052、src/inspector.rs:1074、src/inspector.rs:1144"
+precondition = "切到表信息页（每次都重新查询列 / 主键 / 索引与触发器）"
+result = "按节渲染本次读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据"
+source = "src/inspector.rs:1070、src/inspector.rs:1250"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "caa397c3cab7"
+spec_hash = "179de5ff755e"
 evidence = "§6 表信息页；inspector.rs::render_table_info 的五节"
 
 [component.sync.windows]
 state = "partial"
-spec_hash = "caa397c3cab7"
+spec_hash = "179de5ff755e"
 note = "§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。"
 
 [component.sync.macos]
@@ -580,8 +587,8 @@ platform_notes.linux = "Linux 侧不单独设等宽字族：§5 要求 DDL 正�
 [[component.interaction]]
 trigger = "load"
 precondition = "切到 DDL 页（选中表 / 视图时默认落在这一页）"
-result = "发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」"
-source = "src/ddl.rs:232、src/ddl.rs:154、src/ddl.rs:168"
+result = "每次进入 / 切回都发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」；迟到响应在碰控件前按加载令牌丢弃"
+source = "src/ddl.rs:281、src/ddl.rs:337"
 
 [[component.interaction]]
 trigger = "load"
@@ -591,12 +598,12 @@ source = "src/ddl.rs:307、src/ddl.rs:317"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "7da31b7e4648"
+spec_hash = "478edaf882b5"
 evidence = "§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow"
 
 [component.sync.windows]
 state = "done"
-spec_hash = "7da31b7e4648"
+spec_hash = "478edaf882b5"
 evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1145；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1159"
 
 [component.sync.macos]

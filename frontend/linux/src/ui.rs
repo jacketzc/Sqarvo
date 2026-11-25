@@ -644,6 +644,8 @@ pub fn activate(app: &adw::Application) {
                         match workspace {
                             Some(workspace) => {
                                 workspace.tabs.mark_disconnected(&reason);
+                                // 旧会话的展示状态与在途响应一并作废，重连后按新会话重查。
+                                workspace.inspector.mark_disconnected();
                                 workspace.status().set_connection(None);
                                 workspace
                                     .status()
@@ -1530,10 +1532,19 @@ fn selection_identity(selection: &TreeSelection) -> String {
     }
 }
 
+/// 对象身份串（只用于重复 UI 事件去重，不是元数据缓存键）。
+fn object_identity(reference: &crate::proto::services::v1::ObjectRef) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        reference.session_id, reference.catalog, reference.schema, reference.name
+    )
+}
+
 /// 面板钉住的身份键：`标签|目标`（改动确认单 #1）。
 ///
-/// 同键 = 内容没变，`apply_pin` 不重渲染、不重发请求。已加载行数**不进**键：
-/// 翻页不是身份变化，复入钉住渲染时会新鲜注入（`show_table_pinned`）。
+/// 同键 = 这次用户操作的内容没变，`apply_pin` 不重复渲染、不重复发请求；面板本身
+/// 不按这个键复用历史元数据，重新进入 / 主动刷新仍会重新查库。已加载行数**不进**
+/// 键：翻页不是身份变化，复入钉住渲染时会新鲜注入（`show_table_pinned`）。
 /// `selection` 只在 `TabPin::Tree` 里参与（`Objects` 页的钉住目标 = 树选中）。
 fn pin_identity(
     tab_id: &str,
@@ -1549,7 +1560,7 @@ fn pin_identity(
         ),
         TabPin::Table { entry: Some(entry) } => format!(
             "{tab_id}|table|{}|{}",
-            crate::inspector::cache_key(&entry.reference),
+            object_identity(&entry.reference),
             entry.display_name
         ),
         TabPin::Table { entry: None } => format!("{tab_id}|table|pending"),
@@ -2220,11 +2231,8 @@ impl Workspace {
         let tree_slot: Rc<RefCell<Option<Rc<TreePanel>>>> = Rc::new(RefCell::new(None));
         let refresh: Rc<dyn Fn()> = {
             let tree_slot_for_cb = Rc::clone(&tree_slot);
-            let inspector_for_cache = Rc::clone(&inspector);
             Rc::new(move || {
                 eprintln!("[tree] t=+{}ms 刷新对象树", crate::qa::elapsed_ms());
-                // 结构可能已变：钉住视图的对象缓存一并作废（改动确认单 #1）。
-                inspector_for_cache.invalidate_cache();
                 if let Some(tree) = tree_slot_for_cb.borrow().as_ref() {
                     tree.reload();
                 }
@@ -2234,7 +2242,8 @@ impl Workspace {
         // ---- 信息面板：树选中渲染 + 标签钉住接线（改动确认单 #1）--------------
         // 面板内容跟着页面走：切到表数据标签钉这张表、切到查询标签钉它选择的库
         // （无库空态）、切到 `Objects` 页跟随树选中。`pinned` 记当前钉住的身份键，
-        // 同键的重复事件不重渲染、不重发请求；临时预览（别的标签上看树选中）不改
+        // 同键只拦截同一次操作的重复状态事件；用户重新进入 / 主动刷新仍会重查。
+        // 临时预览（别的标签上看树选中）不改
         // 钉住键，切走再回来即恢复该标签自己的内容。
         let pinned: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let render_selection: Rc<dyn Fn(TreeSelection)> = {
@@ -2528,7 +2537,8 @@ impl Workspace {
                         // 事务状态变了：跨标签提示跟着重算（#119）。
                         refresh_txn_hint(&inspector, &tree_slot, &tabs_slot);
                         // 标签或它的钉住目标变了：面板跟着页面切换内容（改动确认单 #1）。
-                        // 身份键没变就不重渲染、不重发请求——「表页选择」的记忆键
+                        // 身份键没变只说明这是重复状态事件，不重复渲染 / 请求；
+                        // 用户重新进入同一对象或 F5 刷新仍会重查——「表页选择」的记忆键
                         // 已并进钉住渲染（`show_table_pinned` 的 `tab_id`）。
                         apply_pin();
                     }
@@ -2803,6 +2813,8 @@ impl Workspace {
     /// 与「表 → 刷新当前表」、状态栏 `⟳` 同一条入口，保持排序 / 筛选、回到第 1 页，
     /// 有未提交更改时照旧被脏行守卫拒绝。其它标签（查询 / `Objects` / 启动态）走整棵树。
     fn refresh(&self) {
+        // 主动刷新不能被钉住身份去重拦截：对象没变也重新查当前子页。
+        self.inspector.force_reload();
         match self.refresh_target() {
             RefreshTarget::Table(name) => {
                 eprintln!(
@@ -4125,6 +4137,7 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
     dialog.set_close_response("cancel");
     {
         let registry = Rc::clone(&registry);
+        let state_for_clear = Rc::clone(state);
         let key = snapshot.key.clone();
         let name = snapshot.name.clone();
         let handled = Rc::new(Cell::new(false));
@@ -4135,6 +4148,15 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot) {
             eprintln!("[browse] 用户确认断开「{name}」（连接键 {key}）");
             registry.log_sessions("断开前");
             registry.disconnect(&key);
+            // 断开后不再信任面板上的任何元数据展示，统一清理（保守且简单）。
+            if let Some(inspector) = state_for_clear
+                .workspace
+                .borrow()
+                .as_ref()
+                .map(|workspace| Rc::clone(&workspace.inspector))
+            {
+                inspector.mark_disconnected();
+            }
             // 断开是异步的：稍后再数一次，前后两次会话数就是验收证据。
             let registry = Rc::clone(&registry);
             glib::timeout_add_local_once(Duration::from_millis(1_500), move || {

@@ -99,6 +99,9 @@ class UiInstance:
         self.db = self.home / "data" / "uitest.db"
         if db:
             _make_sqlite_db(self.db)
+        # 请求日志：只在本实例的隔离目录里，供请求计数断言读取（不含截图/视觉断言）。
+        self.log_path = self.home / "app.log"
+        self._log_handle = None
         self.profile = None
         self.proc = None
         self.app = None
@@ -121,11 +124,18 @@ class UiInstance:
         })
         self.env = env
         _INSTANCES.append(self)
+        self._log_handle = self.log_path.open("wb")
         self.proc = subprocess.Popen(args, env=env, start_new_session=True,
                                      stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+                                     stderr=self._log_handle)
         self.app = A.wait_app("sqarvo-desktop", timeout=READY_TIMEOUT)
         return self
+
+    def log_text(self):
+        """应用 stderr 快照（请求计数断言只数稳定的 `[inspector] 请求 …` 行）。"""
+        if not self.log_path.exists():
+            return ""
+        return self.log_path.read_text(encoding="utf-8", errors="replace")
 
     def frame(self):
         return ops.frame_of(self.app, timeout=READY_TIMEOUT)
@@ -146,6 +156,9 @@ class UiInstance:
             except subprocess.TimeoutExpired:
                 os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
                 self.proc.wait(timeout=5)
+        if self._log_handle is not None:
+            self._log_handle.close()
+            self._log_handle = None
         # 后端由桌面进程 PDEATHSIG 清理；这里只确认没有孤儿。
         time.sleep(0.3)
         for i in range(Atspi.get_desktop(0).get_child_count()):

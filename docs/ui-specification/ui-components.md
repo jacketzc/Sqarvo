@@ -1027,19 +1027,20 @@ kind `control` · status `active` · parent `dialogs.about`
 kind `area` · status `active`
 
 - 样式：槽位 `inspector`；尺寸 `inspector_width`、`inspector_min`、`inspector_max`、`inspector_gap`
-- 同步：Linux done（QA tabs 脚本 9/9 断言 OK：切到表数据标签信息面板 page=table、table_page=info，切到查询标签 page=catalog；GetDdl 单对象全程 1 次、3 次复入走缓存；cargo test：pin_identity_keys_the_tab_target_and_survives_row_growth、pin_identity_of_the_objects_page_is_the_tree_selection）；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住与钉住缓存未实现（面板仍只由选中驱动），跟进 Issue #197。）；macOS none
-- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py 5/5 通过（真实请求计数）：首访仅 GetDdl、DDL→表信息→DDL 各查目标子页、A→B→A 与 F5 均重查、外部 ALTER TABLE 后刷新见新列、快速 A→B→A 与断连清理；cargo test 503 通过（含 each_pane_requests_only_its_own_metadata、LoadEpoch 过期令牌））；Windows partial（§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。）；macOS none
+- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | drag | 面板常驻 | 拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹 | `src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235` |
 | load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2224、src/inspector.rs:723` |
-| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL） | `src/tabs.rs:1852、src/ui.rs:2328、src/inspector.rs:849` |
+| load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL）；每次进入按目标子页重新查库 | `src/inspector.rs:857、src/inspector.rs:878` |
 | load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1863、src/ui.rs:2335、src/tree.rs:1905` |
 | load | 切换到查询标签且没有选择库（真值与请求值都为空） | 面板落空态页，不编造库信息 | `src/ui.rs:2343、src/inspector.rs:669` |
 | load | 切换到 Objects 固定页 | 面板跟随对象树当前选中：连接 → 连接视图、库 / schema → 库视图、表 / 视图 / 物化视图 → 表视图（与既有「按选中种类换页」同一语义） | `src/tabs.rs:1834、src/ui.rs:2314` |
-| load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）不重渲染、不重发请求；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:2309、src/ui.rs:1475、src/ui.rs:2330` |
-| load | 刷新对象树（F5 / 右键刷新） | 钉住视图的对象缓存整体作废（结构可能已变，旧读数不再可信），下一次展示重新读取 | `src/ui.rs:2179、src/inspector.rs:921` |
+| load | 标签状态事件再次到达但钉住身份键没变（切回同一标签、重复事件、翻页） | 同键（pin_identity = 标签|目标）只拦截同一次操作的重复状态事件，不重复渲染、不重复发请求；用户重新进入同一对象或按 F5 主动刷新不受去重拦截，仍重新查库；表数据标签的表尚未建立时暂保留当前内容，快照到达后按新键再钉一次 | `src/ui.rs:1549、src/ui.rs:2366` |
+| load | 刷新对象树（F5 / 右键刷新） | 不沿用历史读数，下一次展示重新查库；F5 主动刷新即使对象身份没变也强制重查当前 Inspector | `src/ui.rs:2805、src/inspector.rs:924` |
+| load | 数据库连接断开（浏览会话失效） | 清理当前展示与错误状态，使在途元数据响应失效；重连后按新会话重新查询，不展示旧会话的元数据 | `src/inspector.rs:957、src/ui.rs:4152` |
 
 ### `inspector.header` 标题块（标题 · 副标题）与分隔线
 
@@ -1108,7 +1109,7 @@ kind `container` · status `active` · parent `inspector`
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 选中表 / 视图 / 物化视图 | 标题 = 对象名、副标题 = 种类；显示 [DDL] / [表信息] 切换条，按当前标签记住的页恢复（默认 DDL） | `src/inspector.rs:665、src/inspector.rs:691` |
-| load | 切换标签（看的还是同一个对象） | 只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息；不重发 GetDdl / GetColumns，也不重建标签 | `src/inspector.rs:798、src/ui.rs:2248` |
+| load | 切换标签（看的还是同一个对象） | 只换「表页选择」的记忆键，按新标签记住的页恢复 DDL / 表信息并按该页重新查库；不重建标签 | `src/inspector.rs:878、src/inspector.rs:924` |
 | load | 选中序列 / 函数 / 过程 / 类型（有 DDL 的种类） | 标题 = 对象名、副标题 = 种类（标题 tooltip 给完整路径）；只显示 DDL 正文一页，不出现 [DDL] / [表信息] 切换条，也没有表信息页 | `src/inspector.rs:675、src/inspector.rs:732、src/inspector.rs:735` |
 
 ### `inspector.pane_switch` [DDL] / [表信息] 切换条
@@ -1131,7 +1132,7 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前是表 / 视图视图 | 切到 DDL 页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中 | `src/inspector.rs:584、src/inspector.rs:817` |
+| click | 当前是表 / 视图视图 | 切到 DDL 页；选择记到当前标签（标签生命周期内有效），重发 GetDdl 查询目标子页；不改变标签与树的选中 | `src/inspector.rs:972、src/inspector.rs:1064` |
 
 ### `inspector.pane_switch.info` 「表信息」按钮
 
@@ -1144,7 +1145,7 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前是表 / 视图视图 | 切到表信息页；选择记到当前标签（标签生命周期内有效），不改变标签与树的选中 | `src/inspector.rs:584、src/inspector.rs:821` |
+| click | 当前是表 / 视图视图 | 切到表信息页；选择记到当前标签（标签生命周期内有效），只重查 GetColumns / GetPrimaryKey / ListNodes；不改变标签与树的选中 | `src/inspector.rs:972、src/inspector.rs:1070` |
 
 ### `inspector.object.info` 表信息页（列 · 主键 · 索引 · 触发器 · 已加载行数）
 
@@ -1156,7 +1157,7 @@ kind `container` · status `active` · parent `inspector.object`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到表信息页且列 / 主键 / 索引 / 触发器至少一项已返回 | 按节渲染已读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码 | `src/inspector.rs:1052、src/inspector.rs:1074、src/inspector.rs:1144` |
+| load | 切到表信息页（每次都重新查询列 / 主键 / 索引与触发器） | 按节渲染本次读回的内容：列、主键、索引、触发器、已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据 | `src/inspector.rs:1070、src/inspector.rs:1250` |
 
 ### `inspector.object.info.columns` 列清单（列名 · 类型 · 可空 · 主键）
 
@@ -1207,7 +1208,7 @@ kind `container` · status `active` · parent `inspector.object`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到 DDL 页（选中表 / 视图时默认落在这一页） | 发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」 | `src/ddl.rs:232、src/ddl.rs:154、src/ddl.rs:168` |
+| load | 切到 DDL 页（选中表 / 视图时默认落在这一页） | 每次进入 / 切回都发一次 GetDdl 并只显示正文：不折行、横向滚动且滚动条常驻、可选中复制；读取中写「正在读取 DDL…」+「等待 GetDdl 返回」；迟到响应在碰控件前按加载令牌丢弃 | `src/ddl.rs:281、src/ddl.rs:337` |
 | load | GetDdl 失败 | 正文区换状态页：标题给错误 headline、说明行给「<文案>（<稳定错误码>）」；§7.1 的文案口径为「DDL 读取失败：<文案>（<错误码>）」，不是空面板 | `src/ddl.rs:307、src/ddl.rs:317` |
 
 ### `inspector.object.ddl.warning` DDL 琥珀警示（exact=false）

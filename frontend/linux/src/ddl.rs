@@ -17,6 +17,10 @@
 //! `layout::FONT_PANEL` = 13px / Medium）：两页文字必须看起来是一套东西；12px 会裁
 //! CJK 笔画，等宽字在 1x 屏幕上又更细更小，所以不用等宽。横向滚动保留——DDL 是代码，
 //! 窄面板里按词折行会把一条语句断成两条。
+//!
+//! **无缓存**：每次 `show_for` 都发一次 `GetDdl`；过期的成功 / 错误响应在碰任何控件
+//! 之前被丢弃（见 [`LoadEpoch`]）。面板不保存历史对象的正文，也不替信息面板写任何
+//! 跨访问结果。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -31,21 +35,41 @@ use crate::proto::services::v1::ObjectRef;
 /// 按对象的会话找元数据通道（多连接下 DDL 走对象**自己**那条浏览会话）。
 pub type HubResolver = Rc<dyn Fn(&ObjectRef) -> Option<Rc<MetadataHub>>>;
 
-/// 一份**已成功取到**的 DDL（改动确认单 #1：钉住视图复入时直接渲染，不再请求）。
+/// 一次加载周期的令牌。
 ///
-/// 只缓存非空原文 / 拼装结果；Empty 与错误是「这一次的判断」，不缓存，下次重新读。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DdlSnapshot {
-    /// DDL 正文。
-    pub ddl: String,
-    /// 是否数据库原文（`false` = 客户端拼装）。
-    pub exact: bool,
-    /// 拼装警示行（`exact = true` 时为 `None`）。
-    pub warning: Option<String>,
-}
+/// 与对象身份**正交**：A → B → A 的第三次加载会拿到新令牌，第一次 A 的迟到响应
+/// 依然过期。任何新加载、换对象、换子页、主动刷新、断连都会开启新周期。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadToken(u64);
 
-/// DDL 成功返回时的旁路回调（信息面板据此写缓存；按**对象引用**给键）。
-pub type DdlResolvedHook = Rc<dyn Fn(&ObjectRef, &DdlSnapshot)>;
+/// 加载周期计数器：新周期使此前的全部令牌失效。
+///
+/// 信息面板与它内嵌的两个 DDL 面板共用同一份计数器，因此表信息页的加载也会让
+/// 上一条 DDL 请求失效，反之亦然。
+#[derive(Debug, Default)]
+pub struct LoadEpoch(std::cell::Cell<u64>);
+
+impl LoadEpoch {
+    /// 开启一个新周期，返回该周期的令牌。
+    #[must_use]
+    pub fn begin(&self) -> LoadToken {
+        let next = self.0.get() + 1;
+        self.0.set(next);
+        LoadToken(next)
+    }
+
+    /// 令牌是否仍属于当前周期。
+    #[must_use]
+    pub fn is_current(&self, token: LoadToken) -> bool {
+        self.0.get() == token.0
+    }
+
+    /// 响应是否可应用到当前展示：令牌必须是当前周期，且仍是该面板最近一次加载发出的。
+    #[must_use]
+    pub fn accepts(&self, token: LoadToken, expected: Option<LoadToken>) -> bool {
+        expected == Some(token) && self.is_current(token)
+    }
+}
 
 /// DDL 面板的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -151,13 +175,15 @@ pub struct DdlPanel {
     state: Cell<DdlState>,
     /// 面板是否被用户打开着（由 ui.rs 的 revealer 状态驱动，这里只记一份）。
     visible: Cell<bool>,
-    /// 成功返回时的旁路（信息面板写 DDL 缓存；改动确认单 #1）。
-    on_resolved: RefCell<Option<DdlResolvedHook>>,
+    /// 与信息面板共用的加载周期：过期响应不得碰控件。
+    epoch: Rc<LoadEpoch>,
+    /// 本面板最近一次加载的令牌。
+    token: Cell<Option<LoadToken>>,
 }
 
 impl DdlPanel {
-    /// 构建面板。
-    pub fn new() -> Rc<Self> {
+    /// 构建面板（与信息面板共用一份加载周期计数器）。
+    pub fn new(epoch: Rc<LoadEpoch>) -> Rc<Self> {
         let warning = gtk::Label::new(None);
         warning.set_xalign(0.0);
         warning.set_wrap(true);
@@ -222,7 +248,8 @@ impl DdlPanel {
             current: RefCell::new(None),
             state: Cell::new(DdlState::Idle),
             visible: Cell::new(false),
-            on_resolved: RefCell::new(None),
+            epoch,
+            token: Cell::new(None),
         });
 
         install_css();
@@ -247,12 +274,16 @@ impl DdlPanel {
         self.visible.set(visible);
     }
 
-    /// 查看某个对象的 DDL（清空上一次内容并进入 Loading）。
-    pub fn show_for(self: &Rc<Self>, node: NodeView) {
+    /// 查看某个对象的 DDL（清空上一次内容并进入 Loading，必发一次 `GetDdl`）。
+    ///
+    /// `token` 由调用方从共用的 [`LoadEpoch`] 开启：换对象 / 换子页 / 刷新 / 断连后，
+    /// 这条请求的成功与错误响应都会被 [`Self::finish`] 丢弃。
+    pub fn show_for(self: &Rc<Self>, node: NodeView, token: LoadToken) {
         self.warning.set_visible(false);
         self.warning.set_text("");
         self.buffer().set_text("");
         self.current.replace(Some(node.clone()));
+        self.token.replace(Some(token));
         self.set_state(
             DdlState::Loading,
             l10n::t("data_page.ddl_loading_title"),
@@ -282,44 +313,45 @@ impl DdlPanel {
             node.reference.clone(),
             Rc::new(move |result| {
                 if let Some(panel) = weak.upgrade() {
-                    panel.finish(&node, result);
+                    panel.finish(&node, token, result);
                 }
             }),
         );
     }
 
-    /// 接线「成功返回」旁路：信息面板据此把 DDL 写进按对象缓存的快照（#1 钉住视图）。
-    pub fn set_on_resolved(&self, hook: DdlResolvedHook) {
-        self.on_resolved.replace(Some(hook));
+    /// 清掉本次展示的数据与错误状态（断连时用；不发起请求）。
+    pub fn clear(&self) {
+        self.token.set(None);
+        self.current.replace(None);
+        self.buffer().set_text("");
+        self.warning.set_text("");
+        self.warning.set_visible(false);
+        self.state.set(DdlState::Idle);
+        self.stack.set_visible_child_name("state");
+        self.state_page.set_title(" ");
+        self.state_page.set_description(None);
+        self.spinner.set_visible(false);
+        self.spinner.stop();
     }
 
-    /// 直接渲染此前成功取到的 DDL（改动确认单 #1：钉住视图复入不再发 `GetDdl`）。
-    ///
-    /// 与 `show_for` 的区别：不进 Loading、不占请求；正文 / 拼装警示与 `finish`
-    /// 的 Ok 分支同一口径（警示行在缓存时就已定格成最终文案）。
-    pub fn show_cached(self: &Rc<Self>, node: &NodeView, snapshot: &DdlSnapshot) {
-        self.current.replace(Some(node.clone()));
-        self.buffer().set_text(&snapshot.ddl);
-        match snapshot.warning.as_deref() {
-            Some(warning) => {
-                self.warning.set_text(warning);
-                self.warning.set_visible(true);
-            }
-            None => {
-                self.warning.set_text("");
-                self.warning.set_visible(false);
-            }
+    fn finish(
+        self: &Rc<Self>,
+        node: &NodeView,
+        token: LoadToken,
+        result: Result<DdlView, MetadataError>,
+    ) {
+        // 有效性校验必须先于任何控件写入：迟到响应（含错误响应）不能污染当前面板。
+        if !self.epoch.accepts(token, self.token.get())
+            || self.current.borrow().as_ref() != Some(node)
+        {
+            eprintln!(
+                "[ddl] 丢弃过期响应（Token={:?}）：{}{}",
+                token.0,
+                kind_label(node.kind),
+                node.path_label()
+            );
+            return;
         }
-        self.stack.set_visible_child_name("text");
-        self.state.set(DdlState::Ready);
-        eprintln!(
-            "[ddl] 从缓存直接渲染：{}{}（钉住视图复入，不重发 GetDdl）",
-            kind_label(node.kind),
-            node.path_label()
-        );
-    }
-
-    fn finish(self: &Rc<Self>, node: &NodeView, result: Result<DdlView, MetadataError>) {
         let object = node.path_label();
         match result {
             Ok(view) => {
@@ -354,16 +386,6 @@ impl DdlPanel {
                 }
                 self.stack.set_visible_child_name("text");
                 self.state.set(DdlState::Ready);
-                if let Some(hook) = self.on_resolved.borrow().as_ref() {
-                    hook(
-                        &node.reference,
-                        &DdlSnapshot {
-                            ddl: view.ddl.clone(),
-                            exact: view.exact,
-                            warning,
-                        },
-                    );
-                }
                 eprintln!(
                     "[ddl] t=+{}ms DDL {object}：{} 行，exact={}，source_detail={}",
                     crate::qa::elapsed_ms(),
@@ -444,5 +466,32 @@ mod tests {
         assert_eq!(DdlState::Error.name(), "error");
         assert_eq!(DdlState::Loading.name(), "loading");
         assert_eq!(DdlState::Idle.name(), "idle");
+    }
+
+    #[test]
+    fn a_new_load_invalidates_every_earlier_token_even_for_the_same_object() {
+        let epoch = LoadEpoch::default();
+        let first = epoch.begin();
+        assert!(epoch.accepts(first, Some(first)));
+        // 同一次用户操作里的重复事件没有新令牌，不会被误当成新批次。
+        assert!(epoch.accepts(first, Some(first)));
+        let second = epoch.begin();
+        assert!(!epoch.is_current(first));
+        assert!(epoch.accepts(second, Some(second)));
+        // A → B → A：第三批的令牌与第一批不同，旧响应一律丢弃。
+        let third = epoch.begin();
+        assert!(!epoch.accepts(first, Some(first)));
+        assert!(!epoch.accepts(second, Some(second)));
+        assert!(epoch.accepts(third, Some(third)));
+    }
+
+    #[test]
+    fn a_token_from_another_panel_or_a_cleared_panel_is_rejected() {
+        let epoch = LoadEpoch::default();
+        let token = epoch.begin();
+        assert!(!epoch.accepts(token, None), "clear 之后没有在途加载");
+        let other = epoch.begin();
+        assert!(!epoch.accepts(token, Some(token)));
+        assert!(epoch.accepts(other, Some(other)));
     }
 }
